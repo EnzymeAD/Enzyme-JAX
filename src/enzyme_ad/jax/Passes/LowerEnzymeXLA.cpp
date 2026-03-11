@@ -66,8 +66,8 @@ using namespace mlir::enzymexla::triton_ext;
 static std::string ci(int64_t v) { return std::to_string(v); }
 
 // Create a vector i32 constant: dense<v> : tensor<Bxi32>.
-static Value makeVecI32Const(PatternRewriter &rewriter, Location loc,
-                             int64_t B, int64_t v) {
+static Value makeVecI32Const(PatternRewriter &rewriter, Location loc, int64_t B,
+                             int64_t v) {
   auto ty = RankedTensorType::get({B}, rewriter.getI32Type());
   auto attr = DenseElementsAttr::get(ty, rewriter.getI32IntegerAttr(v));
   return arith::ConstantOp::create(rewriter, loc, ty, attr);
@@ -84,10 +84,14 @@ static Value makeVecZeroConst(PatternRewriter &rewriter, Location loc,
                                    DenseElementsAttr::get(ty, zero));
 }
 
-// Build a rank-1 Triton stencil kernel directly using C++ op builders.
+// Build a rank-1 Triton stencil kernel.
 //
 // Signature is:
-//   tt.func @name(%input: !tt.ptr<T>, %weights: !tt.ptr<T>, %output: !tt.ptr<T>)
+//   tt.func @name(
+//       %input:   !tt.ptr<T>,
+//       %weights: !tt.ptr<T>,
+//       %output:  !tt.ptr<T>
+//   )
 //
 // with T in {f32, f64}. The computation is:
 //   output[i] = sum_{k=0..K-1} input[i + k] * weights[k]
@@ -110,8 +114,8 @@ static LogicalResult buildTriton1DKernel(triton::FuncOp func,
   auto vecPtrTy = RankedTensorType::get({B}, ptrTy);
 
   Value cB = arith::ConstantIntOp::create(rewriter, loc, B, 32);
-  Value pid = triton::GetProgramIdOp::create(rewriter, loc,
-                                             triton::ProgramIDDim::X);
+  Value pid =
+      triton::GetProgramIdOp::create(rewriter, loc, triton::ProgramIDDim::X);
   Value base = arith::MulIOp::create(rewriter, loc, pid, cB);
   Value rng = triton::MakeRangeOp::create(rewriter, loc, vecI32Ty, 0u,
                                           static_cast<uint32_t>(B));
@@ -174,18 +178,24 @@ static LogicalResult buildTriton1DKernel(triton::FuncOp func,
 // built through C++ op builders (no parseSourceString path).
 //===----------------------------------------------------------------------===//
 
-struct StencilOpTritonLowering
-    : public OpRewritePattern<enzymexla::StencilOp> {
+struct StencilOpTritonLowering : public OpRewritePattern<enzymexla::StencilOp> {
   StencilOpTritonLowering(MLIRContext *ctx, int32_t numWarps = 4,
-                          int32_t numStages = 3, PatternBenefit benefit = 2)
+                          int32_t numStages = 3, std::string backend = "cuda",
+                          PatternBenefit benefit = 2)
       : OpRewritePattern(ctx, benefit), numWarps(numWarps),
-        numStages(numStages) {}
+        numStages(numStages), backend(backend) {}
 
   int32_t numWarps;
   int32_t numStages;
+  std::string backend;
 
   LogicalResult matchAndRewrite(enzymexla::StencilOp op,
                                 PatternRewriter &rewriter) const override {
+    if (!(backend == "cuda" || backend == "rocm")) {
+      return rewriter.notifyMatchFailure(
+          op, "unsupported backend for Triton lowering");
+    }
+
     auto inputType = dyn_cast<RankedTensorType>(op.getInput().getType());
     auto weightsType = dyn_cast<RankedTensorType>(op.getWeights().getType());
     auto outputType = dyn_cast<RankedTensorType>(op.getResult().getType());
@@ -194,13 +204,12 @@ struct StencilOpTritonLowering
 
     if (!inputType.hasStaticShape() || !weightsType.hasStaticShape() ||
         !outputType.hasStaticShape())
-      return rewriter.notifyMatchFailure(op,
-                                         "requires static tensor shapes");
+      return rewriter.notifyMatchFailure(op, "requires static tensor shapes");
 
     if (inputType.getRank() != 1 || weightsType.getRank() != 1 ||
         outputType.getRank() != 1)
-      return rewriter.notifyMatchFailure(op,
-                                         "Triton builder path currently supports rank-1 only");
+      return rewriter.notifyMatchFailure(
+          op, "Triton builder path currently supports rank-1 only");
 
     Type elemType = outputType.getElementType();
     if (!isa<Float32Type, Float64Type>(elemType))
@@ -208,6 +217,8 @@ struct StencilOpTritonLowering
 
     const int64_t Nout = outputType.getShape()[0];
     const int64_t K = weightsType.getShape()[0];
+    // TODO: we might want to tune BLOCK based on Nout and K, or expose it as a
+    // parameter.
     const int64_t BLOCK = 1024;
     const int64_t gridX = (Nout + BLOCK - 1) / BLOCK;
 
@@ -251,23 +262,19 @@ struct StencilOpTritonLowering
     auto TI64 = [&](int64_t v) -> Value {
       auto ty = RankedTensorType::get({}, rewriter.getI64Type());
       return stablehlo::ConstantOp::create(
-          rewriter, loc, ty,
-          cast<ElementsAttr>(mlir::enzyme::makeAttr(ty, v)));
+          rewriter, loc, ty, cast<ElementsAttr>(mlir::enzyme::makeAttr(ty, v)));
     };
 
     rewriter.setInsertionPoint(op);
     auto callOp = TritonCallOp::create(
-        rewriter, loc, TypeRange{outputType}, fn,
-        TI64(gridX), TI64(1), TI64(1),
-        TI64(1), TI64(1), TI64(1),
-        ValueRange{op.getInput(), op.getWeights()},
+        rewriter, loc, TypeRange{outputType}, fn, TI64(gridX), TI64(1), TI64(1),
+        TI64(1), TI64(1), TI64(1), ValueRange{op.getInput(), op.getWeights()},
         StringAttr::get(ctx, ""),
         /*operand_layouts=*/nullptr,
         /*result_layouts=*/nullptr,
         /*arg_attrs=*/ArrayAttr::get(ctx, {}),
         /*res_attrs=*/ArrayAttr::get(ctx, {}),
-        /*output_operand_aliases=*/nullptr,
-        rewriter.getUnitAttr());
+        /*output_operand_aliases=*/nullptr, rewriter.getUnitAttr());
 
     rewriter.replaceOp(op, callOp.getResults());
     return success();
@@ -342,14 +349,13 @@ struct StencilOpFallbackLowering
       convOutShape.push_back(d);
 
     Value convResult = stablehlo::ConvolutionOp::create(
-        rewriter, loc, RankedTensorType::get(convOutShape, elemTy),
-        inputConv, weightsConv,
+        rewriter, loc, RankedTensorType::get(convOutShape, elemTy), inputConv,
+        weightsConv,
         /*window_strides=*/nullptr,
         /*padding=*/nullptr,
         /*lhs_dilation=*/nullptr,
         /*rhs_dilation=*/nullptr,
-        /*window_reversal=*/nullptr,
-        dnums,
+        /*window_reversal=*/nullptr, dnums,
         /*feature_group_count=*/rewriter.getI64IntegerAttr(1),
         /*batch_group_count=*/rewriter.getI64IntegerAttr(1),
         /*precision_config=*/nullptr);
@@ -372,14 +378,9 @@ struct LowerEnzymeXLAPass
     auto *context = getOperation()->getContext();
     RewritePatternSet patterns(context);
 
-    if (forceSliceFallback) {
-      patterns.add<StencilOpFallbackLowering>(context);
-    } else {
-      // Primary: Triton kernel (static rank-1 shapes, GPU).
-      patterns.add<StencilOpTritonLowering>(context);
-      // Fallback: static-shape slice/mul/add unrolling.
-      patterns.add<StencilOpFallbackLowering>(context);
-    }
+    patterns.add<StencilOpTritonLowering>(context, /*numWarps=*/4,
+                                          /*numStages=*/3, backend);
+    patterns.add<StencilOpFallbackLowering>(context);
 
     GreedyRewriteConfig config;
     config.enableFolding();

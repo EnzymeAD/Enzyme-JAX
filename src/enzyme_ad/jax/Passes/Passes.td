@@ -603,9 +603,8 @@ def LowerEnzymeXLAPass : Pass<"lower-enzymexla"> {
       enzymexla.stencil
         Primary path  – lower to a Triton kernel (enzymexla_tt_ext call) when
                         rank-1 input/weight/output shapes are statically known.
-                        The Triton kernel is built with C++ op builders (no
-                        string generation/parsing) and uses software pipelining
-                        (`num_stages`) to exploit shared memory.
+                        The Triton kernel is built with C++ op builders and uses
+                        software pipelining (`num_stages`) to exploit shared memory.
         Fallback path – if forceSliceFallback is set, or Triton matching fails,
                         lower to a sequence of stablehlo.slice + stablehlo.mul
                         + stablehlo.add ops unrolled over all kernel positions.
@@ -620,9 +619,7 @@ def LowerEnzymeXLAPass : Pass<"lower-enzymexla"> {
   ];
   let options = [
     Option<"backend", "backend", "std::string", "\"cpu\"",
-           "HW backend hint (cpu or cuda)">,
-    Option<"forceSliceFallback", "force-slice-fallback", "bool", "false",
-           "Force the slice/elementwise fallback instead of Triton lowering">,
+           "HW backend hint (cuda)">,
   ];
 }
 
