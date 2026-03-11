@@ -33,7 +33,7 @@ hlo_translate() {
 }
 
 mlir_opt() {
-    bazel run --action_env=CC=clang --define using_clang=true --run_under="cd $PWD &&" //:enzymexlamlir-opt -- $@
+    bazel run --action_env=CC=${CC-clang} --define using_clang=true --run_under="cd $PWD &&" //:enzymexlamlir-opt -- $@
 }
 
 # convert HLO to MLIR
