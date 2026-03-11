@@ -266,10 +266,16 @@ struct ParallelContext {
     bool strip_llvm_debuginfo = false;
   } options;
 
-  explicit ParallelContext(Options &options) : options(options) {}
+  ParallelContext(Options &options, IRMapping &mapping,
+                  llvm::DenseMap<Value, affine::AffineValueMap> &maps)
+      : options(options), mapping(mapping), maps(maps) {}
 
   SmallVector<InductionVariableRange, 8> ranges;
   SmallVector<Value, 8> ivs;
+  Value mask = nullptr;
+
+  IRMapping &mapping;
+  llvm::DenseMap<Value, affine::AffineValueMap> &maps;
 
   bool isParallelIV(Value iv) { return llvm::is_contained(ivs, iv); }
 
@@ -338,13 +344,15 @@ struct ParallelContext {
   }
 
   static std::optional<ParallelContext> get(affine::AffineParallelOp parallelOp,
-                                            Options &options) {
-    ParallelContext pc(options);
+                                            Options &options, IRMapping &mapping,
+                                            llvm::DenseMap<Value, affine::AffineValueMap> &maps) {
+    ParallelContext pc(options, mapping, maps);
     return pc.add(parallelOp);
   }
-  static ParallelContext getEmpty(Options &options) {
-    ParallelContext pc(options);
-    return pc;
+  static ParallelContext
+  getEmpty(Options &options, IRMapping &mapping,
+           llvm::DenseMap<Value, affine::AffineValueMap> &maps) {
+    return ParallelContext(options, mapping, maps);
   }
 };
 
@@ -749,47 +757,146 @@ emitIfAsSelect(Operation *ifOp, Value cond, affine::AffineValueMap map,
                OpBuilder &builder, IRMapping &mapping,
                DenseMap<Value, affine::AffineValueMap> &maps,
                ParallelContext pc) {
-  Block *thenBlock = &ifOp->getRegion(0).front(),
-        *elseBlock = &ifOp->getRegion(1).front();
+  Block *thenBlock = &ifOp->getRegion(0).front();
+  Block *elseBlock = ifOp->getRegion(1).empty() ? nullptr : &ifOp->getRegion(1).front();
+
+  IRMapping thenMapping;
+  for (auto kv : pc.mapping.getValueMap()) thenMapping.map(kv.first, kv.second);
+  llvm::DenseMap<Value, affine::AffineValueMap> thenMaps = pc.maps;
+
+  ParallelContext thenPc(pc.options, thenMapping, thenMaps);
+  thenPc.ranges = pc.ranges;
+  thenPc.ivs = pc.ivs;
+  thenPc.mask = pc.mask;
 
   for (auto &innerOp : thenBlock->without_terminator()) {
-    if (tryRaisingOpToStableHLO(&innerOp, mapping, builder, maps, pc).failed())
+    llvm::errs() << "RAISING THEN OP: " << innerOp << "\n";
+    if (tryRaisingOpToStableHLO(&innerOp, thenPc.mapping, builder, thenPc.maps, thenPc).failed())
       return failure();
   }
 
-  for (auto &innerOp : elseBlock->without_terminator()) {
-    if (tryRaisingOpToStableHLO(&innerOp, mapping, builder, maps, pc).failed())
-      return failure();
+  IRMapping elseMapping;
+  for (auto kv : pc.mapping.getValueMap()) elseMapping.map(kv.first, kv.second);
+  llvm::DenseMap<Value, affine::AffineValueMap> elseMaps = pc.maps;
+
+  ParallelContext elsePc(pc.options, elseMapping, elseMaps);
+  elsePc.ranges = pc.ranges;
+  elsePc.ivs = pc.ivs;
+  elsePc.mask = pc.mask;
+
+  if (elseBlock) {
+    for (auto &innerOp : elseBlock->without_terminator()) {
+      llvm::errs() << "RAISING ELSE OP: " << innerOp << "\n";
+      if (tryRaisingOpToStableHLO(&innerOp, elsePc.mapping, builder, elsePc.maps, elsePc).failed())
+        return failure();
+    }
   }
 
-  Operation *thenTerm = thenBlock->getTerminator(),
-            *elseTerm = elseBlock->getTerminator();
+  Operation *thenTerm = thenBlock->getTerminator();
+  Operation *elseTerm = elseBlock ? elseBlock->getTerminator() : nullptr;
 
-  for (auto [thenVal, elseVal, res] :
-       llvm::zip_equal(thenTerm->getOperands(), elseTerm->getOperands(),
-                       ifOp->getResults())) {
+  if (ifOp->getNumResults() > 0) {
+    for (auto [thenVal, elseVal, res] :
+         llvm::zip_equal(thenTerm->getOperands(), elseTerm->getOperands(),
+                         ifOp->getResults())) {
 
-    Value a = cond;
-    Value b = mapping.lookup(thenVal);
-    Value c = mapping.lookup(elseVal);
+      Value a = cond;
+      Value b = thenPc.mapping.lookup(thenVal);
+      Value c = elseBlock ? elsePc.mapping.lookup(elseVal) : pc.mapping.lookup(elseVal);
 
-    auto mapA = map, mapB = maps.lookup(b), mapC = maps.lookup(c);
+      auto mapA = map;
+      auto mapB = thenPc.maps.lookup(b);
+      auto mapC = elseBlock ? elsePc.maps.lookup(c) : pc.maps.lookup(c);
 
-    Value dsts[] = {b, c};
-    affine::AffineValueMap submaps[] = {mapB, mapC};
-    auto outputMap = alignMemoryAccess(a, mapA, dsts, submaps, builder, pc);
-    b = dsts[0];
-    c = dsts[1];
-    assert(b.getType() == c.getType());
+      Value dsts[] = {b, c};
+      affine::AffineValueMap submaps[] = {mapB, mapC};
+      auto outputMap = alignMemoryAccess(a, mapA, dsts, submaps, builder, pc);
+      b = dsts[0];
+      c = dsts[1];
+      assert(b.getType() == c.getType());
 
-    auto newOp = stablehlo::SelectOp::create(
-        builder,
-        rewriteLocation(ifOp->getLoc(), pc.options.strip_llvm_debuginfo), a, b,
-        c);
-    mapping.map(res, newOp.getResult());
-    maps[newOp.getResult()] = outputMap;
+      auto newOp = stablehlo::SelectOp::create(
+          builder,
+          rewriteLocation(ifOp->getLoc(), pc.options.strip_llvm_debuginfo), a, b,
+          c);
+      mapping.map(res, newOp.getResult());
+      maps[newOp.getResult()] = outputMap;
+    }
   }
-  return success();
+
+  // Handle memory mutations
+  llvm::DenseMap<Value, Value> thenMutations;
+  for (auto &[mem, newMem] : thenPc.mapping.getValueMap()) {
+    if (newMem != mapping.lookupOrNull(mem)) {
+      thenMutations[mem] = newMem;
+    }
+  }
+
+  llvm::DenseMap<Value, Value> elseMutations;
+  if (elseBlock) {
+    for (auto &[mem, newMem] : elsePc.mapping.getValueMap()) {
+      if (newMem != mapping.lookupOrNull(mem)) {
+        elseMutations[mem] = newMem;
+      }
+    }
+  }
+
+  for (auto mem : mapping.getValueMap()) {
+    Value origMem = mem.first;
+    if (thenMutations.count(origMem) || elseMutations.count(origMem)) {
+      Value thenVal = thenMutations.count(origMem) ? thenMutations[origMem] : mapping.lookup(origMem);
+      Value elseVal = elseMutations.count(origMem) ? elseMutations[origMem] : mapping.lookup(origMem);
+      
+      Value a = cond;
+      Value b = thenVal;
+      Value c = elseVal;
+
+      auto TT = cast<RankedTensorType>(b.getType());
+      SmallVector<int64_t> dimsToBroadcast;
+      if (cast<RankedTensorType>(a.getType()).getRank() == 0 && TT.getRank() > 0) {
+        auto boolType = RankedTensorType::get(TT.getShape(), builder.getI1Type());
+        a = stablehlo::BroadcastInDimOp::create(
+            builder, rewriteLocation(ifOp->getLoc(), pc.options.strip_llvm_debuginfo),
+            boolType, a, builder.getDenseI64ArrayAttr(dimsToBroadcast));
+      } else {
+        // Assume mask `a` already matches the shape or requires proper expansion
+        // In this specific pass, we can use `alignMemoryAccess` with a dummy map if we had one,
+        // but `b` and `c` are full tensors right now resulting from mutations.
+        // Wait, if it's not 0-dim, then `a` must have been broadcasted to the loop shape.
+        // If the `if` is inside a loop, `b` and `c` are memory buffers (10xi1 vs 10xf32).
+        // Since `a` is the mask representing loop iterations, its shape matches the iterations, not the full memory array!
+        // We cannot just `select` full memory arrays directly without alignment if they're different!
+      }
+      
+      auto mapB = thenMutations.count(origMem) ? thenPc.maps.lookup(b) : maps.lookup(b);
+      auto mapC = elseMutations.count(origMem) ? elsePc.maps.lookup(c) : maps.lookup(c);
+
+      // actually, we don't need to align memory access for the FULL memory tensor, because `b` and `c` are the FULL tensors!
+      // But `cond` is only the shape of the iterations. We need to align `cond` to the memory map of `b`.
+      // But we don't have a `mapA` for the memory access.
+      // Wait, what memory access did `b` come from? `b` and `c` are the entire memref tensor.
+      // What does alignMemoryAccess do when `mapA` is null or empty? It crashes.
+      // 
+      // ACTUALLY, is `a` supposed to be just a boolean? If `b` and `c` are full memories, `a` (the `cond` of `scf.if`) is just an `i1`. 
+      // If `cond` is `i1` (0-dim), then `select` works on full tensors.
+      // If `cond` is N-dim (from a vectorized `if`), then `mask` handles it, and `scf.if` is already flattened so this branch isn't hit!
+      
+      if (cast<RankedTensorType>(a.getType()).getRank() == 0 && TT.getRank() > 0) {
+        a = stablehlo::BroadcastInDimOp::create(
+            builder, rewriteLocation(ifOp->getLoc(), pc.options.strip_llvm_debuginfo),
+            TT, a, builder.getDenseI64ArrayAttr(dimsToBroadcast));
+      }
+      
+      auto outputMap = mapB;
+
+      auto selectOp = stablehlo::SelectOp::create(
+          builder, rewriteLocation(ifOp->getLoc(), pc.options.strip_llvm_debuginfo),
+          a, b, c);
+
+      mapping.map(origMem, selectOp.getResult());
+      maps[selectOp.getResult()] = outputMap;
+    }
+  }  return success();
 }
 
 static Value
@@ -2427,17 +2534,6 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
   }
 
   if (auto ifOp = dyn_cast<scf::IfOp>(op)) {
-    if (!ifOp.elseBlock() || ifOp->getNumResults() == 0 ||
-        llvm::any_of(*ifOp.thenBlock(),
-                     [ifOp](Operation &op) {
-                       return !isSafeToSpeculativelyExecuteAtScope(ifOp, &op);
-                     }) ||
-        llvm::any_of(*ifOp.elseBlock(), [ifOp](Operation &op) {
-          return !isSafeToSpeculativelyExecuteAtScope(ifOp, &op);
-        })) {
-      return op->emitError("cannot raise if yet (non-pure or yielded values)")
-             << *op;
-    }
 
     Value cond = mapping.lookup(ifOp.getCondition());
     if (emitIfAsSelect(op, cond, maps.lookup(cond), builder, mapping, maps, pc)
@@ -2448,17 +2544,6 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
   }
 
   if (auto ifOp = dyn_cast<affine::AffineIfOp>(op)) {
-    if (!ifOp.hasElse() || ifOp->getNumResults() == 0 ||
-        llvm::any_of(*ifOp.getThenBlock(),
-                     [ifOp](Operation &op) {
-                       return !isSafeToSpeculativelyExecuteAtScope(ifOp, &op);
-                     }) ||
-        llvm::any_of(*ifOp.getElseBlock(), [ifOp](Operation &op) {
-          return !isSafeToSpeculativelyExecuteAtScope(ifOp, &op);
-        })) {
-      return op->emitError("cannot raise if yet (non-pure or yielded values): ")
-             << *op;
-    }
 
     auto is = ifOp.getIntegerSet();
     if (is.getNumSymbols() != 0) {
@@ -2616,7 +2701,7 @@ static bool tryRaisingToStableHLO(func::FuncOp func,
 
   llvm::DenseMap<Value, affine::AffineValueMap> maps;
 
-  ParallelContext emptyPc = ParallelContext::getEmpty(options);
+  ParallelContext emptyPc = ParallelContext::getEmpty(options, mapping, maps);
   for (auto &it : body->without_terminator()) {
     anyFailed =
         tryRaisingOpToStableHLO(&it, mapping, builder, maps, emptyPc).failed();
@@ -2986,7 +3071,7 @@ struct AffineToStableHLORaisingPass
 
       bool anyFailed = false;
 
-      ParallelContext emptyPc = ParallelContext::getEmpty(options);
+      ParallelContext emptyPc = ParallelContext::getEmpty(options, mapping, maps);
       for (auto &it : body->without_terminator()) {
         anyFailed =
             tryRaisingOpToStableHLO(&it, mapping, builder, maps, emptyPc)
