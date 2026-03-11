@@ -1,5 +1,5 @@
 diff --git a/xla/service/spmd/custom_call_handler.cc b/xla/service/spmd/custom_call_handler.cc
-index a269b9462b..bb3981f77e 100644
+index a269b9462b..cb4970055c 100644
 --- a/xla/service/spmd/custom_call_handler.cc
 +++ b/xla/service/spmd/custom_call_handler.cc
 @@ -911,6 +911,7 @@ absl::Status SpmdPartitioningVisitor::HandleCustomCallSPMDInternal_MultiSlice(
@@ -27,3 +27,16 @@ index a269b9462b..bb3981f77e 100644
      TF_RET_CHECK(hlo->sharding().tuple_elements()[i] == element_sharding)
          << "All elements of MultiSlice output must have the same sharding.";
    }
+@@ -1090,7 +1094,12 @@ absl::Status SpmdPartitioningVisitor::HandleCustomCallSPMDInternal_Wrap(
+       << "No right_amount attribute in SPMD wrap op";
+   int64_t right_amount = right_amount_it->second;
+ 
++  std::cerr << " wrap hlo: " << hlo->DebugString() << "\n";
+   const HloInstruction* input_operand = hlo->operand(0);
++  std::cerr << " + input_operand: " << input_operand->DebugString() << "\n";
++  HloSharding element_sharding = input_operand->sharding();
++  std::cerr << " + elem_sharding: " << element_sharding << "\n";
++
+   PartitionedHlo input = GetPartitionedHlo(input_operand);
+   const Shape& pre_wrap_shape = input_operand->shape();
+   const int64_t full_pre_wrap_size = pre_wrap_shape.dimensions(dim);
