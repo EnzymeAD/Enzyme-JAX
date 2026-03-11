@@ -30,11 +30,12 @@ fi
 
 bazel_run() {
     bazel run --action_env=CC=${CC-clang}\
-    --define using_clang=true\
+    --define=using_clang=true\
     --run_under="cd $PWD &&"\
     --ui_event_filters=ERROR\
     --noshow_progress\
     --noshow_loading_progress\
+    --color=no\
     $@
 }
 
@@ -54,7 +55,7 @@ fi
 
 # convert MLIR to graphviz dot format
 TMP_MLIR_OPT_CMD=$(mktemp)
-mlir_opt --view-op-graph $TMP_AWK 2>&1 >/dev/null | awk '{gsub(/\x1b\[[0-9;]*m/, ""); print}' >$TMP_MLIR_OPT_CMD
+mlir_opt --view-op-graph $TMP_AWK 2>$TMP_MLIR_OPT_CMD >/dev/null
 
 if [ -n "$OUTPUT" ]; then
     cp --interactive $TMP_MLIR_OPT_CMD $OUTPUT
