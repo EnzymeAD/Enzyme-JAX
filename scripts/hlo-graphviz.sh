@@ -28,13 +28,18 @@ if [ -z "$INPUT" ]; then
     usage
 fi
 
-hlo_translate() {
-    bazel run --action_env=CC=${CC-clang} --define using_clang=true --run_under="cd $PWD &&" @xla//xla/hlo/tools:hlo-translate -- $@
+bazel_run() {
+    bazel run --action_env=CC=${CC-clang}\
+    --define using_clang=true\
+    --run_under="cd $PWD &&"\
+    --ui_event_filters=ERROR\
+    --noshow_progress\
+    --noshow_loading_progress\
+    $@
 }
 
-mlir_opt() {
-    bazel run --action_env=CC=${CC-clang} --define using_clang=true --run_under="cd $PWD &&" //:enzymexlamlir-opt -- $@
-}
+hlo_translate() { bazel_run @xla//xla/hlo/tools:hlo-translate -- $@;}
+mlir_opt() { bazel_run //:enzymexlamlir-opt -- $@; }
 
 # convert HLO to MLIR
 TMP_HLO_TRANSLATE_CMD=$(mktemp)
@@ -44,12 +49,12 @@ hlo_translate --hlo-to-mlir $INPUT -o $TMP_HLO_TRANSLATE_CMD
 TMP_AWK=$TMP_HLO_TRANSLATE_CMD
 if [ -n "$PATTERN" ]; then
     TMP_AWK=$(mktemp)
-    awk '/func\.func '"$PATTERN"'/ {p=1} p {print; c+=gsub(/\{/,"{"); c-=gsub(/\}/,"}"); if(c==0) p=0}' $TMP_HLO_TRANSLATE_CMD > $TMP_AWK
+    awk '/func\.func( private)? '"$PATTERN"'/ {p=1} p {print; c+=gsub(/\{/,"{"); c-=gsub(/\}/,"}"); if(c==0) p=0}' $TMP_HLO_TRANSLATE_CMD >$TMP_AWK
 fi
 
 # convert MLIR to graphviz dot format
 TMP_MLIR_OPT_CMD=$(mktemp)
-mlir_opt --view-op-graph $TMP_AWK 2>$TMP_MLIR_OPT_CMD >/dev/null
+mlir_opt --view-op-graph $TMP_AWK 2>&1 >/dev/null | awk '{gsub(/\x1b\[[0-9;]*m/, ""); print}' >$TMP_MLIR_OPT_CMD
 
 if [ -n "$OUTPUT" ]; then
     cp --interactive $TMP_MLIR_OPT_CMD $OUTPUT
