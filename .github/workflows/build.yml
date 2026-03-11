@@ -4,7 +4,7 @@ on:
   push:
     branches:
       - main
-    paths:
+    paths: &paths
       - ".github/scripts/process_benchmark_results.py"
       - ".github/workflows/build.yml"
       - "**/BUILD"
@@ -18,17 +18,7 @@ on:
   pull_request:
     branches:
       - main
-    paths:
-      - ".github/scripts/process_benchmark_results.py"
-      - ".github/workflows/build.yml"
-      - "**/BUILD"
-      - "**/WORKSPACE"
-      - "**/*.bzl"
-      - "builddeps/**"
-      - "patches/**"
-      - "src/**"
-      - "test/**"
-      - "third_party/**"
+    paths: *paths
   merge_group:
 
 concurrency:
@@ -115,10 +105,10 @@ jobs:
         with:
           # Avoid downloading Bazel every time.
           bazelisk-cache: true
-          # Store build cache per workflow.
-          disk-cache: ${{ github.workflow }}-${{ matrix.os }}-${{ matrix.python }}
-          # Share repository cache between workflows.
-          repository-cache: true
+          # Store build cache per workflow only for macOS.
+          disk-cache: ${{ runner.os == 'macOS' && format('build-{0}-{1}-{2}', github.workflow, matrix.os, matrix.python) || false }}
+          # Do not share repository cache between workflows.
+          repository-cache: false
           bazelisk-version: 1.x
 
       - name: Update JAX version

@@ -4,7 +4,7 @@ on:
   push:
     branches:
     - main
-    paths:
+    paths: &paths
       - '.github/workflows/test-gb-25.yml'
       - '**/BUILD'
       - '**/WORKSPACE'
@@ -15,14 +15,7 @@ on:
   pull_request:
     branches:
     - main
-    paths:
-      - '.github/workflows/test-gb-25.yml'
-      - '**/BUILD'
-      - '**/WORKSPACE'
-      - '**/*.bzl'
-      - 'patches/**'
-      - 'src/**'
-      - 'third_party/**'
+    paths: *paths
 
 concurrency:
   # Skip intermediate builds: always.
@@ -44,7 +37,7 @@ jobs:
       matrix:
         os:
           - linux-x86-a2-48-a100-4gpu
-          # - linux-x86-ct6e-180-4tpu
+          - linux-x86-ct6e-180-4tpu
         julia_version:
           - '1.11'
         xla_commit:
@@ -73,10 +66,10 @@ jobs:
         with:
           # Avoid downloading Bazel every time.
           bazelisk-cache: true
-          # Store build cache per workflow.
-          disk-cache: gb-25-${{ github.workflow }}-${{ matrix.os }}-${{ matrix.xla_commit }}
-          # Share repository cache between workflows.
-          repository-cache: true
+          # Store build cache per workflow only for macOS.
+          disk-cache: ${{ runner.os == 'macOS' && format('gb-25-{0}-{1}', github.workflow, matrix.os) || false }}
+          # Do not share repository cache between workflows.
+          repository-cache: false
           bazelisk-version: 1.x
       - name: Checkout Reactant.jl
         uses: actions/checkout@v6
@@ -97,8 +90,7 @@ jobs:
         with:
           version: ${{ matrix.julia_version }}
       - name: Load Julia packages from cache
-        id: julia-cache
-        uses: julia-actions/cache@v2
+        uses: julia-actions/cache@v3
       - name: Modify Enzyme-JAX commit
         timeout-minutes: 1
         run: |
@@ -149,6 +141,15 @@ jobs:
           # Make sure this directory exists, for good measure
           ls -lhrt "${GB25_DIR}"
           echo "GB25_DIR=${GB25_DIR}" >> ${GITHUB_ENV}
+          
+      - name: Set default precision (GPU)
+        if: ${{ contains(matrix.os, 'a100') }}
+        run: |
+          echo "RUN_FLAGS=--precision=64" >> ${GITHUB_ENV}
+      - name: Set default precision (TPU)
+        if: ${{ contains(matrix.os, 'tpu') }}
+        run: |
+          echo "RUN_FLAGS=--precision=32" >> ${GITHUB_ENV}
       - name: Instantiate GB-25 environment
         timeout-minutes: 40
         shell: julia --project --color=yes {0}
@@ -189,7 +190,7 @@ jobs:
         timeout-minutes: 30
         run: |
           export XLA_FLAGS='--xla_dump_to=${{ env.GB25_DIR }}/xla_dump_compile'
-          timeout --signal=TERM --verbose 29m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict sharding/sharded_baroclinic_instability_simulation_compile.jl
+          timeout --signal=TERM --verbose 29m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict sharding/sharded_baroclinic_instability_simulation_compile.jl ${{ env.RUN_FLAGS }}
         working-directory: ${{ env.GB25_DIR }}
       - name: Show remaining collective operations
         timeout-minutes: 10
@@ -200,12 +201,12 @@ jobs:
               ALL_TO_ALL_THRESHOLD=0
               ALL_GATHER_THRESHOLD=0
               ALL_REDUCE_THRESHOLD=0
-              COLLECTIVE_PERMUTE_THRESHOLD=340
+              COLLECTIVE_PERMUTE_THRESHOLD=339
           elif [[ '${{ contains(matrix.os, 'tpu') }}' == 'true' ]]; then
               ALL_TO_ALL_THRESHOLD=0
-              ALL_GATHER_THRESHOLD=20
-              ALL_REDUCE_THRESHOLD=21
-              COLLECTIVE_PERMUTE_THRESHOLD=1256
+              ALL_GATHER_THRESHOLD=0
+              ALL_REDUCE_THRESHOLD=19
+              COLLECTIVE_PERMUTE_THRESHOLD=1076
           fi
 
           for OP in "all-to-all" "all-gather" "all-reduce" "%collective-permute-start.* ="; do
@@ -213,7 +214,7 @@ jobs:
               NUM_COLLECTIVES=$(echo "${COLLECTIVES}" | wc -l | xargs)
               if [[ -n "${COLLECTIVES}" ]]; then
                   MSG="There are ${NUM_COLLECTIVES} remaining ${OP} operations"
-                  echo "::error title=Remaining ${OP} Operations:: ${MSG}"
+                  echo "::error title=${{ matrix.os }} - Remaining ${OP} Operations:: ${MSG}"
                   echo
                   echo "----------"
                   echo "${COLLECTIVES}"
@@ -230,12 +231,24 @@ jobs:
         timeout-minutes: 60
         run: |
           export XLA_FLAGS='--xla_dump_to=${{ env.GB25_DIR }}/xla_dump_run'
-          timeout --signal=TERM --verbose 59m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict sharding/sharded_baroclinic_instability_simulation_run.jl
+          timeout --signal=TERM --verbose 59m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict sharding/sharded_baroclinic_instability_simulation_run.jl ${{ env.RUN_FLAGS }}
+        working-directory: ${{ env.GB25_DIR }}
+      - name: Display profile results
+        shell: julia --project --color=yes {0}
+        run: |
+          using Reactant
+
+          prof_dir = joinpath(first(readdir(joinpath(pwd(), "sharding", "profiling"); join=true)), "loop2", "plugins", "profile")
+          prof_dir = joinpath(first(readdir(prof_dir; join=true)))
+
+          xplane_file = first(filter(endswith(".xplane.pb"), readdir(prof_dir; join=true)))
+
+          display(Reactant.Profiler.load_xplane_file(xplane_file))
         working-directory: ${{ env.GB25_DIR }}
       - name: Test correctness in GB-25 code
         timeout-minutes: 20
         run: |
-          timeout --signal=TERM --verbose 19m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict correctness/correctness_sharded_baroclinic_instability_simulation_run.jl
+          timeout --signal=TERM --verbose 19m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict correctness/correctness_sharded_baroclinic_instability_simulation_run.jl ${{ env.RUN_FLAGS }}
         working-directory: ${{ env.GB25_DIR }}
       - name: Upload MLIR and XLA modules
         uses: actions/upload-artifact@v7
@@ -266,11 +279,3 @@ jobs:
           path: '${{ env.GB25_DIR }}/**/plugins'
           retention-days: 90
           overwrite: false
-      - name: Save Julia depot cache on cancel or failure
-        id: julia-cache-save
-        if: cancelled() || failure()
-        uses: actions/cache/save@v5
-        with: 
-          path: |
-            ${{ steps.julia-cache.outputs.cache-paths }}
-          key: ${{ steps.julia-cache.outputs.cache-key }}
