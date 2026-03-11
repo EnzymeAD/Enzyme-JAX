@@ -29,7 +29,7 @@ if [ -z "$INPUT" ]; then
 fi
 
 hlo_translate() {
-    bazel run --action_env=CC=clang --define using_clang=true --run_under="cd $PWD &&" @xla//xla/hlo/tools:hlo-translate -- $@
+    bazel run --action_env=CC=${CC-clang} --define using_clang=true --run_under="cd $PWD &&" @xla//xla/hlo/tools:hlo-translate -- $@
 }
 
 mlir_opt() {
