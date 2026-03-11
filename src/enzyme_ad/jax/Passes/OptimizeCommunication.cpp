@@ -2343,10 +2343,15 @@ struct MultiSliceCustomCallOptimize
     auto shardings = mlir::sdy::getShardingPerValue(slice);
     if (!shardings)
       return rewriter.notifyMatchFailure(slice, "No sharding found.");
-    auto rotateSharding = shardings.getSharding(0);
+    auto sliceSharding = shardings.getSharding(0);
+    for (int64_t i = 1; i < slice.getNumResults(); ++i) {
+      if (shardings.getSharding(i) != sliceSharding)
+        return rewriter.notifyMatchFailure(
+            slice, "Not all results have the same sharding");
+    }
 
     int64_t numDevicesAlongDimension =
-        getNumDevicesAlongDimension(rotateSharding, sliceDimension, slice);
+        getNumDevicesAlongDimension(sliceSharding, sliceDimension, slice);
 
     if (numDevicesAlongDimension == 1) {
       return rewriter.notifyMatchFailure(
@@ -2359,7 +2364,7 @@ struct MultiSliceCustomCallOptimize
     if (!operandSharding) {
       return rewriter.notifyMatchFailure(slice, "No operand shardings");
     }
-    if (rotateSharding != operandSharding) {
+    if (sliceSharding != operandSharding) {
       return rewriter.notifyMatchFailure(slice,
                                          "Mismatched input/output sharding");
     }
@@ -2425,7 +2430,7 @@ struct MultiSliceCustomCallOptimize
       auto preSliceOp = rewriter.create<stablehlo::SliceOp>(
           slice.getLoc(), customCallOperand, preStart, preLimit, preStrides);
 
-      SmallVector<TensorShardingAttr> opShardings(1, rotateSharding);
+      SmallVector<TensorShardingAttr> opShardings(1, sliceSharding);
       sdy::setShardings(preSliceOp, TensorShardingPerValueAttr::get(
                                         rewriter.getContext(), opShardings));
 
@@ -2447,7 +2452,7 @@ struct MultiSliceCustomCallOptimize
     auto fnSym = rewriter.getStringAttr("_SPMDInternalOp_MultiSlice");
 
     SmallVector<TensorShardingAttr> opShardings(slice.getNumResults(),
-                                                rotateSharding);
+                                                sliceSharding);
 
     auto ccall = rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
         slice, slice->getResultTypes(), ValueRange{customCallOperand}, fnSym,
