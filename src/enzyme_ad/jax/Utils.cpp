@@ -532,6 +532,109 @@ bool canApplySymmetricPattern(Value val, PatternRewriter &rewriter) {
   return guaranteedSymmetricResult(val, rewriter);
 }
 
+bool canApplyUpperTriPattern(mlir::Operation *op, PatternRewriter &rewriter) {
+  return guaranteedUpperTriResult(op, rewriter);
+}
+
+bool canApplyUpperTriPattern(Value val, PatternRewriter &rewriter) {
+  return guaranteedUpperTriResult(val, rewriter);
+}
+
+bool canApplyLowerTriPattern(mlir::Operation *op, PatternRewriter &rewriter) {
+  return guaranteedLowerTriResult(op, rewriter);
+}
+
+bool canApplyLowerTriPattern(Value val, PatternRewriter &rewriter) {
+  return guaranteedLowerTriResult(val, rewriter);
+}
+
+bool canApplyUpperUnitTriPattern(mlir::Operation *op, PatternRewriter &rewriter) {
+  return guaranteedUpperUnitTriResult(op, rewriter);
+}
+
+bool canApplyUpperUnitTriPattern(Value val, PatternRewriter &rewriter) {
+  return guaranteedUpperUnitTriResult(val, rewriter);
+}
+
+bool canApplyLowerUnitTriPattern(mlir::Operation *op, PatternRewriter &rewriter) {
+  return guaranteedLowerUnitTriResult(op, rewriter);
+}
+
+bool canApplyLowerUnitTriPattern(Value val, PatternRewriter &rewriter) {
+  return guaranteedLowerUnitTriResult(val, rewriter);
+}
+
+UpperTriResultAnalysis initUpperTriResultAnalysis() {
+  auto lowerTriAnalysis = std::make_shared<LowerTriResultAnalysis>();
+  auto upperTriAnalysis = std::make_shared<UpperTriResultAnalysis>();
+  auto upperUnitTriAnalysis = std::make_shared<UpperUnitTriResultAnalysis>();
+  auto lowerUnitTriAnalysis = std::make_shared<LowerUnitTriResultAnalysis>();
+
+  lowerTriAnalysis->setUpperTriResultAnalysis(upperTriAnalysis);
+  lowerTriAnalysis->setLowerUnitTriResultAnalysis(lowerUnitTriAnalysis);
+  upperTriAnalysis->setLowerTriResultAnalysis(lowerTriAnalysis);
+  upperTriAnalysis->setUpperUnitTriResultAnalysis(upperUnitTriAnalysis);
+
+  lowerUnitTriAnalysis->setUpperUnitTriResultAnalysis(upperUnitTriAnalysis);
+  lowerUnitTriAnalysis->setLowerTriResultAnalysis(lowerTriAnalysis);
+  upperUnitTriAnalysis->setLowerUnitTriResultAnalysis(lowerUnitTriAnalysis);
+  upperUnitTriAnalysis->setUpperTriResultAnalysis(upperTriAnalysis);
+  return *upperTriAnalysis;
+}
+
+LowerTriResultAnalysis initLowerTriResultAnalysis() {
+  auto lowerTriAnalysis = std::make_shared<LowerTriResultAnalysis>();
+  auto upperTriAnalysis = std::make_shared<UpperTriResultAnalysis>();
+  auto upperUnitTriAnalysis = std::make_shared<UpperUnitTriResultAnalysis>();
+  auto lowerUnitTriAnalysis = std::make_shared<LowerUnitTriResultAnalysis>();
+
+  lowerTriAnalysis->setUpperTriResultAnalysis(upperTriAnalysis);
+  lowerTriAnalysis->setLowerUnitTriResultAnalysis(lowerUnitTriAnalysis);
+  upperTriAnalysis->setLowerTriResultAnalysis(lowerTriAnalysis);
+  upperTriAnalysis->setUpperUnitTriResultAnalysis(upperUnitTriAnalysis);
+
+  lowerUnitTriAnalysis->setUpperUnitTriResultAnalysis(upperUnitTriAnalysis);
+  lowerUnitTriAnalysis->setLowerTriResultAnalysis(lowerTriAnalysis);
+  upperUnitTriAnalysis->setLowerUnitTriResultAnalysis(lowerUnitTriAnalysis);
+  upperUnitTriAnalysis->setUpperTriResultAnalysis(upperTriAnalysis);
+  return *lowerTriAnalysis;
+}
+
+LowerUnitTriResultAnalysis initLowerUnitTriResultAnalysis() {
+  auto lowerTriAnalysis = std::make_shared<LowerTriResultAnalysis>();
+  auto upperTriAnalysis = std::make_shared<UpperTriResultAnalysis>();
+  auto upperUnitTriAnalysis = std::make_shared<UpperUnitTriResultAnalysis>();
+  auto lowerUnitTriAnalysis = std::make_shared<LowerUnitTriResultAnalysis>();
+
+  lowerTriAnalysis->setUpperTriResultAnalysis(upperTriAnalysis);
+  lowerTriAnalysis->setLowerUnitTriResultAnalysis(lowerUnitTriAnalysis);
+  upperTriAnalysis->setLowerTriResultAnalysis(lowerTriAnalysis);
+  upperTriAnalysis->setUpperUnitTriResultAnalysis(upperUnitTriAnalysis);
+
+  lowerUnitTriAnalysis->setUpperUnitTriResultAnalysis(upperUnitTriAnalysis);
+  lowerUnitTriAnalysis->setLowerTriResultAnalysis(lowerTriAnalysis);
+  upperUnitTriAnalysis->setLowerUnitTriResultAnalysis(lowerUnitTriAnalysis);
+  upperUnitTriAnalysis->setUpperTriResultAnalysis(upperTriAnalysis);  return *lowerUnitTriAnalysis;
+}
+
+UpperUnitTriResultAnalysis initUpperUnitTriResultAnalysis() {
+  auto lowerTriAnalysis = std::make_shared<LowerTriResultAnalysis>();
+  auto upperTriAnalysis = std::make_shared<UpperTriResultAnalysis>();
+  auto upperUnitTriAnalysis = std::make_shared<UpperUnitTriResultAnalysis>();
+  auto lowerUnitTriAnalysis = std::make_shared<LowerUnitTriResultAnalysis>();
+
+  lowerTriAnalysis->setUpperTriResultAnalysis(upperTriAnalysis);
+  lowerTriAnalysis->setLowerUnitTriResultAnalysis(lowerUnitTriAnalysis);
+  upperTriAnalysis->setLowerTriResultAnalysis(lowerTriAnalysis);
+  upperTriAnalysis->setUpperUnitTriResultAnalysis(upperUnitTriAnalysis);
+
+  lowerUnitTriAnalysis->setUpperUnitTriResultAnalysis(upperUnitTriAnalysis);
+  lowerUnitTriAnalysis->setLowerTriResultAnalysis(lowerTriAnalysis);
+  upperUnitTriAnalysis->setLowerUnitTriResultAnalysis(lowerUnitTriAnalysis);
+  upperUnitTriAnalysis->setUpperTriResultAnalysis(upperTriAnalysis);
+  return *upperUnitTriAnalysis;
+}
+
 SymmetricResultAnalysis initSymmetricResultAnalysis() {
   return SymmetricResultAnalysis();
 }
@@ -544,11 +647,16 @@ PurelyImagResultAnalysis initPurelyImagResultAnalysis() {
   return PurelyImagResultAnalysis();
 }
 
-bool checkNotEqual(APInt a, APInt b) { return a != b; }
+bool checkEqual(APInt a, APInt b) { return a == b; }
 
-bool checkNotEqual(APFloat a, APFloat b) {
-  return a.compare(b) != llvm::APFloat::cmpEqual;
+bool checkEqual(APFloat a, APFloat b) {
+  return a.compare(b) == llvm::APFloat::cmpEqual;
 }
+
+bool isTrueTranspose(stablehlo::TransposeOp tOp) {
+  auto perm = tOp.getPermutation();
+  return perm.size() == 2 && perm[0] == 1 && perm[1] == 0;
+};
 
 template <typename Ty> bool checkConstantSymmetric(DenseElementsAttr attr) {
   if (!attr)
@@ -579,7 +687,7 @@ template <typename Ty> bool checkConstantSymmetric(DenseElementsAttr attr) {
     for (int64_t j = i + 1; j < cols; j++) {
       auto a = *(it + i * cols + j);
       auto b = *(it + j * cols + i);
-      if (checkNotEqual(a, b))
+      if (!checkEqual(a, b))
         return false;
     }
   }
@@ -614,12 +722,6 @@ SymmetricResultAnalysis::State SymmetricResultAnalysis::localGuaranteed(
 
   if (isa<enzymexla::SyrkOp>(op))
     return State::GUARANTEED;
-
-  // check that transpose dimensions are [1,0]
-  auto isTrueTranspose = [](stablehlo::TransposeOp tOp) -> bool {
-    auto perm = tOp.getPermutation();
-    return perm.size() == 2 && perm[0] == 1 && perm[1] == 0;
-  };
 
   if (auto broadcastOp = dyn_cast<stablehlo::BroadcastInDimOp>(op)) {
     auto operand = broadcastOp.getOperand();
@@ -720,6 +822,491 @@ SymmetricResultAnalysis::State SymmetricResultAnalysis::localGuaranteed(
       {
         auto found = valueCache.find(operand);
         if (found != valueCache.end()) {
+          if (found->second) {
+            continue;
+          } else {
+            return State::NOTGUARANTEED;
+          }
+        }
+      }
+
+      localtodo.push_back(operand);
+      allOperandsGuaranteed = false;
+    }
+
+    if (allOperandsGuaranteed)
+      return State::GUARANTEED;
+    else
+      return State::PENDING;
+  } else {
+    return State::NOTGUARANTEED;
+  }
+}
+
+template <typename Ty> bool checkConstantSquare(DenseElementsAttr attr) {
+  if (!attr)
+    return false;
+
+  auto type = dyn_cast<RankedTensorType>(attr.getType());
+  if (!type)
+    return false;
+
+  if (type.getRank() == 0)
+    return true;
+  if (type.getRank() != 2)
+    return false;
+
+  auto shape = type.getShape();
+  int64_t rows = shape[0];
+  int64_t cols = shape[1];
+
+  if (rows != cols)
+    return false;
+
+  return true;
+}
+
+template <typename Ty> bool checkConstantLowerTri(DenseElementsAttr attr) {
+  if (!checkConstantSquare<Ty>(attr))
+    return false;
+  
+  auto type = dyn_cast<RankedTensorType>(attr.getType());
+  if (type.getRank() == 0)
+    return true;
+
+  auto shape = type.getShape();
+  int64_t rows = shape[0];
+  int64_t cols = shape[1];
+  
+  auto values = attr.getValues<Ty>();
+  auto it = values.begin();
+
+  for (int64_t i = 0; i < rows; i++) {
+    for (int64_t j = i; j < cols; j++) {
+      if ((*(it + i * cols + j)).isZero()) 
+        return false;
+    }
+  }
+  return true;
+}
+
+template <typename Ty> bool checkConstantUpperTri(DenseElementsAttr attr) {
+  if (!checkConstantSquare<Ty>(attr))
+    return false;
+  
+  auto type = dyn_cast<RankedTensorType>(attr.getType());
+  if (type.getRank() == 0)
+    return true;
+
+  auto shape = type.getShape();
+  int64_t rows = shape[0];
+  int64_t cols = shape[1];
+  
+  auto values = attr.getValues<Ty>();
+  auto it = values.begin();
+
+  for (int64_t i = 0; i < rows; i++) {
+    for (int64_t j = 0; j < i; j++) {
+      if ((*(it + i * cols + j)).isZero()) 
+        return false;
+    }
+  }
+  return true;
+}
+
+bool isOne(APFloat a) {
+  return a.isExactlyValue(1.0);
+}
+
+bool isOne(APInt a) {
+  return a == 1;
+}
+
+template <typename Ty> bool checkConstantUnitTri(DenseElementsAttr attr, bool detectUpper) {
+  if ((detectUpper && !checkConstantUpperTri<Ty>(attr)) || (!detectUpper && !checkConstantLowerTri<Ty>(attr)))
+    return false;
+
+  auto type = dyn_cast<RankedTensorType>(attr.getType());
+
+  if (type.getRank() == 0 && isOne(attr.getValues<Ty>()[0]))
+    return true;
+
+  // otherwise rank must be 2 and square if passed triangular check
+  auto shape = type.getShape();
+  int64_t rows = shape[0];
+  int64_t cols = shape[1];
+
+  auto values = attr.getValues<Ty>();
+  auto it = values.begin();
+
+  // check unit diagonal
+  for (int64_t i = 0; i < rows; i++) {
+    if (isOne(*(it + i * cols + i))) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
+template <typename Child>
+bool BaseUnitTriResultAnalysis<Child>::constantFloatCheck(DenseElementsAttr attr) {
+  return checkConstantUnitTri<APFloat>(attr, ((Child *)this)->detectUpper);
+}
+
+template <typename Child>
+bool BaseUnitTriResultAnalysis<Child>::constantIntCheck(DenseElementsAttr attr) {
+  return checkConstantUnitTri<APInt>(attr, ((Child *)this)->detectUpper);
+}
+
+bool LowerTriResultAnalysis::constantFloatCheck(DenseElementsAttr attr) {
+  return checkConstantLowerTri<APFloat>(attr);
+}
+
+bool LowerTriResultAnalysis::constantIntCheck(DenseElementsAttr attr) {
+  return checkConstantLowerTri<APInt>(attr);
+}
+
+bool UpperTriResultAnalysis::constantFloatCheck(DenseElementsAttr attr) {
+  return checkConstantUpperTri<APFloat>(attr);
+}
+
+bool UpperTriResultAnalysis::constantIntCheck(DenseElementsAttr attr) {
+  return checkConstantUpperTri<APInt>(attr);
+}
+
+bool LowerTriResultAnalysis::otherResultAnalysis(Value val, PatternRewriter &rewriter){
+    return upperTriResultAnalysis->guaranteed(val, rewriter);
+}
+
+bool UpperTriResultAnalysis::otherResultAnalysis(Value val, PatternRewriter &rewriter){
+    return lowerTriResultAnalysis->guaranteed(val, rewriter);
+}
+
+bool LowerTriResultAnalysis::unitResultAnalysis(Value val, PatternRewriter &rewriter){
+    return lowerUnitTriResultAnalysis->guaranteed(val, rewriter);
+}
+
+bool UpperTriResultAnalysis::unitResultAnalysis(Value val, PatternRewriter &rewriter){
+    return upperUnitTriResultAnalysis->guaranteed(val, rewriter);
+}
+
+bool LowerUnitTriResultAnalysis::otherResultAnalysis(Value val, PatternRewriter &rewriter){
+    return upperUnitTriResultAnalysis->guaranteed(val, rewriter);
+}
+
+bool UpperUnitTriResultAnalysis::otherResultAnalysis(Value val, PatternRewriter &rewriter){
+    return lowerUnitTriResultAnalysis->guaranteed(val, rewriter);
+}
+
+bool LowerUnitTriResultAnalysis::nonUnitResultAnalysis(Value val, PatternRewriter &rewriter){
+    return lowerTriResultAnalysis->guaranteed(val, rewriter);
+}
+
+bool UpperUnitTriResultAnalysis::nonUnitResultAnalysis(Value val, PatternRewriter &rewriter){
+    return upperTriResultAnalysis->guaranteed(val, rewriter);
+}
+
+// detects triangular matrices from sequence of iota, compare, and select operations. returns true if detectUpper is true and the matrix is upper triangular, or if detectUpper is false and the matrix is lower triangular.
+template <typename Child>
+bool BaseTriResultAnalysis<Child>::checkIotaCompare(stablehlo::SelectOp selectOp, bool detectUpper) {
+  
+  Value pred = selectOp.getPred();
+  Value trueTensor = selectOp.getOnTrue();
+  Value falseTensor = selectOp.getOnFalse();
+
+  auto cmpOp = dyn_cast<stablehlo::CompareOp>(pred.getDefiningOp());
+  if (!cmpOp) return false;
+
+  bool zeroOnFalse;
+
+  if (matchPattern(trueTensor, m_AnyZeroFloat()) ||
+    matchPattern(trueTensor, m_Zero())) {
+      zeroOnFalse = false;
+  } else if (matchPattern(falseTensor, m_AnyZeroFloat()) ||
+    matchPattern(falseTensor, m_Zero())) {
+      zeroOnFalse = true;
+  } else {
+    return false;
+  }
+
+  auto lhs = cmpOp.getLhs();
+  auto rhs = cmpOp.getRhs();
+
+  auto lhsIota = dyn_cast<stablehlo::IotaOp>(lhs.getDefiningOp());
+  if (!lhsIota) return false;
+  auto rhsIota = dyn_cast<stablehlo::IotaOp>(rhs.getDefiningOp());
+  if (!rhsIota) return false;
+
+  if (lhsIota.getIotaDimension() == 0 && rhsIota.getIotaDimension() == 1) {
+    switch (cmpOp.getComparisonDirection()) {
+      case stablehlo::ComparisonDirection::LE:
+        return !(zeroOnFalse ^ detectUpper); // upper if zeroOnFalse, lower otherwise
+      case stablehlo::ComparisonDirection::GE:
+        return (zeroOnFalse ^ detectUpper); // lower ...
+      case stablehlo::ComparisonDirection::LT:
+        return !(zeroOnFalse ^ detectUpper);
+      case stablehlo::ComparisonDirection::GT:
+        return (zeroOnFalse ^ detectUpper);
+      default:
+        return false;
+    }
+  }
+  else if (lhsIota.getIotaDimension() == 1 && rhsIota.getIotaDimension() == 0) {
+    switch (cmpOp.getComparisonDirection()) {
+      case stablehlo::ComparisonDirection::LE:
+        return (zeroOnFalse ^ detectUpper); // lower
+      case stablehlo::ComparisonDirection::GE:
+        return !(zeroOnFalse ^ detectUpper); // upper
+      case stablehlo::ComparisonDirection::LT:
+        return (zeroOnFalse ^ detectUpper); // upper
+      case stablehlo::ComparisonDirection::GT:
+        return !(zeroOnFalse ^ detectUpper); // lower
+      default:
+        return false;
+
+    }
+  }
+  return false;
+}
+
+// returns true if iota operations are used to set the diagonal of an already triangular matrix to one
+template <typename Child>
+bool BaseUnitTriResultAnalysis<Child>::checkIotaCompare(stablehlo::SelectOp selectOp, PatternRewriter &rewriter) {
+  
+  Value pred = selectOp.getPred();
+  Value trueTensor = selectOp.getOnTrue();
+  Value falseTensor = selectOp.getOnFalse();
+
+  Value nonOneTensor;
+
+  auto cmpOp = dyn_cast<stablehlo::CompareOp>(pred.getDefiningOp());
+  if (!cmpOp) return false;
+
+  bool oneOnFalse;
+
+  if (matchPattern(trueTensor, m_OneFloat()) ||
+    matchPattern(trueTensor, m_One())) {
+      oneOnFalse = false;
+      nonOneTensor = falseTensor;
+    } else if (matchPattern(falseTensor, m_OneFloat()) ||
+    matchPattern(falseTensor, m_One())) {
+      oneOnFalse = true;
+      nonOneTensor = trueTensor;
+  } else {
+    return false;
+  }
+
+  auto lhs = cmpOp.getLhs();
+  auto rhs = cmpOp.getRhs();
+
+  auto lhsIota = dyn_cast<stablehlo::IotaOp>(lhs.getDefiningOp());
+  if (!lhsIota) return false;
+  auto rhsIota = dyn_cast<stablehlo::IotaOp>(rhs.getDefiningOp());
+  if (!rhsIota) return false;
+
+  if (!(lhsIota.getIotaDimension() == 0 && rhsIota.getIotaDimension() == 1) || (lhsIota.getIotaDimension() == 1 && rhsIota.getIotaDimension() == 0)) return false;
+  
+  if ((oneOnFalse && cmpOp.getComparisonDirection() == stablehlo::ComparisonDirection::NE) || (!oneOnFalse && cmpOp.getComparisonDirection() == stablehlo::ComparisonDirection::EQ)) {
+    return ((Child *)this)->nonUnitResultAnalysis(nonOneTensor, rewriter);
+  }
+
+  return false;
+}
+
+template <typename Child>
+typename BaseTriResultAnalysis<Child>::State
+BaseTriResultAnalysis<Child>::localGuaranteed(Value val, SmallVectorImpl<Value> &localtodo, PatternRewriter &rewriter) {
+  auto valTy = cast<RankedTensorType>(val.getType());
+  if (valTy.getRank() != 2)
+    return State::NOTGUARANTEED; // restrict check to matrices
+  if (valTy.getDimSize(0) != valTy.getDimSize(1))
+    return State::NOTGUARANTEED; // must be square
+
+  auto op = val.getDefiningOp();
+  if (!op)
+    return State::NOTGUARANTEED;
+
+  // transpose of upper triangular is lower triangular and vice versa
+  if (auto transposeOp = dyn_cast<stablehlo::TransposeOp>(op)) {
+    if (isTrueTranspose(transposeOp) && ((Child*)this)->otherResultAnalysis(transposeOp.getOperand(), rewriter)) 
+    return State::GUARANTEED;
+  }
+
+  // diagonal implies triangular
+  if (auto scatterOp = dyn_cast<stablehlo::ScatterOp>(op)) {
+    Value outValues;
+    if (detectDiagonalTensor(scatterOp, &outValues, [](auto scatterInput) {
+          return matchPattern(scatterInput, m_AnyZeroFloat());
+        }).ok()) {
+      return State::GUARANTEED;
+    }
+  }
+
+  if (auto selectOp = dyn_cast<stablehlo::SelectOp>(op)) {
+    if (checkIotaCompare(selectOp, ((Child *)this)->detectUpper)) {
+      return State::GUARANTEED;
+    } else if (((Child*)this)->unitResultAnalysis(selectOp, rewriter)) {
+      return State::GUARANTEED;
+    }
+  }
+
+  bool recursiveCheck = false;
+
+  // unary ops where op(0) = 0
+  if (isa<
+      stablehlo::AbsOp,
+      stablehlo::CbrtOp,
+      stablehlo::CeilOp,
+      stablehlo::FloorOp,
+      stablehlo::ImagOp,
+      stablehlo::NegOp,
+      stablehlo::RealOp,
+      stablehlo::RoundOp,
+      stablehlo::SineOp,
+      stablehlo::SqrtOp>(op)) {
+    recursiveCheck = true;
+  }
+  // elementwise ops where op(0, 0) = 0
+  if (isa<
+      stablehlo::AddOp,
+      stablehlo::AndOp,
+      stablehlo::Atan2Op,
+      stablehlo::MaxOp,
+      stablehlo::MinOp,
+      stablehlo::MulOp,
+      stablehlo::OrOp,
+      stablehlo::SubtractOp,
+      stablehlo::XorOp>(op)) {
+    recursiveCheck = true;
+  }
+
+  if (auto dotOp = dyn_cast<stablehlo::DotGeneralOp>(op)) {
+    auto dotDimNumbers = dotOp.getDotDimensionNumbers();
+    auto lhs = dotOp.getLhs();
+    auto rhs = dotOp.getRhs();
+
+    auto lhsCDims = dotDimNumbers.getLhsContractingDimensions();
+    auto rhsCDims = dotDimNumbers.getRhsContractingDimensions();
+
+    if (dotDimNumbers.getLhsBatchingDimensions().size() == 0 &&
+        dotDimNumbers.getRhsBatchingDimensions().size() == 0 &&
+        lhsCDims.size() == 1 && rhsCDims.size() == 1) {
+      if (lhsCDims[0] == 1 && rhsCDims[0] == 0 ) { 
+        recursiveCheck = true;
+      } else if (lhsCDims[0] == 0 && rhsCDims[1] == 1) {
+        // equivalent to multiplying transposes of matrices
+        if (((Child *)this)->otherResultAnalysis(lhs, rewriter) && ((Child *)this)->otherResultAnalysis(rhs, rewriter)) {
+          return State::GUARANTEED;
+        }
+      } else if (lhsCDims[0] == 0 && rhsCDims[0] == 0) {
+        if (((Child *)this)->otherResultAnalysis(lhs, rewriter)) 
+          if (this->guaranteed(rhs, rewriter)) return State::GUARANTEED;
+      } else if (lhsCDims[0] == 1 && rhsCDims[0] == 1) {
+        if (((Child *)this)->otherResultAnalysis(rhs, rewriter)) 
+          if (this->guaranteed(lhs, rewriter)) return State::GUARANTEED;
+      }
+    }
+  }
+
+  if (recursiveCheck) {
+    bool allOperandsGuaranteed = true;
+    for (auto operand : op->getOperands()) {
+      {
+        auto found = this->valueCache.find(operand);
+        if (found != this->valueCache.end()) {
+          if (found->second) {
+            continue;
+          } else {
+            return State::NOTGUARANTEED;
+          }
+        }
+      }
+
+      localtodo.push_back(operand);
+      allOperandsGuaranteed = false;
+    }
+
+    if (allOperandsGuaranteed)
+      return State::GUARANTEED;
+    else
+      return State::PENDING;
+  } else {
+    return State::NOTGUARANTEED;
+  }
+}
+
+template <typename Child>
+typename BaseUnitTriResultAnalysis<Child>::State BaseUnitTriResultAnalysis<Child>::localGuaranteed(Value val, SmallVectorImpl<Value> &localtodo, PatternRewriter &rewriter) {
+  auto valTy = cast<RankedTensorType>(val.getType());
+  if (valTy.getRank() != 2)
+    return State::NOTGUARANTEED; // restrict check to matrices
+  if (valTy.getDimSize(0) != valTy.getDimSize(1))
+    return State::NOTGUARANTEED; // must be square
+
+  auto op = val.getDefiningOp();
+  if (!op)
+    return State::NOTGUARANTEED;
+
+  // transpose of upper triangular is lower triangular and vice versa
+  if (auto transposeOp = dyn_cast<stablehlo::TransposeOp>(op)) {
+    if (isTrueTranspose(transposeOp) && ((Child*)this)->otherResultAnalysis(transposeOp.getOperand(), rewriter)) 
+    return State::GUARANTEED;
+  }
+
+  // if iota operations are used to set the diagonal of a triangular matrix to one
+  if (auto selectOp = dyn_cast<stablehlo::SelectOp>(op)) {
+    if (checkIotaCompare(selectOp, rewriter)) {
+      return State::GUARANTEED;
+    }
+  }
+
+  bool recursiveCheck = false;
+
+  // unary ops where op(0) = 0 and op(1) = 1 
+  if (isa<stablehlo::AbsOp, stablehlo::SqrtOp, stablehlo::CbrtOp, stablehlo::CeilOp, stablehlo::FloorOp, stablehlo::RoundOp>(op)) {
+    recursiveCheck = true;
+  }
+  // elementwise ops where op(0, 0) = 0 and op(1, 1) = 1
+  if (isa<stablehlo::AndOp, stablehlo::MaxOp, stablehlo::MinOp, stablehlo::MulOp, stablehlo::OrOp>(op)) {
+    recursiveCheck = true;
+  }
+
+  if (auto dotOp = dyn_cast<stablehlo::DotGeneralOp>(op)) {
+    auto dotDimNumbers = dotOp.getDotDimensionNumbers();
+    auto lhs = dotOp.getLhs();
+    auto rhs = dotOp.getRhs();
+
+    auto lhsCDims = dotDimNumbers.getLhsContractingDimensions();
+    auto rhsCDims = dotDimNumbers.getRhsContractingDimensions();
+
+    if (dotDimNumbers.getLhsBatchingDimensions().size() == 0 &&
+        dotDimNumbers.getRhsBatchingDimensions().size() == 0 &&
+        lhsCDims.size() == 1 && rhsCDims.size() == 1) {
+      if (lhsCDims[0] == 1 && rhsCDims[0] == 0 ) { 
+        recursiveCheck = true;
+      } else if (lhsCDims[0] == 0 && rhsCDims[1] == 1) {
+        // equivalent to multiplying transposes of matrices
+        if (((Child *)this)->otherResultAnalysis(lhs, rewriter) && ((Child *)this)->otherResultAnalysis(rhs, rewriter)) {
+          return State::GUARANTEED;
+        }
+      } else if (lhsCDims[0] == 0 && rhsCDims[0] == 0) {
+        if (((Child *)this)->otherResultAnalysis(lhs, rewriter)) 
+          if (this->guaranteed(rhs, rewriter)) return State::GUARANTEED;
+      } else if (lhsCDims[0] == 1 && rhsCDims[0] == 1) {
+        if (((Child *)this)->otherResultAnalysis(rhs, rewriter)) 
+          if (this->guaranteed(lhs, rewriter)) return State::GUARANTEED;
+      }
+    }
+  } // TODO this is shared with non-unit triangular matrices, refactor
+
+
+  if (recursiveCheck) {
+    bool allOperandsGuaranteed = true;
+    for (auto operand : op->getOperands()) {
+      {
+        auto found = this->valueCache.find(operand);
+        if (found != this->valueCache.end()) {
           if (found->second) {
             continue;
           } else {
