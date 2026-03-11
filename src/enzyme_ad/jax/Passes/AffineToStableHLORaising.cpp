@@ -761,8 +761,8 @@ emitIfAsSelect(Operation *ifOp, Value cond, affine::AffineValueMap map,
   Block *elseBlock = ifOp->getRegion(1).empty() ? nullptr : &ifOp->getRegion(1).front();
 
   IRMapping thenMapping;
-  for (auto kv : pc.mapping.getValueMap()) thenMapping.map(kv.first, kv.second);
-  llvm::DenseMap<Value, affine::AffineValueMap> thenMaps = pc.maps;
+  for (auto kv : mapping.getValueMap()) thenMapping.map(kv.first, kv.second);
+  llvm::DenseMap<Value, affine::AffineValueMap> thenMaps = maps;
 
   ParallelContext thenPc(pc.options, thenMapping, thenMaps);
   thenPc.ranges = pc.ranges;
@@ -770,14 +770,13 @@ emitIfAsSelect(Operation *ifOp, Value cond, affine::AffineValueMap map,
   thenPc.mask = pc.mask;
 
   for (auto &innerOp : thenBlock->without_terminator()) {
-    llvm::errs() << "RAISING THEN OP: " << innerOp << "\n";
     if (tryRaisingOpToStableHLO(&innerOp, thenPc.mapping, builder, thenPc.maps, thenPc).failed())
       return failure();
   }
 
   IRMapping elseMapping;
-  for (auto kv : pc.mapping.getValueMap()) elseMapping.map(kv.first, kv.second);
-  llvm::DenseMap<Value, affine::AffineValueMap> elseMaps = pc.maps;
+  for (auto kv : mapping.getValueMap()) elseMapping.map(kv.first, kv.second);
+  llvm::DenseMap<Value, affine::AffineValueMap> elseMaps = maps;
 
   ParallelContext elsePc(pc.options, elseMapping, elseMaps);
   elsePc.ranges = pc.ranges;
@@ -786,7 +785,6 @@ emitIfAsSelect(Operation *ifOp, Value cond, affine::AffineValueMap map,
 
   if (elseBlock) {
     for (auto &innerOp : elseBlock->without_terminator()) {
-      llvm::errs() << "RAISING ELSE OP: " << innerOp << "\n";
       if (tryRaisingOpToStableHLO(&innerOp, elsePc.mapping, builder, elsePc.maps, elsePc).failed())
         return failure();
     }
@@ -799,7 +797,6 @@ emitIfAsSelect(Operation *ifOp, Value cond, affine::AffineValueMap map,
     for (auto [thenVal, elseVal, res] :
          llvm::zip_equal(thenTerm->getOperands(), elseTerm->getOperands(),
                          ifOp->getResults())) {
-
       Value a = cond;
       Value b = thenPc.mapping.lookup(thenVal);
       Value c = elseBlock ? elsePc.mapping.lookup(elseVal) : pc.mapping.lookup(elseVal);
@@ -841,8 +838,14 @@ emitIfAsSelect(Operation *ifOp, Value cond, affine::AffineValueMap map,
     }
   }
 
+  // Iterate over a copy of the keys to prevent iterator invalidation
+  // since we will be mutating 'mapping' inside the loop.
+  SmallVector<Value, 4> mappedOrigValues;
   for (auto mem : mapping.getValueMap()) {
-    Value origMem = mem.first;
+    mappedOrigValues.push_back(mem.first);
+  }
+
+  for (Value origMem : mappedOrigValues) {
     if (thenMutations.count(origMem) || elseMutations.count(origMem)) {
       Value thenVal = thenMutations.count(origMem) ? thenMutations[origMem] : mapping.lookup(origMem);
       Value elseVal = elseMutations.count(origMem) ? elseMutations[origMem] : mapping.lookup(origMem);
@@ -1322,8 +1325,13 @@ static LogicalResult tryRaisingForOpToStableHLOWhile(
     maps[ivInBody] =
         affine::AffineValueMap(AffineMap::get(forOp->getContext()), {});
 
+    ParallelContext localPc(pc.options, mapping, maps);
+    localPc.ranges = pc.ranges;
+    localPc.ivs = pc.ivs;
+    localPc.mask = pc.mask;
+
     for (auto &innerOp : forOp.getBody()->without_terminator()) {
-      if (tryRaisingOpToStableHLO(&innerOp, mapping, builder, maps, pc)
+      if (tryRaisingOpToStableHLO(&innerOp, mapping, builder, maps, localPc)
               .failed()) {
         LLVM_DEBUG(llvm::dbgs() << "Failed to raise inner op\n"
                                 << innerOp << "\n");
@@ -1834,7 +1842,7 @@ static LogicalResult tryRaisingLockStepForOpToStableHLO(
   if (pc.options.dump_failed_lockstep) {
     llvm::errs() << " failed lockstep of for raise: " << *forOp << "\n";
   }
-  return forOp.emitError("Not lockstep executable") << *forOp;
+  return failure();
 }
 
 static LogicalResult
@@ -1950,9 +1958,13 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
           inputTen, startIndices, outputShape);
     } else {
       bool needSlice = false;
+      bool needPad = false;
 
       SmallVector<int64_t> startIndices;
       SmallVector<int64_t> limitIndices;
+
+      SmallVector<int64_t> padLow;
+      SmallVector<int64_t> padHigh;
 
       for (auto [E, stride, sz] : llvm::zip_equal(
                accessValueMap.getAffineMap().getResults(), strides,
@@ -1964,14 +1976,60 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
           stride = 1;
         } else {
           auto range = computeExprRange(accessValueMap, E);
+          if (!range.has_value()) return failure();
           start = range->step < 0 ? range->ub - range->step : range->lb;
           limit = range->step < 0 ? range->lb - range->step : range->ub;
         }
 
         needSlice |= sz != (limit - start) / stride;
 
+        int64_t pLow = 0;
+        int64_t pHigh = 0;
+
+        if (start < 0) {
+          pLow = -start;
+          start = 0;
+          limit += pLow;
+        }
+        if (limit > sz + pLow) {
+          pHigh = limit - (sz + pLow);
+        }
+
+        if (pLow != 0 || pHigh != 0) {
+          needPad = true;
+          needSlice = true;
+        }
+
+        padLow.push_back(pLow);
+        padHigh.push_back(pHigh);
+
         startIndices.push_back(start);
         limitIndices.push_back(limit);
+      }
+
+      if (needPad) {
+        auto elemType = cast<RankedTensorType>(inputTen.getType()).getElementType();
+        auto tensorType = RankedTensorType::get({}, elemType);
+        auto padVal = stablehlo::ConstantOp::create(
+            builder,
+            rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+            tensorType,
+            cast<ElementsAttr>(builder.getZeroAttr(tensorType)));
+
+        SmallVector<int64_t> paddedShape;
+        SmallVector<int64_t> interior(
+            cast<RankedTensorType>(inputTen.getType()).getShape().size(), 0);
+        for (auto [sz, low, high] :
+             llvm::zip(cast<RankedTensorType>(inputTen.getType()).getShape(),
+                       padLow, padHigh)) {
+          paddedShape.push_back(sz + low + high);
+        }
+
+        inputTen = stablehlo::PadOp::create(
+            builder,
+            rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+            cast<RankedTensorType>(inputTen.getType()).clone(paddedShape),
+            inputTen, padVal, padLow, padHigh, interior);
       }
 
       if (needSlice)

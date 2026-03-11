@@ -79,17 +79,73 @@
     return
   }
 
-// CHECK-LABEL:   func.func private @if_with_load(
-// CHECK:           affine
 
-// CHECK-LABEL:   func.func private @if_yield_with_load_raised(
-// CHECK:           stablehlo
 
-// CHECK-LABEL:   func.func private @with_load_out_of_bounds(
-// CHECK:           affine
+// CHECK-LABEL:   func.func private @if_with_load(%[[VAL_0:.*]]: memref<194xf64, 1>, %[[VAL_1:.*]]: memref<194xf64, 1>, %[[VAL_2:.*]]: memref<194xf64, 1>) {
+// CHECK:           affine.parallel (%arg3) = (0) to (191) {
+// CHECK:           affine.if #set(%arg3) {
+// CHECK:           %[[VAL_3:.*]] = affine.load %[[VAL_0]][%arg3 + 2] : memref<194xf64, 1>
+// CHECK:           affine.store %[[VAL_3]], %[[VAL_2]][%arg3] : memref<194xf64, 1>
+// CHECK:           } else {
+// CHECK:           %[[VAL_3]] = affine.load %[[VAL_1]][%arg3 + 3] : memref<194xf64, 1>
+// CHECK:           affine.store %[[VAL_3]], %[[VAL_2]][%arg3] : memref<194xf64, 1>
+// CHECK:           }
+// CHECK:           }
+// CHECK:           return
+// CHECK:         }
 
-// CHECK-LABEL:   func.func private @if_with_multidimload_raised(
-// CHECK:           stablehlo
+// CHECK-LABEL:   func.func private @if_yield_with_load(%[[VAL_0:.*]]: memref<194xf64, 1>, %[[VAL_1:.*]]: memref<194xf64, 1>, %[[VAL_2:.*]]: memref<194xf64, 1>) {
+// CHECK:           affine.parallel (%arg3) = (0) to (191) {
+// CHECK:           %[[VAL_3:.*]] = affine.if #set(%arg3) -> f64 {
+// CHECK:           %[[VAL_4:.*]] = affine.load %[[VAL_0]][%arg3 + 2] : memref<194xf64, 1>
+// CHECK:           affine.yield %[[VAL_4]] : f64
+// CHECK:           } else {
+// CHECK:           %[[VAL_4]] = affine.load %[[VAL_1]][%arg3 + 3] : memref<194xf64, 1>
+// CHECK:           affine.yield %[[VAL_4]] : f64
+// CHECK:           }
+// CHECK:           affine.store %[[VAL_3]], %[[VAL_2]][%arg3] : memref<194xf64, 1>
+// CHECK:           }
+// CHECK:           return
+// CHECK:         }
 
-// CHECK-LABEL:   func.func private @if_with_multidimload_out_of_bounds
-// CHECK:           affine
+// CHECK-LABEL:   func.func private @with_load_out_of_bounds(%[[VAL_0:.*]]: memref<194xf64, 1>, %[[VAL_1:.*]]: memref<194xf64, 1>, %[[VAL_2:.*]]: memref<194xf64, 1>) {
+// CHECK:           affine.parallel (%arg3) = (0) to (193) {
+// CHECK:           %[[VAL_3:.*]] = affine.if #set(%arg3) -> f64 {
+// CHECK:           %[[VAL_4:.*]] = affine.load %[[VAL_0]][%arg3 + 2] : memref<194xf64, 1>
+// CHECK:           affine.yield %[[VAL_4]] : f64
+// CHECK:           } else {
+// CHECK:           %[[VAL_4]] = affine.load %[[VAL_1]][%arg3 + 3] : memref<194xf64, 1>
+// CHECK:           affine.yield %[[VAL_4]] : f64
+// CHECK:           }
+// CHECK:           affine.store %[[VAL_3]], %[[VAL_2]][%arg3] : memref<194xf64, 1>
+// CHECK:           }
+// CHECK:           return
+// CHECK:         }
+
+// CHECK-LABEL:   func.func private @if_with_multidimload(%[[VAL_0:.*]]: memref<100x194xf64, 1>, %[[VAL_1:.*]]: memref<100x194xf64, 1>, %[[VAL_2:.*]]: memref<100x194xf64, 1>) {
+// CHECK:           affine.parallel (%arg3, %[[VAL_3:.*]] = (2, 0) to (100, 192) {
+// CHECK:           %[[VAL_4:.*]] = affine.if #set(%[[VAL_3]]) -> f64 {
+// CHECK:           %[[VAL_5:.*]] = affine.load %[[VAL_0]][%arg3 - 2, %[[VAL_3]] + 2] : memref<100x194xf64, 1>
+// CHECK:           affine.yield %[[VAL_5]] : f64
+// CHECK:           } else {
+// CHECK:           %[[VAL_5]] = affine.load %[[VAL_1]][%arg3 - 2, %[[VAL_3]] + 2] : memref<100x194xf64, 1>
+// CHECK:           affine.yield %[[VAL_5]] : f64
+// CHECK:           }
+// CHECK:           affine.store %[[VAL_4]], %[[VAL_2]][%arg3, %[[VAL_3]]] : memref<100x194xf64, 1>
+// CHECK:           }
+// CHECK:           return
+// CHECK:         }
+
+// CHECK-LABEL:   func.func private @if_with_multidimload_out_of_bounds(%[[VAL_0:.*]]: memref<100x194xf64, 1>, %[[VAL_1:.*]]: memref<100x194xf64, 1>, %[[VAL_2:.*]]: memref<100x194xf64, 1>) {
+// CHECK:           affine.parallel (%arg3, %[[VAL_3:.*]] = (1, 0) to (100, 192) {
+// CHECK:           %[[VAL_4:.*]] = affine.if #set(%[[VAL_3]]) -> f64 {
+// CHECK:           %[[VAL_5:.*]] = affine.load %[[VAL_0]][%arg3 - 2, %[[VAL_3]] + 2] : memref<100x194xf64, 1>
+// CHECK:           affine.yield %[[VAL_5]] : f64
+// CHECK:           } else {
+// CHECK:           %[[VAL_5]] = affine.load %[[VAL_1]][%arg3 - 2, %[[VAL_3]] + 2] : memref<100x194xf64, 1>
+// CHECK:           affine.yield %[[VAL_5]] : f64
+// CHECK:           }
+// CHECK:           affine.store %[[VAL_4]], %[[VAL_2]][%arg3, %[[VAL_3]]] : memref<100x194xf64, 1>
+// CHECK:           }
+// CHECK:           return
+// CHECK:         }
