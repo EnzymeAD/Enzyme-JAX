@@ -593,6 +593,36 @@ def LowerEnzymeXLAMLPass : Pass<"lower-enzymexla-ml"> {
   ];
 }
 
+def LowerEnzymeXLAPass : Pass<"lower-enzymexla"> {
+  let summary = "Lower generic enzymexla ops (e.g. stencil) to stablehlo";
+  let description = [{
+    Lowers enzymexla dialect ops that do not belong to a more specific
+    sub-category (BLAS, LAPACK, ML, MPI, ...) to StableHLO.
+
+    Currently handled ops:
+      enzymexla.stencil
+        Primary path  – lower to a Triton kernel (enzymexla_tt_ext call) when
+                        rank-1 input/weight/output shapes are statically known.
+                        The Triton kernel is built with C++ op builders and uses
+                        software pipelining (`num_stages`) to exploit shared memory.
+        Fallback path – if forceSliceFallback is set, or Triton matching fails,
+                        lower to a sequence of stablehlo.slice + stablehlo.mul
+                        + stablehlo.add ops unrolled over all kernel positions.
+                        Requires statically-known shapes.
+  }];
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "enzymexla::EnzymeXLADialect",
+    "triton::TritonDialect",
+    "mlir::enzymexla::triton_ext::TritonExtDialect",
+    "mlir::arith::ArithDialect",
+  ];
+  let options = [
+    Option<"backend", "backend", "std::string", "\"cpu\"",
+           "HW backend hint (cuda)">,
+  ];
+}
+
 def RaiseTritonCustomCallPass : Pass<"raise-triton-custom-call"> {
   let summary = "Raise triton custom kernel call";
   let dependentDialects = [

@@ -1169,6 +1169,36 @@ def ReluOp: EnzymeXLA_Op<"ml.relu", [Pure, SameOperandsAndResultType, Elementwis
   }];
 }
 
+def StencilOp : EnzymeXLA_Op<"stencil", [Pure]> {
+  let summary = "N-D stencil (valid cross-correlation): stride=1, padding=0, dilation=1";
+
+  let description = [{
+    Applies an N-D stencil (cross-correlation) to the input tensor using the
+    provided weight tensor.  Stride is fixed at 1, padding at 0, and dilation
+    at 1 in every spatial dimension.
+
+    Input and weights must have the same rank N.  The output shape satisfies
+      output.shape[d] = input.shape[d] - weights.shape[d] + 1
+    for each dimension d.
+
+    Semantics (cross-correlation, no padding):
+      output[i0, i1, ..., iR] =
+        sum over j0 in [0,K0), j1 in [0,K1), ..., jR in [0,KR):
+          input[i0+j0, i1+j1, ..., iR+jR] * weights[j0, j1, ..., jR]
+  }];
+
+  let arguments = (ins
+    HLO_Tensor:$input,
+    HLO_Tensor:$weights
+  );
+
+  let results = (outs HLO_Tensor:$result);
+
+  let assemblyFormat = [{
+    $input `,` $weights attr-dict `:` functional-type(operands, results)
+  }];
+}
+
 def CacheLoadOp : EnzymeXLA_Op<"cacheload"> {
   let arguments = (ins Arg<AnyMemRef, "the reference to load from",
                            [MemRead]>:$memref,
