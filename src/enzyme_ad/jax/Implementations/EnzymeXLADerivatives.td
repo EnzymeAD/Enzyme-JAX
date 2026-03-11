@@ -44,8 +44,10 @@ def Logistic : Inst<"LogisticOp", "stablehlo">;
 def Compare : Inst<"CompareOp", "stablehlo">;
 def Select : Inst<"SelectOp", "stablehlo">;
 def Erf : Inst<"ErfOp", "chlo">;
+def Softplus : Inst<"SoftplusOp", "enzymexla">;
 
 def GT : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::GT">;
+def EQ : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::EQ">;
 
 def GeluApproximation : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   op.getGeluApproximationAttr();
@@ -53,6 +55,14 @@ def GeluApproximation : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
 
 def SelectIfGeluNone : StaticSelect<"cast<enzymexla::GeluOp>(op).getGeluApproximation() == enzymexla::GeluApproximation::NONE">;
 def SelectIfGeluTanh : StaticSelect<"cast<enzymexla::GeluOp>(op).getGeluApproximation() == enzymexla::GeluApproximation::TANH">;
+
+// Others
+def CheckedMul : SubRoutine<(Op $diffret, $x),
+                  (
+                    SelectIfStrongZero
+                    (Select (Compare $diffret, (HLOConstantFP<"0">):$zero, (EQ)), $zero, (Mul $diffret, $x)),
+                    (Mul $diffret, $x)
+                  )>;
 
 // Derivative rules
 // ReLU:
@@ -69,6 +79,13 @@ def : EnzymeXLADerivative<"ReluOp", (Op $input),
                     (Relu (Shadow $input))
                   >;
 
+def : EnzymeXLADerivative<"SoftplusOp", (Op $input),
+                    [
+                      (CheckedMul (DiffeRet), (Logistic $input))
+                    ],
+                    (Softplus (Shadow $input))
+                  >;
+
 // GELU (x):
 //   NONE:    gelu(x) = 0.5 * x * (1 + erf(x / sqrt(2)))
 //            d/dx = 0.5 * (1 + erf(x / sqrt(2))) + x * exp(-x^2 / 2) / sqrt(2π)
@@ -80,7 +97,7 @@ def : EnzymeXLADerivative<"ReluOp", (Op $input),
 //            d/dx = sigmoid(1.702*x) + 1.702*x*sigmoid(1.702*x)*(1 - sigmoid(1.702*x))
 def : EnzymeXLADerivative<"GeluOp", (Op $input),
                     [
-                      (Mul
+                      (CheckedMul
                         (DiffeRet),
                         (SelectIfGeluNone
                           (Add
