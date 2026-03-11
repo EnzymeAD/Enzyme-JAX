@@ -2451,7 +2451,7 @@ struct MultiSliceCustomCallOptimize
 
     auto fnSym = rewriter.getStringAttr("_SPMDInternalOp_MultiSlice");
 
-    SmallVector<TensorShardingAttr> opShardings(slice.getNumResults(),
+    SmallVector<TensorShardingAttr> opShardings(slice.getAmount() + 1,
                                                 sliceSharding);
 
     auto ccall = rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
@@ -2465,6 +2465,7 @@ struct MultiSliceCustomCallOptimize
         /*output_operand_aliases=*/nullptr);
     mlir::sdy::setShardings(ccall, TensorShardingPerValueAttr::get(
                                        rewriter.getContext(), opShardings));
+    llvm::errs() << " ms: " << *ccall << "\n";
     return success();
   }
 };
