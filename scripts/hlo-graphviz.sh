@@ -1,8 +1,6 @@
 #!/bin/sh
 # helper script that generates a Graphviz dot file from a given HLO file
-
-# required for hlo-translate, uses gcc if not forced in hydra
-export CC=clang
+# NOTE running this script can invalidate the bazel build cache, because it requires compiling the commands with clang
 
 usage() {
     echo "Usage: $0 [-o <output path of dot file>] [-f <matching func.func pattern>] <input hlo file>"
@@ -30,22 +28,17 @@ if [ -z "$INPUT" ]; then
     usage
 fi
 
-HLO_TRANSLATE_CMD=./$(bazel cquery --output=starlark --starlark:expr=target.files_to_run.executable.path @xla//xla/hlo/tools:hlo-translate 2>/dev/null)
-MLIR_OPT_CMD=./$(bazel cquery --output=starlark --starlark:expr=target.files_to_run.executable.path //:enzymexlamlir-opt 2>/dev/null)
+hlo_translate() {
+    bazel run --action_env=CC=clang --define using_clang=true --run_under="cd $PWD &&" @xla//xla/hlo/tools:hlo-translate -- $@
+}
 
-if [ ! -f "$HLO_TRANSLATE_CMD" ]; then
-    echo "Error: hlo-translate binary not found. Please build @xla//xla/hlo/tools:hlo-translate with bazel." >&2
-    exit 1
-fi
-
-if [ ! -f "$MLIR_OPT_CMD" ]; then
-    echo "Error: enzymexlamlir-opt binary not found. Please build //:enzymexlamlir-opt with bazel." >&2
-    exit 1
-fi
+mlir_opt() {
+    bazel run --action_env=CC=clang --define using_clang=true --run_under="cd $PWD &&" //:enzymexlamlir-opt -- $@
+}
 
 # convert HLO to MLIR
 TMP_HLO_TRANSLATE_CMD=$(mktemp)
-$HLO_TRANSLATE_CMD --hlo-to-mlir $INPUT -o $TMP_HLO_TRANSLATE_CMD
+hlo_translate --hlo-to-mlir $INPUT -o $TMP_HLO_TRANSLATE_CMD
 
 # filter MLIR to only include the specified `func.func` if provided, otherwise include all
 TMP_AWK=$TMP_HLO_TRANSLATE_CMD
@@ -56,7 +49,7 @@ fi
 
 # convert MLIR to graphviz dot format
 TMP_MLIR_OPT_CMD=$(mktemp)
-$MLIR_OPT_CMD --view-op-graph $TMP_AWK 2>$TMP_MLIR_OPT_CMD >/dev/null
+mlir_opt --view-op-graph $TMP_AWK 2>$TMP_MLIR_OPT_CMD >/dev/null
 
 if [ -n "$OUTPUT" ]; then
     cp --interactive $TMP_MLIR_OPT_CMD $OUTPUT
