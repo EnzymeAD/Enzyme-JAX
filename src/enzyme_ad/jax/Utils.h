@@ -1108,6 +1108,19 @@ struct IotaLikeTensor {
 std::optional<IotaLikeTensor> detectIotaLikeTensor(DenseElementsAttr attr);
 std::optional<IotaLikeTensor> detectIotaLikeTensor(mlir::Value tensor);
 
+// Represents a multi-dimensional nested iota, e.g.
+//   c1 * (c2 * iota(d0) + offset1) + offset2
+// Used for detecting when gather indices are functionally a slice/reshape.
+struct AffineIotaLikeTensor {
+  llvm::SmallVector<mlir::TypedAttr> starts;
+  llvm::SmallVector<int64_t> dimensions;
+  llvm::SmallVector<mlir::TypedAttr> scales;
+  mlir::RankedTensorType tensorType;
+};
+
+std::optional<AffineIotaLikeTensor> detectAffineIotaLikeTensor(mlir::Value tensor);
+
+
 // Represents a constant tensor that can be expressed as
 //   pad(innerTensor, paddingValue, lowPadding, highPadding,
 //   interiorPadding=[0,...])
