@@ -55,6 +55,12 @@ def TensorFloat
                  "getElementType()).getElementType())))">,
            "tensor<float or complex<float> scalar>", "::mlir::TensorType">;
 
+def TensorFloatAnyRank
+  : Type<CPred<"::llvm::isa<::mlir::TensorType>($_self) && "
+               "::llvm::isa<::mlir::FloatType>(::llvm::cast<::mlir::"
+               "TensorType>($_self).getElementType())">,
+           "tensor with floating-point element type", "::mlir::TensorType">;
+
 def KernelCallOp : EnzymeXLA_Op<"kernel_call", [
   AttrSizedOperandSegments, DeclareOpInterfaceMethods<SymbolUserOpInterface>,
   DeclareOpInterfaceMethods<CallOpInterface>,
@@ -1163,6 +1169,20 @@ def ReluOp: EnzymeXLA_Op<"ml.relu", [Pure, SameOperandsAndResultType, Elementwis
   );
 
   let results = (outs HLO_Tensor:$result);
+
+  let assemblyFormat = [{
+    $input attr-dict `:` functional-type($input, results)
+  }];
+}
+
+def SoftplusOp: EnzymeXLA_Op<"ml.softplus", [Pure, SameOperandsAndResultType, Elementwise]> {
+  let summary = "Computes the Softplus activation function";
+
+  let arguments = (ins
+    TensorFloatAnyRank:$input
+  );
+
+  let results = (outs TensorFloatAnyRank:$result);
 
   let assemblyFormat = [{
     $input attr-dict `:` functional-type($input, results)
