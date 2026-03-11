@@ -4,7 +4,7 @@ JAX_SHA256 = ""
 ENZYME_COMMIT = "b847f3bf85b4e74b85170781f83c36a80ce15b96"
 ENZYME_SHA256 = ""
 
-ML_TOOLCHAIN_COMMIT = "826af5f5b7755e1233387841395178d741cab24b"
+ML_TOOLCHAIN_COMMIT = "30ef4a9096f9490e8f198faa5ce5bbddd1b72fdb"
 ML_TOOLCHAIN_SHA256 = ""
 
 # If the empty string this will automatically use the commit above
