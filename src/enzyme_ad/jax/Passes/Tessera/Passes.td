@@ -68,6 +68,7 @@ def TesseraApplyPDLPass : Pass<"tessera-apply-pdl", "ModuleOp"> {
   }];
   let dependentDialects = [
     "pdl::PDLDialect",
+    "pdl_interp::PDLInterpDialect",
     "enzyme::tessera::TesseraDialect"
   ];
 }
