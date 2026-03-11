@@ -1001,6 +1001,7 @@ cc_library(
         "//src/external/polly:Polly",
         "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
+        "@com_google_absl//absl/strings",
         "@enzyme//:EnzymeMLIR",
         "@jax//jaxlib/gpu:triton_cc_proto",
         "@llvm-project//llvm:Core",
@@ -1113,6 +1114,7 @@ cc_library(
     name = "XLADerivatives",
     srcs = glob(
         [
+            "Analysis/*.cpp",
             "Implementations/*.cpp",
             "Passes/*.cpp",
             "Passes/Tessera/*.cpp",
@@ -1126,6 +1128,7 @@ cc_library(
         "Utils.cpp",
     ],
     hdrs = glob([
+        "Analysis/*.h",
         "Implementations/*.h",
         "Passes/*.h",
         "Passes/Tessera/*.h",
@@ -1204,6 +1207,7 @@ cc_library(
         "@llvm-project//mlir:ArithUtils",
         "@llvm-project//mlir:AsyncDialect",
         "@llvm-project//mlir:BytecodeOpInterface",
+        "@llvm-project//mlir:BytecodeWriter",
         "@llvm-project//mlir:CallOpInterfaces",
         "@llvm-project//mlir:CommonFolders",
         "@llvm-project//mlir:ComplexDialect",
@@ -1235,6 +1239,7 @@ cc_library(
         "@llvm-project//mlir:MathDialect",
         "@llvm-project//mlir:MathToLLVM",
         "@llvm-project//mlir:MathToLibm",
+        "@llvm-project//mlir:MathToNVVM",
         "@llvm-project//mlir:MathToROCDL",
         "@llvm-project//mlir:MemRefDialect",
         "@llvm-project//mlir:MemRefToLLVM",
@@ -1247,6 +1252,7 @@ cc_library(
         "@llvm-project//mlir:NVVMToLLVM",
         "@llvm-project//mlir:OpenMPDialect",
         "@llvm-project//mlir:OpenMPToLLVM",
+        "@llvm-project//mlir:PDLInterpDialect",
         "@llvm-project//mlir:Parser",
         "@llvm-project//mlir:Pass",
         "@llvm-project//mlir:QuantOps",
@@ -1387,6 +1393,9 @@ cc_library(
         "@llvm-project//mlir:LLVMDialect",
         "@llvm-project//mlir:LLVMCommonConversion",
         "@llvm-project//mlir:Transforms",
+        "@llvm-project//mlir:PDLDialect",
+        "@llvm-project//mlir:PDLInterpDialect",
+        "@llvm-project//mlir:PDLToPDLInterp",
 
         # Triton
         "@triton//:TritonDialects",

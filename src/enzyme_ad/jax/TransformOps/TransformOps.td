@@ -628,6 +628,11 @@ def ApplyTransposeSymmetricSimplify : EnzymeHLOPatternOp<
   let patterns = ["TransposeSymmetricSimplify"];
 }
 
+def ApplyTransposePartialSymmetrySimplify : EnzymeHLOPatternOp<
+    "transpose_partial_symmetry_simplify"> {
+  let patterns = ["TransposePartialSymmetrySimplify"];
+}
+
 def ApplyFactorScalarsInDotGeneral : EnzymeHLOPatternOp<
     "factor_scalars_in_dot_general"> {
   let patterns = ["FactorScalarsInDotGeneral"];
@@ -2561,6 +2566,10 @@ def ApplyLogSimplify : EnzymeHLOPatternOp<"log_simplify"> {
   let patterns = ["LogSimplify"];
 }
 
+def ApplyExponentialMinusOneFuse : EnzymeHLOPatternOp<"exponential_minus_one_fuse"> {
+  let patterns = ["ExponentialMinusOneFuse", "ExponentialMinusOneAddFuse"];
+}
+
 def ApplyNegMulConstSimplify : EnzymeHLOPatternOp<"neg_mul_const_simplify"> {
   let patterns = ["NegMulConstSimplify"];
 }
@@ -3062,4 +3071,9 @@ def ApplyAddComplexSimplifyPatterns: EnzymeHLOPatternOp<
 def ApplySubComplexSimplifyPatterns: EnzymeHLOPatternOp<
     "sub_complex_simplify"> {
   let patterns = ["BinaryOpComplexSimplifyBase<stablehlo::SubtractOp>"];
+}
+
+def ApplyScatterOfScatterSimplifyPatterns : EnzymeHLOPatternOp<
+    "scatter_of_scatter_simplify"> {
+  let patterns = ["ScatterOfScatterSimplify"];
 }

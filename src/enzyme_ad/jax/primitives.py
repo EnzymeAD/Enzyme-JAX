@@ -303,6 +303,7 @@ def optimization_passes(
         "power_multiply_to_power",
         "common_associative_commutative_op_reorder",
         "log_simplify",
+        "exponential_minus_one_fuse",
         "neg_mul_const_simplify",
         "neg_div_const_simplify",
         "negated_constant_mul_factoring",
@@ -352,6 +353,7 @@ def optimization_passes(
         "reduce_max_min_mul_positive_scalar",
         "add_complex_simplify",
         "sub_complex_simplify",
+        "scatter_of_scatter_simplify",
     ]
 
     # constant propagation patterns

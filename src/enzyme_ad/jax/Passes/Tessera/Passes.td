@@ -47,4 +47,15 @@ def TesseraToFuncPass : Pass<"tessera-to-func", "ModuleOp"> {
   ];
 }
 
+def TesseraPDLPass : Pass<"tessera-pdl", "ModuleOp"> {
+  let summary = "Apply PDL patterns to Tessera operations";
+  let description = [{
+    This pass applies PDL patterns to operations in the Tessera dialect.
+  }];
+  let dependentDialects = [
+    "pdl_interp::PDLInterpDialect",
+    "enzyme::tessera::TesseraDialect"
+  ];
+}
+
 #endif // ENZYME_AD_JAX_TESSERA_PASSES
