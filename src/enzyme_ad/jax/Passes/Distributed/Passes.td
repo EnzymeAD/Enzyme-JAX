@@ -80,4 +80,30 @@ def LocalizeDistributedModulePass : Pass<"localize-distributed-module", "ModuleO
   ];
 }
 
+def PrintTimingAnalysisPass
+    : Pass<"print-timing-analysis", "distributed::RegionComputationOp"> {
+  let summary = "Print timing analysis results for each lane and op";
+  let description = [{
+    This debugging pass computes the distributed timing analysis for a
+    RegionComputationOp and prints the resulting time range for each op in each
+    lane.
+  }];
+  let dependentDialects = [
+    "enzyme::distributed::DistributedDialect",
+  ];
+}
+
+def PrintTimingAnalysisModulePass
+    : Pass<"print-timing-analysis-module", "ModuleOp"> {
+  let summary = "Print timing analysis results for all distributed regions";
+  let description = [{
+    This wrapper pass finds every distributed.RegionComputationOp in the
+    module and prints timing analysis results for each lane and op.
+  }];
+  let dependentDialects = [
+    "enzyme::distributed::DistributedDialect",
+    "func::FuncDialect",
+  ];
+}
+
 #endif // ENZYME_AD_JAX_DISTRIBUTED_PASSES

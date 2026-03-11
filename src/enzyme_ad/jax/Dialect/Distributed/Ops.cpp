@@ -12,6 +12,13 @@ LogicalResult RegionComputationOp::verify() {
   // TODO
   return mlir::success();
 }
+
+llvm::SmallVector<mlir::Region *> RegionComputationOp::getLanes() {
+  llvm::SmallVector<mlir::Region *> lanes;
+  for (Region &region : getDeviceBodies())
+    lanes.push_back(&region);
+  return lanes;
+}
 } // namespace mlir::enzyme::distributed
 #define GET_OP_CLASSES
 #include "src/enzyme_ad/jax/Dialect/Distributed/DistributedOps.cpp.inc"

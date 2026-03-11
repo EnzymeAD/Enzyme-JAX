@@ -137,7 +137,7 @@ def MeshComputationOp : DistributedOp<"MeshComputation"> {
     let assemblyFormat = "$mesh $input_tensors type($input_tensors) `->` type($output_tensors) $body attr-dict";
 }
 
-def RegionComputationOp : DistributedOp<"RegionComputation"> {
+def RegionComputationOp : DistributedOp<"RegionComputation", [DeclareOpInterfaceMethods<LaneOpInterface>]> {
     let description = [{
        A computation performed across a submesh region of a parent MeshComputation. Any axis (factors) within the 
        region are decomposed into individual programs, while axes outside the region replicate the same program. 
@@ -190,7 +190,7 @@ def ShardingOp : DistributedOp<"Sharding", [PureDistributedMetadata]> {
 
 
 // Communication Ops
-def CollectiveOp : DistributedOp<"Collective", [PureDistributedMetadata, DeclareOpInterfaceMethods<InferTypeOpInterface>, SameVariadicOperandSize]> {
+def CollectiveOp : DistributedOp<"Collective", [PureDistributedMetadata, DeclareOpInterfaceMethods<HandleDeclarationOpInterface>, DeclareOpInterfaceMethods<InferTypeOpInterface>, SameVariadicOperandSize]> {
     let description = [{
        A resharding collective communication where the resharding pattern dictates the 
        communication pattern.
@@ -224,26 +224,34 @@ def SubmeshCollectivePartsOp : DistributedOp<"SubmeshCollectiveParts", [PureDist
     let assemblyFormat = "$collective $submesh $input_tensor_type`->` $output_tensor_type attr-dict";
 }
 
-def SendOp : DistributedOp<"Send", []> {
+def SendOp : DistributedOp<"Send", [DeclareOpInterfaceMethods<EventOpInterface>]> {
     let description = [{
-       Sends a tensor into a collective routine or a communication channel. 
-       Asynchronous.
+         Marks a tensor as ready to send in a one-way communication asynchronously.
      }];
     let arguments = (ins
-    CollectiveTokenType:$token,
+    MessageTokenType:$token,
     TensorType:$message
     );
     let assemblyFormat = "$token $message type($message) attr-dict";
 }
 
-def RecvOp : DistributedOp<"Recv", []> {
+def RecvOp : DistributedOp<"Recv", [DeclareOpInterfaceMethods<EventOpInterface>]> {
     let description = [{
-       Receives a tensor from a collective routine or a communication channel. 
-       Blocks.
+       Receives the tensor value from an asynchronous one-way communication.
      }];
-    let arguments = (ins CollectiveTokenType:$token);
+    let arguments = (ins MessageTokenType:$token);
     let results = (outs TensorType:$message);
     let assemblyFormat = "$token type($message) attr-dict";
+}
+
+def SendRecvOp : DistributedOp<"SendRecv", [DeclareOpInterfaceMethods<EventOpInterface>]> {
+    let description = [{
+       Synchronously participates in a send-recieve collective routine among potentially
+       multiple other devices. 
+     }];
+    let arguments = (ins CollectiveTokenType:$token, TensorType:$message);
+    let results = (outs TensorType:$response);
+    let assemblyFormat = "$token $message type($message) `->` type($response) attr-dict";
 }
 
 #endif // ENZYME_AD_JAX_DIALECT_DISTRIBUTED_OPS_TD

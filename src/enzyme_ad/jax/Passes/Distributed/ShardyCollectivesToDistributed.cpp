@@ -211,12 +211,11 @@ struct LowerSdyCollectiveToDistributedPattern : public RewritePattern {
         globalOutputTensorTypeAttr, localInputTensorTypeAttr,
         localOutputTensorTypeAttr, *inputShardingAxes, *outputShardingAxes);
 
-    rewriter.create<SendOp>(op->getLoc(), collective.getToken(), tensorIn);
-    auto recv = rewriter.create<RecvOp>(op->getLoc(), tensorOutType,
-                                        collective.getToken());
-    sdy::setSharding(recv.getMessage(), outputSharding);
+    auto sendRecv = rewriter.create<SendRecvOp>(
+      op->getLoc(), tensorOutType, collective.getToken(), tensorIn);
+    sdy::setSharding(sendRecv.getResponse(), outputSharding);
 
-    rewriter.replaceOp(op, recv.getMessage());
+    rewriter.replaceOp(op, sendRecv.getResponse());
     return success();
   }
 };

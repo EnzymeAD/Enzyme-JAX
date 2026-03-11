@@ -48,8 +48,8 @@ def LaneOpInterface :
     ];
 }
 
-def HandleDeclarationOp :
-        OpInterface<"HandleDeclarationOp"> {
+def HandleDeclarationOpInterface :
+        OpInterface<"HandleDeclarationOpInterface"> {
         let methods = [
             InterfaceMethod<
                 [{Returns the SSA value representing an event handle}],
