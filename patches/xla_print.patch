@@ -1,8 +1,8 @@
 diff --git a/third_party/shardy/workspace.bzl b/third_party/shardy/workspace.bzl
-index 2fb18c2745..5568232945 100644
+index 2fb18c2745..e4acd87937 100644
 --- a/third_party/shardy/workspace.bzl
 +++ b/third_party/shardy/workspace.bzl
-@@ -3,8 +3,8 @@
+@@ -3,13 +3,13 @@
  load("//third_party:repo.bzl", "tf_http_archive", "tf_mirror_urls")
  
  def repo():
@@ -13,6 +13,12 @@ index 2fb18c2745..5568232945 100644
  
      tf_http_archive(
          name = "shardy",
+         sha256 = SHARDY_SHA256,
+         strip_prefix = "shardy-{commit}".format(commit = SHARDY_COMMIT),
+         urls = tf_mirror_urls("https://github.com/openxla/shardy/archive/{commit}.zip".format(commit = SHARDY_COMMIT)),
+-        patch_file = ["//third_party/shardy:temporary.patch"],
++        patch_file = [],
+     )
 diff --git a/xla/service/spmd/custom_call_handler.cc b/xla/service/spmd/custom_call_handler.cc
 index a269b9462b..522107e564 100644
 --- a/xla/service/spmd/custom_call_handler.cc
