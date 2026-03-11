@@ -44,24 +44,27 @@ mlir::Value CollectiveOp::getHandle() { return getToken(); }
 llvm::SmallVector<mlir::Value> SendOp::happensAfter() {
   return {}; // sending is first in the chain
 }
-llvm::SmallVector<mlir::Value> SendOp::simulatenousWith() {
+llvm::SmallVector<mlir::Value> SendOp::simultaneousWith() {
   return {getToken()}; // satisfies its send token
 }
 bool SendOp::concurrentWith(Operation *other) { return false; }
 llvm::SmallVector<mlir::Value> RecvOp::happensAfter() {
   return {getToken()}; // receiving happens after the token is satisfied
 }
-llvm::SmallVector<mlir::Value> RecvOp::simulatenousWith() {
+llvm::SmallVector<mlir::Value> RecvOp::simultaneousWith() {
   return {}; // receiving is last in the chain
 }
 bool RecvOp::concurrentWith(Operation *other) { return false; }
 
 // SendRecv behaves differently since it is a synchronous protocol
 llvm::SmallVector<mlir::Value> SendRecvOp::happensAfter() { return {}; }
-llvm::SmallVector<mlir::Value> SendRecvOp::simulatenousWith() {
+llvm::SmallVector<mlir::Value> SendRecvOp::simultaneousWith() {
   // Need to walk the token back to its defining collective- it could be defined
   // by a parts op.
-  return {resolveCollectiveTokenToRootCollective(getToken())}; // satisfies its send/recv token
+  auto tok = resolveCollectiveTokenToRootCollective(getToken()).asOpResult();
+  assert(tok.getDefiningOp<CollectiveOp>() &&
+         "SendRecv token must be ultimately defined by a CollectiveOp");
+  return {tok}; // satisfies its send/recv token
 }
 bool SendRecvOp::concurrentWith(Operation *other) {
   // Must commute with other SendRecvOps on the same token so long as there is

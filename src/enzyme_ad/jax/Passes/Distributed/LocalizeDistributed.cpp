@@ -193,19 +193,22 @@ buildDeviceTokenMap(ArrayRef<CollectiveOp> collectiveOps, Value submesh,
 
   for (CollectiveOp collective : collectiveOps) {
     builder.setInsertionPointAfter(collective);
-    auto tokenParts = builder.create<SubmeshCollectivePartsOp>(
-        loc, collective.getToken(), submesh,
-        collective.getLocalInputTensorTypeAttr(),
-        collective.getLocalOutputTensorTypeAttr());
-
-    llvm::SmallVector<Value> deviceTokens(
-        tokenParts.getDeviceSpecificTokens().begin(),
-        tokenParts.getDeviceSpecificTokens().end());
-    if (deviceTokens.size() != nDevices) {
-      tokenParts.emitError()
-          << "unexpected number of device-specific tokens for submesh";
-      return failure();
-    }
+    // TODO: need to rethink collective parts.
+    // auto tokenParts = builder.create<SubmeshCollectivePartsOp>(
+    //     loc, collective.getToken(), submesh,
+    //     collective.getLocalInputTensorTypeAttr(),
+    //     collective.getLocalOutputTensorTypeAttr());
+    // llvm::SmallVector<Value> deviceTokens(
+    //     tokenParts.getDeviceSpecificTokens().begin(),
+    //     tokenParts.getDeviceSpecificTokens().end());
+    // if (deviceTokens.size() != nDevices) {
+    //   tokenParts.emitError()
+    //       << "unexpected number of device-specific tokens for submesh";
+    //   return failure();
+    // }
+    
+    // temp placeholder
+    llvm::SmallVector<Value> deviceTokens(nDevices, collective.getToken());
     deviceTokenMap[collective.getToken()] = std::move(deviceTokens);
   }
   builder.restoreInsertionPoint(ip);
