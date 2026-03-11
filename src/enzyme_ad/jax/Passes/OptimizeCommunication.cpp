@@ -2425,10 +2425,9 @@ struct MultiSliceCustomCallOptimize
       auto preSliceOp = rewriter.create<stablehlo::SliceOp>(
           slice.getLoc(), customCallOperand, preStart, preLimit, preStrides);
 
-      // Propagate the operand sharding onto the pre-sliced result.
-      // We only sliced replicated dims, so the sharding is unchanged.
-      if (auto operandShardingAttr = sdy::getSharding(customCallOperand))
-        sdy::setSharding(preSliceOp, operandShardingAttr);
+      SmallVector<TensorShardingAttr> opShardings(1, rotateSharding);
+      sdy::setShardings(preSliceOp, TensorShardingPerValueAttr::get(
+                                        rewriter.getContext(), opShardings));
 
       customCallOperand = preSliceOp.getResult();
     }
