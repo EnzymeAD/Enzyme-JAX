@@ -103,16 +103,14 @@ void registerEnzymeJaXXLAInternalFFI() {
   std::call_once(once, []() {
     XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(), "xla_throw_error",
                              "Host", xlaThrowErrorHandlerHost);
-    XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(),
-                             "xla_always_throw_error", "Host",
-                             xlaAlwaysThrowErrorHandlerHost);
+    XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(), "xla_always_throw_error",
+                             "Host", xlaAlwaysThrowErrorHandlerHost);
 
 #if defined(GOOGLE_CUDA)
     XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(), "xla_throw_error",
                              "CUDA", xlaThrowErrorHandlerCUDA);
-    XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(),
-                             "xla_always_throw_error", "CUDA",
-                             xlaAlwaysThrowErrorHandlerCUDA);
+    XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(), "xla_always_throw_error",
+                             "CUDA", xlaAlwaysThrowErrorHandlerCUDA);
 #endif
   });
 }

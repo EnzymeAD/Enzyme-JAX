@@ -55,11 +55,11 @@ ffi::Error GetHostScalar(CUstream stream, ffi::AnyBuffer buffer,
         absl::StrFormat("Expected scalar buffer with 1 element, got %d",
                         buffer.element_count()));
   }
-  cudaError_t err = cudaMemcpyAsync(host_value, buffer.untyped_data(), sizeof(T),
-                                    cudaMemcpyDeviceToHost, stream);
+  cudaError_t err = cudaMemcpyAsync(host_value, buffer.untyped_data(),
+                                    sizeof(T), cudaMemcpyDeviceToHost, stream);
   if (err != cudaSuccess) {
-    return ffi::Error::InvalidArgument(absl::StrFormat(
-        "cudaMemcpyAsync failed: %s", cudaGetErrorString(err)));
+    return ffi::Error::InvalidArgument(
+        absl::StrFormat("cudaMemcpyAsync failed: %s", cudaGetErrorString(err)));
   }
   return ffi::Error::Success();
 }
@@ -257,44 +257,43 @@ ffi::Error SyrkNoCDispatch(CUstream stream, bool transpose, bool uplo,
       "Unsupported dtype %s in syrk", absl::FormatStreamed(dataType)));
 }
 
-XLA_FFI_DEFINE_HANDLER(
-    SyrkFfi, SyrkDispatch,
-    xla::ffi::Ffi::Bind()
-        .Ctx<ffi::PlatformStream<CUstream>>()
-        .Attr<bool>("transpose")
-        .Attr<bool>("uplo")
-        .Attr<bool>("use_alpha_attribute")
-        .Attr<double>("alpha_real")
-        .Attr<double>("alpha_imag")
-        .Attr<bool>("use_beta_attribute")
-        .Attr<double>("beta_real")
-        .Attr<double>("beta_imag")
-        .Arg<ffi::AnyBuffer>()
-        .Arg<ffi::AnyBuffer>()
-        .Arg<ffi::AnyBuffer>()
-        .Arg<ffi::AnyBuffer>()
-        .Ret<ffi::AnyBuffer>());
+XLA_FFI_DEFINE_HANDLER(SyrkFfi, SyrkDispatch,
+                       xla::ffi::Ffi::Bind()
+                           .Ctx<ffi::PlatformStream<CUstream>>()
+                           .Attr<bool>("transpose")
+                           .Attr<bool>("uplo")
+                           .Attr<bool>("use_alpha_attribute")
+                           .Attr<double>("alpha_real")
+                           .Attr<double>("alpha_imag")
+                           .Attr<bool>("use_beta_attribute")
+                           .Attr<double>("beta_real")
+                           .Attr<double>("beta_imag")
+                           .Arg<ffi::AnyBuffer>()
+                           .Arg<ffi::AnyBuffer>()
+                           .Arg<ffi::AnyBuffer>()
+                           .Arg<ffi::AnyBuffer>()
+                           .Ret<ffi::AnyBuffer>());
 
-XLA_FFI_DEFINE_HANDLER(
-    SyrkNoCFfi, SyrkNoCDispatch,
-    xla::ffi::Ffi::Bind()
-        .Ctx<ffi::PlatformStream<CUstream>>()
-        .Attr<bool>("transpose")
-        .Attr<bool>("uplo")
-        .Attr<bool>("use_alpha_attribute")
-        .Attr<double>("alpha_real")
-        .Attr<double>("alpha_imag")
-        .Arg<ffi::AnyBuffer>()
-        .Arg<ffi::AnyBuffer>()
-        .Ret<ffi::AnyBuffer>());
+XLA_FFI_DEFINE_HANDLER(SyrkNoCFfi, SyrkNoCDispatch,
+                       xla::ffi::Ffi::Bind()
+                           .Ctx<ffi::PlatformStream<CUstream>>()
+                           .Attr<bool>("transpose")
+                           .Attr<bool>("uplo")
+                           .Attr<bool>("use_alpha_attribute")
+                           .Attr<double>("alpha_real")
+                           .Attr<double>("alpha_imag")
+                           .Arg<ffi::AnyBuffer>()
+                           .Arg<ffi::AnyBuffer>()
+                           .Ret<ffi::AnyBuffer>());
 
 #undef SOLVER_BLAS_DISPATCH_IMPL
 
 void registerEnzymeJaXXLACudaBlasFFI() {
-  XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(), "enzymejax_cublas_syrk_ffi",
-                           "CUDA", SyrkFfi);
   XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(),
-                           "enzymejax_cublas_syrk_no_c_ffi", "CUDA", SyrkNoCFfi);
+                           "enzymejax_cublas_syrk_ffi", "CUDA", SyrkFfi);
+  XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(),
+                           "enzymejax_cublas_syrk_no_c_ffi", "CUDA",
+                           SyrkNoCFfi);
 }
 
 } // namespace ffi_internal

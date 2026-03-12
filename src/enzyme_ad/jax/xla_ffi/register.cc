@@ -1,7 +1,7 @@
 #include <mutex>
 
-#include "host/register.h"
 #include "cuda/register.h"
+#include "host/register.h"
 
 #if (defined(_WIN32) || defined(__CYGWIN__)) &&                                \
     !defined(MLIR_CAPI_ENABLE_WINDOWS_DLL_DECLSPEC)
