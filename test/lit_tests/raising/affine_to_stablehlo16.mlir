@@ -29,12 +29,16 @@ module {
 // CHECK-NEXT:    %c_0 = stablehlo.constant dense<-17> : tensor<16xi64>
 // CHECK-NEXT:    %c_1 = stablehlo.constant dense<92> : tensor<i64>
 // CHECK-NEXT:    %c_2 = stablehlo.constant dense<7> : tensor<i64>
+// CHECK-NEXT:    %c_3 = stablehlo.constant dense<193> : tensor<16x1xi64>
+// CHECK-NEXT:    %c_4 = stablehlo.constant dense<0> : tensor<16x1xi64>
 // CHECK-NEXT:    %0 = stablehlo.iota dim = 0 : tensor<16xi64>
 // CHECK-NEXT:    %1 = stablehlo.multiply %0, %c_0 : tensor<16xi64>
 // CHECK-NEXT:    %2 = stablehlo.add %1, %c : tensor<16xi64>
 // CHECK-NEXT:    %3 = stablehlo.reshape %2 : (tensor<16xi64>) -> tensor<16x1xi64>
-// CHECK-NEXT:    %4 = "stablehlo.gather"(%arg0, %3) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1>}> : (tensor<194xf64>, tensor<16x1xi64>) -> tensor<16xf64>
-// CHECK-NEXT:    %5 = stablehlo.broadcast_in_dim %4, dims = [2] : (tensor<16xf64>) -> tensor<16x1x16xf64>
-// CHECK-NEXT:    %6 = stablehlo.dynamic_update_slice %arg4, %5, %c_2, %c_1, %c_2 : (tensor<34x99x194xf64>, tensor<16x1x16xf64>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<34x99x194xf64>
-// CHECK-NEXT:    return %arg0, %arg1, %arg2, %arg3, %6 : tensor<194xf64>, tensor<34x99x194xf64>, tensor<34x99x194xf64>, tensor<34x99x194xf64>, tensor<34x99x194xf64>
+// CHECK-NEXT:    %4 = stablehlo.maximum %3, %c_4 : tensor<16x1xi64>
+// CHECK-NEXT:    %5 = stablehlo.minimum %4, %c_3 : tensor<16x1xi64>
+// CHECK-NEXT:    %6 = "stablehlo.gather"(%arg0, %5) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1>}> : (tensor<194xf64>, tensor<16x1xi64>) -> tensor<16xf64>
+// CHECK-NEXT:    %7 = stablehlo.broadcast_in_dim %6, dims = [2] : (tensor<16xf64>) -> tensor<16x1x16xf64>
+// CHECK-NEXT:    %8 = stablehlo.dynamic_update_slice %arg4, %7, %c_2, %c_1, %c_2 : (tensor<34x99x194xf64>, tensor<16x1x16xf64>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<34x99x194xf64>
+// CHECK-NEXT:    return %arg0, %arg1, %arg2, %arg3, %8 : tensor<194xf64>, tensor<34x99x194xf64>, tensor<34x99x194xf64>, tensor<34x99x194xf64>, tensor<34x99x194xf64>
 // CHECK-NEXT:  }

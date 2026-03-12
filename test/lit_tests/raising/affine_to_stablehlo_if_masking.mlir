@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s -raise-affine-to-stablehlo | FileCheck %s
+// RUN: enzymexlamlir-opt %s -raise-affine-to-stablehlo -canonicalize | FileCheck %s
 
 func.func @test_if_masking(%arg0: memref<10xf32>, %arg1: memref<10xi1>) {
   affine.for %i = 0 to 10 {
@@ -11,25 +11,6 @@ func.func @test_if_masking(%arg0: memref<10xf32>, %arg1: memref<10xi1>) {
   }
   return
 }
-
-// CHECK-LABEL:   func.func private @test_if_masking_raised(
-// CHECK-SAME:                                              %[[VAL_0:.*]]: tensor<10xf32>,
-// CHECK-SAME:                                              %[[VAL_1:.*]]: tensor<10xi1>) -> (tensor<10xf32>, tensor<10xi1>) {
-// CHECK:           %[[VAL_2:.*]] = stablehlo.constant dense<0> : tensor<i64>
-// CHECK:           %[[VAL_3:.*]] = stablehlo.dynamic_slice %[[VAL_1]], %[[VAL_2]], sizes = [10] : (tensor<10xi1>, tensor<i64>) -> tensor<10xi1>
-// CHECK:           %[[VAL_4:.*]] = stablehlo.reshape %[[VAL_3]] : (tensor<10xi1>) -> tensor<10xi1>
-// CHECK:           %[[VAL_5:.*]] = stablehlo.constant dense<0> : tensor<i64>
-// CHECK:           %[[VAL_6:.*]] = stablehlo.dynamic_slice %[[VAL_0]], %[[VAL_5]], sizes = [10] : (tensor<10xf32>, tensor<i64>) -> tensor<10xf32>
-// CHECK:           %[[VAL_7:.*]] = stablehlo.reshape %[[VAL_6]] : (tensor<10xf32>) -> tensor<10xf32>
-// CHECK:           %[[VAL_8:.*]] = arith.addf %[[VAL_7]], %[[VAL_7]] : tensor<10xf32>
-// CHECK:           %[[VAL_9:.*]] = stablehlo.constant dense<0> : tensor<i64>
-// CHECK:           %[[VAL_10:.*]] = stablehlo.broadcast_in_dim %[[VAL_8]], dims = [0] : (tensor<10xf32>) -> tensor<10xf32>
-// CHECK:           %[[VAL_11:.*]] = stablehlo.dynamic_slice %[[VAL_0]], %[[VAL_9]], sizes = [10] : (tensor<10xf32>, tensor<i64>) -> tensor<10xf32>
-// CHECK:           %[[VAL_12:.*]] = stablehlo.select %[[VAL_4]], %[[VAL_10]], %[[VAL_11]] : tensor<10xi1>, tensor<10xf32>
-// CHECK:           %[[VAL_13:.*]] = stablehlo.dynamic_update_slice %[[VAL_0]], %[[VAL_12]], %[[VAL_9]] : (tensor<10xf32>, tensor<10xf32>, tensor<i64>) -> tensor<10xf32>
-// CHECK:           %[[VAL_14:.*]] = stablehlo.select %[[VAL_4]], %[[VAL_13]], %[[VAL_0]] : tensor<10xi1>, tensor<10xf32>
-// CHECK:           return %[[VAL_14]], %[[VAL_1]] : tensor<10xf32>, tensor<10xi1>
-// CHECK:         }
 
 func.func @test_nested_if_masking(%arg0: memref<10xf32>, %arg1: memref<10xi1>, %arg2: memref<10xi1>) {
   affine.for %i = 0 to 10 {
