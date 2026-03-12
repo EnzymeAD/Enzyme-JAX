@@ -753,25 +753,26 @@ emitIfAsSelect(Operation *ifOp, Value cond, affine::AffineValueMap map,
   Block *elseBlock =
       ifOp->getRegion(1).empty() ? nullptr : &ifOp->getRegion(1).front();
 
-  Value mask = pc.mask;
-  if (mask) {
-    // merge mask and current cond
-    // TODO: this is wrong for the false block!!
-    //       this needs to be true: (oldMask) & (cond)
-    //                       false: (oldMask) & (!cond)
-    affine::AffineValueMap maskMap = maps.lookup(mask),
-                           condMap = maps.lookup(cond);
-    affine::AffineValueMap newMaskMap =
-        alignMemoryAccess(mask, maskMap, cond, condMap, builder, pc);
+  auto getMaskedCond = [&](Value cond, Value mask) {
+    if (mask) {
+      // merge mask and current cond
+      affine::AffineValueMap maskMap = maps.lookup(mask),
+                             condMap = maps.lookup(cond);
+      affine::AffineValueMap newMaskMap =
+          alignMemoryAccess(mask, maskMap, cond, condMap, builder, pc);
 
-    mask = stablehlo::AndOp::create(
-        builder,
-        rewriteLocation(ifOp->getLoc(), pc.options.strip_llvm_debuginfo), mask,
-        cond);
-    maps[mask] = newMaskMap;
-  } else {
-    mask = cond;
-  }
+      mask = stablehlo::AndOp::create(
+          builder,
+          rewriteLocation(ifOp->getLoc(), pc.options.strip_llvm_debuginfo),
+          mask, cond);
+      maps[mask] = newMaskMap;
+    } else {
+      mask = cond;
+    }
+    return mask;
+  };
+
+  Value mask = getMaskedCond(cond, pc.mask);
 
   ParallelContext thenPc(pc.options);
   thenPc.ranges = pc.ranges;
@@ -789,9 +790,11 @@ emitIfAsSelect(Operation *ifOp, Value cond, affine::AffineValueMap map,
   elsePc.ivs = pc.ivs;
 
   if (elseBlock) {
-    Value elseMask = stablehlo::NotOp::create(
+    Value elseCond = stablehlo::NotOp::create(
         builder,
-        rewriteLocation(ifOp->getLoc(), pc.options.strip_llvm_debuginfo), mask);
+        rewriteLocation(ifOp->getLoc(), pc.options.strip_llvm_debuginfo), cond);
+
+    Value elseMask = getMaskedCond(elseCond, pc.mask);
     maps[elseMask] = maps.lookup(mask);
     elsePc.mask = elseMask;
 
