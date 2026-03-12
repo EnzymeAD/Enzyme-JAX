@@ -753,13 +753,30 @@ emitIfAsSelect(Operation *ifOp, Value cond, affine::AffineValueMap map,
   Block *elseBlock =
       ifOp->getRegion(1).empty() ? nullptr : &ifOp->getRegion(1).front();
 
-  if (pc.mask != nullptr)
-    llvm_unreachable("todo: support nested if statements.");
+  Value mask = pc.mask;
+  if (mask) {
+    // merge mask and current cond
+    // TODO: this is wrong for the false block!!
+    //       this needs to be true: (oldMask) & (cond)
+    //                       false: (oldMask) & (!cond)
+    affine::AffineValueMap maskMap = maps.lookup(mask),
+                           condMap = maps.lookup(cond);
+    affine::AffineValueMap newMaskMap =
+        alignMemoryAccess(mask, maskMap, cond, condMap, builder, pc);
+
+    mask = stablehlo::AndOp::create(
+        builder,
+        rewriteLocation(ifOp->getLoc(), pc.options.strip_llvm_debuginfo), mask,
+        cond);
+    maps[mask] = newMaskMap;
+  } else {
+    mask = cond;
+  }
 
   ParallelContext thenPc(pc.options);
   thenPc.ranges = pc.ranges;
   thenPc.ivs = pc.ivs;
-  thenPc.mask = cond;
+  thenPc.mask = mask;
 
   for (auto &innerOp : thenBlock->without_terminator()) {
     if (tryRaisingOpToStableHLO(&innerOp, mapping, builder, maps, thenPc)
@@ -774,9 +791,8 @@ emitIfAsSelect(Operation *ifOp, Value cond, affine::AffineValueMap map,
   if (elseBlock) {
     Value elseMask = stablehlo::NotOp::create(
         builder,
-        rewriteLocation(ifOp->getLoc(), pc.options.strip_llvm_debuginfo),
-        cond);
-    maps[elseMask] = maps.lookup(cond);
+        rewriteLocation(ifOp->getLoc(), pc.options.strip_llvm_debuginfo), mask);
+    maps[elseMask] = maps.lookup(mask);
     elsePc.mask = elseMask;
 
     for (auto &innerOp : elseBlock->without_terminator()) {
