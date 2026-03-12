@@ -266,7 +266,7 @@ struct ParallelContext {
     bool strip_llvm_debuginfo = false;
   } options;
 
-  ParallelContext(Options &options) : options(options) {}
+  explicit ParallelContext(Options &options) : options(options) {}
 
   SmallVector<InductionVariableRange, 8> ranges;
   SmallVector<Value, 8> ivs;
