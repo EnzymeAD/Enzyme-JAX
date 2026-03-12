@@ -753,7 +753,8 @@ emitIfAsSelect(Operation *ifOp, Value cond, affine::AffineValueMap map,
   Block *elseBlock =
       ifOp->getRegion(1).empty() ? nullptr : &ifOp->getRegion(1).front();
 
-  assert(pc.mask == nullptr && "unsupported");
+  if (pc.mask != nullptr)
+    llvm_unreachable("todo: support nested if statements.");
 
   ParallelContext thenPc(pc.options);
   thenPc.ranges = pc.ranges;
@@ -769,9 +770,12 @@ emitIfAsSelect(Operation *ifOp, Value cond, affine::AffineValueMap map,
   ParallelContext elsePc(pc.options);
   elsePc.ranges = pc.ranges;
   elsePc.ivs = pc.ivs;
-  elsePc.mask = stablehlo::NotOp::create(
+
+  Value elseMask = stablehlo::NotOp::create(
       builder, rewriteLocation(ifOp->getLoc(), pc.options.strip_llvm_debuginfo),
       cond);
+  maps[elseMask] = maps.lookup(cond);
+  elsePc.mask = elseMask;
 
   if (elseBlock) {
     for (auto &innerOp : elseBlock->without_terminator()) {
@@ -790,8 +794,7 @@ emitIfAsSelect(Operation *ifOp, Value cond, affine::AffineValueMap map,
                          ifOp->getResults())) {
       Value a = cond;
       Value b = mapping.lookup(thenVal);
-      Value c =
-          mapping.lookup(elseVal);
+      Value c = mapping.lookup(elseVal);
 
       auto mapA = map;
       auto mapB = maps.lookup(b);
@@ -2274,9 +2277,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
       affine::AffineValueMap storeValueMap(
           storeOp.getMap().getSubMap(nonConstantDims), storeOp.getIndices());
 
-      ShapedType updateTy = cast<ShapedType>(update.getType());
-      SmallVector<int64_t> updateShape(updateTy.getShape().begin(),
-                                       updateTy.getShape().end());
+      SmallVector<int64_t> updateShape(updateType.getShape().begin(),
+                                       updateType.getShape().end());
       Value prev = stablehlo::DynamicSliceOp::create(
           builder,
           rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
@@ -2727,6 +2729,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
         map = outputMap;
       }
     }
+
+    maps[cond] = map;
 
     if (emitIfAsSelect(op, cond, map, builder, mapping, maps, pc).failed())
       return failure();
