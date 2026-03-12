@@ -933,23 +933,6 @@ emitLoadAsGather(Location loc, Value mappedMemref, ValueRange lIndices,
       indices = stablehlo::ReshapeOp::create(builder, loc, Ty.clone(shape),
                                              raisedIdx);
     }
-
-    // clamp indices to prevent out-of-bounds access.
-    auto indicesTy = cast<RankedTensorType>(indices.getType());
-    int64_t dimBound = cast<RankedTensorType>(mappedMemref.getType())
-                           .getShape()[startIndexMap.back()];
-    Value zero = stablehlo::ConstantOp::create(
-        builder, loc,
-        DenseElementsAttr::get(
-            indicesTy, builder.getIntegerAttr(indicesTy.getElementType(), 0)));
-    Value maxBound = stablehlo::ConstantOp::create(
-        builder, loc,
-        DenseElementsAttr::get(
-            indicesTy,
-            builder.getIntegerAttr(indicesTy.getElementType(), dimBound - 1)));
-
-    indices = stablehlo::MaxOp::create(builder, loc, indices, zero);
-    indices = stablehlo::MinOp::create(builder, loc, indices, maxBound);
   }
 
   auto Ty = cast<RankedTensorType>(indices.getType());
@@ -1003,10 +986,7 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
 
     auto Ty = cast<RankedTensorType>(raisedIdx.getType());
 
-    int64_t numIndices = 1;
-    for (auto s : Ty.getShape())
-      numIndices *= s;
-
+    int64_t numIndices = Ty.getNumElements();
     scatterDimsToOperandDims.push_back(i);
 
     auto S = Ty.getShape();
@@ -1030,22 +1010,6 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
 
     raisedIdx = stablehlo::ReshapeOp::create(
         builder, loc, Ty.clone({numIndices, 1}), raisedIdx); // tensor<?x1xi64>
-
-    // clamp indices to prevent out-of-bounds accesses.
-    auto indicesTy = cast<RankedTensorType>(raisedIdx.getType());
-    int64_t dimBound = cast<RankedTensorType>(input.getType()).getShape()[i];
-    Value zero = stablehlo::ConstantOp::create(
-        builder, loc,
-        DenseElementsAttr::get(
-            indicesTy, builder.getIntegerAttr(indicesTy.getElementType(), 0)));
-    Value maxBound = stablehlo::ConstantOp::create(
-        builder, loc,
-        DenseElementsAttr::get(
-            indicesTy,
-            builder.getIntegerAttr(indicesTy.getElementType(), dimBound - 1)));
-
-    raisedIdx = stablehlo::MaxOp::create(builder, loc, raisedIdx, zero);
-    raisedIdx = stablehlo::MinOp::create(builder, loc, raisedIdx, maxBound);
 
     if (indices) {
       int64_t indicesSize =
