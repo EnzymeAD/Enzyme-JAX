@@ -12,7 +12,7 @@ func.func @main(%arg0: tensor<4x4xf64>) -> (tensor<4x4xf64>, tensor<4xf64>, tens
 // CPU-NEXT:    %[[W:.*]] = stablehlo.constant dense<0.000000e+00> : tensor<4xf64>
 // CPU-NEXT:    %[[INFO:.*]] = stablehlo.constant dense<-1> : tensor<i64>
 // CPU-NEXT:    %[[RES:.*]]:3 = enzymexla.jit_call @enzymexla_wrapper_lapack_dsyevd_ (%[[ARG]], %[[W]], %[[INFO]])
-// CPU-SAME:      output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 1, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 2, operand_tuple_indices = []>]
+// CPU-SAME:      output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [0], operand_index = 0, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [1], operand_index = 1, operand_tuple_indices = []>, #stablehlo.output_operand_alias<output_tuple_indices = [2], operand_index = 2, operand_tuple_indices = []>]
 // CPU-SAME:      xla_side_effect_free
 // CPU-SAME:      (tensor<4x4xf64>, tensor<4xf64>, tensor<i64>) -> (tensor<4x4xf64>, tensor<4xf64>, tensor<i64>)
 // CPU-NEXT:    return %[[RES]]#0, %[[RES]]#1, %[[RES]]#2 : tensor<4x4xf64>, tensor<4xf64>, tensor<i64>

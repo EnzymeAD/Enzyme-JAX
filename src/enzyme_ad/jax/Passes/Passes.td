@@ -591,6 +591,8 @@ def SICMPass : Pass<"sicm"> {
     1. Apply domain-specific StableHLO pattern rewrites that split expensive
        sample-dependent ops into cheap sample-dependent + expensive invariant parts.
     2. Hoist sample-invariant operations out of the region.
+
+    Expects logpdf bodies to already be flattened (by flatten-probprog-regions).
   }];
   let dependentDialects = [
     "arith::ArithDialect",

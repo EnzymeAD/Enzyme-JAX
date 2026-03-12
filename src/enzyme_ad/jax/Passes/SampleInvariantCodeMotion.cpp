@@ -4,8 +4,10 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "mlir/Transforms/RegionUtils.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "stablehlo/dialect/StablehloOps.h"
@@ -85,6 +87,7 @@ static Value broadcastScalarToShape(OpBuilder &rewriter, Location loc,
   return scalarVal;
 }
 
+/// TODO: Need to prove positive scale
 struct CholeskyScaleFactorizationHLO
     : public OpRewritePattern<stablehlo::CholeskyOp> {
   SampleDependenceAnalysis &analysis;
@@ -99,7 +102,7 @@ struct CholeskyScaleFactorizationHLO
   LogicalResult matchAndRewrite(stablehlo::CholeskyOp choleskyOp,
                                 PatternRewriter &rewriter) const override {
     // Only match within the analyzed mcmc_region
-    if (!analysis.getRegionOp()->isProperAncestor(choleskyOp))
+    if (!analysis.isInTargetRegion(choleskyOp))
       return failure();
 
     Location loc = choleskyOp.getLoc();
@@ -138,10 +141,130 @@ struct CholeskyScaleFactorizationHLO
   }
 };
 
-/// Dot general linearity pattern for StableHLO.
-/// dot_general(broadcast(s) * A, x) -> broadcast(s) * dot_general(A, x)
-/// (and symmetrically for the RHS operand)
-/// when A is sample-invariant and s is a scalar.
+struct OuterProductInfo {
+  Value sourceVec;
+  Value rowBroadcast;
+  Value colBroadcast;
+};
+
+static Value lookThroughReshapes(Value v) {
+  while (auto reshape = v.getDefiningOp<stablehlo::ReshapeOp>())
+    v = reshape.getOperand();
+  return v;
+}
+
+static OuterProductInfo matchOuterProduct(Value value) {
+  auto mulOp = value.getDefiningOp<stablehlo::MulOp>();
+  if (!mulOp)
+    return {nullptr, nullptr, nullptr};
+
+  auto lBcast = mulOp.getLhs().getDefiningOp<stablehlo::BroadcastInDimOp>();
+  auto rBcast = mulOp.getRhs().getDefiningOp<stablehlo::BroadcastInDimOp>();
+  if (!lBcast || !rBcast)
+    return {nullptr, nullptr, nullptr};
+
+  Value lSource = lookThroughReshapes(lBcast.getOperand());
+  Value rSource = lookThroughReshapes(rBcast.getOperand());
+  if (lSource != rSource)
+    return {nullptr, nullptr, nullptr};
+
+  if (lBcast.getOperand() == rBcast.getOperand() &&
+      lBcast.getBroadcastDimensions() == rBcast.getBroadcastDimensions())
+    return {nullptr, nullptr, nullptr};
+
+  Value sourceVec = lSource;
+
+  Value rowBcast = nullptr, colBcast = nullptr;
+  for (auto bcast : {lBcast, rBcast}) {
+    auto bcastSourceType = cast<RankedTensorType>(bcast.getOperand().getType());
+    auto dims = bcast.getBroadcastDimensions();
+    bool isRow = false;
+    for (int64_t i = 0; i < bcastSourceType.getRank(); ++i) {
+      if (bcastSourceType.getDimSize(i) > 1) {
+        isRow = (dims[i] == 0);
+        break;
+      }
+    }
+    if (isRow)
+      rowBcast = bcast.getResult();
+    else
+      colBcast = bcast.getResult();
+  }
+
+  if (!rowBcast || !colBcast)
+    return {nullptr, nullptr, nullptr};
+
+  return {sourceVec, rowBcast, colBcast};
+}
+
+/// Cholesky factorization for diagonal-scaled invariant correlation matrix.
+///
+/// Rewrites cholesky(D ⊙ Ω) where:
+///   D = outer_product(σ, σ) = σ_i * σ_j (diagonal scale matrix)
+///   Ω = sample-invariant correlation matrix
+///
+/// Identity: chol(diag(σ) Ω diag(σ)) = diag(σ) chol(Ω)  [lower=true]
+///           chol(diag(σ) Ω diag(σ)) = chol(Ω) diag(σ)  [lower=false]
+///
+/// The chol(Ω) is sample-invariant and will be auto-hoisted in Phase 2.
+struct CholeskyOuterProductScaleHLO
+    : public OpRewritePattern<stablehlo::CholeskyOp> {
+  SampleDependenceAnalysis &analysis;
+  bool &patternApplied;
+
+  CholeskyOuterProductScaleHLO(SampleDependenceAnalysis &analysis,
+                               bool &patternApplied, MLIRContext *context,
+                               PatternBenefit benefit = 1)
+      : OpRewritePattern(context, benefit), analysis(analysis),
+        patternApplied(patternApplied) {}
+
+  LogicalResult matchAndRewrite(stablehlo::CholeskyOp cholOp,
+                                PatternRewriter &rewriter) const override {
+    if (!analysis.isInTargetRegion(cholOp))
+      return failure();
+
+    // Match: multiply(outer_product(σ, σ), Ω) where Ω is invariant
+    auto mulOp = cholOp.getA().getDefiningOp<stablehlo::MulOp>();
+    if (!mulOp)
+      return failure();
+
+    OuterProductInfo outerProd;
+    Value invariantMatrix;
+
+    for (auto [maybeDiag, maybeInvariant] :
+         {std::pair{mulOp.getLhs(), mulOp.getRhs()},
+          std::pair{mulOp.getRhs(), mulOp.getLhs()}}) {
+      if (analysis.isSampleDependent(maybeInvariant))
+        continue;
+      auto op = matchOuterProduct(maybeDiag);
+      if (!op.sourceVec)
+        continue;
+      outerProd = op;
+      invariantMatrix = maybeInvariant;
+      break;
+    }
+
+    if (!outerProd.sourceVec)
+      return failure();
+
+    Location loc = cholOp.getLoc();
+    auto inputType = cast<RankedTensorType>(cholOp.getType());
+
+    // chol(Ω) — invariant, will be hoisted
+    auto newChol = stablehlo::CholeskyOp::create(
+        rewriter, loc, inputType, invariantMatrix, cholOp.getLowerAttr());
+
+    Value scaleBcast =
+        cholOp.getLower() ? outerProd.rowBroadcast : outerProd.colBroadcast;
+    Value result =
+        stablehlo::MulOp::create(rewriter, loc, inputType, scaleBcast, newChol);
+
+    rewriter.replaceOp(cholOp, result);
+    patternApplied = true;
+    return success();
+  }
+};
+
 struct DotGeneralScaleFactorizationHLO
     : public OpRewritePattern<stablehlo::DotGeneralOp> {
   SampleDependenceAnalysis &analysis;
@@ -155,7 +278,7 @@ struct DotGeneralScaleFactorizationHLO
 
   LogicalResult matchAndRewrite(stablehlo::DotGeneralOp dotOp,
                                 PatternRewriter &rewriter) const override {
-    if (!analysis.getRegionOp()->isProperAncestor(dotOp))
+    if (!analysis.isInTargetRegion(dotOp))
       return failure();
 
     Location loc = dotOp.getLoc();
@@ -221,7 +344,7 @@ struct TriangularSolveScaleFactorizationHLO
 
   LogicalResult matchAndRewrite(stablehlo::TriangularSolveOp solveOp,
                                 PatternRewriter &rewriter) const override {
-    if (!analysis.getRegionOp()->isProperAncestor(solveOp))
+    if (!analysis.isInTargetRegion(solveOp))
       return failure();
 
     Location loc = solveOp.getLoc();
@@ -286,7 +409,7 @@ struct LogMultiplyDistributionHLO : public OpRewritePattern<stablehlo::LogOp> {
 
   LogicalResult matchAndRewrite(stablehlo::LogOp logOp,
                                 PatternRewriter &rewriter) const override {
-    if (!analysis.getRegionOp()->isProperAncestor(logOp))
+    if (!analysis.isInTargetRegion(logOp))
       return failure();
 
     Location loc = logOp.getLoc();
@@ -330,8 +453,6 @@ struct LogMultiplyDistributionHLO : public OpRewritePattern<stablehlo::LogOp> {
 // DotAbsorb patterns: absorb invariant ops from RHS into LHS matrix
 //===----------------------------------------------------------------------===//
 
-/// Helper: look through a reshape on the RHS of a dot_general.
-/// Returns the inner value and the reshape op, or (rhs, nullptr) if no reshape.
 static std::pair<Value, stablehlo::ReshapeOp> lookThroughReshape(Value rhs) {
   if (auto reshapeOp = rhs.getDefiningOp<stablehlo::ReshapeOp>())
     return {reshapeOp.getOperand(), reshapeOp};
@@ -353,7 +474,7 @@ struct DotAbsorbDiagMulHLO : public OpRewritePattern<stablehlo::DotGeneralOp> {
 
   LogicalResult matchAndRewrite(stablehlo::DotGeneralOp dotOp,
                                 PatternRewriter &rewriter) const override {
-    if (!analysis.getRegionOp()->isProperAncestor(dotOp))
+    if (!analysis.isInTargetRegion(dotOp))
       return failure();
 
     Location loc = dotOp.getLoc();
@@ -459,7 +580,7 @@ struct DotAbsorbFFTHLO : public OpRewritePattern<stablehlo::DotGeneralOp> {
 
   LogicalResult matchAndRewrite(stablehlo::DotGeneralOp dotOp,
                                 PatternRewriter &rewriter) const override {
-    if (!analysis.getRegionOp()->isProperAncestor(dotOp))
+    if (!analysis.isInTargetRegion(dotOp))
       return failure();
 
     Location loc = dotOp.getLoc();
@@ -615,7 +736,7 @@ struct DotAbsorbTransposeHLO
 
   LogicalResult matchAndRewrite(stablehlo::DotGeneralOp dotOp,
                                 PatternRewriter &rewriter) const override {
-    if (!analysis.getRegionOp()->isProperAncestor(dotOp))
+    if (!analysis.isInTargetRegion(dotOp))
       return failure();
 
     Location loc = dotOp.getLoc();
@@ -831,7 +952,7 @@ struct DotAbsorbScatterHLO : public OpRewritePattern<stablehlo::DotGeneralOp> {
 
   LogicalResult matchAndRewrite(stablehlo::DotGeneralOp dotOp,
                                 PatternRewriter &rewriter) const override {
-    if (!analysis.getRegionOp()->isProperAncestor(dotOp))
+    if (!analysis.isInTargetRegion(dotOp))
       return failure();
 
     Location loc = dotOp.getLoc();
@@ -1215,7 +1336,7 @@ struct PowerScaleFactorizationHLO : public OpRewritePattern<stablehlo::PowOp> {
 
   LogicalResult matchAndRewrite(stablehlo::PowOp powOp,
                                 PatternRewriter &rewriter) const override {
-    if (!analysis.getRegionOp()->isProperAncestor(powOp))
+    if (!analysis.isInTargetRegion(powOp))
       return failure();
 
     Location loc = powOp.getLoc();
@@ -1263,7 +1384,7 @@ struct SqrtScaleFactorizationHLO : public OpRewritePattern<stablehlo::SqrtOp> {
 
   LogicalResult matchAndRewrite(stablehlo::SqrtOp sqrtOp,
                                 PatternRewriter &rewriter) const override {
-    if (!analysis.getRegionOp()->isProperAncestor(sqrtOp))
+    if (!analysis.isInTargetRegion(sqrtOp))
       return failure();
 
     Location loc = sqrtOp.getLoc();
@@ -1316,7 +1437,7 @@ struct RsqrtScaleFactorizationHLO
 
   LogicalResult matchAndRewrite(stablehlo::RsqrtOp rsqrtOp,
                                 PatternRewriter &rewriter) const override {
-    if (!analysis.getRegionOp()->isProperAncestor(rsqrtOp))
+    if (!analysis.isInTargetRegion(rsqrtOp))
       return failure();
 
     Location loc = rsqrtOp.getLoc();
@@ -1366,7 +1487,7 @@ struct AbsScaleFactorizationHLO : public OpRewritePattern<stablehlo::AbsOp> {
 
   LogicalResult matchAndRewrite(stablehlo::AbsOp absOp,
                                 PatternRewriter &rewriter) const override {
-    if (!analysis.getRegionOp()->isProperAncestor(absOp))
+    if (!analysis.isInTargetRegion(absOp))
       return failure();
 
     Location loc = absOp.getLoc();
@@ -1423,7 +1544,7 @@ struct NegateDistributionHLO : public OpRewritePattern<stablehlo::NegOp> {
 
   LogicalResult matchAndRewrite(stablehlo::NegOp negOp,
                                 PatternRewriter &rewriter) const override {
-    if (!analysis.getRegionOp()->isProperAncestor(negOp))
+    if (!analysis.isInTargetRegion(negOp))
       return failure();
 
     Location loc = negOp.getLoc();
@@ -1509,7 +1630,7 @@ struct ExpAddFactorizationHLO : public OpRewritePattern<stablehlo::ExpOp> {
 
   LogicalResult matchAndRewrite(stablehlo::ExpOp expOp,
                                 PatternRewriter &rewriter) const override {
-    if (!analysis.getRegionOp()->isProperAncestor(expOp))
+    if (!analysis.isInTargetRegion(expOp))
       return failure();
 
     Location loc = expOp.getLoc();
@@ -1563,7 +1684,7 @@ struct DivideScaleFactorizationHLO : public OpRewritePattern<stablehlo::DivOp> {
 
   LogicalResult matchAndRewrite(stablehlo::DivOp divOp,
                                 PatternRewriter &rewriter) const override {
-    if (!analysis.getRegionOp()->isProperAncestor(divOp))
+    if (!analysis.isInTargetRegion(divOp))
       return failure();
 
     Location loc = divOp.getLoc();
@@ -1652,61 +1773,157 @@ static bool isIdentityMatrix(Value value) {
   return true;
 }
 
-/// Try to decompose a value as invariant_matrix + broadcast(scalar) * I.
-/// Returns (invariant, scalar) on success, (nullptr, nullptr) on failure.
-/// The invariant operand must be sample-invariant according to the analysis.
-static std::pair<Value, Value>
-matchInvariantPlusDiagShift(Value value, SampleDependenceAnalysis &analysis) {
-  auto addOp = value.getDefiningOp<stablehlo::AddOp>();
-  if (!addOp)
+/// Try to decompose `multiply(broadcast(scalar), matrix)` into (scalar,
+/// matrix). Returns (nullptr, nullptr) if the pattern doesn't match.
+static std::pair<Value, Value> decomposeScaledMatrix(Value value) {
+  auto mulOp = value.getDefiningOp<stablehlo::MulOp>();
+  if (!mulOp)
     return {nullptr, nullptr};
 
-  // Try both orderings: invariant + diag_shift, diag_shift + invariant
-  for (auto [maybeInvariant, maybeDiag] :
-       {std::pair{addOp.getLhs(), addOp.getRhs()},
-        std::pair{addOp.getRhs(), addOp.getLhs()}}) {
-    if (analysis.isSampleDependent(maybeInvariant))
-      continue;
-
-    // maybeDiag should be multiply(broadcast(scalar), identity)
-    auto mulOp = maybeDiag.getDefiningOp<stablehlo::MulOp>();
-    if (!mulOp)
-      continue;
-
-    Value mulLhs = mulOp.getLhs();
-    Value mulRhs = mulOp.getRhs();
-
-    // Check both orderings of the multiply operands
-    Value scalar = nullptr;
-    for (auto [maybeScalar, maybeIdentity] :
-         {std::pair{mulLhs, mulRhs}, std::pair{mulRhs, mulLhs}}) {
-      if (!isIdentityMatrix(maybeIdentity))
-        continue;
-
-      // maybeScalar should be broadcast_in_dim of a scalar
-      auto bcast = maybeScalar.getDefiningOp<stablehlo::BroadcastInDimOp>();
-      if (bcast && isScalar(bcast.getOperand())) {
-        scalar = bcast.getOperand();
-        break;
-      }
-      // Or it could be a scalar directly broadcast to NxN
-      if (isScalar(maybeScalar)) {
-        scalar = maybeScalar;
-        break;
-      }
-    }
-
-    if (scalar)
-      return {maybeInvariant, scalar};
+  for (auto [maybeScalarBcast, maybeMatrix] :
+       {std::pair{mulOp.getLhs(), mulOp.getRhs()},
+        std::pair{mulOp.getRhs(), mulOp.getLhs()}}) {
+    auto bcast = maybeScalarBcast.getDefiningOp<stablehlo::BroadcastInDimOp>();
+    if (bcast && isScalar(bcast.getOperand()))
+      return {bcast.getOperand(), maybeMatrix};
+    if (isScalar(maybeScalarBcast))
+      return {maybeScalarBcast, maybeMatrix};
   }
   return {nullptr, nullptr};
 }
 
+/// Try to decompose a value as s*A + t*I where A is sample-invariant.
+/// Returns (invariantMatrix, scaleScalar, diagScalar) on success.
+/// Also handles the simpler A + t*I case (scaleScalar is nullptr).
+struct ScaledInvariantPlusDiag {
+  Value invariant;       // The sample-invariant matrix A
+  Value scaleScalar;     // s (nullptr if pattern is A + t*I or A + t*B)
+  Value diagScalar;      // t
+  Value secondInvariant; // B (nullptr for identity case: s*A + t*I)
+};
+
+static ScaledInvariantPlusDiag
+matchScaledInvariantPlusDiagShift(Value value,
+                                  SampleDependenceAnalysis &analysis) {
+  auto addOp = value.getDefiningOp<stablehlo::AddOp>();
+  if (!addOp)
+    return {nullptr, nullptr, nullptr, nullptr};
+
+  // Try both orderings of the add operands
+  for (auto [lhs, rhs] : {std::pair{addOp.getLhs(), addOp.getRhs()},
+                          std::pair{addOp.getRhs(), addOp.getLhs()}}) {
+    // rhs should be t*I or t*B where B is sample-invariant
+    Value diagScalar = nullptr;
+    Value secondInvariant = nullptr;
+    auto [dScalar, dMatrix] = decomposeScaledMatrix(rhs);
+    if (dScalar) {
+      if (isIdentityMatrix(dMatrix)) {
+        // Identity case: rhs = t*I
+        diagScalar = dScalar;
+      } else if (!analysis.isSampleDependent(dMatrix)) {
+        // Generalized case: rhs = t*B where B is invariant
+        diagScalar = dScalar;
+        secondInvariant = dMatrix;
+      }
+    }
+    if (!diagScalar)
+      continue;
+
+    // lhs is either: (a) invariant matrix A, or (b) s*A where A is invariant
+    if (!analysis.isSampleDependent(lhs)) {
+      // Simple case: A + t*I or A + t*B
+      return {lhs, nullptr, diagScalar, secondInvariant};
+    }
+
+    // Try decomposing lhs as s*A
+    auto [sScalar, sMatrix] = decomposeScaledMatrix(lhs);
+    if (sScalar && !analysis.isSampleDependent(sMatrix)) {
+      // Scaled case: s*A + t*I or s*A + t*B
+      return {sMatrix, sScalar, diagScalar, secondInvariant};
+    }
+  }
+  return {nullptr, nullptr, nullptr, nullptr};
+}
+
+/// Detect chained triangular_solve pairs that compute Σ^{-1}b.
+///
+/// Pattern: triangular_solve(F, triangular_solve(F, b, ADJOINT), NO_TRANSPOSE)
+/// where F is a Cholesky factor (upper or lower). The outer solve's `b` operand
+/// IS the inner solve result.
+///
+/// Returns the ultimate RHS `b` if the pattern matches, nullptr otherwise.
+static Value matchFullCholeskySolve(stablehlo::TriangularSolveOp outerSolve,
+                                    Value cholResult) {
+  // The outer solve must use Cholesky result directly, NO_TRANSPOSE
+  if (outerSolve.getA() != cholResult)
+    return nullptr;
+  if (!outerSolve.getLeftSide())
+    return nullptr;
+  if (outerSolve.getTransposeA() != stablehlo::Transpose::NO_TRANSPOSE)
+    return nullptr;
+
+  // The outer solve's B must come from an inner triangular_solve using the
+  // same Cholesky, with ADJOINT transpose
+  auto innerSolve =
+      outerSolve.getB().getDefiningOp<stablehlo::TriangularSolveOp>();
+  if (!innerSolve)
+    return nullptr;
+  if (innerSolve.getA() != cholResult)
+    return nullptr;
+  if (!innerSolve.getLeftSide())
+    return nullptr;
+  if (innerSolve.getTransposeA() != stablehlo::Transpose::ADJOINT)
+    return nullptr;
+
+  return innerSolve.getB();
+}
+
+/// Detect diagonal extraction: multiply(cholResult, identityMatrix) or
+/// dot_general(cholResult, identity, batching=[1]x[1], contracting=[0]x[0])
+/// used to get diagonal elements for log-determinant.
+static bool isDiagonalExtraction(Operation *user, Value cholResult) {
+  // Pattern 1: element-wise multiply(L, I)
+  if (auto mulOp = dyn_cast<stablehlo::MulOp>(user)) {
+    for (auto [a, b] : {std::pair{mulOp.getLhs(), mulOp.getRhs()},
+                        std::pair{mulOp.getRhs(), mulOp.getLhs()}}) {
+      if (a == cholResult && isIdentityMatrix(b))
+        return true;
+    }
+    return false;
+  }
+  // Pattern 2: dot_general(L, I, batching=[1]x[1], contracting=[0]x[0])
+  // This is the pattern Reactant produces for extracting diag(L).
+  if (auto dotOp = dyn_cast<stablehlo::DotGeneralOp>(user)) {
+    auto dims = dotOp.getDotDimensionNumbers();
+    // Check batching_dims = [1] x [1], contracting_dims = [0] x [0]
+    if (dims.getLhsBatchingDimensions().size() != 1 ||
+        dims.getRhsBatchingDimensions().size() != 1 ||
+        dims.getLhsContractingDimensions().size() != 1 ||
+        dims.getRhsContractingDimensions().size() != 1)
+      return false;
+    if (dims.getLhsBatchingDimensions()[0] != 1 ||
+        dims.getRhsBatchingDimensions()[0] != 1 ||
+        dims.getLhsContractingDimensions()[0] != 0 ||
+        dims.getRhsContractingDimensions()[0] != 0)
+      return false;
+    for (auto [a, b] : {std::pair{dotOp.getLhs(), dotOp.getRhs()},
+                        std::pair{dotOp.getRhs(), dotOp.getLhs()}}) {
+      if (a == cholResult && isIdentityMatrix(b))
+        return true;
+    }
+  }
+  return false;
+}
+
 /// Eigendecomposition lift for Cholesky with diagonal additive perturbation.
 ///
-/// Rewrites: cholesky(A + d*I) where A is sample-invariant, and replaces
-/// downstream uses with eigendecomposition-based equivalents:
-///   - triangular_solve(L, b) → Q @ diag(1/sqrt(lambda+d)) @ Q^T @ b
+/// Rewrites cholesky(s*A + t*I) where A is sample-invariant, replacing:
+///   - Full solve chains: F\(F'\b) → Q @ diag(1/(s*λ+t)) @ Q^T @ b
+///   - Single solves: F\b (NO_TRANSPOSE) → Q @ diag(1/sqrt(s*λ+t)) @ Q^T @ b
+///                    F'\b (ADJOINT)     → Q @ diag(1/sqrt(s*λ+t)) @ Q^T @ b
+///   - Diagonal extraction: diag(F) → sqrt(s*λ+t) (for log-determinant)
+///
+/// Also handles the simpler case: cholesky(A + t*I) (s=1 implicitly).
 ///
 /// The eigendecomposition enzymexla.lapack.syevd(A) is sample-invariant and
 /// will be automatically hoisted out of the mcmc_region in Phase 2.
@@ -1721,147 +1938,510 @@ struct CholeskyEigenLiftHLO : public OpRewritePattern<stablehlo::CholeskyOp> {
 
   LogicalResult matchAndRewrite(stablehlo::CholeskyOp cholOp,
                                 PatternRewriter &rewriter) const override {
-    if (!analysis.getRegionOp()->isProperAncestor(cholOp))
+    if (!analysis.isInTargetRegion(cholOp))
       return failure();
 
     Location loc = cholOp.getLoc();
 
-    // 1. Match input = invariant + scalar * I
-    auto [invariant, scalar] =
-        matchInvariantPlusDiagShift(cholOp.getA(), analysis);
-    if (!invariant)
+    // 1. Match input = s*A + t*I (or A + t*I)
+    auto match = matchScaledInvariantPlusDiagShift(cholOp.getA(), analysis);
+    if (!match.invariant)
       return failure();
 
-    // 2. Verify ALL users are supported patterns (triangular_solve only)
-    for (auto *user : cholOp->getUsers()) {
+    Value cholResult = cholOp.getResult();
+
+    // 2. Classify ALL users into supported patterns
+    // - Full solve chains: outer_solve(F, inner_solve(F^H, b)) → Σ^{-1}b
+    // - Single triangular_solve(F, b)
+    // - Diagonal extraction: multiply(F, I) for log-determinant
+    struct FullSolveInfo {
+      stablehlo::TriangularSolveOp outerSolve;
+      stablehlo::TriangularSolveOp innerSolve;
+      Value rhs; // The ultimate b in Σ^{-1}b
+    };
+    SmallVector<FullSolveInfo> fullSolves;
+    struct SingleSolveInfo {
+      stablehlo::TriangularSolveOp solve;
+      bool isAdjoint; // ADJOINT vs NO_TRANSPOSE
+    };
+    SmallVector<SingleSolveInfo> singleSolves;
+    SmallVector<Operation *> diagExtractions;
+
+    // First pass: identify full solve chains (so we don't double-count inner
+    // solves)
+    DenseSet<Operation *> innerSolveOps;
+
+    for (auto *user : cholResult.getUsers()) {
       auto triSolve = dyn_cast<stablehlo::TriangularSolveOp>(user);
-      if (!triSolve)
-        return failure();
-      // Only support left-side, non-transposed solves (the common case)
+      if (!triSolve) {
+        if (isDiagonalExtraction(user, cholResult)) {
+          diagExtractions.push_back(user);
+          continue;
+        }
+        // Skip unsupported users — the cholesky won't be erased but
+        // recognized users (solves, diag extractions) can still be replaced.
+        continue;
+      }
+
       if (!triSolve.getLeftSide())
         return failure();
-      if (triSolve.getTransposeA() != stablehlo::Transpose::NO_TRANSPOSE)
-        return failure();
+
+      // Check if this is an outer solve of a full chain
+      if (triSolve.getTransposeA() == stablehlo::Transpose::NO_TRANSPOSE) {
+        Value rhs = matchFullCholeskySolve(triSolve, cholResult);
+        if (rhs) {
+          auto innerSolve =
+              triSolve.getB().getDefiningOp<stablehlo::TriangularSolveOp>();
+          fullSolves.push_back({triSolve, innerSolve, rhs});
+          innerSolveOps.insert(innerSolve.getOperation());
+          continue;
+        }
+      }
     }
 
-    auto inputType = cast<RankedTensorType>(invariant.getType());
+    // Second pass: remaining triangular_solves are single solves
+    for (auto *user : cholResult.getUsers()) {
+      auto triSolve = dyn_cast<stablehlo::TriangularSolveOp>(user);
+      if (!triSolve)
+        continue;
+      if (innerSolveOps.count(triSolve.getOperation()))
+        continue;
+      // Check it wasn't already classified as a full solve outer
+      bool isFullSolveOuter = false;
+      for (auto &fs : fullSolves) {
+        if (fs.outerSolve == triSolve) {
+          isFullSolveOuter = true;
+          break;
+        }
+      }
+      if (isFullSolveOuter)
+        continue;
+
+      auto transpose = triSolve.getTransposeA();
+      if (transpose == stablehlo::Transpose::NO_TRANSPOSE) {
+        singleSolves.push_back({triSolve, /*isAdjoint=*/false});
+      } else if (transpose == stablehlo::Transpose::ADJOINT) {
+        singleSolves.push_back({triSolve, /*isAdjoint=*/true});
+      } else {
+        return failure(); // Unsupported transpose mode
+      }
+    }
+
+    // Must have at least one solvable user
+    if (fullSolves.empty() && singleSolves.empty() && diagExtractions.empty())
+      return failure();
+
+    auto inputType = cast<RankedTensorType>(match.invariant.getType());
     int64_t N = inputType.getShape()[0];
     auto elemType = inputType.getElementType();
     auto eigvalsType = RankedTensorType::get({N}, elemType);
     auto infoType = RankedTensorType::get({}, rewriter.getIntegerType(64));
 
+    // --- Generalized case: whiten through chol(B) ---
+    // When match.secondInvariant is set, we have chol(s*A + t*B) where both
+    // A, B are invariant. We whiten: L_B = chol(B), C_w = L_B^{-1}*A*L_B^{-T},
+    // then eigendecompose C_w instead of A directly.
+    Value LB;
+    Value eigenTarget = match.invariant;
+    if (match.secondInvariant) {
+      // L_B = chol(B) — invariant, will be hoisted
+      LB = stablehlo::CholeskyOp::create(rewriter, loc, inputType,
+                                         match.secondInvariant,
+                                         rewriter.getBoolAttr(true))
+               .getResult();
+
+      // Y = L_B^{-1} * A  (solve L_B * Y = A)
+      Value Y = stablehlo::TriangularSolveOp::create(
+                    rewriter, loc, inputType, LB, match.invariant,
+                    /*left_side=*/true, /*lower=*/true,
+                    /*unit_diagonal=*/false, stablehlo::Transpose::NO_TRANSPOSE)
+                    .getResult();
+
+      // C_w = Y * L_B^{-T}  (solve X * L_B^T = Y, i.e., left_side=false)
+      eigenTarget = stablehlo::TriangularSolveOp::create(
+                        rewriter, loc, inputType, LB, Y,
+                        /*left_side=*/false, /*lower=*/true,
+                        /*unit_diagonal=*/false, stablehlo::Transpose::ADJOINT)
+                        .getResult();
+    }
+
     // 3. Create eigendecomposition (sample-invariant, will be auto-hoisted)
     auto syevd = enzymexla::SyevdOp::create(
-        rewriter, loc, TypeRange{inputType, eigvalsType, infoType}, invariant,
+        rewriter, loc, TypeRange{inputType, eigvalsType, infoType}, eigenTarget,
         enzymexla::LapackUploAttr::get(rewriter.getContext(),
                                        enzymexla::LapackUplo::L));
-    Value Q = syevd.getEigenvectors();     // NxN orthogonal matrix
-    Value lambda = syevd.getEigenvalues(); // N eigenvalues
+    Value Q = syevd.getEigenvectors();
+    Value lambda = syevd.getEigenvalues();
 
-    // 4. Compute shifted eigenvalues: lambda + d
-    Value dBcast = broadcastScalarToShape(rewriter, loc, scalar, eigvalsType);
-    Value shifted =
-        stablehlo::AddOp::create(rewriter, loc, eigvalsType, lambda, dBcast);
+    // 4. Compute shifted eigenvalues: d = s*lambda + t (or lambda + t)
+    Value shifted;
+    if (match.scaleScalar) {
+      Value sBcast =
+          broadcastScalarToShape(rewriter, loc, match.scaleScalar, eigvalsType);
+      Value sLambda =
+          stablehlo::MulOp::create(rewriter, loc, eigvalsType, sBcast, lambda);
+      Value tBcast =
+          broadcastScalarToShape(rewriter, loc, match.diagScalar, eigvalsType);
+      shifted =
+          stablehlo::AddOp::create(rewriter, loc, eigvalsType, sLambda, tBcast);
+    } else {
+      Value tBcast =
+          broadcastScalarToShape(rewriter, loc, match.diagScalar, eigvalsType);
+      shifted =
+          stablehlo::AddOp::create(rewriter, loc, eigvalsType, lambda, tBcast);
+    }
 
-    // 5. Compute 1/sqrt(lambda + d)
-    Value sqrtShifted =
-        stablehlo::SqrtOp::create(rewriter, loc, eigvalsType, shifted);
     Value ones = stablehlo::ConstantOp::create(
         rewriter, loc,
         DenseElementsAttr::get(eigvalsType,
                                rewriter.getFloatAttr(elemType, 1.0)));
-    Value invSqrtShifted =
-        stablehlo::DivOp::create(rewriter, loc, eigvalsType, ones, sqrtShifted);
 
-    // 6. Precompute Q^T (transpose of Q)
+    // Precompute Q^T
     Value QT = stablehlo::TransposeOp::create(
         rewriter, loc, inputType, Q, rewriter.getDenseI64ArrayAttr({1, 0}));
 
-    // 7. Replace each triangular_solve(L, b) with Q @ diag(1/sqrt) @ Q^T @ b
-    for (auto *user : llvm::make_early_inc_range(cholOp->getUsers())) {
-      auto triSolve = cast<stablehlo::TriangularSolveOp>(user);
-      Value b = triSolve.getB();
-      auto resultType = cast<RankedTensorType>(triSolve.getType());
+    auto dotDims = stablehlo::DotDimensionNumbersAttr::get(
+        rewriter.getContext(),
+        /*lhsBatchingDims=*/{}, /*rhsBatchingDims=*/{},
+        /*lhsContractingDims=*/{1}, /*rhsContractingDims=*/{0});
 
-      // Q^T @ b — matrix-matrix multiply, contracting dim 1 of Q^T with dim 0
-      // of b
-      auto dotDims = stablehlo::DotDimensionNumbersAttr::get(
-          rewriter.getContext(),
-          /*lhsBatchingDims=*/{}, /*rhsBatchingDims=*/{},
-          /*lhsContractingDims=*/{1}, /*rhsContractingDims=*/{0});
+    // Helper: compute Q @ diag(scale) @ Q^T @ b
+    auto emitEigenSolve = [&](Value b, Value scaleVec,
+                              RankedTensorType resultType) -> Value {
       Value QTb = stablehlo::DotGeneralOp::create(
           rewriter, loc, resultType, QT, b, dotDims,
           /*precision_config=*/nullptr, /*algorithm=*/nullptr);
-
-      // diag(1/sqrt(lambda+d)) @ Q^T @ b — broadcast invSqrt along dim 0,
-      // element-wise multiply
-      Value invSqrtBcast = stablehlo::BroadcastInDimOp::create(
-          rewriter, loc, resultType, invSqrtShifted,
+      Value scaleBcast = stablehlo::BroadcastInDimOp::create(
+          rewriter, loc, resultType, scaleVec,
           rewriter.getDenseI64ArrayAttr({0}));
-      Value scaled = stablehlo::MulOp::create(rewriter, loc, resultType,
-                                              invSqrtBcast, QTb);
-
-      // Q @ scaled — final matrix-matrix multiply
-      Value result = stablehlo::DotGeneralOp::create(
+      Value scaled =
+          stablehlo::MulOp::create(rewriter, loc, resultType, scaleBcast, QTb);
+      return stablehlo::DotGeneralOp::create(
           rewriter, loc, resultType, Q, scaled, dotDims,
           /*precision_config=*/nullptr, /*algorithm=*/nullptr);
+    };
 
-      rewriter.replaceOp(triSolve, result);
+    // 5. Replace full solve chains: Σ^{-1}b
+    //   Identity case: Q @ diag(1/d) @ Q^T @ b
+    //   Generalized:   L_B^{-T} @ Q @ diag(1/d) @ Q^T @ L_B^{-1} @ b
+    if (!fullSolves.empty()) {
+      Value invShifted =
+          stablehlo::DivOp::create(rewriter, loc, eigvalsType, ones, shifted);
+      for (auto &fs : fullSolves) {
+        rewriter.setInsertionPoint(fs.outerSolve);
+        auto resultType = cast<RankedTensorType>(fs.outerSolve.getType());
+        Value rhs = fs.rhs;
+
+        if (LB) {
+          // z1 = L_B^{-1} @ b
+          rhs = stablehlo::TriangularSolveOp::create(
+                    rewriter, loc, resultType, LB, rhs,
+                    /*left_side=*/true, /*lower=*/true,
+                    /*unit_diagonal=*/false, stablehlo::Transpose::NO_TRANSPOSE)
+                    .getResult();
+        }
+
+        Value result = emitEigenSolve(rhs, invShifted, resultType);
+
+        if (LB) {
+          // result = L_B^{-T} @ result
+          result = stablehlo::TriangularSolveOp::create(
+                       rewriter, loc, resultType, LB, result,
+                       /*left_side=*/true, /*lower=*/true,
+                       /*unit_diagonal=*/false, stablehlo::Transpose::ADJOINT)
+                       .getResult();
+        }
+
+        rewriter.replaceOp(fs.outerSolve, result);
+        if (fs.innerSolve->use_empty())
+          rewriter.eraseOp(fs.innerSolve);
+      }
     }
 
-    // Cholesky has no more users, erase it
-    rewriter.eraseOp(cholOp);
+    // 6. Replace single solves: L^{-1}b or L^{-H}b
+    //   Identity case:   Q @ diag(1/sqrt(d)) @ Q^T @ b
+    //   Generalized:     Q @ diag(1/sqrt(d)) @ Q^T @ L_B^{-1} @ b
+    //   Both preserve |L^{-1}b|^2 = b^T K^{-1} b.
+    if (!singleSolves.empty()) {
+      Value sqrtShifted =
+          stablehlo::SqrtOp::create(rewriter, loc, eigvalsType, shifted);
+      Value invSqrtShifted = stablehlo::DivOp::create(
+          rewriter, loc, eigvalsType, ones, sqrtShifted);
+      for (auto &ss : singleSolves) {
+        rewriter.setInsertionPoint(ss.solve);
+        auto resultType = cast<RankedTensorType>(ss.solve.getType());
+        Value rhs = ss.solve.getB();
+
+        if (LB) {
+          rhs = stablehlo::TriangularSolveOp::create(
+                    rewriter, loc, resultType, LB, rhs,
+                    /*left_side=*/true, /*lower=*/true,
+                    /*unit_diagonal=*/false, stablehlo::Transpose::NO_TRANSPOSE)
+                    .getResult();
+        }
+
+        Value result = emitEigenSolve(rhs, invSqrtShifted, resultType);
+        rewriter.replaceOp(ss.solve, result);
+      }
+    }
+
+    // 7. Replace diagonal extractions
+    //   Identity case:   diag(chol(K)) → sqrt(d)
+    //   Generalized:     diag(chol(K)) → diag(L_B) .* sqrt(d)
+    //   Both preserve log-det: sum(log(diag(L))) = 0.5 * log det(K).
+    if (!diagExtractions.empty()) {
+      Value sqrtShiftedForDiag =
+          stablehlo::SqrtOp::create(rewriter, loc, eigvalsType, shifted);
+
+      Value diagVec = sqrtShiftedForDiag;
+      if (LB) {
+        // Extract diag(L_B) via dot_general(L_B, I, batch=[1]x[1],
+        // contract=[0]x[0])
+        auto diagDotDims = stablehlo::DotDimensionNumbersAttr::get(
+            rewriter.getContext(),
+            /*lhsBatchingDims=*/{1}, /*rhsBatchingDims=*/{1},
+            /*lhsContractingDims=*/{0}, /*rhsContractingDims=*/{0});
+        SmallVector<Attribute> identityVals(
+            N * N, rewriter.getFloatAttr(elemType, 0.0));
+        for (int64_t i = 0; i < N; ++i)
+          identityVals[i * N + i] = rewriter.getFloatAttr(elemType, 1.0);
+        Value identity = stablehlo::ConstantOp::create(
+            rewriter, loc, DenseElementsAttr::get(inputType, identityVals));
+        Value diagLB = stablehlo::DotGeneralOp::create(
+            rewriter, loc, eigvalsType, LB, identity, diagDotDims,
+            /*precision_config=*/nullptr, /*algorithm=*/nullptr);
+        // diag(chol(K)) ≈ diag(L_B) .* sqrt(d)
+        diagVec = stablehlo::MulOp::create(rewriter, loc, eigvalsType, diagLB,
+                                           sqrtShiftedForDiag);
+      }
+
+      for (auto *diagOp : diagExtractions) {
+        rewriter.setInsertionPoint(diagOp);
+        auto resultType =
+            cast<RankedTensorType>(diagOp->getResult(0).getType());
+        Value replacement;
+        if (resultType.getRank() == 1) {
+          replacement = diagVec;
+        } else {
+          Value bcast = stablehlo::BroadcastInDimOp::create(
+              rewriter, loc, RankedTensorType::get({N, N}, elemType), diagVec,
+              rewriter.getDenseI64ArrayAttr({0}));
+          SmallVector<Attribute> identityVals(
+              N * N, rewriter.getFloatAttr(elemType, 0.0));
+          for (int64_t i = 0; i < N; ++i)
+            identityVals[i * N + i] = rewriter.getFloatAttr(elemType, 1.0);
+          Value identity = stablehlo::ConstantOp::create(
+              rewriter, loc,
+              DenseElementsAttr::get(RankedTensorType::get({N, N}, elemType),
+                                     identityVals));
+          replacement = stablehlo::MulOp::create(rewriter, loc, resultType,
+                                                 bcast, identity);
+        }
+        rewriter.replaceOp(diagOp, replacement);
+      }
+    }
+
+    // Erase Cholesky if no more users
+    if (cholOp->use_empty())
+      rewriter.eraseOp(cholOp);
+
     patternApplied = true;
     return success();
   }
 };
 
 //===----------------------------------------------------------------------===//
-// Pass Definition
+// Partial Inlining (Logpdf + Submodel)
 //===----------------------------------------------------------------------===//
+
+/// Compose two SymbolAttrs into a composite symbol by concatenating paths.
+/// E.g., symbol<42> + symbol<17> -> symbol<42, 17>
+static enzyme::SymbolAttr composeSymbols(enzyme::SymbolAttr outer,
+                                         enzyme::SymbolAttr inner,
+                                         MLIRContext *ctx) {
+  SmallVector<uint64_t> composed(outer.getPath());
+  composed.append(inner.getPath().begin(), inner.getPath().end());
+  return enzyme::SymbolAttr::get(ctx, composed);
+}
+
+/// TODO: Move this to Enzyme proper
+/// Flatten hierarchical addresses by composing the outer symbol with
+/// the next symbol in each address that starts with outerSymbol.
+/// E.g., [[<1>, <2>], [<3>]] with outerSymbol=<1> -> [[<1, 2>], [<3>]]
+static ArrayAttr flattenAddressesForSymbol(ArrayAttr addresses,
+                                           enzyme::SymbolAttr outerSymbol,
+                                           MLIRContext *ctx) {
+  SmallVector<Attribute> newAddresses;
+  for (auto addr : addresses) {
+    auto address = cast<ArrayAttr>(addr);
+    if (address.size() >= 2 && address[0] == outerSymbol) {
+      // Compose outer with next symbol, keep rest of address tail
+      auto inner = cast<enzyme::SymbolAttr>(address[1]);
+      auto composite = composeSymbols(outerSymbol, inner, ctx);
+      SmallVector<Attribute> newAddr;
+      newAddr.push_back(composite);
+      for (unsigned i = 2; i < address.size(); ++i)
+        newAddr.push_back(address[i]);
+      newAddresses.push_back(ArrayAttr::get(ctx, newAddr));
+    } else {
+      newAddresses.push_back(addr);
+    }
+  }
+  return ArrayAttr::get(ctx, newAddresses);
+}
+
+/// Inline submodel sample_region ops into the mcmc_region body.
+///
+/// A submodel sample_region has an empty logpdf region and no logpdf
+/// attribute. Inlining dissolves the sample_region boundary, moving all
+/// ops from the sampler body (including inner sample_region ops) into
+/// the mcmc_region body.
+///
+/// Inner sample symbols are composed with the outer symbol to form unique
+/// composite identifiers: symbol<outer> + symbol<inner> -> symbol<outer,
+/// inner>. Addresses are flattened accordingly:
+///   [[<outer>, <inner>]] -> [[<outer, inner>]]
+static bool inlineSubmodelSampleRegions(MCMCRegionOp regionOp) {
+  bool anyChanged = false;
+
+  SmallVector<SampleRegionOp> sampleOps;
+  regionOp.getSampler().walk(
+      [&](SampleRegionOp op) { sampleOps.push_back(op); });
+
+  for (SampleRegionOp sampleOp : sampleOps) {
+    // Only handle submodel calls (empty logpdf region, no logpdf attribute)
+    Region &logpdf = sampleOp.getLogpdf();
+    if (!logpdf.empty())
+      continue;
+    if (sampleOp.getLogpdfFnAttr())
+      continue;
+
+    Region &sampler = sampleOp.getSampler();
+    if (sampler.empty() || !sampler.hasOneBlock())
+      continue;
+
+    auto outerSymbol = sampleOp.getSymbolAttr();
+    if (!outerSymbol)
+      continue;
+
+    Block &samplerEntry = sampler.front();
+    auto *ctx = regionOp.getContext();
+
+    // Map sampler block args to sample_region inputs
+    OpBuilder builder(sampleOp);
+    IRMapping mapper;
+    auto inputs = sampleOp.getInputs();
+    for (unsigned i = 0, e = samplerEntry.getNumArguments(); i < e; ++i) {
+      if (i < inputs.size())
+        mapper.map(samplerEntry.getArgument(i), inputs[i]);
+    }
+
+    // Clone all ops (except yield) into mcmc_region body.
+    // Compose symbols on inner sample_region ops.
+    for (Operation &op : samplerEntry.without_terminator()) {
+      Operation *cloned = builder.clone(op, mapper);
+      // Compose symbols on inner sample ops (both SampleRegionOp and SampleOp,
+      // since --inline-mcmc-regions only converts top-level samples to regions)
+      if (auto innerSample = dyn_cast<SampleRegionOp>(cloned)) {
+        if (auto innerSymbol = innerSample.getSymbolAttr()) {
+          innerSample.setSymbolAttr(
+              composeSymbols(outerSymbol, innerSymbol, ctx));
+        }
+      } else if (auto innerSampleOp = dyn_cast<enzyme::SampleOp>(cloned)) {
+        if (auto innerSymbol = innerSampleOp.getSymbolAttr()) {
+          innerSampleOp.setSymbolAttr(
+              composeSymbols(outerSymbol, innerSymbol, ctx));
+        }
+      }
+    }
+
+    // Replace sample_region results with mapped yield operands
+    auto *yield = samplerEntry.getTerminator();
+    for (auto [oldResult, yieldOperand] :
+         llvm::zip(sampleOp.getResults(), yield->getOperands())) {
+      oldResult.replaceAllUsesWith(mapper.lookupOrDefault(yieldOperand));
+    }
+
+    sampleOp.erase();
+
+    // Flatten addresses: compose outer symbol into address entries
+    if (auto allAddrs = regionOp.getAllAddressesAttr())
+      regionOp.setAllAddressesAttr(
+          flattenAddressesForSymbol(allAddrs, outerSymbol, ctx));
+    if (auto sel = regionOp.getSelectionAttr())
+      regionOp.setSelectionAttr(
+          flattenAddressesForSymbol(sel, outerSymbol, ctx));
+
+    anyChanged = true;
+  }
+
+  return anyChanged;
+}
 
 struct SICMPass : public enzyme::impl::SICMPassBase<SICMPass> {
   using SICMPassBase::SICMPassBase;
+
+  /// Run SICM pattern rewrites + hoisting fixpoint on a specific region.
+  bool runSICMOnRegion(MCMCRegionOp regionOp, AnalysisTarget target) {
+    bool everChanged = false;
+    for (int64_t iter = 0; iter < maxIterations; ++iter) {
+      bool anyChanged = false;
+
+      // Phase 1: Pattern rewrites with fresh analysis
+      {
+        SampleDependenceAnalysis analysis(regionOp, target);
+        bool patternApplied = false;
+        RewritePatternSet patterns(getOperation()->getContext());
+        patterns.add<
+            CholeskyScaleFactorizationHLO, CholeskyOuterProductScaleHLO,
+            CholeskyEigenLiftHLO, DotGeneralScaleFactorizationHLO,
+            TriangularSolveScaleFactorizationHLO, LogMultiplyDistributionHLO,
+            // DotAbsorb patterns
+            DotAbsorbDiagMulHLO, DotAbsorbFFTHLO, DotAbsorbTransposeHLO,
+            DotAbsorbScatterHLO,
+            // Element-wise scale factorization patterns
+            PowerScaleFactorizationHLO, SqrtScaleFactorizationHLO,
+            RsqrtScaleFactorizationHLO, AbsScaleFactorizationHLO,
+            NegateDistributionHLO, ExpAddFactorizationHLO,
+            DivideScaleFactorizationHLO>(analysis, patternApplied,
+                                         getOperation()->getContext());
+        GreedyRewriteConfig config;
+        (void)applyPatternsGreedily(getOperation(), std::move(patterns),
+                                    config);
+        anyChanged |= patternApplied;
+      }
+
+      // Phase 2: Hoist (recomputes analysis internally)
+      anyChanged |= hoistSampleInvariantOps(regionOp, target);
+
+      everChanged |= anyChanged;
+      if (!anyChanged)
+        break;
+    }
+    return everChanged;
+  }
 
   void runOnOperation() override {
     SmallVector<MCMCRegionOp> regions;
     getOperation()->walk([&](MCMCRegionOp op) { regions.push_back(op); });
 
     for (MCMCRegionOp regionOp : regions) {
-      for (int64_t iter = 0; iter < maxIterations; ++iter) {
-        bool anyChanged = false;
+      // Level 1: Optimize the sampler region.
+      // Decompositions like chol(α²R) → α·chol(R) hoist chol(R) before
+      // mcmc_region, making it available to the logpdf via inheritance.
+      runSICMOnRegion(regionOp, AnalysisTarget::Sampler);
 
-        // Phase 1: Pattern rewrites with fresh analysis
-        {
-          SampleDependenceAnalysis analysis(regionOp);
-          bool patternApplied = false;
-          RewritePatternSet patterns(getOperation()->getContext());
-          patterns.add<CholeskyScaleFactorizationHLO, CholeskyEigenLiftHLO,
-                       DotGeneralScaleFactorizationHLO,
-                       TriangularSolveScaleFactorizationHLO,
-                       LogMultiplyDistributionHLO,
-                       // DotAbsorb patterns
-                       DotAbsorbDiagMulHLO, DotAbsorbFFTHLO,
-                       DotAbsorbTransposeHLO, DotAbsorbScatterHLO,
-                       // Element-wise scale factorization patterns
-                       PowerScaleFactorizationHLO, SqrtScaleFactorizationHLO,
-                       RsqrtScaleFactorizationHLO, AbsScaleFactorizationHLO,
-                       NegateDistributionHLO, ExpAddFactorizationHLO,
-                       DivideScaleFactorizationHLO>(
-              analysis, patternApplied, getOperation()->getContext());
-          GreedyRewriteConfig config;
-          // Apply to the nearest IsolatedFromAbove ancestor (mcmc_region isn't)
-          (void)applyPatternsGreedily(getOperation(), std::move(patterns),
-                                      config);
-          anyChanged |= patternApplied;
-        }
+      // Construct unified logpdf region from per-site logpdf bodies.
+      // Runs after sampler SICM so resolveValueForLogpdf inherits
+      // optimized computation (e.g., hoisted chol(R) becomes a free
+      // value captured by the logpdf).
+      constructUnifiedLogpdf(regionOp);
 
-        // Phase 2: Hoist (recomputes analysis internally)
-        anyChanged |= hoistSampleInvariantOps(regionOp);
-
-        if (!anyChanged)
-          break;
-      }
+      // Level 2: Optimize the logpdf region.
+      // Catches logpdf-internal decompositions (e.g., MVN scale-family
+      // where cholesky lives in the logpdf body, not the sampler).
+      if (!regionOp.getLogpdf().empty())
+        runSICMOnRegion(regionOp, AnalysisTarget::Logpdf);
     }
   }
 };
