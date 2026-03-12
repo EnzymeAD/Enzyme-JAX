@@ -771,13 +771,14 @@ emitIfAsSelect(Operation *ifOp, Value cond, affine::AffineValueMap map,
   elsePc.ranges = pc.ranges;
   elsePc.ivs = pc.ivs;
 
-  Value elseMask = stablehlo::NotOp::create(
-      builder, rewriteLocation(ifOp->getLoc(), pc.options.strip_llvm_debuginfo),
-      cond);
-  maps[elseMask] = maps.lookup(cond);
-  elsePc.mask = elseMask;
-
   if (elseBlock) {
+    Value elseMask = stablehlo::NotOp::create(
+        builder,
+        rewriteLocation(ifOp->getLoc(), pc.options.strip_llvm_debuginfo),
+        cond);
+    maps[elseMask] = maps.lookup(cond);
+    elsePc.mask = elseMask;
+
     for (auto &innerOp : elseBlock->without_terminator()) {
       if (tryRaisingOpToStableHLO(&innerOp, mapping, builder, maps, elsePc)
               .failed())
