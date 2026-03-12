@@ -2257,8 +2257,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
       for (auto dim : storeValueMap.getOperands()) {
         // This dim is present in the masked update and not in the stored
         // dimensions.
-        if (std::find(storeOp.getIndices().begin(), storeOp.getIndices().end(),
-                      dim) == storeOp.getIndices().end()) {
+        if (!llvm::is_contained(storeOp.getIndices(), dim)) {
           auto err = op->emitError(
                          "masked affine.store is dependent on less dimensions "
                          "than masked stored value:\n")
