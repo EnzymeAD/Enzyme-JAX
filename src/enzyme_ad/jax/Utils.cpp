@@ -651,10 +651,10 @@ PurelyImagResultAnalysis initPurelyImagResultAnalysis() {
   return PurelyImagResultAnalysis();
 }
 
-bool checkEqual(APInt a, APInt b) { return a == b; }
+bool checkNotEqual(APInt a, APInt b) { return a != b; }
 
-bool checkEqual(APFloat a, APFloat b) {
-  return a.compare(b) == llvm::APFloat::cmpEqual;
+bool checkNotEqual(APFloat a, APFloat b) {
+  return a.compare(b) != llvm::APFloat::cmpEqual;
 }
 
 bool isTrueTranspose(stablehlo::TransposeOp tOp) {
@@ -691,7 +691,7 @@ template <typename Ty> bool checkConstantSymmetric(DenseElementsAttr attr) {
     for (int64_t j = i + 1; j < cols; j++) {
       auto a = *(it + i * cols + j);
       auto b = *(it + j * cols + i);
-      if (!checkEqual(a, b))
+      if (checkNotEqual(a, b))
         return false;
     }
   }
