@@ -1,63 +1,15 @@
 diff --git a/third_party/shardy/workspace.bzl b/third_party/shardy/workspace.bzl
-index 2fb18c2745..e4acd87937 100644
+index 9628ddb01f..3ef0332b70 100644
 --- a/third_party/shardy/workspace.bzl
 +++ b/third_party/shardy/workspace.bzl
-@@ -3,13 +3,13 @@
+@@ -3,8 +3,8 @@
  load("//third_party:repo.bzl", "tf_http_archive", "tf_mirror_urls")
  
  def repo():
--    SHARDY_COMMIT = "2e11034b3c06417e98c09413dc50f22dd68316bb"
--    SHARDY_SHA256 = "037a392dcc4b2f52f2cae5189fcb8b8ef4b3fb19a252690a693c7ae9120ee736"
-+    SHARDY_COMMIT = "99564ac3faed5d10319faa07ed2a10e1e2bf5b78"
+-    SHARDY_COMMIT = "8f0d576921146c4a9fd800fbb8002f02a332539f"
+-    SHARDY_SHA256 = "2f622fabcbd9f5ed1a81a382e2d0db9d64f49a6affa61fe5634b0961f96e8a22"
++    SHARDY_COMMIT = "826f349cd94675698f0e8893997bb435cbb3f751"
 +    SHARDY_SHA256 = ""
  
      tf_http_archive(
          name = "shardy",
-         sha256 = SHARDY_SHA256,
-         strip_prefix = "shardy-{commit}".format(commit = SHARDY_COMMIT),
-         urls = tf_mirror_urls("https://github.com/openxla/shardy/archive/{commit}.zip".format(commit = SHARDY_COMMIT)),
--        patch_file = ["//third_party/shardy:temporary.patch"],
-+        patch_file = [],
-     )
-diff --git a/xla/service/spmd/custom_call_handler.cc b/xla/service/spmd/custom_call_handler.cc
-index a269b9462b..522107e564 100644
---- a/xla/service/spmd/custom_call_handler.cc
-+++ b/xla/service/spmd/custom_call_handler.cc
-@@ -911,6 +911,7 @@ absl::Status SpmdPartitioningVisitor::HandleCustomCallSPMDInternal_MultiSlice(
-   auto& int_attrs = attrs_pair.first;
-   auto& array_attrs = attrs_pair.second;
- 
-+  std::cerr << " multislice: " << hlo->ToString() << "\n";
-   auto dim_it = int_attrs.find("dimension");
-   TF_RET_CHECK(dim_it != int_attrs.end())
-       << "No dimension attribute in SPMD multi slice op";
-@@ -932,13 +933,16 @@ absl::Status SpmdPartitioningVisitor::HandleCustomCallSPMDInternal_MultiSlice(
-   int64_t limit_index = limit_indices_it->second.at(dim);
- 
-   const HloInstruction* input_operand = hlo->operand(0);
-+  std::cerr << " multislice operand: " << input_operand->ToString() << "\n";
-   PartitionedHlo input = GetPartitionedHlo(input_operand);
-   TF_RET_CHECK(hlo->sharding().IsTuple())
-       << "MultiSlice output must be a tuple.";
-   const HloSharding& element_sharding = hlo->sharding().tuple_elements()[0];
- 
-+  std::cerr << " elem sharding: " << element_sharding << "\n";
-   // Check that all tuple elements have the same sharding.
-   for (size_t i = 0; i < hlo->sharding().tuple_elements().size(); ++i) {
-+    std::cerr << " res sharding[i=" << i << "]: " << hlo->sharding().tuple_elements()[i] << "\n";
-     TF_RET_CHECK(hlo->sharding().tuple_elements()[i] == element_sharding)
-         << "All elements of MultiSlice output must have the same sharding.";
-   }
-@@ -1090,7 +1094,12 @@ absl::Status SpmdPartitioningVisitor::HandleCustomCallSPMDInternal_Wrap(
-       << "No right_amount attribute in SPMD wrap op";
-   int64_t right_amount = right_amount_it->second;
- 
-+  std::cerr << " wrap hlo: " << hlo->ToString() << "\n";
-   const HloInstruction* input_operand = hlo->operand(0);
-+  std::cerr << " + input_operand: " << input_operand->ToString() << "\n";
-+  HloSharding element_sharding = input_operand->sharding();
-+  std::cerr << " + elem_sharding: " << element_sharding << "\n";
-+
-   PartitionedHlo input = GetPartitionedHlo(input_operand);
-   const Shape& pre_wrap_shape = input_operand->shape();
-   const int64_t full_pre_wrap_size = pre_wrap_shape.dimensions(dim);
