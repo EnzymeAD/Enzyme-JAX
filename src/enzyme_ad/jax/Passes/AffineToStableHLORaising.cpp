@@ -266,16 +266,11 @@ struct ParallelContext {
     bool strip_llvm_debuginfo = false;
   } options;
 
-  ParallelContext(Options &options, IRMapping &mapping,
-                  llvm::DenseMap<Value, affine::AffineValueMap> &maps)
-      : options(options), mapping(mapping), maps(maps) {}
+  ParallelContext(Options &options) : options(options) {}
 
   SmallVector<InductionVariableRange, 8> ranges;
   SmallVector<Value, 8> ivs;
   Value mask = nullptr;
-
-  IRMapping &mapping;
-  llvm::DenseMap<Value, affine::AffineValueMap> &maps;
 
   bool isParallelIV(Value iv) { return llvm::is_contained(ivs, iv); }
 
@@ -343,16 +338,13 @@ struct ParallelContext {
     return newPc;
   }
 
-  static std::optional<ParallelContext>
-  get(affine::AffineParallelOp parallelOp, Options &options, IRMapping &mapping,
-      llvm::DenseMap<Value, affine::AffineValueMap> &maps) {
-    ParallelContext pc(options, mapping, maps);
+  static std::optional<ParallelContext> get(affine::AffineParallelOp parallelOp,
+                                            Options &options) {
+    ParallelContext pc(options);
     return pc.add(parallelOp);
   }
-  static ParallelContext
-  getEmpty(Options &options, IRMapping &mapping,
-           llvm::DenseMap<Value, affine::AffineValueMap> &maps) {
-    return ParallelContext(options, mapping, maps);
+  static ParallelContext getEmpty(Options &options) {
+    return ParallelContext(options);
   }
 };
 
@@ -763,11 +755,7 @@ emitIfAsSelect(Operation *ifOp, Value cond, affine::AffineValueMap map,
 
   assert(pc.mask == nullptr && "unsupported");
 
-  IRMapping thenMapping;
-  for (auto kv : mapping.getValueMap())
-    thenMapping.map(kv.first, kv.second);
-
-  ParallelContext thenPc(pc.options, thenMapping, maps);
+  ParallelContext thenPc(pc.options);
   thenPc.ranges = pc.ranges;
   thenPc.ivs = pc.ivs;
   thenPc.mask = cond;
@@ -778,16 +766,12 @@ emitIfAsSelect(Operation *ifOp, Value cond, affine::AffineValueMap map,
       return failure();
   }
 
-  IRMapping elseMapping;
-  for (auto kv : mapping.getValueMap())
-    elseMapping.map(kv.first, kv.second);
-
-  ParallelContext elsePc(pc.options, elseMapping, maps);
+  ParallelContext elsePc(pc.options);
   elsePc.ranges = pc.ranges;
   elsePc.ivs = pc.ivs;
-  elsePc.mask = stablehlo::NotOp::create(builder,
-          rewriteLocation(ifOp->getLoc(), pc.options.strip_llvm_debuginfo),
-          cond);
+  elsePc.mask = stablehlo::NotOp::create(
+      builder, rewriteLocation(ifOp->getLoc(), pc.options.strip_llvm_debuginfo),
+      cond);
 
   if (elseBlock) {
     for (auto &innerOp : elseBlock->without_terminator()) {
@@ -805,13 +789,13 @@ emitIfAsSelect(Operation *ifOp, Value cond, affine::AffineValueMap map,
          llvm::zip_equal(thenTerm->getOperands(), elseTerm->getOperands(),
                          ifOp->getResults())) {
       Value a = cond;
-      Value b = thenPc.mapping.lookup(thenVal);
-      Value c = elseBlock ? elsePc.mapping.lookup(elseVal)
-                          : pc.mapping.lookup(elseVal);
+      Value b = mapping.lookup(thenVal);
+      Value c =
+          mapping.lookup(elseVal);
 
       auto mapA = map;
-      auto mapB = thenPc.maps.lookup(b);
-      auto mapC = elseBlock ? elsePc.maps.lookup(c) : pc.maps.lookup(c);
+      auto mapB = maps.lookup(b);
+      auto mapC = maps.lookup(c);
 
       Value dsts[] = {b, c};
       affine::AffineValueMap submaps[] = {mapB, mapC};
@@ -829,89 +813,6 @@ emitIfAsSelect(Operation *ifOp, Value cond, affine::AffineValueMap map,
     }
   }
 
-  // Handle memory mutations
-  llvm::DenseMap<Value, Value> thenMutations;
-  for (auto &[mem, newMem] : thenPc.mapping.getValueMap()) {
-    if (newMem != mapping.lookupOrNull(mem)) {
-      thenMutations[mem] = newMem;
-    }
-  }
-
-  llvm::DenseMap<Value, Value> elseMutations;
-  if (elseBlock) {
-    for (auto &[mem, newMem] : elsePc.mapping.getValueMap()) {
-      if (newMem != mapping.lookupOrNull(mem)) {
-        elseMutations[mem] = newMem;
-      }
-    }
-  }
-
-  // Iterate over a copy of the keys to prevent iterator invalidation
-  // since we will be mutating 'mapping' inside the loop.
-  SmallVector<Value, 4> mappedOrigValues;
-  for (auto mem : mapping.getValueMap()) {
-    mappedOrigValues.push_back(mem.first);
-  }
-
-  for (Value origMem : mappedOrigValues) {
-    if (thenMutations.count(origMem) || elseMutations.count(origMem)) {
-      // Value thenVal = thenMutations.count(origMem) ? thenMutations[origMem]
-      //                                              : mapping.lookup(origMem);
-      // Value elseVal = elseMutations.count(origMem) ? elseMutations[origMem]
-      //                                              : mapping.lookup(origMem);
-      //
-      // Value a = cond;
-      // Value b = thenVal;
-      // Value c = elseVal;
-      //
-      // auto mapB = maps.lookup(b);
-      // auto mapC = maps.lookup(c);
-
-      // actually, we don't need to align memory access for the FULL memory
-      // tensor, because `b` and `c` are the FULL tensors! But `cond` is only
-      // the shape of the iterations. We need to align `cond` to the memory map
-      // of `b`. But we don't have a `mapA` for the memory access. Wait, what
-      // memory access did `b` come from? `b` and `c` are the entire memref
-      // tensor. What does alignMemoryAccess do when `mapA` is null or empty? It
-      // crashes.
-      //
-      // ACTUALLY, is `a` supposed to be just a boolean? If `b` and `c` are full
-      // memories, `a` (the `cond` of `scf.if`) is just an `i1`. If `cond` is
-      // `i1` (0-dim), then `select` works on full tensors. If `cond` is N-dim
-      // (from a vectorized `if`), then `mask` handles it, and `scf.if` is
-      // already flattened so this branch isn't hit!
-
-      // if (cast<RankedTensorType>(a.getType()).getRank() == 0 && TT.getRank()
-      // > 0) {
-      //   a = stablehlo::BroadcastInDimOp::create(
-      //       builder, rewriteLocation(ifOp->getLoc(),
-      //       pc.options.strip_llvm_debuginfo), TT, a,
-      //       builder.getDenseI64ArrayAttr(dimsToBroadcast));
-      // }
-
-      // Value trueFalseVals[] = {b, c};
-      // affine::AffineValueMap trueFalseMaps[] = {mapB, mapC};
-      // affine::AffineValueMap condMap = maps.lookup(a);
-      //
-      // llvm::errs() << "A: ";
-      // condMap.getAffineMap().dump();
-      // llvm::errs() << "\nB: ";
-      // mapB.getAffineMap().dump();
-      // llvm::errs() << "\nC: ";
-      // mapC.getAffineMap().dump();
-      //
-      // auto outputMap = alignMemoryAccess(a, condMap, trueFalseVals,
-      //                                    trueFalseMaps, builder, pc);
-      //
-      // auto selectOp = stablehlo::SelectOp::create(
-      //     builder,
-      //     rewriteLocation(ifOp->getLoc(), pc.options.strip_llvm_debuginfo), a,
-      //     b, c);
-      //
-      // mapping.map(origMem, selectOp.getResult());
-      // maps[selectOp.getResult()] = outputMap;
-    }
-  }
   return success();
 }
 
@@ -1371,7 +1272,7 @@ static LogicalResult tryRaisingForOpToStableHLOWhile(
     maps[ivInBody] =
         affine::AffineValueMap(AffineMap::get(forOp->getContext()), {});
 
-    ParallelContext localPc(pc.options, mapping, maps);
+    ParallelContext localPc(pc.options);
     localPc.ranges = pc.ranges;
     localPc.ivs = pc.ivs;
     localPc.mask = pc.mask;
@@ -2353,8 +2254,25 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
       Value mask = pc.mask;
       affine::AffineValueMap maskMap = maps.lookup(mask);
 
-      affine::AffineValueMap storeValueMap(storeOp.getMap(),
-                                           storeOp.getIndices());
+      // here this is a bit annoying but alignMemoryAccess expects non constant
+      // dims in its value maps. as such, we remove constant dims from the
+      // update and subsequent previous value as to use the storeValueMap.
+      // we will put these constant dims (size = 1) to the masked update
+      // afterwards.
+      SmallVector<unsigned> nonConstantDims;
+
+      ShapedType updateType = cast<ShapedType>(update.getType());
+      SmallVector<int64_t> updateShapeWithoutConstantDims;
+
+      for (auto [i, E] : llvm::enumerate(storeOp.getMap().getResults())) {
+        if (!E.isSymbolicOrConstant()) {
+          nonConstantDims.push_back(i);
+          updateShapeWithoutConstantDims.push_back(updateType.getShape()[i]);
+        }
+      }
+
+      affine::AffineValueMap storeValueMap(
+          storeOp.getMap().getSubMap(nonConstantDims), storeOp.getIndices());
 
       ShapedType updateTy = cast<ShapedType>(update.getType());
       SmallVector<int64_t> updateShape(updateTy.getShape().begin(),
@@ -2364,16 +2282,31 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
           rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
           operand, startIndicesValues, updateShape);
 
-      Value vals[] = {update, prev};
+      Value updateWithoutConstantDims = stablehlo::ReshapeOp::create(
+          builder,
+          rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+          updateType.clone(updateShapeWithoutConstantDims), update);
+      Value prevWithoutConstantDims = stablehlo::ReshapeOp::create(
+          builder,
+          rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+          updateType.clone(updateShapeWithoutConstantDims), prev);
+
+      Value vals[] = {updateWithoutConstantDims, prevWithoutConstantDims};
       affine::AffineValueMap dsts[] = {storeValueMap, storeValueMap};
+
       // update what if cond has more ivs dependence than the update?
       // or different?
       storeValueMap = alignMemoryAccess(mask, maskMap, vals, dsts, builder, pc);
 
-      update = stablehlo::SelectOp::create(
+      Value maskedUpdate = stablehlo::SelectOp::create(
           builder,
           rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo), mask,
           vals[0], vals[1]);
+
+      update = stablehlo::ReshapeOp::create(
+          builder,
+          rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+          updateType, maskedUpdate);
     }
 
     if (needPad) {
@@ -2411,9 +2344,9 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
       SmallVector<int64_t> startSlice;
       SmallVector<int64_t> limitSlice;
       SmallVector<int64_t> stridesSlice;
-      for (auto [sz, low, high] : llvm::zip(
-               cast<ShapedType>(storeOp.getMemref().getType()).getShape(),
-               padLow, padHigh)) {
+      for (auto [sz, low, high] :
+           llvm::zip(cast<ShapedType>(storeOp.getMemref().getType()).getShape(),
+                     padLow, padHigh)) {
         startSlice.push_back(low);
         limitSlice.push_back(low + sz);
         stridesSlice.push_back(1);
@@ -2422,8 +2355,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
           builder,
           rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
           cast<RankedTensorType>(operand.getType())
-              .clone(cast<ShapedType>(storeOp.getMemref().getType())
-                         .getShape()),
+              .clone(
+                  cast<ShapedType>(storeOp.getMemref().getType()).getShape()),
           finalResult, startSlice, limitSlice, stridesSlice);
     }
 
@@ -2904,7 +2837,7 @@ static bool tryRaisingToStableHLO(func::FuncOp func,
 
   llvm::DenseMap<Value, affine::AffineValueMap> maps;
 
-  ParallelContext emptyPc = ParallelContext::getEmpty(options, mapping, maps);
+  ParallelContext emptyPc = ParallelContext::getEmpty(options);
   for (auto &it : body->without_terminator()) {
     anyFailed =
         tryRaisingOpToStableHLO(&it, mapping, builder, maps, emptyPc).failed();
@@ -3274,8 +3207,7 @@ struct AffineToStableHLORaisingPass
 
       bool anyFailed = false;
 
-      ParallelContext emptyPc =
-          ParallelContext::getEmpty(options, mapping, maps);
+      ParallelContext emptyPc = ParallelContext::getEmpty(options);
       for (auto &it : body->without_terminator()) {
         anyFailed =
             tryRaisingOpToStableHLO(&it, mapping, builder, maps, emptyPc)
