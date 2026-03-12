@@ -1295,13 +1295,8 @@ static LogicalResult tryRaisingForOpToStableHLOWhile(
     maps[ivInBody] =
         affine::AffineValueMap(AffineMap::get(forOp->getContext()), {});
 
-    ParallelContext localPc(pc.options);
-    localPc.ranges = pc.ranges;
-    localPc.ivs = pc.ivs;
-    localPc.mask = pc.mask;
-
     for (auto &innerOp : forOp.getBody()->without_terminator()) {
-      if (tryRaisingOpToStableHLO(&innerOp, mapping, builder, maps, localPc)
+      if (tryRaisingOpToStableHLO(&innerOp, mapping, builder, maps, pc)
               .failed()) {
         LLVM_DEBUG(llvm::dbgs() << "Failed to raise inner op\n"
                                 << innerOp << "\n");
@@ -1836,37 +1831,14 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     SmallVector<int64_t> strides;
     SmallVector<int64_t> reverseDims;
 
-    if (affineMapToSlice(accessValueMap, strides, reverseDims, pc).failed()) {
-      SmallVector<Value> lIndices;
-      for (auto E : accessValueMap.getAffineMap().getResults()) {
-        auto [idx, idxMap] = expandAffineExpr(
-            builder,
-            rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo), E,
-            accessValueMap.getOperands(), mapping,
-            accessValueMap.getAffineMap().getNumDims(), pc);
-        maps[idx] = idxMap;
-        lIndices.push_back(idx);
-      }
-
-      Value res = emitLoadAsGather(
-          rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
-          inputTen, lIndices, builder, maps);
-      if (!res) {
-        return op->emitError("failed to raise load (indices of rank > 1)")
-               << *op;
-      }
-      mapping.map(loadOp.getResult(), res);
-      return success();
-    }
-
-    bool repeatingIV = needsGeneralScatterGather(accessValueMap);
     bool dynIndices = llvm::any_of(accessValueMap.getOperands(), [](Value iv) {
       return affine::isAffineForInductionVar(iv);
     });
     bool emitAsGather =
+        affineMapToSlice(accessValueMap, strides, reverseDims, pc).failed() ||
         dynIndices &&
             llvm::any_of(strides, [](int64_t stride) { return stride != 1; }) ||
-        repeatingIV;
+        needsGeneralScatterGather(accessValueMap);
 
     if (emitAsGather) {
       SmallVector<Value> lIndices;
@@ -1887,9 +1859,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
         return op->emitError("failed to raise load (indices of rank > 1)")
                << *op;
       }
-
       mapping.map(loadOp.getResult(), res);
-
       return success();
     }
 
