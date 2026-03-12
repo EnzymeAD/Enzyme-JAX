@@ -70,9 +70,9 @@ cc_library(
         "@xla//xla/ffi:ffi_api",
         "@xla//xla/ffi/api:c_api",
         "@xla//xla/ffi/api:ffi",
+        "@com_google_absl//absl/strings:str_format",
     ] + select({
         "@local_config_cuda//:is_cuda_enabled": [
-            "@com_google_absl//absl/strings:str_format",
             "@jax//jaxlib:ffi_helpers",
             "@jax//jaxlib/cuda:cuda_blas_handle_pool",
             "@local_config_cuda//cuda:cuda_headers",
