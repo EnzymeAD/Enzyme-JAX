@@ -6,6 +6,7 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "src/enzyme_ad/jax/Dialect/BLAS/Utils.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
+#include "src/enzyme_ad/jax/Dialect/LAPACK/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "src/enzyme_ad/jax/Utils.h"
@@ -38,8 +39,8 @@ struct LUFactorizationOpLowering
 
   LogicalResult matchAndRewrite(enzymexla::LUFactorizationOp op,
                                 PatternRewriter &rewriter) const override {
-    auto getrfOp = enzymexla::GetrfOp::create(
-        rewriter, op.getLoc(), op->getResultTypes(), op.getInput());
+    auto getrfOp = lapack::GetrfOp::create(rewriter, op.getLoc(),
+                                           op->getResultTypes(), op.getInput());
     rewriter.replaceOp(op, getrfOp);
     return success();
   }
@@ -71,21 +72,21 @@ struct SVDFactorizationOpLowering
 
     switch (algorithm) {
     case SVDAlgorithm::QRIteration: {
-      auto gesddOp = enzymexla::GesvdOp::create(
+      auto gesddOp = lapack::GesvdOp::create(
           rewriter, op.getLoc(), op->getResultTypes(), op.getInput(),
           /*full=*/op.getFull(), computeUv);
       rewriter.replaceOp(op, gesddOp);
       break;
     }
     case SVDAlgorithm::DivideAndConquer: {
-      auto gesvjOp = enzymexla::GesddOp::create(
+      auto gesvjOp = lapack::GesddOp::create(
           rewriter, op.getLoc(), op->getResultTypes(), op.getInput(),
           /*full=*/op.getFull(), computeUv);
       rewriter.replaceOp(op, gesvjOp);
       break;
     }
     case SVDAlgorithm::Jacobi: {
-      auto gesvdOp = enzymexla::GesvjOp::create(
+      auto gesvdOp = lapack::GesvjOp::create(
           rewriter, op.getLoc(), op->getResultTypes(), op.getInput(),
           /*full=*/op.getFull(), computeUv);
       rewriter.replaceOp(op, gesvdOp);
