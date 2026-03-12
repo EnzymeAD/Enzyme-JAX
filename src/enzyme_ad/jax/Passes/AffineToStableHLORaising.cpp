@@ -2254,6 +2254,31 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
       // or different?
       storeValueMap = alignMemoryAccess(mask, maskMap, vals, dsts, builder, pc);
 
+      for (auto dim : storeValueMap.getOperands()) {
+        // This dim is present in the masked update and not in the stored
+        // dimensions.
+        if (std::find(storeOp.getIndices().begin(), storeOp.getIndices().end(),
+                      dim) == storeOp.getIndices().end()) {
+          auto err = op->emitError(
+                         "masked affine.store is dependent on less dimensions "
+                         "than masked stored value:\n")
+                     << *op << "\n";
+          for (auto iv : accessValueMap.getOperands()) {
+            printAsOperand(err, iv, OpPrintingFlags());
+            err << ", ";
+          }
+          err << ": ";
+          err << accessValueMap.getAffineMap() << "\n";
+          for (auto iv : storeValueMap.getOperands()) {
+            printAsOperand(err, iv, OpPrintingFlags());
+            err << ", ";
+          }
+          err << ": ";
+          err << storeValueMap.getAffineMap();
+          return err;
+        }
+      }
+
       Value maskedUpdate = stablehlo::SelectOp::create(
           builder,
           rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo), mask,
