@@ -1,9 +1,8 @@
-#include "Enzyme/MLIR/Dialect/Dialect.h"
-#include "Enzyme/MLIR/Passes/EnzymeBatchPass.h"
+#include "src/enzyme_ad/jax/Dialect/BLAS/Dialect.h"
+#include "src/enzyme_ad/jax/Dialect/BLAS/Utils.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
-#include "src/enzyme_ad/jax/Passes/LinalgUtils.h"
-#include "src/enzyme_ad/jax/Passes/Passes.h"
+#include "src/enzyme_ad/jax/Passes/BLAS/Passes.h"
 #include "src/enzyme_ad/jax/Utils.h"
 
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
@@ -14,18 +13,17 @@
 #include "llvm/ADT/SmallVector.h"
 #include <mlir/IR/BuiltinAttributes.h>
 
-#define DEBUG_TYPE "lower-enzymexla-blas"
+#define DEBUG_TYPE "lower-blas-to-jit_call"
 
-namespace mlir {
-namespace enzyme {
-#define GEN_PASS_DEF_LOWERENZYMEXLABLASPASS
-#include "src/enzyme_ad/jax/Passes/Passes.h.inc"
-} // namespace enzyme
-} // namespace mlir
+namespace mlir::blas {
+#define GEN_PASS_DEF_LOWERBLASTOJITCALLPASS
+#include "src/enzyme_ad/jax/Passes/BLAS/Passes.h.inc"
+} // namespace mlir::blas
 
 using namespace mlir;
 using namespace mlir::enzyme;
-using namespace mlir::enzymexla;
+namespace blas = mlir::blas;
+using namespace mlir::blas;
 using namespace mlir::stablehlo;
 
 // Helper function to extract constant scalar value (real/imag parts)
@@ -71,18 +69,20 @@ static std::pair<Value, int64_t> createScalarOperand(PatternRewriter &rewriter,
   }
   return {originalVal, 0};
 }
-struct SymmOpLowering : public OpRewritePattern<enzymexla::SymmOp> {
 
-  using OpRewritePattern<enzymexla::SymmOp>::OpRewritePattern;
+struct SymmOpLowering : public OpRewritePattern<blas::SymmOp> {
+
+  using OpRewritePattern<blas::SymmOp>::OpRewritePattern;
 
   std::string backend;
   int64_t blasIntWidth;
+
   SymmOpLowering(std::string backend, int64_t blasIntWidth,
                  MLIRContext *context, PatternBenefit benefit = 1)
       : OpRewritePattern(context, benefit), backend(backend),
         blasIntWidth(blasIntWidth) {}
 
-  LogicalResult matchAndRewrite(enzymexla::SymmOp op,
+  LogicalResult matchAndRewrite(blas::SymmOp op,
                                 PatternRewriter &rewriter) const override {
     auto AType = cast<RankedTensorType>(op.getA().getType());
     auto nBatchDims = AType.getRank() - 2;
@@ -93,10 +93,10 @@ struct SymmOpLowering : public OpRewritePattern<enzymexla::SymmOp> {
       }
     }
 
-    return matchAndRewriteFallback(op, rewriter);
+    return failure();
   }
 
-  LogicalResult matchAndRewriteCPU(enzymexla::SymmOp op,
+  LogicalResult matchAndRewriteCPU(blas::SymmOp op,
                                    PatternRewriter &rewriter) const {
     auto ctx = op->getContext();
     LLVMTypeConverter typeConverter(ctx);
@@ -104,8 +104,8 @@ struct SymmOpLowering : public OpRewritePattern<enzymexla::SymmOp> {
     Value a = op.getA();
     Value b = op.getB();
     Value c = op.getC();
-    auto side_value = op.getSide() == enzymexla::LapackSide::left ? 'L' : 'R';
-    auto uplo_value = op.getUplo() == enzymexla::LapackUplo::L ? 'L' : 'U';
+    auto side_value = op.getSideAttr().getBlasChar();
+    auto uplo_value = op.getUploAttr().getBlasChar();
 
     auto aType = cast<RankedTensorType>(a.getType());
     auto bType = cast<RankedTensorType>(b.getType());
@@ -131,7 +131,7 @@ struct SymmOpLowering : public OpRewritePattern<enzymexla::SymmOp> {
     auto llvmVoidType = LLVM::LLVMVoidType::get(ctx);
 
     std::string blasFn;
-    if (auto prefix = lapackPrecisionPrefix(elementType)) {
+    if (auto prefix = blasPrecisionPrefix(elementType)) {
       blasFn = "enzymexla_blas_" + *prefix + "symm_";
     } else {
       op->emitOpError() << "Unsupported element type: " << elementType;
@@ -294,60 +294,17 @@ struct SymmOpLowering : public OpRewritePattern<enzymexla::SymmOp> {
 
     return success();
   }
-
-  LogicalResult matchAndRewriteFallback(enzymexla::SymmOp op,
-                                        PatternRewriter &rewriter) const {
-    auto AType = cast<RankedTensorType>(op.getA().getType());
-    auto nBatchDims = AType.getRank() - 2;
-    SmallVector<int64_t> batchDims(nBatchDims, 0);
-    std::iota(batchDims.begin(), batchDims.end(), 0);
-
-    Value A = op.getA();
-    if (!stablehlo::IsTensorFilled(A)) {
-      // If the tensor is not filled, we copy to the non-uplo region for safety
-      A = stablehlo::copyTriangularPart(rewriter, A, op.getUplo());
-      if (!A) {
-        return failure();
-      }
-    }
-
-    // fallback to emitting a stablehlo.dot_general that computes:
-    //   alpha*A*B + beta*C if side = 'L'
-    //   alpha*B*A + beta*C if side = 'R'
-    stablehlo::DotDimensionNumbersAttr dotDims;
-    dotDims = stablehlo::DotDimensionNumbersAttr::get(
-        op.getContext(), batchDims, batchDims, {nBatchDims + 1}, {nBatchDims});
-
-    stablehlo::DotGeneralOp dotGeneralOp;
-    if (op.getSide() == enzymexla::LapackSide::left) {
-      dotGeneralOp = stablehlo::DotGeneralOp::create(
-          rewriter, op.getLoc(), cast<RankedTensorType>(op.getC().getType()), A,
-          op.getB(), dotDims, nullptr, nullptr);
-    } else {
-      dotGeneralOp = stablehlo::DotGeneralOp::create(
-          rewriter, op.getLoc(), cast<RankedTensorType>(op.getC().getType()),
-          op.getB(), A, dotDims, nullptr, nullptr);
-    }
-
-    auto mul0 = stablehlo::MulOpCreate(rewriter, op->getLoc(), op.getAlpha(),
-                                       dotGeneralOp);
-    auto mul1 =
-        stablehlo::MulOpCreate(rewriter, op->getLoc(), op.getBeta(), op.getC());
-    auto res = stablehlo::AddOpCreate(rewriter, op->getLoc(), mul0, mul1);
-    rewriter.replaceOp(op, res);
-    return success();
-  }
 };
 
-struct SyrkOpLowering : public OpRewritePattern<enzymexla::SyrkOp> {
-  using OpRewritePattern<enzymexla::SyrkOp>::OpRewritePattern;
+struct SyrkOpLowering : public OpRewritePattern<blas::SyrkOp> {
+  using OpRewritePattern<blas::SyrkOp>::OpRewritePattern;
 
   SyrkOpLowering(std::string backend, int64_t blasIntWidth,
                  MLIRContext *context, PatternBenefit benefit = 1)
       : OpRewritePattern(context, benefit), backend(backend),
         blasIntWidth(blasIntWidth){};
 
-  LogicalResult matchAndRewrite(enzymexla::SyrkOp op,
+  LogicalResult matchAndRewrite(blas::SyrkOp op,
                                 PatternRewriter &rewriter) const override {
     auto AType = cast<RankedTensorType>(op.getA().getType());
     auto nBatchDims = AType.getRank() - 2;
@@ -360,44 +317,43 @@ struct SyrkOpLowering : public OpRewritePattern<enzymexla::SyrkOp> {
       }
     }
 
-    return matchAndRewriteFallback(op, rewriter);
+    return failure();
   }
 
   enum CopyMode { NOT_NEEDED, COPY, TRANSPOSE };
 
-  void resolveUplo(enzymexla::SyrkOp op, enzymexla::LapackUplo &customCallUplo,
+  void resolveUplo(blas::SyrkOp op, BlasUplo &customCallUplo,
                    CopyMode &needsCopy) const {
     switch (op.getUplo()) {
-    case enzymexla::LapackUplo::F:
+    case BlasUplo::any:
       customCallUplo = standardizeUplo(op.getOutputUplo());
-      needsCopy = op.getOutputUplo() == enzymexla::LapackUplo::F
-                      ? CopyMode::COPY
-                      : CopyMode::NOT_NEEDED;
+      needsCopy = op.getOutputUplo() == BlasUplo::any ? CopyMode::COPY
+                                                      : CopyMode::NOT_NEEDED;
       break;
-    case enzymexla::LapackUplo::L:
+    case BlasUplo::lower:
       customCallUplo = op.getUplo();
       switch (op.getOutputUplo()) {
-      case enzymexla::LapackUplo::F:
+      case BlasUplo::any:
         needsCopy = CopyMode::COPY;
         break;
-      case enzymexla::LapackUplo::L:
+      case BlasUplo::lower:
         needsCopy = CopyMode::NOT_NEEDED;
         break;
-      case enzymexla::LapackUplo::U:
+      case BlasUplo::upper:
         needsCopy = CopyMode::TRANSPOSE;
         break;
       }
       break;
-    case enzymexla::LapackUplo::U:
+    case BlasUplo::upper:
       customCallUplo = op.getUplo();
       switch (op.getOutputUplo()) {
-      case enzymexla::LapackUplo::F:
+      case BlasUplo::any:
         needsCopy = CopyMode::COPY;
         break;
-      case enzymexla::LapackUplo::L:
+      case BlasUplo::lower:
         needsCopy = CopyMode::TRANSPOSE;
         break;
-      case enzymexla::LapackUplo::U:
+      case BlasUplo::upper:
         needsCopy = CopyMode::NOT_NEEDED;
         break;
       }
@@ -405,7 +361,7 @@ struct SyrkOpLowering : public OpRewritePattern<enzymexla::SyrkOp> {
     }
   }
 
-  LogicalResult matchAndRewriteCPU(enzymexla::SyrkOp op,
+  LogicalResult matchAndRewriteCPU(blas::SyrkOp op,
                                    PatternRewriter &rewriter) const {
     auto ctx = op->getContext();
     LLVMTypeConverter typeConverter(ctx);
@@ -423,7 +379,7 @@ struct SyrkOpLowering : public OpRewritePattern<enzymexla::SyrkOp> {
     auto llvmIntType = typeConverter.convertType(blasIntType);
 
     std::string blasFn;
-    auto prefix = lapackPrecisionPrefix(AType.getElementType());
+    auto prefix = blasPrecisionPrefix(AType.getElementType());
     if (prefix) {
       blasFn = "enzymexla_blas_" + *prefix + "syrk_";
     } else {
@@ -477,7 +433,7 @@ struct SyrkOpLowering : public OpRewritePattern<enzymexla::SyrkOp> {
     }
 
     CopyMode needsCopy;
-    enzymexla::LapackUplo customCallUplo;
+    BlasUplo customCallUplo;
     resolveUplo(op, customCallUplo, needsCopy);
 
     // generate the func.funcOp that calls the blas function
@@ -526,14 +482,14 @@ struct SyrkOpLowering : public OpRewritePattern<enzymexla::SyrkOp> {
 
       auto nSize = stablehlo::ConvertOp::create(
           rewriter, op.getLoc(), intType,
-          stablehlo::GetDimensionSizeOp::create(
-              rewriter, op.getLoc(), A,
-              op.getTranspose() != enzymexla::LapackTranspose::none));
+          stablehlo::GetDimensionSizeOp::create(rewriter, op.getLoc(), A,
+                                                op.getTranspose() !=
+                                                    BlasTranspose::none));
       auto kSize = stablehlo::ConvertOp::create(
           rewriter, op.getLoc(), intType,
-          stablehlo::GetDimensionSizeOp::create(
-              rewriter, op.getLoc(), A,
-              op.getTranspose() == enzymexla::LapackTranspose::none));
+          stablehlo::GetDimensionSizeOp::create(rewriter, op.getLoc(), A,
+                                                op.getTranspose() ==
+                                                    BlasTranspose::none));
 
       // For row-major format, lda is the trailing dimension (columns in shape)
       // This is dimension 1 for a 2D matrix
@@ -550,17 +506,15 @@ struct SyrkOpLowering : public OpRewritePattern<enzymexla::SyrkOp> {
       auto uploConst = stablehlo::ConstantOp::create(
           rewriter, op.getLoc(), uint8Type,
           cast<ElementsAttr>(makeAttr(
-              uint8Type,
-              customCallUplo == enzymexla::LapackUplo::U ? 'L' : 'U')));
+              uint8Type, customCallUplo == BlasUplo::upper ? 'L' : 'U')));
       // We intentionally flip transpose here, this allows us to pass in
       // the data as a row-major format without paying the cost of
       // layout transformation to a col-major (which CPU BLAS uses)
       auto transConst = stablehlo::ConstantOp::create(
           rewriter, op.getLoc(), uint8Type,
-          cast<ElementsAttr>(makeAttr(
-              uint8Type, op.getTranspose() == enzymexla::LapackTranspose::none
-                             ? 'T'
-                             : 'N')));
+          cast<ElementsAttr>(
+              makeAttr(uint8Type,
+                       op.getTranspose() == BlasTranspose::none ? 'T' : 'N')));
 
       // {uplo, trans, n, k, alpha, A, lda, beta, C, ldc}
       auto jitCall = enzymexla::JITCallOp::create(
@@ -601,7 +555,7 @@ struct SyrkOpLowering : public OpRewritePattern<enzymexla::SyrkOp> {
     return success();
   }
 
-  LogicalResult matchAndRewriteCUDA(enzymexla::SyrkOp op,
+  LogicalResult matchAndRewriteCUDA(blas::SyrkOp op,
                                     PatternRewriter &rewriter) const {
     auto CType = cast<RankedTensorType>(op.getC().getType());
     auto rank = CType.getRank();
@@ -614,7 +568,7 @@ struct SyrkOpLowering : public OpRewritePattern<enzymexla::SyrkOp> {
     bool useBetaAttr = extractConstantScalar(op.getBeta(), betaReal, betaImag);
 
     CopyMode needsCopy;
-    enzymexla::LapackUplo customCallUplo;
+    BlasUplo customCallUplo;
     resolveUplo(op, customCallUplo, needsCopy);
 
     // Build operands list - use empty tensors for constant alpha/beta
@@ -641,11 +595,9 @@ struct SyrkOpLowering : public OpRewritePattern<enzymexla::SyrkOp> {
     SmallVector<NamedAttribute> configAttrs = {
         rewriter.getNamedAttr(
             "transpose",
-            rewriter.getBoolAttr(op.getTranspose() !=
-                                 enzymexla::LapackTranspose::none)),
+            rewriter.getBoolAttr(op.getTranspose() != BlasTranspose::none)),
         rewriter.getNamedAttr(
-            "uplo",
-            rewriter.getBoolAttr(customCallUplo == enzymexla::LapackUplo::U)),
+            "uplo", rewriter.getBoolAttr(customCallUplo == BlasUplo::upper)),
         rewriter.getNamedAttr("use_alpha_attribute",
                               rewriter.getBoolAttr(useAlphaAttr)),
         rewriter.getNamedAttr("alpha_real",
@@ -714,153 +666,22 @@ struct SyrkOpLowering : public OpRewritePattern<enzymexla::SyrkOp> {
     return success();
   }
 
-  LogicalResult matchAndRewriteFallback(enzymexla::SyrkOp op,
-                                        PatternRewriter &rewriter) const {
-    auto AType = cast<RankedTensorType>(op.getA().getType());
-    auto nBatchDims = AType.getRank() - 2;
-    SmallVector<int64_t> batchDims(nBatchDims, 0);
-    std::iota(batchDims.begin(), batchDims.end(), 0);
-
-    Value C = op.getC();
-    if (!stablehlo::IsTensorFilled(C)) {
-      // If the tensor is not filled, we copy to the non-uplo region for safety
-      C = stablehlo::copyTriangularPart(rewriter, C, op.getUplo());
-      if (!C) {
-        return failure();
-      }
-    }
-
-    // fallback to emitting a stablehlo.dot_general that computes:
-    //   alpha * A * A^T + beta * C
-    //   alpha * A^T * A + beta * C
-    stablehlo::DotDimensionNumbersAttr dotDims;
-    switch (op.getTranspose()) {
-    case enzymexla::LapackTranspose::none:
-      dotDims = stablehlo::DotDimensionNumbersAttr::get(
-          op.getContext(), batchDims, batchDims, {nBatchDims + 1},
-          {nBatchDims + 1});
-      break;
-    case enzymexla::LapackTranspose::adjoint:
-      LLVM_FALLTHROUGH;
-    case enzymexla::LapackTranspose::transpose:
-      dotDims = stablehlo::DotDimensionNumbersAttr::get(
-          op.getContext(), batchDims, batchDims, {nBatchDims}, {nBatchDims});
-      break;
-    }
-
-    auto AAT = stablehlo::DotGeneralOp::create(
-        rewriter, op.getLoc(), cast<RankedTensorType>(op.getC().getType()),
-        op.getA(), op.getA(), dotDims, nullptr, nullptr);
-
-    auto aop =
-        stablehlo::MulOpCreate(rewriter, op->getLoc(), op.getAlpha(), AAT);
-    auto bop = stablehlo::MulOpCreate(rewriter, op->getLoc(), op.getBeta(), C);
-
-    auto res = stablehlo::AddOpCreate(rewriter, op->getLoc(), aop, bop);
-    rewriter.replaceOp(op, res);
-    return success();
-  }
-
 private:
   std::string backend;
   int64_t blasIntWidth;
 };
 
-struct TrsmOpLowering : public OpRewritePattern<enzymexla::TrsmOp> {
-  TrsmOpLowering(MLIRContext *context, PatternBenefit benefit = 1)
-      : OpRewritePattern(context, benefit) {}
-
-  LogicalResult matchAndRewrite(enzymexla::TrsmOp op,
-                                PatternRewriter &rewriter) const override {
-    auto ctx = op->getContext();
-    LLVMTypeConverter typeConverter(ctx);
-
-    auto alpha = op.getOperand(0);
-    auto A = op.getOperand(1);
-    auto B = op.getOperand(2);
-    auto type_alpha = cast<RankedTensorType>(alpha.getType());
-    auto type_A = cast<RankedTensorType>(A.getType());
-    auto type_B = cast<RankedTensorType>(B.getType());
-    auto type_element = type_alpha.getElementType();
-
-    // (C1)
-    if (type_A.getElementType() != type_element ||
-        type_B.getElementType() != type_element) {
-      return rewriter.notifyMatchFailure(
-          op, "Element types of alpha, A and B must match");
-    }
-    auto rank = type_A.getRank();
-
-    // (C2)
-    if (type_A.getRank() != type_B.getRank()) {
-      return rewriter.notifyMatchFailure(op, "Ranks of A and B must match");
-    }
-
-    // (C3)
-    auto shape_A = type_A.getShape();
-    auto shape_B = type_B.getShape();
-    if (shape_A.drop_back(2) != shape_B.drop_back(2)) {
-      return rewriter.notifyMatchFailure(
-          op, "Batch dimensions of A and B must match");
-    }
-
-    if (shape_A[rank - 1] != shape_A[rank - 2]) {
-      return rewriter.notifyMatchFailure(
-          op, "Inner two dimensions of A must be square");
-    }
-
-    if (shape_A[rank - 1] !=
-        shape_B[rank - (op.getSide() == enzymexla::LapackSide::left ? 2 : 1)]) {
-      return rewriter.notifyMatchFailure(
-          op, "Inner dimensions of A and B must match");
-    }
-
-    // (C4)
-    if (op.getResult().getType() != type_B) {
-      return rewriter.notifyMatchFailure(op, "Result type must match B's type");
-    }
-
-    auto scaledB = stablehlo::MulOpCreate(rewriter, op.getLoc(), B, alpha);
-
-    auto transa = stablehlo::Transpose::NO_TRANSPOSE;
-    switch (op.getTransa()) {
-    case enzymexla::LapackTranspose::none:
-      transa = stablehlo::Transpose::NO_TRANSPOSE;
-      break;
-    case enzymexla::LapackTranspose::transpose:
-      transa = stablehlo::Transpose::TRANSPOSE;
-      break;
-    case enzymexla::LapackTranspose::adjoint:
-      transa = stablehlo::Transpose::ADJOINT;
-      break;
-    }
-
-    auto trisolve_op = stablehlo::TriangularSolveOp::create(
-        rewriter, op.getLoc(), TypeRange{type_B}, A, scaledB,
-        /*left_side=*/op.getSide() == enzymexla::LapackSide::left,
-        /*lower=*/op.getUplo() == enzymexla::LapackUplo::L,
-        /*unit_diagonal=*/op.getDiag() == enzymexla::LapackDiag::unit,
-        /*transpose_a=*/transa);
-
-    // replace enzymexla.blas.trsm with the trisolve_op
-    rewriter.replaceAllUsesWith(op.getResult(), trisolve_op.getResult());
-    rewriter.eraseOp(op);
-
-    return success();
-  }
-};
-
-struct LowerEnzymeXLABLASPass
-    : public enzyme::impl::LowerEnzymeXLABLASPassBase<LowerEnzymeXLABLASPass> {
+struct LowerBlasToJitCallPass
+    : public mlir::blas::impl::LowerBlasToJitCallPassBase<
+          LowerBlasToJitCallPass> {
   using Base::Base;
 
   void runOnOperation() override {
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
 
-    patterns.add<SyrkOpLowering, SymmOpLowering>(backend, blasIntWidth,
+    patterns.add<SymmOpLowering, SyrkOpLowering>(backend, blasIntWidth,
                                                  context);
-    patterns.add<TrsmOpLowering>(context);
 
     GreedyRewriteConfig config;
     config.setUseTopDownTraversal(true);
@@ -872,8 +693,8 @@ struct LowerEnzymeXLABLASPass
 
     // Verify that all illegal ops have been lowered
     auto walkResult = getOperation()->walk([&](Operation *op) {
-      if (isa<enzymexla::SyrkOp, enzymexla::TrsmOp>(op)) {
-        op->emitError("Failed to lower enzymexla.blas operation");
+      if (isa<blas::SymmOp, blas::SyrkOp>(op)) {
+        op->emitError("Failed to lower blas operation");
         return WalkResult::interrupt();
       }
       return WalkResult::advance();

@@ -1041,12 +1041,12 @@ bool isValueOnlyUsedInOperation(Value value, Operation *parentOp);
 mlir::RankedTensorType removeBatchedDims(mlir::RankedTensorType Ty,
                                          llvm::ArrayRef<int64_t> dims);
 
-enzymexla::LapackTranspose
-transposeLapackTranspose(enzymexla::LapackTranspose trans, bool canBeComplex);
+blas::BlasTranspose transposeBlasTranspose(blas::BlasTranspose trans,
+                                           bool canBeComplex);
 
-enzymexla::LapackUplo transposeLapackUplo(enzymexla::LapackUplo uplo);
+blas::BlasUplo transposeBlasUplo(blas::BlasUplo uplo);
 
-enzymexla::LapackUplo standardizeUplo(enzymexla::LapackUplo uplo);
+blas::BlasUplo standardizeUplo(blas::BlasUplo uplo);
 
 using InputValidatorFn = std::function<bool(mlir::Value)>;
 
@@ -1319,8 +1319,7 @@ Value getScalarValue(Operation *op, OpBuilder &builder);
 bool isScalarValue(Value val);
 bool isScalarValue(Operation *op);
 
-Value copyTriangularPart(OpBuilder &builder, Value input,
-                         enzymexla::LapackUplo uplo);
+Value copyTriangularPart(OpBuilder &builder, Value input, blas::BlasUplo uplo);
 
 bool OpIsReshapeLike(stablehlo::BroadcastInDimOp op);
 bool OpIsReshapeLike(stablehlo::TransposeOp op);

@@ -45,11 +45,11 @@ module {
 // CHECK-NEXT:   stablehlo.return %1 : tensor<i1>
 // CHECK-NEXT: } do {
 // CHECK-NEXT:   %1 = stablehlo.add %iterArg, %[[c1]] {{.*}} : tensor<i64>
-// CHECK-NEXT:   %2 = enzymexla.blas.syrk %iterArg_7, %[[cst0]], %[[cst1]], %[[cstm0]] {output_uplo = #enzymexla.uplo<F>, transpose = #enzymexla.transpose<transpose>, uplo = #enzymexla.uplo<F>} : (tensor<5x4xf32>, tensor<4x4xf32>, tensor<f32>, tensor<f32>) -> tensor<4x4xf32>
+// CHECK-NEXT:   %2 = blas.syrk %[[cst1]], %iterArg_7, %[[cstm0]], %[[cst0]] {output_uplo = #blas.uplo<any>, transpose = #blas.transpose<transpose>, uplo = #blas.uplo<any>} : (tensor<f32>, tensor<5x4xf32>, tensor<f32>, tensor<4x4xf32>) -> tensor<4x4xf32>
 // CHECK-NEXT:   %3 = stablehlo.multiply %[[c47]], %2 {enzymexla.symmetric_matrix = [#enzymexla<guaranteed GUARANTEED>]} : tensor<4x4xf32>
-// CHECK-NEXT:   %4 = enzymexla.blas.syrk %2, %3, %[[cst2]], %[[cst1]] {enzymexla.symmetric_matrix = [#enzymexla<guaranteed GUARANTEED>], output_uplo = #enzymexla.uplo<U>, uplo = #enzymexla.uplo<F>} : (tensor<4x4xf32>, tensor<4x4xf32>, tensor<f32>, tensor<f32>) -> tensor<4x4xf32>
+// CHECK-NEXT:   %4 = blas.syrk %[[cst2]], %2, %[[cst1]], %3 {enzymexla.symmetric_matrix = [#enzymexla<guaranteed GUARANTEED>], output_uplo = #blas.uplo<upper>, uplo = #blas.uplo<any>} : (tensor<f32>, tensor<4x4xf32>, tensor<f32>, tensor<4x4xf32>) -> tensor<4x4xf32>
 // CHECK-NEXT:   %5 = stablehlo.multiply %[[c34]], %iterArg_7 : tensor<5x4xf32>
-// CHECK-NEXT:   %6 = enzymexla.blas.symm %4, %iterArg_7, %5, %[[cst1]], %[[cst1]] {side = #enzymexla.side<right>, uplo = #enzymexla.uplo<U>} : (tensor<4x4xf32>, tensor<5x4xf32>, tensor<5x4xf32>, tensor<f32>, tensor<f32>) -> tensor<5x4xf32>
+// CHECK-NEXT:   %6 = blas.symm %[[cst1]], %4, %iterArg_7, %[[cst1]], %5 {side = #blas.side<right>, uplo = #blas.uplo<upper>} : (tensor<f32>, tensor<4x4xf32>, tensor<5x4xf32>, tensor<f32>, tensor<5x4xf32>) -> tensor<5x4xf32>
 // CHECK-NEXT:   stablehlo.return %1, %6 : tensor<i64>, tensor<5x4xf32>
 // CHECK-NEXT: }
 // CHECK-NEXT: return %0#1 : tensor<5x4xf32>

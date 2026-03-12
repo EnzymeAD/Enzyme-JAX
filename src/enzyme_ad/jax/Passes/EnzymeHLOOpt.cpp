@@ -30274,15 +30274,15 @@ struct DotGeneralToSyrk
     auto rhsContractingDim = dotDims.getRhsContractingDimensions()[0];
 
     Value syrkInput;
-    enzymexla::LapackTranspose lapackTranspose;
+    blas::BlasTranspose lapackTranspose;
 
     if (lhs == rhs) {
       if (lhsContractingDim == rhsContractingDim) {
         syrkInput = lhs;
         if (lhsContractingDim == 1) {
-          lapackTranspose = enzymexla::LapackTranspose::none;
+          lapackTranspose = blas::BlasTranspose::none;
         } else {
-          lapackTranspose = enzymexla::LapackTranspose::transpose;
+          lapackTranspose = blas::BlasTranspose::transpose;
         }
       } else {
         // if lhsContractingDim != rhsContractingDim, then we can fuse iff
@@ -30290,9 +30290,9 @@ struct DotGeneralToSyrk
         if (canApplySymmetricPattern(lhs, rewriter)) {
           syrkInput = lhs;
           if (lhsContractingDim == 1) {
-            lapackTranspose = enzymexla::LapackTranspose::none;
+            lapackTranspose = blas::BlasTranspose::none;
           } else {
-            lapackTranspose = enzymexla::LapackTranspose::transpose;
+            lapackTranspose = blas::BlasTranspose::transpose;
           }
         }
       }
@@ -30303,9 +30303,9 @@ struct DotGeneralToSyrk
           lhsContractingDim == 1 - rhsContractingDim) {
         syrkInput = rhs;
         if (rhsContractingDim == 1) {
-          lapackTranspose = enzymexla::LapackTranspose::none;
+          lapackTranspose = blas::BlasTranspose::none;
         } else {
-          lapackTranspose = enzymexla::LapackTranspose::transpose;
+          lapackTranspose = blas::BlasTranspose::transpose;
         }
       }
     }
@@ -30315,9 +30315,9 @@ struct DotGeneralToSyrk
           rhsContractingDim == 1 - lhsContractingDim) {
         syrkInput = lhs;
         if (lhsContractingDim == 0) {
-          lapackTranspose = enzymexla::LapackTranspose::transpose;
+          lapackTranspose = blas::BlasTranspose::transpose;
         } else {
-          lapackTranspose = enzymexla::LapackTranspose::none;
+          lapackTranspose = blas::BlasTranspose::none;
         }
       }
     }
@@ -30329,22 +30329,21 @@ struct DotGeneralToSyrk
         cast<RankedTensorType>(syrkInput.getType()).getElementType();
     auto alphaType = RankedTensorType::get({}, elemType);
 
-    auto syrkOp = enzymexla::SyrkOp::create(
-        rewriter, op.getLoc(), op.getResult().getType(), syrkInput,
-        stablehlo::ConstantOp::create(
-            rewriter, op.getLoc(), op.getType(),
-            cast<ElementsAttr>(makeAttr(op.getType(), 0))),
+    auto syrkOp = blas::SyrkOp::create(
+        rewriter, op.getLoc(), op.getResult().getType(),
         stablehlo::ConstantOp::create(
             rewriter, op.getLoc(), alphaType,
             cast<ElementsAttr>(makeAttr(alphaType, 1))),
+        syrkInput,
         stablehlo::ConstantOp::create(
             rewriter, op.getLoc(), alphaType,
             cast<ElementsAttr>(makeAttr(alphaType, 0))),
-        enzymexla::LapackUploAttr::get(op.getContext(),
-                                       enzymexla::LapackUplo::F),
-        enzymexla::LapackUploAttr::get(op.getContext(),
-                                       enzymexla::LapackUplo::F),
-        enzymexla::LapackTransposeAttr::get(op.getContext(), lapackTranspose));
+        stablehlo::ConstantOp::create(
+            rewriter, op.getLoc(), op.getType(),
+            cast<ElementsAttr>(makeAttr(op.getType(), 0))),
+        blas::BlasUploAttr::get(op.getContext(), blas::BlasUplo::any),
+        blas::BlasUploAttr::get(op.getContext(), blas::BlasUplo::any),
+        blas::BlasTransposeAttr::get(op.getContext(), lapackTranspose));
     rewriter.replaceOp(op, syrkOp.getResult());
     return success();
   }
@@ -30381,14 +30380,14 @@ struct DotGeneralToSymm
     }
 
     Value symmMatrix, genMatrix;
-    enzymexla::LapackSide side;
+    blas::BlasSide side;
 
     auto lhsContractingDim = dotDims.getLhsContractingDimensions()[0];
     auto rhsContractingDim = dotDims.getRhsContractingDimensions()[0];
 
     // can only replace with symm if either lhs or rhs is symmetric
     if (canApplySymmetricPattern(lhs, rewriter)) {
-      side = enzymexla::LapackSide::left;
+      side = blas::BlasSide::left;
       symmMatrix = lhs;
       if (rhsContractingDim == 1) {
         auto perm = rewriter.getDenseI64ArrayAttr({1, 0});
@@ -30396,7 +30395,7 @@ struct DotGeneralToSymm
       }
       genMatrix = rhs;
     } else if (canApplySymmetricPattern(rhs, rewriter)) {
-      side = enzymexla::LapackSide::right;
+      side = blas::BlasSide::right;
       symmMatrix = rhs;
       if (lhsContractingDim == 0) {
         auto perm = rewriter.getDenseI64ArrayAttr({1, 0});
@@ -30410,22 +30409,21 @@ struct DotGeneralToSymm
     auto elemType = cast<RankedTensorType>(lhs.getType()).getElementType();
     auto alphaType = RankedTensorType::get({}, elemType);
 
-    auto symmOp = enzymexla::SymmOp::create(
+    auto symmOp = blas::SymmOp::create(
         rewriter, op.getLoc(), op.getResult().getType(),
-        symmMatrix, // A (symmetric)
-        genMatrix,  // B (general)
-        stablehlo::ConstantOp::create(
-            rewriter, op.getLoc(), op.getType(),
-            cast<ElementsAttr>(makeAttr(op.getType(), 0))), // C
         stablehlo::ConstantOp::create(
             rewriter, op.getLoc(), alphaType,
             cast<ElementsAttr>(makeAttr(alphaType, 1))), // alpha
+        symmMatrix,                                      // A (symmetric)
+        genMatrix,                                       // B (general)
         stablehlo::ConstantOp::create(
             rewriter, op.getLoc(), alphaType,
             cast<ElementsAttr>(makeAttr(alphaType, 0))), // beta
-        enzymexla::LapackSideAttr::get(op.getContext(), side),
-        enzymexla::LapackUploAttr::get(op.getContext(),
-                                       enzymexla::LapackUplo::F));
+        stablehlo::ConstantOp::create(
+            rewriter, op.getLoc(), op.getType(),
+            cast<ElementsAttr>(makeAttr(op.getType(), 0))), // C
+        blas::BlasSideAttr::get(op.getContext(), side),
+        blas::BlasUploAttr::get(op.getContext(), blas::BlasUplo::any));
     rewriter.replaceOp(op, symmOp.getResult());
     return success();
   }
@@ -30469,37 +30467,35 @@ struct FuseMulBase
   }
 };
 
-struct FuseMulIntoSymm
-    : public FuseMulBase<enzymexla::SymmOp, FuseMulIntoSymm> {
-  using FuseMulBase<enzymexla::SymmOp, FuseMulIntoSymm>::FuseMulBase;
+struct FuseMulIntoSymm : public FuseMulBase<blas::SymmOp, FuseMulIntoSymm> {
+  using FuseMulBase<blas::SymmOp, FuseMulIntoSymm>::FuseMulBase;
 
-  LogicalResult fuseMul(PatternRewriter &rewriter, enzymexla::SymmOp symmOp,
+  LogicalResult fuseMul(PatternRewriter &rewriter, blas::SymmOp symmOp,
                         stablehlo::MulOp op, Value scalarVal) {
     auto newBeta = stablehlo::MulOp::create(rewriter, op.getLoc(),
                                             symmOp.getBeta(), scalarVal);
     auto newAlpha = stablehlo::MulOp::create(rewriter, op.getLoc(),
                                              symmOp.getAlpha(), scalarVal);
 
-    rewriter.replaceOpWithNewOp<enzymexla::SymmOp>(
-        op, symmOp.getType(), symmOp.getA(), symmOp.getB(), symmOp.getC(),
-        newAlpha, newBeta, symmOp.getSideAttr(), symmOp.getUploAttr());
+    rewriter.replaceOpWithNewOp<blas::SymmOp>(
+        op, symmOp.getType(), newAlpha, symmOp.getA(), symmOp.getB(), newBeta,
+        symmOp.getC(), symmOp.getSideAttr(), symmOp.getUploAttr());
     return success();
   }
 };
 
-struct FuseMulIntoSyrk
-    : public FuseMulBase<enzymexla::SyrkOp, FuseMulIntoSyrk> {
-  using FuseMulBase<enzymexla::SyrkOp, FuseMulIntoSyrk>::FuseMulBase;
+struct FuseMulIntoSyrk : public FuseMulBase<blas::SyrkOp, FuseMulIntoSyrk> {
+  using FuseMulBase<blas::SyrkOp, FuseMulIntoSyrk>::FuseMulBase;
 
-  LogicalResult fuseMul(PatternRewriter &rewriter, enzymexla::SyrkOp syrkOp,
+  LogicalResult fuseMul(PatternRewriter &rewriter, blas::SyrkOp syrkOp,
                         stablehlo::MulOp op, Value scalarVal) {
     auto newBeta = stablehlo::MulOp::create(rewriter, op.getLoc(),
                                             syrkOp.getBeta(), scalarVal);
     auto newAlpha = stablehlo::MulOp::create(rewriter, op.getLoc(),
                                              syrkOp.getAlpha(), scalarVal);
 
-    rewriter.replaceOpWithNewOp<enzymexla::SyrkOp>(
-        op, syrkOp.getType(), syrkOp.getA(), syrkOp.getC(), newAlpha, newBeta,
+    rewriter.replaceOpWithNewOp<blas::SyrkOp>(
+        op, syrkOp.getType(), newAlpha, syrkOp.getA(), newBeta, syrkOp.getC(),
         syrkOp.getUploAttr(), syrkOp.getOutputUploAttr(),
         syrkOp.getTransposeAttr());
     return success();
@@ -30552,27 +30548,25 @@ struct FuseAddBase
   }
 };
 
-struct FuseAddIntoSymm
-    : public FuseAddBase<enzymexla::SymmOp, FuseAddIntoSymm> {
-  using FuseAddBase<enzymexla::SymmOp, FuseAddIntoSymm>::FuseAddBase;
+struct FuseAddIntoSymm : public FuseAddBase<blas::SymmOp, FuseAddIntoSymm> {
+  using FuseAddBase<blas::SymmOp, FuseAddIntoSymm>::FuseAddBase;
 
-  LogicalResult fuseAdd(PatternRewriter &rewriter, enzymexla::SymmOp symmOp,
+  LogicalResult fuseAdd(PatternRewriter &rewriter, blas::SymmOp symmOp,
                         stablehlo::AddOp op, Value other) {
     auto [newC, newBeta] = computeNewCBeta(
         rewriter, symmOp.getBeta(), symmOp.getType(), op, symmOp.getC(), other);
 
-    rewriter.replaceOpWithNewOp<enzymexla::SymmOp>(
-        op, symmOp.getType(), symmOp.getA(), symmOp.getB(), newC,
-        symmOp.getAlpha(), newBeta, symmOp.getSideAttr(), symmOp.getUploAttr());
+    rewriter.replaceOpWithNewOp<blas::SymmOp>(
+        op, symmOp.getType(), symmOp.getAlpha(), symmOp.getA(), symmOp.getB(),
+        newBeta, newC, symmOp.getSideAttr(), symmOp.getUploAttr());
     return success();
   }
 };
 
-struct FuseAddIntoSyrk
-    : public FuseAddBase<enzymexla::SyrkOp, FuseAddIntoSyrk> {
-  using FuseAddBase<enzymexla::SyrkOp, FuseAddIntoSyrk>::FuseAddBase;
+struct FuseAddIntoSyrk : public FuseAddBase<blas::SyrkOp, FuseAddIntoSyrk> {
+  using FuseAddBase<blas::SyrkOp, FuseAddIntoSyrk>::FuseAddBase;
 
-  LogicalResult fuseAdd(PatternRewriter &rewriter, enzymexla::SyrkOp syrkOp,
+  LogicalResult fuseAdd(PatternRewriter &rewriter, blas::SyrkOp syrkOp,
                         stablehlo::AddOp op, Value other) {
 
     // we can fuse this addition iff the other operand is a symmetric matrix
@@ -30583,8 +30577,8 @@ struct FuseAddIntoSyrk
     auto [newC, newBeta] = computeNewCBeta(
         rewriter, syrkOp.getBeta(), syrkOp.getType(), op, syrkOp.getC(), other);
 
-    rewriter.replaceOpWithNewOp<enzymexla::SyrkOp>(
-        op, syrkOp.getType(), syrkOp.getA(), newC, syrkOp.getAlpha(), newBeta,
+    rewriter.replaceOpWithNewOp<blas::SyrkOp>(
+        op, syrkOp.getType(), syrkOp.getAlpha(), syrkOp.getA(), newBeta, newC,
         syrkOp.getUploAttr(), syrkOp.getOutputUploAttr(),
         syrkOp.getTransposeAttr());
     return success();
@@ -30592,11 +30586,11 @@ struct FuseAddIntoSyrk
 };
 
 struct TransposeSyrkToSyrk
-    : public CheckedOpRewritePattern<enzymexla::SyrkOp, TransposeSyrkToSyrk> {
-  using CheckedOpRewritePattern<enzymexla::SyrkOp,
+    : public CheckedOpRewritePattern<blas::SyrkOp, TransposeSyrkToSyrk> {
+  using CheckedOpRewritePattern<blas::SyrkOp,
                                 TransposeSyrkToSyrk>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewriteImpl(enzymexla::SyrkOp op,
+  LogicalResult matchAndRewriteImpl(blas::SyrkOp op,
                                     PatternRewriter &rewriter) const {
     auto input = op.getA();
     if (cast<RankedTensorType>(input.getType()).getRank() != 2) {
@@ -30613,34 +30607,33 @@ struct TransposeSyrkToSyrk
       return failure();
     }
 
-    rewriter.replaceOpWithNewOp<enzymexla::SyrkOp>(
-        op, op.getResult().getType(), transposeOp.getOperand(), op.getC(),
-        op.getAlpha(), op.getBeta(), op.getUploAttr(), op.getOutputUploAttr(),
-        enzymexla::LapackTransposeAttr::get(
+    rewriter.replaceOpWithNewOp<blas::SyrkOp>(
+        op, op.getResult().getType(), op.getAlpha(), transposeOp.getOperand(),
+        op.getBeta(), op.getC(), op.getUploAttr(), op.getOutputUploAttr(),
+        blas::BlasTransposeAttr::get(
             op.getContext(),
-            enzyme::transposeLapackTranspose(op.getTranspose(), false)));
+            enzyme::transposeBlasTranspose(op.getTranspose(), false)));
     return success();
   }
 };
 
 struct SyrkSimplifyOutputUplo final
-    : public CheckedOpRewritePattern<enzymexla::SyrkOp,
-                                     SyrkSimplifyOutputUplo> {
+    : public CheckedOpRewritePattern<blas::SyrkOp, SyrkSimplifyOutputUplo> {
   using CheckedOpRewritePattern<
-      enzymexla::SyrkOp, SyrkSimplifyOutputUplo>::CheckedOpRewritePattern;
+      blas::SyrkOp, SyrkSimplifyOutputUplo>::CheckedOpRewritePattern;
 
-  LogicalResult matchAndRewriteImpl(enzymexla::SyrkOp op,
+  LogicalResult matchAndRewriteImpl(blas::SyrkOp op,
                                     PatternRewriter &rewriter) const {
     // we can also try to align the uplos for other cases but that would be
     // less common
-    if (op.getOutputUplo() != enzymexla::LapackUplo::F) {
+    if (op.getOutputUplo() != blas::BlasUplo::any) {
       return rewriter.notifyMatchFailure(op, "output_uplo is not F");
     }
 
     // Track all users of syrk. If these end at syrk ops (via supported
     // elementwise operations) we can potentially set a common uplo.
-    SmallVector<enzymexla::SyrkOp> childSyrkOps;
-    SmallVector<enzymexla::SymmOp> childSymmOps;
+    SmallVector<blas::SyrkOp> childSyrkOps;
+    SmallVector<blas::SymmOp> childSymmOps;
 
     // Worklist approach: track all children that need to be processed
     SmallVector<Value> worklist;
@@ -30656,7 +30649,7 @@ struct SyrkSimplifyOutputUplo final
       // Check all users of the current value
       for (Operation *user : current.getUsers()) {
         // If user is a syrk op, add it to our list of child syrk ops
-        if (auto childSyrk = dyn_cast<enzymexla::SyrkOp>(user)) {
+        if (auto childSyrk = dyn_cast<blas::SyrkOp>(user)) {
           if (childSyrk.getC() != current) {
             return failure();
           }
@@ -30665,7 +30658,7 @@ struct SyrkSimplifyOutputUplo final
         }
 
         // If user is a symm op, add it to our list of child symm ops
-        if (auto childSymm = dyn_cast<enzymexla::SymmOp>(user)) {
+        if (auto childSymm = dyn_cast<blas::SymmOp>(user)) {
           if (childSymm.getA() != current) {
             return failure();
           }
@@ -30703,39 +30696,39 @@ struct SyrkSimplifyOutputUplo final
     bool hasUpper = false, hasLower = false;
     int countOutputUpper = 0, countOutputLower = 0;
 
-    for (enzymexla::SyrkOp childSyrk : childSyrkOps) {
+    for (blas::SyrkOp childSyrk : childSyrkOps) {
       switch (childSyrk.getUplo()) {
-      case enzymexla::LapackUplo::U:
+      case blas::BlasUplo::upper:
         hasUpper = true;
         break;
-      case enzymexla::LapackUplo::L:
+      case blas::BlasUplo::lower:
         hasLower = true;
         break;
-      case enzymexla::LapackUplo::F:
+      case blas::BlasUplo::any:
         break;
       }
 
       switch (childSyrk.getOutputUplo()) {
-      case enzymexla::LapackUplo::U:
+      case blas::BlasUplo::upper:
         countOutputUpper++;
         break;
-      case enzymexla::LapackUplo::L:
+      case blas::BlasUplo::lower:
         countOutputLower++;
         break;
-      case enzymexla::LapackUplo::F:
+      case blas::BlasUplo::any:
         break;
       }
     }
 
-    for (enzymexla::SymmOp childSymm : childSymmOps) {
+    for (blas::SymmOp childSymm : childSymmOps) {
       switch (childSymm.getUplo()) {
-      case enzymexla::LapackUplo::U:
+      case blas::BlasUplo::upper:
         hasUpper = true;
         break;
-      case enzymexla::LapackUplo::L:
+      case blas::BlasUplo::lower:
         hasLower = true;
         break;
-      case enzymexla::LapackUplo::F:
+      case blas::BlasUplo::any:
         break;
       }
     }
@@ -30747,13 +30740,13 @@ struct SyrkSimplifyOutputUplo final
     }
 
     // Determine the common uplo
-    enzymexla::LapackUplo newOutputUplo;
+    blas::BlasUplo newOutputUplo;
     if (hasUpper) {
       // At least one child requires U, set output to U
-      newOutputUplo = enzymexla::LapackUplo::U;
+      newOutputUplo = blas::BlasUplo::upper;
     } else if (hasLower) {
       // At least one child requires L, set output to L
-      newOutputUplo = enzymexla::LapackUplo::L;
+      newOutputUplo = blas::BlasUplo::lower;
     } else {
       // All children have uplo F
       // Check the output_uplo of each child to find the uplo that minimizes
@@ -30764,13 +30757,13 @@ struct SyrkSimplifyOutputUplo final
       // Choose the uplo that matches the most children's output_uplo
       // This minimizes the number of copies needed
       if (countOutputUpper > countOutputLower) {
-        newOutputUplo = enzymexla::LapackUplo::U;
+        newOutputUplo = blas::BlasUplo::upper;
       } else if (countOutputLower > countOutputUpper) {
-        newOutputUplo = enzymexla::LapackUplo::L;
+        newOutputUplo = blas::BlasUplo::lower;
       } else {
         // Tied or all have output_uplo F
         // Default to U as per standardizeUplo (see LowerEnzymeXLABlas)
-        newOutputUplo = enzymexla::LapackUplo::U;
+        newOutputUplo = blas::BlasUplo::upper;
       }
     }
 
@@ -30780,18 +30773,18 @@ struct SyrkSimplifyOutputUplo final
     }
 
     auto newUploAttr =
-        enzymexla::LapackUploAttr::get(rewriter.getContext(), newOutputUplo);
+        blas::BlasUploAttr::get(rewriter.getContext(), newOutputUplo);
 
     // Create a new syrk op with the updated output_uplo
     rewriter.modifyOpInPlace(op, [&]() { op.setOutputUploAttr(newUploAttr); });
 
     // Also update the child syrk ops that have uplo F to use the new uplo
     // This ensures they don't need to copy
-    for (enzymexla::SyrkOp &childSyrk : childSyrkOps) {
+    for (blas::SyrkOp &childSyrk : childSyrkOps) {
       rewriter.modifyOpInPlace(childSyrk,
                                [&]() { childSyrk.setUploAttr(newUploAttr); });
     }
-    for (enzymexla::SymmOp &childSymm : childSymmOps) {
+    for (blas::SymmOp &childSymm : childSymmOps) {
       rewriter.modifyOpInPlace(childSymm,
                                [&]() { childSymm.setUploAttr(newUploAttr); });
     }
