@@ -14,7 +14,9 @@ exports_files([
     "raise.h",
     "raise.cpp",
     "RegistryUtils.cpp",
-])
+] + glob([
+    "xla_ffi/**/*.cc",
+]))
 
 licenses(["notice"])
 
@@ -43,6 +45,42 @@ cc_library(
         "@xla//xla/service:custom_call_status",
         "@xla//xla/service:custom_call_target_registry",
     ],
+)
+
+cc_library(
+    name = "xla_ffi",
+    srcs =
+        [
+            "xla_ffi/register.cc",
+        ] + glob([
+            "xla_ffi/host/**/*.cc",
+            "xla_ffi/cuda/**/*.cc",
+        ]),
+    hdrs =
+        glob([
+            "xla_ffi/host/**/*.h",
+            "xla_ffi/cuda/**/*.h",
+        ]),
+    copts = select({
+        "@local_config_cuda//:is_cuda_enabled": ["-DENZYMEJAX_CUDA=1"],
+        "//conditions:default": [],
+    }),
+    visibility = ["//visibility:public"],
+    deps = [
+        "@xla//xla/ffi:ffi_api",
+        "@xla//xla/ffi/api:c_api",
+        "@xla//xla/ffi/api:ffi",
+        "@com_google_absl//absl/strings:str_format",
+    ] + select({
+        "@local_config_cuda//:is_cuda_enabled": [
+            "@jax//jaxlib:ffi_helpers",
+            "@jax//jaxlib/cuda:cuda_blas_handle_pool",
+            "@local_config_cuda//cuda:cuda_headers",
+            "@xla//xla/tsl/cuda:cublas",
+            "@xla//xla/tsl/cuda:cudart",
+        ],
+        "//conditions:default": [],
+    }),
 )
 
 cc_library(
@@ -1622,6 +1660,7 @@ pybind_extension(
         ":compile_with_xla",
         ":cpu",
         ":gpu",
+        ":xla_ffi",
         "@com_google_absl//absl/status:statusor",
         "@enzyme//:EnzymeMLIR",
         "@enzyme//:EnzymeStatic",

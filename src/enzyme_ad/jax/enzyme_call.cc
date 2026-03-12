@@ -1035,6 +1035,7 @@ void Callback(void *out, void **ins, void *opaque, size_t opaque_len,
 
 extern "C" void RegisterEnzymeXLAGPUHandler();
 extern "C" void RegisterEnzymeXLACPUHandler();
+extern "C" void registerEnzymeJaXXLAFFI();
 
 NB_MODULE(enzyme_call, m) {
   llvm::InitializeAllTargets();
@@ -1267,6 +1268,8 @@ NB_MODULE(enzyme_call, m) {
 
   m.def("register_enzymexla_gpu_handler",
         []() { RegisterEnzymeXLAGPUHandler(); });
+
+  m.def("register_enzymexla_xla_ffi", []() { registerEnzymeJaXXLAFFI(); });
 
   m.def("compile_mhlo_to_llvm_with_xla",
         [](const std::string &mhlo_text, bool xla_runtime,
