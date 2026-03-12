@@ -54,12 +54,8 @@ cc_library(
             "xla_ffi/register.cc",
         ] + glob([
             "xla_ffi/host/**/*.cc",
-        ]) + select({
-            "@local_config_cuda//:is_cuda_enabled": glob([
-                "xla_ffi/cuda/**/*.cc",
-            ]),
-            "//conditions:default": [],
-        }),
+            "xla_ffi/cuda/**/*.cc",
+        ]),
     hdrs =
         glob([
             "xla_ffi/host/**/*.h",
