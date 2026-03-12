@@ -5,7 +5,7 @@
 #include "xla/ffi/api/ffi.h"
 #include "xla/ffi/ffi_api.h"
 
-#if defined(GOOGLE_CUDA)
+#if defined(ENZYMEJAX_CUDA)
 #include "jaxlib/ffi_helpers.h"
 #include "jaxlib/gpu/blas_handle_pool.h"
 #include "third_party/gpus/cuda/include/cuComplex.h"

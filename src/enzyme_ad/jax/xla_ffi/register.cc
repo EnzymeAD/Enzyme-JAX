@@ -23,8 +23,6 @@ extern "C" MLIR_CAPI_EXPORTED void registerEnzymeJaXXLAFFI() {
   static std::once_flag once;
   std::call_once(once, []() {
     enzymexla::ffi_internal::registerEnzymeJaXXLAHostFFI();
-#if defined(GOOGLE_CUDA)
     enzymexla::ffi_internal::registerEnzymeJaXXLACudaFFI();
-#endif
   });
 }

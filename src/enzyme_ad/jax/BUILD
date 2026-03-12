@@ -65,6 +65,11 @@ cc_library(
             "xla_ffi/host/**/*.h",
             "xla_ffi/cuda/**/*.h",
         ]),
+    copts = select({
+        "@local_config_cuda//:is_cuda_enabled": ["-DENZYMEJAX_CUDA=1"],
+        "//conditions:default": [],
+    }),
+    visibility = ["//visibility:public"],
     deps = [
         "@xla//xla/ffi:ffi_api",
         "@xla//xla/ffi/api:c_api",
