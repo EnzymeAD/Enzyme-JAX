@@ -17,6 +17,7 @@ namespace enzymexla {
 namespace ffi_internal {
 
 using namespace jax;
+namespace ffi = xla::ffi;
 
 #define SOLVER_BLAS_DISPATCH_IMPL(impl, ...)                                   \
   switch (dataType) {                                                          \
