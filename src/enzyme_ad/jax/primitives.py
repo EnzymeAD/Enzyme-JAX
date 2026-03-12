@@ -35,6 +35,9 @@ except AttributeError:
 
     register_custom_call_target = xla_client.register_custom_call_target
 
+if hasattr(enzyme_call, "register_enzymexla_xla_ffi"):
+    enzyme_call.register_enzymexla_xla_ffi()
+
 
 class PipelineConfig:
     # Whether to use the new xla runtime
