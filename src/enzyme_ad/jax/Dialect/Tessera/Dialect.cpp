@@ -1,5 +1,6 @@
 #include "Dialect.h"
 
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/Builders.h"
 #include "llvm/ADT/TypeSwitch.h"
 
