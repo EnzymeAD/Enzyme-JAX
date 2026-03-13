@@ -2465,7 +2465,6 @@ struct MultiSliceCustomCallOptimize
         /*output_operand_aliases=*/nullptr);
     mlir::sdy::setShardings(ccall, TensorShardingPerValueAttr::get(
                                        rewriter.getContext(), opShardings));
-    llvm::errs() << " ms: " << *ccall << "\n";
     return success();
   }
 };
