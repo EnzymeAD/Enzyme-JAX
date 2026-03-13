@@ -948,6 +948,25 @@ def PotrfOp : EnzymeXLA_Op<"lapack.potrf", [Pure]> {
   }];
 }
 
+def SyevdOp : EnzymeXLA_Op<"lapack.syevd", [Pure]> {
+  let summary = "Symmetric eigenvalue decomposition via divide-and-conquer (LAPACK dsyevd)";
+
+  let arguments = (ins
+    HLO_Tensor:$input,
+    EnzymeXLA_LapackUploAttr:$uplo
+  );
+
+  let results = (outs
+    HLO_Tensor:$eigenvectors,
+    HLO_Tensor:$eigenvalues,
+    HLO_Tensor:$info
+  );
+
+  let assemblyFormat = [{
+    $input attr-dict `:` functional-type(operands, results)
+  }];
+}
+
 // Special Functions - Bessel Functions
 
 def BesselJ : EnzymeXLA_Op<"special.besselj", [Pure, AllTypesMatch<["z", "res"]>, Elementwise]> {

@@ -119,6 +119,8 @@ def : HLODerivative<"ConjOp", (Op $z), [(Conj (DiffeRet))], (Conj (Shadow $z))>;
 
 def : HLODerivative<"CoshOp", (Op $x), [(Mul (DiffeRet), (Sinh $x))]>;
 
+def : HLODerivative<"LgammaOp", (Op $x), [(Mul (DiffeRet), (Digamma $x))]>;
+
 def : HLODerivative<"DigammaOp", (Op $x), 
                     [(Mul (DiffeRet), (Polygamma $x, (HLOConstantFP<"2"> $x)))],
                     (Mul (Shadow $x), (Polygamma $x, (HLOConstantFP<"2"> $x)))
