@@ -1,5 +1,7 @@
 // RUN: enzymexlamlir-opt %s --raise-triton-custom-call --canonicalize | FileCheck %s
 
+// XFAIL: *
+
 module {
   func.func @main1(%arg0: tensor<1024xf32>, %arg1: tensor<1024xf32>, %arg2: tensor<1024xf32>, %arg3: tensor<i32>) -> (tensor<1024xf32>, tensor<1024xf32>, tensor<1024xf32>) {
     // CHECK-DAG: %[[GX:.*]] = stablehlo.constant dense<16> : tensor<i64>

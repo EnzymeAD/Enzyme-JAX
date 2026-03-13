@@ -2261,6 +2261,62 @@ struct MultiRotateCustomCallOptimize
   }
 };
 
+/// Detect whether this MultiSliceOp matches the cross-shard pattern:
+///   1. All strides are 1.
+///   2. For every sharded dimension except the multi-slice dimension,
+///      start/limit span the full tensor extent.
+///   3. Along the multi-slice dimension, every slice's start falls within
+///      one shard and its end falls within a different shard.
+bool detectCrossShardPattern(Value operand, Operation *op,
+                             ArrayRef<int64_t> startIndices,
+                             ArrayRef<int64_t> limitIndices,
+                             ArrayRef<int64_t> strides, int32_t dim,
+                             int32_t amount, bool &needsSlice) {
+  // --- Condition 1: unit strides everywhere ---
+  if (!llvm::all_of(strides, [](int64_t s) { return s == 1; }))
+    return false;
+
+  auto operandType = cast<RankedTensorType>(operand.getType());
+  auto operandSharding = mlir::sdy::getSharding(operand);
+  if (!operandSharding) {
+    return false;
+  }
+  ArrayRef<int64_t> shape = operandType.getShape();
+  int64_t rank = shape.size();
+
+  if (dim < 0 || dim >= rank)
+    return false;
+
+  // --- Condition 2: full span on every sharded dim except `dim` ---
+  for (int64_t d = 0; d < rank; ++d) {
+    if (d == dim)
+      continue;
+    int64_t numShards = getNumDevicesAlongDimension(operandSharding, d, op);
+    if (startIndices[d] != 0 || limitIndices[d] != shape[d]) {
+      needsSlice = true;
+      if (numShards > 1) {
+        return false;
+      }
+    }
+  }
+
+  // --- Condition 3: cross-shard slicing along `dim` ---
+  int64_t numShards = getNumDevicesAlongDimension(operandSharding, dim, op);
+  if (numShards <= 1)
+    return false; // Not sharded along the slice dimension.
+
+  int64_t dimSize = shape[dim];
+  int64_t shardSize = (dimSize + numShards - 1) / numShards;
+
+  if (startIndices[dim] > shardSize) {
+    return false;
+  }
+  if (shape[dim] - limitIndices[dim] > shardSize) {
+    return false;
+  }
+  return true;
+}
+
 struct MultiSliceCustomCallOptimize
     : public OpRewritePattern<enzymexla::MultiSliceOp> {
 
@@ -2283,14 +2339,19 @@ struct MultiSliceCustomCallOptimize
     if (slice->getParentOfType<sdy::ManualComputationOp>())
       return failure();
 
-    auto rotateDimension = slice.getDimension();
+    auto sliceDimension = slice.getDimension();
     auto shardings = mlir::sdy::getShardingPerValue(slice);
     if (!shardings)
       return rewriter.notifyMatchFailure(slice, "No sharding found.");
-    auto rotateSharding = shardings.getSharding(0);
+    auto sliceSharding = shardings.getSharding(0);
+    for (int64_t i = 1; i < slice.getNumResults(); ++i) {
+      if (shardings.getSharding(i) != sliceSharding)
+        return rewriter.notifyMatchFailure(
+            slice, "Not all results have the same sharding");
+    }
 
     int64_t numDevicesAlongDimension =
-        getNumDevicesAlongDimension(rotateSharding, rotateDimension, slice);
+        getNumDevicesAlongDimension(sliceSharding, sliceDimension, slice);
 
     if (numDevicesAlongDimension == 1) {
       return rewriter.notifyMatchFailure(
@@ -2298,25 +2359,103 @@ struct MultiSliceCustomCallOptimize
           "numDevicesAlongDimension == 1. Communication is already optimized.");
     }
 
-    std::string start_indices =
-        serializeDenseI64ArrayAttr(slice.getStartIndices());
-    std::string limit_indices =
-        serializeDenseI64ArrayAttr(slice.getLimitIndices());
-    std::string strides = serializeDenseI64ArrayAttr(slice.getStrides());
+    Value customCallOperand = slice.getOperand();
+    auto operandSharding = mlir::sdy::getSharding(customCallOperand);
+    if (!operandSharding) {
+      return rewriter.notifyMatchFailure(slice, "No operand shardings");
+    }
+    if (sliceSharding != operandSharding) {
+      return rewriter.notifyMatchFailure(slice,
+                                         "Mismatched input/output sharding");
+    }
 
-    std::string opaque = "dimension=" + std::to_string(rotateDimension) +
+    // Only lower to custom call if the cross-shard pattern is detected.
+    auto startIndices = SmallVector<int64_t>(slice.getStartIndices());
+    auto limitIndices = SmallVector<int64_t>(slice.getLimitIndices());
+    auto strideVals = SmallVector<int64_t>(slice.getStrides());
+    bool needs_slice = false;
+    if (!detectCrossShardPattern(customCallOperand, slice, startIndices,
+                                 limitIndices, strideVals, sliceDimension,
+                                 slice.getAmount(), needs_slice))
+      return rewriter.notifyMatchFailure(
+          slice, "MultiSlice does not match cross-shard pattern.");
+
+    // --- Replace the needs_slice bail-out and custom-call emission with this:
+    // ---
+
+    SmallVector<int64_t> finalStartIndices(startIndices);
+    SmallVector<int64_t> finalLimitIndices(limitIndices);
+    SmallVector<int64_t> finalStrides(strideVals);
+
+    if (needs_slice) {
+      // Emit a preliminary stablehlo::SliceOp that trims replicated
+      // (unsharded) dimensions down to the requested range, so that
+      // the MultiSlice custom call afterwards spans the full axis on
+      // every dimension except `dim`.
+      auto operandType = cast<RankedTensorType>(customCallOperand.getType());
+      ArrayRef<int64_t> shape = operandType.getShape();
+      int64_t rank = shape.size();
+
+      auto operandSharding = sdy::getSharding(slice.getOperand());
+
+      SmallVector<int64_t> preStart(rank);
+      SmallVector<int64_t> preLimit(rank);
+      SmallVector<int64_t> preStrides(rank, 1);
+
+      for (int64_t d = 0; d < rank; ++d) {
+        if (d == sliceDimension) {
+          // Keep the full extent along the multi-slice dimension;
+          // the custom call handles cross-shard slicing there.
+          preStart[d] = 0;
+          preLimit[d] = shape[d];
+        } else {
+          int64_t numShards =
+              getNumDevicesAlongDimension(operandSharding, d, slice);
+          if (numShards <= 1 &&
+              (startIndices[d] != 0 || limitIndices[d] != shape[d])) {
+            // Replicated dim that doesn't span the full tensor —
+            // slice it now so the custom call can assume full extent.
+            preStart[d] = startIndices[d];
+            preLimit[d] = limitIndices[d];
+            // After pre-slicing, the custom call sees [0, newSize).
+            finalStartIndices[d] = 0;
+            finalLimitIndices[d] = limitIndices[d] - startIndices[d];
+          } else {
+            preStart[d] = 0;
+            preLimit[d] = shape[d];
+          }
+        }
+      }
+
+      auto preSliceOp = rewriter.create<stablehlo::SliceOp>(
+          slice.getLoc(), customCallOperand, preStart, preLimit, preStrides);
+
+      SmallVector<TensorShardingAttr> opShardings(1, sliceSharding);
+      sdy::setShardings(preSliceOp, TensorShardingPerValueAttr::get(
+                                        rewriter.getContext(), opShardings));
+
+      customCallOperand = preSliceOp.getResult();
+    }
+
+    std::string start_indices_str =
+        serializeDenseI64ArrayAttr(finalStartIndices);
+    std::string limit_indices_str =
+        serializeDenseI64ArrayAttr(finalLimitIndices);
+    std::string strides_str = serializeDenseI64ArrayAttr(finalStrides);
+
+    std::string opaque = "dimension=" + std::to_string(sliceDimension) +
                          ",amount=" + std::to_string(slice.getAmount()) +
-                         ",start_indices=" + start_indices +
-                         ",limit_indices=" + limit_indices +
-                         ",strides=" + strides;
+                         ",start_indices=" + start_indices_str +
+                         ",limit_indices=" + limit_indices_str +
+                         ",strides=" + strides_str;
 
-    auto fnSym = rewriter.getStringAttr("_SPMDEnzymeInternalOp_MultiSlice");
+    auto fnSym = rewriter.getStringAttr("_SPMDInternalOp_MultiSlice");
 
-    SmallVector<TensorShardingAttr> opShardings(slice.getNumResults(),
-                                                rotateSharding);
+    SmallVector<TensorShardingAttr> opShardings(slice.getAmount() + 1,
+                                                sliceSharding);
 
     auto ccall = rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
-        slice, slice->getResultTypes(), slice->getOperands(), fnSym,
+        slice, slice->getResultTypes(), ValueRange{customCallOperand}, fnSym,
         /*has_side_effect=*/rewriter.getBoolAttr(false),
         /*backend_config=*/rewriter.getStringAttr(opaque),
         /*api_version=*/nullptr,

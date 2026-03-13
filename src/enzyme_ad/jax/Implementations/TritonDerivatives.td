@@ -25,7 +25,6 @@ def : TritonInactiveOp<"MakeRangeOp">;
 def : TritonInactiveOp<"PrintOp">;
 
 def : ReadOnlyIdentityOp<"triton", "AddPtrOp", [0]>;
-def : ReadOnlyIdentityOp<"triton", "AdvanceOp", [0]>;
 def : ReadOnlyIdentityOp<"triton", "LoadOp", [0]>;
 def : ReadOnlyIdentityOp<"triton", "SplatOp", [0]>;
 def : MemoryIdentityOp<"triton", "StoreOp", [1], [0]>;

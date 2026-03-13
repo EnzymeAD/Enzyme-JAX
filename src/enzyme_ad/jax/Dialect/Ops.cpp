@@ -1551,7 +1551,7 @@ LogicalResult fixupGetFunc(LLVM::CallOp op, OpBuilder &rewriter,
 struct NoopResource : public SideEffects::Resource::Base<NoopResource> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(NoopResource)
 
-  StringRef getName() final { return "<NoopResource>"; }
+  StringRef getName() const final { return "<NoopResource>"; }
 };
 
 void NoopOp::build(OpBuilder &builder, OperationState &result,
