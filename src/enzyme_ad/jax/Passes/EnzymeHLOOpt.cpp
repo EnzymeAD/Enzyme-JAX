@@ -7458,6 +7458,37 @@ struct ExponentialMinusOneAddFuse
   }
 };
 
+struct LUFactorizationTriSimplify
+    : public CheckedOpRewritePattern<enzymexla::LUFactorizationOp,
+                                     LUFactorizationTriSimplify> {
+  using CheckedOpRewritePattern<
+      enzymexla::LUFactorizationOp,
+      LUFactorizationTriSimplify>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(enzymexla::LUFactorizationOp op,
+                                  PatternRewriter &rewriter) const {
+    auto operand = op.getOperand();
+    auto resTy = cast<RankedTensorType>(op.getOutput().getType());
+
+    if (resTy.getRank() != 2 || resTy.getDimSize(0) != resTy.getDimSize(1))
+      return failure();
+
+    if (!(canApplyUpperTriPattern(operand, rewriter)))
+      return failure();
+
+    if (!op.getResult(1).use_empty() ||
+        !op.getResult(2).use_empty() ||
+        !op.getResult(3).use_empty())
+      return failure();
+
+    // Replace LU matrix result with the operand
+    op.getResult(0).replaceAllUsesWith(operand);
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 struct TransposeSymmetricSimplify
     : public CheckedOpRewritePattern<stablehlo::TransposeOp,
                                      TransposeSymmetricSimplify> {
@@ -34852,6 +34883,7 @@ struct EnzymeHLOOptPass
 
     patterns.add<TransposeSymmetricSimplify, TransposePartialSymmetrySimplify>(
         context);
+    patterns.add<LUFactorizationTriSimplify>(context);
     patterns.add<FactorScalarsInDotGeneral>(context);
 
     // clang-format off
