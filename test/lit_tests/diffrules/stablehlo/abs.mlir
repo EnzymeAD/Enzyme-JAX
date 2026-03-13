@@ -1,8 +1,8 @@
-// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=abs outfn= retTys=enzyme_dup argTys=enzyme_dup mode=ForwardMode" --enzyme-hlo-opt --cse | FileCheck %s --check-prefix=FORWARD
-// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=abs outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --enzyme-hlo-opt --cse --verify-each=0 | FileCheck %s --check-prefix=REVERSE
-// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=abs_complex outfn= retTys=enzyme_dup argTys=enzyme_dup mode=ForwardMode" --enzyme-hlo-opt --cse | FileCheck %s --check-prefix=FORWARD-COMPLEX
-// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=abs_complex outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --enzyme-hlo-opt --cse --verify-each=0 | FileCheck %s --check-prefix=REVERSE-COMPLEX
-// RUN: enzymexlamlir-opt %s --enzyme --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --chlo-legalize-to-stablehlo --enzyme-hlo-opt --verify-each=0 | stablehlo-translate - --interpret --allow-unregistered-dialect
+// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=abs outfn= retTys=enzyme_dup argTys=enzyme_dup mode=ForwardMode" --arith-raise --enzyme-hlo-opt --cse | FileCheck %s --check-prefix=FORWARD
+// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=abs outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --arith-raise --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --enzyme-hlo-opt --cse --verify-each=0 | FileCheck %s --check-prefix=REVERSE
+// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=abs_complex outfn= retTys=enzyme_dup argTys=enzyme_dup mode=ForwardMode" --arith-raise --enzyme-hlo-opt --cse | FileCheck %s --check-prefix=FORWARD-COMPLEX
+// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=abs_complex outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --arith-raise --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --enzyme-hlo-opt --cse --verify-each=0 | FileCheck %s --check-prefix=REVERSE-COMPLEX
+// RUN: enzymexlamlir-opt %s --enzyme --arith-raise --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --chlo-legalize-to-stablehlo --enzyme-hlo-opt --verify-each=0 | stablehlo-translate - --interpret --allow-unregistered-dialect
 
 func.func @abs(%arg0 : tensor<2xf32>) -> tensor<2xf32> {
   %0 = stablehlo.abs %arg0 : (tensor<2xf32>) -> tensor<2xf32>

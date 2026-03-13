@@ -1,8 +1,8 @@
 // RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=multiply outfn= retTys=enzyme_dup argTys=enzyme_dup,enzyme_dup mode=ForwardMode" --arith-raise --enzyme-hlo-opt --cse | FileCheck %s --check-prefix=FORWARD
-// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=multiply outfn= retTys=enzyme_active argTys=enzyme_active,enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --enzyme-hlo-opt --cse | FileCheck %s --check-prefix=REVERSE
-// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=multiply_complex outfn= retTys=enzyme_dup argTys=enzyme_dup,enzyme_dup mode=ForwardMode" --remove-unnecessary-enzyme-ops --arith-raise --enzyme-hlo-opt --cse --verify-each=0 | FileCheck %s --check-prefix=FORWARD-COMPLEX
-// RUN enzymexlamlir-opt %s --enzyme-wrap="infn=multiply_complex outfn= retTys=enzyme_active argTys=enzyme_active,enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --enzyme-hlo-opt --cse --verify-each=0 | FileCheck %s --check-prefix=REVERSE-COMPLEX
-// RUN: enzymexlamlir-opt %s --enzyme --canonicalize --remove-unnecessary-enzyme-ops --arith-raise | stablehlo-translate - --interpret
+// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=multiply outfn= retTys=enzyme_active argTys=enzyme_active,enzyme_active mode=ReverseModeCombined" --arith-raise --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --enzyme-hlo-opt --cse | FileCheck %s --check-prefix=REVERSE
+// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=multiply_complex outfn= retTys=enzyme_dup argTys=enzyme_dup,enzyme_dup mode=ForwardMode" --arith-raise --remove-unnecessary-enzyme-ops --arith-raise --enzyme-hlo-opt --cse --verify-each=0 | FileCheck %s --check-prefix=FORWARD-COMPLEX
+// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=multiply_complex outfn= retTys=enzyme_active argTys=enzyme_active,enzyme_active mode=ReverseModeCombined" --arith-raise --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --enzyme-hlo-opt --cse --verify-each=0 | FileCheck %s --check-prefix=REVERSE-COMPLEX
+// RUN: enzymexlamlir-opt %s --enzyme --arith-raise --canonicalize --remove-unnecessary-enzyme-ops --arith-raise | stablehlo-translate - --interpret
 
 func.func @multiply(%a : tensor<2xf32>, %b : tensor<2xf32>) -> tensor<2xf32> {
   %c = stablehlo.multiply %a, %b : (tensor<2xf32>, tensor<2xf32>) -> tensor<2xf32>
@@ -37,10 +37,10 @@ func.func @multiply_complex(%a : tensor<2xcomplex<f32>>, %b : tensor<2xcomplex<f
 // FORWARD-COMPLEX-NEXT:  }
 
 // REVERSE-COMPLEX:  func.func @multiply_complex(%arg0: tensor<2xcomplex<f32>>, %arg1: tensor<2xcomplex<f32>>, %arg2: tensor<2xcomplex<f32>>) -> (tensor<2xcomplex<f32>>, tensor<2xcomplex<f32>>) {
-// REVERSE-COMPLEX-NEXT:    %0 = chlo.conj %arg2 : tensor<2xcomplex<f32>> -> tensor<2xcomplex<f32>>
-// REVERSE-COMPLEX-NEXT:    %1 = stablehlo.multiply %0, %arg1 : tensor<2xcomplex<f32>>
+// REVERSE-COMPLEX-NEXT:    %0 = chlo.conj %arg2 {enzymexla.complex_is_purely_real = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<2xcomplex<f32>> -> tensor<2xcomplex<f32>>
+// REVERSE-COMPLEX-NEXT:    %1 = stablehlo.multiply %0, %arg1 {enzymexla.complex_is_purely_real = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<2xcomplex<f32>>
 // REVERSE-COMPLEX-NEXT:    %2 = chlo.conj %1 : tensor<2xcomplex<f32>> -> tensor<2xcomplex<f32>>
-// REVERSE-COMPLEX-NEXT:    %3 = stablehlo.multiply %0, %arg0 : tensor<2xcomplex<f32>>
+// REVERSE-COMPLEX-NEXT:    %3 = stablehlo.multiply %0, %arg0 {enzymexla.complex_is_purely_real = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<2xcomplex<f32>>
 // REVERSE-COMPLEX-NEXT:    %4 = chlo.conj %3 : tensor<2xcomplex<f32>> -> tensor<2xcomplex<f32>>
 // REVERSE-COMPLEX-NEXT:    return %2, %4 : tensor<2xcomplex<f32>>, tensor<2xcomplex<f32>>
 // REVERSE-COMPLEX-NEXT:  }
