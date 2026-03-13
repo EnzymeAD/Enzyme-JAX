@@ -658,13 +658,13 @@ struct SyrkOpLowering : public OpRewritePattern<enzymexla::SyrkOp> {
         matchPattern(op.getC(), m_AnyZeroFloat()) ||
         matchPattern(op.getC(), m_Zero())) {
       customCallTarget =
-          rewriter.getStringAttr("reactant_cublas_syrk_no_c_ffi");
+          rewriter.getStringAttr("enzymejax_cublas_syrk_no_c_ffi");
       operands = {A, alphaOperand};
       operandRanks = {rank, alphaRank};
       aliases = rewriter.getArrayAttr({});
       areColMajor = {false, false};
     } else {
-      customCallTarget = rewriter.getStringAttr("reactant_cublas_syrk_ffi");
+      customCallTarget = rewriter.getStringAttr("enzymejax_cublas_syrk_ffi");
       operands = {A, C, alphaOperand, betaOperand};
       operandRanks = {rank, rank, alphaRank, betaRank};
 
