@@ -6631,8 +6631,9 @@ static DepType getDepType(MemRefAccess src, MemRefAccess dst) {
 
 static bool isLoopMemoryLockStepExecutable(AffineForOp forOp) {
   // Any memref-typed iteration arguments are treated as serializing.
-  if (llvm::any_of(forOp.getResultTypes(), llvm::IsaPred<BaseMemRefType>))
+  if (llvm::any_of(forOp.getResultTypes(), llvm::IsaPred<BaseMemRefType>)) {
     return false;
+  }
 
   // Collect all load and store ops in loop nest rooted at 'forOp'.
   SmallVector<Operation *> loadAndStoreOps;
@@ -6655,8 +6656,9 @@ static bool isLoopMemoryLockStepExecutable(AffineForOp forOp) {
   });
 
   // Stop early if the loop has unknown ops with side effects.
-  if (walkResult.wasInterrupted())
+  if (walkResult.wasInterrupted()) {
     return false;
+  }
 
   // Dep check depth would be number of enclosing loops + 1.
   unsigned depth = ::getNestingDepth(forOp) + 1;
@@ -6727,8 +6729,9 @@ bool isLoopLockStepExecutable(
     AffineForOp forOp, SmallVectorImpl<LoopReduction> *parallelReductions) {
   unsigned numIterArgs = forOp.getNumIterOperands();
 
-  if (numIterArgs > 0 && !parallelReductions)
+  if (numIterArgs > 0 && !parallelReductions) {
     return false;
+  }
 
   return ::isLoopMemoryLockStepExecutable(forOp);
 }
