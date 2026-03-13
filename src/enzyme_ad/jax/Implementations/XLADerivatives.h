@@ -14,6 +14,7 @@ void registerMHLODialectAutoDiffInterface(mlir::DialectRegistry &registry);
 void registerStableHLODialectAutoDiffInterface(mlir::DialectRegistry &registry);
 void registerCHLODialectAutoDiffInterface(mlir::DialectRegistry &registry);
 void registerEnzymeXLADialectAutoDiffInterface(mlir::DialectRegistry &registry);
+void registerPactDialectAutoDiffInterface(mlir::DialectRegistry &registry);
 void registerTritonDialectAutoDiffInterface(mlir::DialectRegistry &registry);
 void registerTritonExtDialectAutoDiffInterface(mlir::DialectRegistry &registry);
 
@@ -23,6 +24,7 @@ registerXLAAutoDiffInterfaces(mlir::DialectRegistry &registry) {
   registerStableHLODialectAutoDiffInterface(registry);
   registerCHLODialectAutoDiffInterface(registry);
   registerEnzymeXLADialectAutoDiffInterface(registry);
+  registerPactDialectAutoDiffInterface(registry);
   registerTritonDialectAutoDiffInterface(registry);
   registerTritonExtDialectAutoDiffInterface(registry);
 }
