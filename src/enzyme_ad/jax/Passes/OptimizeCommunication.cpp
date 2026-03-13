@@ -2494,6 +2494,32 @@ struct WrapCustomCallOptimize : public OpRewritePattern<enzymexla::WrapOp> {
     auto leftAmount = wrap.getLhs();
     auto rightAmount = wrap.getRhs();
 
+    // avoids assertion error in
+    // `external/xla/xla/service/spmd/custom_call_handler.cc:662` and leaves
+    // this op to be dealt in a later pass
+    // TODO remove this assert once we deal with the problem
+    auto pre_wrap_shape = wrap.getOperand().getType().getShape();
+    auto full_pre_wrap_size = pre_wrap_shape[rotateDimension];
+    auto mesh = rotateSharding.getMesh(wrap);
+    auto shard_size =
+        rotateSharding.getDimSharding(rotateDimension).getShardedSize(mesh);
+    int64_t participating_shards =
+        (full_pre_wrap_size + shard_size - 1) / shard_size; // CeilOfRatio
+    bool divisible_by_participating_shards =
+        full_pre_wrap_size % participating_shards == 0;
+
+    if (divisible_by_participating_shards) {
+      // NOTE should be `>=` or else XLA will assert error, but currently it's
+      // probably generating too many comms
+      if (rightAmount > shard_size)
+        return failure();
+    } else {
+      // NOTE should be `>=` or else XLA will assert error, but currently it's
+      // probably generating too many comms
+      if (rightAmount > full_pre_wrap_size % shard_size)
+        return failure();
+    }
+
     std::string opaque = "dimension=" + std::to_string(rotateDimension) +
                          ",left_amount=" + std::to_string(leftAmount) +
                          ",right_amount=" + std::to_string(rightAmount);
