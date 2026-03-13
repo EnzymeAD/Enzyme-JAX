@@ -35,6 +35,9 @@ except AttributeError:
 
     register_custom_call_target = xla_client.register_custom_call_target
 
+if hasattr(enzyme_call, "register_enzymexla_xla_ffi"):
+    enzyme_call.register_enzymexla_xla_ffi()
+
 
 class PipelineConfig:
     # Whether to use the new xla runtime
@@ -385,6 +388,9 @@ def optimization_passes(
         "sign_const_prop",
         "floor_const_prop",
         "tan_const_prop",
+        "relu_const_prop",
+        "gelu_const_prop",
+        "softplus_const_prop",
         # binary constant propagation
         "add_const_prop",
         "and_const_prop",

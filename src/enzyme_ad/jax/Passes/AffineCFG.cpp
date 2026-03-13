@@ -6646,7 +6646,8 @@ static bool isLoopMemoryLockStepExecutable(AffineForOp forOp) {
       // Filter out stores the same way as above.
       if (!isLocallyDefined(writeOp.getMemRef(), forOp))
         loadAndStoreOps.push_back(op);
-    } else if (!isa<AffineForOp, AffineYieldOp, AffineIfOp>(op) &&
+    } else if (!isa<AffineForOp, AffineYieldOp, AffineIfOp, scf::IfOp,
+                    scf::YieldOp>(op) &&
                !isReadNone(op)) {
       return WalkResult::interrupt();
     }

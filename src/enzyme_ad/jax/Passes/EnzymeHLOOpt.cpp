@@ -34,6 +34,7 @@
 #include "src/enzyme_ad/jax/CheckedRewrite.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
+#include "src/enzyme_ad/jax/Implementations/ReferenceOps.h"
 #include "src/enzyme_ad/jax/Implementations/WhileLoopInfo.h"
 #include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
@@ -6414,6 +6415,25 @@ struct UnaryConstProp final
 
   LogicalResult matchAndRewriteImpl(OpTy op, PatternRewriter &rewriter) const {
     return unaryConstProp<constPropFn>(op, rewriter);
+  }
+};
+
+struct GeluConstProp final
+    : CheckedOpRewritePattern<enzymexla::GeluOp, GeluConstProp> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(enzymexla::GeluOp op,
+                                    PatternRewriter &rewriter) const {
+    switch (op.getGeluApproximation()) {
+    case enzymexla::GeluApproximation::TANH:
+      return unaryConstProp<geluTanhOp>(op, rewriter);
+    case enzymexla::GeluApproximation::SIGMOID:
+      return unaryConstProp<geluSigmoidOp>(op, rewriter);
+    case enzymexla::GeluApproximation::NONE:
+      return failure();
+    }
+
+    return failure();
   }
 };
 
@@ -34606,31 +34626,35 @@ struct EnzymeHLOOptPass
         BinBroadcastSplat<stablehlo::MulOp>, RotatePad, ConjReal>(context);
 
     // Unary constant propagation patterns
-    patterns.add<UnaryConstProp<stablehlo::NotOp, stablehlo::notOp>,
-                 UnaryConstProp<stablehlo::IsFiniteOp, stablehlo::isFiniteOp>,
-                 UnaryConstProp<stablehlo::LogOp, stablehlo::logOp>,
-                 UnaryConstProp<stablehlo::Log1pOp, stablehlo::log1pOp>,
-                 UnaryConstProp<stablehlo::AbsOp, stablehlo::absOp>,
-                 UnaryConstProp<stablehlo::NegOp, stablehlo::negOp>,
-                 UnaryConstProp<stablehlo::SqrtOp, stablehlo::sqrtOp>,
-                 UnaryConstProp<stablehlo::RsqrtOp, stablehlo::rsqrtOp>,
-                 UnaryConstProp<stablehlo::CosineOp, stablehlo::cosineOp>,
-                 UnaryConstProp<stablehlo::SineOp, stablehlo::sineOp>,
-                 UnaryConstProp<stablehlo::ExpOp, stablehlo::exponentialOp>,
-                 UnaryConstProp<stablehlo::Expm1Op, stablehlo::expm1Op>,
-                 UnaryConstProp<stablehlo::TanhOp, stablehlo::tanhOp>,
-                 UnaryConstProp<stablehlo::LogisticOp, stablehlo::logisticOp>,
-                 UnaryConstProp<chlo::ConjOp, conjOp>,
-                 UnaryConstProp<stablehlo::CeilOp, stablehlo::ceilOp>,
-                 UnaryConstProp<stablehlo::CbrtOp, stablehlo::cbrtOp>,
-                 UnaryConstProp<stablehlo::RealOp, stablehlo::realOp>,
-                 UnaryConstProp<stablehlo::ImagOp, stablehlo::imagOp>,
-                 UnaryConstProp<stablehlo::RoundOp, stablehlo::roundOp>,
-                 UnaryConstProp<stablehlo::RoundNearestEvenOp,
-                                stablehlo::roundNearestEvenOp>,
-                 UnaryConstProp<stablehlo::SignOp, stablehlo::signOp>,
-                 UnaryConstProp<stablehlo::FloorOp, stablehlo::floorOp>,
-                 UnaryConstProp<stablehlo::TanOp, stablehlo::tanOp>>(context);
+    patterns
+        .add<UnaryConstProp<stablehlo::NotOp, stablehlo::notOp>,
+             UnaryConstProp<stablehlo::IsFiniteOp, stablehlo::isFiniteOp>,
+             UnaryConstProp<stablehlo::LogOp, stablehlo::logOp>,
+             UnaryConstProp<stablehlo::Log1pOp, stablehlo::log1pOp>,
+             UnaryConstProp<stablehlo::AbsOp, stablehlo::absOp>,
+             UnaryConstProp<stablehlo::NegOp, stablehlo::negOp>,
+             UnaryConstProp<stablehlo::SqrtOp, stablehlo::sqrtOp>,
+             UnaryConstProp<stablehlo::RsqrtOp, stablehlo::rsqrtOp>,
+             UnaryConstProp<stablehlo::CosineOp, stablehlo::cosineOp>,
+             UnaryConstProp<stablehlo::SineOp, stablehlo::sineOp>,
+             UnaryConstProp<stablehlo::ExpOp, stablehlo::exponentialOp>,
+             UnaryConstProp<stablehlo::Expm1Op, stablehlo::expm1Op>,
+             UnaryConstProp<stablehlo::TanhOp, stablehlo::tanhOp>,
+             UnaryConstProp<stablehlo::LogisticOp, stablehlo::logisticOp>,
+             UnaryConstProp<chlo::ConjOp, conjOp>,
+             UnaryConstProp<stablehlo::CeilOp, stablehlo::ceilOp>,
+             UnaryConstProp<stablehlo::CbrtOp, stablehlo::cbrtOp>,
+             UnaryConstProp<stablehlo::RealOp, stablehlo::realOp>,
+             UnaryConstProp<stablehlo::ImagOp, stablehlo::imagOp>,
+             UnaryConstProp<stablehlo::RoundOp, stablehlo::roundOp>,
+             UnaryConstProp<stablehlo::RoundNearestEvenOp,
+                            stablehlo::roundNearestEvenOp>,
+             UnaryConstProp<stablehlo::SignOp, stablehlo::signOp>,
+             UnaryConstProp<stablehlo::FloorOp, stablehlo::floorOp>,
+             UnaryConstProp<stablehlo::TanOp, stablehlo::tanOp>,
+             UnaryConstProp<enzymexla::ReluOp, reluOp>,
+             UnaryConstProp<enzymexla::SoftplusOp, softplusOp>, GeluConstProp>(
+            context);
 
     // binary constant propagation patterns
     patterns.add<BinaryConstProp<stablehlo::AddOp, stablehlo::addOp>,

@@ -59,63 +59,6 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
 
 // arg2
 
-// 0
-
-// arg2
-
-// 1
-
-// arg2
-
-// arg3
-
-// 0
-
-// arg3
-
-// 1
-
-// arg3
-
-// 128
-
-// 128
-
-// arg2 * 128
-
-// [arg3, :         ]
-
-// [:   , arg2 * 128] 
-
-// arg3 + arg2 * 128 (axis is arg3, arg2)
-
-//  arg3 + arg2 * 128 (axis is reshape(arg3, arg2))
-
-//  arg3 + arg2 * 128 (axis is reshape(arg3, arg2))
-
-// arg0[arg3 + arg2 * 128] (axis is reshape(arg3, arg2))
-
-// arg0[arg3 + arg2 * 128] (axis is (arg3, arg2))
-
-// 128
-
-// 128
-
-// arg2 * 128
-
-// [arg3, :]
-
-// [:   , arg2 * 128]
-
-// arg3 + arg2 * 128 (axis is arg3, arg2)
-
-//    arg3 + arg2 * 128 (axis is reshape(arg3, arg2))
-
-// arg0[arg3 + arg2 * 128] (axis is (arg3, arg2))
-
-//  arg3 + arg2 * 128 (axis is reshape(arg3, arg2))
-
-
 
 // CHECK:module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vector<4xi64>, !llvm.ptr<271> = dense<32> : vector<4xi64>, !llvm.ptr<272> = dense<64> : vector<4xi64>, i64 = dense<64> : vector<2xi64>, i128 = dense<128> : vector<2xi64>, f80 = dense<128> : vector<2xi64>, !llvm.ptr = dense<64> : vector<4xi64>, i1 = dense<8> : vector<2xi64>, i8 = dense<8> : vector<2xi64>, i16 = dense<16> : vector<2xi64>, i32 = dense<32> : vector<2xi64>, f16 = dense<16> : vector<2xi64>, f64 = dense<64> : vector<2xi64>, f128 = dense<128> : vector<2xi64>, "dlti.endianness" = "little", "dlti.mangling_mode" = "e", "dlti.legal_int_widths" = array<i32: 8, 16, 32, 64>, "dlti.stack_alignment" = 128 : i64>, llvm.module_asm = [], llvm.target_triple = "x86_64-unknown-linux-gnu"} {
 // CHECK:  llvm.func internal unnamed_addr fastcc @_ZL4kernPfS_(%arg0: !llvm.ptr {llvm.noundef}, %arg1: !llvm.ptr {llvm.noundef}) attributes {dso_local, no_infs_fp_math = true, no_inline, no_nans_fp_math = true, no_signed_zeros_fp_math = true, no_unwind, passthrough = ["mustprogress", ["min-legal-vector-width", "0"], ["no-trapping-math", "true"], ["stack-protector-buffer-size", "8"], ["target-cpu", "x86-64"]], sym_visibility = "private", target_cpu = "x86-64", target_features = #llvm.target_features<["+cmov", "+cx8", "+fxsr", "+mmx", "+sse", "+sse2", "+x87"]>, tune_cpu = "generic", uwtable_kind = #llvm.uwtableKind<async>} {
