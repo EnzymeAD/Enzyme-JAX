@@ -350,13 +350,13 @@ struct SymmOpLowering : public OpRewritePattern<enzymexla::SymmOp> {
         matchPattern(op.getC(), m_AnyZeroFloat()) ||
         matchPattern(op.getC(), m_Zero())) {
       customCallTarget =
-          rewriter.getStringAttr("reactant_cublas_symm_no_c_ffi");
+          rewriter.getStringAttr("enzymejax_cublas_symm_no_c_ffi");
       operands = {A, B, alphaOperand};
       operandRanks = {rank, rank, alphaRank};
       aliases = rewriter.getArrayAttr({});
       areColMajor = {false, false, false};
     } else {
-      customCallTarget = rewriter.getStringAttr("reactant_cublas_symm_ffi");
+      customCallTarget = rewriter.getStringAttr("enzymejax_cublas_symm_ffi");
       operands = {A, B, C, alphaOperand, betaOperand};
       operandRanks = {rank, rank, rank, alphaRank, betaRank};
 
