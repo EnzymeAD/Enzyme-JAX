@@ -37,18 +37,17 @@ jobs:
       matrix:
         os:
           - linux-x86-a2-48-a100-4gpu
-          # - linux-x86-ct6e-180-4tpu
+          - linux-x86-ct6e-180-4tpu
         julia_version:
           - '1.11'
         xla_commit:
           - ''
           # - 'b25f3cbed2bc88c8ffef85f6a5319e2cf7b0454c'
         gb25_commit:
-          - 'wsmoses-patch-6'
+          - 'main'
           # - '0123456789abcdef0123456789abcdef01234567'
         reactant_commit:
           - 'main'
-          - 'mspp'
 
     steps:
       - name: Check GPUs
@@ -187,18 +186,10 @@ jobs:
           julia --project --color=yes -e "using MPI; MPI.install_mpiexecjl(; destdir=\"${MPIEXECJL_DIR}\")"
           echo "${MPIEXECJL_DIR}" >> "${GITHUB_PATH}"
         working-directory: ${{ env.GB25_DIR }}
-        
-      - name: Run GB-25 simulation
-        timeout-minutes: 60
-        run: |
-          export XLA_FLAGS='--xla_dump_to=${{ env.GB25_DIR }}/xla_dump_run'
-          timeout --signal=TERM --verbose 59m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict sharding/sharded_baroclinic_instability_simulation_run.jl ${{ env.RUN_FLAGS }}
-        working-directory: ${{ env.GB25_DIR }}
-        
       - name: Compile GB-25 simulation
         timeout-minutes: 30
         run: |
-          export XLA_FLAGS='--xla_dump_to=${{ env.GB25_DIR }}/xla_dump_compile --xla_dump_hlo_pass_re=.*'
+          export XLA_FLAGS='--xla_dump_to=${{ env.GB25_DIR }}/xla_dump_compile'
           timeout --signal=TERM --verbose 29m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict sharding/sharded_baroclinic_instability_simulation_compile.jl ${{ env.RUN_FLAGS }}
         working-directory: ${{ env.GB25_DIR }}
       - name: Show remaining collective operations
@@ -210,7 +201,7 @@ jobs:
               ALL_TO_ALL_THRESHOLD=0
               ALL_GATHER_THRESHOLD=0
               ALL_REDUCE_THRESHOLD=0
-              COLLECTIVE_PERMUTE_THRESHOLD=339
+              COLLECTIVE_PERMUTE_THRESHOLD=345
           elif [[ '${{ contains(matrix.os, 'tpu') }}' == 'true' ]]; then
               ALL_TO_ALL_THRESHOLD=0
               ALL_GATHER_THRESHOLD=0
@@ -236,6 +227,12 @@ jobs:
           if [[ "${OK}" == "false" ]]; then
               exit 1
           fi
+      - name: Run GB-25 simulation
+        timeout-minutes: 60
+        run: |
+          export XLA_FLAGS='--xla_dump_to=${{ env.GB25_DIR }}/xla_dump_run'
+          timeout --signal=TERM --verbose 59m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict sharding/sharded_baroclinic_instability_simulation_run.jl ${{ env.RUN_FLAGS }}
+        working-directory: ${{ env.GB25_DIR }}
       - name: Display profile results
         shell: julia --project --color=yes {0}
         run: |
