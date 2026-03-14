@@ -704,6 +704,58 @@ struct ReadOnlyAllocaElim : public OpRewritePattern<LLVM::AllocaOp> {
   }
 };
 
+class BF16HalfToFloatRaising : public OpRewritePattern<LLVM::CallOp> {
+public:
+  BF16HalfToFloatRaising(MLIRContext *context)
+      : OpRewritePattern<LLVM::CallOp>(context) {}
+
+  LogicalResult matchAndRewrite(LLVM::CallOp op,
+                                PatternRewriter &rewriter) const override {
+    CallInterfaceCallable callable = op.getCallableForCallee();
+    auto callee = dyn_cast<SymbolRefAttr>(callable);
+    if (!callee)
+      return failure();
+
+    StringRef funcName = callee.getLeafReference();
+    if (funcName == "__half2float") {
+      Value input = op.getOperand(0);
+      Location loc = op.getLoc();
+      if (isa<IntegerType>(input.getType())) {
+        input = rewriter.create<arith::BitcastOp>(loc, rewriter.getF16Type(),
+                                                  input);
+      }
+      rewriter.replaceOpWithNewOp<arith::ExtFOp>(op, op.getResultTypes()[0],
+                                                 input);
+      return success();
+    }
+    if (funcName == "__bfloat162float") {
+      Value input = op.getOperand(0);
+      Location loc = op.getLoc();
+      if (isa<IntegerType>(input.getType())) {
+        input = rewriter.create<arith::BitcastOp>(loc, rewriter.getBF16Type(),
+                                                  input);
+      }
+      rewriter.replaceOpWithNewOp<arith::ExtFOp>(op, op.getResultTypes()[0],
+                                                 input);
+      return success();
+    }
+    if (funcName == "__float2bfloat16") {
+      Value input = op.getOperand(0);
+      Location loc = op.getLoc();
+      Type resType = op.getResultTypes()[0];
+      Value res =
+          rewriter.create<arith::TruncFOp>(loc, rewriter.getBF16Type(), input);
+      if (isa<IntegerType>(resType)) {
+        res = rewriter.create<arith::BitcastOp>(loc, resType, res);
+      }
+      rewriter.replaceOp(op, res);
+      return success();
+    }
+
+    return failure();
+  }
+};
+
 } // namespace
 
 void mlir::enzyme::populateLibDeviceFuncsToOpsPatterns(
@@ -714,6 +766,7 @@ void mlir::enzyme::populateLibDeviceFuncsToOpsPatterns(
   auto *converter = context;
 
   patterns.add<IsFPClassRaising>(context);
+  patterns.add<BF16HalfToFloatRaising>(context);
   patterns.add<CallToOpIntAdaptRaising<math::CountLeadingZerosOp>>(context,
                                                                    "__nv_clz");
   patterns.add<CallToOpIntAdaptRaising<math::CountLeadingZerosOp>>(
