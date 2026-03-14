@@ -30843,7 +30843,7 @@ struct ReduceBroadcastInDimDotGeneral
       }
 
       auto initVal = stablehlo::ConstantOp::create(
-        rewriter, bcastOp.getLoc(), rank0Type, cast<ElementsAttr>(makeAttr(eltype, 0)));
+        rewriter, bcastOp.getLoc(), rank0Type, cast<ElementsAttr>(makeAttr(rank0Type, 0)));
 
       auto reduceOp = stablehlo::ReduceOp::create(
         rewriter, bcastOp.getLoc(),
