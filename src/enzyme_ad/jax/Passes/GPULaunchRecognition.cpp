@@ -140,6 +140,23 @@ struct GPULaunchRecognitionPass
         return;
       }
 
+      if (callee == "cudaFree") {
+        Value arg = call->getOperand(0);
+        auto src = enzymexla::Pointer2MemrefOp::create(
+            builder, call->getLoc(),
+            MemRefType::get({ShapedType::kDynamic}, i8,
+                            MemRefLayoutAttrInterface{},
+                            builder.getI64IntegerAttr(1)),
+            arg);
+        gpu::DeallocOp::create(builder, call.getLoc(), (mlir::Type) nullptr,
+                               ValueRange(), src);
+        auto replace =
+            LLVM::ZeroOp::create(builder, call.getLoc(), call.getType(0));
+        call->replaceAllUsesWith(replace);
+        call->erase();
+        return;
+      }
+
       if (callee == "cudaOccupancyMaxActiveBlocksPerMultiprocessorWithFlags") {
         auto intType = call.getArgOperands()[2].getType();
 
