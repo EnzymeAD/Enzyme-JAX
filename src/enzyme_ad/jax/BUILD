@@ -20,8 +20,6 @@ exports_files([
 
 licenses(["notice"])
 
-
-
 cc_library(
     name = "gpu",
     srcs = ["gpu.cc"],
@@ -64,10 +62,10 @@ cc_library(
     }),
     visibility = ["//visibility:public"],
     deps = [
+        "@com_google_absl//absl/strings:str_format",
         "@xla//xla/ffi:ffi_api",
         "@xla//xla/ffi/api:c_api",
         "@xla//xla/ffi/api:ffi",
-        "@com_google_absl//absl/strings:str_format",
     ] + select({
         "@local_config_cuda//:is_cuda_enabled": [
             "@jax//jaxlib:ffi_helpers",
