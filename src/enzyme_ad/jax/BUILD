@@ -20,10 +20,7 @@ exports_files([
 
 licenses(["notice"])
 
-config_setting(
-    name = "is_clang_build",
-    flag_values = {"@bazel_tools//tools/cpp:compiler": "clang"},
-)
+
 
 cc_library(
     name = "gpu",
@@ -253,8 +250,8 @@ cc_library(
     srcs = ["TransformOps/RaisingTransformOps.cpp"],
     hdrs = ["TransformOps/RaisingTransformOps.h"],
     copts = select({
+        "@rules_cc//cc/compiler:clang": ["-fbracket-depth=768"],
         "//conditions:default": [],
-        ":is_clang_build": ["-fbracket-depth=768"],
     }),
     deps = [
         ":RaisingTransformOpsImplIncGen",
@@ -281,8 +278,8 @@ cc_library(
     ],
     hdrs = ["TransformOps/TransformOps.h"],
     copts = select({
+        "@rules_cc//cc/compiler:clang": ["-fbracket-depth=768"],
         "//conditions:default": [],
-        ":is_clang_build": ["-fbracket-depth=768"],
     }),
     deps = [
         ":TransformOpsImplIncGen",
