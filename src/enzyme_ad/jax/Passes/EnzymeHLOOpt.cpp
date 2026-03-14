@@ -14607,6 +14607,7 @@ struct GatherOpCanon final
     int64_t affineDim;
     int64_t scale;
     int64_t start;
+    int64_t componentIndex;
   };
 
   LogicalResult
@@ -14650,7 +14651,8 @@ struct GatherOpCanon final
           dnums.getStartIndexMap()[0],
           affineDim,
           static_cast<int64_t>(*scaleVal),
-          static_cast<int64_t>(*startVal)
+          static_cast<int64_t>(*startVal),
+          static_cast<int64_t>(i)
       });
     }
 
@@ -14676,7 +14678,12 @@ struct GatherOpCanon final
 
     int64_t currentScale = 1;
     for (const auto& ds : dimStrides) {
-      int64_t implied_dim_size = baseIndicesTy.getDimSize(ds.affineDim);
+      int64_t implied_dim_size;
+      if (affineIota.implied_dim_sizes.size() > static_cast<size_t>(ds.componentIndex)) {
+        implied_dim_size = affineIota.implied_dim_sizes[ds.componentIndex];
+      } else {
+        implied_dim_size = baseIndicesTy.getDimSize(ds.affineDim);
+      }
       if (ds.scale != currentScale) {
         llvm::errs() << "BAIL affine iota matching: strides not forming a contiguous block (" << ds.scale << " vs " << currentScale << ")\n";
         return failure();

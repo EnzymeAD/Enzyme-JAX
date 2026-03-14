@@ -1114,6 +1114,7 @@ std::optional<IotaLikeTensor> detectIotaLikeTensor(mlir::Value tensor);
 struct AffineIotaLikeTensor {
   llvm::SmallVector<mlir::TypedAttr> starts;
   llvm::SmallVector<int64_t> dimensions;
+  llvm::SmallVector<int64_t> implied_dim_sizes;
   llvm::SmallVector<mlir::TypedAttr> scales;
   mlir::RankedTensorType tensorType;
 };

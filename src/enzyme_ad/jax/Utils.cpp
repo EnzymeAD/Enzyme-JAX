@@ -1866,6 +1866,11 @@ std::optional<AffineIotaLikeTensor> detectAffineIotaLikeTensor(mlir::Value tenso
     AffineIotaLikeTensor result;
     result.starts.push_back(iotaLike->start);
     result.dimensions.push_back(iotaLike->dimension);
+    
+    // Explicitly record the implied dimension size from the original iota shape
+    auto indicesTy = cast<RankedTensorType>(iotaLike->tensorType);
+    result.implied_dim_sizes.push_back(indicesTy.getDimSize(iotaLike->dimension));
+    
     result.scales.push_back(iotaLike->scale);
     result.tensorType = iotaLike->tensorType;
     return result;
@@ -1916,6 +1921,7 @@ std::optional<AffineIotaLikeTensor> detectAffineIotaLikeTensor(mlir::Value tenso
         AffineIotaLikeTensor combined = *lhsAffine;
         combined.starts.insert(combined.starts.end(), rhsAffine->starts.begin(), rhsAffine->starts.end());
         combined.dimensions.insert(combined.dimensions.end(), rhsAffine->dimensions.begin(), rhsAffine->dimensions.end());
+        combined.implied_dim_sizes.insert(combined.implied_dim_sizes.end(), rhsAffine->implied_dim_sizes.begin(), rhsAffine->implied_dim_sizes.end());
         combined.scales.insert(combined.scales.end(), rhsAffine->scales.begin(), rhsAffine->scales.end());
         combined.tensorType = cast<RankedTensorType>(addOp.getType());
         return combined;
