@@ -30982,19 +30982,21 @@ struct ReduceBroadcastInDimDotGeneral
         newRhsShape.push_back(dim);
     }
 
-    // TODO add case for lhs is bcast
     auto lhsReduceValue = Value(op.getLhs());
-    if (!lhsReduceDims.empty() && lhsBcast)
-      lhsReduceValue = reduceBcastWithoutAccumulation(rewriter, lhsBcast, lhsReduceDims);
-    else if (!lhsReduceDims.empty())
-      lhsReduceValue = reduceOperand(rewriter, op.getLhs(), lhsReduceDims);
+    if (!lhsReduceDims.empty()) {
+      if (lhsBcast)
+        lhsReduceValue = reduceBcastWithoutAccumulation(rewriter, lhsBcast, lhsReduceDims);
+      else
+        lhsReduceValue = reduceOperand(rewriter, op.getLhs(), lhsReduceDims);
+    }
 
-    // TODO add case for rhs is bcast
     auto rhsReduceValue = Value(op.getRhs());
-    if (!rhsReduceDims.empty() && rhsBcast)
-      rhsReduceValue = reduceBcastWithoutAccumulation(rewriter, rhsBcast, rhsReduceDims);
-    else if (!rhsReduceDims.empty())
-      rhsReduceValue = reduceOperand(rewriter, op.getRhs(), rhsReduceDims);
+    if (!rhsReduceDims.empty()) {         
+      if (rhsBcast)
+        rhsReduceValue = reduceBcastWithoutAccumulation(rewriter, rhsBcast, rhsReduceDims);
+      else 
+        rhsReduceValue = reduceOperand(rewriter, op.getRhs(), rhsReduceDims);
+    }
 
     // create new dot_general with reduced inputs
     SmallVector<int64_t> dotLhsContractDims, dotRhsContractDims;
