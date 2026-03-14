@@ -2413,7 +2413,7 @@ struct MultiSliceCustomCallOptimize
   int64_t bufferize;
   MultiSliceCustomCallOptimize(int64_t bufferize, MLIRContext *context,
                                PatternBenefit benefit = 1)
-      : OpRewritePattern(context, benefit) {}
+      : OpRewritePattern(context, benefit), bufferize(bufferize) {}
 
   std::string serializeDenseI64ArrayAttr(ArrayRef<int64_t> array) const {
     std::string result = "[";
@@ -5043,7 +5043,7 @@ struct OptimizeCommunicationPass
                                        PatternBenefit(rotate_comm));
 
     if (rotate_spmd > 0)
-      patterns.add<RotateSpmdOptimize>((int)multi_buffer, context,
+      patterns.add<RotateSpmdOptimize>(multi_buffer, context,
                                        PatternBenefit(rotate_spmd));
 
     if (multirotate_spmd > 0)
