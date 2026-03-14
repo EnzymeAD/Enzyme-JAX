@@ -22,7 +22,7 @@ index 320a7cb190..e71802ef47 100644
  
  }  // namespace xla
 diff --git a/xla/service/spmd/custom_call_handler.cc b/xla/service/spmd/custom_call_handler.cc
-index 35c574b289..ce842838f1 100644
+index 35c574b289..2b345a4c84 100644
 --- a/xla/service/spmd/custom_call_handler.cc
 +++ b/xla/service/spmd/custom_call_handler.cc
 @@ -580,10 +580,14 @@ SpmdPartitioningVisitor::ConstructHaloExchangeSuperShard(
@@ -73,7 +73,7 @@ index 35c574b289..ce842838f1 100644
 +
 +    if (bufferize)
 +    shard_to_slice = b_.AddInstruction(
-+        HloInstruction::CreateUnary(shard_to_slice->shape(), HloOpcode::kCopy, shard_to_slice));
++        HloInstruction::CreateUnary(shard_to_slice->shape(), HloOpcode::kOptimizationBarrier, shard_to_slice));
    }
  
    std::vector<HloInstruction*> sliced_results;
