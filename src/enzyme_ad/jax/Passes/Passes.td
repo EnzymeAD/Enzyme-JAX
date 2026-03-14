@@ -906,6 +906,12 @@ def OptimizeCommunication : Pass<"optimize-communication"> {
        /*default=*/"0",
        /*description=*/"Convert Rotate to Spmd custom call">,
        Option<
+       /*C++ variable name=*/"multi_buffer",
+       /*CLI argument=*/"multi_buffer",
+       /*type=*/"int",
+       /*default=*/"0",
+       /*description=*/"Force multi-X to buffer">,
+       Option<
        /*C++ variable name=*/"multirotate_spmd",
        /*CLI argument=*/"multirotate_spmd",
        /*type=*/"int",
