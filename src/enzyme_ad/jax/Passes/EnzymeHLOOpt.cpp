@@ -30808,6 +30808,122 @@ struct ReduceBroadcastInDimDotGeneral
     return result;
   }
 
+  Value reduceBcastWithoutAccumulation(PatternRewriter &rewriter, stablehlo::BroadcastInDimOp bcastOp, ArrayRef<int64_t> reduceDims) const {
+    if (reduceDims.empty())
+      return bcastOp.getResult();
+
+    // if lhs is BroadcastInDim, we should redo the bcast instead of reducing
+    auto bcastDimsMap = llvm::SmallDenseMap<int64_t, int64_t>();
+    auto bcastDimsRevMap = llvm::SmallDenseMap<int64_t, int64_t>();
+    for (auto [i, dim] : llvm::enumerate(bcastOp.getBroadcastDimensions())) {
+      if (llvm::is_contained(reduceDims, dim)) {
+        bcastDimsMap[i] = dim;
+        bcastDimsRevMap[dim] = i;
+      }
+    }
+
+    // reduce the operand of bcast op if there are reduce dims that are not expanded by the bcast
+    SmallVector<int64_t> reduceDimsOperand;
+    for (auto dim : reduceDims) {
+      if (llvm::is_contained(bcastDimsRevMap, dim))
+        reduceDimsOperand.push_back(bcastDimsRevMap[dim]);
+    }
+
+    auto operandType = cast<RankedTensorType>(bcastOp.getOperand().getType());
+    auto eltype = operandType.getElementType();
+    auto rank0Type = RankedTensorType::get({}, eltype);
+    Value newOperand = bcastOp.getOperand();
+
+    auto newOperandShape = SmallVector<int64_t>(operandType.getShape());
+    if (!reduceDimsOperand.empty()) {
+      newOperandShape.clear();
+      for (auto [i, size] : llvm::enumerate(operandType.getShape())) {
+        if (!llvm::is_contained(reduceDimsOperand, i))
+          newOperandShape.push_back(size);
+      }
+
+      auto initVal = stablehlo::ConstantOp::create(
+        rewriter, bcastOp.getLoc(), rank0Type, cast<ElementsAttr>(makeAttr(eltype, 0)));
+
+      auto reduceOp = stablehlo::ReduceOp::create(
+        rewriter, bcastOp.getLoc(),
+        TypeRange{RankedTensorType::get(newOperandShape, eltype)},
+        ValueRange{newOperand}, ValueRange{initVal.getResult()},
+        rewriter.getDenseI64ArrayAttr(reduceDimsOperand));
+      Block &block = reduceOp.getBody().emplaceBlock();
+      BlockArgument arg0 = block.addArgument(rank0Type, bcastOp.getLoc());
+      BlockArgument arg1 = block.addArgument(rank0Type, bcastOp.getLoc());
+      {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToStart(&block);
+
+        Value sum = stablehlo::AddOp::create(rewriter, bcastOp.getLoc(), arg0, arg1);
+        stablehlo::ReturnOp::create(rewriter, bcastOp.getLoc(), sum);
+      }
+
+      newOperand = reduceOp.getResult(0);
+    }
+
+    // rewrite the bcast op
+    SmallVector<int64_t> newBcastShape, newBcastDims;
+
+    for (auto [i, dim] : llvm::enumerate(bcastOp.getResult().getType().getShape())) {
+      if (!llvm::is_contained(reduceDims, i)) {
+        newBcastShape.push_back(dim);
+      }
+    }
+
+    for (auto dim : bcastOp.getBroadcastDimensions()) {
+      if (!llvm::is_contained(reduceDims, dim)) {
+        auto shift = llvm::count_if(reduceDims, [&](int64_t d) { return d < dim; });
+        newBcastDims.push_back(dim - shift);
+      }
+    }
+
+    auto newBcastOp = stablehlo::BroadcastInDimOp::create(
+      rewriter, bcastOp.getLoc(),
+      RankedTensorType::get(newBcastShape, eltype),
+      newOperand, rewriter.getDenseI64ArrayAttr(newBcastDims));
+      
+    return newBcastOp.getResult();
+  }
+
+  Value reduceOperand(PatternRewriter &rewriter, Value operand, ArrayRef<int64_t> reduceDims) const {
+    if (reduceDims.empty())
+      return operand;
+
+    auto operandType = cast<RankedTensorType>(operand.getType());
+    auto eltype = operandType.getElementType();
+    auto rank0Type = RankedTensorType::get({}, eltype);
+
+    auto newOperandShape = SmallVector<int64_t>();
+    for (auto [i, size] : llvm::enumerate(operandType.getShape())) {
+      if (!llvm::is_contained(reduceDims, i))
+        newOperandShape.push_back(size);
+    }
+
+    auto initVal = stablehlo::ConstantOp::create(
+        rewriter, operand.getLoc(), rank0Type, cast<ElementsAttr>(makeAttr(rank0Type, 0)));
+
+    auto reduceOp = stablehlo::ReduceOp::create(
+        rewriter, operand.getLoc(),
+        TypeRange{RankedTensorType::get(newOperandShape, eltype)},
+        ValueRange{operand}, ValueRange{initVal.getResult()},
+        rewriter.getDenseI64ArrayAttr(reduceDims));
+    Block &block = reduceOp.getBody().emplaceBlock();
+    BlockArgument arg0 = block.addArgument(rank0Type, operand.getLoc());
+    BlockArgument arg1 = block.addArgument(rank0Type, operand.getLoc());
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(&block);
+
+      Value sum = stablehlo::AddOp::create(rewriter, operand.getLoc(), arg0, arg1);
+      stablehlo::ReturnOp::create(rewriter, operand.getLoc(), sum);
+    }
+
+    return reduceOp.getResult(0);
+  }
+
   LogicalResult matchAndRewriteImpl(stablehlo::DotGeneralOp op,
                                     PatternRewriter &rewriter) const {
     auto lhsBcast = op.getLhs().getDefiningOp<stablehlo::BroadcastInDimOp>();
@@ -30816,7 +30932,7 @@ struct ReduceBroadcastInDimDotGeneral
 
     if (!lhsBcast && !rhsBcast)
       return failure();
-
+    
     std::optional<AnalysisResult> lhsBcastDims;
     if (lhsBcast)
       lhsBcastDims = listBcastDims(dotDims, lhsBcast, /*isLhs=*/true);
@@ -30827,14 +30943,17 @@ struct ReduceBroadcastInDimDotGeneral
 
     // reduce dims that are contracted and the other side has broadcasted
     SmallVector<int64_t> lhsReduceDims, rhsReduceDims;
-    if (rhsBcastDims) {
-      lhsReduceDims.append(rhsBcastDims->otherContractDims);
-      rhsReduceDims.append(rhsBcastDims->bcastContractDims);
-    }
     if (lhsBcastDims) {
       lhsReduceDims.append(lhsBcastDims->bcastContractDims);
       rhsReduceDims.append(lhsBcastDims->otherContractDims);
     }
+    if (rhsBcastDims) {
+      lhsReduceDims.append(rhsBcastDims->otherContractDims);
+      rhsReduceDims.append(rhsBcastDims->bcastContractDims);
+    }
+
+    if (lhsReduceDims.empty() && rhsReduceDims.empty())
+      return failure();
 
     auto lhsReduceDimSet =
         llvm::SmallSet<int64_t, 6>(lhsReduceDims.begin(), lhsReduceDims.end());
@@ -30863,69 +30982,22 @@ struct ReduceBroadcastInDimDotGeneral
         newRhsShape.push_back(dim);
     }
 
-    auto lhsEltype =
-        cast<RankedTensorType>(op.getLhs().getType()).getElementType();
-    auto rhsEltype =
-        cast<RankedTensorType>(op.getRhs().getType()).getElementType();
-    auto lhsRank0Type = RankedTensorType::get({}, lhsEltype);
-    auto rhsRank0Type = RankedTensorType::get({}, rhsEltype);
+    // TODO add case for lhs is bcast
+    auto lhsReduceValue = Value(op.getLhs());
+    if (!lhsReduceDims.empty() && lhsBcast)
+      lhsReduceValue = reduceBcastWithoutAccumulation(rewriter, lhsBcast, lhsReduceDims);
+    else if (!lhsReduceDims.empty())
+      lhsReduceValue = reduceOperand(rewriter, op.getLhs(), lhsReduceDims);
 
-    auto lhsInitVal = stablehlo::ConstantOp::create(
-        rewriter, op->getLoc(), lhsRank0Type,
-        cast<ElementsAttr>(makeAttr(lhsRank0Type, 0)));
-    auto rhsInitVal = stablehlo::ConstantOp::create(
-        rewriter, op->getLoc(), rhsRank0Type,
-        cast<ElementsAttr>(makeAttr(rhsRank0Type, 0)));
-
-    auto lhsReduceOp = stablehlo::ReduceOp::create(
-        rewriter, op.getLoc(),
-        TypeRange{RankedTensorType::get(newLhsShape, lhsEltype)},
-        ValueRange{op.getLhs()}, ValueRange{lhsInitVal.getResult()},
-        rewriter.getDenseI64ArrayAttr(lhsReduceDims));
-    Block &lhsBlock = lhsReduceOp.getBody().emplaceBlock();
-    {
-      BlockArgument arg0 = lhsBlock.addArgument(lhsRank0Type, op.getLoc());
-      BlockArgument arg1 = lhsBlock.addArgument(lhsRank0Type, op.getLoc());
-      {
-        OpBuilder::InsertionGuard guard(rewriter);
-        rewriter.setInsertionPointToStart(&lhsBlock);
-
-        Value sum = stablehlo::AddOp::create(rewriter, op.getLoc(), arg0, arg1);
-        stablehlo::ReturnOp::create(rewriter, op.getLoc(), sum);
-      }
-    }
-
-    auto rhsReduceOp = stablehlo::ReduceOp::create(
-        rewriter, op.getLoc(),
-        TypeRange{RankedTensorType::get(newRhsShape, rhsEltype)},
-        ValueRange{op.getRhs()}, ValueRange{rhsInitVal.getResult()},
-        rewriter.getDenseI64ArrayAttr(rhsReduceDims));
-    Block &rhsBlock = rhsReduceOp.getBody().emplaceBlock();
-    {
-      BlockArgument arg0 = rhsBlock.addArgument(rhsRank0Type, op.getLoc());
-      BlockArgument arg1 = rhsBlock.addArgument(rhsRank0Type, op.getLoc());
-      {
-        OpBuilder::InsertionGuard guard(rewriter);
-        rewriter.setInsertionPointToStart(&rhsBlock);
-
-        Value sum = stablehlo::AddOp::create(rewriter, op.getLoc(), arg0, arg1);
-        stablehlo::ReturnOp::create(rewriter, op.getLoc(), sum);
-      }
-    }
+    // TODO add case for rhs is bcast
+    auto rhsReduceValue = Value(op.getRhs());
+    if (!rhsReduceDims.empty() && rhsBcast)
+      rhsReduceValue = reduceBcastWithoutAccumulation(rewriter, rhsBcast, rhsReduceDims);
+    else if (!rhsReduceDims.empty())
+      rhsReduceValue = reduceOperand(rewriter, op.getRhs(), rhsReduceDims);
 
     // create new dot_general with reduced inputs
-    SmallVector<int64_t> dotLhsBatchDims, dotRhsBatchDims, dotLhsContractDims,
-        dotRhsContractDims;
-
-    for (const auto &dim : dotDims.getLhsBatchingDimensions()) {
-      // TODO filter when bcast down propagation works
-      dotLhsBatchDims.push_back(dim);
-    }
-
-    for (const auto &dim : dotDims.getRhsBatchingDimensions()) {
-      // TODO filter when bcast down propagation works
-      dotRhsBatchDims.push_back(dim);
-    }
+    SmallVector<int64_t> dotLhsContractDims, dotRhsContractDims;
 
     for (const auto &dim : dotDims.getLhsContractingDimensions()) {
       if (std::find(lhsReduceDims.begin(), lhsReduceDims.end(), dim) ==
@@ -30941,20 +31013,14 @@ struct ReduceBroadcastInDimDotGeneral
       }
     }
 
-    // TODO filter when bcast down propagation works
-    auto newDotShape = SmallVector<int64_t>(
-        cast<RankedTensorType>(op.getResult().getType()).getShape());
-
     auto newDotDims = DotDimensionNumbersAttr::get(
-        rewriter.getContext(), dotLhsBatchDims, dotRhsBatchDims,
+        rewriter.getContext(), dotDims.getLhsBatchingDimensions(), dotDims.getRhsBatchingDimensions(),
         dotLhsContractDims, dotRhsContractDims);
     auto newDotOp = stablehlo::DotGeneralOp::create(
         rewriter, op.getLoc(),
-        RankedTensorType::get(newDotShape, op.getType().getElementType()),
-        lhsReduceOp.getResult(0), rhsReduceOp.getResult(0), newDotDims,
+        op.getType(),
+        lhsReduceValue, rhsReduceValue, newDotDims,
         op.getPrecisionConfigAttr(), op.getAlgorithmAttr());
-
-    // TODO propagated broadcast
 
     rewriter.replaceOp(op, newDotOp);
     return success();
