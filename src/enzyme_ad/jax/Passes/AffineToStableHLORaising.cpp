@@ -1861,6 +1861,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
           rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo), T,
           inputTen, startIndices, outputShape);
     } else {
+      bool needSlice = false;
       bool needPad = false;
 
       SmallVector<int64_t> startIndices;
@@ -1898,6 +1899,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
           limit = range->step < 0 ? range->lb - range->step : range->ub;
         }
 
+        needSlice |= sz != (limit - start) / stride;
+
         int64_t pLow = 0;
         int64_t pHigh = 0;
 
@@ -1909,6 +1912,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
         if (hasDynamicEdgePadding) {
           needPad = true;
+          needSlice = true;
 
           auto pLowVal = stablehlo::ConstantOp::create(
               builder,
@@ -1962,6 +1966,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
           if (pLow != 0 || pHigh != 0) {
             needPad = true;
+            needSlice = true;
           }
         }
 
@@ -2029,11 +2034,13 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
         }
       }
 
-      if (T != inputTen.getType()) {
+      if (needSlice) {
         newVal = stablehlo::SliceOp::create(
             builder,
             rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo), T,
             inputTen, startIndices, limitIndices, strides);
+      } else {
+        newVal = inputTen;
       }
     }
 
