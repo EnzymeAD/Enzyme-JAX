@@ -22,20 +22,9 @@ index 320a7cb190..e71802ef47 100644
  
  }  // namespace xla
 diff --git a/xla/service/spmd/custom_call_handler.cc b/xla/service/spmd/custom_call_handler.cc
-index 35c574b289..ed8a3f8b45 100644
+index 35c574b289..b82507c2df 100644
 --- a/xla/service/spmd/custom_call_handler.cc
 +++ b/xla/service/spmd/custom_call_handler.cc
-@@ -256,8 +256,8 @@ absl::Status SpmdPartitioningVisitor::HandleCustomCallTopK(
-   XlaComputation comparator = CreateScalarComparisonComputation(
-       "compare-value-and-index", {input->shape().element_type(), S32}, {Gt, Lt},
-       &b);
--  TF_ASSIGN_OR_RETURN(HloComputation * compare_computation,
--                      XlaComputationToHloComputation(comparator, module_));
-+  HloComputation* compare_computation =
-+      XlaComputationToHloComputation(comparator, module_).ValueOrDie();
-   // Each partition needs to do TopK separately, thus the base shape for sort
-   // becomes [ceil(batch_size / batch_dim_partition), k * shard_count].
-   const Shape sort_shape = ShapeUtil::MakeTupleShape(
 @@ -439,6 +439,11 @@ absl::Status SpmdPartitioningVisitor::HandleCustomCallSPMDInternal_MultiRotate(
        << "No dimension attribute in SPMD multi rotate op";
    int64_t dim = dim_it->second;
