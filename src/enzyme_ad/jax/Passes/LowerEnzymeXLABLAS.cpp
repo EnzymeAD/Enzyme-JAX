@@ -108,14 +108,14 @@ struct TrmmOpLowering : public OpRewritePattern<enzymexla::TrmmOp> {
     Value b = op.getB();
     auto side_value = op.getSide() == enzymexla::LapackSide::left ? 'L' : 'R';
     auto uplo_value = op.getUplo() == enzymexla::LapackUplo::L ? 'L' : 'U';
-    auto trans_value = op.getTranspose() == enzymexla::LapackTranspose::transpose ? 'T' : 'N';
+    auto trans_value =
+        op.getTranspose() == enzymexla::LapackTranspose::transpose ? 'T' : 'N';
     auto diag_value = op.getDiag() == enzymexla::LapackDiag::unit ? 'U' : 'N';
 
     auto aType = cast<RankedTensorType>(a.getType());
     auto bType = cast<RankedTensorType>(b.getType());
     if (!aType || !bType || !aType.hasRank() || !bType.hasRank())
-      return rewriter.notifyMatchFailure(
-          op, "expected ranked tensor types");
+      return rewriter.notifyMatchFailure(op, "expected ranked tensor types");
 
     if (aType.getRank() != 2 || bType.getRank() > 2)
       return rewriter.notifyMatchFailure(op,
@@ -268,7 +268,8 @@ struct TrmmOpLowering : public OpRewritePattern<enzymexla::TrmmOp> {
       auto jitCall = enzymexla::JITCallOp::create(
           rewriter, op.getLoc(), TypeRange{op.getB().getType()},
           mlir::FlatSymbolRefAttr::get(ctx, blasFnWrapper),
-          ValueRange{side, uplo, trans, diag, mSize, nSize, alpha, A, lda, B, ldb},
+          ValueRange{side, uplo, trans, diag, mSize, nSize, alpha, A, lda, B,
+                     ldb},
           rewriter.getStringAttr(""),
           /*operand_layouts=*/operandLayouts,
           /*result_layouts=*/resultLayouts,
@@ -310,25 +311,24 @@ struct TrmmOpLowering : public OpRewritePattern<enzymexla::TrmmOp> {
 
     auto [alphaOperand, alphaRank] =
         createScalarOperand(rewriter, op.getLoc(), op.getAlpha(), useAlphaAttr);
-    
+
     StringAttr customCallTarget;
     ArrayAttr aliases;
 
     SmallVector<NamedAttribute> configAttrs = {
         rewriter.getNamedAttr(
-            "side",
-            rewriter.getBoolAttr(customCallSide == enzymexla::LapackSide::right)),
+            "side", rewriter.getBoolAttr(customCallSide ==
+                                         enzymexla::LapackSide::right)),
         rewriter.getNamedAttr(
             "uplo",
             rewriter.getBoolAttr(customCallUplo == enzymexla::LapackUplo::U)),
         rewriter.getNamedAttr(
             "transpose",
             rewriter.getBoolAttr(op.getTranspose() !=
-                                  enzymexla::LapackTranspose::transpose)),
+                                 enzymexla::LapackTranspose::transpose)),
         rewriter.getNamedAttr(
             "diag",
-            rewriter.getBoolAttr(op.getDiag() !=
-                                  enzymexla::LapackDiag::unit)),
+            rewriter.getBoolAttr(op.getDiag() != enzymexla::LapackDiag::unit)),
         rewriter.getNamedAttr("use_alpha_attribute",
                               rewriter.getBoolAttr(useAlphaAttr)),
         rewriter.getNamedAttr("alpha_real",
@@ -375,22 +375,31 @@ struct TrmmOpLowering : public OpRewritePattern<enzymexla::TrmmOp> {
     std::iota(batchDims.begin(), batchDims.end(), 0);
 
     // fallback to emitting a stablehlo.dot_general that computes:
-    //   alpha*A*B + beta*C if side = 'L'
-    //   alpha*B*A + beta*C if side = 'R'
+    //   alpha*op(A)*B if side = 'L'
+    //   alpha*B*op(A) if side = 'R'
+    // where op is transpose or none.
     stablehlo::DotDimensionNumbersAttr dotDims;
 
     stablehlo::DotGeneralOp dotGeneralOp;
 
     // if op(A) is transpose, flip contracting dims for A
-    auto lhsDims = (op.getTranspose() == enzymexla::LapackTranspose::transpose && op.getSide() == enzymexla::LapackSide::left)? nBatchDims : nBatchDims + 1;
-    auto rhsDims = (op.getTranspose() == enzymexla::LapackTranspose::transpose && op.getSide() == enzymexla::LapackSide::right)? nBatchDims + 1 : nBatchDims;
+    auto lhsDims =
+        (op.getTranspose() == enzymexla::LapackTranspose::transpose &&
+         op.getSide() == enzymexla::LapackSide::left)
+            ? nBatchDims
+            : nBatchDims + 1;
+    auto rhsDims =
+        (op.getTranspose() == enzymexla::LapackTranspose::transpose &&
+         op.getSide() == enzymexla::LapackSide::right)
+            ? nBatchDims + 1
+            : nBatchDims;
     dotDims = stablehlo::DotDimensionNumbersAttr::get(
-      op.getContext(), batchDims, batchDims, {lhsDims}, {rhsDims});
+        op.getContext(), batchDims, batchDims, {lhsDims}, {rhsDims});
 
     if (op.getSide() == enzymexla::LapackSide::left) {
       dotGeneralOp = stablehlo::DotGeneralOp::create(
-          rewriter, op.getLoc(), cast<RankedTensorType>(op.getB().getType()), op.getA(),
-          op.getB(), dotDims, nullptr, nullptr);
+          rewriter, op.getLoc(), cast<RankedTensorType>(op.getB().getType()),
+          op.getA(), op.getB(), dotDims, nullptr, nullptr);
     } else {
       dotGeneralOp = stablehlo::DotGeneralOp::create(
           rewriter, op.getLoc(), cast<RankedTensorType>(op.getB().getType()),
@@ -398,7 +407,306 @@ struct TrmmOpLowering : public OpRewritePattern<enzymexla::TrmmOp> {
     }
 
     auto res = stablehlo::MulOpCreate(rewriter, op->getLoc(), op.getAlpha(),
-                                       dotGeneralOp);
+                                      dotGeneralOp);
+    rewriter.replaceOp(op, res);
+    return success();
+  }
+};
+
+struct TrmvOpLowering : public OpRewritePattern<enzymexla::TrmvOp> {
+
+  using OpRewritePattern<enzymexla::TrmvOp>::OpRewritePattern;
+
+  std::string backend;
+  int64_t blasIntWidth;
+  TrmvOpLowering(std::string backend, int64_t blasIntWidth,
+                 MLIRContext *context, PatternBenefit benefit = 1)
+      : OpRewritePattern(context, benefit), backend(backend),
+        blasIntWidth(blasIntWidth) {}
+
+  LogicalResult matchAndRewrite(enzymexla::TrmvOp op,
+                                PatternRewriter &rewriter) const override {
+    auto AType = cast<RankedTensorType>(op.getA().getType());
+    auto nBatchDims = AType.getRank() - 2;
+
+    if (nBatchDims == 0) {
+      if (backend == "cpu") {
+        return matchAndRewriteCPU(op, rewriter);
+      } else if (backend == "cuda") {
+        return matchAndRewriteCUDA(op, rewriter);
+      }
+    }
+
+    return matchAndRewriteFallback(op, rewriter);
+  }
+
+  LogicalResult matchAndRewriteCPU(enzymexla::TrmvOp op,
+                                   PatternRewriter &rewriter) const {
+    auto ctx = op->getContext();
+    LLVMTypeConverter typeConverter(ctx);
+
+    Value a = op.getA();
+    Value x = op.getX();
+    auto uplo_value = op.getUplo() == enzymexla::LapackUplo::L ? 'L' : 'U';
+    auto trans_value =
+        op.getTranspose() == enzymexla::LapackTranspose::transpose ? 'T' : 'N';
+    auto diag_value = op.getDiag() == enzymexla::LapackDiag::unit ? 'U' : 'N';
+
+    auto aType = cast<RankedTensorType>(a.getType());
+    auto xType = cast<RankedTensorType>(x.getType());
+    if (!aType || !xType || !aType.hasRank() || !xType.hasRank())
+      return rewriter.notifyMatchFailure(op, "expected ranked tensor types");
+
+    if (aType.getRank() != 2 || xType.getRank() > 2)
+      return rewriter.notifyMatchFailure(op,
+                                         "only 2D matrices supported for symm");
+
+    Type elementType = aType.getElementType();
+    auto blasIntType = rewriter.getIntegerType(blasIntWidth);
+    auto intType = RankedTensorType::get({}, blasIntType);
+    auto uint8Type =
+        RankedTensorType::get({}, rewriter.getIntegerType(8, false));
+    auto llvmIntType = typeConverter.convertType(blasIntType);
+    auto llvmPtrType = LLVM::LLVMPointerType::get(ctx);
+    auto llvmVoidType = LLVM::LLVMVoidType::get(ctx);
+
+    std::string blasFn;
+    if (auto prefix = lapackPrecisionPrefix(elementType)) {
+      blasFn = "enzymexla_blas_" + *prefix + "trmv_";
+    } else {
+      op->emitOpError() << "Unsupported element type: " << elementType;
+      return rewriter.notifyMatchFailure(op, "unsupported element type");
+    }
+    std::string blasFnWrapper = blasFn + "wrapper";
+
+    auto moduleOp = op->getParentOfType<ModuleOp>();
+
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(blasFn)) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+      auto funcType = LLVM::LLVMFunctionType::get(llvmVoidType,
+                                                  {llvmPtrType, // uplo
+                                                   llvmPtrType, // transa
+                                                   llvmPtrType, // diag
+                                                   llvmPtrType, // n
+                                                   llvmPtrType, // A
+                                                   llvmPtrType, // lda
+                                                   llvmPtrType, // x
+                                                   llvmPtrType, // incX
+                                                   llvmIntType, llvmIntType},
+                                                  false);
+      rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), blasFn, funcType,
+                                        LLVM::Linkage::External);
+    }
+
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(blasFnWrapper)) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+      auto funcType = LLVM::LLVMFunctionType::get(llvmVoidType,
+                                                  {
+                                                      llvmPtrType, // uplo
+                                                      llvmPtrType, // transa
+                                                      llvmPtrType, // diag
+                                                      llvmPtrType, // n
+                                                      llvmPtrType, // A
+                                                      llvmPtrType, // lda
+                                                      llvmPtrType, // x
+                                                      llvmPtrType, // incX
+                                                  },
+                                                  false);
+
+      auto funcOp =
+          LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), blasFnWrapper,
+                                   funcType, LLVM::Linkage::Private);
+      rewriter.setInsertionPointToStart(funcOp.addEntryBlock(rewriter));
+
+      SmallVector<Value> args(funcOp.getArguments().begin(),
+                              funcOp.getArguments().end());
+      auto const1 =
+          LLVM::ConstantOp::create(rewriter, op.getLoc(), llvmIntType,
+                                   rewriter.getIntegerAttr(llvmIntType, 1));
+      args.push_back(const1);
+      args.push_back(const1);
+
+      LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{},
+                           SymbolRefAttr::get(ctx, blasFn), args);
+      LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
+    }
+
+    static int64_t fn_counter = 0;
+    std::string funcFnName = blasFnWrapper + "_" + std::to_string(fn_counter++);
+
+    SmallVector<bool> isColMajorArr{(8, true)};
+    SmallVector<int64_t> operandRanks = {
+        0, 0, 0, 0, 2, 0, op.getX().getType().getRank(), 0};
+    SmallVector<int64_t> outputRanks = {op.getX().getType().getRank()};
+    auto operandLayouts =
+        getSHLOLayout(rewriter, operandRanks, isColMajorArr, 2);
+    auto resultLayouts =
+        getSHLOLayout(rewriter, outputRanks, SmallVector<bool>{true}, 2);
+
+    SmallVector<Attribute> aliases;
+    aliases.push_back(
+        stablehlo::OutputOperandAliasAttr::get(ctx, {}, 6, {})); /*x*/
+
+    func::FuncOp shloFunc;
+
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+      SmallVector<Type> argTypes = {
+          op.getA().getType(), // A
+          op.getX().getType(), // x
+      };
+      SmallVector<Type> retTypes = {op.getX().getType()};
+
+      auto calleeType = rewriter.getFunctionType(argTypes, retTypes);
+      shloFunc =
+          func::FuncOp::create(rewriter, op.getLoc(), funcFnName, calleeType);
+      shloFunc.setPrivate();
+
+      auto &entryBlock = *shloFunc.addEntryBlock();
+      rewriter.setInsertionPointToStart(&entryBlock);
+
+      auto A = entryBlock.getArgument(0);
+      auto x = entryBlock.getArgument(1);
+
+      auto uplo = stablehlo::ConstantOp::create(
+          rewriter, op.getLoc(), uint8Type,
+          cast<ElementsAttr>(makeAttr(uint8Type, uplo_value)));
+      auto trans = stablehlo::ConstantOp::create(
+          rewriter, op.getLoc(), uint8Type,
+          cast<ElementsAttr>(makeAttr(uint8Type, trans_value)));
+      auto diag = stablehlo::ConstantOp::create(
+          rewriter, op.getLoc(), uint8Type,
+          cast<ElementsAttr>(makeAttr(uint8Type, diag_value)));
+
+      auto lda = stablehlo::ConvertOp::create(
+          rewriter, op.getLoc(), intType,
+          stablehlo::GetDimensionSizeOp::create(rewriter, op.getLoc(), A, 0));
+      auto nSize = stablehlo::ConvertOp::create(
+          rewriter, op.getLoc(), intType,
+          stablehlo::GetDimensionSizeOp::create(rewriter, op.getLoc(), B, 1));
+      auto incX =
+          stablehlo::ConstantOp::create(rewriter, op.getLoc(), intType, 1);
+
+      auto jitCall = enzymexla::JITCallOp::create(
+          rewriter, op.getLoc(), TypeRange{op.getX().getType()},
+          mlir::FlatSymbolRefAttr::get(ctx, blasFnWrapper),
+          ValueRange{uplo, trans, diag, nSize, A, lda, x, incX},
+          rewriter.getStringAttr(""),
+          /*operand_layouts=*/operandLayouts,
+          /*result_layouts=*/resultLayouts,
+          /*arg_attrs=*/nullptr,
+          /*res_attrs=*/nullptr,
+          /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
+          /*xla_side_effect_free=*/rewriter.getUnitAttr());
+
+      func::ReturnOp::create(rewriter, op.getLoc(),
+                             ValueRange{jitCall.getResult(0)});
+    }
+
+    auto callOp = func::CallOp::create(rewriter, op.getLoc(), shloFunc,
+                                       ValueRange{op.getA(), op.getX()});
+
+    rewriter.replaceOp(op, callOp);
+
+    return success();
+  }
+
+  LogicalResult matchAndRewriteCUDA(enzymexla::TrmvOp op,
+                                    PatternRewriter &rewriter) const {
+    auto Atype = cast<RankedTensorType>(op.getA().getType());
+    auto Arank = Atype.getRank();
+
+    auto Xtype = cast<RankedTensorType>(op.getX().getType());
+    auto Xrank = Xtype.getRank();
+
+    // Build operands list
+    SmallVector<Value> operands;
+    SmallVector<int64_t> operandRanks;
+    SmallVector<bool> areColMajor;
+
+    auto A = op.getA();
+    auto x = op.getX();
+
+    StringAttr customCallTarget;
+    ArrayAttr aliases;
+
+    SmallVector<NamedAttribute> configAttrs = {
+        rewriter.getNamedAttr(
+            "uplo",
+            rewriter.getBoolAttr(customCallUplo == enzymexla::LapackUplo::U)),
+        rewriter.getNamedAttr(
+            "transpose",
+            rewriter.getBoolAttr(op.getTranspose() !=
+                                 enzymexla::LapackTranspose::transpose)),
+        rewriter.getNamedAttr(
+            "diag",
+            rewriter.getBoolAttr(op.getDiag() != enzymexla::LapackDiag::unit))};
+
+    customCallTarget = rewriter.getStringAttr("enzymejax_cublas_trmv_ffi");
+    operands = {A, x};
+    operandRanks = {Arank, Xrank};
+
+    aliases = rewriter.getArrayAttr(
+        {stablehlo::OutputOperandAliasAttr::get(op.getContext(), {}, 1, {})});
+
+    // we pass A and x as row-major. The `uplo` and `transpose` attribute will
+    // be flipped, which corrects the layout of A. The layout of X will be
+    // unaffected because X is a vector.
+    areColMajor = {false, false};
+
+    DictionaryAttr backendConfig = rewriter.getDictionaryAttr(configAttrs);
+
+    auto customCall = stablehlo::CustomCallOp::create(
+        rewriter, op.getLoc(), TypeRange{Xtype}, operands, customCallTarget,
+        /*has_side_effect*/ nullptr,
+        /*backend_config*/ backendConfig,
+        /*api_version*/
+        stablehlo::CustomCallApiVersionAttr::get(
+            rewriter.getContext(),
+            mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
+        /*calledcomputations*/ nullptr,
+        /*operand_layouts*/
+        getSHLOLayout(rewriter, operandRanks, areColMajor, rank),
+        /*result_layouts*/
+        getSHLOLayout(rewriter, {rank}, SmallVector<bool>(rank, false), rank),
+        /*output_operand_aliases*/ aliases);
+
+    Value result = customCall.getResult(0);
+    rewriter.replaceAllUsesWith(op.getResult(), result);
+
+    return success();
+  }
+
+  LogicalResult matchAndRewriteFallback(enzymexla::TrmvOp op,
+                                        PatternRewriter &rewriter) const {
+    auto AType = cast<RankedTensorType>(op.getA().getType());
+    auto nBatchDims = AType.getRank() - 2;
+    SmallVector<int64_t> batchDims(nBatchDims, 0);
+    std::iota(batchDims.begin(), batchDims.end(), 0);
+
+    // fallback to emitting a stablehlo.dot_general that computes:
+    //   A*x if transpose = 'N'
+    //   A^T*x is transpose = 'T'
+    stablehlo::DotDimensionNumbersAttr dotDims;
+
+    stablehlo::DotGeneralOp dotGeneralOp;
+
+    // if op(A) is transpose, flip contracting dims for A
+    auto lhsDims = op.getTranspose() == enzymexla::LapackTranspose::transpose
+                       ? nBatchDims
+                       : nBatchDims + 1;
+    dotDims = stablehlo::DotDimensionNumbersAttr::get(
+        op.getContext(), batchDims, batchDims, {lhsDims}, {nBatchDims});
+
+    res = stablehlo::DotGeneralOp::create(
+        rewriter, op.getLoc(), cast<RankedTensorType>(op.getX().getType()),
+        op.getA(), op.getX(), dotDims, nullptr, nullptr);
+
     rewriter.replaceOp(op, res);
     return success();
   }
