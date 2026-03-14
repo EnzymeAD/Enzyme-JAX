@@ -591,7 +591,8 @@ def TrmmOp: EnzymeXLA_Op<"blas.trmm", [Pure, SameOperandsAndResultElementType]> 
     TensorFloat:$alpha,
     EnzymeXLA_LapackSideAttr:$side,
     EnzymeXLA_LapackUploAttr:$uplo,
-    EnzymeXLA_LapackTransposeAttr:$transpose
+    EnzymeXLA_LapackTransposeAttr:$transpose,
+    EnzymeXLA_LapackDiagAttr:$diag
   );
 
   let results = (outs
@@ -599,7 +600,34 @@ def TrmmOp: EnzymeXLA_Op<"blas.trmm", [Pure, SameOperandsAndResultElementType]> 
   );
 
   let assemblyFormat = [{
-    $A `,` $B `,` $alpha `,` attr-dict `:` functional-type(operands, results)
+    $A `,` $B `,` $alpha attr-dict `:` functional-type(operands, results)
+  }];
+}
+
+def TrmvOp : EnzymeXLA_Op<"blas.trmv", [Pure, SameOperandsAndResultElementType]> {
+  let summary = "Matrix-vector multiplication involving a triangular matrix";
+
+  let description = [{
+  trmv performs one of the matrix-vector operations
+    x := A*x,   or   x := A**T*x,
+  where x is an n element vector and  A is an n by n unit, or non-unit,
+  upper or lower triangular matrix.
+  }];
+
+  let arguments = (ins
+    HLO_Tensor:$A,
+    HLO_Tensor:$x,
+    EnzymeXLA_LapackUploAttr:$uplo,
+    EnzymeXLA_LapackTransposeAttr:$transpose,
+    EnzymeXLA_LapackDiagAttr:$diag
+  );
+
+  let results = (outs
+    HLO_Tensor: $output
+  );
+
+  let assemblyFormat = [{
+    $A `,` $x attr-dict `:` functional-type(operands, results)
   }];
 }
 
