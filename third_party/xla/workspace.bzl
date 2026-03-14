@@ -7,7 +7,7 @@ load("//:workspace.bzl", "XLA_PATCHES")
 def repo(extra_patches = [], override_commit = ""):
     commit = XLA_COMMIT
     sha = XLA_SHA256
-    override_commit = "4cbb92b05688cbf249fb30d7625e57112ae5f96c"
+    override_commit = "c2035cfa1fb8b9376d44cfdad67d3dd4c85b8731"
     if len(override_commit):
         commit = override_commit
         sha = ""
