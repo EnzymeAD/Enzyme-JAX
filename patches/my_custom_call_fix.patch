@@ -22,7 +22,7 @@ index 320a7cb190..e71802ef47 100644
  
  }  // namespace xla
 diff --git a/xla/service/spmd/custom_call_handler.cc b/xla/service/spmd/custom_call_handler.cc
-index 35c574b289..9ee2ef0ad9 100644
+index 35c574b289..ce842838f1 100644
 --- a/xla/service/spmd/custom_call_handler.cc
 +++ b/xla/service/spmd/custom_call_handler.cc
 @@ -580,10 +580,14 @@ SpmdPartitioningVisitor::ConstructHaloExchangeSuperShard(
@@ -54,3 +54,26 @@ index 35c574b289..9ee2ef0ad9 100644
  
      Shape dynamic_slice_shape = local_input->shape();
      dynamic_slice_shape.set_dimensions(dim, left_amount);
+@@ -775,6 +783,11 @@ absl::Status SpmdPartitioningVisitor::HandleCustomCallSPMDInternal_MultiSlice(
+   TF_RET_CHECK(dim_it != int_attrs.end())
+       << "No dimension attribute in SPMD multi slice op";
+   int64_t dim = dim_it->second;
++  
++  auto bufferize_it = int_attrs.find("bufferize");
++  TF_RET_CHECK(bufferize_it != int_attrs.end())
++      << "No dimension attribute in SPMD multi slice op";
++  int64_t bufferize = bufferize_it->second;
+ 
+   auto amount_it = int_attrs.find("amount");
+   TF_RET_CHECK(amount_it != int_attrs.end())
+@@ -902,6 +915,10 @@ absl::Status SpmdPartitioningVisitor::HandleCustomCallSPMDInternal_MultiSlice(
+ 
+     shard_to_slice = b_.AddInstruction(HloInstruction::CreateDynamicSlice(
+         slice_shape, super_shard, start_indices, slice_sizes));
++
++    if (bufferize)
++    shard_to_slice = b_.AddInstruction(
++        HloInstruction::CreateUnary(shard_to_slice->shape(), HloOpcode::kCopy, shard_to_slice));
+   }
+ 
+   std::vector<HloInstruction*> sliced_results;
