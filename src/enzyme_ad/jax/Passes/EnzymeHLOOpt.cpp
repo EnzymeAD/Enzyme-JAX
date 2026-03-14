@@ -33577,7 +33577,7 @@ struct ScatterOpCanon final
       return success();
     }
 
-    if (trySimplifyWithIotaIndexing(op, rewriter).succeeded()) {
+    if (trySimplifyWithAffineIotaIndexing(op, rewriter).succeeded()) {
       return success();
     }
 
@@ -33691,7 +33691,7 @@ private:
     return success();
   }
 
-  LogicalResult trySimplifyWithIotaIndexing(stablehlo::ScatterOp op,
+  LogicalResult trySimplifyWithAffineIotaIndexing(stablehlo::ScatterOp op,
                                             PatternRewriter &rewriter) const {
     auto inputs = op.getInputs();
     auto inputTy = cast<RankedTensorType>(inputs[0].getType());
@@ -33728,29 +33728,81 @@ private:
       return success();
     }
 
-    auto iotaLike = detectIotaLikeTensor(indices);
-    if (!iotaLike) {
-      return failure();
-    }
-
-    auto iota = *iotaLike;
+    auto indicesTy = cast<RankedTensorType>(indices.getType());
     auto dimNumbers = op.getScatterDimensionNumbers();
 
-    if (dimNumbers.getScatterDimsToOperandDims().size() <= iota.dimension ||
-        dimNumbers.getScatterDimsToOperandDims()[iota.dimension] != 0) {
+    if (dimNumbers.getScatterDimsToOperandDims().size() == 0 ||
+        dimNumbers.getScatterDimsToOperandDims()[0] != 0) {
       return failure();
     }
 
-    auto indicesTy = cast<RankedTensorType>(indices.getType());
     int64_t indexVectorDim = dimNumbers.getIndexVectorDim();
     if (indexVectorDim < indicesTy.getRank() &&
         indicesTy.getDimSize(indexVectorDim) != 1) {
       return failure();
     }
 
-    int64_t start = cast<IntegerAttr>(iota.start).getValue().getSExtValue();
-    int64_t count = indicesTy.getDimSize(iota.dimension);
-    int64_t stride = cast<IntegerAttr>(iota.scale).getValue().getSExtValue();
+    auto maybeAffineIota = detectAffineIotaLikeTensor(indices);
+    if (!maybeAffineIota) {
+      return failure();
+    }
+    auto affineIota = *maybeAffineIota;
+
+    struct DimStrideInfo {
+      int64_t operandDim;
+      int64_t affineDim;
+      int64_t scale;
+      int64_t start;
+      int64_t componentIndex;
+    };
+
+    SmallVector<DimStrideInfo> dimStrides;
+    for (size_t i = 0; i < affineIota.dimensions.size(); ++i) {
+      auto startVal = getDoubleFromAttr(affineIota.starts[i]);
+      auto scaleVal = getDoubleFromAttr(affineIota.scales[i]);
+      if (!startVal || !scaleVal) return failure();
+
+      int64_t affineDim = affineIota.dimensions[i];
+      if (affineDim >= indicesTy.getRank()) return failure();
+
+      dimStrides.push_back({
+          dimNumbers.getScatterDimsToOperandDims()[0],
+          affineDim,
+          static_cast<int64_t>(*scaleVal),
+          static_cast<int64_t>(*startVal),
+          static_cast<int64_t>(i)
+      });
+    }
+
+    int64_t totalStartOffset = 0;
+    for (const auto& ds : dimStrides) {
+      totalStartOffset += ds.start;
+    }
+
+    llvm::sort(dimStrides, [](const DimStrideInfo &a, const DimStrideInfo &b) {
+      return std::abs(a.scale) < std::abs(b.scale);
+    });
+
+    int64_t sign = dimStrides.empty() ? 1 : (dimStrides.front().scale < 0 ? -1 : 1);
+    int64_t currentScale = sign;
+    for (const auto& ds : dimStrides) {
+      int64_t implied_dim_size;
+      if (affineIota.implied_dim_sizes.size() > static_cast<size_t>(ds.componentIndex)) {
+        implied_dim_size = affineIota.implied_dim_sizes[ds.componentIndex];
+      } else {
+        implied_dim_size = indicesTy.getDimSize(ds.affineDim);
+      }
+      if (ds.scale != currentScale) {
+        return failure();
+      }
+      if (implied_dim_size != ShapedType::kDynamic) {
+        currentScale *= implied_dim_size;
+      }
+    }
+
+    int64_t start = totalStartOffset;
+    int64_t count = std::abs(currentScale);
+    int64_t stride = sign;
 
     if (std::abs(stride) != 1) {
       return failure(); // DUS doesn't support strided store.
