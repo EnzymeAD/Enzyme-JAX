@@ -145,7 +145,7 @@ jobs:
       - name: Set default precision (GPU)
         if: ${{ contains(matrix.os, 'a100') }}
         run: |
-          echo "RUN_FLAGS=--precision=64 --grid-x 3072 --grid-y 1536" >> ${GITHUB_ENV}
+          echo "RUN_FLAGS=--precision=64 --grid-x 1536 --grid-y 1536" >> ${GITHUB_ENV}
       - name: Set default precision (TPU)
         if: ${{ contains(matrix.os, 'tpu') }}
         run: |
