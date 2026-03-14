@@ -2195,7 +2195,7 @@ struct RotateSpmdOptimize : public OpRewritePattern<enzymexla::RotateOp> {
 
       auto fnSym = rewriter.getStringAttr("_SPMDInternalOp_MultiRotate");
 
-      SmallVector<Type, 2> resultTypes(2, rotate.getType());
+      SmallVector<Type, 2> resultTypes(rotate.getAmount()+1, rotate.getType());
 
       // Replace with a custom call
       auto ccall = rewriter.create<stablehlo::CustomCallOp>(
@@ -2208,7 +2208,7 @@ struct RotateSpmdOptimize : public OpRewritePattern<enzymexla::RotateOp> {
           /*result_layouts=*/nullptr,
           /*output_operand_aliases=*/nullptr);
 
-      SmallVector<sdy::TensorShardingAttr> newShardings(2, rotateSharding);
+      SmallVector<sdy::TensorShardingAttr> newShardings(rotate.getAmount()+1, rotateSharding);
       mlir::sdy::setShardings(ccall, sdy::TensorShardingPerValueAttr::get(
                                          rotate.getContext(), newShardings));
       rewriter.replaceOp(rotate, ValueRange(ccall->getResults()[0]));
@@ -2217,16 +2217,16 @@ struct RotateSpmdOptimize : public OpRewritePattern<enzymexla::RotateOp> {
 
     if (rotate.getType().getShape()[rotateDimension] - rotate.getAmount() <=
         shard_size) {
+      int64_t right_amount = rotate.getType().getShape()[rotateDimension] - rotate.getAmount();
       // Our op is rotate left:
       std::string opaque =
           "dimension=" + std::to_string(rotateDimension) +
           ",left_amount=0,right_amount=" +
-          std::to_string(rotate.getType().getShape()[rotateDimension] -
-                         rotate.getAmount());
+          std::to_string(right_amount);
 
       auto fnSym = rewriter.getStringAttr("_SPMDInternalOp_MultiRotate");
 
-      SmallVector<Type, 2> resultTypes(2, rotate.getType());
+      SmallVector<Type, 2> resultTypes(right_amount+1, rotate.getType());
 
       // Replace with a custom call
       auto ccall = rewriter.create<stablehlo::CustomCallOp>(
@@ -2239,10 +2239,10 @@ struct RotateSpmdOptimize : public OpRewritePattern<enzymexla::RotateOp> {
           /*result_layouts=*/nullptr,
           /*output_operand_aliases=*/nullptr);
 
-      SmallVector<sdy::TensorShardingAttr> newShardings(2, rotateSharding);
+      SmallVector<sdy::TensorShardingAttr> newShardings(right_amount+1, rotateSharding);
       mlir::sdy::setShardings(ccall, sdy::TensorShardingPerValueAttr::get(
                                          rotate.getContext(), newShardings));
-      rewriter.replaceOp(rotate, ValueRange(ccall->getResults()[1]));
+      rewriter.replaceOp(rotate, ValueRange(ccall->getResults()[right_amount]));
       return success();
     }
 
