@@ -1,3 +1,26 @@
+diff --git a/xla/service/collective_permute_key.cc b/xla/service/collective_permute_key.cc
+index 320a7cb190..e71802ef47 100644
+--- a/xla/service/collective_permute_key.cc
++++ b/xla/service/collective_permute_key.cc
+@@ -34,7 +34,17 @@ std::optional<CollectivePermuteKey> GetCollectivePermuteKey(
+   }
+ 
+   const auto* cp = Cast<HloCollectivePermuteInstruction>(instruction);
+-  return CollectivePermuteKey{cp->source_target_pairs()};
++  std::vector<std::pair<int64_t, int64_t>> source_target_pairs =
++      cp->source_target_pairs();
++  if (instruction->parent()
++          ->parent()
++          ->config()
++          .debug_options()
++          .xla_enable_enzyme_comms_opt()) {
++    // Canonicalize the source-target pairs so that the order does not matter.
++    std::sort(source_target_pairs.begin(), source_target_pairs.end());
++  }
++  return CollectivePermuteKey{source_target_pairs};
+ }
+ 
+ }  // namespace xla
 diff --git a/xla/service/spmd/custom_call_handler.cc b/xla/service/spmd/custom_call_handler.cc
 index 35c574b289..9ee2ef0ad9 100644
 --- a/xla/service/spmd/custom_call_handler.cc
