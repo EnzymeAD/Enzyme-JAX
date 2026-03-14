@@ -1,12 +1,12 @@
 diff --git a/xla/service/spmd/custom_call_handler.cc b/xla/service/spmd/custom_call_handler.cc
-index 35c574b289..d294caa991 100644
+index 35c574b289..9ee2ef0ad9 100644
 --- a/xla/service/spmd/custom_call_handler.cc
 +++ b/xla/service/spmd/custom_call_handler.cc
 @@ -580,10 +580,14 @@ SpmdPartitioningVisitor::ConstructHaloExchangeSuperShard(
            }
            std::vector<int64_t> dst_idx(indices.begin(), indices.end());
            dst_idx[dim] += 1;
-+          if (!handle_last_shard && dst_idx[dim] == participating_shards) {
++          if (!handle_last_shard && dst_idx[dim] == participating_shards - 1) {
 +            return;
 +          }
            dst_idx[dim] %= participating_shards;
@@ -21,7 +21,7 @@ index 35c574b289..d294caa991 100644
            std::vector<int64_t> dst_idx(indices.begin(), indices.end());
            dst_idx[dim] += participating_shards - 1;
            dst_idx[dim] %= participating_shards;
-+          if (!handle_last_shard && dst_idx[dim] == participating_shards - 1) {
++          if (!handle_last_shard && dst_idx[dim] == 0) {
 +            return;
 +          }
            pairs.emplace_back(device,
