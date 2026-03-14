@@ -2182,6 +2182,68 @@ struct RotateSpmdOptimize : public OpRewritePattern<enzymexla::RotateOp> {
     assert(rotate.getType().getShape()[rotateDimension] > 0);
     assert(rotate.getAmount() < rotate.getType().getShape()[rotateDimension]);
 
+    int64_t shard_size = (rotate.getType().getShape()[rotateDimension] +
+                          numDevicesAlongDimension - 1) /
+                         numDevicesAlongDimension;
+
+    if (rotate.getAmount() <= shard_size) {
+      // Our op is rotate left:
+      std::string opaque =
+          "dimension=" + std::to_string(rotateDimension) +
+          ",left_amount=" + std::to_string(rotate.getAmount()) +
+          ",right_amount=0";
+
+      auto fnSym = rewriter.getStringAttr("_SPMDInternalOp_MultiRotate");
+
+      // Replace with a custom call
+      auto ccall = rewriter.create<stablehlo::CustomCallOp>(
+          rotate, rotate->getResultTypes(), rotate->getOperands(), fnSym,
+          /*has_side_effect=*/rewriter.getBoolAttr(false),
+          /*backend_config=*/rewriter.getStringAttr(opaque),
+          /*api_version=*/nullptr,
+          /*called_computations=*/nullptr,
+          /*operand_layouts=*/nullptr,
+          /*result_layouts=*/nullptr,
+          /*output_operand_aliases=*/nullptr);
+
+      sdy::TensorShardingAttr singleShard = rotateSharding.getShardings()[0];
+      SmallVector<sdy::TensorShardingAttr> newShardings(2, singleShard);
+      mlir::sdy::setShardings(ccall, sdy::TensorShardingPerValueAttr::get(
+                                         rotate.getContext(), newShardings));
+      rewriter.replaceOp(rotate, ValueRange(ccall->getResults()[0]));
+      return success();
+    }
+
+    if (rotate.getType().getShape()[rotateDimension] - rotate.getAmount() <=
+        shard_size) {
+      // Our op is rotate left:
+      std::string opaque =
+          "dimension=" + std::to_string(rotateDimension) +
+          ",left_amount=0,right_amount=" +
+          std::to_string(rotate.getType().getShape()[rotateDimension] -
+                         rotate.getAmount());
+
+      auto fnSym = rewriter.getStringAttr("_SPMDInternalOp_MultiRotate");
+
+      // Replace with a custom call
+      auto ccall = rewriter.create<stablehlo::CustomCallOp>(
+          rotate, rotate->getResultTypes(), rotate->getOperands(), fnSym,
+          /*has_side_effect=*/rewriter.getBoolAttr(false),
+          /*backend_config=*/rewriter.getStringAttr(opaque),
+          /*api_version=*/nullptr,
+          /*called_computations=*/nullptr,
+          /*operand_layouts=*/nullptr,
+          /*result_layouts=*/nullptr,
+          /*output_operand_aliases=*/nullptr);
+
+      sdy::TensorShardingAttr singleShard = rotateSharding.getShardings()[0];
+      SmallVector<sdy::TensorShardingAttr> newShardings(2, singleShard);
+      mlir::sdy::setShardings(ccall, sdy::TensorShardingPerValueAttr::get(
+                                         rotate.getContext(), newShardings));
+      rewriter.replaceOp(rotate, ValueRange(ccall->getResults()[1]));
+      return success();
+    }
+
     // Our op is rotate left, the spmd one is rotate right. rotateleft(x) =
     // rotateright(-x), which we add the dim size to make positive.
     std::string opaque =
