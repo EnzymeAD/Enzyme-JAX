@@ -1,8 +1,8 @@
 diff --git a/xla/service/spmd/custom_call_handler.cc b/xla/service/spmd/custom_call_handler.cc
-index 35c574b289..a83fcfe8cf 100644
+index 35c574b289..5e2fc78c3d 100644
 --- a/xla/service/spmd/custom_call_handler.cc
 +++ b/xla/service/spmd/custom_call_handler.cc
-@@ -580,6 +580,9 @@ SpmdPartitioningVisitor::ConstructHaloExchangeSuperShard(
+@@ -580,10 +580,14 @@ SpmdPartitioningVisitor::ConstructHaloExchangeSuperShard(
            }
            std::vector<int64_t> dst_idx(indices.begin(), indices.end());
            dst_idx[dim] += 1;
@@ -12,15 +12,25 @@ index 35c574b289..a83fcfe8cf 100644
            dst_idx[dim] %= participating_shards;
            pairs.emplace_back(device,
                               element_sharding.tile_assignment()(dst_idx));
-@@ -629,7 +632,10 @@ SpmdPartitioningVisitor::ConstructHaloExchangeSuperShard(
+         });
++    std::sort(pairs.begin(), pairs.end());
+ 
+     Shape slice_shape = local_input->shape();
+     slice_shape.set_dimensions(dim, right_amount);
+@@ -629,11 +633,15 @@ SpmdPartitioningVisitor::ConstructHaloExchangeSuperShard(
              return;
            }
            std::vector<int64_t> dst_idx(indices.begin(), indices.end());
 -          dst_idx[dim] += participating_shards - 1;
-+          dst_idx[dim] += 1;
-+          if (!handle_last_shard && dst_idx[dim] == participating_shards) {
++          dst_idx[dim] += dst_idx[dim] += participating_shards - 1;
+           dst_idx[dim] %= participating_shards;
++          if (!handle_last_shard && dst_idx[dim] == 0) {
 +            return;
 +          }
-           dst_idx[dim] %= participating_shards;
            pairs.emplace_back(device,
                               element_sharding.tile_assignment()(dst_idx));
+         });
++    std::sort(pairs.begin(), pairs.end());
+ 
+     Shape dynamic_slice_shape = local_input->shape();
+     dynamic_slice_shape.set_dimensions(dim, left_amount);
