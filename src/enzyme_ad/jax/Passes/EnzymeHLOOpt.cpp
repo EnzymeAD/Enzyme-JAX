@@ -52,8 +52,6 @@
 
 #include "Interfaces/AutoDiffTypeInterface.h"
 
-#include "llvm/ADT/SmallPtrSet.h"
-#include "llvm/ADT/SmallSet.h"
 
 #include "llvm/ADT/MapVector.h"
 #include <cstddef>
@@ -61,6 +59,8 @@
 #include <iterator>
 #include <llvm/ADT/MapVector.h>
 #include <llvm/ADT/STLExtras.h>
+#include <llvm/ADT/SmallPtrSet.h>
+#include <llvm/ADT/SmallSet.h>
 #include <llvm/ADT/SmallVector.h>
 #include <llvm/Support/Casting.h>
 #include <llvm/Support/LogicalResult.h>
@@ -30741,6 +30741,226 @@ private:
   }
 };
 
+struct ReduceBroadcastInDimDotGeneral
+    : public CheckedOpRewritePattern<
+          stablehlo::DotGeneralOp,
+          ReduceBroadcastInDimDotGeneral>::CheckedOpRewritePattern {
+  using CheckedOpRewritePattern<
+      stablehlo::DotGeneralOp,
+      ReduceBroadcastInDimDotGeneral>::CheckedOpRewritePattern;
+
+  struct AnalysisResult {
+    SmallVector<int64_t> bcastContractDims;
+    SmallVector<int64_t> bcastBatchDims;
+    SmallVector<int64_t> otherContractDims;
+    SmallVector<int64_t> otherBatchDims;
+  };
+
+  AnalysisResult listBcastDims(stablehlo::DotDimensionNumbersAttr dotDims,
+                               stablehlo::BroadcastInDimOp bcastOp,
+                               bool isLhs) const {
+    auto bcastContractDims = dotDims.getLhsContractingDimensions();
+    auto otherContractDims = dotDims.getRhsContractingDimensions();
+    auto bcastBatchDims = dotDims.getLhsBatchingDimensions();
+    auto otherBatchDims = dotDims.getRhsBatchingDimensions();
+
+    if (!isLhs) {
+      auto tmpContractDims = bcastContractDims;
+      bcastContractDims = otherContractDims;
+      otherContractDims = tmpContractDims;
+
+      auto tmpBatchDims = bcastBatchDims;
+      bcastBatchDims = otherBatchDims;
+      otherBatchDims = tmpBatchDims;
+    }
+
+    auto lhsBcastDims = bcastOp.getBroadcastDimensions();
+    AnalysisResult result;
+
+    // list contracting dimensions created by lhs broadcast
+    for (size_t i = 0; i < bcastContractDims.size(); i++) {
+      int64_t lhsDim = bcastContractDims[i];
+      int64_t rhsDim = otherContractDims[i];
+
+      bool isNewDim = std::find(lhsBcastDims.begin(), lhsBcastDims.end(),
+                                lhsDim) == lhsBcastDims.end();
+
+      if (isNewDim) {
+        result.bcastContractDims.push_back(lhsDim);
+        result.otherContractDims.push_back(rhsDim);
+      }
+    }
+
+    // list batching dimensions created by lhs broadcast
+    for (size_t i = 0; i < bcastBatchDims.size(); i++) {
+      int64_t lhsDim = bcastBatchDims[i];
+      int64_t rhsDim = otherBatchDims[i];
+
+      bool isNewDim = std::find(lhsBcastDims.begin(), lhsBcastDims.end(),
+                                lhsDim) == lhsBcastDims.end();
+
+      if (isNewDim) {
+        result.bcastBatchDims.push_back(lhsDim);
+        result.otherBatchDims.push_back(rhsDim);
+      }
+    }
+
+    return result;
+  }
+
+  LogicalResult matchAndRewriteImpl(stablehlo::DotGeneralOp op,
+                                    PatternRewriter &rewriter) const {
+    auto lhsBcast = op.getLhs().getDefiningOp<stablehlo::BroadcastInDimOp>();
+    auto rhsBcast = op.getRhs().getDefiningOp<stablehlo::BroadcastInDimOp>();
+    auto dotDims = op.getDotDimensionNumbers();
+
+    if (!lhsBcast && !rhsBcast)
+      return failure();
+
+    std::optional<AnalysisResult> lhsBcastDims;
+    if (lhsBcast)
+      lhsBcastDims = listBcastDims(dotDims, lhsBcast, /*isLhs=*/true);
+
+    std::optional<AnalysisResult> rhsBcastDims;
+    if (rhsBcast)
+      rhsBcastDims = listBcastDims(dotDims, rhsBcast, /*isLhs=*/false);
+
+    // reduce dims that are contracted and the other side has broadcasted
+    SmallVector<int64_t> lhsReduceDims, rhsReduceDims;
+    if (rhsBcastDims) {
+      lhsReduceDims.append(rhsBcastDims->otherContractDims);
+      rhsReduceDims.append(rhsBcastDims->bcastContractDims);
+    }
+    if (lhsBcastDims) {
+      lhsReduceDims.append(lhsBcastDims->bcastContractDims);
+      rhsReduceDims.append(lhsBcastDims->otherContractDims);
+    }
+
+    auto lhsReduceDimSet =
+        llvm::SmallSet<int64_t, 6>(lhsReduceDims.begin(), lhsReduceDims.end());
+    auto rhsReduceDimSet =
+        llvm::SmallSet<int64_t, 6>(rhsReduceDims.begin(), rhsReduceDims.end());
+
+    lhsReduceDims =
+        SmallVector<int64_t>(lhsReduceDimSet.begin(), lhsReduceDimSet.end());
+    rhsReduceDims =
+        SmallVector<int64_t>(rhsReduceDimSet.begin(), rhsReduceDimSet.end());
+
+    llvm::sort(lhsReduceDims);
+    llvm::sort(rhsReduceDims);
+
+    auto newLhsShape = SmallVector<int64_t>();
+    for (auto [i, dim] : llvm::enumerate(
+             cast<RankedTensorType>(op.getLhs().getType()).getShape())) {
+      if (!llvm::is_contained(lhsReduceDimSet, i))
+        newLhsShape.push_back(dim);  
+    }
+    
+    auto newRhsShape = SmallVector<int64_t>();
+    for (auto [i, dim] : llvm::enumerate(
+             cast<RankedTensorType>(op.getRhs().getType()).getShape())) {
+      if (!llvm::is_contained(rhsReduceDimSet, i))
+        newRhsShape.push_back(dim);
+    }
+
+    auto lhsEltype =
+        cast<RankedTensorType>(op.getLhs().getType()).getElementType();
+    auto rhsEltype =
+        cast<RankedTensorType>(op.getRhs().getType()).getElementType();
+    auto lhsRank0Type = RankedTensorType::get({}, lhsEltype);
+    auto rhsRank0Type = RankedTensorType::get({}, rhsEltype);
+
+    auto lhsInitVal = stablehlo::ConstantOp::create(
+        rewriter, op->getLoc(), lhsRank0Type,
+        cast<ElementsAttr>(makeAttr(lhsRank0Type, 0)));
+    auto rhsInitVal = stablehlo::ConstantOp::create(
+        rewriter, op->getLoc(), rhsRank0Type,
+        cast<ElementsAttr>(makeAttr(rhsRank0Type, 0)));
+
+    auto lhsReduceOp = stablehlo::ReduceOp::create(
+        rewriter, op.getLoc(),
+        TypeRange{RankedTensorType::get(newLhsShape, lhsEltype)},
+        ValueRange{op.getLhs()}, ValueRange{lhsInitVal.getResult()},
+        rewriter.getDenseI64ArrayAttr(lhsReduceDims));
+    Block &lhsBlock = lhsReduceOp.getBody().emplaceBlock();
+    {
+      BlockArgument arg0 = lhsBlock.addArgument(lhsRank0Type, op.getLoc());
+      BlockArgument arg1 = lhsBlock.addArgument(lhsRank0Type, op.getLoc());
+      {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToStart(&lhsBlock);
+
+        Value sum = stablehlo::AddOp::create(rewriter, op.getLoc(), arg0, arg1);
+        stablehlo::ReturnOp::create(rewriter, op.getLoc(), sum);
+      }
+    }
+
+    auto rhsReduceOp = stablehlo::ReduceOp::create(
+        rewriter, op.getLoc(),
+        TypeRange{RankedTensorType::get(newRhsShape, rhsEltype)},
+        ValueRange{op.getRhs()}, ValueRange{rhsInitVal.getResult()},
+        rewriter.getDenseI64ArrayAttr(rhsReduceDims));
+    Block &rhsBlock = rhsReduceOp.getBody().emplaceBlock();
+    {
+      BlockArgument arg0 = rhsBlock.addArgument(rhsRank0Type, op.getLoc());
+      BlockArgument arg1 = rhsBlock.addArgument(rhsRank0Type, op.getLoc());
+      {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToStart(&rhsBlock);
+
+        Value sum = stablehlo::AddOp::create(rewriter, op.getLoc(), arg0, arg1);
+        stablehlo::ReturnOp::create(rewriter, op.getLoc(), sum);
+      }
+    }
+
+    // create new dot_general with reduced inputs
+    SmallVector<int64_t> dotLhsBatchDims, dotRhsBatchDims, dotLhsContractDims,
+        dotRhsContractDims;
+
+    for (const auto &dim : dotDims.getLhsBatchingDimensions()) {
+      // TODO filter when bcast down propagation works
+      dotLhsBatchDims.push_back(dim);
+    }
+
+    for (const auto &dim : dotDims.getRhsBatchingDimensions()) {
+      // TODO filter when bcast down propagation works
+      dotRhsBatchDims.push_back(dim);
+    }
+
+    for (const auto &dim : dotDims.getLhsContractingDimensions()) {
+      if (std::find(lhsReduceDims.begin(), lhsReduceDims.end(), dim) ==
+          lhsReduceDims.end()) {
+        dotLhsContractDims.push_back(dim);
+      }
+    }
+
+    for (const auto &dim : dotDims.getRhsContractingDimensions()) {
+      if (std::find(rhsReduceDims.begin(), rhsReduceDims.end(), dim) ==
+          rhsReduceDims.end()) {
+        dotRhsContractDims.push_back(dim);
+      }
+    }
+
+    // TODO filter when bcast down propagation works
+    auto newDotShape = SmallVector<int64_t>(
+        cast<RankedTensorType>(op.getResult().getType()).getShape());
+
+    auto newDotDims = DotDimensionNumbersAttr::get(
+        rewriter.getContext(), dotLhsBatchDims, dotRhsBatchDims,
+        dotLhsContractDims, dotRhsContractDims);
+    auto newDotOp = stablehlo::DotGeneralOp::create(
+        rewriter, op.getLoc(),
+        RankedTensorType::get(newDotShape, op.getType().getElementType()),
+        lhsReduceOp.getResult(0), rhsReduceOp.getResult(0), newDotDims,
+        op.getPrecisionConfigAttr(), op.getAlgorithmAttr());
+
+    // TODO propagated broadcast
+
+    rewriter.replaceOp(op, newDotOp);
+    return success();
+  }
+};
+
 // Shared helper function to compute the transpose permutation needed after
 // changing dot_general operand dimensions.
 //
@@ -34776,8 +34996,9 @@ struct EnzymeHLOOptPass
         DotGeneralOnlyDiagonalAccess,
         BinaryNegatedOperandsSimplify<stablehlo::MulOp>,
         BinaryNegatedOperandsSimplify<stablehlo::DivOp>,
-        DotGeneralBroadcastInDim,
-        DotGeneralBroadcastInDimSortDims,
+        ReduceBroadcastInDimDotGeneral,
+        // DotGeneralBroadcastInDim,
+        // DotGeneralBroadcastInDimSortDims,
         DotGeneralRemoveBatchDimensions,
         DUSDynamicSliceSimplify,
         WhileDUSDSSimplify,
