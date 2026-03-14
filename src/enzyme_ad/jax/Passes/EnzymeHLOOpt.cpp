@@ -14601,6 +14601,7 @@ private:
 /// indices.
 struct GatherOpCanon final
     : CheckedOpRewritePattern<stablehlo::GatherOp, GatherOpCanon> {
+  bool supportsDynamicShapes() const { return true; }
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::GatherOp gather,
@@ -14614,7 +14615,136 @@ struct GatherOpCanon final
       return success();
     }
 
+    if (tryRewriteGatherWithAffineIotaIndexing(gather, rewriter).succeeded()) {
+      return success();
+    }
+
     return failure();
+  }
+
+  struct DimStrideInfo {
+    int64_t indexDimOffset;
+    int64_t affineDim;
+    int64_t scale;
+    int64_t start;
+    int64_t componentIndex;
+  };
+
+  LogicalResult
+  tryRewriteGatherWithAffineIotaIndexing(stablehlo::GatherOp gatherOp,
+                                         PatternRewriter &rewriter) const {
+    auto operand = gatherOp.getOperand();
+    auto operandTy = cast<RankedTensorType>(operand.getType());
+
+    // NOTE: This optimization is currently implemented for gathering a specific point from a 1D tensor
+    if (operandTy.getRank() != 1) {
+      return failure();
+    }
+
+    for (auto size : gatherOp.getSliceSizes()) {
+      if (size != 1) {
+        return failure();
+      }
+    }
+
+    auto indices = gatherOp.getStartIndices();
+    auto baseIndicesTy = cast<RankedTensorType>(indices.getType());
+    auto dnums = gatherOp.getDimensionNumbers();
+
+    auto maybeAffineIota = detectAffineIotaLikeTensor(indices);
+    if (!maybeAffineIota) {
+      llvm::errs() << "BAIL affine iota matching: !affineIotaLike\n";
+      return failure();
+    }
+    auto affineIota = *maybeAffineIota;
+
+    SmallVector<DimStrideInfo> dimStrides;
+    for (size_t i = 0; i < affineIota.dimensions.size(); ++i) {
+      auto startVal = getDoubleFromAttr(affineIota.starts[i]);
+      auto scaleVal = getDoubleFromAttr(affineIota.scales[i]);
+      if (!startVal || !scaleVal) return failure();
+
+      int64_t affineDim = affineIota.dimensions[i];
+      if (affineDim >= baseIndicesTy.getRank()) return failure();
+
+      dimStrides.push_back({
+          dnums.getStartIndexMap()[0],
+          affineDim,
+          static_cast<int64_t>(*scaleVal),
+          static_cast<int64_t>(*startVal),
+          static_cast<int64_t>(i)
+      });
+    }
+
+    // Since indices map 2D coordinates into a 1D tensor linearly,
+    // we calculate the total constant offset that represents the slice start.
+    int64_t totalStartOffset = 0;
+    for (const auto& ds : dimStrides) {
+      totalStartOffset += ds.start;
+    }
+
+    // Since the operand is 1D, we can only emit a 1D SliceOp.
+    // The Gather operation effectively creates a result of shape [120, 18000].
+    // If the strides on these dimensions perfectly match a single contiguous 1D block
+    // (e.g. inner_stride=1, outer_stride=inner_size), then we could slice exactly inner_size*outer_size elements.
+    // However, pre_shape_opt.mlir uses strides [1, 128], which means it's skipping elements
+    // and CANNOT be represented as a single contiguous slice of the 1D tensor.
+    // If it could, we would return a stablehlo.slice followed by a stablehlo.reshape.
+    // Let's implement the standard checking for 1D contiguous arrays to enable that:
+    
+    llvm::sort(dimStrides, [](const DimStrideInfo &a, const DimStrideInfo &b) {
+      return std::abs(a.scale) < std::abs(b.scale);
+    });
+
+    int64_t currentScale = 1;
+    for (const auto& ds : dimStrides) {
+      int64_t implied_dim_size;
+      if (affineIota.implied_dim_sizes.size() > static_cast<size_t>(ds.componentIndex)) {
+        implied_dim_size = affineIota.implied_dim_sizes[ds.componentIndex];
+      } else {
+        implied_dim_size = baseIndicesTy.getDimSize(ds.affineDim);
+      }
+      if (ds.scale != currentScale) {
+        llvm::errs() << "BAIL affine iota matching: strides not forming a contiguous block (" << ds.scale << " vs " << currentScale << ")\n";
+        return failure();
+      }
+      if (implied_dim_size != ShapedType::kDynamic) {
+        currentScale *= implied_dim_size;
+      }
+    }
+
+    // If we passed the contiguous check, the entire grid is just a contiguous line of elements.
+    // The number of elements gathered is exactly currentScale.
+    SmallVector<int64_t> sliceStart = {totalStartOffset};
+    SmallVector<int64_t> sliceEnd = {totalStartOffset + currentScale};
+    SmallVector<int64_t> sliceStrides = {1};
+
+    // Check bounds
+    if (sliceStart[0] < 0 || (operandTy.getDimSize(0) != ShapedType::kDynamic && sliceStart[0] >= operandTy.getDimSize(0))) {
+      return failure();
+    }
+    if (operandTy.getDimSize(0) != ShapedType::kDynamic && sliceEnd[0] > operandTy.getDimSize(0)) {
+       return failure();
+    }
+
+    auto sliceOp = stablehlo::SliceOpCreate(
+        rewriter, gatherOp.getLoc(), operand, sliceStart, sliceEnd, sliceStrides);
+
+    SmallVector<int64_t> reshapeShape;
+    for (int64_t i = 0; i < baseIndicesTy.getRank(); ++i) {
+      if (baseIndicesTy.getDimSize(i) == ShapedType::kDynamic) {
+          // Can't reconstruct dynamic shapes properly via reshape easily unless we use dynamic_reshape
+          return failure();
+      }
+      reshapeShape.push_back(baseIndicesTy.getDimSize(i));
+    }
+    
+    rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(
+        gatherOp,
+        gatherOp.getType(),
+        sliceOp);
+
+    return success();
   }
 
   LogicalResult
@@ -33467,7 +33597,7 @@ struct ScatterOpCanon final
       return success();
     }
 
-    if (trySimplifyWithIotaIndexing(op, rewriter).succeeded()) {
+    if (trySimplifyWithAffineIotaIndexing(op, rewriter).succeeded()) {
       return success();
     }
 
@@ -33581,7 +33711,7 @@ private:
     return success();
   }
 
-  LogicalResult trySimplifyWithIotaIndexing(stablehlo::ScatterOp op,
+  LogicalResult trySimplifyWithAffineIotaIndexing(stablehlo::ScatterOp op,
                                             PatternRewriter &rewriter) const {
     auto inputs = op.getInputs();
     auto inputTy = cast<RankedTensorType>(inputs[0].getType());
@@ -33618,29 +33748,81 @@ private:
       return success();
     }
 
-    auto iotaLike = detectIotaLikeTensor(indices);
-    if (!iotaLike) {
-      return failure();
-    }
-
-    auto iota = *iotaLike;
+    auto indicesTy = cast<RankedTensorType>(indices.getType());
     auto dimNumbers = op.getScatterDimensionNumbers();
 
-    if (dimNumbers.getScatterDimsToOperandDims().size() <= iota.dimension ||
-        dimNumbers.getScatterDimsToOperandDims()[iota.dimension] != 0) {
+    if (dimNumbers.getScatterDimsToOperandDims().size() == 0 ||
+        dimNumbers.getScatterDimsToOperandDims()[0] != 0) {
       return failure();
     }
 
-    auto indicesTy = cast<RankedTensorType>(indices.getType());
     int64_t indexVectorDim = dimNumbers.getIndexVectorDim();
     if (indexVectorDim < indicesTy.getRank() &&
         indicesTy.getDimSize(indexVectorDim) != 1) {
       return failure();
     }
 
-    int64_t start = cast<IntegerAttr>(iota.start).getValue().getSExtValue();
-    int64_t count = indicesTy.getDimSize(iota.dimension);
-    int64_t stride = cast<IntegerAttr>(iota.scale).getValue().getSExtValue();
+    auto maybeAffineIota = detectAffineIotaLikeTensor(indices);
+    if (!maybeAffineIota) {
+      return failure();
+    }
+    auto affineIota = *maybeAffineIota;
+
+    struct DimStrideInfo {
+      int64_t operandDim;
+      int64_t affineDim;
+      int64_t scale;
+      int64_t start;
+      int64_t componentIndex;
+    };
+
+    SmallVector<DimStrideInfo> dimStrides;
+    for (size_t i = 0; i < affineIota.dimensions.size(); ++i) {
+      auto startVal = getDoubleFromAttr(affineIota.starts[i]);
+      auto scaleVal = getDoubleFromAttr(affineIota.scales[i]);
+      if (!startVal || !scaleVal) return failure();
+
+      int64_t affineDim = affineIota.dimensions[i];
+      if (affineDim >= indicesTy.getRank()) return failure();
+
+      dimStrides.push_back({
+          dimNumbers.getScatterDimsToOperandDims()[0],
+          affineDim,
+          static_cast<int64_t>(*scaleVal),
+          static_cast<int64_t>(*startVal),
+          static_cast<int64_t>(i)
+      });
+    }
+
+    int64_t totalStartOffset = 0;
+    for (const auto& ds : dimStrides) {
+      totalStartOffset += ds.start;
+    }
+
+    llvm::sort(dimStrides, [](const DimStrideInfo &a, const DimStrideInfo &b) {
+      return std::abs(a.scale) < std::abs(b.scale);
+    });
+
+    int64_t sign = dimStrides.empty() ? 1 : (dimStrides.front().scale < 0 ? -1 : 1);
+    int64_t currentScale = sign;
+    for (const auto& ds : dimStrides) {
+      int64_t implied_dim_size;
+      if (affineIota.implied_dim_sizes.size() > static_cast<size_t>(ds.componentIndex)) {
+        implied_dim_size = affineIota.implied_dim_sizes[ds.componentIndex];
+      } else {
+        implied_dim_size = indicesTy.getDimSize(ds.affineDim);
+      }
+      if (ds.scale != currentScale) {
+        return failure();
+      }
+      if (implied_dim_size != ShapedType::kDynamic) {
+        currentScale *= implied_dim_size;
+      }
+    }
+
+    int64_t start = totalStartOffset;
+    int64_t count = std::abs(currentScale);
+    int64_t stride = sign;
 
     if (std::abs(stride) != 1) {
       return failure(); // DUS doesn't support strided store.

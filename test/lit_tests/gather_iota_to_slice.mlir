@@ -231,3 +231,35 @@ func.func @gather_iota_negative_stride_offset_to_slice_reverse(%arg0: tensor<10x
 // CHECK-NEXT: %[[SLICE:.+]] = stablehlo.slice %arg0 [1:8:2]
 // CHECK-NEXT: %[[REVERSE:.+]] = stablehlo.reverse %[[SLICE]], dims = [0]
 // CHECK-NEXT: return %[[REVERSE]]
+
+// ============================================================================
+// Tests for gather with multi-dimensional iota reshaped into a flat index
+// ============================================================================
+
+// Reshaped indices: gather with a 2D grid of indices flattened
+func.func @gather_reshaped_iota_to_slice(%arg0: tensor<10xi64>) -> tensor<4xi64> {
+    %iota1 = stablehlo.iota dim = 0 : tensor<2x2xi64>
+    %iota2 = stablehlo.iota dim = 1 : tensor<2x2xi64>
+    %c2 = stablehlo.constant dense<2> : tensor<2x2xi64>
+    %scaled = stablehlo.multiply %iota1, %c2 : tensor<2x2xi64>
+    %added = stablehlo.add %scaled, %iota2 : tensor<2x2xi64>
+    %c_offset = stablehlo.constant dense<1> : tensor<2x2xi64>
+    %indices_2d = stablehlo.add %added, %c_offset : tensor<2x2xi64>
+    // indices_2d is [[1, 2],
+    //                [3, 4]]
+    %indices = stablehlo.reshape %indices_2d : (tensor<2x2xi64>) -> tensor<4x1xi64>
+    
+    %0 = "stablehlo.gather"(%arg0, %indices) {
+      dimension_numbers = #stablehlo.gather<
+        collapsed_slice_dims = [0],
+        start_index_map = [0],
+        index_vector_dim = 1
+      >,
+      slice_sizes = array<i64: 1>
+    } : (tensor<10xi64>, tensor<4x1xi64>) -> tensor<4xi64>
+    return %0 : tensor<4xi64>
+}
+// CHECK-LABEL: func.func @gather_reshaped_iota_to_slice
+// CHECK-NEXT: %[[SLICE:.+]] = stablehlo.slice %arg0 [1:5]
+// CHECK-NEXT: return %[[SLICE]]
+

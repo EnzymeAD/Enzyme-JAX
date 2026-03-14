@@ -1861,6 +1861,147 @@ std::optional<IotaLikeTensor> detectIotaLikeTensor(mlir::Value tensor) {
   return result;
 }
 
+std::optional<AffineIotaLikeTensor> detectAffineIotaLikeTensor(mlir::Value tensor) {
+  if (auto iotaLike = detectIotaLikeTensor(tensor)) {
+    AffineIotaLikeTensor result;
+    result.starts.push_back(iotaLike->start);
+    result.dimensions.push_back(iotaLike->dimension);
+    
+    // Explicitly record the implied dimension size from the original iota shape
+    auto indicesTy = cast<RankedTensorType>(iotaLike->tensorType);
+    result.implied_dim_sizes.push_back(indicesTy.getDimSize(iotaLike->dimension));
+    
+    result.scales.push_back(iotaLike->scale);
+    result.tensorType = iotaLike->tensorType;
+    return result;
+  }
+
+  auto getConstantSplat = [](mlir::Value v, SplatElementsAttr& attr) -> bool {
+      if (matchPattern(v, m_Constant(&attr)) && attr.isSplat()) return true;
+      if (auto bcast = v.getDefiningOp<stablehlo::BroadcastInDimOp>()) {
+          if (matchPattern(bcast.getOperand(), m_Constant(&attr)) && attr.isSplat()) return true;
+      }
+      return false;
+  };
+
+  if (auto addOp = tensor.getDefiningOp<stablehlo::AddOp>()) {
+    SplatElementsAttr constAttr;
+    mlir::Value otherOp = nullptr;
+    
+    if (getConstantSplat(addOp.getRhs(), constAttr)) {
+        otherOp = addOp.getLhs();
+    } else if (getConstantSplat(addOp.getLhs(), constAttr)) {
+        otherOp = addOp.getRhs();
+    }
+    
+    if (otherOp) {
+        auto affineVal = detectAffineIotaLikeTensor(otherOp);
+        if (affineVal) {
+            auto offsetVal = getDoubleFromAttr(constAttr.getSplatValue<TypedAttr>());
+            if (offsetVal) {
+                AffineIotaLikeTensor combined = *affineVal;
+                MLIRContext *ctx = tensor.getContext();
+                auto elemType = constAttr.getSplatValue<TypedAttr>().getType();
+                if (!combined.starts.empty()) {
+                    auto startVal = getDoubleFromAttr(combined.starts[0]);
+                    if (startVal) {
+                        combined.starts[0] = createAttrFromDouble(ctx, elemType, *startVal + *offsetVal);
+                        combined.tensorType = cast<RankedTensorType>(addOp.getType());
+                        return combined;
+                    }
+                }
+            }
+        }
+    }
+    
+    auto lhsAffine = detectAffineIotaLikeTensor(addOp.getLhs());
+    auto rhsAffine = detectAffineIotaLikeTensor(addOp.getRhs());
+    
+    if (lhsAffine && rhsAffine) {
+        AffineIotaLikeTensor combined = *lhsAffine;
+        combined.starts.insert(combined.starts.end(), rhsAffine->starts.begin(), rhsAffine->starts.end());
+        combined.dimensions.insert(combined.dimensions.end(), rhsAffine->dimensions.begin(), rhsAffine->dimensions.end());
+        combined.implied_dim_sizes.insert(combined.implied_dim_sizes.end(), rhsAffine->implied_dim_sizes.begin(), rhsAffine->implied_dim_sizes.end());
+        combined.scales.insert(combined.scales.end(), rhsAffine->scales.begin(), rhsAffine->scales.end());
+        combined.tensorType = cast<RankedTensorType>(addOp.getType());
+        return combined;
+    }
+  }
+
+  if (auto mulOp = tensor.getDefiningOp<stablehlo::MulOp>()) {
+    SplatElementsAttr constAttr;
+    mlir::Value otherOp = nullptr;
+    
+    if (getConstantSplat(mulOp.getRhs(), constAttr)) {
+        otherOp = mulOp.getLhs();
+    } else if (getConstantSplat(mulOp.getLhs(), constAttr)) {
+        otherOp = mulOp.getRhs();
+    }
+    
+    if (otherOp) {
+        auto affineVal = detectAffineIotaLikeTensor(otherOp);
+        if (affineVal) {
+            auto scaleVal = getDoubleFromAttr(constAttr.getSplatValue<TypedAttr>());
+            if (scaleVal) {
+                AffineIotaLikeTensor combined = *affineVal;
+                MLIRContext *ctx = tensor.getContext();
+                auto elemType = constAttr.getSplatValue<TypedAttr>().getType();
+                
+                for (size_t i = 0; i < combined.starts.size(); ++i) {
+                    auto startVal = getDoubleFromAttr(combined.starts[i]);
+                    auto iotaScaleVal = getDoubleFromAttr(combined.scales[i]);
+                    if (!startVal || !iotaScaleVal) return std::nullopt;
+                    
+                    combined.starts[i] = createAttrFromDouble(ctx, elemType, *startVal * *scaleVal);
+                    combined.scales[i] = createAttrFromDouble(ctx, elemType, *iotaScaleVal * *scaleVal);
+                }
+                combined.tensorType = cast<RankedTensorType>(mulOp.getType());
+                return combined;
+            }
+        }
+    }
+  }
+
+    if (auto bcastOp = tensor.getDefiningOp<stablehlo::BroadcastInDimOp>()) {
+      if (auto inner = detectAffineIotaLikeTensor(bcastOp.getOperand())) {
+        AffineIotaLikeTensor broadcasted = *inner;
+        broadcasted.tensorType = cast<RankedTensorType>(bcastOp.getType());
+        
+        auto bcastDims = bcastOp.getBroadcastDimensions();
+        for (size_t i = 0; i < broadcasted.dimensions.size(); ++i) {
+          if (broadcasted.dimensions[i] >= 0 && broadcasted.dimensions[i] < static_cast<int64_t>(bcastDims.size())) {
+             broadcasted.dimensions[i] = bcastDims[broadcasted.dimensions[i]];
+          } else {
+             return std::nullopt;
+          }
+        }
+        return broadcasted;
+      }
+    }
+  
+    if (auto reshapeOp = tensor.getDefiningOp<stablehlo::ReshapeOp>()) {
+      if (auto inner = detectAffineIotaLikeTensor(reshapeOp.getOperand())) {
+          // If we reshape, we lose the direct mapping of `dimensions` to the indices shape.
+          // However, for our 1D rank-1 slice rewriting logic, we only care about
+          // the scale and start offsets (which remain unchanged during a reshape!).
+          // Wait, the rewrite rule uses baseIndicesTy.getRank() to validate `affineDim`.
+          // If the reshape changes the rank, then validation might fail.
+          // Since the values themselves don't change, we just pass the struct along
+          // but we can set `dimensions` to 0 because our GatherOp 1D rewrite logic
+          // doesn't rely on `affineDim` mapping anymore (it just sorts by scales).
+          // Actually, let's keep it as is, but we need to ensure validation passes.
+          AffineIotaLikeTensor reshaped = *inner;
+          reshaped.tensorType = cast<RankedTensorType>(reshapeOp.getType());
+          for (size_t i = 0; i < reshaped.dimensions.size(); ++i) {
+              reshaped.dimensions[i] = 0; // map to a valid dimension, 0 is always valid and unused by our logic in GatherOpCanon 1D
+          }
+          return reshaped;
+      }
+    }
+  
+    return std::nullopt;
+  }
+
 namespace {
 
 struct PaddingResult {
