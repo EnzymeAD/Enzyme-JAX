@@ -790,5 +790,61 @@ module {
       llvm.return %0 : i64
     }
   }
-}
 
+  gpu.module @test_module_51 {
+    llvm.func @__half2float(f16) -> f32
+    llvm.func @__bfloat162float(bf16) -> f32
+    llvm.func @__float2bfloat16(f32) -> bf16
+
+    // CHECK-LABEL: @gpu_half2float
+    llvm.func @gpu_half2float(%arg0: f16) -> f32 {
+      // CHECK: arith.extf %arg0 : f16 to f32
+      %0 = llvm.call @__half2float(%arg0) : (f16) -> f32
+      llvm.return %0 : f32
+    }
+
+    // CHECK-LABEL: @gpu_bfloat162float
+    llvm.func @gpu_bfloat162float(%arg0: bf16) -> f32 {
+      // CHECK: arith.extf %arg0 : bf16 to f32
+      %0 = llvm.call @__bfloat162float(%arg0) : (bf16) -> f32
+      llvm.return %0 : f32
+    }
+
+    // CHECK-LABEL: @gpu_float2bfloat16
+    llvm.func @gpu_float2bfloat16(%arg0: f32) -> bf16 {
+      // CHECK: arith.truncf %arg0 : f32 to bf16
+      %0 = llvm.call @__float2bfloat16(%arg0) : (f32) -> bf16
+      llvm.return %0 : bf16
+    }
+  }
+
+  gpu.module @test_module_52 {
+    llvm.func @__half2float(i16) -> f32
+    llvm.func @__bfloat162float(i16) -> f32
+    llvm.func @__float2bfloat16(f32) -> i16
+
+    // CHECK-LABEL: @gpu_half2float_i16
+    llvm.func @gpu_half2float_i16(%arg0: i16) -> f32 {
+      // CHECK: %[[BC:.*]] = arith.bitcast %arg0 : i16 to f16
+      // CHECK: arith.extf %[[BC]] : f16 to f32
+      %0 = llvm.call @__half2float(%arg0) : (i16) -> f32
+      llvm.return %0 : f32
+    }
+
+    // CHECK-LABEL: @gpu_bfloat162float_i16
+    llvm.func @gpu_bfloat162float_i16(%arg0: i16) -> f32 {
+      // CHECK: %[[BC:.*]] = arith.bitcast %arg0 : i16 to bf16
+      // CHECK: arith.extf %[[BC]] : bf16 to f32
+      %0 = llvm.call @__bfloat162float(%arg0) : (i16) -> f32
+      llvm.return %0 : f32
+    }
+
+    // CHECK-LABEL: @gpu_float2bfloat16_i16
+    llvm.func @gpu_float2bfloat16_i16(%arg0: f32) -> i16 {
+      // CHECK: %[[TRUNC:.*]] = arith.truncf %arg0 : f32 to bf16
+      // CHECK: arith.bitcast %[[TRUNC]] : bf16 to i16
+      %0 = llvm.call @__float2bfloat16(%arg0) : (f32) -> i16
+      llvm.return %0 : i16
+    }
+  }
+}
