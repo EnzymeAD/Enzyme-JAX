@@ -10,7 +10,7 @@ func.func @contract_bcast_dim_left(%a: tensor<3xf32>, %b: tensor<4x4xf32>) -> te
 }
 
 // CHECK: func.func @contract_bcast_dim_left(%arg0: tensor<3xf32>, %arg1: tensor<4x4xf32>) -> tensor<3x4xf32> {
-// CHECK-NEXT:     %cst = stablehlo.constant dense<0.0> : tensor<f32>
+// CHECK-NEXT:     %cst = stablehlo.constant dense<0.000000e+00> : tensor<f32>
 // CHECK-NEXT:     %0 = stablehlo.reduce(%arg1 init: %cst) applies stablehlo.add across dimensions = [0] : (tensor<4x4xf32>, tensor<f32>) -> tensor<4xf32>
 // CHECK-NEXT:     %1 = stablehlo.dot_general %arg0, %0, contracting_dims = [] x [], precision = [DEFAULT, DEFAULT] : (tensor<3xf32>, tensor<4xf32>) -> tensor<3x4xf32>
 // CHECK-NEXT:     return %1 : tensor<3x4xf32>
@@ -24,7 +24,7 @@ func.func @contract_bcast_dim_right(%a: tensor<3xf32>, %b: tensor<4x4xf32>) -> t
 }
 
 // CHECK: func.func @contract_bcast_dim_right(%arg0: tensor<3xf32>, %arg1: tensor<4x4xf32>) -> tensor<4x3xf32> {
-// CHECK-NEXT:     %cst = stablehlo.constant dense<0.0> : tensor<f32>
+// CHECK-NEXT:     %cst = stablehlo.constant dense<0.000000e+00> : tensor<f32>
 // CHECK-NEXT:     %0 = stablehlo.reduce(%arg1 init: %cst) applies stablehlo.add across dimensions = [0] : (tensor<4x4xf32>, tensor<f32>) -> tensor<4xf32>
 // CHECK-NEXT:     %1 = stablehlo.dot_general %0, %arg0, contracting_dims = [] x [], precision = [DEFAULT, DEFAULT] : (tensor<4xf32>, tensor<3xf32>) -> tensor<4x3xf32>
 // CHECK-NEXT:     return %1 : tensor<4x3xf32>
