@@ -2077,7 +2077,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
       int64_t pLow = 0;
       int64_t pHigh = 0;
 
-      if (hasRange) {
+      if (hasRange && sz != ShapedType::kDynamic) {
         if (start < 0) {
           pLow = -start;
           start = 0;
