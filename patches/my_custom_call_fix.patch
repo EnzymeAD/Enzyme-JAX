@@ -1,5 +1,5 @@
 diff --git a/xla/service/spmd/custom_call_handler.cc b/xla/service/spmd/custom_call_handler.cc
-index 35c574b289..5e2fc78c3d 100644
+index 35c574b289..104b361220 100644
 --- a/xla/service/spmd/custom_call_handler.cc
 +++ b/xla/service/spmd/custom_call_handler.cc
 @@ -580,10 +580,14 @@ SpmdPartitioningVisitor::ConstructHaloExchangeSuperShard(
@@ -17,12 +17,9 @@ index 35c574b289..5e2fc78c3d 100644
  
      Shape slice_shape = local_input->shape();
      slice_shape.set_dimensions(dim, right_amount);
-@@ -629,11 +633,15 @@ SpmdPartitioningVisitor::ConstructHaloExchangeSuperShard(
-             return;
-           }
+@@ -631,9 +635,13 @@ SpmdPartitioningVisitor::ConstructHaloExchangeSuperShard(
            std::vector<int64_t> dst_idx(indices.begin(), indices.end());
--          dst_idx[dim] += participating_shards - 1;
-+          dst_idx[dim] += dst_idx[dim] += participating_shards - 1;
+           dst_idx[dim] += participating_shards - 1;
            dst_idx[dim] %= participating_shards;
 +          if (!handle_last_shard && dst_idx[dim] == 0) {
 +            return;
