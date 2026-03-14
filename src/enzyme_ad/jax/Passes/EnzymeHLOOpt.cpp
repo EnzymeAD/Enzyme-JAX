@@ -12549,7 +12549,10 @@ template <typename T> struct CSE final : CheckedOpRewritePattern<T, CSE<T>> {
           continue;
 
         if (!OperationEquivalence::isEquivalentTo(
-                op, nop, OperationEquivalence::IgnoreLocations)) {
+                op, nop,
+                (OperationEquivalence::Flags)(
+                    OperationEquivalence::IgnoreLocations |
+                    OperationEquivalence::IgnoreDiscardableAttrs))) {
           // stablehlo defines a special trait for commutative operations.
           // check for that here.
           if constexpr (std::is_base_of_v<
