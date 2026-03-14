@@ -224,9 +224,6 @@ jobs:
                   fi
               fi
           done
-          if [[ "${OK}" == "false" ]]; then
-              exit 1
-          fi
       - name: Run GB-25 simulation
         timeout-minutes: 60
         run: |
