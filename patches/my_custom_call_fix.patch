@@ -22,10 +22,45 @@ index 320a7cb190..e71802ef47 100644
  
  }  // namespace xla
 diff --git a/xla/service/spmd/custom_call_handler.cc b/xla/service/spmd/custom_call_handler.cc
-index 35c574b289..2b345a4c84 100644
+index 35c574b289..ed8a3f8b45 100644
 --- a/xla/service/spmd/custom_call_handler.cc
 +++ b/xla/service/spmd/custom_call_handler.cc
-@@ -580,10 +580,14 @@ SpmdPartitioningVisitor::ConstructHaloExchangeSuperShard(
+@@ -256,8 +256,8 @@ absl::Status SpmdPartitioningVisitor::HandleCustomCallTopK(
+   XlaComputation comparator = CreateScalarComparisonComputation(
+       "compare-value-and-index", {input->shape().element_type(), S32}, {Gt, Lt},
+       &b);
+-  TF_ASSIGN_OR_RETURN(HloComputation * compare_computation,
+-                      XlaComputationToHloComputation(comparator, module_));
++  HloComputation* compare_computation =
++      XlaComputationToHloComputation(comparator, module_).ValueOrDie();
+   // Each partition needs to do TopK separately, thus the base shape for sort
+   // becomes [ceil(batch_size / batch_dim_partition), k * shard_count].
+   const Shape sort_shape = ShapeUtil::MakeTupleShape(
+@@ -439,6 +439,11 @@ absl::Status SpmdPartitioningVisitor::HandleCustomCallSPMDInternal_MultiRotate(
+       << "No dimension attribute in SPMD multi rotate op";
+   int64_t dim = dim_it->second;
+ 
++  auto bufferize_it = attrs.find("bufferize");
++  TF_RET_CHECK(bufferize_it != attrs.end())
++      << "No bufferize attribute in SPMD multi rotate op";
++  int64_t bufferize = bufferize_it->second;
++
+   auto left_amount_it = attrs.find("left_amount");
+   TF_RET_CHECK(left_amount_it != attrs.end())
+       << "No left_amount attribute in SPMD multi rotate op";
+@@ -488,6 +493,11 @@ absl::Status SpmdPartitioningVisitor::HandleCustomCallSPMDInternal_MultiRotate(
+ 
+   auto [super_shard, shard_offset] = super_shard_and_offset;
+ 
++  if (bufferize) {
++    super_shard = b_.AddInstruction(HloInstruction::CreateUnary(
++        super_shard->shape(), HloOpcode::kOptimizationBarrier, super_shard));
++  }
++
+   auto create_slice = [&](HloInstruction* val, int64_t start, int64_t limit) {
+     Shape slice_shape = val->shape();
+     slice_shape.set_dimensions(dim, limit - start);
+@@ -580,10 +590,14 @@ SpmdPartitioningVisitor::ConstructHaloExchangeSuperShard(
            }
            std::vector<int64_t> dst_idx(indices.begin(), indices.end());
            dst_idx[dim] += 1;
@@ -40,7 +75,7 @@ index 35c574b289..2b345a4c84 100644
  
      Shape slice_shape = local_input->shape();
      slice_shape.set_dimensions(dim, right_amount);
-@@ -631,9 +635,13 @@ SpmdPartitioningVisitor::ConstructHaloExchangeSuperShard(
+@@ -631,9 +645,13 @@ SpmdPartitioningVisitor::ConstructHaloExchangeSuperShard(
            std::vector<int64_t> dst_idx(indices.begin(), indices.end());
            dst_idx[dim] += participating_shards - 1;
            dst_idx[dim] %= participating_shards;
@@ -54,26 +89,68 @@ index 35c574b289..2b345a4c84 100644
  
      Shape dynamic_slice_shape = local_input->shape();
      dynamic_slice_shape.set_dimensions(dim, left_amount);
-@@ -775,6 +783,11 @@ absl::Status SpmdPartitioningVisitor::HandleCustomCallSPMDInternal_MultiSlice(
-   TF_RET_CHECK(dim_it != int_attrs.end())
+@@ -776,6 +794,11 @@ absl::Status SpmdPartitioningVisitor::HandleCustomCallSPMDInternal_MultiSlice(
        << "No dimension attribute in SPMD multi slice op";
    int64_t dim = dim_it->second;
-+  
+ 
 +  auto bufferize_it = int_attrs.find("bufferize");
 +  TF_RET_CHECK(bufferize_it != int_attrs.end())
-+      << "No dimension attribute in SPMD multi slice op";
++      << "No bufferize attribute in SPMD multi slice op";
 +  int64_t bufferize = bufferize_it->second;
- 
++
    auto amount_it = int_attrs.find("amount");
    TF_RET_CHECK(amount_it != int_attrs.end())
-@@ -902,6 +915,10 @@ absl::Status SpmdPartitioningVisitor::HandleCustomCallSPMDInternal_MultiSlice(
+       << "No amount attribute in SPMD multi slice op";
+@@ -798,7 +821,7 @@ absl::Status SpmdPartitioningVisitor::HandleCustomCallSPMDInternal_MultiSlice(
+   const HloSharding& element_sharding = hlo->sharding().tuple_elements()[0];
+ 
+   // Check that all tuple elements have the same sharding.
+-  for (size_t i = 0; i < hlo->sharding().tuple_elements().size(); ++i) {
++  for (int64_t i = 0; i < hlo->sharding().tuple_elements().size(); ++i) {
+     TF_RET_CHECK(hlo->sharding().tuple_elements()[i] == element_sharding)
+         << "All elements of MultiSlice output must have the same sharding.";
+   }
+@@ -902,6 +925,12 @@ absl::Status SpmdPartitioningVisitor::HandleCustomCallSPMDInternal_MultiSlice(
  
      shard_to_slice = b_.AddInstruction(HloInstruction::CreateDynamicSlice(
          slice_shape, super_shard, start_indices, slice_sizes));
 +
-+    if (bufferize)
-+    shard_to_slice = b_.AddInstruction(
-+        HloInstruction::CreateUnary(shard_to_slice->shape(), HloOpcode::kOptimizationBarrier, shard_to_slice));
++    if (bufferize) {
++      shard_to_slice = b_.AddInstruction(HloInstruction::CreateUnary(
++          shard_to_slice->shape(), HloOpcode::kOptimizationBarrier,
++          shard_to_slice));
++    }
    }
  
    std::vector<HloInstruction*> sliced_results;
+diff --git a/xla/service/spmd/spmd_partitioner_test.cc b/xla/service/spmd/spmd_partitioner_test.cc
+index 18135120a5..c2f61b1ddb 100644
+--- a/xla/service/spmd/spmd_partitioner_test.cc
++++ b/xla/service/spmd/spmd_partitioner_test.cc
+@@ -3187,7 +3187,7 @@ ENTRY entry {
+   %param0 = f32[12] parameter(0), sharding={devices=[4]<=[4]}
+   ROOT %custom-call = (f32[12], f32[12], f32[12]) custom-call(%param0),
+     custom_call_target="_SPMDInternalOp_MultiRotate",
+-    backend_config="dimension=0,left_amount=1,right_amount=1",
++    backend_config="dimension=0,left_amount=1,right_amount=1,bufferize=0",
+     sharding={{devices=[4]<=[4]}, {devices=[4]<=[4]}, {devices=[4]<=[4]}}
+ })";
+ 
+@@ -3240,7 +3240,7 @@ ENTRY entry {
+   ROOT %custom-call = (f64[1520]{0}, f64[1520]{0}, f64[1520]{0}, f64[1520]{0}) custom-call(%param0),
+     custom_call_target="_SPMDInternalOp_MultiSlice",
+     sharding={{devices=[2]<=[2]}, {devices=[2]<=[2]}, {devices=[2]<=[2]}, {devices=[2]<=[2]}},
+-    backend_config="dimension=0,amount=3,start_indices=[6],limit_indices=[1526],strides=[1]"
++    backend_config="dimension=0,amount=3,start_indices=[6],limit_indices=[1526],strides=[1],bufferize=0"
+ })";
+ 
+   TF_ASSERT_OK_AND_ASSIGN(auto module,
+@@ -3270,7 +3270,7 @@ ENTRY entry {
+   ROOT %custom-call = (f64[1520]{0}, f64[1520]{0}) custom-call(%param0),
+     custom_call_target="_SPMDInternalOp_MultiSlice",
+     sharding={{devices=[2]<=[2]}, {devices=[2]<=[2]}},
+-    backend_config="dimension=0,amount=1,start_indices=[7],limit_indices=[1527],strides=[1]"
++    backend_config="dimension=0,amount=1,start_indices=[7],limit_indices=[1527],strides=[1],bufferize=0"
+ })";
+ 
+   TF_ASSERT_OK_AND_ASSIGN(auto module,
