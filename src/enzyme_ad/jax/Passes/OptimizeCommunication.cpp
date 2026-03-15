@@ -2157,9 +2157,10 @@ struct RotateCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
 };
 
 struct RotateSpmdOptimize : public OpRewritePattern<enzymexla::RotateOp> {
-
-  RotateSpmdOptimize(MLIRContext *context, PatternBenefit benefit = 1)
-      : OpRewritePattern(context, benefit) {}
+  int64_t bufferize;
+  RotateSpmdOptimize(int64_t bufferize, MLIRContext *context,
+                     PatternBenefit benefit = 1)
+      : OpRewritePattern(context, benefit), bufferize(bufferize) {}
   LogicalResult matchAndRewrite(enzymexla::RotateOp rotate,
                                 PatternRewriter &rewriter) const override {
     if (rotate->getParentOfType<sdy::ManualComputationOp>())
@@ -2181,6 +2182,95 @@ struct RotateSpmdOptimize : public OpRewritePattern<enzymexla::RotateOp> {
 
     assert(rotate.getType().getShape()[rotateDimension] > 0);
     assert(rotate.getAmount() < rotate.getType().getShape()[rotateDimension]);
+
+    int64_t shard_size = (rotate.getType().getShape()[rotateDimension] +
+                          numDevicesAlongDimension - 1) /
+                         numDevicesAlongDimension;
+
+    if (rotate.getAmount() <= shard_size) {
+      // Our op is rotate left:
+      std::string opaque =
+          "dimension=" + std::to_string(rotateDimension) +
+          ",left_amount=" + std::to_string(rotate.getAmount()) +
+          ",right_amount=0,bufferize=" + std::to_string(bufferize);
+
+      auto fnSym = rewriter.getStringAttr("_SPMDInternalOp_MultiRotate");
+
+      SmallVector<Type, 2> resultTypes(rotate.getAmount() + 1,
+                                       rotate.getType());
+
+      // Replace with a custom call
+      auto ccall = rewriter.create<stablehlo::CustomCallOp>(
+          rotate.getLoc(), resultTypes, rotate->getOperands(), fnSym,
+          /*has_side_effect=*/rewriter.getBoolAttr(false),
+          /*backend_config=*/rewriter.getStringAttr(opaque),
+          /*api_version=*/nullptr,
+          /*called_computations=*/nullptr,
+          /*operand_layouts=*/nullptr,
+          /*result_layouts=*/nullptr,
+          /*output_operand_aliases=*/nullptr);
+
+      SmallVector<sdy::TensorShardingAttr> newShardings(rotate.getAmount() + 1,
+                                                        rotateSharding);
+      mlir::sdy::setShardings(ccall, sdy::TensorShardingPerValueAttr::get(
+                                         rotate.getContext(), newShardings));
+      rewriter.replaceOp(rotate, ValueRange(ccall->getResults()[0]));
+
+      Value neutral = ccall.getResult(rotate.getAmount());
+      DominanceInfo domInfo;
+      rewriter.replaceUsesWithIf(ccall.getOperands()[0], neutral,
+                                 [&](OpOperand &use) {
+                                   Operation *user = use.getOwner();
+                                   if (!domInfo.properlyDominates(ccall, user))
+                                     return false;
+                                   return true;
+                                 });
+      return success();
+    }
+
+    if (rotate.getType().getShape()[rotateDimension] - rotate.getAmount() <=
+        shard_size) {
+      int64_t right_amount =
+          rotate.getType().getShape()[rotateDimension] - rotate.getAmount();
+      // Our op is rotate left:
+      std::string opaque =
+          "dimension=" + std::to_string(rotateDimension) +
+          ",left_amount=0,right_amount=" + std::to_string(right_amount) +
+          ",bufferize=" + std::to_string(bufferize);
+
+      auto fnSym = rewriter.getStringAttr("_SPMDInternalOp_MultiRotate");
+
+      SmallVector<Type, 2> resultTypes(right_amount + 1, rotate.getType());
+
+      // Replace with a custom call
+      auto ccall = rewriter.create<stablehlo::CustomCallOp>(
+          rotate.getLoc(), resultTypes, rotate->getOperands(), fnSym,
+          /*has_side_effect=*/rewriter.getBoolAttr(false),
+          /*backend_config=*/rewriter.getStringAttr(opaque),
+          /*api_version=*/nullptr,
+          /*called_computations=*/nullptr,
+          /*operand_layouts=*/nullptr,
+          /*result_layouts=*/nullptr,
+          /*output_operand_aliases=*/nullptr);
+
+      SmallVector<sdy::TensorShardingAttr> newShardings(right_amount + 1,
+                                                        rotateSharding);
+      mlir::sdy::setShardings(ccall, sdy::TensorShardingPerValueAttr::get(
+                                         rotate.getContext(), newShardings));
+      rewriter.replaceOp(rotate, ValueRange(ccall->getResults()[right_amount]));
+
+      Value neutral = ccall.getResult(0);
+      DominanceInfo domInfo;
+      rewriter.replaceUsesWithIf(ccall.getOperands()[0], neutral,
+                                 [&](OpOperand &use) {
+                                   Operation *user = use.getOwner();
+                                   if (!domInfo.properlyDominates(ccall, user))
+                                     return false;
+                                   return true;
+                                 });
+
+      return success();
+    }
 
     // Our op is rotate left, the spmd one is rotate right. rotateleft(x) =
     // rotateright(-x), which we add the dim size to make positive.
@@ -2208,10 +2298,10 @@ struct RotateSpmdOptimize : public OpRewritePattern<enzymexla::RotateOp> {
 
 struct MultiRotateCustomCallOptimize
     : public OpRewritePattern<enzymexla::MultiRotateOp> {
-
-  MultiRotateCustomCallOptimize(MLIRContext *context,
+  int64_t bufferize;
+  MultiRotateCustomCallOptimize(int64_t bufferize, MLIRContext *context,
                                 PatternBenefit benefit = 1)
-      : OpRewritePattern(context, benefit) {}
+      : OpRewritePattern(context, benefit), bufferize(bufferize) {}
   LogicalResult matchAndRewrite(enzymexla::MultiRotateOp rotate,
                                 PatternRewriter &rewriter) const override {
     if (rotate->getParentOfType<sdy::ManualComputationOp>())
@@ -2239,7 +2329,8 @@ struct MultiRotateCustomCallOptimize
     std::string opaque =
         "dimension=" + std::to_string(rotateDimension) +
         ",left_amount=" + std::to_string(rotate.getLeftAmount()) +
-        ",right_amount=" + std::to_string(rotate.getRightAmount());
+        ",right_amount=" + std::to_string(rotate.getRightAmount()) +
+        ",bufferize=" + std::to_string(bufferize);
 
     auto fnSym = rewriter.getStringAttr("_SPMDInternalOp_MultiRotate");
 
@@ -2319,9 +2410,10 @@ bool detectCrossShardPattern(Value operand, Operation *op,
 
 struct MultiSliceCustomCallOptimize
     : public OpRewritePattern<enzymexla::MultiSliceOp> {
-
-  MultiSliceCustomCallOptimize(MLIRContext *context, PatternBenefit benefit = 1)
-      : OpRewritePattern(context, benefit) {}
+  int64_t bufferize;
+  MultiSliceCustomCallOptimize(int64_t bufferize, MLIRContext *context,
+                               PatternBenefit benefit = 1)
+      : OpRewritePattern(context, benefit), bufferize(bufferize) {}
 
   std::string serializeDenseI64ArrayAttr(ArrayRef<int64_t> array) const {
     std::string result = "[";
@@ -2447,7 +2539,8 @@ struct MultiSliceCustomCallOptimize
                          ",amount=" + std::to_string(slice.getAmount()) +
                          ",start_indices=" + start_indices_str +
                          ",limit_indices=" + limit_indices_str +
-                         ",strides=" + strides_str;
+                         ",strides=" + strides_str +
+                         ",bufferize=" + std::to_string(bufferize);
 
     auto fnSym = rewriter.getStringAttr("_SPMDInternalOp_MultiSlice");
 
@@ -4950,7 +5043,8 @@ struct OptimizeCommunicationPass
                                        PatternBenefit(rotate_comm));
 
     if (rotate_spmd > 0)
-      patterns.add<RotateSpmdOptimize>(context, PatternBenefit(rotate_spmd));
+      patterns.add<RotateSpmdOptimize>(multi_buffer, context,
+                                       PatternBenefit(rotate_spmd));
 
     if (multirotate_spmd > 0)
       patterns.add<MultiRotateSpmdOptimize>(context,
@@ -4958,11 +5052,11 @@ struct OptimizeCommunicationPass
 
     if (multirotate_custom_call > 0)
       patterns.add<MultiRotateCustomCallOptimize>(
-          context, PatternBenefit(multirotate_custom_call));
+          multi_buffer, context, PatternBenefit(multirotate_custom_call));
 
     if (multislice_custom_call > 0)
       patterns.add<MultiSliceCustomCallOptimize>(
-          context, PatternBenefit(multislice_custom_call));
+          multi_buffer, context, PatternBenefit(multislice_custom_call));
 
     if (rotate_to_pad_comm > 0)
       patterns.add<RotateToPadCommOptimize>(context,

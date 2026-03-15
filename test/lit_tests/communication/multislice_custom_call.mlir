@@ -16,7 +16,7 @@ module  {
 }
 
 // CHECK:  func.func public @main(%arg0: tensor<10xf32> {sdy.sharding = #sdy.sharding<@mesh, [{"a", ?}]>}) -> (tensor<7xf32>, tensor<7xf32>, tensor<7xf32>) {
-// CHECK-NEXT:    %0:3 = stablehlo.custom_call @_SPMDInternalOp_MultiSlice(%arg0) {backend_config = "dimension=0,amount=2,start_indices=[0],limit_indices=[7],strides=[1]", sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"a", ?}]>, <@mesh, [{"a", ?}]>, <@mesh, [{"a", ?}]>]>} : (tensor<10xf32>) -> (tensor<7xf32>, tensor<7xf32>, tensor<7xf32>)
+// CHECK-NEXT:    %0:3 = stablehlo.custom_call @_SPMDInternalOp_MultiSlice(%arg0) {backend_config = "dimension=0,amount=2,start_indices=[0],limit_indices=[7],strides=[1],bufferize=0", sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{"a", ?}]>, <@mesh, [{"a", ?}]>, <@mesh, [{"a", ?}]>]>} : (tensor<10xf32>) -> (tensor<7xf32>, tensor<7xf32>, tensor<7xf32>)
 // CHECK-NEXT:    return %0#0, %0#1, %0#2 : tensor<7xf32>, tensor<7xf32>, tensor<7xf32>
 // CHECK-NEXT:  }
 
@@ -38,6 +38,6 @@ module {
 
 // CHECK:  func.func public @main(%arg0: tensor<20x1536x3056xf64> {sdy.sharding = #sdy.sharding<@mesh, [{}, {"y"}, {"x"}]>}) -> (tensor<4x1520x3056xf64>, tensor<4x1520x3056xf64>) {
 // CHECK-NEXT:    %[[SLICE:.*]] = stablehlo.slice %arg0 [8:12, 0:1536, 0:3056] {sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{}, {"y"}, {"x"}]>]>} : (tensor<20x1536x3056xf64>) -> tensor<4x1536x3056xf64>
-// CHECK-NEXT:    %[[CC:.*]]:2 = stablehlo.custom_call @_SPMDInternalOp_MultiSlice(%[[SLICE]]) {backend_config = "dimension=1,amount=1,start_indices=[0, 9, 0],limit_indices=[4, 1529, 3056],strides=[1, 1, 1]", sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{}, {"y"}, {"x"}]>, <@mesh, [{}, {"y"}, {"x"}]>]>} : (tensor<4x1536x3056xf64>) -> (tensor<4x1520x3056xf64>, tensor<4x1520x3056xf64>)
+// CHECK-NEXT:    %[[CC:.*]]:2 = stablehlo.custom_call @_SPMDInternalOp_MultiSlice(%[[SLICE]]) {backend_config = "dimension=1,amount=1,start_indices=[0, 9, 0],limit_indices=[4, 1529, 3056],strides=[1, 1, 1],bufferize=0", sdy.sharding = #sdy.sharding_per_value<[<@mesh, [{}, {"y"}, {"x"}]>, <@mesh, [{}, {"y"}, {"x"}]>]>} : (tensor<4x1536x3056xf64>) -> (tensor<4x1520x3056xf64>, tensor<4x1520x3056xf64>)
 // CHECK-NEXT:    return %[[CC]]#0, %[[CC]]#1 : tensor<4x1520x3056xf64>, tensor<4x1520x3056xf64>
 // CHECK-NEXT:  }
