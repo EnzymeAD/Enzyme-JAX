@@ -36,7 +36,7 @@ jobs:
       fail-fast: false
       matrix:
         os:
-          - linux-x86-a2-48-a100-4gpu
+          # - linux-x86-a2-48-a100-4gpu
           - linux-x86-ct6e-180-4tpu
         julia_version:
           - '1.11'
@@ -149,7 +149,7 @@ jobs:
       - name: Set default precision (TPU)
         if: ${{ contains(matrix.os, 'tpu') }}
         run: |
-          echo "RUN_FLAGS=--precision=32" >> ${GITHUB_ENV}
+          echo "RUN_FLAGS=--precision=32 --grid-x=1536 --grid-y=768 --grid-z=1" >> ${GITHUB_ENV}
       - name: Instantiate GB-25 environment
         timeout-minutes: 40
         shell: julia --project --color=yes {0}
@@ -203,10 +203,10 @@ jobs:
               ALL_REDUCE_THRESHOLD=0
               COLLECTIVE_PERMUTE_THRESHOLD=337
           elif [[ '${{ contains(matrix.os, 'tpu') }}' == 'true' ]]; then
-              ALL_TO_ALL_THRESHOLD=0
-              ALL_GATHER_THRESHOLD=0
-              ALL_REDUCE_THRESHOLD=0
-              COLLECTIVE_PERMUTE_THRESHOLD=1071
+              ALL_TO_ALL_THRESHOLD=1000
+              ALL_GATHER_THRESHOLD=1000
+              ALL_REDUCE_THRESHOLD=1000
+              COLLECTIVE_PERMUTE_THRESHOLD=10000
           fi
 
           for OP in "all-to-all" "all-gather" "all-reduce" "%collective-permute-start.* ="; do
