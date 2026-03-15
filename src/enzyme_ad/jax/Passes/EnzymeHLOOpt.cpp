@@ -12566,64 +12566,10 @@ template <typename T> struct CSE final : CheckedOpRewritePattern<T, CSE<T>> {
           }
         }
 
-        bool safeToMerge = true;
-        for (auto attr : op->getDiscardableAttrs()) {
-          if (!nop->hasAttr(attr.getName()) || nop->getAttr(attr.getName()) != attr.getValue()) {
-            if (!attr.getName().strref().starts_with("enzymexla.")) {
-              safeToMerge = false;
-              break;
-            }
-          }
-        }
-        for (auto attr : nop->getDiscardableAttrs()) {
-          if (!op->hasAttr(attr.getName()) || op->getAttr(attr.getName()) != attr.getValue()) {
-            if (!attr.getName().strref().starts_with("enzymexla.")) {
-              safeToMerge = false;
-              break;
-            }
-          }
-        }
-        
-        if (!safeToMerge)
-          continue;
-
-        auto combineAttrs = [&](Operation *surviving, Operation *erased) {
-          for (auto attr : erased->getDiscardableAttrs()) {
-            if (!surviving->hasAttr(attr.getName())) {
-              surviving->setAttr(attr.getName(), attr.getValue());
-            } else if (attr.getName().strref().starts_with("enzymexla.")) {
-              auto sArray = dyn_cast<ArrayAttr>(surviving->getAttr(attr.getName()));
-              auto eArray = dyn_cast<ArrayAttr>(attr.getValue());
-              if (sArray && eArray && sArray.size() == eArray.size()) {
-                SmallVector<Attribute> merged;
-                bool changed = false;
-                for (auto [s, e] : llvm::zip(sArray, eArray)) {
-                  std::string sStr, eStr;
-                  llvm::raw_string_ostream sOs(sStr), eOs(eStr);
-                  s.print(sOs);
-                  e.print(eOs);
-                  if (!StringRef(eStr).contains("NOTGUARANTEED") &&
-                      StringRef(sStr).contains("NOTGUARANTEED")) {
-                    merged.push_back(e);
-                    changed = true;
-                  } else {
-                    merged.push_back(s);
-                  }
-                }
-                if (changed) {
-                  surviving->setAttr(attr.getName(), ArrayAttr::get(surviving->getContext(), merged));
-                }
-              }
-            }
-          }
-        };
-
         if (nop->isBeforeInBlock(op)) {
-          combineAttrs(nop, op);
           rewriter.replaceOp(op, nop);
           return success();
         } else {
-          combineAttrs(op, nop);
           rewriter.replaceOp(nop, op);
           return success();
         }
