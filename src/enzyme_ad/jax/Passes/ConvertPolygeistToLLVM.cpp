@@ -2788,7 +2788,7 @@ private:
 
     auto ptr1ty = LLVM::LLVMPointerType::get(rewriter.getContext(), 1);
 
-      if (backend == "cuda") {
+    if (backend == "cuda") {
 
       Type tys[] = {ptr1ty};
       auto cudaFreeFn =
@@ -2801,9 +2801,9 @@ private:
       Value ptr_arg = ptr;
       if (ptr.getType() != ptr1ty) {
         if (isa<LLVM::LLVMPointerType>(ptr.getType())) {
-           ptr_arg = rewriter.create<LLVM::AddrSpaceCastOp>(loc, ptr1ty, ptr);
+          ptr_arg = rewriter.create<LLVM::AddrSpaceCastOp>(loc, ptr1ty, ptr);
         } else {
-           ptr_arg = rewriter.create<LLVM::BitcastOp>(loc, ptr1ty, ptr);
+          ptr_arg = rewriter.create<LLVM::BitcastOp>(loc, ptr1ty, ptr);
         }
       }
 
@@ -2823,9 +2823,9 @@ private:
       Value ptr_arg = ptr;
       if (ptr.getType() != ptr1ty) {
         if (isa<LLVM::LLVMPointerType>(ptr.getType())) {
-           ptr_arg = rewriter.create<LLVM::AddrSpaceCastOp>(loc, ptr1ty, ptr);
+          ptr_arg = rewriter.create<LLVM::AddrSpaceCastOp>(loc, ptr1ty, ptr);
         } else {
-           ptr_arg = rewriter.create<LLVM::BitcastOp>(loc, ptr1ty, ptr);
+          ptr_arg = rewriter.create<LLVM::BitcastOp>(loc, ptr1ty, ptr);
         }
       }
       Value args[] = {
@@ -2843,8 +2843,18 @@ private:
         return failure();
       }
 
+      auto ptrty = LLVM::LLVMPointerType::get(rewriter.getContext());
+      Value ptr_arg = ptr;
+      if (ptr.getType() != ptrty) {
+        if (isa<LLVM::LLVMPointerType>(ptr.getType())) {
+          ptr_arg = rewriter.create<LLVM::AddrSpaceCastOp>(loc, ptrty, ptr);
+        } else {
+          ptr_arg = rewriter.create<LLVM::BitcastOp>(loc, ptrty, ptr);
+        }
+      }
+
       Value args[] = {
-          ptr,
+          ptr_arg,
       };
       LLVM::CallOp::create(rewriter, loc, freeFunc.value(), args);
     } else if (backend.starts_with("xla")) {
@@ -2863,7 +2873,16 @@ private:
 
       auto xdata = insertXLAInitDeinit(moduleOp, backend, rewriter);
 
-      Value args[] = {xdata, ptr};
+      Value ptr_arg = ptr;
+      if (ptr.getType() != ptrty) {
+        if (isa<LLVM::LLVMPointerType>(ptr.getType())) {
+          ptr_arg = rewriter.create<LLVM::AddrSpaceCastOp>(loc, ptrty, ptr);
+        } else {
+          ptr_arg = rewriter.create<LLVM::BitcastOp>(loc, ptrty, ptr);
+        }
+      }
+
+      Value args[] = {xdata, ptr_arg};
 
       LLVM::CallOp::create(rewriter, loc, xlaFreeFn.value(), args);
     } else {
