@@ -31004,7 +31004,7 @@ struct ReduceBroadcastInDimDotGeneral
     }
 
     // create new dot_general with reduced inputs
-    SmallVector<int64_t> dotLhsContractDims, dotRhsContractDims;
+    SmallVector<int64_t> dotLhsContractDims, dotRhsContractDims, dotLhsBatchDims, dotRhsBatchDims;
 
     for (const auto &dim : dotDims.getLhsContractingDimensions()) {
       if (std::find(lhsReduceDims.begin(), lhsReduceDims.end(), dim) ==
@@ -31022,8 +31022,18 @@ struct ReduceBroadcastInDimDotGeneral
       }
     }
 
+    for (const auto &dim : dotDims.getLhsBatchingDimensions()) {
+      auto shift = llvm::count_if(lhsReduceDims, [&](int64_t d) { return d < dim; });
+      dotLhsBatchDims.push_back(dim - shift);
+    }
+
+    for (const auto &dim : dotDims.getRhsBatchingDimensions()) {
+      auto shift = llvm::count_if(rhsReduceDims, [&](int64_t d) { return d < dim; });
+      dotRhsBatchDims.push_back(dim - shift);
+    }
+
     auto newDotDims = DotDimensionNumbersAttr::get(
-        rewriter.getContext(), dotDims.getLhsBatchingDimensions(), dotDims.getRhsBatchingDimensions(),
+        rewriter.getContext(), dotLhsBatchDims, dotRhsBatchDims,
         dotLhsContractDims, dotRhsContractDims);
     auto newDotOp = stablehlo::DotGeneralOp::create(
         rewriter, op.getLoc(),
