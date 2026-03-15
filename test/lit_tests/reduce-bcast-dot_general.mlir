@@ -42,3 +42,31 @@ func.func @contract_bcast_dim_both(%a: tensor<3xf32>, %b: tensor<4xf32>) -> tens
 // CHECK-NEXT:     %0 = stablehlo.dot_general %arg0, %arg1, contracting_dims = [] x [], precision = [DEFAULT, DEFAULT] : (tensor<3xf32>, tensor<4xf32>) -> tensor<3x4xf32>
 // CHECK-NEXT:     return %0 : tensor<3x4xf32>
 // CHECK-NEXT: }
+
+func.func @contract_bcast_dim_left_with_batch(%a: tensor<3xf32>, %b: tensor<4x3xf32>) -> tensor<3xf32> {
+    %a_bcast = stablehlo.broadcast_in_dim %a, dims = [0] : (tensor<3xf32>) -> tensor<3x4xf32>
+    %c = stablehlo.dot_general %a_bcast, %b, batching_dims = [0] x [1], contracting_dims = [1] x [0], precision = [DEFAULT, DEFAULT] : (tensor<3x4xf32>, tensor<4x3xf32>) -> tensor<3xf32>
+    return %c : tensor<3xf32>
+}
+
+// CHECK: func.func @contract_bcast_dim_left_with_batch(%arg0: tensor<3xf32>, %arg1: tensor<4x3xf32>) -> tensor<3xf32> {
+// CHECK-NEXT:     %cst = stablehlo.constant dense<0.000000e+00> : tensor<f32>
+// CHECK-NEXT:     %0 = stablehlo.reduce(%arg1 init: %cst) applies stablehlo.add across dimensions = [0] : (tensor<4x3xf32>, tensor<f32>) -> tensor<3xf32>
+// CHECK-NEXT:     %1 = stablehlo.dot_general %arg0, %0, batching_dims = [0] x [0], contracting_dims = [] x [], precision = [DEFAULT, DEFAULT] : (tensor<3xf32>, tensor<3xf32>) -> tensor<3xf32>
+// CHECK-NEXT:     return %1 : tensor<3xf32>
+// CHECK-NEXT: }
+
+// broadcast_in_dim: A_ik = A_i1
+// C = sum_ij(A_ij * B_ji) = sum_ij(A_i1 * B_ji) = sum_i(A_i1 * sum_j(B_ji))
+func.func @contract_all_dims(%a: tensor<3xf32>, %b: tensor<4x3xf32>) -> tensor<f32> {
+    %a_bcast = stablehlo.broadcast_in_dim %a, dims = [0] : (tensor<3xf32>) -> tensor<3x4xf32>
+    %c = stablehlo.dot_general %a_bcast, %b, contracting_dims = [0, 1] x [1, 0], precision = [DEFAULT, DEFAULT] : (tensor<3x4xf32>, tensor<4x3xf32>) -> tensor<f32>
+    return %c : tensor<f32>
+}
+
+// CHECK: func.func @contract_all_dims(%arg0: tensor<3xf32>, %arg1: tensor<4x3xf32>) -> tensor<f32> {
+// CHECK-NEXT:     %cst = stablehlo.constant dense<0.000000e+00> : tensor<f32>
+// CHECK-NEXT:     %0 = stablehlo.reduce(%arg1 init: %cst) applies stablehlo.add across dimensions = [0] : (tensor<4x3xf32>, tensor<f32>) -> tensor<3xf32>
+// CHECK-NEXT:     %1 = stablehlo.dot_general %arg0, %0, contracting_dims = [0] x [0], precision = [DEFAULT, DEFAULT] : (tensor<3xf32>, tensor<3xf32>) -> tensor<f32>
+// CHECK-NEXT:     return %1 : tensor<f32>
+// CHECK-NEXT: }
