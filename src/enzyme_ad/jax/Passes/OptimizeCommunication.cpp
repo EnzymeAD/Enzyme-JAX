@@ -2402,7 +2402,7 @@ bool detectCrossShardPattern(Value operand, Operation *op,
   if (startIndices[dim] > shardSize) {
     return false;
   }
-  if (shape[dim] - limitIndices[dim] > shardSize) {
+  if (limitIndices[dim] < (numShards - 1) * shardSize) {
     return false;
   }
   return true;
