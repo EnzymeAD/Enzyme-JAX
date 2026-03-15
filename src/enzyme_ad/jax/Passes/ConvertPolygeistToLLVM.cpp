@@ -2788,7 +2788,7 @@ private:
 
     auto ptr1ty = LLVM::LLVMPointerType::get(rewriter.getContext(), 1);
 
-    if (backend == "cuda") {
+      if (backend == "cuda") {
 
       Type tys[] = {ptr1ty};
       auto cudaFreeFn =
@@ -2798,8 +2798,17 @@ private:
         return failure();
       }
 
+      Value ptr_arg = ptr;
+      if (ptr.getType() != ptr1ty) {
+        if (isa<LLVM::LLVMPointerType>(ptr.getType())) {
+           ptr_arg = rewriter.create<LLVM::AddrSpaceCastOp>(loc, ptr1ty, ptr);
+        } else {
+           ptr_arg = rewriter.create<LLVM::BitcastOp>(loc, ptr1ty, ptr);
+        }
+      }
+
       Value args[] = {
-          ptr,
+          ptr_arg,
       };
       LLVM::CallOp::create(rewriter, loc, cudaFreeFn.value(), args);
     } else if (backend == "rocm") {
@@ -2811,8 +2820,16 @@ private:
         llvm::errs() << " hipfree already exists with different types\n";
         return failure();
       }
+      Value ptr_arg = ptr;
+      if (ptr.getType() != ptr1ty) {
+        if (isa<LLVM::LLVMPointerType>(ptr.getType())) {
+           ptr_arg = rewriter.create<LLVM::AddrSpaceCastOp>(loc, ptr1ty, ptr);
+        } else {
+           ptr_arg = rewriter.create<LLVM::BitcastOp>(loc, ptr1ty, ptr);
+        }
+      }
       Value args[] = {
-          ptr,
+          ptr_arg,
       };
       LLVM::CallOp::create(rewriter, loc, hipFreeFn.value(), args);
 

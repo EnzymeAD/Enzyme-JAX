@@ -467,8 +467,30 @@ enum __device_builtin__ cudaMemcpyKind
             builder, loc, builder.getI32Type(), cop.getArgOperands()[7]);
         auto stream = cop.getArgOperands()[8];
         llvm::SmallVector<mlir::Value> args;
-        for (unsigned i = 9; i < cop.getArgOperands().size(); i++)
-          args.push_back(cop.getArgOperands()[i]);
+        for (unsigned i = 9; i < cop.getArgOperands().size(); i++) {
+          mlir::Value arg = cop.getArgOperands()[i];
+          auto gpuTy0 = cur.getFunctionType();
+          mlir::Type expectedTy;
+          if (auto funcTy = dyn_cast<FunctionType>(gpuTy0)) {
+            expectedTy = funcTy.getInput(i - 9);
+          } else if (auto llvmFuncTy = dyn_cast<LLVM::LLVMFunctionType>(gpuTy0)) {
+            expectedTy = llvmFuncTy.getParamType(i - 9);
+          } else {
+            expectedTy = arg.getType(); // Should not happen given earlier checks
+          }
+
+          if (arg.getType() != expectedTy) {
+            if (isa<LLVM::LLVMPointerType>(arg.getType()) && isa<LLVM::LLVMPointerType>(expectedTy)) {
+              arg = LLVM::AddrSpaceCastOp::create(builder, loc, expectedTy, arg);
+            } else if (arg.getType().isIntOrIndexOrFloat() && expectedTy.isIntOrIndexOrFloat() &&
+                       arg.getType().getIntOrFloatBitWidth() == expectedTy.getIntOrFloatBitWidth()) {
+              arg = LLVM::BitcastOp::create(builder, loc, expectedTy, arg);
+            } else {
+              arg = LLVM::BitcastOp::create(builder, loc, expectedTy, arg); // Fallback
+            }
+          }
+          args.push_back(arg);
+        }
 
         Value grid[3];
         for (int i = 0; i < 3; i++) {
