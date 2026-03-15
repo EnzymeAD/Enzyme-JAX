@@ -48,6 +48,7 @@ jobs:
           # - '0123456789abcdef0123456789abcdef01234567'
         reactant_commit:
           - 'main'
+          - 's2c'
 
     steps:
       - name: Check GPUs
