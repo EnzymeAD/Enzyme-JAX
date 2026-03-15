@@ -847,4 +847,63 @@ module {
       llvm.return %0 : i16
     }
   }
+
+  gpu.module @test_module_half_math {
+    llvm.func @_ZL12__float2halff(f32) -> i16
+    llvm.func @_ZL4hlog6__half(i16) -> i16
+    llvm.func @_ZL6__hdiv6__halfS_(i16, i16) -> i16
+    llvm.func @_ZL12__half2float6__half(i16) -> f32
+    llvm.func @_ZL6__habs6__half(i16) -> i16
+    llvm.func @_ZL5__hlt6__halfS_(i16, i16) -> i1
+    llvm.func @_ZL6__hmul6__halfS_(i16, i16) -> i16
+    llvm.func @_ZL6__hadd6__halfS_(i16, i16) -> i16
+    llvm.func @_ZL5hsqrt6__half(i16) -> i16
+    llvm.func @_ZL6__hsub6__halfS_(i16, i16) -> i16
+    llvm.func @_ZL4hexp6__half(i16) -> i16
+    llvm.func @_ZL6__hneg6__half(i16) -> i16
+
+    llvm.func @gpu_half_math(%arg0: i16, %arg1: i16, %argf: f32) -> !llvm.struct<(i16, i16, i16, f32, i16, i1, i16, i16, i16, i16, i16, i16)> {
+      // CHECK-LABEL: @gpu_half_math
+      // CHECK: arith.truncf
+      // CHECK: math.log
+      // CHECK: arith.divf
+      // CHECK: arith.extf
+      // CHECK: math.absf
+      // CHECK: arith.cmpf olt
+      // CHECK: arith.mulf
+      // CHECK: arith.addf
+      // CHECK: math.sqrt
+      // CHECK: arith.subf
+      // CHECK: math.exp
+      // CHECK: arith.negf
+      %0 = llvm.call @_ZL12__float2halff(%argf) : (f32) -> i16
+      %1 = llvm.call @_ZL4hlog6__half(%arg0) : (i16) -> i16
+      %2 = llvm.call @_ZL6__hdiv6__halfS_(%arg0, %arg0) : (i16, i16) -> i16
+      %3 = llvm.call @_ZL12__half2float6__half(%arg0) : (i16) -> f32
+      %4 = llvm.call @_ZL6__habs6__half(%arg0) : (i16) -> i16
+      %5 = llvm.call @_ZL5__hlt6__halfS_(%arg0, %arg1) : (i16, i16) -> i1
+      %6 = llvm.call @_ZL6__hmul6__halfS_(%arg0, %arg1) : (i16, i16) -> i16
+      %7 = llvm.call @_ZL6__hadd6__halfS_(%arg0, %arg1) : (i16, i16) -> i16
+      %8 = llvm.call @_ZL5hsqrt6__half(%arg0) : (i16) -> i16
+      %9 = llvm.call @_ZL6__hsub6__halfS_(%arg0, %arg1) : (i16, i16) -> i16
+      %10 = llvm.call @_ZL4hexp6__half(%arg0) : (i16) -> i16
+      %11 = llvm.call @_ZL6__hneg6__half(%arg0) : (i16) -> i16
+
+      %s0 = llvm.mlir.undef : !llvm.struct<(i16, i16, i16, f32, i16, i1, i16, i16, i16, i16, i16, i16)>
+      %s1 = llvm.insertvalue %0, %s0[0] : !llvm.struct<(i16, i16, i16, f32, i16, i1, i16, i16, i16, i16, i16, i16)>
+      %s2 = llvm.insertvalue %1, %s1[1] : !llvm.struct<(i16, i16, i16, f32, i16, i1, i16, i16, i16, i16, i16, i16)>
+      %s3 = llvm.insertvalue %2, %s2[2] : !llvm.struct<(i16, i16, i16, f32, i16, i1, i16, i16, i16, i16, i16, i16)>
+      %s4 = llvm.insertvalue %3, %s3[3] : !llvm.struct<(i16, i16, i16, f32, i16, i1, i16, i16, i16, i16, i16, i16)>
+      %s5 = llvm.insertvalue %4, %s4[4] : !llvm.struct<(i16, i16, i16, f32, i16, i1, i16, i16, i16, i16, i16, i16)>
+      %s6 = llvm.insertvalue %5, %s5[5] : !llvm.struct<(i16, i16, i16, f32, i16, i1, i16, i16, i16, i16, i16, i16)>
+      %s7 = llvm.insertvalue %6, %s6[6] : !llvm.struct<(i16, i16, i16, f32, i16, i1, i16, i16, i16, i16, i16, i16)>
+      %s8 = llvm.insertvalue %7, %s7[7] : !llvm.struct<(i16, i16, i16, f32, i16, i1, i16, i16, i16, i16, i16, i16)>
+      %s9 = llvm.insertvalue %8, %s8[8] : !llvm.struct<(i16, i16, i16, f32, i16, i1, i16, i16, i16, i16, i16, i16)>
+      %s10 = llvm.insertvalue %9, %s9[9] : !llvm.struct<(i16, i16, i16, f32, i16, i1, i16, i16, i16, i16, i16, i16)>
+      %s11 = llvm.insertvalue %10, %s10[10] : !llvm.struct<(i16, i16, i16, f32, i16, i1, i16, i16, i16, i16, i16, i16)>
+      %s12 = llvm.insertvalue %11, %s11[11] : !llvm.struct<(i16, i16, i16, f32, i16, i1, i16, i16, i16, i16, i16, i16)>
+
+      llvm.return %s12 : !llvm.struct<(i16, i16, i16, f32, i16, i1, i16, i16, i16, i16, i16, i16)>
+    }
+  }
 }
