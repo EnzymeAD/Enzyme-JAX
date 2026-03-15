@@ -2786,11 +2786,11 @@ private:
     auto i32 = rewriter.getIntegerType(32);
     auto moduleOp = deallocOp->getParentOfType<ModuleOp>();
 
-    auto ptr1ty = LLVM::LLVMPointerType::get(rewriter.getContext(), 1);
+    auto ptrty = LLVM::LLVMPointerType::get(rewriter.getContext());
 
     if (backend == "cuda") {
 
-      Type tys[] = {ptr1ty};
+      Type tys[] = {ptrty};
       auto cudaFreeFn =
           LLVM::lookupOrCreateFn(rewriter, moduleOp, "cudaFree", tys, i32);
       if (failed(cudaFreeFn)) {
@@ -2799,11 +2799,11 @@ private:
       }
 
       Value ptr_arg = ptr;
-      if (ptr.getType() != ptr1ty) {
+      if (ptr.getType() != ptrty) {
         if (isa<LLVM::LLVMPointerType>(ptr.getType())) {
-          ptr_arg = rewriter.create<LLVM::AddrSpaceCastOp>(loc, ptr1ty, ptr);
+          ptr_arg = rewriter.create<LLVM::AddrSpaceCastOp>(loc, ptrty, ptr);
         } else {
-          ptr_arg = rewriter.create<LLVM::BitcastOp>(loc, ptr1ty, ptr);
+          ptr_arg = rewriter.create<LLVM::BitcastOp>(loc, ptrty, ptr);
         }
       }
 
@@ -2812,7 +2812,7 @@ private:
       };
       LLVM::CallOp::create(rewriter, loc, cudaFreeFn.value(), args);
     } else if (backend == "rocm") {
-      Type tys[] = {ptr1ty};
+      Type tys[] = {ptrty};
       auto hipFreeFn =
           LLVM::lookupOrCreateFn(rewriter, moduleOp, "hipFree", tys, i32);
 
@@ -2821,11 +2821,11 @@ private:
         return failure();
       }
       Value ptr_arg = ptr;
-      if (ptr.getType() != ptr1ty) {
+      if (ptr.getType() != ptrty) {
         if (isa<LLVM::LLVMPointerType>(ptr.getType())) {
-          ptr_arg = rewriter.create<LLVM::AddrSpaceCastOp>(loc, ptr1ty, ptr);
+          ptr_arg = rewriter.create<LLVM::AddrSpaceCastOp>(loc, ptrty, ptr);
         } else {
-          ptr_arg = rewriter.create<LLVM::BitcastOp>(loc, ptr1ty, ptr);
+          ptr_arg = rewriter.create<LLVM::BitcastOp>(loc, ptrty, ptr);
         }
       }
       Value args[] = {
@@ -3612,7 +3612,7 @@ public:
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = op->getLoc();
     MLIRContext *context = rewriter.getContext();
-    Operation *newOp;
+    Operation *newOp = nullptr;
     switch (op.getDimension()) {
     case gpu::Dimension::x:
       newOp = XOp::create(rewriter, loc, IntegerType::get(context, 32));

@@ -19,6 +19,8 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
   llvm.func local_unnamed_addr @__mlir_cuda_caller_phase3(...) attributes {sym_visibility = "private"}
 }
 
-// CHECK-LABEL: llvm.func local_unnamed_addr @main(%arg0: !llvm.ptr)
+// CHECK-LABEL: llvm.func {{.*}} @main(%arg0: !llvm.ptr)
 // CHECK: %[[CAST:.*]] = llvm.addrspacecast %arg0 : !llvm.ptr to !llvm.ptr<1>
-// CHECK: gpu.launch_func  @__mlir_gpu_module::@reactant$_Z18__device_stub__fooPi blocks in ({{.*}}) threads in ({{.*}}) : i64 dynamic_shared_memory_size {{.*}} args(%[[CAST]] : !llvm.ptr<1>)
+// CHECK: gpu.launch blocks
+// CHECK:   llvm.call @reactant$_Z18__device_stub__fooPi(%[[CAST]]) : (!llvm.ptr<1>) -> ()
+// CHECK:   gpu.terminator
