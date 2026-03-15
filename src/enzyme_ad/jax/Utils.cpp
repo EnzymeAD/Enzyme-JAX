@@ -1643,13 +1643,55 @@ detectIotaLikeTensorImpl(DenseElementsAttr denseAttr) {
 } // namespace
 
 bool isZero(mlir::ElementsAttr v) {
-  auto iface = llvm::cast<mlir::enzyme::AutoDiffTypeInterface>(v.getType());
-  return iface.isZeroAttr(v);
+  if (auto iface =
+          llvm::dyn_cast<mlir::enzyme::AutoDiffTypeInterface>(v.getType())) {
+    if (iface.isZeroAttr(v)) {
+      return true;
+    }
+  }
+
+  if (auto denseAttr = dyn_cast<mlir::DenseElementsAttr>(v)) {
+    auto type = denseAttr.getElementType();
+    if (isa<mlir::FloatType>(type)) {
+      for (const auto &apFloat : denseAttr.getValues<llvm::APFloat>()) {
+        if (!apFloat.isZero())
+          return false;
+      }
+      return true;
+    } else if (isa<mlir::IntegerType>(type)) {
+      for (const auto &apInt : denseAttr.getValues<llvm::APInt>()) {
+        if (!apInt.isZero())
+          return false;
+      }
+      return true;
+    }
+  }
+
+  return false;
 }
 
 bool isZero(mlir::Value v) {
-  auto iface = llvm::cast<mlir::enzyme::AutoDiffTypeInterface>(v.getType());
-  return iface.isZero(v);
+  if (auto iface =
+          llvm::dyn_cast<mlir::enzyme::AutoDiffTypeInterface>(v.getType())) {
+    if (iface.isZero(v)) {
+      return true;
+    }
+  }
+
+  mlir::ElementsAttr elementsAttr;
+  if (matchPattern(v, m_Constant(&elementsAttr))) {
+    return isZero(elementsAttr);
+  }
+
+  // Handle sdy.constant if it doesn't match m_Constant
+  if (auto sdyConst =
+          dyn_cast_if_present<mlir::sdy::ConstantOp>(v.getDefiningOp())) {
+    if (auto attr = dyn_cast<mlir::ElementsAttr>(sdyConst.getValue())) {
+      return isZero(attr);
+    }
+  }
+
+  return false;
 }
 
 std::optional<IotaLikeTensor>
