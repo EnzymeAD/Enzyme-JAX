@@ -149,7 +149,7 @@ jobs:
       - name: Set default precision (TPU)
         if: ${{ contains(matrix.os, 'tpu') }}
         run: |
-          echo "RUN_FLAGS=--precision=32 --grid-x=1536 --grid-y=768 --grid-z=1" >> ${GITHUB_ENV}
+          echo "RUN_FLAGS=--precision=32 --grid-x=1536 --grid-y=768 --grid-z=2" >> ${GITHUB_ENV}
       - name: Instantiate GB-25 environment
         timeout-minutes: 40
         shell: julia --project --color=yes {0}
