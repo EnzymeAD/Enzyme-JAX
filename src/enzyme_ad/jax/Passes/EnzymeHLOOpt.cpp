@@ -8571,9 +8571,7 @@ struct CompareAbs
       auto abs = operand.getDefiningOp<stablehlo::AbsOp>();
       if (!abs)
         continue;
-      if (!cast<mlir::enzyme::AutoDiffTypeInterface>(
-               cmpOp->getOperand(1 - i).getType())
-               .isZero(cmpOp->getOperand(1 - i)))
+      if (!enzyme::isZero(cmpOp->getOperand(1 - i)))
         continue;
 
       auto dir = cmpOp.getComparisonDirection();
@@ -8645,9 +8643,7 @@ struct CompareMul
       auto mul = operand.getDefiningOp<stablehlo::MulOp>();
       if (!mul)
         continue;
-      if (!cast<mlir::enzyme::AutoDiffTypeInterface>(
-               cmpOp->getOperand(1 - i).getType())
-               .isZero(cmpOp->getOperand(1 - i)))
+      if (!enzyme::isZero(cmpOp->getOperand(1 - i)))
         continue;
 
       for (int j = 0; j < 2; j++) {
@@ -8757,9 +8753,7 @@ struct CompareConvert
       if (!conv.getOperand().getType().getElementType().isInteger())
         continue;
 
-      if (!cast<mlir::enzyme::AutoDiffTypeInterface>(
-               cmpOp->getOperand(1 - i).getType())
-               .isZero(cmpOp->getOperand(1 - i)))
+      if (!enzyme::isZero(cmpOp->getOperand(1 - i)))
         continue;
 
       SplatElementsAttr splat;
@@ -30104,7 +30098,7 @@ struct ReduceMulToDotGeneral
 
     auto checkCommonReduce = mlir::stablehlo::CheckCommonReduceOp(op);
     if (checkCommonReduce.kind != ReduceOpKind::Add ||
-        !matchPattern(op.getInitValues()[0], m_AnyZeroFloat())) {
+        !enzyme::isZero(op.getInitValues()[0])) {
       return rewriter.notifyMatchFailure(op, "reduction is not add");
     }
 
@@ -30144,7 +30138,7 @@ struct SplitReduceAddMulToAddDotGeneral final
     auto checkCommonReduce = mlir::stablehlo::CheckCommonReduceOp(op);
     auto initVal = op.getInitValues()[0];
     if (checkCommonReduce.kind != ReduceOpKind::Add ||
-        !matchPattern(initVal, m_AnyZeroFloat())) {
+        !enzyme::isZero(initVal)) {
       return rewriter.notifyMatchFailure(op, "reduction is not add");
     }
 

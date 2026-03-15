@@ -1121,6 +1121,9 @@ struct PaddedTensor {
 
 std::optional<PaddedTensor> detectPaddedTensor(mlir::DenseElementsAttr attr);
 
+bool isZero(mlir::ElementsAttr v);
+bool isZero(mlir::Value v);
+
 // Helper to check if a TypedAttr is zero
 inline bool isZeroAttr(mlir::TypedAttr attr) {
   if (auto intAttr = llvm::dyn_cast<mlir::IntegerAttr>(attr))

@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "Utils.h"
+#include "Interfaces/AutoDiffTypeInterface.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -1640,6 +1641,16 @@ detectIotaLikeTensorImpl(DenseElementsAttr denseAttr) {
 }
 
 } // namespace
+
+bool isZero(mlir::ElementsAttr v) {
+  auto iface = llvm::cast<mlir::enzyme::AutoDiffTypeInterface>(v.getType());
+  return iface.isZeroAttr(v);
+}
+
+bool isZero(mlir::Value v) {
+  auto iface = llvm::cast<mlir::enzyme::AutoDiffTypeInterface>(v.getType());
+  return iface.isZero(v);
+}
 
 std::optional<IotaLikeTensor>
 detectIotaLikeTensor(DenseElementsAttr denseAttr) {
