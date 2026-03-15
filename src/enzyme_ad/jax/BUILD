@@ -20,11 +20,6 @@ exports_files([
 
 licenses(["notice"])
 
-config_setting(
-    name = "is_clang_build",
-    define_values = {"using_clang": "true"},
-)
-
 cc_library(
     name = "gpu",
     srcs = ["gpu.cc"],
@@ -67,10 +62,10 @@ cc_library(
     }),
     visibility = ["//visibility:public"],
     deps = [
+        "@com_google_absl//absl/strings:str_format",
         "@xla//xla/ffi:ffi_api",
         "@xla//xla/ffi/api:c_api",
         "@xla//xla/ffi/api:ffi",
-        "@com_google_absl//absl/strings:str_format",
     ] + select({
         "@local_config_cuda//:is_cuda_enabled": [
             "@jax//jaxlib:ffi_helpers",
@@ -253,8 +248,8 @@ cc_library(
     srcs = ["TransformOps/RaisingTransformOps.cpp"],
     hdrs = ["TransformOps/RaisingTransformOps.h"],
     copts = select({
-        "//conditions:default": [],
-        ":is_clang_build": ["-fbracket-depth=768"],
+        "@rules_cc//cc/compiler:gcc": [],
+        "//conditions:default": ["-fbracket-depth=768"],
     }),
     deps = [
         ":RaisingTransformOpsImplIncGen",
@@ -281,8 +276,8 @@ cc_library(
     ],
     hdrs = ["TransformOps/TransformOps.h"],
     copts = select({
-        "//conditions:default": [],
-        ":is_clang_build": ["-fbracket-depth=768"],
+        "@rules_cc//cc/compiler:gcc": [],
+        "//conditions:default": ["-fbracket-depth=768"],
     }),
     deps = [
         ":TransformOpsImplIncGen",

@@ -120,8 +120,8 @@ http_archive(
     url = "https://github.com/bazel-contrib/rules_uv/releases/download/v0.89.2/rules_uv-0.89.2.tar.gz",
 )
 
-load("//third_party/ml_toolchain:workspace.bzl", ml_toolchain_workspace = "repo")
 load("//third_party/jax:workspace.bzl", jax_workspace = "repo")
+load("//third_party/ml_toolchain:workspace.bzl", ml_toolchain_workspace = "repo")
 
 jax_workspace()
 
@@ -172,9 +172,9 @@ load("@pypi//:requirements.bzl", "install_deps")
 
 install_deps()
 
+load("@xla//:workspace2.bzl", "xla_workspace2")
 load("@xla//third_party/llvm:workspace.bzl", llvm = "repo")
 load("//:workspace.bzl", "LLVM_TARGETS")
-load("@xla//:workspace2.bzl", "xla_workspace2")
 
 xla_workspace2()
 
@@ -305,8 +305,8 @@ nvshmem_redist_init_repository(
     nvshmem_redistributions = NVSHMEM_REDISTRIBUTIONS,
 )
 
-load("//third_party/enzyme:workspace.bzl", enzyme_workspace = "repo")
 load("//third_party/cuda_tile:workspace.bzl", cuda_tile_workspace = "repo")
+load("//third_party/enzyme:workspace.bzl", enzyme_workspace = "repo")
 
 # add support for generating compile_commands
 load("//third_party/hedron_compile_commands:workspace.bzl", hedron_compile_commands_workspace = "repo")

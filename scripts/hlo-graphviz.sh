@@ -30,7 +30,6 @@ fi
 
 bazel_run() {
     bazel run --action_env=CC=${CC-clang}\
-    --define=using_clang=true\
     --run_under="cd $PWD &&"\
     --ui_event_filters=ERROR\
     --noshow_progress\
