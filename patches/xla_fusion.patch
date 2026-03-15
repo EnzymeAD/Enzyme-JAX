@@ -1,0 +1,24 @@
+diff --git a/xla/backends/gpu/transforms/priority_fusion.cc b/xla/backends/gpu/transforms/priority_fusion.cc
+index 5ef5db3347..1446c51471 100644
+--- a/xla/backends/gpu/transforms/priority_fusion.cc
++++ b/xla/backends/gpu/transforms/priority_fusion.cc
+@@ -853,6 +853,19 @@ class PriorityFusionQueue {
+       }
+     }
+ 
++    // Heuristic: Do not fuse a dynamic-slice or concatenate computation into a
++    // loop consumer if it would duplicate the dynamic-slice/concatenate, 
++    // because GpuHloCostAnalysis under-costs the index arithmetic/branch latency.
++    if (producer->opcode() == HloOpcode::kDynamicSlice ||
++        producer->opcode() == HloOpcode::kConcatenate) {
++      bool would_duplicate =
++          !(producer->users().size() == 1 && consumer->IsUserOf(producer));
++      if (would_duplicate) {
++        return FusionDecision::Forbid(
++            "fusion of dynamic-slice/concatenate would duplicate index arithmetic/branching cost");
++      }
++    }
++
+     // Avoid cases where we'd create a fusion that hit limitations in ptxas.
+     // Would be nice to model this with cost instead.
+     if (auto fits_budget = FusionFitsInBudget(
