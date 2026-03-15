@@ -1870,9 +1870,22 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
       SmallVector<int64_t> padLow;
       SmallVector<int64_t> padHigh;
 
-      for (auto [E, stride, sz] : llvm::zip_equal(
+      bool hasDynamicEdgePadding = llvm::any_of(
+          cast<RankedTensorType>(inputTen.getType()).getShape(),
+          [](int64_t s) { return s == mlir::ShapedType::kDynamic; });
+      SmallVector<Value> dynPadLow;
+      SmallVector<Value> dynPadHigh;
+      SmallVector<Value> dynPaddingInterior;
+      auto i64Ty = builder.getI64Type();
+      auto ti64Ty = RankedTensorType::get({1}, i64Ty);
+
+      for (auto [i, T] : llvm::enumerate(llvm::zip_equal(
                accessValueMap.getAffineMap().getResults(), strides,
-               cast<RankedTensorType>(inputTen.getType()).getShape())) {
+               cast<RankedTensorType>(inputTen.getType()).getShape()))) {
+        auto E = std::get<0>(T);
+        auto stride = std::get<1>(T);
+        auto sz = std::get<2>(T);
+
         int64_t start, limit;
         if (auto constOp = dyn_cast<AffineConstantExpr>(E)) {
           start = constOp.getValue();
@@ -1896,13 +1909,65 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
           start = 0;
           limit += pLow;
         }
-        if (limit > sz + pLow) {
-          pHigh = limit - (sz + pLow);
-        }
 
-        if (pLow != 0 || pHigh != 0) {
+        if (hasDynamicEdgePadding) {
           needPad = true;
           needSlice = true;
+
+          auto pLowVal = stablehlo::ConstantOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              ti64Ty, cast<ElementsAttr>(builder.getI64TensorAttr({pLow})));
+          dynPadLow.push_back(pLowVal);
+
+          auto szVal = stablehlo::GetDimensionSizeOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              inputTen, i);
+
+          auto szVal64 = stablehlo::ConvertOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              RankedTensorType::get({}, builder.getI64Type()), szVal);
+
+          auto szVal1D_Cast = stablehlo::ReshapeOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              ti64Ty, szVal64);
+
+          auto limitVal = stablehlo::ConstantOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              ti64Ty, cast<ElementsAttr>(builder.getI64TensorAttr({limit})));
+
+          auto sumVal = stablehlo::AddOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              szVal1D_Cast, pLowVal);
+          auto diffVal = stablehlo::SubtractOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              limitVal, sumVal);
+
+          auto zeroVal = stablehlo::ConstantOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              ti64Ty, cast<ElementsAttr>(builder.getI64TensorAttr({0})));
+          auto pHighVal = stablehlo::MaxOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              diffVal, zeroVal);
+
+          dynPadHigh.push_back(pHighVal);
+        } else {
+          if (limit > sz + pLow) {
+            pHigh = limit - (sz + pLow);
+          }
+
+          if (pLow != 0 || pHigh != 0) {
+            needPad = true;
+            needSlice = true;
+          }
         }
 
         padLow.push_back(pLow);
@@ -1921,29 +1986,62 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
             rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
             tensorType, cast<ElementsAttr>(builder.getZeroAttr(tensorType)));
 
-        SmallVector<int64_t> paddedShape;
-        SmallVector<int64_t> interior(
-            cast<RankedTensorType>(inputTen.getType()).getShape().size(), 0);
-        for (auto [sz, low, high] :
-             llvm::zip(cast<RankedTensorType>(inputTen.getType()).getShape(),
-                       padLow, padHigh)) {
-          paddedShape.push_back(sz + low + high);
-        }
+        if (hasDynamicEdgePadding) {
+          auto edgePaddingLow = stablehlo::ConcatenateOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              dynPadLow, 0);
+          auto edgePaddingHigh = stablehlo::ConcatenateOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              dynPadHigh, 0);
 
-        inputTen = stablehlo::PadOp::create(
-            builder,
-            rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
-            cast<RankedTensorType>(inputTen.getType()).clone(paddedShape),
-            inputTen, padVal, padLow, padHigh, interior);
+          auto interiorPadding0 = stablehlo::ConstantOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              ti64Ty, cast<ElementsAttr>(builder.getI64TensorAttr({0})));
+
+          auto interiorPadding = stablehlo::ConcatenateOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              SmallVector<Value>(dynPadLow.size(), interiorPadding0), 0);
+
+          SmallVector<int64_t> paddedShape(
+              cast<RankedTensorType>(inputTen.getType()).getShape().size(),
+              ShapedType::kDynamic);
+
+          inputTen = stablehlo::DynamicPadOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              cast<RankedTensorType>(inputTen.getType()).clone(paddedShape),
+              inputTen, padVal, edgePaddingLow, edgePaddingHigh,
+              interiorPadding);
+        } else {
+          SmallVector<int64_t> paddedShape;
+          SmallVector<int64_t> interior(
+              cast<RankedTensorType>(inputTen.getType()).getShape().size(), 0);
+          for (auto [sz, low, high] :
+               llvm::zip(cast<RankedTensorType>(inputTen.getType()).getShape(),
+                         padLow, padHigh)) {
+            paddedShape.push_back(sz + low + high);
+          }
+
+          inputTen = stablehlo::PadOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              cast<RankedTensorType>(inputTen.getType()).clone(paddedShape),
+              inputTen, padVal, padLow, padHigh, interior);
+        }
       }
 
-      if (needSlice)
+      if (needSlice) {
         newVal = stablehlo::SliceOp::create(
             builder,
             rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo), T,
             inputTen, startIndices, limitIndices, strides);
-      else
+      } else {
         newVal = inputTen;
+      }
     }
 
     if (reverseDims.size())
@@ -2055,9 +2153,23 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     SmallVector<int64_t> padLow;
     SmallVector<int64_t> padHigh;
 
-    for (auto [E, stride, sz] : llvm::zip_equal(
+    bool hasDynamicEdgePadding =
+        llvm::any_of(cast<RankedTensorType>(operand.getType()).getShape(),
+                     [](int64_t s) { return s == mlir::ShapedType::kDynamic; });
+    SmallVector<Value> dynPadLow;
+    SmallVector<Value> dynPadHigh;
+    SmallVector<Value> dynNegPadLow;
+    SmallVector<Value> dynNegPadHigh;
+    SmallVector<Value> dynPaddingInterior;
+    auto i64Ty = builder.getI64Type();
+    auto ti64Ty = RankedTensorType::get({1}, i64Ty);
+
+    for (auto [i, T] : llvm::enumerate(llvm::zip_equal(
              accessValueMap.getAffineMap().getResults(), strides,
-             cast<RankedTensorType>(operand.getType()).getShape())) {
+             cast<RankedTensorType>(operand.getType()).getShape()))) {
+      auto E = std::get<0>(T);
+      [[maybe_unused]] auto stride = std::get<1>(T);
+      auto sz = std::get<2>(T);
 
       int64_t start = 0, limit = 0;
       bool hasRange = true;
@@ -2083,17 +2195,129 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
           start = 0;
           limit += pLow;
         }
-        if (limit > sz + pLow) {
-          pHigh = limit - (sz + pLow);
-        }
-
-        if (pLow != 0 || pHigh != 0) {
+        if (sz == ShapedType::kDynamic) {
           needPad = true;
+
+          auto pLowVal = stablehlo::ConstantOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              ti64Ty, cast<ElementsAttr>(builder.getI64TensorAttr({pLow})));
+          dynPadLow.push_back(pLowVal);
+
+          auto szVal = stablehlo::GetDimensionSizeOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              operand, i);
+
+          auto szVal64 = stablehlo::ConvertOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              RankedTensorType::get({}, builder.getI64Type()), szVal);
+
+          auto szVal1D_Cast = stablehlo::ReshapeOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              ti64Ty, szVal64);
+
+          auto limitVal = stablehlo::ConstantOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              ti64Ty, cast<ElementsAttr>(builder.getI64TensorAttr({limit})));
+
+          // pHigh = max(0, limit - (sz + pLow))
+          auto sumVal = stablehlo::AddOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              szVal1D_Cast, pLowVal);
+          auto diffVal = stablehlo::SubtractOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              limitVal, sumVal);
+
+          auto zeroVal = stablehlo::ConstantOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              ti64Ty, cast<ElementsAttr>(builder.getI64TensorAttr({0})));
+          auto pHighVal = stablehlo::MaxOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              diffVal, zeroVal);
+
+          dynPadHigh.push_back(pHighVal);
+
+          auto negOneVal = stablehlo::ConstantOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              ti64Ty, cast<ElementsAttr>(builder.getI64TensorAttr({-1})));
+          auto negPLowVal = stablehlo::MulOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              pLowVal, negOneVal);
+          dynNegPadLow.push_back(negPLowVal);
+
+          auto negPHighVal = stablehlo::MulOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              pHighVal, negOneVal);
+          dynNegPadHigh.push_back(negPHighVal);
+        } else {
+          if (limit > sz + pLow) {
+            pHigh = limit - (sz + pLow);
+          }
+
+          if (pLow != 0 || pHigh != 0) {
+            needPad = true;
+          }
+
+          auto pLowVal = stablehlo::ConstantOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              ti64Ty, cast<ElementsAttr>(builder.getI64TensorAttr({pLow})));
+          dynPadLow.push_back(pLowVal);
+
+          auto pHighVal = stablehlo::ConstantOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              ti64Ty, cast<ElementsAttr>(builder.getI64TensorAttr({pHigh})));
+          dynPadHigh.push_back(pHighVal);
+
+          auto negPLowVal = stablehlo::ConstantOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              ti64Ty, cast<ElementsAttr>(builder.getI64TensorAttr({-pLow})));
+          dynNegPadLow.push_back(negPLowVal);
+
+          auto negPHighVal = stablehlo::ConstantOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              ti64Ty, cast<ElementsAttr>(builder.getI64TensorAttr({-pHigh})));
+          dynNegPadHigh.push_back(negPHighVal);
         }
+      } else {
+        auto pLowVal = stablehlo::ConstantOp::create(
+            builder,
+            rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+            ti64Ty, cast<ElementsAttr>(builder.getI64TensorAttr({0})));
+        dynPadLow.push_back(pLowVal);
+
+        auto pHighVal = stablehlo::ConstantOp::create(
+            builder,
+            rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+            ti64Ty, cast<ElementsAttr>(builder.getI64TensorAttr({0})));
+        dynPadHigh.push_back(pHighVal);
+
+        dynNegPadLow.push_back(pLowVal);
+        dynNegPadHigh.push_back(pHighVal);
       }
 
       padLow.push_back(pLow);
       padHigh.push_back(pHigh);
+
+      auto zeroVal = stablehlo::ConstantOp::create(
+          builder,
+          rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+          ti64Ty, cast<ElementsAttr>(builder.getI64TensorAttr({0})));
+      dynPaddingInterior.push_back(zeroVal);
 
       Value startIndex;
       if (E.isSymbolicOrConstant()) {
@@ -2298,20 +2522,45 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
           rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
           tensorType, cast<ElementsAttr>(builder.getZeroAttr(tensorType)));
 
-      SmallVector<int64_t> paddedShape;
-      SmallVector<int64_t> interior(
-          cast<RankedTensorType>(operand.getType()).getShape().size(), 0);
-      for (auto [sz, low, high] :
-           llvm::zip(cast<RankedTensorType>(operand.getType()).getShape(),
-                     padLow, padHigh)) {
-        paddedShape.push_back(sz + low + high);
-      }
+      if (hasDynamicEdgePadding) {
+        auto edgePaddingLow = stablehlo::ConcatenateOp::create(
+            builder,
+            rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+            dynPadLow, 0);
+        auto edgePaddingHigh = stablehlo::ConcatenateOp::create(
+            builder,
+            rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+            dynPadHigh, 0);
+        auto interiorPadding = stablehlo::ConcatenateOp::create(
+            builder,
+            rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+            dynPaddingInterior, 0);
 
-      operand = stablehlo::PadOp::create(
-          builder,
-          rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
-          cast<RankedTensorType>(operand.getType()).clone(paddedShape), operand,
-          padVal, padLow, padHigh, interior);
+        SmallVector<int64_t> paddedShape(
+            cast<RankedTensorType>(operand.getType()).getShape().size(),
+            ShapedType::kDynamic);
+
+        operand = stablehlo::DynamicPadOp::create(
+            builder,
+            rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+            cast<RankedTensorType>(operand.getType()).clone(paddedShape),
+            operand, padVal, edgePaddingLow, edgePaddingHigh, interiorPadding);
+      } else {
+        SmallVector<int64_t> paddedShape;
+        SmallVector<int64_t> interior(
+            cast<RankedTensorType>(operand.getType()).getShape().size(), 0);
+        for (auto [sz, low, high] :
+             llvm::zip(cast<RankedTensorType>(operand.getType()).getShape(),
+                       padLow, padHigh)) {
+          paddedShape.push_back(sz + low + high);
+        }
+
+        operand = stablehlo::PadOp::create(
+            builder,
+            rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+            cast<RankedTensorType>(operand.getType()).clone(paddedShape),
+            operand, padVal, padLow, padHigh, interior);
+      }
     }
 
     auto newOperand = stablehlo::DynamicUpdateSliceOp::create(
@@ -2321,23 +2570,55 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     Value finalResult = newOperand.getResult();
 
     if (needPad) {
-      SmallVector<int64_t> startSlice;
-      SmallVector<int64_t> limitSlice;
-      SmallVector<int64_t> stridesSlice;
-      for (auto [sz, low, high] :
-           llvm::zip(cast<ShapedType>(storeOp.getMemref().getType()).getShape(),
-                     padLow, padHigh)) {
-        startSlice.push_back(low);
-        limitSlice.push_back(low + sz);
-        stridesSlice.push_back(1);
+      if (hasDynamicEdgePadding) {
+        auto elemType =
+            cast<RankedTensorType>(finalResult.getType()).getElementType();
+        auto tensorType = RankedTensorType::get({}, elemType);
+        auto padVal = stablehlo::ConstantOp::create(
+            builder,
+            rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+            tensorType, cast<ElementsAttr>(builder.getZeroAttr(tensorType)));
+
+        auto edgePaddingLow = stablehlo::ConcatenateOp::create(
+            builder,
+            rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+            dynNegPadLow, 0);
+        auto edgePaddingHigh = stablehlo::ConcatenateOp::create(
+            builder,
+            rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+            dynNegPadHigh, 0);
+        auto interiorPadding = stablehlo::ConcatenateOp::create(
+            builder,
+            rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+            dynPaddingInterior, 0);
+
+        finalResult = stablehlo::DynamicPadOp::create(
+            builder,
+            rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+            cast<RankedTensorType>(finalResult.getType())
+                .clone(
+                    cast<ShapedType>(storeOp.getMemref().getType()).getShape()),
+            finalResult, padVal, edgePaddingLow, edgePaddingHigh,
+            interiorPadding);
+      } else {
+        SmallVector<int64_t> startSlice;
+        SmallVector<int64_t> limitSlice;
+        SmallVector<int64_t> stridesSlice;
+        for (auto [sz, low, high] : llvm::zip(
+                 cast<ShapedType>(storeOp.getMemref().getType()).getShape(),
+                 padLow, padHigh)) {
+          startSlice.push_back(low);
+          limitSlice.push_back(low + sz);
+          stridesSlice.push_back(1);
+        }
+        finalResult = stablehlo::SliceOp::create(
+            builder,
+            rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+            cast<RankedTensorType>(finalResult.getType())
+                .clone(
+                    cast<ShapedType>(storeOp.getMemref().getType()).getShape()),
+            finalResult, startSlice, limitSlice, stridesSlice);
       }
-      finalResult = stablehlo::SliceOp::create(
-          builder,
-          rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
-          cast<RankedTensorType>(operand.getType())
-              .clone(
-                  cast<ShapedType>(storeOp.getMemref().getType()).getShape()),
-          finalResult, startSlice, limitSlice, stridesSlice);
     }
 
     mapping.map(storeOp.getMemref(), finalResult);
@@ -2555,7 +2836,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
           arith::ExtUIOp, arith::SIToFPOp, arith::UIToFPOp, arith::FPToSIOp,
           arith::FPToUIOp, arith::TruncFOp, arith::ExtFOp, math::SqrtOp,
           math::RsqrtOp, math::CbrtOp, math::LogOp, math::ExpOp, math::AbsFOp,
-          math::AbsIOp, math::IsNaNOp, math::AtanOp, arith::BitcastOp>(op)) {
+          math::AbsIOp, math::IsNaNOp, math::AtanOp, arith::BitcastOp,
+          math::ErfOp>(op)) {
     assert(op->getNumOperands() == 1 && op->getNumResults() == 1);
 
     auto operand = op->getOperand(0);

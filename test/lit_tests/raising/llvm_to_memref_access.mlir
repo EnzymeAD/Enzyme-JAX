@@ -1,7 +1,7 @@
 // RUN: enzymexlamlir-opt %s -split-input-file --pass-pipeline="builtin.module(llvm-to-memref-access)" | FileCheck %s
 
 module {
-  llvm.func internal ptx_kernelcc @single_block_kern(%arg0: !llvm.ptr<1> {llvm.nonnull, llvm.noundef}) {
+  func.func @single_block_kern(%arg0: !llvm.ptr<1> {llvm.nonnull, llvm.noundef}) {
     %0 = llvm.mlir.constant(63 : i32) : i32
     %1 = nvvm.read.ptx.sreg.tid.x : i32
     %4 = llvm.zext %1 : i32 to i64
@@ -9,7 +9,7 @@ module {
     %6 = llvm.load %5 {alignment = 1 : i64} : !llvm.ptr<1> -> i64
     %7 = llvm.mul %6, %6 : i64
     llvm.store %7, %5 {alignment = 1 : i64} : i64, !llvm.ptr<1>
-    llvm.return
+    func.return
   }
   func.func @main(%arg0: tensor<64xi64>) -> tensor<64xi64> {
     %c0 = stablehlo.constant dense<0> : tensor<i64>
@@ -31,7 +31,7 @@ module {
   llvm.func internal unnamed_addr fastcc @throw_boundserror_2676() attributes {dso_local, no_inline, sym_visibility = "private"} {
     llvm.unreachable
   }
-  llvm.func internal ptx_kernelcc @simple_multi_blocks_kern(%arg0: !llvm.ptr<1>) {
+  func.func @simple_multi_blocks_kern(%arg0: !llvm.ptr<1>) {
     %0 = llvm.mlir.constant(63 : i32) : i32
     %1 = nvvm.read.ptx.sreg.tid.x : i32
     %2 = llvm.icmp "ugt" %1, %0 : i32
@@ -42,7 +42,7 @@ module {
     %6 = llvm.load %5 {alignment = 1 : i64} : !llvm.ptr<1> -> i64
     %7 = llvm.mul %6, %6 : i64
     llvm.store %7, %5 {alignment = 1 : i64} : i64, !llvm.ptr<1>
-    llvm.return
+    func.return
   ^bb2:  // pred: ^bb0
     llvm.call fastcc @throw_boundserror_2676() : () -> ()
     llvm.unreachable
@@ -65,7 +65,7 @@ module {
 // -----
 
 module {
-  llvm.func ptx_kernelcc @"multi_args_kern"(%arg0: !llvm.ptr<1> {llvm.noalias, llvm.nocapture, llvm.nofree}, %arg1: !llvm.ptr<1> {llvm.noalias, llvm.nocapture, llvm.nofree}, %arg2: !llvm.ptr<1> {llvm.noalias, llvm.nocapture, llvm.nofree, llvm.readonly}, %arg3: !llvm.ptr<1> {llvm.noalias, llvm.nocapture, llvm.nofree, llvm.readonly}) attributes {no_unwind, passthrough = ["mustprogress", "nofree", "norecurse", "nosync"], will_return} {
+  func.func @"multi_args_kern"(%arg0: !llvm.ptr<1> {llvm.noalias, llvm.nocapture, llvm.nofree}, %arg1: !llvm.ptr<1> {llvm.noalias, llvm.nocapture, llvm.nofree}, %arg2: !llvm.ptr<1> {llvm.noalias, llvm.nocapture, llvm.nofree, llvm.readonly}, %arg3: !llvm.ptr<1> {llvm.noalias, llvm.nocapture, llvm.nofree, llvm.readonly}) attributes {no_unwind, passthrough = ["mustprogress", "nofree", "norecurse", "nosync"], will_return} {
     %0 = llvm.mlir.constant(23 : i32) : i32
     %1 = llvm.mlir.constant(1152921504606846953 : i64) : i64
     %2 = llvm.mlir.constant(4 : i64) : i64
@@ -115,8 +115,7 @@ module {
     %78 = llvm.getelementptr inbounds %77[%69] : (!llvm.ptr<1>, i64) -> !llvm.ptr<1>, i8
     %79 = llvm.getelementptr inbounds %78[18000] : (!llvm.ptr<1>) -> !llvm.ptr<1>, i8
     llvm.store %76, %79 {alignment = 8 : i64} : f64, !llvm.ptr<1>
-
-    llvm.return
+    func.return
   }
 
   func.func @main(%arg8: tensor<1x134x374xf64>, %arg13: tensor<1x135x374xf64>, %arg14: tensor<114x134x374xf64>, %arg15: tensor<114x135x374xf64>) -> tensor<1x134x374xf64> {
@@ -134,12 +133,8 @@ module {
 // CHECK-SAME:  %[[ARG1:.*]]: memref<1x135x374xf64, 1> {llvm.noalias, llvm.nocapture, llvm.nofree}
 // CHECK-SAME:  %[[ARG2:.*]]: memref<114x134x374xf64, 1> {llvm.noalias, llvm.nocapture, llvm.nofree, llvm.readonly}
 // CHECK-SAME:  %[[ARG3:.*]]: memref<114x135x374xf64, 1> {llvm.noalias, llvm.nocapture, llvm.nofree, llvm.readonly}
-// CHECK-SAME:  CConv = #llvm.cconv<ptx_kernelcc>
-// CHECK-SAME:  linkage = #llvm.linkage<external>
 // CHECK-SAME:  no_unwind
 // CHECK-SAME:  passthrough = ["mustprogress", "nofree", "norecurse", "nosync"]
-// CHECK-SAME:  unnamed_addr = 0 : i64
-// CHECK-SAME:  visibility_ = 0 : i64
 // CHECK-SAME:  will_return
 // CHECK:       %[[ADDR0:.*]] = "enzymexla.memref2pointer"(%[[ARG0]])
 // CHECK:       %[[ADDR1:.*]] = "enzymexla.memref2pointer"(%[[ARG1]])
@@ -153,7 +148,7 @@ module {
 // -----
 
 module {
-  llvm.func ptx_kernelcc @"loop_kern"(%arg0: !llvm.ptr<1> {llvm.noalias, llvm.nocapture, llvm.nofree}, %arg1: !llvm.ptr<1> {llvm.noalias, llvm.nocapture, llvm.nofree}, %arg2: !llvm.ptr<1> {llvm.noalias, llvm.nocapture, llvm.nofree, llvm.readonly}, %arg3: !llvm.ptr<1> {llvm.noalias, llvm.nocapture, llvm.nofree, llvm.readonly}) attributes {no_unwind, passthrough = ["mustprogress", "nofree", "norecurse", "nosync"], will_return} {
+  func.func @"loop_kern"(%arg0: !llvm.ptr<1> {llvm.noalias, llvm.nocapture, llvm.nofree}, %arg1: !llvm.ptr<1> {llvm.noalias, llvm.nocapture, llvm.nofree}, %arg2: !llvm.ptr<1> {llvm.noalias, llvm.nocapture, llvm.nofree, llvm.readonly}, %arg3: !llvm.ptr<1> {llvm.noalias, llvm.nocapture, llvm.nofree, llvm.readonly}) attributes {no_unwind, passthrough = ["mustprogress", "nofree", "norecurse", "nosync"], will_return} {
     %0 = llvm.mlir.constant(23 : i32) : i32
     %1 = llvm.mlir.constant(1152921504606846953 : i64) : i64
     %2 = llvm.mlir.constant(4 : i64) : i64
@@ -247,7 +242,7 @@ module {
   ^bb4:  // pred: ^bb3
     llvm.br ^bb1(%13 : i64)
   ^bb5:  // pred: ^bb2
-    llvm.return
+    func.return
   }
 
   func.func @main(%arg8: tensor<1x134x374xf64>, %arg13: tensor<1x135x374xf64>, %arg14: tensor<114x134x374xf64>, %arg15: tensor<114x135x374xf64>) -> tensor<1x134x374xf64> {
@@ -291,7 +286,7 @@ module {
 // -----
 
 module {
-  llvm.func internal ptx_kernelcc @multi_callers_kern(%arg0: !llvm.ptr<1>) {
+  func.func @multi_callers_kern(%arg0: !llvm.ptr<1>) {
     %0 = llvm.mlir.constant(63 : i32) : i32
     %1 = nvvm.read.ptx.sreg.tid.x : i32
     %4 = llvm.zext %1 : i32 to i64
@@ -299,7 +294,7 @@ module {
     %6 = llvm.load %5 {alignment = 1 : i64} : !llvm.ptr<1> -> i64
     %7 = llvm.mul %6, %6 : i64
     llvm.store %7, %5 {alignment = 1 : i64} : i64, !llvm.ptr<1>
-    llvm.return
+    func.return
   }
   func.func @main(%arg0: tensor<64xi64>) -> tensor<64xi64> {
     %c0 = stablehlo.constant dense<0> : tensor<i64>
@@ -319,7 +314,7 @@ module {
 // -----
 
 module {
-  llvm.func internal ptx_kernelcc @multi_callers_different_elty_kern(%arg0: !llvm.ptr<1>) {
+  func.func @multi_callers_different_elty_kern(%arg0: !llvm.ptr<1>) {
     %0 = llvm.mlir.constant(63 : i32) : i32
     %1 = nvvm.read.ptx.sreg.tid.x : i32
     %4 = llvm.zext %1 : i32 to i64
@@ -327,7 +322,7 @@ module {
     %6 = llvm.load %5 {alignment = 1 : i64} : !llvm.ptr<1> -> i64
     %7 = llvm.mul %6, %6 : i64
     llvm.store %7, %5 {alignment = 1 : i64} : i64, !llvm.ptr<1>
-    llvm.return
+    func.return
   }
   func.func @main(%arg0: tensor<64xi64>) -> tensor<64xi64> {
     %c0 = stablehlo.constant dense<0> : tensor<i64>
@@ -339,7 +334,7 @@ module {
   }
 }
 
-// CHECK-LABEL: llvm.func internal ptx_kernelcc @multi_callers_different_elty_kern
+// CHECK-LABEL: func.func @multi_callers_different_elty_kern
 // CHECK-SAME:  %[[ARG:.*]]: !llvm.ptr<1>
 // CHECK-NOT:   "enzymexla.memref2pointer"
 // CHECK:       llvm.getelementptr {{.*}} %[[ARG]]
@@ -347,7 +342,7 @@ module {
 // -----
 
 module {
-  llvm.func internal ptx_kernelcc @multi_callers_different_shape_kern(%arg0: !llvm.ptr<1>) {
+  func.func @multi_callers_different_shape_kern(%arg0: !llvm.ptr<1>) {
     %0 = llvm.mlir.constant(63 : i32) : i32
     %1 = nvvm.read.ptx.sreg.tid.x : i32
     %4 = llvm.zext %1 : i32 to i64
@@ -355,7 +350,7 @@ module {
     %6 = llvm.load %5 {alignment = 1 : i64} : !llvm.ptr<1> -> i64
     %7 = llvm.mul %6, %6 : i64
     llvm.store %7, %5 {alignment = 1 : i64} : i64, !llvm.ptr<1>
-    llvm.return
+    func.return
   }
   func.func @main(%arg0: tensor<64xi64>) -> tensor<64xi64> {
     %c0 = stablehlo.constant dense<0> : tensor<i64>
@@ -376,7 +371,7 @@ module {
 // -----
 
 module {
-  llvm.func internal @jitcall(%arg0: !llvm.ptr<1>) {
+  func.func @jitcall(%arg0: !llvm.ptr<1>) {
     %0 = llvm.mlir.constant(63 : i32) : i32
     %1 = nvvm.read.ptx.sreg.tid.x : i32
     %4 = llvm.zext %1 : i32 to i64
@@ -384,7 +379,7 @@ module {
     %6 = llvm.load %5 {alignment = 1 : i64} : !llvm.ptr<1> -> i64
     %7 = llvm.mul %6, %6 : i64
     llvm.store %7, %5 {alignment = 1 : i64} : i64, !llvm.ptr<1>
-    llvm.return
+    func.return
   }
   func.func @main(%arg0: tensor<8x8xi64>) -> tensor<8x8xi64> {
     %0 = enzymexla.jit_call @jitcall (%arg0) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]} : (tensor<8x8xi64>) -> tensor<8x8xi64>
@@ -408,7 +403,7 @@ module {
     %6 = llvm.load %5 {alignment = 1 : i64} : !llvm.ptr<1> -> i64
     %7 = llvm.mul %6, %6 : i64
     llvm.store %7, %5 {alignment = 1 : i64} : i64, !llvm.ptr<1>
-    llvm.return
+    return
   }
   func.func @main(%arg0: tensor<8x8xi64>) -> tensor<8x8xi64> {
     %0 = enzymexla.jit_call @jitcall (%arg0) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]} : (tensor<8x8xi64>) -> tensor<8x8xi64>
