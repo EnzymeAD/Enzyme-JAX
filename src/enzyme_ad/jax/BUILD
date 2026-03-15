@@ -248,8 +248,8 @@ cc_library(
     srcs = ["TransformOps/RaisingTransformOps.cpp"],
     hdrs = ["TransformOps/RaisingTransformOps.h"],
     copts = select({
-        "@rules_cc//cc/compiler:clang": ["-fbracket-depth=768"],
-        "//conditions:default": [],
+        "@rules_cc//cc/compiler:gcc": [],
+        "//conditions:default": ["-fbracket-depth=768"],
     }),
     deps = [
         ":RaisingTransformOpsImplIncGen",
@@ -276,8 +276,8 @@ cc_library(
     ],
     hdrs = ["TransformOps/TransformOps.h"],
     copts = select({
-        "@rules_cc//cc/compiler:clang": ["-fbracket-depth=768"],
-        "//conditions:default": [],
+        "@rules_cc//cc/compiler:gcc": [],
+        "//conditions:default": ["-fbracket-depth=768"],
     }),
     deps = [
         ":TransformOpsImplIncGen",
