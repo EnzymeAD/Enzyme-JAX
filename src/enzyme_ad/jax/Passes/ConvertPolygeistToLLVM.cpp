@@ -2786,11 +2786,11 @@ private:
     auto i32 = rewriter.getIntegerType(32);
     auto moduleOp = deallocOp->getParentOfType<ModuleOp>();
 
-    auto ptr1ty = LLVM::LLVMPointerType::get(rewriter.getContext(), 1);
+    auto ptrty = LLVM::LLVMPointerType::get(rewriter.getContext());
 
     if (backend == "cuda") {
 
-      Type tys[] = {ptr1ty};
+      Type tys[] = {ptrty};
       auto cudaFreeFn =
           LLVM::lookupOrCreateFn(rewriter, moduleOp, "cudaFree", tys, i32);
       if (failed(cudaFreeFn)) {
@@ -2798,12 +2798,21 @@ private:
         return failure();
       }
 
+      Value ptr_arg = ptr;
+      if (ptr.getType() != ptrty) {
+        if (isa<LLVM::LLVMPointerType>(ptr.getType())) {
+          ptr_arg = rewriter.create<LLVM::AddrSpaceCastOp>(loc, ptrty, ptr);
+        } else {
+          ptr_arg = rewriter.create<LLVM::BitcastOp>(loc, ptrty, ptr);
+        }
+      }
+
       Value args[] = {
-          ptr,
+          ptr_arg,
       };
       LLVM::CallOp::create(rewriter, loc, cudaFreeFn.value(), args);
     } else if (backend == "rocm") {
-      Type tys[] = {ptr1ty};
+      Type tys[] = {ptrty};
       auto hipFreeFn =
           LLVM::lookupOrCreateFn(rewriter, moduleOp, "hipFree", tys, i32);
 
@@ -2811,8 +2820,16 @@ private:
         llvm::errs() << " hipfree already exists with different types\n";
         return failure();
       }
+      Value ptr_arg = ptr;
+      if (ptr.getType() != ptrty) {
+        if (isa<LLVM::LLVMPointerType>(ptr.getType())) {
+          ptr_arg = rewriter.create<LLVM::AddrSpaceCastOp>(loc, ptrty, ptr);
+        } else {
+          ptr_arg = rewriter.create<LLVM::BitcastOp>(loc, ptrty, ptr);
+        }
+      }
       Value args[] = {
-          ptr,
+          ptr_arg,
       };
       LLVM::CallOp::create(rewriter, loc, hipFreeFn.value(), args);
 
@@ -2826,8 +2843,18 @@ private:
         return failure();
       }
 
+      auto ptrty = LLVM::LLVMPointerType::get(rewriter.getContext());
+      Value ptr_arg = ptr;
+      if (ptr.getType() != ptrty) {
+        if (isa<LLVM::LLVMPointerType>(ptr.getType())) {
+          ptr_arg = rewriter.create<LLVM::AddrSpaceCastOp>(loc, ptrty, ptr);
+        } else {
+          ptr_arg = rewriter.create<LLVM::BitcastOp>(loc, ptrty, ptr);
+        }
+      }
+
       Value args[] = {
-          ptr,
+          ptr_arg,
       };
       LLVM::CallOp::create(rewriter, loc, freeFunc.value(), args);
     } else if (backend.starts_with("xla")) {
@@ -2846,7 +2873,16 @@ private:
 
       auto xdata = insertXLAInitDeinit(moduleOp, backend, rewriter);
 
-      Value args[] = {xdata, ptr};
+      Value ptr_arg = ptr;
+      if (ptr.getType() != ptrty) {
+        if (isa<LLVM::LLVMPointerType>(ptr.getType())) {
+          ptr_arg = rewriter.create<LLVM::AddrSpaceCastOp>(loc, ptrty, ptr);
+        } else {
+          ptr_arg = rewriter.create<LLVM::BitcastOp>(loc, ptrty, ptr);
+        }
+      }
+
+      Value args[] = {xdata, ptr_arg};
 
       LLVM::CallOp::create(rewriter, loc, xlaFreeFn.value(), args);
     } else {
@@ -3576,7 +3612,7 @@ public:
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = op->getLoc();
     MLIRContext *context = rewriter.getContext();
-    Operation *newOp;
+    Operation *newOp = nullptr;
     switch (op.getDimension()) {
     case gpu::Dimension::x:
       newOp = XOp::create(rewriter, loc, IntegerType::get(context, 32));
