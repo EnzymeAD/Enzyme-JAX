@@ -30873,6 +30873,11 @@ struct ReduceBroadcastInDimDotGeneral
       }
     }
 
+    // no change in shape, no need for bcast op
+    if (newBcastShape.size() == bcastOp.getResult().getType().getRank()) {
+      return newOperand;
+    }
+
     for (auto dim : bcastOp.getBroadcastDimensions()) {
       if (!llvm::is_contained(reduceDims, dim)) {
         auto shift = llvm::count_if(reduceDims, [&](int64_t d) { return d < dim; });
@@ -31004,14 +31009,16 @@ struct ReduceBroadcastInDimDotGeneral
     for (const auto &dim : dotDims.getLhsContractingDimensions()) {
       if (std::find(lhsReduceDims.begin(), lhsReduceDims.end(), dim) ==
           lhsReduceDims.end()) {
-        dotLhsContractDims.push_back(dim);
+        auto shift = llvm::count_if(lhsReduceDims, [&](int64_t d) { return d < dim; });
+        dotLhsContractDims.push_back(dim - shift);
       }
     }
 
     for (const auto &dim : dotDims.getRhsContractingDimensions()) {
       if (std::find(rhsReduceDims.begin(), rhsReduceDims.end(), dim) ==
           rhsReduceDims.end()) {
-        dotRhsContractDims.push_back(dim);
+        auto shift = llvm::count_if(rhsReduceDims, [&](int64_t d) { return d < dim; });
+        dotRhsContractDims.push_back(dim - shift);
       }
     }
 
