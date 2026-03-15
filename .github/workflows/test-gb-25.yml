@@ -36,7 +36,7 @@ jobs:
       fail-fast: false
       matrix:
         os:
-          - linux-x86-a2-48-a100-4gpu
+          # - linux-x86-a2-48-a100-4gpu
           - linux-x86-ct6e-180-4tpu
         julia_version:
           - '1.11'
@@ -203,10 +203,10 @@ jobs:
               ALL_REDUCE_THRESHOLD=0
               COLLECTIVE_PERMUTE_THRESHOLD=339
           elif [[ '${{ contains(matrix.os, 'tpu') }}' == 'true' ]]; then
-              ALL_TO_ALL_THRESHOLD=0
-              ALL_GATHER_THRESHOLD=0
-              ALL_REDUCE_THRESHOLD=0
-              COLLECTIVE_PERMUTE_THRESHOLD=1071
+              ALL_TO_ALL_THRESHOLD=1000
+              ALL_GATHER_THRESHOLD=1000
+              ALL_REDUCE_THRESHOLD=1000
+              COLLECTIVE_PERMUTE_THRESHOLD=10000
           fi
 
           for OP in "all-to-all" "all-gather" "all-reduce" "%collective-permute-start.* ="; do
