@@ -814,6 +814,12 @@ public:
     if (funcName == "__half2float" || funcName == "_ZL12__half2float6__half") {
       Value input = op.getOperand(0);
       Location loc = op.getLoc();
+      if (isa<LLVM::LLVMPointerType>(input.getType())) {
+        input =
+            rewriter.create<LLVM::LoadOp>(loc, rewriter.getF16Type(), input);
+      } else if (isa<LLVM::LLVMStructType>(input.getType())) {
+        input = rewriter.create<LLVM::ExtractValueOp>(loc, input, 0);
+      }
       if (isa<IntegerType>(input.getType())) {
         input = rewriter.create<arith::BitcastOp>(loc, rewriter.getF16Type(),
                                                   input);
@@ -825,6 +831,12 @@ public:
     if (funcName == "__bfloat162float") {
       Value input = op.getOperand(0);
       Location loc = op.getLoc();
+      if (isa<LLVM::LLVMPointerType>(input.getType())) {
+        input =
+            rewriter.create<LLVM::LoadOp>(loc, rewriter.getBF16Type(), input);
+      } else if (isa<LLVM::LLVMStructType>(input.getType())) {
+        input = rewriter.create<LLVM::ExtractValueOp>(loc, input, 0);
+      }
       if (isa<IntegerType>(input.getType())) {
         input = rewriter.create<arith::BitcastOp>(loc, rewriter.getBF16Type(),
                                                   input);
@@ -841,6 +853,12 @@ public:
           rewriter.create<arith::TruncFOp>(loc, rewriter.getBF16Type(), input);
       if (isa<IntegerType>(resType)) {
         res = rewriter.create<arith::BitcastOp>(loc, resType, res);
+      } else if (auto structTy = dyn_cast<LLVM::LLVMStructType>(resType)) {
+        res =
+            rewriter.create<arith::BitcastOp>(loc, rewriter.getI16Type(), res);
+        res = rewriter.create<LLVM::InsertValueOp>(
+            loc, structTy, rewriter.create<LLVM::UndefOp>(loc, structTy), res,
+            rewriter.getDenseI64ArrayAttr(0));
       }
       rewriter.replaceOp(op, res);
       return success();
@@ -853,6 +871,12 @@ public:
           rewriter.create<arith::TruncFOp>(loc, rewriter.getF16Type(), input);
       if (isa<IntegerType>(resType)) {
         res = rewriter.create<arith::BitcastOp>(loc, resType, res);
+      } else if (auto structTy = dyn_cast<LLVM::LLVMStructType>(resType)) {
+        res =
+            rewriter.create<arith::BitcastOp>(loc, rewriter.getI16Type(), res);
+        res = rewriter.create<LLVM::InsertValueOp>(
+            loc, structTy, rewriter.create<LLVM::UndefOp>(loc, structTy), res,
+            rewriter.getDenseI64ArrayAttr(0));
       }
       rewriter.replaceOp(op, res);
       return success();

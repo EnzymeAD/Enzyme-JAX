@@ -848,6 +848,51 @@ module {
     }
   }
 
+  gpu.module @test_module_53 {
+    llvm.func @__half2float(!llvm.ptr) -> f32
+    llvm.func @__bfloat162float(!llvm.ptr) -> f32
+
+    // CHECK-LABEL: @gpu_half2float_ptr
+    llvm.func @gpu_half2float_ptr(%arg0: !llvm.ptr) -> f32 {
+      // CHECK: %[[LOAD:.*]] = llvm.load %arg0 : !llvm.ptr -> f16
+      // CHECK: arith.extf %[[LOAD]] : f16 to f32
+      %0 = llvm.call @__half2float(%arg0) : (!llvm.ptr) -> f32
+      llvm.return %0 : f32
+    }
+
+    // CHECK-LABEL: @gpu_bfloat162float_ptr
+    llvm.func @gpu_bfloat162float_ptr(%arg0: !llvm.ptr) -> f32 {
+      // CHECK: %[[LOAD:.*]] = llvm.load %arg0 : !llvm.ptr -> bf16
+      // CHECK: arith.extf %[[LOAD]] : bf16 to f32
+      %0 = llvm.call @__bfloat162float(%arg0) : (!llvm.ptr) -> f32
+      llvm.return %0 : f32
+    }
+
+  }
+
+  gpu.module @test_module_54 {
+    llvm.func @__half2float(!llvm.struct<(i16)>) -> f32
+    llvm.func @__bfloat162float(!llvm.struct<(i16)>) -> f32
+
+    // CHECK-LABEL: @gpu_half2float_struct
+    llvm.func @gpu_half2float_struct(%arg0: !llvm.struct<(i16)>) -> f32 {
+      // CHECK: %[[EXT:.*]] = llvm.extractvalue %arg0[0] : !llvm.struct<(i16)>
+      // CHECK: %[[BC:.*]] = arith.bitcast %[[EXT]] : i16 to f16
+      // CHECK: arith.extf %[[BC]] : f16 to f32
+      %0 = llvm.call @__half2float(%arg0) : (!llvm.struct<(i16)>) -> f32
+      llvm.return %0 : f32
+    }
+
+    // CHECK-LABEL: @gpu_bfloat162float_struct
+    llvm.func @gpu_bfloat162float_struct(%arg0: !llvm.struct<(i16)>) -> f32 {
+      // CHECK: %[[EXT:.*]] = llvm.extractvalue %arg0[0] : !llvm.struct<(i16)>
+      // CHECK: %[[BC:.*]] = arith.bitcast %[[EXT]] : i16 to bf16
+      // CHECK: arith.extf %[[BC]] : bf16 to f32
+      %0 = llvm.call @__bfloat162float(%arg0) : (!llvm.struct<(i16)>) -> f32
+      llvm.return %0 : f32
+    }
+  }
+
   gpu.module @test_module_half_math {
     llvm.func @_ZL12__float2halff(f32) -> i16
     llvm.func @_ZL4hlog6__half(i16) -> i16
