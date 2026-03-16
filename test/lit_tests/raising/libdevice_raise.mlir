@@ -951,4 +951,93 @@ module {
       llvm.return %s12 : !llvm.struct<(i16, i16, i16, f32, i16, i1, i16, i16, i16, i16, i16, i16)>
     }
   }
+
+  gpu.module @test_module_bfloat16_math {
+    llvm.func @_ZL16__float2bfloat16f(f32) -> !llvm.struct<(i16)>
+    llvm.func @_ZL32__internal_device_bfloat162floatt(i16) -> f32
+    llvm.func @_ZL22__internal_device_hdiv13__nv_bfloat16S_(!llvm.ptr, !llvm.ptr) -> !llvm.struct<(i16)>
+    llvm.func @_ZL27__internal_sm80_device_hmul13__nv_bfloat16S_(!llvm.ptr, !llvm.ptr) -> !llvm.struct<(i16)>
+    llvm.func @_ZL6__hadd13__nv_bfloat16S_(!llvm.ptr, !llvm.ptr) -> !llvm.struct<(i16)>
+    llvm.func @_ZL27__internal_sm80_device_hsub13__nv_bfloat16S_(!llvm.ptr, !llvm.ptr) -> !llvm.struct<(i16)>
+    llvm.func @_ZL22__internal_device_hneg13__nv_bfloat16(!llvm.ptr) -> !llvm.struct<(i16)>
+
+    // CHECK-LABEL: @gpu_float2bfloat16
+    llvm.func @gpu_float2bfloat16(%arg0: f32) -> !llvm.struct<(i16)> {
+      // CHECK: %[[UNDEF:.*]] = llvm.mlir.undef : !llvm.struct<(i16)>
+      // CHECK: %[[TRUNC:.*]] = arith.truncf %arg0 : f32 to bf16
+      // CHECK: %[[BC:.*]] = arith.bitcast %[[TRUNC]] : bf16 to i16
+      // CHECK: %[[IN:.*]] = llvm.insertvalue %[[BC]], %[[UNDEF]][0] : !llvm.struct<(i16)> 
+      %0 = llvm.call @_ZL16__float2bfloat16f(%arg0) : (f32) -> !llvm.struct<(i16)>
+      llvm.return %0 : !llvm.struct<(i16)>
+    }
+
+    // CHECK-LABEL: @gpu_bfloat162float
+    llvm.func @gpu_bfloat162float(%arg0: i16) -> f32 {
+      // CHECK: %[[BC:.*]] = arith.bitcast %arg0 : i16 to bf16
+      // CHECK: arith.extf %[[BC]] : bf16 to f32
+      %0 = llvm.call @_ZL32__internal_device_bfloat162floatt(%arg0) : (i16) -> f32
+      llvm.return %0 : f32
+    }
+
+    // CHECK-LABEL: @gpu_bfloat16_add
+    llvm.func @gpu_bfloat16_add(%arg0: !llvm.ptr, %arg1: !llvm.ptr) -> !llvm.struct<(i16)> {
+      // CHECK: %[[UNDEF:.*]] = llvm.mlir.undef : !llvm.struct<(i16)>
+      // CHECK: %[[LOAD0:.*]] = llvm.load %arg0 : !llvm.ptr -> bf16
+      // CHECK: %[[LOAD1:.*]] = llvm.load %arg1 : !llvm.ptr -> bf16
+      // CHECK: %[[ADD:.*]] = arith.addf %[[LOAD0]], %[[LOAD1]] : bf16
+      // CHECK: %[[BC:.*]] = arith.bitcast %[[ADD]] : bf16 to i16
+      // CHECK: %[[IN:.*]] = llvm.insertvalue %[[BC]], %[[UNDEF]][0] : !llvm.struct<(i16)> 
+      %0 = llvm.call @_ZL6__hadd13__nv_bfloat16S_(%arg0, %arg1) : (!llvm.ptr, !llvm.ptr) -> !llvm.struct<(i16)>
+      llvm.return %0 : !llvm.struct<(i16)>
+    }
+
+    // CHECK-LABEL: @gpu_bfloat16_mul
+    llvm.func @gpu_bfloat16_mul(%arg0: !llvm.ptr, %arg1: !llvm.ptr) -> !llvm.struct<(i16)> {
+      // CHECK: %[[UNDEF:.*]] = llvm.mlir.undef : !llvm.struct<(i16)>
+      // CHECK: %[[LOAD0:.*]] = llvm.load %arg0 : !llvm.ptr -> bf16
+      // CHECK: %[[LOAD1:.*]] = llvm.load %arg1 : !llvm.ptr -> bf16
+      // CHECK: %[[MUL:.*]] = arith.mulf %[[LOAD0]], %[[LOAD1]] : bf16
+      // CHECK: %[[BC:.*]] = arith.bitcast %[[MUL]] : bf16 to i16
+      // CHECK: %[[IN:.*]] = llvm.insertvalue %[[BC]], %[[UNDEF]][0] : !llvm.struct<(i16)> 
+      %0 = llvm.call @_ZL27__internal_sm80_device_hmul13__nv_bfloat16S_(%arg0, %arg1) : (!llvm.ptr, !llvm.ptr) -> !llvm.struct<(i16)>
+      llvm.return %0 : !llvm.struct<(i16)>
+    }
+
+    // CHECK-LABEL: @gpu_bfloat16_div
+    llvm.func @gpu_bfloat16_div(%arg0: !llvm.ptr, %arg1: !llvm.ptr) -> !llvm.struct<(i16)> {
+      // CHECK: %[[UNDEF:.*]] = llvm.mlir.undef : !llvm.struct<(i16)>
+      // CHECK: %[[LOAD0:.*]] = llvm.load %arg0 : !llvm.ptr -> bf16
+      // CHECK: %[[LOAD1:.*]] = llvm.load %arg1 : !llvm.ptr -> bf16
+      // CHECK: %[[DIV:.*]] = arith.divf %[[LOAD0]], %[[LOAD1]] : bf16
+      // CHECK: %[[BC:.*]] = arith.bitcast %[[DIV]] : bf16 to i16
+      // CHECK: %[[IN:.*]] = llvm.insertvalue %[[BC]], %[[UNDEF]][0] : !llvm.struct<(i16)> 
+      %0 = llvm.call @_ZL22__internal_device_hdiv13__nv_bfloat16S_(%arg0, %arg1) : (!llvm.ptr, !llvm.ptr) -> !llvm.struct<(i16)>
+      llvm.return %0 : !llvm.struct<(i16)>
+    }
+
+    // CHECK-LABEL: @gpu_bfloat16_sub
+    llvm.func @gpu_bfloat16_sub(%arg0: !llvm.ptr, %arg1: !llvm.ptr) -> !llvm.struct<(i16)> {
+      // CHECK: %[[UNDEF:.*]] = llvm.mlir.undef : !llvm.struct<(i16)>
+      // CHECK: %[[LOAD0:.*]] = llvm.load %arg0 : !llvm.ptr -> bf16
+      // CHECK: %[[LOAD1:.*]] = llvm.load %arg1 : !llvm.ptr -> bf16
+      // CHECK: %[[SUB:.*]] = arith.subf %[[LOAD0]], %[[LOAD1]] : bf16
+      // CHECK: %[[BC:.*]] = arith.bitcast %[[SUB]] : bf16 to i16
+      // CHECK: %[[IN:.*]] = llvm.insertvalue %[[BC]], %[[UNDEF]][0] : !llvm.struct<(i16)> 
+      %0 = llvm.call @_ZL27__internal_sm80_device_hsub13__nv_bfloat16S_(%arg0, %arg1) : (!llvm.ptr, !llvm.ptr) -> !llvm.struct<(i16)>
+      llvm.return %0 : !llvm.struct<(i16)>
+    }
+
+    // CHECK-LABEL: @gpu_bfloat16_neg
+    llvm.func @gpu_bfloat16_neg(%arg0: !llvm.ptr) -> !llvm.struct<(i16)> {
+      // CHECK: %[[UNDEF:.*]] = llvm.mlir.undef : !llvm.struct<(i16)>
+      // CHECK: %[[LOAD:.*]] = llvm.load %arg0 : !llvm.ptr -> bf16
+      // CHECK: %[[NEG:.*]] = arith.negf %[[LOAD]] : bf16
+      // CHECK: %[[BC:.*]] = arith.bitcast %[[NEG]] : bf16 to i16
+      // CHECK: %[[IN:.*]] = llvm.insertvalue %[[BC]], %[[UNDEF]][0] : !llvm.struct<(i16)> 
+      %0 = llvm.call @_ZL22__internal_device_hneg13__nv_bfloat16(%arg0) : (!llvm.ptr) -> !llvm.struct<(i16)>
+      llvm.return %0 : !llvm.struct<(i16)>
+    }
+
+  }
+
 }

@@ -718,28 +718,44 @@ public:
     if (!callee)
       return failure();
 
-    MathOp mathOp = llvm::StringSwitch<MathOp>(callee.getLeafReference())
-                        .Case("_ZL4hlog6__half", MathOp::Log)
-                        .Case("_ZL6__hdiv6__halfS_", MathOp::Div)
-                        .Case("_ZL6__habs6__half", MathOp::Abs)
-                        .Case("_ZL6__hmul6__halfS_", MathOp::Mul)
-                        .Case("_ZL6__hadd6__halfS_", MathOp::Add)
-                        .Case("_ZL5hsqrt6__half", MathOp::Sqrt)
-                        .Case("_ZL6__hsub6__halfS_", MathOp::Sub)
-                        .Case("_ZL4hexp6__half", MathOp::Exp)
-                        .Case("_ZL6__hneg6__half", MathOp::Neg)
-                        .Case("_ZL5__hlt6__halfS_", MathOp::Lt)
-                        .Default(MathOp::None);
+    MathOp mathOp =
+        llvm::StringSwitch<MathOp>(callee.getLeafReference().getValue())
+            .Case("_ZL4hlog6__half", MathOp::Log)
+            .Case("_ZL6__hdiv6__halfS_", MathOp::Div)
+            .Case("_ZL22__internal_device_hdiv13__nv_bfloat16S_", MathOp::Div)
+            .Case("_ZL6__habs6__half", MathOp::Abs)
+            .Case("_ZL6__hmul6__halfS_", MathOp::Mul)
+            .Case("_ZL27__internal_sm80_device_hmul13__nv_bfloat16S_",
+                  MathOp::Mul)
+            .Case("_ZL6__hadd6__halfS_", MathOp::Add)
+            .Case("_ZL6__hadd13__nv_bfloat16S_", MathOp::Add)
+            .Case("_ZL5hsqrt6__half", MathOp::Sqrt)
+            .Case("_ZL6__hsub6__halfS_", MathOp::Sub)
+            .Case("_ZL27__internal_sm80_device_hsub13__nv_bfloat16S_",
+                  MathOp::Sub)
+            .Case("_ZL4hexp6__half", MathOp::Exp)
+            .Case("_ZL6__hneg6__half", MathOp::Neg)
+            .Case("_ZL22__internal_device_hneg13__nv_bfloat16", MathOp::Neg)
+            .Case("_ZL5__hlt6__halfS_", MathOp::Lt)
+            .Default(MathOp::None);
 
     if (mathOp == MathOp::None)
       return failure();
 
     Location loc = op.getLoc();
     SmallVector<Value> newArgs;
+    Type fltType = callee.getLeafReference().getValue().contains("bfloat16")
+                       ? rewriter.getBF16Type()
+                       : rewriter.getF16Type();
+
     for (Value arg : op.getOperands()) {
-      if (isa<IntegerType>(arg.getType())) {
-        newArgs.push_back(
-            rewriter.create<arith::BitcastOp>(loc, rewriter.getF16Type(), arg));
+      if (isa<LLVM::LLVMPointerType>(arg.getType())) {
+        newArgs.push_back(rewriter.create<LLVM::LoadOp>(loc, fltType, arg));
+      } else if (isa<LLVM::LLVMStructType>(arg.getType())) {
+        Value val = rewriter.create<LLVM::ExtractValueOp>(loc, arg, 0);
+        newArgs.push_back(rewriter.create<arith::BitcastOp>(loc, fltType, val));
+      } else if (isa<IntegerType>(arg.getType())) {
+        newArgs.push_back(rewriter.create<arith::BitcastOp>(loc, fltType, arg));
       } else {
         newArgs.push_back(arg);
       }
@@ -790,6 +806,14 @@ public:
     } else {
       if (isa<IntegerType>(resType)) {
         res = rewriter.create<arith::BitcastOp>(loc, resType, res);
+      } else if (auto structTy = dyn_cast<LLVM::LLVMStructType>(resType)) {
+        res =
+            rewriter.create<arith::BitcastOp>(loc, rewriter.getI16Type(), res);
+        res = rewriter.create<LLVM::InsertValueOp>(
+            loc, structTy, rewriter.create<LLVM::UndefOp>(loc, structTy), res,
+            rewriter.getDenseI64ArrayAttr(0));
+      } else if (!isa<FloatType>(resType)) {
+        res = rewriter.create<arith::BitcastOp>(loc, resType, res);
       }
     }
 
@@ -828,7 +852,8 @@ public:
                                                  input);
       return success();
     }
-    if (funcName == "__bfloat162float") {
+    if (funcName == "__bfloat162float" ||
+        funcName == "_ZL32__internal_device_bfloat162floatt") {
       Value input = op.getOperand(0);
       Location loc = op.getLoc();
       if (isa<LLVM::LLVMPointerType>(input.getType())) {
@@ -845,7 +870,8 @@ public:
                                                  input);
       return success();
     }
-    if (funcName == "__float2bfloat16") {
+    if (funcName == "__float2bfloat16" ||
+        funcName == "_ZL16__float2bfloat16f") {
       Value input = op.getOperand(0);
       Location loc = op.getLoc();
       Type resType = op.getResultTypes()[0];
