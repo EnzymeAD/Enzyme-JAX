@@ -53,10 +53,15 @@ public:
     if (!convertAttr)
       return failure();
     auto tesseraName = convertAttr.getValue();
-    auto funcName = funcOp.getName();
-    auto fnType = funcOp.getFunctionType();
     auto module = funcOp->getParentOfType<ModuleOp>();
     auto *ctx = funcOp->getContext();
+    auto funcName = funcOp.getName();
+    auto llvmFuncType = funcOp.getFunctionType();
+    auto fnType =
+        FunctionType::get(ctx, llvmFuncType.getParams(),
+                          isa<LLVM::LLVMVoidType>(llvmFuncType.getReturnType())
+                              ? TypeRange{}
+                              : TypeRange{llvmFuncType.getReturnType()});
 
     // Replace current function name with tessera name defined in
     // tessera.convert attribute

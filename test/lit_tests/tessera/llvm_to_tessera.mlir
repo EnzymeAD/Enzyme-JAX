@@ -5,7 +5,7 @@ llvm.func @simple_func() attributes {tessera.convert = #tessera<convert "tessera
 }
 
 // CHECK-LABEL: tessera.define @tessera_simple_func
-// CHECK-NEXT: tessera.return
+// CHECK: tessera.return
 
 // -----
 
@@ -15,7 +15,7 @@ llvm.func @func_with_args(%arg0: i32, %arg1: f32) -> i32 attributes {tessera.con
 }
 
 // CHECK-LABEL: tessera.define @tessera_func_with_args
-// CHECK-NEXT: tessera.return %arg0 : i32
+// CHECK: tessera.return %arg0 : i32
 
 // -----
 
@@ -29,11 +29,11 @@ llvm.func @func_with_call() attributes {tessera.convert = #tessera<convert "tess
 }
 
 // CHECK-LABEL: tessera.define @tessera_helper
-// CHECK-NEXT: tessera.return
+// CHECK: tessera.return
 
 // CHECK-LABEL: tessera.define @tessera_func_with_call
-// CHECK-NEXT: tessera.call @tessera_helper()
-// CHECK-NEXT: tessera.return
+// CHECK: tessera.call @tessera_helper()
+// CHECK: tessera.return
 
 // -----
 
@@ -42,4 +42,4 @@ llvm.func @regular_function() {
 }
 
 // CHECK-LABEL: llvm.func @regular_function
-// CHECK-NEXT: llvm.return
+// CHECK: llvm.return

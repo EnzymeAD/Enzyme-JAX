@@ -6,6 +6,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Bytecode/BytecodeOpInterface.h"
+#include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMTypes.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -41,7 +42,8 @@ namespace {
 // Rewrite 'tessera.define' -> 'llvm.func'
 class DefineOpRewrite final : public OpRewritePattern<tessera::DefineOp> {
 public:
-  using OpRewritePattern<tessera::DefineOp>::OpRewritePattern;
+  DefineOpRewrite(LLVMTypeConverter &typeConverter, MLIRContext *ctx)
+      : OpRewritePattern(ctx), typeConverter(typeConverter) {}
 
   LogicalResult matchAndRewrite(tessera::DefineOp defineOp,
                                 PatternRewriter &rewriter) const override {
@@ -49,10 +51,23 @@ public:
         defineOp->getAttrOfType<StringAttr>("tessera.original_name");
     if (!funcNameAttr)
       return failure();
-    auto fnType = defineOp.getFunctionType();
     auto funcName = funcNameAttr.getValue();
     auto module = defineOp->getParentOfType<ModuleOp>();
     auto *ctx = defineOp->getContext();
+    auto fnType = defineOp.getFunctionType();
+
+    // Convert argument types
+    SmallVector<Type> argTypes;
+    for (auto type : fnType.getInputs())
+      argTypes.push_back(typeConverter.convertType(type));
+
+    // Handle return type - void if no results
+    Type returnType = fnType.getNumResults() == 0
+                          ? LLVM::LLVMVoidType::get(ctx)
+                          : typeConverter.convertType(fnType.getResult(0));
+    auto llvmFuncType = LLVM::LLVMFunctionType::get(returnType, argTypes);
+    if (!llvmFuncType)
+      return failure();
 
     // Replace tessera name with original function name
     if (failed(SymbolTable::replaceAllSymbolUses(
@@ -60,8 +75,8 @@ public:
       return failure();
 
     // Create the `llvm.func` op
-    auto funcOp =
-        LLVM::LLVMFuncOp::create(rewriter, defineOp.getLoc(), funcName, fnType);
+    auto funcOp = LLVM::LLVMFuncOp::create(rewriter, defineOp.getLoc(),
+                                           funcName, llvmFuncType);
 
     // Copy over all attributes other than the function name and type.
     for (const auto &namedAttr : defineOp->getAttrs()) {
@@ -81,6 +96,9 @@ public:
 
     return success();
   }
+
+private:
+  LLVMTypeConverter &typeConverter;
 };
 
 // Rewrite 'tessera.call' -> 'llvm.call'
@@ -123,9 +141,11 @@ struct TesseraToLLVMPass
 
   void runOnOperation() override {
     MLIRContext *ctx = &getContext();
+    LLVMTypeConverter typeConverter(ctx);
     RewritePatternSet patterns(ctx);
 
-    patterns.add<DefineOpRewrite, CallOpRewrite, ReturnOpRewrite>(ctx);
+    patterns.add<DefineOpRewrite>(typeConverter, ctx);
+    patterns.add<CallOpRewrite, ReturnOpRewrite>(ctx);
 
     if (failed(applyPatternsGreedily(getOperation(), std::move(patterns)))) {
       signalPassFailure();

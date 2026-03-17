@@ -21,8 +21,7 @@ namespace mlir::enzyme::tessera {} // namespace mlir::enzyme::tessera
 //===----------------------------------------------------------------------===//
 
 void DefineOp::build(OpBuilder &builder, OperationState &state, StringRef name,
-                     LLVM::LLVMFunctionType type,
-                     ArrayRef<NamedAttribute> attrs,
+                     FunctionType type, ArrayRef<NamedAttribute> attrs,
                      ArrayRef<DictionaryAttr> argAttrs) {
   state.addAttribute(SymbolTable::getSymbolAttrName(),
                      builder.getStringAttr(name));
@@ -32,7 +31,7 @@ void DefineOp::build(OpBuilder &builder, OperationState &state, StringRef name,
 
   if (argAttrs.empty())
     return;
-  assert(type.getNumParams() == argAttrs.size());
+  assert(type.getNumInputs() == argAttrs.size());
   call_interface_impl::addArgAndResultAttrs(
       builder, state, argAttrs, /*resultAttrs=*/{},
       getArgAttrsAttrName(state.name), getResAttrsAttrName(state.name));
@@ -41,12 +40,8 @@ void DefineOp::build(OpBuilder &builder, OperationState &state, StringRef name,
 ParseResult DefineOp::parse(OpAsmParser &parser, OperationState &result) {
   auto buildFuncType =
       [](Builder &builder, ArrayRef<Type> argTypes, ArrayRef<Type> results,
-         function_interface_impl::VariadicFlag, std::string &) {
-        Type returnType = results.empty()
-                              ? LLVM::LLVMVoidType::get(builder.getContext())
-                              : results[0];
-        return LLVM::LLVMFunctionType::get(returnType, argTypes);
-      };
+         function_interface_impl::VariadicFlag,
+         std::string &) { return builder.getFunctionType(argTypes, results); };
 
   return function_interface_impl::parseFunctionOp(
       parser, result, /*allowVariadic=*/false,
@@ -93,24 +88,24 @@ DefineOp DefineOp::clone(IRMapping &mapper) {
   // the function by specifying them in the mapper. If so, we don't add the
   // argument to the input type vector.
   if (!isExternal()) {
-    auto oldType = getFunctionType();
+    FunctionType oldType = getFunctionType();
 
-    unsigned oldNumArgs = oldType.getNumParams();
-    SmallVector<Type, 4> newParams;
-    newParams.reserve(oldNumArgs);
+    unsigned oldNumArgs = oldType.getNumInputs();
+    SmallVector<Type, 4> newInputs;
+    newInputs.reserve(oldNumArgs);
     for (unsigned i = 0; i != oldNumArgs; ++i)
       if (!mapper.contains(getArgument(i)))
-        newParams.push_back(oldType.getParams()[i]);
+        newInputs.push_back(oldType.getInput(i));
 
     /// If any of the arguments were dropped, update the type and drop any
     /// necessary argument attributes.
-    if (newParams.size() != oldNumArgs) {
-      newFunc.setType(LLVM::LLVMFunctionType::get(
-          oldType.getReturnType(), newParams, oldType.isVarArg()));
+    if (newInputs.size() != oldNumArgs) {
+      newFunc.setType(FunctionType::get(oldType.getContext(), newInputs,
+                                        oldType.getResults()));
 
       if (ArrayAttr argAttrs = getAllArgAttrs()) {
         SmallVector<Attribute> newArgAttrs;
-        newArgAttrs.reserve(newParams.size());
+        newArgAttrs.reserve(newInputs.size());
         for (unsigned i = 0; i != oldNumArgs; ++i)
           if (!mapper.contains(getArgument(i)))
             newArgAttrs.push_back(argAttrs[i]);
@@ -134,24 +129,21 @@ DefineOp DefineOp::clone() {
 
 LogicalResult ReturnOp::verify() {
   auto function = cast<DefineOp>((*this)->getParentOp());
-  auto fnType = function.getFunctionType();
-  bool isVoid = mlir::isa<LLVM::LLVMVoidType>(fnType.getReturnType());
 
-  if (isVoid && getNumOperands() != 0)
-    return emitOpError("has operands but enclosing function (@")
-           << function.getName() << ") returns void";
-
-  if (!isVoid && getNumOperands() != 1)
+  // The operand number and types must match the function signature.
+  const auto &results = function.getFunctionType().getResults();
+  if (getNumOperands() != results.size())
     return emitOpError("has ")
            << getNumOperands() << " operands, but enclosing function (@"
-           << function.getName() << ") returns one value";
+           << function.getName() << ") returns " << results.size();
 
-  if (!isVoid && getOperand(0).getType() != fnType.getReturnType())
-    return emitError() << "type of return operand 0 ("
-                       << getOperand(0).getType()
-                       << ") doesn't match function result type ("
-                       << fnType.getReturnType() << ") in function @"
-                       << function.getName();
+  for (unsigned i = 0, e = results.size(); i != e; ++i)
+    if (getOperand(i).getType() != results[i])
+      return emitError() << "type of return operand " << i << " ("
+                         << getOperand(i).getType()
+                         << ") doesn't match function result type ("
+                         << results[i] << ")"
+                         << " in function @" << function.getName();
   return success();
 }
 
@@ -171,36 +163,29 @@ LogicalResult CallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
 
   // Verify that the operand and result types match the callee.
   auto fnType = fn.getFunctionType();
-  if (fnType.getNumParams() != getNumOperands())
+  if (fnType.getNumInputs() != getNumOperands())
     return emitOpError("incorrect number of operands for callee");
 
-  for (unsigned i = 0, e = fnType.getNumParams(); i != e; ++i)
-    if (getOperand(i).getType() != fnType.getParams()[i])
+  for (unsigned i = 0, e = fnType.getNumInputs(); i != e; ++i)
+    if (getOperand(i).getType() != fnType.getInput(i))
       return emitOpError("operand type mismatch: expected operand type ")
-             << fnType.getParams()[i] << ", but provided "
+             << fnType.getInput(i) << ", but provided "
              << getOperand(i).getType() << " for operand number " << i;
 
-  if (mlir::isa<LLVM::LLVMVoidType>(fnType.getReturnType()) !=
-      (getNumResults() == 0))
+  if (fnType.getNumResults() != getNumResults())
     return emitOpError("incorrect number of results for callee");
 
-  if (getNumResults() > 0) {
-    Type resultType = getResult(0).getType();
-    if (resultType != fnType.getReturnType()) {
-      auto diag = emitOpError("result type mismatch");
+  for (unsigned i = 0, e = fnType.getNumResults(); i != e; ++i)
+    if (getResult(i).getType() != fnType.getResult(i)) {
+      auto diag = emitOpError("result type mismatch at index ") << i;
       diag.attachNote() << "      op result types: " << getResultTypes();
-      diag.attachNote() << "function result types: " << fnType.getReturnType();
+      diag.attachNote() << "function result types: " << fnType.getResults();
       return diag;
     }
-  }
 
   return success();
 }
 
-LLVM::LLVMFunctionType CallOp::getCalleeType() {
-  auto resultTypes = getResultTypes();
-  auto returnType = resultTypes.empty() ? LLVM::LLVMVoidType::get(getContext())
-                                        : resultTypes[0];
-  SmallVector<Type> argTypes(getOperandTypes());
-  return LLVM::LLVMFunctionType::get(returnType, argTypes);
+FunctionType CallOp::getCalleeType() {
+  return FunctionType::get(getContext(), getOperandTypes(), getResultTypes());
 }

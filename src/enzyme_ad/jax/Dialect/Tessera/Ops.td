@@ -10,7 +10,6 @@ include "mlir/Interfaces/ControlFlowInterfaces.td"
 include "mlir/Interfaces/FunctionInterfaces.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
-include "mlir/Dialect/LLVMIR/LLVMTypes.td"
 
 include "Dialect.td"
 
@@ -29,7 +28,7 @@ def DefineOp : TesseraOp<"define", [
   }];
 
   let arguments = (ins SymbolNameAttr:$sym_name,
-                       TypeAttrOf<LLVM_FunctionType>:$function_type,
+                       TypeAttrOf<FunctionType>:$function_type,
                        OptionalAttr<StrAttr>:$sym_visibility,
                        OptionalAttr<DictArrayAttr>:$arg_attrs,
                        OptionalAttr<DictArrayAttr>:$res_attrs
@@ -37,7 +36,7 @@ def DefineOp : TesseraOp<"define", [
   let regions = (region AnyRegion:$body);
 
   let builders = [OpBuilder<(ins
-    "StringRef":$name, "LLVM::LLVMFunctionType":$type,
+    "StringRef":$name, "FunctionType":$type,
     CArg<"ArrayRef<NamedAttribute>", "{}">:$attrs,
     CArg<"ArrayRef<DictionaryAttr>", "{}">:$argAttrs)
   >];
@@ -68,10 +67,10 @@ def DefineOp : TesseraOp<"define", [
     ::mlir::Region *getCallableRegion() { return isExternal() ? nullptr : &getBody(); }
 
     /// Returns the argument types of this function.
-    ArrayRef<Type> getArgumentTypes() { return getFunctionType().getParams(); }
+    ArrayRef<Type> getArgumentTypes() { return getFunctionType().getInputs(); }
 
     /// Returns the result types of this function.
-    ArrayRef<Type> getResultTypes() { return getFunctionType().getReturnTypes(); }
+    ArrayRef<Type> getResultTypes() { return getFunctionType().getResults(); }
 
     //===------------------------------------------------------------------===//
     // SymbolOpInterface Methods
@@ -112,7 +111,7 @@ def CallOp : TesseraOp<"call",
     OpBuilder<(ins "DefineOp":$callee, CArg<"ValueRange", "{}">:$operands), [{
       $_state.addOperands(operands);
       $_state.addAttribute("callee", SymbolRefAttr::get(callee));
-      $_state.addTypes(callee.getFunctionType().getReturnTypes());
+      $_state.addTypes(callee.getFunctionType().getResults());
     }]>,
     OpBuilder<(ins "SymbolRefAttr":$callee, "TypeRange":$results,
       CArg<"ValueRange", "{}">:$operands), [{
@@ -143,7 +142,7 @@ def CallOp : TesseraOp<"call",
     }]>];
 
   let extraClassDeclaration = [{
-    LLVM::LLVMFunctionType getCalleeType();
+    FunctionType getCalleeType();
 
     /// Get the argument operands to the called function.
     operand_range getArgOperands() {
