@@ -13,10 +13,10 @@
 #include "llvm/ADT/SmallVector.h"
 #include <mlir/IR/BuiltinAttributes.h>
 
-#define DEBUG_TYPE "lower-blas-to-jit_call"
+#define DEBUG_TYPE "lower-blas"
 
 namespace mlir::blas {
-#define GEN_PASS_DEF_LOWERBLASTOJITCALLPASS
+#define GEN_PASS_DEF_LOWERBLASPASS
 #include "src/enzyme_ad/jax/Passes/BLAS/Passes.h.inc"
 } // namespace mlir::blas
 
@@ -671,9 +671,9 @@ private:
   int64_t blasIntWidth;
 };
 
-struct LowerBlasToJitCallPass
-    : public mlir::blas::impl::LowerBlasToJitCallPassBase<
-          LowerBlasToJitCallPass> {
+struct LowerBlasPass
+    : public mlir::blas::impl::LowerBlasPassBase<
+          LowerBlasPass> {
   using Base::Base;
 
   void runOnOperation() override {

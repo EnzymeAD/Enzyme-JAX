@@ -13,10 +13,10 @@
 #include "llvm/ADT/SmallVector.h"
 #include <mlir/IR/BuiltinAttributes.h>
 
-#define DEBUG_TYPE "lower-blas-to-stablehlo"
+#define DEBUG_TYPE "blas-legalize-to-stablehlo"
 
 namespace mlir::blas {
-#define GEN_PASS_DEF_LOWERBLASTOSTABLEHLOPASS
+#define GEN_PASS_DEF_BLASLEGALIZETOSTABLEHLOPASS
 #include "src/enzyme_ad/jax/Passes/BLAS/Passes.h.inc"
 } // namespace mlir::blas
 
@@ -216,9 +216,9 @@ struct TrsmOpLowering : public OpRewritePattern<blas::TrsmOp> {
 };
 } // namespace lower_shlo
 
-struct LowerBlasToStableHLOPass
-    : public mlir::blas::impl::LowerBlasToStableHLOPassBase<
-          LowerBlasToStableHLOPass> {
+struct BlasLegalizeToStablehloPass
+    : public mlir::blas::impl::BlasLegalizeToStablehloPassBase<
+          BlasLegalizeToStablehloPass> {
   using Base::Base;
 
   void runOnOperation() override {

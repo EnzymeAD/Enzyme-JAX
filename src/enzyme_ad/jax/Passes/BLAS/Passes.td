@@ -3,8 +3,8 @@
 
 include "mlir/Pass/PassBase.td"
 
-def LowerBlasToStableHLOPass : Pass<"lower-blas-to-stablehlo"> {
-  let summary = "Lower BLAS operations to StableHLO ops";
+def BlasLegalizeToStablehloPass : Pass<"blas-legalize-to-stablehlo"> {
+  let summary = "Legalize BLAS ops to StableHLO ops";
   let dependentDialects = [
     "mlir::blas::BlasDialect",
     "stablehlo::StablehloDialect"
@@ -16,24 +16,24 @@ def LowerBlasToStableHLOPass : Pass<"lower-blas-to-stablehlo"> {
       /*CLI argument=*/"symm",
       /*type=*/"bool",
       /*default=*/"false",
-      /*description=*/"lower blas.symm to stablehlo.dot_general">,
+      /*description=*/"legalize blas.symm to stablehlo.dot_general">,
     Option<
       /*C++ variable name=*/"syrk",
       /*CLI argument=*/"syrk",
       /*type=*/"bool",
       /*default=*/"false",
-      /*description=*/"lower blas.syrk to stablehlo.dot_general">,
+      /*description=*/"legalize blas.syrk to stablehlo.dot_general">,
     Option<
       /*C++ variable name=*/"trsm",
       /*CLI argument=*/"trsm",
       /*type=*/"bool",
       /*default=*/"true",
-      /*description=*/"lower blas.trsm to stablehlo.triangular_solve">,
+      /*description=*/"legalize blas.trsm to stablehlo.triangular_solve">,
   ];
 }
 
-def LowerBlasToJitCallPass : Pass<"lower-blas-to-jit_call"> {
-  let summary = "Lower BLAS operations to enzymexla.jit_call ops";
+def LowerBlasPass : Pass<"lower-blas"> {
+  let summary = "Lower BLAS operations to custom calls";
   let dependentDialects = [
     "mlir::blas::BlasDialect",
     "mlir::enzymexla::EnzymeXLADialect"
