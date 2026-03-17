@@ -853,6 +853,8 @@ public:
       return success();
     }
     if (funcName == "__bfloat162float" ||
+        funcName == "_ZL16__bfloat162float13__nv_bfloat16" ||
+        funcName == "_ZL25__internal_bfloat162floatt" ||
         funcName == "_ZL32__internal_device_bfloat162floatt") {
       Value input = op.getOperand(0);
       Location loc = op.getLoc();
