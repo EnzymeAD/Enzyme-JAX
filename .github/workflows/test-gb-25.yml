@@ -92,7 +92,9 @@ jobs:
         with:
           version: ${{ matrix.julia_version }}
       - name: Load Julia packages from cache
-        uses: julia-actions/cache@v3
+        uses: wsmoses/cache@gcpb
+        with:
+          gcp-bucket: enzyme-ci-transient
       - name: Modify Enzyme-JAX commit
         timeout-minutes: 1
         run: |
