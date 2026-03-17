@@ -1099,7 +1099,13 @@ struct LibDeviceFuncsRaisingPass
     if (remove_freeze)
       patterns.add<RemoveFreeze>(getOperation()->getContext());
     patterns.add<EnzymeAutodiffOpRaising>(getOperation()->getContext());
-    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns)))) {
+    GreedyRewriteConfig config;
+    // We disable region simplification to avoid inadvertently merging
+    // llvm.cond_br now that there is an index type.
+    config.setRegionSimplificationLevel(
+        mlir::GreedySimplifyRegionLevel::Disabled);
+    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
+                                     config))) {
       emitError(getOperation()->getLoc()) << "failed to raise __nv functions";
       return signalPassFailure();
     }
