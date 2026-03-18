@@ -85,8 +85,8 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
   std::string pass_pipeline =
       "inline{default-pipeline=canonicalize "
       "max-iterations=4},sroa-wrappers{set_private=false attributor=false},"
-      "tessera-annotation-to-attribute,func-attr-to-tessera-attr,gpu-launch-"
-      "recognition{backend=";
+      "lift-tessera-annotations,func-attr-to-tessera-attr,parse-optimization-rules,"
+      "gpu-launch-recognition{backend=";
   pass_pipeline += backend;
   pass_pipeline += "}";
   pass_pipeline += ","
@@ -110,7 +110,7 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       "canonicalize,delinearize-indexing,canonicalize,simplify-affine-exprs,"
       "affine-cfg,canonicalize,llvm-to-affine-access,canonicalize,"
       "func.func(affine-loop-invariant-code-motion),"
-      "canonicalize,sort-memory,";
+      "canonicalize,sort-memory,llvm-to-tessera,tessera-apply-pdl,tessera-to-llvm,";
   if (StringRef(backend).starts_with("xla")) {
       pass_pipeline += "raise-affine-to-stablehlo{prefer_while_raising=false "
       "dump_failed_lockstep=true},canonicalize,arith-raise{stablehlo=true},"

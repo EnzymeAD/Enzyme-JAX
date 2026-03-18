@@ -23,14 +23,14 @@ module {
 // CHECK:         scf.parallel 
 // CHECK:           memref.alloca_scope  {
 // CHECK:             scf.execute_region {
-// CHECK-DAG:               %[[a1:.*]] = llvm.alloca %0 x !llvm.struct<(i8)> {alignment = 1 : i64} : (i64) -> !llvm.ptr
 // CHECK-DAG:               %[[a2:.*]] = llvm.alloca %0 x !llvm.struct<(i8)> {alignment = 1 : i64} : (i64) -> !llvm.ptr
 // CHECK:               llvm.store %[[ld]], %[[a2]] : !llvm.struct<(i8)>, !llvm.ptr
 // CHECK:               memref.alloca_scope  {
+// CHECK-DAG:             %[[a1:.*]] = llvm.alloca %0 x !llvm.struct<(i8)> {alignment = 1 : i64} : (i64) -> !llvm.ptr
 // CHECK:                 scf.execute_region {
-// CHECK:                   "llvm.intr.memcpy"(%[[a1]], %[[a2]], %0) <{isVolatile = false}> : (!llvm.ptr, !llvm.ptr, i64) -> ()
-// CHECK:                   %[[rld:.*]] = llvm.load %4 : !llvm.ptr -> !llvm.struct<(i8)>
-// CHECK:                   llvm.store %6, %arg5 : !llvm.struct<(i8)>, !llvm.ptr
+// CHECK:                    "llvm.intr.memcpy"(%[[a1]], %[[a2]], %0) <{arg_attrs = [{llvm.align = 1 : i64}], isVolatile = false}> : (!llvm.ptr, !llvm.ptr, i64) -> ()
+// CHECK:                   %[[rld:.*]] = llvm.load %[[a1]] : !llvm.ptr -> !llvm.struct<(i8)>
+// CHECK:                   llvm.store %[[rld]], %arg5 : !llvm.struct<(i8)>, !llvm.ptr
 // CHECK:                   scf.yield
 // CHECK:                 }
 // CHECK:               }

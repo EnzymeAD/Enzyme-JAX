@@ -14,14 +14,11 @@ exports_files([
     "raise.h",
     "raise.cpp",
     "RegistryUtils.cpp",
-])
+] + glob([
+    "xla_ffi/**/*.cc",
+]))
 
 licenses(["notice"])
-
-config_setting(
-    name = "is_clang_build",
-    define_values = {"using_clang": "true"},
-)
 
 cc_library(
     name = "gpu",
@@ -43,6 +40,42 @@ cc_library(
         "@xla//xla/service:custom_call_status",
         "@xla//xla/service:custom_call_target_registry",
     ],
+)
+
+cc_library(
+    name = "xla_ffi",
+    srcs =
+        [
+            "xla_ffi/register.cc",
+        ] + glob([
+            "xla_ffi/host/**/*.cc",
+            "xla_ffi/cuda/**/*.cc",
+        ]),
+    hdrs =
+        glob([
+            "xla_ffi/host/**/*.h",
+            "xla_ffi/cuda/**/*.h",
+        ]),
+    copts = select({
+        "@local_config_cuda//:is_cuda_enabled": ["-DENZYMEJAX_CUDA=1"],
+        "//conditions:default": [],
+    }),
+    visibility = ["//visibility:public"],
+    deps = [
+        "@com_google_absl//absl/strings:str_format",
+        "@xla//xla/ffi:ffi_api",
+        "@xla//xla/ffi/api:c_api",
+        "@xla//xla/ffi/api:ffi",
+    ] + select({
+        "@local_config_cuda//:is_cuda_enabled": [
+            "@jax//jaxlib:ffi_helpers",
+            "@jax//jaxlib/cuda:cuda_blas_handle_pool",
+            "@local_config_cuda//cuda:cuda_headers",
+            "@xla//xla/tsl/cuda:cublas",
+            "@xla//xla/tsl/cuda:cudart",
+        ],
+        "//conditions:default": [],
+    }),
 )
 
 cc_library(
@@ -215,8 +248,8 @@ cc_library(
     srcs = ["TransformOps/RaisingTransformOps.cpp"],
     hdrs = ["TransformOps/RaisingTransformOps.h"],
     copts = select({
-        "//conditions:default": [],
-        ":is_clang_build": ["-fbracket-depth=768"],
+        "@rules_cc//cc/compiler:gcc": [],
+        "//conditions:default": ["-fbracket-depth=768"],
     }),
     deps = [
         ":RaisingTransformOpsImplIncGen",
@@ -243,8 +276,8 @@ cc_library(
     ],
     hdrs = ["TransformOps/TransformOps.h"],
     copts = select({
-        "//conditions:default": [],
-        ":is_clang_build": ["-fbracket-depth=768"],
+        "@rules_cc//cc/compiler:gcc": [],
+        "//conditions:default": ["-fbracket-depth=768"],
     }),
     deps = [
         ":TransformOpsImplIncGen",
@@ -616,6 +649,7 @@ td_library(
         "@llvm-project//mlir:ControlFlowInterfacesTdFiles",
         "@llvm-project//mlir:FunctionInterfacesTdFiles",
         "@llvm-project//mlir:InferTypeOpInterfaceTdFiles",
+        "@llvm-project//mlir:LLVMOpsTdFiles",
         "@llvm-project//mlir:OpBaseTdFiles",
         "@llvm-project//mlir:SideEffectInterfacesTdFiles",
     ],
@@ -1256,6 +1290,7 @@ cc_library(
         "@llvm-project//mlir:NVVMToLLVM",
         "@llvm-project//mlir:OpenMPDialect",
         "@llvm-project//mlir:OpenMPToLLVM",
+        "@llvm-project//mlir:PDLDialect",
         "@llvm-project//mlir:PDLInterpDialect",
         "@llvm-project//mlir:Parser",
         "@llvm-project//mlir:Pass",
@@ -1400,8 +1435,6 @@ cc_library(
         "@llvm-project//mlir:LLVMCommonConversion",
         "@llvm-project//mlir:Transforms",
         "@llvm-project//mlir:PDLDialect",
-        "@llvm-project//mlir:PDLInterpDialect",
-        "@llvm-project//mlir:PDLToPDLInterp",
 
         # Triton
         "@triton//:TritonDialects",
@@ -1628,6 +1661,7 @@ pybind_extension(
         ":compile_with_xla",
         ":cpu",
         ":gpu",
+        ":xla_ffi",
         "@com_google_absl//absl/status:statusor",
         "@enzyme//:EnzymeMLIR",
         "@enzyme//:EnzymeStatic",

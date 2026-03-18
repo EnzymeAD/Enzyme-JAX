@@ -245,6 +245,18 @@ def ApplyTanConstProp : EnzymeHLOPatternOp<
     "tan_const_prop">{
   let patterns = ["UnaryConstProp<stablehlo::TanOp,stablehlo::tanOp>"];
 }
+def ApplyReluConstProp : EnzymeHLOPatternOp<
+    "relu_const_prop">{
+  let patterns = ["UnaryConstProp<enzymexla::ReluOp,reluOp>"];
+}
+def ApplyGeluConstProp : EnzymeHLOPatternOp<
+    "gelu_const_prop">{
+  let patterns = ["GeluConstProp"];
+}
+def ApplySoftplusConstProp : EnzymeHLOPatternOp<
+    "softplus_const_prop">{
+  let patterns = ["UnaryConstProp<enzymexla::SoftplusOp,softplusOp>"];
+}
 def SignAbsSimplifyPatterns : EnzymeHLOPatternOp<
     "sign_abs_simplify"> {
   let patterns = ["SignAbsSimplify"];

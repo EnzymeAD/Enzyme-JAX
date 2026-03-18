@@ -704,6 +704,216 @@ struct ReadOnlyAllocaElim : public OpRewritePattern<LLVM::AllocaOp> {
   }
 };
 
+class HalfMathRaising : public OpRewritePattern<LLVM::CallOp> {
+public:
+  HalfMathRaising(MLIRContext *context)
+      : OpRewritePattern<LLVM::CallOp>(context) {}
+
+  enum class MathOp { Log, Div, Abs, Mul, Add, Sqrt, Sub, Exp, Neg, Lt, None };
+
+  LogicalResult matchAndRewrite(LLVM::CallOp op,
+                                PatternRewriter &rewriter) const override {
+    CallInterfaceCallable callable = op.getCallableForCallee();
+    auto callee = dyn_cast<SymbolRefAttr>(callable);
+    if (!callee)
+      return failure();
+
+    MathOp mathOp =
+        llvm::StringSwitch<MathOp>(callee.getLeafReference().getValue())
+            .Case("_ZL4hlog6__half", MathOp::Log)
+            .Case("_ZL6__hdiv6__halfS_", MathOp::Div)
+            .Case("_ZL22__internal_device_hdiv13__nv_bfloat16S_", MathOp::Div)
+            .Case("_ZL6__habs6__half", MathOp::Abs)
+            .Case("_ZL6__hmul6__halfS_", MathOp::Mul)
+            .Case("_ZL27__internal_sm80_device_hmul13__nv_bfloat16S_",
+                  MathOp::Mul)
+            .Case("_ZL6__hadd6__halfS_", MathOp::Add)
+            .Case("_ZL6__hadd13__nv_bfloat16S_", MathOp::Add)
+            .Case("_ZL5hsqrt6__half", MathOp::Sqrt)
+            .Case("_ZL6__hsub6__halfS_", MathOp::Sub)
+            .Case("_ZL27__internal_sm80_device_hsub13__nv_bfloat16S_",
+                  MathOp::Sub)
+            .Case("_ZL4hexp6__half", MathOp::Exp)
+            .Case("_ZL6__hneg6__half", MathOp::Neg)
+            .Case("_ZL22__internal_device_hneg13__nv_bfloat16", MathOp::Neg)
+            .Case("_ZL5__hlt6__halfS_", MathOp::Lt)
+            .Default(MathOp::None);
+
+    if (mathOp == MathOp::None)
+      return failure();
+
+    Location loc = op.getLoc();
+    SmallVector<Value> newArgs;
+    Type fltType = callee.getLeafReference().getValue().contains("bfloat16")
+                       ? rewriter.getBF16Type()
+                       : rewriter.getF16Type();
+
+    for (Value arg : op.getOperands()) {
+      if (isa<LLVM::LLVMPointerType>(arg.getType())) {
+        newArgs.push_back(rewriter.create<LLVM::LoadOp>(loc, fltType, arg));
+      } else if (isa<LLVM::LLVMStructType>(arg.getType())) {
+        Value val = rewriter.create<LLVM::ExtractValueOp>(loc, arg, 0);
+        newArgs.push_back(rewriter.create<arith::BitcastOp>(loc, fltType, val));
+      } else if (isa<IntegerType>(arg.getType())) {
+        newArgs.push_back(rewriter.create<arith::BitcastOp>(loc, fltType, arg));
+      } else {
+        newArgs.push_back(arg);
+      }
+    }
+
+    Value res;
+    switch (mathOp) {
+    case MathOp::Log:
+      res = rewriter.create<math::LogOp>(loc, newArgs[0]);
+      break;
+    case MathOp::Div:
+      res = rewriter.create<arith::DivFOp>(loc, newArgs[0], newArgs[1]);
+      break;
+    case MathOp::Abs:
+      res = rewriter.create<math::AbsFOp>(loc, newArgs[0]);
+      break;
+    case MathOp::Mul:
+      res = rewriter.create<arith::MulFOp>(loc, newArgs[0], newArgs[1]);
+      break;
+    case MathOp::Add:
+      res = rewriter.create<arith::AddFOp>(loc, newArgs[0], newArgs[1]);
+      break;
+    case MathOp::Sqrt:
+      res = rewriter.create<math::SqrtOp>(loc, newArgs[0]);
+      break;
+    case MathOp::Sub:
+      res = rewriter.create<arith::SubFOp>(loc, newArgs[0], newArgs[1]);
+      break;
+    case MathOp::Exp:
+      res = rewriter.create<math::ExpOp>(loc, newArgs[0]);
+      break;
+    case MathOp::Neg:
+      res = rewriter.create<arith::NegFOp>(loc, newArgs[0]);
+      break;
+    case MathOp::Lt:
+      res = rewriter.create<arith::CmpFOp>(loc, arith::CmpFPredicate::OLT,
+                                           newArgs[0], newArgs[1]);
+      break;
+    case MathOp::None:
+      llvm_unreachable("Invalid math function");
+    }
+
+    Type resType = op.getResultTypes()[0];
+    if (mathOp == MathOp::Lt) {
+      if (isa<IntegerType>(resType) && resType.getIntOrFloatBitWidth() > 1) {
+        res = rewriter.create<arith::ExtUIOp>(loc, resType, res);
+      }
+    } else {
+      if (isa<IntegerType>(resType)) {
+        res = rewriter.create<arith::BitcastOp>(loc, resType, res);
+      } else if (auto structTy = dyn_cast<LLVM::LLVMStructType>(resType)) {
+        res =
+            rewriter.create<arith::BitcastOp>(loc, rewriter.getI16Type(), res);
+        res = rewriter.create<LLVM::InsertValueOp>(
+            loc, structTy, rewriter.create<LLVM::UndefOp>(loc, structTy), res,
+            rewriter.getDenseI64ArrayAttr(0));
+      } else if (!isa<FloatType>(resType)) {
+        res = rewriter.create<arith::BitcastOp>(loc, resType, res);
+      }
+    }
+
+    rewriter.replaceOp(op, res);
+    return success();
+  }
+};
+
+class BF16HalfToFloatRaising : public OpRewritePattern<LLVM::CallOp> {
+public:
+  BF16HalfToFloatRaising(MLIRContext *context)
+      : OpRewritePattern<LLVM::CallOp>(context) {}
+
+  LogicalResult matchAndRewrite(LLVM::CallOp op,
+                                PatternRewriter &rewriter) const override {
+    CallInterfaceCallable callable = op.getCallableForCallee();
+    auto callee = dyn_cast<SymbolRefAttr>(callable);
+    if (!callee)
+      return failure();
+
+    StringRef funcName = callee.getLeafReference();
+    if (funcName == "__half2float" || funcName == "_ZL12__half2float6__half") {
+      Value input = op.getOperand(0);
+      Location loc = op.getLoc();
+      if (isa<LLVM::LLVMPointerType>(input.getType())) {
+        input =
+            rewriter.create<LLVM::LoadOp>(loc, rewriter.getF16Type(), input);
+      } else if (isa<LLVM::LLVMStructType>(input.getType())) {
+        input = rewriter.create<LLVM::ExtractValueOp>(loc, input, 0);
+      }
+      if (isa<IntegerType>(input.getType())) {
+        input = rewriter.create<arith::BitcastOp>(loc, rewriter.getF16Type(),
+                                                  input);
+      }
+      rewriter.replaceOpWithNewOp<arith::ExtFOp>(op, op.getResultTypes()[0],
+                                                 input);
+      return success();
+    }
+    if (funcName == "__bfloat162float" ||
+        funcName == "_ZL16__bfloat162float13__nv_bfloat16" ||
+        funcName == "_ZL25__internal_bfloat162floatt" ||
+        funcName == "_ZL32__internal_device_bfloat162floatt") {
+      Value input = op.getOperand(0);
+      Location loc = op.getLoc();
+      if (isa<LLVM::LLVMPointerType>(input.getType())) {
+        input =
+            rewriter.create<LLVM::LoadOp>(loc, rewriter.getBF16Type(), input);
+      } else if (isa<LLVM::LLVMStructType>(input.getType())) {
+        input = rewriter.create<LLVM::ExtractValueOp>(loc, input, 0);
+      }
+      if (isa<IntegerType>(input.getType())) {
+        input = rewriter.create<arith::BitcastOp>(loc, rewriter.getBF16Type(),
+                                                  input);
+      }
+      rewriter.replaceOpWithNewOp<arith::ExtFOp>(op, op.getResultTypes()[0],
+                                                 input);
+      return success();
+    }
+    if (funcName == "__float2bfloat16" ||
+        funcName == "_ZL16__float2bfloat16f") {
+      Value input = op.getOperand(0);
+      Location loc = op.getLoc();
+      Type resType = op.getResultTypes()[0];
+      Value res =
+          rewriter.create<arith::TruncFOp>(loc, rewriter.getBF16Type(), input);
+      if (isa<IntegerType>(resType)) {
+        res = rewriter.create<arith::BitcastOp>(loc, resType, res);
+      } else if (auto structTy = dyn_cast<LLVM::LLVMStructType>(resType)) {
+        res =
+            rewriter.create<arith::BitcastOp>(loc, rewriter.getI16Type(), res);
+        res = rewriter.create<LLVM::InsertValueOp>(
+            loc, structTy, rewriter.create<LLVM::UndefOp>(loc, structTy), res,
+            rewriter.getDenseI64ArrayAttr(0));
+      }
+      rewriter.replaceOp(op, res);
+      return success();
+    }
+    if (funcName == "_ZL12__float2halff") {
+      Value input = op.getOperand(0);
+      Location loc = op.getLoc();
+      Type resType = op.getResultTypes()[0];
+      Value res =
+          rewriter.create<arith::TruncFOp>(loc, rewriter.getF16Type(), input);
+      if (isa<IntegerType>(resType)) {
+        res = rewriter.create<arith::BitcastOp>(loc, resType, res);
+      } else if (auto structTy = dyn_cast<LLVM::LLVMStructType>(resType)) {
+        res =
+            rewriter.create<arith::BitcastOp>(loc, rewriter.getI16Type(), res);
+        res = rewriter.create<LLVM::InsertValueOp>(
+            loc, structTy, rewriter.create<LLVM::UndefOp>(loc, structTy), res,
+            rewriter.getDenseI64ArrayAttr(0));
+      }
+      rewriter.replaceOp(op, res);
+      return success();
+    }
+
+    return failure();
+  }
+};
+
 } // namespace
 
 void mlir::enzyme::populateLibDeviceFuncsToOpsPatterns(
@@ -714,6 +924,8 @@ void mlir::enzyme::populateLibDeviceFuncsToOpsPatterns(
   auto *converter = context;
 
   patterns.add<IsFPClassRaising>(context);
+  patterns.add<BF16HalfToFloatRaising>(context);
+  patterns.add<HalfMathRaising>(context);
   patterns.add<CallToOpIntAdaptRaising<math::CountLeadingZerosOp>>(context,
                                                                    "__nv_clz");
   patterns.add<CallToOpIntAdaptRaising<math::CountLeadingZerosOp>>(
@@ -889,7 +1101,13 @@ struct LibDeviceFuncsRaisingPass
     if (remove_freeze)
       patterns.add<RemoveFreeze>(getOperation()->getContext());
     patterns.add<EnzymeAutodiffOpRaising>(getOperation()->getContext());
-    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns)))) {
+    GreedyRewriteConfig config;
+    // We disable region simplification to avoid inadvertently merging
+    // llvm.cond_br now that there is an index type.
+    config.setRegionSimplificationLevel(
+        mlir::GreedySimplifyRegionLevel::Disabled);
+    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
+                                     config))) {
       emitError(getOperation()->getLoc()) << "failed to raise __nv functions";
       return signalPassFailure();
     }

@@ -1,0 +1,112 @@
+diff --git a/xla/debug_options_flags.cc b/xla/debug_options_flags.cc
+index c7fcf7d246..8d2f41118d 100644
+--- a/xla/debug_options_flags.cc
++++ b/xla/debug_options_flags.cc
+@@ -268,6 +268,8 @@ DebugOptions DefaultDebugOptionsIgnoringFlags() {
+       kDefaultReduceScatterCombineThreshold);
+   opts.set_xla_gpu_collective_permute_combine_threshold_bytes(
+       kDefaultCollectivePermuteCombineThreshold);
++  opts.set_xla_gpu_collective_combine_threshold_count(
++      kDefaultCollectiveCombineThresholdCount);
+   opts.set_xla_gpu_enable_all_gather_combine_by_dim(false);
+   opts.set_xla_gpu_enable_reduce_scatter_combine_by_dim(false);
+   opts.set_xla_gpu_enable_approx_costly_collectives(false);
+@@ -1675,6 +1677,13 @@ void MakeDebugOptionsFlags(std::vector<tsl::Flag>* flag_list,
+               set_xla_gpu_collective_permute_combine_threshold_bytes),
+       debug_options->xla_gpu_collective_permute_combine_threshold_bytes(),
+       "Size threshold (in bytes) for the GPU collective-permute combiner."));
++  flag_list->push_back(tsl::Flag(
++      "xla_gpu_collective_combine_threshold_count",
++      int64_setter_for(
++          &DebugOptions::set_xla_gpu_collective_combine_threshold_count),
++      debug_options->xla_gpu_collective_combine_threshold_count(),
++      "Maximum number of instructions to be combined in collective "
++      "combiners."));
+   flag_list->push_back(tsl::Flag(
+       "xla_gpu_enable_all_gather_combine_by_dim",
+       bool_setter_for(
+diff --git a/xla/service/collective_utils.h b/xla/service/collective_utils.h
+index 995d9ec759..0b2a0815bd 100644
+--- a/xla/service/collective_utils.h
++++ b/xla/service/collective_utils.h
+@@ -40,6 +40,9 @@ inline constexpr int64_t kDefaultCollectivePermuteCombineThreshold =
+ inline constexpr int64_t kDefaultReduceScatterCombineThreshold =
+     30 * 1024 * 1024 + 7;
+ 
++// Defines the default threshold count for collective combiners.
++inline constexpr int64_t kDefaultCollectiveCombineThresholdCount = 2048;
++
+ // Defines the default coefficient for the SoL NCCL collective cost model.
+ // Note: XLA flags allow a user to override the default values of the model.
+ inline constexpr float kDefaultNcclCostModelCoeff = 0.45f;
+diff --git a/xla/service/gpu/gpu_compiler.cc b/xla/service/gpu/gpu_compiler.cc
+index c35d1d0d7f..f1a0ca9eaa 100644
+--- a/xla/service/gpu/gpu_compiler.cc
++++ b/xla/service/gpu/gpu_compiler.cc
+@@ -1252,7 +1252,6 @@ void AddDoubleBufferingPasses(const HloModule& module,
+   }
+ }
+ 
+-constexpr int kCombineThresholdCount = 256;
+ 
+ void AddCollectiveCombinerPasses(
+     HloPassPipeline& pipeline, const HloModule& module,
+@@ -1270,21 +1269,22 @@ void AddCollectiveCombinerPasses(
+ 
+   pipeline.AddPass<GpuAllGatherCombiner>(
+       kDefaultAllGatherCombineThreshold,
+-      opts.xla_gpu_all_gather_combine_threshold_bytes(), kCombineThresholdCount,
++      opts.xla_gpu_all_gather_combine_threshold_bytes(),
++      opts.xla_gpu_collective_combine_threshold_count(),
+       opts.xla_gpu_enable_all_gather_combine_by_dim(),
+       /*combine_different_dtypes=*/true);
+   pipeline.AddPass<GpuAllReduceCombiner>(
+       kDefaultAllReduceCombineThreshold,
+       opts.xla_gpu_all_reduce_combine_threshold_bytes(),
+-      kCombineThresholdCount);
++      opts.xla_gpu_collective_combine_threshold_count());
+   pipeline.AddPass<GpuReduceScatterCombiner>(
+       kDefaultReduceScatterCombineThreshold,
+       opts.xla_gpu_reduce_scatter_combine_threshold_bytes(),
+-      kCombineThresholdCount,
++      opts.xla_gpu_collective_combine_threshold_count(),
+       opts.xla_gpu_enable_reduce_scatter_combine_by_dim());
+   pipeline.AddPass<CollectivePermuteCombiner>(
+       opts.xla_gpu_collective_permute_combine_threshold_bytes(),
+-      kCombineThresholdCount);
++      opts.xla_gpu_collective_combine_threshold_count());
+ }
+ 
+ absl::Status RunPostFusionPasses(
+@@ -1425,7 +1425,7 @@ absl::Status RunDynamicSliceFusionPasses(HloModule* hlo_module,
+     pipeline.AddPass<GpuReduceScatterCombiner>(
+         kDefaultReduceScatterCombineThreshold,
+         opts.xla_gpu_reduce_scatter_combine_threshold_bytes(),
+-        kCombineThresholdCount,
++        opts.xla_gpu_collective_combine_threshold_count(),
+         opts.xla_gpu_enable_reduce_scatter_combine_by_dim());
+     pipeline.AddPass<DynamicSliceFusionRewriter>(platform_id);
+     pipeline.AddPass<AsyncWrapper>([](const HloInstruction* instr) {
+diff --git a/xla/xla.proto b/xla/xla.proto
+index 32e0678df1..f3a46e43a3 100644
+--- a/xla/xla.proto
++++ b/xla/xla.proto
+@@ -430,6 +430,9 @@ message DebugOptions {
+   // backend config after compilation.
+   optional bool xla_gpu_collect_cost_model_stats = 240;
+ 
++  // Maximum number of instructions to be combined in collective combiners.
++  optional int64 xla_gpu_collective_combine_threshold_count = 461;
++
+   // Inflate collective cost by running each collective multiple times.
+   optional int32 xla_gpu_collective_inflation_factor = 205;
+ 
+@@ -1417,7 +1420,7 @@ message DebugOptions {
+   // Note: when adding a new flag, please add it to one of the hardware-specific
+   // or hardware-agnostic sections at the top of this proto message.
+ 
+-  // Next id: 461
++  // Next id: 462
+ 
+   // Extra options to pass to the compilation backend (e.g. LLVM); specific
+   // interpretation of these values is left to the backend.

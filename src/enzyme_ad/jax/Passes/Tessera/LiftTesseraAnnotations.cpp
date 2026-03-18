@@ -1,14 +1,24 @@
+//===----------------------------------------------------------------------===//
+//
+// This file extracts tessera_op and tessera_optimize global annotations
+// and adds tessera_op attributes and tessera.optimization ops to the module.
+//
+//===----------------------------------------------------------------------===//
+
 #include "Passes/Passes.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/Pass.h"
+#include "src/enzyme_ad/jax/Dialect/Tessera/Dialect.h"
+#include "src/enzyme_ad/jax/Passes/Tessera/Passes.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringRef.h"
 
 namespace mlir {
 namespace enzyme {
 namespace tessera {
-#define GEN_PASS_DEF_TESSERAANNOTATIONTOATTRIBUTEPASS
+#define GEN_PASS_DEF_LIFTTESSERAANNOTATIONSPASS
 #include "src/enzyme_ad/jax/Passes/Tessera/Passes.h.inc"
 } // namespace tessera
 } // namespace enzyme
@@ -20,33 +30,38 @@ using namespace mlir::enzyme::tessera;
 
 namespace {
 
-struct TesseraAnnotationToAttributePass
-    : public enzyme::tessera::impl::TesseraAnnotationToAttributePassBase<
-          TesseraAnnotationToAttributePass> {
-  using TesseraAnnotationToAttributePassBase::
-      TesseraAnnotationToAttributePassBase;
+struct LiftTesseraAnnotationsPass
+    : public enzyme::tessera::impl::LiftTesseraAnnotationsPassBase<
+          LiftTesseraAnnotationsPass> {
+  using LiftTesseraAnnotationsPassBase::LiftTesseraAnnotationsPassBase;
 
   void runOnOperation() override {
     ModuleOp module = getOperation();
-    OpBuilder builder(module.getContext());
+    MLIRContext *ctx = module.getContext();
 
-    // Find string constants in metadata
-    DenseMap<StringRef, std::string> stringGlobals;
-    for (auto global : module.getOps<LLVM::GlobalOp>()) {
-      if (global.getSection() && *global.getSection() == "llvm.metadata") {
-        if (auto strAttr =
-                dyn_cast_or_null<StringAttr>(global.getValueAttr())) {
-          stringGlobals[global.getSymName()] = strAttr.getValue().str();
-        }
-      }
-    }
-
-    // Find annotations array
+    // Find string constants in metadata, locate annotations array, and build
+    // optimization ops
     LLVM::GlobalOp annotationGlobal = nullptr;
+    DenseMap<StringRef, std::string> stringGlobals;
+    SmallVector<std::string> optimizationRules;
+
     for (auto global : module.getOps<LLVM::GlobalOp>()) {
       if (global.getSymName() == "llvm.global.annotations") {
         annotationGlobal = global;
-        break;
+      }
+      if (global.getSection() && *global.getSection() == "llvm.metadata") {
+        if (auto strAttr =
+                dyn_cast_or_null<StringAttr>(global.getValueAttr())) {
+          StringRef str = strAttr.getValue();
+          stringGlobals[global.getSymName()] = str.str();
+          if (str.starts_with("tessera_optimize=")) {
+            StringRef rule =
+                str.drop_front(StringRef("tessera_optimize=").size());
+            if (rule.ends_with('\0'))
+              rule = rule.drop_back(1);
+            optimizationRules.push_back(rule.str());
+          }
+        }
       }
     }
 
@@ -56,6 +71,21 @@ struct TesseraAnnotationToAttributePass
     Region &region = annotationGlobal.getInitializerRegion();
     if (region.empty())
       return;
+
+    if (!optimizationRules.empty()) {
+      OpBuilder builder(ctx);
+      Location loc = builder.getUnknownLoc();
+      builder.setInsertionPointToEnd(module.getBody());
+      auto optimizationsOp = tessera::OptimizationsOp::create(builder, loc);
+      Region &body = optimizationsOp.getBody();
+      Block *block = builder.createBlock(&body);
+      builder.setInsertionPointToStart(block);
+
+      for (const std::string &rule : optimizationRules) {
+        tessera::OptimizationOp::create(builder, loc,
+                                        builder.getStringAttr(rule));
+      }
+    }
 
     DenseMap<Value, StringRef> valueToFunction;
     DenseMap<Value, StringRef> valueToAnnotation;
@@ -127,9 +157,6 @@ struct TesseraAnnotationToAttributePass
                       StringAttr::get(func->getContext(), opName));
       }
     }
-
-    // Delete annotation array
-    annotationGlobal.erase();
   }
 };
 } // namespace
