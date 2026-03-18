@@ -18,6 +18,7 @@
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/Support/LogicalResult.h"
 #include "src/enzyme_ad/jax/Implementations/SHLOGenericBatchOpInterface.h"
+#include "src/enzyme_ad/jax/Utils.h"
 
 #include "Dialect/Ops.h"
 #include "mlir/IR/TypeSupport.h"
