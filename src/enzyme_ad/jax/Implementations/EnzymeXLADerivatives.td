@@ -298,7 +298,7 @@ def SliceStride : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
 }]>;
 
 def ZeroVal : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-    auto Ty = cast<ShapedType>(op.getResult().getType()).clone(llvm::ArrayRef<long>{});
+    auto Ty = cast<ShapedType>(op.getResult().getType()).clone(llvm::ArrayRef<int64_t>{});
     stablehlo::ConstantOp::create(builder, op.getLoc(), Ty, cast<ElementsAttr>(makeAttr(Ty, 0)));
 }]>;
 
