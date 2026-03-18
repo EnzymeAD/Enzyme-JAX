@@ -672,8 +672,7 @@ private:
 };
 
 struct LowerBlasPass
-    : public mlir::blas::impl::LowerBlasPassBase<
-          LowerBlasPass> {
+    : public mlir::blas::impl::LowerBlasPassBase<LowerBlasPass> {
   using Base::Base;
 
   void runOnOperation() override {
