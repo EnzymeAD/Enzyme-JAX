@@ -16,7 +16,6 @@ func.func @fft(%x : tensor<4xcomplex<f32>>) -> tensor<4xcomplex<f32>> {
 // FORWARD-FFT-NEXT:   }
 
 // REVERSE-FFT:  func.func private @fft_revdiff(%arg0: tensor<4xcomplex<f32>>, %arg1: tensor<4xcomplex<f32>>) -> tensor<4xcomplex<f32>> {
-// REVERSE-FFT-NEXT:    %0 = chlo.conj %arg1 : tensor<4xcomplex<f32>> -> tensor<4xcomplex<f32>>
-// REVERSE-FFT-NEXT:    %1 = stablehlo.fft %0, type = FFT, length = [4] : (tensor<4xcomplex<f32>>) -> tensor<4xcomplex<f32>>
-// REVERSE-FFT-NEXT:    return %1 : tensor<4xcomplex<f32>>
+// REVERSE-FFT-NEXT:    %0 = stablehlo.fft %arg1, type = FFT, length = [4] : (tensor<4xcomplex<f32>>) -> tensor<4xcomplex<f32>>
+// REVERSE-FFT-NEXT:    return %0 : tensor<4xcomplex<f32>>
 // REVERSE-FFT-NEXT:  }
