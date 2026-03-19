@@ -1040,4 +1040,22 @@ module {
 
   }
 
+  gpu.module @test_module_inline_asm {
+    // CHECK-LABEL: @gpu_inline_asm_f32_to_f16
+    llvm.func @gpu_inline_asm_f32_to_f16(%arg0: f32) -> i16 {
+      // CHECK: %[[TRUNC:.*]] = arith.truncf %arg0 : f32 to f16
+      // CHECK: arith.bitcast %[[TRUNC]] : f16 to i16
+      %0 = llvm.inline_asm asm_dialect = att "{  cvt.rn.f16.f32 $0, $1;}\n", "=h,f" %arg0 : (f32) -> i16
+      llvm.return %0 : i16
+    }
+
+    // CHECK-LABEL: @gpu_inline_asm_f16_to_f32
+    llvm.func @gpu_inline_asm_f16_to_f32(%arg0: i16) -> f32 {
+      // CHECK: %[[CAST:.*]] = arith.bitcast %arg0 : i16 to f16
+      // CHECK: arith.extf %[[CAST]] : f16 to f32
+      %0 = llvm.inline_asm asm_dialect = att "{  cvt.f32.f16 $0, $1;}\n", "=f,h" %arg0 : (i16) -> f32
+      llvm.return %0 : f32
+    }
+  }
+
 }
