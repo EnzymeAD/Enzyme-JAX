@@ -1,0 +1,15 @@
+diff --git a/xla/service/collective_combiner_utils.h b/xla/service/collective_combiner_utils.h
+index 8784c0f..1e38294 100644
+--- a/xla/service/collective_combiner_utils.h
++++ b/xla/service/collective_combiner_utils.h
+@@ -148,8 +148,8 @@ absl::StatusOr<bool> CombineInstructionsByKey(
+             return reachable;
+           });
+       if (is_reachable) {
+-        VLOG(1) << "Instruction is reachable.";
+-        break;
++        VLOG(1) << "Instruction is reachable, skipping.";
++        continue;
+       }
+
+       VLOG(1) << "Adding instruction to set.";
