@@ -42,6 +42,11 @@ struct TesseraApplyPDLPass
     if (!patternModule)
       return;
 
+    if (patternModule.getBody()->getOperations().empty()) {
+      patternModule.getOperation()->erase();
+      return;
+    }
+
     RewritePatternSet patternList(module->getContext());
 
     // Process the pattern module.
