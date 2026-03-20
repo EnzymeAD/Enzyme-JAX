@@ -104,8 +104,12 @@ public:
   LogicalResult matchAndRewrite(LLVM::CallOp callOp,
                                 PatternRewriter &rewriter) const override {
 
+    auto calleeAttr = callOp.getCalleeAttr();
+    if (!calleeAttr)
+      return failure();
+
     auto callee = SymbolTable::lookupSymbolIn(
-        callOp->getParentOfType<ModuleOp>(), callOp.getCalleeAttr());
+        callOp->getParentOfType<ModuleOp>(), calleeAttr);
     // Only rewrite if callee is a tessera.define op
     if (!isa_and_nonnull<tessera::DefineOp>(callee))
       return failure();
