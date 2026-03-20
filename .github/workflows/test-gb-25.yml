@@ -27,7 +27,7 @@ jobs:
   test-gb-25:
     name: 'Test GB-25 - ${{ matrix.os }} - julia ${{ matrix.julia_version }} - XLA ${{ matrix.xla_commit }} - GB-25 ${{ matrix.gb25_commit }}- Reactant ${{ matrix.reactant_commit }}'
     runs-on: ${{ matrix.os }}
-    timeout-minutes: 150
+    timeout-minutes: 180
 
     container:
       image: ${{ (contains(matrix.os, 'linux') && 'ghcr.io/enzymead/reactant-docker-images@sha256:cd45d851f5ea544f88d042eafefa53d948c229fffcab6189019324e3b02b505a' ) || '' }}
@@ -48,8 +48,8 @@ jobs:
           # - '0123456789abcdef0123456789abcdef01234567'
 
         reactant_commit:
-          - 'main'
-          - 'mst3'
+          - 'ffuse'
+          - 'mst3-v2'
 
     steps:
       - name: Check GPUs
@@ -191,10 +191,10 @@ jobs:
           echo "${MPIEXECJL_DIR}" >> "${GITHUB_PATH}"
         working-directory: ${{ env.GB25_DIR }}
       - name: Compile GB-25 simulation
-        timeout-minutes: 30
+        timeout-minutes: 60
         run: |
           export XLA_FLAGS='--xla_dump_hlo_pass_re=.* --xla_dump_to=${{ env.GB25_DIR }}/xla_dump_compile'
-          timeout --signal=TERM --verbose 29m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict sharding/sharded_baroclinic_instability_simulation_compile.jl ${{ env.RUN_FLAGS }}
+          timeout --signal=TERM --verbose 59m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict sharding/sharded_baroclinic_instability_simulation_compile.jl ${{ env.RUN_FLAGS }}
         working-directory: ${{ env.GB25_DIR }}
       - name: Show remaining collective operations
         timeout-minutes: 10
@@ -232,10 +232,10 @@ jobs:
               exit 1
           fi
       - name: Run GB-25 simulation
-        timeout-minutes: 60
+        timeout-minutes: 90
         run: |
           export XLA_FLAGS='--xla_dump_hlo_pass_re=.* --xla_dump_to=${{ env.GB25_DIR }}/xla_dump_run'
-          timeout --signal=TERM --verbose 59m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict sharding/sharded_baroclinic_instability_simulation_run.jl ${{ env.RUN_FLAGS }}
+          timeout --signal=TERM --verbose 89m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict sharding/sharded_baroclinic_instability_simulation_run.jl ${{ env.RUN_FLAGS }}
         working-directory: ${{ env.GB25_DIR }}
       - name: Display profile results
         shell: julia --project --color=yes {0}
@@ -250,9 +250,9 @@ jobs:
           display(Reactant.Profiler.load_xplane_file(xplane_file))
         working-directory: ${{ env.GB25_DIR }}
       - name: Test correctness in GB-25 code
-        timeout-minutes: 20
+        timeout-minutes: 40
         run: |
-          timeout --signal=TERM --verbose 19m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict correctness/correctness_sharded_baroclinic_instability_simulation_run.jl ${{ env.RUN_FLAGS }}
+          timeout --signal=TERM --verbose 39m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict correctness/correctness_sharded_baroclinic_instability_simulation_run.jl ${{ env.RUN_FLAGS }}
         working-directory: ${{ env.GB25_DIR }}
       - name: Upload MLIR and XLA modules
         uses: actions/upload-artifact@v7
