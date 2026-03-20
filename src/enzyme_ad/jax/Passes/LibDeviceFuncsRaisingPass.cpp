@@ -891,7 +891,8 @@ public:
       rewriter.replaceOp(op, res);
       return success();
     }
-    if (funcName == "_ZL12__float2halff") {
+    if (funcName == "_ZL12__float2halff" ||
+        funcName == "_ZL21__internal_float2halffRjS_") {
       Value input = op.getOperand(0);
       Location loc = op.getLoc();
       Type resType = op.getResultTypes()[0];
