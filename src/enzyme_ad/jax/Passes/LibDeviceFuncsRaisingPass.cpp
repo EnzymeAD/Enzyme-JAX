@@ -922,9 +922,7 @@ public:
   LogicalResult matchAndRewrite(LLVM::InlineAsmOp op,
                                 PatternRewriter &rewriter) const override {
     StringRef asmStr = op.getAsmString();
-    if (asmStr.contains("cvt.rn.f16.f32")) {
-      if (op.getOperands().size() != 1)
-        return failure();
+    if (asmStr == "{  cvt.rn.f16.f32 $0, $1;}\n") {
       Value input = op.getOperand(0);
       Location loc = op.getLoc();
       Type resType = op.getResultTypes()[0];
@@ -936,9 +934,7 @@ public:
       rewriter.replaceOp(op, res);
       return success();
     }
-    if (asmStr.contains("cvt.f32.f16")) {
-      if (op.getOperands().size() != 1)
-        return failure();
+    if (asmStr == "{  cvt.f32.f16 $0, $1;}\n") {
       Value input = op.getOperand(0);
       Location loc = op.getLoc();
       if (isa<IntegerType>(input.getType())) {
