@@ -1,6 +1,6 @@
 // RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=fft outfn=fft_fwddiff retTys=enzyme_dup argTys=enzyme_dup mode=ForwardMode" | FileCheck %s --check-prefix=FORWARD-FFT
 // RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=fft outfn=fft_revdiff retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --arith-raise --verify-each=0 --canonicalize --remove-unnecessary-enzyme-ops --enzyme-hlo-opt | FileCheck %s --check-prefix=REVERSE-FFT
-// RUN: enzymexlamlir-opt --enzyme --arith-raise --canonicalize --remove-unnecessary-enzyme-ops --chlo-legalize-to-stablehlo --enzyme-hlo-opt --verify-each=0 %s | stablehlo-translate - --interpret -split-input-file %s
+// RUN: enzymexlamlir-opt --enzyme --arith-raise --canonicalize --remove-unnecessary-enzyme-ops --chlo-legalize-to-stablehlo --enzyme-hlo-opt --verify-each=0 %s | stablehlo-translate - --interpret --allow-unregistered-dialect
 
 func.func @fft(%x : tensor<4xcomplex<f64>>) -> tensor<4xcomplex<f64>> {
   %0 = "stablehlo.fft"(%x) {
@@ -17,8 +17,10 @@ func.func @fft(%x : tensor<4xcomplex<f64>>) -> tensor<4xcomplex<f64>> {
 // FORWARD-FFT-NEXT:   }
 
 // REVERSE-FFT:  func.func private @fft_revdiff(%arg0: tensor<4xcomplex<f64>>, %arg1: tensor<4xcomplex<f64>>) -> tensor<4xcomplex<f64>> {
-// REVERSE-FFT-NEXT:    %0 = stablehlo.fft %arg1, type = FFT, length = [4] : (tensor<4xcomplex<f64>>) -> tensor<4xcomplex<f64>>
-// REVERSE-FFT-NEXT:    return %0 : tensor<4xcomplex<f64>>
+// REVERSE-FFT-NEXT:    %0 = chlo.conj %arg1 : tensor<4xcomplex<f64>> -> tensor<4xcomplex<f64>>
+// REVERSE-FFT-NEXT:    %1 = stablehlo.fft %0, type = FFT, length = [4] {enzymexla.complex_is_purely_real = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<4xcomplex<f64>>) -> tensor<4xcomplex<f64>>
+// REVERSE-FFT-NEXT:    %2 = chlo.conj %1 : tensor<4xcomplex<f64>> -> tensor<4xcomplex<f64>>
+// REVERSE-FFT-NEXT:    return %2 : tensor<4xcomplex<f64>>
 // REVERSE-FFT-NEXT:  }
 
 func.func @main() {

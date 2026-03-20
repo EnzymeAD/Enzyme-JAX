@@ -1,6 +1,6 @@
 // RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=rfft outfn=rfft_fwddiff retTys=enzyme_dup argTys=enzyme_dup mode=ForwardMode" | FileCheck %s --check-prefix=FORWARD-RFFT
 // RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=rfft outfn=rfft_revdiff retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --arith-raise --verify-each=0 --canonicalize --remove-unnecessary-enzyme-ops --enzyme-hlo-opt | FileCheck %s --check-prefix=REVERSE-RFFT
-// RUN: enzymexlamlir-opt --enzyme --arith-raise --canonicalize --remove-unnecessary-enzyme-ops --chlo-legalize-to-stablehlo --enzyme-hlo-opt --verify-each=0 %s | stablehlo-translate - --interpret -split-input-file %s
+// RUN: enzymexlamlir-opt --enzyme --arith-raise --canonicalize --remove-unnecessary-enzyme-ops --chlo-legalize-to-stablehlo --enzyme-hlo-opt --verify-each=0 %s | stablehlo-translate - --interpret --allow-unregistered-dialect
 
 func.func @rfft(%x : tensor<4xf64>) -> tensor<3xcomplex<f64>> {
   %y = "stablehlo.fft"(%x) {
