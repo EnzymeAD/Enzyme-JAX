@@ -1471,7 +1471,6 @@ def : HLODerivative<"FftOp",
       )
     ],
     (
-      Conj
-      (Fft (Conj (Shadow $x)), (FftType), (FftLength))
+      Fft (Shadow $x), (FftType), (FftLength)
     )
 >;

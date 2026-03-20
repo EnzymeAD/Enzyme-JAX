@@ -49,7 +49,7 @@ func.func @main() {
   } : (tensor<4xf64>, tensor<4xf64>) -> (tensor<3xcomplex<f64>>, tensor<3xcomplex<f64>>)
 
   check.expect_almost_eq %fwd_1#0, %output : tensor<3xcomplex<f64>>
-  check.expect_almost_eq_const %fwd_1#1, dense<[(1.0, 0.0), (0.0, 1.0), (-1.0, 0.0)]> : tensor<3xcomplex<f64>>
+  check.expect_almost_eq_const %fwd_1#1, dense<[(1.0, 0.0), (0.0, -1.0), (-1.0, 0.0)]> : tensor<3xcomplex<f64>>
 
   // forward, index = 2
   %dinput_fwd_2 = stablehlo.constant dense<[0.0, 0.0, 1.0, 0.0]> : tensor<4xf64>
@@ -71,7 +71,7 @@ func.func @main() {
   } : (tensor<4xf64>, tensor<4xf64>) -> (tensor<3xcomplex<f64>>, tensor<3xcomplex<f64>>)
 
   check.expect_almost_eq %fwd_3#0, %output : tensor<3xcomplex<f64>>
-  check.expect_almost_eq_const %fwd_3#1, dense<[(1.0, 0.0), (0.0, -1.0), (-1.0, 0.0)]> : tensor<3xcomplex<f64>>
+  check.expect_almost_eq_const %fwd_3#1, dense<[(1.0, 0.0), (0.0, 1.0), (-1.0, 0.0)]> : tensor<3xcomplex<f64>>
 
   // reverse, index = 0, real
   %dinput_rev_0_real = stablehlo.constant dense<[(1.0, 0.0), (0.0, 0.0), (0.0, 0.0)]> : tensor<3xcomplex<f64>>
