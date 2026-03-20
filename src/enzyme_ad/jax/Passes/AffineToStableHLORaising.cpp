@@ -793,7 +793,7 @@ emitIfAsSelect(Operation *ifOp, Value cond, affine::AffineValueMap map,
     Value elseCond = stablehlo::NotOp::create(
         builder,
         rewriteLocation(ifOp->getLoc(), pc.options.strip_llvm_debuginfo), cond);
-    maps[elseCond] = maps.lookup(mask);
+    maps[elseCond] = maps.lookup(cond);
 
     Value elseMask = getMaskedCond(elseCond, pc.mask);
     assert(maps.contains(elseMask));
