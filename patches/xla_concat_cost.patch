@@ -1,0 +1,26 @@
+diff --git a/xla/service/gpu/model/gpu_hlo_cost_analysis.cc b/xla/service/gpu/model/gpu_hlo_cost_analysis.cc
+index e395f548ad..147b2a11ea 100644
+--- a/xla/service/gpu/model/gpu_hlo_cost_analysis.cc
++++ b/xla/service/gpu/model/gpu_hlo_cost_analysis.cc
+@@ -448,7 +448,20 @@ absl::Status GpuHloCostAnalysis::HandleConcatenate(const HloInstruction* hlo) {
+   // tiling patterns.
+   int64_t dim = Cast<HloConcatenateInstruction>(hlo)->concatenate_dimension();
+   if (dim > 0 && hlo->operand(0)->shape().dimensions()[dim] & 31) {
+-    flop_per_element = 400;
++    // Only apply the divergence penalty if the number of elements after
++    // the concat dimension is small enough that a significant fraction of
++    // warps will cross the operand boundary. When there are many elements
++    // after the concat dim, each warp processes elements within a single
++    // operand, and divergence is negligible.
++    int64_t elements_after_concat_dim = 1;
++    for (int64_t i = dim + 1; i < hlo->shape().dimensions_size(); ++i) {
++      elements_after_concat_dim *= hlo->operand(0)->shape().dimensions()[i];
++    }
++    // 128 elements = 4 warps. Below this threshold, divergence affects
++    // >25% of warps. Above it, divergence is <25% and not worth penalizing.
++    if (elements_after_concat_dim < 128) {
++      flop_per_element = 400;
++    }
+   }
+   current_properties_[kFlopsKey] =
+       flop_per_element * ShapeUtil::ElementsInRecursive(hlo->shape());
