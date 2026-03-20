@@ -1,0 +1,382 @@
+diff --git a/xla/debug_options_flags.cc b/xla/debug_options_flags.cc
+index 32ec5975e5..3e7d5b8a7d 100644
+--- a/xla/debug_options_flags.cc
++++ b/xla/debug_options_flags.cc
+@@ -330,6 +330,8 @@ DebugOptions DefaultDebugOptionsIgnoringFlags() {
+   opts.set_xla_partitioning_algorithm(
+       DebugOptions::PARTITIONING_ALGORITHM_NOOP);
+ 
++  opts.set_xla_gpu_occupancy_aware_fusion(true);
++
+   opts.set_xla_gpu_enable_triton_gemm(true);
+   opts.set_xla_gpu_unsupported_enable_triton_multi_output_fusion(true);
+   opts.set_xla_gpu_enable_cudnn_int8x32_convolution_reordering(true);
+@@ -2059,6 +2061,13 @@ void MakeDebugOptionsFlags(std::vector<tsl::Flag>* flag_list,
+       DebugOptions::PartitioningAlgorithm_Name(
+           debug_options->xla_partitioning_algorithm()),
+       "The partitioning algorithm to be used in the PartitionAssignment pass"));
++  flag_list->push_back(tsl::Flag(
++      "xla_gpu_occupancy_aware_fusion",
++      bool_setter_for(
++          &DebugOptions::set_xla_gpu_occupancy_aware_fusion),
++      debug_options->xla_gpu_occupancy_aware_fusion(),
++      "When enabled, the fusion cost model penalizes fusions that would "
++      "reduce GPU occupancy due to high register pressure."));
+   flag_list->push_back(
+       tsl::Flag("xla_gpu_enable_triton_gemm",
+                 bool_setter_for(&DebugOptions::set_xla_gpu_enable_triton_gemm),
+diff --git a/xla/service/gpu/model/gpu_performance_model.cc b/xla/service/gpu/model/gpu_performance_model.cc
+index 956bc9f926..30a8847177 100644
+--- a/xla/service/gpu/model/gpu_performance_model.cc
++++ b/xla/service/gpu/model/gpu_performance_model.cc
+@@ -193,6 +193,79 @@ absl::Duration GpuPerformanceModel::EstimateRunTimeForFusionImpl(
+   auto exec_time =
+       CombineComputeAndMemoryAccessTime(compute_time, read_time + write_time);
+ 
++  // --- Occupancy-aware fusion penalty ---
++  // The key idea: fusion saves bandwidth (by eliminating intermediate buffers)
++  // but may hurt occupancy (by increasing register pressure). We estimate both
++  // effects and only penalize when the occupancy cost exceeds the savings.
++  const auto& debug_options = producer->GetModule()->config().debug_options();
++  if (debug_options.xla_gpu_occupancy_aware_fusion()) {
++    RegisterUsage fused_reg_usage = simple_register_estimate(producer, consumer);
++    int64_t fused_regs = fused_reg_usage.num_registers;
++
++    double fused_occupancy = ComputeOccupancy(
++        device_info_, fused_regs, launch_dimensions.num_threads_per_block());
++
++    // Estimate the unfused occupancy (max of producer and consumer separately).
++    RegisterUsage producer_reg_usage =
++        simple_register_estimate(producer, producer);
++    RegisterUsage consumer_reg_usage =
++        simple_register_estimate(consumer, consumer);
++    double producer_occ = ComputeOccupancy(
++        device_info_, producer_reg_usage.num_registers,
++        launch_dimensions.num_threads_per_block());
++    double consumer_occ = ComputeOccupancy(
++        device_info_, consumer_reg_usage.num_registers,
++        launch_dimensions.num_threads_per_block());
++    double unfused_occupancy = std::max(producer_occ, consumer_occ);
++
++    // Only penalize if fusion makes occupancy worse AND the resulting
++    // occupancy is below 50%.
++    if (fused_occupancy < unfused_occupancy && fused_occupancy < 0.5) {
++      // The bandwidth cost of the occupancy drop.
++      double fused_bw = OccupancyToBandwidthEfficiency(fused_occupancy);
++      double unfused_bw = OccupancyToBandwidthEfficiency(unfused_occupancy);
++
++      // How much slower does memory access become due to the occupancy drop?
++      // ratio > 1 means the fused version is slower at memory access.
++      double bw_degradation = (fused_bw > 0.01)
++          ? unfused_bw / fused_bw
++          : 1.0;
++
++      // The bandwidth SAVINGS from fusion: the intermediate buffer that
++      // doesn't need to be written/read. Estimate from the difference
++      // in total bytes between unfused and fused.
++      int64_t unfused_bytes =
++          producer_runtime.bytes_read + producer_runtime.bytes_written +
++          consumer_runtime.bytes_read + consumer_runtime.bytes_written;
++      int64_t saved_bytes = unfused_bytes - (bytes_read + bytes_written);
++      saved_bytes = std::max<int64_t>(saved_bytes, 0);
++
++      // Time saved from eliminated buffer traffic (at peak bandwidth).
++      absl::Duration saved_time = WriteTime(device_info_, saved_bytes);
++
++      // Time cost from occupancy degradation on the remaining memory traffic.
++      absl::Duration memory_time = read_time + write_time;
++      absl::Duration occupancy_cost =
++          memory_time * (bw_degradation - 1.0);
++
++      // Only apply penalty if the occupancy cost exceeds the savings.
++      if (occupancy_cost > saved_time) {
++        // Scale down: only add the NET cost (occupancy_cost - savings).
++        absl::Duration net_penalty = occupancy_cost - saved_time;
++        exec_time += net_penalty;
++
++        VLOG(3) << "Occupancy penalty for " << producer->name() << " + "
++                << consumer->name() << ": fused_regs=" << fused_regs
++                << " occ=" << fused_occupancy << "->" << unfused_occupancy
++                << " bw_degradation=" << bw_degradation
++                << " saved_bytes=" << saved_bytes
++                << " saved_time=" << saved_time
++                << " occ_cost=" << occupancy_cost
++                << " net_penalty=" << net_penalty;
++      }
++    }
++  }
++
+   VLOG(3) << "Runtime data for producer-consumer fusion:\n"
+           << " producer: " << producer->name() << "\n"
+           << " consumer: " << consumer->name() << "\n"
+diff --git a/xla/service/gpu/model/gpu_performance_model_base.cc b/xla/service/gpu/model/gpu_performance_model_base.cc
+index 3c2e2eafbd..9b80623bb8 100644
+--- a/xla/service/gpu/model/gpu_performance_model_base.cc
++++ b/xla/service/gpu/model/gpu_performance_model_base.cc
+@@ -19,6 +19,7 @@ limitations under the License.
+ #include <cmath>
+ #include <cstdint>
+ #include <optional>
++#include <utility>
+ #include <vector>
+ 
+ #include "absl/container/flat_hash_map.h"
+@@ -75,6 +76,199 @@ float AdjustBandwidth(const se::DeviceDescription& gpu_device_info,
+ 
+ }  // namespace
+ 
++// ---------------------------------------------------------------------------
++// Register-pressure estimation helpers for occupancy-aware fusion.
++// ---------------------------------------------------------------------------
++
++namespace {
++
++// Returns the number of registers a value of the given type occupies.
++int64_t GetRegistersPerValue(const Shape& shape) {
++  if (shape.IsTuple()) return 0;
++  int64_t bytes = ShapeUtil::ByteSizeOfPrimitiveType(shape.element_type());
++  // Each register is 4 bytes (32 bits). Round up.
++  return (bytes + 3) / 4;
++}
++
++// Overhead registers for addressing (pointers, indices, etc.) per operand.
++int64_t AddressingOverhead(const HloInstruction* instr) {
++  // 2 registers for the base pointer, 1 for the index.
++  return 3;
++}
++
++// Returns true if this opcode produces a register-resident value.
++bool ProducesRegister(HloOpcode opcode) {
++  switch (opcode) {
++    case HloOpcode::kParameter:
++    case HloOpcode::kConstant:
++    case HloOpcode::kIota:
++    case HloOpcode::kGetTupleElement:
++      return false;
++    default:
++      return true;
++  }
++}
++
++// Tracks the current number of live registers at a point in the instruction
++// sequence. Each value is weighted by the number of remaining uses.
++int64_t current_live_registers(
++    const absl::flat_hash_map<const HloInstruction*, int64_t>& live_set) {
++  int64_t total = 0;
++  for (const auto& [instr, remaining_uses] : live_set) {
++    if (remaining_uses > 0) {
++      total += GetRegistersPerValue(instr->shape());
++    }
++  }
++  return total;
++}
++
++}  // anonymous namespace
++
++RegisterUsage simple_register_estimate(const HloInstruction* producer,
++                                       const HloInstruction* consumer) {
++  // Collect instructions that would be in the fused kernel.
++  std::vector<const HloInstruction*> instructions;
++
++  // Gather producer's fused instructions (or just the producer itself).
++  if (producer->opcode() == HloOpcode::kFusion) {
++    for (const auto* instr :
++         producer->fused_instructions_computation()->instructions()) {
++      instructions.push_back(instr);
++    }
++  } else {
++    instructions.push_back(producer);
++  }
++
++  // Gather consumer's fused instructions (or just the consumer itself).
++  if (consumer->opcode() == HloOpcode::kFusion) {
++    for (const auto* instr :
++         consumer->fused_instructions_computation()->instructions()) {
++      instructions.push_back(instr);
++    }
++  } else {
++    instructions.push_back(consumer);
++  }
++
++  // Simulate a simple register allocation: walk the instructions, track live
++  // values, and record the peak.
++  int64_t peak_registers = 0;
++  absl::flat_hash_map<const HloInstruction*, int64_t> remaining_uses;
++
++  // First pass: count the number of uses for each instruction within the
++  // fused set.
++  absl::flat_hash_set<const HloInstruction*> instr_set(instructions.begin(),
++                                                       instructions.end());
++  for (const auto* instr : instructions) {
++    for (const auto* operand : instr->operands()) {
++      if (instr_set.contains(operand)) {
++        remaining_uses[operand]++;
++      }
++    }
++  }
++
++  // Second pass: simulate execution order, tracking live registers.
++  absl::flat_hash_map<const HloInstruction*, int64_t> live_set;
++  int64_t addressing_regs = 0;
++
++  for (const auto* instr : instructions) {
++    // If this instruction produces a register value, add it to the live set.
++    if (ProducesRegister(instr->opcode())) {
++      live_set[instr] = remaining_uses[instr];
++    }
++
++    // Add addressing overhead for operands that are parameters (memory loads).
++    if (instr->opcode() == HloOpcode::kParameter) {
++      addressing_regs += AddressingOverhead(instr);
++    }
++
++    // Decrement remaining uses of operands; remove dead values.
++    for (const auto* operand : instr->operands()) {
++      if (live_set.contains(operand)) {
++        live_set[operand]--;
++        if (live_set[operand] <= 0) {
++          live_set.erase(operand);
++        }
++      }
++    }
++
++    int64_t current = current_live_registers(live_set) + addressing_regs;
++    peak_registers = std::max(peak_registers, current);
++  }
++
++  // Add a small constant overhead for thread indexing, loop counters, etc.
++  peak_registers += 8;
++
++  return RegisterUsage{peak_registers,
++                       static_cast<int64_t>(instructions.size())};
++}
++
++// ---------------------------------------------------------------------------
++// Occupancy computation helpers.
++// ---------------------------------------------------------------------------
++
++/*static*/
++double GpuPerformanceModelBase::ComputeOccupancy(
++    const se::DeviceDescription& gpu_device_info,
++    int64_t num_registers_per_thread, int64_t num_threads_per_block) {
++  // Total registers available per SM.
++  int64_t registers_per_sm = gpu_device_info.registers_per_block_limit();
++  // Maximum threads per SM.
++  int64_t max_threads_per_sm = gpu_device_info.threads_per_core_limit();
++
++  if (num_registers_per_thread <= 0 || num_threads_per_block <= 0) {
++    return 1.0;
++  }
++
++  // How many registers does one block need?
++  int64_t regs_per_block = num_registers_per_thread * num_threads_per_block;
++  if (regs_per_block <= 0) return 1.0;
++
++  // How many blocks can fit on one SM given registers?
++  int64_t blocks_by_regs = registers_per_sm / regs_per_block;
++
++  // How many blocks can fit on one SM given thread count?
++  int64_t blocks_by_threads = max_threads_per_sm / num_threads_per_block;
++
++  int64_t blocks_per_sm = std::min(blocks_by_regs, blocks_by_threads);
++  blocks_per_sm = std::max(blocks_per_sm, int64_t{1});
++
++  int64_t active_threads = blocks_per_sm * num_threads_per_block;
++  double occupancy =
++      static_cast<double>(active_threads) / static_cast<double>(max_threads_per_sm);
++  return std::min(occupancy, 1.0);
++}
++
++/*static*/
++double GpuPerformanceModelBase::OccupancyToBandwidthEfficiency(
++    double occupancy) {
++  // Quadratic curve: at 50% occupancy we get 100% bandwidth; below that,
++  // bandwidth efficiency drops quadratically.
++  if (occupancy >= 0.5) return 1.0;
++  double ratio = occupancy / 0.5;
++  return ratio * ratio;
++}
++
++/*static*/
++int64_t GpuPerformanceModelBase::ComputeMaxOccupantBlocks(
++    const se::DeviceDescription& gpu_device_info,
++    int64_t num_registers_per_thread, int64_t num_threads_per_block) {
++  int64_t registers_per_sm = gpu_device_info.registers_per_block_limit();
++  int64_t max_threads_per_sm = gpu_device_info.threads_per_core_limit();
++
++  if (num_registers_per_thread <= 0 || num_threads_per_block <= 0) {
++    return gpu_device_info.core_count();
++  }
++
++  int64_t regs_per_block = num_registers_per_thread * num_threads_per_block;
++  int64_t blocks_by_regs = registers_per_sm / std::max(regs_per_block, int64_t{1});
++  int64_t blocks_by_threads = max_threads_per_sm / std::max(num_threads_per_block, int64_t{1});
++
++  int64_t blocks_per_sm = std::min(blocks_by_regs, blocks_by_threads);
++  blocks_per_sm = std::max(blocks_per_sm, int64_t{1});
++
++  return blocks_per_sm * gpu_device_info.core_count();
++}
++
+ std::optional<EstimateRunTimeData> GpuPerformanceModelCache::Get(
+     const HloInstruction& instruction) {
+   auto it = instruction_runtime_data_.find(&instruction);
+diff --git a/xla/service/gpu/model/gpu_performance_model_base.h b/xla/service/gpu/model/gpu_performance_model_base.h
+index ea9c07234b..3448527d09 100644
+--- a/xla/service/gpu/model/gpu_performance_model_base.h
++++ b/xla/service/gpu/model/gpu_performance_model_base.h
+@@ -20,6 +20,7 @@ limitations under the License.
+ #include <limits>
+ #include <optional>
+ #include <string>
++#include <vector>
+ 
+ #include "absl/container/flat_hash_map.h"
+ #include "absl/strings/str_format.h"
+@@ -90,6 +91,15 @@ struct EstimateRunTimeData {
+   }
+ };
+ 
++struct RegisterUsage {
++  int64_t num_registers;
++  int64_t num_instructions;
++};
++
++// Forward declaration of the register estimation function.
++RegisterUsage simple_register_estimate(const HloInstruction* producer,
++                                       const HloInstruction* consumer);
++
+ class GpuPerformanceModelCache {
+  public:
+   // Returns cached runtime data for the instruction or producer-consumer pair.
+@@ -228,6 +238,17 @@ class GpuPerformanceModelBase {
+   static void VLogOperandRead(const HloInstruction* operand,
+                               int64_t n_bytes_total, int64_t n_bytes_net,
+                               bool coalesced);
++
++  // Occupancy-aware fusion helpers.
++  static double ComputeOccupancy(
++      const se::DeviceDescription& gpu_device_info,
++      int64_t num_registers_per_thread, int64_t num_threads_per_block);
++
++  static double OccupancyToBandwidthEfficiency(double occupancy);
++
++  static int64_t ComputeMaxOccupantBlocks(
++      const se::DeviceDescription& gpu_device_info,
++      int64_t num_registers_per_thread, int64_t num_threads_per_block);
+ };
+ 
+ // Given an element type and whether the read is coalesced, returns the
+diff --git a/xla/xla.proto b/xla/xla.proto
+index defeb28c6d..c706e01e64 100644
+--- a/xla/xla.proto
++++ b/xla/xla.proto
+@@ -934,6 +934,8 @@ message DebugOptions {
+ 
+   optional string xla_gpu_pgle_profile_file_or_directory_path = 210;
+ 
++  optional bool xla_gpu_occupancy_aware_fusion = 513;
++
+   // Prints statistics about the HLO passes: how many times each pass
+   // was run, and how long it took.
+   optional bool xla_gpu_print_compilation_stats = 454;
