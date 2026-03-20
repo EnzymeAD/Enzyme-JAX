@@ -914,6 +914,46 @@ public:
   }
 };
 
+class InlineAsmHalfRaising : public OpRewritePattern<LLVM::InlineAsmOp> {
+public:
+  InlineAsmHalfRaising(MLIRContext *context)
+      : OpRewritePattern<LLVM::InlineAsmOp>(context) {}
+
+  LogicalResult matchAndRewrite(LLVM::InlineAsmOp op,
+                                PatternRewriter &rewriter) const override {
+    StringRef asmStr = op.getAsmString();
+    if (asmStr.contains("cvt.rn.f16.f32")) {
+      if (op.getOperands().size() != 1)
+        return failure();
+      Value input = op.getOperand(0);
+      Location loc = op.getLoc();
+      Type resType = op.getResultTypes()[0];
+      Value res =
+          rewriter.create<arith::TruncFOp>(loc, rewriter.getF16Type(), input);
+      if (isa<IntegerType>(resType)) {
+        res = rewriter.create<arith::BitcastOp>(loc, resType, res);
+      }
+      rewriter.replaceOp(op, res);
+      return success();
+    }
+    if (asmStr.contains("cvt.f32.f16")) {
+      if (op.getOperands().size() != 1)
+        return failure();
+      Value input = op.getOperand(0);
+      Location loc = op.getLoc();
+      if (isa<IntegerType>(input.getType())) {
+        input = rewriter.create<arith::BitcastOp>(loc, rewriter.getF16Type(),
+                                                  input);
+      }
+      Value res =
+          rewriter.create<arith::ExtFOp>(loc, rewriter.getF32Type(), input);
+      rewriter.replaceOp(op, res);
+      return success();
+    }
+    return failure();
+  }
+};
+
 } // namespace
 
 void mlir::enzyme::populateLibDeviceFuncsToOpsPatterns(
@@ -926,6 +966,7 @@ void mlir::enzyme::populateLibDeviceFuncsToOpsPatterns(
   patterns.add<IsFPClassRaising>(context);
   patterns.add<BF16HalfToFloatRaising>(context);
   patterns.add<HalfMathRaising>(context);
+  patterns.add<InlineAsmHalfRaising>(context);
   patterns.add<CallToOpIntAdaptRaising<math::CountLeadingZerosOp>>(context,
                                                                    "__nv_clz");
   patterns.add<CallToOpIntAdaptRaising<math::CountLeadingZerosOp>>(

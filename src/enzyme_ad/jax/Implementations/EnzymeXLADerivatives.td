@@ -45,6 +45,10 @@ def Compare : Inst<"CompareOp", "stablehlo">;
 def Select : Inst<"SelectOp", "stablehlo">;
 def Erf : Inst<"ErfOp", "chlo">;
 def Softplus : Inst<"SoftplusOp", "enzymexla">;
+def Slice : Inst<"SliceOp", "stablehlo">;
+def Pad : Inst<"PadOp", "stablehlo">;
+def Rotate : Inst<"RotateOp", "enzymexla">;
+def Extend : Inst<"ExtendOp", "enzymexla">;
 
 def GT : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::GT">;
 def EQ : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::EQ">;
@@ -189,3 +193,219 @@ def : EnzymeXLADerivative<"GeluOp", (Op $input),
                     (Gelu (Shadow $input), (GeluApproximation))
                   >;
 
+// Helpers
+def ExtendLhsType : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+    auto Ty = cast<RankedTensorType>(op.getResult().getType());
+    SmallVector<int64_t> newShape(Ty.getShape());
+    newShape[op.getDimension()] = (int64_t)op.getLhs();
+    Ty.clone(newShape);
+}]>;
+
+def LhsSliceStart : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+    auto Ty = cast<RankedTensorType>(op.getResult().getType());
+    SmallVector<int64_t> starts(Ty.getRank(), 0);
+    getI64Attr(builder, starts);
+}]>;
+def LhsSliceLimit : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+    auto Ty = cast<RankedTensorType>(op.getResult().getType());
+    SmallVector<int64_t> limits(Ty.getShape());
+    limits[op.getDimension()] = (int64_t)op.getLhs();
+    getI64Attr(builder, limits);
+}]>;
+def LhsSliceStride : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+    auto Ty = cast<RankedTensorType>(op.getResult().getType());
+    SmallVector<int64_t> strides(Ty.getRank(), 1);
+    getI64Attr(builder, strides);
+}]>;
+def LhsPaddingLow : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+    auto Ty = cast<RankedTensorType>(op.getResult().getType());
+    SmallVector<int64_t> lows(Ty.getRank(), 0);
+    getI64Attr(builder, lows);
+}]>;
+def LhsPaddingHigh : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+    auto Ty = cast<ShapedType>(op.getOperand().getType());
+    int64_t N = Ty.getShape()[op.getDimension()];
+    SmallVector<int64_t> highs(Ty.getRank(), 0);
+    highs[op.getDimension()] = N - (int64_t)op.getLhs();
+    getI64Attr(builder, highs);
+}]>;
+def LhsPaddingInterior : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+    auto Ty = cast<RankedTensorType>(op.getResult().getType());
+    SmallVector<int64_t> interiors(Ty.getRank(), 0);
+    getI64Attr(builder, interiors);
+}]>;
+
+def ExtendRhsType : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+    auto Ty = cast<RankedTensorType>(op.getResult().getType());
+    SmallVector<int64_t> newShape(Ty.getShape());
+    newShape[op.getDimension()] = (int64_t)op.getRhs();
+    Ty.clone(newShape);
+}]>;
+def RhsSliceStart : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+    auto Ty = cast<ShapedType>(op.getOperand().getType());
+    int64_t N = Ty.getShape()[op.getDimension()];
+    SmallVector<int64_t> starts(Ty.getRank(), 0);
+    starts[op.getDimension()] = N + (int64_t)op.getLhs();
+    getI64Attr(builder, starts);
+}]>;
+def RhsSliceLimit : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+    auto Ty = cast<ShapedType>(op.getResult().getType());
+    int64_t N = Ty.getShape()[op.getDimension()];
+    SmallVector<int64_t> limits(Ty.getShape());
+    limits[op.getDimension()] = N;
+    getI64Attr(builder, limits);
+}]>;
+def RhsSliceStride : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+    auto Ty = cast<ShapedType>(op.getResult().getType());
+    SmallVector<int64_t> strides(Ty.getRank(), 1);
+    getI64Attr(builder, strides);
+}]>;
+def RhsPaddingLow : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+    auto Ty = cast<ShapedType>(op.getOperand().getType());
+    int64_t N = Ty.getShape()[op.getDimension()];
+    SmallVector<int64_t> lows(Ty.getRank(), 0);
+    lows[op.getDimension()] = N - (int64_t)op.getRhs();
+    getI64Attr(builder, lows);
+}]>;
+def RhsPaddingHigh : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+    auto Ty = cast<ShapedType>(op.getOperand().getType());
+    SmallVector<int64_t> highs(Ty.getRank(), 0);
+    getI64Attr(builder, highs);
+}]>;
+def RhsPaddingInterior : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+    auto Ty = cast<ShapedType>(op.getOperand().getType());
+    SmallVector<int64_t> interior(Ty.getRank(), 0);
+    getI64Attr(builder, interior);
+}]>;
+
+def SliceStart : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+    auto Ty = cast<ShapedType>(op.getOperand().getType());
+    SmallVector<int64_t> starts(Ty.getRank(), 0);
+    starts[op.getDimension()] = op.getLhs();
+    getI64Attr(builder, starts);
+}]>;
+def SliceLimit : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+    auto Ty = cast<ShapedType>(op.getResult().getType());
+    int64_t N = Ty.getShape()[op.getDimension()];
+    SmallVector<int64_t> limits(Ty.getShape());
+    limits[op.getDimension()] = N - (int64_t)op.getRhs();
+    getI64Attr(builder, limits);
+}]>;
+def SliceStride : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+    auto Ty = cast<ShapedType>(op.getOperand().getType());
+    SmallVector<int64_t> strides(Ty.getRank(), 1);
+    getI64Attr(builder, strides);
+}]>;
+
+def ZeroVal : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+    auto Ty = cast<ShapedType>(op.getResult().getType()).clone(llvm::ArrayRef<int64_t>{});
+    stablehlo::ConstantOp::create(builder, op.getLoc(), Ty, cast<ElementsAttr>(makeAttr(Ty, 0)));
+}]>;
+
+def ExtendLhs : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+    op.getLhsAttr();
+}]>;
+def ExtendRhs : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+    op.getRhsAttr();
+}]>;
+def ExtendDim : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+    op.getDimensionAttr();
+}]>;
+
+// Comms ops
+def : EnzymeXLADerivative<"ExtendOp", (Op $input), [
+    (Add
+        (Add
+            (Pad (TypeOf $input),
+                 (Slice (ExtendLhsType), (DiffeRet),
+                        (LhsSliceStart), (LhsSliceLimit),
+                        (LhsSliceStride)),
+                 (ZeroVal),
+                 (LhsPaddingLow),
+                 (LhsPaddingHigh),
+                 (LhsPaddingInterior)),
+            (Pad (TypeOf $input),
+                 (Slice (ExtendRhsType), (DiffeRet),
+                        (RhsSliceStart), (RhsSliceLimit),
+                        (RhsSliceStride)),
+                 (ZeroVal),
+                 (RhsPaddingLow),
+                 (RhsPaddingHigh),
+                 (RhsPaddingInterior))),
+        (Slice (TypeOf $input), (DiffeRet),
+               (SliceStart), (SliceLimit),
+               (SliceStride)))
+], (Extend (Shadow $input), (ExtendLhs), (ExtendRhs), (ExtendDim))>;
+
+def RotateRevAmount : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+    builder.getI32IntegerAttr(-op.getAmount());
+}]>;
+def RotateAmount : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+    op.getAmountAttr();
+}]>;
+def RotateDim : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+    op.getDimensionAttr();
+}]>;
+def : EnzymeXLADerivative<"RotateOp", (Op $input), [
+    (Rotate (TypeOf $input), (DiffeRet), (RotateRevAmount), (RotateDim))
+], (Rotate (TypeOf $input), (Shadow $input), (RotateAmount), (RotateDim))>;
+
+def RotateLhsPaddingLow : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+    auto Ty = cast<ShapedType>(op.getOperand().getType());
+    int64_t N = Ty.getShape()[op.getDimension()];
+    SmallVector<int64_t> lows(Ty.getRank(), 0);
+    lows[op.getDimension()] = N - (int64_t)op.getLhs();
+    getI64Attr(builder, lows);
+}]>;
+def RotateLhsPaddingHigh : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+    auto Ty = cast<ShapedType>(op.getOperand().getType());
+    SmallVector<int64_t> highs(Ty.getRank(), 0);
+    getI64Attr(builder, highs);
+}]>;
+def RotateLhsPaddingInterior : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+    auto Ty = cast<ShapedType>(op.getOperand().getType());
+    SmallVector<int64_t> interior(Ty.getRank(), 0);
+    getI64Attr(builder, interior);
+}]>;
+
+def RotateRhsPaddingLow : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+    auto Ty = cast<ShapedType>(op.getOperand().getType());
+    SmallVector<int64_t> lows(Ty.getRank(), 0);
+    getI64Attr(builder, lows);
+}]>;
+def RotateRhsPaddingHigh : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+    auto Ty = cast<ShapedType>(op.getOperand().getType());
+    int64_t N = Ty.getShape()[op.getDimension()];
+    SmallVector<int64_t> highs(Ty.getRank(), 0);
+    highs[op.getDimension()] = N - (int64_t)op.getRhs();
+    getI64Attr(builder, highs);
+}]>;
+def RotateRhsPaddingInterior : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+    auto Ty = cast<ShapedType>(op.getOperand().getType());
+    SmallVector<int64_t> interior(Ty.getRank(), 0);
+    getI64Attr(builder, interior);
+}]>;
+
+def : EnzymeXLADerivative<"WrapOp", (Op $input), [
+    (Add
+        (Add
+            (Pad (TypeOf $input),
+                 (Slice (ExtendLhsType), (DiffeRet),
+                        (LhsSliceStart), (LhsSliceLimit),
+                        (LhsSliceStride)),
+                 (ZeroVal),
+                 (RotateLhsPaddingLow),
+                 (RotateLhsPaddingHigh),
+                 (RotateLhsPaddingInterior)),
+            (Pad (TypeOf $input),
+                 (Slice (ExtendRhsType), (DiffeRet),
+                        (RhsSliceStart), (RhsSliceLimit),
+                        (RhsSliceStride)),
+                 (ZeroVal),
+                 (RotateRhsPaddingLow),
+                 (RotateRhsPaddingHigh),
+                 (RotateRhsPaddingInterior))),
+        (Slice (TypeOf $input), (DiffeRet),
+               (SliceStart), (SliceLimit),
+               (SliceStride)))
+]>;

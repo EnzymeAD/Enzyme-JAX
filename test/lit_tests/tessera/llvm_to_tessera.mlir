@@ -43,3 +43,13 @@ llvm.func @regular_function() {
 
 // CHECK-LABEL: llvm.func @regular_function
 // CHECK: llvm.return
+
+// -----
+
+llvm.func @func_with_indirect_call(%arg0: !llvm.ptr) {
+  llvm.call %arg0() : !llvm.ptr, () -> ()
+  llvm.return
+}
+
+// CHECK-LABEL: llvm.func @func_with_indirect_call
+// CHECK: llvm.call %arg0() : !llvm.ptr, () -> ()
