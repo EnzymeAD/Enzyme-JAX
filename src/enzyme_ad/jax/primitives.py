@@ -280,6 +280,8 @@ def optimization_passes(
         "broadcast_iota",
         "cse_iota",
         "compare_iota_const_simplify",
+        "min_max_iota_const_simplify",
+        "clamp_iota_const_simplify",
         "reshuffle_ands_compares",
         "square_abs_simplify",
         "divide_divide_simplify",
