@@ -353,7 +353,7 @@ def RotateOp : EnzymeXLA_Op<"rotate", [Pure, SameOperandsAndResultType]> {
   let description = [{
     Performs a left rotation (circular shift) along `dimension` by `amount` elements.
     Elements are shifted left, with the first `amount` elements wrapping around to the end.
-    
+
     i.e.:
     ```
     rotate([a, b, c, d, e], amount=2, dimension=0) → [c, d, e, a, b]
