@@ -185,7 +185,8 @@ getDirectlyNestedSingleParallel_(const char *PATTERN, Block *block,
                                  bool allowAllocas = false,
                                  bool allowIndexComputation = false) {
   auto it = block->begin();
-  while ((allowAllocas && (isa<memref::AllocaOp>(&*it) || isa<LLVM::AllocaOp>(&*it))) ||
+  while ((allowAllocas &&
+          (isa<memref::AllocaOp>(&*it) || isa<LLVM::AllocaOp>(&*it))) ||
          (allowIndexComputation && isa<arith::ArithDialect>(it->getDialect())))
     it++;
   auto pop = dyn_cast<scf::ParallelOp>(&*it);
@@ -557,13 +558,14 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
       if (curRegion == 0) {
         llvm::errs() << " Failed to make kernel with exact dimension\n";
         // if (getenv("DUMP_MLIR_ON_EXACT_DIM_FAIL")) {
-        //   if (auto parentFunc = wrapper->getParentOfType<mlir::FunctionOpInterface>()) {
-        //     llvm::errs() << "=== FUNC IR at 'Failed to make kernel with exact dimension' ===\n";
-        //     parentFunc.print(llvm::errs());
-        //     llvm::errs() << "\n=== END FUNC IR ===\n";
+        //   if (auto parentFunc =
+        //   wrapper->getParentOfType<mlir::FunctionOpInterface>()) {
+        //     llvm::errs() << "=== FUNC IR at 'Failed to make kernel with exact
+        //     dimension' ===\n"; parentFunc.print(llvm::errs()); llvm::errs()
+        //     << "\n=== END FUNC IR ===\n";
         //   } else {
-        //     llvm::errs() << "=== WRAPPER IR at 'Failed to make kernel with exact dimension' ===\n";
-        //     wrapper.print(llvm::errs());
+        //     llvm::errs() << "=== WRAPPER IR at 'Failed to make kernel with
+        //     exact dimension' ===\n"; wrapper.print(llvm::errs());
         //     llvm::errs() << "\n=== END WRAPPER IR ===\n";
         //   }
         // }
@@ -1031,7 +1033,8 @@ struct ParallelizeBlockOps : public OpRewritePattern<scf::ParallelOp> {
     {
       auto zeroindex = arith::ConstantIndexOp::create(rewriter, loc, 0);
       rewriter.setInsertionPoint(innerBlock->getTerminator());
-      mlir::enzymexla::BarrierOp::create(rewriter, loc, innerBlock->getArguments());
+      mlir::enzymexla::BarrierOp::create(rewriter, loc,
+                                         innerBlock->getArguments());
       auto cmpOp =
           arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::eq,
                                 zeroindex, innerBlock->getArgument(0));
@@ -1057,7 +1060,8 @@ struct ParallelizeBlockOps : public OpRewritePattern<scf::ParallelOp> {
           mlir::OpBuilder::InsertionGuard guard(rewriter);
           rewriter.setInsertionPointToStart(innerBlock);
           auto *newOp = rewriter.clone(op, mapping);
-          rewriter.replaceOpUsesWithinBlock(&op, newOp->getResults(), innerBlock);
+          rewriter.replaceOpUsesWithinBlock(&op, newOp->getResults(),
+                                            innerBlock);
           toErase.push_back(&op);
           continue;
         } else {
@@ -1721,8 +1725,8 @@ struct ParallelToGPULaunch : public OpRewritePattern<enzymexla::GPUWrapperOp> {
         auto cast = memref::CastOp::create(rewriter, alloca.getLoc(),
                                            alloca.getType(), newAlloca);
         it->replaceAllUsesWith(cast);
-      // } else if (dyn_cast<LLVM::AllocaOp>(&*it)) {
-      //   shared memory
+        // } else if (dyn_cast<LLVM::AllocaOp>(&*it)) {
+        //   shared memory
       } else {
         assert(0);
       }
@@ -2008,7 +2012,8 @@ struct ConvertParallelToGPU1Pass
       populateNormalizationPatterns(patterns);
       GreedyRewriteConfig config;
       config.enableFolding();
-      llvm::errs() << "=== runNormalization: before applyPatternsGreedily ===\n";
+      llvm::errs()
+          << "=== runNormalization: before applyPatternsGreedily ===\n";
       if (failed(applyPatternsGreedily(m, std::move(patterns), config))) {
         llvm::errs() << "=== runNormalization: FAILED ===\n";
         signalPassFailure();
