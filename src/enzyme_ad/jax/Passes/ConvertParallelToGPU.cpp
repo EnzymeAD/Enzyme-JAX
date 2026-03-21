@@ -606,7 +606,6 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
 
     rewriter.eraseOp(wrapper);
 
-    llvm::errs() << "=== SplitParallelOp: matched ===\n";
     return success();
   }
 
@@ -1074,7 +1073,6 @@ struct ParallelizeBlockOps : public OpRewritePattern<scf::ParallelOp> {
     for (Operation *op : llvm::reverse(toErase))
       rewriter.eraseOp(op);
 
-    llvm::errs() << "=== ParallelizeBlockOps: matched ===\n";
     return success();
   }
 };
@@ -1136,7 +1134,6 @@ struct HandleWrapperRootAlloca
     for (Operation *op : llvm::reverse(toErase))
       rewriter.eraseOp(op);
 
-    llvm::errs() << "=== CreateParallelOps: matched ===\n";
     return success();
   }
 };
@@ -1333,7 +1330,6 @@ struct HandleWrapperRootOps : public OpRewritePattern<enzymexla::GPUWrapperOp> {
       rewriter.eraseOp(op);
     }
 
-    llvm::errs() << "=== HandleWrapperRootOps: matched ===\n";
     return success();
   }
 };
@@ -1725,8 +1721,6 @@ struct ParallelToGPULaunch : public OpRewritePattern<enzymexla::GPUWrapperOp> {
         auto cast = memref::CastOp::create(rewriter, alloca.getLoc(),
                                            alloca.getType(), newAlloca);
         it->replaceAllUsesWith(cast);
-        // } else if (dyn_cast<LLVM::AllocaOp>(&*it)) {
-        //   shared memory
       } else {
         assert(0);
       }
@@ -1967,11 +1961,9 @@ struct ConvertParallelToGPU1Pass
       GreedyRewriteConfig config;
       config.enableFolding();
       if (failed(applyPatternsGreedily(m, std::move(patterns), config))) {
-        llvm::errs() << "=== InnerParallelSerialization: FAILED ===\n";
         signalPassFailure();
         return;
       }
-      llvm::errs() << "=== InnerParallelSerialization: SUCCESS ===\n";
     }
     // TODO we need to transform all parallels in gpu_wrappers to have lower
     // bounds of 0 and steps of 1 as we kind of assume that in many patterns (or
@@ -2012,10 +2004,8 @@ struct ConvertParallelToGPU1Pass
       populateNormalizationPatterns(patterns);
       GreedyRewriteConfig config;
       config.enableFolding();
-      llvm::errs()
-          << "=== runNormalization: before applyPatternsGreedily ===\n";
+      
       if (failed(applyPatternsGreedily(m, std::move(patterns), config))) {
-        llvm::errs() << "=== runNormalization: FAILED ===\n";
         signalPassFailure();
         return;
       }
@@ -2436,11 +2426,9 @@ struct ConvertParallelToGPU1Pass
       GreedyRewriteConfig config;
       config.enableFolding();
       if (failed(applyPatternsGreedily(m, std::move(patterns), config))) {
-        llvm::errs() << "=== ParallelToGPULaunch: FAILED ===\n";
         signalPassFailure();
         return;
       }
-      llvm::errs() << "=== ParallelToGPULaunch: SUCCESS ===\n";
     }
     {
       RewritePatternSet patterns(&getContext());

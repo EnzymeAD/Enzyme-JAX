@@ -1430,16 +1430,6 @@ struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
 
   LogicalResult matchAndRewrite(WhileOp loop,
                                 PatternRewriter &rewriter) const override {
-    if (getenv("DEBUG_WHILE_TO_FOR")) {
-      llvm::errs() << "MoveWhileToFor: trying to match WhileOp at ";
-      loop.getLoc().print(llvm::errs());
-      llvm::errs() << "\n  inits=" << loop.getInits().size()
-                    << " results=" << loop.getResults().size()
-                    << " before_args=" << loop.getBefore().front().getNumArguments()
-                    << " after_args=" << loop.getAfter().front().getNumArguments()
-                    << " before_ops=" << loop.getBefore().front().getOperations().size()
-                    << "\n";
-    }
     auto condOp = loop.getConditionOp();
     SmallVector<Value, 2> results = {condOp.getArgs()};
     WhileToForHelper helper(loop,
@@ -1495,11 +1485,9 @@ struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
 
         if (auto trueBlockArg =
                 dyn_cast<BlockArgument>(selectOp.getTrueValue())) {
-          if (trueBlockArg.getOwner() == &condOp->getParentRegion()->front())
             newArg = loop.getOperand(trueBlockArg.getArgNumber());
         } else if (auto falseBlockArg =
                        dyn_cast<BlockArgument>(selectOp.getFalseValue())) {
-          if (falseBlockArg.getOwner() == &condOp->getParentRegion()->front())
             newArg = loop.getOperand(falseBlockArg.getArgNumber());
         }
       }
