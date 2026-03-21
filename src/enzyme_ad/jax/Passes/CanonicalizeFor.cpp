@@ -1485,10 +1485,10 @@ struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
 
         if (auto trueBlockArg =
                 dyn_cast<BlockArgument>(selectOp.getTrueValue())) {
-            newArg = loop.getOperand(trueBlockArg.getArgNumber());
+          newArg = loop.getOperand(trueBlockArg.getArgNumber());
         } else if (auto falseBlockArg =
                        dyn_cast<BlockArgument>(selectOp.getFalseValue())) {
-            newArg = loop.getOperand(falseBlockArg.getArgNumber());
+          newArg = loop.getOperand(falseBlockArg.getArgNumber());
         }
       }
       if (!newArg)
