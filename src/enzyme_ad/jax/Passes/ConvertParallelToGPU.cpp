@@ -2004,7 +2004,7 @@ struct ConvertParallelToGPU1Pass
       populateNormalizationPatterns(patterns);
       GreedyRewriteConfig config;
       config.enableFolding();
-      
+
       if (failed(applyPatternsGreedily(m, std::move(patterns), config))) {
         signalPassFailure();
         return;
