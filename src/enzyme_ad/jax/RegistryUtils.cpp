@@ -77,8 +77,6 @@
 #include "stablehlo/conversions/tosa/transforms/Passes.h"
 #include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
-#include "stablehlo/reference/InterpreterOps.h"
-#include "stablehlo/tests/CheckOps.h"
 #include "stablehlo/transforms/Passes.h"
 #include "stablehlo/transforms/optimization/Passes.h"
 #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
@@ -225,8 +223,6 @@ void registerDialects(mlir::DialectRegistry &registry) {
   registry.insert<mlir::DLTIDialect>();
   registry.insert<mlir::mhlo::MhloDialect>();
   registry.insert<mlir::stablehlo::StablehloDialect>();
-  registry.insert<mlir::stablehlo::check::CheckDialect>();
-  registry.insert<mlir::stablehlo::interpreter::InterpreterDialect>();
   registry.insert<mlir::chlo::ChloDialect>();
   registry.insert<mlir::vector::VectorDialect>();
   registry.insert<mlir::nvgpu::NVGPUDialect>();
@@ -268,8 +264,6 @@ void loadAllRegisteredDialects(mlir::MLIRContext &context) {
   context.loadDialect<mlir::DLTIDialect>();
   context.loadDialect<mlir::mhlo::MhloDialect>();
   context.loadDialect<mlir::stablehlo::StablehloDialect>();
-  context.loadDialect<mlir::stablehlo::check::CheckDialect>();
-  context.loadDialect<mlir::stablehlo::interpreter::InterpreterDialect>();
   context.loadDialect<mlir::chlo::ChloDialect>();
   context.loadDialect<mlir::vector::VectorDialect>();
   context.loadDialect<mlir::nvgpu::NVGPUDialect>();

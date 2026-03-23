@@ -1473,8 +1473,6 @@ cc_library(
         "@stablehlo//:tosa_passes",
         "@stablehlo//:stablehlo_passes",
         "@stablehlo//:stablehlo_passes_optimization",
-        "@stablehlo//stablehlo/tests:check_ops",
-        "@stablehlo//:interpreter_ops",
 
         # Shardy
         "@shardy//shardy/dialect/sdy/transforms:passes",
