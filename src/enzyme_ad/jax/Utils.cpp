@@ -994,6 +994,13 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
     return State::PENDING;
   }
 
+  if (auto logisticOp = dyn_cast<stablehlo::LogisticOp>(op)) {
+    // Logistic is always non-negative for real numbers
+    auto eltype = cast<RankedTensorType>(logisticOp.getType()).getElementType();
+    if (isa<FloatType>(eltype))
+      return State::GUARANTEED;
+  }
+
   bool recursiveCheck = false;
   SmallVector<Value> operandsToCheck;
 
