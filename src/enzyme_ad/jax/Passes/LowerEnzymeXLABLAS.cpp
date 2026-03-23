@@ -205,14 +205,19 @@ struct SymmOpLowering : public OpRewritePattern<enzymexla::SymmOp> {
     static int64_t fn_counter = 0;
     std::string funcFnName = blasFnWrapper + "_" + std::to_string(fn_counter++);
 
-    SmallVector<bool> isColMajorArr(12, true);
+    // Pass A, B and C in row-major format (isColMajor = false) to avoid layout
+    // transforms. This requires flipping uplo and side parameters below,
+    // similar to the CUDA FFI implementation in xla_ffi.cpp.
+    // operandRanks: {uplo, side, m, n, alpha, A, lda, B, ldb, beta, C, ldc}
+
+    SmallVector<bool> isColMajorArr(12, false);
     SmallVector<int64_t> operandRanks = {
         0, 0, 0, 0, 0, 2, 0, op.getB().getType().getRank(), 0, 0, 2, 0};
     SmallVector<int64_t> outputRanks = {2};
     auto operandLayouts =
         getSHLOLayout(rewriter, operandRanks, isColMajorArr, 2);
     auto resultLayouts =
-        getSHLOLayout(rewriter, outputRanks, SmallVector<bool>{true}, 2);
+        getSHLOLayout(rewriter, outputRanks, SmallVector<bool>{false}, 2);
 
     SmallVector<Attribute> aliases;
     aliases.push_back(
@@ -247,26 +252,37 @@ struct SymmOpLowering : public OpRewritePattern<enzymexla::SymmOp> {
       auto alpha = entryBlock.getArgument(3);
       auto beta = entryBlock.getArgument(4);
 
+      // We can swap side since (A*B)^T = B^T*A^T, where B^T is also the
+      // column-major interpretation of B. Essentially we ask BLAS to compute
+      // C^T in col-major, which is equivalent to C in row-major
       auto side = stablehlo::ConstantOp::create(
           rewriter, op.getLoc(), uint8Type,
-          cast<ElementsAttr>(makeAttr(uint8Type, side_value)));
+          cast<ElementsAttr>(
+              makeAttr(uint8Type, side_value == 'L' ? 'R' : 'L')));
+
+      // We flip uplo here because A is passed in row-major format.
+      // Row-major A is equivalent to A^T in column-major, and since A is
+      // symmetric, this means we need to swap upper/lower triangular.
       auto uplo = stablehlo::ConstantOp::create(
           rewriter, op.getLoc(), uint8Type,
-          cast<ElementsAttr>(makeAttr(uint8Type, uplo_value)));
+          cast<ElementsAttr>(
+              makeAttr(uint8Type, uplo_value == 'U' ? 'L' : 'U')));
 
+      // For row-major format, lda is the trailing dimension (columns in shape)
+      // This is dimension 1 for a 2D matrix
       auto lda = stablehlo::ConvertOp::create(
           rewriter, op.getLoc(), intType,
-          stablehlo::GetDimensionSizeOp::create(rewriter, op.getLoc(), A, 0));
+          stablehlo::GetDimensionSizeOp::create(rewriter, op.getLoc(), A, 1));
       auto ldb = stablehlo::ConvertOp::create(
           rewriter, op.getLoc(), intType,
-          stablehlo::GetDimensionSizeOp::create(rewriter, op.getLoc(), B, 0));
+          stablehlo::GetDimensionSizeOp::create(rewriter, op.getLoc(), B, 1));
       auto ldc = stablehlo::ConvertOp::create(
           rewriter, op.getLoc(), intType,
-          stablehlo::GetDimensionSizeOp::create(rewriter, op.getLoc(), C, 0));
+          stablehlo::GetDimensionSizeOp::create(rewriter, op.getLoc(), C, 1));
       auto mSize = ldc;
       auto nSize = stablehlo::ConvertOp::create(
           rewriter, op.getLoc(), intType,
-          stablehlo::GetDimensionSizeOp::create(rewriter, op.getLoc(), C, 1));
+          stablehlo::GetDimensionSizeOp::create(rewriter, op.getLoc(), C, 0));
 
       auto jitCall = enzymexla::JITCallOp::create(
           rewriter, op.getLoc(), TypeRange{op.getC().getType()},
