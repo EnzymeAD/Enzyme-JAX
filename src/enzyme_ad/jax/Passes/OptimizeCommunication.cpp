@@ -2140,6 +2140,7 @@ struct RotateSpmdOptimize : public OpRewritePattern<enzymexla::RotateOp> {
       return failure();
 
     auto rotateDimension = rotate.getDimension();
+    auto rotateAmount = rotate.getAmount();
     auto rotateSharding = mlir::sdy::getSharding(rotate);
     if (!rotateSharding)
       return rewriter.notifyMatchFailure(rotate, "No sharding found.");
@@ -2152,24 +2153,25 @@ struct RotateSpmdOptimize : public OpRewritePattern<enzymexla::RotateOp> {
           rotate,
           "numDevicesAlongDimension == 1. Communication is already optimized.");
     }
+    
 
     assert(rotate.getType().getShape()[rotateDimension] > 0);
-    assert(rotate.getAmount() < rotate.getType().getShape()[rotateDimension]);
+    assert(rotateAmount < rotate.getType().getShape()[rotateDimension]);
 
     int64_t shard_size = (rotate.getType().getShape()[rotateDimension] +
                           numDevicesAlongDimension - 1) /
                          numDevicesAlongDimension;
 
-    if (rotate.getAmount() <= shard_size) {
+    if (rotateAmount <= shard_size) {
       // Our op is rotate left:
       std::string opaque =
           "dimension=" + std::to_string(rotateDimension) +
-          ",left_amount=" + std::to_string(rotate.getAmount()) +
+          ",left_amount=" + std::to_string(rotateAmount) +
           ",right_amount=0,bufferize=" + std::to_string(bufferize);
 
       auto fnSym = rewriter.getStringAttr("_SPMDInternalOp_MultiRotate");
 
-      SmallVector<Type, 2> resultTypes(rotate.getAmount() + 1,
+      SmallVector<Type, 2> resultTypes(rotateAmount + 1,
                                        rotate.getType());
 
       // Replace with a custom call
@@ -2183,13 +2185,14 @@ struct RotateSpmdOptimize : public OpRewritePattern<enzymexla::RotateOp> {
           /*result_layouts=*/nullptr,
           /*output_operand_aliases=*/nullptr);
 
-      SmallVector<sdy::TensorShardingAttr> newShardings(rotate.getAmount() + 1,
+      int32_t rotateAmount = rotate.getAmount();
+      SmallVector<sdy::TensorShardingAttr> newShardings(rotateAmount + 1,
                                                         rotateSharding);
       mlir::sdy::setShardings(ccall, sdy::TensorShardingPerValueAttr::get(
                                          rotate.getContext(), newShardings));
       rewriter.replaceOp(rotate, ValueRange(ccall->getResults()[0]));
 
-      Value neutral = ccall.getResult(rotate.getAmount());
+      Value neutral = ccall.getResult(rotateAmount);
       DominanceInfo domInfo;
       rewriter.replaceUsesWithIf(ccall.getOperands()[0], neutral,
                                  [&](OpOperand &use) {
@@ -2201,10 +2204,10 @@ struct RotateSpmdOptimize : public OpRewritePattern<enzymexla::RotateOp> {
       return success();
     }
 
-    if (rotate.getType().getShape()[rotateDimension] - rotate.getAmount() <=
+    if (rotate.getType().getShape()[rotateDimension] - rotateAmount <=
         shard_size) {
       int64_t right_amount =
-          rotate.getType().getShape()[rotateDimension] - rotate.getAmount();
+          rotate.getType().getShape()[rotateDimension] - rotateAmount;
       // Our op is rotate left:
       std::string opaque =
           "dimension=" + std::to_string(rotateDimension) +
