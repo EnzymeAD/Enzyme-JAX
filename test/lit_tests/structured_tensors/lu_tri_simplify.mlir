@@ -1,3 +1,5 @@
+// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=lu_factorization_tri_simplify" --transform-interpreter --enzyme-hlo-remove-transform %s | FileCheck %s
+
 func.func @main1(%arg0: tensor<100x100xf64>) -> tensor<100x100xf64> {
     %cst = stablehlo.constant dense<0.000000e+00> : tensor<100x100xf64>
     %1 = stablehlo.iota dim = 1 : tensor<100x100xi64>
@@ -40,7 +42,7 @@ func.func @main2(%arg0: tensor<64x64xf64> {enzymexla.memory_effects = []}, %arg1
     return %7 : tensor<64x64xf64>
 }
 
-// CHECK:  func.func @main(%arg0: tensor<64x64xf64> {enzymexla.memory_effects = []}, %arg1: tensor<64x64xf64> {enzymexla.memory_effects = []}) -> tensor<64x64xf64> attributes {enzymexla.memory_effects = []} {
+// CHECK:  func.func @main2(%arg0: tensor<64x64xf64> {enzymexla.memory_effects = []}, %arg1: tensor<64x64xf64> {enzymexla.memory_effects = []}) -> tensor<64x64xf64> attributes {enzymexla.memory_effects = []} {
 // CHECK-NEXT:    %cst = stablehlo.constant dense<1.000000e+00> : tensor<64x64xf64>
 // CHECK-NEXT:    %cst_0 = stablehlo.constant dense<0.000000e+00> : tensor<64x64xf64>
 // CHECK-NEXT:    %0 = stablehlo.transpose %arg0, dims = [1, 0] : (tensor<64x64xf64>) -> tensor<64x64xf64>
