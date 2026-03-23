@@ -128,7 +128,20 @@ ffi::Error Symm(cublasHandle_t handle, cublasSideMode_t side,
                 cublasFillMode_t uplo, int m, int n, const T *alpha, const T *A,
                 int lda, const T *B, int ldb, const T *beta, T *C, int ldc) {
   return ffi::Error::InvalidArgument("Unsupported type for symm");
-}
+
+  ffi::Error Trmm(cublasHandle_t handle, cublasSideMode_t side,
+                  cublasFillMode_t uplo, cublasOperation_t trans,
+                  cublasDiagType_t diag, int n, const T *alpha, const T *a,
+                  int lda, T *b, int ldb) {
+    return ffi::Error::InvalidArgument("Unsupported type for syrk");
+  }
+
+  template <typename T>
+  ffi::Error Trmv(cublasHandle_t handle, cublasFillMode_t uplo,
+                  cublasOperation_t trans, cublasDiagType_t diag, int n,
+                  const T *a, int lda, T *x, int x, int incX) {
+    return ffi::Error::InvalidArgument("Unsupported type for syrk");
+  }
 
 #define SYRK_SPECIALIZATION(T, cublas_func)                                    \
   template <>                                                                  \
@@ -140,10 +153,10 @@ ffi::Error Symm(cublasHandle_t handle, cublasSideMode_t side,
     return CublasStatusToError(status, #cublas_func);                          \
   }
 
-SYRK_SPECIALIZATION(float, cublasSsyrk)
-SYRK_SPECIALIZATION(double, cublasDsyrk)
-SYRK_SPECIALIZATION(cuComplex, cublasCsyrk)
-SYRK_SPECIALIZATION(cuDoubleComplex, cublasZsyrk)
+  SYRK_SPECIALIZATION(float, cublasSsyrk)
+  SYRK_SPECIALIZATION(double, cublasDsyrk)
+  SYRK_SPECIALIZATION(cuComplex, cublasCsyrk)
+  SYRK_SPECIALIZATION(cuDoubleComplex, cublasZsyrk)
 
 #undef SYRK_SPECIALIZATION
 
@@ -158,14 +171,197 @@ SYRK_SPECIALIZATION(cuDoubleComplex, cublasZsyrk)
     return CublasStatusToError(status, #cublas_func);                          \
   }
 
-SYMM_SPECIALIZATION(float, cublasSsymm)
-SYMM_SPECIALIZATION(double, cublasDsymm)
-SYMM_SPECIALIZATION(cuComplex, cublasCsymm)
-SYMM_SPECIALIZATION(cuDoubleComplex, cublasZsymm)
+  SYMM_SPECIALIZATION(float, cublasSsymm)
+  SYMM_SPECIALIZATION(double, cublasDsymm)
+  SYMM_SPECIALIZATION(cuComplex, cublasCsymm)
+  SYMM_SPECIALIZATION(cuDoubleComplex, cublasZsymm)
 
 #undef SYMM_SPECIALIZATION
 
+#define TRMM_SPECIALIZATION(T, cublas_func)                                    \
+  template <>                                                                  \
+  ffi::Error Trmm<T>(cublasHandle_t handle, cublasSideMode_t side,             \
+                     cublasFillMode_t uplo, cublasOperation_t trans,           \
+                     cublasDiagType_t diag, int m, int n, const T *alpha,      \
+                     const T *a, int lda, T *b, int ldb) {                     \
+    cublasStatus_t status = cublas_func(handle, side, uplo, trans, diag, m, n, \
+                                        alpha, a, lda, b, ldb);                \
+    return CublasStatusToError(status, #cublas_func);                          \
+  }
+
+  TRMM_SPECIALIZATION(float, cublasStrmm)
+  TRMM_SPECIALIZATION(double, cublasDtrmm)
+  TRMM_SPECIALIZATION(cuComplex, cublasCtrmm)
+  TRMM_SPECIALIZATION(cuDoubleComplex, cublasZtrmm)
+
+#undef TRMM_SPECIALIZATION
+
+#define TRMV_SPECIALIZATION(T, cublas_func)                                    \
+  template <>                                                                  \
+  ffi::Error Trmv<T>(cublasHandle_t handle, cublasFillMode_t uplo,             \
+                     cublasOperation_t trans, cublasDiagType_t diag, int m,    \
+                     int n, const T *a, int lda, T *x, int x, int incX) {      \
+    cublasStatus_t status =                                                    \
+        cublas_func(handle, uplo, trans, diag, m, n, alpha, a, lda, x, incX);  \
+    return CublasStatusToError(status, #cublas_func);                          \
+  }
+
+  TRMV_SPECIALIZATION(float, cublasStrmm)
+  TRMV_SPECIALIZATION(double, cublasDtrmm)
+  TRMV_SPECIALIZATION(cuComplex, cublasCtrmm)
+  TRMV_SPECIALIZATION(cuDoubleComplex, cublasZtrmm)
+
+#undef TRMV_SPECIALIZATION
+
 } // namespace blas
+
+template <typename T>
+ffi::Error TrmmImpl(CUstream stream, bool side_, bool uplo_, bool trans,
+                    bool diag, ffi::AnyBuffer a, ffi::AnyBuffer b,
+                    const T *alpha, ffi::Result<ffi::AnyBuffer> b_out) {
+  FFI_ASSIGN_OR_RETURN((auto [batch, rows, cols]),
+                       SplitBatch2D(b.dimensions()));
+  auto a_size = side_ ? cols : rows;
+  FFI_RETURN_IF_ERROR(
+      CheckShape(b_out->dimensions(), {batch, rows, cols}, "b_out", "trmm"));
+
+  FFI_ASSIGN_OR_RETURN(auto m, cols);
+  FFI_ASSIGN_OR_RETURN(auto n, rows);
+
+  // We flip uplo here because A is passed in row-major format.
+  // Row-major A is equivalent to A^T in column-major, and since A is
+  // triangular, this will just swap upper/lower triangular.
+  cublasFillMode_t uplo =
+      uplo_ ? CUBLAS_FILL_MODE_LOWER : CUBLAS_FILL_MODE_UPPER;
+  // We can then swap side since (A*B)^T = B^T*A^T, where B^T is also the
+  // column-major interpretation of B
+  cublasSideMode_t side = side_ ? CUBLAS_SIDE_LEFT : CUBLAS_SIDE_RIGHT;
+
+  const T *a_data = static_cast<const T *>(a.untyped_data());
+  const T *b_data = static_cast<const T *>(b.untyped_data());
+  T *b_out_data = static_cast<T *>(b_out->untyped_data());
+
+  if (b_data != b_out_data) {
+    cudaError_t err = cudaMemcpyAsync(b_out_data, b_data, b.size_bytes(),
+                                      cudaMemcpyDeviceToDevice, stream);
+    if (err != cudaSuccess) {
+      return ffi::Error::InvalidArgument(absl::StrFormat(
+          "cudaMemcpyAsync failed: %s", cudaGetErrorString(err)));
+    }
+  }
+
+  FFI_ASSIGN_OR_RETURN(auto handle, BlasHandlePool::Borrow(stream));
+  int lda = a_size;
+  int ldb = m;
+  for (int i = 0; i < batch; ++i) {
+    FFI_RETURN_IF_ERROR(blas::Trmm<T>(handle.get(), side, uplo, trans, diag, m,
+                                      n, alpha, a_data, lda, b_out_data, ldb));
+    a_data += a_size * a_size;
+    b_out_data += m * n;
+  }
+  return ffi::Error::Success();
+}
+
+template <typename T>
+ffi::Error TrmmImpl(CUstream stream, bool side, bool uplo, bool trans,
+                    bool diag, bool use_alpha_attribute, double alpha_real,
+                    double alpha_imag, ffi::AnyBuffer a, ffi::AnyBuffer b,
+                    ffi::AnyBuffer alpha_, ffi::Result<ffi::AnyBuffer> b_out) {
+  T host_alpha;
+  FFI_RETURN_IF_ERROR(GetHostScalar<T>(stream, use_alpha_attribute, alpha_real,
+                                       alpha_imag, alpha_, &host_alpha));
+  return TrmmImpl<T>(stream, side, uplo, trans, diag, a, b, &host_alpha, b_out);
+}
+
+ffi::Error TrmmDispatch(CUstream stream, bool side, bool uplo, bool trans,
+                        bool diag, bool use_alpha_attribute, double alpha_real,
+                        double alpha_imag, ffi::AnyBuffer a,
+                        ffi::AnyBuffer b_in, ffi::AnyBuffer alpha_,
+                        ffi::Result<ffi::AnyBuffer> b_out) {
+  auto dataType = b_in.element_type();
+  SOLVER_BLAS_DISPATCH_IMPL(TrmmImpl, stream, side, uplo, trans, diag,
+                            use_alpha_attribute, alpha_real, alpha_imag, a,
+                            b_in, alpha_, b_out);
+  return ffi::Error::InvalidArgument(absl::StrFormat(
+      "Unsupported dtype %s in trmm", absl::FormatStreamed(dataType)));
+}
+
+XLA_FFI_DEFINE_HANDLER(TrmmFfi, TrmmDispatch,
+                       xla::ffi::Ffi::Bind()
+                           .Ctx<ffi::PlatformStream<CUstream>>()
+                           .Attr<bool>("side")
+                           .Attr<bool>("uplo")
+                           .Attr<bool>("transpose")
+                           .Attr<bool>("diag")
+                           .Attr<bool>("use_alpha_attribute")
+                           .Attr<double>("alpha_real")
+                           .Attr<double>("alpha_imag")
+                           .Arg<ffi::AnyBuffer>()
+                           .Arg<ffi::AnyBuffer>()
+                           .Arg<ffi::AnyBuffer>()
+                           .Ret<ffi::AnyBuffer>());
+
+template <typename T>
+ffi::Error TrmvImpl(CUstream stream, bool uplo_, bool trans_, bool diag,
+                    ffi::AnyBuffer a, ffi::AnyBuffer x,
+                    ffi::Result<ffi::AnyBuffer> x_out) {
+  FFI_ASSIGN_OR_RETURN((auto [batch, a_size, _]), SplitBatch2D(.dimensions()));
+  FFI_RETURN_IF_ERROR(
+      CheckShape(x_out->dimensions(), {batch, a_size}, "x_out", "trmv"));
+
+  // We flip uplo here because A is passed in row-major format.
+  // Row-major A is equivalent to A^T in column-major, and since A is
+  // triangular, this will just swap upper/lower triangular.
+  cublasFillMode_t uplo =
+      uplo_ ? CUBLAS_FILL_MODE_LOWER : CUBLAS_FILL_MODE_UPPER;
+  // We can then swap transa since this will map A^T to A and A to A^T
+  cublasSideMode_t transpose = trans_ ? CUBLAS_OP_N : CUBLAS_OP_T;
+
+  const T *a_data = static_cast<const T *>(a.untyped_data());
+  const T *x_data = static_cast<const T *>(x.untyped_data());
+  T *x_out_data = static_cast<T *>(x_out->untyped_data());
+
+  if (x_data != x_out_data) {
+    cudaError_t err = cudaMemcpyAsync(x_out_data, x_data, x.size_bytes(),
+                                      cudaMemcpyDeviceToDevice, stream);
+    if (err != cudaSuccess) {
+      return ffi::Error::InvalidArgument(absl::StrFormat(
+          "cudaMemcpyAsync failed: %s", cudaGetErrorString(err)));
+    }
+  }
+
+  FFI_ASSIGN_OR_RETURN(auto handle, BlasHandlePool::Borrow(stream));
+  int lda = a_size;
+  int n = lda;
+  int incX = 1;
+
+  for (int i = 0; i < batch; ++i) {
+    FFI_RETURN_IF_ERROR(blas::Trmv<T>(handle.get(), side, uplo, trans, diag, n,
+                                      a_data, lda, x_out_data, incX));
+    a_data += n * n;
+    x_out_data += n;
+  }
+  return ffi::Error::Success();
+}
+
+ffi::Error TrmvDispatch(CUstream stream, bool uplo, bool trans, bool diag,
+                        ffi::AnyBuffer a, ffi::AnyBuffer x_in,
+                        ffi::Result<ffi::AnyBuffer> x_out) {
+  auto dataType = x_in.element_type();
+  SOLVER_BLAS_DISPATCH_IMPL(TrmvImpl, stream, uplo, trans, diag, a, x_in,
+                            x_out);
+  return ffi::Error::InvalidArgument(absl::StrFormat(
+      "Unsupported dtype %s in trmv", absl::FormatStreamed(dataType)));
+}
+
+XLA_FFI_DEFINE_HANDLER(TrmvFfi, TrmvDispatch,
+                       xla::ffi::Ffi::Bind()
+                           .Ctx<ffi::PlatformStream<CUstream>>()
+                           .Attr<bool>("uplo")
+                           .Attr<bool>("transpose")
+                           .Attr<bool>("diag")
+                           .Arg<ffi::AnyBuffer>()
+                           .Ret<ffi::AnyBuffer>());
 
 template <typename T>
 ffi::Error SyrkImpl(CUstream stream, bool transpose, bool uplo_,
