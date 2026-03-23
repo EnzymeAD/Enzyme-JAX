@@ -2153,8 +2153,6 @@ struct RotateSpmdOptimize : public OpRewritePattern<enzymexla::RotateOp> {
           rotate,
           "numDevicesAlongDimension == 1. Communication is already optimized.");
     }
-    
-
     assert(rotate.getType().getShape()[rotateDimension] > 0);
     assert(rotateAmount < rotate.getType().getShape()[rotateDimension]);
 
@@ -2171,8 +2169,7 @@ struct RotateSpmdOptimize : public OpRewritePattern<enzymexla::RotateOp> {
 
       auto fnSym = rewriter.getStringAttr("_SPMDInternalOp_MultiRotate");
 
-      SmallVector<Type, 2> resultTypes(rotateAmount + 1,
-                                       rotate.getType());
+      SmallVector<Type, 2> resultTypes(rotateAmount + 1, rotate.getType());
 
       // Replace with a custom call
       auto ccall = rewriter.create<stablehlo::CustomCallOp>(
@@ -2185,7 +2182,6 @@ struct RotateSpmdOptimize : public OpRewritePattern<enzymexla::RotateOp> {
           /*result_layouts=*/nullptr,
           /*output_operand_aliases=*/nullptr);
 
-      int32_t rotateAmount = rotate.getAmount();
       SmallVector<sdy::TensorShardingAttr> newShardings(rotateAmount + 1,
                                                         rotateSharding);
       mlir::sdy::setShardings(ccall, sdy::TensorShardingPerValueAttr::get(
