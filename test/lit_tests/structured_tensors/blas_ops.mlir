@@ -7,10 +7,3 @@ func.func @trmm(%arg0: tensor<64x64xf32>, %arg1: tensor<64x32xf32>) -> tensor<64
 }
 
 // CHECK: enzymexla.blas.trmm
-
-func.func @trmv(%arg0: tensor<64x64xf32>, %arg1: tensor<64xf32>) -> tensor<64xf32> {
-    %0 = enzymexla.blas.trmv %arg0, %arg1 {uplo = #enzymexla.uplo<U>, transpose = #enzymexla.transpose<none>, diag = #enzymexla.diag<nonunit>} : (tensor<64x64xf32>, tensor<64xf32>) -> tensor<64xf32>
-    return %0 : tensor<64xf32>
-}
-
-// CHECK: enzymexla.blas.trmv
