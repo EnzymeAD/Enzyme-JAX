@@ -497,10 +497,12 @@ bool canApplyUpperTriPattern(mlir::Value val, PatternRewriter &rewriter);
 bool canApplyLowerTriPattern(mlir::Operation *op, PatternRewriter &rewriter);
 bool canApplyLowerTriPattern(mlir::Value val, PatternRewriter &rewriter);
 
-bool canApplyUpperUnitTriPattern(mlir::Operation *op, PatternRewriter &rewriter);
+bool canApplyUpperUnitTriPattern(mlir::Operation *op,
+                                 PatternRewriter &rewriter);
 bool canApplyUpperUnitTriPattern(mlir::Value val, PatternRewriter &rewriter);
 
-bool canApplyLowerUnitTriPattern(mlir::Operation *op, PatternRewriter &rewriter);
+bool canApplyLowerUnitTriPattern(mlir::Operation *op,
+                                 PatternRewriter &rewriter);
 bool canApplyLowerUnitTriPattern(mlir::Value val, PatternRewriter &rewriter);
 
 template <typename Child> class GuaranteedResultAnalysisBase {
@@ -826,8 +828,7 @@ class PurelyRealResultAnalysis;
 class PurelyImagResultAnalysis;
 
 template <typename Child>
-class BaseTriResultAnalysis
-    : public GuaranteedResultAnalysisBase<Child> {
+class BaseTriResultAnalysis : public GuaranteedResultAnalysisBase<Child> {
 public:
   using State = typename GuaranteedResultAnalysisBase<Child>::State;
   State localGuaranteed(Value val, SmallVectorImpl<Value> &localtodo,
@@ -835,8 +836,9 @@ public:
 
   bool constantComplexCheck(DenseElementsAttr attr) { return false; }
   bool checkIotaCompare(stablehlo::SelectOp selectOp, bool detectUpper);
-  // bool constantFloatCheck(DenseElementsAttr attr) { return ((Child *)this)->constantFloatCheck(attr);}
-  // bool constantIntCheck(DenseElementsAttr attr) { return ((Child *)this)->constantIntCheck(attr); };
+  // bool constantFloatCheck(DenseElementsAttr attr) { return ((Child
+  // *)this)->constantFloatCheck(attr);} bool constantIntCheck(DenseElementsAttr
+  // attr) { return ((Child *)this)->constantIntCheck(attr); };
 
   // StringRef getAttrName() const { return ((Child *)this)->getAttrName(); }
 };
@@ -844,17 +846,21 @@ public:
 class UpperTriResultAnalysis
     : public BaseTriResultAnalysis<UpperTriResultAnalysis> {
 private:
-std::shared_ptr<LowerTriResultAnalysis> lowerTriResultAnalysis = nullptr;
-std::shared_ptr<UpperUnitTriResultAnalysis> upperUnitTriResultAnalysis = nullptr;
+  std::shared_ptr<LowerTriResultAnalysis> lowerTriResultAnalysis = nullptr;
+  std::shared_ptr<UpperUnitTriResultAnalysis> upperUnitTriResultAnalysis =
+      nullptr;
+
 public:
   bool constantFloatCheck(DenseElementsAttr attr);
   bool constantIntCheck(DenseElementsAttr attr);
   StringRef getAttrName() const { return "enzymexla.upper_tri_matrix"; }
   bool detectUpper = true;
-  void setLowerTriResultAnalysis(std::shared_ptr<LowerTriResultAnalysis> analysis) {
+  void
+  setLowerTriResultAnalysis(std::shared_ptr<LowerTriResultAnalysis> analysis) {
     lowerTriResultAnalysis = analysis;
   }
-  void setUpperUnitTriResultAnalysis(std::shared_ptr<UpperUnitTriResultAnalysis> analysis) {
+  void setUpperUnitTriResultAnalysis(
+      std::shared_ptr<UpperUnitTriResultAnalysis> analysis) {
     upperUnitTriResultAnalysis = analysis;
   }
   bool otherResultAnalysis(Value val, PatternRewriter &rewriter);
@@ -864,27 +870,29 @@ public:
 class LowerTriResultAnalysis
     : public BaseTriResultAnalysis<LowerTriResultAnalysis> {
 private:
-std::shared_ptr<UpperTriResultAnalysis> upperTriResultAnalysis = nullptr;
-std::shared_ptr<LowerUnitTriResultAnalysis> lowerUnitTriResultAnalysis = nullptr;
+  std::shared_ptr<UpperTriResultAnalysis> upperTriResultAnalysis = nullptr;
+  std::shared_ptr<LowerUnitTriResultAnalysis> lowerUnitTriResultAnalysis =
+      nullptr;
+
 public:
   bool constantFloatCheck(DenseElementsAttr attr);
   bool constantIntCheck(DenseElementsAttr attr);
   StringRef getAttrName() const { return "enzymexla.lower_tri_matrix"; }
   bool detectUpper = false;
-  void setUpperTriResultAnalysis(std::shared_ptr<UpperTriResultAnalysis> analysis) {
+  void
+  setUpperTriResultAnalysis(std::shared_ptr<UpperTriResultAnalysis> analysis) {
     upperTriResultAnalysis = analysis;
   }
-  void setLowerUnitTriResultAnalysis(std::shared_ptr<LowerUnitTriResultAnalysis> analysis) {
+  void setLowerUnitTriResultAnalysis(
+      std::shared_ptr<LowerUnitTriResultAnalysis> analysis) {
     lowerUnitTriResultAnalysis = analysis;
   }
   bool otherResultAnalysis(Value val, PatternRewriter &rewriter);
   bool unitResultAnalysis(Value val, PatternRewriter &rewriter);
-
 };
 
 template <typename Child>
-class BaseUnitTriResultAnalysis
-    : public GuaranteedResultAnalysisBase<Child> {
+class BaseUnitTriResultAnalysis : public GuaranteedResultAnalysisBase<Child> {
 public:
   using State = typename GuaranteedResultAnalysisBase<Child>::State;
   State localGuaranteed(Value val, SmallVectorImpl<Value> &localtodo,
@@ -892,22 +900,26 @@ public:
   bool constantComplexCheck(DenseElementsAttr attr) { return false; }
   bool constantFloatCheck(DenseElementsAttr attr);
   bool constantIntCheck(DenseElementsAttr attr);
-  bool checkIotaCompare(stablehlo::SelectOp selectOp, PatternRewriter& rewriter);
+  bool checkIotaCompare(stablehlo::SelectOp selectOp,
+                        PatternRewriter &rewriter);
 };
 
 class LowerUnitTriResultAnalysis
     : public BaseUnitTriResultAnalysis<LowerUnitTriResultAnalysis> {
 private:
   std::shared_ptr<LowerTriResultAnalysis> lowerTriResultAnalysis = nullptr;
-  std::shared_ptr<UpperUnitTriResultAnalysis> upperUnitTriResultAnalysis = nullptr;
-  
-  public:
+  std::shared_ptr<UpperUnitTriResultAnalysis> upperUnitTriResultAnalysis =
+      nullptr;
+
+public:
   StringRef getAttrName() const { return "enzymexla.lower_unit_tri_matrix"; }
   bool detectUpper = false;
-  void setUpperUnitTriResultAnalysis(std::shared_ptr<UpperUnitTriResultAnalysis> analysis) {
+  void setUpperUnitTriResultAnalysis(
+      std::shared_ptr<UpperUnitTriResultAnalysis> analysis) {
     upperUnitTriResultAnalysis = analysis;
   }
-  void setLowerTriResultAnalysis(std::shared_ptr<LowerTriResultAnalysis> analysis) {
+  void
+  setLowerTriResultAnalysis(std::shared_ptr<LowerTriResultAnalysis> analysis) {
     lowerTriResultAnalysis = analysis;
   }
   bool otherResultAnalysis(Value val, PatternRewriter &rewriter);
@@ -915,18 +927,21 @@ private:
 };
 
 class UpperUnitTriResultAnalysis
-: public BaseUnitTriResultAnalysis<UpperUnitTriResultAnalysis> {
-  private:
+    : public BaseUnitTriResultAnalysis<UpperUnitTriResultAnalysis> {
+private:
   std::shared_ptr<UpperTriResultAnalysis> upperTriResultAnalysis = nullptr;
-  std::shared_ptr<LowerUnitTriResultAnalysis> lowerUnitTriResultAnalysis = nullptr;
+  std::shared_ptr<LowerUnitTriResultAnalysis> lowerUnitTriResultAnalysis =
+      nullptr;
 
 public:
   StringRef getAttrName() const { return "enzymexla.upper_unit_tri_matrix"; }
   bool detectUpper = true;
-  void setLowerUnitTriResultAnalysis(std::shared_ptr<LowerUnitTriResultAnalysis> analysis) {
+  void setLowerUnitTriResultAnalysis(
+      std::shared_ptr<LowerUnitTriResultAnalysis> analysis) {
     lowerUnitTriResultAnalysis = analysis;
   }
-  void setUpperTriResultAnalysis(std::shared_ptr<UpperTriResultAnalysis> analysis) {
+  void
+  setUpperTriResultAnalysis(std::shared_ptr<UpperTriResultAnalysis> analysis) {
     upperTriResultAnalysis = analysis;
   }
   bool otherResultAnalysis(Value val, PatternRewriter &rewriter);
@@ -1070,49 +1085,44 @@ inline bool guaranteedSymmetricResult(Operation *op,
 }
 
 inline bool guaranteedUpperTriResult(mlir::Value value,
-                                      PatternRewriter &rewriter) {
+                                     PatternRewriter &rewriter) {
   return initUpperTriResultAnalysis().guaranteed(value, rewriter);
 }
-inline bool guaranteedUpperTriResult(Operation *op,
-                                      PatternRewriter &rewriter) {
+inline bool guaranteedUpperTriResult(Operation *op, PatternRewriter &rewriter) {
   auto analysis = initUpperTriResultAnalysis();
-  return runAnalysisOnOperation<UpperTriResultAnalysis>(analysis, op,
-                                                         rewriter);
+  return runAnalysisOnOperation<UpperTriResultAnalysis>(analysis, op, rewriter);
 }
 
 inline bool guaranteedLowerTriResult(mlir::Value value,
-                                      PatternRewriter &rewriter) {
+                                     PatternRewriter &rewriter) {
   return initLowerTriResultAnalysis().guaranteed(value, rewriter);
 }
-inline bool guaranteedLowerTriResult(Operation *op,
-                                      PatternRewriter &rewriter) {
+inline bool guaranteedLowerTriResult(Operation *op, PatternRewriter &rewriter) {
   auto analysis = initLowerTriResultAnalysis();
-  return runAnalysisOnOperation<LowerTriResultAnalysis>(analysis, op,
-                                                         rewriter);
+  return runAnalysisOnOperation<LowerTriResultAnalysis>(analysis, op, rewriter);
 }
 
 inline bool guaranteedUpperUnitTriResult(mlir::Value value,
-                                      PatternRewriter &rewriter) {
+                                         PatternRewriter &rewriter) {
   return initUpperUnitTriResultAnalysis().guaranteed(value, rewriter);
 }
 inline bool guaranteedUpperUnitTriResult(Operation *op,
-                                      PatternRewriter &rewriter) {
+                                         PatternRewriter &rewriter) {
   auto analysis = initUpperUnitTriResultAnalysis();
   return runAnalysisOnOperation<UpperUnitTriResultAnalysis>(analysis, op,
-                                                         rewriter);
+                                                            rewriter);
 }
 
 inline bool guaranteedLowerUnitTriResult(mlir::Value value,
-                                      PatternRewriter &rewriter) {
+                                         PatternRewriter &rewriter) {
   return initLowerUnitTriResultAnalysis().guaranteed(value, rewriter);
 }
 inline bool guaranteedLowerUnitTriResult(Operation *op,
-                                      PatternRewriter &rewriter) {
+                                         PatternRewriter &rewriter) {
   auto analysis = initLowerUnitTriResultAnalysis();
   return runAnalysisOnOperation<LowerUnitTriResultAnalysis>(analysis, op,
-                                                         rewriter);
+                                                            rewriter);
 }
-
 
 class NonNegativeResultAnalysis
     : public GuaranteedResultAnalysisBase<NonNegativeResultAnalysis> {
