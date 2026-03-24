@@ -33267,6 +33267,55 @@ struct LowerMultiSlice final
   }
 };
 
+struct LowerMultiPad final
+    : CheckedOpRewritePattern<enzymexla::MultiPadOp, LowerMultiPad> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(enzymexla::MultiPadOp op,
+                                    PatternRewriter &rewriter) const {
+    int32_t amount = op.getAmount();
+    int32_t totalResults = amount + 1;
+    int32_t dim = op.getDimension();
+
+    auto input = op.getOperand();
+    auto paddingValue = op.getPaddingValue();
+
+    auto inputType = cast<RankedTensorType>(input.getType());
+    int64_t rank = inputType.getRank();
+
+    auto shard = sdy::getShardingPerValue(op);
+
+    SmallVector<Value> replacements(totalResults);
+
+    for (int idx = 0; idx < totalResults; idx++) {
+      SmallVector<int64_t> low(rank, 0);
+      SmallVector<int64_t> high(rank, 0);
+      SmallVector<int64_t> interior(rank, 0);
+
+      low[dim] = idx;
+      high[dim] = amount - idx;
+
+      auto padOp = rewriter.create<stablehlo::PadOp>(
+          op.getLoc(), input, paddingValue, rewriter.getDenseI64ArrayAttr(low),
+          rewriter.getDenseI64ArrayAttr(high),
+          rewriter.getDenseI64ArrayAttr(interior));
+
+      if (shard) {
+        sdy::TensorShardingAttr shards[1] = {shard.getShardings()[idx]};
+        auto shard2 =
+            sdy::TensorShardingPerValueAttr::get(padOp.getContext(), shards);
+        sdy::setShardings(padOp, shard2);
+      }
+
+      replacements[idx] = padOp.getResult();
+    }
+
+    rewriter.replaceOp(op, replacements);
+
+    return success();
+  }
+};
+
 struct RecognizeMultiRotate
     : public CheckedOpRewritePattern<enzymexla::RotateOp,
                                      RecognizeMultiRotate> {
@@ -33595,7 +33644,6 @@ struct RecognizeMultiPad final
 
   LogicalResult matchAndRewriteImpl(stablehlo::PadOp op,
                                     PatternRewriter &rewriter) const {
-    llvm::errs() << "RecognizeMultiPad matched op\n";
     Value input = op.getOperand();
     Value paddingValue = op.getPaddingValue();
 
@@ -33668,6 +33716,20 @@ struct RecognizeMultiPad final
     if (pads.size() < 2)
       return failure(); // Need at least 2 pads to combine
 
+    std::optional<sdy::TensorShardingPerValueAttr> commonSharding;
+    bool shardingMismatch = false;
+    for (auto pad : pads) {
+      auto shardPerValue = sdy::getShardingPerValue(pad);
+      if (!commonSharding.has_value()) {
+        commonSharding = shardPerValue;
+      } else if (commonSharding.value() != shardPerValue) {
+        shardingMismatch = true;
+        break;
+      }
+    }
+    if (shardingMismatch)
+      return failure();
+
     rewriter.setInsertionPointAfterValue(input);
 
     int64_t amount = rootTotalPadding;
@@ -33685,6 +33747,17 @@ struct RecognizeMultiPad final
 
     auto multiPad = rewriter.create<enzymexla::MultiPadOp>(
         op.getLoc(), resultTypes, input, paddingValue, dimension, amount);
+
+    if (commonSharding.has_value() && commonSharding.value()) {
+      auto shardings = commonSharding.value().getShardings();
+      if (!shardings.empty()) {
+        sdy::TensorShardingAttr singleShard = shardings[0];
+        SmallVector<sdy::TensorShardingAttr> newShardings(numResults,
+                                                          singleShard);
+        sdy::setShardings(multiPad, sdy::TensorShardingPerValueAttr::get(
+                                        op.getContext(), newShardings));
+      }
+    }
 
     for (auto pad : pads) {
       int64_t low = pad.getEdgePaddingLow()[dimension];

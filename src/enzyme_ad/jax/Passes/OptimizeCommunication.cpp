@@ -2333,7 +2333,6 @@ struct MultiPadCustomCallOptimize
 
   LogicalResult matchAndRewrite(enzymexla::MultiPadOp pad,
                                 PatternRewriter &rewriter) const override {
-    llvm::errs() << "MultiPadCustomCallOptimize matched op\n";
     if (pad->getParentOfType<sdy::ManualComputationOp>())
       return failure();
 

@@ -2282,6 +2282,11 @@ def LowerMultiSlice : EnzymeHLOPatternOp<
   let patterns = ["LowerMultiSlice"];
 }
 
+def LowerMultiPad : EnzymeHLOPatternOp<
+    "lower_multipad"> {
+  let patterns = ["LowerMultiPad"];
+}
+
 def RecognizeMultiRotate : EnzymeHLOPatternOp<
     "recognize_multirotate"> {
   let patterns = ["RecognizeMultiRotate"];
