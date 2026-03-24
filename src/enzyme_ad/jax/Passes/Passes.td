@@ -1336,6 +1336,14 @@ def EnzymeBatchToStableHLOPass : Pass<"enzyme-batch-to-stablehlo"> {
   ];
 }
 
+def LowerEnzymeJacobianStableHLO : Pass<"lower-enzyme-jacobian-stablehlo"> {
+  let summary = "Lowers JVPs/VJPs in StableHLO to fwddiff/autodiff calls";
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "enzyme::EnzymeDialect"
+  ];
+}
+
 def PartialSymmetryAnnotatePass : Pass<"partial-symmetry-annotate", "ModuleOp"> {
   let summary = "Annotate operations using partial symmetry analysis";
   let dependentDialects = [
