@@ -1,0 +1,35 @@
+diff --git a/xla/service/collective_pipeliner.cc b/xla/service/collective_pipeliner.cc
+index 0cc6e8bfa6..c5bf004625 100644
+--- a/xla/service/collective_pipeliner.cc
++++ b/xla/service/collective_pipeliner.cc
+@@ -558,6 +558,9 @@ std::optional<std::vector<HloInstruction*>> CollectIndependentOperandChain(
+     }
+     if (is_loop_variant_parameter_input(curr_operand) &&
+         !should_allow_loop_variant_parameter_in_chain(curr_operand)) {
++      if (instr->opcode() == HloOpcode::kCollectivePermute) {
++        LOG(INFO) << "CP " << instr->name() << " skipped due to loop variant parameter: " << curr_operand->name();
++      }
+       return std::nullopt;
+     }
+     if (visited_set.insert(curr_operand).second) {
+@@ -595,6 +598,9 @@ std::optional<std::vector<HloInstruction*>> CollectIndependentOperandChain(
+       if ((!loop_invariant_params.contains(chain_instr) && !is_scalar_shaped &&
+            allow_loop_variant_parameter_in_chain) &&
+           !add_loop_invariant_op_in_chain) {
++        if (instr->opcode() == HloOpcode::kCollectivePermute) {
++          LOG(INFO) << "CP " << instr->name() << " skipped due to bad chain op: " << chain_instr->name() << " allow_loop=" << allow_loop_variant_parameter_in_chain;
++        }
+         return std::nullopt;
+       }
+     }
+@@ -1528,8 +1534,8 @@ void WhileLoopAnalysis::CollectCollectivesToMove(
+           should_add_loop_invariant_op_in_chain,
+           additional_chain_start_op_finder);
+       if (!chain_collected.has_value()) {
+-        VLOG(5) << "Skipping " << instr->name()
+-                << " because didn't find compatible slice of parameter";
++        LOG(INFO) << "Skipping CP " << instr->name()
++                  << " because didn't find compatible slice of parameter in Backward";
+         continue;
+       }
+       move_infos_.push_back(

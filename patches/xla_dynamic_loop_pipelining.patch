@@ -1,0 +1,96 @@
+diff --git a/xla/service/collective_pipeliner.cc b/xla/service/collective_pipeliner.cc
+index 0cc6e8bfa6..8c50b9f8e6 100644
+--- a/xla/service/collective_pipeliner.cc
++++ b/xla/service/collective_pipeliner.cc
+@@ -997,16 +997,38 @@ bool WhileLoopAnalysis::ComputeLoopStatistics() {
+   }
+   std::optional<ParsedWhileLoop> parsed_loop =
+       PatternMatchParseWhileLoop(while_, {tuple_points_to_analysis_});
+-  if (!parsed_loop || !parsed_loop->static_while_loop) {
++  if (!parsed_loop) {
+     return false;
+   }
++
++  const HloInstruction* loop_root = while_->while_body()->root_instruction();
++
++  // Simple invariant analysis. Just support arrays in the first nest of the
++  // while() input.
++  if (loop_root->opcode() == HloOpcode::kTuple) {
++    for (int i = 0; i < loop_root->operand_count(); ++i) {
++      if (loop_root->operand(i)->opcode() != HloOpcode::kGetTupleElement) {
++        continue;
++      }
++      if (i != loop_root->operand(i)->tuple_index()) {
++        continue;
++      }
++      invariant_loop_parameters_.insert(loop_root->operand(i));
++    }
++  }
++
++  ExtractLoopInvariantOps();
++
++  if (!parsed_loop->static_while_loop) {
++    return true;
++  }
++
+   if (!IsSupportedLoopIndexType(
+           while_->shape()
+               .tuple_shapes(parsed_loop->static_while_loop->induction_var_index)
+               .element_type())) {
+     return false;
+   }
+-  const HloInstruction* loop_root = while_->while_body()->root_instruction();
+   const int64_t bitwidth = primitive_util::BitWidth(
+       loop_root->operand(parsed_loop->static_while_loop->induction_var_index)
+           ->shape()
+@@ -1054,22 +1076,6 @@ bool WhileLoopAnalysis::ComputeLoopStatistics() {
+   VLOG(1) << "Bound: " << loop_bound_->ToString()
+           << " Start: " << loop_start_->ToString()
+           << " Increment: " << loop_increment_->ToString();
+-  // Simple invariant analysis. Just support arrays in the first nest of the
+-  // while() input.
+-  if (loop_root->opcode() == HloOpcode::kTuple) {
+-    for (int i = 0; i < loop_root->operand_count(); ++i) {
+-      if (loop_root->operand(i)->opcode() != HloOpcode::kGetTupleElement) {
+-        continue;
+-      }
+-      if (i != loop_root->operand(i)->tuple_index()) {
+-        continue;
+-      }
+-      invariant_loop_parameters_.insert(loop_root->operand(i));
+-    }
+-  }
+-
+-  // Extract all loop invariant instructions.
+-  ExtractLoopInvariantOps();
+ 
+   return true;
+ }
+@@ -3338,8 +3344,15 @@ absl::StatusOr<bool> CollectivePipeliner::RunPipeliner(
+           /*known_start=*/std::nullopt, config_.delay_sinking_large_collectives,
+           config_.collective_size_threshold_to_delay_sinking);
+       loop_analysis->ComputeLoopStatistics();
+-      if (loop_analysis->GetLoopIterationCount() &&
+-          loop_analysis->GetLoopIterationCount()->GetUnsignedValue() > 1) {
++      bool can_pipeline = false;
++      if (loop_analysis->GetLoopIterationCount()) {
++        can_pipeline = loop_analysis->GetLoopIterationCount()->GetUnsignedValue() > 1;
++      } else if (instruction->GetModule()->config().debug_options().xla_enable_enzyme_comms_opt()) {
++        can_pipeline = true;
++      }
++
++      if (can_pipeline) {
+         loop_analyses.push_back(
+             std::make_pair(instruction, std::move(loop_analysis)));
+       }
+@@ -3352,7 +3365,9 @@ absl::StatusOr<bool> CollectivePipeliner::RunPipeliner(
+           << GetPipelineDirectionString(config_.pipelining_direction);
+   for (auto& [instruction, loop_analysis] : loop_analyses) {
+     VLOG(1) << "While iterations: "
+-            << loop_analysis->GetLoopIterationCount()->ToString();
++            << (loop_analysis->GetLoopIterationCount()
++                    ? loop_analysis->GetLoopIterationCount()->ToString()
++                    : "dynamic");
+     loop_analysis->CollectCollectivesToMove(
+         config_.level_to_operate_on, config_.pipelining_direction,
+         config_.should_process, config_.acceptable_formatting,
