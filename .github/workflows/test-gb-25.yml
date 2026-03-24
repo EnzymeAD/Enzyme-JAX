@@ -49,7 +49,7 @@ jobs:
           # - 'b25f3cbed2bc88c8ffef85f6a5319e2cf7b0454c'
         gb25_commit:
           - 'main'
-          # - '0123456789abcdef0123456789abcdef01234567'
+          - 'add-pm-counters'
 
         reactant_commit:
           - 'main'
@@ -136,7 +136,7 @@ jobs:
       - name: Checkout GB-25
         uses: actions/checkout@v6
         with:
-          repository: 'PRONTOLab/GB-25'
+          repository: ${{ matrix.gb25_commit == 'add-pm-counters' && 'gbaraldi/GB-25' || 'PRONTOLab/GB-25' }}
           ref: ${{ matrix.gb25_commit }}
           path: 'GB-25'
       - name: Set GB25_DIR
@@ -252,6 +252,32 @@ jobs:
           xplane_file = first(filter(endswith(".xplane.pb"), readdir(prof_dir; join=true)))
 
           display(Reactant.Profiler.load_xplane_file(xplane_file))
+
+          # Display kernel stats (GPU only — may be empty on TPU)
+          try
+              kernel_stats = Reactant.Profiler.get_kernel_stats(xplane_file)
+              if !isempty(kernel_stats.reports)
+                  println("\n=== Kernel Stats ===")
+                  for r in kernel_stats.reports
+                      println("  $(r.name): regs=$(r.registers_per_thread) occ=$(r.occupancy_pct)%")
+                  end
+              end
+          catch e
+              @warn "Could not get kernel stats" exception=e
+          end
+
+          # Display framework op stats (includes PM counter data if collected)
+          try
+              framework_stats = Reactant.Profiler.get_framework_op_stats(xplane_file)
+              if !isempty(framework_stats)
+                  println("\n=== Framework Op Stats ===")
+                  for r in framework_stats
+                      println("  $(r.op_name): bw=$(round(r.measured_memory_bw; digits=1)) GB/s, oi=$(round(r.op_nameal_intensity; digits=2)), bound=$(r.bound_by)")
+                  end
+              end
+          catch e
+              @warn "Could not get framework op stats" exception=e
+          end
         working-directory: ${{ env.GB25_DIR }}
       - name: Test correctness in GB-25 code
         timeout-minutes: 20
