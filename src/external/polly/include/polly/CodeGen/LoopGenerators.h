@@ -16,6 +16,7 @@
 #include "polly/CodeGen/IRBuilder.h"
 #include "polly/Support/ScopHelper.h"
 #include "llvm/ADT/SetVector.h"
+#include "llvm/Analysis/LoopInfo.h"
 
 namespace polly {
 using llvm::AllocaInst;
