@@ -53,6 +53,7 @@ jobs:
 
         reactant_commit:
           - 'main'
+          - 'wsmoses-patch-15'
 
     steps:
       - name: Check GPUs
