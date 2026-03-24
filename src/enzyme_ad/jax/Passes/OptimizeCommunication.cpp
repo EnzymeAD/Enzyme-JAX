@@ -2324,6 +2324,58 @@ struct MultiRotateCustomCallOptimize
   }
 };
 
+struct MultiPadCustomCallOptimize
+    : public OpRewritePattern<enzymexla::MultiPadOp> {
+  int64_t bufferize;
+  MultiPadCustomCallOptimize(int64_t bufferize, MLIRContext *context,
+                             PatternBenefit benefit = 1)
+      : OpRewritePattern(context, benefit), bufferize(bufferize) {}
+
+  LogicalResult matchAndRewrite(enzymexla::MultiPadOp pad,
+                                PatternRewriter &rewriter) const override {
+    llvm::errs() << "MultiPadCustomCallOptimize matched op\n";
+    if (pad->getParentOfType<sdy::ManualComputationOp>())
+      return failure();
+
+    auto padDimension = pad.getDimension();
+    auto shardings = mlir::sdy::getShardingPerValue(pad);
+    if (!shardings) {
+      return failure();
+    }
+    auto padSharding = shardings.getSharding(0);
+
+    int64_t numDevicesAlongDimension =
+        getNumDevicesAlongDimension(padSharding, padDimension, pad);
+
+    if (numDevicesAlongDimension == 1) {
+      return failure();
+    }
+
+    std::string opaque = "dimension=" + std::to_string(padDimension) +
+                         ",amt=" + std::to_string(pad.getAmount()) +
+                         ",bufferize=" + std::to_string(bufferize);
+
+    auto fnSym = rewriter.getStringAttr("_SPMDInternalOp_MultiPad");
+
+    SmallVector<TensorShardingAttr> opShardings(pad.getNumResults(),
+                                                padSharding);
+
+    auto ccall = rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
+        pad, pad->getResultTypes(), pad->getOperands(), fnSym,
+        /*has_side_effect=*/rewriter.getBoolAttr(false),
+        /*backend_config=*/rewriter.getStringAttr(opaque),
+        /*api_version=*/nullptr,
+        /*called_computations=*/nullptr,
+        /*operand_layouts=*/nullptr,
+        /*result_layouts=*/nullptr,
+        /*output_operand_aliases=*/nullptr);
+
+    mlir::sdy::setShardings(ccall, TensorShardingPerValueAttr::get(
+                                       rewriter.getContext(), opShardings));
+    return success();
+  }
+};
+
 /// Detect whether this MultiSliceOp matches the cross-shard pattern:
 ///   1. All strides are 1.
 ///   2. For every sharded dimension except the multi-slice dimension,
@@ -5029,6 +5081,10 @@ struct OptimizeCommunicationPass
     if (multislice_custom_call > 0)
       patterns.add<MultiSliceCustomCallOptimize>(
           multi_buffer, context, PatternBenefit(multislice_custom_call));
+
+    if (multipad_custom_call > 0)
+      patterns.add<MultiPadCustomCallOptimize>(
+          multi_buffer, context, PatternBenefit(multipad_custom_call));
 
     if (rotate_to_pad_comm > 0)
       patterns.add<RotateToPadCommOptimize>(context,

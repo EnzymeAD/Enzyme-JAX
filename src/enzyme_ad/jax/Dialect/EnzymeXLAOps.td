@@ -421,6 +421,26 @@ def MultiSliceOp : EnzymeXLA_Op<"multi_slice", [Pure]> {
   let hasVerifier = 1;
 }
 
+def MultiPadOp : EnzymeXLA_Op<"multi_pad", [Pure]> {
+  let summary = "Produces multiple padded versions of the input tensor with constant total padding";
+  let description = [{
+    MultiPad operation produces multiple padded versions of the input tensor.
+    Given dimension=D and amount=A, it produces A + 1 results.
+    The i-th result corresponds to padding along dimension D by:
+    - Low side: i
+    - High side: A - i
+    Other dimensions are not padded.
+  }];
+  let arguments = (ins
+    HLO_Tensor:$operand,
+    HLO_Tensor:$padding_value,
+    I32Attr:$dimension,
+    I64Attr:$amount
+  );
+  let results = (outs Variadic<HLO_Tensor>:$results);
+  let hasVerifier = 1;
+}
+
 def WrapOp: EnzymeXLA_Op<
       "wrap",
       [Pure, SameOperandsAndResultElementType,

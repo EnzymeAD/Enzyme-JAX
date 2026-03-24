@@ -941,6 +941,12 @@ def OptimizeCommunication : Pass<"optimize-communication"> {
        /*default=*/"0",
        /*description=*/"Convert MultiSlice to Spmd custom call">,
        Option<
+       /*C++ variable name=*/"multipad_custom_call",
+       /*CLI argument=*/"multipad_custom_call",
+       /*type=*/"int",
+       /*default=*/"0",
+       /*description=*/"Convert MultiPad to Spmd custom call">,
+       Option<
        /*C++ variable name=*/"rotate_to_pad_comm",
        /*CLI argument=*/"rotate_to_pad_comm",
        /*type=*/"int",
