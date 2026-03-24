@@ -1,10 +1,10 @@
-// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(lower-enzymexla-lapack{backend=cpu blas_int_width=64},enzyme-hlo-opt)" %s | FileCheck %s --check-prefix=CPU
-// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(lower-enzymexla-lapack{backend=cuda},enzyme-hlo-opt)" %s | FileCheck %s --check-prefix=CUDA
-// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(lower-enzymexla-lapack{backend=tpu},enzyme-hlo-opt)" %s | FileCheck %s --check-prefix=TPU
+// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(lower-lapack-to-jit_call{backend=cpu blas_int_width=64},enzyme-hlo-opt)" %s | FileCheck %s --check-prefix=CPU
+// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(lower-lapack-to-jit_call{backend=cuda},enzyme-hlo-opt)" %s | FileCheck %s --check-prefix=CUDA
+// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(lower-lapack-to-jit_call{backend=tpu},enzyme-hlo-opt)" %s | FileCheck %s --check-prefix=TPU
 
 module {
   func.func @main(%arg0: tensor<64x32xf32>, %arg1: tensor<32xf32>) -> tensor<64x32xf32> {
-      %0 = enzymexla.lapack.orgqr %arg0, %arg1 : (tensor<64x32xf32>, tensor<32xf32>) -> tensor<64x32xf32>
+      %0 = lapack.orgqr %arg0, %arg1 : (tensor<64x32xf32>, tensor<32xf32>) -> tensor<64x32xf32>
       return %0 : tensor<64x32xf32>
   }
 }
@@ -35,7 +35,7 @@ module {
 module {
   func.func @main(%arg0: tensor<64x32xf64>, %arg1: tensor<32xf64>) -> tensor<64x32xf64> {
     // CPU: enzymexla.jit_call @enzymexla_wrapper_lapacke_dorgqr_[[WRAPPER_ID:[0-9]+]]
-    %0 = enzymexla.lapack.orgqr %arg0, %arg1 : (tensor<64x32xf64>, tensor<32xf64>) -> tensor<64x32xf64>
+    %0 = lapack.orgqr %arg0, %arg1 : (tensor<64x32xf64>, tensor<32xf64>) -> tensor<64x32xf64>
     return %0 : tensor<64x32xf64>
   }
 }
@@ -43,7 +43,7 @@ module {
 module {
   func.func @main(%arg0: tensor<64x32xcomplex<f32>>, %arg1: tensor<32xcomplex<f32>>) -> tensor<64x32xcomplex<f32>> {
     // CPU: enzymexla.jit_call @enzymexla_wrapper_lapacke_cungqr_[[WRAPPER_ID:[0-9]+]]
-    %0 = enzymexla.lapack.orgqr %arg0, %arg1 : (tensor<64x32xcomplex<f32>>, tensor<32xcomplex<f32>>) -> tensor<64x32xcomplex<f32>>
+    %0 = lapack.orgqr %arg0, %arg1 : (tensor<64x32xcomplex<f32>>, tensor<32xcomplex<f32>>) -> tensor<64x32xcomplex<f32>>
     return %0 : tensor<64x32xcomplex<f32>>
   }
 }
@@ -51,7 +51,7 @@ module {
 module {
   func.func @main(%arg0: tensor<64x32xcomplex<f64>>, %arg1: tensor<32xcomplex<f64>>) -> tensor<64x32xcomplex<f64>> {
     // CPU: enzymexla.jit_call @enzymexla_wrapper_lapacke_zungqr_[[WRAPPER_ID:[0-9]+]]
-    %0 = enzymexla.lapack.orgqr %arg0, %arg1 : (tensor<64x32xcomplex<f64>>, tensor<32xcomplex<f64>>) -> tensor<64x32xcomplex<f64>>
+    %0 = lapack.orgqr %arg0, %arg1 : (tensor<64x32xcomplex<f64>>, tensor<32xcomplex<f64>>) -> tensor<64x32xcomplex<f64>>
     return %0 : tensor<64x32xcomplex<f64>>
   }
 }

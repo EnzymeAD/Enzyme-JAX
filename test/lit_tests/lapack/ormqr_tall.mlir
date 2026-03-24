@@ -1,8 +1,8 @@
-// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(lower-enzymexla-lapack{backend=cpu blas_int_width=64},enzyme-hlo-opt)" %s | FileCheck %s --check-prefix=CPU
+// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(lower-lapack-to-jit_call{backend=cpu blas_int_width=64},enzyme-hlo-opt)" %s | FileCheck %s --check-prefix=CPU
 
 module {
   func.func @main(%arg0: tensor<64x32xf32>, %arg1: tensor<32xf32>, %arg2: tensor<64x48xf32>) -> tensor<64x48xf32> {
-    %0 = enzymexla.lapack.ormqr %arg0, %arg1, %arg2 {side = #blas.side<left>} : (tensor<64x32xf32>, tensor<32xf32>, tensor<64x48xf32>) -> tensor<64x48xf32>
+    %0 = lapack.ormqr %arg0, %arg1, %arg2 {side = #blas.side<left>} : (tensor<64x32xf32>, tensor<32xf32>, tensor<64x48xf32>) -> tensor<64x48xf32>
     return %0: tensor<64x48xf32>
   }
 }
@@ -25,7 +25,7 @@ module {
 
 module {
   func.func @main(%arg0: tensor<64x32xf32>, %arg1: tensor<32xf32>, %arg2: tensor<64x48xf32>) -> tensor<64x48xf32> {
-    %0 = enzymexla.lapack.ormqr %arg0, %arg1, %arg2 {side = #blas.side<left>, transpose = #blas.transpose<transpose>} : (tensor<64x32xf32>, tensor<32xf32>, tensor<64x48xf32>) -> tensor<64x48xf32>
+    %0 = lapack.ormqr %arg0, %arg1, %arg2 {side = #blas.side<left>, transpose = #blas.transpose<transpose>} : (tensor<64x32xf32>, tensor<32xf32>, tensor<64x48xf32>) -> tensor<64x48xf32>
     return %0: tensor<64x48xf32>
   }
 }
@@ -48,7 +48,7 @@ module {
 
 module {
   func.func @main(%arg0: tensor<64x32xf32>, %arg1: tensor<32xf32>, %arg2: tensor<48x64xf32>) -> tensor<48x64xf32> {
-    %0 = enzymexla.lapack.ormqr %arg0, %arg1, %arg2 {side = #blas.side<right>, transpose = #blas.transpose<none>} : (tensor<64x32xf32>, tensor<32xf32>, tensor<48x64xf32>) -> tensor<48x64xf32>
+    %0 = lapack.ormqr %arg0, %arg1, %arg2 {side = #blas.side<right>, transpose = #blas.transpose<none>} : (tensor<64x32xf32>, tensor<32xf32>, tensor<48x64xf32>) -> tensor<48x64xf32>
     return %0: tensor<48x64xf32>
   }
 }
@@ -72,7 +72,7 @@ module {
 module {
   func.func @main(%arg0: tensor<64x32xf64>, %arg1: tensor<32xf64>, %arg2: tensor<64x48xf64>) -> tensor<64x48xf64> {
     // CPU: enzymexla.jit_call @enzymexla_wrapper_lapacke_dormqr_[[WRAPPER_ID:[0-9]+]]
-    %0 = enzymexla.lapack.ormqr %arg0, %arg1, %arg2 {side = #blas.side<left>} : (tensor<64x32xf64>, tensor<32xf64>, tensor<64x48xf64>) -> tensor<64x48xf64>
+    %0 = lapack.ormqr %arg0, %arg1, %arg2 {side = #blas.side<left>} : (tensor<64x32xf64>, tensor<32xf64>, tensor<64x48xf64>) -> tensor<64x48xf64>
     return %0: tensor<64x48xf64>
   }
 }
@@ -80,7 +80,7 @@ module {
 module {
   func.func @main(%arg0: tensor<64x32xcomplex<f32>>, %arg1: tensor<32xcomplex<f32>>, %arg2: tensor<64x48xcomplex<f32>>) -> tensor<64x48xcomplex<f32>> {
     // CPU: enzymexla.jit_call @enzymexla_wrapper_lapacke_cunmqr_[[WRAPPER_ID:[0-9]+]]
-    %0 = enzymexla.lapack.ormqr %arg0, %arg1, %arg2 {side = #blas.side<left>} : (tensor<64x32xcomplex<f32>>, tensor<32xcomplex<f32>>, tensor<64x48xcomplex<f32>>) -> tensor<64x48xcomplex<f32>>
+    %0 = lapack.ormqr %arg0, %arg1, %arg2 {side = #blas.side<left>} : (tensor<64x32xcomplex<f32>>, tensor<32xcomplex<f32>>, tensor<64x48xcomplex<f32>>) -> tensor<64x48xcomplex<f32>>
     return %0: tensor<64x48xcomplex<f32>>
   }
 }
@@ -88,7 +88,7 @@ module {
 module {
   func.func @main(%arg0: tensor<64x32xcomplex<f64>>, %arg1: tensor<32xcomplex<f64>>, %arg2: tensor<64x48xcomplex<f64>>) -> tensor<64x48xcomplex<f64>> {
     // CPU: enzymexla.jit_call @enzymexla_wrapper_lapacke_zunmqr_[[WRAPPER_ID:[0-9]+]]
-    %0 = enzymexla.lapack.ormqr %arg0, %arg1, %arg2 {side = #blas.side<left>} : (tensor<64x32xcomplex<f64>>, tensor<32xcomplex<f64>>, tensor<64x48xcomplex<f64>>) -> tensor<64x48xcomplex<f64>>
+    %0 = lapack.ormqr %arg0, %arg1, %arg2 {side = #blas.side<left>} : (tensor<64x32xcomplex<f64>>, tensor<32xcomplex<f64>>, tensor<64x48xcomplex<f64>>) -> tensor<64x48xcomplex<f64>>
     return %0: tensor<64x48xcomplex<f64>>
   }
 }
