@@ -9,7 +9,7 @@ module {
 }
 // CHECK:       func.func @main() -> tensor<20x180xi64> {
 // CHECK-NEXT:    %[[v0:[^ ]*]] = stablehlo.constant dense<20176> : tensor<20x180xi64>
-// CHECK-NEXT:    %[[v1:[^ ]*]] = stablehlo.iota dim = 1 : tensor<20x180xi64>
+// CHECK-NEXT:    %[[v1:[^ ]*]] = stablehlo.iota dim = 0 : tensor<20x180xi64>
 // CHECK-NEXT:    %[[v2:[^ ]*]] = stablehlo.multiply %[[v1]], %[[v0]] : tensor<20x180xi64>
 // CHECK-NEXT:    return %[[v2]] : tensor<20x180xi64>
 // CHECK-NEXT:  }
@@ -25,7 +25,7 @@ module {
 }
 // CHECK:       func.func @main() -> tensor<180x20xi64> {
 // CHECK-NEXT:    %[[v0:[^ ]*]] = stablehlo.constant dense<20176> : tensor<180x20xi64>
-// CHECK-NEXT:    %[[v1:[^ ]*]] = stablehlo.iota dim = 0 : tensor<180x20xi64>
+// CHECK-NEXT:    %[[v1:[^ ]*]] = stablehlo.iota dim = 1 : tensor<180x20xi64>
 // CHECK-NEXT:    %[[v2:[^ ]*]] = stablehlo.multiply %[[v1]], %[[v0]] : tensor<180x20xi64>
 // CHECK-NEXT:    return %[[v2]] : tensor<180x20xi64>
 // CHECK-NEXT:  }
@@ -42,7 +42,7 @@ module {
 // CHECK:       func.func @main() -> tensor<20x180xi64> {
 // CHECK-NEXT:    %[[v0:[^ ]*]] = stablehlo.constant dense<1> : tensor<20x180xi64>
 // CHECK-NEXT:    %[[v1:[^ ]*]] = stablehlo.constant dense<20176> : tensor<20x180xi64>
-// CHECK-NEXT:    %[[v2:[^ ]*]] = stablehlo.iota dim = 1 : tensor<20x180xi64>
+// CHECK-NEXT:    %[[v2:[^ ]*]] = stablehlo.iota dim = 0 : tensor<20x180xi64>
 // CHECK-NEXT:    %[[v3:[^ ]*]] = stablehlo.multiply %[[v2]], %[[v1]] : tensor<20x180xi64>
 // CHECK-NEXT:    %[[v4:[^ ]*]] = stablehlo.add %[[v0]], %[[v3]] : tensor<20x180xi64>
 // CHECK-NEXT:    return %[[v4]] : tensor<20x180xi64>
