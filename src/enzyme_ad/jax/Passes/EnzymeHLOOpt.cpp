@@ -33292,8 +33292,8 @@ struct LowerMultiPad final
       SmallVector<int64_t> high(rank, 0);
       SmallVector<int64_t> interior(rank, 0);
 
-      low[dim] = idx;
-      high[dim] = amount - idx;
+      high[dim] = idx;
+      low[dim] = amount - idx;
 
       auto padOp = rewriter.create<stablehlo::PadOp>(
           op.getLoc(), input, paddingValue, rewriter.getDenseI64ArrayAttr(low),
@@ -33760,8 +33760,7 @@ struct RecognizeMultiPad final
     }
 
     for (auto pad : pads) {
-      int64_t low = pad.getEdgePaddingLow()[dimension];
-      int64_t idx = low;
+      int64_t idx = pad.getEdgePaddingHigh()[dimension];
       rewriter.replaceOp(pad, multiPad.getResult(idx));
     }
 
