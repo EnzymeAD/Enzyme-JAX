@@ -356,6 +356,7 @@ def LibDeviceFuncsRaisingPass : Pass<"libdevice-funcs-raise"> {
     "enzyme::EnzymeDialect",
     "math::MathDialect",
     "gpu::GPUDialect",
+    "scf::SCFDialect",
   ];
   let options = [
     Option<
