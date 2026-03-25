@@ -52,7 +52,10 @@ jobs:
           # - '0123456789abcdef0123456789abcdef01234567'
 
         reactant_commit:
-          - 'main'
+          - 'stencil-ghost-cell-widening'
+
+        reactant_repo:
+          - 'gbaraldi/Reactant.jl'
 
     steps:
       - name: Check GPUs
@@ -79,7 +82,7 @@ jobs:
       - name: Checkout Reactant.jl
         uses: actions/checkout@v6
         with:
-          repository: 'EnzymeAD/Reactant.jl'
+          repository: ${{ matrix.reactant_repo || 'EnzymeAD/Reactant.jl' }}
           ref: ${{ matrix.reactant_commit }}
           path: 'Reactant.jl'
       - name: Set REACTANT_DIR
@@ -166,11 +169,23 @@ jobs:
 
           using Pkg
           if !isempty("${{ matrix.reactant_commit }}")
-              # Install specific commit of Reactant, if necessary
-              Pkg.add([
-                  PackageSpec(; name="ReactantCore", rev="${{ matrix.reactant_commit }}"),
-                  PackageSpec(; name="Reactant", rev="${{ matrix.reactant_commit }}"),
-              ])
+              # Install specific commit/branch of Reactant
+              repo = "${{ matrix.reactant_repo || 'EnzymeAD/Reactant.jl' }}"
+              rev = "${{ matrix.reactant_commit }}"
+              url = "https://github.com/$(repo).git"
+              if repo == "EnzymeAD/Reactant.jl"
+                  # Upstream: use rev directly
+                  Pkg.add([
+                      PackageSpec(; name="ReactantCore", rev=rev),
+                      PackageSpec(; name="Reactant", rev=rev),
+                  ])
+              else
+                  # Fork: use url + rev
+                  Pkg.add([
+                      PackageSpec(; url="$(url)", subdir="lib/ReactantCore", rev=rev),
+                      PackageSpec(; url="$(url)", rev=rev),
+                  ])
+              end
           end
           # Instantiate environment
           Pkg.instantiate()
