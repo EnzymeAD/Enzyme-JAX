@@ -1311,7 +1311,7 @@ def RemoveAtomicsPass : Pass<"remove-atomics"> {
   ];
 }
 
-def StencilGhostCellWideningPass : Pass<"stencil-ghost-cell-widening"> {
+def StencilGhostCellWideningPass : Pass<"stencil-ghost-cell-widening", "func::FuncOp"> {
   let summary = "Widen stencil shift chains to merge halo exchanges";
   let description = [{
     Detects chains of boundary-consuming stencil shifts (slice→pad on same dimension)

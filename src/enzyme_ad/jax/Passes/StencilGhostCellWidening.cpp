@@ -616,7 +616,7 @@ public:
   using StencilGhostCellWideningPassBase::StencilGhostCellWideningPassBase;
 
   void runOnOperation() override {
-    auto *root = getOperation();
+    Operation *root = getOperation();
 
     // Step 1: Find all stencil shifts
     auto shifts = findAllShifts(root);
