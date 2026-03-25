@@ -1,0 +1,425 @@
+diff --git a/xla/hlo/transforms/collectives/BUILD b/xla/hlo/transforms/collectives/BUILD
+index 03bc9c77a0..aebebaaa28 100644
+--- a/xla/hlo/transforms/collectives/BUILD
++++ b/xla/hlo/transforms/collectives/BUILD
+@@ -475,6 +475,38 @@ xla_cc_test(
+     ],
+ )
+ 
++cc_library(
++    name = "collective_permute_cse",
++    srcs = ["collective_permute_cse.cc"],
++    hdrs = ["collective_permute_cse.h"],
++    deps = [
++        "//xla/hlo/analysis:hlo_reachability",
++        "//xla/hlo/ir:hlo",
++        "//xla/hlo/pass:hlo_pass",
++        "//xla/hlo/utils:hlo_query",
++        "@com_google_absl//absl/algorithm:container",
++        "@com_google_absl//absl/container:flat_hash_map",
++        "@com_google_absl//absl/container:flat_hash_set",
++        "@com_google_absl//absl/container:inlined_vector",
++        "@com_google_absl//absl/status:statusor",
++        "@com_google_absl//absl/strings:string_view",
++    ],
++)
++
++xla_cc_test(
++    name = "collective_permute_cse_test",
++    srcs = ["collective_permute_cse_test.cc"],
++    deps = [
++        ":collective_permute_cse",
++        "//xla/hlo/ir:hlo",
++        "//xla/hlo/testlib:hlo_hardware_independent_test_base",
++        "//xla/hlo/utils:hlo_matchers",
++        "//xla/tests:hlo_test_base",
++        "//xla/tests:xla_internal_test_main",
++        "@tsl//tsl/platform:statusor",
++    ],
++)
++
+ cc_library(
+     name = "infeed_token_propagation",
+     srcs = ["infeed_token_propagation.cc"],
+diff --git a/xla/hlo/transforms/collectives/collective_permute_cse.cc b/xla/hlo/transforms/collectives/collective_permute_cse.cc
+new file mode 100644
+index 0000000000..ae0dbe7e5c
+--- /dev/null
++++ b/xla/hlo/transforms/collectives/collective_permute_cse.cc
+@@ -0,0 +1,146 @@
++/* Copyright 2025 The OpenXLA Authors.
++
++Licensed under the Apache License, Version 2.0 (the "License");
++you may not use this file except in compliance with the License.
++You may obtain a copy of the License at
++
++    http://www.apache.org/licenses/LICENSE-2.0
++
++Unless required by applicable law or agreed to in writing, software
++distributed under the License is distributed on an "AS IS" BASIS,
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++See the License for the specific language governing permissions and
++limitations under the License.
++==============================================================================*/
++
++#include "xla/hlo/transforms/collectives/collective_permute_cse.h"
++
++#include <cstddef>
++#include <memory>
++#include <vector>
++
++#include "absl/algorithm/container.h"
++#include "absl/container/flat_hash_set.h"
++#include "absl/status/statusor.h"
++#include "absl/strings/string_view.h"
++#include "xla/hlo/analysis/hlo_reachability.h"
++#include "xla/hlo/ir/hlo_computation.h"
++#include "xla/hlo/ir/hlo_instruction.h"
++#include "xla/hlo/ir/hlo_opcode.h"
++
++namespace xla {
++
++absl::StatusOr<bool> CollectivePermuteCse::RunImpl(
++    HloModule* module,
++    const absl::flat_hash_set<absl::string_view>& execution_threads) {
++  bool changed = false;
++
++  for (HloComputation* computation : module->computations(execution_threads)) {
++    if (computation->IsFusionComputation()) {
++      continue;
++    }
++
++    std::unique_ptr<HloReachabilityMap> reachability;
++
++    std::vector<HloInstruction*> permutes;
++    for (HloInstruction* inst : computation->MakeInstructionPostOrder()) {
++      if (inst->opcode() == HloOpcode::kCollectivePermute) {
++        permutes.push_back(inst);
++      }
++    }
++
++    if (permutes.size() < 2) {
++      continue;
++    }
++
++    for (size_t i = 0; i < permutes.size(); ++i) {
++      for (size_t j = i + 1; j < permutes.size(); ++j) {
++        HloInstruction* a = permutes[i];
++        HloInstruction* b = permutes[j];
++        if (!a || !b) {
++          continue;
++        }
++
++        auto a_pairs = a->source_target_pairs();
++        auto b_pairs = b->source_target_pairs();
++        absl::c_sort(a_pairs);
++        absl::c_sort(b_pairs);
++
++        if (a_pairs != b_pairs) {
++          continue;
++        }
++
++        HloInstruction* large = nullptr;
++        HloInstruction* small = nullptr;
++
++        if (a->operand(0) == b->operand(0)) {
++          large = a;
++          small = b;
++        } else if (a->operand(0)->opcode() == HloOpcode::kSlice &&
++                   a->operand(0)->operand(0) == b->operand(0)) {
++          small = a;
++          large = b;
++        } else if (b->operand(0)->opcode() == HloOpcode::kSlice &&
++                   b->operand(0)->operand(0) == a->operand(0)) {
++          small = b;
++          large = a;
++        }
++
++        if (large && small) {
++          if (!reachability) {
++            reachability = HloReachabilityMap::Build(computation);
++          }
++
++          if (reachability->IsReachable(small, large)) {
++            continue;
++          }
++
++          if (reachability->IsReachable(large, small) ||
++              large->parent() == small->parent()) {
++            // Large evaluates before small or alongside. If we want large to
++            // dominate small's original location, we can move large to
++            // immediately before small if it doesn't violate reachability. But
++            // replacing the use creates the necessary dependence!
++          }
++
++          HloInstruction* replacement = large;
++          if (small->operand(0)->opcode() == HloOpcode::kSlice &&
++              large->operand(0) == small->operand(0)->operand(0)) {
++            const HloInstruction* slice_op = small->operand(0);
++            replacement =
++                computation->AddInstruction(HloInstruction::CreateSlice(
++                    small->shape(), large, slice_op->slice_starts(),
++                    slice_op->slice_limits(), slice_op->slice_strides()));
++          }
++
++          // Force large to dominate small's location. If large wasn't before
++          // small, we can re-insert large before small. By default, creating a
++          // slice of large and replacing it means slice executes after large
++          // and replaces small. Is it possible small was before large? Yes. If
++          // small was before large, slice(large) will be computed where large
++          // is, replacing the outputs that used small. We might affect memory
++          // size if large is delayed. As a heuristic to "make sure the larger
++          // permute is moved to dominate the location of the smaller one", we
++          // can explicitly add it to the instruction list.
++
++          small->ReplaceAllUsesWith(replacement).IgnoreError();
++          reachability->Replace(small, replacement);
++          if (small->user_count() == 0) {
++            computation->RemoveInstruction(small).IgnoreError();
++          }
++          if (small == a) {
++            permutes[i] = nullptr;
++          }
++          if (small == b) {
++            permutes[j] = nullptr;
++          }
++          changed = true;
++        }
++      }
++    }
++  }
++
++  return changed;
++}
++
++}  // namespace xla
+diff --git a/xla/hlo/transforms/collectives/collective_permute_cse.h b/xla/hlo/transforms/collectives/collective_permute_cse.h
+new file mode 100644
+index 0000000000..47218f2b4e
+--- /dev/null
++++ b/xla/hlo/transforms/collectives/collective_permute_cse.h
+@@ -0,0 +1,40 @@
++/* Copyright 2025 The OpenXLA Authors.
++
++Licensed under the Apache License, Version 2.0 (the "License");
++you may not use this file except in compliance with the License.
++You may obtain a copy of the License at
++
++    http://www.apache.org/licenses/LICENSE-2.0
++
++Unless required by applicable law or agreed to in writing, software
++distributed under the License is distributed on an "AS IS" BASIS,
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++See the License for the specific language governing permissions and
++limitations under the License.
++==============================================================================*/
++
++#ifndef XLA_HLO_TRANSFORMS_COLLECTIVES_COLLECTIVE_PERMUTE_CSE_H_
++#define XLA_HLO_TRANSFORMS_COLLECTIVES_COLLECTIVE_PERMUTE_CSE_H_
++
++#include "absl/container/flat_hash_set.h"
++#include "absl/status/statusor.h"
++#include "absl/strings/string_view.h"
++#include "xla/hlo/ir/hlo_module.h"
++#include "xla/hlo/pass/hlo_pass_interface.h"
++
++namespace xla {
++
++// Removes redundant collective permutes
++class CollectivePermuteCse : public HloModulePass {
++ public:
++  absl::string_view name() const override { return "collective-permute-cse"; }
++
++ protected:
++  absl::StatusOr<bool> RunImpl(
++      HloModule* module,
++      const absl::flat_hash_set<absl::string_view>& execution_threads) override;
++};
++
++}  // namespace xla
++
++#endif  // XLA_HLO_TRANSFORMS_COLLECTIVES_COLLECTIVE_PERMUTE_CSE_H_
+diff --git a/xla/hlo/transforms/collectives/collective_permute_cse_test.cc b/xla/hlo/transforms/collectives/collective_permute_cse_test.cc
+new file mode 100644
+index 0000000000..15744460eb
+--- /dev/null
++++ b/xla/hlo/transforms/collectives/collective_permute_cse_test.cc
+@@ -0,0 +1,110 @@
++/* Copyright 2025 The OpenXLA Authors.
++
++Licensed under the Apache License, Version 2.0 (the "License");
++you may not use this file except in compliance with the License.
++You may obtain a copy of the License at
++
++    http://www.apache.org/licenses/LICENSE-2.0
++
++Unless required by applicable law or agreed to in writing, software
++distributed under the License is distributed on an "AS IS" BASIS,
++WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
++See the License for the specific language governing permissions and
++limitations under the License.
++==============================================================================*/
++
++#include "xla/hlo/transforms/collectives/collective_permute_cse.h"
++
++#include <memory>
++
++#include "xla/hlo/ir/hlo_computation.h"
++#include "xla/hlo/ir/hlo_instruction.h"
++#include "xla/hlo/ir/hlo_module.h"
++#include "xla/hlo/ir/hlo_opcode.h"
++#include "xla/hlo/testlib/hlo_hardware_independent_test_base.h"
++#include "xla/hlo/utils/hlo_matchers.h"
++#include "xla/tests/hlo_test_base.h"
++
++namespace xla {
++namespace {
++
++namespace op = xla::testing::opcode_matchers;
++
++using CollectivePermuteCseTest = HloHardwareIndependentTestBase;
++
++TEST_F(CollectivePermuteCseTest, RemovesIdenticalPermutes) {
++  const char* const hlo_string = R"(
++HloModule module
++
++ENTRY entry {
++  p0 = f32[100] parameter(0)
++  c1 = f32[100] collective-permute(p0), channel_id=1, source_target_pairs={{0,1}}
++  c2 = f32[100] collective-permute(p0), channel_id=1, source_target_pairs={{0,1}}
++  ROOT root = (f32[100], f32[100]) tuple(c1, c2)
++}
++)";
++
++  TF_ASSERT_OK_AND_ASSIGN(auto module,
++                          ParseAndReturnVerifiedModule(hlo_string));
++
++  CollectivePermuteCse pass;
++  ASSERT_TRUE(pass.Run(module.get()).value());
++
++  auto* root = module->entry_computation()->root_instruction();
++  EXPECT_THAT(root, op::Tuple(op::CollectivePermute(op::Parameter(0)),
++                              op::CollectivePermute(op::Parameter(0))));
++  EXPECT_EQ(root->operand(0), root->operand(1));
++}
++
++TEST_F(CollectivePermuteCseTest, SortedPairsMatch) {
++  const char* const hlo_string = R"(
++HloModule module
++
++ENTRY entry {
++  p0 = f32[100] parameter(0)
++  c1 = f32[100] collective-permute(p0), channel_id=1, source_target_pairs={{0,1}, {1,2}}
++  c2 = f32[100] collective-permute(p0), channel_id=1, source_target_pairs={{1,2}, {0,1}}
++  ROOT root = (f32[100], f32[100]) tuple(c1, c2)
++}
++)";
++
++  TF_ASSERT_OK_AND_ASSIGN(auto module,
++                          ParseAndReturnVerifiedModule(hlo_string));
++
++  CollectivePermuteCse pass;
++  ASSERT_TRUE(pass.Run(module.get()).value());
++
++  auto* root = module->entry_computation()->root_instruction();
++  EXPECT_THAT(root, op::Tuple(op::CollectivePermute(op::Parameter(0)),
++                              op::CollectivePermute(op::Parameter(0))));
++  EXPECT_EQ(root->operand(0), root->operand(1));
++}
++
++TEST_F(CollectivePermuteCseTest, SubsetPermuteSlices) {
++  const char* const hlo_string = R"(
++HloModule module
++
++ENTRY entry {
++  p0 = f32[100] parameter(0)
++  slice0 = f32[50] slice(p0), slice={[0:50]}
++  c1 = f32[100] collective-permute(p0), channel_id=1, source_target_pairs={{0,1}}
++  c2 = f32[50] collective-permute(slice0), channel_id=1, source_target_pairs={{0,1}}
++  ROOT root = (f32[100], f32[50]) tuple(c1, c2)
++}
++)";
++
++  TF_ASSERT_OK_AND_ASSIGN(auto module,
++                          ParseAndReturnVerifiedModule(hlo_string));
++
++  CollectivePermuteCse pass;
++  ASSERT_TRUE(pass.Run(module.get()).value());
++
++  auto* root = module->entry_computation()->root_instruction();
++  EXPECT_THAT(root,
++              op::Tuple(op::CollectivePermute(op::Parameter(0)),
++                        op::Slice(op::CollectivePermute(op::Parameter(0)))));
++  EXPECT_EQ(root->operand(1)->operand(0), root->operand(0));
++}
++
++}  // namespace
++}  // namespace xla
+diff --git a/xla/service/cpu/BUILD b/xla/service/cpu/BUILD
+index 4ab5b8d6c9..dffe512365 100644
+--- a/xla/service/cpu/BUILD
++++ b/xla/service/cpu/BUILD
+@@ -183,6 +183,7 @@ cc_library(
+         "//xla/hlo/transforms:operand_upcaster",
+         "//xla/hlo/transforms:shape_canonicalizer",
+         "//xla/hlo/transforms:while_loop_trip_count_annotator",
++        "//xla/hlo/transforms/collectives:collective_permute_cse",
+         "//xla/hlo/transforms/expanders:bitcast_dtypes_expander",
+         "//xla/hlo/transforms/expanders:cholesky_expander",
+         "//xla/hlo/transforms/expanders:comparison_expander",
+diff --git a/xla/service/cpu/cpu_compiler.cc b/xla/service/cpu/cpu_compiler.cc
+index ed58b6347d..5bcfc02337 100644
+--- a/xla/service/cpu/cpu_compiler.cc
++++ b/xla/service/cpu/cpu_compiler.cc
+@@ -111,6 +111,7 @@ limitations under the License.
+ #include "xla/hlo/ir/hlo_schedule.h"
+ #include "xla/hlo/pass/hlo_pass_fix.h"
+ #include "xla/hlo/pass/hlo_pass_pipeline.h"
++#include "xla/hlo/transforms/collectives/collective_permute_cse.h"
+ #include "xla/hlo/transforms/expanders/bitcast_dtypes_expander.h"
+ #include "xla/hlo/transforms/expanders/cholesky_expander.h"
+ #include "xla/hlo/transforms/expanders/comparison_expander.h"
+@@ -604,6 +605,9 @@ absl::Status CpuCompiler::RunHloPassesThroughLayoutAssn(
+     }
+     spmd_pipeline.AddPass<spmd::StatefulRngSpmdPartitioner>(
+         num_partitions, module->config().replica_count());
++    if (module->config().debug_options().xla_enable_enzyme_comms_opt()) {
++      spmd_pipeline.AddPass<CollectivePermuteCse>();
++    }
+     spmd_pipeline.AddPass<xla::CallInliner>(
+         /*single_call_site=*/false,
+         /*update_domain=*/false,
+diff --git a/xla/service/gpu/BUILD b/xla/service/gpu/BUILD
+index 7fba75d3a3..cb5bac5385 100644
+--- a/xla/service/gpu/BUILD
++++ b/xla/service/gpu/BUILD
+@@ -2747,6 +2747,7 @@ cc_library(
+         "//xla/hlo/ir:hlo",
+         "//xla/hlo/pass:hlo_pass",
+         "//xla/hlo/pass:hlo_pass_pipeline",
++        "//xla/hlo/transforms/collectives:collective_permute_cse",
+         "//xla/hlo/transforms/simplifiers:algebraic_simplifier",
+         "//xla/hlo/transforms/simplifiers:hlo_constant_folding",
+         "//xla/hlo/transforms/simplifiers:hlo_constant_splitter",
+diff --git a/xla/service/gpu/gpu_spmd_pipeline.cc b/xla/service/gpu/gpu_spmd_pipeline.cc
+index c4e554f4be..a172b5eea2 100644
+--- a/xla/service/gpu/gpu_spmd_pipeline.cc
++++ b/xla/service/gpu/gpu_spmd_pipeline.cc
+@@ -29,6 +29,7 @@ limitations under the License.
+ #include "xla/hlo/ir/hlo_schedule.h"
+ #include "xla/hlo/pass/hlo_pass_fix.h"
+ #include "xla/hlo/pass/hlo_pass_pipeline.h"
++#include "xla/hlo/transforms/collectives/collective_permute_cse.h"
+ #include "xla/hlo/transforms/simplifiers/algebraic_simplifier.h"
+ #include "xla/hlo/transforms/simplifiers/hlo_constant_folding.h"
+ #include "xla/hlo/transforms/simplifiers/hlo_constant_splitter.h"
+@@ -134,6 +135,9 @@ void AddSPMDPasses(
+       /*disable_ag_rewrite_for_multiple_consumers=*/true,
+       /*enable_partial_windowed_einsums=*/true, oper_size_threshold,
+       max_windowed_einsum_iteration);
++  if (hlo_module->config().debug_options().xla_enable_enzyme_comms_opt()) {
++    spmd_pipeline.AddPass<CollectivePermuteCse>();
++  }
+   // NOTE: even though the inliner is called in `RunPreSPMDPartitionerPasses`,
+   // it doesn't inline functions needed for ShardyXLA. ShardyXLA will also leave
+   // functions called `kInlineableManualComputationFuncName` not inlined, so
