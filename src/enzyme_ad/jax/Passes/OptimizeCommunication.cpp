@@ -2350,6 +2350,16 @@ struct MultiPadCustomCallOptimize
       return failure();
     }
 
+    if ((cast<RankedTensorType>(pad.getResult(0).getType())
+             .getShape()[padDimension] +
+         numDevicesAlongDimension - 1) /
+            numDevicesAlongDimension !=
+        (pad.getOperand().getType().getShape()[padDimension] +
+         numDevicesAlongDimension - 1) /
+            numDevicesAlongDimension) {
+      return failure();
+    }
+
     std::string opaque = "dimension=" + std::to_string(padDimension) +
                          ",amt=" + std::to_string(pad.getAmount()) +
                          ",bufferize=" + std::to_string(bufferize);
