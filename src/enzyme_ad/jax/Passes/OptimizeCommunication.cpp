@@ -19,6 +19,7 @@
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
+#include "src/enzyme_ad/jax/Passes/StencilAnalysis.h"
 #include "src/enzyme_ad/jax/Utils.h"
 
 #include "stablehlo/dialect/StablehloOps.h"
@@ -5036,6 +5037,282 @@ struct ReorderAssociativeOp : public OpRewritePattern<opTy> {
   }
 };
 
+/// Widen a stencil group: replace the chain of width-1 pads with a single
+/// wide enzymexla.extend at the root, then widen the computation inside.
+/// The existing ExtendCommOptimize pattern will lower the extend to
+/// ManualComputationOp + CollectivePermuteOp.
+static void widenStencilGroup(stencil::StencilGroup &g, OpBuilder &b) {
+  using namespace stencil;
+  int32_t dim = g.dim;
+  int64_t K = g.criticalPath;
+  Value rootField = g.rootField;
+  auto rootTy = cast<RankedTensorType>(rootField.getType());
+  int64_t rank = rootTy.getRank();
+
+  // Collect chain pad ops
+  DenseSet<Operation *> chainPadOps;
+  for (auto *sh : g.allShifts)
+    chainPadOps.insert(sh->pad.getOperation());
+
+  // Collect region ops
+  SmallVector<Operation *> regionOps;
+  DenseSet<Operation *> regionSet;
+  for (auto it = g.firstOp->getIterator();; ++it) {
+    regionOps.push_back(&*it);
+    regionSet.insert(&*it);
+    if (&*it == g.lastOp)
+      break;
+  }
+
+  // --- Ghost cell exchange: enzymexla.extend instead of pad with zero ---
+  Location loc = g.firstOp->getLoc();
+  b.setInsertionPoint(g.firstOp);
+  auto extendResultShape = llvm::to_vector(rootTy.getShape());
+  extendResultShape[dim] += 2 * K;
+  auto extendResultType = rootTy.clone(extendResultShape);
+  auto wRoot = enzymexla::ExtendOp::create(
+      b, loc, extendResultType, rootField,
+      b.getI64IntegerAttr(K),  // lhs
+      b.getI64IntegerAttr(K),  // rhs
+      b.getI64IntegerAttr(dim) // dimension
+  );
+
+  // --- Validity footprint tracking ---
+  IRMapping vm;
+  DenseMap<Value, int64_t> F;
+  DenseMap<Value, int32_t> dm;
+  DenseSet<Operation *> created;
+
+  vm.map(rootField, wRoot.getResult());
+  F[rootField] = 2 * K;
+  dm[rootField] = dim;
+  created.insert(wRoot);
+
+  // --- Walk region, clone each op with widened types ---
+  for (Operation *op : regionOps) {
+    b.setInsertionPointAfter(op);
+
+    bool needsWidening = false;
+    int64_t minF = INT64_MAX;
+    int32_t curDim = dim;
+    for (Value v : op->getOperands()) {
+      if (vm.contains(v)) {
+        needsWidening = true;
+        minF = std::min(minF, F.lookup(v));
+        if (dm.count(v))
+          curDim = dm.lookup(v);
+      }
+    }
+    if (!needsWidening)
+      continue;
+
+    RankedTensorType tgt = nullptr;
+    for (Value v : op->getOperands())
+      if (vm.contains(v) && F.lookup(v) == minF) {
+        tgt = cast<RankedTensorType>(vm.lookup(v).getType());
+        break;
+      }
+    if (!tgt)
+      continue;
+
+    // Trim helper
+    auto trim = [&](Value v, int64_t curF, int64_t tgtF) -> Value {
+      if (curF <= tgtF)
+        return v;
+      int64_t t = curF - tgtF, tlo = t / 2, thi = t - tlo;
+      auto vt = cast<RankedTensorType>(v.getType());
+      SmallVector<int64_t> st(vt.getRank(), 0), li(vt.getRank()),
+          str(vt.getRank(), 1);
+      for (int64_t i = 0; i < vt.getRank(); ++i) {
+        li[i] = vt.getDimSize(i);
+        if (i == curDim) {
+          st[i] = tlo;
+          li[i] -= thi;
+        }
+      }
+      auto s = llvm::to_vector(vt.getShape());
+      s[curDim] -= t;
+      auto sl = b.create<stablehlo::SliceOp>(loc, vt.clone(s), v, st, li, str);
+      created.insert(sl);
+      return sl.getResult();
+    };
+
+    // Build widened operands
+    SmallVector<Value> wops;
+    for (Value v : op->getOperands()) {
+      if (vm.contains(v)) {
+        wops.push_back(trim(vm.lookup(v), F.lookup(v), minF));
+      } else {
+        auto vt = dyn_cast<RankedTensorType>(v.getType());
+        if (vt && vt.getRank() == tgt.getRank()) {
+          int64_t vD = vt.getDimSize(curDim), tD = tgt.getDimSize(curDim);
+          if (vD < tD) {
+            // Pad non-chain operand to match widened size
+            int64_t n = tD - vD;
+            SmallVector<int64_t> wl(vt.getRank(), 0), wh(vt.getRank(), 0),
+                wi(vt.getRank(), 0);
+            wl[curDim] = n / 2;
+            wh[curDim] = n - n / 2;
+            auto s = llvm::to_vector(vt.getShape());
+            s[curDim] = tD;
+            auto zz = b.create<stablehlo::ConstantOp>(
+                loc,
+                b.getZeroAttr(RankedTensorType::get({}, vt.getElementType())));
+            auto p =
+                b.create<stablehlo::PadOp>(loc, vt.clone(s), v, zz, wl, wh, wi);
+            created.insert(zz);
+            created.insert(p);
+            wops.push_back(p);
+          } else if (vD > tD) {
+            wops.push_back(trim(v, vD - tD, 0));
+          } else {
+            wops.push_back(v);
+          }
+        } else {
+          wops.push_back(v);
+        }
+      }
+    }
+
+    // Create widened op
+    Value wr;
+    int64_t newF = minF;
+
+    if (auto sl = dyn_cast<stablehlo::SliceOp>(op)) {
+      auto st = llvm::to_vector(sl.getStartIndices());
+      auto li = llvm::to_vector(sl.getLimitIndices());
+      auto str = llvm::to_vector(sl.getStrides());
+      li[curDim] += minF;
+      auto s = llvm::to_vector(cast<RankedTensorType>(sl.getType()).getShape());
+      s[curDim] += minF;
+      wr = b.create<stablehlo::SliceOp>(
+          loc, cast<RankedTensorType>(sl.getType()).clone(s), wops[0], st, li,
+          str);
+    } else if (auto pd = dyn_cast<stablehlo::PadOp>(op)) {
+      if (chainPadOps.contains(op)) {
+        // Chain pad → slice (consume ghost cell)
+        auto inTy = cast<RankedTensorType>(wops[0].getType());
+        int64_t S = inTy.getDimSize(curDim);
+        SmallVector<int64_t> st(rank, 0), li(rank), str(rank, 1);
+        for (int64_t i = 0; i < rank; ++i)
+          li[i] = inTy.getDimSize(i);
+        if (pd.getEdgePaddingHigh()[curDim] >= 1)
+          st[curDim] = 1;
+        else
+          li[curDim] = S - 1;
+        auto s = llvm::to_vector(inTy.getShape());
+        s[curDim] = S - 1;
+        wr = b.create<stablehlo::SliceOp>(
+            loc, cast<RankedTensorType>(pd.getType()).clone(s), wops[0], st, li,
+            str);
+        newF = minF - 2;
+      } else {
+        // Non-chain pad: widen normally
+        auto inTy = cast<RankedTensorType>(wops[0].getType());
+        int64_t nd = inTy.getDimSize(curDim) + pd.getEdgePaddingLow()[curDim] +
+                     pd.getEdgePaddingHigh()[curDim];
+        auto s =
+            llvm::to_vector(cast<RankedTensorType>(pd.getType()).getShape());
+        s[curDim] = nd;
+        wr = b.create<stablehlo::PadOp>(
+            loc, cast<RankedTensorType>(pd.getType()).clone(s), wops[0],
+            wops[1], pd.getEdgePaddingLow(), pd.getEdgePaddingHigh(),
+            pd.getInteriorPadding());
+      }
+    } else if (isWidenSafe(op)) {
+      OperationState st(loc, op->getName());
+      st.addOperands(wops);
+      st.addTypes(tgt);
+      st.addAttributes(op->getAttrs());
+      wr = b.create(st)->getResult(0);
+    } else if (op->getNumOperands() >= 1 && op->getNumResults() == 1 &&
+               op->getResult(0).getType() == op->getOperand(0).getType()) {
+      // Shape-preserving pass-through (e.g., enzymexla.rotate)
+      OperationState st(loc, op->getName());
+      st.addOperands(wops);
+      st.addTypes(cast<RankedTensorType>(wops[0].getType()));
+      st.addAttributes(op->getAttrs());
+      wr = b.create(st)->getResult(0);
+    } else if (auto rs = dyn_cast<stablehlo::ReshapeOp>(op)) {
+      auto ot = cast<RankedTensorType>(rs.getType());
+      auto inTy = cast<RankedTensorType>(wops[0].getType());
+      auto s = llvm::to_vector(ot.getShape());
+      int32_t newDim = curDim;
+      int64_t widenedSize = inTy.getDimSize(curDim);
+      for (int64_t i = 0; i < (int64_t)s.size(); ++i)
+        if (s[i] == widenedSize - minF) {
+          s[i] = widenedSize;
+          newDim = i;
+          break;
+        }
+      wr = b.create<stablehlo::ReshapeOp>(loc, ot.clone(s), wops[0]);
+      dm[op->getResult(0)] = newDim;
+    }
+
+    if (!wr)
+      continue;
+
+    F[op->getResult(0)] = newF;
+    if (!dm.count(op->getResult(0)))
+      dm[op->getResult(0)] = curDim;
+    vm.map(op->getResult(0), wr);
+    if (wr.getDefiningOp())
+      created.insert(wr.getDefiningOp());
+  }
+
+  // --- Replace external uses with narrowed widened values ---
+  int replaced = 0;
+  for (Operation *op : regionOps) {
+    Value orig = op->getResult(0);
+    if (!vm.contains(orig))
+      continue;
+    Value wide = vm.lookup(orig);
+    int64_t remF = F.lookup(orig);
+    int32_t d = dm.count(orig) ? dm.lookup(orig) : dim;
+
+    SmallVector<OpOperand *> extUses;
+    for (auto &use : orig.getUses())
+      if (!regionSet.contains(use.getOwner()) &&
+          !created.contains(use.getOwner()))
+        extUses.push_back(&use);
+    if (extUses.empty())
+      continue;
+
+    Value narrow;
+    if (remF > 0) {
+      b.setInsertionPointAfterValue(wide);
+      int64_t nk = remF / 2;
+      auto ot = cast<RankedTensorType>(orig.getType());
+      SmallVector<int64_t> ns(ot.getRank(), 0), nl(ot.getRank()),
+          nstr(ot.getRank(), 1);
+      for (int64_t i = 0; i < ot.getRank(); ++i) {
+        ns[i] = (i == d) ? nk : 0;
+        nl[i] = (i == d) ? ot.getDimSize(i) + nk : ot.getDimSize(i);
+      }
+      auto sl = b.create<stablehlo::SliceOp>(loc, ot, wide, ns, nl, nstr);
+      created.insert(sl);
+      narrow = sl.getResult();
+    } else if (orig.getType() == wide.getType()) {
+      narrow = wide;
+    } else {
+      continue;
+    }
+
+    for (auto *use : extUses) {
+      use->set(narrow);
+      replaced++;
+    }
+  }
+
+  // Erase dead originals
+  for (auto it = regionOps.rbegin(); it != regionOps.rend(); ++it)
+    if ((*it)->use_empty())
+      (*it)->erase();
+
+  llvm::errs() << "StencilGhostCell: widened " << regionOps.size() << " ops, "
+               << replaced << " external uses, K=" << K << "\n";
+}
+
 struct OptimizeCommunicationPass
     : public enzyme::impl::OptimizeCommunicationBase<
           OptimizeCommunicationPass> {
@@ -5051,6 +5328,31 @@ struct OptimizeCommunicationPass
       if (auto attr = perm.getChannelHandle())
         channel_id = std::max(channel_id, (int)attr->getHandle() + 1);
     });
+
+    // --- Stencil ghost cell widening (pre-processing) ---
+    // Detect chains of width-1 stencil pads and replace with one wide
+    // enzymexla.extend. Must run before pattern application to avoid
+    // interactions with pad optimization patterns.
+    {
+      auto shifts = stencil::findAllShifts(getOperation());
+      if (!shifts.empty()) {
+        DenseMap<stencil::StencilShift *, SmallVector<stencil::StencilShift *>>
+            successors, predecessors;
+        DenseMap<Operation *, SmallVector<stencil::StencilShift *>>
+            shiftsBySlice;
+        stencil::buildShiftDAG(shifts, 1000, successors, predecessors,
+                               shiftsBySlice);
+        auto groups = stencil::discoverGroups(shifts, successors, predecessors,
+                                              shiftsBySlice);
+        OpBuilder builder(context);
+        for (auto &g : groups) {
+          llvm::errs() << "StencilGhostCell group: dim=" << g.dim
+                       << " K=" << g.criticalPath
+                       << " shifts=" << g.allShifts.size() << "\n";
+          widenStencilGroup(g, builder);
+        }
+      }
+    }
 
     if (periodic_concat > 0)
       patterns.add<PeriodicConcatSimplify>(channel_id, context,
