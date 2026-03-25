@@ -232,6 +232,7 @@ def GPUKernelAddressOp : EnzymeXLA_Op<"gpu_kernel_address", [Pure, DeclareOpInte
 }
 
 def GPUWrapperOp : EnzymeXLA_Op<"gpu_wrapper", [
+  DeclareOpInterfaceMethods<RegionBranchOpInterface, ["getSuccessorInputs"]>,
   RecursiveMemoryEffects,
   AffineScope,
   AutomaticAllocationScope,
