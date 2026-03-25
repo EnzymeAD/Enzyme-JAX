@@ -1311,4 +1311,23 @@ def RemoveAtomicsPass : Pass<"remove-atomics"> {
   ];
 }
 
+def StencilGhostCellWideningPass : Pass<"stencil-ghost-cell-widening"> {
+  let summary = "Widen stencil shift chains to merge halo exchanges";
+  let description = [{
+    Detects chains of boundary-consuming stencil shifts (slice→pad on same dimension)
+    and widens the computation to use ghost cells. A chain of K width-1 shifts
+    becomes one width-K ghost cell exchange after SPMD partitioning, reducing
+    collective-permute count by up to K×.
+  }];
+  let dependentDialects = [
+    "mlir::stablehlo::StablehloDialect",
+  ];
+  let options = [
+    Option<"maxChainLength", "max-chain-length", "int64_t", "100",
+           "Maximum chain length to detect (iteration limit)">,
+    Option<"maxSearchDepth", "max-search-depth", "int64_t", "1000",
+           "Maximum worklist iterations during forward search">,
+  ];
+}
+
 #endif
