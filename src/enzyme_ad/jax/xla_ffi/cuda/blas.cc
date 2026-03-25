@@ -359,10 +359,9 @@ ffi::Error SymmImpl(CUstream stream, bool side_, bool uplo_, ffi::AnyBuffer a,
 }
 
 template <typename T>
-ffi::Error SymmImpl(CUstream stream, bool side_, bool uplo_,
-                    ffi::AnyBuffer a, ffi::AnyBuffer b, ffi::AnyBuffer c_in,
-                    const T *alpha, const T *beta,
-                    ffi::Result<ffi::AnyBuffer> c_out) {
+ffi::Error SymmImpl(CUstream stream, bool side_, bool uplo_, ffi::AnyBuffer a,
+                    ffi::AnyBuffer b, ffi::AnyBuffer c_in, const T *alpha,
+                    const T *beta, ffi::Result<ffi::AnyBuffer> c_out) {
   FFI_ASSIGN_OR_RETURN((auto [batch, rows, cols]),
                        SplitBatch2D(b.dimensions()));
   int a_size = side_ ? cols : rows;
@@ -411,8 +410,7 @@ ffi::Error SymmImpl(CUstream stream, bool side, bool uplo,
   FFI_RETURN_IF_ERROR(GetHostScalar<T>(stream, use_alpha_attribute, alpha_real,
                                        alpha_imag, alpha_, &host_alpha));
   FFI_RETURN_IF_ERROR(GetHostScalar<T>(0.0, 0.0, &host_beta));
-  return SymmImpl<T>(stream, side, uplo, a, b, &host_alpha, &host_beta,
-                     c_out);
+  return SymmImpl<T>(stream, side, uplo, a, b, &host_alpha, &host_beta, c_out);
 }
 
 ffi::Error SymmDispatch(CUstream stream, bool side, bool uplo,
@@ -423,23 +421,22 @@ ffi::Error SymmDispatch(CUstream stream, bool side, bool uplo,
                         ffi::AnyBuffer alpha_, ffi::AnyBuffer beta_,
                         ffi::Result<ffi::AnyBuffer> c_out) {
   auto dataType = c_in.element_type();
-  SOLVER_BLAS_DISPATCH_IMPL(SymmImpl, stream, side, uplo,
-                            use_alpha_attribute, alpha_real, alpha_imag,
-                            use_beta_attribute, beta_real, beta_imag, a, b, c_in,
-                            alpha_, beta_, c_out);
+  SOLVER_BLAS_DISPATCH_IMPL(SymmImpl, stream, side, uplo, use_alpha_attribute,
+                            alpha_real, alpha_imag, use_beta_attribute,
+                            beta_real, beta_imag, a, b, c_in, alpha_, beta_,
+                            c_out);
   return ffi::Error::InvalidArgument(absl::StrFormat(
       "Unsupported dtype %s in symm", absl::FormatStreamed(dataType)));
 }
 
 ffi::Error SymmNoCDispatch(CUstream stream, bool side, bool uplo,
                            bool use_alpha_attribute, double alpha_real,
-                           double alpha_imag, ffi::AnyBuffer a, ffi::AnyBuffer b,
-                           ffi::AnyBuffer alpha_,
+                           double alpha_imag, ffi::AnyBuffer a,
+                           ffi::AnyBuffer b, ffi::AnyBuffer alpha_,
                            ffi::Result<ffi::AnyBuffer> c_out) {
   auto dataType = a.element_type();
-  SOLVER_BLAS_DISPATCH_IMPL(SymmImpl, stream, side, uplo,
-                            use_alpha_attribute, alpha_real, alpha_imag, a, b,
-                            alpha_, c_out);
+  SOLVER_BLAS_DISPATCH_IMPL(SymmImpl, stream, side, uplo, use_alpha_attribute,
+                            alpha_real, alpha_imag, a, b, alpha_, c_out);
   return ffi::Error::InvalidArgument(absl::StrFormat(
       "Unsupported dtype %s in symm", absl::FormatStreamed(dataType)));
 }
