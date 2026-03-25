@@ -4,7 +4,7 @@ func.func @main(%arg0: tensor<1519x3056xf64>) -> (tensor<1520x3056xf64>, tensor<
     %cst = stablehlo.constant dense<0.000000e+00> : tensor<f64>
     %0 = stablehlo.pad %arg0, %cst, low = [0, 0], high = [1, 0], interior = [0, 0] : (tensor<1519x3056xf64>, tensor<f64>) -> tensor<1520x3056xf64>
     %1 = stablehlo.pad %arg0, %cst, low = [1, 0], high = [0, 0], interior = [0, 0] : (tensor<1519x3056xf64>, tensor<f64>) -> tensor<1520x3056xf64>
-    return %0, %1 : tensor<1520x3056xf64>, tensor<1520x3056xf64>
+    return %1, %0 : tensor<1520x3056xf64>, tensor<1520x3056xf64>
 }
 
 // CHECK-LABEL: func.func @main

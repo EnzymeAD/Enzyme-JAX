@@ -611,7 +611,8 @@ def TrmmOp: EnzymeXLA_Op<"blas.trmm", [Pure, SameOperandsAndResultElementType]> 
     TensorFloat:$alpha,
     EnzymeXLA_LapackSideAttr:$side,
     EnzymeXLA_LapackUploAttr:$uplo,
-    EnzymeXLA_LapackTransposeAttr:$transpose
+    EnzymeXLA_LapackTransposeAttr:$transpose,
+    EnzymeXLA_LapackDiagAttr:$diag
   );
 
   let results = (outs
@@ -619,7 +620,7 @@ def TrmmOp: EnzymeXLA_Op<"blas.trmm", [Pure, SameOperandsAndResultElementType]> 
   );
 
   let assemblyFormat = [{
-    $A `,` $B `,` $alpha `,` attr-dict `:` functional-type(operands, results)
+    $A `,` $B `,` $alpha attr-dict `:` functional-type(operands, results)
   }];
 }
 

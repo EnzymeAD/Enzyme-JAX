@@ -9,8 +9,8 @@ func.func @main(%arg0: tensor<1519x3056xf64>, %cst: tensor<f64>) -> (tensor<1520
 
   %0:2 = "enzymexla.multi_pad"(%arg0, %cst) <{amount = 1 : i64, dimension = 0 : i32}> {sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{"x"}, {"y"}]>, <@mesh1, [{"x"}, {"y"}]>]>} : (tensor<1519x3056xf64>, tensor<f64>) -> (tensor<1520x3056xf64>, tensor<1520x3056xf64>)
 
-  // CHECK: %[[PAD0:.*]] = stablehlo.pad %[[ARG0]], %[[CST]], low = [0, 0], high = [1, 0], interior = [0, 0] {sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{{.*}}]>]>}
-  // CHECK: %[[PAD1:.*]] = stablehlo.pad %[[ARG0]], %[[CST]], low = [1, 0], high = [0, 0], interior = [0, 0] {sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{{.*}}]>]>}
+  // CHECK: %[[PAD0:.*]] = stablehlo.pad %[[ARG0]], %[[CST]], low = [1, 0], high = [0, 0], interior = [0, 0] {sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{{.*}}]>]>}
+  // CHECK: %[[PAD1:.*]] = stablehlo.pad %[[ARG0]], %[[CST]], low = [0, 0], high = [1, 0], interior = [0, 0] {sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{{.*}}]>]>}
 
   // We are returning them, so we just check if they are returned!
   // Wait, in my test I was returning them, let's make sure the output types match!

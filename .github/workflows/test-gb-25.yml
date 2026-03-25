@@ -53,6 +53,7 @@ jobs:
 
         reactant_commit:
           - 'main'
+          - 'multipad'
 
     steps:
       - name: Check GPUs
