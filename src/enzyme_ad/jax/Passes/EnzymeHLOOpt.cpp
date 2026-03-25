@@ -19588,7 +19588,7 @@ struct WhileWrap
       limits[candidate.concat.getDimension()] -= candidate.concat.getRhs();
 
       newOperands[candidate.idx] = stablehlo::SliceOp::create(
-          rewriter, candidate.concat[1].getLoc(),
+          rewriter, candidate.concat.getLoc(),
           whileOp.getOperands()[candidate.idx], starts, limits, steps);
     }
 
