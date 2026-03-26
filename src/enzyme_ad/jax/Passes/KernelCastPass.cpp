@@ -5,15 +5,11 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
-#include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
-#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/IRMapping.h"
-#include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "llvm/ADT/StringSwitch.h"
 
 namespace mlir {
@@ -41,25 +37,10 @@ static Type parseFloatTypeAttr(StringRef name, MLIRContext *ctx) {
 
 // Recursively clone `src` into `dst`, converting all floating-point types
 // (scalar and memref element) to `targetFloat`.
-//
-// Strategy:
-//  - Block arguments are created fresh with the converted type.
-//  - Each op is shallow-cloned via Operation::clone(mapping, skipRegions),
-//    which remaps operands through `mapping` and registers result mappings.
-//    Its result types are then fixed on the fresh values (no users yet).
-//  - Nested regions are populated by recursive calls after the parent op is
-//    inserted into the IR (so the region has a valid container context).
-//  - arith.constant float ops are kept at their original type and followed by
-//    an arith.extf or arith.truncf to produce the target type.
-//  - arith.extf / arith.truncf whose source and destination types collapse to
-//    the same type are elided.
 static void cloneWithTypeConversion(Region &src, Region &dst,
                                     IRMapping &mapping, MLIRContext *ctx,
                                     function_ref<Type(Type)> convertType,
                                     Type targetFloat) {
-  // --- Pass 1: create all destination blocks and map block arguments -------
-  // All blocks must exist before cloning any op so that branch successors can
-  // be looked up in the mapping.
   for (Block &srcBlock : src.getBlocks()) {
     auto *dstBlock = new Block();
     dst.push_back(dstBlock);
@@ -71,18 +52,10 @@ static void cloneWithTypeConversion(Region &src, Region &dst,
     }
   }
 
-  // --- Pass 2: clone ops ---------------------------------------------------
   for (Block &srcBlock : src.getBlocks()) {
     Block *dstBlock = mapping.lookup(&srcBlock);
 
     for (Operation &op : srcBlock.getOperations()) {
-      // arith.constant with a float attribute: clone at the original type
-      // (op.clone() with no options correctly keeps attribute and result type
-      // in sync AND updates the mapper), then insert an ext or trunc to
-      // produce the target type.  This must be handled before the general path
-      // because withResultTypes() would set the result type to targetFloat
-      // while leaving the FloatAttr value at the original type, making the op
-      // invalid.
       if (auto constOp = dyn_cast<arith::ConstantOp>(op)) {
         if (auto fa = dyn_cast<FloatAttr>(constOp.getValue());
             fa && isa<FloatType>(fa.getType())) {
@@ -107,10 +80,6 @@ static void cloneWithTypeConversion(Region &src, Region &dst,
         }
       }
 
-      // General case: clone with converted result types.  withResultTypes()
-      // opts out of the automatic mapper update inside clone() (it is gated on
-      // shouldCloneResults()), so we register the old→new result mapping
-      // explicitly after the call.
       SmallVector<Type> resultTypes =
           llvm::map_to_vector(op.getResultTypes(), convertType);
       Operation *newOp = op.clone(mapping, Operation::CloneOptions()
@@ -118,7 +87,8 @@ static void cloneWithTypeConversion(Region &src, Region &dst,
                                                .cloneRegions(false)
                                                .cloneOperands(true));
       dstBlock->push_back(newOp);
-      for (auto [srcRes, dstRes] : llvm::zip(op.getResults(), newOp->getResults()))
+      for (auto [srcRes, dstRes] :
+           llvm::zip(op.getResults(), newOp->getResults()))
         mapping.map(srcRes, dstRes);
 
       for (auto [srcReg, dstReg] :
@@ -126,8 +96,6 @@ static void cloneWithTypeConversion(Region &src, Region &dst,
         cloneWithTypeConversion(srcReg, dstReg, mapping, ctx, convertType,
                                 targetFloat);
 
-      // arith.extf / arith.truncf that became a noop after type conversion:
-      // elide the op and redirect the mapping to its operand.
       if (isa<arith::ExtFOp, arith::TruncFOp>(newOp) &&
           newOp->getOperand(0).getType() == newOp->getResult(0).getType()) {
         mapping.map(op.getResult(0), newOp->getOperand(0));
@@ -137,9 +105,6 @@ static void cloneWithTypeConversion(Region &src, Region &dst,
   }
 }
 
-// Core transformation: rewrite every floating-point value inside `func` to use
-// `targetFloat`, cloning the function body into a fresh region so that no
-// existing Value's type is mutated.
 void castKernelTypes(func::FuncOp func, mlir::Type targetFloat) {
   MLIRContext *ctx = func.getContext();
 
@@ -160,8 +125,6 @@ void castKernelTypes(func::FuncOp func, mlir::Type targetFloat) {
   for (Type t : oldFT.getResults())
     newOutputs.push_back(convertType(t));
 
-  // Move the original body out so func.getBody() is empty and can be
-  // repopulated cleanly without any naming conflicts.
   Region oldBody;
   oldBody.takeBody(func.getBody());
 
