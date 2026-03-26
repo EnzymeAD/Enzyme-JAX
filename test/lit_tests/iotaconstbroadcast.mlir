@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s --enzyme-hlo-opt  --split-input-file | FileCheck %s
+// RUN: enzymexlamlir-opt %s --enzyme-hlo-opt="max_constant_expansion=0" --split-input-file | FileCheck %s
 
 module {
   func.func @main() -> tensor<20x180xi64 >{
@@ -47,3 +47,47 @@ module {
 // CHECK-NEXT:    %[[v4:[^ ]*]] = stablehlo.add %[[v0]], %[[v3]] : tensor<20x180xi64>
 // CHECK-NEXT:    return %[[v4]] : tensor<20x180xi64>
 // CHECK-NEXT:  }
+
+// -----
+
+func.func @arith_broadcast_dim0() -> tensor<4x8xi32> {
+  %c = stablehlo.constant dense<[0, 1, 2, 3]> : tensor<4xi32>
+  %0 = stablehlo.broadcast_in_dim %c, dims = [0] : (tensor<4xi32>) -> tensor<4x8xi32>
+  return %0 : tensor<4x8xi32>
+}
+
+// CHECK-LABEL: @arith_broadcast_dim0
+// CHECK: stablehlo.iota dim = 0 : tensor<4x8xi32>
+
+// -----
+
+func.func @arith_broadcast_dim1() -> tensor<8x4xi32> {
+  %c = stablehlo.constant dense<[0, 1, 2, 3]> : tensor<4xi32>
+  %0 = stablehlo.broadcast_in_dim %c, dims = [1] : (tensor<4xi32>) -> tensor<8x4xi32>
+  return %0 : tensor<8x4xi32>
+}
+
+// CHECK-LABEL: @arith_broadcast_dim1
+// CHECK: stablehlo.iota dim = 1 : tensor<8x4xi32>
+
+// -----
+
+func.func @arith_broadcast_dim1_3d() -> tensor<5x4x6xi32> {
+  %c = stablehlo.constant dense<[0, 1, 2, 3]> : tensor<4xi32>
+  %0 = stablehlo.broadcast_in_dim %c, dims = [1] : (tensor<4xi32>) -> tensor<5x4x6xi32>
+  return %0 : tensor<5x4x6xi32>
+}
+
+// CHECK-LABEL: @arith_broadcast_dim1_3d
+// CHECK: stablehlo.iota dim = 1 : tensor<5x4x6xi32>
+
+// -----
+
+func.func @arith_broadcast_nonzero_start() -> tensor<4x8xi32> {
+  %c = stablehlo.constant dense<[1, 2, 3, 4]> : tensor<4xi32>
+  %0 = stablehlo.broadcast_in_dim %c, dims = [0] : (tensor<4xi32>) -> tensor<4x8xi32>
+  return %0 : tensor<4x8xi32>
+}
+
+// CHECK-LABEL: @arith_broadcast_nonzero_start
+// CHECK: stablehlo.iota dim = 0 : tensor<4x8xi32>

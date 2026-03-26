@@ -9073,10 +9073,8 @@ struct BroadcastIotaSimplify
         auto loc = broadcast.getLoc();
 
         // find the dimension to broadcast in
-        int broadcast_dim = -1;
         auto result_shape =
             cast<mlir::ShapedType>(result_type.front()).getShape();
-        auto max_dims = result_shape.size();
 
         if (broadcast.getType().getElementType().isInteger(1)) {
           // true, false, .... false.  -> iota == 0
@@ -9267,7 +9265,7 @@ struct BroadcastIotaSimplify
         // The input is 1D, so getBroadcastDimensions()[0] gives the output
         // dimension that the input data maps to. The iota must vary along
         // that dimension, not the replicated one.
-        broadcast_dim = broadcast.getBroadcastDimensions()[0];
+        int32_t broadcast_dim = broadcast.getBroadcastDimensions()[0];
 
         // build the replacement operations
         auto iota = stablehlo::IotaOp::create(rewriter, loc, result_type,
