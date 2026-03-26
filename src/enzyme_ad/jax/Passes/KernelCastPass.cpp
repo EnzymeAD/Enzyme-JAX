@@ -10,8 +10,8 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/IRMapping.h"
+#include "mlir/IR/Matchers.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
-#include "llvm/ADT/StringSwitch.h"
 
 namespace mlir {
 namespace enzyme {
@@ -23,32 +23,28 @@ namespace enzyme {
 using namespace mlir;
 using namespace mlir::enzyme;
 
-static Type parseFloatTypeAttr(StringRef name, MLIRContext *ctx) {
-  return StringSwitch<Type>(name)
-      .Case("f16", Float16Type::get(ctx))
-      .Case("f32", Float32Type::get(ctx))
-      .Case("f64", Float64Type::get(ctx))
-      .Case("bf16", BFloat16Type::get(ctx))
-      .Case("f8E4M3FN", Float8E4M3FNType::get(ctx))
-      .Case("f8E5M2", Float8E5M2Type::get(ctx))
-      .Case("f8E4M3FNUZ", Float8E4M3FNUZType::get(ctx))
-      .Case("f8E5M2FNUZ", Float8E5M2FNUZType::get(ctx))
-      .Default(Type{});
-}
+static Type convertType(Type t, Type targetFloat) {
+  if (isa<FloatType>(t))
+    return targetFloat;
+  if (auto shapedType = dyn_cast<ShapedType>(t))
+    return shapedType.clone(
+        shapedType.getShape(),
+        convertType(shapedType.getElementType(), targetFloat));
+  return t;
+};
 
 // Recursively clone `src` into `dst`, converting all floating-point types
 // (scalar and memref element) to `targetFloat`.
 static void cloneWithTypeConversion(Region &src, Region &dst,
                                     IRMapping &mapping, MLIRContext *ctx,
-                                    function_ref<Type(Type)> convertType,
                                     Type targetFloat) {
   for (Block &srcBlock : src.getBlocks()) {
     auto *dstBlock = new Block();
     dst.push_back(dstBlock);
     mapping.map(&srcBlock, dstBlock);
     for (BlockArgument srcArg : srcBlock.getArguments()) {
-      BlockArgument dstArg =
-          dstBlock->addArgument(convertType(srcArg.getType()), srcArg.getLoc());
+      BlockArgument dstArg = dstBlock->addArgument(
+          convertType(srcArg.getType(), targetFloat), srcArg.getLoc());
       mapping.map(srcArg, dstArg);
     }
   }
@@ -57,32 +53,34 @@ static void cloneWithTypeConversion(Region &src, Region &dst,
     Block *dstBlock = mapping.lookup(&srcBlock);
 
     for (Operation &op : srcBlock.getOperations()) {
-      if (auto constOp = dyn_cast<arith::ConstantOp>(op)) {
-        if (auto fa = dyn_cast<FloatAttr>(constOp.getValue());
-            fa && isa<FloatType>(fa.getType())) {
-          // Full clone: result type matches attribute, mapper updated.
-          Operation *newConst = op.clone(mapping);
-          dstBlock->push_back(newConst);
-          if (constOp.getType() != targetFloat) {
-            OpBuilder b(ctx);
-            b.setInsertionPointAfter(newConst);
-            Value cast;
-            if (constOp.getType().getIntOrFloatBitWidth() <
-                targetFloat.getIntOrFloatBitWidth())
-              cast = arith::ExtFOp::create(b, newConst->getLoc(), targetFloat,
+      APFloat apf(0.0);
+      if (op.getNumResults() == 1 &&
+          isa<FloatType>(op.getResult(0).getType()) &&
+          matchPattern(op.getResult(0), m_ConstantFloat(&apf))) {
+        Operation *newConst = op.clone(mapping);
+        dstBlock->push_back(newConst);
+        auto constType = cast<FloatType>(op.getResult(0).getType());
+        if (constType != targetFloat) {
+          OpBuilder b(ctx);
+          b.setInsertionPointAfter(newConst);
+          Value cast;
+          if (constType.getIntOrFloatBitWidth() <
+              targetFloat.getIntOrFloatBitWidth())
+            cast = arith::ExtFOp::create(b, newConst->getLoc(), targetFloat,
+                                         newConst->getResult(0));
+          else
+            cast = arith::TruncFOp::create(b, newConst->getLoc(), targetFloat,
                                            newConst->getResult(0));
-            else
-              cast = arith::TruncFOp::create(b, newConst->getLoc(), targetFloat,
-                                             newConst->getResult(0));
-            // Override the mapper entry set by clone() to point to the cast.
-            mapping.map(op.getResult(0), cast);
-          }
-          continue;
+          // Override the mapper entry set by clone() to point to the cast.
+          mapping.map(op.getResult(0), cast);
         }
+        continue;
       }
 
       SmallVector<Type> resultTypes =
-          llvm::map_to_vector(op.getResultTypes(), convertType);
+          llvm::map_to_vector(op.getResultTypes(), [&targetFloat](Type ty) {
+            return convertType(ty, targetFloat);
+          });
       Operation *newOp = op.clone(mapping, Operation::CloneOptions()
                                                .withResultTypes(resultTypes)
                                                .cloneRegions(false)
@@ -94,8 +92,7 @@ static void cloneWithTypeConversion(Region &src, Region &dst,
 
       for (auto [srcReg, dstReg] :
            llvm::zip(op.getRegions(), newOp->getRegions()))
-        cloneWithTypeConversion(srcReg, dstReg, mapping, ctx, convertType,
-                                targetFloat);
+        cloneWithTypeConversion(srcReg, dstReg, mapping, ctx, targetFloat);
 
       if (isa<arith::ExtFOp, arith::TruncFOp>(newOp) &&
           newOp->getOperand(0).getType() == newOp->getResult(0).getType()) {
@@ -109,22 +106,12 @@ static void cloneWithTypeConversion(Region &src, Region &dst,
 void castKernelTypes(func::FuncOp func, mlir::Type targetFloat) {
   MLIRContext *ctx = func.getContext();
 
-  auto convertType = [&](Type t) -> Type {
-    if (isa<FloatType>(t))
-      return targetFloat;
-    if (auto mt = dyn_cast<MemRefType>(t))
-      if (isa<FloatType>(mt.getElementType()))
-        return MemRefType::get(mt.getShape(), targetFloat, mt.getLayout(),
-                               mt.getMemorySpace());
-    return t;
-  };
-
   auto oldFT = func.getFunctionType();
   SmallVector<Type> newInputs, newOutputs;
   for (Type t : oldFT.getInputs())
-    newInputs.push_back(convertType(t));
+    newInputs.push_back(convertType(t, targetFloat));
   for (Type t : oldFT.getResults())
-    newOutputs.push_back(convertType(t));
+    newOutputs.push_back(convertType(t, targetFloat));
 
   Region oldBody;
   oldBody.takeBody(func.getBody());
@@ -132,8 +119,7 @@ void castKernelTypes(func::FuncOp func, mlir::Type targetFloat) {
   func.setFunctionType(FunctionType::get(ctx, newInputs, newOutputs));
 
   IRMapping mapping;
-  cloneWithTypeConversion(oldBody, func.getBody(), mapping, ctx, convertType,
-                          targetFloat);
+  cloneWithTypeConversion(oldBody, func.getBody(), mapping, ctx, targetFloat);
 }
 
 namespace {
@@ -145,14 +131,14 @@ struct KernelCastPass
   void runOnOperation() override {
     func::FuncOp func = getOperation();
 
-    auto attr = func->getAttrOfType<StringAttr>("enzymexla.float_type");
+    auto attr = func->getAttrOfType<TypeAttr>("enzymexla.float_type");
     if (!attr)
       return;
 
-    Type targetFloat = parseFloatTypeAttr(attr.getValue(), func.getContext());
-    if (!targetFloat) {
-      func.emitError("enzymexla.float_type: unrecognised float type '")
-          << attr.getValue() << "'";
+    Type targetFloat = attr.getValue();
+    if (!isa<FloatType>(targetFloat)) {
+      func.emitError("enzymexla.float_type: expected a float type, got '")
+          << targetFloat << "'";
       return signalPassFailure();
     }
 
