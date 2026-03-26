@@ -114,6 +114,18 @@ def TensorEmptyOpRaisingPass : Pass<"tensor-empty-raise"> {
   ];
 }
 
+def KernelCastPass : Pass<"kernelcast", "func::FuncOp"> {
+  let summary = "Cast GPU kernel floating point type based on enzymexla.float_type attribute";
+  let dependentDialects = [
+    "arith::ArithDialect",
+    "math::MathDialect",
+    "affine::AffineDialect",
+    "memref::MemRefDialect",
+    "func::FuncDialect",
+    "scf::SCFDialect",
+  ];
+}
+
 def ConsumingInterpreterPass : Pass<"enzyme-consuming-transform-interpreter"> {
   let summary = "Run the transform interpreter and remove the script";
   let description =
