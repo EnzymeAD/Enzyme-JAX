@@ -10,6 +10,7 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/IRMapping.h"
+#include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "llvm/ADT/StringSwitch.h"
 
 namespace mlir {
