@@ -21,11 +21,13 @@ func.func @cast_f32_to_bf16(%arg0: memref<10xf32>, %arg1: memref<10xf32>)
 
 // Function without the attribute must be left unchanged.
 // CHECK-LABEL: func.func @no_cast
-// CHECK-SAME:    (%arg0: memref<10xf32>)
-func.func @no_cast(%arg0: memref<10xf32>) {
-  // CHECK: %[[V:.+]] = affine.load %arg0[0] : memref<10xf32>
+// CHECK-SAME:    (%arg0: memref<10xbf16>)
+func.func @no_cast(%arg0: memref<10xf32>) -> f32
+    attributes {"enzymexla.float_type" = bf16} {
+  // CHECK: %[[V:.+]] = affine.load %arg0[0] : memref<10xbf16>
   %v = affine.load %arg0[0] : memref<10xf32>
-  return
+  // CHECK-NEXT: return %[[V]] : bf16
+  return %v : f32
 }
 
 // Upcast from bf16 to f32: constant should use arith.extf.
