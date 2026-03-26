@@ -4656,6 +4656,19 @@ struct ConcatWrap final
   }
 };
 
+bool isOuterReducingReshape(stablehlo::ReshapeOp op) {
+  auto prevT = cast<RankedTensorType>(op.getOperand().getType());
+  if (prevT.getShape().size() != op.getType().getShape().size() + 1)
+    return false;
+  if (prevT.getShape()[0] != 1)
+    return false;
+  for (int i = 1; i < prevT.getShape().size(); i++) {
+    if (prevT.getShape()[i] != op.getType().getShape()[i - 1])
+      return false;
+  }
+  return true;
+}
+
 bool isSliceOf(Value wrapOperand, Value widenOperand, int dim,
                bool widenOperandOnLeft, int existingOffset) {
   auto wrapType = cast<RankedTensorType>(wrapOperand.getType());
@@ -4837,13 +4850,30 @@ struct WidenWrap final
       }
 
       if (newOperands.size()) {
-        auto prev = newOperands.back();
-        if (isSliceOf(wrap.getOperand(), prev, dim, /*widenOperandOnLeft*/ true,
-                      wrap.getLhs())) {
-          auto newWrap = enzymexla::WrapOp::create(
+        Value prev = newOperands.back();
+        Value wrapOperand = wrap.getOperand();
+
+        int withReshape = 0;
+        auto rsWrap = wrapOperand.getDefiningOp<stablehlo::ReshapeOp>();
+        auto rsWiden = prev.getDefiningOp<stablehlo::ReshapeOp>();
+        if (rsWrap && rsWiden && isOuterReducingReshape(rsWrap) &&
+            isOuterReducingReshape(rsWiden)) {
+
+          auto postRsTy = cast<ShapedType>(rsWiden.getResult().getType());
+
+          wrapOperand = rsWrap.getOperand();
+          prev = rsWiden.getOperand();
+
+          auto prevTy = cast<ShapedType>(prev.getType());
+          withReshape = prevTy.getRank() - postRsTy.getRank();
+        }
+
+        if (isSliceOf(wrapOperand, prev, dim + withReshape,
+                      /*widenOperandOnLeft*/ true, wrap.getLhs())) {
+          Value newWrap = enzymexla::WrapOp::create(
               rewriter, wrap.getLoc(), wrap.getOperand(),
-              wrap.getLhs() +
-                  cast<RankedTensorType>(prev.getType()).getShape()[dim],
+              wrap.getLhs() + cast<RankedTensorType>(prev.getType())
+                                  .getShape()[dim + withReshape],
               wrap.getRhs(), wrap.getDimension());
           newOperands.pop_back();
           newOperands.push_back(newWrap);
@@ -4853,13 +4883,30 @@ struct WidenWrap final
       }
 
       if (i + 1 < e) {
-        auto prev = op->getOperand(i + 1);
-        if (isSliceOf(wrap.getOperand(), prev, dim,
+        Value prev = op->getOperand(i + 1);
+        Value wrapOperand = wrap.getOperand();
+
+        int withReshape = 0;
+        auto rsWrap = wrapOperand.getDefiningOp<stablehlo::ReshapeOp>();
+        auto rsWiden = prev.getDefiningOp<stablehlo::ReshapeOp>();
+        if (rsWrap && rsWiden && isOuterReducingReshape(rsWrap) &&
+            isOuterReducingReshape(rsWiden)) {
+
+          auto postRsTy = cast<ShapedType>(rsWiden.getResult().getType());
+
+          wrapOperand = rsWrap.getOperand();
+          prev = rsWiden.getOperand();
+
+          auto prevTy = cast<ShapedType>(prev.getType());
+          withReshape = prevTy.getRank() - postRsTy.getRank();
+        }
+
+        if (isSliceOf(wrapOperand, prev, dim + withReshape,
                       /*widenOperandOnLeft*/ false, wrap.getRhs())) {
           auto newWrap = enzymexla::WrapOp::create(
               rewriter, wrap.getLoc(), wrap.getOperand(), wrap.getLhs(),
-              wrap.getRhs() +
-                  cast<RankedTensorType>(prev.getType()).getShape()[dim],
+              wrap.getRhs() + cast<RankedTensorType>(prev.getType())
+                                  .getShape()[dim + withReshape],
               wrap.getDimension());
           newOperands.push_back(newWrap);
           i++;
@@ -23336,19 +23383,6 @@ bool isWrapLike(int dim, Value lhs, Value mid, Value rhs,
         return false;
       }
     }
-  }
-  return true;
-}
-
-bool isOuterReducingReshape(stablehlo::ReshapeOp op) {
-  auto prevT = cast<RankedTensorType>(op.getOperand().getType());
-  if (prevT.getShape().size() != op.getType().getShape().size() + 1)
-    return false;
-  if (prevT.getShape()[0] != 1)
-    return false;
-  for (int i = 1; i < prevT.getShape().size(); i++) {
-    if (prevT.getShape()[i] != op.getType().getShape()[i - 1])
-      return false;
   }
   return true;
 }
