@@ -203,14 +203,19 @@ struct TrmmOpLowering : public OpRewritePattern<enzymexla::TrmmOp> {
     static int64_t fn_counter = 0;
     std::string funcFnName = blasFnWrapper + "_" + std::to_string(fn_counter++);
 
-    SmallVector<bool> isColMajorArr(11, true);
+    // Pass A and B in row-major format (isColMajor = false) to avoid layout
+    // transforms. This requires flipping uplo and side parameters below,
+    // similar to the CUDA FFI implementation in xla_ffi.cpp.
+    // operandRanks: {side, uplo, trans, diag, m, n, alpha, A, lda, B, ldb}
+
+    SmallVector<bool> isColMajorArr(11, false);
     SmallVector<int64_t> operandRanks = {
         0, 0, 0, 0, 0, 0, 0, 2, 0, op.getB().getType().getRank(), 0};
     SmallVector<int64_t> outputRanks = {2};
     auto operandLayouts =
         getSHLOLayout(rewriter, operandRanks, isColMajorArr, 2);
     auto resultLayouts =
-        getSHLOLayout(rewriter, outputRanks, SmallVector<bool>{true}, 2);
+        getSHLOLayout(rewriter, outputRanks, SmallVector<bool>{false}, 2);
 
     SmallVector<Attribute> aliases;
     aliases.push_back(
@@ -241,12 +246,21 @@ struct TrmmOpLowering : public OpRewritePattern<enzymexla::TrmmOp> {
       auto B = entryBlock.getArgument(1);
       auto alpha = entryBlock.getArgument(2);
 
+      // We can swap side since (A*B)^T = B^T*A^T, where B^T is also the
+      // column-major interpretation of B. Essentially we ask BLAS to compute
+      // (B_new)^T in col-major, which is equivalent to B_new in row-major
       auto side = stablehlo::ConstantOp::create(
           rewriter, op.getLoc(), uint8Type,
-          cast<ElementsAttr>(makeAttr(uint8Type, side_value)));
+          cast<ElementsAttr>(
+              makeAttr(uint8Type, side_value == 'L' ? 'R' : 'L')));
+
+      // We flip uplo here because A is passed in row-major format.
+      // Row-major A is equivalent to A^T in column-major, and since A is
+      // triangular, this will just swap upper/lower triangular.
       auto uplo = stablehlo::ConstantOp::create(
           rewriter, op.getLoc(), uint8Type,
-          cast<ElementsAttr>(makeAttr(uint8Type, uplo_value)));
+          cast<ElementsAttr>(
+              makeAttr(uint8Type, uplo_value == 'U' ? 'L' : 'U')));
       auto trans = stablehlo::ConstantOp::create(
           rewriter, op.getLoc(), uint8Type,
           cast<ElementsAttr>(makeAttr(uint8Type, trans_value)));
@@ -552,7 +566,7 @@ struct SymmOpLowering : public OpRewritePattern<enzymexla::SymmOp> {
     // Pass A, B and C in row-major format (isColMajor = false) to avoid layout
     // transforms. This requires flipping uplo and side parameters below,
     // similar to the CUDA FFI implementation in xla_ffi.cpp.
-    // operandRanks: {uplo, side, m, n, alpha, A, lda, B, ldb, beta, C, ldc}
+    // operandRanks: {side, uplo, m, n, alpha, A, lda, B, ldb, beta, C, ldc}
 
     SmallVector<bool> isColMajorArr(12, false);
     SmallVector<int64_t> operandRanks = {
@@ -1345,7 +1359,8 @@ struct LowerEnzymeXLABLASPass
 
     // Verify that all illegal ops have been lowered
     auto walkResult = getOperation()->walk([&](Operation *op) {
-      if (isa<enzymexla::SyrkOp, enzymexla::TrsmOp>(op)) {
+      if (isa<enzymexla::SyrkOp, enzymexla::SymmOp, enzymexla::TrmmOp,
+              enzymexla::TrsmOp>(op)) {
         op->emitError("Failed to lower enzymexla.blas operation");
         return WalkResult::interrupt();
       }
