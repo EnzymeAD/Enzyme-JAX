@@ -323,6 +323,16 @@ struct TrmmOpLowering : public OpRewritePattern<enzymexla::TrmmOp> {
     auto A = op.getA();
     auto B = op.getB();
 
+    // Notice that in order to achieve better parallelism cuBLAS differs from
+    // the BLAS API only for this routine. The BLAS API assumes an in-place
+    // implementation (with results written back to B), while the cuBLAS API
+    // assumes an out-of-place implementation (with results written into C).
+    // We construct a new C to store the result of the computation.
+    auto zeroAttr = rewriter.getZeroAttr(Btype.getElementType());
+
+    auto C = stablehlo::ConstantOp::create(
+        rewriter, op.getLoc(), DenseElementsAttr::get(Btype, zeroAttr));
+
     auto [alphaOperand, alphaRank] =
         createScalarOperand(rewriter, op.getLoc(), op.getAlpha(), useAlphaAttr);
 
@@ -351,12 +361,12 @@ struct TrmmOpLowering : public OpRewritePattern<enzymexla::TrmmOp> {
                               rewriter.getF64FloatAttr(alphaImag))};
 
     customCallTarget = rewriter.getStringAttr("enzymejax_cublas_trmm_ffi");
-    operands = {A, B, alphaOperand};
-    operandRanks = {rank, rank, alphaRank};
+    operands = {A, B, C, alphaOperand};
+    operandRanks = {rank, rank, rank, alphaRank};
 
-    aliases = rewriter.getArrayAttr(
-        {stablehlo::OutputOperandAliasAttr::get(op.getContext(), {}, 1, {})});
-    areColMajor = {false, false, true};
+    aliases = rewriter.getArrayAttr({stablehlo::OutputOperandAliasAttr::get(
+        op.getContext(), {}, 2, {})}); // C
+    areColMajor = {false, false, false, true};
 
     DictionaryAttr backendConfig = rewriter.getDictionaryAttr(configAttrs);
 
