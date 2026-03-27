@@ -287,7 +287,8 @@ struct ParallelContext {
   RankedTensorType getTensorType(Type elTy) {
     SmallVector<int64_t> shape = llvm::map_to_vector(
         ranges, [&](auto range) { return range.getNumIters(); });
-    assert(isXLACompatiblePrimitive(elTy) && "unsupported element type for XLA");
+    assert(isXLACompatiblePrimitive(elTy) &&
+           "unsupported element type for XLA");
     return RankedTensorType::get(shape, elTy);
   }
 
@@ -2750,6 +2751,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
   if (auto p2m = dyn_cast<enzymexla::Pointer2MemrefOp>(op)) {
     Value operand = op->getOperand(0), result = op->getResult(0);
     auto input = mapping.lookup(operand);
+    auto MT = p2m.getType();
     if (!isXLACompatiblePrimitive(MT.getElementType())) {
       return op->emitError("unsupported element type for XLA: ")
              << MT.getElementType();
