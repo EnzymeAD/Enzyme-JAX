@@ -23,6 +23,7 @@ def profile_function(
     nrepeat: int = 1,
     warmup: int = 1,
     trace_dir: str | None = None,
+    use_xprof: bool = True,
 ) -> dict[str, Any]:
     """
     Profile a JAX function and return timing data.
@@ -34,6 +35,7 @@ def profile_function(
         nrepeat: Number of times to run the function during profiling
         warmup: Number of warmup runs before profiling (to ensure compilation is done)
         trace_dir: Directory to save traces. If None, uses a temporary directory.
+        use_xprof: Whether to use xprof for profiling
 
     Returns:
         A dictionary containing:
@@ -56,7 +58,7 @@ def profile_function(
     for _ in range(warmup):
         jax.block_until_ready(compiled_fn(*args, **kwargs))
 
-    profile_compiled_function(compiled_fn, args, kwargs, nrepeat, trace_dir)
+    profile_compiled_function(compiled_fn, args, kwargs, nrepeat, trace_dir, use_xprof)
 
 
 def profile_compiled_function(
@@ -65,6 +67,7 @@ def profile_compiled_function(
     kwargs: dict | None = None,
     nrepeat: int = 1,
     trace_dir: str | None = None,
+    use_xprof: bool = True,
 ) -> dict[str, Any]:
     """
     Profile a JAX function and return timing data.
@@ -75,6 +78,7 @@ def profile_compiled_function(
         kwargs: Keyword arguments to pass to the function
         nrepeat: Number of times to run the function during profiling
         trace_dir: Directory to save traces. If None, uses a temporary directory.
+        use_xprof: Whether to use xprof for profiling
 
     Returns:
         A dictionary containing:
@@ -91,7 +95,7 @@ def profile_compiled_function(
     if kwargs is None:
         kwargs = {}
 
-    if not XPROF_AVAILABLE:
+    if not XPROF_AVAILABLE or not use_xprof:
         warnings.warn("xprof not found, falling back to timeit for profiling.")
         # Fallback to timeit
         times = []

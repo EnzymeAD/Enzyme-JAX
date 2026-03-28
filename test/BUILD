@@ -123,6 +123,25 @@ py_test(
 )
 
 py_test(
+    name = "jaxley_test",
+    timeout = "eternal",
+    srcs = [
+        "jaxley_test.py",
+        "test_utils.py",
+        "xprof_utils.py",
+    ],
+    imports = ["."],
+    tags = ["exclusive"],
+    deps = TEST_DEPS + select({
+        "@bazel_tools//src/conditions:linux_x86_64": [
+            "@pypi_jaxley//:pkg",
+            "@pypi_jaxley_mech//:pkg",
+        ],
+        "//conditions:default": [],
+    }),
+)
+
+py_test(
     name = "jaxmd",
     timeout = "eternal",
     srcs = [
@@ -192,6 +211,7 @@ test_suite(
     name = "python_tests",
     tests = [
         ":bench_vs_xla",
+        ":jaxley_test",
         ":jaxmd",
         ":llama",
         ":neuralgcm_test",
