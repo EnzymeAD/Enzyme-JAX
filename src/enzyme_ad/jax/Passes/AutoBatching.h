@@ -321,6 +321,19 @@ private:
       mlir::enzyme::WhileLoopInfo &info) const;
 };
 
+struct RaiseScanLikeOperations
+    : public mlir::enzyme::CheckedOpRewritePattern<mlir::stablehlo::WhileOp,
+                                                   RaiseScanLikeOperations> {
+  using Base = mlir::enzyme::CheckedOpRewritePattern<mlir::stablehlo::WhileOp,
+                                                     RaiseScanLikeOperations>;
+
+  using Base::Base;
+
+  mlir::LogicalResult
+  matchAndRewriteImpl(mlir::stablehlo::WhileOp whileOp,
+                      mlir::PatternRewriter &rewriter) const;
+};
+
 namespace mlir {
 namespace enzyme {
 
@@ -331,6 +344,7 @@ struct AutoBatchingPassPipelineOptions {
   bool enableWhileElementwiseReductionToReduce;
   bool enableWhileIsCopySimplify;
   bool enableRemoveLoopCarriedDependenciesFromWhileLoadOperations;
+  bool enableWhileRaiseScanLikeOperations;
 };
 
 void populateAutoBatchingPassPatterns(RewritePatternSet &patterns,
