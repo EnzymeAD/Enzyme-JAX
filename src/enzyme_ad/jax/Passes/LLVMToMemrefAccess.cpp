@@ -89,6 +89,20 @@ struct LLVMToMemrefAccessPass
             if (auto rtt = dyn_cast<RankedTensorType>(callerArgTy)) {
               auto thisShape = rtt.getShape();
               auto thisElTy = rtt.getElementType();
+
+              if (isa<FloatType>(thisElTy)) {
+                auto targetFloatType =
+                    callee->getAttrOfType<TypeAttr>("enzymexla.float_type");
+                if (targetFloatType) {
+                  if (thisElTy != targetFloatType.getValue()) {
+                    sameElementTypeAcrossCallers = false;
+                  } else {
+                    // NOTE: make this configurable?
+                    thisElTy = mlir::Float32Type::get(thisElTy.getContext());
+                  }
+                }
+              }
+
               if (!elTy) {
                 elTy = thisElTy;
                 shape = thisShape;

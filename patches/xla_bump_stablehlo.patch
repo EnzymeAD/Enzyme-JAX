@@ -1,0 +1,15 @@
+diff --git a/third_party/stablehlo/workspace.bzl b/third_party/stablehlo/workspace.bzl
+index 588d85493f..1131f57e32 100644
+--- a/third_party/stablehlo/workspace.bzl
++++ b/third_party/stablehlo/workspace.bzl
+@@ -4,8 +4,8 @@ load("//third_party:repo.bzl", "tf_http_archive", "tf_mirror_urls")
+ 
+ def repo():
+     # LINT.IfChange
+-    STABLEHLO_COMMIT = "1373ee06a49f4aab1f02be11539ce0f6f62cd6f5"
+-    STABLEHLO_SHA256 = "aa58bda6fcfc872f65c9a514e9543af658d7df113c8ab773cc01f99c26d45abf"
++    STABLEHLO_COMMIT = "b744df4fa70fa87ccb04b3809dffcded294d8c33"
++    STABLEHLO_SHA256 = "d88904fe9e55fe7440750ca9deb5d562b7355d8e0eb40e560a3c3274a4ebb8ad"
+     # LINT.ThenChange(Google-internal path)
+ 
+     tf_http_archive(

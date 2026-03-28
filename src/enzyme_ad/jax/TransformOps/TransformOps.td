@@ -383,6 +383,10 @@ def ApplyPadPadPatterns : EnzymeHLOPatternOp<
     "pad_pad"> {
   let patterns = ["PadPad"];
 }
+def ApplyRecognizeMultiPadPatterns : EnzymeHLOPatternOp<
+    "recognize_multi_pad"> {
+  let patterns = ["RecognizeMultiPad"];
+}
 def ApplyScatterToDynamicUpdateSlicePatterns : EnzymeHLOPatternOp<
     "scatter_to_dynamic_update_slice"> {
   let patterns = ["ScatterToDynamicUpdateSlice"];
@@ -2263,6 +2267,11 @@ def RecognizeMultiSlice : EnzymeHLOPatternOp<
   let patterns = ["RecognizeMultiSlice"];
 }
 
+def RecognizeMultiPad : EnzymeHLOPatternOp<
+    "recognize_multipad"> {
+  let patterns = ["RecognizeMultiPad"];
+}
+
 def ReduceUnusedMultiSlice : EnzymeHLOPatternOp<
     "reduce_unused_multislice"> {
   let patterns = ["ReduceUnusedMultiSlice"];
@@ -2271,6 +2280,11 @@ def ReduceUnusedMultiSlice : EnzymeHLOPatternOp<
 def LowerMultiSlice : EnzymeHLOPatternOp<
     "lower_multislice"> {
   let patterns = ["LowerMultiSlice"];
+}
+
+def LowerMultiPad : EnzymeHLOPatternOp<
+    "lower_multipad"> {
+  let patterns = ["LowerMultiPad"];
 }
 
 def RecognizeMultiRotate : EnzymeHLOPatternOp<

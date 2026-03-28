@@ -78,7 +78,7 @@ module {
 // CHECK-NEXT:     %2 = stablehlo.broadcast_in_dim %1, dims = [0, 2] : (tensor<100x1xf32>) -> tensor<100x100x1x1xf32>
 // CHECK-NEXT:     %3 = stablehlo.slice %arg0 [0:100, 0:2] : (tensor<100x3xf32>) -> tensor<100x2xf32>
 // CHECK-NEXT:     %4 = stablehlo.broadcast_in_dim %3, dims = [1, 0] : (tensor<100x2xf32>) -> tensor<2x100x100x1x1xf32>
-// CHECK-NEXT:     %5 = stablehlo.iota dim = 1 : tensor<100x100xi64>
+// CHECK-NEXT:     %5 = stablehlo.iota dim = 0 : tensor<100x100xi64>
 // CHECK-NEXT:     %6 = stablehlo.add %c, %5 : tensor<100x100xi64>
 // CHECK-NEXT:     %7 = stablehlo.broadcast_in_dim %3, dims = [2, 0] : (tensor<100x2xf32>) -> tensor<2x100x100x1x1xf32>
 // CHECK-NEXT:     %8 = stablehlo.slice %7 [0:1, 0:100, 0:100, 0:1, 0:1] : (tensor<2x100x100x1x1xf32>) -> tensor<1x100x100x1x1xf32>
@@ -91,9 +91,9 @@ module {
 // CHECK-NEXT:     %15 = stablehlo.slice %14 [0:1, 0:100, 0:100, 0:1, 0:1] : (tensor<2x100x100x1x1xf32>) -> tensor<1x100x100x1x1xf32>
 // CHECK-NEXT:     %16 = stablehlo.slice %14 [1:2, 0:100, 0:100, 0:1, 0:1] : (tensor<2x100x100x1x1xf32>) -> tensor<1x100x100x1x1xf32>
 // CHECK-NEXT:     %17 = stablehlo.reshape %16 : (tensor<1x100x100x1x1xf32>) -> tensor<100x100xf32>
-// CHECK-NEXT:     %18 = stablehlo.iota dim = 0 : tensor<100x100xi64>
+// CHECK-NEXT:     %18 = stablehlo.iota dim = 1 : tensor<100x100xi64>
 // CHECK-NEXT:     %19 = stablehlo.add %c, %18 : tensor<100x100xi64>
-// CHECK-NEXT:     %20 = stablehlo.compare  EQ, %6, %19 : (tensor<100x100xi64>, tensor<100x100xi64>) -> tensor<100x100xi1>
+// CHECK-NEXT:     %20 = stablehlo.compare EQ, %6, %19 : (tensor<100x100xi64>, tensor<100x100xi64>) -> tensor<100x100xi1>
 // CHECK-NEXT:     %21 = stablehlo.broadcast_in_dim %1, dims = [1, 2] : (tensor<100x1xf32>) -> tensor<100x100x1x1xf32>
 // CHECK-NEXT:     %22 = stablehlo.subtract %2, %21 : tensor<100x100x1x1xf32>
 // CHECK-NEXT:     %23 = stablehlo.broadcast_in_dim %arg1, dims = [1] : (tensor<100xf32>) -> tensor<100x100xf32>

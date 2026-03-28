@@ -209,6 +209,7 @@ bool CompileGPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
   callid++;
   auto callName = (op.getName() + "$call$" + std::to_string(callid)).str();
   auto func = func::FuncOp::create(builder, loc, callName, gpuTy);
+  func->setDiscardableAttrs(op->getDiscardableAttrDictionary());
   func.setVisibility(SymbolTable::Visibility::Private);
 
   auto &entryBlock = *func.addEntryBlock();
@@ -304,6 +305,7 @@ bool CompileCPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
   auto callName = (op.getName() + "$" + "par" + std::to_string(id)).str();
   id++;
   auto func = func::FuncOp::create(builder, loc, callName, gpuTy0);
+  func->setDiscardableAttrs(op->getDiscardableAttrDictionary());
   func.setVisibility(SymbolTable::Visibility::Private);
   auto &entryBlock = *func.addEntryBlock();
   builder.setInsertionPointToStart(&entryBlock);
