@@ -120,8 +120,8 @@ http_archive(
     url = "https://github.com/bazel-contrib/rules_uv/releases/download/v0.89.2/rules_uv-0.89.2.tar.gz",
 )
 
-load("//third_party/ml_toolchain:workspace.bzl", ml_toolchain_workspace = "repo")
 load("//third_party/jax:workspace.bzl", jax_workspace = "repo")
+load("//third_party/ml_toolchain:workspace.bzl", ml_toolchain_workspace = "repo")
 
 jax_workspace()
 
@@ -172,9 +172,9 @@ load("@pypi//:requirements.bzl", "install_deps")
 
 install_deps()
 
+load("@xla//:workspace2.bzl", "xla_workspace2")
 load("@xla//third_party/llvm:workspace.bzl", llvm = "repo")
 load("//:workspace.bzl", "LLVM_TARGETS")
-load("@xla//:workspace2.bzl", "xla_workspace2")
 
 xla_workspace2()
 
@@ -207,6 +207,35 @@ load("@jax//:test_shard_count.bzl", "test_shard_count_repository")
 
 test_shard_count_repository(
     name = "test_shard_count",
+)
+
+load("@jax//jaxlib:jax_python_wheel.bzl", "jax_python_wheel_repository")
+
+jax_python_wheel_repository(
+    name = "jax_wheel",
+    version_key = "_version",
+    version_source = "@jax//jax:version.py",
+)
+
+load("@jax_wheel//:wheel.bzl", "WHEEL_VERSION")
+load("@python_version_repo//:py_version.bzl", "HERMETIC_PYTHON_VERSION")
+load("@jax//third_party/rocm_wheels:workspace.bzl", "rocm_wheels_repository")
+
+# Pre-built ROCm wheels from a GitHub release (ROCm/rocm-jax).
+rocm_wheels_repository(
+    name = "rocm_wheels",
+    jaxlib_version = WHEEL_VERSION,
+    python_version = HERMETIC_PYTHON_VERSION,
+    # rocm_version = "7.2.0",  # Optional: pick a specific ROCm version.
+)
+
+# Used for --//jax:build_jaxlib=false (pre-built wheels from GitHub).
+external_deps_repository(
+    name = "rocm_prebuilt_test_deps",
+    deps = [
+        "@rocm_wheels//:rocm_pjrt_py_import",
+        "@rocm_wheels//:rocm_plugin_py_import",
+    ],
 )
 
 load("@jax//jaxlib:jax_python_wheel.bzl", "jax_python_wheel_repository")
@@ -305,8 +334,8 @@ nvshmem_redist_init_repository(
     nvshmem_redistributions = NVSHMEM_REDISTRIBUTIONS,
 )
 
-load("//third_party/enzyme:workspace.bzl", enzyme_workspace = "repo")
 load("//third_party/cuda_tile:workspace.bzl", cuda_tile_workspace = "repo")
+load("//third_party/enzyme:workspace.bzl", enzyme_workspace = "repo")
 
 # add support for generating compile_commands
 load("//third_party/hedron_compile_commands:workspace.bzl", hedron_compile_commands_workspace = "repo")

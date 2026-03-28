@@ -245,6 +245,18 @@ def ApplyTanConstProp : EnzymeHLOPatternOp<
     "tan_const_prop">{
   let patterns = ["UnaryConstProp<stablehlo::TanOp,stablehlo::tanOp>"];
 }
+def ApplyReluConstProp : EnzymeHLOPatternOp<
+    "relu_const_prop">{
+  let patterns = ["UnaryConstProp<enzymexla::ReluOp,reluOp>"];
+}
+def ApplyGeluConstProp : EnzymeHLOPatternOp<
+    "gelu_const_prop">{
+  let patterns = ["GeluConstProp"];
+}
+def ApplySoftplusConstProp : EnzymeHLOPatternOp<
+    "softplus_const_prop">{
+  let patterns = ["UnaryConstProp<enzymexla::SoftplusOp,softplusOp>"];
+}
 def SignAbsSimplifyPatterns : EnzymeHLOPatternOp<
     "sign_abs_simplify"> {
   let patterns = ["SignAbsSimplify"];
@@ -370,6 +382,10 @@ def ApplyConcatFusePatterns : EnzymeHLOPatternOp<
 def ApplyPadPadPatterns : EnzymeHLOPatternOp<
     "pad_pad"> {
   let patterns = ["PadPad"];
+}
+def ApplyRecognizeMultiPadPatterns : EnzymeHLOPatternOp<
+    "recognize_multi_pad"> {
+  let patterns = ["RecognizeMultiPad"];
 }
 def ApplyScatterToDynamicUpdateSlicePatterns : EnzymeHLOPatternOp<
     "scatter_to_dynamic_update_slice"> {
@@ -1589,6 +1605,18 @@ def CompareIotaConstSimplifyPatterns : EnzymeHLOPatternOp<
   let patterns = ["CompareIotaConstSimplify"];
 }
 
+def MinMaxIotaConstSimplifyPatterns : EnzymeHLOPatternOp<
+  "min_max_iota_const_simplify"
+> {
+  let patterns = ["MinMaxIotaConstSimplify<stablehlo::MaxOp>", "MinMaxIotaConstSimplify<stablehlo::MinOp>"];
+}
+
+def ClampIotaConstSimplifyPatterns : EnzymeHLOPatternOp<
+  "clamp_iota_const_simplify"
+> {
+  let patterns = ["ClampIotaConstSimplify"];
+}
+
 def CompareNegateConstSimplifyPatterns : EnzymeHLOPatternOp<
   "compare_negate_const_simplify"
 > {
@@ -2239,6 +2267,11 @@ def RecognizeMultiSlice : EnzymeHLOPatternOp<
   let patterns = ["RecognizeMultiSlice"];
 }
 
+def RecognizeMultiPad : EnzymeHLOPatternOp<
+    "recognize_multipad"> {
+  let patterns = ["RecognizeMultiPad"];
+}
+
 def ReduceUnusedMultiSlice : EnzymeHLOPatternOp<
     "reduce_unused_multislice"> {
   let patterns = ["ReduceUnusedMultiSlice"];
@@ -2247,6 +2280,11 @@ def ReduceUnusedMultiSlice : EnzymeHLOPatternOp<
 def LowerMultiSlice : EnzymeHLOPatternOp<
     "lower_multislice"> {
   let patterns = ["LowerMultiSlice"];
+}
+
+def LowerMultiPad : EnzymeHLOPatternOp<
+    "lower_multipad"> {
+  let patterns = ["LowerMultiPad"];
 }
 
 def RecognizeMultiRotate : EnzymeHLOPatternOp<
@@ -3071,4 +3109,9 @@ def ApplyAddComplexSimplifyPatterns: EnzymeHLOPatternOp<
 def ApplySubComplexSimplifyPatterns: EnzymeHLOPatternOp<
     "sub_complex_simplify"> {
   let patterns = ["BinaryOpComplexSimplifyBase<stablehlo::SubtractOp>"];
+}
+
+def ApplyScatterOfScatterSimplifyPatterns : EnzymeHLOPatternOp<
+    "scatter_of_scatter_simplify"> {
+  let patterns = ["ScatterOfScatterSimplify"];
 }

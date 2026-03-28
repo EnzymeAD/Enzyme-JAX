@@ -5,8 +5,9 @@
 #   3) python test/maxtext.py
 
 from absl.testing import absltest
+import test_utils
 
-argv = ("-I/usr/include/c++/11", "-I/usr/include/x86_64-linux-gnu/c++/11")
+argv = test_utils.argv
 
 
 class MaxText(absltest.TestCase):

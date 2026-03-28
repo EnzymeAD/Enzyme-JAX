@@ -1087,6 +1087,10 @@ Value castToType(Type elType, Value val, Operation *op) {
   } else if (isa<LLVM::LLVMPointerType>(val.getType()) &&
              isa<IntegerType>(elType)) {
     return LLVM::PtrToIntOp::create(b, val.getLoc(), elType, val);
+  } else if ((isa<IntegerType>(val.getType()) ||
+              isa<FloatType>(val.getType())) &&
+             (isa<IntegerType>(elType) || isa<FloatType>(elType))) {
+    return b.create<arith::BitcastOp>(val.getLoc(), elType, val);
   } else if (auto ST = dyn_cast<LLVM::LLVMStructType>(elType)) {
     if (ST.getBody().size() == 1) {
       auto ud = LLVM::UndefOp::create(b, val.getLoc(), elType);

@@ -114,6 +114,14 @@ def TensorEmptyOpRaisingPass : Pass<"tensor-empty-raise"> {
   ];
 }
 
+def KernelCastPass : Pass<"kernelcast", "func::FuncOp"> {
+  let summary = "Cast GPU kernel floating point type based on enzymexla.float_type attribute";
+  let dependentDialects = [
+    "arith::ArithDialect",
+    "func::FuncDialect",
+  ];
+}
+
 def ConsumingInterpreterPass : Pass<"enzyme-consuming-transform-interpreter"> {
   let summary = "Run the transform interpreter and remove the script";
   let description =
@@ -906,6 +914,12 @@ def OptimizeCommunication : Pass<"optimize-communication"> {
        /*default=*/"0",
        /*description=*/"Convert Rotate to Spmd custom call">,
        Option<
+       /*C++ variable name=*/"multi_buffer",
+       /*CLI argument=*/"multi_buffer",
+       /*type=*/"int",
+       /*default=*/"0",
+       /*description=*/"Force multi-X to buffer">,
+       Option<
        /*C++ variable name=*/"multirotate_spmd",
        /*CLI argument=*/"multirotate_spmd",
        /*type=*/"int",
@@ -934,6 +948,12 @@ def OptimizeCommunication : Pass<"optimize-communication"> {
        /*type=*/"int",
        /*default=*/"0",
        /*description=*/"Convert MultiSlice to Spmd custom call">,
+       Option<
+       /*C++ variable name=*/"multipad_custom_call",
+       /*CLI argument=*/"multipad_custom_call",
+       /*type=*/"int",
+       /*default=*/"0",
+       /*description=*/"Convert MultiPad to Spmd custom call">,
        Option<
        /*C++ variable name=*/"rotate_to_pad_comm",
        /*CLI argument=*/"rotate_to_pad_comm",
@@ -1248,6 +1268,23 @@ def ConvertTritonToTritonGPUPreservingModuleAttributesPass : Pass<
         /*default=*/"\"\"",
         /*description=*/"the GPU target, e.g., cuda:80, hip:gfx942"
       >];
+}
+
+def LowerTritonPass : Pass<"lower-triton", "mlir::ModuleOp"> {
+  let summary = "Lower Triton to xla custom call";
+  let dependentDialects = [
+    "triton::TritonDialect",
+    "func::FuncDialect",
+    "enzymexla::triton_ext::TritonExtDialect",
+    "stablehlo::StablehloDialect",
+  ];
+  let options = [
+    Option<
+        /*C++ variable name=*/"backend",
+        /*CLI argument=*/"backend",
+        /*type=*/"std::string",
+        /*default=*/"\"cuda\"",
+        /*description=*/"HW backend">];
 }
 
 def EnzymeBatchToStableHLOPass : Pass<"enzyme-batch-to-stablehlo"> {

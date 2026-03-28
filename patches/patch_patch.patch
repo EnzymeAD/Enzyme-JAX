@@ -1,0 +1,13 @@
+diff --git a/third_party/stablehlo/temporary.patch b/third_party/stablehlo/temporary.patch
+index 0fd60440ef..94113f04c5 100755
+--- a/third_party/stablehlo/temporary.patch
++++ b/third_party/stablehlo/temporary.patch
+@@ -465,7 +465,7 @@ diff --ruN a/stablehlo/stablehlo/dialect/Version.h b/stablehlo/stablehlo/dialect
+    static FailureOr<Version> fromString(llvm::StringRef versionRef);
+  
+    /// Return a Version representing the current VHLO dialect version.
+--  static Version getCurrentVersion() { return Version(1, 14, 1); }
++-  static Version getCurrentVersion() { return Version(1, 14, 2); }
+ +  static Version getCurrentVersion() { return Version(1, 15, 0); }
+  
+    /// Return a Version representing the minimum supported VHLO dialect version.

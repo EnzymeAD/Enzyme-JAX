@@ -23,6 +23,10 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
 
+env:
+  JULIA_PKG_SERVER_REGISTRY_PREFERENCE: 'eager'
+  JULIA_MAX_NUM_PRECOMPILE_FILES: 3
+
 jobs:
   test-gb-25:
     name: 'Test GB-25 - ${{ matrix.os }} - julia ${{ matrix.julia_version }} - XLA ${{ matrix.xla_commit }} - GB-25 ${{ matrix.gb25_commit }}- Reactant ${{ matrix.reactant_commit }}'
@@ -46,8 +50,10 @@ jobs:
         gb25_commit:
           - 'main'
           # - '0123456789abcdef0123456789abcdef01234567'
+
         reactant_commit:
           - 'main'
+          - 'multipad'
 
     steps:
       - name: Check GPUs
@@ -67,7 +73,7 @@ jobs:
           # Avoid downloading Bazel every time.
           bazelisk-cache: true
           # Store build cache per workflow only for macOS.
-          disk-cache: ${{ runner.os == 'macOS' && format('gb-25-{0}-{1}-{2}', github.workflow, matrix.os, matrix.python) || false }}
+          disk-cache: ${{ runner.os == 'macOS' && format('gb-25-{0}-{1}', github.workflow, matrix.os) || false }}
           # Do not share repository cache between workflows.
           repository-cache: false
           bazelisk-version: 1.x
@@ -90,8 +96,9 @@ jobs:
         with:
           version: ${{ matrix.julia_version }}
       - name: Load Julia packages from cache
-        id: julia-cache
-        uses: julia-actions/cache@v2
+        uses: wsmoses/cache@gcpb
+        with:
+          gcp-bucket: enzyme-ci-transient
       - name: Modify Enzyme-JAX commit
         timeout-minutes: 1
         run: |
@@ -162,6 +169,7 @@ jobs:
           if !isempty("${{ matrix.reactant_commit }}")
               # Install specific commit of Reactant, if necessary
               Pkg.add([
+                  PackageSpec(; name="ReactantCore", rev="${{ matrix.reactant_commit }}"),
                   PackageSpec(; name="Reactant", rev="${{ matrix.reactant_commit }}"),
               ])
           end
@@ -190,7 +198,7 @@ jobs:
       - name: Compile GB-25 simulation
         timeout-minutes: 30
         run: |
-          export XLA_FLAGS='--xla_dump_to=${{ env.GB25_DIR }}/xla_dump_compile'
+          export XLA_FLAGS='--xla_disable_hlo_passes=multi_output_fusion --xla_dump_hlo_pass_re=.* --xla_dump_to=${{ env.GB25_DIR }}/xla_dump_compile'
           timeout --signal=TERM --verbose 29m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict sharding/sharded_baroclinic_instability_simulation_compile.jl ${{ env.RUN_FLAGS }}
         working-directory: ${{ env.GB25_DIR }}
       - name: Show remaining collective operations
@@ -202,16 +210,16 @@ jobs:
               ALL_TO_ALL_THRESHOLD=0
               ALL_GATHER_THRESHOLD=0
               ALL_REDUCE_THRESHOLD=0
-              COLLECTIVE_PERMUTE_THRESHOLD=339
+              COLLECTIVE_PERMUTE_THRESHOLD=299
           elif [[ '${{ contains(matrix.os, 'tpu') }}' == 'true' ]]; then
               ALL_TO_ALL_THRESHOLD=0
               ALL_GATHER_THRESHOLD=0
-              ALL_REDUCE_THRESHOLD=19
-              COLLECTIVE_PERMUTE_THRESHOLD=1076
+              ALL_REDUCE_THRESHOLD=0
+              COLLECTIVE_PERMUTE_THRESHOLD=1092
           fi
 
           for OP in "all-to-all" "all-gather" "all-reduce" "%collective-permute-start.* ="; do
-              COLLECTIVES=$(find . -name 'optimised_sharded_baroclinic_instability*.xla' -exec grep --with-filename --line-number --extended-regexp "${OP}" '{}' \;)
+              COLLECTIVES=$(find . -name 'optimised_sharded_baroclinic_instability*.xla' -exec grep --with-filename --line-number --extended-regexp "${OP}" '{}' \; | sort)
               NUM_COLLECTIVES=$(echo "${COLLECTIVES}" | wc -l | xargs)
               if [[ -n "${COLLECTIVES}" ]]; then
                   MSG="There are ${NUM_COLLECTIVES} remaining ${OP} operations"
@@ -231,7 +239,7 @@ jobs:
       - name: Run GB-25 simulation
         timeout-minutes: 60
         run: |
-          export XLA_FLAGS='--xla_dump_to=${{ env.GB25_DIR }}/xla_dump_run'
+          export XLA_FLAGS='--xla_disable_hlo_passes=multi_output_fusion --xla_dump_hlo_pass_re=.* --xla_dump_to=${{ env.GB25_DIR }}/xla_dump_run'
           timeout --signal=TERM --verbose 59m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict sharding/sharded_baroclinic_instability_simulation_run.jl ${{ env.RUN_FLAGS }}
         working-directory: ${{ env.GB25_DIR }}
       - name: Display profile results
@@ -280,11 +288,3 @@ jobs:
           path: '${{ env.GB25_DIR }}/**/plugins'
           retention-days: 90
           overwrite: false
-      - name: Save Julia depot cache on cancel or failure
-        id: julia-cache-save
-        if: cancelled() || failure()
-        uses: actions/cache/save@v5
-        with: 
-          path: |
-            ${{ steps.julia-cache.outputs.cache-paths }}
-          key: ${{ steps.julia-cache.outputs.cache-key }}

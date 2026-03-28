@@ -505,7 +505,6 @@ struct tensor<T, n0, N...>
 
   DiagsBuffer->FlushDiagnostics(Clang->getDiagnostics());
   if (!Success) {
-    Clang->getDiagnosticClient().finish();
     llvm::errs() << " failed diag\n";
     return {};
   }

@@ -35,6 +35,9 @@ except AttributeError:
 
     register_custom_call_target = xla_client.register_custom_call_target
 
+if hasattr(enzyme_call, "register_enzymexla_xla_ffi"):
+    enzyme_call.register_enzymexla_xla_ffi()
+
 
 class PipelineConfig:
     # Whether to use the new xla runtime
@@ -277,6 +280,8 @@ def optimization_passes(
         "broadcast_iota",
         "cse_iota",
         "compare_iota_const_simplify",
+        "min_max_iota_const_simplify",
+        "clamp_iota_const_simplify",
         "reshuffle_ands_compares",
         "square_abs_simplify",
         "divide_divide_simplify",
@@ -353,6 +358,7 @@ def optimization_passes(
         "reduce_max_min_mul_positive_scalar",
         "add_complex_simplify",
         "sub_complex_simplify",
+        "scatter_of_scatter_simplify",
     ]
 
     # constant propagation patterns
@@ -384,6 +390,9 @@ def optimization_passes(
         "sign_const_prop",
         "floor_const_prop",
         "tan_const_prop",
+        "relu_const_prop",
+        "gelu_const_prop",
+        "softplus_const_prop",
         # binary constant propagation
         "add_const_prop",
         "and_const_prop",

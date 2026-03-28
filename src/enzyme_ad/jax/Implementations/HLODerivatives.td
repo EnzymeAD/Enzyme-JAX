@@ -1461,12 +1461,11 @@ def : HLODerivative<"FftOp",
           SelectIfIRFFT
           (
             Mul
-            (Fft (DiffeRet), (RFFTType), (FftLength)),
+            (Conj (Fft (Conj (DiffeRet)), (RFFTType), (FftLength))),
             (IRFFTMaskedScaling)
           ),
           (
-            Conj
-            (Fft (DiffeRet), (FftType), (FftLength))
+            Fft (DiffeRet), (FftType), (FftLength)
           )
         )
       )

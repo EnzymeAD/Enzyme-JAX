@@ -9,8 +9,10 @@
 // This file implements a pass to raise operations to arith dialect.
 //===---------------------------------------------------------------------===//
 
+#ifndef DISABLE_POLYMER
 #include "../polymer/mlir/include/mlir/Conversion/Polymer/Support/IslScop.h"
 #include "../polymer/mlir/include/mlir/Conversion/Polymer/Target/ISL.h"
+#endif
 #include "Enzyme/MLIR/Dialect/Ops.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "polly/Support/GICHelper.h"
@@ -38,6 +40,7 @@ using namespace mlir;
 using namespace mlir::enzyme;
 
 namespace {
+#ifndef DISABLE_POLYMER
 using namespace polymer;
 
 #define LDBG_ISL_DUMP(OBJ)                                                     \
@@ -448,15 +451,18 @@ void handleGPUWrapper(enzymexla::GPUWrapperOp wrapperOp) {
   for (auto rmw : toConvert)
     convertRmw(rmw);
 }
+#endif
 
 struct RemoveAtomicsPass
     : public enzyme::impl::RemoveAtomicsPassBase<RemoveAtomicsPass> {
   using RemoveAtomicsPassBase::RemoveAtomicsPassBase;
   void runOnOperation() override {
+#ifndef DISABLE_POLYMER
     getOperation()->walk([](enzymexla::GPUWrapperOp op) {
       handleGPUWrapper(op);
       return WalkResult::skip();
     });
+#endif
   }
 };
 } // namespace

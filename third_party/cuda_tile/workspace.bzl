@@ -2,7 +2,7 @@
 
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
-CUDA_TILE_COMMIT = "8a775693b18303d6c696be6ffd06dadad1b32a8e"  # v13.1.3
+CUDA_TILE_COMMIT = "0c5ec1c5b72889d58b03cf43970984747680588c"
 CUDA_TILE_SHA256 = ""
 
 CUTILE_PATCHES = [

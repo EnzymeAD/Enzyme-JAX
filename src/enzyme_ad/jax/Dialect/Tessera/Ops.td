@@ -11,7 +11,6 @@ include "mlir/Interfaces/FunctionInterfaces.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 
-
 include "Dialect.td"
 
 //===----------------------------------------------------------------------===//
@@ -42,14 +41,6 @@ def DefineOp : TesseraOp<"define", [
     CArg<"ArrayRef<DictionaryAttr>", "{}">:$argAttrs)
   >];
   let extraClassDeclaration = [{
-    static DefineOp create(Location location, StringRef name, FunctionType type,
-                         ArrayRef<NamedAttribute> attrs = {});
-    static DefineOp create(Location location, StringRef name, FunctionType type,
-                         Operation::dialect_attr_range attrs);
-    static DefineOp create(Location location, StringRef name, FunctionType type,
-                         ArrayRef<NamedAttribute> attrs,
-                         ArrayRef<DictionaryAttr> argAttrs);
-
     /// Create a deep copy of this function and all of its blocks, remapping any
     /// operands that use values outside of the function using the map that is
     /// provided (leaving them alone if no entry is present). If the mapper
@@ -198,5 +189,50 @@ def ReturnOp : TesseraOp<"return", [Pure, HasParent<"DefineOp">, ReturnLike, Ter
   let hasVerifier = 1;
 }
 
+//===----------------------------------------------------------------------===//
+// OptimizationOp
+//===----------------------------------------------------------------------===//
+
+def OptimizationOp : TesseraOp<"optimization", [Pure]> {
+  let summary = "A tessera optimization rule";
+  let description = [{
+    The 'tessera.optimization' operation represents a single optimization rule defined by the user in string form.
+
+    Example: 
+```mlir
+    tessera.optimization "inv(inv(x)) -> x"
+```
+  }];
+
+  let arguments = (ins StrAttr:$rule);
+  let results = (outs);
+
+  let assemblyFormat = "$rule attr-dict";
+}
+
+//===----------------------------------------------------------------------===//
+// OptimizationsOp
+//===----------------------------------------------------------------------===//
+
+def OptimizationsOp : TesseraOp<"optimizations", [Pure, NoTerminator]> {
+  let summary = "A set of tessera optimization rules";
+  let description = [{
+    The 'tessera.optimizations' operation groups multiple optimization rules into a single container.
+
+    Example: 
+```mlir
+    tessera.optimizations {
+      tessera.optimization "inv(inv(x)) -> x"
+      tessera.optimization "mag(-x,y,z) -> mag(x,y,z)"
+    }
+```
+  }];
+
+  let arguments = (ins);
+  let results = (outs);
+  let regions = (region SizedRegion<1>:$body);
+
+  let assemblyFormat = "$body attr-dict";
+}
 
 #endif // ENZYME_AD_JAX_DIALECT_TESSERA_OPS_TD

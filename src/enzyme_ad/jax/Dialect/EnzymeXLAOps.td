@@ -55,6 +55,12 @@ def TensorFloat
                  "getElementType()).getElementType())))">,
            "tensor<float or complex<float> scalar>", "::mlir::TensorType">;
 
+def TensorFloatAnyRank
+  : Type<CPred<"::llvm::isa<::mlir::TensorType>($_self) && "
+               "::llvm::isa<::mlir::FloatType>(::llvm::cast<::mlir::"
+               "TensorType>($_self).getElementType())">,
+           "tensor with floating-point element type", "::mlir::TensorType">;
+
 def KernelCallOp : EnzymeXLA_Op<"kernel_call", [
   AttrSizedOperandSegments, DeclareOpInterfaceMethods<SymbolUserOpInterface>,
   DeclareOpInterfaceMethods<CallOpInterface>,
@@ -347,7 +353,7 @@ def RotateOp : EnzymeXLA_Op<"rotate", [Pure, SameOperandsAndResultType]> {
   let description = [{
     Performs a left rotation (circular shift) along `dimension` by `amount` elements.
     Elements are shifted left, with the first `amount` elements wrapping around to the end.
-    
+
     i.e.:
     ```
     rotate([a, b, c, d, e], amount=2, dimension=0) → [c, d, e, a, b]
@@ -410,6 +416,26 @@ def MultiSliceOp : EnzymeXLA_Op<"multi_slice", [Pure]> {
     DenseI64ArrayAttr:$strides,
     I32Attr:$dimension,
     I32Attr:$amount
+  );
+  let results = (outs Variadic<HLO_Tensor>:$results);
+  let hasVerifier = 1;
+}
+
+def MultiPadOp : EnzymeXLA_Op<"multi_pad", [Pure]> {
+  let summary = "Produces multiple padded versions of the input tensor with constant total padding";
+  let description = [{
+    MultiPad operation produces multiple padded versions of the input tensor.
+    Given dimension=D and amount=A, it produces A + 1 results.
+    The i-th result corresponds to padding along dimension D by:
+    - Low side: i
+    - High side: A - i
+    Other dimensions are not padded.
+  }];
+  let arguments = (ins
+    HLO_Tensor:$operand,
+    HLO_Tensor:$padding_value,
+    I32Attr:$dimension,
+    I64Attr:$amount
   );
   let results = (outs Variadic<HLO_Tensor>:$results);
   let hasVerifier = 1;
@@ -585,7 +611,8 @@ def TrmmOp: EnzymeXLA_Op<"blas.trmm", [Pure, SameOperandsAndResultElementType]> 
     TensorFloat:$alpha,
     EnzymeXLA_LapackSideAttr:$side,
     EnzymeXLA_LapackUploAttr:$uplo,
-    EnzymeXLA_LapackTransposeAttr:$transpose
+    EnzymeXLA_LapackTransposeAttr:$transpose,
+    EnzymeXLA_LapackDiagAttr:$diag
   );
 
   let results = (outs
@@ -593,7 +620,7 @@ def TrmmOp: EnzymeXLA_Op<"blas.trmm", [Pure, SameOperandsAndResultElementType]> 
   );
 
   let assemblyFormat = [{
-    $A `,` $B `,` $alpha `,` attr-dict `:` functional-type(operands, results)
+    $A `,` $B `,` $alpha attr-dict `:` functional-type(operands, results)
   }];
 }
 
@@ -1163,6 +1190,20 @@ def ReluOp: EnzymeXLA_Op<"ml.relu", [Pure, SameOperandsAndResultType, Elementwis
   );
 
   let results = (outs HLO_Tensor:$result);
+
+  let assemblyFormat = [{
+    $input attr-dict `:` functional-type($input, results)
+  }];
+}
+
+def SoftplusOp: EnzymeXLA_Op<"ml.softplus", [Pure, SameOperandsAndResultType, Elementwise]> {
+  let summary = "Computes the Softplus activation function";
+
+  let arguments = (ins
+    TensorFloatAnyRank:$input
+  );
+
+  let results = (outs TensorFloatAnyRank:$result);
 
   let assemblyFormat = [{
     $input attr-dict `:` functional-type($input, results)
