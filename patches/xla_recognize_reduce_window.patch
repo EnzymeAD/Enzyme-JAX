@@ -1,8 +1,21 @@
 diff --git a/xla/hlo/transforms/simplifiers/recognize_reduce_window.cc b/xla/hlo/transforms/simplifiers/recognize_reduce_window.cc
-index 66fc45c130..083c7e7865 100644
+index 66fc45c130..f949552bb7 100644
 --- a/xla/hlo/transforms/simplifiers/recognize_reduce_window.cc
 +++ b/xla/hlo/transforms/simplifiers/recognize_reduce_window.cc
-@@ -833,8 +833,8 @@ absl::StatusOr<bool> RunOnComputation(HloComputation* computation) {
+@@ -379,6 +379,12 @@ absl::StatusOr<bool> RunOnComputation(HloComputation* computation) {
+         TF_RETURN_IF_ERROR(inst->ReplaceAllUsesWith(static_slice));
+         changed = true;
+       }
++    } else if (inst->opcode() == HloOpcode::kGetTupleElement) {
++      if (inst->operand(0)->opcode() == HloOpcode::kTuple) {
++        TF_RETURN_IF_ERROR(inst->ReplaceAllUsesWith(
++            inst->mutable_operand(0)->mutable_operand(inst->tuple_index())));
++        changed = true;
++      }
+     }
+   }
+ 
+@@ -833,8 +839,8 @@ absl::StatusOr<bool> RunOnComputation(HloComputation* computation) {
          }
  
          if (folded.size() == 2 && !any_array_weights &&
@@ -14,10 +27,10 @@ index 66fc45c130..083c7e7865 100644
              if (folded[0].slice == inst->operand(0) &&
                  folded[1].slice == inst->operand(1)) {
 diff --git a/xla/hlo/transforms/simplifiers/recognize_reduce_window_test.cc b/xla/hlo/transforms/simplifiers/recognize_reduce_window_test.cc
-index 5e4e12179e..78483fd320 100644
+index 6865fe2169..bf9781cddd 100644
 --- a/xla/hlo/transforms/simplifiers/recognize_reduce_window_test.cc
 +++ b/xla/hlo/transforms/simplifiers/recognize_reduce_window_test.cc
-@@ -919,4 +919,30 @@ ENTRY %main (x: f32[10], y: f32[10], w1: f32[10], w2: f32[10], z: f32[10]) -> f3
+@@ -918,4 +918,30 @@ ENTRY %main (x: f32[10], y: f32[10], w1: f32[10], w2: f32[10], z: f32[10]) -> f3
                               2);
  }
  
