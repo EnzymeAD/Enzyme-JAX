@@ -1337,8 +1337,11 @@ static LogicalResult tryRaisingParallelOpToStableHLO(
 
   for (auto iv : getIVs(parallelOp)) {
     auto range = getIVRange(iv);
-    if (!range.has_value())
-      return failure();
+    if (!range.has_value()) {
+      return parallelOp.getOperation()->emitError(
+          "parallel loop has non-constant bounds, which is not currently "
+          "supported");
+    }
     emitIVToStableHLO(builder, iv, *range, mapping, maps,
                       pc.options.strip_llvm_debuginfo);
   }
