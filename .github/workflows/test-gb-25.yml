@@ -53,6 +53,7 @@ jobs:
 
         reactant_commit:
           - 'main'
+          - 'ss/pad-for-alignment'
 
     steps:
       - name: Check GPUs
