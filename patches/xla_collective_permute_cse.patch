@@ -41,10 +41,10 @@ index ec7169dd4f..2ff6d30e6c 100644
      srcs = ["infeed_token_propagation.cc"],
 diff --git a/xla/hlo/transforms/collectives/collective_permute_cse.cc b/xla/hlo/transforms/collectives/collective_permute_cse.cc
 new file mode 100644
-index 0000000000..dedb28738d
+index 0000000000..ef56e12506
 --- /dev/null
 +++ b/xla/hlo/transforms/collectives/collective_permute_cse.cc
-@@ -0,0 +1,196 @@
+@@ -0,0 +1,199 @@
 +/* Copyright 2025 The OpenXLA Authors.
 +
 +Licensed under the Apache License, Version 2.0 (the "License");
@@ -232,6 +232,9 @@ index 0000000000..dedb28738d
 +            permutes[j] = nullptr;
 +          }
 +          changed = true;
++          if (small == a) {
++            break;
++          }
 +        }
 +      }
 +    }
@@ -309,10 +312,10 @@ index 0000000000..ccd5bdfe6a
 +#endif  // XLA_HLO_TRANSFORMS_COLLECTIVES_COLLECTIVE_PERMUTE_CSE_H_
 diff --git a/xla/hlo/transforms/collectives/collective_permute_cse_test.cc b/xla/hlo/transforms/collectives/collective_permute_cse_test.cc
 new file mode 100644
-index 0000000000..9f160df777
+index 0000000000..a174ad54b5
 --- /dev/null
 +++ b/xla/hlo/transforms/collectives/collective_permute_cse_test.cc
-@@ -0,0 +1,198 @@
+@@ -0,0 +1,228 @@
 +/* Copyright 2025 The OpenXLA Authors.
 +
 +Licensed under the Apache License, Version 2.0 (the "License");
@@ -450,6 +453,36 @@ index 0000000000..9f160df777
 +              op::Tuple(op::CollectivePermute(op::Parameter(0)),
 +                        op::Slice(op::CollectivePermute(op::Parameter(0)))));
 +  EXPECT_EQ(root->operand(1)->operand(0), root->operand(0));
++}
++
++TEST_F(CollectivePermuteCSETest, SubsetPermuteSlicesSmallBeforeLargeMultiple) {
++  const char* const hlo_string = R"(
++HloModule module
++
++ENTRY entry {
++  p0 = f32[100] parameter(0)
++  slice0 = f32[50] slice(p0), slice={[0:50]}
++  c2 = f32[50] collective-permute(slice0), channel_id=1, source_target_pairs={{0,1}}
++  c1 = f32[100] collective-permute(p0), channel_id=1, source_target_pairs={{0,1}}
++  c3 = f32[100] collective-permute(p0), channel_id=1, source_target_pairs={{0,1}}
++  ROOT root = (f32[100], f32[50], f32[100]) tuple(c1, c2, c3)
++}
++)";
++
++  TF_ASSERT_OK_AND_ASSIGN(auto module,
++                          ParseAndReturnVerifiedModule(hlo_string));
++
++  CollectivePermuteCSE pass;
++  TF_ASSERT_OK_AND_ASSIGN(bool changed, pass.Run(module.get()));
++  ASSERT_TRUE(changed);
++
++  auto* root = module->entry_computation()->root_instruction();
++  EXPECT_THAT(root,
++              op::Tuple(op::CollectivePermute(op::Parameter(0)),
++                        op::Slice(op::CollectivePermute(op::Parameter(0))),
++                        op::CollectivePermute(op::Parameter(0))));
++  EXPECT_EQ(root->operand(1)->operand(0), root->operand(0));
++  EXPECT_EQ(root->operand(0), root->operand(2));
 +}
 +
 +TEST_F(CollectivePermuteCSETest,
