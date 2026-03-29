@@ -466,7 +466,11 @@ public:
     for (auto &B : exOp.getRegion()) {
       if (auto yield = dyn_cast<scf::YieldOp>(B.getTerminator())) {
         auto found = metaMap.valueAtEndOfBlock.find(&B);
-        assert(found != metaMap.valueAtEndOfBlock.end());
+        if (found == metaMap.valueAtEndOfBlock.end()) {
+          this->overwritten = true;
+          this->exOp = nullptr;
+          return nullptr;
+        }
         assert(found->second);
         Value post = found->second->materialize(full);
         if (found->second->overwritten) {
