@@ -901,7 +901,8 @@ void PadForAlignmentPass::runOnFunction(func::FuncOp func) {
   }
 
   // safely delete any original ops that are now dead
-  for (auto op : handler.toErase) {
+  for (auto it = handler.toErase.rbegin(); it != handler.toErase.rend(); ++it) {
+    auto op = *it;
     assert(op->use_empty());
     op->erase();
   }
