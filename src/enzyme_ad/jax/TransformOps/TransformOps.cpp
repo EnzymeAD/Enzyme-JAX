@@ -186,6 +186,11 @@ void ApplyPadSimplifyPatterns::populatePatterns(RewritePatternSet &patterns) {
   addPadSimplify(patterns, getParameter(), *getContext(),
                  PatternBenefit(getBenefit().value_or(1)));
 }
+void ApplyReduceConstPropPatterns::populatePatterns(
+    RewritePatternSet &patterns) {
+  addReduceConstProp(patterns, getParameter(), *getContext(),
+                     PatternBenefit(getBenefit().value_or(1)));
+}
 void ApplyDynamicUpdateSliceConstPropPatterns::populatePatterns(
     RewritePatternSet &patterns) {
   addDynamicUpdateSliceConstProp(patterns, getParameter(), *getContext(),
