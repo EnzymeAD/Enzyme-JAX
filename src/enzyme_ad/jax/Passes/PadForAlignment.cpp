@@ -93,16 +93,15 @@ struct AlignmentHandler {
   bool handleTransposeOp(stablehlo::TransposeOp op);
 
   // it doesn't update the results of `op`; i.e. just updates the `paddedValues`
-  // and may mark it for erasure
+  // and may mark it for erasure. the replacement is done on a later stage.
   void eraseWithReplacement(Operation *op, ValueRange replacements,
                             bool should_erase = true) {
-    for (auto [res, rep] : llvm::zip_equal(op->getResults(), replacements)) {
-      if (paddedValues.contains(res))
-        paddedValues[res] = rep;
-    }
-    if (should_erase) {
+    // even if the op results do not need padding (and thus they weren't before 
+    // in `paddedValues`), their uses need to be updated
+    for (auto [res, rep] : llvm::zip_equal(op->getResults(), replacements))
+      paddedValues[res] = rep;
+    if (should_erase)
       toErase.push_back(op);
-    }
   }
 };
 
@@ -343,9 +342,6 @@ bool AlignmentHandler::handlePadOp(stablehlo::PadOp op) {
   if (!needsPadding(res) && !needsPadding(input))
     return false;
 
-  builder.setInsertionPoint(op);
-  Value paddedInput = getValueOrPadded(input);
-
   auto type = cast<RankedTensorType>(op.getType());
   auto alignedShape = getAlignedShape(type);
   auto paddedType = type.clone(alignedShape);
@@ -355,57 +351,44 @@ bool AlignmentHandler::handlePadOp(stablehlo::PadOp op) {
   SmallVector<int64_t> low = llvm::to_vector(op.getEdgePaddingLow());
   SmallVector<int64_t> high = llvm::to_vector(op.getEdgePaddingHigh());
   SmallVector<int64_t> interior = llvm::to_vector(op.getInteriorPadding());
-  bool all_zero_interior = true;
-  for (int i = 0; i < type.getRank(); ++i) {
-    if (interior[i] != 0)
-      all_zero_interior = false;
-  }
-  bool all_zero_low = true;
-  for (int i = 0; i < type.getRank(); ++i) {
-    if (low[i] != 0)
-      all_zero_low = false;
-  }
 
+  // if input is already aligned, just create a bigger padded op
   if (!needsPadding(input)) {
-    // Just create a bigger padded op
-    if (all_zero_interior) {
-      for (int i = 0; i < type.getRank(); ++i) {
-        high[i] += resultPadding[i];
-      }
-      auto padOp = stablehlo::PadOp::create(builder, op.getLoc(), paddedType,
-                                            paddedInput, op.getPaddingValue(),
-                                            low, high, interior);
-      eraseWithReplacement(op, padOp.getResult());
-      return true;
-    } else {
-      builder.setInsertionPointAfterValue(op);
-      auto padOp = stablehlo::PadOp::create(builder, op.getLoc(), paddedType,
-                                            paddedInput, op.getPaddingValue(),
-                                            low, high, interior);
-      eraseWithReplacement(op, padOp.getResult(), false);
-      return true;
-    }
-  }
+    for (auto [high_i, result_pad_i] : llvm::zip(high, resultPadding))
+      high_i += result_pad_i;
 
-  if (all_zero_interior && all_zero_low) {
-    bool all_zero_input_padding = true;
-    for (int i = 0; i < type.getRank(); ++i) {
-      high[i] += resultPadding[i] - inputPadding[i];
-      if (high[i] != 0)
-        all_zero_input_padding = false;
-    }
-    if (all_zero_input_padding) {
-      eraseWithReplacement(op, paddedInput);
-      return true;
-    }
+    builder.setInsertionPointAfterValue(op);
     auto padOp =
-        stablehlo::PadOp::create(builder, op.getLoc(), paddedType, paddedInput,
+        stablehlo::PadOp::create(builder, op.getLoc(), paddedType, input,
                                  op.getPaddingValue(), low, high, interior);
     eraseWithReplacement(op, padOp.getResult());
     return true;
   }
 
-  llvm_unreachable("unhandled case of pad");
+  bool all_zero_input_padding = true;
+  for (int i = 0; i < type.getRank(); ++i) {
+    high[i] += resultPadding[i] - (interior[i] + 1) * inputPadding[i];
+    if (high[i] != 0)
+      all_zero_input_padding = false;
+
+    // check that negative paddings do not remove real data, just the already existing padding
+    if (high[i] < 0)
+      assert(inputPadding[i] + high[i] >= 0);
+  }
+  if (all_zero_input_padding) {
+    eraseWithReplacement(op, getValueOrPadded(input));
+    return true;
+  }
+  builder.setInsertionPointAfterValue(op);
+  auto padOp =
+      // stablehlo::PadOp::create(builder, op.getLoc(), paddedType, paddedInput,
+      //                          op.getPaddingValue(), low, high, interior);
+      stablehlo::PadOp::create(builder, op.getLoc(), paddedType, getValueOrPadded(input),
+                               op.getPaddingValue(), low, high, interior);
+
+  eraseWithReplacement(op, padOp.getResult());
+
+  return true;
 }
 
 bool AlignmentHandler::handleSliceOp(stablehlo::SliceOp op) {
