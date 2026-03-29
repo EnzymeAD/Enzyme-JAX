@@ -40,8 +40,8 @@ jobs:
       fail-fast: false
       matrix:
         os:
-          - linux-x86-a2-48-a100-4gpu
-          # - linux-x86-ct6e-180-4tpu
+          # - linux-x86-a2-48-a100-4gpu
+          - linux-x86-ct6e-180-4tpu
         julia_version:
           - '1.11'
         xla_commit:
@@ -53,7 +53,7 @@ jobs:
 
         reactant_commit:
           - 'main'
-          - 'multipad'
+          # - 'multipad'
         flags:
           - ''
           - '--xla_tpu_sliced_prefetch_max_slices=0'
