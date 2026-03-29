@@ -57,6 +57,16 @@ namespace enzyme {
 using namespace mlir;
 using namespace mlir::enzyme;
 
+bool isXLACompatiblePrimitive(Type ty) {
+  if (isa<FloatType>(ty))
+    return true;
+  if (isa<IntegerType>(ty))
+    return true;
+  if (isa<ComplexType>(ty))
+    return true;
+  return false;
+}
+
 Type makeIndexToI64(Type ty) {
   if (isa<IndexType>(ty))
     return IntegerType::get(ty.getContext(), 64);
@@ -277,6 +287,8 @@ struct ParallelContext {
   RankedTensorType getTensorType(Type elTy) {
     SmallVector<int64_t> shape = llvm::map_to_vector(
         ranges, [&](auto range) { return range.getNumIters(); });
+    assert(isXLACompatiblePrimitive(elTy) &&
+           "unsupported element type for XLA");
     return RankedTensorType::get(shape, elTy);
   }
 
@@ -1325,8 +1337,11 @@ static LogicalResult tryRaisingParallelOpToStableHLO(
 
   for (auto iv : getIVs(parallelOp)) {
     auto range = getIVRange(iv);
-    if (!range.has_value())
-      return failure();
+    if (!range.has_value()) {
+      return parallelOp.getOperation()->emitError(
+          "parallel loop has non-constant bounds, which is not currently "
+          "supported");
+    }
     emitIVToStableHLO(builder, iv, *range, mapping, maps,
                       pc.options.strip_llvm_debuginfo);
   }
@@ -2740,6 +2755,11 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     Value operand = op->getOperand(0), result = op->getResult(0);
     auto input = mapping.lookup(operand);
     auto MT = p2m.getType();
+    if (!isXLACompatiblePrimitive(MT.getElementType())) {
+      return op->emitError("unsupported element type for XLA: ")
+             << MT.getElementType();
+    }
+
     auto ty = RankedTensorType::get(MT.getShape(), MT.getElementType());
 
     auto inTy = cast<RankedTensorType>(input.getType());
@@ -3075,6 +3095,12 @@ static bool tryRaisingToStableHLO(func::FuncOp func,
   SmallVector<Type> tensorTypes;
   for (auto arg : body->getArguments()) {
     auto MT = cast<MemRefType>(arg.getType());
+    if (!isXLACompatiblePrimitive(MT.getElementType())) {
+      func.emitError("unsupported element type for argument for XLA: ")
+          << MT.getElementType();
+      delete newBlock;
+      return false;
+    }
     auto TT = RankedTensorType::get(MT.getShape(), MT.getElementType());
     auto newArg = newBlock->addArgument(
         TT, rewriteLocation(arg.getLoc(), options.strip_llvm_debuginfo));
