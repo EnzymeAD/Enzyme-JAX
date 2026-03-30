@@ -2140,6 +2140,7 @@ struct RotateSpmdOptimize : public OpRewritePattern<enzymexla::RotateOp> {
       return failure();
 
     auto rotateDimension = rotate.getDimension();
+    auto rotateAmount = rotate.getAmount();
     auto rotateSharding = mlir::sdy::getSharding(rotate);
     if (!rotateSharding)
       return rewriter.notifyMatchFailure(rotate, "No sharding found.");
@@ -2152,25 +2153,23 @@ struct RotateSpmdOptimize : public OpRewritePattern<enzymexla::RotateOp> {
           rotate,
           "numDevicesAlongDimension == 1. Communication is already optimized.");
     }
-
     assert(rotate.getType().getShape()[rotateDimension] > 0);
-    assert(rotate.getAmount() < rotate.getType().getShape()[rotateDimension]);
+    assert(rotateAmount < rotate.getType().getShape()[rotateDimension]);
 
     int64_t shard_size = (rotate.getType().getShape()[rotateDimension] +
                           numDevicesAlongDimension - 1) /
                          numDevicesAlongDimension;
 
-    if (rotate.getAmount() <= shard_size) {
+    if (rotateAmount <= shard_size) {
       // Our op is rotate left:
       std::string opaque =
           "dimension=" + std::to_string(rotateDimension) +
-          ",left_amount=" + std::to_string(rotate.getAmount()) +
+          ",left_amount=" + std::to_string(rotateAmount) +
           ",right_amount=0,bufferize=" + std::to_string(bufferize);
 
       auto fnSym = rewriter.getStringAttr("_SPMDInternalOp_MultiRotate");
 
-      SmallVector<Type, 2> resultTypes(rotate.getAmount() + 1,
-                                       rotate.getType());
+      SmallVector<Type, 2> resultTypes(rotateAmount + 1, rotate.getType());
 
       // Replace with a custom call
       auto ccall = rewriter.create<stablehlo::CustomCallOp>(
@@ -2183,13 +2182,13 @@ struct RotateSpmdOptimize : public OpRewritePattern<enzymexla::RotateOp> {
           /*result_layouts=*/nullptr,
           /*output_operand_aliases=*/nullptr);
 
-      SmallVector<sdy::TensorShardingAttr> newShardings(rotate.getAmount() + 1,
+      SmallVector<sdy::TensorShardingAttr> newShardings(rotateAmount + 1,
                                                         rotateSharding);
       mlir::sdy::setShardings(ccall, sdy::TensorShardingPerValueAttr::get(
                                          rotate.getContext(), newShardings));
       rewriter.replaceOp(rotate, ValueRange(ccall->getResults()[0]));
 
-      Value neutral = ccall.getResult(rotate.getAmount());
+      Value neutral = ccall.getResult(rotateAmount);
       DominanceInfo domInfo;
       rewriter.replaceUsesWithIf(ccall.getOperands()[0], neutral,
                                  [&](OpOperand &use) {
@@ -2201,10 +2200,10 @@ struct RotateSpmdOptimize : public OpRewritePattern<enzymexla::RotateOp> {
       return success();
     }
 
-    if (rotate.getType().getShape()[rotateDimension] - rotate.getAmount() <=
+    if (rotate.getType().getShape()[rotateDimension] - rotateAmount <=
         shard_size) {
       int64_t right_amount =
-          rotate.getType().getShape()[rotateDimension] - rotate.getAmount();
+          rotate.getType().getShape()[rotateDimension] - rotateAmount;
       // Our op is rotate left:
       std::string opaque =
           "dimension=" + std::to_string(rotateDimension) +
@@ -2319,6 +2318,67 @@ struct MultiRotateCustomCallOptimize
         /*operand_layouts=*/nullptr,
         /*result_layouts=*/nullptr,
         /*output_operand_aliases=*/nullptr);
+    mlir::sdy::setShardings(ccall, TensorShardingPerValueAttr::get(
+                                       rewriter.getContext(), opShardings));
+    return success();
+  }
+};
+
+struct MultiPadCustomCallOptimize
+    : public OpRewritePattern<enzymexla::MultiPadOp> {
+  int64_t bufferize;
+  MultiPadCustomCallOptimize(int64_t bufferize, MLIRContext *context,
+                             PatternBenefit benefit = 1)
+      : OpRewritePattern(context, benefit), bufferize(bufferize) {}
+
+  LogicalResult matchAndRewrite(enzymexla::MultiPadOp pad,
+                                PatternRewriter &rewriter) const override {
+    if (pad->getParentOfType<sdy::ManualComputationOp>())
+      return failure();
+
+    auto padDimension = pad.getDimension();
+    auto shardings = mlir::sdy::getShardingPerValue(pad);
+    if (!shardings) {
+      return failure();
+    }
+    auto padSharding = shardings.getSharding(0);
+
+    int64_t numDevicesAlongDimension =
+        getNumDevicesAlongDimension(padSharding, padDimension, pad);
+
+    if (numDevicesAlongDimension == 1) {
+      return failure();
+    }
+
+    if ((cast<RankedTensorType>(pad.getResult(0).getType())
+             .getShape()[padDimension] +
+         numDevicesAlongDimension - 1) /
+            numDevicesAlongDimension !=
+        (pad.getOperand().getType().getShape()[padDimension] +
+         numDevicesAlongDimension - 1) /
+            numDevicesAlongDimension) {
+      return failure();
+    }
+
+    std::string opaque = "dimension=" + std::to_string(padDimension) +
+                         ",amt=" + std::to_string(pad.getAmount()) +
+                         ",bufferize=" + std::to_string(bufferize);
+
+    auto fnSym = rewriter.getStringAttr("_SPMDInternalOp_MultiPad");
+
+    SmallVector<TensorShardingAttr> opShardings(pad.getNumResults(),
+                                                padSharding);
+
+    auto ccall = rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
+        pad, pad->getResultTypes(), pad->getOperands(), fnSym,
+        /*has_side_effect=*/rewriter.getBoolAttr(false),
+        /*backend_config=*/rewriter.getStringAttr(opaque),
+        /*api_version=*/nullptr,
+        /*called_computations=*/nullptr,
+        /*operand_layouts=*/nullptr,
+        /*result_layouts=*/nullptr,
+        /*output_operand_aliases=*/nullptr);
+
     mlir::sdy::setShardings(ccall, TensorShardingPerValueAttr::get(
                                        rewriter.getContext(), opShardings));
     return success();
@@ -5030,6 +5090,10 @@ struct OptimizeCommunicationPass
     if (multislice_custom_call > 0)
       patterns.add<MultiSliceCustomCallOptimize>(
           multi_buffer, context, PatternBenefit(multislice_custom_call));
+
+    if (multipad_custom_call > 0)
+      patterns.add<MultiPadCustomCallOptimize>(
+          multi_buffer, context, PatternBenefit(multipad_custom_call));
 
     if (rotate_to_pad_comm > 0)
       patterns.add<RotateToPadCommOptimize>(context,

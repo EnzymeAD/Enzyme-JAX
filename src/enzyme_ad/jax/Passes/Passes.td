@@ -114,6 +114,14 @@ def TensorEmptyOpRaisingPass : Pass<"tensor-empty-raise"> {
   ];
 }
 
+def KernelCastPass : Pass<"kernelcast", "func::FuncOp"> {
+  let summary = "Cast GPU kernel floating point type based on enzymexla.float_type attribute";
+  let dependentDialects = [
+    "arith::ArithDialect",
+    "func::FuncDialect",
+  ];
+}
+
 def ConsumingInterpreterPass : Pass<"enzyme-consuming-transform-interpreter"> {
   let summary = "Run the transform interpreter and remove the script";
   let description =
@@ -940,6 +948,12 @@ def OptimizeCommunication : Pass<"optimize-communication"> {
        /*type=*/"int",
        /*default=*/"0",
        /*description=*/"Convert MultiSlice to Spmd custom call">,
+       Option<
+       /*C++ variable name=*/"multipad_custom_call",
+       /*CLI argument=*/"multipad_custom_call",
+       /*type=*/"int",
+       /*default=*/"0",
+       /*description=*/"Convert MultiPad to Spmd custom call">,
        Option<
        /*C++ variable name=*/"rotate_to_pad_comm",
        /*CLI argument=*/"rotate_to_pad_comm",

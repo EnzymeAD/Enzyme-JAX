@@ -2,7 +2,7 @@
 
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 
-XPROF_COMMIT = "a193bc6485ff2865f284362a038761165d833311"
+XPROF_COMMIT = "7f2296530fbbd8fc69dfaf6f6cde5edd6b3f18ed"
 XPROF_SHA256 = ""
 
 def repo(repo_name = ""):
@@ -45,8 +45,6 @@ cc_library(
 
     http_archive(
         name = "com_github_googlecloudplatform_google_cloud_cpp",
-        patch_args = ["-p1"],
-        patches = ["@org_xprof//third_party:google_cloud_cpp.patch"],
         patch_cmds = [
             """find . -type f -exec sed -i.bak -e 's/Windows.h/windows.h/g' -e 's/Ntstatus.h/ntstatus.h/g' {} +""",
         ],

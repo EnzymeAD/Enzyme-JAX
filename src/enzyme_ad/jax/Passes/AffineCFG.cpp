@@ -367,6 +367,7 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
           op = nv.getDefiningOp();
         } else {
           operationContext.pop_back();
+          opsTodos.pop_back();
           return nullptr;
         }
         next = op->getNextNode();
@@ -378,6 +379,7 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
         if (index && isAffineForArg(BA)) {
         } else if (!isValidSymbolInt(o, /*recur*/ false, scope)) {
           operationContext.pop_back();
+          opsTodos.pop_back();
           return nullptr;
         }
         next = &BA.getOwner()->front();

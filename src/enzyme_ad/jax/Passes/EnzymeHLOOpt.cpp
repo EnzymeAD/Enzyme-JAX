@@ -1517,7 +1517,7 @@ struct LowerPiecewiseSelect
                                     PatternRewriter &rewriter) const {
     Value condition;
     for (Attribute box : op.getBoxes()) {
-      SmallVector boxCoords = llvm::map_to_vector(
+      SmallVector<int64_t> boxCoords = llvm::map_to_vector(
           cast<ArrayAttr>(box).getAsValueRange<IntegerAttr>(),
           [](APInt apInt) { return apInt.getSExtValue(); });
       Value boxCondition = createInBoxCondition(
@@ -4656,6 +4656,19 @@ struct ConcatWrap final
   }
 };
 
+bool isOuterReducingReshape(stablehlo::ReshapeOp op) {
+  auto prevT = cast<RankedTensorType>(op.getOperand().getType());
+  if (prevT.getShape().size() != op.getType().getShape().size() + 1)
+    return false;
+  if (prevT.getShape()[0] != 1)
+    return false;
+  for (int i = 1; i < prevT.getShape().size(); i++) {
+    if (prevT.getShape()[i] != op.getType().getShape()[i - 1])
+      return false;
+  }
+  return true;
+}
+
 bool isSliceOf(Value wrapOperand, Value widenOperand, int dim,
                bool widenOperandOnLeft, int existingOffset) {
   auto wrapType = cast<RankedTensorType>(wrapOperand.getType());
@@ -4837,13 +4850,30 @@ struct WidenWrap final
       }
 
       if (newOperands.size()) {
-        auto prev = newOperands.back();
-        if (isSliceOf(wrap.getOperand(), prev, dim, /*widenOperandOnLeft*/ true,
-                      wrap.getLhs())) {
-          auto newWrap = enzymexla::WrapOp::create(
+        Value prev = newOperands.back();
+        Value wrapOperand = wrap.getOperand();
+
+        int withReshape = 0;
+        auto rsWrap = wrapOperand.getDefiningOp<stablehlo::ReshapeOp>();
+        auto rsWiden = prev.getDefiningOp<stablehlo::ReshapeOp>();
+        if (rsWrap && rsWiden && isOuterReducingReshape(rsWrap) &&
+            isOuterReducingReshape(rsWiden)) {
+
+          auto postRsTy = cast<ShapedType>(rsWiden.getResult().getType());
+
+          wrapOperand = rsWrap.getOperand();
+          prev = rsWiden.getOperand();
+
+          auto prevTy = cast<ShapedType>(prev.getType());
+          withReshape = prevTy.getRank() - postRsTy.getRank();
+        }
+
+        if (isSliceOf(wrapOperand, prev, dim + withReshape,
+                      /*widenOperandOnLeft*/ true, wrap.getLhs())) {
+          Value newWrap = enzymexla::WrapOp::create(
               rewriter, wrap.getLoc(), wrap.getOperand(),
-              wrap.getLhs() +
-                  cast<RankedTensorType>(prev.getType()).getShape()[dim],
+              wrap.getLhs() + cast<RankedTensorType>(prev.getType())
+                                  .getShape()[dim + withReshape],
               wrap.getRhs(), wrap.getDimension());
           newOperands.pop_back();
           newOperands.push_back(newWrap);
@@ -4853,13 +4883,30 @@ struct WidenWrap final
       }
 
       if (i + 1 < e) {
-        auto prev = op->getOperand(i + 1);
-        if (isSliceOf(wrap.getOperand(), prev, dim,
+        Value prev = op->getOperand(i + 1);
+        Value wrapOperand = wrap.getOperand();
+
+        int withReshape = 0;
+        auto rsWrap = wrapOperand.getDefiningOp<stablehlo::ReshapeOp>();
+        auto rsWiden = prev.getDefiningOp<stablehlo::ReshapeOp>();
+        if (rsWrap && rsWiden && isOuterReducingReshape(rsWrap) &&
+            isOuterReducingReshape(rsWiden)) {
+
+          auto postRsTy = cast<ShapedType>(rsWiden.getResult().getType());
+
+          wrapOperand = rsWrap.getOperand();
+          prev = rsWiden.getOperand();
+
+          auto prevTy = cast<ShapedType>(prev.getType());
+          withReshape = prevTy.getRank() - postRsTy.getRank();
+        }
+
+        if (isSliceOf(wrapOperand, prev, dim + withReshape,
                       /*widenOperandOnLeft*/ false, wrap.getRhs())) {
           auto newWrap = enzymexla::WrapOp::create(
               rewriter, wrap.getLoc(), wrap.getOperand(), wrap.getLhs(),
-              wrap.getRhs() +
-                  cast<RankedTensorType>(prev.getType()).getShape()[dim],
+              wrap.getRhs() + cast<RankedTensorType>(prev.getType())
+                                  .getShape()[dim + withReshape],
               wrap.getDimension());
           newOperands.push_back(newWrap);
           i++;
@@ -8354,6 +8401,141 @@ struct BroadcastInDimSimplify
   }
 };
 
+static bool getIotaLikeBounds(const enzyme::IotaLikeTensor &iotaLike,
+                              double &min_offset, double &max_offset) {
+  auto startOpt = enzyme::getDoubleFromAttr(iotaLike.start);
+  auto scaleOpt = enzyme::getDoubleFromAttr(iotaLike.scale);
+  if (!startOpt || !scaleOpt)
+    return false;
+  double startV = *startOpt;
+  double scaleV = *scaleOpt;
+
+  auto T = dyn_cast<RankedTensorType>(iotaLike.tensorType);
+  if (!T)
+    return false;
+
+  double max_index = T.getShape()[iotaLike.dimension] - 1;
+  double offset1 = startV;
+  double offset2 = startV + max_index * scaleV;
+  min_offset = std::min(offset1, offset2);
+  max_offset = std::max(offset1, offset2);
+  return true;
+}
+
+template <typename OpTy>
+struct MinMaxIotaConstSimplify
+    : public CheckedOpRewritePattern<OpTy, MinMaxIotaConstSimplify<OpTy>> {
+  using CheckedOpRewritePattern<
+      OpTy, MinMaxIotaConstSimplify<OpTy>>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(OpTy op, PatternRewriter &rewriter) const {
+    auto lhs = op.getLhs();
+    auto rhs = op.getRhs();
+
+    auto lhsIota = enzyme::detectIotaLikeTensor(lhs);
+    auto rhsIota = enzyme::detectIotaLikeTensor(rhs);
+
+    if ((!lhsIota && !rhsIota) || (lhsIota && rhsIota))
+      return failure();
+
+    auto iotaLike = lhsIota ? *lhsIota : *rhsIota;
+    Value iotaVal = lhsIota ? lhs : rhs;
+    Value cst = lhsIota ? rhs : lhs;
+
+    APInt cstAPInt;
+    APFloat cstAPFloat(0.0);
+    double cstF;
+    if (matchPattern(cst, m_ConstantInt(&cstAPInt))) {
+      cstF = cstAPInt.getSExtValue();
+    } else if (matchPattern(cst, m_ConstantFloat(&cstAPFloat))) {
+      cstF = cstAPFloat.convertToDouble();
+    } else {
+      return failure();
+    }
+
+    double min_offset, max_offset;
+    if (!getIotaLikeBounds(iotaLike, min_offset, max_offset))
+      return failure();
+
+    if (std::is_same_v<OpTy, stablehlo::MaxOp>) {
+      if (cstF <= min_offset) {
+        rewriter.replaceOp(op, iotaVal);
+        return success();
+      }
+      if (cstF >= max_offset) {
+        rewriter.replaceOp(op, cst);
+        return success();
+      }
+    } else {
+      if (cstF <= min_offset) {
+        rewriter.replaceOp(op, cst);
+        return success();
+      }
+      if (cstF >= max_offset) {
+        rewriter.replaceOp(op, iotaVal);
+        return success();
+      }
+    }
+
+    return failure();
+  }
+};
+
+struct ClampIotaConstSimplify
+    : public CheckedOpRewritePattern<stablehlo::ClampOp,
+                                     ClampIotaConstSimplify> {
+  using CheckedOpRewritePattern<
+      stablehlo::ClampOp, ClampIotaConstSimplify>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ClampOp op,
+                                    PatternRewriter &rewriter) const {
+    auto min_cst = op.getMin();
+    auto max_cst = op.getMax();
+    auto operand = op.getOperand();
+
+    auto iotaLike = enzyme::detectIotaLikeTensor(operand);
+    if (!iotaLike)
+      return failure();
+
+    APInt minAPInt, maxAPInt;
+    APFloat minAPFloat(0.0), maxAPFloat(0.0);
+    double minF, maxF;
+
+    if (matchPattern(min_cst, m_ConstantInt(&minAPInt)))
+      minF = minAPInt.getSExtValue();
+    else if (matchPattern(min_cst, m_ConstantFloat(&minAPFloat)))
+      minF = minAPFloat.convertToDouble();
+    else
+      return failure();
+
+    if (matchPattern(max_cst, m_ConstantInt(&maxAPInt)))
+      maxF = maxAPInt.getSExtValue();
+    else if (matchPattern(max_cst, m_ConstantFloat(&maxAPFloat)))
+      maxF = maxAPFloat.convertToDouble();
+    else
+      return failure();
+
+    double iota_min, iota_max;
+    if (!getIotaLikeBounds(*iotaLike, iota_min, iota_max))
+      return failure();
+
+    if (minF <= iota_min && maxF >= iota_max) {
+      rewriter.replaceOp(op, operand);
+      return success();
+    }
+    if (iota_max <= minF) {
+      rewriter.replaceOp(op, min_cst);
+      return success();
+    }
+    if (iota_min >= maxF) {
+      rewriter.replaceOp(op, max_cst);
+      return success();
+    }
+
+    return failure();
+  }
+};
+
 struct CompareIotaConstSimplify
     : public CheckedOpRewritePattern<stablehlo::CompareOp,
                                      CompareIotaConstSimplify> {
@@ -8938,10 +9120,8 @@ struct BroadcastIotaSimplify
         auto loc = broadcast.getLoc();
 
         // find the dimension to broadcast in
-        int broadcast_dim = -1;
         auto result_shape =
             cast<mlir::ShapedType>(result_type.front()).getShape();
-        auto max_dims = result_shape.size();
 
         if (broadcast.getType().getElementType().isInteger(1)) {
           // true, false, .... false.  -> iota == 0
@@ -9117,19 +9297,6 @@ struct BroadcastIotaSimplify
           }
         }
 
-        for (broadcast_dim = 0; broadcast_dim < max_dims; ++broadcast_dim) {
-          bool found = false;
-          for (auto &elem : broadcast.getBroadcastDimensions()) {
-            if (elem == broadcast_dim) {
-              found = true;
-              break;
-            }
-          }
-          if (!found)
-            break;
-        }
-        assert(broadcast_dim != -1);
-
         if (diff == 0)
           return failure();
 
@@ -9141,6 +9308,11 @@ struct BroadcastIotaSimplify
           ++curr;
           ++next;
         }
+
+        // The input is 1D, so getBroadcastDimensions()[0] gives the output
+        // dimension that the input data maps to. The iota must vary along
+        // that dimension, not the replicated one.
+        int32_t broadcast_dim = broadcast.getBroadcastDimensions()[0];
 
         // build the replacement operations
         auto iota = stablehlo::IotaOp::create(rewriter, loc, result_type,
@@ -19453,7 +19625,7 @@ struct WhileWrap
       limits[candidate.concat.getDimension()] -= candidate.concat.getRhs();
 
       newOperands[candidate.idx] = stablehlo::SliceOp::create(
-          rewriter, candidate.concat[1].getLoc(),
+          rewriter, candidate.concat.getLoc(),
           whileOp.getOperands()[candidate.idx], starts, limits, steps);
     }
 
@@ -23211,19 +23383,6 @@ bool isWrapLike(int dim, Value lhs, Value mid, Value rhs,
         return false;
       }
     }
-  }
-  return true;
-}
-
-bool isOuterReducingReshape(stablehlo::ReshapeOp op) {
-  auto prevT = cast<RankedTensorType>(op.getOperand().getType());
-  if (prevT.getShape().size() != op.getType().getShape().size() + 1)
-    return false;
-  if (prevT.getShape()[0] != 1)
-    return false;
-  for (int i = 1; i < prevT.getShape().size(); i++) {
-    if (prevT.getShape()[i] != op.getType().getShape()[i - 1])
-      return false;
   }
   return true;
 }
@@ -33132,6 +33291,55 @@ struct LowerMultiSlice final
   }
 };
 
+struct LowerMultiPad final
+    : CheckedOpRewritePattern<enzymexla::MultiPadOp, LowerMultiPad> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(enzymexla::MultiPadOp op,
+                                    PatternRewriter &rewriter) const {
+    int32_t amount = op.getAmount();
+    int32_t totalResults = amount + 1;
+    int32_t dim = op.getDimension();
+
+    auto input = op.getOperand();
+    auto paddingValue = op.getPaddingValue();
+
+    auto inputType = cast<RankedTensorType>(input.getType());
+    int64_t rank = inputType.getRank();
+
+    auto shard = sdy::getShardingPerValue(op);
+
+    SmallVector<Value> replacements(totalResults);
+
+    for (int idx = 0; idx < totalResults; idx++) {
+      SmallVector<int64_t> low(rank, 0);
+      SmallVector<int64_t> high(rank, 0);
+      SmallVector<int64_t> interior(rank, 0);
+
+      high[dim] = idx;
+      low[dim] = amount - idx;
+
+      auto padOp = rewriter.create<stablehlo::PadOp>(
+          op.getLoc(), input, paddingValue, rewriter.getDenseI64ArrayAttr(low),
+          rewriter.getDenseI64ArrayAttr(high),
+          rewriter.getDenseI64ArrayAttr(interior));
+
+      if (shard) {
+        sdy::TensorShardingAttr shards[1] = {shard.getShardings()[idx]};
+        auto shard2 =
+            sdy::TensorShardingPerValueAttr::get(padOp.getContext(), shards);
+        sdy::setShardings(padOp, shard2);
+      }
+
+      replacements[idx] = padOp.getResult();
+    }
+
+    rewriter.replaceOp(op, replacements);
+
+    return success();
+  }
+};
+
 struct RecognizeMultiRotate
     : public CheckedOpRewritePattern<enzymexla::RotateOp,
                                      RecognizeMultiRotate> {
@@ -33451,6 +33659,136 @@ struct UseMultiRotateNeutralResult
       return true;
     });
     return success(anyReplaced);
+  }
+};
+
+struct RecognizeMultiPad final
+    : CheckedOpRewritePattern<stablehlo::PadOp, RecognizeMultiPad> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::PadOp op,
+                                    PatternRewriter &rewriter) const {
+    Value input = op.getOperand();
+    Value paddingValue = op.getPaddingValue();
+
+    auto opLow = op.getEdgePaddingLow();
+    auto opHigh = op.getEdgePaddingHigh();
+    auto opInterior = op.getInteriorPadding();
+
+    int64_t rank = cast<RankedTensorType>(input.getType()).getRank();
+
+    // Find the single dimension that is padded.
+    int32_t dimension = -1;
+    for (int64_t i = 0; i < rank; ++i) {
+      if (opLow[i] != 0 || opHigh[i] != 0 || opInterior[i] != 0) {
+        if (dimension != -1) {
+          return failure(); // Pads multiple dimensions, not supported by
+                            // MultiPadOp
+        }
+        dimension = i;
+      }
+    }
+
+    if (dimension == -1) {
+      return failure(); // No padding at all?
+    }
+
+    if (opInterior[dimension] != 0) {
+      return failure(); // Non-zero interior padding not supported
+    }
+
+    int64_t rootTotalPadding = opLow[dimension] + opHigh[dimension];
+
+    // Collect all PadOps operating on the same input with the same padding
+    // value and that only pad the same dimension and have 0 interior padding.
+    SmallVector<stablehlo::PadOp> pads;
+
+    for (Operation *user : input.getUsers()) {
+      if (auto pad = dyn_cast<stablehlo::PadOp>(user)) {
+        if (pad.getPaddingValue() != paddingValue)
+          continue;
+
+        auto low = pad.getEdgePaddingLow();
+        auto high = pad.getEdgePaddingHigh();
+        auto interior = pad.getInteriorPadding();
+
+        int64_t totalPadding = low[dimension] + high[dimension];
+        if (totalPadding != rootTotalPadding)
+          continue;
+
+        bool match = true;
+        for (int64_t i = 0; i < rank; ++i) {
+          if (i == dimension) {
+            if (interior[i] != 0) {
+              match = false;
+              break;
+            }
+          } else {
+            if (low[i] != 0 || high[i] != 0 || interior[i] != 0) {
+              match = false;
+              break;
+            }
+          }
+        }
+
+        if (match) {
+          pads.push_back(pad);
+        }
+      }
+    }
+
+    if (pads.size() < 2)
+      return failure(); // Need at least 2 pads to combine
+
+    std::optional<sdy::TensorShardingPerValueAttr> commonSharding;
+    bool shardingMismatch = false;
+    for (auto pad : pads) {
+      auto shardPerValue = sdy::getShardingPerValue(pad);
+      if (!commonSharding.has_value()) {
+        commonSharding = shardPerValue;
+      } else if (commonSharding.value() != shardPerValue) {
+        shardingMismatch = true;
+        break;
+      }
+    }
+    if (shardingMismatch)
+      return failure();
+
+    rewriter.setInsertionPointAfterValue(input);
+
+    int64_t amount = rootTotalPadding;
+    int64_t numResults = amount + 1;
+    SmallVector<Type> resultTypes(numResults);
+
+    auto inputType = cast<RankedTensorType>(input.getType());
+    auto shape = llvm::to_vector(inputType.getShape());
+    shape[dimension] += amount;
+    Type resultType = RankedTensorType::get(shape, inputType.getElementType());
+
+    for (int64_t i = 0; i < numResults; ++i) {
+      resultTypes[i] = resultType;
+    }
+
+    auto multiPad = rewriter.create<enzymexla::MultiPadOp>(
+        op.getLoc(), resultTypes, input, paddingValue, dimension, amount);
+
+    if (commonSharding.has_value() && commonSharding.value()) {
+      auto shardings = commonSharding.value().getShardings();
+      if (!shardings.empty()) {
+        sdy::TensorShardingAttr singleShard = shardings[0];
+        SmallVector<sdy::TensorShardingAttr> newShardings(numResults,
+                                                          singleShard);
+        sdy::setShardings(multiPad, sdy::TensorShardingPerValueAttr::get(
+                                        op.getContext(), newShardings));
+      }
+    }
+
+    for (auto pad : pads) {
+      int64_t idx = pad.getEdgePaddingHigh()[dimension];
+      rewriter.replaceOp(pad, multiPad.getResult(idx));
+    }
+
+    return success();
   }
 };
 
@@ -34597,6 +34935,8 @@ struct EnzymeHLOOptPass
         NegatedConstantMulFactoring<stablehlo::SubtractOp>,
         ReshapeDeletionsBroadcastInDimSimplify,
         ReshapeInsertionsBroadcastInDimSimplify, CompareIotaConstSimplify,
+        MinMaxIotaConstSimplify<stablehlo::MaxOp>,
+        MinMaxIotaConstSimplify<stablehlo::MinOp>, ClampIotaConstSimplify,
         CompareAbs, CompareMul, CompareConvert, AddSelects,
         CompareNegateConstSimplify, SelectSimplify,
         DynamicSliceReshapeDynamicSlice, DynamicSliceReshapeSlice,

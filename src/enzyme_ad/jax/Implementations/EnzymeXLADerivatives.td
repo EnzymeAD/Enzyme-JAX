@@ -338,7 +338,10 @@ def : EnzymeXLADerivative<"ExtendOp", (Op $input), [
 ], (Extend (Shadow $input), (ExtendLhs), (ExtendRhs), (ExtendDim))>;
 
 def RotateRevAmount : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-    builder.getI32IntegerAttr(-op.getAmount());
+    auto Ty = cast<ShapedType>(op.getOperand().getType());
+    uint32_t N = Ty.getShape()[op.getDimension()];
+    uint32_t revAmount = N - (op.getAmount() % N);
+    builder.getI32IntegerAttr(revAmount);
 }]>;
 def RotateAmount : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
     op.getAmountAttr();

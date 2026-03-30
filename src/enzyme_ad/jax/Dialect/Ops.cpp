@@ -2614,3 +2614,48 @@ LogicalResult enzymexla::MultiSliceOp::verify() {
 
   return success();
 }
+
+LogicalResult enzymexla::MultiPadOp::verify() {
+  auto operandType = cast<RankedTensorType>(getOperand().getType());
+  int64_t rank = operandType.getRank();
+
+  int32_t dimension = getDimension();
+  if (dimension < 0 || dimension >= rank)
+    return emitOpError("dimension ")
+           << dimension << " is out of range for tensor of rank " << rank;
+
+  int64_t amount = getAmount();
+  if (amount < 0)
+    return emitOpError("amount must be non-negative");
+
+  int64_t expectedNumResults = amount + 1;
+  if ((int64_t)getNumResults() != expectedNumResults)
+    return emitOpError("expected ")
+           << expectedNumResults << " results (amount + 1), got "
+           << getNumResults();
+
+  auto operandShape = operandType.getShape();
+  for (auto [idx, result] : llvm::enumerate(getResults())) {
+    auto resType = cast<RankedTensorType>(result.getType());
+    if (resType.getRank() != rank)
+      return emitOpError("result #")
+             << idx << " must have the same rank as operand";
+
+    for (int64_t d = 0; d < rank; ++d) {
+      if (d == dimension) {
+        int64_t expectedSize = operandShape[d] + amount;
+        if (resType.getDimSize(d) != expectedSize)
+          return emitOpError("result #")
+                 << idx << " dimension " << d << " must have size "
+                 << expectedSize << " but got " << resType.getDimSize(d);
+      } else {
+        if (resType.getDimSize(d) != operandShape[d])
+          return emitOpError("result #")
+                 << idx << " dimension " << d << " must match operand size "
+                 << operandShape[d] << " but got " << resType.getDimSize(d);
+      }
+    }
+  }
+
+  return success();
+}
