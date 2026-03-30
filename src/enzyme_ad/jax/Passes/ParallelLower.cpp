@@ -775,7 +775,7 @@ void ParallelLower::runOnOperation() {
     }
     */
     {
-     auto noop = enzymexla::NoopOp::create(
+      auto noop = enzymexla::NoopOp::create(
           builder, loc,
           ValueRange({blockB->getArguments()[0], blockB->getArguments()[1],
                       blockB->getArguments()[2]}));
