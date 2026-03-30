@@ -86,6 +86,7 @@ struct AlignmentHandler {
   bool handleSliceOp(stablehlo::SliceOp op);
   bool handleDynamicUpdateSliceOp(stablehlo::DynamicUpdateSliceOp op);
   bool handleBroadcastInDimOp(stablehlo::BroadcastInDimOp op);
+  bool handleReshapeOp(stablehlo::ReshapeOp op);
   bool handleElementwiseOp(Operation *op);
   bool handleSelectOp(stablehlo::SelectOp op);
   bool handleConcatenateOp(stablehlo::ConcatenateOp op);
@@ -718,6 +719,42 @@ bool AlignmentHandler::handleConcatenateOp(stablehlo::ConcatenateOp op) {
   return true;
 }
 
+bool AlignmentHandler::handleReshapeOp(stablehlo::ReshapeOp op) {
+  auto input = op.getOperand();
+  auto res = op.getResult();
+
+  if (!paddedValues.contains(input) && !needsPadding(res))
+    return false;
+
+  auto inputType = cast<RankedTensorType>(input.getType());
+  auto resType = cast<RankedTensorType>(res.getType());
+
+  // currently only reshape of singleton dimensions is supported
+  auto filteredInputShape = llvm::to_vector(llvm::make_filter_range(
+      inputType.getShape(), [](int64_t dim) { return dim != 1; }));
+  auto filteredResShape = llvm::to_vector(llvm::make_filter_range(
+      resType.getShape(), [](int64_t dim) { return dim != 1; }));
+  if (filteredInputShape.size() != filteredResShape.size())
+    return false;
+
+  for (auto [resDim, inputDim] :
+       llvm::zip_equal(filteredResShape, filteredInputShape))
+    if (resDim != inputDim)
+      return false;
+
+  builder.setInsertionPoint(op);
+  auto paddedInput = getOrCreatePadOp(input);
+
+  auto alignedResShape = getAlignedShape(resType);
+  auto paddedResType = resType.clone(alignedResShape);
+
+  auto newOp = builder.create<stablehlo::ReshapeOp>(op.getLoc(), paddedResType,
+                                                    paddedInput);
+
+  eraseWithReplacement(op, newOp.getResult());
+  return true;
+}
+
 bool AlignmentHandler::handleElementwiseOp(Operation *op) {
   if (!needsPadding(op->getResult(0)))
     return false;
@@ -855,6 +892,8 @@ void PadForAlignmentPass::runOnFunction(func::FuncOp func) {
       handled = handler.handleSelectOp(select);
     } else if (auto concat = dyn_cast<stablehlo::ConcatenateOp>(op)) {
       handled = handler.handleConcatenateOp(concat);
+    } else if (auto reshape = dyn_cast<stablehlo::ReshapeOp>(op)) {
+      handled = handler.handleReshapeOp(reshape);
     } else if (stablehlo::hasTraitElementwise(op)) {
       handled = handler.handleElementwiseOp(op);
     } else if (auto dot = dyn_cast<stablehlo::DotGeneralOp>(op)) {
