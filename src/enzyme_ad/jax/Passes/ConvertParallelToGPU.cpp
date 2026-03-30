@@ -557,18 +557,6 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
       emitAlternative(atoi(blockSizeStr), alternativesOp);
       if (curRegion == 0) {
         llvm::errs() << " Failed to make kernel with exact dimension\n";
-        // if (getenv("DUMP_MLIR_ON_EXACT_DIM_FAIL")) {
-        //   if (auto parentFunc =
-        //   wrapper->getParentOfType<mlir::FunctionOpInterface>()) {
-        //     llvm::errs() << "=== FUNC IR at 'Failed to make kernel with exact
-        //     dimension' ===\n"; parentFunc.print(llvm::errs()); llvm::errs()
-        //     << "\n=== END FUNC IR ===\n";
-        //   } else {
-        //     llvm::errs() << "=== WRAPPER IR at 'Failed to make kernel with
-        //     exact dimension' ===\n"; wrapper.print(llvm::errs());
-        //     llvm::errs() << "\n=== END WRAPPER IR ===\n";
-        //   }
-        // }
         assert(wrapper.getOperands().size() == 6);
         assert(pop.getUpperBound().size() == 6 &&
                pop.getUpperBound() == wrapper.getOperands());
