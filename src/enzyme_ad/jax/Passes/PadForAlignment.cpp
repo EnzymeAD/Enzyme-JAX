@@ -43,12 +43,24 @@ struct AlignmentHandler {
   }
 
   static SmallVector<int64_t> getPaddingAmounts(RankedTensorType type) {
-    SmallVector<int64_t> padding(type.getRank(), 0);
     auto rank = type.getRank();
+    if (rank == 0)
+      return {};
+
+    SmallVector<int64_t> padding(type.getRank(), 0);
+
+    SmallVector<int64_t> non_singleton_dims;
+    for (int i = 0; i < type.getRank(); ++i)
+      if (type.getDimSize(i) > 1)
+        non_singleton_dims.push_back(i);
+
+    rank = non_singleton_dims.size();
+
     for (int i = std::max((int64_t)0, rank - 2); i < rank; ++i) {
-      if (type.getDimSize(i) >= 64 && type.getDimSize(i) % 128 != 0) {
-        padding[i] =
-            ((type.getDimSize(i) + 127) / 128 * 128) - type.getDimSize(i);
+      auto dim = non_singleton_dims[i];
+      if (type.getDimSize(dim) >= 64 && type.getDimSize(dim) % 128 != 0) {
+        padding[dim] =
+            ((type.getDimSize(dim) + 127) / 128 * 128) - type.getDimSize(dim);
       }
     }
     return padding;
