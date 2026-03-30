@@ -774,6 +774,14 @@ void ParallelLower::runOnOperation() {
                     StringAttr::get(noop->getContext(), "gpu_kernel.block"));
     }
     */
+   {
+    auto noop = enzymexla::NoopOp::create(
+          builder, loc,
+          ValueRange({blockB->getArguments()[0], blockB->getArguments()[1],
+                      blockB->getArguments()[2]}));
+      noop->setAttr("enzymexla.noop_type",
+                    StringAttr::get(noop->getContext(), "gpu_kernel.block"));
+   }
 
     auto threadr = mlir::scf::ParallelOp::create(
         builder, loc, std::vector<Value>({zindex, zindex, zindex}),
