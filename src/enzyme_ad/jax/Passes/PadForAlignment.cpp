@@ -378,19 +378,12 @@ bool AlignmentHandler::handlePadOp(stablehlo::PadOp op) {
     return true;
   }
 
-  bool all_zero_input_padding = true;
   for (int i = 0; i < type.getRank(); ++i) {
     high[i] += resultPadding[i] - (interior[i] + 1) * inputPadding[i];
-    if (high[i] != 0)
-      all_zero_input_padding = false;
 
     // check that negative paddings do not remove real data, just the already existing padding
     if (high[i] < 0)
       assert(inputPadding[i] + high[i] >= 0);
-  }
-  if (all_zero_input_padding) {
-    eraseWithReplacement(op, getValueOrPadded(input));
-    return true;
   }
   builder.setInsertionPointAfterValue(op);
   auto padOp =

@@ -107,3 +107,18 @@ func.func @test_no_result_padding_needed(%arg0: tensor<4x760x1533xf32>) -> tenso
 // CHECK-NEXT:     %1 = stablehlo.pad %0, %cst, low = [1, 4, 0], high = [1, -4, 0], interior = [0, 0, 0] : (tensor<4x768x1536xf32>, tensor<f32>) -> tensor<6x768x1536xf32>
 // CHECK-NEXT:     return %1 : tensor<6x768x1536xf32>
 // CHECK-NEXT: }
+
+func.func @test_low_all_zero_input_padding(%arg0: tensor<3x1520x3056xf32>) -> tensor<4x1520x3056xf32> {
+  %cst = stablehlo.constant dense<0.0> : tensor<f32>
+  %0 = stablehlo.pad %arg0, %cst, low = [1, 0, 0], high = [0, 0, 0], interior = [0, 0, 0] : (tensor<3x1520x3056xf32>, tensor<f32>) -> tensor<4x1520x3056xf32>
+  return %0 : tensor<4x1520x3056xf32>
+}
+
+// CHECK: func.func @test_low_all_zero_input_padding(%arg0: tensor<3x1520x3056xf32>) -> tensor<4x1520x3056xf32> {
+// CHECK-NEXT:     %cst = stablehlo.constant dense<0.000000e+00> : tensor<f32>
+// CHECK-NEXT:     %0 = stablehlo.pad %arg0, %cst, low = [0, 0, 0], high = [0, 16, 16], interior = [0, 0, 0] : (tensor<3x1520x3056xf32>, tensor<f32>) -> tensor<3x1536x3072xf32>
+// CHECK-NEXT:     %1 = stablehlo.pad %0, %cst, low = [1, 0, 0], high = [0, 0, 0], interior = [0, 0, 0] : (tensor<3x1536x3072xf32>, tensor<f32>) -> tensor<4x1536x3072xf32>
+// CHECK-NEXT:     %2 = stablehlo.slice %1 [0:4, 0:1520, 0:3056] : (tensor<4x1536x3072xf32>) -> tensor<4x1520x3056xf32>
+// CHECK-NEXT:     return %2 : tensor<4x1520x3056xf32>
+// CHECK-NEXT: }
+
