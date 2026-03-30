@@ -4,6 +4,7 @@
 #include "mlir/IR/Location.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/Pass/Pass.h"
+#include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Utils.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "llvm/ADT/DenseMap.h"
@@ -104,6 +105,8 @@ struct AlignmentHandler {
   bool handleConcatenateOp(stablehlo::ConcatenateOp op);
   bool handleDotGeneralOp(stablehlo::DotGeneralOp op);
   bool handleTransposeOp(stablehlo::TransposeOp op);
+  bool handleRotateOp(enzymexla::RotateOp op);
+  bool handleMultiRotateOp(enzymexla::MultiRotateOp op);
 
   // it doesn't update the results of `op`; i.e. just updates the `paddedValues`
   // and may mark it for erasure. the replacement is done on a later stage.
@@ -834,6 +837,58 @@ bool AlignmentHandler::handleTransposeOp(stablehlo::TransposeOp op) {
   return true;
 }
 
+bool AlignmentHandler::handleRotateOp(enzymexla::RotateOp op) {
+  auto input = op.getOperand();
+
+  if (!needsPadding(input))
+    return false;
+
+  auto paddedInput = getOrCreatePadOp(input);
+  auto padding = getPaddingAmounts(input.getType());
+  auto amount = op.getAmount();
+  auto dimension = op.getDimension();
+
+  builder.setInsertionPoint(op);
+
+  // if no padding on rotated dim, just rotate the padded input
+  if (padding[dimension] == 0) {
+
+    auto rotOp = builder.create<enzymexla::RotateOp>(op.getLoc(), paddedInput.getType(),
+                                               paddedInput, amount, dimension);
+    eraseWithReplacement(op, rotOp.getResult());
+    return true;
+  }
+
+  return false;
+}
+
+bool AlignmentHandler::handleMultiRotateOp(enzymexla::MultiRotateOp op) {
+  auto input = op.getOperand();
+
+  if (!needsPadding(input))
+    return false;
+
+  auto paddedInput = getOrCreatePadOp(input);
+  auto padding = getPaddingAmounts(input.getType());
+  auto dimension = op.getDimension();
+  auto leftAmount = op.getLeftAmount();
+  auto rightAmount = op.getRightAmount();
+  auto totalAmount = leftAmount + rightAmount + 1;
+
+  builder.setInsertionPoint(op);
+
+  // if no padding on rotated dim, just rotate the padded input
+  if (padding[dimension] == 0) {
+    auto rotOp = builder.create<enzymexla::MultiRotateOp>(op.getLoc(),
+      SmallVector<Type>(totalAmount, paddedInput.getType()),
+      paddedInput, dimension, leftAmount, rightAmount);
+    eraseWithReplacement(op, rotOp.getResults());
+    return true;
+  }
+
+  return false;
+}
+
 void PadForAlignmentPass::runOnFunction(func::FuncOp func) {
   OpBuilder builder(func.getContext());
   DenseMap<Value, Value> paddedValues;
@@ -911,6 +966,10 @@ void PadForAlignmentPass::runOnFunction(func::FuncOp func) {
       handled = handler.handleBroadcastInDimOp(bcast);
     } else if (auto transpose = dyn_cast<stablehlo::TransposeOp>(op)) {
       handled = handler.handleTransposeOp(transpose);
+    } else if (auto rotate = dyn_cast<enzymexla::RotateOp>(op)) {
+      handled = handler.handleRotateOp(rotate);
+    } else if (auto multiRotate = dyn_cast<enzymexla::MultiRotateOp>(op)) {
+      handled = handler.handleElementwiseOp(multiRotate);
     }
 
     if (!handled) {
