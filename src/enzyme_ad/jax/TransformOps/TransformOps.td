@@ -131,6 +131,10 @@ def ApplyDynamicUpdateSliceElimPatterns : EnzymeHLOPatternOp<
     "dynamic_update_slice_elim"> {
   let patterns = ["DynamicUpdateSliceElim"];
 }
+def ApplyDUSSelectSlicePatterns : EnzymeHLOPatternOp<
+    "dus_select_slice"> {
+  let patterns = ["DUSSelectSlice"];
+}
 def ApplyReduceToReshapePatterns : EnzymeHLOPatternOp<
     "reduce_to_reshape"> {
   let patterns = ["ReduceToReshape"];
