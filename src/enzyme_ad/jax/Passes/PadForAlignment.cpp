@@ -727,7 +727,11 @@ bool AlignmentHandler::handleConcatenateOp(stablehlo::ConcatenateOp op) {
   auto newOp = builder.create<stablehlo::ConcatenateOp>(
       op.getLoc(), paddedOutType, operands, op.getDimension());
 
-  eraseWithReplacement(op, newOp.getResult());
+  Value currentResult = newOp.getResult();
+  if (needsPadding(currentResult))
+    currentResult = getOrCreatePadOp(currentResult);
+
+  eraseWithReplacement(op, {currentResult});
   return true;
 }
 
