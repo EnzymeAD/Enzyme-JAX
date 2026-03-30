@@ -584,7 +584,7 @@ bool AlignmentHandler::handleBroadcastInDimOp(stablehlo::BroadcastInDimOp op) {
   for (size_t i = 0; i < bcastDims.size(); ++i) {
     int64_t outDim = bcastDims[i];
     auto inputDimSize = inputPaddedType.getDimSize(i);
-    if (inputDimSize != alignedOutShape[outDim]) {
+    if (inputDimSize != alignedOutShape[outDim] && inputDimSize != 1) {
       intermediateShape[outDim] = inputDimSize;
       if (inputDimSize < alignedOutShape[outDim]) {
         padHigh[outDim] = alignedOutShape[outDim] - inputDimSize;
