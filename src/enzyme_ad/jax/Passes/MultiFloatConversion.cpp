@@ -148,14 +148,20 @@ Value packLimbs(Value high, Value low, OpBuilder &builder, Location loc, StringR
 }
 
 Value convertToMultifloat(Value val, OpBuilder &b, Location loc, Type tgtTy,
-                          StringRef concatDimension) {
+                          StringRef concatDimension, int expansionSize) {
   auto tensorType = cast<RankedTensorType>(val.getType());
-  Value high = b.create<stablehlo::ConvertOp>(
-      loc, RankedTensorType::get(tensorType.getShape(), tgtTy), val);
-  Value highBack = b.create<stablehlo::ConvertOp>(loc, tensorType, high);
-  Value rem = b.create<stablehlo::SubtractOp>(loc, val, highBack);
-  Value low = b.create<stablehlo::ConvertOp>(
-      loc, RankedTensorType::get(tensorType.getShape(), tgtTy), rem);
+  SmallVector<Value> limbs;
+  Value rem = val;
+  for (int i = 0; i < expansionSize; ++i) {
+    Value limb = b.create<stablehlo::ConvertOp>(
+        loc, RankedTensorType::get(tensorType.getShape(), tgtTy), rem);
+    limbs.push_back(limb);
+    if (i < expansionSize - 1) {
+      Value limbBack = b.create<stablehlo::ConvertOp>(loc, tensorType, limb);
+      rem = b.create<stablehlo::SubtractOp>(loc, rem, limbBack);
+    }
+  }
+
   if (concatDimension != "tuple") {
     SmallVector<int64_t> expandedShape;
     if (concatDimension == "first") {
@@ -168,10 +174,13 @@ Value convertToMultifloat(Value val, OpBuilder &b, Location loc, Type tgtTy,
       expandedShape.push_back(1);
     }
     auto expandedType = RankedTensorType::get(expandedShape, tgtTy);
-    high = b.create<stablehlo::ReshapeOp>(loc, expandedType, high);
-    low = b.create<stablehlo::ReshapeOp>(loc, expandedType, low);
+    SmallVector<Value> reshapedLimbs;
+    for (auto limb : limbs) {
+      reshapedLimbs.push_back(b.create<stablehlo::ReshapeOp>(loc, expandedType, limb));
+    }
+    return packLimbs(reshapedLimbs, b, loc, concatDimension);
   }
-  return packLimbs({high, low}, b, loc, concatDimension);
+  return packLimbs(limbs, b, loc, concatDimension);
 }
 
 Value convertFromMultifloat(Value packedVal, OpBuilder &b, Location loc,
@@ -257,10 +266,6 @@ int getFloatPrecision(Type type) {
   return getFloatProperties(type).second;
 }
 
-bool atLeastAsPreciseAs(Type a, Type b) {
-  return getFloatPrecision(a) >= getFloatPrecision(b);
-}
-
 bool isSubsetFloat(Type a, Type b) {
   auto pA = getFloatProperties(a);
   auto pB = getFloatProperties(b);
@@ -273,9 +278,13 @@ Value getSplitConstant(Type type, OpBuilder &builder, Location loc) {
   int precision = getFloatPrecision(floatTy);
   if (precision == 0) return nullptr;
   int k = (precision + 1) / 2;
-  double val = std::pow(2.0, k) + 1.0;
+  APInt api(256, 1);
+  api <<= k;
+  api += 1;
+  APFloat apVal(floatTy.getFloatSemantics());
+  apVal.convertFromAPInt(api, /*isSigned=*/false, APFloat::rmNearestTiesToEven);
   
-  auto attr = builder.getFloatAttr(floatTy, val);
+  auto attr = builder.getFloatAttr(floatTy, apVal);
   auto splatAttr = SplatElementsAttr::get(tensorTy, attr);
   return builder.create<stablehlo::ConstantOp>(loc, splatAttr);
 }
@@ -775,13 +784,17 @@ struct ConvertOpConversion : public OpConversionPattern<stablehlo::ConvertOp> {
         rewriter.replaceOp(op, high);
         return success();
       } else {
+        if (!isTuple) {
+          Value zero = nullptr;
+          Value converted = convertFromMultifloat(adaptor.getOperands()[0], rewriter, loc, outElType, concatDimension, zero);
+          rewriter.replaceOp(op, converted);
+          return success();
+        }
+
         // Output is wider than a limb, sum limbs
         Value sum = nullptr;
         for (int i = 0; i < expansionSize; ++i) {
           Value limb = extractLimb(adaptor.getOperands()[0], i, rewriter, loc, concatDimension);
-          if (!isTuple) {
-            limb = rewriter.create<stablehlo::ReshapeOp>(loc, RankedTensorType::get(outTensorType.getShape(), targetType), limb);
-          }
           Value convertedLimb = rewriter.create<stablehlo::ConvertOp>(loc, RankedTensorType::get(outTensorType.getShape(), outElType), limb);
           if (sum) {
             sum = rewriter.create<stablehlo::AddOp>(loc, sum, convertedLimb);
@@ -816,30 +829,7 @@ struct ConvertOpConversion : public OpConversionPattern<stablehlo::ConvertOp> {
         rewriter.replaceOp(op, packed);
         return success();
       } else {
-        // Input is wider or not a subset. Convert to sourceType first, then split.
-        Value converted = rewriter.create<stablehlo::ConvertOp>(loc, RankedTensorType::get(inTensorType.getShape(), sourceType), adaptor.getOperands()[0]);
-        
-        Value rem = converted;
-        SmallVector<Value> limbs;
-        for (int i = 0; i < expansionSize; ++i) {
-          Value limb = rewriter.create<stablehlo::ConvertOp>(loc, RankedTensorType::get(outTensorType.getShape(), targetType), rem);
-          limbs.push_back(limb);
-          if (i < expansionSize - 1) {
-            Value limbBack = rewriter.create<stablehlo::ConvertOp>(loc, RankedTensorType::get(outTensorType.getShape(), sourceType), limb);
-            rem = rewriter.create<stablehlo::SubtractOp>(loc, rem, limbBack);
-          }
-        }
-        
-        SmallVector<Value> packedLimbsList;
-        for (auto limb : limbs) {
-          if (!isTuple) {
-            packedLimbsList.push_back(rewriter.create<stablehlo::ReshapeOp>(loc, limbType, limb));
-          } else {
-            packedLimbsList.push_back(limb);
-          }
-        }
-        
-        Value packed = packLimbs(packedLimbsList, rewriter, loc, concatDimension);
+        Value packed = convertToMultifloat(adaptor.getOperands()[0], rewriter, loc, targetType, concatDimension, expansionSize);
         rewriter.replaceOp(op, packed);
         return success();
       }
@@ -2952,7 +2942,7 @@ struct MultiFloatConversionPass
                 continue;
 
               Value converted =
-                  convertToMultifloat(arg, b, loc, tgtTy, concatDimension);
+                  convertToMultifloat(arg, b, loc, tgtTy, concatDimension, expansionSize);
               SmallVector<Operation *> users(arg.getUsers().begin(),
                                              arg.getUsers().end());
               for (auto user : users) {
