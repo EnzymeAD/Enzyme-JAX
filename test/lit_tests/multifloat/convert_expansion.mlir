@@ -40,7 +40,11 @@ func.func @convert_f64_to_i32(%arg0: tensor<4x4xf64>) -> tensor<4x4xi32> {
   return %0 : tensor<4x4xi32>
 }
 // CHECK-LABEL: func.func @convert_f64_to_i32
-// CHECK: %[[EXTRACTED:.*]] = stablehlo.slice %{{.*}} [0:1, 0:4, 0:4]
-// CHECK: %[[RESHAPED:.*]] = stablehlo.reshape %[[EXTRACTED]]
-// CHECK: %[[CONVERTED:.*]] = stablehlo.convert %[[RESHAPED]] : (tensor<4x4xf32>) -> tensor<4x4xi32>
-// CHECK: return %[[CONVERTED]]
+// CHECK: %[[SLICE0:.*]] = stablehlo.slice %{{.*}} [0:1, 0:4, 0:4]
+// CHECK: %[[RESHAPED0:.*]] = stablehlo.reshape %[[SLICE0]]
+// CHECK: %[[CONV0:.*]] = stablehlo.convert %[[RESHAPED0]] : (tensor<4x4xf32>) -> tensor<4x4xi32>
+// CHECK: %[[SLICE1:.*]] = stablehlo.slice %{{.*}} [1:2, 0:4, 0:4]
+// CHECK: %[[RESHAPED1:.*]] = stablehlo.reshape %[[SLICE1]]
+// CHECK: %[[CONV1:.*]] = stablehlo.convert %[[RESHAPED1]] : (tensor<4x4xf32>) -> tensor<4x4xi32>
+// CHECK: %[[SUM:.*]] = stablehlo.add %[[CONV0]], %[[CONV1]]
+// CHECK: return %[[SUM]]

@@ -844,12 +844,20 @@ struct ConvertOpConversion : public OpConversionPattern<stablehlo::ConvertOp> {
 
     // Case 4: Source to Integer
     if (inElType == sourceType && outElType.isIntOrIndex()) {
-        Value high = extractLimb(adaptor.getOperands()[0], 0, rewriter, loc, concatDimension);
-        if (!isTuple) {
-          high = rewriter.create<stablehlo::ReshapeOp>(loc, RankedTensorType::get(outTensorType.getShape(), targetType), high);
+        Value sum = nullptr;
+        for (int i = 0; i < expansionSize; ++i) {
+            Value limb = extractLimb(adaptor.getOperands()[0], i, rewriter, loc, concatDimension);
+            if (!isTuple) {
+              limb = rewriter.create<stablehlo::ReshapeOp>(loc, RankedTensorType::get(outTensorType.getShape(), targetType), limb);
+            }
+            Value convertedLimb = rewriter.create<stablehlo::ConvertOp>(loc, outType, limb);
+            if (sum) {
+              sum = rewriter.create<stablehlo::AddOp>(loc, sum, convertedLimb);
+            } else {
+              sum = convertedLimb;
+            }
         }
-        Value converted = rewriter.create<stablehlo::ConvertOp>(loc, outType, high);
-        rewriter.replaceOp(op, converted);
+        rewriter.replaceOp(op, sum);
         return success();
     }
 
@@ -1444,6 +1452,9 @@ struct CompareOpConversion : public OpConversionPattern<stablehlo::CompareOp> {
     Value lhs = adaptor.getOperands()[0];
     Value rhs = adaptor.getOperands()[1];
 
+    auto resultType = cast<RankedTensorType>(op.getType());
+    auto direction = op.getComparisonDirection();
+
     Type expectedLhsTy = getTypeConverter()->convertType(op.getOperands()[0].getType());
     Type expectedRhsTy = getTypeConverter()->convertType(op.getOperands()[1].getType());
 
@@ -1454,20 +1465,47 @@ struct CompareOpConversion : public OpConversionPattern<stablehlo::CompareOp> {
       rhs = rewriter.create<UnrealizedConversionCastOp>(loc, expectedRhsTy, rhs).getResult(0);
     }
 
+    bool isTuple = (concatDimension == "tuple");
+    if (!isTuple && (direction == stablehlo::ComparisonDirection::EQ || direction == stablehlo::ComparisonDirection::NE)) {
+        Value cmp = rewriter.create<stablehlo::CompareOp>(loc, lhs, rhs, direction);
+        auto tensorType = cast<RankedTensorType>(lhs.getType());
+        int reduceDim = (concatDimension == "first") ? 0 : (tensorType.getRank() - 1);
+        
+        Value init_val;
+        auto boolType = rewriter.getI1Type();
+        if (direction == stablehlo::ComparisonDirection::EQ) {
+          init_val = rewriter.create<stablehlo::ConstantOp>(loc, DenseElementsAttr::get(RankedTensorType::get(ArrayRef<int64_t>{}, boolType), true));
+        } else {
+          init_val = rewriter.create<stablehlo::ConstantOp>(loc, DenseElementsAttr::get(RankedTensorType::get(ArrayRef<int64_t>{}, boolType), false));
+        }
+
+        auto reduceOp = rewriter.create<stablehlo::ReduceOp>(loc, cmp, init_val, rewriter.getDenseI64ArrayAttr({reduceDim}));
+        Block *reduceBlock = new Block();
+        reduceOp.getBody().push_back(reduceBlock);
+        auto tensorBoolType = RankedTensorType::get(ArrayRef<int64_t>{}, boolType);
+        reduceBlock->addArguments({tensorBoolType, tensorBoolType}, {loc, loc});
+        auto blockBuilder = OpBuilder::atBlockBegin(reduceBlock);
+        Value reducedRes;
+        if (direction == stablehlo::ComparisonDirection::EQ) {
+          reducedRes = blockBuilder.create<stablehlo::AndOp>(loc, reduceBlock->getArgument(0), reduceBlock->getArgument(1));
+        } else {
+          reducedRes = blockBuilder.create<stablehlo::OrOp>(loc, reduceBlock->getArgument(0), reduceBlock->getArgument(1));
+        }
+        blockBuilder.create<stablehlo::ReturnOp>(loc, reducedRes);
+
+        Value res = reduceOp.getResults()[0];
+        if (res.getType() != resultType) {
+          res = rewriter.create<stablehlo::ReshapeOp>(loc, resultType, res);
+        }
+        rewriter.replaceOp(op, res);
+        return success();
+    }
+
     Value lhs_hi = extractLimb(lhs, 0, rewriter, loc, concatDimension);
     Value lhs_lo = extractLimb(lhs, 1, rewriter, loc, concatDimension);
     Value rhs_hi = extractLimb(rhs, 0, rewriter, loc, concatDimension);
     Value rhs_lo = extractLimb(rhs, 1, rewriter, loc, concatDimension);
 
-    auto resultType = cast<RankedTensorType>(op.getType());
-    auto shape = resultType.getShape();
-    auto boolType = rewriter.getI1Type();
-    auto trueAttr = DenseElementsAttr::get(RankedTensorType::get(shape, boolType), true);
-    auto falseAttr = DenseElementsAttr::get(RankedTensorType::get(shape, boolType), false);
-    Value true_val = rewriter.create<stablehlo::ConstantOp>(loc, trueAttr);
-    Value false_val = rewriter.create<stablehlo::ConstantOp>(loc, falseAttr);
-
-    auto direction = op.getComparisonDirection();
 
     Value res;
     if (direction == stablehlo::ComparisonDirection::EQ) {
@@ -1477,12 +1515,7 @@ struct CompareOpConversion : public OpConversionPattern<stablehlo::CompareOp> {
       hi_eq = rewriter.create<stablehlo::ReshapeOp>(loc, resultType, hi_eq);
       lo_eq = rewriter.create<stablehlo::ReshapeOp>(loc, resultType, lo_eq);
       
-      LLVM_DEBUG(llvm::dbgs() << "CompareOpConversion EQ SelectOp:\n");
-      LLVM_DEBUG(llvm::dbgs() << "  hi_eq type: " << hi_eq.getType() << "\n");
-      LLVM_DEBUG(llvm::dbgs() << "  lo_eq type: " << lo_eq.getType() << "\n");
-      LLVM_DEBUG(llvm::dbgs() << "  false_val type: " << false_val.getType() << "\n");
-
-      res = rewriter.create<stablehlo::SelectOp>(loc, hi_eq, lo_eq, false_val);
+      res = rewriter.create<stablehlo::AndOp>(loc, hi_eq, lo_eq);
     } else if (direction == stablehlo::ComparisonDirection::NE) {
       Value hi_ne = rewriter.create<stablehlo::CompareOp>(loc, lhs_hi, rhs_hi, stablehlo::ComparisonDirection::NE);
       Value lo_ne = rewriter.create<stablehlo::CompareOp>(loc, lhs_lo, rhs_lo, stablehlo::ComparisonDirection::NE);
@@ -1490,12 +1523,7 @@ struct CompareOpConversion : public OpConversionPattern<stablehlo::CompareOp> {
       hi_ne = rewriter.create<stablehlo::ReshapeOp>(loc, resultType, hi_ne);
       lo_ne = rewriter.create<stablehlo::ReshapeOp>(loc, resultType, lo_ne);
       
-      LLVM_DEBUG(llvm::dbgs() << "CompareOpConversion NE SelectOp:\n");
-      LLVM_DEBUG(llvm::dbgs() << "  hi_ne type: " << hi_ne.getType() << "\n");
-      LLVM_DEBUG(llvm::dbgs() << "  true_val type: " << true_val.getType() << "\n");
-      LLVM_DEBUG(llvm::dbgs() << "  lo_ne type: " << lo_ne.getType() << "\n");
-
-      res = rewriter.create<stablehlo::SelectOp>(loc, hi_ne, true_val, lo_ne);
+      res = rewriter.create<stablehlo::OrOp>(loc, hi_ne, lo_ne);
     } else {
       stablehlo::ComparisonDirection dir_hi;
       stablehlo::ComparisonDirection dir_lo;
