@@ -2910,7 +2910,7 @@ struct MultiFloatConversionPass
               SmallVector<Operation*> users(arg.getUsers().begin(), arg.getUsers().end());
               for (auto user : users) {
                 if (auto cast = dyn_cast<UnrealizedConversionCastOp>(user)) {
-                  cast.getResult(0).replaceAllUsesWith(converted);
+                   cast.getResult(0).replaceAllUsesWith(converted);
                 }
               }
             }
