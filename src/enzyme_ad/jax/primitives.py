@@ -392,6 +392,8 @@ def optimization_passes(
         "tan_const_prop",
         "relu_const_prop",
         "gelu_const_prop",
+        "tgamma_const_prop",
+        "lgamma_const_prop",
         "softplus_const_prop",
         # binary constant propagation
         "add_const_prop",

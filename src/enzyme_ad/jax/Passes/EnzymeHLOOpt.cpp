@@ -57,6 +57,7 @@
 #include "llvm/ADT/SmallSet.h"
 
 #include "llvm/ADT/MapVector.h"
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
@@ -6283,6 +6284,103 @@ struct GammaConstProp final
         stablehlo::materializeLgamma(rewriter, op.getLoc(), op->getOperands());
     rewriter.replaceOp(op, result);
 
+    return success();
+  }
+};
+
+struct TGammaConstProp final
+    : CheckedOpRewritePattern<enzymexla::TGammaOp, TGammaConstProp> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(enzymexla::TGammaOp op,
+                                    PatternRewriter &rewriter) const {
+    DenseElementsAttr inputAttr;
+    if (!matchPattern(op.getOperand(), m_Constant(&inputAttr)))
+      return failure();
+
+    auto resultType = cast<ShapedType>(op.getType());
+    auto floatTy = dyn_cast<FloatType>(resultType.getElementType());
+    if (!floatTy)
+      return failure();
+
+    const auto &sem = floatTy.getFloatSemantics();
+    SmallVector<APFloat> results;
+    for (auto val : inputAttr.getValues<APFloat>()) {
+      double x = val.convertToDouble();
+      double res =
+          (x < 0.0) ? std::numeric_limits<double>::quiet_NaN() : std::tgamma(x);
+      bool losesInfo;
+      APFloat apRes(res);
+      apRes.convert(sem, APFloat::rmNearestTiesToEven, &losesInfo);
+      results.push_back(apRes);
+    }
+
+    rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+        op, DenseElementsAttr::get(resultType, results));
+    return success();
+  }
+};
+
+struct LGammaConstProp final
+    : CheckedOpRewritePattern<enzymexla::LGammaOp, LGammaConstProp> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(enzymexla::LGammaOp op,
+                                    PatternRewriter &rewriter) const {
+    DenseElementsAttr inputAttr;
+    if (!matchPattern(op.getOperand(), m_Constant(&inputAttr)))
+      return failure();
+
+    auto resultType = cast<ShapedType>(op.getType());
+    auto floatTy = dyn_cast<FloatType>(resultType.getElementType());
+    if (!floatTy)
+      return failure();
+
+    const auto &sem = floatTy.getFloatSemantics();
+    SmallVector<APFloat> results;
+    for (auto val : inputAttr.getValues<APFloat>()) {
+      double x = val.convertToDouble();
+      double res = std::lgamma(x);
+      bool losesInfo;
+      APFloat apRes(res);
+      apRes.convert(sem, APFloat::rmNearestTiesToEven, &losesInfo);
+      results.push_back(apRes);
+    }
+
+    rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+        op, DenseElementsAttr::get(resultType, results));
+    return success();
+  }
+};
+
+struct CHLOLGammaConstProp final
+    : CheckedOpRewritePattern<chlo::LgammaOp, CHLOLGammaConstProp> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(chlo::LgammaOp op,
+                                    PatternRewriter &rewriter) const {
+    DenseElementsAttr inputAttr;
+    if (!matchPattern(op.getOperand(), m_Constant(&inputAttr)))
+      return failure();
+
+    auto resultType = cast<ShapedType>(op.getType());
+    auto floatTy = dyn_cast<FloatType>(resultType.getElementType());
+    if (!floatTy)
+      return failure();
+
+    const auto &sem = floatTy.getFloatSemantics();
+    SmallVector<APFloat> results;
+    for (auto val : inputAttr.getValues<APFloat>()) {
+      double x = val.convertToDouble();
+      double res = std::lgamma(x);
+      bool losesInfo;
+      APFloat apRes(res);
+      apRes.convert(sem, APFloat::rmNearestTiesToEven, &losesInfo);
+      results.push_back(apRes);
+    }
+
+    rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+        op, DenseElementsAttr::get(resultType, results));
     return success();
   }
 };
@@ -34952,12 +35050,13 @@ struct EnzymeHLOOptPass
         ConvertConcat, DynamicUpdateToConcat, SliceOfDynamicUpdate,
         SliceOfUpdateWithoutCorners, SliceElementwise, SliceReshapeElementwise,
         DynamicSliceElementwise, SlicePad, SliceReshapePad, ReshapeSliceReshape,
-        DotReshapeDot, ChloInfConstProp, GammaConstProp, ConcatFuse,
-        ConcatToBroadcast, PadPad, PadReshapePad,
-        ConcatPushBinop<stablehlo::AddOp>, ConcatPushBinop<stablehlo::MulOp>,
-        ScatterToDynamicUpdateSlice, ReduceConcat, ConcatSlice, ConcatMultiPad,
-        ConcatWrap, WidenWrap, WidenExtend, ConcatConcatAxisSwap, SliceConcat,
-        SliceIf, SliceReshapeConcat, BinBroadcastSplat<stablehlo::AddOp>,
+        DotReshapeDot, ChloInfConstProp, GammaConstProp, TGammaConstProp,
+        LGammaConstProp, CHLOLGammaConstProp, ConcatFuse, ConcatToBroadcast,
+        PadPad, PadReshapePad, ConcatPushBinop<stablehlo::AddOp>,
+        ConcatPushBinop<stablehlo::MulOp>, ScatterToDynamicUpdateSlice,
+        ReduceConcat, ConcatSlice, ConcatMultiPad, ConcatWrap, WidenWrap,
+        WidenExtend, ConcatConcatAxisSwap, SliceConcat, SliceIf,
+        SliceReshapeConcat, BinBroadcastSplat<stablehlo::AddOp>,
         BinBroadcastSplat<stablehlo::SubtractOp>,
         BinBroadcastSplat<stablehlo::DivOp>,
         BinBroadcastSplat<stablehlo::MulOp>, RotatePad, ConjReal>(context);

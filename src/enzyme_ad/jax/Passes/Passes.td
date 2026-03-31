@@ -106,6 +106,22 @@ def ArithRaisingPass : Pass<"arith-raise"> {
       /*description=*/"Whether to raise to stablehlo vs mhlo">];
 }
 
+def MultiFloatConversionPass : Pass<"multi-float-conversion"> {
+  let summary = "Rewrite floating-point computations to use multi-float representation (tensor of 2xY).";
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "tensor::TensorDialect",
+    "arith::ArithDialect",
+  ];
+  let options = [
+    Option<"sourceType", "source-type", "std::string", "\"f64\"", "Source floating-point type (e.g., f64, f32)">,
+    Option<"targetType", "target-type", "std::string", "\"f32\"", "Target floating-point type (e.g., f32, f16, bf16)">,
+    Option<"concatDimension", "concat-dimension", "std::string", "\"first\"", "Dimension to concatenate ('first' or 'last')">,
+    Option<"expansionSize", "expansion-size", "int32_t", "2", "Number of limbs for expansion (1 or 2)">,
+    Option<"convertSignatures", "convert-signatures", "bool", "false", "Whether to convert function signatures">,
+  ];
+}
+
 def TensorEmptyOpRaisingPass : Pass<"tensor-empty-raise"> {
   let summary = "Raise tensor.empty ops";
   let dependentDialects = [

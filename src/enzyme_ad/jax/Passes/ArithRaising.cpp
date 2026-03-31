@@ -124,6 +124,7 @@ struct ArithRaisingPass
     RAISE_UNARY(math::FloorOp, stablehlo::FloorOp, mhlo::FloorOp);
     RAISE_UNARY(math::ErfOp, chlo::ErfOp, chlo::ErfOp);
     RAISE_UNARY(arith::NegFOp, stablehlo::NegOp, mhlo::NegOp);
+    RAISE_UNARY(enzymexla::LGammaOp, chlo::LgammaOp, chlo::LgammaOp);
 
 #undef RAISE_UNARY
 
