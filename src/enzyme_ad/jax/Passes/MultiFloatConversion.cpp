@@ -416,8 +416,8 @@ struct ConstantOpConversion
     if (elType != sourceType)
       return failure();
 
-    auto outType =
-        cast<RankedTensorType>(getTypeConverter()->convertType(op.getType()));
+    Type convType = getTypeConverter()->convertType(op.getType());
+    auto outType = dyn_cast<RankedTensorType>(convType);
 
     if (expansionSize == 1) {
       if (elementsAttr.isSplat()) {
@@ -1547,8 +1547,8 @@ struct BroadcastInDimOpConversion
                               concatDimension);
 
       auto outType =
-          cast<RankedTensorType>(getTypeConverter()->convertType(op.getType()));
-      auto partType = cast<TupleType>(outType).getType(0);
+          cast<TupleType>(getTypeConverter()->convertType(op.getType()));
+      auto partType = outType.getType(0);
 
       auto bcastHigh = rewriter.create<stablehlo::BroadcastInDimOp>(
           loc, partType, high, op.getBroadcastDimensions());
@@ -1609,8 +1609,8 @@ struct TransposeOpConversion
                               concatDimension);
 
       auto outType =
-          cast<RankedTensorType>(getTypeConverter()->convertType(op.getType()));
-      auto partType = cast<TupleType>(outType).getType(0);
+          cast<TupleType>(getTypeConverter()->convertType(op.getType()));
+      auto partType = outType.getType(0);
 
       auto transHigh = rewriter.create<stablehlo::TransposeOp>(
           loc, partType, high, op.getPermutation());
@@ -1668,8 +1668,8 @@ struct ReshapeOpConversion : public OpConversionPattern<stablehlo::ReshapeOp> {
                               concatDimension);
 
       auto outType =
-          cast<RankedTensorType>(getTypeConverter()->convertType(op.getType()));
-      auto partType = cast<TupleType>(outType).getType(0);
+          cast<TupleType>(getTypeConverter()->convertType(op.getType()));
+      auto partType = outType.getType(0);
 
       auto reshapeHigh =
           rewriter.create<stablehlo::ReshapeOp>(loc, partType, high);
@@ -2391,8 +2391,8 @@ struct PadOpConversion : public OpConversionPattern<stablehlo::PadOp> {
   matchAndRewrite(stablehlo::PadOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
-    auto outType = cast<RankedTensorType>(
-        getTypeConverter()->convertType(op->getResult(0).getType()));
+    Type convType = getTypeConverter()->convertType(op->getResult(0).getType());
+    auto outType = dyn_cast<RankedTensorType>(convType);
 
     if (concatDimension == "tuple") {
       auto tupleType =
