@@ -35709,8 +35709,6 @@ struct EnzymeHLOOptPass
         BinaryOpComplexSimplifyBase<stablehlo::SubtractOp>
       >(context);
 
-    patterns.add<PadSubToConvolution>(context);
-
     patterns.add<ReshapeElementwise>(true, true, context);
 
     patterns.add<
