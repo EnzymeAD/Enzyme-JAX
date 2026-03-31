@@ -3683,10 +3683,7 @@ struct SliceElementwise final
       return failure();
     if (!stablehlo::hasTraitElementwise(elem))
       return failure();
-    if (llvm::hasSingleElement(elem->getUsers()) ||
-        (llvm::hasSingleElement(op.getResult().getUsers()) &&
-         isa<stablehlo::ConcatenateOp>(
-             op.getResult().use_begin()->getOwner()))) {
+    if (llvm::hasSingleElement(elem->getUsers())) {
       SmallVector<Value> ops;
       for (auto v : elem->getOperands()) {
         ops.push_back(stablehlo::SliceOp::create(
