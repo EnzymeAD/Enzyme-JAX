@@ -2866,6 +2866,214 @@ stablehlo::ConcatenateOp lowerWrap(enzymexla::WrapOp wrap,
   return newConcat;
 }
 
+bool reshapeIsUnsqueeze(stablehlo::ReshapeOp reshape) {
+  auto inputTy = cast<ShapedType>(reshape.getOperand().getType());
+  auto outputTy = cast<ShapedType>(reshape.getResult().getType());
+
+  for (size_t i = 0, j = 0, ei = inputTy.getRank(), eo = outputTy.getRank();
+       i < ei && j < eo; ++i) {
+    auto Ni = inputTy.getDimSize(i);
+    auto Nj = outputTy.getDimSize(j);
+    while (j + 1 < eo && (Ni != Nj || Nj == 1)) {
+      j++;
+      Nj = outputTy.getDimSize(j);
+    }
+    if (Ni != Nj)
+      return false;
+
+    ++j;
+  }
+
+  return true;
+}
+
+// canonical concat slice operand with potential reshape / broadcast applied
+struct ConcatSlicedElem {
+  stablehlo::SliceOp slice;
+  Value orig;
+};
+
+std::optional<ConcatSlicedElem> findConcatSlicedElem(Value concatOperand) {
+  Value operand = concatOperand;
+  stablehlo::SliceOp slice;
+
+  while (!(slice = operand.getDefiningOp<SliceOp>())) {
+    if (auto broadcast = operand.getDefiningOp<stablehlo::BroadcastInDimOp>()) {
+      operand = broadcast.getOperand();
+      continue;
+    }
+
+    if (auto reshape = operand.getDefiningOp<stablehlo::ReshapeOp>()) {
+      if (!reshapeIsUnsqueeze(reshape)) {
+        break;
+      }
+
+      operand = reshape.getOperand();
+      continue;
+    }
+
+    break;
+  }
+
+  if (!slice)
+    return std::nullopt;
+
+  return {ConcatSlicedElem{
+      slice,
+      concatOperand,
+  }};
+}
+
+static int64_t getSliceDim(SliceOp slice) {
+  auto sliceInTy = cast<ShapedType>(slice.getOperand().getType());
+  int64_t sliceDim = -1;
+  for (size_t idx = 0; idx < slice.getStartIndices().size(); ++idx) {
+    if (!(slice.getStartIndices()[idx] == 0 &&
+          slice.getLimitIndices()[idx] == sliceInTy.getDimSize(idx) &&
+          slice.getStrides()[idx] == 1)) {
+      if (sliceDim != -1) {
+        sliceDim = -1; // TODO: support multiple dims here
+        break;
+      }
+      sliceDim = idx;
+    }
+  }
+  return sliceDim;
+}
+
+static Value mergeConcatSlicedElems(PatternRewriter &rewriter,
+                                    int64_t concatDim, ConcatSlicedElem a,
+                                    ConcatSlicedElem b) {
+  Value newConcatOperand = nullptr;
+
+  if (a.slice.getOperand() != b.slice.getOperand())
+    return newConcatOperand;
+
+  int64_t sliceDimA = getSliceDim(a.slice), sliceDimB = getSliceDim(b.slice);
+  if (sliceDimA == -1 || sliceDimA != sliceDimB) {
+    return newConcatOperand;
+  }
+
+  int64_t sliceDim = sliceDimA;
+
+  if (!canMergeSlicesAlongAxis(
+          sliceDim, a.slice.getStartIndices(), b.slice.getStartIndices(),
+          a.slice.getLimitIndices(), b.slice.getLimitIndices(),
+          a.slice.getStrides(), b.slice.getStrides()))
+    return newConcatOperand;
+
+  int64_t sliceSizeA = (a.slice.getLimitIndices()[sliceDim] -
+                        a.slice.getStartIndices()[sliceDim]) /
+                       a.slice.getStrides()[sliceDim];
+  int64_t sliceSizeB = (b.slice.getLimitIndices()[sliceDim] -
+                        b.slice.getStartIndices()[sliceDim]) /
+                       b.slice.getStrides()[sliceDim];
+
+  // TODO: if both indices are one since reshape becomes broadcast
+  if (sliceSizeA == 1 && sliceSizeB == 1)
+    return nullptr;
+
+  auto newSlice = stablehlo::SliceOp::create(
+      rewriter, a.slice.getLoc(), a.slice.getOperand(),
+      a.slice.getStartIndices(), b.slice.getLimitIndices(),
+      a.slice.getStrides());
+
+  auto getTransformChain = [](ConcatSlicedElem b) {
+    SmallVector<Operation *> transformChain;
+    Operation *cur = b.orig.getDefiningOp();
+    while (cur != b.slice) {
+      transformChain.push_back(cur);
+      cur = cur->getOperand(0).getDefiningOp();
+    }
+    return transformChain;
+  };
+
+  auto transformChain =
+      sliceSizeA < sliceSizeB ? getTransformChain(b) : getTransformChain(a);
+
+  newConcatOperand = newSlice.getResult();
+
+  for (auto transform : llvm::reverse(transformChain)) {
+    if (auto broadcast = dyn_cast<BroadcastInDimOp>(transform)) {
+      // auto inTy = cast<ShapedType>(broadcast.getOperand().getType());
+      auto outTy = cast<ShapedType>(broadcast.getResult().getType());
+
+      SmallVector<int64_t> newShape(outTy.getShape());
+
+      for (auto [dim, bdim] :
+           llvm::enumerate(broadcast.getBroadcastDimensions())) {
+        newShape[bdim] =
+            cast<ShapedType>(newConcatOperand.getType()).getDimSize(dim);
+      }
+
+      newConcatOperand =
+          stablehlo::BroadcastInDimOp::create(
+              rewriter, a.slice.getLoc(), outTy.clone(newShape),
+              newConcatOperand, broadcast.getBroadcastDimensions())
+              .getResult();
+      sliceDim = broadcast.getBroadcastDimensions()[sliceDim];
+      continue;
+    }
+    if (auto reshape = dyn_cast<ReshapeOp>(transform)) {
+      auto outTy = cast<ShapedType>(reshape.getResult().getType());
+
+      SmallVector<int64_t> newShape(outTy.getShape());
+      newShape[concatDim] =
+          cast<ShapedType>(newConcatOperand.getType()).getDimSize(sliceDim);
+
+      newConcatOperand =
+          stablehlo::ReshapeOp::create(rewriter, a.slice.getLoc(),
+                                       outTy.clone(newShape), newConcatOperand)
+              .getResult();
+      continue;
+    }
+    llvm_unreachable("impossible");
+  }
+
+  return newConcatOperand;
+}
+
+LogicalResult
+concatBroadcastSliceSimplify(PatternRewriter &rewriter,
+                             SmallVectorImpl<Value> &operands, int64_t dim,
+                             SmallVectorImpl<Value> &newOperands) {
+  bool changed = false;
+
+  for (size_t i = 0, e = operands.size(); i < e; ++i) {
+    auto operand = operands[i];
+
+    std::optional<ConcatSlicedElem> curElemOpt = findConcatSlicedElem(operand);
+    if (!curElemOpt) {
+      newOperands.push_back(operand);
+      continue;
+    }
+    ConcatSlicedElem curElem = *curElemOpt;
+
+    while (i + 1 < e) {
+      auto otherElemOpt = findConcatSlicedElem(operands[i + 1]);
+      if (!otherElemOpt) {
+        break;
+      }
+
+      Value newSlice =
+          mergeConcatSlicedElems(rewriter, dim, curElem, *otherElemOpt);
+      if (!newSlice) {
+        break;
+      }
+
+      changed = true;
+      curElemOpt = findConcatSlicedElem(newSlice);
+      assert(curElemOpt.has_value());
+      curElem = *curElemOpt;
+      i++;
+    }
+
+    newOperands.push_back(curElem.orig);
+  }
+
+  return success(changed);
+}
+
 LogicalResult concatReshapeSliceSimplify(PatternRewriter &rewriter,
                                          SmallVectorImpl<Value> &operands,
                                          int64_t dim,
@@ -3038,7 +3246,7 @@ LogicalResult concatReshapeSliceSimplify(PatternRewriter &rewriter,
 
     newOperands.push_back(newOperand);
   }
-  return changed ? success() : failure();
+  return success(changed);
 }
 
 LogicalResult concatSliceSimplify(PatternRewriter &rewriter,
@@ -3602,11 +3810,12 @@ bool isFusible(Operation *op, stablehlo::BroadcastInDimOp bcast) {
 
 bool IsTensorFilled(Value input) {
   // Use a worklist-based approach to traverse the SSA def-use chain
-  // and determine if the value is known to be a dense (fully-populated) matrix.
+  // and determine if the value is known to be a dense (fully-populated)
+  // matrix.
   //
   // A value is considered dense if it comes from:
-  // - stablehlo ops (except custom_call) - they produce dense outputs if inputs
-  // are dense
+  // - stablehlo ops (except custom_call) - they produce dense outputs if
+  // inputs are dense
   // - Block arguments (conservatively assume not dense)
   // - CallOpInterface - check the function body's return values
   SymbolTableCollection symbolTable;
