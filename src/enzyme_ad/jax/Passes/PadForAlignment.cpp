@@ -958,8 +958,6 @@ void PadForAlignmentPass::runOnFunction(func::FuncOp func) {
       handled = handler.handleConcatenateOp(concat);
     } else if (auto reshape = dyn_cast<stablehlo::ReshapeOp>(op)) {
       handled = handler.handleReshapeOp(reshape);
-    } else if (stablehlo::hasTraitElementwise(op)) {
-      handled = handler.handleElementwiseOp(op);
     } else if (auto dot = dyn_cast<stablehlo::DotGeneralOp>(op)) {
       handled = handler.handleDotGeneralOp(dot);
     } else if (auto bcast = dyn_cast<stablehlo::BroadcastInDimOp>(op)) {
@@ -969,7 +967,9 @@ void PadForAlignmentPass::runOnFunction(func::FuncOp func) {
     } else if (auto rotate = dyn_cast<enzymexla::RotateOp>(op)) {
       handled = handler.handleRotateOp(rotate);
     } else if (auto multiRotate = dyn_cast<enzymexla::MultiRotateOp>(op)) {
-      handled = handler.handleElementwiseOp(multiRotate);
+      handled = handler.handleMultiRotateOp(multiRotate);
+    } else if (stablehlo::hasTraitElementwise(op)) {
+      handled = handler.handleElementwiseOp(op);
     }
 
     if (!handled) {
