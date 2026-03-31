@@ -3683,7 +3683,10 @@ struct SliceElementwise final
       return failure();
     if (!stablehlo::hasTraitElementwise(elem))
       return failure();
-    if (llvm::hasSingleElement(elem->getUsers())) {
+    if (llvm::hasSingleElement(elem->getUsers()) ||
+        (llvm::hasSingleElement(op.getResult().getUsers()) &&
+         isa<stablehlo::ConcatenateOp>(
+             op.getResult().use_begin()->getOwner()))) {
       SmallVector<Value> ops;
       for (auto v : elem->getOperands()) {
         ops.push_back(stablehlo::SliceOp::create(
@@ -13517,8 +13520,7 @@ struct SelectBroadcastIota final
       return failure();
 
     // broadcast input must be a compare
-    auto compare =
-        broadcast.getOperand().getDefiningOp<stablehlo::CompareOp>();
+    auto compare = broadcast.getOperand().getDefiningOp<stablehlo::CompareOp>();
     if (!compare)
       return failure();
 
@@ -13639,9 +13641,8 @@ struct SelectBroadcastIota final
       break;
     }
 
-    auto validCount =
-        std::count_if(slices.begin(), slices.end(),
-                      [](slice_data d) { return d.count > 0; });
+    auto validCount = std::count_if(slices.begin(), slices.end(),
+                                    [](slice_data d) { return d.count > 0; });
     if (validCount == 1) {
       for (auto &e : slices)
         if (e.count > 0) {
@@ -28414,163 +28415,6 @@ struct SubtractMultiplyConstToAddMulConst
     }
 
     return failure();
-  }
-};
-
-// Match: sub(pad(x, 0, lo=0, hi=K, dim=d), pad(x, 0, lo=K, hi=0, dim=d))
-// Rewrite to a convolution with kernel [-1, 1] and inline padding [K, K] on dim
-// d. This handles the common "backward finite difference" pattern as a 1-D
-// cross-correlation.
-struct PadSubToConvolution
-    : public CheckedOpRewritePattern<stablehlo::SubtractOp,
-                                     PadSubToConvolution> {
-  using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  LogicalResult matchAndRewriteImpl(stablehlo::SubtractOp op,
-                                    PatternRewriter &rewriter) const {
-    auto lhsPad = op.getLhs().getDefiningOp<stablehlo::PadOp>();
-    auto rhsPad = op.getRhs().getDefiningOp<stablehlo::PadOp>();
-    if (!lhsPad || !rhsPad)
-      return rewriter.notifyMatchFailure(op, "operands are not pad ops");
-
-    if (lhsPad.getOperand() != rhsPad.getOperand())
-      return rewriter.notifyMatchFailure(op, "pads have different operands");
-
-    if (anyPadSizesNegative(lhsPad) || anyPadSizesNegative(rhsPad))
-      return rewriter.notifyMatchFailure(op, "pads have negative sizes");
-
-    if (!llvm::all_of(lhsPad.getInteriorPadding(),
-                      [](int64_t v) { return v == 0; }) ||
-        !llvm::all_of(rhsPad.getInteriorPadding(),
-                      [](int64_t v) { return v == 0; }))
-      return rewriter.notifyMatchFailure(op, "interior padding is not zero");
-
-    if ((!matchPattern(lhsPad.getPaddingValue(), m_AnyZeroFloat()) &&
-         !matchPattern(lhsPad.getPaddingValue(), m_Zero())) ||
-        (!matchPattern(rhsPad.getPaddingValue(), m_AnyZeroFloat()) &&
-         !matchPattern(rhsPad.getPaddingValue(), m_Zero())))
-      return rewriter.notifyMatchFailure(op, "padding value is not zero");
-
-    auto lhsLow = lhsPad.getEdgePaddingLow();
-    auto lhsHigh = lhsPad.getEdgePaddingHigh();
-    auto rhsLow = rhsPad.getEdgePaddingLow();
-    auto rhsHigh = rhsPad.getEdgePaddingHigh();
-
-    auto outType = cast<RankedTensorType>(op.getType());
-    int64_t rank = outType.getRank();
-
-    // Find the single dimension with complementary padding; all others must be
-    // 0.
-    int64_t diffDim = -1;
-    int64_t shiftAmount = -1;
-    // lhsHasHighPad=true:  lhs has hi=K, rhs has lo=K  → x[i] - x[i-K]
-    // lhsHasHighPad=false: lhs has lo=K, rhs has hi=K  → x[i-K] - x[i]
-    bool lhsHasHighPad = false;
-
-    for (int64_t d = 0; d < rank; d++) {
-      if (lhsLow[d] == 0 && lhsHigh[d] == 0 && rhsLow[d] == 0 &&
-          rhsHigh[d] == 0)
-        continue;
-
-      if (diffDim != -1)
-        return rewriter.notifyMatchFailure(
-            op, "more than one dimension differs in padding");
-
-      if (lhsLow[d] == 0 && rhsHigh[d] == 0 && lhsHigh[d] == rhsLow[d] &&
-          lhsHigh[d] > 0) {
-        diffDim = d;
-        shiftAmount = lhsHigh[d];
-        lhsHasHighPad = true;
-      } else if (lhsHigh[d] == 0 && rhsLow[d] == 0 && lhsLow[d] == rhsHigh[d] &&
-                 lhsLow[d] > 0) {
-        diffDim = d;
-        shiftAmount = lhsLow[d];
-        lhsHasHighPad = false;
-      } else {
-        return rewriter.notifyMatchFailure(
-            op, "padding is not complementary in differing dimension");
-      }
-    }
-
-    if (diffDim == -1)
-      return rewriter.notifyMatchFailure(op, "no differencing dimension found");
-
-    auto loc = op.getLoc();
-    auto T = outType.getElementType();
-    auto scalarType = RankedTensorType::get({}, T);
-
-    // Reshape input x: [d0,...,dN] -> [1, 1, d0,...,dN]
-    auto inputType = cast<RankedTensorType>(lhsPad.getOperand().getType());
-    SmallVector<int64_t> convInputShape(2, 1);
-    for (auto d : inputType.getShape())
-      convInputShape.push_back(d);
-    auto convInput = stablehlo::ReshapeOpCreate(
-        rewriter, loc, lhsPad.getOperand(), convInputShape);
-
-    // Build kernel: two scalar elements reshaped then concatenated along
-    // diffDim+2. lhsHasHighPad=true  → [-1, 1]   lhsHasHighPad=false → [1, -1]
-    auto negOne = stablehlo::ConstantOp::create(
-        rewriter, loc, scalarType,
-        cast<ElementsAttr>(makeAttr(scalarType, -1)));
-    auto posOne = stablehlo::ConstantOp::create(
-        rewriter, loc, scalarType, cast<ElementsAttr>(makeAttr(scalarType, 1)));
-
-    SmallVector<int64_t> filterElemShape(rank + 2, 1);
-    auto negOneReshaped =
-        stablehlo::ReshapeOpCreate(rewriter, loc, negOne, filterElemShape);
-    auto posOneReshaped =
-        stablehlo::ReshapeOpCreate(rewriter, loc, posOne, filterElemShape);
-
-    Value firstElem = lhsHasHighPad ? negOneReshaped : posOneReshaped;
-    Value secondElem = lhsHasHighPad ? posOneReshaped : negOneReshaped;
-
-    auto filter = stablehlo::ConcatenateOp::create(
-        rewriter, loc, ValueRange{firstElem, secondElem},
-        rewriter.getI64IntegerAttr(diffDim + 2));
-
-    // Spatial dims: [2, 3, ..., rank+1]
-    SmallVector<int64_t> spatialDims(rank);
-    for (int64_t i = 0; i < rank; ++i)
-      spatialDims[i] = i + 2;
-
-    auto convDims = stablehlo::ConvDimensionNumbersAttr::get(
-        rewriter.getContext(),
-        /*input_batch_dimension=*/0,
-        /*input_feature_dimension=*/1,
-        /*input_spatial_dimensions=*/spatialDims,
-        /*kernel_input_feature_dimension=*/0,
-        /*kernel_output_feature_dimension=*/1,
-        /*kernel_spatial_dimensions=*/spatialDims,
-        /*output_batch_dimension=*/0,
-        /*output_feature_dimension=*/1,
-        /*output_spatial_dimensions=*/spatialDims);
-
-    // Inline padding: [shiftAmount, shiftAmount] on diffDim, 0 elsewhere.
-    SmallVector<int64_t> paddingVals(2 * rank, 0);
-    paddingVals[2 * diffDim] = shiftAmount;
-    paddingVals[2 * diffDim + 1] = shiftAmount;
-    auto paddingType = RankedTensorType::get({rank, 2}, rewriter.getI64Type());
-    auto paddingAttr = DenseIntElementsAttr::get(paddingType, paddingVals);
-
-    SmallVector<int64_t> convOutShape(2, 1);
-    for (auto d : outType.getShape())
-      convOutShape.push_back(d);
-    auto convOutType = RankedTensorType::get(convOutShape, T);
-
-    auto conv = stablehlo::ConvolutionOp::create(
-        rewriter, loc, convOutType, convInput, filter,
-        /*window_strides=*/nullptr,
-        /*padding=*/paddingAttr,
-        /*lhs_dilation=*/nullptr,
-        /*rhs_dilation=*/nullptr,
-        /*window_reversal=*/nullptr,
-        /*conv_dimension_numbers=*/convDims,
-        /*feature_group_count=*/rewriter.getI64IntegerAttr(1),
-        /*batch_group_count=*/rewriter.getI64IntegerAttr(1),
-        /*precision_config=*/nullptr);
-
-    rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op.getType(), conv);
-    return success();
   }
 };
 
