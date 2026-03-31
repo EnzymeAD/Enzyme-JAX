@@ -2845,6 +2845,66 @@ struct MultiFloatConversionPass
     if (failed(applyPartialConversion(op, target, std::move(patterns)))) {
       signalPassFailure();
     }
+
+    if (expansionSize > 1 && !convertSignatures) {
+      SmallVector<FunctionOpInterface> funcs;
+      op.walk([&](FunctionOpInterface f) {
+        if (f->getParentOp() == op) {
+          funcs.push_back(f);
+        }
+      });
+      for (auto func : funcs) {
+        OpBuilder b(func.getBody().front());
+        for (auto arg : func.getArguments()) {
+          if (auto tensorType = dyn_cast<RankedTensorType>(arg.getType())) {
+            if (tensorType.getElementType() == srcTy) {
+              auto newType = typeConverter.convertType(tensorType);
+              assert(newType != tensorType);
+              auto converted = ...;
+              SmallVector<Operation*> toErase;
+              for (auto user : arg.getUsers()) {
+                if (auto cast = dyn_cast<UnrealizedConversionCastOp>(user)) {
+                  cast.replaceAllUsesWith(converted);
+                  toErase.push_back(cast);
+                }
+              }
+              for (auto op : toErase) {
+                op->erase();
+              }
+            }
+          }
+        }
+        for (auto blk : func.getBlocks()) {
+          SmallVector<Operation*> toErase;
+          for (auto& op : blk.getOperations()) {
+            if (auto cast = dyn_cast<func::ReturnOp>(&op)) {
+              SmallVector<Value> newOperands;
+              bool changed = false;
+              for (auto operand : cast.getOperands()) {
+                if (auto cast = dyn_cast<UnrealizedConversionCastOp>(operand)) {
+                  auto oldType = operand.getType();
+                  auto newType = typeConverter.convertType(oldType);
+                  assert(cast.getNewType() == newType);
+                  auto converted = ...;
+                  cast.replaceAllUsesWith(converted);
+                  toErase.push_back(cast);
+                  newOperands.push_back(converted);
+                  changed = true;
+                } else {
+                  newOperands.push_back(operand);
+                }
+              }
+              if (changed) {
+                cast.getOperation()->setOperands(newOperands);
+              }
+            }
+            for (auto op : toErase) {
+              op->erase();
+            }
+          }
+        }
+      }
+    }
   }
 };
 
