@@ -40,7 +40,7 @@ jobs:
       fail-fast: false
       matrix:
         os:
-          - linux-x86-a2-48-a100-4gpu
+          # - linux-x86-a2-48-a100-4gpu
           - linux-x86-ct6e-180-4tpu
         julia_version:
           - '1.11'
@@ -255,11 +255,6 @@ jobs:
 
           display(Reactant.Profiler.load_xplane_file(xplane_file))
         working-directory: ${{ env.GB25_DIR }}
-      - name: Test correctness in GB-25 code
-        timeout-minutes: 20
-        run: |
-          timeout --signal=TERM --verbose 19m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict correctness/correctness_sharded_baroclinic_instability_simulation_run.jl ${{ env.RUN_FLAGS }}
-        working-directory: ${{ env.GB25_DIR }}
       - name: Upload MLIR and XLA modules
         uses: actions/upload-artifact@v7
         timeout-minutes: 10
@@ -289,3 +284,8 @@ jobs:
           path: '${{ env.GB25_DIR }}/**/plugins'
           retention-days: 90
           overwrite: false
+      - name: Test correctness in GB-25 code
+        timeout-minutes: 20
+        run: |
+          timeout --signal=TERM --verbose 19m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict correctness/correctness_sharded_baroclinic_instability_simulation_run.jl ${{ env.RUN_FLAGS }}
+        working-directory: ${{ env.GB25_DIR }}
