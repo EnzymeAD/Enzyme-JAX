@@ -170,14 +170,14 @@ Value convertToMultifloat(Value val, OpBuilder &b, Location loc, Type tgtTy, Str
 }
 
 Value convertFromMultifloat(Value packedVal, OpBuilder &b, Location loc, Type srcTy, StringRef concatDimension) {
-  Value high = extractLimb(packedVal, 0, b, loc, concatDimension);
-  Value low = extractLimb(packedVal, 1, b, loc, concatDimension);
-  auto f64Type = RankedTensorType::get(cast<RankedTensorType>(high.getType()).getShape(), srcTy);
-  Value high64 = b.create<stablehlo::ConvertOp>(loc, f64Type, high);
-  Value low64 = b.create<stablehlo::ConvertOp>(loc, f64Type, low);
-  Value added = b.create<stablehlo::AddOp>(loc, high64, low64);
   if (concatDimension != "tuple") {
     auto tensorType = cast<RankedTensorType>(packedVal.getType());
+    auto f64PackedType = RankedTensorType::get(tensorType.getShape(), srcTy);
+    Value packed64 = b.create<stablehlo::ConvertOp>(loc, f64PackedType, packedVal);
+    Value high64 = extractLimb(packed64, 0, b, loc, concatDimension);
+    Value low64 = extractLimb(packed64, 1, b, loc, concatDimension);
+    Value added = b.create<stablehlo::AddOp>(loc, high64, low64);
+
     SmallVector<int64_t> collapsedShape;
     bool isFirst = concatDimension == "first";
     if (isFirst) {
@@ -188,7 +188,13 @@ Value convertFromMultifloat(Value packedVal, OpBuilder &b, Location loc, Type sr
     auto collapsedType = RankedTensorType::get(collapsedShape, srcTy);
     return b.create<stablehlo::ReshapeOp>(loc, collapsedType, added);
   }
-  return added;
+
+  Value high = extractLimb(packedVal, 0, b, loc, concatDimension);
+  Value low = extractLimb(packedVal, 1, b, loc, concatDimension);
+  auto f64Type = RankedTensorType::get(cast<RankedTensorType>(high.getType()).getShape(), srcTy);
+  Value high64 = b.create<stablehlo::ConvertOp>(loc, f64Type, high);
+  Value low64 = b.create<stablehlo::ConvertOp>(loc, f64Type, low);
+  return b.create<stablehlo::AddOp>(loc, high64, low64);
 }
 
 
