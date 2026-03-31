@@ -2915,6 +2915,7 @@ struct MultiFloatConversionPass
           }
         }
         for (auto &blk : func.getBody()) {
+          SetVector<UnrealizedConversionCastOp> toErase;
           for (auto& op : blk.getOperations()) {
             if (auto returnOp = dyn_cast<func::ReturnOp>(&op)) {
               OpBuilder b_ret(returnOp);
@@ -2933,6 +2934,11 @@ struct MultiFloatConversionPass
               }
               if (changed) {
                 returnOp.getOperation()->setOperands(newOperands);
+              }
+            }
+            for (auto op : toErase) {
+              if (op.use_empty()) {
+                op->erase();
               }
             }
           }
