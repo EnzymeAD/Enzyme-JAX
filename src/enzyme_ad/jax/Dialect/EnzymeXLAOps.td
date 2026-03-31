@@ -1423,4 +1423,22 @@ def MPIAllreduceOp : EnzymeXLA_Op<"mpi.allreduce", []> {
   let assemblyFormat = "`(` operands `)` attr-dict `:` functional-type(operands, results)";
 }
 
+def MPIBcastOp : EnzymeXLA_Op<"mpi.bcast", []> {
+  let summary = "Equivalent to "
+                "`MPI_Bcast(&buf, count, datatype, root, MPI_COMM_WORLD)`";
+
+  let arguments = (
+    ins AnyTensor : $buf,
+    TensorOf<[I32]> : $count,
+    TensorOf<[I32]> : $root,
+    EnzymeXLA_MPIDatatypeAttr:$datatype
+  );
+
+  let results = (
+    outs AnyTensor : $outbuf
+  );
+
+  let assemblyFormat = "`(` operands `)` attr-dict `:` functional-type(operands, results)";
+}
+
 #endif // ENZYMEXLA_OPS
