@@ -1645,6 +1645,41 @@ struct WrapOpConversion : public OpConversionPattern<enzymexla::WrapOp> {
   }
 };
 
+struct RotateOpConversion : public OpConversionPattern<enzymexla::RotateOp> {
+  StringRef concatDimension;
+
+  RotateOpConversion(TypeConverter &typeConverter, MLIRContext *context, StringRef concatDimension)
+      : OpConversionPattern<enzymexla::RotateOp>(typeConverter, context), concatDimension(concatDimension) {}
+
+  LogicalResult matchAndRewrite(enzymexla::RotateOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    Value input = adaptor.getOperands()[0];
+
+    int32_t dim = op.getDimension();
+    if (concatDimension == "first") {
+      dim += 1;
+    }
+
+    Type convertedType = getTypeConverter()->convertType(op.getType());
+    
+    SmallVector<NamedAttribute, 4> newAttrs;
+    for (auto attr : op->getAttrs()) {
+      if (attr.getName() == "dimension") {
+        newAttrs.push_back(rewriter.getNamedAttr("dimension", rewriter.getI32IntegerAttr(dim)));
+      } else {
+        newAttrs.push_back(attr);
+      }
+    }
+
+    auto newOp = rewriter.create<enzymexla::RotateOp>(
+        loc, TypeRange{convertedType}, ValueRange{input}, newAttrs);
+
+    rewriter.replaceOp(op, newOp.getResult());
+    return success();
+  }
+};
+
 struct ExtendOpConversion : public OpConversionPattern<enzymexla::ExtendOp> {
   StringRef concatDimension;
 
@@ -2109,13 +2144,17 @@ struct LowerReduceWindowOp : public OpConversionPattern<stablehlo::ReduceWindowO
       }
 
       LLVM_DEBUG(llvm::dbgs() << "Creating ReduceOp with operands: " << operands.size() << "\n");
+#ifndef NDEBUG
       for (auto op : operands) {
         LLVM_DEBUG(llvm::dbgs() << "  operand type: " << op.getType() << "\n");
       }
+#endif
       LLVM_DEBUG(llvm::dbgs() << "  Init values count: " << adaptor.getInitValues().size() << "\n");
+#ifndef NDEBUG
       for (auto val : adaptor.getInitValues()) {
         LLVM_DEBUG(llvm::dbgs() << "    init val type: " << val.getType() << "\n");
       }
+#endif
       SmallVector<Value> splitInitValues;
       if (packingSize == 2 && adaptor.getInitValues().size() == 1) {
         Value initVal = adaptor.getInitValues()[0];
@@ -2287,12 +2326,14 @@ struct LowerReduceWindowOp : public OpConversionPattern<stablehlo::ReduceWindowO
         Operation *clone = rewriter.create(state);
 
         LLVM_DEBUG(llvm::dbgs() << "Cloning op: " << op.getName() << "\n");
+#ifndef NDEBUG
         for (Value operand : op.getOperands()) {
           LLVM_DEBUG(llvm::dbgs() << "  Orig operand type: " << operand.getType() << "\n");
         }
         for (Value operand : clone->getOperands()) {
           LLVM_DEBUG(llvm::dbgs() << "  Cloned operand type: " << operand.getType() << "\n");
         }
+#endif
         for (size_t i = 0; i < op.getNumResults(); ++i) {
           mapper.map(op.getResult(i), clone->getResult(i));
         }
@@ -2789,10 +2830,10 @@ struct MultiFloatConversionPass
       patterns.add<CompareOpConversion>(typeConverter, context, concatDimension);
       patterns.add<GenericOpConversion<stablehlo::NegOp>>(typeConverter, context);
       patterns.add<DynamicUpdateSliceOpConversion>(typeConverter, context, concatDimension, tgtTy);
-      patterns.add<GenericOpConversion<enzymexla::RotateOp>>(typeConverter, context);
+      patterns.add<RotateOpConversion>(typeConverter, context, concatDimension);
+      patterns.add<UpdateWithoutCornersOpConversion>(typeConverter, context, concatDimension);
       patterns.add<WrapOpConversion>(typeConverter, context, concatDimension);
       patterns.add<ExtendOpConversion>(typeConverter, context, concatDimension);
-      patterns.add<UpdateWithoutCornersOpConversion>(typeConverter, context, concatDimension);
       patterns.add<GenericOpConversion<stablehlo::SineOp>>(typeConverter, context);
     } else {
       op->emitError() << "Unsupported expansion size specified: " << (int)expansionSize;
