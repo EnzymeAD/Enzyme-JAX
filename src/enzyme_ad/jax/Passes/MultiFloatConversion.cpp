@@ -837,35 +837,43 @@ struct ConvertOpConversion : public OpConversionPattern<stablehlo::ConvertOp> {
 
     // Case 3: Integer to Source Type
     if (inElType.isIntOrIndex() && outElType == sourceType) {
-        Value packed = convertToMultifloat(adaptor.getOperands()[0], rewriter, loc, targetType, concatDimension, expansionSize);
-        rewriter.replaceOp(op, packed);
-        return success();
+      Value packed =
+          convertToMultifloat(adaptor.getOperands()[0], rewriter, loc,
+                              targetType, concatDimension, expansionSize);
+      rewriter.replaceOp(op, packed);
+      return success();
     }
 
     // Case 4: Source to Integer
     if (inElType == sourceType && outElType.isIntOrIndex()) {
-        Value sum = nullptr;
-        for (int i = 0; i < expansionSize; ++i) {
-            Value limb = extractLimb(adaptor.getOperands()[0], i, rewriter, loc, concatDimension);
-            if (!isTuple) {
-              limb = rewriter.create<stablehlo::ReshapeOp>(loc, RankedTensorType::get(outTensorType.getShape(), targetType), limb);
-            }
-            Value convertedLimb = rewriter.create<stablehlo::ConvertOp>(loc, outType, limb);
-            if (sum) {
-              sum = rewriter.create<stablehlo::AddOp>(loc, sum, convertedLimb);
-            } else {
-              sum = convertedLimb;
-            }
+      Value sum = nullptr;
+      for (int i = 0; i < expansionSize; ++i) {
+        Value limb = extractLimb(adaptor.getOperands()[0], i, rewriter, loc,
+                                 concatDimension);
+        if (!isTuple) {
+          limb = rewriter.create<stablehlo::ReshapeOp>(
+              loc, RankedTensorType::get(outTensorType.getShape(), targetType),
+              limb);
         }
-        rewriter.replaceOp(op, sum);
-        return success();
+        Value convertedLimb =
+            rewriter.create<stablehlo::ConvertOp>(loc, outType, limb);
+        if (sum) {
+          sum = rewriter.create<stablehlo::AddOp>(loc, sum, convertedLimb);
+        } else {
+          sum = convertedLimb;
+        }
+      }
+      rewriter.replaceOp(op, sum);
+      return success();
     }
 
     // Case 5: Un-converted Source -> Converted Source (expanded pair)
     if (inElType == sourceType && outElType == sourceType && adaptor.getOperands()[0].getType() == inType) {
-        Value packed = convertToMultifloat(adaptor.getOperands()[0], rewriter, loc, targetType, concatDimension, expansionSize);
-        rewriter.replaceOp(op, packed);
-        return success();
+      Value packed =
+          convertToMultifloat(adaptor.getOperands()[0], rewriter, loc,
+                              targetType, concatDimension, expansionSize);
+      rewriter.replaceOp(op, packed);
+      return success();
     }
     return failure();
   }
@@ -1466,46 +1474,58 @@ struct CompareOpConversion : public OpConversionPattern<stablehlo::CompareOp> {
     }
 
     bool isTuple = (concatDimension == "tuple");
-    if (!isTuple && (direction == stablehlo::ComparisonDirection::EQ || direction == stablehlo::ComparisonDirection::NE)) {
-        Value cmp = rewriter.create<stablehlo::CompareOp>(loc, lhs, rhs, direction);
-        auto tensorType = cast<RankedTensorType>(lhs.getType());
-        int reduceDim = (concatDimension == "first") ? 0 : (tensorType.getRank() - 1);
-        
-        Value init_val;
-        auto boolType = rewriter.getI1Type();
-        if (direction == stablehlo::ComparisonDirection::EQ) {
-          init_val = rewriter.create<stablehlo::ConstantOp>(loc, DenseElementsAttr::get(RankedTensorType::get(ArrayRef<int64_t>{}, boolType), true));
-        } else {
-          init_val = rewriter.create<stablehlo::ConstantOp>(loc, DenseElementsAttr::get(RankedTensorType::get(ArrayRef<int64_t>{}, boolType), false));
-        }
+    if (!isTuple && (direction == stablehlo::ComparisonDirection::EQ ||
+                     direction == stablehlo::ComparisonDirection::NE)) {
+      Value cmp =
+          rewriter.create<stablehlo::CompareOp>(loc, lhs, rhs, direction);
+      auto tensorType = cast<RankedTensorType>(lhs.getType());
+      int reduceDim =
+          (concatDimension == "first") ? 0 : (tensorType.getRank() - 1);
 
-        auto reduceOp = rewriter.create<stablehlo::ReduceOp>(loc, cmp, init_val, rewriter.getDenseI64ArrayAttr({reduceDim}));
-        Block *reduceBlock = new Block();
-        reduceOp.getBody().push_back(reduceBlock);
-        auto tensorBoolType = RankedTensorType::get(ArrayRef<int64_t>{}, boolType);
-        reduceBlock->addArguments({tensorBoolType, tensorBoolType}, {loc, loc});
-        auto blockBuilder = OpBuilder::atBlockBegin(reduceBlock);
-        Value reducedRes;
-        if (direction == stablehlo::ComparisonDirection::EQ) {
-          reducedRes = blockBuilder.create<stablehlo::AndOp>(loc, reduceBlock->getArgument(0), reduceBlock->getArgument(1));
-        } else {
-          reducedRes = blockBuilder.create<stablehlo::OrOp>(loc, reduceBlock->getArgument(0), reduceBlock->getArgument(1));
-        }
-        blockBuilder.create<stablehlo::ReturnOp>(loc, reducedRes);
+      Value init_val;
+      auto boolType = rewriter.getI1Type();
+      if (direction == stablehlo::ComparisonDirection::EQ) {
+        init_val = rewriter.create<stablehlo::ConstantOp>(
+            loc,
+            DenseElementsAttr::get(
+                RankedTensorType::get(ArrayRef<int64_t>{}, boolType), true));
+      } else {
+        init_val = rewriter.create<stablehlo::ConstantOp>(
+            loc,
+            DenseElementsAttr::get(
+                RankedTensorType::get(ArrayRef<int64_t>{}, boolType), false));
+      }
 
-        Value res = reduceOp.getResults()[0];
-        if (res.getType() != resultType) {
-          res = rewriter.create<stablehlo::ReshapeOp>(loc, resultType, res);
-        }
-        rewriter.replaceOp(op, res);
-        return success();
+      auto reduceOp = rewriter.create<stablehlo::ReduceOp>(
+          loc, cmp, init_val, rewriter.getDenseI64ArrayAttr({reduceDim}));
+      Block *reduceBlock = new Block();
+      reduceOp.getBody().push_back(reduceBlock);
+      auto tensorBoolType =
+          RankedTensorType::get(ArrayRef<int64_t>{}, boolType);
+      reduceBlock->addArguments({tensorBoolType, tensorBoolType}, {loc, loc});
+      auto blockBuilder = OpBuilder::atBlockBegin(reduceBlock);
+      Value reducedRes;
+      if (direction == stablehlo::ComparisonDirection::EQ) {
+        reducedRes = blockBuilder.create<stablehlo::AndOp>(
+            loc, reduceBlock->getArgument(0), reduceBlock->getArgument(1));
+      } else {
+        reducedRes = blockBuilder.create<stablehlo::OrOp>(
+            loc, reduceBlock->getArgument(0), reduceBlock->getArgument(1));
+      }
+      blockBuilder.create<stablehlo::ReturnOp>(loc, reducedRes);
+
+      Value res = reduceOp.getResults()[0];
+      if (res.getType() != resultType) {
+        res = rewriter.create<stablehlo::ReshapeOp>(loc, resultType, res);
+      }
+      rewriter.replaceOp(op, res);
+      return success();
     }
 
     Value lhs_hi = extractLimb(lhs, 0, rewriter, loc, concatDimension);
     Value lhs_lo = extractLimb(lhs, 1, rewriter, loc, concatDimension);
     Value rhs_hi = extractLimb(rhs, 0, rewriter, loc, concatDimension);
     Value rhs_lo = extractLimb(rhs, 1, rewriter, loc, concatDimension);
-
 
     Value res;
     if (direction == stablehlo::ComparisonDirection::EQ) {
@@ -1514,7 +1534,7 @@ struct CompareOpConversion : public OpConversionPattern<stablehlo::CompareOp> {
       
       hi_eq = rewriter.create<stablehlo::ReshapeOp>(loc, resultType, hi_eq);
       lo_eq = rewriter.create<stablehlo::ReshapeOp>(loc, resultType, lo_eq);
-      
+
       res = rewriter.create<stablehlo::AndOp>(loc, hi_eq, lo_eq);
     } else if (direction == stablehlo::ComparisonDirection::NE) {
       Value hi_ne = rewriter.create<stablehlo::CompareOp>(loc, lhs_hi, rhs_hi, stablehlo::ComparisonDirection::NE);
@@ -1522,7 +1542,7 @@ struct CompareOpConversion : public OpConversionPattern<stablehlo::CompareOp> {
       
       hi_ne = rewriter.create<stablehlo::ReshapeOp>(loc, resultType, hi_ne);
       lo_ne = rewriter.create<stablehlo::ReshapeOp>(loc, resultType, lo_ne);
-      
+
       res = rewriter.create<stablehlo::OrOp>(loc, hi_ne, lo_ne);
     } else {
       stablehlo::ComparisonDirection dir_hi;
@@ -1568,29 +1588,47 @@ struct DynamicUpdateSliceOpConversion : public OpConversionPattern<stablehlo::Dy
     Value update = adaptor.getOperands()[1];
     auto indices = adaptor.getOperands().drop_front(2);
 
+    bool isTuple = concatDimension == "tuple";
+
+    if (!isTuple) {
+      Type indexType = indices[0].getType();
+      Value zero;
+      if (auto tensorType = dyn_cast<RankedTensorType>(indexType)) {
+        zero = rewriter.create<stablehlo::ConstantOp>(
+            loc, DenseIntElementsAttr::get(tensorType, 0));
+      } else {
+        zero = rewriter.create<stablehlo::ConstantOp>(
+            loc, rewriter.getIntegerAttr(indexType, 0));
+      }
+
+      SmallVector<Value> newIndices;
+      if (concatDimension == "first") {
+        newIndices.push_back(zero);
+        for (auto idx : indices)
+            newIndices.push_back(idx);
+      } else {
+        for (auto idx : indices)
+            newIndices.push_back(idx);
+        newIndices.push_back(zero);
+      }
+
+      Value res = rewriter.create<stablehlo::DynamicUpdateSliceOp>(
+          loc, operand.getType(), operand, update, newIndices);
+      rewriter.replaceOp(op, res);
+      return success();
+    }
+
     Value operand_hi = extractLimb(operand, 0, rewriter, loc, concatDimension);
     Value operand_lo = extractLimb(operand, 1, rewriter, loc, concatDimension);
     Value update_hi = extractLimb(update, 0, rewriter, loc, concatDimension);
     Value update_lo = extractLimb(update, 1, rewriter, loc, concatDimension);
 
-    auto rankNOperandType = cast<RankedTensorType>(op.getOperand().getType());
-    auto rankNOperandF32Type = RankedTensorType::get(rankNOperandType.getShape(), targetType);
-    Value operand_hi_N = rewriter.create<stablehlo::ReshapeOp>(loc, rankNOperandF32Type, operand_hi);
-    Value operand_lo_N = rewriter.create<stablehlo::ReshapeOp>(loc, rankNOperandF32Type, operand_lo);
+    Value hi_N = rewriter.create<stablehlo::DynamicUpdateSliceOp>(
+        loc, operand_hi.getType(), operand_hi, update_hi, indices);
+    Value lo_N = rewriter.create<stablehlo::DynamicUpdateSliceOp>(
+        loc, operand_lo.getType(), operand_lo, update_lo, indices);
 
-    auto rankNUpdateType = cast<RankedTensorType>(op.getUpdate().getType());
-    auto rankNUpdateF32Type = RankedTensorType::get(rankNUpdateType.getShape(), targetType);
-    Value update_hi_N = rewriter.create<stablehlo::ReshapeOp>(loc, rankNUpdateF32Type, update_hi);
-    Value update_lo_N = rewriter.create<stablehlo::ReshapeOp>(loc, rankNUpdateF32Type, update_lo);
-
-    Value hi_N = rewriter.create<stablehlo::DynamicUpdateSliceOp>(loc, rankNOperandF32Type, operand_hi_N, update_hi_N, indices);
-    Value lo_N = rewriter.create<stablehlo::DynamicUpdateSliceOp>(loc, rankNOperandF32Type, operand_lo_N, update_lo_N, indices);
-
-    auto rankNPlusOneType = cast<RankedTensorType>(operand_hi.getType());
-    Value hi = rewriter.create<stablehlo::ReshapeOp>(loc, rankNPlusOneType, hi_N);
-    Value lo = rewriter.create<stablehlo::ReshapeOp>(loc, rankNPlusOneType, lo_N);
-
-    Value packed = packLimbs(hi, lo, rewriter, loc, concatDimension);
+    Value packed = packLimbs(hi_N, lo_N, rewriter, loc, concatDimension);
     rewriter.replaceOp(op, packed);
     return success();
   }
@@ -1695,13 +1733,34 @@ struct WrapOpConversion : public OpConversionPattern<enzymexla::WrapOp> {
     Location loc = op.getLoc();
     Value input = adaptor.getOperands()[0];
 
+    bool isTuple = concatDimension == "tuple";
+
+    Type convertedType = getTypeConverter()->convertType(op.getType());
+
+    if (isTuple && isa<TupleType>(convertedType)) {
+      Value input_hi = extractLimb(input, 0, rewriter, loc, concatDimension);
+      Value input_lo = extractLimb(input, 1, rewriter, loc, concatDimension);
+
+      auto tupleType = cast<TupleType>(convertedType);
+      Type hiType = tupleType.getType(0);
+      Type loType = tupleType.getType(1);
+
+      auto hiOp = rewriter.create<enzymexla::WrapOp>(
+          loc, TypeRange{hiType}, ValueRange{input_hi}, op->getAttrs());
+      auto loOp = rewriter.create<enzymexla::WrapOp>(
+          loc, TypeRange{loType}, ValueRange{input_lo}, op->getAttrs());
+
+      Value packed = packLimbs(hiOp.getResult(), loOp.getResult(), rewriter,
+                               loc, concatDimension);
+      rewriter.replaceOp(op, packed);
+      return success();
+    }
+
     int64_t dim = op.getDimension();
     if (concatDimension == "first") {
       dim += 1;
     }
 
-    Type convertedType = getTypeConverter()->convertType(op.getType());
-    
     SmallVector<NamedAttribute, 4> newAttrs;
     for (auto attr : op->getAttrs()) {
       if (attr.getName() == "dimension") {
@@ -1730,13 +1789,34 @@ struct RotateOpConversion : public OpConversionPattern<enzymexla::RotateOp> {
     Location loc = op.getLoc();
     Value input = adaptor.getOperands()[0];
 
+    bool isTuple = concatDimension == "tuple";
+
+    Type convertedType = getTypeConverter()->convertType(op.getType());
+
+    if (isTuple && isa<TupleType>(convertedType)) {
+      Value input_hi = extractLimb(input, 0, rewriter, loc, concatDimension);
+      Value input_lo = extractLimb(input, 1, rewriter, loc, concatDimension);
+
+      auto tupleType = cast<TupleType>(convertedType);
+      Type hiType = tupleType.getType(0);
+      Type loType = tupleType.getType(1);
+
+      auto hiOp = rewriter.create<enzymexla::RotateOp>(
+          loc, TypeRange{hiType}, ValueRange{input_hi}, op->getAttrs());
+      auto loOp = rewriter.create<enzymexla::RotateOp>(
+          loc, TypeRange{loType}, ValueRange{input_lo}, op->getAttrs());
+
+      Value packed = packLimbs(hiOp.getResult(), loOp.getResult(), rewriter,
+                               loc, concatDimension);
+      rewriter.replaceOp(op, packed);
+      return success();
+    }
+
     int32_t dim = op.getDimension();
     if (concatDimension == "first") {
       dim += 1;
     }
 
-    Type convertedType = getTypeConverter()->convertType(op.getType());
-    
     SmallVector<NamedAttribute, 4> newAttrs;
     for (auto attr : op->getAttrs()) {
       if (attr.getName() == "dimension") {
@@ -1765,13 +1845,36 @@ struct ExtendOpConversion : public OpConversionPattern<enzymexla::ExtendOp> {
     Location loc = op.getLoc();
     Value input = adaptor.getOperands()[0];
 
+    bool isTuple = concatDimension == "tuple";
+
+    Type convertedType = getTypeConverter()->convertType(op.getType());
+
+    if (isTuple && isa<TupleType>(convertedType)) {
+      Value input_hi = extractLimb(input, 0, rewriter, loc, concatDimension);
+      Value input_lo = extractLimb(input, 1, rewriter, loc, concatDimension);
+
+      auto tupleType = cast<TupleType>(convertedType);
+      Type hiType = tupleType.getType(0);
+      Type loType = tupleType.getType(1);
+
+      auto hiOp = rewriter.create<enzymexla::ExtendOp>(
+          loc, hiType, input_hi, op.getLhsAttr(), op.getRhsAttr(),
+          op.getDimensionAttr());
+      auto loOp = rewriter.create<enzymexla::ExtendOp>(
+          loc, loType, input_lo, op.getLhsAttr(), op.getRhsAttr(),
+          op.getDimensionAttr());
+
+      Value packed = packLimbs(hiOp.getResult(), loOp.getResult(), rewriter,
+                               loc, concatDimension);
+      rewriter.replaceOp(op, packed);
+      return success();
+    }
+
     int64_t dim = op.getDimension();
     if (concatDimension == "first") {
       dim += 1;
     }
 
-    Type convertedType = getTypeConverter()->convertType(op.getType());
-    
     auto newOp = rewriter.create<enzymexla::ExtendOp>(
         loc, convertedType, input, op.getLhsAttr(), op.getRhsAttr(),
         rewriter.getI64IntegerAttr(dim));
@@ -1791,14 +1894,44 @@ struct UpdateWithoutCornersOpConversion : public OpConversionPattern<enzymexla::
                                 ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
 
+    bool isTuple = concatDimension == "tuple";
+
+    Type convertedType = getTypeConverter()->convertType(op.getType());
+
+    if (isTuple && isa<TupleType>(convertedType)) {
+      Value operand = adaptor.getOperand();
+      Value update = adaptor.getUpdate();
+
+      Value operand_hi =
+          extractLimb(operand, 0, rewriter, loc, concatDimension);
+      Value operand_lo =
+          extractLimb(operand, 1, rewriter, loc, concatDimension);
+      Value update_hi = extractLimb(update, 0, rewriter, loc, concatDimension);
+      Value update_lo = extractLimb(update, 1, rewriter, loc, concatDimension);
+
+      auto tupleType = cast<TupleType>(convertedType);
+      Type hiType = tupleType.getType(0);
+      Type loType = tupleType.getType(1);
+
+      auto hiOp = rewriter.create<enzymexla::UpdateWithoutCornersOp>(
+          loc, TypeRange{hiType}, ValueRange{operand_hi, update_hi},
+          op->getAttrs());
+      auto loOp = rewriter.create<enzymexla::UpdateWithoutCornersOp>(
+          loc, TypeRange{loType}, ValueRange{operand_lo, update_lo},
+          op->getAttrs());
+
+      Value packed = packLimbs(hiOp.getResult(), loOp.getResult(), rewriter,
+                               loc, concatDimension);
+      rewriter.replaceOp(op, packed);
+      return success();
+    }
+
     int64_t dimX = op.getDimensionX();
     int64_t dimY = op.getDimensionY();
     if (concatDimension == "first") {
       dimX += 1;
       dimY += 1;
     }
-
-    Type convertedType = getTypeConverter()->convertType(op.getType());
 
     SmallVector<NamedAttribute> newAttrs;
     for (auto attr : op->getAttrs()) {
@@ -2217,18 +2350,6 @@ struct LowerReduceWindowOp : public OpConversionPattern<stablehlo::ReduceWindowO
         operands.push_back(sliceOp);
       }
 
-      LLVM_DEBUG(llvm::dbgs() << "Creating ReduceOp with operands: " << operands.size() << "\n");
-#ifndef NDEBUG
-      for (auto op : operands) {
-        LLVM_DEBUG(llvm::dbgs() << "  operand type: " << op.getType() << "\n");
-      }
-#endif
-      LLVM_DEBUG(llvm::dbgs() << "  Init values count: " << adaptor.getInitValues().size() << "\n");
-#ifndef NDEBUG
-      for (auto val : adaptor.getInitValues()) {
-        LLVM_DEBUG(llvm::dbgs() << "    init val type: " << val.getType() << "\n");
-      }
-#endif
       SmallVector<Value> splitInitValues;
       if (packingSize == 2 && adaptor.getInitValues().size() == 1) {
         Value initVal = adaptor.getInitValues()[0];
