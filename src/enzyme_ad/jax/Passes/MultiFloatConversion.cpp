@@ -16,9 +16,14 @@
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "stablehlo/dialect/StablehloOps.h"
+#include "shardy/dialect/sdy/ir/dialect.h"
+#include "shardy/dialect/sdy/ir/utils.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/IRMapping.h"
+#include "llvm/Support/Debug.h"
+
+#define DEBUG_TYPE "multi-float-conversion"
 
 namespace mlir {
 namespace enzyme {
@@ -435,13 +440,13 @@ struct AddOpConversion : public OpConversionPattern<stablehlo::AddOp> {
 
   LogicalResult matchAndRewrite(stablehlo::AddOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
-    llvm::errs() << "AddOpConversion called\n";
+    LLVM_DEBUG(llvm::dbgs() << "AddOpConversion called\n");
     
     // Check if single-limb by looking at the converted operand type
     bool isTuple = concatDimension == "tuple";
     if (isTuple) {
       if (!mlir::dyn_cast_or_null<TupleType>(adaptor.getOperands()[0].getType())) {
-        llvm::errs() << "AddOpConversion: Found single-limb operand in tuple mode, failing\n";
+        LLVM_DEBUG(llvm::dbgs() << "AddOpConversion: Found single-limb operand in tuple mode, failing\n");
         return failure();
       }
     } else {
@@ -450,7 +455,7 @@ struct AddOpConversion : public OpConversionPattern<stablehlo::AddOp> {
       
       int limbDim = (concatDimension == "first") ? 0 : convertedType.getRank() - 1;
       if (convertedType.getShape()[limbDim] == 1) {
-        llvm::errs() << "AddOpConversion: Found single-limb operand in dimension mode, failing\n";
+        LLVM_DEBUG(llvm::dbgs() << "AddOpConversion: Found single-limb operand in dimension mode, failing\n");
         return failure();
       }
     }
@@ -472,7 +477,7 @@ struct AddOpConversion : public OpConversionPattern<stablehlo::AddOp> {
     
     Value packed = packLimbs(final_a, final_b, rewriter, loc, concatDimension);
     rewriter.replaceOp(op, packed);
-    llvm::errs() << "AddOpConversion succeeded\n";
+    LLVM_DEBUG(llvm::dbgs() << "AddOpConversion succeeded\n");
     return success();
   }
 };
@@ -633,11 +638,11 @@ struct SelectOpConversion : public OpConversionPattern<stablehlo::SelectOp> {
           loc, outType, adaptor.getOperands()[0], rewriter.getDenseI64ArrayAttr(broadcastDims));
     }
 
-    llvm::errs() << "SelectOpConversion creating SelectOp:\n";
-    llvm::errs() << "  valuesType: " << valuesType << "\n";
-    llvm::errs() << "  pred type: " << pred.getType() << "\n";
-    llvm::errs() << "  onTrue type: " << onTrue.getType() << "\n";
-    llvm::errs() << "  onFalse type: " << onFalse.getType() << "\n";
+    LLVM_DEBUG(llvm::dbgs() << "SelectOpConversion creating SelectOp:\n");
+    LLVM_DEBUG(llvm::dbgs() << "  valuesType: " << valuesType << "\n");
+    LLVM_DEBUG(llvm::dbgs() << "  pred type: " << pred.getType() << "\n");
+    LLVM_DEBUG(llvm::dbgs() << "  onTrue type: " << onTrue.getType() << "\n");
+    LLVM_DEBUG(llvm::dbgs() << "  onFalse type: " << onFalse.getType() << "\n");
 
     auto selectOp = rewriter.create<stablehlo::SelectOp>(
         loc, valuesType, pred, onTrue, onFalse);
@@ -658,7 +663,7 @@ struct ConvertOpConversion : public OpConversionPattern<stablehlo::ConvertOp> {
 
   LogicalResult matchAndRewrite(stablehlo::ConvertOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
-    llvm::errs() << "ConvertOpConversion called\n";
+    LLVM_DEBUG(llvm::dbgs() << "ConvertOpConversion called\n");
     Location loc = op.getLoc();
     Type outType = op.getResult().getType();
     Type inType = op.getOperand().getType();
@@ -982,7 +987,7 @@ struct WhileOpConversion : public OpConversionPattern<stablehlo::WhileOp> {
 
   LogicalResult matchAndRewrite(stablehlo::WhileOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
-    llvm::errs() << "WhileOpConversion called\n";
+    LLVM_DEBUG(llvm::dbgs() << "WhileOpConversion called\n");
     Location loc = op.getLoc();
 
     bool isTuple = concatDimension == "tuple";
@@ -1430,10 +1435,10 @@ struct CompareOpConversion : public OpConversionPattern<stablehlo::CompareOp> {
       hi_eq = rewriter.create<stablehlo::ReshapeOp>(loc, resultType, hi_eq);
       lo_eq = rewriter.create<stablehlo::ReshapeOp>(loc, resultType, lo_eq);
       
-      llvm::errs() << "CompareOpConversion EQ SelectOp:\n";
-      llvm::errs() << "  hi_eq type: " << hi_eq.getType() << "\n";
-      llvm::errs() << "  lo_eq type: " << lo_eq.getType() << "\n";
-      llvm::errs() << "  false_val type: " << false_val.getType() << "\n";
+      LLVM_DEBUG(llvm::dbgs() << "CompareOpConversion EQ SelectOp:\n");
+      LLVM_DEBUG(llvm::dbgs() << "  hi_eq type: " << hi_eq.getType() << "\n");
+      LLVM_DEBUG(llvm::dbgs() << "  lo_eq type: " << lo_eq.getType() << "\n");
+      LLVM_DEBUG(llvm::dbgs() << "  false_val type: " << false_val.getType() << "\n");
 
       res = rewriter.create<stablehlo::SelectOp>(loc, hi_eq, lo_eq, false_val);
     } else if (direction == stablehlo::ComparisonDirection::NE) {
@@ -1443,10 +1448,10 @@ struct CompareOpConversion : public OpConversionPattern<stablehlo::CompareOp> {
       hi_ne = rewriter.create<stablehlo::ReshapeOp>(loc, resultType, hi_ne);
       lo_ne = rewriter.create<stablehlo::ReshapeOp>(loc, resultType, lo_ne);
       
-      llvm::errs() << "CompareOpConversion NE SelectOp:\n";
-      llvm::errs() << "  hi_ne type: " << hi_ne.getType() << "\n";
-      llvm::errs() << "  true_val type: " << true_val.getType() << "\n";
-      llvm::errs() << "  lo_ne type: " << lo_ne.getType() << "\n";
+      LLVM_DEBUG(llvm::dbgs() << "CompareOpConversion NE SelectOp:\n");
+      LLVM_DEBUG(llvm::dbgs() << "  hi_ne type: " << hi_ne.getType() << "\n");
+      LLVM_DEBUG(llvm::dbgs() << "  true_val type: " << true_val.getType() << "\n");
+      LLVM_DEBUG(llvm::dbgs() << "  lo_ne type: " << lo_ne.getType() << "\n");
 
       res = rewriter.create<stablehlo::SelectOp>(loc, hi_ne, true_val, lo_ne);
     } else {
@@ -1462,10 +1467,10 @@ struct CompareOpConversion : public OpConversionPattern<stablehlo::CompareOp> {
       Value hi_eq = rewriter.create<stablehlo::CompareOp>(loc, lhs_hi, rhs_hi, stablehlo::ComparisonDirection::EQ);
       Value lo_cond = rewriter.create<stablehlo::CompareOp>(loc, lhs_lo, rhs_lo, dir_lo);
       
-      llvm::errs() << "CompareOpConversion other SelectOp:\n";
-      llvm::errs() << "  hi_eq type: " << hi_eq.getType() << "\n";
-      llvm::errs() << "  lo_cond type: " << lo_cond.getType() << "\n";
-      llvm::errs() << "  hi_gt type: " << hi_gt.getType() << "\n";
+      LLVM_DEBUG(llvm::dbgs() << "CompareOpConversion other SelectOp:\n");
+      LLVM_DEBUG(llvm::dbgs() << "  hi_eq type: " << hi_eq.getType() << "\n");
+      LLVM_DEBUG(llvm::dbgs() << "  lo_cond type: " << lo_cond.getType() << "\n");
+      LLVM_DEBUG(llvm::dbgs() << "  hi_gt type: " << hi_gt.getType() << "\n");
 
       res = rewriter.create<stablehlo::SelectOp>(loc, hi_eq, lo_cond, hi_gt);
     }
@@ -1532,7 +1537,7 @@ struct DotGeneralOpConversion : public OpConversionPattern<stablehlo::DotGeneral
 
   LogicalResult matchAndRewrite(stablehlo::DotGeneralOp op, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
-    llvm::errs() << "DotGeneralOpConversion called\n";
+    LLVM_DEBUG(llvm::dbgs() << "DotGeneralOpConversion called\n");
     Location loc = op.getLoc();
     Value lhs = adaptor.getOperands()[0];
     Value rhs = adaptor.getOperands()[1];
@@ -1661,6 +1666,46 @@ struct ExtendOpConversion : public OpConversionPattern<enzymexla::ExtendOp> {
     auto newOp = rewriter.create<enzymexla::ExtendOp>(
         loc, convertedType, input, op.getLhsAttr(), op.getRhsAttr(),
         rewriter.getI64IntegerAttr(dim));
+
+    rewriter.replaceOp(op, newOp.getResult());
+    return success();
+  }
+};
+
+struct UpdateWithoutCornersOpConversion : public OpConversionPattern<enzymexla::UpdateWithoutCornersOp> {
+  StringRef concatDimension;
+
+  UpdateWithoutCornersOpConversion(TypeConverter &typeConverter, MLIRContext *context, StringRef concatDimension)
+      : OpConversionPattern<enzymexla::UpdateWithoutCornersOp>(typeConverter, context), concatDimension(concatDimension) {}
+
+  LogicalResult matchAndRewrite(enzymexla::UpdateWithoutCornersOp op, OpAdaptor adaptor,
+                                ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+
+    int64_t dimX = op.getDimensionX();
+    int64_t dimY = op.getDimensionY();
+    if (concatDimension == "first") {
+      dimX += 1;
+      dimY += 1;
+    }
+
+    Type convertedType = getTypeConverter()->convertType(op.getType());
+
+    SmallVector<NamedAttribute> newAttrs;
+    for (auto attr : op->getAttrs()) {
+      if (attr.getName() == "dimensionX") {
+        newAttrs.push_back(rewriter.getNamedAttr("dimensionX", rewriter.getI64IntegerAttr(dimX)));
+      } else if (attr.getName() == "dimensionY") {
+        newAttrs.push_back(rewriter.getNamedAttr("dimensionY", rewriter.getI64IntegerAttr(dimY)));
+      } else {
+        newAttrs.push_back(attr);
+      }
+    }
+
+    auto newOp = rewriter.create<enzymexla::UpdateWithoutCornersOp>(
+        loc, TypeRange{convertedType},
+        ValueRange{adaptor.getOperand(), adaptor.getUpdate()},
+        newAttrs);
 
     rewriter.replaceOp(op, newOp.getResult());
     return success();
@@ -1886,9 +1931,9 @@ struct LowerReduceWindowOp : public OpConversionPattern<stablehlo::ReduceWindowO
   LogicalResult matchAndRewrite(stablehlo::ReduceWindowOp reduceOp, OpAdaptor adaptor,
                                 ConversionPatternRewriter &rewriter) const override {
     Value input = adaptor.getInputs()[0];
-    llvm::outs() << "adaptor.getInputs().size(): " << adaptor.getInputs().size() << "\n";
+    LLVM_DEBUG(llvm::dbgs() << "adaptor.getInputs().size(): " << adaptor.getInputs().size() << "\n");
     for (size_t i = 0; i < adaptor.getInputs().size(); ++i) {
-      llvm::outs() << "  input " << i << " type: " << adaptor.getInputs()[i].getType() << "\n";
+      LLVM_DEBUG(llvm::dbgs() << "  input " << i << " type: " << adaptor.getInputs()[i].getType() << "\n");
     }
     auto tensorType = cast<RankedTensorType>(input.getType());
     
@@ -1959,7 +2004,7 @@ struct LowerReduceWindowOp : public OpConversionPattern<stablehlo::ReduceWindowO
       }
     }
 
-    llvm::outs() << "input type: " << input.getType() << "\n";
+    LLVM_DEBUG(llvm::dbgs() << "input type: " << input.getType() << "\n");
 
     Location loc = reduceOp.getLoc();
 
@@ -1969,13 +2014,13 @@ struct LowerReduceWindowOp : public OpConversionPattern<stablehlo::ReduceWindowO
 
     if (!needsPadding) return failure();
 
-    llvm::outs() << "lowPadding: ";
-    for (auto p : lowPadding) llvm::outs() << p << " ";
-    llvm::outs() << "\n";
-    llvm::outs() << "highPadding: ";
-    for (auto p : highPadding) llvm::outs() << p << " ";
-    llvm::outs() << "\n";
-    llvm::outs() << "needsPadding: " << needsPadding << "\n";
+    LLVM_DEBUG(llvm::dbgs() << "lowPadding: ");
+    LLVM_DEBUG(for (auto p : lowPadding) llvm::dbgs() << p << " ");
+    LLVM_DEBUG(llvm::dbgs() << "\n");
+    LLVM_DEBUG(llvm::dbgs() << "highPadding: ");
+    LLVM_DEBUG(for (auto p : highPadding) llvm::dbgs() << p << " ");
+    LLVM_DEBUG(llvm::dbgs() << "\n");
+    LLVM_DEBUG(llvm::dbgs() << "needsPadding: " << needsPadding << "\n");
 
     Value paddedInput = input;
     if (needsPadding) {
@@ -1994,18 +2039,18 @@ struct LowerReduceWindowOp : public OpConversionPattern<stablehlo::ReduceWindowO
     }
 
     auto outType = getTypeConverter()->convertType(reduceOp.getResult(0).getType());
-    llvm::outs() << "Converted type of ReduceWindowOp result: " << outType << "\n";
+    LLVM_DEBUG(llvm::dbgs() << "Converted type of ReduceWindowOp result: " << outType << "\n");
     auto outTensorType = cast<RankedTensorType>(outType);
     auto outShape = outTensorType.getShape();
     int outRank = outTensorType.getRank();
 
     int actualReduceDim = reduceDim + (hasPacking ? 1 : 0);
 
-    llvm::outs() << "hasPacking: " << hasPacking << "\n";
-    llvm::outs() << "packingSize: " << packingSize << "\n";
-    llvm::outs() << "tensorType rank: " << tensorType.getRank() << "\n";
-    llvm::outs() << "dims size: " << dims.size() << "\n";
-    llvm::outs() << "tensorType: " << tensorType << "\n";
+    LLVM_DEBUG(llvm::dbgs() << "hasPacking: " << hasPacking << "\n");
+    LLVM_DEBUG(llvm::dbgs() << "packingSize: " << packingSize << "\n");
+    LLVM_DEBUG(llvm::dbgs() << "tensorType rank: " << tensorType.getRank() << "\n");
+    LLVM_DEBUG(llvm::dbgs() << "dims size: " << dims.size() << "\n");
+    LLVM_DEBUG(llvm::dbgs() << "tensorType: " << tensorType << "\n");
 
     bool outHasPacking = (outRank == dims.size() + 1);
     int actualOutReduceDim = reduceDim + (outHasPacking ? 1 : 0);
@@ -2063,13 +2108,13 @@ struct LowerReduceWindowOp : public OpConversionPattern<stablehlo::ReduceWindowO
         operands.push_back(sliceOp);
       }
 
-      llvm::outs() << "Creating ReduceOp with operands: " << operands.size() << "\n";
+      LLVM_DEBUG(llvm::dbgs() << "Creating ReduceOp with operands: " << operands.size() << "\n");
       for (auto op : operands) {
-        llvm::outs() << "  operand type: " << op.getType() << "\n";
+        LLVM_DEBUG(llvm::dbgs() << "  operand type: " << op.getType() << "\n");
       }
-      llvm::outs() << "  Init values count: " << adaptor.getInitValues().size() << "\n";
+      LLVM_DEBUG(llvm::dbgs() << "  Init values count: " << adaptor.getInitValues().size() << "\n");
       for (auto val : adaptor.getInitValues()) {
-        llvm::outs() << "    init val type: " << val.getType() << "\n";
+        LLVM_DEBUG(llvm::dbgs() << "    init val type: " << val.getType() << "\n");
       }
       SmallVector<Value> splitInitValues;
       if (packingSize == 2 && adaptor.getInitValues().size() == 1) {
@@ -2102,16 +2147,16 @@ struct LowerReduceWindowOp : public OpConversionPattern<stablehlo::ReduceWindowO
       auto newReduceOp = rewriter.create<stablehlo::ReduceOp>(
           loc, TypeRange(reduceResultTypes), operands, splitInitValues,
           ArrayRef<int64_t>{actualReduceDim});
-      llvm::outs() << "ReduceOp created successfully\n";
+      LLVM_DEBUG(llvm::dbgs() << "ReduceOp created successfully\n");
       
-      llvm::outs() << "Rewriting region...\n";
+      LLVM_DEBUG(llvm::dbgs() << "Rewriting region...\n");
       // Create a new block with updated signature
       Region& origRegion = reduceOp.getRegion();
       Block& origBlock = origRegion.front();
 
       Region& newRegion = newReduceOp.getRegion();
       Type argType = splitInitValues[0].getType(); // Use split init value type for region arguments
-      llvm::outs() << "Arg type for new block: " << argType << "\n";
+      LLVM_DEBUG(llvm::dbgs() << "Arg type for new block: " << argType << "\n");
       SmallVector<Type> argTypes;
       SmallVector<Location> argLocs;
       for (int p = 0; p < packingSize; ++p) { argTypes.push_back(argType); argLocs.push_back(loc); }
@@ -2119,28 +2164,28 @@ struct LowerReduceWindowOp : public OpConversionPattern<stablehlo::ReduceWindowO
 
       Block *newBlock;
       if (newReduceOp.getRegion().empty()) {
-        llvm::outs() << "newRegion is empty, creating new block\n";
+        LLVM_DEBUG(llvm::dbgs() << "newRegion is empty, creating new block\n");
         newBlock = rewriter.createBlock(&newRegion, {}, argTypes, argLocs);
       } else {
-        llvm::outs() << "newRegion is NOT empty, obtaining existing block\n";
+        LLVM_DEBUG(llvm::dbgs() << "newRegion is NOT empty, obtaining existing block\n");
         newBlock = &newRegion.front();
-        llvm::outs() << "  Existing block has " << newBlock->getOperations().size() << " ops\n";
-        llvm::outs() << "  Existing block has " << newBlock->getNumArguments() << " arguments\n";
+        LLVM_DEBUG(llvm::dbgs() << "  Existing block has " << newBlock->getOperations().size() << " ops\n");
+        LLVM_DEBUG(llvm::dbgs() << "  Existing block has " << newBlock->getNumArguments() << " arguments\n");
         if (!newBlock->empty()) {
           while (!newBlock->empty()) {
             newBlock->front().erase();
           }
-          llvm::outs() << "  Cleared existing block ops\n";
+          LLVM_DEBUG(llvm::dbgs() << "  Cleared existing block ops\n");
         }
         if (newBlock->getNumArguments() == 0) {
-          llvm::outs() << "  Adding arguments to existing block\n";
+          LLVM_DEBUG(llvm::dbgs() << "  Adding arguments to existing block\n");
           for (size_t i = 0; i < argTypes.size(); ++i) {
             newBlock->addArgument(argTypes[i], argLocs[i]);
           }
         } else {
-          llvm::outs() << "  Existing block ALREADY had arguments:\n";
+          LLVM_DEBUG(llvm::dbgs() << "  Existing block ALREADY had arguments:\n");
           for (unsigned i = 0; i < newBlock->getNumArguments(); ++i) {
-            llvm::outs() << "    arg " << i << " type: " << newBlock->getArgument(i).getType() << "\n";
+            LLVM_DEBUG(llvm::dbgs() << "    arg " << i << " type: " << newBlock->getArgument(i).getType() << "\n");
           }
         }
       }
@@ -2150,7 +2195,7 @@ struct LowerReduceWindowOp : public OpConversionPattern<stablehlo::ReduceWindowO
       // Reconstruct combined inputs for the original block ops
       SmallVector<Value> combinedArgs;
       for (int i = 0; i < 2; ++i) { // 2 operands in original region (lhs, rhs)
-        llvm::outs() << "Processing operand " << i << "\n";
+        LLVM_DEBUG(llvm::dbgs() << "Processing operand " << i << "\n");
         if (packingSize == 1) {
           Value high = newBlock->getArgument(i);
           combinedArgs.push_back(high);
@@ -2173,7 +2218,7 @@ struct LowerReduceWindowOp : public OpConversionPattern<stablehlo::ReduceWindowO
         }
       }
 
-      llvm::outs() << "Cloning ops using IRMapping...\n";
+      LLVM_DEBUG(llvm::dbgs() << "Cloning ops using IRMapping...\n");
       IRMapping mapper;
       for (Operation &op : origBlock) {
         for (Value operand : op.getOperands()) {
@@ -2181,14 +2226,14 @@ struct LowerReduceWindowOp : public OpConversionPattern<stablehlo::ReduceWindowO
           while (auto castOp = dyn_cast_or_null<mlir::UnrealizedConversionCastOp>(rootValue.getDefiningOp())) {
             rootValue = castOp.getOperand(0);
           }
-          llvm::errs() << "Operand: " << operand << " traces back to rootValue: " << rootValue << "\n";
+          LLVM_DEBUG(llvm::dbgs() << "Operand: " << operand << " traces back to rootValue: " << rootValue << "\n");
           if (rootValue.getDefiningOp()) {
-            llvm::errs() << "  Defining op: " << *rootValue.getDefiningOp() << "\n";
+            LLVM_DEBUG(llvm::dbgs() << "  Defining op: " << *rootValue.getDefiningOp() << "\n");
           } else {
-            llvm::errs() << "  No defining op (must be block arg)\n";
+            LLVM_DEBUG(llvm::dbgs() << "  No defining op (must be block arg)\n");
           }
           if (auto blockArg = dyn_cast<BlockArgument>(rootValue)) {
-            llvm::errs() << "  Is block arg, owner block: " << blockArg.getOwner() << ", origBlock: " << &origBlock << "\n";
+            LLVM_DEBUG(llvm::dbgs() << "  Is block arg, owner block: " << blockArg.getOwner() << ", origBlock: " << &origBlock << "\n");
             bool shouldMap = false;
             if (blockArg.getOwner() == &origBlock) {
               shouldMap = true;
@@ -2198,7 +2243,7 @@ struct LowerReduceWindowOp : public OpConversionPattern<stablehlo::ReduceWindowO
             if (shouldMap) {
               unsigned idx = blockArg.getArgNumber();
               mapper.map(operand, combinedArgs[idx]);
-              llvm::errs() << "  Mapped operand to combinedArgs[" << idx << "]\n";
+              LLVM_DEBUG(llvm::dbgs() << "  Mapped operand to combinedArgs[" << idx << "]\n");
             }
           }
         }
@@ -2206,13 +2251,13 @@ struct LowerReduceWindowOp : public OpConversionPattern<stablehlo::ReduceWindowO
 
       rewriter.setInsertionPointToEnd(newBlock);
       Value actualRetVal = nullptr;
-      llvm::errs() << "Mapper contents:\n";
+      LLVM_DEBUG(llvm::dbgs() << "Mapper contents:\n");
       for (size_t i = 0; i < origBlock.getNumArguments(); ++i) {
-        llvm::errs() << "  " << origBlock.getArgument(i) << " -> " << mapper.lookupOrDefault(origBlock.getArgument(i)) << "\n";
+        LLVM_DEBUG(llvm::dbgs() << "  " << origBlock.getArgument(i) << " -> " << mapper.lookupOrDefault(origBlock.getArgument(i)) << "\n");
       }
 
       for (Operation &op : origBlock) {
-        llvm::errs() << "Orig op before cloning: " << op << "\n";
+        LLVM_DEBUG(llvm::dbgs() << "Orig op before cloning: " << op << "\n");
         if (isa<stablehlo::ReturnOp>(&op)) {
           actualRetVal = mapper.lookupOrDefault(op.getOperand(0));
           continue;
@@ -2241,12 +2286,12 @@ struct LowerReduceWindowOp : public OpConversionPattern<stablehlo::ReduceWindowO
         }
         Operation *clone = rewriter.create(state);
 
-        llvm::errs() << "Cloning op: " << op.getName() << "\n";
+        LLVM_DEBUG(llvm::dbgs() << "Cloning op: " << op.getName() << "\n");
         for (Value operand : op.getOperands()) {
-          llvm::errs() << "  Orig operand type: " << operand.getType() << "\n";
+          LLVM_DEBUG(llvm::dbgs() << "  Orig operand type: " << operand.getType() << "\n");
         }
         for (Value operand : clone->getOperands()) {
-          llvm::errs() << "  Cloned operand type: " << operand.getType() << "\n";
+          LLVM_DEBUG(llvm::dbgs() << "  Cloned operand type: " << operand.getType() << "\n");
         }
         for (size_t i = 0; i < op.getNumResults(); ++i) {
           mapper.map(op.getResult(i), clone->getResult(i));
@@ -2254,7 +2299,7 @@ struct LowerReduceWindowOp : public OpConversionPattern<stablehlo::ReduceWindowO
       }
 
       if (!actualRetVal) {
-        llvm::outs() << "Error: Could not find return value from original region\n";
+        LLVM_DEBUG(llvm::dbgs() << "Error: Could not find return value from original region\n");
         return failure();
       }
 
@@ -2275,12 +2320,12 @@ struct LowerReduceWindowOp : public OpConversionPattern<stablehlo::ReduceWindowO
           lowRet = rewriter.create<stablehlo::ReshapeOp>(loc, RankedTensorType::get({}, lowType.getElementType()), lowRet);
         }
 
-        llvm::outs() << "Creating tablehlo::ReturnOp for packingSize == 2 with 2 values\n";
+        LLVM_DEBUG(llvm::dbgs() << "Creating tablehlo::ReturnOp for packingSize == 2 with 2 values\n");
         rewriter.create<stablehlo::ReturnOp>(loc, ValueRange{highRet, lowRet});
-        llvm::outs() << "tablehlo::ReturnOp created successfully\n";
+        LLVM_DEBUG(llvm::dbgs() << "tablehlo::ReturnOp created successfully\n");
       }
 
-      llvm::outs() << "Region rewritten using IRMapping cloning\n";
+      LLVM_DEBUG(llvm::dbgs() << "Region rewritten using IRMapping cloning\n");
 
       rewriter.setInsertionPointAfter(newReduceOp);
 
@@ -2391,22 +2436,22 @@ struct IsResultOrOperandTypeLegal {
 
   bool operator()(OpTy op) const {
     if (std::is_same<OpTy, stablehlo::DynamicUpdateSliceOp>::value) {
-      llvm::errs() << "Checking DynamicUpdateSliceOp legality for result: " << op.getType() << "\n";
+      LLVM_DEBUG(llvm::dbgs() << "Checking DynamicUpdateSliceOp legality for result: " << op.getType() << "\n");
     }
     if (!this->typeConverter.isLegal(op.getType())) {
       if (std::is_same<OpTy, stablehlo::DynamicUpdateSliceOp>::value) {
-        llvm::errs() << "DynamicUpdateSliceOp result is illegal\n";
+        LLVM_DEBUG(llvm::dbgs() << "DynamicUpdateSliceOp result is illegal\n");
       }
       return false;
     }
     if (op->getNumOperands() > 0 && !this->typeConverter.isLegal(op->getOperand(0).getType())) {
       if (std::is_same<OpTy, stablehlo::DynamicUpdateSliceOp>::value) {
-        llvm::errs() << "DynamicUpdateSliceOp operand 0 is illegal\n";
+        LLVM_DEBUG(llvm::dbgs() << "DynamicUpdateSliceOp operand 0 is illegal\n");
       }
       return false;
     }
     if (std::is_same<OpTy, stablehlo::DynamicUpdateSliceOp>::value) {
-      llvm::errs() << "DynamicUpdateSliceOp is legal!\n";
+      LLVM_DEBUG(llvm::dbgs() << "DynamicUpdateSliceOp is legal!\n");
     }
     return true;
   }
@@ -2429,10 +2474,10 @@ struct MultiFloatConversionPass
       return;
     }
 
-    llvm::outs() << "sourceType: " << sourceType << "\n";
-    llvm::outs() << "targetType: " << targetType << "\n";
-    llvm::outs() << "concatDimension: " << concatDimension << "\n";
-    llvm::outs() << "expansionSize: " << expansionSize << "\n";
+    LLVM_DEBUG(llvm::dbgs() << "sourceType: " << sourceType << "\n");
+    LLVM_DEBUG(llvm::dbgs() << "targetType: " << targetType << "\n");
+    LLVM_DEBUG(llvm::dbgs() << "concatDimension: " << concatDimension << "\n");
+    LLVM_DEBUG(llvm::dbgs() << "expansionSize: " << expansionSize << "\n");
 
     if (concatDimension != "first" && concatDimension != "last" && concatDimension != "tuple") {
       op->emitError() << "Invalid concat-dimension specified: " << concatDimension;
@@ -2478,7 +2523,7 @@ struct MultiFloatConversionPass
             newShape.push_back(2);
           }
           auto resultType = RankedTensorType::get(newShape, tgtTy);
-          llvm::outs() << "Tensor type converted: " << type << " -> " << resultType << "\n";
+          LLVM_DEBUG(llvm::dbgs() << "Tensor type converted: " << type << " -> " << resultType << "\n");
           return resultType;
         }
       }
@@ -2506,17 +2551,56 @@ struct MultiFloatConversionPass
         SmallVector<Type> newArgTypes;
         for (auto ty : oldArgTypes) {
           Type newTy = typeConverter.convertType(ty);
-          llvm::outs() << "Converting arg type: " << ty << " -> " << newTy << "\n";
+          LLVM_DEBUG(llvm::dbgs() << "Converting arg type: " << ty << " -> " << newTy << "\n");
           newArgTypes.push_back(newTy);
         }
 
-        SmallVector<Type> newResTypes;
+        SmallVector<Type> oldResTypes;
         for (auto ty : func.getFunctionType().getResults()) {
+          oldResTypes.push_back(ty);
+        }
+
+        SmallVector<Type> newResTypes;
+        for (auto ty : oldResTypes) {
           newResTypes.push_back(typeConverter.convertType(ty));
         }
 
         auto newFuncType = FunctionType::get(context, newArgTypes, newResTypes);
         func.setType(newFuncType);
+
+        auto updateShardingAttr = [&](Attribute attr) -> Attribute {
+          auto sharding = dyn_cast_or_null<sdy::TensorShardingAttr>(attr);
+          if (!sharding)
+            return attr;
+          SmallVector<sdy::DimensionShardingAttr> newDimShardings;
+          auto emptyDim = sdy::DimensionShardingAttr::get(
+              context, ArrayRef<sdy::AxisRefAttr>{}, /*is_closed=*/false);
+          if (isFirst) {
+            newDimShardings.push_back(emptyDim);
+            for (auto ds : sharding.getDimShardings())
+              newDimShardings.push_back(ds);
+          } else {
+            for (auto ds : sharding.getDimShardings())
+              newDimShardings.push_back(ds);
+            newDimShardings.push_back(emptyDim);
+          }
+          return sdy::TensorShardingAttr::get(
+              context, sharding.getMeshOrRef(), newDimShardings,
+              sharding.getReplicatedAxes(), sharding.getUnreducedAxes());
+        };
+
+        for (unsigned i = 0; i < oldArgTypes.size(); ++i) {
+          if (oldArgTypes[i] != newArgTypes[i]) {
+            if (auto attr = func.getArgAttr(i, "sdy.sharding"))
+              func.setArgAttr(i, "sdy.sharding", updateShardingAttr(attr));
+          }
+        }
+        for (unsigned i = 0; i < oldResTypes.size(); ++i) {
+          if (oldResTypes[i] != newResTypes[i]) {
+            if (auto attr = func.getResultAttr(i, "sdy.sharding"))
+              func.setResultAttr(i, "sdy.sharding", updateShardingAttr(attr));
+          }
+        }
 
         if (!func.empty()) {
           OpBuilder builder(&func.front(), func.front().begin());
@@ -2574,6 +2658,7 @@ struct MultiFloatConversionPass
     IsResultOrOperandTypeLegal<enzymexla::RotateOp> rotateLegal(typeConverter);
     IsResultOrOperandTypeLegal<enzymexla::WrapOp> wrapLegal(typeConverter);
     IsResultOrOperandTypeLegal<enzymexla::ExtendOp> extendLegal(typeConverter);
+    IsResultOrOperandTypeLegal<enzymexla::UpdateWithoutCornersOp> updateWithoutCornersLegal(typeConverter);
     IsResultOrOperandTypeLegal<stablehlo::NegOp> negLegal(typeConverter);
     IsResultOrOperandTypeLegal<stablehlo::DynamicUpdateSliceOp> dynamicUpdateSliceLegal(typeConverter);
 
@@ -2582,6 +2667,8 @@ struct MultiFloatConversionPass
     });
 
     target.addDynamicallyLegalOp<stablehlo::ConcatenateOp>([&](stablehlo::ConcatenateOp op) {
+      if (!typeConverter.isLegal(op.getResult().getType()))
+        return false;
       if (op.getOperands().size() != 2) return true;
       Operation *lhsOp = op.getOperands()[0].getDefiningOp();
       Operation *rhsOp = op.getOperands()[1].getDefiningOp();
@@ -2589,7 +2676,7 @@ struct MultiFloatConversionPass
       if (lhsOp->getName() != rhsOp->getName()) return true;
       if (!lhsOp->hasTrait<mlir::OpTrait::Elementwise>()) return true;
       if (lhsOp->getAttrDictionary() != rhsOp->getAttrDictionary()) return true;
-      return false; // Not legal if it can be optimized!
+      return false;
     });
     target.addDynamicallyLegalOp<stablehlo::SliceOp>(sliceLegal);
     target.addDynamicallyLegalOp<stablehlo::BroadcastInDimOp>(broadcastLegal);
@@ -2601,6 +2688,7 @@ struct MultiFloatConversionPass
     target.addDynamicallyLegalOp<enzymexla::RotateOp>(rotateLegal);
     target.addDynamicallyLegalOp<enzymexla::WrapOp>(wrapLegal);
     target.addDynamicallyLegalOp<enzymexla::ExtendOp>(extendLegal);
+    target.addDynamicallyLegalOp<enzymexla::UpdateWithoutCornersOp>(updateWithoutCornersLegal);
     target.addDynamicallyLegalOp<stablehlo::NegOp>(negLegal);
     target.addDynamicallyLegalOp<stablehlo::DynamicUpdateSliceOp>(dynamicUpdateSliceLegal);
     target.addDynamicallyLegalOp<stablehlo::AddOp>(addLegal);
@@ -2704,6 +2792,7 @@ struct MultiFloatConversionPass
       patterns.add<GenericOpConversion<enzymexla::RotateOp>>(typeConverter, context);
       patterns.add<WrapOpConversion>(typeConverter, context, concatDimension);
       patterns.add<ExtendOpConversion>(typeConverter, context, concatDimension);
+      patterns.add<UpdateWithoutCornersOpConversion>(typeConverter, context, concatDimension);
       patterns.add<GenericOpConversion<stablehlo::SineOp>>(typeConverter, context);
     } else {
       op->emitError() << "Unsupported expansion size specified: " << (int)expansionSize;
