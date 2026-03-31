@@ -2947,6 +2947,27 @@ struct MultiFloatConversionPass
         }
       }
     }
+
+    llvm::SetVector<UnrealizedConversionCastOp> worklist;
+    op->walk([&](UnrealizedConversionCastOp castOp) {
+      if (castOp.use_empty()) {
+        worklist.insert(castOp);
+      }
+    });
+
+    while (!worklist.empty()) {
+      UnrealizedConversionCastOp castOp = worklist.pop_back_val();
+      SmallVector<Value> operands(castOp.getOperands().begin(), castOp.getOperands().end());
+      castOp.erase();
+
+      for (Value operand : operands) {
+        if (auto defOp = operand.getDefiningOp<UnrealizedConversionCastOp>()) {
+          if (defOp.use_empty()) {
+            worklist.insert(defOp);
+          }
+        }
+      }
+    }
   }
 };
 
