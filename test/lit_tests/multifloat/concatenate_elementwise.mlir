@@ -8,6 +8,6 @@ func.func @test_combine_add(%arg0: tensor<1xf64>, %arg1: tensor<1xf64>, %arg2: t
 }
 
 // CHECK-LABEL: func.func @test_combine_add
-// CHECK: stablehlo.concatenate
-// CHECK-NOT: stablehlo.concatenate
-// CHECK: stablehlo.add
+// CHECK: stablehlo.concatenate %{{.*}}, %{{.*}}, dim = 1 : (tensor<2x1xf32>, tensor<2x1xf32>) -> tensor<2x2xf32>
+// CHECK: stablehlo.concatenate %{{.*}}, %{{.*}}, dim = 1 : (tensor<2x1xf32>, tensor<2x1xf32>) -> tensor<2x2xf32>
+// CHECK: stablehlo.add %{{.*}}, %{{.*}} : tensor<1x2xf32>

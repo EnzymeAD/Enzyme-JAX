@@ -14,12 +14,12 @@ func.func @while(%arg0: tensor<f64>) -> tensor<f64> {
 }
 
 // CHECK-LABEL: func.func @while
-// CHECK-DAG: %[[ARG_CAST:.*]] = builtin.unrealized_conversion_cast %arg0 : tensor<f64> to tuple<tensor<f32>, tensor<f32>>
+// CHECK: %[[ARG_TUPLE:.*]] = stablehlo.tuple %{{.*}}, %{{.*}} : tuple<tensor<f32>, tensor<f32>>
 // CHECK-DAG: %[[CST_HI:.*]] = stablehlo.constant dense<1.000000e+01> : tensor<f32>
 // CHECK-DAG: %[[CST_LO:.*]] = stablehlo.constant dense<0.000000e+00> : tensor<f32>
-// CHECK: %[[TUPLE:.*]] = stablehlo.tuple %[[CST_HI]], %[[CST_LO]] : tuple<tensor<f32>, tensor<f32>>
-// CHECK-DAG: %[[ARG_HI:.*]] = stablehlo.get_tuple_element %[[ARG_CAST]][0] : (tuple<tensor<f32>, tensor<f32>>) -> tensor<f32>
-// CHECK-DAG: %[[ARG_LO:.*]] = stablehlo.get_tuple_element %[[ARG_CAST]][1] : (tuple<tensor<f32>, tensor<f32>>) -> tensor<f32>
+// CHECK: %[[CST_TUPLE:.*]] = stablehlo.tuple %[[CST_HI]], %[[CST_LO]] : tuple<tensor<f32>, tensor<f32>>
+// CHECK-DAG: %[[ARG_HI:.*]] = stablehlo.get_tuple_element %[[ARG_TUPLE]][0] : (tuple<tensor<f32>, tensor<f32>>) -> tensor<f32>
+// CHECK-DAG: %[[ARG_LO:.*]] = stablehlo.get_tuple_element %[[ARG_TUPLE]][1] : (tuple<tensor<f32>, tensor<f32>>) -> tensor<f32>
 // CHECK: stablehlo.while
 // CHECK-NEXT: cond {
 // CHECK: stablehlo.compare {{.*}}, %{{.*}}, %{{.*}} : (tensor<f32>, tensor<f32>) -> tensor<i1>

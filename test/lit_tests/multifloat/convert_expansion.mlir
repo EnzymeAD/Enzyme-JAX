@@ -16,9 +16,8 @@ func.func @convert_f32_to_f64(%arg0: tensor<4x4xf32>) -> tensor<4x4xf64> {
 // CHECK-LABEL: func.func @convert_f32_to_f64
 // CHECK: %[[RESHAPED:.*]] = stablehlo.reshape %{{.*}} : (tensor<4x4xf32>) -> tensor<1x4x4xf32>
 // CHECK: %[[ZERO:.*]] = stablehlo.constant dense<0.000000e+00> : tensor<1x4x4xf32>
-// CHECK: %[[PACKED:.*]] = stablehlo.concatenate %[[RESHAPED]], %[[ZERO]], dim = 0 : (tensor<1x4x4xf32>, tensor<1x4x4xf32>) -> tensor<2x4x4xf32>
-// CHECK: %[[CAST:.*]] = builtin.unrealized_conversion_cast %[[PACKED]] : tensor<2x4x4xf32> to tensor<4x4xf64>
-// CHECK: return %[[CAST]]
+// CHECK: %[[OUT:.*]] = stablehlo.reshape %{{.*}} : (tensor<1x4x4xf64>) -> tensor<4x4xf64>
+// CHECK: return %[[OUT]]
 
 func.func @convert_i32_to_f64(%arg0: tensor<4x4xi32>) -> tensor<4x4xf64> {
   %0 = stablehlo.convert %arg0 : (tensor<4x4xi32>) -> tensor<4x4xf64>
@@ -31,9 +30,8 @@ func.func @convert_i32_to_f64(%arg0: tensor<4x4xi32>) -> tensor<4x4xf64> {
 // CHECK: %[[LOW:.*]] = stablehlo.convert %[[REM]] : (tensor<4x4xi32>) -> tensor<4x4xf32>
 // CHECK: %[[HIGH_RESHAPED:.*]] = stablehlo.reshape %[[HIGH]] : (tensor<4x4xf32>) -> tensor<1x4x4xf32>
 // CHECK: %[[LOW_RESHAPED:.*]] = stablehlo.reshape %[[LOW]] : (tensor<4x4xf32>) -> tensor<1x4x4xf32>
-// CHECK: %[[PACKED:.*]] = stablehlo.concatenate %[[HIGH_RESHAPED]], %[[LOW_RESHAPED]], dim = 0 : (tensor<1x4x4xf32>, tensor<1x4x4xf32>) -> tensor<2x4x4xf32>
-// CHECK: %[[CAST:.*]] = builtin.unrealized_conversion_cast %[[PACKED]] : tensor<2x4x4xf32> to tensor<4x4xf64>
-// CHECK: return %[[CAST]]
+// CHECK: %[[OUT:.*]] = stablehlo.reshape %{{.*}} : (tensor<1x4x4xf64>) -> tensor<4x4xf64>
+// CHECK: return %[[OUT]]
 
 func.func @convert_f64_to_i32(%arg0: tensor<4x4xf64>) -> tensor<4x4xi32> {
   %0 = stablehlo.convert %arg0 : (tensor<4x4xf64>) -> tensor<4x4xi32>

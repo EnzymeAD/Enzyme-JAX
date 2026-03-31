@@ -14,6 +14,5 @@ func.func @test_add(%arg0: tensor<f64>, %arg1: tensor<f64>) -> tensor<f64> {
 // CHECK-NOT: stablehlo.reshape
 // CHECK: stablehlo.add
 // CHECK: stablehlo.subtract
-// CHECK: %[[PACKED:.*]] = stablehlo.concatenate
-// CHECK: %[[RESULT:.*]] = builtin.unrealized_conversion_cast %[[PACKED]] : tensor<2xf32> to tensor<f64>
-// CHECK: return %[[RESULT]]
+// CHECK: %[[OUT:.*]] = stablehlo.reshape %{{.*}} : (tensor<1xf64>) -> tensor<f64>
+// CHECK: return %[[OUT]]

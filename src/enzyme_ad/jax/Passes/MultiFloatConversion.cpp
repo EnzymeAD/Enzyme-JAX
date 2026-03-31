@@ -1630,22 +1630,24 @@ struct DotGeneralOpConversion : public OpConversionPattern<stablehlo::DotGeneral
     Value L = rewriter.create<stablehlo::AddOp>(loc, hi_lo, lo_hi);
     L = rewriter.create<stablehlo::AddOp>(loc, L, lo_lo);
 
-    if (prodTensorTy.getRank() == 0) {
-      Type rank1Ty = RankedTensorType::get({1}, targetType);
-      hi_hi = rewriter.create<stablehlo::ReshapeOp>(loc, rank1Ty, hi_hi);
-      L = rewriter.create<stablehlo::ReshapeOp>(loc, rank1Ty, L);
-    } else {
-      SmallVector<int64_t> packedShape;
-      if (concatDimension == "first") {
-        packedShape.push_back(1);
-        for (auto s : origShape) packedShape.push_back(s);
+    if (concatDimension != "tuple") {
+      if (prodTensorTy.getRank() == 0) {
+        Type rank1Ty = RankedTensorType::get({1}, targetType);
+        hi_hi = rewriter.create<stablehlo::ReshapeOp>(loc, rank1Ty, hi_hi);
+        L = rewriter.create<stablehlo::ReshapeOp>(loc, rank1Ty, L);
       } else {
-        for (auto s : origShape) packedShape.push_back(s);
-        packedShape.push_back(1);
+        SmallVector<int64_t> packedShape;
+        if (concatDimension == "first") {
+          packedShape.push_back(1);
+          for (auto s : origShape) packedShape.push_back(s);
+        } else {
+          for (auto s : origShape) packedShape.push_back(s);
+          packedShape.push_back(1);
+        }
+        Type packedTy = RankedTensorType::get(packedShape, targetType);
+        hi_hi = rewriter.create<stablehlo::ReshapeOp>(loc, packedTy, hi_hi);
+        L = rewriter.create<stablehlo::ReshapeOp>(loc, packedTy, L);
       }
-      Type packedTy = RankedTensorType::get(packedShape, targetType);
-      hi_hi = rewriter.create<stablehlo::ReshapeOp>(loc, packedTy, hi_hi);
-      L = rewriter.create<stablehlo::ReshapeOp>(loc, packedTy, L);
     }
 
     Value packed = packLimbs(hi_hi, L, rewriter, loc, concatDimension);
