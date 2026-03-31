@@ -2257,6 +2257,19 @@ Value getIdentityValueForOp<stablehlo::MaxOp>(OpBuilder &builder, Location loc,
   return nullptr;
 }
 
+template <>
+Value getIdentityValueForOp<stablehlo::SubtractOp>(OpBuilder &builder,
+                                                   Location loc,
+                                                   Type elemType) {
+  return getIdentityValueForOp<stablehlo::AddOp>(builder, loc, elemType);
+}
+
+template <>
+Value getIdentityValueForOp<stablehlo::DivOp>(OpBuilder &builder, Location loc,
+                                              Type elemType) {
+  return getIdentityValueForOp<stablehlo::MulOp>(builder, loc, elemType);
+}
+
 // Identity values for bitwise logical ops.
 // OR/XOR: identity = 0
 template <>
@@ -2295,9 +2308,11 @@ Value getIdentityValue(OpBuilder &builder, Location loc, Type elemType,
   return TypeSwitch<Operation *, Value>(op)
       .Case<stablehlo::AddOp, stablehlo::MulOp, stablehlo::MinOp,
             stablehlo::MaxOp, stablehlo::OrOp, stablehlo::XorOp,
-            stablehlo::AndOp>([&](auto binOp) {
-        return getIdentityValueForOp<decltype(binOp)>(builder, loc, elemType);
-      })
+            stablehlo::AndOp, stablehlo::SubtractOp, stablehlo::DivOp>(
+          [&](auto binOp) {
+            return getIdentityValueForOp<decltype(binOp)>(builder, loc,
+                                                          elemType);
+          })
       .Default([&](Operation *op) -> Value { return nullptr; });
 }
 
