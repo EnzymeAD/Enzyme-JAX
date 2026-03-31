@@ -837,52 +837,27 @@ struct ConvertOpConversion : public OpConversionPattern<stablehlo::ConvertOp> {
 
     // Case 3: Integer to Source Type
     if (inElType.isIntOrIndex() && outElType == sourceType) {
-      Value high = rewriter.create<stablehlo::ConvertOp>(loc, RankedTensorType::get(outTensorType.getShape(), targetType), adaptor.getOperands()[0]);
-      Value highBack = rewriter.create<stablehlo::ConvertOp>(loc, inTensorType, high);
-      Value rem = rewriter.create<stablehlo::SubtractOp>(loc, adaptor.getOperands()[0], highBack);
-      Value low = rewriter.create<stablehlo::ConvertOp>(loc, RankedTensorType::get(outTensorType.getShape(), targetType), rem);
-      
-      Value highPacked = high;
-      Value lowPacked = low;
-      if (!isTuple) {
-        highPacked = rewriter.create<stablehlo::ReshapeOp>(loc, limbType, high);
-        lowPacked = rewriter.create<stablehlo::ReshapeOp>(loc, limbType, low);
-      }
-      
-      Value packed = packLimbs(highPacked, lowPacked, rewriter, loc, concatDimension);
-      rewriter.replaceOp(op, packed);
-      return success();
+        Value packed = convertToMultifloat(adaptor.getOperands()[0], rewriter, loc, targetType, concatDimension, expansionSize);
+        rewriter.replaceOp(op, packed);
+        return success();
     }
 
     // Case 4: Source to Integer
     if (inElType == sourceType && outElType.isIntOrIndex()) {
-      Value high = extractLimb(adaptor.getOperands()[0], 0, rewriter, loc, concatDimension);
-      if (!isTuple) {
-        high = rewriter.create<stablehlo::ReshapeOp>(loc, RankedTensorType::get(outTensorType.getShape(), targetType), high);
-      }
-      Value converted = rewriter.create<stablehlo::ConvertOp>(loc, outType, high);
-      rewriter.replaceOp(op, converted);
-      return success();
+        Value high = extractLimb(adaptor.getOperands()[0], 0, rewriter, loc, concatDimension);
+        if (!isTuple) {
+          high = rewriter.create<stablehlo::ReshapeOp>(loc, RankedTensorType::get(outTensorType.getShape(), targetType), high);
+        }
+        Value converted = rewriter.create<stablehlo::ConvertOp>(loc, outType, high);
+        rewriter.replaceOp(op, converted);
+        return success();
     }
 
     // Case 5: Un-converted Source -> Converted Source (expanded pair)
     if (inElType == sourceType && outElType == sourceType && adaptor.getOperands()[0].getType() == inType) {
-      Value x = adaptor.getOperands()[0];
-      Value high = rewriter.create<stablehlo::ConvertOp>(loc, RankedTensorType::get(outTensorType.getShape(), targetType), x);
-      Value highBack = rewriter.create<stablehlo::ConvertOp>(loc, outTensorType, high);
-      Value rem = rewriter.create<stablehlo::SubtractOp>(loc, x, highBack);
-      Value low = rewriter.create<stablehlo::ConvertOp>(loc, RankedTensorType::get(outTensorType.getShape(), targetType), rem);
-      
-      Value highPacked = high;
-      Value lowPacked = low;
-      if (!isTuple) {
-        highPacked = rewriter.create<stablehlo::ReshapeOp>(loc, limbType, high);
-        lowPacked = rewriter.create<stablehlo::ReshapeOp>(loc, limbType, low);
-      }
-      
-      Value packed = packLimbs(highPacked, lowPacked, rewriter, loc, concatDimension);
-      rewriter.replaceOp(op, packed);
-      return success();
+        Value packed = convertToMultifloat(adaptor.getOperands()[0], rewriter, loc, targetType, concatDimension, expansionSize);
+        rewriter.replaceOp(op, packed);
+        return success();
     }
     return failure();
   }
@@ -1132,7 +1107,7 @@ struct ReturnOpConversion : public OpConversionPattern<stablehlo::ReturnOp> {
     bool isFuncReturn = isa<func::FuncOp>(op->getParentOp());
 
     if (!isFuncReturn) {
-      if (op->getParentOp()->getName().getStringRef() == "stablehlo.while") {
+      if (isa<stablehlo::WhileOp>(op->getParentOp())) {
         SmallVector<Value> flatOperands;
         if (concatDimension == "tuple") {
           for (auto operand : adaptor.getOperands()) {
