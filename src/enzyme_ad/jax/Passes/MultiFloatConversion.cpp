@@ -147,6 +147,50 @@ Value packLimbs(Value high, Value low, OpBuilder &builder, Location loc, StringR
   return packLimbs({high, low}, builder, loc, concatDimension);
 }
 
+Value convertToMultifloat(Value val, OpBuilder &b, Location loc, Type tgtTy, StringRef concatDimension) {
+  auto tensorType = cast<RankedTensorType>(val.getType());
+  Value high = b.create<stablehlo::ConvertOp>(loc, RankedTensorType::get(tensorType.getShape(), tgtTy), val);
+  Value highBack = b.create<stablehlo::ConvertOp>(loc, tensorType, high);
+  Value rem = b.create<stablehlo::SubtractOp>(loc, val, highBack);
+  Value low = b.create<stablehlo::ConvertOp>(loc, RankedTensorType::get(tensorType.getShape(), tgtTy), rem);
+  if (concatDimension != "tuple") {
+    SmallVector<int64_t> expandedShape;
+    if (concatDimension == "first") {
+      expandedShape.push_back(1);
+      for (auto dim : tensorType.getShape()) expandedShape.push_back(dim);
+    } else {
+      for (auto dim : tensorType.getShape()) expandedShape.push_back(dim);
+      expandedShape.push_back(1);
+    }
+    auto expandedType = RankedTensorType::get(expandedShape, tgtTy);
+    high = b.create<stablehlo::ReshapeOp>(loc, expandedType, high);
+    low = b.create<stablehlo::ReshapeOp>(loc, expandedType, low);
+  }
+  return packLimbs({high, low}, b, loc, concatDimension);
+}
+
+Value convertFromMultifloat(Value packedVal, OpBuilder &b, Location loc, Type srcTy, StringRef concatDimension) {
+  Value high = extractLimb(packedVal, 0, b, loc, concatDimension);
+  Value low = extractLimb(packedVal, 1, b, loc, concatDimension);
+  auto f64Type = RankedTensorType::get(cast<RankedTensorType>(high.getType()).getShape(), srcTy);
+  Value high64 = b.create<stablehlo::ConvertOp>(loc, f64Type, high);
+  Value low64 = b.create<stablehlo::ConvertOp>(loc, f64Type, low);
+  Value added = b.create<stablehlo::AddOp>(loc, high64, low64);
+  if (concatDimension != "tuple") {
+    auto tensorType = cast<RankedTensorType>(packedVal.getType());
+    SmallVector<int64_t> collapsedShape;
+    bool isFirst = concatDimension == "first";
+    if (isFirst) {
+      for (size_t i = 1; i < tensorType.getRank(); ++i) collapsedShape.push_back(tensorType.getShape()[i]);
+    } else {
+      for (size_t i = 0; i < tensorType.getRank() - 1; ++i) collapsedShape.push_back(tensorType.getShape()[i]);
+    }
+    auto collapsedType = RankedTensorType::get(collapsedShape, srcTy);
+    return b.create<stablehlo::ReshapeOp>(loc, collapsedType, added);
+  }
+  return added;
+}
+
 
 
 std::pair<Value, Value> twoSum(Value a, Value b, OpBuilder &builder, Location loc) {
@@ -2847,47 +2891,40 @@ struct MultiFloatConversionPass
     }
 
     if (expansionSize > 1 && !convertSignatures) {
-      SmallVector<FunctionOpInterface> funcs;
-      op.walk([&](FunctionOpInterface f) {
+      SmallVector<func::FuncOp> funcs;
+      op->walk([&](func::FuncOp f) {
         if (f->getParentOp() == op) {
           funcs.push_back(f);
         }
       });
       for (auto func : funcs) {
-        OpBuilder b(func.getBody().front());
+        OpBuilder b(func.getContext());
+        b.setInsertionPointToStart(&func.getBody().front());
         for (auto arg : func.getArguments()) {
           if (auto tensorType = dyn_cast<RankedTensorType>(arg.getType())) {
             if (tensorType.getElementType() == srcTy) {
-              auto newType = typeConverter.convertType(tensorType);
-              assert(newType != tensorType);
-              auto converted = ...;
-              SmallVector<Operation*> toErase;
-              for (auto user : arg.getUsers()) {
+              Location loc = func.getLoc();
+              Value converted = convertToMultifloat(arg, b, loc, tgtTy, concatDimension);
+              SmallVector<Operation*> users(arg.getUsers().begin(), arg.getUsers().end());
+              for (auto user : users) {
                 if (auto cast = dyn_cast<UnrealizedConversionCastOp>(user)) {
-                  cast.replaceAllUsesWith(converted);
-                  toErase.push_back(cast);
+                  cast.getResult(0).replaceAllUsesWith(converted);
                 }
-              }
-              for (auto op : toErase) {
-                op->erase();
               }
             }
           }
         }
-        for (auto blk : func.getBlocks()) {
-          SmallVector<Operation*> toErase;
+        for (auto &blk : func.getBody()) {
           for (auto& op : blk.getOperations()) {
-            if (auto cast = dyn_cast<func::ReturnOp>(&op)) {
+            if (auto returnOp = dyn_cast<func::ReturnOp>(&op)) {
+              OpBuilder b_ret(returnOp);
               SmallVector<Value> newOperands;
               bool changed = false;
-              for (auto operand : cast.getOperands()) {
-                if (auto cast = dyn_cast<UnrealizedConversionCastOp>(operand)) {
-                  auto oldType = operand.getType();
-                  auto newType = typeConverter.convertType(oldType);
-                  assert(cast.getNewType() == newType);
-                  auto converted = ...;
-                  cast.replaceAllUsesWith(converted);
-                  toErase.push_back(cast);
+              for (auto operand : returnOp.getOperands()) {
+                if (auto castOp = operand.getDefiningOp<UnrealizedConversionCastOp>()) {
+                  Location loc = returnOp.getLoc();
+                  Value packedVal = castOp.getOperand(0);
+                  Value converted = convertFromMultifloat(packedVal, b_ret, loc, srcTy, concatDimension);
                   newOperands.push_back(converted);
                   changed = true;
                 } else {
@@ -2895,11 +2932,8 @@ struct MultiFloatConversionPass
                 }
               }
               if (changed) {
-                cast.getOperation()->setOperands(newOperands);
+                returnOp.getOperation()->setOperands(newOperands);
               }
-            }
-            for (auto op : toErase) {
-              op->erase();
             }
           }
         }

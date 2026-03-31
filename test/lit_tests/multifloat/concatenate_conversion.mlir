@@ -6,9 +6,7 @@ func.func @concat_2op(%arg0: tensor<3x4xf64>, %arg1: tensor<1x4xf64>) -> tensor<
   return %0 : tensor<4x4xf64>
 }
 // CHECK-LABEL: func.func @concat_2op
-// CHECK-DAG: %[[A:.*]] = builtin.unrealized_conversion_cast %arg0 : tensor<3x4xf64> to tensor<2x3x4xf32>
-// CHECK-DAG: %[[B:.*]] = builtin.unrealized_conversion_cast %arg1 : tensor<1x4xf64> to tensor<2x1x4xf32>
-// CHECK: stablehlo.concatenate %[[A]], %[[B]], dim = 1 : (tensor<2x3x4xf32>, tensor<2x1x4xf32>) -> tensor<2x4x4xf32>
+// CHECK: stablehlo.concatenate %{{.*}}, %{{.*}}, dim = 1 : (tensor<2x3x4xf32>, tensor<2x1x4xf32>) -> tensor<2x4x4xf32>
 
 // 3-operand concatenate on dim 0 (halo assembly pattern)
 func.func @concat_3op(%arg0: tensor<1x4xf64>, %arg1: tensor<2x4xf64>, %arg2: tensor<1x4xf64>) -> tensor<4x4xf64> {
