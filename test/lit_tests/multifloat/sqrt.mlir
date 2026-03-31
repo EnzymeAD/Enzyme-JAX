@@ -25,8 +25,6 @@ func.func @sqrt(%arg0: tensor<2xf64>) -> tensor<2xf64> {
 // CHECK: %{{.*}} = stablehlo.subtract %{{.*}}, %{{.*}} : tensor<1x2xf32>
 // CHECK: %{{.*}} = stablehlo.concatenate %{{.*}}, %{{.*}}, dim = 0 : (tensor<1x2xf32>, tensor<1x2xf32>) -> tensor<2x2xf32>
 // CHECK: %{{.*}} = stablehlo.convert %{{.*}} : (tensor<2x2xf32>) -> tensor<2x2xf64>
-// CHECK: %{{.*}} = stablehlo.slice %{{.*}} [0:1, 0:2] : (tensor<2x2xf64>) -> tensor<1x2xf64>
-// CHECK: %{{.*}} = stablehlo.slice %{{.*}} [1:2, 0:2] : (tensor<2x2xf64>) -> tensor<1x2xf64>
-// CHECK: %{{.*}} = stablehlo.add %{{.*}}, %{{.*}} : tensor<1x2xf64>
-// CHECK: %{{.*}} = stablehlo.reshape %{{.*}} : (tensor<1x2xf64>) -> tensor<2xf64>
+// CHECK: %[[CST:.*]] = stablehlo.constant dense<0.000000e+00> : tensor<f64>
+// CHECK: %{{.*}} = stablehlo.reduce(%{{.*}} init: %[[CST]]) applies stablehlo.add across dimensions = [0] : (tensor<2x2xf64>, tensor<f64>) -> tensor<2xf64>
 // CHECK: return %{{.*}} : tensor<2xf64>

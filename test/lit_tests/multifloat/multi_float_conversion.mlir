@@ -19,5 +19,6 @@ func.func @test_add(%arg0: tensor<f64>, %arg1: tensor<f64>) -> tensor<f64> {
 // CHECK-NOT: stablehlo.reshape
 // CHECK: stablehlo.add
 // CHECK: stablehlo.subtract
-// CHECK: %[[OUT:.*]] = stablehlo.reshape %{{.*}} : (tensor<1xf64>) -> tensor<f64>
+// CHECK: %[[CST:.*]] = stablehlo.constant dense<0.000000e+00> : tensor<f64>
+// CHECK: %[[OUT:.*]] = stablehlo.reduce(%{{.*}} init: %[[CST]]) applies stablehlo.add across dimensions = [0] : (tensor<2xf64>, tensor<f64>) -> tensor<f64>
 // CHECK: return %[[OUT]]

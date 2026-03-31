@@ -169,24 +169,40 @@ Value convertToMultifloat(Value val, OpBuilder &b, Location loc, Type tgtTy, Str
   return packLimbs({high, low}, b, loc, concatDimension);
 }
 
-Value convertFromMultifloat(Value packedVal, OpBuilder &b, Location loc, Type srcTy, StringRef concatDimension) {
+Value convertFromMultifloat(Value packedVal, OpBuilder &b, Location loc, Type srcTy, StringRef concatDimension,
+                          Value &zero) {
   if (concatDimension != "tuple") {
     auto tensorType = cast<RankedTensorType>(packedVal.getType());
     auto f64PackedType = RankedTensorType::get(tensorType.getShape(), srcTy);
     Value packed64 = b.create<stablehlo::ConvertOp>(loc, f64PackedType, packedVal);
-    Value high64 = extractLimb(packed64, 0, b, loc, concatDimension);
-    Value low64 = extractLimb(packed64, 1, b, loc, concatDimension);
-    Value added = b.create<stablehlo::AddOp>(loc, high64, low64);
 
-    SmallVector<int64_t> collapsedShape;
-    bool isFirst = concatDimension == "first";
-    if (isFirst) {
-      for (size_t i = 1; i < tensorType.getRank(); ++i) collapsedShape.push_back(tensorType.getShape()[i]);
-    } else {
-      for (size_t i = 0; i < tensorType.getRank() - 1; ++i) collapsedShape.push_back(tensorType.getShape()[i]);
+    int reduceDim = (concatDimension == "first") ? 0 : (tensorType.getRank() - 1);
+
+    SmallVector<int64_t> resultShape;
+    for (int i = 0; i < tensorType.getRank(); ++i) {
+      if (i != reduceDim) {
+        resultShape.push_back(tensorType.getShape()[i]);
+      }
     }
-    auto collapsedType = RankedTensorType::get(collapsedShape, srcTy);
-    return b.create<stablehlo::ReshapeOp>(loc, collapsedType, added);
+    auto resultType = RankedTensorType::get(resultShape, srcTy);
+
+    auto scalarType = RankedTensorType::get({}, srcTy);
+    auto zeroAttr = DenseElementsAttr::get(scalarType, b.getFloatAttr(srcTy, 0.0));
+    if (!zero) zero = b.create<stablehlo::ConstantOp>(loc, scalarType, zeroAttr);
+
+    auto reduceOp = b.create<stablehlo::ReduceOp>(
+        loc, resultType, packed64, zero, b.getDenseI64ArrayAttr({reduceDim}));
+
+    {
+      OpBuilder::InsertionGuard guard(b);
+      auto &region = reduceOp.getRegion();
+      auto *block = b.createBlock(&region, {}, {scalarType, scalarType}, {loc, loc});
+      b.setInsertionPointToStart(block);
+      Value added = b.create<stablehlo::AddOp>(loc, block->getArgument(0), block->getArgument(1));
+      b.create<stablehlo::ReturnOp>(loc, added);
+    }
+
+    return reduceOp.getResult(0);
   }
 
   Value high = extractLimb(packedVal, 0, b, loc, concatDimension);
@@ -2928,12 +2944,13 @@ struct MultiFloatConversionPass
             if (auto returnOp = dyn_cast<func::ReturnOp>(&op)) {
               OpBuilder b_ret(returnOp);
               SmallVector<Value> newOperands;
+              Value zero = nullptr;
               bool changed = false;
               for (auto operand : returnOp.getOperands()) {
                 if (auto castOp = operand.getDefiningOp<UnrealizedConversionCastOp>()) {
                   Location loc = returnOp.getLoc();
                   Value packedVal = castOp.getOperand(0);
-                  Value converted = convertFromMultifloat(packedVal, b_ret, loc, srcTy, concatDimension);
+                  Value converted = convertFromMultifloat(packedVal, b_ret, loc, srcTy, concatDimension, zero);
                   newOperands.push_back(converted);
                   changed = true;
                 } else {

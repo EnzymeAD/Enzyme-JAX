@@ -21,10 +21,7 @@ func.func @update_without_corners(%arg0: tensor<6x1522x3056xf64>, %arg1: tensor<
 // CHECK: %{{.*}} = stablehlo.reshape %{{.*}} : (tensor<6x1522x3056xf32>) -> tensor<1x6x1522x3056xf32>
 // CHECK: %{{.*}} = stablehlo.concatenate %{{.*}}, %{{.*}}, dim = 0 : (tensor<1x6x1522x3056xf32>, tensor<1x6x1522x3056xf32>) -> tensor<2x6x1522x3056xf32>
 // CHECK: "enzymexla.update_without_corners"(%{{.*}}, %{{.*}}) <{dimensionX = 1 : i64, {{.*}}dimensionY = 2 : i64{{.*}}}> : (tensor<2x6x1522x3056xf32>, tensor<2x6x1522x3056xf32>) -> tensor<2x6x1522x3056xf32>
-// CHECK: %{{.*}} = stablehlo.slice %{{.*}} [0:1, 0:6, 0:1522, 0:3056] : (tensor<2x6x1522x3056xf32>) -> tensor<1x6x1522x3056xf32>
-// CHECK: %{{.*}} = stablehlo.slice %{{.*}} [1:2, 0:6, 0:1522, 0:3056] : (tensor<2x6x1522x3056xf32>) -> tensor<1x6x1522x3056xf32>
-// CHECK: %{{.*}} = stablehlo.convert %{{.*}} : (tensor<1x6x1522x3056xf32>) -> tensor<1x6x1522x3056xf64>
-// CHECK: %{{.*}} = stablehlo.convert %{{.*}} : (tensor<1x6x1522x3056xf32>) -> tensor<1x6x1522x3056xf64>
-// CHECK: %{{.*}} = stablehlo.add %{{.*}}, %{{.*}} : tensor<1x6x1522x3056xf64>
-// CHECK: %{{.*}} = stablehlo.reshape %{{.*}} : (tensor<1x6x1522x3056xf64>) -> tensor<6x1522x3056xf64>
+// CHECK: %{{.*}} = stablehlo.convert %{{.*}} : (tensor<2x6x1522x3056xf32>) -> tensor<2x6x1522x3056xf64>
+// CHECK: %[[CST:.*]] = stablehlo.constant dense<0.000000e+00> : tensor<f64>
+// CHECK: %{{.*}} = stablehlo.reduce(%{{.*}} init: %[[CST]]) applies stablehlo.add across dimensions = [0] : (tensor<2x6x1522x3056xf64>, tensor<f64>) -> tensor<6x1522x3056xf64>
 // CHECK: return %{{.*}} : tensor<6x1522x3056xf64>

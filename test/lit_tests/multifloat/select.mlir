@@ -8,16 +8,18 @@ func.func @main(%pred: tensor<2xi1>, %on_true: tensor<2xf64>, %on_false: tensor<
   // CHECK: %[[FALSE_CONV:.*]] = stablehlo.concatenate %{{.*}}, %{{.*}}, dim = 0 : (tensor<1x2xf32>, tensor<1x2xf32>) -> tensor<2x2xf32>
   // CHECK: %[[PRED_BCAST:.*]] = stablehlo.broadcast_in_dim %arg0, dims = [1] : (tensor<2xi1>) -> tensor<2x2xi1>
   // CHECK: %[[SELECT:.*]] = stablehlo.select %[[PRED_BCAST]], %[[TRUE_CONV]], %[[FALSE_CONV]] : tensor<2x2xi1>, tensor<2x2xf32>
-  // CHECK: %[[OUT:.*]] = stablehlo.reshape %{{.*}} : (tensor<1x2xf64>) -> tensor<2xf64>
-  // CHECK: return %[[OUT]] : tensor<2xf64>
+// CHECK: %[[CST:.*]] = stablehlo.constant dense<0.000000e+00> : tensor<f64>
+// CHECK: %[[OUT:.*]] = stablehlo.reduce(%{{.*}} init: %[[CST]]) applies stablehlo.add across dimensions = [0] : (tensor<2x2xf64>, tensor<f64>) -> tensor<2xf64>
+// CHECK: return %[[OUT]] : tensor<2xf64>
 
   // CHECK-LAST-LABEL: @main
   // CHECK-LAST: %[[TRUE_CONV:.*]] = stablehlo.concatenate %{{.*}}, %{{.*}}, dim = 1 : (tensor<2x1xf32>, tensor<2x1xf32>) -> tensor<2x2xf32>
   // CHECK-LAST: %[[FALSE_CONV:.*]] = stablehlo.concatenate %{{.*}}, %{{.*}}, dim = 1 : (tensor<2x1xf32>, tensor<2x1xf32>) -> tensor<2x2xf32>
   // CHECK-LAST: %[[PRED_BCAST:.*]] = stablehlo.broadcast_in_dim %arg0, dims = [0] : (tensor<2xi1>) -> tensor<2x2xi1>
   // CHECK-LAST: %[[SELECT:.*]] = stablehlo.select %[[PRED_BCAST]], %[[TRUE_CONV]], %[[FALSE_CONV]] : tensor<2x2xi1>, tensor<2x2xf32>
-  // CHECK-LAST: %[[OUT:.*]] = stablehlo.reshape %{{.*}} : (tensor<2x1xf64>) -> tensor<2xf64>
-  // CHECK-LAST: return %[[OUT]] : tensor<2xf64>
+// CHECK-LAST: %[[CST:.*]] = stablehlo.constant dense<0.000000e+00> : tensor<f64>
+// CHECK-LAST: %[[OUT:.*]] = stablehlo.reduce(%{{.*}} init: %[[CST]]) applies stablehlo.add across dimensions = [1] : (tensor<2x2xf64>, tensor<f64>) -> tensor<2xf64>
+// CHECK-LAST: return %[[OUT]] : tensor<2xf64>
 
   // CHECK-TUPLE-LABEL: @main
   // CHECK-TUPLE: %[[TRUE_TUPLE:.*]] = stablehlo.tuple %{{.*}}, %{{.*}} : tuple<tensor<2xf32>, tensor<2xf32>>

@@ -6,14 +6,16 @@ func.func @main(%arg0: tensor<5xf64>) -> tensor<3xf64> {
   // CHECK-LABEL: @main
   // CHECK: %[[A:.*]] = stablehlo.concatenate %{{.*}}, %{{.*}}, dim = 0 : (tensor<1x5xf32>, tensor<1x5xf32>) -> tensor<2x5xf32>
   // CHECK: %[[SLICE:.*]] = stablehlo.slice %[[A]] [0:2, 1:4] : (tensor<2x5xf32>) -> tensor<2x3xf32>
-  // CHECK: %[[OUT:.*]] = stablehlo.reshape %{{.*}} : (tensor<1x3xf64>) -> tensor<3xf64>
-  // CHECK: return %[[OUT]] : tensor<3xf64>
+// CHECK: %[[CST:.*]] = stablehlo.constant dense<0.000000e+00> : tensor<f64>
+// CHECK: %[[OUT:.*]] = stablehlo.reduce(%{{.*}} init: %[[CST]]) applies stablehlo.add across dimensions = [0] : (tensor<2x3xf64>, tensor<f64>) -> tensor<3xf64>
+// CHECK: return %[[OUT]] : tensor<3xf64>
 
   // CHECK-LAST-LABEL: @main
   // CHECK-LAST: %[[A:.*]] = stablehlo.concatenate %{{.*}}, %{{.*}}, dim = 1 : (tensor<5x1xf32>, tensor<5x1xf32>) -> tensor<5x2xf32>
   // CHECK-LAST: %[[SLICE:.*]] = stablehlo.slice %[[A]] [1:4, 0:2] : (tensor<5x2xf32>) -> tensor<3x2xf32>
-  // CHECK-LAST: %[[OUT:.*]] = stablehlo.reshape %{{.*}} : (tensor<3x1xf64>) -> tensor<3xf64>
-  // CHECK-LAST: return %[[OUT]] : tensor<3xf64>
+// CHECK-LAST: %[[CST:.*]] = stablehlo.constant dense<0.000000e+00> : tensor<f64>
+// CHECK-LAST: %[[OUT:.*]] = stablehlo.reduce(%{{.*}} init: %[[CST]]) applies stablehlo.add across dimensions = [1] : (tensor<3x2xf64>, tensor<f64>) -> tensor<3xf64>
+// CHECK-LAST: return %[[OUT]] : tensor<3xf64>
 
   // CHECK-TUPLE-LABEL: @main
   // CHECK-TUPLE: %[[TUPLE:.*]] = stablehlo.tuple %{{.*}}, %{{.*}} : tuple<tensor<5xf32>, tensor<5xf32>>
