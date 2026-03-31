@@ -533,6 +533,11 @@ def ApplyConcatReshapeSlicePatterns : EnzymeHLOPatternOp<
   let patterns = ["ConcatReshapeSlice"];
 }
 
+def ApplyConcatBroadcastSlicePatterns : EnzymeHLOPatternOp<
+    "concat_broadcast_slice"> {
+  let patterns = ["ConcatBroadcastSlice"];
+}
+
 def ApplyConcatReshapeReducePatterns : EnzymeHLOPatternOp<
     "concat_reshape_reduce"> {
   let patterns = ["ConcatReshapeReduce"];
@@ -1423,6 +1428,11 @@ def ApplyExtendLICMPatterns : EnzymeHLOParameterizedPatternOp<
 def SelectCompIotaConstSimplify : EnzymeHLOPatternOp<
     "select_comp_iota_const_simplify"> {
   let patterns = ["SelectCompIotaConstSimplify"];
+}
+
+def SelectBroadcastIota : EnzymeHLOPatternOp<
+    "select_broadcast_iota"> {
+  let patterns = ["SelectBroadcastIota"];
 }
 
 def SelectCompIotaConstToDUS : EnzymeHLOPatternOp<

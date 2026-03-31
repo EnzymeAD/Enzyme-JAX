@@ -13483,6 +13483,196 @@ struct CompareExt final
   }
 };
 
+// Extract a scalar integer constant from a splat tensor or a scalar
+// broadcast_in_dim of a constant (dims=[]).
+static bool extractSplatInt(Value v, int64_t &out) {
+  DenseIntElementsAttr attr;
+  if (matchPattern(v, m_Constant(&attr)) && attr.isSplat()) {
+    out = attr.getSplatValue<IntegerAttr>().getValue().getSExtValue();
+    return true;
+  }
+  if (auto bcast = v.getDefiningOp<stablehlo::BroadcastInDimOp>()) {
+    if (bcast.getBroadcastDimensions().empty())
+      return extractSplatInt(bcast.getOperand(), out);
+  }
+  return false;
+}
+
+// Matches: select(broadcast_in_dim(compare(iota_expr, K), [dim]), A, B)
+// where iota_expr is either iota or add(iota, const_offset).
+// Replaces with concat(slice(A|B, ...), ...) along the broadcast dimension.
+struct SelectBroadcastIota final
+    : CheckedOpRewritePattern<stablehlo::SelectOp, SelectBroadcastIota> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::SelectOp selectOp,
+                                    PatternRewriter &rewriter) const {
+    Value trueTensor = selectOp.getOnTrue();
+    Value falseTensor = selectOp.getOnFalse();
+
+    // pred must come from a broadcast_in_dim
+    auto broadcast =
+        selectOp.getPred().getDefiningOp<stablehlo::BroadcastInDimOp>();
+    if (!broadcast)
+      return failure();
+
+    // broadcast input must be a compare
+    auto compare =
+        broadcast.getOperand().getDefiningOp<stablehlo::CompareOp>();
+    if (!compare)
+      return failure();
+
+    Value cmpLHS = compare.getLhs();
+    Value cmpRHS = compare.getRhs();
+    stablehlo::ComparisonDirection direction = compare.getComparisonDirection();
+
+    stablehlo::IotaOp iota;
+    int64_t K = 0;
+
+    // Try to match lhs as an iota expression, rhs as a constant.
+    // Handles: iota vs const, and add(iota, offset) vs const.
+    // Returns true and sets iota/K on success.
+    auto tryMatchIotaVsConst = [&](Value lhs, Value rhs) -> bool {
+      // Form A: direct iota vs splat constant
+      if (auto iotaOp = lhs.getDefiningOp<stablehlo::IotaOp>()) {
+        int64_t rhsConst = 0;
+        if (extractSplatInt(rhs, rhsConst)) {
+          iota = iotaOp;
+          K = rhsConst;
+          return true;
+        }
+      }
+      // Form B: add(iota, offset) vs splat constant
+      // iota + offset direction rhsConst  ⟺  iota direction rhsConst - offset
+      if (auto add = lhs.getDefiningOp<stablehlo::AddOp>()) {
+        for (int side = 0; side < 2; side++) {
+          Value maybeIota = side == 0 ? add.getLhs() : add.getRhs();
+          Value maybeConst = side == 0 ? add.getRhs() : add.getLhs();
+          if (auto iotaOp = maybeIota.getDefiningOp<stablehlo::IotaOp>()) {
+            int64_t addOffset = 0, rhsConst = 0;
+            if (extractSplatInt(maybeConst, addOffset) &&
+                extractSplatInt(rhs, rhsConst)) {
+              iota = iotaOp;
+              K = rhsConst - addOffset;
+              return true;
+            }
+          }
+        }
+      }
+      return false;
+    };
+
+    if (!tryMatchIotaVsConst(cmpLHS, cmpRHS)) {
+      // Try commuted: swap lhs/rhs and flip ordering directions
+      if (!tryMatchIotaVsConst(cmpRHS, cmpLHS))
+        return failure();
+      // Flip ordering direction because we swapped operands
+      switch (direction) {
+      case stablehlo::ComparisonDirection::LT:
+        direction = stablehlo::ComparisonDirection::GT;
+        break;
+      case stablehlo::ComparisonDirection::LE:
+        direction = stablehlo::ComparisonDirection::GE;
+        break;
+      case stablehlo::ComparisonDirection::GT:
+        direction = stablehlo::ComparisonDirection::LT;
+        break;
+      case stablehlo::ComparisonDirection::GE:
+        direction = stablehlo::ComparisonDirection::LE;
+        break;
+      default:
+        break;
+      }
+    }
+
+    // Find which output dimension the iota dimension maps to via broadcast.
+    // getBroadcastDimensions()[i] is the output dim that input dim i maps to.
+    const int64_t iotaDim = iota.getIotaDimension();
+    auto bcastDims = broadcast.getBroadcastDimensions();
+    int64_t outputDim = -1;
+    for (auto [inDim, outDim] : llvm::enumerate(bcastDims)) {
+      if ((int64_t)inDim == iotaDim) {
+        outputDim = outDim;
+        break;
+      }
+    }
+    if (outputDim == -1)
+      return failure();
+
+    auto outputShape = selectOp.getType().getShape();
+    const int64_t endValue = outputShape[outputDim];
+
+    if (K < 0 || K > endValue)
+      return failure();
+
+    struct slice_data {
+      Value tensor;
+      int64_t count;
+    };
+    SmallVector<slice_data, 3> slices;
+    switch (direction) {
+    case stablehlo::ComparisonDirection::LT:
+      slices.push_back({trueTensor, K});
+      slices.push_back({falseTensor, endValue - K});
+      break;
+    case stablehlo::ComparisonDirection::LE:
+      slices.push_back({trueTensor, K + 1});
+      slices.push_back({falseTensor, endValue - K - 1});
+      break;
+    case stablehlo::ComparisonDirection::GT:
+      slices.push_back({falseTensor, K + 1});
+      slices.push_back({trueTensor, endValue - K - 1});
+      break;
+    case stablehlo::ComparisonDirection::GE:
+      slices.push_back({falseTensor, K});
+      slices.push_back({trueTensor, endValue - K});
+      break;
+    case stablehlo::ComparisonDirection::EQ:
+      slices.push_back({falseTensor, K});
+      slices.push_back({trueTensor, 1});
+      slices.push_back({falseTensor, endValue - K - 1});
+      break;
+    case stablehlo::ComparisonDirection::NE:
+      slices.push_back({trueTensor, K});
+      slices.push_back({falseTensor, 1});
+      slices.push_back({trueTensor, endValue - K - 1});
+      break;
+    }
+
+    auto validCount =
+        std::count_if(slices.begin(), slices.end(),
+                      [](slice_data d) { return d.count > 0; });
+    if (validCount == 1) {
+      for (auto &e : slices)
+        if (e.count > 0) {
+          rewriter.replaceAllOpUsesWith(selectOp, e.tensor);
+          return success();
+        }
+    }
+
+    const auto loc = selectOp.getLoc();
+    SmallVector<int64_t> starts(outputShape.size(), 0);
+    SmallVector<int64_t> limits(outputShape);
+    SmallVector<int64_t> strides(outputShape.size(), 1);
+    SmallVector<Value> sliceValues;
+    int64_t cursor = 0;
+    for (auto &e : slices) {
+      if (e.count > 0) {
+        starts[outputDim] = cursor;
+        limits[outputDim] = cursor + e.count;
+        sliceValues.push_back(stablehlo::SliceOp::create(
+            rewriter, loc, e.tensor, ArrayRef<int64_t>(starts),
+            ArrayRef<int64_t>(limits), ArrayRef<int64_t>(strides)));
+        cursor += e.count;
+      }
+    }
+
+    rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
+        selectOp, ValueRange{sliceValues}, outputDim);
+    return success();
+  }
+};
+
 struct SelectCompIotaConstSimplify final
     : CheckedOpRewritePattern<stablehlo::SelectOp,
                               SelectCompIotaConstSimplify> {
@@ -24871,6 +25061,27 @@ struct SquareAbsSimplify
   }
 };
 
+struct ConcatBroadcastSlice
+    : public CheckedOpRewritePattern<stablehlo::ConcatenateOp,
+                                     ConcatBroadcastSlice> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp op,
+                                    PatternRewriter &rewriter) const {
+    auto dim = op.getDimension();
+    SmallVector<Value> newOperands;
+
+    SmallVector<Value> oldOperands(op.getOperands());
+    auto res =
+        concatBroadcastSliceSimplify(rewriter, oldOperands, dim, newOperands);
+    if (!res.succeeded())
+      return res;
+
+    rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(op, newOperands, dim);
+    return success();
+  }
+};
+
 struct ConcatReshapeSlice
     : public CheckedOpRewritePattern<stablehlo::ConcatenateOp,
                                      ConcatReshapeSlice> {
@@ -28203,6 +28414,163 @@ struct SubtractMultiplyConstToAddMulConst
     }
 
     return failure();
+  }
+};
+
+// Match: sub(pad(x, 0, lo=0, hi=K, dim=d), pad(x, 0, lo=K, hi=0, dim=d))
+// Rewrite to a convolution with kernel [-1, 1] and inline padding [K, K] on dim
+// d. This handles the common "backward finite difference" pattern as a 1-D
+// cross-correlation.
+struct PadSubToConvolution
+    : public CheckedOpRewritePattern<stablehlo::SubtractOp,
+                                     PadSubToConvolution> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::SubtractOp op,
+                                    PatternRewriter &rewriter) const {
+    auto lhsPad = op.getLhs().getDefiningOp<stablehlo::PadOp>();
+    auto rhsPad = op.getRhs().getDefiningOp<stablehlo::PadOp>();
+    if (!lhsPad || !rhsPad)
+      return rewriter.notifyMatchFailure(op, "operands are not pad ops");
+
+    if (lhsPad.getOperand() != rhsPad.getOperand())
+      return rewriter.notifyMatchFailure(op, "pads have different operands");
+
+    if (anyPadSizesNegative(lhsPad) || anyPadSizesNegative(rhsPad))
+      return rewriter.notifyMatchFailure(op, "pads have negative sizes");
+
+    if (!llvm::all_of(lhsPad.getInteriorPadding(),
+                      [](int64_t v) { return v == 0; }) ||
+        !llvm::all_of(rhsPad.getInteriorPadding(),
+                      [](int64_t v) { return v == 0; }))
+      return rewriter.notifyMatchFailure(op, "interior padding is not zero");
+
+    if ((!matchPattern(lhsPad.getPaddingValue(), m_AnyZeroFloat()) &&
+         !matchPattern(lhsPad.getPaddingValue(), m_Zero())) ||
+        (!matchPattern(rhsPad.getPaddingValue(), m_AnyZeroFloat()) &&
+         !matchPattern(rhsPad.getPaddingValue(), m_Zero())))
+      return rewriter.notifyMatchFailure(op, "padding value is not zero");
+
+    auto lhsLow = lhsPad.getEdgePaddingLow();
+    auto lhsHigh = lhsPad.getEdgePaddingHigh();
+    auto rhsLow = rhsPad.getEdgePaddingLow();
+    auto rhsHigh = rhsPad.getEdgePaddingHigh();
+
+    auto outType = cast<RankedTensorType>(op.getType());
+    int64_t rank = outType.getRank();
+
+    // Find the single dimension with complementary padding; all others must be
+    // 0.
+    int64_t diffDim = -1;
+    int64_t shiftAmount = -1;
+    // lhsHasHighPad=true:  lhs has hi=K, rhs has lo=K  → x[i] - x[i-K]
+    // lhsHasHighPad=false: lhs has lo=K, rhs has hi=K  → x[i-K] - x[i]
+    bool lhsHasHighPad = false;
+
+    for (int64_t d = 0; d < rank; d++) {
+      if (lhsLow[d] == 0 && lhsHigh[d] == 0 && rhsLow[d] == 0 &&
+          rhsHigh[d] == 0)
+        continue;
+
+      if (diffDim != -1)
+        return rewriter.notifyMatchFailure(
+            op, "more than one dimension differs in padding");
+
+      if (lhsLow[d] == 0 && rhsHigh[d] == 0 && lhsHigh[d] == rhsLow[d] &&
+          lhsHigh[d] > 0) {
+        diffDim = d;
+        shiftAmount = lhsHigh[d];
+        lhsHasHighPad = true;
+      } else if (lhsHigh[d] == 0 && rhsLow[d] == 0 && lhsLow[d] == rhsHigh[d] &&
+                 lhsLow[d] > 0) {
+        diffDim = d;
+        shiftAmount = lhsLow[d];
+        lhsHasHighPad = false;
+      } else {
+        return rewriter.notifyMatchFailure(
+            op, "padding is not complementary in differing dimension");
+      }
+    }
+
+    if (diffDim == -1)
+      return rewriter.notifyMatchFailure(op, "no differencing dimension found");
+
+    auto loc = op.getLoc();
+    auto T = outType.getElementType();
+    auto scalarType = RankedTensorType::get({}, T);
+
+    // Reshape input x: [d0,...,dN] -> [1, 1, d0,...,dN]
+    auto inputType = cast<RankedTensorType>(lhsPad.getOperand().getType());
+    SmallVector<int64_t> convInputShape(2, 1);
+    for (auto d : inputType.getShape())
+      convInputShape.push_back(d);
+    auto convInput = stablehlo::ReshapeOpCreate(
+        rewriter, loc, lhsPad.getOperand(), convInputShape);
+
+    // Build kernel: two scalar elements reshaped then concatenated along
+    // diffDim+2. lhsHasHighPad=true  → [-1, 1]   lhsHasHighPad=false → [1, -1]
+    auto negOne = stablehlo::ConstantOp::create(
+        rewriter, loc, scalarType,
+        cast<ElementsAttr>(makeAttr(scalarType, -1)));
+    auto posOne = stablehlo::ConstantOp::create(
+        rewriter, loc, scalarType, cast<ElementsAttr>(makeAttr(scalarType, 1)));
+
+    SmallVector<int64_t> filterElemShape(rank + 2, 1);
+    auto negOneReshaped =
+        stablehlo::ReshapeOpCreate(rewriter, loc, negOne, filterElemShape);
+    auto posOneReshaped =
+        stablehlo::ReshapeOpCreate(rewriter, loc, posOne, filterElemShape);
+
+    Value firstElem = lhsHasHighPad ? negOneReshaped : posOneReshaped;
+    Value secondElem = lhsHasHighPad ? posOneReshaped : negOneReshaped;
+
+    auto filter = stablehlo::ConcatenateOp::create(
+        rewriter, loc, ValueRange{firstElem, secondElem},
+        rewriter.getI64IntegerAttr(diffDim + 2));
+
+    // Spatial dims: [2, 3, ..., rank+1]
+    SmallVector<int64_t> spatialDims(rank);
+    for (int64_t i = 0; i < rank; ++i)
+      spatialDims[i] = i + 2;
+
+    auto convDims = stablehlo::ConvDimensionNumbersAttr::get(
+        rewriter.getContext(),
+        /*input_batch_dimension=*/0,
+        /*input_feature_dimension=*/1,
+        /*input_spatial_dimensions=*/spatialDims,
+        /*kernel_input_feature_dimension=*/0,
+        /*kernel_output_feature_dimension=*/1,
+        /*kernel_spatial_dimensions=*/spatialDims,
+        /*output_batch_dimension=*/0,
+        /*output_feature_dimension=*/1,
+        /*output_spatial_dimensions=*/spatialDims);
+
+    // Inline padding: [shiftAmount, shiftAmount] on diffDim, 0 elsewhere.
+    SmallVector<int64_t> paddingVals(2 * rank, 0);
+    paddingVals[2 * diffDim] = shiftAmount;
+    paddingVals[2 * diffDim + 1] = shiftAmount;
+    auto paddingType = RankedTensorType::get({rank, 2}, rewriter.getI64Type());
+    auto paddingAttr = DenseIntElementsAttr::get(paddingType, paddingVals);
+
+    SmallVector<int64_t> convOutShape(2, 1);
+    for (auto d : outType.getShape())
+      convOutShape.push_back(d);
+    auto convOutType = RankedTensorType::get(convOutShape, T);
+
+    auto conv = stablehlo::ConvolutionOp::create(
+        rewriter, loc, convOutType, convInput, filter,
+        /*window_strides=*/nullptr,
+        /*padding=*/paddingAttr,
+        /*lhs_dilation=*/nullptr,
+        /*rhs_dilation=*/nullptr,
+        /*window_reversal=*/nullptr,
+        /*conv_dimension_numbers=*/convDims,
+        /*feature_group_count=*/rewriter.getI64IntegerAttr(1),
+        /*batch_group_count=*/rewriter.getI64IntegerAttr(1),
+        /*precision_config=*/nullptr);
+
+    rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op.getType(), conv);
+    return success();
   }
 };
 
@@ -35244,6 +35612,7 @@ struct EnzymeHLOOptPass
         ReshapeOpCanon,
         SelectCompIotaConstSimplify,
         SelectCompIotaConstToDUS,
+        SelectBroadcastIota,
         SelectPadToDUS,
         AndPadPad,
         SelectOpUsedWithinIf,
@@ -35268,6 +35637,7 @@ struct EnzymeHLOOptPass
         SquareAbsSimplify,
         DivideDivideSimplify,
         ConcatReshapeSlice,
+        ConcatBroadcastSlice,
         ConcatReshapeReduce,
         ConcatElementwise,
         ConcatReshapeElementwise,
@@ -35338,6 +35708,8 @@ struct EnzymeHLOOptPass
         BinaryOpComplexSimplifyBase<stablehlo::AddOp>,
         BinaryOpComplexSimplifyBase<stablehlo::SubtractOp>
       >(context);
+
+    patterns.add<PadSubToConvolution>(context);
 
     patterns.add<ReshapeElementwise>(true, true, context);
 
