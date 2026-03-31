@@ -32,6 +32,89 @@ using namespace mlir;
 using namespace mlir::enzyme;
 using namespace mlir::enzymexla;
 
+struct TridiagonalSolveOpLowering
+    : public OpRewritePattern<enzymexla::TridiagonalSolveOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  std::string backend;
+  int64_t blasIntWidth;
+  TridiagonalSolveOpLowering(std::string backend, int64_t blasIntWidth,
+                             MLIRContext *context, PatternBenefit benefit = 1)
+      : OpRewritePattern(context, benefit), backend(backend),
+        blasIntWidth(blasIntWidth) {}
+
+  LogicalResult matchAndRewrite(enzymexla::TridiagonalSolveOp op,
+                                PatternRewriter &rewriter) const override {
+    if (backend == "cpu") {
+      return matchAndRewriteCPU(op, rewriter);
+    } else if (backend == "cuda") {
+      return matchAndRewriteCUDA(op, rewriter);
+    }
+    return matchAndRewriteFallback(op, rewriter);
+  }
+
+  LogicalResult matchAndRewriteCPU(enzymexla::TridiagonalSolveOp op,
+                                   PatternRewriter &rewriter) const {
+    // TODO
+    return matchAndRewriteFallback(op, rewriter);
+  }
+
+  LogicalResult matchAndRewriteCUDA(enzymexla::TridiagonalSolveOp op,
+                                    PatternRewriter &rewriter) const {
+    auto dType = cast<RankedTensorType>(op.getDl().getType());
+    auto dRank = dType.getRank();
+    auto bType = cast<RankedTensorType>(op.getBl().getType());
+    auto bRank = bType.getRank();
+
+    // Build operands list - use empty tensors for constant alpha/beta
+    SmallVector<Value> operands;
+    SmallVector<int64_t> operandRanks;
+    SmallVector<bool> areColMajor;
+
+    auto dl = op.getDl();
+    auto d = op.getD();
+    auto du = op.getDu();
+    auto B = op.getB();
+
+    StringAttr customCallTarget;
+    ArrayAttr aliases;
+
+    customCallTarget = rewriter.getStringAttr("cusparse_gtsv2_ffi");
+    operands = {dl, d, du, B};
+    operandRanks = {dRank, dRank, dRank, bRank};
+    aliases = rewriter.getArrayAttr(
+        {stablehlo::OutputOperandAliasAttr::get(op.getContext(), {}, 3, {})});
+    areColMajor = {true, true, true, true};
+
+    DictionaryAttr backendConfig = rewriter.getDictionaryAttr({});
+
+    auto customCall = stablehlo::CustomCallOp::create(
+        rewriter, op.getLoc(), TypeRange{bType}, operands, customCallTarget,
+        /*has_side_effect*/ nullptr,
+        /*backend_config*/ backendConfig,
+        /*api_version*/
+        stablehlo::CustomCallApiVersionAttr::get(
+            rewriter.getContext(),
+            mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
+        /*calledcomputations*/ nullptr,
+        /*operand_layouts*/
+        getSHLOLayout(rewriter, operandRanks, areColMajor, rank),
+        /*result_layouts*/
+        getSHLOLayout(rewriter, {rank}, SmallVector<bool>(rank, true), rank),
+        /*output_operand_aliases*/ aliases);
+
+    Value result = customCall.getResult(0);
+    rewriter.replaceAllUsesWith(op.getResult(), result);
+
+    return success();
+  }
+
+  LogicalResult matchAndRewriteFallback(enzymexla::TridiagonalSolveOp op,
+                                        PatternRewriter &rewriter) const {
+    // TODO
+  }
+};
+
 struct LUFactorizationOpLowering
     : public OpRewritePattern<enzymexla::LUFactorizationOp> {
   using OpRewritePattern::OpRewritePattern;
