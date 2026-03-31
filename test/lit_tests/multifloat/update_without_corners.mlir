@@ -6,8 +6,8 @@ func.func @update_without_corners(%arg0: tensor<6x1522x3056xf64>, %arg1: tensor<
 }
 
 // CHECK-LABEL: func.func @update_without_corners
-// CHECK: builtin.unrealized_conversion_cast %arg0 : tensor<6x1522x3056xf64> to tensor<2x6x1522x3056xf32>
-// CHECK: builtin.unrealized_conversion_cast %arg1 : tensor<6x1522x3056xf64> to tensor<2x6x1522x3056xf32>
+// CHECK-DAG: builtin.unrealized_conversion_cast %arg0 : tensor<6x1522x3056xf64> to tensor<2x6x1522x3056xf32>
+// CHECK-DAG: builtin.unrealized_conversion_cast %arg1 : tensor<6x1522x3056xf64> to tensor<2x6x1522x3056xf32>
 // CHECK: "enzymexla.update_without_corners"(%{{.*}}, %{{.*}}) <{dimensionX = 1 : i64, {{.*}}dimensionY = 2 : i64{{.*}}}> : (tensor<2x6x1522x3056xf32>, tensor<2x6x1522x3056xf32>) -> tensor<2x6x1522x3056xf32>
 // CHECK: builtin.unrealized_conversion_cast %{{.*}} : tensor<2x6x1522x3056xf32> to tensor<6x1522x3056xf64>
 // CHECK: return
