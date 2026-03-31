@@ -2870,8 +2870,11 @@ bool reshapeIsUnsqueeze(stablehlo::ReshapeOp reshape) {
   auto inputTy = cast<ShapedType>(reshape.getOperand().getType());
   auto outputTy = cast<ShapedType>(reshape.getResult().getType());
 
+  if (outputTy.getRank() < inputTy.getRank())
+    return false;
+
   for (size_t i = 0, j = 0, ei = inputTy.getRank(), eo = outputTy.getRank();
-       i < ei && j < eo; ++i) {
+       i < ei; ++i) {
     auto Ni = inputTy.getDimSize(i);
     auto Nj = outputTy.getDimSize(j);
     while (j + 1 < eo && (Ni != Nj || Nj == 1)) {
@@ -2880,48 +2883,13 @@ bool reshapeIsUnsqueeze(stablehlo::ReshapeOp reshape) {
     }
     if (Ni != Nj)
       return false;
-
     ++j;
+
+    if (i != ei - 1 && j == eo)
+      return false; // dropping dims
   }
 
   return true;
-}
-
-// canonical concat slice operand with potential reshape / broadcast applied
-struct ConcatSlicedElem {
-  stablehlo::SliceOp slice;
-  Value orig;
-};
-
-std::optional<ConcatSlicedElem> findConcatSlicedElem(Value concatOperand) {
-  Value operand = concatOperand;
-  stablehlo::SliceOp slice;
-
-  while (!(slice = operand.getDefiningOp<SliceOp>())) {
-    if (auto broadcast = operand.getDefiningOp<stablehlo::BroadcastInDimOp>()) {
-      operand = broadcast.getOperand();
-      continue;
-    }
-
-    if (auto reshape = operand.getDefiningOp<stablehlo::ReshapeOp>()) {
-      if (!reshapeIsUnsqueeze(reshape)) {
-        break;
-      }
-
-      operand = reshape.getOperand();
-      continue;
-    }
-
-    break;
-  }
-
-  if (!slice)
-    return std::nullopt;
-
-  return {ConcatSlicedElem{
-      slice,
-      concatOperand,
-  }};
 }
 
 static int64_t getSliceDim(SliceOp slice) {
@@ -2941,17 +2909,90 @@ static int64_t getSliceDim(SliceOp slice) {
   return sliceDim;
 }
 
+// canonical concat slice operand with potential reshape / broadcast applied
+struct ConcatSlicedElem {
+  stablehlo::SliceOp slice;
+  SmallVector<int64_t> perm;
+  Value orig;
+  int64_t dim;
+  int64_t start, limit, stride;
+};
+
+std::optional<ConcatSlicedElem> findConcatSlicedElem(Value concatOperand) {
+  Value operand = concatOperand;
+  stablehlo::SliceOp slice;
+
+  auto operandTy = cast<ShapedType>(concatOperand.getType());
+  SmallVector<int64_t> iperm;
+  for (int64_t i = 0, e = operandTy.getRank(); i < e; ++i)
+    iperm.push_back(i);
+
+  while (!(slice = operand.getDefiningOp<SliceOp>())) {
+    if (auto broadcast = operand.getDefiningOp<stablehlo::BroadcastInDimOp>()) {
+      SmallVector<int64_t> newPerm;
+      for (auto bdim : broadcast.getBroadcastDimensions())
+        newPerm.push_back(iperm[bdim]);
+      iperm = std::move(newPerm);
+      operand = broadcast.getOperand();
+      continue;
+    }
+
+    if (auto reshape = operand.getDefiningOp<stablehlo::ReshapeOp>()) {
+      if (!reshapeIsUnsqueeze(reshape)) {
+        break;
+      }
+
+      auto inputTy = cast<ShapedType>(reshape.getOperand().getType());
+      auto outputTy = cast<ShapedType>(reshape.getResult().getType());
+      SmallVector<int64_t> newPerm;
+      for (size_t i = 0, j = 0, ei = inputTy.getRank(), eo = outputTy.getRank();
+           i < ei && j < eo; ++i) {
+        auto Ni = inputTy.getDimSize(i);
+        auto Nj = outputTy.getDimSize(j);
+        while (j + 1 < eo && (Ni != Nj || Nj == 1)) {
+          j++;
+          Nj = outputTy.getDimSize(j);
+        }
+        newPerm.push_back(iperm[j]);
+        ++j;
+      }
+      iperm = newPerm;
+      operand = reshape.getOperand();
+      continue;
+    }
+
+    break;
+  }
+
+  if (!slice)
+    return std::nullopt;
+
+  auto sliceDim = getSliceDim(slice);
+
+  if (sliceDim == -1)
+    return {};
+
+  return {ConcatSlicedElem{
+      slice, iperm, concatOperand, sliceDim, slice.getStartIndices()[sliceDim],
+      slice.getLimitIndices()[sliceDim], slice.getStrides()[sliceDim]}};
+}
+
 static Value mergeConcatSlicedElems(PatternRewriter &rewriter,
                                     int64_t concatDim, ConcatSlicedElem a,
                                     ConcatSlicedElem b) {
   Value newConcatOperand = nullptr;
 
-  if (a.slice.getOperand() != b.slice.getOperand())
-    return newConcatOperand;
+  if (a.slice.getOperand() != b.slice.getOperand()) {
+    a.slice->getParentOp()->dump();
+
+    llvm::errs() << "cannot merge " << a.slice.getOperand() << "\n and \n"
+                 << b.slice.getOperand();
+    return nullptr;
+  }
 
   int64_t sliceDimA = getSliceDim(a.slice), sliceDimB = getSliceDim(b.slice);
   if (sliceDimA == -1 || sliceDimA != sliceDimB) {
-    return newConcatOperand;
+    return nullptr;
   }
 
   int64_t sliceDim = sliceDimA;
