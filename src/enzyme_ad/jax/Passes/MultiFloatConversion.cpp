@@ -2928,6 +2928,15 @@ struct MultiFloatConversionPass
           if (auto tensorType = dyn_cast<RankedTensorType>(arg.getType())) {
             if (tensorType.getElementType() == srcTy) {
               Location loc = func.getLoc();
+              bool needed = false;
+              for (auto user : arg.getUsers()) {
+                if (isa<UnrealizedConversionCastOp>(user)) {
+                  needed = true;
+                  break;
+                }
+              }
+              if (!needed) continue;
+
               Value converted = convertToMultifloat(arg, b, loc, tgtTy, concatDimension);
               SmallVector<Operation*> users(arg.getUsers().begin(), arg.getUsers().end());
               for (auto user : users) {
