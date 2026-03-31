@@ -4044,11 +4044,8 @@ private:
                                          stablehlo::PadOp pad,
                                          Value input) const {
     auto reduceInfo = matchAndRewriteReduce(op, rewriter, pad, input);
-    Value res = stablehlo::MinOp::create(
-        rewriter, op.getLoc(), reduceInfo.res,
-        stablehlo::BroadcastInDimOp::create(
-            rewriter, op.getLoc(), reduceInfo.res.getType(),
-            pad.getPaddingValue(), rewriter.getDenseI64ArrayAttr({})));
+    Value res = stablehlo::MinOpCreate(rewriter, op.getLoc(), reduceInfo.res,
+                                       pad.getPaddingValue());
 
     if (reduceInfo.needsPostPad) {
       res = stablehlo::PadOp::create(rewriter, op.getLoc(), res,
@@ -4064,11 +4061,8 @@ private:
                                          stablehlo::PadOp pad,
                                          Value input) const {
     auto reduceInfo = matchAndRewriteReduce(op, rewriter, pad, input);
-    Value res = stablehlo::MaxOp::create(
-        rewriter, op.getLoc(), reduceInfo.res,
-        stablehlo::BroadcastInDimOp::create(
-            rewriter, op.getLoc(), reduceInfo.res.getType(),
-            pad.getPaddingValue(), rewriter.getDenseI64ArrayAttr({})));
+    Value res = stablehlo::MaxOpCreate(rewriter, op.getLoc(), reduceInfo.res,
+                                       pad.getPaddingValue());
 
     if (reduceInfo.needsPostPad) {
       res = stablehlo::PadOp::create(rewriter, op.getLoc(), res,
@@ -4096,11 +4090,7 @@ private:
             rewriter, op.getLoc(), cType,
             cast<ElementsAttr>(
                 makeAttr(cType, reduceInfo.numElementsReduced))));
-    res = stablehlo::MulOp::create(
-        rewriter, op.getLoc(), res,
-        stablehlo::BroadcastInDimOp::create(rewriter, op.getLoc(),
-                                            res.getType(), mulConst,
-                                            rewriter.getDenseI64ArrayAttr({})));
+    res = stablehlo::MulOpCreate(rewriter, op.getLoc(), res, mulConst);
 
     if (reduceInfo.needsPostPad) {
       res = stablehlo::PadOp::create(rewriter, op.getLoc(), res,
@@ -4131,11 +4121,7 @@ private:
               rewriter, op.getLoc(), cType,
               cast<ElementsAttr>(
                   makeAttr(cType, reduceInfo.numElementsReduced))));
-      res = stablehlo::AddOp::create(rewriter, op.getLoc(), res,
-                                     stablehlo::BroadcastInDimOp::create(
-                                         rewriter, op.getLoc(), res.getType(),
-                                         mulConst,
-                                         rewriter.getDenseI64ArrayAttr({})));
+      res = stablehlo::AddOpCreate(rewriter, op.getLoc(), res, mulConst);
     }
 
     if (reduceInfo.needsPostPad) {
@@ -6263,8 +6249,10 @@ struct ConcatToBroadcast final
           RankedTensorType::get(reshaped, op.getType().getElementType()),
           reshapeVal, bcast2);
 
-      rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op.getType(),
-                                                        bcastVal);
+      auto newReshapeVal =
+          stablehlo::ReshapeOpCreate(rewriter, op.getLoc(), bcastVal,
+                                     cast<ShapedType>(op.getType()).getShape());
+      rewriter.replaceOp(op, newReshapeVal);
       return success();
     }
   }
@@ -7060,9 +7048,11 @@ struct BroadcastReshape final
     }
     while (pre_reshape_idx !=
            reshape.getOperand().getType().getShape().size()) {
-      auto ival = reshape.getOperand().getType().getShape()[pre_reshape_idx];
-      assert(ival == 1);
-      (void)ival;
+      if (reshape.getOperand().getType().getShape()[pre_reshape_idx] != 1) {
+        LLVM_DEBUG(llvm::dbgs() << "bcast: " << op << "\n";
+                   llvm::dbgs() << "reshape: " << reshape << "\n\n");
+        return failure();
+      }
 
       size_t nextdim = 0;
       if (postidx == oneOutIdxs.size()) {
@@ -10372,14 +10362,9 @@ struct ReduceMaxMinMulPositiveScalar
         op.getInitValues(), op.getDimensions());
     newReduction.getRegion().takeBody(op.getRegion());
 
-    // Broadcast the scalar to the result shape and multiply
-    auto resultType = cast<RankedTensorType>(op.getResult(0).getType());
-    Value broadcastedScalar = stablehlo::BroadcastInDimOp::create(
-        rewriter, op.getLoc(), resultType, scalar,
-        rewriter.getDenseI64ArrayAttr({}));
-
-    rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, newReduction.getResult(0),
-                                                  broadcastedScalar);
+    auto res = stablehlo::MulOpCreate(rewriter, op.getLoc(),
+                                      newReduction.getResult(0), scalar);
+    rewriter.replaceOp(op, res);
     return success();
   }
 };
@@ -12075,8 +12060,9 @@ struct ReshapeOfConcatToConcatOfReshape final
     }
 
     // Create a new concat operation with the reshaped operands
-    rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
-        reshapeOp, concatOperands, newDim);
+    auto newConcatOp = stablehlo::ConcatenateOp::create(
+        rewriter, reshapeOp.getLoc(), concatOperands, newDim);
+    rewriter.replaceOp(reshapeOp, newConcatOp);
     return success();
   }
 };
@@ -26614,10 +26600,9 @@ struct FactorScalarsInDotGeneral final
       combinedScalar = lhsScalar ? lhsScalar : rhsScalar;
     }
 
-    auto bcastedScalar = stablehlo::BroadcastInDimOp::create(
-        rewriter, op.getLoc(), newDot.getType(), combinedScalar,
-        rewriter.getDenseI64ArrayAttr({}));
-    rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, bcastedScalar, newDot);
+    auto mulResult =
+        stablehlo::MulOpCreate(rewriter, op.getLoc(), combinedScalar, newDot);
+    rewriter.replaceOp(op, mulResult);
     return success();
   }
 
