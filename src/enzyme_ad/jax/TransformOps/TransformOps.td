@@ -93,6 +93,10 @@ def ApplyNoopReversePatterns : EnzymeHLOPatternOp<
     "noop_reverse"> {
   let patterns = ["NoopReverse"];
 }
+def ApplyReverseReversePatterns : EnzymeHLOPatternOp<
+    "reverse_reverse"> {
+  let patterns = ["ReverseReverse"];
+}
 def ApplySliceSlicePatterns : EnzymeHLOPatternOp<
     "slice_slice"> {
   let patterns = ["SliceSlice"];
