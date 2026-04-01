@@ -9174,10 +9174,12 @@ struct CompareNegateConstSimplify
   }
 };
 
-// (a - b) OP 0  →  a OP b  (integer types only; float semantics differ for NaN)
-struct CompareSubtractZeroSimplify
+// (cst - x) OP cst2  →  x reversed_OP (cst - cst2)
+// Both cst and cst2 must be constants; the new SubtractOp will be folded by
+// a subsequent constant-propagation pass.
+struct CompareSubtractConstSimplify
     : public CheckedOpRewritePattern<stablehlo::CompareOp,
-                                     CompareSubtractZeroSimplify> {
+                                     CompareSubtractConstSimplify> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::CompareOp cmpOp,
@@ -9186,13 +9188,21 @@ struct CompareSubtractZeroSimplify
     if (!lhsSub)
       return rewriter.notifyMatchFailure(cmpOp, "lhs is not subtract");
 
-    // RHS must be integer zero (m_Zero does not match float zeros).
-    if (!matchPattern(cmpOp.getRhs(), m_Zero()))
-      return rewriter.notifyMatchFailure(cmpOp, "rhs is not zero");
+    if (!matchPattern(lhsSub.getLhs(), m_Constant()))
+      return rewriter.notifyMatchFailure(cmpOp,
+                                         "lhs of subtract is not constant");
+
+    if (!matchPattern(cmpOp.getRhs(), m_Constant()))
+      return rewriter.notifyMatchFailure(cmpOp, "rhs is not constant");
+
+    auto newSub = stablehlo::SubtractOp::create(
+        rewriter, cmpOp.getLoc(), lhsSub.getLhs(), cmpOp.getRhs());
+    auto reversedDir =
+        reversedComparisonDirection(cmpOp.getComparisonDirection());
 
     auto shardingAttr = sdy::getShardingPerValue(cmpOp);
     auto newOp = rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(
-        cmpOp, lhsSub.getLhs(), lhsSub.getRhs(), cmpOp.getComparisonDirection(),
+        cmpOp, lhsSub.getRhs(), newSub, reversedDir,
         cmpOp.getCompareTypeAttr());
     if (shardingAttr)
       sdy::setShardings(newOp, shardingAttr);
@@ -35047,10 +35057,11 @@ struct EnzymeHLOOptPass
         MinMaxIotaConstSimplify<stablehlo::MaxOp>,
         MinMaxIotaConstSimplify<stablehlo::MinOp>, ClampIotaConstSimplify,
         CompareAbs, CompareMul, CompareConvert, AddSelects,
-        CompareNegateConstSimplify, CompareSubtractZeroSimplify, SelectSimplify,
-        DynamicSliceReshapeDynamicSlice, DynamicSliceReshapeSlice,
-        SliceReshapeDynamicSlice, SliceReshapeSlice, ExponentialMinusOneFuse,
-        ExponentialMinusOneAddFuse>(context, PatternBenefit(65000));
+        CompareNegateConstSimplify, CompareSubtractConstSimplify,
+        SelectSimplify, DynamicSliceReshapeDynamicSlice,
+        DynamicSliceReshapeSlice, SliceReshapeDynamicSlice, SliceReshapeSlice,
+        ExponentialMinusOneFuse, ExponentialMinusOneAddFuse>(
+        context, PatternBenefit(65000));
 
     patterns.add<IotaSimplify, BroadcastInDimSimplify, ConcatConstProp,
                  DynamicUpdateSliceConstProp, PadSimplify, ScatterConstFold,
