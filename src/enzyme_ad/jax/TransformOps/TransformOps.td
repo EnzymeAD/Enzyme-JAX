@@ -1631,6 +1631,12 @@ def CompareNegateConstSimplifyPatterns : EnzymeHLOPatternOp<
   let patterns = ["CompareNegateConstSimplify"];
 }
 
+def CompareSubtractZeroSimplifyPatterns : EnzymeHLOPatternOp<
+  "compare_subtract_zero_simplify"
+> {
+  let patterns = ["CompareSubtractZeroSimplify"];
+}
+
 def BroadcastIotaSimplifyPatterns : EnzymeHLOPatternOp<
   "broadcast_iota_simplify"
 > {
