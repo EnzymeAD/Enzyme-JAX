@@ -92,7 +92,7 @@ MlirAttribute enzymexlaQRAlgorithmAttrGet(MlirContext ctx,
 }
 
 MlirAttribute enzymexlaSVDAlgorithmAttrGet(MlirContext ctx,
-                                          EnzymeXlaSVDAlgorithm algorithm) {
+                                           EnzymeXlaSVDAlgorithm algorithm) {
   mlir::enzymexla::SVDAlgorithm a;
   switch (algorithm) {
   case ENZYMEXLA_SVD_ALGORITHM_NONE:
@@ -111,8 +111,9 @@ MlirAttribute enzymexlaSVDAlgorithmAttrGet(MlirContext ctx,
   return wrap(mlir::enzymexla::SVDAlgorithmAttr::get(unwrap(ctx), a));
 }
 
-MlirAttribute enzymexlaGeluApproximationAttrGet(MlirContext ctx,
-                                                EnzymeXlaGeluApproximation approximation) {
+MlirAttribute
+enzymexlaGeluApproximationAttrGet(MlirContext ctx,
+                                  EnzymeXlaGeluApproximation approximation) {
   mlir::enzymexla::GeluApproximation a;
   switch (approximation) {
   case ENZYMEXLA_GELU_APPROXIMATION_NONE:
@@ -128,8 +129,8 @@ MlirAttribute enzymexlaGeluApproximationAttrGet(MlirContext ctx,
   return wrap(mlir::enzymexla::GeluApproximationAttr::get(unwrap(ctx), a));
 }
 
-MlirAttribute enzymexlaGuaranteedAnalysisResultAttrGet(MlirContext ctx,
-                                                       EnzymeXlaGuaranteedAnalysisResult result) {
+MlirAttribute enzymexlaGuaranteedAnalysisResultAttrGet(
+    MlirContext ctx, EnzymeXlaGuaranteedAnalysisResult result) {
   mlir::enzymexla::GuaranteedAnalysisResult analysis;
   switch (result) {
   case ENZYMEXLA_GUARANTEED_ANALYSIS_RESULT_GUARANTEED:
@@ -146,8 +147,8 @@ MlirAttribute enzymexlaGuaranteedAnalysisResultAttrGet(MlirContext ctx,
                                                                  analysis));
 }
 
-MlirAttribute
-enzymexlaMPIDatatypeAttrGet(MlirContext ctx, EnzymeXlaMPIDatatype mode) {
+MlirAttribute enzymexlaMPIDatatypeAttrGet(MlirContext ctx,
+                                          EnzymeXlaMPIDatatype mode) {
   mlir::enzymexla::MPIDatatype datatype;
   switch (mode) {
   case ENZYMEXLA_MPI_DATATYPE_NULL:
