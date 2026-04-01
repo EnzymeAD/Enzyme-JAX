@@ -14,116 +14,131 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_join.h"
 
-MlirAttribute enzymexlaLapackLayoutAttrGet(MlirContext ctx, uint8_t col_major) {
-  mlir::enzymexla::LapackLayout layout;
-  if (col_major) {
-    layout = mlir::enzymexla::LapackLayout::col_major;
-  } else {
-    layout = mlir::enzymexla::LapackLayout::row_major;
+MlirAttribute enzymexlaLapackLayoutAttrGet(MlirContext ctx,
+                                           EnzymeXlaLapackLayout layout) {
+  mlir::enzymexla::LapackLayout l;
+  switch (layout) {
+  case ENZYMEXLA_LAPACK_LAYOUT_COLUMN_MAJOR:
+    l = mlir::enzymexla::LapackLayout::col_major;
+    break;
+  case ENZYMEXLA_LAPACK_LAYOUT_ROW_MAJOR:
+    l = mlir::enzymexla::LapackLayout::row_major;
+    break;
   }
-  return wrap(mlir::enzymexla::LapackLayoutAttr::get(unwrap(ctx), layout));
+  return wrap(mlir::enzymexla::LapackLayoutAttr::get(unwrap(ctx), l));
 }
 
-MlirAttribute enzymexlaLapackTransposeAttrGet(MlirContext ctx, int32_t mode) {
-  mlir::enzymexla::LapackTranspose transpose;
-  switch (mode) {
-  case 0:
-    transpose = mlir::enzymexla::LapackTranspose::none;
+MlirAttribute
+enzymexlaLapackTransposeAttrGet(MlirContext ctx,
+                                EnzymeXlaLapackTranspose transpose) {
+  mlir::enzymexla::LapackTranspose trans;
+  switch (transpose) {
+  case ENZYMEXLA_LAPACK_TRANSPOSE_NONE:
+    trans = mlir::enzymexla::LapackTranspose::none;
     break;
-  case 1:
-    transpose = mlir::enzymexla::LapackTranspose::transpose;
+  case ENZYMEXLA_LAPACK_TRANSPOSE_TRANSPOSE:
+    trans = mlir::enzymexla::LapackTranspose::transpose;
     break;
-  case 2:
-    transpose = mlir::enzymexla::LapackTranspose::adjoint;
+  case ENZYMEXLA_LAPACK_TRANSPOSE_CONJUGATE_TRANSPOSE:
+    trans = mlir::enzymexla::LapackTranspose::adjoint;
+    break;
   }
-  return wrap(
-      mlir::enzymexla::LapackTransposeAttr::get(unwrap(ctx), transpose));
+  return wrap(mlir::enzymexla::LapackTransposeAttr::get(unwrap(ctx), trans));
 }
 
-MlirAttribute enzymexlaLapackSideAttrGet(MlirContext ctx, uint8_t left_side) {
-  mlir::enzymexla::LapackSide side;
-  if (left_side) {
-    side = mlir::enzymexla::LapackSide::left;
-  } else {
-    side = mlir::enzymexla::LapackSide::right;
+MlirAttribute enzymexlaLapackSideAttrGet(MlirContext ctx,
+                                         EnzymeXlaLapackSide side) {
+  mlir::enzymexla::LapackSide s;
+  switch (side) {
+  case ENZYMEXLA_LAPACK_SIDE_LEFT:
+    s = mlir::enzymexla::LapackSide::left;
+    break;
+  case ENZYMEXLA_LAPACK_SIDE_RIGHT:
+    s = mlir::enzymexla::LapackSide::right;
+    break;
   }
-  return wrap(mlir::enzymexla::LapackSideAttr::get(unwrap(ctx), side));
+  return wrap(mlir::enzymexla::LapackSideAttr::get(unwrap(ctx), s));
 }
 
-MlirAttribute enzymexlaLapackUploAttrGet(MlirContext ctx, int32_t mode) {
-  mlir::enzymexla::LapackUplo uplo;
-  switch (mode) {
-  case 0:
-    uplo = mlir::enzymexla::LapackUplo::U;
+MlirAttribute enzymexlaLapackUploAttrGet(MlirContext ctx,
+                                         EnzymeXlaLapackUplo uplo) {
+  mlir::enzymexla::LapackUplo l;
+  switch (uplo) {
+  case ENZYMEXLA_LAPACK_UPLO_UPPER:
+    l = mlir::enzymexla::LapackUplo::U;
     break;
-  case 1:
-    uplo = mlir::enzymexla::LapackUplo::L;
+  case ENZYMEXLA_LAPACK_UPLO_LOWER:
+    l = mlir::enzymexla::LapackUplo::L;
     break;
-  case 2:
-    uplo = mlir::enzymexla::LapackUplo::F;
+  case ENZYMEXLA_LAPACK_UPLO_FULL:
+    l = mlir::enzymexla::LapackUplo::F;
     break;
   }
-  return wrap(mlir::enzymexla::LapackUploAttr::get(unwrap(ctx), uplo));
+  return wrap(mlir::enzymexla::LapackUploAttr::get(unwrap(ctx), l));
 }
 
-MlirAttribute enzymexlaQRAlgorithmAttrGet(MlirContext ctx, int32_t mode) {
-  mlir::enzymexla::QrAlgorithm algorithm;
-  switch (mode) {
-  case 0:
-    algorithm = mlir::enzymexla::QrAlgorithm::geqrf;
+MlirAttribute enzymexlaQRAlgorithmAttrGet(MlirContext ctx,
+                                          EnzymeXlaQRAlgorithm algorithm) {
+  mlir::enzymexla::QrAlgorithm a;
+  switch (algorithm) {
+  case ENZYMEXLA_QR_ALGORITHM_NONE:
+    a = mlir::enzymexla::QrAlgorithm::geqrf;
     break;
-  case 1:
-    algorithm = mlir::enzymexla::QrAlgorithm::geqrt;
+  case ENZYMEXLA_QR_ALGORITHM_HOUSEHOLDER:
+    a = mlir::enzymexla::QrAlgorithm::geqrt;
+    break;
   }
-  return wrap(mlir::enzymexla::QrAlgorithmAttr::get(unwrap(ctx), algorithm));
+  return wrap(mlir::enzymexla::QrAlgorithmAttr::get(unwrap(ctx), a));
 }
 
-MlirAttribute enzymexlaSVDAlgorithmAttrGet(MlirContext ctx, int32_t mode) {
-  mlir::enzymexla::SVDAlgorithm algorithm;
-  switch (mode) {
-  case 0:
-    algorithm = mlir::enzymexla::SVDAlgorithm::DEFAULT;
+MlirAttribute enzymexlaSVDAlgorithmAttrGet(MlirContext ctx,
+                                          EnzymeXlaSVDAlgorithm algorithm) {
+  mlir::enzymexla::SVDAlgorithm a;
+  switch (algorithm) {
+  case ENZYMEXLA_SVD_ALGORITHM_NONE:
+    a = mlir::enzymexla::SVDAlgorithm::DEFAULT;
     break;
-  case 1:
-    algorithm = mlir::enzymexla::SVDAlgorithm::QRIteration;
+  case ENZYMEXLA_SVD_ALGORITHM_QRITERATION:
+    a = mlir::enzymexla::SVDAlgorithm::QRIteration;
     break;
-  case 2:
-    algorithm = mlir::enzymexla::SVDAlgorithm::DivideAndConquer;
+  case ENZYMEXLA_SVD_ALGORITHM_DIVIDEANDCONQUER:
+    a = mlir::enzymexla::SVDAlgorithm::DivideAndConquer;
     break;
-  case 3:
-    algorithm = mlir::enzymexla::SVDAlgorithm::Jacobi;
+  case ENZYMEXLA_SVD_ALGORITHM_JACOBI:
+    a = mlir::enzymexla::SVDAlgorithm::Jacobi;
     break;
   }
-  return wrap(mlir::enzymexla::SVDAlgorithmAttr::get(unwrap(ctx), algorithm));
+  return wrap(mlir::enzymexla::SVDAlgorithmAttr::get(unwrap(ctx), a));
 }
 
-MlirAttribute enzymexlaGeluApproximationAttrGet(MlirContext ctx, int32_t mode) {
-  mlir::enzymexla::GeluApproximation approximation;
-  switch (mode) {
-  case 0:
-    approximation = mlir::enzymexla::GeluApproximation::NONE;
+MlirAttribute enzymexlaGeluApproximationAttrGet(MlirContext ctx,
+                                                EnzymeXlaGeluApproximation approximation) {
+  mlir::enzymexla::GeluApproximation a;
+  switch (approximation) {
+  case ENZYMEXLA_GELU_APPROXIMATION_NONE:
+    a = mlir::enzymexla::GeluApproximation::NONE;
     break;
-  case 1:
-    approximation = mlir::enzymexla::GeluApproximation::TANH;
+  case ENZYMEXLA_GELU_APPROXIMATION_TANH:
+    a = mlir::enzymexla::GeluApproximation::TANH;
     break;
-  case 2:
-    approximation = mlir::enzymexla::GeluApproximation::SIGMOID;
+  case ENZYMEXLA_GELU_APPROXIMATION_SIGMOID:
+    a = mlir::enzymexla::GeluApproximation::SIGMOID;
+    break;
   }
-  return wrap(
-      mlir::enzymexla::GeluApproximationAttr::get(unwrap(ctx), approximation));
+  return wrap(mlir::enzymexla::GeluApproximationAttr::get(unwrap(ctx), a));
 }
 
 MlirAttribute enzymexlaGuaranteedAnalysisResultAttrGet(MlirContext ctx,
-                                                       int32_t mode) {
+                                                       EnzymeXlaGuaranteedAnalysisResult result) {
   mlir::enzymexla::GuaranteedAnalysisResult analysis;
-  switch (mode) {
-  case 0:
+  switch (result) {
+  case ENZYMEXLA_GUARANTEED_ANALYSIS_RESULT_GUARANTEED:
     analysis = mlir::enzymexla::GuaranteedAnalysisResult::GUARANTEED;
     break;
-  case 1:
+  case ENZYMEXLA_GUARANTEED_ANALYSIS_RESULT_NOTGUARANTEED:
     analysis = mlir::enzymexla::GuaranteedAnalysisResult::NOTGUARANTEED;
     break;
-  case 2:
+  case ENZYMEXLA_GUARANTEED_ANALYSIS_RESULT_UNKNOWN:
     analysis = mlir::enzymexla::GuaranteedAnalysisResult::UNKNOWN;
     break;
   }
@@ -131,88 +146,89 @@ MlirAttribute enzymexlaGuaranteedAnalysisResultAttrGet(MlirContext ctx,
                                                                  analysis));
 }
 
-MlirAttribute enzymexlaMPIDatatypeAttrGet(MlirContext ctx, int32_t mode) {
+MlirAttribute
+enzymexlaMPIDatatypeAttrGet(MlirContext ctx, EnzymeXlaMPIDatatype mode) {
   mlir::enzymexla::MPIDatatype datatype;
   switch (mode) {
-  case 0:
+  case ENZYMEXLA_MPI_DATATYPE_NULL:
     datatype = mlir::enzymexla::MPIDatatype::MPI_DATATYPE_NULL;
     break;
-  case 1:
+  case ENZYMEXLA_MPI_INT8_T:
     datatype = mlir::enzymexla::MPIDatatype::MPI_INT8_T;
     break;
-  case 2:
+  case ENZYMEXLA_MPI_UINT8_T:
     datatype = mlir::enzymexla::MPIDatatype::MPI_UINT8_T;
     break;
-  case 3:
+  case ENZYMEXLA_MPI_INT16_T:
     datatype = mlir::enzymexla::MPIDatatype::MPI_INT16_T;
     break;
-  case 4:
+  case ENZYMEXLA_MPI_UINT16_T:
     datatype = mlir::enzymexla::MPIDatatype::MPI_UINT16_T;
     break;
-  case 5:
+  case ENZYMEXLA_MPI_INT32_T:
     datatype = mlir::enzymexla::MPIDatatype::MPI_INT32_T;
     break;
-  case 6:
+  case ENZYMEXLA_MPI_UINT32_T:
     datatype = mlir::enzymexla::MPIDatatype::MPI_UINT32_T;
     break;
-  case 7:
+  case ENZYMEXLA_MPI_INT64_T:
     datatype = mlir::enzymexla::MPIDatatype::MPI_INT64_T;
     break;
-  case 8:
+  case ENZYMEXLA_MPI_UINT64_T:
     datatype = mlir::enzymexla::MPIDatatype::MPI_UINT64_T;
     break;
-  case 9:
+  case ENZYMEXLA_MPI_BYTE:
     datatype = mlir::enzymexla::MPIDatatype::MPI_BYTE;
     break;
-  case 10:
+  case ENZYMEXLA_MPI_SHORT:
     datatype = mlir::enzymexla::MPIDatatype::MPI_SHORT;
     break;
-  case 11:
+  case ENZYMEXLA_MPI_UNSIGNED_SHORT:
     datatype = mlir::enzymexla::MPIDatatype::MPI_UNSIGNED_SHORT;
     break;
-  case 12:
+  case ENZYMEXLA_MPI_INT:
     datatype = mlir::enzymexla::MPIDatatype::MPI_INT;
     break;
-  case 13:
+  case ENZYMEXLA_MPI_UNSIGNED:
     datatype = mlir::enzymexla::MPIDatatype::MPI_UNSIGNED;
     break;
-  case 14:
+  case ENZYMEXLA_MPI_LONG:
     datatype = mlir::enzymexla::MPIDatatype::MPI_LONG;
     break;
-  case 15:
+  case ENZYMEXLA_MPI_UNSIGNED_LONG:
     datatype = mlir::enzymexla::MPIDatatype::MPI_UNSIGNED_LONG;
     break;
-  case 16:
+  case ENZYMEXLA_MPI_LONG_LONG_INT:
     datatype = mlir::enzymexla::MPIDatatype::MPI_LONG_LONG_INT;
     break;
-  case 17:
+  case ENZYMEXLA_MPI_UNSIGNED_LONG_LONG:
     datatype = mlir::enzymexla::MPIDatatype::MPI_UNSIGNED_LONG_LONG;
     break;
-  case 18:
+  case ENZYMEXLA_MPI_CHAR:
     datatype = mlir::enzymexla::MPIDatatype::MPI_CHAR;
     break;
-  case 19:
+  case ENZYMEXLA_MPI_SIGNED_CHAR:
     datatype = mlir::enzymexla::MPIDatatype::MPI_SIGNED_CHAR;
     break;
-  case 20:
+  case ENZYMEXLA_MPI_UNSIGNED_CHAR:
     datatype = mlir::enzymexla::MPIDatatype::MPI_UNSIGNED_CHAR;
     break;
-  case 21:
+  case ENZYMEXLA_MPI_WCHAR:
     datatype = mlir::enzymexla::MPIDatatype::MPI_WCHAR;
     break;
-  case 22:
+  case ENZYMEXLA_MPI_FLOAT:
     datatype = mlir::enzymexla::MPIDatatype::MPI_FLOAT;
     break;
-  case 23:
+  case ENZYMEXLA_MPI_DOUBLE:
     datatype = mlir::enzymexla::MPIDatatype::MPI_DOUBLE;
     break;
-  case 24:
+  case ENZYMEXLA_MPI_C_FLOAT_COMPLEX:
     datatype = mlir::enzymexla::MPIDatatype::MPI_C_FLOAT_COMPLEX;
     break;
-  case 25:
+  case ENZYMEXLA_MPI_C_DOUBLE_COMPLEX:
     datatype = mlir::enzymexla::MPIDatatype::MPI_C_DOUBLE_COMPLEX;
     break;
-  case 26:
+  case ENZYMEXLA_MPI_C_BOOL:
     datatype = mlir::enzymexla::MPIDatatype::MPI_C_BOOL;
     break;
   default:
@@ -221,46 +237,46 @@ MlirAttribute enzymexlaMPIDatatypeAttrGet(MlirContext ctx, int32_t mode) {
   return wrap(mlir::enzymexla::MPIDatatypeAttr::get(unwrap(ctx), datatype));
 }
 
-MlirAttribute enzymexlaMPIOpAttrGet(MlirContext ctx, int32_t mode) {
+MlirAttribute enzymexlaMPIOpAttrGet(MlirContext ctx, EnzymeXlaMPIOp mode) {
   mlir::enzymexla::MPIOp op;
   switch (mode) {
-  case 0:
+  case ENZYMEXLA_MPI_OP_NULL:
     op = mlir::enzymexla::MPIOp::MPI_OP_NULL;
     break;
-  case 1:
+  case ENZYMEXLA_MPI_BAND:
     op = mlir::enzymexla::MPIOp::MPI_BAND;
     break;
-  case 2:
+  case ENZYMEXLA_MPI_BOR:
     op = mlir::enzymexla::MPIOp::MPI_BOR;
     break;
-  case 3:
+  case ENZYMEXLA_MPI_BXOR:
     op = mlir::enzymexla::MPIOp::MPI_BXOR;
     break;
-  case 4:
+  case ENZYMEXLA_MPI_LAND:
     op = mlir::enzymexla::MPIOp::MPI_LAND;
     break;
-  case 5:
+  case ENZYMEXLA_MPI_LOR:
     op = mlir::enzymexla::MPIOp::MPI_LOR;
     break;
-  case 6:
+  case ENZYMEXLA_MPI_LXOR:
     op = mlir::enzymexla::MPIOp::MPI_LXOR;
     break;
-  case 7:
+  case ENZYMEXLA_MPI_MAX:
     op = mlir::enzymexla::MPIOp::MPI_MAX;
     break;
-  case 8:
+  case ENZYMEXLA_MPI_MIN:
     op = mlir::enzymexla::MPIOp::MPI_MIN;
     break;
-  case 9:
+  case ENZYMEXLA_MPI_PROD:
     op = mlir::enzymexla::MPIOp::MPI_PROD;
     break;
-  case 10:
+  case ENZYMEXLA_MPI_REPLACE:
     op = mlir::enzymexla::MPIOp::MPI_REPLACE;
     break;
-  case 11:
+  case ENZYMEXLA_MPI_SUM:
     op = mlir::enzymexla::MPIOp::MPI_SUM;
     break;
-  case 12:
+  case ENZYMEXLA_MPI_NO_OP:
     op = mlir::enzymexla::MPIOp::MPI_NO_OP;
     break;
   default:
