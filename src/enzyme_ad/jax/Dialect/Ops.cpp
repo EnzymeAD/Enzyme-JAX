@@ -1154,6 +1154,51 @@ LogicalResult enzymexla::SyrkOp::verify() {
   return success();
 }
 
+LogicalResult enzymexla::HeevOp::verify() {
+  auto inputType = cast<RankedTensorType>(getInput().getType());
+  if (inputType.getShape().size() < 2) {
+    return emitOpError("Input matrix must be at least 2D");
+  }
+
+  auto m = inputType.getShape()[inputType.getShape().size() - 1];
+  auto n = inputType.getShape()[inputType.getShape().size() - 2];
+  if (m != n) {
+    return emitOpError("Input matrix must be square");
+  }
+
+  auto job = getJob();
+  if (job != enzymexla::LapackJob::N && job != enzymexla::LapackJob::V) {
+    return emitOpError("Invalid job value; only 'N' and 'V' are supported");
+  }
+
+  if (job == enzymexla::LapackJob::V) {
+    auto res = getRes();
+    if (res.size() != 2) {
+      return emitOpError("When job is 'V', two tensors are returned");
+    }
+
+    auto eigvecs = res[1];
+    auto eigvecsType = cast<RankedTensorType>(eigvecs.getType());
+    if (inputType.getShape() != eigvecsType.getShape()) {
+      return emitOpError("Eigenvectors tensor has incorrect shape");
+    }
+
+  } else {
+    auto res = getRes();
+    if (res.size() != 1) {
+      return emitOpError("When job is 'N', only one tensor is returned");
+    }
+  }
+
+  auto eigvals = res[0];
+  auto eigvalsType = cast<RankedTensorType>(eigvals.getType());
+  if (inputType.getShape().drop_back(1) != eigvalsType.getShape()) {
+    return emitOpError("Eigenvalues tensor has incorrect shape");
+  }
+
+  return success();
+}
+
 namespace {
 
 /// Erases a common case of copy ops where a destination value is used only by
