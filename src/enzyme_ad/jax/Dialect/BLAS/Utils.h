@@ -17,6 +17,6 @@ mlir::ArrayAttr getSHLOLayout(mlir::PatternRewriter &rewriter,
                               llvm::SmallVector<bool> isColMajorArr,
                               int64_t maxNumDims);
 
-std::optional<std::string> lapackPrecisionPrefix(mlir::Type elementType);
+std::optional<std::string> blasPrecisionPrefix(mlir::Type elementType);
 
 #endif // ENZYMEXLA_LINALGUTILS_H

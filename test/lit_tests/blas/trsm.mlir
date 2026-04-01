@@ -1,7 +1,7 @@
-// RUN: enzymexlamlir-opt --lower-enzymexla-blas={backend=cpu,blas_int_width=64} --enzyme-hlo-opt %s | FileCheck %s --check-prefix=CHECK
+// RUN: enzymexlamlir-opt --lower-blas-to-stablehlo="trsm=true" --enzyme-hlo-opt %s | FileCheck %s --check-prefix=CHECK
 
 func.func @main(%alpha: tensor<f32>, %a: tensor<100x64x64xf32>, %b: tensor<100x64x32xf32>) -> tensor<100x64x32xf32> {
-  %0 = enzymexla.blas.trsm %alpha, %a, %b {side = #enzymexla.side<left>, uplo = #enzymexla.uplo<U>, transa = #enzymexla.transpose<none>, diag = #enzymexla.diag<nonunit>} : (tensor<f32>, tensor<100x64x64xf32>, tensor<100x64x32xf32>) -> tensor<100x64x32xf32>
+  %0 = blas.trsm %alpha, %a, %b {side = #blas.side<left>, uplo = #blas.uplo<upper>, transa = #blas.transpose<none>, diag = #blas.diag<non_unit>} : (tensor<f32>, tensor<100x64x64xf32>, tensor<100x64x32xf32>) -> tensor<100x64x32xf32>
   return %0 : tensor<100x64x32xf32>
 }
 

@@ -26,6 +26,8 @@
 #include "stablehlo/dialect/Base.h"
 #include "llvm/Support/CommandLine.h"
 
+#include "src/enzyme_ad/jax/Dialect/BLAS/Dialect.h"
+
 extern llvm::cl::opt<bool> BarrierOpt;
 
 #define GET_ATTRDEF_CLASSES

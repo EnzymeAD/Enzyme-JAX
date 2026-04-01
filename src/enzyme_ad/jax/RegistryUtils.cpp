@@ -93,6 +93,7 @@
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "src/enzyme_ad/jax/Passes/Tessera/Passes.h"
 
+#include "src/enzyme_ad/jax/Dialect/BLAS/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Distributed/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Perfify/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Tessera/Dialect.h"
@@ -236,6 +237,7 @@ void registerDialects(mlir::DialectRegistry &registry) {
   registry.insert<mlir::enzyme::tessera::TesseraDialect>();
   registry.insert<mlir::enzyme::perfify::PerfifyDialect>();
   registry.insert<mlir::enzymexla::triton_ext::TritonExtDialect>();
+  registry.insert<mlir::blas::BlasDialect>();
   registry.insert<mlir::sdy::SdyDialect>();
   registry.insert<mlir::ub::UBDialect>();
   registry.insert<mlir::triton::TritonDialect>();
@@ -274,6 +276,7 @@ void loadAllRegisteredDialects(mlir::MLIRContext &context) {
   context.loadDialect<mlir::enzyme::EnzymeDialect>();
   context.loadDialect<mlir::enzymexla::EnzymeXLADialect>();
   context.loadDialect<mlir::enzymexla::triton_ext::TritonExtDialect>();
+  context.loadDialect<mlir::blas::BlasDialect>();
   context.loadDialect<mlir::sdy::SdyDialect>();
   context.loadDialect<mlir::ub::UBDialect>();
   context.loadDialect<mlir::triton::TritonDialect>();

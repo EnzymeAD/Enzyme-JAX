@@ -1,8 +1,7 @@
-#include "Enzyme/MLIR/Dialect/Dialect.h"
-#include "Enzyme/MLIR/Passes/EnzymeBatchPass.h"
+#include "src/enzyme_ad/jax/Dialect/BLAS/Dialect.h"
+#include "src/enzyme_ad/jax/Dialect/BLAS/Utils.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
-#include "src/enzyme_ad/jax/Passes/LinalgUtils.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "src/enzyme_ad/jax/Utils.h"
 
@@ -77,6 +76,7 @@ struct SymmOpLowering : public OpRewritePattern<enzymexla::SymmOp> {
 
   std::string backend;
   int64_t blasIntWidth;
+
   SymmOpLowering(std::string backend, int64_t blasIntWidth,
                  MLIRContext *context, PatternBenefit benefit = 1)
       : OpRewritePattern(context, benefit), backend(backend),
@@ -133,7 +133,7 @@ struct SymmOpLowering : public OpRewritePattern<enzymexla::SymmOp> {
     auto llvmVoidType = LLVM::LLVMVoidType::get(ctx);
 
     std::string blasFn;
-    if (auto prefix = lapackPrecisionPrefix(elementType)) {
+    if (auto prefix = blasPrecisionPrefix(elementType)) {
       blasFn = "enzymexla_blas_" + *prefix + "symm_";
     } else {
       op->emitOpError() << "Unsupported element type: " << elementType;
@@ -486,9 +486,8 @@ struct SyrkOpLowering : public OpRewritePattern<enzymexla::SyrkOp> {
     switch (op.getUplo()) {
     case enzymexla::LapackUplo::F:
       customCallUplo = standardizeUplo(op.getOutputUplo());
-      needsCopy = op.getOutputUplo() == enzymexla::LapackUplo::F
-                      ? CopyMode::COPY
-                      : CopyMode::NOT_NEEDED;
+      needsCopy = op.getOutputUplo() == BlasUplo::any ? CopyMode::COPY
+                                                      : CopyMode::NOT_NEEDED;
       break;
     case enzymexla::LapackUplo::L:
       customCallUplo = op.getUplo();
@@ -539,7 +538,7 @@ struct SyrkOpLowering : public OpRewritePattern<enzymexla::SyrkOp> {
     auto llvmIntType = typeConverter.convertType(blasIntType);
 
     std::string blasFn;
-    auto prefix = lapackPrecisionPrefix(AType.getElementType());
+    auto prefix = blasPrecisionPrefix(AType.getElementType());
     if (prefix) {
       blasFn = "enzymexla_blas_" + *prefix + "syrk_";
     } else {
@@ -666,8 +665,7 @@ struct SyrkOpLowering : public OpRewritePattern<enzymexla::SyrkOp> {
       auto uploConst = stablehlo::ConstantOp::create(
           rewriter, op.getLoc(), uint8Type,
           cast<ElementsAttr>(makeAttr(
-              uint8Type,
-              customCallUplo == enzymexla::LapackUplo::U ? 'L' : 'U')));
+              uint8Type, customCallUplo == BlasUplo::upper ? 'L' : 'U')));
       // We intentionally flip transpose here, this allows us to pass in
       // the data as a row-major format without paying the cost of
       // layout transformation to a col-major (which CPU BLAS uses)
@@ -974,7 +972,7 @@ struct LowerEnzymeXLABLASPass
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
 
-    patterns.add<SyrkOpLowering, SymmOpLowering>(backend, blasIntWidth,
+    patterns.add<SymmOpLowering, SyrkOpLowering>(backend, blasIntWidth,
                                                  context);
     patterns.add<TrsmOpLowering>(context);
 
@@ -989,7 +987,7 @@ struct LowerEnzymeXLABLASPass
     // Verify that all illegal ops have been lowered
     auto walkResult = getOperation()->walk([&](Operation *op) {
       if (isa<enzymexla::SyrkOp, enzymexla::TrsmOp>(op)) {
-        op->emitError("Failed to lower enzymexla.blas operation");
+        op->emitError("Failed to lower blas operation");
         return WalkResult::interrupt();
       }
       return WalkResult::advance();
