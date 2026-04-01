@@ -156,6 +156,7 @@ struct TrmmOpLowering : public OpRewritePattern<enzymexla::TrmmOp> {
                                                    llvmPtrType, // lda
                                                    llvmPtrType, // B
                                                    llvmPtrType, // ldb
+                                                   llvmIntType, llvmIntType,
                                                    llvmIntType, llvmIntType},
                                                   false);
       rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), blasFn, funcType,
@@ -192,6 +193,8 @@ struct TrmmOpLowering : public OpRewritePattern<enzymexla::TrmmOp> {
       auto const1 =
           LLVM::ConstantOp::create(rewriter, op.getLoc(), llvmIntType,
                                    rewriter.getIntegerAttr(llvmIntType, 1));
+      args.push_back(const1);
+      args.push_back(const1);
       args.push_back(const1);
       args.push_back(const1);
 
