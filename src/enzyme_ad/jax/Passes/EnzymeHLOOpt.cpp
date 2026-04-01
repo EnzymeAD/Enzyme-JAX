@@ -9186,22 +9186,14 @@ struct CompareSubtractZeroSimplify
     if (!lhsSub)
       return rewriter.notifyMatchFailure(cmpOp, "lhs is not subtract");
 
-    // Only valid for integer element types.
-    auto elTy = getElementTypeOrSelf(cmpOp.getLhs().getType());
-    if (!elTy.isInteger())
-      return rewriter.notifyMatchFailure(cmpOp, "non-integer type");
-
-    // RHS must be the integer zero.
-    DenseIntElementsAttr rhsAttr;
-    if (!matchPattern(cmpOp.getRhs(), m_Constant(&rhsAttr)) ||
-        !rhsAttr.isSplat() ||
-        !rhsAttr.getSplatValue<APInt>().isZero())
+    // RHS must be integer zero (m_Zero does not match float zeros).
+    if (!matchPattern(cmpOp.getRhs(), m_Zero()))
       return rewriter.notifyMatchFailure(cmpOp, "rhs is not zero");
 
     auto shardingAttr = sdy::getShardingPerValue(cmpOp);
     auto newOp = rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(
-        cmpOp, lhsSub.getLhs(), lhsSub.getRhs(),
-        cmpOp.getComparisonDirection(), cmpOp.getCompareTypeAttr());
+        cmpOp, lhsSub.getLhs(), lhsSub.getRhs(), cmpOp.getComparisonDirection(),
+        cmpOp.getCompareTypeAttr());
     if (shardingAttr)
       sdy::setShardings(newOp, shardingAttr);
     return success();
