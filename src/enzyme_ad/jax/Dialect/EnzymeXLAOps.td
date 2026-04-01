@@ -1428,7 +1428,7 @@ def MPIBcastOp : EnzymeXLA_Op<"mpi.bcast", []> {
                 "`MPI_Bcast(&buf, count, datatype, root, MPI_COMM_WORLD)`";
 
   let arguments = (
-    ins AnyTensor : $buf,
+    ins AnyTensor : $inbuf,
     TensorOf<[I32]> : $count,
     TensorOf<[I32]> : $root,
     EnzymeXLA_MPIDatatypeAttr:$datatype
