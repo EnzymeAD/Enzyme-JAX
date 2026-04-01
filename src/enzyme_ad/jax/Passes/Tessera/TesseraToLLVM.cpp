@@ -78,11 +78,13 @@ public:
     auto funcOp = LLVM::LLVMFuncOp::create(rewriter, defineOp.getLoc(),
                                            funcName, llvmFuncType);
 
-    // Copy over all attributes other than the function name and type.
+    // Copy over all attributes other than the function name and type and
+    // attributes used only for tessera conversion
     for (const auto &namedAttr : defineOp->getAttrs()) {
       if (namedAttr.getName() != defineOp.getFunctionTypeAttrName() &&
           namedAttr.getName() != SymbolTable::getSymbolAttrName() &&
-          namedAttr.getName() != "tessera.original_name")
+          namedAttr.getName() != "tessera.original_name" &&
+          namedAttr.getName() != "tessera.sret_attrs")
         funcOp->setAttr(namedAttr.getName(), namedAttr.getValue());
     }
 
@@ -109,9 +111,73 @@ public:
   LogicalResult matchAndRewrite(tessera::CallOp callOp,
                                 PatternRewriter &rewriter) const override {
 
-    rewriter.replaceOpWithNewOp<LLVM::CallOp>(callOp, callOp.getResultTypes(),
-                                              callOp.getOperands(),
-                                              callOp->getAttrs());
+    auto calleeAttr = callOp.getCalleeAttr();
+    if (!calleeAttr)
+      return failure();
+
+    auto callee = SymbolTable::lookupSymbolIn(
+        callOp->getParentOfType<ModuleOp>(), calleeAttr);
+
+    // Check if callee has sret attribute. If so, allocate new pointer to
+    // contain result of tessera.call and insert as first argument in llvm.call.
+    auto defineOp = dyn_cast_or_null<tessera::DefineOp>(callee);
+    if (!defineOp)
+      return failure();
+
+    auto sretAttrs =
+        defineOp->getAttrOfType<DictionaryAttr>("tessera.sret_attrs");
+    if (sretAttrs) {
+      if (callOp.getNumResults() == 0)
+        return callOp.emitOpError(
+            "tessera.call to sret function must have a result");
+      auto sretType = callOp.getResult(0).getType();
+      int64_t alignment = 0;
+      if (auto alignAttr = sretAttrs.get(LLVM::LLVMDialect::getAlignAttrName()))
+        alignment = cast<IntegerAttr>(alignAttr).getInt();
+      Value one = rewriter.create<LLVM::ConstantOp>(
+          callOp.getLoc(), rewriter.getI32Type(),
+          rewriter.getI32IntegerAttr(1));
+
+      // Allocate stack storage for the sret return value
+      Value sretPtr = rewriter.create<LLVM::AllocaOp>(
+          callOp.getLoc(), LLVM::LLVMPointerType::get(callOp->getContext()),
+          sretType, one, alignment);
+
+      // Build new operands with sretPtr as first arg
+      SmallVector<Value> newOperands;
+      newOperands.push_back(sretPtr);
+      for (auto operand : callOp.getOperands())
+        newOperands.push_back(operand);
+
+      // Reconstruct arg attributes with sret attr first
+      SmallVector<Attribute> newArgAttrs;
+      newArgAttrs.push_back(sretAttrs);
+      if (auto argAttrs = callOp.getArgAttrsAttr()) {
+        for (auto argAttr : argAttrs)
+          newArgAttrs.push_back(argAttr);
+      }
+
+      // Filter out arg_attrs from attributes
+      SmallVector<NamedAttribute> newAttrs;
+      for (auto attr : callOp->getAttrs()) {
+        if (attr.getName() != callOp.getArgAttrsAttrName())
+          newAttrs.push_back(attr);
+      }
+
+      auto newCall = rewriter.create<LLVM::CallOp>(callOp.getLoc(), TypeRange{},
+                                                   newOperands, newAttrs);
+      newCall->setAttr(newCall.getArgAttrsAttrName(),
+                       rewriter.getArrayAttr(newArgAttrs));
+
+      // Load result from sret pointer and replace uses
+      auto loadedResult =
+          rewriter.create<LLVM::LoadOp>(callOp.getLoc(), sretType, sretPtr);
+      rewriter.replaceOp(callOp, loadedResult.getResult());
+    } else {
+      rewriter.replaceOpWithNewOp<LLVM::CallOp>(callOp, callOp.getResultTypes(),
+                                                callOp.getOperands(),
+                                                callOp->getAttrs());
+    }
 
     return success();
   }

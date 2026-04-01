@@ -31,6 +31,7 @@ class HLOConstantFP<string m> : ConstantFP<m, "stablehlo", "ConstantOp", "mlir::
 // Required operations from the EnzymeXLA dialect
 def Gelu : EnzymeXLAInst<"GeluOp">;
 def Relu : EnzymeXLAInst<"ReluOp">;
+def TGamma : EnzymeXLAInst<"TGammaOp">;
 
 // Required operations from StableHLO/CHLO dialects
 def Add : Inst<"AddOp", "stablehlo">;
@@ -49,6 +50,8 @@ def Slice : Inst<"SliceOp", "stablehlo">;
 def Pad : Inst<"PadOp", "stablehlo">;
 def Rotate : Inst<"RotateOp", "enzymexla">;
 def Extend : Inst<"ExtendOp", "enzymexla">;
+def CHLO_Polygamma: Inst<"PolygammaOp", "chlo">;
+def CHLO_Digamma: Inst<"DigammaOp", "chlo">;
 
 def GT : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::GT">;
 def EQ : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, "ComparisonDirection::EQ">;
@@ -88,6 +91,18 @@ def : EnzymeXLADerivative<"SoftplusOp", (Op $input),
                       (CheckedMul (DiffeRet), (Logistic $input))
                     ],
                     (Softplus (Shadow $input))
+                  >;
+
+def : EnzymeXLADerivative<"LGammaOp", (Op $input),
+                    [
+                      (CheckedMul (DiffeRet), (CHLO_Digamma $input))
+                    ]
+                  >;
+
+def : EnzymeXLADerivative<"TGammaOp", (Op $input),
+                    [
+                      (CheckedMul (DiffeRet), (CheckedMul (TGamma $input), (CHLO_Polygamma (HLOConstantFP<"0"> $input), $input)))
+                    ]
                   >;
 
 // GELU (x):

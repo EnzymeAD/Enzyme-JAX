@@ -124,6 +124,71 @@ DefineOp DefineOp::clone() {
 }
 
 //===----------------------------------------------------------------------===//
+// CallOp
+//===----------------------------------------------------------------------===//
+
+LogicalResult CallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
+  // Check that the callee attribute was specified.
+  auto fnAttr = (*this)->getAttrOfType<FlatSymbolRefAttr>("callee");
+  if (!fnAttr)
+    return emitOpError("requires a 'callee' symbol reference attribute");
+  DefineOp fn = symbolTable.lookupNearestSymbolFrom<DefineOp>(*this, fnAttr);
+  if (!fn)
+    return emitOpError() << "'" << fnAttr.getValue()
+                         << "' does not reference a valid function";
+
+  // Verify that the operand and result types match the callee,
+  // unless callee has attribute to indicate struct return.
+  bool has_sret = (fn->hasAttr("tessera.sret_attrs"));
+  auto fnType = fn.getFunctionType();
+
+  // If tessera.define has sret attribute,
+  // tessera.call operand count = tessera.define input count - 1
+  if (has_sret && (fnType.getNumInputs() - 1) != getNumOperands())
+    return emitOpError("incorrect number of operands for callee");
+  if (!has_sret && fnType.getNumInputs() != getNumOperands())
+    return emitOpError("incorrect number of operands for callee");
+
+  int startIdx = has_sret ? 1 : 0;
+  for (unsigned i = startIdx, e = fnType.getNumInputs(); i != e; ++i)
+    if (getOperand(i - startIdx).getType() != fnType.getInput(i))
+      return emitOpError("operand type mismatch: expected operand type ")
+             << fnType.getInput(i) << ", but provided "
+             << getOperand(i - startIdx).getType() << " for operand number "
+             << i - startIdx;
+
+  // If tessera.define has sret attribute,
+  // tessera.call result count = tessera.define result count + 1
+  if (has_sret && getNumResults() != 1)
+    return emitOpError("incorrect number of results for callee");
+  if (!has_sret && fnType.getNumResults() != getNumResults())
+    return emitOpError("incorrect number of results for callee");
+
+  if (has_sret) {
+    auto argAttrs = fn.getArgAttrsAttr();
+    auto firstArgAttr = cast<DictionaryAttr>(argAttrs[0]);
+    auto sretType = cast<TypeAttr>(firstArgAttr.get("llvm.sret")).getValue();
+    if (getResult(0).getType() != sretType)
+      return emitOpError("result type mismatch: expected ")
+             << sretType << " but got " << getResult(0).getType();
+  } else {
+    for (unsigned i = 0, e = fnType.getNumResults(); i != e; ++i)
+      if (getResult(i).getType() != fnType.getResult(i)) {
+        auto diag = emitOpError("result type mismatch at index ") << i;
+        diag.attachNote() << "      op result types: " << getResultTypes();
+        diag.attachNote() << "function result types: " << fnType.getResults();
+        return diag;
+      }
+  }
+
+  return success();
+}
+
+FunctionType CallOp::getCalleeType() {
+  return FunctionType::get(getContext(), getOperandTypes(), getResultTypes());
+}
+
+//===----------------------------------------------------------------------===//
 // ReturnOp
 //===----------------------------------------------------------------------===//
 
@@ -145,47 +210,4 @@ LogicalResult ReturnOp::verify() {
                          << results[i] << ")"
                          << " in function @" << function.getName();
   return success();
-}
-
-//===----------------------------------------------------------------------===//
-// CallOp
-//===----------------------------------------------------------------------===//
-
-LogicalResult CallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
-  // Check that the callee attribute was specified.
-  auto fnAttr = (*this)->getAttrOfType<FlatSymbolRefAttr>("callee");
-  if (!fnAttr)
-    return emitOpError("requires a 'callee' symbol reference attribute");
-  DefineOp fn = symbolTable.lookupNearestSymbolFrom<DefineOp>(*this, fnAttr);
-  if (!fn)
-    return emitOpError() << "'" << fnAttr.getValue()
-                         << "' does not reference a valid function";
-
-  // Verify that the operand and result types match the callee.
-  auto fnType = fn.getFunctionType();
-  if (fnType.getNumInputs() != getNumOperands())
-    return emitOpError("incorrect number of operands for callee");
-
-  for (unsigned i = 0, e = fnType.getNumInputs(); i != e; ++i)
-    if (getOperand(i).getType() != fnType.getInput(i))
-      return emitOpError("operand type mismatch: expected operand type ")
-             << fnType.getInput(i) << ", but provided "
-             << getOperand(i).getType() << " for operand number " << i;
-
-  if (fnType.getNumResults() != getNumResults())
-    return emitOpError("incorrect number of results for callee");
-
-  for (unsigned i = 0, e = fnType.getNumResults(); i != e; ++i)
-    if (getResult(i).getType() != fnType.getResult(i)) {
-      auto diag = emitOpError("result type mismatch at index ") << i;
-      diag.attachNote() << "      op result types: " << getResultTypes();
-      diag.attachNote() << "function result types: " << fnType.getResults();
-      return diag;
-    }
-
-  return success();
-}
-
-FunctionType CallOp::getCalleeType() {
-  return FunctionType::get(getContext(), getOperandTypes(), getResultTypes());
 }

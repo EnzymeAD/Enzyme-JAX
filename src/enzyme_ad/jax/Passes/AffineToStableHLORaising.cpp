@@ -2681,7 +2681,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     return success();
   }
 
-  if (isa<ub::PoisonOp>(op)) {
+  if (isa<ub::PoisonOp, LLVM::PoisonOp, LLVM::ZeroOp, LLVM::UndefOp>(op)) {
     affine::AffineValueMap accessMap(AffineMap::get(op->getContext()), {});
 
     Type ET = op->getResult(0).getType();
@@ -2858,7 +2858,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
           arith::FPToUIOp, arith::TruncFOp, arith::ExtFOp, math::SqrtOp,
           math::RsqrtOp, math::CbrtOp, math::LogOp, math::ExpOp, math::AbsFOp,
           math::AbsIOp, math::IsNaNOp, math::AtanOp, arith::BitcastOp,
-          math::ErfOp>(op)) {
+          enzymexla::TGammaOp, enzymexla::LGammaOp, math::ErfOp>(op)) {
     assert(op->getNumOperands() == 1 && op->getNumResults() == 1);
 
     auto operand = op->getOperand(0);

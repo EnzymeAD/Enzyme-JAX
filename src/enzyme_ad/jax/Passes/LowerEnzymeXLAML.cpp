@@ -9,6 +9,7 @@
 #include "mhlo/IR/hlo_ops.h"
 #include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
+#include "stablehlo/transforms/ChloDecompositionUtils.h"
 
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "llvm/ADT/SmallVector.h"
@@ -39,6 +40,55 @@ struct LowerReluOpToStablehlo : public OpRewritePattern<enzymexla::ReluOp> {
     auto maxTerm = stablehlo::MaxOp::create(rewriter, loc, operand, zero);
 
     rewriter.replaceOp(op, maxTerm);
+    return success();
+  }
+};
+
+struct LowerTGammaOpToStablehlo : public OpRewritePattern<enzymexla::TGammaOp> {
+  using OpRewritePattern<enzymexla::TGammaOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::TGammaOp op,
+                                PatternRewriter &rewriter) const override {
+    // __nv_tgamma semantics:
+    //   x < 0   → NaN
+    //   x = ±0  → ±inf
+    //   x = +∞  → +∞
+    //   else    → exp(lgamma(x))
+    auto loc = op.getLoc();
+    auto operand = op.getOperand();
+    auto ty = op.getType();
+
+    auto zero = stablehlo::ConstantOp::create(
+        rewriter, loc, cast<ElementsAttr>(makeAttr(ty, 0)));
+    auto nan = stablehlo::ConstantOp::create(
+        rewriter, loc,
+        cast<ElementsAttr>(
+            makeAttr(ty, std::numeric_limits<double>::quiet_NaN())));
+
+    auto negPred = stablehlo::CompareOp::create(
+        rewriter, loc, operand, zero, stablehlo::ComparisonDirection::LT,
+        stablehlo::ComparisonType::FLOAT);
+
+    auto LGamma = stablehlo::materializeLgamma(rewriter, loc, operand);
+    auto expLGamma = stablehlo::ExpOp::create(rewriter, loc, LGamma);
+
+    auto result =
+        stablehlo::SelectOp::create(rewriter, loc, negPred, nan, expLGamma);
+
+    rewriter.replaceOp(op, result);
+    return success();
+  }
+};
+
+struct LowerLGammaOpToStablehlo : public OpRewritePattern<enzymexla::LGammaOp> {
+  using OpRewritePattern<enzymexla::LGammaOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::LGammaOp op,
+                                PatternRewriter &rewriter) const override {
+    auto loc = op.getLoc();
+    auto operand = op.getOperand();
+    auto result = stablehlo::materializeLgamma(rewriter, loc, operand);
+    rewriter.replaceOp(op, result);
     return success();
   }
 };
@@ -192,6 +242,8 @@ struct LowerEnzymeXLAMLPass
     patterns.add<LowerReluOpToStablehlo>(context);
     patterns.add<LowerGeluOpToStablehlo>(context);
     patterns.add<LowerSoftplusOpToStablehlo>(context);
+    patterns.add<LowerTGammaOpToStablehlo>(context);
+    patterns.add<LowerLGammaOpToStablehlo>(context);
 
     GreedyRewriteConfig config;
     config.enableFolding();
