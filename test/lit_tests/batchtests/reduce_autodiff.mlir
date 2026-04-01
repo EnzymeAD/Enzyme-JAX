@@ -18,7 +18,7 @@ func.func @main(%arg0: tensor<2xf64>, %arg1: tensor<2xf64>, %arg2: tensor<2xf64>
 
 // CHECK:  func.func @main(%arg0: tensor<2xf64>, %arg1: tensor<2xf64>, %arg2: tensor<2xf64>) -> (tensor<1xf64>, tensor<1xf64>, tensor<2xf64>, tensor<2xf64>, tensor<2xf64>) {
 // CHECK-NEXT:    %0 = stablehlo.concatenate %arg1, %arg2, dim = 0 : (tensor<2xf64>, tensor<2xf64>) -> tensor<4xf64>
-// CHECK-NEXT:    %1 = stablehlo.reshape %0 : (tensor<4xf64>) -> tensor<2x2xf64>
+// CHECK-NEXT:    %1 = stablehlo.reshape %0 {enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<4xf64>) -> tensor<2x2xf64>
 // CHECK-NEXT:    %2 = stablehlo.transpose %1, dims = [1, 0] : (tensor<2x2xf64>) -> tensor<2x2xf64>
 // CHECK-NEXT:    %3:3 = call @fwddiffe2fwd_autodiff(%arg0, %2) : (tensor<2xf64>, tensor<2x2xf64>) -> (tensor<2xf64>, tensor<2xf64>, tensor<2x2xf64>)
 // CHECK-NEXT:    %4 = stablehlo.slice %3#0 [0:1] : (tensor<2xf64>) -> tensor<1xf64>

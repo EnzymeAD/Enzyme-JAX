@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(enzyme-hlo-opt)" %s | FileCheck %s
+// RUN: enzymexlamlir-opt --enzyme-hlo-opt --auto-batching --enzyme-hlo-opt %s | FileCheck %s
 
 module @reactant_Boltz.L... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_replicas = 1 : i64} {
   func.func @main(%arg0: tensor<3x2xf32>, %arg1: tensor<2xf32>) -> tensor<3x1xf32> {
@@ -44,29 +44,15 @@ module @reactant_Boltz.L... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
 }
 
 // CHECK: func.func @main(%arg0: tensor<3x2xf32>, %arg1: tensor<2xf32>) -> tensor<3x1xf32> {
-// CHECK-NEXT:     %cst = stablehlo.constant dense<0.000000e+00> : tensor<f32>
-// CHECK-NEXT:     %0 = stablehlo.transpose %arg0, dims = [1, 0] : (tensor<3x2xf32>) -> tensor<2x3xf32>
-// CHECK-NEXT:     %1 = stablehlo.slice %0 [0:2, 0:1] : (tensor<2x3xf32>) -> tensor<2x1xf32>
-// CHECK-NEXT:     %2 = stablehlo.slice %0 [0:2, 1:2] : (tensor<2x3xf32>) -> tensor<2x1xf32>
-// CHECK-NEXT:     %3 = stablehlo.slice %0 [0:2, 2:3] : (tensor<2x3xf32>) -> tensor<2x1xf32>
-// CHECK-NEXT:     %4 = stablehlo.reshape %1 : (tensor<2x1xf32>) -> tensor<1x2x1xf32>
-// CHECK-NEXT:     %5 = stablehlo.reshape %2 : (tensor<2x1xf32>) -> tensor<1x2x1xf32>
-// CHECK-NEXT:     %6 = stablehlo.reshape %3 : (tensor<2x1xf32>) -> tensor<1x2x1xf32>
-// CHECK-NEXT:     %7 = stablehlo.concatenate %4, %5, %6, dim = 0 : (tensor<1x2x1xf32>, tensor<1x2x1xf32>, tensor<1x2x1xf32>) -> tensor<3x2x1xf32>
-// CHECK-NEXT:     %8 = stablehlo.broadcast_in_dim %arg1, dims = [1] : (tensor<2xf32>) -> tensor<3x2x1xf32>
-// CHECK-NEXT:     %9 = stablehlo.subtract %7, %8 : tensor<3x2x1xf32>
-// CHECK-NEXT:     %10 = stablehlo.multiply %9, %9 : tensor<3x2x1xf32>
-// CHECK-NEXT:     %11 = stablehlo.reduce(%10 init: %cst) applies stablehlo.add across dimensions = [1, 2] : (tensor<3x2x1xf32>, tensor<f32>) -> tensor<3xf32>
-// CHECK-NEXT:     %12 = stablehlo.reshape %11 : (tensor<3xf32>) -> tensor<3x1xf32>
-// CHECK-NEXT:     %13 = stablehlo.reshape %1 : (tensor<2x1xf32>) -> tensor<1x2xf32>
-// CHECK-NEXT:     %14 = stablehlo.reshape %2 : (tensor<2x1xf32>) -> tensor<1x2xf32>
-// CHECK-NEXT:     %15 = stablehlo.reshape %3 : (tensor<2x1xf32>) -> tensor<1x2xf32>
-// CHECK-NEXT:     %16 = stablehlo.concatenate %13, %14, %15, dim = 0 : (tensor<1x2xf32>, tensor<1x2xf32>, tensor<1x2xf32>) -> tensor<3x2xf32>
-// CHECK-NEXT:     %17 = stablehlo.broadcast_in_dim %arg1, dims = [1] : (tensor<2xf32>) -> tensor<3x2xf32>
-// CHECK-NEXT:     %18 = stablehlo.subtract %16, %17 : tensor<3x2xf32>
-// CHECK-NEXT:     %19 = stablehlo.multiply %18, %18 : tensor<3x2xf32>
-// CHECK-NEXT:     %20 = stablehlo.reduce(%19 init: %cst) applies stablehlo.add across dimensions = [1] : (tensor<3x2xf32>, tensor<f32>) -> tensor<3xf32>
-// CHECK-NEXT:     %21 = stablehlo.reshape %20 : (tensor<3xf32>) -> tensor<3x1xf32>
-// CHECK-NEXT:     %22 = stablehlo.add %12, %21 : tensor<3x1xf32>
-// CHECK-NEXT:     return %22 : tensor<3x1xf32>
+// CHECK-NEXT:    %0 = stablehlo.reshape %arg0 : (tensor<3x2xf32>) -> tensor<3x2x1xf32>
+// CHECK-NEXT:    %1 = stablehlo.broadcast_in_dim %arg1, dims = [1] : (tensor<2xf32>) -> tensor<3x2x1xf32>
+// CHECK-NEXT:    %2 = stablehlo.subtract %0, %1 : tensor<3x2x1xf32>
+// CHECK-NEXT:    %3 = stablehlo.dot_general %2, %2, batching_dims = [0] x [0], contracting_dims = [1, 2] x [1, 2] : (tensor<3x2x1xf32>, tensor<3x2x1xf32>) -> tensor<3xf32>
+// CHECK-NEXT:    %4 = stablehlo.reshape %3 : (tensor<3xf32>) -> tensor<3x1xf32>
+// CHECK-NEXT:    %5 = stablehlo.broadcast_in_dim %arg1, dims = [1] : (tensor<2xf32>) -> tensor<3x2xf32>
+// CHECK-NEXT:    %6 = stablehlo.subtract %arg0, %5 : tensor<3x2xf32>
+// CHECK-NEXT:    %7 = stablehlo.dot_general %6, %6, batching_dims = [0] x [0], contracting_dims = [1] x [1] : (tensor<3x2xf32>, tensor<3x2xf32>) -> tensor<3xf32>
+// CHECK-NEXT:    %8 = stablehlo.reshape %7 : (tensor<3xf32>) -> tensor<3x1xf32>
+// CHECK-NEXT:    %9 = stablehlo.add %4, %8 : tensor<3x1xf32>
+// CHECK-NEXT:    return %9 : tensor<3x1xf32>
 // CHECK-NEXT:  }

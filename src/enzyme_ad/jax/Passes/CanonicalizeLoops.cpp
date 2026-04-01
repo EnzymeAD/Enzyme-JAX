@@ -23,6 +23,7 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "llvm/Support/Debug.h"
 
+#include <llvm/ADT/STLExtras.h>
 #include <numeric>
 
 #define DEBUG_TYPE "affine-int-range-analysis"
@@ -99,8 +100,8 @@ struct RemoveAffineParallelSingleIter
         continue;
       if (lb.getValue() + steps[idx] >= ub.getValue()) {
         tmpBlk->eraseArgument(0);
-        replacements[0] =
-            rewriter.create<arith::ConstantIndexOp>(op.getLoc(), lb.getValue());
+        replacements[0] = arith::ConstantIndexOp::create(rewriter, op.getLoc(),
+                                                         lb.getValue());
         lboundGroup.erase(lboundGroup.begin() + idx);
         uboundGroup.erase(uboundGroup.begin() + idx);
         lbounds.erase(lbounds.begin() + loff);
@@ -126,20 +127,19 @@ struct RemoveAffineParallelSingleIter
       rewriter.replaceOp(op, toRet);
     } else {
 
-      affine::AffineParallelOp affineLoop =
-          rewriter.create<affine::AffineParallelOp>(
-              op.getLoc(), op.getResultTypes(), op.getReductions(),
-              AffineMapAttr::get(
-                  AffineMap::get(op.getLowerBoundsMap().getNumDims(),
-                                 op.getLowerBoundsMap().getNumSymbols(),
-                                 lbounds, op.getContext())),
-              rewriter.getI32TensorAttr(lboundGroup),
-              AffineMapAttr::get(
-                  AffineMap::get(op.getUpperBoundsMap().getNumDims(),
-                                 op.getUpperBoundsMap().getNumSymbols(),
-                                 ubounds, op.getContext())),
-              rewriter.getI32TensorAttr(uboundGroup),
-              rewriter.getI64ArrayAttr(steps), op.getOperands());
+      affine::AffineParallelOp affineLoop = affine::AffineParallelOp::create(
+          rewriter, op.getLoc(), op.getResultTypes(), op.getReductions(),
+          AffineMapAttr::get(
+              AffineMap::get(op.getLowerBoundsMap().getNumDims(),
+                             op.getLowerBoundsMap().getNumSymbols(), lbounds,
+                             op.getContext())),
+          rewriter.getI32TensorAttr(lboundGroup),
+          AffineMapAttr::get(
+              AffineMap::get(op.getUpperBoundsMap().getNumDims(),
+                             op.getUpperBoundsMap().getNumSymbols(), ubounds,
+                             op.getContext())),
+          rewriter.getI32TensorAttr(uboundGroup),
+          rewriter.getI64ArrayAttr(steps), op.getOperands());
 
       affineLoop.getRegion().getBlocks().push_back(tmpBlk);
 
@@ -182,10 +182,10 @@ public:
   /// function calls `InferIntRangeInterface` to provide values for block
   /// arguments or tries to reduce the range on loop induction variables with
   /// known bounds.
-  void
-  visitNonControlFlowArguments(Operation *op, const RegionSuccessor &successor,
-                               ArrayRef<IntegerValueRangeLattice *> argLattices,
-                               unsigned firstIndex) override;
+  void visitNonControlFlowArguments(
+      Operation *op, const RegionSuccessor &successor,
+      ValueRange nonSuccessorInputs,
+      ArrayRef<IntegerValueRangeLattice *> nonSuccessorInputLattices) override;
 
   /// Gets the constant lower and upper bounds for a given index of an
   /// AffineParallelOp. The upper bound is adjusted to be inclusive (subtracts 1
@@ -240,7 +240,8 @@ public:
 
 void AffineIntegerRangeAnalysis::visitNonControlFlowArguments(
     Operation *op, const RegionSuccessor &successor,
-    ArrayRef<IntegerValueRangeLattice *> argLattices, unsigned firstIndex) {
+    ValueRange nonSuccessorInputs,
+    ArrayRef<IntegerValueRangeLattice *> nonSuccessorInputLattices) {
   LLVM_DEBUG(llvm::dbgs() << "Inferring ranges for " << op->getName() << "\n");
   if (auto inferrable = dyn_cast<InferIntRangeInterface>(op)) {
     auto argRanges = llvm::map_to_vector(op->getOperands(), [&](Value value) {
@@ -255,7 +256,8 @@ void AffineIntegerRangeAnalysis::visitNonControlFlowArguments(
         return;
 
       LLVM_DEBUG(llvm::dbgs() << "Inferred range " << attrs << "\n");
-      IntegerValueRangeLattice *lattice = argLattices[arg.getArgNumber()];
+      IntegerValueRangeLattice *lattice =
+          nonSuccessorInputLattices[arg.getArgNumber()];
       IntegerValueRange oldRange = lattice->getValue();
 
       ChangeResult changed = lattice->join(attrs);
@@ -293,7 +295,7 @@ void AffineIntegerRangeAnalysis::visitNonControlFlowArguments(
   } // AffineParallelOp
 
   return SparseForwardDataFlowAnalysis::visitNonControlFlowArguments(
-      op, successor, argLattices, firstIndex);
+      op, successor, nonSuccessorInputs, nonSuccessorInputLattices);
 }
 
 LogicalResult AffineIntegerRangeAnalysis::visitOperation(
@@ -501,10 +503,10 @@ public:
     if (!matchPattern(ext.getRhs(), m_Constant(&constValue)))
       return failure();
 
-    auto rhs = rewriter.create<arith::ConstantIndexOp>(
-        ext.getRhs().getLoc(), constValue.getValue().getZExtValue());
-    auto idxshr = rewriter.create<arith::ShRUIOp>(ext.getLoc(),
-                                                  operand.getOperand(), rhs);
+    auto rhs = arith::ConstantIndexOp::create(
+        rewriter, ext.getRhs().getLoc(), constValue.getValue().getZExtValue());
+    auto idxshr = arith::ShRUIOp::create(rewriter, ext.getLoc(),
+                                         operand.getOperand(), rhs);
     rewriter.replaceOpWithNewOp<arith::IndexCastUIOp>(ext, ext.getType(),
                                                       idxshr);
     return success();
@@ -534,10 +536,10 @@ public:
     if (constValue.getValue().isNegative())
       return failure();
 
-    auto rhs = rewriter.create<arith::ConstantIndexOp>(
-        ext.getRhs().getLoc(), constValue.getValue().getZExtValue());
-    auto idxshr = rewriter.create<arith::DivUIOp>(ext.getLoc(),
-                                                  operand.getOperand(), rhs);
+    auto rhs = arith::ConstantIndexOp::create(
+        rewriter, ext.getRhs().getLoc(), constValue.getValue().getZExtValue());
+    auto idxshr = arith::DivUIOp::create(rewriter, ext.getLoc(),
+                                         operand.getOperand(), rhs);
     rewriter.replaceOpWithNewOp<arith::IndexCastUIOp>(ext, ext.getType(),
                                                       idxshr);
     return success();
@@ -594,10 +596,10 @@ public:
         if (matchPattern(add2.getRhs(), m_Constant(&constValue2))) {
           auto v2 = constValue.getValue() + constValue2.getValue();
           if (!v2.isNegative()) {
-            auto rhs = rewriter.create<arith::ConstantIndexOp>(
-                ext.getRhs().getLoc(), v2.getZExtValue());
-            auto idxshr = rewriter.create<arith::AddIOp>(ext.getLoc(),
-                                                         add2.getLhs(), rhs);
+            auto rhs = arith::ConstantIndexOp::create(
+                rewriter, ext.getRhs().getLoc(), v2.getZExtValue());
+            auto idxshr = arith::AddIOp::create(rewriter, ext.getLoc(),
+                                                add2.getLhs(), rhs);
             rewriter.replaceOpWithNewOp<arith::IndexCastUIOp>(
                 ext, ext.getType(), idxshr);
             return success();
@@ -607,10 +609,10 @@ public:
       return failure();
     }
 
-    auto rhs = rewriter.create<arith::ConstantIndexOp>(
-        ext.getRhs().getLoc(), constValue.getValue().getZExtValue());
-    auto idxshr = rewriter.create<arith::AddIOp>(ext.getLoc(),
-                                                 operandOp->getOperand(0), rhs);
+    auto rhs = arith::ConstantIndexOp::create(
+        rewriter, ext.getRhs().getLoc(), constValue.getValue().getZExtValue());
+    auto idxshr = arith::AddIOp::create(rewriter, ext.getLoc(),
+                                        operandOp->getOperand(0), rhs);
     rewriter.replaceOpWithNewOp<arith::IndexCastUIOp>(ext, ext.getType(),
                                                       idxshr);
     return success();
@@ -641,10 +643,10 @@ public:
     if (!constValue.isZero())
       return failure();
 
-    auto lhs2 = rewriter.create<arith::ConstantIndexOp>(
-        ext.getLhs().getLoc(), constValue.getSExtValue());
-    auto sub2 = rewriter.create<arith::SubIOp>(ext.getLoc(), lhs2,
-                                               operand.getOperand());
+    auto lhs2 = arith::ConstantIndexOp::create(rewriter, ext.getLhs().getLoc(),
+                                               constValue.getSExtValue());
+    auto sub2 = arith::SubIOp::create(rewriter, ext.getLoc(), lhs2,
+                                      operand.getOperand());
     rewriter.replaceOpWithNewOp<arith::IndexCastOp>(ext, ext.getType(), sub2);
     return success();
   }
@@ -671,12 +673,13 @@ public:
     if (!matchPattern(ext.getRhs(), m_Constant(&constValue)))
       return failure();
 
-    auto rhs = rewriter.create<arith::ConstantIndexOp>(
-        ext.getRhs().getLoc(), constValue.getValue().isNegative()
-                                   ? constValue.getValue().getSExtValue()
-                                   : constValue.getValue().getZExtValue());
-    auto idxshr = rewriter.create<arith::MulIOp>(ext.getLoc(),
-                                                 operand->getOperand(0), rhs);
+    auto rhs = arith::ConstantIndexOp::create(
+        rewriter, ext.getRhs().getLoc(),
+        constValue.getValue().isNegative()
+            ? constValue.getValue().getSExtValue()
+            : constValue.getValue().getZExtValue());
+    auto idxshr = arith::MulIOp::create(rewriter, ext.getLoc(),
+                                        operand->getOperand(0), rhs);
     if (constValue.getValue().isNegative())
       rewriter.replaceOpWithNewOp<arith::IndexCastOp>(ext, ext.getType(),
                                                       idxshr);
@@ -707,10 +710,10 @@ public:
     if (!matchPattern(ext.getRhs(), m_Constant(&constValue)))
       return failure();
 
-    auto rhs = rewriter.create<arith::ConstantIndexOp>(
-        ext.getRhs().getLoc(), constValue.getValue().getZExtValue());
-    auto idxshr =
-        rewriter.create<arith::ShLIOp>(ext.getLoc(), operand.getOperand(), rhs);
+    auto rhs = arith::ConstantIndexOp::create(
+        rewriter, ext.getRhs().getLoc(), constValue.getValue().getZExtValue());
+    auto idxshr = arith::ShLIOp::create(rewriter, ext.getLoc(),
+                                        operand.getOperand(), rhs);
     rewriter.replaceOpWithNewOp<arith::IndexCastUIOp>(ext, ext.getType(),
                                                       idxshr);
     return success();
@@ -737,8 +740,8 @@ public:
     bool sign = ext.getLhs().getDefiningOp<arith::IndexCastOp>() ||
                 ext.getRhs().getDefiningOp<arith::IndexCastOp>();
 
-    auto add = rewriter.create<arith::AddIOp>(
-        ext.getLoc(), ext.getLhs().getDefiningOp()->getOperand(0),
+    auto add = arith::AddIOp::create(
+        rewriter, ext.getLoc(), ext.getLhs().getDefiningOp()->getOperand(0),
         ext.getRhs().getDefiningOp()->getOperand(0));
     if (sign)
       rewriter.replaceOpWithNewOp<arith::IndexCastOp>(ext, ext.getType(), add);
@@ -792,16 +795,16 @@ public:
       return failure();
 
     ArrayRef<int64_t> cases = switchOp.getCases();
-    Value caseValue = rewriter.create<arith::ConstantIndexOp>(switchOp.getLoc(),
-                                                              cases.front());
+    Value caseValue = arith::ConstantIndexOp::create(
+        rewriter, switchOp.getLoc(), cases.front());
 
-    Value cmpResult = rewriter.create<arith::CmpIOp>(
-        switchOp.getLoc(), arith::CmpIPredicate::eq, switchOp.getArg(),
-        caseValue);
+    Value cmpResult = arith::CmpIOp::create(rewriter, switchOp.getLoc(),
+                                            arith::CmpIPredicate::eq,
+                                            switchOp.getArg(), caseValue);
 
-    scf::IfOp ifOp =
-        rewriter.create<scf::IfOp>(switchOp.getLoc(), switchOp.getResultTypes(),
-                                   cmpResult, /*withElseRegion=*/true);
+    scf::IfOp ifOp = scf::IfOp::create(rewriter, switchOp.getLoc(),
+                                       switchOp.getResultTypes(), cmpResult,
+                                       /*withElseRegion=*/true);
 
     if (ifOp.thenBlock()->mightHaveTerminator()) {
       rewriter.eraseOp(ifOp.thenBlock()->getTerminator());
@@ -852,15 +855,15 @@ public:
 
     // Get the condition and negate it
     Value cond = ifOp.getCondition();
-    Value negatedCond = rewriter.create<arith::XOrIOp>(
-        ifOp.getLoc(), cond,
-        rewriter.create<arith::ConstantIntOp>(ifOp.getLoc(),
-                                              rewriter.getI1Type(), 1));
+    Value negatedCond = arith::XOrIOp::create(
+        rewriter, ifOp.getLoc(), cond,
+        arith::ConstantIntOp::create(rewriter, ifOp.getLoc(),
+                                     rewriter.getI1Type(), 1));
 
     // Create new if operation with negated condition and no else region
-    auto newIf = rewriter.create<scf::IfOp>(ifOp.getLoc(),
-                                            ifOp.getResultTypes(), negatedCond,
-                                            /*withElseRegion=*/false);
+    auto newIf = scf::IfOp::create(rewriter, ifOp.getLoc(),
+                                   ifOp.getResultTypes(), negatedCond,
+                                   /*withElseRegion=*/false);
 
     // Move operations from old else block to new then block
     Block &elseBlock = ifOp.getElseRegion().front();
@@ -877,6 +880,80 @@ public:
     // Replace old if with new if
     rewriter.replaceOp(ifOp, newIf.getResults());
     return success();
+  }
+};
+
+class PartialIfToSelect final : public OpRewritePattern<scf::IfOp> {
+public:
+  using OpRewritePattern<scf::IfOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(scf::IfOp ifOp,
+                                PatternRewriter &rewriter) const override {
+    // Check if if has both then and else regions
+    bool hasElse = !ifOp.getElseRegion().empty();
+    if (!hasElse)
+      return failure();
+
+    Location loc = ifOp.getLoc();
+    Value condition = ifOp.getCondition();
+
+    // Get the yield ops from both branches
+    Block *thenBlock = ifOp.thenBlock();
+    Block *elseBlock = ifOp.elseBlock();
+    auto thenYield = cast<scf::YieldOp>(thenBlock->getTerminator());
+    auto elseYield = cast<scf::YieldOp>(elseBlock->getTerminator());
+
+    rewriter.setInsertionPoint(ifOp);
+    bool succeeded = false;
+    for (auto [i, thenYieldVal, elseYieldVal, res] :
+         llvm::enumerate(thenYield.getOperands(), elseYield.getOperands(),
+                         ifOp.getResults())) {
+      // Ignore cases where the result is not used - these will be cleaned up by
+      // a canonicalization
+      if (res.use_empty())
+        continue;
+      SmallVector<Operation *> rOps;
+      IRMapping rVals;
+      std::function<std::optional<Value>(Value)> recomputeOutsideIf =
+          [&](Value v) -> std::optional<Value> {
+        auto rVal = rVals.lookupOrNull(v);
+        if (rVal)
+          return rVal;
+        Operation *op = v.getDefiningOp();
+        if (!op)
+          return v;
+        if (!ifOp->isAncestor(op))
+          return v;
+        if (!isPure(op))
+          return std::nullopt;
+        SmallVector<Value> rOprs;
+        for (auto opr : op->getOperands()) {
+          auto rOpr = recomputeOutsideIf(opr);
+          if (!rOpr)
+            return std::nullopt;
+          rOprs.push_back(*rOpr);
+        }
+        auto rOp = rewriter.clone(*op);
+        rOp->setOperands(rOprs);
+        rVals.map(op->getResults(), rOp->getResults());
+        rOps.push_back(rOp);
+        return rOp->getResult(cast<OpResult>(v).getResultNumber());
+      };
+      auto rThenYieldVal = recomputeOutsideIf(thenYieldVal);
+      auto rElseYieldVal = recomputeOutsideIf(elseYieldVal);
+      if (!rThenYieldVal || !rElseYieldVal) {
+        for (auto rOp : llvm::reverse(rOps))
+          rewriter.eraseOp(rOp);
+        continue;
+      }
+
+      // Create select op with same attributes as original if op
+      auto select = arith::SelectOp::create(rewriter, loc, condition,
+                                            *rThenYieldVal, *rElseYieldVal);
+      rewriter.replaceAllUsesWith(ifOp->getResult(i), select);
+      succeeded = true;
+    }
+    return success(succeeded);
   }
 };
 
@@ -941,8 +1018,8 @@ public:
       Value mappedElseVal = elseMapping.lookupOrDefault(elseVal);
 
       // Create select op with same attributes as original if op
-      auto select = rewriter.create<arith::SelectOp>(
-          loc, condition, mappedThenVal, mappedElseVal);
+      auto select = arith::SelectOp::create(rewriter, loc, condition,
+                                            mappedThenVal, mappedElseVal);
       results.push_back(select);
     }
 
@@ -960,11 +1037,14 @@ struct CanonicalizeLoopsPass
     // Step 0: Canonicalize loops when possible.
     {
       RewritePatternSet patterns(&getContext());
-      patterns.add<RemoveAffineParallelSingleIter, SwitchToIf,
-                   SimplifyIfByRemovingEmptyThen, IfToSelect>(&getContext());
+      patterns
+          .add<RemoveAffineParallelSingleIter, SwitchToIf,
+               SimplifyIfByRemovingEmptyThen, PartialIfToSelect, IfToSelect>(
+              &getContext());
 
-      if (failed(applyPatternsAndFoldGreedily(getOperation(),
-                                              std::move(patterns)))) {
+      if (failed(
+              applyPatternsGreedily(getOperation(), std::move(patterns),
+                                    GreedyRewriteConfig().enableFolding()))) {
         signalPassFailure();
         return;
       }
@@ -1006,8 +1086,8 @@ struct CanonicalizeLoopsPass
           if (!constantRangeValue.has_value())
             return;
           b.setInsertionPoint(cmpiOp);
-          auto cst = b.create<arith::ConstantOp>(
-              cmpiOp.getLoc(), b.getI1Type(),
+          auto cst = arith::ConstantOp::create(
+              b, cmpiOp.getLoc(), b.getI1Type(),
               IntegerAttr::get(b.getI1Type(), !constantRangeValue->eq(cstRhs)));
           cmpiOp.getResult().replaceAllUsesWith(cst);
         }
@@ -1017,8 +1097,8 @@ struct CanonicalizeLoopsPass
           if (!constantRangeValue.has_value())
             return;
           b.setInsertionPoint(cmpiOp);
-          auto cst = b.create<arith::ConstantOp>(
-              cmpiOp.getLoc(), b.getI1Type(),
+          auto cst = arith::ConstantOp::create(
+              b, cmpiOp.getLoc(), b.getI1Type(),
               IntegerAttr::get(b.getI1Type(), constantRangeValue->eq(cstRhs)));
           cmpiOp.getResult().replaceAllUsesWith(cst);
         }
@@ -1028,8 +1108,8 @@ struct CanonicalizeLoopsPass
           if (umax.ult(cstRhs)) {
             // Condition always true.
             b.setInsertionPoint(cmpiOp);
-            auto cst = b.create<arith::ConstantOp>(
-                cmpiOp.getLoc(), b.getI1Type(),
+            auto cst = arith::ConstantOp::create(
+                b, cmpiOp.getLoc(), b.getI1Type(),
                 IntegerAttr::get(b.getI1Type(), true));
             cmpiOp.getResult().replaceAllUsesWith(cst);
           }
@@ -1037,8 +1117,8 @@ struct CanonicalizeLoopsPass
           if (umin.uge(cstRhs)) {
             // Condition always false.
             b.setInsertionPoint(cmpiOp);
-            auto cst = b.create<arith::ConstantOp>(
-                cmpiOp.getLoc(), b.getI1Type(),
+            auto cst = arith::ConstantOp::create(
+                b, cmpiOp.getLoc(), b.getI1Type(),
                 IntegerAttr::get(b.getI1Type(), false));
             cmpiOp.getResult().replaceAllUsesWith(cst);
           }
@@ -1049,8 +1129,8 @@ struct CanonicalizeLoopsPass
           if (umax.ule(cstRhs)) {
             // Condition always true.
             b.setInsertionPoint(cmpiOp);
-            auto cst = b.create<arith::ConstantOp>(
-                cmpiOp.getLoc(), b.getI1Type(),
+            auto cst = arith::ConstantOp::create(
+                b, cmpiOp.getLoc(), b.getI1Type(),
                 IntegerAttr::get(b.getI1Type(), true));
             cmpiOp.getResult().replaceAllUsesWith(cst);
           }
@@ -1058,8 +1138,8 @@ struct CanonicalizeLoopsPass
           if (umin.ugt(cstRhs)) {
             // Condition always false.
             b.setInsertionPoint(cmpiOp);
-            auto cst = b.create<arith::ConstantOp>(
-                cmpiOp.getLoc(), b.getI1Type(),
+            auto cst = arith::ConstantOp::create(
+                b, cmpiOp.getLoc(), b.getI1Type(),
                 IntegerAttr::get(b.getI1Type(), false));
             cmpiOp.getResult().replaceAllUsesWith(cst);
           }
@@ -1070,8 +1150,8 @@ struct CanonicalizeLoopsPass
           if (umin.ugt(cstRhs)) {
             // Condition always true.
             b.setInsertionPoint(cmpiOp);
-            auto cst = b.create<arith::ConstantOp>(
-                cmpiOp.getLoc(), b.getI1Type(),
+            auto cst = arith::ConstantOp::create(
+                b, cmpiOp.getLoc(), b.getI1Type(),
                 IntegerAttr::get(b.getI1Type(), true));
             cmpiOp.getResult().replaceAllUsesWith(cst);
           }
@@ -1079,8 +1159,8 @@ struct CanonicalizeLoopsPass
           if (umax.ule(cstRhs)) {
             // Condition always false.
             b.setInsertionPoint(cmpiOp);
-            auto cst = b.create<arith::ConstantOp>(
-                cmpiOp.getLoc(), b.getI1Type(),
+            auto cst = arith::ConstantOp::create(
+                b, cmpiOp.getLoc(), b.getI1Type(),
                 IntegerAttr::get(b.getI1Type(), false));
             cmpiOp.getResult().replaceAllUsesWith(cst);
           }
@@ -1091,8 +1171,8 @@ struct CanonicalizeLoopsPass
           if (umin.uge(cstRhs)) {
             // Condition always true.
             b.setInsertionPoint(cmpiOp);
-            auto cst = b.create<arith::ConstantOp>(
-                cmpiOp.getLoc(), b.getI1Type(),
+            auto cst = arith::ConstantOp::create(
+                b, cmpiOp.getLoc(), b.getI1Type(),
                 IntegerAttr::get(b.getI1Type(), true));
             cmpiOp.getResult().replaceAllUsesWith(cst);
           }
@@ -1100,8 +1180,8 @@ struct CanonicalizeLoopsPass
           if (umax.ult(cstRhs)) {
             // Condition always false.
             b.setInsertionPoint(cmpiOp);
-            auto cst = b.create<arith::ConstantOp>(
-                cmpiOp.getLoc(), b.getI1Type(),
+            auto cst = arith::ConstantOp::create(
+                b, cmpiOp.getLoc(), b.getI1Type(),
                 IntegerAttr::get(b.getI1Type(), false));
             cmpiOp.getResult().replaceAllUsesWith(cst);
           }
@@ -1113,8 +1193,8 @@ struct CanonicalizeLoopsPass
           if (smax.slt(cstRhs)) {
             // Condition always true.
             b.setInsertionPoint(cmpiOp);
-            auto cst = b.create<arith::ConstantOp>(
-                cmpiOp.getLoc(), b.getI1Type(),
+            auto cst = arith::ConstantOp::create(
+                b, cmpiOp.getLoc(), b.getI1Type(),
                 IntegerAttr::get(b.getI1Type(), true));
             cmpiOp.getResult().replaceAllUsesWith(cst);
           }
@@ -1122,8 +1202,8 @@ struct CanonicalizeLoopsPass
           if (smin.sge(cstRhs)) {
             // Condition always false.
             b.setInsertionPoint(cmpiOp);
-            auto cst = b.create<arith::ConstantOp>(
-                cmpiOp.getLoc(), b.getI1Type(),
+            auto cst = arith::ConstantOp::create(
+                b, cmpiOp.getLoc(), b.getI1Type(),
                 IntegerAttr::get(b.getI1Type(), false));
             cmpiOp.getResult().replaceAllUsesWith(cst);
           }
@@ -1134,8 +1214,8 @@ struct CanonicalizeLoopsPass
           if (smax.sle(cstRhs)) {
             // Condition always true.
             b.setInsertionPoint(cmpiOp);
-            auto cst = b.create<arith::ConstantOp>(
-                cmpiOp.getLoc(), b.getI1Type(),
+            auto cst = arith::ConstantOp::create(
+                b, cmpiOp.getLoc(), b.getI1Type(),
                 IntegerAttr::get(b.getI1Type(), true));
             cmpiOp.getResult().replaceAllUsesWith(cst);
           }
@@ -1143,8 +1223,8 @@ struct CanonicalizeLoopsPass
           if (smin.sgt(cstRhs)) {
             // Condition always false.
             b.setInsertionPoint(cmpiOp);
-            auto cst = b.create<arith::ConstantOp>(
-                cmpiOp.getLoc(), b.getI1Type(),
+            auto cst = arith::ConstantOp::create(
+                b, cmpiOp.getLoc(), b.getI1Type(),
                 IntegerAttr::get(b.getI1Type(), false));
             cmpiOp.getResult().replaceAllUsesWith(cst);
           }
@@ -1155,8 +1235,8 @@ struct CanonicalizeLoopsPass
           if (smin.sgt(cstRhs)) {
             // Condition always true.
             b.setInsertionPoint(cmpiOp);
-            auto cst = b.create<arith::ConstantOp>(
-                cmpiOp.getLoc(), b.getI1Type(),
+            auto cst = arith::ConstantOp::create(
+                b, cmpiOp.getLoc(), b.getI1Type(),
                 IntegerAttr::get(b.getI1Type(), true));
             cmpiOp.getResult().replaceAllUsesWith(cst);
           }
@@ -1164,8 +1244,8 @@ struct CanonicalizeLoopsPass
           if (smax.sle(cstRhs)) {
             // Condition always false.
             b.setInsertionPoint(cmpiOp);
-            auto cst = b.create<arith::ConstantOp>(
-                cmpiOp.getLoc(), b.getI1Type(),
+            auto cst = arith::ConstantOp::create(
+                b, cmpiOp.getLoc(), b.getI1Type(),
                 IntegerAttr::get(b.getI1Type(), false));
             cmpiOp.getResult().replaceAllUsesWith(cst);
           }
@@ -1176,8 +1256,8 @@ struct CanonicalizeLoopsPass
           if (smin.sge(cstRhs)) {
             // Condition always true.
             b.setInsertionPoint(cmpiOp);
-            auto cst = b.create<arith::ConstantOp>(
-                cmpiOp.getLoc(), b.getI1Type(),
+            auto cst = arith::ConstantOp::create(
+                b, cmpiOp.getLoc(), b.getI1Type(),
                 IntegerAttr::get(b.getI1Type(), true));
             cmpiOp.getResult().replaceAllUsesWith(cst);
           }
@@ -1185,8 +1265,8 @@ struct CanonicalizeLoopsPass
           if (smax.slt(cstRhs)) {
             // Condition always false.
             b.setInsertionPoint(cmpiOp);
-            auto cst = b.create<arith::ConstantOp>(
-                cmpiOp.getLoc(), b.getI1Type(),
+            auto cst = arith::ConstantOp::create(
+                b, cmpiOp.getLoc(), b.getI1Type(),
                 IntegerAttr::get(b.getI1Type(), false));
             cmpiOp.getResult().replaceAllUsesWith(cst);
           }
@@ -1205,8 +1285,8 @@ struct CanonicalizeLoopsPass
         std::optional<APInt> maybeRange = range.getValue().getConstantValue();
         if (maybeRange.has_value()) {
           b.setInsertionPoint(inferOp);
-          auto cst = b.create<arith::ConstantOp>(
-              inferOp.getLoc(), inferOp->getResult(0).getType(),
+          auto cst = arith::ConstantOp::create(
+              b, inferOp.getLoc(), inferOp->getResult(0).getType(),
               IntegerAttr::get(inferOp->getResult(0).getType(),
                                maybeRange.value()));
           inferOp->getResult(0).replaceAllUsesWith(cst);
@@ -1217,8 +1297,10 @@ struct CanonicalizeLoopsPass
     {
       RewritePatternSet patterns(&getContext());
       addSingleIter(patterns, &getContext());
-      if (failed(applyPatternsAndFoldGreedily(getOperation(),
-                                              std::move(patterns)))) {
+      GreedyRewriteConfig config;
+      config.enableFolding();
+      if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
+                                       config))) {
         signalPassFailure();
         return;
       }

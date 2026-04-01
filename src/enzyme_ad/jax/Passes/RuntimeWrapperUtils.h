@@ -35,10 +35,11 @@ LLVM::CallOp FunctionCallBuilder::create(Location loc, OpBuilder &builder,
   auto function = [&] {
     if (auto function = module.lookupSymbol<LLVM::LLVMFuncOp>(functionName))
       return function;
-    return OpBuilder::atBlockEnd(module.getBody())
-        .create<LLVM::LLVMFuncOp>(loc, functionName, functionType);
+    OpBuilder funcBuilder = OpBuilder::atBlockEnd(module.getBody());
+    return LLVM::LLVMFuncOp::create(funcBuilder, loc, functionName,
+                                    functionType);
   }();
-  return builder.create<LLVM::CallOp>(loc, function, arguments);
+  return LLVM::CallOp::create(builder, loc, function, arguments);
 }
 
 class GpuRuntimeCallBuilders {

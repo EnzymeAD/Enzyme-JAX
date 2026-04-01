@@ -153,8 +153,8 @@ func.func @t14(%arg0: tensor<3x3xf64>, %arg1: tensor<3x3xf64>) -> tensor<3x3xf64
 }
 
 // CHECK:  func.func @t14(%arg0: tensor<3x3xf64>, %arg1: tensor<3x3xf64>) -> tensor<3x3xf64> {
-// CHECK-NEXT:    %0 = stablehlo.multiply %arg0, %arg1 : tensor<3x3xf64>
-// CHECK-NEXT:    %1 = stablehlo.cosine %0 : tensor<3x3xf64>
+// CHECK-NEXT:    %0 = stablehlo.multiply %arg0, %arg1 {enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<3x3xf64>
+// CHECK-NEXT:    %1 = stablehlo.cosine %0 {enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<3x3xf64>
 // CHECK-NEXT:    %2 = stablehlo.transpose %1, dims = [1, 0] : (tensor<3x3xf64>) -> tensor<3x3xf64>
 // CHECK-NEXT:    return %2 : tensor<3x3xf64>
 // CHECK-NEXT:  }

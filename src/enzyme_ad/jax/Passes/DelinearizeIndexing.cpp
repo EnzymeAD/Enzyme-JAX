@@ -109,7 +109,7 @@ reshapeMemref2(Value memref, ArrayRef<int64_t> shape,
       AffineMap map = ainfo.map;
       for (auto expr : map.getResults()) {
         auto cst = dyn_cast<AffineConstantExpr>(expr);
-        if (cst.getValue() != 0)
+        if (!cst || cst.getValue() != 0)
           return failure();
       }
       ainfo.map = AffineMap::get(map.getNumDims(), map.getNumSymbols(), {},
@@ -151,12 +151,12 @@ reshapeMemref2(Value memref, ArrayRef<int64_t> shape,
         // either memref ld/st (emit new index calc ops)
         Value last_dim_key = ainfo.last_dim_key;
         rewriter.setInsertionPoint(ainfo.mOpInst);
-        auto dim_size = rewriter.create<arith::ConstantIndexOp>(
-            ainfo.mOpInst->getLoc(), cst);
-        auto mod = rewriter.create<arith::RemUIOp>(ainfo.mOpInst->getLoc(),
-                                                   last_dim_key, dim_size);
-        auto floor = rewriter.create<arith::DivUIOp>(ainfo.mOpInst->getLoc(),
-                                                     last_dim_key, dim_size);
+        auto dim_size = arith::ConstantIndexOp::create(
+            rewriter, ainfo.mOpInst->getLoc(), cst);
+        auto mod = arith::RemUIOp::create(rewriter, ainfo.mOpInst->getLoc(),
+                                          last_dim_key, dim_size);
+        auto floor = arith::DivUIOp::create(rewriter, ainfo.mOpInst->getLoc(),
+                                            last_dim_key, dim_size);
         ainfo.updated_indices.push_back(mod);
 
         // floor is the new last dim key
@@ -190,10 +190,9 @@ reshapeMemref2(Value memref, ArrayRef<int64_t> shape,
       rewriter.replaceOpWithNewOp<memref::LoadOp>(load, load.getMemref(),
                                                   ainfo.updated_indices);
     } else if (auto store = dyn_cast<memref::StoreOp>(ainfo.mOpInst)) {
-
       ainfo.updated_indices.push_back(ainfo.last_dim_key);
       std::reverse(ainfo.updated_indices.begin(), ainfo.updated_indices.end());
-      rewriter.setInsertionPoint(load);
+      rewriter.setInsertionPoint(store);
       rewriter.replaceOpWithNewOp<memref::StoreOp>(
           store, store.getValue(), store.getMemref(), ainfo.updated_indices);
     } else {

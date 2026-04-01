@@ -206,30 +206,11 @@ run_pass_pipeline(const std::vector<std::string> &oldsym_vec,
 }
 
 absl::StatusOr<std::unique_ptr<xla::Executable>>
-RunBackend(xla::cpu::CpuCompiler *self, std::unique_ptr<xla::HloModule> module,
-           [[maybe_unused]] xla::se::StreamExecutor *stream_exec,
-           const xla::Compiler::CompileOptions &options, bool xla_runtime) {
-
-  std::unique_ptr<xla::cpu::CpuExecutable> cpu_executable;
-  if (xla_runtime) {
-    throw nanobind::value_error("xla_runtime deprecated upstream");
-    // TF_ASSIGN_OR_RETURN(cpu_executable,
-    //                    self->CompileXlaRuntimeCpuExecutable(std::move(module),
-    //                                                         options.registry));
-  } else {
-    TF_ASSIGN_OR_RETURN(cpu_executable,
-                        self->CompileCpuExecutable(std::move(module)));
-  }
-
-  return std::unique_ptr<xla::Executable>(std::move(cpu_executable));
-}
-
-absl::StatusOr<std::unique_ptr<xla::Executable>>
 BuildExecutable(xla::Service *self, const xla::HloModuleProto &module_proto,
                 std::unique_ptr<xla::HloModuleConfig> module_config,
                 xla::Backend *backend, xla::se::StreamExecutor *executor,
                 const xla::Compiler::CompileOptions &options,
-                bool run_backend_only, bool xla_runtime) {
+                bool run_backend_only, [[maybe_unused]] bool xla_runtime) {
 
   TF_ASSIGN_OR_RETURN(std::unique_ptr<xla::HloModule> module,
                       xla::CreateModuleFromProto(module_proto, *module_config,
@@ -252,15 +233,9 @@ BuildExecutable(xla::Service *self, const xla::HloModuleProto &module_proto,
                                     std::move(module), executor, options));
   }
 
-  /*
   TF_ASSIGN_OR_RETURN(
       std::unique_ptr<xla::Executable> executable,
       backend->compiler()->RunBackend(std::move(module), executor, options));
-  */
-  TF_ASSIGN_OR_RETURN(std::unique_ptr<xla::Executable> executable,
-                      RunBackend((xla::cpu::CpuCompiler *)backend->compiler(),
-                                 std::move(module), executor, options,
-                                 xla_runtime));
 
   const xla::BufferAssignmentProto *buffer_assignment_proto_after_opt =
       executable->buffer_assignment_proto();

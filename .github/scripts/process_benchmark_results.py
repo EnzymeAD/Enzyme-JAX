@@ -4,13 +4,9 @@
 #     "absl-py",
 #     "numpy",
 #     "pandas",
-#     "tabulate",
-#     "seaborn",
-#     "matplotlib",
 # ]
 # ///
 
-import base64
 import collections
 import glob
 import os
@@ -18,11 +14,8 @@ import json
 import re
 import tempfile
 import zipfile
-from datetime import datetime, timezone
 
-import matplotlib.pyplot as plt
 import pandas as pd
-import seaborn as sns
 from absl import app, flags, logging
 
 _ARTIFACT_DIR = flags.DEFINE_string(
@@ -46,24 +39,47 @@ def get_machine_name(filename: str) -> str:
 
 def main(_) -> None:
     # unzip the outputs.zip
-    tempdir_results = tempfile.TemporaryDirectory(delete=False)
+    tempdir_results = tempfile.TemporaryDirectory()
     logging.info("Extracting outputs to %s", tempdir_results.name)
 
-    for file in glob.glob(f"{_ARTIFACT_DIR.value}/**/outputs.zip", recursive=True):
-        logging.info("Unzipping %s...", file)
-        machine_name = file.strip(f"{_ARTIFACT_DIR.value}/").split("/")[0]
+    zip_files = sorted(
+        glob.glob(
+            os.path.join(_ARTIFACT_DIR.value, "**", "outputs.zip"), recursive=True
+        )
+    )
+    logging.info("Found %d outputs.zip file(s)", len(zip_files))
 
+    for file in zip_files:
+        logging.info("Parsing zip: %s", file)
+
+        # Use the first path segment under artifact_dir as the machine bucket.
+        rel_dir = os.path.relpath(os.path.dirname(file), _ARTIFACT_DIR.value)
+        machine_name = (
+            rel_dir.split(os.sep, 1)[0] if rel_dir != os.curdir else "unknown"
+        )
+
+        extract_dir = os.path.join(tempdir_results.name, machine_name)
         with zipfile.ZipFile(file, "r") as zip_ref:
-            zip_ref.extractall(os.path.join(tempdir_results.name, machine_name))
+            zip_ref.extractall(extract_dir)
 
     # Merge the CSVs into a single dataframe
     combined_dfs = collections.defaultdict(list)
-    for file in glob.glob(f"{tempdir_results.name}/*/results_*.csv"):
-        machine_name = get_machine_name(os.path.basename(os.path.dirname(file)))
+    csv_files = sorted(
+        glob.glob(
+            os.path.join(tempdir_results.name, "**", "results_*.csv"), recursive=True
+        )
+    )
+    logging.info("Found %d results_*.csv file(s)", len(csv_files))
+
+    for file in csv_files:
+        logging.info("Parsing CSV: %s", file)
+        rel_csv = os.path.relpath(file, tempdir_results.name)
+        machine_name = rel_csv.split(os.sep, 1)[0]
         expt = os.path.basename(file).replace("results_", "").replace(".csv", "")
 
         df = pd.read_csv(file)
         df["machine"] = machine_name
+        df["experiment"] = expt
 
         combined_dfs[expt].append(df)
 
@@ -83,12 +99,12 @@ def main(_) -> None:
             "unit": "s",
             "value": row["Time"],
         }
-        for _, row in df.iterrows()
+        for _, row in dfs_merged.iterrows()
     ]
 
-    with open(_JSON_FILE.value, "w") as f:
+    with open(_JSON_FILE.value, "w", encoding="utf-8") as f:
         json.dump(records, f, indent=2)
 
 
 if __name__ == "__main__":
-    app.run(main)()
+    app.run(main)

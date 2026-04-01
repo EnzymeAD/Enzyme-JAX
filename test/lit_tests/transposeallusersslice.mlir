@@ -33,12 +33,12 @@ module {
 }
 
 // CHECK2: func.func @main(%arg0: tensor<6x4x2xf32>) -> tensor<1x2x3xf32> {
-// CHECK2-NEXT:    %0 = stablehlo.slice %arg0 [3:5, 1:4, 0:1] : (tensor<6x4x2xf32>) -> tensor<2x3x1xf32>
+// CHECK2-NEXT:    %0 = stablehlo.slice %arg0 [3:5, 0:3, 0:1] : (tensor<6x4x2xf32>) -> tensor<2x3x1xf32>
 // CHECK2-NEXT:    %1 = stablehlo.transpose %0, dims = [1, 2, 0] : (tensor<2x3x1xf32>) -> tensor<3x1x2xf32>
-// CHECK2-NEXT:    %2 = stablehlo.slice %arg0 [3:5, 0:3, 0:1] : (tensor<6x4x2xf32>) -> tensor<2x3x1xf32>
+// CHECK2-NEXT:    %2 = stablehlo.slice %arg0 [3:5, 1:4, 0:1] : (tensor<6x4x2xf32>) -> tensor<2x3x1xf32>
 // CHECK2-NEXT:    %3 = stablehlo.transpose %2, dims = [1, 2, 0] : (tensor<2x3x1xf32>) -> tensor<3x1x2xf32>
-// CHECK2-NEXT:    %4 = stablehlo.transpose %3, dims = [1, 2, 0] : (tensor<3x1x2xf32>) -> tensor<1x2x3xf32>
-// CHECK2-NEXT:    %5 = stablehlo.transpose %1, dims = [1, 2, 0] : (tensor<3x1x2xf32>) -> tensor<1x2x3xf32>
+// CHECK2-NEXT:    %4 = stablehlo.transpose %1, dims = [1, 2, 0] : (tensor<3x1x2xf32>) -> tensor<1x2x3xf32>
+// CHECK2-NEXT:    %5 = stablehlo.transpose %3, dims = [1, 2, 0] : (tensor<3x1x2xf32>) -> tensor<1x2x3xf32>
 // CHECK2-NEXT:    %6 = stablehlo.add %4, %5 : tensor<1x2x3xf32>
 // CHECK2-NEXT:    return %6 : tensor<1x2x3xf32>
 // CHECK2-NEXT: }

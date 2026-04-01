@@ -137,6 +137,10 @@ def : HLODerivative<"PolygammaOp", (Op $x, $n),
                     ]
                     >;
 
+def : HLODerivative<"LgammaOp", (Op $x),
+                    [(Mul (DiffeRet), (Digamma $x))]
+>;
+
 def : HLODerivative<"SinhOp", (Op $x), [(Mul (DiffeRet), (Cosh $x))]>;
 
 def : HLODerivative<"TanOp", (Op $x), [

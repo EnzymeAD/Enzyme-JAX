@@ -2,7 +2,7 @@
 #define ENZYMEXLA_LINALGUTILS_H
 
 #include "mlir/IR/Attributes.h"
-#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "mlir/IR/PatternMatch.h"
 #include "llvm/ADT/SmallVector.h"
 
 llvm::SmallVector<int64_t> columnMajorMatrixLayout(int64_t ndim);
@@ -17,6 +17,6 @@ mlir::ArrayAttr getSHLOLayout(mlir::PatternRewriter &rewriter,
                               llvm::SmallVector<bool> isColMajorArr,
                               int64_t maxNumDims);
 
-std::optional<std::string> lapack_precision_prefix(mlir::Type elementType);
+std::optional<std::string> lapackPrecisionPrefix(mlir::Type elementType);
 
 #endif // ENZYMEXLA_LINALGUTILS_H

@@ -18,7 +18,7 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
   }
 }
 
-// CHECK:  llvm.func @foo
+// CHECK:  llvm.func @foo(%arg0: i1, %arg1: i64, %arg2: i64, %arg3: i64, %arg4: i64, %arg5: i64, %arg6: i64, %arg7: i32, %arg8: i32, %arg9: i32, %arg10: !llvm.ptr, %arg11: i32, %arg12: i32, %arg13: !llvm.ptr, %arg14: f64, %arg15: i32, %arg16: !llvm.ptr, %arg17: f64) -> i64 {
 // CHECK-NEXT:    %0 = llvm.mlir.constant(0 : i64) : i64
 // CHECK-NEXT:    %1 = llvm.mlir.constant(32 : i64) : i64
 // CHECK-NEXT:    %2 = llvm.mlir.zero : !llvm.ptr
@@ -28,77 +28,76 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
 // CHECK-NEXT:    %6 = llvm.mlir.constant(0 : i32) : i32
 // CHECK-NEXT:    %7 = llvm.mlir.constant(1 : i64) : i64
 // CHECK-NEXT:    %8 = llvm.alloca %7 x i32 : (i64) -> !llvm.ptr
-// CHECK-NEXT:    %9 = llvm.alloca %5 x !llvm.struct<"", (i32, i32, i32, ptr, i32, i32, ptr, f64, i32, ptr, f64)> : (i32) -> !llvm.ptr
-// CHECK-NEXT:    %10 = llvm.alloca %4 x !llvm.ptr : (i32) -> !llvm.ptr
+// CHECK-NEXT:    %9 = llvm.alloca %5 x f64 : (i32) -> !llvm.ptr
+// CHECK-NEXT:    %10 = llvm.alloca %5 x !llvm.ptr : (i32) -> !llvm.ptr
+// CHECK-NEXT:    %11 = llvm.alloca %5 x i32 : (i32) -> !llvm.ptr
+// CHECK-NEXT:    %12 = llvm.alloca %5 x f64 : (i32) -> !llvm.ptr
+// CHECK-NEXT:    %13 = llvm.alloca %5 x !llvm.ptr : (i32) -> !llvm.ptr
+// CHECK-NEXT:    %14 = llvm.alloca %5 x i32 : (i32) -> !llvm.ptr
+// CHECK-NEXT:    %15 = llvm.alloca %5 x i32 : (i32) -> !llvm.ptr
+// CHECK-NEXT:    %16 = llvm.alloca %5 x !llvm.ptr : (i32) -> !llvm.ptr
+// CHECK-NEXT:    %17 = llvm.alloca %5 x i32 : (i32) -> !llvm.ptr
+// CHECK-NEXT:    %18 = llvm.alloca %5 x i32 : (i32) -> !llvm.ptr
+// CHECK-NEXT:    %19 = llvm.alloca %5 x i32 : (i32) -> !llvm.ptr
+// CHECK-NEXT:    %20 = llvm.alloca %4 x !llvm.ptr : (i32) -> !llvm.ptr
 // CHECK-NEXT:    llvm.br ^bb1
 // CHECK-NEXT:  ^bb1:  // pred: ^bb0
 // CHECK-NEXT:    llvm.cond_br %arg0, ^bb2, ^bb3
 // CHECK-NEXT:  ^bb2:  // pred: ^bb1
-// CHECK-NEXT:    %11 = llvm.getelementptr %9[0, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<"", (i32, i32, i32, ptr, i32, i32, ptr, f64, i32, ptr, f64)>
-// CHECK-NEXT:    llvm.store %arg7, %11 : i32, !llvm.ptr
-// CHECK-NEXT:    llvm.store %11, %10 : !llvm.ptr, !llvm.ptr
-// CHECK-NEXT:    %12 = llvm.getelementptr %9[0, 1] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<"", (i32, i32, i32, ptr, i32, i32, ptr, f64, i32, ptr, f64)>
-// CHECK-NEXT:    llvm.store %arg8, %12 : i32, !llvm.ptr
-// CHECK-NEXT:    %13 = llvm.getelementptr %10[1] : (!llvm.ptr) -> !llvm.ptr, !llvm.ptr
-// CHECK-NEXT:    llvm.store %12, %13 : !llvm.ptr, !llvm.ptr
-// CHECK-NEXT:    %14 = llvm.getelementptr %9[0, 2] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<"", (i32, i32, i32, ptr, i32, i32, ptr, f64, i32, ptr, f64)>
-// CHECK-NEXT:    llvm.store %arg9, %14 : i32, !llvm.ptr
-// CHECK-NEXT:    %15 = llvm.getelementptr %10[2] : (!llvm.ptr) -> !llvm.ptr, !llvm.ptr
-// CHECK-NEXT:    llvm.store %14, %15 : !llvm.ptr, !llvm.ptr
-// CHECK-NEXT:    %16 = llvm.getelementptr %9[0, 3] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<"", (i32, i32, i32, ptr, i32, i32, ptr, f64, i32, ptr, f64)>
+// CHECK-NEXT:    llvm.store %arg7, %19 : i32, !llvm.ptr
+// CHECK-NEXT:    llvm.store %19, %20 : !llvm.ptr, !llvm.ptr
+// CHECK-NEXT:    llvm.store %arg8, %18 : i32, !llvm.ptr
+// CHECK-NEXT:    %21 = llvm.getelementptr %20[1] : (!llvm.ptr) -> !llvm.ptr, !llvm.ptr
+// CHECK-NEXT:    llvm.store %18, %21 : !llvm.ptr, !llvm.ptr
+// CHECK-NEXT:    llvm.store %arg9, %17 : i32, !llvm.ptr
+// CHECK-NEXT:    %22 = llvm.getelementptr %20[2] : (!llvm.ptr) -> !llvm.ptr, !llvm.ptr
+// CHECK-NEXT:    llvm.store %17, %22 : !llvm.ptr, !llvm.ptr
 // CHECK-NEXT:    llvm.store %arg10, %16 : !llvm.ptr, !llvm.ptr
-// CHECK-NEXT:    %17 = llvm.getelementptr %10[3] : (!llvm.ptr) -> !llvm.ptr, !llvm.ptr
-// CHECK-NEXT:    llvm.store %16, %17 : !llvm.ptr, !llvm.ptr
-// CHECK-NEXT:    %18 = llvm.getelementptr %9[0, 4] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<"", (i32, i32, i32, ptr, i32, i32, ptr, f64, i32, ptr, f64)>
-// CHECK-NEXT:    llvm.store %arg11, %18 : i32, !llvm.ptr
-// CHECK-NEXT:    %19 = llvm.getelementptr %10[4] : (!llvm.ptr) -> !llvm.ptr, !llvm.ptr
-// CHECK-NEXT:    llvm.store %18, %19 : !llvm.ptr, !llvm.ptr
-// CHECK-NEXT:    %20 = llvm.getelementptr %9[0, 5] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<"", (i32, i32, i32, ptr, i32, i32, ptr, f64, i32, ptr, f64)>
-// CHECK-NEXT:    llvm.store %arg12, %20 : i32, !llvm.ptr
-// CHECK-NEXT:    %21 = llvm.getelementptr %10[5] : (!llvm.ptr) -> !llvm.ptr, !llvm.ptr
-// CHECK-NEXT:    llvm.store %20, %21 : !llvm.ptr, !llvm.ptr
-// CHECK-NEXT:    %22 = llvm.getelementptr %9[0, 6] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<"", (i32, i32, i32, ptr, i32, i32, ptr, f64, i32, ptr, f64)>
-// CHECK-NEXT:    llvm.store %arg13, %22 : !llvm.ptr, !llvm.ptr
-// CHECK-NEXT:    %23 = llvm.getelementptr %10[6] : (!llvm.ptr) -> !llvm.ptr, !llvm.ptr
-// CHECK-NEXT:    llvm.store %22, %23 : !llvm.ptr, !llvm.ptr
-// CHECK-NEXT:    %24 = llvm.getelementptr %9[0, 7] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<"", (i32, i32, i32, ptr, i32, i32, ptr, f64, i32, ptr, f64)>
-// CHECK-NEXT:    llvm.store %arg14, %24 : f64, !llvm.ptr
-// CHECK-NEXT:    %25 = llvm.getelementptr %10[7] : (!llvm.ptr) -> !llvm.ptr, !llvm.ptr
-// CHECK-NEXT:    llvm.store %24, %25 : !llvm.ptr, !llvm.ptr
-// CHECK-NEXT:    %26 = llvm.getelementptr %9[0, 8] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<"", (i32, i32, i32, ptr, i32, i32, ptr, f64, i32, ptr, f64)>
-// CHECK-NEXT:    llvm.store %arg15, %26 : i32, !llvm.ptr
-// CHECK-NEXT:    %27 = llvm.getelementptr %10[8] : (!llvm.ptr) -> !llvm.ptr, !llvm.ptr
-// CHECK-NEXT:    llvm.store %26, %27 : !llvm.ptr, !llvm.ptr
-// CHECK-NEXT:    %28 = llvm.getelementptr %9[0, 9] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<"", (i32, i32, i32, ptr, i32, i32, ptr, f64, i32, ptr, f64)>
-// CHECK-NEXT:    llvm.store %arg16, %28 : !llvm.ptr, !llvm.ptr
-// CHECK-NEXT:    %29 = llvm.getelementptr %10[9] : (!llvm.ptr) -> !llvm.ptr, !llvm.ptr
-// CHECK-NEXT:    llvm.store %28, %29 : !llvm.ptr, !llvm.ptr
-// CHECK-NEXT:    %30 = llvm.getelementptr %9[0, 10] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<"", (i32, i32, i32, ptr, i32, i32, ptr, f64, i32, ptr, f64)>
-// CHECK-NEXT:    llvm.store %arg17, %30 : f64, !llvm.ptr
-// CHECK-NEXT:    %31 = llvm.getelementptr %10[10] : (!llvm.ptr) -> !llvm.ptr, !llvm.ptr
-// CHECK-NEXT:    llvm.store %30, %31 : !llvm.ptr, !llvm.ptr
-// CHECK-NEXT:    %32 = llvm.trunc %arg1 : i64 to i32
-// CHECK-NEXT:    %33 = llvm.trunc %arg2 : i64 to i32
-// CHECK-NEXT:    %34 = llvm.trunc %arg3 : i64 to i32
+// CHECK-NEXT:    %23 = llvm.getelementptr %20[3] : (!llvm.ptr) -> !llvm.ptr, !llvm.ptr
+// CHECK-NEXT:    llvm.store %16, %23 : !llvm.ptr, !llvm.ptr
+// CHECK-NEXT:    llvm.store %arg11, %15 : i32, !llvm.ptr
+// CHECK-NEXT:    %24 = llvm.getelementptr %20[4] : (!llvm.ptr) -> !llvm.ptr, !llvm.ptr
+// CHECK-NEXT:    llvm.store %15, %24 : !llvm.ptr, !llvm.ptr
+// CHECK-NEXT:    llvm.store %arg12, %14 : i32, !llvm.ptr
+// CHECK-NEXT:    %25 = llvm.getelementptr %20[5] : (!llvm.ptr) -> !llvm.ptr, !llvm.ptr
+// CHECK-NEXT:    llvm.store %14, %25 : !llvm.ptr, !llvm.ptr
+// CHECK-NEXT:    llvm.store %arg13, %13 : !llvm.ptr, !llvm.ptr
+// CHECK-NEXT:    %26 = llvm.getelementptr %20[6] : (!llvm.ptr) -> !llvm.ptr, !llvm.ptr
+// CHECK-NEXT:    llvm.store %13, %26 : !llvm.ptr, !llvm.ptr
+// CHECK-NEXT:    llvm.store %arg14, %12 : f64, !llvm.ptr
+// CHECK-NEXT:    %27 = llvm.getelementptr %20[7] : (!llvm.ptr) -> !llvm.ptr, !llvm.ptr
+// CHECK-NEXT:    llvm.store %12, %27 : !llvm.ptr, !llvm.ptr
+// CHECK-NEXT:    llvm.store %arg15, %11 : i32, !llvm.ptr
+// CHECK-NEXT:    %28 = llvm.getelementptr %20[8] : (!llvm.ptr) -> !llvm.ptr, !llvm.ptr
+// CHECK-NEXT:    llvm.store %11, %28 : !llvm.ptr, !llvm.ptr
+// CHECK-NEXT:    llvm.store %arg16, %10 : !llvm.ptr, !llvm.ptr
+// CHECK-NEXT:    %29 = llvm.getelementptr %20[9] : (!llvm.ptr) -> !llvm.ptr, !llvm.ptr
+// CHECK-NEXT:    llvm.store %10, %29 : !llvm.ptr, !llvm.ptr
+// CHECK-NEXT:    llvm.store %arg17, %9 : f64, !llvm.ptr
+// CHECK-NEXT:    %30 = llvm.getelementptr %20[10] : (!llvm.ptr) -> !llvm.ptr, !llvm.ptr
+// CHECK-NEXT:    llvm.store %9, %30 : !llvm.ptr, !llvm.ptr
+// CHECK-NEXT:    %31 = llvm.trunc %arg1 : i64 to i32
+// CHECK-NEXT:    %32 = llvm.trunc %arg2 : i64 to i32
+// CHECK-NEXT:    %33 = llvm.trunc %arg3 : i64 to i32
+// CHECK-NEXT:    %34 = llvm.zext %31 : i32 to i64
 // CHECK-NEXT:    %35 = llvm.zext %32 : i32 to i64
-// CHECK-NEXT:    %36 = llvm.zext %33 : i32 to i64
-// CHECK-NEXT:    %37 = llvm.shl %36, %1 : i64
-// CHECK-NEXT:    %38 = llvm.or %35, %37 : i64
-// CHECK-NEXT:    %39 = llvm.trunc %arg4 : i64 to i32
-// CHECK-NEXT:    %40 = llvm.trunc %arg5 : i64 to i32
-// CHECK-NEXT:    %41 = llvm.trunc %arg6 : i64 to i32
+// CHECK-NEXT:    %36 = llvm.shl %35, %1 : i64
+// CHECK-NEXT:    %37 = llvm.or %34, %36 : i64
+// CHECK-NEXT:    %38 = llvm.trunc %arg4 : i64 to i32
+// CHECK-NEXT:    %39 = llvm.trunc %arg5 : i64 to i32
+// CHECK-NEXT:    %40 = llvm.trunc %arg6 : i64 to i32
+// CHECK-NEXT:    %41 = llvm.zext %38 : i32 to i64
 // CHECK-NEXT:    %42 = llvm.zext %39 : i32 to i64
-// CHECK-NEXT:    %43 = llvm.zext %40 : i32 to i64
-// CHECK-NEXT:    %44 = llvm.shl %43, %1 : i64
-// CHECK-NEXT:    %45 = llvm.or %42, %44 : i64
-// CHECK-NEXT:    %46 = llvm.call @cudaLaunchKernel(%3, %38, %34, %45, %41, %10, %0, %2) : (!llvm.ptr, i64, i32, i64, i32, !llvm.ptr, i64, !llvm.ptr) -> i32
-// CHECK-NEXT:    llvm.store %46, %8 : i32, !llvm.ptr
+// CHECK-NEXT:    %43 = llvm.shl %42, %1 : i64
+// CHECK-NEXT:    %44 = llvm.or %41, %43 : i64
+// CHECK-NEXT:    %45 = llvm.call @cudaLaunchKernel(%3, %37, %33, %44, %40, %20, %0, %2) : (!llvm.ptr, i64, i32, i64, i32, !llvm.ptr, i64, !llvm.ptr) -> i32
+// CHECK-NEXT:    llvm.store %45, %8 : i32, !llvm.ptr
 // CHECK-NEXT:    llvm.br ^bb3
 // CHECK-NEXT:  ^bb3:  // 2 preds: ^bb1, ^bb2
-// CHECK-NEXT:    %47 = llvm.load %8 : !llvm.ptr -> i32
-// CHECK-NEXT:    llvm.br ^bb4(%47 : i32)
-// CHECK-NEXT:  ^bb4(%48: i32):  // pred: ^bb3
+// CHECK-NEXT:    %46 = llvm.load %8 : !llvm.ptr -> i32
+// CHECK-NEXT:    llvm.br ^bb4(%46 : i32)
+// CHECK-NEXT:  ^bb4(%47: i32):  // pred: ^bb3
 // CHECK-NEXT:    llvm.store %6, %8 : i32, !llvm.ptr
-// CHECK-NEXT:    %49 = llvm.sext %48 : i32 to i64
-// CHECK-NEXT:    llvm.return %49 : i64
+// CHECK-NEXT:    %48 = llvm.sext %47 : i32 to i64
+// CHECK-NEXT:    llvm.return %48 : i64
 // CHECK-NEXT:  }

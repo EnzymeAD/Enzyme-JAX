@@ -40,7 +40,7 @@ def : ControlFlowOp<"stablehlo", "CaseOp", [{
                                MGradientUtils *gutils, Operation *original,
                                ValueRange remappedOperands,
                                TypeRange rettys) const {
-    return builder.create<stablehlo::CaseOp>(original->getLoc(), rettys,
+    return stablehlo::CaseOp::create(builder, original->getLoc(), rettys,
                                         remappedOperands, original->getAttrs(), cast<stablehlo::CaseOp>(op).getBranches().size());
   }
 }]>;

@@ -24,6 +24,7 @@
 
 #include "src/enzyme_ad/jax/RegistryUtils.h"
 #include "llvm/Support/TargetSelect.h"
+#include <system_error>
 
 #include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/NVVM/NVVMToLLVMIRTranslation.h"
@@ -61,8 +62,21 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
     exit(1);
   }
 
+  mlir::OpPrintingFlags flags;
+  if (getenv("DEBUG_REACTANT_INFO"))
+    flags.enableDebugInfo(true, /*pretty*/ false);
+  else
+    flags.enableDebugInfo(false, /*pretty*/ false);
+
+  if (auto path = getenv("DEBUG_REACTANT_IMPORTED_MLIR_MOD_PATH")) {
+    std::error_code EC;
+    llvm::raw_fd_ostream os(path, EC);
+    mod->print(os, flags);
+  }
   if (getenv("DEBUG_REACTANT")) {
-    llvm::errs() << " imported mlir mod: " << *mod << "\n";
+    llvm::errs() << " imported mlir mod: ";
+    mod->print(llvm::errs(), flags);
+    llvm::errs() << "\n";
   }
 
   using namespace llvm;
@@ -70,8 +84,13 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
   // clang-format off
   std::string pass_pipeline =
       "inline{default-pipeline=canonicalize "
-      "max-iterations=4},sroa-wrappers{set_private=false attributor=false},gpu-launch-"
-      "recognition,canonicalize,libdevice-funcs-raise,canonicalize,symbol-dce,";
+      "max-iterations=4},sroa-wrappers{set_private=false attributor=false},"
+      "lift-tessera-annotations,func-attr-to-tessera-attr,parse-optimization-rules,"
+      "gpu-launch-recognition{backend=";
+  pass_pipeline += backend;
+  pass_pipeline += "}";
+  pass_pipeline += ","
+      "canonicalize,libdevice-funcs-raise,canonicalize,symbol-dce,";
   
   if (backend == "cpu")
     pass_pipeline += "parallel-lower{wrapParallelOps=false},";
@@ -91,9 +110,9 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       "canonicalize,delinearize-indexing,canonicalize,simplify-affine-exprs,"
       "affine-cfg,canonicalize,llvm-to-affine-access,canonicalize,"
       "func.func(affine-loop-invariant-code-motion),"
-      "canonicalize,sort-memory,";
+      "canonicalize,sort-memory,llvm-to-tessera,tessera-apply-pdl,tessera-to-llvm,";
   if (StringRef(backend).starts_with("xla")) {
-      pass_pipeline += "raise-affine-to-stablehlo{prefer_while_raising=false "
+      pass_pipeline += "func.func(kernelcast),raise-affine-to-stablehlo{prefer_while_raising=false "
       "dump_failed_lockstep=true},canonicalize,arith-raise{stablehlo=true},"
       "symbol-dce";
       if (outfile.size() && getenv("EXPORT_REACTANT")) {
@@ -112,9 +131,15 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       if (outfile.size() && getenv("EXPORT_REACTANT")) {
         pass_pipeline += "print{filename="+outfile+".mlir},";
       }
-      pass_pipeline += "symbol-dce,enzyme,lower-affine";
-      if (backend != "cpu")
-	pass_pipeline += ",convert-parallel-to-gpu1,gpu-kernel-outlining,canonicalize,convert-parallel-to-gpu2,lower-affine";
+      pass_pipeline += "symbol-dce,enzyme,remove-unnecessary-enzyme-ops,lower-affine";
+      if (backend == "rocm")
+        pass_pipeline += ",convert-cudart-to-hiprt";
+      if (backend != "cpu") {
+        pass_pipeline += ",convert-parallel-to-gpu1,gpu-kernel-outlining,canonicalize,convert-parallel-to-gpu2{backend=";
+        pass_pipeline += backend;
+        pass_pipeline += "}";
+        pass_pipeline += ",lower-affine";
+      }
       if (getenv("REACTANT_OMP")) {
         pass_pipeline += ",convert-scf-to-openmp,";
       } else {
@@ -162,7 +187,9 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
   }
 
   if (getenv("DEBUG_REACTANT")) {
-    llvm::errs() << " final mlir mod: " << *mod << "\n";
+    llvm::errs() << " final mlir mod: ";
+    mod->print(llvm::errs(), flags);
+    llvm::errs() << "\n";
   }
 
   llvm::LLVMContext llvmContext;

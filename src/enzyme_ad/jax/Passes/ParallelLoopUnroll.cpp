@@ -121,8 +121,8 @@ static LogicalResult generateUnrolledInterleavedLoop(
             for (unsigned i = 0; i < unrollFactor; i++)
               dstYieldArgs.push_back(
                   operandMap[i].lookupOrDefault(yieldOperand));
-          OpBuilder::atBlockEnd(dstBlock).create<scf::YieldOp>(
-              srcYieldOp.getLoc(), dstYieldArgs);
+          OpBuilder builder = OpBuilder::atBlockEnd(dstBlock);
+          scf::YieldOp::create(builder, srcYieldOp.getLoc(), dstYieldArgs);
         };
         auto interleaveOp = [&](Operation *op) {
           // An operation can be recursively interleaved if its control flow is
@@ -137,8 +137,8 @@ static LogicalResult generateUnrolledInterleavedLoop(
               for (unsigned i = 0; i < unrollFactor; i++)
                 dstIterOperands.push_back(
                     operandMap[i].lookupOrDefault(iterOperand));
-            auto dstForOp = builder.create<scf::ForOp>(
-                forOp.getLoc(),
+            auto dstForOp = scf::ForOp::create(
+                builder, forOp.getLoc(),
                 operandMap[0].lookupOrDefault(forOp.getLowerBound()),
                 operandMap[0].lookupOrDefault(forOp.getUpperBound()),
                 operandMap[0].lookupOrDefault(forOp.getStep()),
@@ -177,8 +177,8 @@ static LogicalResult generateUnrolledInterleavedLoop(
             for (auto result : ifOp.getResults())
               for (unsigned i = 0; i < unrollFactor; i++)
                 dstResultTypes.push_back(result.getType());
-            auto dstIfOp = builder.create<scf::IfOp>(
-                ifOp.getLoc(), dstResultTypes,
+            auto dstIfOp = scf::IfOp::create(
+                builder, ifOp.getLoc(), dstResultTypes,
                 operandMap[0].lookupOrDefault(ifOp.getCondition()), hasElse);
             for (unsigned j = 0; j < ifOp.getNumResults(); j++) {
               for (unsigned i = 0; i < unrollFactor; i++) {
@@ -301,10 +301,10 @@ static Value ceilDivPositive(OpBuilder &builder, Location loc, Value dividend,
                              Value divisor) {
   assert(dividend.getType().isIndex() && "expected index-typed value");
 
-  Value cstOne = builder.create<arith::ConstantIndexOp>(loc, 1);
-  Value divisorMinusOne = builder.create<arith::SubIOp>(loc, divisor, cstOne);
-  Value sum = builder.create<arith::AddIOp>(loc, dividend, divisorMinusOne);
-  return builder.create<arith::DivUIOp>(loc, sum, divisor);
+  Value cstOne = arith::ConstantIndexOp::create(builder, loc, 1);
+  Value divisorMinusOne = arith::SubIOp::create(builder, loc, divisor, cstOne);
+  Value sum = arith::AddIOp::create(builder, loc, dividend, divisorMinusOne);
+  return arith::DivUIOp::create(builder, loc, sum, divisor);
 }
 
 /// Unrolls 'pop' by 'unrollFactor', returns success if the loop is unrolled.
@@ -329,7 +329,7 @@ LogicalResult mlir::enzymexla::scfParallelUnrollByFactor(
   auto loc = pop.getLoc();
   OpBuilder builder(pop);
   Value unrollFactorCst =
-      builder.create<arith::ConstantIndexOp>(loc, unrollFactor);
+      arith::ConstantIndexOp::create(builder, loc, unrollFactor);
   Value upperBoundUnrolled = nullptr;
   Value remUnrolled = nullptr;
   std::optional<int64_t> remUnrolledCst = {};
@@ -357,8 +357,8 @@ LogicalResult mlir::enzymexla::scfParallelUnrollByFactor(
     if (upperBoundUnrolledCst == 0)
       return failure();
     upperBoundUnrolled =
-        builder.create<arith::ConstantIndexOp>(loc, upperBoundUnrolledCst);
-    remUnrolled = builder.create<arith::ConstantIndexOp>(loc, upperBoundRem);
+        arith::ConstantIndexOp::create(builder, loc, upperBoundUnrolledCst);
+    remUnrolled = arith::ConstantIndexOp::create(builder, loc, upperBoundRem);
     remUnrolledCst = upperBoundRem;
   } else if (lbCstOp && !ubCstOp && stepCstOp) {
     int64_t lbCst = lbCstOp.value();
@@ -371,10 +371,10 @@ LogicalResult mlir::enzymexla::scfParallelUnrollByFactor(
     auto upperBound = pop.getUpperBound()[dim];
     // auto step = pop.getStep()[dim];
     upperBoundUnrolled =
-        builder.create<arith::DivSIOp>(loc, upperBound, unrollFactorCst);
+        arith::DivSIOp::create(builder, loc, upperBound, unrollFactorCst);
     // TODO what do we do if we dont generateEpilogueLoop but remUnrolled != 0 ?
     remUnrolled =
-        builder.create<arith::RemSIOp>(loc, upperBound, unrollFactorCst);
+        arith::RemSIOp::create(builder, loc, upperBound, unrollFactorCst);
   } else {
     assert(0);
     return failure();
@@ -382,20 +382,20 @@ LogicalResult mlir::enzymexla::scfParallelUnrollByFactor(
 
   auto ub = getUpperBounds(pop);
   ub[dim] = upperBoundUnrolled;
-  auto dstPop = builder.create<scf::ParallelOp>(
-      pop->getLoc(), pop.getLowerBound(), ub, pop.getStep());
+  auto dstPop = scf::ParallelOp::create(builder, pop->getLoc(),
+                                        pop.getLowerBound(), ub, pop.getStep());
   scf::ParallelOp epiloguePop = nullptr;
 
   if (generateEpilogueLoop && (!remUnrolledCst || *remUnrolledCst != 0)) {
-    auto mainLoopTrips =
-        builder.create<arith::MulIOp>(loc, upperBoundUnrolled, unrollFactorCst);
+    auto mainLoopTrips = arith::MulIOp::create(builder, loc, upperBoundUnrolled,
+                                               unrollFactorCst);
     epiloguePop = cast<scf::ParallelOp>(builder.clone(*pop));
     // TODO more robust way to set the upper bound
     epiloguePop->setOperand(pop.getUpperBound().size() + dim, remUnrolled);
     OpBuilder::InsertionGuard _(builder);
     builder.setInsertionPointToStart(epiloguePop.getBody());
     auto oldIV = epiloguePop.getBody()->getArgument(dim);
-    auto newIV = builder.create<arith::AddIOp>(loc, mainLoopTrips, oldIV);
+    auto newIV = arith::AddIOp::create(builder, loc, mainLoopTrips, oldIV);
     oldIV.replaceAllUsesExcept(newIV, newIV);
   } else {
     // TODO throw runtime error if rem != 0 or should we expect the caller of
@@ -409,14 +409,14 @@ LogicalResult mlir::enzymexla::scfParallelUnrollByFactor(
           // upperBoundUnrolled = upperBound / unrollFactor;
           // iv(i) = iv + upperBoundUnrolled * i
           auto base =
-              b.create<arith::MulIOp>(loc, upperBoundUnrolled,
-                                      b.create<arith::ConstantIndexOp>(loc, i));
-          return b.create<arith::AddIOp>(loc, base, iv);
+              arith::MulIOp::create(b, loc, upperBoundUnrolled,
+                                    arith::ConstantIndexOp::create(b, loc, i));
+          return arith::AddIOp::create(b, loc, base, iv);
         } else {
           // iv(i) = iv * unrollFactor + i
-          auto base = b.create<arith::MulIOp>(loc, iv, unrollFactorCst);
-          return b.create<arith::AddIOp>(
-              loc, base, b.create<arith::ConstantIndexOp>(loc, i));
+          auto base = arith::MulIOp::create(b, loc, iv, unrollFactorCst);
+          return arith::AddIOp::create(
+              b, loc, base, arith::ConstantIndexOp::create(b, loc, i));
         }
       });
   if (res.succeeded()) {

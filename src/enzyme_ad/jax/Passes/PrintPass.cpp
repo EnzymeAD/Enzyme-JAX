@@ -46,9 +46,11 @@ struct PrintPass : public enzyme::impl::PrintPassBase<PrintPass> {
     } else if (use_stdout) {
       getOperation()->print(llvm::outs(), flags);
       llvm::outs() << "\n";
+      llvm::outs().flush();
     } else {
       getOperation()->print(llvm::errs(), flags);
       llvm::errs() << "\n";
+      llvm::errs().flush();
     }
   }
 };

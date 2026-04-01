@@ -89,6 +89,20 @@ struct LLVMToMemrefAccessPass
             if (auto rtt = dyn_cast<RankedTensorType>(callerArgTy)) {
               auto thisShape = rtt.getShape();
               auto thisElTy = rtt.getElementType();
+
+              if (isa<FloatType>(thisElTy)) {
+                auto targetFloatType =
+                    callee->getAttrOfType<TypeAttr>("enzymexla.float_type");
+                if (targetFloatType) {
+                  if (thisElTy != targetFloatType.getValue()) {
+                    sameElementTypeAcrossCallers = false;
+                  } else {
+                    // NOTE: make this configurable?
+                    thisElTy = mlir::Float32Type::get(thisElTy.getContext());
+                  }
+                }
+              }
+
               if (!elTy) {
                 elTy = thisElTy;
                 shape = thisShape;
@@ -158,15 +172,15 @@ struct LLVMToMemrefAccessPass
           auto newType = newTypes[index];
           auto oldArg = callee.getArgument(index);
           auto newArg = entry->insertArgument(index, newType, oldArg.getLoc());
-          auto newPtr = builder.create<enzymexla::Memref2PointerOp>(
-              newArg.getLoc(), oldArg.getType(), newArg);
+          auto newPtr = enzymexla::Memref2PointerOp::create(
+              builder, newArg.getLoc(), oldArg.getType(), newArg);
           oldArg.replaceAllUsesWith(newPtr);
           entry->eraseArgument(index + 1);
         }
 
         builder.setInsertionPoint(callee);
-        auto newFunc = builder.create<func::FuncOp>(
-            callee.getLoc(), callee.getName(), newFuncTy);
+        auto newFunc = func::FuncOp::create(builder, callee.getLoc(),
+                                            callee.getName(), newFuncTy);
         newFunc.getBlocks().splice(newFunc.getBlocks().begin(),
                                    callee.getFunctionBody().getBlocks());
 

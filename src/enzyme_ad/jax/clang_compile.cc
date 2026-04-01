@@ -162,9 +162,8 @@ static TargetMachine *GetTargetMachine(llvm::Triple TheTriple, StringRef CPUStr,
   }
 
   return TheTarget->createTargetMachine(
-      TheTriple.getTriple(), codegen::getCPUStr(), codegen::getFeaturesStr(),
-      Options, codegen::getExplicitRelocModel(),
-      codegen::getExplicitCodeModel(), level);
+      TheTriple, codegen::getCPUStr(), codegen::getFeaturesStr(), Options,
+      codegen::getExplicitRelocModel(), codegen::getExplicitCodeModel(), level);
 }
 
 std::unique_ptr<llvm::Module>
@@ -481,7 +480,8 @@ struct tensor<T, n0, N...>
   fuseFS->pushOverlay(fs);
   fuseFS->pushOverlay(baseFS);
 
-  Clang->createFileManager(fuseFS);
+  Clang->createVirtualFileSystem(fuseFS);
+  Clang->createFileManager();
 
   bool Success = CompilerInvocation::CreateFromArgs(
       Clang->getInvocation(), Argv.getArguments(), Diags, binary);
@@ -489,11 +489,10 @@ struct tensor<T, n0, N...>
   // Infer the builtin include path if unspecified.
   if (Clang->getHeaderSearchOpts().UseBuiltinIncludes &&
       Clang->getHeaderSearchOpts().ResourceDir.empty())
-    Clang->getHeaderSearchOpts().ResourceDir =
-        CompilerInvocation::GetResourcesPath(binary, /*MainAddr*/ 0x0);
+    Clang->getHeaderSearchOpts().ResourceDir = clang::GetResourcesPath(binary);
 
   // Create the actual diagnostics engine.
-  Clang->createDiagnostics(*fuseFS);
+  Clang->setDiagnostics(Clang->createDiagnostics(*fuseFS, DiagOpts));
   if (!Clang->hasDiagnostics()) {
     llvm::errs() << " failed create diag\n";
     return {};
@@ -506,7 +505,6 @@ struct tensor<T, n0, N...>
 
   DiagsBuffer->FlushDiagnostics(Clang->getDiagnostics());
   if (!Success) {
-    Clang->getDiagnosticClient().finish();
     llvm::errs() << " failed diag\n";
     return {};
   }

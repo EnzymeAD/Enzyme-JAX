@@ -25,11 +25,8 @@ module @reactant_vector_... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
 }
 
 // CHECK:  func.func private @"fwddiffe4Const{typeof(fn)}(Main.fn)_autodiff"(%arg0: tensor<2x2xf32>, %arg1: tensor<4x2x2xf32>) -> (tensor<4xf32>, tensor<2x2xf32>, tensor<4x2x2xf32>) {
-// CHECK-NEXT:    %cst = stablehlo.constant dense<0.000000e+00> : tensor<f32>
-// CHECK-NEXT:    %0 = stablehlo.transpose %arg1, dims = [0, 2, 1] : (tensor<4x2x2xf32>) -> tensor<4x2x2xf32>
-// CHECK-NEXT:    %1 = stablehlo.broadcast_in_dim %arg0, dims = [2, 1] : (tensor<2x2xf32>) -> tensor<4x2x2xf32>
-// CHECK-NEXT:    %2 = stablehlo.multiply %0, %1 : tensor<4x2x2xf32>
-// CHECK-NEXT:    %3 = stablehlo.add %2, %2 : tensor<4x2x2xf32>
-// CHECK-NEXT:    %4 = stablehlo.reduce(%3 init: %cst) applies stablehlo.add across dimensions = [1, 2] : (tensor<4x2x2xf32>, tensor<f32>) -> tensor<4xf32>
-// CHECK-NEXT:    return %4, %arg0, %arg1 : tensor<4xf32>, tensor<2x2xf32>, tensor<4x2x2xf32>
+// CHECK-NEXT:    %0 = stablehlo.broadcast_in_dim %arg0, dims = [2, 1] : (tensor<2x2xf32>) -> tensor<4x2x2xf32>
+// CHECK-NEXT:    %1 = stablehlo.add %0, %0 : tensor<4x2x2xf32>
+// CHECK-NEXT:    %2 = stablehlo.dot_general %arg1, %1, batching_dims = [0] x [0], contracting_dims = [2, 1] x [1, 2] : (tensor<4x2x2xf32>, tensor<4x2x2xf32>) -> tensor<4xf32>
+// CHECK-NEXT:    return %2, %arg0, %arg1 : tensor<4xf32>, tensor<2x2xf32>, tensor<4x2x2xf32>
 // CHECK-NEXT:  }

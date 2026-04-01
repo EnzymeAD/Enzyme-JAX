@@ -25,7 +25,7 @@ module {
 // CHECK-NEXT:      affine.if #set(%arg1, %arg2) {
 // CHECK-NEXT:        %1 = "enzymexla.pointer2memref"(%0) : (!llvm.ptr) -> memref<?xf32>
 // CHECK-NEXT:        affine.store %cst, %1[0] {alignment = 4 : i64, ordering = 5 : i64} : memref<?xf32>
-// CHECK-NEXT:        "llvm.intr.trap"() : () -> ()
+// CHECK-NEXT:        llvm.intr.trap
 // CHECK-NEXT:      }
 // CHECK-NEXT:    }
 // CHECK-NEXT:    return

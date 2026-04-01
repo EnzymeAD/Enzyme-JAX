@@ -9,8 +9,8 @@ func.func @conj(%arg0: tensor<5x3x4xf32>) -> tensor<4x5x3xcomplex<f32>> {
 }
 
 // CHECK: func.func @conj(%arg0: tensor<5x3x4xf32>) -> tensor<4x5x3xcomplex<f32>> {
-// CHECK-NEXT:     %cst = stablehlo.constant dense<-1.000000e+00> : tensor<4x5x3xf32>
-// CHECK-NEXT:     %0 = stablehlo.transpose %arg0, dims = [2, 0, 1] : (tensor<5x3x4xf32>) -> tensor<4x5x3xf32>
-// CHECK-NEXT:     %1 = stablehlo.complex %0, %cst : tensor<4x5x3xcomplex<f32>>
+// CHECK-NEXT:     %cst = stablehlo.constant dense<-1.000000e+00> : tensor<5x3x4xf32>
+// CHECK-NEXT:     %0 = stablehlo.complex %arg0, %cst : tensor<5x3x4xcomplex<f32>>
+// CHECK-NEXT:     %1 = stablehlo.transpose %0, dims = [2, 0, 1] : (tensor<5x3x4xcomplex<f32>>) -> tensor<4x5x3xcomplex<f32>>
 // CHECK-NEXT:     return %1 : tensor<4x5x3xcomplex<f32>>
 // CHECK-NEXT: }

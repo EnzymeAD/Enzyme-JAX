@@ -77,8 +77,14 @@ static void set_default_ulong(struct isl_arg *arg, void *opt)
 static void set_default_str(struct isl_arg *arg, void *opt)
 {
 	const char *str = NULL;
-	if (arg->u.str.default_value)
-		str = strdup(arg->u.str.default_value);
+	if (arg->u.str.default_value) {
+         const char* s = arg->u.str.default_value;
+         size_t len = strlen(s);
+         char* ret = (char*)(malloc(len + 1));
+         memcpy(ret, s, len);
+         ret[len] = '\0';
+         str = ret;
+	}
 	*(const char **)(((char *)opt) + arg->offset) = str;
 }
 

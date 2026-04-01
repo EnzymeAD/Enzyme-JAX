@@ -14,9 +14,9 @@ module {
 }
 
 // CHECK:  func.func @main(%arg0: tensor<100x200x300xbf16>, %arg1: tensor<100x200x300xbf16>) -> tensor<20000x300xbf16> {
-// CHECK-NEXT:    %0 = stablehlo.reshape %arg0 : (tensor<100x200x300xbf16>) -> tensor<20000x300xbf16>
-// CHECK-NEXT:    %1 = stablehlo.reshape %arg1 : (tensor<100x200x300xbf16>) -> tensor<20000x300xbf16>
-// CHECK-NEXT:    %2 = stablehlo.subtract %0, %1 : tensor<20000x300xbf16>
+// CHECK-NEXT:    %0 = stablehlo.reshape %arg1 : (tensor<100x200x300xbf16>) -> tensor<20000x300xbf16>
+// CHECK-NEXT:    %1 = stablehlo.reshape %arg0 : (tensor<100x200x300xbf16>) -> tensor<20000x300xbf16>
+// CHECK-NEXT:    %2 = stablehlo.subtract %1, %0 : tensor<20000x300xbf16>
 // CHECK-NEXT:    return %2 : tensor<20000x300xbf16>
 // CHECK-NEXT:  }
 // CHECK:  func.func @main2(%arg0: tensor<100x200x300xbf16>) -> tensor<20000x300xf32> {

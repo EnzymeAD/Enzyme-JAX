@@ -101,3 +101,26 @@ module {
     return
   }
 }
+
+// -----
+
+// CHECK: affine_set<(d0, d1) : (d1 - 3 >= 0, -d1 + 8 >= 0)>
+
+module {
+  func.func private @foo(%arg0: memref<26x40xf64, 1>) {
+    %false = arith.constant false
+    %true = arith.constant true
+    %cst = arith.constant 3.000000e+00 : f64
+    %cst_0 = arith.constant 1.000000e+02 : f64
+    affine.parallel (%arg1, %arg2, %arg3) = (0, 0, 0) to (10, 16, 2) {
+        %1 = affine.if affine_set<(d0, d1) : (d1 + d0 floordiv 2 - 3 >= 0, -d1 - d0 floordiv 2 + 8 >= 0)>(%arg3, %arg1) -> i1 {
+          affine.yield %true : i1
+        } else {
+          affine.yield %false : i1
+        }
+        %3 = arith.select %1, %cst_0, %cst : f64
+        affine.store %3, %arg0[%arg1, %arg3 * 16 + %arg2] : memref<26x40xf64, 1>
+    }
+    return
+  }
+}

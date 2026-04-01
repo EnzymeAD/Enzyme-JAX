@@ -93,16 +93,6 @@ struct RemoveDuplicateFuncDefPass
         [&](SymbolUserOpInterface callOp) { callOps.push_back(callOp); });
 
     for (SymbolUserOpInterface symbolUserOp : callOps) {
-      if (auto kernelOp =
-              dyn_cast<enzymexla::KernelCallOp>(symbolUserOp.getOperation())) {
-        auto sym = kernelOp.getFn();
-        Operation *op = symbolTable.lookup(sym);
-        assert(op && "Kernel function not found");
-        auto funcOp = dyn_cast<FunctionOpInterface>(op);
-        assert(funcOp && "Kernel function is not a function");
-        if (equivalenceMap.count(funcOp.getNameAttr()))
-          kernelOp.setFn(equivalenceMap[funcOp.getNameAttr()]);
-      }
       if (auto callOp =
               dyn_cast<CallOpInterface>(symbolUserOp.getOperation())) {
         SymbolRefAttr sym = llvm::dyn_cast_if_present<SymbolRefAttr>(

@@ -16,6 +16,6 @@ module {
 // NONAN-NEXT:  }
 
 // NAN:  func.func @main(%arg0: tensor<3x4xf64>) -> tensor<3x4xf64> {
-// NAN-NEXT:    %0 = stablehlo.subtract %arg0, %arg0 : tensor<3x4xf64>
+// NAN-NEXT:    %0 = stablehlo.subtract %arg0, %arg0 {enzymexla.no_nan = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<3x4xf64>
 // NAN-NEXT:    return %0 : tensor<3x4xf64>
 // NAN-NEXT:  }

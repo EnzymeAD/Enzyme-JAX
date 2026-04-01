@@ -14,7 +14,7 @@ module {
 
     %4 = stablehlo.dynamic_update_slice %arg26, %arg58, %c_204 : (tensor<1xf64>, tensor<1xf64>, tensor<i32>) -> tensor<1xf64>
 
-    %23315:2 = stablehlo.while(%iterArg = %c_216, %iterArg_537 = %arg18) : tensor<i64>, tensor<1xf64> attributes {enzymexla.disable_min_cut, enzymexla.enable_checkpointing = true}
+    %23315:2 = stablehlo.while(%iterArg = %c_216, %iterArg_537 = %arg18) : tensor<i64>, tensor<1xf64> attributes {enzyme.disable_mincut, enzymexla.enable_checkpointing = true}
      cond {
       %69678 = stablehlo.compare  LT, %iterArg, %c_214 : (tensor<i64>, tensor<i64>) -> tensor<i1>
       stablehlo.return %69678 : tensor<i1>

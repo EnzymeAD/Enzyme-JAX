@@ -49,6 +49,10 @@ def ApplyReplaceNegAddWithSubtract: EnzymeHLOPatternOp<
     "replace_neg_add_with_subtract"> {
   let patterns = ["ReplaceNegAddWithSubtract"];
 }
+def ApplyReplaceSubtractNegWithAdd: EnzymeHLOPatternOp<
+    "replace_subtract_neg_with_add"> {
+  let patterns = ["ReplaceSubtractNegWithAdd"];
+}
 def ApplySubSimplifyPatterns : EnzymeHLOPatternOp<
     "sub_simplify"> {
   let patterns = ["SubSimplify"];
@@ -241,6 +245,26 @@ def ApplyTanConstProp : EnzymeHLOPatternOp<
     "tan_const_prop">{
   let patterns = ["UnaryConstProp<stablehlo::TanOp,stablehlo::tanOp>"];
 }
+def ApplyReluConstProp : EnzymeHLOPatternOp<
+    "relu_const_prop">{
+  let patterns = ["UnaryConstProp<enzymexla::ReluOp,reluOp>"];
+}
+def ApplyGeluConstProp : EnzymeHLOPatternOp<
+    "gelu_const_prop">{
+  let patterns = ["GeluConstProp"];
+}
+def ApplyTGammaConstProp : EnzymeHLOPatternOp<
+    "tgamma_const_prop">{
+  let patterns = ["TGammaConstProp"];
+}
+def ApplyLGammaConstProp : EnzymeHLOPatternOp<
+    "lgamma_const_prop">{
+  let patterns = ["LGammaConstProp", "CHLOLGammaConstProp"];
+}
+def ApplySoftplusConstProp : EnzymeHLOPatternOp<
+    "softplus_const_prop">{
+  let patterns = ["UnaryConstProp<enzymexla::SoftplusOp,softplusOp>"];
+}
 def SignAbsSimplifyPatterns : EnzymeHLOPatternOp<
     "sign_abs_simplify"> {
   let patterns = ["SignAbsSimplify"];
@@ -273,9 +297,17 @@ def ApplySliceOfDynamicUpdatePatterns : EnzymeHLOPatternOp<
     "slice_of_dynamic_update"> {
   let patterns = ["SliceOfDynamicUpdate"];
 }
+def ApplySliceOfUpdateWithoutCornersPatterns : EnzymeHLOPatternOp<
+    "slice_of_updatewithoutcorners"> {
+  let patterns = ["SliceOfUpdateWithoutCorners"];
+}
 def ApplySliceElementwisePatterns : EnzymeHLOPatternOp<
     "slice_elementwise"> {
   let patterns = ["SliceElementwise"];
+}
+def ApplyDynamicSliceElementwisePatterns : EnzymeHLOPatternOp<
+    "dynamic_slice_elementwise"> {
+  let patterns = ["DynamicSliceElementwise"];
 }
 def ApplySlicePadPatterns : EnzymeHLOPatternOp<
     "slice_pad"> {
@@ -285,6 +317,10 @@ def ApplyPadReduceWindowPatterns : EnzymeHLOPatternOp<
     "pad_reduce_window"> {
   let patterns = ["PadReduceWindow"];
 }
+def ApplyReduceWindowWrapSimplify : EnzymeHLOPatternOp<
+    "reduce_window_wrap"> {
+  let patterns = ["ReduceWindowWrapSimplify"];
+}
 def ApplyConvolutionPadPatterns : EnzymeHLOPatternOp<
     "convolution_pad"> {
   let patterns = ["ConvolutionPad"];
@@ -292,6 +328,10 @@ def ApplyConvolutionPadPatterns : EnzymeHLOPatternOp<
 def ReshapeEmptyBroadcastPatterns : EnzymeHLOPatternOp<
     "reshape_empty_broadcast"> {
   let patterns = ["ReshapeEmptyBroadcast"];
+}
+def ReshapeBroadcastPatterns : EnzymeHLOPatternOp<
+    "reshape_broadcast"> {
+  let patterns = ["ReshapeBroadcast"];
 }
 def ApplySliceReshapePadPatterns : EnzymeHLOPatternOp<
     "slice_reshape_pad"> {
@@ -303,6 +343,20 @@ def ApplyDotReshapeDotPatterns : EnzymeHLOPatternOp<
 }
 def ApplyConcatConstPropPatterns : EnzymeHLOParameterizedPatternOp<
     "concat_const_prop"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, I64Attr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getI64IntegerAttr(1024)))};
+    }
+  }];
+}
+def ApplyScatterConstFoldPatterns : EnzymeHLOParameterizedPatternOp<
+    "scatter_const_fold"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, I64Attr:$parameter);
   let assemblyFormat = "attr-dict";
   // TODO: this should be made better searchable.
@@ -336,6 +390,10 @@ def ApplyConcatFusePatterns : EnzymeHLOPatternOp<
 def ApplyPadPadPatterns : EnzymeHLOPatternOp<
     "pad_pad"> {
   let patterns = ["PadPad"];
+}
+def ApplyRecognizeMultiPadPatterns : EnzymeHLOPatternOp<
+    "recognize_multi_pad"> {
+  let patterns = ["RecognizeMultiPad"];
 }
 def ApplyScatterToDynamicUpdateSlicePatterns : EnzymeHLOPatternOp<
     "scatter_to_dynamic_update_slice"> {
@@ -403,7 +461,11 @@ def ApplyFullReduceReshapeOrTransposePatterns : EnzymeHLOPatternOp<
 }
 def ApplySliceTransposePatterns : EnzymeHLOPatternOp<
     "slice_transpose"> {
-  let patterns = ["SliceTranspose"];
+  let patterns = ["SliceTransposeBase<stablehlo::SliceOp>"];
+}
+def ApplyDynamicSliceTransposePatterns : EnzymeHLOPatternOp<
+    "dynamic_slice_transpose"> {
+  let patterns = ["SliceTransposeBase<stablehlo::DynamicSliceOp>"];
 }
 def ApplySliceBroadcastPatterns : EnzymeHLOPatternOp<
     "slice_broadcast"> {
@@ -585,8 +647,38 @@ def ApplyNoNanZeroBasePowSimplify : EnzymeHLOParameterizedPatternOp<
   }];
 }
 
+def ApplyTransposeSymmetricSimplify : EnzymeHLOPatternOp<
+    "transpose_symmetric_simplify"> {
+  let patterns = ["TransposeSymmetricSimplify"];
+}
+
+def ApplyTransposePartialSymmetrySimplify : EnzymeHLOPatternOp<
+    "transpose_partial_symmetry_simplify"> {
+  let patterns = ["TransposePartialSymmetrySimplify"];
+}
+
+def ApplyFactorScalarsInDotGeneral : EnzymeHLOPatternOp<
+    "factor_scalars_in_dot_general"> {
+  let patterns = ["FactorScalarsInDotGeneral"];
+}
+
 def ApplyTransposeElementwisePatterns : EnzymeHLOParameterizedPatternOp<
     "transpose_elementwise"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(true)))};
+    }
+  }];
+}
+
+def ApplyTransposeLikeBroadcastElementwisePatterns : EnzymeHLOParameterizedPatternOp<
+    "transpose_like_broadcast_elementwise"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
   let assemblyFormat = "attr-dict";
   // TODO: this should be made better searchable.
@@ -625,49 +717,9 @@ def ApplyBinBroadcastSplatMulPatterns : EnzymeHLOPatternOp<
   let patterns = ["BinBroadcastSplat<stablehlo::MulOp>"];
 }
 
-def ApplyBinaryOpTransposeSimplifyAddPatterns : EnzymeHLOPatternOp<
-    "binary_op_transpose_simplify_add"> {
-  let patterns = ["BinaryOpTransposeSimplify<stablehlo::AddOp>"];
-}
-def ApplyBinaryOpTransposeSimplifySubPatterns : EnzymeHLOPatternOp<
-    "binary_op_transpose_simplify_sub"> {
-  let patterns = ["BinaryOpTransposeSimplify<stablehlo::SubtractOp>"];
-}
-def ApplyBinaryOpTransposeSimplifyMulPatterns : EnzymeHLOPatternOp<
-    "binary_op_transpose_simplify_mul"> {
-  let patterns = ["BinaryOpTransposeSimplify<stablehlo::MulOp>"];
-}
-def ApplyBinaryOpTransposeSimplifyDivPatterns : EnzymeHLOPatternOp<
-    "binary_op_transpose_simplify_div"> {
-  let patterns = ["BinaryOpTransposeSimplify<stablehlo::DivOp>"];
-}
-def ApplyBinaryOpTransposeSimplifyMinPatterns : EnzymeHLOPatternOp<
-    "binary_op_transpose_simplify_min"> {
-  let patterns = ["BinaryOpTransposeSimplify<stablehlo::MinOp>"];
-}
-def ApplyBinaryOpTransposeSimplifyMaxPatterns : EnzymeHLOPatternOp<
-    "binary_op_transpose_simplify_max"> {
-  let patterns = ["BinaryOpTransposeSimplify<stablehlo::MaxOp>"];
-}
-def ApplyBinaryOpTransposeSimplifyPowPatterns : EnzymeHLOPatternOp<
-    "binary_op_transpose_simplify_pow"> {
-  let patterns = ["BinaryOpTransposeSimplify<stablehlo::PowOp>"];
-}
-def ApplyBinaryOpTransposeSimplifyAndPatterns : EnzymeHLOPatternOp<
-    "binary_op_transpose_simplify_and"> {
-  let patterns = ["BinaryOpTransposeSimplify<stablehlo::AndOp>"];
-}
-def ApplyBinaryOpTransposeSimplifyOrPatterns : EnzymeHLOPatternOp<
-    "binary_op_transpose_simplify_or"> {
-  let patterns = ["BinaryOpTransposeSimplify<stablehlo::OrOp>"];
-}
-def ApplyBinaryOpTransposeSimplifyXorPatterns : EnzymeHLOPatternOp<
-    "binary_op_transpose_simplify_xor"> {
-  let patterns = ["BinaryOpTransposeSimplify<stablehlo::XorOp>"];
-}
-def ApplyBinaryOpTransposeSimplifyRemPatterns : EnzymeHLOPatternOp<
-    "binary_op_transpose_simplify_rem"> {
-  let patterns = ["BinaryOpTransposeSimplify<stablehlo::RemOp>"];
+def ApplyElementwiseAllTransposeOperandsSimplifyPatterns : EnzymeHLOPatternOp<
+    "elementwise_all_transpose_operands_simplify"> {
+  let patterns = ["ElementwiseAllTransposeOperandsSimplify"];
 }
 
 def  AssociativeCommonMulOpReorderingPatterns : EnzymeHLOPatternOp<
@@ -678,81 +730,17 @@ def  AssociativeCommonMulOpReorderingPatterns : EnzymeHLOPatternOp<
 
 def ApplyAssociativeBinaryOpReorderingPatterns : EnzymeHLOPatternOp<
     "associative_binary_op_reordering"> {
-  let patterns = ["AssociativeBinaryOpReordering<stablehlo::AddOp>",
-                  "AssociativeBinaryOpReordering<stablehlo::MulOp>",
-                  "AssociativeBinaryOpReordering<stablehlo::MinOp>",
-                  "AssociativeBinaryOpReordering<stablehlo::MaxOp>",
-                  "AssociativeBinaryOpReordering<stablehlo::AndOp>",
-                  "AssociativeBinaryOpReordering<stablehlo::OrOp>",
-                  "AssociativeBinaryOpReordering<stablehlo::XorOp>"];
+  let patterns = ["AssociativeBinaryOpReordering"];
 }
 
 def ApplyCommonAssociativeCommutativeOpReorderPatterns : EnzymeHLOPatternOp<
     "common_associative_commutative_op_reorder"> {
-  let patterns = ["CommonAssociativeCommutativeOpReorder<stablehlo::AddOp>",
-                  "CommonAssociativeCommutativeOpReorder<stablehlo::MulOp>",
-                  "CommonAssociativeCommutativeOpReorder<stablehlo::MinOp>",
-                  "CommonAssociativeCommutativeOpReorder<stablehlo::MaxOp>",
-                  "CommonAssociativeCommutativeOpReorder<stablehlo::AndOp>",
-                  "CommonAssociativeCommutativeOpReorder<stablehlo::OrOp>",
-                  "CommonAssociativeCommutativeOpReorder<stablehlo::XorOp>"];
+  let patterns = ["CommonAssociativeCommutativeOpReorder"];
 }
 
-def ApplyTransposeUnaryTransposeAbsPatterns : EnzymeHLOPatternOp<
-    "transpose_unary_transpose_abs"> {
-  let patterns = ["TransposeUnaryTransposeSimplify<stablehlo::AbsOp>"];
-}
-def ApplyTransposeUnaryTransposeNegPatterns : EnzymeHLOPatternOp<
-    "transpose_unary_transpose_neg"> {
-  let patterns = ["TransposeUnaryTransposeSimplify<stablehlo::NegOp>"];
-}
-def ApplyTransposeUnaryTransposeSqrtPatterns : EnzymeHLOPatternOp<
-    "transpose_unary_transpose_sqrt"> {
-  let patterns = ["TransposeUnaryTransposeSimplify<stablehlo::SqrtOp>"];
-}
-def ApplyTransposeUnaryTransposeRsqrtPatterns : EnzymeHLOPatternOp<
-    "transpose_unary_transpose_rsqrt"> {
-  let patterns = ["TransposeUnaryTransposeSimplify<stablehlo::RsqrtOp>"];
-}
-def ApplyTransposeUnaryTransposeCeilPatterns : EnzymeHLOPatternOp<
-    "transpose_unary_transpose_ceil"> {
-  let patterns = ["TransposeUnaryTransposeSimplify<stablehlo::CeilOp>"];
-}
-def ApplyTransposeUnaryTransposeConvertPatterns : EnzymeHLOPatternOp<
-    "transpose_unary_transpose_convert"> {
-  let patterns = ["TransposeUnaryTransposeSimplify<stablehlo::ConvertOp>"];
-}
-def ApplyTransposeUnaryTransposeCosinePatterns : EnzymeHLOPatternOp<
-    "transpose_unary_transpose_cosine"> {
-  let patterns = ["TransposeUnaryTransposeSimplify<stablehlo::CosineOp>"];
-}
-def ApplyTransposeUnaryTransposeExpPatterns : EnzymeHLOPatternOp<
-    "transpose_unary_transpose_exp"> {
-  let patterns = ["TransposeUnaryTransposeSimplify<stablehlo::ExpOp>"];
-}
-def ApplyTransposeUnaryTransposeExpm1Patterns : EnzymeHLOPatternOp<
-    "transpose_unary_transpose_expm1"> {
-  let patterns = ["TransposeUnaryTransposeSimplify<stablehlo::Expm1Op>"];
-}
-def ApplyTransposeUnaryTransposeLogPatterns : EnzymeHLOPatternOp<
-    "transpose_unary_transpose_log"> {
-  let patterns = ["TransposeUnaryTransposeSimplify<stablehlo::LogOp>"];
-}
-def ApplyTransposeUnaryTransposeLog1pPatterns : EnzymeHLOPatternOp<
-    "transpose_unary_transpose_log1p"> {
-  let patterns = ["TransposeUnaryTransposeSimplify<stablehlo::Log1pOp>"];
-}
-def ApplyTransposeUnaryTransposeSignPatterns : EnzymeHLOPatternOp<
-    "transpose_unary_transpose_sign"> {
-  let patterns = ["TransposeUnaryTransposeSimplify<stablehlo::SignOp>"];
-}
-def ApplyTransposeUnaryTransposeSinePatterns : EnzymeHLOPatternOp<
-    "transpose_unary_transpose_sine"> {
-  let patterns = ["TransposeUnaryTransposeSimplify<stablehlo::SineOp>"];
-}
-def ApplyTransposeUnaryTransposeTanhPatterns : EnzymeHLOPatternOp<
-    "transpose_unary_transpose_tanh"> {
-  let patterns = ["TransposeUnaryTransposeSimplify<stablehlo::TanhOp>"];
+def ApplyTransposeElementwiseTransposeAbsPatterns : EnzymeHLOPatternOp<
+    "transpose_elementwise_transpose"> {
+  let patterns = ["TransposeElementwiseTransposeSimplify"];
 }
 
 def TransposeBroadcastInDimToBroadcastInDimPatterns : EnzymeHLOPatternOp<
@@ -903,6 +891,12 @@ def ApplyCSEAbsPatterns : EnzymeHLOPatternOp<
     "cse_abs"> {
   let patterns = ["CSE<stablehlo::AbsOp>"];
 }
+
+def ApplyCSEUpdateWithoutCornersPatterns : EnzymeHLOPatternOp<
+    "cse_updatewithoutcorners"> {
+  let patterns = ["CSE<enzymexla::UpdateWithoutCornersOp>"];
+}
+
 def ApplyCSEWrapPatterns : EnzymeHLOPatternOp<
     "cse_wrap"> {
   let patterns = ["CSE<enzymexla::WrapOp>"];
@@ -914,6 +908,38 @@ def ApplyCSERotatePatterns : EnzymeHLOPatternOp<
 def ApplyCSEExtendPatterns : EnzymeHLOPatternOp<
     "cse_extend"> {
   let patterns = ["CSE<enzymexla::ExtendOp>"];
+}
+
+def ApplyCSEGatherPatterns : EnzymeHLOPatternOp<
+    "cse_gather"> {
+  let patterns = ["CSE<stablehlo::GatherOp>"];
+}
+def ApplyCSEScatterPatterns : EnzymeHLOPatternOp<
+    "cse_scatter"> {
+  let patterns = ["CSE<stablehlo::ScatterOp>"];
+}
+def ApplyCSEComparePatterns : EnzymeHLOPatternOp<
+    "cse_compare"> {
+  let patterns = ["CSE<stablehlo::CompareOp>"];
+}
+def ApplyCSESelectPatterns : EnzymeHLOPatternOp<
+    "cse_select"> {
+  let patterns = ["CSE<stablehlo::SelectOp>"];
+}
+
+def ApplyCSERealPatterns : EnzymeHLOPatternOp<
+    "cse_real"> {
+  let patterns = ["CSE<stablehlo::RealOp>"];
+}
+
+def ApplyCSEImagPatterns : EnzymeHLOPatternOp<
+    "cse_imag"> {
+  let patterns = ["CSE<stablehlo::ImagOp>"];
+}
+
+def ApplyCSEConjPatterns : EnzymeHLOPatternOp<
+    "cse_conj"> {
+  let patterns = ["CSE<chlo::ConjOp>"];
 }
 
 def CompareAbs : EnzymeHLOPatternOp<
@@ -1006,6 +1032,11 @@ def ConjComplexNegatePatterns : EnzymeHLOPatternOp<
   let patterns = ["ConjComplexNegate"];
 }
 
+def NegateImagConjPatterns : EnzymeHLOPatternOp<
+    "negate_imag_conj"> {
+  let patterns = ["NegateImagConj"];
+}
+
 def GetDimensionSizeOpCanonPatterns : EnzymeHLOPatternOp<
     "get_dimension_size_op_canon"> {
   let patterns = ["GetDimensionSizeOpCanon"];
@@ -1014,6 +1045,11 @@ def GetDimensionSizeOpCanonPatterns : EnzymeHLOPatternOp<
 def GatherOpCanonPatterns : EnzymeHLOPatternOp<
     "gather_op_canon"> {
   let patterns = ["GatherOpCanon"];
+}
+
+def ScatterOpCanonPatterns : EnzymeHLOPatternOp<
+    "scatter_op_canon"> {
+  let patterns = ["ScatterOpCanon"];
 }
 
 def ReshapeOpCanonPatterns : EnzymeHLOPatternOp<
@@ -1094,6 +1130,66 @@ def ApplyWhileLICMPatterns : EnzymeHLOParameterizedPatternOp<
 
 def ApplySliceLICMPatterns : EnzymeHLOParameterizedPatternOp<
     "slice_licm"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(true)))};
+    }
+  }];
+}
+
+def ApplyDotGeneralLICMPatterns : EnzymeHLOParameterizedPatternOp<
+    "dot_general_licm"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(true)))};
+    }
+  }];
+}
+
+def ApplyReverseLICMPatterns : EnzymeHLOParameterizedPatternOp<
+    "reverse_licm"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(true)))};
+    }
+  }];
+}
+
+def ApplyReduceLICMPatterns : EnzymeHLOParameterizedPatternOp<
+    "reduce_licm"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(true)))};
+    }
+  }];
+}
+
+def ApplyReduceWindowLICMPatterns : EnzymeHLOParameterizedPatternOp<
+    "reduce_window_licm"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
   let assemblyFormat = "attr-dict";
   // TODO: this should be made better searchable.
@@ -1212,6 +1308,126 @@ def ApplyTransposeLICMPatterns : EnzymeHLOParameterizedPatternOp<
   }];
 }
 
+def ApplyConvolutionLICMPatterns : EnzymeHLOParameterizedPatternOp<
+    "convolution_licm"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(true)))};
+    }
+  }];
+}
+
+def ApplyDynamicSliceLICMPatterns : EnzymeHLOParameterizedPatternOp<
+    "dynamic_slice_licm"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(true)))};
+    }
+  }];
+}
+
+def ApplyGatherLICMPatterns : EnzymeHLOParameterizedPatternOp<
+    "gather_licm"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(true)))};
+    }
+  }];
+}
+
+def ApplyScatterLICMPatterns : EnzymeHLOParameterizedPatternOp<
+    "scatter_licm"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(true)))};
+    }
+  }];
+}
+
+def ApplyIotaLICMPatterns : EnzymeHLOParameterizedPatternOp<
+    "iota_licm"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(true)))};
+    }
+  }];
+}
+
+def ApplyRotateLICMPatterns : EnzymeHLOParameterizedPatternOp<
+    "rotate_licm"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(true)))};
+    }
+  }];
+}
+
+def ApplyWrapLICMPatterns : EnzymeHLOParameterizedPatternOp<
+    "wrap_licm"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(true)))};
+    }
+  }];
+}
+
+def ApplyExtendLICMPatterns : EnzymeHLOParameterizedPatternOp<
+    "extend_licm"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(true)))};
+    }
+  }];
+}
+
 def SelectCompIotaConstSimplify : EnzymeHLOPatternOp<
     "select_comp_iota_const_simplify"> {
   let patterns = ["SelectCompIotaConstSimplify"];
@@ -1290,6 +1506,30 @@ def ApplySliceReshapeDotGeneralPatterns : EnzymeHLOPatternOp<
 def ApplySliceReshapeSlicePatterns : EnzymeHLOPatternOp<
     "slice_reshape_slice"> {
   let patterns = ["SliceReshapeSlice"];
+}
+def ApplyDynamicSliceReshapeDynamicSlicePatterns : EnzymeHLOPatternOp<
+    "dynamic_slice_reshape_dynamic_slice"> {
+  let patterns = ["DynamicSliceReshapeDynamicSlice"];
+}
+def ApplySliceReshapeDynamicSlicePatterns : EnzymeHLOPatternOp<
+    "slice_reshape_dynamic_slice"> {
+  let patterns = ["SliceReshapeDynamicSlice"];
+}
+def ApplyDynamicSliceReshapeSlicePatterns : EnzymeHLOPatternOp<
+    "dynamic_slice_reshape_slice"> {
+  let patterns = ["DynamicSliceReshapeSlice"];
+}
+def ApplyDynamicSliceDynamicSlicePatterns : EnzymeHLOPatternOp<
+    "dynamic_slice_dynamic_slice"> {
+  let patterns = ["DynamicSliceDynamicSlice"];
+}
+def ApplyDynamicSliceSlicePatterns : EnzymeHLOPatternOp<
+    "dynamic_slice_slice"> {
+  let patterns = ["DynamicSliceSlice"];
+}
+def ApplySliceDynamicSlicePatterns : EnzymeHLOPatternOp<
+    "slice_dynamic_slice"> {
+  let patterns = ["SliceDynamicSlice"];
 }
 def ConcatToBroadcastPatterns : EnzymeHLOPatternOp<
     "concat_to_broadcast"> {
@@ -1373,6 +1613,18 @@ def CompareIotaConstSimplifyPatterns : EnzymeHLOPatternOp<
   let patterns = ["CompareIotaConstSimplify"];
 }
 
+def MinMaxIotaConstSimplifyPatterns : EnzymeHLOPatternOp<
+  "min_max_iota_const_simplify"
+> {
+  let patterns = ["MinMaxIotaConstSimplify<stablehlo::MaxOp>", "MinMaxIotaConstSimplify<stablehlo::MinOp>"];
+}
+
+def ClampIotaConstSimplifyPatterns : EnzymeHLOPatternOp<
+  "clamp_iota_const_simplify"
+> {
+  let patterns = ["ClampIotaConstSimplify"];
+}
+
 def CompareNegateConstSimplifyPatterns : EnzymeHLOPatternOp<
   "compare_negate_const_simplify"
 > {
@@ -1424,13 +1676,25 @@ def TransposeWhilePatterns : EnzymeHLOPatternOp<
 def TransposeSlicePatterns : EnzymeHLOPatternOp<
   "transpose_slice"
 > {
-  let patterns = ["TransposeSlice"];
+  let patterns = ["TransposeSliceBase<stablehlo::SliceOp>"];
 }
 
 def TransposeDynamicSlicePatterns : EnzymeHLOPatternOp<
   "transpose_dynamic_slice"
 > {
-  let patterns = ["TransposeDynamicSlice"];
+  let patterns = ["TransposeSliceBase<stablehlo::DynamicSliceOp>"];
+}
+
+def TransposeLikeBroadcastSlicePatterns : EnzymeHLOPatternOp<
+  "transpose_like_broadcast_slice"
+> {
+  let patterns = ["TransposeLikeBroadcastSliceBase<stablehlo::SliceOp>"];
+}
+
+def TransposeLikeBroadcastDynamicSlicePatterns : EnzymeHLOPatternOp<
+  "transpose_like_broadcast_dynamic_slice"
+> {
+  let patterns = ["TransposeLikeBroadcastSliceBase<stablehlo::DynamicSliceOp>"];
 }
 
 def TransposeReshapeToBroadcastPatterns : EnzymeHLOPatternOp<
@@ -1501,8 +1765,38 @@ def ApplyReshapeSlicePatterns : EnzymeHLOParameterizedPatternOp<
   }];
 }
 
+def ApplyReshapeDynamicSlicePatterns : EnzymeHLOParameterizedPatternOp<
+    "reshape_dynamic_slice"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(true)))};
+    }
+  }];
+}
+
 def ApplyReshapeElementwisePatterns : EnzymeHLOParameterizedPatternOp<
     "reshape_elementwise"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(true)))};
+    }
+  }];
+}
+
+def ApplyReshapeElementwiseOnlyFusiblePatterns : EnzymeHLOParameterizedPatternOp<
+    "reshape_elementwise_only_fusible"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
   let assemblyFormat = "attr-dict";
   // TODO: this should be made better searchable.
@@ -1531,6 +1825,11 @@ def ReshapeReduceWindowPatterns : EnzymeHLOPatternOp<
 def WhileDUS : EnzymeHLOPatternOp<
     "while_dus"> {
   let patterns = ["WhileDUS"];
+}
+
+def WhileUpdateWithoutCorners : EnzymeHLOPatternOp<
+    "while_updatewithoutcorners"> {
+  let patterns = ["WhileUpdateWithoutCorners"];
 }
 
 def DUSSliceSimplify : EnzymeHLOPatternOp<
@@ -1563,6 +1862,16 @@ def DUSToConcat : EnzymeHLOPatternOp<
   let patterns = ["DUSToConcat"];
 }
 
+def DUSDUSToDUSExtend : EnzymeHLOPatternOp<
+    "dusdus_to_dusextend"> {
+  let patterns = ["DUSDUSToDUSExtend"];
+}
+
+def DUSDUSToDUSPad : EnzymeHLOPatternOp<
+    "dusdus_to_duspad"> {
+  let patterns = ["DUSDUSToDUSPad"];
+}
+
 def DUSConcat : EnzymeHLOPatternOp<
     "dus_concat"> {
   let patterns = ["DUSConcat"];
@@ -1586,6 +1895,16 @@ def ConcatConcatToDUS : EnzymeHLOPatternOp<
 def WhileInductionReduction : EnzymeHLOPatternOp<
     "while_induction_reduction"> {
   let patterns = ["WhileInductionReduction"];
+}
+
+def SinkDUS : EnzymeHLOPatternOp<
+    "sink_dus"> {
+  let patterns = ["SinkDUS"];
+}
+
+def HoistSlice : EnzymeHLOPatternOp<
+    "hoist_slice"> {
+  let patterns = ["HoistSlice"];
 }
 
 def WhileRepeatedInductionReduction : EnzymeHLOPatternOp<
@@ -1654,6 +1973,20 @@ def SumToReduceWindow : EnzymeHLOPatternOp<
 // benefit 65k + max_constant_expansion flag
 def ApplyIotaSimplifyPatterns : EnzymeHLOParameterizedPatternOp<
     "iota_simplify"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, I64Attr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getI64IntegerAttr(1024)))};
+    }
+  }];
+}
+def ApplyRecognizeFromConstantPatterns : EnzymeHLOParameterizedPatternOp<
+    "recognize_from_constant"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, I64Attr:$parameter);
   let assemblyFormat = "attr-dict";
   // TODO: this should be made better searchable.
@@ -1771,14 +2104,29 @@ def LowerCommRegion : EnzymeHLOPatternOp<
   let patterns = ["LowerCommRegion"];
 }
 
+def RecognizeUpdateWithoutCorners : EnzymeHLOPatternOp<
+    "recognize_updatewithoutcorners"> {
+  let patterns = ["RecognizeUpdateWithoutCorners"];
+}
+
 def RecognizeRotate : EnzymeHLOPatternOp<
     "recognize_rotate"> {
   let patterns = ["RecognizeRotate"];
 }
 
+def LowerUpdateWithoutCorners : EnzymeHLOPatternOp<
+    "lower_updatewithoutcorners"> {
+  let patterns = ["LowerUpdateWithoutCorners"];
+}
+
 def LowerRotate : EnzymeHLOPatternOp<
     "lower_rotate"> {
   let patterns = ["LowerRotate"];
+}
+
+def LowerPiecewiseSelect : EnzymeHLOPatternOp<
+    "lower_piecewise_select"> {
+  let patterns = ["LowerPiecewiseSelect"];
 }
 
 def RecognizeWrap : EnzymeHLOPatternOp<
@@ -1867,6 +2215,16 @@ def SimplifyRotate : EnzymeHLOPatternOp<
   let patterns = ["SimplifyBoundary<enzymexla::RotateOp>"];
 }
 
+def ExtendPad : EnzymeHLOPatternOp<
+  "extend_pad"> {
+  let patterns = ["ExtendPad"];
+}
+
+def ExtendToBroadcast : EnzymeHLOPatternOp<
+  "extend_to_broadcast"> {
+  let patterns = ["ExtendToBroadcast"];
+}
+
 def SliceExtend : EnzymeHLOPatternOp<
   "slice_extend"> {
   let patterns = ["SliceExtend"];
@@ -1910,6 +2268,51 @@ def TransposeExtend : EnzymeHLOPatternOp<
 def TransposeRotate : EnzymeHLOPatternOp<
     "transpose_rotate"> {
   let patterns = ["TransposeRotate"];
+}
+
+def RecognizeMultiSlice : EnzymeHLOPatternOp<
+    "recognize_multislice"> {
+  let patterns = ["RecognizeMultiSlice"];
+}
+
+def RecognizeMultiPad : EnzymeHLOPatternOp<
+    "recognize_multipad"> {
+  let patterns = ["RecognizeMultiPad"];
+}
+
+def ReduceUnusedMultiSlice : EnzymeHLOPatternOp<
+    "reduce_unused_multislice"> {
+  let patterns = ["ReduceUnusedMultiSlice"];
+}
+
+def LowerMultiSlice : EnzymeHLOPatternOp<
+    "lower_multislice"> {
+  let patterns = ["LowerMultiSlice"];
+}
+
+def LowerMultiPad : EnzymeHLOPatternOp<
+    "lower_multipad"> {
+  let patterns = ["LowerMultiPad"];
+}
+
+def RecognizeMultiRotate : EnzymeHLOPatternOp<
+    "recognize_multirotate"> {
+  let patterns = ["RecognizeMultiRotate"];
+}
+
+def LowerMultiRotate : EnzymeHLOPatternOp<
+    "lower_multirotate"> {
+  let patterns = ["LowerMultiRotate"];
+}
+    
+def ReduceUnusedMultiRotate : EnzymeHLOPatternOp<
+    "reduce_unused_multirotate"> {
+  let patterns = ["ReduceUnusedMultiRotate"];
+}
+
+def UseMultiRotateNeutralResult : EnzymeHLOPatternOp<
+    "use_multirotate_neutral_result"> {
+  let patterns = ["UseMultiRotateNeutralResult"];
 }
 
 def SelectPad : EnzymeHLOPatternOp<
@@ -2072,9 +2475,26 @@ def ApplyRealConjSimplifyPatterns : EnzymeHLOPatternOp<
   let patterns = ["RealConjSimplify"];
 }
 
+def ApplyRealConvertSimplifyPatterns : EnzymeHLOPatternOp<
+    "real_convert_simplify"> {
+  let patterns = ["RealConvertSimplify"];
+}
+
 def ApplyConjComplexSimplifyPatterns : EnzymeHLOPatternOp<
     "conj_complex_simplify"> {
   let patterns = ["ConjComplexSimplify"];
+}
+
+// TODO: remove this pattern once we have deleted it from Reactant.
+//       ConjReal now performs a detailed analysis that covers this case.
+def ApplyConjConvertSimplifyPatterns : EnzymeHLOPatternOp<
+    "conj_convert_simplify"> {
+  let patterns = ["ConjReal"];
+}
+
+def ApplyElementwiseComplexSimplifyPatterns : EnzymeHLOPatternOp<
+    "elementwise_complex_simplify"> {
+  let patterns = ["ElementwiseComplexSimplify"];
 }
 
 def ApplyAddConstPropPatterns : EnzymeHLOPatternOp<
@@ -2143,6 +2563,24 @@ def ApplyScatterMultiplySimplify : EnzymeHLOPatternOp<"scatter_multiply_simplify
   ];
 }
 
+def ApplyScatterAddSimplify : EnzymeHLOPatternOp<"scatter_add_simplify"> {
+  let patterns = [
+    "ScatterAddSimplify"
+  ];
+}
+
+def ApplyScatterSubSimplify : EnzymeHLOPatternOp<"scatter_sub_simplify"> {
+  let patterns = [
+    "ScatterSubSimplify"
+  ];
+}
+
+def ApplyScatterDivSimplify : EnzymeHLOPatternOp<"scatter_div_simplify"> {
+  let patterns = [
+    "ScatterDivSimplify"
+  ];
+}
+
 def ApplyGatherConstProp : EnzymeHLOPatternOp<"gather_const_prop"> {
   let patterns = [
     "GatherConstProp"
@@ -2158,6 +2596,9 @@ def ApplyUnaryElementwiseScatterSimplify : EnzymeHLOPatternOp<"unary_elementwise
 def ApplyGatherElementwise : EnzymeHLOPatternOp<"gather_elementwise"> {
   let patterns = ["GatherElementwise"];
 }
+def ApplyElementwiseGather : EnzymeHLOPatternOp<"elementwise_gather"> {
+  let patterns = ["ElementwiseGather"];
+}
 
 def ApplyChainedMultiplyToPower : EnzymeHLOPatternOp<"chained_multiply_to_power"> {
   let patterns = ["ChainedMultiplyToPower"];
@@ -2171,12 +2612,21 @@ def ApplyLogSimplify : EnzymeHLOPatternOp<"log_simplify"> {
   let patterns = ["LogSimplify"];
 }
 
+def ApplyExponentialMinusOneFuse : EnzymeHLOPatternOp<"exponential_minus_one_fuse"> {
+  let patterns = ["ExponentialMinusOneFuse", "ExponentialMinusOneAddFuse"];
+}
+
 def ApplyNegMulConstSimplify : EnzymeHLOPatternOp<"neg_mul_const_simplify"> {
   let patterns = ["NegMulConstSimplify"];
 }
 
 def ApplyNegDivConstSimplify : EnzymeHLOPatternOp<"neg_div_const_simplify"> {
   let patterns = ["NegDivConstSimplify"];
+}
+
+def ApplyNegatedConstantMulFactoring : EnzymeHLOPatternOp<"negated_constant_mul_factoring"> {
+  let patterns = ["NegatedConstantMulFactoring<stablehlo::AddOp>",
+                  "NegatedConstantMulFactoring<stablehlo::SubtractOp>"];
 }
 
 def ApplyReshapeDeletionsBroadcastInDimSimplify : EnzymeHLOPatternOp<"reshape_deletions_broadcast_in_dim_simplify"> {
@@ -2215,6 +2665,10 @@ def ApplyConcatenateSubtractToSubtractPadPatterns : EnzymeHLOPatternOp<"concaten
   let patterns = ["ConcatenateSubtractToSubtractPad"];
 }
 
+def ApplyConcatenateAddToAddPadPatterns : EnzymeHLOPatternOp<"concatenate_add_to_add_pad"> {
+  let patterns = ["ConcatenateAddToAddPad"];
+}
+
 def ApplyConcatenateBroadcastInDimPatterns : EnzymeHLOPatternOp<"concatenate_broadcast_in_dim"> {
   let patterns = ["ConcatenateBroadcastInDim"];
 }
@@ -2231,38 +2685,8 @@ def ApplyElementwiseExtendPatterns : EnzymeHLOPatternOp<"elementwise_extend"> {
   let patterns = ["ElementwiseExtend"];
 }
 
-def ApplyConcatInsertDimDotGeneralPatterns : EnzymeHLOPatternOp<
-    "concat_insert_dim_dot_general"> {
-  let patterns = ["ConcatInsertDimToBatch<stablehlo::DotGeneralOp>"];
-}
-
-def ApplyConcatInsertDimGatherPatterns : EnzymeHLOPatternOp<
-    "concat_insert_dim_gather"> {
-  let patterns = ["ConcatInsertDimToBatch<stablehlo::GatherOp>"];
-}
-
-def ApplyConcatInsertDimIotaPatterns : EnzymeHLOPatternOp<
-    "concat_insert_dim_iota"> {
-  let patterns = ["ConcatInsertDimToBatch<stablehlo::IotaOp>"];
-}
-
 def ApplySubtractMultiplyConstToAddMulConstPatterns : EnzymeHLOPatternOp<"subtract_multiply_const_to_add_mul_const"> {
   let patterns = ["SubtractMultiplyConstToAddMulConst"];
-}
-
-def ApplyConcatInsertDimReducePatterns : EnzymeHLOPatternOp<
-    "concat_insert_dim_reduce"> {
-  let patterns = ["ConcatInsertDimToBatch<stablehlo::ReduceOp>"];
-}
-
-def ApplyConcatInsertDimSortPatterns : EnzymeHLOPatternOp<
-    "concat_insert_dim_sort"> {
-  let patterns = ["ConcatInsertDimToBatch<stablehlo::SortOp>"];
-}
-
-def ApplyConcatInsertDimReduceWindowPatterns : EnzymeHLOPatternOp<
-    "concat_insert_dim_reduce_window"> {
-  let patterns = ["ConcatInsertDimToBatch<stablehlo::ReduceWindowOp>"];
 }
 
 def ApplyDotGeneralAddDistributiveSimplifyPatterns : EnzymeHLOPatternOp<
@@ -2337,4 +2761,359 @@ def ApplyMinReduceSliceFusionPatterns : EnzymeHLOPatternOp<
 def ApplyMaxReduceSliceFusionPatterns : EnzymeHLOPatternOp<
     "max_reduce_slice_fusion"> {
   let patterns = ["MaxReduceSliceFusion"];
+}
+def ApplyAndReduceSliceFusionPatterns : EnzymeHLOPatternOp<
+    "and_reduce_slice_fusion"> {
+  let patterns = ["AndReduceSliceFusion"];
+}
+def ApplyOrReduceSliceFusionPatterns : EnzymeHLOPatternOp<
+    "or_reduce_slice_fusion"> {
+  let patterns = ["OrReduceSliceFusion"];
+}
+def ApplyXorReduceSliceFusionPatterns : EnzymeHLOPatternOp<
+    "xor_reduce_slice_fusion"> {
+  let patterns = ["XorReduceSliceFusion"];
+}
+
+def ApplyConcatInsertDimDotGeneralPatterns : EnzymeHLOPatternOp<
+    "concat_insert_dim_dot_general"> {
+  let patterns = ["ConcatInsertDimToBatch<stablehlo::DotGeneralOp>"];
+}
+def ApplyConcatInsertDimGatherPatterns : EnzymeHLOPatternOp<
+    "concat_insert_dim_gather"> {
+  let patterns = ["ConcatInsertDimToBatch<stablehlo::GatherOp>"];
+}
+def ApplyConcatInsertDimIotaPatterns : EnzymeHLOPatternOp<
+    "concat_insert_dim_iota"> {
+  let patterns = ["ConcatInsertDimToBatch<stablehlo::IotaOp>"];
+}
+def ApplyConcatInsertDimReducePatterns : EnzymeHLOPatternOp<
+    "concat_insert_dim_reduce"> {
+  let patterns = ["ConcatInsertDimToBatchReduceLike<stablehlo::ReduceOp>"];
+}
+def ApplyConcatInsertDimSortPatterns : EnzymeHLOPatternOp<
+    "concat_insert_dim_sort"> {
+  let patterns = ["ConcatInsertDimToBatch<stablehlo::SortOp>"];
+}
+def ApplyConcatInsertDimConcatenatePatterns : EnzymeHLOPatternOp<
+    "concat_insert_dim_concatenate"> {
+  let patterns = ["ConcatInsertDimToBatch<stablehlo::ConcatenateOp>"];
+}
+def ApplyConcatInsertDimGetDimensionSizePatterns : EnzymeHLOPatternOp<
+    "concat_insert_dim_get_dimension_size"> {
+  let patterns = ["ConcatInsertDimToBatch<stablehlo::GetDimensionSizeOp>"];
+}
+def ApplyConcatInsertDimReversePatterns : EnzymeHLOPatternOp<
+    "concat_insert_dim_reverse"> {
+  let patterns = ["ConcatInsertDimToBatch<stablehlo::ReverseOp>"];
+}
+def ApplyConcatInsertDimReduceWindowPatterns : EnzymeHLOPatternOp<
+    "concat_insert_dim_reduce_window"> {
+  let patterns = ["ConcatInsertDimToBatchReduceLike<stablehlo::ReduceWindowOp>"];
+}
+def ApplyConcatInsertDimConvolutionPatterns : EnzymeHLOPatternOp<
+    "concat_insert_dim_convolution"> {
+  let patterns = ["ConcatInsertDimToBatch<stablehlo::ConvolutionOp>"];
+}
+
+def ApplyConcatInsertDimScatterPatterns : EnzymeHLOPatternOp<
+    "concat_insert_dim_scatter"> {
+  let patterns = ["ConcatInsertDimToBatch<stablehlo::ScatterOp>"];
+}
+
+def ApplyConcatInsertDimElementwisePatterns : EnzymeHLOPatternOp<
+    "concat_insert_dim_elementwise"> {
+  let patterns = ["ConcatInsertDimElementwiseToBatch"];
+}
+
+def ApplyDotGeneralSliceToBatchPatterns : EnzymeHLOPatternOp<
+    "dot_general_slice_to_batch"> {
+  let patterns = ["SliceToBatch<stablehlo::DotGeneralOp>"];
+}
+def ApplyGatherSliceToBatchPatterns : EnzymeHLOPatternOp<
+    "gather_slice_to_batch"> {
+  let patterns = ["SliceToBatch<stablehlo::GatherOp>"];
+}
+def ApplyIotaSliceToBatchPatterns : EnzymeHLOPatternOp<
+    "iota_slice_to_batch"> {
+  let patterns = ["SliceToBatch<stablehlo::IotaOp>"];
+}
+def ApplyReduceSliceToBatchPatterns : EnzymeHLOPatternOp<
+    "reduce_slice_to_batch"> {
+  let patterns = ["SliceToBatchReduceLike<stablehlo::ReduceOp>"];
+}
+def ApplySortSliceToBatchPatterns : EnzymeHLOPatternOp<
+    "sort_slice_to_batch"> {
+  let patterns = ["SliceToBatch<stablehlo::SortOp>"];
+}
+def ApplyScatterSliceToBatchPatterns : EnzymeHLOPatternOp<
+    "scatter_slice_to_batch"> {
+  let patterns = ["SliceToBatch<stablehlo::ScatterOp>"];
+}
+def ApplyTransposeSliceToBatchPatterns : EnzymeHLOPatternOp<
+    "transpose_slice_to_batch"> {
+  let patterns = ["SliceToBatchWithReshapeLikeCheck<stablehlo::TransposeOp>"];
+}
+def ApplyBroadcastInDimSliceToBatchPatterns : EnzymeHLOPatternOp<
+    "broadcastindim_slice_to_batch"> {
+  let patterns = ["SliceToBatchWithReshapeLikeCheck<stablehlo::BroadcastInDimOp>"];
+}
+def ApplyConcatenateSliceToBatchPatterns : EnzymeHLOPatternOp<
+    "concatenate_slice_to_batch"> {
+  let patterns = ["SliceToBatch<stablehlo::ConcatenateOp>"];
+}
+def ApplyGetDimensionSizeSliceToBatchPatterns : EnzymeHLOPatternOp<
+    "get_dimension_size_slice_to_batch"> {
+  let patterns = ["SliceToBatch<stablehlo::GetDimensionSizeOp>"];
+}
+def ApplyReverseSliceToBatchPatterns : EnzymeHLOPatternOp<
+    "reverse_slice_to_batch"> {
+  let patterns = ["SliceToBatch<stablehlo::ReverseOp>"];
+}
+def ApplyReduceWindowSliceToBatchPatterns : EnzymeHLOPatternOp<
+    "reducewindow_slice_to_batch"> {
+  let patterns = ["SliceToBatchReduceLike<stablehlo::ReduceWindowOp>"];
+}
+def ApplyConvolutionSliceToBatchPatterns : EnzymeHLOPatternOp<
+    "convolution_slice_to_batch"> {
+  let patterns = ["SliceToBatch<stablehlo::ConvolutionOp>"];
+}
+
+def ApplyElementwiseSliceToBatchPatterns : EnzymeHLOPatternOp<
+    "elementwise_slice_to_batch"> {
+  let patterns = ["SliceToBatchElementwise"];
+}
+
+def ApplyCaseToIfPatterns : EnzymeHLOPatternOp<"case_to_if"> {
+  let patterns = ["CaseToIf"];
+}
+
+def DUSToDynamicPad : EnzymeHLOPatternOp<"dus_to_dynamic_pad"> {
+  let patterns = ["DUSToDynamicPad"];
+}
+def DynamicPadToPad : EnzymeHLOPatternOp<"dynamic_pad_to_pad"> {
+  let patterns = ["DynamicPadToPad"];
+}
+
+def ApplyClampConstPropPatterns : EnzymeHLOPatternOp<"clamp_const_prop"> {
+  let patterns = ["ClampConstProp"];
+}
+
+def ApplyRemoveNoOpsFromWhileLoopPatterns : EnzymeHLOPatternOp<
+    "remove_no_ops_from_while_loop"> {
+  let patterns = ["RemoveNoOpsFromWhileLoop"];
+}
+
+def ApplyWhileIsCopySimplifyPatterns : EnzymeHLOPatternOp<
+    "while_is_copy_simplify"> {
+  let patterns = ["WhileIsCopySimplify"];
+}
+
+def ApplySplitVariadicScatterOpPatterns : EnzymeHLOPatternOp<
+    "split_variadic_scatter_op"> {
+  let patterns = ["SplitVariadicScatterOp"];
+}
+
+def ApplyDynamicSliceSimplifyPatterns : EnzymeHLOPatternOp<
+    "dynamic_slice_simplify"> {
+  let patterns = ["DynamicSliceSimplify"];
+}
+
+def ApplyGreedyWhileLoopBatchFissionPatterns : EnzymeHLOPatternOp<
+    "greedy_while_loop_batch_fission"> {
+  let patterns = ["GreedyWhileLoopBatchFission"];
+}
+
+def ApplyRemoveLoopCarriedDependenciesFromWhileLoadOperationsPatterns : EnzymeHLOPatternOp<
+    "remove_loop_carried_dependencies_from_while_load_operations"> {
+  let patterns = ["RemoveLoopCarriedDependenciesFromWhileLoadOperations"];
+}
+
+def EnzymeHLOUnroll : EnzymeHLOParameterizedPatternOp<
+    "enzyme_hlo_unroll"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, I64Attr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getI64IntegerAttr(1024)))};
+    }
+  }];
+}
+
+def ApplyReduceMulToDotGeneralPatterns : EnzymeHLOPatternOp<
+    "reduce_mul_to_dot_general"> {
+  let patterns = ["ReduceMulToDotGeneral"];
+}
+def ApplySplitReduceAddMulToAddDotGeneralPatterns : EnzymeHLOPatternOp<
+    "split_reduce_add_mul_to_add_dot_general"> {
+  let patterns = ["SplitReduceAddMulToAddDotGeneral"];
+}
+
+def ApplyDotGeneralOnlyDiagonalAccessPatterns : EnzymeHLOPatternOp<
+    "dot_general_only_diagonal_access"> {
+  let patterns = ["DotGeneralOnlyDiagonalAccess"];
+}
+
+def ApplyDivideNegatedOperandsSimplifyPatterns : EnzymeHLOPatternOp<
+    "divide_negated_operands_simplify"> {
+  let patterns = ["BinaryNegatedOperandsSimplify<stablehlo::DivOp>"];
+}
+
+def ApplyMultiplyNegatedOperandsSimplifyPatterns : EnzymeHLOPatternOp<
+    "multiply_negated_operands_simplify"> {
+  let patterns = ["BinaryNegatedOperandsSimplify<stablehlo::MulOp>"];
+}
+
+def ApplyDotGeneralToSyrkPatterns : EnzymeHLOPatternOp<
+    "dot_general_to_syrk"> {
+  let patterns = ["DotGeneralToSyrk"];
+}
+
+
+def ApplyDotGeneralToSymmPatterns : EnzymeHLOPatternOp<
+    "dot_general_to_symm"> {
+  let patterns = ["DotGeneralToSymm"];
+}
+def ApplyTransposeSyrkToSyrkPatterns : EnzymeHLOPatternOp<
+    "transpose_syrk_to_syrk"> {
+  let patterns = ["TransposeSyrkToSyrk"];
+}
+
+def ApplyFuseMulIntoSyrkPatterns : EnzymeHLOPatternOp<
+    "fuse_mul_into_syrk"> {
+  let patterns = ["FuseMulIntoSyrk"];
+}
+
+def ApplyFuseAddIntoSyrkPatterns : EnzymeHLOPatternOp<
+    "fuse_add_into_syrk"> {
+  let patterns = ["FuseAddIntoSyrk"];
+}
+
+def ApplyFuseMulIntoSymmPatterns : EnzymeHLOPatternOp<
+    "fuse_mul_into_symm"> {
+  let patterns = ["FuseMulIntoSymm"];
+}
+
+def ApplyFuseAddIntoSymmPatterns : EnzymeHLOPatternOp<
+    "fuse_add_into_symm"> {
+  let patterns = ["FuseAddIntoSymm"];
+}
+
+def ApplyDotGeneralBroadcastInDimPatterns : EnzymeHLOPatternOp<
+    "dot_general_broadcast_in_dim"> {
+  let patterns = ["DotGeneralBroadcastInDim"];
+}
+
+def ApplyDotGeneralBroadcastInDimSortDimsPatterns : EnzymeHLOPatternOp<
+    "dot_general_broadcast_in_dim_sort_dims"> {
+  let patterns = ["DotGeneralBroadcastInDimSortDims"];
+}
+
+def ApplyDUSDynamicSliceSimplifyPatterns : EnzymeHLOPatternOp<
+    "dus_dynamic_slice_simplify"> {
+  let patterns = ["DUSDynamicSliceSimplify"];
+}
+
+def ApplyDUSDUSSubsumingPatterns : EnzymeHLOPatternOp<
+    "dus_dus_subsuming"> {
+  let patterns = ["DUSDUSSubsuming"];
+}
+
+def ApplyWhileIdempotentDUSPatterns : EnzymeHLOPatternOp<
+    "while_idempotent_dus"> {
+  let patterns = ["WhileIdempotentDUS"];
+}
+
+def ApplyWhileDUSDSSimplifyPatterns : EnzymeHLOPatternOp<
+    "while_dus_ds_simplify"> {
+  let patterns = ["WhileDUSDSSimplify"];
+}
+
+def ApplyWhileDUSDUSSimplifyPatterns : EnzymeHLOPatternOp<
+    "while_dus_dus_simplify"> {
+  let patterns = ["WhileDUSDUSSimplify"];
+}
+
+def ApplyReshapeSliceReshapePatterns : EnzymeHLOPatternOp<
+    "reshape_slice_reshape"> {
+  let patterns = ["ReshapeSliceReshape"];
+}
+
+def ApplySyrkSimplifyOutputUploPatterns : EnzymeHLOPatternOp<
+    "syrk_simplify_output_uplo"> {
+  let patterns = ["SyrkSimplifyOutputUplo"];
+}
+
+def ApplyDotGeneralRemoveBatchDimensionsPatterns : EnzymeHLOPatternOp<
+    "dot_general_remove_batch_dimensions"> {
+  let patterns = ["DotGeneralRemoveBatchDimensions"];
+}
+
+def ApplyDeleteDimsReducePatterns : EnzymeHLOPatternOp<
+    "delete_dims_reduce"> {
+  let patterns = ["DeleteDimsReduce"];
+}
+
+def ApplyReduceDeleteDimsPatterns : EnzymeHLOPatternOp<
+    "reduce_delete_dims"> {
+  let patterns = ["ReduceDeleteDims"];
+}
+
+def ApplyDotGeneralInsertDimContractionSimplificationPatterns : EnzymeHLOPatternOp<
+    "dot_general_insert_dim_contraction_simplification"> {
+  let patterns = ["DotGeneralInsertDimContractionSimplification"];
+}
+
+def ApplyFuseReshapeCollapseOrExpandDimsIntoReducePatterns : EnzymeHLOPatternOp<
+    "fuse_reshape_collapse_or_expand_dims_into_reduce"> {
+  let patterns = ["FuseReshapeCollapseOrExpandDimsIntoReduce"];
+}
+
+def ApplyWhileElementwiseReductionToReducePatterns : EnzymeHLOPatternOp<
+    "while_elementwise_reduction_to_reduce"> {
+  let patterns = ["WhileElementwiseReductionToReduce"];
+}
+
+def ApplyGatherOfScatterSimplifyPatterns : EnzymeHLOPatternOp<
+    "gather_of_scatter_simplify"> {
+  let patterns = ["GatherOfScatterSimplify"];
+}
+
+def ApplyDeleteDimsBroadcastPatterns : EnzymeHLOPatternOp<
+    "delete_dims_broadcast"> {
+  let patterns = ["DeleteDimsBroadcast"];
+}
+
+def ApplySplitComplexScatterPatterns: EnzymeHLOPatternOp<
+    "split_complex_scatter"> {
+  let patterns = ["SplitComplexScatter"];
+}
+
+def ApplySplitComplexGatherPatterns: EnzymeHLOPatternOp<
+    "split_complex_gather"> {
+  let patterns = ["SplitComplexGather"];
+}
+
+def ApplyReduceMaxMinMulPositiveScalarPatterns: EnzymeHLOPatternOp<
+    "reduce_max_min_mul_positive_scalar"> {
+  let patterns = ["ReduceMaxMinMulPositiveScalar"];
+}
+
+def ApplyAddComplexSimplifyPatterns: EnzymeHLOPatternOp<
+    "add_complex_simplify"> {
+  let patterns = ["BinaryOpComplexSimplifyBase<stablehlo::AddOp>"];
+}
+
+def ApplySubComplexSimplifyPatterns: EnzymeHLOPatternOp<
+    "sub_complex_simplify"> {
+  let patterns = ["BinaryOpComplexSimplifyBase<stablehlo::SubtractOp>"];
+}
+
+def ApplyScatterOfScatterSimplifyPatterns : EnzymeHLOPatternOp<
+    "scatter_of_scatter_simplify"> {
+  let patterns = ["ScatterOfScatterSimplify"];
 }

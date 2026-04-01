@@ -19,12 +19,14 @@
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Interfaces/CallInterfaces.h"
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
-#include "mlir/Interfaces/CopyOpInterface.h"
 #include "mlir/Interfaces/InferTypeOpInterface.h"
 #include "mlir/Interfaces/MemorySlotInterfaces.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Interfaces/ViewLikeInterface.h"
 #include "stablehlo/dialect/Base.h"
+#include "llvm/Support/CommandLine.h"
+
+extern llvm::cl::opt<bool> BarrierOpt;
 
 #define GET_ATTRDEF_CLASSES
 #include "src/enzyme_ad/jax/Dialect/EnzymeXLAAttrEnums.h.inc"
