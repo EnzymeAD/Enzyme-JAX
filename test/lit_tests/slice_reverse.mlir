@@ -50,3 +50,18 @@ func.func @slice_no_single_element(%arg0: tensor<4x8xf32>) -> tensor<4x4xf32> {
 // CHECK-LABEL: func.func @slice_no_single_element
 // CHECK:         stablehlo.reverse
 // CHECK:         stablehlo.slice
+
+// Reverse with multiple uses and remaining dims -> no transformation (duplicating
+// the reverse would not be beneficial).
+func.func @slice_multi_use_no_transform(%arg0: tensor<4x8xf32>) -> (tensor<1x4xf32>, tensor<1x4xf32>) {
+  %0 = stablehlo.reverse %arg0, dims = [0, 1] : tensor<4x8xf32>
+  %1 = stablehlo.slice %0 [1:2, 2:6] : (tensor<4x8xf32>) -> tensor<1x4xf32>
+  %2 = stablehlo.slice %0 [2:3, 2:6] : (tensor<4x8xf32>) -> tensor<1x4xf32>
+  return %1, %2 : tensor<1x4xf32>, tensor<1x4xf32>
+}
+// dim0 is single-element for both slices, dim1 picks 4 elements -> remainingDims=[1]
+// reverse has 2 uses -> not beneficial to duplicate, no transformation applied
+// CHECK-LABEL: func.func @slice_multi_use_no_transform
+// CHECK:         stablehlo.reverse
+// CHECK:         stablehlo.slice
+// CHECK:         stablehlo.slice
