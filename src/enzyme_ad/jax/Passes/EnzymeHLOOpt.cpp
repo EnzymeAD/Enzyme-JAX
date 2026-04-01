@@ -9192,6 +9192,10 @@ struct CompareSubtractConstSimplify
       return rewriter.notifyMatchFailure(cmpOp,
                                          "lhs of subtract is not constant");
 
+    if (matchPattern(lhsSub.getRhs(), m_Constant()))
+      return rewriter.notifyMatchFailure(cmpOp,
+                                         "rhs of subtract is a constant");
+
     if (!matchPattern(cmpOp.getRhs(), m_Constant()))
       return rewriter.notifyMatchFailure(cmpOp, "rhs is not constant");
 
