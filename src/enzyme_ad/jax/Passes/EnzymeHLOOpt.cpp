@@ -7761,6 +7761,40 @@ struct CompareNegateConstSimplify
   }
 };
 
+// (a - b) OP 0  →  a OP b  (integer types only; float semantics differ for NaN)
+struct CompareSubtractZeroSimplify
+    : public CheckedOpRewritePattern<stablehlo::CompareOp,
+                                     CompareSubtractZeroSimplify> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::CompareOp cmpOp,
+                                    PatternRewriter &rewriter) const {
+    auto lhsSub = cmpOp.getLhs().getDefiningOp<stablehlo::SubtractOp>();
+    if (!lhsSub)
+      return rewriter.notifyMatchFailure(cmpOp, "lhs is not subtract");
+
+    // Only valid for integer element types.
+    auto elTy = getElementTypeOrSelf(cmpOp.getLhs().getType());
+    if (!elTy.isInteger())
+      return rewriter.notifyMatchFailure(cmpOp, "non-integer type");
+
+    // RHS must be the integer zero.
+    DenseIntElementsAttr rhsAttr;
+    if (!matchPattern(cmpOp.getRhs(), m_Constant(&rhsAttr)) ||
+        !rhsAttr.isSplat() ||
+        !rhsAttr.getSplatValue<APInt>().isZero())
+      return rewriter.notifyMatchFailure(cmpOp, "rhs is not zero");
+
+    auto shardingAttr = sdy::getShardingPerValue(cmpOp);
+    auto newOp = rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(
+        cmpOp, lhsSub.getLhs(), lhsSub.getRhs(),
+        cmpOp.getComparisonDirection(), cmpOp.getCompareTypeAttr());
+    if (shardingAttr)
+      sdy::setShardings(newOp, shardingAttr);
+    return success();
+  }
+};
+
 struct BroadcastIotaSimplify
     : public CheckedOpRewritePattern<stablehlo::BroadcastInDimOp,
                                      BroadcastIotaSimplify> {
@@ -23684,7 +23718,8 @@ struct EnzymeHLOOptPass
         ReshapeDeletionsBroadcastInDimSimplify,
         ReshapeInsertionsBroadcastInDimSimplify, CompareIotaConstSimplify,
         CompareAbs, CompareMul, CompareConvert, AddSelects,
-        CompareNegateConstSimplify, SelectSimplify>(context,
+        CompareNegateConstSimplify, CompareSubtractZeroSimplify,
+        SelectSimplify>(context,
                                                     PatternBenefit(65000));
 
     patterns.add<IotaSimplify, BroadcastInDimSimplify, ConcatConstProp,
