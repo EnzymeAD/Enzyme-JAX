@@ -83,18 +83,16 @@
 
 // CHECK-LABEL:   func.func private @if_with_load_raised(
 // CHECK-SAME:                                           %[[VAL_0:.*]]: tensor<194xf64>, %[[VAL_1:.*]]: tensor<194xf64>, %[[VAL_2:.*]]: tensor<194xf64>) -> (tensor<194xf64>, tensor<194xf64>, tensor<194xf64>) {
-// CHECK:           %[[C70:.*]] = stablehlo.constant {{.*}} dense<70> : tensor<191xi64>
+// CHECK:           %[[C70:.*]] = stablehlo.constant {enzymexla.non_negative = [#enzymexla<guaranteed GUARANTEED>]} dense<70> : tensor<191xi64>
 // CHECK:           %[[C0:.*]] = stablehlo.constant dense<0> : tensor<191xi64>
 // CHECK:           %[[IOTA:.*]] = stablehlo.iota dim = 0 : tensor<191xi64>
-// CHECK:           %[[SUB:.*]] = stablehlo.subtract %[[C70]], %[[IOTA]] {{.*}} : tensor<191xi64>
-// CHECK:           %[[CMP:.*]] = stablehlo.compare  GE, %[[SUB]], %[[C0]] : (tensor<191xi64>, tensor<191xi64>) -> tensor<191xi1>
+// CHECK:           %[[SUB:.*]] = stablehlo.subtract %[[C70]], %[[IOTA]] {enzymexla.non_negative = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<191xi64>
+// CHECK:           %[[CMP:.*]] = stablehlo.compare GE, %[[SUB]], %[[C0]] : (tensor<191xi64>, tensor<191xi64>) -> tensor<191xi1>
 // CHECK:           %[[SL0:.*]] = stablehlo.slice %[[VAL_0]] [2:193] : (tensor<194xf64>) -> tensor<191xf64>
-// CHECK:           %[[SL2:.*]] = stablehlo.slice %[[VAL_2]] [0:191] : (tensor<194xf64>) -> tensor<191xf64>
-// CHECK:           %[[SEL0:.*]] = stablehlo.select %[[CMP]], %[[SL0]], %[[SL2]] : tensor<191xi1>, tensor<191xf64>
-// CHECK:           %[[SL1:.*]] = stablehlo.slice %[[VAL_1]] [3:194] : (tensor<194xf64>) -> tensor<191xf64>
-// CHECK:           %[[SEL1:.*]] = stablehlo.select %[[CMP]], %[[SEL0]], %[[SL1]] : tensor<191xi1>, tensor<191xf64>
+// CHECK:           %[[SL2:.*]] = stablehlo.slice %[[VAL_1]] [3:194] : (tensor<194xf64>) -> tensor<191xf64>
+// CHECK:           %[[SEL:.*]] = stablehlo.select %[[CMP]], %[[SL0]], %[[SL2]] : tensor<191xi1>, tensor<191xf64>
 // CHECK:           %[[TAIL:.*]] = stablehlo.slice %[[VAL_2]] [191:194] : (tensor<194xf64>) -> tensor<3xf64>
-// CHECK:           %[[CAT:.*]] = stablehlo.concatenate %[[SEL1]], %[[TAIL]], dim = 0 : (tensor<191xf64>, tensor<3xf64>) -> tensor<194xf64>
+// CHECK:           %[[CAT:.*]] = stablehlo.concatenate %[[SEL]], %[[TAIL]], dim = 0 : (tensor<191xf64>, tensor<3xf64>) -> tensor<194xf64>
 // CHECK:           return %[[VAL_0]], %[[VAL_1]], %[[CAT]] : tensor<194xf64>, tensor<194xf64>, tensor<194xf64>
 // CHECK:         }
 
