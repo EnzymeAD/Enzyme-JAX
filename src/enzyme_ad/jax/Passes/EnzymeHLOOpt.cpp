@@ -14029,6 +14029,42 @@ struct SelectPadToDUS final
   }
 };
 
+// Folds two selects with the same condition:
+//   select(%cond, %a, %b) -> %0
+//   select(%cond, %c, %0) -> select(%cond, %c, %b)   [false-chain]
+//   select(%cond, %0, %c) -> select(%cond, %a, %c)   [true-chain]
+struct SelectSelectSameCond final
+    : CheckedOpRewritePattern<stablehlo::SelectOp, SelectSelectSameCond> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::SelectOp op,
+                                    PatternRewriter &rewriter) const {
+    Value cond = op.getPred();
+
+    // Case 1: false branch is another select with the same condition
+    //   select(cond, c, select(cond, a, b)) -> select(cond, c, b)
+    if (auto inner = op.getOnFalse().getDefiningOp<stablehlo::SelectOp>()) {
+      if (inner.getPred() == cond) {
+        rewriter.replaceOpWithNewOp<stablehlo::SelectOp>(
+            op, op.getType(), cond, op.getOnTrue(), inner.getOnFalse());
+        return success();
+      }
+    }
+
+    // Case 2: true branch is another select with the same condition
+    //   select(cond, select(cond, a, b), c) -> select(cond, a, c)
+    if (auto inner = op.getOnTrue().getDefiningOp<stablehlo::SelectOp>()) {
+      if (inner.getPred() == cond) {
+        rewriter.replaceOpWithNewOp<stablehlo::SelectOp>(
+            op, op.getType(), cond, inner.getOnTrue(), op.getOnFalse());
+        return success();
+      }
+    }
+
+    return failure();
+  }
+};
+
 struct AndPadPad final : CheckedOpRewritePattern<stablehlo::AndOp, AndPadPad> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
@@ -34721,6 +34757,160 @@ struct BinaryOpComplexSimplifyBase
   }
 };
 
+// Pattern: convert[wide_float->narrow_float](mul(convert[int->wide_float](x), val))
+// -> mul(convert[int->narrow_float](x), convert[wide_float->narrow_float](val))
+//
+// This eliminates an unnecessary intermediate wide-float precision step when
+// the result is immediately narrowed. The convert of a constant 'val' will be
+// folded to a narrower-type constant by subsequent constant-folding passes.
+//
+// Example from iota-based coordinate calculations:
+//   convert[f64->f32](mul(convert[i64->f64](iota+c), f64_const))
+//   -> mul(convert[i64->f32](iota+c), f32_const)
+struct ConvertMulConvert final
+    : CheckedOpRewritePattern<stablehlo::ConvertOp, ConvertMulConvert> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ConvertOp op,
+                                    PatternRewriter &rewriter) const {
+    auto dstType = op.getType();
+    auto dstElemTy = dstType.getElementType();
+    // Destination must be float
+    if (!isa<FloatType>(dstElemTy))
+      return failure();
+
+    // Source must be a wider float (narrowing conversion)
+    auto srcElemTy =
+        cast<RankedTensorType>(op.getOperand().getType()).getElementType();
+    if (!isa<FloatType>(srcElemTy))
+      return failure();
+    if (srcElemTy.getIntOrFloatBitWidth() <= dstElemTy.getIntOrFloatBitWidth())
+      return failure();
+
+    // Operand must be a multiply in the wide float type
+    auto mul = op.getOperand().getDefiningOp<stablehlo::MulOp>();
+    if (!mul)
+      return failure();
+
+    // Find which operand of the multiply was converted from an integer type
+    Value intVal;   // original integer value (before widening convert)
+    Value otherVal; // the other mul operand (to be converted to narrow float)
+
+    auto lhsConv = mul.getLhs().getDefiningOp<stablehlo::ConvertOp>();
+    if (lhsConv &&
+        isa<IntegerType>(cast<RankedTensorType>(lhsConv.getOperand().getType())
+                             .getElementType())) {
+      intVal = lhsConv.getOperand();
+      otherVal = mul.getRhs();
+    } else {
+      auto rhsConv = mul.getRhs().getDefiningOp<stablehlo::ConvertOp>();
+      if (!rhsConv ||
+          !isa<IntegerType>(
+              cast<RankedTensorType>(rhsConv.getOperand().getType())
+                  .getElementType()))
+        return failure();
+      intVal = rhsConv.getOperand();
+      otherVal = mul.getLhs();
+    }
+
+    // Build convert[int->dstFloat](intVal)
+    auto intValType = cast<RankedTensorType>(intVal.getType());
+    auto newIntConv = stablehlo::ConvertOp::create(
+        rewriter, op.getLoc(),
+        RankedTensorType::get(intValType.getShape(), dstElemTy), intVal);
+
+    // Build convert[wideFloat->dstFloat](otherVal)
+    // If otherVal is a constant, this will be folded to a narrower constant.
+    auto otherValType = cast<RankedTensorType>(otherVal.getType());
+    auto newOtherConv = stablehlo::ConvertOp::create(
+        rewriter, op.getLoc(),
+        RankedTensorType::get(otherValType.getShape(), dstElemTy), otherVal);
+
+    // Replace the convert(mul(...)) with mul in the narrow float type
+    rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, newIntConv, newOtherConv);
+    return success();
+  }
+};
+
+// Pattern: negate(reduce_window(x, 0, \acc,elem -> acc - elem))
+//       -> reduce_window(x, 0, \acc,elem -> acc + elem)
+//
+// When the reduce_window body subtracts each element from the running
+// accumulator starting at zero, the result is the negated window sum:
+//   reduce_window(x, 0, sub) = 0 - x_0 - x_1 - ... = -sum(window(x))
+// Negating that recovers the plain sum, which equals a reduce_window with add.
+struct NegateReduceWindowSub final
+    : CheckedOpRewritePattern<stablehlo::NegOp, NegateReduceWindowSub> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::NegOp op,
+                                    PatternRewriter &rewriter) const {
+    auto rw = op.getOperand().getDefiningOp<stablehlo::ReduceWindowOp>();
+    if (!rw || !rw->hasOneUse())
+      return failure();
+
+    // Only handle single input + single init value
+    if (rw.getInputs().size() != 1 || rw.getInitValues().size() != 1)
+      return failure();
+
+    // Inspect the reduce_window body
+    Region &body = rw.getBody();
+    if (!body.hasOneBlock())
+      return failure();
+    Block &block = body.front();
+    if (block.getNumArguments() != 2)
+      return failure();
+
+    // Body must be: %res = subtract(%acc, %elem); return %res
+    auto returnOp = dyn_cast<stablehlo::ReturnOp>(block.getTerminator());
+    if (!returnOp || returnOp.getNumOperands() != 1)
+      return failure();
+
+    auto subOp =
+        returnOp.getOperand(0).getDefiningOp<stablehlo::SubtractOp>();
+    if (!subOp)
+      return failure();
+
+    // Must be acc - elem (arg0 - arg1)
+    if (subOp.getLhs() != block.getArgument(0) ||
+        subOp.getRhs() != block.getArgument(1))
+      return failure();
+
+    // Init value must be zero
+    if (!matchPattern(rw.getInitValues()[0], m_AnyZeroFloat()))
+      return failure();
+
+    // Create a new reduce_window identical to the original except the body
+    // uses addition instead of subtraction.
+    Value inputs[1] = {rw.getInputs()[0]};
+    auto newRw = stablehlo::ReduceWindowOp::create(
+        rewriter, rw.getLoc(), rw.getResultTypes(), inputs, rw.getInitValues(),
+        rw.getWindowDimensionsAttr(), rw.getWindowStridesAttr(),
+        rw.getBaseDilationsAttr(), rw.getWindowDilationsAttr(),
+        rw.getPaddingAttr());
+
+    // Build the add body using the same block argument types as the original
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      auto argTypes = block.getArgumentTypes();
+      SmallVector<Location> argLocs(argTypes.size(), rw.getLoc());
+      auto *newBlock =
+          rewriter.createBlock(&newRw.getBody(), {}, argTypes, argLocs);
+      rewriter.setInsertionPointToStart(newBlock);
+      auto addOp =
+          stablehlo::AddOp::create(rewriter, rw.getLoc(),
+                                   newBlock->getArgument(0),
+                                   newBlock->getArgument(1));
+      stablehlo::ReturnOp::create(rewriter, rw.getLoc(), addOp.getResult());
+    }
+
+    // Replace negate(reduce_window(..., sub)) with reduce_window(..., add)
+    rewriter.replaceOp(op, newRw.getResults());
+    rewriter.eraseOp(rw);
+    return success();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -35169,7 +35359,8 @@ struct EnzymeHLOOptPass
         SliceIf, SliceReshapeConcat, BinBroadcastSplat<stablehlo::AddOp>,
         BinBroadcastSplat<stablehlo::SubtractOp>,
         BinBroadcastSplat<stablehlo::DivOp>,
-        BinBroadcastSplat<stablehlo::MulOp>, RotatePad, ConjReal>(context);
+        BinBroadcastSplat<stablehlo::MulOp>, RotatePad, ConjReal,
+        ConvertMulConvert, NegateReduceWindowSub>(context);
 
     // Unary constant propagation patterns
     patterns
@@ -35455,6 +35646,7 @@ struct EnzymeHLOOptPass
         SelectCompIotaConstToDUS,
         SelectBroadcastIota,
         SelectPadToDUS,
+        SelectSelectSameCond,
         AndPadPad,
         SelectOpUsedWithinIf,
         TransposeBroadcastInDimToBroadcastInDim,
