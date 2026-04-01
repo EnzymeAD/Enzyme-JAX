@@ -346,6 +346,7 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("extend_splat<16>");
   list.push_back("noop_slice<16>");
   list.push_back("noop_reverse<16>");
+  list.push_back("slice_reverse<16>");
   list.push_back("slice_slice<16>");
   list.push_back("dynamic_slice_slice<16>");
   list.push_back("slice_dynamic_slice<16>");
