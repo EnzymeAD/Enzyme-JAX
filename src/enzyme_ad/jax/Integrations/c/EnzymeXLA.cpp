@@ -460,6 +460,7 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("concat_concat_to_dus");
   list.push_back("broadcast_iota_simplify");
   list.push_back("select_comp_iota_to_dus");
+  list.push_back("select_broadcast_iota");
   list.push_back("compare_cleanup");
   list.push_back("broadcast_compare");
   list.push_back("not_compare");
@@ -472,11 +473,13 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("square_abs_simplify");
   list.push_back("divide_divide_simplify");
   list.push_back("concat_reshape_slice");
+  list.push_back("concat_broadcast_slice");
   list.push_back("full_reduce_reshape_or_transpose");
   list.push_back("concat_reshape_reduce");
   list.push_back("concat_elementwise");
   list.push_back("reduce_reduce");
   list.push_back("conj_real");
+  list.push_back("convert_mul_convert");
   list.push_back("select_broadcast_in_dim");
   list.push_back("if_op_lift_common_ops");
   list.push_back("involution_neg_simplify");
@@ -492,6 +495,7 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("log_simplify");
   list.push_back("neg_mul_const_simplify");
   list.push_back("neg_div_const_simplify");
+  list.push_back("negate_reduce_window_sub");
   list.push_back("reshape_deletions_broadcast_in_dim_simplify");
   list.push_back("reshape_insertions_broadcast_in_dim_simplify");
   list.push_back("dot_general_reshape");
@@ -501,6 +505,7 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("compare_negate_const_simplify");
   list.push_back("compare_subtract_const_simplify");
   list.push_back("select_simplify");
+  list.push_back("select_select_same_cond");
   list.push_back("concatenate_subtract_to_subtract_pad");
   list.push_back("concatenate_add_to_add_pad");
   list.push_back("concatenate_broadcast_in_dim");
