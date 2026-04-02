@@ -511,12 +511,18 @@ class AutoDiffWhileRev
       const char *periodicCheckpointAttrName = "enzymexla.checkpoint_period";
       auto checkpointPeriod =
           orig->getAttrOfType<IntegerAttr>(periodicCheckpointAttrName);
+      auto enableBinomialCheckpointing =
+          orig->hasAttr("enzymexla.binomial_checkpointing");
 
       if (enableCheckpointing && enableCheckpointing.getValue()) {
         // CONSTANT_CHECKPOINTING: use provided period or default to sqrt(N).
-        revInfo.mode = CONSTANT_CHECKPOINTING;
+        revInfo.mode = enableBinomialCheckpointing ? CONSTANT_BINOMIAL
+                                                   : CONSTANT_CHECKPOINTING;
         if (checkpointPeriod && checkpointPeriod.getInt() > 0) {
           revInfo.checkpointPeriod = checkpointPeriod.getInt();
+        } else if (enableBinomialCheckpointing) {
+          // Default budget for binomial checkpointing
+          revInfo.checkpointPeriod = 3;
         } else {
           // Default to sqrt checkpointing when no period is specified
           int64_t numIters = revInfo.info.getConstantNumIters();
@@ -580,6 +586,14 @@ class AutoDiffWhileRev
     stablehlo::ReturnOp::create(builder, loc, operandsWithInduction);
 
     return whileOp;
+  }
+
+  static LogicalResult
+  reverseWithRevolveCheckpointing(stablehlo::WhileOp orig, OpBuilder &builder,
+                                  MGradientUtilsReverse *gutils,
+                                  SmallVector<Value> caches,
+                                  ArrayRef<bool> operandsActive) {
+    return failure();
   }
 
   // Reverse pass for CONSTANT_CHECKPOINTING (explicit period or default sqrt).
@@ -1097,6 +1111,149 @@ public:
                 makeI64Constant(newWhile.getLoc(), builder, nInner),
                 remainingIters);
           }
+
+          auto inner =
+              makeForLoop(builder, orig->getLoc(), 0, innerLimit, 1, operands);
+
+          outerBody->getTerminator()->setOperands(
+              1, inner.getNumResults() - 1,
+              inner.getResults().slice(1, inner.getNumResults() - 1));
+
+          Block *innerBody = &inner.getBody().front();
+          Block *oldInnerBody = &newWhile.getBody().front();
+          builder.setInsertionPointToStart(innerBody);
+
+          IRMapping mapping;
+
+          for (auto [oldArg, newArg] : llvm::zip_equal(
+                   oldInnerBody->getArguments(), innerBody->getArguments())) {
+            mapping.map(oldArg, newArg);
+          }
+
+          Value oldIV = oldInnerBody->getArgument(0);
+          Value newIV = stablehlo::AddOp::create(
+              builder, oldIV.getLoc(), innerBody->getArgument(0), outerIV);
+
+          mapping.map(oldIV, newIV);
+
+          for (Operation &innerOp : oldInnerBody->without_terminator()) {
+            builder.clone(innerOp, mapping);
+          }
+
+          SmallVector<Value> newReturns;
+          for (auto oldRes : oldInnerBody->getTerminator()->getOperands().slice(
+                   1, oldInnerBody->getTerminator()->getNumOperands() - 1)) {
+            newReturns.push_back(mapping.lookupOrDefault(oldRes));
+          }
+          Operation *term = innerBody->getTerminator();
+          term->setOperands(1, term->getNumOperands() - 1, newReturns);
+
+          builder.setInsertionPointAfter(outer);
+          SmallVector<Value> newResults{makeI64Constant(
+              oldIV.getLoc(), builder, *info.getConstantLimit())};
+          newResults.append(
+              outer->getResults().slice(1, outer->getNumResults() - 1).begin(),
+              outer->getResults().slice(1, outer->getNumResults() - 1).end());
+
+          gutils->replaceOrigOpWith(orig, newResults);
+          gutils->erase(newWhile);
+          gutils->originalToNewFnOps[orig] = outer;
+
+          return caches;
+        } else if (revModeInfo.mode == CONSTANT_BINOMIAL) {
+
+          Value zero = makeI64Constant(orig->getLoc(), builder, 0);
+
+          OpBuilder builder(newWhile);
+
+          SetVector<Value> outsideRefs;
+          getUsedValuesDefinedAbove(orig->getRegions(), outsideRefs);
+          SmallVector<Value> caches;
+
+          SmallVector<Value> outerOperands(
+              newWhile.getOperands().slice(1, newWhile.getNumOperands() - 1));
+
+          for (size_t i = 1, e = orig->getNumOperands(); i < e; i++) {
+            auto operand = outerOperands[i];
+            auto operandType = cast<ShapedType>(operand.getType());
+            auto ET = operandType.getElementType();
+            SmallVector<int64_t> cacheShape;
+            cacheShape.push_back(revModeInfo.checkpointPeriod);
+            cacheShape.append(operandType.getShape());
+            auto cacheType = operandType.clone(cacheShape);
+            auto zeroCache = stablehlo::ConstantOp::create(
+                                 builder, operand.getLoc(), cacheType,
+                                 SplatElementsAttr::get(
+                                     cacheType, makeAttr(operand.getType(), 0)))
+                                 .getResult();
+            outerOperands.push_back(zeroCache);
+          }
+
+          outerOperands.push_back(zero);
+
+          stablehlo::WhileOp outer =
+              makeForLoop(builder, orig->getLoc(), 0,
+                          revModeInfo.checkpointPeriod, 1, outerOperands);
+
+          Block *outerBody = &outer.getBody().front();
+
+          builder.setInsertionPointAfter(outer);
+
+          for (auto argCache :
+               outer.getResults().slice(orig->getNumOperands() - 1)) {
+            caches.push_back(gutils->initAndPushCache(argCache, builder));
+          }
+
+          for (auto ref : outsideRefs) {
+            caches.push_back(gutils->initAndPushCache(
+                gutils->getNewFromOriginal(ref), builder));
+          }
+
+          builder.setInsertionPointToStart(outerBody);
+
+          Value stepInOuter =
+              outerBody->getArgument(outerBody->getNumArguments() - 1);
+
+          auto setCache = [&](Value cache, Value val) {
+            auto valTy = cast<ShapedType>(val.getType());
+            SmallVector<Value> startIndices;
+            startIndices.push_back(stepInOuter);
+
+            for (size_t i = 0, e = valTy.getRank(); i < e; ++i) {
+              startIndices.push_back(zero);
+            }
+
+            SmallVector<int64_t> reshapedShape;
+            reshapedShape.push_back(1);
+            reshapedShape.append(valTy.getShape());
+            Value reshapedVal = stablehlo::ReshapeOp::create(
+                builder, cache.getLoc(), valTy.clone(reshapedShape), val);
+
+            Value newCache = stablehlo::DynamicUpdateSliceOp::create(
+                builder, cache.getLoc(), cache, reshapedVal, startIndices);
+            return newCache;
+          };
+
+          for (size_t i = 1, e = orig->getNumOperands(); i < e; ++i) {
+            auto operand = outerBody->getArgument(i);
+            outerBody->getTerminator()->setOperand(
+                i + e, setCache(outerBody->getArgument(i + e), operand));
+          }
+
+          SmallVector<Value> operands(outerBody->getArguments()
+                                          .slice(1, orig->getNumOperands() - 1)
+                                          .begin(),
+                                      outerBody->getArguments()
+                                          .slice(1, orig->getNumOperands() - 1)
+                                          .end());
+
+          Value numSteps = stablehlo::SubtractOp::create(
+              builder, orig->getLoc(),
+              makeI64Constant(orig->getLoc(), builder,
+                              *info.getConstantLimit()),
+              stepInOuter);
+
+          Value innerLimit = numSteps;
 
           auto inner =
               makeForLoop(builder, orig->getLoc(), 0, innerLimit, 1, operands);
