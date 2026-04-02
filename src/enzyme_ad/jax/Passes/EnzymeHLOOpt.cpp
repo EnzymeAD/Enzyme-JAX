@@ -34880,7 +34880,8 @@ struct BinaryOpComplexSimplifyBase
   }
 };
 
-// Pattern: convert[wide_float->narrow_float](mul(convert[int->wide_float](x), val))
+// Pattern: convert[wide_float->narrow_float](mul(convert[int->wide_float](x),
+// val))
 // -> mul(convert[int->narrow_float](x), convert[wide_float->narrow_float](val))
 //
 // This eliminates an unnecessary intermediate wide-float precision step when
@@ -34927,10 +34928,9 @@ struct ConvertMulConvert final
       otherVal = mul.getRhs();
     } else {
       auto rhsConv = mul.getRhs().getDefiningOp<stablehlo::ConvertOp>();
-      if (!rhsConv ||
-          !isa<IntegerType>(
-              cast<RankedTensorType>(rhsConv.getOperand().getType())
-                  .getElementType()))
+      if (!rhsConv || !isa<IntegerType>(
+                          cast<RankedTensorType>(rhsConv.getOperand().getType())
+                              .getElementType()))
         return failure();
       intVal = rhsConv.getOperand();
       otherVal = mul.getLhs();
@@ -34989,8 +34989,7 @@ struct NegateReduceWindowSub final
     if (!returnOp || returnOp.getNumOperands() != 1)
       return failure();
 
-    auto subOp =
-        returnOp.getOperand(0).getDefiningOp<stablehlo::SubtractOp>();
+    auto subOp = returnOp.getOperand(0).getDefiningOp<stablehlo::SubtractOp>();
     if (!subOp)
       return failure();
 
@@ -35020,10 +35019,9 @@ struct NegateReduceWindowSub final
       auto *newBlock =
           rewriter.createBlock(&newRw.getBody(), {}, argTypes, argLocs);
       rewriter.setInsertionPointToStart(newBlock);
-      auto addOp =
-          stablehlo::AddOp::create(rewriter, rw.getLoc(),
-                                   newBlock->getArgument(0),
-                                   newBlock->getArgument(1));
+      auto addOp = stablehlo::AddOp::create(rewriter, rw.getLoc(),
+                                            newBlock->getArgument(0),
+                                            newBlock->getArgument(1));
       stablehlo::ReturnOp::create(rewriter, rw.getLoc(), addOp.getResult());
     }
 
