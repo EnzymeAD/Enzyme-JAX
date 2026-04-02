@@ -1349,6 +1349,10 @@ LogicalResult concatReshapeSliceSimplify(PatternRewriter &rewriter,
                                          SmallVectorImpl<Value> &operands,
                                          int64_t dim,
                                          SmallVectorImpl<Value> &newOperands);
+LogicalResult concatBroadcastSliceSimplify(PatternRewriter &rewriter,
+                                           SmallVectorImpl<Value> &operands,
+                                           int64_t dim,
+                                           SmallVectorImpl<Value> &newOperands);
 
 Value getIdentityValue(OpBuilder &builder, Location loc, Type elemType,
                        Operation *op);

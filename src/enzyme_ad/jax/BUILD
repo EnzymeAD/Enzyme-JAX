@@ -870,6 +870,7 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":EnzymeXLADialect",
+        "@com_google_absl//absl/strings",
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:CAPIIRObjects",
         "@llvm-project//mlir:IR",
@@ -1647,6 +1648,7 @@ pybind_extension(
     }),
     visibility = ["//visibility:public"],
     deps = [
+        ":CInterface",
         ":RegistryUtils",
         ":TransformOps",
         ":XLADerivatives",
