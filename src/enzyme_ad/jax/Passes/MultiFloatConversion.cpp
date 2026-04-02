@@ -15,6 +15,7 @@
 #include "mlir/IR/IRMapping.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "shardy/dialect/sdy/ir/dialect.h"
 #include "shardy/dialect/sdy/ir/utils.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
@@ -3495,13 +3496,18 @@ struct MultiFloatConversionPass
         });
     target.addDynamicallyLegalOp<stablehlo::ReduceWindowOp>(reduceWindowLegal);
 
+    if (expansionSize >= 2) {
+      RewritePatternSet patterns(context);
+      patterns.add<LowerReduceWindowOp>(typeConverter, context, srcTy,
+                                        concatDimension);
+      GreedyRewriteConfig config;
+      if (failed(applyPatternsGreedily(op, std::move(patterns), config))) {
+        signalPassFailure();
+      }
+    }
     RewritePatternSet patterns(context);
     patterns.add<ConstantOpConversion>(typeConverter, context, concatDimension,
                                        expansionSize, srcTy, tgtTy);
-    if (expansionSize >= 2) {
-      patterns.add<LowerReduceWindowOp>(typeConverter, context, srcTy,
-                                        concatDimension);
-    }
     if (expansionSize == 1) {
       patterns.add<GenericOpConversion<stablehlo::AddOp>>(typeConverter,
                                                           context);
