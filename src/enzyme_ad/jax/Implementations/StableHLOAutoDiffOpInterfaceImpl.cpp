@@ -1161,10 +1161,9 @@ public:
 
           return caches;
         } else if (revModeInfo.mode == CONSTANT_BINOMIAL) {
+          OpBuilder builder(newWhile);
 
           Value zero = makeI64Constant(orig->getLoc(), builder, 0);
-
-          OpBuilder builder(newWhile);
 
           SetVector<Value> outsideRefs;
           getUsedValuesDefinedAbove(orig->getRegions(), outsideRefs);
@@ -1173,19 +1172,16 @@ public:
           SmallVector<Value> outerOperands(
               newWhile.getOperands().slice(1, newWhile.getNumOperands() - 1));
 
-          for (size_t i = 1, e = orig->getNumOperands(); i < e; i++) {
-            auto operand = outerOperands[i];
+          for (auto operand : outerOperands) {
             auto operandType = cast<ShapedType>(operand.getType());
-            auto ET = operandType.getElementType();
             SmallVector<int64_t> cacheShape;
             cacheShape.push_back(revModeInfo.checkpointPeriod);
-            cacheShape.append(operandType.getShape());
+            cacheShape.append(operandType.getShape().begin(),
+                              operandType.getShape().end());
             auto cacheType = operandType.clone(cacheShape);
-            auto zeroCache = stablehlo::ConstantOp::create(
-                                 builder, operand.getLoc(), cacheType,
-                                 SplatElementsAttr::get(
-                                     cacheType, makeAttr(operand.getType(), 0)))
-                                 .getResult();
+            auto zeroCache =
+                cast<AutoDiffTypeInterface>(cacheType).createNullValue(
+                    builder, operand.getLoc());
             outerOperands.push_back(zeroCache);
           }
 
@@ -1199,8 +1195,11 @@ public:
 
           builder.setInsertionPointAfter(outer);
 
-          for (auto argCache :
-               outer.getResults().slice(orig->getNumOperands() - 1)) {
+          caches.push_back(gutils->initAndPushCache(
+              outer.getResult(outer.getNumResults() - 1), builder));
+
+          for (auto argCache : outer.getResults().slice(
+                   orig->getNumOperands(), orig->getNumOperands() - 1)) {
             caches.push_back(gutils->initAndPushCache(argCache, builder));
           }
 
@@ -1217,7 +1216,11 @@ public:
           auto setCache = [&](Value cache, Value val) {
             auto valTy = cast<ShapedType>(val.getType());
             SmallVector<Value> startIndices;
-            startIndices.push_back(stepInOuter);
+            startIndices.push_back(
+
+                outerBody->getArgument(0)
+
+            );
 
             for (size_t i = 0, e = valTy.getRank(); i < e; ++i) {
               startIndices.push_back(zero);
@@ -1225,7 +1228,8 @@ public:
 
             SmallVector<int64_t> reshapedShape;
             reshapedShape.push_back(1);
-            reshapedShape.append(valTy.getShape());
+            reshapedShape.append(valTy.getShape().begin(),
+                                 valTy.getShape().end());
             Value reshapedVal = stablehlo::ReshapeOp::create(
                 builder, cache.getLoc(), valTy.clone(reshapedShape), val);
 
@@ -1234,10 +1238,14 @@ public:
             return newCache;
           };
 
-          for (size_t i = 1, e = orig->getNumOperands(); i < e; ++i) {
+          Operation *outerTerm = outerBody->getTerminator();
+
+          for (size_t i = 1, e = orig->getNumOperands() - 1; i < e; ++i) {
             auto operand = outerBody->getArgument(i);
-            outerBody->getTerminator()->setOperand(
-                i + e, setCache(outerBody->getArgument(i + e), operand));
+            outerTerm->setOperand(
+                i + orig->getNumOperands() - 1,
+                setCache(outerBody->getArgument(i + orig->getNumOperands() - 1),
+                         operand));
           }
 
           SmallVector<Value> operands(outerBody->getArguments()
@@ -1253,12 +1261,23 @@ public:
                               *info.getConstantLimit()),
               stepInOuter);
 
-          Value innerLimit = numSteps;
+          Value budget = stablehlo::SubtractOp::create(
+              builder, orig->getLoc(),
+              makeI64Constant(orig->getLoc(), builder,
+                              revModeInfo.checkpointPeriod),
+              outerBody->getArgument(0));
+          Value innerLimit = enzymexla::BinomialProgress::create(
+              builder, orig->getLoc(), numSteps, budget, nullptr);
+
+          outerTerm->setOperand(
+              outerTerm->getNumOperands() - 1,
+              stablehlo::AddOp::create(builder, stepInOuter.getLoc(),
+                                       stepInOuter, innerLimit));
 
           auto inner =
               makeForLoop(builder, orig->getLoc(), 0, innerLimit, 1, operands);
 
-          outerBody->getTerminator()->setOperands(
+          outerTerm->setOperands(
               1, inner.getNumResults() - 1,
               inner.getResults().slice(1, inner.getNumResults() - 1));
 
@@ -1274,8 +1293,7 @@ public:
           }
 
           Value oldIV = oldInnerBody->getArgument(0);
-          Value newIV = stablehlo::AddOp::create(
-              builder, oldIV.getLoc(), innerBody->getArgument(0), outerIV);
+          Value newIV = stepInOuter;
 
           mapping.map(oldIV, newIV);
 
@@ -1294,9 +1312,10 @@ public:
           builder.setInsertionPointAfter(outer);
           SmallVector<Value> newResults{makeI64Constant(
               oldIV.getLoc(), builder, *info.getConstantLimit())};
+
           newResults.append(
-              outer->getResults().slice(1, outer->getNumResults() - 1).begin(),
-              outer->getResults().slice(1, outer->getNumResults() - 1).end());
+              outer->getResults().slice(1, orig->getNumResults() - 1).begin(),
+              outer->getResults().slice(1, orig->getNumResults() - 1).end());
 
           gutils->replaceOrigOpWith(orig, newResults);
           gutils->erase(newWhile);

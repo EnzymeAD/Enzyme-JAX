@@ -1257,7 +1257,7 @@ def SoftplusOp: EnzymeXLA_Op<"ml.softplus", [Pure, SameOperandsAndResultType, El
   let summary = "Computes the Softplus activation function";
 
   let arguments = (ins
-    TensorFloatAnyRank:$input
+    FloatLike:$input
   );
 
   let results = (outs TensorFloatAnyRank:$result);
@@ -1265,6 +1265,20 @@ def SoftplusOp: EnzymeXLA_Op<"ml.softplus", [Pure, SameOperandsAndResultType, El
   let assemblyFormat = [{
     $input attr-dict `:` functional-type($input, results)
   }];
+}
+
+def BinomialProgress : EnzymeXLA_Op<"binomial_progress", [Pure, SameOperandsAndResultType]> {
+  let summary = "Computes the number of steps to progress from in a binomial checkpointing scheme";
+
+  let arguments = (ins
+    TensorI64:$num_steps,
+    TensorI64:$budget,
+    OptionalAttr<I64Attr>:$max_iters
+  );
+
+  let results = (outs TensorI64:$result);
+
+  let assemblyFormat = "`(` operands `)` attr-dict `:` functional-type(operands, results)";
 }
 
 def CacheLoadOp : EnzymeXLA_Op<"cacheload"> {
