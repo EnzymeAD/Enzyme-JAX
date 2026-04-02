@@ -14169,8 +14169,8 @@ struct SelectSelectSameCond final
     //   select(cond, c, select(cond, a, b)) -> select(cond, c, b)
     if (auto inner = op.getOnFalse().getDefiningOp<stablehlo::SelectOp>()) {
       if (inner.getPred() == cond) {
-        rewriter.replaceOpWithNewOp<stablehlo::SelectOp>(
-            op, op.getType(), cond, op.getOnTrue(), inner.getOnFalse());
+        rewriter.modifyOpInPlace(
+            op, [&]() { op.getOnFalseMutable().assign(inner.getOnFalse()); });
         return success();
       }
     }
@@ -14179,8 +14179,8 @@ struct SelectSelectSameCond final
     //   select(cond, select(cond, a, b), c) -> select(cond, a, c)
     if (auto inner = op.getOnTrue().getDefiningOp<stablehlo::SelectOp>()) {
       if (inner.getPred() == cond) {
-        rewriter.replaceOpWithNewOp<stablehlo::SelectOp>(
-            op, op.getType(), cond, inner.getOnTrue(), op.getOnFalse());
+        rewriter.modifyOpInPlace(
+            op, [&]() { op.getOnTrueMutable().assign(inner.getOnTrue()); });
         return success();
       }
     }
@@ -25235,7 +25235,7 @@ struct ConcatBroadcastSlice
     if (!res.succeeded())
       return res;
 
-    rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(op, newOperands, dim);
+    rewriter.modifyOpInPlace(op, [&]() { op->setOperands(newOperands); });
     return success();
   }
 };
@@ -25256,7 +25256,7 @@ struct ConcatReshapeSlice
     if (!res.succeeded())
       return res;
 
-    rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(op, newOperands, dim);
+    rewriter.modifyOpInPlace(op, [&]() { op->setOperands(newOperands); });
     return success();
   }
 };
