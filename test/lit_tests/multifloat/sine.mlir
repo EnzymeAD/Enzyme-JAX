@@ -7,13 +7,19 @@ func.func @sine(%arg0: tensor<2xf64>) -> tensor<2xf64> {
 }
 
 // TUPLE-LABEL: func.func @sine
-// TUPLE: %[[HI:.*]] = stablehlo.get_tuple_element %{{.*}}[0] : (tuple<tensor<2xf32>, tensor<2xf32>>) -> tensor<2xf32>
-// TUPLE: %[[LO:.*]] = stablehlo.get_tuple_element %{{.*}}[1] : (tuple<tensor<2xf32>, tensor<2xf32>>) -> tensor<2xf32>
-// TUPLE: %[[SINE_HI:.*]] = stablehlo.sine %[[HI]] : tensor<2xf32>
-// TUPLE: %[[SINE_LO:.*]] = stablehlo.sine %[[LO]] : tensor<2xf32>
-// TUPLE: %{{.*}} = stablehlo.tuple %[[SINE_HI]], %[[SINE_LO]] : tuple<tensor<2xf32>, tensor<2xf32>>
+// TUPLE: stablehlo.get_tuple_element
+// TUPLE: stablehlo.get_tuple_element
+// TUPLE-NOT: stablehlo.sine
+// TUPLE: stablehlo.select
+// TUPLE: stablehlo.convert
+// TUPLE: stablehlo.select
+// TUPLE: stablehlo.tuple
 
 // FIRST-LABEL: func.func @sine
-// FIRST-NOT: stablehlo.get_tuple_element
-// FIRST: stablehlo.sine
-// FIRST-NOT: stablehlo.tuple
+// FIRST: stablehlo.slice
+// FIRST: stablehlo.slice
+// FIRST-NOT: stablehlo.sine
+// FIRST: stablehlo.select
+// FIRST: stablehlo.convert
+// FIRST: stablehlo.select
+// FIRST: stablehlo.concatenate
