@@ -2527,6 +2527,7 @@ struct LowerReduceWindowOp
     TypedValue<RankedTensorType> input =
         cast<TypedValue<RankedTensorType>>(reduceOp.getInputs()[0]);
     auto inputType = input.getType();
+    auto outputType = cast<RankedTensorType>(reduceOp.getResults()[0].getType());
 
     if (inputType.getElementType() != sourceType) {
       return failure();
@@ -2628,7 +2629,7 @@ struct LowerReduceWindowOp
 
     SmallVector<int64_t> startOffsets(newRank, 0);
     SmallVector<int64_t> sliceStrides(newRank, 1);
-    SmallVector<int64_t> sliceLimits = llvm::to_vector(inputType.getShape());
+    SmallVector<int64_t> sliceLimits = llvm::to_vector(outputType.getShape());
 
     int64_t dilation = 1;
     if (windowDilations) {
@@ -2637,7 +2638,7 @@ struct LowerReduceWindowOp
 
     for (int k = 0; k < windowSize; ++k) {
       startOffsets[reduceDim] = k * dilation;
-      sliceLimits[reduceDim] = k * dilation + inputType.getDimSize(reduceDim);
+      sliceLimits[reduceDim] = k * dilation + outputType.getDimSize(reduceDim);
 
       auto sliceOp = stablehlo::SliceOp::create(
           rewriter, loc, paddedInput, startOffsets, sliceLimits, sliceStrides);
