@@ -2538,7 +2538,7 @@ struct LowerReduceWindowOp
 
     Value initValues = reduceOp.getInitValues()[0];
     if (!matchPattern(initValues, m_Zero()) &&
-        !matchPattern(initValues, m_ZeroFloat())) {
+        !matchPattern(initValues, m_AnyZeroFloat())) {
       return failure();
     }
 
