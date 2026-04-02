@@ -13625,9 +13625,11 @@ static bool extractSplatInt(Value v, int64_t &out) {
 // Matches: select(broadcast_in_dim(compare(iota_expr, K), [dim]), A, B)
 //      or: select(compare(iota_expr, K), A, B)   (no broadcast)
 // where iota_expr is either iota or add(iota, const_offset).
-// Replaces with concat(slice(A|B, ...), ...) along the iota/broadcast dimension.
+// Replaces with concat(slice(A|B, ...), ...) along the iota/broadcast
+// dimension.
 struct SelectCompIotaConstSimplify final
-    : CheckedOpRewritePattern<stablehlo::SelectOp, SelectCompIotaConstSimplify> {
+    : CheckedOpRewritePattern<stablehlo::SelectOp,
+                              SelectCompIotaConstSimplify> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::SelectOp selectOp,
