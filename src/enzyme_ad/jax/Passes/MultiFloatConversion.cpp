@@ -2515,39 +2515,33 @@ struct PadOpConversion : public OpConversionPattern<stablehlo::PadOp> {
 };
 
 struct LowerReduceWindowOp
-    : public OpConversionPattern<stablehlo::ReduceWindowOp> {
+    : public OpRewritePattern<stablehlo::ReduceWindowOp> {
   Type sourceType;
-  StringRef concatDimension;
 
-  LowerReduceWindowOp(TypeConverter &typeConverter, MLIRContext *context,
-                      Type sourceType, StringRef concatDimension)
-      : OpConversionPattern<stablehlo::ReduceWindowOp>(typeConverter, context),
-        sourceType(sourceType), concatDimension(concatDimension) {}
+  LowerReduceWindowOp(MLIRContext *context, Type sourceType)
+      : OpRewritePattern<stablehlo::ReduceWindowOp>(context),
+        sourceType(sourceType) {}
 
-  LogicalResult
-  matchAndRewrite(stablehlo::ReduceWindowOp reduceOp, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    Value input = adaptor.getInputs()[0];
-    LLVM_DEBUG(llvm::dbgs() << "adaptor.getInputs().size(): "
-                            << adaptor.getInputs().size() << "\n");
-    for (size_t i = 0; i < adaptor.getInputs().size(); ++i) {
-      LLVM_DEBUG(llvm::dbgs() << "  input " << i << " type: "
-                              << adaptor.getInputs()[i].getType() << "\n");
-    }
-    auto tensorType = cast<RankedTensorType>(input.getType());
+  LogicalResult matchAndRewrite(stablehlo::ReduceWindowOp reduceOp,
+                                PatternRewriter &rewriter) const override {
+    TypedValue<RankedTensorType> input =
+        cast<TypedValue<RankedTensorType>>(reduceOp.getInputs()[0]);
+    auto inputType = input.getType();
 
-    int origRank = reduceOp.getWindowDimensions().size();
-    int newRank = tensorType.getRank();
-    bool hasPacking = (newRank == origRank + 1);
-    int packingSize = hasPacking ? tensorType.getShape()[0] : 1;
-
-    if (!hasPacking && tensorType.getElementType() != sourceType) {
+    if (inputType.getElementType() != sourceType) {
       return failure();
     }
 
-    int rankDiff = newRank - origRank;
+    if (reduceOp->getNumResults() != 1) {
+      return failure();
+    }
 
-    bool isFirst = concatDimension == "first";
+    Value initValues = reduceOp.getInitValues()[0];
+    if (!matchPattern(initValues, m_One()) &&
+        !matchPattern(initValues, m_OneFloat())) {
+      return failure();
+    }
+
     Region &region = reduceOp.getBody();
     if (region.getBlocks().size() != 1)
       return failure();
@@ -2583,538 +2577,79 @@ struct LowerReduceWindowOp
     if (reduceDim == -1)
       return failure();
 
-    int64_t windowSize = dims[reduceDim];
-
-    auto paddingAttr = reduceOp.getPadding();
-    if (!paddingAttr)
-      return failure();
-
-    auto paddingType = paddingAttr->getType();
-    if (paddingType.getRank() != 2 || paddingType.getDimSize(1) != 2)
-      return failure();
-
-    SmallVector<int64_t> lowPadding, highPadding;
-    auto vals = paddingAttr->getValues<int64_t>();
-    auto it = vals.begin();
-    for (size_t i = 0; i < dims.size(); ++i) {
-      int64_t low = *it++;
-      int64_t high = *it++;
-      lowPadding.push_back(low);
-      highPadding.push_back(high);
-    }
-
-    if (rankDiff > 0) {
-      if (isFirst) {
-        lowPadding.insert(lowPadding.begin(), 0);
-        highPadding.insert(highPadding.begin(), 0);
-      } else {
-        lowPadding.push_back(0);
-        highPadding.push_back(0);
+    auto windowDilations = reduceOp.getWindowDilations();
+    if (windowDilations) {
+      for (auto &&[i, d] : llvm::enumerate(*windowDilations)) {
+        if (i == reduceDim)
+          continue;
+        if (d != 1)
+          return failure();
       }
     }
 
-    LLVM_DEBUG(llvm::dbgs() << "input type: " << input.getType() << "\n");
+    auto baseDilations = reduceOp.getBaseDilations();
+    if (baseDilations) {
+      for (auto d : *baseDilations) {
+        if (d != 1)
+          return failure();
+      }
+    }
+
+    int64_t windowSize = dims[reduceDim];
 
     Location loc = reduceOp.getLoc();
 
-    bool needsPadding = false;
-    for (auto p : lowPadding)
-      if (p > 0)
-        needsPadding = true;
-    for (auto p : highPadding)
-      if (p > 0)
-        needsPadding = true;
-
-    if (!needsPadding)
-      return failure();
-
-    LLVM_DEBUG(llvm::dbgs() << "lowPadding: ");
-    LLVM_DEBUG(for (auto p : lowPadding) llvm::dbgs() << p << " ");
-    LLVM_DEBUG(llvm::dbgs() << "\n");
-    LLVM_DEBUG(llvm::dbgs() << "highPadding: ");
-    LLVM_DEBUG(for (auto p : highPadding) llvm::dbgs() << p << " ");
-    LLVM_DEBUG(llvm::dbgs() << "\n");
-    LLVM_DEBUG(llvm::dbgs() << "needsPadding: " << needsPadding << "\n");
-
+    size_t newRank = inputType.getRank();
     Value paddedInput = input;
-    if (needsPadding) {
-      Value initValues = adaptor.getInitValues()[0];
-      Value initValue =
-          extractLimb(initValues, 0, rewriter, loc, concatDimension);
 
-      auto scalarType = RankedTensorType::get(
-          {}, cast<RankedTensorType>(initValue.getType()).getElementType());
-      initValue =
-          rewriter.create<stablehlo::ReshapeOp>(loc, scalarType, initValue);
+    if (auto paddingAttr = reduceOp.getPadding()) {
+      auto paddingType = paddingAttr->getType();
+      if (paddingType.getRank() != 2 || paddingType.getDimSize(1) != 2)
+        return failure();
+
+      SmallVector<int64_t> lowPadding, highPadding;
+      auto vals = paddingAttr->getValues<int64_t>();
+      auto it = vals.begin();
+      for (size_t i = 0; i < dims.size(); ++i) {
+        int64_t low = *it++;
+        int64_t high = *it++;
+        lowPadding.push_back(low);
+        highPadding.push_back(high);
+      }
 
       SmallVector<int64_t> interiorPadding(newRank, 0);
-      paddedInput = rewriter.create<stablehlo::PadOp>(
-          loc, input, initValue, rewriter.getDenseI64ArrayAttr(lowPadding),
+      rewriter.create<stablehlo::PadOp>(
+          loc, input, initValues, rewriter.getDenseI64ArrayAttr(lowPadding),
           rewriter.getDenseI64ArrayAttr(highPadding),
           rewriter.getDenseI64ArrayAttr(interiorPadding));
     }
 
-    auto outType =
-        getTypeConverter()->convertType(reduceOp.getResult(0).getType());
-    LLVM_DEBUG(llvm::dbgs() << "Converted type of ReduceWindowOp result: "
-                            << outType << "\n");
-    auto outTensorType = cast<RankedTensorType>(outType);
-    auto outShape = outTensorType.getShape();
-    int outRank = outTensorType.getRank();
+    Value result = nullptr;
 
-    int actualReduceDim = reduceDim + (hasPacking ? 1 : 0);
+    SmallVector<int64_t> startOffsets(newRank, 0);
+    SmallVector<int64_t> sliceStrides(newRank, 1);
+    SmallVector<int64_t> sliceLimits = llvm::to_vector(inputType.getShape());
 
-    LLVM_DEBUG(llvm::dbgs() << "hasPacking: " << hasPacking << "\n");
-    LLVM_DEBUG(llvm::dbgs() << "packingSize: " << packingSize << "\n");
-    LLVM_DEBUG(llvm::dbgs()
-               << "tensorType rank: " << tensorType.getRank() << "\n");
-    LLVM_DEBUG(llvm::dbgs() << "dims size: " << dims.size() << "\n");
-    LLVM_DEBUG(llvm::dbgs() << "tensorType: " << tensorType << "\n");
+    int64_t dilation = 1;
+    if (windowDilations) {
+      dilation = (*windowDilations)[reduceDim];
+    }
 
-    bool outHasPacking = (outRank == dims.size() + 1);
-    int actualOutReduceDim = reduceDim + (outHasPacking ? 1 : 0);
-    int outSize = outShape[actualOutReduceDim];
+    for (int k = 0; k < windowSize; ++k) {
+      startOffsets[reduceDim] = k * dilation;
+      sliceLimits[reduceDim] = k * dilation + inputType.getDimSize(reduceDim);
 
-    SmallVector<SmallVector<Value>> rollingResultsPerLimb(packingSize);
+      auto sliceOp = stablehlo::SliceOp::create(
+          rewriter, loc, paddedInput, startOffsets, sliceLimits, sliceStrides);
 
-    for (int k = 0; k < outSize; ++k) {
-      SmallVector<int64_t> sliceShape;
-      SmallVector<int64_t> startOffsets(newRank, 0);
-      SmallVector<int64_t> endOffsets;
-      for (int d = 0; d < newRank; ++d) {
-        if (hasPacking && d == 0) {
-          startOffsets[d] = 0;
-          endOffsets.push_back(1);
-        } else if (d == actualReduceDim) {
-          startOffsets[d] = k;
-          endOffsets.push_back(k + windowSize);
-        } else {
-          int outD = d;
-          if (hasPacking && outRank < newRank) {
-            if (d > actualReduceDim)
-              outD = d - 1;
-          } else if (!hasPacking && outRank > newRank) {
-            if (d > actualReduceDim)
-              outD = d + 1;
-          }
-          startOffsets[d] = 0;
-          endOffsets.push_back(outShape[outD]);
-        }
-      }
-      for (size_t d = 0; d < newRank; ++d) {
-        sliceShape.push_back(endOffsets[d] - startOffsets[d]);
-      }
-
-      SmallVector<Type> reduceResultTypes;
-      SmallVector<int64_t> resShape;
-      for (int d = 0; d < newRank; ++d) {
-        if (d != actualReduceDim)
-          resShape.push_back(sliceShape[d]);
-      }
-      Type reduceResultType = RankedTensorType::get(
-          resShape,
-          cast<RankedTensorType>(paddedInput.getType()).getElementType());
-      for (int p = 0; p < packingSize; ++p)
-        reduceResultTypes.push_back(reduceResultType);
-
-      SmallVector<Value> operands;
-      for (int p = 0; p < packingSize; ++p) {
-        SmallVector<int64_t> pStart = startOffsets;
-        SmallVector<int64_t> pEnd = endOffsets;
-        if (hasPacking) {
-          pStart[0] = p;
-          pEnd[0] = p + 1;
-        }
-        auto sliceOp = rewriter.create<stablehlo::SliceOp>(
-            loc,
-            RankedTensorType::get(
-                sliceShape,
-                cast<RankedTensorType>(paddedInput.getType()).getElementType()),
-            paddedInput, rewriter.getDenseI64ArrayAttr(pStart),
-            rewriter.getDenseI64ArrayAttr(pEnd),
-            rewriter.getDenseI64ArrayAttr(SmallVector<int64_t>(newRank, 1)));
-        operands.push_back(sliceOp);
-      }
-
-      SmallVector<Value> splitInitValues;
-      if (packingSize == 2 && adaptor.getInitValues().size() == 1) {
-        Value initVal = adaptor.getInitValues()[0];
-        Value hiInit = extractLimb(initVal, 0, rewriter, loc, concatDimension);
-        Value loInit = extractLimb(initVal, 1, rewriter, loc, concatDimension);
-
-        auto hiType = cast<RankedTensorType>(hiInit.getType());
-        auto loType = cast<RankedTensorType>(loInit.getType());
-
-        if (hiType.getRank() == 1 && hiType.getShape()[0] == 1) {
-          hiInit = rewriter.create<stablehlo::ReshapeOp>(
-              loc, RankedTensorType::get({}, hiType.getElementType()), hiInit);
-        }
-        if (loType.getRank() == 1 && loType.getShape()[0] == 1) {
-          loInit = rewriter.create<stablehlo::ReshapeOp>(
-              loc, RankedTensorType::get({}, loType.getElementType()), loInit);
-        }
-        splitInitValues.push_back(hiInit);
-        splitInitValues.push_back(loInit);
+      if (result) {
+        result = stablehlo::AddOp::create(rewriter, loc, result, sliceOp);
       } else {
-        for (auto val : adaptor.getInitValues()) {
-          if (auto tt = dyn_cast<RankedTensorType>(val.getType())) {
-            if (tt.getRank() == 1 && tt.getShape()[0] == 1) {
-              val = rewriter.create<stablehlo::ReshapeOp>(
-                  loc, RankedTensorType::get({}, tt.getElementType()), val);
-            }
-          }
-          splitInitValues.push_back(val);
-        }
-      }
-
-      auto newReduceOp = rewriter.create<stablehlo::ReduceOp>(
-          loc, TypeRange(reduceResultTypes), operands, splitInitValues,
-          ArrayRef<int64_t>{actualReduceDim});
-      LLVM_DEBUG(llvm::dbgs() << "ReduceOp created successfully\n");
-
-      LLVM_DEBUG(llvm::dbgs() << "Rewriting region...\n");
-      // Create a new block with updated signature
-      Region &origRegion = reduceOp.getRegion();
-      Block &origBlock = origRegion.front();
-
-      Region &newRegion = newReduceOp.getRegion();
-      Type argType =
-          splitInitValues[0]
-              .getType(); // Use split init value type for region arguments
-      LLVM_DEBUG(llvm::dbgs() << "Arg type for new block: " << argType << "\n");
-      SmallVector<Type> argTypes;
-      SmallVector<Location> argLocs;
-      for (int p = 0; p < packingSize; ++p) {
-        argTypes.push_back(argType);
-        argLocs.push_back(loc);
-      }
-      for (int p = 0; p < packingSize; ++p) {
-        argTypes.push_back(argType);
-        argLocs.push_back(loc);
-      }
-
-      Block *newBlock;
-      if (newReduceOp.getRegion().empty()) {
-        LLVM_DEBUG(llvm::dbgs() << "newRegion is empty, creating new block\n");
-        newBlock = rewriter.createBlock(&newRegion, {}, argTypes, argLocs);
-      } else {
-        LLVM_DEBUG(llvm::dbgs()
-                   << "newRegion is NOT empty, obtaining existing block\n");
-        newBlock = &newRegion.front();
-        LLVM_DEBUG(llvm::dbgs()
-                   << "  Existing block has "
-                   << newBlock->getOperations().size() << " ops\n");
-        LLVM_DEBUG(llvm::dbgs()
-                   << "  Existing block has " << newBlock->getNumArguments()
-                   << " arguments\n");
-        if (!newBlock->empty()) {
-          while (!newBlock->empty()) {
-            newBlock->front().erase();
-          }
-          LLVM_DEBUG(llvm::dbgs() << "  Cleared existing block ops\n");
-        }
-        if (newBlock->getNumArguments() == 0) {
-          LLVM_DEBUG(llvm::dbgs() << "  Adding arguments to existing block\n");
-          for (size_t i = 0; i < argTypes.size(); ++i) {
-            newBlock->addArgument(argTypes[i], argLocs[i]);
-          }
-        } else {
-          LLVM_DEBUG(llvm::dbgs()
-                     << "  Existing block ALREADY had arguments:\n");
-          for (unsigned i = 0; i < newBlock->getNumArguments(); ++i) {
-            LLVM_DEBUG(llvm::dbgs()
-                       << "    arg " << i << " type: "
-                       << newBlock->getArgument(i).getType() << "\n");
-          }
-        }
-      }
-
-      rewriter.setInsertionPointToStart(newBlock);
-
-      // Reconstruct combined inputs for the original block ops
-      SmallVector<Value> combinedArgs;
-      for (int i = 0; i < 2; ++i) { // 2 operands in original region (lhs, rhs)
-        LLVM_DEBUG(llvm::dbgs() << "Processing operand " << i << "\n");
-        if (packingSize == 1) {
-          Value high = newBlock->getArgument(i);
-          combinedArgs.push_back(high);
-        } else if (packingSize == 2) {
-          Value high = newBlock->getArgument(i * 2);
-          Value low = newBlock->getArgument(i * 2 + 1);
-
-          if (cast<RankedTensorType>(high.getType()).getRank() == 0) {
-            high = rewriter.create<stablehlo::ReshapeOp>(
-                loc,
-                RankedTensorType::get(
-                    {1},
-                    cast<RankedTensorType>(high.getType()).getElementType()),
-                high);
-            low = rewriter.create<stablehlo::ReshapeOp>(
-                loc,
-                RankedTensorType::get(
-                    {1},
-                    cast<RankedTensorType>(low.getType()).getElementType()),
-                low);
-          }
-
-          Value combined;
-          if (isFirst) {
-            combined = rewriter.create<stablehlo::ConcatenateOp>(
-                loc,
-                RankedTensorType::get(
-                    {2},
-                    cast<RankedTensorType>(high.getType()).getElementType()),
-                ValueRange{high, low}, 0);
-          } else {
-            combined = rewriter.create<stablehlo::ConcatenateOp>(
-                loc,
-                RankedTensorType::get(
-                    {2},
-                    cast<RankedTensorType>(high.getType()).getElementType()),
-                ValueRange{low, high}, 0);
-          }
-          combinedArgs.push_back(combined);
-        }
-      }
-
-      LLVM_DEBUG(llvm::dbgs() << "Cloning ops using IRMapping...\n");
-      IRMapping mapper;
-      for (Operation &op : origBlock) {
-        for (Value operand : op.getOperands()) {
-          Value rootValue = operand;
-          while (auto castOp =
-                     dyn_cast_or_null<mlir::UnrealizedConversionCastOp>(
-                         rootValue.getDefiningOp())) {
-            rootValue = castOp.getOperand(0);
-          }
-          LLVM_DEBUG(llvm::dbgs()
-                     << "Operand: " << operand
-                     << " traces back to rootValue: " << rootValue << "\n");
-          if (rootValue.getDefiningOp()) {
-            LLVM_DEBUG(llvm::dbgs() << "  Defining op: "
-                                    << *rootValue.getDefiningOp() << "\n");
-          } else {
-            LLVM_DEBUG(llvm::dbgs()
-                       << "  No defining op (must be block arg)\n");
-          }
-          if (auto blockArg = dyn_cast<BlockArgument>(rootValue)) {
-            LLVM_DEBUG(llvm::dbgs()
-                       << "  Is block arg, owner block: " << blockArg.getOwner()
-                       << ", origBlock: " << &origBlock << "\n");
-            bool shouldMap = false;
-            if (blockArg.getOwner() == &origBlock) {
-              shouldMap = true;
-            } else if (!blockArg.getOwner()->getParentOp()) {
-              shouldMap = true; // Detached block, likely old reduction block
-            }
-            if (shouldMap) {
-              unsigned idx = blockArg.getArgNumber();
-              mapper.map(operand, combinedArgs[idx]);
-              LLVM_DEBUG(llvm::dbgs() << "  Mapped operand to combinedArgs["
-                                      << idx << "]\n");
-            }
-          }
-        }
-      }
-
-      rewriter.setInsertionPointToEnd(newBlock);
-      Value actualRetVal = nullptr;
-      LLVM_DEBUG(llvm::dbgs() << "Mapper contents:\n");
-      for (size_t i = 0; i < origBlock.getNumArguments(); ++i) {
-        LLVM_DEBUG(llvm::dbgs()
-                   << "  " << origBlock.getArgument(i) << " -> "
-                   << mapper.lookupOrDefault(origBlock.getArgument(i)) << "\n");
-      }
-
-      for (Operation &op : origBlock) {
-        LLVM_DEBUG(llvm::dbgs() << "Orig op before cloning: " << op << "\n");
-        if (isa<stablehlo::ReturnOp>(&op)) {
-          actualRetVal = mapper.lookupOrDefault(op.getOperand(0));
-          continue;
-        }
-        OperationState state(op.getLoc(), op.getName().getStringRef());
-        SmallVector<Value> mappedOperands;
-        for (Value operand : op.getOperands()) {
-          mappedOperands.push_back(mapper.lookupOrDefault(operand));
-        }
-        state.addOperands(mappedOperands);
-        state.addAttributes(op.getAttrs());
-        for (Type resultType : op.getResultTypes()) {
-          if (packingSize == 1 && resultType.isF64()) {
-            state.addTypes(rewriter.getF32Type());
-          } else if (packingSize == 1 && isa<RankedTensorType>(resultType) &&
-                     cast<RankedTensorType>(resultType)
-                         .getElementType()
-                         .isF64()) {
-            auto tt = cast<RankedTensorType>(resultType);
-            state.addTypes(
-                RankedTensorType::get(tt.getShape(), rewriter.getF32Type()));
-          } else {
-            Type convertedType = getTypeConverter()->convertType(resultType);
-            if (convertedType) {
-              state.addTypes(convertedType);
-            } else {
-              state.addTypes(resultType);
-            }
-          }
-        }
-        Operation *clone = rewriter.create(state);
-
-        LLVM_DEBUG(llvm::dbgs() << "Cloning op: " << op.getName() << "\n");
-#ifndef NDEBUG
-        for (Value operand : op.getOperands()) {
-          LLVM_DEBUG(llvm::dbgs()
-                     << "  Orig operand type: " << operand.getType() << "\n");
-        }
-        for (Value operand : clone->getOperands()) {
-          LLVM_DEBUG(llvm::dbgs()
-                     << "  Cloned operand type: " << operand.getType() << "\n");
-        }
-#endif
-        for (size_t i = 0; i < op.getNumResults(); ++i) {
-          mapper.map(op.getResult(i), clone->getResult(i));
-        }
-      }
-
-      if (!actualRetVal) {
-        LLVM_DEBUG(
-            llvm::dbgs()
-            << "Error: Could not find return value from original region\n");
-        return failure();
-      }
-
-      // Now create the ACTUAL ReturnOp based on actualRetVal
-      if (packingSize == 1) {
-        rewriter.create<stablehlo::ReturnOp>(loc, actualRetVal);
-      } else if (packingSize == 2) {
-        Value highRet =
-            extractLimb(actualRetVal, 0, rewriter, loc, concatDimension);
-        Value lowRet =
-            extractLimb(actualRetVal, 1, rewriter, loc, concatDimension);
-
-        auto highType = cast<RankedTensorType>(highRet.getType());
-        auto lowType = cast<RankedTensorType>(lowRet.getType());
-
-        if (highType.getRank() == 1 && highType.getShape()[0] == 1) {
-          highRet = rewriter.create<stablehlo::ReshapeOp>(
-              loc, RankedTensorType::get({}, highType.getElementType()),
-              highRet);
-        }
-        if (lowType.getRank() == 1 && lowType.getShape()[0] == 1) {
-          lowRet = rewriter.create<stablehlo::ReshapeOp>(
-              loc, RankedTensorType::get({}, lowType.getElementType()), lowRet);
-        }
-
-        LLVM_DEBUG(llvm::dbgs() << "Creating tablehlo::ReturnOp for "
-                                   "packingSize == 2 with 2 values\n");
-        rewriter.create<stablehlo::ReturnOp>(loc, ValueRange{highRet, lowRet});
-        LLVM_DEBUG(llvm::dbgs() << "tablehlo::ReturnOp created successfully\n");
-      }
-
-      LLVM_DEBUG(llvm::dbgs() << "Region rewritten using IRMapping cloning\n");
-
-      rewriter.setInsertionPointAfter(newReduceOp);
-
-      for (int p = 0; p < packingSize; ++p) {
-        Value res = newReduceOp.getResult(p);
-        SmallVector<int64_t> reshapedShape;
-        for (int d = 0; d < newRank; ++d) {
-          if (d == actualReduceDim) {
-            reshapedShape.push_back(1);
-          } else {
-            int resD = d;
-            if (d > actualReduceDim)
-              resD = d - 1;
-            reshapedShape.push_back(
-                cast<RankedTensorType>(res.getType()).getShape()[resD]);
-          }
-        }
-        Value reshapedRes = rewriter.create<stablehlo::ReshapeOp>(
-            loc,
-            RankedTensorType::get(
-                reshapedShape,
-                cast<RankedTensorType>(res.getType()).getElementType()),
-            res);
-        rollingResultsPerLimb[p].push_back(reshapedRes);
+        result = sliceOp;
       }
     }
 
-    SmallVector<Value> packingResults;
-    for (int p = 0; p < packingSize; ++p) {
-      Value limbResult;
-      if (rollingResultsPerLimb[p].size() == 1) {
-        limbResult = rollingResultsPerLimb[p][0];
-      } else {
-        SmallVector<int64_t> concatShape = llvm::to_vector(
-            cast<RankedTensorType>(rollingResultsPerLimb[p][0].getType())
-                .getShape());
-        concatShape[actualReduceDim] = outSize;
-        limbResult = rewriter.create<stablehlo::ConcatenateOp>(
-            loc,
-            RankedTensorType::get(
-                concatShape,
-                cast<RankedTensorType>(rollingResultsPerLimb[p][0].getType())
-                    .getElementType()),
-            rollingResultsPerLimb[p], actualReduceDim);
-      }
-      packingResults.push_back(limbResult);
-    }
-
-    Value finalResult;
-    if (packingResults.size() == 1) {
-      finalResult = packingResults[0];
-    } else {
-      if (hasPacking) {
-        SmallVector<int64_t> concatShape = llvm::to_vector(
-            mlir::cast<RankedTensorType>(packingResults[0].getType())
-                .getShape());
-        concatShape[0] = packingSize;
-
-        finalResult = rewriter.create<stablehlo::ConcatenateOp>(
-            loc,
-            RankedTensorType::get(concatShape, mlir::cast<RankedTensorType>(
-                                                   packingResults[0].getType())
-                                                   .getElementType()),
-            packingResults, 0);
-      } else {
-        SmallVector<Value> reshapedPackingResults;
-        for (Value res : packingResults) {
-          SmallVector<int64_t> reshapedShape = {1};
-          for (int64_t s :
-               mlir::cast<RankedTensorType>(res.getType()).getShape()) {
-            reshapedShape.push_back(s);
-          }
-          reshapedPackingResults.push_back(
-              rewriter.create<stablehlo::ReshapeOp>(
-                  loc,
-                  RankedTensorType::get(
-                      reshapedShape, mlir::cast<RankedTensorType>(res.getType())
-                                         .getElementType()),
-                  res));
-        }
-
-        SmallVector<int64_t> concatShape = {packingSize};
-        for (int64_t s :
-             mlir::cast<RankedTensorType>(packingResults[0].getType())
-                 .getShape()) {
-          concatShape.push_back(s);
-        }
-
-        finalResult = rewriter.create<stablehlo::ConcatenateOp>(
-            loc,
-            RankedTensorType::get(concatShape, mlir::cast<RankedTensorType>(
-                                                   packingResults[0].getType())
-                                                   .getElementType()),
-            reshapedPackingResults, 0);
-      }
-    }
-
-    if (outRank < newRank) {
-      finalResult =
-          rewriter.create<stablehlo::ReshapeOp>(loc, outType, finalResult);
-    }
-
-    rewriter.replaceOp(reduceOp, finalResult);
+    rewriter.replaceOp(reduceOp, result);
     return success();
   }
 };
@@ -3498,8 +3033,7 @@ struct MultiFloatConversionPass
 
     if (expansionSize >= 2) {
       RewritePatternSet patterns(context);
-      patterns.add<LowerReduceWindowOp>(typeConverter, context, srcTy,
-                                        concatDimension);
+      patterns.add<LowerReduceWindowOp>(context, srcTy);
       GreedyRewriteConfig config;
       if (failed(applyPatternsGreedily(op, std::move(patterns), config))) {
         signalPassFailure();
