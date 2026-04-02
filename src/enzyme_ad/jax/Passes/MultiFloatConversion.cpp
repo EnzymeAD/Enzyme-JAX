@@ -2527,7 +2527,8 @@ struct LowerReduceWindowOp
     TypedValue<RankedTensorType> input =
         cast<TypedValue<RankedTensorType>>(reduceOp.getInputs()[0]);
     auto inputType = input.getType();
-    auto outputType = cast<RankedTensorType>(reduceOp.getResults()[0].getType());
+    auto outputType =
+        cast<RankedTensorType>(reduceOp.getResults()[0].getType());
 
     if (inputType.getElementType() != sourceType) {
       return failure();
@@ -2619,8 +2620,9 @@ struct LowerReduceWindowOp
       }
 
       SmallVector<int64_t> interiorPadding(newRank, 0);
-      rewriter.create<stablehlo::PadOp>(
-          loc, input, initValues, rewriter.getDenseI64ArrayAttr(lowPadding),
+      paddedInput = stablehlo::PadOp::create(
+          rewriter, loc, input, initValues,
+          rewriter.getDenseI64ArrayAttr(lowPadding),
           rewriter.getDenseI64ArrayAttr(highPadding),
           rewriter.getDenseI64ArrayAttr(interiorPadding));
     }
