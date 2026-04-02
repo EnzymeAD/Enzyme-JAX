@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s --enzyme-hlo-opt=passses=131072 | FileCheck %s
+// RUN: enzymexlamlir-opt %s --enzyme-hlo-opt | FileCheck %s
 
 module {
   func.func @main(%arg6: tensor<1536xf64>, %3931: tensor<1519x3056xf64>) -> (tensor<1519x3056xf64>, tensor<1x1519x3056xf64>) {

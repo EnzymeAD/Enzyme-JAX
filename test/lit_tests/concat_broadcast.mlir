@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s --enzyme-hlo-opt=passses=131072 | FileCheck %s
+// RUN: enzymexlamlir-opt %s --enzyme-hlo-opt | FileCheck %s
 module {
   func.func @main(%arg6: tensor<1536xf64>) -> (tensor<1519x3056xf64>, tensor<1x1519x3056xf64>) {
     %633 = stablehlo.slice %arg6 [9:1529] : (tensor<1536xf64>) -> tensor<1520xf64>
