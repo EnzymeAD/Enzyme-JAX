@@ -1654,6 +1654,12 @@ def CompareNegateConstSimplifyPatterns : EnzymeHLOPatternOp<
   let patterns = ["CompareNegateConstSimplify"];
 }
 
+def CompareSubtractConstSimplifyPatterns : EnzymeHLOPatternOp<
+  "compare_subtract_const_simplify"
+> {
+  let patterns = ["CompareSubtractConstSimplify"];
+}
+
 def BroadcastIotaSimplifyPatterns : EnzymeHLOPatternOp<
   "broadcast_iota_simplify"
 > {
@@ -3119,12 +3125,6 @@ def ApplySplitComplexScatterPatterns: EnzymeHLOPatternOp<
 def ApplySplitComplexGatherPatterns: EnzymeHLOPatternOp<
     "split_complex_gather"> {
   let patterns = ["SplitComplexGather"];
-}
-
-// TODO: remove this once we have removed it from reactant
-def ApplySplitComplexScatterSetindexPatterns: EnzymeHLOPatternOp<
-    "split_complex_scatter_setindex"> {
-  let patterns = ["SplitComplexScatter"];
 }
 
 def ApplyReduceMaxMinMulPositiveScalarPatterns: EnzymeHLOPatternOp<

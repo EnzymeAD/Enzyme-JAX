@@ -651,6 +651,35 @@ def TrsmOp : EnzymeXLA_Op<"blas.trsm", [Pure]> {
   }];
 }
 
+def TridiagonalSolveOp: EnzymeXLA_Op<"linalg.tridiagonal_solve", [Pure]> {
+  let summary = "Computes the solution of a tridiagonal linear system.";
+  let description = [{Computes the solution of a tridiagonal linear system.
+  Parameters:
+  dl: A batch of vectors with shape [..., m]. The lower diagonal of A:
+    dl[i] := A[i, i-1] for i in [0,m). Note that dl[0] = 0.
+  d: A batch of vectors with shape [..., m]. The middle diagonal of A:
+    d[i]  := A[i, i] for i in [0,m).
+  du: A batch of vectors with shape [..., m]. The upper diagonal of A:
+    du[i] := A[i, i+1] for i in [0,m). Note that dl[m-1] = 0.
+  b: Right hand side matrix.
+  }];
+
+  let arguments = (ins
+    HLO_Tensor:$dl,
+    HLO_Tensor:$d,
+    HLO_Tensor:$du,
+    HLO_Tensor:$B
+  );
+
+  let results = (outs
+    HLO_Tensor:$X
+  );
+
+  let assemblyFormat = [{
+    $dl `,` $d `,` $du `,` $B attr-dict `:` functional-type(operands, results)
+  }];
+}
+
 def LUFactorizationOp: EnzymeXLA_Op<"linalg.lu", [Pure]> {
   let summary = "LU factorization operation with RowMaximum pivoting.";
 
@@ -1414,6 +1443,24 @@ def MPIAllreduceOp : EnzymeXLA_Op<"mpi.allreduce", []> {
     TensorOf<[I32]> : $count,
     EnzymeXLA_MPIDatatypeAttr:$datatype,
     EnzymeXLA_MPIOpAttr:$op
+  );
+
+  let results = (
+    outs AnyTensor : $outbuf
+  );
+
+  let assemblyFormat = "`(` operands `)` attr-dict `:` functional-type(operands, results)";
+}
+
+def MPIBcastOp : EnzymeXLA_Op<"mpi.bcast", []> {
+  let summary = "Equivalent to "
+                "`MPI_Bcast(&buf, count, datatype, root, MPI_COMM_WORLD)`";
+
+  let arguments = (
+    ins AnyTensor : $inbuf,
+    TensorOf<[I32]> : $count,
+    TensorOf<[I32]> : $root,
+    EnzymeXLA_MPIDatatypeAttr:$datatype
   );
 
   let results = (
