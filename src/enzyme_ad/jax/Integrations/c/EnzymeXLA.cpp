@@ -428,7 +428,7 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("dus_dus_concat");
   list.push_back("abs_positive_simplify");
   list.push_back("transpose_elementwise_transpose");
-  list.push_back("select_comp_iota_const_simplify<1>");
+  list.push_back("select_comp_iota_const_simplify");
   list.push_back("sign_abs_simplify<1>");
   list.push_back("broadcastindim_is_reshape");
   list.push_back("reduce_window_wrap<1>");
@@ -460,7 +460,6 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("concat_concat_to_dus");
   list.push_back("broadcast_iota_simplify");
   list.push_back("select_comp_iota_to_dus");
-  list.push_back("select_broadcast_iota");
   list.push_back("compare_cleanup");
   list.push_back("broadcast_compare");
   list.push_back("not_compare");
