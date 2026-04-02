@@ -1446,11 +1446,6 @@ def SelectCompIotaConstSimplify : EnzymeHLOPatternOp<
   let patterns = ["SelectCompIotaConstSimplify"];
 }
 
-def SelectBroadcastIota : EnzymeHLOPatternOp<
-    "select_broadcast_iota"> {
-  let patterns = ["SelectBroadcastIota"];
-}
-
 def SelectCompIotaConstToDUS : EnzymeHLOPatternOp<
     "select_comp_iota_to_dus"> {
   let patterns = ["SelectCompIotaConstToDUS"];

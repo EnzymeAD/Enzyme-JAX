@@ -13623,10 +13623,11 @@ static bool extractSplatInt(Value v, int64_t &out) {
 }
 
 // Matches: select(broadcast_in_dim(compare(iota_expr, K), [dim]), A, B)
+//      or: select(compare(iota_expr, K), A, B)   (no broadcast)
 // where iota_expr is either iota or add(iota, const_offset).
-// Replaces with concat(slice(A|B, ...), ...) along the broadcast dimension.
-struct SelectBroadcastIota final
-    : CheckedOpRewritePattern<stablehlo::SelectOp, SelectBroadcastIota> {
+// Replaces with concat(slice(A|B, ...), ...) along the iota/broadcast dimension.
+struct SelectCompIotaConstSimplify final
+    : CheckedOpRewritePattern<stablehlo::SelectOp, SelectCompIotaConstSimplify> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::SelectOp selectOp,
@@ -13634,14 +13635,16 @@ struct SelectBroadcastIota final
     Value trueTensor = selectOp.getOnTrue();
     Value falseTensor = selectOp.getOnFalse();
 
-    // pred must come from a broadcast_in_dim
+    // pred may come from a broadcast_in_dim wrapping a compare, or directly
+    // from a compare (no broadcast).
     auto broadcast =
         selectOp.getPred().getDefiningOp<stablehlo::BroadcastInDimOp>();
-    if (!broadcast)
-      return failure();
-
-    // broadcast input must be a compare
-    auto compare = broadcast.getOperand().getDefiningOp<stablehlo::CompareOp>();
+    stablehlo::CompareOp compare;
+    if (broadcast) {
+      compare = broadcast.getOperand().getDefiningOp<stablehlo::CompareOp>();
+    } else {
+      compare = selectOp.getPred().getDefiningOp<stablehlo::CompareOp>();
+    }
     if (!compare)
       return failure();
 
@@ -13708,19 +13711,23 @@ struct SelectBroadcastIota final
       }
     }
 
-    // Find which output dimension the iota dimension maps to via broadcast.
-    // getBroadcastDimensions()[i] is the output dim that input dim i maps to.
+    // Find which output dimension the iota dimension maps to.
+    // With broadcast: look up through getBroadcastDimensions().
+    // Without broadcast: the iota dim is already the output dim.
     const int64_t iotaDim = iota.getIotaDimension();
-    auto bcastDims = broadcast.getBroadcastDimensions();
-    int64_t outputDim = -1;
-    for (auto [inDim, outDim] : llvm::enumerate(bcastDims)) {
-      if ((int64_t)inDim == iotaDim) {
-        outputDim = outDim;
-        break;
+    int64_t outputDim = iotaDim;
+    if (broadcast) {
+      auto bcastDims = broadcast.getBroadcastDimensions();
+      outputDim = -1;
+      for (auto [inDim, outDim] : llvm::enumerate(bcastDims)) {
+        if ((int64_t)inDim == iotaDim) {
+          outputDim = outDim;
+          break;
+        }
       }
+      if (outputDim == -1)
+        return failure();
     }
-    if (outputDim == -1)
-      return failure();
 
     auto outputShape = selectOp.getType().getShape();
     const int64_t endValue = outputShape[outputDim];
@@ -13791,169 +13798,6 @@ struct SelectBroadcastIota final
 
     rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
         selectOp, ValueRange{sliceValues}, outputDim);
-    return success();
-  }
-};
-
-struct SelectCompIotaConstSimplify final
-    : CheckedOpRewritePattern<stablehlo::SelectOp,
-                              SelectCompIotaConstSimplify> {
-  struct slice_data {
-    Value tensor;
-    int64_t count;
-  };
-  using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  LogicalResult matchAndRewriteImpl(stablehlo::SelectOp selectOp,
-                                    PatternRewriter &rewriter) const {
-    DenseIntElementsAttr inp;
-
-    Value compare = selectOp.getPred();
-    Value trueTensor = selectOp.getOnTrue();
-    Value falseTensor = selectOp.getOnFalse();
-    if (!matchPattern(selectOp.getOperation(),
-                      m_Op<stablehlo::SelectOp>(m_Op<stablehlo::CompareOp>(),
-                                                matchers::m_Any(&trueTensor),
-                                                matchers::m_Any(&falseTensor))))
-      return failure();
-
-    auto tensorType = selectOp.getType();
-    if (!tensorType)
-      return failure();
-
-    auto shapeLimit = tensorType.getShape();
-
-    Value cmpLHS = nullptr;
-    Value cmpRHS = nullptr;
-    stablehlo::ComparisonDirection flag;
-    if (auto cmp = compare.getDefiningOp<stablehlo::CompareOp>()) {
-      cmpLHS = cmp.getLhs();
-      cmpRHS = cmp.getRhs();
-      flag = cmp.getComparisonDirection();
-    } else if (auto notop = compare.getDefiningOp<stablehlo::NotOp>()) {
-      if (auto cmp = compare.getDefiningOp<stablehlo::CompareOp>()) {
-        cmpLHS = cmp.getLhs();
-        cmpRHS = cmp.getRhs();
-        flag = negatedComparisonDirection(cmp.getComparisonDirection());
-      }
-    }
-
-    if (!cmpLHS)
-      return failure();
-
-    stablehlo::IotaOp iota;
-    if (!(matchPattern(cmpLHS, m_Op<stablehlo::IotaOp>()) &&
-          matchPattern(cmpRHS, m_Constant(&inp)))) {
-      if (matchPattern(cmpRHS, m_Op<stablehlo::IotaOp>()) &&
-          matchPattern(cmpLHS, m_Constant(&inp))) {
-        // incoming: const `op` iota
-        // treat the match as iota `op` const
-        switch (flag) {
-        case stablehlo::ComparisonDirection::LT:
-          flag = stablehlo::ComparisonDirection::GT;
-          break;
-        case stablehlo::ComparisonDirection::LE:
-          flag = stablehlo::ComparisonDirection::GE;
-          break;
-        case stablehlo::ComparisonDirection::GT:
-          flag = stablehlo::ComparisonDirection::LT;
-          break;
-        case stablehlo::ComparisonDirection::GE:
-          flag = stablehlo::ComparisonDirection::LE;
-          break;
-        default:
-          break;
-        }
-        iota = cast<stablehlo::IotaOp>(cmpRHS.getDefiningOp());
-      } else
-        return failure();
-    } else
-      iota = cast<stablehlo::IotaOp>(cmpLHS.getDefiningOp());
-
-    assert(iota);
-
-    const auto iotaDim = iota.getIotaDimension();
-
-    if (!inp.isSplat())
-      return failure();
-
-    auto constValue =
-        inp.getSplatValue<IntegerAttr>().getValue().getSExtValue();
-    auto endValue = shapeLimit[iotaDim];
-
-    SmallVector<slice_data, 3> slices;
-
-    switch (flag) {
-    case stablehlo::ComparisonDirection::LT:
-      slices.push_back(slice_data{trueTensor, constValue});
-      slices.push_back(slice_data{falseTensor, endValue - constValue});
-      break;
-    case stablehlo::ComparisonDirection::LE:
-      slices.push_back(slice_data{trueTensor, constValue + 1});
-      slices.push_back(slice_data{falseTensor, endValue - (constValue + 1)});
-      break;
-
-    case stablehlo::ComparisonDirection::GT:
-      slices.push_back(slice_data{falseTensor, constValue + 1});
-      slices.push_back(slice_data{trueTensor, endValue - (constValue + 1)});
-      break;
-    case stablehlo::ComparisonDirection::GE:
-      slices.push_back(slice_data{falseTensor, constValue});
-      slices.push_back(slice_data{trueTensor, endValue - constValue});
-      break;
-
-    case stablehlo::ComparisonDirection::EQ:
-      slices.push_back(slice_data{falseTensor, constValue});
-      slices.push_back(slice_data{trueTensor, 1});
-      slices.push_back(slice_data{falseTensor, endValue - constValue - 1});
-      break;
-    case stablehlo::ComparisonDirection::NE:
-      slices.push_back(slice_data{trueTensor, constValue});
-      slices.push_back(slice_data{falseTensor, 1});
-      slices.push_back(slice_data{trueTensor, endValue - constValue - 1});
-      break;
-    }
-
-    assert(slices.size() >= 2);
-
-    auto valid_slices =
-        std::count_if(slices.begin(), slices.end(),
-                      [](slice_data data) { return data.count > 0; });
-    if (valid_slices == 1) {
-      for (auto &elem : slices) {
-        if (elem.count > 0) {
-          // if we are the only usable slice, replace the result
-          rewriter.replaceAllOpUsesWith(selectOp, elem.tensor);
-          return success();
-        }
-      }
-    }
-
-    SmallVector<Value, 3> sliceValues;
-    {
-      int64_t start = 0;
-      const auto loc = selectOp.getLoc();
-      SmallVector<int64_t> startIndices(shapeLimit.size(), 0);
-      SmallVector<int64_t> limitIndices{shapeLimit};
-      SmallVector<int64_t> strides(shapeLimit.size(), 1);
-
-      for (const auto &elem : slices) {
-        if (elem.count > 0) {
-          startIndices[iotaDim] = start;
-          limitIndices[iotaDim] = start + elem.count;
-          auto slice = stablehlo::SliceOp::create(
-              rewriter, loc, elem.tensor, llvm::ArrayRef<int64_t>(startIndices),
-              llvm::ArrayRef<int64_t>(limitIndices),
-              llvm::ArrayRef<int64_t>(strides));
-          sliceValues.push_back(slice);
-          start += elem.count;
-        }
-      }
-    }
-
-    rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
-        selectOp, ValueRange{sliceValues}, iotaDim);
-
     return success();
   }
 };
@@ -35765,9 +35609,8 @@ struct EnzymeHLOOptPass
         RealOpCanon,
         ReorderElementwiseAndShapeOp,
         ReshapeOpCanon,
-        SelectCompIotaConstSimplify,
         SelectCompIotaConstToDUS,
-        SelectBroadcastIota,
+        SelectCompIotaConstSimplify,
         SelectPadToDUS,
         SelectSelectSameCond,
         AndPadPad,
