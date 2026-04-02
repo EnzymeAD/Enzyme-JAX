@@ -1160,6 +1160,33 @@ struct AbsOpConversion : public OpConversionPattern<stablehlo::AbsOp> {
   }
 };
 
+struct NegOpConversion : public OpConversionPattern<stablehlo::NegOp> {
+  StringRef concatDimension;
+
+  NegOpConversion(TypeConverter &typeConverter, MLIRContext *context,
+                  StringRef concatDimension)
+      : OpConversionPattern<stablehlo::NegOp>(typeConverter, context),
+        concatDimension(concatDimension) {}
+
+  LogicalResult
+  matchAndRewrite(stablehlo::NegOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+
+    Value hi = extractLimb(adaptor.getOperands()[0], 0, rewriter, loc,
+                           concatDimension);
+    Value lo = extractLimb(adaptor.getOperands()[0], 1, rewriter, loc,
+                           concatDimension);
+
+    Value neg_hi = rewriter.create<stablehlo::NegOp>(loc, hi);
+    Value neg_lo = rewriter.create<stablehlo::NegOp>(loc, lo);
+
+    Value packed = packLimbs(neg_hi, neg_lo, rewriter, loc, concatDimension);
+    rewriter.replaceOp(op, packed);
+    return success();
+  }
+};
+
 struct SqrtOpConversion : public OpConversionPattern<stablehlo::SqrtOp> {
   StringRef concatDimension;
 
@@ -3134,8 +3161,12 @@ struct MultiFloatConversionPass
                                         srcTy, tgtTy, expansionSize);
       patterns.add<CompareOpConversion>(typeConverter, context,
                                         concatDimension);
-      patterns.add<GenericOpConversion<stablehlo::NegOp>>(typeConverter,
-                                                          context);
+      if (concatDimension == "tuple") {
+        patterns.add<NegOpConversion>(typeConverter, context, concatDimension);
+      } else {
+        patterns.add<GenericOpConversion<stablehlo::NegOp>>(typeConverter,
+                                                            context);
+      }
       patterns.add<DynamicUpdateSliceOpConversion>(typeConverter, context,
                                                    concatDimension, tgtTy);
       patterns.add<RotateOpConversion>(typeConverter, context, concatDimension);
