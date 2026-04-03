@@ -955,7 +955,7 @@ struct TrsmOpLowering : public OpRewritePattern<enzymexla::TrsmOp> {
         rewriter, op.getLoc(), TypeRange{type_B}, A, scaledB,
         /*left_side=*/op.getSide() == enzymexla::LapackSide::left,
         /*lower=*/op.getUplo() == enzymexla::LapackUplo::L,
-        /*unit_diagonal=*/op.getDiag() == enzymexla::LapackDiag::unit,
+        /*unit_diagonal=*/op.getUnitDiagonal(),
         /*transpose_a=*/transa);
 
     // replace enzymexla.blas.trsm with the trisolve_op

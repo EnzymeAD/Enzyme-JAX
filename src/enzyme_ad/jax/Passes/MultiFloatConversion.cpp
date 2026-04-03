@@ -1543,10 +1543,16 @@ struct ReturnOpConversion : public OpConversionPattern<stablehlo::ReturnOp> {
         SmallVector<Value> flatOperands;
         if (concatDimension == "tuple") {
           for (auto operand : adaptor.getOperands()) {
-            Value hi = extractLimb(operand, 0, rewriter, loc, concatDimension);
-            Value lo = extractLimb(operand, 1, rewriter, loc, concatDimension);
-            flatOperands.push_back(hi);
-            flatOperands.push_back(lo);
+            if (isa<TupleType>(operand.getType())) {
+              Value hi =
+                  extractLimb(operand, 0, rewriter, loc, concatDimension);
+              Value lo =
+                  extractLimb(operand, 1, rewriter, loc, concatDimension);
+              flatOperands.push_back(hi);
+              flatOperands.push_back(lo);
+            } else {
+              flatOperands.push_back(operand);
+            }
           }
         } else {
           for (auto operand : adaptor.getOperands()) {
