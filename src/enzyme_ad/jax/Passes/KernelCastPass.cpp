@@ -86,6 +86,8 @@ static void cloneWithTypeConversion(Region &src, Region &dst,
       }
 
       if (auto bitcastOp = dyn_cast<arith::BitcastOp>(&op)) {
+        // bitcast %0 f16 -> i16 tgt=bf16
+        // bitcast convert(%0: bf16, f16) f16 -> i16
         Value operand = bitcastOp.getOperand();
         Value newOperand = mapping.lookup(operand);
 

@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s -split-input-file --pass-pipeline="builtin.module(enzyme-lift-cf-to-scf{rewrite-index-switch=true})" | FileCheck %s
+// RUN: enzymexlamlir-opt %s -split-input-file --pass-pipeline="builtin.module(enzyme-lift-cf-to-scf{rewrite_index_switch=true},canonicalize)" -allow-unregistered-dialect | FileCheck %s
 
 // Single case + default, no results
 func.func @single_case_no_results(%arg0: index) {
@@ -78,10 +78,12 @@ func.func @two_cases(%arg0: index) -> i32 {
 // CHECK-SAME:    %[[ARG:.*]]: index
 // CHECK-DAG:   %[[C0:.*]] = arith.constant 0 : index
 // CHECK-DAG:   %[[C1:.*]] = arith.constant 1 : index
-// CHECK:       %[[OUTER:.*]] = scf.if
+// CHECK:       %[[CMP0:.*]] = arith.cmpi eq, %[[ARG]], %[[C0]] : index
+// CHECK:       %[[OUTER:.*]] = scf.if %[[CMP0]] -> (i32) {
 // CHECK:         "test.op0"()
 // CHECK:       } else {
-// CHECK:         %[[INNER:.*]] = scf.if
+// CHECK:         %[[CMP1:.*]] = arith.cmpi eq, %[[ARG]], %[[C1]] : index
+// CHECK:         %[[INNER:.*]] = scf.if %[[CMP1]]
 // CHECK:           "test.op1"()
 // CHECK:         } else {
 // CHECK:           "test.default"()
@@ -198,7 +200,7 @@ func.func @multiple_results(%arg0: index) -> (i32, f64) {
 // -----
 
 // Verify that rewrite-index-switch=false preserves index_switch
-// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(enzyme-lift-cf-to-scf{rewrite-index-switch=false})" | FileCheck %s --check-prefix=NOSWITCH
+// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(enzyme-lift-cf-to-scf{rewrite_index_switch=false},canonicalize)" -allow-unregistered-dialect | FileCheck %s --check-prefix=NOSWITCH
 
 func.func @preserved_switch(%arg0: index) {
   scf.index_switch %arg0
