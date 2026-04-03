@@ -53,12 +53,11 @@ static void lowerIndexSwitchToIfChain(scf::IndexSwitchOp switchOp,
   Value arg = switchOp.getArg();
 
   // Create the outermost if for case 0
-  Value caseVal =
-      arith::ConstantIndexOp::create(rewriter, loc, cases[0]);
+  Value caseVal = arith::ConstantIndexOp::create(rewriter, loc, cases[0]);
   Value cmp = arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::eq,
                                     arg, caseVal);
   scf::IfOp outerIf = scf::IfOp::create(rewriter, loc, resultTypes, cmp,
-                                         /*withElseRegion=*/true);
+                                        /*withElseRegion=*/true);
 
   // Merge case 0 into the then block
   if (outerIf.thenBlock()->mightHaveTerminator())
@@ -75,12 +74,11 @@ static void lowerIndexSwitchToIfChain(scf::IndexSwitchOp switchOp,
   for (int i = 1; i < numCases; i++) {
     rewriter.setInsertionPointToStart(prevElseBlock);
 
-    Value caseVal =
-        arith::ConstantIndexOp::create(rewriter, loc, cases[i]);
+    Value caseVal = arith::ConstantIndexOp::create(rewriter, loc, cases[i]);
     Value cmp = arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::eq,
                                       arg, caseVal);
     scf::IfOp nestedIf = scf::IfOp::create(rewriter, loc, resultTypes, cmp,
-                                            /*withElseRegion=*/true);
+                                           /*withElseRegion=*/true);
 
     // Yield nested if results from the previous else block
     scf::YieldOp::create(rewriter, loc, nestedIf.getResults());
@@ -148,9 +146,8 @@ struct EnzymeLiftControlFlowToSCF
 
     if (rewrite_index_switch) {
       SmallVector<scf::IndexSwitchOp> switchOps;
-      op->walk([&](scf::IndexSwitchOp switchOp) {
-        switchOps.push_back(switchOp);
-      });
+      op->walk(
+          [&](scf::IndexSwitchOp switchOp) { switchOps.push_back(switchOp); });
       if (!switchOps.empty()) {
         IRRewriter rewriter(&getContext());
         for (auto switchOp : switchOps)
