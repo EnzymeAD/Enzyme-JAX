@@ -118,6 +118,7 @@ struct SROAWrappersPass
       signalPassFailure();
       return;
     }
+    llvmModule->setDataLayout("e-i64:64-i128:128-v16:16-v32:32-n16:32:64");
 
     if (dump_prellvm)
       llvm::errs() << "sroa pre llvm\n" << *llvmModule << "\n";
