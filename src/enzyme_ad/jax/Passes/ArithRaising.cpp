@@ -208,6 +208,17 @@ struct ArithRaisingPass
       op.replaceAllUsesWith(res);
       op.erase();
     });
+    op->walk([=](arith::ConvertFOp cvtOp) {
+      auto ty = dyn_cast<RankedTensorType>(cvtOp.getResult().getType());
+      if (!use_stablehlo || !ty)
+        return;
+
+      OpBuilder builder(cvtOp);
+      auto res = stablehlo::ConvertOp::create(builder, cvtOp.getLoc(), ty,
+                                              cvtOp.getIn());
+      cvtOp.replaceAllUsesWith(res.getResult());
+      cvtOp.erase();
+    });
     op->walk([=](arith::TruncFOp truncOp) {
       auto ty = dyn_cast<RankedTensorType>(truncOp.getResult().getType());
       if (!use_stablehlo || !ty)
