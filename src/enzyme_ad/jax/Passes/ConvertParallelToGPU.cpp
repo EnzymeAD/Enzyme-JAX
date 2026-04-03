@@ -765,9 +765,13 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
     auto oneindex = arith::ConstantIndexOp::create(rewriter, loc, 1);
 
     SmallVector<Value, 6> tripCounts(totalDims);
-    for (int i = 0; i < totalDims; i++)
-      tripCounts[i] = arith::SubIOp::create(rewriter, loc, upperBounds[i],
-                                            origLowerBounds[i]);
+    for (int i = 0; i < totalDims; i++) {
+      if (matchPattern(origLowerBounds[i], m_Zero()))
+        tripCounts[i] = upperBounds[i];
+      else
+        tripCounts[i] = arith::SubIOp::create(rewriter, loc, upperBounds[i],
+                                              origLowerBounds[i]);
+    }
 
     for (unsigned i = 0; i < gridDims.size(); i++)
       gridDims[i] = tripCounts[gridArgId[i]];
@@ -860,11 +864,16 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
 
     IRMapping mapping;
     for (unsigned i = 0; i < gridDims.size(); i++) {
-      Value iv = arith::AddIOp::create(rewriter, loc,
-                                       gridPop.getBody()->getArgument(i),
-                                       origLowerBounds[gridArgId[i]]);
+      Value iv;
+      if (matchPattern(origLowerBounds[gridArgId[i]], m_Zero()))
+        iv = gridPop.getBody()->getArgument(i);
+      else
+        iv = arith::AddIOp::create(rewriter, loc,
+                                  gridPop.getBody()->getArgument(i),
+                                  origLowerBounds[gridArgId[i]]);
       mapping.map(pop.getBody()->getArgument(gridArgId[i]), iv);
     }
+
     for (unsigned i = 0; i < blockDims.size(); i++) {
       Value iv = arith::AddIOp::create(rewriter, loc,
                                        blockPop.getBody()->getArgument(i),
