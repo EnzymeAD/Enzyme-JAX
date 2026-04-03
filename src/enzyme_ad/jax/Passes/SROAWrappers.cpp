@@ -23,7 +23,11 @@
 #include "mlir/Target/LLVMIR/ModuleImport.h"
 
 #include "llvm/IR/PassManager.h"
+#include "llvm/MC/TargetRegistry.h"
 #include "llvm/Passes/PassBuilder.h"
+#include "llvm/Target/TargetMachine.h"
+#include "llvm/Target/TargetOptions.h"
+#include "llvm/TargetParser/Triple.h"
 #include "llvm/Transforms/IPO/Attributor.h"
 #include "llvm/Transforms/InstCombine/InstCombine.h"
 #include "llvm/Transforms/Scalar/InstSimplifyPass.h"
@@ -118,8 +122,6 @@ struct SROAWrappersPass
       signalPassFailure();
       return;
     }
-    llvmModule->setDataLayout("e-i64:64-i128:128-v16:16-v32:32-n16:32:64");
-
     if (dump_prellvm)
       llvm::errs() << "sroa pre llvm\n" << *llvmModule << "\n";
     {
@@ -138,6 +140,11 @@ struct SROAWrappersPass
       CGSCCAnalysisManager CGAM;
       ModuleAnalysisManager MAM;
 
+      auto dl =
+          "e-p:64:64:64-i1:8:8-i8:8:8-i16:16:16-i32:32:32-i64:64:64-f32:32:32-"
+          "f64:64:64-v16:16:16-v32:32:32-v64:64:64-v128:128:128-n16:32:64";
+      llvmModule->setDataLayout(dl);
+
       PassInstrumentationCallbacks PIC;
       PassBuilder PB(nullptr, PTO, std::nullopt, nullptr);
 
@@ -148,7 +155,6 @@ struct SROAWrappersPass
       PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
 
       ModulePassManager MPM;
-      FunctionPassManager FPM;
       if (sroa)
         MPM.addPass(createModuleToFunctionPassAdaptor(
             SROAPass(SROAOptions::ModifyCFG)));
@@ -158,6 +164,7 @@ struct SROAWrappersPass
         MPM.addPass(createModuleToFunctionPassAdaptor(InstSimplifyPass()));
       if (attributor)
         MPM.addPass(llvm::AttributorPass());
+
       MPM.run(*llvmModule, MAM);
     }
     if (dump_postllvm)

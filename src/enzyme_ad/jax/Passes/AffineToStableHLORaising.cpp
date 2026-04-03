@@ -28,6 +28,7 @@
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/IRMapping.h"
+#include "mlir/Interfaces/VectorInterfaces.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 
 #include "Interfaces/AutoDiffTypeInterface.h"
@@ -2853,14 +2854,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
   }
 
   // unary ops
-  if (isa<math::SinOp, math::SinhOp, math::CosOp, math::CoshOp, arith::NegFOp,
-          arith::ExtUIOp, arith::SIToFPOp, arith::UIToFPOp, arith::FPToSIOp,
-          arith::FPToUIOp, arith::ConvertFOp, arith::TruncFOp, arith::ExtFOp,
-          math::SqrtOp, math::RsqrtOp, math::CbrtOp, math::LogOp, math::ExpOp,
-          math::AbsFOp, math::AbsIOp, math::IsNaNOp, math::AtanOp,
-          arith::BitcastOp, enzymexla::TGammaOp, enzymexla::LGammaOp,
-          math::ErfOp>(op)) {
-    assert(op->getNumOperands() == 1 && op->getNumResults() == 1);
+  if (mlir::isPure(op) && op->hasTrait<OpTrait::Elementwise>() &&
+      op->getNumOperands() == 1 && op->getNumResults() == 1) {
 
     auto operand = op->getOperand(0);
     auto newOperand = mapping.lookup(operand);
