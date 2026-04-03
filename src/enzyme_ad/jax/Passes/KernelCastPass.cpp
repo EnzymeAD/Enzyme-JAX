@@ -68,9 +68,13 @@ static void cloneWithTypeConversion(Region &src, Region &dst,
               targetFloat.getIntOrFloatBitWidth())
             cast = arith::ExtFOp::create(b, newConst->getLoc(), targetFloat,
                                          newConst->getResult(0));
-          else
+          else if (constType.getIntOrFloatBitWidth() >
+                   targetFloat.getIntOrFloatBitWidth())
             cast = arith::TruncFOp::create(b, newConst->getLoc(), targetFloat,
                                            newConst->getResult(0));
+          else
+            cast = arith::ConvertFOp::create(b, newConst->getLoc(), targetFloat,
+                                             newConst->getResult(0));
           // Override the mapper entry set by clone() to point to the cast.
           mapping.map(op.getResult(0), cast);
         }
