@@ -787,6 +787,14 @@ def EnzymeLiftControlFlowToSCFPass : Pass<"enzyme-lift-cf-to-scf"> {
     //       ub.unreachable op.
     "func::FuncDialect"
   ];
+
+  let options = [
+    Option</*C++ variable name=*/"rewrite_index_switch",
+           /*CLI argument=*/"rewrite_index_switch",
+           /*type=*/"bool",
+           /*default=*/"true",
+           /*description=*/"Rewrite scf.index_switch to a chain of scf.if ops">
+  ];
 }
 
 def LLVMToAffineAccessPass : Pass<"llvm-to-affine-access"> {
