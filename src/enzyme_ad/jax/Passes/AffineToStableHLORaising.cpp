@@ -2731,10 +2731,30 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
   }
 
   // Identity
-  if (isa<arith::IndexCastUIOp, arith::IndexCastOp,
-          enzymexla::Memref2PointerOp>(op)) {
+  if (isa<enzymexla::Memref2PointerOp>(op)) {
     Value operand = op->getOperand(0), result = op->getResult(0);
     mapping.map(result, mapping.lookup(operand));
+    return success();
+  }
+
+  if (isa<arith::IndexCastUIOp, arith::IndexCastOp>(op)) {
+    Value operand = op->getOperand(0), result = op->getResult(0);
+    Value mappedResult = mapping.lookup(operand);
+
+    if (result.getType().isIndex()) {
+      Value newMappedResult =
+          stablehlo::ConvertOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              RankedTensorType::get(cast<ShapedType>(mappedResult.getType()).getShape(),
+                                    builder.getI64Type()),
+              mappedResult)
+              .getResult();
+      maps[newMappedResult] = maps.lookup(mappedResult);
+      mappedResult = newMappedResult;
+    }
+
+    mapping.map(result, mappedResult);
     return success();
   }
 
