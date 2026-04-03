@@ -94,7 +94,7 @@ struct DropUnsupportedAttributesPass
           "enzymexla.complex_is_purely_real",
           "enzymexla.complex_is_purely_imaginary"};
 
-      moduleOp.walk([&](Operation *op) {
+      moduleOp->walk([&](Operation *op) {
         for (auto removeAttr : enzymexlaAnalysisResultAttrs) {
           if (op->hasAttr(removeAttr)) {
             op->removeAttr(removeAttr);
