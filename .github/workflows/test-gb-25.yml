@@ -29,7 +29,7 @@ env:
 
 jobs:
   test-gb-25:
-    name: 'Test GB-25 - ${{ matrix.os }} - julia ${{ matrix.julia_version }} - XLA ${{ matrix.xla_commit }} - GB-25 ${{ matrix.gb25_commit }}- Reactant ${{ matrix.reactant_commit }}'
+    name: 'Test GB-25 - ${{ matrix.os }} - julia ${{ matrix.julia_version }} - XLA ${{ matrix.xla_commit }} - GB-25 ${{ matrix.gb25_commit }}- Reactant ${{ matrix.reactant_commit }} ${{ matrix.flags}}'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 150
 
@@ -40,7 +40,7 @@ jobs:
       fail-fast: false
       matrix:
         os:
-          - linux-x86-a2-48-a100-4gpu
+          # - linux-x86-a2-48-a100-4gpu
           - linux-x86-ct6e-180-4tpu
         julia_version:
           - '1.11'
@@ -53,7 +53,12 @@ jobs:
 
         reactant_commit:
           - 'main'
-          - 'multipad'
+          # - 'multipad'
+        flags:
+          - ''
+          - '--xla_tpu_sliced_prefetch_max_slices=0'
+          - '--xla_tpu_sliced_prefetch_max_slices=1'
+          - '--xla_tpu_sliced_prefetch_min_bytes=1048576'
 
     steps:
       - name: Check GPUs
@@ -65,7 +70,7 @@ jobs:
         run: |
           # Artifact names cannot include forward slashes and some other characters, here we
           # do some sanitisation.
-          ARTIFACT_INDEX=${{ matrix.os}}-${{ matrix.julia_version }}-${{ matrix.xla_commit }}-${{ matrix.gb25_commit }}-${{ matrix.reactant_commit }}
+          ARTIFACT_INDEX=${{ matrix.os}}-${{ matrix.julia_version }}-${{ matrix.xla_commit }}-${{ matrix.gb25_commit }}-${{ matrix.reactant_commit }}-${{ matrix.flags}}
           echo "ARTIFACT_INDEX=${ARTIFACT_INDEX//\//_}" >> "${GITHUB_ENV}"
       - uses: bazel-contrib/setup-bazel@0.19.0
         name: Set up Bazel
@@ -199,6 +204,7 @@ jobs:
         timeout-minutes: 30
         run: |
           export XLA_FLAGS='--xla_disable_hlo_passes=multi_output_fusion --xla_dump_hlo_pass_re=.* --xla_dump_to=${{ env.GB25_DIR }}/xla_dump_compile'
+          export LIBTPU_INIT_ARGS="${{matrix.flags}}"
           timeout --signal=TERM --verbose 29m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict sharding/sharded_baroclinic_instability_simulation_compile.jl ${{ env.RUN_FLAGS }}
         working-directory: ${{ env.GB25_DIR }}
       - name: Show remaining collective operations
@@ -240,6 +246,7 @@ jobs:
         timeout-minutes: 60
         run: |
           export XLA_FLAGS='--xla_disable_hlo_passes=multi_output_fusion --xla_dump_hlo_pass_re=.* --xla_dump_to=${{ env.GB25_DIR }}/xla_dump_run'
+          export LIBTPU_INIT_ARGS="${{matrix.flags}}"
           timeout --signal=TERM --verbose 59m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict sharding/sharded_baroclinic_instability_simulation_run.jl ${{ env.RUN_FLAGS }}
         working-directory: ${{ env.GB25_DIR }}
       - name: Display profile results
@@ -257,6 +264,8 @@ jobs:
       - name: Test correctness in GB-25 code
         timeout-minutes: 20
         run: |
+          export XLA_FLAGS='--xla_disable_hlo_passes=multi_output_fusion'
+          export LIBTPU_INIT_ARGS="${{matrix.flags}}"
           timeout --signal=TERM --verbose 19m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict correctness/correctness_sharded_baroclinic_instability_simulation_run.jl ${{ env.RUN_FLAGS }}
         working-directory: ${{ env.GB25_DIR }}
       - name: Upload MLIR and XLA modules
