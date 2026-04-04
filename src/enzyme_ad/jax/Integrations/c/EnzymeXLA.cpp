@@ -480,6 +480,8 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("reduce_reduce");
   list.push_back("conj_real");
   list.push_back("convert_mul_convert");
+  list.push_back("convert_binop_convert_min");
+  list.push_back("convert_binop_convert_max");
   list.push_back("select_broadcast_in_dim");
   list.push_back("if_op_lift_common_ops");
   list.push_back("involution_neg_simplify");

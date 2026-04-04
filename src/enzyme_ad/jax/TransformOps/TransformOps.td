@@ -451,6 +451,14 @@ def ApplyConvertMulConvertPatterns : EnzymeHLOPatternOp<
     "convert_mul_convert"> {
   let patterns = ["ConvertMulConvert"];
 }
+def ApplyConvertBinopConvertMinPatterns : EnzymeHLOPatternOp<
+    "convert_binop_convert_min"> {
+  let patterns = ["ConvertBinopConvert<stablehlo::MinOp>"];
+}
+def ApplyConvertBinopConvertMaxPatterns : EnzymeHLOPatternOp<
+    "convert_binop_convert_max"> {
+  let patterns = ["ConvertBinopConvert<stablehlo::MaxOp>"];
+}
 def ApplyNegateReduceWindowSubPatterns : EnzymeHLOPatternOp<
     "negate_reduce_window_sub"> {
   let patterns = ["NegateReduceWindowSub"];

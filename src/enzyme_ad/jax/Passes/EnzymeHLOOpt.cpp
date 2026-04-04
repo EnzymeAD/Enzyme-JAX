@@ -34854,6 +34854,47 @@ struct ConvertMulConvert final
   }
 };
 
+// Pattern: convert(binop(convert(x), convert(y))) -> binop(x, y)
+// when x and y have the same type as the outer convert result.
+// Valid for operations like min/max where the binop result is preserved
+// through matching convert-unconvert pairs.
+template <typename BinOp>
+struct ConvertBinopConvert final
+    : CheckedOpRewritePattern<stablehlo::ConvertOp,
+                              ConvertBinopConvert<BinOp>> {
+  using CheckedOpRewritePattern<
+      stablehlo::ConvertOp,
+      ConvertBinopConvert<BinOp>>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ConvertOp op,
+                                    PatternRewriter &rewriter) const {
+    auto resultType = op.getType();
+
+    if (!isa<FloatType>(resultType.getElementType()))
+      return failure();
+
+    auto binop = op.getOperand().template getDefiningOp<BinOp>();
+    if (!binop)
+      return failure();
+
+    auto lhsConvert =
+        binop.getLhs().template getDefiningOp<stablehlo::ConvertOp>();
+    auto rhsConvert =
+        binop.getRhs().template getDefiningOp<stablehlo::ConvertOp>();
+    if (!lhsConvert || !rhsConvert)
+      return failure();
+
+    auto lhs = lhsConvert.getOperand();
+    auto rhs = rhsConvert.getOperand();
+
+    if (lhs.getType() != resultType || rhs.getType() != resultType)
+      return failure();
+
+    rewriter.replaceOpWithNewOp<BinOp>(op, lhs, rhs);
+    return success();
+  }
+};
+
 // Pattern: negate(reduce_window(x, 0, \acc,elem -> acc - elem))
 //       -> reduce_window(x, 0, \acc,elem -> acc + elem)
 //
@@ -35382,7 +35423,8 @@ struct EnzymeHLOOptPass
         BinBroadcastSplat<stablehlo::SubtractOp>,
         BinBroadcastSplat<stablehlo::DivOp>,
         BinBroadcastSplat<stablehlo::MulOp>, RotatePad, ConjReal,
-        ConvertMulConvert, NegateReduceWindowSub>(context);
+        ConvertMulConvert, ConvertBinopConvert<stablehlo::MinOp>,
+        ConvertBinopConvert<stablehlo::MaxOp>, NegateReduceWindowSub>(context);
 
     // Unary constant propagation patterns
     patterns
