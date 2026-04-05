@@ -51,7 +51,6 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/ImplicitLocOpBuilder.h"
-#include "mlir/IR/Verifier.h"
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Target/LLVMIR/Import.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -2726,35 +2725,6 @@ private:
   }
 };
 
-// TODO(jacob): probably should be its own pass, just testing to see if this
-// fixes the issue currently
-template <typename IntrOp>
-class AddIntrinsicBody : public OpRewritePattern<LLVM::LLVMFuncOp> {
-private:
-  StringAttr funcName;
-
-public:
-  AddIntrinsicBody(MLIRContext *context, StringRef funcNameStr)
-      : OpRewritePattern<LLVM::LLVMFuncOp>(context),
-        funcName(StringAttr::get(context, funcNameStr)) {}
-
-  LogicalResult matchAndRewrite(LLVM::LLVMFuncOp funcOp,
-                                PatternRewriter &rewriter) const override {
-    if (funcOp.getCallableRegion())
-      return failure();
-    if (!funcOp.getName().starts_with(funcName))
-      return failure();
-
-    OpBuilder::InsertionGuard guard(rewriter);
-    Block *entryBlock = funcOp.addEntryBlock(rewriter);
-    rewriter.setInsertionPointToStart(entryBlock);
-    auto mathOp =
-        IntrOp::create(rewriter, funcOp.getLoc(), entryBlock->getArgument(0));
-    LLVM::ReturnOp::create(rewriter, funcOp.getLoc(), mathOp.getResult());
-    return success();
-  }
-};
-
 class ConvertGPUKernelAddressOp
     : public ConvertOpToGpuRuntimeCallPattern<enzymexla::GPUKernelAddressOp> {
 public:
@@ -4340,17 +4310,6 @@ struct ConvertPolygeistToLLVMPass
       return;
     }
 
-    {
-      RewritePatternSet patterns(&getContext());
-      // patterns.insert<AddIntrinsicBody<LLVM::SqrtOp>>(&getContext(),
-      //                                                 "__nv_sqrt");
-      // patterns.insert<AddIntrinsicBody<LLVM::CosOp>>(&getContext(),
-      // "__nv_cos");
-      if (failed(applyPatternsGreedily(m, std::move(patterns)))) {
-        llvm::errs() << " failed to add intrinsic bodies\n";
-        return signalPassFailure();
-      }
-    }
     {
       RewritePatternSet patterns(&getContext());
       patterns.insert<ReconcileUnrealizedPointerCasts>(&getContext());

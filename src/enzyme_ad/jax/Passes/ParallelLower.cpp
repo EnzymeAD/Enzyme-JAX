@@ -234,6 +234,9 @@ prepareForGPUInline(LLVM::CallOp callOp, Operation *hostInsertionPoint,
   if (lfn->getAttr("enzyme.prepared_for_inline"))
     return {callOp, lfn};
 
+  if (lfn.isExternal())
+    return {callOp, lfn};
+
   OpBuilder hostBuilder(hostInsertionPoint);
 
   SmallVector<Value> newArgs;
@@ -463,6 +466,11 @@ void ParallelLower::runOnOperation() {
       return;
     }
     assert(gpuWrapper);
+    auto callee = dyn_cast_or_null<LLVM::LLVMFuncOp>(
+        caller.resolveCallableInTable(&symbolTable));
+    assert(callee);
+    if (callee.isExternal())
+      return;
     auto [callInGPU, lfn] =
         prepareForGPUInline(caller, gpuWrapper, symbolTable);
     LLVMcallInlinerImpl(callInGPU);
