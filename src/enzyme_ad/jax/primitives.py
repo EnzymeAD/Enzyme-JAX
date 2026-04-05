@@ -612,7 +612,7 @@ def _enzyme_primal_lowering(
 
             if len(pass_pipeline) > 0:
                 pass_pipeline = (
-                    pass_pipeline + ",tensor-empty-raise,drop-unsupported-attributes"
+                    "pad-for-alignment," + pass_pipeline + ",tensor-empty-raise,drop-unsupported-attributes"
                 )
 
             try:

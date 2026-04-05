@@ -1335,4 +1335,10 @@ def RemoveAtomicsPass : Pass<"remove-atomics"> {
   ];
 }
 
+def PadForAlignmentPass : Pass<"pad-for-alignment"> {
+  let summary = "Pad tensor dimensions to maximize alignment (e.g., multiples of 128 for TPU)";
+  let dependentDialects = ["stablehlo::StablehloDialect"];
+}
+
 #endif
+
