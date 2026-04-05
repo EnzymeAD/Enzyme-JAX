@@ -9,7 +9,9 @@
 // This file implements a pass to print the MLIR module
 //===----------------------------------------------------------------------===//
 
+#include "Dialect/Ops.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Interfaces/FunctionInterfaces.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 
 namespace mlir {
@@ -28,6 +30,15 @@ struct PrintPass : public enzyme::impl::PrintPassBase<PrintPass> {
   using PrintPassBase::PrintPassBase;
 
   void runOnOperation() override {
+    // bool found = false;
+    // getOperation()->walk([&](enzyme::AutoDiffOp op) { found = true; });
+    // getOperation()->walk([&](FunctionOpInterface func) {
+    //   if (func.getName().contains("diffe") ||
+    //       func.getName().contains("enzyme_autodiff"))
+    //     found = true;
+    // });
+    // if (!found)
+    //   return;
 
     OpPrintingFlags flags;
     if (debug)
