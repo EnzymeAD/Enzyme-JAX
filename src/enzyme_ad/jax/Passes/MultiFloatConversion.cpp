@@ -168,6 +168,80 @@ Value packLimbs(Value high, Value low, OpBuilder &builder, Location loc,
   return packLimbs({high, low}, builder, loc, concatDimension);
 }
 
+Value convertToMultifloat(DenseElementsAttr val, OpBuilder &b, Location loc,
+                          Type tgtTy, StringRef concatDimension, int expansionSize) {
+  SmallVector<Value> limbs;
+  DenseElementsAttr rem = val;
+  RankedTensorType tensorType = cast<RankedTensorType>(val.getType());
+  RankedTensorType outType = RankedTensorType::get(tensorType.getShape(), tgtTy);
+  for (int i = 0; i < expansionSize; ++i) {
+    DenseElementsAttr limb = nullptr;
+    if (auto splat = dyn_cast<SplatElementsAttr>(rem)) {
+      auto newVal = splat.getSplatValue<APFloat>();
+      bool losesInfo;
+      newVal.convert(cast<FloatType>(tgtTy).getFloatSemantics(),
+                     APFloat::rmNearestTiesToEven, &losesInfo);
+      limb = SplatElementsAttr::get(outType, newVal);
+    } else {
+      SmallVector<Attribute> convertedAttrs;
+      for (auto val : rem.getValues<APFloat>()) {
+        bool losesInfo;
+        APFloat newVal = val;
+        newVal.convert(cast<FloatType>(tgtTy).getFloatSemantics(),
+                       APFloat::rmNearestTiesToEven, &losesInfo);
+        convertedAttrs.push_back(
+            b.getFloatAttr(tgtTy, newVal.convertToDouble()));
+      }
+      limb = DenseElementsAttr::get(outType, convertedAttrs);
+    }
+    limbs.push_back(b.create<stablehlo::ConstantOp>(loc, limb));
+    if (i < expansionSize - 1) {
+      auto limbSplat = dyn_cast<SplatElementsAttr>(limb);
+      auto remSplat = dyn_cast<SplatElementsAttr>(rem);
+      if (limbSplat && remSplat) {
+        auto limbBack = remSplat.getSplatValue<APFloat>();
+        bool losesInfo;
+        limbBack.convert(cast<FloatType>(tensorType.getElementType()).getFloatSemantics(),
+                       APFloat::rmNearestTiesToEven, &losesInfo);
+        auto remFlt = remSplat.getSplatValue<APFloat>();
+        remFlt.subtract(limbBack, APFloat::rmNearestTiesToEven);
+        rem = SplatElementsAttr::get(tensorType, remFlt);
+      } else {
+        SmallVector<Attribute> newRems;
+        for (auto [limbBack, remFlt] : llvm::zip_equal(limb.getValues<APFloat>(), rem.getValues<APFloat>())) {
+                  bool losesInfo;
+          limbBack.convert(cast<FloatType>(tensorType.getElementType()).getFloatSemantics(),
+                       APFloat::rmNearestTiesToEven, &losesInfo);
+          remFlt.subtract(limbBack, APFloat::rmNearestTiesToEven);
+          newRems.push_back(FloatAttr::get(tgtTy, remFlt));
+        }
+        rem = DenseElementsAttr::get(outType, newRems);
+      }
+    }
+  }
+
+  if (concatDimension != "tuple") {
+    SmallVector<int64_t> expandedShape;
+    if (concatDimension == "first") {
+      expandedShape.push_back(1);
+      for (auto dim : tensorType.getShape())
+        expandedShape.push_back(dim);
+    } else {
+      for (auto dim : tensorType.getShape())
+        expandedShape.push_back(dim);
+      expandedShape.push_back(1);
+    }
+    auto expandedType = RankedTensorType::get(expandedShape, tgtTy);
+    SmallVector<Value> reshapedLimbs;
+    for (auto limb : limbs) {
+      reshapedLimbs.push_back(
+          b.create<stablehlo::ReshapeOp>(loc, expandedType, limb));
+    }
+    return packLimbs(reshapedLimbs, b, loc, concatDimension);
+  }
+  return packLimbs(limbs, b, loc, concatDimension);
+}
+
 Value convertToMultifloat(Value val, OpBuilder &b, Location loc, Type tgtTy,
                           StringRef concatDimension, int expansionSize) {
   auto tensorType = cast<RankedTensorType>(val.getType());
@@ -417,107 +491,9 @@ struct ConstantOpConversion
     if (elType != sourceType)
       return failure();
 
-    Type convType = getTypeConverter()->convertType(op.getType());
-    auto outType = dyn_cast<RankedTensorType>(convType);
-
-    if (expansionSize == 1) {
-      if (elementsAttr.isSplat()) {
-        auto val = elementsAttr.getSplatValue<APFloat>();
-        bool losesInfo;
-        val.convert(cast<FloatType>(targetType).getFloatSemantics(),
-                    APFloat::rmNearestTiesToEven, &losesInfo);
-        auto newAttr = SplatElementsAttr::get(outType, val);
-        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, newAttr);
-        return success();
-      } else {
-        SmallVector<Attribute> convertedAttrs;
-        for (auto val : elementsAttr.getValues<APFloat>()) {
-          bool losesInfo;
-          APFloat newVal = val;
-          newVal.convert(cast<FloatType>(targetType).getFloatSemantics(),
-                         APFloat::rmNearestTiesToEven, &losesInfo);
-          convertedAttrs.push_back(
-              rewriter.getFloatAttr(targetType, newVal.convertToDouble()));
-        }
-        auto newAttr = DenseElementsAttr::get(outType, convertedAttrs);
-        rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, newAttr);
-        return success();
-      }
-    }
-
-    if (expansionSize == 2) {
-      Value hiConst = nullptr;
-      Value loConst = nullptr;
-
-      RankedTensorType limbType = nullptr;
-      bool isTuple = concatDimension == "tuple";
-      bool isFirst = concatDimension == "first";
-      if (isTuple) {
-        limbType = RankedTensorType::get(op.getType().getShape(), targetType);
-      } else {
-        SmallVector<int64_t> limbShape =
-            llvm::to_vector(op.getType().getShape());
-        limbShape.insert(limbShape.begin() + (isFirst ? 0 : limbShape.size()),
-                         1);
-        limbType = RankedTensorType::get(limbShape, targetType);
-      }
-
-      if (elementsAttr.isSplat()) {
-        auto val = elementsAttr.getSplatValue<APFloat>();
-        APFloat hiAP = val;
-        bool losesInfo;
-        hiAP.convert(cast<FloatType>(targetType).getFloatSemantics(),
-                     APFloat::rmNearestTiesToEven, &losesInfo);
-
-        APFloat hiSource = hiAP;
-        hiSource.convert(cast<FloatType>(sourceType).getFloatSemantics(),
-                         APFloat::rmNearestTiesToEven, &losesInfo);
-
-        APFloat loSource = val;
-        loSource.subtract(hiSource, APFloat::rmNearestTiesToEven);
-
-        APFloat loAP = loSource;
-        loAP.convert(cast<FloatType>(targetType).getFloatSemantics(),
-                     APFloat::rmNearestTiesToEven, &losesInfo);
-
-        auto hiAttr = SplatElementsAttr::get(limbType, hiAP);
-        auto loAttr = SplatElementsAttr::get(limbType, loAP);
-        hiConst = rewriter.create<stablehlo::ConstantOp>(loc, hiAttr);
-        loConst = rewriter.create<stablehlo::ConstantOp>(loc, loAttr);
-      } else {
-        SmallVector<Attribute> hiAttrs;
-        SmallVector<Attribute> loAttrs;
-        for (auto val : elementsAttr.getValues<APFloat>()) {
-          APFloat hiAP = val;
-          bool losesInfo;
-          hiAP.convert(cast<FloatType>(targetType).getFloatSemantics(),
-                       APFloat::rmNearestTiesToEven, &losesInfo);
-
-          APFloat hiSource = hiAP;
-          hiSource.convert(cast<FloatType>(sourceType).getFloatSemantics(),
-                           APFloat::rmNearestTiesToEven, &losesInfo);
-
-          APFloat loSource = val;
-          loSource.subtract(hiSource, APFloat::rmNearestTiesToEven);
-
-          APFloat loAP = loSource;
-          loAP.convert(cast<FloatType>(targetType).getFloatSemantics(),
-                       APFloat::rmNearestTiesToEven, &losesInfo);
-
-          hiAttrs.push_back(rewriter.getFloatAttr(targetType, hiAP));
-          loAttrs.push_back(rewriter.getFloatAttr(targetType, loAP));
-        }
-        auto hiAttr = DenseElementsAttr::get(limbType, hiAttrs);
-        auto loAttr = DenseElementsAttr::get(limbType, loAttrs);
-        hiConst = rewriter.create<stablehlo::ConstantOp>(loc, hiAttr);
-        loConst = rewriter.create<stablehlo::ConstantOp>(loc, loAttr);
-      }
-      Value packed =
-          packLimbs({hiConst, loConst}, rewriter, loc, concatDimension);
-      rewriter.replaceOp(op, packed);
-      return success();
-    }
-    return failure();
+    auto replacement = convertToMultifloat(elementsAttr, rewriter, loc, targetType, concatDimension, expansionSize);
+    rewriter.replaceOp(op, replacement);
+    return success();
   }
 };
 
