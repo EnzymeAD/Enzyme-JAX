@@ -22,6 +22,7 @@
 #include "mlir/Transforms/RegionUtils.h"
 #include "src/enzyme_ad/jax/Implementations/SHLOGenericBatchOpInterface.h"
 #include "src/enzyme_ad/jax/Utils.h"
+#include "llvm/ADT/TypeSwitch.h"
 
 #include "Dialect/Ops.h"
 #include "mlir/IR/TypeSupport.h"
@@ -181,15 +182,19 @@ struct GPUWrapperOpEnzymeOpsRemover
         // Update the memory space of any users
         SmallVector<Value> frontier{gpuAlloc.getResult(0)};
         traverseDownDefUseChains(frontier, [globalMemSpace](Operation *op) {
+          if (auto pushOp = dyn_cast<enzyme::PushOp>(op)) {
+            Type newType =
+                updateMemorySpace(pushOp.getCache().getType(), globalMemSpace);
+            pushOp.getCache().setType(newType);
+          }
           if (auto subviewOp = dyn_cast<memref::SubViewOp>(op)) {
-            auto newType = cast<MemRefType>(*subviewOp.getType().clonePtrWith(
-                globalMemSpace, std::nullopt));
+            auto newType = cast<MemRefType>(
+                updateMemorySpace(subviewOp.getType(), globalMemSpace));
             subviewOp.getResult().setType(newType);
           }
         });
       }
     }
-
     for (auto &info : caches) {
       rewriter.moveOpBefore(info.pushOp, wrapOp);
       auto revWrapper = info.popOp->getParentOfType<enzymexla::GPUWrapperOp>();
@@ -205,14 +210,20 @@ struct GPUWrapperOpEnzymeOpsRemover
         }
       });
 
+      // TODO(jacob): this flag is confusing, need to think about what the
+      // expected behaviour is for when to deallocate an op.
+      bool deallocated = false;
       for (auto user : info.popOp.getResult().getUsers()) {
         if (hasSingleEffect<MemoryEffects::Free>(user)) {
           rewriter.eraseOp(user);
+          deallocated = true;
         }
       }
-      rewriter.setInsertionPointAfter(revWrapper);
-      gpu::DeallocOp::create(rewriter, wrapOp.getLoc(), TypeRange(),
-                             info.popOp.getResult());
+      if (deallocated) {
+        rewriter.setInsertionPointAfter(revWrapper);
+        gpu::DeallocOp::create(rewriter, wrapOp.getLoc(), TypeRange(),
+                               info.popOp.getResult());
+      }
     }
 
     return success();
