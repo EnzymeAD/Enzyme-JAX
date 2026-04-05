@@ -160,10 +160,10 @@ func.func @test_mul(%arg0: tensor<8xf64>, %arg1: tensor<8xf64>) -> tensor<8xf64>
 // TUPLE:     return %[[V_41]] : tensor<8xf64>
 
 func.func @main() attributes {enzyme.no_multifloat} {
-  %c1 = stablehlo.constant dense<[1.1, 1.1, -1.1, -1.1, 0.0, 1.1, 0.0, 1.0001]> : tensor<8xf64>
-  %c2 = stablehlo.constant dense<[1.1, -1.1, 1.1, -1.1, 1.1, 0.0, 0.0, 0.9999]> : tensor<8xf64>
+  %c1 = stablehlo.constant dense<[1.1, 1.1, -1.1, -1.1, 0.0, 1.1, 0.0, 0.999999998]> : tensor<8xf64>
+  %c2 = stablehlo.constant dense<[1.1, -1.1, 1.1, -1.1, 1.1, 0.0, 0.0, 1.000000003]> : tensor<8xf64>
   
-  %expected = stablehlo.constant dense<[1.2100000000000002, -1.2100000000000002, -1.2100000000000002, 1.2100000000000002, 0.0, 0.0, 0.0, 0.99999999]> : tensor<8xf64>
+  %expected = stablehlo.constant dense<[1.2100000000000002, -1.2100000000000002, -1.2100000000000002, 1.2100000000000002, 0.0, 0.0, 0.0, 1.0000000009999999]> : tensor<8xf64>
   
   %res = func.call @test_mul(%c1, %c2) : (tensor<8xf64>, tensor<8xf64>) -> tensor<8xf64>
   
