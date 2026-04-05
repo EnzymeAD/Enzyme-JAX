@@ -38,8 +38,8 @@ func.func @neg(%arg0: tensor<2xf64>) -> tensor<2xf64> {
 // FIRST: return %[[RES]] : tensor<2xf64>
 
 func.func @main() attributes {enzyme.no_multifloat} {
-  %cst = stablehlo.constant dense<[1.0, -2.0]> : tensor<2xf64>
-  %expected = stablehlo.constant dense<[-1.0, 2.0]> : tensor<2xf64>
+  %cst = stablehlo.constant dense<[1.1, -2.2]> : tensor<2xf64>
+  %expected = stablehlo.constant dense<[-1.1, 2.2]> : tensor<2xf64>
   %res = func.call @neg(%cst) : (tensor<2xf64>) -> tensor<2xf64>
   "check.expect_almost_eq"(%res, %expected) : (tensor<2xf64>, tensor<2xf64>) -> ()
   return
