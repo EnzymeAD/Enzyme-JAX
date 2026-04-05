@@ -1484,14 +1484,40 @@ struct SqrtOpConversion : public OpConversionPattern<stablehlo::SqrtOp> {
     auto [final_h, final_l] = multiFloatAdd(root_hi, root_lo, neg_corr_hi,
                                             neg_corr_lo, rewriter, loc);
 
-    // If is_zero, result is zero
-    Value res_h =
-        rewriter.create<stablehlo::SelectOp>(loc, is_zero, zero, final_h);
-    Value res_l =
-        rewriter.create<stablehlo::SelectOp>(loc, is_zero, zero, final_l);
+    bool isTuple = concatDimension == "tuple";
 
-    Value packed = packLimbs(res_h, res_l, rewriter, loc, concatDimension);
-    rewriter.replaceOp(op, packed);
+    if (isTuple) {
+      // If is_zero, result is zero
+      Value res_h = rewriter.create<stablehlo::SelectOp>(loc, is_zero, zero, final_h);
+      Value res_l = rewriter.create<stablehlo::SelectOp>(loc, is_zero, zero, final_l);
+
+      Value packed = packLimbs(res_h, res_l, rewriter, loc, concatDimension);
+      rewriter.replaceOp(op, packed);
+    } else {
+      Value final_packed = packLimbs(final_h, final_l, rewriter, loc, concatDimension);
+      auto fullType = cast<RankedTensorType>(final_packed.getType());
+      auto predType = RankedTensorType::get(fullType.getShape(), rewriter.getI1Type());
+
+      SmallVector<int64_t> broadcastDims;
+      for (int i = 0; i < fullType.getRank(); ++i) {
+        broadcastDims.push_back(i);
+      }
+      
+      // Broadcast is_zero
+      Value bcast_is_zero = rewriter.create<stablehlo::BroadcastInDimOp>(
+          loc, predType, is_zero, rewriter.getDenseI64ArrayAttr(broadcastDims));
+          
+      // Create a full zero tensor of the same shape
+      auto floatTy = cast<FloatType>(fullType.getElementType());
+      auto zeroAttr = rewriter.getFloatAttr(floatTy, 0.0);
+      auto splatAttr = SplatElementsAttr::get(fullType, zeroAttr);
+      Value full_zero = rewriter.create<stablehlo::ConstantOp>(loc, splatAttr);
+      
+      Value res = rewriter.create<stablehlo::SelectOp>(
+          loc, fullType, bcast_is_zero, full_zero, final_packed);
+          
+      rewriter.replaceOp(op, res);
+    }
     return success();
   }
 };

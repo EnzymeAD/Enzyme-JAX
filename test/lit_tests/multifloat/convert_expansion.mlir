@@ -21,37 +21,48 @@ func.func @convert_f32_to_f64(%arg0: tensor<4x4xf32>) -> tensor<4x4xf64> {
   return %0 : tensor<4x4xf64>
 }
 // CHECK-LABEL: func.func @convert_f32_to_f64
-// CHECK: %[[RESHAPED:.*]] = stablehlo.reshape %{{.*}} : (tensor<4x4xf32>) -> tensor<1x4x4xf32>
-// CHECK: %[[ZERO:.*]] = stablehlo.constant dense<0.000000e+00> : tensor<1x4x4xf32>
-// CHECK: %[[CST:.*]] = stablehlo.constant dense<0.000000e+00> : tensor<f64>
-// CHECK: %[[OUT:.*]] = stablehlo.reduce(%{{.*}} init: %[[CST]]) applies stablehlo.add across dimensions = [0] : (tensor<2x4x4xf64>, tensor<f64>) -> tensor<4x4xf64>
-// CHECK: return %[[OUT]]
+// CHECK:     %[[V_0:.*]] = stablehlo.reshape %arg0 : (tensor<4x4xf32>) -> tensor<1x4x4xf32>
+// CHECK:     %[[CST:.*]] = stablehlo.constant dense<0.000000e+00> : tensor<1x4x4xf32>
+// CHECK:     %[[V_1:.*]] = stablehlo.concatenate %[[V_0]], %[[CST]], dim = 0 : (tensor<1x4x4xf32>, tensor<1x4x4xf32>) -> tensor<2x4x4xf32>
+// CHECK:     %[[V_2:.*]] = stablehlo.convert %[[V_1]] : (tensor<2x4x4xf32>) -> tensor<2x4x4xf64>
+// CHECK:     %[[CST_0:.*]] = stablehlo.constant dense<0.000000e+00> : tensor<f64>
+// CHECK:     %[[V_3:.*]] = stablehlo.reduce(%[[V_2]] init: %[[CST_0]]) applies stablehlo.add across dimensions = [0] : (tensor<2x4x4xf64>, tensor<f64>) -> tensor<4x4xf64>
+// CHECK:     return %[[V_3]] : tensor<4x4xf64>
 
 func.func @convert_i32_to_f64(%arg0: tensor<4x4xi32>) -> tensor<4x4xf64> {
   %0 = stablehlo.convert %arg0 : (tensor<4x4xi32>) -> tensor<4x4xf64>
   return %0 : tensor<4x4xf64>
 }
 // CHECK-LABEL: func.func @convert_i32_to_f64
-// CHECK: %[[HIGH:.*]] = stablehlo.convert %{{.*}} : (tensor<4x4xi32>) -> tensor<4x4xf32>
-// CHECK: %[[HIGH_BACK:.*]] = stablehlo.convert %[[HIGH]] : (tensor<4x4xf32>) -> tensor<4x4xi32>
-// CHECK: %[[REM:.*]] = stablehlo.subtract %{{.*}}, %[[HIGH_BACK]]
-// CHECK: %[[LOW:.*]] = stablehlo.convert %[[REM]] : (tensor<4x4xi32>) -> tensor<4x4xf32>
-// CHECK: %[[HIGH_RESHAPED:.*]] = stablehlo.reshape %[[HIGH]] : (tensor<4x4xf32>) -> tensor<1x4x4xf32>
-// CHECK: %[[LOW_RESHAPED:.*]] = stablehlo.reshape %[[LOW]] : (tensor<4x4xf32>) -> tensor<1x4x4xf32>
-// CHECK: %[[CST:.*]] = stablehlo.constant dense<0.000000e+00> : tensor<f64>
-// CHECK: %[[OUT:.*]] = stablehlo.reduce(%{{.*}} init: %[[CST]]) applies stablehlo.add across dimensions = [0] : (tensor<2x4x4xf64>, tensor<f64>) -> tensor<4x4xf64>
-// CHECK: return %[[OUT]]
+// CHECK:     %[[V_0:.*]] = stablehlo.convert %arg0 : (tensor<4x4xi32>) -> tensor<4x4xf32>
+// CHECK:     %[[V_1:.*]] = stablehlo.convert %[[V_0]] : (tensor<4x4xf32>) -> tensor<4x4xi32>
+// CHECK:     %[[V_2:.*]] = stablehlo.subtract %arg0, %[[V_1]] : tensor<4x4xi32>
+// CHECK:     %[[V_3:.*]] = stablehlo.convert %[[V_2]] : (tensor<4x4xi32>) -> tensor<4x4xf32>
+// CHECK:     %[[V_4:.*]] = stablehlo.reshape %[[V_0]] : (tensor<4x4xf32>) -> tensor<1x4x4xf32>
+// CHECK:     %[[V_5:.*]] = stablehlo.reshape %[[V_3]] : (tensor<4x4xf32>) -> tensor<1x4x4xf32>
+// CHECK:     %[[V_6:.*]] = stablehlo.concatenate %[[V_4]], %[[V_5]], dim = 0 : (tensor<1x4x4xf32>, tensor<1x4x4xf32>) -> tensor<2x4x4xf32>
+// CHECK:     %[[V_7:.*]] = stablehlo.convert %[[V_6]] : (tensor<2x4x4xf32>) -> tensor<2x4x4xf64>
+// CHECK:     %[[CST:.*]] = stablehlo.constant dense<0.000000e+00> : tensor<f64>
+// CHECK:     %[[V_8:.*]] = stablehlo.reduce(%[[V_7]] init: %[[CST]]) applies stablehlo.add across dimensions = [0] : (tensor<2x4x4xf64>, tensor<f64>) -> tensor<4x4xf64>
+// CHECK:     return %[[V_8]] : tensor<4x4xf64>
 
 func.func @convert_f64_to_i32(%arg0: tensor<4x4xf64>) -> tensor<4x4xi32> {
   %0 = stablehlo.convert %arg0 : (tensor<4x4xf64>) -> tensor<4x4xi32>
   return %0 : tensor<4x4xi32>
 }
 // CHECK-LABEL: func.func @convert_f64_to_i32
-// CHECK: %[[SLICE0:.*]] = stablehlo.slice %{{.*}} [0:1, 0:4, 0:4]
-// CHECK: %[[RESHAPED0:.*]] = stablehlo.reshape %[[SLICE0]]
-// CHECK: %[[CONV0:.*]] = stablehlo.convert %[[RESHAPED0]] : (tensor<4x4xf32>) -> tensor<4x4xi32>
-// CHECK: %[[SLICE1:.*]] = stablehlo.slice %{{.*}} [1:2, 0:4, 0:4]
-// CHECK: %[[RESHAPED1:.*]] = stablehlo.reshape %[[SLICE1]]
-// CHECK: %[[CONV1:.*]] = stablehlo.convert %[[RESHAPED1]] : (tensor<4x4xf32>) -> tensor<4x4xi32>
-// CHECK: %[[SUM:.*]] = stablehlo.add %[[CONV0]], %[[CONV1]]
-// CHECK: return %[[SUM]]
+// CHECK:     %[[V_0:.*]] = stablehlo.convert %arg0 : (tensor<4x4xf64>) -> tensor<4x4xf32>
+// CHECK:     %[[V_1:.*]] = stablehlo.convert %[[V_0]] : (tensor<4x4xf32>) -> tensor<4x4xf64>
+// CHECK:     %[[V_2:.*]] = stablehlo.subtract %arg0, %[[V_1]] : tensor<4x4xf64>
+// CHECK:     %[[V_3:.*]] = stablehlo.convert %[[V_2]] : (tensor<4x4xf64>) -> tensor<4x4xf32>
+// CHECK:     %[[V_4:.*]] = stablehlo.reshape %[[V_0]] : (tensor<4x4xf32>) -> tensor<1x4x4xf32>
+// CHECK:     %[[V_5:.*]] = stablehlo.reshape %[[V_3]] : (tensor<4x4xf32>) -> tensor<1x4x4xf32>
+// CHECK:     %[[V_6:.*]] = stablehlo.concatenate %[[V_4]], %[[V_5]], dim = 0 : (tensor<1x4x4xf32>, tensor<1x4x4xf32>) -> tensor<2x4x4xf32>
+// CHECK:     %[[V_7:.*]] = stablehlo.slice %[[V_6]] [0:1, 0:4, 0:4] : (tensor<2x4x4xf32>) -> tensor<1x4x4xf32>
+// CHECK:     %[[V_8:.*]] = stablehlo.reshape %[[V_7]] : (tensor<1x4x4xf32>) -> tensor<4x4xf32>
+// CHECK:     %[[V_9:.*]] = stablehlo.convert %[[V_8]] : (tensor<4x4xf32>) -> tensor<4x4xi32>
+// CHECK:     %[[V_10:.*]] = stablehlo.slice %[[V_6]] [1:2, 0:4, 0:4] : (tensor<2x4x4xf32>) -> tensor<1x4x4xf32>
+// CHECK:     %[[V_11:.*]] = stablehlo.reshape %[[V_10]] : (tensor<1x4x4xf32>) -> tensor<4x4xf32>
+// CHECK:     %[[V_12:.*]] = stablehlo.convert %[[V_11]] : (tensor<4x4xf32>) -> tensor<4x4xi32>
+// CHECK:     %[[V_13:.*]] = stablehlo.add %[[V_9]], %[[V_12]] : tensor<4x4xi32>
+// CHECK:     return %[[V_13]] : tensor<4x4xi32>
