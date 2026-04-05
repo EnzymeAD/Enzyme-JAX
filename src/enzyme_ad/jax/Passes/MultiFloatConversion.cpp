@@ -439,8 +439,8 @@ std::pair<Value, Value> twoProdDekker(Value a, Value b, OpBuilder &builder,
   Value p4 = builder.create<stablehlo::MulOp>(loc, a_lo, b_lo);
 
   Value err1 = builder.create<stablehlo::SubtractOp>(loc, p1, p);
-  Value err2 = builder.create<stablehlo::AddOp>(loc, err1, p2);
-  Value err3 = builder.create<stablehlo::AddOp>(loc, err2, p3);
+  Value err2 = builder.create<stablehlo::AddOp>(loc, p2, p3); // Group cross terms for accuracy
+  Value err3 = builder.create<stablehlo::AddOp>(loc, err1, err2);
   Value err4 = builder.create<stablehlo::AddOp>(loc, err3, p4);
 
   return {p, err4};

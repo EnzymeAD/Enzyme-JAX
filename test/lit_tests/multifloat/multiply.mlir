@@ -45,8 +45,8 @@ func.func @test_mul(%arg0: tensor<8xf64>, %arg1: tensor<8xf64>) -> tensor<8xf64>
 // FIRST:     %[[V_29:.*]] = stablehlo.multiply %[[V_22]], %[[V_25]] : tensor<1x8xf32>
 // FIRST:     %[[V_30:.*]] = stablehlo.multiply %[[V_22]], %[[V_26]] : tensor<1x8xf32>
 // FIRST:     %[[V_31:.*]] = stablehlo.subtract %[[V_27]], %[[V_18]] : tensor<1x8xf32>
-// FIRST:     %[[V_32:.*]] = stablehlo.add %[[V_31]], %[[V_28]] : tensor<1x8xf32>
-// FIRST:     %[[V_33:.*]] = stablehlo.add %[[V_32]], %[[V_29]] : tensor<1x8xf32>
+// FIRST:     %[[V_32:.*]] = stablehlo.add %[[V_28]], %[[V_29]] : tensor<1x8xf32>
+// FIRST:     %[[V_33:.*]] = stablehlo.add %[[V_31]], %[[V_32]] : tensor<1x8xf32>
 // FIRST:     %[[V_34:.*]] = stablehlo.add %[[V_33]], %[[V_30]] : tensor<1x8xf32>
 // FIRST:     %[[V_35:.*]] = stablehlo.multiply %[[V_14]], %[[V_17]] : tensor<1x8xf32>
 // FIRST:     %[[V_36:.*]] = stablehlo.multiply %[[V_15]], %[[V_16]] : tensor<1x8xf32>
@@ -96,8 +96,8 @@ func.func @test_mul(%arg0: tensor<8xf64>, %arg1: tensor<8xf64>) -> tensor<8xf64>
 // LAST:     %[[V_29:.*]] = stablehlo.multiply %[[V_22]], %[[V_25]] : tensor<8x1xf32>
 // LAST:     %[[V_30:.*]] = stablehlo.multiply %[[V_22]], %[[V_26]] : tensor<8x1xf32>
 // LAST:     %[[V_31:.*]] = stablehlo.subtract %[[V_27]], %[[V_18]] : tensor<8x1xf32>
-// LAST:     %[[V_32:.*]] = stablehlo.add %[[V_31]], %[[V_28]] : tensor<8x1xf32>
-// LAST:     %[[V_33:.*]] = stablehlo.add %[[V_32]], %[[V_29]] : tensor<8x1xf32>
+// LAST:     %[[V_32:.*]] = stablehlo.add %[[V_28]], %[[V_29]] : tensor<8x1xf32>
+// LAST:     %[[V_33:.*]] = stablehlo.add %[[V_31]], %[[V_32]] : tensor<8x1xf32>
 // LAST:     %[[V_34:.*]] = stablehlo.add %[[V_33]], %[[V_30]] : tensor<8x1xf32>
 // LAST:     %[[V_35:.*]] = stablehlo.multiply %[[V_14]], %[[V_17]] : tensor<8x1xf32>
 // LAST:     %[[V_36:.*]] = stablehlo.multiply %[[V_15]], %[[V_16]] : tensor<8x1xf32>
@@ -143,8 +143,8 @@ func.func @test_mul(%arg0: tensor<8xf64>, %arg1: tensor<8xf64>) -> tensor<8xf64>
 // TUPLE:     %[[V_25:.*]] = stablehlo.multiply %[[V_18]], %[[V_21]] : tensor<8xf32>
 // TUPLE:     %[[V_26:.*]] = stablehlo.multiply %[[V_18]], %[[V_22]] : tensor<8xf32>
 // TUPLE:     %[[V_27:.*]] = stablehlo.subtract %[[V_23]], %[[V_14]] : tensor<8xf32>
-// TUPLE:     %[[V_28:.*]] = stablehlo.add %[[V_27]], %[[V_24]] : tensor<8xf32>
-// TUPLE:     %[[V_29:.*]] = stablehlo.add %[[V_28]], %[[V_25]] : tensor<8xf32>
+// TUPLE:     %[[V_28:.*]] = stablehlo.add %[[V_24]], %[[V_25]] : tensor<8xf32>
+// TUPLE:     %[[V_29:.*]] = stablehlo.add %[[V_27]], %[[V_28]] : tensor<8xf32>
 // TUPLE:     %[[V_30:.*]] = stablehlo.add %[[V_29]], %[[V_26]] : tensor<8xf32>
 // TUPLE:     %[[V_31:.*]] = stablehlo.multiply %[[V_10]], %[[V_13]] : tensor<8xf32>
 // TUPLE:     %[[V_32:.*]] = stablehlo.multiply %[[V_11]], %[[V_12]] : tensor<8xf32>
@@ -167,7 +167,10 @@ func.func @main() attributes {enzyme.no_multifloat} {
   
   %res = func.call @test_mul(%c1, %c2) : (tensor<8xf64>, tensor<8xf64>) -> tensor<8xf64>
   
-  "check.expect_almost_eq"(%res, %expected) : (tensor<8xf64>, tensor<8xf64>) -> ()
+  %diff = stablehlo.subtract %res, %expected : tensor<8xf64>
+  %abs_diff = stablehlo.abs %diff : tensor<8xf64>
+  %zero = stablehlo.constant dense<0.0> : tensor<8xf64>
+  "check.expect_almost_eq"(%abs_diff, %zero) {tolerance = 1.0e-12 : f64} : (tensor<8xf64>, tensor<8xf64>) -> ()
   return
 }
 
@@ -176,5 +179,5 @@ func.func @main() attributes {enzyme.no_multifloat} {
 // FIRST:     %[[CST_0:.*]] = stablehlo.constant dense<{{[^>]*}}> : tensor<8xf64>
 // FIRST:     %[[CST_1:.*]] = stablehlo.constant dense<{{[^>]*}}> : tensor<8xf64>
 // FIRST:     %[[V_0:.*]] = call @test_mul(%[[CST]], %[[CST_0]]) : (tensor<8xf64>, tensor<8xf64>) -> tensor<8xf64>
-// FIRST:     check.expect_almost_eq %[[V_0]], %[[CST_1]] : tensor<8xf64>
+// FIRST:     check.expect_close %[[V_0]], %[[CST_1]], max_ulp_difference = 3 : tensor<8xf64>, tensor<8xf64>
 // FIRST:     return

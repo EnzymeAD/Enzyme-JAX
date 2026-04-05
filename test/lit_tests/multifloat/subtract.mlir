@@ -155,7 +155,10 @@ func.func @main() attributes {enzyme.no_multifloat} {
   
   %res = func.call @test_sub(%c1, %c2) : (tensor<5xf64>, tensor<5xf64>) -> tensor<5xf64>
   
-  "check.expect_almost_eq"(%res, %expected) : (tensor<5xf64>, tensor<5xf64>) -> ()
+  %diff = stablehlo.subtract %res, %expected : tensor<5xf64>
+  %abs_diff = stablehlo.abs %diff : tensor<5xf64>
+  %zero = stablehlo.constant dense<0.0> : tensor<5xf64>
+  "check.expect_almost_eq"(%abs_diff, %zero) {tolerance = 1.0e-12 : f64} : (tensor<5xf64>, tensor<5xf64>) -> ()
   return
 }
 
@@ -164,5 +167,8 @@ func.func @main() attributes {enzyme.no_multifloat} {
 // FIRST:     %[[CST_0:.*]] = stablehlo.constant dense<{{[^>]*}}> : tensor<5xf64>
 // FIRST:     %[[CST_1:.*]] = stablehlo.constant dense<{{[^>]*}}> : tensor<5xf64>
 // FIRST:     %[[V_0:.*]] = call @test_sub(%[[CST]], %[[CST_0]]) : (tensor<5xf64>, tensor<5xf64>) -> tensor<5xf64>
-// FIRST:     check.expect_almost_eq %[[V_0]], %[[CST_1]] : tensor<5xf64>
+// FIRST:     %[[V_1:.*]] = stablehlo.subtract %[[V_0]], %[[CST_1]] : tensor<5xf64>
+// FIRST:     %[[V_2:.*]] = stablehlo.abs %[[V_1]] : tensor<5xf64>
+// FIRST:     %[[CST_2:.*]] = stablehlo.constant dense<{{[^>]*}}> : tensor<5xf64>
+// FIRST:     check.expect_almost_eq %[[V_2]], %[[CST_2]], tolerance = 9.9999999999999998E-13 : tensor<5xf64>
 // FIRST:     return
