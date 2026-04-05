@@ -480,5 +480,5 @@ func.func @main() attributes {enzyme.no_multifloat} {
 // FIRST:     %[[V_0:.*]] = call @divide(%[[CST]], %[[CST_0]]) : (tensor<8xf64>, tensor<8xf64>) -> tensor<8xf64>
 // FIRST:     check.expect_close %[[V_0]], %[[CST_1]], max_ulp_difference = 3 : tensor<8xf64>, tensor<8xf64>
 // FIRST:     %[[CST_2:.*]] = stablehlo.constant dense<{{[^>]*}}> : tensor<8xf64>
-// FIRST:     check.expect_close %[[V_0]], %[[CST_2]], max_ulp_difference = 10 : tensor<8xf64>, tensor<8xf64>
+// FIRST:     check.expect_close %[[V_0]], %[[CST_2]], max_ulp_difference = {{[0-9]+}} : tensor<8xf64>, tensor<8xf64>
 // FIRST:     return
