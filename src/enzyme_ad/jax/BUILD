@@ -783,6 +783,23 @@ gentbl_cc_library(
     deps = [":PerfifyDialectFiles"],
 )
 
+gentbl_cc_library(
+    name = "PerfifyEnumsIncGen",
+    tbl_outs = [
+        (
+            ["-gen-enum-decls", "-attrdefs-dialect=perfify"],
+            "Dialect/Perfify/PerfifyDialectEnums.h.inc",
+        ),
+        (
+            ["-gen-enum-defs", "-attrdefs-dialect=perfify"],
+            "Dialect/Perfify/PerfifyDialectEnums.cpp.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Dialect/Perfify/Dialect.td",
+    deps = [":PerfifyDialectFiles"],
+)
+
 td_library(
     name = "TesseraPassesTdFiles",
     srcs = [],
@@ -1197,6 +1214,7 @@ cc_library(
         ":EnzymeXLAPassesIncGen",
         ":PerfifyDialectIncGen",
         ":PerfifyAttributesIncGen",
+        ":PerfifyEnumsIncGen",
         ":PerfifyOpsIncGen",
         ":PerfifyTypesIncGen",
         ":Polymer",

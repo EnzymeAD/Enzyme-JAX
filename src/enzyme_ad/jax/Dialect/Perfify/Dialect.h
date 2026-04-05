@@ -1,6 +1,7 @@
 #ifndef ENZYME_AD_JAX_DIALECT_PERFIFY_DIALECT_H
 #define ENZYME_AD_JAX_DIALECT_PERFIFY_DIALECT_H
 
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/Bytecode/BytecodeOpInterface.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/Dialect.h"
@@ -16,10 +17,13 @@
 // Types
 #define GET_TYPEDEF_CLASSES
 #include "src/enzyme_ad/jax/Dialect/Perfify/PerfifyTypes.h.inc"
+#define GET_ENUM_CLASSES
+#include "src/enzyme_ad/jax/Dialect/Perfify/PerfifyDialectEnums.h.inc"
 // Operations
 #define GET_OP_CLASSES
 #include "src/enzyme_ad/jax/Dialect/Perfify/PerfifyOps.h.inc"
 #define GET_ATTRDEF_CLASSES
 #include "src/enzyme_ad/jax/Dialect/Perfify/PerfifyAttributes.h.inc"
+
 
 #endif // ENZYME_AD_JAX_DIALECT_PERFIFY_DIALECT_H

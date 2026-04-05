@@ -315,7 +315,7 @@ filegroup(
 
 http_archive(
     name = "lean",
-    url = "https://github.com/leanprover/lean4/archive/refs/tags/v4.25.1.tar.gz",
-    strip_prefix = "lean4-4.25.1",
+    url = "https://github.com/leanprover/lean4/archive/refs/tags/v4.29.0.tar.gz",
+    strip_prefix = "lean4-4.29.0",
     build_file_content = LEAN_ALL_CONTENT,
 )
