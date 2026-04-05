@@ -5,9 +5,16 @@ func.func @convert_f64_to_f32(%arg0: tensor<4x4xf64>) -> tensor<4x4xf32> {
   return %0 : tensor<4x4xf32>
 }
 // CHECK-LABEL: func.func @convert_f64_to_f32
-// CHECK: %[[EXTRACTED:.*]] = stablehlo.slice %{{.*}} [0:1, 0:4, 0:4]
-// CHECK: %[[RESHAPED:.*]] = stablehlo.reshape %[[EXTRACTED]]
-// CHECK: return %[[RESHAPED]]
+// CHECK: %[[C0:.*]] = stablehlo.convert %arg0 : (tensor<4x4xf64>) -> tensor<4x4xf32>
+// CHECK: %[[C1:.*]] = stablehlo.convert %[[C0]] : (tensor<4x4xf32>) -> tensor<4x4xf64>
+// CHECK: %[[SUB:.*]] = stablehlo.subtract %arg0, %[[C1]] : tensor<4x4xf64>
+// CHECK: %[[C2:.*]] = stablehlo.convert %[[SUB]] : (tensor<4x4xf64>) -> tensor<4x4xf32>
+// CHECK: %[[R1:.*]] = stablehlo.reshape %[[C0]] : (tensor<4x4xf32>) -> tensor<1x4x4xf32>
+// CHECK: %[[R2:.*]] = stablehlo.reshape %[[C2]] : (tensor<4x4xf32>) -> tensor<1x4x4xf32>
+// CHECK: %[[CAT:.*]] = stablehlo.concatenate %[[R1]], %[[R2]], dim = 0 : (tensor<1x4x4xf32>, tensor<1x4x4xf32>) -> tensor<2x4x4xf32>
+// CHECK: %[[SLICE:.*]] = stablehlo.slice %[[CAT]] [0:1, 0:4, 0:4] : (tensor<2x4x4xf32>) -> tensor<1x4x4xf32>
+// CHECK: %[[RES:.*]] = stablehlo.reshape %[[SLICE]] : (tensor<1x4x4xf32>) -> tensor<4x4xf32>
+// CHECK: return %[[RES]] : tensor<4x4xf32>
 
 func.func @convert_f32_to_f64(%arg0: tensor<4x4xf32>) -> tensor<4x4xf64> {
   %0 = stablehlo.convert %arg0 : (tensor<4x4xf32>) -> tensor<4x4xf64>
