@@ -119,7 +119,8 @@ struct SCFParallelSerializationPass
     RewritePatternSet patterns(&getContext());
     patterns.insert<ParallelSerialization>(&getContext());
     GreedyRewriteConfig config;
-    if (failed(applyPatternsAndFoldGreedily(m, std::move(patterns), config))) {
+    config.enableFolding();
+    if (failed(applyPatternsGreedily(m, std::move(patterns), config))) {
       signalPassFailure();
       return;
     }

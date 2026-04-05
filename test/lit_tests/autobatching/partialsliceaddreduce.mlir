@@ -22,6 +22,5 @@ module attributes {transform.with_named_sequence} {
 // CHECK-NEXT:     %cst = stablehlo.constant dense<0.000000e+00> : tensor<f64>
 // CHECK-NEXT:     %0 = stablehlo.slice %arg0 [35:37, 4:100, 4:52] : (tensor<40x104x56xf64>) -> tensor<2x96x48xf64>
 // CHECK-NEXT:     %1 = stablehlo.reduce(%0 init: %cst) applies stablehlo.add across dimensions = [0] : (tensor<2x96x48xf64>, tensor<f64>) -> tensor<96x48xf64>
-// CHECK-NEXT:     %2 = stablehlo.reshape %1 : (tensor<96x48xf64>) -> tensor<96x48xf64>
-// CHECK-NEXT:     return %2 : tensor<96x48xf64>
+// CHECK-NEXT:     return %1 : tensor<96x48xf64>
 // CHECK-NEXT: }

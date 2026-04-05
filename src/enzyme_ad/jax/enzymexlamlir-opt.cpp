@@ -14,7 +14,10 @@
 #include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/NVVM/NVVMToLLVMIRTranslation.h"
 #include "mlir/Tools/mlir-opt/MlirOptMain.h"
+#include "mlir/Transforms/Passes.h"
 #include "src/enzyme_ad/jax/RegistryUtils.h"
+#include "stablehlo/reference/InterpreterOps.h"
+#include "stablehlo/tests/CheckOps.h"
 #include "llvm/Support/TargetSelect.h"
 
 using namespace mlir;
@@ -27,8 +30,13 @@ int main(int argc, char **argv) {
 
   mlir::enzyme::prepareRegistry(registry);
   mlir::enzyme::registerDialects(registry);
+
+  registry.insert<mlir::stablehlo::check::CheckDialect>();
+  registry.insert<mlir::stablehlo::interpreter::InterpreterDialect>();
+
   mlir::enzyme::registerInterfaces(registry);
   mlir::enzyme::initializePasses();
+  mlir::registerTransformsPasses();
 
   return mlir::asMainReturnCode(mlir::MlirOptMain(
       argc, argv, "Enzyme modular optimizer driver", registry));

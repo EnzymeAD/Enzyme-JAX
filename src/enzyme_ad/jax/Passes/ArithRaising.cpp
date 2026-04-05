@@ -114,7 +114,10 @@ struct ArithRaisingPass
     RAISE_UNARY(math::SinOp, stablehlo::SineOp, mhlo::SineOp);
     RAISE_UNARY(math::CosOp, stablehlo::CosineOp, mhlo::CosineOp);
     RAISE_UNARY(math::LogOp, stablehlo::LogOp, mhlo::LogOp);
+    RAISE_UNARY(math::Log1pOp, stablehlo::Log1pOp, stablehlo::Log1pOp);
     RAISE_UNARY(math::ExpOp, stablehlo::ExpOp, mhlo::ExpOp);
+    RAISE_UNARY(math::ExpM1Op, stablehlo::Expm1Op, stablehlo::Expm1Op);
+    RAISE_UNARY(math::TanhOp, stablehlo::TanhOp, stablehlo::TanhOp);
     RAISE_UNARY(math::SqrtOp, stablehlo::SqrtOp, mhlo::SqrtOp);
     RAISE_UNARY(math::RsqrtOp, stablehlo::RsqrtOp, mhlo::RsqrtOp);
     RAISE_UNARY(math::CbrtOp, stablehlo::CbrtOp, mhlo::CbrtOp);
@@ -122,7 +125,9 @@ struct ArithRaisingPass
     RAISE_UNARY(math::IsFiniteOp, stablehlo::IsFiniteOp, mhlo::IsFiniteOp);
     RAISE_UNARY(math::CeilOp, stablehlo::CeilOp, mhlo::CeilOp);
     RAISE_UNARY(math::FloorOp, stablehlo::FloorOp, mhlo::FloorOp);
+    RAISE_UNARY(math::ErfOp, chlo::ErfOp, chlo::ErfOp);
     RAISE_UNARY(arith::NegFOp, stablehlo::NegOp, mhlo::NegOp);
+    RAISE_UNARY(enzymexla::LGammaOp, chlo::LgammaOp, chlo::LgammaOp);
 
 #undef RAISE_UNARY
 

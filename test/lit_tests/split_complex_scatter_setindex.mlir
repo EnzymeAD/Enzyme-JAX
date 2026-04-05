@@ -27,16 +27,17 @@ module {
   }
 }
 
-// CHECK: %cst = stablehlo.constant dense<5.000000e+00> : tensor<128x128xf64>
-// CHECK: %cst_0 = stablehlo.constant dense<0.000000e+00> : tensor<128x128xf64>
-// CHECK: %8 = stablehlo.real %3 : (tensor<4096xcomplex<f64>>) -> tensor<4096xf64>
-// CHECK-NEXT: %9 = stablehlo.imag %3 : (tensor<4096xcomplex<f64>>) -> tensor<4096xf64>
-// CHECK-NEXT: %10 = "stablehlo.scatter"(%cst_0, %7, %8) <{scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0, 1], scatter_dims_to_operand_dims = [0, 1], index_vector_dim = 1>}> ({
-// CHECK-NEXT: ^bb0(%arg7: tensor<f64>, %arg8: tensor<f64>):
-// CHECK-NEXT:   stablehlo.return %arg8 : tensor<f64>
-// CHECK-NEXT: }) {enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<128x128xf64>, tensor<4096x2xi64>, tensor<4096xf64>) -> tensor<128x128xf64>
-// CHECK-NEXT: %11 = "stablehlo.scatter"(%cst, %7, %9) <{scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0, 1], scatter_dims_to_operand_dims = [0, 1], index_vector_dim = 1>}> ({
-// CHECK-NEXT: ^bb0(%arg7: tensor<f64>, %arg8: tensor<f64>):
-// CHECK-NEXT:   stablehlo.return %arg8 : tensor<f64>
-// CHECK-NEXT: }) : (tensor<128x128xf64>, tensor<4096x2xi64>, tensor<4096xf64>) -> tensor<128x128xf64>
-// CHECK-NEXT: %12 = stablehlo.complex %10, %11 {enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<128x128xcomplex<f64>>
+// The Setindex scatter on complex constant input gets transformed to a single scatter.
+// The constant input (0.0 + 5.0i) gets decomposed, reshaped, and folded into a pad op.
+// CHECK: %[[REAL:.*]] = stablehlo.real %3
+// CHECK-NEXT: %[[IMAG:.*]] = stablehlo.imag %3
+// CHECK-NEXT: %[[CONCAT_RAW:.*]] = stablehlo.concatenate %[[REAL]], %[[IMAG]], dim = 0
+// CHECK-NEXT: %[[CONCAT:.*]] = stablehlo.reshape %[[CONCAT_RAW]]
+// CHECK-NEXT: %[[SCATTER:.*]] = "stablehlo.scatter"(%{{.*}}, %7, %[[CONCAT]])
+// CHECK-SAME: update_window_dims = [0]
+// CHECK-SAME: inserted_window_dims = [1, 2]
+// CHECK: ^bb0(%{{.*}}: tensor<f64>, %[[ARG8:.*]]: tensor<f64>):
+// CHECK-NEXT:   stablehlo.return %[[ARG8]] : tensor<f64>
+// CHECK: stablehlo.slice %[[SCATTER]] [0:1, 0:128, 0:128]
+// CHECK: stablehlo.slice %[[SCATTER]] [1:2, 0:128, 0:128]
+// CHECK: stablehlo.complex

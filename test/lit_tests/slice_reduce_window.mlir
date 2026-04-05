@@ -43,3 +43,29 @@ module {
 // CHECK-SAME:    %[[ARG0:.*]]: tensor<85x180x18xf64>
 // CHECK:         %[[REDUCE:.*]] = stablehlo.reduce(%[[ARG0]] {{.*}} applies stablehlo.add across dimensions = [1]
 // CHECK:         stablehlo.add %[[REDUCE]]
+
+// -----
+
+module {
+  func.func @main(%arg0: tensor<4x1521x3056xf32>) -> tensor<4x1516x3056xf32> {
+    %cst = stablehlo.constant dense<0.000000e+00> : tensor<f32>
+    %0 = "stablehlo.reduce_window"(%arg0, %cst) <{window_dimensions = array<i64: 1, 2, 1>}> ({
+    ^bb0(%arg1: tensor<f32>, %arg2: tensor<f32>):
+      %2 = stablehlo.add %arg1, %arg2 : tensor<f32>
+      stablehlo.return %2 : tensor<f32>
+    }) : (tensor<4x1521x3056xf32>, tensor<f32>) -> tensor<4x1520x3056xf32>
+    %1 = stablehlo.slice %0 [0:4, 2:1518, 0:3056] : (tensor<4x1520x3056xf32>) -> tensor<4x1516x3056xf32>
+    return %1 : tensor<4x1516x3056xf32>
+  }
+}
+
+// CHECK: func.func @main(%arg0: tensor<4x1521x3056xf32>) -> tensor<4x1516x3056xf32> {
+// CHECK-NEXT:   %cst = stablehlo.constant dense<0.000000e+00> : tensor<f32>
+// CHECK-NEXT:   %0 = stablehlo.slice %arg0 [0:4, 2:1519, 0:3056] : (tensor<4x1521x3056xf32>) -> tensor<4x1517x3056xf32>
+// CHECK-NEXT:   %1 = "stablehlo.reduce_window"(%0, %cst) <{window_dimensions = array<i64: 1, 2, 1>}> ({
+// CHECK-NEXT:   ^bb0(%arg1: tensor<f32>, %arg2: tensor<f32>):
+// CHECK-NEXT:     %2 = stablehlo.add %arg1, %arg2 : tensor<f32>
+// CHECK-NEXT:     stablehlo.return %2 : tensor<f32>
+// CHECK-NEXT:   }) : (tensor<4x1517x3056xf32>, tensor<f32>) -> tensor<4x1516x3056xf32>
+// CHECK-NEXT:   return %1 : tensor<4x1516x3056xf32>
+// CHECK-NEXT: }

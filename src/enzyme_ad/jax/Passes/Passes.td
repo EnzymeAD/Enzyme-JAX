@@ -106,11 +106,36 @@ def ArithRaisingPass : Pass<"arith-raise"> {
       /*description=*/"Whether to raise to stablehlo vs mhlo">];
 }
 
+def MultiFloatConversionPass : Pass<"multi-float-conversion"> {
+  let summary = "Rewrite floating-point computations to use multi-float representation (tensor of 2xY).";
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "tensor::TensorDialect",
+    "arith::ArithDialect",
+  ];
+  let options = [
+    Option<"sourceType", "source-type", "std::string", "\"f64\"", "Source floating-point type (e.g., f64, f32)">,
+    Option<"targetType", "target-type", "std::string", "\"f32\"", "Target floating-point type (e.g., f32, f16, bf16)">,
+    Option<"concatDimension", "concat-dimension", "std::string", "\"first\"", "Dimension to concatenate ('first' or 'last')">,
+    Option<"expansionSize", "expansion-size", "int32_t", "2", "Number of limbs for expansion (1 or 2)">,
+    Option<"convertSignatures", "convert-signatures", "bool", "false", "Whether to convert function signatures">,
+    Option<"divSubsteps", "div-substeps", "int32_t", "0", "Number of Newton-Raphson iterations for division (0 for Dekker's algorithm)">,
+  ];
+}
+
 def TensorEmptyOpRaisingPass : Pass<"tensor-empty-raise"> {
   let summary = "Raise tensor.empty ops";
   let dependentDialects = [
     "tensor::TensorDialect",
     "stablehlo::StablehloDialect"
+  ];
+}
+
+def KernelCastPass : Pass<"kernelcast", "func::FuncOp"> {
+  let summary = "Cast GPU kernel floating point type based on enzymexla.float_type attribute";
+  let dependentDialects = [
+    "arith::ArithDialect",
+    "func::FuncDialect",
   ];
 }
 
@@ -191,7 +216,13 @@ def EnzymeHLOOptPass : Pass<"enzyme-hlo-opt"> {
         /*CLI argument=*/"enable_auto_batching_passes",
         /*type=*/"bool",
         /*default=*/"false",
-        /*description=*/"Enable auto batching passes">
+        /*description=*/"Enable auto batching passes">,
+    Option<
+        /*C++ variable name=*/"structured_tensors_detection",
+        /*CLI argument=*/"structured_tensors_detection",
+        /*type=*/"bool",
+        /*default=*/"false",
+        /*description=*/"Enable detection of structured tensor operations (syrk, symm, etc.)">
   ];
 }
 
@@ -900,11 +931,46 @@ def OptimizeCommunication : Pass<"optimize-communication"> {
        /*default=*/"0",
        /*description=*/"Convert Rotate to Spmd custom call">,
        Option<
+       /*C++ variable name=*/"multi_buffer",
+       /*CLI argument=*/"multi_buffer",
+       /*type=*/"int",
+       /*default=*/"0",
+       /*description=*/"Force multi-X to buffer">,
+       Option<
        /*C++ variable name=*/"multirotate_spmd",
        /*CLI argument=*/"multirotate_spmd",
        /*type=*/"int",
        /*default=*/"0",
+       /*description=*/"Convert MultiRotate to Manual Computation with CollectivePermute">,
+       Option<
+
+       /*C++ variable name=*/"wrap_custom_call",
+
+       /*CLI argument=*/"wrap_custom_call",
+
+       /*type=*/"int",
+
+       /*default=*/"0",
+
+       /*description=*/"Convert Wrap to Spmd custom call">,
+       Option<
+       /*C++ variable name=*/"multirotate_custom_call",
+       /*CLI argument=*/"multirotate_custom_call",
+       /*type=*/"int",
+       /*default=*/"0",
        /*description=*/"Convert MultiRotate to Spmd custom call">,
+       Option<
+       /*C++ variable name=*/"multislice_custom_call",
+       /*CLI argument=*/"multislice_custom_call",
+       /*type=*/"int",
+       /*default=*/"0",
+       /*description=*/"Convert MultiSlice to Spmd custom call">,
+       Option<
+       /*C++ variable name=*/"multipad_custom_call",
+       /*CLI argument=*/"multipad_custom_call",
+       /*type=*/"int",
+       /*default=*/"0",
+       /*description=*/"Convert MultiPad to Spmd custom call">,
        Option<
        /*C++ variable name=*/"rotate_to_pad_comm",
        /*CLI argument=*/"rotate_to_pad_comm",
@@ -1034,6 +1100,12 @@ def AffineToStableHLORaising : Pass<"raise-affine-to-stablehlo"> {
            /*type=*/"bool",
            /*default=*/"false",
            /*description=*/"Whether to enable the lockstep for raising">,
+       Option<
+           /*C++ variable name=*/"strip_llvm_debuginfo",
+           /*CLI argument=*/"strip_llvm_debuginfo",
+           /*type=*/"bool",
+           /*default=*/"false",
+           /*description=*/"Whether to strip llvm debug info">,
        Option<
            /*C++ variable name=*/"prefer_while_raising",
            /*CLI argument=*/"prefer_while_raising",
@@ -1179,6 +1251,19 @@ def DropUnsupportedAttributesPass : Pass<"drop-unsupported-attributes", "ModuleO
   ];
 }
 
+def TrimCallsites : Pass<"trim-callsites"> {
+  let summary = "Trim callsite debug info";
+  let dependentDialects = [];
+  let options = [
+    Option<
+        /*C++ variable name=*/"to_trim",
+        /*CLI argument=*/"to_trim",
+        /*type=*/"std::string",
+        /*default=*/"\"\"",
+        /*description=*/";-separated list of prefixes to trim">,
+  ];
+}
+
 def SCFCPUify : Pass<"cpuify"> {
   let summary = "remove barrier ig";
   let dependentDialects =
@@ -1202,11 +1287,37 @@ def ConvertTritonToTritonGPUPreservingModuleAttributesPass : Pass<
       >];
 }
 
+def LowerTritonPass : Pass<"lower-triton", "mlir::ModuleOp"> {
+  let summary = "Lower Triton to xla custom call";
+  let dependentDialects = [
+    "triton::TritonDialect",
+    "func::FuncDialect",
+    "enzymexla::triton_ext::TritonExtDialect",
+    "stablehlo::StablehloDialect",
+  ];
+  let options = [
+    Option<
+        /*C++ variable name=*/"backend",
+        /*CLI argument=*/"backend",
+        /*type=*/"std::string",
+        /*default=*/"\"cuda\"",
+        /*description=*/"HW backend">];
+}
+
 def EnzymeBatchToStableHLOPass : Pass<"enzyme-batch-to-stablehlo"> {
   let summary = "Legalize batching specific enzyme ops to stablehlo dialect";
   let dependentDialects = [
     "stablehlo::StablehloDialect",
     "enzyme::EnzymeDialect"
+  ];
+}
+
+def PartialSymmetryAnnotatePass : Pass<"partial-symmetry-annotate", "ModuleOp"> {
+  let summary = "Annotate operations using partial symmetry analysis";
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "enzymexla::EnzymeXLADialect",
+    "func::FuncDialect",
   ];
 }
 

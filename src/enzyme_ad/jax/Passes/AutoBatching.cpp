@@ -938,9 +938,8 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
         .Case<stablehlo::ReshapeOp, stablehlo::SliceOp, stablehlo::ReturnOp,
               // avoid ops that use SHLOGenericBatchOpInterface since that
               // lowers to loop
-              stablehlo::ScatterOp, stablehlo::IfOp, stablehlo::CaseOp,
-              stablehlo::WhileOp, stablehlo::CustomCallOp>(
-            [](auto op) { return true; })
+              stablehlo::IfOp, stablehlo::CaseOp, stablehlo::WhileOp,
+              stablehlo::CustomCallOp>([](auto op) { return true; })
         .Case<stablehlo::BroadcastInDimOp, stablehlo::TransposeOp>(
             [](auto op) { return stablehlo::OpIsReshapeLike(op); })
         .Default([](auto op) { return false; });
@@ -1511,6 +1510,9 @@ bool raiseDynamicSliceToGather(
                                        true)) {
     return false;
   }
+
+  rewriter.setInsertionPoint(whileOp);
+
   if (!outerOperand) {
     // The operand is defined inside the loop but is hoistable - hoist it
     DenseMap<Value, SmallVector<Operation *>> hoistMap;
@@ -1533,8 +1535,6 @@ bool raiseDynamicSliceToGather(
   int64_t numIters = info.getConstantNumIters();
   Location loc = dsOp.getLoc();
 
-  rewriter.setInsertionPoint(whileOp);
-
   // Step 1: Hoist each inner slice operand and construct the gather indices
   // We need to gather all indices for all loop iterations and concatenate them.
   SmallVector<Value> hoistedIndicesList;
@@ -1555,7 +1555,6 @@ bool raiseDynamicSliceToGather(
 
     // Reshape to [numIters, 1] for use as gather indices
     SmallVector<int64_t> reshapeShape = {numIters, 1};
-    auto reshapeTy = RankedTensorType::get(reshapeShape, hoistedIndicesElemTy);
 
     // Convert type if needed
     if (hoistedTy.getElementType() != hoistedIndicesElemTy) {
@@ -1566,7 +1565,7 @@ bool raiseDynamicSliceToGather(
     }
 
     Value reshaped =
-        stablehlo::ReshapeOp::create(rewriter, loc, reshapeTy, hoistedIndices);
+        stablehlo::ReshapeOpCreate(rewriter, loc, hoistedIndices, reshapeShape);
     hoistedIndicesList.push_back(reshaped);
   }
 
@@ -1689,15 +1688,13 @@ bool raiseDynamicSliceToGather(
     }
   }
 
-  auto dynSlice = stablehlo::DynamicSliceOp::create(
+  auto dynSlice = stablehlo::DynamicSliceOpCreate(
       rewriter, loc, gatherOp.getResult(), dynSliceStarts, dynSliceSizes);
 
   // Reshape to match the original dsOp output type
-  auto replacement =
-      stablehlo::ReshapeOp::create(rewriter, loc, dsOp.getType(), dynSlice);
-
-  rewriter.replaceOp(dsOp, replacement.getResult());
-
+  auto replacement = stablehlo::ReshapeOpCreate(
+      rewriter, loc, dynSlice, cast<ShapedType>(dsOp.getType()).getShape());
+  rewriter.replaceOp(dsOp, replacement);
   return true;
 }
 
@@ -1740,19 +1737,14 @@ bool liftOperationByBatching(
     return false;
   }
 
+  auto inductionVar = info.getInductionVariable();
+
   auto resultType = cast<RankedTensorType>(op->getResult(0).getType());
   auto resultShape = resultType.getShape();
   SmallVector<int64_t> outputShape(resultShape.size() + 1);
   outputShape[0] = info.getConstantNumIters();
   for (int i = 0; i < resultShape.size(); i++)
     outputShape[i + 1] = resultShape[i];
-
-  auto inductionVar = info.getInductionVariable();
-  auto inductionVarType = cast<RankedTensorType>(inductionVar.getType());
-
-  auto constZero = stablehlo::ConstantOp::create(
-      rewriter, whileOp->getLoc(), inductionVarType,
-      cast<ElementsAttr>(makeAttr(inductionVarType, 0)));
 
   auto batchOp = enzyme::BatchOp::create(
       rewriter, whileOp->getLoc(),
@@ -1762,6 +1754,11 @@ bool liftOperationByBatching(
       rewriter.getDenseI64ArrayAttr({info.getConstantNumIters()}));
 
   rewriter.setInsertionPointAfter(op);
+
+  auto inductionVarType = cast<RankedTensorType>(inductionVar.getType());
+  auto constZero = stablehlo::ConstantOp::create(
+      rewriter, whileOp->getLoc(), inductionVarType,
+      cast<ElementsAttr>(makeAttr(inductionVarType, 0)));
   SmallVector<Value> dynamicSliceStarts(outputShape.size(), constZero);
   Value resIndex;
   if (info.isConstantStart() && info.getConstantStart() == 0) {
@@ -1781,11 +1778,13 @@ bool liftOperationByBatching(
                                          outputShape.end());
   dynamicSliceSizes[0] = 1;
 
-  auto dynamicSlice = stablehlo::DynamicSliceOp::create(
+  auto dynamicSlice = stablehlo::DynamicSliceOpCreate(
       rewriter, whileOp->getLoc(), batchOp->getResult(0), dynamicSliceStarts,
       dynamicSliceSizes);
-  rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(
-      op, op->getResult(0).getType(), dynamicSlice);
+  auto newReshape = stablehlo::ReshapeOpCreate(
+      rewriter, whileOp->getLoc(), dynamicSlice,
+      cast<ShapedType>(op->getResult(0).getType()).getShape());
+  rewriter.replaceOp(op, newReshape);
 
   enzyme::batchutils::batchOperationInline(
       rewriter, batchOp, cast<FunctionOpInterface>(func.getOperation()));
@@ -2327,6 +2326,7 @@ void populateAutoBatchingPassPatterns(RewritePatternSet &patterns,
              SliceToBatch<stablehlo::GetDimensionSizeOp>,
              SliceToBatch<stablehlo::ReverseOp>,
              SliceToBatch<stablehlo::ConvolutionOp>,
+             SliceToBatch<stablehlo::ScatterOp>,
              SliceToBatchWithReshapeLikeCheck<stablehlo::BroadcastInDimOp>,
              SliceToBatchWithReshapeLikeCheck<stablehlo::TransposeOp>,
              SliceToBatchElementwise>(ctx);
@@ -2338,8 +2338,7 @@ void populateAutoBatchingPassPatterns(RewritePatternSet &patterns,
                  ConcatInsertDimToBatch<stablehlo::IotaOp>,
                  ConcatInsertDimToBatchReduceLike<stablehlo::ReduceOp>,
                  ConcatInsertDimToBatchReduceLike<stablehlo::ReduceWindowOp>,
-                 // ConcatInsertDimToBatch<stablehlo::ScatterOp>, after batch
-                 // op interface is implemented
+                 ConcatInsertDimToBatch<stablehlo::ScatterOp>,
                  ConcatInsertDimToBatch<stablehlo::SortOp>,
                  ConcatInsertDimToBatch<stablehlo::ConcatenateOp>,
                  ConcatInsertDimToBatch<stablehlo::GetDimensionSizeOp>,
@@ -2389,8 +2388,9 @@ struct AutoBatchingPass
     GreedyRewriteConfig config;
     config.setMaxIterations(max_iterations);
     config.setUseTopDownTraversal(top_down);
-    if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),
-                                            config))) {
+    config.enableFolding();
+    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
+                                     config))) {
       signalPassFailure();
     }
   }

@@ -8,8 +8,8 @@ func.func @multi_slice_valid(%arg0: tensor<20x24x80xf64>) -> tensor<4x24x80xf64>
         start_indices = array<i64: 6, 0, 0>,
         limit_indices = array<i64: 10, 24, 80>,
         strides = array<i64: 1, 1, 1>,
-        dimension = 0 : si32,
-        amount = 4 : si32
+        dimension = 0 : i32,
+        amount = 4 : i32
     }> : (tensor<20x24x80xf64>) -> (tensor<4x24x80xf64>, tensor<4x24x80xf64>, tensor<4x24x80xf64>, tensor<4x24x80xf64>, tensor<4x24x80xf64>)
     return %2 : tensor<4x24x80xf64>
 }
@@ -22,8 +22,8 @@ func.func @multi_slice_negative_amount(%arg0: tensor<20x24x80xf64>) -> tensor<4x
         start_indices = array<i64: 8, 0, 0>,
         limit_indices = array<i64: 12, 24, 80>,
         strides = array<i64: 1, 1, 1>,
-        dimension = 0 : si32,
-        amount = -1 : si32
+        dimension = 0 : i32,
+        amount = -1 : i32
     }> : (tensor<20x24x80xf64>) -> tensor<4x24x80xf64>
     return %0 : tensor<4x24x80xf64>
 }
@@ -36,8 +36,8 @@ func.func @multi_slice_invalid_dimension_negative(%arg0: tensor<20x24x80xf64>) -
         start_indices = array<i64: 8, 0, 0>,
         limit_indices = array<i64: 12, 24, 80>,
         strides = array<i64: 1, 1, 1>,
-        dimension = -1 : si32,
-        amount = 2 : si32
+        dimension = -1 : i32,
+        amount = 2 : i32
     }> : (tensor<20x24x80xf64>) -> (tensor<4x24x80xf64>, tensor<4x24x80xf64>, tensor<4x24x80xf64>)
     return %1 : tensor<4x24x80xf64>
 }
@@ -50,8 +50,8 @@ func.func @multi_slice_invalid_dimension_too_large(%arg0: tensor<20x24x80xf64>) 
         start_indices = array<i64: 8, 0, 0>,
         limit_indices = array<i64: 12, 24, 80>,
         strides = array<i64: 1, 1, 1>,
-        dimension = 3 : si32,
-        amount = 2 : si32
+        dimension = 3 : i32,
+        amount = 2 : i32
     }> : (tensor<20x24x80xf64>) -> (tensor<4x24x80xf64>, tensor<4x24x80xf64>, tensor<4x24x80xf64>)
     return %1 : tensor<4x24x80xf64>
 }
@@ -64,8 +64,8 @@ func.func @multi_slice_start_indices_size_mismatch(%arg0: tensor<20x24x80xf64>) 
         start_indices = array<i64: 8, 0>,
         limit_indices = array<i64: 12, 24, 80>,
         strides = array<i64: 1, 1, 1>,
-        dimension = 0 : si32,
-        amount = 2 : si32
+        dimension = 0 : i32,
+        amount = 2 : i32
     }> : (tensor<20x24x80xf64>) -> (tensor<4x24x80xf64>, tensor<4x24x80xf64>, tensor<4x24x80xf64>)
     return %1 : tensor<4x24x80xf64>
 }
@@ -78,8 +78,8 @@ func.func @multi_slice_limit_indices_size_mismatch(%arg0: tensor<20x24x80xf64>) 
         start_indices = array<i64: 8, 0, 0>,
         limit_indices = array<i64: 12, 24, 80, 5>,
         strides = array<i64: 1, 1, 1>,
-        dimension = 0 : si32,
-        amount = 2 : si32
+        dimension = 0 : i32,
+        amount = 2 : i32
     }> : (tensor<20x24x80xf64>) -> (tensor<4x24x80xf64>, tensor<4x24x80xf64>, tensor<4x24x80xf64>)
     return %1 : tensor<4x24x80xf64>
 }
@@ -92,8 +92,8 @@ func.func @multi_slice_strides_size_mismatch(%arg0: tensor<20x24x80xf64>) -> ten
         start_indices = array<i64: 8, 0, 0>,
         limit_indices = array<i64: 12, 24, 80>,
         strides = array<i64: 1>,
-        dimension = 0 : si32,
-        amount = 2 : si32
+        dimension = 0 : i32,
+        amount = 2 : i32
     }> : (tensor<20x24x80xf64>) -> (tensor<4x24x80xf64>, tensor<4x24x80xf64>, tensor<4x24x80xf64>)
     return %1 : tensor<4x24x80xf64>
 }
@@ -106,8 +106,8 @@ func.func @multi_slice_non_positive_stride(%arg0: tensor<20x24x80xf64>) -> tenso
         start_indices = array<i64: 8, 0, 0>,
         limit_indices = array<i64: 12, 24, 80>,
         strides = array<i64: 1, 0, 1>,
-        dimension = 0 : si32,
-        amount = 2 : si32
+        dimension = 0 : i32,
+        amount = 2 : i32
     }> : (tensor<20x24x80xf64>) -> (tensor<4x24x80xf64>, tensor<4x24x80xf64>, tensor<4x24x80xf64>)
     return %1 : tensor<4x24x80xf64>
 }
@@ -120,8 +120,8 @@ func.func @multi_slice_negative_stride(%arg0: tensor<20x24x80xf64>) -> tensor<4x
         start_indices = array<i64: 8, 0, 0>,
         limit_indices = array<i64: 12, 24, 80>,
         strides = array<i64: 1, 1, -1>,
-        dimension = 0 : si32,
-        amount = 2 : si32
+        dimension = 0 : i32,
+        amount = 2 : i32
     }> : (tensor<20x24x80xf64>) -> (tensor<4x24x80xf64>, tensor<4x24x80xf64>, tensor<4x24x80xf64>)
     return %1 : tensor<4x24x80xf64>
 }
@@ -134,8 +134,8 @@ func.func @multi_slice_wrong_num_results(%arg0: tensor<20x24x80xf64>) -> tensor<
         start_indices = array<i64: 8, 0, 0>,
         limit_indices = array<i64: 12, 24, 80>,
         strides = array<i64: 1, 1, 1>,
-        dimension = 0 : si32,
-        amount = 4 : si32
+        dimension = 0 : i32,
+        amount = 4 : i32
     }> : (tensor<20x24x80xf64>) -> (tensor<4x24x80xf64>, tensor<4x24x80xf64>, tensor<4x24x80xf64>)
     return %1 : tensor<4x24x80xf64>
 }
@@ -148,8 +148,8 @@ func.func @multi_slice_result_shape_mismatch(%arg0: tensor<20x24x80xf64>) -> ten
         start_indices = array<i64: 8, 0, 0>,
         limit_indices = array<i64: 12, 24, 80>,
         strides = array<i64: 1, 1, 1>,
-        dimension = 0 : si32,
-        amount = 2 : si32
+        dimension = 0 : i32,
+        amount = 2 : i32
     }> : (tensor<20x24x80xf64>) -> (tensor<4x24x80xf64>, tensor<8x24x80xf64>, tensor<4x24x80xf64>)
     return %1 : tensor<8x24x80xf64>
 }
@@ -162,8 +162,8 @@ func.func @multi_slice_result_element_type_mismatch(%arg0: tensor<20x24x80xf64>)
         start_indices = array<i64: 8, 0, 0>,
         limit_indices = array<i64: 12, 24, 80>,
         strides = array<i64: 1, 1, 1>,
-        dimension = 0 : si32,
-        amount = 2 : si32
+        dimension = 0 : i32,
+        amount = 2 : i32
     }> : (tensor<20x24x80xf64>) -> (tensor<4x24x80xf64>, tensor<4x24x80xf64>, tensor<4x24x80xf32>)
     return %2 : tensor<4x24x80xf32>
 }
@@ -176,8 +176,8 @@ func.func @multi_slice_with_strides(%arg0: tensor<20x24x80xf64>) -> tensor<2x12x
         start_indices = array<i64: 7, 0, 0>,
         limit_indices = array<i64: 11, 24, 80>,
         strides = array<i64: 2, 2, 2>,
-        dimension = 0 : si32,
-        amount = 2 : si32
+        dimension = 0 : i32,
+        amount = 2 : i32
     }> : (tensor<20x24x80xf64>) -> (tensor<2x12x40xf64>, tensor<2x12x40xf64>, tensor<2x12x40xf64>)
     return %1 : tensor<2x12x40xf64>
 }
@@ -191,8 +191,8 @@ func.func @multi_slice_out_of_bounds(%arg0: tensor<20x24x80xf64>) -> tensor<2x12
         start_indices = array<i64: 8, 0, 0>,
         limit_indices = array<i64: 12, 24, 80>,
         strides = array<i64: 2, 2, 2>,
-        dimension = 1 : si32,
-        amount = 2 : si32
+        dimension = 1 : i32,
+        amount = 2 : i32
     }> : (tensor<20x24x80xf64>) -> (tensor<2x12x40xf64>, tensor<2x12x40xf64>, tensor<2x12x40xf64>)
     return %1 : tensor<2x12x40xf64>
 }

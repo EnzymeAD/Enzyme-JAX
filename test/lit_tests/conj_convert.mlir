@@ -7,7 +7,7 @@ func.func @conj_1(%arg0: tensor<64x64xf64>) -> tensor<64x64xcomplex<f64>> {
 }
 
 // CHECK: func.func @conj_1(%arg0: tensor<64x64xf64>) -> tensor<64x64xcomplex<f64>> {
-// CHECK-NEXT:     %0 = stablehlo.convert %arg0 : (tensor<64x64xf64>) -> tensor<64x64xcomplex<f64>>
+// CHECK-NEXT:     %0 = stablehlo.convert %arg0 {enzymexla.complex_is_purely_real = [#enzymexla<guaranteed GUARANTEED>]} : (tensor<64x64xf64>) -> tensor<64x64xcomplex<f64>>
 // CHECK-NEXT:     return %0 : tensor<64x64xcomplex<f64>>
 // CHECK-NEXT: }
 
@@ -20,6 +20,6 @@ func.func @conj_2(%arg0: tensor<64x64xf64>) -> tensor<64x64xf64> {
 }
 
 // CHECK: func.func @conj_2(%arg0: tensor<64x64xf64>) -> tensor<64x64xf64> {
-// CHECK-NEXT:     %0 = stablehlo.multiply %arg0, %arg0 : tensor<64x64xf64>
+// CHECK-NEXT:     %0 = stablehlo.multiply %arg0, %arg0 {enzymexla.complex_is_purely_imaginary = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<64x64xf64>
 // CHECK-NEXT:     return %0 : tensor<64x64xf64>
 // CHECK-NEXT: }

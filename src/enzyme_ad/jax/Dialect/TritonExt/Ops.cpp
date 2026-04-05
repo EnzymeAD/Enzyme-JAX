@@ -41,10 +41,10 @@ LogicalResult
 TritonCallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   auto global = symbolTable.lookupNearestSymbolFrom<FunctionOpInterface>(
       *this, getFnAttr());
-  if (!global)
+  if (!global) {
     return emitOpError("'")
            << getFn() << "' does not reference a valid global funcOp";
-
+  }
   // Verify that the referenced symbol is specifically a tt.func operation
   auto fnKind = global->getName().getStringRef();
   if (fnKind != "tt.func" && fnKind != "llvm.func")

@@ -400,9 +400,10 @@ bool WhileLoopInfo::isConstantAcrossIterations(
     return true;
   }
 
-  if (auto blockArg = dyn_cast<BlockArgument>(v)) {
+  auto &body = op.getBody().front();
+  auto blockArg = dyn_cast<BlockArgument>(v);
+  if (v.getParentBlock() == &body && blockArg) {
     int64_t blockArgIndex = blockArg.getArgNumber();
-    auto &body = op.getBody().front();
     auto terminator = body.getTerminator();
     if (terminator && blockArgIndex < terminator->getNumOperands() &&
         terminator->getOperand(blockArgIndex) ==

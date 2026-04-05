@@ -128,6 +128,11 @@ public:
         /* augmented */ nullptr, gutils->omp, gutils->postpasses,
         gutils->verifyPostPasses, gutils->strongZero);
 
+    if (SymbolTable::getSymbolVisibility(forwardFn) ==
+        SymbolTable::Visibility::Private) {
+      SymbolTable::setSymbolVisibility(forwardFn,
+                                       SymbolTable::getSymbolVisibility(fn));
+    }
     SmallVector<Value> fwdArguments;
     SmallVector<Type> returnTypes;
 

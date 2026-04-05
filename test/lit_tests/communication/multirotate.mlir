@@ -48,7 +48,7 @@ func.func @multirotate_lr(%arg0: tensor<16x20xf64> {sdy.sharding = #sdy.sharding
     // CHECK: } : (tensor<16x20xf64>) -> (tensor<16x20xf64>, tensor<16x20xf64>, tensor<16x20xf64>)
     // CHECK: return %[[MANUAL]]#0, %[[MANUAL]]#1, %[[MANUAL]]#2
     
-    %1:3 = "enzymexla.multi_rotate"(%arg0) <{dimension = 0 : si32, left_amount = 1 : si32, right_amount = 1 : si32}> 
+    %1:3 = "enzymexla.multi_rotate"(%arg0) <{dimension = 0 : i32, left_amount = 1 : i32, right_amount = 1 : i32}> 
          {sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{"x"}, {"y"}]>, <@mesh1, [{"x"}, {"y"}]>, <@mesh1, [{"x"}, {"y"}]>]>} 
          : (tensor<16x20xf64>) -> (tensor<16x20xf64>, tensor<16x20xf64>, tensor<16x20xf64>)
     return %1#0, %1#1, %1#2 : tensor<16x20xf64>, tensor<16x20xf64>, tensor<16x20xf64>
@@ -86,7 +86,7 @@ func.func @multirotate_l(%arg0: tensor<16x20xf64> {sdy.sharding = #sdy.sharding<
     // CHECK: } : (tensor<16x20xf64>) -> (tensor<16x20xf64>, tensor<16x20xf64>, tensor<16x20xf64>)
     // CHECK: return %[[MANUAL]]#0, %[[MANUAL]]#1, %[[MANUAL]]#2
     
-    %1:3 = "enzymexla.multi_rotate"(%arg0) <{dimension = 0 : si32, left_amount = 2 : si32, right_amount = 0 : si32}> 
+    %1:3 = "enzymexla.multi_rotate"(%arg0) <{dimension = 0 : i32, left_amount = 2 : i32, right_amount = 0 : i32}> 
          {sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{"x"}, {"y"}]>, <@mesh1, [{"x"}, {"y"}]>, <@mesh1, [{"x"}, {"y"}]>]>} 
          : (tensor<16x20xf64>) -> (tensor<16x20xf64>, tensor<16x20xf64>, tensor<16x20xf64>)
     return %1#0, %1#1, %1#2 : tensor<16x20xf64>, tensor<16x20xf64>, tensor<16x20xf64>
@@ -133,7 +133,7 @@ func.func @multirotate_r(%arg0: tensor<16x20xf64> {sdy.sharding = #sdy.sharding<
     // CHECK: } : (tensor<16x20xf64>) -> (tensor<16x20xf64>, tensor<16x20xf64>, tensor<16x20xf64>)
     // CHECK: return %[[MANUAL]]#0, %[[MANUAL]]#1, %[[MANUAL]]#2
     
-    %1:3 = "enzymexla.multi_rotate"(%arg0) <{dimension = 0 : si32, left_amount = 0 : si32, right_amount = 2 : si32}> 
+    %1:3 = "enzymexla.multi_rotate"(%arg0) <{dimension = 0 : i32, left_amount = 0 : i32, right_amount = 2 : i32}> 
          {sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{"x"}, {"y"}]>, <@mesh1, [{"x"}, {"y"}]>, <@mesh1, [{"x"}, {"y"}]>]>} 
          : (tensor<16x20xf64>) -> (tensor<16x20xf64>, tensor<16x20xf64>, tensor<16x20xf64>)
     return %1#0, %1#1, %1#2 : tensor<16x20xf64>, tensor<16x20xf64>, tensor<16x20xf64>
@@ -194,7 +194,7 @@ func.func @multirotate_padding(%arg0: tensor<17x20xf64> {sdy.sharding = #sdy.sha
     // CHECK: %[[FINAL2:.*]] = stablehlo.slice %[[MANUAL]]#2 [0:17, 0:20] {sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{"x"}, {"y"}]>]>} : (tensor<20x20xf64>) -> tensor<17x20xf64>
     // CHECK: return %[[FINAL0]], %[[FINAL1]], %[[FINAL2]]
     
-    %1:3 = "enzymexla.multi_rotate"(%arg0) <{dimension = 0 : si32, left_amount = 1 : si32, right_amount = 1 : si32}> 
+    %1:3 = "enzymexla.multi_rotate"(%arg0) <{dimension = 0 : i32, left_amount = 1 : i32, right_amount = 1 : i32}> 
          {sdy.sharding = #sdy.sharding_per_value<[<@mesh1, [{"x"}, {"y"}]>, <@mesh1, [{"x"}, {"y"}]>, <@mesh1, [{"x"}, {"y"}]>]>} 
          : (tensor<17x20xf64>) -> (tensor<17x20xf64>, tensor<17x20xf64>, tensor<17x20xf64>)
     return %1#0, %1#1, %1#2 : tensor<17x20xf64>, tensor<17x20xf64>, tensor<17x20xf64>

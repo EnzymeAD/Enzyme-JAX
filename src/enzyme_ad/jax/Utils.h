@@ -478,6 +478,9 @@ getBoundsFromIR(Value val, unsigned bitWidth) {
   return std::make_pair(minVal, maxVal);
 }
 
+bool checkNotEqual(llvm::APInt a, llvm::APInt b);
+bool checkNotEqual(llvm::APFloat a, llvm::APFloat b);
+
 bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type Ty);
 bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type Ty,
                           mlir::Operation *op, PatternRewriter &rewriter);
@@ -665,15 +668,24 @@ public:
           RankedTensorType::get({}, denseAttr.getType().getElementType()));
     }
 
+    auto elemType = denseAttr.getElementType();
+
+    // For Complex values
+    if (isa<ComplexType>(elemType)) {
+      if (((Child *)this)->constantComplexCheck(denseAttr)) {
+        state = State::GUARANTEED;
+      }
+    }
+
     // For floating point values
-    if (isa<FloatType>(denseAttr.getElementType())) {
+    if (isa<FloatType>(elemType)) {
       if (((Child *)this)->constantFloatCheck(denseAttr)) {
         state = State::GUARANTEED;
       }
     }
 
     // For integer values
-    if (isa<IntegerType>(denseAttr.getElementType())) {
+    if (isa<IntegerType>(elemType)) {
       if (((Child *)this)->constantIntCheck(denseAttr)) {
         state = State::GUARANTEED;
       }
@@ -794,6 +806,8 @@ private:
 class FiniteResultAnalysis;
 class NoNanResultAnalysis;
 class SymmetricResultAnalysis;
+class PurelyRealResultAnalysis;
+class PurelyImagResultAnalysis;
 
 class SymmetricResultAnalysis
     : public GuaranteedResultAnalysisBase<SymmetricResultAnalysis> {
@@ -801,6 +815,7 @@ public:
   State localGuaranteed(Value val, SmallVectorImpl<Value> &localtodo,
                         PatternRewriter &rewriter);
 
+  bool constantComplexCheck(DenseElementsAttr attr) { return false; }
   bool constantFloatCheck(DenseElementsAttr attr);
   bool constantIntCheck(DenseElementsAttr attr);
 
@@ -816,6 +831,7 @@ public:
   State localGuaranteed(Value val, SmallVectorImpl<Value> &localtodo,
                         PatternRewriter &rewriter);
 
+  bool constantComplexCheck(DenseElementsAttr attr) { return false; }
   bool constantFloatCheck(DenseElementsAttr attr);
   bool constantIntCheck(DenseElementsAttr attr);
 
@@ -832,6 +848,7 @@ private:
   std::shared_ptr<NoNanResultAnalysis> noNanResultAnalysis = nullptr;
 
 public:
+  bool constantComplexCheck(DenseElementsAttr attr) { return false; }
   bool constantFloatCheck(DenseElementsAttr attr);
   bool constantIntCheck(DenseElementsAttr attr);
 
@@ -845,9 +862,41 @@ public:
   }
 };
 
+// TODO: analysis for == 0 case, and use that inside the purely* analysis
+
+class PurelyRealResultAnalysis
+    : public GuaranteedResultAnalysisBase<PurelyRealResultAnalysis> {
+public:
+  State localGuaranteed(Value val, SmallVectorImpl<Value> &localtodo,
+                        PatternRewriter &rewriter);
+
+  bool constantComplexCheck(DenseElementsAttr attr);
+  bool constantFloatCheck(DenseElementsAttr attr) { return true; }
+  bool constantIntCheck(DenseElementsAttr attr) { return true; }
+
+  StringRef getAttrName() const { return "enzymexla.complex_is_purely_real"; }
+};
+
+class PurelyImagResultAnalysis
+    : public GuaranteedResultAnalysisBase<PurelyImagResultAnalysis> {
+public:
+  State localGuaranteed(Value val, SmallVectorImpl<Value> &localtodo,
+                        PatternRewriter &rewriter);
+
+  bool constantComplexCheck(DenseElementsAttr attr);
+  bool constantFloatCheck(DenseElementsAttr attr) { return true; }
+  bool constantIntCheck(DenseElementsAttr attr) { return true; }
+
+  StringRef getAttrName() const {
+    return "enzymexla.complex_is_purely_imaginary";
+  }
+};
+
 NoNanResultAnalysis initNoNanResultAnalysis();
 FiniteResultAnalysis initFiniteResultAnalysis();
 SymmetricResultAnalysis initSymmetricResultAnalysis();
+PurelyRealResultAnalysis initPurelyRealResultAnalysis();
+PurelyImagResultAnalysis initPurelyImagResultAnalysis();
 
 template <typename T>
 bool runAnalysisOnOperation(T analysis, Operation *op,
@@ -895,6 +944,7 @@ inline bool guaranteedSymmetricResult(Operation *op,
 class NonNegativeResultAnalysis
     : public GuaranteedResultAnalysisBase<NonNegativeResultAnalysis> {
 public:
+  bool constantComplexCheck(DenseElementsAttr attr) { return false; }
   bool constantFloatCheck(DenseElementsAttr attr);
   bool constantIntCheck(DenseElementsAttr attr);
 
@@ -913,6 +963,28 @@ inline bool guaranteedNonNegativeResult(Operation *op,
   auto analysis = NonNegativeResultAnalysis();
   return runAnalysisOnOperation<NonNegativeResultAnalysis>(analysis, op,
                                                            rewriter);
+}
+
+inline bool guaranteedPurelyRealResult(mlir::Value value,
+                                       PatternRewriter &rewriter) {
+  return initPurelyRealResultAnalysis().guaranteed(value, rewriter);
+}
+inline bool guaranteedPurelyRealResult(Operation *op,
+                                       PatternRewriter &rewriter) {
+  auto analysis = initPurelyRealResultAnalysis();
+  return runAnalysisOnOperation<PurelyRealResultAnalysis>(analysis, op,
+                                                          rewriter);
+}
+
+inline bool guaranteedPurelyImagResult(mlir::Value value,
+                                       PatternRewriter &rewriter) {
+  return initPurelyImagResultAnalysis().guaranteed(value, rewriter);
+}
+inline bool guaranteedPurelyImagResult(Operation *op,
+                                       PatternRewriter &rewriter) {
+  auto analysis = initPurelyImagResultAnalysis();
+  return runAnalysisOnOperation<PurelyImagResultAnalysis>(analysis, op,
+                                                          rewriter);
 }
 
 bool anyOperandIsConstant(mlir::Operation *op);
@@ -1048,6 +1120,9 @@ struct PaddedTensor {
 };
 
 std::optional<PaddedTensor> detectPaddedTensor(mlir::DenseElementsAttr attr);
+
+bool isZero(mlir::ElementsAttr v);
+bool isZero(mlir::Value v);
 
 // Helper to check if a TypedAttr is zero
 inline bool isZeroAttr(mlir::TypedAttr attr) {
@@ -1274,6 +1349,10 @@ LogicalResult concatReshapeSliceSimplify(PatternRewriter &rewriter,
                                          SmallVectorImpl<Value> &operands,
                                          int64_t dim,
                                          SmallVectorImpl<Value> &newOperands);
+LogicalResult concatBroadcastSliceSimplify(PatternRewriter &rewriter,
+                                           SmallVectorImpl<Value> &operands,
+                                           int64_t dim,
+                                           SmallVectorImpl<Value> &newOperands);
 
 Value getIdentityValue(OpBuilder &builder, Location loc, Type elemType,
                        Operation *op);

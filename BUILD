@@ -45,10 +45,13 @@ cc_binary(
     visibility = ["//visibility:public"],
     deps = [
         "//src/enzyme_ad/jax:RegistryUtils",
+        "@stablehlo//stablehlo/tests:check_ops",
+        "@stablehlo//:interpreter_ops",
         "@llvm-project//mlir:GPUToLLVMIRTranslation",
         "@llvm-project//mlir:LLVMToLLVMIRTranslation",
         "@llvm-project//mlir:MlirOptLib",
         "@llvm-project//mlir:NVVMToLLVMIRTranslation",
+        "@llvm-project//mlir:Transforms",
         "@tsl//tsl/platform:env",
         "@tsl//tsl/platform:env_impl",
     ] + if_llvm_aarch32_available([
@@ -74,6 +77,9 @@ cc_library(
     srcs = [
         "//src/enzyme_ad/jax:RegistryUtils.cpp",
         "//src/enzyme_ad/jax:raise.cpp",
+    ],
+    hdrs = [
+        "//src/enzyme_ad/jax:raise.h",
     ],
     copts = [
         "-Wno-unused-variable",

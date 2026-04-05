@@ -109,7 +109,7 @@ reshapeMemref2(Value memref, ArrayRef<int64_t> shape,
       AffineMap map = ainfo.map;
       for (auto expr : map.getResults()) {
         auto cst = dyn_cast<AffineConstantExpr>(expr);
-        if (cst.getValue() != 0)
+        if (!cst || cst.getValue() != 0)
           return failure();
       }
       ainfo.map = AffineMap::get(map.getNumDims(), map.getNumSymbols(), {},

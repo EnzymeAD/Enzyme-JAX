@@ -117,16 +117,17 @@ module {
 // CHECK-NEXT:        %10 = stablehlo.compare  LT, %iterArg_8, %c_0 : (tensor<i64>, tensor<i64>) -> tensor<i1>
 // CHECK-NEXT:        stablehlo.return %10 : tensor<i1>
 // CHECK-NEXT:      } do {
-// CHECK-NEXT:        %10 = stablehlo.subtract %c, %iterArg_8 : tensor<i64>
-// CHECK-NEXT:        %11 = stablehlo.add %5, %10 : tensor<i64>
-// CHECK-NEXT:        %12 = stablehlo.multiply %c_2, %11 : tensor<i64>
-// CHECK-NEXT:        %13 = stablehlo.add %12, %c_2 : tensor<i64>
-// CHECK-NEXT:        %14 = stablehlo.convert %13 : (tensor<i64>) -> tensor<f64>
-// CHECK-NEXT:        %15 = stablehlo.reshape %14 : (tensor<f64>) -> tensor<1xf64>
-// CHECK-NEXT:        %16 = stablehlo.dynamic_update_slice %iterArg_10, %15, %iterArg_8 : (tensor<3xf64>, tensor<1xf64>, tensor<i64>) -> tensor<3xf64>
-// CHECK-NEXT:        %17 = stablehlo.multiply %iterArg_9, %14 : tensor<f64>
-// CHECK-NEXT:        %18 = stablehlo.add %iterArg_8, %c_2 : tensor<i64>
-// CHECK-NEXT:        stablehlo.return %18, %17, %16 : tensor<i64>, tensor<f64>, tensor<3xf64>
+// CHECK-NEXT:        %[[subc:.+]] = stablehlo.subtract %c_0, %c_2 : tensor<i64>
+// CHECK-NEXT:        %[[subi:.+]] = stablehlo.subtract %[[subc]], %iterArg_8 : tensor<i64>
+// CHECK-NEXT:        %[[add:.+]] = stablehlo.add %5, %[[subi]] : tensor<i64>
+// CHECK-NEXT:        %[[mul:.+]] = stablehlo.multiply %c_2, %[[add]] : tensor<i64>
+// CHECK-NEXT:        %[[add2:.+]] = stablehlo.add %[[mul]], %c_2 : tensor<i64>
+// CHECK-NEXT:        %[[conv:.+]] = stablehlo.convert %[[add2]] : (tensor<i64>) -> tensor<f64>
+// CHECK-NEXT:        %[[reshape:.+]] = stablehlo.reshape %[[conv]] : (tensor<f64>) -> tensor<1xf64>
+// CHECK-NEXT:        %[[dus:.+]] = stablehlo.dynamic_update_slice %iterArg_10, %[[reshape]], %iterArg_8 : (tensor<3xf64>, tensor<1xf64>, tensor<i64>) -> tensor<3xf64>
+// CHECK-NEXT:        %[[mul2:.+]] = stablehlo.multiply %iterArg_9, %[[conv]] : tensor<f64>
+// CHECK-NEXT:        %[[ivnext:.+]] = stablehlo.add %iterArg_8, %c_2 : tensor<i64>
+// CHECK-NEXT:        stablehlo.return %[[ivnext]], %[[mul2]], %[[dus]] : tensor<i64>, tensor<f64>, tensor<3xf64>
 // CHECK-NEXT:      }
 // CHECK-NEXT:      %7:5 = stablehlo.while(%iterArg_8 = %c_1, %iterArg_9 = %iterArg_4, %iterArg_10 = %iterArg_5, %iterArg_11 = %iterArg_6, %iterArg_12 = %c) : tensor<i64>, tensor<f64>, tensor<f64>, tensor<f64>, tensor<i64>
 // CHECK-NEXT:       cond {

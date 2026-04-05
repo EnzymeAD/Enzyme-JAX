@@ -18,8 +18,19 @@ def EnzymeXLA_LapackLayout : I32EnumAttr<"LapackLayout",
   let cppNamespace = "::mlir::enzymexla";
 }
 
-def EnzymeXLA_LapackLayoutAttr : EnumAttr<EnzymeXLA_Dialect,
-    EnzymeXLA_LapackLayout, "layout">;
+def EnzymeXLA_LapackLayoutAttr
+    : EnumAttr<EnzymeXLA_Dialect, EnzymeXLA_LapackLayout, "layout"> {
+  let assemblyFormat = "`<` $value `>`";
+  let extraClassDeclaration = [{
+    char getBlasChar() const {
+      switch (getValue()) {
+        case LapackLayout::col_major: return 'C';
+        case LapackLayout::row_major: return 'R';
+        default: llvm_unreachable("invalid LapackLayout");
+      }
+    }
+  }];
+}
 
 def EnzymeXLA_LapackTranspose : I32EnumAttr<"LapackTranspose",
     "Whether to transpose the matrix",
@@ -35,6 +46,16 @@ def EnzymeXLA_LapackTranspose : I32EnumAttr<"LapackTranspose",
 def EnzymeXLA_LapackTransposeAttr : EnumAttr<EnzymeXLA_Dialect,
     EnzymeXLA_LapackTranspose, "transpose"> {
   let assemblyFormat = "`<` $value `>`";
+  let extraClassDeclaration = [{
+    char getBlasChar() const {
+      switch(getValue()) {
+        case LapackTranspose::none : return 'N';
+        case LapackTranspose::transpose : return 'T';
+        case LapackTranspose::adjoint : return 'C';
+        default : llvm_unreachable("invalid LapackTranspose");
+      }
+    }
+  }];
 }
 
 def EnzymeXLA_LapackSide : I32EnumAttr<"LapackSide",
@@ -50,6 +71,15 @@ def EnzymeXLA_LapackSide : I32EnumAttr<"LapackSide",
 def EnzymeXLA_LapackSideAttr : EnumAttr<EnzymeXLA_Dialect,
     EnzymeXLA_LapackSide, "side"> {
   let assemblyFormat = "`<` $value `>`";
+  let extraClassDeclaration = [{
+    char getBlasChar() const {
+      switch (getValue()) {
+        case LapackSide::left: return 'L';
+        case LapackSide::right: return 'R';
+        default: llvm_unreachable("invalid LapackSide");
+      }
+    }
+  }];
 }
 
 def EnzymeXLA_LapackUplo : I32EnumAttr<"LapackUplo",
@@ -66,6 +96,16 @@ def EnzymeXLA_LapackUplo : I32EnumAttr<"LapackUplo",
 def EnzymeXLA_LapackUploAttr : EnumAttr<EnzymeXLA_Dialect,
     EnzymeXLA_LapackUplo, "uplo"> {
   let assemblyFormat = "`<` $value `>`";
+  let extraClassDeclaration = [{
+    char getBlasChar() const {
+      switch (getValue()) {
+        case LapackUplo::U: return 'U';
+        case LapackUplo::L: return 'L';
+        case LapackUplo::F: return 'F';
+        default: llvm_unreachable("invalid LapackUplo");
+      }
+    }
+  }];
 }
 
 def EnzymeXLA_QrAlgorithm : I32EnumAttr<"QrAlgorithm",
@@ -132,6 +172,38 @@ def EnzymeXLA_GuaranteedAnalysisResult : I32EnumAttr<"GuaranteedAnalysisResult",
 
 def EnzymeXLA_GuaranteedAnalysisResultAttr : EnumAttr<EnzymeXLA_Dialect,
     EnzymeXLA_GuaranteedAnalysisResult, "guaranteed">;
+
+def EnzymeXLA_SymmetricDimensionSetAttr : AttrDef<EnzymeXLA_Dialect,
+    "SymmetricDimensionSet"> {
+  let summary = "A set of symmetric dimension indices";
+  let cppNamespace = "::mlir::enzymexla";
+
+  let parameters = (ins
+    "DenseI64ArrayAttr":$dimensions
+  );
+
+  let assemblyFormat = [{
+    `<` $dimensions `>`
+  }];
+
+  let mnemonic = "symmetric_dimension_set";
+}
+
+def EnzymeXLA_PartialSymmetryAnalysisResultAttr : AttrDef<EnzymeXLA_Dialect,
+    "PartialSymmetryAnalysisResult"> {
+  let summary = "Sets of partially symmetric dimensions";
+  let cppNamespace = "::mlir::enzymexla";
+
+  let parameters = (ins
+    ArrayRefParameter<"SymmetricDimensionSetAttr">:$values
+  );
+
+  let assemblyFormat = [{
+    `<` $values `>`
+  }];
+
+  let mnemonic = "partial_symmetry";
+}
 
 // MPI
 

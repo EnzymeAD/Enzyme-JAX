@@ -61,7 +61,7 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
   }
 }
 
-// CHECK:  func.func private @raised(%arg0: tensor<?xf32>, %arg1: tensor<?xf32>) -> (tensor<?xf32>, tensor<?xf32>) {
+// CHECK:  func.func private @rxla$raised_0(%arg0: tensor<?xf32>, %arg1: tensor<?xf32>) -> (tensor<?xf32>, tensor<?xf32>) {
 // CHECK-NEXT:    %cst = stablehlo.constant dense<2.000000e-03> : tensor<2160000xf32>
 // CHECK-NEXT:    %c = stablehlo.constant dense<0> : tensor<2160000xi32>
 // CHECK-NEXT:    %c_0 = stablehlo.constant dense<2> : tensor<2160000xi32>
@@ -85,7 +85,7 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
 // CHECK-NEXT:    %11 = stablehlo.reshape %10 : (tensor<i32>) -> tensor<1xi32>
 // CHECK-NEXT:    %12 = stablehlo.dynamic_reshape %8, %11 : (tensor<?x4xi8>, tensor<1xi32>) -> tensor<?xi8>
 // CHECK-NEXT:    %13 = stablehlo.multiply %0, %c_3 : tensor<18000xi64>
-// CHECK-NEXT:    %14 = stablehlo.iota dim = 1 : tensor<120x18000xi64>
+// CHECK-NEXT:    %14 = stablehlo.iota dim = 0 : tensor<120x18000xi64>
 // CHECK-NEXT:    %15 = stablehlo.multiply %14, %c_2 : tensor<120x18000xi64>
 // CHECK-NEXT:    %16 = stablehlo.broadcast_in_dim %13, dims = [1] : (tensor<18000xi64>) -> tensor<120x18000xi64>
 // CHECK-NEXT:    %17 = stablehlo.add %15, %16 : tensor<120x18000xi64>

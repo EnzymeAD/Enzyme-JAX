@@ -1,20 +1,24 @@
-JAX_COMMIT = "dc1eedbe737ee3c45783ade935eb95319925b9f8"
+JAX_COMMIT = "6368db245ff2f16c8a0bf88226f0877cfeba63aa"
 JAX_SHA256 = ""
 
-ENZYME_COMMIT = "53a46ca7bb6268aabd3960034dd0295848f6d5e1"
+ENZYME_COMMIT = "9b78a1cdfbb36edd57ff8d879fc8d29beb6e0eee"
 ENZYME_SHA256 = ""
 
-ML_TOOLCHAIN_COMMIT = "78ef5eda03c54a912c000f1f872242d4ca6063a4"
+ML_TOOLCHAIN_COMMIT = "30ef4a9096f9490e8f198faa5ce5bbddd1b72fdb"
 ML_TOOLCHAIN_SHA256 = ""
 
 # If the empty string this will automatically use the commit above
 # otherwise this should be a path to the folder containing the BUILD file for enzyme
 OVERRIDE_ENZYME_PATH = ""
 
-HEDRON_COMPILE_COMMANDS_COMMIT = "d107d9c9025915902fd52346f1c6e18d87f7013a"
+HEDRON_COMPILE_COMMANDS_COMMIT = "84c8aadfeee9a09105ec22cc85d0f478c90a788a"
 HEDRON_COMPILE_COMMANDS_SHA256 = ""
 
 XLA_PATCHES = [
+    """
+    # Fix support for musl stacktrace issue where execinfo.h is otherwise included
+    sed -i.bak0 "s/defined(__clang__) || defined(__GNUC__)/defined(__GLIBC__)/g" xla/tsl/platform/default/stacktrace.h
+    """,
     """
     sed -i.bak0 "s/\\\"-lamd_comgr\\\",//g" third_party/gpus/rocm/BUILD.tpl 
     """,
@@ -96,7 +100,7 @@ echo "" >> third_party/proto.patch
 echo " #ifndef bswap_16" >> third_party/proto.patch
 echo " static inline uint16_t bswap_16(uint16_t x) {" >> third_party/proto.patch
 sed -i.bak0 "s/protobuf.patch\\"/protobuf.patch\\", \\":proto.patch\\"/g" workspace2.bzl
-sed -i.bak0 "s/= \\[\\"@xla\\/\\/third_party\\/protobuf:protobuf.patch\\"/= \\[\\"@xla\\/\\/third_party\\/protobuf:protobuf.patch\\", \\"\\/\\/third_party:proto.patch\\"/g" third_party/py/python_init_rules.bzl
+sed -i.bak0 "s/\\"@xla\\/\\/third_party\\/protobuf:protobuf.patch\\"/\\"@xla\\/\\/third_party\\/protobuf:protobuf.patch\\", \\"\\/\\/third_party:proto.patch\\"/g" third_party/py/python_init_rules.bzl
 
 """,
     """
