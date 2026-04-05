@@ -238,7 +238,7 @@ Value convertToMultifloat(DenseElementsAttr val, OpBuilder &b, Location loc,
       auto limbSplat = dyn_cast<SplatElementsAttr>(limb);
       auto remSplat = dyn_cast<SplatElementsAttr>(rem);
       if (limbSplat && remSplat) {
-        auto limbBack = remSplat.getSplatValue<APFloat>();
+        auto limbBack = limbSplat.getSplatValue<APFloat>();
         bool losesInfo;
         limbBack.convert(
             cast<FloatType>(tensorType.getElementType()).getFloatSemantics(),
@@ -255,9 +255,10 @@ Value convertToMultifloat(DenseElementsAttr val, OpBuilder &b, Location loc,
               cast<FloatType>(tensorType.getElementType()).getFloatSemantics(),
               APFloat::rmNearestTiesToEven, &losesInfo);
           remFlt.subtract(limbBack, APFloat::rmNearestTiesToEven);
-          newRems.push_back(FloatAttr::get(tgtTy, remFlt));
+          newRems.push_back(
+              FloatAttr::get(tensorType.getElementType(), remFlt));
         }
-        rem = DenseElementsAttr::get(outType, newRems);
+        rem = DenseElementsAttr::get(tensorType, newRems);
       }
     }
   }
