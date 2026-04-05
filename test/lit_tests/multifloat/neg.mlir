@@ -1,5 +1,6 @@
 // RUN: enzymexlamlir-opt --multi-float-conversion="source-type=f64 target-type=f32 concat-dimension=tuple" %s | FileCheck --check-prefix=TUPLE %s
 // RUN: enzymexlamlir-opt --multi-float-conversion="source-type=f64 target-type=f32 concat-dimension=first" %s | FileCheck --check-prefix=FIRST %s
+// RUN: enzymexlamlir-opt %s --multi-float-conversion="source-type=f64 target-type=f32 concat-dimension=first" | stablehlo-translate - --interpret --allow-unregistered-dialect
 
 func.func @neg(%arg0: tensor<2xf64>) -> tensor<2xf64> {
   %0 = stablehlo.negate %arg0 : tensor<2xf64>
@@ -35,4 +36,12 @@ func.func @neg(%arg0: tensor<2xf64>) -> tensor<2xf64> {
 // FIRST: %[[ZERO:.*]] = stablehlo.constant dense<0.000000e+00> : tensor<f64>
 // FIRST: %[[RES:.*]] = stablehlo.reduce(%[[C4]] init: %[[ZERO]]) applies stablehlo.add across dimensions = [0] : (tensor<2x2xf64>, tensor<f64>) -> tensor<2xf64>
 // FIRST: return %[[RES]] : tensor<2xf64>
+
+func.func @main() {
+  %cst = stablehlo.constant dense<[1.0, -2.0]> : tensor<2xf64>
+  %expected = stablehlo.constant dense<[-1.0, 2.0]> : tensor<2xf64>
+  %res = func.call @neg(%cst) : (tensor<2xf64>) -> tensor<2xf64>
+  "check.expect_almost_eq"(%res, %expected) : (tensor<2xf64>, tensor<2xf64>) -> ()
+  return
+}
 

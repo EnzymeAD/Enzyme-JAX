@@ -3146,6 +3146,8 @@ struct MultiFloatConversionPass
 
     if (convertSignatures) {
       op->walk([&](func::FuncOp func) {
+        if (func->hasAttr("enzyme.no_multifloat"))
+          return;
         SmallVector<Type> oldArgTypes;
         for (auto arg : func.getArguments()) {
           oldArgTypes.push_back(arg.getType());
@@ -3368,11 +3370,21 @@ struct MultiFloatConversionPass
     target.addDynamicallyLegalOp<stablehlo::ReduceWindowOp>(reduceWindowLegal);
 
     if (expansionSize >= 2) {
-      RewritePatternSet patterns(context);
-      patterns.add<LowerReduceWindowOp>(context, srcTy);
+      SmallVector<func::FuncOp> funcsToConvert;
+      op->walk([&](func::FuncOp func) {
+        if (!func->hasAttr("enzyme.no_multifloat")) {
+          funcsToConvert.push_back(func);
+        }
+      });
+
       GreedyRewriteConfig config;
-      if (failed(applyPatternsGreedily(op, std::move(patterns), config))) {
-        signalPassFailure();
+      for (auto func : funcsToConvert) {
+        RewritePatternSet patterns(context);
+        patterns.add<LowerReduceWindowOp>(context, srcTy);
+        if (failed(applyPatternsGreedily(func, std::move(patterns), config))) {
+          signalPassFailure();
+          return;
+        }
       }
     }
     RewritePatternSet patterns(context);
@@ -3488,14 +3500,25 @@ struct MultiFloatConversionPass
       return;
     }
 
-    if (failed(applyPartialConversion(op, target, std::move(patterns)))) {
-      signalPassFailure();
+    SmallVector<func::FuncOp> funcsToConvert;
+    op->walk([&](func::FuncOp func) {
+      if (!func->hasAttr("enzyme.no_multifloat")) {
+        funcsToConvert.push_back(func);
+      }
+    });
+
+    FrozenRewritePatternSet frozenPatterns(std::move(patterns));
+    for (auto func : funcsToConvert) {
+      if (failed(applyPartialConversion(func, target, frozenPatterns))) {
+        signalPassFailure();
+        return;
+      }
     }
 
     if (expansionSize > 1 && !convertSignatures) {
       SmallVector<func::FuncOp> funcs;
       op->walk([&](func::FuncOp f) {
-        if (f->getParentOp() == op) {
+        if (f->getParentOp() == op && !f->hasAttr("enzyme.no_multifloat")) {
           funcs.push_back(f);
         }
       });
