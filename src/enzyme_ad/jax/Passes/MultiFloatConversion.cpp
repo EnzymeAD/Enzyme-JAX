@@ -2314,23 +2314,48 @@ struct DotGeneralOpConversion
     auto origShape = origType.getShape();
     auto prodType = RankedTensorType::get(origShape, targetType);
 
-    Value hi_hi = rewriter.create<stablehlo::DotGeneralOp>(
+    // Extended Dekker's algorithm on tensors
+    auto [lhs_hi_hi, lhs_hi_lo] = split(lhs_hi, rewriter, loc);
+    auto [rhs_hi_hi, rhs_hi_lo] = split(rhs_hi, rewriter, loc);
+
+    Value p1 = rewriter.create<stablehlo::DotGeneralOp>(
+        loc, prodType, lhs_hi_hi, rhs_hi_hi, op.getDotDimensionNumbers(),
+        op.getPrecisionConfigAttr(), op.getAlgorithmAttr());
+    Value p2 = rewriter.create<stablehlo::DotGeneralOp>(
+        loc, prodType, lhs_hi_hi, rhs_hi_lo, op.getDotDimensionNumbers(),
+        op.getPrecisionConfigAttr(), op.getAlgorithmAttr());
+    Value p3 = rewriter.create<stablehlo::DotGeneralOp>(
+        loc, prodType, lhs_hi_lo, rhs_hi_hi, op.getDotDimensionNumbers(),
+        op.getPrecisionConfigAttr(), op.getAlgorithmAttr());
+    Value p4 = rewriter.create<stablehlo::DotGeneralOp>(
+        loc, prodType, lhs_hi_lo, rhs_hi_lo, op.getDotDimensionNumbers(),
+        op.getPrecisionConfigAttr(), op.getAlgorithmAttr());
+
+    // p = standard dot product of high limbs
+    Value p = rewriter.create<stablehlo::DotGeneralOp>(
         loc, prodType, lhs_hi, rhs_hi, op.getDotDimensionNumbers(),
         op.getPrecisionConfigAttr(), op.getAlgorithmAttr());
+
+    // Combine to get error (similar to twoProdDekker)
+    Value err1 = rewriter.create<stablehlo::SubtractOp>(loc, p1, p);
+    Value err2 = rewriter.create<stablehlo::AddOp>(loc, p2, p3);
+    Value err3 = rewriter.create<stablehlo::AddOp>(loc, err1, err2);
+    Value err4 = rewriter.create<stablehlo::AddOp>(loc, err3, p4);
+
+    // Cross terms (low limbs)
     Value hi_lo = rewriter.create<stablehlo::DotGeneralOp>(
         loc, prodType, lhs_hi, rhs_lo, op.getDotDimensionNumbers(),
         op.getPrecisionConfigAttr(), op.getAlgorithmAttr());
     Value lo_hi = rewriter.create<stablehlo::DotGeneralOp>(
         loc, prodType, lhs_lo, rhs_hi, op.getDotDimensionNumbers(),
         op.getPrecisionConfigAttr(), op.getAlgorithmAttr());
-    Value lo_lo = rewriter.create<stablehlo::DotGeneralOp>(
-        loc, prodType, lhs_lo, rhs_lo, op.getDotDimensionNumbers(),
-        op.getPrecisionConfigAttr(), op.getAlgorithmAttr());
 
-    Value low = rewriter.create<stablehlo::AddOp>(loc, hi_lo, lo_hi);
-    low = rewriter.create<stablehlo::AddOp>(loc, low, lo_lo);
+    // Sum low parts
+    Value low = rewriter.create<stablehlo::AddOp>(loc, err4, hi_lo);
+    low = rewriter.create<stablehlo::AddOp>(loc, low, lo_hi);
 
-    auto [final_h, final_l] = fastTwoSum(hi_hi, low, rewriter, loc);
+    // Renormalize
+    auto [final_h, final_l] = fastTwoSum(p, low, rewriter, loc);
 
     if (concatDimension != "tuple") {
       if (prodType.getRank() == 0) {
