@@ -157,7 +157,7 @@ jobs:
       - name: Set default precision (TPU)
         if: ${{ contains(matrix.os, 'tpu') }}
         run: |
-          echo "RUN_FLAGS=--float-type=Float32" >> ${GITHUB_ENV}
+          echo "RUN_FLAGS=--float-type=Float32 --xla_tpu_enable_collective_permute_combiner=true" >> ${GITHUB_ENV}
       - name: Instantiate GB-25 environment
         timeout-minutes: 40
         shell: julia --project --color=yes {0}
