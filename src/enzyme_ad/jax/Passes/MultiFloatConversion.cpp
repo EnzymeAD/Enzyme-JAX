@@ -439,7 +439,8 @@ std::pair<Value, Value> twoProdDekker(Value a, Value b, OpBuilder &builder,
   Value p4 = builder.create<stablehlo::MulOp>(loc, a_lo, b_lo);
 
   Value err1 = builder.create<stablehlo::SubtractOp>(loc, p1, p);
-  Value err2 = builder.create<stablehlo::AddOp>(loc, p2, p3); // Group cross terms for accuracy
+  Value err2 = builder.create<stablehlo::AddOp>(
+      loc, p2, p3); // Group cross terms for accuracy
   Value err3 = builder.create<stablehlo::AddOp>(loc, err1, err2);
   Value err4 = builder.create<stablehlo::AddOp>(loc, err3, p4);
 
@@ -476,11 +477,11 @@ std::pair<Value, Value> multiFloatDiv(Value x1, Value x2, Value y1, Value y2,
 
   Value q1 = builder.create<stablehlo::DivOp>(loc, x1, y1);
   auto [p_hi, p_lo] = multiFloatMul(q1, zero, y1, y2, builder, loc);
-  
+
   Value neg_p_hi = builder.create<stablehlo::NegOp>(loc, p_hi);
   Value neg_p_lo = builder.create<stablehlo::NegOp>(loc, p_lo);
   auto [r_hi, r_lo] = multiFloatAdd(x1, x2, neg_p_hi, neg_p_lo, builder, loc);
-  
+
   Value q2 = builder.create<stablehlo::DivOp>(loc, r_hi, y1);
   return fastTwoSum(q1, q2, builder, loc);
 }
@@ -1257,7 +1258,6 @@ struct SineOpConversion : public OpConversionPattern<stablehlo::SineOp> {
     Value abs_x_hi = rewriter.create<stablehlo::SelectOp>(loc, lt_zero,
                                                           neg_x_pi_hi, x_pi_hi);
 
-
     // n = round(2 * abs_x_hi)
     // Using trunc(2 * abs_x_hi + 0.5) as a proxy for round for positive
     // numbers.
@@ -1282,7 +1282,7 @@ struct SineOpConversion : public OpConversionPattern<stablehlo::SineOp> {
     // rx = abs_x - 0.5 * n
     Value half_n = rewriter.create<stablehlo::MulOp>(loc, half, n_float);
     Value neg_half_n = rewriter.create<stablehlo::NegOp>(loc, half_n);
-    
+
     Value neg_x_pi_lo = rewriter.create<stablehlo::NegOp>(loc, x_pi_lo);
     Value abs_x_lo = rewriter.create<stablehlo::SelectOp>(loc, lt_zero,
                                                           neg_x_pi_lo, x_pi_lo);
