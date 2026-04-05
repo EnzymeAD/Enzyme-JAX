@@ -169,11 +169,26 @@ Value packLimbs(Value high, Value low, OpBuilder &builder, Location loc,
 }
 
 Value convertToMultifloat(DenseElementsAttr val, OpBuilder &b, Location loc,
-                          Type tgtTy, StringRef concatDimension, int expansionSize) {
+                          Type tgtTy, StringRef concatDimension,
+                          int expansionSize) {
   SmallVector<Value> limbs;
   DenseElementsAttr rem = val;
   RankedTensorType tensorType = cast<RankedTensorType>(val.getType());
-  RankedTensorType outType = RankedTensorType::get(tensorType.getShape(), tgtTy);
+  RankedTensorType outType =
+      RankedTensorType::get(tensorType.getShape(), tgtTy);
+
+  SmallVector<int64_t> expandedShape;
+  if (concatDimension == "first") {
+    expandedShape.push_back(1);
+    for (auto dim : tensorType.getShape())
+      expandedShape.push_back(dim);
+  } else {
+    for (auto dim : tensorType.getShape())
+      expandedShape.push_back(dim);
+    expandedShape.push_back(1);
+  }
+  auto expandedType = RankedTensorType::get(expandedShape, tgtTy);
+
   for (int i = 0; i < expansionSize; ++i) {
     DenseElementsAttr limb = nullptr;
     if (auto splat = dyn_cast<SplatElementsAttr>(rem)) {
@@ -194,24 +209,36 @@ Value convertToMultifloat(DenseElementsAttr val, OpBuilder &b, Location loc,
       }
       limb = DenseElementsAttr::get(outType, convertedAttrs);
     }
-    limbs.push_back(b.create<stablehlo::ConstantOp>(loc, limb));
+
+    if (concatDimension == "tuple") {
+      limbs.push_back(b.create<stablehlo::ConstantOp>(loc, limb));
+    } else if (expansionSize > 1) {
+      limbs.push_back(
+          b.create<stablehlo::ConstantOp>(loc, limb.reshape(expandedType)));
+    } else {
+      limbs.push_back(b.create<stablehlo::ConstantOp>(loc, limb));
+    }
+
     if (i < expansionSize - 1) {
       auto limbSplat = dyn_cast<SplatElementsAttr>(limb);
       auto remSplat = dyn_cast<SplatElementsAttr>(rem);
       if (limbSplat && remSplat) {
         auto limbBack = remSplat.getSplatValue<APFloat>();
         bool losesInfo;
-        limbBack.convert(cast<FloatType>(tensorType.getElementType()).getFloatSemantics(),
-                       APFloat::rmNearestTiesToEven, &losesInfo);
+        limbBack.convert(
+            cast<FloatType>(tensorType.getElementType()).getFloatSemantics(),
+            APFloat::rmNearestTiesToEven, &losesInfo);
         auto remFlt = remSplat.getSplatValue<APFloat>();
         remFlt.subtract(limbBack, APFloat::rmNearestTiesToEven);
         rem = SplatElementsAttr::get(tensorType, remFlt);
       } else {
         SmallVector<Attribute> newRems;
-        for (auto [limbBack, remFlt] : llvm::zip_equal(limb.getValues<APFloat>(), rem.getValues<APFloat>())) {
-                  bool losesInfo;
-          limbBack.convert(cast<FloatType>(tensorType.getElementType()).getFloatSemantics(),
-                       APFloat::rmNearestTiesToEven, &losesInfo);
+        for (auto [limbBack, remFlt] : llvm::zip_equal(
+                 limb.getValues<APFloat>(), rem.getValues<APFloat>())) {
+          bool losesInfo;
+          limbBack.convert(
+              cast<FloatType>(tensorType.getElementType()).getFloatSemantics(),
+              APFloat::rmNearestTiesToEven, &losesInfo);
           remFlt.subtract(limbBack, APFloat::rmNearestTiesToEven);
           newRems.push_back(FloatAttr::get(tgtTy, remFlt));
         }
@@ -220,25 +247,9 @@ Value convertToMultifloat(DenseElementsAttr val, OpBuilder &b, Location loc,
     }
   }
 
-  if (concatDimension != "tuple") {
-    SmallVector<int64_t> expandedShape;
-    if (concatDimension == "first") {
-      expandedShape.push_back(1);
-      for (auto dim : tensorType.getShape())
-        expandedShape.push_back(dim);
-    } else {
-      for (auto dim : tensorType.getShape())
-        expandedShape.push_back(dim);
-      expandedShape.push_back(1);
-    }
-    auto expandedType = RankedTensorType::get(expandedShape, tgtTy);
-    SmallVector<Value> reshapedLimbs;
-    for (auto limb : limbs) {
-      reshapedLimbs.push_back(
-          b.create<stablehlo::ReshapeOp>(loc, expandedType, limb));
-    }
-    return packLimbs(reshapedLimbs, b, loc, concatDimension);
-  }
+  if (expansionSize == 1)
+    return limbs[0];
+
   return packLimbs(limbs, b, loc, concatDimension);
 }
 
@@ -491,7 +502,9 @@ struct ConstantOpConversion
     if (elType != sourceType)
       return failure();
 
-    auto replacement = convertToMultifloat(elementsAttr, rewriter, loc, targetType, concatDimension, expansionSize);
+    auto replacement =
+        convertToMultifloat(elementsAttr, rewriter, loc, targetType,
+                            concatDimension, expansionSize);
     rewriter.replaceOp(op, replacement);
     return success();
   }
