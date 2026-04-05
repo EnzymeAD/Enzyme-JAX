@@ -4,13 +4,26 @@
 
 func.func @main(%pred: tensor<2xi1>, %on_true: tensor<2xf64>, %on_false: tensor<2xf64>) -> tensor<2xf64> {
   // CHECK-LABEL: @main
-  // CHECK: %[[TRUE_CONV:.*]] = stablehlo.concatenate %{{.*}}, %{{.*}}, dim = 0 : (tensor<1x2xf32>, tensor<1x2xf32>) -> tensor<2x2xf32>
-  // CHECK: %[[FALSE_CONV:.*]] = stablehlo.concatenate %{{.*}}, %{{.*}}, dim = 0 : (tensor<1x2xf32>, tensor<1x2xf32>) -> tensor<2x2xf32>
+  // CHECK: %[[C0:.*]] = stablehlo.convert %arg1 : (tensor<2xf64>) -> tensor<2xf32>
+  // CHECK: %[[C1:.*]] = stablehlo.convert %[[C0]] : (tensor<2xf32>) -> tensor<2xf64>
+  // CHECK: %[[SUB1:.*]] = stablehlo.subtract %arg1, %[[C1]] : tensor<2xf64>
+  // CHECK: %[[C2:.*]] = stablehlo.convert %[[SUB1]] : (tensor<2xf64>) -> tensor<2xf32>
+  // CHECK: %[[R1:.*]] = stablehlo.reshape %[[C0]] : (tensor<2xf32>) -> tensor<1x2xf32>
+  // CHECK: %[[R2:.*]] = stablehlo.reshape %[[C2]] : (tensor<2xf32>) -> tensor<1x2xf32>
+  // CHECK: %[[CAT1:.*]] = stablehlo.concatenate %[[R1]], %[[R2]], dim = 0 : (tensor<1x2xf32>, tensor<1x2xf32>) -> tensor<2x2xf32>
+  // CHECK: %[[C3:.*]] = stablehlo.convert %arg2 : (tensor<2xf64>) -> tensor<2xf32>
+  // CHECK: %[[C4:.*]] = stablehlo.convert %[[C3]] : (tensor<2xf32>) -> tensor<2xf64>
+  // CHECK: %[[SUB2:.*]] = stablehlo.subtract %arg2, %[[C4]] : tensor<2xf64>
+  // CHECK: %[[C5:.*]] = stablehlo.convert %[[SUB2]] : (tensor<2xf64>) -> tensor<2xf32>
+  // CHECK: %[[R3:.*]] = stablehlo.reshape %[[C3]] : (tensor<2xf32>) -> tensor<1x2xf32>
+  // CHECK: %[[R4:.*]] = stablehlo.reshape %[[C5]] : (tensor<2xf32>) -> tensor<1x2xf32>
+  // CHECK: %[[CAT2:.*]] = stablehlo.concatenate %[[R3]], %[[R4]], dim = 0 : (tensor<1x2xf32>, tensor<1x2xf32>) -> tensor<2x2xf32>
   // CHECK: %[[PRED_BCAST:.*]] = stablehlo.broadcast_in_dim %arg0, dims = [1] : (tensor<2xi1>) -> tensor<2x2xi1>
-  // CHECK: %[[SELECT:.*]] = stablehlo.select %[[PRED_BCAST]], %[[TRUE_CONV]], %[[FALSE_CONV]] : tensor<2x2xi1>, tensor<2x2xf32>
-// CHECK: %[[CST:.*]] = stablehlo.constant dense<0.000000e+00> : tensor<f64>
-// CHECK: %[[OUT:.*]] = stablehlo.reduce(%{{.*}} init: %[[CST]]) applies stablehlo.add across dimensions = [0] : (tensor<2x2xf64>, tensor<f64>) -> tensor<2xf64>
-// CHECK: return %[[OUT]] : tensor<2xf64>
+  // CHECK: %[[SELECT:.*]] = stablehlo.select %[[PRED_BCAST]], %[[CAT1]], %[[CAT2]] : tensor<2x2xi1>, tensor<2x2xf32>
+  // CHECK: %[[C6:.*]] = stablehlo.convert %[[SELECT]] : (tensor<2x2xf32>) -> tensor<2x2xf64>
+  // CHECK: %[[ZERO:.*]] = stablehlo.constant dense<0.000000e+00> : tensor<f64>
+  // CHECK: %[[RES:.*]] = stablehlo.reduce(%[[C6]] init: %[[ZERO]]) applies stablehlo.add across dimensions = [0] : (tensor<2x2xf64>, tensor<f64>) -> tensor<2xf64>
+  // CHECK: return %[[RES]] : tensor<2xf64>
 
   // CHECK-LAST-LABEL: @main
   // CHECK-LAST: %[[TRUE_CONV:.*]] = stablehlo.concatenate %{{.*}}, %{{.*}}, dim = 1 : (tensor<2x1xf32>, tensor<2x1xf32>) -> tensor<2x2xf32>
