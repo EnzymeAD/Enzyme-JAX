@@ -1,6 +1,9 @@
 // RUN: enzymexlamlir-opt --multi-float-conversion="source-type=f64 target-type=f32 concat-dimension=first" %s | FileCheck --check-prefix=FIRST %s
 // RUN: enzymexlamlir-opt --multi-float-conversion="source-type=f64 target-type=f32 concat-dimension=last" %s | FileCheck --check-prefix=LAST %s
 // RUN: enzymexlamlir-opt --multi-float-conversion="source-type=f64 target-type=f32 concat-dimension=tuple" %s | FileCheck --check-prefix=TUPLE %s
+// RUN: enzymexlamlir-opt %s --multi-float-conversion="source-type=f64 target-type=f32 concat-dimension=first" | stablehlo-translate - --interpret --allow-unregistered-dialect
+// RUN: enzymexlamlir-opt %s --multi-float-conversion="source-type=f64 target-type=f32 concat-dimension=last" | stablehlo-translate - --interpret --allow-unregistered-dialect
+// RUN: enzymexlamlir-opt %s --multi-float-conversion="source-type=f64 target-type=f32 concat-dimension=tuple" | stablehlo-translate - --interpret --allow-unregistered-dialect
 
 func.func @abs(%arg0: tensor<2xf64>) -> tensor<2xf64> {
   %0 = stablehlo.abs %arg0 : tensor<2xf64>
@@ -64,3 +67,13 @@ func.func @abs(%arg0: tensor<2xf64>) -> tensor<2xf64> {
 // TUPLE: %[[CONV2:.*]] = stablehlo.convert %[[SEL_LO]] : (tensor<2xf32>) -> tensor<2xf64>
 // TUPLE: %[[ADD:.*]] = stablehlo.add %[[CONV1]], %[[CONV2]] : tensor<2xf64>
 // TUPLE: return %[[ADD]] : tensor<2xf64>
+
+func.func @main() attributes {enzyme.no_multifloat} {
+  %cst = stablehlo.constant dense<[-1.1, 2.2]> : tensor<2xf64>
+  %expected = stablehlo.constant dense<[1.1, 2.2]> : tensor<2xf64>
+  
+  %res = func.call @abs(%cst) : (tensor<2xf64>) -> tensor<2xf64>
+  
+  "check.expect_almost_eq"(%res, %expected) : (tensor<2xf64>, tensor<2xf64>) -> ()
+  return
+}
