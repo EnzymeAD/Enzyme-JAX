@@ -154,10 +154,13 @@ jobs:
         if: ${{ contains(matrix.os, 'a100') }}
         run: |
           echo "RUN_FLAGS=--float-type=Float64" >> ${GITHUB_ENV}
+          echo "ALL_XLA_FLAGS=--xla_disable_hlo_passes=multi_output_fusion" >> ${GITHUB_ENV}
       - name: Set default precision (TPU)
         if: ${{ contains(matrix.os, 'tpu') }}
         run: |
-          echo "RUN_FLAGS=--float-type=Float32 --xla_tpu_enable_collective_permute_combiner=true" >> ${GITHUB_ENV}
+          echo "RUN_FLAGS=--float-type=Float32" >> ${GITHUB_ENV}
+          echo "ALL_XLA_FLAGS=--xla_disable_hlo_passes=multi_output_fusion" >> ${GITHUB_ENV}     
+          echo "TPU_XLA_FLAGS=--xla_tpu_enable_collective_permute_combiner=true" >> ${GITHUB_ENV}     
       - name: Instantiate GB-25 environment
         timeout-minutes: 40
         shell: julia --project --color=yes {0}
@@ -198,7 +201,8 @@ jobs:
       - name: Compile GB-25 simulation
         timeout-minutes: 30
         run: |
-          export XLA_FLAGS='--xla_disable_hlo_passes=multi_output_fusion --xla_dump_hlo_pass_re=.* --xla_dump_to=${{ env.GB25_DIR }}/xla_dump_compile'
+          export XLA_FLAGS='${{ env.ALL_XLA_FLAGS }} --xla_dump_hlo_pass_re=.* --xla_dump_to=${{ env.GB25_DIR }}/xla_dump_compile'
+          export LIBTPU_INIT_ARGS='${{ env.TPU_XLA_FLAGS }} '
           timeout --signal=TERM --verbose 29m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict sharding/sharded_baroclinic_instability_simulation_compile.jl ${{ env.RUN_FLAGS }}
         working-directory: ${{ env.GB25_DIR }}
       - name: Show remaining collective operations
@@ -239,7 +243,8 @@ jobs:
       - name: Run GB-25 simulation
         timeout-minutes: 60
         run: |
-          export XLA_FLAGS='--xla_disable_hlo_passes=multi_output_fusion --xla_dump_hlo_pass_re=.* --xla_dump_to=${{ env.GB25_DIR }}/xla_dump_run'
+          export XLA_FLAGS='${{ env.ALL_XLA_FLAGS }} --xla_dump_hlo_pass_re=.* --xla_dump_to=${{ env.GB25_DIR }}/xla_dump_run'
+          export LIBTPU_INIT_ARGS='${{ env.TPU_XLA_FLAGS }} '
           timeout --signal=TERM --verbose 59m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict sharding/sharded_baroclinic_instability_simulation_run.jl ${{ env.RUN_FLAGS }}
         working-directory: ${{ env.GB25_DIR }}
       - name: Display profile results
@@ -257,6 +262,8 @@ jobs:
       - name: Test correctness in GB-25 code
         timeout-minutes: 20
         run: |
+          export XLA_FLAGS='${{ env.ALL_XLA_FLAGS }} --xla_dump_hlo_pass_re=.* --xla_dump_to=${{ env.GB25_DIR }}/xla_dump_correctness'
+          export LIBTPU_INIT_ARGS='${{ env.TPU_XLA_FLAGS }} '
           timeout --signal=TERM --verbose 19m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict correctness/correctness_sharded_baroclinic_instability_simulation_run.jl ${{ env.RUN_FLAGS }}
         working-directory: ${{ env.GB25_DIR }}
       - name: Upload MLIR and XLA modules
