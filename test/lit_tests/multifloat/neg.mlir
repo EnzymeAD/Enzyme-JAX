@@ -37,7 +37,7 @@ func.func @neg(%arg0: tensor<2xf64>) -> tensor<2xf64> {
 // FIRST: %[[RES:.*]] = stablehlo.reduce(%[[C4]] init: %[[ZERO]]) applies stablehlo.add across dimensions = [0] : (tensor<2x2xf64>, tensor<f64>) -> tensor<2xf64>
 // FIRST: return %[[RES]] : tensor<2xf64>
 
-func.func @main() {
+func.func @main() attributes {enzyme.no_multifloat} {
   %cst = stablehlo.constant dense<[1.0, -2.0]> : tensor<2xf64>
   %expected = stablehlo.constant dense<[-1.0, 2.0]> : tensor<2xf64>
   %res = func.call @neg(%cst) : (tensor<2xf64>) -> tensor<2xf64>
