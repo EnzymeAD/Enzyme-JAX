@@ -1,6 +1,14 @@
 // RUN: enzymexlamlir-opt --multi-float-conversion="source-type=f64 target-type=f32 concat-dimension=tuple" %s | FileCheck --check-prefix=TUPLE %s
 // RUN: enzymexlamlir-opt --multi-float-conversion="source-type=f64 target-type=f32 concat-dimension=first" %s | FileCheck --check-prefix=FIRST %s
 // RUN: enzymexlamlir-opt --multi-float-conversion="source-type=f64 target-type=f32 concat-dimension=last" %s | FileCheck --check-prefix=LAST %s
+// RUN: enzymexlamlir-opt %s --multi-float-conversion="source-type=f64 target-type=f32 concat-dimension=first" | stablehlo-translate - --interpret --allow-unregistered-dialect
+// RUN: enzymexlamlir-opt %s --multi-float-conversion="source-type=f64 target-type=f32 concat-dimension=last" | stablehlo-translate - --interpret --allow-unregistered-dialect
+// RUN: enzymexlamlir-opt %s --multi-float-conversion="source-type=f64 target-type=f32 concat-dimension=tuple" | stablehlo-translate - --interpret --allow-unregistered-dialect
+
+func.func @sine_test(%arg0: tensor<15xf64>) -> tensor<15xf64> {
+  %0 = stablehlo.sine %arg0 : tensor<15xf64>
+  return %0 : tensor<15xf64>
+}
 
 func.func @sine(%arg0: tensor<2xf64>) -> tensor<2xf64> {
   %0 = stablehlo.sine %arg0 : tensor<2xf64>
@@ -2472,3 +2480,13 @@ func.func @sine(%arg0: tensor<2xf64>) -> tensor<2xf64> {
 // LAST:     %[[CST_73:.*]] = stablehlo.constant dense<0.000000e+00> : tensor<f64>
 // LAST:     %[[V_743:.*]] = stablehlo.reduce(%[[V_742]] init: %[[CST_73]]) applies stablehlo.add across dimensions = [1] : (tensor<2x2xf64>, tensor<f64>) -> tensor<2xf64>
 // LAST:     return %[[V_743]] : tensor<2xf64>
+
+func.func @main() attributes {enzyme.no_multifloat} {
+  %cst = stablehlo.constant dense<[0.0, 1.1, 1.5707963267948966, 2.2, 3.141592653589793, 4.4, 4.71238898038469, 5.5, 6.283185307179586, -1.1, -2.2, -4.4, -5.5, 7.383185307179586, 8.483185307179586]> : tensor<15xf64>
+  %expected = stablehlo.constant dense<[0.0, 0.8912073600614354, 1.0, 0.8084964038195901, 1.2246467991473532e-16, -0.951602073889516, -1.0, -0.7055403255703919, -2.4492935982947064e-16, -0.8912073600614354, -0.8084964038195901, 0.951602073889516, 0.7055403255703919, 0.8912073600614351, 0.8084964038195908]> : tensor<15xf64>
+  
+  %res = func.call @sine_test(%cst) : (tensor<15xf64>) -> tensor<15xf64>
+  
+  "check.expect_almost_eq"(%res, %expected) : (tensor<15xf64>, tensor<15xf64>) -> ()
+  return
+}
