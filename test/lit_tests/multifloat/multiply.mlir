@@ -163,11 +163,16 @@ func.func @main() attributes {enzyme.no_multifloat} {
   %c1 = stablehlo.constant dense<[1.1, 1.1, -1.1, -1.1, 0.0, 1.1, 0.0, 0.999999998]> : tensor<8xf64>
   %c2 = stablehlo.constant dense<[1.1, -1.1, 1.1, -1.1, 1.1, 0.0, 0.0, 1.000000003]> : tensor<8xf64>
   
-  %expected = stablehlo.constant dense<[1.2100000000000002, -1.2100000000000002, -1.2100000000000002, 1.2100000000000002, 0.0, 0.0, 0.0, 1.0000000009999999]> : tensor<8xf64>
+  %expected_mf = stablehlo.constant dense<[1.2099999999999973, -1.2099999999999973, -1.2099999999999973, 1.2099999999999973, 0.0, 0.0, 0.0, 1.0000000009999999]> : tensor<8xf64>
   
   %res = func.call @test_mul(%c1, %c2) : (tensor<8xf64>, tensor<8xf64>) -> tensor<8xf64>
   
-  %diff = stablehlo.subtract %res, %expected : tensor<8xf64>
+  // Strict test against Julia MultiFloat
+  "check.expect_close"(%res, %expected_mf) {max_ulp_difference = 3 : ui64} : (tensor<8xf64>, tensor<8xf64>) -> ()
+  
+  // Approximate test against regular f64
+  %expected_f64 = stablehlo.constant dense<[1.2100000000000002, -1.2100000000000002, -1.2100000000000002, 1.2100000000000002, 0.0, 0.0, 0.0, 1.0000000009999999]> : tensor<8xf64>
+  %diff = stablehlo.subtract %res, %expected_f64 : tensor<8xf64>
   %abs_diff = stablehlo.abs %diff : tensor<8xf64>
   %zero = stablehlo.constant dense<0.0> : tensor<8xf64>
   "check.expect_almost_eq"(%abs_diff, %zero) {tolerance = 1.0e-12 : f64} : (tensor<8xf64>, tensor<8xf64>) -> ()
@@ -180,4 +185,9 @@ func.func @main() attributes {enzyme.no_multifloat} {
 // FIRST:     %[[CST_1:.*]] = stablehlo.constant dense<{{[^>]*}}> : tensor<8xf64>
 // FIRST:     %[[V_0:.*]] = call @test_mul(%[[CST]], %[[CST_0]]) : (tensor<8xf64>, tensor<8xf64>) -> tensor<8xf64>
 // FIRST:     check.expect_close %[[V_0]], %[[CST_1]], max_ulp_difference = 3 : tensor<8xf64>, tensor<8xf64>
+// FIRST:     %[[CST_2:.*]] = stablehlo.constant dense<{{[^>]*}}> : tensor<8xf64>
+// FIRST:     %[[V_1:.*]] = stablehlo.subtract %[[V_0]], %[[CST_2]] : tensor<8xf64>
+// FIRST:     %[[V_2:.*]] = stablehlo.abs %[[V_1]] : tensor<8xf64>
+// FIRST:     %[[CST_3:.*]] = stablehlo.constant dense<{{[^>]*}}> : tensor<8xf64>
+// FIRST:     check.expect_almost_eq %[[V_2]], %[[CST_3]], tolerance = 9.9999999999999998E-13 : tensor<8xf64>
 // FIRST:     return

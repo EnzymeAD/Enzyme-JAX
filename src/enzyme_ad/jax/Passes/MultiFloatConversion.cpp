@@ -466,6 +466,25 @@ std::pair<Value, Value> multiFloatAdd(Value x1, Value x2, Value y1, Value y2,
   return fastTwoSum(new_a, b3, builder, loc);
 }
 
+std::pair<Value, Value> multiFloatDiv(Value x1, Value x2, Value y1, Value y2,
+                                      OpBuilder &builder, Location loc) {
+  auto tensorType = cast<RankedTensorType>(x1.getType());
+  auto floatTy = cast<FloatType>(tensorType.getElementType());
+  auto zeroAttr = builder.getFloatAttr(floatTy, 0.0);
+  Value zero = builder.create<stablehlo::ConstantOp>(
+      loc, SplatElementsAttr::get(tensorType, zeroAttr));
+
+  Value q1 = builder.create<stablehlo::DivOp>(loc, x1, y1);
+  auto [p_hi, p_lo] = multiFloatMul(q1, zero, y1, y2, builder, loc);
+  
+  Value neg_p_hi = builder.create<stablehlo::NegOp>(loc, p_hi);
+  Value neg_p_lo = builder.create<stablehlo::NegOp>(loc, p_lo);
+  auto [r_hi, r_lo] = multiFloatAdd(x1, x2, neg_p_hi, neg_p_lo, builder, loc);
+  
+  Value q2 = builder.create<stablehlo::DivOp>(loc, r_hi, y1);
+  return fastTwoSum(q1, q2, builder, loc);
+}
+
 template <typename OpTy>
 struct GenericOpConversion : public OpConversionPattern<OpTy> {
   using OpConversionPattern<OpTy>::OpConversionPattern;
@@ -1234,11 +1253,10 @@ struct SineOpConversion : public OpConversionPattern<stablehlo::SineOp> {
     Value lt_zero = rewriter.create<stablehlo::CompareOp>(
         loc, x_pi_hi, zero, stablehlo::ComparisonDirection::LT);
     Value neg_x_pi_hi = rewriter.create<stablehlo::NegOp>(loc, x_pi_hi);
-    Value neg_x_pi_lo = rewriter.create<stablehlo::NegOp>(loc, x_pi_lo);
+
     Value abs_x_hi = rewriter.create<stablehlo::SelectOp>(loc, lt_zero,
                                                           neg_x_pi_hi, x_pi_hi);
-    Value abs_x_lo = rewriter.create<stablehlo::SelectOp>(loc, lt_zero,
-                                                          neg_x_pi_lo, x_pi_lo);
+
 
     // n = round(2 * abs_x_hi)
     // Using trunc(2 * abs_x_hi + 0.5) as a proxy for round for positive
@@ -1264,6 +1282,10 @@ struct SineOpConversion : public OpConversionPattern<stablehlo::SineOp> {
     // rx = abs_x - 0.5 * n
     Value half_n = rewriter.create<stablehlo::MulOp>(loc, half, n_float);
     Value neg_half_n = rewriter.create<stablehlo::NegOp>(loc, half_n);
+    
+    Value neg_x_pi_lo = rewriter.create<stablehlo::NegOp>(loc, x_pi_lo);
+    Value abs_x_lo = rewriter.create<stablehlo::SelectOp>(loc, lt_zero,
+                                                          neg_x_pi_lo, x_pi_lo);
 
     auto [rx_hi, rx_lo] =
         multiFloatAdd(abs_x_hi, abs_x_lo, neg_half_n, zero, rewriter, loc);
