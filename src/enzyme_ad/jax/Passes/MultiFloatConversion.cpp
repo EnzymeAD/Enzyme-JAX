@@ -668,15 +668,14 @@ struct MulOpConversion : public OpConversionPattern<stablehlo::MulOp> {
 };
 struct ReduceOpConversion : public OpConversionPattern<stablehlo::ReduceOp> {
   ReduceOpConversion(TypeConverter &typeConverter, MLIRContext *context,
-                    StringRef concatDimension, bool preciseReduce, Type sourceType, Type targetType, bool convertSignatures)
+                    StringRef concatDimension, bool preciseReduce, Type sourceType, Type targetType)
       : OpConversionPattern<stablehlo::ReduceOp>(typeConverter, context),
-        concatDimension(concatDimension), preciseReduce(preciseReduce), sourceType(sourceType), targetType(targetType), convertSignatures(convertSignatures) {}
+        concatDimension(concatDimension), preciseReduce(preciseReduce), sourceType(sourceType), targetType(targetType) {}
 
   StringRef concatDimension;
   bool preciseReduce;
   Type sourceType;
   Type targetType;
-  bool convertSignatures;
 
   LogicalResult
   matchAndRewrite(stablehlo::ReduceOp op, OpAdaptor adaptor,
@@ -701,71 +700,25 @@ struct ReduceOpConversion : public OpConversionPattern<stablehlo::ReduceOp> {
     Value input = inputs[0];
     Value initValue = initValues[0];
 
-    Value actualInput = input;
-    if (auto castOp = dyn_cast_or_null<UnrealizedConversionCastOp>(input.getDefiningOp())) {
-      if (castOp.getInputs().size() == 1)
-        actualInput = castOp.getInputs()[0];
-    }
+    Value input_hi = extractLimb(input, 0, rewriter, loc, concatDimension);
+    Value input_lo = extractLimb(input, 1, rewriter, loc, concatDimension);
 
-    auto inputTy = dyn_cast<RankedTensorType>(actualInput.getType());
-    if (!inputTy) {
-        llvm::errs() << "ReduceOpConversion failed at line 707\n";
-        return failure();
-    }
+    Value init_hi = extractLimb(initValue, 0, rewriter, loc, concatDimension);
+    Value init_lo = extractLimb(initValue, 1, rewriter, loc, concatDimension);
 
-    Value input_hi, input_lo;
-    if (inputTy.getElementType() == sourceType) {
-      input_hi = rewriter.create<stablehlo::ConvertOp>(loc, RankedTensorType::get(inputTy.getShape(), targetType), actualInput);
-      Value input_hi_f64 = rewriter.create<stablehlo::ConvertOp>(loc, inputTy, input_hi);
-      Value residue = rewriter.create<stablehlo::SubtractOp>(loc, inputTy, actualInput, input_hi_f64);
-      input_lo = rewriter.create<stablehlo::ConvertOp>(loc, RankedTensorType::get(inputTy.getShape(), targetType), residue);
-    } else if (inputTy.getElementType() == targetType) {
-      input_hi = extractLimb(actualInput, 0, rewriter, loc, concatDimension);
-      input_lo = extractLimb(actualInput, 1, rewriter, loc, concatDimension);
-    } else {
-      llvm::errs() << "ReduceOpConversion failed at line 719\n";
-      return failure();
-    }
-
-    Value init_hi, init_lo;
-    auto initTy = dyn_cast<RankedTensorType>(initValue.getType());
-    if (!initTy) return failure();
-
-    if (initTy.getElementType() == sourceType) {
-      init_hi = rewriter.create<stablehlo::ConvertOp>(loc, RankedTensorType::get(initTy.getShape(), targetType), initValue);
-      Value init_hi_f64 = rewriter.create<stablehlo::ConvertOp>(loc, initTy, init_hi);
-      Value residue = rewriter.create<stablehlo::SubtractOp>(loc, initTy, initValue, init_hi_f64);
-      init_lo = rewriter.create<stablehlo::ConvertOp>(loc, RankedTensorType::get(initTy.getShape(), targetType), residue);
-    } else if (initTy.getElementType() == targetType) {
-      init_hi = extractLimb(initValue, 0, rewriter, loc, concatDimension);
-      init_lo = extractLimb(initValue, 1, rewriter, loc, concatDimension);
-    } else {
-      return failure();
-    }
-
-    auto elemType = cast<RankedTensorType>(input_hi.getType()).getElementType();
-    auto scalarType = RankedTensorType::get({}, elemType);
+    auto scalarType = RankedTensorType::get({}, targetType);
+    assert(init_hi.getType() == scalarType && init_lo.getType() == scalarType);
+    (void)scalarType;
     
-    Value init_hi_reshaped = rewriter.create<stablehlo::ReshapeOp>(loc, scalarType, init_hi);
-    Value init_lo_reshaped = rewriter.create<stablehlo::ReshapeOp>(loc, scalarType, init_lo);
-
     SmallVector<Value, 2> newInputs = {input_hi, input_lo};
-    SmallVector<Value, 2> newInits = {init_hi_reshaped, init_lo_reshaped};
+    SmallVector<Value, 2> newInits = {init_hi, init_lo};
 
     if (preciseReduce) {
-      SmallVector<Value, 2> newInputs = {input_hi, input_lo};
-      SmallVector<Value, 2> newInits = {init_hi_reshaped, init_lo_reshaped};
 
       auto reduceOp = rewriter.create<stablehlo::ReduceOp>(
           loc, newInputs, newInits, op.getDimensions());
 
-      Block *reduceBlock = new Block();
-      reduceOp.getBody().push_back(reduceBlock);
-      
-      auto resType = reduceOp.getResult(0).getType();
-      
-      reduceBlock->addArguments({resType, resType, resType, resType}, 
-                                {loc, loc, loc, loc});
+      Block *reduceBlock = &reduceOp.getBody().front();
       
       auto blockBuilder = OpBuilder::atBlockBegin(reduceBlock);
       
@@ -775,21 +728,21 @@ struct ReduceOpConversion : public OpConversionPattern<stablehlo::ReduceOp> {
       Value val_lo = reduceBlock->getArgument(3);
 
       // [s, e] = twoSum(acc_hi, val_hi)
-      Value s = blockBuilder.create<stablehlo::AddOp>(loc, resType, acc_hi, val_hi);
-      Value a_prime = blockBuilder.create<stablehlo::SubtractOp>(loc, resType, s, val_hi);
-      Value b_prime = blockBuilder.create<stablehlo::SubtractOp>(loc, resType, s, a_prime);
-      Value delta_a = blockBuilder.create<stablehlo::SubtractOp>(loc, resType, acc_hi, a_prime);
-      Value delta_b = blockBuilder.create<stablehlo::SubtractOp>(loc, resType, val_hi, b_prime);
-      Value e = blockBuilder.create<stablehlo::AddOp>(loc, resType, delta_a, delta_b);
+      Value s = blockBuilder.create<stablehlo::AddOp>(loc, acc_hi, val_hi);
+      Value a_prime = blockBuilder.create<stablehlo::SubtractOp>(loc, s, val_hi);
+      Value b_prime = blockBuilder.create<stablehlo::SubtractOp>(loc, s, a_prime);
+      Value delta_a = blockBuilder.create<stablehlo::SubtractOp>(loc, acc_hi, a_prime);
+      Value delta_b = blockBuilder.create<stablehlo::SubtractOp>(loc, val_hi, b_prime);
+      Value e = blockBuilder.create<stablehlo::AddOp>(loc, delta_a, delta_b);
       
       // e_new = e + acc_lo + val_lo
-      Value e_lo1 = blockBuilder.create<stablehlo::AddOp>(loc, resType, acc_lo, val_lo);
-      Value e_new = blockBuilder.create<stablehlo::AddOp>(loc, resType, e, e_lo1);
+      Value e_lo1 = blockBuilder.create<stablehlo::AddOp>(loc, acc_lo, val_lo);
+      Value e_new = blockBuilder.create<stablehlo::AddOp>(loc, e, e_lo1);
       
       // [final_hi, final_lo] = fastTwoSum(s, e_new)
-      Value final_hi = blockBuilder.create<stablehlo::AddOp>(loc, resType, s, e_new);
-      Value s_prime = blockBuilder.create<stablehlo::SubtractOp>(loc, resType, final_hi, e_new);
-      Value final_lo = blockBuilder.create<stablehlo::SubtractOp>(loc, resType, s, s_prime);
+      Value final_hi = blockBuilder.create<stablehlo::AddOp>(loc, s, e_new);
+      Value s_prime = blockBuilder.create<stablehlo::SubtractOp>(loc, final_hi, e_new);
+      Value final_lo = blockBuilder.create<stablehlo::SubtractOp>(loc, s, s_prime);
       
       blockBuilder.create<stablehlo::ReturnOp>(loc, ValueRange{final_hi, final_lo});
 
@@ -821,36 +774,13 @@ struct ReduceOpConversion : public OpConversionPattern<stablehlo::ReduceOp> {
         return reduceOp.getResult(0);
       };
 
-      Value res_hi = createLimbReduce(input_hi, init_hi_reshaped);
-      Value res_lo = createLimbReduce(input_lo, init_lo_reshaped);
+      Value res_hi = createLimbReduce(input_hi, init_hi);
+      Value res_lo = createLimbReduce(input_lo, init_lo);
 
-      if (!convertSignatures) {
-        Value sum = rewriter.create<stablehlo::AddOp>(loc, res_hi.getType(), res_hi, res_lo);
-        auto f64Type = RankedTensorType::get(cast<RankedTensorType>(res_hi.getType()).getShape(), sourceType);
-        Value result = rewriter.create<stablehlo::ConvertOp>(loc, f64Type, sum);
-        rewriter.replaceOp(op, result);
-        return success();
-      }
-
-      auto resHiTy = cast<RankedTensorType>(res_hi.getType());
-      SmallVector<int64_t> expandedShape;
-      if (concatDimension == "first") {
-        expandedShape.push_back(1);
-        for (auto dim : resHiTy.getShape()) expandedShape.push_back(dim);
-      } else if (concatDimension == "last") {
-        for (auto dim : resHiTy.getShape()) expandedShape.push_back(dim);
-        expandedShape.push_back(1);
-      } else {
-        expandedShape = llvm::to_vector(resHiTy.getShape());
-      }
-      
-      auto expandedType = RankedTensorType::get(expandedShape, resHiTy.getElementType());
-      Value res_hi_expanded = rewriter.create<stablehlo::ReshapeOp>(loc, expandedType, res_hi);
-      Value res_lo_expanded = rewriter.create<stablehlo::ReshapeOp>(loc, expandedType, res_lo);
-
-      Value packed = packLimbs(res_hi_expanded, res_lo_expanded, rewriter, loc, concatDimension);
-      rewriter.replaceOp(op, packed);
-      
+      Value sum = rewriter.create<stablehlo::AddOp>(loc, res_hi.getType(), res_hi, res_lo);
+      auto f64Type = RankedTensorType::get(cast<RankedTensorType>(res_hi.getType()).getShape(), sourceType);
+      Value result = rewriter.create<stablehlo::ConvertOp>(loc, f64Type, sum);
+      rewriter.replaceOp(op, result);
       return success();
     }
   }
@@ -3873,7 +3803,7 @@ struct MultiFloatConversionPass
                                     concatDimension);
       patterns.add<SubOpConversion>(typeConverter, context, concatDimension);
       patterns.add<MulOpConversion>(typeConverter, context, concatDimension);
-      patterns.add<ReduceOpConversion>(typeConverter, context, concatDimension, preciseReduce, srcTy, tgtTy, convertSignatures);
+      patterns.add<ReduceOpConversion>(typeConverter, context, concatDimension, preciseReduce, srcTy, tgtTy);
       patterns.add<DivOpConversion>(typeConverter, context, concatDimension,
                                     divSubsteps);
       patterns.add<SelectOpConversion>(typeConverter, context, concatDimension);
