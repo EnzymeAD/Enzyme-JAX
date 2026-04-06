@@ -30655,6 +30655,98 @@ private:
   }
 };
 
+// returns input A and transpose param to syrk if can convert dot_general op to
+// syrk
+std::pair<Value, enzymexla::LapackTranspose>
+extractSyrkInput(stablehlo::DotGeneralOp op, PatternRewriter &rewriter) {
+
+  Value syrkInput;
+  enzymexla::LapackTranspose lapackTranspose;
+
+  auto failure =
+      std::pair<Value, enzymexla::LapackTranspose>(syrkInput, lapackTranspose);
+
+  auto dotDims = op.getDotDimensionNumbers();
+  auto lhs = op.getLhs();
+  auto rhs = op.getRhs();
+
+  auto lhsType = cast<RankedTensorType>(lhs.getType());
+  auto rhsType = cast<RankedTensorType>(rhs.getType());
+  auto outType = cast<RankedTensorType>(op.getResult().getType());
+  if (lhsType.getRank() != 2 || rhsType.getRank() != 2 ||
+      outType.getRank() != 2) {
+    return failure;
+  }
+
+  if (dotDims.getLhsBatchingDimensions().size() != 0 ||
+      dotDims.getRhsBatchingDimensions().size() != 0) {
+    return failure;
+  }
+
+  if (dotDims.getLhsContractingDimensions().size() != 1 ||
+      dotDims.getRhsContractingDimensions().size() != 1) {
+    return failure;
+  }
+
+  // check that transpose dimensions are [1,0]
+  auto isTrueTranspose = [](stablehlo::TransposeOp tOp) -> bool {
+    auto perm = tOp.getPermutation();
+    return perm.size() == 2 && perm[0] == 1 && perm[1] == 0;
+  };
+
+  auto lhsContractingDim = dotDims.getLhsContractingDimensions()[0];
+  auto rhsContractingDim = dotDims.getRhsContractingDimensions()[0];
+
+  if (lhs == rhs) {
+    if (lhsContractingDim == rhsContractingDim) {
+      syrkInput = lhs;
+      if (lhsContractingDim == 1) {
+        lapackTranspose = enzymexla::LapackTranspose::none;
+      } else {
+        lapackTranspose = enzymexla::LapackTranspose::transpose;
+      }
+    } else {
+      // if lhsContractingDim != rhsContractingDim, then we can fuse iff
+      // lhs/rhs is a symmetric matrix
+      if (canApplySymmetricPattern(lhs, rewriter)) {
+        syrkInput = lhs;
+        if (lhsContractingDim == 1) {
+          lapackTranspose = enzymexla::LapackTranspose::none;
+        } else {
+          lapackTranspose = enzymexla::LapackTranspose::transpose;
+        }
+      }
+    }
+  }
+
+  if (auto lhsT = lhs.getDefiningOp<stablehlo::TransposeOp>()) {
+    if (isTrueTranspose(lhsT) && lhsT.getOperand() == rhs &&
+        lhsContractingDim == 1 - rhsContractingDim) {
+      syrkInput = rhs;
+      if (rhsContractingDim == 1) {
+        lapackTranspose = enzymexla::LapackTranspose::none;
+      } else {
+        lapackTranspose = enzymexla::LapackTranspose::transpose;
+      }
+    }
+  }
+
+  if (auto rhsT = rhs.getDefiningOp<stablehlo::TransposeOp>()) {
+    if (isTrueTranspose(rhsT) && rhsT.getOperand() == lhs &&
+        rhsContractingDim == 1 - lhsContractingDim) {
+      syrkInput = lhs;
+      if (lhsContractingDim == 0) {
+        lapackTranspose = enzymexla::LapackTranspose::transpose;
+      } else {
+        lapackTranspose = enzymexla::LapackTranspose::none;
+      }
+    }
+  }
+
+  return std::pair<Value, enzymexla::LapackTranspose>(syrkInput,
+                                                      lapackTranspose);
+}
+
 // currently limited to non-batched dot_general
 struct DotGeneralToSyrk
     : public CheckedOpRewritePattern<stablehlo::DotGeneralOp,
@@ -30664,86 +30756,8 @@ struct DotGeneralToSyrk
 
   LogicalResult matchAndRewriteImpl(stablehlo::DotGeneralOp op,
                                     PatternRewriter &rewriter) const {
-    auto dotDims = op.getDotDimensionNumbers();
-    auto lhs = op.getLhs();
-    auto rhs = op.getRhs();
 
-    auto lhsType = cast<RankedTensorType>(lhs.getType());
-    auto rhsType = cast<RankedTensorType>(rhs.getType());
-    auto outType = cast<RankedTensorType>(op.getResult().getType());
-    if (lhsType.getRank() != 2 || rhsType.getRank() != 2 ||
-        outType.getRank() != 2) {
-      return failure();
-    }
-
-    if (dotDims.getLhsBatchingDimensions().size() != 0 ||
-        dotDims.getRhsBatchingDimensions().size() != 0) {
-      return failure();
-    }
-
-    if (dotDims.getLhsContractingDimensions().size() != 1 ||
-        dotDims.getRhsContractingDimensions().size() != 1) {
-      return failure();
-    }
-
-    // check that transpose dimensions are [1,0]
-    auto isTrueTranspose = [](stablehlo::TransposeOp tOp) -> bool {
-      auto perm = tOp.getPermutation();
-      return perm.size() == 2 && perm[0] == 1 && perm[1] == 0;
-    };
-
-    auto lhsContractingDim = dotDims.getLhsContractingDimensions()[0];
-    auto rhsContractingDim = dotDims.getRhsContractingDimensions()[0];
-
-    Value syrkInput;
-    enzymexla::LapackTranspose lapackTranspose;
-
-    if (lhs == rhs) {
-      if (lhsContractingDim == rhsContractingDim) {
-        syrkInput = lhs;
-        if (lhsContractingDim == 1) {
-          lapackTranspose = enzymexla::LapackTranspose::none;
-        } else {
-          lapackTranspose = enzymexla::LapackTranspose::transpose;
-        }
-      } else {
-        // if lhsContractingDim != rhsContractingDim, then we can fuse iff
-        // lhs/rhs is a symmetric matrix
-        if (canApplySymmetricPattern(lhs, rewriter)) {
-          syrkInput = lhs;
-          if (lhsContractingDim == 1) {
-            lapackTranspose = enzymexla::LapackTranspose::none;
-          } else {
-            lapackTranspose = enzymexla::LapackTranspose::transpose;
-          }
-        }
-      }
-    }
-
-    if (auto lhsT = lhs.getDefiningOp<stablehlo::TransposeOp>()) {
-      if (isTrueTranspose(lhsT) && lhsT.getOperand() == rhs &&
-          lhsContractingDim == 1 - rhsContractingDim) {
-        syrkInput = rhs;
-        if (rhsContractingDim == 1) {
-          lapackTranspose = enzymexla::LapackTranspose::none;
-        } else {
-          lapackTranspose = enzymexla::LapackTranspose::transpose;
-        }
-      }
-    }
-
-    if (auto rhsT = rhs.getDefiningOp<stablehlo::TransposeOp>()) {
-      if (isTrueTranspose(rhsT) && rhsT.getOperand() == lhs &&
-          rhsContractingDim == 1 - lhsContractingDim) {
-        syrkInput = lhs;
-        if (lhsContractingDim == 0) {
-          lapackTranspose = enzymexla::LapackTranspose::transpose;
-        } else {
-          lapackTranspose = enzymexla::LapackTranspose::none;
-        }
-      }
-    }
-
+    auto [syrkInput, lapackTranspose] = extractSyrkInput(op, rewriter);
     if (!syrkInput)
       return failure();
 
@@ -30781,6 +30795,12 @@ struct DotGeneralToSymm
 
   LogicalResult matchAndRewriteImpl(stablehlo::DotGeneralOp op,
                                     PatternRewriter &rewriter) const {
+    // if can rewrite as an syrk operation instead, don't rewrite as symm
+    auto [syrkInput, _] = extractSyrkInput(op, rewriter);
+    if (syrkInput) {
+      return failure();
+    }
+
     auto dotDims = op.getDotDimensionNumbers();
     auto lhs = op.getLhs();
     auto rhs = op.getRhs();
