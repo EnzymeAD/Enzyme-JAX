@@ -1321,8 +1321,10 @@ struct SineOpConversion : public OpConversionPattern<stablehlo::SineOp> {
 
     auto intType =
         RankedTensorType::get(tensorType.getShape(), rewriter.getI32Type());
+    Value n_int = rewriter.create<stablehlo::ConvertOp>(loc, intType,
+                                                        two_abs_x_hi_plus_half);
     Value n_float =
-        rewriter.create<stablehlo::FloorOp>(loc, two_abs_x_hi_plus_half);
+        rewriter.create<stablehlo::ConvertOp>(loc, tensorType, n_int);
 
     // rx = abs_x - 0.5 * n
     Value half_n = rewriter.create<stablehlo::MulOp>(loc, half, n_float);
@@ -1335,20 +1337,11 @@ struct SineOpConversion : public OpConversionPattern<stablehlo::SineOp> {
     auto [rx_hi, rx_lo] =
         multiFloatAdd(abs_x_hi, abs_x_lo, neg_half_n, zero, rewriter, loc);
 
-    // quadrant = n_float % 4
-    auto fourAttr = rewriter.getFloatAttr(floatTy, 4.0);
-    Value four = rewriter.create<stablehlo::ConstantOp>(
-        loc, SplatElementsAttr::get(tensorType, fourAttr));
-    auto quarterAttr = rewriter.getFloatAttr(floatTy, 0.25);
-    Value quarter = rewriter.create<stablehlo::ConstantOp>(
-        loc, SplatElementsAttr::get(tensorType, quarterAttr));
-
-    Value n_div_4 = rewriter.create<stablehlo::MulOp>(loc, n_float, quarter);
-    Value floor_n_div_4 = rewriter.create<stablehlo::FloorOp>(loc, n_div_4);
-    Value four_floor_n_div_4 = rewriter.create<stablehlo::MulOp>(loc, four, floor_n_div_4);
-    Value quadrant_float = rewriter.create<stablehlo::SubtractOp>(loc, n_float, four_floor_n_div_4);
-    
-    Value quadrant = rewriter.create<stablehlo::ConvertOp>(loc, intType, quadrant_float);
+    // quadrant = n_int & 3
+    auto threeAttr = rewriter.getIntegerAttr(rewriter.getI32Type(), 3);
+    Value three = rewriter.create<stablehlo::ConstantOp>(
+        loc, SplatElementsAttr::get(intType, threeAttr));
+    Value quadrant = rewriter.create<stablehlo::AndOp>(loc, n_int, three);
 
     // Polynomial evaluation constants
     auto getConstant = [&](float val) -> Value {
