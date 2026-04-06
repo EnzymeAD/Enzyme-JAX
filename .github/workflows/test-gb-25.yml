@@ -154,7 +154,8 @@ jobs:
         if: ${{ contains(matrix.os, 'a100') }}
         run: |
           echo "RUN_FLAGS=--float-type=Float64" >> ${GITHUB_ENV}
-      - name: Set default precision
+      - name: Set default precision (TPU)
+        if: ${{ contains(matrix.os, 'tpu') }}
         run: |
           echo "RUN_FLAGS=--float-type=Float32" >> ${GITHUB_ENV}
       - name: Instantiate GB-25 environment
