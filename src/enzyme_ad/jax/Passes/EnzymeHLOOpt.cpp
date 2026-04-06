@@ -7945,14 +7945,13 @@ struct PowSimplify
 
     if (isa<FloatType>(op.getType().getElementType())) {
       DenseFPElementsAttr rhs;
-      if (matchPattern(op.getRhs(), m_Constant(&rhs))) {
+      if (matchPattern(op.getRhs(), m_Constant(&rhs)) && rhs.isSplat()) {
         bool allHalf = true, allNegOne = true, allNegHalf = true, allTwo = true;
-        for (auto v : rhs) {
-          allHalf &= v.isExactlyValue(0.5);
-          allNegOne &= v.isExactlyValue(-1.0);
-          allNegHalf &= v.isExactlyValue(-0.5);
-          allTwo &= v.isExactlyValue(2.0);
-        }
+        auto v = rhs.getSplatValue<APFloat>();
+        allHalf &= v.isExactlyValue(0.5);
+        allNegOne &= v.isExactlyValue(-1.0);
+        allNegHalf &= v.isExactlyValue(-0.5);
+        allTwo &= v.isExactlyValue(2.0);
 
         // pow(X, -1) -> 1 / X
         if (allNegOne) {
