@@ -665,11 +665,12 @@ struct MulOpConversion : public OpConversionPattern<stablehlo::MulOp> {
 };
 struct ReduceOpConversion : public OpConversionPattern<stablehlo::ReduceOp> {
   ReduceOpConversion(TypeConverter &typeConverter, MLIRContext *context,
-                    StringRef concatDimension)
+                    StringRef concatDimension, bool preciseReduce)
       : OpConversionPattern<stablehlo::ReduceOp>(typeConverter, context),
-        concatDimension(concatDimension) {}
+        concatDimension(concatDimension), preciseReduce(preciseReduce) {}
 
   StringRef concatDimension;
+  bool preciseReduce;
 
   LogicalResult
   matchAndRewrite(stablehlo::ReduceOp op, OpAdaptor adaptor,
@@ -701,54 +702,83 @@ struct ReduceOpConversion : public OpConversionPattern<stablehlo::ReduceOp> {
     SmallVector<Value, 2> newInputs = {input_hi, input_lo};
     SmallVector<Value, 2> newInits = {init_hi, init_lo};
 
-    auto reduceOp = rewriter.create<stablehlo::ReduceOp>(
-        loc, newInputs, newInits, op.getDimensions());
+    if (preciseReduce) {
+      SmallVector<Value, 2> newInputs = {input_hi, input_lo};
+      SmallVector<Value, 2> newInits = {init_hi, init_lo};
 
-    Block *reduceBlock = new Block();
-    reduceOp.getBody().push_back(reduceBlock);
-    
-    auto resType = reduceOp.getResult(0).getType();
-    
-    reduceBlock->addArguments({resType, resType, resType, resType}, 
-                              {loc, loc, loc, loc});
-    
-    auto blockBuilder = OpBuilder::atBlockBegin(reduceBlock);
-    
-    Value acc_hi = reduceBlock->getArgument(0);
-    Value acc_lo = reduceBlock->getArgument(1);
-    Value val_hi = reduceBlock->getArgument(2);
-    Value val_lo = reduceBlock->getArgument(3);
+      auto reduceOp = rewriter.create<stablehlo::ReduceOp>(
+          loc, newInputs, newInits, op.getDimensions());
 
-    // [s, e] = twoSum(acc_hi, val_hi)
-    Value s = blockBuilder.create<stablehlo::AddOp>(loc, resType, acc_hi, val_hi);
-    Value a_prime = blockBuilder.create<stablehlo::SubtractOp>(loc, resType, s, val_hi);
-    Value b_prime = blockBuilder.create<stablehlo::SubtractOp>(loc, resType, s, a_prime);
-    Value delta_a = blockBuilder.create<stablehlo::SubtractOp>(loc, resType, acc_hi, a_prime);
-    Value delta_b = blockBuilder.create<stablehlo::SubtractOp>(loc, resType, val_hi, b_prime);
-    Value e = blockBuilder.create<stablehlo::AddOp>(loc, resType, delta_a, delta_b);
-    
-    // e_new = e + acc_lo + val_lo
-    Value e_lo1 = blockBuilder.create<stablehlo::AddOp>(loc, resType, acc_lo, val_lo);
-    Value e_new = blockBuilder.create<stablehlo::AddOp>(loc, resType, e, e_lo1);
-    
-    // [final_hi, final_lo] = fastTwoSum(s, e_new)
-    Value final_hi = blockBuilder.create<stablehlo::AddOp>(loc, resType, s, e_new);
-    Value s_prime = blockBuilder.create<stablehlo::SubtractOp>(loc, resType, final_hi, e_new);
-    Value final_lo = blockBuilder.create<stablehlo::SubtractOp>(loc, resType, s, s_prime);
-    
-    blockBuilder.create<stablehlo::ReturnOp>(loc, ValueRange{final_hi, final_lo});
+      Block *reduceBlock = new Block();
+      reduceOp.getBody().push_back(reduceBlock);
+      
+      auto resType = reduceOp.getResult(0).getType();
+      
+      reduceBlock->addArguments({resType, resType, resType, resType}, 
+                                {loc, loc, loc, loc});
+      
+      auto blockBuilder = OpBuilder::atBlockBegin(reduceBlock);
+      
+      Value acc_hi = reduceBlock->getArgument(0);
+      Value acc_lo = reduceBlock->getArgument(1);
+      Value val_hi = reduceBlock->getArgument(2);
+      Value val_lo = reduceBlock->getArgument(3);
 
-    Value res_hi = reduceOp.getResult(0);
-    Value res_lo = reduceOp.getResult(1);
-    
-    Value packed = packLimbs(res_hi, res_lo, rewriter, loc, concatDimension);
+      // [s, e] = twoSum(acc_hi, val_hi)
+      Value s = blockBuilder.create<stablehlo::AddOp>(loc, resType, acc_hi, val_hi);
+      Value a_prime = blockBuilder.create<stablehlo::SubtractOp>(loc, resType, s, val_hi);
+      Value b_prime = blockBuilder.create<stablehlo::SubtractOp>(loc, resType, s, a_prime);
+      Value delta_a = blockBuilder.create<stablehlo::SubtractOp>(loc, resType, acc_hi, a_prime);
+      Value delta_b = blockBuilder.create<stablehlo::SubtractOp>(loc, resType, val_hi, b_prime);
+      Value e = blockBuilder.create<stablehlo::AddOp>(loc, resType, delta_a, delta_b);
+      
+      // e_new = e + acc_lo + val_lo
+      Value e_lo1 = blockBuilder.create<stablehlo::AddOp>(loc, resType, acc_lo, val_lo);
+      Value e_new = blockBuilder.create<stablehlo::AddOp>(loc, resType, e, e_lo1);
+      
+      // [final_hi, final_lo] = fastTwoSum(s, e_new)
+      Value final_hi = blockBuilder.create<stablehlo::AddOp>(loc, resType, s, e_new);
+      Value s_prime = blockBuilder.create<stablehlo::SubtractOp>(loc, resType, final_hi, e_new);
+      Value final_lo = blockBuilder.create<stablehlo::SubtractOp>(loc, resType, s, s_prime);
+      
+      blockBuilder.create<stablehlo::ReturnOp>(loc, ValueRange{final_hi, final_lo});
 
-    llvm::errs() << " op: " << *op << "\n";
-    llvm::errs() << " reduceOp: " << *reduceOp << "\n";
-    
-    rewriter.replaceOp(op, packed);
-    
-    return success();
+      Value res_hi = reduceOp.getResult(0);
+      Value res_lo = reduceOp.getResult(1);
+      
+      Value packed = packLimbs(res_hi, res_lo, rewriter, loc, concatDimension);
+      rewriter.replaceOp(op, packed);
+      
+      return success();
+    } else {
+      auto createLimbReduce = [&](Value input_limb, Value init_limb) -> Value {
+        auto reduceOp = rewriter.create<stablehlo::ReduceOp>(
+            loc, input_limb, init_limb, op.getDimensions());
+        
+        Block *reduceBlock = new Block();
+        reduceOp.getBody().push_back(reduceBlock);
+        
+        auto elemType = cast<RankedTensorType>(input_limb.getType()).getElementType();
+        auto scalarType = RankedTensorType::get({}, elemType);
+        
+        reduceBlock->addArguments({scalarType, scalarType}, {loc, loc});
+        
+        auto blockBuilder = OpBuilder::atBlockBegin(reduceBlock);
+        Value add = blockBuilder.create<stablehlo::AddOp>(
+            loc, scalarType, reduceBlock->getArgument(0), reduceBlock->getArgument(1));
+        blockBuilder.create<stablehlo::ReturnOp>(loc, add);
+        
+        return reduceOp.getResult(0);
+      };
+
+      Value res_hi = createLimbReduce(input_hi, init_hi);
+      Value res_lo = createLimbReduce(input_lo, init_lo);
+
+      Value packed = packLimbs(res_hi, res_lo, rewriter, loc, concatDimension);
+      rewriter.replaceOp(op, packed);
+      
+      return success();
+    }
   }
 };
 
@@ -3745,7 +3775,7 @@ struct MultiFloatConversionPass
                                     concatDimension);
       patterns.add<SubOpConversion>(typeConverter, context, concatDimension);
       patterns.add<MulOpConversion>(typeConverter, context, concatDimension);
-      patterns.add<ReduceOpConversion>(typeConverter, context, concatDimension);
+      patterns.add<ReduceOpConversion>(typeConverter, context, concatDimension, preciseReduce);
       patterns.add<DivOpConversion>(typeConverter, context, concatDimension,
                                     divSubsteps);
       patterns.add<SelectOpConversion>(typeConverter, context, concatDimension);
