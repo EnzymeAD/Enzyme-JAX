@@ -21,13 +21,12 @@ void enzyme::perfify::PerfifyDialect::initialize() {
 #define GET_TYPEDEF_LIST
 #include "src/enzyme_ad/jax/Dialect/Perfify/PerfifyTypes.cpp.inc"
       >();
-addAttributes<
+  addAttributes<
 #define GET_ATTRDEF_LIST
 #include "src/enzyme_ad/jax/Dialect/Perfify/PerfifyAttributes.cpp.inc"
       >();
-addOperations<
+  addOperations<
 #define GET_OP_LIST
 #include "src/enzyme_ad/jax/Dialect/Perfify/PerfifyOps.cpp.inc"
       >();
-
 }
