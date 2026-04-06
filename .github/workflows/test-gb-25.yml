@@ -165,17 +165,10 @@ jobs:
           ls -lhrt "${GB25_DIR}"
           echo "GB25_DIR=${GB25_DIR}" >> ${GITHUB_ENV}
           
-<<<<<<< HEAD
-      - name: Set default precision (GPU)
-        if: ${{ contains(matrix.os, 'a100') }}
-        run: |
-          echo "RUN_FLAGS=--precision=64 --grid-x 1536 --grid-y 768" >> ${GITHUB_ENV}
       - name: Set default precision (TPU)
         if: ${{ contains(matrix.os, 'tpu') }}
         run: |
           echo "RUN_FLAGS=--precision=32 --grid-x 1536 --grid-y 768" >> ${GITHUB_ENV}
-=======
->>>>>>> upstream/main
       - name: Instantiate GB-25 environment
         timeout-minutes: 40
         shell: julia --project --color=yes {0}
@@ -217,11 +210,7 @@ jobs:
         timeout-minutes: 30
         run: |
           export XLA_FLAGS='--xla_disable_hlo_passes=multi_output_fusion --xla_dump_hlo_pass_re=.* --xla_dump_to=${{ env.GB25_DIR }}/xla_dump_compile'
-<<<<<<< HEAD
-          timeout --signal=TERM --verbose 29m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict sharding/sharded_atmosphere_simulation_compile.jl ${{ env.RUN_FLAGS }}
-=======
-          timeout --signal=TERM --verbose 29m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict sharding/sharded_baroclinic_instability_simulation_compile.jl ${{matrix.grid}}
->>>>>>> upstream/main
+          timeout --signal=TERM --verbose 29m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict sharding/sharded_atmosphere_simulation_compile.jl ${{ matrix.grid }}
         working-directory: ${{ env.GB25_DIR }}
       - name: Show remaining collective operations
         timeout-minutes: 10
@@ -262,11 +251,7 @@ jobs:
         timeout-minutes: 60
         run: |
           export XLA_FLAGS='--xla_disable_hlo_passes=multi_output_fusion --xla_dump_hlo_pass_re=.* --xla_dump_to=${{ env.GB25_DIR }}/xla_dump_run'
-<<<<<<< HEAD
-          timeout --signal=TERM --verbose 59m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict sharding/sharded_atmosphere_simulation_run.jl ${{ env.RUN_FLAGS }}
-=======
-          timeout --signal=TERM --verbose 59m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict sharding/sharded_baroclinic_instability_simulation_run.jl ${{matrix.grid}}
->>>>>>> upstream/main
+          timeout --signal=TERM --verbose 59m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict sharding/sharded_atmosphere_simulation_run.jl ${{ matrix.grid }}
         working-directory: ${{ env.GB25_DIR }}
       - name: Display profile results
         shell: julia --project --color=yes {0}
@@ -283,11 +268,7 @@ jobs:
       - name: Test correctness in GB-25 code
         timeout-minutes: 20
         run: |
-<<<<<<< HEAD
-          timeout --signal=TERM --verbose 19m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict correctness/correctness_sharded_atmosphere_simulation_run.jl ${{ env.RUN_FLAGS }}
-=======
-          timeout --signal=TERM --verbose 19m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict correctness/correctness_sharded_baroclinic_instability_simulation_run.jl ${{matrix.grid}}
->>>>>>> upstream/main
+          timeout --signal=TERM --verbose 19m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict correctness/correctness_sharded_atmosphere_simulation_run.jl ${{ matrix.grid }}
         working-directory: ${{ env.GB25_DIR }}
       - name: Upload MLIR and XLA modules
         uses: actions/upload-artifact@v7
