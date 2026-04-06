@@ -48,12 +48,12 @@ jobs:
           - ''
           # - 'b25f3cbed2bc88c8ffef85f6a5319e2cf7b0454c'
         gb25_commit:
-          - 'bf16-2'
+          - 'main'
           # - '0123456789abcdef0123456789abcdef01234567'
 
         reactant_commit:
-          - 'bf16cu'
-          # - 'multipad'
+          - 'main'
+          - 'multipad'
 
     steps:
       - name: Check GPUs
@@ -156,7 +156,7 @@ jobs:
           echo "RUN_FLAGS=--float-type=Float64" >> ${GITHUB_ENV}
       - name: Set default precision
         run: |
-          echo "RUN_FLAGS=--float-type=BFloat16" >> ${GITHUB_ENV}
+          echo "RUN_FLAGS=--float-type=Float32" >> ${GITHUB_ENV}
       - name: Instantiate GB-25 environment
         timeout-minutes: 40
         shell: julia --project --color=yes {0}
