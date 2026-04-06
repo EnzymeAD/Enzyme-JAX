@@ -1083,7 +1083,7 @@ struct ParallelizeBlockOps : public OpRewritePattern<scf::ParallelOp> {
           break;
         } else if (auto alloca = dyn_cast<LLVM::AllocaOp>(&op)) {
           mlir::OpBuilder::InsertionGuard guard(rewriter);
-          rewriter.setInsertionPointToStart(innerBlock);
+          rewriter.setInsertionPointToStart(ifOp.thenBlock());
           auto *newOp = rewriter.clone(op, mapping);
           rewriter.replaceOpUsesWithinBlock(&op, newOp->getResults(),
                                             innerBlock);
