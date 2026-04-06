@@ -110,7 +110,7 @@ struct TrmmOpLowering : public OpRewritePattern<enzymexla::TrmmOp> {
     auto uplo_value = op.getUplo() == enzymexla::LapackUplo::L ? 'L' : 'U';
     auto trans_value =
         op.getTranspose() == enzymexla::LapackTranspose::transpose ? 'T' : 'N';
-    auto diag_value = op.getDiag() == enzymexla::LapackDiag::unit ? 'U' : 'N';
+    auto diag_value = op.getUnitDiagonal() ? 'U' : 'N';
 
     auto aType = cast<RankedTensorType>(a.getType());
     auto bType = cast<RankedTensorType>(b.getType());
@@ -352,10 +352,9 @@ struct TrmmOpLowering : public OpRewritePattern<enzymexla::TrmmOp> {
         rewriter.getNamedAttr(
             "transpose",
             rewriter.getBoolAttr(op.getTranspose() !=
-                                 enzymexla::LapackTranspose::transpose)),
-        rewriter.getNamedAttr(
-            "diag",
-            rewriter.getBoolAttr(op.getDiag() != enzymexla::LapackDiag::unit)),
+                                 enzymexla::LapackTranspose::none)),
+        rewriter.getNamedAttr("diag",
+                              rewriter.getBoolAttr(op.getUnitDiagonal())),
         rewriter.getNamedAttr("use_alpha_attribute",
                               rewriter.getBoolAttr(useAlphaAttr)),
         rewriter.getNamedAttr("alpha_real",
@@ -1363,7 +1362,8 @@ struct LowerEnzymeXLABLASPass
     }
 
     RewritePatternSet patternsSet2(context);
-    patternsSet2.add<SyrkOpLowering>(backend, blasIntWidth, context);
+    patternsSet2.add<SyrkOpLowering, TrmmOpLowering>(backend, blasIntWidth,
+                                                     context);
     patternsSet2.add<TrsmOpLowering>(context);
     if (failed(applyPatternsGreedily(getOperation(), std::move(patternsSet2),
                                      config))) {

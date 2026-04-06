@@ -216,8 +216,8 @@ ffi::Error TrmmImpl(CUstream stream, bool side_, bool uplo_, bool trans_,
   // We can then swap side since (A*B)^T = B^T*A^T, where B^T is also the
   // column-major interpretation of B
   cublasSideMode_t side = side_ ? CUBLAS_SIDE_LEFT : CUBLAS_SIDE_RIGHT;
-  cublasOperation_t trans = trans_ ? CUBLAS_OP_N : CUBLAS_OP_T;
-  cublasDiagType_t diag = diag_ ? CUBLAS_DIAG_NON_UNIT : CUBLAS_DIAG_UNIT;
+  cublasOperation_t trans = trans_ ? CUBLAS_OP_T : CUBLAS_OP_N;
+  cublasDiagType_t diag = diag_ ? CUBLAS_DIAG_UNIT : CUBLAS_DIAG_NON_UNIT;
 
   const T *a_data = static_cast<const T *>(a.untyped_data());
   const T *b_data = static_cast<const T *>(b.untyped_data());

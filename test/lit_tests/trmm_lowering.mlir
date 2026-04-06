@@ -4,7 +4,7 @@
 
 func.func @trmm(%arg0: tensor<64x64xf32>, %arg1: tensor<64x32xf32>) -> tensor<64x32xf32> {
     %alpha = stablehlo.constant dense<2.0> : tensor<f32>
-    %0 = enzymexla.blas.trmm %arg0, %arg1, %alpha {side = #enzymexla.side<left>, uplo = #enzymexla.uplo<U>, transpose = #enzymexla.transpose<none>, diag = #enzymexla.diag<nonunit>} : (tensor<64x64xf32>, tensor<64x32xf32>, tensor<f32>) -> tensor<64x32xf32>
+    %0 = enzymexla.blas.trmm %arg0, %arg1, %alpha {side = #enzymexla.side<left>, uplo = #enzymexla.uplo<U>, transpose = #enzymexla.transpose<none>} : (tensor<64x64xf32>, tensor<64x32xf32>, tensor<f32>) -> tensor<64x32xf32>
     return %0 : tensor<64x32xf32>
 }
 
@@ -32,7 +32,7 @@ func.func @trmm(%arg0: tensor<64x64xf32>, %arg1: tensor<64x32xf32>) -> tensor<64
 // CUDA:  func.func @trmm(%arg0: tensor<64x64xf32>, %arg1: tensor<64x32xf32>) -> tensor<64x32xf32> {
 // CUDA-NEXT:    %cst = stablehlo.constant dense<0.000000e+00> : tensor<64x32xf32>
 // CUDA-NEXT:    %0 = tensor.empty() : tensor<0xf32>
-// CUDA-NEXT:    %1 = stablehlo.custom_call @enzymejax_cublas_trmm_ffi(%arg0, %arg1, %cst, %0) {api_version = 4 : i32, backend_config = {alpha_imag = 0.000000e+00 : f64, alpha_real = 2.000000e+00 : f64, diag = true, side = false, transpose = true, uplo = true, use_alpha_attribute = true}, operand_layouts = [dense<[1, 0]> : tensor<2xindex>, dense<[1, 0]> : tensor<2xindex>, dense<[1, 0]> : tensor<2xindex>, dense<0> : tensor<1xindex>], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 2, operand_tuple_indices = []>], result_layouts = [dense<[1, 0]> : tensor<2xindex>]} : (tensor<64x64xf32>, tensor<64x32xf32>, tensor<64x32xf32>, tensor<0xf32>) -> tensor<64x32xf32>
+// CUDA-NEXT:    %1 = stablehlo.custom_call @enzymejax_cublas_trmm_ffi(%arg0, %arg1, %cst, %0) {api_version = 4 : i32, backend_config = {alpha_imag = 0.000000e+00 : f64, alpha_real = 2.000000e+00 : f64, diag = false, side = false, transpose = false, uplo = true, use_alpha_attribute = true}, operand_layouts = [dense<[1, 0]> : tensor<2xindex>, dense<[1, 0]> : tensor<2xindex>, dense<[1, 0]> : tensor<2xindex>, dense<0> : tensor<1xindex>], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 2, operand_tuple_indices = []>], result_layouts = [dense<[1, 0]> : tensor<2xindex>]} : (tensor<64x64xf32>, tensor<64x32xf32>, tensor<64x32xf32>, tensor<0xf32>) -> tensor<64x32xf32>
 // CUDA-NEXT:    return %1 : tensor<64x32xf32>
 // CUDA-NEXT:  }
 
