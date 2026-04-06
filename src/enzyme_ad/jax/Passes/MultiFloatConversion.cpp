@@ -716,10 +716,20 @@ struct ReduceOpConversion : public OpConversionPattern<stablehlo::ReduceOp> {
     SmallVector<Value, 2> newInits = {init_hi, init_lo};
 
     if (preciseReduce) {
+      SmallVector<int64_t> dims;
+      for (auto dim : op.getDimensions()) {
+        if (concatDimension == "first") {
+          dims.push_back(dim + 1);
+          continue;
+        }
+        dims.push_back(dim);
+      }
       auto reduceOp = rewriter.create<stablehlo::ReduceOp>(
-          loc, newInputs, newInits, op.getDimensions());
+          loc, newInputs, newInits, dims);
 
-      Block *reduceBlock = &reduceOp.getBody().front();
+      Block *reduceBlock = new Block();
+      reduceOp.getBody().push_back(reduceBlock);
+      reduceBlock->addArguments({scalarType, scalarType, scalarType, scalarType}, {loc, loc, loc, loc});
       
       auto blockBuilder = OpBuilder::atBlockBegin(reduceBlock);
       
