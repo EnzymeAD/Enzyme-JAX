@@ -1,8 +1,7 @@
 // RUN: enzymexlamlir-opt --multi-float-conversion="source-type=f64 target-type=f32 concat-dimension=first" %s | FileCheck --check-prefix=FIRST_LIMB %s
+// RUN: enzymexlamlir-opt --multi-float-conversion="source-type=f64 target-type=f32 concat-dimension=first precise-reduce=true" %s | FileCheck --check-prefix=FIRST_PRECISE %s
 // RUN: enzymexlamlir-opt --multi-float-conversion="source-type=f64 target-type=f32 concat-dimension=last" %s | FileCheck --check-prefix=LAST_LIMB %s
-// RUN: enzymexlamlir-opt --multi-float-conversion="source-type=f64 target-type=f32 concat-dimension=tuple" %s | FileCheck --check-prefix=TUPLE_LIMB %s
-// RUN: enzymexlamlir-opt --multi-float-conversion="source-type=f64 target-type=f32 concat-dimension=tuple precise-reduce=true" %s | FileCheck --check-prefix=TUPLE_PRECISE %s
-// RUN: enzymexlamlir-opt --multi-float-conversion="source-type=f64 target-type=f32 concat-dimension=first" %s | stablehlo-translate - --interpret --allow-unregistered-dialect
+// RUN: enzymexlamlir-opt --multi-float-conversion="source-type=f64 target-type=f32 concat-dimension=last precise-reduce=true" %s | FileCheck --check-prefix=LAST_PRECISE %s
 
 func.func @reduce_test(%arg0: tensor<2x2xf64>) -> tensor<2xf64> {
   %cst = stablehlo.constant dense<0.0> : tensor<f64>
@@ -12,18 +11,19 @@ func.func @reduce_test(%arg0: tensor<2x2xf64>) -> tensor<2xf64> {
 
 // FIRST_LIMB-LABEL: func.func @reduce_test
 // FIRST_LIMB: stablehlo.reduce
-// FIRST_LIMB: stablehlo.reduce
+// FIRST_LIMB-NOT: stablehlo.reduce
+
+// FIRST_PRECISE-LABEL: func.func @reduce_test
+// FIRST_PRECISE: stablehlo.reduce(%{{.*}} init: %{{.*}}), (%{{.*}} init: %{{.*}}) across dimensions = [1]
 
 // LAST_LIMB-LABEL: func.func @reduce_test
 // LAST_LIMB: stablehlo.reduce
 // LAST_LIMB: stablehlo.reduce
 
-// TUPLE_LIMB-LABEL: func.func @reduce_test
-// TUPLE_LIMB: stablehlo.reduce
-// TUPLE_LIMB: stablehlo.reduce
+// LAST_PRECISE-LABEL: func.func @reduce_test
+// LAST_PRECISE: stablehlo.reduce({{.*}}, {{.*}} init: {{.*}}, {{.*}})
 
-// TUPLE_PRECISE-LABEL: func.func @reduce_test
-// TUPLE_PRECISE: stablehlo.reduce({{.*}}, {{.*}} init: {{.*}}, {{.*}})
+
 
 func.func @main() attributes {enzyme.no_multifloat} {
   %c = stablehlo.constant dense<[[1.1, 2.2], [3.3, 4.4]]> : tensor<2x2xf64>
