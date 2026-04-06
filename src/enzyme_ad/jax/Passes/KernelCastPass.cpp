@@ -33,11 +33,26 @@ static Type convertType(Type t, Type targetFloat) {
   return t;
 };
 
+static Value convertToTargetType(OpBuilder &builder, Value val,
+                                 FloatType targetFloat) {
+  auto valType = dyn_cast<FloatType>(val.getType());
+  if (valType && valType != targetFloat) {
+    if (valType.getIntOrFloatBitWidth() < targetFloat.getIntOrFloatBitWidth())
+      val = arith::ExtFOp::create(builder, val.getLoc(), targetFloat, val);
+    else if (valType.getIntOrFloatBitWidth() >
+             targetFloat.getIntOrFloatBitWidth())
+      val = arith::TruncFOp::create(builder, val.getLoc(), targetFloat, val);
+    else
+      val = arith::ConvertFOp::create(builder, val.getLoc(), targetFloat, val);
+  }
+  return val;
+}
+
 // Recursively clone `src` into `dst`, converting all floating-point types
 // (scalar and memref element) to `targetFloat`.
 static void cloneWithTypeConversion(Region &src, Region &dst,
                                     IRMapping &mapping, MLIRContext *ctx,
-                                    Type targetFloat) {
+                                    FloatType targetFloat) {
   for (Block &srcBlock : src.getBlocks()) {
     auto *dstBlock = new Block();
     dst.push_back(dstBlock);
@@ -51,6 +66,7 @@ static void cloneWithTypeConversion(Region &src, Region &dst,
 
   for (Block &srcBlock : src.getBlocks()) {
     Block *dstBlock = mapping.lookup(&srcBlock);
+    OpBuilder builder = OpBuilder::atBlockEnd(dstBlock);
 
     for (Operation &op : srcBlock.getOperations()) {
       APFloat apf(0.0);
@@ -61,19 +77,33 @@ static void cloneWithTypeConversion(Region &src, Region &dst,
         dstBlock->push_back(newConst);
         auto constType = cast<FloatType>(op.getResult(0).getType());
         if (constType != targetFloat) {
-          OpBuilder b(ctx);
-          b.setInsertionPointAfter(newConst);
-          Value cast;
-          if (constType.getIntOrFloatBitWidth() <
-              targetFloat.getIntOrFloatBitWidth())
-            cast = arith::ExtFOp::create(b, newConst->getLoc(), targetFloat,
-                                         newConst->getResult(0));
-          else
-            cast = arith::TruncFOp::create(b, newConst->getLoc(), targetFloat,
-                                           newConst->getResult(0));
+          auto cast =
+              convertToTargetType(builder, newConst->getResult(0), targetFloat);
           // Override the mapper entry set by clone() to point to the cast.
           mapping.map(op.getResult(0), cast);
         }
+        continue;
+      }
+
+      if (auto bitcastOp = dyn_cast<arith::BitcastOp>(&op)) {
+        // bitcast %0 f16 -> i16 tgt=bf16
+        // bitcast convert(%0: bf16, f16) f16 -> i16
+        Value operand = bitcastOp.getOperand();
+        Value newOperand = mapping.lookup(operand);
+
+        if (auto srcType = dyn_cast<FloatType>(operand.getType())) {
+          newOperand = convertToTargetType(builder, newOperand, srcType);
+        }
+
+        auto newOp = arith::BitcastOp::create(
+            builder, op.getLoc(), bitcastOp.getResult().getType(), newOperand);
+        Value newResult = newOp.getResult();
+
+        newResult = convertToTargetType(builder, newResult, targetFloat);
+
+        bitcastOp.getResult().replaceAllUsesWith(newResult);
+        mapping.map(bitcastOp.getResult(), newResult);
+
         continue;
       }
 
@@ -103,7 +133,7 @@ static void cloneWithTypeConversion(Region &src, Region &dst,
   }
 }
 
-void castKernelTypes(func::FuncOp func, mlir::Type targetFloat) {
+void castKernelTypes(func::FuncOp func, mlir::FloatType targetFloat) {
   MLIRContext *ctx = func.getContext();
 
   auto oldFT = func.getFunctionType();
@@ -135,10 +165,10 @@ struct KernelCastPass
     if (!attr)
       return;
 
-    Type targetFloat = attr.getValue();
-    if (!isa<FloatType>(targetFloat)) {
+    auto targetFloat = dyn_cast<FloatType>(attr.getValue());
+    if (!targetFloat) {
       func.emitError("enzymexla.float_type: expected a float type, got '")
-          << targetFloat << "'";
+          << attr.getValue() << "'";
       return signalPassFailure();
     }
 

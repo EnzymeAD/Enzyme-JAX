@@ -96,8 +96,10 @@ struct LLVMToMemrefAccessPass
                 if (targetFloatType) {
                   if (thisElTy != targetFloatType.getValue()) {
                     sameElementTypeAcrossCallers = false;
+                  } else if (auto srcTyAttr = callee->getAttrOfType<TypeAttr>(
+                                 "enzymexla.src_float_type")) {
+                    thisElTy = srcTyAttr.getValue();
                   } else {
-                    // NOTE: make this configurable?
                     thisElTy = mlir::Float32Type::get(thisElTy.getContext());
                   }
                 }

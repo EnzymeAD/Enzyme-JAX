@@ -485,7 +485,12 @@ class AutoDiffWhileRev
     : public ReverseAutoDiffOpInterface::ExternalModel<AutoDiffWhileRev,
                                                        WhileOp> {
 
-  enum ReverseMode { CONSTANT, CONSTANT_CHECKPOINTING, UNKNOWN };
+  enum ReverseMode {
+    CONSTANT,
+    CONSTANT_CHECKPOINTING,
+    CONSTANT_BINOMIAL,
+    UNKNOWN
+  };
   struct ReverseModeInfo {
     enum ReverseMode mode = UNKNOWN;
     WhileLoopInfo info;

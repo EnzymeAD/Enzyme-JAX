@@ -114,7 +114,10 @@ struct ArithRaisingPass
     RAISE_UNARY(math::SinOp, stablehlo::SineOp, mhlo::SineOp);
     RAISE_UNARY(math::CosOp, stablehlo::CosineOp, mhlo::CosineOp);
     RAISE_UNARY(math::LogOp, stablehlo::LogOp, mhlo::LogOp);
+    RAISE_UNARY(math::Log1pOp, stablehlo::Log1pOp, stablehlo::Log1pOp);
     RAISE_UNARY(math::ExpOp, stablehlo::ExpOp, mhlo::ExpOp);
+    RAISE_UNARY(math::ExpM1Op, stablehlo::Expm1Op, stablehlo::Expm1Op);
+    RAISE_UNARY(math::TanhOp, stablehlo::TanhOp, stablehlo::TanhOp);
     RAISE_UNARY(math::SqrtOp, stablehlo::SqrtOp, mhlo::SqrtOp);
     RAISE_UNARY(math::RsqrtOp, stablehlo::RsqrtOp, mhlo::RsqrtOp);
     RAISE_UNARY(math::CbrtOp, stablehlo::CbrtOp, mhlo::CbrtOp);
@@ -208,6 +211,17 @@ struct ArithRaisingPass
       op.replaceAllUsesWith(res);
       op.erase();
     });
+    op->walk([=](arith::ConvertFOp cvtOp) {
+      auto ty = dyn_cast<RankedTensorType>(cvtOp.getResult().getType());
+      if (!use_stablehlo || !ty)
+        return;
+
+      OpBuilder builder(cvtOp);
+      auto res = stablehlo::ConvertOp::create(builder, cvtOp.getLoc(), ty,
+                                              cvtOp.getIn());
+      cvtOp.replaceAllUsesWith(res.getResult());
+      cvtOp.erase();
+    });
     op->walk([=](arith::TruncFOp truncOp) {
       auto ty = dyn_cast<RankedTensorType>(truncOp.getResult().getType());
       if (!use_stablehlo || !ty)
@@ -220,6 +234,40 @@ struct ArithRaisingPass
       truncOp.erase();
     });
     op->walk([=](arith::ExtFOp truncOp) {
+      auto ty = dyn_cast<RankedTensorType>(truncOp.getResult().getType());
+      if (!use_stablehlo || !ty)
+        return;
+
+      OpBuilder builder(truncOp);
+      auto res = stablehlo::ConvertOp::create(builder, truncOp.getLoc(), ty,
+                                              truncOp.getIn());
+      truncOp.replaceAllUsesWith(res.getResult());
+      truncOp.erase();
+    });
+    // TODO: either SI or UI is wrong
+    op->walk([=](arith::ExtUIOp cvtOp) {
+      auto ty = dyn_cast<RankedTensorType>(cvtOp.getResult().getType());
+      if (!use_stablehlo || !ty)
+        return;
+
+      OpBuilder builder(cvtOp);
+      auto res = stablehlo::ConvertOp::create(builder, cvtOp.getLoc(), ty,
+                                              cvtOp.getIn());
+      cvtOp.replaceAllUsesWith(res.getResult());
+      cvtOp.erase();
+    });
+    op->walk([=](arith::ExtSIOp cvtOp) {
+      auto ty = dyn_cast<RankedTensorType>(cvtOp.getResult().getType());
+      if (!use_stablehlo || !ty)
+        return;
+
+      OpBuilder builder(cvtOp);
+      auto res = stablehlo::ConvertOp::create(builder, cvtOp.getLoc(), ty,
+                                              cvtOp.getIn());
+      cvtOp.replaceAllUsesWith(res.getResult());
+      cvtOp.erase();
+    });
+    op->walk([=](arith::TruncIOp truncOp) {
       auto ty = dyn_cast<RankedTensorType>(truncOp.getResult().getType());
       if (!use_stablehlo || !ty)
         return;

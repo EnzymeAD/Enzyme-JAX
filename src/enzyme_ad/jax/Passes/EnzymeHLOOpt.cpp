@@ -4044,11 +4044,8 @@ private:
                                          stablehlo::PadOp pad,
                                          Value input) const {
     auto reduceInfo = matchAndRewriteReduce(op, rewriter, pad, input);
-    Value res = stablehlo::MinOp::create(
-        rewriter, op.getLoc(), reduceInfo.res,
-        stablehlo::BroadcastInDimOp::create(
-            rewriter, op.getLoc(), reduceInfo.res.getType(),
-            pad.getPaddingValue(), rewriter.getDenseI64ArrayAttr({})));
+    Value res = stablehlo::MinOpCreate(rewriter, op.getLoc(), reduceInfo.res,
+                                       pad.getPaddingValue());
 
     if (reduceInfo.needsPostPad) {
       res = stablehlo::PadOp::create(rewriter, op.getLoc(), res,
@@ -4064,11 +4061,8 @@ private:
                                          stablehlo::PadOp pad,
                                          Value input) const {
     auto reduceInfo = matchAndRewriteReduce(op, rewriter, pad, input);
-    Value res = stablehlo::MaxOp::create(
-        rewriter, op.getLoc(), reduceInfo.res,
-        stablehlo::BroadcastInDimOp::create(
-            rewriter, op.getLoc(), reduceInfo.res.getType(),
-            pad.getPaddingValue(), rewriter.getDenseI64ArrayAttr({})));
+    Value res = stablehlo::MaxOpCreate(rewriter, op.getLoc(), reduceInfo.res,
+                                       pad.getPaddingValue());
 
     if (reduceInfo.needsPostPad) {
       res = stablehlo::PadOp::create(rewriter, op.getLoc(), res,
@@ -4096,11 +4090,7 @@ private:
             rewriter, op.getLoc(), cType,
             cast<ElementsAttr>(
                 makeAttr(cType, reduceInfo.numElementsReduced))));
-    res = stablehlo::MulOp::create(
-        rewriter, op.getLoc(), res,
-        stablehlo::BroadcastInDimOp::create(rewriter, op.getLoc(),
-                                            res.getType(), mulConst,
-                                            rewriter.getDenseI64ArrayAttr({})));
+    res = stablehlo::MulOpCreate(rewriter, op.getLoc(), res, mulConst);
 
     if (reduceInfo.needsPostPad) {
       res = stablehlo::PadOp::create(rewriter, op.getLoc(), res,
@@ -4131,11 +4121,7 @@ private:
               rewriter, op.getLoc(), cType,
               cast<ElementsAttr>(
                   makeAttr(cType, reduceInfo.numElementsReduced))));
-      res = stablehlo::AddOp::create(rewriter, op.getLoc(), res,
-                                     stablehlo::BroadcastInDimOp::create(
-                                         rewriter, op.getLoc(), res.getType(),
-                                         mulConst,
-                                         rewriter.getDenseI64ArrayAttr({})));
+      res = stablehlo::AddOpCreate(rewriter, op.getLoc(), res, mulConst);
     }
 
     if (reduceInfo.needsPostPad) {
@@ -6263,8 +6249,10 @@ struct ConcatToBroadcast final
           RankedTensorType::get(reshaped, op.getType().getElementType()),
           reshapeVal, bcast2);
 
-      rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, op.getType(),
-                                                        bcastVal);
+      auto newReshapeVal =
+          stablehlo::ReshapeOpCreate(rewriter, op.getLoc(), bcastVal,
+                                     cast<ShapedType>(op.getType()).getShape());
+      rewriter.replaceOp(op, newReshapeVal);
       return success();
     }
   }
@@ -7060,9 +7048,11 @@ struct BroadcastReshape final
     }
     while (pre_reshape_idx !=
            reshape.getOperand().getType().getShape().size()) {
-      auto ival = reshape.getOperand().getType().getShape()[pre_reshape_idx];
-      assert(ival == 1);
-      (void)ival;
+      if (reshape.getOperand().getType().getShape()[pre_reshape_idx] != 1) {
+        LLVM_DEBUG(llvm::dbgs() << "bcast: " << op << "\n";
+                   llvm::dbgs() << "reshape: " << reshape << "\n\n");
+        return failure();
+      }
 
       size_t nextdim = 0;
       if (postidx == oneOutIdxs.size()) {
@@ -9183,6 +9173,46 @@ struct CompareNegateConstSimplify
   }
 };
 
+// (cst - x) OP cst2  →  x reversed_OP (cst - cst2)
+// Both cst and cst2 must be constants; the new SubtractOp will be folded by
+// a subsequent constant-propagation pass.
+struct CompareSubtractConstSimplify
+    : public CheckedOpRewritePattern<stablehlo::CompareOp,
+                                     CompareSubtractConstSimplify> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::CompareOp cmpOp,
+                                    PatternRewriter &rewriter) const {
+    auto lhsSub = cmpOp.getLhs().getDefiningOp<stablehlo::SubtractOp>();
+    if (!lhsSub)
+      return rewriter.notifyMatchFailure(cmpOp, "lhs is not subtract");
+
+    if (!matchPattern(lhsSub.getLhs(), m_Constant()))
+      return rewriter.notifyMatchFailure(cmpOp,
+                                         "lhs of subtract is not constant");
+
+    if (matchPattern(lhsSub.getRhs(), m_Constant()))
+      return rewriter.notifyMatchFailure(cmpOp,
+                                         "rhs of subtract is a constant");
+
+    if (!matchPattern(cmpOp.getRhs(), m_Constant()))
+      return rewriter.notifyMatchFailure(cmpOp, "rhs is not constant");
+
+    auto newSub = stablehlo::SubtractOp::create(
+        rewriter, cmpOp.getLoc(), lhsSub.getLhs(), cmpOp.getRhs());
+    auto reversedDir =
+        reversedComparisonDirection(cmpOp.getComparisonDirection());
+
+    auto shardingAttr = sdy::getShardingPerValue(cmpOp);
+    auto newOp = rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(
+        cmpOp, lhsSub.getRhs(), newSub, reversedDir,
+        cmpOp.getCompareTypeAttr());
+    if (shardingAttr)
+      sdy::setShardings(newOp, shardingAttr);
+    return success();
+  }
+};
+
 struct BroadcastIotaSimplify
     : public CheckedOpRewritePattern<stablehlo::BroadcastInDimOp,
                                      BroadcastIotaSimplify> {
@@ -10371,14 +10401,9 @@ struct ReduceMaxMinMulPositiveScalar
         op.getInitValues(), op.getDimensions());
     newReduction.getRegion().takeBody(op.getRegion());
 
-    // Broadcast the scalar to the result shape and multiply
-    auto resultType = cast<RankedTensorType>(op.getResult(0).getType());
-    Value broadcastedScalar = stablehlo::BroadcastInDimOp::create(
-        rewriter, op.getLoc(), resultType, scalar,
-        rewriter.getDenseI64ArrayAttr({}));
-
-    rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, newReduction.getResult(0),
-                                                  broadcastedScalar);
+    auto res = stablehlo::MulOpCreate(rewriter, op.getLoc(),
+                                      newReduction.getResult(0), scalar);
+    rewriter.replaceOp(op, res);
     return success();
   }
 };
@@ -12074,8 +12099,9 @@ struct ReshapeOfConcatToConcatOfReshape final
     }
 
     // Create a new concat operation with the reshaped operands
-    rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
-        reshapeOp, concatOperands, newDim);
+    auto newConcatOp = stablehlo::ConcatenateOp::create(
+        rewriter, reshapeOp.getLoc(), concatOperands, newDim);
+    rewriter.replaceOp(reshapeOp, newConcatOp);
     return success();
   }
 };
@@ -13580,165 +13606,199 @@ struct CompareExt final
   }
 };
 
+// Extract a scalar integer constant from a splat tensor or a scalar
+// broadcast_in_dim of a constant (dims=[]).
+static bool extractSplatInt(Value v, int64_t &out) {
+  DenseIntElementsAttr attr;
+  if (matchPattern(v, m_Constant(&attr)) && attr.isSplat()) {
+    out = attr.getSplatValue<IntegerAttr>().getValue().getSExtValue();
+    return true;
+  }
+  if (auto bcast = v.getDefiningOp<stablehlo::BroadcastInDimOp>()) {
+    if (bcast.getBroadcastDimensions().empty())
+      return extractSplatInt(bcast.getOperand(), out);
+  }
+  return false;
+}
+
+// Matches: select(broadcast_in_dim(compare(iota_expr, K), [dim]), A, B)
+//      or: select(compare(iota_expr, K), A, B)   (no broadcast)
+// where iota_expr is either iota or add(iota, const_offset).
+// Replaces with concat(slice(A|B, ...), ...) along the iota/broadcast
+// dimension.
 struct SelectCompIotaConstSimplify final
     : CheckedOpRewritePattern<stablehlo::SelectOp,
                               SelectCompIotaConstSimplify> {
-  struct slice_data {
-    Value tensor;
-    int64_t count;
-  };
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::SelectOp selectOp,
                                     PatternRewriter &rewriter) const {
-    DenseIntElementsAttr inp;
-
-    Value compare = selectOp.getPred();
     Value trueTensor = selectOp.getOnTrue();
     Value falseTensor = selectOp.getOnFalse();
-    if (!matchPattern(selectOp.getOperation(),
-                      m_Op<stablehlo::SelectOp>(m_Op<stablehlo::CompareOp>(),
-                                                matchers::m_Any(&trueTensor),
-                                                matchers::m_Any(&falseTensor))))
-      return failure();
 
-    auto tensorType = selectOp.getType();
-    if (!tensorType)
-      return failure();
-
-    auto shapeLimit = tensorType.getShape();
-
-    Value cmpLHS = nullptr;
-    Value cmpRHS = nullptr;
-    stablehlo::ComparisonDirection flag;
-    if (auto cmp = compare.getDefiningOp<stablehlo::CompareOp>()) {
-      cmpLHS = cmp.getLhs();
-      cmpRHS = cmp.getRhs();
-      flag = cmp.getComparisonDirection();
-    } else if (auto notop = compare.getDefiningOp<stablehlo::NotOp>()) {
-      if (auto cmp = compare.getDefiningOp<stablehlo::CompareOp>()) {
-        cmpLHS = cmp.getLhs();
-        cmpRHS = cmp.getRhs();
-        flag = negatedComparisonDirection(cmp.getComparisonDirection());
-      }
+    // pred may come from a broadcast_in_dim wrapping a compare, or directly
+    // from a compare (no broadcast).
+    auto broadcast =
+        selectOp.getPred().getDefiningOp<stablehlo::BroadcastInDimOp>();
+    stablehlo::CompareOp compare;
+    if (broadcast) {
+      compare = broadcast.getOperand().getDefiningOp<stablehlo::CompareOp>();
+    } else {
+      compare = selectOp.getPred().getDefiningOp<stablehlo::CompareOp>();
     }
-
-    if (!cmpLHS)
+    if (!compare)
       return failure();
+
+    Value cmpLHS = compare.getLhs();
+    Value cmpRHS = compare.getRhs();
+    stablehlo::ComparisonDirection direction = compare.getComparisonDirection();
 
     stablehlo::IotaOp iota;
-    if (!(matchPattern(cmpLHS, m_Op<stablehlo::IotaOp>()) &&
-          matchPattern(cmpRHS, m_Constant(&inp)))) {
-      if (matchPattern(cmpRHS, m_Op<stablehlo::IotaOp>()) &&
-          matchPattern(cmpLHS, m_Constant(&inp))) {
-        // incoming: const `op` iota
-        // treat the match as iota `op` const
-        switch (flag) {
-        case stablehlo::ComparisonDirection::LT:
-          flag = stablehlo::ComparisonDirection::GT;
-          break;
-        case stablehlo::ComparisonDirection::LE:
-          flag = stablehlo::ComparisonDirection::GE;
-          break;
-        case stablehlo::ComparisonDirection::GT:
-          flag = stablehlo::ComparisonDirection::LT;
-          break;
-        case stablehlo::ComparisonDirection::GE:
-          flag = stablehlo::ComparisonDirection::LE;
-          break;
-        default:
-          break;
+    int64_t K = 0;
+
+    // Try to match lhs as an iota expression, rhs as a constant.
+    // Handles: iota vs const, and add(iota, offset) vs const.
+    // Returns true and sets iota/K on success.
+    auto tryMatchIotaVsConst = [&](Value lhs, Value rhs) -> bool {
+      // Form A: direct iota vs splat constant
+      if (auto iotaOp = lhs.getDefiningOp<stablehlo::IotaOp>()) {
+        int64_t rhsConst = 0;
+        if (extractSplatInt(rhs, rhsConst)) {
+          iota = iotaOp;
+          K = rhsConst;
+          return true;
         }
-        iota = cast<stablehlo::IotaOp>(cmpRHS.getDefiningOp());
-      } else
+      }
+      // Form B: add(iota, offset) vs splat constant
+      // iota + offset direction rhsConst  ⟺  iota direction rhsConst - offset
+      if (auto add = lhs.getDefiningOp<stablehlo::AddOp>()) {
+        for (int side = 0; side < 2; side++) {
+          Value maybeIota = side == 0 ? add.getLhs() : add.getRhs();
+          Value maybeConst = side == 0 ? add.getRhs() : add.getLhs();
+          if (auto iotaOp = maybeIota.getDefiningOp<stablehlo::IotaOp>()) {
+            int64_t addOffset = 0, rhsConst = 0;
+            if (extractSplatInt(maybeConst, addOffset) &&
+                extractSplatInt(rhs, rhsConst)) {
+              iota = iotaOp;
+              K = rhsConst - addOffset;
+              return true;
+            }
+          }
+        }
+      }
+      return false;
+    };
+
+    if (!tryMatchIotaVsConst(cmpLHS, cmpRHS)) {
+      // Try commuted: swap lhs/rhs and flip ordering directions
+      if (!tryMatchIotaVsConst(cmpRHS, cmpLHS))
         return failure();
-    } else
-      iota = cast<stablehlo::IotaOp>(cmpLHS.getDefiningOp());
-
-    assert(iota);
-
-    const auto iotaDim = iota.getIotaDimension();
-
-    if (!inp.isSplat())
-      return failure();
-
-    auto constValue =
-        inp.getSplatValue<IntegerAttr>().getValue().getSExtValue();
-    auto endValue = shapeLimit[iotaDim];
-
-    SmallVector<slice_data, 3> slices;
-
-    switch (flag) {
-    case stablehlo::ComparisonDirection::LT:
-      slices.push_back(slice_data{trueTensor, constValue});
-      slices.push_back(slice_data{falseTensor, endValue - constValue});
-      break;
-    case stablehlo::ComparisonDirection::LE:
-      slices.push_back(slice_data{trueTensor, constValue + 1});
-      slices.push_back(slice_data{falseTensor, endValue - (constValue + 1)});
-      break;
-
-    case stablehlo::ComparisonDirection::GT:
-      slices.push_back(slice_data{falseTensor, constValue + 1});
-      slices.push_back(slice_data{trueTensor, endValue - (constValue + 1)});
-      break;
-    case stablehlo::ComparisonDirection::GE:
-      slices.push_back(slice_data{falseTensor, constValue});
-      slices.push_back(slice_data{trueTensor, endValue - constValue});
-      break;
-
-    case stablehlo::ComparisonDirection::EQ:
-      slices.push_back(slice_data{falseTensor, constValue});
-      slices.push_back(slice_data{trueTensor, 1});
-      slices.push_back(slice_data{falseTensor, endValue - constValue - 1});
-      break;
-    case stablehlo::ComparisonDirection::NE:
-      slices.push_back(slice_data{trueTensor, constValue});
-      slices.push_back(slice_data{falseTensor, 1});
-      slices.push_back(slice_data{trueTensor, endValue - constValue - 1});
-      break;
-    }
-
-    assert(slices.size() >= 2);
-
-    auto valid_slices =
-        std::count_if(slices.begin(), slices.end(),
-                      [](slice_data data) { return data.count > 0; });
-    if (valid_slices == 1) {
-      for (auto &elem : slices) {
-        if (elem.count > 0) {
-          // if we are the only usable slice, replace the result
-          rewriter.replaceAllOpUsesWith(selectOp, elem.tensor);
-          return success();
-        }
+      // Flip ordering direction because we swapped operands
+      switch (direction) {
+      case stablehlo::ComparisonDirection::LT:
+        direction = stablehlo::ComparisonDirection::GT;
+        break;
+      case stablehlo::ComparisonDirection::LE:
+        direction = stablehlo::ComparisonDirection::GE;
+        break;
+      case stablehlo::ComparisonDirection::GT:
+        direction = stablehlo::ComparisonDirection::LT;
+        break;
+      case stablehlo::ComparisonDirection::GE:
+        direction = stablehlo::ComparisonDirection::LE;
+        break;
+      default:
+        break;
       }
     }
 
-    SmallVector<Value, 3> sliceValues;
-    {
-      int64_t start = 0;
-      const auto loc = selectOp.getLoc();
-      SmallVector<int64_t> startIndices(shapeLimit.size(), 0);
-      SmallVector<int64_t> limitIndices{shapeLimit};
-      SmallVector<int64_t> strides(shapeLimit.size(), 1);
-
-      for (const auto &elem : slices) {
-        if (elem.count > 0) {
-          startIndices[iotaDim] = start;
-          limitIndices[iotaDim] = start + elem.count;
-          auto slice = stablehlo::SliceOp::create(
-              rewriter, loc, elem.tensor, llvm::ArrayRef<int64_t>(startIndices),
-              llvm::ArrayRef<int64_t>(limitIndices),
-              llvm::ArrayRef<int64_t>(strides));
-          sliceValues.push_back(slice);
-          start += elem.count;
+    // Find which output dimension the iota dimension maps to.
+    // With broadcast: look up through getBroadcastDimensions().
+    // Without broadcast: the iota dim is already the output dim.
+    const int64_t iotaDim = iota.getIotaDimension();
+    int64_t outputDim = iotaDim;
+    if (broadcast) {
+      auto bcastDims = broadcast.getBroadcastDimensions();
+      outputDim = -1;
+      for (auto [inDim, outDim] : llvm::enumerate(bcastDims)) {
+        if ((int64_t)inDim == iotaDim) {
+          outputDim = outDim;
+          break;
         }
+      }
+      if (outputDim == -1)
+        return failure();
+    }
+
+    auto outputShape = selectOp.getType().getShape();
+    const int64_t endValue = outputShape[outputDim];
+
+    if (K < 0 || K > endValue)
+      return failure();
+
+    struct slice_data {
+      Value tensor;
+      int64_t count;
+    };
+    SmallVector<slice_data, 3> slices;
+    switch (direction) {
+    case stablehlo::ComparisonDirection::LT:
+      slices.push_back({trueTensor, K});
+      slices.push_back({falseTensor, endValue - K});
+      break;
+    case stablehlo::ComparisonDirection::LE:
+      slices.push_back({trueTensor, K + 1});
+      slices.push_back({falseTensor, endValue - K - 1});
+      break;
+    case stablehlo::ComparisonDirection::GT:
+      slices.push_back({falseTensor, K + 1});
+      slices.push_back({trueTensor, endValue - K - 1});
+      break;
+    case stablehlo::ComparisonDirection::GE:
+      slices.push_back({falseTensor, K});
+      slices.push_back({trueTensor, endValue - K});
+      break;
+    case stablehlo::ComparisonDirection::EQ:
+      slices.push_back({falseTensor, K});
+      slices.push_back({trueTensor, 1});
+      slices.push_back({falseTensor, endValue - K - 1});
+      break;
+    case stablehlo::ComparisonDirection::NE:
+      slices.push_back({trueTensor, K});
+      slices.push_back({falseTensor, 1});
+      slices.push_back({trueTensor, endValue - K - 1});
+      break;
+    }
+
+    auto validCount = std::count_if(slices.begin(), slices.end(),
+                                    [](slice_data d) { return d.count > 0; });
+    if (validCount == 1) {
+      for (auto &e : slices)
+        if (e.count > 0) {
+          rewriter.replaceAllOpUsesWith(selectOp, e.tensor);
+          return success();
+        }
+    }
+
+    const auto loc = selectOp.getLoc();
+    SmallVector<int64_t> starts(outputShape.size(), 0);
+    SmallVector<int64_t> limits(outputShape);
+    SmallVector<int64_t> strides(outputShape.size(), 1);
+    SmallVector<Value> sliceValues;
+    int64_t cursor = 0;
+    for (auto &e : slices) {
+      if (e.count > 0) {
+        starts[outputDim] = cursor;
+        limits[outputDim] = cursor + e.count;
+        sliceValues.push_back(stablehlo::SliceOp::create(
+            rewriter, loc, e.tensor, ArrayRef<int64_t>(starts),
+            ArrayRef<int64_t>(limits), ArrayRef<int64_t>(strides)));
+        cursor += e.count;
       }
     }
 
     rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(
-        selectOp, ValueRange{sliceValues}, iotaDim);
-
+        selectOp, ValueRange{sliceValues}, outputDim);
     return success();
   }
 };
@@ -13935,6 +13995,42 @@ struct SelectPadToDUS final
     rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(
         selectOp, operandV ? falseTensor : trueTensor, dusOperand, starts);
     return success();
+  }
+};
+
+// Folds two selects with the same condition:
+//   select(%cond, %a, %b) -> %0
+//   select(%cond, %c, %0) -> select(%cond, %c, %b)   [false-chain]
+//   select(%cond, %0, %c) -> select(%cond, %a, %c)   [true-chain]
+struct SelectSelectSameCond final
+    : CheckedOpRewritePattern<stablehlo::SelectOp, SelectSelectSameCond> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::SelectOp op,
+                                    PatternRewriter &rewriter) const {
+    Value cond = op.getPred();
+
+    // Case 1: false branch is another select with the same condition
+    //   select(cond, c, select(cond, a, b)) -> select(cond, c, b)
+    if (auto inner = op.getOnFalse().getDefiningOp<stablehlo::SelectOp>()) {
+      if (inner.getPred() == cond) {
+        rewriter.modifyOpInPlace(
+            op, [&]() { op.getOnFalseMutable().assign(inner.getOnFalse()); });
+        return success();
+      }
+    }
+
+    // Case 2: true branch is another select with the same condition
+    //   select(cond, select(cond, a, b), c) -> select(cond, a, c)
+    if (auto inner = op.getOnTrue().getDefiningOp<stablehlo::SelectOp>()) {
+      if (inner.getPred() == cond) {
+        rewriter.modifyOpInPlace(
+            op, [&]() { op.getOnTrueMutable().assign(inner.getOnTrue()); });
+        return success();
+      }
+    }
+
+    return failure();
   }
 };
 
@@ -14860,6 +14956,59 @@ private:
     });
     dims.erase(newEnd, dims.end());
     return;
+  }
+};
+
+// slice(reverse(x, dims=[...,d,...]), starts=[...,s,...], limits=[...,s+1,...])
+// → slice(x, starts=[...,N-1-s,...], limits=[...,N-s,...])
+// for each reversed dim d where the slice picks exactly one element.
+// Reversed dims that still span multiple elements keep a residual ReverseOp.
+struct SliceReverse final
+    : CheckedOpRewritePattern<stablehlo::SliceOp, SliceReverse> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::SliceOp op,
+                                    PatternRewriter &rewriter) const {
+    auto reverse = op.getOperand().getDefiningOp<stablehlo::ReverseOp>();
+    if (!reverse)
+      return failure();
+
+    auto operandType = cast<RankedTensorType>(reverse.getOperand().getType());
+
+    SmallVector<int64_t> starts(op.getStartIndices());
+    SmallVector<int64_t> limits(op.getLimitIndices());
+    SmallVector<int64_t> strides(op.getStrides());
+
+    SmallVector<int64_t> remainingDims;
+    bool changed = false;
+    for (int64_t dim : reverse.getDimensions()) {
+      // Single element along this dim: output size == 1.
+      if (limits[dim] - starts[dim] <= strides[dim]) {
+        int64_t N = operandType.getDimSize(dim);
+        int64_t newStart = N - 1 - starts[dim];
+        starts[dim] = newStart;
+        limits[dim] = newStart + 1;
+        strides[dim] = 1;
+        changed = true;
+      } else {
+        remainingDims.push_back(dim);
+      }
+    }
+
+    if (!changed || !remainingDims.empty() &&
+                        !llvm::hasSingleElement(reverse.getResult().getUses()))
+      return failure();
+
+    // If any reversed dims remain (not eliminated), we must re-apply the
+    // reverse on the original operand *before* slicing so that the slice
+    // indices for those dims still select the right elements.
+    Value src = reverse.getOperand();
+    if (!remainingDims.empty())
+      src = rewriter.create<stablehlo::ReverseOp>(op.getLoc(), src,
+                                                  remainingDims);
+    rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(op, src, starts, limits,
+                                                    strides);
+    return success();
   }
 };
 
@@ -24968,6 +25117,27 @@ struct SquareAbsSimplify
   }
 };
 
+struct ConcatBroadcastSlice
+    : public CheckedOpRewritePattern<stablehlo::ConcatenateOp,
+                                     ConcatBroadcastSlice> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp op,
+                                    PatternRewriter &rewriter) const {
+    auto dim = op.getDimension();
+    SmallVector<Value> newOperands;
+
+    SmallVector<Value> oldOperands(op.getOperands());
+    auto res =
+        concatBroadcastSliceSimplify(rewriter, oldOperands, dim, newOperands);
+    if (!res.succeeded())
+      return res;
+
+    rewriter.modifyOpInPlace(op, [&]() { op->setOperands(newOperands); });
+    return success();
+  }
+};
+
 struct ConcatReshapeSlice
     : public CheckedOpRewritePattern<stablehlo::ConcatenateOp,
                                      ConcatReshapeSlice> {
@@ -24984,7 +25154,7 @@ struct ConcatReshapeSlice
     if (!res.succeeded())
       return res;
 
-    rewriter.replaceOpWithNewOp<stablehlo::ConcatenateOp>(op, newOperands, dim);
+    rewriter.modifyOpInPlace(op, [&]() { op->setOperands(newOperands); });
     return success();
   }
 };
@@ -26613,10 +26783,9 @@ struct FactorScalarsInDotGeneral final
       combinedScalar = lhsScalar ? lhsScalar : rhsScalar;
     }
 
-    auto bcastedScalar = stablehlo::BroadcastInDimOp::create(
-        rewriter, op.getLoc(), newDot.getType(), combinedScalar,
-        rewriter.getDenseI64ArrayAttr({}));
-    rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, bcastedScalar, newDot);
+    auto mulResult =
+        stablehlo::MulOpCreate(rewriter, op.getLoc(), combinedScalar, newDot);
+    rewriter.replaceOp(op, mulResult);
     return success();
   }
 
@@ -34609,6 +34778,199 @@ struct BinaryOpComplexSimplifyBase
   }
 };
 
+// Pattern: convert[wide_float->narrow_float](mul(convert[int->wide_float](x),
+// val))
+// -> mul(convert[int->narrow_float](x), convert[wide_float->narrow_float](val))
+//
+// This eliminates an unnecessary intermediate wide-float precision step when
+// the result is immediately narrowed. The convert of a constant 'val' will be
+// folded to a narrower-type constant by subsequent constant-folding passes.
+//
+// Example from iota-based coordinate calculations:
+//   convert[f64->f32](mul(convert[i64->f64](iota+c), f64_const))
+//   -> mul(convert[i64->f32](iota+c), f32_const)
+struct ConvertMulConvert final
+    : CheckedOpRewritePattern<stablehlo::ConvertOp, ConvertMulConvert> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ConvertOp op,
+                                    PatternRewriter &rewriter) const {
+    auto dstType = op.getType();
+    auto dstElemTy = dstType.getElementType();
+    // Destination must be float
+    if (!isa<FloatType>(dstElemTy))
+      return failure();
+
+    // Source must be a wider float (narrowing conversion)
+    auto srcElemTy =
+        cast<RankedTensorType>(op.getOperand().getType()).getElementType();
+    if (!isa<FloatType>(srcElemTy))
+      return failure();
+    if (srcElemTy.getIntOrFloatBitWidth() <= dstElemTy.getIntOrFloatBitWidth())
+      return failure();
+
+    // Operand must be a multiply in the wide float type
+    auto mul = op.getOperand().getDefiningOp<stablehlo::MulOp>();
+    if (!mul)
+      return failure();
+
+    // Find which operand of the multiply was converted from an integer type
+    Value intVal;   // original integer value (before widening convert)
+    Value otherVal; // the other mul operand (to be converted to narrow float)
+
+    auto lhsConv = mul.getLhs().getDefiningOp<stablehlo::ConvertOp>();
+    if (lhsConv &&
+        isa<IntegerType>(cast<RankedTensorType>(lhsConv.getOperand().getType())
+                             .getElementType())) {
+      intVal = lhsConv.getOperand();
+      otherVal = mul.getRhs();
+    } else {
+      auto rhsConv = mul.getRhs().getDefiningOp<stablehlo::ConvertOp>();
+      if (!rhsConv || !isa<IntegerType>(
+                          cast<RankedTensorType>(rhsConv.getOperand().getType())
+                              .getElementType()))
+        return failure();
+      intVal = rhsConv.getOperand();
+      otherVal = mul.getLhs();
+    }
+
+    // Build convert[int->dstFloat](intVal)
+    auto intValType = cast<RankedTensorType>(intVal.getType());
+    auto newIntConv = stablehlo::ConvertOp::create(
+        rewriter, op.getLoc(),
+        RankedTensorType::get(intValType.getShape(), dstElemTy), intVal);
+
+    // Build convert[wideFloat->dstFloat](otherVal)
+    // If otherVal is a constant, this will be folded to a narrower constant.
+    auto otherValType = cast<RankedTensorType>(otherVal.getType());
+    auto newOtherConv = stablehlo::ConvertOp::create(
+        rewriter, op.getLoc(),
+        RankedTensorType::get(otherValType.getShape(), dstElemTy), otherVal);
+
+    // Replace the convert(mul(...)) with mul in the narrow float type
+    rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, newIntConv, newOtherConv);
+    return success();
+  }
+};
+
+// Pattern: convert(binop(convert(x), convert(y))) -> binop(x, y)
+// when x and y have the same type as the outer convert result.
+// Valid for operations like min/max where the binop result is preserved
+// through matching convert-unconvert pairs.
+template <typename BinOp>
+struct ConvertBinopConvert final
+    : CheckedOpRewritePattern<stablehlo::ConvertOp,
+                              ConvertBinopConvert<BinOp>> {
+  using CheckedOpRewritePattern<
+      stablehlo::ConvertOp,
+      ConvertBinopConvert<BinOp>>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ConvertOp op,
+                                    PatternRewriter &rewriter) const {
+    auto resultType = op.getType();
+
+    if (!isa<FloatType>(resultType.getElementType()))
+      return failure();
+
+    auto binop = op.getOperand().template getDefiningOp<BinOp>();
+    if (!binop)
+      return failure();
+
+    auto lhsConvert =
+        binop.getLhs().template getDefiningOp<stablehlo::ConvertOp>();
+    auto rhsConvert =
+        binop.getRhs().template getDefiningOp<stablehlo::ConvertOp>();
+    if (!lhsConvert || !rhsConvert)
+      return failure();
+
+    auto lhs = lhsConvert.getOperand();
+    auto rhs = rhsConvert.getOperand();
+
+    if (lhs.getType() != resultType || rhs.getType() != resultType)
+      return failure();
+
+    rewriter.replaceOpWithNewOp<BinOp>(op, lhs, rhs);
+    return success();
+  }
+};
+
+// Pattern: negate(reduce_window(x, 0, \acc,elem -> acc - elem))
+//       -> reduce_window(x, 0, \acc,elem -> acc + elem)
+//
+// When the reduce_window body subtracts each element from the running
+// accumulator starting at zero, the result is the negated window sum:
+//   reduce_window(x, 0, sub) = 0 - x_0 - x_1 - ... = -sum(window(x))
+// Negating that recovers the plain sum, which equals a reduce_window with add.
+struct NegateReduceWindowSub final
+    : CheckedOpRewritePattern<stablehlo::NegOp, NegateReduceWindowSub> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::NegOp op,
+                                    PatternRewriter &rewriter) const {
+    auto rw = op.getOperand().getDefiningOp<stablehlo::ReduceWindowOp>();
+    if (!rw || !rw->hasOneUse())
+      return failure();
+
+    // Only handle single input + single init value
+    if (rw.getInputs().size() != 1 || rw.getInitValues().size() != 1)
+      return failure();
+
+    // Inspect the reduce_window body
+    Region &body = rw.getBody();
+    if (!body.hasOneBlock())
+      return failure();
+    Block &block = body.front();
+    if (block.getNumArguments() != 2)
+      return failure();
+
+    // Body must be: %res = subtract(%acc, %elem); return %res
+    auto returnOp = dyn_cast<stablehlo::ReturnOp>(block.getTerminator());
+    if (!returnOp || returnOp.getNumOperands() != 1)
+      return failure();
+
+    auto subOp = returnOp.getOperand(0).getDefiningOp<stablehlo::SubtractOp>();
+    if (!subOp)
+      return failure();
+
+    // Must be acc - elem (arg0 - arg1)
+    if (subOp.getLhs() != block.getArgument(0) ||
+        subOp.getRhs() != block.getArgument(1))
+      return failure();
+
+    // Init value must be zero
+    if (!matchPattern(rw.getInitValues()[0], m_AnyZeroFloat()))
+      return failure();
+
+    // Create a new reduce_window identical to the original except the body
+    // uses addition instead of subtraction.
+    Value inputs[1] = {rw.getInputs()[0]};
+    auto newRw = stablehlo::ReduceWindowOp::create(
+        rewriter, rw.getLoc(), rw.getResultTypes(), inputs, rw.getInitValues(),
+        rw.getWindowDimensionsAttr(), rw.getWindowStridesAttr(),
+        rw.getBaseDilationsAttr(), rw.getWindowDilationsAttr(),
+        rw.getPaddingAttr());
+
+    // Build the add body using the same block argument types as the original
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      auto argTypes = block.getArgumentTypes();
+      SmallVector<Location> argLocs(argTypes.size(), rw.getLoc());
+      auto *newBlock =
+          rewriter.createBlock(&newRw.getBody(), {}, argTypes, argLocs);
+      rewriter.setInsertionPointToStart(newBlock);
+      auto addOp = stablehlo::AddOp::create(rewriter, rw.getLoc(),
+                                            newBlock->getArgument(0),
+                                            newBlock->getArgument(1));
+      stablehlo::ReturnOp::create(rewriter, rw.getLoc(), addOp.getResult());
+    }
+
+    // Replace negate(reduce_window(..., sub)) with reduce_window(..., add)
+    rewriter.replaceOp(op, newRw.getResults());
+    rewriter.eraseOp(rw);
+    return success();
+  }
+};
+
 ///////////////  End Imported from stablehlo
 
 // clang-format off
@@ -35014,7 +35376,7 @@ struct EnzymeHLOOptPass
     patterns.add<
         AddSimplify, SubSimplify, AndSimplify, MaxSimplify, MinSimplify,
         OrSimplify, XorSimplify, MulSimplify, DivSimplify, RemSimplify,
-        PowSimplify, NoopSlice, NoopReverse, SliceSlice,
+        PowSimplify, NoopSlice, NoopReverse, SliceReverse, SliceSlice,
         DynamicSliceDynamicSlice, DynamicSliceSlice, SliceDynamicSlice,
         LogSimplify, ShiftRightLogicalSimplify, NegativePadToSlice,
         SliceSimplify, ConvertSimplify, TransposeSimplify, DotGeneralSimplify,
@@ -35035,10 +35397,11 @@ struct EnzymeHLOOptPass
         MinMaxIotaConstSimplify<stablehlo::MaxOp>,
         MinMaxIotaConstSimplify<stablehlo::MinOp>, ClampIotaConstSimplify,
         CompareAbs, CompareMul, CompareConvert, AddSelects,
-        CompareNegateConstSimplify, SelectSimplify,
-        DynamicSliceReshapeDynamicSlice, DynamicSliceReshapeSlice,
-        SliceReshapeDynamicSlice, SliceReshapeSlice, ExponentialMinusOneFuse,
-        ExponentialMinusOneAddFuse>(context, PatternBenefit(65000));
+        CompareNegateConstSimplify, CompareSubtractConstSimplify,
+        SelectSimplify, DynamicSliceReshapeDynamicSlice,
+        DynamicSliceReshapeSlice, SliceReshapeDynamicSlice, SliceReshapeSlice,
+        ExponentialMinusOneFuse, ExponentialMinusOneAddFuse>(
+        context, PatternBenefit(65000));
 
     patterns.add<IotaSimplify, BroadcastInDimSimplify, ConcatConstProp,
                  DynamicUpdateSliceConstProp, PadSimplify, ScatterConstFold,
@@ -35058,7 +35421,9 @@ struct EnzymeHLOOptPass
         SliceReshapeConcat, BinBroadcastSplat<stablehlo::AddOp>,
         BinBroadcastSplat<stablehlo::SubtractOp>,
         BinBroadcastSplat<stablehlo::DivOp>,
-        BinBroadcastSplat<stablehlo::MulOp>, RotatePad, ConjReal>(context);
+        BinBroadcastSplat<stablehlo::MulOp>, RotatePad, ConjReal,
+        ConvertMulConvert, ConvertBinopConvert<stablehlo::MinOp>,
+        ConvertBinopConvert<stablehlo::MaxOp>, NegateReduceWindowSub>(context);
 
     // Unary constant propagation patterns
     patterns
@@ -35340,9 +35705,10 @@ struct EnzymeHLOOptPass
         RealOpCanon,
         ReorderElementwiseAndShapeOp,
         ReshapeOpCanon,
-        SelectCompIotaConstSimplify,
         SelectCompIotaConstToDUS,
+        SelectCompIotaConstSimplify,
         SelectPadToDUS,
+        SelectSelectSameCond,
         AndPadPad,
         SelectOpUsedWithinIf,
         TransposeBroadcastInDimToBroadcastInDim,
@@ -35366,6 +35732,7 @@ struct EnzymeHLOOptPass
         SquareAbsSimplify,
         DivideDivideSimplify,
         ConcatReshapeSlice,
+        ConcatBroadcastSlice,
         ConcatReshapeReduce,
         ConcatElementwise,
         ConcatReshapeElementwise,

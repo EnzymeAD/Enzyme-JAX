@@ -2866,6 +2866,291 @@ stablehlo::ConcatenateOp lowerWrap(enzymexla::WrapOp wrap,
   return newConcat;
 }
 
+bool reshapeIsUnsqueeze(stablehlo::ReshapeOp reshape) {
+  auto inputTy = cast<ShapedType>(reshape.getOperand().getType());
+  auto outputTy = cast<ShapedType>(reshape.getResult().getType());
+
+  if (outputTy.getRank() < inputTy.getRank())
+    return false;
+
+  for (size_t i = 0, j = 0, ei = inputTy.getRank(), eo = outputTy.getRank();
+       i < ei; ++i) {
+    auto Ni = inputTy.getDimSize(i);
+    auto Nj = outputTy.getDimSize(j);
+    while (j + 1 < eo && (Ni != Nj || Nj == 1)) {
+      j++;
+      Nj = outputTy.getDimSize(j);
+    }
+    if (Ni != Nj)
+      return false;
+    ++j;
+
+    if (i != ei - 1 && j == eo)
+      return false; // dropping dims
+  }
+
+  return true;
+}
+
+static int64_t getSliceDim(SliceOp slice) {
+  auto sliceInTy = cast<ShapedType>(slice.getOperand().getType());
+  int64_t sliceDim = -1;
+  for (size_t idx = 0; idx < slice.getStartIndices().size(); ++idx) {
+    if (!(slice.getStartIndices()[idx] == 0 &&
+          slice.getLimitIndices()[idx] == sliceInTy.getDimSize(idx) &&
+          slice.getStrides()[idx] == 1)) {
+      if (sliceDim != -1) {
+        sliceDim = -1; // TODO: support multiple dims here
+        break;
+      }
+      sliceDim = idx;
+    }
+  }
+  return sliceDim;
+}
+
+// canonical concat slice operand with potential reshape / broadcast applied
+struct ConcatSlicedElem {
+  Value src;
+  SmallVector<int64_t> perm;
+  Value orig;
+  int64_t dim;
+  int64_t start, limit, stride;
+};
+
+std::optional<ConcatSlicedElem> findConcatSlicedElem(Value concatOperand) {
+  Value operand = concatOperand;
+
+  auto operandTy = cast<ShapedType>(concatOperand.getType());
+  SmallVector<int64_t> iperm;
+  for (int64_t i = 0, e = operandTy.getRank(); i < e; ++i)
+    iperm.push_back(i);
+
+  bool foundFirst = false;
+  int64_t sliceDim = -1;
+  int64_t start = 0, limit = 0, stride = 1;
+
+  while (true) {
+    // Peel broadcasts and unsqueeze reshapes, updating iperm and sliceDim.
+    // When a slice has already been found, sliceDim is also propagated
+    // through each op via the inverse dimension mapping; if it cannot be
+    // mapped (broadcast-only or added size-1 dim), peeling stops.
+    stablehlo::SliceOp slice;
+    while (!(slice = operand.getDefiningOp<SliceOp>())) {
+      if (auto broadcast =
+              operand.getDefiningOp<stablehlo::BroadcastInDimOp>()) {
+        if (foundFirst) {
+          // Inverse of broadcast: find input dim i where
+          // broadcast_dims[i]==sliceDim.
+          int64_t newSliceDim = -1;
+          for (auto [i, bdim] :
+               llvm::enumerate(broadcast.getBroadcastDimensions()))
+            if ((int64_t)bdim == sliceDim) {
+              newSliceDim = (int64_t)i;
+              break;
+            }
+          if (newSliceDim == -1)
+            break; // sliceDim is broadcast-only; cannot go deeper
+          sliceDim = newSliceDim;
+        }
+        SmallVector<int64_t> newPerm;
+        for (auto bdim : broadcast.getBroadcastDimensions())
+          newPerm.push_back(iperm[bdim]);
+        iperm = std::move(newPerm);
+        operand = broadcast.getOperand();
+        continue;
+      }
+
+      if (auto reshape = operand.getDefiningOp<stablehlo::ReshapeOp>()) {
+        if (!reshapeIsUnsqueeze(reshape))
+          break;
+
+        auto inputTy = cast<ShapedType>(reshape.getOperand().getType());
+        auto outputTy = cast<ShapedType>(reshape.getResult().getType());
+        SmallVector<int64_t> newPerm;
+        int64_t newSliceDim = -1;
+        for (size_t i = 0, j = 0, ei = inputTy.getRank(),
+                    eo = outputTy.getRank();
+             i < ei && j < eo; ++i) {
+          auto Ni = inputTy.getDimSize(i);
+          auto Nj = outputTy.getDimSize(j);
+          while (j + 1 < eo && (Ni != Nj || Nj == 1)) {
+            j++;
+            Nj = outputTy.getDimSize(j);
+          }
+          newPerm.push_back(iperm[j]);
+          if (foundFirst && (int64_t)j == sliceDim)
+            newSliceDim = (int64_t)i;
+          ++j;
+        }
+        if (foundFirst) {
+          if (newSliceDim == -1)
+            break; // sliceDim is an added size-1 dim; cannot go deeper
+          sliceDim = newSliceDim;
+        }
+        iperm = std::move(newPerm);
+        operand = reshape.getOperand();
+        continue;
+      }
+
+      break;
+    }
+
+    if (!slice)
+      break;
+
+    int64_t newSliceDim = getSliceDim(slice);
+    if (newSliceDim == -1)
+      break;
+
+    if (!foundFirst) {
+      // First slice found.
+      sliceDim = newSliceDim;
+      start = slice.getStartIndices()[sliceDim];
+      limit = slice.getLimitIndices()[sliceDim];
+      stride = slice.getStrides()[sliceDim];
+      foundFirst = true;
+    } else {
+      // Deeper slice: must be on the same dimension as tracked sliceDim.
+      if (newSliceDim != sliceDim)
+        break;
+
+      // Compose: accumulated [start:limit:stride] on top of [s2:l2:str2].
+      // Index j → raw s2 + (start + j*stride)*str2.
+      int64_t s2 = slice.getStartIndices()[sliceDim];
+      int64_t str2 = slice.getStrides()[sliceDim];
+      start = s2 + start * str2;
+      limit = s2 + limit * str2;
+      stride = stride * str2;
+    }
+
+    // Slice preserves rank/dim indices so iperm and sliceDim remain valid.
+    operand = slice.getOperand();
+  }
+
+  if (!foundFirst)
+    return std::nullopt;
+
+  return {ConcatSlicedElem{operand, iperm, concatOperand, sliceDim, start,
+                           limit, stride}};
+}
+
+static Value mergeConcatSlicedElems(PatternRewriter &rewriter,
+                                    int64_t concatDim, ConcatSlicedElem a,
+                                    ConcatSlicedElem b) {
+  Value newConcatOperand = nullptr;
+
+  if (a.src != b.src) {
+    // a.slice->getParentOp()->dump();
+
+    // llvm::errs() << "cannot merge " << a.slice.getOperand() << "\n and \n"
+    //              << b.slice.getOperand();
+    //
+    return nullptr;
+  }
+
+  if (a.limit != b.start || a.stride != b.stride || a.stride != 1)
+    return nullptr;
+
+  int64_t sliceSizeA = (a.limit - a.start) / a.stride;
+  int64_t sliceSizeB = (b.limit - b.start) / b.stride;
+
+  // TODO: if both indices are one since reshape becomes broadcast
+  if (sliceSizeA == 1 && sliceSizeB == 1)
+    return nullptr;
+
+  auto operandTy = cast<ShapedType>(a.src.getType());
+  int64_t sliceDim = sliceSizeA < sliceSizeB ? b.dim : a.dim;
+  SmallVector<int64_t> startIndices(operandTy.getRank(), 0),
+      limitIndices(operandTy.getShape()),
+      strides(operandTy.getRank(), a.stride);
+
+  startIndices[sliceDim] = a.start;
+  limitIndices[sliceDim] = b.limit;
+
+  auto newSlice =
+      stablehlo::SliceOp::create(rewriter, a.src.getLoc(), a.src,
+                                 rewriter.getDenseI64ArrayAttr(startIndices),
+                                 rewriter.getDenseI64ArrayAttr(limitIndices),
+                                 rewriter.getDenseI64ArrayAttr(strides));
+  newConcatOperand = newSlice.getResult();
+
+  // a.orig.dump();
+  // llvm::errs() << "\n";
+  // newSlice.dump();
+  // llvm::errs() << "perm A = ";
+  // for (auto p : a.perm) {
+  //   llvm::errs() << p << ", ";
+  // }
+  // llvm::errs() << "\n";
+  // b.orig.dump();
+  // llvm::errs() << "\nperm B = ";
+  // for (auto p : b.perm) {
+  //   llvm::errs() << p << ", ";
+  // }
+
+  SmallVector<int64_t> &perm = sliceSizeA < sliceSizeB ? b.perm : a.perm;
+  Value origOperand = sliceSizeA < sliceSizeB ? b.orig : a.orig;
+  auto origTy = cast<ShapedType>(origOperand.getType());
+
+  SmallVector<int64_t> outputShape(origTy.getShape());
+  for (auto [p, d] : llvm::enumerate(perm))
+    outputShape[d] = cast<ShapedType>(newConcatOperand.getType()).getDimSize(p);
+
+  if (outputShape.size() != 1)
+    newConcatOperand = BroadcastInDimOp::create(
+        rewriter, b.src.getLoc(), origTy.clone(outputShape), newConcatOperand,
+        rewriter.getDenseI64ArrayAttr(perm));
+
+  return newConcatOperand;
+}
+
+LogicalResult
+concatBroadcastSliceSimplify(PatternRewriter &rewriter,
+                             SmallVectorImpl<Value> &operands, int64_t dim,
+                             SmallVectorImpl<Value> &newOperands) {
+  bool changed = false;
+
+  for (size_t i = 0, e = operands.size(); i < e; ++i) {
+    auto operand = operands[i];
+
+    std::optional<ConcatSlicedElem> curElemOpt = findConcatSlicedElem(operand);
+    if (!curElemOpt) {
+      newOperands.push_back(operand);
+      continue;
+    }
+    ConcatSlicedElem curElem = *curElemOpt;
+
+    while (i + 1 < e) {
+      auto otherElemOpt = findConcatSlicedElem(operands[i + 1]);
+      if (!otherElemOpt) {
+        break;
+      }
+
+      Value newSlice =
+          mergeConcatSlicedElems(rewriter, dim, curElem, *otherElemOpt);
+      if (!newSlice) {
+        break;
+      }
+
+      changed = true;
+      curElemOpt = findConcatSlicedElem(newSlice);
+      if (!curElemOpt) {
+        // the slice is full
+        curElem.orig = newSlice;
+        i++;
+        break;
+      }
+      curElem = *curElemOpt;
+      i++;
+    }
+
+    newOperands.push_back(curElem.orig);
+  }
+
+  return success(changed);
+}
+
 LogicalResult concatReshapeSliceSimplify(PatternRewriter &rewriter,
                                          SmallVectorImpl<Value> &operands,
                                          int64_t dim,
@@ -3038,7 +3323,7 @@ LogicalResult concatReshapeSliceSimplify(PatternRewriter &rewriter,
 
     newOperands.push_back(newOperand);
   }
-  return changed ? success() : failure();
+  return success(changed);
 }
 
 LogicalResult concatSliceSimplify(PatternRewriter &rewriter,
@@ -3602,11 +3887,12 @@ bool isFusible(Operation *op, stablehlo::BroadcastInDimOp bcast) {
 
 bool IsTensorFilled(Value input) {
   // Use a worklist-based approach to traverse the SSA def-use chain
-  // and determine if the value is known to be a dense (fully-populated) matrix.
+  // and determine if the value is known to be a dense (fully-populated)
+  // matrix.
   //
   // A value is considered dense if it comes from:
-  // - stablehlo ops (except custom_call) - they produce dense outputs if inputs
-  // are dense
+  // - stablehlo ops (except custom_call) - they produce dense outputs if
+  // inputs are dense
   // - Block arguments (conservatively assume not dense)
   // - CallOpInterface - check the function body's return values
   SymbolTableCollection symbolTable;
