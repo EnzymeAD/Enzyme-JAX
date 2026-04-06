@@ -836,6 +836,32 @@ gentbl_cc_library(
     td_file = "Dialect/Perfify/Dialect.td",
     deps = [":PerfifyDialectFiles"],
 )
+td_library(
+    name = "PerfifyPassesTdFiles",
+    srcs = [],
+    deps = [
+        "@llvm-project//mlir:PassBaseTdFiles",
+    ],
+)
+
+gentbl_cc_library(
+    name = "PerfifyPassesIncGen",
+    tbl_outs = [
+        (
+            [
+                "-gen-pass-decls",
+                "-name=perfify",
+            ],
+            "Passes/Perfify/Passes.h.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Passes/Perfify/Passes.td",
+    deps = [
+        ":PerfifyPassesTdFiles",
+        "@llvm-project//mlir:FunctionInterfacesTdFiles",
+    ],
+)
 
 td_library(
     name = "TesseraPassesTdFiles",
@@ -1211,6 +1237,7 @@ cc_library(
             "Implementations/*.cpp",
             "Passes/*.cpp",
             "Passes/Tessera/*.cpp",
+            "Passes/Perfify/*.cpp",
             "Dialect/*.cpp",
             "Dialect/Distributed/*.cpp",
             "Dialect/Tessera/*.cpp",
@@ -1225,6 +1252,7 @@ cc_library(
         "Implementations/*.h",
         "Passes/*.h",
         "Passes/Tessera/*.h",
+        "Passes/Perfify/*.h",
         "Dialect/*.h",
         "Dialect/Distributed/*.h",
         "Dialect/Tessera/*.h",
@@ -1258,6 +1286,7 @@ cc_library(
         ":PerfifyEnumsIncGen",
         ":PerfifyOpsIncGen",
         ":PerfifyTypesIncGen",
+        ":PerfifyPassesIncGen",
         ":Polymer",
         ":RaisingTransformOps",
         ":RaisingTransformOpsImplIncGen",

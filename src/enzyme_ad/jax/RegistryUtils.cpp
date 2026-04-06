@@ -92,6 +92,7 @@
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "src/enzyme_ad/jax/Passes/Tessera/Passes.h"
+#include "src/enzyme_ad/jax/Passes/Perfify/Passes.h"
 
 #include "src/enzyme_ad/jax/Dialect/Distributed/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Perfify/Dialect.h"
@@ -329,6 +330,7 @@ void initializePasses() {
   registerenzymePasses();
   enzyme::registerenzymexlaPasses();
   mlir::enzyme::tessera::registertesseraPasses();
+  mlir::enzyme::perfify::registerperfifyPasses();
 
   // Register the standard passes we want.
   mlir::registerCSEPass();
