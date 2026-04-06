@@ -167,12 +167,13 @@ public:
           auto alias = cast<stablehlo::OutputOperandAliasAttr>(alias_attr);
           auto aliasOperandIndex = alias.getOperandIndex();
           if (aliasOperandIndex == operandIndex) {
-            return failure();
+            goto notlegal;
           }
         }
       }
       changed = true;
       deadArgs[operandIndex] = true;
+    notlegal:;
     }
 
     if (!changed)
