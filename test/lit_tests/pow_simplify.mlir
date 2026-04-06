@@ -78,3 +78,13 @@ func.func @main7(%arg0: tensor<3xf32>) -> tensor<3xf32> {
 // CHECK-NEXT:    %0 = stablehlo.power %arg0, %cst : tensor<3xf32>
 // CHECK-NEXT:    return %0 : tensor<3xf32>
 // CHECK-NEXT:  }
+
+func.func @main8(%arg0: tensor<10000x10000xf64>) -> tensor<10000x10000xf64> {
+  %cst = stablehlo.constant dense<1.000000e+00> : tensor<10000x10000xf64>
+  %0 = stablehlo.power %arg0, %cst : tensor<10000x10000xf64>
+  return %0 : tensor<10000x10000xf64>
+}
+
+// CHECK:  func.func @main8(%arg0: tensor<10000x10000xf64>) -> tensor<10000x10000xf64> {
+// CHECK-NEXT:    return %arg0 : tensor<10000x10000xf64>
+// CHECK-NEXT:  }
