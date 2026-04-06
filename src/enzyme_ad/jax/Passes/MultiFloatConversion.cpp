@@ -778,22 +778,9 @@ struct ReduceOpConversion : public OpConversionPattern<stablehlo::ReduceOp> {
 
       return success();
     } else {
-      SmallVector<int64_t> dims;
-      if (concatDimension == "first")
-        dims.push_back(0);
-      for (auto dim : op.getDimensions()) {
-        if (concatDimension == "first") {
-          dims.push_back(dim + 1);
-          continue;
-        }
-        dims.push_back(dim);
-      }
-      if (concatDimension == "last")
-        dims.push_back(
-            cast<RankedTensorType>(input_hi.getType()).getShape().size() - 1);
       auto createLimbReduce = [&](Value input_limb, Value init_limb) -> Value {
-        auto reduceOp = rewriter.create<stablehlo::ReduceOp>(loc, input_limb,
-                                                             init_limb, dims);
+        auto reduceOp = rewriter.create<stablehlo::ReduceOp>(
+            loc, input_limb, init_limb, op.getDimensions());
 
         Block *reduceBlock = new Block();
         reduceOp.getBody().push_back(reduceBlock);
@@ -816,12 +803,15 @@ struct ReduceOpConversion : public OpConversionPattern<stablehlo::ReduceOp> {
       Value res_hi = createLimbReduce(input_hi, init_hi);
       Value res_lo = createLimbReduce(input_lo, init_lo);
 
-      Value sum = rewriter.create<stablehlo::AddOp>(loc, res_hi.getType(),
-                                                    res_hi, res_lo);
       auto f64Type = RankedTensorType::get(
           cast<RankedTensorType>(res_hi.getType()).getShape(), sourceType);
-      Value result = rewriter.create<stablehlo::ConvertOp>(loc, f64Type, sum);
-      rewriter.replaceOp(op, result);
+      Value res_hi_f64 =
+          rewriter.create<stablehlo::ConvertOp>(loc, f64Type, res_hi);
+      Value res_lo_f64 =
+          rewriter.create<stablehlo::ConvertOp>(loc, f64Type, res_lo);
+      Value sum = rewriter.create<stablehlo::AddOp>(loc, f64Type, res_hi_f64,
+                                                    res_lo_f64);
+      rewriter.replaceOp(op, sum);
       return success();
     }
   }
