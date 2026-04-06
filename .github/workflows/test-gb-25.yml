@@ -117,7 +117,6 @@ jobs:
           sed -i.bak 's/ENZYMEXLA_COMMIT = ".*"/ENZYMEXLA_COMMIT = "${{ github.sha }}"/' ReactantExtra/WORKSPACE
           cat ReactantExtra/WORKSPACE
         working-directory: ${{ env.REACTANT_DIR }}/deps
-
       - name: Modify XLA commit
         timeout-minutes: 1
         shell: bash
