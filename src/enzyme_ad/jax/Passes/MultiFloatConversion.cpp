@@ -580,6 +580,9 @@ struct AddOpConversion : public OpConversionPattern<stablehlo::AddOp> {
                   ConversionPatternRewriter &rewriter) const override {
     LLVM_DEBUG(llvm::dbgs() << "AddOpConversion called\n");
 
+    if (isa<stablehlo::ReduceOp>(op->getParentOp())) {
+      return failure();
+    }
     // Check if single-limb by looking at the converted operand type
     bool isTuple = concatDimension == "tuple";
     if (isTuple) {
@@ -665,12 +668,15 @@ struct MulOpConversion : public OpConversionPattern<stablehlo::MulOp> {
 };
 struct ReduceOpConversion : public OpConversionPattern<stablehlo::ReduceOp> {
   ReduceOpConversion(TypeConverter &typeConverter, MLIRContext *context,
-                    StringRef concatDimension, bool preciseReduce)
+                    StringRef concatDimension, bool preciseReduce, Type sourceType, Type targetType, bool convertSignatures)
       : OpConversionPattern<stablehlo::ReduceOp>(typeConverter, context),
-        concatDimension(concatDimension), preciseReduce(preciseReduce) {}
+        concatDimension(concatDimension), preciseReduce(preciseReduce), sourceType(sourceType), targetType(targetType), convertSignatures(convertSignatures) {}
 
   StringRef concatDimension;
   bool preciseReduce;
+  Type sourceType;
+  Type targetType;
+  bool convertSignatures;
 
   LogicalResult
   matchAndRewrite(stablehlo::ReduceOp op, OpAdaptor adaptor,
@@ -680,31 +686,75 @@ struct ReduceOpConversion : public OpConversionPattern<stablehlo::ReduceOp> {
     Block &body = op.getBody().front();
     if (body.getOperations().empty() || !isa<stablehlo::AddOp>(body.front())) {
         LLVM_DEBUG(llvm::dbgs() << "ReduceOp: unsupported reduction operation\n");
+        llvm::errs() << "ReduceOpConversion failed at line 689\n";
         return failure(); 
     }
 
     auto inputs = adaptor.getInputs();
     auto initValues = adaptor.getInitValues();
     
-    if (inputs.size() != 1) return failure(); 
+    if (inputs.size() != 1) {
+        llvm::errs() << "ReduceOpConversion failed at line 695\n";
+        return failure();
+    } 
     
     Value input = inputs[0];
     Value initValue = initValues[0];
 
-    Type expectedInputTy = getTypeConverter()->convertType(op.getInputs()[0].getType());
-    if (input.getType() != expectedInputTy) return failure();
+    Value actualInput = input;
+    if (auto castOp = dyn_cast_or_null<UnrealizedConversionCastOp>(input.getDefiningOp())) {
+      if (castOp.getInputs().size() == 1)
+        actualInput = castOp.getInputs()[0];
+    }
 
-    Value input_hi = extractLimb(input, 0, rewriter, loc, concatDimension);
-    Value input_lo = extractLimb(input, 1, rewriter, loc, concatDimension);
-    Value init_hi = extractLimb(initValue, 0, rewriter, loc, concatDimension);
-    Value init_lo = extractLimb(initValue, 1, rewriter, loc, concatDimension);
+    auto inputTy = dyn_cast<RankedTensorType>(actualInput.getType());
+    if (!inputTy) {
+        llvm::errs() << "ReduceOpConversion failed at line 707\n";
+        return failure();
+    }
+
+    Value input_hi, input_lo;
+    if (inputTy.getElementType() == sourceType) {
+      input_hi = rewriter.create<stablehlo::ConvertOp>(loc, RankedTensorType::get(inputTy.getShape(), targetType), actualInput);
+      Value input_hi_f64 = rewriter.create<stablehlo::ConvertOp>(loc, inputTy, input_hi);
+      Value residue = rewriter.create<stablehlo::SubtractOp>(loc, inputTy, actualInput, input_hi_f64);
+      input_lo = rewriter.create<stablehlo::ConvertOp>(loc, RankedTensorType::get(inputTy.getShape(), targetType), residue);
+    } else if (inputTy.getElementType() == targetType) {
+      input_hi = extractLimb(actualInput, 0, rewriter, loc, concatDimension);
+      input_lo = extractLimb(actualInput, 1, rewriter, loc, concatDimension);
+    } else {
+      llvm::errs() << "ReduceOpConversion failed at line 719\n";
+      return failure();
+    }
+
+    Value init_hi, init_lo;
+    auto initTy = dyn_cast<RankedTensorType>(initValue.getType());
+    if (!initTy) return failure();
+
+    if (initTy.getElementType() == sourceType) {
+      init_hi = rewriter.create<stablehlo::ConvertOp>(loc, RankedTensorType::get(initTy.getShape(), targetType), initValue);
+      Value init_hi_f64 = rewriter.create<stablehlo::ConvertOp>(loc, initTy, init_hi);
+      Value residue = rewriter.create<stablehlo::SubtractOp>(loc, initTy, initValue, init_hi_f64);
+      init_lo = rewriter.create<stablehlo::ConvertOp>(loc, RankedTensorType::get(initTy.getShape(), targetType), residue);
+    } else if (initTy.getElementType() == targetType) {
+      init_hi = extractLimb(initValue, 0, rewriter, loc, concatDimension);
+      init_lo = extractLimb(initValue, 1, rewriter, loc, concatDimension);
+    } else {
+      return failure();
+    }
+
+    auto elemType = cast<RankedTensorType>(input_hi.getType()).getElementType();
+    auto scalarType = RankedTensorType::get({}, elemType);
+    
+    Value init_hi_reshaped = rewriter.create<stablehlo::ReshapeOp>(loc, scalarType, init_hi);
+    Value init_lo_reshaped = rewriter.create<stablehlo::ReshapeOp>(loc, scalarType, init_lo);
 
     SmallVector<Value, 2> newInputs = {input_hi, input_lo};
-    SmallVector<Value, 2> newInits = {init_hi, init_lo};
+    SmallVector<Value, 2> newInits = {init_hi_reshaped, init_lo_reshaped};
 
     if (preciseReduce) {
       SmallVector<Value, 2> newInputs = {input_hi, input_lo};
-      SmallVector<Value, 2> newInits = {init_hi, init_lo};
+      SmallVector<Value, 2> newInits = {init_hi_reshaped, init_lo_reshaped};
 
       auto reduceOp = rewriter.create<stablehlo::ReduceOp>(
           loc, newInputs, newInits, op.getDimensions());
@@ -771,10 +821,34 @@ struct ReduceOpConversion : public OpConversionPattern<stablehlo::ReduceOp> {
         return reduceOp.getResult(0);
       };
 
-      Value res_hi = createLimbReduce(input_hi, init_hi);
-      Value res_lo = createLimbReduce(input_lo, init_lo);
+      Value res_hi = createLimbReduce(input_hi, init_hi_reshaped);
+      Value res_lo = createLimbReduce(input_lo, init_lo_reshaped);
 
-      Value packed = packLimbs(res_hi, res_lo, rewriter, loc, concatDimension);
+      if (!convertSignatures) {
+        Value sum = rewriter.create<stablehlo::AddOp>(loc, res_hi.getType(), res_hi, res_lo);
+        auto f64Type = RankedTensorType::get(cast<RankedTensorType>(res_hi.getType()).getShape(), sourceType);
+        Value result = rewriter.create<stablehlo::ConvertOp>(loc, f64Type, sum);
+        rewriter.replaceOp(op, result);
+        return success();
+      }
+
+      auto resHiTy = cast<RankedTensorType>(res_hi.getType());
+      SmallVector<int64_t> expandedShape;
+      if (concatDimension == "first") {
+        expandedShape.push_back(1);
+        for (auto dim : resHiTy.getShape()) expandedShape.push_back(dim);
+      } else if (concatDimension == "last") {
+        for (auto dim : resHiTy.getShape()) expandedShape.push_back(dim);
+        expandedShape.push_back(1);
+      } else {
+        expandedShape = llvm::to_vector(resHiTy.getShape());
+      }
+      
+      auto expandedType = RankedTensorType::get(expandedShape, resHiTy.getElementType());
+      Value res_hi_expanded = rewriter.create<stablehlo::ReshapeOp>(loc, expandedType, res_hi);
+      Value res_lo_expanded = rewriter.create<stablehlo::ReshapeOp>(loc, expandedType, res_lo);
+
+      Value packed = packLimbs(res_hi_expanded, res_lo_expanded, rewriter, loc, concatDimension);
       rewriter.replaceOp(op, packed);
       
       return success();
@@ -1815,6 +1889,9 @@ struct ReturnOpConversion : public OpConversionPattern<stablehlo::ReturnOp> {
   LogicalResult
   matchAndRewrite(stablehlo::ReturnOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    if (isa<stablehlo::ReduceOp>(op->getParentOp()))
+      return failure();
+
     Location loc = op.getLoc();
     SmallVector<Value> newOperands;
 
@@ -3338,6 +3415,17 @@ template <> struct IsResultTypeLegal<stablehlo::ReduceWindowOp> {
   }
 };
 
+template <> struct IsResultTypeLegal<stablehlo::ReduceOp> {
+  const TypeConverter &typeConverter;
+  IsResultTypeLegal(const TypeConverter &tc) : typeConverter(tc) {}
+
+  bool operator()(stablehlo::ReduceOp op) const {
+    if (op.getResults().empty())
+      return true;
+    return typeConverter.isLegal(op.getResults()[0].getType());
+  }
+};
+
 template <typename OpTy> struct IsResultOrOperandTypeLegal {
   const TypeConverter &typeConverter;
   IsResultOrOperandTypeLegal(const TypeConverter &tc) : typeConverter(tc) {}
@@ -3580,6 +3668,7 @@ struct MultiFloatConversionPass
     IsResultTypeLegal<stablehlo::PadOp> padLegal(typeConverter);
     IsResultTypeLegal<stablehlo::ReduceWindowOp> reduceWindowLegal(
         typeConverter);
+    IsResultTypeLegal<stablehlo::ReduceOp> reduceLegal(typeConverter);
 
     IsResultOrOperandTypeLegal<stablehlo::SliceOp> sliceLegal(typeConverter);
     IsResultOrOperandTypeLegal<stablehlo::BroadcastInDimOp> broadcastLegal(
@@ -3640,7 +3729,12 @@ struct MultiFloatConversionPass
     target.addDynamicallyLegalOp<stablehlo::NegOp>(negLegal);
     target.addDynamicallyLegalOp<stablehlo::DynamicUpdateSliceOp>(
         dynamicUpdateSliceLegal);
-    target.addDynamicallyLegalOp<stablehlo::AddOp>(addLegal);
+    target.addDynamicallyLegalOp<stablehlo::AddOp>(
+        [&](stablehlo::AddOp op) {
+          if (isa<stablehlo::ReduceOp>(op->getParentOp()))
+            return true;
+          return addLegal(op);
+        });
     target.addDynamicallyLegalOp<stablehlo::SubtractOp>(subLegal);
     target.addDynamicallyLegalOp<stablehlo::MulOp>(mulLegal);
     target.addDynamicallyLegalOp<stablehlo::DivOp>(divLegal);
@@ -3678,6 +3772,9 @@ struct MultiFloatConversionPass
         });
     target.addDynamicallyLegalOp<stablehlo::ReturnOp>(
         [&](stablehlo::ReturnOp op) {
+          if (isa<stablehlo::ReduceOp>(op->getParentOp()))
+            return true;
+
           if (!convertSignatures && isa<func::FuncOp>(op->getParentOp())) {
             OpBuilder b(op.getContext());
             for (auto type : op.getOperandTypes()) {
@@ -3691,6 +3788,7 @@ struct MultiFloatConversionPass
           return typeConverter.isLegal(op.getOperandTypes());
         });
     target.addDynamicallyLegalOp<stablehlo::ReduceWindowOp>(reduceWindowLegal);
+    target.addDynamicallyLegalOp<stablehlo::ReduceOp>(reduceLegal);
 
     if (expansionSize >= 2) {
       SmallVector<func::FuncOp> funcsToConvert;
@@ -3775,7 +3873,7 @@ struct MultiFloatConversionPass
                                     concatDimension);
       patterns.add<SubOpConversion>(typeConverter, context, concatDimension);
       patterns.add<MulOpConversion>(typeConverter, context, concatDimension);
-      patterns.add<ReduceOpConversion>(typeConverter, context, concatDimension, preciseReduce);
+      patterns.add<ReduceOpConversion>(typeConverter, context, concatDimension, preciseReduce, srcTy, tgtTy, convertSignatures);
       patterns.add<DivOpConversion>(typeConverter, context, concatDimension,
                                     divSubsteps);
       patterns.add<SelectOpConversion>(typeConverter, context, concatDimension);

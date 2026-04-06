@@ -1,5 +1,8 @@
-// RUN: enzymexlamlir-opt --multi-float-conversion="source-type=f64 target-type=f32 concat-dimension=first" %s | FileCheck --check-prefix=LIMB %s
-// RUN: enzymexlamlir-opt --multi-float-conversion="source-type=f64 target-type=f32 concat-dimension=first precise-reduce=true" %s | FileCheck --check-prefix=PRECISE %s
+// RUN: enzymexlamlir-opt --multi-float-conversion="source-type=f64 target-type=f32 concat-dimension=first" %s | FileCheck --check-prefix=FIRST_LIMB %s
+// RUN: enzymexlamlir-opt --multi-float-conversion="source-type=f64 target-type=f32 concat-dimension=last" %s | FileCheck --check-prefix=LAST_LIMB %s
+// RUN: enzymexlamlir-opt --multi-float-conversion="source-type=f64 target-type=f32 concat-dimension=tuple" %s | FileCheck --check-prefix=TUPLE_LIMB %s
+// RUN: enzymexlamlir-opt --multi-float-conversion="source-type=f64 target-type=f32 concat-dimension=tuple precise-reduce=true" %s | FileCheck --check-prefix=TUPLE_PRECISE %s
+// RUN: enzymexlamlir-opt --multi-float-conversion="source-type=f64 target-type=f32 concat-dimension=first" %s | stablehlo-translate - --interpret --allow-unregistered-dialect
 
 func.func @reduce_test(%arg0: tensor<2x2xf64>) -> tensor<2xf64> {
   %cst = stablehlo.constant dense<0.0> : tensor<f64>
@@ -7,17 +10,27 @@ func.func @reduce_test(%arg0: tensor<2x2xf64>) -> tensor<2xf64> {
   return %0 : tensor<2xf64>
 }
 
-// LIMB-LABEL: func.func @reduce_test
-// LIMB: %[[INPUT_HI:.*]] = stablehlo.slice
-// LIMB: %[[INPUT_LO:.*]] = stablehlo.slice
-// LIMB: %[[REDUCE_HI:.*]] = stablehlo.reduce(%[[INPUT_HI]]
-// LIMB: %[[REDUCE_LO:.*]] = stablehlo.reduce(%[[INPUT_LO]]
-// LIMB: %[[PACKED:.*]] = stablehlo.concatenate %[[REDUCE_HI]], %[[REDUCE_LO]]
-// LIMB: return %[[PACKED]]
+// FIRST_LIMB-LABEL: func.func @reduce_test
+// FIRST_LIMB: stablehlo.reduce
+// FIRST_LIMB: stablehlo.reduce
 
-// PRECISE-LABEL: func.func @reduce_test
-// PRECISE: %[[INPUT_HI:.*]] = stablehlo.slice
-// PRECISE: %[[INPUT_LO:.*]] = stablehlo.slice
-// PRECISE: %[[REDUCE:.*]]:2 = stablehlo.reduce(%[[INPUT_HI]], %[[INPUT_LO]]
-// PRECISE: %[[PACKED:.*]] = stablehlo.concatenate %[[REDUCE]]#0, %[[REDUCE]]#1
-// PRECISE: return %[[PACKED]]
+// LAST_LIMB-LABEL: func.func @reduce_test
+// LAST_LIMB: stablehlo.reduce
+// LAST_LIMB: stablehlo.reduce
+
+// TUPLE_LIMB-LABEL: func.func @reduce_test
+// TUPLE_LIMB: stablehlo.reduce
+// TUPLE_LIMB: stablehlo.reduce
+
+// TUPLE_PRECISE-LABEL: func.func @reduce_test
+// TUPLE_PRECISE: stablehlo.reduce({{.*}}, {{.*}} init: {{.*}}, {{.*}})
+
+func.func @main() attributes {enzyme.no_multifloat} {
+  %c = stablehlo.constant dense<[[1.1, 2.2], [3.3, 4.4]]> : tensor<2x2xf64>
+  %expected = stablehlo.constant dense<[4.4, 6.6]> : tensor<2xf64>
+  
+  %res = func.call @reduce_test(%c) : (tensor<2x2xf64>) -> tensor<2xf64>
+  
+  "check.expect_close"(%res, %expected) {max_ulp_difference = 100 : ui64} : (tensor<2xf64>, tensor<2xf64>) -> ()
+  return
+}
