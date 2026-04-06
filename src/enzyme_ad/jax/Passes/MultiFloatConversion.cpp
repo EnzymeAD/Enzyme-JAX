@@ -707,14 +707,15 @@ struct ReduceOpConversion : public OpConversionPattern<stablehlo::ReduceOp> {
     Value init_lo = extractLimb(initValue, 1, rewriter, loc, concatDimension);
 
     auto scalarType = RankedTensorType::get({}, targetType);
-    assert(init_hi.getType() == scalarType && init_lo.getType() == scalarType);
-    (void)scalarType;
-    
+    if (concatDimension != "tuple") {
+      init_hi = stablehlo::ReshapeOp::create(rewriter, loc, scalarType, init_hi);
+      init_lo = stablehlo::ReshapeOp::create(rewriter, loc, scalarType, init_lo);
+    }
+
     SmallVector<Value, 2> newInputs = {input_hi, input_lo};
     SmallVector<Value, 2> newInits = {init_hi, init_lo};
 
     if (preciseReduce) {
-
       auto reduceOp = rewriter.create<stablehlo::ReduceOp>(
           loc, newInputs, newInits, op.getDimensions());
 
