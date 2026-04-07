@@ -461,7 +461,6 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("concat_concat_to_dus");
   list.push_back("broadcast_iota_simplify");
   list.push_back("select_comp_iota_to_dus");
-  list.push_back("select_broadcast_iota");
   list.push_back("compare_cleanup");
   list.push_back("broadcast_compare");
   list.push_back("not_compare");
