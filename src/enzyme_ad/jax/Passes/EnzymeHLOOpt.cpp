@@ -6292,16 +6292,27 @@ struct TGammaConstProp final
       return failure();
 
     const auto &sem = floatTy.getFloatSemantics();
-    SmallVector<APFloat> results;
-    for (auto val : inputAttr.getValues<APFloat>()) {
+
+    auto computeTGamma = [&](APFloat val) -> APFloat {
       double x = val.convertToDouble();
       double res =
           (x < 0.0) ? std::numeric_limits<double>::quiet_NaN() : std::tgamma(x);
       bool losesInfo;
       APFloat apRes(res);
       apRes.convert(sem, APFloat::rmNearestTiesToEven, &losesInfo);
-      results.push_back(apRes);
+      return apRes;
+    };
+
+    if (inputAttr.isSplat()) {
+      APFloat result = computeTGamma(inputAttr.getSplatValue<APFloat>());
+      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+          op, DenseElementsAttr::get(resultType, result));
+      return success();
     }
+
+    SmallVector<APFloat> results;
+    for (auto val : inputAttr.getValues<APFloat>())
+      results.push_back(computeTGamma(val));
 
     rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
         op, DenseElementsAttr::get(resultType, results));
@@ -6325,15 +6336,26 @@ struct LGammaConstProp final
       return failure();
 
     const auto &sem = floatTy.getFloatSemantics();
-    SmallVector<APFloat> results;
-    for (auto val : inputAttr.getValues<APFloat>()) {
+
+    auto computeLGamma = [&](APFloat val) -> APFloat {
       double x = val.convertToDouble();
       double res = std::lgamma(x);
       bool losesInfo;
       APFloat apRes(res);
       apRes.convert(sem, APFloat::rmNearestTiesToEven, &losesInfo);
-      results.push_back(apRes);
+      return apRes;
+    };
+
+    if (inputAttr.isSplat()) {
+      APFloat result = computeLGamma(inputAttr.getSplatValue<APFloat>());
+      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+          op, DenseElementsAttr::get(resultType, result));
+      return success();
     }
+
+    SmallVector<APFloat> results;
+    for (auto val : inputAttr.getValues<APFloat>())
+      results.push_back(computeLGamma(val));
 
     rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
         op, DenseElementsAttr::get(resultType, results));
@@ -6357,15 +6379,26 @@ struct CHLOLGammaConstProp final
       return failure();
 
     const auto &sem = floatTy.getFloatSemantics();
-    SmallVector<APFloat> results;
-    for (auto val : inputAttr.getValues<APFloat>()) {
+
+    auto computeLGamma = [&](APFloat val) -> APFloat {
       double x = val.convertToDouble();
       double res = std::lgamma(x);
       bool losesInfo;
       APFloat apRes(res);
       apRes.convert(sem, APFloat::rmNearestTiesToEven, &losesInfo);
-      results.push_back(apRes);
+      return apRes;
+    };
+
+    if (inputAttr.isSplat()) {
+      APFloat result = computeLGamma(inputAttr.getSplatValue<APFloat>());
+      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+          op, DenseElementsAttr::get(resultType, result));
+      return success();
     }
+
+    SmallVector<APFloat> results;
+    for (auto val : inputAttr.getValues<APFloat>())
+      results.push_back(computeLGamma(val));
 
     rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
         op, DenseElementsAttr::get(resultType, results));
@@ -13998,10 +14031,6 @@ struct SelectPadToDUS final
   }
 };
 
-// Folds two selects with the same condition:
-//   select(%cond, %a, %b) -> %0
-//   select(%cond, %c, %0) -> select(%cond, %c, %b)   [false-chain]
-//   select(%cond, %0, %c) -> select(%cond, %a, %c)   [true-chain]
 struct SelectSelectSameCond final
     : CheckedOpRewritePattern<stablehlo::SelectOp, SelectSelectSameCond> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -14026,6 +14055,84 @@ struct SelectSelectSameCond final
       if (inner.getPred() == cond) {
         rewriter.modifyOpInPlace(
             op, [&]() { op.getOnTrueMutable().assign(inner.getOnTrue()); });
+        return success();
+      }
+    }
+
+    return failure();
+  }
+};
+
+struct SelectSelectNegCond final
+    : CheckedOpRewritePattern<stablehlo::SelectOp, SelectSelectNegCond> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  // Returns the operand if v == not(operand), else null Value.
+  static Value getNegated(Value v) {
+    if (auto notOp = v.getDefiningOp<stablehlo::NotOp>())
+      return notOp.getOperand();
+    return {};
+  }
+
+  // If pred1 == and(c1, c2) and pred2 == and(c1, not(c2)) (operands in any
+  // order), returns c1. Otherwise returns null Value.
+  static Value getAndNegComplement(Value pred1, Value pred2) {
+    auto and1 = pred1.getDefiningOp<stablehlo::AndOp>();
+    auto and2 = pred2.getDefiningOp<stablehlo::AndOp>();
+    if (!and1 || !and2)
+      return {};
+    Value and1Ops[2] = {and1.getLhs(), and1.getRhs()};
+    Value and2Ops[2] = {and2.getLhs(), and2.getRhs()};
+    for (Value a1 : and1Ops)
+      for (Value b1 : and1Ops) {
+        if (a1 == b1)
+          continue;
+        for (Value a2 : and2Ops)
+          for (Value b2 : and2Ops) {
+            if (a2 == b2)
+              continue;
+            if (a1 == a2 && getNegated(b2) == b1)
+              return a1;
+          }
+      }
+    return {};
+  }
+
+  LogicalResult matchAndRewriteImpl(stablehlo::SelectOp op,
+                                    PatternRewriter &rewriter) const {
+    Value cond = op.getPred();
+
+    // Case 1: select(cond, c, select(not(cond), a, b)) -> select(cond, c, a)
+    if (auto inner = op.getOnFalse().getDefiningOp<stablehlo::SelectOp>()) {
+      if (getNegated(inner.getPred()) == cond) {
+        rewriter.modifyOpInPlace(
+            op, [&]() { op.getOnFalseMutable().assign(inner.getOnTrue()); });
+        return success();
+      }
+      // Case 3: select(and(c1,c2), c, select(and(c1,not(c2)), a, b))
+      //      -> select(and(c1,c2), c, select(c1, a, b))
+      if (Value c1 = getAndNegComplement(cond, inner.getPred())) {
+        auto newInner = rewriter.create<stablehlo::SelectOp>(
+            op.getLoc(), c1, inner.getOnTrue(), inner.getOnFalse());
+        rewriter.modifyOpInPlace(
+            op, [&]() { op.getOnFalseMutable().assign(newInner); });
+        return success();
+      }
+    }
+
+    // Case 2: select(cond, select(not(cond), a, b), c) -> select(cond, b, c)
+    if (auto inner = op.getOnTrue().getDefiningOp<stablehlo::SelectOp>()) {
+      if (getNegated(inner.getPred()) == cond) {
+        rewriter.modifyOpInPlace(
+            op, [&]() { op.getOnTrueMutable().assign(inner.getOnFalse()); });
+        return success();
+      }
+      // Case 4: select(and(c1,c2), select(and(c1,not(c2)), a, b), c)
+      //      -> select(and(c1,c2), b, c)
+      // When outer is true: c1=T,c2=T => inner pred=and(T,F)=F => b
+      if (getAndNegComplement(cond, inner.getPred())) {
+        rewriter.modifyOpInPlace(
+            op, [&]() { op.getOnTrueMutable().assign(inner.getOnFalse()); });
         return success();
       }
     }
@@ -35412,9 +35519,9 @@ struct EnzymeHLOOptPass
         ConvertConcat, DynamicUpdateToConcat, SliceOfDynamicUpdate,
         SliceOfUpdateWithoutCorners, SliceElementwise, SliceReshapeElementwise,
         DynamicSliceElementwise, SlicePad, SliceReshapePad, ReshapeSliceReshape,
-        DotReshapeDot, ChloInfConstProp, GammaConstProp, TGammaConstProp,
-        LGammaConstProp, CHLOLGammaConstProp, ConcatFuse, ConcatToBroadcast,
-        PadPad, PadReshapePad, ConcatPushBinop<stablehlo::AddOp>,
+        DotReshapeDot, ChloInfConstProp, CHLOLGammaConstProp, GammaConstProp,
+        TGammaConstProp, LGammaConstProp, ConcatFuse, ConcatToBroadcast, PadPad,
+        PadReshapePad, ConcatPushBinop<stablehlo::AddOp>,
         ConcatPushBinop<stablehlo::MulOp>, ScatterToDynamicUpdateSlice,
         ReduceConcat, ConcatSlice, ConcatMultiPad, ConcatWrap, WidenWrap,
         WidenExtend, ConcatConcatAxisSwap, SliceConcat, SliceIf,
@@ -35709,6 +35816,7 @@ struct EnzymeHLOOptPass
         SelectCompIotaConstSimplify,
         SelectPadToDUS,
         SelectSelectSameCond,
+        SelectSelectNegCond,
         AndPadPad,
         SelectOpUsedWithinIf,
         TransposeBroadcastInDimToBroadcastInDim,

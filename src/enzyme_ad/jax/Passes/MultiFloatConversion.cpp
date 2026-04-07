@@ -580,6 +580,9 @@ struct AddOpConversion : public OpConversionPattern<stablehlo::AddOp> {
                   ConversionPatternRewriter &rewriter) const override {
     LLVM_DEBUG(llvm::dbgs() << "AddOpConversion called\n");
 
+    if (isa<stablehlo::ReduceOp>(op->getParentOp())) {
+      return failure();
+    }
     // Check if single-limb by looking at the converted operand type
     bool isTuple = concatDimension == "tuple";
     if (isTuple) {
@@ -661,6 +664,156 @@ struct MulOpConversion : public OpConversionPattern<stablehlo::MulOp> {
     Value packed = packLimbs(final_p, final_e, rewriter, loc, concatDimension);
     rewriter.replaceOp(op, packed);
     return success();
+  }
+};
+struct ReduceOpConversion : public OpConversionPattern<stablehlo::ReduceOp> {
+  ReduceOpConversion(TypeConverter &typeConverter, MLIRContext *context,
+                     StringRef concatDimension, bool preciseReduce,
+                     Type sourceType, Type targetType)
+      : OpConversionPattern<stablehlo::ReduceOp>(typeConverter, context),
+        concatDimension(concatDimension), preciseReduce(preciseReduce),
+        sourceType(sourceType), targetType(targetType) {}
+
+  StringRef concatDimension;
+  bool preciseReduce;
+  Type sourceType;
+  Type targetType;
+
+  LogicalResult
+  matchAndRewrite(stablehlo::ReduceOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+
+    Block &body = op.getBody().front();
+    if (body.getOperations().empty() || !isa<stablehlo::AddOp>(body.front())) {
+      LLVM_DEBUG(llvm::dbgs() << "ReduceOp: unsupported reduction operation\n");
+      llvm::errs() << "ReduceOpConversion failed at line 689\n";
+      return failure();
+    }
+
+    auto inputs = adaptor.getInputs();
+    auto initValues = adaptor.getInitValues();
+
+    if (inputs.size() != 1) {
+      llvm::errs() << "ReduceOpConversion failed at line 695\n";
+      return failure();
+    }
+
+    Value input = inputs[0];
+    Value initValue = initValues[0];
+
+    Value input_hi = extractLimb(input, 0, rewriter, loc, concatDimension);
+    Value input_lo = extractLimb(input, 1, rewriter, loc, concatDimension);
+
+    Value init_hi = extractLimb(initValue, 0, rewriter, loc, concatDimension);
+    Value init_lo = extractLimb(initValue, 1, rewriter, loc, concatDimension);
+
+    auto scalarType = RankedTensorType::get({}, targetType);
+    if (concatDimension != "tuple") {
+      init_hi =
+          stablehlo::ReshapeOp::create(rewriter, loc, scalarType, init_hi);
+      init_lo =
+          stablehlo::ReshapeOp::create(rewriter, loc, scalarType, init_lo);
+    }
+
+    SmallVector<Value, 2> newInputs = {input_hi, input_lo};
+    SmallVector<Value, 2> newInits = {init_hi, init_lo};
+
+    if (preciseReduce) {
+      SmallVector<int64_t> dims;
+      for (auto dim : op.getDimensions()) {
+        if (concatDimension == "first") {
+          dims.push_back(dim + 1);
+          continue;
+        }
+        dims.push_back(dim);
+      }
+      auto reduceOp =
+          rewriter.create<stablehlo::ReduceOp>(loc, newInputs, newInits, dims);
+
+      Block *reduceBlock = new Block();
+      reduceOp.getBody().push_back(reduceBlock);
+      reduceBlock->addArguments(
+          {scalarType, scalarType, scalarType, scalarType},
+          {loc, loc, loc, loc});
+
+      auto blockBuilder = OpBuilder::atBlockBegin(reduceBlock);
+
+      Value acc_hi = reduceBlock->getArgument(0);
+      Value acc_lo = reduceBlock->getArgument(1);
+      Value val_hi = reduceBlock->getArgument(2);
+      Value val_lo = reduceBlock->getArgument(3);
+
+      // [s, e] = twoSum(acc_hi, val_hi)
+      Value s = blockBuilder.create<stablehlo::AddOp>(loc, acc_hi, val_hi);
+      Value a_prime =
+          blockBuilder.create<stablehlo::SubtractOp>(loc, s, val_hi);
+      Value b_prime =
+          blockBuilder.create<stablehlo::SubtractOp>(loc, s, a_prime);
+      Value delta_a =
+          blockBuilder.create<stablehlo::SubtractOp>(loc, acc_hi, a_prime);
+      Value delta_b =
+          blockBuilder.create<stablehlo::SubtractOp>(loc, val_hi, b_prime);
+      Value e = blockBuilder.create<stablehlo::AddOp>(loc, delta_a, delta_b);
+
+      // e_new = e + acc_lo + val_lo
+      Value e_lo1 = blockBuilder.create<stablehlo::AddOp>(loc, acc_lo, val_lo);
+      Value e_new = blockBuilder.create<stablehlo::AddOp>(loc, e, e_lo1);
+
+      // [final_hi, final_lo] = fastTwoSum(s, e_new)
+      Value final_hi = blockBuilder.create<stablehlo::AddOp>(loc, s, e_new);
+      Value s_prime =
+          blockBuilder.create<stablehlo::SubtractOp>(loc, final_hi, e_new);
+      Value final_lo =
+          blockBuilder.create<stablehlo::SubtractOp>(loc, s, s_prime);
+
+      blockBuilder.create<stablehlo::ReturnOp>(loc,
+                                               ValueRange{final_hi, final_lo});
+
+      Value res_hi = reduceOp.getResult(0);
+      Value res_lo = reduceOp.getResult(1);
+
+      Value packed = packLimbs(res_hi, res_lo, rewriter, loc, concatDimension);
+      rewriter.replaceOp(op, packed);
+
+      return success();
+    } else {
+      auto createLimbReduce = [&](Value input_limb, Value init_limb) -> Value {
+        auto reduceOp = rewriter.create<stablehlo::ReduceOp>(
+            loc, input_limb, init_limb, op.getDimensions());
+
+        Block *reduceBlock = new Block();
+        reduceOp.getBody().push_back(reduceBlock);
+
+        auto elemType =
+            cast<RankedTensorType>(input_limb.getType()).getElementType();
+        auto scalarType = RankedTensorType::get({}, elemType);
+
+        reduceBlock->addArguments({scalarType, scalarType}, {loc, loc});
+
+        auto blockBuilder = OpBuilder::atBlockBegin(reduceBlock);
+        Value add = blockBuilder.create<stablehlo::AddOp>(
+            loc, scalarType, reduceBlock->getArgument(0),
+            reduceBlock->getArgument(1));
+        blockBuilder.create<stablehlo::ReturnOp>(loc, add);
+
+        return reduceOp.getResult(0);
+      };
+
+      Value res_hi = createLimbReduce(input_hi, init_hi);
+      Value res_lo = createLimbReduce(input_lo, init_lo);
+
+      auto f64Type = RankedTensorType::get(
+          cast<RankedTensorType>(res_hi.getType()).getShape(), sourceType);
+      Value res_hi_f64 =
+          rewriter.create<stablehlo::ConvertOp>(loc, f64Type, res_hi);
+      Value res_lo_f64 =
+          rewriter.create<stablehlo::ConvertOp>(loc, f64Type, res_lo);
+      Value sum = rewriter.create<stablehlo::AddOp>(loc, f64Type, res_hi_f64,
+                                                    res_lo_f64);
+      rewriter.replaceOp(op, sum);
+      return success();
+    }
   }
 };
 
@@ -1696,6 +1849,9 @@ struct ReturnOpConversion : public OpConversionPattern<stablehlo::ReturnOp> {
   LogicalResult
   matchAndRewrite(stablehlo::ReturnOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
+    if (isa<stablehlo::ReduceOp>(op->getParentOp()))
+      return failure();
+
     Location loc = op.getLoc();
     SmallVector<Value> newOperands;
 
@@ -2312,6 +2468,119 @@ struct DynamicUpdateSliceOpConversion
 
     Value packed = packLimbs(hi_N, lo_N, rewriter, loc, concatDimension);
     rewriter.replaceOp(op, packed);
+    return success();
+  }
+};
+
+struct DotGeneralToMulReducePattern
+    : public OpRewritePattern<stablehlo::DotGeneralOp> {
+  using OpRewritePattern<stablehlo::DotGeneralOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::DotGeneralOp op,
+                                PatternRewriter &rewriter) const override {
+    auto lhsType = dyn_cast<RankedTensorType>(op.getOperands()[0].getType());
+    auto rhsType = dyn_cast<RankedTensorType>(op.getOperands()[1].getType());
+    if (!lhsType || !rhsType)
+      return failure();
+
+    if (!lhsType.getElementType().isF32() && !lhsType.getElementType().isF64())
+      return failure();
+
+    auto dNums = op.getDotDimensionNumbers();
+    auto lhsContracting = dNums.getLhsContractingDimensions();
+    auto rhsContracting = dNums.getRhsContractingDimensions();
+
+    bool lhsAllContracted = (lhsContracting.size() == lhsType.getRank());
+    bool rhsAllContracted = (rhsContracting.size() == rhsType.getRank());
+
+    if (!lhsAllContracted && !rhsAllContracted)
+      return failure(); // Not a reduction-like operation
+
+    Value lhs = op.getOperands()[0];
+    Value rhs = op.getOperands()[1];
+
+    Value broadcastedLhs;
+    auto dimsToReduce = lhsAllContracted ? rhsContracting : lhsContracting;
+
+    if (lhsAllContracted) {
+      broadcastedLhs = rewriter.create<stablehlo::BroadcastInDimOp>(
+          op.getLoc(), rhs.getType(), lhs,
+          rewriter.getDenseI64ArrayAttr(rhsContracting));
+    } else {
+      broadcastedLhs = lhs;
+      Value broadcastedRhs = rewriter.create<stablehlo::BroadcastInDimOp>(
+          op.getLoc(), lhs.getType(), rhs,
+          rewriter.getDenseI64ArrayAttr(lhsContracting));
+      rhs = broadcastedRhs;
+    }
+
+    Value mul = rewriter.create<stablehlo::MulOp>(
+        op.getLoc(), broadcastedLhs.getType(), broadcastedLhs, rhs);
+
+    auto elemType = lhsType.getElementType();
+
+    if (dimsToReduce.size() == 1) {
+      int64_t reduceDim = dimsToReduce[0];
+      auto mulType = cast<RankedTensorType>(mul.getType());
+      int64_t reduceDimSize = mulType.getShape()[reduceDim];
+
+      if (reduceDimSize <= 64) {
+        Value sum;
+        for (int64_t i = 0; i < reduceDimSize; ++i) {
+          SmallVector<int64_t> startIndices(mulType.getRank(), 0);
+          SmallVector<int64_t> limitIndices(mulType.getShape().begin(),
+                                            mulType.getShape().end());
+          SmallVector<int64_t> strides(mulType.getRank(), 1);
+
+          startIndices[reduceDim] = i;
+          limitIndices[reduceDim] = i + 1;
+
+          Value slice = rewriter.create<stablehlo::SliceOp>(
+              op.getLoc(), mul, rewriter.getDenseI64ArrayAttr(startIndices),
+              rewriter.getDenseI64ArrayAttr(limitIndices),
+              rewriter.getDenseI64ArrayAttr(strides));
+
+          SmallVector<int64_t> newShape;
+          for (int64_t d = 0; d < mulType.getRank(); ++d) {
+            if (d != reduceDim) {
+              newShape.push_back(mulType.getShape()[d]);
+            }
+          }
+          auto reshapedType =
+              RankedTensorType::get(newShape, mulType.getElementType());
+          Value reshapedSlice = rewriter.create<stablehlo::ReshapeOp>(
+              op.getLoc(), reshapedType, slice);
+
+          if (i == 0) {
+            sum = reshapedSlice;
+          } else {
+            sum = rewriter.create<stablehlo::AddOp>(op.getLoc(), reshapedType,
+                                                    sum, reshapedSlice);
+          }
+        }
+        rewriter.replaceOp(op, sum);
+        return success();
+      }
+    }
+
+    auto zeroAttr = rewriter.getFloatAttr(elemType, 0.0);
+    auto scalarType = RankedTensorType::get({}, elemType);
+    Value zero = rewriter.create<stablehlo::ConstantOp>(
+        op.getLoc(), SplatElementsAttr::get(scalarType, zeroAttr));
+
+    auto reduceOp = rewriter.create<stablehlo::ReduceOp>(
+        op.getLoc(), op.getType(), mul, zero,
+        rewriter.getDenseI64ArrayAttr(dimsToReduce));
+
+    Block *block = new Block();
+    reduceOp.getBody().push_back(block);
+    block->addArguments({scalarType, scalarType}, {op.getLoc(), op.getLoc()});
+    auto b = OpBuilder::atBlockBegin(block);
+    Value add = b.create<stablehlo::AddOp>(
+        op.getLoc(), scalarType, block->getArgument(0), block->getArgument(1));
+    b.create<stablehlo::ReturnOp>(op.getLoc(), add);
+
+    rewriter.replaceOp(op, reduceOp.getResults());
     return success();
   }
 };
@@ -3118,6 +3387,17 @@ template <> struct IsResultTypeLegal<stablehlo::ReduceWindowOp> {
   }
 };
 
+template <> struct IsResultTypeLegal<stablehlo::ReduceOp> {
+  const TypeConverter &typeConverter;
+  IsResultTypeLegal(const TypeConverter &tc) : typeConverter(tc) {}
+
+  bool operator()(stablehlo::ReduceOp op) const {
+    if (op.getResults().empty())
+      return true;
+    return typeConverter.isLegal(op.getResults()[0].getType());
+  }
+};
+
 template <typename OpTy> struct IsResultOrOperandTypeLegal {
   const TypeConverter &typeConverter;
   IsResultOrOperandTypeLegal(const TypeConverter &tc) : typeConverter(tc) {}
@@ -3360,6 +3640,7 @@ struct MultiFloatConversionPass
     IsResultTypeLegal<stablehlo::PadOp> padLegal(typeConverter);
     IsResultTypeLegal<stablehlo::ReduceWindowOp> reduceWindowLegal(
         typeConverter);
+    IsResultTypeLegal<stablehlo::ReduceOp> reduceLegal(typeConverter);
 
     IsResultOrOperandTypeLegal<stablehlo::SliceOp> sliceLegal(typeConverter);
     IsResultOrOperandTypeLegal<stablehlo::BroadcastInDimOp> broadcastLegal(
@@ -3420,7 +3701,11 @@ struct MultiFloatConversionPass
     target.addDynamicallyLegalOp<stablehlo::NegOp>(negLegal);
     target.addDynamicallyLegalOp<stablehlo::DynamicUpdateSliceOp>(
         dynamicUpdateSliceLegal);
-    target.addDynamicallyLegalOp<stablehlo::AddOp>(addLegal);
+    target.addDynamicallyLegalOp<stablehlo::AddOp>([&](stablehlo::AddOp op) {
+      if (isa<stablehlo::ReduceOp>(op->getParentOp()))
+        return true;
+      return addLegal(op);
+    });
     target.addDynamicallyLegalOp<stablehlo::SubtractOp>(subLegal);
     target.addDynamicallyLegalOp<stablehlo::MulOp>(mulLegal);
     target.addDynamicallyLegalOp<stablehlo::DivOp>(divLegal);
@@ -3458,6 +3743,9 @@ struct MultiFloatConversionPass
         });
     target.addDynamicallyLegalOp<stablehlo::ReturnOp>(
         [&](stablehlo::ReturnOp op) {
+          if (isa<stablehlo::ReduceOp>(op->getParentOp()))
+            return true;
+
           if (!convertSignatures && isa<func::FuncOp>(op->getParentOp())) {
             OpBuilder b(op.getContext());
             for (auto type : op.getOperandTypes()) {
@@ -3471,6 +3759,7 @@ struct MultiFloatConversionPass
           return typeConverter.isLegal(op.getOperandTypes());
         });
     target.addDynamicallyLegalOp<stablehlo::ReduceWindowOp>(reduceWindowLegal);
+    target.addDynamicallyLegalOp<stablehlo::ReduceOp>(reduceLegal);
 
     if (expansionSize >= 2) {
       SmallVector<func::FuncOp> funcsToConvert;
@@ -3484,6 +3773,8 @@ struct MultiFloatConversionPass
       for (auto func : funcsToConvert) {
         RewritePatternSet patterns(context);
         patterns.add<LowerReduceWindowOp>(context, srcTy);
+        if (dotGeneralToReduce)
+          patterns.add<DotGeneralToMulReducePattern>(context);
         if (failed(applyPatternsGreedily(func, std::move(patterns), config))) {
           signalPassFailure();
           return;
@@ -3553,6 +3844,8 @@ struct MultiFloatConversionPass
                                     concatDimension);
       patterns.add<SubOpConversion>(typeConverter, context, concatDimension);
       patterns.add<MulOpConversion>(typeConverter, context, concatDimension);
+      patterns.add<ReduceOpConversion>(typeConverter, context, concatDimension,
+                                       preciseReduce, srcTy, tgtTy);
       patterns.add<DivOpConversion>(typeConverter, context, concatDimension,
                                     divSubsteps);
       patterns.add<SelectOpConversion>(typeConverter, context, concatDimension);

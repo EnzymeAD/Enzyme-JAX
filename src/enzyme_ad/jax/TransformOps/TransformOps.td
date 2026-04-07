@@ -1473,6 +1473,11 @@ def SelectSelectSameCond : EnzymeHLOPatternOp<
   let patterns = ["SelectSelectSameCond"];
 }
 
+def SelectSelectNegCond : EnzymeHLOPatternOp<
+    "select_select_neg_cond"> {
+  let patterns = ["SelectSelectNegCond"];
+}
+
 def AndPadPad : EnzymeHLOPatternOp<
     "and_pad_pad"> {
   let patterns = ["AndPadPad"];
