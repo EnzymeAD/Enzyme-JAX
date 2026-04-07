@@ -52,7 +52,7 @@ jobs:
         reactant_commit:
           - 'main'
         grid:
-          - '--grid-x 768 --grid-y 384 --grid-z 64'
+          - '--grid-x 384 --grid-y 384 --grid-z 64'
 
     steps:
       - name: Check GPUs
