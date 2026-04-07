@@ -685,8 +685,10 @@ struct ReduceOpConversion : public OpConversionPattern<stablehlo::ReduceOp> {
     Location loc = op.getLoc();
 
     Block &body = op.getBody().front();
-    bool isMax = !body.getOperations().empty() && isa<stablehlo::MaxOp>(body.front());
-    if (body.getOperations().empty() || (!isa<stablehlo::AddOp>(body.front()) && !isMax)) {
+    bool isMax =
+        !body.getOperations().empty() && isa<stablehlo::MaxOp>(body.front());
+    if (body.getOperations().empty() ||
+        (!isa<stablehlo::AddOp>(body.front()) && !isMax)) {
       LLVM_DEBUG(llvm::dbgs() << "ReduceOp: unsupported reduction operation\n");
       return failure();
     }
@@ -759,15 +761,15 @@ struct ReduceOpConversion : public OpConversionPattern<stablehlo::ReduceOp> {
         Value e = blockBuilder.create<stablehlo::AddOp>(loc, delta_a, delta_b);
 
         // e_new = e + acc_lo + val_lo
-        Value e_lo1 = blockBuilder.create<stablehlo::AddOp>(loc, acc_lo, val_lo);
+        Value e_lo1 =
+            blockBuilder.create<stablehlo::AddOp>(loc, acc_lo, val_lo);
         Value e_new = blockBuilder.create<stablehlo::AddOp>(loc, e, e_lo1);
 
         // [final_hi, final_lo] = fastTwoSum(s, e_new)
         final_hi = blockBuilder.create<stablehlo::AddOp>(loc, s, e_new);
         Value s_prime =
             blockBuilder.create<stablehlo::SubtractOp>(loc, final_hi, e_new);
-        final_lo =
-            blockBuilder.create<stablehlo::SubtractOp>(loc, s, s_prime);
+        final_lo = blockBuilder.create<stablehlo::SubtractOp>(loc, s, s_prime);
       } else {
         // Lexicographical comparison for MaxOp
         Value cmp = blockBuilder.create<stablehlo::CompareOp>(
@@ -776,10 +778,13 @@ struct ReduceOpConversion : public OpConversionPattern<stablehlo::ReduceOp> {
             loc, acc_hi, val_hi, stablehlo::ComparisonDirection::EQ);
         Value lo_cmp = blockBuilder.create<stablehlo::CompareOp>(
             loc, acc_lo, val_lo, stablehlo::ComparisonDirection::GT);
-        Value final_cmp = blockBuilder.create<stablehlo::SelectOp>(loc, eq, lo_cmp, cmp);
+        Value final_cmp =
+            blockBuilder.create<stablehlo::SelectOp>(loc, eq, lo_cmp, cmp);
 
-        final_hi = blockBuilder.create<stablehlo::SelectOp>(loc, final_cmp, acc_hi, val_hi);
-        final_lo = blockBuilder.create<stablehlo::SelectOp>(loc, final_cmp, acc_lo, val_lo);
+        final_hi = blockBuilder.create<stablehlo::SelectOp>(loc, final_cmp,
+                                                            acc_hi, val_hi);
+        final_lo = blockBuilder.create<stablehlo::SelectOp>(loc, final_cmp,
+                                                            acc_lo, val_lo);
       }
 
       blockBuilder.create<stablehlo::ReturnOp>(loc,
@@ -1446,7 +1451,8 @@ struct FloorOpConversion : public OpConversionPattern<stablehlo::FloorOp> {
     Value fh_minus_1 = rewriter.create<stablehlo::SubtractOp>(loc, fh, one);
 
     // 5. res_hi = select(is_negative, fh_minus_1, fh)
-    Value res_hi = rewriter.create<stablehlo::SelectOp>(loc, is_negative, fh_minus_1, fh);
+    Value res_hi =
+        rewriter.create<stablehlo::SelectOp>(loc, is_negative, fh_minus_1, fh);
 
     // 6. res_lo = 0
     auto zeroAttr = rewriter.getFloatAttr(floatTy, 0.0);
@@ -1469,11 +1475,18 @@ struct ExpOpConversion : public OpConversionPattern<stablehlo::ExpOp> {
       : OpConversionPattern<stablehlo::ExpOp>(typeConverter, context),
         concatDimension(concatDimension) {}
 
-  Value polEvl(Value x, ArrayRef<double> coefs, ConversionPatternRewriter &rewriter, Location loc, RankedTensorType type) const {
-    auto floatTy = cast<FloatType>(cast<RankedTensorType>(type).getElementType());
-    Value res = rewriter.create<stablehlo::ConstantOp>(loc, SplatElementsAttr::get(type, rewriter.getFloatAttr(floatTy, coefs[0])));
+  Value polEvl(Value x, ArrayRef<double> coefs,
+               ConversionPatternRewriter &rewriter, Location loc,
+               RankedTensorType type) const {
+    auto floatTy =
+        cast<FloatType>(cast<RankedTensorType>(type).getElementType());
+    Value res = rewriter.create<stablehlo::ConstantOp>(
+        loc,
+        SplatElementsAttr::get(type, rewriter.getFloatAttr(floatTy, coefs[0])));
     for (size_t i = 1; i < coefs.size(); ++i) {
-      Value c = rewriter.create<stablehlo::ConstantOp>(loc, SplatElementsAttr::get(type, rewriter.getFloatAttr(floatTy, coefs[i])));
+      Value c = rewriter.create<stablehlo::ConstantOp>(
+          loc, SplatElementsAttr::get(
+                   type, rewriter.getFloatAttr(floatTy, coefs[i])));
       res = rewriter.create<stablehlo::MulOp>(loc, res, x);
       res = rewriter.create<stablehlo::AddOp>(loc, res, c);
     }
@@ -1487,7 +1500,7 @@ struct ExpOpConversion : public OpConversionPattern<stablehlo::ExpOp> {
 
     Value input = adaptor.getOperands()[0];
     Value hi = extractLimb(input, 0, rewriter, loc, concatDimension);
-    
+
     auto tensorType = cast<RankedTensorType>(hi.getType());
     auto floatTy = cast<FloatType>(tensorType.getElementType());
 
@@ -1496,12 +1509,12 @@ struct ExpOpConversion : public OpConversionPattern<stablehlo::ExpOp> {
     auto log2eSplat = SplatElementsAttr::get(tensorType, log2eAttr);
     Value log2e = rewriter.create<stablehlo::ConstantOp>(loc, log2eSplat);
     Value mul1 = rewriter.create<stablehlo::MulOp>(loc, hi, log2e);
-    
+
     auto halfAttr = rewriter.getFloatAttr(floatTy, 0.5);
     auto halfSplat = SplatElementsAttr::get(tensorType, halfAttr);
     Value half = rewriter.create<stablehlo::ConstantOp>(loc, halfSplat);
     Value add1 = rewriter.create<stablehlo::AddOp>(loc, mul1, half);
-    
+
     Value n = rewriter.create<stablehlo::FloorOp>(loc, add1);
 
     // Clamp n to [-126, 127]
@@ -1509,7 +1522,7 @@ struct ExpOpConversion : public OpConversionPattern<stablehlo::ExpOp> {
     auto minSplat = SplatElementsAttr::get(tensorType, minAttr);
     Value min_val = rewriter.create<stablehlo::ConstantOp>(loc, minSplat);
     n = rewriter.create<stablehlo::MaxOp>(loc, n, min_val);
-    
+
     auto maxAttr = rewriter.getFloatAttr(floatTy, 127.0);
     auto maxSplat = SplatElementsAttr::get(tensorType, maxAttr);
     Value max_val = rewriter.create<stablehlo::ConstantOp>(loc, maxSplat);
@@ -1523,25 +1536,22 @@ struct ExpOpConversion : public OpConversionPattern<stablehlo::ExpOp> {
 
     // 3. Create multi-float n_mf = packLimbs(n, 0)
 
-
-
     // 4. Compute reduced argument r = x - n_mf * ln(2)
     // We need to create a multi-float constant for ln(2)!
     // ln(2) approx 0.6931471805599453
     // Let's use kC1 and kC2 provided by user!
     constexpr double kC1 = 6.93145751953125E-1;
     constexpr double kC2 = 1.42860682030941723212E-6;
-    
+
     auto c1Attr = rewriter.getFloatAttr(floatTy, kC1);
     auto c1Splat = SplatElementsAttr::get(tensorType, c1Attr);
     Value c1 = rewriter.create<stablehlo::ConstantOp>(loc, c1Splat);
-    
+
     auto c2Attr = rewriter.getFloatAttr(floatTy, kC2);
     auto c2Splat = SplatElementsAttr::get(tensorType, c2Attr);
     Value c2 = rewriter.create<stablehlo::ConstantOp>(loc, c2Splat);
 
     // We need to create a multi-float for ln(2) by packing c1 and c2!
-
 
     // Now we need to emit MULTI-FLOAT operations!
     // But we are inside a pattern!
@@ -1550,32 +1560,31 @@ struct ExpOpConversion : public OpConversionPattern<stablehlo::ExpOp> {
     // So we need to convert n_mf and ln2 BACK to source type!
     // Or we can just use the original unconverted operand for x!
 
-    
     // And we need to create an operation that represents n_mf * ln(2)!
-    // But we cannot easily create a multi-float value in source type unless we use UnrealizedConversionCastOp!
-    // Or we can just emit the expansion of multiplication and subtraction directly here!
-    // Yes! Expanding it directly here is safer!
-    // But multiplication is complex!
-    
-    // Wait! I can use `GenericOpConversion` to emit operations on limbs if they are elementwise!
-    // But multiplication is NOT limb-wise!
-    
+    // But we cannot easily create a multi-float value in source type unless we
+    // use UnrealizedConversionCastOp! Or we can just emit the expansion of
+    // multiplication and subtraction directly here! Yes! Expanding it directly
+    // here is safer! But multiplication is complex!
+
+    // Wait! I can use `GenericOpConversion` to emit operations on limbs if they
+    // are elementwise! But multiplication is NOT limb-wise!
+
     // Okay, let's look at how `DivOpConversion` does it!
     // It calls `extractLimb` and does arithmetic on limbs!
     // So I can do the same!
     // I can extract limbs of `x` (which is `hi` and `lo`!).
     Value lo = extractLimb(input, 1, rewriter, loc, concatDimension);
-    
+
     // And I have limbs of `n_mf` (which are `n` and `zero`!).
     // And limbs of `ln2` (which are `c1` and `c2`!).
-    
+
     // So I can compute `n_mf * ln2` using limb arithmetic!
     // `n_mf * ln2 = (n + 0) * (c1 + c2) = n * c1 + n * c2`!
     // Since `n` is large and `c2` is small!
     // `n * c1` is the high part! `n * c2` is the low part!
     Value t1 = rewriter.create<stablehlo::MulOp>(loc, n, c1);
     Value t2 = rewriter.create<stablehlo::MulOp>(loc, n, c2);
-    
+
     // Now compute `r = x - (t1 + t2)`!
     // `r_hi = hi - t1`!
     // `r_lo = lo - t2`!
@@ -1590,23 +1599,26 @@ struct ExpOpConversion : public OpConversionPattern<stablehlo::ExpOp> {
     // `xx_lo = 2 * r_hi * r_lo`
     Value xx_hi = rewriter.create<stablehlo::MulOp>(loc, r_hi, r_hi);
     Value xx_lo = rewriter.create<stablehlo::MulOp>(loc, r_hi, r_lo);
-    Value two_val = rewriter.create<stablehlo::ConstantOp>(loc, SplatElementsAttr::get(tensorType, rewriter.getFloatAttr(floatTy, 2.0)));
+    Value two_val = rewriter.create<stablehlo::ConstantOp>(
+        loc, SplatElementsAttr::get(tensorType,
+                                    rewriter.getFloatAttr(floatTy, 2.0)));
     xx_lo = rewriter.create<stablehlo::MulOp>(loc, xx_lo, two_val);
-    
+
     // Now evaluate polynomials on `xx`!
     // But `polEvl` expects a single Value!
     // And we have `xx_hi` and `xx_lo`!
     // If we only use `xx_hi` for polynomial evaluation, we lose precision!
-    // But `xx_lo` is VERY small! So it might be acceptable to only use `xx_hi` in the polynomial!
-    // Let's assume we can use `xx_hi` as the argument to `polEvl`!
-    
+    // But `xx_lo` is VERY small! So it might be acceptable to only use `xx_hi`
+    // in the polynomial! Let's assume we can use `xx_hi` as the argument to
+    // `polEvl`!
+
     constexpr double kP[] = {
         1.26177193074810590878E-4,
         3.02994407707441961300E-2,
         9.99999999999999999910E-1,
     };
     Value polP = polEvl(xx_hi, kP, rewriter, loc, tensorType);
-    
+
     constexpr double kQ[] = {
         3.00198505138664455042E-6,
         2.52448340349684104192E-3,
@@ -1624,10 +1636,10 @@ struct ExpOpConversion : public OpConversionPattern<stablehlo::ExpOp> {
     // x = px / (PolEvl(xx, kQ) - px)
     // `denom = polQ - px_hi`
     Value denom = rewriter.create<stablehlo::SubtractOp>(loc, polQ, px_hi);
-    
+
     // `x_hi = px_hi / denom`
     Value x_hi = rewriter.create<stablehlo::DivOp>(loc, px_hi, denom);
-    
+
     // `x_lo = (px_lo - x_hi * (-px_lo)) / denom` (approximate!)
     // Let's use a simpler approximation!
     Value x_lo = rewriter.create<stablehlo::DivOp>(loc, px_lo, denom);
@@ -1641,7 +1653,7 @@ struct ExpOpConversion : public OpConversionPattern<stablehlo::ExpOp> {
 
     Value res_hi = rewriter.create<stablehlo::MulOp>(loc, x_hi, two_val);
     res_hi = rewriter.create<stablehlo::AddOp>(loc, one, res_hi);
-    
+
     Value res_lo = rewriter.create<stablehlo::MulOp>(loc, x_lo, two_val);
 
     // Multiply by power of 2 (scale)
@@ -2683,12 +2695,14 @@ struct MaxOpConversion : public OpConversionPattern<stablehlo::MaxOp> {
     Location loc = op.getLoc();
     Value uncoverted_lhs = op.getOperands()[0];
     Value uncoverted_rhs = op.getOperands()[1];
-    
+
     Value cmp = rewriter.create<stablehlo::CompareOp>(
-        loc, uncoverted_lhs, uncoverted_rhs, stablehlo::ComparisonDirection::GT);
-        
-    Value select = rewriter.create<stablehlo::SelectOp>(loc, cmp, uncoverted_lhs, uncoverted_rhs);
-    
+        loc, uncoverted_lhs, uncoverted_rhs,
+        stablehlo::ComparisonDirection::GT);
+
+    Value select = rewriter.create<stablehlo::SelectOp>(
+        loc, cmp, uncoverted_lhs, uncoverted_rhs);
+
     rewriter.replaceOp(op, select);
     return success();
   }
@@ -2958,20 +2972,28 @@ struct DotGeneralOpConversion
 
     // Re-merge limbs and apply Ozaki splitting on combined value
     Type sourceType = origLhsTy.getElementType();
-    auto sourceTensorLhsType = RankedTensorType::get(origLhsTy.getShape(), sourceType);
-    auto sourceTensorRhsType = RankedTensorType::get(origRhsTy.getShape(), sourceType);
-    
-    Value lhs_hi_src = rewriter.create<stablehlo::ConvertOp>(loc, sourceTensorLhsType, lhs_hi);
-    Value lhs_lo_src = rewriter.create<stablehlo::ConvertOp>(loc, sourceTensorLhsType, lhs_lo);
-    Value lhs_combined = rewriter.create<stablehlo::AddOp>(loc, sourceTensorLhsType, lhs_hi_src, lhs_lo_src);
-    
-    Value rhs_hi_src = rewriter.create<stablehlo::ConvertOp>(loc, sourceTensorRhsType, rhs_hi);
-    Value rhs_lo_src = rewriter.create<stablehlo::ConvertOp>(loc, sourceTensorRhsType, rhs_lo);
-    Value rhs_combined = rewriter.create<stablehlo::AddOp>(loc, sourceTensorRhsType, rhs_hi_src, rhs_lo_src);
+    auto sourceTensorLhsType =
+        RankedTensorType::get(origLhsTy.getShape(), sourceType);
+    auto sourceTensorRhsType =
+        RankedTensorType::get(origRhsTy.getShape(), sourceType);
+
+    Value lhs_hi_src =
+        rewriter.create<stablehlo::ConvertOp>(loc, sourceTensorLhsType, lhs_hi);
+    Value lhs_lo_src =
+        rewriter.create<stablehlo::ConvertOp>(loc, sourceTensorLhsType, lhs_lo);
+    Value lhs_combined = rewriter.create<stablehlo::AddOp>(
+        loc, sourceTensorLhsType, lhs_hi_src, lhs_lo_src);
+
+    Value rhs_hi_src =
+        rewriter.create<stablehlo::ConvertOp>(loc, sourceTensorRhsType, rhs_hi);
+    Value rhs_lo_src =
+        rewriter.create<stablehlo::ConvertOp>(loc, sourceTensorRhsType, rhs_lo);
+    Value rhs_combined = rewriter.create<stablehlo::AddOp>(
+        loc, sourceTensorRhsType, rhs_hi_src, rhs_lo_src);
 
     auto floatTargetType = cast<FloatType>(targetType);
     unsigned mantissaWidth = floatTargetType.getFPMantissaWidth();
-    
+
     // Compute N (number of accumulated products)
     auto dimNumbers = op.getDotDimensionNumbers();
     auto lhsContractingDims = dimNumbers.getLhsContractingDimensions();
@@ -2981,12 +3003,14 @@ struct DotGeneralOpConversion
     for (auto dim : lhsContractingDims) {
       N *= lhsShape[dim];
     }
-    
+
     double log2_N = std::log2(static_cast<double>(N));
     int64_t ceil_log2_N = std::ceil(log2_N);
-    int64_t splitBits = std::floor((static_cast<int64_t>(mantissaWidth) - ceil_log2_N) / 2.0);
-    if (splitBits <= 0) splitBits = 0; // Fallback to 0 as approved!
-    
+    int64_t splitBits =
+        std::floor((static_cast<int64_t>(mantissaWidth) - ceil_log2_N) / 2.0);
+    if (splitBits <= 0)
+      splitBits = 0; // Fallback to 0 as approved!
+
     double splitFactor = std::pow(2.0, splitBits);
 
     Value max_A = getMaxValue(lhs_combined, rewriter, loc);
@@ -2994,50 +3018,74 @@ struct DotGeneralOpConversion
 
     auto sourceScalarType = RankedTensorType::get({}, sourceType);
     Value ln_2 = rewriter.create<stablehlo::ConstantOp>(
-        loc, SplatElementsAttr::get(sourceScalarType, rewriter.getFloatAttr(sourceType, std::log(2.0))));
+        loc, SplatElementsAttr::get(
+                 sourceScalarType,
+                 rewriter.getFloatAttr(sourceType, std::log(2.0))));
 
     // Compute scale_A
     Value ln_A = rewriter.create<stablehlo::LogOp>(loc, max_A);
     Value log2_A = rewriter.create<stablehlo::DivOp>(loc, ln_A, ln_2);
     Value ceil_log2_A = rewriter.create<stablehlo::CeilOp>(loc, log2_A);
-    Value scaled_log2_A = rewriter.create<stablehlo::MulOp>(loc, ceil_log2_A, ln_2);
-    Value scale_A_scalar = rewriter.create<stablehlo::ExpOp>(loc, scaled_log2_A);
+    Value scaled_log2_A =
+        rewriter.create<stablehlo::MulOp>(loc, ceil_log2_A, ln_2);
+    Value scale_A_scalar =
+        rewriter.create<stablehlo::ExpOp>(loc, scaled_log2_A);
     Value scale_A = rewriter.create<stablehlo::BroadcastInDimOp>(
-        loc, sourceTensorLhsType, scale_A_scalar, rewriter.getDenseI64ArrayAttr({}));
+        loc, sourceTensorLhsType, scale_A_scalar,
+        rewriter.getDenseI64ArrayAttr({}));
 
     // Compute scale_B
     Value ln_B = rewriter.create<stablehlo::LogOp>(loc, max_B);
     Value log2_B = rewriter.create<stablehlo::DivOp>(loc, ln_B, ln_2);
     Value ceil_log2_B = rewriter.create<stablehlo::CeilOp>(loc, log2_B);
-    Value scaled_log2_B = rewriter.create<stablehlo::MulOp>(loc, ceil_log2_B, ln_2);
-    Value scale_B_scalar = rewriter.create<stablehlo::ExpOp>(loc, scaled_log2_B);
+    Value scaled_log2_B =
+        rewriter.create<stablehlo::MulOp>(loc, ceil_log2_B, ln_2);
+    Value scale_B_scalar =
+        rewriter.create<stablehlo::ExpOp>(loc, scaled_log2_B);
     Value scale_B = rewriter.create<stablehlo::BroadcastInDimOp>(
-        loc, sourceTensorRhsType, scale_B_scalar, rewriter.getDenseI64ArrayAttr({}));
+        loc, sourceTensorRhsType, scale_B_scalar,
+        rewriter.getDenseI64ArrayAttr({}));
 
-    Value lhs_norm = rewriter.create<stablehlo::DivOp>(loc, lhs_combined, scale_A);
-    Value rhs_norm = rewriter.create<stablehlo::DivOp>(loc, rhs_combined, scale_B);
+    Value lhs_norm =
+        rewriter.create<stablehlo::DivOp>(loc, lhs_combined, scale_A);
+    Value rhs_norm =
+        rewriter.create<stablehlo::DivOp>(loc, rhs_combined, scale_B);
 
     Value scale_const = rewriter.create<stablehlo::ConstantOp>(
-        loc, SplatElementsAttr::get(sourceTensorLhsType, rewriter.getFloatAttr(sourceType, splitFactor)));
-    Value scaled_A = rewriter.create<stablehlo::MulOp>(loc, lhs_norm, scale_const);
+        loc,
+        SplatElementsAttr::get(sourceTensorLhsType,
+                               rewriter.getFloatAttr(sourceType, splitFactor)));
+    Value scaled_A =
+        rewriter.create<stablehlo::MulOp>(loc, lhs_norm, scale_const);
     Value floored_A = rewriter.create<stablehlo::FloorOp>(loc, scaled_A);
     Value A_hi = floored_A;
-    Value A_lo = rewriter.create<stablehlo::SubtractOp>(loc, scaled_A, floored_A);
-    
+    Value A_lo =
+        rewriter.create<stablehlo::SubtractOp>(loc, scaled_A, floored_A);
+
     Value scale_const_B = rewriter.create<stablehlo::ConstantOp>(
-        loc, SplatElementsAttr::get(sourceTensorRhsType, rewriter.getFloatAttr(sourceType, splitFactor)));
-    Value scaled_B = rewriter.create<stablehlo::MulOp>(loc, rhs_norm, scale_const_B);
+        loc,
+        SplatElementsAttr::get(sourceTensorRhsType,
+                               rewriter.getFloatAttr(sourceType, splitFactor)));
+    Value scaled_B =
+        rewriter.create<stablehlo::MulOp>(loc, rhs_norm, scale_const_B);
     Value floored_B = rewriter.create<stablehlo::FloorOp>(loc, scaled_B);
     Value B_hi = floored_B;
-    Value B_lo = rewriter.create<stablehlo::SubtractOp>(loc, scaled_B, floored_B);
+    Value B_lo =
+        rewriter.create<stablehlo::SubtractOp>(loc, scaled_B, floored_B);
 
-    auto targetTensorLhsType = RankedTensorType::get(origLhsTy.getShape(), targetType);
-    auto targetTensorRhsType = RankedTensorType::get(origRhsTy.getShape(), targetType);
+    auto targetTensorLhsType =
+        RankedTensorType::get(origLhsTy.getShape(), targetType);
+    auto targetTensorRhsType =
+        RankedTensorType::get(origRhsTy.getShape(), targetType);
 
-    Value lhs_hi_hi = rewriter.create<stablehlo::ConvertOp>(loc, targetTensorLhsType, A_hi);
-    Value lhs_hi_lo = rewriter.create<stablehlo::ConvertOp>(loc, targetTensorLhsType, A_lo);
-    Value rhs_hi_hi = rewriter.create<stablehlo::ConvertOp>(loc, targetTensorRhsType, B_hi);
-    Value rhs_hi_lo = rewriter.create<stablehlo::ConvertOp>(loc, targetTensorRhsType, B_lo);
+    Value lhs_hi_hi =
+        rewriter.create<stablehlo::ConvertOp>(loc, targetTensorLhsType, A_hi);
+    Value lhs_hi_lo =
+        rewriter.create<stablehlo::ConvertOp>(loc, targetTensorLhsType, A_lo);
+    Value rhs_hi_hi =
+        rewriter.create<stablehlo::ConvertOp>(loc, targetTensorRhsType, B_hi);
+    Value rhs_hi_lo =
+        rewriter.create<stablehlo::ConvertOp>(loc, targetTensorRhsType, B_lo);
 
     Value p1 = rewriter.create<stablehlo::DotGeneralOp>(
         loc, prodType, lhs_hi_hi, rhs_hi_hi, op.getDotDimensionNumbers(),
@@ -3054,30 +3102,43 @@ struct DotGeneralOpConversion
 
     // Scale back and sum in sourceType
     auto sourceProdType = RankedTensorType::get(origShape, sourceType);
-    Value p1_src = rewriter.create<stablehlo::ConvertOp>(loc, sourceProdType, p1);
-    Value p2_src = rewriter.create<stablehlo::ConvertOp>(loc, sourceProdType, p2);
-    Value p3_src = rewriter.create<stablehlo::ConvertOp>(loc, sourceProdType, p3);
-    Value p4_src = rewriter.create<stablehlo::ConvertOp>(loc, sourceProdType, p4);
+    Value p1_src =
+        rewriter.create<stablehlo::ConvertOp>(loc, sourceProdType, p1);
+    Value p2_src =
+        rewriter.create<stablehlo::ConvertOp>(loc, sourceProdType, p2);
+    Value p3_src =
+        rewriter.create<stablehlo::ConvertOp>(loc, sourceProdType, p3);
+    Value p4_src =
+        rewriter.create<stablehlo::ConvertOp>(loc, sourceProdType, p4);
 
-    Value total_scale = rewriter.create<stablehlo::MulOp>(loc, scale_A_scalar, scale_B_scalar);
+    Value total_scale =
+        rewriter.create<stablehlo::MulOp>(loc, scale_A_scalar, scale_B_scalar);
     Value split_factor_squared = rewriter.create<stablehlo::ConstantOp>(
-        loc, SplatElementsAttr::get(sourceScalarType, rewriter.getFloatAttr(sourceType, splitFactor * splitFactor)));
-    Value scale_back_scalar = rewriter.create<stablehlo::DivOp>(loc, total_scale, split_factor_squared);
-    
+        loc, SplatElementsAttr::get(
+                 sourceScalarType,
+                 rewriter.getFloatAttr(sourceType, splitFactor * splitFactor)));
+    Value scale_back_scalar = rewriter.create<stablehlo::DivOp>(
+        loc, total_scale, split_factor_squared);
+
     Value scale_back = rewriter.create<stablehlo::BroadcastInDimOp>(
-        loc, sourceProdType, scale_back_scalar, rewriter.getDenseI64ArrayAttr({}));
+        loc, sourceProdType, scale_back_scalar,
+        rewriter.getDenseI64ArrayAttr({}));
 
     p1_src = rewriter.create<stablehlo::MulOp>(loc, p1_src, scale_back);
     p2_src = rewriter.create<stablehlo::MulOp>(loc, p2_src, scale_back);
     p3_src = rewriter.create<stablehlo::MulOp>(loc, p3_src, scale_back);
     p4_src = rewriter.create<stablehlo::MulOp>(loc, p4_src, scale_back);
 
-    Value sum1 = rewriter.create<stablehlo::AddOp>(loc, sourceProdType, p1_src, p2_src);
-    Value sum2 = rewriter.create<stablehlo::AddOp>(loc, sourceProdType, p3_src, p4_src);
-    Value sum = rewriter.create<stablehlo::AddOp>(loc, sourceProdType, sum1, sum2);
+    Value sum1 =
+        rewriter.create<stablehlo::AddOp>(loc, sourceProdType, p1_src, p2_src);
+    Value sum2 =
+        rewriter.create<stablehlo::AddOp>(loc, sourceProdType, p3_src, p4_src);
+    Value sum =
+        rewriter.create<stablehlo::AddOp>(loc, sourceProdType, sum1, sum2);
 
     int expansionSize = 2; // Hardcoded for now
-    Value packed = convertToMultifloat(sum, rewriter, loc, targetType, concatDimension, expansionSize);
+    Value packed = convertToMultifloat(sum, rewriter, loc, targetType,
+                                       concatDimension, expansionSize);
     rewriter.replaceOp(op, packed);
 
     return success();
@@ -3412,6 +3473,9 @@ struct ConcatenateOpConversion
   matchAndRewrite(stablehlo::ConcatenateOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
+    if (op.getType() == getTypeConverter()->convertType(op.getType()))
+      return failure();
+
     if (concatDimension == "tuple") {
       auto tupleType =
           cast<TupleType>(getTypeConverter()->convertType(op.getType()));
