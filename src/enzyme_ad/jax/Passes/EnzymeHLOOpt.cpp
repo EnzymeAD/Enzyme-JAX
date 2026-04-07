@@ -12876,12 +12876,17 @@ template <typename T> struct CSE final : CheckedOpRewritePattern<T, CSE<T>> {
         if (op->getName() != nop->getName())
           continue;
 
-        if (!OperationEquivalence::isEquivalentTo(
-                op, nop,
-                (OperationEquivalence::Flags)(
-                    OperationEquivalence::IgnoreCommutativity |
-                    OperationEquivalence::IgnoreLocations |
-                    OperationEquivalence::IgnoreDiscardableAttrs))) {
+        OperationEquivalence::Flags flags =
+            OperationEquivalence::IgnoreLocations |
+            OperationEquivalence::IgnoreDiscardableAttrs;
+
+        // OperationEquivalence only checks for mlir::OpTrait::IsCommutative
+        if constexpr (!std::is_base_of_v<::mlir::OpTrait::IsCommutative<T>,
+                                         T>) {
+          flags |= OperationEquivalence::IgnoreCommutativity;
+        }
+
+        if (!OperationEquivalence::isEquivalentTo(op, nop, flags)) {
           // stablehlo defines a special trait for commutative operations.
           // check for that here.
           if constexpr (std::is_base_of_v<
