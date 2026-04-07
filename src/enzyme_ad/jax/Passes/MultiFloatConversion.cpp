@@ -2674,10 +2674,27 @@ struct DotGeneralOpConversion
     auto rhs_hi_f32_ty = cast<RankedTensorType>(rhs_hi.getType());
     auto floatType = lhs_hi_f32_ty.getElementType();
 
-    // Dynamic power-of-2 scaling and splitting
+    // Dynamic power-of-2 scaling and splitting based on dimensions
     auto floatTargetType = cast<FloatType>(targetType);
     unsigned mantissaWidth = floatTargetType.getFPMantissaWidth();
-    unsigned splitBits = mantissaWidth / 2;
+
+    // Compute N (number of accumulated products)
+    auto dimNumbers = op.getDotDimensionNumbers();
+    auto lhsContractingDims = dimNumbers.getLhsContractingDimensions();
+    auto lhsType = cast<RankedTensorType>(op.getLhs().getType());
+    auto lhsShape = lhsType.getShape();
+    int64_t N = 1;
+    for (auto dim : lhsContractingDims) {
+      N *= lhsShape[dim];
+    }
+
+    double log2_N = std::log2(static_cast<double>(N));
+    int64_t ceil_log2_N = std::ceil(log2_N);
+    int64_t splitBits =
+        std::floor((static_cast<int64_t>(mantissaWidth) - ceil_log2_N) / 2.0);
+    if (splitBits <= 0)
+      splitBits = 0; // Fallback to 0 as approved!
+
     double splitFactor = std::pow(2.0, splitBits);
 
     Value max_A = getMaxValue(lhs_hi, rewriter, loc);
