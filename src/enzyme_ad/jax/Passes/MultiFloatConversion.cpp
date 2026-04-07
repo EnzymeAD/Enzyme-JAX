@@ -1422,9 +1422,6 @@ struct FloorOpConversion : public OpConversionPattern<stablehlo::FloorOp> {
     Location loc = op.getLoc();
 
     Value input = adaptor.getOperands()[0];
-    if (auto castOp = input.getDefiningOp<UnrealizedConversionCastOp>()) {
-      input = castOp.getOperand(0);
-    }
     Value hi = extractLimb(input, 0, rewriter, loc, concatDimension);
     Value lo = extractLimb(input, 1, rewriter, loc, concatDimension);
 
