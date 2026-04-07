@@ -8,8 +8,7 @@ module {
   }
 }
 
-
 // CHECK: func.func @lgamma_f32() -> tensor<f32> {
-// CHECK-NEXT:   %cst = stablehlo.constant dense<4.76837158E-7> : tensor<f32>
+// CHECK-NEXT:   %cst = stablehlo.constant dense<0.000000e+00> : tensor<f32>
 // CHECK-NEXT:   return %cst : tensor<f32>
 // CHECK-NEXT: }

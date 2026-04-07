@@ -6279,6 +6279,13 @@ struct GammaConstProp final
 struct TGammaConstProp final
     : CheckedOpRewritePattern<enzymexla::TGammaOp, TGammaConstProp> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
+  size_t max_constant_expansion;
+
+  TGammaConstProp(size_t max_constant_expansion, MLIRContext *context,
+                  PatternBenefit benefit = 1,
+                  ArrayRef<StringRef> generatedNames = {})
+      : CheckedOpRewritePattern(context, benefit, generatedNames),
+        max_constant_expansion(max_constant_expansion) {}
 
   LogicalResult matchAndRewriteImpl(enzymexla::TGammaOp op,
                                     PatternRewriter &rewriter) const {
@@ -6292,16 +6299,30 @@ struct TGammaConstProp final
       return failure();
 
     const auto &sem = floatTy.getFloatSemantics();
-    SmallVector<APFloat> results;
-    for (auto val : inputAttr.getValues<APFloat>()) {
+
+    auto computeTGamma = [&](APFloat val) -> APFloat {
       double x = val.convertToDouble();
       double res =
           (x < 0.0) ? std::numeric_limits<double>::quiet_NaN() : std::tgamma(x);
       bool losesInfo;
       APFloat apRes(res);
       apRes.convert(sem, APFloat::rmNearestTiesToEven, &losesInfo);
-      results.push_back(apRes);
+      return apRes;
+    };
+
+    if (inputAttr.isSplat()) {
+      APFloat result = computeTGamma(inputAttr.getSplatValue<APFloat>());
+      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+          op, DenseElementsAttr::get(resultType, result));
+      return success();
     }
+
+    if (inputAttr.getNumElements() >= (int64_t)max_constant_expansion)
+      return failure();
+
+    SmallVector<APFloat> results;
+    for (auto val : inputAttr.getValues<APFloat>())
+      results.push_back(computeTGamma(val));
 
     rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
         op, DenseElementsAttr::get(resultType, results));
@@ -6312,6 +6333,13 @@ struct TGammaConstProp final
 struct LGammaConstProp final
     : CheckedOpRewritePattern<enzymexla::LGammaOp, LGammaConstProp> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
+  size_t max_constant_expansion;
+
+  LGammaConstProp(size_t max_constant_expansion, MLIRContext *context,
+                  PatternBenefit benefit = 1,
+                  ArrayRef<StringRef> generatedNames = {})
+      : CheckedOpRewritePattern(context, benefit, generatedNames),
+        max_constant_expansion(max_constant_expansion) {}
 
   LogicalResult matchAndRewriteImpl(enzymexla::LGammaOp op,
                                     PatternRewriter &rewriter) const {
@@ -6325,15 +6353,29 @@ struct LGammaConstProp final
       return failure();
 
     const auto &sem = floatTy.getFloatSemantics();
-    SmallVector<APFloat> results;
-    for (auto val : inputAttr.getValues<APFloat>()) {
+
+    auto computeLGamma = [&](APFloat val) -> APFloat {
       double x = val.convertToDouble();
       double res = std::lgamma(x);
       bool losesInfo;
       APFloat apRes(res);
       apRes.convert(sem, APFloat::rmNearestTiesToEven, &losesInfo);
-      results.push_back(apRes);
+      return apRes;
+    };
+
+    if (inputAttr.isSplat()) {
+      APFloat result = computeLGamma(inputAttr.getSplatValue<APFloat>());
+      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+          op, DenseElementsAttr::get(resultType, result));
+      return success();
     }
+
+    if (inputAttr.getNumElements() >= (int64_t)max_constant_expansion)
+      return failure();
+
+    SmallVector<APFloat> results;
+    for (auto val : inputAttr.getValues<APFloat>())
+      results.push_back(computeLGamma(val));
 
     rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
         op, DenseElementsAttr::get(resultType, results));
@@ -6344,6 +6386,13 @@ struct LGammaConstProp final
 struct CHLOLGammaConstProp final
     : CheckedOpRewritePattern<chlo::LgammaOp, CHLOLGammaConstProp> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
+  size_t max_constant_expansion;
+
+  CHLOLGammaConstProp(size_t max_constant_expansion, MLIRContext *context,
+                      PatternBenefit benefit = 1,
+                      ArrayRef<StringRef> generatedNames = {})
+      : CheckedOpRewritePattern(context, benefit, generatedNames),
+        max_constant_expansion(max_constant_expansion) {}
 
   LogicalResult matchAndRewriteImpl(chlo::LgammaOp op,
                                     PatternRewriter &rewriter) const {
@@ -6357,15 +6406,29 @@ struct CHLOLGammaConstProp final
       return failure();
 
     const auto &sem = floatTy.getFloatSemantics();
-    SmallVector<APFloat> results;
-    for (auto val : inputAttr.getValues<APFloat>()) {
+
+    auto computeLGamma = [&](APFloat val) -> APFloat {
       double x = val.convertToDouble();
       double res = std::lgamma(x);
       bool losesInfo;
       APFloat apRes(res);
       apRes.convert(sem, APFloat::rmNearestTiesToEven, &losesInfo);
-      results.push_back(apRes);
+      return apRes;
+    };
+
+    if (inputAttr.isSplat()) {
+      APFloat result = computeLGamma(inputAttr.getSplatValue<APFloat>());
+      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+          op, DenseElementsAttr::get(resultType, result));
+      return success();
     }
+
+    if (inputAttr.getNumElements() >= (int64_t)max_constant_expansion)
+      return failure();
+
+    SmallVector<APFloat> results;
+    for (auto val : inputAttr.getValues<APFloat>())
+      results.push_back(computeLGamma(val));
 
     rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
         op, DenseElementsAttr::get(resultType, results));
@@ -35115,6 +35178,21 @@ void mlir::transform::addDynamicUpdateSliceConstProp(
                                                benefit);
 }
 
+void mlir::transform::addTGammaConstProp(RewritePatternSet &patterns,
+                                         int64_t maxConstantExpansion,
+                                         MLIRContext &context,
+                                         PatternBenefit benefit) {
+  patterns.insert<TGammaConstProp>(maxConstantExpansion, &context, benefit);
+}
+
+void mlir::transform::addLGammaConstProp(RewritePatternSet &patterns,
+                                         int64_t maxConstantExpansion,
+                                         MLIRContext &context,
+                                         PatternBenefit benefit) {
+  patterns.insert<LGammaConstProp>(maxConstantExpansion, &context, benefit);
+  patterns.insert<CHLOLGammaConstProp>(maxConstantExpansion, &context, benefit);
+}
+
 void mlir::transform::addWhileSimplify(RewritePatternSet &patterns,
                                        bool hoistAll, MLIRContext &context,
                                        PatternBenefit benefit) {
@@ -35479,20 +35557,20 @@ struct EnzymeHLOOptPass
 
     patterns.add<IotaSimplify, BroadcastInDimSimplify, ConcatConstProp,
                  DynamicUpdateSliceConstProp, PadSimplify, ScatterConstFold,
-                 RecognizeFromConstant>(max_constant_expansion, context,
-                                        PatternBenefit(65000));
+                 RecognizeFromConstant, TGammaConstProp, LGammaConstProp,
+                 CHLOLGammaConstProp>(max_constant_expansion, context,
+                                      PatternBenefit(65000));
 
     patterns.add<
         ConvertConcat, DynamicUpdateToConcat, SliceOfDynamicUpdate,
         SliceOfUpdateWithoutCorners, SliceElementwise, SliceReshapeElementwise,
         DynamicSliceElementwise, SlicePad, SliceReshapePad, ReshapeSliceReshape,
-        DotReshapeDot, ChloInfConstProp, GammaConstProp, TGammaConstProp,
-        LGammaConstProp, CHLOLGammaConstProp, ConcatFuse, ConcatToBroadcast,
-        PadPad, PadReshapePad, ConcatPushBinop<stablehlo::AddOp>,
-        ConcatPushBinop<stablehlo::MulOp>, ScatterToDynamicUpdateSlice,
-        ReduceConcat, ConcatSlice, ConcatMultiPad, ConcatWrap, WidenWrap,
-        WidenExtend, ConcatConcatAxisSwap, SliceConcat, SliceIf,
-        SliceReshapeConcat, BinBroadcastSplat<stablehlo::AddOp>,
+        DotReshapeDot, ChloInfConstProp, GammaConstProp, ConcatFuse,
+        ConcatToBroadcast, PadPad, PadReshapePad,
+        ConcatPushBinop<stablehlo::AddOp>, ConcatPushBinop<stablehlo::MulOp>,
+        ScatterToDynamicUpdateSlice, ReduceConcat, ConcatSlice, ConcatMultiPad,
+        ConcatWrap, WidenWrap, WidenExtend, ConcatConcatAxisSwap, SliceConcat,
+        SliceIf, SliceReshapeConcat, BinBroadcastSplat<stablehlo::AddOp>,
         BinBroadcastSplat<stablehlo::SubtractOp>,
         BinBroadcastSplat<stablehlo::DivOp>,
         BinBroadcastSplat<stablehlo::MulOp>, RotatePad, ConjReal,

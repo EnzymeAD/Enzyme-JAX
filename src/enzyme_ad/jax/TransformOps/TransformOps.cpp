@@ -191,6 +191,14 @@ void ApplyDynamicUpdateSliceConstPropPatterns::populatePatterns(
   addDynamicUpdateSliceConstProp(patterns, getParameter(), *getContext(),
                                  PatternBenefit(getBenefit().value_or(1)));
 }
+void ApplyTGammaConstProp::populatePatterns(RewritePatternSet &patterns) {
+  addTGammaConstProp(patterns, getParameter(), *getContext(),
+                     PatternBenefit(getBenefit().value_or(1)));
+}
+void ApplyLGammaConstProp::populatePatterns(RewritePatternSet &patterns) {
+  addLGammaConstProp(patterns, getParameter(), *getContext(),
+                     PatternBenefit(getBenefit().value_or(1)));
+}
 void ApplyBroadcastInDimSimplifyPatterns::populatePatterns(
     RewritePatternSet &patterns) {
   addBroadcastInDimSimplify(patterns, getParameter(), *getContext(),

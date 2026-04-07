@@ -257,13 +257,33 @@ def ApplyGeluConstProp : EnzymeHLOPatternOp<
     "gelu_const_prop">{
   let patterns = ["GeluConstProp"];
 }
-def ApplyTGammaConstProp : EnzymeHLOPatternOp<
-    "tgamma_const_prop">{
-  let patterns = ["TGammaConstProp"];
+// benefit 65k + max_constant_expansion flag
+def ApplyTGammaConstProp : EnzymeHLOParameterizedPatternOp<
+    "tgamma_const_prop"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, I64Attr:$parameter);
+  let assemblyFormat = "attr-dict";
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getI64IntegerAttr(1024)))};
+    }
+  }];
 }
-def ApplyLGammaConstProp : EnzymeHLOPatternOp<
-    "lgamma_const_prop">{
-  let patterns = ["LGammaConstProp", "CHLOLGammaConstProp"];
+// benefit 65k + max_constant_expansion flag
+def ApplyLGammaConstProp : EnzymeHLOParameterizedPatternOp<
+    "lgamma_const_prop"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, I64Attr:$parameter);
+  let assemblyFormat = "attr-dict";
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getI64IntegerAttr(1024)))};
+    }
+  }];
 }
 def ApplySoftplusConstProp : EnzymeHLOPatternOp<
     "softplus_const_prop">{
