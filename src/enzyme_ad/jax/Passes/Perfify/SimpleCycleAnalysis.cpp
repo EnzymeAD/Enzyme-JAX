@@ -16,7 +16,7 @@ namespace perfify {
 using namespace mlir;
 using namespace mlir::enzyme;
 using namespace mlir::enzyme::perfify;
-
+std::unordered_map<std::string, int> cost_map;
 namespace {
 
 struct SimpleCycleAnalysisPass
@@ -24,11 +24,32 @@ struct SimpleCycleAnalysisPass
   using SimpleCycleAnalysisPassBase::SimpleCycleAnalysisPassBase;
 
   void runOnOperation() override {
-    ModuleOp module = getOperation();
-    OpBuilder builder(module.getContext());
-
-    std::cout << "Cost trigger works" << std::endl;
+    Operation *op = getOperation();
+    visitOperation(op);
   }
+  void visitOperation(Operation *op) {
+    // Print the operation itself and some of its properties
+    if (auto costOp = dyn_cast<CostOp>(op)) {
+      if (!op->getAttrs().empty()) {
+        for (NamedAttribute attr : op->getAttrs()) {
+          llvm::outs() << attr.getName().getValue() << " : " << attr.getValue() << "\n";
+
+        }
+      }
+    }
+    for (Region &region : op->getRegions())
+      visitRegion(region);
+  }
+
+  void visitRegion(Region &region) {
+    for (Block &block : region.getBlocks())
+      visitBlock(block);
+  }
+
+  void visitBlock(Block &block) {
+    for (Operation &op : block.getOperations())
+      visitOperation(&op);
+  }  
 };
 
 } // namespace
