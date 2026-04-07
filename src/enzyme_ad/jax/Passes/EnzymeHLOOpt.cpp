@@ -12878,9 +12878,9 @@ template <typename T> struct CSE final : CheckedOpRewritePattern<T, CSE<T>> {
 
         if (!OperationEquivalence::isEquivalentTo(
                 op, nop,
-                (OperationEquivalence::
-                     Flags)(OperationEquivalence::IgnoreLocations |
-                            OperationEquivalence::IgnoreDiscardableAttrs))) {
+                (OperationEquivalence::Flags)(
+                    OperationEquivalence::IgnoreLocations |
+                    OperationEquivalence::IgnoreDiscardableAttrs))) {
           // stablehlo defines a special trait for commutative operations.
           // check for that here.
           if constexpr (std::is_base_of_v<
@@ -13059,7 +13059,8 @@ struct DUSSliceSimplify final
         });
 
     LLVM_DEBUG(
-        for (auto [idx, operandSize, updateSize] : llvm::zip_equal(
+        for (auto [idx, operandSize, updateSize]
+             : llvm::zip_equal(
                  newDusIndices,
                  cast<RankedTensorType>(preSliceOperand.getType()).getShape(),
                  cast<RankedTensorType>(preSliceUpdate.getType()).getShape())) {
