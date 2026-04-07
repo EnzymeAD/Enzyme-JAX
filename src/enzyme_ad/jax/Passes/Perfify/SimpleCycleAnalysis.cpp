@@ -20,7 +20,8 @@ std::unordered_map<std::string, int> cost_map;
 namespace {
 
 struct SimpleCycleAnalysisPass
-    : public enzyme::perfify::impl::SimpleCycleAnalysisPassBase<SimpleCycleAnalysisPass> {
+    : public enzyme::perfify::impl::SimpleCycleAnalysisPassBase<
+          SimpleCycleAnalysisPass> {
   using SimpleCycleAnalysisPassBase::SimpleCycleAnalysisPassBase;
 
   void runOnOperation() override {
@@ -32,8 +33,8 @@ struct SimpleCycleAnalysisPass
     if (auto costOp = dyn_cast<CostOp>(op)) {
       if (!op->getAttrs().empty()) {
         for (NamedAttribute attr : op->getAttrs()) {
-          llvm::outs() << attr.getName().getValue() << " : " << attr.getValue() << "\n";
-
+          llvm::outs() << attr.getName().getValue() << " : " << attr.getValue()
+                       << "\n";
         }
       }
     }
@@ -49,7 +50,7 @@ struct SimpleCycleAnalysisPass
   void visitBlock(Block &block) {
     for (Operation &op : block.getOperations())
       visitOperation(&op);
-  }  
+  }
 };
 
 } // namespace
