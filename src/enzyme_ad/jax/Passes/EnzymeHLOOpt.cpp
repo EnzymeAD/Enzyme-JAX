@@ -12879,6 +12879,7 @@ template <typename T> struct CSE final : CheckedOpRewritePattern<T, CSE<T>> {
         if (!OperationEquivalence::isEquivalentTo(
                 op, nop,
                 (OperationEquivalence::Flags)(
+                    OperationEquivalence::IgnoreCommutativity |
                     OperationEquivalence::IgnoreLocations |
                     OperationEquivalence::IgnoreDiscardableAttrs))) {
           // stablehlo defines a special trait for commutative operations.
