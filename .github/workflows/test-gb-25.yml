@@ -40,28 +40,19 @@ jobs:
       fail-fast: false
       matrix:
         os:
-          # - linux-x86-a2-48-a100-4gpu
-          - linux-x86-ct6e-180-4tpu
+          - linux-x86-a2-48-a100-4gpu
         julia_version:
           - '1.11'
         xla_commit:
           - ''
-          # - 'b25f3cbed2bc88c8ffef85f6a5319e2cf7b0454c'
         gb25_commit:
-          - 'sup'
+          - 'main'
+          - 'mg/dt-10'
 
         reactant_commit:
           - 'main'
-          # - 'multipad'
         grid:
-          #- '--float-type=Float64'
-          #- '--float-type=Float32'
-          - '--float-type=Float64 --target-float-type=Float32 --dimension=first'
-          - '--float-type=Float64 --target-float-type=Float32 --dimension=last'
-          #- '--float-type=Float64 --target-float-type=Float32 --dimension=tuple'
-          - '--float-type=Float32 --target-float-type=BFloat16 --dimension=first'
-          - '--float-type=Float32 --target-float-type=BFloat16 --dimension=last'
-          #- '--float-type=Float32 --target-float-type=BFloat16 --dimension=tuple'
+          - '--grid-x 768 --grid-y 384 --grid-z 64'
 
     steps:
       - name: Check GPUs
