@@ -189,6 +189,65 @@ jobs:
           julia --project --color=yes -e "using MPI; MPI.install_mpiexecjl(; destdir=\"${MPIEXECJL_DIR}\")"
           echo "${MPIEXECJL_DIR}" >> "${GITHUB_PATH}"
         working-directory: ${{ env.GB25_DIR }}
+      - name: Compile GB-25 simulation
+        timeout-minutes: 30
+        run: |
+          export XLA_FLAGS='--xla_disable_hlo_passes=multi_output_fusion --xla_dump_hlo_pass_re=.* --xla_dump_to=${{ env.GB25_DIR }}/xla_dump_compile'
+          timeout --signal=TERM --verbose 29m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict sharding/sharded_baroclinic_instability_simulation_compile.jl ${{matrix.grid}}
+        working-directory: ${{ env.GB25_DIR }}
+      - name: Show remaining collective operations
+        timeout-minutes: 10
+        shell: bash
+        run: |
+          OK="true"
+          if [[ '${{ contains(matrix.os, 'a100') }}' == 'true' ]]; then
+              ALL_TO_ALL_THRESHOLD=1000
+              ALL_GATHER_THRESHOLD=1000
+              ALL_REDUCE_THRESHOLD=1000
+              COLLECTIVE_PERMUTE_THRESHOLD=29900
+          elif [[ '${{ contains(matrix.os, 'tpu') }}' == 'true' ]]; then
+              ALL_TO_ALL_THRESHOLD=1000
+              ALL_GATHER_THRESHOLD=1000
+              ALL_REDUCE_THRESHOLD=1000
+              COLLECTIVE_PERMUTE_THRESHOLD=109200
+          fi
+
+          for OP in "all-to-all" "all-gather" "all-reduce" "%collective-permute-start.* ="; do
+              COLLECTIVES=$(find . -name 'optimised_sharded_baroclinic_instability*.xla' -exec grep --with-filename --line-number --extended-regexp "${OP}" '{}' \; | sort)
+              NUM_COLLECTIVES=$(echo "${COLLECTIVES}" | wc -l | xargs)
+              if [[ -n "${COLLECTIVES}" ]]; then
+                  MSG="There are ${NUM_COLLECTIVES} remaining ${OP} operations"
+                  echo "::error title=${{ matrix.os }} - Remaining ${OP} Operations:: ${MSG}"
+                  echo
+                  echo "----------"
+                  echo "${COLLECTIVES}"
+                  echo "----------"
+                  if [[ "${OP}" == "all-to-all" && ${NUM_COLLECTIVES} -gt ${ALL_TO_ALL_THRESHOLD} ]] || [[ "${OP}" == "all-gather" && ${NUM_COLLECTIVES} -gt ${ALL_GATHER_THRESHOLD} ]] || [[ "${OP}" == "all-reduce" && ${NUM_COLLECTIVES} -gt ${ALL_REDUCE_THRESHOLD} ]] || [[ "${OP}" =~ "collective-permute" && ${NUM_COLLECTIVES} -gt ${COLLECTIVE_PERMUTE_THRESHOLD} ]]; then
+                      OK="false"
+                  fi
+              fi
+          done
+          if [[ "${OK}" == "false" ]]; then
+              exit 1
+          fi
+      - name: Run GB-25 simulation
+        timeout-minutes: 60
+        run: |
+          export XLA_FLAGS='--xla_disable_hlo_passes=multi_output_fusion --xla_dump_hlo_pass_re=.* --xla_dump_to=${{ env.GB25_DIR }}/xla_dump_run'
+          timeout --signal=TERM --verbose 59m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict sharding/sharded_baroclinic_instability_simulation_run.jl ${{matrix.grid}}
+        working-directory: ${{ env.GB25_DIR }}
+      - name: Display profile results
+        shell: julia --project --color=yes {0}
+        run: |
+          using Reactant
+
+          prof_dir = joinpath(first(readdir(joinpath(pwd(), "sharding", "profiling"); join=true)), "loop2", "plugins", "profile")
+          prof_dir = joinpath(first(readdir(prof_dir; join=true)))
+
+          xplane_file = first(filter(endswith(".xplane.pb"), readdir(prof_dir; join=true)))
+
+          display(Reactant.Profiler.load_xplane_file(xplane_file))
+        working-directory: ${{ env.GB25_DIR }}
       - name: Test correctness in GB-25 code
         timeout-minutes: 20
         run: |
