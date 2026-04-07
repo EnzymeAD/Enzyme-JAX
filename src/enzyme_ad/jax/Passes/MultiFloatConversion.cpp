@@ -4022,6 +4022,8 @@ struct MultiFloatConversionPass
         typeConverter);
     IsResultOrOperandTypeLegal<stablehlo::FloorOp> floorLegal(typeConverter);
     IsResultOrOperandTypeLegal<stablehlo::ExpOp> expLegal(typeConverter);
+    IsResultOrOperandTypeLegal<stablehlo::MaxOp> maxLegal(typeConverter);
+    IsResultOrOperandTypeLegal<stablehlo::MinOp> minLegal(typeConverter);
     IsResultOrOperandTypeLegal<stablehlo::SineOp> sineLegal(typeConverter);
     IsResultOrOperandTypeLegal<stablehlo::DotGeneralOp> dotGeneralLegal(
         typeConverter);
@@ -4063,7 +4065,7 @@ struct MultiFloatConversionPass
     target.addDynamicallyLegalOp<stablehlo::ReshapeOp>(reshapeLegal);
     target.addDynamicallyLegalOp<stablehlo::CompareOp>(compareLegal);
     target.addDynamicallyLegalOp<stablehlo::FloorOp>(floorLegal);
-    target.addIllegalOp<stablehlo::ExpOp>();
+    target.addDynamicallyLegalOp<stablehlo::ExpOp>(expLegal);
     target.addDynamicallyLegalOp<stablehlo::SineOp>(sineLegal);
     target.addDynamicallyLegalOp<stablehlo::DotGeneralOp>(dotGeneralLegal);
     target.addDynamicallyLegalOp<enzymexla::RotateOp>(rotateLegal);
@@ -4074,7 +4076,8 @@ struct MultiFloatConversionPass
     target.addDynamicallyLegalOp<stablehlo::NegOp>(negLegal);
     target.addDynamicallyLegalOp<stablehlo::DynamicUpdateSliceOp>(
         dynamicUpdateSliceLegal);
-    target.addIllegalOp<stablehlo::MaxOp>();
+    target.addDynamicallyLegalOp<stablehlo::MaxOp>(maxLegal);
+    target.addDynamicallyLegalOp<stablehlo::MinOp>(minLegal);
     target.addDynamicallyLegalOp<stablehlo::AddOp>([&](stablehlo::AddOp op) {
       if (isa<stablehlo::ReduceOp>(op->getParentOp()))
         return true;
