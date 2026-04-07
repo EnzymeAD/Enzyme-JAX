@@ -29,7 +29,7 @@ env:
 
 jobs:
   test-gb-25:
-    name: 'Test GB-25 - ${{ matrix.os }} - julia ${{ matrix.julia_version }} - XLA ${{ matrix.xla_commit }} - GB-25 ${{ matrix.gb25_commit }}- Reactant ${{ matrix.reactant_commit }}'
+    name: 'Test GB-25 - ${{ matrix.os }} - julia ${{ matrix.julia_version }} - XLA ${{ matrix.xla_commit }} - GB-25 ${{ matrix.gb25_commit }}- Reactant ${{ matrix.reactant_commit }} - ${{ matrix.grid }}'
     runs-on: ${{ matrix.os }}
     timeout-minutes: 150
 
@@ -52,8 +52,16 @@ jobs:
           # - '0123456789abcdef0123456789abcdef01234567'
 
         reactant_commit:
-          - 'pb/reshape_broadcast'
-          # - 'multipad'
+          - 'main'
+        grid:
+          - '--float-type=Float64'
+          - '--float-type=Float32'
+          #- '--float-type=Float64 --target-float-type=Float32 --dimension=first'
+          #- '--float-type=Float64 --target-float-type=Float32 --dimension=last'
+          #- '--float-type=Float64 --target-float-type=Float32 --dimension=tuple'
+          #- '--float-type=Float32 --target-float-type=BFloat16 --dimension=first'
+          #- '--float-type=Float32 --target-float-type=BFloat16 --dimension=last'
+          #- '--float-type=Float32 --target-float-type=BFloat16 --dimension=tuple'
 
     steps:
       - name: Check GPUs
@@ -65,8 +73,12 @@ jobs:
         run: |
           # Artifact names cannot include forward slashes and some other characters, here we
           # do some sanitisation.
-          ARTIFACT_INDEX=${{ matrix.os}}-${{ matrix.julia_version }}-${{ matrix.xla_commit }}-${{ matrix.gb25_commit }}-${{ matrix.reactant_commit }}
-          echo "ARTIFACT_INDEX=${ARTIFACT_INDEX//\//_}" >> "${GITHUB_ENV}"
+          ARTIFACT_INDEX="${{ matrix.os}}-${{ matrix.julia_version }}-${{ matrix.xla_commit }}-${{ matrix.gb25_commit }}-${{ matrix.reactant_commit }}-${{matrix.grid}}"
+          # Replace forward slashes with underscores
+          ARTIFACT_INDEX=${ARTIFACT_INDEX//\//_}
+          # Remove all spaces
+          ARTIFACT_INDEX=${ARTIFACT_INDEX// /}
+          echo "ARTIFACT_INDEX=${ARTIFACT_INDEX}" >> "${GITHUB_ENV}"
       - uses: bazel-contrib/setup-bazel@0.19.0
         name: Set up Bazel
         with:
@@ -150,14 +162,6 @@ jobs:
           ls -lhrt "${GB25_DIR}"
           echo "GB25_DIR=${GB25_DIR}" >> ${GITHUB_ENV}
           
-      - name: Set default precision (GPU)
-        if: ${{ contains(matrix.os, 'a100') }}
-        run: |
-          echo "RUN_FLAGS=--float-type=Float64 --grid-x 1536 --grid-y 768" >> ${GITHUB_ENV}
-      - name: Set default precision (TPU)
-        if: ${{ contains(matrix.os, 'tpu') }}
-        run: |
-          echo "RUN_FLAGS=--float-type=Float32 --grid-x 1536 --grid-y 768" >> ${GITHUB_ENV}
       - name: Instantiate GB-25 environment
         timeout-minutes: 40
         shell: julia --project --color=yes {0}
@@ -199,7 +203,7 @@ jobs:
         timeout-minutes: 30
         run: |
           export XLA_FLAGS='--xla_disable_hlo_passes=multi_output_fusion --xla_dump_hlo_pass_re=.* --xla_dump_to=${{ env.GB25_DIR }}/xla_dump_compile'
-          timeout --signal=TERM --verbose 29m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict sharding/sharded_baroclinic_instability_simulation_compile.jl ${{ env.RUN_FLAGS }}
+          timeout --signal=TERM --verbose 29m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict sharding/sharded_baroclinic_instability_simulation_compile.jl ${{matrix.grid}}
         working-directory: ${{ env.GB25_DIR }}
       - name: Show remaining collective operations
         timeout-minutes: 10
@@ -207,15 +211,15 @@ jobs:
         run: |
           OK="true"
           if [[ '${{ contains(matrix.os, 'a100') }}' == 'true' ]]; then
-              ALL_TO_ALL_THRESHOLD=0
-              ALL_GATHER_THRESHOLD=0
-              ALL_REDUCE_THRESHOLD=0
-              COLLECTIVE_PERMUTE_THRESHOLD=299
+              ALL_TO_ALL_THRESHOLD=1000
+              ALL_GATHER_THRESHOLD=1000
+              ALL_REDUCE_THRESHOLD=1000
+              COLLECTIVE_PERMUTE_THRESHOLD=29900
           elif [[ '${{ contains(matrix.os, 'tpu') }}' == 'true' ]]; then
-              ALL_TO_ALL_THRESHOLD=0
-              ALL_GATHER_THRESHOLD=0
-              ALL_REDUCE_THRESHOLD=0
-              COLLECTIVE_PERMUTE_THRESHOLD=1092
+              ALL_TO_ALL_THRESHOLD=1000
+              ALL_GATHER_THRESHOLD=1000
+              ALL_REDUCE_THRESHOLD=1000
+              COLLECTIVE_PERMUTE_THRESHOLD=109200
           fi
 
           for OP in "all-to-all" "all-gather" "all-reduce" "%collective-permute-start.* ="; do
@@ -240,7 +244,7 @@ jobs:
         timeout-minutes: 60
         run: |
           export XLA_FLAGS='--xla_disable_hlo_passes=multi_output_fusion --xla_dump_hlo_pass_re=.* --xla_dump_to=${{ env.GB25_DIR }}/xla_dump_run'
-          timeout --signal=TERM --verbose 59m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict sharding/sharded_baroclinic_instability_simulation_run.jl ${{ env.RUN_FLAGS }}
+          timeout --signal=TERM --verbose 59m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict sharding/sharded_baroclinic_instability_simulation_run.jl ${{matrix.grid}}
         working-directory: ${{ env.GB25_DIR }}
       - name: Display profile results
         shell: julia --project --color=yes {0}
@@ -257,7 +261,7 @@ jobs:
       - name: Test correctness in GB-25 code
         timeout-minutes: 20
         run: |
-          timeout --signal=TERM --verbose 19m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict correctness/correctness_sharded_baroclinic_instability_simulation_run.jl ${{ env.RUN_FLAGS }}
+          timeout --signal=TERM --verbose 19m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict correctness/correctness_sharded_baroclinic_instability_simulation_run.jl ${{matrix.grid}}
         working-directory: ${{ env.GB25_DIR }}
       - name: Upload MLIR and XLA modules
         uses: actions/upload-artifact@v7

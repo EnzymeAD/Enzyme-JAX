@@ -612,7 +612,7 @@ def TrmmOp: EnzymeXLA_Op<"blas.trmm", [Pure, SameOperandsAndResultElementType]> 
     EnzymeXLA_LapackSideAttr:$side,
     EnzymeXLA_LapackUploAttr:$uplo,
     EnzymeXLA_LapackTransposeAttr:$transpose,
-    EnzymeXLA_LapackDiagAttr:$diag
+    UnitAttr:$unit_diagonal
   );
 
   let results = (outs
@@ -639,7 +639,7 @@ def TrsmOp : EnzymeXLA_Op<"blas.trsm", [Pure]> {
     EnzymeXLA_LapackSideAttr:$side,
     EnzymeXLA_LapackUploAttr:$uplo,
     EnzymeXLA_LapackTransposeAttr:$transa,
-    EnzymeXLA_LapackDiagAttr:$diag
+    UnitAttr:$unit_diagonal
   );
 
   let results = (outs

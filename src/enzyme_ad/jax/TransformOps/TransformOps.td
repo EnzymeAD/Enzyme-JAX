@@ -93,6 +93,10 @@ def ApplyNoopReversePatterns : EnzymeHLOPatternOp<
     "noop_reverse"> {
   let patterns = ["NoopReverse"];
 }
+def ApplySliceReversePatterns : EnzymeHLOPatternOp<
+    "slice_reverse"> {
+  let patterns = ["SliceReverse"];
+}
 def ApplySliceSlicePatterns : EnzymeHLOPatternOp<
     "slice_slice"> {
   let patterns = ["SliceSlice"];
@@ -446,6 +450,14 @@ def ApplyConvertConvertIntPatterns : EnzymeHLOPatternOp<
 def ApplyConvertMulConvertPatterns : EnzymeHLOPatternOp<
     "convert_mul_convert"> {
   let patterns = ["ConvertMulConvert"];
+}
+def ApplyConvertBinopConvertMinPatterns : EnzymeHLOPatternOp<
+    "convert_binop_convert_min"> {
+  let patterns = ["ConvertBinopConvert<stablehlo::MinOp>"];
+}
+def ApplyConvertBinopConvertMaxPatterns : EnzymeHLOPatternOp<
+    "convert_binop_convert_max"> {
+  let patterns = ["ConvertBinopConvert<stablehlo::MaxOp>"];
 }
 def ApplyNegateReduceWindowSubPatterns : EnzymeHLOPatternOp<
     "negate_reduce_window_sub"> {
@@ -1465,6 +1477,12 @@ def SelectSelectSameCond : EnzymeHLOPatternOp<
     "select_select_same_cond"> {
   let patterns = ["SelectSelectSameCond"];
 }
+
+def SelectSelectNegCond : EnzymeHLOPatternOp<
+    "select_select_neg_cond"> {
+  let patterns = ["SelectSelectNegCond"];
+}
+
 
 def AndPadPad : EnzymeHLOPatternOp<
     "and_pad_pad"> {

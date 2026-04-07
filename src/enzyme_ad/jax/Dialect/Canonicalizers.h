@@ -109,6 +109,44 @@ public:
   }
 };
 
+template <typename T>
+static std::optional<SmallVector<T>> getSymbolUsers(FunctionOpInterface fn,
+                                                    Operation *op) {
+  SmallVector<T> users;
+  SmallVector<Region *, 1> todo;
+  for (auto &reg : op->getRegions())
+    todo.push_back(&reg);
+  while (!todo.empty()) {
+    for (Operation &op : todo.pop_back_val()->getOps()) {
+      if (auto elem = dyn_cast<CallOpInterface>(&op)) {
+        auto callable = elem.getCallableForCallee();
+        if (auto sym = callable.dyn_cast<SymbolRefAttr>()) {
+
+          if (sym == FlatSymbolRefAttr::get(op.getContext(), fn.getName())) {
+            if (auto ET = dyn_cast<T>(&op)) {
+              users.push_back(ET);
+              continue;
+            }
+            return {};
+          } else {
+            continue;
+          }
+        }
+        return {};
+      }
+      // jitcall and kernelcall ops are only allowed in stablehlo-compatible
+      // func ops
+      if (isa<LLVM::LLVMFuncOp>(&op))
+        continue;
+      if (op.hasTrait<OpTrait::SymbolTable>())
+        continue;
+      for (auto &reg : op.getRegions())
+        todo.push_back(&reg);
+    }
+  }
+  return std::move(users);
+}
+
 template <typename OpTy>
 class ReadNoneArg final : public OpRewritePattern<OpTy> {
 public:
@@ -138,17 +176,41 @@ public:
       if (!potentialReadNone)
         return failure();
     }
+
+    // Do it first on the current launch to avoid costly collection of all
+    // symbol users if already we can early prove there are no changes.
+    {
+      bool potentialChanged = false;
+      for (auto arg : fn.front().getArguments()) {
+        auto operandIndex = arg.getArgNumber();
+        bool readnone = arg.use_empty();
+        if (!readnone)
+          continue;
+
+        auto operand_aliases = launchOp.getOutputOperandAliases();
+        for (auto alias_attr : operand_aliases) {
+          auto alias = cast<stablehlo::OutputOperandAliasAttr>(alias_attr);
+          auto aliasOperandIndex = alias.getOperandIndex();
+          if (aliasOperandIndex == operandIndex) {
+            goto notlegal0;
+          }
+        }
+        potentialChanged = true;
+        break;
+      notlegal0:;
+      }
+      if (!potentialChanged)
+        return failure();
+    }
+
     bool changed = false;
 
     SmallVector<OpTy> calls;
-    auto use_opt = symbolTable.getSymbolTable(mod).getSymbolUses(fn, mod);
+    auto use_opt = getSymbolUsers<OpTy>(fn, mod);
     if (!use_opt)
       return failure();
-    for (auto u : *use_opt) {
-      auto launch2 = dyn_cast<OpTy>(u.getUser());
-      if (!launch2)
-        return failure();
-      calls.push_back(launch2);
+    calls = std::move(*use_opt);
+    for (auto launchOp : calls) {
       auto operand_aliases2 = launchOp.getOutputOperandAliases();
       (void)operand_aliases2;
       assert(operand_aliases2.size() == launchOp.getNumResults());
@@ -167,12 +229,13 @@ public:
           auto alias = cast<stablehlo::OutputOperandAliasAttr>(alias_attr);
           auto aliasOperandIndex = alias.getOperandIndex();
           if (aliasOperandIndex == operandIndex) {
-            return failure();
+            goto notlegal;
           }
         }
       }
       changed = true;
       deadArgs[operandIndex] = true;
+    notlegal:;
     }
 
     if (!changed)

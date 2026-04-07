@@ -363,6 +363,7 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("extend_splat<16>");
   list.push_back("noop_slice<16>");
   list.push_back("noop_reverse<16>");
+  list.push_back("slice_reverse<16>");
   list.push_back("slice_slice<16>");
   list.push_back("dynamic_slice_slice<16>");
   list.push_back("slice_dynamic_slice<16>");
@@ -428,7 +429,7 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("dus_dus_concat");
   list.push_back("abs_positive_simplify");
   list.push_back("transpose_elementwise_transpose");
-  list.push_back("select_comp_iota_const_simplify<1>");
+  list.push_back("select_comp_iota_const_simplify");
   list.push_back("sign_abs_simplify<1>");
   list.push_back("broadcastindim_is_reshape");
   list.push_back("reduce_window_wrap<1>");
@@ -480,6 +481,8 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("reduce_reduce");
   list.push_back("conj_real");
   list.push_back("convert_mul_convert");
+  list.push_back("convert_binop_convert_min");
+  list.push_back("convert_binop_convert_max");
   list.push_back("select_broadcast_in_dim");
   list.push_back("if_op_lift_common_ops");
   list.push_back("involution_neg_simplify");
@@ -506,6 +509,7 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("compare_subtract_const_simplify");
   list.push_back("select_simplify");
   list.push_back("select_select_same_cond");
+  list.push_back("select_select_neg_cond");
   list.push_back("concatenate_subtract_to_subtract_pad");
   list.push_back("concatenate_add_to_add_pad");
   list.push_back("concatenate_broadcast_in_dim");
