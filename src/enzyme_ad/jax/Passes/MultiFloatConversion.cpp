@@ -2584,6 +2584,35 @@ struct DotGeneralToMulReducePattern
     return success();
   }
 };
+Value getMaxValue(Value tensor, OpBuilder &builder, Location loc) {
+  auto type = cast<RankedTensorType>(tensor.getType());
+  auto absOp = builder.create<stablehlo::AbsOp>(loc, tensor);
+
+  auto elemType = type.getElementType();
+  auto zeroAttr = builder.getFloatAttr(elemType, 0.0);
+  auto scalarType = RankedTensorType::get({}, elemType);
+  Value zero = builder.create<stablehlo::ConstantOp>(
+      loc, SplatElementsAttr::get(scalarType, zeroAttr));
+
+  SmallVector<int64_t> dims;
+  for (int64_t i = 0; i < type.getRank(); ++i)
+    dims.push_back(i);
+
+  auto reduceOp = builder.create<stablehlo::ReduceOp>(
+      loc, TypeRange{scalarType}, ValueRange{absOp.getResult()},
+      ValueRange{zero}, builder.getDenseI64ArrayAttr(dims));
+
+  Block *block = new Block();
+  reduceOp.getBody().push_back(block);
+  block->addArguments({scalarType, scalarType}, {loc, loc});
+
+  auto b = OpBuilder::atBlockBegin(block);
+  Value max = b.create<stablehlo::MaxOp>(loc, block->getArgument(0),
+                                         block->getArgument(1));
+  b.create<stablehlo::ReturnOp>(loc, max);
+
+  return reduceOp.getResult(0);
+}
 
 struct DotGeneralOpConversion
     : public OpConversionPattern<stablehlo::DotGeneralOp> {
@@ -2639,9 +2668,70 @@ struct DotGeneralOpConversion
     auto origShape = origType.getShape();
     auto prodType = RankedTensorType::get(origShape, targetType);
 
-    // Extended Dekker's algorithm on tensors
-    auto [lhs_hi_hi, lhs_hi_lo] = split(lhs_hi, rewriter, loc);
-    auto [rhs_hi_hi, rhs_hi_lo] = split(rhs_hi, rewriter, loc);
+    // Reverted to Extended Dekker's algorithm on tensors with f64 accumulation
+    // True Ozaki scheme with dynamic scaling and floor splitting
+    auto lhs_hi_f32_ty = cast<RankedTensorType>(lhs_hi.getType());
+    auto rhs_hi_f32_ty = cast<RankedTensorType>(rhs_hi.getType());
+    auto floatType = lhs_hi_f32_ty.getElementType();
+
+    // Dynamic power-of-2 scaling and splitting
+    auto floatTargetType = cast<FloatType>(targetType);
+    unsigned mantissaWidth = floatTargetType.getFPMantissaWidth();
+    unsigned splitBits = mantissaWidth / 2;
+    double splitFactor = std::pow(2.0, splitBits);
+
+    Value max_A = getMaxValue(lhs_hi, rewriter, loc);
+    Value max_B = getMaxValue(rhs_hi, rewriter, loc);
+
+    auto scalarType = RankedTensorType::get({}, floatType);
+    Value ln_2 = rewriter.create<stablehlo::ConstantOp>(
+        loc, SplatElementsAttr::get(
+                 scalarType, rewriter.getFloatAttr(floatType, std::log(2.0))));
+
+    // Compute scale_A
+    Value ln_A = rewriter.create<stablehlo::LogOp>(loc, max_A);
+    Value log2_A = rewriter.create<stablehlo::DivOp>(loc, ln_A, ln_2);
+    Value ceil_log2_A = rewriter.create<stablehlo::CeilOp>(loc, log2_A);
+    Value scaled_log2_A =
+        rewriter.create<stablehlo::MulOp>(loc, ceil_log2_A, ln_2);
+    Value scale_A_scalar =
+        rewriter.create<stablehlo::ExpOp>(loc, scaled_log2_A);
+    Value scale_A = rewriter.create<stablehlo::BroadcastInDimOp>(
+        loc, lhs_hi_f32_ty, scale_A_scalar, rewriter.getDenseI64ArrayAttr({}));
+
+    // Compute scale_B
+    Value ln_B = rewriter.create<stablehlo::LogOp>(loc, max_B);
+    Value log2_B = rewriter.create<stablehlo::DivOp>(loc, ln_B, ln_2);
+    Value ceil_log2_B = rewriter.create<stablehlo::CeilOp>(loc, log2_B);
+    Value scaled_log2_B =
+        rewriter.create<stablehlo::MulOp>(loc, ceil_log2_B, ln_2);
+    Value scale_B_scalar =
+        rewriter.create<stablehlo::ExpOp>(loc, scaled_log2_B);
+    Value scale_B = rewriter.create<stablehlo::BroadcastInDimOp>(
+        loc, rhs_hi_f32_ty, scale_B_scalar, rewriter.getDenseI64ArrayAttr({}));
+
+    Value lhs_hi_norm = rewriter.create<stablehlo::DivOp>(loc, lhs_hi, scale_A);
+    Value rhs_hi_norm = rewriter.create<stablehlo::DivOp>(loc, rhs_hi, scale_B);
+
+    Value scale_const = rewriter.create<stablehlo::ConstantOp>(
+        loc, SplatElementsAttr::get(
+                 lhs_hi_f32_ty, rewriter.getFloatAttr(floatType, splitFactor)));
+    Value scaled_A =
+        rewriter.create<stablehlo::MulOp>(loc, lhs_hi_norm, scale_const);
+    Value floored_A = rewriter.create<stablehlo::FloorOp>(loc, scaled_A);
+    Value lhs_hi_hi = floored_A;
+    Value lhs_hi_lo =
+        rewriter.create<stablehlo::SubtractOp>(loc, scaled_A, floored_A);
+
+    Value scale_const_B = rewriter.create<stablehlo::ConstantOp>(
+        loc, SplatElementsAttr::get(
+                 rhs_hi_f32_ty, rewriter.getFloatAttr(floatType, splitFactor)));
+    Value scaled_B =
+        rewriter.create<stablehlo::MulOp>(loc, rhs_hi_norm, scale_const_B);
+    Value floored_B = rewriter.create<stablehlo::FloorOp>(loc, scaled_B);
+    Value rhs_hi_hi = floored_B;
+    Value rhs_hi_lo =
+        rewriter.create<stablehlo::SubtractOp>(loc, scaled_B, floored_B);
 
     Value p1 = rewriter.create<stablehlo::DotGeneralOp>(
         loc, prodType, lhs_hi_hi, rhs_hi_hi, op.getDotDimensionNumbers(),
@@ -2656,18 +2746,63 @@ struct DotGeneralOpConversion
         loc, prodType, lhs_hi_lo, rhs_hi_lo, op.getDotDimensionNumbers(),
         op.getPrecisionConfigAttr(), op.getAlgorithmAttr());
 
-    // p = standard dot product of high limbs
-    Value p = rewriter.create<stablehlo::DotGeneralOp>(
-        loc, prodType, lhs_hi, rhs_hi, op.getDotDimensionNumbers(),
-        op.getPrecisionConfigAttr(), op.getAlgorithmAttr());
+    Value total_scale =
+        rewriter.create<stablehlo::MulOp>(loc, scale_A_scalar, scale_B_scalar);
+    Value split_factor_squared = rewriter.create<stablehlo::ConstantOp>(
+        loc, SplatElementsAttr::get(
+                 scalarType,
+                 rewriter.getFloatAttr(floatType, splitFactor * splitFactor)));
+    Value scale_back_scalar = rewriter.create<stablehlo::DivOp>(
+        loc, total_scale, split_factor_squared);
 
-    // Combine to get error (similar to twoProdDekker)
-    Value err1 = rewriter.create<stablehlo::SubtractOp>(loc, p1, p);
-    Value err2 = rewriter.create<stablehlo::AddOp>(loc, p2, p3);
-    Value err3 = rewriter.create<stablehlo::AddOp>(loc, err1, err2);
-    Value err4 = rewriter.create<stablehlo::AddOp>(loc, err3, p4);
+    Value scale_back = rewriter.create<stablehlo::BroadcastInDimOp>(
+        loc, prodType, scale_back_scalar, rewriter.getDenseI64ArrayAttr({}));
 
-    // Cross terms (low limbs)
+    p1 = rewriter.create<stablehlo::MulOp>(loc, p1, scale_back);
+    p2 = rewriter.create<stablehlo::MulOp>(loc, p2, scale_back);
+    p3 = rewriter.create<stablehlo::MulOp>(loc, p3, scale_back);
+    p4 = rewriter.create<stablehlo::MulOp>(loc, p4, scale_back);
+
+    // Reshape to 2x1 to prepare for concatenation in f32
+    SmallVector<int64_t, 2> extShape(origShape.begin(), origShape.end());
+    extShape.push_back(1);
+    auto extType = RankedTensorType::get(extShape, targetType);
+
+    Value p1_ext = rewriter.create<stablehlo::ReshapeOp>(loc, extType, p1);
+    Value p2_ext = rewriter.create<stablehlo::ReshapeOp>(loc, extType, p2);
+    Value p3_ext = rewriter.create<stablehlo::ReshapeOp>(loc, extType, p3);
+    Value p4_ext = rewriter.create<stablehlo::ReshapeOp>(loc, extType, p4);
+
+    // Concatenate along dim 1
+    SmallVector<int64_t, 2> concatShape(origShape.begin(), origShape.end());
+    concatShape.push_back(4);
+    auto concatType = RankedTensorType::get(concatShape, targetType);
+
+    Value products = rewriter.create<stablehlo::ConcatenateOp>(
+        loc, concatType, ValueRange{p1_ext, p2_ext, p3_ext, p4_ext}, 1);
+
+    // Reduce across dim 1 in f32
+    Value init_val = rewriter.create<stablehlo::ConstantOp>(
+        loc, SplatElementsAttr::get(RankedTensorType::get({}, targetType),
+                                    rewriter.getFloatAttr(targetType, 0.0)));
+
+    auto sum_high_op = rewriter.create<stablehlo::ReduceOp>(
+        loc, prodType, products, init_val, rewriter.getDenseI64ArrayAttr({1}));
+    Value sum_high_f32 = sum_high_op.getResult(0);
+
+    // Add stablehlo.add as reducer!
+    Region &region = sum_high_op.getRegion();
+    Block *block = rewriter.createBlock(&region);
+    auto argType = RankedTensorType::get({}, targetType);
+    block->addArgument(argType, loc);
+    block->addArgument(argType, loc);
+    rewriter.setInsertionPointToStart(block);
+    Value sum = rewriter.create<stablehlo::AddOp>(loc, block->getArgument(0),
+                                                  block->getArgument(1));
+    rewriter.create<stablehlo::ReturnOp>(loc, sum);
+
+    rewriter.setInsertionPointAfter(sum_high_op);
+
     Value hi_lo = rewriter.create<stablehlo::DotGeneralOp>(
         loc, prodType, lhs_hi, rhs_lo, op.getDotDimensionNumbers(),
         op.getPrecisionConfigAttr(), op.getAlgorithmAttr());
@@ -2675,12 +2810,10 @@ struct DotGeneralOpConversion
         loc, prodType, lhs_lo, rhs_hi, op.getDotDimensionNumbers(),
         op.getPrecisionConfigAttr(), op.getAlgorithmAttr());
 
-    // Sum low parts
-    Value low = rewriter.create<stablehlo::AddOp>(loc, err4, hi_lo);
-    low = rewriter.create<stablehlo::AddOp>(loc, low, lo_hi);
-
-    // Renormalize
-    auto [final_h, final_l] = fastTwoSum(p, low, rewriter, loc);
+    auto [s1, e1] = twoSum(sum_high_f32, hi_lo, rewriter, loc);
+    auto [s2, e2] = twoSum(s1, lo_hi, rewriter, loc);
+    Value err = rewriter.create<stablehlo::AddOp>(loc, e1, e2);
+    auto [final_h, final_l] = twoSum(s2, err, rewriter, loc);
 
     if (concatDimension != "tuple") {
       if (prodType.getRank() == 0) {
