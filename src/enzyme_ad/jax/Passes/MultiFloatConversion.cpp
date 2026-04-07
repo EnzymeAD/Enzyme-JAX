@@ -1408,6 +1408,62 @@ struct AbsOpConversion : public OpConversionPattern<stablehlo::AbsOp> {
   }
 };
 
+struct FloorOpConversion : public OpConversionPattern<stablehlo::FloorOp> {
+  StringRef concatDimension;
+
+  FloorOpConversion(TypeConverter &typeConverter, MLIRContext *context,
+                    StringRef concatDimension)
+      : OpConversionPattern<stablehlo::FloorOp>(typeConverter, context),
+        concatDimension(concatDimension) {}
+
+  LogicalResult
+  matchAndRewrite(stablehlo::FloorOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+
+    Value input = adaptor.getOperands()[0];
+    if (auto castOp = input.getDefiningOp<UnrealizedConversionCastOp>()) {
+      input = castOp.getOperand(0);
+    }
+    Value hi = extractLimb(input, 0, rewriter, loc, concatDimension);
+    Value lo = extractLimb(input, 1, rewriter, loc, concatDimension);
+
+    auto tensorType = cast<RankedTensorType>(hi.getType());
+    auto floatTy = cast<FloatType>(tensorType.getElementType());
+
+    // 1. fh = floor(xh)
+    Value fh = rewriter.create<stablehlo::FloorOp>(loc, hi);
+
+    // 2. diff = xh - fh
+    Value diff = rewriter.create<stablehlo::SubtractOp>(loc, hi, fh);
+
+    // 3. is_negative = compare(LT, diff, negate(xl))
+    Value neg_lo = rewriter.create<stablehlo::NegOp>(loc, lo);
+    Value is_negative = rewriter.create<stablehlo::CompareOp>(
+        loc, diff, neg_lo, stablehlo::ComparisonDirection::LT);
+
+    // 4. fh_minus_1 = fh - 1
+    auto oneAttr = rewriter.getFloatAttr(floatTy, 1.0);
+    auto splatAttr = SplatElementsAttr::get(tensorType, oneAttr);
+    Value one = rewriter.create<stablehlo::ConstantOp>(loc, splatAttr);
+    Value fh_minus_1 = rewriter.create<stablehlo::SubtractOp>(loc, fh, one);
+
+    // 5. res_hi = select(is_negative, fh_minus_1, fh)
+    Value res_hi = rewriter.create<stablehlo::SelectOp>(loc, is_negative, fh_minus_1, fh);
+
+    // 6. res_lo = 0
+    auto zeroAttr = rewriter.getFloatAttr(floatTy, 0.0);
+    auto zeroSplatAttr = SplatElementsAttr::get(tensorType, zeroAttr);
+    Value zero = rewriter.create<stablehlo::ConstantOp>(loc, zeroSplatAttr);
+
+    // 7. Pack res_hi and res_lo
+    Value packed = packLimbs(res_hi, zero, rewriter, loc, concatDimension);
+    rewriter.replaceOp(op, packed);
+
+    return success();
+  }
+};
+
 struct NegOpConversion : public OpConversionPattern<stablehlo::NegOp> {
   StringRef concatDimension;
 
@@ -3772,6 +3828,7 @@ struct MultiFloatConversionPass
         typeConverter);
     IsResultOrOperandTypeLegal<stablehlo::CompareOp> compareLegal(
         typeConverter);
+    IsResultOrOperandTypeLegal<stablehlo::FloorOp> floorLegal(typeConverter);
     IsResultOrOperandTypeLegal<stablehlo::SineOp> sineLegal(typeConverter);
     IsResultOrOperandTypeLegal<stablehlo::DotGeneralOp> dotGeneralLegal(
         typeConverter);
@@ -3812,6 +3869,7 @@ struct MultiFloatConversionPass
     target.addDynamicallyLegalOp<stablehlo::TransposeOp>(transposeLegal);
     target.addDynamicallyLegalOp<stablehlo::ReshapeOp>(reshapeLegal);
     target.addDynamicallyLegalOp<stablehlo::CompareOp>(compareLegal);
+    target.addDynamicallyLegalOp<stablehlo::FloorOp>(floorLegal);
     target.addDynamicallyLegalOp<stablehlo::SineOp>(sineLegal);
     target.addDynamicallyLegalOp<stablehlo::DotGeneralOp>(dotGeneralLegal);
     target.addDynamicallyLegalOp<enzymexla::RotateOp>(rotateLegal);
@@ -3923,6 +3981,8 @@ struct MultiFloatConversionPass
                                                               context);
       patterns.add<GenericOpConversion<stablehlo::AbsOp>>(typeConverter,
                                                           context);
+      patterns.add<GenericOpConversion<stablehlo::FloorOp>>(typeConverter,
+                                                            context);
       patterns.add<GenericOpConversion<stablehlo::SqrtOp>>(typeConverter,
                                                            context);
       patterns.add<GenericOpConversion<stablehlo::SliceOp>>(typeConverter,
@@ -3975,6 +4035,7 @@ struct MultiFloatConversionPass
       patterns.add<ReverseOpConversion>(typeConverter, context,
                                         concatDimension);
       patterns.add<AbsOpConversion>(typeConverter, context, concatDimension);
+      patterns.add<FloorOpConversion>(typeConverter, context, concatDimension);
       patterns.add<SqrtOpConversion>(typeConverter, context, concatDimension);
       patterns.add<SliceOpConversion>(typeConverter, context, concatDimension);
       patterns.add<BroadcastInDimOpConversion>(typeConverter, context,
