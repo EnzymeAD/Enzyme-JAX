@@ -78,6 +78,14 @@ TypedOpResult<CollectiveTokenType> resolveCollectiveTokenToRootCollective(
 
 int getAxisSize(TypedOpResult<LogicalCommAxisType> logicalAxis);
 
+/**
+ * Checks that logical axes are disjoint after resolving to atomic factors:
+ *  - atomic factors are pairwise distinct
+ *  - factors for the same physical axis come from one factorization op
+ */
+bool areLogicalAxesDisjoint(
+  ::mlir::ValueRange logicalAxes);
+
 } // namespace mlir::enzyme::distributed
 
 #endif // ENZYME_AD_JAX_DIALECT_DISTRIBUTED_DIALECT_H

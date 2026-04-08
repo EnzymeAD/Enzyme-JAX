@@ -94,36 +94,10 @@ LogicalResult AxisProductOp::verify() {
     }
   }
 
-  llvm::SmallVector<TypedOpResult<LogicalCommAxisType>> atomicFactors;
-  resolveLogicalAxisToAtomicFactors(getLogicalAxis(), atomicFactors);
-  // Disjointness of factors: all factors refering to the same symbol/physical
-  // axis should be defined by the same factor op and should be distinct values.
-  llvm::SmallDenseMap<Attribute, llvm::SmallVector<TypedOpResult<LogicalCommAxisType>>> factorGroups;
-
-  for (auto atomicFactor : atomicFactors) {
-    auto atomicFactorResult = atomicFactor.asOpResult();
-    auto defining_op = atomicFactorResult.getDefiningOp();
-    auto axisFactorOp = cast<AxisFactorOp>(defining_op);
-    auto physicalAxisAttr = axisFactorOp.getPhysicalAxisAttr();
-    if (factorGroups.count(physicalAxisAttr)) {
-      // Check if the atomic factor is already in the group
-      auto &group = factorGroups[physicalAxisAttr];
-      for (auto existingFactor : group) {
-        auto existingFactorResult = existingFactor.asOpResult();
-        if (existingFactorResult == atomicFactorResult) {
-          return emitOpError() << "logical axis has duplicate atomic factors "
-                               << "referring to the same physical axis";
-        }
-        if (existingFactorResult.getDefiningOp() != axisFactorOp) {
-          return emitOpError() << "logical axis has atomic factors referring "
-                               << "to the same physical axis but defined by "
-                               << "different factorization ops";
-        }
-      }
-      group.push_back(atomicFactor);
-    } else {
-      factorGroups[physicalAxisAttr].push_back(atomicFactor);
-    }
+  if (!areLogicalAxesDisjoint(getLogicalAxis())) {
+    return emitOpError()
+           << "requires atomic factors to be distinct, and all factors "
+              "for the same physical axis to come from one factorization op";
   }
 
   return mlir::success();
