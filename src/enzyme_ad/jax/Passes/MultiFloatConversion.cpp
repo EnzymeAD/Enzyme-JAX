@@ -906,6 +906,8 @@ struct DivOpConversion : public OpConversionPattern<stablehlo::DivOp> {
                            concatDimension);
     Value y2 = extractLimb(adaptor.getOperands()[1], 1, rewriter, loc,
                            concatDimension);
+    llvm::errs() << "DivOpConversion: x1 type = " << x1.getType() << "\n";
+    llvm::errs() << "DivOpConversion: y1 type = " << y1.getType() << "\n";
 
     if (divSubsteps == 0) {
       // 1. q_hi = x_hi / y_hi
@@ -2329,6 +2331,7 @@ struct BroadcastInDimOpConversion
     Location loc = op.getLoc();
     bool isTuple = concatDimension == "tuple";
     bool isFirst = concatDimension == "first";
+    assert(false && "BroadcastInDimOpConversion called");
 
     if (isTuple) {
       Value high = extractLimb(adaptor.getOperands()[0], 0, rewriter, loc,
@@ -2355,6 +2358,8 @@ struct BroadcastInDimOpConversion
         llvm::to_vector(op.getBroadcastDimensions());
     auto outType =
         cast<RankedTensorType>(getTypeConverter()->convertType(op.getType()));
+    if (outType == op.getType())
+      return failure();
 
     if (isFirst) {
       SmallVector<int64_t> newBroadcastDims;
