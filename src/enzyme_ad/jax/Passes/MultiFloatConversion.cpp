@@ -4448,6 +4448,7 @@ struct MultiFloatConversionPass
     IsResultOrOperandTypeLegal<stablehlo::CompareOp> compareLegal(
         typeConverter);
     IsResultOrOperandTypeLegal<stablehlo::FloorOp> floorLegal(typeConverter);
+    IsResultOrOperandTypeLegal<stablehlo::CeilOp> ceilLegal(typeConverter);
     IsResultOrOperandTypeLegal<stablehlo::ExpOp> expLegal(typeConverter);
     IsResultOrOperandTypeLegal<stablehlo::LogOp> logLegal(typeConverter);
     IsResultOrOperandTypeLegal<stablehlo::MaxOp> maxLegal(typeConverter);
@@ -4499,6 +4500,7 @@ struct MultiFloatConversionPass
     target.addDynamicallyLegalOp<stablehlo::ReshapeOp>(reshapeLegal);
     target.addDynamicallyLegalOp<stablehlo::CompareOp>(compareLegal);
     target.addDynamicallyLegalOp<stablehlo::FloorOp>(floorLegal);
+    target.addDynamicallyLegalOp<stablehlo::CeilOp>(ceilLegal);
     target.addDynamicallyLegalOp<stablehlo::ExpOp>(expLegal);
     target.addDynamicallyLegalOp<stablehlo::LogOp>(logLegal);
     target.addDynamicallyLegalOp<stablehlo::SineOp>(sineLegal);
