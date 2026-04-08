@@ -381,16 +381,9 @@ std::pair<int, int> getFloatProperties(Type type) {
   auto floatTy = dyn_cast<FloatType>(type);
   if (!floatTy)
     return {0, 0};
-  if (floatTy.getWidth() == 64)
-    return {11, 53};
-  if (floatTy.getWidth() == 32)
-    return {8, 24};
-  if (floatTy.getWidth() == 16)
-    return floatTy.isF16() ? std::make_pair(5, 11) : std::make_pair(8, 8);
-  if (floatTy.getWidth() == 8)
-    return isa<Float8E4M3FNType>(floatTy) ? std::make_pair(4, 4)
-                                          : std::make_pair(5, 3);
-  return {0, 0};
+  int mantissaWidth = floatTy.getFPMantissaWidth();
+  int expBits = floatTy.getWidth() - mantissaWidth;
+  return {expBits, mantissaWidth};
 }
 
 int getFloatPrecision(Type type) { return getFloatProperties(type).second; }
@@ -2842,9 +2835,6 @@ struct DotGeneralToMulReducePattern
     if (!lhsType || !rhsType)
       return failure();
 
-    if (!lhsType.getElementType().isF32() && !lhsType.getElementType().isF64())
-      return failure();
-
     auto dNums = op.getDotDimensionNumbers();
     auto lhsContracting = dNums.getLhsContractingDimensions();
     auto rhsContracting = dNums.getRhsContractingDimensions();
@@ -3087,8 +3077,7 @@ struct LogOpConversion : public OpConversionPattern<stablehlo::LogOp> {
     static const double kLn2[2] = {0.6931471824645996, -1.9046542101288585e-9};
 
     // 1. Extract exponent and significand
-    Type intEltTy =
-        floatTy.isBF16() ? rewriter.getI16Type() : rewriter.getI32Type();
+    Type intEltTy = rewriter.getIntegerType(floatTy.getWidth());
     auto intType = RankedTensorType::get(tensorType.getShape(), intEltTy);
     Value bits =
         rewriter.create<stablehlo::BitcastConvertOp>(loc, intType, x_hi);
@@ -3100,8 +3089,8 @@ struct LogOpConversion : public OpConversionPattern<stablehlo::LogOp> {
     };
 
     int mantissaWidth = floatTy.getFPMantissaWidth() - 1;
-    int expBits = 8; // Both f32 and bf16 have 8 exponent bits
-    int bias = 127;  // Both have 127 bias
+    int expBits = floatTy.getWidth() - floatTy.getFPMantissaWidth();
+    int bias = (1 << (expBits - 1)) - 1;
 
     int maskVal = ((1 << expBits) - 1) << mantissaWidth;
     int shiftAmount = mantissaWidth;
@@ -3114,7 +3103,7 @@ struct LogOpConversion : public OpConversionPattern<stablehlo::LogOp> {
                                                        getIntConst(bias));
 
     Value biased_neg_exp =
-        rewriter.create<stablehlo::SubtractOp>(loc, getIntConst(127), exp);
+        rewriter.create<stablehlo::SubtractOp>(loc, getIntConst(bias), exp);
     Value scale_bits = rewriter.create<stablehlo::ShiftLeftOp>(
         loc, biased_neg_exp, getIntConst(shiftAmount));
     Value scale = rewriter.create<stablehlo::BitcastConvertOp>(loc, tensorType,
@@ -3131,7 +3120,7 @@ struct LogOpConversion : public OpConversionPattern<stablehlo::LogOp> {
         rewriter.create<stablehlo::AndOp>(loc, index_bits, getIntConst(0x1F));
 
     Value index_i32 = index;
-    if (floatTy.isBF16()) {
+    if (floatTy.getWidth() != 32) {
       auto int32Type =
           RankedTensorType::get(tensorType.getShape(), rewriter.getI32Type());
       index_i32 = rewriter.create<stablehlo::ConvertOp>(loc, int32Type, index);
