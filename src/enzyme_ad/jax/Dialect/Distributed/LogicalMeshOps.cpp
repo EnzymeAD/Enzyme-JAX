@@ -30,37 +30,7 @@ LogicalResult LogicalMeshOp::resolveToAtomicFactors(
 }
 
 bool LogicalMeshOp::isDisjoint() {
-  llvm::SmallVector<TypedOpResult<LogicalCommAxisType>> atomicFactors;
-  if (failed(resolveToAtomicFactors(atomicFactors))) {
-    return false;
-  }
-
-  llvm::SmallVector<SymbolRefAttr> physicalAxisRefs;
-  for (auto atomicFactor : atomicFactors) {
-    auto atomicFactorResult = atomicFactor.asOpResult();
-    auto definingOp = atomicFactorResult.getDefiningOp();
-    auto axisFactorOp = cast<AxisFactorOp>(definingOp);
-    physicalAxisRefs.push_back(axisFactorOp.getPhysicalAxisAttr());
-  }
-
-  for (size_t i = 0; i < atomicFactors.size(); ++i) {
-    auto factorIResult = atomicFactors[i].asOpResult();
-    auto def_op = factorIResult.getDefiningOp();
-
-    for (size_t j = i + 1; j < atomicFactors.size(); ++j) {
-      auto factorJResult = atomicFactors[j].asOpResult();
-      auto other_def_op = factorJResult.getDefiningOp();
-      if (factorIResult == factorJResult) {
-        return false;
-      }
-      if (physicalAxisRefs[i] == physicalAxisRefs[j] &&
-          def_op != other_def_op) {
-        return false;
-      }
-    }
-  }
-
-  return true;
+  return areLogicalAxesDisjoint(getAxes());
 }
 
 bool LogicalMeshOp::isSubmesh(LogicalMeshOp submesh) {
