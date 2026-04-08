@@ -724,7 +724,7 @@ struct ReduceOpConversion : public OpConversionPattern<stablehlo::ReduceOp> {
           stablehlo::ReshapeOp::create(rewriter, loc, scalarType, init_lo);
     }
 
-    if (preciseReduce) {
+    if (preciseReduce || isMax) {
       Value input_hi = extractLimb(input, 0, rewriter, loc, concatDimension);
       Value input_lo = extractLimb(input, 1, rewriter, loc, concatDimension);
       SmallVector<Value, 2> newInputs = {input_hi, input_lo};
@@ -796,18 +796,46 @@ struct ReduceOpConversion : public OpConversionPattern<stablehlo::ReduceOp> {
       }
 
       auto scalarType = RankedTensorType::get({}, targetType);
-      auto reduceOp = rewriter.create<stablehlo::ReduceOp>(
-          loc, input, init_hi, dims);
 
-      Block *reduceBlock = new Block();
-      reduceOp.getBody().push_back(reduceBlock);
-      reduceBlock->addArguments({scalarType, scalarType}, {loc, loc});
+      auto createReducer = [&](stablehlo::ReduceOp reduceOp) {
+        Block *reduceBlock = new Block();
+        reduceOp.getBody().push_back(reduceBlock);
+        reduceBlock->addArguments({scalarType, scalarType}, {loc, loc});
 
-      auto blockBuilder = OpBuilder::atBlockBegin(reduceBlock);
-      Value add = blockBuilder.create<stablehlo::AddOp>(
-          loc, scalarType, reduceBlock->getArgument(0),
-          reduceBlock->getArgument(1));
-      blockBuilder.create<stablehlo::ReturnOp>(loc, add);
+        auto blockBuilder = OpBuilder::atBlockBegin(reduceBlock);
+        Value add = blockBuilder.create<stablehlo::AddOp>(
+            loc, scalarType, reduceBlock->getArgument(0),
+            reduceBlock->getArgument(1));
+        blockBuilder.create<stablehlo::ReturnOp>(loc, add);
+      };
+
+      if (concatDimension == "tuple") {
+        Value input_hi = extractLimb(input, 0, rewriter, loc, concatDimension);
+        Value input_lo = extractLimb(input, 1, rewriter, loc, concatDimension);
+
+        auto reduceOp_hi =
+            rewriter.create<stablehlo::ReduceOp>(loc, input_hi, init_hi, dims);
+        createReducer(reduceOp_hi);
+
+        auto reduceOp_lo =
+            rewriter.create<stablehlo::ReduceOp>(loc, input_lo, init_lo, dims);
+        createReducer(reduceOp_lo);
+
+        auto finalF64Type = op.getResult(0).getType();
+        Value conv_hi = rewriter.create<stablehlo::ConvertOp>(
+            loc, finalF64Type, reduceOp_hi.getResult(0));
+        Value conv_lo = rewriter.create<stablehlo::ConvertOp>(
+            loc, finalF64Type, reduceOp_lo.getResult(0));
+        Value final_sum = rewriter.create<stablehlo::AddOp>(loc, finalF64Type,
+                                                            conv_hi, conv_lo);
+
+        rewriter.replaceOp(op, final_sum);
+        return success();
+      }
+
+      auto reduceOp =
+          rewriter.create<stablehlo::ReduceOp>(loc, input, init_hi, dims);
+      createReducer(reduceOp);
 
       Value res_all = reduceOp.getResult(0);
       auto resType = cast<RankedTensorType>(res_all.getType());
@@ -820,11 +848,13 @@ struct ReduceOpConversion : public OpConversionPattern<stablehlo::ReduceOp> {
         SmallVector<int64_t> sliceStrides(resType.getRank(), 1);
 
         sliceLimits[0] = 1;
-        res_hi = rewriter.create<stablehlo::SliceOp>(loc, res_all, sliceOffsets, sliceLimits, sliceStrides);
-        
+        res_hi = rewriter.create<stablehlo::SliceOp>(loc, res_all, sliceOffsets,
+                                                     sliceLimits, sliceStrides);
+
         sliceOffsets[0] = 1;
         sliceLimits[0] = 2;
-        res_lo = rewriter.create<stablehlo::SliceOp>(loc, res_all, sliceOffsets, sliceLimits, sliceStrides);
+        res_lo = rewriter.create<stablehlo::SliceOp>(loc, res_all, sliceOffsets,
+                                                     sliceLimits, sliceStrides);
       } else {
         int lastDim = resType.getRank() - 1;
         SmallVector<int64_t> sliceOffsets(resType.getRank(), 0);
@@ -832,24 +862,31 @@ struct ReduceOpConversion : public OpConversionPattern<stablehlo::ReduceOp> {
         SmallVector<int64_t> sliceStrides(resType.getRank(), 1);
 
         sliceLimits[lastDim] = 1;
-        res_hi = rewriter.create<stablehlo::SliceOp>(loc, res_all, sliceOffsets, sliceLimits, sliceStrides);
-        
+        res_hi = rewriter.create<stablehlo::SliceOp>(loc, res_all, sliceOffsets,
+                                                     sliceLimits, sliceStrides);
+
         sliceOffsets[lastDim] = 1;
         sliceLimits[lastDim] = 2;
-        res_lo = rewriter.create<stablehlo::SliceOp>(loc, res_all, sliceOffsets, sliceLimits, sliceStrides);
+        res_lo = rewriter.create<stablehlo::SliceOp>(loc, res_all, sliceOffsets,
+                                                     sliceLimits, sliceStrides);
       }
 
       auto finalF64Type = op.getResult(0).getType();
       auto finalF32Type = RankedTensorType::get(
           cast<RankedTensorType>(finalF64Type).getShape(), targetType);
 
-      Value reshaped_hi = rewriter.create<stablehlo::ReshapeOp>(loc, finalF32Type, res_hi);
-      Value reshaped_lo = rewriter.create<stablehlo::ReshapeOp>(loc, finalF32Type, res_lo);
+      Value reshaped_hi =
+          rewriter.create<stablehlo::ReshapeOp>(loc, finalF32Type, res_hi);
+      Value reshaped_lo =
+          rewriter.create<stablehlo::ReshapeOp>(loc, finalF32Type, res_lo);
 
-      Value conv_hi = rewriter.create<stablehlo::ConvertOp>(loc, finalF64Type, reshaped_hi);
-      Value conv_lo = rewriter.create<stablehlo::ConvertOp>(loc, finalF64Type, reshaped_lo);
+      Value conv_hi =
+          rewriter.create<stablehlo::ConvertOp>(loc, finalF64Type, reshaped_hi);
+      Value conv_lo =
+          rewriter.create<stablehlo::ConvertOp>(loc, finalF64Type, reshaped_lo);
 
-      Value sum = rewriter.create<stablehlo::AddOp>(loc, finalF64Type, conv_hi, conv_lo);
+      Value sum = rewriter.create<stablehlo::AddOp>(loc, finalF64Type, conv_hi,
+                                                    conv_lo);
       rewriter.replaceOp(op, sum);
       return success();
     }
@@ -1490,7 +1527,7 @@ struct CeilOpConversion : public OpConversionPattern<stablehlo::CeilOp> {
   StringRef concatDimension;
 
   CeilOpConversion(TypeConverter &typeConverter, MLIRContext *context,
-                    StringRef concatDimension)
+                   StringRef concatDimension)
       : OpConversionPattern<stablehlo::CeilOp>(typeConverter, context),
         concatDimension(concatDimension) {}
 
@@ -3393,6 +3430,7 @@ struct DotGeneralOpConversion
         rewriter.create<stablehlo::MulOp>(loc, ceil_log2_A, ln_2);
     Value scale_A_scalar =
         rewriter.create<stablehlo::ExpOp>(loc, scaled_log2_A);
+
     Value scale_A = rewriter.create<stablehlo::BroadcastInDimOp>(
         loc, sourceTensorLhsType, scale_A_scalar,
         rewriter.getDenseI64ArrayAttr({}));
@@ -3405,6 +3443,7 @@ struct DotGeneralOpConversion
         rewriter.create<stablehlo::MulOp>(loc, ceil_log2_B, ln_2);
     Value scale_B_scalar =
         rewriter.create<stablehlo::ExpOp>(loc, scaled_log2_B);
+
     Value scale_B = rewriter.create<stablehlo::BroadcastInDimOp>(
         loc, sourceTensorRhsType, scale_B_scalar,
         rewriter.getDenseI64ArrayAttr({}));

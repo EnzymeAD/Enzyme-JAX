@@ -86,6 +86,12 @@ func.func @reduce_2d_test(%arg0: tensor<2x2xf64>) -> tensor<f64> {
 // FIRST_PRECISE: %[[FINAL:.*]] = stablehlo.reduce(%[[CONV]] init: %{{.*}}) applies stablehlo.add across dimensions = [0]
 // FIRST_PRECISE: return %[[FINAL]]
 
+// FIRST_LIMB-LABEL: func.func @reduce_2d_test
+// FIRST_LIMB: %[[INPUT:.*]] = stablehlo.concatenate
+// FIRST_LIMB: %[[HI:.*]] = stablehlo.slice %[[INPUT]] [0:1, 0:2, 0:2]
+// FIRST_LIMB: %[[LO:.*]] = stablehlo.slice %[[INPUT]] [1:2, 0:2, 0:2]
+// FIRST_LIMB: %[[RED:.*]]:2 = stablehlo.reduce(%[[HI]] init: %{{.*}}), (%[[LO]] init: %{{.*}}) across dimensions = [1, 2]
+
 // LAST_PRECISE-LABEL: func.func @reduce_2d_test
 // LAST_PRECISE: %[[INPUT:.*]] = stablehlo.concatenate
 // LAST_PRECISE: %[[HI:.*]] = stablehlo.slice %[[INPUT]] [0:2, 0:2, 0:1]
