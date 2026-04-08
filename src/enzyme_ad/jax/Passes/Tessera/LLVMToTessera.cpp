@@ -64,9 +64,8 @@ public:
     bool hasSret = false;
     auto argAttrs = funcOp.getArgAttrsAttr();
     if (!params.empty() && argAttrs) {
-      auto firstArgAttrs = cast<DictionaryAttr>(argAttrs[0]);
       if (auto sretAttr =
-              firstArgAttrs.get(LLVM::LLVMDialect::getStructRetAttrName()))
+              funcOp.getArgAttr(0, LLVM::LLVMDialect::getStructRetAttrName()))
         hasSret = true;
     }
 
@@ -127,13 +126,10 @@ public:
     auto callee = SymbolTable::lookupSymbolIn(
         callOp->getParentOfType<ModuleOp>(), calleeAttr);
     // Only rewrite if callee is a tessera.define op
-    if (!isa_and_nonnull<tessera::DefineOp>(callee))
+    auto defineOp = dyn_cast_or_null<tessera::DefineOp>(callee);
+    if (!defineOp)
       return failure();
 
-    // Check if first operand has sret attribute. If so, remove it from
-    // the operand list and use its pointed-to type as the SSA return type,
-    // since tessera.call returns values directly rather than writing through
-    // a pointer.
     Value sretPtr;
     Type sretType;
     auto operands = callOp.getOperands();
@@ -141,16 +137,49 @@ public:
     SmallVector<Value> newOperands;
     SmallVector<Attribute> newArgAttrs;
     SmallVector<NamedAttribute> newAttrs;
+    SmallVector<int32_t> loadedOperands;
 
+    // Check if first operand has sret attribute. If so, remove it from
+    // the operand list and use its pointed-to type as the SSA return type,
+    // since tessera.call returns values directly rather than writing through
+    // a pointer.
     if (!operands.empty() && argAttrs) {
-      auto firstArgAttrs = cast<DictionaryAttr>(argAttrs[0]);
-      if (auto sretAttr =
-              firstArgAttrs.get(LLVM::LLVMDialect::getStructRetAttrName())) {
+      if (auto sretAttr = defineOp.getArgAttr(
+              0, LLVM::LLVMDialect::getStructRetAttrName())) {
         sretPtr = callOp.getOperand(0);
         sretType = cast<TypeAttr>(sretAttr).getValue();
-        // Build operands and arg attributes without first element
-        for (int i = 1; i < operands.size(); i++)
-          newOperands.push_back(callOp.getOperand(i));
+        // Build operands without first element. If a pointer operand is
+        // readonly and there is a preceding store to that pointer,
+        // load the value from the pointer and store that as the new operand
+        for (int i = 1; i < operands.size(); i++) {
+          auto operand = callOp.getOperand(i);
+          if (isa<LLVM::LLVMPointerType>(operand.getType()) &&
+              defineOp.getArgAttr(i,
+                                  LLVM::LLVMDialect::getReadonlyAttrName())) {
+            LLVM::StoreOp precedingStore;
+            for (auto *U : operand.getUsers()) {
+              if (auto storeOp = dyn_cast<LLVM::StoreOp>(U)) {
+                if (storeOp->getBlock() == callOp->getBlock() &&
+                    storeOp->isBeforeInBlock(callOp)) {
+                  precedingStore = storeOp;
+                  break;
+                }
+              }
+            }
+            if (precedingStore) {
+              auto loadedType = precedingStore.getValue().getType();
+              auto loadedVal = rewriter.create<LLVM::LoadOp>(
+                  callOp.getLoc(), loadedType, operand);
+              newOperands.push_back(loadedVal);
+              loadedOperands.push_back(i - 1);
+            } else {
+              newOperands.push_back(operand);
+            }
+          } else {
+            newOperands.push_back(operand);
+          }
+        }
+        // Build arg attrs without first element
         for (int j = 1; j < argAttrs.size(); j++)
           newArgAttrs.push_back(argAttrs[j]);
         // Filter out arg_attrs from attributes
@@ -169,6 +198,8 @@ public:
                                      sretPtr);
       newCall->setAttr(newCall.getArgAttrsAttrName(),
                        rewriter.getArrayAttr(newArgAttrs));
+      newCall->setAttr("tessera.loaded_operands",
+                       rewriter.getDenseI32ArrayAttr(loadedOperands));
       rewriter.eraseOp(callOp);
     } else {
       rewriter.replaceOpWithNewOp<tessera::CallOp>(

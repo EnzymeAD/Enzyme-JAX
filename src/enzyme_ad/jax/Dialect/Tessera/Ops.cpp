@@ -2,6 +2,8 @@
 #include "llvm/ADT/TypeSwitch.h"
 
 #include "Dialect.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/LLVMIR/LLVMTypes.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/Interfaces/CallInterfaces.h"
 #include "mlir/Interfaces/FunctionImplementation.h"
@@ -149,13 +151,20 @@ LogicalResult CallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   if (!has_sret && fnType.getNumInputs() != getNumOperands())
     return emitOpError("incorrect number of operands for callee");
 
+  // Allow type mismatch only for readonly pointer args that have been converted
+  // to values
   int startIdx = has_sret ? 1 : 0;
-  for (unsigned i = startIdx, e = fnType.getNumInputs(); i != e; ++i)
-    if (getOperand(i - startIdx).getType() != fnType.getInput(i))
-      return emitOpError("operand type mismatch: expected operand type ")
-             << fnType.getInput(i) << ", but provided "
-             << getOperand(i - startIdx).getType() << " for operand number "
-             << i - startIdx;
+  for (unsigned i = startIdx, e = fnType.getNumInputs(); i != e; ++i) {
+    if (getOperand(i - startIdx).getType() == fnType.getInput(i))
+      continue;
+    if (isa<LLVM::LLVMPointerType>(fnType.getInput(i)) &&
+        fn.getArgAttr(i, LLVM::LLVMDialect::getReadonlyAttrName()))
+      continue;
+    return emitOpError("operand type mismatch: expected operand type ")
+           << fnType.getInput(i) << ", but provided "
+           << getOperand(i - startIdx).getType() << " for operand number "
+           << i - startIdx;
+  }
 
   // If tessera.define has sret attribute,
   // tessera.call result count = tessera.define result count + 1
