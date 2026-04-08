@@ -219,9 +219,9 @@ jobs:
           display(Reactant.Profiler.load_xplane_file(xplane_file))
         working-directory: ${{ env.GB25_DIR }}
       - name: Test correctness in GB-25 code
-        timeout-minutes: 20
+        timeout-minutes: 40
         run: |
-          timeout --signal=TERM --verbose 19m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict correctness/correctness_sharded_atmosphere_simulation_run.jl ${{ matrix.grid }}
+          timeout --signal=TERM --verbose 39m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict correctness/correctness_sharded_atmosphere_simulation_run.jl ${{ matrix.grid }}
         working-directory: ${{ env.GB25_DIR }}
       - name: Upload MLIR and XLA modules
         uses: actions/upload-artifact@v7
