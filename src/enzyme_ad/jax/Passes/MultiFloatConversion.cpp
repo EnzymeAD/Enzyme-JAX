@@ -1500,6 +1500,7 @@ struct ExpOpConversion : public OpConversionPattern<stablehlo::ExpOp> {
 
     Value input = adaptor.getOperands()[0];
     Value hi = extractLimb(input, 0, rewriter, loc, concatDimension);
+    Value lo = extractLimb(input, 1, rewriter, loc, concatDimension);
 
     auto tensorType = cast<RankedTensorType>(hi.getType());
     auto floatTy = cast<FloatType>(tensorType.getElementType());
@@ -1573,7 +1574,7 @@ struct ExpOpConversion : public OpConversionPattern<stablehlo::ExpOp> {
     // It calls `extractLimb` and does arithmetic on limbs!
     // So I can do the same!
     // I can extract limbs of `x` (which is `hi` and `lo`!).
-    Value lo = extractLimb(input, 1, rewriter, loc, concatDimension);
+
 
     // And I have limbs of `n_mf` (which are `n` and `zero`!).
     // And limbs of `ln2` (which are `c1` and `c2`!).
@@ -4121,6 +4122,12 @@ struct MultiFloatConversionPass
             return true;
           if (lhsOp->getAttrDictionary() != rhsOp->getAttrDictionary())
             return true;
+          for (auto operand : op.getOperands()) {
+            for (auto *user : operand.getDefiningOp()->getUsers()) {
+              if (user != op)
+                return true;
+            }
+          }
           return false;
         });
     target.addDynamicallyLegalOp<stablehlo::SliceOp>(sliceLegal);
