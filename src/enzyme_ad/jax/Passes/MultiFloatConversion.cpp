@@ -916,8 +916,6 @@ struct DivOpConversion : public OpConversionPattern<stablehlo::DivOp> {
                            concatDimension);
     Value y2 = extractLimb(adaptor.getOperands()[1], 1, rewriter, loc,
                            concatDimension);
-    llvm::errs() << "DivOpConversion: x1 type = " << x1.getType() << "\n";
-    llvm::errs() << "DivOpConversion: y1 type = " << y1.getType() << "\n";
 
     if (divSubsteps == 0) {
       // 1. q_hi = x_hi / y_hi
@@ -1481,6 +1479,61 @@ struct FloorOpConversion : public OpConversionPattern<stablehlo::FloorOp> {
     Value zero = rewriter.create<stablehlo::ConstantOp>(loc, zeroSplatAttr);
 
     // 7. Pack res_hi and res_lo
+    Value packed = packLimbs(res_hi, zero, rewriter, loc, concatDimension);
+    rewriter.replaceOp(op, packed);
+
+    return success();
+  }
+};
+
+struct CeilOpConversion : public OpConversionPattern<stablehlo::CeilOp> {
+  StringRef concatDimension;
+
+  CeilOpConversion(TypeConverter &typeConverter, MLIRContext *context,
+                    StringRef concatDimension)
+      : OpConversionPattern<stablehlo::CeilOp>(typeConverter, context),
+        concatDimension(concatDimension) {}
+
+  LogicalResult
+  matchAndRewrite(stablehlo::CeilOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+
+    Value input = adaptor.getOperands()[0];
+    Value hi = extractLimb(input, 0, rewriter, loc, concatDimension);
+    Value lo = extractLimb(input, 1, rewriter, loc, concatDimension);
+
+    auto tensorType = cast<RankedTensorType>(hi.getType());
+    auto floatTy = cast<FloatType>(tensorType.getElementType());
+
+    // 1. ch = ceil(xh)
+    Value ch = rewriter.create<stablehlo::CeilOp>(loc, hi);
+
+    // 2. is_int = compare(EQ, ch, hi)
+    Value is_int = rewriter.create<stablehlo::CompareOp>(
+        loc, ch, hi, stablehlo::ComparisonDirection::EQ);
+
+    // 3. is_pos = compare(GT, lo, 0)
+    auto zeroAttr = rewriter.getFloatAttr(floatTy, 0.0);
+    auto zeroSplatAttr = SplatElementsAttr::get(tensorType, zeroAttr);
+    Value zero = rewriter.create<stablehlo::ConstantOp>(loc, zeroSplatAttr);
+    Value is_pos = rewriter.create<stablehlo::CompareOp>(
+        loc, lo, zero, stablehlo::ComparisonDirection::GT);
+
+    // 4. should_inc = and(is_int, is_pos)
+    Value should_inc = rewriter.create<stablehlo::AndOp>(loc, is_int, is_pos);
+
+    // 5. ch_plus_1 = ch + 1
+    auto oneAttr = rewriter.getFloatAttr(floatTy, 1.0);
+    auto splatAttr = SplatElementsAttr::get(tensorType, oneAttr);
+    Value one = rewriter.create<stablehlo::ConstantOp>(loc, splatAttr);
+    Value ch_plus_1 = rewriter.create<stablehlo::AddOp>(loc, ch, one);
+
+    // 6. res_hi = select(should_inc, ch_plus_1, ch)
+    Value res_hi =
+        rewriter.create<stablehlo::SelectOp>(loc, should_inc, ch_plus_1, ch);
+
+    // 7. Pack res_hi and zero (res_lo is 0)
     Value packed = packLimbs(res_hi, zero, rewriter, loc, concatDimension);
     rewriter.replaceOp(op, packed);
 
@@ -2341,7 +2394,6 @@ struct BroadcastInDimOpConversion
     Location loc = op.getLoc();
     bool isTuple = concatDimension == "tuple";
     bool isFirst = concatDimension == "first";
-    assert(false && "BroadcastInDimOpConversion called");
 
     if (isTuple) {
       Value high = extractLimb(adaptor.getOperands()[0], 0, rewriter, loc,
@@ -4618,6 +4670,7 @@ struct MultiFloatConversionPass
                                         concatDimension);
       patterns.add<AbsOpConversion>(typeConverter, context, concatDimension);
       patterns.add<FloorOpConversion>(typeConverter, context, concatDimension);
+      patterns.add<CeilOpConversion>(typeConverter, context, concatDimension);
       patterns.add<ExpOpConversion>(typeConverter, context, concatDimension);
       patterns.add<LogOpConversion>(typeConverter, context, concatDimension);
       patterns.add<SqrtOpConversion>(typeConverter, context, concatDimension);
