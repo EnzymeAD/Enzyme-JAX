@@ -48,7 +48,7 @@ jobs:
           - ''
           # - 'b25f3cbed2bc88c8ffef85f6a5319e2cf7b0454c'
         gb25_commit:
-          - 'pb/baroclinic-sharded-io'
+          - 'dkz/sharded-io'
 
         reactant_commit:
           - 'main'
