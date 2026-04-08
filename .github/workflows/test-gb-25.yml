@@ -55,7 +55,7 @@ jobs:
           - 'main'
           - 'multipad'
         grid:
-          - '--float-type=BFloat16 --grid-x 768 --grid-y 384'
+          - '--float-type=Float64 --grid-x 768 --grid-y 384'
           - '--float-type=Float32 --grid-x 768 --grid-y 384'
           #- '--float-type=Float64 --target-float-type=Float32 --dimension=first'
           #- '--float-type=Float64 --target-float-type=Float32 --dimension=last'
