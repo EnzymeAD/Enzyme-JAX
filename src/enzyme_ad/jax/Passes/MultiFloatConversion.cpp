@@ -565,6 +565,25 @@ struct ConstantOpConversion
     return success();
   }
 };
+std::pair<Value, Value> mfAdd(Value x_hi, Value x_lo, Value y_hi, Value y_lo,
+                              OpBuilder &builder, Location loc) {
+  auto [a, b] = twoSum(x_hi, y_hi, builder, loc);
+  auto [c, d] = twoSum(x_lo, y_lo, builder, loc);
+  auto [new_a, new_c] = fastTwoSum(a, c, builder, loc);
+  Value b2 = builder.create<stablehlo::AddOp>(loc, b, d);
+  Value b3 = builder.create<stablehlo::AddOp>(loc, b2, new_c);
+  return fastTwoSum(new_a, b3, builder, loc);
+}
+
+std::pair<Value, Value> mfMul(Value x_hi, Value x_lo, Value y_hi, Value y_lo,
+                              OpBuilder &builder, Location loc) {
+  auto [p00, e00] = twoProdDekker(x_hi, y_hi, builder, loc);
+  Value p01 = builder.create<stablehlo::MulOp>(loc, x_hi, y_lo);
+  Value p10 = builder.create<stablehlo::MulOp>(loc, x_lo, y_hi);
+  Value p01_p10 = builder.create<stablehlo::AddOp>(loc, p01, p10);
+  Value e00_new = builder.create<stablehlo::AddOp>(loc, e00, p01_p10);
+  return fastTwoSum(p00, e00_new, builder, loc);
+}
 
 struct AddOpConversion : public OpConversionPattern<stablehlo::AddOp> {
   AddOpConversion(TypeConverter &typeConverter, MLIRContext *context,
@@ -618,12 +637,7 @@ struct AddOpConversion : public OpConversionPattern<stablehlo::AddOp> {
     Value y2 = extractLimb(adaptor.getOperands()[1], 1, rewriter, loc,
                            concatDimension);
 
-    auto [a, b] = twoSum(x1, y1, rewriter, loc);
-    auto [c, d] = twoSum(x2, y2, rewriter, loc);
-    auto [new_a, new_c] = fastTwoSum(a, c, rewriter, loc);
-    Value b2 = rewriter.create<stablehlo::AddOp>(loc, b, d);
-    Value b3 = rewriter.create<stablehlo::AddOp>(loc, b2, new_c);
-    auto [final_a, final_b] = fastTwoSum(new_a, b3, rewriter, loc);
+    auto [final_a, final_b] = mfAdd(x1, x2, y1, y2, rewriter, loc);
 
     Value packed = packLimbs(final_a, final_b, rewriter, loc, concatDimension);
     rewriter.replaceOp(op, packed);
@@ -654,12 +668,7 @@ struct MulOpConversion : public OpConversionPattern<stablehlo::MulOp> {
     Value y2 = extractLimb(adaptor.getOperands()[1], 1, rewriter, loc,
                            concatDimension);
 
-    auto [p00, e00] = twoProdDekker(x1, y1, rewriter, loc);
-    Value p01 = rewriter.create<stablehlo::MulOp>(loc, x1, y2);
-    Value p10 = rewriter.create<stablehlo::MulOp>(loc, x2, y1);
-    Value p01_p10 = rewriter.create<stablehlo::AddOp>(loc, p01, p10);
-    Value e00_new = rewriter.create<stablehlo::AddOp>(loc, e00, p01_p10);
-    auto [final_p, final_e] = fastTwoSum(p00, e00_new, rewriter, loc);
+    auto [final_p, final_e] = mfMul(x1, x2, y1, y2, rewriter, loc);
 
     Value packed = packLimbs(final_p, final_e, rewriter, loc, concatDimension);
     rewriter.replaceOp(op, packed);
@@ -1505,159 +1514,102 @@ struct ExpOpConversion : public OpConversionPattern<stablehlo::ExpOp> {
     auto tensorType = cast<RankedTensorType>(hi.getType());
     auto floatTy = cast<FloatType>(tensorType.getElementType());
 
-    // 1. n = floor(xh * log2(e) + 0.5) on standard float!
-    auto log2eAttr = rewriter.getFloatAttr(floatTy, M_LOG2E);
-    auto log2eSplat = SplatElementsAttr::get(tensorType, log2eAttr);
-    Value log2e = rewriter.create<stablehlo::ConstantOp>(loc, log2eSplat);
-    Value mul1 = rewriter.create<stablehlo::MulOp>(loc, hi, log2e);
+    // 1. Multiply by log2(e) in multi-float!
+    // log2(e) approx C1 + C2
+    // C1 = Float32(+0x1.715476p+000) = 1.4426950216293335
+    // C2 = Float32(+0x1.4AE0C0p-026) = 1.9259629911678385e-8
+    auto c1Attr = rewriter.getFloatAttr(floatTy, 1.4426950216293335);
+    auto c1Splat = SplatElementsAttr::get(tensorType, c1Attr);
+    Value c1 = rewriter.create<stablehlo::ConstantOp>(loc, c1Splat);
 
+    auto c2Attr = rewriter.getFloatAttr(floatTy, 1.9259629911678385e-8);
+    auto c2Splat = SplatElementsAttr::get(tensorType, c2Attr);
+    Value c2 = rewriter.create<stablehlo::ConstantOp>(loc, c2Splat);
+
+    auto [p00, e00] = twoProdDekker(hi, c1, rewriter, loc);
+    Value p01 = rewriter.create<stablehlo::MulOp>(loc, hi, c2);
+    Value p10 = rewriter.create<stablehlo::MulOp>(loc, lo, c1);
+    Value p01_p10 = rewriter.create<stablehlo::AddOp>(loc, p01, p10);
+    Value e00_new = rewriter.create<stablehlo::AddOp>(loc, e00, p01_p10);
+    auto [y_hi, y_lo] = fastTwoSum(p00, e00_new, rewriter, loc);
+
+    // 2. n = floor(y_hi + 0.5)
     auto halfAttr = rewriter.getFloatAttr(floatTy, 0.5);
     auto halfSplat = SplatElementsAttr::get(tensorType, halfAttr);
     Value half = rewriter.create<stablehlo::ConstantOp>(loc, halfSplat);
-    Value add1 = rewriter.create<stablehlo::AddOp>(loc, mul1, half);
+    Value add_half = rewriter.create<stablehlo::AddOp>(loc, y_hi, half);
+    Value n = rewriter.create<stablehlo::FloorOp>(loc, add_half);
 
-    Value n = rewriter.create<stablehlo::FloorOp>(loc, add1);
+    // 3. r = y - n in multi-float!
+    Value neg_n = rewriter.create<stablehlo::NegOp>(loc, n);
+    auto [r_hi, r_lo_err] = twoSum(y_hi, neg_n, rewriter, loc);
+    Value r_lo = rewriter.create<stablehlo::AddOp>(loc, y_lo, r_lo_err);
+    auto [r_hi_final, r_lo_final] = fastTwoSum(r_hi, r_lo, rewriter, loc);
 
-    // Clamp n to [-126, 127]
-    auto minAttr = rewriter.getFloatAttr(floatTy, -126.0);
-    auto minSplat = SplatElementsAttr::get(tensorType, minAttr);
-    Value min_val = rewriter.create<stablehlo::ConstantOp>(loc, minSplat);
-    n = rewriter.create<stablehlo::MaxOp>(loc, n, min_val);
+    // 4. Scale r by 1/8
+    auto one_eighthAttr = rewriter.getFloatAttr(floatTy, 0.125);
+    auto one_eighthSplat = SplatElementsAttr::get(tensorType, one_eighthAttr);
+    Value one_eighth =
+        rewriter.create<stablehlo::ConstantOp>(loc, one_eighthSplat);
+    Value r_prime_hi =
+        rewriter.create<stablehlo::MulOp>(loc, r_hi_final, one_eighth);
+    Value r_prime_lo =
+        rewriter.create<stablehlo::MulOp>(loc, r_lo_final, one_eighth);
 
-    auto maxAttr = rewriter.getFloatAttr(floatTy, 127.0);
-    auto maxSplat = SplatElementsAttr::get(tensorType, maxAttr);
-    Value max_val = rewriter.create<stablehlo::ConstantOp>(loc, maxSplat);
-    n = rewriter.create<stablehlo::MinOp>(loc, n, max_val);
+    // 5. Evaluate polynomial of degree 7 on r_prime in multi-float!
+    // Coefficients from MultiFloats.jl for Float32, Val{2}:
+    // 1: (1.0, -1.62C458p-59) -> we only use 1.0 for high part!
+    // 2: (+0x1.62E430p-001, -0x1.05C610p-029)
+    // 3: (+0x1.EBFBE0p-003, -0x1.F4DEB0p-033)
+    // 4: (+0x1.C6B08Ep-005, -0x1.1F6B9Cp-030)
+    // 5: (+0x1.3B2AB6p-007, +0x1.DB9286p-032)
+    // 6: (+0x1.5D87FEp-010)
+    // 7: (+0x1.430E9Ep-013)
+    // 8: (+0x1.FFD486p-017)
 
-    // 2. Compute 2^n = pow(2.0, n)
+    constexpr double kCoefs[][2] = {
+        {1.0, 0.0},
+        {0.6931471824645996, -1.9046542121259336e-09},
+        {0.24022650718688965, -2.27769247906906e-10},
+        {0.05550410971045494, -1.0456291388294403e-09},
+        {0.009618128649890423, 4.3253053916281203e-10},
+        {0.0013333557872101665, 0.0},
+        {0.00015404562873300165, 0.0},
+        {1.5253727724484634e-05, 0.0},
+    };
+
+    // Horner's method in multi-float!
+    // Start with last coefficient!
+    auto getConst = [&](double val) {
+      return rewriter.create<stablehlo::ConstantOp>(
+          loc, SplatElementsAttr::get(tensorType,
+                                      rewriter.getFloatAttr(floatTy, val)));
+    };
+
+    Value p_hi = getConst(kCoefs[7][0]);
+    Value p_lo = getConst(kCoefs[7][1]);
+
+    for (int i = 6; i >= 0; --i) {
+      auto [mul_hi, mul_lo] =
+          mfMul(p_hi, p_lo, r_prime_hi, r_prime_lo, rewriter, loc);
+      auto [add_hi, add_lo] = mfAdd(mul_hi, mul_lo, getConst(kCoefs[i][0]),
+                                    getConst(kCoefs[i][1]), rewriter, loc);
+      p_hi = add_hi;
+      p_lo = add_lo;
+    }
+
+    // 6. Square 3 times in multi-float!
+    auto [s1_hi, s1_lo] = mfMul(p_hi, p_lo, p_hi, p_lo, rewriter, loc);
+    auto [s2_hi, s2_lo] = mfMul(s1_hi, s1_lo, s1_hi, s1_lo, rewriter, loc);
+    auto [res_hi, res_lo] = mfMul(s2_hi, s2_lo, s2_hi, s2_lo, rewriter, loc);
+
+    // 7. Scale by 2^n
+    // We can use stablehlo.pow(2.0, n) and multiply!
     auto twoAttr = rewriter.getFloatAttr(floatTy, 2.0);
     auto twoSplat = SplatElementsAttr::get(tensorType, twoAttr);
     Value two = rewriter.create<stablehlo::ConstantOp>(loc, twoSplat);
     Value scale = rewriter.create<stablehlo::PowOp>(loc, two, n);
 
-    // 3. Create multi-float n_mf = packLimbs(n, 0)
-
-    // 4. Compute reduced argument r = x - n_mf * ln(2)
-    // We need to create a multi-float constant for ln(2)!
-    // ln(2) approx 0.6931471805599453
-    // Let's use kC1 and kC2 provided by user!
-    constexpr double kC1 = 6.93145751953125E-1;
-    constexpr double kC2 = 1.42860682030941723212E-6;
-
-    auto c1Attr = rewriter.getFloatAttr(floatTy, kC1);
-    auto c1Splat = SplatElementsAttr::get(tensorType, c1Attr);
-    Value c1 = rewriter.create<stablehlo::ConstantOp>(loc, c1Splat);
-
-    auto c2Attr = rewriter.getFloatAttr(floatTy, kC2);
-    auto c2Splat = SplatElementsAttr::get(tensorType, c2Attr);
-    Value c2 = rewriter.create<stablehlo::ConstantOp>(loc, c2Splat);
-
-    // We need to create a multi-float for ln(2) by packing c1 and c2!
-
-    // Now we need to emit MULTI-FLOAT operations!
-    // But we are inside a pattern!
-    // So we must emit operations on the SOURCE type!
-    // And let the pass convert them!
-    // So we need to convert n_mf and ln2 BACK to source type!
-    // Or we can just use the original unconverted operand for x!
-
-    // And we need to create an operation that represents n_mf * ln(2)!
-    // But we cannot easily create a multi-float value in source type unless we
-    // use UnrealizedConversionCastOp! Or we can just emit the expansion of
-    // multiplication and subtraction directly here! Yes! Expanding it directly
-    // here is safer! But multiplication is complex!
-
-    // Wait! I can use `GenericOpConversion` to emit operations on limbs if they
-    // are elementwise! But multiplication is NOT limb-wise!
-
-    // Okay, let's look at how `DivOpConversion` does it!
-    // It calls `extractLimb` and does arithmetic on limbs!
-    // So I can do the same!
-    // I can extract limbs of `x` (which is `hi` and `lo`!).
-
-
-    // And I have limbs of `n_mf` (which are `n` and `zero`!).
-    // And limbs of `ln2` (which are `c1` and `c2`!).
-
-    // So I can compute `n_mf * ln2` using limb arithmetic!
-    // `n_mf * ln2 = (n + 0) * (c1 + c2) = n * c1 + n * c2`!
-    // Since `n` is large and `c2` is small!
-    // `n * c1` is the high part! `n * c2` is the low part!
-    Value t1 = rewriter.create<stablehlo::MulOp>(loc, n, c1);
-    Value t2 = rewriter.create<stablehlo::MulOp>(loc, n, c2);
-
-    // Now compute `r = x - (t1 + t2)`!
-    // `r_hi = hi - t1`!
-    // `r_lo = lo - t2`!
-    // And we might need to normalize!
-    Value r_hi = rewriter.create<stablehlo::SubtractOp>(loc, hi, t1);
-    Value r_lo = rewriter.create<stablehlo::SubtractOp>(loc, lo, t2);
-
-    // Now apply rational approximation to `r` (which is `r_hi + r_lo`!)
-    // xx = r * r
-    // We need to compute `xx` in multi-float!
-    // `xx_hi = r_hi * r_hi`
-    // `xx_lo = 2 * r_hi * r_lo`
-    Value xx_hi = rewriter.create<stablehlo::MulOp>(loc, r_hi, r_hi);
-    Value xx_lo = rewriter.create<stablehlo::MulOp>(loc, r_hi, r_lo);
-    Value two_val = rewriter.create<stablehlo::ConstantOp>(
-        loc, SplatElementsAttr::get(tensorType,
-                                    rewriter.getFloatAttr(floatTy, 2.0)));
-    xx_lo = rewriter.create<stablehlo::MulOp>(loc, xx_lo, two_val);
-
-    // Now evaluate polynomials on `xx`!
-    // But `polEvl` expects a single Value!
-    // And we have `xx_hi` and `xx_lo`!
-    // If we only use `xx_hi` for polynomial evaluation, we lose precision!
-    // But `xx_lo` is VERY small! So it might be acceptable to only use `xx_hi`
-    // in the polynomial! Let's assume we can use `xx_hi` as the argument to
-    // `polEvl`!
-
-    constexpr double kP[] = {
-        1.26177193074810590878E-4,
-        3.02994407707441961300E-2,
-        9.99999999999999999910E-1,
-    };
-    Value polP = polEvl(xx_hi, kP, rewriter, loc, tensorType);
-
-    constexpr double kQ[] = {
-        3.00198505138664455042E-6,
-        2.52448340349684104192E-3,
-        2.27265548208155028766E-1,
-        2.00000000000000000009E0,
-    };
-    Value polQ = polEvl(xx_hi, kQ, rewriter, loc, tensorType);
-
-    // px = r * PolEvl(xx, kP)
-    // `px_hi = r_hi * polP`
-    // `px_lo = r_lo * polP`
-    Value px_hi = rewriter.create<stablehlo::MulOp>(loc, r_hi, polP);
-    Value px_lo = rewriter.create<stablehlo::MulOp>(loc, r_lo, polP);
-
-    // x = px / (PolEvl(xx, kQ) - px)
-    // `denom = polQ - px_hi`
-    Value denom = rewriter.create<stablehlo::SubtractOp>(loc, polQ, px_hi);
-
-    // `x_hi = px_hi / denom`
-    Value x_hi = rewriter.create<stablehlo::DivOp>(loc, px_hi, denom);
-
-    // `x_lo = (px_lo - x_hi * (-px_lo)) / denom` (approximate!)
-    // Let's use a simpler approximation!
-    Value x_lo = rewriter.create<stablehlo::DivOp>(loc, px_lo, denom);
-
-    // x = 1.0 + 2 * x
-    // `x_hi = 1.0 + 2 * x_hi`
-    // `x_lo = 2 * x_lo`
-    auto oneAttr = rewriter.getFloatAttr(floatTy, 1.0);
-    auto oneSplat = SplatElementsAttr::get(tensorType, oneAttr);
-    Value one = rewriter.create<stablehlo::ConstantOp>(loc, oneSplat);
-
-    Value res_hi = rewriter.create<stablehlo::MulOp>(loc, x_hi, two_val);
-    res_hi = rewriter.create<stablehlo::AddOp>(loc, one, res_hi);
-
-    Value res_lo = rewriter.create<stablehlo::MulOp>(loc, x_lo, two_val);
-
-    // Multiply by power of 2 (scale)
     res_hi = rewriter.create<stablehlo::MulOp>(loc, res_hi, scale);
     res_lo = rewriter.create<stablehlo::MulOp>(loc, res_lo, scale);
 
