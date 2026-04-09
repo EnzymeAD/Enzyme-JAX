@@ -29494,27 +29494,22 @@ struct TrivialReduceWindowToReduceOp
 // operation, i.e. reduce_body(val, x) == x for all x.
 static bool isIdentityValueForReduceOp(Value val, ReduceOpKind kind) {
   Attribute attr;
-  bool isConstant = matchPattern(val, m_Constant(&attr));
+  if (!matchPattern(val, m_Constant(&attr)))
+    return false;
   switch (kind) {
   case ReduceOpKind::Add:
   case ReduceOpKind::Or:
   case ReduceOpKind::Xor:
     // Both integer zero and float +0.0 / -0.0 are identity for add/or/xor.
-    if (isConstant)
-      return matchPattern(attr, m_AnyZeroFloat()) || matchPattern(attr, m_Zero());
-    return matchPattern(val, m_Zero());
+    return matchPattern(attr, m_AnyZeroFloat()) || matchPattern(attr, m_Zero());
   case ReduceOpKind::Mul:
-    if (!isConstant)
-      return false;
     return matchPattern(attr, m_One()) || matchPattern(attr, m_OneFloat());
   case ReduceOpKind::And:
-    if (!isConstant)
-      return false;
     return matchPattern(attr, m_AllOnes());
   case ReduceOpKind::Max:
-    return matchPattern(val, m_NegInfFloat());
+    return matchPattern(attr, m_NegInfFloat());
   case ReduceOpKind::Min:
-    return matchPattern(val, m_PosInfFloat());
+    return matchPattern(attr, m_PosInfFloat());
   default:
     return false;
   }
