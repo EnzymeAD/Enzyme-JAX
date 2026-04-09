@@ -1027,6 +1027,11 @@ def NoopReduceOpCanonPatterns : EnzymeHLOPatternOp<
   let patterns = ["NoopReduceOpCanon"];
 }
 
+def NoopReduceWindowOpCanonPatterns : EnzymeHLOPatternOp<
+    "noop_reduce_window_op_canon"> {
+  let patterns = ["NoopReduceWindowOpCanon"];
+}
+
 def EmptyReduceOpCanonPatterns : EnzymeHLOPatternOp<
     "empty_reduce_op_canon"> {
   let patterns = ["EmptyReduceOpCanon"];
