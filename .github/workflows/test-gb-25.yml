@@ -199,6 +199,9 @@ jobs:
           julia --project --color=yes -e "using MPI; MPI.install_mpiexecjl(; destdir=\"${MPIEXECJL_DIR}\")"
           echo "${MPIEXECJL_DIR}" >> "${GITHUB_PATH}"
         working-directory: ${{ env.GB25_DIR }}
+      - name: Download baroclinic instability initial-condition artifact
+        timeout-minutes: 30
+        run: julia --color=yes --project simulations/download_baroclinic_ic_artifact.jl
       - name: Compile GB-25 simulation
         timeout-minutes: 30
         run: |
