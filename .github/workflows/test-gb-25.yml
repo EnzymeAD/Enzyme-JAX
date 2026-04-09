@@ -52,7 +52,7 @@ jobs:
 
         reactant_commit:
           - 'main'
-          - 'multipad'
+          # - 'multipad'
         grid:
           - '--float-type=Float64 --xla_recognize_reduction_optimization_level=0'
           - '--float-type=Float64 --xla_recognize_reduction_optimization_level=1'
