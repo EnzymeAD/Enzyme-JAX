@@ -29490,6 +29490,110 @@ struct TrivialReduceWindowToReduceOp
   }
 };
 
+// Returns true if `val` is the identity element for the given `kind` of reduce
+// operation, i.e. reduce_body(val, x) == x for all x.
+static bool isIdentityValueForReduceOp(Value val, ReduceOpKind kind) {
+  Attribute attr;
+  bool isConstant = matchPattern(val, m_Constant(&attr));
+  switch (kind) {
+  case ReduceOpKind::Add:
+  case ReduceOpKind::Or:
+  case ReduceOpKind::Xor:
+    // Both integer zero and float +0.0 / -0.0 are identity for add/or/xor.
+    if (isConstant)
+      return matchPattern(attr, m_AnyZeroFloat()) || matchPattern(attr, m_Zero());
+    return matchPattern(val, m_Zero());
+  case ReduceOpKind::Mul:
+    if (!isConstant)
+      return false;
+    return matchPattern(attr, m_One()) || matchPattern(attr, m_OneFloat());
+  case ReduceOpKind::And:
+    if (!isConstant)
+      return false;
+    return matchPattern(attr, m_AllOnes());
+  case ReduceOpKind::Max:
+    return matchPattern(val, m_NegInfFloat());
+  case ReduceOpKind::Min:
+    return matchPattern(val, m_PosInfFloat());
+  default:
+    return false;
+  }
+}
+
+// Eliminate reduce_window ops that are no-ops: all window dimensions are 1,
+// there is no padding, all strides and dilations are 1, and the init value is
+// the identity element for the reduction body.  In that case every output
+// element equals the corresponding input element and the op can be replaced
+// by the input.
+struct NoopReduceWindowOpCanon final
+    : CheckedOpRewritePattern<stablehlo::ReduceWindowOp,
+                              NoopReduceWindowOpCanon> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ReduceWindowOp op,
+                                    PatternRewriter &rewriter) const {
+    // Only handle single-input / single-init ops for now.
+    if (op.getInputs().size() != 1 || op.getInitValues().size() != 1)
+      return failure();
+
+    auto inputType =
+        dyn_cast<RankedTensorType>(op.getInputs()[0].getType());
+    if (!inputType || !inputType.hasStaticShape())
+      return failure();
+
+    auto resultType = dyn_cast<RankedTensorType>(op.getType(0));
+    if (!resultType || !resultType.hasStaticShape())
+      return failure();
+
+    // The result must have the same shape as the input.
+    if (inputType != resultType)
+      return failure();
+
+    // All window dimensions must be 1.
+    auto windowDims = op.getWindowDimensions();
+    if (!llvm::all_of(windowDims, [](int64_t d) { return d == 1; }))
+      return failure();
+
+    // Padding must be absent or all-zero.
+    auto padding = op.getPadding();
+    if (padding && !llvm::all_of(padding->getValues<int64_t>(),
+                                 [](int64_t p) { return p == 0; }))
+      return failure();
+
+    // Window strides must be absent or all-one.
+    auto strides = op.getWindowStrides();
+    if (strides && !llvm::all_of(*strides, [](int64_t s) { return s == 1; }))
+      return failure();
+
+    // Base dilations must be absent or all-one.
+    auto baseDilations = op.getBaseDilations();
+    if (baseDilations &&
+        !llvm::all_of(*baseDilations, [](int64_t d) { return d == 1; }))
+      return failure();
+
+    // Window dilations must be absent or all-one (irrelevant for window=1 but
+    // check anyway to keep the semantics clear).
+    auto windowDilations = op.getWindowDilations();
+    if (windowDilations &&
+        !llvm::all_of(*windowDilations, [](int64_t d) { return d == 1; }))
+      return failure();
+
+    // Determine the reduction kind from the body.
+    auto commonRW = CheckCommonReduceWindowOp(op);
+    if (commonRW.kind == ReduceOpKind::Unknown)
+      return failure();
+
+    // The init value must be the identity element for the reduction so that
+    // reduce_body(init, x) == x.
+    if (!isIdentityValueForReduceOp(op.getInitValues()[0], commonRW.kind))
+      return failure();
+
+    // All checks passed – replace the reduce_window with its input.
+    rewriter.replaceOp(op, op.getInputs()[0]);
+    return success();
+  }
+};
+
 template <typename BinaryOpType, typename Child>
 struct ReduceSliceFusionBase
     : public CheckedOpRewritePattern<
@@ -35958,6 +36062,7 @@ struct EnzymeHLOOptPass
         DotGeneralDistributiveSimplify<stablehlo::AddOp>,
         DotGeneralDistributiveSimplify<stablehlo::SubtractOp>,
         TrivialReduceWindowToReduceOp,
+        NoopReduceWindowOpCanon,
         AddReduceSliceFusion,
         MulReduceSliceFusion,
         MinReduceSliceFusion,
