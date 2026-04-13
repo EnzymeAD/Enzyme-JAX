@@ -54,8 +54,8 @@ jobs:
           - 'main'
           - 'multipad'
         grid:
-          - '--float-type=Float64'
-          - '--float-type=Float32'
+          # - '--float-type=Float64'
+          - '--float-type=Float32 --grix-x 768 --grid-y 768 --grid-z 64'
           #- '--float-type=Float64 --target-float-type=Float32 --dimension=first'
           #- '--float-type=Float64 --target-float-type=Float32 --dimension=last'
           #- '--float-type=Float64 --target-float-type=Float32 --dimension=tuple'
@@ -244,7 +244,7 @@ jobs:
         timeout-minutes: 60
         run: |
           export XLA_FLAGS='--xla_disable_hlo_passes=multi_output_fusion --xla_dump_hlo_pass_re=.* --xla_dump_to=${{ env.GB25_DIR }}/xla_dump_run'
-          timeout --signal=TERM --verbose 59m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict sharding/sharded_baroclinic_instability_simulation_run.jl ${{matrix.grid}} --grix-x=128 --grid-y=128 --grid-z=64
+          timeout --signal=TERM --verbose 59m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict sharding/sharded_baroclinic_instability_simulation_run.jl ${{matrix.grid}}
         working-directory: ${{ env.GB25_DIR }}
       - name: Display profile results
         shell: julia --project --color=yes {0}
