@@ -54,8 +54,8 @@ jobs:
           - 'main'
         grid:
           # - '--float-type=Float64'
-          - '--float-type=Float32 --grid-x 768 --grid-y 768 --grid-z 64'
-          - '--float-type=Float32 --grid-x 3072 --grid-y 1536 --grid-z 64'
+          - '--float-type=Float32 --grid-x 1088 --grid-y 768 --grid-z 64'
+          - '--float-type=Float32 --grid-x 1536 --grid-y 1088 --grid-z 64'
           #- '--float-type=Float64 --target-float-type=Float32 --dimension=first'
           #- '--float-type=Float64 --target-float-type=Float32 --dimension=last'
           #- '--float-type=Float64 --target-float-type=Float32 --dimension=tuple'
