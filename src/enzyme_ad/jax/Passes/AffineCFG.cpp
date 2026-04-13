@@ -6188,10 +6188,10 @@ void mlir::enzyme::populateAffineCFGPatterns(RewritePatternSet &rpl) {
   rpl.add</*SimplfyIntegerCastMath, */ CanonicalizeAffineApply, ForOpRaising,
           ParallelOpRaising, CanonicalizeIndexCast<IndexCastOp>,
           CanonicalizeIndexCast<IndexCastUIOp>, AffineIfYieldMovementPattern,
-          /* IndexCastMovement,*/ AffineFixup<affine::AffineLoadOp>,
+          /* IndexCastMovement, */ AffineFixup<affine::AffineLoadOp>,
           AffineFixup<affine::AffineStoreOp>, CanonicalizIfBounds,
           MoveStoreToAffine, MoveIfToAffine, MoveRMWToAffine, MoveLoadToAffine,
-          MoveExtToAffine, MoveSIToFPToAffine, CmpExt, MoveSelectToAffine,
+          MoveExtToAffine, MoveSIToFPToAffine, CmpExt, /*MoveSelectToAffine,*/
           AffineIfSimplification, AffineIfSimplificationIsl, CombineAffineIfs,
           MergeNestedAffineParallelLoops, PrepMergeNestedAffineParallelLoops,
           MergeNestedAffineParallelIf, MergeParallelInductions, OptimizeRem,
