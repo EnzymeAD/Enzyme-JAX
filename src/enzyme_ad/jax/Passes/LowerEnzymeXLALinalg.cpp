@@ -213,20 +213,68 @@ struct TridiagonalSolveOpLowering
 
   LogicalResult matchAndRewriteCUDA(enzymexla::TridiagonalSolveOp op,
                                     PatternRewriter &rewriter) const {
-    auto dType = cast<RankedTensorType>(op.getDl().getType());
+    auto dlType = cast<RankedTensorType>(op.getDl().getType());
+    auto dType = cast<RankedTensorType>(op.getD().getType());
     auto dRank = dType.getRank();
     auto bType = cast<RankedTensorType>(op.getBl().getType());
     auto bRank = bType.getRank();
 
-    // Build operands list - use empty tensors for constant alpha/beta
+    if (!dlType || !dType || !duType || !bType)
+      return rewriter.notifyMatchFailure(
+          op, "operand types not ranked tensor types");
+
+    if (!dlType.hasRank() || !dType.hasRank() || !duType.hasRank() ||
+        !bType.hasRank())
+      return rewriter.notifyMatchFailure(op, "expected ranked tensor types");
+
+    if (dlType.getRank() != 1 || dType.getRank() != 1 ||
+        duType.getRank() != 1 || bType.getRank() > 2)
+      return rewriter.notifyMatchFailure(
+          op, "only 2D matrices supported for gtsv on CUDA");
+
     SmallVector<Value> operands;
     SmallVector<int64_t> operandRanks;
     SmallVector<bool> areColMajor;
 
-    auto dl = op.getDl();
+    auto dl_in = op.getDl();
     auto d = op.getD();
-    auto du = op.getDu();
+    auto du_in = op.getDu();
     auto B = op.getB();
+
+    // In TridiagonalSolveOp, dl and du are of length n-1, but cuBLAS requires
+    // them to be padded to length n, where dl[0] = 0 and du[n-1] = 0.
+    int64_t n = dType.getShape()[0]; // target size
+
+    auto elemTy = dlType.getElementType();
+    auto outType = RankedTensorType::get({n}, elemTy);
+
+    // zero vector
+    auto zeroAttr = rewriter.getZeroAttr(elemTy);
+    auto zero_du = stablehlo::ConstantOp::create(
+        rewriter, op.getLoc(),
+        DenseElementsAttr::get(RankedTensorType::get({}, elemTy), zeroAttr));
+    auto zero_dl = stablehlo::ConstantOp::create(
+        rewriter, op.getLoc(),
+        DenseElementsAttr::get(RankedTensorType::get({}, elemTy), zeroAttr));
+
+    auto zeroTensorDl = stablehlo::BroadcastInDimOp::create(
+        rewriter, loc, outType, zero,
+        DenseI64ArrayAttr::get(rewriter.getContext(), {}));
+    // insert dl_in at index 1
+    llvm::SmallVector<int64_t> dl_start(rank, 0);
+    start[rank - 1] = 1;
+
+    auto dl = stablehlo::DynamicUpdateSliceOp::create(
+        rewriter, loc, outType, zeroTensorDl, dl_in, dl_start);
+
+    auto zeroTensorDu = stablehlo::BroadcastInDimOp::create(
+        rewriter, loc, outType, zero,
+        DenseI64ArrayAttr::get(rewriter.getContext(), {}));
+    // insert du_in at index 0
+    llvm::SmallVector<int64_t> du_start(rank, 0);
+
+    auto du = stablehlo::DynamicUpdateSliceOp::create(
+        rewriter, loc, outType, zeroTensorDu, du_in, du_start);
 
     StringAttr customCallTarget;
     ArrayAttr aliases;
@@ -263,7 +311,115 @@ struct TridiagonalSolveOpLowering
 
   LogicalResult matchAndRewriteFallback(enzymexla::TridiagonalSolveOp op,
                                         PatternRewriter &rewriter) const {
-    // TODO
+    Location loc = op.getLoc();
+
+    auto dl = op.getDl();
+    auto d = op.getD();
+    auto du = op.getDu();
+
+    Value B = op.getB();
+
+    auto dType = cast<RankedTensorType>(d.getType());
+    int64_t n = dType.getShape()[0];
+
+    auto elemTy = dType.getElementType();
+
+    // build scatter index tensor
+    SmallVector<int64_t> indicesData;
+    indicesData.reserve(3 * n * 2);
+
+    // diagonal (i,i)
+    for (int64_t i = 0; i < n; i++) {
+      indicesData.push_back(i);
+      indicesData.push_back(i);
+    }
+    // lower (i+1,i)
+    for (int64_t i = 0; i < n - 1; i++) {
+      indicesData.push_back(i + 1);
+      indicesData.push_back(i);
+    }
+    // upper (i,i+1)
+    for (int64_t i = 0; i < n - 1; i++) {
+      indicesData.push_back(i);
+      indicesData.push_back(i + 1);
+    }
+
+    auto indicesType =
+        RankedTensorType::get({3 * n - 2, 2}, rewriter.getI64Type());
+    auto indicesAttr = DenseElementsAttr::get(indicesType, indicesData);
+    Value indices = stablehlo::ConstantOp::create(rewriter, loc, indicesAttr);
+
+    auto matrixType = RankedTensorType::get({n, n}, elemTy);
+
+    auto zeroAttr =
+        DenseElementsAttr::get(matrixType, rewriter.getZeroAttr(elemTy));
+
+    Value zero = stablehlo::ConstantOp::create(rewriter, loc, zeroAttr);
+
+    Value values = stablehlo::ConcatenateOp::create(
+        rewriter, loc, RankedTensorType::get({3 * n - 2}, elemTy),
+        ValueRange{d, dl, du},
+        /*dimension=*/0);
+
+    auto scatterDims = stablehlo::ScatterDimensionNumbersAttr::get(
+        rewriter.getContext(),
+        /*update_window_dims=*/ArrayRef<int64_t>{},
+        /*inserted_window_dims=*/ArrayRef<int64_t>{0, 1},
+        /*scatter_dims_to_operand_dims=*/ArrayRef<int64_t>{0, 1},
+        /*index_vector_dim=*/1);
+
+    // reconstructed A
+    auto scatterOp = stablehlo::ScatterOp::create(
+        rewriter, loc, matrixType,
+        /*inputs=*/ValueRange{zero},
+        /*scatter_indices=*/indices,
+        /*updates=*/ValueRange{values}, scatterDims,
+        /*indices_are_sorted=*/false,
+        /*unique_indices=*/true);
+    Value A = scatterOp.getResult();
+
+    auto lu =
+        enzymexla::LUFactorizationOp::create(rewriter, loc, A.getType(), A);
+
+    Value LU = lu.getResult(0);
+    Value perm = lu.getResult(2);
+
+    auto permType = cast<RankedTensorType>(perm.getType());
+    auto idxType = RankedTensorType::get({n, 1}, permType.getElementType());
+    Value indices = stablehlo::ReshapeOp::create(rewriter, loc, idxType, perm);
+
+    auto dnums = stablehlo::GatherDimensionNumbersAttr::get(
+        rewriter.getContext(),
+        /*offset_dims=*/ArrayRef<int64_t>{1}, // result keeps column dim
+        /*collapsed_slice_dims=*/ArrayRef<int64_t>{0}, // collapse row dim
+        /*start_index_map=*/ArrayRef<int64_t>{0},      // index maps to row dim
+        /*index_vector_dim=*/1);
+    SmallVector<int64_t> sliceSizes = {1, BType.getShape()[1]};
+
+    Value B_perm = stablehlo::GatherOp::create(rewriter, loc, B.getType(), B,
+                                               indices, dnums, sliceSizes);
+
+    // solve Ly = B_perm
+    Value y = stablehlo::TriangularSolveOp::create(
+        rewriter, loc, B.getType(),
+        LU, // we can directly use the LU buffer and indicate unit diagonal is
+            // true
+        B_perm,
+        /*left_side=*/true,
+        /*lower=*/true,
+        /*unit_diagonal=*/true,
+        /*transpose_a=*/false);
+
+    // solve Ux = y
+    Value x =
+        stablehlo::TriangularSolveOp::create(rewriter, loc, B.getType(), LU, y,
+                                             /*left_side=*/true,
+                                             /*lower=*/false,
+                                             /*unit_diagonal=*/false,
+                                             /*transpose_a=*/false);
+
+    rewriter.replaceOp(op, result);
+    return success();
   }
 };
 
