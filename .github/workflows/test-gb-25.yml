@@ -205,6 +205,7 @@ jobs:
           timeout --signal=TERM --verbose 59m mpiexecjl -np 1 julia --color=yes --project -O0 --startup-file=no --threads=16 --compiled-modules=strict sharding/sharded_atmosphere_simulation_run.jl ${{ matrix.grid }}
         working-directory: ${{ env.GB25_DIR }}
       - name: Display profile results
+        if: ${{ always() }}
         shell: julia --project --color=yes {0}
         run: |
           using Reactant
