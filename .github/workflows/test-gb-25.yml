@@ -53,8 +53,8 @@ jobs:
         reactant_commit:
           - 'main'
         grid:
-          - '--float-type=Float32 --grid-x 544 --grid-y 272 --grid-z 64'
-          - '--float-type=Float32 --grid-x 272 --grid-y 136 --grid-z 64'
+          - '--float-type=Float32 --grid-x 728 --grid-y 364 --grid-z 64'
+          - '--float-type=Float32 --grid-x 692 --grid-y 346 --grid-z 64'
           #- '--float-type=Float64 --target-float-type=Float32 --dimension=first'
           #- '--float-type=Float64 --target-float-type=Float32 --dimension=last'
           #- '--float-type=Float64 --target-float-type=Float32 --dimension=tuple'
