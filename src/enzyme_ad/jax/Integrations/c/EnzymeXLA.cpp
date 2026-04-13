@@ -720,6 +720,8 @@ static void addConstPropPasses(std::vector<std::string> &list,
                                int64_t maxConstThreshold) {
   // Unary constant propagation
   list.push_back("chlo_inf_const_prop<16>");
+  list.push_back("tgamma_const_prop<16>");
+  list.push_back("lgamma_const_prop<16>");
   list.push_back("gamma_const_prop<16>");
   list.push_back("abs_const_prop<16>");
   list.push_back("log_const_prop<1>");
@@ -748,7 +750,6 @@ static void addConstPropPasses(std::vector<std::string> &list,
   list.push_back("relu_const_prop");
   list.push_back("gelu_const_prop");
   list.push_back("softplus_const_prop");
-  list.push_back("lgamma_const_prop");
 
   // Binary constant propagation
   list.push_back("add_const_prop");
