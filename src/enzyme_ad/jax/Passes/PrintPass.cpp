@@ -30,15 +30,15 @@ struct PrintPass : public enzyme::impl::PrintPassBase<PrintPass> {
   using PrintPassBase::PrintPassBase;
 
   void runOnOperation() override {
-    // bool found = false;
-    // getOperation()->walk([&](enzyme::AutoDiffOp op) { found = true; });
-    // getOperation()->walk([&](FunctionOpInterface func) {
-    //   if (func.getName().contains("diffe") ||
-    //       func.getName().contains("enzyme_autodiff"))
-    //     found = true;
-    // });
-    // if (!found)
-    //   return;
+    bool found = false;
+    getOperation()->walk([&](enzyme::AutoDiffOp op) { found = true; });
+    getOperation()->walk([&](FunctionOpInterface func) {
+      if (func.getName().contains("diffe") ||
+          func.getName().contains("enzyme_autodiff"))
+        found = true;
+    });
+    if (!found)
+      return;
 
     OpPrintingFlags flags;
     if (debug)
