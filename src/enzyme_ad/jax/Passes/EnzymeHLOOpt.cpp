@@ -35728,15 +35728,15 @@ struct EnzymeHLOOptPass
                    CSE<stablehlo::PadOp>, CSE<stablehlo::DotGeneralOp>,
                    CSE<stablehlo::ReshapeOp>, CSE<stablehlo::MulOp>,
                    CSE<stablehlo::DivOp>, CSE<stablehlo::AddOp>,
-                   CSE<stablehlo::SubtractOp>, CSE<stablehlo::MinOp>,
-                   CSE<stablehlo::ConcatenateOp>, CSE<stablehlo::MaxOp>,
-                   CSE<stablehlo::NegOp>, CSE<stablehlo::AbsOp>,
-                   CSE<enzymexla::RotateOp>, CSE<enzymexla::WrapOp>,
-                   CSE<enzymexla::ExtendOp>, CSEIota, CSE<stablehlo::CompareOp>,
-                   CSE<stablehlo::GatherOp>, CSE<stablehlo::ScatterOp>,
-                   CSE<stablehlo::SelectOp>, CSE<stablehlo::RealOp>,
-                   CSE<chlo::ConjOp>, CSE<stablehlo::ImagOp>>(
-          context, PatternBenefit(65000));
+                   CSE<stablehlo::SubtractOp>, CSE<stablehlo::PowOp>,
+                   CSE<stablehlo::MinOp>, CSE<stablehlo::ConcatenateOp>,
+                   CSE<stablehlo::MaxOp>, CSE<stablehlo::NegOp>,
+                   CSE<stablehlo::AbsOp>, CSE<enzymexla::RotateOp>,
+                   CSE<enzymexla::WrapOp>, CSE<enzymexla::ExtendOp>, CSEIota,
+                   CSE<stablehlo::CompareOp>, CSE<stablehlo::GatherOp>,
+                   CSE<stablehlo::ScatterOp>, CSE<stablehlo::SelectOp>,
+                   CSE<stablehlo::RealOp>, CSE<chlo::ConjOp>,
+                   CSE<stablehlo::ImagOp>>(context, PatternBenefit(65000));
     }
 
     if (passses & 256)

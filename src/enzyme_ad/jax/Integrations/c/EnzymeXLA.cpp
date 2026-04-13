@@ -332,6 +332,7 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("cse_div<16>");
   list.push_back("cse_add<16>");
   list.push_back("cse_subtract<16>");
+  list.push_back("cse_pow<16>");
   list.push_back("cse_min<16>");
   list.push_back("cse_max<16>");
   list.push_back("cse_neg<16>");

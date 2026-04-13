@@ -900,6 +900,10 @@ def ApplyCSESubtractPatterns : EnzymeHLOPatternOp<
     "cse_subtract"> {
   let patterns = ["CSE<stablehlo::SubtractOp>"];
 }
+def ApplyCSEPowPatterns : EnzymeHLOPatternOp<
+    "cse_pow"> {
+  let patterns = ["CSE<stablehlo::PowOp>"];
+}
 def ApplyCSEMinPatterns : EnzymeHLOPatternOp<
     "cse_min"> {
   let patterns = ["CSE<stablehlo::MinOp>"];
