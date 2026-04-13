@@ -52,10 +52,9 @@ jobs:
 
         reactant_commit:
           - 'main'
-          - 'multipad'
         grid:
           # - '--float-type=Float64'
-          - '--float-type=Float32 --grix-x 768 --grid-y 768 --grid-z 64'
+          - '--float-type=Float32 --grid-x 768 --grid-y 768 --grid-z 64'
           #- '--float-type=Float64 --target-float-type=Float32 --dimension=first'
           #- '--float-type=Float64 --target-float-type=Float32 --dimension=last'
           #- '--float-type=Float64 --target-float-type=Float32 --dimension=tuple'
