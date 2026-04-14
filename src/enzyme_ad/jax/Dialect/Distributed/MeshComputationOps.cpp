@@ -2,6 +2,15 @@
 
 namespace mlir::enzyme::distributed {
 
+llvm::SmallVector<mlir::Region *> MeshComputationOp::getLanes() {
+  llvm::SmallVector<mlir::Region *> lanes;
+  lanes.reserve((*this)->getNumRegions());
+  for (Region &region : (*this)->getRegions()) {
+    lanes.push_back(&region);
+  }
+  return lanes;
+}
+
 ValueRange MeshComputationOp::getSpmdAxes() const {
   auto segmentSizesAttr =
       (*this)->getAttrOfType<DenseI32ArrayAttr>("operandSegmentSizes");

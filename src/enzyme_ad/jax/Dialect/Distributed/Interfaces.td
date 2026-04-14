@@ -82,6 +82,10 @@ def EventOpInterface :
             "::llvm::SmallVector<::mlir::Value>", "happensAfter", (ins)
         >,
         InterfaceMethod<
+            [{Returns the SSA value handles whose events must happen after this event.}],
+            "::llvm::SmallVector<::mlir::Value>", "happensBefore", (ins)
+        >,
+        InterfaceMethod<
             [{Returns the SSA value handles whose events this event happens simultaneously with}],
             "::llvm::SmallVector<::mlir::Value>", "simultaneousWith", (ins)
         >,
