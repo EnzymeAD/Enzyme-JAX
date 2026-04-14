@@ -129,6 +129,35 @@ struct GPUWrapperOpEnzymeOpsRemover
   }
 };
 
+template <typename OpTy>
+struct ViewCastOpInterfaceReverse
+    : public ReverseAutoDiffOpInterface::ExternalModel<
+          ViewCastOpInterfaceReverse<OpTy>, OpTy> {
+  LogicalResult createReverseModeAdjoint(Operation *op, OpBuilder &builder,
+                                         MGradientUtilsReverse *gutils,
+                                         SmallVector<Value> caches) const {
+    return success();
+  }
+
+  SmallVector<Value> cacheValues(Operation *op,
+                                 MGradientUtilsReverse *gutils) const {
+    return {};
+  }
+
+  void createShadowValues(Operation *op, OpBuilder &builder,
+                          MGradientUtilsReverse *gutils) const {
+    auto castOp = cast<OpTy>(op);
+    auto newCastOp = cast<OpTy>(gutils->getNewFromOriginal(op));
+    Value source = castOp.getSource();
+    if (!gutils->isConstantValue(source)) {
+      Value sourceShadow = gutils->invertPointerM(source, builder);
+      auto shadowCast = cast<OpTy>(builder.clone(*newCastOp));
+      shadowCast.getSourceMutable().assign(sourceShadow);
+      gutils->setInvertedPointer(castOp.getResult(), shadowCast->getResult(0));
+    }
+  }
+};
+
 struct GPUWrapperOpInterfaceReverse
     : public ReverseAutoDiffOpInterface::ExternalModel<
           GPUWrapperOpInterfaceReverse, GPUWrapperOp> {
@@ -202,6 +231,11 @@ void mlir::enzyme::registerEnzymeXLADialectAutoDiffInterface(
     registerInterfaces(context);
     GPUWrapperOp::attachInterface<GPUWrapperOpInterfaceReverse>(*context);
     GPUWrapperOp::attachInterface<GPUWrapperOpEnzymeOpsRemover>(*context);
+
+    Pointer2MemrefOp::attachInterface<
+        ViewCastOpInterfaceReverse<Pointer2MemrefOp>>(*context);
+    Memref2PointerOp::attachInterface<
+        ViewCastOpInterfaceReverse<Memref2PointerOp>>(*context);
 
     // Register batching interfaces
     JITCallOp::attachInterface<SHLOGenericBatchOpInterface<JITCallOp>>(
