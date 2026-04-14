@@ -155,6 +155,13 @@ def MeshComputationOp : DistributedOp<"MeshComputation", [AttrSizedOperandSegmen
         // Multi-axis MPMD device coordinates. One coordinate per MPMD axis.
         using DeviceIndex = ::llvm::SmallVector<unsigned, 4>;
 
+                // Const overloads for segmented operands/attrs generated as
+                // mutable-only accessors by ODS.
+            ::mlir::ValueRange getSpmdAxes() const;
+            ::mlir::ValueRange getMpmdAxes() const;
+            uint32_t getNumDeviceBodies() const;
+            uint32_t getNumCommunicationBodies() const;
+
         // Indices are zero-based within the device-body partition.
       ::mlir::Region &getDeviceBody(unsigned idx);
       const ::mlir::Region &getDeviceBody(unsigned idx) const;
@@ -224,13 +231,18 @@ def ShardingOp : DistributedOp<"Sharding", [PureDistributedMetadata]> {
 
 
 // Communication Ops
-def CollectiveOp : DistributedOp<"Collective", [PureDistributedMetadata, DeclareOpInterfaceMethods<HandleDeclarationOpInterface>, DeclareOpInterfaceMethods<InferTypeOpInterface>, SameVariadicOperandSize]> {
+def CollectiveOp : DistributedOp<"Collective", [
+    PureDistributedMetadata,
+    DeclareOpInterfaceMethods<HandleDeclarationOpInterface>,
+    DeclareOpInterfaceMethods<InferTypeOpInterface>,
+    AttrSizedOperandSegments
+]> {
     let description = [{
        A resharding collective communication where the resharding pattern dictates the 
        communication pattern.
      }];
     let arguments = (ins
-        LogicalMeshType:$mesh,
+        Variadic<LogicalCommAxisType>:$axes,
         TypeAttr:$global_input_tensor_type,
         TypeAttr:$global_output_tensor_type,
         TypeAttr:$local_input_tensor_type,
@@ -239,13 +251,13 @@ def CollectiveOp : DistributedOp<"Collective", [PureDistributedMetadata, Declare
         Variadic<ShardingAxisType>:$output_sharding
     );
     let results = (outs CollectiveTokenType:$token);
-    let assemblyFormat = "$mesh `(`$global_input_tensor_type `>` $local_input_tensor_type`,` $input_sharding `)` `->` `(`$global_output_tensor_type `>` $local_output_tensor_type`,` $output_sharding`)` attr-dict";
+    let assemblyFormat = "$axes `(`$global_input_tensor_type `>` $local_input_tensor_type`,` $input_sharding `)` `->` `(`$global_output_tensor_type `>` $local_output_tensor_type`,` $output_sharding`)` attr-dict";
     // let hasVerifier = 1; // TODO verify sharding axes match the mesh, and that the input and output shardings are compatible with each other and the global/local tensor shapes.
 }
 
 def SubmeshCollectivePartsOp : DistributedOp<"SubmeshCollectiveParts", [PureDistributedMetadata, DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
     let description = [{
-       Decomposes a submesh collective into distince send/recieve tokens 
+       Decomposes a submesh collective into distinct send/recieve tokens 
        per submesh device, which can then be manipulated individually
        }];
     let arguments = (ins
