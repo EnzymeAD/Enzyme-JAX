@@ -23,7 +23,7 @@ func.func @square(%x : tensor<5xf32>) -> tensor<5xf32> {
 func.func @main() {
   %x = stablehlo.constant dense<[0.0, 1.0, 2.5, -3.0, 4.0]> : tensor<5xf32>
   %output = stablehlo.constant dense<[0.0, 1.0, 6.25, 9.0, 16.0]> : tensor<5xf32>
-  %expected = stablehlo.constant dense<2.0> : tensor<5xf32>
+  %expected = stablehlo.constant dense<[0.0, 2.0, 5.0, -6.0, 8.0]> : tensor<5xf32>
 
   %d = stablehlo.constant dense<1.0> : tensor<5xf32>
 
