@@ -42,6 +42,16 @@ def PropagateShapesPass : Pass<"propagate-shapes"> {
     "enzymexla::EnzymeXLADialect",
     "chlo::ChloDialect"
   ];
+
+  let options = [
+    Option<
+      /*C++ variable name=*/"shapes",
+      /*CLI argument=*/"shapes",
+      /*type=*/"std::string",
+      /*default=*/"",
+      /*description=*/"describes the shapes to be propagated"
+    >,
+  ];
 }
 
 def CanonicalizeLoopsPass : InterfacePass<"canonicalize-loops", 

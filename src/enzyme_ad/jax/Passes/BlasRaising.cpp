@@ -31,7 +31,6 @@
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/IR/AffineValueMap.h"
 #include "mlir/Dialect/Affine/LoopUtils.h"
-#include "mlir/Dialect/Affine/Passes.h"
 #include "mlir/Dialect/Affine/Utils.h"
 
 #include "stablehlo/dialect/ChloOps.h"
@@ -80,7 +79,6 @@ struct BlasRaisingPass
   }
 
   SmallVector<Value> transformOperands(LLVM::CallOp call, SmallVector<Type> targetTypes) {
-    auto modOp = call->getParentOfType<ModuleOp>();
     OpBuilder builder(call);
     Location loc = call.getLoc();
 
@@ -197,15 +195,23 @@ struct BlasRaisingPass
 
   // The input tensor is stored as column-major format and has dimensions lda x other_dim (flattened). We want to return it cropped
   // and reshaped to row-major ldim_size by other_dim.
-  Value make2DTensor(OpBuilder &builder, Location &loc, Value tensor, int64_t ldim, int64_t ldim_size, int64_t other_dim) {
+  Value make2DTensor(OpBuilder &builder, Location &loc, Value tensor, int64_t ldim, int64_t ldim_size, int64_t other_dim, bool transposed) {
     Type elemTy = getElemType(tensor);
     auto ctx = builder.getContext();
+
+    mlir::Attribute otherDimAttr = mlir::StringAttr::get(builder.getContext(), "otherDim");
+    mlir::Attribute ldimAttr = mlir::StringAttr::get(builder.getContext(), "ldim");
+    mlir::Attribute ldimSizeAttr = mlir::StringAttr::get(builder.getContext(), "alongLdim");
+    mlir::Attribute transposedAttr = mlir::BoolAttr::get(builder.getContext(), transposed);
 
     auto reshaped = stablehlo::ReshapeOp::create(builder,
       loc, 
       RankedTensorType::get({other_dim, ldim}, elemTy),
       tensor
     );
+    reshaped->setAttr("dim.0", otherDimAttr);
+    reshaped->setAttr("dim.1", ldimAttr);
+    reshaped->setAttr("transposed", transposedAttr);
 
     // Convert to row major
     auto transposed = stablehlo::TransposeOp::create(builder,
@@ -215,7 +221,7 @@ struct BlasRaisingPass
       SmallVector<int64_t>{1, 0}
     );
 
-    return stablehlo::SliceOp::create(builder,
+    auto tmp = stablehlo::SliceOp::create(builder,
       loc,
       RankedTensorType::get({ldim_size, other_dim}, elemTy),
       transposed,
@@ -223,6 +229,10 @@ struct BlasRaisingPass
       DenseI64ArrayAttr::get(ctx, {ldim_size, other_dim}),
       DenseI64ArrayAttr::get(ctx, {(int64_t) 1, (int64_t) 1})
     );
+    tmp->setAttr("dim.0", ldimSizeAttr);
+    tmp->setAttr("dim.1", otherDimAttr);
+    tmp->setAttr("transposed", transposedAttr);
+    return tmp;
   }
 
   Value writebackTo1DTensor(OpBuilder &builder, Location loc,
@@ -231,16 +241,21 @@ struct BlasRaisingPass
                           int64_t ldim,
                           int64_t ldim_size,
                           int64_t other_dim) {
-    auto ctx = builder.getContext();
     Type elemTy = getElemType(orig);
 
-    auto startIndices = DenseI64ArrayAttr::get(ctx, {0, 0});
+    // auto startIndices = DenseI64ArrayAttr::get(ctx, {0, 0});
+    mlir::Attribute otherDimAttr = mlir::StringAttr::get(builder.getContext(), "otherDim");
+    mlir::Attribute ldimAttr = mlir::StringAttr::get(builder.getContext(), "ldim");
+    // mlir::Attribute ldimSizeAttr = mlir::StringAttr::get(builder.getContext(), "alongLdim");
+    mlir::Attribute otherDimLDimAttr = mlir::StringAttr::get(builder.getContext(), "ldim.otherDim");
 
     auto reshaped_orig = stablehlo::ReshapeOp::create(builder,
       loc, 
       RankedTensorType::get({other_dim, ldim}, elemTy),
       orig
     );
+    reshaped_orig->setAttr("dim.0", otherDimAttr);
+    reshaped_orig->setAttr("dim.1", ldimAttr);
 
     auto transposed_update = stablehlo::TransposeOp::create(builder,
       loc,
@@ -263,16 +278,25 @@ struct BlasRaisingPass
       RankedTensorType::get({other_dim * ldim}, elemTy),
       updated_2D_orig
     );
+    tmp->setAttr("dim.0", otherDimLDimAttr);
 
     Value size_tensor = stablehlo::ConstantOp::create(builder, loc,
       DenseIntElementsAttr::get(RankedTensorType::get({1}, builder.getI64Type()), {other_dim*ldim}));
-    return stablehlo::DynamicReshapeOp::create(
+
+    // this being a dynamic reshape op is a sneaky workaround to the fact that we need to return
+    // a <?xdatatype> tensor, but we use placeholder shapes that aren't dynamic
+    // and we can't cast from <nxdatatype>. Annotate this so we can switch it out for the correct static reshape
+    // in the JIT pass
+    mlir::Attribute reshapeAttr = mlir::BoolAttr::get(builder.getContext(), true);
+    auto reshape = stablehlo::DynamicReshapeOp::create(
       builder,
       loc,
       RankedTensorType::get({ShapedType::kDynamic}, elemTy),
       tmp,
       size_tensor
     );
+    reshape->setAttr("replaceWithStaticReshape", reshapeAttr);
+    return reshape;
   }
 
   func::FuncOp buildFunctionSignature(LLVM::CallOp call, SmallVector<Value> operands, std::map<int, SmallVector<int>> operandShapes, StringRef name) {
@@ -373,19 +397,24 @@ struct BlasRaisingPass
 
     // Extract arguments
     int i = 0;
-    Value transAenum = operands[i++];
-    Value transBenum = operands[i++];
+    // Value transAenum = operands[i++];
+    // Value transBenum = operands[i++];
+    i+=2;
     Value m = operands[i++];
     Value n = operands[i++];
-    Value k = operands[i++];
+    // Value k = operands[i++];
+    i++;
     Value alpha = operands[i++];
     Value A_flat = operands[i++];
-    Value lda = operands[i++];
+    // Value lda = operands[i++];
+    i++;
     Value B_flat = operands[i++];
-    Value ldb = operands[i++];
+    // Value ldb = operands[i++];
+    i++;
     Value beta = operands[i++];
     Value C_flat = operands[i++];
-    Value ldc = operands[i++];
+    // Value ldc = operands[i++];
+    i++;
 
     Type elemTy = getElemType(A_flat);
 
@@ -422,7 +451,7 @@ struct BlasRaisingPass
     if (transA) {
       // matrix is [k,m] column-major, becomes [m,k] row-major
       // Then transpose to [k,m] for the row-major computation
-      auto A_reshaped = make2DTensor(bodyBuilder, loc, A_flat, lda_const, k_const, m_const);
+      auto A_reshaped = make2DTensor(bodyBuilder, loc, A_flat, lda_const, k_const, m_const, true);
       A_eff = stablehlo::TransposeOp::create(bodyBuilder, loc,
         RankedTensorType::get({m_const, k_const}, elemTy),
         A_reshaped, SmallVector<int64_t>{1, 0}
@@ -582,10 +611,8 @@ struct BlasRaisingPass
     
     operands[11] = outFlat;
     SmallVector<Value> result;
-    int idx = 0;
-    for (auto &value : operands) {
-        result.push_back(operands[idx]);
-      ++idx;
+    for (int idx = 0; idx < operands.size(); idx++) {
+      result.push_back(operands[idx]);
     }
     func::ReturnOp::create(bodyBuilder, loc, ValueRange{result});
     return fn;
@@ -622,9 +649,8 @@ struct BlasRaisingPass
       }
       call.erase();
     }
-
-    llvm::errs() << "=== BlasRaisingPass done ===\n";
     op->dump();
+    llvm::errs() << "=== BlasRaisingPass done ===\n";
     // llvm::errs().flush();
   }
 };

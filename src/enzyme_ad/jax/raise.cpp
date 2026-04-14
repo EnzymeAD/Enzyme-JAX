@@ -112,21 +112,21 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       "func.func(affine-loop-invariant-code-motion),"
       "canonicalize,sort-memory,llvm-to-tessera,tessera-apply-pdl,tessera-to-llvm,";
   if (StringRef(backend).starts_with("xla")) {
-      pass_pipeline += "func.func(kernelcast),raise-affine-to-stablehlo{prefer_while_raising=false "
+      pass_pipeline += "func.func(kernelcast),blas-raise,raise-affine-to-stablehlo{prefer_while_raising=false "
       "dump_failed_lockstep=true},canonicalize,arith-raise{stablehlo=true},"
-      "symbol-dce";
+      "symbol-dce,print";
       if (outfile.size() && getenv("EXPORT_REACTANT")) {
         pass_pipeline += ",print{filename="+outfile+".mlir}";
       }
       pass_pipeline += ",lower-affine";
       if (getenv("REACTANT_OMP")) {
-        pass_pipeline += ",convert-scf-to-openmp,";
+        pass_pipeline += ",print,convert-scf-to-openmp,";
       } else {
-        pass_pipeline += ",parallel-serialization,";
+        pass_pipeline += ",print,parallel-serialization,";
       }
       pass_pipeline += "canonicalize,convert-polygeist-to-llvm{backend=";
       pass_pipeline += backend;
-      pass_pipeline += "}";
+      pass_pipeline += "},print";
   } else {
       if (outfile.size() && getenv("EXPORT_REACTANT")) {
         pass_pipeline += "print{filename="+outfile+".mlir},";
