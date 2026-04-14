@@ -13,8 +13,7 @@ def ShardingAxisType : DistributedType<"Sharding", "sharding">;
 def PhysicalMeshType : DistributedType<"PhysicalMesh", "physical_mesh">;
 def LogicalMeshType : DistributedType<"LogicalMesh", "logical_mesh">;
 
-def CollectiveTokenType : DistributedType<"CollectiveToken", "collective_token">;
-// TODO: split this into send and recieve token types?
+// Single token type used for collective declaration and message events.
 def MessageTokenType : DistributedType<"MessageToken", "message_token">;
 
 #endif // ENZYME_DISTRIBUTED_DIALECT_TYPES_H
