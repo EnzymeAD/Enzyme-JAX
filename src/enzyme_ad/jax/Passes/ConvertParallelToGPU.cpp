@@ -2536,6 +2536,11 @@ gdgo->erase();
         auto gmod = cast<gpu::GPUModuleOp>(gfunc->getParentOp());
         if (!gmod.getTargetsAttr()) {
           Attribute target;
+          bool hasFastMath = false;
+          if (auto attr =
+                  gfunc->getAttrOfType<BoolAttr>("no_signed_zeros_fp_math"))
+            hasFastMath = attr.getValue();
+
           if (backend == "rocm") {
             auto chip = "gfx900";
             auto features = "+wavefront64";
@@ -2550,9 +2555,18 @@ gdgo->erase();
             auto features = feat;
             if (features.size() == 0)
               features = "+ptx73";
+
+            auto ctx = gmod.getContext();
+            DictionaryAttr flags;
+            if (hasFastMath) {
+              auto fastAttr = BoolAttr::get(ctx, true);
+              flags = DictionaryAttr::get(ctx, {{"fast", fastAttr}});
+            } else {
+              flags = DictionaryAttr::get(ctx, {});
+            }
             target = NVVM::NVVMTargetAttr::get(
                 gmod.getContext(), /*optLevel*/ 3,
-                /*triple*/ "nvptx64-nvidia-cuda", chip, features);
+                /*triple*/ "nvptx64-nvidia-cuda", chip, features, flags);
           }
           gmod.setTargetsAttr(ArrayAttr::get(gmod.getContext(), target));
 
