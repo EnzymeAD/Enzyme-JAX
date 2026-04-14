@@ -13096,8 +13096,7 @@ struct DUSSliceSimplify final
         });
 
     LLVM_DEBUG(
-        for (auto [idx, operandSize, updateSize]
-             : llvm::zip_equal(
+        for (auto [idx, operandSize, updateSize] : llvm::zip_equal(
                  newDusIndices,
                  cast<RankedTensorType>(preSliceOperand.getType()).getShape(),
                  cast<RankedTensorType>(preSliceUpdate.getType()).getShape())) {
@@ -29531,8 +29530,7 @@ struct NoopReduceWindowOpCanon final
     if (op.getInputs().size() != 1 || op.getInitValues().size() != 1)
       return failure();
 
-    auto inputType =
-        dyn_cast<RankedTensorType>(op.getInputs()[0].getType());
+    auto inputType = dyn_cast<RankedTensorType>(op.getInputs()[0].getType());
     if (!inputType || !inputType.hasStaticShape())
       return failure();
 
