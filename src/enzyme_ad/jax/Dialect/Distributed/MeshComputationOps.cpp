@@ -2,28 +2,59 @@
 
 namespace mlir::enzyme::distributed {
 
+ValueRange MeshComputationOp::getSpmdAxes() const {
+  auto segmentSizesAttr =
+      (*this)->getAttrOfType<DenseI32ArrayAttr>("operandSegmentSizes");
+  if (!segmentSizesAttr || segmentSizesAttr.size() != 3) {
+    return {};
+  }
+  return ValueRange(
+      (*this)->getOperands().slice(/*start=*/0, segmentSizesAttr[0]));
+}
+
+ValueRange MeshComputationOp::getMpmdAxes() const {
+  auto segmentSizesAttr =
+      (*this)->getAttrOfType<DenseI32ArrayAttr>("operandSegmentSizes");
+  if (!segmentSizesAttr || segmentSizesAttr.size() != 3) {
+    return {};
+  }
+  return ValueRange(
+      (*this)->getOperands().slice(/*start=*/segmentSizesAttr[0],
+                                   segmentSizesAttr[1]));
+}
+
+uint32_t MeshComputationOp::getNumDeviceBodies() const {
+  auto attr = (*this)->getAttrOfType<IntegerAttr>("num_device_bodies");
+  return attr ? static_cast<uint32_t>(attr.getInt()) : 0;
+}
+
+uint32_t MeshComputationOp::getNumCommunicationBodies() const {
+  auto attr =
+      (*this)->getAttrOfType<IntegerAttr>("num_communication_bodies");
+  return attr ? static_cast<uint32_t>(attr.getInt()) : 0;
+}
+
 Region &MeshComputationOp::getDeviceBody(unsigned idx) {
-  assert(idx < static_cast<unsigned>(getNumDeviceBodies()) &&
-         "device-body index is relative to the start of the device partition");
   return getOperation()->getRegion(idx);
 }
 
 const Region &MeshComputationOp::getDeviceBody(unsigned idx) const {
-  return const_cast<MeshComputationOp *>(this)->getDeviceBody(idx);
+  return (*this)->getRegion(idx);
 }
 
 // Maps a multi-axis MPMD device coordinate to a flat index in the device-body
 // partition. Higher-index MPMD axes are treated as higher-significance.
 FailureOr<unsigned> MeshComputationOp::findComputationBodyIndexByDeviceIndex(
     const DeviceIndex &deviceIndex) const {
-  if (deviceIndex.size() != getMpmdAxes().size()) {
+  auto mpmdAxes = getMpmdAxes();
+  if (deviceIndex.size() != mpmdAxes.size()) {
     return failure();
   }
 
   unsigned flatIndex = 0;
   unsigned stride = 1;
-  for (size_t axisPos = 0; axisPos < getMpmdAxes().size(); ++axisPos) {
-    Value axis = getMpmdAxes()[axisPos];
+  for (size_t axisPos = 0; axisPos < mpmdAxes.size(); ++axisPos) {
+    Value axis = mpmdAxes[axisPos];
     int64_t axisSize =
         static_cast<int64_t>(getAxisSize(TypedOpResult<LogicalCommAxisType>(
             axis)));
@@ -40,7 +71,8 @@ FailureOr<unsigned> MeshComputationOp::findComputationBodyIndexByDeviceIndex(
     stride *= static_cast<unsigned>(axisSize);
   }
 
-  if (flatIndex >= static_cast<unsigned>(getNumDeviceBodies())) {
+  uint32_t numDeviceBodies = getNumDeviceBodies();
+  if (flatIndex >= static_cast<unsigned>(numDeviceBodies)) {
     return failure();
   }
   return flatIndex;
@@ -56,20 +88,20 @@ Region &MeshComputationOp::getDeviceBodyByDeviceIndex(
 
 const Region &MeshComputationOp::getDeviceBodyByDeviceIndex(
     const DeviceIndex &deviceIndex) const {
-  return const_cast<MeshComputationOp *>(this)->getDeviceBodyByDeviceIndex(
-      deviceIndex);
+  auto bodyIndex = findComputationBodyIndexByDeviceIndex(deviceIndex);
+  assert(succeeded(bodyIndex) &&
+         "expected a valid DeviceIndex in the MPMD submesh");
+  return getDeviceBody(*bodyIndex);
 }
 
 Region &MeshComputationOp::getCommunicationBody(unsigned idx) {
   unsigned communicationBodyStart = static_cast<unsigned>(getNumDeviceBodies());
-  assert(idx < static_cast<unsigned>(getNumCommunicationBodies()) &&
-         "communication-body index is relative to the start of the "
-         "communication partition");
   return getOperation()->getRegion(communicationBodyStart + idx);
 }
 
 const Region &MeshComputationOp::getCommunicationBody(unsigned idx) const {
-  return const_cast<MeshComputationOp *>(this)->getCommunicationBody(idx);
+  unsigned communicationBodyStart = getNumDeviceBodies();
+  return (*this)->getRegion(communicationBodyStart + idx);
 }
 
 // Returns the communication-body index for a communication axis in the
@@ -78,8 +110,10 @@ const Region &MeshComputationOp::getCommunicationBody(unsigned idx) const {
 FailureOr<unsigned>
 MeshComputationOp::findCommunicationBodyIndexForAxis(Value axis) const {
   unsigned communicationBodyIndex = 0;
+  auto spmdAxes = getSpmdAxes();
+  auto mpmdAxes = getMpmdAxes();
   for (bool spmdCase : {true, false}) {
-    auto axisRange = spmdCase ? getSpmdAxes() : getMpmdAxes();
+    auto axisRange = spmdCase ? spmdAxes : mpmdAxes;
     for (Value candidate : axisRange) {
       if (candidate == axis) {
         return communicationBodyIndex;
@@ -99,12 +133,44 @@ Region &MeshComputationOp::getCommunicationBodyForAxis(Value axis) {
 }
 
 const Region &MeshComputationOp::getCommunicationBodyForAxis(Value axis) const {
-  return const_cast<MeshComputationOp *>(this)->getCommunicationBodyForAxis(
-      axis);
+  auto bodyIndex = findCommunicationBodyIndexForAxis(axis);
+  assert(succeeded(bodyIndex) &&
+         "communication body lookup expects a logical axis from either the "
+         "SPMD or MPMD partitions");
+  return getCommunicationBody(*bodyIndex);
 }
 
 // Verifies region partition sizes and axis/body cardinality invariants.
 LogicalResult MeshComputationOp::verify() {
+  auto segmentSizesAttr =
+      (*this)->getAttrOfType<DenseI32ArrayAttr>("operandSegmentSizes");
+  if (!segmentSizesAttr) {
+    return emitOpError() << "requires operandSegmentSizes attribute";
+  }
+  if (segmentSizesAttr.size() != 3) {
+    return emitOpError()
+           << "requires operandSegmentSizes to have 3 entries "
+              "(spmd_axes, mpmd_axes, input_tensors)";
+  }
+
+  auto numDeviceBodiesAttr =
+      (*this)->getAttrOfType<IntegerAttr>("num_device_bodies");
+  if (!numDeviceBodiesAttr) {
+    return emitOpError() << "requires num_device_bodies attribute";
+  }
+  auto numCommunicationBodiesAttr =
+      (*this)->getAttrOfType<IntegerAttr>("num_communication_bodies");
+  if (!numCommunicationBodiesAttr) {
+    return emitOpError() << "requires num_communication_bodies attribute";
+  }
+
+  if (numDeviceBodiesAttr.getInt() < 0) {
+    return emitOpError() << "requires num_device_bodies to be non-negative";
+  }
+  if (numCommunicationBodiesAttr.getInt() < 0) {
+    return emitOpError()
+           << "requires num_communication_bodies to be non-negative";
+  }
 
   // Check overall region count
   unsigned expectedBodyCount =

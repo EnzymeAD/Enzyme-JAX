@@ -9,6 +9,8 @@
 #include "mlir/IR/Region.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/IR/Types.h"
+#include "stablehlo/dialect/Base.h"
+#include "mlir/Dialect/Quant/IR/QuantTypes.h"
 #include "mlir/Interfaces/InferTypeOpInterface.h"
 #include "mlir/Support/LLVM.h"
 
@@ -83,8 +85,7 @@ int getAxisSize(TypedOpResult<LogicalCommAxisType> logicalAxis);
  *  - atomic factors are pairwise distinct
  *  - factors for the same physical axis come from one factorization op
  */
-bool areLogicalAxesDisjoint(
-  ::mlir::ValueRange logicalAxes);
+bool areLogicalAxesDisjoint(::mlir::ValueRange logicalAxes);
 
 } // namespace mlir::enzyme::distributed
 
