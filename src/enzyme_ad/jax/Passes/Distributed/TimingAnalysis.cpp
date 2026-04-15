@@ -121,7 +121,7 @@ int64_t getDotReductionSize(ShapedType lhsTy, ShapedType rhsTy) {
 
 double getOpToKflops(Operation *op) {
   if (isa<SendOp, RecvOp, distributed::DistributedYieldOp, stablehlo::ReshapeOp,
-          TransferOp>(op)) {
+          stablehlo::SliceOp, stablehlo::ConcatenateOp, TransferOp>(op)) {
     return 0.0;
   }
 
