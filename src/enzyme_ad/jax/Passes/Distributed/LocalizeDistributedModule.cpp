@@ -46,6 +46,14 @@ TensorBindingMap buildPrototypeTensorBindingMap(
     return bindings;
   }
 
+  // Cycle through three sharding modes: IndexBased, Sharded, Replicated
+  const ShardingMode modes[] = {
+      ShardingMode::IndexBased,
+      ShardingMode::Sharded,
+      ShardingMode::Replicated
+  };
+  const size_t numModes = 3;
+
   for (auto [tensorOpIndex, op] : llvm::enumerate(tensorOps)) {
     Value localizedAxis = localizationAxes[
         (static_cast<int64_t>(tensorOpIndex) + startAxisIndex) %
@@ -57,6 +65,8 @@ TensorBindingMap buildPrototypeTensorBindingMap(
                      ? static_cast<int64_t>(tensorOpIndex) %
                        chosenDeviceCount
                      : 0;
+    // Cycle through sharding modes for each tensor op to stress test
+    choice.shardingMode = modes[tensorOpIndex % numModes];
 
     for (Value result : op->getResults()) {
       if (!isa<ShapedType>(result.getType())) {
@@ -89,16 +99,12 @@ struct LocalizeDistributedModulePass
       }
 
       if (localizationAxes.empty()) {
-        meshOp.emitRemark()
-            << "skipping localization because the mesh has no axes to cycle";
         continue;
       }
 
       SmallVector<Operation *> tensorOps;
       recordTensorProducingOps(meshOp, tensorOps);
       if (tensorOps.empty()) {
-        meshOp.emitRemark()
-            << "no tensor-producing ops found in the computational region";
         continue;
       }
 
@@ -111,15 +117,6 @@ struct LocalizeDistributedModulePass
         TensorBindingMap bindings = buildPrototypeTensorBindingMap(
           localizationAxes, tensorOps, targetMpmdAxisIndex, tensorAxis,
           axisSize);
-
-      meshOp.emitRemark()
-          << "prototype localization config: axis-index="
-          << targetMpmdAxisIndex << ", tensor-axis=Index"
-          << ", tensor-axis-value=" << tensorAxis
-          << ", chosen-device-count=" << axisSize
-          << ", cycle-slot=" << meshIndex
-          << ", hlo-ops=" << tensorOps.size()
-          << ", bindings=" << bindings.size();
 
       if (failed(parameterizedLocalizeMeshComputation(meshOp, bindings))) {
         signalPassFailure();
