@@ -12,13 +12,11 @@ distributed.PhysicalMesh @phys_mesh [@ax1]
 func.func @innerouterinnerdataparallel(
     %x: tensor<512x1024xf32> {sdy.sharding = #sdy.sharding<@mesh, [{"x"}, {}]>},
     %w1: tensor<1024x64xf32> {sdy.sharding = #sdy.sharding<@mesh, [{}, {}]>},
-    %w2: tensor<1x128xf32> {sdy.sharding = #sdy.sharding<@mesh, [{}, {}]>},
-    %w3: tensor<8192x10xf32> {sdy.sharding = #sdy.sharding<@mesh, [{}, {}]>}
-) -> (tensor<512x10xf32> {sdy.sharding = #sdy.sharding<@mesh, [{"x"}, {}]>}) {
+    %w2: tensor<2xf32> {sdy.sharding = #sdy.sharding<@mesh, [{}]>},
+    %w3: tensor<64x2x64xf32> {sdy.sharding = #sdy.sharding<@mesh, [{}, {}, {}]>}
+) -> (tensor<512x64xf32> {sdy.sharding = #sdy.sharding<@mesh, [{"x"}, {}]>}) {
     %0 = stablehlo.dot %x, %w1 : (tensor<512x1024xf32>, tensor<1024x64xf32>) -> tensor<512x64xf32>
-    %1 = stablehlo.reshape %0 : (tensor<512x64xf32>) -> tensor<32768x1xf32>
-    %2 = stablehlo.dot %1, %w2 : (tensor<32768x1xf32>, tensor<1x128xf32>) -> tensor<32768x128xf32>
-    %3 = stablehlo.reshape %2 : (tensor<32768x128xf32>) -> tensor<512x8192xf32>
-    %4 = stablehlo.dot %3, %w3 : (tensor<512x8192xf32>, tensor<8192x10xf32>) -> tensor<512x10xf32>
-    return %4 : tensor<512x10xf32>
+    %1 = stablehlo.dot_general %0, %w2, contracting_dims = [] x [] : (tensor<512x64xf32>, tensor<2xf32>) -> tensor<512x64x2xf32>
+    %2 = stablehlo.dot_general %1, %w3, contracting_dims = [1, 2] x [0, 1] : (tensor<512x64x2xf32>, tensor<64x2x64xf32>) -> tensor<512x64xf32>
+    return %2 : tensor<512x64xf32>
 }
