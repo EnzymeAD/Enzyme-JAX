@@ -1028,7 +1028,7 @@ def OptimizeCommunication : Pass<"optimize-communication"> {
        /*C++ variable name=*/"concat_to_dus_any",
        /*CLI argument=*/"concat_to_dus_any",
        /*type=*/"int",
-       /*default=*/"1",
+       /*default=*/"0",
        /*description=*/"Perform a Concatenate with Padding to optimize the communication">,
        Option<
        /*C++ variable name=*/"concat_to_rotatepad",
@@ -1066,6 +1066,12 @@ def OptimizeCommunication : Pass<"optimize-communication"> {
        /*type=*/"int",
        /*default=*/"0",
        /*description=*/"Perform a two-concat with pads and a manual select">,
+       Option<
+       /*C++ variable name=*/"dus_of_concat_slices",
+       /*CLI argument=*/"dus_of_concat_slices",
+       /*type=*/"int",
+       /*default=*/"2",
+       /*description=*/"Optimize DUS of concat of slices">,
        Option<
        /*C++ variable name=*/"wrap_to_pad_comm",
        /*CLI argument=*/"wrap_to_pad_comm",
