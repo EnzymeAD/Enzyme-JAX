@@ -673,6 +673,8 @@ int64_t findBestTilingFactor(CollectiveOp collective, int64_t tileDim,
   return bestFactor;
 }
 
+} // end anonymous namespace
+
 // ===----------------------------------------------------------------------===
 // runOverlapCommunication — entry point.
 // ===----------------------------------------------------------------------===
@@ -727,6 +729,8 @@ void runOverlapCommunication(MeshComputationOp meshOp, int64_t kMaxVal) {
     }
   }
 }
+
+namespace {
 
 struct DistributedOverlapCommunicationPass
     : public enzyme::distributed::impl::DistributedOverlapCommunicationPassBase<
