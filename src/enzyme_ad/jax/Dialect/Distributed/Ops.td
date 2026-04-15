@@ -139,6 +139,7 @@ def MeshComputationOp : DistributedOp<"MeshComputation", [
     let arguments = (ins
         Variadic<LogicalCommAxisType>:$spmd_axes,
         Variadic<LogicalCommAxisType>:$mpmd_axes,
+        ArrayAttr:$shardy_axis_names,
         Variadic<ShardedTensorType>:$input_tensors,
         I32Attr:$num_device_bodies,
         I32Attr:$num_communication_bodies
@@ -147,6 +148,7 @@ def MeshComputationOp : DistributedOp<"MeshComputation", [
     let regions = (region VariadicRegion<SizedRegion<1>>:$bodies);
         let assemblyFormat = [{
             `spmd` `(` $spmd_axes `)` `mpmd` `(` $mpmd_axes `)`
+            `shardy_axis_names` $shardy_axis_names
             $input_tensors type($input_tensors)
             `->` type($output_tensors)
             `num_device_bodies` $num_device_bodies
@@ -164,6 +166,22 @@ def MeshComputationOp : DistributedOp<"MeshComputation", [
             ::mlir::ValueRange getMpmdAxes() const;
             uint32_t getNumDeviceBodies() const;
             uint32_t getNumCommunicationBodies() const;
+
+        // Axis-name/axis-value conversion helpers for mixed Shardy/distributed
+        // lowering states.
+        ::mlir::FailureOr<::mlir::Value>
+        findLogicalAxisForShardyAxisName(::llvm::StringRef shardyAxisName) const;
+        ::mlir::FailureOr<::mlir::StringAttr>
+        findShardyAxisNameForLogicalAxis(::mlir::Value logicalAxis) const;
+
+        // Looks up one of the input tensor operands by SSA value.
+        ::mlir::FailureOr<unsigned>
+        findInputTensorIndex(::mlir::Value tensor) const;
+
+        // Rewrites the sharding attached to one of the input tensor operands.
+        ::mlir::LogicalResult
+        setInputTensorSharding(::mlir::Value tensor,
+                                                        ::mlir::sdy::TensorShardingAttr sharding);
 
         // Indices are zero-based within the device-body partition.
       ::mlir::Region &getDeviceBody(unsigned idx);
@@ -235,14 +253,14 @@ def ShardingOp : DistributedOp<"Sharding", [PureDistributedMetadata]> {
 
 // Communication Ops
 def CollectiveOp : DistributedOp<"Collective", [
-    PureDistributedMetadata,
     DeclareOpInterfaceMethods<HandleDeclarationOpInterface>,
     DeclareOpInterfaceMethods<InferTypeOpInterface>,
     AttrSizedOperandSegments
 ]> {
     let description = [{
        A resharding collective communication where the resharding pattern dictates the 
-       communication pattern.
+       communication pattern. Not marked Pure to prevent CSE from combining multiple
+       collectives, as each generates a distinct Transfer op in the communication body.
      }];
     let arguments = (ins
         Variadic<LogicalCommAxisType>:$axes,

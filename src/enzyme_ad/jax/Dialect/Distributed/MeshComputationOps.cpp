@@ -1,5 +1,7 @@
 #include "Dialect.h"
 
+#include "shardy/dialect/sdy/ir/utils.h"
+
 namespace mlir::enzyme::distributed {
 
 llvm::SmallVector<mlir::Region *> MeshComputationOp::getLanes() {
@@ -9,6 +11,85 @@ llvm::SmallVector<mlir::Region *> MeshComputationOp::getLanes() {
     lanes.push_back(&region);
   }
   return lanes;
+}
+
+// Resolves a tensor SSA value back to its input-operand slot.
+FailureOr<unsigned> MeshComputationOp::findInputTensorIndex(Value tensor) const {
+  auto inputTensors = const_cast<MeshComputationOp *>(this)->getInputTensors();
+  for (auto [index, inputTensor] : llvm::enumerate(inputTensors)) {
+    if (inputTensor == tensor) {
+      return static_cast<unsigned>(index);
+    }
+  }
+  return failure();
+}
+
+LogicalResult MeshComputationOp::setInputTensorSharding(
+    Value tensor, sdy::TensorShardingAttr sharding) {
+  if (failed(findInputTensorIndex(tensor))) {
+    return emitOpError()
+           << "expected tensor to be one of the mesh computation input tensors";
+  }
+  sdy::setSharding(tensor, sharding);
+  return success();
+}
+
+// Looks up the distributed logical axis corresponding to a recorded Shardy
+// axis name.
+FailureOr<Value>
+MeshComputationOp::findLogicalAxisForShardyAxisName(StringRef shardyAxisName) const {
+  ArrayAttr shardyAxisNames = const_cast<MeshComputationOp *>(this)->getShardyAxisNames();
+  if (!shardyAxisNames) {
+    return failure();
+  }
+
+  llvm::SmallVector<Value> logicalAxes;
+  logicalAxes.append(getSpmdAxes().begin(), getSpmdAxes().end());
+  logicalAxes.append(getMpmdAxes().begin(), getMpmdAxes().end());
+  if (logicalAxes.size() != shardyAxisNames.size()) {
+    return failure();
+  }
+
+  for (auto [index, nameAttr] : llvm::enumerate(shardyAxisNames)) {
+    auto axisName = dyn_cast<StringAttr>(nameAttr);
+    if (!axisName) {
+      return failure();
+    }
+    if (axisName.getValue() == shardyAxisName) {
+      return logicalAxes[index];
+    }
+  }
+
+  return failure();
+}
+
+// Looks up the recorded Shardy axis name corresponding to a logical axis SSA
+// value.
+FailureOr<StringAttr>
+MeshComputationOp::findShardyAxisNameForLogicalAxis(Value logicalAxis) const {
+  ArrayAttr shardyAxisNames = const_cast<MeshComputationOp *>(this)->getShardyAxisNames();
+  if (!shardyAxisNames) {
+    return failure();
+  }
+
+  llvm::SmallVector<Value> logicalAxes;
+  logicalAxes.append(getSpmdAxes().begin(), getSpmdAxes().end());
+  logicalAxes.append(getMpmdAxes().begin(), getMpmdAxes().end());
+  if (logicalAxes.size() != shardyAxisNames.size()) {
+    return failure();
+  }
+
+  for (auto [index, axis] : llvm::enumerate(logicalAxes)) {
+    if (axis == logicalAxis) {
+      auto axisName = dyn_cast<StringAttr>(shardyAxisNames[index]);
+      if (!axisName) {
+        return failure();
+      }
+      return axisName;
+    }
+  }
+
+  return failure();
 }
 
 ValueRange MeshComputationOp::getSpmdAxes() const {
