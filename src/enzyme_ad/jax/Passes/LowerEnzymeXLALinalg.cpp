@@ -48,23 +48,25 @@ struct TridiagonalSolveOpLowering
 
     auto BType = cast<RankedTensorType>(op.getB().getType());
     auto nBatchDims = BType.getRank() - 2;
-
-    if (backend == "cpu" && nBatchDims == 0) {
-      return matchAndRewriteCPU(op, rewriter);
-    } else if (backend == "cuda") {
-      return matchAndRewriteCUDA(op, rewriter);
+    if (nBatchDims == 0) {
+      if (backend == "cpu") {
+        return matchAndRewriteCPU(op, rewriter);
+      } else if (backend == "cuda") {
+        return matchAndRewriteCUDA(op, rewriter);
+      }
     }
     return matchAndRewriteFallback(op, rewriter);
   }
 
   LogicalResult matchAndRewriteCPU(enzymexla::TridiagonalSolveOp op,
                                    PatternRewriter &rewriter) const {
+
     auto ctx = op->getContext();
     LLVMTypeConverter typeConverter(ctx);
 
-    Value dl = op.getDL();
+    Value dl = op.getDl();
     Value d = op.getD();
-    Value du = op.getDU();
+    Value du = op.getDu();
     Value B = op.getB();
 
     auto dlType = cast<RankedTensorType>(dl.getType());
@@ -88,9 +90,6 @@ struct TridiagonalSolveOpLowering
     Type elementType = dlType.getElementType();
     auto blasIntType = rewriter.getIntegerType(blasIntWidth);
     auto intType = RankedTensorType::get({}, blasIntType);
-    auto uint8Type =
-        RankedTensorType::get({}, rewriter.getIntegerType(8, false));
-    auto llvmIntType = typeConverter.convertType(blasIntType);
     auto llvmPtrType = LLVM::LLVMPointerType::get(ctx);
     auto llvmVoidType = LLVM::LLVMVoidType::get(ctx);
 
@@ -125,7 +124,7 @@ struct TridiagonalSolveOpLowering
 
     static int64_t fn_counter = 0;
     std::string funcFnName =
-        blasFnWrapper + "wrapper_" + std::to_string(fn_counter++);
+        lapackFn + "wrapper_" + std::to_string(fn_counter++);
 
     SmallVector<bool> isColMajorArrOperands(8, true);
     SmallVector<int64_t> operandRanks = {0, 0, 1, 1, 1, 2, 0, 0};
@@ -178,10 +177,10 @@ struct TridiagonalSolveOpLowering
           stablehlo::GetDimensionSizeOp::create(rewriter, op.getLoc(), d, 0));
       auto nrhs = stablehlo::ConvertOp::create(
           rewriter, op.getLoc(), intType,
-          stablehlo::GetDimensionSizeOp::create(rewriter, op.getLoc(), B, 1));
+          stablehlo::GetDimensionSizeOp::create(rewriter, op.getLoc(), b, 1));
       auto ldb = stablehlo::ConvertOp::create(
           rewriter, op.getLoc(), intType,
-          stablehlo::GetDimensionSizeOp::create(rewriter, op.getLoc(), B, 0));
+          stablehlo::GetDimensionSizeOp::create(rewriter, op.getLoc(), b, 0));
       auto info = stablehlo::ConstantOp::create(
           rewriter, op.getLoc(), intType,
           cast<ElementsAttr>(makeAttr(intType, -1)));
@@ -213,10 +212,13 @@ struct TridiagonalSolveOpLowering
 
   LogicalResult matchAndRewriteCUDA(enzymexla::TridiagonalSolveOp op,
                                     PatternRewriter &rewriter) const {
+
+    auto loc = op.getLoc();
     auto dlType = cast<RankedTensorType>(op.getDl().getType());
+    auto duType = cast<RankedTensorType>(op.getDu().getType());
     auto dType = cast<RankedTensorType>(op.getD().getType());
     auto dRank = dType.getRank();
-    auto bType = cast<RankedTensorType>(op.getBl().getType());
+    auto bType = cast<RankedTensorType>(op.getB().getType());
     auto bRank = bType.getRank();
 
     if (!dlType || !dType || !duType || !bType)
@@ -246,35 +248,27 @@ struct TridiagonalSolveOpLowering
     int64_t n = dType.getShape()[0]; // target size
 
     auto elemTy = dlType.getElementType();
-    auto outType = RankedTensorType::get({n}, elemTy);
 
-    // zero vector
-    auto zeroAttr = rewriter.getZeroAttr(elemTy);
-    auto zero_du = stablehlo::ConstantOp::create(
-        rewriter, op.getLoc(),
-        DenseElementsAttr::get(RankedTensorType::get({}, elemTy), zeroAttr));
-    auto zero_dl = stablehlo::ConstantOp::create(
-        rewriter, op.getLoc(),
-        DenseElementsAttr::get(RankedTensorType::get({}, elemTy), zeroAttr));
+    // padding value (0.0)
+    Value zero = stablehlo::ConstantOp::create(
+        rewriter, loc,
+        DenseElementsAttr::get(RankedTensorType::get({}, elemTy),
+                               rewriter.getZeroAttr(elemTy)));
 
-    auto zeroTensorDl = stablehlo::BroadcastInDimOp::create(
-        rewriter, loc, outType, zero,
-        DenseI64ArrayAttr::get(rewriter.getContext(), {}));
-    // insert dl_in at index 1
-    llvm::SmallVector<int64_t> dl_start(rank, 0);
-    start[rank - 1] = 1;
+    auto paddedTy = RankedTensorType::get({n}, elemTy);
 
-    auto dl = stablehlo::DynamicUpdateSliceOp::create(
-        rewriter, loc, outType, zeroTensorDl, dl_in, dl_start);
+    auto padding1 = rewriter.getDenseI64ArrayAttr({1});
+    auto padding0 = rewriter.getDenseI64ArrayAttr({0});
 
-    auto zeroTensorDu = stablehlo::BroadcastInDimOp::create(
-        rewriter, loc, outType, zero,
-        DenseI64ArrayAttr::get(rewriter.getContext(), {}));
-    // insert du_in at index 0
-    llvm::SmallVector<int64_t> du_start(rank, 0);
+    Value dl = stablehlo::PadOp::create(rewriter, loc, paddedTy,
+                                        /*operand=*/dl_in,
+                                        /*padding_value=*/zero, padding1,
+                                        padding0, padding0);
 
-    auto du = stablehlo::DynamicUpdateSliceOp::create(
-        rewriter, loc, outType, zeroTensorDu, du_in, du_start);
+    Value du = stablehlo::PadOp::create(rewriter, loc, paddedTy,
+                                        /*operand=*/du_in,
+                                        /*padding_value=*/zero, padding0,
+                                        padding1, padding0);
 
     StringAttr customCallTarget;
     ArrayAttr aliases;
@@ -320,33 +314,35 @@ struct TridiagonalSolveOpLowering
     Value B = op.getB();
 
     auto dType = cast<RankedTensorType>(d.getType());
+    auto BType = cast<RankedTensorType>(B.getType());
     int64_t n = dType.getShape()[0];
 
     auto elemTy = dType.getElementType();
 
     // build scatter index tensor
-    SmallVector<int64_t> indicesData;
+    SmallVector<int32_t> indicesData;
     indicesData.reserve(3 * n * 2);
 
     // diagonal (i,i)
-    for (int64_t i = 0; i < n; i++) {
+    for (int32_t i = 0; i < n; i++) {
       indicesData.push_back(i);
       indicesData.push_back(i);
     }
     // lower (i+1,i)
-    for (int64_t i = 0; i < n - 1; i++) {
+    for (int32_t i = 0; i < n - 1; i++) {
       indicesData.push_back(i + 1);
       indicesData.push_back(i);
     }
     // upper (i,i+1)
-    for (int64_t i = 0; i < n - 1; i++) {
+    for (int32_t i = 0; i < n - 1; i++) {
       indicesData.push_back(i);
       indicesData.push_back(i + 1);
     }
 
     auto indicesType =
-        RankedTensorType::get({3 * n - 2, 2}, rewriter.getI64Type());
-    auto indicesAttr = DenseElementsAttr::get(indicesType, indicesData);
+        RankedTensorType::get({3 * n - 2, 2}, rewriter.getI32Type());
+    auto indicesAttr = DenseIntElementsAttr::get(indicesType, indicesData);
+
     Value indices = stablehlo::ConstantOp::create(rewriter, loc, indicesAttr);
 
     auto matrixType = RankedTensorType::get({n, n}, elemTy);
@@ -363,10 +359,12 @@ struct TridiagonalSolveOpLowering
 
     auto scatterDims = stablehlo::ScatterDimensionNumbersAttr::get(
         rewriter.getContext(),
-        /*update_window_dims=*/ArrayRef<int64_t>{},
-        /*inserted_window_dims=*/ArrayRef<int64_t>{0, 1},
-        /*scatter_dims_to_operand_dims=*/ArrayRef<int64_t>{0, 1},
-        /*index_vector_dim=*/1);
+        /*updateWindowDims=*/ArrayRef<int64_t>{},
+        /*insertedWindowDims=*/ArrayRef<int64_t>{0, 1},
+        /*inputBatchingDims=*/{},
+        /*scatterIndicesBatchingDims=*/{},
+        /*scatterDimsToOperandDims=*/ArrayRef<int64_t>{0, 1},
+        /*indexVectorDim=*/1);
 
     // reconstructed A
     auto scatterOp = stablehlo::ScatterOp::create(
@@ -376,49 +374,73 @@ struct TridiagonalSolveOpLowering
         /*updates=*/ValueRange{values}, scatterDims,
         /*indices_are_sorted=*/false,
         /*unique_indices=*/true);
-    Value A = scatterOp.getResult();
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      Region &region = scatterOp.getUpdateComputation();
+      Block *block = rewriter.createBlock(&region);
 
-    auto lu =
-        enzymexla::LUFactorizationOp::create(rewriter, loc, A.getType(), A);
+      // block args: (old_value, new_value)
+      auto argType = RankedTensorType::get({}, elemTy);
+      block->addArgument(argType, op.getLoc());
+      block->addArgument(argType, op.getLoc());
+      // return rhs (overwrite)
+      rewriter.setInsertionPointToStart(block);
+      stablehlo::ReturnOp::create(rewriter, op.getLoc(), block->getArgument(1));
+    }
+    rewriter.setInsertionPointAfter(scatterOp);
+    Value A = scatterOp.getResult(0);
+
+    auto lu = enzymexla::LUFactorizationOp::create(
+        rewriter, op.getLoc(),
+        TypeRange{
+            A.getType(),
+            /*pivots_type=*/RankedTensorType::get({n}, rewriter.getI64Type()),
+            /*perm_type=*/RankedTensorType::get({n}, rewriter.getI64Type()),
+            /*info_type=*/RankedTensorType::get({}, rewriter.getI64Type())},
+        A);
 
     Value LU = lu.getResult(0);
     Value perm = lu.getResult(2);
 
     auto permType = cast<RankedTensorType>(perm.getType());
     auto idxType = RankedTensorType::get({n, 1}, permType.getElementType());
-    Value indices = stablehlo::ReshapeOp::create(rewriter, loc, idxType, perm);
+    Value gather_indices =
+        stablehlo::ReshapeOp::create(rewriter, loc, idxType, perm);
 
     auto dnums = stablehlo::GatherDimensionNumbersAttr::get(
         rewriter.getContext(),
         /*offset_dims=*/ArrayRef<int64_t>{1}, // result keeps column dim
         /*collapsed_slice_dims=*/ArrayRef<int64_t>{0}, // collapse row dim
-        /*start_index_map=*/ArrayRef<int64_t>{0},      // index maps to row dim
+        /*operandBatchingDims=*/{},
+        /*startIndicesBatchingDims=*/{},
+        /*start_index_map=*/ArrayRef<int64_t>{0}, // index maps to row dim
         /*index_vector_dim=*/1);
     SmallVector<int64_t> sliceSizes = {1, BType.getShape()[1]};
 
-    Value B_perm = stablehlo::GatherOp::create(rewriter, loc, B.getType(), B,
-                                               indices, dnums, sliceSizes);
+    Value B_perm = stablehlo::GatherOp::create(
+        rewriter, loc, B.getType(), B, gather_indices, dnums, sliceSizes);
 
     // solve Ly = B_perm
+    // we can directly use the LU buffer and indicate unit diagonal is
+    // true
     Value y = stablehlo::TriangularSolveOp::create(
-        rewriter, loc, B.getType(),
-        LU, // we can directly use the LU buffer and indicate unit diagonal is
-            // true
-        B_perm,
+        rewriter, loc, B.getType(), LU, B_perm,
         /*left_side=*/true,
         /*lower=*/true,
         /*unit_diagonal=*/true,
-        /*transpose_a=*/false);
+        /*transpose_a=*/
+        stablehlo::Transpose::NO_TRANSPOSE);
 
     // solve Ux = y
-    Value x =
-        stablehlo::TriangularSolveOp::create(rewriter, loc, B.getType(), LU, y,
-                                             /*left_side=*/true,
-                                             /*lower=*/false,
-                                             /*unit_diagonal=*/false,
-                                             /*transpose_a=*/false);
+    Value x = stablehlo::TriangularSolveOp::create(
+        rewriter, loc, B.getType(), LU, y,
+        /*left_side=*/true,
+        /*lower=*/false,
+        /*unit_diagonal=*/false,
+        /*transpose_a=*/
+        stablehlo::Transpose::NO_TRANSPOSE);
 
-    rewriter.replaceOp(op, result);
+    rewriter.replaceOp(op, x);
     return success();
   }
 };
@@ -501,6 +523,7 @@ struct LowerEnzymeXLALinalgPass
 
     patterns.add<LUFactorizationOpLowering>(context);
     patterns.add<SVDFactorizationOpLowering>(backend, context);
+    patterns.add<TridiagonalSolveOpLowering>(backend, blasIntWidth, context);
 
     GreedyRewriteConfig config;
     config.enableFolding();
@@ -511,8 +534,8 @@ struct LowerEnzymeXLALinalgPass
 
     // Verify that all illegal ops have been lowered
     auto walkResult = getOperation()->walk([&](Operation *op) {
-      if (isa<enzymexla::LUFactorizationOp, enzymexla::SVDFactorizationOp>(
-              op)) {
+      if (isa<enzymexla::LUFactorizationOp, enzymexla::SVDFactorizationOp,
+              enzymexla::TridiagonalSolveOp>(op)) {
         op->emitError("Failed to lower enzymexla linalg operation");
         return WalkResult::interrupt();
       }
