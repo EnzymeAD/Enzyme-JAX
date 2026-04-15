@@ -119,26 +119,46 @@ void HappensBeforeAnalysis::scanHappensBeforeEdges(LaneOpInterface laneOp) {
     Block &block = lane->front();
     if (block.empty())
       continue;
-    // at least one op, can safely take start + 1;
+
+    auto addExplicitEventEdges = [&](Operation *op) {
+      if (auto eventOp = dyn_cast<EventOpInterface>(op)) {
+        for (Value handle : eventOp.happensAfter()) {
+          auto representitive_other = any_event_simultaneous_with(handle);
+          if (representitive_other) {
+            addHappensBeforeEdge(representitive_other->getOperation(), op);
+          }
+        }
+
+        for (Value handle : eventOp.happensBefore()) {
+          auto representitive_other = any_event_simultaneous_with(handle);
+          if (representitive_other) {
+            addHappensBeforeEdge(op, representitive_other->getOperation());
+          }
+        }
+      }
+    };
+
     llvm::SmallVector<Operation *> lastOpsInSimultaneousClass;
-    Operation *current_root;
-    // Prep using the first op.
-    current_root = simultaneousClasses.getOrInsertLeaderValue(&block.front());
-    lastOpsInSimultaneousClass.push_back(&block.front());
-    for (Operation &op : llvm::drop_begin(block)) {
-      Operation *next_root = simultaneousClasses.getOrInsertLeaderValue(&op);
-      if (next_root != current_root) {
+    Operation *currentRoot = nullptr;
+    for (Operation &op : block) {
+      Operation *opPtr = &op;
+      Operation *nextRoot = simultaneousClasses.getOrInsertLeaderValue(opPtr);
+
+      if (!currentRoot) {
+        // First op starts the current simultaneous class.
+        currentRoot = nextRoot;
+      } else if (nextRoot != currentRoot) {
         // New simultaneous class, add happens-before edges from all ops in the
         // previous simultaneous class to this new simultaneous class.
         for (Operation *lastOp : lastOpsInSimultaneousClass) {
-          addHappensBeforeEdge(lastOp, &op);
+          addHappensBeforeEdge(lastOp, opPtr);
         }
         lastOpsInSimultaneousClass.clear();
-        current_root = next_root;
+        currentRoot = nextRoot;
       } else {
         // Same simultaenous class. Require that this op is
         // concurrent with all previous ops.
-        EventOpInterface eventOp = cast<EventOpInterface>(&op);
+        EventOpInterface eventOp = cast<EventOpInterface>(opPtr);
         bool concurrent = true;
         for (Operation *lastOp : lastOpsInSimultaneousClass) {
           if (!eventOp.concurrentWith(lastOp)) {
@@ -155,25 +175,8 @@ void HappensBeforeAnalysis::scanHappensBeforeEdges(LaneOpInterface laneOp) {
         }
       }
       // Add this op to the current simultaneous class.
-      lastOpsInSimultaneousClass.push_back(&op);
-
-      // Normal explicit happens-before edges if this op is an event:
-      if (auto eventOp = dyn_cast<EventOpInterface>(&op)) {
-        for (Value handle : eventOp.happensAfter()) {
-          auto representitive_other = any_event_simultaneous_with(handle);
-          if (representitive_other) {
-            addHappensBeforeEdge(representitive_other->getOperation(),
-                                 &op);
-          }
-        }
-
-        for (Value handle : eventOp.happensBefore()) {
-          auto representitive_other = any_event_simultaneous_with(handle);
-          if (representitive_other) {
-            addHappensBeforeEdge(&op, representitive_other->getOperation());
-          }
-        }
-      }
+      lastOpsInSimultaneousClass.push_back(opPtr);
+      addExplicitEventEdges(opPtr);
     }
   }
 }
