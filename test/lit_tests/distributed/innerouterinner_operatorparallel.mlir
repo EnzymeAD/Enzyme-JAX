@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --sdy-propagation-pipeline  --sdy-insert-explicit-reshards=enable-full-version=true --sdy-reshard-to-collectives --insert-identity-reshard --shardy-to-distributed --localize-distributed-module --cse %s | FileCheck %s
+// RUN: enzymexlamlir-opt --sdy-propagation-pipeline  --sdy-insert-explicit-reshards=enable-full-version=true --sdy-reshard-to-collectives --insert-identity-reshard --shardy-to-distributed --localize-distributed-module --cse --distributed-simplify-collectives %s | FileCheck %s
 // A somewhat unrealistic example of an inner-product * outer-product * inner-product which should
 // be ideal for pipelining, on the basis that only communicating the inner products is much cheaper
 // than communicating the outer products.

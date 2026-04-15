@@ -141,4 +141,23 @@ def PrintTimingAnalysisModulePass
   ];
 }
 
+def DistributedSimplifyCollectivesPass
+    : Pass<"distributed-simplify-collectives", "func::FuncOp"> {
+  let summary = "Simplify distributed collective operations";
+  let description = [{
+    This pass simplifies collective operations within functions that contain
+    MeshComputationOps. An identity collective is one where:
+    (1) input and output shardings are equal,
+    (2) input and output tensor types are equal, and
+    (3) in every device body, both Send and Recv for the token coexist
+        (i.e. the data stays on the same device).
+    For such collectives, the Send/Recv pairs are replaced with direct SSA
+    forwarding, and the Collective and its Transfer op are erased.
+  }];
+  let dependentDialects = [
+    "enzyme::distributed::DistributedDialect",
+    "func::FuncDialect",
+  ];
+}
+
 #endif // ENZYME_AD_JAX_DISTRIBUTED_PASSES
