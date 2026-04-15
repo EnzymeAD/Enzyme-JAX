@@ -4574,6 +4574,7 @@ struct ConcatToPadCommOptimize
   }
 };
 
+template <bool any>
 struct ConcatToDUSOptimize : public OpRewritePattern<stablehlo::ConcatenateOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -4592,7 +4593,7 @@ struct ConcatToDUSOptimize : public OpRewritePattern<stablehlo::ConcatenateOp> {
 
     auto numDevicesAlongDimension =
         getNumDevicesAlongDimension(concatSharding, concatDimension, concat);
-    if (numDevicesAlongDimension == 1) {
+    if (!any && numDevicesAlongDimension == 1) {
       return rewriter.notifyMatchFailure(
           concat,
           "numDevicesAlongDimension == 1. Communication is already optimized.");
@@ -5061,7 +5062,12 @@ struct OptimizeCommunicationPass
                                             PatternBenefit(concat_to_pad_comm));
 
     if (concat_to_dus > 0)
-      patterns.add<ConcatToDUSOptimize>(context, PatternBenefit(concat_to_dus));
+      patterns.add<ConcatToDUSOptimize<false>>(context,
+                                               PatternBenefit(concat_to_dus));
+
+    if (concat_to_dus_any > 0)
+      patterns.add<ConcatToDUSOptimizeAny<true>>(context,
+                                                 PatternBenefit(concat_to_dus));
 
     if (concat_to_rotatepad > 0)
       patterns.add<ConcatToRotatePadOptimize>(

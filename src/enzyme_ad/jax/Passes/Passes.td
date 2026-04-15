@@ -1025,6 +1025,12 @@ def OptimizeCommunication : Pass<"optimize-communication"> {
        /*default=*/"0",
        /*description=*/"Perform a Concatenate with Padding to optimize the communication">,
        Option<
+       /*C++ variable name=*/"concat_to_dus_any",
+       /*CLI argument=*/"concat_to_dus_any",
+       /*type=*/"int",
+       /*default=*/"1",
+       /*description=*/"Perform a Concatenate with Padding to optimize the communication">,
+       Option<
        /*C++ variable name=*/"concat_to_rotatepad",
        /*CLI argument=*/"concat_to_rotatepad",
        /*type=*/"int",
