@@ -15,7 +15,7 @@ namespace {
 
 void printTimingAnalysisForMesh(MeshComputationOp meshOp) {
   HappensBeforeAnalysis hb(meshOp);
-  UnitTimingCostModel costModel;
+  AffineTimingCostModel costModel;
   TimingAnalysis timing(hb, costModel);
 
   llvm::outs() << "Timing analysis for " << meshOp.getOperationName() << "\n";
