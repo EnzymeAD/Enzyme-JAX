@@ -5066,8 +5066,8 @@ struct OptimizeCommunicationPass
                                                PatternBenefit(concat_to_dus));
 
     if (concat_to_dus_any > 0)
-      patterns.add<ConcatToDUSOptimizeAny<true>>(context,
-                                                 PatternBenefit(concat_to_dus));
+      patterns.add<ConcatToDUSOptimize<true>>(
+          context, PatternBenefit(concat_to_dus_any));
 
     if (concat_to_rotatepad > 0)
       patterns.add<ConcatToRotatePadOptimize>(
