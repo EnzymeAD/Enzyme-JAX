@@ -1,7 +1,7 @@
 // RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=square_real outfn= retTys=enzyme_dup argTys=enzyme_dup mode=ForwardMode" --arith-raise --enzyme-hlo-opt --cse | FileCheck %s --check-prefix=FORWARD-REAL
-// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=square_real outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --enzyme-hlo-opt --cse --verify-each=0 | FileCheck %s --check-prefix=REVERSE-REAL
-// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=square_complex outfn= retTys=enzyme_dup argTys=enzyme_dup mode=ForwardMode" --arith-raise --enzyme-hlo-opt --cse --verify-each=0 | FileCheck %s --check-prefix=FORWARD-COMPLEX
-// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=square_complex outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --arith-raise --canonicalize --remove-unnecessary-enzyme-ops --enzyme-hlo-opt --cse --verify-each=0 | FileCheck %s --check-prefix=REVERSE-COMPLEX
+// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=square_real outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --enzyme-hlo-opt --cse --drop-unsupported-attributes --verify-each=0 | FileCheck %s --check-prefix=REVERSE-REAL
+// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=square_complex outfn= retTys=enzyme_dup argTys=enzyme_dup mode=ForwardMode" --arith-raise --enzyme-hlo-opt --cse --drop-unsupported-attributes --verify-each=0 | FileCheck %s --check-prefix=FORWARD-COMPLEX
+// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=square_complex outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --arith-raise --canonicalize --remove-unnecessary-enzyme-ops --enzyme-hlo-opt --cse --drop-unsupported-attributes --verify-each=0 | FileCheck %s --check-prefix=REVERSE-COMPLEX
 // RUN: enzymexlamlir-opt %s --enzyme --arith-raise --canonicalize --remove-unnecessary-enzyme-ops --chlo-legalize-to-stablehlo --enzyme-hlo-opt --verify-each=0 | stablehlo-translate - --interpret --allow-unregistered-dialect
 
 func.func @square_real(%x : tensor<5xf32>) -> tensor<5xf32> {
@@ -39,11 +39,9 @@ func.func @square_complex(%x : tensor<5xcomplex<f32>>) -> tensor<5xcomplex<f32>>
 
 // REVERSE-COMPLEX:  func.func @square_complex(%arg0: tensor<5xcomplex<f32>>, %arg1: tensor<5xcomplex<f32>>) -> tensor<5xcomplex<f32>> {
 // REVERSE-COMPLEX-NEXT:   %[[CST:.*]] = chlo.constant dense<(2.000000e+00,0.000000e+00)> : tensor<5xcomplex<f32>>
-// REVERSE-COMPLEX-NEXT:   %[[CONJ1:.*]] = chlo.conj %arg1 {enzymexla.complex_is_purely_real = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<5xcomplex<f32>> -> tensor<5xcomplex<f32>>
 // REVERSE-COMPLEX-NEXT:   %[[DIFF1:.*]] = stablehlo.multiply %arg0, %[[CST]] : tensor<5xcomplex<f32>>
-// REVERSE-COMPLEX-NEXT:   %[[DIFF2:.*]] = stablehlo.multiply %[[CONJ1]], %[[DIFF1]] {enzymexla.complex_is_purely_real = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<5xcomplex<f32>>
-// REVERSE-COMPLEX-NEXT:   %[[DIFF2_CONJ:.*]] = chlo.conj %[[DIFF2]] : tensor<5xcomplex<f32>> -> tensor<5xcomplex<f32>>
-// REVERSE-COMPLEX-NEXT:   return %[[DIFF2_CONJ]] : tensor<5xcomplex<f32>>
+// REVERSE-COMPLEX-NEXT:   %[[DIFF2:.*]] = stablehlo.multiply %arg1, %[[DIFF1]] : tensor<5xcomplex<f32>>
+// REVERSE-COMPLEX-NEXT:   return %[[DIFF2]] : tensor<5xcomplex<f32>>
 // REVERSE-COMPLEX-NEXT: }
 
 func.func @main() {
@@ -72,7 +70,7 @@ func.func @main() {
 
   // complex
   %x_c = stablehlo.constant dense<[(0.0, 0.0), (2.0, 0.0), (0.0, 3.0), (2.0, -3.0), (-2.0, 3.0)]> : tensor<5xcomplex<f32>>
-  %output_c = stablehlo.constant dense<[(0.0, 0.0), (4.0, 0.0), (0.0, 9.0), (-5.0, -12.0), (-5.0, -12.0)]> : tensor<5xcomplex<f32>>
+  %output_c = stablehlo.constant dense<[(0.0, 0.0), (4.0, 0.0), (-9.0, 0.0), (-5.0, -12.0), (-5.0, -12.0)]> : tensor<5xcomplex<f32>>
 
   %d_c_re = stablehlo.constant dense<(1.0, 0.0)> : tensor<5xcomplex<f32>>
   %expected_c_re = stablehlo.constant dense<[(0.0, 0.0), (4.0, 0.0), (0.0, 6.0), (4.0, -6.0), (-4.0, 6.0)]> : tensor<5xcomplex<f32>>
@@ -83,6 +81,8 @@ func.func @main() {
     ret_activity=[#enzyme<activity enzyme_dup>]
   } : (tensor<5xcomplex<f32>>, tensor<5xcomplex<f32>>) -> (tensor<5xcomplex<f32>>, tensor<5xcomplex<f32>>)
 
+  interpreter.print %fwd_c_re#1 : tensor<5xcomplex<f32>>
+
   check.expect_almost_eq %fwd_c_re#0, %output_c : tensor<5xcomplex<f32>>
   check.expect_almost_eq %fwd_c_re#1, %expected_c_re : tensor<5xcomplex<f32>>
 
@@ -90,6 +90,8 @@ func.func @main() {
     activity=[#enzyme<activity enzyme_active>],
     ret_activity=[#enzyme<activity enzyme_active>]
   } : (tensor<5xcomplex<f32>>, tensor<5xcomplex<f32>>) -> (tensor<5xcomplex<f32>>, tensor<5xcomplex<f32>>)
+
+  interpreter.print %rev_c_re#1 : tensor<5xcomplex<f32>>
 
   check.expect_almost_eq %rev_c_re#0, %output_c : tensor<5xcomplex<f32>>
   check.expect_almost_eq %rev_c_re#1, %expected_c_re : tensor<5xcomplex<f32>>
@@ -103,6 +105,8 @@ func.func @main() {
     ret_activity=[#enzyme<activity enzyme_dup>]
   } : (tensor<5xcomplex<f32>>, tensor<5xcomplex<f32>>) -> (tensor<5xcomplex<f32>>, tensor<5xcomplex<f32>>)
 
+  interpreter.print %fwd_c_im#1 : tensor<5xcomplex<f32>>
+
   check.expect_almost_eq %fwd_c_im#0, %output_c : tensor<5xcomplex<f32>>
   check.expect_almost_eq %fwd_c_im#1, %expected_c_im : tensor<5xcomplex<f32>>
 
@@ -110,6 +114,8 @@ func.func @main() {
     activity=[#enzyme<activity enzyme_active>],
     ret_activity=[#enzyme<activity enzyme_active>]
   } : (tensor<5xcomplex<f32>>, tensor<5xcomplex<f32>>) -> (tensor<5xcomplex<f32>>, tensor<5xcomplex<f32>>)
+
+  interpreter.print %rev_c_im#1 : tensor<5xcomplex<f32>>
 
   check.expect_almost_eq %rev_c_im#0, %output_c : tensor<5xcomplex<f32>>
   check.expect_almost_eq %rev_c_im#1, %expected_c_im : tensor<5xcomplex<f32>>

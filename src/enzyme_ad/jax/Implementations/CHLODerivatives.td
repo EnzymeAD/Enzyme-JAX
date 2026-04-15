@@ -132,9 +132,12 @@ def : HLODerivative<"LgammaOp", (Op $x),
 
 def : HLODerivative<"SinhOp", (Op $x), [(Mul (DiffeRet), (Cosh $x))]>;
 
+// check that the conj-conj is correct for complex inputs
 def : HLODerivative<"SquareOp", (Op $x), [
-  (Mul (DiffeRet), (Mul $x, (HLOConstantFP<"2"> $x)))
-]>;
+  (Conj (Mul (Conj (DiffeRet)), (Mul $x, (HLOConstantFP<"2"> $x))))
+],
+  (Mul (Shadow $x), (Mul $x, (HLOConstantFP<"2"> $x)))
+>;
 
 def : HLODerivative<"TanOp", (Op $x), [
   (Div (DiffeRet), (Mul (Cos $x), (Cos $x)))
