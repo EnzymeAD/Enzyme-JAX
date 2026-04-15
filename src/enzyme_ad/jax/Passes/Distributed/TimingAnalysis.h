@@ -14,20 +14,35 @@ namespace distributed {
 class TimingCostModel {
 public:
   virtual ~TimingCostModel() = default;
-  virtual int64_t getOperationDuration(Operation *op) const = 0;
+  virtual double getOperationDuration(Operation *op) const = 0;
 };
 
-class UnitTimingCostModel : public TimingCostModel {
+struct AffineTimingCostModelParams {
+  double opIntercept = 1.0;
+  double kflopCoeff = 0.01;
+
+  double transferIntercept = 1.0;
+  double transferKbyteCoeff = 1.0;
+};
+
+class AffineTimingCostModel : public TimingCostModel {
 public:
-  int64_t getOperationDuration(Operation *op) const override;
+  explicit AffineTimingCostModel(
+      AffineTimingCostModelParams params = AffineTimingCostModelParams())
+      : params(params) {}
+
+  double getOperationDuration(Operation *op) const override;
+
+private:
+  AffineTimingCostModelParams params;
 };
 
 class TimingAnalysis {
 public:
-  using TimeRange = std::pair<int64_t, int64_t>;
+  using TimeRange = std::pair<double, double>;
 
   // MLIR analysis constructor: depends on HappensBeforeAnalysis and uses
-  // a unit-duration fallback cost model.
+  // an affine duration cost model.
   TimingAnalysis(Operation *op, AnalysisManager &am);
 
   // Explicit constructor for custom cost models.
