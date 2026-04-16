@@ -13,6 +13,7 @@
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Visitors.h"
+#include "mlir/Interfaces/InferTypeOpInterface.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "shardy/dialect/sdy/ir/utils.h"
@@ -40,6 +41,7 @@
 #include "llvm/ADT/SmallSet.h"
 
 #include "llvm/ADT/MapVector.h"
+#include <cstdint>
 #include <iterator>
 #include <numeric>
 #define DEBUG_TYPE "propagateshapes"
@@ -54,15 +56,16 @@ namespace enzyme {
 using namespace mlir;
 using namespace mlir::enzyme;
 
-
 namespace {
 
-llvm::SmallDenseMap<int, llvm::SmallVector<int, 3>> parseArg(const std::string &s) {
+llvm::SmallDenseMap<int, llvm::SmallVector<int, 3>>
+parseArg(const std::string &s) {
   llvm::SmallDenseMap<int, llvm::SmallVector<int, 3>> result;
   size_t pos = 0;
   while (pos < s.size()) {
     size_t sep = s.find(':', pos);
-    if (sep == std::string::npos) break;
+    if (sep == std::string::npos)
+      break;
     int key = std::stoi(s.substr(pos, sep - pos));
     pos = sep + 1;
 
@@ -73,25 +76,269 @@ llvm::SmallDenseMap<int, llvm::SmallVector<int, 3>> parseArg(const std::string &
     size_t vpos = 0;
     while (vpos < vecStr.size()) {
       size_t comma = vecStr.find(',', vpos);
-      if (comma == std::string::npos) comma = vecStr.size();
+      if (comma == std::string::npos)
+        comma = vecStr.size();
       vec.push_back(std::stoi(vecStr.substr(vpos, comma - vpos)));
       vpos = comma + 1;
     }
 
     result[key] = vec;
-    if (next == std::string::npos) break;
+    if (next == std::string::npos)
+      break;
     pos = next + 1;
   }
   return result;
 }
-  
+
+struct ShapeInfoState {
+  llvm::SmallDenseMap<int, llvm::SmallVector<int, 3>> shapeMap;
+};
+
+SmallVector<int64_t> getShapeFromOp(mlir::Operation *op,
+                                    ShapeInfoState &state) {
+  int srcIdx = -1;
+  int dim0 = -1;
+  int dim1 = -1;
+  if (auto srcIdxAttr = op->getAttrOfType<IntegerAttr>("sourceArgIdx")) {
+    srcIdx = srcIdxAttr.getInt();
+  }
+  if (srcIdx == -1) {
+    return SmallVector<int64_t>();
+  }
+  if (auto dim0Attr = op->getAttrOfType<StringAttr>("dim.0")) {
+    if (dim0Attr.getValue() == "ldim") {
+      dim0 = state.shapeMap[srcIdx][1];
+    } else if (dim0Attr.getValue() == "row") {
+      dim0 = state.shapeMap[srcIdx][2];
+    } else if (dim0Attr.getValue() == "col") {
+      dim0 = state.shapeMap[srcIdx][3];
+    } else if (dim0Attr.getValue() == "ldim.col") {
+      dim0 = state.shapeMap[srcIdx][1] * state.shapeMap[srcIdx][3];
+    }
+  }
+  if (auto dim1Attr = op->getAttrOfType<StringAttr>("dim.1")) {
+    if (dim1Attr.getValue() == "ldim") {
+      dim1 = state.shapeMap[srcIdx][1];
+    } else if (dim1Attr.getValue() == "row") {
+      dim1 = state.shapeMap[srcIdx][2];
+    } else if (dim1Attr.getValue() == "col") {
+      dim1 = state.shapeMap[srcIdx][3];
+    } else if (dim1Attr.getValue() == "ldim.col") {
+      dim1 = state.shapeMap[srcIdx][1] * state.shapeMap[srcIdx][3];
+    }
+  }
+  SmallVector<int64_t> newShape;
+
+  if (dim1 == -1) {
+    if (dim0 == -1) {
+      return newShape;
+    }
+    newShape = {dim0};
+  } else {
+    newShape = {dim0, dim1};
+  }
+  return newShape;
+}
+
+struct RemoveDynamicReshapePattern
+    : OpRewritePattern<stablehlo::DynamicReshapeOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::DynamicReshapeOp op,
+                                PatternRewriter &rewriter) const override {
+    if (!op->hasAttr("replaceWithStaticReshape")) {
+      return success();
+    }
+    Value src = op.getOperand();
+    rewriter.replaceOp(op, src);
+    return success();
+  }
+};
+
+struct RefineReshapePattern : OpRewritePattern<stablehlo::ReshapeOp> {
+
+  RefineReshapePattern(MLIRContext *ctx, ShapeInfoState &state)
+      : OpRewritePattern(ctx), state(state) {}
+
+  LogicalResult matchAndRewrite(stablehlo::ReshapeOp op,
+                                PatternRewriter &rewriter) const override {
+    auto oldTy = cast<RankedTensorType>(op.getType());
+    auto elemTy = oldTy.getElementType();
+    SmallVector<int64_t> newShape = getShapeFromOp(op, state);
+    auto newTy = RankedTensorType::get(newShape, elemTy);
+
+    if (newTy == oldTy || newShape.size() <= 0)
+      return failure();
+
+    auto newOp = rewriter.clone(*op);
+    newOp->getResult(0).setType(newTy);
+    rewriter.replaceOp(op, newOp);
+    return success();
+  }
+
+private:
+  ShapeInfoState &state;
+};
+
+struct RefineSlicePattern : OpRewritePattern<stablehlo::SliceOp> {
+
+  RefineSlicePattern(MLIRContext *ctx, ShapeInfoState &state)
+      : OpRewritePattern(ctx), state(state) {}
+
+  LogicalResult matchAndRewrite(stablehlo::SliceOp op,
+                                PatternRewriter &rewriter) const override {
+    auto oldTy = cast<RankedTensorType>(op.getType());
+    auto elemTy = oldTy.getElementType();
+    auto newShape = getShapeFromOp(op, state);
+    auto newTy = RankedTensorType::get(newShape, elemTy);
+    if (newTy == oldTy || newShape.size() <= 0)
+      return failure();
+
+    // auto limit = op.getLimitIndices();
+    auto newLimitAttr = rewriter.getDenseI64ArrayAttr(newShape);
+    llvm::errs() << "rewriting slice\n";
+
+    stablehlo::SliceOp newOp = cast<stablehlo::SliceOp>(rewriter.clone(*op));
+    newOp.getResult().setType(newTy);
+    newOp.setLimitIndices(newLimitAttr);
+    rewriter.replaceOp(op, newOp);
+
+    // rewriter.modifyOpInPlace(op, [&] {
+    //   op.getResult().setType(newTy);
+    //   op.setLimitIndices(newLimitAttr);
+    // });
+    return success();
+  }
+
+private:
+  ShapeInfoState &state;
+};
+
+struct RefineBroadcastPattern : OpRewritePattern<stablehlo::BroadcastInDimOp> {
+
+  RefineBroadcastPattern(MLIRContext *ctx, ShapeInfoState &state)
+      : OpRewritePattern(ctx), state(state) {}
+
+  LogicalResult matchAndRewrite(stablehlo::BroadcastInDimOp op,
+                                PatternRewriter &rewriter) const override {
+    auto oldTy = cast<RankedTensorType>(op.getType());
+    auto elemTy = oldTy.getElementType();
+    auto newShape = getShapeFromOp(op, state);
+    auto newTy = RankedTensorType::get(newShape, elemTy);
+    if (newTy == oldTy || newShape.size() <= 0)
+      return failure();
+
+    // auto limit = op.getLimitIndices();
+    // auto newLimitAttr = rewriter.getDenseI64ArrayAttr(newShape);
+
+    stablehlo::BroadcastInDimOp newOp =
+        cast<stablehlo::BroadcastInDimOp>(rewriter.clone(*op));
+    newOp.getResult().setType(newTy);
+    rewriter.replaceOp(op, newOp);
+
+    // rewriter.modifyOpInPlace(op, [&] {
+    //   op.getResult().setType(newTy);
+    //   op.setLimitIndices(newLimitAttr);
+    // });
+    return success();
+  }
+
+private:
+  ShapeInfoState &state;
+};
+
+struct DotGeneralTypePropagationPattern
+    : OpRewritePattern<stablehlo::DotGeneralOp> {
+  DotGeneralTypePropagationPattern(MLIRContext *ctx)
+      : OpRewritePattern(ctx) {}
+
+  LogicalResult matchAndRewrite(stablehlo::DotGeneralOp op,
+                                PatternRewriter &rewriter) const override {
+    auto oldTy = cast<RankedTensorType>(op.getType());
+    auto elemTy = oldTy.getElementType();
+
+    auto newTy = cast<mlir::RankedTensorType>(stablehlo::GetDotGeneralResultType(
+        op.getLhs(), op.getRhs(), elemTy, op.getDotDimensionNumbers()));
+    if (newTy == oldTy)
+      return failure();
+
+    // auto limit = op.getLimitIndices();
+    // auto newLimitAttr = rewriter.getDenseI64ArrayAttr(newShape);
+    stablehlo::DotGeneralOp newOp =
+        cast<stablehlo::DotGeneralOp>(rewriter.clone(*op));
+    newOp.getResult().setType(newTy);
+    rewriter.replaceOp(op, newOp);
+
+    // rewriter.modifyOpInPlace(op, [&] {
+    //   op.getResult().setType(newTy);
+    //   op.setLimitIndices(newLimitAttr);
+    // });
+    return success();
+  }
+};
+
+struct TypePropagationPattern : RewritePattern {
+  TypePropagationPattern(MLIRContext *context)
+      : RewritePattern(MatchAnyOpTypeTag(), /*benefit=*/1, context) {}
+
+  LogicalResult matchAndRewrite(Operation *op,
+                                PatternRewriter &rewriter) const override {
+    auto iface = dyn_cast<InferTypeOpInterface>(op);
+    if (!iface)
+      return failure(); // not a shape-inference-capable op
+
+    llvm::errs() << "found shape inference capable op:";
+    op->dump();
+
+    SmallVector<Type> inferredTypes;
+
+    LogicalResult res = iface.inferReturnTypes(
+        op->getContext(), op->getLoc(), op->getOperands(),
+        op->getAttrDictionary(), op->getPropertiesStorage(), op->getRegions(),
+        inferredTypes);
+
+    if (failed(res))
+      return failure();
+
+    // Check if anything actually changes
+    bool changed = false;
+    for (auto [oldTy, newTy] : llvm::zip(op->getResultTypes(), inferredTypes)) {
+      oldTy.dump();
+      newTy.dump();
+      if (oldTy != newTy) {
+        changed = true;
+        break;
+      }
+    }
+
+    if (!changed)
+      return failure();
+
+    llvm::errs() << "trying to replace\n";
+    // Recreate op with corrected types (required in MLIR)
+    auto newOp = rewriter.clone(*op);
+    for (int idx = 0; idx < inferredTypes.size(); idx++) {
+      newOp->getResult(idx).setType(inferredTypes[idx]);
+    }
+    rewriter.replaceOp(op, newOp);
+
+    // rewriter.modifyOpInPlace(op, [&] {
+    //   for (int idx = 0; idx < inferredTypes.size(); idx++) {
+    //     op->getResult(idx).setType(inferredTypes[idx]);
+    //   }
+    // });
+
+    return success();
+  }
+};
+
 struct PropagateShapesPass
     : public enzyme::impl::PropagateShapesPassBase<PropagateShapesPass> {
   using PropagateShapesPassBase::PropagateShapesPassBase;
 
   llvm::SmallDenseMap<int, llvm::SmallVector<int, 3>> shapeMap;
 
-  mlir::func::FuncOp setFuncOperandTypes(mlir::func::FuncOp func) {
+  void setFuncOperandTypes(mlir::func::FuncOp func) {
     // auto oldType = func.getFunctionType();
     llvm::SmallVector<mlir::Type> newInputs;
     int i = 0;
@@ -99,53 +346,67 @@ struct PropagateShapesPass
       auto type = arg.getType();
 
       if (shapeMap.count(i) > 0) {
-        llvm::errs() << "shape found at " << i << "\n";
+        // llvm::errs() << "shape found at " << i << "";
         // Tensors are passed flattened, so we need to get the size as such
-        int64_t totalSize = 1;
-        // shapeDims.push_back(shapeMap[i][0]);
-        totalSize *= shapeMap[i][0];
-        for (int j = 2; j < shapeMap[i].size(); j++) {
-          totalSize *= shapeMap[i][j];
+        int64_t totalSize = shapeMap[i][1];
+        if (!shapeMap[i][0] || shapeMap[i][0] == -1) {
+          totalSize *= shapeMap[i][3];
+        } else {
+          totalSize *= shapeMap[i][2];
         }
-        type = mlir::RankedTensorType::get({totalSize},
-            cast<mlir::RankedTensorType>(type).getElementType());
+        type = mlir::RankedTensorType::get(
+            {totalSize}, cast<mlir::RankedTensorType>(type).getElementType());
       }
       type.dump();
       newInputs.push_back(type);
       i++;
     }
-    auto newType = mlir::FunctionType::get(
-      func.getContext(), newInputs, newInputs
-    );
+    auto newType =
+        mlir::FunctionType::get(func.getContext(), newInputs, newInputs);
 
-    auto newFunc = mlir::func::FuncOp::create(func.getLoc(), func.getName(), newType);
-    newFunc->dump();
+    func.setType(newType);
 
-    llvm::errs() << "\nafter set attrs:\n";
-    // newFunc->setAttrs(func->getAttrs());
-    newFunc->dump();
-
-    func->getBlock()->getOperations().insert(
-        mlir::Block::iterator(func), newFunc);
-    // Clone body
-    auto &oldBlock = func.getBody().front();
-    auto &newBlock = *newFunc.addEntryBlock();
-
-    mlir::IRMapping mapping;
-    for (auto [oldArg, newArg] :
-        llvm::zip(oldBlock.getArguments(), newBlock.getArguments())) {
-      mapping.map(oldArg, newArg);
+    Block &entry = func.front();
+    if (entry.getNumArguments() == newInputs.size()) {
+      for (auto [arg, newTy] : llvm::zip(entry.getArguments(), newInputs)) {
+        arg.setType(newTy);
+      }
     }
 
-    for (auto &op : oldBlock.without_terminator()) {
-      newBlock.push_back(op.clone(mapping));
-    }
-    newBlock.push_back(oldBlock.getTerminator()->clone(mapping));
+    // func.walk([&](func::ReturnOp ret) {
+    //   // Adjust operands to match newResults
+    //   ret.setType()
+    // });
 
-    // Replace + erase
-    func->replaceAllUsesWith(newFunc);
-    func.erase();
-    return newFunc;
+    // auto newFunc =
+    //     mlir::func::FuncOp::create(func.getLoc(), func.getName(), newType);
+    // newFunc->dump();
+
+    // llvm::errs() << "\nafter set attrs:\n";
+    // // newFunc->setAttrs(func->getAttrs());
+    // newFunc->dump();
+
+    // func->getBlock()->getOperations().insert(mlir::Block::iterator(func),
+    //                                          newFunc);
+    // // Clone body
+    // auto &oldBlock = func.getBody().front();
+    // auto &newBlock = *newFunc.addEntryBlock();
+
+    // mlir::IRMapping mapping;
+    // for (auto [oldArg, newArg] :
+    //      llvm::zip(oldBlock.getArguments(), newBlock.getArguments())) {
+    //   mapping.map(oldArg, newArg);
+    // }
+
+    // for (auto &op : oldBlock.without_terminator()) {
+    //   newBlock.push_back(op.clone(mapping));
+    // }
+    // newBlock.push_back(oldBlock.getTerminator()->clone(mapping));
+
+    // // Replace + erase
+    // func->replaceAllUsesWith(newFunc);
+    // func.erase();
+    // return func;
   }
 
   void runOnOperation() override {
@@ -170,19 +431,7 @@ struct PropagateShapesPass
     root->dump();
     // auto context = getOperation()->getContext();
 
-    root->walk([&](mlir::func::FuncOp func) {
-      func = setFuncOperandTypes(func);
-
-      llvm::errs() << "\nprinting metadata:\n";
-      func.walk([](mlir::Operation *op) {
-        llvm::outs() << "Operation: " << op->getName() << "\n";
-        for (auto namedAttr : op->getAttrs()) {
-          llvm::outs() << "  "
-                      << namedAttr.getName() << " = "
-                      << namedAttr.getValue() << "\n";
-        }
-      });
-    });
+    root->walk([&](mlir::func::FuncOp func) { setFuncOperandTypes(func); });
 
     // auto func = M->lookupSymbol<mlir::func::FuncOp>("main");
 
@@ -215,11 +464,25 @@ struct PropagateShapesPass
 
     // // Update function type
     // func.setType(newFuncType);
+    auto context = getOperation()->getContext();
+    ShapeInfoState state{shapeMap};
+    RewritePatternSet patterns(context);
+    patterns.add<RemoveDynamicReshapePattern>(context);
+    patterns.add<RefineReshapePattern>(context, state);
+    patterns.add<RefineSlicePattern>(context, state);
+    patterns.add<RefineBroadcastPattern>(context, state);
 
-    // if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),
-    //                                         config))) {
-    //   signalPassFailure();
-    // }
+    patterns.add<DotGeneralTypePropagationPattern>(context);
+    patterns.add<TypePropagationPattern>(context);
+
+    GreedyRewriteConfig config;
+    // config.setMaxIterations(max_iterations);
+    // config.setUseTopDownTraversal(top_down);
+    // config.enableFolding();
+    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
+                                     config))) {
+      signalPassFailure();
+    }
     llvm::errs() << "===========Final function==========\n";
     root->dump();
   }
