@@ -1474,3 +1474,102 @@ def : HLODerivative<"FftOp",
       Fft (Shadow $x), (FftType), (FftLength)
     )
 >;
+
+def Result0 : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  op.getResult(0);
+}]>;
+
+def TriangularSolveShadowDotDims : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  auto type_A = cast<RankedTensorType>(op.getA().getType());
+  auto type_b = cast<RankedTensorType>(op.getB().getType());
+  int64_t rank_A = type_A.getRank();
+  int64_t rank_b = type_b.getRank();
+
+  SmallVector<int64_t> batch_dims_A;
+  for (int i = 0; i < rank_A - 2; ++i) {
+    batch_dims_A.push_back(i);
+  }
+
+  SmallVector<int64_t> batch_dims_b;
+  for (int i = 0; i < rank_b - 2; ++i) {
+    batch_dims_b.push_back(i);
+  }
+
+  auto transpose_A = op.getTransposeA().getValue();
+  SmallVector<int64_t> contract_dims_A;
+  if (transpose_A == Transpose::STABLEHLO_NO_TRANSPOSE)
+    contract_dims_A.push_back(rank_A - 1);
+  else if (transpose_A == Transpose::STABLEHLO_TRANSPOSE || transpose_A == Transpose::STABLEHLO_ADJOINT)
+    contract_dims_A.push_back(rank_A - 2);
+  else
+    llvm::errs("Unexpected `transpose_a` attribute value in TriangularSolveOp");
+
+  SmallVector<int64_t> contract_dims_b;
+  if (op.getLeftSide().getValue())
+    contract_dims_b.push_back(rank_b - 2);
+  else
+    contract_dims_b.push_back(rank_b - 1);
+
+  DotDimensionNumbersAttr::get(
+    op.getContext(),
+    batch_dims_A,
+    batch_dims_b,
+    contract_dims_A,
+    contract_dims_b
+  );
+}]>;
+
+def TriangularSolveDiffOuterDotDims : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  auto rank = cast<RankedTensorType>(op.getResult().getType()).getRank();
+
+  SmallVector<int64_t> batch_dims;
+  for (int i = 0; i < rank - 2; ++i) {
+    batch_dims.push_back(i);
+  }
+
+  SmallVector<int64_t> contract_dims;
+
+  DotDimensionNumbersAttr::get(
+    op.getContext(),
+    batch_dims,
+    batch_dims,
+    contract_dims,
+    contract_dims
+  );
+}]>;
+
+def SelectIfAdjoint : StaticSelect<"cast<TriangularSolveOp>(op).getTransposeA() == Transpose::STABLEHLO_ADJOINT">;
+
+def : HLODerivative<"TriangularSolveOp", (Op $A, $b),
+  [
+    (Neg (TriangularSolve
+      (SelectIfAdjoint
+        (Conj $A),
+        $A),
+      (DotGeneral
+        (DotGeneralBatchedResultType),
+        (DiffeRet),
+        (Conj (Result0)),
+        (TriangularSolveDiffOuterDotDims)
+      )
+    )),
+    (DotGeneral
+      (DotGeneralBatchedResultType),
+      (SelectIfAdjoint
+        (Conj $A),
+        $A),
+      (DiffeRet),
+      (TriangularSolveShadowDotDims))
+  ],
+  (TriangularSolve
+    $A,
+    (Sub
+      (Shadow $b),
+      (DotGeneral
+        (DotGeneralBatchedResultType),
+        (SelectIfAdjoint
+          (Conj (Shadow $A)),
+          (Shadow $A)),
+        (Result0),
+        (TriangularSolveShadowDotDims))))
+>;
