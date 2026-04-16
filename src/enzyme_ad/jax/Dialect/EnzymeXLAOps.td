@@ -672,7 +672,8 @@ def TridiagonalSolveOp: EnzymeXLA_Op<"linalg.tridiagonal_solve", [Pure]> {
   );
 
   let results = (outs
-    HLO_Tensor:$X
+    HLO_Tensor:$X,
+    HLO_Tensor:$info
   );
 
   let assemblyFormat = [{

@@ -157,7 +157,7 @@ struct TridiagonalSolveOpLowering
           op.getDu().getType(),
           op.getB().getType(),
       };
-      SmallVector<Type> retTypes = {op.getB().getType()};
+      SmallVector<Type> retTypes = {op.getB().getType(), intType};
 
       auto calleeType = rewriter.getFunctionType(argTypes, retTypes);
       shloFunc =
@@ -199,8 +199,9 @@ struct TridiagonalSolveOpLowering
           /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
           /*xla_side_effect_free=*/rewriter.getUnitAttr());
 
-      func::ReturnOp::create(rewriter, op.getLoc(),
-                             ValueRange{jitCall.getResult(3)}); // B
+      func::ReturnOp::create(
+          rewriter, op.getLoc(),
+          ValueRange{jitCall.getResult(3), jitCall.getResult(4)}); // B, info
     }
     auto callOp = func::CallOp::create(rewriter, op.getLoc(), shloFunc,
                                        ValueRange{dl, d, du, B});
@@ -298,7 +299,9 @@ struct TridiagonalSolveOpLowering
         /*output_operand_aliases*/ aliases);
 
     Value result = customCall.getResult(0);
-    rewriter.replaceAllUsesWith(op.getResult(), result);
+    rewriter.replaceAllUsesWith(op.getResult(0), result);
+    // return info = 0, cusparse gtsv does not have info return value
+    rewriter.replaceAllUsesWith(op.getResult(1), zero);
 
     return success();
   }
@@ -379,11 +382,9 @@ struct TridiagonalSolveOpLowering
       Region &region = scatterOp.getUpdateComputation();
       Block *block = rewriter.createBlock(&region);
 
-      // block args: (old_value, new_value)
       auto argType = RankedTensorType::get({}, elemTy);
       block->addArgument(argType, op.getLoc());
       block->addArgument(argType, op.getLoc());
-      // return rhs (overwrite)
       rewriter.setInsertionPointToStart(block);
       stablehlo::ReturnOp::create(rewriter, op.getLoc(), block->getArgument(1));
     }
@@ -399,48 +400,75 @@ struct TridiagonalSolveOpLowering
             /*info_type=*/RankedTensorType::get({}, rewriter.getI64Type())},
         A);
 
-    Value LU = lu.getResult(0);
-    Value perm = lu.getResult(2);
+    Value info = lu.getResult(3);
+    Value cmp_zero = stablehlo::ConstantOp::create(
+        rewriter, loc,
+        DenseElementsAttr::get(
+            cast<RankedTensorType>(info.getType()),
+            rewriter.getIntegerAttr(rewriter.getI64Type(), 0)));
 
-    auto permType = cast<RankedTensorType>(perm.getType());
-    auto idxType = RankedTensorType::get({n, 1}, permType.getElementType());
-    Value gather_indices =
-        stablehlo::ReshapeOp::create(rewriter, loc, idxType, perm);
+    // if info == 0, proceed with triangular solve. otherwise, return info.
+    Value cond = stablehlo::CompareOp::create(
+        rewriter, loc, info, cmp_zero, stablehlo::ComparisonDirection::EQ);
 
-    auto dnums = stablehlo::GatherDimensionNumbersAttr::get(
-        rewriter.getContext(),
-        /*offset_dims=*/ArrayRef<int64_t>{1}, // result keeps column dim
-        /*collapsed_slice_dims=*/ArrayRef<int64_t>{0}, // collapse row dim
-        /*operandBatchingDims=*/{},
-        /*startIndicesBatchingDims=*/{},
-        /*start_index_map=*/ArrayRef<int64_t>{0}, // index maps to row dim
-        /*index_vector_dim=*/1);
-    SmallVector<int64_t> sliceSizes = {1, BType.getShape()[1]};
+    auto ifOp = stablehlo::IfOp::create(rewriter, loc,
+                                        /*resultTypes=*/TypeRange{B.getType()},
+                                        /*condition=*/cond);
 
-    Value B_perm = stablehlo::GatherOp::create(
-        rewriter, loc, B.getType(), B, gather_indices, dnums, sliceSizes);
+    {
+      rewriter.createBlock(&ifOp.getTrueBranch(), ifOp.getTrueBranch().begin());
 
-    // solve Ly = B_perm
-    // we can directly use the LU buffer and indicate unit diagonal is
-    // true
-    Value y = stablehlo::TriangularSolveOp::create(
-        rewriter, loc, B.getType(), LU, B_perm,
-        /*left_side=*/true,
-        /*lower=*/true,
-        /*unit_diagonal=*/true,
-        /*transpose_a=*/
-        stablehlo::Transpose::NO_TRANSPOSE);
+      Value LU = lu.getResult(0);
+      Value perm = lu.getResult(2);
 
-    // solve Ux = y
-    Value x = stablehlo::TriangularSolveOp::create(
-        rewriter, loc, B.getType(), LU, y,
-        /*left_side=*/true,
-        /*lower=*/false,
-        /*unit_diagonal=*/false,
-        /*transpose_a=*/
-        stablehlo::Transpose::NO_TRANSPOSE);
+      auto permType = cast<RankedTensorType>(perm.getType());
+      auto idxType = RankedTensorType::get({n, 1}, permType.getElementType());
+      Value gather_indices =
+          stablehlo::ReshapeOp::create(rewriter, loc, idxType, perm);
 
-    rewriter.replaceOp(op, x);
+      auto dnums = stablehlo::GatherDimensionNumbersAttr::get(
+          rewriter.getContext(),
+          /*offset_dims=*/ArrayRef<int64_t>{1}, // result keeps column dim
+          /*collapsed_slice_dims=*/ArrayRef<int64_t>{0}, // collapse row dim
+          /*operandBatchingDims=*/{},
+          /*startIndicesBatchingDims=*/{},
+          /*start_index_map=*/ArrayRef<int64_t>{0}, // index maps to row dim
+          /*index_vector_dim=*/1);
+      SmallVector<int64_t> sliceSizes = {1, BType.getShape()[1]};
+
+      Value B_perm = stablehlo::GatherOp::create(
+          rewriter, loc, B.getType(), B, gather_indices, dnums, sliceSizes);
+
+      // solve Ly = B_perm
+      // we can directly use the LU buffer and indicate unit diagonal is
+      // true
+      Value y = stablehlo::TriangularSolveOp::create(
+          rewriter, loc, B.getType(), LU, B_perm,
+          /*left_side=*/true,
+          /*lower=*/true,
+          /*unit_diagonal=*/true,
+          /*transpose_a=*/
+          stablehlo::Transpose::NO_TRANSPOSE);
+
+      // solve Ux = y
+      Value x = stablehlo::TriangularSolveOp::create(
+          rewriter, loc, B.getType(), LU, y,
+          /*left_side=*/true,
+          /*lower=*/false,
+          /*unit_diagonal=*/false,
+          /*transpose_a=*/
+          stablehlo::Transpose::NO_TRANSPOSE);
+
+      stablehlo::ReturnOp::create(rewriter, loc, ValueRange{x});
+    }
+    {
+      rewriter.createBlock(&ifOp.getFalseBranch(),
+                           ifOp.getFalseBranch().begin());
+
+      stablehlo::ReturnOp::create(rewriter, loc, ValueRange{lu.getResult(0)});
+    }
+    rewriter.replaceAllUsesWith(op.getResult(0), ifOp.getResult(0));
+    rewriter.replaceAllUsesWith(op.getResult(1), info);
     return success();
   }
 };
