@@ -186,6 +186,12 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
     return "";
   }
 
+  if (getenv("EXPORT_MLIR_ONLY")) {
+    llvm::errs() << "exit program here from runLLVMToMLIRRoundTrip to only export mlir" << "\n";
+    exit(0);
+  }
+
+
   if (getenv("DEBUG_REACTANT")) {
     llvm::errs() << " final mlir mod: ";
     mod->print(llvm::errs(), flags);
