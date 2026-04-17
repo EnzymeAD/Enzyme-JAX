@@ -88,7 +88,8 @@ def DefineOp : TesseraOp<"define", [
 
 def CallOp : TesseraOp<"call",
     [CallOpInterface, MemRefsNormalizable,
-     DeclareOpInterfaceMethods<SymbolUserOpInterface>]> {
+     DeclareOpInterfaceMethods<SymbolUserOpInterface>,
+     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "call operation";
   let description = [{
     The 'tessera.call' operation represents a call to the custom operation defined by the user.

@@ -84,7 +84,8 @@ public:
       if (namedAttr.getName() != defineOp.getFunctionTypeAttrName() &&
           namedAttr.getName() != SymbolTable::getSymbolAttrName() &&
           namedAttr.getName() != "tessera.original_name" &&
-          namedAttr.getName() != "tessera.sret_attrs")
+          namedAttr.getName() != "tessera.sret_attrs" &&
+          namedAttr.getName() != "tessera.side_effect_free")
         funcOp->setAttr(namedAttr.getName(), namedAttr.getValue());
     }
 
@@ -182,23 +183,42 @@ public:
       SmallVector<NamedAttribute> newAttrs;
       for (auto attr : callOp->getAttrs()) {
         if (attr.getName() != callOp.getArgAttrsAttrName() &&
-            attr.getName() != "tessera.loaded_operands")
+            attr.getName() != "tessera.loaded_operands" &&
+            attr.getName() != "operandSegmentSizes" &&
+            attr.getName() != "op_bundle_sizes")
           newAttrs.push_back(attr);
       }
+      newAttrs.push_back(rewriter.getNamedAttr(
+          callOp.getArgAttrsAttrName(), rewriter.getArrayAttr(newArgAttrs)));
+      newAttrs.push_back(rewriter.getNamedAttr(
+          "operandSegmentSizes",
+          rewriter.getDenseI32ArrayAttr({(int32_t)newOperands.size(), 0})));
+      newAttrs.push_back(rewriter.getNamedAttr(
+          "op_bundle_sizes", rewriter.getDenseI32ArrayAttr({})));
 
-      auto newCall = rewriter.create<LLVM::CallOp>(callOp.getLoc(), TypeRange{},
-                                                   newOperands, newAttrs);
-      newCall->setAttr(newCall.getArgAttrsAttrName(),
-                       rewriter.getArrayAttr(newArgAttrs));
+      rewriter.create<LLVM::CallOp>(callOp.getLoc(), TypeRange{}, newOperands,
+                                    newAttrs);
 
       // Load result from sret pointer and replace uses
       auto loadedResult =
           rewriter.create<LLVM::LoadOp>(callOp.getLoc(), sretType, sretPtr);
       rewriter.replaceOp(callOp, loadedResult.getResult());
     } else {
+      SmallVector<NamedAttribute> newAttrs;
+      for (auto attr : callOp->getAttrs()) {
+        if (attr.getName() != "operandSegmentSizes" &&
+            attr.getName() != "op_bundle_sizes")
+          newAttrs.push_back(attr);
+      }
+      newAttrs.push_back(rewriter.getNamedAttr(
+          "operandSegmentSizes",
+          rewriter.getDenseI32ArrayAttr(
+              {(int32_t)callOp.getOperands().size(), 0})));
+      newAttrs.push_back(rewriter.getNamedAttr(
+          "op_bundle_sizes", rewriter.getDenseI32ArrayAttr({})));
+
       rewriter.replaceOpWithNewOp<LLVM::CallOp>(callOp, callOp.getResultTypes(),
-                                                callOp.getOperands(),
-                                                callOp->getAttrs());
+                                                callOp.getOperands(), newAttrs);
     }
 
     return success();

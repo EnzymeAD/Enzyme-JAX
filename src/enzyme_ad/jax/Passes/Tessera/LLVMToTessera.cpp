@@ -60,13 +60,21 @@ public:
     auto params = llvmFuncType.getParams();
     auto retType = llvmFuncType.getReturnType();
 
-    // Check if first argument has sret attribute
+    // Check if first argument has sret attribute and if function is side
+    // effect free
     bool hasSret = false;
+    bool isSideEffectFree = true;
     auto argAttrs = funcOp.getArgAttrsAttr();
     if (!params.empty() && argAttrs) {
       if (auto sretAttr =
               funcOp.getArgAttr(0, LLVM::LLVMDialect::getStructRetAttrName()))
         hasSret = true;
+      for (int i = hasSret ? 1 : 0; i < params.size(); i++) {
+        if (isa<LLVM::LLVMPointerType>(params[i])) {
+          if (!funcOp.getArgAttr(i, LLVM::LLVMDialect::getReadonlyAttrName()))
+            isSideEffectFree = false;
+        }
+      }
     }
 
     auto fnType = FunctionType::get(
@@ -98,6 +106,11 @@ public:
     // attributes for exact reconstruction later
     if (hasSret)
       tesseraDefineOp->setAttr("tessera.sret_attrs", argAttrs[0]);
+
+    // Mark if the function has no side effects
+    if (isSideEffectFree)
+      tesseraDefineOp->setAttr("tessera.side_effect_free",
+                               rewriter.getUnitAttr());
 
     // Clone body of function
     if (!funcOp.isExternal()) {
@@ -187,6 +200,11 @@ public:
           if (attr.getName() != callOp.getArgAttrsAttrName())
             newAttrs.push_back(attr);
         }
+        newAttrs.push_back(rewriter.getNamedAttr(
+            callOp.getArgAttrsAttrName(), rewriter.getArrayAttr(newArgAttrs)));
+        newAttrs.push_back(rewriter.getNamedAttr(
+            "tessera.loaded_operands",
+            rewriter.getDenseI32ArrayAttr(loadedOperands)));
       }
     }
 
@@ -196,10 +214,6 @@ public:
           callOp.getLoc(), TypeRange{sretType}, newOperands, newAttrs);
       rewriter.create<LLVM::StoreOp>(callOp.getLoc(), newCall.getResult(0),
                                      sretPtr);
-      newCall->setAttr(newCall.getArgAttrsAttrName(),
-                       rewriter.getArrayAttr(newArgAttrs));
-      newCall->setAttr("tessera.loaded_operands",
-                       rewriter.getDenseI32ArrayAttr(loadedOperands));
       rewriter.eraseOp(callOp);
     } else {
       rewriter.replaceOpWithNewOp<tessera::CallOp>(

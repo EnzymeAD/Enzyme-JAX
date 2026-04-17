@@ -6,6 +6,7 @@ llvm.func @simple_func() attributes {tessera.convert = #tessera<convert "tessera
 
 // CHECK-LABEL: tessera.define @tessera_simple_func
 // CHECK-SAME: tessera.original_name = "simple_func"
+// CHECK-SAME: tessera.side_effect_free
 // CHECK: tessera.return
 
 // -----
@@ -73,9 +74,11 @@ llvm.func @caller() {
 
 // CHECK-LABEL: tessera.define @tessera_sret_func
 // CHECK-SAME: tessera.sret_attrs = {llvm.align = 8 : i64, llvm.nonnull, llvm.sret = !llvm.struct<(f32, f32)>}
+// CHECK-SAME: tessera.side_effect_free
 // CHECK: tessera.return
 
 // CHECK-LABEL: llvm.func @caller
 // CHECK: %[[RES:.*]] = tessera.call @tessera_sret_func
+// CHECK-SAME: tessera.loaded_operands = array<i32>
 // CHECK-SAME: -> !llvm.struct<(f32, f32)>
 // CHECK: llvm.store %[[RES]], %{{.*}} : !llvm.struct<(f32, f32)>, !llvm.ptr

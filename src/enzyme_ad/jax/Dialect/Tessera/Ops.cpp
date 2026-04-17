@@ -197,6 +197,21 @@ FunctionType CallOp::getCalleeType() {
   return FunctionType::get(getContext(), getOperandTypes(), getResultTypes());
 }
 
+void CallOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  auto fnAttr = (*this)->getAttrOfType<FlatSymbolRefAttr>("callee");
+  if (!fnAttr)
+    return;
+  DefineOp fn = SymbolTable::lookupNearestSymbolFrom<DefineOp>(*this, fnAttr);
+  if (!fn)
+    return;
+  if (fn->hasAttr("tessera.side_effect_free"))
+    return; // return nothing = no effects = side effect free
+  effects.emplace_back(MemoryEffects::Write::get(),
+                       SideEffects::DefaultResource::get());
+}
+
 //===----------------------------------------------------------------------===//
 // ReturnOp
 //===----------------------------------------------------------------------===//

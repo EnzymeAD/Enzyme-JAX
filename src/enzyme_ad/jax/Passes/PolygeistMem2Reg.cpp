@@ -1987,7 +1987,7 @@ std::vector<std::vector<Offset>> getLastStored(mlir::Value AI) {
         lastStored[vec]++;
       } else if (auto CO = dyn_cast<memref::CastOp>(U)) {
         list.push_back(CO);
-      } 
+      }
     }
   }
 
