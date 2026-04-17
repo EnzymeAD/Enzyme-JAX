@@ -101,10 +101,10 @@ SmallVector<int64_t> getShapeFromOp(mlir::Operation *op,
   int dim1 = -1;
   if (auto srcIdxAttr = op->getAttrOfType<IntegerAttr>("sourceArgIdx")) {
     srcIdx = srcIdxAttr.getInt();
-  }
-  if (srcIdx == -1) {
+  } else {
     return SmallVector<int64_t>();
   }
+
   if (auto dim0Attr = op->getAttrOfType<StringAttr>("dim.0")) {
     if (dim0Attr.getValue() == "ldim") {
       dim0 = state.shapeMap[srcIdx][1];
@@ -164,6 +164,7 @@ struct RefineReshapePattern : OpRewritePattern<stablehlo::ReshapeOp> {
                                 PatternRewriter &rewriter) const override {
     auto oldTy = cast<RankedTensorType>(op.getType());
     auto elemTy = oldTy.getElementType();
+
     SmallVector<int64_t> newShape = getShapeFromOp(op, state);
     auto newTy = RankedTensorType::get(newShape, elemTy);
 
@@ -247,18 +248,44 @@ private:
   ShapeInfoState &state;
 };
 
+struct MergeTransposeSelectPattern : OpRewritePattern<stablehlo::SelectOp> {
+
+  MergeTransposeSelectPattern(MLIRContext *ctx, ShapeInfoState &state)
+      : OpRewritePattern(ctx), state(state) {}
+
+  LogicalResult matchAndRewrite(stablehlo::SelectOp op,
+                                PatternRewriter &rewriter) const override {
+    if (auto isTransposeSelect =
+            op->getAttrOfType<BoolAttr>("isTransposeSelect")) {
+      if (auto srcIdxAttr = op->getAttrOfType<IntegerAttr>("sourceArgIdx")) {
+        if (state.shapeMap[srcIdxAttr.getInt()][0]) {
+          rewriter.replaceOp(op, op.getOnTrue());
+        } else {
+          rewriter.replaceOp(op, op.getOnFalse());
+        }
+        return success();
+      }
+    }
+
+    return failure();
+  }
+
+private:
+  ShapeInfoState &state;
+};
+
 struct DotGeneralTypePropagationPattern
     : OpRewritePattern<stablehlo::DotGeneralOp> {
-  DotGeneralTypePropagationPattern(MLIRContext *ctx)
-      : OpRewritePattern(ctx) {}
+  DotGeneralTypePropagationPattern(MLIRContext *ctx) : OpRewritePattern(ctx) {}
 
   LogicalResult matchAndRewrite(stablehlo::DotGeneralOp op,
                                 PatternRewriter &rewriter) const override {
     auto oldTy = cast<RankedTensorType>(op.getType());
     auto elemTy = oldTy.getElementType();
 
-    auto newTy = cast<mlir::RankedTensorType>(stablehlo::GetDotGeneralResultType(
-        op.getLhs(), op.getRhs(), elemTy, op.getDotDimensionNumbers()));
+    auto newTy =
+        cast<mlir::RankedTensorType>(stablehlo::GetDotGeneralResultType(
+            op.getLhs(), op.getRhs(), elemTy, op.getDotDimensionNumbers()));
     if (newTy == oldTy)
       return failure();
 
@@ -287,9 +314,6 @@ struct TypePropagationPattern : RewritePattern {
     if (!iface)
       return failure(); // not a shape-inference-capable op
 
-    llvm::errs() << "found shape inference capable op:";
-    op->dump();
-
     SmallVector<Type> inferredTypes;
 
     LogicalResult res = iface.inferReturnTypes(
@@ -303,8 +327,6 @@ struct TypePropagationPattern : RewritePattern {
     // Check if anything actually changes
     bool changed = false;
     for (auto [oldTy, newTy] : llvm::zip(op->getResultTypes(), inferredTypes)) {
-      oldTy.dump();
-      newTy.dump();
       if (oldTy != newTy) {
         changed = true;
         break;
@@ -332,6 +354,59 @@ struct TypePropagationPattern : RewritePattern {
   }
 };
 
+struct DeleteWrongTransposePattern : RewritePattern {
+  DeleteWrongTransposePattern(MLIRContext *context, ShapeInfoState &state)
+      : RewritePattern(MatchAnyOpTypeTag(), /*benefit=*/1, context),
+        state(state) {}
+
+  LogicalResult matchAndRewrite(Operation *op,
+                                PatternRewriter &rewriter) const override {
+
+    int srcIdx = -1;
+    if (auto srcIdxAttr = op->getAttrOfType<IntegerAttr>("sourceArgIdx")) {
+      srcIdx = srcIdxAttr.getInt();
+    } else {
+      return failure();
+    }
+
+    // Delete reshapes that are part of the wrong transpose
+    if (auto isTransposed = op->getAttrOfType<BoolAttr>("transposed")) {
+      if (isTransposed.getValue() != state.shapeMap[srcIdx][0]) {
+        llvm::SmallPtrSet<Operation *, 16> visited;
+        llvm::SmallVector<Operation *, 16> postOrder;
+
+        // DFS to collect users (forward slice)
+        std::function<void(Operation *)> dfs = [&](Operation *op) {
+          if (!visited.insert(op).second)
+            return;
+
+          for (Value result : op->getResults()) {
+            for (Operation *user : result.getUsers()) {
+              dfs(user);
+            }
+          }
+
+          postOrder.push_back(op); // post-order = safe deletion order
+        };
+
+        dfs(op);
+
+        // Erase in post-order (users first)
+        for (Operation *op : postOrder) {
+          if (op->use_empty()) {
+            rewriter.eraseOp(op);
+          }
+        }
+        return success();
+      }
+    }
+    return failure();
+  }
+
+private:
+  ShapeInfoState &state;
+};
+
 struct PropagateShapesPass
     : public enzyme::impl::PropagateShapesPassBase<PropagateShapesPass> {
   using PropagateShapesPassBase::PropagateShapesPassBase;
@@ -357,7 +432,6 @@ struct PropagateShapesPass
         type = mlir::RankedTensorType::get(
             {totalSize}, cast<mlir::RankedTensorType>(type).getElementType());
       }
-      type.dump();
       newInputs.push_back(type);
       i++;
     }
@@ -474,8 +548,19 @@ struct PropagateShapesPass
 
     patterns.add<DotGeneralTypePropagationPattern>(context);
     patterns.add<TypePropagationPattern>(context);
+    // patterns.add<DeleteWrongTransposePattern>(context, state);
+
+
+    RewritePatternSet deletePatterns(context);
+    deletePatterns.add<MergeTransposeSelectPattern>(context, state);
 
     GreedyRewriteConfig config;
+    if (failed(applyPatternsGreedily(getOperation(), std::move(deletePatterns),
+                                     config))) {
+      signalPassFailure();
+    }
+    llvm::errs() << "===========After deletion==========\n";
+    getOperation()->dump();
     // config.setMaxIterations(max_iterations);
     // config.setUseTopDownTraversal(top_down);
     // config.enableFolding();
@@ -484,7 +569,7 @@ struct PropagateShapesPass
       signalPassFailure();
     }
     llvm::errs() << "===========Final function==========\n";
-    root->dump();
+    getOperation()->dump();
   }
 };
 

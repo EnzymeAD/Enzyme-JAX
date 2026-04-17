@@ -223,6 +223,8 @@ struct BlasRaisingPass
 
     Value transposed = builder.create<stablehlo::TransposeOp>(
         loc, transTy, reshaped, ArrayRef<int64_t>{1, 0});
+    transposed.getDefiningOp()->setAttr("transposed", transposedAttr);
+    transposed.getDefiningOp()->setAttr("sourceArgIdx", sourceIdxAttr);
 
     // --- Step 3: slice to desired logical shape ---
     int64_t sliceRows = isTransposed ? cols : rows;
@@ -241,9 +243,12 @@ struct BlasRaisingPass
     sliced.getDefiningOp()->setAttr("sourceArgIdx", sourceIdxAttr);
 
     if (isTransposed) {
-      return builder.create<stablehlo::TransposeOp>(
+      Value slicedTransposed = builder.create<stablehlo::TransposeOp>(
           loc, RankedTensorType::get({rows, cols}, elemTy), sliced,
           ArrayRef<int64_t>{1, 0});
+      slicedTransposed.getDefiningOp()->setAttr("transposed", transposedAttr);
+      slicedTransposed.getDefiningOp()->setAttr("sourceArgIdx", sourceIdxAttr);
+      return slicedTransposed;
     }
 
     return sliced;
@@ -323,12 +328,31 @@ struct BlasRaisingPass
     auto resultType = RankedTensorType::get({rows, cols}, elemTy);
     auto broadcast = stablehlo::BroadcastInDimOp::create(
         builder, loc, resultType, reshaped,
-        builder.getDenseI64ArrayAttr({(int64_t) 0, (int64_t) 1}));
+        builder.getDenseI64ArrayAttr({(int64_t)0, (int64_t)1}));
 
     broadcast->setAttr("dim.0", rowAttr);
     broadcast->setAttr("dim.1", colAttr);
     broadcast->setAttr("sourceArgIdx", sourceIdxAttr);
     return broadcast;
+  }
+
+  Value createSelectStatement(OpBuilder &builder, Location loc, Value ifVal,
+                              Value elseVal, int64_t sourceIdx) {
+    mlir::Attribute sourceIdxAttr = builder.getI64IntegerAttr(sourceIdx);
+    mlir::Attribute IsTransposeSelectAttr = builder.getBoolAttr(true);
+
+    auto predType = RankedTensorType::get({}, builder.getI1Type());
+    auto trueAttr = DenseElementsAttr::get(predType, builder.getBoolAttr(true));
+    Value pred = builder.create<stablehlo::ConstantOp>(loc, predType, trueAttr);
+
+    auto selOp = stablehlo::SelectOp::create(builder, loc,
+                                             ifVal.getType(), // result type
+                                             pred, ifVal, elseVal);
+
+    selOp->setAttr("sourceArgIdx", sourceIdxAttr);
+    selOp->setAttr("isTransposeSelect", IsTransposeSelectAttr);
+
+    return selOp;
   }
 
   func::FuncOp
@@ -471,107 +495,31 @@ struct BlasRaisingPass
     // int64_t ldc_const = getConstantValue(ldc);
     int64_t ldc_const = 1;
 
-    // int64_t transAenum_const = getConstantValue(transAenum);
-    int64_t transAenum_const = 0;
-    // int64_t transBenum_const = getConstantValue(transBenum);
-    int64_t transBenum_const = 0;
+    // Value transA = buildEnumMatch(bodyBuilder, loc, transAenum, {1, 2});
+    // Value transB = buildEnumMatch(bodyBuilder, loc, transBenum, {1, 2});
 
     // If transA or transB matches any of these enums, take the transpose
-    SmallVector<int64_t> transposeEnums = {1, 2};
-    bool transA = llvm::is_contained(transposeEnums, transAenum_const);
-    bool transB = llvm::is_contained(transposeEnums, transBenum_const);
-    // Value transA = getIsEnum(bodyBuilder, loc, transAenum, transposeEnums);
-    // Value transB = getIsEnum(bodyBuilder, loc, transBenum, transposeEnums);
+    // SmallVector<int64_t> transposeEnums = {1, 2};
+    // bool transA = llvm::is_contained(transposeEnums, transAenum_const);
+    // bool transB = llvm::is_contained(transposeEnums, transBenum_const);
 
-    // Column-major matrix in memory has same layout as row-major transpose
-    // When transA=false: A is [m,k] column-major = [k,m] row-major
-    // When transA=true: A is [k,m] column-major = [m,k] row-major
+    Value A_IsTransposed = make2DTensor(bodyBuilder, loc, A_flat, lda_const,
+                                        m_const, k_const, 6, true);
+    Value A_NotTransposed = make2DTensor(bodyBuilder, loc, A_flat, lda_const,
+                                         m_const, k_const, 6, false);
 
-    Value A_eff;
-    if (transA) {
-      // matrix is [k,m] column-major, becomes [m,k] row-major
-      // Then transpose to [k,m] for the row-major computation
-      A_eff = make2DTensor(bodyBuilder, loc, A_flat, lda_const, m_const,
-                           k_const, 6, true);
-    } else {
-      // matrix is [m,k] column-major, becomes [k,m] row-major
-      A_eff = make2DTensor(bodyBuilder, loc, A_flat, lda_const, m_const,
-                           k_const, 6, false);
-    }
+    Value B_IsTransposed = make2DTensor(bodyBuilder, loc, B_flat, ldb_const,
+                                        k_const, n_const, 8, true);
+    Value B_NotTransposed = make2DTensor(bodyBuilder, loc, B_flat, ldb_const,
+                                         k_const, n_const, 8, false);
 
-    Value B_eff;
-    if (transB) {
-      B_eff = make2DTensor(bodyBuilder, loc, B_flat, ldb_const, k_const,
-                           n_const, 8, true);
-    } else {
-      B_eff = make2DTensor(bodyBuilder, loc, B_flat, ldb_const, k_const,
-                           n_const, 8, false);
-    }
-    // Value A_sliced = makeDynamicSlice(bodyBuilder, loc, A, m_const, k_const);
-    // Value B_sliced = makeDynamicSlice(bodyBuilder, loc, B, k_const, n_const);
-
-    // Transpose conditionally
-    // auto transpose2D = [&](OpBuilder &myBuilder, Value t, int64_t dim0_const,
-    // int64_t dim1_const) -> Value {
-    //   SmallVector<int64_t> perm{1, 0};
-    //   Type elemTy = getElemType(t);
-    //   return stablehlo::TransposeOp::create(
-    //       myBuilder,
-    //       loc, RankedTensorType::get({dim1_const, dim0_const}, elemTy), t,
-    //       perm
-    //     );
-    // };
-
-    // auto A_if = stablehlo::IfOp::create(
-    //     bodyBuilder,
-    //     loc,
-    //     A_sliced.getType(),   // result type
-    //     transA
-    // );
-
-    // // Fill in the "then" region
-    // auto &thenRegion = A_if.getTrueBranch();
-    // Block *thenBlock = new mlir::Block();
-    // thenRegion.push_back(thenBlock);
-    // OpBuilder ifBuilder(thenBlock, thenBlock->begin());
-    // Value thenVal = transpose2D(ifBuilder, A_sliced); // produce Value of
-    // type resultType ifBuilder.create<stablehlo::ReturnOp>(loc, thenVal);
-
-    // // Fill in the "else" region
-    // auto &elseRegion = A_if.getFalseBranch();
-    // Block *elseBlock = new mlir::Block();
-    // elseRegion.push_back(elseBlock);
-    // OpBuilder elseBuilder(elseBlock, elseBlock->begin());
-    // elseBuilder.create<stablehlo::ReturnOp>(loc, A_sliced);
-
-    // Value A_eff = A_if.getResult(0);
-
-    // auto B_if = stablehlo::IfOp::create(
-    //     bodyBuilder,
-    //     loc,
-    //     B_sliced.getType(),   // result type
-    //     transB
-    // );
-    // // Fill in the "then" region
-    // auto &thenRegionB = B_if.getTrueBranch();
-    // Block *thenBlockB = new mlir::Block();
-    // thenRegionB.push_back(thenBlockB);
-    // OpBuilder ifBuilderB(thenBlockB, thenBlockB->begin());
-    // Value thenValB = transpose2D(ifBuilderB, B_sliced); // produce Value of
-    // type resultType ifBuilderB.create<stablehlo::ReturnOp>(loc, thenValB);
-
-    // // Fill in the "else" region
-    // auto &elseRegionB = B_if.getFalseBranch();
-    // Block *elseBlockB = new mlir::Block();
-    // elseRegionB.push_back(elseBlockB);
-    // OpBuilder elseBuilderB(elseBlockB, elseBlockB->begin());
-    // elseBuilderB.create<stablehlo::ReturnOp>(loc, B_sliced);
-
-    // Value B_eff = B_if.getResult(0);
-    // Value B_eff = stablehlo::IfOp::create(
-    //     bodyBuilder,
-    //     loc, transB, transpose2D(B_sliced), B_sliced
-    //   );
+    Value A_eff = createSelectStatement(bodyBuilder, loc, A_IsTransposed,
+                                        A_NotTransposed, 6);
+    Value B_eff = createSelectStatement(bodyBuilder, loc, B_IsTransposed,
+                                        B_NotTransposed, 8);
+    // stablehlo::IfOp B_if = createIfStatement(bodyBuilder, loc,
+    // B_IsTransposed,
+    //  B_NotTransposed, transB);
 
     // STEP 2: Dot general: A_eff [m,k], B_eff [k,n] => [m,n]
     // Mixed batch dims are empty; contracting dimension is {1}.
