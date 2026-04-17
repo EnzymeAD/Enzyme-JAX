@@ -258,7 +258,7 @@ enum __device_builtin__ cudaMemcpyKind
       }
     });
   }
-  void runOnOperation() override {
+void runOnOperation() override {
     replaceRuntime();
     llvm::SmallVector<LLVM::LLVMFuncOp> launchFuncs;
     getOperation()->walk([&](LLVM::LLVMFuncOp funcOp) {
@@ -294,11 +294,38 @@ enum __device_builtin__ cudaMemcpyKind
           if (!cur)
             continue;
 
+         // Skip phase3 calls whose enclosing host stub is never directly
+          // called — it is only referenced via addressof for
+          // nvshmemx_collective_launch. Those kernels are handled by the
+          // collective-launch walker below and must not be double-registered.
+          auto parentFunc = cop->getParentOfType<LLVM::LLVMFuncOp>();
+          if (parentFunc) {
+            // Only skip if parentFunc is a host stub — i.e. it has no direct
+            // callers AND it IS referenced via addressof (as a launch function
+            // pointer). Plain entry points like main also have no direct callers
+            // but are never used via addressof, so they must not be skipped.
+            bool hasDirectCaller = false;
+            bool hasAddressOfUse = false;
+
+            if (auto parentUses = parentFunc.getSymbolUses(getOperation())) {
+              for (auto &puse : *parentUses) {
+                if (isa<LLVM::CallOp>(puse.getUser()))
+                  hasDirectCaller = true;
+                if (isa<LLVM::AddressOfOp>(puse.getUser()))
+                  hasAddressOfUse = true;
+              }
+            }
+
+            // Skip only genuine host stubs: no direct calls, but IS used as a
+            // function pointer (for nvshmemx_collective_launch or similar).
+            if (!hasDirectCaller && hasAddressOfUse)
+              continue;
+          }
+
           kernelLaunches[cur].push_back(cop);
         }
       }
     }
-
     // Map of runtime function, index of the entry fn
     std::pair<const char *, int> runtime_fns[] = {
         {"cudaOccupancyMaxActiveBlocksPerMultiprocessorWithFlags", 1},
@@ -330,6 +357,41 @@ enum __device_builtin__ cudaMemcpyKind
       }
     }
 
+    // ── nvshmemx_collective_launch → kernelLaunches ──────────────────────
+    getOperation()->walk([&](LLVM::CallOp call) {
+      if (call.getCallee() != "nvshmemx_collective_launch") return;
+      if (call.getArgOperands().empty()) return;
+
+      auto addrOf = call.getArgOperands()[0]
+                        .getDefiningOp<LLVM::AddressOfOp>();
+      if (!addrOf) return;
+      auto hostStub = addrOf.getFunction(symbolTable);
+      if (!hostStub) return;
+
+      LLVM::LLVMFuncOp deviceFunc = nullptr;
+      hostStub->walk([&](LLVM::CallOp inner) {
+        if (inner.getCallee() != "__mlir_cuda_caller_phase3")
+          return WalkResult::advance();
+        if (inner.getArgOperands().empty())
+          return WalkResult::advance();
+        auto innerAddr = inner.getArgOperands()[0]
+                            .getDefiningOp<LLVM::AddressOfOp>();
+        if (!innerAddr) return WalkResult::advance();
+        deviceFunc = innerAddr.getFunction(symbolTable);
+        return WalkResult::interrupt();
+      });
+
+      if (!deviceFunc) {
+        call.emitWarning()
+            << "nvshmemx_collective_launch: could not trace device function "
+               "through host stub '" << hostStub.getName() << "'\n";
+        return;
+      }
+
+      kernelLaunches[deviceFunc].push_back(
+          cast<CallOpInterface>(call.getOperation()));
+    });
+
     SmallVector<Operation *> toErase;
     for (auto &launch : kernelLaunches) {
       bool captured = false;
@@ -354,7 +416,13 @@ enum __device_builtin__ cudaMemcpyKind
       }
       auto cur = launch.first;
       gpu::GPUFuncOp gpufunc = nullptr;
-      bool local_use_launch_func = use_launch_func || captured;
+      bool allLaunchesAreNvshmem = llvm::all_of(launch.second, [](CallOpInterface cop) {
+          auto llvmCall = dyn_cast<LLVM::CallOp>(cop.getOperation());
+          return llvmCall && llvmCall.getCallee() == "nvshmemx_collective_launch";
+      });
+      bool local_use_launch_func = allLaunchesAreNvshmem 
+          ? use_launch_func 
+          : (use_launch_func || captured);
       if (local_use_launch_func) {
 
         FunctionType gpuTy0 = dyn_cast<FunctionType>(cur.getFunctionType());
@@ -463,6 +531,371 @@ enum __device_builtin__ cudaMemcpyKind
         auto loc = cop->getLoc();
         builder.setInsertionPointAfter(cop);
 
+        // ── nvshmemx_collective_launch branch ──────────────────────────────
+        if (auto llvmCall = dyn_cast<LLVM::CallOp>(cop.getOperation())) {
+          if (llvmCall.getCallee() == "nvshmemx_collective_launch") {
+
+            auto unpackDim = [&](Value packed_i64, Value z_i32)
+                -> std::tuple<Value, Value, Value> {
+              Value c32 = LLVM::ConstantOp::create(builder, loc,
+                              builder.getI64Type(),
+                              builder.getI64IntegerAttr(32));
+              Value x_i32 = arith::TruncIOp::create(builder, loc,
+                                builder.getI32Type(), packed_i64);
+              Value y_i64 = arith::ShRUIOp::create(builder, loc, packed_i64, c32);
+              Value y_i32 = arith::TruncIOp::create(builder, loc,
+                                builder.getI32Type(), y_i64);
+              Value x = arith::IndexCastOp::create(builder, loc,
+                            builder.getIndexType(), x_i32);
+              Value y = arith::IndexCastOp::create(builder, loc,
+                            builder.getIndexType(), y_i32);
+              Value z = arith::IndexCastOp::create(builder, loc,
+                            builder.getIndexType(), z_i32);
+              return {x, y, z};
+            };
+
+            auto [gridX, gridY, gridZ] =
+                unpackDim(llvmCall.getArgOperands()[1],
+                          llvmCall.getArgOperands()[2]);
+            auto [blockX, blockY, blockZ] =
+                unpackDim(llvmCall.getArgOperands()[3],
+                          llvmCall.getArgOperands()[4]);
+
+            // ── Hoist numParams/curFuncTy so nullptr case can use them ──
+            auto curFuncTy =
+                dyn_cast<LLVM::LLVMFunctionType>(cur.getFunctionType());
+            unsigned numParams = curFuncTy ? curFuncTy.getNumParams() : 0;
+
+            Value argsArrayPtr = llvmCall.getArgOperands()[5];
+
+            // nullptr is valid when the kernel has no parameters
+            bool argsIsNull =
+                argsArrayPtr.getDefiningOp<LLVM::ZeroOp>() != nullptr;
+
+            SmallVector<Value> kernelArgs;
+
+            if (argsIsNull) {
+              if (numParams != 0) {
+                llvmCall.emitError()
+                    << "nvshmemx_collective_launch: void** args is null but "
+                       "kernel expects " << numParams << " parameter(s)\n";
+                signalPassFailure();
+                return;
+              }
+              // numParams == 0: kernelArgs stays empty.
+            } else {
+              auto argsAlloca =
+                  argsArrayPtr.getDefiningOp<LLVM::AllocaOp>();
+              if (!argsAlloca) {
+                llvmCall.emitError()
+                    << "nvshmemx_collective_launch: void** args is not a "
+                       "static alloca\n";
+                signalPassFailure();
+                return;
+              }
+
+              // ── Helpers ────────────────────────────────────────────────
+
+              // Returns the byte size of an LLVM type on a 64-bit target.
+              std::function<int64_t(Type)> getTypeSizeBytes =
+                  [&](Type t) -> int64_t {
+                if (auto intTy = dyn_cast<IntegerType>(t))
+                  return intTy.getWidth() / 8;
+                if (isa<LLVM::LLVMPointerType>(t))
+                  return 8;
+                if (auto arrTy = dyn_cast<LLVM::LLVMArrayType>(t))
+                  return arrTy.getNumElements() *
+                         getTypeSizeBytes(arrTy.getElementType());
+                if (auto structTy = dyn_cast<LLVM::LLVMStructType>(t)) {
+                  int64_t total = 0;
+                  for (auto field : structTy.getBody()) {
+                    int64_t sz = getTypeSizeBytes(field);
+                    if (sz <= 0) return 0;
+                    total += sz;
+                  }
+                  return total;
+                }
+                if (t.isF32()) return 4;
+                if (t.isF64()) return 8;
+                return 0;
+              };
+
+              // Walk backwards through transparent pointer ops to compute
+              // the byte offset of ptr relative to argsAlloca->getResult(0).
+             std::function<bool(Value, int64_t &)> getByteOffset =
+                  [&](Value ptr, int64_t &byteOffset) -> bool {
+                byteOffset = 0;
+                while (ptr != argsAlloca->getResult(0)) {
+                  if (auto bitcast = ptr.getDefiningOp<LLVM::BitcastOp>()) {
+                    ptr = bitcast.getArg();
+                  } else if (auto addrcast = ptr.getDefiningOp<LLVM::AddrSpaceCastOp>()) {
+                    ptr = addrcast.getArg();
+                  } else if (auto gep = ptr.getDefiningOp<LLVM::GEPOp>()) {
+                    int64_t elemSize = getTypeSizeBytes(gep.getElemType());
+                    if (elemSize <= 0)
+                      return false;
+                    int64_t gepOffset = 0;
+                    for (auto gepIdx : gep.getIndices()) {
+                      int64_t idxVal = 0;
+                      bool found = false;
+                      if (auto attr = gepIdx.template dyn_cast<IntegerAttr>()) {
+                        idxVal = attr.getValue().getSExtValue();
+                        found = true;
+                      } else if (auto val = gepIdx.template dyn_cast<Value>()) {
+                        APInt intVal;
+                        if (matchPattern(val, m_ConstantInt(&intVal))) {
+                          idxVal = intVal.getSExtValue();
+                          found = true;
+                        } else if (auto c = val.getDefiningOp<arith::ConstantIndexOp>()) {
+                          idxVal = c.value();
+                          found = true;
+                        } else if (auto c = val.getDefiningOp<LLVM::ConstantOp>()) {  // <-- ADD THIS
+                          if (auto intAttr = dyn_cast<IntegerAttr>(c.getValue())) {
+                            idxVal = intAttr.getValue().getSExtValue();
+                            found = true;
+                          }
+                        }
+                      }
+                      if (!found)
+                        return false;
+                      gepOffset += idxVal * elemSize;
+                    }
+                    byteOffset += gepOffset;
+                    ptr = gep.getBase();
+                  } else {
+                    return false;
+                  }
+                }
+                return true;
+              };
+
+              constexpr int64_t kPtrSize = 8;
+
+              SmallVector<Value> slotValues(numParams, nullptr);
+              bool slotFailed = false;
+
+              auto recordSlot = [&](int64_t byteOff, Value val) {
+                if (slotFailed) return;
+                if ((byteOff % kPtrSize) != 0) {
+                  slotFailed = true;
+                  return;
+                }
+                int64_t idx = byteOff / kPtrSize;
+                if (idx < 0 || (unsigned)idx >= numParams) {
+                  slotFailed = true;
+                  return;
+                }
+                if (slotValues[idx]) {
+                  slotFailed = true;
+                  return;
+                }
+                slotValues[idx] = val;
+              };
+
+              std::function<void(Value)> collectWrites = [&](Value ptr) {
+                for (Operation *user : ptr.getUsers()) {
+                  if (auto memset = dyn_cast<LLVM::MemsetOp>(user)) {
+                    APInt fillVal;
+                    if (matchPattern(memset.getVal(), m_ConstantInt(&fillVal)) &&
+                        fillVal.isZero()) {
+                      for (unsigned i = 0; i < numParams; i++)
+                        if (!slotValues[i])
+                          slotValues[i] = LLVM::ZeroOp::create(
+                              builder, loc, curFuncTy.getParamType(i));
+                    }
+                  } else if (auto store = dyn_cast<LLVM::StoreOp>(user)) {
+                    int64_t byteOff = 0;
+                    if (getByteOffset(store.getAddr(), byteOff))
+                      recordSlot(byteOff, store.getValue());
+                    else
+                      slotFailed = true;
+                  } else if (isa<LLVM::GEPOp, LLVM::BitcastOp,
+                                LLVM::AddrSpaceCastOp>(user)) {
+                    collectWrites(user->getResult(0));
+
+                  // ── NEW: trace writes that flow through a function call ───────────
+                  } else if (auto call = dyn_cast<LLVM::CallOp>(user)) {
+                    // Skip the launch call itself and any other collective launch —
+                    // they consume the args array, they don't write into it.
+                    if (call == llvmCall) continue;
+                    if (call.getCallee() == "nvshmemx_collective_launch") continue;
+
+                    // Only handle direct calls to functions we can inspect.
+                    std::optional<StringRef> calleeName = call.getCallee();
+                    if (!calleeName) { slotFailed = true; continue; }
+                    auto calleeFn = symbolTable.getSymbolTable(getOperation())
+                                        .lookup<LLVM::LLVMFuncOp>(*calleeName);
+                    if (!calleeFn || calleeFn.isExternal()) {
+                      slotFailed = true;
+                      continue;
+                    }
+
+                    // Byte offset of `ptr` from the top of argsAlloca.
+                    int64_t ptrBaseOffset = 0;
+                    if (!getByteOffset(ptr, ptrBaseOffset)) {
+                      slotFailed = true;
+                      continue;
+                    }
+
+                    // Find which argument positions carry our tracked ptr.
+                    for (auto [argIdx, operand] :
+                        llvm::enumerate(call.getArgOperands())) {
+                      if (slotFailed) break;
+                      if (operand != ptr) continue;
+                      if ((unsigned)argIdx >=
+                          calleeFn.getBody().front().getNumArguments()) {
+                        slotFailed = true;
+                        break;
+                      }
+                      BlockArgument calleeParam =
+                          calleeFn.getBody().front().getArgument(argIdx);
+
+                      // Walk callee looking for stores *through* calleeParam.
+                      calleeFn->walk([&](LLVM::StoreOp store) {
+                        if (slotFailed) return;
+
+                        // Strip transparent casts from the store address.
+                        Value addr = store.getAddr();
+                        while (auto bc = addr.getDefiningOp<LLVM::BitcastOp>())
+                          addr = bc.getArg();
+                        while (auto ac = addr.getDefiningOp<LLVM::AddrSpaceCastOp>())
+                          addr = ac.getArg();
+                        if (addr != calleeParam) return; // not our slot
+
+                        Value sv = store.getValue();
+
+                        // Pattern A: store (load paramK), paramJ
+                        //   → in caller: load(callerArgK) → slot at ptrBaseOffset
+                        if (auto ld = sv.getDefiningOp<LLVM::LoadOp>()) {
+                          Value lsrc = ld.getAddr();
+                          while (auto bc = lsrc.getDefiningOp<LLVM::BitcastOp>())
+                            lsrc = bc.getArg();
+                          while (auto ac = lsrc.getDefiningOp<LLVM::AddrSpaceCastOp>())
+                            lsrc = ac.getArg();
+                          if (auto ba = dyn_cast<BlockArgument>(lsrc)) {
+                            Value callerSrcPtr =
+                                call.getArgOperands()[ba.getArgNumber()];
+                            OpBuilder b(call); // insert before the call
+                            Value callerVal = LLVM::LoadOp::create(
+                                b, call.getLoc(), sv.getType(), callerSrcPtr);
+                            recordSlot(ptrBaseOffset, callerVal);
+                            return;
+                          }
+                        }
+
+                        // Pattern B: store paramK, paramJ  (direct arg value)
+                        //   → in caller: callerArgK → slot at ptrBaseOffset
+                        if (auto ba = dyn_cast<BlockArgument>(sv)) {
+                          recordSlot(ptrBaseOffset,
+                                    call.getArgOperands()[ba.getArgNumber()]);
+                          return;
+                        }
+
+                        slotFailed = true; // unrecognised pattern
+                      });
+                    }
+                  }
+                  // All other users (loads, lifetime markers, etc.) silently ignored.
+                }
+              };
+
+              collectWrites(argsAlloca->getResult(0));   
+
+              if (slotFailed) {
+                llvmCall.emitError()
+                    << "nvshmemx_collective_launch: could not statically "
+                       "resolve args array\n";
+                signalPassFailure();
+                return;
+              }
+
+              // Build the final kernel argument list.
+              for (unsigned i = 0; i < numParams; i++) {
+                if (!slotValues[i]) {
+                  llvmCall.emitError()
+                      << "nvshmemx_collective_launch: missing args[" << i
+                      << "]\n";
+                  signalPassFailure();
+                  return;
+                }
+                Type paramTy = curFuncTy.getParamType(i);
+                if (slotValues[i].getType() == paramTy) {
+                  kernelArgs.push_back(slotValues[i]);
+                } else {
+                  // Slot holds a void* pointing to the actual arg — load it.
+                  auto slotMemref = enzymexla::Pointer2MemrefOp::create(
+                      builder, loc, MemRefType::get({1}, paramTy),
+                      slotValues[i]);
+                  Value idx0 =
+                      arith::ConstantIndexOp::create(builder, loc, 0);
+                  kernelArgs.push_back(memref::LoadOp::create(
+                      builder, loc, slotMemref, ValueRange{idx0}));
+                }
+              }
+            } // end else (!argsIsNull)
+
+            Value shMem = arith::TruncIOp::create(builder, loc,
+                              builder.getI32Type(),
+                              llvmCall.getArgOperands()[6]);
+            Value stream = llvmCall.getArgOperands()[7];
+
+            Value result = llvmCall.getResult();
+            Value zero = nullptr;
+            if (result) {
+              zero = LLVM::ConstantOp::create(
+                  builder, loc, result.getType(),
+                  builder.getIntegerAttr(result.getType(), 0));
+            }
+
+            if (local_use_launch_func) {
+              if (stream.getDefiningOp<LLVM::ZeroOp>()) {
+                launchFuncOp = gpu::LaunchFuncOp::create(
+                    builder, loc, gpufunc,
+                    gpu::KernelDim3{gridX, gridY, gridZ},
+                    gpu::KernelDim3{blockX, blockY, blockZ},
+                    shMem, ValueRange(kernelArgs));
+              } else {
+                assert(isa<LLVM::LLVMPointerType>(stream.getType()));
+                Value token = enzymexla::StreamToTokenOp::create(
+                    builder, loc, gpu::AsyncTokenType::get(ctx), stream);
+                launchFuncOp = gpu::LaunchFuncOp::create(
+                    builder, loc, gpufunc,
+                    gpu::KernelDim3{gridX, gridY, gridZ},
+                    gpu::KernelDim3{blockX, blockY, blockZ},
+                    shMem, ValueRange(kernelArgs),
+                    token.getType(), ValueRange(token));
+              }
+            } else {
+              if (stream.getDefiningOp<LLVM::ZeroOp>()) {
+                auto op = mlir::gpu::LaunchOp::create(
+                    builder, loc, gridX, gridY, gridZ,
+                    blockX, blockY, blockZ, shMem, nullptr, ValueRange());
+                builder.setInsertionPointToStart(&op.getRegion().front());
+                LLVM::CallOp::create(builder, loc, cur, kernelArgs);
+                gpu::TerminatorOp::create(builder, loc);
+              } else {
+                assert(isa<LLVM::LLVMPointerType>(stream.getType()));
+                Value token = enzymexla::StreamToTokenOp::create(
+                    builder, loc, gpu::AsyncTokenType::get(ctx), stream);
+                auto op = mlir::gpu::LaunchOp::create(
+                    builder, loc, gridX, gridY, gridZ,
+                    blockX, blockY, blockZ, shMem,
+                    token.getType(), ValueRange(token));
+                builder.setInsertionPointToStart(&op.getRegion().front());
+                LLVM::CallOp::create(builder, loc, cur, kernelArgs);
+                gpu::TerminatorOp::create(builder, loc);
+              }
+            }
+
+            if (zero)
+              result.replaceAllUsesWith(zero);
+            cop->erase();
+            continue;
+          }
+        } // closes: if (auto llvmCall = dyn_cast<LLVM::CallOp>(...))
+
+        // ── existing __mlir_cuda_caller_phase3 path (unchanged) ────────────
+
         auto shMemSize = LLVM::TruncOp::create(
             builder, loc, builder.getI32Type(), cop.getArgOperands()[7]);
         auto stream = cop.getArgOperands()[8];
@@ -477,8 +910,7 @@ enum __device_builtin__ cudaMemcpyKind
                          dyn_cast<LLVM::LLVMFunctionType>(gpuTy0)) {
             expectedTy = llvmFuncTy.getParamType(i - 9);
           } else {
-            expectedTy =
-                arg.getType(); // Should not happen given earlier checks
+            expectedTy = arg.getType();
           }
 
           if (arg.getType() != expectedTy) {
@@ -492,8 +924,7 @@ enum __device_builtin__ cudaMemcpyKind
                            expectedTy.getIntOrFloatBitWidth()) {
               arg = LLVM::BitcastOp::create(builder, loc, expectedTy, arg);
             } else {
-              arg = LLVM::BitcastOp::create(builder, loc, expectedTy,
-                                            arg); // Fallback
+              arg = LLVM::BitcastOp::create(builder, loc, expectedTy, arg);
             }
           }
           args.push_back(arg);
@@ -558,7 +989,6 @@ enum __device_builtin__ cudaMemcpyKind
           }
         }
         if (launchFuncOp) {
-
           SmallVector<Attribute> newArgAttrs;
           for (auto [i, argAttrs] : llvm::enumerate(*cur.getArgAttrs())) {
             if (std::optional<NamedAttribute> attr =
@@ -591,28 +1021,24 @@ enum __device_builtin__ cudaMemcpyKind
         if (auto glob = dyn_cast<LLVM::GlobalOp>(cur)) {
           if (auto comdat = glob.getComdat()) {
             glob.setComdatAttr({});
-
             auto comdatSelector =
                 SymbolTable::lookupNearestSymbolFrom(cur, *comdat);
             if (auto cselect =
                     dyn_cast<LLVM::ComdatSelectorOp>(comdatSelector)) {
               cselect->erase();
             }
-
             cast<LLVM::GlobalOp>(cloned).setComdatAttr({});
           }
         }
         if (auto glob = dyn_cast<LLVM::LLVMFuncOp>(cur)) {
           if (auto comdat = glob.getComdat()) {
             glob.setComdatAttr({});
-
             auto comdatSelector =
                 SymbolTable::lookupNearestSymbolFrom(cur, *comdat);
             if (auto cselect =
                     dyn_cast<LLVM::ComdatSelectorOp>(comdatSelector)) {
               cselect->erase();
             }
-
             cast<LLVM::LLVMFuncOp>(cloned).setComdatAttr({});
           }
         }
