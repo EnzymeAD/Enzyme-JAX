@@ -1476,7 +1476,7 @@ def : HLODerivative<"FftOp",
 >;
 
 def Result0 : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  op.getResult(0);
+  op.getResult();
 }]>;
 
 def TriangularSolveShadowDotDims : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
@@ -1495,17 +1495,17 @@ def TriangularSolveShadowDotDims : GlobalExpr</*needsprimal*/0, /*needsshadow*/0
     batch_dims_b.push_back(i);
   }
 
-  auto transpose_A = op.getTransposeA().getValue();
+  auto transpose_A = op.getTransposeA();
   SmallVector<int64_t> contract_dims_A;
-  if (transpose_A == Transpose::STABLEHLO_NO_TRANSPOSE)
+  if (transpose_A == decltype(transpose_A)::NO_TRANSPOSE)
     contract_dims_A.push_back(rank_A - 1);
-  else if (transpose_A == Transpose::STABLEHLO_TRANSPOSE || transpose_A == Transpose::STABLEHLO_ADJOINT)
+  else if (transpose_A == decltype(transpose_A)::TRANSPOSE || transpose_A == decltype(transpose_A)::ADJOINT)
     contract_dims_A.push_back(rank_A - 2);
   else
-    llvm::errs("Unexpected `transpose_a` attribute value in TriangularSolveOp");
+    llvm::errs() << "Unexpected `transpose_a` attribute value in TriangularSolveOp";
 
   SmallVector<int64_t> contract_dims_b;
-  if (op.getLeftSide().getValue())
+  if (op.getLeftSide())
     contract_dims_b.push_back(rank_b - 2);
   else
     contract_dims_b.push_back(rank_b - 1);
@@ -1538,28 +1538,35 @@ def TriangularSolveDiffOuterDotDims : GlobalExpr</*needsprimal*/0, /*needsshadow
   );
 }]>;
 
-def SelectIfAdjoint : StaticSelect<"cast<TriangularSolveOp>(op).getTransposeA() == Transpose::STABLEHLO_ADJOINT">;
+def TriangularSolveGetLeftSide : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{op.getLeftSide();}]>;
+def TriangularSolveGetLower : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{op.getLower();}]>;
+def TriangularSolveGetUnitDiagonal : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{op.getUnitDiagonal();}]>;
+def TriangularSolveGetTransposeA : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{op.getTransposeA();}]>;
+def ArrayAttr : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{ArrayAttr()}]>;
 
 def : HLODerivative<"TriangularSolveOp", (Op $A, $b),
   [
     (Neg (TriangularSolve
-      (SelectIfAdjoint
-        (Conj $A),
-        $A),
+      $A,
       (DotGeneral
         (DotGeneralBatchedResultType),
         (DiffeRet),
         (Conj (Result0)),
-        (TriangularSolveDiffOuterDotDims)
-      )
+        (TriangularSolveDiffOuterDotDims),
+        (ArrayAttr),
+        (DotAlgorithmAttr)),
+      (TriangularSolveGetLeftSide),
+      (TriangularSolveGetLower),
+      (TriangularSolveGetUnitDiagonal),
+      (TriangularSolveGetTransposeA)
     )),
     (DotGeneral
       (DotGeneralBatchedResultType),
-      (SelectIfAdjoint
-        (Conj $A),
-        $A),
+      $A,
       (DiffeRet),
-      (TriangularSolveShadowDotDims))
+      (TriangularSolveShadowDotDims),
+      (ArrayAttr),
+      (DotAlgorithmAttr))
   ],
   (TriangularSolve
     $A,
@@ -1567,9 +1574,14 @@ def : HLODerivative<"TriangularSolveOp", (Op $A, $b),
       (Shadow $b),
       (DotGeneral
         (DotGeneralBatchedResultType),
-        (SelectIfAdjoint
-          (Conj (Shadow $A)),
-          (Shadow $A)),
+        (Shadow $A),
         (Result0),
-        (TriangularSolveShadowDotDims))))
+        (TriangularSolveShadowDotDims),
+        (ArrayAttr),
+        (DotAlgorithmAttr))),
+    (TriangularSolveGetLeftSide),
+    (TriangularSolveGetLower),
+    (TriangularSolveGetUnitDiagonal),
+    (TriangularSolveGetTransposeA)
+  )
 >;
