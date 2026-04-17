@@ -63,18 +63,18 @@ public:
     // Check if first argument has sret attribute and if function is side
     // effect free
     bool hasSret = false;
-    bool isSideEffectFree = true;
+    // bool isSideEffectFree = true;
     auto argAttrs = funcOp.getArgAttrsAttr();
     if (!params.empty() && argAttrs) {
       if (auto sretAttr =
               funcOp.getArgAttr(0, LLVM::LLVMDialect::getStructRetAttrName()))
         hasSret = true;
-      for (int i = hasSret ? 1 : 0; i < params.size(); i++) {
-        if (isa<LLVM::LLVMPointerType>(params[i])) {
-          if (!funcOp.getArgAttr(i, LLVM::LLVMDialect::getReadonlyAttrName()))
-            isSideEffectFree = false;
-        }
-      }
+      // for (int i = hasSret ? 1 : 0; i < params.size(); i++) {
+      //   if (isa<LLVM::LLVMPointerType>(params[i])) {
+      //   if (!funcOp.getArgAttr(i, LLVM::LLVMDialect::getReadonlyAttrName()))
+      //      isSideEffectFree = false;
+      //  }
+      //}
     }
 
     auto fnType = FunctionType::get(
@@ -107,10 +107,10 @@ public:
     if (hasSret)
       tesseraDefineOp->setAttr("tessera.sret_attrs", argAttrs[0]);
 
-    // Mark if the function has no side effects
-    if (isSideEffectFree)
+    if (mlir::isMemoryEffectFree(funcOp)) {
       tesseraDefineOp->setAttr("tessera.side_effect_free",
                                rewriter.getUnitAttr());
+    }
 
     // Clone body of function
     if (!funcOp.isExternal()) {

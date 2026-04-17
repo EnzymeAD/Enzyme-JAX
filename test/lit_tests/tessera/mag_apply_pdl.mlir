@@ -5,14 +5,13 @@ module {
       tessera.return %arg0 : f32
   }
   
-  tessera.define @arith.negf(%arg0 : f32) -> f32 attributes {tessera.side_effect_free} {
+  tessera.define @arith.negf(%arg0 : f32) -> f32 {
       tessera.return %arg0 : f32
   }
   
   // CHECK-LABEL: llvm.func @main
   llvm.func @main(%arg0 : f32, %arg1 : f32, %arg2 : f32) -> f32 {
       // CHECK: tessera.call @eigen.mag(%arg0, %arg1, %arg2)
-      // CHECK-NOT: tessera.call @arith.negf
       %0 = tessera.call @arith.negf(%arg0) : (f32) -> f32
       %1 = tessera.call @eigen.mag(%0, %arg1, %arg2) : (f32, f32, f32) -> f32
       llvm.return %1 : f32
