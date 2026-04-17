@@ -114,6 +114,8 @@ SmallVector<int64_t> getShapeFromOp(mlir::Operation *op,
       dim0 = state.shapeMap[srcIdx][3];
     } else if (dim0Attr.getValue() == "ldim.col") {
       dim0 = state.shapeMap[srcIdx][1] * state.shapeMap[srcIdx][3];
+    } else if (dim0Attr.getValue() == "ldim.row") {
+      dim0 = state.shapeMap[srcIdx][1] * state.shapeMap[srcIdx][2];
     }
   }
   if (auto dim1Attr = op->getAttrOfType<StringAttr>("dim.1")) {
@@ -423,12 +425,7 @@ struct PropagateShapesPass
       if (shapeMap.count(i) > 0) {
         // llvm::errs() << "shape found at " << i << "";
         // Tensors are passed flattened, so we need to get the size as such
-        int64_t totalSize = shapeMap[i][1];
-        if (!shapeMap[i][0] || shapeMap[i][0] == -1) {
-          totalSize *= shapeMap[i][3];
-        } else {
-          totalSize *= shapeMap[i][2];
-        }
+        int64_t totalSize = shapeMap[i].back();
         type = mlir::RankedTensorType::get(
             {totalSize}, cast<mlir::RankedTensorType>(type).getElementType());
       }
@@ -446,98 +443,18 @@ struct PropagateShapesPass
         arg.setType(newTy);
       }
     }
-
-    // func.walk([&](func::ReturnOp ret) {
-    //   // Adjust operands to match newResults
-    //   ret.setType()
-    // });
-
-    // auto newFunc =
-    //     mlir::func::FuncOp::create(func.getLoc(), func.getName(), newType);
-    // newFunc->dump();
-
-    // llvm::errs() << "\nafter set attrs:\n";
-    // // newFunc->setAttrs(func->getAttrs());
-    // newFunc->dump();
-
-    // func->getBlock()->getOperations().insert(mlir::Block::iterator(func),
-    //                                          newFunc);
-    // // Clone body
-    // auto &oldBlock = func.getBody().front();
-    // auto &newBlock = *newFunc.addEntryBlock();
-
-    // mlir::IRMapping mapping;
-    // for (auto [oldArg, newArg] :
-    //      llvm::zip(oldBlock.getArguments(), newBlock.getArguments())) {
-    //   mapping.map(oldArg, newArg);
-    // }
-
-    // for (auto &op : oldBlock.without_terminator()) {
-    //   newBlock.push_back(op.clone(mapping));
-    // }
-    // newBlock.push_back(oldBlock.getTerminator()->clone(mapping));
-
-    // // Replace + erase
-    // func->replaceAllUsesWith(newFunc);
-    // func.erase();
-    // return func;
   }
 
   void runOnOperation() override {
     shapeMap = parseArg(shapes);
 
-    // debug print shapeMap
-    // for (const auto &it : shapeMap) {
-    //   int key = it.first;
-    //   const auto &vec = it.second;
-
-    //   llvm::outs() << "key " << key << ": [";
-    //   for (size_t i = 0; i < vec.size(); ++i) {
-    //     llvm::outs() << vec[i];
-    //     if (i + 1 < vec.size())
-    //       llvm::outs() << ", ";
-    //   }
-    //   llvm::outs() << "]\n";
-    // }
-
     auto root = getOperation();
     llvm::errs() << "\n=============Initial Root==============\n";
     root->dump();
-    // auto context = getOperation()->getContext();
 
     root->walk([&](mlir::func::FuncOp func) { setFuncOperandTypes(func); });
 
-    // auto func = M->lookupSymbol<mlir::func::FuncOp>("main");
-
-    // // Old types
-    // auto oldType = func.getFunctionType();
-
-    // // Build new input types
-    // llvm::SmallVector<mlir::Type> newInputs;
-    // for (auto [i, arg] : llvm::enumerate(func.getArguments())) {
-    //   auto type = arg.getType();
-
-    //   if (shapeMap.count[i] > 0) {
-    //     llvm::SmallVector<int, 4> shapeDims;
-    //     shapeDims.push_back(shapeMap[i][0]);
-    //     for (int j = 2; j < shapeMap[i].size; j++) {
-    //       shapeDims.push_back(shapeMap[i][j]);
-    //     }
-    //     type = mlir::RankedTensorType::get(shapeDims,
-    //         type.cast<mlir::RankedTensorType>().getElementType());
-    //   }
-
-    //   newInputs.push_back(type);
-    // }
-
-    // // Keep result types the same
-    // auto newFuncType = mlir::FunctionType::get(
-    //     func.getContext(),
-    //     newInputs,
-    //     newInputs);
-
-    // // Update function type
-    // func.setType(newFuncType);
+    // Update function type
     auto context = getOperation()->getContext();
     ShapeInfoState state{shapeMap};
     RewritePatternSet patterns(context);
@@ -548,8 +465,6 @@ struct PropagateShapesPass
 
     patterns.add<DotGeneralTypePropagationPattern>(context);
     patterns.add<TypePropagationPattern>(context);
-    // patterns.add<DeleteWrongTransposePattern>(context, state);
-
 
     RewritePatternSet deletePatterns(context);
     deletePatterns.add<MergeTransposeSelectPattern>(context, state);

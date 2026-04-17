@@ -201,15 +201,28 @@ struct BlasRaisingPass
     auto rowAttr = builder.getStringAttr("row");
     auto colAttr = builder.getStringAttr("col");
     auto ldimAttr = builder.getStringAttr("ldim");
+    auto rowLdimAttr = builder.getStringAttr("ldim.row");
+    auto colLdimAttr = builder.getStringAttr("ldim.col");
     auto sourceIdxAttr = builder.getI64IntegerAttr(sourceIdx);
     auto transposedAttr = builder.getBoolAttr(isTransposed);
 
-    // --- Step 1: reshape ---
+    // --- Step 0: initial slice ---
     int64_t outer = isTransposed ? rows : cols;
+    auto flatSliceTy = RankedTensorType::get({outer * ldim}, elemTy);
+
+    Value flatSliced = builder.create<stablehlo::SliceOp>(
+        loc, flatSliceTy, tensor, DenseI64ArrayAttr::get(ctx, {0}),
+        DenseI64ArrayAttr::get(ctx, {outer * ldim}),
+        DenseI64ArrayAttr::get(ctx, {1}));
+    flatSliced.getDefiningOp()->setAttr("dim.0", isTransposed ? rowLdimAttr : colLdimAttr);
+    flatSliced.getDefiningOp()->setAttr("transposed", transposedAttr);
+    flatSliced.getDefiningOp()->setAttr("sourceArgIdx", sourceIdxAttr);
+
+    // --- Step 1: reshape ---
     auto reshapeTy = RankedTensorType::get({outer, ldim}, elemTy);
 
     Value reshaped =
-        builder.create<stablehlo::ReshapeOp>(loc, reshapeTy, tensor);
+        builder.create<stablehlo::ReshapeOp>(loc, reshapeTy, flatSliced);
 
     reshaped.getDefiningOp()->setAttr("dim.0",
                                       isTransposed ? rowAttr : colAttr);
