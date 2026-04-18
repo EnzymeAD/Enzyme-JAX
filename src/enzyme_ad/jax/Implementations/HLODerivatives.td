@@ -1479,10 +1479,6 @@ def : HLODerivative<"FftOp",
     )
 >;
 
-def Result0 : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
-  op.getResult();
-}]>;
-
 def TriangularSolveShadowDotDims : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   auto type_A = cast<RankedTensorType>(op.getA().getType());
   auto type_b = cast<RankedTensorType>(op.getB().getType());
@@ -1555,7 +1551,13 @@ def : HLODerivative<"TriangularSolveOp", (Op $A, $b),
       (DotGeneral
         (DotGeneralBatchedResultType),
         (DiffeRet),
-        (Conj (Result0)),
+        (Conj (TriangularSolve
+          $A, $b,
+          (TriangularSolveGetLeftSide),
+          (TriangularSolveGetLower),
+          (TriangularSolveGetUnitDiagonal),
+          (TriangularSolveGetTransposeA)
+        )),
         (TriangularSolveDiffOuterDotDims),
         (ArrayAttr),
         (DotAlgorithmAttr)),
@@ -1579,7 +1581,13 @@ def : HLODerivative<"TriangularSolveOp", (Op $A, $b),
       (DotGeneral
         (DotGeneralBatchedResultType),
         (Shadow $A),
-        (Result0),
+        (TriangularSolve
+          $A, $b,
+          (TriangularSolveGetLeftSide),
+          (TriangularSolveGetLower),
+          (TriangularSolveGetUnitDiagonal),
+          (TriangularSolveGetTransposeA)
+        ),
         (TriangularSolveShadowDotDims),
         (ArrayAttr),
         (DotAlgorithmAttr))),
