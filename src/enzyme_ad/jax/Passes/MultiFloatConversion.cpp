@@ -1687,8 +1687,9 @@ struct ExpOpConversion : public OpConversionPattern<stablehlo::ExpOp> {
     for (int i = 6; i >= 0; --i) {
       auto [mul_hi, mul_lo] =
           mfMul(p_hi, p_lo, r_prime_hi, r_prime_lo, rewriter, loc);
-      auto [add_hi, add_lo] = mfAdd(mul_hi, mul_lo, getConst(kCoefs[i][0]),
-                                    getConst(kCoefs[i][1]), rewriter, loc);
+      Value c_hi = getConst(kCoefs[i][0]);
+      Value c_lo = getConst(kCoefs[i][1]);
+      auto [add_hi, add_lo] = mfAdd(mul_hi, mul_lo, c_hi, c_lo, rewriter, loc);
       p_hi = add_hi;
       p_lo = add_lo;
     }
@@ -3140,12 +3141,15 @@ struct LogOpConversion : public OpConversionPattern<stablehlo::LogOp> {
     Value val_lo = lookupTable(index_i32, values_lo, rewriter, loc, tensorType);
     // 3. Polynomial evaluation
     // t_direct = (x - 1) / (x + 1)
-    auto [neg_one_hi, neg_one_lo] =
-        std::make_pair(getConst(-1.0), getConst(0.0));
+    Value m1_hi = getConst(-1.0);
+    Value m1_lo = getConst(0.0);
+    auto [neg_one_hi, neg_one_lo] = std::make_pair(m1_hi, m1_lo);
+    Value p1_hi = getConst(1.0);
+    Value p1_lo = getConst(0.0);
     auto [x_minus_one_hi, x_minus_one_lo] =
         multiFloatAdd(x_hi, x_lo, neg_one_hi, neg_one_lo, rewriter, loc);
     auto [x_plus_one_hi, x_plus_one_lo] =
-        multiFloatAdd(x_hi, x_lo, getConst(1.0), getConst(0.0), rewriter, loc);
+        multiFloatAdd(x_hi, x_lo, p1_hi, p1_lo, rewriter, loc);
     auto [t_direct_hi, t_direct_lo] =
         multiFloatDiv(x_minus_one_hi, x_minus_one_lo, x_plus_one_hi,
                       x_plus_one_lo, rewriter, loc);
@@ -3224,8 +3228,10 @@ struct LogOpConversion : public OpConversionPattern<stablehlo::LogOp> {
         rewriter.create<stablehlo::SelectOp>(loc, cond, res_direct_lo, else_lo);
 
     // Multiply by ln(2)
-    auto [res_hi, res_lo] = multiFloatMul(log2_hi, log2_lo, getConst(kLn2[0]),
-                                          getConst(kLn2[1]), rewriter, loc);
+    Value ln2_hi = getConst(kLn2[0]);
+    Value ln2_lo = getConst(kLn2[1]);
+    auto [res_hi, res_lo] =
+        multiFloatMul(log2_hi, log2_lo, ln2_hi, ln2_lo, rewriter, loc);
 
     // Handle special cases
     Value zero = getConst(0.0);
