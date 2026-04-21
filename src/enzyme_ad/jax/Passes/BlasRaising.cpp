@@ -61,6 +61,8 @@ struct BlasRaisingPass
     : public enzyme::impl::BlasRaisingPassBase<BlasRaisingPass> {
   using BlasRaisingPassBase::BlasRaisingPassBase;
 
+  llvm::DenseMap<llvm::StringRef, func::FuncOp> transformedCublasFunctions;
+
   void getDependentDialects(DialectRegistry &registry) const override {
     registry.insert<mlir::func::FuncDialect>();
     registry.insert<mlir::LLVM::LLVMDialect>();
@@ -214,7 +216,8 @@ struct BlasRaisingPass
         loc, flatSliceTy, tensor, DenseI64ArrayAttr::get(ctx, {0}),
         DenseI64ArrayAttr::get(ctx, {outer * ldim}),
         DenseI64ArrayAttr::get(ctx, {1}));
-    flatSliced.getDefiningOp()->setAttr("dim.0", isTransposed ? rowLdimAttr : colLdimAttr);
+    flatSliced.getDefiningOp()->setAttr("dim.0", isTransposed ? rowLdimAttr
+                                                              : colLdimAttr);
     flatSliced.getDefiningOp()->setAttr("transposed", transposedAttr);
     flatSliced.getDefiningOp()->setAttr("sourceArgIdx", sourceIdxAttr);
 
@@ -379,8 +382,6 @@ struct BlasRaisingPass
 
     std::string fnName = getRaisedFuncName(name);
 
-    // transform operands
-
     // Construct new function type
     SmallVector<Type> newInputs;
     for (auto &value_wrapper : operands) {
@@ -450,11 +451,16 @@ struct BlasRaisingPass
 
     SmallVector<Value> operands =
         transformOperands(call, getOperandTypesCublasSGemm_v2(ctx));
-    func::FuncOp fn = buildFunctionSignature(
-        call, operands, getShapeInfoCublasSGemm_v2(ctx), name);
 
-    // fill in function with corresponding constructor
-    func::FuncOp f = constructCublasSGemm_v2(fn);
+    func::FuncOp f;
+    if (transformedCublasFunctions.count(name) > 0) {
+      f = transformedCublasFunctions[name];
+    } else {
+      func::FuncOp fn = buildFunctionSignature(
+          call, operands, getShapeInfoCublasSGemm_v2(ctx), name);
+      f = constructCublasSGemm_v2(fn);
+      transformedCublasFunctions[name] = f;
+    }
 
     // create call to new function
     OpBuilder builder(call);
@@ -606,7 +612,6 @@ struct BlasRaisingPass
     //     getCublasSGemm_v2(callOp);
     //   }
     // });
-
     SmallVector<LLVM::CallOp, 4> cublasCalls;
 
     op->walk([&](LLVM::CallOp callOp) {

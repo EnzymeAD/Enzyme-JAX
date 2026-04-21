@@ -65,7 +65,7 @@ struct ShapeInfo {
   llvm::SmallVector<int64_t, 2> shape;
 };
 
-llvm::SmallDenseMap<int, ShapeInfo> DecodeShapeInfoStruct(llvm::StringRef input) {
+llvm::SmallDenseMap<int, ShapeInfo> decodeShapeInfoStruct(llvm::StringRef input) {
   llvm::SmallDenseMap<int, ShapeInfo> map;
 
   while (!input.empty()) {
@@ -214,7 +214,6 @@ struct RefineSlicePattern : OpRewritePattern<stablehlo::SliceOp> {
 
     // auto limit = op.getLimitIndices();
     auto newLimitAttr = rewriter.getDenseI64ArrayAttr(newShape);
-    llvm::errs() << "rewriting slice\n";
 
     stablehlo::SliceOp newOp = cast<stablehlo::SliceOp>(rewriter.clone(*op));
     newOp.getResult().setType(newTy);
@@ -353,7 +352,6 @@ struct TypePropagationPattern : RewritePattern {
     if (!changed)
       return failure();
 
-    llvm::errs() << "trying to replace\n";
     // Recreate op with corrected types (required in MLIR)
     auto newOp = rewriter.clone(*op);
     for (int idx = 0; idx < inferredTypes.size(); idx++) {
@@ -461,12 +459,11 @@ struct PropagateShapesPass
   }
 
   void runOnOperation() override {
-    shapeMap = DecodeShapeInfoStruct(shapes);
+    shapeMap = decodeShapeInfoStruct(shapes);
 
     auto root = getOperation();
-    llvm::errs() << "\n=============Initial Root==============\n";
-    root->dump();
-
+    // llvm::errs() << "\n=============Initial Root==============\n";
+    // root->dump();
     root->walk([&](mlir::func::FuncOp func) { setFuncOperandTypes(func); });
 
     // Update function type
@@ -489,8 +486,8 @@ struct PropagateShapesPass
                                      config))) {
       signalPassFailure();
     }
-    llvm::errs() << "===========After deletion==========\n";
-    getOperation()->dump();
+    // llvm::errs() << "===========After deletion==========\n";
+    // getOperation()->dump();
     // config.setMaxIterations(max_iterations);
     // config.setUseTopDownTraversal(top_down);
     // config.enableFolding();

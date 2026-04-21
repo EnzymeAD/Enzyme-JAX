@@ -2927,10 +2927,18 @@ private:
         SymbolTable::lookupNearestSymbolFrom(wrap, wrap.getFn()));
     stream << fn << "\n" << '\0';
 
-    auto stringval = mlir::LLVM::createGlobalString(
+    auto myModuleOp = wrap->getParentOfType<ModuleOp>();
+    SymbolTable symTable(myModuleOp);
+
+    Value stringval;
+    if (auto existing = symTable.lookup<LLVM::GlobalOp>("xlamod$" + cast<FlatSymbolRefAttr>(wrap.getFn()).getValue().str())) {
+      stringval = rewriter.create<LLVM::AddressOfOp>(loc, existing);
+    } else {
+      stringval = mlir::LLVM::createGlobalString(
         loc, rewriter,
         "xlamod$" + cast<FlatSymbolRefAttr>(wrap.getFn()).getValue().str(), str,
         LLVM::Linkage::Internal);
+    }
 
     auto ptrty = LLVM::LLVMPointerType::get(rewriter.getContext());
 
