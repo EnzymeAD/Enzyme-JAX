@@ -58,88 +58,103 @@ using namespace mlir::enzyme;
 
 namespace {
 
-llvm::SmallDenseMap<int, llvm::SmallVector<int, 3>>
-parseArg(const std::string &s) {
-  llvm::SmallDenseMap<int, llvm::SmallVector<int, 3>> result;
-  size_t pos = 0;
-  while (pos < s.size()) {
-    size_t sep = s.find(':', pos);
-    if (sep == std::string::npos)
-      break;
-    int key = std::stoi(s.substr(pos, sep - pos));
-    pos = sep + 1;
+struct ShapeInfo {
+  int64_t ldim = -1;
+  int64_t totalSize = -1;
+  int64_t transposed = -1;
+  llvm::SmallVector<int64_t, 2> shape;
+};
 
-    size_t next = s.find(';', pos);
-    std::string vecStr = s.substr(pos, next - pos);
+llvm::SmallDenseMap<int, ShapeInfo> DecodeShapeInfoStruct(llvm::StringRef input) {
+  llvm::SmallDenseMap<int, ShapeInfo> map;
 
-    llvm::SmallVector<int, 3> vec;
-    size_t vpos = 0;
-    while (vpos < vecStr.size()) {
-      size_t comma = vecStr.find(',', vpos);
-      if (comma == std::string::npos)
-        comma = vecStr.size();
-      vec.push_back(std::stoi(vecStr.substr(vpos, comma - vpos)));
-      vpos = comma + 1;
+  while (!input.empty()) {
+    auto [entry, rest] = input.split(';');
+    input = rest;
+
+    if (entry.empty())
+      continue;
+
+    // Split key and payload
+    auto [keyStr, payload] = entry.split(':');
+
+    int key;
+    if (keyStr.getAsInteger(10, key))
+      continue; // or handle error
+
+    // Split payload fields: a|b|flag|vec
+    llvm::SmallVector<llvm::StringRef, 4> parts;
+    payload.split(parts, '|');
+
+    if (parts.size() < 4)
+      continue; // malformed
+
+    ShapeInfo s;
+
+    parts[0].getAsInteger(10, s.ldim);
+    parts[1].getAsInteger(10, s.totalSize);
+    parts[2].getAsInteger(10, s.transposed);
+
+    // Parse vector: v0,v1,v2
+    llvm::StringRef vecStr = parts[3];
+    while (!vecStr.empty()) {
+      auto [elem, restVec] = vecStr.split(',');
+      vecStr = restVec;
+
+      if (elem.empty())
+        continue;
+
+      int v;
+      if (!elem.getAsInteger(10, v))
+        s.shape.push_back(v);
     }
 
-    result[key] = vec;
-    if (next == std::string::npos)
-      break;
-    pos = next + 1;
+    map.try_emplace(key, std::move(s));
   }
-  return result;
+
+  return map;
 }
 
 struct ShapeInfoState {
-  llvm::SmallDenseMap<int, llvm::SmallVector<int, 3>> shapeMap;
+  llvm::SmallDenseMap<int, ShapeInfo> shapeMap;
 };
 
-SmallVector<int64_t> getShapeFromOp(mlir::Operation *op,
+SmallVector<int64_t> getShapeFromOp(Operation *op,
                                     ShapeInfoState &state) {
-  int srcIdx = -1;
-  int dim0 = -1;
-  int dim1 = -1;
-  if (auto srcIdxAttr = op->getAttrOfType<IntegerAttr>("sourceArgIdx")) {
-    srcIdx = srcIdxAttr.getInt();
-  } else {
-    return SmallVector<int64_t>();
-  }
+  // Get source index
+  auto srcIdxAttr = op->getAttrOfType<IntegerAttr>("sourceArgIdx");
+  if (!srcIdxAttr)
+    return {};
 
-  if (auto dim0Attr = op->getAttrOfType<StringAttr>("dim.0")) {
-    if (dim0Attr.getValue() == "ldim") {
-      dim0 = state.shapeMap[srcIdx][1];
-    } else if (dim0Attr.getValue() == "row") {
-      dim0 = state.shapeMap[srcIdx][2];
-    } else if (dim0Attr.getValue() == "col") {
-      dim0 = state.shapeMap[srcIdx][3];
-    } else if (dim0Attr.getValue() == "ldim.col") {
-      dim0 = state.shapeMap[srcIdx][1] * state.shapeMap[srcIdx][3];
-    } else if (dim0Attr.getValue() == "ldim.row") {
-      dim0 = state.shapeMap[srcIdx][1] * state.shapeMap[srcIdx][2];
-    }
-  }
-  if (auto dim1Attr = op->getAttrOfType<StringAttr>("dim.1")) {
-    if (dim1Attr.getValue() == "ldim") {
-      dim1 = state.shapeMap[srcIdx][1];
-    } else if (dim1Attr.getValue() == "row") {
-      dim1 = state.shapeMap[srcIdx][2];
-    } else if (dim1Attr.getValue() == "col") {
-      dim1 = state.shapeMap[srcIdx][3];
-    } else if (dim1Attr.getValue() == "ldim.col") {
-      dim1 = state.shapeMap[srcIdx][1] * state.shapeMap[srcIdx][3];
-    }
-  }
-  SmallVector<int64_t> newShape;
+  int srcIdx = srcIdxAttr.getInt();
+  const auto &info = state.shapeMap[srcIdx];
 
-  if (dim1 == -1) {
-    if (dim0 == -1) {
-      return newShape;
-    }
-    newShape = {dim0};
-  } else {
-    newShape = {dim0, dim1};
-  }
-  return newShape;
+  // Helper: decode a dimension string
+  auto decodeDim = [&](StringAttr attr) -> int64_t {
+    if (!attr)
+      return -1;
+
+    StringRef v = attr.getValue();
+
+    if (v == "ldim") return info.ldim;
+    if (v == "row") return info.shape[0];
+    if (v == "col") return info.shape[1];
+    if (v == "ldim.col") return info.ldim * info.shape[1];
+    if (v == "ldim.row") return info.ldim * info.shape[0];
+
+    return -1;
+  };
+
+  int64_t dim0 = decodeDim(op->getAttrOfType<StringAttr>("dim.0"));
+  int64_t dim1 = decodeDim(op->getAttrOfType<StringAttr>("dim.1"));
+
+  if (dim0 == -1)
+    return {};
+
+  if (dim1 == -1)
+    return {dim0};
+
+  return {dim0, dim1};
 }
 
 struct RemoveDynamicReshapePattern
@@ -260,7 +275,7 @@ struct MergeTransposeSelectPattern : OpRewritePattern<stablehlo::SelectOp> {
     if (auto isTransposeSelect =
             op->getAttrOfType<BoolAttr>("isTransposeSelect")) {
       if (auto srcIdxAttr = op->getAttrOfType<IntegerAttr>("sourceArgIdx")) {
-        if (state.shapeMap[srcIdxAttr.getInt()][0]) {
+        if (state.shapeMap[srcIdxAttr.getInt()].transposed) {
           rewriter.replaceOp(op, op.getOnTrue());
         } else {
           rewriter.replaceOp(op, op.getOnFalse());
@@ -373,7 +388,7 @@ struct DeleteWrongTransposePattern : RewritePattern {
 
     // Delete reshapes that are part of the wrong transpose
     if (auto isTransposed = op->getAttrOfType<BoolAttr>("transposed")) {
-      if (isTransposed.getValue() != state.shapeMap[srcIdx][0]) {
+      if (isTransposed.getValue() != state.shapeMap[srcIdx].transposed) {
         llvm::SmallPtrSet<Operation *, 16> visited;
         llvm::SmallVector<Operation *, 16> postOrder;
 
@@ -413,7 +428,7 @@ struct PropagateShapesPass
     : public enzyme::impl::PropagateShapesPassBase<PropagateShapesPass> {
   using PropagateShapesPassBase::PropagateShapesPassBase;
 
-  llvm::SmallDenseMap<int, llvm::SmallVector<int, 3>> shapeMap;
+  llvm::SmallDenseMap<int, ShapeInfo> shapeMap;
 
   void setFuncOperandTypes(mlir::func::FuncOp func) {
     // auto oldType = func.getFunctionType();
@@ -425,7 +440,7 @@ struct PropagateShapesPass
       if (shapeMap.count(i) > 0) {
         // llvm::errs() << "shape found at " << i << "";
         // Tensors are passed flattened, so we need to get the size as such
-        int64_t totalSize = shapeMap[i].back();
+        int64_t totalSize = shapeMap[i].totalSize;
         type = mlir::RankedTensorType::get(
             {totalSize}, cast<mlir::RankedTensorType>(type).getElementType());
       }
@@ -446,7 +461,7 @@ struct PropagateShapesPass
   }
 
   void runOnOperation() override {
-    shapeMap = parseArg(shapes);
+    shapeMap = DecodeShapeInfoStruct(shapes);
 
     auto root = getOperation();
     llvm::errs() << "\n=============Initial Root==============\n";
