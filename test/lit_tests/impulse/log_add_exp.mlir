@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(lower-probprog-to-stablehlo{backend=cpu})" | FileCheck %s --check-prefix=CPU
+// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(lower-impulse-to-stablehlo{backend=cpu})" | FileCheck %s --check-prefix=CPU
 
 module {
   // CPU:  func.func @test(%arg0: tensor<10xf64>, %arg1: tensor<10xf64>) -> tensor<10xf64> {
@@ -15,7 +15,7 @@ module {
   // CPU-NEXT:    return %9 : tensor<10xf64>
   // CPU-NEXT:  }
   func.func @test(%lhs: tensor<10xf64>, %rhs: tensor<10xf64>) -> tensor<10xf64> {
-    %result = enzyme.log_add_exp %lhs, %rhs : (tensor<10xf64>, tensor<10xf64>) -> tensor<10xf64>
+    %result = impulse.log_add_exp %lhs, %rhs : (tensor<10xf64>, tensor<10xf64>) -> tensor<10xf64>
     return %result : tensor<10xf64>
   }
 }

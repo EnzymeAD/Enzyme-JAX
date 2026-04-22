@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(lower-probprog-to-stablehlo{backend=cpu})" | FileCheck %s --check-prefix=CPU
+// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(lower-impulse-to-stablehlo{backend=cpu})" | FileCheck %s --check-prefix=CPU
 
 module {
   // CPU:  func.func @test_uniform_scalar(%arg0: tensor<2xui64>) -> (tensor<2xui64>, tensor<f64>) {
@@ -22,7 +22,7 @@ module {
   func.func @test_uniform_scalar(%rng: tensor<2xui64>) -> (tensor<2xui64>, tensor<f64>) {
     %neg_one = stablehlo.constant dense<-1.0> : tensor<f64>
     %two = stablehlo.constant dense<2.0> : tensor<f64>
-    %new_rng, %result = enzyme.random %rng, %neg_one, %two {rng_distribution = #enzyme<rng_distribution UNIFORM>} : (tensor<2xui64>, tensor<f64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
+    %new_rng, %result = impulse.random %rng, %neg_one, %two {rng_distribution = #impulse<rng_distribution UNIFORM>} : (tensor<2xui64>, tensor<f64>, tensor<f64>) -> (tensor<2xui64>, tensor<f64>)
     return %new_rng, %result : tensor<2xui64>, tensor<f64>
   }
 
@@ -54,7 +54,7 @@ module {
   func.func @test_normal_vector(%rng: tensor<2xui64>) -> (tensor<2xui64>, tensor<10xf64>) {
     %neg_one = stablehlo.constant dense<-1.0> : tensor<f64>
     %two = stablehlo.constant dense<2.0> : tensor<f64>
-    %new_rng, %result = enzyme.random %rng, %neg_one, %two {rng_distribution = #enzyme<rng_distribution NORMAL>} : (tensor<2xui64>, tensor<f64>, tensor<f64>) -> (tensor<2xui64>, tensor<10xf64>)
+    %new_rng, %result = impulse.random %rng, %neg_one, %two {rng_distribution = #impulse<rng_distribution NORMAL>} : (tensor<2xui64>, tensor<f64>, tensor<f64>) -> (tensor<2xui64>, tensor<10xf64>)
     return %new_rng, %result : tensor<2xui64>, tensor<10xf64>
   }
 
@@ -86,7 +86,7 @@ module {
   func.func @test_normal_2d(%rng: tensor<2xui64>) -> (tensor<2xui64>, tensor<3x4xf64>) {
     %mean = stablehlo.constant dense<-1.0> : tensor<f64>
     %std = stablehlo.constant dense<2.0> : tensor<f64>
-    %new_rng, %result = enzyme.random %rng, %mean, %std {rng_distribution = #enzyme<rng_distribution NORMAL>} : (tensor<2xui64>, tensor<f64>, tensor<f64>) -> (tensor<2xui64>, tensor<3x4xf64>)
+    %new_rng, %result = impulse.random %rng, %mean, %std {rng_distribution = #impulse<rng_distribution NORMAL>} : (tensor<2xui64>, tensor<f64>, tensor<f64>) -> (tensor<2xui64>, tensor<3x4xf64>)
     return %new_rng, %result : tensor<2xui64>, tensor<3x4xf64>
   }
 
@@ -118,7 +118,7 @@ module {
   func.func @test_multinormal(%rng: tensor<2xui64>) -> (tensor<2xui64>, tensor<3xf64>) {
     %mean = stablehlo.constant dense<0.0> : tensor<f64>
     %cov = stablehlo.constant dense<[[1.0, 0.0, 0.0], [0.0, 1.0, 0.0], [0.0, 0.0, 1.0]]> : tensor<3x3xf64>
-    %new_rng, %result = enzyme.random %rng, %mean, %cov {rng_distribution = #enzyme<rng_distribution MULTINORMAL>} : (tensor<2xui64>, tensor<f64>, tensor<3x3xf64>) -> (tensor<2xui64>, tensor<3xf64>)
+    %new_rng, %result = impulse.random %rng, %mean, %cov {rng_distribution = #impulse<rng_distribution MULTINORMAL>} : (tensor<2xui64>, tensor<f64>, tensor<3x3xf64>) -> (tensor<2xui64>, tensor<3xf64>)
     return %new_rng, %result : tensor<2xui64>, tensor<3xf64>
   }
 }

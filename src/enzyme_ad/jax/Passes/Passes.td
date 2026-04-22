@@ -559,10 +559,10 @@ def LowerEnzymeXLABLASPass : Pass<"lower-enzymexla-blas"> {
   ];
 }
 
-def LowerProbProgToStableHLOPass : Pass<"lower-probprog-to-stablehlo"> {
-  let summary = "Lower computational enzyme ops to StableHLO";
+def LowerImpulseToStableHLOPass : Pass<"lower-impulse-to-stablehlo"> {
+  let summary = "Lower Impulse dialect ops to StableHLO";
   let description = [{
-    Lower computational probprog ops (loop, dot, cholesky, triangular_solve, random, recover_sample)
+    Lower Impulse dialect ops (loop, dot, cholesky, triangular_solve, random, etc.)
     to StableHLO dialect operations.
   }];
   let dependentDialects = [
@@ -571,6 +571,7 @@ def LowerProbProgToStableHLOPass : Pass<"lower-probprog-to-stablehlo"> {
     "arith::ArithDialect",
     "func::FuncDialect",
     "enzyme::EnzymeDialect",
+    "impulse::ImpulseDialect",
   ];
 
   let options = [
@@ -589,18 +590,17 @@ def LowerProbProgToStableHLOPass : Pass<"lower-probprog-to-stablehlo"> {
   ];
 }
 
-def LowerProbProgTraceOpsPass : Pass<"lower-probprog-trace-ops"> {
-  let summary = "Lower probprog trace manipulation ops to JIT calls";
+def LowerImpulseTraceOpsPass : Pass<"lower-impulse-trace-ops"> {
+  let summary = "Lower Impulse trace manipulation ops to JIT calls";
   let description = [{
-    Lower probprog trace manipulation ops (initTrace, addSampleToTrace, getSampleFromTrace, etc.)
-    to enzymexla.jit_call operations that invoke external runtime functions (e.g., Julia `@cfunction`).
-    This pass also handles type conversions (!enzyme.Trace -> tensor<ui64>, !enzyme.Constraint -> tensor<ui64>).
+    Lower Impulse ops that requires JIT calls
   }];
   let dependentDialects = [
     "stablehlo::StablehloDialect",
     "enzymexla::EnzymeXLADialect",
     "LLVM::LLVMDialect",
     "func::FuncDialect",
+    "impulse::ImpulseDialect",
   ];
 
   let options = [
