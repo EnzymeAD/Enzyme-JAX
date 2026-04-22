@@ -14,7 +14,7 @@ module {
    }
 
     perfify.assumptions { // operation in the dialect
-     perfify.cost "arith.mul" 3 // op
+     perfify.cost "arith.muli" 3 // op
      perfify.cost "func.return" 0
      perfify.cost "scf.yield" 0
    
