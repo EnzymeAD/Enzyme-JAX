@@ -212,7 +212,6 @@ struct RefineSlicePattern : OpRewritePattern<stablehlo::SliceOp> {
     if (newTy == oldTy || newShape.size() <= 0)
       return failure();
 
-    // auto limit = op.getLimitIndices();
     auto newLimitAttr = rewriter.getDenseI64ArrayAttr(newShape);
 
     stablehlo::SliceOp newOp = cast<stablehlo::SliceOp>(rewriter.clone(*op));
@@ -220,10 +219,6 @@ struct RefineSlicePattern : OpRewritePattern<stablehlo::SliceOp> {
     newOp.setLimitIndices(newLimitAttr);
     rewriter.replaceOp(op, newOp);
 
-    // rewriter.modifyOpInPlace(op, [&] {
-    //   op.getResult().setType(newTy);
-    //   op.setLimitIndices(newLimitAttr);
-    // });
     return success();
   }
 
@@ -245,18 +240,11 @@ struct RefineBroadcastPattern : OpRewritePattern<stablehlo::BroadcastInDimOp> {
     if (newTy == oldTy || newShape.size() <= 0)
       return failure();
 
-    // auto limit = op.getLimitIndices();
-    // auto newLimitAttr = rewriter.getDenseI64ArrayAttr(newShape);
-
     stablehlo::BroadcastInDimOp newOp =
         cast<stablehlo::BroadcastInDimOp>(rewriter.clone(*op));
     newOp.getResult().setType(newTy);
     rewriter.replaceOp(op, newOp);
 
-    // rewriter.modifyOpInPlace(op, [&] {
-    //   op.getResult().setType(newTy);
-    //   op.setLimitIndices(newLimitAttr);
-    // });
     return success();
   }
 
@@ -305,17 +293,11 @@ struct DotGeneralTypePropagationPattern
     if (newTy == oldTy)
       return failure();
 
-    // auto limit = op.getLimitIndices();
-    // auto newLimitAttr = rewriter.getDenseI64ArrayAttr(newShape);
     stablehlo::DotGeneralOp newOp =
         cast<stablehlo::DotGeneralOp>(rewriter.clone(*op));
     newOp.getResult().setType(newTy);
     rewriter.replaceOp(op, newOp);
 
-    // rewriter.modifyOpInPlace(op, [&] {
-    //   op.getResult().setType(newTy);
-    //   op.setLimitIndices(newLimitAttr);
-    // });
     return success();
   }
 };
@@ -462,8 +444,6 @@ struct PropagateShapesPass
     shapeMap = decodeShapeInfoStruct(shapes);
 
     auto root = getOperation();
-    // llvm::errs() << "\n=============Initial Root==============\n";
-    // root->dump();
     root->walk([&](mlir::func::FuncOp func) { setFuncOperandTypes(func); });
 
     // Update function type
@@ -486,17 +466,11 @@ struct PropagateShapesPass
                                      config))) {
       signalPassFailure();
     }
-    // llvm::errs() << "===========After deletion==========\n";
-    // getOperation()->dump();
-    // config.setMaxIterations(max_iterations);
-    // config.setUseTopDownTraversal(top_down);
-    // config.enableFolding();
+
     if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
                                      config))) {
       signalPassFailure();
     }
-    llvm::errs() << "===========Final function==========\n";
-    getOperation()->dump();
   }
 };
 
