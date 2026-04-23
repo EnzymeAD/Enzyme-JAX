@@ -129,8 +129,9 @@ struct GPUWrapperOpEnzymeOpsRemover
   }
 };
 
-// Reverse-mode adjoint for pure view-cast ops (Pointer2Memref / Memref2Pointer).
-// These ops carry no computation; the reverse adjoint itself is a no-op.
+// Reverse-mode adjoint for pure view-cast ops (Pointer2Memref /
+// Memref2Pointer). These ops carry no computation; the reverse adjoint itself
+// is a no-op.
 template <typename OpTy>
 struct ViewCastOpInterfaceReverse
     : public ReverseAutoDiffOpInterface::ExternalModel<
