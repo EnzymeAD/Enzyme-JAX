@@ -2864,6 +2864,238 @@ struct PotrfOpLowering : public OpRewritePattern<enzymexla::PotrfOp> {
   }
 };
 
+struct SyevdOpLowering : public OpRewritePattern<enzymexla::SyevdOp> {
+  std::string backend;
+  int64_t blasIntWidth;
+
+  SyevdOpLowering(std::string backend, int64_t blasIntWidth,
+                  MLIRContext *context, PatternBenefit benefit = 1)
+      : OpRewritePattern(context, benefit), backend(backend),
+        blasIntWidth(blasIntWidth) {}
+
+  LogicalResult matchAndRewrite(enzymexla::SyevdOp op,
+                                PatternRewriter &rewriter) const override {
+    if (backend == "cpu")
+      return matchAndRewriteCPU(op, rewriter);
+
+    op->emitOpError() << "Unsupported backend: " << backend;
+    return failure();
+  }
+
+  LogicalResult matchAndRewriteCPU(enzymexla::SyevdOp op,
+                                   PatternRewriter &rewriter) const {
+    auto ctx = op->getContext();
+    LLVMTypeConverter typeConverter(ctx);
+
+    auto input = op.getInput();
+    auto inputType = cast<RankedTensorType>(input.getType());
+    auto inputShape = inputType.getShape();
+    auto inputRank = inputType.getRank();
+    auto inputElementType = inputType.getElementType();
+
+    const int64_t numBatchDims = inputRank - 2;
+    if (numBatchDims > 0)
+      return rewriter.notifyMatchFailure(
+          op, "Eigendecomposition with batch dimensions is not yet supported");
+
+    int64_t N = inputShape[inputRank - 1];
+
+    auto type_lapack_int = rewriter.getIntegerType(blasIntWidth);
+    auto type_lapack_char = rewriter.getIntegerType(sizeof(char) * 8);
+    auto type_llvm_lapack_int = typeConverter.convertType(type_lapack_int);
+    auto type_llvm_ptr = LLVM::LLVMPointerType::get(ctx);
+    auto type_llvm_void = LLVM::LLVMVoidType::get(ctx);
+
+    // Determine precision prefix (s/d/c/z)
+    std::string fn = "syevd_";
+    if (auto prefix = lapackPrecisionPrefix(inputElementType)) {
+      fn = *prefix + fn;
+    } else {
+      op->emitOpError() << "Unsupported element type: " << inputElementType;
+      return rewriter.notifyMatchFailure(op, "unsupported element type");
+    }
+
+    std::string bind_fn = "enzymexla_lapack_" + fn;
+    std::string wrapper_fn = "enzymexla_wrapper_lapack_" + fn;
+
+    auto moduleOp = op->getParentOfType<ModuleOp>();
+
+    // Declare the Fortran LAPACK binding if not present.
+    // dsyevd_(JOBZ, UPLO, N, A, LDA, W, WORK, LWORK, IWORK, LIWORK, INFO)
+    // All arguments are pointers (Fortran calling convention).
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(bind_fn)) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+      SmallVector<Type> argTypes(11, type_llvm_ptr);
+      auto func_type =
+          LLVM::LLVMFunctionType::get(type_llvm_void, argTypes, false);
+      LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), bind_fn, func_type,
+                               LLVM::Linkage::External);
+    }
+
+    // Generate wrapper function with workspace query pattern.
+    // The wrapper is called from JITCallOp with tensor buffers.
+    // Internally it does two calls to dsyevd:
+    //   1) Workspace query (LWORK=-1, LIWORK=-1)
+    //   2) Actual computation with optimal workspace sizes
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapper_fn)) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+      // Wrapper arguments: (A_ptr, W_ptr, info_ptr)
+      auto func_type = LLVM::LLVMFunctionType::get(
+          type_llvm_void, {type_llvm_ptr, type_llvm_ptr, type_llvm_ptr}, false);
+
+      auto func = LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), wrapper_fn,
+                                           func_type);
+      rewriter.setInsertionPointToStart(func.addEntryBlock(rewriter));
+
+      auto a_ptr = func.getArgument(0);
+      auto w_ptr = func.getArgument(1);
+      auto info_ptr = func.getArgument(2);
+
+      auto loc = op.getLoc();
+
+      // Allocate stack variables for scalar parameters
+      auto const1 =
+          LLVM::ConstantOp::create(rewriter, loc, type_llvm_lapack_int,
+                                   rewriter.getIntegerAttr(type_lapack_int, 1));
+      auto constM1 = LLVM::ConstantOp::create(
+          rewriter, loc, type_llvm_lapack_int,
+          rewriter.getIntegerAttr(type_lapack_int, -1));
+
+      // JOBZ = 'V' (compute eigenvalues AND eigenvectors)
+      auto jobz_ptr = LLVM::AllocaOp::create(rewriter, loc, type_llvm_ptr,
+                                             type_lapack_char, const1);
+      auto jobz_val = LLVM::ConstantOp::create(
+          rewriter, loc, type_lapack_char,
+          rewriter.getIntegerAttr(type_lapack_char, 'V'));
+      LLVM::StoreOp::create(rewriter, loc, jobz_val, jobz_ptr);
+
+      // UPLO = 'L' or 'U' from the op attribute
+      auto uplo_ptr = LLVM::AllocaOp::create(rewriter, loc, type_llvm_ptr,
+                                             type_lapack_char, const1);
+      auto uplo_val = LLVM::ConstantOp::create(
+          rewriter, loc, type_lapack_char,
+          rewriter.getIntegerAttr(type_lapack_char,
+                                  op.getUploAttr().getBlasChar()));
+      LLVM::StoreOp::create(rewriter, loc, uplo_val, uplo_ptr);
+
+      // N
+      auto n_ptr = LLVM::AllocaOp::create(rewriter, loc, type_llvm_ptr,
+                                          type_lapack_int, const1);
+      auto n_val =
+          LLVM::ConstantOp::create(rewriter, loc, type_llvm_lapack_int,
+                                   rewriter.getIntegerAttr(type_lapack_int, N));
+      LLVM::StoreOp::create(rewriter, loc, n_val, n_ptr);
+
+      // LDA = N
+      auto lda_ptr = LLVM::AllocaOp::create(rewriter, loc, type_llvm_ptr,
+                                            type_lapack_int, const1);
+      LLVM::StoreOp::create(rewriter, loc, n_val, lda_ptr);
+
+      // LWORK (initially -1 for workspace query)
+      auto lwork_ptr = LLVM::AllocaOp::create(rewriter, loc, type_llvm_ptr,
+                                              type_lapack_int, const1);
+      LLVM::StoreOp::create(rewriter, loc, constM1, lwork_ptr);
+
+      // LIWORK (initially -1 for workspace query)
+      auto liwork_ptr = LLVM::AllocaOp::create(rewriter, loc, type_llvm_ptr,
+                                               type_lapack_int, const1);
+      LLVM::StoreOp::create(rewriter, loc, constM1, liwork_ptr);
+
+      // Allocate single-element scratch for workspace query results
+      auto work_query = LLVM::AllocaOp::create(rewriter, loc, type_llvm_ptr,
+                                               inputElementType, const1);
+      auto iwork_query = LLVM::AllocaOp::create(rewriter, loc, type_llvm_ptr,
+                                                type_lapack_int, const1);
+
+      // First call: workspace query
+      LLVM::CallOp::create(
+          rewriter, loc, TypeRange{}, SymbolRefAttr::get(ctx, bind_fn),
+          ValueRange{jobz_ptr, uplo_ptr, n_ptr, a_ptr, lda_ptr, w_ptr,
+                     work_query, lwork_ptr, iwork_query, liwork_ptr, info_ptr});
+
+      // Load optimal LWORK from WORK[0] (returned as float, convert to int)
+      auto opt_lwork_float =
+          LLVM::LoadOp::create(rewriter, loc, inputElementType, work_query);
+      auto opt_lwork = LLVM::FPToSIOp::create(
+          rewriter, loc, type_llvm_lapack_int, opt_lwork_float);
+
+      // Load optimal LIWORK from IWORK[0]
+      auto opt_liwork = LLVM::LoadOp::create(rewriter, loc,
+                                             type_llvm_lapack_int, iwork_query);
+
+      // Allocate optimal workspace
+      auto work_ptr = LLVM::AllocaOp::create(rewriter, loc, type_llvm_ptr,
+                                             inputElementType, opt_lwork);
+      auto iwork_ptr = LLVM::AllocaOp::create(rewriter, loc, type_llvm_ptr,
+                                              type_lapack_int, opt_liwork);
+
+      // Store optimal sizes
+      LLVM::StoreOp::create(rewriter, loc, opt_lwork, lwork_ptr);
+      LLVM::StoreOp::create(rewriter, loc, opt_liwork, liwork_ptr);
+
+      // Second call: actual computation
+      LLVM::CallOp::create(
+          rewriter, loc, TypeRange{}, SymbolRefAttr::get(ctx, bind_fn),
+          ValueRange{jobz_ptr, uplo_ptr, n_ptr, a_ptr, lda_ptr, w_ptr, work_ptr,
+                     lwork_ptr, iwork_ptr, liwork_ptr, info_ptr});
+
+      LLVM::ReturnOp::create(rewriter, loc, ValueRange{});
+    }
+
+    // Emit StableHLO constants and JITCallOp
+
+    // Eigenvalues output: tensor<Nxf64>
+    auto eigvalsType = RankedTensorType::get({N}, inputElementType);
+    auto eigvals_init = stablehlo::ConstantOp::create(
+        rewriter, op.getLoc(), eigvalsType,
+        cast<ElementsAttr>(makeAttr(eigvalsType, 0)));
+
+    // Info output: tensor<i_blasIntWidth>
+    auto type_info = RankedTensorType::get({}, type_lapack_int);
+    auto info = stablehlo::ConstantOp::create(
+        rewriter, op.getLoc(), type_info,
+        cast<ElementsAttr>(makeAttr(type_info, -1)));
+
+    // Wrapper takes: (A, W, info) — 3 operands
+    // Returns: (eigenvectors=A, eigenvalues=W, info) — 3 results
+    SmallVector<bool> isColMajorArr = {true, true, true};
+    SmallVector<int64_t> operandRanks = {2, 1, 0};
+    SmallVector<int64_t> outputRanks = {2, 1, 0};
+    auto operandLayouts =
+        getSHLOLayout(rewriter, operandRanks, isColMajorArr, 2);
+    auto resultLayouts = getSHLOLayout(rewriter, outputRanks, isColMajorArr, 2);
+
+    SmallVector<Attribute> aliases{
+        stablehlo::OutputOperandAliasAttr::get(ctx, {0}, 0, {}),
+        stablehlo::OutputOperandAliasAttr::get(ctx, {1}, 1, {}),
+        stablehlo::OutputOperandAliasAttr::get(ctx, {2}, 2, {}),
+    };
+
+    auto jit_call_op = enzymexla::JITCallOp::create(
+        rewriter, op.getLoc(), TypeRange{inputType, eigvalsType, type_info},
+        mlir::FlatSymbolRefAttr::get(ctx, wrapper_fn),
+        ValueRange{input, eigvals_init.getResult(), info.getResult()},
+        rewriter.getStringAttr(""),
+        /*operand_layouts=*/operandLayouts,
+        /*result_layouts=*/resultLayouts,
+        /*arg_attrs=*/nullptr,
+        /*res_attrs=*/nullptr,
+        /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
+        /*xla_side_effect_free=*/rewriter.getUnitAttr());
+
+    rewriter.replaceAllUsesWith(op.getEigenvectors(), jit_call_op.getResult(0));
+    rewriter.replaceAllUsesWith(op.getEigenvalues(), jit_call_op.getResult(1));
+    rewriter.replaceAllUsesWith(op.getInfo(), jit_call_op.getResult(2));
+    rewriter.eraseOp(op);
+
+    return success();
+  }
+};
+
 struct LowerEnzymeXLALapackPass
     : public enzyme::impl::LowerEnzymeXLALapackPassBase<
           LowerEnzymeXLALapackPass> {
@@ -2876,8 +3108,8 @@ struct LowerEnzymeXLALapackPass
     patterns.add<GeqrfOpLowering, GeqrtOpLowering, OrgqrOpLowering,
                  OrmqrOpLowering, GemqrtOpLowering, GetrfOpLowering,
                  GetriOpLowering, GesvdOpLowering, GesddOpLowering,
-                 GesvjOpLowering, PotrfOpLowering>(backend, blasIntWidth,
-                                                   context);
+                 GesvjOpLowering, PotrfOpLowering, SyevdOpLowering>(
+        backend, blasIntWidth, context);
 
     GreedyRewriteConfig config;
     config.enableFolding();
@@ -2891,7 +3123,7 @@ struct LowerEnzymeXLALapackPass
       if (isa<enzymexla::GeqrfOp, enzymexla::GeqrtOp, enzymexla::OrgqrOp,
               enzymexla::OrmqrOp, enzymexla::GemqrtOp, enzymexla::GetrfOp,
               enzymexla::GetriOp, enzymexla::GesvdOp, enzymexla::GesddOp,
-              enzymexla::GesvjOp, enzymexla::PotrfOp>(op)) {
+              enzymexla::GesvjOp, enzymexla::PotrfOp, enzymexla::SyevdOp>(op)) {
         op->emitError("Failed to lower enzymexla.lapack operation");
         return WalkResult::interrupt();
       }
