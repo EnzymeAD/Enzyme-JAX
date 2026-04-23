@@ -1,9 +1,7 @@
 // RUN: enzymexlamlir-opt %s --enzyme --canonicalize --remove-unnecessary-enzyme-ops | FileCheck %s
 
-// Verify that reverse-mode AD does not crash on enzymexla.pointer2memref /
-// enzymexla.memref2pointer when the source operand is an active value
-
 module {
+  // Case 1: source is a function-arg (blockarg) shadow.
   func.func @load_via_p2m(%ptr: !llvm.ptr, %i: index) -> f64 {
     %mem = "enzymexla.pointer2memref"(%ptr) : (!llvm.ptr) -> memref<?xf64>
     %v = memref.load %mem[%i] : memref<?xf64>
@@ -18,6 +16,7 @@ module {
     } : (!llvm.ptr, !llvm.ptr, index, f64) -> ()
     return
   }
+
   func.func @load_via_m2p(%mem: memref<?xf64>) -> f64 {
     %ptr = "enzymexla.memref2pointer"(%mem) : (memref<?xf64>) -> !llvm.ptr
     %v = llvm.load %ptr : !llvm.ptr -> f64
@@ -30,6 +29,32 @@ module {
       activity = [#enzyme<activity enzyme_dup>],
       ret_activity = [#enzyme<activity enzyme_activenoneed>]
     } : (memref<?xf64>, memref<?xf64>, f64) -> ()
+    return
+  }
+
+  // Case 2: chained casts (ptr2memref(memref2pointer(...))) nested inside an scf.if. 
+  func.func @nested_cast(%mem: memref<?xf64>, %cond: i1, %i: index) {
+    scf.if %cond {
+      %inner_ptr = "enzymexla.memref2pointer"(%mem)
+          : (memref<?xf64>) -> !llvm.ptr
+      %inner_mem = "enzymexla.pointer2memref"(%inner_ptr)
+          : (!llvm.ptr) -> memref<?xf64>
+      %v = memref.load %inner_mem[%i] : memref<?xf64>
+      %two = arith.constant 2.0 : f64
+      %new = arith.mulf %v, %two : f64
+      memref.store %new, %inner_mem[%i] : memref<?xf64>
+    }
+    return
+  }
+
+  func.func @diff_nested_cast(%mem: memref<?xf64>, %d_mem: memref<?xf64>,
+                              %cond: i1, %i: index) {
+    enzyme.autodiff @nested_cast(%mem, %d_mem, %cond, %i) {
+      activity = [#enzyme<activity enzyme_dup>,
+                  #enzyme<activity enzyme_const>,
+                  #enzyme<activity enzyme_const>],
+      ret_activity = []
+    } : (memref<?xf64>, memref<?xf64>, i1, index) -> ()
     return
   }
 }
@@ -56,3 +81,16 @@ module {
 // CHECK:         %[[OLD:.*]] = llvm.load %[[DPTR]] : !llvm.ptr -> f64
 // CHECK:         %[[NEW:.*]] = arith.addf %[[OLD]], %[[ACC]] : f64
 // CHECK:         llvm.store %[[NEW]], %[[DPTR]] : f64, !llvm.ptr
+
+// CHECK-LABEL: func.func private @diffenested_cast(
+// CHECK-SAME:    %[[MEM:[^,]+]]: memref<?xf64>,
+// CHECK-SAME:    %[[DMEM:[^,]+]]: memref<?xf64>,
+// CHECK-SAME:    %[[COND:[^,]+]]: i1,
+// CHECK-SAME:    %[[I:[^)]+]]: index)
+// CHECK:         scf.if %[[COND]]
+// CHECK:           memref.load %[[MEM]][%[[I]]] : memref<?xf64>
+// CHECK:           memref.store {{.*}}, %[[MEM]][%[[I]]] : memref<?xf64>
+// CHECK:         scf.if %[[COND]]
+// CHECK:           memref.load %[[DMEM]][%[[I]]] : memref<?xf64>
+// CHECK:           memref.store {{.*}}, %[[DMEM]][%[[I]]] : memref<?xf64>
+// CHECK:         return

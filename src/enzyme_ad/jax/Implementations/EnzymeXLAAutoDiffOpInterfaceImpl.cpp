@@ -129,6 +129,8 @@ struct GPUWrapperOpEnzymeOpsRemover
   }
 };
 
+// Reverse-mode adjoint for pure view-cast ops (Pointer2Memref / Memref2Pointer).
+// These ops carry no computation; the reverse adjoint itself is a no-op.
 template <typename OpTy>
 struct ViewCastOpInterfaceReverse
     : public ReverseAutoDiffOpInterface::ExternalModel<
@@ -141,20 +143,31 @@ struct ViewCastOpInterfaceReverse
 
   SmallVector<Value> cacheValues(Operation *op,
                                  MGradientUtilsReverse *gutils) const {
-    return {};
+    auto castOp = cast<OpTy>(op);
+    Value source = castOp.getSource();
+    if (gutils->isConstantValue(source))
+      return {};
+
+    OpBuilder cacheBuilder(gutils->getNewFromOriginal(op));
+    auto newCastOp = cast<OpTy>(gutils->getNewFromOriginal(op));
+
+    // Cache the source adjoint
+    Value sourceShadow = gutils->invertPointerM(source, cacheBuilder);
+    Value cachedSourceShadow =
+        gutils->initAndPushCache(sourceShadow, cacheBuilder);
+
+    // Materialize the shadow view in the forward block and register it so
+    // downstream consumers can locate it via invertPointerM.
+    auto shadowCast = cast<OpTy>(cacheBuilder.clone(*newCastOp));
+    shadowCast.getSourceMutable().assign(sourceShadow);
+    gutils->setInvertedPointer(castOp.getResult(), shadowCast->getResult(0));
+
+    return {cachedSourceShadow};
   }
 
   void createShadowValues(Operation *op, OpBuilder &builder,
                           MGradientUtilsReverse *gutils) const {
-    auto castOp = cast<OpTy>(op);
-    auto newCastOp = cast<OpTy>(gutils->getNewFromOriginal(op));
-    Value source = castOp.getSource();
-    if (!gutils->isConstantValue(source)) {
-      Value sourceShadow = gutils->invertPointerM(source, builder);
-      auto shadowCast = cast<OpTy>(builder.clone(*newCastOp));
-      shadowCast.getSourceMutable().assign(sourceShadow);
-      gutils->setInvertedPointer(castOp.getResult(), shadowCast->getResult(0));
-    }
+    // Shadow construction is done in cacheValues.
   }
 };
 
