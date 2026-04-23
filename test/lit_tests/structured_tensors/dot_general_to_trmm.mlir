@@ -25,7 +25,7 @@ func.func @main1(%arg0: tensor<64x64xf64> {enzymexla.memory_effects = []}, %arg1
 // CHECK-NEXT:    %4 = stablehlo.compare  LE, %1, %2 : (tensor<64x64xi64>, tensor<64x64xi64>) -> tensor<64x64xi1>
 // CHECK-NEXT:    %5 = stablehlo.select %4, %0, %cst_1 {enzymexla.upper_tri_matrix = [#enzymexla<guaranteed GUARANTEED>]} : tensor<64x64xi1>, tensor<64x64xf64>
 // CHECK-NEXT:    %6 = stablehlo.select %3, %5, %cst_0 {enzymexla.upper_tri_matrix = [#enzymexla<guaranteed GUARANTEED>], enzymexla.upper_unit_tri_matrix = [#enzymexla<guaranteed GUARANTEED>]} : tensor<64x64xi1>, tensor<64x64xf64>
-// CHECK-NEXT:    %7 = enzymexla.blas.trmm %6, %arg1, %cst {diag = #enzymexla.diag<unit>, side = #enzymexla.side<left>, transpose = #enzymexla.transpose<none>, uplo = #enzymexla.uplo<U>} : (tensor<64x64xf64>, tensor<64x32xf64>, tensor<f64>) -> tensor<64x32xf64>
+// CHECK-NEXT:    %7 = enzymexla.blas.trmm %6, %arg1, %cst {side = #enzymexla.side<left>, transpose = #enzymexla.transpose<none>, unit_diagonal, uplo = #enzymexla.uplo<U>} : (tensor<64x64xf64>, tensor<64x32xf64>, tensor<f64>) -> tensor<64x32xf64>
 // CHECK-NEXT:    return %7 : tensor<64x32xf64>
 // CHECK-NEXT:  }
 
@@ -54,6 +54,6 @@ func.func @main2(%arg0: tensor<64x64xf64> {enzymexla.memory_effects = []}, %arg1
 // CHECK-NEXT:    %4 = stablehlo.select %3, %0, %cst_1 {enzymexla.upper_tri_matrix = [#enzymexla<guaranteed GUARANTEED>], enzymexla.upper_unit_tri_matrix = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<64x64xi1>, tensor<64x64xf64>
 // CHECK-NEXT:    %5 = stablehlo.transpose %arg1, dims = [1, 0] : (tensor<64x32xf64>) -> tensor<32x64xf64>
 // CHECK-NEXT:    %6 = stablehlo.multiply %cst_0, %cst : tensor<f64>
-// CHECK-NEXT:    %7 = enzymexla.blas.trmm %4, %5, %6 {diag = #enzymexla.diag<nonunit>, side = #enzymexla.side<right>, transpose = #enzymexla.transpose<transpose>, uplo = #enzymexla.uplo<U>} : (tensor<64x64xf64>, tensor<32x64xf64>, tensor<f64>) -> tensor<32x64xf64>
+// CHECK-NEXT:    %7 = enzymexla.blas.trmm %4, %5, %6 {side = #enzymexla.side<right>, transpose = #enzymexla.transpose<transpose>, uplo = #enzymexla.uplo<U>} : (tensor<64x64xf64>, tensor<32x64xf64>, tensor<f64>) -> tensor<32x64xf64>
 // CHECK-NEXT:    return %7 : tensor<32x64xf64>
 // CHECK-NEXT:  }

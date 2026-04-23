@@ -31075,7 +31075,7 @@ struct DotGeneralToTrmm
 
     Value triMatrix, genMatrix;
     enzymexla::LapackSide side;
-    enzymexla::LapackDiag diag;
+    UnitAttr diag;
     enzymexla::LapackUplo uplo;
     enzymexla::LapackTranspose transpose;
 
@@ -31094,9 +31094,8 @@ struct DotGeneralToTrmm
         auto perm = rewriter.getDenseI64ArrayAttr({1, 0});
         rhs = stablehlo::TransposeOp::create(rewriter, op.getLoc(), rhs, perm);
       }
-      diag = canApplyUpperUnitTriPattern(lhs, rewriter)
-                 ? enzymexla::LapackDiag::unit
-                 : enzymexla::LapackDiag::nonunit;
+      diag = canApplyUpperUnitTriPattern(lhs, rewriter) ? rewriter.getUnitAttr()
+                                                        : nullptr;
       genMatrix = rhs;
     } else if (canApplyLowerTriPattern(lhs, rewriter)) {
       side = enzymexla::LapackSide::left;
@@ -31109,9 +31108,8 @@ struct DotGeneralToTrmm
         auto perm = rewriter.getDenseI64ArrayAttr({1, 0});
         rhs = stablehlo::TransposeOp::create(rewriter, op.getLoc(), rhs, perm);
       }
-      diag = canApplyLowerUnitTriPattern(lhs, rewriter)
-                 ? enzymexla::LapackDiag::unit
-                 : enzymexla::LapackDiag::nonunit;
+      diag = canApplyLowerUnitTriPattern(lhs, rewriter) ? rewriter.getUnitAttr()
+                                                        : nullptr;
       genMatrix = rhs;
     } else if (canApplyUpperTriPattern(rhs, rewriter)) {
       side = enzymexla::LapackSide::right;
@@ -31124,9 +31122,8 @@ struct DotGeneralToTrmm
         auto perm = rewriter.getDenseI64ArrayAttr({1, 0});
         lhs = stablehlo::TransposeOp::create(rewriter, op.getLoc(), lhs, perm);
       }
-      diag = canApplyUpperUnitTriPattern(rhs, rewriter)
-                 ? enzymexla::LapackDiag::unit
-                 : enzymexla::LapackDiag::nonunit;
+      diag = canApplyUpperUnitTriPattern(rhs, rewriter) ? rewriter.getUnitAttr()
+                                                        : nullptr;
       genMatrix = lhs;
     } else if (canApplyLowerTriPattern(rhs, rewriter)) {
       side = enzymexla::LapackSide::right;
@@ -31138,9 +31135,8 @@ struct DotGeneralToTrmm
         auto perm = rewriter.getDenseI64ArrayAttr({1, 0});
         lhs = stablehlo::TransposeOp::create(rewriter, op.getLoc(), lhs, perm);
       }
-      diag = canApplyLowerUnitTriPattern(rhs, rewriter)
-                 ? enzymexla::LapackDiag::unit
-                 : enzymexla::LapackDiag::nonunit;
+      diag = canApplyLowerUnitTriPattern(rhs, rewriter) ? rewriter.getUnitAttr()
+                                                        : nullptr;
       genMatrix = lhs;
     } else {
       return failure();
@@ -31158,8 +31154,7 @@ struct DotGeneralToTrmm
             cast<ElementsAttr>(makeAttr(alphaType, 1))), // alpha
         enzymexla::LapackSideAttr::get(op.getContext(), side),
         enzymexla::LapackUploAttr::get(op.getContext(), uplo),
-        enzymexla::LapackTransposeAttr::get(op.getContext(), transpose),
-        enzymexla::LapackDiagAttr::get(op.getContext(), diag));
+        enzymexla::LapackTransposeAttr::get(op.getContext(), transpose), diag);
     rewriter.replaceOp(op, trmmOp.getResult());
     return success();
   }
@@ -31341,7 +31336,7 @@ struct FuseMulIntoTrmm
     rewriter.replaceOpWithNewOp<enzymexla::TrmmOp>(
         op, trmmOp.getType(), trmmOp.getA(), trmmOp.getB(), newAlpha,
         trmmOp.getSideAttr(), trmmOp.getUploAttr(), trmmOp.getTransposeAttr(),
-        trmmOp.getDiagAttr());
+        trmmOp.getUnitDiagonalAttr());
     return success();
   }
 };
