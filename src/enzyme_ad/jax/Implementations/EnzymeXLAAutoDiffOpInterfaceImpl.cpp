@@ -144,31 +144,20 @@ struct ViewCastOpInterfaceReverse
 
   SmallVector<Value> cacheValues(Operation *op,
                                  MGradientUtilsReverse *gutils) const {
-    auto castOp = cast<OpTy>(op);
-    Value source = castOp.getSource();
-    if (gutils->isConstantValue(source))
-      return {};
-
-    OpBuilder cacheBuilder(gutils->getNewFromOriginal(op));
-    auto newCastOp = cast<OpTy>(gutils->getNewFromOriginal(op));
-
-    // Cache the source adjoint
-    Value sourceShadow = gutils->invertPointerM(source, cacheBuilder);
-    Value cachedSourceShadow =
-        gutils->initAndPushCache(sourceShadow, cacheBuilder);
-
-    // Materialize the shadow view in the forward block and register it so
-    // downstream consumers can locate it via invertPointerM.
-    auto shadowCast = cast<OpTy>(cacheBuilder.clone(*newCastOp));
-    shadowCast.getSourceMutable().assign(sourceShadow);
-    gutils->setInvertedPointer(castOp.getResult(), shadowCast->getResult(0));
-
-    return {cachedSourceShadow};
+    return {};
   }
 
-  void createShadowValues(Operation *op, OpBuilder &builder,
+  void createShadowValues(Operation *orig, OpBuilder &builder,
                           MGradientUtilsReverse *gutils) const {
-    // Shadow construction is done in cacheValues.
+    auto op = cast<OpTy>(orig);
+    auto newOp = cast<OpTy>(gutils->getNewFromOriginal(orig));
+    auto source = op.getSource();
+    if (!gutils->isConstantValue(source)) {
+      auto sourceShadow = gutils->invertPointerM(source, builder);
+      auto shadowCast = cast<OpTy>(builder.clone(*newOp));
+      shadowCast.getSourceMutable().assign(sourceShadow);
+      gutils->setInvertedPointer(op.getResult(), shadowCast.getResult());
+    }
   }
 };
 
