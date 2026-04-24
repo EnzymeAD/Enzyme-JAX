@@ -7,8 +7,8 @@ include "mlir/IR/AttrTypeBase.td"
 
 def TesseraConvertAttr : TesseraAttr<"Convert", "convert"> {
     let summary = "Marks a function for Tessera conversion";
-    let parameters = (ins "std::string":$value);
-    let assemblyFormat = "$value";
+    let parameters = (ins "std::string":$value, "bool":$pure);
+    let assemblyFormat = "$value `pure` `=` $pure";
     let cppClassName = "ConvertAttr";
 }
 

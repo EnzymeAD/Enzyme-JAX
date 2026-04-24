@@ -1,7 +1,8 @@
 //===----------------------------------------------------------------------===//
 //
-// This file extracts tessera_op and tessera_optimize global annotations
-// and adds tessera_op attributes and tessera.optimization ops to the module.
+// This file extracts tessera_op, pure_tessera_op, and tessera_optimize
+// global annotations and adds tessera_op / pure_tessera_op attributes
+// and tessera.optimization ops to the module.
 //
 //===----------------------------------------------------------------------===//
 
@@ -148,12 +149,17 @@ struct LiftTesseraAnnotationsPass
       if (!func)
         continue;
 
-      // Parse "tessera_op=string\0"
+      // Parse "tessera_op=string\0" and "pure_tessera_op=string\0"
       StringRef annot(annotStr);
       if (annot.starts_with("tessera_op=")) {
         StringRef opName = annot.substr(11);
         opName = opName.take_while([](char c) { return c != '\0'; });
         func->setAttr("tessera_op",
+                      StringAttr::get(func->getContext(), opName));
+      } else if (annot.starts_with("pure_tessera_op=")) {
+        StringRef opName = annot.substr(16);
+        opName = opName.take_while([](char c) { return c != '\0'; });
+        func->setAttr("pure_tessera_op",
                       StringAttr::get(func->getContext(), opName));
       }
     }

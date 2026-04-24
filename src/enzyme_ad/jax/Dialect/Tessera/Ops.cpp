@@ -208,8 +208,12 @@ void CallOp::getEffects(
     return;
   if (fn->hasAttr("tessera.side_effect_free"))
     return; // return nothing = no effects = side effect free
-  effects.emplace_back(MemoryEffects::Write::get(),
-                       SideEffects::DefaultResource::get());
+
+  // if not side effect free, add all possible memory effects
+  effects.emplace_back(MemoryEffects::Effect::get<MemoryEffects::Read>());
+  effects.emplace_back(MemoryEffects::Effect::get<MemoryEffects::Write>());
+  effects.emplace_back(MemoryEffects::Effect::get<MemoryEffects::Allocate>());
+  effects.emplace_back(MemoryEffects::Effect::get<MemoryEffects::Free>());
 }
 
 //===----------------------------------------------------------------------===//

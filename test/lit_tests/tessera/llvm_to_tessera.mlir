@@ -1,6 +1,6 @@
 // RUN: enzymexlamlir-opt %s -llvm-to-tessera | FileCheck %s
 
-llvm.func @simple_func() attributes {tessera.convert = #tessera<convert "tessera_simple_func">} {
+llvm.func @simple_func() attributes {tessera.convert = #tessera<convert "tessera_simple_func" pure = false>} {
   llvm.return
 }
 
@@ -11,7 +11,7 @@ llvm.func @simple_func() attributes {tessera.convert = #tessera<convert "tessera
 // -----
 
 
-llvm.func @func_with_args(%arg0: i32, %arg1: f32) -> i32 attributes {tessera.convert = #tessera<convert "tessera_func_with_args">} {
+llvm.func @func_with_args(%arg0: i32, %arg1: f32) -> i32 attributes {tessera.convert = #tessera<convert "tessera_func_with_args" pure = false>} {
   llvm.return %arg0 : i32
 }
 
@@ -20,11 +20,21 @@ llvm.func @func_with_args(%arg0: i32, %arg1: f32) -> i32 attributes {tessera.con
 
 // -----
 
-llvm.func @helper() attributes {tessera.convert = #tessera<convert "tessera_helper">} {
+llvm.func @pure_func(%arg0: i32, %arg1: f32) -> i32 attributes {tessera.convert = #tessera<convert "tessera_pure_func" pure = true>} {
+  llvm.return %arg0 : i32
+}
+
+// CHECK-LABEL: tessera.define @tessera_pure_func
+// CHECK-SAME: tessera.side_effect_free
+// CHECK: tessera.return %arg0 : i32
+
+// -----
+
+llvm.func @helper() attributes {tessera.convert = #tessera<convert "tessera_helper" pure = false>} {
   llvm.return
 }
 
-llvm.func @func_with_call() attributes {tessera.convert = #tessera<convert "tessera_func_with_call">} {
+llvm.func @func_with_call() attributes {tessera.convert = #tessera<convert "tessera_func_with_call" pure = false>} {
   llvm.call @helper() : () -> ()
   llvm.return
 }
@@ -57,7 +67,7 @@ llvm.func @func_with_indirect_call(%arg0: !llvm.ptr) {
 
 // -----
 
-llvm.func @sret_func(%arg0: !llvm.ptr {llvm.sret = !llvm.struct<(f32, f32)>, llvm.align = 8 : i64, llvm.nonnull}, %arg1: !llvm.ptr {llvm.noundef, llvm.readonly}) attributes {tessera.convert = #tessera<convert "tessera_sret_func">} {
+llvm.func @sret_func(%arg0: !llvm.ptr {llvm.sret = !llvm.struct<(f32, f32)>, llvm.align = 8 : i64, llvm.nonnull}, %arg1: !llvm.ptr {llvm.noundef, llvm.readonly}) attributes {tessera.convert = #tessera<convert "tessera_sret_func" pure = true>} {
   %0 = llvm.load %arg1 {alignment = 8 : i64} : !llvm.ptr -> f32
   llvm.store %0, %arg0 {alignment = 8 : i64} : f32, !llvm.ptr
   llvm.return
@@ -72,6 +82,7 @@ llvm.func @caller() {
 }
 
 // CHECK-LABEL: tessera.define @tessera_sret_func
+// CHECK-SAME: tessera.side_effect_free
 // CHECK-SAME: tessera.sret_attrs = {llvm.align = 8 : i64, llvm.nonnull, llvm.sret = !llvm.struct<(f32, f32)>}
 // CHECK: tessera.return
 

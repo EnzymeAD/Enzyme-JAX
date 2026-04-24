@@ -53,6 +53,7 @@ public:
     if (!convertAttr)
       return failure();
     auto tesseraName = convertAttr.getValue();
+    auto isPure = convertAttr.getPure();
     auto module = funcOp->getParentOfType<ModuleOp>();
     auto *ctx = funcOp->getContext();
     auto funcName = funcOp.getName();
@@ -69,12 +70,6 @@ public:
       if (auto sretAttr =
               funcOp.getArgAttr(0, LLVM::LLVMDialect::getStructRetAttrName()))
         hasSret = true;
-      // for (int i = hasSret ? 1 : 0; i < params.size(); i++) {
-      //   if (isa<LLVM::LLVMPointerType>(params[i])) {
-      //   if (!funcOp.getArgAttr(i, LLVM::LLVMDialect::getReadonlyAttrName()))
-      //      isSideEffectFree = false;
-      //  }
-      //}
     }
 
     auto fnType = FunctionType::get(
@@ -107,7 +102,7 @@ public:
     if (hasSret)
       tesseraDefineOp->setAttr("tessera.sret_attrs", argAttrs[0]);
 
-    if (mlir::isMemoryEffectFree(funcOp)) {
+    if (isPure) {
       tesseraDefineOp->setAttr("tessera.side_effect_free",
                                rewriter.getUnitAttr());
     }

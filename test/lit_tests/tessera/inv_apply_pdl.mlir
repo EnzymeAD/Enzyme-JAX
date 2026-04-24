@@ -1,7 +1,7 @@
 // RUN: enzymexlamlir-opt %s -tessera-apply-pdl | FileCheck %s
 
 module {
-  tessera.define @eigen.inv(%arg0 : f32) -> f32 {
+  tessera.define @eigen.inv(%arg0 : f32) -> f32 attributes {tessera.side_effect_free} {
     tessera.return %arg0 : f32
   }
 
