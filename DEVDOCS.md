@@ -7,8 +7,9 @@ The `.devcontainer` configuration is helpful but not recommended. While it provi
 ## Building the Project
 
 ### Quick Build
+
 ```bash
-bazel build --repo_env=CC=clang-18 --color=yes --copt=-fbracket-depth=1024 --host_copt=-fbracket-depth=1024 -c dbg :enzymexlamlir-opt
+bazel build --config=hydra :enzymexlamlir-opt
 ```
 
 ### Build Artifacts
@@ -90,7 +91,7 @@ enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=and_pad_pad" --transform-in
 
 Run all tests with:
 ```bash
-bazel test //test/...
+bazel test --config=hydra //test/...
 ```
 This recursively runs all targets in the `test/` directory.
 
@@ -106,5 +107,5 @@ The output is fed to `FileCheck` which compares it against the expected result t
 
 Run all lit tests with
 ```bash
-bazel test //test/lit_tests/...
+bazel test --config=hydra //test/lit_tests/...
 ```

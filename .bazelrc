@@ -62,3 +62,8 @@ common --define=allow_oversize_protos=true
 build --@rules_python//python/config_settings:precompile=force_disabled
 
 build -c opt
+
+# hydra config
+common:hydra -c dbg
+common:hydra --repo_env=CC=clang-18
+common:hydra --copt=-fbracket-depth=1024 --host_copt=-fbracket-depth=1024
