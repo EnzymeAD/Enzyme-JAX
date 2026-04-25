@@ -563,6 +563,9 @@ static void addSelfToConvolutionLikePasses(std::vector<std::string> &list) {
 static void addStructuredTensorsSyrkPasses(std::vector<std::string> &list) {
   list.push_back("dot_general_to_syrk");
   list.push_back("dot_general_to_symm");
+}
+
+static void addTriangularPasses(std::vector<std::string> &list) {
   list.push_back("dot_general_to_trmm");
 }
 
@@ -933,6 +936,10 @@ void enzymexlaGetTransformPassesList(
   // Structured tensors passes
   if (options->enable_structured_tensors_passes) {
     addStructuredTensorsPasses(list);
+  }
+
+  if (options->enable_triangular_passes) {
+    addTriangularPasses(list);
   }
 
   // Scatter/gather

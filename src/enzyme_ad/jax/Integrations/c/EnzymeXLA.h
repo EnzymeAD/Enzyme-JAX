@@ -195,6 +195,7 @@ typedef struct {
   bool enable_self_to_convolution_like_passes;
   bool enable_structured_tensors_detection_passes;
   bool enable_structured_tensors_passes;
+  bool enable_triangular_passes;
   bool enable_scatter_gather_optimization_passes;
   bool enable_slice_to_batch_passes;
   bool enable_reduce_slice_fusion_passes;

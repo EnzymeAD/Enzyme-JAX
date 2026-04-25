@@ -1291,7 +1291,7 @@ NB_MODULE(enzyme_call, m) {
            bool aggressive_propagation, bool is_sharded,
            bool raise_shlo_to_blas_lapack, bool recognize_comms,
            bool lower_comms, bool enable_structured_tensors_detection_passes,
-           bool enable_structured_tensors_passes,
+           bool enable_structured_tensors_passes, bool enable_triangular_passes,
            bool enable_scatter_gather_optimization_passes,
            bool enable_slice_to_batch_passes,
            bool enable_reduce_slice_fusion_passes,
@@ -1324,6 +1324,7 @@ NB_MODULE(enzyme_call, m) {
               enable_structured_tensors_detection_passes;
           options.enable_structured_tensors_passes =
               enable_structured_tensors_passes;
+          options.enable_triangular_passes = enable_triangular_passes;
           options.enable_scatter_gather_optimization_passes =
               enable_scatter_gather_optimization_passes;
           options.enable_slice_to_batch_passes = enable_slice_to_batch_passes;
