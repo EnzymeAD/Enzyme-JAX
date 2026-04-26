@@ -887,7 +887,7 @@ template <typename Ty> bool checkConstantLowerTri(DenseElementsAttr attr) {
 
   for (int64_t i = 0; i < rows; i++) {
     for (int64_t j = i; j < cols; j++) {
-      if ((*(it + i * cols + j)).isZero())
+      if (!(*(it + i * cols + j)).isZero())
         return false;
     }
   }
@@ -911,7 +911,7 @@ template <typename Ty> bool checkConstantUpperTri(DenseElementsAttr attr) {
 
   for (int64_t i = 0; i < rows; i++) {
     for (int64_t j = 0; j < i; j++) {
-      if ((*(it + i * cols + j)).isZero())
+      if (!(*(it + i * cols + j)).isZero())
         return false;
     }
   }
@@ -1196,6 +1196,12 @@ BaseTriResultAnalysis<Child>::localGuaranteed(Value val,
       return State::GUARANTEED;
     } else if (((Child *)this)->unitResultAnalysis(selectOp, rewriter)) {
       return State::GUARANTEED;
+    } else if (this->guaranteed(selectOp.getPred(),
+                                rewriter)) { // if a triangular constant
+                                             // matrix is used as a mask
+      if (matchZeroRealAndComplex(selectOp.getOnFalse())) {
+        return State::GUARANTEED;
+      }
     }
   }
 
