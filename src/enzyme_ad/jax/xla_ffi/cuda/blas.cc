@@ -130,6 +130,14 @@ ffi::Error Symm(cublasHandle_t handle, cublasSideMode_t side,
   return ffi::Error::InvalidArgument("Unsupported type for symm");
 }
 
+template <typename T>
+ffi::Error Trmm(cublasHandle_t handle, cublasSideMode_t side,
+                cublasFillMode_t uplo, cublasOperation_t trans,
+                cublasDiagType_t diag, int m, int n, const T *alpha, const T *a,
+                int lda, const T *b, int ldb, T *c, int ldc) {
+  return ffi::Error::InvalidArgument("Unsupported type for trmm");
+}
+
 #define SYRK_SPECIALIZATION(T, cublas_func)                                    \
   template <>                                                                  \
   ffi::Error Syrk<T>(cublasHandle_t handle, cublasFillMode_t uplo,             \
@@ -165,7 +173,108 @@ SYMM_SPECIALIZATION(cuDoubleComplex, cublasZsymm)
 
 #undef SYMM_SPECIALIZATION
 
+#define TRMM_SPECIALIZATION(T, cublas_func)                                    \
+  template <>                                                                  \
+  ffi::Error Trmm<T>(cublasHandle_t handle, cublasSideMode_t side,             \
+                     cublasFillMode_t uplo, cublasOperation_t trans,           \
+                     cublasDiagType_t diag, int m, int n, const T *alpha,      \
+                     const T *a, int lda, const T *b, int ldb, T *c,           \
+                     int ldc) {                                                \
+    cublasStatus_t status = cublas_func(handle, side, uplo, trans, diag, m, n, \
+                                        alpha, a, lda, b, ldb, c, ldc);        \
+    return CublasStatusToError(status, #cublas_func);                          \
+  }
+
+TRMM_SPECIALIZATION(float, cublasStrmm)
+TRMM_SPECIALIZATION(double, cublasDtrmm)
+TRMM_SPECIALIZATION(cuComplex, cublasCtrmm)
+TRMM_SPECIALIZATION(cuDoubleComplex, cublasZtrmm)
+
+#undef TRMM_SPECIALIZATION
+
 } // namespace blas
+
+template <typename T>
+ffi::Error TrmmImpl(CUstream stream, bool side_, bool uplo_, bool trans_,
+                    bool diag_, ffi::AnyBuffer a, ffi::AnyBuffer b,
+                    const T *alpha, ffi::Result<ffi::AnyBuffer> c_out) {
+  FFI_ASSIGN_OR_RETURN((auto [batch, rows, cols]),
+                       SplitBatch2D(b.dimensions()));
+  auto a_size = side_ ? cols : rows;
+  FFI_RETURN_IF_ERROR(
+      CheckShape(c_out->dimensions(), {batch, rows, cols}, "c_out", "trmm"));
+
+  FFI_ASSIGN_OR_RETURN(auto m, MaybeCastNoOverflow<int>(cols));
+  FFI_ASSIGN_OR_RETURN(auto n, MaybeCastNoOverflow<int>(rows));
+
+  // We flip uplo here because A is passed in row-major format.
+  // Row-major A is equivalent to A^T in column-major, and since A is
+  // triangular, this will just swap upper/lower triangular.
+  cublasFillMode_t uplo =
+      uplo_ ? CUBLAS_FILL_MODE_LOWER : CUBLAS_FILL_MODE_UPPER;
+  // We can then swap side since (A*B)^T = B^T*A^T, where B^T is also the
+  // column-major interpretation of B
+  cublasSideMode_t side = side_ ? CUBLAS_SIDE_LEFT : CUBLAS_SIDE_RIGHT;
+  cublasOperation_t trans = trans_ ? CUBLAS_OP_T : CUBLAS_OP_N;
+  cublasDiagType_t diag = diag_ ? CUBLAS_DIAG_UNIT : CUBLAS_DIAG_NON_UNIT;
+
+  const T *a_data = static_cast<const T *>(a.untyped_data());
+  const T *b_data = static_cast<const T *>(b.untyped_data());
+  T *c_out_data = static_cast<T *>(c_out->untyped_data());
+
+  FFI_ASSIGN_OR_RETURN(auto handle, BlasHandlePool::Borrow(stream));
+  int lda = a_size;
+  int ldb = m;
+  int ldc = ldb;
+  for (int i = 0; i < batch; ++i) {
+    FFI_RETURN_IF_ERROR(blas::Trmm<T>(handle.get(), side, uplo, trans, diag, m,
+                                      n, alpha, a_data, lda, b_data, ldb,
+                                      c_out_data, ldc));
+    a_data += a_size * a_size;
+    b_data += m * n;
+    c_out_data += m * n;
+  }
+  return ffi::Error::Success();
+}
+
+template <typename T>
+ffi::Error TrmmImpl(CUstream stream, bool side, bool uplo, bool trans,
+                    bool diag, bool use_alpha_attribute, double alpha_real,
+                    double alpha_imag, ffi::AnyBuffer a, ffi::AnyBuffer b,
+                    ffi::AnyBuffer alpha_, ffi::Result<ffi::AnyBuffer> c_out) {
+  T host_alpha;
+  FFI_RETURN_IF_ERROR(GetHostScalar<T>(stream, use_alpha_attribute, alpha_real,
+                                       alpha_imag, alpha_, &host_alpha));
+  return TrmmImpl<T>(stream, side, uplo, trans, diag, a, b, &host_alpha, c_out);
+}
+
+ffi::Error TrmmDispatch(CUstream stream, bool side, bool uplo, bool trans,
+                        bool diag, bool use_alpha_attribute, double alpha_real,
+                        double alpha_imag, ffi::AnyBuffer a, ffi::AnyBuffer b,
+                        ffi::AnyBuffer alpha_,
+                        ffi::Result<ffi::AnyBuffer> c_out) {
+  auto dataType = b.element_type();
+  SOLVER_BLAS_DISPATCH_IMPL(TrmmImpl, stream, side, uplo, trans, diag,
+                            use_alpha_attribute, alpha_real, alpha_imag, a, b,
+                            alpha_, c_out);
+  return ffi::Error::InvalidArgument(absl::StrFormat(
+      "Unsupported dtype %s in trmm", absl::FormatStreamed(dataType)));
+}
+
+XLA_FFI_DEFINE_HANDLER(TrmmFfi, TrmmDispatch,
+                       xla::ffi::Ffi::Bind()
+                           .Ctx<ffi::PlatformStream<CUstream>>()
+                           .Attr<bool>("side")
+                           .Attr<bool>("uplo")
+                           .Attr<bool>("transpose")
+                           .Attr<bool>("diag")
+                           .Attr<bool>("use_alpha_attribute")
+                           .Attr<double>("alpha_real")
+                           .Attr<double>("alpha_imag")
+                           .Arg<ffi::AnyBuffer>()
+                           .Arg<ffi::AnyBuffer>()
+                           .Arg<ffi::AnyBuffer>()
+                           .Ret<ffi::AnyBuffer>());
 
 template <typename T>
 ffi::Error SyrkImpl(CUstream stream, bool transpose, bool uplo_,
@@ -479,6 +588,8 @@ XLA_FFI_DEFINE_HANDLER(
 #undef SOLVER_BLAS_DISPATCH_IMPL
 
 void registerEnzymeJaXXLACudaBlasFFI() {
+  XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(),
+                           "enzymejax_cublas_trmm_ffi", "CUDA", TrmmFfi);
   XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(),
                            "enzymejax_cublas_syrk_ffi", "CUDA", SyrkFfi);
   XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(),

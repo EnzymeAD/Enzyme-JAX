@@ -31043,6 +31043,8 @@ extractSyrkInput(stablehlo::DotGeneralOp op, PatternRewriter &rewriter) {
   return std::pair<Value, enzymexla::LapackTranspose>(syrkInput,
                                                       lapackTranspose);
 }
+
+// currently limited to non-batched dot_general
 struct DotGeneralToTrmm
     : public CheckedOpRewritePattern<stablehlo::DotGeneralOp,
                                      DotGeneralToTrmm> {
