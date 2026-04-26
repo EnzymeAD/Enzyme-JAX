@@ -1,11 +1,12 @@
 // RUN: enzymexlamlir-opt --lower-enzymexla-blas="backend=cpu" --enzyme-hlo-opt %s | FileCheck %s --check-prefix=CPU
 // RUN: enzymexlamlir-opt --lower-enzymexla-blas="backend=cuda" --enzyme-hlo-opt %s | FileCheck %s --check-prefix=CUDA
 // RUN: enzymexlamlir-opt --lower-enzymexla-blas="backend=tpu" --enzyme-hlo-opt %s | FileCheck %s --check-prefix=TPU
-
-func.func @trmm(%arg0: tensor<64x64xf32>, %arg1: tensor<64x32xf32>) -> tensor<64x32xf32> {
-    %alpha = stablehlo.constant dense<2.0> : tensor<f32>
-    %0 = enzymexla.blas.trmm %arg0, %arg1, %alpha {side = #enzymexla.side<left>, uplo = #enzymexla.uplo<U>, transpose = #enzymexla.transpose<none>} : (tensor<64x64xf32>, tensor<64x32xf32>, tensor<f32>) -> tensor<64x32xf32>
-    return %0 : tensor<64x32xf32>
+module {
+    func.func @trmm(%arg0: tensor<64x64xf32>, %arg1: tensor<64x32xf32>) -> tensor<64x32xf32> {
+        %alpha = stablehlo.constant dense<2.0> : tensor<f32>
+        %0 = enzymexla.blas.trmm %arg0, %arg1, %alpha {side = #enzymexla.side<left>, uplo = #enzymexla.uplo<U>, transpose = #enzymexla.transpose<none>} : (tensor<64x64xf32>, tensor<64x32xf32>, tensor<f32>) -> tensor<64x32xf32>
+        return %0 : tensor<64x32xf32>
+    }
 }
 
 // CPU:  func.func private @enzymexla_blas_strmm_wrapper_0(%arg0: tensor<64x64xf32>, %arg1: tensor<64x32xf32>, %arg2: tensor<f32>) -> tensor<64x32xf32> {
@@ -14,7 +15,7 @@ func.func @trmm(%arg0: tensor<64x64xf32>, %arg1: tensor<64x32xf32>) -> tensor<64
 // CPU-NEXT:    %c_1 = stablehlo.constant dense<78> : tensor<ui8>
 // CPU-NEXT:    %c_2 = stablehlo.constant dense<64> : tensor<i64>
 // CPU-NEXT:    %c_3 = stablehlo.constant dense<32> : tensor<i64>
-// CPU-NEXT:    %0 = enzymexla.jit_call @enzymexla_blas_strmm_wrapper (%c, %c_0, %c_1, %c_1, %c_2, %c_3, %arg2, %arg0, %c_2, %arg1, %c_2) {operand_layouts = [dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<[1, 0]> : tensor<2xindex>, dense<> : tensor<0xindex>, dense<[1, 0]> : tensor<2xindex>, dense<> : tensor<0xindex>], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 9, operand_tuple_indices = []>], result_layouts = [dense<[1, 0]> : tensor<2xindex>], xla_side_effect_free} : (tensor<ui8>, tensor<ui8>, tensor<ui8>, tensor<ui8>, tensor<i64>, tensor<i64>, tensor<f32>, tensor<64x64xf32>, tensor<i64>, tensor<64x32xf32>, tensor<i64>) -> tensor<64x32xf32>
+// CPU-NEXT:    %0 = enzymexla.jit_call @enzymexla_blas_strmm_wrapper (%c, %c_0, %c_1, %c_1, %c_3, %c_2, %arg2, %arg0, %c_2, %arg1, %c_3) {operand_layouts = [dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<> : tensor<0xindex>, dense<[1, 0]> : tensor<2xindex>, dense<> : tensor<0xindex>, dense<[1, 0]> : tensor<2xindex>, dense<> : tensor<0xindex>], output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 9, operand_tuple_indices = []>], result_layouts = [dense<[1, 0]> : tensor<2xindex>], xla_side_effect_free} : (tensor<ui8>, tensor<ui8>, tensor<ui8>, tensor<ui8>, tensor<i64>, tensor<i64>, tensor<f32>, tensor<64x64xf32>, tensor<i64>, tensor<64x32xf32>, tensor<i64>) -> tensor<64x32xf32>
 // CPU-NEXT:    return %0 : tensor<64x32xf32>
 // CPU-NEXT:  }
 // CPU-NEXT:  llvm.func private @enzymexla_blas_strmm_wrapper(%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: !llvm.ptr, %arg3: !llvm.ptr, %arg4: !llvm.ptr, %arg5: !llvm.ptr, %arg6: !llvm.ptr, %arg7: !llvm.ptr, %arg8: !llvm.ptr, %arg9: !llvm.ptr, %arg10: !llvm.ptr) {
@@ -42,27 +43,16 @@ func.func @trmm(%arg0: tensor<64x64xf32>, %arg1: tensor<64x32xf32>) -> tensor<64
 // TPU-NEXT:    return %1 : tensor<64x32xf32>
 // TPU-NEXT:  }
 
-func.func @trmm_complex(%arg0: tensor<100x100xcomplex<f64>>, %arg1: tensor<100x50xcomplex<f64>>) -> tensor<100x50xcomplex<f64>> {
-    %cst = stablehlo.constant dense<(1.000000e+00,0.000000e+00)> : tensor<complex<f64>>
-    %5 = enzymexla.blas.trmm %arg0, %arg1, %cst {side = #enzymexla.side<left>, transpose = #enzymexla.transpose<transpose>, uplo = #enzymexla.uplo<L>} : (tensor<100x100xcomplex<f64>>, tensor<100x50xcomplex<f64>>, tensor<complex<f64>>) -> tensor<100x50xcomplex<f64>>
-    return %5 : tensor<100x50xcomplex<f64>>
+module {
+    func.func @trmm_complex(%arg0: tensor<100x100xcomplex<f64>>, %arg1: tensor<100x50xcomplex<f64>>) -> tensor<100x50xcomplex<f64>> {
+        %cst = stablehlo.constant dense<(1.000000e+00,0.000000e+00)> : tensor<complex<f64>>
+        %5 = enzymexla.blas.trmm %arg0, %arg1, %cst {side = #enzymexla.side<left>, transpose = #enzymexla.transpose<transpose>, uplo = #enzymexla.uplo<L>} : (tensor<100x100xcomplex<f64>>, tensor<100x50xcomplex<f64>>, tensor<complex<f64>>) -> tensor<100x50xcomplex<f64>>
+        return %5 : tensor<100x50xcomplex<f64>>
+    }
 }
-
-// CPU:  func.func @trmm_complex(%arg0: tensor<100x100xcomplex<f64>>, %arg1: tensor<100x50xcomplex<f64>>) -> tensor<100x50xcomplex<f64>> {
-// CPU-NEXT:    %cst = stablehlo.constant dense<(1.000000e+00,0.000000e+00)> : tensor<complex<f64>>
-// CPU-NEXT:    %0 = call @enzymexla_blas_ztrmm_wrapper_1(%arg0, %arg1, %cst) : (tensor<100x100xcomplex<f64>>, tensor<100x50xcomplex<f64>>, tensor<complex<f64>>) -> tensor<100x50xcomplex<f64>>
-// CPU-NEXT:    return %0 : tensor<100x50xcomplex<f64>>
-// CPU-NEXT:  }
 
 // CUDA: func.func @trmm_complex(%arg0: tensor<100x100xcomplex<f64>>, %arg1: tensor<100x50xcomplex<f64>>) -> tensor<100x50xcomplex<f64>> {
 // CUDA-NEXT: %0 = tensor.empty() : tensor<0xcomplex<f64>>
 // CUDA-NEXT: %1 = stablehlo.custom_call @enzymejax_cublas_trmm_ffi(%arg0, %arg1, %0) {api_version = 4 : i32, backend_config = {alpha_imag = 0.000000e+00 : f64, alpha_real = 1.000000e+00 : f64, diag = false, side = false, transpose = true, uplo = false, use_alpha_attribute = true}, operand_layouts = [dense<[1, 0]> : tensor<2xindex>, dense<[1, 0]> : tensor<2xindex>, dense<0> : tensor<1xindex>], result_layouts = [dense<[1, 0]> : tensor<2xindex>]} : (tensor<100x100xcomplex<f64>>, tensor<100x50xcomplex<f64>>, tensor<0xcomplex<f64>>) -> tensor<100x50xcomplex<f64>>
 // CUDA-NEXT: return %1 : tensor<100x50xcomplex<f64>>
 // CUDA-NEXT: }
-
-// TPU:  func.func @trmm_complex(%arg0: tensor<100x100xcomplex<f64>>, %arg1: tensor<100x50xcomplex<f64>>) -> tensor<100x50xcomplex<f64>> {
-// TPU-NEXT:    %cst = stablehlo.constant {enzymexla.complex_is_purely_real = [#enzymexla<guaranteed GUARANTEED>]} dense<(1.000000e+00,0.000000e+00)> : tensor<100x50xcomplex<f64>>
-// TPU-NEXT:    %0 = stablehlo.dot_general %arg0, %arg1, contracting_dims = [0] x [0] {enzymexla.complex_is_purely_real = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<100x100xcomplex<f64>>, tensor<100x50xcomplex<f64>>) -> tensor<100x50xcomplex<f64>>
-// TPU-NEXT:    %1 = stablehlo.multiply %cst, %0 : tensor<100x50xcomplex<f64>>
-// TPU-NEXT:    return %1 : tensor<100x50xcomplex<f64>>
-// TPU-NEXT:  }

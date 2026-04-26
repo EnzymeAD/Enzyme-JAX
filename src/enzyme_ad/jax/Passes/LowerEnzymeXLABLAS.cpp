@@ -273,14 +273,14 @@ struct TrmmOpLowering : public OpRewritePattern<enzymexla::TrmmOp> {
 
       auto lda = stablehlo::ConvertOp::create(
           rewriter, op.getLoc(), intType,
-          stablehlo::GetDimensionSizeOp::create(rewriter, op.getLoc(), A, 0));
+          stablehlo::GetDimensionSizeOp::create(rewriter, op.getLoc(), A, 1));
       auto ldb = stablehlo::ConvertOp::create(
           rewriter, op.getLoc(), intType,
-          stablehlo::GetDimensionSizeOp::create(rewriter, op.getLoc(), B, 0));
+          stablehlo::GetDimensionSizeOp::create(rewriter, op.getLoc(), B, 1));
       auto mSize = ldb;
       auto nSize = stablehlo::ConvertOp::create(
           rewriter, op.getLoc(), intType,
-          stablehlo::GetDimensionSizeOp::create(rewriter, op.getLoc(), B, 1));
+          stablehlo::GetDimensionSizeOp::create(rewriter, op.getLoc(), B, 0));
 
       auto jitCall = enzymexla::JITCallOp::create(
           rewriter, op.getLoc(), TypeRange{op.getB().getType()},
