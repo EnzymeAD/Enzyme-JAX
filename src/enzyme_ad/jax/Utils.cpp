@@ -1019,6 +1019,24 @@ bool UpperUnitTriResultAnalysis::nonUnitResultAnalysis(
   return upperTriResultAnalysis->guaranteed(val, rewriter);
 }
 
+bool matchZeroRealAndComplex(Value val) {
+  if (matchPattern(val, m_AnyZeroFloat()) || matchPattern(val, m_Zero()))
+    return true;
+
+  DenseElementsAttr attr;
+
+  if (matchPattern(val, m_Constant(&attr)) && attr.isSplat()) {
+    auto valType = cast<RankedTensorType>(val.getType());
+    auto elemType = valType.getElementType();
+
+    if (auto complexType = dyn_cast<ComplexType>(elemType)) {
+      auto value = attr.getSplatValue<std::complex<llvm::APFloat>>();
+      return value.real().isZero() && value.imag().isZero();
+    }
+  }
+  return false;
+}
+
 // detects triangular matrices from sequence of iota, compare, and select
 // operations. returns true if detectUpper is true and the matrix is upper
 // triangular, or if detectUpper is false and the matrix is lower triangular.
@@ -1036,11 +1054,9 @@ bool BaseTriResultAnalysis<Child>::checkIotaCompare(
 
   bool zeroOnFalse;
 
-  if (matchPattern(trueTensor, m_AnyZeroFloat()) ||
-      matchPattern(trueTensor, m_Zero())) {
+  if (matchZeroRealAndComplex(trueTensor)) {
     zeroOnFalse = false;
-  } else if (matchPattern(falseTensor, m_AnyZeroFloat()) ||
-             matchPattern(falseTensor, m_Zero())) {
+  } else if (matchZeroRealAndComplex(falseTensor)) {
     zeroOnFalse = true;
   } else {
     return false;
