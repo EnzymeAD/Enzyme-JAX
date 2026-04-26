@@ -563,6 +563,7 @@ static void addSelfToConvolutionLikePasses(std::vector<std::string> &list) {
 static void addStructuredTensorsSyrkPasses(std::vector<std::string> &list) {
   list.push_back("dot_general_to_syrk");
   list.push_back("dot_general_to_symm");
+  list.push_back("dot_general_to_trmm");
 }
 
 static void addStructuredTensorsPasses(std::vector<std::string> &list) {
@@ -571,6 +572,7 @@ static void addStructuredTensorsPasses(std::vector<std::string> &list) {
   list.push_back("fuse_add_into_syrk");
   list.push_back("fuse_add_into_symm");
   list.push_back("fuse_mul_into_symm");
+  list.push_back("fuse_mul_into_trmm");
   list.push_back("dot_general_only_diagonal_access");
   list.push_back("transpose_symmetric_simplify");
   list.push_back("lu_factorization_tri_simplify");

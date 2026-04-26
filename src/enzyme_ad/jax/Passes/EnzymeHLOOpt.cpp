@@ -31043,6 +31043,122 @@ extractSyrkInput(stablehlo::DotGeneralOp op, PatternRewriter &rewriter) {
   return std::pair<Value, enzymexla::LapackTranspose>(syrkInput,
                                                       lapackTranspose);
 }
+struct DotGeneralToTrmm
+    : public CheckedOpRewritePattern<stablehlo::DotGeneralOp,
+                                     DotGeneralToTrmm> {
+  using CheckedOpRewritePattern<stablehlo::DotGeneralOp,
+                                DotGeneralToTrmm>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::DotGeneralOp op,
+                                    PatternRewriter &rewriter) const {
+    auto dotDims = op.getDotDimensionNumbers();
+    auto lhs = op.getLhs();
+    auto rhs = op.getRhs();
+
+    auto lhsType = cast<RankedTensorType>(lhs.getType());
+    auto rhsType = cast<RankedTensorType>(rhs.getType());
+    auto outType = cast<RankedTensorType>(op.getResult().getType());
+    if (lhsType.getRank() != 2 || rhsType.getRank() != 2 ||
+        outType.getRank() != 2) {
+      return failure();
+    }
+
+    if (dotDims.getLhsBatchingDimensions().size() != 0 ||
+        dotDims.getRhsBatchingDimensions().size() != 0) {
+      return failure();
+    }
+
+    if (dotDims.getLhsContractingDimensions().size() != 1 ||
+        dotDims.getRhsContractingDimensions().size() != 1) {
+      return failure();
+    }
+
+    Value triMatrix, genMatrix;
+    enzymexla::LapackSide side;
+    UnitAttr diag;
+    enzymexla::LapackUplo uplo;
+    enzymexla::LapackTranspose transpose;
+
+    auto lhsContractingDim = dotDims.getLhsContractingDimensions()[0];
+    auto rhsContractingDim = dotDims.getRhsContractingDimensions()[0];
+
+    // can only replace with trmm if either lhs or rhs is triangular
+    if (canApplyUpperTriPattern(lhs, rewriter)) {
+      side = enzymexla::LapackSide::left;
+      uplo = enzymexla::LapackUplo::U;
+      triMatrix = lhs;
+      transpose = lhsContractingDim == 0 ? enzymexla::LapackTranspose::transpose
+                                         : enzymexla::LapackTranspose::none;
+
+      if (rhsContractingDim == 1) {
+        auto perm = rewriter.getDenseI64ArrayAttr({1, 0});
+        rhs = stablehlo::TransposeOp::create(rewriter, op.getLoc(), rhs, perm);
+      }
+      diag = canApplyUpperUnitTriPattern(lhs, rewriter) ? rewriter.getUnitAttr()
+                                                        : nullptr;
+      genMatrix = rhs;
+    } else if (canApplyLowerTriPattern(lhs, rewriter)) {
+      side = enzymexla::LapackSide::left;
+      uplo = enzymexla::LapackUplo::L;
+      triMatrix = lhs;
+      transpose = lhsContractingDim == 0 ? enzymexla::LapackTranspose::transpose
+                                         : enzymexla::LapackTranspose::none;
+
+      if (rhsContractingDim == 1) {
+        auto perm = rewriter.getDenseI64ArrayAttr({1, 0});
+        rhs = stablehlo::TransposeOp::create(rewriter, op.getLoc(), rhs, perm);
+      }
+      diag = canApplyLowerUnitTriPattern(lhs, rewriter) ? rewriter.getUnitAttr()
+                                                        : nullptr;
+      genMatrix = rhs;
+    } else if (canApplyUpperTriPattern(rhs, rewriter)) {
+      side = enzymexla::LapackSide::right;
+      uplo = enzymexla::LapackUplo::U;
+      triMatrix = rhs;
+      transpose = rhsContractingDim == 1 ? enzymexla::LapackTranspose::transpose
+                                         : enzymexla::LapackTranspose::none;
+
+      if (lhsContractingDim == 0) {
+        auto perm = rewriter.getDenseI64ArrayAttr({1, 0});
+        lhs = stablehlo::TransposeOp::create(rewriter, op.getLoc(), lhs, perm);
+      }
+      diag = canApplyUpperUnitTriPattern(rhs, rewriter) ? rewriter.getUnitAttr()
+                                                        : nullptr;
+      genMatrix = lhs;
+    } else if (canApplyLowerTriPattern(rhs, rewriter)) {
+      side = enzymexla::LapackSide::right;
+      uplo = enzymexla::LapackUplo::L;
+      triMatrix = rhs;
+      transpose = rhsContractingDim == 1 ? enzymexla::LapackTranspose::transpose
+                                         : enzymexla::LapackTranspose::none;
+      if (lhsContractingDim == 0) {
+        auto perm = rewriter.getDenseI64ArrayAttr({1, 0});
+        lhs = stablehlo::TransposeOp::create(rewriter, op.getLoc(), lhs, perm);
+      }
+      diag = canApplyLowerUnitTriPattern(rhs, rewriter) ? rewriter.getUnitAttr()
+                                                        : nullptr;
+      genMatrix = lhs;
+    } else {
+      return failure();
+    }
+
+    auto elemType = cast<RankedTensorType>(lhs.getType()).getElementType();
+    auto alphaType = RankedTensorType::get({}, elemType);
+
+    auto trmmOp = enzymexla::TrmmOp::create(
+        rewriter, op.getLoc(), op.getResult().getType(),
+        triMatrix, // A (triangular)
+        genMatrix, // B (general)
+        stablehlo::ConstantOp::create(
+            rewriter, op.getLoc(), alphaType,
+            cast<ElementsAttr>(makeAttr(alphaType, 1))), // alpha
+        enzymexla::LapackSideAttr::get(op.getContext(), side),
+        enzymexla::LapackUploAttr::get(op.getContext(), uplo),
+        enzymexla::LapackTransposeAttr::get(op.getContext(), transpose), diag);
+    rewriter.replaceOp(op, trmmOp.getResult());
+    return success();
+  }
+};
 
 // currently limited to non-batched dot_general
 struct DotGeneralToSyrk
@@ -31205,6 +31321,23 @@ struct FuseMulBase
     }
 
     return ((Child *)this)->fuseMul(rewriter, targetOp, op, scalarVal);
+  }
+};
+
+struct FuseMulIntoTrmm
+    : public FuseMulBase<enzymexla::TrmmOp, FuseMulIntoTrmm> {
+  using FuseMulBase<enzymexla::TrmmOp, FuseMulIntoTrmm>::FuseMulBase;
+
+  LogicalResult fuseMul(PatternRewriter &rewriter, enzymexla::TrmmOp trmmOp,
+                        stablehlo::MulOp op, Value scalarVal) {
+    auto newAlpha = stablehlo::MulOp::create(rewriter, op.getLoc(),
+                                             trmmOp.getAlpha(), scalarVal);
+
+    rewriter.replaceOpWithNewOp<enzymexla::TrmmOp>(
+        op, trmmOp.getType(), trmmOp.getA(), trmmOp.getB(), newAlpha,
+        trmmOp.getSideAttr(), trmmOp.getUploAttr(), trmmOp.getTransposeAttr(),
+        trmmOp.getUnitDiagonalAttr());
+    return success();
   }
 };
 
@@ -35980,12 +36113,14 @@ struct EnzymeHLOOptPass
         FuseAddIntoSyrk,
         FuseAddIntoSymm,
         FuseMulIntoSymm,
+        FuseMulIntoTrmm,
         SyrkSimplifyOutputUplo
       >(context);
     // clang-format on
 
     if (structured_tensors_detection) {
-      patterns.add<DotGeneralToSymm, DotGeneralToSyrk>(context);
+      patterns.add<DotGeneralToSymm, DotGeneralToSyrk, DotGeneralToTrmm>(
+          context);
     }
 
     // clang-format off
