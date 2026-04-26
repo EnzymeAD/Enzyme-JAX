@@ -331,10 +331,13 @@ struct TrmmOpLowering : public OpRewritePattern<enzymexla::TrmmOp> {
     // implementation (with results written back to B), while the cuBLAS API
     // assumes an out-of-place implementation (with results written into C).
     // We construct a new C to store the result of the computation.
-    auto zeroAttr = rewriter.getZeroAttr(Btype.getElementType());
+    // auto zeroAttr = rewriter.getZeroAttr(Btype.getElementType());
+    // llvm::errs() << "Element type: " << Btype.getElementType() << "\n";
+    // llvm::errs() << "Zero attr: " << zeroAttr << "\n";
 
-    auto C = stablehlo::ConstantOp::create(
-        rewriter, op.getLoc(), DenseElementsAttr::get(Btype, zeroAttr));
+    // auto C = stablehlo::ConstantOp::create(
+    //     rewriter, op.getLoc(), DenseElementsAttr::get(Btype, zeroAttr));
+    // llvm::errs() << "here\n";
 
     auto [alphaOperand, alphaRank] =
         createScalarOperand(rewriter, op.getLoc(), op.getAlpha(), useAlphaAttr);
@@ -363,12 +366,11 @@ struct TrmmOpLowering : public OpRewritePattern<enzymexla::TrmmOp> {
                               rewriter.getF64FloatAttr(alphaImag))};
 
     customCallTarget = rewriter.getStringAttr("enzymejax_cublas_trmm_ffi");
-    operands = {A, B, C, alphaOperand};
-    operandRanks = {rank, rank, rank, alphaRank};
+    operands = {A, B, alphaOperand};
+    operandRanks = {rank, rank, alphaRank};
 
-    aliases = rewriter.getArrayAttr({stablehlo::OutputOperandAliasAttr::get(
-        op.getContext(), {}, 2, {})}); // C
-    areColMajor = {false, false, false, true};
+    aliases = rewriter.getArrayAttr({}); // No aliasing
+    areColMajor = {false, false, true};
 
     DictionaryAttr backendConfig = rewriter.getDictionaryAttr(configAttrs);
 

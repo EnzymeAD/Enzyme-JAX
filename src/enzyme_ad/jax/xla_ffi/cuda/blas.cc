@@ -197,8 +197,7 @@ TRMM_SPECIALIZATION(cuDoubleComplex, cublasZtrmm)
 template <typename T>
 ffi::Error TrmmImpl(CUstream stream, bool side_, bool uplo_, bool trans_,
                     bool diag_, ffi::AnyBuffer a, ffi::AnyBuffer b,
-                    ffi::AnyBuffer c, const T *alpha,
-                    ffi::Result<ffi::AnyBuffer> c_out) {
+                    const T *alpha, ffi::Result<ffi::AnyBuffer> c_out) {
   FFI_ASSIGN_OR_RETURN((auto [batch, rows, cols]),
                        SplitBatch2D(b.dimensions()));
   auto a_size = side_ ? cols : rows;
@@ -242,24 +241,22 @@ template <typename T>
 ffi::Error TrmmImpl(CUstream stream, bool side, bool uplo, bool trans,
                     bool diag, bool use_alpha_attribute, double alpha_real,
                     double alpha_imag, ffi::AnyBuffer a, ffi::AnyBuffer b,
-                    ffi::AnyBuffer c, ffi::AnyBuffer alpha_,
-                    ffi::Result<ffi::AnyBuffer> c_out) {
+                    ffi::AnyBuffer alpha_, ffi::Result<ffi::AnyBuffer> c_out) {
   T host_alpha;
   FFI_RETURN_IF_ERROR(GetHostScalar<T>(stream, use_alpha_attribute, alpha_real,
                                        alpha_imag, alpha_, &host_alpha));
-  return TrmmImpl<T>(stream, side, uplo, trans, diag, a, b, c, &host_alpha,
-                     c_out);
+  return TrmmImpl<T>(stream, side, uplo, trans, diag, a, b, &host_alpha, c_out);
 }
 
 ffi::Error TrmmDispatch(CUstream stream, bool side, bool uplo, bool trans,
                         bool diag, bool use_alpha_attribute, double alpha_real,
                         double alpha_imag, ffi::AnyBuffer a, ffi::AnyBuffer b,
-                        ffi::AnyBuffer c, ffi::AnyBuffer alpha_,
+                        ffi::AnyBuffer alpha_,
                         ffi::Result<ffi::AnyBuffer> c_out) {
   auto dataType = b.element_type();
   SOLVER_BLAS_DISPATCH_IMPL(TrmmImpl, stream, side, uplo, trans, diag,
                             use_alpha_attribute, alpha_real, alpha_imag, a, b,
-                            c, alpha_, c_out);
+                            alpha_, c_out);
   return ffi::Error::InvalidArgument(absl::StrFormat(
       "Unsupported dtype %s in trmm", absl::FormatStreamed(dataType)));
 }
@@ -274,7 +271,6 @@ XLA_FFI_DEFINE_HANDLER(TrmmFfi, TrmmDispatch,
                            .Attr<bool>("use_alpha_attribute")
                            .Attr<double>("alpha_real")
                            .Attr<double>("alpha_imag")
-                           .Arg<ffi::AnyBuffer>()
                            .Arg<ffi::AnyBuffer>()
                            .Arg<ffi::AnyBuffer>()
                            .Arg<ffi::AnyBuffer>()
