@@ -45,7 +45,7 @@ func.func @main(%arg0: tensor<16384x16384xf64> {tf.aliasing_output = 0 : i32}) -
     // DOWN: %[[DUS:.*]] = stablehlo.dynamic_update_slice
     // DOWN-NEXT: %[[OLD_TRANS:.*]] = stablehlo.transpose %[[DUS]], dims = [1, 0]
     // DOWN-NEXT: %[[NEW_TRANS:.*]] = stablehlo.transpose %[[OLD_TRANS]], dims = [1, 0]
-    // DOWN-NEXT stablehlo.return %[[I:.*]], %[[DUS]], %[[NEW_TRANS]]
+    // DOWN-NEXT: stablehlo.return %[[I:.*]], %[[DUS]], %[[NEW_TRANS]]
     %17 = stablehlo.dynamic_update_slice %2, %16, %c, %c : (tensor<16384x16384xf64>, tensor<16382x16382xf64>, tensor<i32>, tensor<i32>) -> tensor<16384x16384xf64>
     %18 = stablehlo.transpose %17, dims = [1, 0] : (tensor<16384x16384xf64>) -> tensor<16384x16384xf64>
     stablehlo.return %1, %17, %18 : tensor<i64>, tensor<16384x16384xf64>, tensor<16384x16384xf64>
