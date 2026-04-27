@@ -35258,30 +35258,34 @@ struct NegateReduceWindowSub final
   }
 };
 
-// moves transpose at the beginning/end of the body of a while op to the end/beginning, hopefully
-// fusing with other transpose ops or cancelling
+// moves transpose at the beginning/end of the body of a while op to the
+// end/beginning, hopefully fusing with other transpose ops or cancelling
 struct WhileCyclicTranposePropagate final
-    : CheckedOpRewritePattern<stablehlo::WhileOp, WhileCyclicTranposePropagate> {
+    : CheckedOpRewritePattern<stablehlo::WhileOp,
+                              WhileCyclicTranposePropagate> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
   bool prop_up;
 
   WhileCyclicTranposePropagate(bool propUp, MLIRContext *context,
-                                    PatternBenefit benefit = 1)
+                               PatternBenefit benefit = 1)
       : CheckedOpRewritePattern(context, benefit), prop_up(propUp) {}
 
   LogicalResult matchAndRewriteImpl(stablehlo::WhileOp op,
                                     PatternRewriter &rewriter) const {
-    // llvm::errs() << "[@] Trying to propagate transpose through while body boundary, prop_up = " << prop_up << "\n";
+    // llvm::errs() << "[@] Trying to propagate transpose through while body
+    // boundary, prop_up = " << prop_up << "\n";
 
     OpBuilder::InsertionGuard guard(rewriter);
-    auto& body = op.getBody().front();
-    auto& cond = op.getCond().front();
+    auto &body = op.getBody().front();
+    auto &cond = op.getCond().front();
     // auto _return = cast<stablehlo::ReturnOp>(body.getTerminator());
 
-    // idx of argument and returning loop variables that are the resul of a transpose
-    SmallVector<std::tuple<int, Value>> targets = prop_up ? findTransposeRetTargets(op, rewriter)
-                                      : findArgumentTransposeTargets(op, rewriter);
+    // idx of argument and returning loop variables that are the resul of a
+    // transpose
+    SmallVector<std::tuple<int, Value>> targets =
+        prop_up ? findTransposeRetTargets(op, rewriter)
+                : findArgumentTransposeTargets(op, rewriter);
 
     if (targets.empty()) {
       // llvm::errs() << "[@] No targets found\n";
@@ -35296,10 +35300,11 @@ struct WhileCyclicTranposePropagate final
     if (prop_up) {
       // move transpose from return to beginning of body
       for (auto [idx, target] : targets) {
-        auto old_trans_op = dyn_cast<stablehlo::TransposeOp>(target.getDefiningOp());
+        auto old_trans_op =
+            dyn_cast<stablehlo::TransposeOp>(target.getDefiningOp());
         auto perm = old_trans_op.getPermutation();
         auto inverse_perm = llvm::to_vector(llvm::reverse(perm));
-        
+
         // bypass transpose uses
         auto old_trans_operand = old_trans_op.getOperand();
         rewriter.replaceAllUsesWith(old_trans_op, old_trans_operand);
@@ -35308,27 +35313,31 @@ struct WhileCyclicTranposePropagate final
         for (auto block : {&body, &cond}) {
           rewriter.setInsertionPointToStart(block);
           auto block_arg = block->getArgument(idx);
-          auto new_trans_op = rewriter.create<stablehlo::TransposeOp>(target.getLoc(), block_arg, perm);
-          rewriter.replaceAllUsesExcept(block_arg, new_trans_op, {new_trans_op});
+          auto new_trans_op = rewriter.create<stablehlo::TransposeOp>(
+              target.getLoc(), block_arg, perm);
+          rewriter.replaceAllUsesExcept(block_arg, new_trans_op,
+                                        {new_trans_op});
         }
-        
+
         // transpose the corresponding while result
         {
           rewriter.setInsertionPointAfter(op);
-          auto new_trans_op = rewriter.create<stablehlo::TransposeOp>(target.getLoc(), op.getResult(idx), perm);
-          rewriter.replaceAllUsesExcept(op.getResult(idx), new_trans_op, {new_trans_op});
+          auto new_trans_op = rewriter.create<stablehlo::TransposeOp>(
+              target.getLoc(), op.getResult(idx), perm);
+          rewriter.replaceAllUsesExcept(op.getResult(idx), new_trans_op,
+                                        {new_trans_op});
         }
 
         // inverse transpose of the while operand
         {
           rewriter.setInsertionPoint(op);
           auto operand = op.getOperand()[idx];
-          auto new_trans_op = rewriter.create<stablehlo::TransposeOp>(target.getLoc(), operand, inverse_perm);
+          auto new_trans_op = rewriter.create<stablehlo::TransposeOp>(
+              target.getLoc(), operand, inverse_perm);
 
           rewriter.startOpModification(op);
-          rewriter.modifyOpInPlace(op, [&] () {
-            op.setOperand(idx, new_trans_op);
-          });
+          rewriter.modifyOpInPlace(op,
+                                   [&]() { op.setOperand(idx, new_trans_op); });
           rewriter.finalizeOpModification(op);
         }
       }
@@ -35349,12 +35358,12 @@ struct WhileCyclicTranposePropagate final
           auto returnOp = body.getTerminator();
           auto return_operand = returnOp->getOperand(idx);
 
-          auto new_trans_op = rewriter.create<stablehlo::TransposeOp>(target.getLoc(), return_operand, perm);
+          auto new_trans_op = rewriter.create<stablehlo::TransposeOp>(
+              target.getLoc(), return_operand, perm);
 
           rewriter.startOpModification(returnOp);
-          rewriter.modifyOpInPlace(returnOp, [&] () {
-            returnOp->setOperand(idx, new_trans_op);
-          });
+          rewriter.modifyOpInPlace(
+              returnOp, [&]() { returnOp->setOperand(idx, new_trans_op); });
           rewriter.finalizeOpModification(returnOp);
         }
 
@@ -35362,15 +35371,18 @@ struct WhileCyclicTranposePropagate final
         {
           rewriter.setInsertionPointToStart(&cond);
           auto block_arg = cond.getArgument(idx);
-          auto new_trans_op = rewriter.create<stablehlo::TransposeOp>(target.getLoc(), block_arg, inverse_perm);
-          rewriter.replaceAllUsesExcept(block_arg, new_trans_op, {new_trans_op});
+          auto new_trans_op = rewriter.create<stablehlo::TransposeOp>(
+              target.getLoc(), block_arg, inverse_perm);
+          rewriter.replaceAllUsesExcept(block_arg, new_trans_op,
+                                        {new_trans_op});
         }
 
         // inverse transpose the corresponding while result
         {
           rewriter.setInsertionPointAfter(op);
           auto result = op.getResult(idx);
-          auto new_trans_op = rewriter.create<stablehlo::TransposeOp>(target.getLoc(), result, inverse_perm);
+          auto new_trans_op = rewriter.create<stablehlo::TransposeOp>(
+              target.getLoc(), result, inverse_perm);
           rewriter.replaceAllUsesExcept(result, new_trans_op, {new_trans_op});
         }
 
@@ -35378,11 +35390,11 @@ struct WhileCyclicTranposePropagate final
         {
           rewriter.setInsertionPoint(op);
           auto operand = op.getOperand()[idx];
-          auto new_trans_op = rewriter.create<stablehlo::TransposeOp>(target.getLoc(), operand, perm);
+          auto new_trans_op = rewriter.create<stablehlo::TransposeOp>(
+              target.getLoc(), operand, perm);
           rewriter.startOpModification(op);
-          rewriter.modifyOpInPlace(op, [&] () {
-            op.setOperand(idx, new_trans_op);
-          });
+          rewriter.modifyOpInPlace(op,
+                                   [&]() { op.setOperand(idx, new_trans_op); });
           rewriter.finalizeOpModification(op);
         }
       }
@@ -35394,26 +35406,32 @@ struct WhileCyclicTranposePropagate final
     return success();
   }
 
-  SmallVector<std::tuple<int, Value>> findArgumentTransposeTargets(stablehlo::WhileOp op, PatternRewriter &rewriter) const {
-    auto& body = op.getBody().front();
+  SmallVector<std::tuple<int, Value>>
+  findArgumentTransposeTargets(stablehlo::WhileOp op,
+                               PatternRewriter &rewriter) const {
+    auto &body = op.getBody().front();
 
     SmallVector<std::tuple<int, Value>> targets;
     for (auto arg : body.getArguments())
-      if (arg.hasOneUse() && isa<stablehlo::TransposeOp>(arg.getUsers().begin().getCurrent().getUser()))
+      if (arg.hasOneUse() && isa<stablehlo::TransposeOp>(
+                                 arg.getUsers().begin().getCurrent().getUser()))
         targets.push_back({arg.getArgNumber(), arg});
 
     return targets;
   }
 
-  SmallVector<std::tuple<int, Value>> findTransposeRetTargets(stablehlo::WhileOp op, PatternRewriter &rewriter) const {
-    auto& body = op.getBody().front();
+  SmallVector<std::tuple<int, Value>>
+  findTransposeRetTargets(stablehlo::WhileOp op,
+                          PatternRewriter &rewriter) const {
+    auto &body = op.getBody().front();
     auto _return = cast<stablehlo::ReturnOp>(body.getTerminator());
 
     SmallVector<std::tuple<int, Value>> targets;
     for (auto [i, retvar] : llvm::enumerate(_return.getOperands()))
-      if (retvar.hasOneUse() && isa<stablehlo::TransposeOp>(retvar.getDefiningOp()))
+      if (retvar.hasOneUse() &&
+          isa<stablehlo::TransposeOp>(retvar.getDefiningOp()))
         targets.push_back({i, retvar});
-    
+
     return targets;
   }
 };
@@ -36035,7 +36053,8 @@ struct EnzymeHLOOptPass
                    TransposeReverse, TransposeBatchNormTraining,
                    TransposeBatchNormInference, TransposeBatchNormGrad,
                    TransposeIf, TransposeFFT, TransposeReshape>(context);
-      patterns.add<TransposeElementwise, WhileCyclicTranposePropagate>(true, context);
+      patterns.add<TransposeElementwise, WhileCyclicTranposePropagate>(true,
+                                                                       context);
     }
 
     if (passses & (2048 * 64)) {
