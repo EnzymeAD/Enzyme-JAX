@@ -35346,14 +35346,16 @@ struct WhileBodyBoundaryTransposePropagate final
         // update return operand with the transpose operand
         {
           rewriter.setInsertionPoint(body.getTerminator());
-          auto new_trans_op = rewriter.create<stablehlo::TransposeOp>(target.getLoc(), target, perm);
-
           auto returnOp = body.getTerminator();
-          rewriter.startOpModification(body.getTerminator());
+          auto return_operand = returnOp->getOperand(idx);
+
+          auto new_trans_op = rewriter.create<stablehlo::TransposeOp>(target.getLoc(), return_operand, perm);
+
+          rewriter.startOpModification(returnOp);
           rewriter.modifyOpInPlace(returnOp, [&] () {
             returnOp->setOperand(idx, new_trans_op);
           });
-          rewriter.finalizeOpModification(op);
+          rewriter.finalizeOpModification(returnOp);
         }
 
         // inverse transpose the corresponding cond region argument
