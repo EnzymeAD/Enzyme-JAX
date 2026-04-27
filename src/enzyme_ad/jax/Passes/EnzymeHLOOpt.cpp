@@ -35272,8 +35272,7 @@ struct WhileBodyBoundaryTransposePropagate final
 
   LogicalResult matchAndRewriteImpl(stablehlo::WhileOp op,
                                     PatternRewriter &rewriter) const {
-    llvm::errs() << "[@] Trying to propagate transpose through while body boundary, prop_up = " << prop_up << "\n";
-    op.dump();
+    // llvm::errs() << "[@] Trying to propagate transpose through while body boundary, prop_up = " << prop_up << "\n";
 
     OpBuilder::InsertionGuard guard(rewriter);
     auto& body = op.getBody().front();
@@ -35285,14 +35284,14 @@ struct WhileBodyBoundaryTransposePropagate final
                                       : findArgumentTransposeTargets(op, rewriter);
 
     if (targets.empty()) {
-      llvm::errs() << "[@] No targets found\n";
+      // llvm::errs() << "[@] No targets found\n";
       return failure();
     }
 
-    llvm::errs() << "[@] Found targets: ";
-    for (auto [idx, value] : targets)
-      llvm::errs() << idx << ", ";
-    llvm::errs() << "\n";
+    // llvm::errs() << "[@] Found targets: ";
+    // for (auto [idx, value] : targets)
+    //   llvm::errs() << idx << ", ";
+    // llvm::errs() << "\n";
 
     if (prop_up) {
       // move transpose from return to beginning of body
@@ -35387,8 +35386,8 @@ struct WhileBodyBoundaryTransposePropagate final
       }
     }
 
-    llvm::errs() << "[@] Finished propagating transpose\n";
-    op.getOperation()->getParentOp()->dump();
+    // llvm::errs() << "[@] Finished propagating transpose\n";
+    // op.getOperation()->getParentOp()->dump();
 
     return success();
   }
