@@ -3167,3 +3167,18 @@ def ApplyScatterOfScatterSimplifyPatterns : EnzymeHLOPatternOp<
     "scatter_of_scatter_simplify"> {
   let patterns = ["ScatterOfScatterSimplify"];
 }
+
+def ApplyWhileBodyBoundaryTransposePropagate : EnzymeHLOParameterizedPatternOp<
+    "while_body_boundary_transpose_propagate"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(true)))};
+    }
+  }];
+}

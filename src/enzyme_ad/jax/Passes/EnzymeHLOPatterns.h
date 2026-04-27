@@ -144,6 +144,8 @@ void addMultiSliceLICM(RewritePatternSet &patterns, bool single_user,
                        MLIRContext &context, PatternBenefit benefit);
 void addMultiRotateLICM(RewritePatternSet &patterns, bool single_user,
                         MLIRContext &context, PatternBenefit benefit);
+void addWhileBodyBoundaryTransposePropagate(RewritePatternSet &patterns, bool propUp,
+                                        MLIRContext &context, PatternBenefit benefit);
 
 } // namespace mlir::transform
 
