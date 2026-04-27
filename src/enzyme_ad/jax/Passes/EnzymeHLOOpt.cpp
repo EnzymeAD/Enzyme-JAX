@@ -35310,14 +35310,14 @@ struct WhileBodyBoundaryTransposePropagate final
           rewriter.setInsertionPointToStart(block);
           auto block_arg = block->getArgument(idx);
           auto new_trans_op = rewriter.create<stablehlo::TransposeOp>(target.getLoc(), block_arg, perm);
-          rewriter.replaceAllUsesWith(block_arg, new_trans_op);
+          rewriter.replaceAllUsesExcept(block_arg, new_trans_op, {new_trans_op});
         }
         
         // transpose the corresponding while result
         {
           rewriter.setInsertionPointAfter(op);
           auto new_trans_op = rewriter.create<stablehlo::TransposeOp>(target.getLoc(), op.getResult(idx), perm);
-          rewriter.replaceAllUsesWith(op.getResult(idx), new_trans_op);
+          rewriter.replaceAllUsesExcept(op.getResult(idx), new_trans_op, {new_trans_op});
         }
 
         // inverse transpose of the while operand
@@ -35362,7 +35362,7 @@ struct WhileBodyBoundaryTransposePropagate final
           rewriter.setInsertionPointToStart(&cond);
           auto block_arg = cond.getArgument(idx);
           auto new_trans_op = rewriter.create<stablehlo::TransposeOp>(target.getLoc(), block_arg, inverse_perm);
-          rewriter.replaceAllUsesWith(block_arg, new_trans_op);
+          rewriter.replaceAllUsesExcept(block_arg, new_trans_op, {new_trans_op});
         }
 
         // inverse transpose the corresponding while result
@@ -35370,7 +35370,7 @@ struct WhileBodyBoundaryTransposePropagate final
           rewriter.setInsertionPointAfter(op);
           auto result = op.getResult(idx);
           auto new_trans_op = rewriter.create<stablehlo::TransposeOp>(target.getLoc(), result, inverse_perm);
-          rewriter.replaceAllUsesWith(result, new_trans_op);
+          rewriter.replaceAllUsesExcept(result, new_trans_op, {new_trans_op});
         }
 
         // transpose of the while operand
