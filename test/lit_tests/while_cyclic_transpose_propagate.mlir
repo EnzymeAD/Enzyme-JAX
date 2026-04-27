@@ -1,5 +1,5 @@
-// RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td="patterns=while_body_boundary_transpose_simplify(1)" --transform-interpreter --enzyme-hlo-remove-transform | FileCheck %s --check-prefix=UP
-// RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td="patterns=while_body_boundary_transpose_simplify(0)" --transform-interpreter --enzyme-hlo-remove-transform | FileCheck %s --check-prefix=DOWN
+// RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td="patterns=while_cyclic_transpose_propagate(1)" --transform-interpreter --enzyme-hlo-remove-transform | FileCheck %s --check-prefix=UP
+// RUN: enzymexlamlir-opt %s --enzyme-hlo-generate-td="patterns=while_cyclic_transpose_propagate(0)" --transform-interpreter --enzyme-hlo-remove-transform | FileCheck %s --check-prefix=DOWN
 
 func.func @main(%arg0: tensor<16384x16384xf64> {tf.aliasing_output = 0 : i32}) -> tensor<16384x16384xf64> {
   %c = stablehlo.constant dense<1> : tensor<i32>

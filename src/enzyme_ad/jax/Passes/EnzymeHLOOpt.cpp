@@ -35260,13 +35260,13 @@ struct NegateReduceWindowSub final
 
 // moves transpose at the beginning/end of the body of a while op to the end/beginning, hopefully
 // fusing with other transpose ops or cancelling
-struct WhileBodyBoundaryTransposePropagate final
-    : CheckedOpRewritePattern<stablehlo::WhileOp, WhileBodyBoundaryTransposePropagate> {
+struct WhileCyclicTranposePropagate final
+    : CheckedOpRewritePattern<stablehlo::WhileOp, WhileCyclicTranposePropagate> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
   bool prop_up;
 
-  WhileBodyBoundaryTransposePropagate(bool propUp, MLIRContext *context,
+  WhileCyclicTranposePropagate(bool propUp, MLIRContext *context,
                                     PatternBenefit benefit = 1)
       : CheckedOpRewritePattern(context, benefit), prop_up(propUp) {}
 
@@ -35797,10 +35797,10 @@ void mlir::transform::addWrapUnaryElementwise(RewritePatternSet &patterns,
   patterns.insert<WrapUnaryElementwise>(onlySingleUser, &context, benefit);
 }
 
-void mlir::transform::addWhileBodyBoundaryTransposePropagate(
+void mlir::transform::addWhileCyclicTranposePropagate(
     RewritePatternSet &patterns, bool propUp, MLIRContext &context,
     PatternBenefit benefit) {
-  patterns.insert<WhileBodyBoundaryTransposePropagate>(propUp, &context, benefit);
+  patterns.insert<WhileCyclicTranposePropagate>(propUp, &context, benefit);
 }
 
 namespace {
@@ -36026,7 +36026,7 @@ struct EnzymeHLOOptPass
     }
 
     if (passses & (2048 * 32)) {
-      patterns.add</*TransposeWhile,*/ TransposeSliceBase<stablehlo::SliceOp>,
+      patterns.add<TransposeWhile, TransposeSliceBase<stablehlo::SliceOp>,
                    TransposeLikeBroadcastSliceBase<stablehlo::SliceOp>,
                    TransposeConcat, TransposeDUS, TransposeIota,
                    TransposeReduceWindow, TransposeReduce, TransposeSelect,
@@ -36035,8 +36035,7 @@ struct EnzymeHLOOptPass
                    TransposeReverse, TransposeBatchNormTraining,
                    TransposeBatchNormInference, TransposeBatchNormGrad,
                    TransposeIf, TransposeFFT, TransposeReshape>(context);
-      patterns.add<TransposeElementwise>(true, context);
-      // patterns.add<WhileBodyBoundaryTransposePropagate>(true, context);
+      patterns.add<TransposeElementwise, WhileCyclicTranposePropagate>(true, context);
     }
 
     if (passses & (2048 * 64)) {
@@ -36259,8 +36258,6 @@ struct EnzymeHLOOptPass
         BinaryOpComplexSimplifyBase<stablehlo::AddOp>,
         BinaryOpComplexSimplifyBase<stablehlo::SubtractOp>
       >(context);
-
-    // patterns.add<WhileBodyBoundaryTransposePropagate>(true, context);
 
     patterns.add<ReshapeElementwise>(true, true, context);
 

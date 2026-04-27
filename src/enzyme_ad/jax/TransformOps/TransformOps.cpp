@@ -250,9 +250,10 @@ void EnzymeHLOUnroll::populatePatterns(RewritePatternSet &patterns) {
   addEnzymeHLOUnroll(patterns, getParameter(), *getContext(),
                      PatternBenefit(getBenefit().value_or(0)));
 }
-void ApplyWhileBodyBoundaryTransposePropagate::populatePatterns(RewritePatternSet &patterns) {
-  addWhileBodyBoundaryTransposePropagate(patterns, getParameter(), *getContext(),
-                                        PatternBenefit(getBenefit().value_or(1)));
+void ApplyWhileCyclicTranposePropagate::populatePatterns(
+    RewritePatternSet &patterns) {
+  addWhileCyclicTranposePropagate(patterns, getParameter(), *getContext(),
+                                  PatternBenefit(getBenefit().value_or(1)));
 }
 
 } // namespace transform

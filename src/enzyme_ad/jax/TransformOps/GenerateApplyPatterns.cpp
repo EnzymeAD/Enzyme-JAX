@@ -173,7 +173,7 @@ LogicalResult parseTransform(OpBuilder &builder, Location loc,
           opName == "self_subtract_to_convolution_like" ||
           opName == "self_add_to_convolution_like" ||
           opName == "self_mul_to_convolution_like" ||
-          opName == "while_body_boundary_transpose_propagate")
+          opName == "while_cyclic_transpose_propagate")
         state.addAttribute("parameter", builder.getBoolAttr(parameter));
       else
         state.addAttribute("parameter", builder.getI64IntegerAttr(parameter));

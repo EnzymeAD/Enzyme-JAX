@@ -3168,8 +3168,8 @@ def ApplyScatterOfScatterSimplifyPatterns : EnzymeHLOPatternOp<
   let patterns = ["ScatterOfScatterSimplify"];
 }
 
-def ApplyWhileBodyBoundaryTransposePropagate : EnzymeHLOParameterizedPatternOp<
-    "while_body_boundary_transpose_propagate"> {
+def ApplyWhileCyclicTranposePropagate : EnzymeHLOParameterizedPatternOp<
+    "while_cyclic_transpose_propagate"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
   let assemblyFormat = "attr-dict";
   // TODO: this should be made better searchable.
