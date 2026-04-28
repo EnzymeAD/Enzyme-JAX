@@ -571,7 +571,7 @@ struct tensor<T, n0, N...>
   PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
 
   ModulePassManager MPM;
-  if (Error Err = PB.parsePassPipeline(MPM, "default<O3>")) {
+  if (Error Err = PB.parsePassPipeline(MPM, "default<O1>")) {
     throw nanobind::value_error(
         (Twine("failed to parse pass pipeline: ") + toString(std::move(Err)))
             .str()
