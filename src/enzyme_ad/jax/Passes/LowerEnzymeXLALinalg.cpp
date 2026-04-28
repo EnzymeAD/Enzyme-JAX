@@ -122,9 +122,40 @@ struct TridiagonalSolveOpLowering
                                         LLVM::Linkage::External);
     }
 
+    std::string lapackFnWrapper = lapackFn + "wrapper_";
+
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(lapackFnWrapper)) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+      auto funcType = LLVM::LLVMFunctionType::get(llvmVoidType,
+                                                  {
+                                                      llvmPtrType, // n
+                                                      llvmPtrType, // nrhs
+                                                      llvmPtrType, // dl
+                                                      llvmPtrType, // d
+                                                      llvmPtrType, // du
+                                                      llvmPtrType, // b
+                                                      llvmPtrType, // ldb
+                                                      llvmPtrType, // info
+                                                  },
+                                                  false);
+
+      auto funcOp =
+          LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), lapackFnWrapper,
+                                   funcType, LLVM::Linkage::Private);
+      rewriter.setInsertionPointToStart(funcOp.addEntryBlock(rewriter));
+
+      SmallVector<Value> args(funcOp.getArguments().begin(),
+                              funcOp.getArguments().end());
+
+      LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{},
+                           SymbolRefAttr::get(ctx, lapackFn), args);
+      LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
+    }
+
     static int64_t fn_counter = 0;
-    std::string funcFnName =
-        lapackFn + "wrapper_" + std::to_string(fn_counter++);
+    std::string funcFnName = lapackFnWrapper + std::to_string(fn_counter++);
 
     SmallVector<bool> isColMajorArrOperands(8, true);
     SmallVector<int64_t> operandRanks = {0, 0, 1, 1, 1, 2, 0, 0};
@@ -138,11 +169,11 @@ struct TridiagonalSolveOpLowering
         getSHLOLayout(rewriter, outputRanks, isColMajorArrResults, 2);
 
     SmallVector<Attribute> aliases = {
-        stablehlo::OutputOperandAliasAttr::get(ctx, {}, 2, {}), // dl
-        stablehlo::OutputOperandAliasAttr::get(ctx, {}, 3, {}), // d
-        stablehlo::OutputOperandAliasAttr::get(ctx, {}, 4, {}), // du
-        stablehlo::OutputOperandAliasAttr::get(ctx, {}, 5, {}), // b
-        stablehlo::OutputOperandAliasAttr::get(ctx, {}, 7, {}), // info
+        stablehlo::OutputOperandAliasAttr::get(ctx, {0}, 2, {}), // dl
+        stablehlo::OutputOperandAliasAttr::get(ctx, {1}, 3, {}), // d
+        stablehlo::OutputOperandAliasAttr::get(ctx, {2}, 4, {}), // du
+        stablehlo::OutputOperandAliasAttr::get(ctx, {3}, 5, {}), // b
+        stablehlo::OutputOperandAliasAttr::get(ctx, {4}, 7, {}), // info
     };
 
     func::FuncOp shloFunc;
@@ -189,7 +220,7 @@ struct TridiagonalSolveOpLowering
           rewriter, op.getLoc(),
           TypeRange{op.getDl().getType(), op.getD().getType(),
                     op.getDu().getType(), op.getB().getType(), intType},
-          mlir::FlatSymbolRefAttr::get(ctx, lapackFn),
+          mlir::FlatSymbolRefAttr::get(ctx, lapackFnWrapper),
           ValueRange{n, nrhs, dl, d, du, b, ldb, info},
           rewriter.getStringAttr(""),
           /*operand_layouts=*/operandLayouts,
