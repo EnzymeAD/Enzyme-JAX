@@ -802,6 +802,13 @@ def EnzymeLiftControlFlowToSCFPass : Pass<"enzyme-lift-cf-to-scf"> {
   ];
 }
 
+def LLVMToOMP : Pass<"llvm-to-omp", "ModuleOp"> {
+  let summary = "Lift LLVM dialect OMP runtime calls to OpenMP dialect";
+  let dependentDialects = ["mlir::omp::OpenMPDialect",
+                            "mlir::LLVM::LLVMDialect"];
+}
+
+
 def LLVMToAffineAccessPass : Pass<"llvm-to-affine-access"> {
   let summary = "";
   let dependentDialects = [
