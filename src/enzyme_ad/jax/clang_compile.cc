@@ -638,7 +638,7 @@ struct tensor<T, n0, N...>
         ss << *mod << "\n";
         ss << " unsupported value to erase:\n";
         ss << " cur: " << *cur << " prev: " << *prev << "\n";
-        return absl::InternalError(err_str);
+        return absl::InternalError(ss.str());
       }
       for (auto I : toErase) {
         I->eraseFromParent();
