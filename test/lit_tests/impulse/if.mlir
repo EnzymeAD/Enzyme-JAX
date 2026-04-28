@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(lower-probprog-to-stablehlo{backend=cpu})" | FileCheck %s
+// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(lower-impulse-to-stablehlo{backend=cpu})" | FileCheck %s
 
 module {
   // CHECK:       func.func @test_simple_if(%[[ARG0:.+]]: tensor<i1>, %[[ARG1:.+]]: tensor<f64>, %[[ARG2:.+]]: tensor<f64>) -> tensor<f64> {
@@ -10,10 +10,10 @@ module {
   // CHECK-NEXT:    return %[[RESULT]] : tensor<f64>
   // CHECK-NEXT:  }
   func.func @test_simple_if(%pred: tensor<i1>, %a: tensor<f64>, %b: tensor<f64>) -> tensor<f64> {
-    %result = enzyme.if (%pred) ({
-      enzyme.yield %a : tensor<f64>
+    %result = impulse.if (%pred) ({
+      impulse.yield %a : tensor<f64>
     }, {
-      enzyme.yield %b : tensor<f64>
+      impulse.yield %b : tensor<f64>
     }) : (tensor<i1>) -> tensor<f64>
     return %result : tensor<f64>
   }
@@ -29,12 +29,12 @@ module {
   // CHECK-NEXT:    return %[[RESULT]] : tensor<f64>
   // CHECK-NEXT:  }
   func.func @test_if_with_computation(%pred: tensor<i1>, %x: tensor<f64>, %y: tensor<f64>) -> tensor<f64> {
-    %result = enzyme.if (%pred) ({
+    %result = impulse.if (%pred) ({
       %add = stablehlo.add %x, %y : tensor<f64>
-      enzyme.yield %add : tensor<f64>
+      impulse.yield %add : tensor<f64>
     }, {
       %mul = stablehlo.multiply %x, %y : tensor<f64>
-      enzyme.yield %mul : tensor<f64>
+      impulse.yield %mul : tensor<f64>
     }) : (tensor<i1>) -> tensor<f64>
     return %result : tensor<f64>
   }
@@ -48,10 +48,10 @@ module {
   // CHECK-NEXT:    return %[[RESULT]]#0, %[[RESULT]]#1 : tensor<f64>, tensor<f64>
   // CHECK-NEXT:  }
   func.func @test_if_multiple_results(%pred: tensor<i1>, %a: tensor<f64>, %b: tensor<f64>) -> (tensor<f64>, tensor<f64>) {
-    %r0, %r1 = enzyme.if (%pred) ({
-      enzyme.yield %a, %b : tensor<f64>, tensor<f64>
+    %r0, %r1 = impulse.if (%pred) ({
+      impulse.yield %a, %b : tensor<f64>, tensor<f64>
     }, {
-      enzyme.yield %b, %a : tensor<f64>, tensor<f64>
+      impulse.yield %b, %a : tensor<f64>, tensor<f64>
     }) : (tensor<i1>) -> (tensor<f64>, tensor<f64>)
     return %r0, %r1 : tensor<f64>, tensor<f64>
   }
@@ -78,18 +78,18 @@ module {
     %c1 = stablehlo.constant dense<1.0> : tensor<f64>
     %c2 = stablehlo.constant dense<2.0> : tensor<f64>
 
-    %result = enzyme.if (%p1) ({
-      %inner = enzyme.if (%p2) ({
+    %result = impulse.if (%p1) ({
+      %inner = impulse.if (%p2) ({
         %add = stablehlo.add %x, %c1 : tensor<f64>
-        enzyme.yield %add : tensor<f64>
+        impulse.yield %add : tensor<f64>
       }, {
         %sub = stablehlo.subtract %x, %c1 : tensor<f64>
-        enzyme.yield %sub : tensor<f64>
+        impulse.yield %sub : tensor<f64>
       }) : (tensor<i1>) -> tensor<f64>
-      enzyme.yield %inner : tensor<f64>
+      impulse.yield %inner : tensor<f64>
     }, {
       %mul = stablehlo.multiply %x, %c2 : tensor<f64>
-      enzyme.yield %mul : tensor<f64>
+      impulse.yield %mul : tensor<f64>
     }) : (tensor<i1>) -> tensor<f64>
 
     return %result : tensor<f64>

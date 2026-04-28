@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(lower-probprog-to-stablehlo{backend=cpu},canonicalize,cse,canonicalize)" | FileCheck %s --check-prefix=CPU
+// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(lower-impulse-to-stablehlo{backend=cpu},canonicalize,cse,canonicalize)" | FileCheck %s --check-prefix=CPU
 
 module {
   // CPU:  func.func @test_split_2(%arg0: tensor<2xui64>) -> (tensor<2xui64>, tensor<2xui64>) {
@@ -296,7 +296,7 @@ module {
   // CPU-NEXT:    return %267, %274 : tensor<2xui64>, tensor<2xui64>
   // CPU-NEXT:  }
   func.func @test_split_2(%rng: tensor<2xui64>) -> (tensor<2xui64>, tensor<2xui64>) {
-    %key1, %key2 = enzyme.randomSplit %rng : (tensor<2xui64>) -> (tensor<2xui64>, tensor<2xui64>)
+    %key1, %key2 = impulse.randomSplit %rng : (tensor<2xui64>) -> (tensor<2xui64>, tensor<2xui64>)
     return %key1, %key2 : tensor<2xui64>, tensor<2xui64>
   }
 
@@ -602,7 +602,7 @@ module {
   // CPU-NEXT:    return %267, %274, %281 : tensor<2xui64>, tensor<2xui64>, tensor<2xui64>
   // CPU-NEXT:  }
   func.func @test_split_3(%rng: tensor<2xui64>) -> (tensor<2xui64>, tensor<2xui64>, tensor<2xui64>) {
-    %key1, %key2, %key3 = enzyme.randomSplit %rng : (tensor<2xui64>) -> (tensor<2xui64>, tensor<2xui64>, tensor<2xui64>)
+    %key1, %key2, %key3 = impulse.randomSplit %rng : (tensor<2xui64>) -> (tensor<2xui64>, tensor<2xui64>, tensor<2xui64>)
     return %key1, %key2, %key3 : tensor<2xui64>, tensor<2xui64>, tensor<2xui64>
   }
 }
