@@ -26,6 +26,9 @@ def : EnzymeXLAControlFlowOp<"GPUWrapperOp", [{
   }
 }]>;
 
+def : EnzymeXLAReadOnlyIdentityOp<"Pointer2MemrefOp", [0]>;
+def : EnzymeXLAReadOnlyIdentityOp<"Memref2PointerOp", [0]>;
+
 class HLOConstantFP<string m> : ConstantFP<m, "stablehlo", "ConstantOp", "mlir::ElementsAttr">;
 
 // Required operations from the EnzymeXLA dialect
