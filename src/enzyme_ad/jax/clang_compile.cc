@@ -19,6 +19,7 @@
 #include <string>
 #include <sys/time.h>
 #include <unistd.h>
+#include <regex>
 
 #include "clang/CodeGen/CodeGenAction.h"
 #include "llvm-c/Core.h"
@@ -667,15 +668,16 @@ struct tensor<T, n0, N...>
   return mod;
 }
 
-std::string make_type(std::string typenam, llvm::ArrayRef<int64_t> shape,
-                      bool constv, ::Language lang) {
-  std::string s =
-      std::string(constv ? "const " : "") + "enzyme::tensor<" + typenam;
-  for (auto v : shape) {
-    s += ", " + std::to_string(v);
+std::string make_type(std::string typenam,
+                               llvm::ArrayRef<int64_t> shape, bool constv,
+                               ::Language lang) {
+    std::string s =
+        std::string(constv ? "const " : "") + "enzyme::tensor<" + typenam;
+    for (auto v : shape) {
+      s += ", " + std::to_string(v);
+    }
+    return s + ">";
   }
-  return s + ">";
-}
 
 std::tuple<std::unique_ptr<llvm::Module>, std::unique_ptr<llvm::LLVMContext>,
            size_t, size_t>

@@ -78,6 +78,10 @@
 
 #include "Integrations/c/EnzymeXLA.h"
 
+enum class ABI { Primal, Forward, Augmented, Reverse, Tape };
+
+enum class Language : int { CPP = 0, LLVM = 1, MHLO = 2 };
+
 namespace {
 class CpuKernel {
   // static llvm::orc::ExecutionSession ES;

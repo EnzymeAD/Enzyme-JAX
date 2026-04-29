@@ -12,6 +12,11 @@
 #include "nanobind/nanobind.h"
 #include "llvm/IR/Module.h"
 #include <string>
+#include "nanobind/nanobind.h"
+
+enum class ABI { Primal, Forward, Augmented, Reverse, Tape };
+
+enum class Language : int { CPP = 0, LLVM = 1, MHLO = 2 };
 
 enum class ABI { Primal, Forward, Augmented, Reverse, Tape };
 
