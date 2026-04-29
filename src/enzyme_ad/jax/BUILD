@@ -111,6 +111,12 @@ cc_library(
         "@llvm-project//llvm:Support",
         "@llvm-project//llvm:TargetParser",
         "@nanobind",
+
+        "@xla//xla/hlo/ir:hlo",
+        "@xla//xla/service/cpu:cpu_executable",
+        "@xla//xla/client:local_client",
+
+        ":compile_with_xla",
     ],
 )
 
