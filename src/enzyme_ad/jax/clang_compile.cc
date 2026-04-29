@@ -19,7 +19,6 @@
 #include <string>
 #include <sys/time.h>
 #include <unistd.h>
-#include <regex>
 
 #include "clang/CodeGen/CodeGenAction.h"
 #include "llvm-c/Core.h"
@@ -72,7 +71,6 @@
 
 #include "llvm/ExecutionEngine/Orc/JITTargetMachineBuilder.h"
 
-#include "nanobind/nanobind.h"
 // #include <Python.h>
 
 #include "Enzyme/Enzyme.h"
@@ -174,7 +172,7 @@ static TargetMachine *GetTargetMachine(llvm::Triple TheTriple, StringRef CPUStr,
       codegen::getExplicitRelocModel(), codegen::getExplicitCodeModel(), level);
 }
 
-std::unique_ptr<llvm::Module>
+absl::StatusOr<std::unique_ptr<llvm::Module>>
 GetLLVMFromJob(std::string filename, std::string filecontents, bool cpp,
                ArrayRef<std::string> pyargv, LLVMContext *Context,
                std::unique_ptr<llvm::Module> linkMod) {
@@ -502,8 +500,7 @@ struct tensor<T, n0, N...>
   // Create the actual diagnostics engine.
   Clang->setDiagnostics(Clang->createDiagnostics(*fuseFS, DiagOpts));
   if (!Clang->hasDiagnostics()) {
-    llvm::errs() << " failed create diag\n";
-    return {};
+    return absl::InvalidArgumentError(" failed create diag");
   }
 
   // Set an error handler, so that any LLVM backend diagnostics go through our
@@ -513,16 +510,14 @@ struct tensor<T, n0, N...>
 
   DiagsBuffer->FlushDiagnostics(Clang->getDiagnostics());
   if (!Success) {
-    llvm::errs() << " failed diag\n";
-    return {};
+    return absl::InternalError(" failed diag");
   }
 
   assert(Context);
   auto Act = std::make_unique<EmitLLVMOnlyAction>(Context);
   Success = Clang->ExecuteAction(*Act);
   if (!Success) {
-    llvm::errs() << " failed execute\n";
-    return {};
+    return absl::InternalError(" failed execute");
   }
 
   auto mod = Act->takeModule();
@@ -561,7 +556,7 @@ struct tensor<T, n0, N...>
       llvm::orc::JITTargetMachineBuilder(llvm::Triple(mod->getTargetTriple()))
           .createTargetMachine();
   if (!ETM) {
-    throw nanobind::value_error("failed to create targetmachine");
+    return absl::InternalError("failed to create targetmachine");
   }
   auto TM = std::move(ETM.get());
 
@@ -580,10 +575,9 @@ struct tensor<T, n0, N...>
 
   ModulePassManager MPM;
   if (Error Err = PB.parsePassPipeline(MPM, "default<O3>")) {
-    throw nanobind::value_error(
+    return absl::InvalidArgumentError(
         (Twine("failed to parse pass pipeline: ") + toString(std::move(Err)))
-            .str()
-            .c_str());
+            .str());
   }
   MPM.run(*mod, MAM);
 
@@ -657,7 +651,7 @@ struct tensor<T, n0, N...>
         ss << *mod << "\n";
         ss << " unsupported value to erase:\n";
         ss << " cur: " << *cur << " prev: " << *prev << "\n";
-        throw nanobind::value_error(ss.str().c_str());
+        throw absl::InternalError(ss.str());
       }
       for (auto I : toErase) {
         I->eraseFromParent();
@@ -665,27 +659,27 @@ struct tensor<T, n0, N...>
     }
   }
 
-  return mod;
+  return std::move(mod);
 }
 
-std::string make_type(std::string typenam,
-                               llvm::ArrayRef<int64_t> shape, bool constv,
-                               ::Language lang) {
-    std::string s =
-        std::string(constv ? "const " : "") + "enzyme::tensor<" + typenam;
-    for (auto v : shape) {
-      s += ", " + std::to_string(v);
-    }
-    return s + ">";
+std::string make_type(std::string typenam, llvm::ArrayRef<int64_t> shape,
+                      bool constv, ::Language lang) {
+  std::string s =
+      std::string(constv ? "const " : "") + "enzyme::tensor<" + typenam;
+  for (auto v : shape) {
+    s += ", " + std::to_string(v);
   }
+  return s + ">";
+}
 
-std::tuple<std::unique_ptr<llvm::Module>, std::unique_ptr<llvm::LLVMContext>,
-           size_t, size_t>
+absl::StatusOr<std::tuple<std::unique_ptr<llvm::Module>,
+                          std::unique_ptr<llvm::LLVMContext>, size_t, size_t>>
 createLLVMMod(std::string fn, llvm::StringRef source,
               llvm::ArrayRef<llvm::SmallVector<int64_t>> out_shapes,
               llvm::ArrayRef<std::string> out_names,
               llvm::ArrayRef<llvm::SmallVector<int64_t>> in_shapes,
-              llvm::ArrayRef<std::string> in_names, PyObject *pyargv, ABI mode,
+              llvm::ArrayRef<std::string> in_names,
+              const std::vector<std::string> &pyargv_strs, ABI mode,
               ::Language lang, bool xla_runtime,
               const std::string &pass_pipeline) {
   auto llvm_ctx = std::make_unique<llvm::LLVMContext>();
@@ -708,8 +702,12 @@ createLLVMMod(std::string fn, llvm::StringRef source,
     break;
 
   case ::Language::MHLO: {
-    local_executable = compile_mhlo_to_llvm_with_xla(
+    auto exec_or_err = compile_mhlo_to_llvm_with_xla(
         source, stringbuf, xla_runtime, pass_pipeline);
+    if (!exec_or_err.ok()) {
+      return exec_or_err.status();
+    }
+    local_executable = std::move(exec_or_err).value();
     auto *cpu_executable =
         static_cast<xla::cpu::CpuExecutable *>(local_executable->executable());
     auto &assignment = cpu_executable->buffer_assignment();
@@ -728,7 +726,7 @@ createLLVMMod(std::string fn, llvm::StringRef source,
         ss << " Number of mhlo inputs (" << num_in
            << ") != number of jax inputs (" << in_shapes.size() << "):\n";
         ss << source << "\n";
-        throw nanobind::value_error(ss.str().c_str());
+        return absl::InvalidArgumentError(ss.str());
       }
       for (size_t i = 0; i < in_shapes.size(); i++) {
         ssize_t idx = -1;
@@ -746,7 +744,7 @@ createLLVMMod(std::string fn, llvm::StringRef source,
           ss << " Could not find input parameter (" << i
              << ") as hlo parameter:\n";
           ss << source << "\n";
-          throw nanobind::value_error(ss.str().c_str());
+          return absl::InvalidArgumentError(ss.str());
         }
       }
     }
@@ -765,8 +763,7 @@ createLLVMMod(std::string fn, llvm::StringRef source,
       std::string err_str;
       llvm::raw_string_ostream ss(err_str);
       Err.print("llvmsource", ss, false);
-      throw nanobind::value_error(
-          ("failed to compile LLVM: " + ss.str()).c_str());
+      return absl::InternalError(("failed to compile LLVM: " + ss.str()));
     }
     assert(linkMod);
     if (lang == ::Language::MHLO) {
@@ -884,7 +881,7 @@ createLLVMMod(std::string fn, llvm::StringRef source,
           llvm::raw_string_ostream ess(err);
           ess << " Failed to compile mhlo, unknown constant element type: "
               << hlo->shape().ToString() << "\n";
-          throw std::runtime_error(ess.str());
+          return absl::InvalidArgumentError(ess.str());
         }
         }
         auto val = xla::Cast<xla::HloConstantInstruction>(hlo->instruction());
@@ -1097,7 +1094,7 @@ createLLVMMod(std::string fn, llvm::StringRef source,
             ess << source << "\n";
             ess << local_executable->executable()->module().ToString() << "\n";
             ess << " unknown buffer type: " << buf.ToString() << "\n";
-            throw std::runtime_error(ess.str());
+            return absl::InternalError(ess.str());
           }
         }
       } else {
@@ -1407,31 +1404,13 @@ createLLVMMod(std::string fn, llvm::StringRef source,
   }
   ss << "}\n";
 
-  llvm::SmallVector<std::string> pyargv_strs;
-  assert(PySequence_Check(pyargv));
-  auto sz = PySequence_Size(pyargv);
-  for (Py_ssize_t i = 0; i < sz; ++i) {
-    PyObject *item = PySequence_GetItem(pyargv, i);
-#if PY_VERSION_HEX < 0x03000000
-    auto argv = PyString_AsString(item);
-#else
-    auto argv = PyUnicode_AsUTF8(item);
-#endif
-    Py_DECREF(item);
-    assert(argv);
-    pyargv_strs.emplace_back(argv);
-#if PY_VERSION_HEX < 0x03000000
-    free(argv);
-#else
-    // should not free py3+
-#endif
-  }
-
-  auto mod = GetLLVMFromJob("/enzyme_call/source.cpp", ss.str(), /*cpp*/ true,
-                            pyargv_strs, llvm_ctx.get(), std::move(linkMod));
-  if (!mod) {
+  auto mod_or_err =
+      GetLLVMFromJob("/enzyme_call/source.cpp", ss.str(), /*cpp*/ true,
+                     pyargv_strs, llvm_ctx.get(), std::move(linkMod));
+  if (!mod_or_err.ok()) {
     llvm::errs() << "Source:\n" << ss.str() << "\n";
-    throw nanobind::value_error("failed to compile C++");
+    return mod_or_err.status();
   }
+  auto mod = std::move(mod_or_err).value();
   return std::make_tuple(std::move(mod), std::move(llvm_ctx), out_off, tmpBuf);
 }
