@@ -90,6 +90,7 @@ cc_library(
         "-Wno-unused-variable",
     ],
     deps = [
+        ":compile_with_xla",
         "@enzyme//:EnzymeStatic",
         "@llvm-project//clang:ast",
         "@llvm-project//clang:basic",
@@ -111,12 +112,9 @@ cc_library(
         "@llvm-project//llvm:Support",
         "@llvm-project//llvm:TargetParser",
         "@nanobind",
-
+        "@xla//xla/client:local_client",
         "@xla//xla/hlo/ir:hlo",
         "@xla//xla/service/cpu:cpu_executable",
-        "@xla//xla/client:local_client",
-
-        ":compile_with_xla",
     ],
 )
 
