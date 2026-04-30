@@ -1615,7 +1615,7 @@ def : HLODerivative<"TriangularSolveOp", (Op $A, $b),
     //   (DotGeneral // bar(x) * adjoint(x)
     //   )),
     (Neg $A),
-    (TrmmLikeTriangularSolve $A, (DiffeRet))
+    (TrmmLikeTriangularSolve $A, (DiffeRet)) // TODO check whether we need to do sth on $A when `transpose_a = TRANSPOSE` or `ADJOINT`
   ],
   (TriangularSolveLike
     $A,
