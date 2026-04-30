@@ -9,9 +9,9 @@
 #ifndef ENZYME_JAX_CLANG_COMPILE_H
 #define ENZYME_JAX_CLANG_COMPILE_H
 
+#include "nanobind/nanobind.h"
 #include "llvm/IR/Module.h"
 #include <string>
-#include "nanobind/nanobind.h"
 
 enum class ABI { Primal, Forward, Augmented, Reverse, Tape };
 

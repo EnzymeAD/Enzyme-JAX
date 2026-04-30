@@ -78,7 +78,6 @@
 
 #include "Integrations/c/EnzymeXLA.h"
 
-
 namespace {
 class CpuKernel {
   // static llvm::orc::ExecutionSession ES;
@@ -94,7 +93,6 @@ public:
 
   CpuKernel(int64_t identifier, size_t num_out, uint64_t addr)
       : identifier(identifier), num_out(num_out), addr(addr) {}
-
 
   static std::pair<size_t, size_t>
   tapeAndTempSize(std::string fn, llvm::StringRef source,
