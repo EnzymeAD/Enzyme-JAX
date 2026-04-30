@@ -10,7 +10,6 @@
 #define ENZYME_JAX_CLANG_COMPILE_H
 
 #include "absl/status/statusor.h"
-#include "nanobind/nanobind.h"
 #include "llvm/IR/Module.h"
 #include <string>
 
