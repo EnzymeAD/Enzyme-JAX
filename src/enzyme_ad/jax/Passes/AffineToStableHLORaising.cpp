@@ -2740,14 +2740,18 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     Value operand = op->getOperand(0), result = op->getResult(0);
     Value mappedResult = mapping.lookup(operand);
 
-    if (result.getType().isIndex()) {
+    Type targetType = makeIndexToI64(result.getType());
+    auto currentType =
+        cast<RankedTensorType>(mappedResult.getType()).getElementType();
+
+    if (currentType != targetType) {
       Value newMappedResult =
           stablehlo::ConvertOp::create(
               builder,
               rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
               RankedTensorType::get(
                   cast<ShapedType>(mappedResult.getType()).getShape(),
-                  builder.getI64Type()),
+                  targetType),
               mappedResult)
               .getResult();
       maps[newMappedResult] = maps.lookup(mappedResult);

@@ -646,7 +646,7 @@ public:
   LogicalResult matchAndRewrite(T op,
                                 PatternRewriter &rewriter) const override {
     // FIXME: Only handle memref.load with single index for now
-    if (op.getIndices().size() != 1)
+    if (op.getMemRefType().getRank() != 1)
       return failure();
 
     // Match pointer2memref -> load pattern
