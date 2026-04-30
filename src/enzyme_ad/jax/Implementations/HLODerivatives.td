@@ -138,6 +138,8 @@ def CheckedDiv : SubRoutine<(Op $diffret, $x),
                     (Div $diffret, $x)
                   )>;
 
+def Trmm : Inst<"TrmmOp", "enzymexla", "", "">;
+
 // Helpers
 def PadToSliceStart : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   op.getEdgePaddingLow();
@@ -1534,62 +1536,83 @@ def TriangularSolveDiffOuterDotDims : GlobalExpr</*needsprimal*/0, /*needsshadow
   );
 }]>;
 
+def SelectIfLeftSide : StaticSelect<"cast<TriangularSolveOp>(op).getLeftSide() == true;">;
+
+def TriangularSolveGetResultType : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  op.getResult().getType();
+}]>;
 def TriangularSolveGetLeftSide : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{op.getLeftSide();}]>;
 def TriangularSolveGetLower : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{op.getLower();}]>;
 def TriangularSolveGetUnitDiagonal : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{op.getUnitDiagonal();}]>;
 def TriangularSolveGetTransposeA : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{op.getTransposeA();}]>;
-def ArrayAttr : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{ArrayAttr()}]>;
 
-def : HLODerivative<"TriangularSolveOp", (Op $A, $b),
-  [
-    (Neg (TriangularSolve
-      $A,
-      (DotGeneral
-        (DotGeneralBatchedResultType),
-        (DiffeRet),
-        (Conj (TriangularSolve
-          $A, $b,
-          (TriangularSolveGetLeftSide),
-          (TriangularSolveGetLower),
-          (TriangularSolveGetUnitDiagonal),
-          (TriangularSolveGetTransposeA)
-        )),
-        (TriangularSolveDiffOuterDotDims),
-        (ArrayAttr),
-        (DotAlgorithmAttr)),
-      (TriangularSolveGetLeftSide),
-      (TriangularSolveGetLower),
-      (TriangularSolveGetUnitDiagonal),
-      (TriangularSolveGetTransposeA)
-    )),
-    (DotGeneral
-      (DotGeneralBatchedResultType),
-      $A,
-      (DiffeRet),
-      (TriangularSolveShadowDotDims),
-      (ArrayAttr),
-      (DotAlgorithmAttr))
-  ],
+def TriangularSolveLike : SubRoutine<(Op $A, $b),
   (TriangularSolve
     $A,
-    (Sub
-      (Shadow $b),
-      (DotGeneral
-        (DotGeneralBatchedResultType),
-        (Shadow $A),
-        (TriangularSolve
-          $A, $b,
-          (TriangularSolveGetLeftSide),
-          (TriangularSolveGetLower),
-          (TriangularSolveGetUnitDiagonal),
-          (TriangularSolveGetTransposeA)
-        ),
-        (TriangularSolveShadowDotDims),
-        (ArrayAttr),
-        (DotAlgorithmAttr))),
+    $b,
     (TriangularSolveGetLeftSide),
     (TriangularSolveGetLower),
     (TriangularSolveGetUnitDiagonal),
     (TriangularSolveGetTransposeA)
+  )>;
+
+// TODO check that `left_side=true` in TriangularSolveOp is semantically equivalent to `side=left` in TrmmOp
+def TrmmLikeTriangularSolveGetSide : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  op.getLeftSide() ? ::enzymexla::LapackSide::left : ::enzymexla::LapackSide::right;
+}]>;
+
+def TrmmLikeTriangularSolveGetUplo : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  op.getLower() ? ::enzymexla::LapackUplo::L : ::enzymexla::LapackUplo::U;
+}]>;
+
+def TrmmLikeTriangularSolveGetUnitDiagonal : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  op.getUnitDiagonal();
+}]>;
+
+def TrmmLikeTriangularSolveGetTransposeA : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  ::enzymexla::LapackTranspose transA;
+  auto hloTransA = op.getTransposeA();
+  switch (hloTransA) {
+    case decltype(hloTransA)::NO_TRANSPOSE:
+      transA = ::enzymexla::LapackTranspose::none;
+      break;
+    case decltype(hloTransA)::TRANSPOSE:
+      transA = ::enzymexla::LapackTranspose::transpose;
+      break;
+    case decltype(hloTransA)::ADJOINT:
+      transA = ::enzymexla::LapackTranspose::adjoint;
+      break;
+    default:
+      op->emitError() << "Unexpected `transpose_a` attribute value in TriangularSolveOp\n";
+  }
+  transA;
+}]>;
+
+def TrmmLikeTriangularSolve : SubRoutine<(Op $A, $b),
+  (Trmm
+    (TriangularSolveGetResultType),
+    $A,
+    $b,
+    (HLOConstantFP<"1">), // alpha
+    (TrmmLikeTriangularSolveGetSide),
+    (TrmmLikeTriangularSolveGetUplo),
+    (TrmmLikeTriangularSolveGetTransposeA),
+    (TrmmLikeTriangularSolveGetUnitDiagonal)
+  )>;
+
+def : HLODerivative<"TriangularSolveOp", (Op $A, $b),
+  [
+    // (TriangularSolveLike
+    //   $A,
+    //   (DotGeneral // bar(x) * adjoint(x)
+    //   )),
+    (Neg $A),
+    (TrmmLikeTriangularSolve $A, (DiffeRet))
+  ],
+  (TriangularSolveLike
+    $A,
+    (Sub
+      (Shadow $b),
+      (TrmmLikeTriangularSolve (Shadow $A), (TriangularSolveLike $A, $b)))
   )
 >;
