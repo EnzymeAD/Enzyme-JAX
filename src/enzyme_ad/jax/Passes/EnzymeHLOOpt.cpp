@@ -5774,6 +5774,11 @@ struct ReshapeIota final
     if (!iota)
       return failure();
 
+    // A scalar (rank-0) IotaOp is invalid in stableHLO. Bail out and let
+    // other passes (e.g. constant folding) handle this case.
+    if (op.getType().getRank() == 0)
+      return failure();
+
     size_t curiotaidx = 0;
     size_t iotadim = 0;
     for (auto en : llvm::enumerate(op.getType().getShape())) {
@@ -8171,6 +8176,12 @@ struct IotaSimplify
   LogicalResult matchAndRewriteImpl(stablehlo::IotaOp op,
                                     PatternRewriter &rewriter) const {
     if (op.getType().getNumElements() >= max_constant_expansion) {
+      return failure();
+    }
+
+    // Bail out on degenerate iota ops (e.g. rank-0 tensors) where the iota
+    // dimension is out of bounds for the result type's rank.
+    if (op.getIotaDimension() >= op.getType().getRank()) {
       return failure();
     }
 
