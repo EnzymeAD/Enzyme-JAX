@@ -677,6 +677,15 @@ public:
       auto elemTy = gep.getElemType();
       if (elemTy.isIntOrFloat()) {
         gepElemSize = elemTy.getIntOrFloatBitWidth() / 8;
+      } else if (auto arrayTy = dyn_cast<LLVM::LLVMArrayType>(elemTy)) {
+        auto baseTy = arrayTy.getElementType();
+        if (baseTy.isIntOrFloat()) {
+          gepElemSize =
+              (baseTy.getIntOrFloatBitWidth() / 8) * arrayTy.getNumElements();
+        } else {
+          // Nested arrays not supported yet, or other types
+          break;
+        }
       } else {
         // Unknown type to get size from, bail early.
         break;

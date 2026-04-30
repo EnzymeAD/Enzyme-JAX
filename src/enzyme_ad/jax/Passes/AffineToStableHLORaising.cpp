@@ -3482,7 +3482,6 @@ struct AffineToStableHLORaisingPass
           if (err_if_not_fully_raised) {
             llvm::errs() << "failed to raise operand: " << arg << "\n"
                          << " within " << g << "\n";
-            ;
             signalPassFailure();
           }
           break;
@@ -3552,6 +3551,10 @@ struct AffineToStableHLORaisingPass
         enzymexla::XLAWrapperOp::create(
             builder, g->getLoc(), SymbolRefAttr::get(newFunc),
             llvm::to_vector(operands), nullptr, nullptr);
+        if (g->getNumResults() > 0) {
+          Value zero = arith::ConstantIndexOp::create(builder, g->getLoc(), 0);
+          g->getResult(0).replaceAllUsesWith(zero);
+        }
         g->erase();
         anyRaised = true;
       }
