@@ -106,7 +106,8 @@ struct InductionVariableRange {
   int64_t step;
 
   int64_t getNumIters() {
-    if (ub <= lb) return 0;
+    if (ub <= lb)
+      return 0;
     return (ub - lb + step - 1) / step;
   }
 };
@@ -1110,43 +1111,47 @@ static LogicalResult tryRaisingForOpToStableHLOUnroll(
   auto lbOpt = getConstant(forOp.getLowerBoundMap());
   auto ubOpt = getConstant(forOp.getUpperBoundMap());
   auto step = forOp.getStepAsInt();
-  
+
   if (lbOpt && ubOpt) {
     int64_t lb = *lbOpt;
     int64_t ub = *ubOpt;
     if (ub > lb) {
       int64_t tripCount = (ub - lb + step - 1) / step;
-      
+
       if (tripCount == 1) {
         IRMapping forMapping = mapping;
-        
-        auto unrankedTensorType = RankedTensorType::get({}, builder.getI64Type());
+
+        auto unrankedTensorType =
+            RankedTensorType::get({}, builder.getI64Type());
         auto newConst = stablehlo::ConstantOp::create(
-            builder, rewriteLocation(forOp.getLoc(), pc.options.strip_llvm_debuginfo),
+            builder,
+            rewriteLocation(forOp.getLoc(), pc.options.strip_llvm_debuginfo),
             unrankedTensorType,
-            SplatElementsAttr::get(
-                unrankedTensorType,
-                ArrayRef<Attribute>(IntegerAttr::get(builder.getI64Type(), lb))));
+            SplatElementsAttr::get(unrankedTensorType,
+                                   ArrayRef<Attribute>(IntegerAttr::get(
+                                       builder.getI64Type(), lb))));
         Value raisedCstIV = newConst.getResult();
         forMapping.map(forOp.getInductionVar(), raisedCstIV);
-        
-        affine::AffineValueMap accessMap(AffineMap::get(forOp.getContext()), {});
+
+        affine::AffineValueMap accessMap(AffineMap::get(forOp.getContext()),
+                                         {});
         maps[raisedCstIV] = accessMap;
-        
+
         for (auto &innerOp : forOp.getBody()->without_terminator()) {
           if (tryRaisingOpToStableHLO(&innerOp, forMapping, builder, maps, pc)
                   .failed())
             return failure();
         }
-        
-        auto yield = cast<affine::AffineYieldOp>(forOp.getBody()->getTerminator());
+
+        auto yield =
+            cast<affine::AffineYieldOp>(forOp.getBody()->getTerminator());
         for (auto [yielded, res] :
              llvm::zip_equal(yield.getOperands(), forOp.getResults())) {
           auto mapped = forMapping.lookupOrNull(yielded);
           assert(mapped);
           mapping.map(res, mapped);
         }
-        
+
         return success();
       }
     }
