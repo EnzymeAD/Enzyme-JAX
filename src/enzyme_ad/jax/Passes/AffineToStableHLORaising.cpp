@@ -2652,8 +2652,19 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     auto memref = loadOp.getMemref();
 
     SmallVector<Value> lIndices;
-    for (auto idx : loadOp.getIndices())
-      lIndices.push_back(mapping.lookup(idx));
+    for (auto idx : loadOp.getIndices()) {
+      Value mappedIdx = mapping.lookup(idx);
+      if (mappedIdx == idx) {
+        if (auto ic = idx.getDefiningOp<arith::IndexCastOp>()) {
+          Value opnd = ic.getOperand();
+          Value mappedOpnd = mapping.lookup(opnd);
+          if (mappedOpnd != opnd && isa<RankedTensorType>(mappedOpnd.getType())) {
+            mappedIdx = mappedOpnd;
+          }
+        }
+      }
+      lIndices.push_back(mappedIdx);
+    }
 
     Value res = emitLoadAsGather(
         rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
@@ -3424,11 +3435,14 @@ struct AffineToStableHLORaisingPass
           if (isa<IntegerType, FloatType, IndexType>(arg.getType())) {
             OpBuilder b(g);
             b.setInsertionPoint(g);
+            auto isIndex = isa<IndexType>(arg.getType());
+            auto ET = isIndex ? b.getI64Type() : arg.getType();
+            
             auto MT0 =
-                MemRefType::get({}, arg.getType(), MemRefLayoutAttrInterface{},
+                MemRefType::get({}, ET, MemRefLayoutAttrInterface{},
                                 b.getI64IntegerAttr(0));
             auto MT =
-                MemRefType::get({}, arg.getType(), MemRefLayoutAttrInterface{},
+                MemRefType::get({}, ET, MemRefLayoutAttrInterface{},
                                 b.getI64IntegerAttr(1));
 
             auto res =
@@ -3442,9 +3456,17 @@ struct AffineToStableHLORaisingPass
             auto res0 = memref::AllocaOp::create(
                 b, rewriteLocation(g.getLoc(), options.strip_llvm_debuginfo),
                 MT0);
+                
+            Value storeVal = arg;
+            if (isIndex) {
+              storeVal = b.create<arith::IndexCastOp>(
+                  rewriteLocation(g.getLoc(), options.strip_llvm_debuginfo),
+                  b.getI64Type(), arg);
+            }
+            
             affine::AffineStoreOp::create(
                 b, rewriteLocation(g.getLoc(), options.strip_llvm_debuginfo),
-                arg, res0, b.getMultiDimIdentityMap(0), ValueRange());
+                storeVal, res0, b.getMultiDimIdentityMap(0), ValueRange());
             auto c1 = arith::ConstantIndexOp::create(
                 b, rewriteLocation(g.getLoc(), options.strip_llvm_debuginfo),
                 1);
@@ -3456,9 +3478,73 @@ struct AffineToStableHLORaisingPass
                 b, rewriteLocation(g.getLoc(), options.strip_llvm_debuginfo),
                 res, b.getMultiDimIdentityMap(0), ValueRange());
             loads.push_back(ld);
+            Value ldVal = ld;
+            if (isIndex) {
+              ldVal = b.create<arith::IndexCastOp>(
+                  rewriteLocation(g.getLoc(), options.strip_llvm_debuginfo),
+                  b.getIndexType(), ld);
+            
+            llvm::SmallSetVector<Operation *, 4> opsToReplace;
+            for (OpOperand &use : llvm::make_early_inc_range(arg.getUses())) {
+              if (!g->isProperAncestor(use.getOwner())) {
+                continue;
+              }
+              auto op = use.getOwner();
+              if (auto loadOp = dyn_cast<affine::AffineLoadOp>(op)) {
+                 opsToReplace.push_back(op);
+                 continue;
+              }
+              if (auto storeOp = dyn_cast<affine::AffineStoreOp>(op)) {
+                bool isIndexUse = false;
+                for (auto idx : storeOp.getIndices()) {
+                  if (idx == arg) {
+                    isIndexUse = true;
+                    break;
+                  }
+                }
+                if (isIndexUse) {
+                 opsToReplace.push_back(op);
+                 continue;
+                }
+              }
+              use.set();
+            }
+            
+            for (auto op : opsToReplace) {
+              if (auto loadOp = dyn_cast<affine::AffineLoadOp>(op)) {
+                OpBuilder B(loadOp);
+                SmallVector<Value> indices;
+                for (auto idx : loadOp.getIndices()) {
+                  if (idx == arg) {
+                    indices.push_back(ldVal);
+                  } else {
+                    indices.push_back(idx);
+                  }
+                }
+                auto newLoad = B.create<memref::LoadOp>(loadOp.getLoc(), loadOp.getMemref(), indices);
+                loadOp.replaceAllUsesWith(newLoad.getResult());
+                loadOp.erase();
+              } else {
+                auto storeOp = cast<affine::AffineStoreOp>(op);
+
+                OpBuilder B(storeOp);
+                SmallVector<Value> indices;
+                for (auto idx : storeOp.getIndices()) {
+                  if (idx == arg) {
+                    indices.push_back(ldVal);
+                  } else {
+                    indices.push_back(idx);
+                  }
+                }
+                B.create<memref::StoreOp>(storeOp.getLoc(), storeOp.getValueToStore(), storeOp.getMemref(), indices);
+                storeOp.erase();
+              }
+            }
+          } else {
             arg.replaceUsesWithIf(ld, [&](OpOperand &opOperand) {
               return g->isProperAncestor(opOperand.getOwner());
             });
+          }
 
             b.setInsertionPointAfter(g);
             gpu::DeallocOp::create(
