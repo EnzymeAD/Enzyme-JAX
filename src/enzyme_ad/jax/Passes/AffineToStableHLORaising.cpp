@@ -3421,7 +3421,7 @@ struct AffineToStableHLORaisingPass
             continue;
           }
 
-          if (isa<IntegerType, FloatType>(arg.getType())) {
+          if (isa<IntegerType, FloatType, IndexType>(arg.getType())) {
             OpBuilder b(g);
             b.setInsertionPoint(g);
             auto MT0 =
