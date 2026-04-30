@@ -3491,7 +3491,7 @@ struct AffineToStableHLORaisingPass
               }
               auto op = use.getOwner();
               if (auto loadOp = dyn_cast<affine::AffineLoadOp>(op)) {
-                 opsToReplace.push_back(op);
+                 opsToReplace.insert(op);
                  continue;
               }
               if (auto storeOp = dyn_cast<affine::AffineStoreOp>(op)) {
@@ -3503,11 +3503,11 @@ struct AffineToStableHLORaisingPass
                   }
                 }
                 if (isIndexUse) {
-                 opsToReplace.push_back(op);
+                  opsToReplace.insert(op);
                  continue;
                 }
               }
-              use.set();
+              use.set(ldVal);
             }
             
             for (auto op : opsToReplace) {
