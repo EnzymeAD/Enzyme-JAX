@@ -1556,6 +1556,14 @@ def TriangularSolveLike : SubRoutine<(Op $A, $b),
     (TriangularSolveGetTransposeA)
   )>;
 
+def TrmmLikeTriangularSolveGetAlpha : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  auto resType = cast<RankedTensorType>(op.getResult().getType());
+  auto elemType = resType.getElementType();
+  ConstantOp::create(builder, 
+    op->getLoc(), RankedTensorType::get({}, elemType),
+    cast<ElementsAttr>(makeAttr(RankedTensorType::get({}, elemType), 1)));
+}]>;
+
 // TODO check that `left_side=true` in TriangularSolveOp is semantically equivalent to `side=left` in TrmmOp
 def TrmmLikeTriangularSolveGetSide : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   op.getLeftSide() ? ::enzymexla::LapackSide::left : ::enzymexla::LapackSide::right;
@@ -1593,7 +1601,7 @@ def TrmmLikeTriangularSolve : SubRoutine<(Op $A, $b),
     (TriangularSolveGetResultType),
     $A,
     $b,
-    (HLOConstantFP<"1">), // alpha
+    (TrmmLikeTriangularSolveGetAlpha),
     (TrmmLikeTriangularSolveGetSide),
     (TrmmLikeTriangularSolveGetUplo),
     (TrmmLikeTriangularSolveGetTransposeA),
