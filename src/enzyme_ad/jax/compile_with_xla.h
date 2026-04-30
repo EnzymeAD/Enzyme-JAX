@@ -19,4 +19,5 @@ run_pass_pipeline(const std::vector<std::string> &oldsyms,
 namespace mlir {
 class Operation;
 }
-absl::Status run_pass_pipeline(mlir::Operation *mod, const std::string &pass_pipeline);
+absl::Status run_pass_pipeline(mlir::Operation *mod,
+                               const std::string &pass_pipeline);
