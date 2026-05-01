@@ -2730,10 +2730,31 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
   }
 
   // Identity
-  if (isa<arith::IndexCastUIOp, arith::IndexCastOp,
-          enzymexla::Memref2PointerOp>(op)) {
+  if (isa<enzymexla::Memref2PointerOp>(op)) {
     Value operand = op->getOperand(0), result = op->getResult(0);
     mapping.map(result, mapping.lookup(operand));
+    return success();
+  }
+
+  if (isa<arith::IndexCastUIOp, arith::IndexCastOp>(op)) {
+    Value operand = op->getOperand(0), result = op->getResult(0);
+    Value mappedResult = mapping.lookup(operand);
+
+    if (result.getType().isIndex()) {
+      Value newMappedResult =
+          stablehlo::ConvertOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              RankedTensorType::get(
+                  cast<ShapedType>(mappedResult.getType()).getShape(),
+                  builder.getI64Type()),
+              mappedResult)
+              .getResult();
+      maps[newMappedResult] = maps.lookup(mappedResult);
+      mappedResult = newMappedResult;
+    }
+
+    mapping.map(result, mappedResult);
     return success();
   }
 
@@ -2853,17 +2874,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
   }
 
   // unary ops
-  if (isa<math::SinOp, math::SinhOp, math::CosOp, math::CoshOp, arith::NegFOp,
-          arith::ExtUIOp, arith::SIToFPOp, arith::UIToFPOp, arith::FPToSIOp,
-          arith::FPToUIOp, arith::TruncFOp, arith::ExtFOp, math::SqrtOp,
-          math::RsqrtOp, math::CbrtOp, math::LogOp, math::Log1pOp, math::Log2Op,
-          math::Log10Op, math::ExpOp, math::Exp2Op, math::ExpM1Op, math::AbsFOp,
-          math::AbsIOp, math::IsNaNOp, math::IsFiniteOp, math::AtanOp,
-          math::TanhOp, math::TanOp, math::AcosOp, math::AsinOp, math::FloorOp,
-          math::CeilOp, math::RoundOp, math::RoundEvenOp, math::TruncOp,
-          arith::BitcastOp, enzymexla::TGammaOp, enzymexla::LGammaOp,
-          math::ErfOp>(op)) {
-    assert(op->getNumOperands() == 1 && op->getNumResults() == 1);
+  if (mlir::isPure(op) && op->hasTrait<OpTrait::Elementwise>() &&
+      op->getNumOperands() == 1 && op->getNumResults() == 1) {
 
     auto operand = op->getOperand(0);
     auto newOperand = mapping.lookup(operand);

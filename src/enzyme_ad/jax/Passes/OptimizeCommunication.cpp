@@ -4228,6 +4228,136 @@ struct ExtendDUSLike : public OpRewritePattern<enzymexla::ExtendOp> {
   }
 };
 
+struct DUSOfConcatSlicesOptimize
+    : public OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::DynamicUpdateSliceOp dus,
+                                PatternRewriter &rewriter) const override {
+    if (dus->getParentOfType<sdy::ManualComputationOp>())
+      return failure();
+
+    auto concat = dus.getUpdate().getDefiningOp<stablehlo::ConcatenateOp>();
+    if (!concat)
+      return failure();
+
+    if (!concat->hasOneUse())
+      return failure();
+
+    Value operand = dus.getOperand();
+    auto ndims = dus.getType().getShape().size();
+    auto concatDim = concat.getDimension();
+
+    // Check if all operands of concat are slices of the same operand
+    for (auto arg : concat.getOperands()) {
+      auto slice = arg.getDefiningOp<stablehlo::SliceOp>();
+      if (!slice)
+        return failure();
+      if (slice.getOperand() != operand)
+        return failure();
+      // Check strides are all 1
+      for (auto stride : slice.getStrides()) {
+        if (stride != 1)
+          return failure();
+      }
+    }
+
+    // Get DUS start indices
+    SmallVector<int64_t> dusStarts;
+    for (auto idx : dus.getStartIndices()) {
+      DenseIntElementsAttr curr;
+      if (auto cst = idx.getDefiningOp<sdy::ConstantOp>()) {
+        dusStarts.push_back(
+            (*cast<DenseIntElementsAttr>(cst.getValue()).begin())
+                .getZExtValue());
+      } else if (matchPattern(idx, m_Constant(&curr))) {
+        dusStarts.push_back((*curr.begin()).getZExtValue());
+      } else {
+        return failure(); // Non-constant index
+      }
+    }
+
+    // Analyze slices
+    int64_t offset = 0;
+    SmallVector<bool> isSelfUpdate;
+    bool hasSelfUpdate = false;
+
+    for (auto arg : concat.getOperands()) {
+      auto slice = cast<stablehlo::SliceOp>(arg.getDefiningOp());
+      bool selfUpdate = true;
+      for (int i = 0; i < ndims; i++) {
+        auto start = slice.getStartIndices()[i];
+        if (i == concatDim) {
+          if (start != dusStarts[i] + offset) {
+            selfUpdate = false;
+            break;
+          }
+        } else {
+          if (start != dusStarts[i]) {
+            selfUpdate = false;
+            break;
+          }
+        }
+      }
+      isSelfUpdate.push_back(selfUpdate);
+      if (selfUpdate)
+        hasSelfUpdate = true;
+      offset += cast<RankedTensorType>(arg.getType()).getShape()[concatDim];
+    }
+
+    if (!hasSelfUpdate)
+      return failure(); // Nothing to optimize
+
+    // Rewrite
+    Value current = operand;
+    offset = 0;
+
+    DenseMap<std::pair<int64_t, Type>, Value> constantCache;
+    auto getOrCreateConstant = [&](int64_t v, Type TT) -> Value {
+      auto key = std::make_pair(v, TT);
+      auto found = constantCache.find(key);
+      if (found != constantCache.end())
+        return found->second;
+      auto cst = stablehlo::ConstantOp::create(
+          rewriter, dus.getLoc(), TT, cast<ElementsAttr>(makeAttr(TT, v)));
+      constantCache[key] = cst;
+      return cst;
+    };
+
+    for (size_t i = 0; i < concat.getOperands().size(); i++) {
+      auto arg = concat.getOperands()[i];
+      auto argType = cast<RankedTensorType>(arg.getType());
+
+      if (isSelfUpdate[i]) {
+        offset += argType.getShape()[concatDim];
+        continue;
+      }
+
+      // Create new DUS for this slice
+      SmallVector<Value> newIndices;
+      for (int j = 0; j < ndims; j++) {
+        auto idxType = dus.getStartIndices()[j].getType();
+        if (j == concatDim) {
+          newIndices.push_back(
+              getOrCreateConstant(dusStarts[j] + offset, idxType));
+        } else {
+          newIndices.push_back(dus.getStartIndices()[j]);
+        }
+      }
+
+      auto newDus = rewriter.create<stablehlo::DynamicUpdateSliceOp>(
+          dus.getLoc(), dus.getType(), current, arg, newIndices);
+      sdy::setShardings(newDus, sdy::getShardingPerValue(dus));
+      current = newDus.getResult();
+
+      offset += argType.getShape()[concatDim];
+    }
+
+    rewriter.replaceOp(dus, current);
+    return success();
+  }
+};
+
 struct DUSToPadManualCompComm
     : public OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
 
@@ -4574,6 +4704,7 @@ struct ConcatToPadCommOptimize
   }
 };
 
+template <bool any>
 struct ConcatToDUSOptimize : public OpRewritePattern<stablehlo::ConcatenateOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -4592,7 +4723,7 @@ struct ConcatToDUSOptimize : public OpRewritePattern<stablehlo::ConcatenateOp> {
 
     auto numDevicesAlongDimension =
         getNumDevicesAlongDimension(concatSharding, concatDimension, concat);
-    if (numDevicesAlongDimension == 1) {
+    if (!any && numDevicesAlongDimension == 1) {
       return rewriter.notifyMatchFailure(
           concat,
           "numDevicesAlongDimension == 1. Communication is already optimized.");
@@ -5061,7 +5192,12 @@ struct OptimizeCommunicationPass
                                             PatternBenefit(concat_to_pad_comm));
 
     if (concat_to_dus > 0)
-      patterns.add<ConcatToDUSOptimize>(context, PatternBenefit(concat_to_dus));
+      patterns.add<ConcatToDUSOptimize<false>>(context,
+                                               PatternBenefit(concat_to_dus));
+
+    if (concat_to_dus_any > 0)
+      patterns.add<ConcatToDUSOptimize<true>>(
+          context, PatternBenefit(concat_to_dus_any));
 
     if (concat_to_rotatepad > 0)
       patterns.add<ConcatToRotatePadOptimize>(
@@ -5131,6 +5267,10 @@ struct OptimizeCommunicationPass
     if (updatewithoutcorners_to_select > 0)
       patterns.add<UpdateWithoutCornersToSelect>(
           context, PatternBenefit(updatewithoutcorners_to_select));
+
+    if (dus_of_concat_slices > 0)
+      patterns.add<DUSOfConcatSlicesOptimize>(
+          context, PatternBenefit(dus_of_concat_slices));
 
     if (dus_to_pad_manual_comp_comm > 0)
       patterns.add<DUSToPadManualCompComm>(

@@ -118,7 +118,6 @@ struct SROAWrappersPass
       signalPassFailure();
       return;
     }
-
     if (dump_prellvm)
       llvm::errs() << "sroa pre llvm\n" << *llvmModule << "\n";
     {
@@ -137,6 +136,11 @@ struct SROAWrappersPass
       CGSCCAnalysisManager CGAM;
       ModuleAnalysisManager MAM;
 
+      if (auto dlAttr = mToTranslate->getAttrOfType<mlir::StringAttr>(
+              "llvm.data_layout")) {
+        llvmModule->setDataLayout(dlAttr.getValue());
+      }
+
       PassInstrumentationCallbacks PIC;
       PassBuilder PB(nullptr, PTO, std::nullopt, nullptr);
 
@@ -147,7 +151,6 @@ struct SROAWrappersPass
       PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
 
       ModulePassManager MPM;
-      FunctionPassManager FPM;
       if (sroa)
         MPM.addPass(createModuleToFunctionPassAdaptor(
             SROAPass(SROAOptions::ModifyCFG)));
@@ -157,6 +160,7 @@ struct SROAWrappersPass
         MPM.addPass(createModuleToFunctionPassAdaptor(InstSimplifyPass()));
       if (attributor)
         MPM.addPass(llvm::AttributorPass());
+
       MPM.run(*llvmModule, MAM);
     }
     if (dump_postllvm)

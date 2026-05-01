@@ -1,4 +1,5 @@
 #include "Enzyme/MLIR/Dialect/Dialect.h"
+#include "Enzyme/MLIR/Dialect/Impulse/Impulse.h"
 #include "Enzyme/MLIR/Dialect/Ops.h"
 #include "mhlo/IR/hlo_ops.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -19,12 +20,12 @@
 #include <cmath>
 #include <cstdint>
 
-#define DEBUG_TYPE "lower-enzyme-probprog"
+#define DEBUG_TYPE "lower-impulse"
 
 namespace mlir {
 namespace enzyme {
-#define GEN_PASS_DEF_LOWERPROBPROGTOSTABLEHLOPASS
-#define GEN_PASS_DEF_LOWERPROBPROGTRACEOPSPASS
+#define GEN_PASS_DEF_LOWERIMPULSETOSTABLEHLOPASS
+#define GEN_PASS_DEF_LOWERIMPULSETRACEOPSPASS
 #include "src/enzyme_ad/jax/Passes/Passes.h.inc"
 } // namespace enzyme
 } // namespace mlir
@@ -215,7 +216,7 @@ static std::pair<Value, Value> threefry2x32Hash(OpBuilder &builder,
   return {v0, v1};
 }
 
-struct SelectOpConversion : public OpConversionPattern<enzyme::SelectOp> {
+struct SelectOpConversion : public OpConversionPattern<impulse::SelectOp> {
   using OpConversionPattern::OpConversionPattern;
 
   std::string backend;
@@ -224,7 +225,7 @@ struct SelectOpConversion : public OpConversionPattern<enzyme::SelectOp> {
       : OpConversionPattern(context, benefit), backend(backend) {}
 
   LogicalResult
-  matchAndRewrite(enzyme::SelectOp op, OpAdaptor adaptor,
+  matchAndRewrite(impulse::SelectOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     rewriter.replaceOpWithNewOp<stablehlo::SelectOp>(
         op, adaptor.getTrueValue().getType(), adaptor.getCondition(),
@@ -233,7 +234,7 @@ struct SelectOpConversion : public OpConversionPattern<enzyme::SelectOp> {
   }
 };
 
-struct ReshapeOpConversion : public OpConversionPattern<enzyme::ReshapeOp> {
+struct ReshapeOpConversion : public OpConversionPattern<impulse::ReshapeOp> {
   using OpConversionPattern::OpConversionPattern;
 
   std::string backend;
@@ -242,7 +243,7 @@ struct ReshapeOpConversion : public OpConversionPattern<enzyme::ReshapeOp> {
       : OpConversionPattern(context, benefit), backend(backend) {}
 
   LogicalResult
-  matchAndRewrite(enzyme::ReshapeOp op, OpAdaptor adaptor,
+  matchAndRewrite(impulse::ReshapeOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto resultType = cast<RankedTensorType>(op.getResult().getType());
     rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, resultType,
@@ -442,7 +443,7 @@ struct DumpOpConversion : public OpConversionPattern<enzyme::DumpOp> {
   }
 };
 
-struct CholeskyOpConversion : public OpConversionPattern<enzyme::CholeskyOp> {
+struct CholeskyOpConversion : public OpConversionPattern<impulse::CholeskyOp> {
   using OpConversionPattern::OpConversionPattern;
 
   std::string backend;
@@ -451,7 +452,7 @@ struct CholeskyOpConversion : public OpConversionPattern<enzyme::CholeskyOp> {
       : OpConversionPattern(context, benefit), backend(backend) {}
 
   LogicalResult
-  matchAndRewrite(enzyme::CholeskyOp op, OpAdaptor adaptor,
+  matchAndRewrite(impulse::CholeskyOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto input = adaptor.getInput();
     auto resultType = cast<RankedTensorType>(op.getResult().getType());
@@ -463,7 +464,7 @@ struct CholeskyOpConversion : public OpConversionPattern<enzyme::CholeskyOp> {
 };
 
 struct TriangularSolveOpConversion
-    : public OpConversionPattern<enzyme::TriangularSolveOp> {
+    : public OpConversionPattern<impulse::TriangularSolveOp> {
   using OpConversionPattern::OpConversionPattern;
 
   std::string backend;
@@ -472,7 +473,7 @@ struct TriangularSolveOpConversion
       : OpConversionPattern(context, benefit), backend(backend) {}
 
   LogicalResult
-  matchAndRewrite(enzyme::TriangularSolveOp op, OpAdaptor adaptor,
+  matchAndRewrite(impulse::TriangularSolveOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto a = adaptor.getA();
     auto b = adaptor.getB();
@@ -486,13 +487,13 @@ struct TriangularSolveOpConversion
 
     stablehlo::Transpose stablehloTranspose;
     switch (transposeA) {
-    case enzyme::Transpose::NO_TRANSPOSE:
+    case impulse::Transpose::NO_TRANSPOSE:
       stablehloTranspose = stablehlo::Transpose::NO_TRANSPOSE;
       break;
-    case enzyme::Transpose::TRANSPOSE:
+    case impulse::Transpose::TRANSPOSE:
       stablehloTranspose = stablehlo::Transpose::TRANSPOSE;
       break;
-    case enzyme::Transpose::ADJOINT:
+    case impulse::Transpose::ADJOINT:
       stablehloTranspose = stablehlo::Transpose::ADJOINT;
       break;
     default:
@@ -529,7 +530,7 @@ struct TriangularSolveOpConversion
   }
 };
 
-struct DotOpConversion : public OpConversionPattern<enzyme::DotOp> {
+struct DotOpConversion : public OpConversionPattern<impulse::DotOp> {
   using OpConversionPattern::OpConversionPattern;
 
   std::string backend;
@@ -538,7 +539,7 @@ struct DotOpConversion : public OpConversionPattern<enzyme::DotOp> {
       : OpConversionPattern(context, benefit), backend(backend) {}
 
   LogicalResult
-  matchAndRewrite(enzyme::DotOp op, OpAdaptor adaptor,
+  matchAndRewrite(impulse::DotOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto lhs = adaptor.getLhs();
     auto rhs = adaptor.getRhs();
@@ -566,7 +567,8 @@ struct DotOpConversion : public OpConversionPattern<enzyme::DotOp> {
 
 // Reference:
 // https://github.com/jax-ml/jax/blob/e9b487238f0cfe932200bae842d26826f19ba2bc/jax/_src/lax/other.py#L262
-struct LogAddExpOpConversion : public OpConversionPattern<enzyme::LogAddExpOp> {
+struct LogAddExpOpConversion
+    : public OpConversionPattern<impulse::LogAddExpOp> {
   using OpConversionPattern::OpConversionPattern;
 
   std::string backend;
@@ -575,7 +577,7 @@ struct LogAddExpOpConversion : public OpConversionPattern<enzyme::LogAddExpOp> {
       : OpConversionPattern(context, benefit), backend(backend) {}
 
   LogicalResult
-  matchAndRewrite(enzyme::LogAddExpOp op, OpAdaptor adaptor,
+  matchAndRewrite(impulse::LogAddExpOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto lhs = adaptor.getLhs();
     auto rhs = adaptor.getRhs();
@@ -608,7 +610,7 @@ struct LogAddExpOpConversion : public OpConversionPattern<enzyme::LogAddExpOp> {
   }
 };
 
-struct LogisticOpConversion : public OpConversionPattern<enzyme::LogisticOp> {
+struct LogisticOpConversion : public OpConversionPattern<impulse::LogisticOp> {
   using OpConversionPattern::OpConversionPattern;
 
   std::string backend;
@@ -617,7 +619,7 @@ struct LogisticOpConversion : public OpConversionPattern<enzyme::LogisticOp> {
       : OpConversionPattern(context, benefit), backend(backend) {}
 
   LogicalResult
-  matchAndRewrite(enzyme::LogisticOp op, OpAdaptor adaptor,
+  matchAndRewrite(impulse::LogisticOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto operand = adaptor.getOperand();
     auto resultType = cast<RankedTensorType>(op.getResult().getType());
@@ -627,7 +629,7 @@ struct LogisticOpConversion : public OpConversionPattern<enzyme::LogisticOp> {
   }
 };
 
-struct RandomOpConversion : public OpConversionPattern<enzyme::RandomOp> {
+struct RandomOpConversion : public OpConversionPattern<impulse::RandomOp> {
   using OpConversionPattern::OpConversionPattern;
 
   std::string backend;
@@ -636,7 +638,7 @@ struct RandomOpConversion : public OpConversionPattern<enzyme::RandomOp> {
       : OpConversionPattern(context, benefit), backend(backend) {}
 
   LogicalResult
-  matchAndRewrite(enzyme::RandomOp op, OpAdaptor adaptor,
+  matchAndRewrite(impulse::RandomOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto distribution = op.getRngDistribution();
     auto resultType = op.getResult().getType();
@@ -675,7 +677,7 @@ struct RandomOpConversion : public OpConversionPattern<enzyme::RandomOp> {
     Value randomBits = rngBitGenOp.getOutput();
     Value result;
 
-    if (distribution == enzyme::RngDistribution::UNIFORM) {
+    if (distribution == impulse::RngDistribution::UNIFORM) {
       unsigned mantissaBits;
       if (nbits == 16)
         mantissaBits = 10; // TODO bfloat16
@@ -734,7 +736,7 @@ struct RandomOpConversion : public OpConversionPattern<enzyme::RandomOp> {
                                              range, uniform01);
       result = stablehlo::AddOp::create(rewriter, op.getLoc(), rankedType,
                                         aBroadcast, scaled);
-    } else if (distribution == enzyme::RngDistribution::NORMAL) {
+    } else if (distribution == impulse::RngDistribution::NORMAL) {
       unsigned mantissaBits;
       if (nbits == 16)
         mantissaBits = 10; // TODO bfloat16
@@ -828,7 +830,7 @@ struct RandomOpConversion : public OpConversionPattern<enzyme::RandomOp> {
                                              sigmaBroadcast, standardNormal);
       result = stablehlo::AddOp::create(rewriter, op.getLoc(), rankedType,
                                         muBroadcast, scaled);
-    } else if (distribution == enzyme::RngDistribution::MULTINORMAL) {
+    } else if (distribution == impulse::RngDistribution::MULTINORMAL) {
       // Multivariate normal: x ~ N(mean, cov)
       // Algorithm: x = mean + chol(cov) * z, where z ~ N(0, I)
 
@@ -971,7 +973,7 @@ struct RandomOpConversion : public OpConversionPattern<enzyme::RandomOp> {
 // Reference (_rbg_split):
 // https://github.com/jax-ml/jax/blob/3aa8a6b0d4de5e554f45db638b0f3056e4c520f1/jax/_src/prng.py#L1271
 struct RandomSplitOpConversion
-    : public OpConversionPattern<enzyme::RandomSplitOp> {
+    : public OpConversionPattern<impulse::RandomSplitOp> {
   using OpConversionPattern::OpConversionPattern;
 
   std::string backend;
@@ -982,7 +984,7 @@ struct RandomSplitOpConversion
         debugDump(debugDump) {}
 
   LogicalResult
-  matchAndRewrite(enzyme::RandomSplitOp op, OpAdaptor adaptor,
+  matchAndRewrite(impulse::RandomSplitOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto rngState = adaptor.getRngState();
     auto rngStateType = cast<RankedTensorType>(rngState.getType());
@@ -1114,7 +1116,7 @@ struct RandomSplitOpConversion
   }
 };
 
-struct ForLoopOpConversion : public OpConversionPattern<enzyme::ForLoopOp> {
+struct ForLoopOpConversion : public OpConversionPattern<impulse::ForOp> {
   using OpConversionPattern::OpConversionPattern;
 
   std::string backend;
@@ -1123,7 +1125,7 @@ struct ForLoopOpConversion : public OpConversionPattern<enzyme::ForLoopOp> {
       : OpConversionPattern(context, benefit), backend(backend) {}
 
   LogicalResult
-  matchAndRewrite(enzyme::ForLoopOp op, OpAdaptor adaptor,
+  matchAndRewrite(impulse::ForOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     SmallVector<Value> initVals = {adaptor.getLowerBound()};
     initVals.append(adaptor.getInitArgs().begin(), adaptor.getInitArgs().end());
@@ -1154,7 +1156,7 @@ struct ForLoopOpConversion : public OpConversionPattern<enzyme::ForLoopOp> {
 
     Block &origBody = op.getRegion().front();
     rewriter.mergeBlocks(&origBody, bodyBlock, bodyBlock->getArguments());
-    auto yieldOp = cast<enzyme::YieldOp>(bodyBlock->getTerminator());
+    auto yieldOp = cast<impulse::YieldOp>(bodyBlock->getTerminator());
     rewriter.setInsertionPoint(yieldOp);
 
     // Return values: [ivNext, yielded_values...]
@@ -1176,7 +1178,7 @@ struct ForLoopOpConversion : public OpConversionPattern<enzyme::ForLoopOp> {
   }
 };
 
-struct WhileLoopOpConversion : public OpConversionPattern<enzyme::WhileLoopOp> {
+struct WhileLoopOpConversion : public OpConversionPattern<impulse::WhileOp> {
   using OpConversionPattern::OpConversionPattern;
 
   std::string backend;
@@ -1185,7 +1187,7 @@ struct WhileLoopOpConversion : public OpConversionPattern<enzyme::WhileLoopOp> {
       : OpConversionPattern(context, benefit), backend(backend) {}
 
   LogicalResult
-  matchAndRewrite(enzyme::WhileLoopOp op, OpAdaptor adaptor,
+  matchAndRewrite(impulse::WhileOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     SmallVector<Type> loopTypes;
     for (auto result : op.getResults())
@@ -1202,7 +1204,7 @@ struct WhileLoopOpConversion : public OpConversionPattern<enzyme::WhileLoopOp> {
 
     Block &origCond = op.getConditionRegion().front();
     rewriter.mergeBlocks(&origCond, condBlock, condBlock->getArguments());
-    auto condYieldOp = cast<enzyme::YieldOp>(condBlock->getTerminator());
+    auto condYieldOp = cast<impulse::YieldOp>(condBlock->getTerminator());
     rewriter.setInsertionPoint(condYieldOp);
 
     if (condYieldOp.getOperands().size() != 1) {
@@ -1222,7 +1224,7 @@ struct WhileLoopOpConversion : public OpConversionPattern<enzyme::WhileLoopOp> {
 
     Block &origBody = op.getBodyRegion().front();
     rewriter.mergeBlocks(&origBody, bodyBlock, bodyBlock->getArguments());
-    auto bodyYieldOp = cast<enzyme::YieldOp>(bodyBlock->getTerminator());
+    auto bodyYieldOp = cast<impulse::YieldOp>(bodyBlock->getTerminator());
     rewriter.setInsertionPoint(bodyYieldOp);
 
     SmallVector<Value> yieldedVals;
@@ -1239,7 +1241,7 @@ struct WhileLoopOpConversion : public OpConversionPattern<enzyme::WhileLoopOp> {
   }
 };
 
-struct IfOpConversion : public OpConversionPattern<enzyme::IfOp> {
+struct IfOpConversion : public OpConversionPattern<impulse::IfOp> {
   using OpConversionPattern::OpConversionPattern;
 
   std::string backend;
@@ -1248,7 +1250,7 @@ struct IfOpConversion : public OpConversionPattern<enzyme::IfOp> {
       : OpConversionPattern(context, benefit), backend(backend) {}
 
   LogicalResult
-  matchAndRewrite(enzyme::IfOp op, OpAdaptor adaptor,
+  matchAndRewrite(impulse::IfOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     SmallVector<Type> resultTypes;
     for (auto result : op.getResults())
@@ -1262,7 +1264,7 @@ struct IfOpConversion : public OpConversionPattern<enzyme::IfOp> {
 
       Block &origTrue = op.getTrueBranch().front();
       rewriter.mergeBlocks(&origTrue, trueBlock, {});
-      auto trueYieldOp = cast<enzyme::YieldOp>(trueBlock->getTerminator());
+      auto trueYieldOp = cast<impulse::YieldOp>(trueBlock->getTerminator());
       rewriter.setInsertionPoint(trueYieldOp);
 
       SmallVector<Value> trueYieldedVals;
@@ -1280,7 +1282,7 @@ struct IfOpConversion : public OpConversionPattern<enzyme::IfOp> {
 
       Block &origFalse = op.getFalseBranch().front();
       rewriter.mergeBlocks(&origFalse, falseBlock, {});
-      auto falseYieldOp = cast<enzyme::YieldOp>(falseBlock->getTerminator());
+      auto falseYieldOp = cast<impulse::YieldOp>(falseBlock->getTerminator());
       rewriter.setInsertionPoint(falseYieldOp);
 
       SmallVector<Value> falseYieldedVals;
@@ -1298,7 +1300,7 @@ struct IfOpConversion : public OpConversionPattern<enzyme::IfOp> {
   }
 };
 
-struct PopcountOpConversion : public OpConversionPattern<enzyme::PopcountOp> {
+struct PopcountOpConversion : public OpConversionPattern<impulse::PopcountOp> {
   using OpConversionPattern::OpConversionPattern;
 
   std::string backend;
@@ -1307,7 +1309,7 @@ struct PopcountOpConversion : public OpConversionPattern<enzyme::PopcountOp> {
       : OpConversionPattern(context, benefit), backend(backend) {}
 
   LogicalResult
-  matchAndRewrite(enzyme::PopcountOp op, OpAdaptor adaptor,
+  matchAndRewrite(impulse::PopcountOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto resultType = cast<RankedTensorType>(op.getResult().getType());
     auto popcntOp = stablehlo::PopulationCountOp::create(
@@ -1317,7 +1319,7 @@ struct PopcountOpConversion : public OpConversionPattern<enzyme::PopcountOp> {
   }
 };
 
-struct SliceOpConversion : public OpConversionPattern<enzyme::SliceOp> {
+struct SliceOpConversion : public OpConversionPattern<impulse::SliceOp> {
   using OpConversionPattern::OpConversionPattern;
 
   std::string backend;
@@ -1326,7 +1328,7 @@ struct SliceOpConversion : public OpConversionPattern<enzyme::SliceOp> {
       : OpConversionPattern(context, benefit), backend(backend) {}
 
   LogicalResult
-  matchAndRewrite(enzyme::SliceOp op, OpAdaptor adaptor,
+  matchAndRewrite(impulse::SliceOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto resultType = cast<RankedTensorType>(op.getResult().getType());
     rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(
@@ -1337,7 +1339,7 @@ struct SliceOpConversion : public OpConversionPattern<enzyme::SliceOp> {
 };
 
 struct DynamicSliceOpConversion
-    : public OpConversionPattern<enzyme::DynamicSliceOp> {
+    : public OpConversionPattern<impulse::DynamicSliceOp> {
   using OpConversionPattern::OpConversionPattern;
 
   std::string backend;
@@ -1346,7 +1348,7 @@ struct DynamicSliceOpConversion
       : OpConversionPattern(context, benefit), backend(backend) {}
 
   LogicalResult
-  matchAndRewrite(enzyme::DynamicSliceOp op, OpAdaptor adaptor,
+  matchAndRewrite(impulse::DynamicSliceOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto resultType = cast<RankedTensorType>(op.getResult().getType());
     rewriter.replaceOpWithNewOp<stablehlo::DynamicSliceOp>(
@@ -1357,7 +1359,7 @@ struct DynamicSliceOpConversion
 };
 
 struct DynamicUpdateSliceOpConversion
-    : public OpConversionPattern<enzyme::DynamicUpdateSliceOp> {
+    : public OpConversionPattern<impulse::DynamicUpdateSliceOp> {
   using OpConversionPattern::OpConversionPattern;
 
   std::string backend;
@@ -1366,7 +1368,7 @@ struct DynamicUpdateSliceOpConversion
       : OpConversionPattern(context, benefit), backend(backend) {}
 
   LogicalResult
-  matchAndRewrite(enzyme::DynamicUpdateSliceOp op, OpAdaptor adaptor,
+  matchAndRewrite(impulse::DynamicUpdateSliceOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     auto resultType = cast<RankedTensorType>(op.getResult().getType());
     auto newOp = stablehlo::DynamicUpdateSliceOp::create(
@@ -1377,10 +1379,10 @@ struct DynamicUpdateSliceOpConversion
   }
 };
 
-struct LowerProbProgToStableHLOPass
-    : public enzyme::impl::LowerProbProgToStableHLOPassBase<
-          LowerProbProgToStableHLOPass> {
-  using LowerProbProgToStableHLOPassBase::LowerProbProgToStableHLOPassBase;
+struct LowerImpulseToStableHLOPass
+    : public enzyme::impl::LowerImpulseToStableHLOPassBase<
+          LowerImpulseToStableHLOPass> {
+  using LowerImpulseToStableHLOPassBase::LowerImpulseToStableHLOPassBase;
 
   void runOnOperation() override {
     auto context = getOperation()->getContext();
@@ -1393,23 +1395,24 @@ struct LowerProbProgToStableHLOPass
     target.addLegalDialect<func::FuncDialect>();
     target.addLegalDialect<tensor::TensorDialect>();
     target.addLegalDialect<enzyme::EnzymeDialect>();
+    target.addLegalDialect<impulse::ImpulseDialect>();
 
-    target.addIllegalOp<enzyme::RandomOp>();
-    target.addIllegalOp<enzyme::RandomSplitOp>();
-    target.addIllegalOp<enzyme::CholeskyOp>();
-    target.addIllegalOp<enzyme::TriangularSolveOp>();
-    target.addIllegalOp<enzyme::DotOp>();
-    target.addIllegalOp<enzyme::LogAddExpOp>();
-    target.addIllegalOp<enzyme::LogisticOp>();
-    target.addIllegalOp<enzyme::ForLoopOp>();
-    target.addIllegalOp<enzyme::WhileLoopOp>();
-    target.addIllegalOp<enzyme::IfOp>();
-    target.addIllegalOp<enzyme::PopcountOp>();
-    target.addIllegalOp<enzyme::SliceOp>();
-    target.addIllegalOp<enzyme::DynamicSliceOp>();
-    target.addIllegalOp<enzyme::DynamicUpdateSliceOp>();
-    target.addIllegalOp<enzyme::SelectOp>();
-    target.addIllegalOp<enzyme::ReshapeOp>();
+    target.addIllegalOp<impulse::RandomOp>();
+    target.addIllegalOp<impulse::RandomSplitOp>();
+    target.addIllegalOp<impulse::CholeskyOp>();
+    target.addIllegalOp<impulse::TriangularSolveOp>();
+    target.addIllegalOp<impulse::DotOp>();
+    target.addIllegalOp<impulse::LogAddExpOp>();
+    target.addIllegalOp<impulse::LogisticOp>();
+    target.addIllegalOp<impulse::ForOp>();
+    target.addIllegalOp<impulse::WhileOp>();
+    target.addIllegalOp<impulse::IfOp>();
+    target.addIllegalOp<impulse::PopcountOp>();
+    target.addIllegalOp<impulse::SliceOp>();
+    target.addIllegalOp<impulse::DynamicSliceOp>();
+    target.addIllegalOp<impulse::DynamicUpdateSliceOp>();
+    target.addIllegalOp<impulse::SelectOp>();
+    target.addIllegalOp<impulse::ReshapeOp>();
 
     target.addLegalOp<UnrealizedConversionCastOp>();
 
@@ -1431,10 +1434,10 @@ struct LowerProbProgToStableHLOPass
   }
 };
 
-struct LowerProbProgTraceOpsPass
-    : public enzyme::impl::LowerProbProgTraceOpsPassBase<
-          LowerProbProgTraceOpsPass> {
-  using LowerProbProgTraceOpsPassBase::LowerProbProgTraceOpsPassBase;
+struct LowerImpulseTraceOpsPass
+    : public enzyme::impl::LowerImpulseTraceOpsPassBase<
+          LowerImpulseTraceOpsPass> {
+  using LowerImpulseTraceOpsPassBase::LowerImpulseTraceOpsPassBase;
 
   void runOnOperation() override {
     auto context = getOperation()->getContext();

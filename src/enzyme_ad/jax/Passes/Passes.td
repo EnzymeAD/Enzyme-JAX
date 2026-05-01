@@ -120,8 +120,12 @@ def MultiFloatConversionPass : Pass<"multi-float-conversion"> {
     Option<"expansionSize", "expansion-size", "int32_t", "2", "Number of limbs for expansion (1 or 2)">,
     Option<"convertSignatures", "convert-signatures", "bool", "false", "Whether to convert function signatures">,
     Option<"divSubsteps", "div-substeps", "int32_t", "0", "Number of Newton-Raphson iterations for division (0 for Dekker's algorithm)">,
+    Option<"dotGeneralToReduce", "dot-general-to-reduce", "bool", "true", "Whether to rewrite dot_general to mul + reduce as preprocessing">,
+    Option<"preciseReduce", "precise-reduce", "bool", "false", "Whether to use precise MultiFloat reduction with custom addition in block">,
   ];
 }
+
+
 
 def TensorEmptyOpRaisingPass : Pass<"tensor-empty-raise"> {
   let summary = "Raise tensor.empty ops";
@@ -555,10 +559,10 @@ def LowerEnzymeXLABLASPass : Pass<"lower-enzymexla-blas"> {
   ];
 }
 
-def LowerProbProgToStableHLOPass : Pass<"lower-probprog-to-stablehlo"> {
-  let summary = "Lower computational enzyme ops to StableHLO";
+def LowerImpulseToStableHLOPass : Pass<"lower-impulse-to-stablehlo"> {
+  let summary = "Lower Impulse dialect ops to StableHLO";
   let description = [{
-    Lower computational probprog ops (loop, dot, cholesky, triangular_solve, random, recover_sample)
+    Lower Impulse dialect ops (loop, dot, cholesky, triangular_solve, random, etc.)
     to StableHLO dialect operations.
   }];
   let dependentDialects = [
@@ -567,6 +571,7 @@ def LowerProbProgToStableHLOPass : Pass<"lower-probprog-to-stablehlo"> {
     "arith::ArithDialect",
     "func::FuncDialect",
     "enzyme::EnzymeDialect",
+    "impulse::ImpulseDialect",
   ];
 
   let options = [
@@ -585,18 +590,17 @@ def LowerProbProgToStableHLOPass : Pass<"lower-probprog-to-stablehlo"> {
   ];
 }
 
-def LowerProbProgTraceOpsPass : Pass<"lower-probprog-trace-ops"> {
-  let summary = "Lower probprog trace manipulation ops to JIT calls";
+def LowerImpulseTraceOpsPass : Pass<"lower-impulse-trace-ops"> {
+  let summary = "Lower Impulse trace manipulation ops to JIT calls";
   let description = [{
-    Lower probprog trace manipulation ops (initTrace, addSampleToTrace, getSampleFromTrace, etc.)
-    to enzymexla.jit_call operations that invoke external runtime functions (e.g., Julia `@cfunction`).
-    This pass also handles type conversions (!enzyme.Trace -> tensor<ui64>, !enzyme.Constraint -> tensor<ui64>).
+    Lower Impulse ops that requires JIT calls
   }];
   let dependentDialects = [
     "stablehlo::StablehloDialect",
     "enzymexla::EnzymeXLADialect",
     "LLVM::LLVMDialect",
     "func::FuncDialect",
+    "impulse::ImpulseDialect",
   ];
 
   let options = [
@@ -787,6 +791,14 @@ def EnzymeLiftControlFlowToSCFPass : Pass<"enzyme-lift-cf-to-scf"> {
     // TODO: This is only necessary until we have a
     //       ub.unreachable op.
     "func::FuncDialect"
+  ];
+
+  let options = [
+    Option</*C++ variable name=*/"rewrite_index_switch",
+           /*CLI argument=*/"rewrite_index_switch",
+           /*type=*/"bool",
+           /*default=*/"true",
+           /*description=*/"Rewrite scf.index_switch to a chain of scf.if ops">
   ];
 }
 
@@ -1013,6 +1025,12 @@ def OptimizeCommunication : Pass<"optimize-communication"> {
        /*default=*/"0",
        /*description=*/"Perform a Concatenate with Padding to optimize the communication">,
        Option<
+       /*C++ variable name=*/"concat_to_dus_any",
+       /*CLI argument=*/"concat_to_dus_any",
+       /*type=*/"int",
+       /*default=*/"0",
+       /*description=*/"Perform a Concatenate with Padding to optimize the communication">,
+       Option<
        /*C++ variable name=*/"concat_to_rotatepad",
        /*CLI argument=*/"concat_to_rotatepad",
        /*type=*/"int",
@@ -1048,6 +1066,12 @@ def OptimizeCommunication : Pass<"optimize-communication"> {
        /*type=*/"int",
        /*default=*/"0",
        /*description=*/"Perform a two-concat with pads and a manual select">,
+       Option<
+       /*C++ variable name=*/"dus_of_concat_slices",
+       /*CLI argument=*/"dus_of_concat_slices",
+       /*type=*/"int",
+       /*default=*/"2",
+       /*description=*/"Optimize DUS of concat of slices">,
        Option<
        /*C++ variable name=*/"wrap_to_pad_comm",
        /*CLI argument=*/"wrap_to_pad_comm",
@@ -1306,6 +1330,14 @@ def LowerTritonPass : Pass<"lower-triton", "mlir::ModuleOp"> {
 
 def EnzymeBatchToStableHLOPass : Pass<"enzyme-batch-to-stablehlo"> {
   let summary = "Legalize batching specific enzyme ops to stablehlo dialect";
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "enzyme::EnzymeDialect"
+  ];
+}
+
+def LowerEnzymeJacobianStableHLO : Pass<"lower-enzyme-jacobian-stablehlo"> {
+  let summary = "Lowers JVPs/VJPs in StableHLO to fwddiff/autodiff calls";
   let dependentDialects = [
     "stablehlo::StablehloDialect",
     "enzyme::EnzymeDialect"

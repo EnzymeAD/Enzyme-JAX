@@ -315,6 +315,14 @@ struct SymmOpLowering : public OpRewritePattern<enzymexla::SymmOp> {
 
   LogicalResult matchAndRewriteCUDA(enzymexla::SymmOp op,
                                     PatternRewriter &rewriter) const {
+    Value A = op.getA();
+    if (stablehlo::IsTensorFilled(A)) {
+      // CUDA runtime performance for SYMM when the entire tensor is filled is
+      // extremely suboptimal. So if the tensor is pre-populated, we can just
+      // use the gemm-lowering
+      return matchAndRewriteFallback(op, rewriter);
+    }
+
     auto CType = cast<RankedTensorType>(op.getC().getType());
     auto rank = CType.getRank();
 
@@ -330,7 +338,6 @@ struct SymmOpLowering : public OpRewritePattern<enzymexla::SymmOp> {
     SmallVector<int64_t> operandRanks;
     SmallVector<bool> areColMajor;
 
-    auto A = op.getA();
     auto B = op.getB();
     auto C = op.getC();
 
@@ -972,16 +979,24 @@ struct LowerEnzymeXLABLASPass
 
   void runOnOperation() override {
     auto context = getOperation()->getContext();
-    RewritePatternSet patterns(context);
-
-    patterns.add<SyrkOpLowering, SymmOpLowering>(backend, blasIntWidth,
-                                                 context);
-    patterns.add<TrsmOpLowering>(context);
 
     GreedyRewriteConfig config;
     config.setUseTopDownTraversal(true);
     config.enableFolding();
-    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
+
+    // We need to run SymmOp lowering first, since it conditionally lowers
+    // to a custom call that needs us to detect potential Syrk Ops
+    RewritePatternSet patternsSet1(context);
+    patternsSet1.add<SymmOpLowering>(backend, blasIntWidth, context);
+    if (failed(applyPatternsGreedily(getOperation(), std::move(patternsSet1),
+                                     config))) {
+      signalPassFailure();
+    }
+
+    RewritePatternSet patternsSet2(context);
+    patternsSet2.add<SyrkOpLowering>(backend, blasIntWidth, context);
+    patternsSet2.add<TrsmOpLowering>(context);
+    if (failed(applyPatternsGreedily(getOperation(), std::move(patternsSet2),
                                      config))) {
       signalPassFailure();
     }

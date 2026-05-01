@@ -1458,6 +1458,7 @@ struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
         legal = true;
         assert(helper.lb);
         assert(helper.ub);
+        break;
       }
       if (!legal) {
         return rewriter.notifyMatchFailure(loop,

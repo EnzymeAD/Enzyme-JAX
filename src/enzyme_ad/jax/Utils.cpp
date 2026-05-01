@@ -3915,6 +3915,8 @@ bool IsTensorFilled(Value input) {
       continue;
     }
 
+    // TODO: If this is not a call op, instead it is a region of ops like
+    // scatter / while, we can analyze the inputs to infer this.
     // Block arguments are considered dense (inputs to functions)
     if (auto blockArg = dyn_cast<BlockArgument>(current)) {
       return false;

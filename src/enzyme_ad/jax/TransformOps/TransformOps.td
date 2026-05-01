@@ -900,6 +900,10 @@ def ApplyCSESubtractPatterns : EnzymeHLOPatternOp<
     "cse_subtract"> {
   let patterns = ["CSE<stablehlo::SubtractOp>"];
 }
+def ApplyCSEPowPatterns : EnzymeHLOPatternOp<
+    "cse_pow"> {
+  let patterns = ["CSE<stablehlo::PowOp>"];
+}
 def ApplyCSEMinPatterns : EnzymeHLOPatternOp<
     "cse_min"> {
   let patterns = ["CSE<stablehlo::MinOp>"];
@@ -1025,6 +1029,11 @@ def DynamicBroadcastInDimAlDimsNonExpandingPatterns : EnzymeHLOPatternOp<
 def NoopReduceOpCanonPatterns : EnzymeHLOPatternOp<
     "noop_reduce_op_canon"> {
   let patterns = ["NoopReduceOpCanon"];
+}
+
+def NoopReduceWindowOpCanonPatterns : EnzymeHLOPatternOp<
+    "noop_reduce_window_op_canon"> {
+  let patterns = ["NoopReduceWindowOpCanon"];
 }
 
 def EmptyReduceOpCanonPatterns : EnzymeHLOPatternOp<
@@ -1471,6 +1480,11 @@ def SelectPadToDUS : EnzymeHLOPatternOp<
 def SelectSelectSameCond : EnzymeHLOPatternOp<
     "select_select_same_cond"> {
   let patterns = ["SelectSelectSameCond"];
+}
+
+def SelectSelectNegCond : EnzymeHLOPatternOp<
+    "select_select_neg_cond"> {
+  let patterns = ["SelectSelectNegCond"];
 }
 
 def AndPadPad : EnzymeHLOPatternOp<

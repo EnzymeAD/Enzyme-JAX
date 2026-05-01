@@ -310,6 +310,7 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("chained_dynamic_broadcast_in_dim_canonicalization<16>");
   list.push_back("dynamic_broadcast_in_dim_all_dims_non_expanding<16>");
   list.push_back("noop_reduce_op_canon<16>");
+  list.push_back("noop_reduce_window_op_canon<16>");
   list.push_back("empty_reduce_op_canon<16>");
   list.push_back("dynamic_reshape_op_canon<16>");
   list.push_back("get_tuple_element_op_canon<16>");
@@ -332,6 +333,7 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("cse_div<16>");
   list.push_back("cse_add<16>");
   list.push_back("cse_subtract<16>");
+  list.push_back("cse_pow<16>");
   list.push_back("cse_min<16>");
   list.push_back("cse_max<16>");
   list.push_back("cse_neg<16>");
@@ -479,7 +481,8 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("concat_elementwise");
   list.push_back("reduce_reduce");
   list.push_back("conj_real");
-  list.push_back("convert_mul_convert");
+  // Creates correctness error.
+  // list.push_back("convert_mul_convert");
   list.push_back("convert_binop_convert_min");
   list.push_back("convert_binop_convert_max");
   list.push_back("select_broadcast_in_dim");
@@ -508,6 +511,7 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("compare_subtract_const_simplify");
   list.push_back("select_simplify");
   list.push_back("select_select_same_cond");
+  list.push_back("select_select_neg_cond");
   list.push_back("concatenate_subtract_to_subtract_pad");
   list.push_back("concatenate_add_to_add_pad");
   list.push_back("concatenate_broadcast_in_dim");
@@ -718,6 +722,8 @@ static void addConstPropPasses(std::vector<std::string> &list,
                                int64_t maxConstThreshold) {
   // Unary constant propagation
   list.push_back("chlo_inf_const_prop<16>");
+  list.push_back("tgamma_const_prop<16>");
+  list.push_back("lgamma_const_prop<16>");
   list.push_back("gamma_const_prop<16>");
   list.push_back("abs_const_prop<16>");
   list.push_back("log_const_prop<1>");
@@ -746,7 +752,6 @@ static void addConstPropPasses(std::vector<std::string> &list,
   list.push_back("relu_const_prop");
   list.push_back("gelu_const_prop");
   list.push_back("softplus_const_prop");
-  list.push_back("lgamma_const_prop");
 
   // Binary constant propagation
   list.push_back("add_const_prop");
