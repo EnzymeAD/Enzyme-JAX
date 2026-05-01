@@ -1870,6 +1870,9 @@ cc_library(
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:LLVMDialect",
         "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:FunctionInterfaces",
+        "@llvm-project//mlir:BytecodeOpInterface",
+        "@llvm-project//llvm:Support",
         "@z3",
     ],
 )
