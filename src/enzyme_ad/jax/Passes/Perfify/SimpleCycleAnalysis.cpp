@@ -7,8 +7,8 @@
 #include "src/enzyme_ad/jax/Passes/Perfify/Passes.h"
 #include "z3++.h"
 #include <cstdint>
-#include <string>
 #include <iostream>
+#include <string>
 namespace mlir {
 namespace enzyme {
 namespace perfify {
@@ -44,7 +44,7 @@ struct SimpleCycleAnalysisPass
     cost_var.push_back(c.int_const("cost0"));
     visitOperation(op, &state, s);
   }
-  void visitOperation(Operation *op, AsmState *state, z3::solver& s) {
+  void visitOperation(Operation *op, AsmState *state, z3::solver &s) {
     if (auto costOp = dyn_cast<CostOp>(op)) {
       if (!op->getAttrs().empty()) {
         NamedAttribute cost_attr = op->getAttrs()[0];
@@ -109,12 +109,15 @@ struct SimpleCycleAnalysisPass
         if (cost_map_res != cost_map.end()) {
           std::string cost_v = std::to_string(cost_var.size());
           std::string fmt = cost_str + cost_v;
-          cost_var.push_back(s.ctx().int_const(fmt.c_str())); // create a new cost var
+          cost_var.push_back(
+              s.ctx().int_const(fmt.c_str())); // create a new cost var
           z3::expr post_cost = cost_var[cost_var.size() - 1];
           z3::expr pre_cost = cost_var[cost_var.size() - 2];
           int64_t cost_val = cost_map_res->second;
-          z3::expr cost_expr = (post_cost == pre_cost + s.ctx().int_val(cost_val)); // increment per op cost
-          s.add(cost_expr); // add to solver
+          z3::expr cost_expr =
+              (post_cost ==
+               pre_cost + s.ctx().int_val(cost_val)); // increment per op cost
+          s.add(cost_expr);                           // add to solver
         } else {
           llvm::outs() << "unknown cost for operation "
                        << region_op->getName().getStringRef().str() << "\n";
@@ -126,13 +129,15 @@ struct SimpleCycleAnalysisPass
         auto region_num = cmpOp->getParentRegion()->getRegionNumber();
         auto pre_post_cost =
             constant_costs.find(static_cast<HoareStates>(region_num));
-            z3::expr p = (cost_var[0] == s.ctx().int_val(pre_post_cost->second)); // precondition
-            z3::expr q = (cost_var[cost_var.size() - 1] != s.ctx().int_val(pre_post_cost->second)); // postcondition
-            if (region_num == 0) {
-              s.add(p);
-            } else {
-              s.add(q); // safer to add the false?
-            }
+        z3::expr p = (cost_var[0] ==
+                      s.ctx().int_val(pre_post_cost->second)); // precondition
+        z3::expr q = (cost_var[cost_var.size() - 1] !=
+                      s.ctx().int_val(pre_post_cost->second)); // postcondition
+        if (region_num == 0) {
+          s.add(p);
+        } else {
+          s.add(q); // safer to add the false?
+        }
       }
     } else if (auto assumeOp = dyn_cast<AssumeOp>(op)) {
       // todo: trigger traceup from the provided register argument, evaluate or
@@ -143,12 +148,12 @@ struct SimpleCycleAnalysisPass
       visitRegion(region, state, s);
   }
 
-  void visitRegion(Region &region, AsmState *state, z3::solver& s) {
+  void visitRegion(Region &region, AsmState *state, z3::solver &s) {
     for (Block &block : region.getBlocks())
       visitBlock(block, state, s);
   }
 
-  void visitBlock(Block &block, AsmState *state, z3::solver& s) {
+  void visitBlock(Block &block, AsmState *state, z3::solver &s) {
     for (Operation &op : block.getOperations())
       visitOperation(&op, state, s);
   }
