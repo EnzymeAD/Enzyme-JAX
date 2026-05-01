@@ -384,7 +384,6 @@ static LogicalResult affineMapToSlice(affine::AffineValueMap accessValueMap,
 
   strides.reserve(rank);
 
-  llvm::errs() << "[DEBUG] affineMapToSlice: map=" << accessValueMap.getAffineMap() << "\n";
   for (unsigned i = 0; i < rank; i++) {
     auto expr = accessValueMap.getResult(i);
 
@@ -401,12 +400,6 @@ static LogicalResult affineMapToSlice(affine::AffineValueMap accessValueMap,
     }
 
     auto range = computeExprRange(accessValueMap, expr);
-    llvm::errs() << "[DEBUG]   result " << i << " expr: " << expr << "\n";
-    if (range.has_value()) {
-      llvm::errs() << "[DEBUG]     range: lb=" << range->lb << ", ub=" << range->ub << ", step=" << range->step << "\n";
-    } else {
-      llvm::errs() << "[DEBUG]     range: nullopt\n";
-    }
 
     if (!range.has_value())
       return failure();
@@ -877,15 +870,6 @@ emitLoadAsGather(Location loc, Value mappedMemref, ValueRange lIndices,
   SmallVector<int64_t> startIndexMap;
   SmallVector<int64_t> outputShape;
   SmallVector<Value> ivs;
-  llvm::errs() << "[DEBUG] emitLoadAsGather: lIndices size=" << lIndices.size() << "\n";
-  for (auto [i, raisedIdx] : llvm::enumerate(lIndices)) {
-    llvm::errs() << "[DEBUG]   lIndices[" << i << "]: " << raisedIdx << "\n";
-    if (auto Ty = dyn_cast<RankedTensorType>(raisedIdx.getType())) {
-      llvm::errs() << "[DEBUG]     type shape: [";
-      llvm::interleaveComma(Ty.getShape(), llvm::errs());
-      llvm::errs() << "]\n";
-    }
-  }
 
   for (auto raisedIdx : lIndices) {
     startIndexMap.push_back(startIndexMap.size());
@@ -1834,14 +1818,6 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
     auto inputTen = mapping.lookup(access.memref);
 
-    llvm::errs() << "[DEBUG] AffineLoadOp: " << *op << "\n";
-    llvm::errs() << "[DEBUG] accessValueMap: " << accessValueMap.getAffineMap() << "\n";
-    llvm::errs() << "[DEBUG] accessValueMap operands: ";
-    for (auto operand : accessValueMap.getOperands()) {
-      operand.print(llvm::errs());
-      llvm::errs() << " ";
-    }
-    llvm::errs() << "\n";
 
     SmallVector<int64_t> outputShape = affineMapShape(accessValueMap, pc);
 
@@ -1852,16 +1828,11 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
       return affine::isAffineForInductionVar(iv);
     });
     
-    bool failedSlice = affineMapToSlice(accessValueMap, strides, reverseDims, pc).failed();
-    bool non1Stride = (dynIndices && llvm::any_of(strides, [](int64_t stride) { return stride != 1; }));
-    bool generalScatterGather = needsGeneralScatterGather(accessValueMap);
-    
-    llvm::errs() << "[DEBUG] failedSlice: " << failedSlice << "\n";
-    llvm::errs() << "[DEBUG] non1Stride: " << non1Stride << "\n";
-    llvm::errs() << "[DEBUG] generalScatterGather: " << generalScatterGather << "\n";
-    
-    bool emitAsGather = failedSlice || non1Stride || generalScatterGather;
-    llvm::errs() << "[DEBUG] emitAsGather: " << emitAsGather << "\n";
+    bool emitAsGather =
+        affineMapToSlice(accessValueMap, strides, reverseDims, pc).failed() ||
+        (dynIndices &&
+         llvm::any_of(strides, [](int64_t stride) { return stride != 1; })) ||
+        needsGeneralScatterGather(accessValueMap);
 
     if (emitAsGather) {
       SmallVector<Value> lIndices;
