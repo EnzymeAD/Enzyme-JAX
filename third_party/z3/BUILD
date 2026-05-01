@@ -56,12 +56,16 @@ cmake(
 cc_library(
     name = "z3_static",
     hdrs = glob([
-        "src/api/z3.h",
-        "src/api/z3++.h",
-        "src/api/z3_*.h",
+        "src/api/*.h",
+        "src/api/*.hpp",
+        "src/api/c++/*.h",
+        "src/api/c++/*.hpp",
     ]),
     include_prefix = "",
-    includes = ["src/api"],
+    includes = [
+        "src/api",
+        "src/api/c++",
+    ],
     strip_include_prefix = "src/api",
     visibility = ["//visibility:public"],
     deps = [":z3_static_cmake"],
