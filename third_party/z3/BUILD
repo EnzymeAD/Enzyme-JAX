@@ -35,7 +35,7 @@ cmake(
 )
 
 cmake(
-    name = "z3_static",
+    name = "z3_static_cmake",
     generate_args = [
         "-G Ninja",
         "-D BUILD_SHARED_LIBS=OFF",
@@ -51,6 +51,19 @@ cmake(
         "//conditions:default": ["@platforms//:incompatible"],
     }),
     visibility = ["//visibility:public"],
+)
+
+cc_library(
+    name = "z3_static",
+    hdrs = glob([
+        "src/api/z3.h",
+        "src/api/z3++.h",
+        "src/api/z3_*.h",
+    ]),
+    include_prefix = "",
+    strip_include_prefix = "src/api",
+    visibility = ["//visibility:public"],
+    deps = [":z3_static_cmake"],
 )
 
 alias(
