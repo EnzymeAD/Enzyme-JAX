@@ -151,19 +151,26 @@ LogicalResult CallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   if (!has_sret && fnType.getNumInputs() != getNumOperands())
     return emitOpError("incorrect number of operands for callee");
 
-  // Allow type mismatch only for readonly pointer args that have been converted
+  auto convertAttr =
+      fn->getAttrOfType<enzyme::tessera::ConvertAttr>("tessera.convert");
+  if (!convertAttr)
+    return emitOpError() << "missing tessera.convert attribute on tessera op";
+  auto byRefArgs = convertAttr.getByRefArgs();
+
+  // Allow type mismatch only for byref pointer args that have been converted
   // to values
-  int startIdx = has_sret ? 1 : 0;
-  for (unsigned i = startIdx, e = fnType.getNumInputs(); i != e; ++i) {
-    if (getOperand(i - startIdx).getType() == fnType.getInput(i))
+  int argOffset = has_sret ? 1 : 0;
+  for (unsigned i = argOffset, e = fnType.getNumInputs(); i != e; ++i) {
+    int argIdx = i - argOffset;
+    if (getOperand(argIdx).getType() == fnType.getInput(i))
       continue;
     if (isa<LLVM::LLVMPointerType>(fnType.getInput(i)) &&
-        fn.getArgAttr(i, LLVM::LLVMDialect::getReadonlyAttrName()))
+        (fn.getArgAttr(i, LLVM::LLVMDialect::getByValAttrName()) ||
+         byRefArgs[argIdx]))
       continue;
     return emitOpError("operand type mismatch: expected operand type ")
            << fnType.getInput(i) << ", but provided "
-           << getOperand(i - startIdx).getType() << " for operand number "
-           << i - startIdx;
+           << getOperand(argIdx).getType() << " for operand number " << argIdx;
   }
 
   // If tessera.define has sret attribute,

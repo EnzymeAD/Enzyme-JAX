@@ -151,16 +151,13 @@ struct LiftTesseraAnnotationsPass
 
       // Parse "tessera_op=string\0" and "pure_tessera_op=string\0"
       StringRef annot(annotStr);
-      if (annot.starts_with("tessera_op=")) {
-        StringRef opName = annot.substr(11);
-        opName = opName.take_while([](char c) { return c != '\0'; });
-        func->setAttr("tessera_op",
-                      StringAttr::get(func->getContext(), opName));
-      } else if (annot.starts_with("pure_tessera_op=")) {
-        StringRef opName = annot.substr(16);
-        opName = opName.take_while([](char c) { return c != '\0'; });
+      if (annot.consume_front("tessera_op=")) {
+        annot = annot.rtrim('\0');
+        func->setAttr("tessera_op", StringAttr::get(func->getContext(), annot));
+      } else if (annot.consume_front("pure_tessera_op=")) {
+        annot = annot.rtrim('\0');
         func->setAttr("pure_tessera_op",
-                      StringAttr::get(func->getContext(), opName));
+                      StringAttr::get(func->getContext(), annot));
       }
     }
   }

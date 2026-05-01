@@ -83,6 +83,7 @@ public:
     for (const auto &namedAttr : defineOp->getAttrs()) {
       if (namedAttr.getName() != defineOp.getFunctionTypeAttrName() &&
           namedAttr.getName() != SymbolTable::getSymbolAttrName() &&
+          namedAttr.getName() != "tessera.convert" &&
           namedAttr.getName() != "tessera.original_name" &&
           namedAttr.getName() != "tessera.sret_attrs" &&
           namedAttr.getName() != "tessera.side_effect_free")

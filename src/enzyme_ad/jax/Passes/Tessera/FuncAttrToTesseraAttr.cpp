@@ -33,7 +33,8 @@ struct FuncAttrToTesseraAttrPass
 
   void runOnOperation() override {
     ModuleOp module = getOperation();
-    OpBuilder builder(module.getContext());
+    MLIRContext *ctx = module.getContext();
+    OpBuilder builder(ctx);
 
     for (auto func : module.getOps<LLVM::LLVMFuncOp>()) {
       StringAttr opAttr;
@@ -48,8 +49,52 @@ struct FuncAttrToTesseraAttrPass
       }
 
       if (opAttr) {
+        StringRef raw = opAttr.getValue();
+
+        // Parse op name (everything before the '(')
+        StringRef opName = raw.take_while([](char c) { return c != '('; });
+
+        // Parse args in parentheses
+        StringRef argList = raw.slice(raw.find('(') + 1, raw.find(')'));
+        SmallVector<StringRef> argParts;
+        argList.split(argParts, ',');
+
+        SmallVector<bool> byRefArgs;
+
+        for (auto arg : argParts) {
+          arg = arg.trim();
+          if (arg.contains(":byref") || arg.contains(": byref")) {
+            byRefArgs.push_back(true);
+          } else {
+            byRefArgs.push_back(false);
+          }
+        }
+
+        // Parse sizes of args
+        SmallVector<int64_t> sizes;
+        StringRef sizeStr = raw.substr(raw.find(')') + 1);
+        if (!sizeStr.empty() && sizeStr.consume_front(":")) {
+          SmallVector<StringRef> sizeParts;
+          sizeStr.split(sizeParts, ',');
+          for (auto s : sizeParts) {
+            int64_t size;
+            s.trim().getAsInteger(10, size);
+            sizes.push_back(size);
+          }
+        }
+
+        // Make sure number of arguments matches number of sizes provided
+        if (byRefArgs.size() != sizes.size()) {
+          func->emitError("tessera: number of arguments (")
+              << byRefArgs.size() << ") does not match number of sizes ("
+              << sizes.size() << ")";
+          return;
+        }
+
         auto tesseraAttr = enzyme::tessera::ConvertAttr::get(
-            builder.getContext(), opAttr.getValue().str(), isPure);
+            builder.getContext(), opName.str(),
+            DenseBoolArrayAttr::get(builder.getContext(), byRefArgs),
+            DenseI64ArrayAttr::get(builder.getContext(), sizes), isPure);
 
         func->setAttr("tessera.convert", tesseraAttr);
         func->removeAttr("tessera_op");

@@ -52,7 +52,7 @@ public:
         funcOp->getAttrOfType<enzyme::tessera::ConvertAttr>("tessera.convert");
     if (!convertAttr)
       return failure();
-    auto tesseraName = convertAttr.getValue();
+    auto tesseraName = convertAttr.getOpName();
     auto isPure = convertAttr.getPure();
     auto module = funcOp->getParentOfType<ModuleOp>();
     auto *ctx = funcOp->getContext();
@@ -64,7 +64,6 @@ public:
     // Check if first argument has sret attribute and if function is side
     // effect free
     bool hasSret = false;
-    // bool isSideEffectFree = true;
     auto argAttrs = funcOp.getArgAttrsAttr();
     if (!params.empty() && argAttrs) {
       if (auto sretAttr =
@@ -89,8 +88,7 @@ public:
     // and tessera.convert attribute.
     for (const auto &namedAttr : funcOp->getAttrs()) {
       if (namedAttr.getName() != funcOp.getFunctionTypeAttrName() &&
-          namedAttr.getName() != SymbolTable::getSymbolAttrName() &&
-          namedAttr.getName() != "tessera.convert")
+          namedAttr.getName() != SymbolTable::getSymbolAttrName())
         tesseraDefineOp->setAttr(namedAttr.getName(), namedAttr.getValue());
     }
     // Store the original function name so we can convert back to it later
@@ -142,51 +140,17 @@ public:
     Type sretType;
     auto operands = callOp.getOperands();
     auto argAttrs = callOp.getArgAttrsAttr();
-    SmallVector<Value> newOperands;
     SmallVector<Attribute> newArgAttrs;
     SmallVector<NamedAttribute> newAttrs;
-    SmallVector<int32_t> loadedOperands;
 
-    // Check if first operand has sret attribute. If so, remove it from
-    // the operand list and use its pointed-to type as the SSA return type,
-    // since tessera.call returns values directly rather than writing through
-    // a pointer.
+    // Check if first operand has sret attribute. If so, use its pointed-to
+    // type as the SSA return type, since tessera.call returns values directly
+    // rather than writing through a pointer.
     if (!operands.empty() && argAttrs) {
       if (auto sretAttr = defineOp.getArgAttr(
               0, LLVM::LLVMDialect::getStructRetAttrName())) {
         sretPtr = callOp.getOperand(0);
         sretType = cast<TypeAttr>(sretAttr).getValue();
-        // Build operands without first element. If a pointer operand is
-        // readonly and there is a preceding store to that pointer,
-        // load the value from the pointer and store that as the new operand
-        for (int i = 1; i < operands.size(); i++) {
-          auto operand = callOp.getOperand(i);
-          if (isa<LLVM::LLVMPointerType>(operand.getType()) &&
-              defineOp.getArgAttr(i,
-                                  LLVM::LLVMDialect::getReadonlyAttrName())) {
-            LLVM::StoreOp precedingStore;
-            for (auto *U : operand.getUsers()) {
-              if (auto storeOp = dyn_cast<LLVM::StoreOp>(U)) {
-                if (storeOp->getBlock() == callOp->getBlock() &&
-                    storeOp->isBeforeInBlock(callOp)) {
-                  precedingStore = storeOp;
-                  break;
-                }
-              }
-            }
-            if (precedingStore) {
-              auto loadedType = precedingStore.getValue().getType();
-              auto loadedVal = rewriter.create<LLVM::LoadOp>(
-                  callOp.getLoc(), loadedType, operand);
-              newOperands.push_back(loadedVal);
-              loadedOperands.push_back(i - 1);
-            } else {
-              newOperands.push_back(operand);
-            }
-          } else {
-            newOperands.push_back(operand);
-          }
-        }
         // Build arg attrs without first element
         for (int j = 1; j < argAttrs.size(); j++)
           newArgAttrs.push_back(argAttrs[j]);
@@ -197,11 +161,55 @@ public:
         }
         newAttrs.push_back(rewriter.getNamedAttr(
             callOp.getArgAttrsAttrName(), rewriter.getArrayAttr(newArgAttrs)));
-        newAttrs.push_back(rewriter.getNamedAttr(
-            "tessera.loaded_operands",
-            rewriter.getDenseI32ArrayAttr(loadedOperands)));
       }
     }
+
+    auto convertAttr = defineOp->getAttrOfType<enzyme::tessera::ConvertAttr>(
+        "tessera.convert");
+    if (!convertAttr)
+      return failure();
+    auto byRefArgs = convertAttr.getByRefArgs();
+    auto argSizes = convertAttr.getArgSizes();
+
+    SmallVector<Value> newOperands;
+    SmallVector<int32_t> loadedOperands;
+
+    // Build operands without first element. If a pointer operand has a
+    // byVal attribute or was marked as byRef by the user, load the value
+    // from the pointer and store that as the new operand
+    int argOffset = sretPtr ? 1 : 0;
+    for (int i = argOffset; i < operands.size(); i++) {
+      auto operand = callOp.getOperand(i);
+      int argIdx = i - argOffset;
+
+      if (!isa<LLVM::LLVMPointerType>(operand.getType())) {
+        newOperands.push_back(operand);
+        continue;
+      }
+
+      // Determine whether to load pointer and how many bytes to load
+      Type pointeeType;
+      if (auto byValAttr =
+              defineOp.getArgAttr(i, LLVM::LLVMDialect::getByValAttrName())) {
+        pointeeType = cast<TypeAttr>(byValAttr).getValue();
+      } else if (byRefArgs[argIdx]) {
+        pointeeType = LLVM::LLVMArrayType::get(
+            IntegerType::get(rewriter.getContext(), 8), argSizes[argIdx]);
+      }
+
+      if (pointeeType) {
+        auto loadedVal = rewriter.create<LLVM::LoadOp>(callOp.getLoc(),
+                                                       pointeeType, operand);
+        newOperands.push_back(loadedVal);
+        loadedOperands.push_back(argIdx);
+      } else {
+        newOperands.push_back(operand);
+      }
+    }
+
+    newAttrs.push_back(
+        rewriter.getNamedAttr("tessera.loaded_operands",
+                              rewriter.getDenseI32ArrayAttr(loadedOperands)));
 
     // Create tessera.call op with SSA return type
     if (sretPtr) {
@@ -212,7 +220,7 @@ public:
       rewriter.eraseOp(callOp);
     } else {
       rewriter.replaceOpWithNewOp<tessera::CallOp>(
-          callOp, callOp.getResultTypes(), operands, callOp->getAttrs());
+          callOp, callOp.getResultTypes(), newOperands, callOp->getAttrs());
     }
 
     return success();
