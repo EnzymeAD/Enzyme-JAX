@@ -4,6 +4,10 @@
 // CHECK: enzymexla.xla_wrapper @[[RAISED:[a-zA-Z0-9_$]+]]
 
 // CHECK: func.func private @[[RAISED]]
+// CHECK: %[[C608:.*]] = stablehlo.constant dense<608> : tensor<i64>
+// CHECK: %[[MUL:.*]] = arith.muli {{.*}}, %[[C608]]
+// CHECK: %[[BROADCAST:.*]] = stablehlo.broadcast_in_dim %[[MUL]], dims = []
+// CHECK: %[[ADD:.*]] = arith.addi {{.*}}, %[[BROADCAST]]
 // CHECK: stablehlo.gather
 // CHECK: stablehlo.dynamic_update_slice
 func.func @gpu_wrapper_symbol(%arg0: memref<?xf64>, %arg1: index) {

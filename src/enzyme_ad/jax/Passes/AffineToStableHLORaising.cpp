@@ -106,8 +106,11 @@ struct InductionVariableRange {
   int64_t step;
 
   int64_t getNumIters() {
-    if (ub <= lb)
+    if (ub <= lb) {
+      if (step < 0)
+        return (lb - ub + (-step) - 1) / (-step);
       return 0;
+    }
     return (ub - lb + step - 1) / step;
   }
 };
@@ -2652,20 +2655,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     auto memref = loadOp.getMemref();
 
     SmallVector<Value> lIndices;
-    for (auto idx : loadOp.getIndices()) {
-      Value mappedIdx = mapping.lookup(idx);
-      if (mappedIdx == idx) {
-        if (auto ic = idx.getDefiningOp<arith::IndexCastOp>()) {
-          Value opnd = ic.getOperand();
-          Value mappedOpnd = mapping.lookup(opnd);
-          if (mappedOpnd != opnd &&
-              isa<RankedTensorType>(mappedOpnd.getType())) {
-            mappedIdx = mappedOpnd;
-          }
-        }
-      }
-      lIndices.push_back(mappedIdx);
-    }
+    for (auto idx : loadOp.getIndices())
+      lIndices.push_back(mapping.lookup(idx));
 
     Value res = emitLoadAsGather(
         rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
