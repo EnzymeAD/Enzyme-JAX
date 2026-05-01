@@ -1102,8 +1102,11 @@ def AffineToStableHLORaising : Pass<"raise-affine-to-stablehlo"> {
   let summary = "Raise affine parallel loops to stablehlo ops if possible";
   let dependentDialects = [
     "affine::AffineDialect",
+    "memref::MemRefDialect",
+    "scf::SCFDialect",
     "stablehlo::StablehloDialect",
     "func::FuncDialect",
+    "gpu::GPUDialect",
   ];
   let options =
       [Option<
