@@ -6,6 +6,7 @@ include "mlir/IR/OpBase.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 include "mlir/Interfaces/ControlFlowInterfaces.td"
 include "Dialect.td"
+include "Types.td"
 
 // Perfify.cost op
 def CostOp : PerfifyOp<"cost", []> {
@@ -15,13 +16,34 @@ def CostOp : PerfifyOp<"cost", []> {
   let arguments = (ins StrAttr:$target_op, 
                   APIntAttr:$cycle_cost);
   let assemblyFormat = "$target_op $cycle_cost attr-dict";
-  
+}
+
+def FnCostOp : PerfifyOp<"fn_cost", []> { // this should be where we calculate the cost in the pass
+  let results = (outs CostType:$out_cost);
+  let assemblyFormat = "attr-dict `:` type($out_cost)"; 
+}
+
+def CompareOp : PerfifyOp<"cmp", []> {
+  let arguments = (ins
+    PerfifyCmpPredicateAttr:$predicate,
+    CostType:$constant_cost,
+    CostType:$func_cost
+  );
+  let assemblyFormat = "$predicate `,` $constant_cost `,` $func_cost attr-dict";
+  let results = (outs I1:$result);
+}
+
+// Perfify.constant_cost op
+def ConstantCostOp : PerfifyOp<"constant_cost", []> {
+  let arguments = (ins I64Attr:$cycle_cost);
+  let assemblyFormat = "$cycle_cost attr-dict `:` type($out_cost)"; 
+  let results = (outs CostType:$out_cost);
 }
 
 def ArgOp : PerfifyOp<"arg", []> {
   let arguments = (ins I64Attr:$val);
   let assemblyFormat = "$val attr-dict";
-  let results = (outs I64);
+  let results = (outs CostType:$argval);
 }
 
 def AssumeOp : PerfifyOp<"assume", [HasParent<"ConditionsOp">, Terminator]> {
