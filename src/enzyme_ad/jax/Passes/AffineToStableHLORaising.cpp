@@ -387,7 +387,6 @@ static LogicalResult affineMapToSlice(affine::AffineValueMap accessValueMap,
   for (unsigned i = 0; i < rank; i++) {
     auto expr = accessValueMap.getResult(i);
 
-
     if (auto constExpr = dyn_cast<AffineConstantExpr>(expr)) {
       strides.push_back(1);
       continue;
@@ -1818,7 +1817,6 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
     auto inputTen = mapping.lookup(access.memref);
 
-
     SmallVector<int64_t> outputShape = affineMapShape(accessValueMap, pc);
 
     SmallVector<int64_t> strides;
@@ -1827,7 +1825,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     bool dynIndices = llvm::any_of(accessValueMap.getOperands(), [](Value iv) {
       return affine::isAffineForInductionVar(iv);
     });
-    
+
     bool emitAsGather =
         affineMapToSlice(accessValueMap, strides, reverseDims, pc).failed() ||
         (dynIndices &&
@@ -3515,9 +3513,12 @@ struct AffineToStableHLORaisingPass
                       indices.push_back(idx);
                     }
                   }
-                  auto maybeExpanded = mlir::affine::expandAffineMap(B, loadOp.getLoc(), loadOp.getAffineMap(), indices);
-                  assert(maybeExpanded.has_value() && "failed to expand affine map");
-                  auto newLoad = B.create<memref::LoadOp>(loadOp.getLoc(), loadOp.getMemref(), *maybeExpanded);
+                  auto maybeExpanded = mlir::affine::expandAffineMap(
+                      B, loadOp.getLoc(), loadOp.getAffineMap(), indices);
+                  assert(maybeExpanded.has_value() &&
+                         "failed to expand affine map");
+                  auto newLoad = B.create<memref::LoadOp>(
+                      loadOp.getLoc(), loadOp.getMemref(), *maybeExpanded);
                   loadOp.replaceAllUsesWith(newLoad.getResult());
                   loadOp.erase();
                 } else {
@@ -3532,9 +3533,13 @@ struct AffineToStableHLORaisingPass
                       indices.push_back(idx);
                     }
                   }
-                  auto maybeExpanded = mlir::affine::expandAffineMap(B, storeOp.getLoc(), storeOp.getAffineMap(), indices);
-                  assert(maybeExpanded.has_value() && "failed to expand affine map");
-                  B.create<memref::StoreOp>(storeOp.getLoc(), storeOp.getValueToStore(), storeOp.getMemref(), *maybeExpanded);
+                  auto maybeExpanded = mlir::affine::expandAffineMap(
+                      B, storeOp.getLoc(), storeOp.getAffineMap(), indices);
+                  assert(maybeExpanded.has_value() &&
+                         "failed to expand affine map");
+                  B.create<memref::StoreOp>(
+                      storeOp.getLoc(), storeOp.getValueToStore(),
+                      storeOp.getMemref(), *maybeExpanded);
                   storeOp.erase();
                 }
               }
