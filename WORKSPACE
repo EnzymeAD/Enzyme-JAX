@@ -384,3 +384,10 @@ http_archive(
     strip_prefix = "lean4-4.29.0",
     build_file_content = LEAN_ALL_CONTENT,
 )
+
+http_archive(
+    name = "z3",
+    url = "https://github.com/Z3Prover/z3/archive/refs/tags/z3-4.16.0.tar.gz",
+    strip_prefix = "z3-z3-4.16.0",
+    build_file = "//third_party/z3:BUILD",
+)
