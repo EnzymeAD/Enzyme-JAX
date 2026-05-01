@@ -3511,8 +3511,9 @@ struct AffineToStableHLORaisingPass
                       indices.push_back(idx);
                     }
                   }
-                  auto newLoad = B.create<memref::LoadOp>(
-                      loadOp.getLoc(), loadOp.getMemref(), indices);
+                  auto maybeExpanded = mlir::affine::expandAffineMap(B, loadOp.getLoc(), loadOp.getAffineMap(), indices);
+                  assert(maybeExpanded.has_value() && "failed to expand affine map");
+                  auto newLoad = B.create<memref::LoadOp>(loadOp.getLoc(), loadOp.getMemref(), *maybeExpanded);
                   loadOp.replaceAllUsesWith(newLoad.getResult());
                   loadOp.erase();
                 } else {
@@ -3527,9 +3528,9 @@ struct AffineToStableHLORaisingPass
                       indices.push_back(idx);
                     }
                   }
-                  B.create<memref::StoreOp>(storeOp.getLoc(),
-                                            storeOp.getValueToStore(),
-                                            storeOp.getMemref(), indices);
+                  auto maybeExpanded = mlir::affine::expandAffineMap(B, storeOp.getLoc(), storeOp.getAffineMap(), indices);
+                  assert(maybeExpanded.has_value() && "failed to expand affine map");
+                  B.create<memref::StoreOp>(storeOp.getLoc(), storeOp.getValueToStore(), storeOp.getMemref(), *maybeExpanded);
                   storeOp.erase();
                 }
               }
