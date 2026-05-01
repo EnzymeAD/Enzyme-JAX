@@ -1281,14 +1281,22 @@ struct MPIWaitallOpLowering : public OpRewritePattern<enzymexla::MPIWaitallOp> {
 
       // Generate the enzymexla_wrapper LLVM function body
       std::string wrapperFunctionName = "enzymexla_wrapper_" + mpiFunctionName;
+      if (op.getInbuf()) {
+        wrapperFunctionName += "_with_inbuf";
+      }
 
       if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapperFunctionName)) {
         OpBuilder::InsertionGuard guard(rewriter);
         rewriter.setInsertionPointToStart(moduleOp.getBody());
 
+        SmallVector<Type> argTypes = {llvmPtrType, llvmPtrType};
+        if (op.getInbuf()) {
+          argTypes.push_back(llvmPtrType);
+        }
+
         // Create the wrapper function decl
-        auto funcType = LLVM::LLVMFunctionType::get(
-            llvmVoidType, {llvmPtrType, llvmPtrType}, false);
+        auto funcType =
+            LLVM::LLVMFunctionType::get(llvmVoidType, argTypes, false);
 
         auto wrapperFunc = rewriter.create<LLVM::LLVMFuncOp>(
             op.getLoc(), wrapperFunctionName, funcType);
@@ -1304,7 +1312,7 @@ struct MPIWaitallOpLowering : public OpRewritePattern<enzymexla::MPIWaitallOp> {
         rewriter.setInsertionPointToStart(entryBlock);
 
         // Add argument-level memory effects attribute to all arguments
-        for (unsigned i = 0; i < 2; ++i) {
+        for (unsigned i = 0; i < argTypes.size(); ++i) {
           wrapperFunc.setArgAttr(i, "enzymexla.memory_effects",
                                  memoryEffectsAttr);
         }
@@ -1351,19 +1359,34 @@ struct MPIWaitallOpLowering : public OpRewritePattern<enzymexla::MPIWaitallOp> {
       // Get all orinigal op operands
       auto opOperands = op.getOperands();
 
+      SmallVector<Attribute> aliases;
+      if (op.getInbuf()) {
+        aliases.push_back(stablehlo::OutputOperandAliasAttr::get(
+            context,
+            /*output_operand_aliases=*/std::vector<int64_t>{},
+            /*operand_index=*/2,
+            /*operand_tuple_indices=*/std::vector<int64_t>{}));
+      }
+
       // Call the LLVM function with enzymexla.jit_call
-      rewriter.create<enzymexla::JITCallOp>(
-          op.getLoc(), TypeRange{},
+      auto jitCall = rewriter.create<enzymexla::JITCallOp>(
+          op.getLoc(), op->getResultTypes(),
           mlir::FlatSymbolRefAttr::get(context, wrapperFunctionName),
           ValueRange{opOperands}, rewriter.getStringAttr(""),
           /*operand_layouts=*/nullptr,
           /*result_layouts=*/nullptr,
           /*arg_attrs=*/nullptr,
           /*res_attrs=*/nullptr,
-          /*output_operand_aliases=*/nullptr,
+          /*output_operand_aliases=*/op.getInbuf()
+              ? rewriter.getArrayAttr(aliases)
+              : nullptr,
           /*xla_side_effect_free=*/nullptr);
 
-      rewriter.eraseOp(op);
+      if (op.getInbuf()) {
+        rewriter.replaceOp(op, jitCall.getResult(0));
+      } else {
+        rewriter.eraseOp(op);
+      }
 
       return success();
     } else {

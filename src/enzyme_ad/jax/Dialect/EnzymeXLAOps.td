@@ -1427,10 +1427,15 @@ def MPIWaitallOp : EnzymeXLA_Op<"mpi.waitall", []> {
 
   let arguments = (
     ins TensorOf<[I32]> : $count,
-    TensorOf<[I32]> : $request
+    TensorOf<[I32]> : $request,
+    Optional<AnyTensor> : $inbuf
   );
 
-  let assemblyFormat = "`(` operands `)` attr-dict `:` type(operands)";
+  let results = (
+    outs Optional<AnyTensor> : $outbuf
+  );
+
+  let assemblyFormat = "`(` operands `)` attr-dict `:` functional-type(operands, results)";
 }
 
 def MPIAllreduceOp : EnzymeXLA_Op<"mpi.allreduce", []> {
