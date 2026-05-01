@@ -366,8 +366,8 @@ http_archive(
     url = "https://github.com/bazelbuild/rules_foreign_cc/archive/refs/tags/0.9.0.tar.gz",
 )
 
-
 load("@rules_foreign_cc//foreign_cc:repositories.bzl", "rules_foreign_cc_dependencies")
+
 rules_foreign_cc_dependencies()
 
 LEAN_ALL_CONTENT = """\
@@ -380,14 +380,14 @@ filegroup(
 
 http_archive(
     name = "lean",
-    url = "https://github.com/leanprover/lean4/archive/refs/tags/v4.29.0.tar.gz",
-    strip_prefix = "lean4-4.29.0",
     build_file_content = LEAN_ALL_CONTENT,
+    strip_prefix = "lean4-4.29.0",
+    url = "https://github.com/leanprover/lean4/archive/refs/tags/v4.29.0.tar.gz",
 )
 
 http_archive(
     name = "z3",
-    url = "https://github.com/Z3Prover/z3/archive/refs/tags/z3-4.16.0.tar.gz",
-    strip_prefix = "z3-z3-4.16.0",
     build_file = "//third_party/z3:BUILD",
+    strip_prefix = "z3-z3-4.16.0",
+    url = "https://github.com/Z3Prover/z3/archive/refs/tags/z3-4.16.0.tar.gz",
 )

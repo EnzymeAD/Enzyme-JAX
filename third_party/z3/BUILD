@@ -19,11 +19,12 @@ filegroup(
 cmake(
     name = "z3_dynamic",
     generate_args = [
-        "-G Ninja", 
+        "-G Ninja",
         "-D Z3_EXPORTED_TARGETS=",  # prevents installation, leaving symlinks between dylibs intact on copy
     ],
     lib_source = ":all_files",
     out_binaries = ["z3"],
+    out_include_dir = "include",
     out_shared_libs = select({
         "@platforms//os:linux": ["libz3.so"],
         # "@platforms//os:osx": ["libz3.dylib"],    # FIXME: this is not working, libz3<version>.dylib is not copied
@@ -31,26 +32,25 @@ cmake(
         "//conditions:default": ["@platforms//:incompatible"],
     }),
     visibility = ["//visibility:public"],
-    out_include_dir = "include",
 )
 
 cmake(
     name = "z3_static",
     generate_args = [
-        "-G Ninja", 
+        "-G Ninja",
         "-D BUILD_SHARED_LIBS=OFF",
         "-D Z3_BUILD_LIBZ3_SHARED=OFF",
     ],
     lib_source = ":all_files",
     out_binaries = ["z3"],
+    out_include_dir = "include",
     out_static_libs = select({
         "@platforms//os:linux": ["libz3.a"],
         "@platforms//os:osx": ["libz3.a"],
-        "@platforms//os:windows": ["libz3.lib"],     # MSVC with Control Flow Guard enabled by default
+        "@platforms//os:windows": ["libz3.lib"],  # MSVC with Control Flow Guard enabled by default
         "//conditions:default": ["@platforms//:incompatible"],
     }),
     visibility = ["//visibility:public"],
-    out_include_dir = "include",
 )
 
 alias(
