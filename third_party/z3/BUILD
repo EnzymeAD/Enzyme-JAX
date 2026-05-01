@@ -61,6 +61,7 @@ cc_library(
         "src/api/z3_*.h",
     ]),
     include_prefix = "",
+    includes = ["src/api"],
     strip_include_prefix = "src/api",
     visibility = ["//visibility:public"],
     deps = [":z3_static_cmake"],
