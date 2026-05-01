@@ -1,4 +1,6 @@
 // RUN: enzymexlamlir-opt %s --raise-affine-to-stablehlo | FileCheck %s
+// XFAIL: *
+// This test fails because it contains a race condition (parallel writes to the same constant location).
 
 func.func @nested_constant_store(%arg0: memref<32x1xi32>) {
   affine.parallel (%arg3) = (0) to (32) {
