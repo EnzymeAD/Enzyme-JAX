@@ -3,7 +3,10 @@
 
 /// Check if the base has a static shape, and the slice does not modify 
 /// the dimension being extended.
-Constraint IsValidSliceForExtend(sliceOp: Op<stablehlo.slice>, extendOp: Op<enzymexla.extend>) [{
+Constraint IsValidSliceForExtend(sliceOpRaw: Op, extendOpRaw: Op) [{
+  auto sliceOp = cast<stablehlo::SliceOp>(sliceOpRaw);
+  auto extendOp = cast<enzymexla::ExtendOp>(extendOpRaw);
+
   Value baseOperand = sliceOp.getOperand();
   auto baseType = dyn_cast<RankedTensorType>(baseOperand.getType());
   
@@ -24,7 +27,10 @@ Constraint IsValidSliceForExtend(sliceOp: Op<stablehlo.slice>, extendOp: Op<enzy
 
 /// Ensures that doing this commute is worthwhile by checking if other valid
 /// users exist on the base operand.
-Constraint HasMultipleMatchingUsers(sliceOp: Op<stablehlo.slice>, extendOp: Op<enzymexla.extend>) [{
+Constraint HasMultipleMatchingUsers(sliceOpRaw: Op, extendOpRaw: Op) [{
+  auto sliceOp = cast<stablehlo::SliceOp>(sliceOpRaw);
+  auto extendOp = cast<enzymexla::ExtendOp>(extendOpRaw);
+
   Value baseOperand = sliceOp.getOperand();
   int64_t targetDim = extendOp.getDimension();
   int64_t targetLhs = extendOp.getLhs();
@@ -64,7 +70,10 @@ Constraint HasMultipleMatchingUsers(sliceOp: Op<stablehlo.slice>, extendOp: Op<e
 /// Rewrite: Commutes the operations, applying the `Extend` to the base operand,
 /// and returning a new `Slice` operation with adjusted limits to replace the
 /// original `Extend`.
-Rewrite CommuteExtendAndSlice(extendOp: Op<enzymexla.extend>, sliceOp: Op<stablehlo.slice>) -> Op [{
+Rewrite CommuteExtendAndSlice(extendOpRaw: Op, sliceOpRaw: Op) -> Op [{
+  auto extendOp = cast<enzymexla::ExtendOp>(extendOpRaw);
+  auto sliceOp = cast<stablehlo::SliceOp>(sliceOpRaw);
+
   Value baseOperand = sliceOp.getOperand();
   int64_t dim = extendOp.getDimension();
   int64_t lhs = extendOp.getLhs();
