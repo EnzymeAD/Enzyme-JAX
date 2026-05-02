@@ -543,6 +543,27 @@ td_library(
     ],
 )
 
+gentbl_cc_library(
+    name = "SliceExtendPDLLPatternsIncGen",
+    includes = ["Dialect"],
+    tbl_outs = [
+        (
+            ["-x=cpp"],
+            "Passes/PDLL/SliceExtendPDLLPatterns.h.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-pdll",
+    td_file = "Passes/PDLL/sliceextend.pdll",
+    deps = [
+        ":EnzymeXLAAttrsIncGen",
+        ":EnzymeXLADialectTdFiles",
+        ":EnzymeXLAOpsIncGen",
+        "@enzyme//:EnzymeDialectTdFiles",
+        "@llvm-project//mlir:GPUOpsTdFiles",
+        "@stablehlo//:stablehlo_ops_td_files",
+    ],
+)
+
 td_library(
     name = "DistributedDialectFiles",
     srcs = [
@@ -1206,6 +1227,7 @@ cc_library(
         ":RaisingTransformOpsImplIncGen",
         ":RaisingTransformOpsIncGen",
         ":RaisingTransformPatternsIncGen",
+        ":SliceExtendPDLLPatternsIncGen",
         ":StablehloOptPatternsIncGen",
         ":TesseraAttrsIncGen",
         ":TesseraDialectIncGen",
