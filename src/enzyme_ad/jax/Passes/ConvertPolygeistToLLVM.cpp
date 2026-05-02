@@ -4206,7 +4206,8 @@ struct ConvertPolygeistToLLVMPass
         patterns.add<AsyncOpLowering>(converter);
       else
         patterns.add<NoAsyncOpLowering>(patterns.getContext());
-    } else if (backend == "xla-gpu" || backend == "xla-tpu") {
+    } else if (backend == "xla-gpu" || backend == "xla-tpu" ||
+               backend == "xla-cpu") {
       patterns.add<NoAsyncOpLowering>(patterns.getContext());
     }
     // Our custom versions of the gpu patterns
