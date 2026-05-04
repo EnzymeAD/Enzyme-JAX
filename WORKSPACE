@@ -137,7 +137,7 @@ load("@xla//:workspace3.bzl", "xla_workspace3")
 
 xla_workspace3()
 
-ml_toolchain_workspace()
+# ml_toolchain_workspace()
 
 load("@rules_ml_toolchain//cc/deps:cc_toolchain_deps.bzl", "cc_toolchain_deps")
 
