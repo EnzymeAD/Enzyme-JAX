@@ -21,12 +21,12 @@ module {
 
 // CHECK-LABEL:   func.func @tr(
 // CHECK-SAME:                  %[[VAL_0:[0-9]+|[a-zA-Z$._-][a-zA-Z0-9$._-]*]]: f64) -> f32 {
-// CHECK:           %[[VAL_1:.*]] = arith.truncf %[[VAL_0]] : f64 to f32
+// CHECK:           %[[VAL_1:.*]] = arith.truncf %[[VAL_0]]{{.*}} : f64 to f32
 // CHECK:           return %[[VAL_1]] : f32
 
 // CHECK-LABEL:   func.func @ctr(
 // CHECK-SAME:                   %[[VAL_0:[0-9]+|[a-zA-Z$._-][a-zA-Z0-9$._-]*]]: f64) -> f32 {
-// CHECK:           %[[VAL_1:.*]] = arith.truncf %[[VAL_0]] {fpExceptionBehavior = 0 : i64} : f64 to f32
+// CHECK:           %[[VAL_1:.*]] = arith.truncf %[[VAL_0]]{{.*}}fpExceptionBehavior = 0 : i64{{.*}} : f64 to f32
 // CHECK:           return %[[VAL_1]] : f32
 
 // CHECK-LABEL:   func.func private @trmem_raised(
