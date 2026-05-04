@@ -24,7 +24,7 @@ module {
 // CHECK-NEXT:    %cst = arith.constant 0.000000e+00 : f32
 // CHECK-NEXT:    %0 = "enzymexla.pointer2memref"(%arg0) : (!llvm.ptr) -> memref<?xf32>
 // CHECK-NEXT:    enzymexla.xla_wrapper @rxla$raised_0 (%0) : (memref<?xf32>) -> ()
-// CHECK-NEXT:    return
+// CHECK:    return
 // CHECK-NEXT:  }
 // CHECK:  func.func private @rxla$raised_0(%arg0: tensor<?xf32>) -> tensor<?xf32> {
 // CHECK-NEXT:    %cst = stablehlo.constant dense<0.000000e+00> : tensor<f32>

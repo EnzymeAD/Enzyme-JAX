@@ -105,7 +105,14 @@ struct InductionVariableRange {
   int64_t ub;
   int64_t step;
 
-  int64_t getNumIters() { return (ub - lb) / step; }
+  int64_t getNumIters() {
+    if (ub <= lb) {
+      if (step < 0)
+        return (lb - ub + (-step) - 1) / (-step);
+      return 0;
+    }
+    return (ub - lb + step - 1) / step;
+  }
 };
 
 static unsigned getIVPos(affine::AffineValueMap map, AffineExpr expr) {
@@ -862,6 +869,7 @@ emitLoadAsGather(Location loc, Value mappedMemref, ValueRange lIndices,
   SmallVector<int64_t> startIndexMap;
   SmallVector<int64_t> outputShape;
   SmallVector<Value> ivs;
+
   for (auto raisedIdx : lIndices) {
     startIndexMap.push_back(startIndexMap.size());
 
@@ -1122,16 +1130,19 @@ static LogicalResult tryRaisingForOpToStableHLOUnroll(
       oldFuncBuilder,
       rewriteLocation(clonedFor.getLoc(), pc.options.strip_llvm_debuginfo),
       clonedFor.getResults());
-  if (failed(affine::loopUnrollFull(clonedFor)))
+  if (failed(affine::loopUnrollFull(clonedFor))) {
+    llvm::errs() << " failed to fully unroll loop: " << *clonedFor << "\n";
     return failure();
+  }
 
   // Make a temporary new mapping because we will map values from the temporary
   // block which we will delete later.
   IRMapping forMapping = mapping;
   for (auto &innerOp : tmpBlock->without_terminator()) {
     if (tryRaisingOpToStableHLO(&innerOp, forMapping, builder, maps, pc)
-            .failed())
+            .failed()) {
       return failure();
+    }
   }
   // Remap the results of the loop in the main mapping which will be needed for
   // raising subsequent ops.
@@ -1787,7 +1798,7 @@ static LogicalResult tryRaisingLockStepForOpToStableHLO(
   if (pc.options.dump_failed_lockstep) {
     llvm::errs() << " failed lockstep of for raise: " << *forOp << "\n";
   }
-  return forOp.emitError("Not lockstep executable") << *forOp;
+  return failure();
 }
 
 static LogicalResult
@@ -1814,6 +1825,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     bool dynIndices = llvm::any_of(accessValueMap.getOperands(), [](Value iv) {
       return affine::isAffineForInductionVar(iv);
     });
+
     bool emitAsGather =
         affineMapToSlice(accessValueMap, strides, reverseDims, pc).failed() ||
         (dynIndices &&
@@ -2740,14 +2752,18 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     Value operand = op->getOperand(0), result = op->getResult(0);
     Value mappedResult = mapping.lookup(operand);
 
-    if (result.getType().isIndex()) {
+    Type targetType = makeIndexToI64(result.getType());
+    auto currentType =
+        cast<RankedTensorType>(mappedResult.getType()).getElementType();
+
+    if (currentType != targetType) {
       Value newMappedResult =
           stablehlo::ConvertOp::create(
               builder,
               rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
               RankedTensorType::get(
                   cast<ShapedType>(mappedResult.getType()).getShape(),
-                  builder.getI64Type()),
+                  targetType),
               mappedResult)
               .getResult();
       maps[newMappedResult] = maps.lookup(mappedResult);
@@ -3410,15 +3426,16 @@ struct AffineToStableHLORaisingPass
             continue;
           }
 
-          if (isa<IntegerType, FloatType>(arg.getType())) {
+          if (isa<IntegerType, FloatType, IndexType>(arg.getType())) {
             OpBuilder b(g);
             b.setInsertionPoint(g);
-            auto MT0 =
-                MemRefType::get({}, arg.getType(), MemRefLayoutAttrInterface{},
-                                b.getI64IntegerAttr(0));
-            auto MT =
-                MemRefType::get({}, arg.getType(), MemRefLayoutAttrInterface{},
-                                b.getI64IntegerAttr(1));
+            auto isIndex = isa<IndexType>(arg.getType());
+            auto ET = isIndex ? b.getI64Type() : arg.getType();
+
+            auto MT0 = MemRefType::get({}, ET, MemRefLayoutAttrInterface{},
+                                       b.getI64IntegerAttr(0));
+            auto MT = MemRefType::get({}, ET, MemRefLayoutAttrInterface{},
+                                      b.getI64IntegerAttr(1));
 
             auto res =
                 gpu::AllocOp::create(
@@ -3431,9 +3448,17 @@ struct AffineToStableHLORaisingPass
             auto res0 = memref::AllocaOp::create(
                 b, rewriteLocation(g.getLoc(), options.strip_llvm_debuginfo),
                 MT0);
+
+            Value storeVal = arg;
+            if (isIndex) {
+              storeVal = b.create<arith::IndexCastOp>(
+                  rewriteLocation(g.getLoc(), options.strip_llvm_debuginfo),
+                  b.getI64Type(), arg);
+            }
+
             affine::AffineStoreOp::create(
                 b, rewriteLocation(g.getLoc(), options.strip_llvm_debuginfo),
-                arg, res0, b.getMultiDimIdentityMap(0), ValueRange());
+                storeVal, res0, b.getMultiDimIdentityMap(0), ValueRange());
             auto c1 = arith::ConstantIndexOp::create(
                 b, rewriteLocation(g.getLoc(), options.strip_llvm_debuginfo),
                 1);
@@ -3445,9 +3470,84 @@ struct AffineToStableHLORaisingPass
                 b, rewriteLocation(g.getLoc(), options.strip_llvm_debuginfo),
                 res, b.getMultiDimIdentityMap(0), ValueRange());
             loads.push_back(ld);
-            arg.replaceUsesWithIf(ld, [&](OpOperand &opOperand) {
-              return g->isProperAncestor(opOperand.getOwner());
-            });
+            Value ldVal = ld;
+            if (isIndex) {
+              ldVal = b.create<arith::IndexCastOp>(
+                  rewriteLocation(g.getLoc(), options.strip_llvm_debuginfo),
+                  b.getIndexType(), ld);
+
+              llvm::SmallSetVector<Operation *, 4> opsToReplace;
+              for (OpOperand &use : llvm::make_early_inc_range(arg.getUses())) {
+                if (!g->isProperAncestor(use.getOwner())) {
+                  continue;
+                }
+                auto op = use.getOwner();
+                if (auto loadOp = dyn_cast<affine::AffineLoadOp>(op)) {
+                  opsToReplace.insert(op);
+                  continue;
+                }
+                if (auto storeOp = dyn_cast<affine::AffineStoreOp>(op)) {
+                  bool isIndexUse = false;
+                  for (auto idx : storeOp.getIndices()) {
+                    if (idx == arg) {
+                      isIndexUse = true;
+                      break;
+                    }
+                  }
+                  if (isIndexUse) {
+                    opsToReplace.insert(op);
+                    continue;
+                  }
+                }
+                use.set(ldVal);
+              }
+
+              for (auto op : opsToReplace) {
+                if (auto loadOp = dyn_cast<affine::AffineLoadOp>(op)) {
+                  OpBuilder B(loadOp);
+                  SmallVector<Value> indices;
+                  for (auto idx : loadOp.getIndices()) {
+                    if (idx == arg) {
+                      indices.push_back(ldVal);
+                    } else {
+                      indices.push_back(idx);
+                    }
+                  }
+                  auto maybeExpanded = mlir::affine::expandAffineMap(
+                      B, loadOp.getLoc(), loadOp.getAffineMap(), indices);
+                  assert(maybeExpanded.has_value() &&
+                         "failed to expand affine map");
+                  auto newLoad = B.create<memref::LoadOp>(
+                      loadOp.getLoc(), loadOp.getMemref(), *maybeExpanded);
+                  loadOp.replaceAllUsesWith(newLoad.getResult());
+                  loadOp.erase();
+                } else {
+                  auto storeOp = cast<affine::AffineStoreOp>(op);
+
+                  OpBuilder B(storeOp);
+                  SmallVector<Value> indices;
+                  for (auto idx : storeOp.getIndices()) {
+                    if (idx == arg) {
+                      indices.push_back(ldVal);
+                    } else {
+                      indices.push_back(idx);
+                    }
+                  }
+                  auto maybeExpanded = mlir::affine::expandAffineMap(
+                      B, storeOp.getLoc(), storeOp.getAffineMap(), indices);
+                  assert(maybeExpanded.has_value() &&
+                         "failed to expand affine map");
+                  B.create<memref::StoreOp>(
+                      storeOp.getLoc(), storeOp.getValueToStore(),
+                      storeOp.getMemref(), *maybeExpanded);
+                  storeOp.erase();
+                }
+              }
+            } else {
+              arg.replaceUsesWithIf(ld, [&](OpOperand &opOperand) {
+                return g->isProperAncestor(opOperand.getOwner());
+              });
+            }
 
             b.setInsertionPointAfter(g);
             gpu::DeallocOp::create(
@@ -3482,7 +3582,6 @@ struct AffineToStableHLORaisingPass
           if (err_if_not_fully_raised) {
             llvm::errs() << "failed to raise operand: " << arg << "\n"
                          << " within " << g << "\n";
-            ;
             signalPassFailure();
           }
           break;
@@ -3552,6 +3651,10 @@ struct AffineToStableHLORaisingPass
         enzymexla::XLAWrapperOp::create(
             builder, g->getLoc(), SymbolRefAttr::get(newFunc),
             llvm::to_vector(operands), nullptr, nullptr);
+        if (g->getNumResults() > 0) {
+          Value zero = arith::ConstantIndexOp::create(builder, g->getLoc(), 0);
+          g->getResult(0).replaceAllUsesWith(zero);
+        }
         g->erase();
         anyRaised = true;
       }
