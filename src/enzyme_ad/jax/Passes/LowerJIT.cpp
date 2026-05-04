@@ -274,7 +274,8 @@ bool initJIT() {
         llvm::orc::LLJITBuilder()
             .setLinkProcessSymbolsByDefault(true)
             .setObjectLinkingLayerCreator(
-                [](llvm::orc::ExecutionSession &ES)
+                [](llvm::orc::ExecutionSession &ES,
+                   llvm::jitlink::JITLinkMemoryManager &)
                     -> llvm::Expected<std::unique_ptr<llvm::orc::ObjectLayer>> {
                   auto obj = std::make_unique<
                       llvm::orc::RTDyldObjectLinkingLayer>(

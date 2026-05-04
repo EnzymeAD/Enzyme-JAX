@@ -2902,8 +2902,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
     auto newOp = Operation::create(
         rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
-        op->getName(), {T}, {newOperand}, op->getAttrs(),
-        OpaqueProperties(nullptr), {}, 0);
+        op->getName(), {T}, {newOperand}, op->getAttrs(), mlir::PropertyRef(),
+        {}, 0);
     mapping.map(op->getResult(0), newOp->getResult(0));
     maps[newOp->getResult(0)] = maps.lookup(newOperand);
 
@@ -2935,8 +2935,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
     auto newOp = Operation::create(
         rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
-        op->getName(), {result}, {a, b}, op->getAttrs(),
-        OpaqueProperties(nullptr), {}, 0);
+        op->getName(), {result}, {a, b}, op->getAttrs(), mlir::PropertyRef(),
+        {}, 0);
 
     builder.insert(newOp);
 
@@ -2970,8 +2970,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
     auto newOp = Operation::create(
         rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
-        op->getName(), {result}, {a, b, c}, op->getAttrs(),
-        OpaqueProperties(nullptr), {}, 0);
+        op->getName(), {result}, {a, b, c}, op->getAttrs(), mlir::PropertyRef(),
+        {}, 0);
 
     builder.insert(newOp);
 

@@ -3060,7 +3060,7 @@ public:
     SmallVector<LLVM::GlobalOp, 3> workgroupBuffers;
     workgroupBuffers.reserve(gpuFuncOp.getNumWorkgroupAttributions());
     for (const auto &en :
-         llvm::enumerate(gpuFuncOp.getWorkgroupAttributions())) {
+         llvm::enumerate(gpuFuncOp.getWorkgroupAttributionBBArgs())) {
       Value attribution = en.value();
 
       auto type = dyn_cast<MemRefType>(attribution.getType());
@@ -3093,8 +3093,7 @@ public:
     for (const auto &attr : gpuFuncOp->getAttrs()) {
       if (attr.getName() == SymbolTable::getSymbolAttrName() ||
           attr.getName() == gpuFuncOp.getFunctionTypeAttrName() ||
-          attr.getName() ==
-              gpu::GPUFuncOp::getNumWorkgroupAttributionsAttrName())
+          attr.getName() == gpuFuncOp.getWorkgroupAttributionsAttrName())
         continue;
       attributes.push_back(attr);
     }
@@ -3128,7 +3127,8 @@ public:
         // existing memref infrastructure. This may use more registers than
         // otherwise necessary given that memref sizes are fixed, but we can try
         // and canonicalize that away later.
-        Value attribution = gpuFuncOp.getWorkgroupAttributions()[en.index()];
+        Value attribution =
+            gpuFuncOp.getWorkgroupAttributionBBArgs()[en.index()];
         auto type = cast<MemRefType>(attribution.getType());
         Value descr = MemRefDescriptor::fromStaticShape(
             rewriter, loc, *getTypeConverter(), type, memory);
