@@ -1946,8 +1946,8 @@ ConvertGPUModuleOp::matchAndRewrite(gpu::GPUModuleOp kernelModule,
       LLVM::StoreOp::create(ctorBuilder, loc, module->getResult(0),
                             aoo->getResult(0));
       for (Operation &op : kernelModule->getRegion(0).front()) {
-        if (auto f = dyn_cast<FunctionOpInterface>(op)) {
-          if (!f->getAttr("gpu.kernel"))
+        if (auto f = dyn_cast<gpu::GPUFuncOp>(op)) {
+          if (!f.isKernel())
             continue;
           auto kernelName = generateKernelNameConstant(
               kernelModule.getName(), f.getName(), ctorloc, ctorBuilder);
