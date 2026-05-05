@@ -179,27 +179,37 @@ load("//:workspace.bzl", "LLVM_TARGETS")
 xla_workspace2()
 
 http_archive(
-        name = "llvm-raw",
-        sha256 = "49049408bdf9ae162b95b3eacfb8f9af226195e66636d0c9eff9a61d99be54c5",
-        patch_cmds = ["find . -type f -name config.h -exec sed -i.bak0 's/HAVE_PTHREAD_SETNAME_NP/FAKE_HAVE_PTHREAD_SETNAME_NP/g' {} +","find . -type f -name config.h -exec sed -i.bak0 's/HAVE_PTHREAD_GETNAME_NP/FAKE_HAVE_PTHREAD_GETNAME_NP/g' {} +","find . -type f -name config.h -exec sed -i.bak0 's/ENABLE_CRASH_OVERRIDES 1/ENABLE_CRASH_OVERRIDES 0/g' {} +","find . -type f -name config.bzl -exec sed -i.bak0 's/HAVE_PTHREAD_SETNAME_NP=1/FAKE_HAVE_PTHREAD_SETNAME_NP=0/g' {} +","find . -type f -name config.bzl -exec sed -i.bak0 's/HAVE_PTHREAD_GETNAME_NP=1/FAKE_HAVE_PTHREAD_GETNAME_NP=0/g' {} +","find . -type f -name config.bzl -exec sed -i.bak0 's/HAVE_MALLINFO=1/DONT_HAVE_ANY_MALLINFO=0/g' {} +","find . -type f -name config.bzl -exec sed -i.bak0 's/LLVM_ENABLE_THREADS=1/LLVM_ENABLE_THREADS=0/g' {} +","find . -type f -name config.bzl -exec sed -i.bak0 's/HAVE_LINK_H=1/HAVE_LINK_H=0/g' {} +","find . -type f -name config.bzl -exec sed -i.bak0 's/HAVE_BACKTRACE=1/NO_HAVE_BACKTRACE=0/g' {} +"],
-        strip_prefix = "llvm-project-a7c97252ed18839e87796dffd3926086ab62e8fd",
-        urls = [
-            "https://storage.googleapis.com/mirror.tensorflow.org/github.com/llvm/llvm-project/archive/a7c97252ed18839e87796dffd3926086ab62e8fd.tar.gz",
-            "https://github.com/llvm/llvm-project/archive/a7c97252ed18839e87796dffd3926086ab62e8fd.tar.gz",
-        ],
-        build_file_content = "# empty",
-        patch_args = ["-p1"],
-        patches = [
-            "@xla//third_party/llvm:generated.patch",
-            "@xla//third_party/llvm:build.patch",
-            "@xla//third_party/llvm:mathextras.patch",
-            "@xla//third_party/llvm:toolchains.patch",
-            "@xla//third_party/llvm:zstd.patch",
-            "@xla//third_party/llvm:lit_test.patch",
-            "@xla//third_party/llvm:run_lit.patch",
-            "//:patches/llvm_inliner.patch",
-        ],
-    )
+    name = "llvm-raw",
+    build_file_content = "# empty",
+    patch_args = ["-p1"],
+    patch_cmds = [
+        "find . -type f -name config.h -exec sed -i.bak0 's/HAVE_PTHREAD_SETNAME_NP/FAKE_HAVE_PTHREAD_SETNAME_NP/g' {} +",
+        "find . -type f -name config.h -exec sed -i.bak0 's/HAVE_PTHREAD_GETNAME_NP/FAKE_HAVE_PTHREAD_GETNAME_NP/g' {} +",
+        "find . -type f -name config.h -exec sed -i.bak0 's/ENABLE_CRASH_OVERRIDES 1/ENABLE_CRASH_OVERRIDES 0/g' {} +",
+        "find . -type f -name config.bzl -exec sed -i.bak0 's/HAVE_PTHREAD_SETNAME_NP=1/FAKE_HAVE_PTHREAD_SETNAME_NP=0/g' {} +",
+        "find . -type f -name config.bzl -exec sed -i.bak0 's/HAVE_PTHREAD_GETNAME_NP=1/FAKE_HAVE_PTHREAD_GETNAME_NP=0/g' {} +",
+        "find . -type f -name config.bzl -exec sed -i.bak0 's/HAVE_MALLINFO=1/DONT_HAVE_ANY_MALLINFO=0/g' {} +",
+        "find . -type f -name config.bzl -exec sed -i.bak0 's/LLVM_ENABLE_THREADS=1/LLVM_ENABLE_THREADS=0/g' {} +",
+        "find . -type f -name config.bzl -exec sed -i.bak0 's/HAVE_LINK_H=1/HAVE_LINK_H=0/g' {} +",
+        "find . -type f -name config.bzl -exec sed -i.bak0 's/HAVE_BACKTRACE=1/NO_HAVE_BACKTRACE=0/g' {} +",
+    ],
+    patches = [
+        "@xla//third_party/llvm:generated.patch",
+        "@xla//third_party/llvm:build.patch",
+        "@xla//third_party/llvm:mathextras.patch",
+        "@xla//third_party/llvm:toolchains.patch",
+        "@xla//third_party/llvm:zstd.patch",
+        "@xla//third_party/llvm:lit_test.patch",
+        "@xla//third_party/llvm:run_lit.patch",
+        "//:patches/llvm_inliner.patch",
+    ],
+    sha256 = "49049408bdf9ae162b95b3eacfb8f9af226195e66636d0c9eff9a61d99be54c5",
+    strip_prefix = "llvm-project-a7c97252ed18839e87796dffd3926086ab62e8fd",
+    urls = [
+        "https://storage.googleapis.com/mirror.tensorflow.org/github.com/llvm/llvm-project/archive/a7c97252ed18839e87796dffd3926086ab62e8fd.tar.gz",
+        "https://github.com/llvm/llvm-project/archive/a7c97252ed18839e87796dffd3926086ab62e8fd.tar.gz",
+    ],
+)
 
 load("@llvm-raw//utils/bazel:configure.bzl", "llvm_configure")
 
