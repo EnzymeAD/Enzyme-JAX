@@ -40,7 +40,121 @@ struct MPICommRankOpLowering
     auto context = op->getContext();
 
     if (backend == "cpu") {
+      auto moduleOp = op->getParentOfType<ModuleOp>();
 
+      auto llvmPtrType = LLVM::LLVMPointerType::get(context);
+      auto llvmVoidType = LLVM::LLVMVoidType::get(context);
+      auto i32Type = IntegerType::get(context, 32);
+
+      std::string mpiFunctionName = "MPI_Comm_rank";
+
+      // For now we just hard code MPI_COMM_WORLD as the communicator.
+      // TODO make this more flexible
+      std::string communicatorName = "MPI_COMM_WORLD";
+
+      // Generate the enzymexla_wrapper_MPI_Comm_rank LLVM function body
+      std::string wrapperFunctionName = "enzymexla_wrapper_" + mpiFunctionName;
+
+      if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapperFunctionName)) {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+        // Create the function type
+        auto funcType =
+            LLVM::LLVMFunctionType::get(llvmVoidType,  // void return type
+                                        {llvmPtrType}, // pointer parameter
+                                        false);        // is variadic: false
+
+        auto wrapperFunc = rewriter.create<LLVM::LLVMFuncOp>(
+            op.getLoc(), wrapperFunctionName, funcType);
+
+        // Add function-level memory effects attribute
+        auto memoryEffectsAttr = rewriter.getArrayAttr(
+            {rewriter.getStringAttr("read"), rewriter.getStringAttr("write"),
+             rewriter.getStringAttr("allocate"),
+             rewriter.getStringAttr("free")});
+        wrapperFunc->setAttr("enzymexla.memory_effects", memoryEffectsAttr);
+
+        Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
+        rewriter.setInsertionPointToStart(entryBlock);
+
+        // Add argument-level memory effects attribute
+        wrapperFunc.setArgAttr(0, "enzymexla.memory_effects",
+                               memoryEffectsAttr);
+
+        // Get the rank pointer from the argument
+        Value rankPtr = entryBlock->getArgument(0);
+
+        // Get the address of the communicator
+        // NOTE these symbols are not ABI-stable until MPI 5.0, but in practice,
+        // they are represented as word-size values (i.e. `int` or ptr)
+        Value addressOfComm = rewriter.create<LLVM::AddressOfOp>(
+            op.getLoc(), llvmPtrType, communicatorName);
+
+        // TODO error checking
+        // MPI_Comm_rank returns i32 error code which we're ignoring here
+        rewriter.create<LLVM::CallOp>(
+            op.getLoc(), TypeRange{i32Type},
+            SymbolRefAttr::get(context, mpiFunctionName),
+            ValueRange{addressOfComm, rankPtr});
+
+        rewriter.create<LLVM::ReturnOp>(op.getLoc(), ValueRange{});
+      }
+
+      // Insert MPI_Comm_rank function declaration if not already present
+      if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(mpiFunctionName)) {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+        auto funcType = LLVM::LLVMFunctionType::get(
+            i32Type, {llvmPtrType, llvmPtrType}, false);
+
+        rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), mpiFunctionName,
+                                          funcType, LLVM::Linkage::External);
+      }
+
+      // Insert MPI_COMM_WORLD declaration if not already present
+      if (!moduleOp.lookupSymbol<LLVM::GlobalOp>(communicatorName)) {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+        rewriter.create<LLVM::GlobalOp>(
+            op.getLoc(), llvmPtrType,
+            /*isConstant=*/true, LLVM::Linkage::External, communicatorName,
+            /*value=*/Attribute(),
+            /*alignment=*/0,
+            /*addrSpace=*/0);
+      }
+
+      // Create a constant tensor to hold the result
+      auto tensorType = llvm::cast<RankedTensorType>(op->getResultTypes()[0]);
+      auto constantAttr =
+          DenseIntElementsAttr::get(tensorType, ArrayRef<int32_t>{-1});
+      Value constantTensor = rewriter.create<stablehlo::ConstantOp>(
+          op.getLoc(), tensorType, constantAttr);
+
+      // Call the LLVM function with enzymexla.jit_call
+      auto aliasAttr = stablehlo::OutputOperandAliasAttr::get(
+          context,
+          /*outputTupleIndices=*/ArrayRef<int64_t>{},
+          /*operandIndex=*/0,
+          /*operandTupleIndices=*/ArrayRef<int64_t>{});
+
+      auto jitCall = rewriter.create<enzymexla::JITCallOp>(
+          op.getLoc(), op->getResultTypes(),
+          mlir::FlatSymbolRefAttr::get(context, wrapperFunctionName),
+          ValueRange{constantTensor}, rewriter.getStringAttr(""),
+          /*operand_layouts=*/nullptr,
+          /*result_layouts=*/nullptr,
+          /*arg_attrs=*/nullptr,
+          /*res_attrs=*/nullptr,
+          /*output_operand_aliases=*/rewriter.getArrayAttr({aliasAttr}),
+          /*xla_side_effect_free=*/nullptr);
+
+      rewriter.replaceOp(op, jitCall.getResult(0));
+
+      return success();
+    } else if (backend == "cuda") {
       auto moduleOp = op->getParentOfType<ModuleOp>();
 
       auto llvmPtrType = LLVM::LLVMPointerType::get(context);

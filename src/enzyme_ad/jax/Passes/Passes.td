@@ -508,6 +508,12 @@ def LowerEnzymeXLAMPIPass : Pass<"lower-enzymexla-mpi"> {
         /*type=*/"std::string",
         /*default=*/"\"cpu\"",
         /*description=*/"HW backend">,
+    Option<
+        /*C++ variable name=*/"ncclCommPtr",
+        /*CLI argument=*/"ncclCommPtr",
+        /*type=*/"size_t",
+        /*default=*/"0",
+        /*description=*/"Pointer to nccl communicator instance">,
   ];
 }
 
