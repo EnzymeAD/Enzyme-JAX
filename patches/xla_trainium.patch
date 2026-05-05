@@ -1,5 +1,5 @@
---- xla/pjrt/c/pjrt_c_api_client.cc
-+++ xla/pjrt/c/pjrt_c_api_client.cc
+--- a/xla/pjrt/c_api_client/pjrt_c_api_client.cc
++++ b/xla/pjrt/c_api_client/pjrt_c_api_client.cc
 @@ -1,6 +1,6 @@
  void PjRtCApiLoadedExecutable::InitDeviceAssignment() {
    if (pjrt_c_api()->pjrt_api_version.major_version == 0 &&
