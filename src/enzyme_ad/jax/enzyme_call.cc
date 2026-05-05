@@ -15,6 +15,7 @@
 #include <numeric>
 #include <regex>
 #include <string>
+#include <vector>
 
 #include "absl/status/statusor.h"
 #include "clang_compile.h"
@@ -103,9 +104,32 @@ public:
                   Language lang, bool xla_runtime,
                   const std::string &pass_pipeline) {
     auto mode = ABI::Tape;
-    auto [mod, llvm_ctx, num_out, tmpBuf] =
+    std::vector<std::string> pyargv_strs;
+    if (pyargv && PySequence_Check(pyargv)) {
+      auto sz = PySequence_Size(pyargv);
+      for (Py_ssize_t i = 0; i < sz; ++i) {
+        PyObject *item = PySequence_GetItem(pyargv, i);
+#if PY_VERSION_HEX < 0x03000000
+        auto argv = PyString_AsString(item);
+#else
+        auto argv = PyUnicode_AsUTF8(item);
+#endif
+        Py_DECREF(item);
+        if (argv)
+          pyargv_strs.emplace_back(argv);
+#if PY_VERSION_HEX < 0x03000000
+        free(argv);
+#endif
+      }
+    }
+    auto mod_or_err =
         createLLVMMod(fn, source, out_shapes, out_names, in_shapes, in_names,
-                      pyargv, mode, lang, xla_runtime, pass_pipeline);
+                      pyargv_strs, mode, lang, xla_runtime, pass_pipeline);
+    if (!mod_or_err.ok()) {
+      throw ::nanobind::value_error(mod_or_err.status().ToString().c_str());
+    }
+
+    auto [mod, llvm_ctx, num_out, tmpBuf] = std::move(mod_or_err).value();
     auto lfn = mod->getFunction("entry");
     auto RI =
         llvm::cast<llvm::ReturnInst>(lfn->getEntryBlock().getTerminator());
@@ -121,8 +145,12 @@ public:
     switch (lang) {
     case Language::MHLO: {
       std::string llvm_ir;
-      auto local_executable = compile_mhlo_to_llvm_with_xla(
+      auto exec_or_err = compile_mhlo_to_llvm_with_xla(
           source, llvm_ir, xla_runtime, pass_pipeline);
+      if (!exec_or_err.ok()) {
+        throw ::nanobind::value_error(exec_or_err.status().ToString().c_str());
+      }
+      auto local_executable = std::move(exec_or_err).value();
       auto *cpu_executable = static_cast<xla::cpu::CpuExecutable *>(
           local_executable->executable());
       auto &assignment = cpu_executable->buffer_assignment();
@@ -146,10 +174,31 @@ public:
     llvm::sys::SmartScopedWriter<true> lock(kernel_mutex);
     size_t identifier = last_identifier++;
 
-    auto [mod, llvm_ctx, num_out, tmpBuf] =
+    std::vector<std::string> pyargv_strs;
+    if (pyargv && PySequence_Check(pyargv)) {
+      auto sz = PySequence_Size(pyargv);
+      for (Py_ssize_t i = 0; i < sz; ++i) {
+        PyObject *item = PySequence_GetItem(pyargv, i);
+#if PY_VERSION_HEX < 0x03000000
+        auto argv = PyString_AsString(item);
+#else
+        auto argv = PyUnicode_AsUTF8(item);
+#endif
+        Py_DECREF(item);
+        if (argv)
+          pyargv_strs.emplace_back(argv);
+#if PY_VERSION_HEX < 0x03000000
+        free(argv);
+#endif
+      }
+    }
+    auto mod_or_err =
         createLLVMMod(fn, source, out_shapes, out_names, in_shapes, in_names,
-                      pyargv, mode, lang, xla_runtime, pass_pipeline);
-
+                      pyargv_strs, mode, lang, xla_runtime, pass_pipeline);
+    if (!mod_or_err.ok()) {
+      throw nanobind::value_error(mod_or_err.status().ToString().c_str());
+    }
+    auto [mod, llvm_ctx, num_out, tmpBuf] = std::move(mod_or_err).value();
     if (!JIT) {
       DL = std::make_unique<llvm::DataLayout>(mod->getDataLayoutStr());
       auto tJIT =
@@ -400,10 +449,33 @@ NB_MODULE(enzyme_call, m) {
           std::error_code EC;
           llvm::raw_fd_ostream ostream(outfile, EC);
 
-          auto [mod, llvm_ctx, num_out, tmpBuf] = createLLVMMod(
-              fn, source, out_shapes, out_types, in_shapes, in_types,
-              pyargv.ptr(), ABI::Primal, lang, xla_runtime, pass_pipeline);
+          std::vector<std::string> pyargv_strs;
+          auto pyargv_ptr = pyargv.ptr();
+          if (pyargv_ptr && PySequence_Check(pyargv_ptr)) {
+            auto sz = PySequence_Size(pyargv_ptr);
+            for (Py_ssize_t i = 0; i < sz; ++i) {
+              PyObject *item = PySequence_GetItem(pyargv_ptr, i);
+#if PY_VERSION_HEX < 0x03000000
+              auto argv = PyString_AsString(item);
+#else
+              auto argv = PyUnicode_AsUTF8(item);
+#endif
+              Py_DECREF(item);
+              if (argv)
+                pyargv_strs.emplace_back(argv);
+#if PY_VERSION_HEX < 0x03000000
+              free(argv);
+#endif
+            }
+          }
 
+          auto mod_or_err = createLLVMMod(
+              fn, source, out_shapes, out_types, in_shapes, in_types,
+              pyargv_strs, ABI::Primal, lang, xla_runtime, pass_pipeline);
+          if (!mod_or_err.ok()) {
+            throw nanobind::value_error(mod_or_err.status().ToString().c_str());
+          }
+          auto [mod, llvm_ctx, num_out, tmpBuf] = std::move(mod_or_err).value();
           ostream << *mod;
           ostream.close();
           return;
@@ -460,33 +532,40 @@ NB_MODULE(enzyme_call, m) {
 
   m.def("optimize_module",
         [](MlirModule cmod, const std::string &pass_pipeline) {
-          run_pass_pipeline(unwrap(cmod), pass_pipeline);
+          absl::Status status = run_pass_pipeline(unwrap(cmod), pass_pipeline);
+          if (!status.ok()) {
+            throw nanobind::value_error(status.ToString().c_str());
+          }
         });
-  m.def("run_pass_pipeline",
-        [](nanobind::object pyoldsyms, const std::string &mlir,
-           const std::string &pass_pipeline) {
-          auto pyargv = pyoldsyms.ptr();
-          std::vector<std::string> oldsyms;
-          assert(PySequence_Check(pyargv));
-          auto sz = PySequence_Size(pyargv);
-          for (Py_ssize_t i = 0; i < sz; ++i) {
-            PyObject *item = PySequence_GetItem(pyargv, i);
+  m.def("run_pass_pipeline", [](nanobind::object pyoldsyms,
+                                const std::string &mlir,
+                                const std::string &pass_pipeline) {
+    auto pyargv = pyoldsyms.ptr();
+    std::vector<std::string> oldsyms;
+    assert(PySequence_Check(pyargv));
+    auto sz = PySequence_Size(pyargv);
+    for (Py_ssize_t i = 0; i < sz; ++i) {
+      PyObject *item = PySequence_GetItem(pyargv, i);
 #if PY_VERSION_HEX < 0x03000000
-            auto argv = PyString_AsString(item);
+      auto argv = PyString_AsString(item);
 #else
       auto argv = PyUnicode_AsUTF8(item);
 #endif
-            Py_DECREF(item);
-            assert(argv);
-            oldsyms.emplace_back(argv);
+      Py_DECREF(item);
+      assert(argv);
+      oldsyms.emplace_back(argv);
 #if PY_VERSION_HEX < 0x03000000
-            free(argv);
+      free(argv);
 #else
       // should not free py3+
 #endif
-          }
-          return run_pass_pipeline(oldsyms, mlir, pass_pipeline);
-        });
+    }
+    auto result_or_err = run_pass_pipeline(oldsyms, mlir, pass_pipeline);
+    if (!result_or_err.ok()) {
+      throw nanobind::value_error(result_or_err.status().ToString().c_str());
+    }
+    return result_or_err.value();
+  });
 
   m.def("register_enzymexla_cpu_handler",
         []() { RegisterEnzymeXLACPUHandler(); });
@@ -496,14 +575,17 @@ NB_MODULE(enzyme_call, m) {
 
   m.def("register_enzymexla_xla_ffi", []() { registerEnzymeJaXXLAFFI(); });
 
-  m.def("compile_mhlo_to_llvm_with_xla",
-        [](const std::string &mhlo_text, bool xla_runtime,
-           const std::string &pass_pipeline) {
-          std::string llvm_ir;
-          compile_mhlo_to_llvm_with_xla(mhlo_text, llvm_ir, xla_runtime,
-                                        pass_pipeline);
-          return llvm_ir;
-        });
+  m.def("compile_mhlo_to_llvm_with_xla", [](const std::string &mhlo_text,
+                                            bool xla_runtime,
+                                            const std::string &pass_pipeline) {
+    std::string llvm_ir;
+    auto exec_or_err = compile_mhlo_to_llvm_with_xla(
+        mhlo_text, llvm_ir, xla_runtime, pass_pipeline);
+    if (!exec_or_err.ok()) {
+      throw nanobind::value_error(exec_or_err.status().ToString().c_str());
+    }
+    return llvm_ir;
+  });
 
   m.def("get_transform_passes_list",
         [](int64_t max_constant_threshold, int64_t while_unroll_threshold,

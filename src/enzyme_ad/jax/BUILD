@@ -91,6 +91,8 @@ cc_library(
     ],
     deps = [
         ":compile_with_xla",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
         "@enzyme//:EnzymeStatic",
         "@llvm-project//clang:ast",
         "@llvm-project//clang:basic",
@@ -111,7 +113,6 @@ cc_library(
         "@llvm-project//llvm:OrcJIT",
         "@llvm-project//llvm:Support",
         "@llvm-project//llvm:TargetParser",
-        "@nanobind",
         "@xla//xla/client:local_client",
         "@xla//xla/hlo/ir:hlo",
         "@xla//xla/service/cpu:cpu_executable",
@@ -1508,7 +1509,6 @@ cc_library(
         "-Wno-vla-cxx-extension",
     ],
     deps = [
-        "@nanobind",
         ":XLADerivatives",
         ":TransformOps",
         ":RegistryUtils",
@@ -1622,6 +1622,7 @@ cc_library(
 
         # EnzymeMLIR
         "@enzyme//:EnzymeMLIR",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
 
         # Mosaic
