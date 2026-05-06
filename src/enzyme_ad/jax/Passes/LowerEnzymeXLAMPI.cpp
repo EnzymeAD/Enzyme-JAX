@@ -273,7 +273,8 @@ struct MPICommSizeOpLowering
     : public OpRewritePattern<enzymexla::MPICommSizeOp> {
 
   std::string backend;
-  MPICommSizeOpLowering(std::string backend, MLIRContext *context,
+  size_t ncclCommPtr;
+  MPICommSizeOpLowering(std::string backend, size_t ncclCommPtr, MLIRContext *context,
                         PatternBenefit benefit = 1)
       : OpRewritePattern(context, benefit), backend(backend) {}
 
@@ -409,7 +410,8 @@ struct MPICommSizeOpLowering
 struct MPIBarrierOpLowering : public OpRewritePattern<enzymexla::MPIBarrierOp> {
 
   std::string backend;
-  MPIBarrierOpLowering(std::string backend, MLIRContext *context,
+  size_t ncclCommPtr;
+  MPIBarrierOpLowering(std::string backend, size_t ncclCommPtr, MLIRContext *context,
                        PatternBenefit benefit = 1)
       : OpRewritePattern(context, benefit), backend(backend) {}
 
@@ -521,7 +523,8 @@ struct MPIBarrierOpLowering : public OpRewritePattern<enzymexla::MPIBarrierOp> {
 struct MPISendOpLowering : public OpRewritePattern<enzymexla::MPISendOp> {
 
   std::string backend;
-  MPISendOpLowering(std::string backend, MLIRContext *context,
+  size_t ncclCommPtr;
+  MPISendOpLowering(std::string backend, size_t ncclCommPtr, MLIRContext *context,
                     PatternBenefit benefit = 1)
       : OpRewritePattern(context, benefit), backend(backend) {}
 
@@ -686,7 +689,8 @@ struct MPISendOpLowering : public OpRewritePattern<enzymexla::MPISendOp> {
 struct MPIRecvOpLowering : public OpRewritePattern<enzymexla::MPIRecvOp> {
 
   std::string backend;
-  MPIRecvOpLowering(std::string backend, MLIRContext *context,
+  size_t ncclCommPtr;
+  MPIRecvOpLowering(std::string backend, size_t ncclCommPtr, MLIRContext *context,
                     PatternBenefit benefit = 1)
       : OpRewritePattern(context, benefit), backend(backend) {}
 
@@ -877,7 +881,8 @@ struct MPIRecvOpLowering : public OpRewritePattern<enzymexla::MPIRecvOp> {
 struct MPIIsendOpLowering : public OpRewritePattern<enzymexla::MPIIsendOp> {
 
   std::string backend;
-  MPIIsendOpLowering(std::string backend, MLIRContext *context,
+  size_t ncclCommPtr;
+  MPIIsendOpLowering(std::string backend, size_t ncclCommPtr, MLIRContext *context,
                      PatternBenefit benefit = 1)
       : OpRewritePattern(context, benefit), backend(backend) {}
 
@@ -1063,7 +1068,8 @@ struct MPIIsendOpLowering : public OpRewritePattern<enzymexla::MPIIsendOp> {
 struct MPIIrecvOpLowering : public OpRewritePattern<enzymexla::MPIIrecvOp> {
 
   std::string backend;
-  MPIIrecvOpLowering(std::string backend, MLIRContext *context,
+  size_t ncclCommPtr;
+  MPIIrecvOpLowering(std::string backend, size_t ncclCommPtr, MLIRContext *context,
                      PatternBenefit benefit = 1)
       : OpRewritePattern(context, benefit), backend(backend) {}
 
@@ -1256,7 +1262,8 @@ struct MPIIrecvOpLowering : public OpRewritePattern<enzymexla::MPIIrecvOp> {
 struct MPIWaitOpLowering : public OpRewritePattern<enzymexla::MPIWaitOp> {
 
   std::string backend;
-  MPIWaitOpLowering(std::string backend, MLIRContext *context,
+  size_t ncclCommPtr;
+  MPIWaitOpLowering(std::string backend, size_t ncclCommPtr, MLIRContext *context,
                     PatternBenefit benefit = 1)
       : OpRewritePattern(context, benefit), backend(backend) {}
 
@@ -1367,7 +1374,8 @@ struct MPIWaitOpLowering : public OpRewritePattern<enzymexla::MPIWaitOp> {
 struct MPIWaitallOpLowering : public OpRewritePattern<enzymexla::MPIWaitallOp> {
 
   std::string backend;
-  MPIWaitallOpLowering(std::string backend, MLIRContext *context,
+  size_t ncclCommPtr;
+  MPIWaitallOpLowering(std::string backend, size_t ncclCommPtr, MLIRContext *context,
                        PatternBenefit benefit = 1)
       : OpRewritePattern(context, benefit), backend(backend) {}
 
@@ -1484,7 +1492,8 @@ struct MPIAllreduceOpLowering
     : public OpRewritePattern<enzymexla::MPIAllreduceOp> {
 
   std::string backend;
-  MPIAllreduceOpLowering(std::string backend, MLIRContext *context,
+  size_t ncclCommPtr;
+  MPIAllreduceOpLowering(std::string backend, size_t ncclCommPtr, MLIRContext *context,
                          PatternBenefit benefit = 1)
       : OpRewritePattern(context, benefit), backend(backend) {}
 
@@ -1671,7 +1680,8 @@ struct MPIAllreduceOpLowering
 struct MPIBcastOpLowering : public OpRewritePattern<enzymexla::MPIBcastOp> {
 
   std::string backend;
-  MPIBcastOpLowering(std::string backend, MLIRContext *context,
+  size_t ncclCommPtr;
+  MPIBcastOpLowering(std::string backend, size_t ncclCommPtr, MLIRContext *context,
                      PatternBenefit benefit = 1)
       : OpRewritePattern(context, benefit), backend(backend) {}
 
