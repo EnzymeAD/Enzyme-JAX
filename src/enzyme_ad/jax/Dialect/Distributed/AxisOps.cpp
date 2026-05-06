@@ -103,7 +103,8 @@ LogicalResult AxisProductOp::verify() {
   return mlir::success();
 }
 
-int64_t AxisProductOp::getAxisSize(TypedOpResult<LogicalCommAxisType> typed_axis) {
+int64_t
+AxisProductOp::getAxisSize(TypedOpResult<LogicalCommAxisType> typed_axis) {
   auto axis = typed_axis.asOpResult();
   // This op defines a single value, so just check if the
   // proper value is passed.

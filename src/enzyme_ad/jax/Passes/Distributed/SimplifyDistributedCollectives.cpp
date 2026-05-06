@@ -2,11 +2,11 @@
 
 #include "src/enzyme_ad/jax/Dialect/Distributed/Dialect.h"
 
-#include "llvm/ADT/DenseSet.h"
-#include "llvm/ADT/SmallVector.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Value.h"
+#include "llvm/ADT/DenseSet.h"
+#include "llvm/ADT/SmallVector.h"
 
 namespace mlir {
 namespace enzyme {

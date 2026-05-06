@@ -29,12 +29,11 @@ LogicalResult LogicalMeshOp::resolveToAtomicFactors(
   return success();
 }
 
-bool LogicalMeshOp::isDisjoint() {
-  return areLogicalAxesDisjoint(getAxes());
-}
+bool LogicalMeshOp::isDisjoint() { return areLogicalAxesDisjoint(getAxes()); }
 
 bool LogicalMeshOp::isSubmesh(LogicalMeshOp submesh) {
-  llvm::SmallVector<TypedOpResult<LogicalCommAxisType>> logicalMeshAtomicFactors;
+  llvm::SmallVector<TypedOpResult<LogicalCommAxisType>>
+      logicalMeshAtomicFactors;
   llvm::SmallVector<TypedOpResult<LogicalCommAxisType>> submeshAtomicFactors;
 
   if (failed(resolveToAtomicFactors(logicalMeshAtomicFactors))) {

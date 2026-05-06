@@ -2,8 +2,6 @@
 
 #include <limits>
 
-#include "llvm/ADT/DenseMap.h"
-#include "llvm/ADT/SmallVector.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Operation.h"
@@ -12,6 +10,8 @@
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/Passes.h"
 #include "src/enzyme_ad/jax/Passes/Distributed/TimingAnalysis.h"
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/SmallVector.h"
 
 namespace mlir {
 namespace enzyme {
@@ -27,13 +27,12 @@ void sinkRecvs(MeshComputationOp meshOp);
 namespace {
 
 bool producesTensorValue(Operation &op) {
-  return llvm::any_of(op.getResultTypes(), [](Type type) {
-    return isa<ShapedType>(type);
-  });
+  return llvm::any_of(op.getResultTypes(),
+                      [](Type type) { return isa<ShapedType>(type); });
 }
 
 void recordTensorProducingOps(MeshComputationOp meshOp,
-                             SmallVectorImpl<Operation *> &tensorOps) {
+                              SmallVectorImpl<Operation *> &tensorOps) {
   Region &deviceBody = meshOp.getDeviceBody(0);
   if (deviceBody.empty())
     return;
@@ -60,8 +59,7 @@ struct BindingCandidate {
   int64_t deviceIndex; // only relevant for IndexBased
 };
 
-SmallVector<BindingCandidate>
-generateCandidates(ArrayRef<Value> axes) {
+SmallVector<BindingCandidate> generateCandidates(ArrayRef<Value> axes) {
   SmallVector<BindingCandidate> candidates;
   for (Value axis : axes) {
     int64_t axisSize = static_cast<int64_t>(
@@ -77,8 +75,8 @@ generateCandidates(ArrayRef<Value> axes) {
 
     // IndexBased for each device index
     for (int64_t d = 0; d < axisSize; ++d) {
-      candidates.push_back(
-          {ShardingMode::IndexBased, axis, /*tensorAxis=*/0, /*deviceIndex=*/d});
+      candidates.push_back({ShardingMode::IndexBased, axis, /*tensorAxis=*/0,
+                            /*deviceIndex=*/d});
     }
   }
   return candidates;
@@ -89,7 +87,7 @@ generateCandidates(ArrayRef<Value> axes) {
 // ===----------------------------------------------------------------------===
 
 TensorBindingMap buildBindingMap(ArrayRef<Operation *> tensorOps,
-                                  ArrayRef<BindingCandidate> choices) {
+                                 ArrayRef<BindingCandidate> choices) {
   assert(tensorOps.size() == choices.size());
   TensorBindingMap bindings;
   for (auto [op, cand] : llvm::zip(tensorOps, choices)) {
@@ -121,15 +119,14 @@ struct LocalizeDistributedModulePass
   using LocalizeDistributedModulePassBase::LocalizeDistributedModulePassBase;
 
   double evaluateBindingConfig(func::FuncOp funcOp,
-                                MeshComputationOp origMeshOp,
-                                ArrayRef<Operation *> tensorOps,
-                                ArrayRef<BindingCandidate> choices) {
+                               MeshComputationOp origMeshOp,
+                               ArrayRef<Operation *> tensorOps,
+                               ArrayRef<BindingCandidate> choices) {
     // Deep-clone the enclosing function and temporarily insert into the module
     // so that symbol lookups (meshes, axes, etc.) work during localization.
     auto clonedFunc = cast<func::FuncOp>(funcOp->clone());
     // Give the clone a unique name to avoid symbol conflicts.
-    clonedFunc.setName(
-        (funcOp.getName() + "__localize_search_clone").str());
+    clonedFunc.setName((funcOp.getName() + "__localize_search_clone").str());
     auto moduleOp = funcOp->getParentOfType<ModuleOp>();
     moduleOp.push_back(clonedFunc);
 
@@ -157,7 +154,7 @@ struct LocalizeDistributedModulePass
 
     // Remap the candidates' axis values to the cloned mesh.
     SmallVector<BindingCandidate> remappedChoices(choices.begin(),
-                                                   choices.end());
+                                                  choices.end());
     for (auto &cand : remappedChoices) {
       auto it = axisMap.find(cand.axis);
       if (it != axisMap.end())
@@ -173,8 +170,8 @@ struct LocalizeDistributedModulePass
       return std::numeric_limits<double>::max();
     }
 
-    TensorBindingMap bindings = buildBindingMap(clonedTensorOps,
-                                                remappedChoices);
+    TensorBindingMap bindings =
+        buildBindingMap(clonedTensorOps, remappedChoices);
 
     // Apply localization.
     if (failed(parameterizedLocalizeMeshComputation(clonedMeshOp, bindings))) {
@@ -227,8 +224,8 @@ struct LocalizeDistributedModulePass
 
   SmallVector<BindingCandidate>
   searchBestBindings(func::FuncOp funcOp, MeshComputationOp meshOp,
-                      ArrayRef<Operation *> tensorOps,
-                      ArrayRef<Value> localizationAxes) {
+                     ArrayRef<Operation *> tensorOps,
+                     ArrayRef<Value> localizationAxes) {
     auto perOpCandidates = generateCandidates(localizationAxes);
     if (perOpCandidates.empty() || tensorOps.empty())
       return {};
@@ -252,19 +249,22 @@ struct LocalizeDistributedModulePass
 
       // TODO for testing purposes
       // Require at least one tensor to be placed at an indexed position.
-      bool hasIndexBased = llvm::any_of(
-          current, [](const BindingCandidate &c) {
-            return c.mode == ShardingMode::IndexBased;
-          });
+      bool hasIndexBased = llvm::any_of(current, [](const BindingCandidate &c) {
+        return c.mode == ShardingMode::IndexBased;
+      });
       if (!hasIndexBased) {
         // Increment mixed-radix counter.
         bool done = true;
         for (size_t i = numOps; i-- > 0;) {
           ++indices[i];
-          if (indices[i] < numCandidatesPerOp) { done = false; break; }
+          if (indices[i] < numCandidatesPerOp) {
+            done = false;
+            break;
+          }
           indices[i] = 0;
         }
-        if (done) break;
+        if (done)
+          break;
         continue;
       }
 
@@ -297,9 +297,8 @@ struct LocalizeDistributedModulePass
     ModuleOp moduleOp = getOperation();
     bool localizedAnyMesh = false;
     SmallVector<MeshComputationOp> meshComputations;
-    moduleOp.walk([&](MeshComputationOp meshOp) {
-      meshComputations.push_back(meshOp);
-    });
+    moduleOp.walk(
+        [&](MeshComputationOp meshOp) { meshComputations.push_back(meshOp); });
 
     for (auto [meshIndex, meshOp] : llvm::enumerate(meshComputations)) {
       SmallVector<Value> localizationAxes;
