@@ -1385,6 +1385,14 @@ def ApplyPDLLPatternsPass : Pass<"apply-pdll-patterns"> {
     "pdl::PDLDialect",
     "pdl_interp::PDLInterpDialect",
   ];
+  let options = [
+    ListOption<"includePatterns", "include", "std::string",
+               "List of PDLL pattern names to include (only these run). "
+               "Mutually exclusive with `exclude-patterns`.">,
+    ListOption<"excludePatterns", "exclude", "std::string",
+               "List of PDLL pattern names to exclude. "
+               "Mutually exclusive with `include-patterns`.">,
+  ];
 }
 
 #endif

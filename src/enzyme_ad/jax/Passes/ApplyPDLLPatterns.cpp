@@ -21,11 +21,14 @@
 //===---------------------------------------------------------------------===//
 
 #include "mlir/Dialect/PDL/IR/PDL.h"
+#include "mlir/Dialect/PDL/IR/PDLOps.h"
 #include "mlir/Dialect/PDLInterp/IR/PDLInterp.h"
+#include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "llvm/ADT/StringSet.h"
 #include "llvm/ADT/TypeSwitch.h"
 
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
@@ -65,9 +68,43 @@ struct ApplyPDLLPatternsPass
   using ApplyPDLLPatternsPassBase::ApplyPDLLPatternsPassBase;
 
   LogicalResult initialize(MLIRContext *ctx) override {
+    if (!includePatterns.empty() && !excludePatterns.empty()) {
+      return emitError(UnknownLoc::get(ctx),
+                       "apply-pdll-patterns: `include-patterns` and "
+                       "`exclude-patterns` options are mutually exclusive");
+    }
+
     RewritePatternSet patternList(ctx);
     populateAllPDLLPatterns(patternList);
-    patterns = std::move(patternList);
+
+    // The `disabledPatternLabels` / `enabledPatternLabels` arguments of
+    // `FrozenRewritePatternSet` only affect native C++ patterns; PDLL-generated
+    // patterns are compiled to PDL bytecode and are not filtered there. Filter
+    // them here, at the `pdl.pattern` level, using their symbol name (which
+    // matches the pattern name in the `.pdll` source).
+    if (!includePatterns.empty() || !excludePatterns.empty()) {
+      llvm::StringSet<> include;
+      for (const std::string &name : includePatterns)
+        include.insert(name);
+      llvm::StringSet<> exclude;
+      for (const std::string &name : excludePatterns)
+        exclude.insert(name);
+      ModuleOp pdlModule = patternList.getPDLPatterns().getModule();
+      SmallVector<pdl::PatternOp> toErase;
+      pdlModule.walk([&](pdl::PatternOp patternOp) {
+        std::optional<StringRef> sym = patternOp.getSymName();
+        if (!sym)
+          return;
+        bool keep =
+            include.empty() ? !exclude.contains(*sym) : include.contains(*sym);
+        if (!keep)
+          toErase.push_back(patternOp);
+      });
+      for (pdl::PatternOp p : toErase)
+        p.erase();
+    }
+
+    patterns = FrozenRewritePatternSet(std::move(patternList));
     return success();
   }
 
