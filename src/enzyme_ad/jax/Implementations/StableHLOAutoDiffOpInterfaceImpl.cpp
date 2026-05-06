@@ -798,6 +798,11 @@ class AutoDiffWhileRev
         makeI64Constant(orig->getLoc(), builder, 1), innerRematOperands);
     Block *innerRematBody = &innerRemat.getBody().front();
 
+    innerRemat->setAttrs(orig->getAttrs());
+    innerRemat->removeAttr("enzymexla.enable_checkpointing");
+    innerRemat->removeAttr("enzymexla.checkpoint_period");
+    innerRemat->removeAttr("enzymexla.binomial_checkpointing");
+
     builder.setInsertionPointToStart(innerRematBody);
 
     // iv [ckpt, ckpt+split[ in [0, numIters]
@@ -881,7 +886,8 @@ class AutoDiffWhileRev
     for (auto &&[active, operand] :
          llvm::zip(operandsActive, term->getOperands())) {
       if (active) {
-        gutils->addToDiffe(operand, outerBody->getArgument(revIdx), bodyBuilder);
+        gutils->addToDiffe(operand, outerBody->getArgument(revIdx),
+                           bodyBuilder);
         revIdx++;
       }
     }
@@ -1666,6 +1672,11 @@ public:
 
           auto inner =
               makeForLoop(builder, orig->getLoc(), 0, innerLimit, 1, operands);
+
+          inner->setAttrs(orig->getAttrs());
+          inner->removeAttr("enzymexla.enable_checkpointing");
+          inner->removeAttr("enzymexla.checkpoint_period");
+          inner->removeAttr("enzymexla.binomial_checkpointing");
 
           outerTerm->setOperands(
               1, inner.getNumResults() - 1,
