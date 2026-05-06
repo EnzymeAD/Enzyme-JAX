@@ -544,38 +544,22 @@ td_library(
 )
 
 gentbl_cc_library(
-    name = "SliceExtendPDLLPatternsIncGen",
+    name = "PDLLPatternsIncGen",
     includes = ["Dialect"],
     tbl_outs = [
         (
             ["-x=cpp"],
-            "Passes/PDLL/SliceExtendPDLLPatterns.h.inc",
+            "Passes/PDLL/PDLLPatterns.h.inc",
         ),
     ],
     tblgen = "@llvm-project//mlir:mlir-pdll",
-    td_file = "Passes/PDLL/sliceextend.pdll",
+    td_file = "Passes/PDLL/patterns.pdll",
     deps = [
         ":EnzymeXLAAttrsIncGen",
         ":EnzymeXLADialectTdFiles",
         ":EnzymeXLAOpsIncGen",
         "@enzyme//:EnzymeDialectTdFiles",
         "@llvm-project//mlir:GPUOpsTdFiles",
-        "@stablehlo//:stablehlo_ops_td_files",
-    ],
-)
-
-gentbl_cc_library(
-    name = "MorePatternsPDLLPatternsIncGen",
-    includes = ["Dialect"],
-    tbl_outs = [
-        (
-            ["-x=cpp"],
-            "Passes/PDLL/MorePatternsPDLLPatterns.h.inc",
-        ),
-    ],
-    tblgen = "@llvm-project//mlir:mlir-pdll",
-    td_file = "Passes/PDLL/more_patterns.pdll",
-    deps = [
         "@stablehlo//:stablehlo_ops_td_files",
     ],
 )
@@ -1243,8 +1227,7 @@ cc_library(
         ":RaisingTransformOpsImplIncGen",
         ":RaisingTransformOpsIncGen",
         ":RaisingTransformPatternsIncGen",
-        ":MorePatternsPDLLPatternsIncGen",
-        ":SliceExtendPDLLPatternsIncGen",
+        ":PDLLPatternsIncGen",
         ":StablehloOptPatternsIncGen",
         ":TesseraAttrsIncGen",
         ":TesseraDialectIncGen",

@@ -47,22 +47,17 @@ using namespace mlir::enzyme;
 namespace {
 
 // Each generated PDLL header defines `populateGeneratedPDLLPatterns` at file
-// scope, so we wrap each include in its own anonymous nested namespace to
-// avoid symbol clashes. To register an additional `.pdll` pattern set, just
-// add a new `namespace { #include ... }` block and a matching call in
+// scope, so we wrap the include in an anonymous nested namespace. To register
+// additional `.pdll` pattern sets in the future, add another
+// `namespace { #include ... }` block and a matching call in
 // `populateAllPDLLPatterns` below.
 
-namespace slice_extend_pdll {
-#include "src/enzyme_ad/jax/Passes/PDLL/SliceExtendPDLLPatterns.h.inc"
-} // namespace slice_extend_pdll
-
-namespace more_patterns_pdll {
-#include "src/enzyme_ad/jax/Passes/PDLL/MorePatternsPDLLPatterns.h.inc"
-} // namespace more_patterns_pdll
+namespace pdll_patterns {
+#include "src/enzyme_ad/jax/Passes/PDLL/PDLLPatterns.h.inc"
+} // namespace pdll_patterns
 
 static void populateAllPDLLPatterns(RewritePatternSet &patterns) {
-  slice_extend_pdll::populateGeneratedPDLLPatterns(patterns);
-  more_patterns_pdll::populateGeneratedPDLLPatterns(patterns);
+  pdll_patterns::populateGeneratedPDLLPatterns(patterns);
 }
 
 struct ApplyPDLLPatternsPass
