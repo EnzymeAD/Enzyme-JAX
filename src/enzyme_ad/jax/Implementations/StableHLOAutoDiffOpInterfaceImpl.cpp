@@ -1631,12 +1631,12 @@ public:
 
           Operation *outerTerm = outerBody->getTerminator();
 
-          for (size_t i = 1, e = orig->getNumOperands() - 1; i < e; ++i) {
+          for (size_t i = 1, e = orig->getNumOperands(); i < e; ++i) {
             auto operand = outerBody->getArgument(i);
-            outerTerm->setOperand(
-                i + orig->getNumOperands() - 1,
+            Value newCache =
                 setCache(outerBody->getArgument(i + orig->getNumOperands() - 1),
-                         operand));
+                         operand);
+            outerTerm->setOperand(i + orig->getNumOperands() - 1, newCache);
           }
 
           SmallVector<Value> operands(outerBody->getArguments()
