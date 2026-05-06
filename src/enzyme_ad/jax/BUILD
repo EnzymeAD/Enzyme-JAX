@@ -564,6 +564,22 @@ gentbl_cc_library(
     ],
 )
 
+gentbl_cc_library(
+    name = "MorePatternsPDLLPatternsIncGen",
+    includes = ["Dialect"],
+    tbl_outs = [
+        (
+            ["-x=cpp"],
+            "Passes/PDLL/MorePatternsPDLLPatterns.h.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-pdll",
+    td_file = "Passes/PDLL/more_patterns.pdll",
+    deps = [
+        "@stablehlo//:stablehlo_ops_td_files",
+    ],
+)
+
 td_library(
     name = "DistributedDialectFiles",
     srcs = [
@@ -1227,6 +1243,7 @@ cc_library(
         ":RaisingTransformOpsImplIncGen",
         ":RaisingTransformOpsIncGen",
         ":RaisingTransformPatternsIncGen",
+        ":MorePatternsPDLLPatternsIncGen",
         ":SliceExtendPDLLPatternsIncGen",
         ":StablehloOptPatternsIncGen",
         ":TesseraAttrsIncGen",
