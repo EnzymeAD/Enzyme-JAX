@@ -1,5 +1,5 @@
 // RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(lower-enzymexla-mpi{backend=cpu})" %s | FileCheck %s --check-prefix=CPU
-// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(lower-enzymexla-mpi{backend=cpu ncclCommPtr=1}})" %s | FileCheck %s --check-prefix=CUDA
+// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(lower-enzymexla-mpi{backend=cuda ncclCommPtr=1})" %s | FileCheck %s --check-prefix=CUDA
 
 module {
   func.func @main() -> tensor<i32> attributes {enzymexla.memory_effects = ["read", "write", "allocate", "free"]} {
