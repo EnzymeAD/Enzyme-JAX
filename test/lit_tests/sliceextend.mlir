@@ -1,5 +1,5 @@
 // RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=slice_extend" --transform-interpreter --enzyme-hlo-remove-transform %s | FileCheck %s
-// RUN: enzymexlamlir-opt --apply-sliceextend-pdll --cse | FileCheck %s --check-prefix=PDLL
+// RUN: enzymexlamlir-opt --apply-pdll-patterns --cse | FileCheck %s --check-prefix=PDLL
 
 func.func @extend_operations(%arg0: tensor<1x10x80xf64>, %arg1: tensor<1x10x8xf64>, %arg2: tensor<1x10x8xf64>) -> (tensor<1x2x96xf64>, tensor<1x10x96xf64>, tensor<1x10x96xf64>) {
   %0 = stablehlo.slice %arg0 [0:1, 1:3, 0:80] : (tensor<1x10x80xf64>) -> tensor<1x2x80xf64>

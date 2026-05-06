@@ -1371,13 +1371,13 @@ def RemoveAtomicsPass : Pass<"remove-atomics"> {
   ];
 }
 
-def ApplySliceExtendPDLLPass : Pass<"apply-sliceextend-pdll"> {
-  let summary = "Apply the SliceExtendCommute PDLL pattern";
+def ApplyPDLLPatternsPass : Pass<"apply-pdll-patterns"> {
+  let summary = "Apply every PDLL pattern set under `Passes/PDLL/`";
   let description = [{
-    Runs the PDLL pattern defined in
-    `src/enzyme_ad/jax/Passes/PDLL/sliceextend.pdll` which commutes a
-    `stablehlo.slice` followed by an `enzymexla.extend` into an
-    `enzymexla.extend` followed by a `stablehlo.slice`.
+    Runs every PDLL pattern set defined in
+    `src/enzyme_ad/jax/Passes/PDLL/`. New `.pdll` files are picked up by
+    adding a build rule and a single registration line in
+    `src/enzyme_ad/jax/Passes/ApplyPDLLPatterns.cpp`.
   }];
   let dependentDialects = [
     "enzymexla::EnzymeXLADialect",
