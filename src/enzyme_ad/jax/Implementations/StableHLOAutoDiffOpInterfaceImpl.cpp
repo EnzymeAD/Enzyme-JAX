@@ -540,6 +540,23 @@ class AutoDiffWhileRev
     return revInfo;
   }
 
+  // arr[index:index+1, :, :, :] = val
+  static Value setIndex(OpBuilder &builder, Value arr, Value index, Value val) {
+    SmallVector<int64_t> updateShape{1};
+    SmallVector<Value> startIndices{index};
+    Value zero = makeI64Constant(val.getLoc(), builder, 0);
+    for (auto s : cast<ShapedType>(val.getType()).getShape()) {
+      startIndices.push_back(zero);
+      updateShape.push_back(s);
+    }
+
+    arr = stablehlo::DynamicUpdateSliceOp::create(
+        builder, arr.getLoc(), arr,
+        ReshapeOpCreate(builder, val.getLoc(), val, updateShape), startIndices);
+
+    return arr;
+  }
+
   static stablehlo::WhileOp makeForLoop(OpBuilder &builder, Location loc,
                                         int64_t start, int64_t limit,
                                         int64_t step, ValueRange operands) {
@@ -588,12 +605,330 @@ class AutoDiffWhileRev
     return whileOp;
   }
 
-  static LogicalResult
-  reverseWithRevolveCheckpointing(stablehlo::WhileOp orig, OpBuilder &builder,
-                                  MGradientUtilsReverse *gutils,
-                                  SmallVector<Value> caches,
-                                  ArrayRef<bool> operandsActive) {
-    return failure();
+  // Reverse pass for CONSTANT_BINOMIAL
+  static LogicalResult reverseWithBinomialCheckpointing(
+      stablehlo::WhileOp orig, struct ReverseModeInfo revInfo,
+      OpBuilder &builder, MGradientUtilsReverse *gutils,
+      SmallVector<Value> caches, ArrayRef<bool> operandsActive) {
+
+    if (revInfo.info.getArgNumber() != 0) {
+      return orig->emitError(
+          "binomial checkpointing: unsupported non-canonical for loop with iv "
+          "not being at the first position.");
+    }
+
+    if (!revInfo.info.isConstant()) {
+      return orig->emitError("binomial checkpointing: unsupported non-constant "
+                             "bounds for for loop.");
+    }
+
+    llvm::errs() << "doing checkpointing with binomial\n";
+
+    SetVector<Value> outsideRefs;
+    getUsedValuesDefinedAbove(orig->getRegions(), outsideRefs);
+
+    int numOutsideRefs = outsideRefs.size();
+    int nrets = caches.size() - 1 - numOutsideRefs;
+
+    // 1. Build outer loop
+    SmallVector<Value> operands;
+
+    // TODO: support dynamic num iters
+    Value currentRevStep = makeI64Constant(orig->getLoc(), builder,
+                                           revInfo.info.getConstantNumIters());
+    Value sp =
+        makeI64Constant(orig->getLoc(), builder, revInfo.checkpointPeriod - 1);
+    Value indexTensor = gutils->popCache(caches[caches.size() - 1], builder);
+
+    operands.push_back(currentRevStep);
+    operands.push_back(sp);
+    operands.push_back(indexTensor);
+
+    for (size_t i = 0; i < nrets; ++i) {
+      operands.push_back(gutils->popCache(caches[i], builder));
+    }
+
+    SmallVector<Value> poppedOutsideRefs;
+    for (size_t i = nrets; i < caches.size() - 1; ++i) {
+      poppedOutsideRefs.push_back(gutils->popCache(caches[i], builder));
+    }
+
+    for (auto [active, res] : llvm::zip(operandsActive, orig->getResults())) {
+      if (active) {
+        operands.push_back(gutils->diffe(res, builder));
+        if (!gutils->isConstantValue(res))
+          gutils->zeroDiffe(res, builder);
+      }
+    }
+
+    OpBuilder::InsertionGuard guard(builder);
+
+    stablehlo::WhileOp revOuter =
+        stablehlo::WhileOp::create(builder, orig->getLoc(), operands);
+
+    TypeRange operandTypes = ValueRange(operands).getTypes();
+    SmallVector<Location> operandLocs = llvm::map_to_vector(
+        operands, [](Value operand) { return operand.getLoc(); });
+
+    { // Outer condition
+      OpBuilder::InsertionGuard guard(builder);
+      Block *cond = builder.createBlock(&revOuter.getCond(), {}, operandTypes,
+                                        operandLocs);
+      Value cmp = stablehlo::CompareOp::create(
+          builder, orig->getLoc(), cond->getArgument(0),
+          makeI64Constant(orig->getLoc(), builder, 1), ComparisonDirection::NE);
+      ReturnOp::create(builder, orig->getLoc(), cmp);
+    }
+
+    Block *outerBody =
+        builder.createBlock(&revOuter.getBody(), {}, operandTypes, operandLocs);
+
+    Value zero = makeI64Constant(orig->getLoc(), builder, 0);
+    SmallVector<Value> innerArgs;
+    SmallVector<Value> cacheArgs;
+    for (size_t i = 0; i < nrets; ++i) {
+      Value cache = outerBody->getArgument(3 + i);
+      cacheArgs.push_back(cache);
+      auto cacheTy = cast<ShapedType>(cache.getType());
+
+      SmallVector<Value> startIndices;
+      startIndices.push_back(outerBody->getArgument(1));
+      for (int i = 0; i < cacheTy.getRank() - 1; i++)
+        startIndices.push_back(zero);
+
+      SmallVector<int64_t> sliceSizes(cacheTy.getShape().begin(),
+                                      cacheTy.getShape().end());
+      sliceSizes[0] = 1;
+
+      Value arg = DynamicSliceOp::create(builder, orig->getLoc(), cache,
+                                         startIndices, sliceSizes);
+
+      SmallVector<int64_t> shape(sliceSizes.size() - 1, 0);
+      for (int i = 0; i < shape.size(); i++)
+        shape[i] = sliceSizes[i + 1];
+
+      arg = ReshapeOpCreate(builder, orig->getLoc(), arg, shape);
+
+      innerArgs.push_back(arg);
+    }
+
+    Value capo = outerBody->getArgument(1);
+    Value ckptStep =
+        ReshapeOpCreate(builder, orig->getLoc(),
+                        DynamicSliceOp::create(builder, orig->getLoc(),
+                                               outerBody->getArgument(2),
+                                               ValueRange{capo}, {1}),
+                        {});
+
+    // 2. Builder inner remat loop
+    SmallVector<Value> innerOperands;
+
+    innerOperands.push_back(ckptStep);
+    innerOperands.push_back(capo);
+    innerOperands.push_back(outerBody->getArgument(2));
+    innerOperands.append(innerArgs);
+    innerOperands.append(cacheArgs);
+
+    // innerOperands = [ckptStep, capo, indexTensor, args..., cacheArgs...]
+
+    auto innerWhile =
+        stablehlo::WhileOp::create(builder, orig->getLoc(), innerOperands);
+    TypeRange innerOperandTypes = ValueRange(innerOperands).getTypes();
+    SmallVector<Location> innerOperandLocs = llvm::map_to_vector(
+        innerOperands, [](Value operand) { return operand.getLoc(); });
+    { // inner cond
+      Block *innerCond = builder.createBlock(
+          &innerWhile.getCond(), {}, innerOperandTypes, innerOperandLocs);
+      Value cmp = stablehlo::CompareOp::create(
+          builder, orig->getLoc(),
+          stablehlo::AddOp::create(builder, orig->getLoc(),
+                                   innerCond->getArgument(0),
+                                   makeI64Constant(orig->getLoc(), builder, 1)),
+          outerBody->getArgument(0), stablehlo::ComparisonDirection::LT);
+      ReturnOp::create(builder, orig->getLoc(), cmp);
+    }
+
+    Block *innerBody = builder.createBlock(&innerWhile.getBody(), {},
+                                           innerOperandTypes, innerOperandLocs);
+
+    Value remaining = stablehlo::SubtractOp::create(builder, orig->getLoc(),
+                                                    outerBody->getArgument(0),
+                                                    innerBody->getArgument(0));
+    Value budget = stablehlo::SubtractOp::create(
+        builder, orig->getLoc(),
+        makeI64Constant(orig->getLoc(), builder, revInfo.checkpointPeriod),
+        outerBody->getArgument(1));
+    Value split = enzymexla::BinomialProgress::create(
+        builder, orig->getLoc(), remaining, budget, nullptr);
+
+    // Store args state to cacheArgs
+    // and store current step to indexTensor
+    indexTensor = innerBody->getArgument(2);
+    capo = stablehlo::AddOp::create(
+        builder, orig->getLoc(), innerBody->getArgument(1),
+        makeI64Constant(orig->getLoc(), builder, 1));
+
+    SmallVector<Value> innerBodyCaches;
+
+    zero = makeI64Constant(orig->getLoc(), builder, 0);
+    for (int i = 0, e = orig->getNumOperands() - 1; i < e; ++i) {
+      Value arg = innerBody->getArgument(i + 3);
+      Value argCache =
+          innerBody->getArgument(i + 3 + orig->getNumOperands() - 1);
+
+      innerBodyCaches.push_back(setIndex(builder, argCache, capo, arg));
+    }
+
+    indexTensor =
+        setIndex(builder, indexTensor, capo, innerBody->getArgument(0));
+
+    Block *origBody = &orig.getBody().front();
+
+    SmallVector<Value> innerRematOperands;
+
+    for (int i = 0, e = origBody->getNumArguments() - 1; i < e; ++i) {
+      innerRematOperands.push_back(innerBody->getArgument(i + 3));
+    }
+
+    auto innerRemat = makeForLoop(
+        builder, orig->getLoc(), innerBody->getArgument(0),
+        stablehlo::AddOp::create(builder, orig->getLoc(),
+                                 innerBody->getArgument(0), split)
+            .getResult(),
+        makeI64Constant(orig->getLoc(), builder, 1), innerRematOperands);
+    Block *innerRematBody = &innerRemat.getBody().front();
+
+    builder.setInsertionPointToStart(innerRematBody);
+
+    // iv [ckpt, ckpt+split[ in [0, numIters]
+    // innerIV = iv * step + start
+    Value innerIV = stablehlo::AddOp::create(
+        builder, orig->getLoc(),
+        makeI64Constant(orig->getLoc(), builder,
+                        *revInfo.info.getConstantStart()),
+        stablehlo::MulOp::create(
+            builder, orig->getLoc(),
+            makeI64Constant(orig->getLoc(), builder,
+                            *revInfo.info.getConstantStep()),
+            innerRematBody->getArgument(0)));
+
+    IRMapping mapping;
+    mapping.map(origBody->getArgument(0), innerIV);
+
+    for (int i = 1, e = orig->getNumOperands(); i < e; ++i) {
+      mapping.map(origBody->getArgument(i), innerRematBody->getArgument(i));
+    }
+
+    for (auto [oRef, pRef] : llvm::zip_equal(outsideRefs, poppedOutsideRefs)) {
+      mapping.map(oRef, pRef);
+    }
+
+    for (Operation &op : origBody->without_terminator()) {
+      Operation *newOp = builder.clone(op, mapping);
+      builder.setInsertionPointAfter(newOp);
+    }
+
+    auto innerRematTerm = cast<ReturnOp>(innerRematBody->getTerminator());
+    auto origTerm = cast<ReturnOp>(origBody->getTerminator());
+
+    for (int i = 1, e = origTerm->getNumOperands(); i < e; i++) {
+      innerRematTerm->setOperand(i, mapping.lookup(origTerm->getOperand(i)));
+    }
+
+    builder.setInsertionPointToEnd(innerBody);
+
+    SmallVector<Value> innerBodyResults;
+    // [ckptStep+split, capo, indexTensor, rematResults..., newCaches...]
+
+    innerBodyResults.push_back(
+        stablehlo::AddOp::create(builder, orig->getLoc(), ckptStep, split));
+    innerBodyResults.push_back(capo);
+    innerBodyResults.push_back(indexTensor);
+
+    for (int i = 1, e = innerRemat->getNumResults(); i < e; ++i) {
+      innerBodyResults.push_back(innerRemat->getResult(i));
+    }
+
+    innerBodyResults.append(innerBodyCaches);
+
+    ReturnOp::create(builder, orig->getLoc(), innerBodyResults);
+
+    // 3. Combined aug fwd + rev
+    builder.setInsertionPointToEnd(outerBody);
+
+    mapping = IRMapping();
+    mapping.map(origBody->getArgument(0),
+                stablehlo::AddOp::create(
+                    builder, orig->getLoc(),
+                    makeI64Constant(orig->getLoc(), builder,
+                                    *revInfo.info.getConstantStart()),
+                    stablehlo::MulOp::create(
+                        builder, orig->getLoc(),
+                        makeI64Constant(orig->getLoc(), builder,
+                                        *revInfo.info.getConstantStep()),
+                        outerBody->getArgument(0))));
+
+    for (auto [oRef, pRef] : llvm::zip_equal(outsideRefs, poppedOutsideRefs)) {
+      mapping.map(oRef, pRef);
+    }
+
+    for (int i = 0, e = origBody->getNumArguments() - 1; i < e; ++i) {
+      mapping.map(origBody->getArgument(i + 1), innerWhile->getResult(i + 3));
+    }
+
+    for (Operation &op : origBody->without_terminator()) {
+      Operation *newOp = builder.clone(op, mapping);
+      gutils->originalToNewFnOps[&op] = newOp;
+      for (auto &&[oldv, newv] :
+           llvm::zip_equal(op.getResults(), newOp->getResults())) {
+        gutils->originalToNewFn.map(oldv, newv);
+      }
+    }
+
+    bool anyFailed = false;
+
+    auto rstart = origBody->rbegin(), rend = origBody->rend();
+    rstart++;
+    for (auto it = rstart; it != rend; it++) {
+      Operation *op = &*it;
+      anyFailed |= gutils->Logic.visitChild(op, builder, gutils).failed();
+    }
+
+    SmallVector<Value> outerBodyResults;
+
+    outerBodyResults.push_back(innerWhile->getResult(0));
+    outerBodyResults.push_back(innerWhile->getResult(1));
+    outerBodyResults.push_back(innerWhile->getResult(2));
+
+    for (int i = 0, e = orig->getNumOperands() - 1; i < e; ++i) {
+      outerBodyResults.push_back(
+          innerWhile.getResult(i + 3 + orig->getNumOperands() - 1));
+    }
+
+    for (auto [active, arg] :
+         llvm::zip(operandsActive, origBody->getArguments())) {
+      if (active) {
+        outerBodyResults.push_back(gutils->diffe(arg, builder));
+      }
+    }
+
+    // 4. Finish and set gradients
+    ReturnOp::create(builder, orig->getLoc(), outerBodyResults);
+
+    builder.setInsertionPointAfter(revOuter);
+
+    int revIdx = 3 + orig->getNumOperands() - 1;
+    for (auto &&[active, arg] :
+         llvm::zip_equal(operandsActive, orig->getOperands())) {
+      if (active) {
+        if (!gutils->isConstantValue(arg)) {
+          gutils->addToDiffe(arg, revOuter->getResult(revIdx), builder);
+        }
+        revIdx++;
+      }
+    }
+
+    return success(anyFailed);
   }
 
   // Reverse pass for CONSTANT_CHECKPOINTING (explicit period or default sqrt).
@@ -863,6 +1198,10 @@ public:
     if (revInfo.mode == CONSTANT_CHECKPOINTING) {
       return reverseWithCheckpointing(cast<stablehlo::WhileOp>(orig), revInfo,
                                       builder, gutils, caches, operandsActive);
+    } else if (revInfo.mode == CONSTANT_BINOMIAL) {
+      return reverseWithBinomialCheckpointing(cast<stablehlo::WhileOp>(orig),
+                                              revInfo, builder, gutils, caches,
+                                              operandsActive);
     } else if (revInfo.mode == CONSTANT) {
       auto iterType = orig->getOperand(0).getType();
       numIters = stablehlo::ConstantOp::create(
@@ -1187,6 +1526,18 @@ public:
 
           outerOperands.push_back(zero);
 
+          auto outerCacheIndicesTy = RankedTensorType::get(
+              {revModeInfo.checkpointPeriod}, builder.getI64Type());
+          Value outerCacheIndices =
+              stablehlo::ConstantOp::create(
+                  builder, orig->getLoc(), outerCacheIndicesTy,
+                  SplatElementsAttr::get(outerCacheIndicesTy,
+                                         ArrayRef<Attribute>(IntegerAttr::get(
+                                             builder.getI64Type(), 0))))
+                  .getResult();
+
+          outerOperands.push_back(outerCacheIndices);
+
           stablehlo::WhileOp outer =
               makeForLoop(builder, orig->getLoc(), 0,
                           revModeInfo.checkpointPeriod, 1, outerOperands);
@@ -1194,9 +1545,6 @@ public:
           Block *outerBody = &outer.getBody().front();
 
           builder.setInsertionPointAfter(outer);
-
-          caches.push_back(gutils->initAndPushCache(
-              outer.getResult(outer.getNumResults() - 1), builder));
 
           for (auto argCache : outer.getResults().slice(
                    orig->getNumOperands(), orig->getNumOperands() - 1)) {
@@ -1208,10 +1556,14 @@ public:
                 gutils->getNewFromOriginal(ref), builder));
           }
 
+          // last cache is corresponding to the index tensor
+          caches.push_back(gutils->initAndPushCache(
+              outer.getResult(outer.getNumResults() - 1), builder));
+
           builder.setInsertionPointToStart(outerBody);
 
           Value stepInOuter =
-              outerBody->getArgument(outerBody->getNumArguments() - 1);
+              outerBody->getArgument(outerBody->getNumArguments() - 2);
 
           auto setCache = [&](Value cache, Value val) {
             auto valTy = cast<ShapedType>(val.getType());
@@ -1270,9 +1622,17 @@ public:
               builder, orig->getLoc(), numSteps, budget, nullptr);
 
           outerTerm->setOperand(
-              outerTerm->getNumOperands() - 1,
+              outerTerm->getNumOperands() - 2,
               stablehlo::AddOp::create(builder, stepInOuter.getLoc(),
                                        stepInOuter, innerLimit));
+          outerTerm->setOperand(
+              outerTerm->getNumOperands() - 1,
+              stablehlo::DynamicUpdateSliceOp::create(
+                  builder, orig->getLoc(),
+                  outerBody->getArgument(outerBody->getNumArguments() - 1),
+                  stablehlo::ReshapeOpCreate(builder, orig->getLoc(),
+                                             stepInOuter, {1}),
+                  ValueRange{outerBody->getArgument(0)}));
 
           auto inner =
               makeForLoop(builder, orig->getLoc(), 0, innerLimit, 1, operands);
