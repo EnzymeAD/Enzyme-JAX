@@ -64,6 +64,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/OpenMP/OpenMPDialect.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/IRMapping.h"
@@ -374,17 +375,16 @@ struct PendingClauses {
   Value numTeams, /*, numTeamsUpper*/ threadLimit;
 };
 
-static SmallVector<Operation *> collectPendingClauses(LLVM::CallOp anchor,
-                                                       PendingClauses &pc) {
-  SmallVector<Operation *> erase;
+static PendingClauses collectPendingClauses(LLVM::CallOp anchor) {
+  PendingClauses pc;
   for (Operation &op : *anchor->getBlock()) {
     if (&op == anchor.getOperation()) break;
     auto call = dyn_cast<LLVM::CallOp>(&op);
     if (!call) continue;
     StringRef n = getCalleeName(call);
-    if (n == "__kmpc_push_num_threads" && call.getNumOperands() >= 3) {
-      pc.numThreads = call.getOperand(2); erase.push_back(&op);
-    } else if (n == "__kmpc_push_proc_bind" && call.getNumOperands() >= 3) {
+    if (n == "__kmpc_push_num_threads" && call.getNumOperands() >= 3)
+      pc.numThreads = call.getOperand(2);
+    else if (n == "__kmpc_push_proc_bind" && call.getNumOperands() >= 3) {
       pc.hasProcBind = true;
       if (auto v = getConstInt(call.getOperand(2))) {
         switch (*v) {
@@ -393,14 +393,12 @@ static SmallVector<Operation *> collectPendingClauses(LLVM::CallOp anchor,
         case 3: pc.procBind = omp::ClauseProcBindKind::Spread;  break;
         }
       }
-      erase.push_back(&op);
     } else if (n == "__kmpc_push_num_teams" && call.getNumOperands() >= 4) {
-      pc.numTeams =  call.getOperand(2);
-      pc.threadLimit   = call.getOperand(3);
-      erase.push_back(&op);
+      pc.numTeams    = call.getOperand(2);
+      pc.threadLimit = call.getOperand(3);
     }
   }
-  return erase;
+  return pc; // no erase vector, no erase loop
 }
 
 //===----------------------------------------------------------------------===//
@@ -454,7 +452,6 @@ private:
   void convertAtomics  (ModuleOp);
   void convertReductions(ModuleOp);
   void applyLeafPatterns(ModuleOp);
-  void eraseDeadGlobals (ModuleOp);
 };
 //===----------------------------------------------------------------------===//
 // §9  __kmpc_fork_teams → omp.teams
@@ -469,8 +466,7 @@ void LLVMToOMPPass::convertTeams(ModuleOp mod) {
     if (isCallTo(c,"__kmpc_fork_teams")) calls.push_back(c);
   });
   for (LLVM::CallOp call : calls) {
-    PendingClauses pc;
-    for (Operation *op : collectPendingClauses(call, pc)) op->erase();
+    PendingClauses pc = collectPendingClauses(call);
     LLVM::LLVMFuncOp fn = resolveOutlinedFn(mod, call);
     if (!fn) {
       call.emitWarning("LLVMToOmp: cannot resolve outlined fn for "
@@ -510,7 +506,7 @@ void LLVMToOMPPass::convertTeams(ModuleOp mod) {
       signalPassFailure(); return;
     }
     call.erase();
-    if (fn.use_empty()) fn.erase();
+    fn.erase();
     LLVM_DEBUG(llvm::dbgs() << "[LLVMToOmp] fork_teams → omp.teams\n");
   }
 }
@@ -529,9 +525,7 @@ void LLVMToOMPPass::convertParallel(ModuleOp mod) {
       calls.push_back(c);
   });
   for (LLVM::CallOp call : calls) {
-    PendingClauses pc;
-    for (Operation *op : collectPendingClauses(call, pc)) op->erase();
-
+    PendingClauses pc = collectPendingClauses(call);
     // __kmpc_parallel_51: ident(0) gtid(1) if_val(2) num_threads(3)
     //                     proc_bind(4) fn_ptr(5) wrapper_ptr(6) ...
     bool is51 = isCallTo(call,"__kmpc_parallel_51");
@@ -584,7 +578,7 @@ void LLVMToOMPPass::convertParallel(ModuleOp mod) {
       signalPassFailure(); return;
     }
     call.erase();
-    if (fn.use_empty()) fn.erase();
+    fn.erase();
     LLVM_DEBUG(llvm::dbgs() << "[LLVMToOmp] fork_call → omp.parallel\n");
   }
 }
@@ -604,76 +598,104 @@ void LLVMToOMPPass::convertParallel(ModuleOp mod) {
 
 void LLVMToOMPPass::convertPaired(ModuleOp mod) {
 
+
+  // ---- shared helper for scf.if-guarded constructs (single, master) ----
+  //
+  // Both __kmpc_single and __kmpc_master return an i32 that gates the body:
+  //   %r  = llvm.call @__kmpc_BEGIN(...)
+  //   %ne = arith.cmpi ne, %r, 0
+  //   scf.if %ne {
+  //     <body>
+  //     llvm.call @__kmpc_END(...)
+  //   }
+  //   [optional __kmpc_barrier → no nowait]
+  //
+  auto convertIfGuarded = [&](StringRef beginCallee, StringRef endCallee,
+                              auto makeOmpOp) {
+    SmallVector<LLVM::CallOp> starts;
+    mod.walk([&](LLVM::CallOp c) {
+      if (isCallTo(c, beginCallee)) starts.push_back(c);
+    });
+    for (LLVM::CallOp start : starts) {
+      OpBuilder b(start);
+      Location loc = start.getLoc();
+
+      // Replace the i32 guard result so cmpi users don't dangle after erase.
+      if (!start.getResults().empty()) {
+        Value one = b.create<LLVM::ConstantOp>(
+            loc, b.getI32Type(), b.getI32IntegerAttr(1));
+        start.getResult().replaceAllUsesWith(one);
+      }
+
+      // Find the scf.if in the same block whose then-region holds endCallee.
+      scf::IfOp ifOp;
+      bool pastStart = false;
+      for (Operation &op : *start->getBlock()) {
+        if (&op == start.getOperation()) { pastStart = true; continue; }
+        if (!pastStart) continue;
+        auto sif = dyn_cast<scf::IfOp>(&op);
+        if (!sif) continue;
+        bool hasEnd = false;
+        sif.getThenRegion().walk([&](LLVM::CallOp c) {
+          if (isCallTo(c, endCallee)) hasEnd = true;
+        });
+        if (hasEnd) { ifOp = sif; break; }
+      }
+      if (!ifOp) {
+        start.emitError("LLVMToOmp: '") << beginCallee
+            << "' without matching '" << endCallee << "'";
+        signalPassFailure(); return;
+      }
+
+      // Create the omp op just before the scf.if.
+      b.setInsertionPoint(ifOp);
+      Operation *ompOp = makeOmpOp(b, loc, ifOp);
+      Block *body = b.createBlock(&ompOp->getRegion(0));
+      b.setInsertionPointToStart(body);
+      b.create<omp::TerminatorOp>(loc);
+
+      // Move body ops (everything before endCallee in the then-block).
+      LLVM::CallOp endCall;
+      ifOp.getThenRegion().walk([&](LLVM::CallOp c) {
+        if (isCallTo(c, endCallee)) endCall = c;
+      });
+      SmallVector<Operation *> toMove;
+      for (Operation &op : ifOp.getThenRegion().front()) {
+        if (&op == endCall.getOperation() || isa<scf::YieldOp>(&op)) break;
+        toMove.push_back(&op);
+      }
+      moveBeforeTerminator(toMove, body);
+
+      endCall.erase();
+      start.erase();
+      ifOp.erase();
+    }
+  };
+
   // ---- single ----
   // td: SingleOp has clauses=[..., OpenMP_NowaitClause, ...]
   //     Builder: OpBuilder<(ins CArg<"const SingleOperands &">:$clauses)>
   //     SingleOperands.nowait = UnitAttr (from OpenMP_NowaitClause)
-  {
-    SmallVector<LLVM::CallOp> starts;
-    mod.walk([&](LLVM::CallOp c){
-      if (isCallTo(c,"__kmpc_single")) starts.push_back(c);
-    });
-    for (LLVM::CallOp start : starts) {
-      LLVM::CallOp end = findNextCallTo(start,"__kmpc_end_single");
-      if (!end) {
-        start.emitError("LLVMToOmp: __kmpc_single without matching end");
-        signalPassFailure(); return;
-      }
-      // detectNowait: if no __kmpc_barrier immediately after end_single → nowait.
-      bool nw = detectNowait(end, /*eraseBarrier=*/false);
-      OpBuilder b(start); Location loc = start.getLoc();
-
-      // Replace __kmpc_single's i32 result with 1 to preserve branch users.
-      if (!start.getResults().empty()) {
-        Value one = b.create<LLVM::ConstantOp>(
-            loc, b.getI32Type(), b.getI32IntegerAttr(1));
-        start.getResult().replaceAllUsesWith(one);
-      }
-
+  convertIfGuarded(
+    "__kmpc_single", "__kmpc_end_single",
+    [&](OpBuilder &b, Location loc, scf::IfOp ifOp) -> Operation * {
+      // Barrier after the scf.if signals no-nowait.
+      bool nw = detectNowait(ifOp, /*eraseBarrier=*/false);
       omp::SingleOperands sOps;
-      if (nw) sOps.nowait = b.getUnitAttr(); // OpenMP_NowaitClause
-
-      auto singleOp = b.create<omp::SingleOp>(loc, sOps);
-      Block *body = b.createBlock(&singleOp.getRegion()); // no SingleBlock
-      b.setInsertionPointToStart(body);
-      b.create<omp::TerminatorOp>(loc);
-      auto ops = opsBetween(start, end);
-      moveBeforeTerminator(ops, body);
-      start.erase(); end.erase();
+      if (nw) sOps.nowait = b.getUnitAttr();
       LLVM_DEBUG(llvm::dbgs() << "[LLVMToOmp] single → omp.single"
-                               << (nw?" nowait":"") << "\n");
-    }
-  }
+                               << (nw ? " nowait" : "") << "\n");
+      return b.create<omp::SingleOp>(loc, sOps).getOperation();
+    });
 
   // ---- master ----
   // td: MasterOp — no clause builder, `$region attr-dict`. No explicit args.
-  {
-    SmallVector<LLVM::CallOp> starts;
-    mod.walk([&](LLVM::CallOp c){
-      if (isCallTo(c,"__kmpc_master")) starts.push_back(c);
-    });
-    for (LLVM::CallOp start : starts) {
-      LLVM::CallOp end = findNextCallTo(start,"__kmpc_end_master");
-      if (!end) {
-        start.emitError("LLVMToOmp: __kmpc_master without matching end");
-        signalPassFailure(); return;
-      }
-      OpBuilder b(start); Location loc = start.getLoc();
-      if (!start.getResults().empty()) {
-        Value one = b.create<LLVM::ConstantOp>(
-            loc, b.getI32Type(), b.getI32IntegerAttr(1));
-        start.getResult().replaceAllUsesWith(one);
-      }
-      auto masterOp = b.create<omp::MasterOp>(loc); // no args
-      Block *body = b.createBlock(&masterOp.getRegion());
-      b.setInsertionPointToStart(body);
-      b.create<omp::TerminatorOp>(loc);
-      auto ops = opsBetween(start, end);
-      moveBeforeTerminator(ops, body);
-      start.erase(); end.erase();
+  convertIfGuarded(
+    "__kmpc_master", "__kmpc_end_master",
+    [&](OpBuilder &b, Location loc, scf::IfOp) -> Operation * {
       LLVM_DEBUG(llvm::dbgs() << "[LLVMToOmp] master → omp.master\n");
-    }
-  }
+      return b.create<omp::MasterOp>(loc).getOperation();
+    });
 
   // ---- critical / critical_with_hint ----
   // td: CriticalOp — arguments = (ins OptionalAttr<FlatSymbolRefAttr>:$name)
@@ -988,14 +1010,14 @@ void LLVMToOMPPass::convertTasks(ModuleOp mod) {
   for (LLVM::CallOp alloc : allocs) {
     Value td = alloc.getResult();
     LLVM::CallOp taskCall;
-    bool isIf0 = false;
+
     for (Operation *u : llvm::make_early_inc_range(td.getUsers())) {
       if (auto uc = dyn_cast<LLVM::CallOp>(u)) {
         StringRef n = getCalleeName(uc);
         if (n=="__kmpc_omp_task"||n=="__kmpc_omp_task_with_deps")
           { taskCall = uc; break; }
         if (n=="__kmpc_omp_task_begin_if0")
-          { taskCall = uc; isIf0 = true; break; }
+          { taskCall = uc; break; }
       }
     }
     if (!taskCall) {
@@ -1035,18 +1057,15 @@ void LLVMToOMPPass::convertTasks(ModuleOp mod) {
         alloc.emitWarning("LLVMToOmp: failed to inline task body — skipped");
         continue;
       }
-      if (fn.use_empty()) fn.erase();
     } else {
       b.create<omp::TerminatorOp>(loc);
       alloc.emitWarning("LLVMToOmp: task entry fn unresolvable — "
                         "emitting empty omp.task");
     }
-    if (isIf0)
-      if (LLVM::CallOp cmp = findNextCallTo(taskCall,
-                                             "__kmpc_omp_task_complete_if0"))
-        cmp.erase();
 
-    alloc.erase(); taskCall.erase();
+    alloc.erase(); 
+    taskCall.erase();
+    if (fn) fn.erase(); 
     LLVM_DEBUG(llvm::dbgs() << "[LLVMToOmp] task_alloc → omp.task\n");
   }
 }
@@ -1402,6 +1421,36 @@ struct GpuTargetPat : OpRewritePattern<LLVM::CallOp> {
   }
 };
 
+/// __kmpc_push_num_threads / _proc_bind / _num_teams
+/// These are consumed by collectPendingClauses and have no OMP dialect
+/// equivalent. Erase silently after Phase 1 has already extracted their
+/// operand values.
+struct PushClausePat : OpRewritePattern<LLVM::CallOp> {
+  using OpRewritePattern::OpRewritePattern;
+  LogicalResult matchAndRewrite(LLVM::CallOp op,
+                                PatternRewriter &rw) const override {
+    StringRef n = getCalleeName(op);
+    if (n != "__kmpc_push_num_threads" &&
+        n != "__kmpc_push_proc_bind"   &&
+        n != "__kmpc_push_num_teams")
+      return failure();
+    rw.eraseOp(op);
+    return success();
+  }
+};
+
+struct TaskCompleteIf0Pat : OpRewritePattern<LLVM::CallOp> {
+  using OpRewritePattern::OpRewritePattern;
+  LogicalResult matchAndRewrite(LLVM::CallOp op,
+                                PatternRewriter &rw) const override {
+    if (!isCallTo(op, "__kmpc_omp_task_begin_if0") &&
+        !isCallTo(op, "__kmpc_omp_task_complete_if0"))
+      return failure();
+    rw.eraseOp(op);
+    return success();
+  }
+};
+
 /// Catch-all: warn on any remaining __kmpc_* / omp_* calls (priority 0).
 struct UnhandledPat : OpRewritePattern<LLVM::CallOp> {
   UnhandledPat(MLIRContext *ctx) : OpRewritePattern(ctx, /*benefit=*/0) {}
@@ -1419,21 +1468,8 @@ void LLVMToOMPPass::applyLeafPatterns(ModuleOp mod) {
   RewritePatternSet pats(mod.getContext());
   pats.add<BarrierPat, FlushPat, TaskwaitPat, TaskyieldPat,
            CancelPat, CancelPointPat, GlobalTidPat,
-           GpuTargetPat, UnhandledPat>(mod.getContext());
+           GpuTargetPat, PushClausePat, TaskCompleteIf0Pat, UnhandledPat>(mod.getContext());
   (void)applyPatternsGreedily(mod, std::move(pats));
-}
-
-//===----------------------------------------------------------------------===//
-// §18  Dead ident_t global cleanup
-//===----------------------------------------------------------------------===//
-
-void LLVMToOMPPass::eraseDeadGlobals(ModuleOp mod) {
-  SmallVector<LLVM::GlobalOp> dead;
-  mod.walk([&](LLVM::GlobalOp g){
-    if (SW(g.getSymName(),"mlir.llvm.nameless_global") && g.use_empty())
-      dead.push_back(g);
-  });
-  for (auto g : dead) g.erase();
 }
 
 //===----------------------------------------------------------------------===//
@@ -1470,7 +1506,6 @@ void LLVMToOMPPass::runOnOperation() {
   // Phase 2 — leaf rewrites.
   applyLeafPatterns(mod);
 
-  eraseDeadGlobals(mod);
   LLVM_DEBUG(llvm::dbgs() << "[LLVMToOmp] pass complete\n");
 }
 

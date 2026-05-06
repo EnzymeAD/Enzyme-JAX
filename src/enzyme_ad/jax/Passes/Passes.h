@@ -10,6 +10,7 @@
 
 #include "Enzyme/MLIR/Dialect/Dialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+// #include "mlir/Dialect/OpenMP/OpenMPDialect.h"
 #include "mlir/Conversion/LLVMCommon/LoweringOptions.h"
 #include "mlir/IR/AffineExpr.h"
 #include "mlir/IR/AffineMap.h"
