@@ -856,6 +856,36 @@ class AutoDiffWhileRev
     // 3. Combined aug fwd + rev
     builder.setInsertionPointToEnd(outerBody);
 
+    Block *oBB = origBody;
+    auto term = oBB->getTerminator();
+    OpBuilder bodyBuilder = builder;
+
+    // All values defined in the body should have no use outside this block
+    // therefore we can set their diffe to zero upon entering the reverse
+    // block to simplify the work of the remove-unnecessary-enzyme-ops pass.
+    for (auto operand : oBB->getArguments()) {
+      if (!gutils->isConstantValue(operand)) {
+        gutils->zeroDiffe(operand, bodyBuilder);
+      }
+    }
+
+    for (auto &it : oBB->getOperations()) {
+      for (auto res : it.getResults()) {
+        if (!gutils->isConstantValue(res)) {
+          gutils->zeroDiffe(res, bodyBuilder);
+        }
+      }
+    }
+
+    int revIdx = 3 + orig->getNumOperands() - 1;
+    for (auto &&[active, operand] :
+         llvm::zip(operandsActive, term->getOperands())) {
+      if (active) {
+        gutils->addToDiffe(operand, outerBody->getArgument(revIdx), bodyBuilder);
+        revIdx++;
+      }
+    }
+
     mapping = IRMapping();
     mapping.map(origBody->getArgument(0),
                 stablehlo::AddOp::create(
@@ -917,7 +947,7 @@ class AutoDiffWhileRev
 
     builder.setInsertionPointAfter(revOuter);
 
-    int revIdx = 3 + orig->getNumOperands() - 1;
+    revIdx = 3 + orig->getNumOperands() - 1;
     for (auto &&[active, arg] :
          llvm::zip_equal(operandsActive, orig->getOperands())) {
       if (active) {
@@ -928,7 +958,7 @@ class AutoDiffWhileRev
       }
     }
 
-    return success(anyFailed);
+    return success(!anyFailed);
   }
 
   // Reverse pass for CONSTANT_CHECKPOINTING (explicit period or default sqrt).
