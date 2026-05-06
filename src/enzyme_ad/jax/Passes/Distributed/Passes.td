@@ -160,6 +160,34 @@ def DistributedSimplifyCollectivesPass
   ];
 }
 
+def DistributedSinkRecvsPass
+    : Pass<"distributed-sink-recvs", "distributed::MeshComputationOp"> {
+  let summary = "Sink RecvOps to just before their first use";
+  let description = [{
+    Within each device body of a MeshComputationOp, moves every RecvOp down
+    to the program point immediately before its earliest consumer.  This
+    exposes more overlap between compute and communication: a consumer can
+    begin executing as soon as its specific recv tile arrives rather than
+    waiting behind all preceding recvs.
+  }];
+  let dependentDialects = [
+    "enzyme::distributed::DistributedDialect",
+  ];
+}
+
+def DistributedSinkRecvsModulePass
+    : Pass<"distributed-sink-recvs-module", "ModuleOp"> {
+  let summary = "Module wrapper for distributed-sink-recvs";
+  let description = [{
+    Finds every distributed.MeshComputationOp in the module and applies
+    distributed-sink-recvs to each one.
+  }];
+  let dependentDialects = [
+    "enzyme::distributed::DistributedDialect",
+    "func::FuncDialect",
+  ];
+}
+
 def DistributedOverlapCommunicationPass
     : Pass<"distributed-overlap-communication", "distributed::MeshComputationOp"> {
   let summary = "Overlap communication via greedy tiling factor search";

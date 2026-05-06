@@ -13,10 +13,12 @@ func.func @innerouterinnerdataparallel(
     %x: tensor<512x1024xf32> {sdy.sharding = #sdy.sharding<@mesh, [{"x"}, {}]>},
     %w1: tensor<1024x64xf32> {sdy.sharding = #sdy.sharding<@mesh, [{}, {}]>},
     %w2: tensor<2xf32> {sdy.sharding = #sdy.sharding<@mesh, [{}]>},
-    %w3: tensor<64x2x64xf32> {sdy.sharding = #sdy.sharding<@mesh, [{}, {}, {}]>}
-) -> (tensor<512x64xf32> {sdy.sharding = #sdy.sharding<@mesh, [{"x"}, {}]>}) {
+    %w3: tensor<64x2x64xf32> {sdy.sharding = #sdy.sharding<@mesh, [{}, {}, {}]>},
+    %w4: tensor<64x128xf32> {sdy.sharding = #sdy.sharding<@mesh, [{"x"}, {}]>}
+) -> (tensor<512x128xf32> {sdy.sharding = #sdy.sharding<@mesh, [{"x"}, {}]>}) {
     %0 = stablehlo.dot %x, %w1 : (tensor<512x1024xf32>, tensor<1024x64xf32>) -> tensor<512x64xf32>
     %1 = stablehlo.dot_general %0, %w2, contracting_dims = [] x [] : (tensor<512x64xf32>, tensor<2xf32>) -> tensor<512x64x2xf32>
     %2 = stablehlo.dot_general %1, %w3, contracting_dims = [1, 2] x [0, 1] : (tensor<512x64x2xf32>, tensor<64x2x64xf32>) -> tensor<512x64xf32>
-    return %2 : tensor<512x64xf32>
+    %3 = stablehlo.dot %2, %w4 : (tensor<512x64xf32>, tensor<64x128xf32>) -> tensor<512x128xf32>
+    return %3 : tensor<512x128xf32>
 }
