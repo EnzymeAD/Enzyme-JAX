@@ -1,9 +1,9 @@
 #include "src/enzyme_ad/jax/Passes/Distributed/Passes.h"
 
-#include "llvm/ADT/SmallVector.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Support/LogicalResult.h"
+#include "llvm/ADT/SmallVector.h"
 
 #include "shardy/dialect/sdy/ir/dialect.h"
 #include "shardy/dialect/sdy/ir/utils.h"
@@ -17,9 +17,7 @@ namespace distributed {
 
 namespace {
 
-bool isTensorOperand(Value value) {
-  return isa<ShapedType>(value.getType());
-}
+bool isTensorOperand(Value value) { return isa<ShapedType>(value.getType()); }
 
 LogicalResult insertIdentityReshardForFunction(func::FuncOp funcOp) {
   llvm::SmallVector<Operation *> operations;
@@ -53,8 +51,8 @@ LogicalResult insertIdentityReshardForFunction(func::FuncOp funcOp) {
         continue;
       }
 
-      auto reshard = rewriter.create<sdy::ReshardOp>(op->getLoc(), value,
-                                                     *sharding);
+      auto reshard =
+          rewriter.create<sdy::ReshardOp>(op->getLoc(), value, *sharding);
       operand.set(reshard.getResult());
     }
   }

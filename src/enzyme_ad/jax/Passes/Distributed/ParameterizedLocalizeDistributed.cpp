@@ -1,12 +1,12 @@
 #include "src/enzyme_ad/jax/Passes/Distributed/Passes.h"
 
-#include "llvm/ADT/SmallVector.h"
-#include "llvm/ADT/STLExtras.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/IR/Value.h"
 #include "mlir/Support/LogicalResult.h"
+#include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include "shardy/dialect/sdy/ir/utils.h"
@@ -35,13 +35,12 @@ buildTensorBindingChoice(ArrayRef<Value> candidateAxes, Value localizedAxis,
   return choice;
 }
 
-FailureOr<Value> findLocalizedAxisForBindings(MeshComputationOp meshOp,
-                                             const TensorBindingMap &bindings) {
+FailureOr<Value>
+findLocalizedAxisForBindings(MeshComputationOp meshOp,
+                             const TensorBindingMap &bindings) {
   SmallVector<Value> logicalAxes;
-  logicalAxes.append(meshOp.getSpmdAxes().begin(),
-                     meshOp.getSpmdAxes().end());
-  logicalAxes.append(meshOp.getMpmdAxes().begin(),
-                     meshOp.getMpmdAxes().end());
+  logicalAxes.append(meshOp.getSpmdAxes().begin(), meshOp.getSpmdAxes().end());
+  logicalAxes.append(meshOp.getMpmdAxes().begin(), meshOp.getMpmdAxes().end());
 
   for (Value axis : logicalAxes) {
     for (const auto &[tensor, choice] : bindings) {
@@ -167,7 +166,8 @@ LogicalResult eraseClonedOpAndSendUsers(Operation *clonedOp) {
       }
 
       return clonedOp->emitOpError()
-             << "expected cloned op users to be sends when removing the wrong device index clone";
+             << "expected cloned op users to be sends when removing the wrong "
+                "device index clone";
     }
   }
 
@@ -179,11 +179,11 @@ LogicalResult eraseClonedOpAndSendUsers(Operation *clonedOp) {
   return success();
 }
 
-LogicalResult applyLocalizedBindingsToClone(
-  MeshComputationOp sourceMesh, Value localizedAxis,
-  StringRef localizedAxisName, int64_t deviceIndex,
-  const TensorBindingMap &bindings,
-  const DenseMap<Value, Value> &clonedToOriginal) {
+LogicalResult
+applyLocalizedBindingsToClone(MeshComputationOp sourceMesh, Value localizedAxis,
+                              StringRef localizedAxisName, int64_t deviceIndex,
+                              const TensorBindingMap &bindings,
+                              const DenseMap<Value, Value> &clonedToOriginal) {
   for (const auto &[clonedTensor, originalTensor] : clonedToOriginal) {
     if (!isa<ShapedType>(clonedTensor.getType())) {
       continue;
@@ -195,23 +195,24 @@ LogicalResult applyLocalizedBindingsToClone(
     }
 
     const TensorBindingChoice &choice = bindingIt->second;
-    
-    // Determine if this binding applies to the current device based on sharding mode
+
+    // Determine if this binding applies to the current device based on sharding
+    // mode
     bool matched = false;
     switch (choice.shardingMode) {
-      case ShardingMode::IndexBased:
-        // Device-specific: only apply if axis matches and device index matches
-        matched = choice.localizedAxis == localizedAxis &&
-                  choice.chosenDeviceIndex == deviceIndex;
-        break;
-      case ShardingMode::Sharded:
-        // Distributed: apply to all devices (only check axis match for locality)
-        matched = choice.localizedAxis == localizedAxis;
-        break;
-      case ShardingMode::Replicated:
-        // Replicated: apply to all devices identically
-        matched = choice.localizedAxis == localizedAxis;
-        break;
+    case ShardingMode::IndexBased:
+      // Device-specific: only apply if axis matches and device index matches
+      matched = choice.localizedAxis == localizedAxis &&
+                choice.chosenDeviceIndex == deviceIndex;
+      break;
+    case ShardingMode::Sharded:
+      // Distributed: apply to all devices (only check axis match for locality)
+      matched = choice.localizedAxis == localizedAxis;
+      break;
+    case ShardingMode::Replicated:
+      // Replicated: apply to all devices identically
+      matched = choice.localizedAxis == localizedAxis;
+      break;
     }
 
     if (!matched) {
@@ -232,15 +233,15 @@ LogicalResult applyLocalizedBindingsToClone(
             ? *originalSharding
             : buildIndexLocalizedSharding(*originalSharding, localizedAxisName);
     sdy::setSharding(clonedTensor, newSharding);
-
   }
 
   return success();
 }
 
-LogicalResult cloneMeshComputationForLocalizedAxis(
-    MeshComputationOp meshOp, Value localizedAxis,
-    const TensorBindingMap &bindings) {
+LogicalResult
+cloneMeshComputationForLocalizedAxis(MeshComputationOp meshOp,
+                                     Value localizedAxis,
+                                     const TensorBindingMap &bindings) {
   SmallVector<Value> oldSpmdAxes(meshOp.getSpmdAxes().begin(),
                                  meshOp.getSpmdAxes().end());
   SmallVector<Value> oldMpmdAxes(meshOp.getMpmdAxes().begin(),
@@ -267,8 +268,8 @@ LogicalResult cloneMeshComputationForLocalizedAxis(
   }
   StringRef localizedAxisName = axisNameOr->getValue();
 
-  int64_t axisSize = static_cast<int64_t>(getAxisSize(
-      TypedOpResult<LogicalCommAxisType>(localizedAxis)));
+  int64_t axisSize = static_cast<int64_t>(
+      getAxisSize(TypedOpResult<LogicalCommAxisType>(localizedAxis)));
   if (axisSize <= 0) {
     return meshOp.emitOpError()
            << "expected localized axis to have a positive size";
@@ -345,8 +346,7 @@ LogicalResult cloneMeshComputationForLocalizedAxis(
 
       if (failed(applyLocalizedBindingsToClone(meshOp, localizedAxis,
                                                localizedAxisName, axisCoord,
-                                               bindings,
-                                               clonedToOriginal))) {
+                                               bindings, clonedToOriginal))) {
         return failure();
       }
 
@@ -360,9 +360,8 @@ LogicalResult cloneMeshComputationForLocalizedAxis(
           continue;
         }
 
-        FailureOr<TensorBindingChoice> choiceOr =
-            getBindingChoiceForClonedOp(clonedToOriginal, bindings, clonedOp,
-                                        axisCoord);
+        FailureOr<TensorBindingChoice> choiceOr = getBindingChoiceForClonedOp(
+            clonedToOriginal, bindings, clonedOp, axisCoord);
         if (failed(choiceOr)) {
           continue;
         }
@@ -370,15 +369,15 @@ LogicalResult cloneMeshComputationForLocalizedAxis(
         // Only prune for IndexBased mode; keep clones for Sharded/Replicated
         bool shouldPrune = false;
         switch (choiceOr->shardingMode) {
-          case ShardingMode::IndexBased:
-            // Prune if this clone is for a different device index
-            shouldPrune = choiceOr->chosenDeviceIndex != axisCoord;
-            break;
-          case ShardingMode::Sharded:
-          case ShardingMode::Replicated:
-            // Don't prune: all devices need this operation
-            shouldPrune = false;
-            break;
+        case ShardingMode::IndexBased:
+          // Prune if this clone is for a different device index
+          shouldPrune = choiceOr->chosenDeviceIndex != axisCoord;
+          break;
+        case ShardingMode::Sharded:
+        case ShardingMode::Replicated:
+          // Don't prune: all devices need this operation
+          shouldPrune = false;
+          break;
         }
 
         if (shouldPrune) {
@@ -404,9 +403,10 @@ LogicalResult cloneMeshComputationForLocalizedAxis(
     }
 
     IRMapping mapper;
-    meshOp.getCommunicationBody(*oldCommunicationBodyIndexOr).cloneInto(
-        &localizedMesh.getCommunicationBody(*newCommunicationBodyIndexOr),
-        mapper);
+    meshOp.getCommunicationBody(*oldCommunicationBodyIndexOr)
+        .cloneInto(
+            &localizedMesh.getCommunicationBody(*newCommunicationBodyIndexOr),
+            mapper);
   }
 
   (void)bindings;
@@ -414,8 +414,9 @@ LogicalResult cloneMeshComputationForLocalizedAxis(
   return success();
 }
 
-LogicalResult parameterizedLocalizeMeshComputation(
-    MeshComputationOp meshOp, const TensorBindingMap &bindings) {
+LogicalResult
+parameterizedLocalizeMeshComputation(MeshComputationOp meshOp,
+                                     const TensorBindingMap &bindings) {
   if (bindings.empty()) {
     meshOp.emitError()
         << "parameterized localization requires at least one tensor binding";
@@ -438,9 +439,8 @@ LogicalResult parameterizedLocalizeMeshComputation(
           << "parameterized localization expects tensor-shaped SSA values";
       return failure();
     }
-    FailureOr<TensorBindingChoice> validatedChoice =
-        buildTensorBindingChoice(localizationAxes, choice.localizedAxis,
-                                 choice.tensorAxis);
+    FailureOr<TensorBindingChoice> validatedChoice = buildTensorBindingChoice(
+        localizationAxes, choice.localizedAxis, choice.tensorAxis);
     if (failed(validatedChoice)) {
       meshOp.emitError()
           << "parameterized localization received a binding for an axis that "

@@ -1,8 +1,8 @@
 #ifndef DISTRIBUTED_LOCALIZATION_TYPES_H
 #define DISTRIBUTED_LOCALIZATION_TYPES_H
 
-#include "llvm/ADT/DenseMap.h"
 #include "mlir/IR/Value.h"
+#include "llvm/ADT/DenseMap.h"
 
 namespace mlir {
 namespace enzyme {
