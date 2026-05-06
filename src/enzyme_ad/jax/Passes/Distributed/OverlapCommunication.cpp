@@ -16,6 +16,9 @@ namespace distributed {
 #define GEN_PASS_DEF_DISTRIBUTEDOVERLAPCOMMUNICATIONMODULEPASS
 #include "src/enzyme_ad/jax/Passes/Distributed/Passes.h.inc"
 
+// Forward declaration from SinkRecvs.cpp.
+void sinkRecvs(MeshComputationOp meshOp);
+
 namespace {
 
 // ===----------------------------------------------------------------------===
@@ -284,6 +287,10 @@ struct InputDimMapping {
   int64_t inputDim;
 };
 
+struct OutputDimMapping {
+  int64_t outputDim;
+};
+
 static std::optional<InputDimMapping> mapOutputDimToInput(Operation *producer,
                                                            int64_t outputDim) {
   if (auto dot = dyn_cast<stablehlo::DotOp>(producer)) {
@@ -331,6 +338,67 @@ static std::optional<InputDimMapping> mapOutputDimToInput(Operation *producer,
       return InputDimMapping{1, rhsFree[rhsFreeIdx]};
     return std::nullopt;
   }
+
+  return std::nullopt;
+}
+
+static std::optional<OutputDimMapping>
+mapInputDimToOutput(Operation *consumer, unsigned operandIdx, int64_t inputDim) {
+  if (auto dot = dyn_cast<stablehlo::DotOp>(consumer)) {
+    auto lhsTy = cast<RankedTensorType>(dot.getLhs().getType());
+    auto rhsTy = cast<RankedTensorType>(dot.getRhs().getType());
+    if (lhsTy.getRank() == 2 && rhsTy.getRank() == 2) {
+      // [M,K] x [K,N] -> [M,N]
+      if (operandIdx == 0 && inputDim == 0)
+        return OutputDimMapping{0};
+      if (operandIdx == 1 && inputDim == 1)
+        return OutputDimMapping{1};
+    }
+    return std::nullopt;
+  }
+
+  if (auto dotGen = dyn_cast<stablehlo::DotGeneralOp>(consumer)) {
+    auto dn = dotGen.getDotDimensionNumbers();
+    ArrayRef<int64_t> lhsBatch = dn.getLhsBatchingDimensions();
+    ArrayRef<int64_t> lhsContract = dn.getLhsContractingDimensions();
+    ArrayRef<int64_t> rhsBatch = dn.getRhsBatchingDimensions();
+    ArrayRef<int64_t> rhsContract = dn.getRhsContractingDimensions();
+    auto lhsTy = cast<RankedTensorType>(dotGen.getLhs().getType());
+    auto rhsTy = cast<RankedTensorType>(dotGen.getRhs().getType());
+
+    SmallVector<int64_t> lhsFree, rhsFree;
+    for (int64_t d = 0; d < lhsTy.getRank(); ++d)
+      if (!llvm::is_contained(lhsBatch, d) &&
+          !llvm::is_contained(lhsContract, d))
+        lhsFree.push_back(d);
+    for (int64_t d = 0; d < rhsTy.getRank(); ++d)
+      if (!llvm::is_contained(rhsBatch, d) &&
+          !llvm::is_contained(rhsContract, d))
+        rhsFree.push_back(d);
+
+    int64_t numBatch = lhsBatch.size();
+    if (operandIdx == 0) {
+      for (int64_t i = 0; i < static_cast<int64_t>(lhsBatch.size()); ++i)
+        if (lhsBatch[i] == inputDim)
+          return OutputDimMapping{i};
+      for (int64_t i = 0; i < static_cast<int64_t>(lhsFree.size()); ++i)
+        if (lhsFree[i] == inputDim)
+          return OutputDimMapping{numBatch + i};
+      return std::nullopt;
+    }
+
+    int64_t numLhsFree = lhsFree.size();
+    for (int64_t i = 0; i < static_cast<int64_t>(rhsBatch.size()); ++i)
+      if (rhsBatch[i] == inputDim)
+        return OutputDimMapping{i};
+    for (int64_t i = 0; i < static_cast<int64_t>(rhsFree.size()); ++i)
+      if (rhsFree[i] == inputDim)
+        return OutputDimMapping{numBatch + numLhsFree + i};
+    return std::nullopt;
+  }
+
+  if (consumer->hasTrait<OpTrait::Elementwise>())
+    return OutputDimMapping{inputDim};
 
   return std::nullopt;
 }
@@ -452,6 +520,25 @@ void applyTiling(CollectiveOp collective, MeshComputationOp meshOp,
     SmallVector<Operation *> consumers(recv.getMessage().getUsers().begin(),
                                        recv.getMessage().getUsers().end());
     for (Operation *consumer : consumers) {
+      unsigned recvOperandIdx = 0;
+      bool foundRecvOperand = false;
+      for (unsigned i = 0; i < consumer->getNumOperands(); ++i) {
+        if (consumer->getOperand(i) == recv.getMessage()) {
+          recvOperandIdx = i;
+          foundRecvOperand = true;
+          break;
+        }
+      }
+      auto resultDimMapping =
+          foundRecvOperand
+              ? mapInputDimToOutput(consumer, recvOperandIdx, tileDim)
+              : std::nullopt;
+      if (!resultDimMapping) {
+        llvm::outs() << "Skipping tiling for unsupported consumer: "
+                     << consumer->getName() << "\n";
+        continue;
+      }
+
       unsigned numResults = consumer->getNumResults();
       SmallVector<SmallVector<Value>> tiledResults(numResults);
 
@@ -464,7 +551,15 @@ void applyTiling(CollectiveOp collective, MeshComputationOp meshOp,
           if (auto resTy = dyn_cast<RankedTensorType>(
                   consumer->getResult(r).getType())) {
             SmallVector<int64_t> newShape(resTy.getShape());
-            newShape[tileDim] /= tilingFactor;
+            if (resultDimMapping->outputDim >=
+                static_cast<int64_t>(newShape.size())) {
+              llvm::outs() << "Skipping tiling for consumer result rank mismatch: "
+                           << consumer->getName() << "\n";
+              rewriter.eraseOp(cloned);
+              tiledResults[r].clear();
+              break;
+            }
+            newShape[resultDimMapping->outputDim] /= tilingFactor;
             cloned->getResult(r).setType(
                 RankedTensorType::get(newShape, resTy.getElementType()));
           }
@@ -473,11 +568,20 @@ void applyTiling(CollectiveOp collective, MeshComputationOp meshOp,
       }
 
       for (unsigned r = 0; r < numResults; ++r) {
+        if (tiledResults[r].empty())
+          break;
         auto origResTy =
             cast<RankedTensorType>(consumer->getResult(r).getType());
-        Value concatenated = concatAlongDim(tiledResults[r], tileDim,
+        Value concatenated = concatAlongDim(tiledResults[r],
+                                            resultDimMapping->outputDim,
                                             origResTy, loc, rewriter);
         consumer->getResult(r).replaceAllUsesWith(concatenated);
+      }
+      if (!llvm::all_of(tiledResults,
+                        [](const SmallVector<Value> &values) {
+                          return !values.empty();
+                        })) {
+        continue;
       }
       rewriter.eraseOp(consumer);
     }
@@ -657,6 +761,9 @@ int64_t findBestTilingFactor(CollectiveOp collective, int64_t tileDim,
     // Simplify slice(concat) patterns so timing sees actual tiled ops.
     simplifySliceOfConcat(clonedMeshOp);
     simplifyNoopSlices(clonedMeshOp);
+
+    // Sink recvs so timing sees the reduced latency from earlier recv placement.
+    sinkRecvs(clonedMeshOp);
 
     // Measure critical path on the tiled clone.
     TimingResult timing = analyzeTiming(clonedMeshOp);

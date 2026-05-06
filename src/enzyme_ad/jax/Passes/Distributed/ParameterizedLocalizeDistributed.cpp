@@ -154,11 +154,6 @@ getBindingChoiceForClonedOp(const DenseMap<Value, Value> &clonedToOriginal,
     return failure();
   }
 
-  llvm::errs() << "[localize-distributed] op binding decision: clone="
-               << *clonedOp << " original=" << *candidateOriginal
-               << " device-index=" << deviceIndex
-               << " chosen-device-index=" << candidateChoice->chosenDeviceIndex
-               << '\n';
   return *candidateChoice;
 }
 
@@ -230,13 +225,14 @@ LogicalResult applyLocalizedBindingsToClone(
              << "expected bound tensor to have explicit sharding";
     }
 
-    sdy::setSharding(
-        clonedTensor,
-        buildIndexLocalizedSharding(*originalSharding, localizedAxisName));
+    // For Sharded mode, keep the original sharding so the cost model can
+    // compute per-device sizes. For Replicated/IndexBased, strip the axis.
+    sdy::TensorShardingAttr newSharding =
+        (choice.shardingMode == ShardingMode::Sharded)
+            ? *originalSharding
+            : buildIndexLocalizedSharding(*originalSharding, localizedAxisName);
+    sdy::setSharding(clonedTensor, newSharding);
 
-    llvm::errs() << "[localize-distributed] applied sharding: clone="
-           << clonedTensor << " sharding=" << sdy::getSharding(clonedTensor)
-           << '\n';
   }
 
   return success();

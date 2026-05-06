@@ -1,10 +1,14 @@
 #include "src/enzyme_ad/jax/Passes/Distributed/TimingAnalysis.h"
 
 #include <algorithm>
+#include <optional>
 
 #include "llvm/ADT/Twine.h"
 #include "llvm/Support/ErrorHandling.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinTypes.h"
+#include "mlir/IR/SymbolTable.h"
+#include "shardy/dialect/sdy/ir/dialect.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "src/enzyme_ad/jax/Dialect/Distributed/Dialect.h"
 
@@ -49,6 +53,47 @@ int64_t getTensorNumElementsFromType(Type ty) {
         "timing cost model requires static int/float tensor types");
   }
   return shapedTy.getNumElements();
+}
+
+std::optional<sdy::TensorShardingAttr>
+getTensorShardingForCosting(Value value) {
+  if (auto opResult = dyn_cast<OpResult>(value)) {
+    if (auto perValue = opResult.getOwner()
+                            ->getAttrOfType<sdy::TensorShardingPerValueAttr>(
+                                "sdy.sharding")) {
+      unsigned resultIndex = opResult.getResultNumber();
+      if (resultIndex < perValue.getShardings().size()) {
+        return perValue.getShardings()[resultIndex];
+      }
+    }
+    return std::nullopt;
+  }
+
+  if (auto blockArg = dyn_cast<BlockArgument>(value)) {
+    Operation *ownerOp = blockArg.getOwner()->getParentOp();
+    if (!ownerOp)
+      return std::nullopt;
+
+    if (auto funcOp = dyn_cast<func::FuncOp>(ownerOp)) {
+      auto sharding = funcOp.getArgAttrOfType<sdy::TensorShardingAttr>(
+          blockArg.getArgNumber(), "sdy.sharding");
+      if (sharding)
+        return sharding;
+      return std::nullopt;
+    }
+
+    if (auto meshOp = dyn_cast<MeshComputationOp>(ownerOp)) {
+      unsigned argIndex = blockArg.getArgNumber();
+      ValueRange inputTensors = meshOp.getInputTensors();
+      if (argIndex < inputTensors.size()) {
+        return getTensorShardingForCosting(inputTensors[argIndex]);
+      }
+    }
+
+    return std::nullopt;
+  }
+
+  return std::nullopt;
 }
 
 double estimateDotLikeOpKflops(ShapedType lhsTy, ShapedType rhsTy,
@@ -119,24 +164,72 @@ int64_t getDotReductionSize(ShapedType lhsTy, ShapedType rhsTy) {
   return lhsContractDim;
 }
 
+/// Return the per-device shaped type for a value by reading its sdy sharding
+/// annotation. For each dimension sharded by mesh axes, the global dimension
+/// size is divided by the product of those axis sizes. Falls back to the
+/// global type if no sharding is present.
+ShapedType getPerDeviceShapedType(Value value, SymbolTable &symbolTable) {
+  auto shapedTy = dyn_cast<ShapedType>(value.getType());
+  if (!shapedTy || !shapedTy.hasStaticShape())
+    return shapedTy;
+
+  std::optional<sdy::TensorShardingAttr> sharding =
+      getTensorShardingForCosting(value);
+  if (!sharding)
+    return shapedTy;
+
+  sdy::MeshAttr mesh = sharding->getMesh(symbolTable);
+  if (!mesh)
+    return shapedTy;
+
+  auto globalShape = shapedTy.getShape();
+  auto dimShardings = sharding->getDimShardings();
+  if (globalShape.size() != dimShardings.size())
+    return shapedTy;
+
+  SmallVector<int64_t> perDeviceShape;
+  perDeviceShape.reserve(globalShape.size());
+  for (auto [dimSize, dimSharding] : llvm::zip(globalShape, dimShardings)) {
+    int64_t divisor = 1;
+    for (sdy::AxisRefAttr axisRef : dimSharding.getAxes()) {
+      divisor *= axisRef.getSize(mesh);
+    }
+    perDeviceShape.push_back(dimSize / divisor);
+  }
+
+  return RankedTensorType::get(perDeviceShape, shapedTy.getElementType());
+}
+
 double getOpToKflops(Operation *op) {
   if (isa<SendOp, RecvOp, distributed::DistributedYieldOp, stablehlo::ReshapeOp,
           stablehlo::SliceOp, stablehlo::ConcatenateOp, TransferOp>(op)) {
     return 0.0;
   }
 
+  // Build a symbol table once for sdy mesh lookups in per-device type
+  // computation. Fall back to global types if no module is available.
+  std::optional<SymbolTable> symbolTable;
+  if (auto moduleOp = op->getParentOfType<ModuleOp>())
+    symbolTable.emplace(moduleOp);
+
+  auto getEffectiveType = [&](Value v) -> ShapedType {
+    if (symbolTable)
+      return getPerDeviceShapedType(v, *symbolTable);
+    return dyn_cast<ShapedType>(v.getType());
+  };
+
   if (auto dot = dyn_cast<stablehlo::DotGeneralOp>(op)) {
-    auto lhsTy = dyn_cast<ShapedType>(dot.getLhs().getType());
-    auto rhsTy = dyn_cast<ShapedType>(dot.getRhs().getType());
-    auto outTy = dyn_cast<ShapedType>(dot.getResult().getType());
+    auto lhsTy = getEffectiveType(dot.getLhs());
+    auto rhsTy = getEffectiveType(dot.getRhs());
+    auto outTy = getEffectiveType(dot.getResult());
     int64_t reductionSize = getDotGeneralReductionSize(dot, lhsTy, rhsTy);
     return estimateDotLikeOpKflops(lhsTy, rhsTy, outTy, reductionSize);
   }
 
   if (auto dot = dyn_cast<stablehlo::DotOp>(op)) {
-    auto lhsTy = dyn_cast<ShapedType>(dot.getLhs().getType());
-    auto rhsTy = dyn_cast<ShapedType>(dot.getRhs().getType());
-    auto outTy = dyn_cast<ShapedType>(dot.getResult().getType());
+    auto lhsTy = getEffectiveType(dot.getLhs());
+    auto rhsTy = getEffectiveType(dot.getRhs());
+    auto outTy = getEffectiveType(dot.getResult());
     int64_t reductionSize = getDotReductionSize(lhsTy, rhsTy);
     return estimateDotLikeOpKflops(lhsTy, rhsTy, outTy, reductionSize);
   }
