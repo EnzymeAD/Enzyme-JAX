@@ -909,7 +909,10 @@ class AutoDiffWhileRev
     }
 
     for (int i = 0, e = origBody->getNumArguments() - 1; i < e; ++i) {
-      mapping.map(origBody->getArgument(i + 1), innerWhile->getResult(i + 3));
+      Value origArg = origBody->getArgument(i + 1);
+      Value newArg = innerWhile->getResult(i + 3);
+      mapping.map(origArg, newArg);
+      gutils->originalToNewFn.map(origArg, newArg);
     }
 
     for (Operation &op : origBody->without_terminator()) {
