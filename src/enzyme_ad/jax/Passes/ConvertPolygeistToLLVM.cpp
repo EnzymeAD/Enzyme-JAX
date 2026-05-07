@@ -3563,7 +3563,7 @@ struct GPUBarrierToNVVM : ConvertOpToLLVMPattern<gpu::BarrierOp> {
   LogicalResult
   matchAndRewrite(gpu::BarrierOp op, gpu::BarrierOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    rewriter.replaceOpWithNewOp<NVVM::Barrier0Op>(op);
+    rewriter.replaceOpWithNewOp<NVVM::BarrierOp>(op);
     return success();
   }
 };

@@ -840,9 +840,9 @@ bool transformReshapeSlice(stablehlo::ReshapeOp op, SmallVectorImpl<T> &start,
 
 stablehlo::Element conj(const stablehlo::Element &orig) {
   if (stablehlo::isSupportedComplexType(orig.getType())) {
-    std::complex<APFloat> val = orig.getComplexValue();
+    mlir::Complex<APFloat> val = orig.getComplexValue();
     return stablehlo::Element(orig.getType(),
-                              std::complex<APFloat>(val.real(), -val.imag()));
+                              mlir::Complex<APFloat>(val.real(), -val.imag()));
   }
 
   llvm_unreachable("Unsupported type");
@@ -34781,7 +34781,7 @@ struct SplitComplexScatter final
     Attribute imagConstant = nullptr;
     if (checkCommonScatterOp.constant) {
       auto complexVal =
-          checkCommonScatterOp.constant.getSplatValue<std::complex<APFloat>>();
+          checkCommonScatterOp.constant.getSplatValue<mlir::Complex<APFloat>>();
       realConstant = FloatAttr::get(innerElemType, complexVal.real());
       imagConstant = FloatAttr::get(innerElemType, complexVal.imag());
     }
