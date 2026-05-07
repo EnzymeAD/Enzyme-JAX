@@ -1772,14 +1772,19 @@ struct MPIAllreduceOpLowering
         // Get the function arguments
         Value sendbufPtr = entryBlock->getArgument(0);
         Value inbufPtr = entryBlock->getArgument(1);
-        Value countPtr = entryBlock->getArgument(2);
+        // Value countPtr = entryBlock->getArgument(2);
+        //
+        // // Load the count value
+        // // NCCL expects size_t count, so widen to pointer width.
+        // Value count32 =
+        //     rewriter.create<LLVM::LoadOp>(op.getLoc(), i32Type, countPtr);
+        // Value count =
+        //     rewriter.create<LLVM::ZExtOp>(op.getLoc(), i64Type, count32);
 
-        // Load the count value
-        // NCCL expects size_t count, so widen to pointer width.
-        Value count32 =
-            rewriter.create<LLVM::LoadOp>(op.getLoc(), i32Type, countPtr);
-        Value count =
-            rewriter.create<LLVM::ZExtOp>(op.getLoc(), i64Type, count32);
+        // Debug-only constant count to bypass scalar buffer ABI issues for the
+        // CUDA custom call path.
+        Value count = rewriter.create<LLVM::ConstantOp>(
+            op.getLoc(), i64Type, rewriter.getI64IntegerAttr(1));
 
         Value dtype = rewriter.create<LLVM::ConstantOp>(
             op.getLoc(), i32Type,
