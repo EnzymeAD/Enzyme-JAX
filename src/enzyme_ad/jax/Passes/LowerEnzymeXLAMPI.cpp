@@ -1795,12 +1795,8 @@ struct MPIAllreduceOpLowering
             op.getLoc(), i32Type,
             rewriter.getI32IntegerAttr(*ncclRedOp));
 
-        Value streamToken = enzymexla::GetStreamOp::create(
-            rewriter, op.getLoc(), gpu::AsyncTokenType::get(context));
-        Value stream = rewriter.create<UnrealizedConversionCastOp>(
-                               op.getLoc(), TypeRange{llvmPtrType},
-                               ValueRange{streamToken})
-                           .getResult(0);
+        Value stream =
+            enzymexla::GetStreamOp::create(rewriter, op.getLoc(), llvmPtrType);
 
         // Call ncclAllReduce
         // TODO error handling

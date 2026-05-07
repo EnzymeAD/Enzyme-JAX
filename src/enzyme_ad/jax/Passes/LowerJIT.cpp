@@ -590,10 +590,14 @@ void rewriteKernelCallABI(
     auto pfunc = op->getParentOfType<LLVM::LLVMFuncOp>();
     mlir::Value stream = pfunc.getBody().begin()->getArgument(1);
     for (auto u : llvm::make_early_inc_range(op->getResult(0).getUsers())) {
-      auto ur = cast<UnrealizedConversionCastOp>(u);
-      assert(ur->getResult(0).getType() == stream.getType());
-      ur->getResult(0).replaceAllUsesWith(stream);
-      ur.erase();
+      if (auto ur = dyn_cast<UnrealizedConversionCastOp>(u)) {
+        assert(ur->getResult(0).getType() == stream.getType());
+        ur->getResult(0).replaceAllUsesWith(stream);
+        ur.erase();
+        continue;
+      }
+      assert(op.getResult().getType() == stream.getType());
+      u->replaceUsesOfWith(op.getResult(), stream);
     }
     op.erase();
   }
