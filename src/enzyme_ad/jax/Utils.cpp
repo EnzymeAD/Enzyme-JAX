@@ -1029,7 +1029,7 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
 }
 
 bool PurelyRealResultAnalysis::constantComplexCheck(DenseElementsAttr attr) {
-  for (auto value : attr.getValues<std::complex<llvm::APFloat>>()) {
+  for (auto value : attr.getValues<mlir::Complex<llvm::APFloat>>()) {
     if (!value.imag().isZero()) {
       return false;
     }
@@ -1092,7 +1092,7 @@ PurelyRealResultAnalysis::State PurelyRealResultAnalysis::localGuaranteed(
 }
 
 bool PurelyImagResultAnalysis::constantComplexCheck(DenseElementsAttr attr) {
-  for (auto value : attr.getValues<std::complex<llvm::APFloat>>()) {
+  for (auto value : attr.getValues<mlir::Complex<llvm::APFloat>>()) {
     if (!value.real().isZero()) {
       return false;
     }
@@ -2199,7 +2199,7 @@ Value getIdentityValueForOp<stablehlo::AddOp>(OpBuilder &builder, Location loc,
   if (auto complexType = dyn_cast<ComplexType>(elemType)) {
     auto floatType = cast<FloatType>(complexType.getElementType());
     auto zero = APFloat::getZero(floatType.getFloatSemantics());
-    auto complexZero = std::complex<APFloat>(zero, zero);
+    auto complexZero = mlir::Complex<APFloat>(zero, zero);
     zeroVal = DenseElementsAttr::get(RankedTensorType::get({}, elemType),
                                      complexZero);
   } else {
@@ -2216,7 +2216,7 @@ Value getIdentityValueForOp<stablehlo::MulOp>(OpBuilder &builder, Location loc,
     auto floatType = cast<FloatType>(complexType.getElementType());
     auto one = APFloat(floatType.getFloatSemantics(), 1);
     auto zero = APFloat::getZero(floatType.getFloatSemantics());
-    auto complexOne = std::complex<APFloat>(one, zero);
+    auto complexOne = mlir::Complex<APFloat>(one, zero);
     identityVal =
         DenseElementsAttr::get(RankedTensorType::get({}, elemType), complexOne);
   } else {
