@@ -22,11 +22,17 @@
 #include "stablehlo/dialect/StablehloOps.h"
 #include "llvm/Support/Debug.h"
 #include <optional>
+#include "llvm/ADT/SmallVector.h"
+#include "mlir/IR/BuiltinAttributes.h"
 
 #define DEBUG_TYPE "lower-complex-operations"
 
+namespace mlir {
+namespace enzyme {
 #define GEN_PASS_DEF_LOWERCOMPLEXOPERATIONSPASS
 #include "src/enzyme_ad/jax/Passes/Passes.h.inc"
+} // namespace enzyme
+} // namespace mlir
 
 using namespace mlir;
 using namespace mlir::enzyme;
@@ -274,6 +280,66 @@ struct DivOpConversion : public OpConversionPattern<stablehlo::DivOp> {
   }
 };
 
+struct AddOpConversion : public OpConversionPattern<stablehlo::AddOp> {
+  StringRef concatDimension;
+
+  AddOpConversion(TypeConverter &typeConverter, MLIRContext *context,
+                  StringRef concatDimension)
+      : OpConversionPattern<stablehlo::AddOp>(typeConverter, context),
+        concatDimension(concatDimension) {}
+
+  LogicalResult
+  matchAndRewrite(stablehlo::AddOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    
+    Value lhs = adaptor.getOperands()[0];
+    Value rhs = adaptor.getOperands()[1];
+
+    Value a = extractLimb(lhs, 0, rewriter, loc, concatDimension);
+    Value b = extractLimb(lhs, 1, rewriter, loc, concatDimension);
+    Value c = extractLimb(rhs, 0, rewriter, loc, concatDimension);
+    Value d = extractLimb(rhs, 1, rewriter, loc, concatDimension);
+
+    Value real = rewriter.create<stablehlo::AddOp>(loc, a, c);
+    Value imag = rewriter.create<stablehlo::AddOp>(loc, b, d);
+
+    Value packed = packLimbs(real, imag, rewriter, loc, concatDimension);
+    rewriter.replaceOp(op, packed);
+    return success();
+  }
+};
+
+struct SubOpConversion : public OpConversionPattern<stablehlo::SubtractOp> {
+  StringRef concatDimension;
+
+  SubOpConversion(TypeConverter &typeConverter, MLIRContext *context,
+                  StringRef concatDimension)
+      : OpConversionPattern<stablehlo::SubtractOp>(typeConverter, context),
+        concatDimension(concatDimension) {}
+
+  LogicalResult
+  matchAndRewrite(stablehlo::SubtractOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    
+    Value lhs = adaptor.getOperands()[0];
+    Value rhs = adaptor.getOperands()[1];
+
+    Value a = extractLimb(lhs, 0, rewriter, loc, concatDimension);
+    Value b = extractLimb(lhs, 1, rewriter, loc, concatDimension);
+    Value c = extractLimb(rhs, 0, rewriter, loc, concatDimension);
+    Value d = extractLimb(rhs, 1, rewriter, loc, concatDimension);
+
+    Value real = rewriter.create<stablehlo::SubtractOp>(loc, a, c);
+    Value imag = rewriter.create<stablehlo::SubtractOp>(loc, b, d);
+
+    Value packed = packLimbs(real, imag, rewriter, loc, concatDimension);
+    rewriter.replaceOp(op, packed);
+    return success();
+  }
+};
+
 struct SliceOpConversion : public OpConversionPattern<stablehlo::SliceOp> {
   StringRef concatDimension;
 
@@ -412,13 +478,40 @@ struct LowerComplexOperationsPass
     });
 
     auto isLegalOp = [&](Operation *op) {
+      bool involvesComplex = false;
       for (auto ty : op->getOperandTypes()) {
-        if (isComplexType(ty)) return false;
+        if (isComplexType(ty)) involvesComplex = true;
       }
       for (auto ty : op->getResultTypes()) {
-        if (isComplexType(ty)) return false;
+        if (isComplexType(ty)) involvesComplex = true;
       }
-      return true;
+      if (!involvesComplex)
+        return true;
+
+      if (auto realOp = dyn_cast<stablehlo::RealOp>(op)) {
+        if (auto blockArg = dyn_cast<BlockArgument>(realOp.getOperand())) {
+          if (blockArg.getOwner()->isEntryBlock() &&
+              isa<func::FuncOp>(blockArg.getOwner()->getParentOp()))
+            return true;
+        }
+      }
+      if (auto imagOp = dyn_cast<stablehlo::ImagOp>(op)) {
+        if (auto blockArg = dyn_cast<BlockArgument>(imagOp.getOperand())) {
+          if (blockArg.getOwner()->isEntryBlock() &&
+              isa<func::FuncOp>(blockArg.getOwner()->getParentOp()))
+            return true;
+        }
+      }
+      if (auto complexOp = dyn_cast<stablehlo::ComplexOp>(op)) {
+        for (auto result : complexOp->getResults()) {
+          for (auto &use : result.getUses()) {
+            if (isa<func::ReturnOp>(use.getOwner()))
+              return true;
+          }
+        }
+      }
+
+      return false;
     };
 
     target.addDynamicallyLegalOp<stablehlo::AddOp>(isLegalOp);
@@ -435,8 +528,8 @@ struct LowerComplexOperationsPass
     patterns.add<RealOpConversion>(typeConverter, context, concatDimension);
     patterns.add<ImagOpConversion>(typeConverter, context, concatDimension);
     patterns.add<ComplexOpConversion>(typeConverter, context, concatDimension);
-    patterns.add<GenericOpConversion<stablehlo::AddOp>>(typeConverter, context);
-    patterns.add<GenericOpConversion<stablehlo::SubtractOp>>(typeConverter, context);
+    patterns.add<AddOpConversion>(typeConverter, context, concatDimension);
+    patterns.add<SubOpConversion>(typeConverter, context, concatDimension);
     patterns.add<MulOpConversion>(typeConverter, context, concatDimension);
     patterns.add<DivOpConversion>(typeConverter, context, concatDimension);
     patterns.add<SliceOpConversion>(typeConverter, context, concatDimension);
@@ -496,8 +589,23 @@ struct LowerComplexOperationsPass
                   operand.getDefiningOp<UnrealizedConversionCastOp>()) {
             Location loc = returnOp.getLoc();
             Value packedVal = castOp.getOperand(0);
-            Value real = extractLimb(packedVal, 0, b_ret, loc, concatDimension);
-            Value imag = extractLimb(packedVal, 1, b_ret, loc, concatDimension);
+            Value realWithDim = extractLimb(packedVal, 0, b_ret, loc, concatDimension);
+            Value imagWithDim = extractLimb(packedVal, 1, b_ret, loc, concatDimension);
+            
+            auto type = cast<RankedTensorType>(realWithDim.getType());
+            SmallVector<int64_t> targetShape;
+            bool isFirst = concatDimension == "first";
+            if (isFirst) {
+              for (size_t i = 1; i < type.getRank(); ++i) targetShape.push_back(type.getShape()[i]);
+            } else {
+              for (size_t i = 0; i < type.getRank() - 1; ++i) targetShape.push_back(type.getShape()[i]);
+            }
+            
+            Value real = b_ret.create<stablehlo::ReshapeOp>(
+                loc, RankedTensorType::get(targetShape, type.getElementType()), realWithDim);
+            Value imag = b_ret.create<stablehlo::ReshapeOp>(
+                loc, RankedTensorType::get(targetShape, type.getElementType()), imagWithDim);
+
             Value converted = b_ret.create<stablehlo::ComplexOp>(loc, real, imag);
             newOperands.push_back(converted);
             changed = true;

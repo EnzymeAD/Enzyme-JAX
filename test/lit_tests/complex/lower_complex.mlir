@@ -18,7 +18,7 @@ func.func @mul_complex(%arg0: tensor<complex<f32>>, %arg1: tensor<complex<f32>>)
   // CHECK: stablehlo.subtract
   // CHECK: stablehlo.add
   // CHECK: stablehlo.complex
-  %0 = stablehlo.mul %arg0, %arg1 : tensor<complex<f32>>
+  %0 = stablehlo.multiply %arg0, %arg1 : tensor<complex<f32>>
   return %0 : tensor<complex<f32>>
 }
 
@@ -26,14 +26,14 @@ func.func @mul_complex(%arg0: tensor<complex<f32>>, %arg1: tensor<complex<f32>>)
 func.func @real_imag(%arg0: tensor<complex<f32>>) -> (tensor<f32>, tensor<f32>) {
   // CHECK: stablehlo.real %arg0
   // CHECK: stablehlo.imag %arg0
-  %0 = stablehlo.real %arg0 : tensor<f32>
-  %1 = stablehlo.imag %arg0 : tensor<f32>
+  %0 = stablehlo.real %arg0 : (tensor<complex<f32>>) -> tensor<f32>
+  %1 = stablehlo.imag %arg0 : (tensor<complex<f32>>) -> tensor<f32>
   return %0, %1 : tensor<f32>, tensor<f32>
 }
 
 // CHECK-LABEL: @create_complex
 func.func @create_complex(%arg0: tensor<f32>, %arg1: tensor<f32>) -> tensor<complex<f32>> {
   // CHECK: stablehlo.complex %arg0, %arg1
-  %0 = stablehlo.complex %arg0, %arg1 : tensor<complex<f32>>
+  %0 = stablehlo.complex %arg0, %arg1 : (tensor<f32>, tensor<f32>) -> tensor<complex<f32>>
   return %0 : tensor<complex<f32>>
 }
