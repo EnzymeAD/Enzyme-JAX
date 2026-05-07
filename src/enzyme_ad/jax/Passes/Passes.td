@@ -499,6 +499,7 @@ def LowerEnzymeXLAMPIPass : Pass<"lower-enzymexla-mpi"> {
   let summary = "Lower MPI Ops to LLVM";
   let dependentDialects = [
     "enzymexla::EnzymeXLADialect",
+    "gpu::GPUDialect", 
     "LLVM::LLVMDialect",
   ];
   let options = [
