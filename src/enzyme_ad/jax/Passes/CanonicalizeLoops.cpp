@@ -1042,8 +1042,9 @@ struct CanonicalizeLoopsPass
                SimplifyIfByRemovingEmptyThen, PartialIfToSelect, IfToSelect>(
               &getContext());
 
-      if (failed(applyPatternsAndFoldGreedily(getOperation(),
-                                              std::move(patterns)))) {
+      if (failed(
+              applyPatternsGreedily(getOperation(), std::move(patterns),
+                                    GreedyRewriteConfig().enableFolding()))) {
         signalPassFailure();
         return;
       }
@@ -1296,8 +1297,10 @@ struct CanonicalizeLoopsPass
     {
       RewritePatternSet patterns(&getContext());
       addSingleIter(patterns, &getContext());
-      if (failed(applyPatternsAndFoldGreedily(getOperation(),
-                                              std::move(patterns)))) {
+      GreedyRewriteConfig config;
+      config.enableFolding();
+      if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
+                                       config))) {
         signalPassFailure();
         return;
       }

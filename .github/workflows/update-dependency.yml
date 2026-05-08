@@ -45,7 +45,7 @@ jobs:
     timeout-minutes: 10
 
     steps:
-      - uses: actions/create-github-app-token@v2
+      - uses: actions/create-github-app-token@v3
         id: generate_token
         with:
           app-id: "${{ secrets.ENZYMEAD_BOT_ID }}"

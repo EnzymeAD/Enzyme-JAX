@@ -2919,8 +2919,9 @@ struct SCFCPUifyPass : public enzyme::impl::SCFCPUifyBase<SCFCPUifyPass> {
         //  config.maxIterations = 142;
         mlir::GreedyRewriteConfig config;
         config.setMaxIterations(142);
-        if (failed(applyPatternsAndFoldGreedily(getOperation(),
-                                                std::move(patterns), config))) {
+        config.enableFolding();
+        if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
+                                         config))) {
           signalPassFailure();
           return;
         }
@@ -2928,9 +2929,10 @@ struct SCFCPUifyPass : public enzyme::impl::SCFCPUifyBase<SCFCPUifyPass> {
       {
         RewritePatternSet patterns(&getContext());
         GreedyRewriteConfig config;
+        config.enableFolding();
         patterns.insert<LowerCacheLoad>(&getContext());
-        if (failed(applyPatternsAndFoldGreedily(getOperation(),
-                                                std::move(patterns), config))) {
+        if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
+                                         config))) {
           signalPassFailure();
           return;
         }

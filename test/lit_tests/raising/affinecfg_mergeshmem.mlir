@@ -299,7 +299,7 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
 // CHECK-NEXT:            %36 = arith.cmpi ult, %25, %35 : i32
 // CHECK-NEXT:            scf.if %36 {
 // CHECK-NEXT:              %38 = arith.addi %35, %25 : i32
-// CHECK-NEXT:              %39 = arith.extui %38 {nonNeg} : i32 to i64
+// CHECK-NEXT:              %39 = arith.extui %38 nneg : i32 to i64 
 // CHECK-NEXT:              %40 = llvm.getelementptr inbounds|nuw %21[0, %39] : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<1024 x f64>
 // CHECK-NEXT:              %41 = llvm.load %40 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : !llvm.ptr -> f64
 // CHECK-NEXT:              %42 = llvm.load %27 {alignment = 8 : i64, tbaa = [#tbaa_tag]} : !llvm.ptr -> f64

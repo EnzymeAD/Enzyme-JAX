@@ -478,6 +478,9 @@ getBoundsFromIR(Value val, unsigned bitWidth) {
   return std::make_pair(minVal, maxVal);
 }
 
+bool checkNotEqual(llvm::APInt a, llvm::APInt b);
+bool checkNotEqual(llvm::APFloat a, llvm::APFloat b);
+
 bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type Ty);
 bool canApplyNoNanPattern(bool allowOnFloatingPointMath, Type Ty,
                           mlir::Operation *op, PatternRewriter &rewriter);
@@ -1118,6 +1121,9 @@ struct PaddedTensor {
 
 std::optional<PaddedTensor> detectPaddedTensor(mlir::DenseElementsAttr attr);
 
+bool isZero(mlir::ElementsAttr v);
+bool isZero(mlir::Value v);
+
 // Helper to check if a TypedAttr is zero
 inline bool isZeroAttr(mlir::TypedAttr attr) {
   if (auto intAttr = llvm::dyn_cast<mlir::IntegerAttr>(attr))
@@ -1343,6 +1349,10 @@ LogicalResult concatReshapeSliceSimplify(PatternRewriter &rewriter,
                                          SmallVectorImpl<Value> &operands,
                                          int64_t dim,
                                          SmallVectorImpl<Value> &newOperands);
+LogicalResult concatBroadcastSliceSimplify(PatternRewriter &rewriter,
+                                           SmallVectorImpl<Value> &operands,
+                                           int64_t dim,
+                                           SmallVectorImpl<Value> &newOperands);
 
 Value getIdentityValue(OpBuilder &builder, Location loc, Type elemType,
                        Operation *op);

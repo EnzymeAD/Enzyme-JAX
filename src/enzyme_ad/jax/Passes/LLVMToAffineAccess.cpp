@@ -1962,7 +1962,8 @@ convertLLVMToAffineAccess(Operation *op,
                     SimplifyDeadAlloc<gpu::AllocOp, true>, Pointer2MemrefSelect,
                     LoadSelect, SimpleMem2Reg<memref::AllocaOp>>(context);
     GreedyRewriteConfig config;
-    if (applyPatternsAndFoldGreedily(op, std::move(patterns), config).failed())
+    config.enableFolding();
+    if (applyPatternsGreedily(op, std::move(patterns), config).failed())
       return failure();
   }
   return success();
@@ -1986,8 +1987,9 @@ struct LLVMToAffineAccessPass
     RewritePatternSet patterns(context);
     populateRemoveIVPatterns(patterns);
     GreedyRewriteConfig config;
-    if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),
-                                            config))) {
+    config.enableFolding();
+    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
+                                     config))) {
       signalPassFailure();
       return;
     }

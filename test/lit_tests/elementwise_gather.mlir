@@ -250,11 +250,11 @@ module @reactant_logdens... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
   }
 }
 
-// CHECK:    %160 = "stablehlo.gather"(%48, %c_38) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1>}> : (tensor<126xf64>, tensor<274x1xi32>) -> tensor<274xf64>
-// CHECK-NEXT:    %161 = "stablehlo.gather"(%65, %c_38) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1>}> : (tensor<126xf64>, tensor<274x1xi32>) -> tensor<274xf64>
-// CHECK-NEXT:    %162 = "stablehlo.gather"(%48, %c_39) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1>}> : (tensor<126xf64>, tensor<274x1xi32>) -> tensor<274xf64>
-// CHECK-NEXT:    %163 = "stablehlo.gather"(%65, %c_39) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1>}> : (tensor<126xf64>, tensor<274x1xi32>) -> tensor<274xf64>
-// CHECK-NEXT:    %164 = stablehlo.complex %160, %161 {enzymexla.complex_is_purely_real = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<274xcomplex<f64>>
-// CHECK-NEXT:    %165 = stablehlo.complex %162, %163 {enzymexla.complex_is_purely_real = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<274xcomplex<f64>>
-// CHECK-NEXT:    %166 = stablehlo.exponential %164 {enzymexla.complex_is_purely_real = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<274xcomplex<f64>>
-// CHECK-NEXT:    %167 = stablehlo.exponential %165 {enzymexla.complex_is_purely_real = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<274xcomplex<f64>>
+// CHECK:    %[[V160:.*]] = "stablehlo.gather"(%[[V48:.*]], %[[C38:.*]]) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1>}> : (tensor<126xf64>, tensor<274x1xi32>) -> tensor<274xf64>
+// CHECK-NEXT:    %[[V161:.*]] = "stablehlo.gather"(%[[V65:.*]], %[[C38]]) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1>}> : (tensor<126xf64>, tensor<274x1xi32>) -> tensor<274xf64>
+// CHECK-NEXT:    %[[V162:.*]] = "stablehlo.gather"(%[[V48]], %[[C39:.*]]) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1>}> : (tensor<126xf64>, tensor<274x1xi32>) -> tensor<274xf64>
+// CHECK-NEXT:    %[[V163:.*]] = "stablehlo.gather"(%[[V65]], %[[C39]]) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1>}> : (tensor<126xf64>, tensor<274x1xi32>) -> tensor<274xf64>
+// CHECK-NEXT:    %[[V164:.*]] = stablehlo.complex %[[V160]], %[[V161]] {enzymexla.complex_is_purely_real = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<274xcomplex<f64>>
+// CHECK-NEXT:    %[[V165:.*]] = stablehlo.complex %[[V162]], %[[V163]] {enzymexla.complex_is_purely_real = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<274xcomplex<f64>>
+// CHECK-NEXT:    %{{.*}} = stablehlo.exponential %[[V164]] {enzymexla.complex_is_purely_real = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<274xcomplex<f64>>
+// CHECK-NEXT:    %{{.*}} = stablehlo.exponential %[[V165]] {enzymexla.complex_is_purely_real = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<274xcomplex<f64>>

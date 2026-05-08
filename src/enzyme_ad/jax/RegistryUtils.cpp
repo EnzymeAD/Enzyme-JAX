@@ -8,6 +8,7 @@
 
 #include "Dialect/Dialect.h"
 #include "Enzyme/MLIR/Dialect/Dialect.h"
+#include "Enzyme/MLIR/Dialect/Impulse/Impulse.h"
 #include "Enzyme/MLIR/Dialect/Ops.h"
 #include "Enzyme/MLIR/Implementations/CoreDialectsAutoDiffImplementations.h"
 #include "Enzyme/MLIR/Passes/Passes.h"
@@ -59,6 +60,8 @@
 #include "mlir/Dialect/Transform/IR/TransformDialect.h"
 #include "mlir/Dialect/Transform/Transforms/Passes.h"
 
+#include "mlir/Dialect/PDL/IR/PDL.h"
+
 #include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/Pass/PassRegistry.h"
@@ -75,7 +78,6 @@
 #include "stablehlo/conversions/tosa/transforms/Passes.h"
 #include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
-#include "stablehlo/tests/CheckOps.h"
 #include "stablehlo/transforms/Passes.h"
 #include "stablehlo/transforms/optimization/Passes.h"
 #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
@@ -223,14 +225,15 @@ void registerDialects(mlir::DialectRegistry &registry) {
   registry.insert<mlir::DLTIDialect>();
   registry.insert<mlir::mhlo::MhloDialect>();
   registry.insert<mlir::stablehlo::StablehloDialect>();
-  registry.insert<mlir::stablehlo::check::CheckDialect>();
   registry.insert<mlir::chlo::ChloDialect>();
   registry.insert<mlir::vector::VectorDialect>();
   registry.insert<mlir::nvgpu::NVGPUDialect>();
   registry.insert<mlir::transform::TransformDialect>();
+  registry.insert<mlir::pdl::PDLDialect>();
   registry.insert<mlir::ub::UBDialect>();
   registry.insert<mlir::sparse_tensor::SparseTensorDialect>();
   registry.insert<mlir::enzyme::EnzymeDialect>();
+  registry.insert<mlir::impulse::ImpulseDialect>();
   registry.insert<mlir::enzymexla::EnzymeXLADialect>();
   registry.insert<mlir::enzymexla::comm::CommDialect>();
   registry.insert<mlir::enzyme::distributed::DistributedDialect>();
@@ -265,14 +268,15 @@ void loadAllRegisteredDialects(mlir::MLIRContext &context) {
   context.loadDialect<mlir::DLTIDialect>();
   context.loadDialect<mlir::mhlo::MhloDialect>();
   context.loadDialect<mlir::stablehlo::StablehloDialect>();
-  context.loadDialect<mlir::stablehlo::check::CheckDialect>();
   context.loadDialect<mlir::chlo::ChloDialect>();
   context.loadDialect<mlir::vector::VectorDialect>();
   context.loadDialect<mlir::nvgpu::NVGPUDialect>();
   context.loadDialect<mlir::transform::TransformDialect>();
+  context.loadDialect<mlir::pdl::PDLDialect>();
   context.loadDialect<mlir::ub::UBDialect>();
   context.loadDialect<mlir::sparse_tensor::SparseTensorDialect>();
   context.loadDialect<mlir::enzyme::EnzymeDialect>();
+  context.loadDialect<mlir::impulse::ImpulseDialect>();
   context.loadDialect<mlir::enzymexla::EnzymeXLADialect>();
   context.loadDialect<mlir::enzymexla::comm::CommDialect>();
   context.loadDialect<mlir::enzymexla::triton_ext::TritonExtDialect>();
@@ -337,7 +341,7 @@ void initializePasses() {
   mlir::registerLowerAffinePass();
   mlir::registerSCCPPass();
   mlir::registerInlinerPass();
-  mlir::registerStripDebugInfo();
+  mlir::registerStripDebugInfoPass();
   mlir::registerCanonicalizerPass();
   mlir::registerSymbolDCEPass();
   mlir::registerSymbolPrivatizePass();

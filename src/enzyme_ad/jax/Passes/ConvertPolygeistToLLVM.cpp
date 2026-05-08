@@ -26,6 +26,7 @@
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Conversion/MathToLLVM/MathToLLVM.h"
 #include "mlir/Conversion/MathToLibm/MathToLibm.h"
+#include "mlir/Conversion/MathToNVVM/MathToNVVM.h"
 #include "mlir/Conversion/MathToROCDL/MathToROCDL.h"
 #include "mlir/Conversion/MemRefToLLVM/MemRefToLLVM.h"
 #include "mlir/Conversion/OpenMPToLLVM/ConvertOpenMPToLLVM.h"
@@ -2785,11 +2786,11 @@ private:
     auto i32 = rewriter.getIntegerType(32);
     auto moduleOp = deallocOp->getParentOfType<ModuleOp>();
 
-    auto ptr1ty = LLVM::LLVMPointerType::get(rewriter.getContext(), 1);
+    auto ptrty = LLVM::LLVMPointerType::get(rewriter.getContext());
 
     if (backend == "cuda") {
 
-      Type tys[] = {ptr1ty};
+      Type tys[] = {ptrty};
       auto cudaFreeFn =
           LLVM::lookupOrCreateFn(rewriter, moduleOp, "cudaFree", tys, i32);
       if (failed(cudaFreeFn)) {
@@ -2797,12 +2798,21 @@ private:
         return failure();
       }
 
+      Value ptr_arg = ptr;
+      if (ptr.getType() != ptrty) {
+        if (isa<LLVM::LLVMPointerType>(ptr.getType())) {
+          ptr_arg = rewriter.create<LLVM::AddrSpaceCastOp>(loc, ptrty, ptr);
+        } else {
+          ptr_arg = rewriter.create<LLVM::BitcastOp>(loc, ptrty, ptr);
+        }
+      }
+
       Value args[] = {
-          ptr,
+          ptr_arg,
       };
       LLVM::CallOp::create(rewriter, loc, cudaFreeFn.value(), args);
     } else if (backend == "rocm") {
-      Type tys[] = {ptr1ty};
+      Type tys[] = {ptrty};
       auto hipFreeFn =
           LLVM::lookupOrCreateFn(rewriter, moduleOp, "hipFree", tys, i32);
 
@@ -2810,8 +2820,16 @@ private:
         llvm::errs() << " hipfree already exists with different types\n";
         return failure();
       }
+      Value ptr_arg = ptr;
+      if (ptr.getType() != ptrty) {
+        if (isa<LLVM::LLVMPointerType>(ptr.getType())) {
+          ptr_arg = rewriter.create<LLVM::AddrSpaceCastOp>(loc, ptrty, ptr);
+        } else {
+          ptr_arg = rewriter.create<LLVM::BitcastOp>(loc, ptrty, ptr);
+        }
+      }
       Value args[] = {
-          ptr,
+          ptr_arg,
       };
       LLVM::CallOp::create(rewriter, loc, hipFreeFn.value(), args);
 
@@ -2825,8 +2843,18 @@ private:
         return failure();
       }
 
+      auto ptrty = LLVM::LLVMPointerType::get(rewriter.getContext());
+      Value ptr_arg = ptr;
+      if (ptr.getType() != ptrty) {
+        if (isa<LLVM::LLVMPointerType>(ptr.getType())) {
+          ptr_arg = rewriter.create<LLVM::AddrSpaceCastOp>(loc, ptrty, ptr);
+        } else {
+          ptr_arg = rewriter.create<LLVM::BitcastOp>(loc, ptrty, ptr);
+        }
+      }
+
       Value args[] = {
-          ptr,
+          ptr_arg,
       };
       LLVM::CallOp::create(rewriter, loc, freeFunc.value(), args);
     } else if (backend.starts_with("xla")) {
@@ -2845,7 +2873,16 @@ private:
 
       auto xdata = insertXLAInitDeinit(moduleOp, backend, rewriter);
 
-      Value args[] = {xdata, ptr};
+      Value ptr_arg = ptr;
+      if (ptr.getType() != ptrty) {
+        if (isa<LLVM::LLVMPointerType>(ptr.getType())) {
+          ptr_arg = rewriter.create<LLVM::AddrSpaceCastOp>(loc, ptrty, ptr);
+        } else {
+          ptr_arg = rewriter.create<LLVM::BitcastOp>(loc, ptrty, ptr);
+        }
+      }
+
+      Value args[] = {xdata, ptr_arg};
 
       LLVM::CallOp::create(rewriter, loc, xlaFreeFn.value(), args);
     } else {
@@ -2891,7 +2928,9 @@ private:
     stream << fn << "\n" << '\0';
 
     auto stringval = mlir::LLVM::createGlobalString(
-        loc, rewriter, "xlamod", str, LLVM::Linkage::Internal);
+        loc, rewriter,
+        "xlamod$" + cast<FlatSymbolRefAttr>(wrap.getFn()).getValue().str(), str,
+        LLVM::Linkage::Internal);
 
     auto ptrty = LLVM::LLVMPointerType::get(rewriter.getContext());
 
@@ -3573,7 +3612,7 @@ public:
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = op->getLoc();
     MLIRContext *context = rewriter.getContext();
-    Operation *newOp;
+    Operation *newOp = nullptr;
     switch (op.getDimension()) {
     case gpu::Dimension::x:
       newOp = XOp::create(rewriter, loc, IntegerType::get(context, 32));
@@ -4123,7 +4162,8 @@ struct ConvertPolygeistToLLVMPass
         mod->emitError() << "failed to apply conversion patterns";
         return signalPassFailure();
       }
-      if (failed(applyPatternsAndFoldGreedily(mod, {}))) {
+      if (failed(applyPatternsGreedily(
+              mod, {}, GreedyRewriteConfig().enableFolding()))) {
         mod->emitError() << "failed to apply folding";
         return signalPassFailure();
       }
@@ -4166,6 +4206,9 @@ struct ConvertPolygeistToLLVMPass
         patterns.add<AsyncOpLowering>(converter);
       else
         patterns.add<NoAsyncOpLowering>(patterns.getContext());
+    } else if (backend == "xla-gpu" || backend == "xla-tpu" ||
+               backend == "xla-cpu") {
+      patterns.add<NoAsyncOpLowering>(patterns.getContext());
     }
     // Our custom versions of the gpu patterns
     if (useCStyleMemRef) {

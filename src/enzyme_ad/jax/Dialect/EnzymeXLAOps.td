@@ -55,6 +55,12 @@ def TensorFloat
                  "getElementType()).getElementType())))">,
            "tensor<float or complex<float> scalar>", "::mlir::TensorType">;
 
+def TensorFloatAnyRank
+  : Type<CPred<"::llvm::isa<::mlir::TensorType>($_self) && "
+               "::llvm::isa<::mlir::FloatType>(::llvm::cast<::mlir::"
+               "TensorType>($_self).getElementType())">,
+           "tensor with floating-point element type", "::mlir::TensorType">;
+
 def KernelCallOp : EnzymeXLA_Op<"kernel_call", [
   AttrSizedOperandSegments, DeclareOpInterfaceMethods<SymbolUserOpInterface>,
   DeclareOpInterfaceMethods<CallOpInterface>,
@@ -347,7 +353,7 @@ def RotateOp : EnzymeXLA_Op<"rotate", [Pure, SameOperandsAndResultType]> {
   let description = [{
     Performs a left rotation (circular shift) along `dimension` by `amount` elements.
     Elements are shifted left, with the first `amount` elements wrapping around to the end.
-    
+
     i.e.:
     ```
     rotate([a, b, c, d, e], amount=2, dimension=0) → [c, d, e, a, b]
@@ -410,6 +416,26 @@ def MultiSliceOp : EnzymeXLA_Op<"multi_slice", [Pure]> {
     DenseI64ArrayAttr:$strides,
     I32Attr:$dimension,
     I32Attr:$amount
+  );
+  let results = (outs Variadic<HLO_Tensor>:$results);
+  let hasVerifier = 1;
+}
+
+def MultiPadOp : EnzymeXLA_Op<"multi_pad", [Pure]> {
+  let summary = "Produces multiple padded versions of the input tensor with constant total padding";
+  let description = [{
+    MultiPad operation produces multiple padded versions of the input tensor.
+    Given dimension=D and amount=A, it produces A + 1 results.
+    The i-th result corresponds to padding along dimension D by:
+    - Low side: i
+    - High side: A - i
+    Other dimensions are not padded.
+  }];
+  let arguments = (ins
+    HLO_Tensor:$operand,
+    HLO_Tensor:$padding_value,
+    I32Attr:$dimension,
+    I64Attr:$amount
   );
   let results = (outs Variadic<HLO_Tensor>:$results);
   let hasVerifier = 1;
@@ -504,7 +530,7 @@ def CommRegionOp : EnzymeXLA_Op<"comm_region", [
 
 // Linear Algebra Ops
 
-def SymmOp: EnzymeXLA_Op<"blas.symm", [Pure, SameOperandsAndResultElementType]> {
+def SymmOp : EnzymeXLA_Op<"blas.symm", [Pure, SameOperandsAndResultElementType]> {
   let summary = "Multiplication involving a symmetric matrix";
 
   let description = [{
@@ -585,7 +611,8 @@ def TrmmOp: EnzymeXLA_Op<"blas.trmm", [Pure, SameOperandsAndResultElementType]> 
     TensorFloat:$alpha,
     EnzymeXLA_LapackSideAttr:$side,
     EnzymeXLA_LapackUploAttr:$uplo,
-    EnzymeXLA_LapackTransposeAttr:$transpose
+    EnzymeXLA_LapackTransposeAttr:$transpose,
+    UnitAttr:$unit_diagonal
   );
 
   let results = (outs
@@ -593,7 +620,63 @@ def TrmmOp: EnzymeXLA_Op<"blas.trmm", [Pure, SameOperandsAndResultElementType]> 
   );
 
   let assemblyFormat = [{
-    $A `,` $B `,` $alpha `,` attr-dict `:` functional-type(operands, results)
+    $A `,` $B `,` $alpha attr-dict `:` functional-type(operands, results)
+  }];
+}
+
+def TrsmOp : EnzymeXLA_Op<"blas.trsm", [Pure]> {
+  let summary = "Triangular matrix-matrix solve operation";
+  let description = [{
+    Solves op(A) * X = alpha * B, or X * op(A) = alpha * B, where alpha is a scalar,
+    X and B are m x n matrices, A is a unit, or non-unit, upper or lower triangular
+    matrix, and op(A) is one of op(A) = A, or op(A) = A^T or A^H.
+  }];
+
+  let arguments = (ins
+    TensorFloat:$alpha,
+    HLO_Tensor:$A,
+    HLO_Tensor:$B,
+    EnzymeXLA_LapackSideAttr:$side,
+    EnzymeXLA_LapackUploAttr:$uplo,
+    EnzymeXLA_LapackTransposeAttr:$transa,
+    UnitAttr:$unit_diagonal
+  );
+
+  let results = (outs
+    HLO_Tensor:$output
+  );
+
+  let assemblyFormat = [{
+    $alpha `,` $A `,` $B attr-dict `:` functional-type(operands, results)
+  }];
+}
+
+def TridiagonalSolveOp: EnzymeXLA_Op<"linalg.tridiagonal_solve", [Pure]> {
+  let summary = "Computes the solution of a tridiagonal linear system.";
+  let description = [{Computes the solution of a tridiagonal linear system.
+  Parameters:
+  dl: A batch of vectors with shape [..., m]. The lower diagonal of A:
+    dl[i] := A[i, i-1] for i in [0,m). Note that dl[0] = 0.
+  d: A batch of vectors with shape [..., m]. The middle diagonal of A:
+    d[i]  := A[i, i] for i in [0,m).
+  du: A batch of vectors with shape [..., m]. The upper diagonal of A:
+    du[i] := A[i, i+1] for i in [0,m). Note that dl[m-1] = 0.
+  b: Right hand side matrix.
+  }];
+
+  let arguments = (ins
+    HLO_Tensor:$dl,
+    HLO_Tensor:$d,
+    HLO_Tensor:$du,
+    HLO_Tensor:$B
+  );
+
+  let results = (outs
+    HLO_Tensor:$X
+  );
+
+  let assemblyFormat = [{
+    $dl `,` $d `,` $du `,` $B attr-dict `:` functional-type(operands, results)
   }];
 }
 
@@ -897,6 +980,24 @@ def GesvjOp : EnzymeXLA_Op<"lapack.gesvj", [Pure]> {
   }];
 }
 
+def PotrfOp : EnzymeXLA_Op<"lapack.potrf", [Pure]> {
+  let summary = "Cholesky factorization of symmetric/Hermitian positive-definite matrix";
+
+  let arguments = (ins
+    HLO_Tensor:$input,
+    EnzymeXLA_LapackUploAttr:$uplo
+  );
+
+  let results = (outs
+    HLO_Tensor:$output,
+    HLO_Tensor:$info
+  );
+
+  let assemblyFormat = [{
+    $input attr-dict `:` functional-type(operands, results)
+  }];
+}
+
 // Special Functions - Bessel Functions
 
 def BesselJ : EnzymeXLA_Op<"special.besselj", [Pure, AllTypesMatch<["z", "res"]>, Elementwise]> {
@@ -1124,6 +1225,48 @@ def ReluOp: EnzymeXLA_Op<"ml.relu", [Pure, SameOperandsAndResultType, Elementwis
   }];
 }
 
+def TGammaOp: EnzymeXLA_Op<"ml.tgamma", [Pure, SameOperandsAndResultType, Elementwise]> {
+  let summary = "Computes the true gamma function";
+
+  let arguments = (ins
+    FloatLike:$input
+  );
+
+  let results = (outs FloatLike:$result);
+
+  let assemblyFormat = [{
+    $input attr-dict `:` functional-type($input, results)
+  }];
+}
+
+def LGammaOp: EnzymeXLA_Op<"ml.lgamma", [Pure, SameOperandsAndResultType, Elementwise]> {
+  let summary = "Computes the log-gamma function";
+
+  let arguments = (ins
+    FloatLike:$input
+  );
+
+  let results = (outs FloatLike:$result);
+
+  let assemblyFormat = [{
+    $input attr-dict `:` functional-type($input, results)
+  }];
+}
+
+def SoftplusOp: EnzymeXLA_Op<"ml.softplus", [Pure, SameOperandsAndResultType, Elementwise]> {
+  let summary = "Computes the Softplus activation function";
+
+  let arguments = (ins
+    TensorFloatAnyRank:$input
+  );
+
+  let results = (outs TensorFloatAnyRank:$result);
+
+  let assemblyFormat = [{
+    $input attr-dict `:` functional-type($input, results)
+  }];
+}
+
 def CacheLoadOp : EnzymeXLA_Op<"cacheload"> {
   let arguments = (ins Arg<AnyMemRef, "the reference to load from",
                            [MemRead]>:$memref,
@@ -1300,6 +1443,24 @@ def MPIAllreduceOp : EnzymeXLA_Op<"mpi.allreduce", []> {
     TensorOf<[I32]> : $count,
     EnzymeXLA_MPIDatatypeAttr:$datatype,
     EnzymeXLA_MPIOpAttr:$op
+  );
+
+  let results = (
+    outs AnyTensor : $outbuf
+  );
+
+  let assemblyFormat = "`(` operands `)` attr-dict `:` functional-type(operands, results)";
+}
+
+def MPIBcastOp : EnzymeXLA_Op<"mpi.bcast", []> {
+  let summary = "Equivalent to "
+                "`MPI_Bcast(&buf, count, datatype, root, MPI_COMM_WORLD)`";
+
+  let arguments = (
+    ins AnyTensor : $inbuf,
+    TensorOf<[I32]> : $count,
+    TensorOf<[I32]> : $root,
+    EnzymeXLA_MPIDatatypeAttr:$datatype
   );
 
   let results = (
