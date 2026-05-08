@@ -758,7 +758,7 @@ class AutoDiffWhileRev
         builder, orig->getLoc(),
         makeI64Constant(orig->getLoc(), builder, revInfo.checkpointPeriod),
         outerBody->getArgument(1));
-    Value split = enzymexla::BinomialProgress::create(
+    Value split = enzymexla::BinomialProgressOp::create(
         builder, orig->getLoc(), remaining, budget, nullptr);
 
     // Store args state to cacheArgs
@@ -1657,7 +1657,7 @@ public:
               makeI64Constant(orig->getLoc(), builder,
                               revModeInfo.checkpointPeriod),
               outerBody->getArgument(0));
-          Value innerLimit = enzymexla::BinomialProgress::create(
+          Value innerLimit = enzymexla::BinomialProgressOp::create(
               builder, orig->getLoc(), numSteps, budget, nullptr);
 
           outerTerm->setOperand(

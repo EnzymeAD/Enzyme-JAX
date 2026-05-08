@@ -1267,7 +1267,7 @@ def SoftplusOp: EnzymeXLA_Op<"ml.softplus", [Pure, SameOperandsAndResultType, El
   }];
 }
 
-def BinomialProgress : EnzymeXLA_Op<"binomial_progress", [Pure, SameOperandsAndResultType]> {
+def BinomialProgressOp : EnzymeXLA_Op<"binomial_progress", [Pure, SameOperandsAndResultType]> {
   let summary = "Computes the number of steps to progress from in a binomial checkpointing scheme";
 
   let arguments = (ins
