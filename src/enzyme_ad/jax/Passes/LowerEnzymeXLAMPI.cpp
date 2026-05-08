@@ -1572,7 +1572,7 @@ struct MPIAllreduceOpLowering
 
         // Create the wrapper function decl
         auto funcType = LLVM::LLVMFunctionType::get(
-            llvmVoidType, {llvmPtrType, llvmPtrType}, false);
+            llvmVoidType, {llvmPtrType, llvmPtrType, llvmPtrType}, false);
 
         auto wrapperFunc = rewriter.create<LLVM::LLVMFuncOp>(
             op.getLoc(), wrapperFunctionName, funcType);
