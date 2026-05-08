@@ -157,7 +157,7 @@ public:
               .setDataLayout(*DL.get())
               .setLinkProcessSymbolsByDefault(true)
               .setObjectLinkingLayerCreator(
-                  [](llvm::orc::ExecutionSession &ES)
+                  [](llvm::orc::ExecutionSession &ES, auto &)
                       -> llvm::Expected<
                           std::unique_ptr<llvm::orc::ObjectLayer>> {
                     auto obj = std::make_unique<
