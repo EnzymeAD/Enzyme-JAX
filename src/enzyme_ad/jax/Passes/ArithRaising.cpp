@@ -574,9 +574,27 @@ struct ArithRaisingPass
         default:
           return;
         }
-        newCmpOp = stablehlo::CompareOp::create(
-            builder, cmpOp->getLoc(), cmpOp->getOperand(0),
-            cmpOp->getOperand(1), direction, compType);
+        Value lhs = cmpOp.getOperand(0);
+        Value rhs = cmpOp.getOperand(1);
+        if (compType == stablehlo::ComparisonType::UNSIGNED) {
+          auto lhsType = dyn_cast<RankedTensorType>(lhs.getType());
+          if (lhsType) {
+            auto elemType = lhsType.getElementType();
+            if (elemType.isSignlessInteger() || elemType.isSignedInteger()) {
+              auto unsignedElemType = IntegerType::get(
+                  builder.getContext(), elemType.getIntOrFloatBitWidth(),
+                  IntegerType::Unsigned);
+              auto unsignedType =
+                  RankedTensorType::get(lhsType.getShape(), unsignedElemType);
+              lhs = builder.create<stablehlo::ConvertOp>(cmpOp.getLoc(),
+                                                         unsignedType, lhs);
+              rhs = builder.create<stablehlo::ConvertOp>(cmpOp.getLoc(),
+                                                         unsignedType, rhs);
+            }
+          }
+        }
+        newCmpOp = stablehlo::CompareOp::create(builder, cmpOp->getLoc(), lhs,
+                                                rhs, direction, compType);
       } else {
         return;
       }
