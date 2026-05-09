@@ -5,7 +5,7 @@ include "mlir/IR/DialectBase.td"
 include "mlir/IR/AttrTypeBase.td"
 include "mlir/IR/OpBase.td"
 
-def CommDialect : Dialect {
+def Comm_Dialect : Dialect {
   let name = "comm";
   let summary = "A dialect for communication primitives and optimizations";
   let description = [{}];
@@ -14,8 +14,10 @@ def CommDialect : Dialect {
   // let useDefaultTypePrinterParser = 1;
 }
 
-class CommType<string name, string type_mnemonic, list<Trait> traits = []> : TypeDef<CommDialect, name, traits>;
+class Comm_Type<string name, string typeMnemonic, list<Trait> traits = []> : TypeDef<Comm_Dialect, name, traits> {
+  let mnemonic = typeMnemonic;
+}
 
-class CommOp<string mnemonic, list<Trait> traits = []> : Op<CommDialect, mnemonic, traits>;
+class Comm_Op<string mnemonic, list<Trait> traits = []> : Op<Comm_Dialect, mnemonic, traits>;
 
 #endif // ENZYMEXLA_COMM_DIALECT_TD
