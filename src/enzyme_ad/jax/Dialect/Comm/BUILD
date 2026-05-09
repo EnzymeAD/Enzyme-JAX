@@ -9,10 +9,12 @@ td_library(
         # MPI
         "MPITypes.td",
         "MPIAttrs.td",
+        "MPIOps.td",
     ],
     deps = [
         "@llvm-project//mlir:BuiltinDialectTdFiles",
         "@llvm-project//mlir:OpBaseTdFiles",
+        "@llvm-project//mlir:SideEffectInterfacesTdFiles",
     ],
 )
 
@@ -85,6 +87,25 @@ gentbl_cc_library(
     ],
 )
 
+gentbl_cc_library(
+    name = "CommMPIOpsIncGen",
+    tbl_outs = [
+        (
+            ["-gen-op-decls"],
+            "MPIOps.h.inc",
+        ),
+        (
+            ["-gen-op-defs"],
+            "MPIOps.cpp.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "MPIOps.td",
+    deps = [
+        ":CommDialectTdFiles",
+    ],
+)
+
 cc_library(
     name = "CommDialect",
     srcs = [
@@ -96,8 +117,13 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":CommDialectIncGen",
+
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:SideEffectInterfaces",
+
+        # MPI
         ":CommMPIAttrsIncGen",
         ":CommMPITypesIncGen",
-        "@llvm-project//mlir:IR",
+        ":CommMPIOpsIncGen",
     ],
 )
