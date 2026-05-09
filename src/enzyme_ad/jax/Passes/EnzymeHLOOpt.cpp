@@ -840,9 +840,9 @@ bool transformReshapeSlice(stablehlo::ReshapeOp op, SmallVectorImpl<T> &start,
 
 stablehlo::Element conj(const stablehlo::Element &orig) {
   if (stablehlo::isSupportedComplexType(orig.getType())) {
-    std::complex<APFloat> val = orig.getComplexValue();
+    mlir::Complex<APFloat> val = orig.getComplexValue();
     return stablehlo::Element(orig.getType(),
-                              std::complex<APFloat>(val.real(), -val.imag()));
+                              mlir::Complex<APFloat>(val.real(), -val.imag()));
   }
 
   llvm_unreachable("Unsupported type");
@@ -7402,8 +7402,7 @@ struct ElementwiseAllTransposeOperandsSimplify
         {RankedTensorType::get(
             elemResShape,
             cast<TensorType>(op->getResult(0).getType()).getElementType())},
-        operands, op->getAttrs(), OpaqueProperties(nullptr),
-        op->getSuccessors(), 0);
+        operands, op->getAttrs(), mlir::PropertyRef(), op->getSuccessors(), 0);
     rewriter.insert(newOp);
     auto newTransposeOp = stablehlo::TransposeOp::create(
         rewriter, op->getLoc(), newOp->getResult(0), permutation);
@@ -7444,10 +7443,10 @@ struct TransposeElementwiseTransposeSimplify
       newOperands.push_back(innerTransposeOp.getOperand());
     }
 
-    auto newElem = Operation::create(
-        elem->getLoc(), elem->getName(), {op->getResult(0).getType()},
-        newOperands, elem->getAttrs(), OpaqueProperties(nullptr),
-        elem->getSuccessors(), 0);
+    auto newElem = Operation::create(elem->getLoc(), elem->getName(),
+                                     {op->getResult(0).getType()}, newOperands,
+                                     elem->getAttrs(), mlir::PropertyRef(),
+                                     elem->getSuccessors(), 0);
     rewriter.insert(newElem);
     rewriter.replaceOp(op, newElem);
     return success();
@@ -13527,7 +13526,7 @@ struct CompareOpCanon final
 
       if (Attribute res;
           lhsAttr && rhsAttr &&
-          (res = constFoldBinaryOp<IntegerAttr, IntegerAttr::ValueType, void>(
+          (res = constFoldBinaryOp<IntegerAttr>(
                ArrayRef<Attribute>({lhsAttr, rhsAttr}), op.getType(),
                [direction, kind = *compType](const APInt &a, const APInt &b) {
                  return calculateComp(kind, direction, a, b);
@@ -27167,7 +27166,7 @@ struct CommonAssociativeCommutativeOpReorder final
     auto createNewOp = [&](Value lhs, Value rhs) {
       auto newOp = Operation::create(
           op->getLoc(), op->getName(), {op->getResult(0).getType()}, {lhs, rhs},
-          op->getAttrs(), OpaqueProperties(nullptr), op->getSuccessors(), 0);
+          op->getAttrs(), mlir::PropertyRef(), op->getSuccessors(), 0);
       rewriter.insert(newOp);
       return newOp;
     };
@@ -34782,7 +34781,7 @@ struct SplitComplexScatter final
     Attribute imagConstant = nullptr;
     if (checkCommonScatterOp.constant) {
       auto complexVal =
-          checkCommonScatterOp.constant.getSplatValue<std::complex<APFloat>>();
+          checkCommonScatterOp.constant.getSplatValue<mlir::Complex<APFloat>>();
       realConstant = FloatAttr::get(innerElemType, complexVal.real());
       imagConstant = FloatAttr::get(innerElemType, complexVal.imag());
     }

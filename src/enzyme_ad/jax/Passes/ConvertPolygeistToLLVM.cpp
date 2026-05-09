@@ -1946,8 +1946,8 @@ ConvertGPUModuleOp::matchAndRewrite(gpu::GPUModuleOp kernelModule,
       LLVM::StoreOp::create(ctorBuilder, loc, module->getResult(0),
                             aoo->getResult(0));
       for (Operation &op : kernelModule->getRegion(0).front()) {
-        if (auto f = dyn_cast<FunctionOpInterface>(op)) {
-          if (!f->getAttr("gpu.kernel"))
+        if (auto f = dyn_cast<gpu::GPUFuncOp>(op)) {
+          if (!f.isKernel())
             continue;
           auto kernelName = generateKernelNameConstant(
               kernelModule.getName(), f.getName(), ctorloc, ctorBuilder);
@@ -3060,7 +3060,7 @@ public:
     SmallVector<LLVM::GlobalOp, 3> workgroupBuffers;
     workgroupBuffers.reserve(gpuFuncOp.getNumWorkgroupAttributions());
     for (const auto &en :
-         llvm::enumerate(gpuFuncOp.getWorkgroupAttributions())) {
+         llvm::enumerate(gpuFuncOp.getWorkgroupAttributionBBArgs())) {
       Value attribution = en.value();
 
       auto type = dyn_cast<MemRefType>(attribution.getType());
@@ -3093,8 +3093,7 @@ public:
     for (const auto &attr : gpuFuncOp->getAttrs()) {
       if (attr.getName() == SymbolTable::getSymbolAttrName() ||
           attr.getName() == gpuFuncOp.getFunctionTypeAttrName() ||
-          attr.getName() ==
-              gpu::GPUFuncOp::getNumWorkgroupAttributionsAttrName())
+          attr.getName() == gpuFuncOp.getWorkgroupAttributionsAttrName())
         continue;
       attributes.push_back(attr);
     }
@@ -3128,7 +3127,8 @@ public:
         // existing memref infrastructure. This may use more registers than
         // otherwise necessary given that memref sizes are fixed, but we can try
         // and canonicalize that away later.
-        Value attribution = gpuFuncOp.getWorkgroupAttributions()[en.index()];
+        Value attribution =
+            gpuFuncOp.getWorkgroupAttributionBBArgs()[en.index()];
         auto type = cast<MemRefType>(attribution.getType());
         Value descr = MemRefDescriptor::fromStaticShape(
             rewriter, loc, *getTypeConverter(), type, memory);
@@ -3563,7 +3563,7 @@ struct GPUBarrierToNVVM : ConvertOpToLLVMPattern<gpu::BarrierOp> {
   LogicalResult
   matchAndRewrite(gpu::BarrierOp op, gpu::BarrierOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    rewriter.replaceOpWithNewOp<NVVM::Barrier0Op>(op);
+    rewriter.replaceOpWithNewOp<NVVM::BarrierOp>(op);
     return success();
   }
 };

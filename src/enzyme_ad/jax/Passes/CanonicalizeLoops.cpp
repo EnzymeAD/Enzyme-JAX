@@ -151,8 +151,6 @@ struct RemoveAffineParallelSingleIter
   }
 };
 
-namespace {
-
 /// Integer range analysis determines the integer value range of SSA values
 /// using operations that define `InferIntRangeInterface` and also sets the
 /// range of iteration indices of loops with known bounds.
@@ -1307,7 +1305,6 @@ struct CanonicalizeLoopsPass
     }
   }
 };
-} // namespace
 
 void mlir::enzyme::addSingleIter(RewritePatternSet &patterns,
                                  MLIRContext *ctx) {

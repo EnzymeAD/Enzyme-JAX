@@ -1044,10 +1044,12 @@ OpFoldResult Pointer2MemrefOp::fold(FoldAdaptor adaptor) {
   return nullptr;
 }
 
-LogicalResult WrapOp::inferReturnTypes(
-    MLIRContext * /*context*/, std::optional<Location> location,
-    ValueRange operands, DictionaryAttr attributes, OpaqueProperties properties,
-    RegionRange regions, SmallVectorImpl<Type> &inferredReturnTypes) {
+LogicalResult
+WrapOp::inferReturnTypes(MLIRContext * /*context*/,
+                         std::optional<Location> location, ValueRange operands,
+                         DictionaryAttr attributes,
+                         mlir::PropertyRef properties, RegionRange regions,
+                         SmallVectorImpl<Type> &inferredReturnTypes) {
   WrapOpAdaptor adaptor(operands, attributes, properties, regions);
   if (adaptor.getLhs() < 0)
     return failure();
@@ -1067,10 +1069,12 @@ LogicalResult WrapOp::inferReturnTypes(
   return success();
 }
 
-LogicalResult ExtendOp::inferReturnTypes(
-    MLIRContext * /*context*/, std::optional<Location> location,
-    ValueRange operands, DictionaryAttr attributes, OpaqueProperties properties,
-    RegionRange regions, SmallVectorImpl<Type> &inferredReturnTypes) {
+LogicalResult
+ExtendOp::inferReturnTypes(MLIRContext * /*context*/,
+                           std::optional<Location> location,
+                           ValueRange operands, DictionaryAttr attributes,
+                           mlir::PropertyRef properties, RegionRange regions,
+                           SmallVectorImpl<Type> &inferredReturnTypes) {
   ExtendOpAdaptor adaptor(operands, attributes, properties, regions);
   if (adaptor.getLhs() < 0)
     return failure();
@@ -1092,8 +1096,9 @@ LogicalResult ExtendOp::inferReturnTypes(
 
 LogicalResult UpdateWithoutCornersOp::inferReturnTypes(
     MLIRContext * /*context*/, std::optional<Location> location,
-    ValueRange operands, DictionaryAttr attributes, OpaqueProperties properties,
-    RegionRange regions, SmallVectorImpl<Type> &inferredReturnTypes) {
+    ValueRange operands, DictionaryAttr attributes,
+    mlir::PropertyRef properties, RegionRange regions,
+    SmallVectorImpl<Type> &inferredReturnTypes) {
   UpdateWithoutCornersOpAdaptor adaptor(operands, attributes, properties,
                                         regions);
   auto RT = cast<RankedTensorType>(adaptor.getOperand().getType());
