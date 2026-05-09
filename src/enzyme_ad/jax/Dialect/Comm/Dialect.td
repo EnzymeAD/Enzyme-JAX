@@ -10,7 +10,7 @@ def Comm_Dialect : Dialect {
   let summary = "A dialect for communication primitives and optimizations";
   let description = [{}];
   let cppNamespace = "::mlir::enzymexla::comm";
-  // let useDefaultAttributePrinterParser = 1;
+  let useDefaultAttributePrinterParser = 1;
   // let useDefaultTypePrinterParser = 1;
 }
 
