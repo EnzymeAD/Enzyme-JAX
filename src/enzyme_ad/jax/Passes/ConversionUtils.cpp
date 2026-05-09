@@ -7,11 +7,11 @@
 //===----------------------------------------------------------------------===//
 
 #include "src/enzyme_ad/jax/Passes/ConversionUtils.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "llvm/ADT/SmallVector.h"
-#include "mlir/IR/BuiltinAttributes.h"
 
 namespace mlir {
 namespace enzyme {
@@ -128,20 +128,22 @@ Value packLimbs(ArrayRef<Value> limbs, OpBuilder &builder, Location loc,
         loc, TupleType::get(limbs[0].getContext(), types), limbs);
   }
   auto type = cast<RankedTensorType>(limbs[0].getType());
-  
+
   if (type.getRank() == 0) {
     SmallVector<Value> expandedLimbs;
     SmallVector<int64_t> expandedShape = {1};
-    auto expandedType = RankedTensorType::get(expandedShape, type.getElementType());
+    auto expandedType =
+        RankedTensorType::get(expandedShape, type.getElementType());
     for (auto limb : limbs) {
       expandedLimbs.push_back(builder.create<stablehlo::BroadcastInDimOp>(
           loc, expandedType, limb, builder.getDenseI64ArrayAttr({})));
     }
     SmallVector<int64_t> outShape = {static_cast<int64_t>(limbs.size())};
     return builder.create<stablehlo::ConcatenateOp>(
-        loc, RankedTensorType::get(outShape, type.getElementType()), expandedLimbs, 0);
+        loc, RankedTensorType::get(outShape, type.getElementType()),
+        expandedLimbs, 0);
   }
-  
+
   int concatDim = isFirst ? 0 : type.getRank() - 1;
 
   SmallVector<int64_t> outShape = llvm::to_vector(type.getShape());

@@ -10,6 +10,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/IR/Builders.h"
+#include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/Pass/Pass.h"
@@ -17,13 +18,12 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
-#include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "src/enzyme_ad/jax/Passes/ConversionUtils.h"
+#include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "stablehlo/dialect/StablehloOps.h"
+#include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/Debug.h"
 #include <optional>
-#include "llvm/ADT/SmallVector.h"
-#include "mlir/IR/BuiltinAttributes.h"
 
 #define DEBUG_TYPE "lower-complex-operations"
 
@@ -292,7 +292,7 @@ struct AddOpConversion : public OpConversionPattern<stablehlo::AddOp> {
   matchAndRewrite(stablehlo::AddOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
-    
+
     Value lhs = adaptor.getOperands()[0];
     Value rhs = adaptor.getOperands()[1];
 
@@ -322,7 +322,7 @@ struct SubOpConversion : public OpConversionPattern<stablehlo::SubtractOp> {
   matchAndRewrite(stablehlo::SubtractOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
-    
+
     Value lhs = adaptor.getOperands()[0];
     Value rhs = adaptor.getOperands()[1];
 
@@ -480,10 +480,12 @@ struct LowerComplexOperationsPass
     auto isLegalOp = [&](Operation *op) {
       bool involvesComplex = false;
       for (auto ty : op->getOperandTypes()) {
-        if (isComplexType(ty)) involvesComplex = true;
+        if (isComplexType(ty))
+          involvesComplex = true;
       }
       for (auto ty : op->getResultTypes()) {
-        if (isComplexType(ty)) involvesComplex = true;
+        if (isComplexType(ty))
+          involvesComplex = true;
       }
       if (!involvesComplex)
         return true;
@@ -589,22 +591,28 @@ struct LowerComplexOperationsPass
                   operand.getDefiningOp<UnrealizedConversionCastOp>()) {
             Location loc = returnOp.getLoc();
             Value packedVal = castOp.getOperand(0);
-            Value realWithDim = extractLimb(packedVal, 0, b_ret, loc, concatDimension);
-            Value imagWithDim = extractLimb(packedVal, 1, b_ret, loc, concatDimension);
-            
+            Value realWithDim =
+                extractLimb(packedVal, 0, b_ret, loc, concatDimension);
+            Value imagWithDim =
+                extractLimb(packedVal, 1, b_ret, loc, concatDimension);
+
             auto type = cast<RankedTensorType>(realWithDim.getType());
             SmallVector<int64_t> targetShape;
             bool isFirst = concatDimension == "first";
             if (isFirst) {
-              for (size_t i = 1; i < type.getRank(); ++i) targetShape.push_back(type.getShape()[i]);
+              for (size_t i = 1; i < type.getRank(); ++i)
+                targetShape.push_back(type.getShape()[i]);
             } else {
-              for (size_t i = 0; i < type.getRank() - 1; ++i) targetShape.push_back(type.getShape()[i]);
+              for (size_t i = 0; i < type.getRank() - 1; ++i)
+                targetShape.push_back(type.getShape()[i]);
             }
-            
+
             Value real = b_ret.create<stablehlo::ReshapeOp>(
-                loc, RankedTensorType::get(targetShape, type.getElementType()), realWithDim);
+                loc, RankedTensorType::get(targetShape, type.getElementType()),
+                realWithDim);
             Value imag = b_ret.create<stablehlo::ReshapeOp>(
-                loc, RankedTensorType::get(targetShape, type.getElementType()), imagWithDim);
+                loc, RankedTensorType::get(targetShape, type.getElementType()),
+                imagWithDim);
 
             Value converted = b_ret.create<stablehlo::ComplexOp>(loc, real, imag);
             newOperands.push_back(converted);
