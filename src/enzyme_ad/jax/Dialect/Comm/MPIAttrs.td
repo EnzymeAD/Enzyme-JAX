@@ -5,7 +5,7 @@ include "Dialect.td"
 
 include "mlir/IR/EnumAttr.td"
 
-def MPI_Communicators : I32EnumAttr<"MPI_Communicators", "Named predefined MPI communicators", [
+def MPI_Comms : I32EnumAttr<"MPI_Comms", "Named predefined MPI communicators", [
       I32EnumAttrCase<"MPI_COMM_NULL", 256>,
       I32EnumAttrCase<"MPI_COMM_WORLD", 257>,
       I32EnumAttrCase<"MPI_COMM_SELF", 258>,
@@ -14,7 +14,7 @@ def MPI_Communicators : I32EnumAttr<"MPI_Communicators", "Named predefined MPI c
   let cppNamespace = "::mlir::enzymexla::comm";
 }
 
-def MPI_CommunicatorsAttr : EnumAttr<Comm_Dialect, MPI_Communicators, "communicator"> {
+def MPI_CommsAttr : EnumAttr<Comm_Dialect, MPI_Comms, "communicator"> {
   let assemblyFormat = "`<` $value `>`";
 }
 
