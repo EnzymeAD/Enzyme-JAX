@@ -394,6 +394,31 @@ public:
     return failure();
   }
 };
+
+class RcpRaising : public OpRewritePattern<LLVM::CallOp> {
+public:
+  RcpRaising(MLIRContext *context) : OpRewritePattern<LLVM::CallOp>(context) {}
+
+  LogicalResult matchAndRewrite(LLVM::CallOp op,
+                                PatternRewriter &rewriter) const override {
+    CallInterfaceCallable callable = op.getCallableForCallee();
+    auto callee = dyn_cast<SymbolRefAttr>(callable);
+    if (!callee)
+      return failure();
+
+    if (callee.getLeafReference() == "__nv_drcp_rn" ||
+        callee.getLeafReference() == "__nv_frcp_rn") {
+      Location loc = op.getLoc();
+      Type type = op.getResultTypes()[0];
+      Value one = rewriter.create<arith::ConstantOp>(
+          loc, type, rewriter.getFloatAttr(type, 1.0));
+      rewriter.replaceOpWithNewOp<arith::DivFOp>(op, one, op->getOperands()[0]);
+      return success();
+    }
+
+    return failure();
+  }
+};
 } // namespace
 
 template <typename TargetOp, typename Arg, typename... Args>
@@ -962,6 +987,7 @@ void mlir::enzyme::populateLibDeviceFuncsToOpsPatterns(
   auto *converter = context;
 
   patterns.add<IsFPClassRaising>(context);
+  patterns.add<RcpRaising>(context);
   patterns.add<BF16HalfToFloatRaising>(context);
   patterns.add<HalfMathRaising>(context);
   patterns.add<InlineAsmHalfRaising>(context);
