@@ -8,6 +8,7 @@ td_library(
 
         # MPI
         "MPITypes.td",
+        "MPIAttrs.td",
     ],
     deps = [
         "@llvm-project//mlir:BuiltinDialectTdFiles",
@@ -57,6 +58,33 @@ gentbl_cc_library(
     ],
 )
 
+gentbl_cc_library(
+    name = "CommMPIAttrsIncGen",
+    tbl_outs = {
+        "MPIAttrEnums.h.inc": [
+            "-gen-enum-decls",
+            "-attrdefs-dialect=comm",
+        ],
+        "MPIAttrEnums.cpp.inc": [
+            "-gen-enum-defs",
+            "-attrdefs-dialect=comm",
+        ],
+        "MPIAttrDefs.h.inc": [
+            "-gen-attrdef-decls",
+            "-attrdefs-dialect=comm",
+        ],
+        "MPIAttrDefs.cpp.inc": [
+            "-gen-attrdef-defs",
+            "-attrdefs-dialect=comm",
+        ],
+    },
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "MPIAttrs.td",
+    deps = [
+        ":CommDialectTdFiles",
+    ],
+)
+
 cc_library(
     name = "CommDialect",
     srcs = [
@@ -68,6 +96,7 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":CommDialectIncGen",
+        ":CommMPIAttrsIncGen",
         ":CommMPITypesIncGen",
         "@llvm-project//mlir:IR",
     ],
