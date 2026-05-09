@@ -17,4 +17,18 @@ def MPI_Request : Comm_Type<"MPI_Request", "mpi.request"> {
   }];
 }
 
+def MPI_Datatype : Comm_Type<"MPI_Datatype", "mpi.datatype"> {
+  let summary = "MPI datatype handler";
+  let description = [{
+    This type represents a handler for a MPI datatype.
+  }];
+}
+
+def MPI_Op : Comm_Type<"MPI_Op", "mpi.op"> {
+  let summary = "MPI reduction operator handler";
+  let description = [{
+    This type represents a handler for a MPI reduction operator.
+  }];
+}
+
 #endif // ENZYMEXLA_COMM_DIALECT_MPI_TYPES_TD
