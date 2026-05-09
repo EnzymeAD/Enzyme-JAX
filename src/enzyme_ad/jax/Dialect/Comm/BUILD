@@ -110,9 +110,11 @@ cc_library(
     name = "CommDialect",
     srcs = [
         "Dialect.cpp",
+        "Ops.cpp",
     ],
     hdrs = [
         "Dialect.h",
+        "Ops.h",
     ],
     visibility = ["//visibility:public"],
     deps = [

@@ -1,4 +1,5 @@
 #include "Dialect.h"
+#include "Ops.h"
 
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/DialectImplementation.h"
@@ -23,5 +24,9 @@ void mlir::enzymexla::comm::CommDialect::initialize() {
   addTypes<
 #define GET_TYPEDEF_LIST
 #include "src/enzyme_ad/jax/Dialect/Comm/MPITypes.cpp.inc"
+      >();
+  addOperations<
+#define GET_OP_LIST
+#include "src/enzyme_ad/jax/Dialect/Comm/MPIOps.cpp.inc"
       >();
 }
