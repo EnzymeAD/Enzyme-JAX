@@ -1058,4 +1058,22 @@ module {
     }
   }
 
+  gpu.module @test_module_rcp {
+    llvm.func @__nv_drcp_rn(f64) -> f64
+    llvm.func @__nv_frcp_rn(f32) -> f32
+    // CHECK-LABEL: @gpu_drcp
+    llvm.func @gpu_drcp(%arg0: f64) -> f64 {
+      // CHECK: %[[ONE:.*]] = arith.constant 1.000000e+00 : f64
+      // CHECK: arith.divf %[[ONE]], %arg0 : f64
+      %0 = llvm.call @__nv_drcp_rn(%arg0) : (f64) -> f64
+      llvm.return %0 : f64
+    }
+    // CHECK-LABEL: @gpu_frcp
+    llvm.func @gpu_frcp(%arg0: f32) -> f32 {
+      // CHECK: %[[ONE:.*]] = arith.constant 1.000000e+00 : f32
+      // CHECK: arith.divf %[[ONE]], %arg0 : f32
+      %0 = llvm.call @__nv_frcp_rn(%arg0) : (f32) -> f32
+      llvm.return %0 : f32
+    }
+  }
 }
