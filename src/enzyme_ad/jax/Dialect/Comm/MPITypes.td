@@ -3,12 +3,20 @@
 
 include "Dialect.td"
 
+include "mlir/IR/CommonTypeConstraints.td"
+
 def MPI_Comm : Comm_Type<"MPI_Comm", "mpi.comm"> {
   let summary = "MPI communicator handler";
 }
 
 def MPI_Request : Comm_Type<"MPI_Request", "mpi.request"> {
   let summary = "MPI asynchronous request handler";
+}
+
+def MPI_Requested : Comm_Type<"MPI_Requested", "mpi.requested"> {
+  let summary = "MPI asynchronous request handler paired with linked tensor";
+  let parameters = (ins AnyType : $requestedType);
+  let assemblyFormat = "`<` $requestedType `>`";
 }
 
 def MPI_Datatype : Comm_Type<"MPI_Datatype", "mpi.datatype"> {

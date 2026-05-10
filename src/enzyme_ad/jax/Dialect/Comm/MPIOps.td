@@ -119,28 +119,22 @@ def MPI_IrecvOp : Comm_Op<"mpi.irecv", []> {
     MPI_Comm : $comm
   );
 
-  // TODO find a way to fuse the buffer and the request into one entity
-  // like a parametric request type (e.g. mpi.request<tensor<2xf32>>)
-  let results = (outs
-    AnyTensor : $buf,
-    MPI_Request : $request
-  );
+  let results = (outs MPI_Requested : $requested);
+  let assemblyFormat = "operands attr-dict `:` type(results)";
+}
 
+def MPI_WaitOp : Comm_Op<"mpi.wait", []> {
+  let summary = "Equivalent to `MPI_Wait`";
+  let arguments = (ins MPI_Requested : $requested);
+  let results = (outs AnyTensor : $buf);
   let assemblyFormat = "operands attr-dict `:` functional-type(operands, results)";
 }
 
-// TODO refactor to use the fused buffer + request type and return the already synced buffer?
-def MPI_WaitOp : Comm_Op<"mpi.wait", []> {
-  let summary = "Equivalent to `MPI_Wait`";
-  let arguments = (ins MPI_Request : $request);
-  let assemblyFormat = "operands attr-dict `:` type(operands)";
-}
-
-// TODO refactor to use the fused buffer + request type and return the already synced buffer?
 def MPI_WaitallOp : Comm_Op<"mpi.waitall", []> {
   let summary = "Equivalent to `MPI_Waitall`";
-  let arguments = (ins Variadic<MPI_Request> : $requests);
-  let assemblyFormat = "operands attr-dict `:` type(operands)";
+  let arguments = (ins Variadic<MPI_Requested> : $requesteds);
+  let results = (outs Variadic<AnyTensor> : $bufs);
+  let assemblyFormat = "operands attr-dict `:` functional-type(operands, results)";
 }
 
 def MPI_AllreduceOp : Comm_Op<"mpi.allreduce", []> {
