@@ -22,12 +22,13 @@ def MPI_PredefinedOpOp : Comm_Op<"mpi.predefined_op", [Pure]> {
   let assemblyFormat = "attr-dict `:` type(results)";
 }
 
-def MPI_PredefinedDatatypeOp : Comm_Op<"mpi.predefined_datatype", [Pure]> {
-  let summary = "Get the named predefined MPI datatype";
-  let arguments = (ins MPI_DatatypesAttr : $value);
-  let results = (outs MPI_Datatype : $datatype);
-  let assemblyFormat = "attr-dict `:` type(results)";
-}
+// NOTE not sure if necessary since we take the datatype from the MLIR tensor eltype
+// def MPI_PredefinedDatatypeOp : Comm_Op<"mpi.predefined_datatype", [Pure]> {
+//   let summary = "Get the named predefined MPI datatype";
+//   let arguments = (ins MPI_DatatypesAttr : $value);
+//   let results = (outs MPI_Datatype : $datatype);
+//   let assemblyFormat = "attr-dict `:` type(results)";
+// }
 
 def MPI_CommRankOp : Comm_Op<"mpi.comm_rank", [Pure]> {
   let summary = "Equivalent to `MPI_Comm_rank`";
