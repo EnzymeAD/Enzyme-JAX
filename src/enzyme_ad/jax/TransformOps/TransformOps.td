@@ -1657,6 +1657,10 @@ def CompareIotaConstSimplifyPatterns : EnzymeHLOPatternOp<
   let patterns = ["CompareIotaConstSimplify"];
 }
 
+def ConvertIotaSimplifyPatterns : EnzymeHLOPatternOp<"convert_iota_simplify"> {
+  let patterns = ["ConvertIotaSimplify"];
+}
+
 def MinMaxIotaConstSimplifyPatterns : EnzymeHLOPatternOp<
   "min_max_iota_const_simplify"
 > {

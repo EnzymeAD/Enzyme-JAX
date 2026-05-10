@@ -8439,6 +8439,29 @@ struct ConvertSimplify
   }
 };
 
+struct ConvertIotaSimplify
+    : public CheckedOpRewritePattern<stablehlo::ConvertOp,
+                                     ConvertIotaSimplify> {
+  using CheckedOpRewritePattern<stablehlo::ConvertOp,
+                                ConvertIotaSimplify>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ConvertOp convertOp,
+                                    PatternRewriter &rewriter) const {
+    auto operand = convertOp.getOperand();
+    auto iota = operand.getDefiningOp<stablehlo::IotaOp>();
+    if (!iota)
+      return failure();
+
+    auto targetType = convertOp.getType();
+    if (!targetType.getElementType().isInteger())
+      return failure();
+
+    rewriter.replaceOpWithNewOp<stablehlo::IotaOp>(convertOp, targetType,
+                                                   iota.getIotaDimension());
+    return success();
+  }
+};
+
 struct SliceSimplify
     : public CheckedOpRewritePattern<stablehlo::SliceOp, SliceSimplify> {
   using CheckedOpRewritePattern<stablehlo::SliceOp,
@@ -8705,8 +8728,19 @@ struct CompareIotaConstSimplify
     auto lhs = cmpOp.getLhs();
     auto rhs = cmpOp.getRhs();
 
-    auto lhsIota = lhs.getDefiningOp<stablehlo::IotaOp>();
-    auto rhsIota = rhs.getDefiningOp<stablehlo::IotaOp>();
+    auto getIota = [](Value v) -> stablehlo::IotaOp {
+      if (auto iota = v.getDefiningOp<stablehlo::IotaOp>())
+        return iota;
+      if (auto conv = v.getDefiningOp<stablehlo::ConvertOp>()) {
+        if (conv.getType().getElementType().isInteger() &&
+            conv.getOperand().getType().getElementType().isInteger()) {
+          return conv.getOperand().getDefiningOp<stablehlo::IotaOp>();
+        }
+      }
+      return nullptr;
+    };
+    auto lhsIota = getIota(lhs);
+    auto rhsIota = getIota(rhs);
 
     if ((!lhsIota && !rhsIota) || (lhsIota && rhsIota))
       return rewriter.notifyMatchFailure(cmpOp, "Requires single iota user");
@@ -35691,7 +35725,7 @@ struct EnzymeHLOOptPass
         NegatedConstantMulFactoring<stablehlo::SubtractOp>,
         ReshapeDeletionsBroadcastInDimSimplify,
         ReshapeInsertionsBroadcastInDimSimplify, CompareIotaConstSimplify,
-        MinMaxIotaConstSimplify<stablehlo::MaxOp>,
+        ConvertIotaSimplify, MinMaxIotaConstSimplify<stablehlo::MaxOp>,
         MinMaxIotaConstSimplify<stablehlo::MinOp>, ClampIotaConstSimplify,
         CompareAbs, CompareMul, CompareConvert, AddSelects,
         CompareNegateConstSimplify, CompareSubtractConstSimplify,
