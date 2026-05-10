@@ -11,7 +11,7 @@ def Comm_Dialect : Dialect {
   let description = [{}];
   let cppNamespace = "::mlir::enzymexla::comm";
   let useDefaultAttributePrinterParser = 1;
-  // let useDefaultTypePrinterParser = 1;
+  let useDefaultTypePrinterParser = 1;
 }
 
 class Comm_Type<string name, string typeMnemonic, list<Trait> traits = []> : TypeDef<Comm_Dialect, name, traits> {
