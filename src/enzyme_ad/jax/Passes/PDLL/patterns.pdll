@@ -1,27 +1,6 @@
-// Include standard StableHLO ODS definitions to make typed ops like
-// `Op<stablehlo.transpose>` and `Op<stablehlo.add>` available, plus the
-// EnzymeXLA dialect for `Op<enzymexla.extend>` and friends.
 #include "stablehlo/dialect/StablehloOps.td"
 #include "src/enzyme_ad/jax/Dialect/EnzymeXLAOps.td"
 
-
-// ----------------------------------------------------------------------------
-// Configurable hooks for the SliceExtend commute pattern.
-//
-// These are *external* PDLL declarations: their behavior is supplied at
-// runtime by `registerSliceExtendDynamicPDLLBindings` in
-// `Passes/PDLLTransformHelpers.cpp`. Depending on the
-// `apply-pdll-patterns` `rewrite-extent` option, the bindings can:
-//
-//   * skip the profitability check entirely (`pure-local`),
-//   * run the profitability check before a local rewrite (`checked-local`),
-//   * run the profitability check before a global rewrite that also
-//     deduplicates matching sibling users (`checked-global`).
-//
-// Keeping the implementation in C++ means the same core logic is shared
-// across all configurations and can evolve independently of the PDLL
-// pattern declaration.
-// ----------------------------------------------------------------------------
 
 /// Check that the base has a static shape and the slice does not modify the
 /// dimension being extended.

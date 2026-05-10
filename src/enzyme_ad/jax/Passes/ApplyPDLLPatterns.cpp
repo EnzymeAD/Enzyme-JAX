@@ -12,8 +12,7 @@
 // Adding a new `.pdll` file is a three-step operation:
 //   1. Drop the new `Foo.pdll` file in `src/enzyme_ad/jax/Passes/PDLL/`.
 //   2. Add a corresponding `gentbl_cc_library` entry in the BUILD file
-//      (model it after `MorePatternsPDLLPatternsIncGen`) and add the new
-//      `*IncGen` target to the main library `deps`.
+//      and add the new `*IncGen` target to the main library `deps`.
 //   3. Add a `PDLL_PATTERN_SET(...)` line below pointing at the generated
 //      header. The C++ side will then automatically include the patterns in
 //      the generic application pass.
@@ -93,11 +92,6 @@ struct ApplyPDLLPatternsPass
     // PDLPatternModule exists) and before the pattern set is frozen.
     registerSliceExtendDynamicPDLLBindings(patternList, *parsedExtent);
 
-    // The `disabledPatternLabels` / `enabledPatternLabels` arguments of
-    // `FrozenRewritePatternSet` only affect native C++ patterns; PDLL-generated
-    // patterns are compiled to PDL bytecode and are not filtered there. Filter
-    // them here, at the `pdl.pattern` level, using their symbol name (which
-    // matches the pattern name in the `.pdll` source).
     if (!includePatterns.empty() || !excludePatterns.empty()) {
       llvm::StringSet<> include;
       for (const std::string &name : includePatterns)
