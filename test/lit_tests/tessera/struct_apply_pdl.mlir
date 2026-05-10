@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s -polygeist-mem2reg -tessera-apply-pdl | FileCheck %s
+// RUN: enzymexlamlir-opt %s -polygeist-mem2reg -canonicalize -tessera-apply-pdl | FileCheck %s
 
 #loop_unroll = #llvm.loop_unroll<disable = true>
 #tbaa_root = #llvm.tbaa_root<id = "Simple C++ TBAA">
@@ -19,16 +19,18 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
   llvm.func local_unnamed_addr @main(%12: !llvm.ptr, %10: !llvm.ptr) -> (!llvm.ptr {llvm.noundef}) attributes {dso_local, no_unwind, passthrough = ["mustprogress", "norecurse", ["min-legal-vector-width", "0"], ["no-trapping-math", "true"], ["stack-protector-buffer-size", "8"], ["target-cpu", "x86-64"]], target_cpu = "x86-64", target_features = #llvm.target_features<["+cmov", "+cx8", "+fxsr", "+mmx", "+sse", "+sse2", "+x87"]>, tune_cpu = "generic", uwtable_kind = #llvm.uwtableKind<async>} {
     %0 = llvm.mlir.constant(1 : i32) : i32
     %11 = llvm.alloca %0 x !llvm.struct<"class.Eigen::Matrix", (struct<"class.Eigen::PlainObjectBase", (struct<"class.Eigen::DenseStorage", (struct<"struct.Eigen::internal::plain_array", (array<16 x f32>)>)>)>)> {alignment = 16 : i64} : (i32) -> !llvm.ptr
-    %15 = tessera.call @eigen.inv(%12) {CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, arg_attrs = [{llvm.nonnull, llvm.noundef}], fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 2, 0>, tessera.loaded_operands = array<i32: 0>} : (!llvm.ptr) -> !llvm.struct<"class.Eigen::Matrix", (struct<"class.Eigen::PlainObjectBase", (struct<"class.Eigen::DenseStorage", (struct<"struct.Eigen::internal::plain_array", (array<16 x f32>)>)>)>)>
+    %14 = llvm.load %12 : !llvm.ptr -> i512 
+    %15 = tessera.call @eigen.inv(%14) {CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, arg_attrs = [{llvm.nonnull, llvm.noundef}], fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 2, 0>, tessera.loaded_operands = array<i32: 0>} : (i512) -> !llvm.struct<"class.Eigen::Matrix", (struct<"class.Eigen::PlainObjectBase", (struct<"class.Eigen::DenseStorage", (struct<"struct.Eigen::internal::plain_array", (array<16 x f32>)>)>)>)>
     llvm.store %15, %11 : !llvm.struct<"class.Eigen::Matrix", (struct<"class.Eigen::PlainObjectBase", (struct<"class.Eigen::DenseStorage", (struct<"struct.Eigen::internal::plain_array", (array<16 x f32>)>)>)>)>, !llvm.ptr
-    %16 = llvm.load %11 : !llvm.ptr -> !llvm.struct<"class.Eigen::Matrix", (struct<"class.Eigen::PlainObjectBase", (struct<"class.Eigen::DenseStorage", (struct<"struct.Eigen::internal::plain_array", (array<16 x f32>)>)>)>)>
-    %17 = tessera.call @eigen.inv(%16) {CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, arg_attrs = [{llvm.nonnull, llvm.noundef}], fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 2, 0>, tessera.loaded_operands = array<i32: 0>} : (!llvm.struct<"class.Eigen::Matrix", (struct<"class.Eigen::PlainObjectBase", (struct<"class.Eigen::DenseStorage", (struct<"struct.Eigen::internal::plain_array", (array<16 x f32>)>)>)>)>) -> !llvm.struct<"class.Eigen::Matrix", (struct<"class.Eigen::PlainObjectBase", (struct<"class.Eigen::DenseStorage", (struct<"struct.Eigen::internal::plain_array", (array<16 x f32>)>)>)>)>
+    %16 = llvm.load %11 : !llvm.ptr -> i512
+    %17 = tessera.call @eigen.inv(%16) {CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, arg_attrs = [{llvm.nonnull, llvm.noundef}], fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 2, 0>, tessera.loaded_operands = array<i32: 0>} : (i512) -> !llvm.struct<"class.Eigen::Matrix", (struct<"class.Eigen::PlainObjectBase", (struct<"class.Eigen::DenseStorage", (struct<"struct.Eigen::internal::plain_array", (array<16 x f32>)>)>)>)>
     llvm.store %17, %10 : !llvm.struct<"class.Eigen::Matrix", (struct<"class.Eigen::PlainObjectBase", (struct<"class.Eigen::DenseStorage", (struct<"struct.Eigen::internal::plain_array", (array<16 x f32>)>)>)>)>, !llvm.ptr
+    llvm.return %10 : !llvm.ptr
     // CHECK-NOT: llvm.alloca
     // CHECK-NOT: tessera.call @eigen.inv
-    // CHECK: llvm.store %arg0, %arg1
+    // CHECK: %[[RES:.*]] = llvm.load %arg0
+    // CHECK: llvm.store %[[RES]], %arg1
     // CHECK: llvm.return %arg1
-    llvm.return %10 : !llvm.ptr
   }
 
   module @patterns {

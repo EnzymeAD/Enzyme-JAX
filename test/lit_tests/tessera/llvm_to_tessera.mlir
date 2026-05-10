@@ -87,7 +87,8 @@ llvm.func @caller() {
 // CHECK: tessera.return
 
 // CHECK-LABEL: llvm.func @caller
-// CHECK: %[[RES:.*]] = tessera.call @tessera_sret_func
-// CHECK-SAME: tessera.loaded_operands = array<i32>
+// CHECK: %[[LOAD:.*]] = llvm.load %{{.*}} : !llvm.ptr -> i512
+// CHECK: %[[RES:.*]] = tessera.call @tessera_sret_func(%[[LOAD]])
+// CHECK-SAME: tessera.loaded_operands = array<i32: 0>
 // CHECK-SAME: -> !llvm.struct<(f32, f32)>
 // CHECK: llvm.store %[[RES]], %{{.*}} : !llvm.struct<(f32, f32)>, !llvm.ptr

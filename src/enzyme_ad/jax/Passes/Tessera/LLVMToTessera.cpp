@@ -193,8 +193,8 @@ public:
               defineOp.getArgAttr(i, LLVM::LLVMDialect::getByValAttrName())) {
         pointeeType = cast<TypeAttr>(byValAttr).getValue();
       } else if (byRefArgs[argIdx]) {
-        pointeeType = LLVM::LLVMArrayType::get(
-            IntegerType::get(rewriter.getContext(), 8), argSizes[argIdx]);
+        pointeeType =
+            IntegerType::get(rewriter.getContext(), argSizes[argIdx] * 8);
       }
 
       if (pointeeType) {

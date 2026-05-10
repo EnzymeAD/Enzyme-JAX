@@ -1081,6 +1081,25 @@ void removeRedundantBlockArgs(
   }
 }
 
+// Extract values from struct or array and insert them into a vector
+Value buildVector(OpBuilder &b, Value val, unsigned numElements,
+                  Type elemType) {
+  SmallVector<Value> extracted;
+  for (unsigned i = 0; i < numElements; i++) {
+    extracted.push_back(LLVM::ExtractValueOp::create(b, val.getLoc(), val, i));
+  }
+
+  auto vecType = VectorType::get(numElements, elemType);
+  Value vec = LLVM::PoisonOp::create(b, val.getLoc(), vecType);
+  for (unsigned i = 0; i < extracted.size(); i++) {
+    Value idx = LLVM::ConstantOp::create(b, val.getLoc(), b.getI32Type(),
+                                         b.getI32IntegerAttr(i));
+    vec =
+        LLVM::InsertElementOp::create(b, val.getLoc(), vec, extracted[i], idx);
+  }
+  return vec;
+}
+
 Value castToType(Type elType, Value val, Operation *op) {
   if (val.getType() == elType)
     return val;
@@ -1103,6 +1122,31 @@ Value castToType(Type elType, Value val, Operation *op) {
       b.setInsertionPoint(op);
       return LLVM::InsertValueOp::create(b, val.getLoc(), ud, c0,
                                          b.getDenseI64ArrayAttr({0}));
+    }
+  } else if (auto ST = dyn_cast<LLVM::LLVMStructType>(val.getType())) {
+    if (ST.getBody().size() == 1) {
+      auto extractedVal = LLVM::ExtractValueOp::create(b, val.getLoc(), val, 0);
+      return castToType(elType, extractedVal, op);
+    } else {
+      Type elemType = ST.getBody()[0];
+      if (llvm::all_of(ST.getBody(), [&](Type t) {
+            return t == elemType && isa<VectorElementTypeInterface>(t);
+          })) {
+        Value vec = buildVector(b, val, ST.getBody().size(), elemType);
+        return castToType(elType, vec, op);
+      }
+    }
+  } else if (auto AT = dyn_cast<LLVM::LLVMArrayType>(val.getType())) {
+    Type elemType = AT.getElementType();
+    if (isa<VectorElementTypeInterface>(elemType)) {
+      Value vec = buildVector(b, val, AT.getNumElements(), elemType);
+      return castToType(elType, vec, op);
+    }
+  } else if (auto VT = dyn_cast<VectorType>(val.getType())) {
+    if (isa<IntegerType>(elType)) {
+      DataLayout dl(op->getParentOfType<ModuleOp>());
+      if (dl.getTypeSize(val.getType()) == dl.getTypeSize(elType))
+        return b.create<LLVM::BitcastOp>(val.getLoc(), elType, val);
     }
   }
   llvm::errs() << " mismatched load type, needed: " << elType << " found "

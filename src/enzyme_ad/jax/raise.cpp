@@ -110,7 +110,7 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       "canonicalize,delinearize-indexing,canonicalize,simplify-affine-exprs,"
       "affine-cfg,canonicalize,llvm-to-affine-access,canonicalize,"
       "func.func(affine-loop-invariant-code-motion),"
-      "canonicalize,sort-memory,llvm-to-tessera,tessera-apply-pdl,tessera-to-llvm,";
+      "canonicalize,sort-memory,llvm-to-tessera,polygeist-mem2reg,canonicalize,tessera-apply-pdl,tessera-to-llvm,";
   if (StringRef(backend).starts_with("xla")) {
       pass_pipeline += "func.func(kernelcast),raise-affine-to-stablehlo{prefer_while_raising=false "
       "dump_failed_lockstep=true},canonicalize,arith-raise{stablehlo=true},"
