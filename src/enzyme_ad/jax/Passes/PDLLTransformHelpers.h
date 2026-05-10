@@ -54,6 +54,12 @@ std::optional<RewriteExtent> parseRewriteExtent(llvm::StringRef name);
 // SliceExtend commute helpers
 //===----------------------------------------------------------------------===//
 
+/// Returns success if `sliceOp.getOperand()` has a static shape and
+/// `sliceOp` does not modify the dimension being extended by `extendOp`
+/// (i.e. start = 0, limit = base dim size, stride = 1 along that dim).
+LogicalResult isValidSliceForExtend(::mlir::stablehlo::SliceOp sliceOp,
+                                    ::mlir::enzymexla::ExtendOp extendOp);
+
 /// Returns success when at least one OTHER user of `sliceOp.getOperand()`
 /// matches the extend characteristics of `extendOp` (either a direct
 /// `enzymexla.extend` user or a `stablehlo.slice` whose single user is a

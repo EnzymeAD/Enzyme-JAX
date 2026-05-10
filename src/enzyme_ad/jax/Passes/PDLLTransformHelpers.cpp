@@ -38,6 +38,26 @@ std::optional<RewriteExtent> parseRewriteExtent(llvm::StringRef name) {
 // SliceExtend commute helpers
 //===----------------------------------------------------------------------===//
 
+LogicalResult isValidSliceForExtend(::mlir::stablehlo::SliceOp sliceOp,
+                                    ::mlir::enzymexla::ExtendOp extendOp) {
+  Value baseOperand = sliceOp.getOperand();
+  auto baseType = mlir::dyn_cast<RankedTensorType>(baseOperand.getType());
+
+  if (!baseType || !baseType.hasStaticShape())
+    return failure();
+
+  int64_t dim = extendOp.getDimension();
+
+  // Ensure the trigger SliceOp does not modify the dimension being extended.
+  if (sliceOp.getStartIndices()[dim] != 0 ||
+      sliceOp.getLimitIndices()[dim] != baseType.getShape()[dim] ||
+      sliceOp.getStrides()[dim] != 1) {
+    return failure();
+  }
+
+  return success();
+}
+
 LogicalResult
 hasMultipleMatchingExtendUsers(::mlir::stablehlo::SliceOp sliceOp,
                                ::mlir::enzymexla::ExtendOp extendOp) {
@@ -196,9 +216,17 @@ void registerSliceExtendDynamicPDLLBindings(RewritePatternSet &patterns,
                                             RewriteExtent extent) {
   PDLPatternModule &pdl = patterns.getPDLPatterns();
 
-  // Bind the configurable profitability check. The high-level overload of
+  // Bind the structural validity check. The high-level overload of
   // `registerConstraintFunction` lets us receive typed Op arguments
   // directly; the framework unwraps the underlying PDLValues.
+  pdl.registerConstraintFunction(
+      "IsValidSliceForExtend",
+      [](PatternRewriter &, stablehlo::SliceOp sliceOp,
+         enzymexla::ExtendOp extendOp) -> LogicalResult {
+        return isValidSliceForExtend(sliceOp, extendOp);
+      });
+
+  // Bind the configurable profitability check.
   pdl.registerConstraintFunction(
       "ConfigurableProfitabilityCheck",
       [extent](PatternRewriter &, stablehlo::SliceOp sliceOp,
