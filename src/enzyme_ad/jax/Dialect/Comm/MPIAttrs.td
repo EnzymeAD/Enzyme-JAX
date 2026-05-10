@@ -14,7 +14,7 @@ def MPI_Comms : I32EnumAttr<"MPI_Comms", "Named predefined MPI communicators", [
   let cppNamespace = "::mlir::enzymexla::comm";
 }
 
-def MPI_CommsAttr : EnumAttr<Comm_Dialect, MPI_Comms, "communicator"> {
+def MPI_CommsAttr : EnumAttr<Comm_Dialect, MPI_Comms, "mpi.comm"> {
   let assemblyFormat = "`<` $value `>`";
 }
 
@@ -97,7 +97,7 @@ def MPI_Datatypes : I32EnumAttr<"MPI_Datatypes", "Named predefined MPI datatypes
   let cppNamespace = "::mlir::enzymexla::comm";
 }
 
-def MPI_DatatypesAttr : EnumAttr<Comm_Dialect, MPI_Datatypes, "datatype"> {
+def MPI_DatatypesAttr : EnumAttr<Comm_Dialect, MPI_Datatypes, "mpi.datatype"> {
   let assemblyFormat = "`<` $value `>`";
 }
 
@@ -122,7 +122,7 @@ def MPI_Ops : I32EnumAttr<"MPI_Ops", "Named predefined MPI operations", [
   let cppNamespace = "::mlir::enzymexla::comm";
 }
 
-def MPI_OpsAttr : EnumAttr<Comm_Dialect, MPI_Ops, "op"> {
+def MPI_OpsAttr : EnumAttr<Comm_Dialect, MPI_Ops, "mpi.op"> {
   let assemblyFormat = "`<` $value `>`";
 }
 
