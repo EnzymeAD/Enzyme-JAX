@@ -20,8 +20,8 @@
 #include "shardy/dialect/sdy/ir/utils.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
-#include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "src/enzyme_ad/jax/Passes/ConversionUtils.h"
+#include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "llvm/Support/Debug.h"
 #include <optional>
@@ -55,8 +55,6 @@ Type getFloatTypeFromString(StringRef typeStr, MLIRContext *context) {
     return Float8E5M2Type::get(context);
   return nullptr;
 }
-
-
 
 template <typename OpFunc>
 Value applyElementwiseOpToLimbs(Value tensor, OpBuilder &builder, Location loc,

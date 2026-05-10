@@ -1,4 +1,5 @@
-//===- LowerComplexOperations.cpp - Lower Complex Operations Pass -----------===//
+//===- LowerComplexOperations.cpp - Lower Complex Operations Pass
+//-----------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -68,8 +69,6 @@ bool isReturned(Operation *op) {
   return false;
 }
 
-
-
 template <typename OpTy>
 struct GenericOpConversion : public OpConversionPattern<OpTy> {
   using OpConversionPattern<OpTy>::OpConversionPattern;
@@ -82,7 +81,8 @@ struct GenericOpConversion : public OpConversionPattern<OpTy> {
 
     SmallVector<Value> operands;
     for (auto operand : adaptor.getOperands()) {
-      if (auto cast = operand.template getDefiningOp<UnrealizedConversionCastOp>()) {
+      if (auto cast =
+              operand.template getDefiningOp<UnrealizedConversionCastOp>()) {
         if (this->getTypeConverter()->isLegal(cast.getOperand(0).getType())) {
           operand = cast.getOperand(0);
         }
@@ -95,7 +95,7 @@ struct GenericOpConversion : public OpConversionPattern<OpTy> {
     state.addAttributes(op->getAttrs());
     state.addTypes(
         this->getTypeConverter()->convertType(op->getResult(0).getType()));
-    
+
     Operation *newOp = rewriter.create(state);
     rewriter.replaceOp(op, newOp->getResults());
     return success();
@@ -115,20 +115,24 @@ struct RealOpConversion : public OpConversionPattern<stablehlo::RealOp> {
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
     Value convertedOperand = adaptor.getOperands()[0];
-    Value realWithDim = extractLimb(convertedOperand, 0, rewriter, loc, concatDimension);
-    
+    Value realWithDim =
+        extractLimb(convertedOperand, 0, rewriter, loc, concatDimension);
+
     auto type = cast<RankedTensorType>(realWithDim.getType());
     SmallVector<int64_t> targetShape;
     bool isFirst = concatDimension == "first";
     if (isFirst) {
-      for (size_t i = 1; i < type.getRank(); ++i) targetShape.push_back(type.getShape()[i]);
+      for (size_t i = 1; i < type.getRank(); ++i)
+        targetShape.push_back(type.getShape()[i]);
     } else {
-      for (size_t i = 0; i < type.getRank() - 1; ++i) targetShape.push_back(type.getShape()[i]);
+      for (size_t i = 0; i < type.getRank() - 1; ++i)
+        targetShape.push_back(type.getShape()[i]);
     }
-    
+
     Value real = rewriter.create<stablehlo::ReshapeOp>(
-        loc, RankedTensorType::get(targetShape, type.getElementType()), realWithDim);
-        
+        loc, RankedTensorType::get(targetShape, type.getElementType()),
+        realWithDim);
+
     rewriter.replaceOp(op, real);
     return success();
   }
@@ -147,20 +151,24 @@ struct ImagOpConversion : public OpConversionPattern<stablehlo::ImagOp> {
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
     Value convertedOperand = adaptor.getOperands()[0];
-    Value imagWithDim = extractLimb(convertedOperand, 1, rewriter, loc, concatDimension);
-    
+    Value imagWithDim =
+        extractLimb(convertedOperand, 1, rewriter, loc, concatDimension);
+
     auto type = cast<RankedTensorType>(imagWithDim.getType());
     SmallVector<int64_t> targetShape;
     bool isFirst = concatDimension == "first";
     if (isFirst) {
-      for (size_t i = 1; i < type.getRank(); ++i) targetShape.push_back(type.getShape()[i]);
+      for (size_t i = 1; i < type.getRank(); ++i)
+        targetShape.push_back(type.getShape()[i]);
     } else {
-      for (size_t i = 0; i < type.getRank() - 1; ++i) targetShape.push_back(type.getShape()[i]);
+      for (size_t i = 0; i < type.getRank() - 1; ++i)
+        targetShape.push_back(type.getShape()[i]);
     }
-    
+
     Value imag = rewriter.create<stablehlo::ReshapeOp>(
-        loc, RankedTensorType::get(targetShape, type.getElementType()), imagWithDim);
-        
+        loc, RankedTensorType::get(targetShape, type.getElementType()),
+        imagWithDim);
+
     rewriter.replaceOp(op, imag);
     return success();
   }
@@ -180,23 +188,29 @@ struct ComplexOpConversion : public OpConversionPattern<stablehlo::ComplexOp> {
     Location loc = op.getLoc();
     Value real = adaptor.getOperands()[0];
     Value imag = adaptor.getOperands()[1];
-    
+
     auto type = cast<RankedTensorType>(real.getType());
     bool isFirst = concatDimension == "first";
     SmallVector<int64_t> expandedShape;
     if (isFirst) {
       expandedShape.push_back(1);
-      for (auto dim : type.getShape()) expandedShape.push_back(dim);
+      for (auto dim : type.getShape())
+        expandedShape.push_back(dim);
     } else {
-      for (auto dim : type.getShape()) expandedShape.push_back(dim);
+      for (auto dim : type.getShape())
+        expandedShape.push_back(dim);
       expandedShape.push_back(1);
     }
-    
-    auto expandedType = RankedTensorType::get(expandedShape, type.getElementType());
-    Value expandedReal = rewriter.create<stablehlo::ReshapeOp>(loc, expandedType, real);
-    Value expandedImag = rewriter.create<stablehlo::ReshapeOp>(loc, expandedType, imag);
 
-    Value packed = packLimbs({expandedReal, expandedImag}, rewriter, loc, concatDimension);
+    auto expandedType =
+        RankedTensorType::get(expandedShape, type.getElementType());
+    Value expandedReal =
+        rewriter.create<stablehlo::ReshapeOp>(loc, expandedType, real);
+    Value expandedImag =
+        rewriter.create<stablehlo::ReshapeOp>(loc, expandedType, imag);
+
+    Value packed =
+        packLimbs({expandedReal, expandedImag}, rewriter, loc, concatDimension);
     rewriter.replaceOp(op, packed);
     return success();
   }
@@ -214,7 +228,7 @@ struct MulOpConversion : public OpConversionPattern<stablehlo::MulOp> {
   matchAndRewrite(stablehlo::MulOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
-    
+
     Value lhs = adaptor.getOperands()[0];
     Value rhs = adaptor.getOperands()[1];
 
@@ -249,7 +263,7 @@ struct DivOpConversion : public OpConversionPattern<stablehlo::DivOp> {
   matchAndRewrite(stablehlo::DivOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
-    
+
     Value lhs = adaptor.getOperands()[0];
     Value rhs = adaptor.getOperands()[1];
 
@@ -382,7 +396,8 @@ struct SliceOpConversion : public OpConversionPattern<stablehlo::SliceOp> {
   }
 };
 
-struct TransposeOpConversion : public OpConversionPattern<stablehlo::TransposeOp> {
+struct TransposeOpConversion
+    : public OpConversionPattern<stablehlo::TransposeOp> {
   StringRef concatDimension;
 
   TransposeOpConversion(TypeConverter &typeConverter, MLIRContext *context,
@@ -535,12 +550,11 @@ struct LowerComplexOperationsPass
     patterns.add<MulOpConversion>(typeConverter, context, concatDimension);
     patterns.add<DivOpConversion>(typeConverter, context, concatDimension);
     patterns.add<SliceOpConversion>(typeConverter, context, concatDimension);
-    patterns.add<TransposeOpConversion>(typeConverter, context, concatDimension);
+    patterns.add<TransposeOpConversion>(typeConverter, context,
+                                        concatDimension);
 
     SmallVector<func::FuncOp> funcsToConvert;
-    op->walk([&](func::FuncOp func) {
-      funcsToConvert.push_back(func);
-    });
+    op->walk([&](func::FuncOp func) { funcsToConvert.push_back(func); });
 
     FrozenRewritePatternSet frozenPatterns(std::move(patterns));
     for (auto func : funcsToConvert) {
@@ -553,7 +567,8 @@ struct LowerComplexOperationsPass
     // Handle boundaries
     for (auto func : funcsToConvert) {
       OpBuilder b(func.getContext());
-      if (func.getBody().empty()) continue;
+      if (func.getBody().empty())
+        continue;
       b.setInsertionPointToStart(&func.getBody().front());
       for (auto arg : func.getArguments()) {
         if (isComplexType(arg.getType())) {
@@ -581,7 +596,7 @@ struct LowerComplexOperationsPass
           }
         }
       }
-      
+
       func.walk([&](func::ReturnOp returnOp) {
         OpBuilder b_ret(returnOp);
         SmallVector<Value> newOperands;
@@ -614,7 +629,8 @@ struct LowerComplexOperationsPass
                 loc, RankedTensorType::get(targetShape, type.getElementType()),
                 imagWithDim);
 
-            Value converted = b_ret.create<stablehlo::ComplexOp>(loc, real, imag);
+            Value converted =
+                b_ret.create<stablehlo::ComplexOp>(loc, real, imag);
             newOperands.push_back(converted);
             changed = true;
           } else {

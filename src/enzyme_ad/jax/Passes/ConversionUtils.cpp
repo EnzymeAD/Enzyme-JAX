@@ -110,8 +110,8 @@ Value extractLimb(Value tensor, int limbIndex, OpBuilder &builder, Location loc,
   SmallVector<int64_t> strides(type.getRank(), 1);
 
   return builder.create<stablehlo::SliceOp>(
-      loc, RankedTensorType::get(sliceShape, type.getElementType()),
-      tensor, builder.getDenseI64ArrayAttr(startIndices),
+      loc, RankedTensorType::get(sliceShape, type.getElementType()), tensor,
+      builder.getDenseI64ArrayAttr(startIndices),
       builder.getDenseI64ArrayAttr(limitIndices),
       builder.getDenseI64ArrayAttr(strides));
 }
