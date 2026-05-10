@@ -33,6 +33,7 @@
 
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
+#include "src/enzyme_ad/jax/Passes/PDLLTransformHelpers.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "src/enzyme_ad/jax/Utils.h"
 #include "stablehlo/dialect/StablehloOps.h"
@@ -74,8 +75,23 @@ struct ApplyPDLLPatternsPass
                        "`exclude-patterns` options are mutually exclusive");
     }
 
+    std::optional<RewriteExtent> parsedExtent =
+        parseRewriteExtent(rewriteExtent);
+    if (!parsedExtent) {
+      return emitError(UnknownLoc::get(ctx),
+                       "apply-pdll-patterns: invalid `rewrite-extent` value '" +
+                           rewriteExtent +
+                           "'; expected one of `pure-local`, "
+                           "`checked-local`, `checked-global`");
+    }
+
     RewritePatternSet patternList(ctx);
     populateAllPDLLPatterns(patternList);
+
+    // Bind the externally-declared PDLL constraint/rewrite hooks for each
+    // configurable pattern. This must happen after population (so the merged
+    // PDLPatternModule exists) and before the pattern set is frozen.
+    registerSliceExtendDynamicPDLLBindings(patternList, *parsedExtent);
 
     // The `disabledPatternLabels` / `enabledPatternLabels` arguments of
     // `FrozenRewritePatternSet` only affect native C++ patterns; PDLL-generated

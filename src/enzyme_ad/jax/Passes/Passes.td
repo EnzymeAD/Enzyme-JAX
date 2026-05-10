@@ -1392,6 +1392,14 @@ def ApplyPDLLPatternsPass : Pass<"apply-pdll-patterns"> {
     ListOption<"excludePatterns", "exclude", "std::string",
                "List of PDLL pattern names to exclude. "
                "Mutually exclusive with `include-patterns`.">,
+    Option<"rewriteExtent", "rewrite-extent", "std::string",
+           "\"checked-local\"",
+           "Controls how aggressively configurable PDLL patterns rewrite. "
+           "One of: `pure-local` (skip profitability checks, run minimal "
+           "rewrite), `checked-local` (run profitability check then "
+           "minimal rewrite), `checked-global` (run profitability check "
+           "then global rewrite that deduplicates matching sibling "
+           "users).">,
   ];
 }
 
