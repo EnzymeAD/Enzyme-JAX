@@ -147,8 +147,9 @@ def MPI_AllreduceOp : Comm_Op<"mpi.allreduce", []> {
   let summary = "Equivalent to `MPI_Allreduce`";
 
   let arguments = (ins
+    AnyTensor : $sendbuf,
     MPI_Op : $mpiOp,
-    AnyTensor : $sendbuf
+    MPI_Comm : $comm
   );
 
   let results = (outs AnyTensor : $recvbuf);
@@ -161,7 +162,8 @@ def MPI_BcastOp : Comm_Op<"mpi.bcast", []> {
 
   let arguments = (ins
     AnyTensor : $inbuf,
-    I32 : $root
+    I32 : $root,
+    MPI_Comm : $comm
   );
 
   let results = (outs AnyTensor : $outbuf);
