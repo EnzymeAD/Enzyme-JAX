@@ -62,3 +62,4 @@ common --define=allow_oversize_protos=true
 build --@rules_python//python/config_settings:precompile=force_disabled
 
 build -c opt
+build --cxxopt=-faligned-allocation

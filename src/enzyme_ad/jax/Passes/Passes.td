@@ -125,7 +125,17 @@ def MultiFloatConversionPass : Pass<"multi-float-conversion"> {
   ];
 }
 
-
+def LowerComplexOperationsPass : Pass<"lower-complex-operations"> {
+  let summary = "Lower operations on complex-element tensor types to use real elements with an extra dimension.";
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "tensor::TensorDialect",
+    "arith::ArithDialect",
+  ];
+  let options = [
+    Option<"concatDimension", "concat-dimension", "std::string", "\"first\"", "Dimension to concatenate ('first' or 'last')">,
+  ];
+}
 
 def TensorEmptyOpRaisingPass : Pass<"tensor-empty-raise"> {
   let summary = "Raise tensor.empty ops";

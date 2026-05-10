@@ -20,6 +20,7 @@
 #include "shardy/dialect/sdy/ir/utils.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
+#include "src/enzyme_ad/jax/Passes/ConversionUtils.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "llvm/Support/Debug.h"
@@ -53,119 +54,6 @@ Type getFloatTypeFromString(StringRef typeStr, MLIRContext *context) {
   if (typeStr == "f8E5M2")
     return Float8E5M2Type::get(context);
   return nullptr;
-}
-
-Value extractLimb(Value tensor, int limbIndex, OpBuilder &builder, Location loc,
-                  StringRef concatDimension) {
-  bool isTuple = concatDimension == "tuple";
-  bool isFirst = concatDimension == "first";
-  if (auto castOp = tensor.getDefiningOp<UnrealizedConversionCastOp>()) {
-    if (isTuple) {
-      if (castOp.getNumOperands() > 1)
-        return castOp.getOperand(limbIndex);
-      if (castOp.getNumOperands() == 1 &&
-          isa<TupleType>(castOp.getOperand(0).getType())) {
-        Value tupleVal = castOp.getOperand(0);
-        if (auto tupleOp = tupleVal.getDefiningOp<stablehlo::TupleOp>()) {
-          return tupleOp.getOperand(limbIndex);
-        }
-        return builder.create<stablehlo::GetTupleElementOp>(
-            loc, tupleVal, builder.getI32IntegerAttr(limbIndex));
-      }
-    } else {
-      Value expanded = castOp.getOperand(0);
-      auto expandedType = dyn_cast<RankedTensorType>(expanded.getType());
-      auto resultType = dyn_cast<RankedTensorType>(tensor.getType());
-      if (expandedType && resultType &&
-          expandedType.getRank() > resultType.getRank()) {
-        SmallVector<int64_t> sliceShape =
-            llvm::to_vector(expandedType.getShape());
-        int dimToSlice = isFirst ? 0 : expandedType.getRank() - 1;
-        sliceShape[dimToSlice] = 1;
-
-        SmallVector<int64_t> startIndices(expandedType.getRank(), 0);
-        SmallVector<int64_t> limitIndices =
-            llvm::to_vector(expandedType.getShape());
-        startIndices[dimToSlice] = limbIndex;
-        limitIndices[dimToSlice] = limbIndex + 1;
-
-        SmallVector<int64_t> strides(expandedType.getRank(), 1);
-
-        return builder.create<stablehlo::SliceOp>(
-            loc,
-            RankedTensorType::get(sliceShape, expandedType.getElementType()),
-            expanded, builder.getDenseI64ArrayAttr(startIndices),
-            builder.getDenseI64ArrayAttr(limitIndices),
-            builder.getDenseI64ArrayAttr(strides));
-      }
-    }
-  }
-
-  if (isTuple) {
-    if (auto tupleOp = tensor.getDefiningOp<stablehlo::TupleOp>()) {
-      return tupleOp.getOperand(limbIndex);
-    }
-    return builder.create<stablehlo::GetTupleElementOp>(
-        loc, tensor, builder.getI32IntegerAttr(limbIndex));
-  }
-
-  if (auto concatOp = tensor.getDefiningOp<stablehlo::ConcatenateOp>()) {
-    auto type =
-        cast<RankedTensorType>(tensor.getType()); // use result type to get rank
-    int concatDim = isFirst ? 0 : type.getRank() - 1;
-    if (concatOp.getDimension() == concatDim &&
-        concatOp.getOperands().size() == 2) { // TODO expansionSize
-      return concatOp.getOperand(limbIndex);
-    }
-  }
-
-  auto type = cast<RankedTensorType>(tensor.getType());
-  SmallVector<int64_t> sliceShape = llvm::to_vector(type.getShape());
-  SmallVector<int64_t> startIndices(type.getRank(), 0);
-  SmallVector<int64_t> limitIndices = llvm::to_vector(type.getShape());
-
-  int dimToSlice = isFirst ? 0 : type.getRank() - 1;
-
-  sliceShape[dimToSlice] = 1;
-  startIndices[dimToSlice] = limbIndex;
-  limitIndices[dimToSlice] = limbIndex + 1;
-
-  SmallVector<int64_t> strides(type.getRank(), 1);
-
-  auto sliceOp = builder.create<stablehlo::SliceOp>(
-      loc, RankedTensorType::get(sliceShape, type.getElementType()), tensor,
-      builder.getDenseI64ArrayAttr(startIndices),
-      builder.getDenseI64ArrayAttr(limitIndices),
-      builder.getDenseI64ArrayAttr(strides));
-
-  return sliceOp;
-}
-
-Value packLimbs(ArrayRef<Value> limbs, OpBuilder &builder, Location loc,
-                StringRef concatDimension) {
-  bool isTuple = concatDimension == "tuple";
-  bool isFirst = concatDimension == "first";
-  if (isTuple) {
-    SmallVector<Type> types;
-    for (auto limb : limbs)
-      types.push_back(limb.getType());
-    return builder.create<stablehlo::TupleOp>(
-        loc, TupleType::get(limbs[0].getContext(), types), limbs);
-  }
-  auto type = cast<RankedTensorType>(limbs[0].getType());
-  int concatDim = isFirst ? 0 : type.getRank() - 1;
-
-  SmallVector<int64_t> outShape = llvm::to_vector(type.getShape());
-  outShape[concatDim] = limbs.size();
-
-  return builder.create<stablehlo::ConcatenateOp>(
-      loc, RankedTensorType::get(outShape, type.getElementType()), limbs,
-      concatDim);
-}
-
-Value packLimbs(Value high, Value low, OpBuilder &builder, Location loc,
-                StringRef concatDimension) {
-  return packLimbs({high, low}, builder, loc, concatDimension);
 }
 
 template <typename OpFunc>
