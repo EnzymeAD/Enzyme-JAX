@@ -143,6 +143,44 @@ def MemcpyOp : EnzymeXLA_Op<"memcpy"> {
   let hasCanonicalizer = 1;
 }
 
+def MemsetOp : EnzymeXLA_Op<"memset"> {
+  let summary = "GPU memset operation";
+
+  let description = [{
+    The `enzymexla.memset` operation fills the content of a memref with a value.
+  }];
+
+  let arguments = (ins Variadic<GPU_AsyncToken>:$asyncDependencies,
+      Arg<AnyMemRef, "", [MemWriteAt<0, FullEffect>]>:$target, AnyType:$value,
+      Index:$count);
+  let results = (outs Optional<GPU_AsyncToken>:$asyncToken);
+
+  let assemblyFormat = [{
+    custom<AsyncDependencies>(type($asyncToken), $asyncDependencies)
+    $target`,` $value `,` $count `:` type($target)`,` type($value) attr-dict
+  }];
+}
+
+def Memcpy2DOp : EnzymeXLA_Op<"memcpy2d"> {
+  let summary = "GPU memcpy2D operation";
+
+  let description = [{
+    The `enzymexla.memcpy2d` operation copies a 2D region from one memref to another.
+  }];
+
+  let arguments = (ins Variadic<GPU_AsyncToken>:$asyncDependencies,
+      Arg<AnyMemRef, "", [MemWriteAt<0, FullEffect>]>:$target, Index:$dpitch,
+      Arg<AnyMemRef, "", [MemReadAt<0, FullEffect>]>:$source, Index:$spitch,
+      Index:$width, Index:$height);
+  let results = (outs Optional<GPU_AsyncToken>:$asyncToken);
+
+  let assemblyFormat = [{
+    custom<AsyncDependencies>(type($asyncToken), $asyncDependencies)
+    $target`,` $dpitch `,` $source `,` $spitch `,` $width `,` $height `:` type($target)`,` type($source) attr-dict
+  }];
+  let hasCanonicalizer = 1;
+}
+
 def JITCallOp: EnzymeXLA_Op<"jit_call", [DeclareOpInterfaceMethods<SymbolUserOpInterface>, DeclareOpInterfaceMethods<CallOpInterface>, DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "JIT Call operation";
 
