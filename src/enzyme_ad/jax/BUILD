@@ -1163,7 +1163,11 @@ cc_library(
             "Dialect/Tessera/*.cpp",
             "Dialect/Perfify/*.cpp",
         ],
-        exclude = ["Dialect/Utils.cpp"],
+        exclude = [
+            "Dialect/Utils.cpp",
+            "Dialect/Ops.cpp",
+            "Dialect/Dialect.cpp",
+        ],
     ) + [
         "Utils.cpp",
     ],
