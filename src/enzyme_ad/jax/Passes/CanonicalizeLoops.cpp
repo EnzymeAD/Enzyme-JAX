@@ -151,6 +151,10 @@ struct RemoveAffineParallelSingleIter
   }
 };
 
+} // namespace
+
+namespace mlir::enzyme {
+
 /// Integer range analysis determines the integer value range of SSA values
 /// using operations that define `InferIntRangeInterface` and also sets the
 /// range of iteration indices of loops with known bounds.
@@ -342,6 +346,10 @@ LogicalResult AffineIntegerRangeAnalysis::visitOperation(
   inferrable.inferResultRangesFromOptional(argRanges, joinCallback);
   return success();
 }
+
+} // namespace mlir::enzyme
+
+namespace {
 
 std::optional<int64_t> maxSize(mlir::Value v) {
   if (auto ba = dyn_cast<BlockArgument>(v)) {
