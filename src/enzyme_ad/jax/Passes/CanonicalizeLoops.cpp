@@ -930,6 +930,8 @@ public:
           return v;
         if (!ifOp->isAncestor(op))
           return v;
+        if (op->getNumRegions() > 0)
+          return std::nullopt;
         if (!isPure(op))
           return std::nullopt;
         SmallVector<Value> rOprs;
@@ -959,6 +961,7 @@ public:
       rewriter.replaceAllUsesWith(ifOp->getResult(i), select);
       succeeded = true;
     }
+
     return success(succeeded);
   }
 };
@@ -969,6 +972,7 @@ public:
 
   LogicalResult matchAndRewrite(scf::IfOp ifOp,
                                 PatternRewriter &rewriter) const override {
+
     // Check if if has both then and else regions
     bool hasElse = !ifOp.getElseRegion().empty();
     if (!hasElse)
@@ -1030,6 +1034,7 @@ public:
     }
 
     rewriter.replaceOp(ifOp, results);
+
     return success();
   }
 };
