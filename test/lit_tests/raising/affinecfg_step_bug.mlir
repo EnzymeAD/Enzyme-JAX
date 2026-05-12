@@ -5,7 +5,7 @@
 // CHECK:           affine.for %[[IV:.*]] = 0 to 4 {
 // CHECK-NEXT:        %[[CAST:.*]] = arith.index_cast %[[IV]] : index to i64
 // CHECK-NEXT:        %[[MUL:.*]] = arith.muli %[[CAST]], %[[C2]] : i64
-// CHECK-NEXT:        %[[ADD:.*]] = arith.addi %[[C2]], %[[MUL]] : i64
+// CHECK-NEXT:        %[[ADD:.*]] = arith.addi %[[MUL]], %[[C2]] : i64
 // CHECK-NEXT:        "test.use"(%[[ADD]]) : (i64) -> ()
 // CHECK-NEXT:      }
 func.func @repro() {
