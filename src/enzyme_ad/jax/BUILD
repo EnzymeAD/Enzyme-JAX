@@ -1249,6 +1249,7 @@ cc_library(
         "@llvm-project//mlir:ArithDialect",
         "@llvm-project//mlir:ArithToLLVM",
         "@llvm-project//mlir:ArithUtils",
+        "@llvm-project//mlir:AsmParser",
         "@llvm-project//mlir:AsyncDialect",
         "@llvm-project//mlir:BytecodeOpInterface",
         "@llvm-project//mlir:BytecodeWriter",

@@ -260,6 +260,18 @@ def EnzymeHLOUnrollPass : Pass<"enzyme-hlo-unroll"> {
   ];
 }
 
+def EnzymeRefineArgumentsPass : Pass<"enzyme-refine-arguments", "ModuleOp"> {
+  let summary = "Refine function arguments with potential type conversion.";
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "tensor::TensorDialect",
+  ];
+  let options = [
+    ListOption<"refinedTypesOption", "refined-types", "std::string",
+               "List of refined types for function arguments">
+  ];
+}
+
 def PrintPass : Pass<"print"> {
   let summary = "Print the module";
   let options = [Option<
