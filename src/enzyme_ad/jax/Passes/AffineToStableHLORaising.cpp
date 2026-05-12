@@ -391,6 +391,14 @@ static LogicalResult affineMapToSlice(affine::AffineValueMap accessValueMap,
       strides.push_back(1);
       continue;
     }
+    if (expr.walk([](AffineExpr e) {
+              if (isa<AffineSymbolExpr>(e))
+                return WalkResult::interrupt();
+              return WalkResult::advance();
+            })
+            .wasInterrupted()) {
+      return failure();
+    }
 
     Value iv = getIVForExpr(accessValueMap, expr);
     if (affine::isAffineForInductionVar(iv) && !pc.isParallelIV(iv)) {
