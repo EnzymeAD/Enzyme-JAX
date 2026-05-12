@@ -39,9 +39,11 @@ func.func @square_complex(%x : tensor<5xcomplex<f32>>) -> tensor<5xcomplex<f32>>
 
 // REVERSE-COMPLEX:  func.func @square_complex(%arg0: tensor<5xcomplex<f32>>, %arg1: tensor<5xcomplex<f32>>) -> tensor<5xcomplex<f32>> {
 // REVERSE-COMPLEX-NEXT:   %[[CST:.*]] = chlo.constant dense<(2.000000e+00,0.000000e+00)> : tensor<5xcomplex<f32>>
+// REVERSE-COMPLEX-NEXT:   %[[CONJ1:.*]] = chlo.conj %arg1 : tensor<5xcomplex<f32>>
 // REVERSE-COMPLEX-NEXT:   %[[DIFF1:.*]] = stablehlo.multiply %arg0, %[[CST]] : tensor<5xcomplex<f32>>
-// REVERSE-COMPLEX-NEXT:   %[[DIFF2:.*]] = stablehlo.multiply %arg1, %[[DIFF1]] : tensor<5xcomplex<f32>>
-// REVERSE-COMPLEX-NEXT:   return %[[DIFF2]] : tensor<5xcomplex<f32>>
+// REVERSE-COMPLEX-NEXT:   %[[DIFF2:.*]] = stablehlo.multiply %[[CONJ1]], %[[DIFF1]] : tensor<5xcomplex<f32>>
+// REVERSE-COMPLEX-NEXT:   %[[CONJ2:.*]] = chlo.conj %[[DIFF2]] : tensor<5xcomplex<f32>>
+// REVERSE-COMPLEX-NEXT:   return %[[CONJ2]] : tensor<5xcomplex<f32>>
 // REVERSE-COMPLEX-NEXT: }
 
 func.func @main() {
@@ -73,7 +75,6 @@ func.func @main() {
   %output_c = stablehlo.constant dense<[(0.0, 0.0), (4.0, 0.0), (-9.0, 0.0), (-5.0, -12.0), (-5.0, -12.0)]> : tensor<5xcomplex<f32>>
 
   %d_c_re = stablehlo.constant dense<(1.0, 0.0)> : tensor<5xcomplex<f32>>
-  %expected_c_re = stablehlo.constant dense<[(0.0, 0.0), (4.0, 0.0), (0.0, -6.0), (4.0, 6.0), (-4.0, -6.0)]> : tensor<5xcomplex<f32>>
 
   // seed on real part
   %fwd_c_re:2 = enzyme.fwddiff @square_complex(%x_c, %d_c_re) {
@@ -81,44 +82,35 @@ func.func @main() {
     ret_activity=[#enzyme<activity enzyme_dup>]
   } : (tensor<5xcomplex<f32>>, tensor<5xcomplex<f32>>) -> (tensor<5xcomplex<f32>>, tensor<5xcomplex<f32>>)
 
-  interpreter.print %fwd_c_re#1 : tensor<5xcomplex<f32>>
-
   check.expect_almost_eq %fwd_c_re#0, %output_c : tensor<5xcomplex<f32>>
-  check.expect_almost_eq %fwd_c_re#1, %expected_c_re : tensor<5xcomplex<f32>>
+  check.expect_almost_eq_const %fwd_c_re#1, dense<[(0.0, 0.0), (4.0, 0.0), (0.0, 6.0), (4.0, -6.0), (-4.0, 6.0)]> : tensor<5xcomplex<f32>>
 
   %rev_c_re:2 = enzyme.autodiff @square_complex(%x_c, %d_c_re) {
     activity=[#enzyme<activity enzyme_active>],
     ret_activity=[#enzyme<activity enzyme_active>]
   } : (tensor<5xcomplex<f32>>, tensor<5xcomplex<f32>>) -> (tensor<5xcomplex<f32>>, tensor<5xcomplex<f32>>)
 
-  interpreter.print %rev_c_re#1 : tensor<5xcomplex<f32>>
-
   check.expect_almost_eq %rev_c_re#0, %output_c : tensor<5xcomplex<f32>>
-  check.expect_almost_eq %rev_c_re#1, %expected_c_re : tensor<5xcomplex<f32>>
+  check.expect_almost_eq_const %rev_c_re#1, dense<[(0.0, 0.0), (4.0, 0.0), (0.0, -6.0), (4.0, 6.0), (-4.0, -6.0)]> : tensor<5xcomplex<f32>>
 
   // seed on imaginary part
   %d_c_im = stablehlo.constant dense<(0.0, 1.0)> : tensor<5xcomplex<f32>>
-  %expected_c_im = stablehlo.constant dense<[(0.0, 0.0), (0.0, 4.0), (6.0, 0.0), (-6.0, 4.0), (6.0, -4.0)]> : tensor<5xcomplex<f32>>
 
   %fwd_c_im:2 = enzyme.fwddiff @square_complex(%x_c, %d_c_im) {
     activity=[#enzyme<activity enzyme_dup>],
     ret_activity=[#enzyme<activity enzyme_dup>]
   } : (tensor<5xcomplex<f32>>, tensor<5xcomplex<f32>>) -> (tensor<5xcomplex<f32>>, tensor<5xcomplex<f32>>)
 
-  interpreter.print %fwd_c_im#1 : tensor<5xcomplex<f32>>
-
   check.expect_almost_eq %fwd_c_im#0, %output_c : tensor<5xcomplex<f32>>
-  check.expect_almost_eq %fwd_c_im#1, %expected_c_im : tensor<5xcomplex<f32>>
+  check.expect_almost_eq_const %fwd_c_im#1, dense<[(0.0, 0.0), (0.0, 4.0), (-6.0, 0.0), (6.0, 4.0), (-6.0, -4.0)]> : tensor<5xcomplex<f32>>
 
   %rev_c_im:2 = enzyme.autodiff @square_complex(%x_c, %d_c_im) {
     activity=[#enzyme<activity enzyme_active>],
     ret_activity=[#enzyme<activity enzyme_active>]
   } : (tensor<5xcomplex<f32>>, tensor<5xcomplex<f32>>) -> (tensor<5xcomplex<f32>>, tensor<5xcomplex<f32>>)
 
-  interpreter.print %rev_c_im#1 : tensor<5xcomplex<f32>>
-
   check.expect_almost_eq %rev_c_im#0, %output_c : tensor<5xcomplex<f32>>
-  check.expect_almost_eq %rev_c_im#1, %expected_c_im : tensor<5xcomplex<f32>>
+  check.expect_almost_eq_const %rev_c_im#1, dense<[(0.0, 0.0), (0.0, 4.0), (6.0, 0.0), (-6.0, 4.0), (6.0, -4.0)]> : tensor<5xcomplex<f32>>
 
   func.return
 }
