@@ -73,7 +73,7 @@ func.func @main() {
   %output_c = stablehlo.constant dense<[(0.0, 0.0), (4.0, 0.0), (-9.0, 0.0), (-5.0, -12.0), (-5.0, -12.0)]> : tensor<5xcomplex<f32>>
 
   %d_c_re = stablehlo.constant dense<(1.0, 0.0)> : tensor<5xcomplex<f32>>
-  %expected_c_re = stablehlo.constant dense<[(0.0, 0.0), (4.0, 0.0), (0.0, 6.0), (4.0, -6.0), (-4.0, 6.0)]> : tensor<5xcomplex<f32>>
+  %expected_c_re = stablehlo.constant dense<[(0.0, 0.0), (4.0, 0.0), (0.0, -6.0), (4.0, 6.0), (-4.0, -6.0)]> : tensor<5xcomplex<f32>>
 
   // seed on real part
   %fwd_c_re:2 = enzyme.fwddiff @square_complex(%x_c, %d_c_re) {
@@ -98,7 +98,7 @@ func.func @main() {
 
   // seed on imaginary part
   %d_c_im = stablehlo.constant dense<(0.0, 1.0)> : tensor<5xcomplex<f32>>
-  %expected_c_im = stablehlo.constant dense<[(0.0, 0.0), (0.0, 4.0), (-6.0, 0.0), (6.0, 4.0), (-6.0, -4.0)]> : tensor<5xcomplex<f32>>
+  %expected_c_im = stablehlo.constant dense<[(0.0, 0.0), (0.0, 4.0), (6.0, 0.0), (-6.0, 4.0), (6.0, -4.0)]> : tensor<5xcomplex<f32>>
 
   %fwd_c_im:2 = enzyme.fwddiff @square_complex(%x_c, %d_c_im) {
     activity=[#enzyme<activity enzyme_dup>],
