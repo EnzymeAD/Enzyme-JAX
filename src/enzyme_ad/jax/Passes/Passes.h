@@ -46,7 +46,8 @@ void addSingleIter(mlir::RewritePatternSet &patterns, mlir::MLIRContext *ctx);
 mlir::AffineExpr recreateExpr(mlir::AffineExpr expr);
 mlir::AffineMap recreateExpr(mlir::AffineMap expr);
 mlir::IntegerSet recreateExpr(mlir::IntegerSet expr);
-std::unique_ptr<OperationPass<ModuleOp>> createEnzymeRefineArgumentsPass(TypeRange refinedTypes);
+std::unique_ptr<OperationPass<ModuleOp>>
+createEnzymeRefineArgumentsPass(TypeRange refinedTypes);
 } // namespace enzyme
 
 namespace cf {
