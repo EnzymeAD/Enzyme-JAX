@@ -19,7 +19,7 @@ limitations under the License.
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/Support/LogicalResult.h"
-#include "mlir/Parser/Parser.h"
+#include "mlir/AsmParser/AsmParser.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/Builders.h"
@@ -217,7 +217,7 @@ LogicalResult EnzymeRefineArgumentsPass::refineArguments(func::FuncOp func, Type
   // Update return types to match argument types as requested by user.
   func.setType(builder.getFunctionType(refinedTypes, refinedTypes));
 
-  // Replace wrappers with bitcast/reshape if element types mismatch
+  // Fix up wrappers if element types mismatch
   for (int64_t i = 0; i < body.getNumArguments(); ++i) {
     stablehlo::CustomCallOp wrapper = wrappers[i];
     if (!wrapper) continue;
@@ -229,13 +229,12 @@ LogicalResult EnzymeRefineArgumentsPass::refineArguments(func::FuncOp func, Type
     auto refinedTensorType = cast<RankedTensorType>(refinedType);
 
     if (originalTensorType.getElementType() != refinedTensorType.getElementType()) {
-      builder.setInsertionPointAfter(wrapper);
+      builder.setInsertionPoint(wrapper); // Insert before wrapper
 
       Type srcElType = refinedTensorType.getElementType();
       Type dstElType = originalTensorType.getElementType();
       
       Value input = wrapper.getOperand(0);
-      Value finalVal = input;
       
       if (srcElType.isInteger(8) && !dstElType.isInteger(8)) {
         int64_t dstSize = dstElType.getIntOrFloatBitWidth() / 8;
@@ -251,32 +250,16 @@ LogicalResult EnzymeRefineArgumentsPass::refineArguments(func::FuncOp func, Type
         bitcastShape.back() /= dstSize;
         auto bitcastType = RankedTensorType::get(bitcastShape, dstElType);
         
-        finalVal = builder.create<stablehlo::BitcastConvertOp>(wrapper.getLoc(), bitcastType, reshapedInput);
+        Value convertedVal = builder.create<stablehlo::BitcastConvertOp>(wrapper.getLoc(), bitcastType, reshapedInput);
         
-        if (bitcastType != originalType) {
-          if (originalTensorType.hasStaticShape()) {
-            finalVal = builder.create<stablehlo::ReshapeOp>(wrapper.getLoc(), originalType, finalVal);
-          } else {
-            finalVal = builder.create<tensor::CastOp>(wrapper.getLoc(), originalType, finalVal);
-          }
-        }
-      } else if (!srcElType.isInteger(8) && dstElType.isInteger(8)) {
-        int64_t srcSize = srcElType.getIntOrFloatBitWidth() / 8;
-        SmallVector<int64_t> bitcastShape = llvm::to_vector(refinedTensorType.getShape());
-        bitcastShape.push_back(srcSize);
+        // Update wrapper to use convertedVal
+        wrapper.setOperand(0, convertedVal);
         
-        auto bitcastType = RankedTensorType::get(bitcastShape, dstElType);
-        Value bitcastVal = builder.create<stablehlo::BitcastConvertOp>(wrapper.getLoc(), bitcastType, input);
-        
-        if (originalTensorType.hasStaticShape()) {
-          finalVal = builder.create<stablehlo::ReshapeOp>(wrapper.getLoc(), originalType, bitcastVal);
-        } else {
-          finalVal = builder.create<tensor::CastOp>(wrapper.getLoc(), originalType, bitcastVal);
-        }
+        // Update shape operand of wrapper
+        auto newShapeAttr = builder.getI64TensorAttr(bitcastType.getShape());
+        auto newShapeConst = builder.create<stablehlo::ConstantOp>(wrapper.getLoc(), newShapeAttr);
+        wrapper.setOperand(1, newShapeConst);
       }
-      
-      wrapper.getResult(0).replaceAllUsesWith(finalVal);
-      wrapper.erase();
     }
   }
 
@@ -303,14 +286,13 @@ LogicalResult EnzymeRefineArgumentsPass::refineArguments(func::FuncOp func, Type
           if (!srcElType.isInteger(8) && dstElType.isInteger(8)) {
              int64_t srcSize = srcElType.getIntOrFloatBitWidth() / 8;
              
-             if (!originalTensorType.hasStaticShape()) {
-               SmallVector<int64_t> staticShape = llvm::to_vector(refinedTensorType.getShape());
-               assert(!staticShape.empty() && staticShape.back() % srcSize == 0);
-               staticShape.back() /= srcSize;
-               
-               auto staticType = RankedTensorType::get(staticShape, srcElType);
-               val = builder.create<stablehlo::ReshapeOp>(returnOp.getLoc(), staticType, val);
-             }
+             // Assume we can reshape from dynamic to static if we know the static shape!
+             SmallVector<int64_t> staticShape = llvm::to_vector(refinedTensorType.getShape());
+             assert(!staticShape.empty() && staticShape.back() % srcSize == 0);
+             staticShape.back() /= srcSize;
+             
+             auto staticType = RankedTensorType::get(staticShape, srcElType);
+             val = builder.create<stablehlo::ReshapeOp>(returnOp.getLoc(), staticType, val);
              
              SmallVector<int64_t> bitcastShape = llvm::to_vector(refinedTensorType.getShape());
              bitcastShape.back() /= srcSize;
