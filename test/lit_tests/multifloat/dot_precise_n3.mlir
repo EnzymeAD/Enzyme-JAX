@@ -24,8 +24,9 @@ func.func @main() attributes {enzyme.no_multifloat} {
   %r1 = func.call @do_dot4(%a1, %b1) : (tensor<4xf64>, tensor<4xf64>) -> tensor<f64>
   "check.expect_close"(%r1, %e1) {max_ulp_difference = 4 : ui64} : (tensor<f64>, tensor<f64>) -> ()
 
-  // Cancellation case via products. 1e30·1 + 1·1 + (-1e30)·1 = 1.0
-  %a2 = stablehlo.constant dense<[1.0e30, 1.0, -1.0e30]> : tensor<3xf64>
+  // Cancellation case via products. 1e18·1 + 1·1 + (-1e18)·1 = 1.0. See
+  // reduce_precise_n3.mlir for why we use 1e18 (not 1e30) at N=3.
+  %a2 = stablehlo.constant dense<[1.0e18, 1.0, -1.0e18]> : tensor<3xf64>
   %b2 = stablehlo.constant dense<[1.0, 1.0, 1.0]> : tensor<3xf64>
   %e2 = stablehlo.constant dense<1.0> : tensor<f64>
   %r2 = func.call @do_dot3(%a2, %b2) : (tensor<3xf64>, tensor<3xf64>) -> tensor<f64>

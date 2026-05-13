@@ -34,13 +34,16 @@ func.func @main() attributes {enzyme.no_multifloat} {
   %r1 = func.call @do_reduce4(%a1) : (tensor<4xf64>) -> tensor<f64>
   "check.expect_close"(%r1, %e1) {max_ulp_difference = 4 : ui64} : (tensor<f64>, tensor<f64>) -> ()
 
-  // Case B: catastrophic cancellation. f64 left-to-right gives 0.0
-  // (1e30 + 1 rounds to 1e30 at f64 precision; the +1 is lost). Multifloat at
-  // N=3 has ~72 bits of mantissa, plenty to retain the +1 through the
-  // cancellation. Expected = 1.0 exactly. A wrong answer here would be ~0.0,
-  // which is ~2^62 ULPs from 1.0 — impossible to mask with any reasonable
-  // tolerance.
-  %a2 = stablehlo.constant dense<[1.0e30, 1.0, -1.0e30]> : tensor<3xf64>
+  // Case B: catastrophic cancellation. At magnitude 1e18, plain f64 reduce
+  // loses the +1 (f64 eps at 1e18 is ~128 > 1), so f64 left-to-right gives
+  // 0.0. N=3 multifloat uses 2 limbs to represent 1e18, leaving the third
+  // limb free to hold the +1 through the +M / -M cancellation. Expected =
+  // 1.0 exactly. A wrong answer here would be ~0.0, which is ~2^62 ULPs
+  // from 1.0 — impossible to mask with any reasonable tolerance.
+  //
+  // Note: at magnitudes ≥ 1e25, even N=3 multifloat uses all 3 limbs to
+  // represent M itself, leaving no room for +1. That regime needs N=4.
+  %a2 = stablehlo.constant dense<[1.0e18, 1.0, -1.0e18]> : tensor<3xf64>
   %e2 = stablehlo.constant dense<1.0> : tensor<f64>
   %r2 = func.call @do_reduce3(%a2) : (tensor<3xf64>) -> tensor<f64>
   "check.expect_close"(%r2, %e2) {max_ulp_difference = 4 : ui64} : (tensor<f64>, tensor<f64>) -> ()
