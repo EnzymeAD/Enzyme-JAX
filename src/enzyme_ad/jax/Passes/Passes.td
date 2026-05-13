@@ -117,7 +117,7 @@ def MultiFloatConversionPass : Pass<"multi-float-conversion"> {
     Option<"sourceType", "source-type", "std::string", "\"f64\"", "Source floating-point type (e.g., f64, f32)">,
     Option<"targetType", "target-type", "std::string", "\"f32\"", "Target floating-point type (e.g., f32, f16, bf16)">,
     Option<"concatDimension", "concat-dimension", "std::string", "\"first\"", "Dimension to concatenate ('first' or 'last')">,
-    Option<"expansionSize", "expansion-size", "int32_t", "2", "Number of limbs for expansion (1 or 2)">,
+    Option<"expansionSize", "expansion-size", "int32_t", "2", "Number of limbs for expansion (1, 2, 3, or 4; N=3 and N=4 schedules pending)">,
     Option<"convertSignatures", "convert-signatures", "bool", "false", "Whether to convert function signatures">,
     Option<"divSubsteps", "div-substeps", "int32_t", "0", "Number of Newton-Raphson iterations for division (0 for Dekker's algorithm)">,
     Option<"dotGeneralToReduce", "dot-general-to-reduce", "bool", "true", "Whether to rewrite dot_general to mul + reduce as preprocessing">,

@@ -329,43 +329,52 @@ std::pair<Value, Value> twoProdDekker(Value a, Value b, OpBuilder &builder,
   return {p, err4};
 }
 
-std::pair<Value, Value> multiFloatMul(Value x1, Value x2, Value y1, Value y2,
-                                      OpBuilder &builder, Location loc) {
-  auto [p00, e00] = twoProdDekker(x1, y1, builder, loc);
-  Value p01 = builder.create<stablehlo::MulOp>(loc, x1, y2);
-  Value p10 = builder.create<stablehlo::MulOp>(loc, x2, y1);
+SmallVector<Value> multiFloatMul(ArrayRef<Value> xs, ArrayRef<Value> ys,
+                                 OpBuilder &builder, Location loc) {
+  assert(xs.size() == ys.size() && xs.size() == 2 &&
+         "multiFloatMul: only N=2 implemented");
+  auto [p00, e00] = twoProdDekker(xs[0], ys[0], builder, loc);
+  Value p01 = builder.create<stablehlo::MulOp>(loc, xs[0], ys[1]);
+  Value p10 = builder.create<stablehlo::MulOp>(loc, xs[1], ys[0]);
   Value p01_p10 = builder.create<stablehlo::AddOp>(loc, p01, p10);
   Value e00_new = builder.create<stablehlo::AddOp>(loc, e00, p01_p10);
-  return fastTwoSum(p00, e00_new, builder, loc);
+  auto [hi, lo] = fastTwoSum(p00, e00_new, builder, loc);
+  return {hi, lo};
 }
 
-std::pair<Value, Value> multiFloatAdd(Value x1, Value x2, Value y1, Value y2,
-                                      OpBuilder &builder, Location loc) {
-  auto [a, b] = twoSum(x1, y1, builder, loc);
-  auto [c, d] = twoSum(x2, y2, builder, loc);
+SmallVector<Value> multiFloatAdd(ArrayRef<Value> xs, ArrayRef<Value> ys,
+                                 OpBuilder &builder, Location loc) {
+  assert(xs.size() == ys.size() && xs.size() == 2 &&
+         "multiFloatAdd: only N=2 implemented");
+  auto [a, b] = twoSum(xs[0], ys[0], builder, loc);
+  auto [c, d] = twoSum(xs[1], ys[1], builder, loc);
   auto [new_a, new_c] = fastTwoSum(a, c, builder, loc);
   Value b2 = builder.create<stablehlo::AddOp>(loc, b, d);
   Value b3 = builder.create<stablehlo::AddOp>(loc, b2, new_c);
-  return fastTwoSum(new_a, b3, builder, loc);
+  auto [hi, lo] = fastTwoSum(new_a, b3, builder, loc);
+  return {hi, lo};
 }
 
-std::pair<Value, Value> multiFloatDiv(Value x1, Value x2, Value y1, Value y2,
-                                      OpBuilder &builder, Location loc) {
-  auto tensorType = cast<RankedTensorType>(x1.getType());
+SmallVector<Value> multiFloatDiv(ArrayRef<Value> xs, ArrayRef<Value> ys,
+                                 OpBuilder &builder, Location loc) {
+  assert(xs.size() == ys.size() && xs.size() == 2 &&
+         "multiFloatDiv: only N=2 implemented");
+  auto tensorType = cast<RankedTensorType>(xs[0].getType());
   auto floatTy = cast<FloatType>(tensorType.getElementType());
   auto zeroAttr = builder.getFloatAttr(floatTy, 0.0);
   Value zero = builder.create<stablehlo::ConstantOp>(
       loc, SplatElementsAttr::get(tensorType, zeroAttr));
 
-  Value q1 = builder.create<stablehlo::DivOp>(loc, x1, y1);
-  auto [p_hi, p_lo] = multiFloatMul(q1, zero, y1, y2, builder, loc);
+  Value q1 = builder.create<stablehlo::DivOp>(loc, xs[0], ys[0]);
+  auto p = multiFloatMul({q1, zero}, ys, builder, loc);
 
-  Value neg_p_hi = builder.create<stablehlo::NegOp>(loc, p_hi);
-  Value neg_p_lo = builder.create<stablehlo::NegOp>(loc, p_lo);
-  auto [r_hi, r_lo] = multiFloatAdd(x1, x2, neg_p_hi, neg_p_lo, builder, loc);
+  Value neg_p_hi = builder.create<stablehlo::NegOp>(loc, p[0]);
+  Value neg_p_lo = builder.create<stablehlo::NegOp>(loc, p[1]);
+  auto r = multiFloatAdd(xs, {neg_p_hi, neg_p_lo}, builder, loc);
 
-  Value q2 = builder.create<stablehlo::DivOp>(loc, r_hi, y1);
-  return fastTwoSum(q1, q2, builder, loc);
+  Value q2 = builder.create<stablehlo::DivOp>(loc, r[0], ys[0]);
+  auto [hi, lo] = fastTwoSum(q1, q2, builder, loc);
+  return {hi, lo};
 }
 
 template <typename OpTy>
@@ -446,25 +455,6 @@ struct ConstantOpConversion
     return success();
   }
 };
-std::pair<Value, Value> mfAdd(Value x_hi, Value x_lo, Value y_hi, Value y_lo,
-                              OpBuilder &builder, Location loc) {
-  auto [a, b] = twoSum(x_hi, y_hi, builder, loc);
-  auto [c, d] = twoSum(x_lo, y_lo, builder, loc);
-  auto [new_a, new_c] = fastTwoSum(a, c, builder, loc);
-  Value b2 = builder.create<stablehlo::AddOp>(loc, b, d);
-  Value b3 = builder.create<stablehlo::AddOp>(loc, b2, new_c);
-  return fastTwoSum(new_a, b3, builder, loc);
-}
-
-std::pair<Value, Value> mfMul(Value x_hi, Value x_lo, Value y_hi, Value y_lo,
-                              OpBuilder &builder, Location loc) {
-  auto [p00, e00] = twoProdDekker(x_hi, y_hi, builder, loc);
-  Value p01 = builder.create<stablehlo::MulOp>(loc, x_hi, y_lo);
-  Value p10 = builder.create<stablehlo::MulOp>(loc, x_lo, y_hi);
-  Value p01_p10 = builder.create<stablehlo::AddOp>(loc, p01, p10);
-  Value e00_new = builder.create<stablehlo::AddOp>(loc, e00, p01_p10);
-  return fastTwoSum(p00, e00_new, builder, loc);
-}
 
 struct AddOpConversion : public OpConversionPattern<stablehlo::AddOp> {
   AddOpConversion(TypeConverter &typeConverter, MLIRContext *context,
@@ -518,7 +508,8 @@ struct AddOpConversion : public OpConversionPattern<stablehlo::AddOp> {
     Value y2 = extractLimb(adaptor.getOperands()[1], 1, rewriter, loc,
                            concatDimension);
 
-    auto [final_a, final_b] = mfAdd(x1, x2, y1, y2, rewriter, loc);
+    auto final_r = multiFloatAdd({x1, x2}, {y1, y2}, rewriter, loc);
+    Value final_a = final_r[0], final_b = final_r[1];
 
     Value packed = packLimbs(final_a, final_b, rewriter, loc, concatDimension);
     rewriter.replaceOp(op, packed);
@@ -549,7 +540,8 @@ struct MulOpConversion : public OpConversionPattern<stablehlo::MulOp> {
     Value y2 = extractLimb(adaptor.getOperands()[1], 1, rewriter, loc,
                            concatDimension);
 
-    auto [final_p, final_e] = mfMul(x1, x2, y1, y2, rewriter, loc);
+    auto final_r_r = multiFloatMul({x1, x2}, {y1, y2}, rewriter, loc);
+    Value final_p = final_r_r[0], final_e = final_r_r[1];
 
     Value packed = packLimbs(final_p, final_e, rewriter, loc, concatDimension);
     rewriter.replaceOp(op, packed);
@@ -636,7 +628,8 @@ struct ReduceOpConversion : public OpConversionPattern<stablehlo::ReduceOp> {
 
       Value final_hi, final_lo;
       if (!isMax) {
-        auto [h, l] = mfAdd(acc_hi, acc_lo, val_hi, val_lo, blockBuilder, loc);
+        auto hl = multiFloatAdd({acc_hi, acc_lo}, {val_hi, val_lo}, blockBuilder, loc);
+        Value h = hl[0], l = hl[1];
         final_hi = h;
         final_lo = l;
       } else {
@@ -896,22 +889,23 @@ struct DivOpConversion : public OpConversionPattern<stablehlo::DivOp> {
 
       for (int i = 0; i < divSubsteps; ++i) {
         // Y * u
-        auto [Y_u_hi, Y_u_lo] =
-            multiFloatMul(y1, y2, u_hi, u_lo, rewriter, loc);
+        auto Y_u = multiFloatMul({y1, y2}, {u_hi, u_lo}, rewriter, loc);
+        Value Y_u_hi = Y_u[0], Y_u_lo = Y_u[1];
         // 2 - Y * u
         Value neg_Y_u_hi = rewriter.create<stablehlo::NegOp>(loc, Y_u_hi);
         Value neg_Y_u_lo = rewriter.create<stablehlo::NegOp>(loc, Y_u_lo);
-        auto [diff_hi, diff_lo] = multiFloatAdd(two_hi, two_lo, neg_Y_u_hi,
-                                                neg_Y_u_lo, rewriter, loc);
+        auto diff_r = multiFloatAdd({two_hi, two_lo}, {neg_Y_u_hi, neg_Y_u_lo}, rewriter, loc);
+        Value diff_hi = diff_r[0], diff_lo = diff_r[1];
         // u = u * (2 - Y * u)
-        auto [next_u_hi, next_u_lo] =
-            multiFloatMul(u_hi, u_lo, diff_hi, diff_lo, rewriter, loc);
+        auto next_u = multiFloatMul({u_hi, u_lo}, {diff_hi, diff_lo}, rewriter, loc);
+        Value next_u_hi = next_u[0], next_u_lo = next_u[1];
         u_hi = next_u_hi;
         u_lo = next_u_lo;
       }
 
       // quotient = X * u
-      auto [q_hi, q_lo] = multiFloatMul(x1, x2, u_hi, u_lo, rewriter, loc);
+      auto q_r = multiFloatMul({x1, x2}, {u_hi, u_lo}, rewriter, loc);
+      Value q_hi = q_r[0], q_lo = q_r[1];
 
       Value packed = packLimbs(q_hi, q_lo, rewriter, loc, concatDimension);
       rewriter.replaceOp(op, packed);
@@ -1573,19 +1567,23 @@ struct ExpOpConversion : public OpConversionPattern<stablehlo::ExpOp> {
     Value p_lo = getConst(kCoefs[7][1]);
 
     for (int i = 6; i >= 0; --i) {
-      auto [mul_hi, mul_lo] =
-          mfMul(p_hi, p_lo, r_prime_hi, r_prime_lo, rewriter, loc);
+      auto mul_r = multiFloatMul({p_hi, p_lo}, {r_prime_hi, r_prime_lo}, rewriter, loc);
+      Value mul_hi = mul_r[0], mul_lo = mul_r[1];
       Value c_hi = getConst(kCoefs[i][0]);
       Value c_lo = getConst(kCoefs[i][1]);
-      auto [add_hi, add_lo] = mfAdd(mul_hi, mul_lo, c_hi, c_lo, rewriter, loc);
+      auto add_r = multiFloatAdd({mul_hi, mul_lo}, {c_hi, c_lo}, rewriter, loc);
+      Value add_hi = add_r[0], add_lo = add_r[1];
       p_hi = add_hi;
       p_lo = add_lo;
     }
 
     // 6. Square 3 times in multi-float!
-    auto [s1_hi, s1_lo] = mfMul(p_hi, p_lo, p_hi, p_lo, rewriter, loc);
-    auto [s2_hi, s2_lo] = mfMul(s1_hi, s1_lo, s1_hi, s1_lo, rewriter, loc);
-    auto [res_hi, res_lo] = mfMul(s2_hi, s2_lo, s2_hi, s2_lo, rewriter, loc);
+    auto s1 = multiFloatMul({p_hi, p_lo}, {p_hi, p_lo}, rewriter, loc);
+    Value s1_hi = s1[0], s1_lo = s1[1];
+    auto s2 = multiFloatMul({s1_hi, s1_lo}, {s1_hi, s1_lo}, rewriter, loc);
+    Value s2_hi = s2[0], s2_lo = s2[1];
+    auto res_r = multiFloatMul({s2_hi, s2_lo}, {s2_hi, s2_lo}, rewriter, loc);
+    Value res_hi = res_r[0], res_lo = res_r[1];
 
     // 7. Scale by 2^n
     // We can use stablehlo.pow(2.0, n) and multiply!
@@ -1656,8 +1654,8 @@ struct SineOpConversion : public OpConversionPattern<stablehlo::SineOp> {
         loc, SplatElementsAttr::get(tensorType, loInvPiAttr));
 
     // x_pi = x * (1/pi)
-    auto [x_pi_hi, x_pi_lo] =
-        multiFloatMul(hi, lo, hi_inv_pi, lo_inv_pi, rewriter, loc);
+    auto x_pi_r = multiFloatMul({hi, lo}, {hi_inv_pi, lo_inv_pi}, rewriter, loc);
+    Value x_pi_hi = x_pi_r[0], x_pi_lo = x_pi_r[1];
 
     // Absolute value of x_pi
     auto zeroAttr = rewriter.getFloatAttr(floatTy, 0.0);
@@ -1699,8 +1697,8 @@ struct SineOpConversion : public OpConversionPattern<stablehlo::SineOp> {
     Value abs_x_lo = rewriter.create<stablehlo::SelectOp>(loc, lt_zero,
                                                           neg_x_pi_lo, x_pi_lo);
 
-    auto [rx_hi, rx_lo] =
-        multiFloatAdd(abs_x_hi, abs_x_lo, neg_half_n, zero, rewriter, loc);
+    auto rx_r = multiFloatAdd({abs_x_hi, abs_x_lo}, {neg_half_n, zero}, rewriter, loc);
+    Value rx_hi = rx_r[0], rx_lo = rx_r[1];
 
     // quadrant = n_int & 3
     auto threeAttr = rewriter.getIntegerAttr(rewriter.getI32Type(), 3);
@@ -1742,19 +1740,20 @@ struct SineOpConversion : public OpConversionPattern<stablehlo::SineOp> {
       Value acc_h = getConstant(coefs.back().first);
       Value acc_l = getConstant(coefs.back().second);
       for (int i = coefs.size() - 2; i >= 0; --i) {
-        auto [mul_h, mul_l] =
-            multiFloatMul(acc_h, acc_l, z_h, z_l, rewriter, loc);
+        auto mul_r2 = multiFloatMul({acc_h, acc_l}, {z_h, z_l}, rewriter, loc);
+        Value mul_h = mul_r2[0], mul_l = mul_r2[1];
         Value c_h = getConstant(coefs[i].first);
         Value c_l = getConstant(coefs[i].second);
-        std::tie(acc_h, acc_l) =
-            multiFloatAdd(mul_h, mul_l, c_h, c_l, rewriter, loc);
+        auto acc_next = multiFloatAdd({mul_h, mul_l}, {c_h, c_l}, rewriter, loc);
+        acc_h = acc_next[0];
+        acc_l = acc_next[1];
       }
       return {acc_h, acc_l};
     };
 
     // z = rx^2
-    auto [z_hi, z_lo] =
-        multiFloatMul(rx_hi, rx_lo, rx_hi, rx_lo, rewriter, loc);
+    auto z_r = multiFloatMul({rx_hi, rx_lo}, {rx_hi, rx_lo}, rewriter, loc);
+    Value z_hi = z_r[0], z_lo = z_r[1];
 
     // Evaluate Sine and Cosine polynomials
     auto [poly_sine_hi, poly_sine_lo] =
@@ -1763,8 +1762,8 @@ struct SineOpConversion : public OpConversionPattern<stablehlo::SineOp> {
         evaluatePolynomial(z_hi, z_lo, cos_coefs);
 
     // Sine result = rx * evalpoly(rx^2, sin_coefs)
-    auto [res_sine_hi, res_sine_lo] =
-        multiFloatMul(rx_hi, rx_lo, poly_sine_hi, poly_sine_lo, rewriter, loc);
+    auto res_sine = multiFloatMul({rx_hi, rx_lo}, {poly_sine_hi, poly_sine_lo}, rewriter, loc);
+    Value res_sine_hi = res_sine[0], res_sine_lo = res_sine[1];
 
     // Cosine result = evalpoly(rx^2, cos_coefs)
     Value res_cosine_hi = poly_cosine_hi;
@@ -1895,16 +1894,16 @@ struct SqrtOpConversion : public OpConversionPattern<stablehlo::SqrtOp> {
     Value u0 = rewriter.create<stablehlo::RsqrtOp>(loc, x_hi_safe);
 
     // root = X * u0
-    auto [root_hi, root_lo] =
-        multiFloatMul(x_hi, x_lo, u0, zero, rewriter, loc);
+    auto root_r = multiFloatMul({x_hi, x_lo}, {u0, zero}, rewriter, loc);
+    Value root_hi = root_r[0], root_lo = root_r[1];
 
     // residual = root^2 - X
-    auto [root_sq_hi, root_sq_lo] =
-        multiFloatMul(root_hi, root_lo, root_hi, root_lo, rewriter, loc);
+    auto root_sq = multiFloatMul({root_hi, root_lo}, {root_hi, root_lo}, rewriter, loc);
+    Value root_sq_hi = root_sq[0], root_sq_lo = root_sq[1];
     Value neg_x_hi = rewriter.create<stablehlo::NegOp>(loc, x_hi);
     Value neg_x_lo = rewriter.create<stablehlo::NegOp>(loc, x_lo);
-    auto [res_hi, res_lo] = multiFloatAdd(root_sq_hi, root_sq_lo, neg_x_hi,
-                                          neg_x_lo, rewriter, loc);
+    auto res_r2 = multiFloatAdd({root_sq_hi, root_sq_lo}, {neg_x_hi, neg_x_lo}, rewriter, loc);
+    Value res_hi = res_r2[0], res_lo = res_r2[1];
 
     // u_over_2 = 0.5 * u0
     auto halfAttr = rewriter.getFloatAttr(floatTy, 0.5);
@@ -1913,14 +1912,14 @@ struct SqrtOpConversion : public OpConversionPattern<stablehlo::SqrtOp> {
     Value u_over_2 = rewriter.create<stablehlo::MulOp>(loc, half, u0);
 
     // correction = residual * u_over_2
-    auto [corr_hi, corr_lo] =
-        multiFloatMul(res_hi, res_lo, u_over_2, zero, rewriter, loc);
+    auto corr = multiFloatMul({res_hi, res_lo}, {u_over_2, zero}, rewriter, loc);
+    Value corr_hi = corr[0], corr_lo = corr[1];
 
     // result = root - correction
     Value neg_corr_hi = rewriter.create<stablehlo::NegOp>(loc, corr_hi);
     Value neg_corr_lo = rewriter.create<stablehlo::NegOp>(loc, corr_lo);
-    auto [final_h, final_l] = multiFloatAdd(root_hi, root_lo, neg_corr_hi,
-                                            neg_corr_lo, rewriter, loc);
+    auto final_r_r2 = multiFloatAdd({root_hi, root_lo}, {neg_corr_hi, neg_corr_lo}, rewriter, loc);
+    Value final_h = final_r_r2[0], final_l = final_r_r2[1];
 
     bool isTuple = concatDimension == "tuple";
 
@@ -3034,30 +3033,28 @@ struct LogOpConversion : public OpConversionPattern<stablehlo::LogOp> {
     auto [neg_one_hi, neg_one_lo] = std::make_pair(m1_hi, m1_lo);
     Value p1_hi = getConst(1.0);
     Value p1_lo = getConst(0.0);
-    auto [x_minus_one_hi, x_minus_one_lo] =
-        multiFloatAdd(x_hi, x_lo, neg_one_hi, neg_one_lo, rewriter, loc);
-    auto [x_plus_one_hi, x_plus_one_lo] =
-        multiFloatAdd(x_hi, x_lo, p1_hi, p1_lo, rewriter, loc);
-    auto [t_direct_hi, t_direct_lo] =
-        multiFloatDiv(x_minus_one_hi, x_minus_one_lo, x_plus_one_hi,
-                      x_plus_one_lo, rewriter, loc);
+    auto x_minus_one = multiFloatAdd({x_hi, x_lo}, {neg_one_hi, neg_one_lo}, rewriter, loc);
+    Value x_minus_one_hi = x_minus_one[0], x_minus_one_lo = x_minus_one[1];
+    auto x_plus_one = multiFloatAdd({x_hi, x_lo}, {p1_hi, p1_lo}, rewriter, loc);
+    Value x_plus_one_hi = x_plus_one[0], x_plus_one_lo = x_plus_one[1];
+    auto t_direct_r = multiFloatDiv({x_minus_one_hi, x_minus_one_lo}, {x_plus_one_hi, x_plus_one_lo}, rewriter, loc);
+    Value t_direct_hi = t_direct_r[0], t_direct_lo = t_direct_r[1];
 
     // t_table = (m - center) / (m + center)
     Value neg_center_hi = rewriter.create<stablehlo::NegOp>(loc, center_hi);
     Value neg_center_lo = rewriter.create<stablehlo::NegOp>(loc, center_lo);
-    auto [m_minus_center_hi, m_minus_center_lo] =
-        multiFloatAdd(m_hi, m_lo, neg_center_hi, neg_center_lo, rewriter, loc);
-    auto [m_plus_center_hi, m_plus_center_lo] =
-        multiFloatAdd(m_hi, m_lo, center_hi, center_lo, rewriter, loc);
-    auto [t_table_hi, t_table_lo] =
-        multiFloatDiv(m_minus_center_hi, m_minus_center_lo, m_plus_center_hi,
-                      m_plus_center_lo, rewriter, loc);
+    auto m_minus_center = multiFloatAdd({m_hi, m_lo}, {neg_center_hi, neg_center_lo}, rewriter, loc);
+    Value m_minus_center_hi = m_minus_center[0], m_minus_center_lo = m_minus_center[1];
+    auto m_plus_center = multiFloatAdd({m_hi, m_lo}, {center_hi, center_lo}, rewriter, loc);
+    Value m_plus_center_hi = m_plus_center[0], m_plus_center_lo = m_plus_center[1];
+    auto t_table_r = multiFloatDiv({m_minus_center_hi, m_minus_center_lo}, {m_plus_center_hi, m_plus_center_lo}, rewriter, loc);
+    Value t_table_hi = t_table_r[0], t_table_lo = t_table_r[1];
 
     // t^2
-    auto [t_direct_sq_hi, t_direct_sq_lo] = multiFloatMul(
-        t_direct_hi, t_direct_lo, t_direct_hi, t_direct_lo, rewriter, loc);
-    auto [t_table_sq_hi, t_table_sq_lo] = multiFloatMul(
-        t_table_hi, t_table_lo, t_table_hi, t_table_lo, rewriter, loc);
+    auto t_direct_sq = multiFloatMul({t_direct_hi, t_direct_lo}, {t_direct_hi, t_direct_lo}, rewriter, loc);
+    Value t_direct_sq_hi = t_direct_sq[0], t_direct_sq_lo = t_direct_sq[1];
+    auto t_table_sq = multiFloatMul({t_table_hi, t_table_lo}, {t_table_hi, t_table_lo}, rewriter, loc);
+    Value t_table_sq_hi = t_table_sq[0], t_table_sq_lo = t_table_sq[1];
 
     // Evaluate polynomials
     // For narrow (table)
@@ -3065,11 +3062,10 @@ struct LogOpConversion : public OpConversionPattern<stablehlo::LogOp> {
     Value p_table_lo = getConst(kNarrowCoefs[3][1]);
 
     for (int i = 2; i >= 0; --i) {
-      auto [mul_hi, mul_lo] = multiFloatMul(
-          p_table_hi, p_table_lo, t_table_sq_hi, t_table_sq_lo, rewriter, loc);
-      auto [add_hi, add_lo] =
-          multiFloatAdd(mul_hi, mul_lo, getConst(kNarrowCoefs[i][0]),
-                        getConst(kNarrowCoefs[i][1]), rewriter, loc);
+      auto mul_r3 = multiFloatMul({p_table_hi, p_table_lo}, {t_table_sq_hi, t_table_sq_lo}, rewriter, loc);
+      Value mul_hi = mul_r3[0], mul_lo = mul_r3[1];
+      auto add_r2 = multiFloatAdd({mul_hi, mul_lo}, {getConst(kNarrowCoefs[i][0]), getConst(kNarrowCoefs[i][1])}, rewriter, loc);
+      Value add_hi = add_r2[0], add_lo = add_r2[1];
       p_table_hi = add_hi;
       p_table_lo = add_lo;
     }
@@ -3079,27 +3075,24 @@ struct LogOpConversion : public OpConversionPattern<stablehlo::LogOp> {
     Value p_direct_lo = getConst(kWideCoefs[4][1]);
 
     for (int i = 3; i >= 0; --i) {
-      auto [mul_hi, mul_lo] =
-          multiFloatMul(p_direct_hi, p_direct_lo, t_direct_sq_hi,
-                        t_direct_sq_lo, rewriter, loc);
-      auto [add_hi, add_lo] =
-          multiFloatAdd(mul_hi, mul_lo, getConst(kWideCoefs[i][0]),
-                        getConst(kWideCoefs[i][1]), rewriter, loc);
+      auto mul_r4 = multiFloatMul({p_direct_hi, p_direct_lo}, {t_direct_sq_hi, t_direct_sq_lo}, rewriter, loc);
+      Value mul_hi = mul_r4[0], mul_lo = mul_r4[1];
+      auto add_r3 = multiFloatAdd({mul_hi, mul_lo}, {getConst(kWideCoefs[i][0]), getConst(kWideCoefs[i][1])}, rewriter, loc);
+      Value add_hi = add_r3[0], add_lo = add_r3[1];
       p_direct_hi = add_hi;
       p_direct_lo = add_lo;
     }
 
-    auto [res_direct_hi, res_direct_lo] = multiFloatMul(
-        t_direct_hi, t_direct_lo, p_direct_hi, p_direct_lo, rewriter, loc);
-    auto [res_table_hi, res_table_lo] = multiFloatMul(
-        t_table_hi, t_table_lo, p_table_hi, p_table_lo, rewriter, loc);
+    auto res_direct = multiFloatMul({t_direct_hi, t_direct_lo}, {p_direct_hi, p_direct_lo}, rewriter, loc);
+    Value res_direct_hi = res_direct[0], res_direct_lo = res_direct[1];
+    auto res_table = multiFloatMul({t_table_hi, t_table_lo}, {p_table_hi, p_table_lo}, rewriter, loc);
+    Value res_table_hi = res_table[0], res_table_lo = res_table[1];
     // 4. Combine results
     Value e_f32 = rewriter.create<stablehlo::ConvertOp>(loc, tensorType, exp);
-    auto [e_plus_val_hi, e_plus_val_lo] =
-        multiFloatAdd(e_f32, getConst(0.0), val_hi, val_lo, rewriter, loc);
-    auto [else_hi, else_lo] =
-        multiFloatAdd(e_plus_val_hi, e_plus_val_lo, res_table_hi, res_table_lo,
-                      rewriter, loc);
+    auto e_plus_val = multiFloatAdd({e_f32, getConst(0.0)}, {val_hi, val_lo}, rewriter, loc);
+    Value e_plus_val_hi = e_plus_val[0], e_plus_val_lo = e_plus_val[1];
+    auto else_r = multiFloatAdd({e_plus_val_hi, e_plus_val_lo}, {res_table_hi, res_table_lo}, rewriter, loc);
+    Value else_hi = else_r[0], else_lo = else_r[1];
 
     Value direct_lo = getConst(0.9375);
     Value direct_hi = getConst(1.0625);
@@ -3118,8 +3111,8 @@ struct LogOpConversion : public OpConversionPattern<stablehlo::LogOp> {
     // Multiply by ln(2)
     Value ln2_hi = getConst(kLn2[0]);
     Value ln2_lo = getConst(kLn2[1]);
-    auto [res_hi, res_lo] =
-        multiFloatMul(log2_hi, log2_lo, ln2_hi, ln2_lo, rewriter, loc);
+    auto res_r3 = multiFloatMul({log2_hi, log2_lo}, {ln2_hi, ln2_lo}, rewriter, loc);
+    Value res_hi = res_r3[0], res_lo = res_r3[1];
 
     // Handle special cases
     Value zero = getConst(0.0);
