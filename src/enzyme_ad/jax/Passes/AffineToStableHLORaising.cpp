@@ -3468,11 +3468,14 @@ struct AffineToStableHLORaisingPass
 
             Block *allocaBlock = getAllocaBlock(g);
             assert(allocaBlock && "GPUWrapperOp must be inside an allocation scope");
-            OpBuilder::InsertionGuard guard(b);
-            b.setInsertionPointToStart(allocaBlock);
-            auto res0 = memref::AllocaOp::create(
-                b, rewriteLocation(g.getLoc(), options.strip_llvm_debuginfo),
-                MT0);
+            Value res0;
+            {
+              OpBuilder::InsertionGuard guard(b);
+              b.setInsertionPointToStart(allocaBlock);
+              res0 = memref::AllocaOp::create(
+                  b, rewriteLocation(g.getLoc(), options.strip_llvm_debuginfo),
+                  MT0);
+            }
 
             Value storeVal = arg;
             if (isIndex) {
