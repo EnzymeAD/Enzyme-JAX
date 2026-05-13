@@ -2505,18 +2505,7 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
     return rewriter.notifyMatchFailure(
         launchOp, "Cannot convert with more than one async dependency.");
 
-  Block *allocaBlock = nullptr;
-  {
-    Operation *currentOp = launchOp;
-    while (Operation *parentOp = currentOp->getParentOp()) {
-      if (parentOp->mightHaveTrait<OpTrait::IsIsolatedFromAbove>() ||
-          parentOp->mightHaveTrait<OpTrait::AutomaticAllocationScope>()) {
-        allocaBlock = &currentOp->getParentRegion()->front();
-        break;
-      }
-      currentOp = parentOp;
-    }
-  }
+  Block *allocaBlock = getAllocaBlock(launchOp);
 
   Location loc = launchOp.getLoc();
 

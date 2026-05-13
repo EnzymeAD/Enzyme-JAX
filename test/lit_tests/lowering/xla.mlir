@@ -69,11 +69,14 @@ module {
 // CHECK-NEXT:    %[[C8_IDX:.+]] = llvm.mlir.constant(8 : index) : i64
 // CHECK-NEXT:    %[[C1_I64:.+]] = llvm.mlir.constant(1 : i64) : i64
 // CHECK-NEXT:    %[[ALLOCA_EXEC:.+]] = llvm.alloca %[[C1_I64]] x !llvm.array<2 x i64>
-// CHECK-NEXT:    %[[ALLOCA1:.+]] = llvm.alloca %[[C1_IDX]] x f64
-// CHECK-NEXT:    %[[ALLOCA2:.+]] = llvm.alloca %[[C1_IDX]] x f64
-// CHECK-NEXT:    %[[ALLOCA3:.+]] = llvm.alloca %[[C1_IDX]] x f64
-// CHECK-NEXT:    %[[ALLOCA4:.+]] = llvm.alloca %[[C1_IDX]] x f64
-// CHECK-NEXT:    %[[ALLOCA_M1:.+]] = llvm.alloca %[[C1_I64]] x !llvm.array<1 x i64>
+// CHECK-DAG:    %[[ALLOCA_M1:.+]] = llvm.alloca %[[C1_I64]] x !llvm.array<1 x i64>
+// CHECK-DAG:    %[[ALLOCA_M2:.+]] = llvm.alloca %[[C1_I64]] x !llvm.array<1 x i64>
+// CHECK-DAG:    %[[ALLOCA_M3:.+]] = llvm.alloca %[[C1_I64]] x !llvm.array<1 x i64>
+// CHECK-DAG:    %[[ALLOCA_M4:.+]] = llvm.alloca %[[C1_I64]] x !llvm.array<1 x i64>
+// CHECK-DAG:    %[[ALLOCA1:.+]] = llvm.alloca %[[C1_IDX]] x f64
+// CHECK-DAG:    %[[ALLOCA2:.+]] = llvm.alloca %[[C1_IDX]] x f64
+// CHECK-DAG:    %[[ALLOCA3:.+]] = llvm.alloca %[[C1_IDX]] x f64
+// CHECK-DAG:    %[[ALLOCA4:.+]] = llvm.alloca %[[C1_IDX]] x f64
 // CHECK-NEXT:    %[[GEP1:.+]] = llvm.getelementptr %[[ALLOCA_M1]][0, 0]
 // CHECK-NEXT:    llvm.store %[[C1_I64]], %[[GEP1]]
 // CHECK-NEXT:    %[[MALLOC1:.+]] = llvm.call @reactantXLAMalloc(%[[XDATA]], %[[C12]], %[[C1_I64]], %[[ALLOCA_M1]])
