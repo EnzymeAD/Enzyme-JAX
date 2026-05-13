@@ -329,10 +329,29 @@ std::pair<Value, Value> twoProdDekker(Value a, Value b, OpBuilder &builder,
   return {p, err4};
 }
 
-SmallVector<Value> multiFloatMul(ArrayRef<Value> xs, ArrayRef<Value> ys,
-                                 OpBuilder &builder, Location loc) {
-  assert(xs.size() == ys.size() && xs.size() == 2 &&
-         "multiFloatMul: only N=2 implemented");
+// --- N-limb add/mul schedules ---
+//
+// N=2 is the original branch-free schedule kept from before.
+// N=3 / N=4 are mechanically ported from MultiFloats.jl:
+//   src/mfadd.jl lines 25-87, src/mfmul.jl lines 25-102
+// MultiFloats.jl's `two_prod(a, b)` uses fma(a, b, -prod); we approximate with
+// twoProdDekker (Dekker split) since stablehlo has no native FMA op.
+
+static SmallVector<Value> multiFloatAdd_n2(ArrayRef<Value> xs,
+                                           ArrayRef<Value> ys,
+                                           OpBuilder &builder, Location loc) {
+  auto [a, b] = twoSum(xs[0], ys[0], builder, loc);
+  auto [c, d] = twoSum(xs[1], ys[1], builder, loc);
+  auto [new_a, new_c] = fastTwoSum(a, c, builder, loc);
+  Value b2 = builder.create<stablehlo::AddOp>(loc, b, d);
+  Value b3 = builder.create<stablehlo::AddOp>(loc, b2, new_c);
+  auto [hi, lo] = fastTwoSum(new_a, b3, builder, loc);
+  return {hi, lo};
+}
+
+static SmallVector<Value> multiFloatMul_n2(ArrayRef<Value> xs,
+                                           ArrayRef<Value> ys,
+                                           OpBuilder &builder, Location loc) {
   auto [p00, e00] = twoProdDekker(xs[0], ys[0], builder, loc);
   Value p01 = builder.create<stablehlo::MulOp>(loc, xs[0], ys[1]);
   Value p10 = builder.create<stablehlo::MulOp>(loc, xs[1], ys[0]);
@@ -342,17 +361,171 @@ SmallVector<Value> multiFloatMul(ArrayRef<Value> xs, ArrayRef<Value> ys,
   return {hi, lo};
 }
 
-SmallVector<Value> multiFloatAdd(ArrayRef<Value> xs, ArrayRef<Value> ys,
-                                 OpBuilder &builder, Location loc) {
-  assert(xs.size() == ys.size() && xs.size() == 2 &&
-         "multiFloatAdd: only N=2 implemented");
+static SmallVector<Value> multiFloatAdd_n3(ArrayRef<Value> xs,
+                                           ArrayRef<Value> ys,
+                                           OpBuilder &builder, Location loc) {
+  // MultiFloats.jl/src/mfadd.jl:25-47
   auto [a, b] = twoSum(xs[0], ys[0], builder, loc);
   auto [c, d] = twoSum(xs[1], ys[1], builder, loc);
-  auto [new_a, new_c] = fastTwoSum(a, c, builder, loc);
-  Value b2 = builder.create<stablehlo::AddOp>(loc, b, d);
-  Value b3 = builder.create<stablehlo::AddOp>(loc, b2, new_c);
-  auto [hi, lo] = fastTwoSum(new_a, b3, builder, loc);
-  return {hi, lo};
+  auto [e, f] = twoSum(xs[2], ys[2], builder, loc);
+  std::tie(a, c) = fastTwoSum(a, c, builder, loc);
+  b = builder.create<stablehlo::AddOp>(loc, b, f);
+  std::tie(d, e) = twoSum(d, e, builder, loc);
+  std::tie(a, d) = fastTwoSum(a, d, builder, loc);
+  std::tie(b, c) = twoSum(b, c, builder, loc);
+  c = builder.create<stablehlo::AddOp>(loc, c, e);
+  std::tie(c, d) = twoSum(c, d, builder, loc);
+  std::tie(b, c) = twoSum(b, c, builder, loc);
+  std::tie(a, b) = fastTwoSum(a, b, builder, loc);
+  c = builder.create<stablehlo::AddOp>(loc, c, d);
+  std::tie(b, c) = fastTwoSum(b, c, builder, loc);
+  std::tie(a, b) = fastTwoSum(a, b, builder, loc);
+  std::tie(b, c) = fastTwoSum(b, c, builder, loc);
+  return {a, b, c};
+}
+
+static SmallVector<Value> multiFloatMul_n3(ArrayRef<Value> xs,
+                                           ArrayRef<Value> ys,
+                                           OpBuilder &builder, Location loc) {
+  // MultiFloats.jl/src/mfmul.jl:25-50
+  auto [p00, e00] = twoProdDekker(xs[0], ys[0], builder, loc);
+  auto [p01, e01] = twoProdDekker(xs[0], ys[1], builder, loc);
+  auto [p10, e10] = twoProdDekker(xs[1], ys[0], builder, loc);
+  Value p02 = builder.create<stablehlo::MulOp>(loc, xs[0], ys[2]);
+  Value p11 = builder.create<stablehlo::MulOp>(loc, xs[1], ys[1]);
+  Value p20 = builder.create<stablehlo::MulOp>(loc, xs[2], ys[0]);
+  std::tie(p01, p10) = twoSum(p01, p10, builder, loc);
+  e01 = builder.create<stablehlo::AddOp>(loc, e01, e10);
+  p02 = builder.create<stablehlo::AddOp>(loc, p02, p20);
+  std::tie(e00, p01) = twoSum(e00, p01, builder, loc);
+  p02 = builder.create<stablehlo::AddOp>(loc, p02, p11);
+  std::tie(p00, e00) = fastTwoSum(p00, e00, builder, loc);
+  p01 = builder.create<stablehlo::AddOp>(loc, p01, p10);
+  e01 = builder.create<stablehlo::AddOp>(loc, e01, p02);
+  p01 = builder.create<stablehlo::AddOp>(loc, p01, e01);
+  std::tie(e00, p01) = twoSum(e00, p01, builder, loc);
+  std::tie(p00, e00) = fastTwoSum(p00, e00, builder, loc);
+  std::tie(e00, p01) = fastTwoSum(e00, p01, builder, loc);
+  std::tie(p00, e00) = fastTwoSum(p00, e00, builder, loc);
+  return {p00, e00, p01};
+}
+
+static SmallVector<Value> multiFloatAdd_n4(ArrayRef<Value> xs,
+                                           ArrayRef<Value> ys,
+                                           OpBuilder &builder, Location loc) {
+  // MultiFloats.jl/src/mfadd.jl:50-87
+  auto [a, b] = twoSum(xs[0], ys[0], builder, loc);
+  auto [c, d] = twoSum(xs[1], ys[1], builder, loc);
+  auto [e, f] = twoSum(xs[2], ys[2], builder, loc);
+  auto [g, h] = twoSum(xs[3], ys[3], builder, loc);
+  std::tie(a, c) = fastTwoSum(a, c, builder, loc);
+  b = builder.create<stablehlo::AddOp>(loc, b, h);
+  std::tie(d, e) = twoSum(d, e, builder, loc);
+  std::tie(f, g) = twoSum(f, g, builder, loc);
+  std::tie(b, g) = twoSum(b, g, builder, loc);
+  std::tie(c, d) = fastTwoSum(c, d, builder, loc);
+  std::tie(e, f) = twoSum(e, f, builder, loc);
+  std::tie(a, c) = fastTwoSum(a, c, builder, loc);
+  std::tie(d, e) = fastTwoSum(d, e, builder, loc);
+  std::tie(b, d) = twoSum(b, d, builder, loc);
+  std::tie(c, g) = fastTwoSum(c, g, builder, loc);
+  e = builder.create<stablehlo::AddOp>(loc, e, f);
+  std::tie(b, c) = twoSum(b, c, builder, loc);
+  std::tie(d, e) = twoSum(d, e, builder, loc);
+  std::tie(a, b) = fastTwoSum(a, b, builder, loc);
+  std::tie(c, d) = twoSum(c, d, builder, loc);
+  e = builder.create<stablehlo::AddOp>(loc, e, g);
+  std::tie(b, c) = fastTwoSum(b, c, builder, loc);
+  std::tie(d, e) = twoSum(d, e, builder, loc);
+  std::tie(a, b) = fastTwoSum(a, b, builder, loc);
+  std::tie(c, d) = fastTwoSum(c, d, builder, loc);
+  std::tie(b, c) = fastTwoSum(b, c, builder, loc);
+  d = builder.create<stablehlo::AddOp>(loc, d, e);
+  std::tie(a, b) = fastTwoSum(a, b, builder, loc);
+  std::tie(c, d) = fastTwoSum(c, d, builder, loc);
+  std::tie(b, c) = fastTwoSum(b, c, builder, loc);
+  std::tie(c, d) = fastTwoSum(c, d, builder, loc);
+  return {a, b, c, d};
+}
+
+static SmallVector<Value> multiFloatMul_n4(ArrayRef<Value> xs,
+                                           ArrayRef<Value> ys,
+                                           OpBuilder &builder, Location loc) {
+  // MultiFloats.jl/src/mfmul.jl:53-102
+  auto [p00, e00] = twoProdDekker(xs[0], ys[0], builder, loc);
+  auto [p01, e01] = twoProdDekker(xs[0], ys[1], builder, loc);
+  auto [p10, e10] = twoProdDekker(xs[1], ys[0], builder, loc);
+  auto [p02, e02] = twoProdDekker(xs[0], ys[2], builder, loc);
+  auto [p11, e11] = twoProdDekker(xs[1], ys[1], builder, loc);
+  auto [p20, e20] = twoProdDekker(xs[2], ys[0], builder, loc);
+  Value p03 = builder.create<stablehlo::MulOp>(loc, xs[0], ys[3]);
+  Value p12 = builder.create<stablehlo::MulOp>(loc, xs[1], ys[2]);
+  Value p21 = builder.create<stablehlo::MulOp>(loc, xs[2], ys[1]);
+  Value p30 = builder.create<stablehlo::MulOp>(loc, xs[3], ys[0]);
+  std::tie(p01, p10) = twoSum(p01, p10, builder, loc);
+  std::tie(e01, e10) = twoSum(e01, e10, builder, loc);
+  std::tie(p02, p20) = twoSum(p02, p20, builder, loc);
+  e02 = builder.create<stablehlo::AddOp>(loc, e02, e20);
+  p03 = builder.create<stablehlo::AddOp>(loc, p03, p30);
+  p12 = builder.create<stablehlo::AddOp>(loc, p12, p21);
+  std::tie(e00, p01) = twoSum(e00, p01, builder, loc);
+  std::tie(e01, p11) = twoSum(e01, p11, builder, loc);
+  e10 = builder.create<stablehlo::AddOp>(loc, e10, e02);
+  p20 = builder.create<stablehlo::AddOp>(loc, p20, e11);
+  p03 = builder.create<stablehlo::AddOp>(loc, p03, p12);
+  std::tie(p00, e00) = fastTwoSum(p00, e00, builder, loc);
+  std::tie(p01, p10) = fastTwoSum(p01, p10, builder, loc);
+  std::tie(e01, p02) = twoSum(e01, p02, builder, loc);
+  e10 = builder.create<stablehlo::AddOp>(loc, e10, p03);
+  p11 = builder.create<stablehlo::AddOp>(loc, p11, p20);
+  std::tie(p01, e01) = twoSum(p01, e01, builder, loc);
+  p10 = builder.create<stablehlo::AddOp>(loc, p10, p11);
+  e10 = builder.create<stablehlo::AddOp>(loc, e10, p02);
+  p10 = builder.create<stablehlo::AddOp>(loc, p10, e01);
+  std::tie(p01, p10) = twoSum(p01, p10, builder, loc);
+  std::tie(e00, p01) = twoSum(e00, p01, builder, loc);
+  p10 = builder.create<stablehlo::AddOp>(loc, p10, e10);
+  std::tie(p00, e00) = fastTwoSum(p00, e00, builder, loc);
+  std::tie(p01, p10) = twoSum(p01, p10, builder, loc);
+  std::tie(e00, p01) = twoSum(e00, p01, builder, loc);
+  std::tie(p00, e00) = fastTwoSum(p00, e00, builder, loc);
+  std::tie(p01, p10) = fastTwoSum(p01, p10, builder, loc);
+  std::tie(e00, p01) = fastTwoSum(e00, p01, builder, loc);
+  std::tie(p00, e00) = fastTwoSum(p00, e00, builder, loc);
+  std::tie(p01, p10) = fastTwoSum(p01, p10, builder, loc);
+  std::tie(e00, p01) = fastTwoSum(e00, p01, builder, loc);
+  std::tie(p01, p10) = fastTwoSum(p01, p10, builder, loc);
+  return {p00, e00, p01, p10};
+}
+
+SmallVector<Value> multiFloatMul(ArrayRef<Value> xs, ArrayRef<Value> ys,
+                                 OpBuilder &builder, Location loc) {
+  assert(xs.size() == ys.size());
+  switch (xs.size()) {
+  case 2:
+    return multiFloatMul_n2(xs, ys, builder, loc);
+  case 3:
+    return multiFloatMul_n3(xs, ys, builder, loc);
+  case 4:
+    return multiFloatMul_n4(xs, ys, builder, loc);
+  default:
+    llvm_unreachable("multiFloatMul: only N in {2,3,4} supported");
+  }
+}
+
+SmallVector<Value> multiFloatAdd(ArrayRef<Value> xs, ArrayRef<Value> ys,
+                                 OpBuilder &builder, Location loc) {
+  assert(xs.size() == ys.size());
+  switch (xs.size()) {
+  case 2:
+    return multiFloatAdd_n2(xs, ys, builder, loc);
+  case 3:
+    return multiFloatAdd_n3(xs, ys, builder, loc);
+  case 4:
+    return multiFloatAdd_n4(xs, ys, builder, loc);
+  default:
+    llvm_unreachable("multiFloatAdd: only N in {2,3,4} supported");
+  }
 }
 
 SmallVector<Value> multiFloatDiv(ArrayRef<Value> xs, ArrayRef<Value> ys,
@@ -458,12 +631,14 @@ struct ConstantOpConversion
 
 struct AddOpConversion : public OpConversionPattern<stablehlo::AddOp> {
   AddOpConversion(TypeConverter &typeConverter, MLIRContext *context,
-                  Type sourceType, StringRef concatDimension)
+                  Type sourceType, StringRef concatDimension, int expansionSize)
       : OpConversionPattern<stablehlo::AddOp>(typeConverter, context),
-        sourceType(sourceType), concatDimension(concatDimension) {}
+        sourceType(sourceType), concatDimension(concatDimension),
+        expansionSize(expansionSize) {}
 
   Type sourceType;
   StringRef concatDimension;
+  int expansionSize;
 
   LogicalResult
   matchAndRewrite(stablehlo::AddOp op, OpAdaptor adaptor,
@@ -499,19 +674,17 @@ struct AddOpConversion : public OpConversionPattern<stablehlo::AddOp> {
 
     Location loc = op.getLoc();
 
-    Value x1 = extractLimb(adaptor.getOperands()[0], 0, rewriter, loc,
-                           concatDimension);
-    Value x2 = extractLimb(adaptor.getOperands()[0], 1, rewriter, loc,
-                           concatDimension);
-    Value y1 = extractLimb(adaptor.getOperands()[1], 0, rewriter, loc,
-                           concatDimension);
-    Value y2 = extractLimb(adaptor.getOperands()[1], 1, rewriter, loc,
-                           concatDimension);
+    SmallVector<Value> xs, ys;
+    for (int i = 0; i < expansionSize; ++i) {
+      xs.push_back(extractLimb(adaptor.getOperands()[0], i, rewriter, loc,
+                               concatDimension));
+      ys.push_back(extractLimb(adaptor.getOperands()[1], i, rewriter, loc,
+                               concatDimension));
+    }
 
-    auto final_r = multiFloatAdd({x1, x2}, {y1, y2}, rewriter, loc);
-    Value final_a = final_r[0], final_b = final_r[1];
+    SmallVector<Value> result = multiFloatAdd(xs, ys, rewriter, loc);
 
-    Value packed = packLimbs(final_a, final_b, rewriter, loc, concatDimension);
+    Value packed = packLimbs(result, rewriter, loc, concatDimension);
     rewriter.replaceOp(op, packed);
     LLVM_DEBUG(llvm::dbgs() << "AddOpConversion succeeded\n");
     return success();
@@ -520,30 +693,29 @@ struct AddOpConversion : public OpConversionPattern<stablehlo::AddOp> {
 
 struct MulOpConversion : public OpConversionPattern<stablehlo::MulOp> {
   MulOpConversion(TypeConverter &typeConverter, MLIRContext *context,
-                  StringRef concatDimension)
+                  StringRef concatDimension, int expansionSize)
       : OpConversionPattern<stablehlo::MulOp>(typeConverter, context),
-        concatDimension(concatDimension) {}
+        concatDimension(concatDimension), expansionSize(expansionSize) {}
 
   StringRef concatDimension;
+  int expansionSize;
 
   LogicalResult
   matchAndRewrite(stablehlo::MulOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
 
-    Value x1 = extractLimb(adaptor.getOperands()[0], 0, rewriter, loc,
-                           concatDimension);
-    Value x2 = extractLimb(adaptor.getOperands()[0], 1, rewriter, loc,
-                           concatDimension);
-    Value y1 = extractLimb(adaptor.getOperands()[1], 0, rewriter, loc,
-                           concatDimension);
-    Value y2 = extractLimb(adaptor.getOperands()[1], 1, rewriter, loc,
-                           concatDimension);
+    SmallVector<Value> xs, ys;
+    for (int i = 0; i < expansionSize; ++i) {
+      xs.push_back(extractLimb(adaptor.getOperands()[0], i, rewriter, loc,
+                               concatDimension));
+      ys.push_back(extractLimb(adaptor.getOperands()[1], i, rewriter, loc,
+                               concatDimension));
+    }
 
-    auto final_r_r = multiFloatMul({x1, x2}, {y1, y2}, rewriter, loc);
-    Value final_p = final_r_r[0], final_e = final_r_r[1];
+    SmallVector<Value> result = multiFloatMul(xs, ys, rewriter, loc);
 
-    Value packed = packLimbs(final_p, final_e, rewriter, loc, concatDimension);
+    Value packed = packLimbs(result, rewriter, loc, concatDimension);
     rewriter.replaceOp(op, packed);
     return success();
   }
@@ -4574,9 +4746,10 @@ struct MultiFloatConversionPass
           typeConverter, context);
     } else if (expansionSize == 2) {
       patterns.add<AddOpConversion>(typeConverter, context, srcTy,
-                                    concatDimension);
+                                    concatDimension, expansionSize);
       patterns.add<SubOpConversion>(typeConverter, context, concatDimension);
-      patterns.add<MulOpConversion>(typeConverter, context, concatDimension);
+      patterns.add<MulOpConversion>(typeConverter, context, concatDimension,
+                                    expansionSize);
       patterns.add<ReduceOpConversion>(typeConverter, context, concatDimension,
                                        preciseReduce, srcTy, tgtTy);
       patterns.add<DivOpConversion>(typeConverter, context, concatDimension,
@@ -4628,6 +4801,17 @@ struct MultiFloatConversionPass
       patterns.add<WrapOpConversion>(typeConverter, context, concatDimension);
       patterns.add<ExtendOpConversion>(typeConverter, context, concatDimension);
       patterns.add<SineOpConversion>(typeConverter, context, concatDimension);
+    } else if (expansionSize == 3 || expansionSize == 4) {
+      // Stage 2: add/mul only. Sub/div/sqrt/transcendentals come in stage 3.
+      patterns.add<AddOpConversion>(typeConverter, context, srcTy,
+                                    concatDimension, expansionSize);
+      patterns.add<MulOpConversion>(typeConverter, context, concatDimension,
+                                    expansionSize);
+      patterns.add<ReturnOpConversion>(typeConverter, context, concatDimension,
+                                       convertSignatures, expansionSize, srcTy,
+                                       tgtTy);
+      patterns.add<ConvertOpConversion>(typeConverter, context, concatDimension,
+                                        srcTy, tgtTy, expansionSize);
     } else {
       op->emitError() << "Unsupported expansion size specified: "
                       << (int)expansionSize;
