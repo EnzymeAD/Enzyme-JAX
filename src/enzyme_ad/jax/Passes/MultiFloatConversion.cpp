@@ -21,6 +21,7 @@
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/ConversionUtils.h"
+#include "src/enzyme_ad/jax/Passes/MultiFloatLogTables.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "llvm/Support/Debug.h"
@@ -3028,11 +3029,47 @@ Value lookupTable(Value index, ArrayRef<double> table, OpBuilder &builder,
 
 struct LogOpConversion : public OpConversionPattern<stablehlo::LogOp> {
   LogOpConversion(TypeConverter &typeConverter, MLIRContext *context,
-                  StringRef concatDimension)
+                  StringRef concatDimension, int expansionSize)
       : OpConversionPattern<stablehlo::LogOp>(typeConverter, context),
-        concatDimension(concatDimension) {}
+        concatDimension(concatDimension), expansionSize(expansionSize) {}
 
   StringRef concatDimension;
+  int expansionSize;
+
+  // Polynomial coefficient counts (narrow / wide) by N.
+  int narrowCount() const {
+    return expansionSize == 2 ? 4 : (expansionSize == 3 ? 5 : 7);
+  }
+  int wideCount() const {
+    return expansionSize == 2 ? 5 : (expansionSize == 3 ? 7 : 9);
+  }
+
+  // Read i-th limb of j-th narrow polynomial coefficient.
+  double narrowCoef(int j, int i) const {
+    using namespace multifloat_log_tables;
+    if (expansionSize == 2) return kLog2NarrowCoefs_f32_n2[j][i];
+    if (expansionSize == 3) return kLog2NarrowCoefs_f32_n3[j][i];
+    return kLog2NarrowCoefs_f32_n4[j][i];
+  }
+  double wideCoef(int j, int i) const {
+    using namespace multifloat_log_tables;
+    if (expansionSize == 2) return kLog2WideCoefs_f32_n2[j][i];
+    if (expansionSize == 3) return kLog2WideCoefs_f32_n3[j][i];
+    return kLog2WideCoefs_f32_n4[j][i];
+  }
+  double lnTwo(int i) const {
+    using namespace multifloat_log_tables;
+    if (expansionSize == 2) return kLn2_f32_n2[i];
+    if (expansionSize == 3) return kLn2_f32_n3[i];
+    return kLn2_f32_n4[i];
+  }
+  // i-th limb of the j-th log2-table value entry.
+  double log2TableValue(int j, int i) const {
+    using namespace multifloat_log_tables;
+    if (expansionSize == 2) return kLog2Values_f32_n2[j][i];
+    if (expansionSize == 3) return kLog2Values_f32_n3[j][i];
+    return kLog2Values_f32_n4[j][i];
+  }
 
   LogicalResult
   matchAndRewrite(stablehlo::LogOp op, OpAdaptor adaptor,
@@ -3040,13 +3077,12 @@ struct LogOpConversion : public OpConversionPattern<stablehlo::LogOp> {
     Location loc = op.getLoc();
     Value operand = adaptor.getOperands()[0];
 
-    // Support only expansion-size=2 for now
-    // We assume rank 1 or 2 based on tests
+    SmallVector<Value> x;
+    x.reserve(expansionSize);
+    for (int i = 0; i < expansionSize; ++i)
+      x.push_back(extractLimb(operand, i, rewriter, loc, concatDimension));
 
-    Value x_hi = extractLimb(operand, 0, rewriter, loc, concatDimension);
-    Value x_lo = extractLimb(operand, 1, rewriter, loc, concatDimension);
-
-    auto tensorType = cast<RankedTensorType>(x_hi.getType());
+    auto tensorType = cast<RankedTensorType>(x[0].getType());
     auto floatTy = cast<FloatType>(tensorType.getElementType());
 
     auto getConst = [&](double val) {
@@ -3055,52 +3091,34 @@ struct LogOpConversion : public OpConversionPattern<stablehlo::LogOp> {
                                       rewriter.getFloatAttr(floatTy, val)));
     };
 
-    // Tables from MultiFloats.jl
-    static const double kCenters[32] = {
+    // Build a multifloat constant (scalar, 0, 0, ...) — leading limb only.
+    auto mfScalar = [&](double leading) -> SmallVector<Value> {
+      SmallVector<Value> v(expansionSize, getConst(0.0));
+      v[0] = getConst(leading);
+      return v;
+    };
+    // Build a multifloat constant from an N-element source.
+    auto mfFromCoef = [&](auto fetchLimb, int j) -> SmallVector<Value> {
+      SmallVector<Value> v;
+      v.reserve(expansionSize);
+      for (int i = 0; i < expansionSize; ++i)
+        v.push_back(getConst(fetchLimb(j, i)));
+      return v;
+    };
+
+    // 32-entry centers table: scalar values 1+(2k-1)/64. All higher limbs zero.
+    static const double kCentersScalar[32] = {
         1.015625, 1.046875, 1.078125, 1.109375, 1.140625, 1.171875, 1.203125,
         1.234375, 1.265625, 1.296875, 1.328125, 1.359375, 1.390625, 1.421875,
         1.453125, 1.484375, 1.515625, 1.546875, 1.578125, 1.609375, 1.640625,
         1.671875, 1.703125, 1.734375, 1.765625, 1.796875, 1.828125, 1.859375,
         1.890625, 1.921875, 1.953125, 1.984375};
 
-    static const double kValues[32][2] = {
-        {0.022367813, 3.3533545e-10}, {0.06608919, -8.4925476e-11},
-        {0.10852446, 1.5795268e-10},  {0.14974712, 1.1508384e-9},
-        {0.18982457, -7.365062e-9},   {0.22881868, 5.6795204e-9},
-        {0.26678655, -4.820159e-9},   {0.30378073, 1.3638071e-8},
-        {0.33985, -5.6030767e-9},     {0.37503943, 2.8744058e-9},
-        {0.40939093, 9.776618e-9},    {0.44294348, 1.2257648e-8},
-        {0.47573343, 1.772901e-9},    {0.5077946, 2.1592129e-8},
-        {0.5391588, -9.997926e-9},    {0.56985563, -2.2066848e-8},
-        {0.5999128, 1.9940575e-8},    {0.6293566, -2.6163132e-9},
-        {0.65821147, 1.3101526e-8},   {0.68650055, -2.2133188e-8},
-        {0.7142455, 1.9485734e-8},    {0.741467, -1.2652808e-8},
-        {0.7681843, 2.0539561e-8},    {0.7944159, -2.4820396e-8},
-        {0.820179, -2.3180515e-8},    {0.84549004, 1.2549447e-8},
-        {0.8703647, -6.006348e-9},    {0.89481777, -6.2194916e-9},
-        {0.91886324, 3.7045023e-10},  {0.9425145, 2.6178931e-8},
-        {0.9657843, -2.6632469e-8},   {0.9886847, -2.706832e-8}};
-
-    static const double kNarrowCoefs[4][2] = {
-        {+0x1.715476p+001, +0x1.4AE0C0p-025},
-        {+0x1.EC709Ep-001, -0x1.E2FDB2p-028},
-        {+0x1.2776C6p-001, 0.0},
-        {+0x1.A6217Cp-002, 0.0}};
-
-    static const double kWideCoefs[5][2] = {
-        {+0x1.715476p+001, +0x1.4AE0C0p-025},
-        {+0x1.EC709Ep-001, -0x1.E2FE88p-028},
-        {+0x1.2776C6p-001, -0x1.DE12AAp-026},
-        {+0x1.A61738p-002, 0.0},
-        {+0x1.48FE3Ap-002, 0.0}};
-
-    static const double kLn2[2] = {0.6931471824645996, -1.9046542101288585e-9};
-
-    // 1. Extract exponent and significand
+    // 1. Extract exponent and significand from the leading limb.
     Type intEltTy = rewriter.getIntegerType(floatTy.getWidth());
     auto intType = RankedTensorType::get(tensorType.getShape(), intEltTy);
     Value bits =
-        rewriter.create<stablehlo::BitcastConvertOp>(loc, intType, x_hi);
+        rewriter.create<stablehlo::BitcastConvertOp>(loc, intType, x[0]);
 
     auto getIntConst = [&](int val) {
       return rewriter.create<stablehlo::ConstantOp>(
@@ -3129,11 +3147,13 @@ struct LogOpConversion : public OpConversionPattern<stablehlo::LogOp> {
     Value scale = rewriter.create<stablehlo::BitcastConvertOp>(loc, tensorType,
                                                                scale_bits);
 
-    // m = ldexp(x, -e)
-    Value m_hi = rewriter.create<stablehlo::MulOp>(loc, x_hi, scale);
-    Value m_lo = rewriter.create<stablehlo::MulOp>(loc, x_lo, scale);
+    // m = ldexp(x, -e) — multiply each limb by 2^-e.
+    SmallVector<Value> m;
+    m.reserve(expansionSize);
+    for (Value xi : x)
+      m.push_back(rewriter.create<stablehlo::MulOp>(loc, xi, scale));
 
-    // 2. Table lookup
+    // 2. 32-entry table lookup via top 5 mantissa bits of leading limb.
     Value index_bits = rewriter.create<stablehlo::ShiftRightLogicalOp>(
         loc, bits, getIntConst(mantissaWidth - 5));
     Value index =
@@ -3146,144 +3166,124 @@ struct LogOpConversion : public OpConversionPattern<stablehlo::LogOp> {
       index_i32 = rewriter.create<stablehlo::ConvertOp>(loc, int32Type, index);
     }
 
-    Value center_hi =
-        lookupTable(index_i32, kCenters, rewriter, loc, tensorType);
-    Value center_lo = getConst(0.0); // Since all low parts are zero!
+    // Center is scalar (only first limb nonzero by construction).
+    SmallVector<Value> center(expansionSize, getConst(0.0));
+    center[0] =
+        lookupTable(index_i32, kCentersScalar, rewriter, loc, tensorType);
 
-    std::vector<double> values_hi, values_lo;
-    for (int i = 0; i < 32; ++i) {
-      values_hi.push_back(kValues[i][0]);
-      values_lo.push_back(kValues[i][1]);
+    // log2-table value is an N-tuple: one lookup per limb.
+    SmallVector<Value> val;
+    val.reserve(expansionSize);
+    for (int i = 0; i < expansionSize; ++i) {
+      std::vector<double> col;
+      col.reserve(32);
+      for (int k = 0; k < 32; ++k)
+        col.push_back(log2TableValue(k, i));
+      val.push_back(lookupTable(index_i32, col, rewriter, loc, tensorType));
     }
 
-    Value val_hi = lookupTable(index_i32, values_hi, rewriter, loc, tensorType);
-    Value val_lo = lookupTable(index_i32, values_lo, rewriter, loc, tensorType);
-    // 3. Polynomial evaluation
-    // t_direct = (x - 1) / (x + 1)
-    Value m1_hi = getConst(-1.0);
-    Value m1_lo = getConst(0.0);
-    auto [neg_one_hi, neg_one_lo] = std::make_pair(m1_hi, m1_lo);
-    Value p1_hi = getConst(1.0);
-    Value p1_lo = getConst(0.0);
-    auto x_minus_one = multiFloatAdd({x_hi, x_lo}, {neg_one_hi, neg_one_lo}, rewriter, loc);
-    Value x_minus_one_hi = x_minus_one[0], x_minus_one_lo = x_minus_one[1];
-    auto x_plus_one = multiFloatAdd({x_hi, x_lo}, {p1_hi, p1_lo}, rewriter, loc);
-    Value x_plus_one_hi = x_plus_one[0], x_plus_one_lo = x_plus_one[1];
-    auto t_direct_r = multiFloatDiv({x_minus_one_hi, x_minus_one_lo}, {x_plus_one_hi, x_plus_one_lo}, rewriter, loc);
-    Value t_direct_hi = t_direct_r[0], t_direct_lo = t_direct_r[1];
+    // 3. Compute t_direct = (x - 1) / (x + 1), t_table = (m - c) / (m + c).
+    auto one_mf = mfScalar(1.0);
+    auto neg_one_mf = mfScalar(-1.0);
+    auto x_minus_one = multiFloatAdd(x, neg_one_mf, rewriter, loc);
+    auto x_plus_one = multiFloatAdd(x, one_mf, rewriter, loc);
+    auto t_direct =
+        multiFloatDiv(x_minus_one, x_plus_one, rewriter, loc);
 
-    // t_table = (m - center) / (m + center)
-    Value neg_center_hi = rewriter.create<stablehlo::NegOp>(loc, center_hi);
-    Value neg_center_lo = rewriter.create<stablehlo::NegOp>(loc, center_lo);
-    auto m_minus_center = multiFloatAdd({m_hi, m_lo}, {neg_center_hi, neg_center_lo}, rewriter, loc);
-    Value m_minus_center_hi = m_minus_center[0], m_minus_center_lo = m_minus_center[1];
-    auto m_plus_center = multiFloatAdd({m_hi, m_lo}, {center_hi, center_lo}, rewriter, loc);
-    Value m_plus_center_hi = m_plus_center[0], m_plus_center_lo = m_plus_center[1];
-    auto t_table_r = multiFloatDiv({m_minus_center_hi, m_minus_center_lo}, {m_plus_center_hi, m_plus_center_lo}, rewriter, loc);
-    Value t_table_hi = t_table_r[0], t_table_lo = t_table_r[1];
+    SmallVector<Value> neg_center;
+    neg_center.reserve(expansionSize);
+    for (Value c : center)
+      neg_center.push_back(rewriter.create<stablehlo::NegOp>(loc, c));
+    auto m_minus_center = multiFloatAdd(m, neg_center, rewriter, loc);
+    auto m_plus_center = multiFloatAdd(m, center, rewriter, loc);
+    auto t_table =
+        multiFloatDiv(m_minus_center, m_plus_center, rewriter, loc);
 
-    // t^2
-    auto t_direct_sq = multiFloatMul({t_direct_hi, t_direct_lo}, {t_direct_hi, t_direct_lo}, rewriter, loc);
-    Value t_direct_sq_hi = t_direct_sq[0], t_direct_sq_lo = t_direct_sq[1];
-    auto t_table_sq = multiFloatMul({t_table_hi, t_table_lo}, {t_table_hi, t_table_lo}, rewriter, loc);
-    Value t_table_sq_hi = t_table_sq[0], t_table_sq_lo = t_table_sq[1];
+    auto t_direct_sq = multiFloatMul(t_direct, t_direct, rewriter, loc);
+    auto t_table_sq = multiFloatMul(t_table, t_table, rewriter, loc);
 
-    // Evaluate polynomials
-    // For narrow (table)
-    Value p_table_hi = getConst(kNarrowCoefs[3][0]);
-    Value p_table_lo = getConst(kNarrowCoefs[3][1]);
+    // Horner polynomial evaluation.
+    auto evalHorner = [&](auto getCoef, int count,
+                          ArrayRef<Value> arg) -> SmallVector<Value> {
+      SmallVector<Value> p = mfFromCoef(getCoef, count - 1);
+      for (int i = count - 2; i >= 0; --i) {
+        auto mul = multiFloatMul(p, arg, rewriter, loc);
+        p = multiFloatAdd(mul, mfFromCoef(getCoef, i), rewriter, loc);
+      }
+      return p;
+    };
 
-    for (int i = 2; i >= 0; --i) {
-      auto mul_r3 = multiFloatMul({p_table_hi, p_table_lo}, {t_table_sq_hi, t_table_sq_lo}, rewriter, loc);
-      Value mul_hi = mul_r3[0], mul_lo = mul_r3[1];
-      auto add_r2 = multiFloatAdd({mul_hi, mul_lo}, {getConst(kNarrowCoefs[i][0]), getConst(kNarrowCoefs[i][1])}, rewriter, loc);
-      Value add_hi = add_r2[0], add_lo = add_r2[1];
-      p_table_hi = add_hi;
-      p_table_lo = add_lo;
-    }
+    auto p_table = evalHorner([&](int j, int i) { return narrowCoef(j, i); },
+                              narrowCount(), t_table_sq);
+    auto p_direct = evalHorner([&](int j, int i) { return wideCoef(j, i); },
+                               wideCount(), t_direct_sq);
 
-    // For wide (direct)
-    Value p_direct_hi = getConst(kWideCoefs[4][0]);
-    Value p_direct_lo = getConst(kWideCoefs[4][1]);
+    auto res_direct = multiFloatMul(t_direct, p_direct, rewriter, loc);
+    auto res_table = multiFloatMul(t_table, p_table, rewriter, loc);
 
-    for (int i = 3; i >= 0; --i) {
-      auto mul_r4 = multiFloatMul({p_direct_hi, p_direct_lo}, {t_direct_sq_hi, t_direct_sq_lo}, rewriter, loc);
-      Value mul_hi = mul_r4[0], mul_lo = mul_r4[1];
-      auto add_r3 = multiFloatAdd({mul_hi, mul_lo}, {getConst(kWideCoefs[i][0]), getConst(kWideCoefs[i][1])}, rewriter, loc);
-      Value add_hi = add_r3[0], add_lo = add_r3[1];
-      p_direct_hi = add_hi;
-      p_direct_lo = add_lo;
-    }
-
-    auto res_direct = multiFloatMul({t_direct_hi, t_direct_lo}, {p_direct_hi, p_direct_lo}, rewriter, loc);
-    Value res_direct_hi = res_direct[0], res_direct_lo = res_direct[1];
-    auto res_table = multiFloatMul({t_table_hi, t_table_lo}, {p_table_hi, p_table_lo}, rewriter, loc);
-    Value res_table_hi = res_table[0], res_table_lo = res_table[1];
-    // 4. Combine results
+    // 4. Combine: log2(x) = e + val + res_table  (or res_direct for |x-1| small).
     Value e_f32 = rewriter.create<stablehlo::ConvertOp>(loc, tensorType, exp);
-    auto e_plus_val = multiFloatAdd({e_f32, getConst(0.0)}, {val_hi, val_lo}, rewriter, loc);
-    Value e_plus_val_hi = e_plus_val[0], e_plus_val_lo = e_plus_val[1];
-    auto else_r = multiFloatAdd({e_plus_val_hi, e_plus_val_lo}, {res_table_hi, res_table_lo}, rewriter, loc);
-    Value else_hi = else_r[0], else_lo = else_r[1];
+    SmallVector<Value> e_mf(expansionSize, getConst(0.0));
+    e_mf[0] = e_f32;
+    auto e_plus_val = multiFloatAdd(e_mf, val, rewriter, loc);
+    auto else_branch = multiFloatAdd(e_plus_val, res_table, rewriter, loc);
 
     Value direct_lo = getConst(0.9375);
     Value direct_hi = getConst(1.0625);
-
     Value cond1 = rewriter.create<stablehlo::CompareOp>(
-        loc, direct_lo, x_hi, stablehlo::ComparisonDirection::LT);
+        loc, direct_lo, x[0], stablehlo::ComparisonDirection::LT);
     Value cond2 = rewriter.create<stablehlo::CompareOp>(
-        loc, x_hi, direct_hi, stablehlo::ComparisonDirection::LT);
+        loc, x[0], direct_hi, stablehlo::ComparisonDirection::LT);
     Value cond = rewriter.create<stablehlo::AndOp>(loc, cond1, cond2);
 
-    Value log2_hi =
-        rewriter.create<stablehlo::SelectOp>(loc, cond, res_direct_hi, else_hi);
-    Value log2_lo =
-        rewriter.create<stablehlo::SelectOp>(loc, cond, res_direct_lo, else_lo);
+    SmallVector<Value> log2_mf;
+    log2_mf.reserve(expansionSize);
+    for (int i = 0; i < expansionSize; ++i)
+      log2_mf.push_back(rewriter.create<stablehlo::SelectOp>(
+          loc, cond, res_direct[i], else_branch[i]));
 
-    // Multiply by ln(2)
-    Value ln2_hi = getConst(kLn2[0]);
-    Value ln2_lo = getConst(kLn2[1]);
-    auto res_r3 = multiFloatMul({log2_hi, log2_lo}, {ln2_hi, ln2_lo}, rewriter, loc);
-    Value res_hi = res_r3[0], res_lo = res_r3[1];
+    // Multiply by ln(2) to get natural log.
+    auto ln2_mf = mfFromCoef([&](int /*j*/, int i) { return lnTwo(i); }, 0);
+    auto res = multiFloatMul(log2_mf, ln2_mf, rewriter, loc);
 
-    // Handle special cases
+    // 5. Special cases (boundary handling).
     Value zero = getConst(0.0);
     Value one = getConst(1.0);
     Value nan = getConst(std::numeric_limits<double>::quiet_NaN());
     Value inf = getConst(std::numeric_limits<double>::infinity());
     Value neg_inf = getConst(-std::numeric_limits<double>::infinity());
 
-    // Check x == 0
     Value is_zero = rewriter.create<stablehlo::CompareOp>(
-        loc, x_hi, zero, stablehlo::ComparisonDirection::EQ);
-
-    // Check x == 1
-    Value is_one_hi = rewriter.create<stablehlo::CompareOp>(
-        loc, x_hi, one, stablehlo::ComparisonDirection::EQ);
-    Value is_one_lo = rewriter.create<stablehlo::CompareOp>(
-        loc, x_lo, zero, stablehlo::ComparisonDirection::EQ);
-    Value is_one = rewriter.create<stablehlo::AndOp>(loc, is_one_hi, is_one_lo);
-
-    // Check x < 0
+        loc, x[0], zero, stablehlo::ComparisonDirection::EQ);
+    // x == 1 iff all limbs match (leading == 1, rest == 0).
+    Value is_one = rewriter.create<stablehlo::CompareOp>(
+        loc, x[0], one, stablehlo::ComparisonDirection::EQ);
+    for (int i = 1; i < expansionSize; ++i) {
+      Value zi = rewriter.create<stablehlo::CompareOp>(
+          loc, x[i], zero, stablehlo::ComparisonDirection::EQ);
+      is_one = rewriter.create<stablehlo::AndOp>(loc, is_one, zi);
+    }
     Value is_neg = rewriter.create<stablehlo::CompareOp>(
-        loc, x_hi, zero, stablehlo::ComparisonDirection::LT);
-
-    // Check x == +inf
+        loc, x[0], zero, stablehlo::ComparisonDirection::LT);
     Value is_inf = rewriter.create<stablehlo::CompareOp>(
-        loc, x_hi, inf, stablehlo::ComparisonDirection::EQ);
+        loc, x[0], inf, stablehlo::ComparisonDirection::EQ);
 
-    Value packed_res =
-        packLimbs(res_hi, res_lo, rewriter, loc, concatDimension);
-    Value packed_zero = packLimbs(zero, zero, rewriter, loc, concatDimension);
-    Value packed_inf = packLimbs(inf, zero, rewriter, loc, concatDimension);
-    Value packed_neg_inf =
-        packLimbs(neg_inf, zero, rewriter, loc, concatDimension);
-    Value packed_nan = packLimbs(nan, nan, rewriter, loc, concatDimension);
+    Value packed_res = packLimbs(res, rewriter, loc, concatDimension);
+    auto packMfScalar = [&](Value leading) {
+      SmallVector<Value> v(expansionSize, zero);
+      v[0] = leading;
+      return packLimbs(v, rewriter, loc, concatDimension);
+    };
+    Value packed_zero = packMfScalar(zero);
+    Value packed_inf = packMfScalar(inf);
+    Value packed_neg_inf = packMfScalar(neg_inf);
+    SmallVector<Value> nan_limbs(expansionSize, nan);
+    Value packed_nan = packLimbs(nan_limbs, rewriter, loc, concatDimension);
 
-    auto limbType = cast<RankedTensorType>(x_hi.getType());
+    auto limbType = cast<RankedTensorType>(x[0].getType());
     int concatDim = (concatDimension == "first") ? 0 : limbType.getRank() - 1;
     SmallVector<int64_t> outShape = llvm::to_vector(limbType.getShape());
-    outShape[concatDim] = 2;
+    outShape[concatDim] = expansionSize;
     auto i1Type = RankedTensorType::get(outShape, rewriter.getI1Type());
 
     SmallVector<int64_t> bcastDims;
@@ -3295,28 +3295,15 @@ struct LogOpConversion : public OpConversionPattern<stablehlo::LogOp> {
                                                           bcastDims);
     };
 
-    Value is_one_bcast = broadcastCond(is_one);
-    Value is_inf_bcast = broadcastCond(is_inf);
-    Value is_zero_bcast = broadcastCond(is_zero);
-    Value is_neg_bcast = broadcastCond(is_neg);
-
     Value final_packed = packed_res;
-
-    // If x == 1 -> 0
     final_packed = rewriter.create<stablehlo::SelectOp>(
-        loc, is_one_bcast, packed_zero, final_packed);
-
-    // If x == +inf -> +inf
+        loc, broadcastCond(is_one), packed_zero, final_packed);
     final_packed = rewriter.create<stablehlo::SelectOp>(
-        loc, is_inf_bcast, packed_inf, final_packed);
-
-    // If x == 0 -> -inf
+        loc, broadcastCond(is_inf), packed_inf, final_packed);
     final_packed = rewriter.create<stablehlo::SelectOp>(
-        loc, is_zero_bcast, packed_neg_inf, final_packed);
-
-    // If x < 0 -> NaN
+        loc, broadcastCond(is_zero), packed_neg_inf, final_packed);
     final_packed = rewriter.create<stablehlo::SelectOp>(
-        loc, is_neg_bcast, packed_nan, final_packed);
+        loc, broadcastCond(is_neg), packed_nan, final_packed);
 
     rewriter.replaceOp(op, final_packed);
     return success();
@@ -4726,7 +4713,8 @@ struct MultiFloatConversionPass
       patterns.add<FloorOpConversion>(typeConverter, context, concatDimension);
       patterns.add<CeilOpConversion>(typeConverter, context, concatDimension);
       patterns.add<ExpOpConversion>(typeConverter, context, concatDimension);
-      patterns.add<LogOpConversion>(typeConverter, context, concatDimension);
+      patterns.add<LogOpConversion>(typeConverter, context, concatDimension,
+                                    expansionSize);
       patterns.add<SqrtOpConversion>(typeConverter, context, concatDimension,
                                      expansionSize);
       patterns.add<SliceOpConversion>(typeConverter, context, concatDimension,
@@ -4782,6 +4770,8 @@ struct MultiFloatConversionPass
                                     divSubsteps, expansionSize);
       patterns.add<SqrtOpConversion>(typeConverter, context, concatDimension,
                                      expansionSize);
+      patterns.add<LogOpConversion>(typeConverter, context, concatDimension,
+                                    expansionSize);
       patterns.add<ReduceOpConversion>(typeConverter, context, concatDimension,
                                        preciseReduce, srcTy, tgtTy,
                                        expansionSize);
