@@ -2940,12 +2940,14 @@ private:
         Value shapePtr;
         {
           Block *allocaBlock = getAllocaBlock(allocOp);
-          assert(allocaBlock && "AllocOp must be inside a function or allocation scope");
+          assert(allocaBlock &&
+                 "AllocOp must be inside a function or allocation scope");
           OpBuilder::InsertionGuard guard(rewriter);
           rewriter.setInsertionPointToStart(allocaBlock);
-          auto one_entry = LLVM::ConstantOp::create(rewriter, loc, i64,
-                                              rewriter.getIntegerAttr(i64, 1));
-          shapePtr = LLVM::AllocaOp::create(rewriter, loc, ptrty, AT, one_entry);
+          auto one_entry = LLVM::ConstantOp::create(
+              rewriter, loc, i64, rewriter.getIntegerAttr(i64, 1));
+          shapePtr =
+              LLVM::AllocaOp::create(rewriter, loc, ptrty, AT, one_entry);
         }
 
         int dynIdx = 0;
@@ -3078,11 +3080,12 @@ private:
     Value ptr;
     {
       Block *allocaBlock = getAllocaBlock(op);
-      assert(allocaBlock && "OccupancyOp must be inside a function or allocation scope");
+      assert(allocaBlock &&
+             "OccupancyOp must be inside a function or allocation scope");
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(allocaBlock);
-      auto one_entry = LLVM::ConstantOp::create(rewriter, loc, i64,
-                                          rewriter.getIntegerAttr(i64, 1));
+      auto one_entry = LLVM::ConstantOp::create(
+          rewriter, loc, i64, rewriter.getIntegerAttr(i64, 1));
       ptr = LLVM::AllocaOp::create(rewriter, loc, ptrty, intty, one_entry);
     }
 
