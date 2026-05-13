@@ -98,7 +98,6 @@ Type convertMemrefElementTypeForLLVMPointer(
     return converted;
   }
 
-
   // Only the leading dimension can be dynamic.
   if (llvm::any_of(type.getShape().drop_front(), ShapedType::isDynamic))
     return Type();
@@ -2851,11 +2850,12 @@ private:
         Value ptr;
         {
           Block *allocaBlock = getAllocaBlock(allocOp);
-          assert(allocaBlock && "AllocOp must be inside a function or allocation scope");
+          assert(allocaBlock &&
+                 "AllocOp must be inside a function or allocation scope");
           OpBuilder::InsertionGuard guard(rewriter);
           rewriter.setInsertionPointToStart(allocaBlock);
-          auto one_entry = LLVM::ConstantOp::create(rewriter, loc, i64,
-                                              rewriter.getIntegerAttr(i64, 1));
+          auto one_entry = LLVM::ConstantOp::create(
+              rewriter, loc, i64, rewriter.getIntegerAttr(i64, 1));
           ptr = LLVM::AllocaOp::create(rewriter, loc, ptrty, ptr1ty, one_entry);
         }
         Type tys[] = {ptrty, i64};
@@ -2877,11 +2877,12 @@ private:
         Value ptr;
         {
           Block *allocaBlock = getAllocaBlock(allocOp);
-          assert(allocaBlock && "AllocOp must be inside a function or allocation scope");
+          assert(allocaBlock &&
+                 "AllocOp must be inside a function or allocation scope");
           OpBuilder::InsertionGuard guard(rewriter);
           rewriter.setInsertionPointToStart(allocaBlock);
-          auto one_entry = LLVM::ConstantOp::create(rewriter, loc, i64,
-                                              rewriter.getIntegerAttr(i64, 1));
+          auto one_entry = LLVM::ConstantOp::create(
+              rewriter, loc, i64, rewriter.getIntegerAttr(i64, 1));
           ptr = LLVM::AllocaOp::create(rewriter, loc, ptrty, ptr1ty, one_entry);
         }
         Type tys[] = {ptrty, i64};
@@ -3331,7 +3332,8 @@ private:
     Value argsPtr;
     {
       Block *allocaBlock = getAllocaBlock(wrap);
-      assert(allocaBlock && "XLAWrapperOp must be inside a function or allocation scope");
+      assert(allocaBlock &&
+             "XLAWrapperOp must be inside a function or allocation scope");
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(allocaBlock);
       auto one_entry = LLVM::ConstantOp::create(rewriter, loc, i64,
