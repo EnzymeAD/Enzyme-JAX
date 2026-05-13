@@ -21,6 +21,11 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<i64 = dense<64> : vector<2xi64>,
     // Test cudaMemset
     %1 = llvm.call @cudaMemset(%dev_ptr, %c0, %c512) : (!llvm.ptr, i32, i64) -> i32
 
+    // Test cudaMemsetAsync
+    %c1_i64 = llvm.mlir.constant(1 : i64) : i64
+    %dummy_stream = llvm.inttoptr %c1_i64 : i64 to !llvm.ptr
+    %3 = llvm.call @cudaMemsetAsync(%dev_ptr, %c0, %c512, %dummy_stream) : (!llvm.ptr, i32, i64, !llvm.ptr) -> i32
+
     // Test cudaMemcpy2D
     %2 = llvm.call @cudaMemcpy2D(%dst_array, %c10, %dev_ptr, %c10, %c10, %c10, %c2) : (!llvm.ptr, i64, !llvm.ptr, i64, i64, i64, i32) -> i32
 
@@ -29,6 +34,7 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<i64 = dense<64> : vector<2xi64>,
 
   llvm.func local_unnamed_addr @cudaMalloc(!llvm.ptr, i64) -> i32
   llvm.func local_unnamed_addr @cudaMemset(!llvm.ptr, i32, i64) -> i32
+  llvm.func local_unnamed_addr @cudaMemsetAsync(!llvm.ptr, i32, i64, !llvm.ptr) -> i32
   llvm.func local_unnamed_addr @cudaMemcpy2D(!llvm.ptr, i64, !llvm.ptr, i64, i64, i64, i32) -> i32
 }
 
@@ -51,6 +57,10 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<i64 = dense<64> : vector<2xi64>,
 // CHECK:        [[MEMREF_SET:%.+]] = "enzymexla.pointer2memref"([[DEV_PTR]])
 // CHECK:        [[C512_2:%.+]] = arith.index_cast [[C512_VAL]] : i64 to index
 // CHECK:        enzymexla.memset [[MEMREF_SET]], [[C0_VAL]], [[C512_2]] : memref<?xi8, 1>, i32
+// CHECK:        [[MEMREF_SET_ASYNC:%.+]] = "enzymexla.pointer2memref"([[DEV_PTR]])
+// CHECK:        [[C512_ASYNC:%.+]] = arith.index_cast [[C512_VAL]] : i64 to index
+// CHECK:        [[TOKEN:%.+]] = "enzymexla.stream2token"
+// CHECK:        enzymexla.memset {{\[}}[[TOKEN]]{{\]}} [[MEMREF_SET_ASYNC]], [[C0_VAL]], [[C512_ASYNC]] : memref<?xi8, 1>, i32
 
 // CHECK-DAG:        [[DST_MEMREF:%.+]] = "enzymexla.pointer2memref"([[DST_ARRAY]]) : (!llvm.ptr) -> memref<?xi8>
 // CHECK-DAG:        [[SRC_MEMREF:%.+]] = "enzymexla.pointer2memref"([[DEV_PTR]]) : (!llvm.ptr) -> memref<?xi8, 1>

@@ -257,7 +257,7 @@ enum __device_builtin__ cudaMemcpyKind
         }
       }
 
-      if (callee == "cudaMemset") {
+      if (callee == "cudaMemset" || callee == "cudaMemsetAsync") {
         Value devPtr = call->getOperand(0);
         devPtr = enzymexla::Pointer2MemrefOp::create(
             builder, call->getLoc(),
@@ -272,9 +272,20 @@ enum __device_builtin__ cudaMemcpyKind
           count = arith::IndexCastOp::create(builder, call->getLoc(),
                                              builder.getIndexType(), count);
 
+        SmallVector<Value, 1> asyncDeps;
+        if (callee == "cudaMemsetAsync") {
+          Value stream = call->getOperand(3);
+          if (!stream.getDefiningOp<LLVM::ZeroOp>()) {
+            auto token = enzymexla::StreamToTokenOp::create(
+                builder, call.getLoc(),
+                gpu::AsyncTokenType::get(call.getContext()), stream);
+            asyncDeps.push_back(token.getResult());
+          }
+        }
+
         enzymexla::MemsetOp::create(builder, call.getLoc(),
-                                    (mlir::Type) nullptr, ValueRange(), devPtr,
-                                    value, count);
+                                    (mlir::Type) nullptr, ValueRange(asyncDeps),
+                                    devPtr, value, count);
         auto replace =
             LLVM::ZeroOp::create(builder, call.getLoc(), call.getType(0));
         call->replaceAllUsesWith(replace);

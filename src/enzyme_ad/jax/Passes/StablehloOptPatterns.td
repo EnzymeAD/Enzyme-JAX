@@ -59,3 +59,12 @@ def SubSubConst : BinOpLiftConstantComputation<StableHLO_SubtractOp, StableHLO_S
 
 // Pattern: (x + cst_1) - cst_2 -> x + (cst_1 - cst_2)
 def SubAddConst : BinOpLiftConstantComputation<StableHLO_SubtractOp, StableHLO_AddOp, StableHLO_AddOp, StableHLO_SubtractOp>;
+
+def HasSameType : Constraint<CPred<"$0.getType() == $1.getType()">>;
+def UseOperand : NativeCodeCall<"$0">;
+
+def BitcastConvertCancellation : Pat<
+  (StableHLO_BitcastConvertOp:$outer (StableHLO_BitcastConvertOp $x)),
+  (UseOperand $x),
+  [(HasSameType $outer, $x)]
+>;

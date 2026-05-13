@@ -420,6 +420,7 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("replace_neg_add_with_subtract");
   list.push_back("replace_subtract_neg_with_add");
   list.push_back("binop_const_simplify");
+  list.push_back("bitcast_convert_cancellation");
   list.push_back("not_select_simplify");
   list.push_back("common_compare_expression_rewrite");
   list.push_back("compare_select_simplify");
