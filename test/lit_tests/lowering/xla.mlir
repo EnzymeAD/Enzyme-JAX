@@ -73,24 +73,24 @@ module {
 // CHECK-NEXT:    %[[ALLOCA2:.+]] = llvm.alloca %[[C1_IDX]] x f64
 // CHECK-NEXT:    %[[ALLOCA3:.+]] = llvm.alloca %[[C1_IDX]] x f64
 // CHECK-NEXT:    %[[ALLOCA4:.+]] = llvm.alloca %[[C1_IDX]] x f64
-// CHECK-NEXT:    %[[ALLOCA_MALLOC:.+]] = llvm.alloca %[[C1_I64]] x !llvm.array<1 x i64>
-// CHECK-NEXT:    %[[GEP:.+]] = llvm.getelementptr %[[ALLOCA_MALLOC]][0, 0]
-// CHECK-NEXT:    llvm.store %[[C1_I64]], %[[GEP]]
-// CHECK-NEXT:    %[[MALLOC1:.+]] = llvm.call @reactantXLAMalloc(%[[XDATA]], %[[C12]], %[[C1_I64]], %[[ALLOCA_MALLOC]])
+// CHECK-NEXT:    %[[ALLOCA_M1:.+]] = llvm.alloca %[[C1_I64]] x !llvm.array<1 x i64>
+// CHECK-NEXT:    %[[GEP1:.+]] = llvm.getelementptr %[[ALLOCA_M1]][0, 0]
+// CHECK-NEXT:    llvm.store %[[C1_I64]], %[[GEP1]]
+// CHECK-NEXT:    %[[MALLOC1:.+]] = llvm.call @reactantXLAMalloc(%[[XDATA]], %[[C12]], %[[C1_I64]], %[[ALLOCA_M1]])
 // CHECK-NEXT:    %[[CAST1:.+]] = llvm.addrspacecast %[[MALLOC1]] : !llvm.ptr to !llvm.ptr<1>
-// CHECK-NEXT:    %[[ALLOCA_MALLOC2:.+]] = llvm.alloca %[[C1_I64]] x !llvm.array<1 x i64>
-// CHECK-NEXT:    %[[GEP2:.+]] = llvm.getelementptr %[[ALLOCA_MALLOC2]][0, 0]
+// CHECK-NEXT:    %[[ALLOCA_M2:.+]] = llvm.alloca %[[C1_I64]] x !llvm.array<1 x i64>
+// CHECK-NEXT:    %[[GEP2:.+]] = llvm.getelementptr %[[ALLOCA_M2]][0, 0]
 // CHECK-NEXT:    llvm.store %[[C1_I64]], %[[GEP2]]
-// CHECK-NEXT:    %[[MALLOC2:.+]] = llvm.call @reactantXLAMalloc(%[[XDATA]], %[[C12]], %[[C1_I64]], %[[ALLOCA_MALLOC2]])
-// CHECK-NEXT:    %[[ALLOCA_MALLOC3:.+]] = llvm.alloca %[[C1_I64]] x !llvm.array<1 x i64>
-// CHECK-NEXT:    %[[GEP3:.+]] = llvm.getelementptr %[[ALLOCA_MALLOC3]][0, 0]
+// CHECK-NEXT:    %[[MALLOC2:.+]] = llvm.call @reactantXLAMalloc(%[[XDATA]], %[[C12]], %[[C1_I64]], %[[ALLOCA_M2]])
+// CHECK-NEXT:    %[[ALLOCA_M3:.+]] = llvm.alloca %[[C1_I64]] x !llvm.array<1 x i64>
+// CHECK-NEXT:    %[[GEP3:.+]] = llvm.getelementptr %[[ALLOCA_M3]][0, 0]
 // CHECK-NEXT:    llvm.store %[[C1_I64]], %[[GEP3]]
-// CHECK-NEXT:    %[[MALLOC3:.+]] = llvm.call @reactantXLAMalloc(%[[XDATA]], %[[C12]], %[[C1_I64]], %[[ALLOCA_MALLOC3]])
+// CHECK-NEXT:    %[[MALLOC3:.+]] = llvm.call @reactantXLAMalloc(%[[XDATA]], %[[C12]], %[[C1_I64]], %[[ALLOCA_M3]])
 // CHECK-NEXT:    %[[CAST3:.+]] = llvm.addrspacecast %[[MALLOC3]] : !llvm.ptr to !llvm.ptr<1>
-// CHECK-NEXT:    %[[ALLOCA_MALLOC4:.+]] = llvm.alloca %[[C1_I64]] x !llvm.array<1 x i64>
-// CHECK-NEXT:    %[[GEP4:.+]] = llvm.getelementptr %[[ALLOCA_MALLOC4]][0, 0]
+// CHECK-NEXT:    %[[ALLOCA_M4:.+]] = llvm.alloca %[[C1_I64]] x !llvm.array<1 x i64>
+// CHECK-NEXT:    %[[GEP4:.+]] = llvm.getelementptr %[[ALLOCA_M4]][0, 0]
 // CHECK-NEXT:    llvm.store %[[C1_I64]], %[[GEP4]]
-// CHECK-NEXT:    %[[MALLOC4:.+]] = llvm.call @reactantXLAMalloc(%[[XDATA]], %[[C12]], %[[C1_I64]], %[[ALLOCA_MALLOC4]])
+// CHECK-NEXT:    %[[MALLOC4:.+]] = llvm.call @reactantXLAMalloc(%[[XDATA]], %[[C12]], %[[C1_I64]], %[[ALLOCA_M4]])
 // CHECK-NEXT:    llvm.store %[[CF1_4]], %[[ALLOCA1]]
 // CHECK-NEXT:    llvm.store %[[CF0]], %[[ALLOCA2]]
 // CHECK-NEXT:    llvm.store %[[CF1]], %[[ALLOCA3]]
@@ -117,6 +117,7 @@ module {
 // CHECK-NEXT:    llvm.call @printf(%[[STR]], %[[RES2]], %[[RES4]])
 // CHECK-NEXT:    llvm.return %[[ZERO]] : i32
 // CHECK-NEXT:  }
+
 // CHECK:  llvm.func local_unnamed_addr @printf(!llvm.ptr {llvm.nocapture, llvm.noundef, llvm.readonly}, ...) -> (i32 {llvm.noundef}) attributes {no_unwind, passthrough = ["nofree", ["no-trapping-math", "true"], ["stack-protector-buffer-size", "8"], ["target-cpu", "x86-64"]], sym_visibility = "private", target_cpu = "x86-64", target_features = #llvm.target_features<["+cmov", "+cx8", "+fxsr", "+mmx", "+sse", "+sse2", "+x87"]>}
 // CHECK-NEXT:  llvm.func linkonce @__reactant_xla_init() {
 // CHECK-NEXT:    %0 = llvm.mlir.addressof @__reactant_xla_data : !llvm.ptr
