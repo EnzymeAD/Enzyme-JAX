@@ -98,6 +98,7 @@ Type convertMemrefElementTypeForLLVMPointer(
     return converted;
   }
 
+
   // Only the leading dimension can be dynamic.
   if (llvm::any_of(type.getShape().drop_front(), ShapedType::isDynamic))
     return Type();
@@ -113,6 +114,18 @@ Type convertMemrefElementTypeForLLVMPointer(
       converted = LLVM::LLVMArrayType::get(converted, size);
   }
   return converted;
+}
+
+static Block *getAllocaBlock(Operation *op) {
+  Operation *currentOp = op;
+  while (Operation *parentOp = currentOp->getParentOp()) {
+    if (parentOp->mightHaveTrait<OpTrait::IsIsolatedFromAbove>() ||
+        parentOp->mightHaveTrait<OpTrait::AutomaticAllocationScope>()) {
+      return &currentOp->getParentRegion()->front();
+    }
+    currentOp = parentOp;
+  }
+  return nullptr;
 }
 
 static Value insertXLAInitDeinit(mlir::ModuleOp moduleOp, StringRef backend,
@@ -2846,9 +2859,16 @@ private:
       auto ptr1ty = LLVM::LLVMPointerType::get(rewriter.getContext(), 1);
 
       if (backend == "cuda") {
-        auto one = LLVM::ConstantOp::create(rewriter, loc, i64,
-                                            rewriter.getI64IntegerAttr(1));
-        auto ptr = LLVM::AllocaOp::create(rewriter, loc, ptrty, ptr1ty, one);
+        Value ptr;
+        {
+          Block *allocaBlock = getAllocaBlock(allocOp);
+          assert(allocaBlock && "AllocOp must be inside a function or allocation scope");
+          OpBuilder::InsertionGuard guard(rewriter);
+          rewriter.setInsertionPointToStart(allocaBlock);
+          auto one_entry = LLVM::ConstantOp::create(rewriter, loc, i64,
+                                              rewriter.getIntegerAttr(i64, 1));
+          ptr = LLVM::AllocaOp::create(rewriter, loc, ptrty, ptr1ty, one_entry);
+        }
         Type tys[] = {ptrty, i64};
         auto cudaMallocFn =
             LLVM::lookupOrCreateFn(rewriter, moduleOp, "cudaMalloc", tys, i32);
@@ -2865,9 +2885,16 @@ private:
         LLVM::CallOp::create(rewriter, loc, cudaMallocFn.value(), args);
         allocatedPtr = LLVM::LoadOp::create(rewriter, loc, ptr1ty, ptr);
       } else if (backend == "rocm") {
-        auto one = LLVM::ConstantOp::create(rewriter, loc, i64,
-                                            rewriter.getI64IntegerAttr(1));
-        auto ptr = LLVM::AllocaOp::create(rewriter, loc, ptrty, ptr1ty, one);
+        Value ptr;
+        {
+          Block *allocaBlock = getAllocaBlock(allocOp);
+          assert(allocaBlock && "AllocOp must be inside a function or allocation scope");
+          OpBuilder::InsertionGuard guard(rewriter);
+          rewriter.setInsertionPointToStart(allocaBlock);
+          auto one_entry = LLVM::ConstantOp::create(rewriter, loc, i64,
+                                              rewriter.getIntegerAttr(i64, 1));
+          ptr = LLVM::AllocaOp::create(rewriter, loc, ptrty, ptr1ty, one_entry);
+        }
         Type tys[] = {ptrty, i64};
         auto hipMallocFn =
             LLVM::lookupOrCreateFn(rewriter, moduleOp, "hipMalloc", tys, i32);
@@ -3299,10 +3326,10 @@ private:
 
     Value argsPtr;
     {
-      auto funcOp = wrap->getParentOfType<FunctionOpInterface>();
-      assert(funcOp && "XLAWrapperOp must be inside a function");
+      Block *allocaBlock = getAllocaBlock(wrap);
+      assert(allocaBlock && "XLAWrapperOp must be inside a function or allocation scope");
       OpBuilder::InsertionGuard guard(rewriter);
-      rewriter.setInsertionPointToStart(&funcOp->getRegion(0).front());
+      rewriter.setInsertionPointToStart(allocaBlock);
       auto one_entry = LLVM::ConstantOp::create(rewriter, loc, i64,
                                                 rewriter.getI64IntegerAttr(1));
       argsPtr = LLVM::AllocaOp::create(rewriter, loc, ptrty, AT, one_entry);
