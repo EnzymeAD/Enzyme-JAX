@@ -2937,9 +2937,6 @@ private:
         auto zero = LLVM::ConstantOp::create(rewriter, loc, i64,
                                              rewriter.getI64IntegerAttr(0));
 
-        auto one = LLVM::ConstantOp::create(rewriter, loc, i64,
-                                            rewriter.getI64IntegerAttr(1));
-
         auto tyid =
             LLVM::ConstantOp::create(rewriter, loc, i64,
                                      rewriter.getI64IntegerAttr(xla_type_id(
@@ -2951,7 +2948,16 @@ private:
 
         auto AT = LLVM::LLVMArrayType::get(i64, memRefType.getShape().size());
 
-        auto shapePtr = LLVM::AllocaOp::create(rewriter, loc, ptrty, AT, one);
+        Value shapePtr;
+        {
+          Block *allocaBlock = getAllocaBlock(allocOp);
+          assert(allocaBlock && "AllocOp must be inside a function or allocation scope");
+          OpBuilder::InsertionGuard guard(rewriter);
+          rewriter.setInsertionPointToStart(allocaBlock);
+          auto one_entry = LLVM::ConstantOp::create(rewriter, loc, i64,
+                                              rewriter.getIntegerAttr(i64, 1));
+          shapePtr = LLVM::AllocaOp::create(rewriter, loc, ptrty, AT, one_entry);
+        }
 
         int dynIdx = 0;
         for (int i = 0; i < memRefType.getShape().size(); i++) {
@@ -3080,10 +3086,16 @@ private:
       return failure();
     }
 
-    auto one = LLVM::ConstantOp::create(rewriter, loc, i64,
-                                        rewriter.getI64IntegerAttr(1));
-
-    auto ptr = LLVM::AllocaOp::create(rewriter, loc, ptrty, intty, one);
+    Value ptr;
+    {
+      Block *allocaBlock = getAllocaBlock(op);
+      assert(allocaBlock && "OccupancyOp must be inside a function or allocation scope");
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(allocaBlock);
+      auto one_entry = LLVM::ConstantOp::create(rewriter, loc, i64,
+                                          rewriter.getIntegerAttr(i64, 1));
+      ptr = LLVM::AllocaOp::create(rewriter, loc, ptrty, intty, one_entry);
+    }
 
     std::string funcStubName =
         getFuncStubName(op.getFn().getRootReference().getValue(),
