@@ -35703,6 +35703,7 @@ struct EnzymeHLOOptPass
     patterns.add<TransposeExtend>(context);
     patterns.add<TransposeRotate>(context);
     patterns.add<SelectPad>(context);
+    patterns.add<BitcastConvertCancellation>(context);
 
     patterns.add<
         AddSimplify, SubSimplify, AndSimplify, MaxSimplify, MinSimplify,
