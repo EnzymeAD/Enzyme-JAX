@@ -3467,7 +3467,8 @@ struct AffineToStableHLORaisingPass
                     ->getResult(0);
 
             Block *allocaBlock = getAllocaBlock(g);
-            assert(allocaBlock && "GPUWrapperOp must be inside an allocation scope");
+            assert(allocaBlock &&
+                   "GPUWrapperOp must be inside an allocation scope");
             Value res0;
             {
               OpBuilder::InsertionGuard guard(b);
