@@ -1356,11 +1356,12 @@ struct ReverseOpConversion : public OpConversionPattern<stablehlo::ReverseOp> {
 
 struct SliceOpConversion : public OpConversionPattern<stablehlo::SliceOp> {
   StringRef concatDimension;
+  int expansionSize;
 
   SliceOpConversion(TypeConverter &typeConverter, MLIRContext *context,
-                    StringRef concatDimension)
+                    StringRef concatDimension, int expansionSize)
       : OpConversionPattern<stablehlo::SliceOp>(typeConverter, context),
-        concatDimension(concatDimension) {}
+        concatDimension(concatDimension), expansionSize(expansionSize) {}
 
   LogicalResult
   matchAndRewrite(stablehlo::SliceOp op, OpAdaptor adaptor,
@@ -1370,20 +1371,16 @@ struct SliceOpConversion : public OpConversionPattern<stablehlo::SliceOp> {
     bool isFirst = concatDimension == "first";
 
     if (isTuple) {
-      Value high = extractLimb(adaptor.getOperands()[0], 0, rewriter, loc,
-                               concatDimension);
-      Value low = extractLimb(adaptor.getOperands()[0], 1, rewriter, loc,
-                              concatDimension);
-
-      auto sliceHigh = rewriter.create<stablehlo::SliceOp>(
-          loc, high, op.getStartIndices(), op.getLimitIndices(),
-          op.getStrides());
-      auto sliceLow = rewriter.create<stablehlo::SliceOp>(
-          loc, low, op.getStartIndices(), op.getLimitIndices(),
-          op.getStrides());
-
-      Value packed =
-          packLimbs(sliceHigh, sliceLow, rewriter, loc, concatDimension);
+      SmallVector<Value> limbs;
+      limbs.reserve(expansionSize);
+      for (int i = 0; i < expansionSize; ++i) {
+        Value limb = extractLimb(adaptor.getOperands()[0], i, rewriter, loc,
+                                 concatDimension);
+        limbs.push_back(rewriter.create<stablehlo::SliceOp>(
+            loc, limb, op.getStartIndices(), op.getLimitIndices(),
+            op.getStrides()));
+      }
+      Value packed = packLimbs(limbs, rewriter, loc, concatDimension);
       rewriter.replaceOp(op, packed);
       return success();
     }
@@ -1394,11 +1391,11 @@ struct SliceOpConversion : public OpConversionPattern<stablehlo::SliceOp> {
 
     if (isFirst) {
       startIndices.insert(startIndices.begin(), 0);
-      limitIndices.insert(limitIndices.begin(), 2);
+      limitIndices.insert(limitIndices.begin(), expansionSize);
       strides.insert(strides.begin(), 1);
     } else {
       startIndices.push_back(0);
-      limitIndices.push_back(2);
+      limitIndices.push_back(expansionSize);
       strides.push_back(1);
     }
 
@@ -4732,7 +4729,8 @@ struct MultiFloatConversionPass
       patterns.add<LogOpConversion>(typeConverter, context, concatDimension);
       patterns.add<SqrtOpConversion>(typeConverter, context, concatDimension,
                                      expansionSize);
-      patterns.add<SliceOpConversion>(typeConverter, context, concatDimension);
+      patterns.add<SliceOpConversion>(typeConverter, context, concatDimension,
+                                      expansionSize);
       patterns.add<BroadcastInDimOpConversion>(typeConverter, context,
                                                concatDimension);
       patterns.add<TransposeOpConversion>(typeConverter, context,
@@ -4770,10 +4768,10 @@ struct MultiFloatConversionPass
       patterns.add<ExtendOpConversion>(typeConverter, context, concatDimension);
       patterns.add<SineOpConversion>(typeConverter, context, concatDimension);
     } else if (expansionSize == 3 || expansionSize == 4) {
-      // Stages 2-4: arith + reduce for N=3,4. DotGeneral reaches N=3,4 via the
-      // pre-pass DotGeneralToMulReducePattern that decomposes it to mul+reduce.
-      // Custom DotGeneralOpConversion (Ozaki scheme) and transcendentals
-      // (exp/log/sin/pow) still 2-limb-only.
+      // Stages 2-4: arith + reduce + shape ops for N=3,4. DotGeneral reaches
+      // N=3,4 via DotGeneralToMulReducePattern (mul+reduce decomposition).
+      // The Ozaki-specialized DotGeneralOpConversion and transcendentals
+      // (exp/log/sin/pow) remain 2-limb-only.
       patterns.add<AddOpConversion>(typeConverter, context, srcTy,
                                     concatDimension, expansionSize);
       patterns.add<SubOpConversion>(typeConverter, context, concatDimension,
@@ -4787,6 +4785,18 @@ struct MultiFloatConversionPass
       patterns.add<ReduceOpConversion>(typeConverter, context, concatDimension,
                                        preciseReduce, srcTy, tgtTy,
                                        expansionSize);
+      patterns.add<BroadcastInDimOpConversion>(typeConverter, context,
+                                               concatDimension);
+      patterns.add<ReshapeOpConversion>(typeConverter, context,
+                                        concatDimension);
+      patterns.add<TransposeOpConversion>(typeConverter, context,
+                                          concatDimension);
+      patterns.add<SliceOpConversion>(typeConverter, context, concatDimension,
+                                      expansionSize);
+      patterns.add<ConcatenateOpConversion>(typeConverter, context,
+                                            concatDimension);
+      patterns.add<GenericOpConversion<stablehlo::NegOp>>(typeConverter,
+                                                          context);
       patterns.add<ReturnOpConversion>(typeConverter, context, concatDimension,
                                        convertSignatures, expansionSize, srcTy,
                                        tgtTy);
