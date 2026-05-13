@@ -3291,16 +3291,22 @@ private:
     auto zero = LLVM::ConstantOp::create(rewriter, loc, i64,
                                          rewriter.getI64IntegerAttr(0));
 
-    auto one = LLVM::ConstantOp::create(rewriter, loc, i64,
-                                        rewriter.getI64IntegerAttr(1));
-
     auto nargs = LLVM::ConstantOp::create(
         rewriter, loc, i64,
         rewriter.getI64IntegerAttr(adaptor.getInputs().size()));
 
     auto AT = LLVM::LLVMArrayType::get(i64, adaptor.getInputs().size());
 
-    auto argsPtr = LLVM::AllocaOp::create(rewriter, loc, ptrty, AT, one);
+    Value argsPtr;
+    {
+      auto funcOp = wrap->getParentOfType<FunctionOpInterface>();
+      assert(funcOp && "XLAWrapperOp must be inside a function");
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(&funcOp->getRegion(0).front());
+      auto one_entry = LLVM::ConstantOp::create(rewriter, loc, i64,
+                                                rewriter.getI64IntegerAttr(1));
+      argsPtr = LLVM::AllocaOp::create(rewriter, loc, ptrty, AT, one_entry);
+    }
 
     for (int i = 0; i < adaptor.getInputs().size(); i++) {
       auto idx = LLVM::ConstantOp::create(rewriter, loc, i64,
