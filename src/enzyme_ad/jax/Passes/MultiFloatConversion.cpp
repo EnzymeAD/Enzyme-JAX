@@ -21,6 +21,7 @@
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/ConversionUtils.h"
+#include "src/enzyme_ad/jax/Passes/MultiFloatExpTables.h"
 #include "src/enzyme_ad/jax/Passes/MultiFloatLogTables.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "stablehlo/dialect/StablehloOps.h"
@@ -1612,150 +1613,180 @@ struct CeilOpConversion : public OpConversionPattern<stablehlo::CeilOp> {
 
 struct ExpOpConversion : public OpConversionPattern<stablehlo::ExpOp> {
   StringRef concatDimension;
+  int expansionSize;
 
   ExpOpConversion(TypeConverter &typeConverter, MLIRContext *context,
-                  StringRef concatDimension)
+                  StringRef concatDimension, int expansionSize)
       : OpConversionPattern<stablehlo::ExpOp>(typeConverter, context),
-        concatDimension(concatDimension) {}
+        concatDimension(concatDimension), expansionSize(expansionSize) {}
 
-  Value polEvl(Value x, ArrayRef<double> coefs,
-               ConversionPatternRewriter &rewriter, Location loc,
-               RankedTensorType type) const {
-    auto floatTy =
-        cast<FloatType>(cast<RankedTensorType>(type).getElementType());
-    Value res = rewriter.create<stablehlo::ConstantOp>(
-        loc,
-        SplatElementsAttr::get(type, rewriter.getFloatAttr(floatTy, coefs[0])));
-    for (size_t i = 1; i < coefs.size(); ++i) {
-      Value c = rewriter.create<stablehlo::ConstantOp>(
-          loc, SplatElementsAttr::get(
-                   type, rewriter.getFloatAttr(floatTy, coefs[i])));
-      res = rewriter.create<stablehlo::MulOp>(loc, res, x);
-      res = rewriter.create<stablehlo::AddOp>(loc, res, c);
-    }
-    return res;
+  // exp2 polynomial coefficient counts per N.
+  int exp2Count() const {
+    return expansionSize == 2 ? 8 : (expansionSize == 3 ? 11 : 13);
+  }
+
+  double exp2Coef(int j, int i) const {
+    using namespace multifloat_exp_tables;
+    if (expansionSize == 2) return kExp2Coefs_f32_n2[j][i];
+    if (expansionSize == 3) return kExp2Coefs_f32_n3[j][i];
+    return kExp2Coefs_f32_n4[j][i];
+  }
+  double log2E(int i) const {
+    using namespace multifloat_exp_tables;
+    if (expansionSize == 2) return kLog2E_f32_n2[i];
+    if (expansionSize == 3) return kLog2E_f32_n3[i];
+    return kLog2E_f32_n4[i];
   }
 
   LogicalResult
   matchAndRewrite(stablehlo::ExpOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
-
     Value input = adaptor.getOperands()[0];
-    Value hi = extractLimb(input, 0, rewriter, loc, concatDimension);
-    Value lo = extractLimb(input, 1, rewriter, loc, concatDimension);
 
-    auto tensorType = cast<RankedTensorType>(hi.getType());
+    SmallVector<Value> x;
+    x.reserve(expansionSize);
+    for (int i = 0; i < expansionSize; ++i)
+      x.push_back(extractLimb(input, i, rewriter, loc, concatDimension));
+
+    auto tensorType = cast<RankedTensorType>(x[0].getType());
     auto floatTy = cast<FloatType>(tensorType.getElementType());
 
-    // 1. Multiply by log2(e) in multi-float!
-    // log2(e) approx C1 + C2
-    // C1 = Float32(+0x1.715476p+000) = 1.4426950216293335
-    // C2 = Float32(+0x1.4AE0C0p-026) = 1.9259629911678385e-8
-    auto c1Attr = rewriter.getFloatAttr(floatTy, 1.4426950216293335);
-    auto c1Splat = SplatElementsAttr::get(tensorType, c1Attr);
-    Value c1 = rewriter.create<stablehlo::ConstantOp>(loc, c1Splat);
-
-    auto c2Attr = rewriter.getFloatAttr(floatTy, 1.9259629911678385e-8);
-    auto c2Splat = SplatElementsAttr::get(tensorType, c2Attr);
-    Value c2 = rewriter.create<stablehlo::ConstantOp>(loc, c2Splat);
-
-    auto [p00, e00] = twoProdDekker(hi, c1, rewriter, loc);
-    Value p01 = rewriter.create<stablehlo::MulOp>(loc, hi, c2);
-    Value p10 = rewriter.create<stablehlo::MulOp>(loc, lo, c1);
-    Value p01_p10 = rewriter.create<stablehlo::AddOp>(loc, p01, p10);
-    Value e00_new = rewriter.create<stablehlo::AddOp>(loc, e00, p01_p10);
-    auto [y_hi, y_lo] = fastTwoSum(p00, e00_new, rewriter, loc);
-
-    // 2. n = floor(y_hi + 0.5)
-    auto halfAttr = rewriter.getFloatAttr(floatTy, 0.5);
-    auto halfSplat = SplatElementsAttr::get(tensorType, halfAttr);
-    Value half = rewriter.create<stablehlo::ConstantOp>(loc, halfSplat);
-    Value add_half = rewriter.create<stablehlo::AddOp>(loc, y_hi, half);
-    Value n = rewriter.create<stablehlo::FloorOp>(loc, add_half);
-
-    // 3. r = y - n in multi-float!
-    Value neg_n = rewriter.create<stablehlo::NegOp>(loc, n);
-    auto [r_hi, r_lo_err] = twoSum(y_hi, neg_n, rewriter, loc);
-    Value r_lo = rewriter.create<stablehlo::AddOp>(loc, y_lo, r_lo_err);
-    auto [r_hi_final, r_lo_final] = fastTwoSum(r_hi, r_lo, rewriter, loc);
-
-    // 4. Scale r by 1/8
-    auto one_eighthAttr = rewriter.getFloatAttr(floatTy, 0.125);
-    auto one_eighthSplat = SplatElementsAttr::get(tensorType, one_eighthAttr);
-    Value one_eighth =
-        rewriter.create<stablehlo::ConstantOp>(loc, one_eighthSplat);
-    Value r_prime_hi =
-        rewriter.create<stablehlo::MulOp>(loc, r_hi_final, one_eighth);
-    Value r_prime_lo =
-        rewriter.create<stablehlo::MulOp>(loc, r_lo_final, one_eighth);
-
-    // 5. Evaluate polynomial of degree 7 on r_prime in multi-float!
-    // Coefficients from MultiFloats.jl for Float32, Val{2}:
-    // 1: (1.0, -1.62C458p-59) -> we only use 1.0 for high part!
-    // 2: (+0x1.62E430p-001, -0x1.05C610p-029)
-    // 3: (+0x1.EBFBE0p-003, -0x1.F4DEB0p-033)
-    // 4: (+0x1.C6B08Ep-005, -0x1.1F6B9Cp-030)
-    // 5: (+0x1.3B2AB6p-007, +0x1.DB9286p-032)
-    // 6: (+0x1.5D87FEp-010)
-    // 7: (+0x1.430E9Ep-013)
-    // 8: (+0x1.FFD486p-017)
-
-    constexpr double kCoefs[][2] = {
-        {1.0, 0.0},
-        {0.6931471824645996, -1.9046542121259336e-09},
-        {0.24022650718688965, -2.27769247906906e-10},
-        {0.05550410971045494, -1.0456291388294403e-09},
-        {0.009618128649890423, 4.3253053916281203e-10},
-        {0.0013333557872101665, 0.0},
-        {0.00015404562873300165, 0.0},
-        {1.5253727724484634e-05, 0.0},
-    };
-
-    // Horner's method in multi-float!
-    // Start with last coefficient!
     auto getConst = [&](double val) {
       return rewriter.create<stablehlo::ConstantOp>(
           loc, SplatElementsAttr::get(tensorType,
                                       rewriter.getFloatAttr(floatTy, val)));
     };
+    auto mfFromTable = [&](auto fetchLimb, int j) -> SmallVector<Value> {
+      SmallVector<Value> v;
+      v.reserve(expansionSize);
+      for (int i = 0; i < expansionSize; ++i)
+        v.push_back(getConst(fetchLimb(j, i)));
+      return v;
+    };
 
-    Value p_hi = getConst(kCoefs[7][0]);
-    Value p_lo = getConst(kCoefs[7][1]);
+    // 1. Multiply input by log2(e) → y in multifloat; exp(x) = exp2(y).
+    auto log2e_mf =
+        mfFromTable([&](int /*j*/, int i) { return log2E(i); }, 0);
+    auto y = multiFloatMul(x, log2e_mf, rewriter, loc);
 
-    for (int i = 6; i >= 0; --i) {
-      auto mul_r = multiFloatMul({p_hi, p_lo}, {r_prime_hi, r_prime_lo}, rewriter, loc);
-      Value mul_hi = mul_r[0], mul_lo = mul_r[1];
-      Value c_hi = getConst(kCoefs[i][0]);
-      Value c_lo = getConst(kCoefs[i][1]);
-      auto add_r = multiFloatAdd({mul_hi, mul_lo}, {c_hi, c_lo}, rewriter, loc);
-      Value add_hi = add_r[0], add_lo = add_r[1];
-      p_hi = add_hi;
-      p_lo = add_lo;
+    // 2. n = floor(y[0] + 0.5) — round-to-nearest of the leading limb.
+    Value half = getConst(0.5);
+    Value y0_plus_half =
+        rewriter.create<stablehlo::AddOp>(loc, y[0], half);
+    Value n = rewriter.create<stablehlo::FloorOp>(loc, y0_plus_half);
+
+    // 3. r = y - n  (n in leading limb only, rest zero).
+    SmallVector<Value> n_mf(expansionSize, getConst(0.0));
+    n_mf[0] = n;
+    SmallVector<Value> neg_n_mf;
+    neg_n_mf.reserve(expansionSize);
+    for (Value v : n_mf)
+      neg_n_mf.push_back(rewriter.create<stablehlo::NegOp>(loc, v));
+    auto r = multiFloatAdd(y, neg_n_mf, rewriter, loc);
+
+    // 4. r' = r * (1/8) — bring r into [-ln(2)/16, ln(2)/16] roughly.
+    Value one_eighth = getConst(0.125);
+    SmallVector<Value> r_prime;
+    r_prime.reserve(expansionSize);
+    for (Value ri : r)
+      r_prime.push_back(rewriter.create<stablehlo::MulOp>(loc, ri, one_eighth));
+
+    // 5. Horner polynomial: p = c[0] + r'*(c[1] + r'*(c[2] + ...))
+    int K = exp2Count();
+    SmallVector<Value> p =
+        mfFromTable([&](int j, int i) { return exp2Coef(j, i); }, K - 1);
+    for (int i = K - 2; i >= 0; --i) {
+      auto mul = multiFloatMul(p, r_prime, rewriter, loc);
+      auto coef =
+          mfFromTable([&](int j2, int i2) { return exp2Coef(j2, i2); }, i);
+      p = multiFloatAdd(mul, coef, rewriter, loc);
     }
 
-    // 6. Square 3 times in multi-float!
-    auto s1 = multiFloatMul({p_hi, p_lo}, {p_hi, p_lo}, rewriter, loc);
-    Value s1_hi = s1[0], s1_lo = s1[1];
-    auto s2 = multiFloatMul({s1_hi, s1_lo}, {s1_hi, s1_lo}, rewriter, loc);
-    Value s2_hi = s2[0], s2_lo = s2[1];
-    auto res_r = multiFloatMul({s2_hi, s2_lo}, {s2_hi, s2_lo}, rewriter, loc);
-    Value res_hi = res_r[0], res_lo = res_r[1];
+    // 6. p^8 via three squarings: exp2(r) = exp2(r')^8.
+    auto s1 = multiFloatMul(p, p, rewriter, loc);
+    auto s2 = multiFloatMul(s1, s1, rewriter, loc);
+    auto res = multiFloatMul(s2, s2, rewriter, loc);
 
-    // 7. Scale by 2^n
-    // We can use stablehlo.pow(2.0, n) and multiply!
-    auto twoAttr = rewriter.getFloatAttr(floatTy, 2.0);
-    auto twoSplat = SplatElementsAttr::get(tensorType, twoAttr);
-    Value two = rewriter.create<stablehlo::ConstantOp>(loc, twoSplat);
+    // 7. Scale by 2^n. Use stablehlo.pow(2, n) on the scalar n.
+    Value two = getConst(2.0);
     Value scale = rewriter.create<stablehlo::PowOp>(loc, two, n);
+    SmallVector<Value> result;
+    result.reserve(expansionSize);
+    for (Value ri : res)
+      result.push_back(rewriter.create<stablehlo::MulOp>(loc, ri, scale));
 
-    res_hi = rewriter.create<stablehlo::MulOp>(loc, res_hi, scale);
-    res_lo = rewriter.create<stablehlo::MulOp>(loc, res_lo, scale);
-
-    // Pack limbs
-    Value packed = packLimbs(res_hi, res_lo, rewriter, loc, concatDimension);
+    Value packed = packLimbs(result, rewriter, loc, concatDimension);
     rewriter.replaceOp(op, packed);
+    return success();
+  }
+};
 
+// pow(x, y) decomposition for multifloat. Emits the f64-level composition
+// exp(y * log(|x|)) plus boundary handling; the conversion driver lowers each
+// constituent op (abs/log/mul/exp/compare/select/constant) via its own pattern.
+// Sign of a multifloat is the sign of its leading limb, but we detect x < 0
+// indirectly via (x != |x|) so we don't need a relational compare on multifloat
+// (which is 2-limb-only for GT/LT). Negative bases give NaN — fully correct
+// pow on negative base requires integer-exponent parity checks via Floor,
+// which is itself 2-limb-only.
+struct PowOpConversion : public OpConversionPattern<stablehlo::PowOp> {
+  StringRef concatDimension;
+
+  PowOpConversion(TypeConverter &typeConverter, MLIRContext *context,
+                  StringRef concatDimension)
+      : OpConversionPattern<stablehlo::PowOp>(typeConverter, context),
+        concatDimension(concatDimension) {}
+
+  LogicalResult
+  matchAndRewrite(stablehlo::PowOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    Value base = op.getLhs();  // original f64 source operand
+    Value exp = op.getRhs();   // original f64 source operand
+
+    auto tensorType = cast<RankedTensorType>(base.getType());
+    auto floatTy = cast<FloatType>(tensorType.getElementType());
+
+    auto fConst = [&](double val) {
+      return rewriter.create<stablehlo::ConstantOp>(
+          loc, SplatElementsAttr::get(tensorType,
+                                      rewriter.getFloatAttr(floatTy, val)));
+    };
+    Value zero = fConst(0.0);
+    Value one = fConst(1.0);
+    Value nan = fConst(std::numeric_limits<double>::quiet_NaN());
+
+    // Core: pos_result = exp(y * log(|x|)).
+    Value abs_x = rewriter.create<stablehlo::AbsOp>(loc, base);
+    Value log_abs_x = rewriter.create<stablehlo::LogOp>(loc, abs_x);
+    Value y_log = rewriter.create<stablehlo::MulOp>(loc, exp, log_abs_x);
+    Value pos_result = rewriter.create<stablehlo::ExpOp>(loc, y_log);
+
+    // Sign / boundary predicates. All compare results are i1 tensors that don't
+    // need multifloat conversion; EQ/NE on multifloat operands go through the
+    // reduce-based path which is N-generic.
+    Value is_neg_x = rewriter.create<stablehlo::CompareOp>(
+        loc, base, abs_x, stablehlo::ComparisonDirection::NE);
+    Value is_zero_x = rewriter.create<stablehlo::CompareOp>(
+        loc, base, zero, stablehlo::ComparisonDirection::EQ);
+    Value is_zero_y = rewriter.create<stablehlo::CompareOp>(
+        loc, exp, zero, stablehlo::ComparisonDirection::EQ);
+    Value is_one_x = rewriter.create<stablehlo::CompareOp>(
+        loc, base, one, stablehlo::ComparisonDirection::EQ);
+
+    // Build result with later selects overriding earlier ones (higher priority).
+    Value result = pos_result;
+    // x == 0 → 0 (will be overridden by y==0 → 1 below if both hold).
+    result = rewriter.create<stablehlo::SelectOp>(loc, is_zero_x, zero, result);
+    // x < 0 → NaN (overrides x==0 case since x<0 ⇒ x≠0).
+    result = rewriter.create<stablehlo::SelectOp>(loc, is_neg_x, nan, result);
+    // x == 1 → 1 (regardless of y).
+    result = rewriter.create<stablehlo::SelectOp>(loc, is_one_x, one, result);
+    // y == 0 → 1 (highest priority; matches IEEE pow(x, 0) = 1).
+    result = rewriter.create<stablehlo::SelectOp>(loc, is_zero_y, one, result);
+
+    rewriter.replaceOp(op, result);
     return success();
   }
 };
@@ -4736,7 +4767,8 @@ struct MultiFloatConversionPass
       patterns.add<AbsOpConversion>(typeConverter, context, concatDimension);
       patterns.add<FloorOpConversion>(typeConverter, context, concatDimension);
       patterns.add<CeilOpConversion>(typeConverter, context, concatDimension);
-      patterns.add<ExpOpConversion>(typeConverter, context, concatDimension);
+      patterns.add<ExpOpConversion>(typeConverter, context, concatDimension,
+                                    expansionSize);
       patterns.add<LogOpConversion>(typeConverter, context, concatDimension,
                                     expansionSize);
       patterns.add<SqrtOpConversion>(typeConverter, context, concatDimension,
@@ -4779,11 +4811,13 @@ struct MultiFloatConversionPass
       patterns.add<WrapOpConversion>(typeConverter, context, concatDimension);
       patterns.add<ExtendOpConversion>(typeConverter, context, concatDimension);
       patterns.add<SineOpConversion>(typeConverter, context, concatDimension);
+      patterns.add<PowOpConversion>(typeConverter, context, concatDimension);
     } else if (expansionSize == 3 || expansionSize == 4) {
-      // Stages 2-4: arith + reduce + shape ops for N=3,4. DotGeneral reaches
-      // N=3,4 via DotGeneralToMulReducePattern (mul+reduce decomposition).
-      // The Ozaki-specialized DotGeneralOpConversion and transcendentals
-      // (exp/log/sin/pow) remain 2-limb-only.
+      // Stages 2-5: arith + reduce + shape ops + transcendentals (log/exp/pow)
+      // for N=3,4. DotGeneral reaches N=3,4 via DotGeneralToMulReducePattern
+      // (mul+reduce decomposition). Sin/cos and the Ozaki-specialized
+      // DotGeneralOpConversion remain 2-limb-only. Pow at N=3,4 returns NaN
+      // for negative bases (Floor / relational compare not yet N-generalized).
       patterns.add<AddOpConversion>(typeConverter, context, srcTy,
                                     concatDimension, expansionSize);
       patterns.add<SubOpConversion>(typeConverter, context, concatDimension,
@@ -4796,6 +4830,12 @@ struct MultiFloatConversionPass
                                      expansionSize);
       patterns.add<LogOpConversion>(typeConverter, context, concatDimension,
                                     expansionSize);
+      patterns.add<ExpOpConversion>(typeConverter, context, concatDimension,
+                                    expansionSize);
+      patterns.add<PowOpConversion>(typeConverter, context, concatDimension);
+      patterns.add<AbsOpConversion>(typeConverter, context, concatDimension);
+      patterns.add<SelectOpConversion>(typeConverter, context, concatDimension);
+      patterns.add<CompareOpConversion>(typeConverter, context, concatDimension);
       patterns.add<ReduceOpConversion>(typeConverter, context, concatDimension,
                                        preciseReduce, srcTy, tgtTy,
                                        expansionSize);
