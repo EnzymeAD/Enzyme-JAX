@@ -2566,8 +2566,7 @@ struct CompareOpConversion : public OpConversionPattern<stablehlo::CompareOp> {
         res = rewriter.create<stablehlo::OrOp>(loc, res, inf_corr);
       } else {
         res = rewriter.create<stablehlo::AndOp>(
-            loc, res,
-            rewriter.create<stablehlo::NotOp>(loc, inf_corr));
+            loc, res, rewriter.create<stablehlo::NotOp>(loc, inf_corr));
       }
 
       rewriter.replaceOp(op, res);
@@ -4261,7 +4260,8 @@ struct MultiFloatConversionPass
         };
         auto makeNaN = [&]() -> Value {
           APFloat nan = APFloat::getNaN(elemTy.getFloatSemantics());
-          auto attr = DenseElementsAttr::get(tensorTy, FloatAttr::get(elemTy, nan));
+          auto attr =
+              DenseElementsAttr::get(tensorTy, FloatAttr::get(elemTy, nan));
           return rewriter.create<stablehlo::ConstantOp>(loc, tensorTy, attr);
         };
 
