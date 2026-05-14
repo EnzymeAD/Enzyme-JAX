@@ -38,7 +38,12 @@ func.func @compare_f64_ge(%arg0: tensor<2xf64>, %arg1: tensor<2xf64>) -> tensor<
 // TUPLE:     %[[V_16:.*]] = stablehlo.reshape %[[V_14]] : (tensor<2xi1>) -> tensor<2xi1>
 // TUPLE:     %[[V_17:.*]] = stablehlo.reshape %[[V_15]] : (tensor<2xi1>) -> tensor<2xi1>
 // TUPLE:     %[[V_18:.*]] = stablehlo.and %[[V_16]], %[[V_17]] : tensor<2xi1>
-// TUPLE:     return %[[V_18]] : tensor<2xi1>
+// TUPLE:     %[[V_19:.*]] = stablehlo.is_finite %[[V_10]] : (tensor<2xf32>) -> tensor<2xi1>
+// TUPLE:     %[[V_20:.*]] = stablehlo.not %[[V_19]] : tensor<2xi1>
+// TUPLE:     %[[V_21:.*]] = stablehlo.reshape %[[V_20]] : (tensor<2xi1>) -> tensor<2xi1>
+// TUPLE:     %[[V_22:.*]] = stablehlo.and %[[V_16]], %[[V_21]] : tensor<2xi1>
+// TUPLE:     %[[V_23:.*]] = stablehlo.or %[[V_18]], %[[V_22]] : tensor<2xi1>
+// TUPLE:     return %[[V_23]] : tensor<2xi1>
 // TUPLE-LABEL: func.func @compare_f64_ne
 // TUPLE:     %[[V_0:.*]] = stablehlo.convert %arg0 : (tensor<2xf64>) -> tensor<2xf32>
 // TUPLE:     %[[V_1:.*]] = stablehlo.convert %[[V_0]] : (tensor<2xf32>) -> tensor<2xf64>
@@ -59,7 +64,15 @@ func.func @compare_f64_ge(%arg0: tensor<2xf64>, %arg1: tensor<2xf64>) -> tensor<
 // TUPLE:     %[[V_16:.*]] = stablehlo.reshape %[[V_14]] : (tensor<2xi1>) -> tensor<2xi1>
 // TUPLE:     %[[V_17:.*]] = stablehlo.reshape %[[V_15]] : (tensor<2xi1>) -> tensor<2xi1>
 // TUPLE:     %[[V_18:.*]] = stablehlo.or %[[V_16]], %[[V_17]] : tensor<2xi1>
-// TUPLE:     return %[[V_18]] : tensor<2xi1>
+// TUPLE:     %[[V_19:.*]] = stablehlo.compare EQ, %[[V_10]], %[[V_12]] : (tensor<2xf32>, tensor<2xf32>) -> tensor<2xi1>
+// TUPLE:     %[[V_20:.*]] = stablehlo.reshape %[[V_19]] : (tensor<2xi1>) -> tensor<2xi1>
+// TUPLE:     %[[V_21:.*]] = stablehlo.is_finite %[[V_10]] : (tensor<2xf32>) -> tensor<2xi1>
+// TUPLE:     %[[V_22:.*]] = stablehlo.not %[[V_21]] : tensor<2xi1>
+// TUPLE:     %[[V_23:.*]] = stablehlo.reshape %[[V_22]] : (tensor<2xi1>) -> tensor<2xi1>
+// TUPLE:     %[[V_24:.*]] = stablehlo.and %[[V_20]], %[[V_23]] : tensor<2xi1>
+// TUPLE:     %[[V_25:.*]] = stablehlo.not %[[V_24]] : tensor<2xi1>
+// TUPLE:     %[[V_26:.*]] = stablehlo.and %[[V_18]], %[[V_25]] : tensor<2xi1>
+// TUPLE:     return %[[V_26]] : tensor<2xi1>
 // TUPLE-LABEL: func.func @compare_f64_ge
 // TUPLE:     %[[V_0:.*]] = stablehlo.convert %arg0 : (tensor<2xf64>) -> tensor<2xf32>
 // TUPLE:     %[[V_1:.*]] = stablehlo.convert %[[V_0]] : (tensor<2xf32>) -> tensor<2xf64>
@@ -99,7 +112,15 @@ func.func @compare_f64_ge(%arg0: tensor<2xf64>, %arg1: tensor<2xf64>) -> tensor<
 // FIRST:     %[[V_14:.*]] = stablehlo.compare EQ, %[[V_6]], %[[V_13]] : (tensor<2x2xf32>, tensor<2x2xf32>) -> tensor<2x2xi1>
 // FIRST:     %[[C:.*]] = stablehlo.constant dense<true> : tensor<i1>
 // FIRST:     %[[V_15:.*]] = stablehlo.reduce(%[[V_14]] init: %[[C]]) applies stablehlo.and across dimensions = [0] : (tensor<2x2xi1>, tensor<i1>) -> tensor<2xi1>
-// FIRST:     return %[[V_15]] : tensor<2xi1>
+// FIRST:     %[[V_16:.*]] = stablehlo.slice %[[V_6]] [0:1, 0:2] : (tensor<2x2xf32>) -> tensor<1x2xf32>
+// FIRST:     %[[V_17:.*]] = stablehlo.slice %[[V_13]] [0:1, 0:2] : (tensor<2x2xf32>) -> tensor<1x2xf32>
+// FIRST:     %[[V_18:.*]] = stablehlo.compare EQ, %[[V_16]], %[[V_17]] : (tensor<1x2xf32>, tensor<1x2xf32>) -> tensor<1x2xi1>
+// FIRST:     %[[V_19:.*]] = stablehlo.is_finite %[[V_16]] : (tensor<1x2xf32>) -> tensor<1x2xi1>
+// FIRST:     %[[V_20:.*]] = stablehlo.not %[[V_19]] : tensor<1x2xi1>
+// FIRST:     %[[V_21:.*]] = stablehlo.and %[[V_18]], %[[V_20]] : tensor<1x2xi1>
+// FIRST:     %[[V_22:.*]] = stablehlo.reshape %[[V_21]] : (tensor<1x2xi1>) -> tensor<2xi1>
+// FIRST:     %[[V_23:.*]] = stablehlo.or %[[V_15]], %[[V_22]] : tensor<2xi1>
+// FIRST:     return %[[V_23]] : tensor<2xi1>
 // FIRST-LABEL: func.func @compare_f64_ne
 // FIRST:     %[[V_0:.*]] = stablehlo.convert %arg0 : (tensor<2xf64>) -> tensor<2xf32>
 // FIRST:     %[[V_1:.*]] = stablehlo.convert %[[V_0]] : (tensor<2xf32>) -> tensor<2xf64>
@@ -118,7 +139,16 @@ func.func @compare_f64_ge(%arg0: tensor<2xf64>, %arg1: tensor<2xf64>) -> tensor<
 // FIRST:     %[[V_14:.*]] = stablehlo.compare NE, %[[V_6]], %[[V_13]] : (tensor<2x2xf32>, tensor<2x2xf32>) -> tensor<2x2xi1>
 // FIRST:     %[[C:.*]] = stablehlo.constant dense<false> : tensor<i1>
 // FIRST:     %[[V_15:.*]] = stablehlo.reduce(%[[V_14]] init: %[[C]]) applies stablehlo.or across dimensions = [0] : (tensor<2x2xi1>, tensor<i1>) -> tensor<2xi1>
-// FIRST:     return %[[V_15]] : tensor<2xi1>
+// FIRST:     %[[V_16:.*]] = stablehlo.slice %[[V_6]] [0:1, 0:2] : (tensor<2x2xf32>) -> tensor<1x2xf32>
+// FIRST:     %[[V_17:.*]] = stablehlo.slice %[[V_13]] [0:1, 0:2] : (tensor<2x2xf32>) -> tensor<1x2xf32>
+// FIRST:     %[[V_18:.*]] = stablehlo.compare EQ, %[[V_16]], %[[V_17]] : (tensor<1x2xf32>, tensor<1x2xf32>) -> tensor<1x2xi1>
+// FIRST:     %[[V_19:.*]] = stablehlo.is_finite %[[V_16]] : (tensor<1x2xf32>) -> tensor<1x2xi1>
+// FIRST:     %[[V_20:.*]] = stablehlo.not %[[V_19]] : tensor<1x2xi1>
+// FIRST:     %[[V_21:.*]] = stablehlo.and %[[V_18]], %[[V_20]] : tensor<1x2xi1>
+// FIRST:     %[[V_22:.*]] = stablehlo.reshape %[[V_21]] : (tensor<1x2xi1>) -> tensor<2xi1>
+// FIRST:     %[[V_23:.*]] = stablehlo.not %[[V_22]] : tensor<2xi1>
+// FIRST:     %[[V_24:.*]] = stablehlo.and %[[V_15]], %[[V_23]] : tensor<2xi1>
+// FIRST:     return %[[V_24]] : tensor<2xi1>
 // FIRST-LABEL: func.func @compare_f64_ge
 // FIRST:     %[[V_0:.*]] = stablehlo.convert %arg0 : (tensor<2xf64>) -> tensor<2xf32>
 // FIRST:     %[[V_1:.*]] = stablehlo.convert %[[V_0]] : (tensor<2xf32>) -> tensor<2xf64>
@@ -163,7 +193,15 @@ func.func @compare_f64_ge(%arg0: tensor<2xf64>, %arg1: tensor<2xf64>) -> tensor<
 // LAST:     %[[V_14:.*]] = stablehlo.compare EQ, %[[V_6]], %[[V_13]] : (tensor<2x2xf32>, tensor<2x2xf32>) -> tensor<2x2xi1>
 // LAST:     %[[C:.*]] = stablehlo.constant dense<true> : tensor<i1>
 // LAST:     %[[V_15:.*]] = stablehlo.reduce(%[[V_14]] init: %[[C]]) applies stablehlo.and across dimensions = [1] : (tensor<2x2xi1>, tensor<i1>) -> tensor<2xi1>
-// LAST:     return %[[V_15]] : tensor<2xi1>
+// LAST:     %[[V_16:.*]] = stablehlo.slice %[[V_6]] [0:2, 0:1] : (tensor<2x2xf32>) -> tensor<2x1xf32>
+// LAST:     %[[V_17:.*]] = stablehlo.slice %[[V_13]] [0:2, 0:1] : (tensor<2x2xf32>) -> tensor<2x1xf32>
+// LAST:     %[[V_18:.*]] = stablehlo.compare EQ, %[[V_16]], %[[V_17]] : (tensor<2x1xf32>, tensor<2x1xf32>) -> tensor<2x1xi1>
+// LAST:     %[[V_19:.*]] = stablehlo.is_finite %[[V_16]] : (tensor<2x1xf32>) -> tensor<2x1xi1>
+// LAST:     %[[V_20:.*]] = stablehlo.not %[[V_19]] : tensor<2x1xi1>
+// LAST:     %[[V_21:.*]] = stablehlo.and %[[V_18]], %[[V_20]] : tensor<2x1xi1>
+// LAST:     %[[V_22:.*]] = stablehlo.reshape %[[V_21]] : (tensor<2x1xi1>) -> tensor<2xi1>
+// LAST:     %[[V_23:.*]] = stablehlo.or %[[V_15]], %[[V_22]] : tensor<2xi1>
+// LAST:     return %[[V_23]] : tensor<2xi1>
 // LAST-LABEL: func.func @compare_f64_ne
 // LAST:     %[[V_0:.*]] = stablehlo.convert %arg0 : (tensor<2xf64>) -> tensor<2xf32>
 // LAST:     %[[V_1:.*]] = stablehlo.convert %[[V_0]] : (tensor<2xf32>) -> tensor<2xf64>
@@ -182,7 +220,16 @@ func.func @compare_f64_ge(%arg0: tensor<2xf64>, %arg1: tensor<2xf64>) -> tensor<
 // LAST:     %[[V_14:.*]] = stablehlo.compare NE, %[[V_6]], %[[V_13]] : (tensor<2x2xf32>, tensor<2x2xf32>) -> tensor<2x2xi1>
 // LAST:     %[[C:.*]] = stablehlo.constant dense<false> : tensor<i1>
 // LAST:     %[[V_15:.*]] = stablehlo.reduce(%[[V_14]] init: %[[C]]) applies stablehlo.or across dimensions = [1] : (tensor<2x2xi1>, tensor<i1>) -> tensor<2xi1>
-// LAST:     return %[[V_15]] : tensor<2xi1>
+// LAST:     %[[V_16:.*]] = stablehlo.slice %[[V_6]] [0:2, 0:1] : (tensor<2x2xf32>) -> tensor<2x1xf32>
+// LAST:     %[[V_17:.*]] = stablehlo.slice %[[V_13]] [0:2, 0:1] : (tensor<2x2xf32>) -> tensor<2x1xf32>
+// LAST:     %[[V_18:.*]] = stablehlo.compare EQ, %[[V_16]], %[[V_17]] : (tensor<2x1xf32>, tensor<2x1xf32>) -> tensor<2x1xi1>
+// LAST:     %[[V_19:.*]] = stablehlo.is_finite %[[V_16]] : (tensor<2x1xf32>) -> tensor<2x1xi1>
+// LAST:     %[[V_20:.*]] = stablehlo.not %[[V_19]] : tensor<2x1xi1>
+// LAST:     %[[V_21:.*]] = stablehlo.and %[[V_18]], %[[V_20]] : tensor<2x1xi1>
+// LAST:     %[[V_22:.*]] = stablehlo.reshape %[[V_21]] : (tensor<2x1xi1>) -> tensor<2xi1>
+// LAST:     %[[V_23:.*]] = stablehlo.not %[[V_22]] : tensor<2xi1>
+// LAST:     %[[V_24:.*]] = stablehlo.and %[[V_15]], %[[V_23]] : tensor<2xi1>
+// LAST:     return %[[V_24]] : tensor<2xi1>
 // LAST-LABEL: func.func @compare_f64_ge
 // LAST:     %[[V_0:.*]] = stablehlo.convert %arg0 : (tensor<2xf64>) -> tensor<2xf32>
 // LAST:     %[[V_1:.*]] = stablehlo.convert %[[V_0]] : (tensor<2xf32>) -> tensor<2xf64>

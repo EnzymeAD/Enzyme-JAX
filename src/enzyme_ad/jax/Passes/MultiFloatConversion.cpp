@@ -2546,6 +2546,30 @@ struct CompareOpConversion : public OpConversionPattern<stablehlo::CompareOp> {
       if (res.getType() != resultType) {
         res = rewriter.create<stablehlo::ReshapeOp>(loc, resultType, res);
       }
+
+      // Infinity correction: two multifloat values that both represent ±∞
+      // compare as equal regardless of their lo limbs (which may be NaN due
+      // to inf_f64 - inf_f32 = NaN during splitting). We check only the hi
+      // limb: (hi_lhs == hi_rhs) AND !is_finite(hi_lhs).
+      // NaN is excluded automatically since NaN == NaN is false at f32 level.
+      Value hi_lhs = extractLimb(lhs, 0, rewriter, loc, concatDimension);
+      Value hi_rhs = extractLimb(rhs, 0, rewriter, loc, concatDimension);
+      Value hi_eq_f32 = rewriter.create<stablehlo::CompareOp>(
+          loc, hi_lhs, hi_rhs, stablehlo::ComparisonDirection::EQ);
+      Value hi_not_finite = rewriter.create<stablehlo::NotOp>(
+          loc, rewriter.create<stablehlo::IsFiniteOp>(loc, hi_lhs));
+      Value inf_corr =
+          rewriter.create<stablehlo::AndOp>(loc, hi_eq_f32, hi_not_finite);
+      inf_corr =
+          rewriter.create<stablehlo::ReshapeOp>(loc, resultType, inf_corr);
+      if (direction == stablehlo::ComparisonDirection::EQ) {
+        res = rewriter.create<stablehlo::OrOp>(loc, res, inf_corr);
+      } else {
+        res = rewriter.create<stablehlo::AndOp>(
+            loc, res,
+            rewriter.create<stablehlo::NotOp>(loc, inf_corr));
+      }
+
       rewriter.replaceOp(op, res);
       return success();
     }
@@ -2566,6 +2590,16 @@ struct CompareOpConversion : public OpConversionPattern<stablehlo::CompareOp> {
       lo_eq = rewriter.create<stablehlo::ReshapeOp>(loc, resultType, lo_eq);
 
       res = rewriter.create<stablehlo::AndOp>(loc, hi_eq, lo_eq);
+
+      // Infinity correction: equal hi limbs that are ±inf mean the values
+      // are equal regardless of lo limbs (which may be NaN after splitting).
+      Value hi_not_finite = rewriter.create<stablehlo::NotOp>(
+          loc, rewriter.create<stablehlo::IsFiniteOp>(loc, lhs_hi));
+      hi_not_finite =
+          rewriter.create<stablehlo::ReshapeOp>(loc, resultType, hi_not_finite);
+      Value inf_corr =
+          rewriter.create<stablehlo::AndOp>(loc, hi_eq, hi_not_finite);
+      res = rewriter.create<stablehlo::OrOp>(loc, res, inf_corr);
     } else if (direction == stablehlo::ComparisonDirection::NE) {
       Value hi_ne = rewriter.create<stablehlo::CompareOp>(
           loc, lhs_hi, rhs_hi, stablehlo::ComparisonDirection::NE);
@@ -2576,6 +2610,20 @@ struct CompareOpConversion : public OpConversionPattern<stablehlo::CompareOp> {
       lo_ne = rewriter.create<stablehlo::ReshapeOp>(loc, resultType, lo_ne);
 
       res = rewriter.create<stablehlo::OrOp>(loc, hi_ne, lo_ne);
+
+      // Infinity correction: equal hi limbs that are ±inf mean the values
+      // are NOT unequal (dual of EQ correction).
+      Value hi_eq = rewriter.create<stablehlo::CompareOp>(
+          loc, lhs_hi, rhs_hi, stablehlo::ComparisonDirection::EQ);
+      hi_eq = rewriter.create<stablehlo::ReshapeOp>(loc, resultType, hi_eq);
+      Value hi_not_finite = rewriter.create<stablehlo::NotOp>(
+          loc, rewriter.create<stablehlo::IsFiniteOp>(loc, lhs_hi));
+      hi_not_finite =
+          rewriter.create<stablehlo::ReshapeOp>(loc, resultType, hi_not_finite);
+      Value inf_corr =
+          rewriter.create<stablehlo::AndOp>(loc, hi_eq, hi_not_finite);
+      res = rewriter.create<stablehlo::AndOp>(
+          loc, res, rewriter.create<stablehlo::NotOp>(loc, inf_corr));
     } else {
       stablehlo::ComparisonDirection dir_hi;
       stablehlo::ComparisonDirection dir_lo;
@@ -4201,10 +4249,82 @@ struct MultiFloatConversionPass
       for (auto powOp : powOps) {
         rewriter.setInsertionPoint(powOp);
         Location loc = powOp.getLoc();
-        Value logBase = rewriter.create<stablehlo::LogOp>(loc, powOp.getLhs());
-        Value product =
-            rewriter.create<stablehlo::MulOp>(loc, powOp.getRhs(), logBase);
-        Value result = rewriter.create<stablehlo::ExpOp>(loc, product);
+        Value x = powOp.getLhs();
+        Value y = powOp.getRhs();
+        auto tensorTy = cast<RankedTensorType>(x.getType());
+        auto elemTy = cast<FloatType>(tensorTy.getElementType());
+
+        auto makeConst = [&](double val) -> Value {
+          auto attr = DenseElementsAttr::get(
+              tensorTy, rewriter.getFloatAttr(elemTy, val));
+          return rewriter.create<stablehlo::ConstantOp>(loc, tensorTy, attr);
+        };
+        auto makeNaN = [&]() -> Value {
+          APFloat nan = APFloat::getNaN(elemTy.getFloatSemantics());
+          auto attr = DenseElementsAttr::get(tensorTy, FloatAttr::get(elemTy, nan));
+          return rewriter.create<stablehlo::ConstantOp>(loc, tensorTy, attr);
+        };
+
+        Value zero = makeConst(0.0);
+        Value one = makeConst(1.0);
+        Value neg_one = makeConst(-1.0);
+        Value two = makeConst(2.0);
+        Value half = makeConst(0.5);
+        Value pos_inf = makeConst(std::numeric_limits<double>::infinity());
+
+        // Base result: exp(y * log(|x|)) = |x|^y, correct for finite x > 0.
+        Value abs_x = rewriter.create<stablehlo::AbsOp>(loc, x);
+        Value log_abs = rewriter.create<stablehlo::LogOp>(loc, abs_x);
+        Value product = rewriter.create<stablehlo::MulOp>(loc, y, log_abs);
+        Value abs_result = rewriter.create<stablehlo::ExpOp>(loc, product);
+
+        // Negative-base correction: for x < 0 with integer y, multiply by
+        // (-1)^y. For non-integer y with x < 0, result is NaN.
+        Value x_neg = rewriter.create<stablehlo::CompareOp>(
+            loc, x, zero, stablehlo::ComparisonDirection::LT);
+        Value y_floor = rewriter.create<stablehlo::FloorOp>(loc, y);
+        Value y_is_int = rewriter.create<stablehlo::CompareOp>(
+            loc, y, y_floor, stablehlo::ComparisonDirection::EQ);
+        // y mod 2 = y - 2 * floor(y/2)
+        Value half_y_floor = rewriter.create<stablehlo::FloorOp>(
+            loc, rewriter.create<stablehlo::MulOp>(loc, y, half));
+        Value y_mod_2 = rewriter.create<stablehlo::SubtractOp>(
+            loc, y, rewriter.create<stablehlo::MulOp>(loc, two, half_y_floor));
+        Value y_is_odd = rewriter.create<stablehlo::CompareOp>(
+            loc, y_mod_2, one, stablehlo::ComparisonDirection::EQ);
+        Value sign =
+            rewriter.create<stablehlo::SelectOp>(loc, y_is_odd, neg_one, one);
+        Value neg_result =
+            rewriter.create<stablehlo::MulOp>(loc, abs_result, sign);
+        Value neg_base_result = rewriter.create<stablehlo::SelectOp>(
+            loc, y_is_int, neg_result, makeNaN());
+        Value result = rewriter.create<stablehlo::SelectOp>(
+            loc, x_neg, neg_base_result, abs_result);
+
+        // IEEE 754: pow(x, 0) = 1 for ALL x (NaN, ±inf, ±0, etc.)
+        Value y_is_zero = rewriter.create<stablehlo::CompareOp>(
+            loc, y, zero, stablehlo::ComparisonDirection::EQ);
+        result =
+            rewriter.create<stablehlo::SelectOp>(loc, y_is_zero, one, result);
+
+        // IEEE 754: pow(1, y) = 1 for ALL y (NaN, ±inf, etc.)
+        Value x_is_one = rewriter.create<stablehlo::CompareOp>(
+            loc, x, one, stablehlo::ComparisonDirection::EQ);
+        result =
+            rewriter.create<stablehlo::SelectOp>(loc, x_is_one, one, result);
+
+        // IEEE 754: pow(-1, ±inf) = 1. The y_mod_2 path yields NaN for
+        // infinite y (inf - inf = NaN), so we handle this as a special case.
+        Value x_is_neg_one = rewriter.create<stablehlo::CompareOp>(
+            loc, x, neg_one, stablehlo::ComparisonDirection::EQ);
+        Value abs_y = rewriter.create<stablehlo::AbsOp>(loc, y);
+        Value y_is_inf = rewriter.create<stablehlo::CompareOp>(
+            loc, abs_y, pos_inf, stablehlo::ComparisonDirection::EQ);
+        Value neg_one_inf =
+            rewriter.create<stablehlo::AndOp>(loc, x_is_neg_one, y_is_inf);
+        result =
+            rewriter.create<stablehlo::SelectOp>(loc, neg_one_inf, one, result);
+
         rewriter.replaceOp(powOp, result);
       }
     }
