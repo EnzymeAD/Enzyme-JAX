@@ -531,24 +531,48 @@ SmallVector<Value> multiFloatAdd(ArrayRef<Value> xs, ArrayRef<Value> ys,
 
 SmallVector<Value> multiFloatDiv(ArrayRef<Value> xs, ArrayRef<Value> ys,
                                  OpBuilder &builder, Location loc) {
-  assert(xs.size() == ys.size() && xs.size() == 2 &&
-         "multiFloatDiv: only N=2 implemented");
+  assert(xs.size() == ys.size());
+  int N = xs.size();
   auto tensorType = cast<RankedTensorType>(xs[0].getType());
   auto floatTy = cast<FloatType>(tensorType.getElementType());
-  auto zeroAttr = builder.getFloatAttr(floatTy, 0.0);
-  Value zero = builder.create<stablehlo::ConstantOp>(
-      loc, SplatElementsAttr::get(tensorType, zeroAttr));
+  auto getConst = [&](double v) -> Value {
+    return builder.create<stablehlo::ConstantOp>(
+        loc, SplatElementsAttr::get(tensorType,
+                                    builder.getFloatAttr(floatTy, v)));
+  };
+  Value zero = getConst(0.0);
 
-  Value q1 = builder.create<stablehlo::DivOp>(loc, xs[0], ys[0]);
-  auto p = multiFloatMul({q1, zero}, ys, builder, loc);
+  if (N == 2) {
+    // Legacy N=2 Dekker-style long division (matches the original helper).
+    Value q1 = builder.create<stablehlo::DivOp>(loc, xs[0], ys[0]);
+    auto p = multiFloatMul({q1, zero}, ys, builder, loc);
+    Value neg_p_hi = builder.create<stablehlo::NegOp>(loc, p[0]);
+    Value neg_p_lo = builder.create<stablehlo::NegOp>(loc, p[1]);
+    auto r = multiFloatAdd(xs, {neg_p_hi, neg_p_lo}, builder, loc);
+    Value q2 = builder.create<stablehlo::DivOp>(loc, r[0], ys[0]);
+    auto [hi, lo] = fastTwoSum(q1, q2, builder, loc);
+    return {hi, lo};
+  }
 
-  Value neg_p_hi = builder.create<stablehlo::NegOp>(loc, p[0]);
-  Value neg_p_lo = builder.create<stablehlo::NegOp>(loc, p[1]);
-  auto r = multiFloatAdd(xs, {neg_p_hi, neg_p_lo}, builder, loc);
+  // Newton-Raphson on reciprocal: u_{k+1} = u_k * (2 - Y * u_k).
+  // Seed u_0 = (1/Y[0], 0, ...). Quadratic convergence — 2 iterations suffice
+  // for N=3 (gets ~96 bits) and N=4 (gets ~96 bits, exactly enough).
+  Value one = getConst(1.0);
+  SmallVector<Value> twoMF(N, zero);
+  twoMF[0] = getConst(2.0);
+  SmallVector<Value> u(N, zero);
+  u[0] = builder.create<stablehlo::DivOp>(loc, one, ys[0]);
 
-  Value q2 = builder.create<stablehlo::DivOp>(loc, r[0], ys[0]);
-  auto [hi, lo] = fastTwoSum(q1, q2, builder, loc);
-  return {hi, lo};
+  for (int i = 0; i < 2; ++i) {
+    auto Yu = multiFloatMul(ys, u, builder, loc);
+    SmallVector<Value> negYu;
+    negYu.reserve(N);
+    for (Value v : Yu)
+      negYu.push_back(builder.create<stablehlo::NegOp>(loc, v));
+    auto diff = multiFloatAdd(twoMF, negYu, builder, loc);
+    u = multiFloatMul(u, diff, builder, loc);
+  }
+  return multiFloatMul(xs, u, builder, loc);
 }
 
 template <typename OpTy>
