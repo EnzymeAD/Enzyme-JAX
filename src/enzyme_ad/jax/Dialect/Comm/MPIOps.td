@@ -37,7 +37,7 @@ def MPI_CommRankOp : Comm_Op<"mpi.comm_rank", [Pure]> {
   let assemblyFormat = "$comm attr-dict `:` type(results)";
 }
 
-def MPI_CommSizeOp : Comm_Op<"mpi.comm_size", []> {
+def MPI_CommSizeOp : Comm_Op<"mpi.comm_size", [Pure]> {
   let summary = "Equivalent to `MPI_Comm_size`";
   let arguments = (ins MPI_Comm : $comm);
   let results = (outs I32 : $size);
