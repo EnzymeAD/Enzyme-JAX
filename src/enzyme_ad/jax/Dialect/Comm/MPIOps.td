@@ -142,13 +142,12 @@ def MPI_AllreduceOp : Comm_Op<"mpi.allreduce", []> {
 
   let arguments = (ins
     AnyTensor : $sendbuf,
-    MPI_Op : $mpiOp,
+    MPI_OpsAttr : $reduceOpAttr,
     MPI_Comm : $comm
   );
 
   let results = (outs AnyTensor : $recvbuf);
-
-  let assemblyFormat = "operands attr-dict `:` functional-type(operands, results)";
+  let assemblyFormat = "$sendbuf `,` $reduceOpAttr `,` $comm attr-dict `:` functional-type($sendbuf, results)";
 }
 
 def MPI_BcastOp : Comm_Op<"mpi.bcast", []> {
