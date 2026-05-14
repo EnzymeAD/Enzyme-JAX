@@ -46,6 +46,19 @@
 #include <optional>
 
 namespace mlir {
+
+static Block *getAllocaBlock(Operation *op) {
+  Operation *currentOp = op;
+  while (Operation *parentOp = currentOp->getParentOp()) {
+    if (parentOp->mightHaveTrait<OpTrait::IsIsolatedFromAbove>() ||
+        parentOp->mightHaveTrait<OpTrait::AutomaticAllocationScope>()) {
+      return &currentOp->getParentRegion()->front();
+    }
+    currentOp = parentOp;
+  }
+  return nullptr;
+}
+
 namespace enzyme {
 #define GEN_PASS_DEF_AFFINETOSTABLEHLORAISING
 #include "src/enzyme_ad/jax/Passes/Passes.h.inc"
@@ -3453,9 +3466,17 @@ struct AffineToStableHLORaisingPass
                     ValueRange())
                     ->getResult(0);
 
-            auto res0 = memref::AllocaOp::create(
-                b, rewriteLocation(g.getLoc(), options.strip_llvm_debuginfo),
-                MT0);
+            Block *allocaBlock = getAllocaBlock(g);
+            assert(allocaBlock &&
+                   "GPUWrapperOp must be inside an allocation scope");
+            Value res0;
+            {
+              OpBuilder::InsertionGuard guard(b);
+              b.setInsertionPointToStart(allocaBlock);
+              res0 = memref::AllocaOp::create(
+                  b, rewriteLocation(g.getLoc(), options.strip_llvm_debuginfo),
+                  MT0);
+            }
 
             Value storeVal = arg;
             if (isIndex) {

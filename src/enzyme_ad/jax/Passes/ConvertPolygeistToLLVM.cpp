@@ -115,6 +115,18 @@ Type convertMemrefElementTypeForLLVMPointer(
   return converted;
 }
 
+static Block *getAllocaBlock(Operation *op) {
+  Operation *currentOp = op;
+  while (Operation *parentOp = currentOp->getParentOp()) {
+    if (parentOp->mightHaveTrait<OpTrait::IsIsolatedFromAbove>() ||
+        parentOp->mightHaveTrait<OpTrait::AutomaticAllocationScope>()) {
+      return &currentOp->getParentRegion()->front();
+    }
+    currentOp = parentOp;
+  }
+  return nullptr;
+}
+
 static Value insertXLAInitDeinit(mlir::ModuleOp moduleOp, StringRef backend,
                                  RewriterBase &rewriter) {
   auto loc = moduleOp.getLoc();
@@ -2492,18 +2504,7 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
     return rewriter.notifyMatchFailure(
         launchOp, "Cannot convert with more than one async dependency.");
 
-  Block *allocaBlock = nullptr;
-  {
-    Operation *currentOp = launchOp;
-    while (Operation *parentOp = currentOp->getParentOp()) {
-      if (parentOp->mightHaveTrait<OpTrait::IsIsolatedFromAbove>() ||
-          parentOp->mightHaveTrait<OpTrait::AutomaticAllocationScope>()) {
-        allocaBlock = &currentOp->getParentRegion()->front();
-        break;
-      }
-      currentOp = parentOp;
-    }
-  }
+  Block *allocaBlock = getAllocaBlock(launchOp);
 
   Location loc = launchOp.getLoc();
 
@@ -2846,9 +2847,17 @@ private:
       auto ptr1ty = LLVM::LLVMPointerType::get(rewriter.getContext(), 1);
 
       if (backend == "cuda") {
-        auto one = LLVM::ConstantOp::create(rewriter, loc, i64,
-                                            rewriter.getI64IntegerAttr(1));
-        auto ptr = LLVM::AllocaOp::create(rewriter, loc, ptrty, ptr1ty, one);
+        Value ptr;
+        {
+          Block *allocaBlock = getAllocaBlock(allocOp);
+          assert(allocaBlock &&
+                 "AllocOp must be inside a function or allocation scope");
+          OpBuilder::InsertionGuard guard(rewriter);
+          rewriter.setInsertionPointToStart(allocaBlock);
+          auto one_entry = LLVM::ConstantOp::create(
+              rewriter, loc, i64, rewriter.getIntegerAttr(i64, 1));
+          ptr = LLVM::AllocaOp::create(rewriter, loc, ptrty, ptr1ty, one_entry);
+        }
         Type tys[] = {ptrty, i64};
         auto cudaMallocFn =
             LLVM::lookupOrCreateFn(rewriter, moduleOp, "cudaMalloc", tys, i32);
@@ -2865,9 +2874,17 @@ private:
         LLVM::CallOp::create(rewriter, loc, cudaMallocFn.value(), args);
         allocatedPtr = LLVM::LoadOp::create(rewriter, loc, ptr1ty, ptr);
       } else if (backend == "rocm") {
-        auto one = LLVM::ConstantOp::create(rewriter, loc, i64,
-                                            rewriter.getI64IntegerAttr(1));
-        auto ptr = LLVM::AllocaOp::create(rewriter, loc, ptrty, ptr1ty, one);
+        Value ptr;
+        {
+          Block *allocaBlock = getAllocaBlock(allocOp);
+          assert(allocaBlock &&
+                 "AllocOp must be inside a function or allocation scope");
+          OpBuilder::InsertionGuard guard(rewriter);
+          rewriter.setInsertionPointToStart(allocaBlock);
+          auto one_entry = LLVM::ConstantOp::create(
+              rewriter, loc, i64, rewriter.getIntegerAttr(i64, 1));
+          ptr = LLVM::AllocaOp::create(rewriter, loc, ptrty, ptr1ty, one_entry);
+        }
         Type tys[] = {ptrty, i64};
         auto hipMallocFn =
             LLVM::lookupOrCreateFn(rewriter, moduleOp, "hipMalloc", tys, i32);
@@ -2910,9 +2927,6 @@ private:
         auto zero = LLVM::ConstantOp::create(rewriter, loc, i64,
                                              rewriter.getI64IntegerAttr(0));
 
-        auto one = LLVM::ConstantOp::create(rewriter, loc, i64,
-                                            rewriter.getI64IntegerAttr(1));
-
         auto tyid =
             LLVM::ConstantOp::create(rewriter, loc, i64,
                                      rewriter.getI64IntegerAttr(xla_type_id(
@@ -2924,7 +2938,18 @@ private:
 
         auto AT = LLVM::LLVMArrayType::get(i64, memRefType.getShape().size());
 
-        auto shapePtr = LLVM::AllocaOp::create(rewriter, loc, ptrty, AT, one);
+        Value shapePtr;
+        {
+          Block *allocaBlock = getAllocaBlock(allocOp);
+          assert(allocaBlock &&
+                 "AllocOp must be inside a function or allocation scope");
+          OpBuilder::InsertionGuard guard(rewriter);
+          rewriter.setInsertionPointToStart(allocaBlock);
+          auto one_entry = LLVM::ConstantOp::create(
+              rewriter, loc, i64, rewriter.getIntegerAttr(i64, 1));
+          shapePtr =
+              LLVM::AllocaOp::create(rewriter, loc, ptrty, AT, one_entry);
+        }
 
         int dynIdx = 0;
         for (int i = 0; i < memRefType.getShape().size(); i++) {
@@ -3053,10 +3078,17 @@ private:
       return failure();
     }
 
-    auto one = LLVM::ConstantOp::create(rewriter, loc, i64,
-                                        rewriter.getI64IntegerAttr(1));
-
-    auto ptr = LLVM::AllocaOp::create(rewriter, loc, ptrty, intty, one);
+    Value ptr;
+    {
+      Block *allocaBlock = getAllocaBlock(op);
+      assert(allocaBlock &&
+             "OccupancyOp must be inside a function or allocation scope");
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(allocaBlock);
+      auto one_entry = LLVM::ConstantOp::create(
+          rewriter, loc, i64, rewriter.getIntegerAttr(i64, 1));
+      ptr = LLVM::AllocaOp::create(rewriter, loc, ptrty, intty, one_entry);
+    }
 
     std::string funcStubName =
         getFuncStubName(op.getFn().getRootReference().getValue(),
@@ -3291,16 +3323,23 @@ private:
     auto zero = LLVM::ConstantOp::create(rewriter, loc, i64,
                                          rewriter.getI64IntegerAttr(0));
 
-    auto one = LLVM::ConstantOp::create(rewriter, loc, i64,
-                                        rewriter.getI64IntegerAttr(1));
-
     auto nargs = LLVM::ConstantOp::create(
         rewriter, loc, i64,
         rewriter.getI64IntegerAttr(adaptor.getInputs().size()));
 
     auto AT = LLVM::LLVMArrayType::get(i64, adaptor.getInputs().size());
 
-    auto argsPtr = LLVM::AllocaOp::create(rewriter, loc, ptrty, AT, one);
+    Value argsPtr;
+    {
+      Block *allocaBlock = getAllocaBlock(wrap);
+      assert(allocaBlock &&
+             "XLAWrapperOp must be inside a function or allocation scope");
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(allocaBlock);
+      auto one_entry = LLVM::ConstantOp::create(rewriter, loc, i64,
+                                                rewriter.getI64IntegerAttr(1));
+      argsPtr = LLVM::AllocaOp::create(rewriter, loc, ptrty, AT, one_entry);
+    }
 
     for (int i = 0; i < adaptor.getInputs().size(); i++) {
       auto idx = LLVM::ConstantOp::create(rewriter, loc, i64,
