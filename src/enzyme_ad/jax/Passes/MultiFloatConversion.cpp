@@ -3215,7 +3215,6 @@ struct LogOpConversion : public OpConversionPattern<stablehlo::LogOp> {
   }
 };
 
-
 struct DotGeneralOpConversion
     : public OpConversionPattern<stablehlo::DotGeneralOp> {
   StringRef concatDimension;
@@ -4189,7 +4188,8 @@ struct MultiFloatConversionPass
     LLVM_DEBUG(llvm::dbgs() << "expansionSize: " << expansionSize << "\n");
 
     // Pre-lower pow(x,y) -> exp(y * log(x)) before dialect conversion so the
-    // existing log/mul/exp patterns handle it without TUPLE-mode ordering issues.
+    // existing log/mul/exp patterns handle it without TUPLE-mode ordering
+    // issues.
     {
       IRRewriter rewriter(context);
       SmallVector<stablehlo::PowOp> powOps;
@@ -4404,8 +4404,10 @@ struct MultiFloatConversionPass
         typeConverter);
     IsResultOrOperandTypeLegal<stablehlo::TransposeOp> transposeLegal(
         typeConverter);
-    IsResultOrOperandTypeLegal<stablehlo::ReshapeOp> reshapeLegal(typeConverter);
-    IsResultOrOperandTypeLegal<stablehlo::CompareOp> compareLegal(typeConverter);
+    IsResultOrOperandTypeLegal<stablehlo::ReshapeOp> reshapeLegal(
+        typeConverter);
+    IsResultOrOperandTypeLegal<stablehlo::CompareOp> compareLegal(
+        typeConverter);
     IsResultOrOperandTypeLegal<stablehlo::FloorOp> floorLegal(typeConverter);
     IsResultOrOperandTypeLegal<stablehlo::CeilOp> ceilLegal(typeConverter);
     IsResultOrOperandTypeLegal<stablehlo::ExpOp> expLegal(typeConverter);
