@@ -875,9 +875,13 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
     }
 
     for (unsigned i = 0; i < blockDims.size(); i++) {
-      Value iv = arith::AddIOp::create(rewriter, loc,
-                                       blockPop.getBody()->getArgument(i),
-                                       origLowerBounds[blockArgId[i]]);
+      Value iv;
+      if (matchPattern(origLowerBounds[blockArgId[i]], m_Zero()))
+        iv = blockPop.getBody()->getArgument(i);
+      else
+        iv = arith::AddIOp::create(rewriter, loc,
+                                   blockPop.getBody()->getArgument(i),
+                                   origLowerBounds[blockArgId[i]]);
       mapping.map(pop.getBody()->getArgument(blockArgId[i]), iv);
     }
 
