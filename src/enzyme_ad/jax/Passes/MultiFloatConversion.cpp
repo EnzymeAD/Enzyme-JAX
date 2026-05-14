@@ -23,6 +23,7 @@
 #include "src/enzyme_ad/jax/Passes/ConversionUtils.h"
 #include "src/enzyme_ad/jax/Passes/MultiFloatExpTables.h"
 #include "src/enzyme_ad/jax/Passes/MultiFloatLogTables.h"
+#include "src/enzyme_ad/jax/Passes/MultiFloatTrigTables.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "llvm/Support/Debug.h"
@@ -1812,231 +1813,214 @@ struct NegOpConversion : public OpConversionPattern<stablehlo::NegOp> {
   }
 };
 
+// Shared kernel for sin and cos. For cos, we use cos(x) = sin(x + π/2),
+// which is equivalent to replacing the quartile index n with n+1 mod 4 in
+// the sin algorithm. Additionally, cos is even so we skip the final
+// "negate-if-input-negative" step.
+
+static int trigCoefCount(int N) { return N == 2 ? 8 : (N == 3 ? 12 : 16); }
+
+static double sinCoef(int N, int j, int i) {
+  using namespace multifloat_trig_tables;
+  if (N == 2) return kSinCoefs_f32_n2[j][i];
+  if (N == 3) return kSinCoefs_f32_n3[j][i];
+  return kSinCoefs_f32_n4[j][i];
+}
+static double cosCoef(int N, int j, int i) {
+  using namespace multifloat_trig_tables;
+  if (N == 2) return kCosCoefs_f32_n2[j][i];
+  if (N == 3) return kCosCoefs_f32_n3[j][i];
+  return kCosCoefs_f32_n4[j][i];
+}
+static double invPiLimb(int N, int i) {
+  using namespace multifloat_trig_tables;
+  if (N == 2) return kInvPi_f32_n2[i];
+  if (N == 3) return kInvPi_f32_n3[i];
+  return kInvPi_f32_n4[i];
+}
+
+// Emit the trig kernel and return the packed multifloat result.
+// `isCos = false` computes sin; `isCos = true` computes cos.
+static Value emitTrigKernelImpl(Value operand,
+                                ConversionPatternRewriter &rewriter,
+                                Location loc, StringRef concatDimension,
+                                int expansionSize, bool isCos) {
+  SmallVector<Value> x;
+  x.reserve(expansionSize);
+  for (int i = 0; i < expansionSize; ++i)
+    x.push_back(extractLimb(operand, i, rewriter, loc, concatDimension));
+
+  auto tensorType = cast<RankedTensorType>(x[0].getType());
+  auto floatTy = cast<FloatType>(tensorType.getElementType());
+
+  auto getConst = [&](double v) {
+    return rewriter.create<stablehlo::ConstantOp>(
+        loc, SplatElementsAttr::get(tensorType,
+                                    rewriter.getFloatAttr(floatTy, v)));
+  };
+  auto mfFromCoef = [&](auto fetchLimb, int j) -> SmallVector<Value> {
+    SmallVector<Value> v;
+    v.reserve(expansionSize);
+    for (int i = 0; i < expansionSize; ++i)
+      v.push_back(getConst(fetchLimb(j, i)));
+    return v;
+  };
+
+  // x_pi = x * (1/π).
+  auto inv_pi_mf =
+      mfFromCoef([&](int /*j*/, int i) { return invPiLimb(expansionSize, i); },
+                 0);
+  auto x_pi = multiFloatMul(x, inv_pi_mf, rewriter, loc);
+
+  // abs_x_pi: sign tracked separately via lt_zero on the leading limb (sign
+  // of a normalized multifloat is the sign of its leading limb).
+  Value zero = getConst(0.0);
+  Value lt_zero = rewriter.create<stablehlo::CompareOp>(
+      loc, x_pi[0], zero, stablehlo::ComparisonDirection::LT);
+  SmallVector<Value> abs_x_pi;
+  abs_x_pi.reserve(expansionSize);
+  for (Value v : x_pi) {
+    Value neg = rewriter.create<stablehlo::NegOp>(loc, v);
+    abs_x_pi.push_back(
+        rewriter.create<stablehlo::SelectOp>(loc, lt_zero, neg, v));
+  }
+
+  // n = round(2 * abs_x_pi[0]) — integer quartile index. Round via trunc(x+0.5).
+  Value two = getConst(2.0);
+  Value half = getConst(0.5);
+  Value two_abs = rewriter.create<stablehlo::MulOp>(loc, two, abs_x_pi[0]);
+  Value two_abs_plus_half =
+      rewriter.create<stablehlo::AddOp>(loc, two_abs, half);
+  auto intType =
+      RankedTensorType::get(tensorType.getShape(), rewriter.getI32Type());
+  Value n_int = rewriter.create<stablehlo::ConvertOp>(loc, intType,
+                                                      two_abs_plus_half);
+  Value n_float = rewriter.create<stablehlo::ConvertOp>(loc, tensorType, n_int);
+
+  // For cos: cos(x) = sin(x + π/2) ⇒ shift n by 1.
+  Value n_int_adj = n_int;
+  Value n_float_adj = n_float;
+  if (isCos) {
+    auto one_i = rewriter.create<stablehlo::ConstantOp>(
+        loc, SplatElementsAttr::get(intType, rewriter.getI32IntegerAttr(1)));
+    n_int_adj = rewriter.create<stablehlo::AddOp>(loc, n_int, one_i);
+    Value one_f = getConst(1.0);
+    n_float_adj = rewriter.create<stablehlo::AddOp>(loc, n_float, one_f);
+  }
+
+  // rx = abs_x_pi - 0.5 * n (multifloat); use unshifted n_float so rx stays in
+  // [-1/4, 1/4]. For cos, the n-shift only affects quadrant selection / sign.
+  Value half_n = rewriter.create<stablehlo::MulOp>(loc, half, n_float);
+  Value neg_half_n = rewriter.create<stablehlo::NegOp>(loc, half_n);
+  SmallVector<Value> neg_half_n_mf(expansionSize, zero);
+  neg_half_n_mf[0] = neg_half_n;
+  auto rx = multiFloatAdd(abs_x_pi, neg_half_n_mf, rewriter, loc);
+
+  // z = rx² (multifloat).
+  auto z = multiFloatMul(rx, rx, rewriter, loc);
+
+  // Horner over sin / cos coefficient tables.
+  int K = trigCoefCount(expansionSize);
+  auto evalHorner = [&](auto getCoef) -> SmallVector<Value> {
+    SmallVector<Value> p = mfFromCoef(getCoef, K - 1);
+    for (int i = K - 2; i >= 0; --i) {
+      auto mul = multiFloatMul(p, z, rewriter, loc);
+      auto c = mfFromCoef(getCoef, i);
+      p = multiFloatAdd(mul, c, rewriter, loc);
+    }
+    return p;
+  };
+  auto poly_sin =
+      evalHorner([&](int j, int i) { return sinCoef(expansionSize, j, i); });
+  auto poly_cos =
+      evalHorner([&](int j, int i) { return cosCoef(expansionSize, j, i); });
+
+  // res_sine = rx * poly_sin; res_cosine = poly_cos.
+  auto res_sin = multiFloatMul(rx, poly_sin, rewriter, loc);
+
+  // Quadrant selection on n_int_adj.
+  auto zero_i = rewriter.create<stablehlo::ConstantOp>(
+      loc, SplatElementsAttr::get(intType, rewriter.getI32IntegerAttr(0)));
+  auto one_i = rewriter.create<stablehlo::ConstantOp>(
+      loc, SplatElementsAttr::get(intType, rewriter.getI32IntegerAttr(1)));
+  auto two_i = rewriter.create<stablehlo::ConstantOp>(
+      loc, SplatElementsAttr::get(intType, rewriter.getI32IntegerAttr(2)));
+  Value q_and_1 = rewriter.create<stablehlo::AndOp>(loc, n_int_adj, one_i);
+  Value is_sin_quad = rewriter.create<stablehlo::CompareOp>(
+      loc, q_and_1, zero_i, stablehlo::ComparisonDirection::EQ);
+  // Pick poly_sin or poly_cos per limb.
+  SmallVector<Value> chosen;
+  chosen.reserve(expansionSize);
+  for (int i = 0; i < expansionSize; ++i)
+    chosen.push_back(rewriter.create<stablehlo::SelectOp>(
+        loc, is_sin_quad, res_sin[i], poly_cos[i]));
+
+  // Negate when (n_adj & 2) != 0.
+  Value q_and_2 = rewriter.create<stablehlo::AndOp>(loc, n_int_adj, two_i);
+  Value is_neg_quad = rewriter.create<stablehlo::CompareOp>(
+      loc, q_and_2, zero_i, stablehlo::ComparisonDirection::NE);
+
+  // Apply quadrant sign per-limb, then (for sin only) original-input sign.
+  Value final_packed = packLimbs(chosen, rewriter, loc, concatDimension);
+  auto fullType = cast<RankedTensorType>(final_packed.getType());
+  auto predType =
+      RankedTensorType::get(fullType.getShape(), rewriter.getI1Type());
+  SmallVector<int64_t> bcastDims;
+  for (int i = 0; i < fullType.getRank(); ++i)
+    bcastDims.push_back(i);
+  auto bcast = [&](Value c) {
+    return rewriter.create<stablehlo::BroadcastInDimOp>(
+        loc, predType, c, rewriter.getDenseI64ArrayAttr(bcastDims));
+  };
+
+  Value neg_final = rewriter.create<stablehlo::NegOp>(loc, final_packed);
+  Value signed_quadrant = rewriter.create<stablehlo::SelectOp>(
+      loc, fullType, bcast(is_neg_quad), neg_final, final_packed);
+
+  if (isCos)
+    return signed_quadrant; // cos is even — input sign irrelevant.
+
+  Value neg_signed = rewriter.create<stablehlo::NegOp>(loc, signed_quadrant);
+  return rewriter.create<stablehlo::SelectOp>(loc, fullType, bcast(lt_zero),
+                                              neg_signed, signed_quadrant);
+}
+
 struct SineOpConversion : public OpConversionPattern<stablehlo::SineOp> {
   StringRef concatDimension;
+  int expansionSize;
 
   SineOpConversion(TypeConverter &typeConverter, MLIRContext *context,
-                   StringRef concatDimension)
+                   StringRef concatDimension, int expansionSize)
       : OpConversionPattern<stablehlo::SineOp>(typeConverter, context),
-        concatDimension(concatDimension) {}
+        concatDimension(concatDimension), expansionSize(expansionSize) {}
 
   LogicalResult
   matchAndRewrite(stablehlo::SineOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    Location loc = op.getLoc();
+    Value result = emitTrigKernelImpl(adaptor.getOperands()[0], rewriter,
+                                       op.getLoc(), concatDimension,
+                                       expansionSize, /*isCos=*/false);
+    rewriter.replaceOp(op, result);
+    return success();
+  }
+};
 
-    Value hi = extractLimb(adaptor.getOperands()[0], 0, rewriter, loc,
-                           concatDimension);
-    Value lo = extractLimb(adaptor.getOperands()[0], 1, rewriter, loc,
-                           concatDimension);
+struct CosineOpConversion : public OpConversionPattern<stablehlo::CosineOp> {
+  StringRef concatDimension;
+  int expansionSize;
 
-    auto tensorType = cast<RankedTensorType>(hi.getType());
-    auto floatTy = cast<FloatType>(tensorType.getElementType());
+  CosineOpConversion(TypeConverter &typeConverter, MLIRContext *context,
+                     StringRef concatDimension, int expansionSize)
+      : OpConversionPattern<stablehlo::CosineOp>(typeConverter, context),
+        concatDimension(concatDimension), expansionSize(expansionSize) {}
 
-    // 1/pi constants
-    auto hiInvPiAttr = rewriter.getFloatAttr(floatTy, 0.31830987334251403809);
-    auto loInvPiAttr = rewriter.getFloatAttr(floatTy, 0.00000001284127648660);
-    Value hi_inv_pi = rewriter.create<stablehlo::ConstantOp>(
-        loc, SplatElementsAttr::get(tensorType, hiInvPiAttr));
-    Value lo_inv_pi = rewriter.create<stablehlo::ConstantOp>(
-        loc, SplatElementsAttr::get(tensorType, loInvPiAttr));
-
-    // x_pi = x * (1/pi)
-    auto x_pi_r = multiFloatMul({hi, lo}, {hi_inv_pi, lo_inv_pi}, rewriter, loc);
-    Value x_pi_hi = x_pi_r[0], x_pi_lo = x_pi_r[1];
-
-    // Absolute value of x_pi
-    auto zeroAttr = rewriter.getFloatAttr(floatTy, 0.0);
-    Value zero = rewriter.create<stablehlo::ConstantOp>(
-        loc, SplatElementsAttr::get(tensorType, zeroAttr));
-    Value lt_zero = rewriter.create<stablehlo::CompareOp>(
-        loc, x_pi_hi, zero, stablehlo::ComparisonDirection::LT);
-    Value neg_x_pi_hi = rewriter.create<stablehlo::NegOp>(loc, x_pi_hi);
-
-    Value abs_x_hi = rewriter.create<stablehlo::SelectOp>(loc, lt_zero,
-                                                          neg_x_pi_hi, x_pi_hi);
-
-    // n = round(2 * abs_x_hi)
-    // Using trunc(2 * abs_x_hi + 0.5) as a proxy for round for positive
-    // numbers.
-    auto twoAttr = rewriter.getFloatAttr(floatTy, 2.0);
-    Value two = rewriter.create<stablehlo::ConstantOp>(
-        loc, SplatElementsAttr::get(tensorType, twoAttr));
-    Value two_abs_x_hi = rewriter.create<stablehlo::MulOp>(loc, two, abs_x_hi);
-
-    auto halfAttr = rewriter.getFloatAttr(floatTy, 0.5);
-    Value half = rewriter.create<stablehlo::ConstantOp>(
-        loc, SplatElementsAttr::get(tensorType, halfAttr));
-    Value two_abs_x_hi_plus_half =
-        rewriter.create<stablehlo::AddOp>(loc, two_abs_x_hi, half);
-
-    auto intType =
-        RankedTensorType::get(tensorType.getShape(), rewriter.getI32Type());
-    Value n_int = rewriter.create<stablehlo::ConvertOp>(loc, intType,
-                                                        two_abs_x_hi_plus_half);
-    Value n_float =
-        rewriter.create<stablehlo::ConvertOp>(loc, tensorType, n_int);
-
-    // rx = abs_x - 0.5 * n
-    Value half_n = rewriter.create<stablehlo::MulOp>(loc, half, n_float);
-    Value neg_half_n = rewriter.create<stablehlo::NegOp>(loc, half_n);
-
-    Value neg_x_pi_lo = rewriter.create<stablehlo::NegOp>(loc, x_pi_lo);
-    Value abs_x_lo = rewriter.create<stablehlo::SelectOp>(loc, lt_zero,
-                                                          neg_x_pi_lo, x_pi_lo);
-
-    auto rx_r = multiFloatAdd({abs_x_hi, abs_x_lo}, {neg_half_n, zero}, rewriter, loc);
-    Value rx_hi = rx_r[0], rx_lo = rx_r[1];
-
-    // quadrant = n_int & 3
-    auto threeAttr = rewriter.getIntegerAttr(rewriter.getI32Type(), 3);
-    Value three = rewriter.create<stablehlo::ConstantOp>(
-        loc, SplatElementsAttr::get(intType, threeAttr));
-    Value quadrant = rewriter.create<stablehlo::AndOp>(loc, n_int, three);
-
-    // Polynomial evaluation constants
-    auto getConstant = [&](float val) -> Value {
-      auto attr = rewriter.getFloatAttr(floatTy, val);
-      return rewriter.create<stablehlo::ConstantOp>(
-          loc, SplatElementsAttr::get(tensorType, attr));
-    };
-
-    SmallVector<std::pair<float, float>> sin_coefs = {
-        {3.14159274101257324219f, -0.00000008742277657348f},
-        {-5.16771268844604492188f, -0.00000009160392266949f},
-        {2.55016398429870605469f, 0.00000005557863858030f},
-        {-0.59926450252532958984f, -0.00000002679546184936f},
-        {0.08214588463306427002f, 0.00000000197806393487f},
-        {-0.00737043097615242004f, 0.00000000003043807220f},
-        {0.00046630279393866658f, 0.00000000001182894581f},
-        {-0.00002191535349993501f, 0.00000000000005210480f}};
-
-    SmallVector<std::pair<float, float>> cos_coefs = {
-        {1.00000000000000000000f, 0.00000000000000000000f},
-        {-4.93480205535888671875f, -0.00000014518579405376f},
-        {4.05871200561523437500f, 0.00000012080153055649f},
-        {-1.33526277542114257812f, 0.00000000656655352316f},
-        {0.23533062636852264404f, 0.00000000399037070054f},
-        {-0.02580689080059528351f, -0.00000000058941879155f},
-        {0.00192957429680973291f, 0.00000000001259418958f},
-        {-0.00010463810758665204f, 0.00000000000266180632f}};
-
-    auto evaluatePolynomial =
-        [&](Value z_h, Value z_l,
-            const SmallVector<std::pair<float, float>> &coefs)
-        -> std::pair<Value, Value> {
-      Value acc_h = getConstant(coefs.back().first);
-      Value acc_l = getConstant(coefs.back().second);
-      for (int i = coefs.size() - 2; i >= 0; --i) {
-        auto mul_r2 = multiFloatMul({acc_h, acc_l}, {z_h, z_l}, rewriter, loc);
-        Value mul_h = mul_r2[0], mul_l = mul_r2[1];
-        Value c_h = getConstant(coefs[i].first);
-        Value c_l = getConstant(coefs[i].second);
-        auto acc_next = multiFloatAdd({mul_h, mul_l}, {c_h, c_l}, rewriter, loc);
-        acc_h = acc_next[0];
-        acc_l = acc_next[1];
-      }
-      return {acc_h, acc_l};
-    };
-
-    // z = rx^2
-    auto z_r = multiFloatMul({rx_hi, rx_lo}, {rx_hi, rx_lo}, rewriter, loc);
-    Value z_hi = z_r[0], z_lo = z_r[1];
-
-    // Evaluate Sine and Cosine polynomials
-    auto [poly_sine_hi, poly_sine_lo] =
-        evaluatePolynomial(z_hi, z_lo, sin_coefs);
-    auto [poly_cosine_hi, poly_cosine_lo] =
-        evaluatePolynomial(z_hi, z_lo, cos_coefs);
-
-    // Sine result = rx * evalpoly(rx^2, sin_coefs)
-    auto res_sine = multiFloatMul({rx_hi, rx_lo}, {poly_sine_hi, poly_sine_lo}, rewriter, loc);
-    Value res_sine_hi = res_sine[0], res_sine_lo = res_sine[1];
-
-    // Cosine result = evalpoly(rx^2, cos_coefs)
-    Value res_cosine_hi = poly_cosine_hi;
-    Value res_cosine_lo = poly_cosine_lo;
-
-    // Selection based on quadrant
-    auto zeroIntAttr = rewriter.getIntegerAttr(rewriter.getI32Type(), 0);
-    Value zero_int = rewriter.create<stablehlo::ConstantOp>(
-        loc, SplatElementsAttr::get(intType, zeroIntAttr));
-
-    auto oneIntAttr = rewriter.getIntegerAttr(rewriter.getI32Type(), 1);
-    Value one_int = rewriter.create<stablehlo::ConstantOp>(
-        loc, SplatElementsAttr::get(intType, oneIntAttr));
-    Value quadrant_and_1 =
-        rewriter.create<stablehlo::AndOp>(loc, quadrant, one_int);
-    Value is_sine_quad = rewriter.create<stablehlo::CompareOp>(
-        loc, quadrant_and_1, zero_int, stablehlo::ComparisonDirection::EQ);
-
-    Value final_raw_hi = rewriter.create<stablehlo::SelectOp>(
-        loc, is_sine_quad, res_sine_hi, res_cosine_hi);
-    Value final_raw_lo = rewriter.create<stablehlo::SelectOp>(
-        loc, is_sine_quad, res_sine_lo, res_cosine_lo);
-
-    bool isTuple = concatDimension == "tuple";
-
-    // Apply quadrant sign
-    auto twoIntAttr = rewriter.getIntegerAttr(rewriter.getI32Type(), 2);
-    Value two_int = rewriter.create<stablehlo::ConstantOp>(
-        loc, SplatElementsAttr::get(intType, twoIntAttr));
-    Value quadrant_and_2 =
-        rewriter.create<stablehlo::AndOp>(loc, quadrant, two_int);
-    Value is_neg_quad = rewriter.create<stablehlo::CompareOp>(
-        loc, quadrant_and_2, zero_int, stablehlo::ComparisonDirection::NE);
-
-    if (isTuple) {
-      Value neg_final_hi = rewriter.create<stablehlo::NegOp>(loc, final_raw_hi);
-      Value neg_final_lo = rewriter.create<stablehlo::NegOp>(loc, final_raw_lo);
-
-      Value final_hi = rewriter.create<stablehlo::SelectOp>(
-          loc, is_neg_quad, neg_final_hi, final_raw_hi);
-      Value final_lo = rewriter.create<stablehlo::SelectOp>(
-          loc, is_neg_quad, neg_final_lo, final_raw_lo);
-
-      // Apply original sign (lt_zero)
-      Value neg_final2_hi = rewriter.create<stablehlo::NegOp>(loc, final_hi);
-      Value neg_final2_lo = rewriter.create<stablehlo::NegOp>(loc, final_lo);
-
-      Value res_h = rewriter.create<stablehlo::SelectOp>(
-          loc, lt_zero, neg_final2_hi, final_hi);
-      Value res_l = rewriter.create<stablehlo::SelectOp>(
-          loc, lt_zero, neg_final2_lo, final_lo);
-
-      Value packed = packLimbs(res_h, res_l, rewriter, loc, concatDimension);
-      rewriter.replaceOp(op, packed);
-    } else {
-      Value final_raw =
-          packLimbs(final_raw_hi, final_raw_lo, rewriter, loc, concatDimension);
-      auto fullType = cast<RankedTensorType>(final_raw.getType());
-      auto predType =
-          RankedTensorType::get(fullType.getShape(), rewriter.getI1Type());
-
-      SmallVector<int64_t> broadcastDims;
-      for (int i = 0; i < fullType.getRank(); ++i) {
-        broadcastDims.push_back(i);
-      }
-
-      // Broadcast is_neg_quad
-      Value bcast_is_neg_quad = rewriter.create<stablehlo::BroadcastInDimOp>(
-          loc, predType, is_neg_quad,
-          rewriter.getDenseI64ArrayAttr(broadcastDims));
-
-      Value neg_final = rewriter.create<stablehlo::NegOp>(loc, final_raw);
-      Value final_signed = rewriter.create<stablehlo::SelectOp>(
-          loc, fullType, bcast_is_neg_quad, neg_final, final_raw);
-
-      // Broadcast lt_zero
-      Value bcast_lt_zero = rewriter.create<stablehlo::BroadcastInDimOp>(
-          loc, predType, lt_zero, rewriter.getDenseI64ArrayAttr(broadcastDims));
-
-      Value neg_final2 = rewriter.create<stablehlo::NegOp>(loc, final_signed);
-      Value res = rewriter.create<stablehlo::SelectOp>(
-          loc, fullType, bcast_lt_zero, neg_final2, final_signed);
-
-      rewriter.replaceOp(op, res);
-    }
+  LogicalResult
+  matchAndRewrite(stablehlo::CosineOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Value result = emitTrigKernelImpl(adaptor.getOperands()[0], rewriter,
+                                       op.getLoc(), concatDimension,
+                                       expansionSize, /*isCos=*/true);
+    rewriter.replaceOp(op, result);
     return success();
   }
 };
@@ -4810,7 +4794,10 @@ struct MultiFloatConversionPass
                                                      concatDimension);
       patterns.add<WrapOpConversion>(typeConverter, context, concatDimension);
       patterns.add<ExtendOpConversion>(typeConverter, context, concatDimension);
-      patterns.add<SineOpConversion>(typeConverter, context, concatDimension);
+      patterns.add<SineOpConversion>(typeConverter, context, concatDimension,
+                                     expansionSize);
+      patterns.add<CosineOpConversion>(typeConverter, context, concatDimension,
+                                       expansionSize);
       patterns.add<PowOpConversion>(typeConverter, context, concatDimension);
     } else if (expansionSize == 3 || expansionSize == 4) {
       // Stages 2-5: arith + reduce + shape ops + transcendentals (log/exp/pow)
@@ -4836,6 +4823,19 @@ struct MultiFloatConversionPass
       patterns.add<AbsOpConversion>(typeConverter, context, concatDimension);
       patterns.add<SelectOpConversion>(typeConverter, context, concatDimension);
       patterns.add<CompareOpConversion>(typeConverter, context, concatDimension);
+      patterns.add<ReverseOpConversion>(typeConverter, context, concatDimension);
+      patterns.add<PadOpConversion>(typeConverter, context, concatDimension);
+      patterns.add<DynamicUpdateSliceOpConversion>(typeConverter, context,
+                                                   concatDimension, tgtTy);
+      patterns.add<RotateOpConversion>(typeConverter, context, concatDimension);
+      patterns.add<WrapOpConversion>(typeConverter, context, concatDimension);
+      patterns.add<ExtendOpConversion>(typeConverter, context, concatDimension);
+      patterns.add<UpdateWithoutCornersOpConversion>(typeConverter, context,
+                                                     concatDimension);
+      patterns.add<SineOpConversion>(typeConverter, context, concatDimension,
+                                     expansionSize);
+      patterns.add<CosineOpConversion>(typeConverter, context, concatDimension,
+                                       expansionSize);
       patterns.add<ReduceOpConversion>(typeConverter, context, concatDimension,
                                        preciseReduce, srcTy, tgtTy,
                                        expansionSize);
