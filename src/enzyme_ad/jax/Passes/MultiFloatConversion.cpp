@@ -3151,22 +3151,28 @@ struct LogOpConversion : public OpConversionPattern<stablehlo::LogOp> {
     Value final_lo = res_lo;
 
     // If x == 1 -> 0
-    final_hi = rewriter.create<stablehlo::SelectOp>(loc, is_one, zero, final_hi);
-    final_lo = rewriter.create<stablehlo::SelectOp>(loc, is_one, zero, final_lo);
+    final_hi =
+        rewriter.create<stablehlo::SelectOp>(loc, is_one, zero, final_hi);
+    final_lo =
+        rewriter.create<stablehlo::SelectOp>(loc, is_one, zero, final_lo);
 
     // If x == +inf -> +inf
     final_hi = rewriter.create<stablehlo::SelectOp>(loc, is_inf, inf, final_hi);
-    final_lo = rewriter.create<stablehlo::SelectOp>(loc, is_inf, zero, final_lo);
+    final_lo =
+        rewriter.create<stablehlo::SelectOp>(loc, is_inf, zero, final_lo);
 
     // If x == 0 -> -inf
-    final_hi = rewriter.create<stablehlo::SelectOp>(loc, is_zero, neg_inf, final_hi);
-    final_lo = rewriter.create<stablehlo::SelectOp>(loc, is_zero, zero, final_lo);
+    final_hi =
+        rewriter.create<stablehlo::SelectOp>(loc, is_zero, neg_inf, final_hi);
+    final_lo =
+        rewriter.create<stablehlo::SelectOp>(loc, is_zero, zero, final_lo);
 
     // If x < 0 -> NaN
     final_hi = rewriter.create<stablehlo::SelectOp>(loc, is_neg, nan, final_hi);
     final_lo = rewriter.create<stablehlo::SelectOp>(loc, is_neg, nan, final_lo);
 
-    Value final_packed = packLimbs(final_hi, final_lo, rewriter, loc, concatDimension);
+    Value final_packed =
+        packLimbs(final_hi, final_lo, rewriter, loc, concatDimension);
 
     rewriter.replaceOp(op, final_packed);
     return success();
@@ -3177,7 +3183,7 @@ struct PowOpConversion : public OpConversionPattern<stablehlo::PowOp> {
   StringRef concatDimension;
 
   PowOpConversion(TypeConverter &typeConverter, MLIRContext *context,
-                    StringRef concatDimension)
+                  StringRef concatDimension)
       : OpConversionPattern<stablehlo::PowOp>(typeConverter, context),
         concatDimension(concatDimension) {}
 
@@ -3186,7 +3192,7 @@ struct PowOpConversion : public OpConversionPattern<stablehlo::PowOp> {
                   ConversionPatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
     Value base = op.getLhs(); // Use ORIGINAL operand!
-    Value exp = op.getRhs();   // Use ORIGINAL operand!
+    Value exp = op.getRhs();  // Use ORIGINAL operand!
 
     auto tensorType = cast<RankedTensorType>(base.getType());
     auto floatTy = cast<FloatType>(tensorType.getElementType());
@@ -3213,39 +3219,48 @@ struct PowOpConversion : public OpConversionPattern<stablehlo::PowOp> {
     Value floorY = rewriter.create<stablehlo::FloorOp>(loc, exp);
     Value floorYDivTwo = rewriter.create<stablehlo::FloorOp>(
         loc, rewriter.create<stablehlo::DivOp>(loc, floorY, two));
-    Value floorYDivTwoMulTwo = rewriter.create<stablehlo::MulOp>(loc, floorYDivTwo, two);
-    Value rem = rewriter.create<stablehlo::SubtractOp>(loc, floorY, floorYDivTwoMulTwo);
-    
+    Value floorYDivTwoMulTwo =
+        rewriter.create<stablehlo::MulOp>(loc, floorYDivTwo, two);
+    Value rem =
+        rewriter.create<stablehlo::SubtractOp>(loc, floorY, floorYDivTwoMulTwo);
+
     Value isOdd = rewriter.create<stablehlo::CompareOp>(
         loc, rem, one, stablehlo::ComparisonDirection::EQ);
-        
-    Value negPosResult = rewriter.create<stablehlo::SubtractOp>(loc, zero, posResult);
-    Value negXResult = rewriter.create<stablehlo::SelectOp>(loc, isOdd, negPosResult, posResult);
-    
+
+    Value negPosResult =
+        rewriter.create<stablehlo::SubtractOp>(loc, zero, posResult);
+    Value negXResult = rewriter.create<stablehlo::SelectOp>(
+        loc, isOdd, negPosResult, posResult);
+
     // Handle non-integer exponent for negative base (produce NaN)
     Value isInt = rewriter.create<stablehlo::CompareOp>(
         loc, exp, floorY, stablehlo::ComparisonDirection::EQ);
-        
-    auto nanAttr = rewriter.getFloatAttr(floatTy, std::numeric_limits<double>::quiet_NaN());
-    Value nan = rewriter.create<stablehlo::ConstantOp>(loc, SplatElementsAttr::get(tensorType, nanAttr));
-    
-    Value resultForNegX = rewriter.create<stablehlo::SelectOp>(loc, isInt, negXResult, nan);
-    
+
+    auto nanAttr = rewriter.getFloatAttr(
+        floatTy, std::numeric_limits<double>::quiet_NaN());
+    Value nan = rewriter.create<stablehlo::ConstantOp>(
+        loc, SplatElementsAttr::get(tensorType, nanAttr));
+
+    Value resultForNegX =
+        rewriter.create<stablehlo::SelectOp>(loc, isInt, negXResult, nan);
+
     // Combine based on sign of base
     Value isNegX = rewriter.create<stablehlo::CompareOp>(
         loc, base, zero, stablehlo::ComparisonDirection::LT);
-        
-    Value result1 = rewriter.create<stablehlo::SelectOp>(loc, isNegX, resultForNegX, posResult);
-    
+
+    Value result1 = rewriter.create<stablehlo::SelectOp>(
+        loc, isNegX, resultForNegX, posResult);
+
     // Special cases: y == 0, x == 1
     Value isZeroY = rewriter.create<stablehlo::CompareOp>(
         loc, exp, zero, stablehlo::ComparisonDirection::EQ);
     Value isOneX = rewriter.create<stablehlo::CompareOp>(
         loc, base, one, stablehlo::ComparisonDirection::EQ);
-        
+
     Value cond2 = rewriter.create<stablehlo::OrOp>(loc, isZeroY, isOneX);
-    
-    Value finalResult = rewriter.create<stablehlo::SelectOp>(loc, cond2, one, result1);
+
+    Value finalResult =
+        rewriter.create<stablehlo::SelectOp>(loc, cond2, one, result1);
 
     rewriter.replaceOp(op, finalResult);
     return success();
@@ -4173,7 +4188,8 @@ template <> struct IsResultTypeLegal<stablehlo::ReduceOp> {
 template <typename OpTy> struct IsResultOrOperandTypeLegal {
   const TypeConverter &typeConverter;
   Type srcTy;
-  IsResultOrOperandTypeLegal(const TypeConverter &tc, Type srcTy) : typeConverter(tc), srcTy(srcTy) {}
+  IsResultOrOperandTypeLegal(const TypeConverter &tc, Type srcTy)
+      : typeConverter(tc), srcTy(srcTy) {}
 
   bool operator()(OpTy op) const {
     auto isIllegalType = [&](Type type) {
@@ -4410,33 +4426,41 @@ struct MultiFloatConversionPass
         typeConverter);
     IsResultTypeLegal<stablehlo::ReduceOp> reduceLegal(typeConverter);
 
-    IsResultOrOperandTypeLegal<stablehlo::SliceOp> sliceLegal(typeConverter, srcTy);
+    IsResultOrOperandTypeLegal<stablehlo::SliceOp> sliceLegal(typeConverter,
+                                                              srcTy);
     IsResultOrOperandTypeLegal<stablehlo::BroadcastInDimOp> broadcastLegal(
         typeConverter, srcTy);
     IsResultOrOperandTypeLegal<stablehlo::TransposeOp> transposeLegal(
         typeConverter, srcTy);
-    IsResultOrOperandTypeLegal<stablehlo::ReshapeOp> reshapeLegal(
-        typeConverter, srcTy);
-    IsResultOrOperandTypeLegal<stablehlo::CompareOp> compareLegal(
-        typeConverter, srcTy);
-    IsResultOrOperandTypeLegal<stablehlo::FloorOp> floorLegal(typeConverter, srcTy);
-    IsResultOrOperandTypeLegal<stablehlo::CeilOp> ceilLegal(typeConverter, srcTy);
+    IsResultOrOperandTypeLegal<stablehlo::ReshapeOp> reshapeLegal(typeConverter,
+                                                                  srcTy);
+    IsResultOrOperandTypeLegal<stablehlo::CompareOp> compareLegal(typeConverter,
+                                                                  srcTy);
+    IsResultOrOperandTypeLegal<stablehlo::FloorOp> floorLegal(typeConverter,
+                                                              srcTy);
+    IsResultOrOperandTypeLegal<stablehlo::CeilOp> ceilLegal(typeConverter,
+                                                            srcTy);
     IsResultOrOperandTypeLegal<stablehlo::ExpOp> expLegal(typeConverter, srcTy);
     IsResultOrOperandTypeLegal<stablehlo::LogOp> logLegal(typeConverter, srcTy);
     IsResultOrOperandTypeLegal<stablehlo::MaxOp> maxLegal(typeConverter, srcTy);
     IsResultOrOperandTypeLegal<stablehlo::MinOp> minLegal(typeConverter, srcTy);
-    IsResultOrOperandTypeLegal<stablehlo::SineOp> sineLegal(typeConverter, srcTy);
+    IsResultOrOperandTypeLegal<stablehlo::SineOp> sineLegal(typeConverter,
+                                                            srcTy);
     IsResultOrOperandTypeLegal<stablehlo::DotGeneralOp> dotGeneralLegal(
         typeConverter, srcTy);
-    IsResultOrOperandTypeLegal<enzymexla::RotateOp> rotateLegal(typeConverter, srcTy);
-    IsResultOrOperandTypeLegal<enzymexla::WrapOp> wrapLegal(typeConverter, srcTy);
-    IsResultOrOperandTypeLegal<enzymexla::ExtendOp> extendLegal(typeConverter, srcTy);
+    IsResultOrOperandTypeLegal<enzymexla::RotateOp> rotateLegal(typeConverter,
+                                                                srcTy);
+    IsResultOrOperandTypeLegal<enzymexla::WrapOp> wrapLegal(typeConverter,
+                                                            srcTy);
+    IsResultOrOperandTypeLegal<enzymexla::ExtendOp> extendLegal(typeConverter,
+                                                                srcTy);
     IsResultOrOperandTypeLegal<enzymexla::UpdateWithoutCornersOp>
         updateWithoutCornersLegal(typeConverter, srcTy);
     IsResultOrOperandTypeLegal<stablehlo::NegOp> negLegal(typeConverter, srcTy);
     IsResultOrOperandTypeLegal<stablehlo::DynamicUpdateSliceOp>
         dynamicUpdateSliceLegal(typeConverter, srcTy);
-    IsResultOrOperandTypeLegal<stablehlo::PowOp> powerLegal(typeConverter, srcTy);
+    IsResultOrOperandTypeLegal<stablehlo::PowOp> powerLegal(typeConverter,
+                                                            srcTy);
 
     target.addDynamicallyLegalOp<stablehlo::ConstantOp>(
         [&](stablehlo::ConstantOp op) {
