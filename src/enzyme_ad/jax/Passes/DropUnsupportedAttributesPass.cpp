@@ -90,6 +90,7 @@ struct DropUnsupportedAttributesPass
           "enzymexla.symmetric_matrix",
           "enzymexla.non_negative",
           "enzymexla.finite",
+          "enzymexla.bounds",
           "enzymexla.no_nan",
           "enzymexla.complex_is_purely_real",
           "enzymexla.complex_is_purely_imaginary"};
