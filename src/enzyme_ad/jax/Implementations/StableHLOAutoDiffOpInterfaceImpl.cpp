@@ -785,8 +785,11 @@ class AutoDiffWhileRev
 
     auto innerRemat = makeForLoop(
         builder, orig->getLoc(), innerBody->getArgument(0),
-        stablehlo::AddOp::create(builder, orig->getLoc(),
-                                 innerBody->getArgument(0), split)
+        stablehlo::SubtractOp::create(
+            builder, orig->getLoc(),
+            stablehlo::AddOp::create(builder, orig->getLoc(),
+                                     innerBody->getArgument(0), split),
+            makeI64Constant(orig->getLoc(), builder, 1))
             .getResult(),
         makeI64Constant(orig->getLoc(), builder, 1), innerRematOperands);
     Block *innerRematBody = &innerRemat.getBody().front();
