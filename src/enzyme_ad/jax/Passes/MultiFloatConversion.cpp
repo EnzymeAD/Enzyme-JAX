@@ -4249,8 +4249,7 @@ struct PowOpLowerPattern : public OpRewritePattern<stablehlo::PowOp> {
       return std::nullopt;
     APSInt asInt(/*BitWidth=*/64, /*isUnsigned=*/false);
     bool isExact = false;
-    auto status =
-        f.convertToInteger(asInt, APFloat::rmTowardZero, &isExact);
+    auto status = f.convertToInteger(asInt, APFloat::rmTowardZero, &isExact);
     if (status != APFloat::opOK || !isExact)
       return std::nullopt;
     return asInt.getExtValue();
@@ -4334,8 +4333,7 @@ struct PowOpLowerPattern : public OpRewritePattern<stablehlo::PowOp> {
     };
     auto makeNaN = [&]() -> Value {
       APFloat nan = APFloat::getNaN(elemTy.getFloatSemantics());
-      auto attr =
-          DenseElementsAttr::get(tensorTy, FloatAttr::get(elemTy, nan));
+      auto attr = DenseElementsAttr::get(tensorTy, FloatAttr::get(elemTy, nan));
       return rewriter.create<stablehlo::ConstantOp>(loc, tensorTy, attr);
     };
 
@@ -4364,8 +4362,7 @@ struct PowOpLowerPattern : public OpRewritePattern<stablehlo::PowOp> {
         loc, y_mod_2, one, stablehlo::ComparisonDirection::EQ);
     Value sign =
         rewriter.create<stablehlo::SelectOp>(loc, y_is_odd, neg_one, one);
-    Value neg_result =
-        rewriter.create<stablehlo::MulOp>(loc, abs_result, sign);
+    Value neg_result = rewriter.create<stablehlo::MulOp>(loc, abs_result, sign);
     Value neg_base_result = rewriter.create<stablehlo::SelectOp>(
         loc, y_is_int, neg_result, makeNaN());
     Value result = rewriter.create<stablehlo::SelectOp>(
@@ -4373,13 +4370,11 @@ struct PowOpLowerPattern : public OpRewritePattern<stablehlo::PowOp> {
 
     Value y_is_zero = rewriter.create<stablehlo::CompareOp>(
         loc, y, zero, stablehlo::ComparisonDirection::EQ);
-    result =
-        rewriter.create<stablehlo::SelectOp>(loc, y_is_zero, one, result);
+    result = rewriter.create<stablehlo::SelectOp>(loc, y_is_zero, one, result);
 
     Value x_is_one = rewriter.create<stablehlo::CompareOp>(
         loc, x, one, stablehlo::ComparisonDirection::EQ);
-    result =
-        rewriter.create<stablehlo::SelectOp>(loc, x_is_one, one, result);
+    result = rewriter.create<stablehlo::SelectOp>(loc, x_is_one, one, result);
 
     Value x_is_neg_one = rewriter.create<stablehlo::CompareOp>(
         loc, x, neg_one, stablehlo::ComparisonDirection::EQ);
