@@ -500,6 +500,8 @@ class AutoDiffWhileRev
     ReverseModeInfo(stablehlo::WhileOp op) : info(op) {}
   };
 
+  static const int64_t BINOMIAL_SENTINEL_BUDGET = ~0;
+
   static struct ReverseModeInfo getReverseMode(Operation *orig) {
     struct ReverseModeInfo revInfo(cast<stablehlo::WhileOp>(orig));
 
@@ -521,8 +523,7 @@ class AutoDiffWhileRev
         if (checkpointPeriod && checkpointPeriod.getInt() > 0) {
           revInfo.checkpointPeriod = checkpointPeriod.getInt();
         } else if (enableBinomialCheckpointing) {
-          // Default budget for binomial checkpointing
-          revInfo.checkpointPeriod = 3;
+          revInfo.checkpointPeriod = BINOMIAL_SENTINEL_BUDGET;
         } else {
           // Default to sqrt checkpointing when no period is specified
           int64_t numIters = revInfo.info.getConstantNumIters();
@@ -620,6 +621,11 @@ class AutoDiffWhileRev
     if (!revInfo.info.isConstant()) {
       return orig->emitError("binomial checkpointing: unsupported non-constant "
                              "bounds for for loop.");
+    }
+
+    if (revInfo.checkpointPeriod == BINOMIAL_SENTINEL_BUDGET) {
+      return orig->emitError("binomial checkpointing: unprovided or "
+                             "unsupported number of checkpoints.");
     }
 
     SetVector<Value> outsideRefs;
