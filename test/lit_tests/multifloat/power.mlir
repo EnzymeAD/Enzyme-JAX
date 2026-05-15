@@ -57,8 +57,15 @@ func.func @power_const_exp(%arg0: tensor<f64>) -> tensor<f64> {
   return %0 : tensor<f64>
 }
 
-// Edge case: pow(x, 0.0) = 1 via exp(0 * log(x)) = 1 for any x > 0.
-// Note: pow(0.0, 0.0) produces NaN via this identity (0 * log(0) = 0 * -inf = NaN).
+// Edge case: pow(x, 0.0). Here y is a stablehlo.constant inside the same
+// function, so PowOpLowerPattern's integer fast path (n = 0) folds the op
+// to constant 1.0 before any log/exp is emitted — the body has no exp/log
+// chain at all. The marker we look for is therefore the multifloat
+// representation of the constant itself: a concatenate of the split limbs in
+// FIRST/LAST modes, and a stablehlo.tuple in TUPLE mode.
+// (Note: the @main interpret check exercises pow(0.0, 0.0) via the general
+// power_test wrapper, where y is a function argument and the fast path does
+// not apply; that path correctly returns 1.0 via the y_is_zero correction.)
 func.func @power_zero_exponent(%arg0: tensor<f64>) -> tensor<f64> {
   // FIRST-LABEL: @power_zero_exponent
   // FIRST: stablehlo.concatenate
@@ -69,7 +76,7 @@ func.func @power_zero_exponent(%arg0: tensor<f64>) -> tensor<f64> {
   // LAST-NOT: stablehlo.power {{.*}} : tensor<f64>
 
   // TUPLE-LABEL: @power_zero_exponent
-  // TUPLE: stablehlo.get_tuple_element
+  // TUPLE: stablehlo.tuple
   // TUPLE-NOT: stablehlo.power {{.*}} : tensor<f64>
 
   %cst = stablehlo.constant dense<0.0> : tensor<f64>
