@@ -633,14 +633,14 @@ class AutoDiffWhileRev
     // 1. Build outer loop
     SmallVector<Value> operands;
 
-    // TODO: support dynamic num iters
-    Value currentRevStep = makeI64Constant(orig->getLoc(), builder,
-                                           revInfo.info.getConstantNumIters());
+    // TODO: support dynamic num iters by using caches for this
+    Value numItersRev = makeI64Constant(orig->getLoc(), builder,
+                                        revInfo.info.getConstantNumIters());
     Value sp =
         makeI64Constant(orig->getLoc(), builder, revInfo.checkpointPeriod - 1);
     Value indexTensor = gutils->popCache(caches[caches.size() - 1], builder);
 
-    operands.push_back(currentRevStep);
+    // operands.push_back(currentRevStep);
     operands.push_back(sp);
     operands.push_back(indexTensor);
 
@@ -664,24 +664,13 @@ class AutoDiffWhileRev
     OpBuilder::InsertionGuard guard(builder);
 
     stablehlo::WhileOp revOuter =
-        stablehlo::WhileOp::create(builder, orig->getLoc(), operands);
+        makeForLoop(builder, orig->getLoc(), 0,
+                    revInfo.info.getConstantNumIters(), 1, operands);
 
-    TypeRange operandTypes = ValueRange(operands).getTypes();
-    SmallVector<Location> operandLocs = llvm::map_to_vector(
-        operands, [](Value operand) { return operand.getLoc(); });
-
-    { // Outer condition
-      OpBuilder::InsertionGuard guard(builder);
-      Block *cond = builder.createBlock(&revOuter.getCond(), {}, operandTypes,
-                                        operandLocs);
-      Value cmp = stablehlo::CompareOp::create(
-          builder, orig->getLoc(), cond->getArgument(0),
-          makeI64Constant(orig->getLoc(), builder, 1), ComparisonDirection::NE);
-      ReturnOp::create(builder, orig->getLoc(), cmp);
-    }
-
-    Block *outerBody =
-        builder.createBlock(&revOuter.getBody(), {}, operandTypes, operandLocs);
+    Block *outerBody = &revOuter.getBody().front();
+    Value newOuterIV = outerBody->getTerminator()->getOperand(0);
+    outerBody->getTerminator()->erase();
+    builder.setInsertionPointToEnd(outerBody);
 
     Value zero = makeI64Constant(orig->getLoc(), builder, 0);
     SmallVector<Value> innerArgs;
@@ -729,6 +718,10 @@ class AutoDiffWhileRev
     innerOperands.append(innerArgs);
     innerOperands.append(cacheArgs);
 
+    // [0, N[ -> [N, 1]
+    Value currentRevStep = stablehlo::SubtractOp::create(
+        builder, orig->getLoc(), numItersRev, outerBody->getArgument(0));
+
     // innerOperands = [ckptStep, capo, indexTensor, args..., cacheArgs...]
 
     auto innerWhile =
@@ -740,11 +733,8 @@ class AutoDiffWhileRev
       Block *innerCond = builder.createBlock(
           &innerWhile.getCond(), {}, innerOperandTypes, innerOperandLocs);
       Value cmp = stablehlo::CompareOp::create(
-          builder, orig->getLoc(),
-          stablehlo::AddOp::create(builder, orig->getLoc(),
-                                   innerCond->getArgument(0),
-                                   makeI64Constant(orig->getLoc(), builder, 1)),
-          outerBody->getArgument(0), stablehlo::ComparisonDirection::LT);
+          builder, orig->getLoc(), innerCond->getArgument(0), currentRevStep,
+          stablehlo::ComparisonDirection::LT);
       ReturnOp::create(builder, orig->getLoc(), cmp);
     }
 
@@ -935,7 +925,7 @@ class AutoDiffWhileRev
 
     SmallVector<Value> outerBodyResults;
 
-    outerBodyResults.push_back(innerWhile->getResult(0));
+    outerBodyResults.push_back(newOuterIV);
     outerBodyResults.push_back(innerWhile->getResult(1));
     outerBodyResults.push_back(innerWhile->getResult(2));
 
