@@ -628,6 +628,13 @@ class AutoDiffWhileRev
                              "unsupported number of checkpoints.");
     }
 
+    if (revInfo.checkpointPeriod <= 1) {
+      return orig->emitError()
+             << "binomial checkpointing: budget of " << revInfo.checkpointPeriod
+             << " is too small for binomial checkpointing. Use periodic "
+                "checkpointing instead.";
+    }
+
     SetVector<Value> outsideRefs;
     getUsedValuesDefinedAbove(orig->getRegions(), outsideRefs);
 
@@ -641,7 +648,7 @@ class AutoDiffWhileRev
     Value numItersRev = makeI64Constant(orig->getLoc(), builder,
                                         revInfo.info.getConstantNumIters());
     Value sp =
-        makeI64Constant(orig->getLoc(), builder, revInfo.checkpointPeriod - 1);
+        makeI64Constant(orig->getLoc(), builder, revInfo.checkpointPeriod);
     Value indexTensor = gutils->popCache(caches[caches.size() - 1], builder);
 
     // operands.push_back(currentRevStep);
@@ -676,6 +683,10 @@ class AutoDiffWhileRev
     outerBody->getTerminator()->erase();
     builder.setInsertionPointToEnd(outerBody);
 
+    Value capo = stablehlo::SubtractOp::create(
+        builder, orig->getLoc(), outerBody->getArgument(1),
+        makeI64Constant(orig->getLoc(), builder, 1));
+
     Value zero = makeI64Constant(orig->getLoc(), builder, 0);
     SmallVector<Value> innerArgs;
     SmallVector<Value> cacheArgs;
@@ -685,7 +696,7 @@ class AutoDiffWhileRev
       auto cacheTy = cast<ShapedType>(cache.getType());
 
       SmallVector<Value> startIndices;
-      startIndices.push_back(outerBody->getArgument(1));
+      startIndices.push_back(capo);
       for (int i = 0; i < cacheTy.getRank() - 1; i++)
         startIndices.push_back(zero);
 
@@ -705,7 +716,6 @@ class AutoDiffWhileRev
       innerArgs.push_back(arg);
     }
 
-    Value capo = outerBody->getArgument(1);
     Value ckptStep =
         ReshapeOpCreate(builder, orig->getLoc(),
                         DynamicSliceOp::create(builder, orig->getLoc(),
@@ -737,29 +747,30 @@ class AutoDiffWhileRev
       Block *innerCond = builder.createBlock(
           &innerWhile.getCond(), {}, innerOperandTypes, innerOperandLocs);
       Value cmp = stablehlo::CompareOp::create(
-          builder, orig->getLoc(), innerCond->getArgument(0), currentRevStep,
-          stablehlo::ComparisonDirection::LT);
+          builder, orig->getLoc(),
+          stablehlo::AddOp::create(builder, orig->getLoc(),
+                                   innerCond->getArgument(0),
+                                   makeI64Constant(orig->getLoc(), builder, 1)),
+          currentRevStep, stablehlo::ComparisonDirection::LT);
       ReturnOp::create(builder, orig->getLoc(), cmp);
     }
 
     Block *innerBody = builder.createBlock(&innerWhile.getBody(), {},
                                            innerOperandTypes, innerOperandLocs);
 
+    // Store args state to cacheArgs
+    // and store current step to indexTensor
+    indexTensor = innerBody->getArgument(2);
+    capo = innerBody->getArgument(1);
+
     Value remaining = stablehlo::SubtractOp::create(
         builder, orig->getLoc(), currentRevStep, innerBody->getArgument(0));
     Value budget = stablehlo::SubtractOp::create(
         builder, orig->getLoc(),
         makeI64Constant(orig->getLoc(), builder, revInfo.checkpointPeriod),
-        outerBody->getArgument(1));
+        capo);
     Value split = enzymexla::BinomialProgressOp::create(
         builder, orig->getLoc(), remaining, budget, nullptr);
-
-    // Store args state to cacheArgs
-    // and store current step to indexTensor
-    indexTensor = innerBody->getArgument(2);
-    capo = stablehlo::AddOp::create(
-        builder, orig->getLoc(), innerBody->getArgument(1),
-        makeI64Constant(orig->getLoc(), builder, 1));
 
     SmallVector<Value> innerBodyCaches;
 
@@ -783,14 +794,21 @@ class AutoDiffWhileRev
       innerRematOperands.push_back(innerBody->getArgument(i + 3));
     }
 
-    auto innerRemat = makeForLoop(
-        builder, orig->getLoc(), innerBody->getArgument(0),
-        stablehlo::SubtractOp::create(
+    // if this is the last iteration, then we do one less rematerialization
+    // iteration since we need the input to compute at time t
+    Value rematUB = stablehlo::AddOp::create(builder, orig->getLoc(),
+                                             innerBody->getArgument(0), split);
+    rematUB = stablehlo::SubtractOp::create(
+        builder, orig->getLoc(), rematUB,
+        stablehlo::ConvertOp::create(
             builder, orig->getLoc(),
-            stablehlo::AddOp::create(builder, orig->getLoc(),
-                                     innerBody->getArgument(0), split),
-            makeI64Constant(orig->getLoc(), builder, 1))
-            .getResult(),
+            RankedTensorType::get({}, builder.getI64Type()),
+            stablehlo::CompareOp::create(builder, orig->getLoc(), rematUB,
+                                         currentRevStep,
+                                         stablehlo::ComparisonDirection::EQ)));
+
+    auto innerRemat = makeForLoop(
+        builder, orig->getLoc(), innerBody->getArgument(0), rematUB,
         makeI64Constant(orig->getLoc(), builder, 1), innerRematOperands);
     Block *innerRematBody = &innerRemat.getBody().front();
 
@@ -837,6 +855,10 @@ class AutoDiffWhileRev
     }
 
     builder.setInsertionPointToEnd(innerBody);
+
+    capo =
+        stablehlo::AddOp::create(builder, orig->getLoc(), capo,
+                                 makeI64Constant(orig->getLoc(), builder, 1));
 
     SmallVector<Value> innerBodyResults;
     // [ckptStep+split, capo, indexTensor, rematResults..., newCaches...]
