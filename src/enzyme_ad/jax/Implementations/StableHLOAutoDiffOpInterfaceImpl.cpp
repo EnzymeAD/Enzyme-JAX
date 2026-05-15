@@ -622,8 +622,6 @@ class AutoDiffWhileRev
                              "bounds for for loop.");
     }
 
-    llvm::errs() << "doing checkpointing with binomial\n";
-
     SetVector<Value> outsideRefs;
     getUsedValuesDefinedAbove(orig->getRegions(), outsideRefs);
 
