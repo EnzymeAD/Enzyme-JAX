@@ -732,7 +732,7 @@ class AutoDiffWhileRev
     innerOperands.append(innerArgs);
     innerOperands.append(cacheArgs);
 
-    // [0, N[ -> [N, 1]
+    // [0, N-1] -> [N, 1]
     Value currentRevStep = stablehlo::SubtractOp::create(
         builder, orig->getLoc(), numItersRev, outerBody->getArgument(0));
 

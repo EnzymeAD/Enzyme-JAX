@@ -306,7 +306,7 @@ def Memref2PointerOp : EnzymeXLA_Op<"memref2pointer", [
 
   let hasFolder = 1;
   let hasCanonicalizer = 1;
-  
+
   let extraClassDeclaration = [{
     ::mlir::Value getViewSource() { return getSource(); }
   }];
@@ -322,7 +322,7 @@ def Pointer2MemrefOp : EnzymeXLA_Op<"pointer2memref", [
 
   let hasFolder = 1;
   let hasCanonicalizer = 1;
-  
+
   let extraClassDeclaration = [{
     ::mlir::Value getViewSource() { return getSource(); }
   }];
@@ -376,7 +376,7 @@ def MultiRotateOp : EnzymeXLA_Op<"multi_rotate", [Pure]> {
     - L results for left rotations (from L to 1)
     - 1 result for no rotation (amount=0)
     - R results for right rotations (from 1 to R)
-    
+
     For example, with left_amount=2 and right_amount=2:
     results[0] = rotate left by 2
     results[1] = rotate left by 1
@@ -402,10 +402,10 @@ def MultiSliceOp : EnzymeXLA_Op<"multi_slice", [Pure]> {
     Given amount=N, it produces N+1 results:
     - Result 0 is the slice at the base start/limit indices
     - Result i is the slice shifted by i along the specified dimension
-    
+
     The slice parameters (start_indices, limit_indices, strides) define the first slice.
     Each subsequent result is offset by +1 along the specified dimension.
-    
+
     To achieve the old left/right semantics: if you previously had left_amount=L and
     right_amount=R, set amount=L+R and shift start_indices[dim] left by L.
   }];
@@ -1002,12 +1002,12 @@ def PotrfOp : EnzymeXLA_Op<"lapack.potrf", [Pure]> {
 
 def BesselJ : EnzymeXLA_Op<"special.besselj", [Pure, AllTypesMatch<["z", "res"]>, Elementwise]> {
   let summary = "Bessel function of the first kind of order nu at z";
-  
+
   let arguments = (ins
     HLO_Tensor:$nu,
     HLO_Tensor:$z
   );
-  
+
   let results = (outs
     HLO_Tensor:$res
   );
@@ -1015,12 +1015,12 @@ def BesselJ : EnzymeXLA_Op<"special.besselj", [Pure, AllTypesMatch<["z", "res"]>
 
 def BesselJX : EnzymeXLA_Op<"special.besseljx", [Pure, AllTypesMatch<["z", "res"]>, Elementwise]> {
   let summary = "Scaled Bessel function of the first kind of order nu at z";
-  
+
   let arguments = (ins
     HLO_Tensor:$nu,
     HLO_Tensor:$z
   );
-  
+
   let results = (outs
     HLO_Tensor:$res
   );
@@ -1028,12 +1028,12 @@ def BesselJX : EnzymeXLA_Op<"special.besseljx", [Pure, AllTypesMatch<["z", "res"
 
 def SphericalBesselJ : EnzymeXLA_Op<"special.sphericalbesselj", [Pure, AllTypesMatch<["z", "res"]>, Elementwise]> {
   let summary = "Spherical Bessel function of the first kind of order nu at z";
-  
+
   let arguments = (ins
     HLO_Tensor:$nu,
     HLO_Tensor:$z
   );
-  
+
   let results = (outs
     HLO_Tensor:$res
   );
@@ -1041,12 +1041,12 @@ def SphericalBesselJ : EnzymeXLA_Op<"special.sphericalbesselj", [Pure, AllTypesM
 
 def BesselY : EnzymeXLA_Op<"special.bessely", [Pure, AllTypesMatch<["z", "res"]>, Elementwise]> {
   let summary = "Bessel function of the second kind of order nu at z";
-  
+
   let arguments = (ins
     HLO_Tensor:$nu,
     HLO_Tensor:$z
   );
-  
+
   let results = (outs
     HLO_Tensor:$res
   );
@@ -1054,12 +1054,12 @@ def BesselY : EnzymeXLA_Op<"special.bessely", [Pure, AllTypesMatch<["z", "res"]>
 
 def BesselYX : EnzymeXLA_Op<"special.besselyx", [Pure, AllTypesMatch<["z", "res"]>, Elementwise]> {
   let summary = "Scaled Bessel function of the second kind of order nu at z";
-  
+
   let arguments = (ins
     HLO_Tensor:$nu,
     HLO_Tensor:$z
   );
-  
+
   let results = (outs
     HLO_Tensor:$res
   );
@@ -1067,12 +1067,12 @@ def BesselYX : EnzymeXLA_Op<"special.besselyx", [Pure, AllTypesMatch<["z", "res"
 
 def SphericalBesselY : EnzymeXLA_Op<"special.sphericalbessely", [Pure, AllTypesMatch<["z", "res"]>, Elementwise]> {
   let summary = "Spherical Bessel function of the second kind of order nu at z";
-  
+
   let arguments = (ins
     HLO_Tensor:$nu,
     HLO_Tensor:$z
   );
-  
+
   let results = (outs
     HLO_Tensor:$res
   );
@@ -1080,19 +1080,19 @@ def SphericalBesselY : EnzymeXLA_Op<"special.sphericalbessely", [Pure, AllTypesM
 
 def BesselH : EnzymeXLA_Op<"special.besselh", [Pure, AllTypesMatch<["z", "res"]>, Elementwise]> {
   let summary = "Bessel function of the third kind (Hankel function) of order nu at z";
-  
+
   let description = [{
     Computes the Bessel function of the third kind, also known as the Hankel
     function. The parameter k must be either 1 or 2, selecting between Hankel
     functions of the first kind (H1) and second kind (H2).
   }];
-  
+
   let arguments = (ins
     HLO_Tensor:$nu,
     HLO_Tensor:$k,
     HLO_Tensor:$z
   );
-  
+
   let results = (outs
     HLO_Tensor:$res
   );
@@ -1100,12 +1100,12 @@ def BesselH : EnzymeXLA_Op<"special.besselh", [Pure, AllTypesMatch<["z", "res"]>
 
 def HankelH1X : EnzymeXLA_Op<"special.hankelh1x", [Pure, AllTypesMatch<["z", "res"]>, Elementwise]> {
   let summary = "Scaled Hankel function of the first kind of order nu at z";
-  
+
   let arguments = (ins
     HLO_Tensor:$nu,
     HLO_Tensor:$z
   );
-  
+
   let results = (outs
     HLO_Tensor:$res
   );
@@ -1113,12 +1113,12 @@ def HankelH1X : EnzymeXLA_Op<"special.hankelh1x", [Pure, AllTypesMatch<["z", "re
 
 def HankelH2X : EnzymeXLA_Op<"special.hankelh2x", [Pure, AllTypesMatch<["z", "res"]>, Elementwise]> {
   let summary = "Scaled Hankel function of the second kind of order nu at z";
-  
+
   let arguments = (ins
     HLO_Tensor:$nu,
     HLO_Tensor:$z
   );
-  
+
   let results = (outs
     HLO_Tensor:$res
   );
@@ -1126,12 +1126,12 @@ def HankelH2X : EnzymeXLA_Op<"special.hankelh2x", [Pure, AllTypesMatch<["z", "re
 
 def BesselI : EnzymeXLA_Op<"special.besseli", [Pure, AllTypesMatch<["z", "res"]>, Elementwise]> {
   let summary = "Modified Bessel function of the first kind of order nu at z";
-  
+
   let arguments = (ins
     HLO_Tensor:$nu,
     HLO_Tensor:$z
   );
-  
+
   let results = (outs
     HLO_Tensor:$res
   );
@@ -1139,12 +1139,12 @@ def BesselI : EnzymeXLA_Op<"special.besseli", [Pure, AllTypesMatch<["z", "res"]>
 
 def BesselIX : EnzymeXLA_Op<"special.besselix", [Pure, AllTypesMatch<["z", "res"]>, Elementwise]> {
   let summary = "Scaled modified Bessel function of the first kind of order nu at z";
-  
+
   let arguments = (ins
     HLO_Tensor:$nu,
     HLO_Tensor:$z
   );
-  
+
   let results = (outs
     HLO_Tensor:$res
   );
@@ -1152,12 +1152,12 @@ def BesselIX : EnzymeXLA_Op<"special.besselix", [Pure, AllTypesMatch<["z", "res"
 
 def BesselK : EnzymeXLA_Op<"special.besselk", [Pure, AllTypesMatch<["z", "res"]>, Elementwise]> {
   let summary = "Modified Bessel function of the second kind of order nu at z";
-  
+
   let arguments = (ins
     HLO_Tensor:$nu,
     HLO_Tensor:$z
   );
-  
+
   let results = (outs
     HLO_Tensor:$res
   );
@@ -1165,12 +1165,12 @@ def BesselK : EnzymeXLA_Op<"special.besselk", [Pure, AllTypesMatch<["z", "res"]>
 
 def BesselKX : EnzymeXLA_Op<"special.besselkx", [Pure, AllTypesMatch<["z", "res"]>, Elementwise]> {
   let summary = "Scaled modified Bessel function of the second kind of order nu at z";
-  
+
   let arguments = (ins
     HLO_Tensor:$nu,
     HLO_Tensor:$z
   );
-  
+
   let results = (outs
     HLO_Tensor:$res
   );
@@ -1178,17 +1178,17 @@ def BesselKX : EnzymeXLA_Op<"special.besselkx", [Pure, AllTypesMatch<["z", "res"
 
 def Jinc : EnzymeXLA_Op<"special.jinc", [Pure, SameOperandsAndResultType, Elementwise]> {
   let summary = "Jinc function (sombrero/besinc): scaled Bessel function of the first kind divided by x";
-  
+
   let description = [{
     Computes the jinc function, also known as the sombrero or besinc function.
     It is defined as J1(pi*x) / (2*x) where J1 is the Bessel function of the
     first kind of order 1. At x=0, the function evaluates to pi/4.
   }];
-  
+
   let arguments = (ins
     HLO_Tensor:$x
   );
-  
+
   let results = (outs
     HLO_Tensor:$res
   );
@@ -1257,7 +1257,7 @@ def SoftplusOp: EnzymeXLA_Op<"ml.softplus", [Pure, SameOperandsAndResultType, El
   let summary = "Computes the Softplus activation function";
 
   let arguments = (ins
-    FloatLike:$input
+    TensorFloatAnyRank:$input
   );
 
   let results = (outs TensorFloatAnyRank:$result);
