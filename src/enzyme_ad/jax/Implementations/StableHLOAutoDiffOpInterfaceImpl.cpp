@@ -745,9 +745,8 @@ class AutoDiffWhileRev
     Block *innerBody = builder.createBlock(&innerWhile.getBody(), {},
                                            innerOperandTypes, innerOperandLocs);
 
-    Value remaining = stablehlo::SubtractOp::create(builder, orig->getLoc(),
-                                                    outerBody->getArgument(0),
-                                                    innerBody->getArgument(0));
+    Value remaining = stablehlo::SubtractOp::create(
+        builder, orig->getLoc(), currentRevStep, innerBody->getArgument(0));
     Value budget = stablehlo::SubtractOp::create(
         builder, orig->getLoc(),
         makeI64Constant(orig->getLoc(), builder, revInfo.checkpointPeriod),
@@ -896,7 +895,7 @@ class AutoDiffWhileRev
                         builder, orig->getLoc(),
                         makeI64Constant(orig->getLoc(), builder,
                                         *revInfo.info.getConstantStep()),
-                        outerBody->getArgument(0))));
+                        currentRevStep)));
 
     for (auto [oRef, pRef] : llvm::zip_equal(outsideRefs, poppedOutsideRefs)) {
       mapping.map(oRef, pRef);
