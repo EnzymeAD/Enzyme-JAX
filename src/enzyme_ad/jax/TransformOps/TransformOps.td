@@ -265,8 +265,12 @@ def ApplyLGammaConstProp : EnzymeHLOPatternOp<
     "lgamma_const_prop">{
   let patterns = ["LGammaConstProp", "CHLOLGammaConstProp"];
 }
+def ApplyBinomialProgressConstProp : EnzymeHLOPatternOp<
+    "binomial_progress_const_prop"> {
+  let patterns = ["BinomialProgressConstProp"];
+}
 def ApplySoftplusConstProp : EnzymeHLOPatternOp<
-    "softplus_const_prop">{
+    "softplus_const_prop"> {
   let patterns = ["UnaryConstProp<enzymexla::SoftplusOp,softplusOp>"];
 }
 def SignAbsSimplifyPatterns : EnzymeHLOPatternOp<
@@ -2354,7 +2358,7 @@ def LowerMultiRotate : EnzymeHLOPatternOp<
     "lower_multirotate"> {
   let patterns = ["LowerMultiRotate"];
 }
-    
+
 def ReduceUnusedMultiRotate : EnzymeHLOPatternOp<
     "reduce_unused_multirotate"> {
   let patterns = ["ReduceUnusedMultiRotate"];
