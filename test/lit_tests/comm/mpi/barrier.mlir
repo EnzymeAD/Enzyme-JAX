@@ -1,8 +1,8 @@
 // RUN: enzymexlamlir-opt %s | FileCheck %s
 
-// CHECK-LABEL: func.func @main
+// CHECK: func.func @main(%[[COMM:.*]]: !comm.mpi.comm) {
 func.func @main(%comm : !comm.mpi.comm) {
-    // CHECK-NEXT: comm.mpi.barrier %comm
+    // CHECK-NEXT: comm.mpi.barrier %[[COMM]]
     comm.mpi.barrier %comm
     return
 }

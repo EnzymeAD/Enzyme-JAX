@@ -54,8 +54,7 @@ def MPI_CommSplitOp : Comm_Op<"mpi.comm_split", []> {
   );
 
   let results = (outs MPI_Comm : $newcomm);
-
-  let assemblyFormat = "operands attr-dict `:` functional-type(operands, results)";
+  let assemblyFormat = "operands attr-dict `:` functional-type($comm, results)";
 }
 
 def MPI_BarrierOp : Comm_Op<"mpi.barrier", []> {
@@ -75,7 +74,7 @@ def MPI_SendOp : Comm_Op<"mpi.send", []> {
     MPI_Comm : $comm
   );
 
-  let assemblyFormat = "operands attr-dict `:` type(operands)";
+  let assemblyFormat = "operands attr-dict `:` type($buf)";
 }
 
 def MPI_IsendOp : Comm_Op<"mpi.isend", []> {
@@ -90,8 +89,7 @@ def MPI_IsendOp : Comm_Op<"mpi.isend", []> {
   );
 
   let results = (outs MPI_Request : $request);
-
-  let assemblyFormat = "operands attr-dict `:` functional-type(operands, results)";
+  let assemblyFormat = "operands attr-dict `:` functional-type($buf, results)";
 }
 
 def MPI_RecvOp : Comm_Op<"mpi.recv", []> {
@@ -105,8 +103,7 @@ def MPI_RecvOp : Comm_Op<"mpi.recv", []> {
   );
 
   let results = (outs AnyTensor : $buf);
-
-  let assemblyFormat = "operands attr-dict `:` functional-type(operands, results)";
+  let assemblyFormat = "operands attr-dict `:` type(results)";
 }
 
 def MPI_IrecvOp : Comm_Op<"mpi.irecv", []> {
@@ -160,8 +157,7 @@ def MPI_BcastOp : Comm_Op<"mpi.bcast", []> {
   );
 
   let results = (outs AnyTensor : $outbuf);
-
-  let assemblyFormat = "operands attr-dict `:` functional-type(operands, results)";
+  let assemblyFormat = "operands attr-dict `:` functional-type($inbuf, results)";
 }
 
 #endif // ENZYMEXLA_COMM_DIALECT_MPI_OPS_TD
