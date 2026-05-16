@@ -1,45 +1,45 @@
-// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=relu_fn outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --lower-enzymexla-ml | FileCheck %s --check-prefix=RELU-REV
-// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=gelu_none_fn outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --lower-enzymexla-ml | FileCheck %s --check-prefix=GELU-NONE-REV
-// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=gelu_tanh_fn outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --lower-enzymexla-ml | FileCheck %s --check-prefix=GELU-TANH-REV
-// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=gelu_sigmoid_fn outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --lower-enzymexla-ml | FileCheck %s --check-prefix=GELU-SIGMOID-REV
-// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=softplus_fn outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --lower-enzymexla-ml | FileCheck %s --check-prefix=SOFTPLUS-REV
-// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=tgamma_fn outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --lower-enzymexla-ml | FileCheck %s --check-prefix=TGAMMA-REV
-// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=lgamma_fn outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --lower-enzymexla-ml | FileCheck %s --check-prefix=LGAMMA-REV
-// RUN: enzymexlamlir-opt %s --enzyme --canonicalize --remove-unnecessary-enzyme-ops --lower-enzymexla-ml --chlo-legalize-to-stablehlo --canonicalize --arith-raise | stablehlo-translate - --interpret
+// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=relu_fn outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --lower-enzymexla-math | FileCheck %s --check-prefix=RELU-REV
+// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=gelu_none_fn outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --lower-enzymexla-math | FileCheck %s --check-prefix=GELU-NONE-REV
+// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=gelu_tanh_fn outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --lower-enzymexla-math | FileCheck %s --check-prefix=GELU-TANH-REV
+// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=gelu_sigmoid_fn outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --lower-enzymexla-math | FileCheck %s --check-prefix=GELU-SIGMOID-REV
+// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=softplus_fn outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --lower-enzymexla-math | FileCheck %s --check-prefix=SOFTPLUS-REV
+// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=tgamma_fn outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --lower-enzymexla-math | FileCheck %s --check-prefix=TGAMMA-REV
+// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=lgamma_fn outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --lower-enzymexla-math | FileCheck %s --check-prefix=LGAMMA-REV
+// RUN: enzymexlamlir-opt %s --enzyme --canonicalize --remove-unnecessary-enzyme-ops --lower-enzymexla-math --chlo-legalize-to-stablehlo --canonicalize --arith-raise | stablehlo-translate - --interpret
 
 module {
   func.func @relu_fn(%x: tensor<6xf32>) -> tensor<6xf32> {
-    %0 = enzymexla.ml.relu %x : (tensor<6xf32>) -> tensor<6xf32>
+    %0 = enzymexla.math.relu %x : (tensor<6xf32>) -> tensor<6xf32>
     return %0 : tensor<6xf32>
   }
 
   func.func @gelu_none_fn(%x: tensor<6xf32>) -> tensor<6xf32> {
-    %0 = enzymexla.ml.gelu %x, approximation = NONE : (tensor<6xf32>) -> tensor<6xf32>
+    %0 = enzymexla.math.gelu %x, approximation = NONE : (tensor<6xf32>) -> tensor<6xf32>
     return %0 : tensor<6xf32>
   }
 
   func.func @gelu_tanh_fn(%x: tensor<6xf32>) -> tensor<6xf32> {
-    %0 = enzymexla.ml.gelu %x, approximation = TANH : (tensor<6xf32>) -> tensor<6xf32>
+    %0 = enzymexla.math.gelu %x, approximation = TANH : (tensor<6xf32>) -> tensor<6xf32>
     return %0 : tensor<6xf32>
   }
 
   func.func @gelu_sigmoid_fn(%x: tensor<6xf32>) -> tensor<6xf32> {
-    %0 = enzymexla.ml.gelu %x, approximation = SIGMOID : (tensor<6xf32>) -> tensor<6xf32>
+    %0 = enzymexla.math.gelu %x, approximation = SIGMOID : (tensor<6xf32>) -> tensor<6xf32>
     return %0 : tensor<6xf32>
   }
 
   func.func @softplus_fn(%x: tensor<6xf32>) -> tensor<6xf32> {
-    %0 = enzymexla.ml.softplus %x : (tensor<6xf32>) -> tensor<6xf32>
+    %0 = enzymexla.math.softplus %x : (tensor<6xf32>) -> tensor<6xf32>
     return %0 : tensor<6xf32>
   }
 
   func.func @tgamma_fn(%x: tensor<6xf32>) -> tensor<6xf32> {
-    %0 = enzymexla.ml.tgamma %x : (tensor<6xf32>) -> tensor<6xf32>
+    %0 = enzymexla.math.tgamma %x : (tensor<6xf32>) -> tensor<6xf32>
     return %0 : tensor<6xf32>
   }
 
   func.func @lgamma_fn(%x: tensor<6xf32>) -> tensor<6xf32> {
-    %0 = enzymexla.ml.lgamma %x : (tensor<6xf32>) -> tensor<6xf32>
+    %0 = enzymexla.math.lgamma %x : (tensor<6xf32>) -> tensor<6xf32>
     return %0 : tensor<6xf32>
   }
 

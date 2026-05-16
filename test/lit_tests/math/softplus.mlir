@@ -1,13 +1,13 @@
-// RUN: enzymexlamlir-opt %s --lower-enzymexla-ml | FileCheck %s --check-prefix=LOWER
-// RUN: enzymexlamlir-opt %s --lower-enzymexla-ml | stablehlo-translate - --interpret
+// RUN: enzymexlamlir-opt %s --lower-enzymexla-math | FileCheck %s --check-prefix=LOWER
+// RUN: enzymexlamlir-opt %s --lower-enzymexla-math | stablehlo-translate - --interpret
 
 func.func @apply_softplus(%arg0: tensor<7xf32>) -> tensor<7xf32> {
-  %0 = enzymexla.ml.softplus %arg0 : (tensor<7xf32>) -> tensor<7xf32>
+  %0 = enzymexla.math.softplus %arg0 : (tensor<7xf32>) -> tensor<7xf32>
   return %0 : tensor<7xf32>
 }
 
 func.func @apply_softplus_scalar(%arg0: tensor<f32>) -> tensor<f32> {
-  %0 = enzymexla.ml.softplus %arg0 : (tensor<f32>) -> tensor<f32>
+  %0 = enzymexla.math.softplus %arg0 : (tensor<f32>) -> tensor<f32>
   return %0 : tensor<f32>
 }
 
