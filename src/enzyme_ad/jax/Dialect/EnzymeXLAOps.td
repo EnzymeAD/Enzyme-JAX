@@ -1305,6 +1305,49 @@ def SoftplusOp: EnzymeXLA_Op<"math.softplus", [Pure, SameOperandsAndResultType, 
   }];
 }
 
+def HypotOp: EnzymeXLA_Op<"math.hypot", [Pure, SameOperandsAndResultType, Elementwise]> {
+  let summary = "Computes the hypot function (sqrt(x^2 + y^2))";
+
+  let arguments = (ins
+    TensorFloatAnyRank:$lhs,
+    TensorFloatAnyRank:$rhs
+  );
+
+  let results = (outs TensorFloatAnyRank:$result);
+
+  let assemblyFormat = [{
+    $lhs `,` $rhs attr-dict `:` functional-type(operands, results)
+  }];
+}
+
+def SincOp: EnzymeXLA_Op<"math.sinc", [Pure, SameOperandsAndResultType, Elementwise]> {
+  let summary = "Computes the normalized sinc function (sin(pi * x) / (pi * x))";
+
+  let arguments = (ins
+    TensorFloatAnyRank:$input
+  );
+
+  let results = (outs TensorFloatAnyRank:$result);
+
+  let assemblyFormat = [{
+    $input attr-dict `:` functional-type($input, results)
+  }];
+}
+
+def CoscOp: EnzymeXLA_Op<"math.cosc", [Pure, SameOperandsAndResultType, Elementwise]> {
+  let summary = "Computes the normalized cosc function (cos(pi * x) / x - sin(pi * x) / (pi * x^2))";
+
+  let arguments = (ins
+    TensorFloatAnyRank:$input
+  );
+
+  let results = (outs TensorFloatAnyRank:$result);
+
+  let assemblyFormat = [{
+    $input attr-dict `:` functional-type($input, results)
+  }];
+}
+
 def CacheLoadOp : EnzymeXLA_Op<"cacheload"> {
   let arguments = (ins Arg<AnyMemRef, "the reference to load from",
                            [MemRead]>:$memref,
