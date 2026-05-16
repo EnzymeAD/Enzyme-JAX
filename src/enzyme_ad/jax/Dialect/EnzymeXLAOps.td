@@ -1232,9 +1232,9 @@ def Jinc : EnzymeXLA_Op<"special.jinc", [Pure, SameOperandsAndResultType, Elemen
   );
 }
 
-// Machine Learning Ops
+// Math Primitive Ops
 
-def GeluOp: EnzymeXLA_Op<"ml.gelu", [Pure, SameOperandsAndResultType, Elementwise]> {
+def GeluOp: EnzymeXLA_Op<"math.gelu", [Pure, SameOperandsAndResultType, Elementwise]> {
   let summary = "Computes the GELU activation function";
 
   let arguments = (ins
@@ -1249,7 +1249,7 @@ def GeluOp: EnzymeXLA_Op<"ml.gelu", [Pure, SameOperandsAndResultType, Elementwis
   }];
 }
 
-def ReluOp: EnzymeXLA_Op<"ml.relu", [Pure, SameOperandsAndResultType, Elementwise]> {
+def ReluOp: EnzymeXLA_Op<"math.relu", [Pure, SameOperandsAndResultType, Elementwise]> {
   let summary = "Computes the RELU activation function";
 
   let arguments = (ins
@@ -1263,7 +1263,7 @@ def ReluOp: EnzymeXLA_Op<"ml.relu", [Pure, SameOperandsAndResultType, Elementwis
   }];
 }
 
-def TGammaOp: EnzymeXLA_Op<"ml.tgamma", [Pure, SameOperandsAndResultType, Elementwise]> {
+def TGammaOp: EnzymeXLA_Op<"math.tgamma", [Pure, SameOperandsAndResultType, Elementwise]> {
   let summary = "Computes the true gamma function";
 
   let arguments = (ins
@@ -1277,7 +1277,7 @@ def TGammaOp: EnzymeXLA_Op<"ml.tgamma", [Pure, SameOperandsAndResultType, Elemen
   }];
 }
 
-def LGammaOp: EnzymeXLA_Op<"ml.lgamma", [Pure, SameOperandsAndResultType, Elementwise]> {
+def LGammaOp: EnzymeXLA_Op<"math.lgamma", [Pure, SameOperandsAndResultType, Elementwise]> {
   let summary = "Computes the log-gamma function";
 
   let arguments = (ins
@@ -1291,7 +1291,7 @@ def LGammaOp: EnzymeXLA_Op<"ml.lgamma", [Pure, SameOperandsAndResultType, Elemen
   }];
 }
 
-def SoftplusOp: EnzymeXLA_Op<"ml.softplus", [Pure, SameOperandsAndResultType, Elementwise]> {
+def SoftplusOp: EnzymeXLA_Op<"math.softplus", [Pure, SameOperandsAndResultType, Elementwise]> {
   let summary = "Computes the Softplus activation function";
 
   let arguments = (ins

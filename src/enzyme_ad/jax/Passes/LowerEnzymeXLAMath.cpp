@@ -14,10 +14,13 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "llvm/ADT/SmallVector.h"
 
-#define DEBUG_TYPE "lower-enzymexla-ml"
+#define DEBUG_TYPE "lower-enzymexla-math"
+
+#include <functional>
 
 namespace mlir {
 namespace enzyme {
+#define GEN_PASS_DEF_LOWERENZYMEXLAMATHPASS
 #define GEN_PASS_DEF_LOWERENZYMEXLAMLPASS
 #include "src/enzyme_ad/jax/Passes/Passes.h.inc"
 } // namespace enzyme
@@ -230,40 +233,56 @@ struct LowerSoftplusOpToStablehlo
   }
 };
 
+namespace {
+void lowerEnzymeXLAMath(Operation *op,
+                        std::function<void()> signalPassFailure) {
+  auto context = op->getContext();
+  RewritePatternSet patterns(context);
+
+  // SHLO Lowering
+  patterns.add<LowerReluOpToStablehlo>(context);
+  patterns.add<LowerGeluOpToStablehlo>(context);
+  patterns.add<LowerSoftplusOpToStablehlo>(context);
+  patterns.add<LowerTGammaOpToStablehlo>(context);
+  patterns.add<LowerLGammaOpToStablehlo>(context);
+
+  GreedyRewriteConfig config;
+  config.enableFolding();
+  if (failed(applyPatternsGreedily(op, std::move(patterns), config))) {
+    signalPassFailure();
+  }
+
+  // Verify that all illegal ops have been lowered
+  auto walkResult = op->walk([&](Operation *op) {
+    if (isa<enzymexla::ReluOp, enzymexla::GeluOp, enzymexla::SoftplusOp>(op)) {
+      op->emitError("Failed to lower enzymexla ML operation");
+      return WalkResult::interrupt();
+    }
+    return WalkResult::advance();
+  });
+
+  if (walkResult.wasInterrupted()) {
+    signalPassFailure();
+  }
+}
+} // namespace
+
+struct LowerEnzymeXLAMathPass
+    : public enzyme::impl::LowerEnzymeXLAMathPassBase<LowerEnzymeXLAMathPass> {
+  using Base::Base;
+
+  void runOnOperation() override {
+    lowerEnzymeXLAMath(getOperation(), [this]() { signalPassFailure(); });
+  }
+};
+
+// TODO: delete this once Reactant uses `lower-enzymexla-math` instead of
+// `lower-enzymexla-ml`
 struct LowerEnzymeXLAMLPass
     : public enzyme::impl::LowerEnzymeXLAMLPassBase<LowerEnzymeXLAMLPass> {
   using Base::Base;
 
   void runOnOperation() override {
-    auto context = getOperation()->getContext();
-    RewritePatternSet patterns(context);
-
-    // SHLO Lowering
-    patterns.add<LowerReluOpToStablehlo>(context);
-    patterns.add<LowerGeluOpToStablehlo>(context);
-    patterns.add<LowerSoftplusOpToStablehlo>(context);
-    patterns.add<LowerTGammaOpToStablehlo>(context);
-    patterns.add<LowerLGammaOpToStablehlo>(context);
-
-    GreedyRewriteConfig config;
-    config.enableFolding();
-    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
-                                     config))) {
-      signalPassFailure();
-    }
-
-    // Verify that all illegal ops have been lowered
-    auto walkResult = getOperation()->walk([&](Operation *op) {
-      if (isa<enzymexla::ReluOp, enzymexla::GeluOp, enzymexla::SoftplusOp>(
-              op)) {
-        op->emitError("Failed to lower enzymexla ML operation");
-        return WalkResult::interrupt();
-      }
-      return WalkResult::advance();
-    });
-
-    if (walkResult.wasInterrupted()) {
-      signalPassFailure();
-    }
+    lowerEnzymeXLAMath(getOperation(), [this]() { signalPassFailure(); });
   }
 };
