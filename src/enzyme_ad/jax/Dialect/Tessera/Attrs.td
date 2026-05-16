@@ -6,9 +6,12 @@ include "Dialect.td"
 include "mlir/IR/AttrTypeBase.td"
 
 def TesseraConvertAttr : TesseraAttr<"Convert", "convert"> {
-    let summary = "Marks a function for Tessera conversion";
-    let parameters = (ins "std::string":$value);
-    let assemblyFormat = "$value";
+    let parameters = (ins 
+	"std::string":$opName,
+	"DenseBoolArrayAttr":$byRefArgs,
+	"DenseI64ArrayAttr":$argSizes, 
+	"bool":$pure);
+    let assemblyFormat = "$opName `byref` `=` $byRefArgs `sizes` `=` $argSizes `pure` `=` $pure";
     let cppClassName = "ConvertAttr";
 }
 
