@@ -108,7 +108,7 @@ jobs:
         with:
           version: ${{ matrix.julia_version }}
       - name: Load Julia packages from cache
-        uses: wsmoses/cache@gcpb
+        uses: julia-actions/cache@v3.1
         with:
           gcp-bucket: enzyme-ci-transient
       - name: Modify Enzyme-JAX commit
