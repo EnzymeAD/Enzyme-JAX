@@ -15226,6 +15226,48 @@ struct GatherOpCanon final
     return failure();
   }
 
+  static bool extractGridIotas(Value val,
+                               SmallVectorImpl<IotaLikeTensor> &result) {
+    if (auto iota = detectIotaLikeTensor(val)) {
+      result.push_back(*iota);
+      return true;
+    }
+
+    if (auto addOp = val.getDefiningOp<stablehlo::AddOp>()) {
+      SmallVector<IotaLikeTensor> lhsIotas;
+      if (!extractGridIotas(addOp.getLhs(), lhsIotas)) {
+        return false;
+      }
+      SmallVector<IotaLikeTensor> rhsIotas;
+      if (!extractGridIotas(addOp.getRhs(), rhsIotas)) {
+        return false;
+      }
+      result.append(lhsIotas.begin(), lhsIotas.end());
+      result.append(rhsIotas.begin(), rhsIotas.end());
+      return true;
+    }
+
+    DenseElementsAttr constAttr;
+    if (matchPattern(val, m_Constant(&constAttr)) && constAttr.isSplat()) {
+      auto elemType = constAttr.getType().getElementType();
+      TypedAttr zeroScale;
+      if (isa<IntegerType>(elemType)) {
+        zeroScale = IntegerAttr::get(elemType, 0);
+      } else {
+        return false;
+      }
+      IotaLikeTensor constIota;
+      constIota.dimension = 0;
+      constIota.scale = zeroScale;
+      constIota.start = constAttr.getSplatValue<TypedAttr>();
+      constIota.tensorType = cast<RankedTensorType>(constAttr.getType());
+      result.push_back(constIota);
+      return true;
+    }
+
+    return false;
+  }
+
   LogicalResult
   tryRewriteGatherWithIotaIndexing(stablehlo::GatherOp op,
                                    PatternRewriter &rewriter) const {
@@ -15258,68 +15300,203 @@ struct GatherOpCanon final
       return success();
     }
 
-    auto iotaLike = detectIotaLikeTensor(indices);
-    if (!iotaLike) {
+    Value grid = indices;
+    if (auto reshapeOp = indices.getDefiningOp<stablehlo::ReshapeOp>()) {
+      grid = reshapeOp.getOperand();
+    }
+
+    SmallVector<IotaLikeTensor> iotas;
+    if (!extractGridIotas(grid, iotas)) {
       return failure();
     }
 
-    auto iota = *iotaLike;
+    auto gridTy = cast<RankedTensorType>(grid.getType());
+    int64_t gridRank = gridTy.getRank();
+    if (gridRank == 0) {
+      return failure();
+    }
+
     auto dimNumbers = op.getDimensionNumbers();
-
-    if (dimNumbers.getStartIndexMap().size() <= iota.dimension ||
-        dimNumbers.getStartIndexMap()[iota.dimension] != 0) {
-      return failure();
-    }
-
     auto indicesTy = cast<RankedTensorType>(indices.getType());
     int64_t indexVectorDim = dimNumbers.getIndexVectorDim();
     if (indexVectorDim < indicesTy.getRank() &&
         indicesTy.getDimSize(indexVectorDim) != 1) {
       return failure();
     }
-
-    int64_t start = cast<IntegerAttr>(iota.start).getValue().getSExtValue();
-    int64_t count = indicesTy.getDimSize(iota.dimension);
-    int64_t stride = cast<IntegerAttr>(iota.scale).getValue().getSExtValue();
-
-    auto resultTy = cast<RankedTensorType>(op.getType());
-    if (resultTy.getNumElements() != count) {
-      LLVM_DEBUG(op->emitError("expected num elements of result to match"));
+    if (dimNumbers.getStartIndexMap().size() != 1 ||
+        dimNumbers.getStartIndexMap()[0] != 0) {
       return failure();
     }
 
-    int64_t limit;
-    bool needsReverse = false;
-    if (stride > 0) {
-      limit = start + count * stride;
-    } else {
-      needsReverse = true;
-      // For negative stride, the iota accesses indices in descending order:
-      //   start, start+stride, start+2*stride, ... (where stride < 0)
-      // The smallest index is start + (count-1)*stride, the largest is start.
-      // We slice in the forward direction with abs(stride), then reverse.
-      limit = start + 1;                    // one past the largest index
-      start = start + (count - 1) * stride; // smallest index
-      stride = -stride;
+    SmallVector<int64_t> dimScales(gridRank, 0);
+    int64_t totalStart = 0;
+
+    for (auto &iota : iotas) {
+      int64_t start = cast<IntegerAttr>(iota.start).getValue().getSExtValue();
+      int64_t scale = cast<IntegerAttr>(iota.scale).getValue().getSExtValue();
+      totalStart += start;
+      if (scale != 0) {
+        if (iota.dimension >= gridRank)
+          return failure();
+        dimScales[iota.dimension] += scale;
+      }
     }
 
-    if (limit > operandTy.getDimSize(0)) { // gather clamps indices
+    struct DimMapping {
+      int64_t gridDim;
+      int64_t scale;
+      int64_t absScale;
+    };
+    SmallVector<DimMapping> mappings;
+    for (int64_t d = 0; d < gridRank; ++d) {
+      if (dimScales[d] != 0) {
+        mappings.push_back({d, dimScales[d], std::abs(dimScales[d])});
+      }
+    }
+
+    if (mappings.empty())
       return failure();
+
+    llvm::sort(mappings, [](const DimMapping &a, const DimMapping &b) {
+      return a.absScale > b.absScale;
+    });
+
+    int64_t N = operandTy.getDimSize(0);
+
+    int64_t currentDivisor = N;
+    SmallVector<int64_t> operandShape;
+    for (const auto &map : mappings) {
+      if (map.absScale == 0 || currentDivisor % map.absScale != 0)
+        return failure();
+      operandShape.push_back(currentDivisor / map.absScale);
+      currentDivisor = map.absScale;
+    }
+    if (currentDivisor > 1) {
+      operandShape.push_back(currentDivisor);
     }
 
-    Value result = stablehlo::SliceOpCreate(rewriter, op.getLoc(), operand,
-                                            {start}, {limit}, {stride});
-    if (needsReverse) {
-      result = stablehlo::ReverseOp::create(rewriter, op.getLoc(), result,
-                                            rewriter.getDenseI64ArrayAttr({0}));
+    int64_t opRank = operandShape.size();
+
+    SmallVector<int64_t> opStrides(opRank);
+    int64_t st = 1;
+    for (int64_t k = opRank - 1; k >= 0; --k) {
+      opStrides[k] = st;
+      st *= operandShape[k];
     }
 
-    if (result.getType() == resultTy) {
+    int64_t minTotalOffset = totalStart;
+    for (int64_t d = 0; d < gridRank; ++d) {
+      if (dimScales[d] < 0) {
+        minTotalOffset += (gridTy.getDimSize(d) - 1) * dimScales[d];
+      }
+    }
+
+    if (minTotalOffset < 0)
+      return failure();
+
+    SmallVector<int64_t> sliceSizes(mappings.size(), 1);
+    for (size_t m = 0; m < mappings.size(); ++m) {
+      int64_t gridDim = mappings[m].gridDim;
+      sliceSizes[m] = gridTy.getDimSize(gridDim);
+    }
+
+    if (mappings.size() == 1) {
+      int64_t stride = mappings[0].scale;
+      int64_t count = sliceSizes[0];
+      int64_t start = minTotalOffset;
+
+      int64_t limit;
+      bool needsReverse = false;
+      if (stride > 0) {
+        limit = start + count * stride;
+      } else {
+        needsReverse = true;
+        limit = start - (count - 1) * stride + 1;
+        stride = -stride;
+      }
+
+      if (limit > operandTy.getDimSize(0)) {
+        return failure();
+      }
+
+      Value result = stablehlo::SliceOpCreate(rewriter, op.getLoc(), operand,
+                                              {start}, {limit}, {stride});
+      if (needsReverse) {
+        result = stablehlo::ReverseOp::create(
+            rewriter, op.getLoc(), result, rewriter.getDenseI64ArrayAttr({0}));
+      }
+
+      if (result.getType() != op.getType()) {
+        result = rewriter.create<stablehlo::ReshapeOp>(op.getLoc(),
+                                                       op.getType(), result);
+      }
       rewriter.replaceOp(op, result);
       return success();
     }
 
-    rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, resultTy, result);
+    SmallVector<int64_t> sliceStarts(opRank, 0);
+    int64_t rem = minTotalOffset;
+    for (int64_t k = 0; k < opRank; ++k) {
+      sliceStarts[k] = rem / opStrides[k];
+      rem %= opStrides[k];
+    }
+
+    for (int64_t k = 0; k < opRank; ++k) {
+      if (sliceStarts[k] + sliceSizes[k] > operandShape[k]) {
+        return failure();
+      }
+    }
+
+    Value reshapedOperand = stablehlo::ReshapeOpCreate(rewriter, op.getLoc(),
+                                                       operand, operandShape);
+
+    SmallVector<int64_t> sliceLimits(opRank);
+    SmallVector<int64_t> sliceStrides(opRank, 1);
+    for (int64_t k = 0; k < opRank; ++k) {
+      sliceLimits[k] = sliceStarts[k] + sliceSizes[k];
+    }
+
+    Value sliced =
+        stablehlo::SliceOpCreate(rewriter, op.getLoc(), reshapedOperand,
+                                 sliceStarts, sliceLimits, sliceStrides);
+
+    SmallVector<int64_t> reverseDims;
+    for (size_t m = 0; m < mappings.size(); ++m) {
+      if (mappings[m].scale < 0) {
+        reverseDims.push_back(m);
+      }
+    }
+    if (!reverseDims.empty()) {
+      sliced = stablehlo::ReverseOp::create(
+          rewriter, op.getLoc(), sliced,
+          rewriter.getDenseI64ArrayAttr(reverseDims));
+    }
+
+    SmallVector<int64_t> mappedShape;
+    for (size_t m = 0; m < mappings.size(); ++m) {
+      mappedShape.push_back(sliceSizes[m]);
+    }
+    if (opRank > (int64_t)mappings.size()) {
+      sliced = stablehlo::ReshapeOpCreate(rewriter, op.getLoc(), sliced,
+                                          mappedShape);
+    }
+
+    SmallVector<int64_t> broadcastDims;
+    for (size_t m = 0; m < mappings.size(); ++m) {
+      broadcastDims.push_back(mappings[m].gridDim);
+    }
+
+    auto gridResultTy =
+        RankedTensorType::get(gridTy.getShape(), operandTy.getElementType());
+    sliced = stablehlo::BroadcastInDimOp::create(
+        rewriter, op.getLoc(), gridResultTy, sliced,
+        rewriter.getDenseI64ArrayAttr(broadcastDims));
+
+    sliced = stablehlo::ReshapeOpCreate(
+        rewriter, op.getLoc(), sliced,
+        cast<RankedTensorType>(op.getType()).getShape());
+
+    rewriter.replaceOp(op, sliced);
     return success();
   }
 
