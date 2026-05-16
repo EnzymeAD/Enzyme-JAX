@@ -188,6 +188,85 @@ FunctionType CallOp::getCalleeType() {
   return FunctionType::get(getContext(), getOperandTypes(), getResultTypes());
 }
 
+class FoldTesseraCallChain final : public OpRewritePattern<CallOp> {
+public:
+  using OpRewritePattern<CallOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(CallOp op,
+                                PatternRewriter &rewriter) const override {
+    SmallVector<Value> newOperands;
+    bool changed = false;
+
+    for (Value arg : op.getOperands()) {
+      if (!isa<IntegerType>(arg.getType())) {
+        newOperands.push_back(arg);
+        continue;
+      }
+
+      // trace through bitcast
+      auto bitcast = arg.getDefiningOp<LLVM::BitcastOp>();
+      if (!bitcast) {
+        newOperands.push_back(arg);
+        continue;
+      }
+
+      // trace through insertelement chain, following vector operand until we
+      // hit poison
+      Value vec = bitcast.getArg();
+      SmallVector<Value> elements;
+      while (auto insertOp = vec.getDefiningOp<LLVM::InsertElementOp>()) {
+        elements.push_back(insertOp.getValue());
+        vec = insertOp.getVector();
+      }
+      if (!vec.getDefiningOp<LLVM::PoisonOp>()) {
+        newOperands.push_back(arg);
+        continue;
+      }
+
+      // trace through extractvalue chain and make sure all come from the same
+      // source call
+      Value source;
+      for (Value elem : elements) {
+        auto extractOp = elem.getDefiningOp<LLVM::ExtractValueOp>();
+        if (!extractOp) {
+          source = nullptr;
+          break;
+        }
+        if (!source)
+          source = extractOp.getContainer();
+        else if (source != extractOp.getContainer()) {
+          source = nullptr; // elements came from different sources
+          break;
+        }
+      }
+      if (!source) {
+        newOperands.push_back(arg);
+        continue;
+      }
+
+      // check source is a tessera call
+      auto sourceCall = source.getDefiningOp<CallOp>();
+      if (sourceCall) {
+        newOperands.push_back(sourceCall.getResult(0));
+        changed = true;
+      } else {
+        newOperands.push_back(arg);
+      }
+    }
+
+    if (!changed)
+      return failure();
+    rewriter.replaceOpWithNewOp<CallOp>(op, op.getResultTypes(), newOperands,
+                                        op->getAttrs());
+    return success();
+  }
+};
+
+void CallOp::getCanonicalizationPatterns(RewritePatternSet &results,
+                                         MLIRContext *context) {
+  results.insert<FoldTesseraCallChain>(context);
+}
+
 //===----------------------------------------------------------------------===//
 // ReturnOp
 //===----------------------------------------------------------------------===//
