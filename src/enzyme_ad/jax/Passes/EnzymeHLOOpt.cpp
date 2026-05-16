@@ -37,6 +37,7 @@
 #include "src/enzyme_ad/jax/Implementations/ReferenceOps.h"
 #include "src/enzyme_ad/jax/Implementations/WhileLoopInfo.h"
 #include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.h"
+#include "src/enzyme_ad/jax/Passes/PDLLTransformHelpers.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "src/enzyme_ad/jax/Utils.h"
 #include "stablehlo/dialect/Base.h"
@@ -24436,11 +24437,6 @@ struct SliceExtend final
     : CheckedOpRewritePattern<enzymexla::ExtendOp, SliceExtend> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
-  struct CandidateInfo {
-    enzymexla::ExtendOp extendOp;
-    stablehlo::SliceOp sliceOp; // Null if it's a direct extend user
-  };
-
   LogicalResult matchAndRewriteImpl(enzymexla::ExtendOp triggerExtendOp,
                                     PatternRewriter &rewriter) const {
 
@@ -24451,124 +24447,27 @@ struct SliceExtend final
       return failure();
     }
 
-    Value baseOperand = triggerSliceOp.getOperand();
-
-    // --- Get Target Extension Parameters ---
-    int64_t targetExtendDim = triggerExtendOp.getDimension();
-    int64_t targetLhs = triggerExtendOp.getLhs();
-    int64_t targetRhs = triggerExtendOp.getRhs();
-    Location loc = triggerExtendOp.getLoc();
-
     // --- Check Validity of Trigger Slice ---
-    auto baseOperandType = dyn_cast<RankedTensorType>(baseOperand.getType());
-    if (!baseOperandType || !baseOperandType.hasStaticShape()) {
-      return rewriter.notifyMatchFailure(triggerExtendOp,
-                                         "Base operand requires static shape");
-    }
-    if (triggerSliceOp.getStartIndices()[targetExtendDim] != 0 ||
-        triggerSliceOp.getLimitIndices()[targetExtendDim] !=
-            baseOperandType.getShape()[targetExtendDim] ||
-        triggerSliceOp.getStrides()[targetExtendDim] != 1) {
+    if (failed(mlir::enzyme::isValidSliceForExtend(triggerSliceOp,
+                                                   triggerExtendOp))) {
       return rewriter.notifyMatchFailure(
           triggerExtendOp,
-          "Trigger SliceOp modifies the dimension being extended");
+          "Trigger SliceOp is invalid for extend (non-static base or "
+          "modifies the dimension being extended)");
     }
 
-    llvm::SmallVector<CandidateInfo> candidates;
-    candidates.push_back({triggerExtendOp, triggerSliceOp});
-
-    for (auto const &userOp : baseOperand.getUsers()) {
-      // Skip the slice that defines the trigger operand
-      if (userOp == triggerSliceOp.getOperation())
-        continue;
-
-      // Case 1: Direct Extend
-      if (auto directExtend = dyn_cast<enzymexla::ExtendOp>(userOp)) {
-        if (directExtend.getDimension() == targetExtendDim &&
-            directExtend.getLhs() == targetLhs &&
-            directExtend.getRhs() == targetRhs) {
-          candidates.push_back({directExtend, nullptr});
-        }
-      }
-      // Case 2: Extend of Slice
-      else if (auto sliceUser = dyn_cast<stablehlo::SliceOp>(userOp)) {
-        if (!sliceUser->hasOneUse())
-          continue;
-        auto extendOfSlice =
-            dyn_cast<enzymexla::ExtendOp>(*sliceUser->user_begin());
-        if (!extendOfSlice)
-          continue;
-
-        if (extendOfSlice.getDimension() == targetExtendDim &&
-            extendOfSlice.getLhs() == targetLhs &&
-            extendOfSlice.getRhs() == targetRhs) {
-          // Check validity: sliceUser must not modify targetExtendDim
-          if (sliceUser.getStartIndices()[targetExtendDim] == 0 &&
-              sliceUser.getLimitIndices()[targetExtendDim] ==
-                  baseOperandType.getShape()[targetExtendDim] &&
-              sliceUser.getStrides()[targetExtendDim] == 1) {
-            candidates.push_back({extendOfSlice, sliceUser});
-          }
-        }
-      }
-    }
-
-    if (candidates.size() <= 1) {
+    // --- Profitability: require at least one other matching sibling user ---
+    if (failed(mlir::enzyme::hasMultipleMatchingExtendUsers(triggerSliceOp,
+                                                            triggerExtendOp))) {
       return rewriter.notifyMatchFailure(
           triggerExtendOp,
           "Rewrite condition not met (only found the trigger candidate)");
     }
 
-    SmallVector<int64_t> newBaseExtendShape =
-        llvm::to_vector(baseOperandType.getShape());
-    newBaseExtendShape[targetExtendDim] += (targetLhs + targetRhs);
-    auto newBaseExtendType = RankedTensorType::get(
-        newBaseExtendShape, baseOperandType.getElementType());
-
-    if (auto subOp = baseOperand.getDefiningOp())
-      rewriter.setInsertionPointAfter(subOp);
-    else
-      rewriter.setInsertionPointToStart(
-          cast<BlockArgument>(baseOperand).getOwner());
-
-    auto newBaseExtendOp = enzymexla::ExtendOp::create(
-        rewriter, loc, newBaseExtendType, baseOperand, targetLhs, targetRhs,
-        targetExtendDim);
-    RankedTensorType newBaseExtendResultType = newBaseExtendOp.getType();
-
-    for (const auto &candidate : candidates) {
-      enzymexla::ExtendOp oldExtendOp = candidate.extendOp;
-      stablehlo::SliceOp oldSliceOp = candidate.sliceOp; // Might be null
-
-      if (!oldSliceOp) {
-        // Direct Extend - Replace directly
-        if (oldExtendOp.getResult().getType() == newBaseExtendOp.getType()) {
-          rewriter.replaceOp(oldExtendOp, newBaseExtendOp);
-        } else {
-          auto castOp = tensor::CastOp::create(
-              rewriter, loc, oldExtendOp.getResult().getType(),
-              newBaseExtendOp);
-          rewriter.replaceOp(oldExtendOp, castOp);
-        }
-      } else {
-        SmallVector<int64_t> newSliceStarts =
-            llvm::to_vector(oldSliceOp.getStartIndices());
-        SmallVector<int64_t> newSliceLimits =
-            llvm::to_vector(oldSliceOp.getLimitIndices());
-        SmallVector<int64_t> newSliceStrides =
-            llvm::to_vector(oldSliceOp.getStrides());
-
-        newSliceStarts[targetExtendDim] = 0;
-        newSliceLimits[targetExtendDim] =
-            newBaseExtendResultType.getDimSize(targetExtendDim);
-        newSliceStrides[targetExtendDim] = 1;
-        assert(newBaseExtendOp);
-        rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(
-            oldExtendOp, newBaseExtendOp, newSliceStarts, newSliceLimits,
-            newSliceStrides);
-      }
-    }
-
+    Operation *replacement = mlir::enzyme::commuteExtendAndSlice(
+        rewriter, triggerExtendOp, triggerSliceOp,
+        /*doGlobalDeduplication=*/true);
+    rewriter.replaceOp(triggerExtendOp, replacement->getResults());
     return success();
   }
 };

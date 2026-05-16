@@ -1,0 +1,29 @@
+#include "stablehlo/dialect/StablehloOps.td"
+#include "src/enzyme_ad/jax/Dialect/EnzymeXLAOps.td"
+
+
+/// Check that the base has a static shape and the slice does not modify the
+/// dimension being extended.
+Constraint IsValidSliceForExtend(sliceOp: Op<stablehlo.slice>,
+                                 extendOp: Op<enzymexla.extend>);
+
+/// Profitability check for the SliceExtend commute pattern.
+Constraint ConfigurableProfitabilityCheck(sliceOp: Op<stablehlo.slice>,
+                                          extendOp: Op<enzymexla.extend>);
+
+/// Commute rewrite that produces a new `enzymexla.extend` of the slice base
+/// and a `stablehlo.slice` to replace the original extend.
+Rewrite ConfigurableCommute(extendOp: Op<enzymexla.extend>,
+                            sliceOp: Op<stablehlo.slice>) -> Op;
+
+
+Pattern SliceExtendCommute {
+  let base: Value;
+  let slice = op<stablehlo.slice>(base);
+  let extend = op<enzymexla.extend>(slice);
+
+  IsValidSliceForExtend(slice, extend);
+  ConfigurableProfitabilityCheck(slice, extend);
+
+  replace extend with ConfigurableCommute(extend, slice);
+}

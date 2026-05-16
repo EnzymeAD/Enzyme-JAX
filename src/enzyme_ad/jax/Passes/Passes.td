@@ -1393,4 +1393,36 @@ def RemoveAtomicsPass : Pass<"remove-atomics"> {
   ];
 }
 
+def ApplyPDLLPatternsPass : Pass<"apply-pdll-patterns"> {
+  let summary = "Apply every PDLL pattern set under `Passes/PDLL/`";
+  let description = [{
+    Runs every PDLL pattern set defined in
+    `src/enzyme_ad/jax/Passes/PDLL/`. New `.pdll` files are picked up by
+    adding a build rule and a single registration line in
+    `src/enzyme_ad/jax/Passes/ApplyPDLLPatterns.cpp`.
+  }];
+  let dependentDialects = [
+    "enzymexla::EnzymeXLADialect",
+    "stablehlo::StablehloDialect",
+    "pdl::PDLDialect",
+    "pdl_interp::PDLInterpDialect",
+  ];
+  let options = [
+    ListOption<"includePatterns", "include", "std::string",
+               "List of PDLL pattern names to include (only these run). "
+               "Mutually exclusive with `exclude-patterns`.">,
+    ListOption<"excludePatterns", "exclude", "std::string",
+               "List of PDLL pattern names to exclude. "
+               "Mutually exclusive with `include-patterns`.">,
+    Option<"rewriteExtent", "rewrite-extent", "std::string",
+           "\"checked-local\"",
+           "Controls how aggressively configurable PDLL patterns rewrite. "
+           "One of: `pure-local` (skip profitability checks, run minimal "
+           "rewrite), `checked-local` (run profitability check then "
+           "minimal rewrite), `checked-global` (run profitability check "
+           "then global rewrite that deduplicates matching sibling "
+           "users).">,
+  ];
+}
+
 #endif
