@@ -1076,7 +1076,7 @@ module {
       llvm.return %0 : f32
     }
   }
-  gpu.module @test_module_52 {
+  gpu.module @test_module_fmuladd {
     // CHECK-LABEL: @llvm_fmuladd
     llvm.func @llvm_fmuladd(%arg0: f32, %arg1: f32, %arg2: f32) -> f32 {
       // CHECK: math.fma
