@@ -85,7 +85,8 @@ XLA_FFI_Error *initialize(XLA_FFI_CallFrame *call_frame) {
           ctx, XLA_FFI_ExecutionStage_INITIALIZE));
   auto type_id = xla::ffi::TypeRegistry::GetTypeId<CuFuncWrapper>();
   auto type_info = xla::ffi::TypeRegistry::GetTypeInfo(type_id);
-  (void)execution_state->Set(type_id, type_info, cufunc);
+  (void)type_info.ok();
+  (void)execution_state->Set(type_id, type_info.value(), cufunc);
 
   return nullptr;
 }
