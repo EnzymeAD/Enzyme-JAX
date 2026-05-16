@@ -25,6 +25,7 @@
 #include "mlir/Support/LLVM.h"
 #include "mlir/Transforms/Passes.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
+#include "src/enzyme_ad/jax/Dialect/Tessera/Dialect.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "src/enzyme_ad/jax/Utils.h"
 #include "llvm/ADT/SetVector.h"
@@ -1153,6 +1154,36 @@ Value castToType(Type elType, Value val, Operation *op) {
   llvm_unreachable("mismatched type");
 }
 
+// Check if tessera call captures alloca instance by checking for llvm.nocapture
+// attribute
+bool isTesseraCallNonCapturing(tessera::CallOp callOp, Value val) {
+  auto calleeAttr = callOp.getCalleeAttr();
+  if (calleeAttr) {
+    auto callee = SymbolTable::lookupSymbolIn(
+        callOp->getParentOfType<ModuleOp>(), calleeAttr);
+    auto defineOp = dyn_cast_or_null<tessera::DefineOp>(callee);
+    if (!defineOp)
+      return false;
+
+    int offset = 0;
+    if (defineOp.getNumArguments() > 0 &&
+        defineOp.getArgAttr(0, LLVM::LLVMDialect::getStructRetAttrName()))
+      offset = 1;
+
+    // Find operand that matches value of alloca we are trying to promote and
+    // check for attributes
+    auto operands = callOp.getOperands();
+    for (int i = 0; i < operands.size(); i++) {
+      if (callOp.getOperand(i) == val) {
+        if (defineOp.getArgAttr(i + offset,
+                                LLVM::LLVMDialect::getNoCaptureAttrName()))
+          return true;
+      }
+    }
+  }
+  return false;
+}
+
 // fopen, fclose
 std::set<std::string> NoWriteFunctions = {"exit", "__errno_location"};
 // This is a straightforward implementation not optimized for speed. Optimize
@@ -1338,6 +1369,17 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
           if (!callOp.getCallee() ||
               !getNonCapturingFunctions().count(callOp.getCallee()->str()))
             captured = true;
+        }
+        continue;
+      }
+      if (auto callOp = dyn_cast<tessera::CallOp>(user)) {
+        if (callOp.getCallee() != "free") {
+          if (!isTesseraCallNonCapturing(callOp, val)) {
+            LLVM_DEBUG(llvm::dbgs() << "Aliasing Store: " << callOp << "\n");
+            AliasingStoreOperations.insert(callOp);
+            if (!getNonCapturingFunctions().count(callOp.getCallee().str()))
+              captured = true;
+          }
         }
         continue;
       }
@@ -1923,6 +1965,10 @@ bool isPromotable(mlir::Value AI) {
         if (auto callee = callOp.getCallee())
           if (getNonCapturingFunctions().count(callee->str()))
             continue;
+      } else if (auto callOp = dyn_cast<tessera::CallOp>(U)) {
+        if (isTesseraCallNonCapturing(callOp, val) ||
+            getNonCapturingFunctions().count(callOp.getCallee().str()))
+          continue;
       } else if (auto CO = dyn_cast<memref::CastOp>(U)) {
         list.push_back(CO);
       } else if (auto CO = dyn_cast<Memref2PointerOp>(U)) {
