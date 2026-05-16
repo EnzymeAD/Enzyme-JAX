@@ -2610,11 +2610,11 @@ struct GesvdOpLowering : public OpRewritePattern<enzymexla::GesvdOp> {
       OpBuilder::InsertionGuard guard(rewriter);
       auto perm = llvm::to_vector(llvm::seq<int64_t>(0, rank));
       std::swap(perm[rank - 2], perm[rank - 1]);
-      
+
       // transpose the input
       rewriter.setInsertionPoint(op);
-      auto transposedInput = stablehlo::TransposeOp::create(
-          rewriter, op.getLoc(), input, perm);
+      auto transposedInput =
+          stablehlo::TransposeOp::create(rewriter, op.getLoc(), input, perm);
       rewriter.startOpModification(op);
       op.setOperand(transposedInput);
       if (op.getComputeUv()) {
@@ -2634,10 +2634,10 @@ struct GesvdOpLowering : public OpRewritePattern<enzymexla::GesvdOp> {
         rewriter.setInsertionPointAfter(op);
         auto trans_u = op.getResult(0);
         auto trans_vt = op.getResult(2);
-        auto u = stablehlo::TransposeOp::create(
-            rewriter, op.getLoc(), trans_vt, perm);
-        auto vt = stablehlo::TransposeOp::create(
-            rewriter, op.getLoc(), trans_u, perm);
+        auto u = stablehlo::TransposeOp::create(rewriter, op.getLoc(), trans_vt,
+                                                perm);
+        auto vt = stablehlo::TransposeOp::create(rewriter, op.getLoc(), trans_u,
+                                                 perm);
         rewriter.replaceAllUsesExcept(trans_u, u, vt);
         rewriter.replaceAllUsesExcept(trans_vt, vt, u);
       }
