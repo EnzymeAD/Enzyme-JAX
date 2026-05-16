@@ -1216,6 +1216,36 @@ static LogicalResult tryRaisingForOpToStableHLOWhile(
                                forOp.getConstantUpperBound(),
                                forOp.getStepAsInt()};
 
+  SmallVector<Value> visibleAllocas;
+  {
+    Operation *currentOp = forOp.getOperation();
+    while (currentOp) {
+      Block *block = currentOp->getBlock();
+      for (auto &op : block->getOperations()) {
+        if (&op == currentOp)
+          break;
+        if (auto allocaOp = dyn_cast<memref::AllocaOp>(&op)) {
+          bool usedInLoop = llvm::is_contained(forOp.getOperands(), allocaOp.getResult());
+          if (!usedInLoop) {
+            forOp.getBody()->walk([&](Operation *innerOp) {
+              for (auto operand : innerOp->getOperands()) {
+                if (operand == allocaOp.getResult()) {
+                  usedInLoop = true;
+                  return WalkResult::interrupt();
+                }
+              }
+              return WalkResult::advance();
+            });
+          }
+          if (usedInLoop) {
+            visibleAllocas.push_back(allocaOp.getResult());
+          }
+        }
+      }
+      currentOp = block->getParentOp();
+    }
+  }
+
   auto ET = builder.getI64Type();
   auto TT = RankedTensorType::get({}, ET);
 
@@ -1278,6 +1308,20 @@ static LogicalResult tryRaisingForOpToStableHLOWhile(
     mapping.map(memref, memrefInBody);
   }
 
+  for (auto alloca : visibleAllocas) {
+    Value mappedAlloca = mapping.lookup(alloca);
+    inits.push_back(mappedAlloca);
+
+    cond->addArgument(mappedAlloca.getType(),
+                      rewriteLocation(mappedAlloca.getLoc(),
+                                      pc.options.strip_llvm_debuginfo));
+    Value allocaInBody =
+        body->addArgument(mappedAlloca.getType(),
+                          rewriteLocation(mappedAlloca.getLoc(),
+                                          pc.options.strip_llvm_debuginfo));
+    mapping.map(alloca, allocaInBody);
+  }
+
   auto whileOp = stablehlo::WhileOp::create(
       builder, rewriteLocation(forOp.getLoc(), pc.options.strip_llvm_debuginfo),
       inits);
@@ -1333,6 +1377,10 @@ static LogicalResult tryRaisingForOpToStableHLOWhile(
 
     for (auto memref : entryBlock->getArguments())
       loopCarried.push_back(mapping.lookup(memref));
+
+    for (auto alloca : visibleAllocas)
+      loopCarried.push_back(mapping.lookup(alloca));
+
     stablehlo::ReturnOp::create(
         builder,
         rewriteLocation(forOp.getLoc(), pc.options.strip_llvm_debuginfo),
@@ -1342,6 +1390,12 @@ static LogicalResult tryRaisingForOpToStableHLOWhile(
   for (auto [i, memref] : llvm::enumerate(entryBlock->getArguments()))
     mapping.map(memref,
                 whileOp.getResult(i + 1 + forOp.getNumRegionIterArgs()));
+
+  unsigned baseIdx = 1 + forOp.getNumRegionIterArgs() + entryBlock->getNumArguments();
+  for (auto [i, alloca] : llvm::enumerate(visibleAllocas)) {
+    mapping.map(alloca, whileOp.getResult(baseIdx + i));
+  }
+
   for (auto [forRes, forIterArg, whileRes] :
        llvm::zip(forOp.getResults(), forOp.getRegionIterArgs(),
                  llvm::drop_begin(whileOp.getResults()))) {
@@ -1381,6 +1435,7 @@ static LogicalResult tryRaisingParallelOpToStableHLO(
   auto newPc = pc.add(parallelOp);
   if (!newPc)
     return failure();
+  llvm::errs() << "newPc ranges: " << newPc->ranges.size() << "\n";
 
   SmallVector<Value> iter_inputs;
   SmallVector<BlockArgument> iters;
@@ -1826,6 +1881,28 @@ static LogicalResult
 tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
                         llvm::DenseMap<Value, affine::AffineValueMap> &maps,
                         ParallelContext pc) {
+
+  // Alloca becomes a constant tensor filled with zeros
+  if (auto allocaOp = dyn_cast<memref::AllocaOp>(op)) {
+    SmallVector<int64_t> shape;
+    for (auto &range : pc.ranges) {
+      shape.push_back(range.getNumIters());
+    }
+    auto memrefType = cast<MemRefType>(allocaOp.getType());
+    shape.append(memrefType.getShape().begin(), memrefType.getShape().end());
+
+    auto raisedType = RankedTensorType::get(shape, memrefType.getElementType());
+
+    auto zeroAttr = builder.getZeroAttr(memrefType.getElementType());
+    auto splatAttr = SplatElementsAttr::get(raisedType, zeroAttr);
+
+    Value constantOp = stablehlo::ConstantOp::create(
+        builder, rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+        raisedType, splatAttr);
+
+    mapping.map(allocaOp.getResult(), constantOp);
+    return success();
+  }
 
   // Affine load inside a loop becomes a slice
   if (auto loadOp = dyn_cast<affine::AffineLoadOp>(op)) {
@@ -2612,6 +2689,34 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
       }
     }
 
+    auto operandType = cast<RankedTensorType>(operand.getType());
+    auto updateType = cast<RankedTensorType>(update.getType());
+    llvm::errs() << "operand rank: " << operandType.getRank() << ", update rank: " << updateType.getRank() << ", pc.ranges: " << pc.ranges.size() << "\n";
+    if (updateType.getRank() < operandType.getRank()) {
+      SmallVector<int64_t> newShape(updateType.getShape().begin(), updateType.getShape().end());
+      while (newShape.size() < operandType.getRank()) {
+        newShape.push_back(1);
+      }
+      update = stablehlo::ReshapeOp::create(
+          builder, rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+          RankedTensorType::get(newShape, updateType.getElementType()), update).getResult();
+
+      auto Ty = builder.getI64Type();
+      auto unrankedTensorType = RankedTensorType::get({}, Ty);
+      Value zeroIndex = stablehlo::ConstantOp::create(
+          builder, rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+          unrankedTensorType,
+          SplatElementsAttr::get(unrankedTensorType,
+                                 ArrayRef<Attribute>(IntegerAttr::get(Ty, 0))));
+
+      SmallVector<Value> newStartIndices;
+      for (size_t i = 0; i < pc.ranges.size(); ++i) {
+        newStartIndices.push_back(zeroIndex);
+      }
+      newStartIndices.append(startIndicesValues.begin(), startIndicesValues.end());
+      startIndicesValues = newStartIndices;
+    }
+
     auto newOperand = stablehlo::DynamicUpdateSliceOp::create(
         builder, rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
         operand, update, startIndicesValues);
@@ -3080,6 +3185,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
   // Inner for op
   if (auto forOp = dyn_cast<affine::AffineForOp>(op)) {
+    llvm::errs() << "tryRaisingOpToStableHLO for forOp, pc.ranges: " << pc.ranges.size() << "\n";
     if (pc.options.enableLockstepFor &&
         tryRaisingLockStepForOpToStableHLO(forOp, mapping, builder, maps, pc)
             .succeeded()) {
