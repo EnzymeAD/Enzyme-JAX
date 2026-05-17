@@ -544,6 +544,37 @@ td_library(
     ],
 )
 
+gentbl_cc_library(
+    name = "LowerEnzymeXLAMathPatternsIncGen",
+    tbl_outs = [
+        (
+            ["--gen-rewriters"],
+            "Passes/LowerEnzymeXLAMathPatterns.cpp.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Passes/LowerEnzymeXLAMathPatterns.td",
+    deps = [
+        ":LowerEnzymeXLAMathPatternsTdFiles",
+    ],
+)
+
+td_library(
+    name = "LowerEnzymeXLAMathPatternsTdFiles",
+    srcs = [
+        "Passes/LowerEnzymeXLAMathPatterns.td",
+    ],
+    includes = ["Dialect"],
+    deps = [
+        ":EnzymeXLADialectTdFiles",
+        "@llvm-project//mlir:BuiltinDialectTdFiles",
+        "@llvm-project//mlir:GPUOpsTdFiles",
+        "@llvm-project//mlir:OpBaseTdFiles",
+        "@stablehlo//:chlo_ops_td_files",
+        "@stablehlo//:stablehlo_ops_td_files",
+    ],
+)
+
 td_library(
     name = "DistributedDialectFiles",
     srcs = [
@@ -1204,6 +1235,7 @@ cc_library(
         ":EnzymeXLADialectUtils",
         ":EnzymeXLAOpsIncGen",
         ":EnzymeXLAPassesIncGen",
+        ":LowerEnzymeXLAMathPatternsIncGen",
         ":PerfifyDialectIncGen",
         ":PerfifyOpsIncGen",
         ":Polymer",

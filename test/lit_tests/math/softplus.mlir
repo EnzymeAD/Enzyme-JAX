@@ -30,27 +30,27 @@ func.func @main() {
 }
 
 // LOWER: func.func @apply_softplus(%arg0: tensor<7xf32>) -> tensor<7xf32> {
-// LOWER-NEXT:    %cst = stablehlo.constant dense<0.000000e+00> : tensor<7xf32>
-// LOWER-NEXT:    %0 = stablehlo.maximum %arg0, %cst : tensor<7xf32>
-// LOWER-NEXT:    %1 = stablehlo.abs %arg0 : tensor<7xf32>
-// LOWER-NEXT:    %2 = stablehlo.negate %1 : tensor<7xf32>
-// LOWER-NEXT:    %3 = stablehlo.exponential %2 : tensor<7xf32>
-// LOWER-NEXT:    %4 = stablehlo.log_plus_one %3 : tensor<7xf32>
-// LOWER-NEXT:    %5 = stablehlo.add %0, %4 : tensor<7xf32>
-// LOWER-NEXT:    %6 = stablehlo.compare  NE, %arg0, %arg0,  FLOAT : (tensor<7xf32>, tensor<7xf32>) -> tensor<7xi1>
-// LOWER-NEXT:    %7 = stablehlo.select %6, %arg0, %5 : tensor<7xi1>, tensor<7xf32>
-// LOWER-NEXT:    return %7 : tensor<7xf32>
+// LOWER-DAG:    %[[CST:.*]] = stablehlo.constant dense<0.000000e+00> : tensor<7xf32>
+// LOWER-DAG:    %[[CMP:.*]] = stablehlo.compare  NE, %arg0, %arg0,  FLOAT : (tensor<7xf32>, tensor<7xf32>) -> tensor<7xi1>
+// LOWER-DAG:    %[[MAX:.*]] = stablehlo.maximum %arg0, %[[CST]] : tensor<7xf32>
+// LOWER-DAG:    %[[ABS:.*]] = stablehlo.abs %arg0 : tensor<7xf32>
+// LOWER-DAG:    %[[NEG:.*]] = stablehlo.negate %[[ABS]] : tensor<7xf32>
+// LOWER-DAG:    %[[EXP:.*]] = stablehlo.exponential %[[NEG]] : tensor<7xf32>
+// LOWER-DAG:    %[[LOG:.*]] = stablehlo.log_plus_one %[[EXP]] : tensor<7xf32>
+// LOWER-DAG:    %[[ADD:.*]] = stablehlo.add %[[MAX]], %[[LOG]] : tensor<7xf32>
+// LOWER-NEXT:    %[[RES:.*]] = stablehlo.select %[[CMP]], %arg0, %[[ADD]] : tensor<7xi1>, tensor<7xf32>
+// LOWER-NEXT:    return %[[RES]] : tensor<7xf32>
 // LOWER-NEXT:  }
 
 // LOWER: func.func @apply_softplus_scalar(%arg0: tensor<f32>) -> tensor<f32> {
-// LOWER-NEXT:    %cst = stablehlo.constant dense<0.000000e+00> : tensor<f32>
-// LOWER-NEXT:    %0 = stablehlo.maximum %arg0, %cst : tensor<f32>
-// LOWER-NEXT:    %1 = stablehlo.abs %arg0 : tensor<f32>
-// LOWER-NEXT:    %2 = stablehlo.negate %1 : tensor<f32>
-// LOWER-NEXT:    %3 = stablehlo.exponential %2 : tensor<f32>
-// LOWER-NEXT:    %4 = stablehlo.log_plus_one %3 : tensor<f32>
-// LOWER-NEXT:    %5 = stablehlo.add %0, %4 : tensor<f32>
-// LOWER-NEXT:    %6 = stablehlo.compare  NE, %arg0, %arg0,  FLOAT : (tensor<f32>, tensor<f32>) -> tensor<i1>
-// LOWER-NEXT:    %7 = stablehlo.select %6, %arg0, %5 : tensor<i1>, tensor<f32>
-// LOWER-NEXT:    return %7 : tensor<f32>
+// LOWER-DAG:    %[[CST:.*]] = stablehlo.constant dense<0.000000e+00> : tensor<f32>
+// LOWER-DAG:    %[[CMP:.*]] = stablehlo.compare  NE, %arg0, %arg0,  FLOAT : (tensor<f32>, tensor<f32>) -> tensor<i1>
+// LOWER-DAG:    %[[MAX:.*]] = stablehlo.maximum %arg0, %[[CST]] : tensor<f32>
+// LOWER-DAG:    %[[ABS:.*]] = stablehlo.abs %arg0 : tensor<f32>
+// LOWER-DAG:    %[[NEG:.*]] = stablehlo.negate %[[ABS]] : tensor<f32>
+// LOWER-DAG:    %[[EXP:.*]] = stablehlo.exponential %[[NEG]] : tensor<f32>
+// LOWER-DAG:    %[[LOG:.*]] = stablehlo.log_plus_one %[[EXP]] : tensor<f32>
+// LOWER-DAG:    %[[ADD:.*]] = stablehlo.add %[[MAX]], %[[LOG]] : tensor<f32>
+// LOWER-NEXT:    %[[RES:.*]] = stablehlo.select %[[CMP]], %arg0, %[[ADD]] : tensor<i1>, tensor<f32>
+// LOWER-NEXT:    return %[[RES]] : tensor<f32>
 // LOWER-NEXT:  }
