@@ -129,3 +129,75 @@ def : Pat<(TGammaOp:$op $x),
     (StableHLO_ExpOp (CHLO_LgammaOp $x), ConstDefaultResultAccuracyAttr)
   )
 >;
+
+// Hypot
+def : Pat<(HypotOp:$op $x, $y),
+  (StableHLO_SelectOp
+    (StableHLO_CompareOp
+      (StableHLO_MaxOp (StableHLO_AbsOp $x), (StableHLO_AbsOp $y)),
+      (CreateConstOp0 $op),
+      StableHLO_ComparisonDirectionValue<"EQ">,
+      (CreateConstFloatType)
+    ),
+    (CreateConstOp0 $op),
+    (StableHLO_MulOp
+      (StableHLO_MaxOp (StableHLO_AbsOp $x), (StableHLO_AbsOp $y)),
+      (StableHLO_SqrtOp
+        (StableHLO_AddOp
+          (CreateConstOp1 $op),
+          (StableHLO_MulOp
+            (StableHLO_DivOp
+              (StableHLO_MinOp (StableHLO_AbsOp $x), (StableHLO_AbsOp $y)),
+              (StableHLO_MaxOp (StableHLO_AbsOp $x), (StableHLO_AbsOp $y))
+            ),
+            (StableHLO_DivOp
+              (StableHLO_MinOp (StableHLO_AbsOp $x), (StableHLO_AbsOp $y)),
+              (StableHLO_MaxOp (StableHLO_AbsOp $x), (StableHLO_AbsOp $y))
+            )
+          )
+        ),
+        ConstDefaultResultAccuracyAttr
+      )
+    )
+  )
+>;
+
+// Sinc
+def : Pat<(SincOp:$op $x),
+  (StableHLO_SelectOp
+    (StableHLO_CompareOp
+      $x,
+      (CreateConstOp0 $op),
+      StableHLO_ComparisonDirectionValue<"EQ">,
+      (CreateConstFloatType)
+    ),
+    (CreateConstOp1 $op),
+    (StableHLO_DivOp
+      (StableHLO_SineOp (StableHLO_MulOp (CreatePiOp $op), $x), ConstDefaultResultAccuracyAttr),
+      (StableHLO_MulOp (CreatePiOp $op), $x)
+    )
+  )
+>;
+
+// Cosc
+def : Pat<(CoscOp:$op $x),
+  (StableHLO_SelectOp
+    (StableHLO_CompareOp
+      $x,
+      (CreateConstOp0 $op),
+      StableHLO_ComparisonDirectionValue<"EQ">,
+      (CreateConstFloatType)
+    ),
+    (CreateConstOp0 $op),
+    (StableHLO_SubtractOp
+      (StableHLO_DivOp
+        (StableHLO_CosineOp (StableHLO_MulOp (CreatePiOp $op), $x), ConstDefaultResultAccuracyAttr),
+        $x
+      ),
+      (StableHLO_DivOp
+        (StableHLO_SineOp (StableHLO_MulOp (CreatePiOp $op), $x), ConstDefaultResultAccuracyAttr),
+        (StableHLO_MulOp (StableHLO_MulOp (CreatePiOp $op), $x), $x)
+      )
+    )
+  )
+>;
