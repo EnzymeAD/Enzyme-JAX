@@ -1228,6 +1228,22 @@ struct WhileToForHelper {
               continue;
             if (ba2.getOwner() != &loop.getBefore().front())
               continue;
+            auto afterYield =
+                cast<scf::YieldOp>(loop.getAfter().front().getTerminator());
+            auto afterValue = afterYield.getOperand(ba2.getArgNumber());
+            auto ba3 = dyn_cast<BlockArgument>(afterValue);
+            if (!ba3) {
+              continue;
+            }
+            if (ba3.getOwner() != &loop.getAfter().front()) {
+              continue;
+            }
+            auto beforeYield = cast<scf::ConditionOp>(
+                loop.getBefore().front().getTerminator());
+            auto inductValue = beforeYield.getArgs()[ba3.getArgNumber()];
+            if (inductValue != steppingVal) {
+              continue;
+            }
             arg = ba2;
           }
         } else {

@@ -635,8 +635,17 @@ def LowerImpulseTraceOpsPass : Pass<"lower-impulse-trace-ops"> {
   ];
 }
 
+def LowerEnzymeXLAMathPass : Pass<"lower-enzymexla-math"> {
+  let summary = "Lower enzymexla math ops to stablehlo";
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "chlo::ChloDialect",
+    "enzymexla::EnzymeXLADialect",
+  ];
+}
+
 def LowerEnzymeXLAMLPass : Pass<"lower-enzymexla-ml"> {
-  let summary = "Lower enzymexla mlops to stablehlo";
+  let summary = "Lower enzymexla math ops to stablehlo (deprecated alias for lower-enzymexla-math)";
   let dependentDialects = [
     "stablehlo::StablehloDialect",
     "chlo::ChloDialect",
