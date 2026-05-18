@@ -4414,28 +4414,6 @@ struct MultiFloatConversionPass
     LLVM_DEBUG(llvm::dbgs() << "concatDimension: " << concatDimension << "\n");
     LLVM_DEBUG(llvm::dbgs() << "expansionSize: " << expansionSize << "\n");
 
-    // Lower stablehlo.power into ops the multifloat conversion can handle.
-    // PowOpLowerPattern picks the most accurate available form per call site
-    // (integer fast path / sqrt / general exp-log fallback). See its docstring.
-    {
-      SmallVector<func::FuncOp> funcsToLower;
-      op->walk([&](func::FuncOp func) {
-        if (!func->hasAttr("enzyme.no_multifloat"))
-          funcsToLower.push_back(func);
-      });
-      RewritePatternSet powPatterns(context);
-      powPatterns.add<PowOpLowerPattern>(context, srcTy);
-      FrozenRewritePatternSet frozenPow(std::move(powPatterns));
-      GreedyRewriteConfig powConfig;
-      for (auto func : funcsToLower) {
-        if (failed(applyPatternsGreedily(func, frozenPow, powConfig))) {
-          op->emitError() << "Failed to lower stablehlo.power";
-          signalPassFailure();
-          return;
-        }
-      }
-    }
-
     if (concatDimension != "first" && concatDimension != "last" &&
         concatDimension != "tuple") {
       op->emitError() << "Invalid concat-dimension specified: "
@@ -4774,6 +4752,7 @@ struct MultiFloatConversionPass
       for (auto func : funcsToConvert) {
         RewritePatternSet patterns(context);
         patterns.add<LowerReduceWindowOp>(context, srcTy);
+        patterns.add<PowOpLowerPattern>(context, srcTy);
         if (dotGeneralToReduce)
           patterns.add<DotGeneralToMulReducePattern>(context);
         if (failed(applyPatternsGreedily(func, std::move(patterns), config))) {
