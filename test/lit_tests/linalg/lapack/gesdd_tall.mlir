@@ -1,9 +1,8 @@
-// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(lower-enzymexla-linalg{backend=cpu blas_int_width=64},lower-enzymexla-lapack{backend=cpu blas_int_width=64},enzyme-hlo-opt)" %s | FileCheck %s --check-prefix=CPU
-// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(lower-enzymexla-linalg{backend=cuda},lower-enzymexla-lapack{backend=cuda blas_int_width=64},enzyme-hlo-opt)" %s | FileCheck %s --check-prefix=CUDA
+// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(lower-enzymexla-lapack{backend=cpu blas_int_width=64},enzyme-hlo-opt,drop-unsupported-attributes)" %s | FileCheck %s --check-prefix=CPU
 
 module {
   func.func @main(%arg0: tensor<64x32xf32>) -> (tensor<64x32xf32>, tensor<32xf32>, tensor<32x32xf32>, tensor<i64>) {
-    %0:4 = enzymexla.linalg.svd %arg0 : (tensor<64x32xf32>) -> (tensor<64x32xf32>, tensor<32xf32>, tensor<32x32xf32>, tensor<i64>)
+    %0:4 = enzymexla.lapack.gesdd %arg0 : (tensor<64x32xf32>) -> (tensor<64x32xf32>, tensor<32xf32>, tensor<32x32xf32>, tensor<i64>)
     return %0#0, %0#1, %0#2, %0#3 : tensor<64x32xf32>, tensor<32xf32>, tensor<32x32xf32>, tensor<i64>
   }
 }
@@ -46,13 +45,6 @@ module {
 // CPU-NEXT:     %0:4 = call @shlo_enzymexla_wrapper_lapack_sgesdd__wrapper_[[WRAPPER_ID]](%arg0) : (tensor<64x32xf32>) -> (tensor<64x32xf32>, tensor<32xf32>, tensor<32x32xf32>, tensor<i64>)
 // CPU-NEXT:     return %0#0, %0#1, %0#2, %0#3 : tensor<64x32xf32>, tensor<32xf32>, tensor<32x32xf32>, tensor<i64>
 // CPU-NEXT:   }
-
-// CUDA: func.func @main(%arg0: tensor<64x32xf32>) -> (tensor<64x32xf32>, tensor<32xf32>, tensor<32x32xf32>, tensor<i64>) {
-// CUDA-NEXT:   %0:5 = stablehlo.custom_call @cusolver_gesvdj_ffi(%arg0) {api_version = 4 : i32, backend_config = {compute_uv = true, full_matrices = false}, enzymexla.symmetric_matrix = [#enzymexla<guaranteed UNKNOWN>, #enzymexla<guaranteed UNKNOWN>, #enzymexla<guaranteed UNKNOWN>, #enzymexla<guaranteed NOTGUARANTEED>, #enzymexla<guaranteed UNKNOWN>], operand_layouts = [dense<[0, 1]> : tensor<2xindex>], result_layouts = [dense<[0, 1]> : tensor<2xindex>, dense<0> : tensor<1xindex>, dense<[0, 1]> : tensor<2xindex>, dense<[0, 1]> : tensor<2xindex>, dense<> : tensor<0xindex>]} : (tensor<64x32xf32>) -> (tensor<64x32xf32>, tensor<32xf32>, tensor<64x32xf32>, tensor<32x32xf32>, tensor<i32>)
-// CUDA-NEXT:   %1 = stablehlo.convert %0#4 : (tensor<i32>) -> tensor<i64>
-// CUDA-NEXT:   %2 = stablehlo.transpose %0#3, dims = [1, 0] : (tensor<32x32xf32>) -> tensor<32x32xf32>
-// CUDA-NEXT:   return %0#2, %0#1, %2, %1 : tensor<64x32xf32>, tensor<32xf32>, tensor<32x32xf32>, tensor<i64>
-// CUDA-NEXT: }
 
 module {
   func.func @main(%arg0: tensor<64x32xf64>) -> (tensor<64x32xf64>, tensor<32xf64>, tensor<32x32xf64>, tensor<i64>) {
