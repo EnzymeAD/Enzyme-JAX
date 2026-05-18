@@ -49,7 +49,7 @@ module {
 module {
   func.func @main(%arg0: tensor<64x32xf64>) -> (tensor<64x32xf64>, tensor<32xf64>, tensor<32x32xf64>, tensor<i64>) {
     // CPU: enzymexla.jit_call @enzymexla_wrapper_lapack_dgesdd_
-    %0:4 = enzymexla.linalg.svd %arg0 : (tensor<64x32xf64>) -> (tensor<64x32xf64>, tensor<32xf64>, tensor<32x32xf64>, tensor<i64>)
+    %0:4 = enzymexla.lapack.gesdd %arg0 : (tensor<64x32xf64>) -> (tensor<64x32xf64>, tensor<32xf64>, tensor<32x32xf64>, tensor<i64>)
     return %0#0, %0#1, %0#2, %0#3 : tensor<64x32xf64>, tensor<32xf64>, tensor<32x32xf64>, tensor<i64>
   }
 }
@@ -57,7 +57,7 @@ module {
 module {
   func.func @main(%arg0: tensor<64x32xcomplex<f32>>) -> (tensor<64x32xcomplex<f32>>, tensor<32xf32>, tensor<32x32xcomplex<f32>>, tensor<i64>) {
     // CPU: enzymexla.jit_call @enzymexla_wrapper_lapack_cgesdd_
-    %0:4 = enzymexla.linalg.svd %arg0 : (tensor<64x32xcomplex<f32>>) -> (tensor<64x32xcomplex<f32>>, tensor<32xf32>, tensor<32x32xcomplex<f32>>, tensor<i64>)
+    %0:4 = enzymexla.lapack.gesdd %arg0 : (tensor<64x32xcomplex<f32>>) -> (tensor<64x32xcomplex<f32>>, tensor<32xf32>, tensor<32x32xcomplex<f32>>, tensor<i64>)
     return %0#0, %0#1, %0#2, %0#3 : tensor<64x32xcomplex<f32>>, tensor<32xf32>, tensor<32x32xcomplex<f32>>, tensor<i64>
   }
 }
@@ -65,7 +65,7 @@ module {
 module {
   func.func @main(%arg0: tensor<64x32xcomplex<f64>>) -> (tensor<64x32xcomplex<f64>>, tensor<32xf64>, tensor<32x32xcomplex<f64>>, tensor<i64>) {
     // CPU: enzymexla.jit_call @enzymexla_wrapper_lapack_zgesdd_
-    %0:4 = enzymexla.linalg.svd %arg0 : (tensor<64x32xcomplex<f64>>) -> (tensor<64x32xcomplex<f64>>, tensor<32xf64>, tensor<32x32xcomplex<f64>>, tensor<i64>)
+    %0:4 = enzymexla.lapack.gesdd %arg0 : (tensor<64x32xcomplex<f64>>) -> (tensor<64x32xcomplex<f64>>, tensor<32xf64>, tensor<32x32xcomplex<f64>>, tensor<i64>)
     return %0#0, %0#1, %0#2, %0#3 : tensor<64x32xcomplex<f64>>, tensor<32xf64>, tensor<32x32xcomplex<f64>>, tensor<i64>
   }
 }
