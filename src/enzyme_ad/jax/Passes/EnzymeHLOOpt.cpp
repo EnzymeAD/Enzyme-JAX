@@ -7942,8 +7942,10 @@ struct RealComplexMulSimplify
         loc, realTensor.getType(), complexTensor);
     auto newRealPart = rewriter.create<stablehlo::MulOp>(
         loc, realTensor.getType(), realTensor, realPart);
+    newRealPart->setAttrs(op->getAttrs());
     auto newImagPart = rewriter.create<stablehlo::MulOp>(
         loc, realTensor.getType(), realTensor, imagPart);
+    newImagPart->setAttrs(op->getAttrs());
     auto newComplex = rewriter.create<stablehlo::ComplexOp>(
         loc, op.getType(), newRealPart, newImagPart);
     rewriter.replaceOp(op, newComplex);
