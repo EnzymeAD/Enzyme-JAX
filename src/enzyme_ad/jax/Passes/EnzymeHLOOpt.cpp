@@ -7887,6 +7887,70 @@ struct MulSimplify
   }
 };
 
+struct RealComplexMulSimplify
+    : public CheckedOpRewritePattern<stablehlo::MulOp, RealComplexMulSimplify> {
+  using CheckedOpRewritePattern<
+      stablehlo::MulOp, RealComplexMulSimplify>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::MulOp op,
+                                    PatternRewriter &rewriter) const {
+    // (a + b*i) * (c + d*i)
+    // with b = 0
+    // (a*c - b*d) + (c*b + a*d)*i = (a*c - 0*d) + (c*0 + a*d)*i = a*c + a*d*i
+    // So if one of the operands is a convert from real to complex, we can
+    // simplify to mul real number with real part and mul real number with imag
+    // part instead of converting the real number to complex number.
+
+    auto resultType = cast<ShapedType>(op.getType()).getElementType();
+    if (!isa<ComplexType>(resultType)) {
+      return failure();
+    }
+    auto convertOp = op.getLhs().getDefiningOp<stablehlo::ConvertOp>();
+
+    if (!convertOp) {
+      convertOp = op.getRhs().getDefiningOp<stablehlo::ConvertOp>();
+    } else if (op.getRhs().getDefiningOp<stablehlo::ConvertOp>()) {
+      return failure();
+    }
+
+    if (!convertOp) {
+      return failure();
+    }
+
+    auto realTensor = (convertOp.getOperand());
+    auto complexTensor =
+        (convertOp->getResult(0) == op.getLhs()) ? op.getRhs() : op.getLhs();
+
+    auto srcType = cast<ShapedType>(realTensor.getType()).getElementType();
+    auto dstType = cast<ShapedType>(complexTensor.getType()).getElementType();
+
+    if (!isa<ComplexType>(dstType) || !isa<FloatType>(srcType)) {
+      return failure();
+    }
+    // Since I think it is legal to convert from f32 to for example
+    // complex<f64>, we need to check that element type is the same
+    auto complexElementType = cast<ComplexType>(dstType).getElementType();
+    if (srcType != complexElementType) {
+      return failure();
+    }
+
+    Location loc = op.getLoc();
+
+    auto realPart = rewriter.create<stablehlo::RealOp>(
+        loc, realTensor.getType(), complexTensor);
+    auto imagPart = rewriter.create<stablehlo::ImagOp>(
+        loc, realTensor.getType(), complexTensor);
+    auto newRealPart = rewriter.create<stablehlo::MulOp>(
+        loc, realTensor.getType(), realTensor, realPart);
+    auto newImagPart = rewriter.create<stablehlo::MulOp>(
+        loc, realTensor.getType(), realTensor, imagPart);
+    auto newComplex = rewriter.create<stablehlo::ComplexOp>(
+        loc, op.getType(), newRealPart, newImagPart);
+    rewriter.replaceOp(op, newComplex);
+    return success();
+  }
+};
+
 struct DivSimplify
     : public CheckedOpRewritePattern<stablehlo::DivOp, DivSimplify> {
   using CheckedOpRewritePattern<stablehlo::DivOp,
@@ -36155,6 +36219,7 @@ struct EnzymeHLOOptPass
         RealConvertSimplify,
         ConjComplexSimplify,
         ElementwiseComplexSimplify,
+        RealComplexMulSimplify,
         SplitConvolutionIntoReverseConvolution,
         ScatterMultiplySimplify,
         ScatterDivSimplify,
