@@ -141,8 +141,6 @@ def CallOp : TesseraOp<"call",
       build($_builder, $_state, callee, results, operands);
     }]>];
 
-  let hasCanonicalizer = 1;
-
   let extraClassDeclaration = [{
     FunctionType getCalleeType();
 

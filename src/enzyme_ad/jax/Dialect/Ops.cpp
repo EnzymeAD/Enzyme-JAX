@@ -994,13 +994,63 @@ void MetaPointer2Memref<affine::AffineStoreOp>::rewriteInternal(
   rewriter.replaceOpWithNewOp<LLVM::StoreOp>(op, op.getValue(), ptr);
 }
 
+/// Fold a chain of extractvalue/insertelement that reconstructs an aggregate
+/// as a vector into a single bitcast of the source aggregate.
+class FoldInsertElementChain final : public OpRewritePattern<LLVM::InsertElementOp> {
+public:
+  using OpRewritePattern<LLVM::InsertElementOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(InsertElementOp op,
+                                PatternRewriter &rewriter) const override {
+
+    // trace through insertelement chain, following vector operand until we
+    // hit poison
+    SmallVector<Value> elements;
+    Value vec = op.getVector();
+    while (auto insertOp = vec.getDefiningOp<LLVM::InsertElementOp>()) {
+      elements.push_back(insertOp.getValue());
+      vec = insertOp.getVector();
+    }
+
+    if (!vec.getDefiningOp<LLVM::PoisonOp>() && !vec.getDefiningOp<LLVM::UndefOp>()) {
+      return failure();
+    }
+
+    // include value inserted by the root op
+    elements.push_back(op.getValue());
+
+    // trace through extractvalue chain and make sure all come from the same
+    // source call
+    Value source;
+    for (Value elem : elements) {
+      auto extractOp = elem.getDefiningOp<LLVM::ExtractValueOp>();
+      if (!extractOp) {
+        return failure();
+      }
+      if (!source)
+        source = extractOp.getContainer();
+      else if (source != extractOp.getContainer()) {
+        return failure(); // elements came from different sources
+      }
+    }
+
+    if (!source)
+      return failure();
+
+    rewriter.replaceOpWithNewOp<LLVM::BitcastOp>(op, op.getType(), source);
+    return success();
+  }
+};
+
 void Pointer2MemrefOp::getCanonicalizationPatterns(RewritePatternSet &results,
                                                    MLIRContext *context) {
   results.insert<Pointer2MemrefCast, Pointer2Memref2PointerCast,
+
                  LoadStorePointer2MemrefGEP<memref::LoadOp>,
                  LoadStorePointer2MemrefGEP<affine::AffineLoadOp>,
                  LoadStorePointer2MemrefGEP<memref::StoreOp>,
-                 LoadStorePointer2MemrefGEP<affine::AffineStoreOp>>(context);
+                 LoadStorePointer2MemrefGEP<affine::AffineStoreOp>,
+                 FoldInsertElementChain>(context);
   /*
   results.insert<Pointer2MemrefCast, Pointer2Memref2PointerCast,
                  MetaPointer2Memref<memref::LoadOp>,
@@ -2726,55 +2776,4 @@ LogicalResult enzymexla::MultiPadOp::verify() {
   }
 
   return success();
-}
-
-class FoldInsertElementChain final : public OpRewritePattern<LLVM::InsertElementOp> {
-public:
-  using OpRewritePattern<LLVM::InsertElementOp>::OpRewritePattern;
-
-  LogicalResult matchAndRewrite(InsertElementOp op,
-                                PatternRewriter &rewriter) const override {
-
-    // trace through insertelement chain, following vector operand until we
-    // hit poison
-    SmallVector<Value> elements;
-    Value vec = op.getVector();
-    while (auto insertOp = vec.getDefiningOp<LLVM::InsertElementOp>()) {
-      elements.push_back(insertOp.getValue());
-      vec = insertOp.getVector();
-    }
-
-    if (!vec.getDefiningOp<LLVM::PoisonOp>() && !vec.getDefiningOp<LLVM::UndefOp>()) {
-      return failure();
-    }
-
-    // include value inserted by the root op
-    elements.push_back(op.getValue());
-
-    // trace through extractvalue chain and make sure all come from the same
-    // source call
-    Value source;
-    for (Value elem : elements) {
-      auto extractOp = elem.getDefiningOp<LLVM::ExtractValueOp>();
-      if (!extractOp) {
-        return failure();
-      }
-      if (!source)
-        source = extractOp.getContainer();
-      else if (source != extractOp.getContainer()) {
-        return failure(); // elements came from different sources
-      }
-    }
-
-    if (!source)
-      return failure();
-
-    rewriter.replaceOpWithNewOp<LLVM::BitcastOp>(op, op.getType(), source);
-    return success();
-  }
-};
-
-void LLVM::InsertElementOp::getCanonicalizationPatterns(RewritePatternSet &results,
-                                         MLIRContext *context) {
-  results.insert<FoldInsertElementChain>(context);
 }
