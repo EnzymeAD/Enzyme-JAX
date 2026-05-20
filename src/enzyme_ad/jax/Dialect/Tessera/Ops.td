@@ -29,14 +29,21 @@ def DefineOp : TesseraOp<"define", [
 
   let arguments = (ins SymbolNameAttr:$sym_name,
                        TypeAttrOf<FunctionType>:$function_type,
+	                     DenseBoolArrayAttr:$byRefArgs,
+	                     DenseI64ArrayAttr:$argSizes,
+                       BoolAttr:$pure,
                        OptionalAttr<StrAttr>:$sym_visibility,
                        OptionalAttr<DictArrayAttr>:$arg_attrs,
                        OptionalAttr<DictArrayAttr>:$res_attrs
-                    );
+                  );
   let regions = (region AnyRegion:$body);
 
   let builders = [OpBuilder<(ins
     "StringRef":$name, "FunctionType":$type,
+    "DenseBoolArrayAttr":$byRefArgs,
+    "DenseI64ArrayAttr":$argSizes,
+    "bool":$pure,
+    CArg<"StringAttr", "{}">:$sym_visibility,
     CArg<"ArrayRef<NamedAttribute>", "{}">:$attrs,
     CArg<"ArrayRef<DictionaryAttr>", "{}">:$argAttrs)
   >];
@@ -128,18 +135,6 @@ def CallOp : TesseraOp<"call",
       CArg<"ValueRange", "{}">:$operands), [{
       build($_builder, $_state, StringAttr::get($_builder.getContext(), callee),
             results, operands);
-    }]>,
-    OpBuilder<(ins "TypeRange":$results, "FlatSymbolRefAttr":$callee,
-      CArg<"ValueRange", "{}">:$operands), [{
-      build($_builder, $_state, callee, results, operands);
-    }]>,
-    OpBuilder<(ins "TypeRange":$results, "StringAttr":$callee,
-      CArg<"ValueRange", "{}">:$operands), [{
-      build($_builder, $_state, callee, results, operands);
-    }]>,
-    OpBuilder<(ins "TypeRange":$results, "StringRef":$callee,
-      CArg<"ValueRange", "{}">:$operands), [{
-      build($_builder, $_state, callee, results, operands);
     }]>];
 
   let extraClassDeclaration = [{
@@ -181,10 +176,6 @@ def ReturnOp : TesseraOp<"return", [Pure, HasParent<"DefineOp">, ReturnLike, Ter
   }];
 
   let arguments = (ins Variadic<AnyType>:$operands);
-
-  let builders = [OpBuilder<(ins), [{
-    build($_builder, $_state, {});
-  }]>];
 
   let assemblyFormat = "attr-dict ($operands^ `:` type($operands))?";
   let hasVerifier = 1;

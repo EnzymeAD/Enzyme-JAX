@@ -23,20 +23,30 @@ namespace mlir::enzyme::tessera {} // namespace mlir::enzyme::tessera
 //===----------------------------------------------------------------------===//
 
 void DefineOp::build(OpBuilder &builder, OperationState &state, StringRef name,
-                     FunctionType type, ArrayRef<NamedAttribute> attrs,
+                     FunctionType type, DenseBoolArrayAttr byRefArgs, 
+                     DenseI64ArrayAttr argSizes, bool pure, 
+                     StringAttr sym_visibility,
+                     ArrayRef<NamedAttribute> attrs,
                      ArrayRef<DictionaryAttr> argAttrs) {
   state.addAttribute(SymbolTable::getSymbolAttrName(),
                      builder.getStringAttr(name));
   state.addAttribute(getFunctionTypeAttrName(state.name), TypeAttr::get(type));
+  state.addAttribute("pure", builder.getBoolAttr(pure));
+  state.addAttribute("byRefArgs", byRefArgs);
+  state.addAttribute("argSizes", argSizes);
+
+  if (sym_visibility)
+    state.addAttribute(getSymVisibilityAttrName(state.name), sym_visibility);
+
   state.attributes.append(attrs.begin(), attrs.end());
   state.addRegion();
 
-  if (argAttrs.empty())
-    return;
-  assert(type.getNumInputs() == argAttrs.size());
-  call_interface_impl::addArgAndResultAttrs(
-      builder, state, argAttrs, /*resultAttrs=*/{},
-      getArgAttrsAttrName(state.name), getResAttrsAttrName(state.name));
+  if (!argAttrs.empty()) {
+    assert(type.getNumInputs() == argAttrs.size());
+    call_interface_impl::addArgAndResultAttrs(
+        builder, state, argAttrs, /*resultAttrs=*/{},
+        getArgAttrsAttrName(state.name), getResAttrsAttrName(state.name));
+  }
 }
 
 ParseResult DefineOp::parse(OpAsmParser &parser, OperationState &result) {
@@ -83,7 +93,6 @@ void DefineOp::cloneInto(DefineOp dest, IRMapping &mapper) {
 /// to cloned sub-values with the corresponding value that is copied, and adds
 /// those mappings to the mapper.
 DefineOp DefineOp::clone(IRMapping &mapper) {
-  // Create the new function.
   DefineOp newFunc = cast<DefineOp>(getOperation()->cloneWithoutRegions());
 
   // If the function has a body, then the user might be deleting arguments to
