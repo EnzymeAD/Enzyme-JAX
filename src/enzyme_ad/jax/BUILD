@@ -1530,6 +1530,9 @@ cc_library(
         # CUDA Tile
         "@cuda_tile//:CudaTileDialect",
         "@cuda_tile//:CudaTileTransforms",
+
+        # Comm dialect
+        "//src/enzyme_ad/jax/Dialect/Comm:CommDialect",
     ],
 )
 
