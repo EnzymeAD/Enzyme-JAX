@@ -119,7 +119,6 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":CommDialectIncGen",
-
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:SideEffectInterfaces",
 
