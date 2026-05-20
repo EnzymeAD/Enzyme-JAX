@@ -151,7 +151,9 @@ struct RemoveAffineParallelSingleIter
   }
 };
 
-namespace {
+} // namespace
+
+namespace mlir::enzyme {
 
 /// Integer range analysis determines the integer value range of SSA values
 /// using operations that define `InferIntRangeInterface` and also sets the
@@ -344,6 +346,10 @@ LogicalResult AffineIntegerRangeAnalysis::visitOperation(
   inferrable.inferResultRangesFromOptional(argRanges, joinCallback);
   return success();
 }
+
+} // namespace mlir::enzyme
+
+namespace {
 
 std::optional<int64_t> maxSize(mlir::Value v) {
   if (auto ba = dyn_cast<BlockArgument>(v)) {
@@ -924,6 +930,8 @@ public:
           return v;
         if (!ifOp->isAncestor(op))
           return v;
+        if (op->getNumRegions() > 0)
+          return std::nullopt;
         if (!isPure(op))
           return std::nullopt;
         SmallVector<Value> rOprs;
@@ -953,6 +961,7 @@ public:
       rewriter.replaceAllUsesWith(ifOp->getResult(i), select);
       succeeded = true;
     }
+
     return success(succeeded);
   }
 };
@@ -963,6 +972,7 @@ public:
 
   LogicalResult matchAndRewrite(scf::IfOp ifOp,
                                 PatternRewriter &rewriter) const override {
+
     // Check if if has both then and else regions
     bool hasElse = !ifOp.getElseRegion().empty();
     if (!hasElse)
@@ -1024,6 +1034,7 @@ public:
     }
 
     rewriter.replaceOp(ifOp, results);
+
     return success();
   }
 };
@@ -1307,7 +1318,6 @@ struct CanonicalizeLoopsPass
     }
   }
 };
-} // namespace
 
 void mlir::enzyme::addSingleIter(RewritePatternSet &patterns,
                                  MLIRContext *ctx) {

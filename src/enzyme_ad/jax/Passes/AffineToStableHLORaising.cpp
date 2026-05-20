@@ -46,6 +46,19 @@
 #include <optional>
 
 namespace mlir {
+
+static Block *getAllocaBlock(Operation *op) {
+  Operation *currentOp = op;
+  while (Operation *parentOp = currentOp->getParentOp()) {
+    if (parentOp->mightHaveTrait<OpTrait::IsIsolatedFromAbove>() ||
+        parentOp->mightHaveTrait<OpTrait::AutomaticAllocationScope>()) {
+      return &currentOp->getParentRegion()->front();
+    }
+    currentOp = parentOp;
+  }
+  return nullptr;
+}
+
 namespace enzyme {
 #define GEN_PASS_DEF_AFFINETOSTABLEHLORAISING
 #include "src/enzyme_ad/jax/Passes/Passes.h.inc"
@@ -390,6 +403,14 @@ static LogicalResult affineMapToSlice(affine::AffineValueMap accessValueMap,
     if (auto constExpr = dyn_cast<AffineConstantExpr>(expr)) {
       strides.push_back(1);
       continue;
+    }
+    if (expr.walk([](AffineExpr e) {
+              if (isa<AffineSymbolExpr>(e))
+                return WalkResult::interrupt();
+              return WalkResult::advance();
+            })
+            .wasInterrupted()) {
+      return failure();
     }
 
     Value iv = getIVForExpr(accessValueMap, expr);
@@ -2902,8 +2923,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
     auto newOp = Operation::create(
         rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
-        op->getName(), {T}, {newOperand}, op->getAttrs(),
-        OpaqueProperties(nullptr), {}, 0);
+        op->getName(), {T}, {newOperand}, op->getAttrs(), mlir::PropertyRef(),
+        {}, 0);
     mapping.map(op->getResult(0), newOp->getResult(0));
     maps[newOp->getResult(0)] = maps.lookup(newOperand);
 
@@ -2935,8 +2956,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
     auto newOp = Operation::create(
         rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
-        op->getName(), {result}, {a, b}, op->getAttrs(),
-        OpaqueProperties(nullptr), {}, 0);
+        op->getName(), {result}, {a, b}, op->getAttrs(), mlir::PropertyRef(),
+        {}, 0);
 
     builder.insert(newOp);
 
@@ -2970,8 +2991,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
     auto newOp = Operation::create(
         rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
-        op->getName(), {result}, {a, b, c}, op->getAttrs(),
-        OpaqueProperties(nullptr), {}, 0);
+        op->getName(), {result}, {a, b, c}, op->getAttrs(), mlir::PropertyRef(),
+        {}, 0);
 
     builder.insert(newOp);
 
@@ -3445,9 +3466,17 @@ struct AffineToStableHLORaisingPass
                     ValueRange())
                     ->getResult(0);
 
-            auto res0 = memref::AllocaOp::create(
-                b, rewriteLocation(g.getLoc(), options.strip_llvm_debuginfo),
-                MT0);
+            Block *allocaBlock = getAllocaBlock(g);
+            assert(allocaBlock &&
+                   "GPUWrapperOp must be inside an allocation scope");
+            Value res0;
+            {
+              OpBuilder::InsertionGuard guard(b);
+              b.setInsertionPointToStart(allocaBlock);
+              res0 = memref::AllocaOp::create(
+                  b, rewriteLocation(g.getLoc(), options.strip_llvm_debuginfo),
+                  MT0);
+            }
 
             Value storeVal = arg;
             if (isIndex) {

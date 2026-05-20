@@ -1328,7 +1328,7 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
     }
   }
   if (SharedMemAddr)
-    AI.getDefiningOp()->getParentOp()->walk([&](mlir::NVVM::Barrier0Op op) {
+    AI.getDefiningOp()->getParentOp()->walk([&](mlir::NVVM::BarrierOp op) {
       LLVM_DEBUG(llvm::dbgs() << "Unknown, potential store: " << *op << "\n");
       AliasingStoreOperations.insert(op);
     });

@@ -1,7 +1,7 @@
-JAX_COMMIT = "66a99fe93ad8e39ac2edccc838dddf37cb7fec24"
+JAX_COMMIT = "d72694890a8dd1911435edc8f5732af0c58054f5"
 JAX_SHA256 = ""
 
-ENZYME_COMMIT = "03fe699c83c9dc1d1a2b21941e76bb9e7429a843"
+ENZYME_COMMIT = "d0749cbba68234506c9a953d894650a73114f657"
 ENZYME_SHA256 = ""
 
 ML_TOOLCHAIN_COMMIT = "30ef4a9096f9490e8f198faa5ce5bbddd1b72fdb"
@@ -131,6 +131,12 @@ sed -i.bak0 "s/Windows\\.h/windows\\.h/g" xla/tsl/platform/windows/port.cc xla/t
 sed -i.bak0 "/D_FORTIFY_SOURCE/d" third_party/gpus/crosstool/cc_toolchain_config.bzl.tpl tools/toolchains/cross_compile/cc/BUILD tools/toolchains/clang6/CROSSTOOL.tpl third_party/gpus/crosstool/BUILD.rocm.tpl
 """,
     """
+sed -i.bak0 "1s|^|load(\\\"@bazel_tools//tools/build_defs/repo:http.bzl\\\", \\\"http_archive\\\")\\n|" workspace3.bzl
+""",
+    """
+sed -i.bak0 '$!N; s|tf_http_archive(\\n\\([ ]*\\)name = "rules_ml_toolchain",|http_archive(\\n\\1name = "rules_ml_toolchain", patch_cmds = [\\\"sed -i.bak0 '/D_FORTIFY_SOURCE/d' cc/features/BUILD gpu/cuda/legacy/crosstool/cc_toolchain_config.bzl.tpl\\\"],|; P; D;' workspace3.bzl
+""",
+    """
 sed -i.bak0 "s/i64/LL/g" xla/tsl/platform/windows/env_time.cc
 """,
     """
@@ -178,6 +184,13 @@ sed -i.bak0 "s/patch_cmds = \\[/patch_cmds = \\[\\\"find . -type f -name config.
     sed -i.bak0 "s/build_file = \\\"/build_file = \\\"@xla/g" third_party/eigen3/workspace.bzl
 
     sed -i.bak0 "s/urls = /patch_cmds = \\[\\\"sed -i.bak -e 's\\/return PACKET_TYPE(0) == PACKET_TYPE(0);\\/return (PACKET_TYPE)(PACKET_TYPE(0) == PACKET_TYPE(0));\\/g' -e 's\\/return CAST_FROM_INT(CAST_TO_INT(a) == CAST_TO_INT(a));\\/return CAST_FROM_INT((decltype(CAST_TO_INT(a)))(CAST_TO_INT(a) == CAST_TO_INT(a)));\\/' Eigen\\/src\\/Core\\/arch\\/clang\\/PacketMath.h\\\"\\],urls = /g" third_party/eigen3/workspace.bzl
+    """,
+    """
+    sed -i.bak0 's/name = "zstd_compressor",*/name = "zstd_compressor",\\n    linkopts = ["-lm"],/g' xla/tools/BUILD
+    """,
+    """
+    echo '#include <cstdio>' >> xla/tsl/util/filewrapper.cc
+    echo 'namespace std { __attribute__((weak)) void __throw_bad_array_new_length() { fprintf(stderr, "erring in throw_bad_array_new_length\\n"); __builtin_trap(); } }' >> xla/tsl/util/filewrapper.cc
     """,
 ]
 

@@ -125,7 +125,17 @@ def MultiFloatConversionPass : Pass<"multi-float-conversion"> {
   ];
 }
 
-
+def LowerComplexOperationsPass : Pass<"lower-complex-operations"> {
+  let summary = "Lower operations on complex-element tensor types to use real elements with an extra dimension.";
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "tensor::TensorDialect",
+    "arith::ArithDialect",
+  ];
+  let options = [
+    Option<"concatDimension", "concat-dimension", "std::string", "\"first\"", "Dimension to concatenate ('first' or 'last')">,
+  ];
+}
 
 def TensorEmptyOpRaisingPass : Pass<"tensor-empty-raise"> {
   let summary = "Raise tensor.empty ops";
@@ -247,6 +257,18 @@ def EnzymeHLOUnrollPass : Pass<"enzyme-hlo-unroll"> {
         /*type=*/"int",
         /*default=*/"-1",
         /*description=*/"Only unroll if total operations is less than this value. If -1, no limit.">
+  ];
+}
+
+def EnzymeRefineArgumentsPass : Pass<"enzyme-refine-arguments", "ModuleOp"> {
+  let summary = "Refine function arguments with potential type conversion.";
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "tensor::TensorDialect",
+  ];
+  let options = [
+    ListOption<"refinedTypesOption", "refined-types", "std::string",
+               "List of refined types for function arguments">
   ];
 }
 
@@ -613,8 +635,17 @@ def LowerImpulseTraceOpsPass : Pass<"lower-impulse-trace-ops"> {
   ];
 }
 
+def LowerEnzymeXLAMathPass : Pass<"lower-enzymexla-math"> {
+  let summary = "Lower enzymexla math ops to stablehlo";
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "chlo::ChloDialect",
+    "enzymexla::EnzymeXLADialect",
+  ];
+}
+
 def LowerEnzymeXLAMLPass : Pass<"lower-enzymexla-ml"> {
-  let summary = "Lower enzymexla mlops to stablehlo";
+  let summary = "Lower enzymexla math ops to stablehlo (deprecated alias for lower-enzymexla-math)";
   let dependentDialects = [
     "stablehlo::StablehloDialect",
     "chlo::ChloDialect",

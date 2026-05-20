@@ -115,6 +115,18 @@ Type convertMemrefElementTypeForLLVMPointer(
   return converted;
 }
 
+static Block *getAllocaBlock(Operation *op) {
+  Operation *currentOp = op;
+  while (Operation *parentOp = currentOp->getParentOp()) {
+    if (parentOp->mightHaveTrait<OpTrait::IsIsolatedFromAbove>() ||
+        parentOp->mightHaveTrait<OpTrait::AutomaticAllocationScope>()) {
+      return &currentOp->getParentRegion()->front();
+    }
+    currentOp = parentOp;
+  }
+  return nullptr;
+}
+
 static Value insertXLAInitDeinit(mlir::ModuleOp moduleOp, StringRef backend,
                                  RewriterBase &rewriter) {
   auto loc = moduleOp.getLoc();
@@ -984,6 +996,360 @@ public:
     return success();
   }
 };
+
+struct CMemsetOpLowering : public CLoadStoreOpLowering<enzymexla::MemsetOp> {
+public:
+  StringRef backend;
+
+  CMemsetOpLowering(LLVMTypeConverter &typeConverter, StringRef backend)
+      : CLoadStoreOpLowering<enzymexla::MemsetOp>(typeConverter),
+        backend(backend) {}
+
+  LogicalResult
+  matchAndRewrite(enzymexla::MemsetOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+
+    MemRefType dstType = op.getTarget().getType();
+    auto convertedDstType = dyn_cast_or_null<LLVM::LLVMPointerType>(
+        this->getTypeConverter()->convertType(dstType));
+    if (!convertedDstType) {
+      (void)rewriter.notifyMatchFailure(loc, "unsupported memref type");
+      return failure();
+    }
+
+    Value dst = adaptor.getTarget();
+    Value value = adaptor.getValue();
+    Value count = adaptor.getCount();
+
+    auto i8 = rewriter.getIntegerType(8);
+    Value truncatedValue = value;
+    if (value.getType() != i8) {
+      truncatedValue = rewriter.create<LLVM::TruncOp>(loc, i8, value);
+    }
+
+    if (dstType.getMemorySpaceAsInt() == 0) {
+      // CPU / Host memory
+      LLVM::MemsetOp::create(rewriter, loc, dst, truncatedValue, count, false);
+      rewriter.eraseOp(op);
+      return success();
+    }
+
+    if (backend == "cpu") {
+      dst = LLVM::AddrSpaceCastOp::create(
+          rewriter, loc, LLVM::LLVMPointerType::get(op.getContext()), dst);
+      LLVM::MemsetOp::create(rewriter, loc, dst, truncatedValue, count, false);
+      rewriter.eraseOp(op);
+      return success();
+    }
+
+    auto moduleOp = op->getParentOfType<ModuleOp>();
+    auto ptrty = LLVM::LLVMPointerType::get(op.getContext());
+    auto i32 = rewriter.getIntegerType(32);
+
+    std::string memsetFuncName;
+    bool xla = backend.starts_with("xla");
+
+    if (xla) {
+      auto i64 = rewriter.getIntegerType(64);
+
+      // 1. Malloc host buffer of size 'count'
+      Value countI64 = count;
+      if (count.getType() != i64) {
+        countI64 = rewriter.create<LLVM::ZExtOp>(loc, i64, count);
+      }
+
+      auto mallocFunc = LLVM::lookupOrCreateMallocFn(rewriter, moduleOp, i64);
+      if (failed(mallocFunc))
+        return failure();
+
+      Value hostPtr =
+          LLVM::CallOp::create(rewriter, loc, mallocFunc.value(), countI64)
+              ->getResult(0);
+
+      // 2. Memset host buffer
+      LLVM::MemsetOp::create(rewriter, loc, hostPtr, truncatedValue, countI64,
+                             false);
+
+      // 3. reactantXLAMemcpy from host to device
+      SmallVector<Type> memcpyTys = {ptrty, ptrty, countI64.getType(), i32};
+      memcpyTys.insert(memcpyTys.begin(), ptrty); // for xdata
+
+      auto memcpyFn = LLVM::lookupOrCreateFn(
+          rewriter, moduleOp, "reactantXLAMemcpy", memcpyTys,
+          LLVM::LLVMVoidType::get(rewriter.getContext()));
+      if (failed(memcpyFn)) {
+        return failure();
+      }
+
+      auto xdata = insertXLAInitDeinit(moduleOp, backend, rewriter);
+
+      Value directionConst =
+          LLVM::ConstantOp::create(rewriter, loc, i32, 1); // HostToDevice
+
+      Value flatDst = dst;
+      if (dst.getType() != ptrty)
+        flatDst = LLVM::AddrSpaceCastOp::create(rewriter, loc, ptrty, dst);
+
+      SmallVector<Value> memcpyArgs = {xdata, flatDst, hostPtr, countI64,
+                                       directionConst};
+      LLVM::CallOp::create(rewriter, loc, memcpyFn.value(), memcpyArgs);
+
+      // 4. Free host buffer
+      auto freeFunc = LLVM::lookupOrCreateFreeFn(rewriter, moduleOp);
+      if (failed(freeFunc))
+        return failure();
+
+      LLVM::CallOp::create(rewriter, loc, freeFunc.value(), hostPtr);
+
+      rewriter.eraseOp(op);
+      return success();
+    }
+
+    if (backend == "cuda") {
+      memsetFuncName = "cudaMemset";
+    } else if (backend == "rocm") {
+      memsetFuncName = "hipMemset";
+    } else {
+      return failure(); // Unknown backend
+    }
+
+    SmallVector<Type> tys = {ptrty, value.getType(), count.getType()};
+
+    auto memsetFn = LLVM::lookupOrCreateFn(rewriter, moduleOp, memsetFuncName,
+                                           tys, (mlir::Type)i32);
+    if (failed(memsetFn)) {
+      return failure();
+    }
+
+    SmallVector<Value> args = {dst, value, count};
+    if (args[0].getType() != tys[0])
+      args[0] = LLVM::AddrSpaceCastOp::create(rewriter, loc, tys[0], args[0]);
+
+    LLVM::CallOp::create(rewriter, loc, memsetFn.value(), args);
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+struct CMemcpy2DOpLowering
+    : public CLoadStoreOpLowering<enzymexla::Memcpy2DOp> {
+public:
+  StringRef backend;
+
+  CMemcpy2DOpLowering(LLVMTypeConverter &typeConverter, StringRef backend)
+      : CLoadStoreOpLowering<enzymexla::Memcpy2DOp>(typeConverter),
+        backend(backend) {}
+
+  LogicalResult
+  matchAndRewrite(enzymexla::Memcpy2DOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+
+    MemRefType dstType = op.getTarget().getType();
+    auto convertedDstType = dyn_cast_or_null<LLVM::LLVMPointerType>(
+        this->getTypeConverter()->convertType(dstType));
+    if (!convertedDstType) {
+      (void)rewriter.notifyMatchFailure(loc, "unsupported memref type");
+      return failure();
+    }
+
+    MemRefType srcType = op.getSource().getType();
+    auto convertedSrcType = dyn_cast_or_null<LLVM::LLVMPointerType>(
+        this->getTypeConverter()->convertType(srcType));
+    if (!convertedSrcType) {
+      (void)rewriter.notifyMatchFailure(loc, "unsupported memref type");
+      return failure();
+    }
+
+    Value dst = adaptor.getTarget();
+    Value dpitch = adaptor.getDpitch();
+    Value src = adaptor.getSource();
+    Value spitch = adaptor.getSpitch();
+    Value width = adaptor.getWidth();
+    Value height = adaptor.getHeight();
+
+    int direction = 0;
+    if (dstType.getMemorySpaceAsInt() == 0 &&
+        srcType.getMemorySpaceAsInt() == 0) {
+      direction = 0;
+    } else if (dstType.getMemorySpaceAsInt() == 1 &&
+               srcType.getMemorySpaceAsInt() == 0) {
+      direction = 1;
+    } else if (dstType.getMemorySpaceAsInt() == 0 &&
+               srcType.getMemorySpaceAsInt() == 1) {
+      direction = 2;
+    } else if (dstType.getMemorySpaceAsInt() == 1 &&
+               srcType.getMemorySpaceAsInt() == 1) {
+      direction = 3;
+    } else {
+      return failure();
+    }
+
+    if (backend == "cpu") {
+      auto *currentBlock = rewriter.getInsertionBlock();
+      auto *remainingOpsBlock =
+          rewriter.splitBlock(currentBlock, rewriter.getInsertionPoint());
+
+      Type ivTy = height.getType();
+      Block *loopHeader =
+          rewriter.createBlock(remainingOpsBlock, {ivTy}, {loc});
+      Block *loopBody = rewriter.createBlock(remainingOpsBlock);
+      Block *loopLatch = rewriter.createBlock(remainingOpsBlock);
+
+      rewriter.setInsertionPointToEnd(currentBlock);
+      Value zero = rewriter.create<LLVM::ConstantOp>(
+          loc, ivTy, rewriter.getIntegerAttr(ivTy, 0));
+      rewriter.create<LLVM::BrOp>(loc, ValueRange{zero}, loopHeader);
+
+      Value iv = loopHeader->getArgument(0);
+      rewriter.setInsertionPointToEnd(loopHeader);
+      Value cmp = rewriter.create<LLVM::ICmpOp>(loc, LLVM::ICmpPredicate::slt,
+                                                iv, height);
+      rewriter.create<LLVM::CondBrOp>(loc, cmp, loopBody, remainingOpsBlock);
+
+      rewriter.setInsertionPointToEnd(loopBody);
+
+      auto ptrty = LLVM::LLVMPointerType::get(op.getContext());
+      auto i8 = rewriter.getIntegerType(8);
+
+      Value flatDst = LLVM::AddrSpaceCastOp::create(rewriter, loc, ptrty, dst);
+      Value flatSrc = LLVM::AddrSpaceCastOp::create(rewriter, loc, ptrty, src);
+
+      Value dstOff = rewriter.create<LLVM::MulOp>(loc, iv, dpitch);
+      Value srcOff = rewriter.create<LLVM::MulOp>(loc, iv, spitch);
+
+      Value dstPtr = LLVM::GEPOp::create(rewriter, loc, ptrty, i8, flatDst,
+                                         ValueRange{dstOff});
+      Value srcPtr = LLVM::GEPOp::create(rewriter, loc, ptrty, i8, flatSrc,
+                                         ValueRange{srcOff});
+
+      LLVM::MemcpyOp::create(rewriter, loc, dstPtr, srcPtr, width, false);
+
+      rewriter.create<LLVM::BrOp>(loc, ValueRange(), loopLatch);
+
+      rewriter.setInsertionPointToEnd(loopLatch);
+      Value one = rewriter.create<LLVM::ConstantOp>(
+          loc, ivTy, rewriter.getIntegerAttr(ivTy, 1));
+      Value nextIv = rewriter.create<LLVM::AddOp>(loc, iv, one);
+      rewriter.create<LLVM::BrOp>(loc, ValueRange{nextIv}, loopHeader);
+
+      rewriter.setInsertionPointToStart(remainingOpsBlock);
+      rewriter.eraseOp(op);
+      return success();
+    }
+
+    auto moduleOp = op->getParentOfType<ModuleOp>();
+    auto ptrty = LLVM::LLVMPointerType::get(op.getContext());
+    auto i32 = rewriter.getIntegerType(32);
+
+    std::string memcpy2DFuncName;
+    bool xla = backend.starts_with("xla");
+
+    if (xla) {
+      SmallVector<Type> tys = {ptrty, ptrty, width.getType(), i32};
+      tys.insert(tys.begin(), ptrty); // for xdata
+
+      auto memcpyFn = LLVM::lookupOrCreateFn(
+          rewriter, moduleOp, "reactantXLAMemcpy", tys,
+          LLVM::LLVMVoidType::get(rewriter.getContext()));
+      if (failed(memcpyFn)) {
+        return failure();
+      }
+
+      auto *currentBlock = rewriter.getInsertionBlock();
+      auto *remainingOpsBlock =
+          rewriter.splitBlock(currentBlock, rewriter.getInsertionPoint());
+
+      Type ivTy = height.getType();
+      Block *loopHeader =
+          rewriter.createBlock(remainingOpsBlock, {ivTy}, {loc});
+      Block *loopBody = rewriter.createBlock(remainingOpsBlock);
+      Block *loopLatch = rewriter.createBlock(remainingOpsBlock);
+
+      rewriter.setInsertionPointToEnd(currentBlock);
+      Value zero = rewriter.create<LLVM::ConstantOp>(
+          loc, ivTy, rewriter.getIntegerAttr(ivTy, 0));
+
+      auto xdata = insertXLAInitDeinit(moduleOp, backend, rewriter);
+
+      rewriter.create<LLVM::BrOp>(loc, ValueRange{zero}, loopHeader);
+
+      Value iv = loopHeader->getArgument(0);
+      rewriter.setInsertionPointToEnd(loopHeader);
+      Value cmp = rewriter.create<LLVM::ICmpOp>(loc, LLVM::ICmpPredicate::slt,
+                                                iv, height);
+      rewriter.create<LLVM::CondBrOp>(loc, cmp, loopBody, remainingOpsBlock);
+
+      rewriter.setInsertionPointToEnd(loopBody);
+
+      auto i8 = rewriter.getIntegerType(8);
+
+      Value flatDst = LLVM::AddrSpaceCastOp::create(rewriter, loc, ptrty, dst);
+      Value flatSrc = LLVM::AddrSpaceCastOp::create(rewriter, loc, ptrty, src);
+
+      Value dstOff = rewriter.create<LLVM::MulOp>(loc, iv, dpitch);
+      Value srcOff = rewriter.create<LLVM::MulOp>(loc, iv, spitch);
+
+      Value dstPtr = LLVM::GEPOp::create(rewriter, loc, ptrty, i8, flatDst,
+                                         ValueRange{dstOff});
+      Value srcPtr = LLVM::GEPOp::create(rewriter, loc, ptrty, i8, flatSrc,
+                                         ValueRange{srcOff});
+
+      Value directionConst =
+          LLVM::ConstantOp::create(rewriter, loc, i32, direction);
+
+      SmallVector<Value> args = {xdata, dstPtr, srcPtr, width, directionConst};
+      LLVM::CallOp::create(rewriter, loc, memcpyFn.value(), args);
+
+      rewriter.create<LLVM::BrOp>(loc, ValueRange(), loopLatch);
+
+      rewriter.setInsertionPointToEnd(loopLatch);
+      Value one = rewriter.create<LLVM::ConstantOp>(
+          loc, ivTy, rewriter.getIntegerAttr(ivTy, 1));
+      Value nextIv = rewriter.create<LLVM::AddOp>(loc, iv, one);
+      rewriter.create<LLVM::BrOp>(loc, ValueRange{nextIv}, loopHeader);
+
+      rewriter.setInsertionPointToStart(remainingOpsBlock);
+      rewriter.eraseOp(op);
+      return success();
+    }
+
+    if (backend == "cuda") {
+      memcpy2DFuncName = "cudaMemcpy2D";
+    } else if (backend == "rocm") {
+      memcpy2DFuncName = "hipMemcpy2D";
+    }
+
+    SmallVector<Type> tys = {
+        ptrty,           dpitch.getType(), ptrty, spitch.getType(),
+        width.getType(), height.getType(), i32};
+
+    auto memcpy2DFn =
+        LLVM::lookupOrCreateFn(rewriter, moduleOp, memcpy2DFuncName, tys, i32);
+    if (failed(memcpy2DFn)) {
+      return failure();
+    }
+
+    SmallVector<Value> args = {
+        dst,
+        dpitch,
+        src,
+        spitch,
+        width,
+        height,
+        LLVM::ConstantOp::create(rewriter, loc, i32, direction)};
+
+    for (int i : {0, 2})
+      if (args[i].getType() != tys[i])
+        args[i] = LLVM::AddrSpaceCastOp::create(rewriter, loc, tys[i], args[i]);
+
+    LLVM::CallOp::create(rewriter, loc, memcpy2DFn.value(), args);
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 } // namespace
 
 /// Only retain those attributes that are not constructed by
@@ -1946,8 +2312,8 @@ ConvertGPUModuleOp::matchAndRewrite(gpu::GPUModuleOp kernelModule,
       LLVM::StoreOp::create(ctorBuilder, loc, module->getResult(0),
                             aoo->getResult(0));
       for (Operation &op : kernelModule->getRegion(0).front()) {
-        if (auto f = dyn_cast<FunctionOpInterface>(op)) {
-          if (!f->getAttr("gpu.kernel"))
+        if (auto f = dyn_cast<gpu::GPUFuncOp>(op)) {
+          if (!f.isKernel())
             continue;
           auto kernelName = generateKernelNameConstant(
               kernelModule.getName(), f.getName(), ctorloc, ctorBuilder);
@@ -2138,18 +2504,7 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
     return rewriter.notifyMatchFailure(
         launchOp, "Cannot convert with more than one async dependency.");
 
-  Block *allocaBlock = nullptr;
-  {
-    Operation *currentOp = launchOp;
-    while (Operation *parentOp = currentOp->getParentOp()) {
-      if (parentOp->mightHaveTrait<OpTrait::IsIsolatedFromAbove>() ||
-          parentOp->mightHaveTrait<OpTrait::AutomaticAllocationScope>()) {
-        allocaBlock = &currentOp->getParentRegion()->front();
-        break;
-      }
-      currentOp = parentOp;
-    }
-  }
+  Block *allocaBlock = getAllocaBlock(launchOp);
 
   Location loc = launchOp.getLoc();
 
@@ -2492,9 +2847,17 @@ private:
       auto ptr1ty = LLVM::LLVMPointerType::get(rewriter.getContext(), 1);
 
       if (backend == "cuda") {
-        auto one = LLVM::ConstantOp::create(rewriter, loc, i64,
-                                            rewriter.getI64IntegerAttr(1));
-        auto ptr = LLVM::AllocaOp::create(rewriter, loc, ptrty, ptr1ty, one);
+        Value ptr;
+        {
+          Block *allocaBlock = getAllocaBlock(allocOp);
+          assert(allocaBlock &&
+                 "AllocOp must be inside a function or allocation scope");
+          OpBuilder::InsertionGuard guard(rewriter);
+          rewriter.setInsertionPointToStart(allocaBlock);
+          auto one_entry = LLVM::ConstantOp::create(
+              rewriter, loc, i64, rewriter.getIntegerAttr(i64, 1));
+          ptr = LLVM::AllocaOp::create(rewriter, loc, ptrty, ptr1ty, one_entry);
+        }
         Type tys[] = {ptrty, i64};
         auto cudaMallocFn =
             LLVM::lookupOrCreateFn(rewriter, moduleOp, "cudaMalloc", tys, i32);
@@ -2511,9 +2874,17 @@ private:
         LLVM::CallOp::create(rewriter, loc, cudaMallocFn.value(), args);
         allocatedPtr = LLVM::LoadOp::create(rewriter, loc, ptr1ty, ptr);
       } else if (backend == "rocm") {
-        auto one = LLVM::ConstantOp::create(rewriter, loc, i64,
-                                            rewriter.getI64IntegerAttr(1));
-        auto ptr = LLVM::AllocaOp::create(rewriter, loc, ptrty, ptr1ty, one);
+        Value ptr;
+        {
+          Block *allocaBlock = getAllocaBlock(allocOp);
+          assert(allocaBlock &&
+                 "AllocOp must be inside a function or allocation scope");
+          OpBuilder::InsertionGuard guard(rewriter);
+          rewriter.setInsertionPointToStart(allocaBlock);
+          auto one_entry = LLVM::ConstantOp::create(
+              rewriter, loc, i64, rewriter.getIntegerAttr(i64, 1));
+          ptr = LLVM::AllocaOp::create(rewriter, loc, ptrty, ptr1ty, one_entry);
+        }
         Type tys[] = {ptrty, i64};
         auto hipMallocFn =
             LLVM::lookupOrCreateFn(rewriter, moduleOp, "hipMalloc", tys, i32);
@@ -2556,9 +2927,6 @@ private:
         auto zero = LLVM::ConstantOp::create(rewriter, loc, i64,
                                              rewriter.getI64IntegerAttr(0));
 
-        auto one = LLVM::ConstantOp::create(rewriter, loc, i64,
-                                            rewriter.getI64IntegerAttr(1));
-
         auto tyid =
             LLVM::ConstantOp::create(rewriter, loc, i64,
                                      rewriter.getI64IntegerAttr(xla_type_id(
@@ -2570,7 +2938,18 @@ private:
 
         auto AT = LLVM::LLVMArrayType::get(i64, memRefType.getShape().size());
 
-        auto shapePtr = LLVM::AllocaOp::create(rewriter, loc, ptrty, AT, one);
+        Value shapePtr;
+        {
+          Block *allocaBlock = getAllocaBlock(allocOp);
+          assert(allocaBlock &&
+                 "AllocOp must be inside a function or allocation scope");
+          OpBuilder::InsertionGuard guard(rewriter);
+          rewriter.setInsertionPointToStart(allocaBlock);
+          auto one_entry = LLVM::ConstantOp::create(
+              rewriter, loc, i64, rewriter.getIntegerAttr(i64, 1));
+          shapePtr =
+              LLVM::AllocaOp::create(rewriter, loc, ptrty, AT, one_entry);
+        }
 
         int dynIdx = 0;
         for (int i = 0; i < memRefType.getShape().size(); i++) {
@@ -2699,10 +3078,17 @@ private:
       return failure();
     }
 
-    auto one = LLVM::ConstantOp::create(rewriter, loc, i64,
-                                        rewriter.getI64IntegerAttr(1));
-
-    auto ptr = LLVM::AllocaOp::create(rewriter, loc, ptrty, intty, one);
+    Value ptr;
+    {
+      Block *allocaBlock = getAllocaBlock(op);
+      assert(allocaBlock &&
+             "OccupancyOp must be inside a function or allocation scope");
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(allocaBlock);
+      auto one_entry = LLVM::ConstantOp::create(
+          rewriter, loc, i64, rewriter.getIntegerAttr(i64, 1));
+      ptr = LLVM::AllocaOp::create(rewriter, loc, ptrty, intty, one_entry);
+    }
 
     std::string funcStubName =
         getFuncStubName(op.getFn().getRootReference().getValue(),
@@ -2937,16 +3323,23 @@ private:
     auto zero = LLVM::ConstantOp::create(rewriter, loc, i64,
                                          rewriter.getI64IntegerAttr(0));
 
-    auto one = LLVM::ConstantOp::create(rewriter, loc, i64,
-                                        rewriter.getI64IntegerAttr(1));
-
     auto nargs = LLVM::ConstantOp::create(
         rewriter, loc, i64,
         rewriter.getI64IntegerAttr(adaptor.getInputs().size()));
 
     auto AT = LLVM::LLVMArrayType::get(i64, adaptor.getInputs().size());
 
-    auto argsPtr = LLVM::AllocaOp::create(rewriter, loc, ptrty, AT, one);
+    Value argsPtr;
+    {
+      Block *allocaBlock = getAllocaBlock(wrap);
+      assert(allocaBlock &&
+             "XLAWrapperOp must be inside a function or allocation scope");
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(allocaBlock);
+      auto one_entry = LLVM::ConstantOp::create(rewriter, loc, i64,
+                                                rewriter.getI64IntegerAttr(1));
+      argsPtr = LLVM::AllocaOp::create(rewriter, loc, ptrty, AT, one_entry);
+    }
 
     for (int i = 0; i < adaptor.getInputs().size(); i++) {
       auto idx = LLVM::ConstantOp::create(rewriter, loc, i64,
@@ -3060,7 +3453,7 @@ public:
     SmallVector<LLVM::GlobalOp, 3> workgroupBuffers;
     workgroupBuffers.reserve(gpuFuncOp.getNumWorkgroupAttributions());
     for (const auto &en :
-         llvm::enumerate(gpuFuncOp.getWorkgroupAttributions())) {
+         llvm::enumerate(gpuFuncOp.getWorkgroupAttributionBBArgs())) {
       Value attribution = en.value();
 
       auto type = dyn_cast<MemRefType>(attribution.getType());
@@ -3093,8 +3486,7 @@ public:
     for (const auto &attr : gpuFuncOp->getAttrs()) {
       if (attr.getName() == SymbolTable::getSymbolAttrName() ||
           attr.getName() == gpuFuncOp.getFunctionTypeAttrName() ||
-          attr.getName() ==
-              gpu::GPUFuncOp::getNumWorkgroupAttributionsAttrName())
+          attr.getName() == gpuFuncOp.getWorkgroupAttributionsAttrName())
         continue;
       attributes.push_back(attr);
     }
@@ -3128,7 +3520,8 @@ public:
         // existing memref infrastructure. This may use more registers than
         // otherwise necessary given that memref sizes are fixed, but we can try
         // and canonicalize that away later.
-        Value attribution = gpuFuncOp.getWorkgroupAttributions()[en.index()];
+        Value attribution =
+            gpuFuncOp.getWorkgroupAttributionBBArgs()[en.index()];
         auto type = cast<MemRefType>(attribution.getType());
         Value descr = MemRefDescriptor::fromStaticShape(
             rewriter, loc, *getTypeConverter(), type, memory);
@@ -3436,6 +3829,8 @@ populateCStyleMemRefLoweringPatterns(RewritePatternSet &patterns,
                CStoreOpLowering, AllocaScopeOpLowering, CAtomicRMWOpLowering>(
       typeConverter);
   patterns.add<CMemcpyOpLowering>(typeConverter, backend);
+  patterns.add<CMemsetOpLowering>(typeConverter, backend);
+  patterns.add<CMemcpy2DOpLowering>(typeConverter, backend);
 }
 
 struct GPUShuffleOpLowering : public ConvertOpToLLVMPattern<gpu::ShuffleOp> {
@@ -3563,7 +3958,7 @@ struct GPUBarrierToNVVM : ConvertOpToLLVMPattern<gpu::BarrierOp> {
   LogicalResult
   matchAndRewrite(gpu::BarrierOp op, gpu::BarrierOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    rewriter.replaceOpWithNewOp<NVVM::Barrier0Op>(op);
+    rewriter.replaceOpWithNewOp<NVVM::BarrierOp>(op);
     return success();
   }
 };

@@ -40,7 +40,7 @@ static bool extractConstantScalar(Value val, double &realPart,
 
   if (auto complexType = dyn_cast<ComplexType>(elemType)) {
     // Complex scalar
-    auto complexVal = attr.getSplatValue<std::complex<APFloat>>();
+    auto complexVal = attr.getSplatValue<mlir::Complex<APFloat>>();
     realPart = complexVal.real().convertToDouble();
     imagPart = complexVal.imag().convertToDouble();
     return true;

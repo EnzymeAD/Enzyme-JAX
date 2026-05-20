@@ -2660,7 +2660,7 @@ struct ForOpRaising : public OpRewritePattern<scf::ForOp> {
 
       affine::AffineForOp affineLoop = affine::AffineForOp::create(
           rewriter, loop.getLoc(), lbs, lbMap, ubs, ubMap,
-          getStep(loop.getStep()), loop.getInits());
+          rewrittenStep ? 1 : getStep(loop.getStep()), loop.getInits());
       preserveDiscardableAttributes(affineLoop, loop);
 
       auto mergedYieldOp =

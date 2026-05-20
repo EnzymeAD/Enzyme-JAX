@@ -143,6 +143,44 @@ def MemcpyOp : EnzymeXLA_Op<"memcpy"> {
   let hasCanonicalizer = 1;
 }
 
+def MemsetOp : EnzymeXLA_Op<"memset"> {
+  let summary = "GPU memset operation";
+
+  let description = [{
+    The `enzymexla.memset` operation fills the content of a memref with a value.
+  }];
+
+  let arguments = (ins Variadic<GPU_AsyncToken>:$asyncDependencies,
+      Arg<AnyMemRef, "", [MemWriteAt<0, FullEffect>]>:$target, AnyType:$value,
+      Index:$count);
+  let results = (outs Optional<GPU_AsyncToken>:$asyncToken);
+
+  let assemblyFormat = [{
+    custom<AsyncDependencies>(type($asyncToken), $asyncDependencies)
+    $target`,` $value `,` $count `:` type($target)`,` type($value) attr-dict
+  }];
+}
+
+def Memcpy2DOp : EnzymeXLA_Op<"memcpy2d"> {
+  let summary = "GPU memcpy2D operation";
+
+  let description = [{
+    The `enzymexla.memcpy2d` operation copies a 2D region from one memref to another.
+  }];
+
+  let arguments = (ins Variadic<GPU_AsyncToken>:$asyncDependencies,
+      Arg<AnyMemRef, "", [MemWriteAt<0, FullEffect>]>:$target, Index:$dpitch,
+      Arg<AnyMemRef, "", [MemReadAt<0, FullEffect>]>:$source, Index:$spitch,
+      Index:$width, Index:$height);
+  let results = (outs Optional<GPU_AsyncToken>:$asyncToken);
+
+  let assemblyFormat = [{
+    custom<AsyncDependencies>(type($asyncToken), $asyncDependencies)
+    $target`,` $dpitch `,` $source `,` $spitch `,` $width `,` $height `:` type($target)`,` type($source) attr-dict
+  }];
+  let hasCanonicalizer = 1;
+}
+
 def JITCallOp: EnzymeXLA_Op<"jit_call", [DeclareOpInterfaceMethods<SymbolUserOpInterface>, DeclareOpInterfaceMethods<CallOpInterface>, DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "JIT Call operation";
 
@@ -1194,9 +1232,9 @@ def Jinc : EnzymeXLA_Op<"special.jinc", [Pure, SameOperandsAndResultType, Elemen
   );
 }
 
-// Machine Learning Ops
+// Math Primitive Ops
 
-def GeluOp: EnzymeXLA_Op<"ml.gelu", [Pure, SameOperandsAndResultType, Elementwise]> {
+def GeluOp: EnzymeXLA_Op<"math.gelu", [Pure, SameOperandsAndResultType, Elementwise]> {
   let summary = "Computes the GELU activation function";
 
   let arguments = (ins
@@ -1211,7 +1249,7 @@ def GeluOp: EnzymeXLA_Op<"ml.gelu", [Pure, SameOperandsAndResultType, Elementwis
   }];
 }
 
-def ReluOp: EnzymeXLA_Op<"ml.relu", [Pure, SameOperandsAndResultType, Elementwise]> {
+def ReluOp: EnzymeXLA_Op<"math.relu", [Pure, SameOperandsAndResultType, Elementwise]> {
   let summary = "Computes the RELU activation function";
 
   let arguments = (ins
@@ -1225,7 +1263,7 @@ def ReluOp: EnzymeXLA_Op<"ml.relu", [Pure, SameOperandsAndResultType, Elementwis
   }];
 }
 
-def TGammaOp: EnzymeXLA_Op<"ml.tgamma", [Pure, SameOperandsAndResultType, Elementwise]> {
+def TGammaOp: EnzymeXLA_Op<"math.tgamma", [Pure, SameOperandsAndResultType, Elementwise]> {
   let summary = "Computes the true gamma function";
 
   let arguments = (ins
@@ -1239,7 +1277,7 @@ def TGammaOp: EnzymeXLA_Op<"ml.tgamma", [Pure, SameOperandsAndResultType, Elemen
   }];
 }
 
-def LGammaOp: EnzymeXLA_Op<"ml.lgamma", [Pure, SameOperandsAndResultType, Elementwise]> {
+def LGammaOp: EnzymeXLA_Op<"math.lgamma", [Pure, SameOperandsAndResultType, Elementwise]> {
   let summary = "Computes the log-gamma function";
 
   let arguments = (ins
@@ -1253,8 +1291,51 @@ def LGammaOp: EnzymeXLA_Op<"ml.lgamma", [Pure, SameOperandsAndResultType, Elemen
   }];
 }
 
-def SoftplusOp: EnzymeXLA_Op<"ml.softplus", [Pure, SameOperandsAndResultType, Elementwise]> {
+def SoftplusOp: EnzymeXLA_Op<"math.softplus", [Pure, SameOperandsAndResultType, Elementwise]> {
   let summary = "Computes the Softplus activation function";
+
+  let arguments = (ins
+    TensorFloatAnyRank:$input
+  );
+
+  let results = (outs TensorFloatAnyRank:$result);
+
+  let assemblyFormat = [{
+    $input attr-dict `:` functional-type($input, results)
+  }];
+}
+
+def HypotOp: EnzymeXLA_Op<"math.hypot", [Pure, SameOperandsAndResultType, Elementwise]> {
+  let summary = "Computes the hypot function (sqrt(x^2 + y^2))";
+
+  let arguments = (ins
+    TensorFloatAnyRank:$lhs,
+    TensorFloatAnyRank:$rhs
+  );
+
+  let results = (outs TensorFloatAnyRank:$result);
+
+  let assemblyFormat = [{
+    $lhs `,` $rhs attr-dict `:` functional-type(operands, results)
+  }];
+}
+
+def SincOp: EnzymeXLA_Op<"math.sinc", [Pure, SameOperandsAndResultType, Elementwise]> {
+  let summary = "Computes the normalized sinc function (sin(pi * x) / (pi * x))";
+
+  let arguments = (ins
+    TensorFloatAnyRank:$input
+  );
+
+  let results = (outs TensorFloatAnyRank:$result);
+
+  let assemblyFormat = [{
+    $input attr-dict `:` functional-type($input, results)
+  }];
+}
+
+def CoscOp: EnzymeXLA_Op<"math.cosc", [Pure, SameOperandsAndResultType, Elementwise]> {
+  let summary = "Computes the normalized cosc function (cos(pi * x) / x - sin(pi * x) / (pi * x^2))";
 
   let arguments = (ins
     TensorFloatAnyRank:$input

@@ -25,7 +25,7 @@ module {
   llvm.func @test_nvvm_barrier_conversion(%arg0: !llvm.ptr) {
     %0 = llvm.mlir.constant(42 : i32) : i32
     llvm.store %0, %arg0 : i32, !llvm.ptr
-    nvvm.barrier0
+    nvvm.barrier
     %1 = llvm.load %arg0 : !llvm.ptr -> i32
     llvm.return
   }

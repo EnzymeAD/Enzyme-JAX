@@ -394,6 +394,31 @@ public:
     return failure();
   }
 };
+
+class RcpRaising : public OpRewritePattern<LLVM::CallOp> {
+public:
+  RcpRaising(MLIRContext *context) : OpRewritePattern<LLVM::CallOp>(context) {}
+
+  LogicalResult matchAndRewrite(LLVM::CallOp op,
+                                PatternRewriter &rewriter) const override {
+    CallInterfaceCallable callable = op.getCallableForCallee();
+    auto callee = dyn_cast<SymbolRefAttr>(callable);
+    if (!callee)
+      return failure();
+
+    if (callee.getLeafReference() == "__nv_drcp_rn" ||
+        callee.getLeafReference() == "__nv_frcp_rn") {
+      Location loc = op.getLoc();
+      Type type = op.getResultTypes()[0];
+      Value one = rewriter.create<arith::ConstantOp>(
+          loc, type, rewriter.getFloatAttr(type, 1.0));
+      rewriter.replaceOpWithNewOp<arith::DivFOp>(op, one, op->getOperands()[0]);
+      return success();
+    }
+
+    return failure();
+  }
+};
 } // namespace
 
 template <typename TargetOp, typename Arg, typename... Args>
@@ -952,6 +977,29 @@ public:
   }
 };
 
+class FMulAddRaising : public RewritePattern {
+public:
+  FMulAddRaising(MLIRContext *context)
+      : RewritePattern(MatchAnyOpTypeTag(), /*benefit=*/1, context) {}
+
+  LogicalResult matchAndRewrite(Operation *op,
+                                PatternRewriter &rewriter) const override {
+    if (op->getName().getStringRef() != "llvm.intr.fmuladd")
+      return failure();
+
+    if (op->getNumOperands() != 3 || op->getNumResults() != 1)
+      return failure();
+
+    Value a = op->getOperand(0);
+    Value b = op->getOperand(1);
+    Value c = op->getOperand(2);
+
+    rewriter.replaceOpWithNewOp<math::FmaOp>(op, op->getResultTypes()[0], a, b,
+                                             c);
+    return success();
+  }
+};
+
 } // namespace
 
 void mlir::enzyme::populateLibDeviceFuncsToOpsPatterns(
@@ -962,6 +1010,7 @@ void mlir::enzyme::populateLibDeviceFuncsToOpsPatterns(
   auto *converter = context;
 
   patterns.add<IsFPClassRaising>(context);
+  patterns.add<RcpRaising>(context);
   patterns.add<BF16HalfToFloatRaising>(context);
   patterns.add<HalfMathRaising>(context);
   patterns.add<InlineAsmHalfRaising>(context);
@@ -1071,6 +1120,7 @@ void populateLLVMToMathPatterns(MLIRContext *context,
                RoundEvenOpLowering, RoundOpLowering, RintOpLowering,
                // RsqrtOpLowering,
                SinOpLowering, SqrtOpLowering, FTruncOpLowering>(converter);
+  patterns.add<FMulAddRaising>(converter);
 
   patterns
       .add<GPUConvert<NVVM::ThreadIdXOp, gpu::ThreadIdOp, gpu::Dimension::x>>(

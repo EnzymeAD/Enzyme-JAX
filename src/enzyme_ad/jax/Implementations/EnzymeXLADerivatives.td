@@ -35,6 +35,9 @@ class HLOConstantFP<string m> : ConstantFP<m, "stablehlo", "ConstantOp", "mlir::
 def Gelu : EnzymeXLAInst<"GeluOp">;
 def Relu : EnzymeXLAInst<"ReluOp">;
 def TGamma : EnzymeXLAInst<"TGammaOp">;
+def Hypot : EnzymeXLAInst<"HypotOp">;
+def Sinc : EnzymeXLAInst<"SincOp">;
+def Cosc : EnzymeXLAInst<"CoscOp">;
 
 // Required operations from StableHLO/CHLO dialects
 def Add : Inst<"AddOp", "stablehlo">;
@@ -210,6 +213,42 @@ def : EnzymeXLADerivative<"GeluOp", (Op $input),
                     ],
                     (Gelu (Shadow $input), (GeluApproximation))
                   >;
+
+def : EnzymeXLADerivative<"HypotOp", (Op $x, $y),
+  [
+    (CheckedMul (DiffeRet), (Div $x, (Hypot $x, $y))),
+    (CheckedMul (DiffeRet), (Div $y, (Hypot $x, $y)))
+  ],
+  (Hypot (Shadow $x), (Shadow $y))
+>;
+
+def : EnzymeXLADerivative<"SincOp", (Op $x),
+  [
+    (CheckedMul (DiffeRet), (Cosc $x))
+  ],
+  (Sinc (Shadow $x))
+>;
+
+def CoscDerivTerm : SubRoutine<(Op $diffret, $x),
+  (
+    Select 
+      (Compare $x, (HLOConstantFP<"0"> $x), (EQ)),
+      (Mul $diffret, (HLOConstantFP<"-3.289868133696453"> $x)),
+      (Mul $diffret, 
+        (Sub 
+          (Mul (HLOConstantFP<"-9.869604401089358"> $x), (Sinc $x)),
+          (Div (Mul (HLOConstantFP<"2.0"> $x), (Cosc $x)), $x)
+        )
+      )
+  )
+>;
+
+def : EnzymeXLADerivative<"CoscOp", (Op $x),
+  [
+    (CoscDerivTerm (DiffeRet), $x)
+  ],
+  (Cosc (Shadow $x))
+>;
 
 // Helpers
 def ExtendLhsType : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
