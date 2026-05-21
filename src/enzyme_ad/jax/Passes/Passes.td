@@ -945,6 +945,9 @@ def ConvertParallelToGPU2 : Pass<"convert-parallel-to-gpu2"> {
 
 def PolygeistMem2Reg : Pass<"polygeist-mem2reg"> {
   let summary = "Replace scf.if and similar with affine.if";
+  let dependentDialects = [
+    "arith::ArithDialect"
+  ];
 }
 
 def OptimizeCommunication : Pass<"optimize-communication"> {
