@@ -47,15 +47,71 @@ public:
   LogicalResult matchAndRewrite(LLVM::LLVMFuncOp funcOp,
                                 PatternRewriter &rewriter) const override {
 
-    // Only rewrite if op has tessera.convert attribute
-    auto convertAttr =
-        funcOp->getAttrOfType<enzyme::tessera::ConvertAttr>("tessera.convert");
-    if (!convertAttr)
-      return failure();
-    auto tesseraName = convertAttr.getOpName();
-    auto isPure = convertAttr.getPure();
     auto module = funcOp->getParentOfType<ModuleOp>();
     auto *ctx = funcOp->getContext();
+
+    // Only rewrite if op has tessera_op or pure_tessera_op attribute
+    StringAttr tesseraOpAttr;
+    bool isPure = false;
+
+    if (auto attr = funcOp->getAttrOfType<StringAttr>("tessera_op")) {
+      tesseraOpAttr = attr;
+    } else if (auto attr =
+                   funcOp->getAttrOfType<StringAttr>("pure_tessera_op")) {
+      tesseraOpAttr = attr;
+      isPure = true;
+    }
+
+    if (!tesseraOpAttr)
+      return failure();
+
+    // Parse the tessera op attribute to extract the op name, argument passing
+    // style, and argument sizes. The attribute is expected to be in the format:
+    // "tessera_op(arg1:byref, arg2, ...):size1,size2,..." or
+    // "pure_tessera_op(arg1:byref, arg2, ...):size1,size2,..."
+    StringRef raw = tesseraOpAttr.getValue();
+
+    // Parse op name (everything before the '(')
+    StringRef tesseraName = raw.take_while([](char c) { return c != '('; });
+
+    // Parse args in parentheses
+    StringRef argList = raw.slice(raw.find('(') + 1, raw.find(')'));
+    SmallVector<bool> byRefArgs;
+
+    if (!argList.trim().empty()) {
+      SmallVector<StringRef> argParts;
+      argList.split(argParts, ',');
+      for (auto arg : argParts) {
+        arg = arg.trim();
+        if (arg.contains(":byref") || arg.contains(": byref")) {
+          byRefArgs.push_back(true);
+        } else {
+          byRefArgs.push_back(false);
+        }
+      }
+    }
+
+    // Parse sizes of args
+    SmallVector<int64_t> sizes;
+    StringRef sizeStr = raw.substr(raw.find(')') + 1);
+    if (!sizeStr.empty() && sizeStr.consume_front(":")) {
+      SmallVector<StringRef> sizeParts;
+      sizeStr.split(sizeParts, ',');
+      for (auto s : sizeParts) {
+        int64_t size;
+        s.trim().getAsInteger(10, size);
+        sizes.push_back(size);
+      }
+    }
+
+    // Make sure number of arguments matches number of sizes provided
+    if (byRefArgs.size() != sizes.size()) {
+      funcOp->emitError("tessera: number of arguments (")
+          << byRefArgs.size() << ") does not match number of sizes ("
+          << sizes.size() << ")";
+      return failure();
+    }
+
     auto funcName = funcOp.getName();
     auto llvmFuncType = funcOp.getFunctionType();
     auto params = llvmFuncType.getParams();
@@ -75,21 +131,29 @@ public:
         isa<LLVM::LLVMVoidType>(retType) ? TypeRange{} : TypeRange{retType});
 
     // Replace current function name with tessera name defined in
-    // tessera.convert attribute
+    // tessera_op / pure_tessera_op attribute
     if (failed(SymbolTable::replaceAllSymbolUses(
             funcOp.getSymNameAttr(), StringAttr::get(ctx, tesseraName),
             module)))
       return failure();
-    auto tesseraDefineOp = tessera::DefineOp::create(rewriter, funcOp.getLoc(),
-                                                     tesseraName, fnType);
+
+    // Create the tessera.define op with the new name, function type, byRef
+    // args, sizes, and purity (side effect free) attribute
+    auto tesseraDefineOp = tessera::DefineOp::create(
+        rewriter, funcOp.getLoc(), tesseraName.str(), fnType,
+        DenseBoolArrayAttr::get(ctx, byRefArgs),
+        DenseI64ArrayAttr::get(ctx, sizes), isPure);
 
     // Copy over all attributes other than the function name and type
-    // and tessera.convert attribute.
+    // and tessera_op / pure_tessera_op attribute.
     for (const auto &namedAttr : funcOp->getAttrs()) {
-      if (namedAttr.getName() != funcOp.getFunctionTypeAttrName() &&
-          namedAttr.getName() != SymbolTable::getSymbolAttrName())
+      if (namedAttr.getName() != SymbolTable::getSymbolAttrName() &&
+          namedAttr.getName() != funcOp.getFunctionTypeAttrName() &&
+          namedAttr.getName() != "tessera_op" &&
+          namedAttr.getName() != "pure_tessera_op")
         tesseraDefineOp->setAttr(namedAttr.getName(), namedAttr.getValue());
     }
+
     // Store the original function name so we can convert back to it later
     tesseraDefineOp->setAttr("tessera.original_name",
                              rewriter.getStringAttr(funcName));
@@ -98,12 +162,6 @@ public:
     // attributes for exact reconstruction later
     if (hasSret)
       tesseraDefineOp->setAttr("tessera.sret_attrs", argAttrs[0]);
-
-    // Add attribute if tessera op is marked as pure (side effect free)
-    if (isPure) {
-      tesseraDefineOp->setAttr("tessera.side_effect_free",
-                               rewriter.getUnitAttr());
-    }
 
     // Clone body of function
     if (!funcOp.isExternal()) {
@@ -164,12 +222,8 @@ public:
       }
     }
 
-    auto convertAttr = defineOp->getAttrOfType<enzyme::tessera::ConvertAttr>(
-        "tessera.convert");
-    if (!convertAttr)
-      return failure();
-    auto byRefArgs = convertAttr.getByRefArgs();
-    auto argSizes = convertAttr.getArgSizes();
+    auto byRefArgs = defineOp.getByRefArgs();
+    auto argSizes = defineOp.getArgSizes();
 
     SmallVector<Value> newOperands;
     SmallVector<int32_t> loadedOperands;

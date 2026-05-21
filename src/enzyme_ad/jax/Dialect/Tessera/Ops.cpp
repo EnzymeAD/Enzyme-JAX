@@ -160,11 +160,7 @@ LogicalResult CallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   if (!has_sret && fnType.getNumInputs() != getNumOperands())
     return emitOpError("incorrect number of operands for callee");
 
-  auto convertAttr =
-      fn->getAttrOfType<enzyme::tessera::ConvertAttr>("tessera.convert");
-  if (!convertAttr)
-    return emitOpError() << "missing tessera.convert attribute on tessera op";
-  auto byRefArgs = convertAttr.getByRefArgs();
+  auto byRefArgs = fn.getByRefArgs();
 
   // Allow type mismatch only for byref pointer args that have been converted
   // to values
@@ -222,7 +218,7 @@ void CallOp::getEffects(
   DefineOp fn = SymbolTable::lookupNearestSymbolFrom<DefineOp>(*this, fnAttr);
   if (!fn)
     return;
-  if (fn->hasAttr("tessera.side_effect_free"))
+  if (fn.getPure())
     return; // return nothing = no effects = side effect free
 
   // if not side effect free, add all possible memory effects
@@ -237,21 +233,21 @@ void CallOp::getEffects(
 //===----------------------------------------------------------------------===//
 
 LogicalResult ReturnOp::verify() {
-  auto function = cast<DefineOp>((*this)->getParentOp());
+  auto fn = cast<DefineOp>((*this)->getParentOp());
 
   // The operand number and types must match the function signature.
-  const auto &results = function.getFunctionType().getResults();
+  const auto &results = fn.getFunctionType().getResults();
   if (getNumOperands() != results.size())
     return emitOpError("has ")
            << getNumOperands() << " operands, but enclosing function (@"
-           << function.getName() << ") returns " << results.size();
+           << fn.getName() << ") returns " << results.size();
 
   for (unsigned i = 0, e = results.size(); i != e; ++i)
     if (getOperand(i).getType() != results[i])
       return emitError() << "type of return operand " << i << " ("
                          << getOperand(i).getType()
                          << ") doesn't match function result type ("
-                         << results[i] << ")"
-                         << " in function @" << function.getName();
+                         << results[i] << ")" << " in function @"
+                         << fn.getName();
   return success();
 }
