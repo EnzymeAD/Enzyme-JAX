@@ -31,10 +31,10 @@ module {
 // The constant input (0.0 + 5.0i) gets decomposed, reshaped, and folded into a pad op.
 // CHECK: %[[REAL:.*]] = stablehlo.real %arg4
 // CHECK: %[[IMAG:.*]] = stablehlo.imag %arg4
-// CHECK: %[[CONCAT:.*]] = stablehlo.concatenate %[[REAL]], %[[IMAG]], dim = 0
-// CHECK: %[[MUL:.*]] = stablehlo.multiply %{{.*}}, %[[CONCAT]]
-// CHECK: %[[SCATTER_UPDATE:.*]] = stablehlo.reshape %[[MUL]]
-// CHECK: %[[SCATTER:.*]] = "stablehlo.scatter"(%{{.*}}, %7, %[[SCATTER_UPDATE]])
+// CHECK: %[[CONCAT_RAW:.*]] = stablehlo.concatenate %[[REAL]], %[[IMAG]], dim = 0
+// CHECK-NEXT: %[[MUL:.*]] = stablehlo.multiply %{{.*}}, %[[CONCAT_RAW]]
+// CHECK-NEXT: %[[CONCAT:.*]] = stablehlo.reshape %[[MUL]]
+// CHECK-NEXT: %[[SCATTER:.*]] = "stablehlo.scatter"(%{{.*}}, %7, %[[CONCAT]])
 // CHECK-SAME: update_window_dims = [0]
 // CHECK-SAME: inserted_window_dims = [1, 2]
 // CHECK: ^bb0(%{{.*}}: tensor<f64>, %[[ARG8:.*]]: tensor<f64>):
