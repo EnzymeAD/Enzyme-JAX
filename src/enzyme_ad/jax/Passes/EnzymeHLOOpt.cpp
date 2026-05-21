@@ -7882,47 +7882,49 @@ struct RealComplexMulSimplify
     if (!isa<ComplexType>(resultType)) {
       return failure();
     }
-    auto convertOp = op.getLhs().getDefiningOp<stablehlo::ConvertOp>();
 
-    if (!convertOp) {
-      convertOp = op.getRhs().getDefiningOp<stablehlo::ConvertOp>();
-    } else if (op.getRhs().getDefiningOp<stablehlo::ConvertOp>()) {
+    Value purelyRealOperand = nullptr;
+    Value complexOperand = nullptr;
+
+    auto lhsState = getAttributeFromIR<enzymexla::GuaranteedAnalysisResultAttr>(
+        op.getLhs(), "enzymexla.complex_is_purely_real",
+        enzymexla::GuaranteedAnalysisResult::UNKNOWN);
+    bool lhsIsReal =
+        (lhsState == enzymexla::GuaranteedAnalysisResult::GUARANTEED);
+
+    auto rhsState = getAttributeFromIR<enzymexla::GuaranteedAnalysisResultAttr>(
+        op.getRhs(), "enzymexla.complex_is_purely_real",
+        enzymexla::GuaranteedAnalysisResult::UNKNOWN);
+    bool rhsIsReal =
+        (rhsState == enzymexla::GuaranteedAnalysisResult::GUARANTEED);
+
+    if (lhsIsReal && rhsIsReal) {
+      return failure();
+    } else if (lhsIsReal) {
+      purelyRealOperand = op.getLhs();
+      complexOperand = op.getRhs();
+    } else if (rhsIsReal) {
+      purelyRealOperand = op.getRhs();
+      complexOperand = op.getLhs();
+    } else {
       return failure();
     }
-
-    if (!convertOp) {
-      return failure();
-    }
-
-    auto realTensor = (convertOp.getOperand());
-    auto complexTensor =
-        (convertOp->getResult(0) == op.getLhs()) ? op.getRhs() : op.getLhs();
-
-    auto srcType = cast<ShapedType>(realTensor.getType()).getElementType();
-    auto dstType = cast<ShapedType>(complexTensor.getType()).getElementType();
-
-    if (!isa<ComplexType>(dstType) || !isa<FloatType>(srcType)) {
-      return failure();
-    }
-    // Since I think it is legal to convert from f32 to for example
-    // complex<f64>, we need to check that element type is the same
-    auto complexElementType = cast<ComplexType>(dstType).getElementType();
-    if (srcType != complexElementType) {
-      return failure();
-    }
+    auto complexTensorTy = cast<TensorType>(op.getType());
+    auto floatElTy =
+        cast<ComplexType>(complexTensorTy.getElementType()).getElementType();
+    auto floatTensorType = complexTensorTy.clone(floatElTy);
 
     Location loc = op.getLoc();
-
-    auto realPart = rewriter.create<stablehlo::RealOp>(
-        loc, realTensor.getType(), complexTensor);
-    auto imagPart = rewriter.create<stablehlo::ImagOp>(
-        loc, realTensor.getType(), complexTensor);
+    auto realExtractedFromPurelyReal = rewriter.create<stablehlo::RealOp>(
+        loc, floatTensorType, purelyRealOperand);
+    auto realPartOfComplex =
+        rewriter.create<stablehlo::RealOp>(loc, floatTensorType, complexOperand);
+    auto imagPartOfComplex =
+        rewriter.create<stablehlo::ImagOp>(loc, floatTensorType, complexOperand);
     auto newRealPart = rewriter.create<stablehlo::MulOp>(
-        loc, realTensor.getType(), realTensor, realPart);
-    newRealPart->setAttrs(op->getAttrs());
+        loc, floatTensorType, realExtractedFromPurelyReal, realPartOfComplex);
     auto newImagPart = rewriter.create<stablehlo::MulOp>(
-        loc, realTensor.getType(), realTensor, imagPart);
-    newImagPart->setAttrs(op->getAttrs());
+        loc, floatTensorType, realExtractedFromPurelyReal, imagPartOfComplex);
     auto newComplex = rewriter.create<stablehlo::ComplexOp>(
         loc, op.getType(), newRealPart, newImagPart);
     rewriter.replaceOp(op, newComplex);
