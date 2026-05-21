@@ -117,15 +117,6 @@ public:
     auto params = llvmFuncType.getParams();
     auto retType = llvmFuncType.getReturnType();
 
-    // Check if first argument has sret attribute
-    bool hasSret = false;
-    auto argAttrs = funcOp.getArgAttrsAttr();
-    if (!params.empty() && argAttrs) {
-      if (auto sretAttr =
-              funcOp.getArgAttr(0, LLVM::LLVMDialect::getStructRetAttrName()))
-        hasSret = true;
-    }
-
     auto fnType = FunctionType::get(
         ctx, params,
         isa<LLVM::LLVMVoidType>(retType) ? TypeRange{} : TypeRange{retType});
@@ -157,11 +148,6 @@ public:
     // Store the original function name so we can convert back to it later
     tesseraDefineOp->setAttr("tessera.original_name",
                              rewriter.getStringAttr(funcName));
-
-    // Add attribute if function uses struct return and store the first arg's
-    // attributes for exact reconstruction later
-    if (hasSret)
-      tesseraDefineOp->setAttr("tessera.sret_attrs", argAttrs[0]);
 
     // Clone body of function
     if (!funcOp.isExternal()) {

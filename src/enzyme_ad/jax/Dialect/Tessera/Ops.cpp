@@ -148,14 +148,16 @@ LogicalResult CallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
     return emitOpError() << "'" << fnAttr.getValue()
                          << "' does not reference a valid function";
 
+  auto fnType = fn.getFunctionType();
+
   // Verify that the operand and result types match the callee,
   // unless callee has attribute to indicate struct return.
-  bool has_sret = (fn->hasAttr("tessera.sret_attrs"));
-  auto fnType = fn.getFunctionType();
+  bool has_sret = fn.getNumArguments() > 0 && 
+                  fn.getArgAttr(0, LLVM::LLVMDialect::getStructRetAttrName());
 
   // If tessera.define has sret attribute,
   // tessera.call operand count = tessera.define input count - 1
-  if (has_sret && (fnType.getNumInputs() - 1) != getNumOperands())
+  if (has_sret && (fnType.getNumInputs() == 0 || (fnType.getNumInputs() - 1) != getNumOperands()))
     return emitOpError("incorrect number of operands for callee");
   if (!has_sret && fnType.getNumInputs() != getNumOperands())
     return emitOpError("incorrect number of operands for callee");
@@ -186,9 +188,7 @@ LogicalResult CallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
     return emitOpError("incorrect number of results for callee");
 
   if (has_sret) {
-    auto argAttrs = fn.getArgAttrsAttr();
-    auto firstArgAttr = cast<DictionaryAttr>(argAttrs[0]);
-    auto sretType = cast<TypeAttr>(firstArgAttr.get("llvm.sret")).getValue();
+    auto sretType = cast<TypeAttr>(fn.getArgAttr(0, LLVM::LLVMDialect::getStructRetAttrName())).getValue();
     if (getResult(0).getType() != sretType)
       return emitOpError("result type mismatch: expected ")
              << sretType << " but got " << getResult(0).getType();

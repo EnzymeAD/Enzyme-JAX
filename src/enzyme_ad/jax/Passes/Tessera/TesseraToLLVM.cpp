@@ -86,8 +86,7 @@ public:
           namedAttr.getName() != defineOp.getByRefArgsAttrName() &&
           namedAttr.getName() != defineOp.getArgSizesAttrName() &&
           namedAttr.getName() != defineOp.getPureAttrName() &&
-          namedAttr.getName() != "tessera.original_name" &&
-          namedAttr.getName() != "tessera.sret_attrs")
+          namedAttr.getName() != "tessera.original_name")
         funcOp->setAttr(namedAttr.getName(), namedAttr.getValue());
     }
 
@@ -121,7 +120,7 @@ public:
     auto callee = SymbolTable::lookupSymbolIn(
         callOp->getParentOfType<ModuleOp>(), calleeAttr);
 
-    // Check if callee has sret attribute. If so, allocate new pointer to
+    // Check if callee's first argument has sret attribute. If so, allocate new pointer to
     // contain result of tessera.call and insert as first argument in llvm.call.
     auto defineOp = dyn_cast_or_null<tessera::DefineOp>(callee);
     if (!defineOp)
@@ -152,16 +151,15 @@ public:
       return newAttrs;
     };
 
-    auto sretAttrs =
-        defineOp->getAttrOfType<DictionaryAttr>("tessera.sret_attrs");
-    if (sretAttrs) {
+    if (defineOp.getNumArguments() > 0 && defineOp.getArgAttr(0, LLVM::LLVMDialect::getStructRetAttrName())) {
+      auto sretArgAttrs = defineOp.getArgAttrDict(0);
       if (callOp.getNumResults() == 0)
         return callOp.emitOpError(
             "tessera.call to sret function must have a result");
       auto sretType = callOp.getResult(0).getType();
       int64_t sret_alignment = 0;
       if (auto sretAlignAttr =
-              sretAttrs.get(LLVM::LLVMDialect::getAlignAttrName()))
+              sretArgAttrs.get(LLVM::LLVMDialect::getAlignAttrName()))
         sret_alignment = cast<IntegerAttr>(sretAlignAttr).getInt();
       Value one = rewriter.create<LLVM::ConstantOp>(
           callOp.getLoc(), rewriter.getI32Type(),
@@ -182,7 +180,7 @@ public:
         argsToReplace = llvm::to_vector(loadedOperands.asArrayRef());
 
       for (auto [i, operand] : llvm::enumerate(callOp.getOperands())) {
-        if (llvm::is_contained(argsToReplace, i)) {
+        if (llvm::is_contained(argsToReplace, (int32_t)i)) {
           int64_t alignment = 0;
           if (auto alignAttr = defineOp.getArgAttr(
                   i + 1, LLVM::LLVMDialect::getAlignAttrName()))
@@ -199,7 +197,7 @@ public:
 
       // Reconstruct arg attributes with sret attr first
       SmallVector<Attribute> newArgAttrs;
-      newArgAttrs.push_back(sretAttrs);
+      newArgAttrs.push_back(sretArgAttrs);
       if (auto argAttrs = callOp.getArgAttrsAttr()) {
         for (auto argAttr : argAttrs)
           newArgAttrs.push_back(argAttr);
