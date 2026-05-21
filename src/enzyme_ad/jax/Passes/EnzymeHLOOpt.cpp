@@ -7917,10 +7917,10 @@ struct RealComplexMulSimplify
     Location loc = op.getLoc();
     auto realExtractedFromPurelyReal = rewriter.create<stablehlo::RealOp>(
         loc, floatTensorType, purelyRealOperand);
-    auto realPartOfComplex =
-        rewriter.create<stablehlo::RealOp>(loc, floatTensorType, complexOperand);
-    auto imagPartOfComplex =
-        rewriter.create<stablehlo::ImagOp>(loc, floatTensorType, complexOperand);
+    auto realPartOfComplex = rewriter.create<stablehlo::RealOp>(
+        loc, floatTensorType, complexOperand);
+    auto imagPartOfComplex = rewriter.create<stablehlo::ImagOp>(
+        loc, floatTensorType, complexOperand);
     auto newRealPart = rewriter.create<stablehlo::MulOp>(
         loc, floatTensorType, realExtractedFromPurelyReal, realPartOfComplex);
     auto newImagPart = rewriter.create<stablehlo::MulOp>(
