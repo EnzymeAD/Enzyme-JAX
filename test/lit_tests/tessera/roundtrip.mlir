@@ -1,6 +1,6 @@
 // RUN: enzymexlamlir-opt %s | FileCheck %s
 
-tessera.define @foo() attributes {tessera.convert = #tessera<convert "foo" byref = [] sizes = [] pure = true>} {
+tessera.define @foo() attributes {argSizes = array<i64>, byRefArgs = array<i1>, pure = false} {
   tessera.return
 }
 
@@ -9,7 +9,7 @@ tessera.define @foo() attributes {tessera.convert = #tessera<convert "foo" byref
 
 // -----
 
-tessera.define @bar() -> i32 attributes {tessera.convert = #tessera<convert "bar" byref = [] sizes = [] pure = true>} {
+tessera.define @bar() -> i32 attributes {argSizes = array<i64>, byRefArgs = array<i1>, pure = false} {
   %0 = arith.constant 42 : i32
   tessera.return %0 : i32
 }
@@ -19,7 +19,7 @@ tessera.define @bar() -> i32 attributes {tessera.convert = #tessera<convert "bar
 
 // -----
 
-tessera.define @caller() attributes {tessera.convert = #tessera<convert "caller" byref = [] sizes = [] pure = true>} {
+tessera.define @caller() attributes {argSizes = array<i64>, byRefArgs = array<i1>, pure = false} {
   tessera.call @foo() : () -> ()
   tessera.return
 }
@@ -30,7 +30,7 @@ tessera.define @caller() attributes {tessera.convert = #tessera<convert "caller"
 
 // -----
 
-tessera.define @with_args(%arg0: i32, %arg1: f32) -> i32 attributes {tessera.convert = #tessera<convert "with_args" byref = [false, false] sizes = [4, 4] pure = true>} {
+tessera.define @with_args(%arg0: i32, %arg1: f32) -> i32 attributes {argSizes = array<i64: 4, 4>, byRefArgs = array<i1: false, false>, pure = false} {
   %0 = tessera.call @bar() : () -> i32
   tessera.return %0 : i32
 }

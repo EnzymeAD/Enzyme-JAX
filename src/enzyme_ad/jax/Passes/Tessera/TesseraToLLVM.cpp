@@ -120,8 +120,9 @@ public:
     auto callee = SymbolTable::lookupSymbolIn(
         callOp->getParentOfType<ModuleOp>(), calleeAttr);
 
-    // Check if callee's first argument has sret attribute. If so, allocate new pointer to
-    // contain result of tessera.call and insert as first argument in llvm.call.
+    // Check if callee's first argument has sret attribute. If so, allocate new
+    // pointer to contain result of tessera.call and insert as first argument in
+    // llvm.call.
     auto defineOp = dyn_cast_or_null<tessera::DefineOp>(callee);
     if (!defineOp)
       return failure();
@@ -151,7 +152,8 @@ public:
       return newAttrs;
     };
 
-    if (defineOp.getNumArguments() > 0 && defineOp.getArgAttr(0, LLVM::LLVMDialect::getStructRetAttrName())) {
+    if (defineOp.getNumArguments() > 0 &&
+        defineOp.getArgAttr(0, LLVM::LLVMDialect::getStructRetAttrName())) {
       auto sretArgAttrs = defineOp.getArgAttrDict(0);
       if (callOp.getNumResults() == 0)
         return callOp.emitOpError(

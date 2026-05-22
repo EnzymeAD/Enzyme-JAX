@@ -23,10 +23,9 @@ namespace mlir::enzyme::tessera {} // namespace mlir::enzyme::tessera
 //===----------------------------------------------------------------------===//
 
 void DefineOp::build(OpBuilder &builder, OperationState &state, StringRef name,
-                     FunctionType type, DenseBoolArrayAttr byRefArgs, 
-                     DenseI64ArrayAttr argSizes, bool pure, 
-                     StringAttr sym_visibility,
-                     ArrayRef<NamedAttribute> attrs,
+                     FunctionType type, DenseBoolArrayAttr byRefArgs,
+                     DenseI64ArrayAttr argSizes, bool pure,
+                     StringAttr sym_visibility, ArrayRef<NamedAttribute> attrs,
                      ArrayRef<DictionaryAttr> argAttrs) {
   state.addAttribute(SymbolTable::getSymbolAttrName(),
                      builder.getStringAttr(name));
@@ -152,12 +151,13 @@ LogicalResult CallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
 
   // Verify that the operand and result types match the callee,
   // unless callee has attribute to indicate struct return.
-  bool has_sret = fn.getNumArguments() > 0 && 
+  bool has_sret = fn.getNumArguments() > 0 &&
                   fn.getArgAttr(0, LLVM::LLVMDialect::getStructRetAttrName());
 
   // If tessera.define has sret attribute,
   // tessera.call operand count = tessera.define input count - 1
-  if (has_sret && (fnType.getNumInputs() == 0 || (fnType.getNumInputs() - 1) != getNumOperands()))
+  if (has_sret && (fnType.getNumInputs() == 0 ||
+                   (fnType.getNumInputs() - 1) != getNumOperands()))
     return emitOpError("incorrect number of operands for callee");
   if (!has_sret && fnType.getNumInputs() != getNumOperands())
     return emitOpError("incorrect number of operands for callee");
@@ -188,7 +188,10 @@ LogicalResult CallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
     return emitOpError("incorrect number of results for callee");
 
   if (has_sret) {
-    auto sretType = cast<TypeAttr>(fn.getArgAttr(0, LLVM::LLVMDialect::getStructRetAttrName())).getValue();
+    auto sretType =
+        cast<TypeAttr>(
+            fn.getArgAttr(0, LLVM::LLVMDialect::getStructRetAttrName()))
+            .getValue();
     if (getResult(0).getType() != sretType)
       return emitOpError("result type mismatch: expected ")
              << sretType << " but got " << getResult(0).getType();
@@ -245,9 +248,9 @@ LogicalResult ReturnOp::verify() {
   for (unsigned i = 0, e = results.size(); i != e; ++i)
     if (getOperand(i).getType() != results[i])
       return emitError() << "type of return operand " << i << " ("
-                         << getOperand(i).getType()
-                         << ") doesn't match function result type ("
-                         << results[i] << ")" << " in function @"
-                         << fn.getName();
+                         << getOperand(i).getType() << ") in function @"
+                         << fn.getName()
+                         << " doesn't match function result type ("
+                         << results[i] << ")";
   return success();
 }
