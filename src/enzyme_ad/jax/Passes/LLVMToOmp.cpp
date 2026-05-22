@@ -257,52 +257,125 @@ static bool detectNowait(Operation *endOp, bool eraseBarrier = false) {
   return true;
 }
 
-// The fini lives inside a scf.if then-block.
-// The barrier lives in that scf.if's PARENT block.
-// Walk up: fini->block->parentOp (the scf.if) -> its block (parallel body).
-// static bool detectNowaitAcrossScfIf(LLVM::CallOp fini, bool eraseBarrier) {
-//   // Try same-block first (the direct case, e.g. no scf.if wrapper)
-//   if (!detectNowait(fini, /*eraseBarrier=*/false)) {
-//     // barrier found in same block
-//     if (eraseBarrier) {
-//       // find and erase it
-//       bool past = false;
-//       for (Operation &op : *fini->getBlock()) {
-//         if (!past) { past = (&op == fini.getOperation()); continue; }
-//         if (auto c = dyn_cast<LLVM::CallOp>(&op)) {
-//           if (getCalleeName(c) == "__kmpc_barrier" ||
-//               getCalleeName(c) == "__kmpc_cancel_barrier") {
-//             c.erase(); break;
-//           }
-//         }
-//       }
-//     }
-//     return false; // not nowait
-//   }
+//===----------------------------------------------------------------------===//
+// §1b  hoistEscapingDeps
+//
+// Problem pattern (convertStaticWs / convertDynWs):
+//   1. inlineForBodyIntoNest / inlineWhileBodyIntoNest clones a loop body
+//      into a fresh omp.loop_nest block.  Operands NOT in the IRMapping are
+//      kept as raw Value pointers — e.g. memref.loads for c[0], c[1], extent
+//      that live inside the enclosing scf.if guard (which is between init and
+//      fini and will therefore be erased).
+//   2. The bulk-erase loop then destroys those ops (via scf.if erasure),
+//      leaving dangling references in the cloned body.
+//   3. LLVM fires "operation destroyed but still has uses."
+//
+// Fix: after building wsOp/nestOp, walk wsOp for any operand whose defining
+// op is strictly inside the init..fini range (direct or nested).  For each
+// such value, clone its defining-op chain to just before wsOp (in SSA order
+// via recursive memoisation) and patch every in-wsOp use with the clone.
+//
+// KEY correctness requirement: the erasedSet must contain ONLY ops strictly
+// between init and fini (mirroring opsBetween).  Including ops BEFORE init
+// causes spurious hoisting of the loop bounds and the entire for-body
+// computation chain, which pulls the loop IV (a child-region block argument)
+// into the parent scope → dominance error.
+//===----------------------------------------------------------------------===//
+static void hoistEscapingDeps(omp::WsloopOp wsOp,
+                               LLVM::CallOp rangeBegin,
+                               LLVM::CallOp rangeEnd) {
+  // ── Step 1: erase set ────────────────────────────────────────────────────
+  SmallPtrSet<Operation *, 32> erasedSet;
+  {
+    auto between = opsBetween(rangeBegin, rangeEnd);
+    for (Operation *op : between) {
+      erasedSet.insert(op);
+      op->walk([&](Operation *inner) { erasedSet.insert(inner); });
+    }
+  }
+  if (erasedSet.empty()) return;
 
-//   // Not found in same block — check parent block after the enclosing scf.if.
-//   Operation *parentOp = fini->getBlock()->getParentOp(); // the scf.if
-//   if (!parentOp) return true; // no parent, assume nowait
-//   Block *parentBlock = parentOp->getBlock();
-//   if (!parentBlock) return true;
+  // ── Step 1b: block-argument resurrection map ──────────────────────────────
+  // Block arguments have no defining op; ensureLive would return them as-is,
+  // leaving live references inside wsOp after the erasedSet ops are destroyed.
+  // For the most common cases (scf.while, scf.for) we map each block argument
+  // to the corresponding init / iter-arg value that is defined *before* the
+  // erased range and therefore safe to use in wsOp.
+  llvm::DenseMap<Value, Value> blockArgReplacement;
+  for (Operation *op : erasedSet) {
+    if (auto whileOp = dyn_cast<scf::WhileOp>(op)) {
+      // before-block args → init values (defined outside the erased range)
+      Block &beforeBlk = whileOp.getBefore().front();
+      for (unsigned i = 0; i < beforeBlk.getNumArguments(); ++i)
+        blockArgReplacement[beforeBlk.getArgument(i)] = whileOp.getInits()[i];
+      // after-block (do-block) args → same init values as fallback
+      // (they normally only appear in scf.yield inside the do-block, but
+      //  guard against any accidental escaping reference)
+      Block &afterBlk = whileOp.getAfter().front();
+      for (unsigned i = 0; i < afterBlk.getNumArguments(); ++i)
+        blockArgReplacement[afterBlk.getArgument(i)] = whileOp.getInits()[i];
+    } else if (auto forOp = dyn_cast<scf::ForOp>(op)) {
+      // iter-args → corresponding init values
+      for (unsigned i = 0; i < forOp.getNumRegionIterArgs(); ++i)
+        blockArgReplacement[forOp.getRegionIterArg(i)] = forOp.getInitArgs()[i];
+      // IV is always remapped by inlineForBodyIntoNest, so no entry needed
+    }
+    // scf.if has no block args in its regions — no entry needed.
+  }
 
-//   bool past = false;
-//   for (Operation &op : *parentBlock) {
-//     if (&op == parentOp) { past = true; continue; }
-//     if (!past) continue;
-//     auto c = dyn_cast<LLVM::CallOp>(&op);
-//     if (!c) break; // stop at first non-call (e.g. omp.terminator)
-//     StringRef n = getCalleeName(c);
-//     if (n == "__kmpc_barrier" || n == "__kmpc_cancel_barrier") {
-//       if (eraseBarrier) c.erase();
-//       return false; // barrier found → NOT nowait
-//     }
-//     break;
-//   }
-//   return true; // no barrier found at either level → nowait
-// }
+  // ── Step 2: memoised recursive lift ──────────────────────────────────────
+  llvm::DenseMap<Value, Value> lifted;
+  OpBuilder b(wsOp);
 
+  std::function<Value(Value)> ensureLive = [&](Value v) -> Value {
+    auto it = lifted.find(v);
+    if (it != lifted.end()) return it->second;
 
+    Operation *def = v.getDefiningOp();
+
+    // ── Block argument: use replacement map if available ──────────────────
+    if (!def) {
+      auto bIt = blockArgReplacement.find(v);
+      if (bIt != blockArgReplacement.end()) {
+        // The replacement may itself be inside the erased range (rare but
+        // possible if the init was computed between rangeBegin and rangeEnd).
+        Value safe = ensureLive(bIt->second);
+        lifted[v] = safe;
+        return safe;
+      }
+      // Block arg defined outside the erased set — safe as-is.
+      return v;
+    }
+
+    // ── Op result: outside erased set — safe as-is ────────────────────────
+    if (!erasedSet.count(def)) return v;
+
+    // ── Op result: inside erased set — clone transitively ─────────────────
+    IRMapping m;
+    for (Value operand : def->getOperands())
+      m.map(operand, ensureLive(operand));
+
+    Operation *cloned = b.clone(*def, m);
+
+    for (auto [origR, newR] :
+         llvm::zip(def->getResults(), cloned->getResults()))
+      lifted[origR] = newR;
+
+    return lifted[v];
+  };
+
+  // ── Step 3: patch dangling operands inside wsOp ──────────────────────────
+  wsOp->walk([&](Operation *op) {
+    for (unsigned i = 0, e = op->getNumOperands(); i < e; ++i) {
+      Value v = op->getOperand(i);
+      Operation *def = v.getDefiningOp();
+      bool inErasedSet   = def && erasedSet.count(def);
+      bool isErasedArg   = !def && blockArgReplacement.count(v);
+      if (inErasedSet || isErasedArg)
+        op->setOperand(i, ensureLive(v));
+    }
+  });
+}
 
 //===----------------------------------------------------------------------===//
 // §3  Outlined-function inliner
@@ -567,12 +640,33 @@ private:
 // td: TeamsOp — explicit builder OpBuilder<(ins CArg<"const TeamsOperands &">)>
 //     No SingleBlock → create entry block explicitly.
 //===----------------------------------------------------------------------===//
+/// Count how many times each outlined function appears as operand `fnIdx`
+/// of a fork call in `calls`.  Used to defer fn.erase() until the last
+/// fork call that references the function has been converted.
+static llvm::DenseMap<LLVM::LLVMFuncOp, unsigned>
+countOutlinedFnUses(ModuleOp mod,
+                    ArrayRef<LLVM::CallOp> calls,
+                    unsigned fnIdx = 2) {
+  llvm::DenseMap<LLVM::LLVMFuncOp, unsigned> counts;
+  for (LLVM::CallOp call : calls)
+    if (auto fn = resolveOutlinedFn(mod, call, fnIdx))
+      counts[fn]++;
+  return counts;
+}
 
 void LLVMToOMPPass::convertTeams(ModuleOp mod) {
   SmallVector<LLVM::CallOp> calls;
   mod.walk([&](LLVM::CallOp c){
     if (isCallTo(c,"__kmpc_fork_teams")) calls.push_back(c);
   });
+  if (calls.empty()) return;
+  // Outlined functions appear outer-first in the module body (Clang emission
+  // order). Reversing gives innermost-first so that when the outer body is
+  // cloned, the inner fork_call has already been replaced by omp.parallel.
+  std::reverse(calls.begin(), calls.end());
+
+  auto fnCounts = countOutlinedFnUses(mod, calls, /*fnIdx=*/2);
+
   for (LLVM::CallOp call : calls) {
     PendingClauses pc = collectPendingClauses(call);
     LLVM::LLVMFuncOp fn = resolveOutlinedFn(mod, call);
@@ -586,27 +680,16 @@ void LLVMToOMPPass::convertTeams(ModuleOp mod) {
     OpBuilder b(call); Location loc = call.getLoc();
 
     omp::TeamsOperands tOprs;
-
     tOprs.ifExpr = Value{};
-
-    if (pc.numTeams)
-      tOprs.numTeamsLower = pc.numTeams;
-
-    if (pc.threadLimit)
-      tOprs.threadLimitVars = ValueRange(pc.threadLimit);
-    else
-      tOprs.threadLimitVars = ValueRange{};
-
-    // optional fields
-    tOprs.allocateVars = ValueRange{};
+    if (pc.numTeams)    tOprs.numTeamsLower   = pc.numTeams;
+    if (pc.threadLimit) tOprs.threadLimitVars = ValueRange(pc.threadLimit);
+    else                tOprs.threadLimitVars = ValueRange{};
+    tOprs.allocateVars  = ValueRange{};
     tOprs.allocatorVars = ValueRange{};
-    tOprs.privateVars = ValueRange{};
+    tOprs.privateVars   = ValueRange{};
 
-
-    // TeamsOperands fields (from OpenMP_NumTeamsClause, OpenMP_ThreadLimitClause):
-    //   numTeams (Value), threadLimit (Value)
     auto teamsOp = b.create<omp::TeamsOp>(loc, tOprs);
-    b.createBlock(&teamsOp.getRegion()); // no SingleBlock → explicit
+    b.createBlock(&teamsOp.getRegion());
     b.setInsertionPointToStart(&teamsOp.getRegion().front());
     if (failed(inlineOutlinedBody(fn, teamsOp.getRegion(), b, caps))) {
       teamsOp.erase();
@@ -614,7 +697,8 @@ void LLVMToOMPPass::convertTeams(ModuleOp mod) {
       signalPassFailure(); return;
     }
     call.erase();
-    fn.erase();
+    // Erase fn only after its last fork_teams call has been converted.
+    if (--fnCounts[fn] == 0) fn.erase();
     LLVM_DEBUG(llvm::dbgs() << "[LLVMToOmp] fork_teams → omp.teams\n");
   }
 }
@@ -625,17 +709,35 @@ void LLVMToOMPPass::convertTeams(ModuleOp mod) {
 // td: ParallelOp — explicit builder OpBuilder<(ins CArg<"const ParallelOperands &">)>
 //     No SingleBlock → create entry block explicitly.
 //===----------------------------------------------------------------------===//
-
 void LLVMToOMPPass::convertParallel(ModuleOp mod) {
   SmallVector<LLVM::CallOp> calls;
   mod.walk([&](LLVM::CallOp c){
     if (isCallTo(c,"__kmpc_fork_call") || isCallTo(c,"__kmpc_parallel_51"))
       calls.push_back(c);
   });
+  if (calls.empty()) return;
+
+  // Outlined functions appear outer-first in the module body (Clang emission
+  // order). Reversing gives innermost-first so that when the outer body is
+  // cloned, the inner fork_call has already been replaced by omp.parallel.
+  std::reverse(calls.begin(), calls.end());
+
+  // Pre-count how many times each outlined function is referenced so we can
+  // defer erasure until the very last fork_call for that function is done.
+  llvm::DenseMap<LLVM::LLVMFuncOp, unsigned> fnCounts;
   for (LLVM::CallOp call : calls) {
+    bool is51 = isCallTo(call, "__kmpc_parallel_51");
+    unsigned idx = is51 ? 5 : 2;
+    if (auto fn = resolveOutlinedFn(mod, call, idx))
+      fnCounts[fn]++;
+  }
+
+  for (LLVM::CallOp call : calls) {
+    if (!call->getBlock()) {
+      llvm::errs() << "[DEBUG] skipping erased fork_call\n";
+      continue;
+    }
     PendingClauses pc = collectPendingClauses(call);
-    // __kmpc_parallel_51: ident(0) gtid(1) if_val(2) num_threads(3)
-    //                     proc_bind(4) fn_ptr(5) wrapper_ptr(6) ...
     bool is51 = isCallTo(call,"__kmpc_parallel_51");
     unsigned fnIdx = is51 ? 5 : 2;
     if (is51 && call.getNumOperands() > 3) pc.numThreads = call.getOperand(3);
@@ -643,7 +745,9 @@ void LLVMToOMPPass::convertParallel(ModuleOp mod) {
     LLVM::LLVMFuncOp fn = resolveOutlinedFn(mod, call, fnIdx);
     if (!fn) {
       call.emitWarning("LLVMToOmp: cannot resolve outlined fn for "
-                       "fork_call — left as llvm.call"); continue;
+                       "fork_call — left as llvm.call");
+      // NOTE: no exit(-2) here — just skip and continue.
+      continue;
     }
     SmallVector<Value> caps;
     for (unsigned i = fnIdx + 1; i < call.getNumOperands(); ++i)
@@ -651,34 +755,22 @@ void LLVMToOMPPass::convertParallel(ModuleOp mod) {
     OpBuilder b(call); Location loc = call.getLoc();
     MLIRContext *ctx = mod.getContext();
 
-    // ParallelOperands fields (from clauses):
-    //   numThreads  (Value, OpenMP_NumThreadsClause)
-    //   procBindKind (ClauseProcBindKindAttr, OpenMP_ProcBindClause)
     omp::ClauseProcBindKindAttr procBindKind;
-
-    if (pc.hasProcBind) {
+    if (pc.hasProcBind)
       procBindKind = omp::ClauseProcBindKindAttr::get(ctx, pc.procBind);
-    }
 
     omp::ParallelOperands ops;
-
     ops.ifExpr = Value{};
-
-    if (pc.numThreads)
-      ops.numThreadsVars = ValueRange(pc.numThreads);
-    else
-      ops.numThreadsVars = ValueRange{};
-
-    ops.procBindKind = procBindKind;
-
-    ops.privateVars = ValueRange{};
-    ops.allocateVars = ValueRange{};
+    if (pc.numThreads) ops.numThreadsVars = ValueRange(pc.numThreads);
+    else               ops.numThreadsVars = ValueRange{};
+    ops.procBindKind  = procBindKind;
+    ops.privateVars   = ValueRange{};
+    ops.allocateVars  = ValueRange{};
     ops.allocatorVars = ValueRange{};
     ops.reductionVars = ValueRange{};
 
     auto parallelOp = b.create<omp::ParallelOp>(loc, ops);
-
-    b.createBlock(&parallelOp.getRegion()); // no SingleBlock → explicit
+    b.createBlock(&parallelOp.getRegion());
     b.setInsertionPointToStart(&parallelOp.getRegion().front());
     if (failed(inlineOutlinedBody(fn, parallelOp.getRegion(), b, caps))) {
       parallelOp.erase();
@@ -686,16 +778,9 @@ void LLVMToOMPPass::convertParallel(ModuleOp mod) {
       signalPassFailure(); return;
     }
 
-    // grab before erasing
-    // Value fnPtr = call.getOperand(fnIdx);
-    // auto addrOfOp = fnPtr.getDefiningOp<LLVM::AddressOfOp>();
-
     call.erase();
-    fn.erase();
-
-    // kill the now-broken symbol ref
-    // if (addrOfOp && addrOfOp->use_empty())
-    //     addrOfOp->erase();
+    // Erase the outlined function only once all its fork_call sites are gone.
+    if (--fnCounts[fn] == 0) fn.erase();
     LLVM_DEBUG(llvm::dbgs() << "[LLVMToOmp] fork_call → omp.parallel\n");
   }
 }
@@ -1055,29 +1140,51 @@ static Value traceLastStoredValue(Value ptr, Operation *before) {
 //   }
 //   fini
 //===----------------------------------------------------------------------===//
+//===----------------------------------------------------------------------===//
+// Helper 3: find first scf.for between init and fini (possibly in scf.if)
+// Used for the sections lowering where Clang emits scf.for instead of
+// scf.while.
+//===----------------------------------------------------------------------===//
 
-static scf::WhileOp findWhileOpBetween(Operation *init, Operation *fini) {
-  scf::WhileOp result;
+
+// Return the first scf::WhileOp or scf::ForOp encountered in a preorder walk
+// of the ops strictly between `init` and `fini` in their shared block.
+// Preorder guarantees we get the OUTERMOST (top-down first) loop, not the
+// deepest one that MLIR's default post-order walk() would return.
+
+template <typename LoopTy>
+static LoopTy findLoopBetween(Operation *init, Operation *fini) {
   bool inRange = false;
-  for (Operation &op : *init->getBlock()) {
-    if (&op == init) { inRange = true; continue; }
-    if (&op == fini) break;
+  for (Operation &top : *init->getBlock()) {
+    if (&top == init) { inRange = true; continue; }
+    if (&top == fini) break;
     if (!inRange) continue;
-    // Direct while in the same block
-    if (auto w = dyn_cast<scf::WhileOp>(&op)) { return w; }
-    // While nested inside an scf.if guard
-    if (auto sif = dyn_cast<scf::IfOp>(&op)) {
-      sif.getThenRegion().walk([&](scf::WhileOp w) {
-        if (!result) result = w;
-      });
-      if (result) return result;
-    }
+
+    LoopTy found;
+    // Walk this top-level between-op in preorder; stop at the first match.
+    top.walk<WalkOrder::PreOrder>([&](Operation *inner) -> WalkResult {
+      if (found) return WalkResult::interrupt();
+      if (auto lp = dyn_cast<LoopTy>(inner)) {
+        found = lp;
+        return WalkResult::interrupt();
+      }
+      return WalkResult::advance();
+    });
+    if (found) return found;
   }
-  return result;
+  return {};
 }
 
+static scf::WhileOp findWhileOpBetween(Operation *init, Operation *fini) {
+  return findLoopBetween<scf::WhileOp>(init, fini);
+}
+
+static scf::ForOp findForOpBetween(Operation *init, Operation *fini) {
+  // Only reached when no scf.while exists between init/fini.
+  return findLoopBetween<scf::ForOp>(init, fini);
+}
 //===----------------------------------------------------------------------===//
-// Helper 3: clone only the per-iteration work from the while's before-block
+// Helper 4: clone only the per-iteration work from the while's before-block
 //           into nestBlk, remapping the while IV → (possibly extended) nestIV.
 //
 // Clang's before-block mixes body work and loop-control in one block:
@@ -1101,65 +1208,90 @@ static void inlineWhileBodyIntoNest(OpBuilder &b, Location loc,
                                     BlockArgument nestIV) {
   Block *beforeBlk = &whileOp.getBefore().front();
   BlockArgument whileIV = beforeBlk->getArgument(0);
-
-  // ── Backward reachability from scf.condition → identify control ops ──
-  SmallPtrSet<Operation *, 8> controlOps;
   Operation *condOp = beforeBlk->getTerminator(); // scf.condition
-  SmallVector<Value> worklist(condOp->getOperands().begin(),
-                               condOp->getOperands().end());
-  while (!worklist.empty()) {
-    Value v = worklist.pop_back_val();
-    Operation *def = v.getDefiningOp();
-    // Stop at block arguments (whileIV) or values from outer scope
-    if (!def || def->getBlock() != beforeBlk) continue;
-    if (!controlOps.insert(def).second) continue; // already visited
-    for (Value operand : def->getOperands())
-      worklist.push_back(operand);
-  }
 
-  // ── Build IRMapping: while IV → (possibly sign-extended) nestIV ──────
-  IRMapping map;
-  b.setInsertionPoint(nestBlk->getTerminator());
-  Value mappedIV = nestIV;
-  if (whileIV.getType() != nestIV.getType()) {
-    // e.g. nestIV : i32  →  whileIV : i64  (Clang extends before looping)
-    mappedIV = b.create<arith::ExtSIOp>(loc, whileIV.getType(), nestIV);
-  }
-  map.map(whileIV, mappedIV);
-
-  // ── Clone body ops (non-control) before the omp.yield terminator ─────
-  b.setInsertionPoint(nestBlk->getTerminator());
-  for (Operation &op : beforeBlk->without_terminator()) {
-    if (!controlOps.contains(&op))
-      b.clone(op, map);
-  }
-}
-
-//===----------------------------------------------------------------------===//
-// Helper 4: find first scf.for between init and fini (possibly in scf.if)
-// Used for the sections lowering where Clang emits scf.for instead of
-// scf.while.
-//===----------------------------------------------------------------------===//
-
-static scf::ForOp findForOpBetween(Operation *init, Operation *fini) {
-  scf::ForOp result;
-  bool inRange = false;
-  for (Operation &op : *init->getBlock()) {
-    if (&op == init) { inRange = true; continue; }
-    if (&op == fini) break;
-    if (!inRange) continue;
-    // Direct for in the same block
-    if (auto f = dyn_cast<scf::ForOp>(&op)) return f;
-    // For nested inside the lb<=ub guard scf.if
-    if (auto sif = dyn_cast<scf::IfOp>(&op)) {
-      sif.getThenRegion().walk([&](scf::ForOp f) {
-        if (!result) result = f;
-      });
-      if (result) return result;
+  // ── Control ops: ONLY trace backward from operand[0] (condition bool)
+  //    and operand[1] (next-IV step).  Operands [2+] are accumulator
+  //    carries — the body's *result* — and must NOT seed the control set.
+  //    (Old code seeded from all operands, marking gep/load/addi as control,
+  //     producing an empty body that DCE subsequently removed.)
+  SmallPtrSet<Operation *, 8> controlOps;
+  {
+    SmallVector<Value> worklist;
+    for (unsigned i = 0; i <= 1 && i < condOp->getNumOperands(); ++i)
+      worklist.push_back(condOp->getOperand(i));
+    while (!worklist.empty()) {
+      Value v = worklist.pop_back_val();
+      Operation *def = v.getDefiningOp();
+      if (!def || def->getBlock() != beforeBlk) continue;
+      if (!controlOps.insert(def).second) continue;
+      for (Value op : def->getOperands()) worklist.push_back(op);
     }
   }
-  return result;
+
+  // ── IRMapping ────────────────────────────────────────────────────────────
+  IRMapping map;
+  b.setInsertionPoint(nestBlk->getTerminator());
+
+  // IV: while arg[0] → (sign-extended if needed) nestIV
+  Value mappedIV = nestIV;
+  if (whileIV.getType() != nestIV.getType())
+    mappedIV = b.create<arith::ExtSIOp>(loc, whileIV.getType(), nestIV);
+  map.map(whileIV, mappedIV);
+
+  // Accumulator args (while block arg[1], arg[2], …):
+  //   Map each to a load from its backing alloca.
+  //   Without this, cloned ops reference the while block-arg which becomes
+  //   dangling once the scf.while is erased.
+  //
+  // scf.condition layout:
+  //   operand[0]  = cond
+  //   operand[1]  = next value for block-arg[0]  (IV)
+  //   operand[i+1]= next value for block-arg[i]  (acc_i, i >= 1)
+  struct AccStore { Value alloca; Value newAccOrig; };
+  SmallVector<AccStore> accStores;
+
+  for (unsigned i = 1; i < beforeBlk->getNumArguments(); ++i) {
+    BlockArgument accArg = beforeBlk->getArgument(i);
+    // Initial value passed to the while for this accumulator
+    Value initVal = whileOp.getInits()[i];
+
+    // Trace: initVal = memref.load(enzymexla.pointer2memref(accAlloca))[0]
+    Value accAlloca;
+    if (auto ld = initVal.getDefiningOp<memref::LoadOp>())
+      if (auto *p2m = ld.getMemRef().getDefiningOp())
+        if (p2m->getName().getStringRef() == "enzymexla.pointer2memref" &&
+            p2m->getNumOperands() == 1)
+          accAlloca = p2m->getOperand(0);
+
+    if (!accAlloca) {
+      // Fallback: undef avoids the dangling reference after while erasure
+      map.map(accArg, b.create<LLVM::UndefOp>(loc, accArg.getType()));
+      continue;
+    }
+
+    // Emit load of the running total at the start of this iteration
+    Value currAcc = b.create<LLVM::LoadOp>(loc, accArg.getType(), accAlloca);
+    map.map(accArg, currAcc);
+
+    // Remember: the new value for this acc is at condOp->getOperand(i+1)
+    if (condOp->getNumOperands() > i + 1)
+      accStores.push_back({accAlloca, condOp->getOperand(i + 1)});
+  }
+
+  // ── Clone non-control body ops ────────────────────────────────────────
+  for (Operation &op : beforeBlk->without_terminator())
+    if (!controlOps.contains(&op))
+      b.clone(op, map);
+
+  // ── Write new accumulator values back (closes the loop-carried dep) ────
+  b.setInsertionPoint(nestBlk->getTerminator());
+  for (auto &[accAlloca, newAccOrig] : accStores) {
+    Value newAcc = map.lookupOrDefault(newAccOrig);
+    b.create<LLVM::StoreOp>(loc, newAcc, accAlloca);
+  }
 }
+
 
 //===----------------------------------------------------------------------===//
 // Helper 5: clone the scf.for body into nestBlk, remapping the for IV to
@@ -1301,11 +1433,17 @@ void LLVMToOMPPass::convertStaticWs(ModuleOp mod) {
       inlineForBodyIntoNest(b, loc, nestBlk, forOp, nestBlk->getArgument(0));
 
     // ── Erase everything between init and fini (now superseded) ─────────
-    // Reverse order so inner uses are dropped before outer defs.
+    // Before erasing, lift any values inside the init..fini range that the
+    // newly created wsOp still references (e.g. memref.load ops for c[0],
+    // c[1], extent inside the lb<=ub scf.if guard).  Without this, erasing
+    // the scf.if would recursively destroy those ops while the cloned loop
+    // body still holds raw Value pointers to them.
+    hoistEscapingDeps(wsOp, init, fini);
+
+    // Now all ops in wsOp reference either hoisted clones or values defined
+    // before init — safe to bulk-erase the original range.
     auto between = opsBetween(init, fini);
     for (Operation *op : llvm::reverse(between)) {
-      // Some ops (like scf.while result) may be use-empty after clone;
-      // others (like lifetime.start ops) have no results and can always go.
       op->dropAllUses();
       op->erase();
     }
@@ -1498,6 +1636,10 @@ void LLVMToOMPPass::convertDynWs(ModuleOp mod) {
         nestBlk->getArgument(0));
 
     // Remove the original runtime-dispatch lowering.
+    // Lift any values inside init..deinit that the new wsOp still
+    // references before we destroy them (same issue as convertStaticWs).
+    hoistEscapingDeps(wsOp, init, deinit);
+
     SmallVector<Operation *> between =
         opsBetween(init, deinit);
 
@@ -1761,30 +1903,48 @@ void LLVMToOMPPass::convertTasks(ModuleOp mod) {
   mod.walk([&](LLVM::CallOp c){
     if (isCallTo(c,"__kmpc_omp_task_alloc")) allocs.push_back(c);
   });
+
+  // ── Deferred-erasure reference count ────────────────────────────────────
+  // An outlined task-entry function may be referenced by more than one
+  // __kmpc_omp_task_alloc site (e.g. a task inside a loop that was unrolled
+  // or duplicated before this pass runs).  Count how many alloc sites point
+  // to each function so we erase it only after the last site is processed.
+  llvm::DenseMap<LLVM::LLVMFuncOp, unsigned> fnCounts;
+  for (LLVM::CallOp alloc : allocs) {
+    // Skip allocs that feed __kmpc_taskloop — handled by convertTaskloop.
+    bool feedsTaskloop = false;
+    for (Operation *u : alloc.getResult().getUsers())
+      if (auto uc = dyn_cast<LLVM::CallOp>(u))
+        if (isCallTo(uc, "__kmpc_taskloop")) { feedsTaskloop = true; break; }
+    if (feedsTaskloop) continue;
+
+    if (alloc.getNumOperands() > 5)
+      if (auto a = alloc.getOperand(5).getDefiningOp<LLVM::AddressOfOp>())
+        if (auto fn = mod.lookupSymbol<LLVM::LLVMFuncOp>(a.getGlobalName()))
+          fnCounts[fn]++;
+  }
+
   for (LLVM::CallOp alloc : allocs) {
     Value td = alloc.getResult();
+
     // Skip allocs whose result flows into __kmpc_taskloop.
-    // Those are taskloop constructs handled by convertTaskloop(),
-    // which runs after this function in runOnOperation().
     bool feedsTaskloop = false;
     for (Operation *u : td.getUsers())
       if (auto uc = dyn_cast<LLVM::CallOp>(u))
         if (isCallTo(uc, "__kmpc_taskloop")) { feedsTaskloop = true; break; }
     if (feedsTaskloop) continue;
-    // ─────────────────────────────────────────────────────────────────────
 
-    // ── Normal task: find the scheduling call that consumes `td`. ───────
+    // ── Find the scheduling call that consumes `td` ──────────────────────
     LLVM::CallOp taskCall;
     for (Operation *u : llvm::make_early_inc_range(td.getUsers())) {
       if (auto uc = dyn_cast<LLVM::CallOp>(u)) {
         StringRef n = getCalleeName(uc);
-        // In convertTasks, extend the consumer search:
         if (n == "__kmpc_omp_task" || n == "__kmpc_omp_task_with_deps")
           { taskCall = uc; break; }
         if (n == "__kmpc_omp_task_begin_if0")
           { taskCall = uc; break; }
         if (n == "__kmpc_taskloop")
-          { /* skip — handled by convertTaskloop */ taskCall = {}; break; }
+          { taskCall = {}; break; }
       }
     }
     if (!taskCall) {
@@ -1805,6 +1965,7 @@ void LLVMToOMPPass::convertTasks(ModuleOp mod) {
       isUntied    = *fv & 1;
       isMergeable = (*fv >> 2) & 1;
     }
+
     // alloc arg 5 = pointer to task-entry outlined function
     LLVM::LLVMFuncOp fn;
     if (alloc.getNumOperands() > 5)
@@ -1852,8 +2013,10 @@ void LLVMToOMPPass::convertTasks(ModuleOp mod) {
     // (4) td is now use-empty — safe to erase.
     alloc.erase();
 
-    // (5) Remove the outlined entry function from the module.
-    if (fn) fn.erase();
+    // (5) Erase the outlined entry function only after its last alloc site
+    //     has been converted.  If the same function is referenced by multiple
+    //     task_alloc calls, earlier iterations merely decrement the counter.
+    if (fn && --fnCounts[fn] == 0) fn.erase();
 
     LLVM_DEBUG({
       llvm::dbgs() << "[LLVMToOmp] task_alloc → omp.task";
@@ -1988,17 +2151,33 @@ static LogicalResult inlineTaskloopBody(
 
   return success();
 }
+
+
+
 void LLVMToOMPPass::convertTaskloop(ModuleOp mod) {
   SmallVector<LLVM::CallOp> calls;
   mod.walk([&](LLVM::CallOp c) {
     if (isCallTo(c, "__kmpc_taskloop")) calls.push_back(c);
   });
 
+  // ── Deferred-erasure reference count ────────────────────────────────────
+  // Multiple __kmpc_taskloop call sites may share the same outlined function.
+  // Count references up front so we erase the function only after the last
+  // site has been converted.
+  llvm::DenseMap<LLVM::LLVMFuncOp, unsigned> fnCounts;
+  for (LLVM::CallOp tlCall : calls) {
+    if (tlCall.getNumOperands() < 7) continue;
+    Value taskPtr = tlCall.getOperand(2);
+    auto alloc = dyn_cast_or_null<LLVM::CallOp>(taskPtr.getDefiningOp());
+    if (!alloc || !isCallTo(alloc, "__kmpc_omp_task_alloc")) continue;
+    if (alloc.getNumOperands() > 5)
+      if (auto a = alloc.getOperand(5).getDefiningOp<LLVM::AddressOfOp>())
+        if (auto fn = mod.lookupSymbol<LLVM::LLVMFuncOp>(a.getGlobalName()))
+          fnCounts[fn]++;
+  }
+
   for (LLVM::CallOp tlCall : calls) {
     // ── (A) Locate the kmp_task_t* from __kmpc_omp_task_alloc ───────────
-    // __kmpc_taskloop(ident*, gtid, task*, if_val,
-    //                 lb_ptr, ub_ptr, step,
-    //                 sched, nogroup, grainsize_or_num_tasks, task_dup*)
     if (tlCall.getNumOperands() < 7) {
       tlCall.emitWarning("LLVMToOmp: __kmpc_taskloop has too few args — skipped");
       continue;
@@ -2105,8 +2284,9 @@ void LLVMToOMPPass::convertTaskloop(ModuleOp mod) {
     eraseTaskSharedsInit(alloc);
     // (3) alloc result is now use-empty — safe to erase.
     alloc.erase();
-    // (4) Remove the outlined entry function.
-    fn.erase();
+    // (4) Erase the outlined entry function only after its last taskloop
+    //     call site has been converted.
+    if (--fnCounts[fn] == 0) fn.erase();
 
     LLVM_DEBUG({
       llvm::dbgs() << "[LLVMToOmp] __kmpc_taskloop → omp.taskloop";
@@ -2122,20 +2302,438 @@ void LLVMToOMPPass::convertTaskloop(ModuleOp mod) {
 // §15  Reductions — warn + leave (needs mem2reg)
 //===----------------------------------------------------------------------===//
 
-void LLVMToOMPPass::convertReductions(ModuleOp mod) {
-  mod.walk([&](LLVM::CallOp c){
-    StringRef n = getCalleeName(c);
-    if (n!="__kmpc_reduce" && n!="__kmpc_reduce_nowait") return;
-    c.emitWarning("LLVMToOmp: '") << n
-        << "' not converted — run mem2reg first so reduction GEPs can be "
-           "traced.  Left as llvm.call.";
-    StringRef en = (n=="__kmpc_reduce_nowait")
-                       ? "__kmpc_end_reduce_nowait" : "__kmpc_end_reduce";
-    if (LLVM::CallOp e = findNextCallTo(c, en))
-      e.emitWarning("LLVMToOmp: ") << en << " also left as llvm.call";
-  });
+//===----------------------------------------------------------------------===//
+// §15  Reductions
+//
+// Converts the __kmpc_reduce_nowait protocol to omp.declare_reduction +
+// omp.parallel reduction clauses.
+//
+// Clang's outlined-function lowering of  `reduction(+:sum)`:
+//
+//   local_acc = alloca i32              // thread-private accumulator
+//   memref.store 0, p2m(local_acc)[0]  // initialize to identity
+//   [loop body accumulates into local_acc]
+//   reduce_list = alloca [1 x ptr]
+//   memref.store local_acc, p2m(reduce_list)[0]
+//   %r = __kmpc_reduce_nowait(ident, gtid, 1, 8, reduce_list, fn, lck)
+//   scf.if (%r == 1) {                  // lock-free critical section
+//     *global_sum += *local_acc
+//     __kmpc_end_reduce_nowait(...)
+//   } else { scf.if (%r == 2) {         // atomic path
+//     atomicrmw add global_sum, *local_acc
+//   }}
+//
+// Target form:
+//
+//   omp.declare_reduction @omp_red_add_i32 : i32
+//     init    { %0 = arith.constant 0 : i32;  omp.yield(%0 : i32) }
+//     combiner { ^(%a: i32, %b: i32): %c = addi %a,%b; omp.yield(%c : i32) }
+//     atomic  { ^(%lp: !llvm.ptr, %rp: !llvm.ptr):
+//                 %v = load %rp; atomicrmw add %lp, %v; omp.yield }
+//
+//   omp.parallel reduction(byref @omp_red_add_i32 %global_sum -> %priv : !llvm.ptr) {
+//     [body uses %priv (block-arg) instead of the old local_acc alloca]
+//     omp.terminator
+//   }
+//===----------------------------------------------------------------------===//
+
+/// Find the scf.if dispatching on __kmpc_reduce*'s return value.
+/// It immediately follows the reduce call (separated by index_castui + cmpi).
+static scf::IfOp findReduceDispatchIf(LLVM::CallOp reduceCall) {
+  bool past = false;
+  for (Operation &op : *reduceCall->getBlock()) {
+    if (&op == reduceCall.getOperation()) { past = true; continue; }
+    if (!past) continue;
+    if (auto sif = dyn_cast<scf::IfOp>(&op)) return sif;
+  }
+  return {};
 }
 
+/// Collect the thread-local reduction variable pointers stored into
+/// the reduce_list alloca:  memref.store ptr_i, p2m(reduceListAlloca)[i]
+static SmallVector<Value> extractReduceListPtrs(Value reduceListAlloca) {
+  SmallVector<std::pair<int64_t, Value>> indexed;
+  for (Operation *u : reduceListAlloca.getUsers()) {
+    if (u->getName().getStringRef() != "enzymexla.pointer2memref") continue;
+    Value p2m = u->getResult(0);
+    for (Operation *su : p2m.getUsers()) {
+      auto st = dyn_cast<memref::StoreOp>(su);
+      if (!st || st.getIndices().size() != 1) continue;
+      if (auto idx = getConstIndex(st.getIndices()[0]))
+        indexed.emplace_back(*idx, st.getValueToStore());
+    }
+  }
+  llvm::sort(indexed, [](const auto &a, const auto &b) { return a.first < b.first; });
+  SmallVector<Value> ptrs;
+  for (auto &[_, v] : indexed) ptrs.push_back(v);
+  return ptrs;
+}
+
+struct ReductionBodyInfo { Value globalPtr; Operation *combineOp; };
+
+/// Scan the case-1 (lock-free) body for:
+///   load-from-global, load-from-local, arith-binop, store-to-global
+/// and return the shared variable pointer and the combiner op.
+static std::optional<ReductionBodyInfo>
+analyzeReductionCase1(Block &body, Value localPtr) {
+  Value localLoad, globalLoad, globalPtr;
+  Operation *combiner = nullptr;
+
+  for (Operation &op : body) {
+    // Identify loads from local or global through the p2m bridge
+    if (auto ld = dyn_cast<memref::LoadOp>(&op)) {
+      if (ld.getIndices().size() != 1) continue;
+      auto *p2mOp = ld.getMemRef().getDefiningOp();
+      if (!p2mOp ||
+          p2mOp->getName().getStringRef() != "enzymexla.pointer2memref" ||
+          p2mOp->getNumOperands() != 1) continue;
+      Value srcPtr = p2mOp->getOperand(0);
+      if (srcPtr == localPtr)
+        localLoad = ld.getResult();
+      else if (!globalPtr)
+        { globalPtr = srcPtr; globalLoad = ld.getResult(); }
+    }
+    // Identify the combining binary op once both loads are seen
+    if (localLoad && globalLoad && !combiner &&
+        op.getNumOperands() == 2 && op.getNumResults() == 1) {
+      if (isa<arith::AddIOp, arith::AddFOp,
+               arith::MulIOp, arith::MulFOp,
+               arith::AndIOp, arith::OrIOp, arith::XOrIOp,
+               arith::MinSIOp, arith::MaxSIOp,
+               arith::MinUIOp, arith::MaxUIOp,
+               arith::MinimumFOp, arith::MaximumFOp>(&op)) {
+        Value o0 = op.getOperand(0), o1 = op.getOperand(1);
+        // The combiner mixes the two loads (order-independent for commutative ops)
+        if ((o0 == localLoad || o0 == globalLoad) &&
+            (o1 == localLoad || o1 == globalLoad) && o0 != o1)
+          combiner = &op;
+      }
+    }
+  }
+  if (!globalPtr || !combiner) return std::nullopt;
+  return ReductionBodyInfo{globalPtr, combiner};
+}
+
+/// Return the first value stored into localPtr — the identity / init value.
+static Value findReductionInit(Value localPtr) {
+  // Count how many parent ops separate `op` from the module root.
+  // Shallower depth = structurally earlier in the program = the init store.
+  auto nestDepth = [](Operation *op) -> int {
+    int d = 0;
+    for (Operation *p = op->getParentOp(); p; p = p->getParentOp()) ++d;
+    return d;
+  };
+
+  Operation *earliest = nullptr;
+  Value      initVal;
+
+  for (Operation *u : localPtr.getUsers()) {
+    if (u->getName().getStringRef() != "enzymexla.pointer2memref") continue;
+    Value p2m = u->getResult(0);
+
+    for (Operation *su : p2m.getUsers()) {
+      auto st = dyn_cast<memref::StoreOp>(su);
+      if (!st) continue;
+
+      if (!earliest) {
+        earliest = st;
+        initVal  = st.getValueToStore();
+        continue;
+      }
+
+      if (st->getBlock() == earliest->getBlock()) {
+        // Same block — safe to use isBeforeInBlock.
+        if (st->isBeforeInBlock(earliest)) {
+          earliest = st;
+          initVal  = st.getValueToStore();
+        }
+      } else {
+        // Different blocks (e.g. one is inside omp.loop_nest after
+        // convertStaticWs, the other is in the surrounding parallel block).
+        // The shallower store is the pre-loop zero-init; prefer it.
+        if (nestDepth(st) < nestDepth(earliest)) {
+          earliest = st;
+          initVal  = st.getValueToStore();
+        }
+      }
+    }
+  }
+  return initVal;
+}
+
+/// Build a unique, stable symbol name: "omp_red_add_i32", "omp_red_mul_f64", …
+static std::string makeRedSymName(Operation *combineOp, Type elemTy) {
+  StringRef opStr = "op";
+  if      (isa<arith::AddIOp, arith::AddFOp>(combineOp))   opStr = "add";
+  else if (isa<arith::MulIOp, arith::MulFOp>(combineOp))   opStr = "mul";
+  else if (isa<arith::AndIOp>(combineOp))                   opStr = "and";
+  else if (isa<arith::OrIOp>(combineOp))                    opStr = "or";
+  else if (isa<arith::XOrIOp>(combineOp))                   opStr = "xor";
+  else if (isa<arith::MinSIOp>(combineOp))                  opStr = "mins";
+  else if (isa<arith::MaxSIOp>(combineOp))                  opStr = "maxs";
+  else if (isa<arith::MinUIOp>(combineOp))                  opStr = "minu";
+  else if (isa<arith::MaxUIOp>(combineOp))                  opStr = "maxu";
+  else if (isa<arith::MinimumFOp>(combineOp))               opStr = "minf";
+  else if (isa<arith::MaximumFOp>(combineOp))               opStr = "maxf";
+  std::string ts; llvm::raw_string_ostream os(ts); elemTy.print(os);
+  for (char &c : ts) if (!llvm::isAlnum(c)) c = '_';
+  return ("omp_red_" + opStr + "_" + ts).str();
+}
+
+/// Clone the combining operation in the combiner region with fresh block args.
+static Value emitRedCombiner(OpBuilder &b, Location loc,
+                               Operation *tmpl, Value lhs, Value rhs) {
+  if (isa<arith::AddIOp>(tmpl))    return b.create<arith::AddIOp>(loc, lhs, rhs);
+  if (isa<arith::AddFOp>(tmpl))    return b.create<arith::AddFOp>(loc, lhs, rhs);
+  if (isa<arith::MulIOp>(tmpl))    return b.create<arith::MulIOp>(loc, lhs, rhs);
+  if (isa<arith::MulFOp>(tmpl))    return b.create<arith::MulFOp>(loc, lhs, rhs);
+  if (isa<arith::AndIOp>(tmpl))    return b.create<arith::AndIOp>(loc, lhs, rhs);
+  if (isa<arith::OrIOp>(tmpl))     return b.create<arith::OrIOp>(loc, lhs, rhs);
+  if (isa<arith::XOrIOp>(tmpl))    return b.create<arith::XOrIOp>(loc, lhs, rhs);
+  if (isa<arith::MinSIOp>(tmpl))   return b.create<arith::MinSIOp>(loc, lhs, rhs);
+  if (isa<arith::MaxSIOp>(tmpl))   return b.create<arith::MaxSIOp>(loc, lhs, rhs);
+  if (isa<arith::MinUIOp>(tmpl))   return b.create<arith::MinUIOp>(loc, lhs, rhs);
+  if (isa<arith::MaxUIOp>(tmpl))   return b.create<arith::MaxUIOp>(loc, lhs, rhs);
+  if (isa<arith::MinimumFOp>(tmpl))return b.create<arith::MinimumFOp>(loc, lhs, rhs);
+  if (isa<arith::MaximumFOp>(tmpl))return b.create<arith::MaximumFOp>(loc, lhs, rhs);
+  return {};
+}
+
+/// Map an arith combiner op to the LLVM atomic bin_op for the atomic region.
+static LLVM::AtomicBinOp combineOpToAtomicBinOp(Operation *combineOp) {
+  if (isa<arith::AddIOp>(combineOp))  return LLVM::AtomicBinOp::add;
+  if (isa<arith::AddFOp>(combineOp))  return LLVM::AtomicBinOp::fadd;
+  if (isa<arith::AndIOp>(combineOp))  return LLVM::AtomicBinOp::_and;
+  if (isa<arith::OrIOp>(combineOp))   return LLVM::AtomicBinOp::_or;
+  if (isa<arith::XOrIOp>(combineOp))  return LLVM::AtomicBinOp::_xor;
+  if (isa<arith::MinSIOp>(combineOp)) return LLVM::AtomicBinOp::min;
+  if (isa<arith::MaxSIOp>(combineOp)) return LLVM::AtomicBinOp::max;
+  if (isa<arith::MinUIOp>(combineOp)) return LLVM::AtomicBinOp::umin;
+  if (isa<arith::MaxUIOp>(combineOp)) return LLVM::AtomicBinOp::umax;
+  return LLVM::AtomicBinOp::add;  // safe default
+}
+
+/// Erase the reduce_list alloca plus all the pointer stores that fed it.
+static void eraseReduceListAlloca(Value reduceListAlloca) {
+  for (Operation *u : llvm::make_early_inc_range(reduceListAlloca.getUsers())) {
+    if (u->getName().getStringRef() != "enzymexla.pointer2memref") continue;
+    Value p2m = u->getResult(0);
+    for (Operation *su : llvm::make_early_inc_range(p2m.getUsers()))
+      if (isa<memref::StoreOp>(su)) su->erase();
+    if (p2m.use_empty()) u->erase();
+  }
+  if (reduceListAlloca.use_empty())
+    if (auto *op = reduceListAlloca.getDefiningOp()) op->erase();
+}
+
+
+void LLVMToOMPPass::convertReductions(ModuleOp mod) {
+  MLIRContext *ctx = mod.getContext();
+
+  SmallVector<LLVM::CallOp> reduceCalls;
+  mod.walk([&](LLVM::CallOp c) {
+    StringRef n = getCalleeName(c);
+    if (n == "__kmpc_reduce" || n == "__kmpc_reduce_nowait")
+      reduceCalls.push_back(c);
+  });
+
+  LLVM_DEBUG(llvm::dbgs() << "[convertReductions] found "
+                           << reduceCalls.size() << " reduce call(s)\n");
+
+  for (LLVM::CallOp reduceCall : reduceCalls) {
+    Location loc = reduceCall.getLoc();
+    StringRef calleeName = getCalleeName(reduceCall);
+
+    // ── step 1: dispatch scf.if ──────────────────────────────────────────
+    scf::IfOp dispatchIf = findReduceDispatchIf(reduceCall);
+    if (!dispatchIf) {
+      LLVM_DEBUG(llvm::dbgs()
+          << "  SKIP: no dispatch scf.if found after the reduce call\n");
+      reduceCall.emitWarning("LLVMToOmp: '") << calleeName
+          << "' not converted — run mem2reg first so reduction GEPs can be "
+             "traced.  Left as llvm.call.";
+      continue;
+    }
+
+    // ── step 2: reduce_list local-var pointers ───────────────────────────
+    if (reduceCall.getNumOperands() < 5) {
+      LLVM_DEBUG(llvm::dbgs() << "  SKIP: reduce call has only "
+                               << reduceCall.getNumOperands() << " operands\n");
+      continue;
+    }
+    Value reduceListAlloca = reduceCall.getOperand(4);
+    SmallVector<Value> localPtrs = extractReduceListPtrs(reduceListAlloca);
+    if (localPtrs.empty()) {
+      LLVM_DEBUG(llvm::dbgs()
+          << "  SKIP: no stores into reduce_list found\n");
+      reduceCall.emitWarning("LLVMToOmp: '") << calleeName
+          << "' not converted — cannot trace reduce_list.  Left as llvm.call.";
+      continue;
+    }
+    Value localPtr = localPtrs[0];
+
+    // ── step 3: analyse case-1 (lock-free) body ──────────────────────────
+    Block &case1Blk = dispatchIf.getThenRegion().front();
+    auto descOpt = analyzeReductionCase1(case1Blk, localPtr);
+    if (!descOpt) {
+      LLVM_DEBUG(llvm::dbgs()
+          << "  SKIP: analyzeReductionCase1 found no globalPtr/combiner\n");
+      reduceCall.emitWarning("LLVMToOmp: '") << calleeName
+          << "' not converted — cannot analyse case-1 reduction body.  "
+             "Left as llvm.call.";
+      continue;
+    }
+    Value globalPtr   = descOpt->globalPtr;
+    Operation *combOp = descOpt->combineOp;
+
+    // ── step 4: element type ──────────────────────────────────────────────
+    Type elemTy;
+    if (auto alloca = localPtr.getDefiningOp<LLVM::AllocaOp>())
+      elemTy = alloca.getElemType();
+    if (!elemTy) {
+      LLVM_DEBUG(llvm::dbgs() << "  SKIP: localPtr does not come from llvm.alloca\n");
+      reduceCall.emitWarning("LLVMToOmp: '") << calleeName
+          << "' not converted — cannot determine element type.  Left as llvm.call.";
+      continue;
+    }
+
+    // ── step 5: init / identity value ─────────────────────────────────────
+    Value initVal = findReductionInit(localPtr);
+
+    // ── step 6: omp.declare_reduction ─────────────────────────────────────
+    std::string symName = makeRedSymName(combOp, elemTy);
+    if (!mod.lookupSymbol(symName)) {
+      OpBuilder mb(mod.getBody(), mod.getBody()->begin());
+      auto declOp = mb.create<omp::DeclareReductionOp>(
+          loc, symName, elemTy, /*byref_element_type=*/TypeAttr{});
+
+      // init region
+      {
+        Block *blk = mb.createBlock(&declOp.getInitializerRegion());
+        blk->addArgument(elemTy, loc);
+        mb.setInsertionPointToStart(blk);
+        Value iv;
+        if (initVal)
+          if (auto *defOp = initVal.getDefiningOp()) {
+            IRMapping m;
+            iv = mb.clone(*defOp, m)->getResult(0);
+          }
+        if (!iv || iv.getType() != elemTy)
+          iv = mb.create<arith::ConstantOp>(loc, mb.getZeroAttr(elemTy));
+        mb.create<omp::YieldOp>(loc, ValueRange{iv});
+      }
+      // combiner region
+      {
+        Block *blk = mb.createBlock(&declOp.getReductionRegion());
+        BlockArgument lhs = blk->addArgument(elemTy, loc);
+        BlockArgument rhs = blk->addArgument(elemTy, loc);
+        mb.setInsertionPointToStart(blk);
+        Value combined = emitRedCombiner(mb, loc, combOp, lhs, rhs);
+        if (!combined) {
+          LLVM_DEBUG(llvm::dbgs()
+              << "  SKIP: emitRedCombiner returned null for "
+              << combOp->getName().getStringRef() << "\n");
+          declOp.erase();
+          reduceCall.emitWarning("LLVMToOmp: '") << calleeName
+              << "' not converted — unsupported combiner op.  Left as llvm.call.";
+          goto nextReduction;
+        }
+        mb.create<omp::YieldOp>(loc, ValueRange{combined});
+      }
+      // atomic region
+      {
+        auto ptrTy = LLVM::LLVMPointerType::get(ctx);
+        Block *blk = mb.createBlock(&declOp.getAtomicReductionRegion());
+        BlockArgument lhsPtr = blk->addArgument(ptrTy, loc);
+        BlockArgument rhsPtr = blk->addArgument(ptrTy, loc);
+        mb.setInsertionPointToStart(blk);
+        Value rhsVal = mb.create<LLVM::LoadOp>(loc, elemTy, rhsPtr);
+        mb.create<LLVM::AtomicRMWOp>(
+            loc, combineOpToAtomicBinOp(combOp), lhsPtr, rhsVal,
+            LLVM::AtomicOrdering::monotonic);
+        mb.create<omp::YieldOp>(loc, ValueRange{});
+      }
+    }
+
+    // ── step 7: find enclosing omp.parallel ───────────────────────────────
+    {
+      omp::ParallelOp parallelOp;
+      for (Operation *p = reduceCall->getParentOp(); p; p = p->getParentOp())
+        if ((parallelOp = dyn_cast<omp::ParallelOp>(p))) break;
+      if (!parallelOp) {
+        LLVM_DEBUG(llvm::dbgs()
+            << "  SKIP: reduce call is not inside an omp.parallel\n");
+        reduceCall.emitWarning("LLVMToOmp: '") << calleeName
+            << "' not inside omp.parallel — left as llvm.call.";
+        continue;
+      }
+      Block *oldEntry = &parallelOp.getRegion().front();
+
+      // ── step 8: rebuild omp.parallel with reduction clause ─────────────
+      OpBuilder b(parallelOp);
+
+      omp::ParallelOperands newOps;
+      newOps.ifExpr        = parallelOp.getIfExpr();
+      if (!parallelOp.getNumThreadsVars().empty())
+        newOps.numThreadsVars = parallelOp.getNumThreadsVars();
+      newOps.procBindKind  = parallelOp.getProcBindKindAttr();
+      newOps.privateVars   = ValueRange{};
+      newOps.allocateVars  = ValueRange{};
+      newOps.allocatorVars = ValueRange{};
+      newOps.reductionVars = ValueRange{globalPtr};
+      newOps.reductionByref = SmallVector<bool>{true};
+      newOps.reductionSyms  = SmallVector<Attribute>{
+          SymbolRefAttr::get(ctx, symName)};
+
+      auto newParallel = b.create<omp::ParallelOp>(parallelOp.getLoc(), newOps);
+      Block *newEntry  = b.createBlock(&newParallel.getRegion());
+      auto ptrTy       = LLVM::LLVMPointerType::get(ctx);
+      BlockArgument privPtr = newEntry->addArgument(ptrTy, loc);
+
+      // Splice all ops from old entry block into new one (preserves wsloop etc.)
+      newEntry->getOperations().splice(newEntry->end(), oldEntry->getOperations());
+
+      localPtr.replaceAllUsesWith(privPtr);
+
+      if (auto allocaOp = localPtr.getDefiningOp<LLVM::AllocaOp>())
+        if (localPtr.use_empty()) {
+          allocaOp.erase();
+        }
+
+      parallelOp.erase();
+
+      // ── step 9: erase reduce protocol ──────────────────────────────────
+      SmallVector<Operation *> intermediates;
+      {
+        bool past = false;
+        for (Operation &op : *reduceCall->getBlock()) {
+          if (&op == reduceCall.getOperation()) { past = true; continue; }
+          if (&op == dispatchIf.getOperation()) break;
+          if (past) intermediates.push_back(&op);
+        }
+      }
+
+      dispatchIf.erase();
+      for (Operation *op : llvm::reverse(intermediates)) op->erase();
+      reduceCall.erase();
+      eraseReduceListAlloca(reduceListAlloca);
+
+      LLVM_DEBUG(llvm::dbgs() << "[convertReductions] OK: " << calleeName
+                               << " → omp.declare_reduction @" << symName
+                               << " + omp.parallel reduction\n");
+    }
+    continue;
+    nextReduction:;
+  }
+
+  // Warn on any survivors
+  mod.walk([&](LLVM::CallOp c) {
+    StringRef n = getCalleeName(c);
+    if (n != "__kmpc_reduce" && n != "__kmpc_reduce_nowait") return;
+    c.emitWarning("LLVMToOmp: '") << n
+        << "' could not be converted.  Left as llvm.call.";
+  });
+}
 //===----------------------------------------------------------------------===//
 // §16  Atomics
 //
@@ -2681,11 +3279,13 @@ struct UnhandledPat : OpRewritePattern<LLVM::CallOp> {
 
 void LLVMToOMPPass::applyLeafPatterns(ModuleOp mod) {
   RewritePatternSet pats(mod.getContext());
-  pats.add<BarrierPat, FlushPat, TaskwaitPat, TaskyieldPat,
+  pats.add<
+  BarrierPat, FlushPat, TaskwaitPat, TaskyieldPat,
            CancelPat, CancelPointPat, GlobalTidPat,
            GpuTargetPat, PushClausePat, TaskCompleteIf0Pat, 
            SectionsDispatchPat, 
-           UnhandledPat>(mod.getContext());
+           UnhandledPat
+           >(mod.getContext());
   (void)applyPatternsGreedily(mod, std::move(pats));
 }
 
@@ -2714,19 +3314,16 @@ void LLVMToOMPPass::runOnOperation() {
   convertTeams(mod);
   convertParallel(mod);
   convertPaired(mod);     // single / master / critical / ordered / taskgroup
+    // mod.print(llvm::outs(),
+    //          OpPrintingFlags().useLocalScope());
   convertStaticWs(mod);   // for_static_init/fini  → wsloop static
-  // mod.print(llvm::outs(),
-  //            OpPrintingFlags().useLocalScope());
   convertDynWs(mod);      // dispatch_init/next/fini→ wsloop dynamic
   convertTasks(mod);      // task_alloc + omp_task  → omp.task
   convertTaskloop(mod);
   convertAtomics(mod);    // __kmpc_atomic_*        → omp.atomic.*
-  convertReductions(mod); // warn + leave
-
-  
+  convertReductions(mod);
   // Phase 2 — leaf rewrites.
   applyLeafPatterns(mod);
-
   LLVM_DEBUG(llvm::dbgs() << "[LLVMToOmp] pass complete\n");
 }
 
