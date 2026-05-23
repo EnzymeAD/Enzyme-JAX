@@ -76,6 +76,7 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
+#include "mlir/Transforms/RegionUtils.h"
 
 namespace mlir::enzyme {
 #define GEN_PASS_DEF_LLVMTOOMP
@@ -231,6 +232,9 @@ static void moveBeforeTerminator(SmallVectorImpl<Operation *> &ops, Block *tgt) 
   for (Operation *op : ops) op->moveBefore(term);
 }
 
+
+
+
 //===----------------------------------------------------------------------===//
 // §2  Nowait detection
 //
@@ -257,6 +261,79 @@ static bool detectNowait(Operation *endOp, bool eraseBarrier = false) {
   return true;
 }
 
+
+//===----------------------------------------------------------------------===//
+// §1c  buildPreHoistMap  (replaces hoistEscapingDeps)
+//
+// Scans the body of `loopOp` (scf::WhileOp or scf::ForOp) for operands that
+// are defined inside `erasedSet` but OUTSIDE the loop itself — typically values
+// computed in the lb<=ub scf.if preamble between init and fini.  Clones those
+// defining-op chains to just before `insertBefore` and returns a DenseMap that
+// seeds the inliner's IRMapping so the cloned body never holds erased-range refs.
+//
+// Why this is correct where hoistEscapingDeps was not:
+//   hoistEscapingDeps ran AFTER cloning → raw erased-range refs already in wsOp
+//     → had to retroactively patch clones → needed block-arg resurrection maps
+//     → every new app revealed a new edge case.
+//   buildPreHoistMap runs BEFORE cloning → the IRMapping is complete when
+//     inlineWhileBodyIntoNest / inlineForBodyIntoNest execute → clone is clean
+//     → erase loop needs only dropAllUses + erase.
+//===----------------------------------------------------------------------===//
+
+#include "mlir/Transforms/RegionUtils.h"
+
+// static IRMapping buildPreHoistMap(Operation *insertBefore,
+//                                    Operation *loopOp,
+//                                    const SmallPtrSet<Operation *, 32> &erasedSet) {
+//   OpBuilder b(insertBefore);
+//   llvm::DenseMap<Value, Value> lifted;
+
+//   // Canonical MLIR primitive: collects every Value used inside loopOp's
+//   // regions that is defined outside those regions.  Block args of loopOp
+//   // itself are excluded by construction — no isAncestor guard needed.
+//   llvm::SetVector<Value> captured;
+//   mlir::getUsedValuesDefinedAbove(loopOp->getRegions(), captured);
+
+//   std::function<Value(Value)> hoist = [&](Value v) -> Value {
+//     if (auto it = lifted.find(v); it != lifted.end()) return it->second;
+//     Operation *def = v.getDefiningOp();
+//     if (!def) {
+//       // Block arg defined above the loop but inside another erased op.
+//       if (Operation *ownerOp =
+//               cast<BlockArgument>(v).getOwner()->getParentOp())
+//         if (erasedSet.count(ownerOp)) {
+//           Value u = b.create<LLVM::UndefOp>(ownerOp->getLoc(), v.getType());
+//           return lifted[v] = u;
+//         }
+//       return v;
+//     }
+//     if (!erasedSet.count(def)) return v;
+//     IRMapping m;
+//     for (Value operand : def->getOperands())
+//       m.map(operand, hoist(operand));
+//     Operation *cloned = b.clone(*def, m);
+//     for (auto [orig, live] : llvm::zip(def->getResults(), cloned->getResults()))
+//       lifted[orig] = live;
+//     return lifted[v];
+//   };
+
+//   IRMapping result;
+//   for (Value cap : captured) {
+//     // Only hoist captures that come from the erased range.
+//     Operation *def = cap.getDefiningOp();
+//     bool needsHoist = def ? erasedSet.count(def) : [&] {
+//       Operation *ownerOp =
+//           cast<BlockArgument>(cap).getOwner()->getParentOp();
+//       return ownerOp && erasedSet.count(ownerOp);
+//     }();
+//     if (!needsHoist) continue;
+//     Value live = hoist(cap);
+//     if (live != cap) result.map(cap, live);
+//   }
+//   return result;
+// }
+
+
 //===----------------------------------------------------------------------===//
 // §1b  hoistEscapingDeps
 //
@@ -281,101 +358,135 @@ static bool detectNowait(Operation *endOp, bool eraseBarrier = false) {
 // computation chain, which pulls the loop IV (a child-region block argument)
 // into the parent scope → dominance error.
 //===----------------------------------------------------------------------===//
-static void hoistEscapingDeps(omp::WsloopOp wsOp,
-                               LLVM::CallOp rangeBegin,
-                               LLVM::CallOp rangeEnd) {
-  // ── Step 1: erase set ────────────────────────────────────────────────────
-  SmallPtrSet<Operation *, 32> erasedSet;
-  {
-    auto between = opsBetween(rangeBegin, rangeEnd);
-    for (Operation *op : between) {
-      erasedSet.insert(op);
-      op->walk([&](Operation *inner) { erasedSet.insert(inner); });
-    }
-  }
-  if (erasedSet.empty()) return;
+// static void hoistEscapingDeps(omp::WsloopOp wsOp,
+//                                LLVM::CallOp rangeBegin,
+//                                LLVM::CallOp rangeEnd) {
+//   // ── Step 1: erase set ────────────────────────────────────────────────────
+//   SmallPtrSet<Operation *, 32> erasedSet;
+//   {
+//     auto between = opsBetween(rangeBegin, rangeEnd);
+//     for (Operation *op : between) {
+//       erasedSet.insert(op);
+//       op->walk([&](Operation *inner) { erasedSet.insert(inner); });
+//     }
+//   }
+//   if (erasedSet.empty()) return;
 
-  // ── Step 1b: block-argument resurrection map ──────────────────────────────
-  // Block arguments have no defining op; ensureLive would return them as-is,
-  // leaving live references inside wsOp after the erasedSet ops are destroyed.
-  // For the most common cases (scf.while, scf.for) we map each block argument
-  // to the corresponding init / iter-arg value that is defined *before* the
-  // erased range and therefore safe to use in wsOp.
-  llvm::DenseMap<Value, Value> blockArgReplacement;
-  for (Operation *op : erasedSet) {
-    if (auto whileOp = dyn_cast<scf::WhileOp>(op)) {
-      // before-block args → init values (defined outside the erased range)
-      Block &beforeBlk = whileOp.getBefore().front();
-      for (unsigned i = 0; i < beforeBlk.getNumArguments(); ++i)
-        blockArgReplacement[beforeBlk.getArgument(i)] = whileOp.getInits()[i];
-      // after-block (do-block) args → same init values as fallback
-      // (they normally only appear in scf.yield inside the do-block, but
-      //  guard against any accidental escaping reference)
-      Block &afterBlk = whileOp.getAfter().front();
-      for (unsigned i = 0; i < afterBlk.getNumArguments(); ++i)
-        blockArgReplacement[afterBlk.getArgument(i)] = whileOp.getInits()[i];
-    } else if (auto forOp = dyn_cast<scf::ForOp>(op)) {
-      // iter-args → corresponding init values
-      for (unsigned i = 0; i < forOp.getNumRegionIterArgs(); ++i)
-        blockArgReplacement[forOp.getRegionIterArg(i)] = forOp.getInitArgs()[i];
-      // IV is always remapped by inlineForBodyIntoNest, so no entry needed
-    }
-    // scf.if has no block args in its regions — no entry needed.
-  }
+//   // ── Step 1b: block-argument resurrection map ──────────────────────────────
+//   // Block arguments have no defining op; ensureLive would return them as-is,
+//   // leaving live references inside wsOp after the erasedSet ops are destroyed.
+//   //
+//   // scf.while layout:
+//   //   before-block args  → getInits() (always 1-to-1)
+//   //   after-block args   → scf.condition operands[1+]  (NOT inits!)
+//   //
+//   // The two counts can differ (e.g. HPGMG: 1 init but 2 after-block args).
+//   // Guard every index against getInits().size(); for extra after-block args
+//   // that have no corresponding init, emit an llvm.undef placeholder — those
+//   // args only appear inside the erased scf.while body so correctness is
+//   // unaffected.
+//   llvm::DenseMap<Value, Value> blockArgReplacement;
+//   for (Operation *op : erasedSet) {
+//     if (auto whileOp = dyn_cast<scf::WhileOp>(op)) {
+//       auto inits = whileOp.getInits();
 
-  // ── Step 2: memoised recursive lift ──────────────────────────────────────
-  llvm::DenseMap<Value, Value> lifted;
-  OpBuilder b(wsOp);
+//       // before-block: always matches inits in a well-formed scf.while,
+//       // but guard for robustness.
+//       Block &beforeBlk = whileOp.getBefore().front();
+//       for (unsigned i = 0;
+//            i < beforeBlk.getNumArguments() && i < (unsigned)inits.size(); ++i)
+//         blockArgReplacement[beforeBlk.getArgument(i)] = inits[i];
 
-  std::function<Value(Value)> ensureLive = [&](Value v) -> Value {
-    auto it = lifted.find(v);
-    if (it != lifted.end()) return it->second;
+//       // after-block: args correspond to scf.condition operands[1+], not inits.
+//       // Their count may exceed inits.size() (the crash case in HPGMG).
+//       Block &afterBlk = whileOp.getAfter().front();
+//       OpBuilder tmpB(wsOp);
+//       for (unsigned i = 0; i < afterBlk.getNumArguments(); ++i) {
+//         Value repl;
+//         if (i < (unsigned)inits.size()) {
+//           repl = inits[i];
+//         } else {
+//           // No corresponding init — emit undef so ensureLive has something
+//           // safe to return if this arg escaped into wsOp.
+//           repl = tmpB.create<LLVM::UndefOp>(
+//               whileOp.getLoc(), afterBlk.getArgument(i).getType());
+//         }
+//         blockArgReplacement[afterBlk.getArgument(i)] = repl;
+//       }
+//     } else if (auto forOp = dyn_cast<scf::ForOp>(op)) {
+//       // iter-args → corresponding init values
+//       for (unsigned i = 0; i < forOp.getNumRegionIterArgs(); ++i)
+//         blockArgReplacement[forOp.getRegionIterArg(i)] = forOp.getInitArgs()[i];
+//       // IV is always remapped by inlineForBodyIntoNest, so no entry needed
+//     }
+//     // scf.if has no block args in its regions — no entry needed.
+//   }
 
-    Operation *def = v.getDefiningOp();
+//   // ── Step 2: memoised recursive lift ──────────────────────────────────────
+//   llvm::DenseMap<Value, Value> lifted;
+//   OpBuilder b(wsOp);
 
-    // ── Block argument: use replacement map if available ──────────────────
-    if (!def) {
-      auto bIt = blockArgReplacement.find(v);
-      if (bIt != blockArgReplacement.end()) {
-        // The replacement may itself be inside the erased range (rare but
-        // possible if the init was computed between rangeBegin and rangeEnd).
-        Value safe = ensureLive(bIt->second);
-        lifted[v] = safe;
-        return safe;
-      }
-      // Block arg defined outside the erased set — safe as-is.
-      return v;
-    }
+//   std::function<Value(Value)> ensureLive = [&](Value v) -> Value {
+//     auto it = lifted.find(v);
+//     if (it != lifted.end()) return it->second;
 
-    // ── Op result: outside erased set — safe as-is ────────────────────────
-    if (!erasedSet.count(def)) return v;
+//     Operation *def = v.getDefiningOp();
 
-    // ── Op result: inside erased set — clone transitively ─────────────────
-    IRMapping m;
-    for (Value operand : def->getOperands())
-      m.map(operand, ensureLive(operand));
+//     // ── Block argument ────────────────────────────────────────────────────
+//     if (!def) {
+//       // 1. Explicit replacement map (scf.while inits, scf.for iter-args).
+//       auto bIt = blockArgReplacement.find(v);
+//       if (bIt != blockArgReplacement.end()) {
+//         Value safe = ensureLive(bIt->second);
+//         lifted[v] = safe;
+//         return safe;
+//       }
+//       // 2. Block arg whose parent op is inside the erased set
+//       //    (e.g. IV of a scf.for nested inside the erased scf.if).
+//       //    Returning it as-is would leave a dangling reference after erasure.
+//       if (Block *ownerBlk = cast<BlockArgument>(v).getOwner()) {
+//         if (Operation *ownerOp = ownerBlk->getParentOp()) {
+//           if (erasedSet.count(ownerOp)) {
+//             Value undef = b.create<LLVM::UndefOp>(ownerOp->getLoc(), v.getType());
+//             lifted[v] = undef;
+//             return undef;
+//           }
+//         }
+//       }
+//       // 3. Block arg defined outside the erased set — safe as-is.
+//       return v;
+//     }
 
-    Operation *cloned = b.clone(*def, m);
+//     // ── Op result: outside erased set — safe as-is ────────────────────────
+//     if (!erasedSet.count(def)) return v;
 
-    for (auto [origR, newR] :
-         llvm::zip(def->getResults(), cloned->getResults()))
-      lifted[origR] = newR;
+//     // ── Op result: inside erased set — clone transitively ─────────────────
+//     IRMapping m;
+//     for (Value operand : def->getOperands())
+//       m.map(operand, ensureLive(operand));
 
-    return lifted[v];
-  };
+//     Operation *cloned = b.clone(*def, m);
 
-  // ── Step 3: patch dangling operands inside wsOp ──────────────────────────
-  wsOp->walk([&](Operation *op) {
-    for (unsigned i = 0, e = op->getNumOperands(); i < e; ++i) {
-      Value v = op->getOperand(i);
-      Operation *def = v.getDefiningOp();
-      bool inErasedSet   = def && erasedSet.count(def);
-      bool isErasedArg   = !def && blockArgReplacement.count(v);
-      if (inErasedSet || isErasedArg)
-        op->setOperand(i, ensureLive(v));
-    }
-  });
-}
+//     for (auto [origR, newR] :
+//          llvm::zip(def->getResults(), cloned->getResults()))
+//       lifted[origR] = newR;
+
+//     return lifted[v];
+//   };
+
+//   // ── Step 3: patch dangling operands inside wsOp ──────────────────────────
+//   wsOp->walk([&](Operation *op) {
+//     for (unsigned i = 0, e = op->getNumOperands(); i < e; ++i) {
+//       Value v = op->getOperand(i);
+//       Operation *def = v.getDefiningOp();
+//       bool inErasedSet   = def && erasedSet.count(def);
+//       bool isErasedArg   = !def && blockArgReplacement.count(v);
+//       if (inErasedSet || isErasedArg)
+//         op->setOperand(i, ensureLive(v));
+//     }
+//   });
+// }
+
 
 //===----------------------------------------------------------------------===//
 // §3  Outlined-function inliner
@@ -1202,96 +1313,391 @@ static scf::ForOp findForOpBetween(Operation *init, Operation *fini) {
 //           everything else is body and gets cloned.
 //===----------------------------------------------------------------------===//
 
-static void inlineWhileBodyIntoNest(OpBuilder &b, Location loc,
-                                    Block *nestBlk,
-                                    scf::WhileOp whileOp,
-                                    BlockArgument nestIV) {
-  Block *beforeBlk = &whileOp.getBefore().front();
-  BlockArgument whileIV = beforeBlk->getArgument(0);
-  Operation *condOp = beforeBlk->getTerminator(); // scf.condition
+//===----------------------------------------------------------------------===//
+// Helper 4 (revised): clone the scf.while body into nestBlk.
+// seedMap  — pre-hoisted values for erased-range operands captured from outside
+//            the while.  Populated by buildPreHoistMap before the call so the
+//            clone is self-contained and holds no erased-range references.
+//===----------------------------------------------------------------------===//
 
-  // ── Control ops: ONLY trace backward from operand[0] (condition bool)
-  //    and operand[1] (next-IV step).  Operands [2+] are accumulator
-  //    carries — the body's *result* — and must NOT seed the control set.
-  //    (Old code seeded from all operands, marking gep/load/addi as control,
-  //     producing an empty body that DCE subsequently removed.)
-  SmallPtrSet<Operation *, 8> controlOps;
-  {
-    SmallVector<Value> worklist;
-    for (unsigned i = 0; i <= 1 && i < condOp->getNumOperands(); ++i)
-      worklist.push_back(condOp->getOperand(i));
-    while (!worklist.empty()) {
-      Value v = worklist.pop_back_val();
-      Operation *def = v.getDefiningOp();
-      if (!def || def->getBlock() != beforeBlk) continue;
-      if (!controlOps.insert(def).second) continue;
-      for (Value op : def->getOperands()) worklist.push_back(op);
-    }
+
+
+//===----------------------------------------------------------------------===//
+// §1c  liftClauseValue
+//
+// Move v's defining op (recursively) out of the erased range to just before
+// `insertBefore`, so the new wsOp/loop_nest can safely consume v.  Uses MOVE
+// (not clone) — that way every existing user, including users still inside the
+// erased range, keeps working until that range is erased.
+//
+// Returns false if v depends transitively on something we cannot move:
+//   - a block argument whose owning op is in erasedSet
+//   - an op with regions (can't safely relocate)
+// On false, the caller must skip the whole conversion.
+//===----------------------------------------------------------------------===//
+static bool liftClauseValue(Value v, Operation *insertBefore,
+                             const SmallPtrSet<Operation *, 32> &erasedSet) {
+  if (!v) return true;
+  Operation *def = v.getDefiningOp();
+  if (!def) {
+    // Block argument.  Safe iff its owning op is outside the erased range.
+    auto ba = cast<BlockArgument>(v);
+    if (Operation *p = ba.getOwner()->getParentOp())
+      if (erasedSet.count(p))
+        return false;
+    return true;
   }
+  if (!erasedSet.count(def)) return true;        // already safe
+  if (def->getNumRegions() > 0) return false;     // can't move region ops
+  for (Value operand : def->getOperands())
+    if (!liftClauseValue(operand, insertBefore, erasedSet))
+      return false;
+  def->moveBefore(insertBefore);
+  return true;
+}
 
-  // ── IRMapping ────────────────────────────────────────────────────────────
-  IRMapping map;
-  b.setInsertionPoint(nestBlk->getTerminator());
+//===----------------------------------------------------------------------===//
+// Helper 5  moveForBodyIntoNest  (replaces inlineForBodyIntoNest)
+//
+// Move (not clone) the body ops of scf.for into nestBlk before the yield, then
+// retarget forIV uses that landed in the nest via region-scoped RAUW.
+//===----------------------------------------------------------------------===//
+static void moveForBodyIntoNest(OpBuilder &b, Location loc,
+                                 Block *nestBlk, scf::ForOp forOp,
+                                 BlockArgument nestIV) {
+  Value forIV = forOp.getInductionVar();
+  Block *bodyBlk = forOp.getBody();
+  Operation *yieldOp = nestBlk->getTerminator();
 
-  // IV: while arg[0] → (sign-extended if needed) nestIV
+  // ── Phase 1: IV cast + iter-arg loads at top of nestBlk ───────────────
+  b.setInsertionPointToStart(nestBlk);
   Value mappedIV = nestIV;
-  if (whileIV.getType() != nestIV.getType())
-    mappedIV = b.create<arith::ExtSIOp>(loc, whileIV.getType(), nestIV);
-  map.map(whileIV, mappedIV);
-
-  // Accumulator args (while block arg[1], arg[2], …):
-  //   Map each to a load from its backing alloca.
-  //   Without this, cloned ops reference the while block-arg which becomes
-  //   dangling once the scf.while is erased.
-  //
-  // scf.condition layout:
-  //   operand[0]  = cond
-  //   operand[1]  = next value for block-arg[0]  (IV)
-  //   operand[i+1]= next value for block-arg[i]  (acc_i, i >= 1)
-  struct AccStore { Value alloca; Value newAccOrig; };
-  SmallVector<AccStore> accStores;
-
-  for (unsigned i = 1; i < beforeBlk->getNumArguments(); ++i) {
-    BlockArgument accArg = beforeBlk->getArgument(i);
-    // Initial value passed to the while for this accumulator
-    Value initVal = whileOp.getInits()[i];
-
-    // Trace: initVal = memref.load(enzymexla.pointer2memref(accAlloca))[0]
-    Value accAlloca;
-    if (auto ld = initVal.getDefiningOp<memref::LoadOp>())
-      if (auto *p2m = ld.getMemRef().getDefiningOp())
-        if (p2m->getName().getStringRef() == "enzymexla.pointer2memref" &&
-            p2m->getNumOperands() == 1)
-          accAlloca = p2m->getOperand(0);
-
-    if (!accAlloca) {
-      // Fallback: undef avoids the dangling reference after while erasure
-      map.map(accArg, b.create<LLVM::UndefOp>(loc, accArg.getType()));
-      continue;
-    }
-
-    // Emit load of the running total at the start of this iteration
-    Value currAcc = b.create<LLVM::LoadOp>(loc, accArg.getType(), accAlloca);
-    map.map(accArg, currAcc);
-
-    // Remember: the new value for this acc is at condOp->getOperand(i+1)
-    if (condOp->getNumOperands() > i + 1)
-      accStores.push_back({accAlloca, condOp->getOperand(i + 1)});
+  if (forIV.getType() != nestIV.getType()) {
+    mappedIV = isa<IndexType>(forIV.getType())
+                ? b.create<arith::IndexCastUIOp>(loc, forIV.getType(), nestIV).getResult()
+                : b.create<arith::ExtSIOp>(loc, forIV.getType(), nestIV).getResult();
   }
 
-  // ── Clone non-control body ops ────────────────────────────────────────
-  for (Operation &op : beforeBlk->without_terminator())
-    if (!controlOps.contains(&op))
-      b.clone(op, map);
+  // For each iter-arg, find the backing alloca via the init-value's
+  // memref.load → pointer2memref pattern (same as moveWhileBodyIntoNest
+  // accumulator handling).  Emit llvm.load at the top of nestBlk; fall
+  // back to llvm.undef when no alloca is detectable.
+  struct IterArgInfo {
+    BlockArgument arg;
+    Value alloca;      // null → no backing alloca found
+    Value loadedVal;   // result of llvm.load or llvm.undef
+  };
+  SmallVector<IterArgInfo> iterArgInfos;
+  for (unsigned i = 0; i < forOp.getNumRegionIterArgs(); ++i) {
+    BlockArgument iterArg = forOp.getRegionIterArg(i);
+    Value initVal = i < (unsigned)forOp.getInitArgs().size()
+                        ? forOp.getInitArgs()[i] : Value{};
+    Value iterAlloca;
+    if (initVal)
+      if (auto ld = initVal.getDefiningOp<memref::LoadOp>())
+        if (auto *p2m = ld.getMemRef().getDefiningOp())
+          if (p2m->getName().getStringRef() == "enzymexla.pointer2memref" &&
+              p2m->getNumOperands() == 1)
+            iterAlloca = p2m->getOperand(0);
+    Value loaded = iterAlloca
+                       ? b.create<LLVM::LoadOp>(loc, iterArg.getType(), iterAlloca).getResult()
+                       : b.create<LLVM::UndefOp>(loc, iterArg.getType()).getResult();
+    iterArgInfos.push_back({iterArg, iterAlloca, loaded});
+  }
 
-  // ── Write new accumulator values back (closes the loop-carried dep) ────
-  b.setInsertionPoint(nestBlk->getTerminator());
-  for (auto &[accAlloca, newAccOrig] : accStores) {
-    Value newAcc = map.lookupOrDefault(newAccOrig);
-    b.create<LLVM::StoreOp>(loc, newAcc, accAlloca);
+  // ── Phase 2: Move body ops (minus terminator) before the yield ─────────
+  SmallVector<Operation *> toMove;
+  for (Operation &op : bodyBlk->without_terminator())
+    toMove.push_back(&op);
+  for (Operation *op : toMove) op->moveBefore(yieldOp);
+
+  // ── Phase 3: Region-scoped RAUW of forIV and all iter-args ─────────────
+  Region *nestRegion = nestBlk->getParent();
+  auto inNest = [&](OpOperand &u) {
+    return nestRegion->isAncestor(u.getOwner()->getParentRegion());
+  };
+  forIV.replaceUsesWithIf(mappedIV, inNest);
+  for (auto &info : iterArgInfos)
+    info.arg.replaceUsesWithIf(info.loadedVal, inNest);
+
+  // ── Phase 4: Iter-arg writebacks before the omp.yield ──────────────────
+  // The body commonly already stores to the backing alloca (Clang's reduction
+  // pattern), so this store may be redundant but is always harmless.
+  // For the pass-through case (scf.yield(%iter_arg)), substitute loadedVal.
+  auto forYield = cast<scf::YieldOp>(bodyBlk->getTerminator());
+  b.setInsertionPoint(yieldOp);
+  for (unsigned i = 0; i < iterArgInfos.size(); ++i) {
+    auto &info = iterArgInfos[i];
+    if (!info.alloca) continue;
+    Value yieldedVal = i < forYield.getNumOperands()
+                           ? forYield.getOperand(i) : Value{};
+    if (!yieldedVal) continue;
+    // Pass-through: scf.yield(%iter_arg) — substitute the loaded value.
+    if (yieldedVal == info.arg) yieldedVal = info.loadedVal;
+    Operation *defOp = yieldedVal.getDefiningOp();
+    bool safe = !defOp || nestRegion->isAncestor(defOp->getParentRegion());
+    if (!safe) continue;
+    b.create<LLVM::StoreOp>(loc, yieldedVal, info.alloca);
   }
 }
 
+//===----------------------------------------------------------------------===//
+// Helper 4  moveWhileBodyIntoNest  (replaces inlineWhileBodyIntoNest)
+//
+// Move (not clone) the per-iteration work from scf.while.before into nestBlk,
+// then retarget block-arg uses via region-scoped RAUW.  Accumulator handling:
+//   - locate backing alloca via inits[i] = memref.load(p2m(alloca))[0] pattern
+//   - emit  %loaded = llvm.load %alloca  at the top of nest body
+//   - emit  llvm.store %newAcc, %alloca  before the yield
+//
+// Classification:
+//   reachWriteback = backward-reachable from scf.condition operands [1..N]
+//                    (these MUST be moved so writebacks can reference them)
+//   controlOnly    = backward-reachable from scf.condition operand 0 (bool)
+//                    AND not in reachWriteback (these stay; erased with while)
+//   body           = everything else in beforeBlk (moved)
+//===----------------------------------------------------------------------===//
+static void moveWhileBodyIntoNest(OpBuilder &b, Location loc,
+                                   Block *nestBlk, scf::WhileOp whileOp,
+                                   BlockArgument nestIV) {
+  Block *beforeBlk = &whileOp.getBefore().front();
+
+  // ── Dispatch-while guard ───────────────────────────────────────────────
+  // The dispatch-while (used by convertDynWs) has no before-block arguments:
+  // the before-block only calls dispatch_next and checks the condition.
+  // The real per-iteration work is an inner scf.for in the after-block.
+  // Delegate to moveForBodyIntoNest for the inner for; if none is found,
+  // move the after-block ops directly.
+  if (beforeBlk->getNumArguments() == 0) {
+    Block *afterBlk = &whileOp.getAfter().front();
+    // Find the first (outermost) scf.for in the after-block.
+    scf::ForOp innerFor;
+    for (Operation &op : *afterBlk)
+      if (auto f = dyn_cast<scf::ForOp>(&op)) { innerFor = f; break; }
+
+    if (innerFor) {
+      // The inner for's IV maps to nestIV; its body becomes the OMP body.
+      moveForBodyIntoNest(b, loc, nestBlk, innerFor, nestIV);
+    } else {
+      // No inner for — move all after-block ops (minus scf.yield) directly.
+      SmallVector<Operation *> toMove;
+      for (Operation &op : afterBlk->without_terminator())
+        toMove.push_back(&op);
+      for (Operation *op : toMove) op->moveBefore(nestBlk->getTerminator());
+    }
+    return;
+  }
+  // ── End dispatch-while guard ───────────────────────────────────────────
+
+  BlockArgument whileIV = beforeBlk->getArgument(0);
+  Operation *condOp = beforeBlk->getTerminator();
+  auto inits = whileOp.getInits();
+  Operation *yieldOp = nestBlk->getTerminator();
+
+  // ── Classify before-block ops ──────────────────────────────────────────
+  SmallPtrSet<Operation *, 16> reachWriteback;
+  {
+    SmallVector<Value> wl;
+    for (unsigned i = 1; i < condOp->getNumOperands(); ++i)
+      wl.push_back(condOp->getOperand(i));
+    while (!wl.empty()) {
+      Value v = wl.pop_back_val();
+      Operation *def = v.getDefiningOp();
+      if (!def || def->getBlock() != beforeBlk) continue;
+      if (!reachWriteback.insert(def).second) continue;
+      for (Value o : def->getOperands()) wl.push_back(o);
+    }
+  }
+  SmallPtrSet<Operation *, 16> controlOnly;
+  if (condOp->getNumOperands() > 0) {
+    SmallVector<Value> wl;
+    wl.push_back(condOp->getOperand(0));
+    while (!wl.empty()) {
+      Value v = wl.pop_back_val();
+      Operation *def = v.getDefiningOp();
+      if (!def || def->getBlock() != beforeBlk) continue;
+      if (reachWriteback.contains(def)) continue;     // body wins
+      if (!controlOnly.insert(def).second) continue;
+      for (Value o : def->getOperands()) wl.push_back(o);
+    }
+  }
+
+  // ── Phase 1: IV cast + accumulator loads at top of nest body ───────────
+  b.setInsertionPointToStart(nestBlk);
+  Value mappedIV = nestIV;
+  if (whileIV.getType() != nestIV.getType())
+    mappedIV = b.create<arith::ExtSIOp>(loc, whileIV.getType(), nestIV);
+
+  struct AccInfo {
+    BlockArgument arg;
+    Value alloca;       // null → no backing alloca, no writeback
+    Value loadedVal;    // load of alloca, or undef if no alloca
+    Value newAccOrig;   // condOp operand at index `argIndex`
+  };
+  SmallVector<AccInfo> accInfos;
+  for (unsigned i = 1; i < beforeBlk->getNumArguments(); ++i) {
+    BlockArgument accArg = beforeBlk->getArgument(i);
+    Value initVal = i < (unsigned)inits.size() ? inits[i] : Value{};
+
+    Value accAlloca;
+    if (initVal)
+      if (auto ld = initVal.getDefiningOp<memref::LoadOp>())
+        if (auto *p2m = ld.getMemRef().getDefiningOp())
+          if (p2m->getName().getStringRef() == "enzymexla.pointer2memref" &&
+              p2m->getNumOperands() == 1)
+            accAlloca = p2m->getOperand(0);
+
+    Value loaded;
+    if (accAlloca)
+      loaded = b.create<LLVM::LoadOp>(loc, accArg.getType(), accAlloca);
+    else
+      loaded = b.create<LLVM::UndefOp>(loc, accArg.getType());
+
+    Value newAcc = (condOp->getNumOperands() > i)
+                       ? condOp->getOperand(i) : Value{};
+    accInfos.push_back({accArg, accAlloca, loaded, newAcc});
+  }
+
+  // ── Phase 2: move body ops (non-control) before the yield, in order ────
+  SmallVector<Operation *> toMove;
+  for (Operation &op : beforeBlk->without_terminator())
+    if (!controlOnly.contains(&op)) toMove.push_back(&op);
+  for (Operation *op : toMove) op->moveBefore(yieldOp);
+
+  // ── Phase 3: region-scoped RAUW of block args ──────────────────────────
+  Region *nestRegion = nestBlk->getParent();
+  auto inNest = [&](OpOperand &u) {
+    return nestRegion->isAncestor(u.getOwner()->getParentRegion());
+  };
+  whileIV.replaceUsesWithIf(mappedIV, inNest);
+  for (auto &acc : accInfos)
+    acc.arg.replaceUsesWithIf(acc.loadedVal, inNest);
+
+  // ── Phase 4: accumulator writebacks before the yield ───────────────────
+  // Translate writeback values that are themselves block args (RAUW only
+  // touches existing uses, not Values we hand to fresh b.create<...> calls).
+  auto translate = [&](Value v) -> Value {
+    if (v == whileIV) return mappedIV;
+    for (auto &a : accInfos)
+      if (v == a.arg) return a.loadedVal;
+    return v;
+  };
+  b.setInsertionPoint(yieldOp);
+  for (auto &acc : accInfos) {
+    if (!acc.alloca || !acc.newAccOrig) continue;
+    Value valToStore = translate(acc.newAccOrig);
+    Operation *defOp = valToStore.getDefiningOp();
+    bool safe = !defOp || nestRegion->isAncestor(defOp->getParentRegion());
+    if (!safe) continue;   // writeback would violate dominance; drop it
+    b.create<LLVM::StoreOp>(loc, valToStore, acc.alloca);
+  }
+}
+
+
+// static void inlineWhileBodyIntoNest(OpBuilder &b, Location loc,
+//                                      Block *nestBlk,
+//                                      scf::WhileOp whileOp,
+//                                      BlockArgument nestIV,
+//                                      IRMapping map) {
+//   Block         *beforeBlk = &whileOp.getBefore().front();
+//   BlockArgument  whileIV   = beforeBlk->getArgument(0);
+//   Operation     *condOp    = beforeBlk->getTerminator();
+
+//   // ── Control ops: backward-reachable from cond bool + next-IV only ─────
+//   SmallPtrSet<Operation *, 8> controlOps;
+//   {
+//     SmallVector<Value> worklist;
+//     for (unsigned i = 0; i <= 1 && i < condOp->getNumOperands(); ++i)
+//       worklist.push_back(condOp->getOperand(i));
+//     while (!worklist.empty()) {
+//       Value v = worklist.pop_back_val();
+//       Operation *def = v.getDefiningOp();
+//       if (!def || def->getBlock() != beforeBlk) continue;
+//       if (!controlOps.insert(def).second) continue;
+//       for (Value op : def->getOperands()) worklist.push_back(op);
+//     }
+//   }
+
+//   b.setInsertionPoint(nestBlk->getTerminator());
+
+//   // ── IV ────────────────────────────────────────────────────────────────
+//   Value mappedIV = nestIV;
+//   if (whileIV.getType() != nestIV.getType())
+//     mappedIV = b.create<arith::ExtSIOp>(loc, whileIV.getType(), nestIV);
+//   map.map(whileIV, mappedIV);
+
+//   // ── Accumulator args ──────────────────────────────────────────────────
+//   auto inits = whileOp.getInits();
+//   struct AccStore { Value alloca; Value newAccOrig; };
+//   SmallVector<AccStore> accStores;
+
+//   for (unsigned i = 1; i < beforeBlk->getNumArguments(); ++i) {
+//     BlockArgument accArg  = beforeBlk->getArgument(i);
+//     Value         initVal = i < (unsigned)inits.size() ? inits[i] : Value{};
+
+//     Value accAlloca;
+//     if (initVal)
+//       if (auto ld = initVal.getDefiningOp<memref::LoadOp>())
+//         if (auto *p2m = ld.getMemRef().getDefiningOp())
+//           if (p2m->getName().getStringRef() == "enzymexla.pointer2memref" &&
+//               p2m->getNumOperands() == 1)
+//             accAlloca = p2m->getOperand(0);
+
+//     if (!accAlloca) {
+//       map.map(accArg, b.create<LLVM::UndefOp>(loc, accArg.getType()));
+//       continue;
+//     }
+//     map.map(accArg,
+//             b.create<LLVM::LoadOp>(loc, accArg.getType(), accAlloca));
+//     if (condOp->getNumOperands() > i + 1)
+//       accStores.push_back({accAlloca, condOp->getOperand(i + 1)});
+//   }
+
+//   // ── ensureCloned: clone a before-block value on demand ───────────────
+//   // Needed in two cases:
+//   //   (A) A body op uses a control-op result directly (e.g. a memref.store
+//   //       writing the new accumulator value — it has no result so the
+//   //       backward trace never marks it as control, but its stored value IS
+//   //       a control op result not in map).
+//   //   (B) The new accumulator value recorded in accStores is a control op
+//   //       (e.g. arith.minsi feeds arith.cmpi → condition bool).
+//   // Without this, b.clone / map.lookupOrDefault silently keeps the original
+//   // erased-range Value, producing a dangling reference after erasure.
+//   std::function<Value(Value)> ensureCloned = [&](Value v) -> Value {
+//     if (map.contains(v)) return map.lookupOrDefault(v);
+//     Operation *def = v.getDefiningOp();
+//     // External to before-block (pre-hoisted or safe outer value).
+//     if (!def || def->getBlock() != beforeBlk)
+//       return map.lookupOrDefault(v);
+//     // Clone the defining op with recursively-ensured operands.
+//     IRMapping m2;
+//     for (Value operand : def->getOperands())
+//       m2.map(operand, ensureCloned(operand));
+//     Operation *cloned = b.clone(*def, m2);
+//     for (auto [orig, newR] :
+//          llvm::zip(def->getResults(), cloned->getResults()))
+//       map.map(orig, newR);
+//     return map.lookupOrDefault(v);
+//   };
+
+//   // ── Clone non-control body ops ────────────────────────────────────────
+//   // Before each clone, resolve any operand that comes from a control op
+//   // (not yet in map) so b.clone finds a valid mapped value.
+//   for (Operation &op : beforeBlk->without_terminator()) {
+//     if (controlOps.contains(&op)) continue;
+//     for (Value operand : op.getOperands())
+//       if (!map.contains(operand))
+//         if (Operation *def = operand.getDefiningOp())
+//           if (def->getBlock() == beforeBlk)
+//             ensureCloned(operand); // adds clone to map for b.clone to pick up
+//     b.clone(op, map);
+//   }
+
+//   // ── Accumulator write-back ────────────────────────────────────────────
+//   b.setInsertionPoint(nestBlk->getTerminator());
+//   for (auto &[accAlloca, newAccOrig] : accStores)
+//     b.create<LLVM::StoreOp>(loc, ensureCloned(newAccOrig), accAlloca);
+// }
 
 //===----------------------------------------------------------------------===//
 // Helper 5: clone the scf.for body into nestBlk, remapping the for IV to
@@ -1299,22 +1705,26 @@ static void inlineWhileBodyIntoNest(OpBuilder &b, Location loc,
 // body (minus the scf.yield terminator) is the per-iteration work.
 //===----------------------------------------------------------------------===//
 
+//===----------------------------------------------------------------------===//
+// Helper 5 (revised): clone the scf.for body into nestBlk.
+// seedMap  — same role as for inlineWhileBodyIntoNest.
+//===----------------------------------------------------------------------===//
+
 static void inlineForBodyIntoNest(OpBuilder &b, Location loc,
                                    Block *nestBlk,
                                    scf::ForOp forOp,
-                                   BlockArgument nestIV) {
+                                   BlockArgument nestIV,
+                                   IRMapping map) { // pre-seeded, used directly
   Block *bodyBlk = forOp.getBody();
-  Value forIV = forOp.getInductionVar();  // ← Value, not BlockArgument
+  Value  forIV   = forOp.getInductionVar();
 
-  IRMapping map;
   b.setInsertionPoint(nestBlk->getTerminator());
 
   Value mappedIV = nestIV;
   if (forIV.getType() != nestIV.getType()) {
-    if (isa<IndexType>(forIV.getType()))
-      mappedIV = b.create<arith::IndexCastUIOp>(loc, forIV.getType(), nestIV);
-    else
-      mappedIV = b.create<arith::ExtSIOp>(loc, forIV.getType(), nestIV);
+    mappedIV = isa<IndexType>(forIV.getType())
+                ? b.create<arith::IndexCastUIOp>(loc, forIV.getType(), nestIV).getResult()
+                : b.create<arith::ExtSIOp>(loc, forIV.getType(), nestIV).getResult();
   }
   map.map(forIV, mappedIV);
 
@@ -1326,6 +1736,180 @@ static void inlineForBodyIntoNest(OpBuilder &b, Location loc,
 // Rewritten convertStaticWs
 //===----------------------------------------------------------------------===//
 
+//===----------------------------------------------------------------------===//
+// §12  Static work-sharing loop (revised — no hoistEscapingDeps)
+//===----------------------------------------------------------------------===//
+
+// void LLVMToOMPPass::convertStaticWs(ModuleOp mod) {
+//   SmallVector<LLVM::CallOp> inits;
+//   mod.walk([&](LLVM::CallOp c) {
+//     if (calleeStartsWith(c, "__kmpc_for_static_init_")) inits.push_back(c);
+//   });
+
+//   for (LLVM::CallOp init : inits) {
+//     LLVM::CallOp fini = findMatchingEndByPrefix(
+//         init, "__kmpc_for_static_init_", "__kmpc_for_static_fini");
+//     if (!fini) {
+//       init.emitWarning("LLVMToOmp: for_static_init without fini — skipped");
+//       continue;
+//     }
+//     if (init->getBlock() != fini->getBlock()) {
+//       init.emitWarning(
+//           "LLVMToOmp: init/fini in different blocks (optimized CFG) — skipped");
+//       continue;
+//     }
+
+//     bool nw = detectNowait(fini, /*eraseBarrier=*/true);
+
+//     StringRef    sfx = getCalleeName(init).drop_front(
+//         strlen("__kmpc_for_static_init_"));
+//     MLIRContext *ctx  = mod.getContext();
+//     Type iterTy = SW(sfx, "8") ? (Type)IntegerType::get(ctx, 64)
+//                                 : (Type)IntegerType::get(ctx, 32);
+
+//     omp::ClauseScheduleKind sched = omp::ClauseScheduleKind::Static;
+//     if (auto sv = getConstInt(init.getNumOperands() > 2
+//                                   ? init.getOperand(2) : Value{}))
+//       sched = kmpSched(*sv);
+//     Value chunk = init.getNumOperands() > 8 ? init.getOperand(8) : Value{};
+
+//     Value lbPtr = init.getNumOperands() > 4 ? init.getOperand(4) : Value{};
+//     Value ubPtr = init.getNumOperands() > 5 ? init.getOperand(5) : Value{};
+//     Value stPtr = init.getNumOperands() > 6 ? init.getOperand(6) : Value{};
+//     if (!lbPtr || !ubPtr || !stPtr) {
+//       init.emitWarning("LLVMToOmp: for_static_init missing ptr args — skipped");
+//       continue;
+//     }
+
+//     Value lb = traceLastStoredValue(lbPtr, init);
+//     Value ub = traceLastStoredValue(ubPtr, init);
+//     Value st = traceLastStoredValue(stPtr, init);
+//     if (!lb || !ub || !st) {
+//       init.emitWarning(
+//           "LLVMToOmp: cannot trace wsloop bounds via pointer2memref — "
+//           "compile with -O0 or pre-run mem2reg");
+//       continue;
+//     }
+
+//     scf::WhileOp whileOp = findWhileOpBetween(init, fini);
+//     scf::ForOp   forOp;
+//     if (!whileOp) forOp = findForOpBetween(init, fini);
+//     if (!whileOp && !forOp) {
+//       init.emitWarning(
+//           "LLVMToOmp: no loop body (scf.while or scf.for) found between "
+//           "init/fini — skipped");
+//       continue;
+//     }
+
+//     // ── Build erased set & pre-hoist map before touching the IR ─────────
+//     SmallPtrSet<Operation *, 32> erasedSet;
+//     for (Operation *op : opsBetween(init, fini)) {
+//       erasedSet.insert(op);
+//       op->walk([&](Operation *inner) { erasedSet.insert(inner); });
+//     }
+//     Operation *loopOp = whileOp ? whileOp.getOperation()
+//                                  : forOp.getOperation();
+//     IRMapping map = buildPreHoistMap(init, loopOp, erasedSet);
+
+//     OpBuilder b(init);
+//     Location  loc = init.getLoc();
+
+//     // ── omp.wsloop ───────────────────────────────────────────────────────
+//     omp::WsloopOperands wOps;
+//     wOps.scheduleKind = omp::ClauseScheduleKindAttr::get(ctx, sched);
+//     if (chunk) wOps.scheduleChunk = chunk;
+//     if (nw)    wOps.nowait        = b.getUnitAttr();
+
+//     auto   wsOp  = b.create<omp::WsloopOp>(loc, wOps);
+//     Block *wsBlk = b.createBlock(&wsOp.getRegion());
+//     b.setInsertionPointToStart(wsBlk);
+
+//     // ── omp.loop_nest ────────────────────────────────────────────────────
+//     omp::LoopNestOperands lnOps;
+//     lnOps.loopLowerBounds = {lb};
+//     lnOps.loopUpperBounds = {ub};
+//     lnOps.loopSteps       = {st};
+//     lnOps.loopInclusive   = b.getUnitAttr();
+
+//     auto   nestOp  = b.create<omp::LoopNestOp>(loc, lnOps);
+//     Block *nestBlk = b.createBlock(&nestOp.getRegion());
+//     nestBlk->addArgument(iterTy, loc);
+//     b.setInsertionPointToStart(nestBlk);
+//     b.create<omp::YieldOp>(loc);
+
+//     // ── Inline body — map is complete, clone produces no erased-range refs
+//     if (whileOp)
+//       inlineWhileBodyIntoNest(b, loc, nestBlk, whileOp,
+//                               nestBlk->getArgument(0), map);
+//     else
+//       inlineForBodyIntoNest(b, loc, nestBlk, forOp,
+//                             nestBlk->getArgument(0), map);
+
+//     #ifndef NDEBUG
+//     wsOp->walk([&](Operation *op) {
+//       for (Value v : op->getOperands())
+//         if (Operation *d = v.getDefiningOp())
+//           assert(!erasedSet.count(d) &&
+//                 "inlineWhileBodyIntoNest left a dangling ref to erased range");
+//     });
+//     #endif
+
+//     // ── Erase — trivially safe, no dangling refs remain ──────────────────
+//     for (Operation *op : llvm::reverse(opsBetween(init, fini))) {
+//       op->dropAllUses();
+//       op->walk([&](Operation *nested) {
+//   for (Value v : nested->getResults())
+//     if (!v.use_empty()) {
+//       llvm::errs() << "RESULT still used: " << v << "\n";
+//       for (auto &u : v.getUses())
+//         llvm::errs() << "  by: " << *u.getOwner() << "\n";
+//     }
+//   for (Region &r : nested->getRegions())
+//     for (Block &b : r)
+//       for (BlockArgument ba : b.getArguments())
+//         if (!ba.use_empty()) {
+//           llvm::errs() << "BLOCK ARG still used: " << ba << "\n";
+//           for (auto &u : ba.getUses())
+//             llvm::errs() << "  by: " << *u.getOwner()
+//                          << " in block " << u.getOwner()->getBlock() << "\n";
+//         }
+// });
+//       op->erase();
+//     }
+//     init.erase();
+//     fini.erase();
+
+//     LLVM_DEBUG(llvm::dbgs() << "[LLVMToOmp] static wsloop"
+//                              << (nw ? " nowait" : "") << "\n");
+//   }
+// }
+
+
+static bool liftClauseValue(Value v, Operation *insertBefore,
+                             const SmallPtrSet<Operation *, 32> &erasedSet,
+                             SmallPtrSet<Operation *, 32> &lifted) {
+  if (!v) return true;
+  Operation *def = v.getDefiningOp();
+  if (!def) {
+    auto ba = cast<BlockArgument>(v);
+    if (Operation *p = ba.getOwner()->getParentOp())
+      if (erasedSet.count(p))
+        return false;
+    return true;
+  }
+  if (!erasedSet.count(def)) return true;   // defined outside erased range
+  if (lifted.count(def))     return true;   // already moved to correct position
+  if (def->getNumRegions() > 0) return false;
+  for (Value operand : def->getOperands())
+    if (!liftClauseValue(operand, insertBefore, erasedSet, lifted))
+      return false;
+  def->moveBefore(insertBefore);
+  lifted.insert(def);
+  return true;
+}
+//===----------------------------------------------------------------------===//
+// §12  Static work-sharing loop (move-based)
+//===----------------------------------------------------------------------===//
 void LLVMToOMPPass::convertStaticWs(ModuleOp mod) {
   SmallVector<LLVM::CallOp> inits;
   mod.walk([&](LLVM::CallOp c) {
@@ -1352,16 +1936,13 @@ void LLVMToOMPPass::convertStaticWs(ModuleOp mod) {
     MLIRContext *ctx = mod.getContext();
     Type iterTy = SW(sfx, "8") ? (Type)IntegerType::get(ctx, 64)
                                 : (Type)IntegerType::get(ctx, 32);
-    
-    // to my understanding the sched can only be static, 
-    // since otherwise no __kmpc_for_static_init_ would have been generated
+
     omp::ClauseScheduleKind sched = omp::ClauseScheduleKind::Static;
     if (auto sv = getConstInt(init.getNumOperands() > 2
                                   ? init.getOperand(2) : Value{}))
       sched = kmpSched(*sv);
     Value chunk = init.getNumOperands() > 8 ? init.getOperand(8) : Value{};
 
-    // Args: ident(0) gtid(1) sched(2) p_last(3) p_lb(4) p_ub(5) p_stride(6)
     Value lbPtr = init.getNumOperands() > 4 ? init.getOperand(4) : Value{};
     Value ubPtr = init.getNumOperands() > 5 ? init.getOperand(5) : Value{};
     Value stPtr = init.getNumOperands() > 6 ? init.getOperand(6) : Value{};
@@ -1370,13 +1951,9 @@ void LLVMToOMPPass::convertStaticWs(ModuleOp mod) {
       continue;
     }
 
-    // ── FIX 1: trace pre-init values through pointer2memref + memref.store ─
-    // These are the ORIGINAL full-range bounds (before the runtime writes
-    // per-thread chunks back into the same allocas).  omp.wsloop handles
-    // the chunking itself via schedule(static).
-    Value lb = traceLastStoredValue(lbPtr, init); // e.g. 0
-    Value ub = traceLastStoredValue(ubPtr, init); // e.g. n-1  (inclusive)
-    Value st = traceLastStoredValue(stPtr, init); // e.g. 1
+    Value lb = traceLastStoredValue(lbPtr, init);
+    Value ub = traceLastStoredValue(ubPtr, init);
+    Value st = traceLastStoredValue(stPtr, init);
     if (!lb || !ub || !st) {
       init.emitWarning(
           "LLVMToOmp: cannot trace wsloop bounds via pointer2memref — "
@@ -1384,13 +1961,9 @@ void LLVMToOMPPass::convertStaticWs(ModuleOp mod) {
       continue;
     }
 
-    // ── FIX 2: find the loop body — scf.while for normal loops,
-    //           scf.for for sections lowering (Clang uses index dispatch).
     scf::WhileOp whileOp = findWhileOpBetween(init, fini);
     scf::ForOp   forOp;
-    if (!whileOp)
-      forOp = findForOpBetween(init, fini);
-
+    if (!whileOp) forOp = findForOpBetween(init, fini);
     if (!whileOp && !forOp) {
       init.emitWarning(
           "LLVMToOmp: no loop body (scf.while or scf.for) found between "
@@ -1398,60 +1971,146 @@ void LLVMToOMPPass::convertStaticWs(ModuleOp mod) {
       continue;
     }
 
+    // Erase set (built BEFORE any IR modification).
+    SmallPtrSet<Operation *, 32> erasedSet;
+    for (Operation *op : opsBetween(init, fini)) {
+      erasedSet.insert(op);
+      op->walk([&](Operation *inner) { erasedSet.insert(inner); });
+    }
+
+    // One shared lifted set across all liftClauseValue calls so that
+    // each op is moved exactly once and is never re-ordered.
+    SmallPtrSet<Operation *, 32> lifted;
+
+    // Lift clause values out of the erased range (insertBefore=init; wsOp
+    // will be inserted before init immediately after, so these land before
+    // wsOp automatically).
+    if (!liftClauseValue(lb, init, erasedSet, lifted) ||
+        !liftClauseValue(ub, init, erasedSet, lifted) ||
+        !liftClauseValue(st, init, erasedSet, lifted) ||
+        (chunk && !liftClauseValue(chunk, init, erasedSet, lifted))) {
+      init.emitWarning("LLVMToOmp: cannot lift wsloop clause values out of "
+                       "erased range — skipped");
+      continue;
+    }
+
     OpBuilder b(init);
     Location loc = init.getLoc();
 
-    // ── Build omp.wsloop ────────────────────────────────────────────────
+    // omp.wsloop wrapper.
     omp::WsloopOperands wOps;
     wOps.scheduleKind = omp::ClauseScheduleKindAttr::get(ctx, sched);
     if (chunk) wOps.scheduleChunk = chunk;
     if (nw)    wOps.nowait        = b.getUnitAttr();
-
     auto wsOp = b.create<omp::WsloopOp>(loc, wOps);
     Block *wsBlk = b.createBlock(&wsOp.getRegion());
     b.setInsertionPointToStart(wsBlk);
 
-    // ── Build omp.loop_nest ─────────────────────────────────────────────
-    // The traced `ub` is inclusive (Clang stores n-1).
-    // Use loopInclusive so the dialect treats it as [lb, ub] closed interval.
+    // omp.loop_nest with empty body + yield placeholder.
     omp::LoopNestOperands lnOps;
     lnOps.loopLowerBounds = {lb};
     lnOps.loopUpperBounds = {ub};
     lnOps.loopSteps       = {st};
-    lnOps.loopInclusive   = b.getUnitAttr(); // ub is inclusive (n-1, not n)
-
-    auto nestOp = b.create<omp::LoopNestOp>(loc, lnOps);
+    lnOps.loopInclusive   = b.getUnitAttr();
+    auto   nestOp  = b.create<omp::LoopNestOp>(loc, lnOps);
     Block *nestBlk = b.createBlock(&nestOp.getRegion());
-    nestBlk->addArgument(iterTy, loc); // the IV, getIVs()[0]
+    BlockArgument nestIV = nestBlk->addArgument(iterTy, loc);
     b.setInsertionPointToStart(nestBlk);
-    b.create<omp::YieldOp>(loc); // placeholder; body inserted before this
+    b.create<omp::YieldOp>(loc);
 
-    // ── FIX 3: inline the per-iteration body ────────────────────────────────
+    // Move-based body extraction.
     if (whileOp)
-      inlineWhileBodyIntoNest(b, loc, nestBlk, whileOp, nestBlk->getArgument(0));
+      moveWhileBodyIntoNest(b, loc, nestBlk, whileOp, nestIV);
     else
-      inlineForBodyIntoNest(b, loc, nestBlk, forOp, nestBlk->getArgument(0));
+      moveForBodyIntoNest(b, loc, nestBlk, forOp, nestIV);
 
-    // ── Erase everything between init and fini (now superseded) ─────────
-    // Before erasing, lift any values inside the init..fini range that the
-    // newly created wsOp still references (e.g. memref.load ops for c[0],
-    // c[1], extent inside the lb<=ub scf.if guard).  Without this, erasing
-    // the scf.if would recursively destroy those ops while the cloned loop
-    // body still holds raw Value pointers to them.
-    hoistEscapingDeps(wsOp, init, fini);
+    // Lift any erased-range deps still visible from nestBlk.
+    // Guard: only lift ops that are OUTSIDE nestRegion (preamble ops, controlOnly
+    // ops shared with body, etc.).  Ops already moved INTO nestRegion are also in
+    // erasedSet (built pre-move) but must not be touched — they reference nestIV
+    // and lifting them creates dominance violations.
+    // The shared `lifted` set prevents any op from being moved more than once,
+    // which would corrupt SSA ordering between mutually dependent preamble ops.
+    Region *nestRegion = nestBlk->getParent();
+    nestBlk->walk([&](Operation *op) {
+      for (unsigned i = 0, e = op->getNumOperands(); i < e; ++i) {
+        Value v = op->getOperand(i);
+        if (Operation *def = v.getDefiningOp())
+          if (erasedSet.count(def) &&
+              !nestRegion->isAncestor(def->getParentRegion()))
+            liftClauseValue(v, wsOp, erasedSet, lifted);
+      }
+    });
 
-    // Now all ops in wsOp reference either hoisted clones or values defined
-    // before init — safe to bulk-erase the original range.
-    auto between = opsBetween(init, fini);
-    for (Operation *op : llvm::reverse(between)) {
-      op->dropAllUses();
-      op->erase();
+
+// ── Pre-erase sanity check ─────────────────────────────────────────────
+// Verify that no value defined inside the erased range still has a user
+// that lives outside it.  Fires before the erase so we can print context.
+#ifndef NDEBUG
+{
+  // Collect the full erased set including all nested ops.
+  SmallPtrSet<Operation *, 32> allErased;
+  for (Operation *op : opsBetween(init, fini)) {
+    allErased.insert(op);
+    op->walk([&](Operation *inner) { allErased.insert(inner); });
+  }
+
+  auto isInErased = [&](Operation *op) -> bool {
+    for (Operation *p = op; p; p = p->getParentOp())
+      if (allErased.count(p)) return true;
+    return false;
+  };
+
+  bool anyLeak = false;
+  for (Operation *op : allErased) {
+    // Check op results.
+    for (Value res : op->getResults()) {
+      for (OpOperand &use : res.getUses()) {
+        if (!isInErased(use.getOwner())) {
+          llvm::errs()
+              << "[LLVMToOmp][BUG] op result escapes erased range:\n"
+              << "  defined by: " << *op << "\n"
+              << "  used by:    " << *use.getOwner() << "\n";
+          anyLeak = true;
+        }
+      }
     }
+    // Check block arguments of every block inside this op.
+    op->walk([&](Block *blk) {
+      for (BlockArgument arg : blk->getArguments()) {
+        for (OpOperand &use : arg.getUses()) {
+          if (!isInErased(use.getOwner())) {
+            llvm::errs()
+                << "[LLVMToOmp][BUG] block arg escapes erased range:\n"
+                << "  block arg: " << arg << "  (type: " << arg.getType()
+                << ", argIndex " << arg.getArgNumber() << ")\n"
+                << "  owner block parent op: "
+                << blk->getParentOp()->getName() << "\n"
+                << "  used by: " << *use.getOwner() << "\n"
+                << "  user parent op: "
+                << use.getOwner()->getParentOp()->getName() << "\n";
+            anyLeak = true;
+          }
+        }
+      }
+    });
+  }
+  if (anyLeak)
+    llvm::errs() << "[LLVMToOmp][BUG] erased-range leak detected — "
+                    "erase will abort\n";
+}
+#endif
+// ── End sanity check ──────────────────────────────────────────────────
 
+    // Snapshot opsBetween into a local vector before erasing — avoids the
+    // dangling-iterator UB from llvm::reverse(temporary).
+    auto between = opsBetween(init, fini);
+    for (Operation *op : llvm::reverse(between))
+      op->erase();
     init.erase();
     fini.erase();
 
-    LLVM_DEBUG(llvm::dbgs() << "[LLVMToOmp] static wsloop (ptr2memref bounds)"
+    LLVM_DEBUG(llvm::dbgs() << "[LLVMToOmp] static wsloop"
                              << (nw ? " nowait" : "") << "\n");
   }
 }
@@ -1467,198 +2126,316 @@ void LLVMToOMPPass::convertStaticWs(ModuleOp mod) {
 // with the third argument of __kmpc_dispatch_init_* being differently
 //===----------------------------------------------------------------------===//
 
+//===----------------------------------------------------------------------===//
+// §13  Dynamic work-sharing loop (revised — no hoistEscapingDeps)
+//===----------------------------------------------------------------------===//
+
+// void LLVMToOMPPass::convertDynWs(ModuleOp mod) {
+//   SmallVector<LLVM::CallOp> inits;
+//   mod.walk([&](LLVM::CallOp c) {
+//     if (calleeStartsWith(c, "__kmpc_dispatch_init_")) inits.push_back(c);
+//   });
+
+//   for (LLVM::CallOp init : inits) {
+//     LLVM::CallOp deinit = findMatchingEndByPrefix(
+//         init, "__kmpc_dispatch_init_", "__kmpc_dispatch_deinit");
+//     if (!deinit) {
+//       StringRef sfx = getCalleeName(init).drop_front(
+//           strlen("__kmpc_dispatch_init_"));
+//       deinit = findMatchingEndByPrefix(
+//           init, "__kmpc_dispatch_init_",
+//           ("__kmpc_dispatch_fini_" + sfx).str());
+//     }
+//     if (!deinit) {
+//       init.emitWarning("LLVMToOmp: dispatch_init without deinit — skipped");
+//       continue;
+//     }
+//     if (init->getBlock() != deinit->getBlock()) {
+//       init.emitWarning(
+//           "LLVMToOmp: init/deinit in different blocks (optimized CFG) — skipped");
+//       continue;
+//     }
+
+//     bool nowait = detectNowait(deinit, /*eraseBarrier=*/false);
+
+//     StringRef    sfx = getCalleeName(init).drop_front(
+//         strlen("__kmpc_dispatch_init_"));
+//     MLIRContext *ctx  = mod.getContext();
+//     Type iterTy = SW(sfx, "8") ? (Type)IntegerType::get(ctx, 64)
+//                                 : (Type)IntegerType::get(ctx, 32);
+
+//     omp::ClauseScheduleKind sched = omp::ClauseScheduleKind::Dynamic;
+//     if (auto sv = getConstInt(init.getNumOperands() > 2
+//                                   ? init.getOperand(2) : Value{})) {
+//       sched = kmpSched(*sv & ~((int64_t)0x60000000));
+//     }
+
+//     // dispatch_init(ident, gtid, sched, lb, ub, step, chunk)
+//     Value lb    = init.getNumOperands() > 3 ? init.getOperand(3) : Value{};
+//     Value ub    = init.getNumOperands() > 4 ? init.getOperand(4) : Value{};
+//     Value step  = init.getNumOperands() > 5 ? init.getOperand(5) : Value{};
+//     Value chunk = init.getNumOperands() > 6 ? init.getOperand(6) : Value{};
+//     if (!lb || !ub || !step) {
+//       init.emitWarning("LLVMToOmp: dispatch_init missing bounds — skipped");
+//       continue;
+//     }
+
+//     scf::WhileOp iterWhile = findWhileOpBetween(init, deinit);
+//     if (!iterWhile) {
+//       init.emitWarning("LLVMToOmp: no dispatch while found — skipped");
+//       continue;
+//     }
+
+//     // ── Build erased set & pre-hoist map before touching the IR ─────────
+//     SmallPtrSet<Operation *, 32> erasedSet;
+//     for (Operation *op : opsBetween(init, deinit)) {
+//       erasedSet.insert(op);
+//       op->walk([&](Operation *inner) { erasedSet.insert(inner); });
+//     }
+//     IRMapping map = buildPreHoistMap(init, iterWhile, erasedSet);
+
+//     OpBuilder b(init);
+//     Location  loc = init.getLoc();
+
+//     // ── omp.wsloop ───────────────────────────────────────────────────────
+//     omp::WsloopOperands wsOps;
+//     wsOps.scheduleKind = omp::ClauseScheduleKindAttr::get(ctx, sched);
+//     if (chunk)  wsOps.scheduleChunk = chunk;
+//     if (nowait) wsOps.nowait        = b.getUnitAttr();
+
+//     auto   wsOp  = b.create<omp::WsloopOp>(loc, wsOps);
+//     Block *wsBlk = b.createBlock(&wsOp.getRegion());
+//     b.setInsertionPointToStart(wsBlk);
+
+//     // ── omp.loop_nest ────────────────────────────────────────────────────
+//     omp::LoopNestOperands lnOps;
+//     lnOps.loopLowerBounds = {lb};
+//     lnOps.loopUpperBounds = {ub};
+//     lnOps.loopSteps       = {step};
+//     lnOps.loopInclusive   = b.getUnitAttr();
+
+//     auto   nestOp  = b.create<omp::LoopNestOp>(loc, lnOps);
+//     Block *nestBlk = b.createBlock(&nestOp.getRegion());
+//     nestBlk->addArgument(iterTy, loc);
+//     b.setInsertionPointToStart(nestBlk);
+//     b.create<omp::YieldOp>(loc);
+
+//     // ── Inline body — map is complete ────────────────────────────────────
+//     inlineWhileBodyIntoNest(b, loc, nestBlk, iterWhile,
+//                             nestBlk->getArgument(0), map);
+
+//     #ifndef NDEBUG
+//     wsOp->walk([&](Operation *op) {
+//       for (Value v : op->getOperands())
+//         if (Operation *d = v.getDefiningOp())
+//           assert(!erasedSet.count(d) &&
+//                 "inlineWhileBodyIntoNest left a dangling ref to erased range");
+//     });
+//     #endif
+
+//     // ── Erase — trivially safe ───────────────────────────────────────────
+//     for (Operation *op : llvm::reverse(opsBetween(init, deinit))) {
+//       op->dropAllUses();
+//       op->erase();
+//     }
+//     init.erase();
+//     deinit.erase();
+
+//     LLVM_DEBUG(llvm::dbgs() << "[LLVMToOmp] dynamic wsloop"
+//                              << (nowait ? " nowait" : "") << "\n");
+//   }
+// }
+
+
+//===----------------------------------------------------------------------===//
+// §13  Dynamic work-sharing loop (move-based)
+//===----------------------------------------------------------------------===//
 void LLVMToOMPPass::convertDynWs(ModuleOp mod) {
   SmallVector<LLVM::CallOp> inits;
-
   mod.walk([&](LLVM::CallOp c) {
-    if (calleeStartsWith(c, "__kmpc_dispatch_init_"))
-      inits.push_back(c);
+    if (calleeStartsWith(c, "__kmpc_dispatch_init_")) inits.push_back(c);
   });
 
   for (LLVM::CallOp init : inits) {
-    // Match the corresponding dispatch deinit/fini.
-    // Modern runtimes use __kmpc_dispatch_deinit while
-    // older runtimes may still emit __kmpc_dispatch_fini_N.
     LLVM::CallOp deinit = findMatchingEndByPrefix(
-        init,
-        "__kmpc_dispatch_init_",
-        "__kmpc_dispatch_deinit");
-
+        init, "__kmpc_dispatch_init_", "__kmpc_dispatch_deinit");
     if (!deinit) {
       StringRef sfx = getCalleeName(init).drop_front(
           strlen("__kmpc_dispatch_init_"));
-
-      auto finiN = ("__kmpc_dispatch_fini_" + sfx).str();
-
       deinit = findMatchingEndByPrefix(
-          init,
-          "__kmpc_dispatch_init_",
-          finiN);
+          init, "__kmpc_dispatch_init_",
+          ("__kmpc_dispatch_fini_" + sfx).str());
     }
-
     if (!deinit) {
-      init.emitWarning(
-          "LLVMToOmp: dispatch_init without deinit — skipped");
+      init.emitWarning("LLVMToOmp: dispatch_init without deinit — skipped");
       continue;
     }
-
-    // Current implementation only supports the simple
-    // single-block canonical lowering.
     if (init->getBlock() != deinit->getBlock()) {
       init.emitWarning(
-          "LLVMToOmp: init/deinit in different blocks "
-          "(optimized CFG) — skipped");
+          "LLVMToOmp: init/deinit in different blocks (optimized CFG) — skipped");
       continue;
     }
 
-    bool nowait =
-        detectNowait(deinit, /*eraseBarrier=*/false);
+    bool nowait = detectNowait(deinit, /*eraseBarrier=*/false);
 
     StringRef sfx = getCalleeName(init).drop_front(
         strlen("__kmpc_dispatch_init_"));
-
     MLIRContext *ctx = mod.getContext();
+    Type iterTy = SW(sfx, "8") ? (Type)IntegerType::get(ctx, 64)
+                                : (Type)IntegerType::get(ctx, 32);
 
-    Type iterTy =
-        SW(sfx, "8")
-            ? (Type)IntegerType::get(ctx, 64)
-            : (Type)IntegerType::get(ctx, 32);
+    omp::ClauseScheduleKind sched = omp::ClauseScheduleKind::Dynamic;
+    if (auto sv = getConstInt(init.getNumOperands() > 2
+                                  ? init.getOperand(2) : Value{}))
+      sched = kmpSched(*sv & ~((int64_t)0x60000000));
 
-    // OpenMP runtimes OR scheduling modifiers into the
-    // high bits of the schedule value:
-    //
-    //   bit 29 -> monotonic
-    //   bit 30 -> nonmonotonic
-    //
-    // Strip them before mapping to omp schedule kinds.
-    omp::ClauseScheduleKind sched =
-        omp::ClauseScheduleKind::Dynamic;
-
-    if (auto sv = getConstInt(
-            init.getNumOperands() > 2
-                ? init.getOperand(2)
-                : Value{})) {
-      int64_t base = *sv & ~((int64_t)0x60000000);
-      sched = kmpSched(base);
-    }
-
-    // dispatch_init arguments:
-    //
-    //   dispatch_init(ident, gtid, sched,
-    //                 lb, ub, step, chunk)
-    //
-    // Bounds are passed directly as values.
-    Value lb =
-        init.getNumOperands() > 3
-            ? init.getOperand(3)
-            : Value{};
-
-    Value ub =
-        init.getNumOperands() > 4
-            ? init.getOperand(4)
-            : Value{};
-
-    Value step =
-        init.getNumOperands() > 5
-            ? init.getOperand(5)
-            : Value{};
-
-    Value chunk =
-        init.getNumOperands() > 6
-            ? init.getOperand(6)
-            : Value{};
-
+    Value lb    = init.getNumOperands() > 3 ? init.getOperand(3) : Value{};
+    Value ub    = init.getNumOperands() > 4 ? init.getOperand(4) : Value{};
+    Value step  = init.getNumOperands() > 5 ? init.getOperand(5) : Value{};
+    Value chunk = init.getNumOperands() > 6 ? init.getOperand(6) : Value{};
     if (!lb || !ub || !step) {
-      init.emitWarning(
-          "LLVMToOmp: dispatch_init missing bounds — skipped");
+      init.emitWarning("LLVMToOmp: dispatch_init missing bounds — skipped");
       continue;
     }
 
-    // The current canonical lowering emits a single
-    // scf.while representing the actual iteration loop.
-    scf::WhileOp iterWhile =
-        findWhileOpBetween(init, deinit);
-
+    scf::WhileOp iterWhile = findWhileOpBetween(init, deinit);
     if (!iterWhile) {
-      init.emitWarning(
-          "LLVMToOmp: no dispatch while found — skipped");
+      init.emitWarning("LLVMToOmp: no dispatch while found — skipped");
+      continue;
+    }
+
+    // Erase set (built BEFORE any IR modification).
+    SmallPtrSet<Operation *, 32> erasedSet;
+    for (Operation *op : opsBetween(init, deinit)) {
+      erasedSet.insert(op);
+      op->walk([&](Operation *inner) { erasedSet.insert(inner); });
+    }
+
+    // One shared lifted set across all liftClauseValue calls.
+    SmallPtrSet<Operation *, 32> lifted;
+
+    // For dispatch, bounds come directly from the init call operands —
+    // they are defined before init so liftClauseValue is usually a no-op,
+    // but we still run it for safety in case of unusual patterns.
+    if (!liftClauseValue(lb,   init, erasedSet, lifted) ||
+        !liftClauseValue(ub,   init, erasedSet, lifted) ||
+        !liftClauseValue(step, init, erasedSet, lifted) ||
+        (chunk && !liftClauseValue(chunk, init, erasedSet, lifted))) {
+      init.emitWarning("LLVMToOmp: cannot lift dispatch clause values out of "
+                       "erased range — skipped");
       continue;
     }
 
     OpBuilder b(init);
     Location loc = init.getLoc();
 
-    // Create omp.wsloop carrying the recovered
-    // scheduling information.
     omp::WsloopOperands wsOps;
-    wsOps.scheduleKind =
-        omp::ClauseScheduleKindAttr::get(ctx, sched);
+    wsOps.scheduleKind = omp::ClauseScheduleKindAttr::get(ctx, sched);
+    if (chunk)  wsOps.scheduleChunk = chunk;
+    if (nowait) wsOps.nowait        = b.getUnitAttr();
+    auto wsOp = b.create<omp::WsloopOp>(loc, wsOps);
+    Block *wsBlk = b.createBlock(&wsOp.getRegion());
+    b.setInsertionPointToStart(wsBlk);
 
-    if (chunk)
-      wsOps.scheduleChunk = chunk;
-
-    if (nowait)
-      wsOps.nowait = b.getUnitAttr();
-
-    auto wsOp =
-        b.create<omp::WsloopOp>(loc, wsOps);
-
-    b.createBlock(&wsOp.getRegion());
-    b.setInsertionPointToStart(
-        &wsOp.getRegion().front());
-
-    // dispatch_init upper bounds are inclusive.
     omp::LoopNestOperands lnOps;
     lnOps.loopLowerBounds = {lb};
     lnOps.loopUpperBounds = {ub};
-    lnOps.loopSteps = {step};
-    lnOps.loopInclusive = b.getUnitAttr();
-
-    auto nestOp =
-        b.create<omp::LoopNestOp>(loc, lnOps);
-
-    Block *nestBlk =
-        b.createBlock(&nestOp.getRegion());
-
-    nestBlk->addArgument(iterTy, loc);
-
+    lnOps.loopSteps       = {step};
+    lnOps.loopInclusive   = b.getUnitAttr();
+    auto   nestOp  = b.create<omp::LoopNestOp>(loc, lnOps);
+    Block *nestBlk = b.createBlock(&nestOp.getRegion());
+    BlockArgument nestIV = nestBlk->addArgument(iterTy, loc);
     b.setInsertionPointToStart(nestBlk);
     b.create<omp::YieldOp>(loc);
 
-    // Clone the original loop body while remapping
-    // the original induction variable to the new
-    // omp.loop_nest IV.
-    inlineWhileBodyIntoNest(
-        b,
-        loc,
-        nestBlk,
-        iterWhile,
-        nestBlk->getArgument(0));
+    moveWhileBodyIntoNest(b, loc, nestBlk, iterWhile, nestIV);
 
-    // Remove the original runtime-dispatch lowering.
-    // Lift any values inside init..deinit that the new wsOp still
-    // references before we destroy them (same issue as convertStaticWs).
-    hoistEscapingDeps(wsOp, init, deinit);
+    // Same three-property lift as convertStaticWs:
+    //   (1) only lift ops outside nestRegion
+    //   (2) shared `lifted` prevents re-ordering via repeated moveBefore
+    //   (3) insertBefore=wsOp so lifted preamble ops land before the loop
+    Region *nestRegion = nestBlk->getParent();
+    nestBlk->walk([&](Operation *op) {
+      for (unsigned i = 0, e = op->getNumOperands(); i < e; ++i) {
+        Value v = op->getOperand(i);
+        if (Operation *def = v.getDefiningOp())
+          if (erasedSet.count(def) &&
+              !nestRegion->isAncestor(def->getParentRegion()))
+            liftClauseValue(v, wsOp, erasedSet, lifted);
+      }
+    });
 
-    SmallVector<Operation *> between =
-        opsBetween(init, deinit);
 
-    for (Operation *op : llvm::reverse(between)) {
-      op->dropAllUses();
-      op->erase();
+// ── Pre-erase sanity check ─────────────────────────────────────────────
+// Verify that no value defined inside the erased range still has a user
+// that lives outside it.  Fires before the erase so we can print context.
+#ifndef NDEBUG
+{
+  // Collect the full erased set including all nested ops.
+  SmallPtrSet<Operation *, 32> allErased;
+  for (Operation *op : opsBetween(init, deinit)) {
+    allErased.insert(op);
+    op->walk([&](Operation *inner) { allErased.insert(inner); });
+  }
+
+  auto isInErased = [&](Operation *op) -> bool {
+    for (Operation *p = op; p; p = p->getParentOp())
+      if (allErased.count(p)) return true;
+    return false;
+  };
+
+  bool anyLeak = false;
+  for (Operation *op : allErased) {
+    // Check op results.
+    for (Value res : op->getResults()) {
+      for (OpOperand &use : res.getUses()) {
+        if (!isInErased(use.getOwner())) {
+          llvm::errs()
+              << "[LLVMToOmp][BUG] op result escapes erased range:\n"
+              << "  defined by: " << *op << "\n"
+              << "  used by:    " << *use.getOwner() << "\n";
+          anyLeak = true;
+        }
+      }
     }
+    // Check block arguments of every block inside this op.
+    op->walk([&](Block *blk) {
+      for (BlockArgument arg : blk->getArguments()) {
+        for (OpOperand &use : arg.getUses()) {
+          if (!isInErased(use.getOwner())) {
+            llvm::errs()
+                << "[LLVMToOmp][BUG] block arg escapes erased range:\n"
+                << "  block arg: " << arg << "  (type: " << arg.getType()
+                << ", argIndex " << arg.getArgNumber() << ")\n"
+                << "  owner block parent op: "
+                << blk->getParentOp()->getName() << "\n"
+                << "  used by: " << *use.getOwner() << "\n"
+                << "  user parent op: "
+                << use.getOwner()->getParentOp()->getName() << "\n";
+            anyLeak = true;
+          }
+        }
+      }
+    });
+  }
+  if (anyLeak)
+    llvm::errs() << "[LLVMToOmp][BUG] erased-range leak detected — "
+                    "erase will abort\n";
+}
+#endif
+// ── End sanity check ──────────────────────────────────────────────────
 
+    // Snapshot before erasing — avoids dangling-iterator UB.
+    auto between = opsBetween(init, deinit);
+    for (Operation *op : llvm::reverse(between))
+      op->erase();
     init.erase();
     deinit.erase();
 
-    LLVM_DEBUG(
-        llvm::dbgs()
-        << "[LLVMToOmp] dynamic wsloop -> omp.wsloop"
-        << (nowait ? " nowait" : "")
-        << "\n");
+    LLVM_DEBUG(llvm::dbgs() << "[LLVMToOmp] dynamic wsloop"
+                             << (nowait ? " nowait" : "") << "\n");
   }
 }
-
 
 //===----------------------------------------------------------------------===//
 // §14  Tasks  (__kmpc_task_alloc + __kmpc_omp_task → omp.task)
@@ -3325,6 +4102,8 @@ void LLVMToOMPPass::runOnOperation() {
   // Phase 2 — leaf rewrites.
   applyLeafPatterns(mod);
   LLVM_DEBUG(llvm::dbgs() << "[LLVMToOmp] pass complete\n");
+      // mod.print(llvm::outs(),
+      //        OpPrintingFlags().useLocalScope());
 }
 
 } // namespace
