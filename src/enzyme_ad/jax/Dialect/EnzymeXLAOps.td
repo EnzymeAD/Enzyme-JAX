@@ -759,7 +759,8 @@ def QRFactorizationOp: EnzymeXLA_Op<"linalg.qr", [Pure]> {
 
   let results = (outs
     HLO_Tensor:$Q,
-    HLO_Tensor:$R
+    HLO_Tensor:$R,
+    HLO_Tensor:$info
   );
 
   let assemblyFormat = [{
