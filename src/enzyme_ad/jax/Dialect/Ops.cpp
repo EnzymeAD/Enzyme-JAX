@@ -1044,10 +1044,12 @@ OpFoldResult Pointer2MemrefOp::fold(FoldAdaptor adaptor) {
   return nullptr;
 }
 
-LogicalResult WrapOp::inferReturnTypes(
-    MLIRContext * /*context*/, std::optional<Location> location,
-    ValueRange operands, DictionaryAttr attributes, OpaqueProperties properties,
-    RegionRange regions, SmallVectorImpl<Type> &inferredReturnTypes) {
+LogicalResult
+WrapOp::inferReturnTypes(MLIRContext * /*context*/,
+                         std::optional<Location> location, ValueRange operands,
+                         DictionaryAttr attributes,
+                         mlir::PropertyRef properties, RegionRange regions,
+                         SmallVectorImpl<Type> &inferredReturnTypes) {
   WrapOpAdaptor adaptor(operands, attributes, properties, regions);
   if (adaptor.getLhs() < 0)
     return failure();
@@ -1067,10 +1069,12 @@ LogicalResult WrapOp::inferReturnTypes(
   return success();
 }
 
-LogicalResult ExtendOp::inferReturnTypes(
-    MLIRContext * /*context*/, std::optional<Location> location,
-    ValueRange operands, DictionaryAttr attributes, OpaqueProperties properties,
-    RegionRange regions, SmallVectorImpl<Type> &inferredReturnTypes) {
+LogicalResult
+ExtendOp::inferReturnTypes(MLIRContext * /*context*/,
+                           std::optional<Location> location,
+                           ValueRange operands, DictionaryAttr attributes,
+                           mlir::PropertyRef properties, RegionRange regions,
+                           SmallVectorImpl<Type> &inferredReturnTypes) {
   ExtendOpAdaptor adaptor(operands, attributes, properties, regions);
   if (adaptor.getLhs() < 0)
     return failure();
@@ -1092,8 +1096,9 @@ LogicalResult ExtendOp::inferReturnTypes(
 
 LogicalResult UpdateWithoutCornersOp::inferReturnTypes(
     MLIRContext * /*context*/, std::optional<Location> location,
-    ValueRange operands, DictionaryAttr attributes, OpaqueProperties properties,
-    RegionRange regions, SmallVectorImpl<Type> &inferredReturnTypes) {
+    ValueRange operands, DictionaryAttr attributes,
+    mlir::PropertyRef properties, RegionRange regions,
+    SmallVectorImpl<Type> &inferredReturnTypes) {
   UpdateWithoutCornersOpAdaptor adaptor(operands, attributes, properties,
                                         regions);
   auto RT = cast<RankedTensorType>(adaptor.getOperand().getType());
@@ -1351,11 +1356,65 @@ struct CopyWithTypes : public OpRewritePattern<enzymexla::MemcpyOp> {
   }
 };
 
+struct Memcpy2DOpToMemcpyOp : public OpRewritePattern<enzymexla::Memcpy2DOp> {
+  using OpRewritePattern<enzymexla::Memcpy2DOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::Memcpy2DOp op,
+                                PatternRewriter &rewriter) const override {
+    Value dpitch = op.getDpitch();
+    Value spitch = op.getSpitch();
+    Value width = op.getWidth();
+    Value height = op.getHeight();
+
+    APInt dpitchConst, spitchConst, widthConst, heightConst;
+    bool dpitchIsConst = matchPattern(dpitch, m_ConstantInt(&dpitchConst));
+    bool spitchIsConst = matchPattern(spitch, m_ConstantInt(&spitchConst));
+    bool widthIsConst = matchPattern(width, m_ConstantInt(&widthConst));
+    bool heightIsConst = matchPattern(height, m_ConstantInt(&heightConst));
+
+    bool canSimplify = false;
+    Value totalSize = nullptr;
+
+    if (heightIsConst && heightConst.getSExtValue() == 1) {
+      canSimplify = true;
+      totalSize = width;
+    } else if (dpitchIsConst && spitchIsConst && widthIsConst) {
+      if (dpitchConst == widthConst && spitchConst == widthConst) {
+        canSimplify = true;
+        if (heightIsConst) {
+          int64_t totalSizeBytes =
+              widthConst.getSExtValue() * heightConst.getSExtValue();
+          totalSize = rewriter.create<arith::ConstantIndexOp>(op.getLoc(),
+                                                              totalSizeBytes);
+        } else {
+          totalSize =
+              rewriter.create<arith::MulIOp>(op.getLoc(), width, height);
+        }
+      }
+    }
+
+    if (!canSimplify)
+      return failure();
+
+    rewriter.create<enzymexla::MemcpyOp>(
+        op.getLoc(), (mlir::Type) nullptr, op.getAsyncDependencies(),
+        op.getTarget(), op.getSource(), totalSize);
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 } // end anonymous namespace
 
 void enzymexla::MemcpyOp::getCanonicalizationPatterns(
     RewritePatternSet &results, MLIRContext *context) {
   results.add<EraseTrivialCopyOp, CopyWithTypes>(context);
+}
+
+void enzymexla::Memcpy2DOp::getCanonicalizationPatterns(
+    RewritePatternSet &results, MLIRContext *context) {
+  results.add<Memcpy2DOpToMemcpyOp>(context);
 }
 
 LogicalResult

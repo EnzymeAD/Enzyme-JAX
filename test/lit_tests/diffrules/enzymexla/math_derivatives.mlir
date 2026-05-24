@@ -1,45 +1,63 @@
-// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=relu_fn outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --lower-enzymexla-ml | FileCheck %s --check-prefix=RELU-REV
-// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=gelu_none_fn outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --lower-enzymexla-ml | FileCheck %s --check-prefix=GELU-NONE-REV
-// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=gelu_tanh_fn outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --lower-enzymexla-ml | FileCheck %s --check-prefix=GELU-TANH-REV
-// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=gelu_sigmoid_fn outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --lower-enzymexla-ml | FileCheck %s --check-prefix=GELU-SIGMOID-REV
-// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=softplus_fn outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --lower-enzymexla-ml | FileCheck %s --check-prefix=SOFTPLUS-REV
-// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=tgamma_fn outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --lower-enzymexla-ml | FileCheck %s --check-prefix=TGAMMA-REV
-// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=lgamma_fn outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --lower-enzymexla-ml | FileCheck %s --check-prefix=LGAMMA-REV
-// RUN: enzymexlamlir-opt %s --enzyme --canonicalize --remove-unnecessary-enzyme-ops --lower-enzymexla-ml --chlo-legalize-to-stablehlo --canonicalize --arith-raise | stablehlo-translate - --interpret
+// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=relu_fn outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --lower-enzymexla-math | FileCheck %s --check-prefix=RELU-REV
+// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=gelu_none_fn outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --lower-enzymexla-math | FileCheck %s --check-prefix=GELU-NONE-REV
+// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=gelu_tanh_fn outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --lower-enzymexla-math | FileCheck %s --check-prefix=GELU-TANH-REV
+// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=gelu_sigmoid_fn outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --lower-enzymexla-math | FileCheck %s --check-prefix=GELU-SIGMOID-REV
+// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=softplus_fn outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --lower-enzymexla-math | FileCheck %s --check-prefix=SOFTPLUS-REV
+// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=tgamma_fn outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --lower-enzymexla-math | FileCheck %s --check-prefix=TGAMMA-REV
+// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=lgamma_fn outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --lower-enzymexla-math | FileCheck %s --check-prefix=LGAMMA-REV
+// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=hypot_fn outfn= retTys=enzyme_active argTys=enzyme_active,enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --lower-enzymexla-math | FileCheck %s --check-prefix=HYPOT-REV
+// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=sinc_fn outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --lower-enzymexla-math | FileCheck %s --check-prefix=SINC-REV
+// RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=cosc_fn outfn= retTys=enzyme_active argTys=enzyme_active mode=ReverseModeCombined" --canonicalize --remove-unnecessary-enzyme-ops --arith-raise --lower-enzymexla-math | FileCheck %s --check-prefix=COSC-REV
+// RUN: enzymexlamlir-opt %s --enzyme --canonicalize --remove-unnecessary-enzyme-ops --lower-enzymexla-math --chlo-legalize-to-stablehlo --canonicalize --arith-raise | stablehlo-translate - --interpret
 
 module {
   func.func @relu_fn(%x: tensor<6xf32>) -> tensor<6xf32> {
-    %0 = enzymexla.ml.relu %x : (tensor<6xf32>) -> tensor<6xf32>
+    %0 = enzymexla.math.relu %x : (tensor<6xf32>) -> tensor<6xf32>
     return %0 : tensor<6xf32>
   }
 
   func.func @gelu_none_fn(%x: tensor<6xf32>) -> tensor<6xf32> {
-    %0 = enzymexla.ml.gelu %x, approximation = NONE : (tensor<6xf32>) -> tensor<6xf32>
+    %0 = enzymexla.math.gelu %x, approximation = NONE : (tensor<6xf32>) -> tensor<6xf32>
     return %0 : tensor<6xf32>
   }
 
   func.func @gelu_tanh_fn(%x: tensor<6xf32>) -> tensor<6xf32> {
-    %0 = enzymexla.ml.gelu %x, approximation = TANH : (tensor<6xf32>) -> tensor<6xf32>
+    %0 = enzymexla.math.gelu %x, approximation = TANH : (tensor<6xf32>) -> tensor<6xf32>
     return %0 : tensor<6xf32>
   }
 
   func.func @gelu_sigmoid_fn(%x: tensor<6xf32>) -> tensor<6xf32> {
-    %0 = enzymexla.ml.gelu %x, approximation = SIGMOID : (tensor<6xf32>) -> tensor<6xf32>
+    %0 = enzymexla.math.gelu %x, approximation = SIGMOID : (tensor<6xf32>) -> tensor<6xf32>
     return %0 : tensor<6xf32>
   }
 
   func.func @softplus_fn(%x: tensor<6xf32>) -> tensor<6xf32> {
-    %0 = enzymexla.ml.softplus %x : (tensor<6xf32>) -> tensor<6xf32>
+    %0 = enzymexla.math.softplus %x : (tensor<6xf32>) -> tensor<6xf32>
     return %0 : tensor<6xf32>
   }
 
   func.func @tgamma_fn(%x: tensor<6xf32>) -> tensor<6xf32> {
-    %0 = enzymexla.ml.tgamma %x : (tensor<6xf32>) -> tensor<6xf32>
+    %0 = enzymexla.math.tgamma %x : (tensor<6xf32>) -> tensor<6xf32>
     return %0 : tensor<6xf32>
   }
 
   func.func @lgamma_fn(%x: tensor<6xf32>) -> tensor<6xf32> {
-    %0 = enzymexla.ml.lgamma %x : (tensor<6xf32>) -> tensor<6xf32>
+    %0 = enzymexla.math.lgamma %x : (tensor<6xf32>) -> tensor<6xf32>
+    return %0 : tensor<6xf32>
+  }
+
+  func.func @hypot_fn(%x: tensor<6xf32>, %y: tensor<6xf32>) -> tensor<6xf32> {
+    %0 = enzymexla.math.hypot %x, %y : (tensor<6xf32>, tensor<6xf32>) -> tensor<6xf32>
+    return %0 : tensor<6xf32>
+  }
+
+  func.func @sinc_fn(%x: tensor<6xf32>) -> tensor<6xf32> {
+    %0 = enzymexla.math.sinc %x : (tensor<6xf32>) -> tensor<6xf32>
+    return %0 : tensor<6xf32>
+  }
+
+  func.func @cosc_fn(%x: tensor<6xf32>) -> tensor<6xf32> {
+    %0 = enzymexla.math.cosc %x : (tensor<6xf32>) -> tensor<6xf32>
     return %0 : tensor<6xf32>
   }
 
@@ -97,8 +115,35 @@ module {
     } : (tensor<6xf32>, tensor<6xf32>) -> (tensor<6xf32>, tensor<6xf32>)
     check.expect_almost_eq_const %lgamma_res#1, dense<[-0.577215672, 0.422784328, 0.922784328, 1.25611770, 1.50611770, 1.70611768]> : tensor<6xf32>
 
+    // d/dx hypot(x, y) = x / hypot(x, y), d/dy hypot(x, y) = y / hypot(x, y)
+    %x_hypot = stablehlo.constant dense<[3.0, 5.0, 0.0, 1.0, -3.0, 8.0]> : tensor<6xf32>
+    %y_hypot = stablehlo.constant dense<[4.0, 12.0, 2.0, 1.0, 4.0, 15.0]> : tensor<6xf32>
+    %hypot_res:3 = enzyme.autodiff @hypot_fn(%x_hypot, %y_hypot, %d_common) {
+      activity = [#enzyme<activity enzyme_active>, #enzyme<activity enzyme_active>],
+      ret_activity = [#enzyme<activity enzyme_active>]
+    } : (tensor<6xf32>, tensor<6xf32>, tensor<6xf32>) -> (tensor<6xf32>, tensor<6xf32>, tensor<6xf32>)
+    check.expect_almost_eq_const %hypot_res#1, dense<[0.6, 0.38461538, 0.0, 0.70710678, -0.6, 0.47058823]> : tensor<6xf32>
+    check.expect_almost_eq_const %hypot_res#2, dense<[0.8, 0.92307692, 1.0, 0.70710678, 0.8, 0.88235294]> : tensor<6xf32>
+
+    // d/dx sinc(x) = cosc(x)
+    %x_sinc = stablehlo.constant dense<[0.0, 0.5, 1.0, 1.5, 2.0, -0.5]> : tensor<6xf32>
+    %sinc_res:2 = enzyme.autodiff @sinc_fn(%x_sinc, %d_common) {
+      activity = [#enzyme<activity enzyme_active>],
+      ret_activity = [#enzyme<activity enzyme_active>]
+    } : (tensor<6xf32>, tensor<6xf32>) -> (tensor<6xf32>, tensor<6xf32>)
+    check.expect_almost_eq_const %sinc_res#1, dense<[0.0, -1.27323954, -1.0, 0.14147106, 0.5, 1.27323954]> : tensor<6xf32>
+
+    // d/dx cosc(x) = -pi^2 * sinc(x) - 2 * cosc(x) / x
+    %x_cosc = stablehlo.constant dense<[0.0, 0.5, 1.0, 1.5, 2.0, -0.5]> : tensor<6xf32>
+    %cosc_res:2 = enzyme.autodiff @cosc_fn(%x_cosc, %d_common) {
+      activity = [#enzyme<activity enzyme_active>],
+      ret_activity = [#enzyme<activity enzyme_active>]
+    } : (tensor<6xf32>, tensor<6xf32>) -> (tensor<6xf32>, tensor<6xf32>)
+    check.expect_almost_eq_const %cosc_res#1, dense<[-3.28986813, -1.1902271, 2.0, 1.905767, -0.5, -1.1902271]> : tensor<6xf32>
+
     return
   }
+
 }
 
 // RELU-REV-LABEL: func.func @relu_fn
@@ -203,3 +248,42 @@ module {
 // LGAMMA-REV: %[[DG:.*]] = chlo.digamma %arg0 : tensor<6xf32> -> tensor<6xf32>
 // LGAMMA-REV: %[[SCALED:.*]] = stablehlo.multiply %[[DR]], %[[DG]] : tensor<6xf32>
 // LGAMMA-REV: stablehlo.add %[[SCALED]], %[[ZERO]] : tensor<6xf32>
+
+// HYPOT-REV-LABEL: func.func @hypot_fn(%arg0: tensor<6xf32>, %arg1: tensor<6xf32>, %arg2: tensor<6xf32>) -> (tensor<6xf32>, tensor<6xf32>)
+// HYPOT-REV-DAG: %[[ZERO:.*]] = stablehlo.constant dense<0.000000e+00> : tensor<6xf32>
+// HYPOT-REV-DAG: %[[ONE:.*]] = stablehlo.constant dense<1.000000e+00> : tensor<6xf32>
+// HYPOT-REV: %[[DR:.*]] = stablehlo.add %arg2, %[[ZERO]] : tensor<6xf32>
+// HYPOT-REV: %[[ABS_X:.*]] = stablehlo.abs %arg0 : tensor<6xf32>
+// HYPOT-REV: %[[ABS_Y:.*]] = stablehlo.abs %arg1 : tensor<6xf32>
+// HYPOT-REV: %[[MAX:.*]] = stablehlo.maximum %[[ABS_X]], %[[ABS_Y]] : tensor<6xf32>
+// HYPOT-REV: %[[SQRT:.*]] = stablehlo.sqrt %{{.*}} : tensor<6xf32>
+// HYPOT-REV: %[[HYP:.*]] = stablehlo.select %{{.*}}, %[[ZERO]], %{{.*}} : tensor<6xi1>, tensor<6xf32>
+// HYPOT-REV: %[[DIV_X:.*]] = stablehlo.divide %arg0, %[[HYP]] : tensor<6xf32>
+// HYPOT-REV: %[[MUL_X:.*]] = stablehlo.multiply %[[DR]], %[[DIV_X]] : tensor<6xf32>
+// HYPOT-REV: %[[RES_X:.*]] = stablehlo.add %[[MUL_X]], %[[ZERO]] : tensor<6xf32>
+// HYPOT-REV: %[[DIV_Y:.*]] = stablehlo.divide %arg1, %{{.*}} : tensor<6xf32>
+// HYPOT-REV: %[[MUL_Y:.*]] = stablehlo.multiply %[[DR]], %[[DIV_Y]] : tensor<6xf32>
+// HYPOT-REV: %[[RES_Y:.*]] = stablehlo.add %[[MUL_Y]], %[[ZERO]] : tensor<6xf32>
+// HYPOT-REV: return %[[RES_X]], %[[RES_Y]]
+
+// SINC-REV-LABEL: func.func @sinc_fn(%arg0: tensor<6xf32>, %arg1: tensor<6xf32>) -> tensor<6xf32>
+// SINC-REV-DAG: %[[PI:.*]] = stablehlo.constant dense<3.14159274> : tensor<6xf32>
+// SINC-REV-DAG: %[[ZERO:.*]] = stablehlo.constant dense<0.000000e+00> : tensor<6xf32>
+// SINC-REV: %[[DR:.*]] = stablehlo.add %arg1, %[[ZERO]] : tensor<6xf32>
+// SINC-REV: %[[COS:.*]] = stablehlo.cosine %{{.*}} : tensor<6xf32>
+// SINC-REV: %[[SIN:.*]] = stablehlo.sine %{{.*}} : tensor<6xf32>
+// SINC-REV: %[[SUB:.*]] = stablehlo.subtract %{{.*}}, %{{.*}} : tensor<6xf32>
+// SINC-REV: %[[SEL:.*]] = stablehlo.select %{{.*}}, %[[ZERO]], %[[SUB]] : tensor<6xi1>, tensor<6xf32>
+// SINC-REV: %[[MUL:.*]] = stablehlo.multiply %[[DR]], %[[SEL]] : tensor<6xf32>
+// SINC-REV: stablehlo.add %[[MUL]], %[[ZERO]] : tensor<6xf32>
+
+// COSC-REV-LABEL: func.func @cosc_fn(%arg0: tensor<6xf32>, %arg1: tensor<6xf32>) -> tensor<6xf32>
+// COSC-REV-DAG: %[[PI:.*]] = stablehlo.constant dense<3.14159274> : tensor<6xf32>
+// COSC-REV-DAG: %[[PI2_3:.*]] = stablehlo.constant dense<-3.28986812> : tensor<6xf32>
+// COSC-REV-DAG: %[[PI2:.*]] = stablehlo.constant dense<-9.86960411> : tensor<6xf32>
+// COSC-REV-DAG: %[[TWO:.*]] = stablehlo.constant dense<2.000000e+00> : tensor<6xf32>
+// COSC-REV-DAG: %[[ZERO:.*]] = stablehlo.constant dense<0.000000e+00> : tensor<6xf32>
+// COSC-REV: %[[DR:.*]] = stablehlo.add %arg1, %[[ZERO]] : tensor<6xf32>
+// COSC-REV: %[[COS:.*]] = stablehlo.cosine %{{.*}} : tensor<6xf32>
+// COSC-REV: %[[SIN:.*]] = stablehlo.sine %{{.*}} : tensor<6xf32>
+// COSC-REV: stablehlo.select %{{.*}}, %{{.*}}, %{{.*}} : tensor<6xi1>, tensor<6xf32>

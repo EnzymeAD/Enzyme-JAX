@@ -844,6 +844,11 @@ def ApplyBinopConstSimplify : EnzymeHLOPatternOp<
     "AddSubConst", "AddAddConst", "SubAddConst", "SubSubConst"
   ];
 }
+
+def ApplyBitcastConvertCancellation : EnzymeHLOPatternOp<
+    "bitcast_convert_cancellation"> {
+  let patterns = ["BitcastConvertCancellation"];
+}
 def ApplyUnaryPadPushConvertPatterns : EnzymeHLOPatternOp<
     "unary_pad_push_convert"> {
   let patterns = ["UnaryPadPush<stablehlo::ConvertOp>"];
@@ -1659,6 +1664,10 @@ def CompareIotaConstSimplifyPatterns : EnzymeHLOPatternOp<
   "compare_iota_const_simplify"
 > {
   let patterns = ["CompareIotaConstSimplify"];
+}
+
+def ConvertIotaSimplifyPatterns : EnzymeHLOPatternOp<"convert_iota_simplify"> {
+  let patterns = ["ConvertIotaSimplify"];
 }
 
 def MinMaxIotaConstSimplifyPatterns : EnzymeHLOPatternOp<

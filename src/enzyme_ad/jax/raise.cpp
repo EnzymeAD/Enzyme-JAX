@@ -131,7 +131,7 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       if (outfile.size() && getenv("EXPORT_REACTANT")) {
         pass_pipeline += "print{filename="+outfile+".mlir},";
       }
-      pass_pipeline += "symbol-dce,enzyme,remove-unnecessary-enzyme-ops,lower-affine";
+      pass_pipeline += "symbol-dce,outline-enzyme-regions,enzyme,remove-unnecessary-enzyme-ops,lower-affine";
       if (backend == "rocm")
         pass_pipeline += ",convert-cudart-to-hiprt";
       if (backend != "cpu") {

@@ -256,6 +256,106 @@ enum __device_builtin__ cudaMemcpyKind
           return;
         }
       }
+
+      if (callee == "cudaMemset" || callee == "cudaMemsetAsync") {
+        Value devPtr = call->getOperand(0);
+        devPtr = enzymexla::Pointer2MemrefOp::create(
+            builder, call->getLoc(),
+            MemRefType::get({ShapedType::kDynamic}, i8,
+                            MemRefLayoutAttrInterface{},
+                            builder.getI64IntegerAttr(1)),
+            devPtr);
+
+        Value value = call->getOperand(1);
+        Value count = call->getOperand(2);
+        if (!isa<IndexType>(count.getType()))
+          count = arith::IndexCastOp::create(builder, call->getLoc(),
+                                             builder.getIndexType(), count);
+
+        SmallVector<Value, 1> asyncDeps;
+        if (callee == "cudaMemsetAsync") {
+          Value stream = call->getOperand(3);
+          if (!stream.getDefiningOp<LLVM::ZeroOp>()) {
+            auto token = enzymexla::StreamToTokenOp::create(
+                builder, call.getLoc(),
+                gpu::AsyncTokenType::get(call.getContext()), stream);
+            asyncDeps.push_back(token.getResult());
+          }
+        }
+
+        enzymexla::MemsetOp::create(builder, call.getLoc(),
+                                    (mlir::Type) nullptr, ValueRange(asyncDeps),
+                                    devPtr, value, count);
+        auto replace =
+            LLVM::ZeroOp::create(builder, call.getLoc(), call.getType(0));
+        call->replaceAllUsesWith(replace);
+        call->erase();
+        return;
+      }
+
+      if (callee == "cudaMemcpy2D") {
+        APInt directionA;
+        if (matchPattern(call->getOperand(6), m_ConstantInt(&directionA))) {
+          auto dst = call->getOperand(0);
+          if (directionA == 0 || directionA == 2)
+            dst = enzymexla::Pointer2MemrefOp::create(
+                builder, call->getLoc(),
+                MemRefType::get({ShapedType::kDynamic}, i8,
+                                MemRefLayoutAttrInterface{}),
+                dst);
+          else
+            dst = enzymexla::Pointer2MemrefOp::create(
+                builder, call->getLoc(),
+                MemRefType::get({ShapedType::kDynamic}, i8,
+                                MemRefLayoutAttrInterface{},
+                                builder.getI64IntegerAttr(1)),
+                dst);
+
+          Value dpitch = call->getOperand(1);
+          if (!isa<IndexType>(dpitch.getType()))
+            dpitch = arith::IndexCastOp::create(builder, call->getLoc(),
+                                                builder.getIndexType(), dpitch);
+
+          auto src = call->getOperand(2);
+          if (directionA == 0 || directionA == 1)
+            src = enzymexla::Pointer2MemrefOp::create(
+                builder, call->getLoc(),
+                MemRefType::get({ShapedType::kDynamic}, i8,
+                                MemRefLayoutAttrInterface{}),
+                src);
+          else
+            src = enzymexla::Pointer2MemrefOp::create(
+                builder, call->getLoc(),
+                MemRefType::get({ShapedType::kDynamic}, i8,
+                                MemRefLayoutAttrInterface{},
+                                builder.getI64IntegerAttr(1)),
+                src);
+
+          Value spitch = call->getOperand(3);
+          if (!isa<IndexType>(spitch.getType()))
+            spitch = arith::IndexCastOp::create(builder, call->getLoc(),
+                                                builder.getIndexType(), spitch);
+
+          Value width = call->getOperand(4);
+          if (!isa<IndexType>(width.getType()))
+            width = arith::IndexCastOp::create(builder, call->getLoc(),
+                                               builder.getIndexType(), width);
+
+          Value height = call->getOperand(5);
+          if (!isa<IndexType>(height.getType()))
+            height = arith::IndexCastOp::create(builder, call->getLoc(),
+                                                builder.getIndexType(), height);
+
+          enzymexla::Memcpy2DOp::create(builder, call.getLoc(),
+                                        (mlir::Type) nullptr, ValueRange(), dst,
+                                        dpitch, src, spitch, width, height);
+          auto replace =
+              LLVM::ZeroOp::create(builder, call.getLoc(), call.getType(0));
+          call->replaceAllUsesWith(replace);
+          call->erase();
+          return;
+        }
+      }
     });
   }
   void runOnOperation() override {

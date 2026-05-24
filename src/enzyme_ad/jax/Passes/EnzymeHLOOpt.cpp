@@ -840,9 +840,9 @@ bool transformReshapeSlice(stablehlo::ReshapeOp op, SmallVectorImpl<T> &start,
 
 stablehlo::Element conj(const stablehlo::Element &orig) {
   if (stablehlo::isSupportedComplexType(orig.getType())) {
-    std::complex<APFloat> val = orig.getComplexValue();
+    mlir::Complex<APFloat> val = orig.getComplexValue();
     return stablehlo::Element(orig.getType(),
-                              std::complex<APFloat>(val.real(), -val.imag()));
+                              mlir::Complex<APFloat>(val.real(), -val.imag()));
   }
 
   llvm_unreachable("Unsupported type");
@@ -7446,8 +7446,7 @@ struct ElementwiseAllTransposeOperandsSimplify
         {RankedTensorType::get(
             elemResShape,
             cast<TensorType>(op->getResult(0).getType()).getElementType())},
-        operands, op->getAttrs(), OpaqueProperties(nullptr),
-        op->getSuccessors(), 0);
+        operands, op->getAttrs(), mlir::PropertyRef(), op->getSuccessors(), 0);
     rewriter.insert(newOp);
     auto newTransposeOp = stablehlo::TransposeOp::create(
         rewriter, op->getLoc(), newOp->getResult(0), permutation);
@@ -7488,10 +7487,10 @@ struct TransposeElementwiseTransposeSimplify
       newOperands.push_back(innerTransposeOp.getOperand());
     }
 
-    auto newElem = Operation::create(
-        elem->getLoc(), elem->getName(), {op->getResult(0).getType()},
-        newOperands, elem->getAttrs(), OpaqueProperties(nullptr),
-        elem->getSuccessors(), 0);
+    auto newElem = Operation::create(elem->getLoc(), elem->getName(),
+                                     {op->getResult(0).getType()}, newOperands,
+                                     elem->getAttrs(), mlir::PropertyRef(),
+                                     elem->getSuccessors(), 0);
     rewriter.insert(newElem);
     rewriter.replaceOp(op, newElem);
     return success();
@@ -8484,6 +8483,29 @@ struct ConvertSimplify
   }
 };
 
+struct ConvertIotaSimplify
+    : public CheckedOpRewritePattern<stablehlo::ConvertOp,
+                                     ConvertIotaSimplify> {
+  using CheckedOpRewritePattern<stablehlo::ConvertOp,
+                                ConvertIotaSimplify>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ConvertOp convertOp,
+                                    PatternRewriter &rewriter) const {
+    auto operand = convertOp.getOperand();
+    auto iota = operand.getDefiningOp<stablehlo::IotaOp>();
+    if (!iota)
+      return failure();
+
+    auto targetType = convertOp.getType();
+    if (!targetType.getElementType().isInteger())
+      return failure();
+
+    rewriter.replaceOpWithNewOp<stablehlo::IotaOp>(convertOp, targetType,
+                                                   iota.getIotaDimension());
+    return success();
+  }
+};
+
 struct SliceSimplify
     : public CheckedOpRewritePattern<stablehlo::SliceOp, SliceSimplify> {
   using CheckedOpRewritePattern<stablehlo::SliceOp,
@@ -8750,8 +8772,19 @@ struct CompareIotaConstSimplify
     auto lhs = cmpOp.getLhs();
     auto rhs = cmpOp.getRhs();
 
-    auto lhsIota = lhs.getDefiningOp<stablehlo::IotaOp>();
-    auto rhsIota = rhs.getDefiningOp<stablehlo::IotaOp>();
+    auto getIota = [](Value v) -> stablehlo::IotaOp {
+      if (auto iota = v.getDefiningOp<stablehlo::IotaOp>())
+        return iota;
+      if (auto conv = v.getDefiningOp<stablehlo::ConvertOp>()) {
+        if (conv.getType().getElementType().isInteger() &&
+            conv.getOperand().getType().getElementType().isInteger()) {
+          return conv.getOperand().getDefiningOp<stablehlo::IotaOp>();
+        }
+      }
+      return nullptr;
+    };
+    auto lhsIota = getIota(lhs);
+    auto rhsIota = getIota(rhs);
 
     if ((!lhsIota && !rhsIota) || (lhsIota && rhsIota))
       return rewriter.notifyMatchFailure(cmpOp, "Requires single iota user");
@@ -13571,7 +13604,7 @@ struct CompareOpCanon final
 
       if (Attribute res;
           lhsAttr && rhsAttr &&
-          (res = constFoldBinaryOp<IntegerAttr, IntegerAttr::ValueType, void>(
+          (res = constFoldBinaryOp<IntegerAttr>(
                ArrayRef<Attribute>({lhsAttr, rhsAttr}), op.getType(),
                [direction, kind = *compType](const APInt &a, const APInt &b) {
                  return calculateComp(kind, direction, a, b);
@@ -27211,7 +27244,7 @@ struct CommonAssociativeCommutativeOpReorder final
     auto createNewOp = [&](Value lhs, Value rhs) {
       auto newOp = Operation::create(
           op->getLoc(), op->getName(), {op->getResult(0).getType()}, {lhs, rhs},
-          op->getAttrs(), OpaqueProperties(nullptr), op->getSuccessors(), 0);
+          op->getAttrs(), mlir::PropertyRef(), op->getSuccessors(), 0);
       rewriter.insert(newOp);
       return newOp;
     };
@@ -34826,7 +34859,7 @@ struct SplitComplexScatter final
     Attribute imagConstant = nullptr;
     if (checkCommonScatterOp.constant) {
       auto complexVal =
-          checkCommonScatterOp.constant.getSplatValue<std::complex<APFloat>>();
+          checkCommonScatterOp.constant.getSplatValue<mlir::Complex<APFloat>>();
       realConstant = FloatAttr::get(innerElemType, complexVal.real());
       imagConstant = FloatAttr::get(innerElemType, complexVal.imag());
     }
@@ -35714,6 +35747,7 @@ struct EnzymeHLOOptPass
     patterns.add<TransposeExtend>(context);
     patterns.add<TransposeRotate>(context);
     patterns.add<SelectPad>(context);
+    patterns.add<BitcastConvertCancellation>(context);
 
     patterns.add<
         AddSimplify, SubSimplify, AndSimplify, MaxSimplify, MinSimplify,
@@ -35736,7 +35770,7 @@ struct EnzymeHLOOptPass
         NegatedConstantMulFactoring<stablehlo::SubtractOp>,
         ReshapeDeletionsBroadcastInDimSimplify,
         ReshapeInsertionsBroadcastInDimSimplify, CompareIotaConstSimplify,
-        MinMaxIotaConstSimplify<stablehlo::MaxOp>,
+        ConvertIotaSimplify, MinMaxIotaConstSimplify<stablehlo::MaxOp>,
         MinMaxIotaConstSimplify<stablehlo::MinOp>, ClampIotaConstSimplify,
         CompareAbs, CompareMul, CompareConvert, AddSelects,
         CompareNegateConstSimplify, CompareSubtractConstSimplify,
