@@ -83,8 +83,10 @@ public:
     for (const auto &namedAttr : defineOp->getAttrs()) {
       if (namedAttr.getName() != defineOp.getFunctionTypeAttrName() &&
           namedAttr.getName() != SymbolTable::getSymbolAttrName() &&
+          namedAttr.getName() != "tessera.convert" &&
           namedAttr.getName() != "tessera.original_name" &&
-          namedAttr.getName() != "tessera.sret_attrs")
+          namedAttr.getName() != "tessera.sret_attrs" &&
+          namedAttr.getName() != "tessera.side_effect_free")
         funcOp->setAttr(namedAttr.getName(), namedAttr.getValue());
     }
 
@@ -131,9 +133,10 @@ public:
         return callOp.emitOpError(
             "tessera.call to sret function must have a result");
       auto sretType = callOp.getResult(0).getType();
-      int64_t alignment = 0;
-      if (auto alignAttr = sretAttrs.get(LLVM::LLVMDialect::getAlignAttrName()))
-        alignment = cast<IntegerAttr>(alignAttr).getInt();
+      int64_t sret_alignment = 0;
+      if (auto sretAlignAttr =
+              sretAttrs.get(LLVM::LLVMDialect::getAlignAttrName()))
+        sret_alignment = cast<IntegerAttr>(sretAlignAttr).getInt();
       Value one = rewriter.create<LLVM::ConstantOp>(
           callOp.getLoc(), rewriter.getI32Type(),
           rewriter.getI32IntegerAttr(1));
@@ -141,13 +144,33 @@ public:
       // Allocate stack storage for the sret return value
       Value sretPtr = rewriter.create<LLVM::AllocaOp>(
           callOp.getLoc(), LLVM::LLVMPointerType::get(callOp->getContext()),
-          sretType, one, alignment);
+          sretType, one, sret_alignment);
 
-      // Build new operands with sretPtr as first arg
+      // Build new operands with sretPtr as first arg and reconstructed pointers
       SmallVector<Value> newOperands;
       newOperands.push_back(sretPtr);
-      for (auto operand : callOp.getOperands())
-        newOperands.push_back(operand);
+      auto argsToReplace = ArrayRef<int32_t>{};
+
+      if (auto loadedOperands = callOp->getAttrOfType<DenseI32ArrayAttr>(
+              "tessera.loaded_operands"))
+        argsToReplace = loadedOperands.asArrayRef();
+
+      for (int i = 0; i < callOp.getOperands().size(); i++) {
+        auto operand = callOp.getOperand(i);
+        if (llvm::is_contained(argsToReplace, i)) {
+          int64_t alignment = 0;
+          if (auto alignAttr = defineOp.getArgAttr(
+                  i + 1, LLVM::LLVMDialect::getAlignAttrName()))
+            alignment = cast<IntegerAttr>(alignAttr).getInt();
+          Value AI = rewriter.create<LLVM::AllocaOp>(
+              callOp.getLoc(), LLVM::LLVMPointerType::get(callOp->getContext()),
+              operand.getType(), one, alignment);
+          rewriter.create<LLVM::StoreOp>(callOp.getLoc(), operand, AI);
+          newOperands.push_back(AI);
+        } else {
+          newOperands.push_back(operand);
+        }
+      }
 
       // Reconstruct arg attributes with sret attr first
       SmallVector<Attribute> newArgAttrs;
@@ -160,23 +183,43 @@ public:
       // Filter out arg_attrs from attributes
       SmallVector<NamedAttribute> newAttrs;
       for (auto attr : callOp->getAttrs()) {
-        if (attr.getName() != callOp.getArgAttrsAttrName())
+        if (attr.getName() != callOp.getArgAttrsAttrName() &&
+            attr.getName() != "tessera.loaded_operands" &&
+            attr.getName() != "operandSegmentSizes" &&
+            attr.getName() != "op_bundle_sizes")
           newAttrs.push_back(attr);
       }
+      newAttrs.push_back(rewriter.getNamedAttr(
+          callOp.getArgAttrsAttrName(), rewriter.getArrayAttr(newArgAttrs)));
+      newAttrs.push_back(rewriter.getNamedAttr(
+          "operandSegmentSizes",
+          rewriter.getDenseI32ArrayAttr({(int32_t)newOperands.size(), 0})));
+      newAttrs.push_back(rewriter.getNamedAttr(
+          "op_bundle_sizes", rewriter.getDenseI32ArrayAttr({})));
 
-      auto newCall = rewriter.create<LLVM::CallOp>(callOp.getLoc(), TypeRange{},
-                                                   newOperands, newAttrs);
-      newCall->setAttr(newCall.getArgAttrsAttrName(),
-                       rewriter.getArrayAttr(newArgAttrs));
+      rewriter.create<LLVM::CallOp>(callOp.getLoc(), TypeRange{}, newOperands,
+                                    newAttrs);
 
       // Load result from sret pointer and replace uses
       auto loadedResult =
           rewriter.create<LLVM::LoadOp>(callOp.getLoc(), sretType, sretPtr);
       rewriter.replaceOp(callOp, loadedResult.getResult());
     } else {
+      SmallVector<NamedAttribute> newAttrs;
+      for (auto attr : callOp->getAttrs()) {
+        if (attr.getName() != "operandSegmentSizes" &&
+            attr.getName() != "op_bundle_sizes")
+          newAttrs.push_back(attr);
+      }
+      newAttrs.push_back(rewriter.getNamedAttr(
+          "operandSegmentSizes",
+          rewriter.getDenseI32ArrayAttr(
+              {(int32_t)callOp.getOperands().size(), 0})));
+      newAttrs.push_back(rewriter.getNamedAttr(
+          "op_bundle_sizes", rewriter.getDenseI32ArrayAttr({})));
+
       rewriter.replaceOpWithNewOp<LLVM::CallOp>(callOp, callOp.getResultTypes(),
-                                                callOp.getOperands(),
-                                                callOp->getAttrs());
+                                                callOp.getOperands(), newAttrs);
     }
 
     return success();

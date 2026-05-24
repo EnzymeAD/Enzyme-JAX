@@ -2,6 +2,8 @@
 #include "llvm/ADT/TypeSwitch.h"
 
 #include "Dialect.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/LLVMIR/LLVMTypes.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/Interfaces/CallInterfaces.h"
 #include "mlir/Interfaces/FunctionImplementation.h"
@@ -149,13 +151,27 @@ LogicalResult CallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   if (!has_sret && fnType.getNumInputs() != getNumOperands())
     return emitOpError("incorrect number of operands for callee");
 
-  int startIdx = has_sret ? 1 : 0;
-  for (unsigned i = startIdx, e = fnType.getNumInputs(); i != e; ++i)
-    if (getOperand(i - startIdx).getType() != fnType.getInput(i))
-      return emitOpError("operand type mismatch: expected operand type ")
-             << fnType.getInput(i) << ", but provided "
-             << getOperand(i - startIdx).getType() << " for operand number "
-             << i - startIdx;
+  auto convertAttr =
+      fn->getAttrOfType<enzyme::tessera::ConvertAttr>("tessera.convert");
+  if (!convertAttr)
+    return emitOpError() << "missing tessera.convert attribute on tessera op";
+  auto byRefArgs = convertAttr.getByRefArgs();
+
+  // Allow type mismatch only for byref pointer args that have been converted
+  // to values
+  int argOffset = has_sret ? 1 : 0;
+  for (unsigned i = argOffset, e = fnType.getNumInputs(); i != e; ++i) {
+    int argIdx = i - argOffset;
+    if (getOperand(argIdx).getType() == fnType.getInput(i))
+      continue;
+    if (isa<LLVM::LLVMPointerType>(fnType.getInput(i)) &&
+        (fn.getArgAttr(i, LLVM::LLVMDialect::getByValAttrName()) ||
+         byRefArgs[argIdx]))
+      continue;
+    return emitOpError("operand type mismatch: expected operand type ")
+           << fnType.getInput(i) << ", but provided "
+           << getOperand(argIdx).getType() << " for operand number " << argIdx;
+  }
 
   // If tessera.define has sret attribute,
   // tessera.call result count = tessera.define result count + 1
@@ -186,6 +202,104 @@ LogicalResult CallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
 
 FunctionType CallOp::getCalleeType() {
   return FunctionType::get(getContext(), getOperandTypes(), getResultTypes());
+}
+
+void CallOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  auto fnAttr = (*this)->getAttrOfType<FlatSymbolRefAttr>("callee");
+  if (!fnAttr)
+    return;
+  DefineOp fn = SymbolTable::lookupNearestSymbolFrom<DefineOp>(*this, fnAttr);
+  if (!fn)
+    return;
+  if (fn->hasAttr("tessera.side_effect_free"))
+    return; // return nothing = no effects = side effect free
+
+  // if not side effect free, add all possible memory effects
+  effects.emplace_back(MemoryEffects::Effect::get<MemoryEffects::Read>());
+  effects.emplace_back(MemoryEffects::Effect::get<MemoryEffects::Write>());
+  effects.emplace_back(MemoryEffects::Effect::get<MemoryEffects::Allocate>());
+  effects.emplace_back(MemoryEffects::Effect::get<MemoryEffects::Free>());
+}
+
+class FoldTesseraCallChain final : public OpRewritePattern<CallOp> {
+public:
+  using OpRewritePattern<CallOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(CallOp op,
+                                PatternRewriter &rewriter) const override {
+    SmallVector<Value> newOperands;
+    bool changed = false;
+
+    for (Value arg : op.getOperands()) {
+      if (!isa<IntegerType>(arg.getType())) {
+        newOperands.push_back(arg);
+        continue;
+      }
+
+      // trace through bitcast
+      auto bitcast = arg.getDefiningOp<LLVM::BitcastOp>();
+      if (!bitcast) {
+        newOperands.push_back(arg);
+        continue;
+      }
+
+      // trace through insertelement chain, following vector operand until we
+      // hit poison
+      Value vec = bitcast.getArg();
+      SmallVector<Value> elements;
+      while (auto insertOp = vec.getDefiningOp<LLVM::InsertElementOp>()) {
+        elements.push_back(insertOp.getValue());
+        vec = insertOp.getVector();
+      }
+      if (!vec.getDefiningOp<LLVM::PoisonOp>()) {
+        newOperands.push_back(arg);
+        continue;
+      }
+
+      // trace through extractvalue chain and make sure all come from the same
+      // source call
+      Value source;
+      for (Value elem : elements) {
+        auto extractOp = elem.getDefiningOp<LLVM::ExtractValueOp>();
+        if (!extractOp) {
+          source = nullptr;
+          break;
+        }
+        if (!source)
+          source = extractOp.getContainer();
+        else if (source != extractOp.getContainer()) {
+          source = nullptr; // elements came from different sources
+          break;
+        }
+      }
+      if (!source) {
+        newOperands.push_back(arg);
+        continue;
+      }
+
+      // check source is a tessera call
+      auto sourceCall = source.getDefiningOp<CallOp>();
+      if (sourceCall) {
+        newOperands.push_back(sourceCall.getResult(0));
+        changed = true;
+      } else {
+        newOperands.push_back(arg);
+      }
+    }
+
+    if (!changed)
+      return failure();
+    rewriter.replaceOpWithNewOp<CallOp>(op, op.getResultTypes(), newOperands,
+                                        op->getAttrs());
+    return success();
+  }
+};
+
+void CallOp::getCanonicalizationPatterns(RewritePatternSet &results,
+                                         MLIRContext *context) {
+  results.insert<FoldTesseraCallChain>(context);
 }
 
 //===----------------------------------------------------------------------===//

@@ -1,6 +1,6 @@
 // RUN: enzymexlamlir-opt %s -tessera-to-llvm | FileCheck %s
 
-tessera.define @tessera_simple_func() attributes {tessera.original_name = "simple_func", CConv = #llvm.cconv<ccc>, linkage = #llvm.linkage<external>, unnamed_addr = 0 : i64, visibility_ = 0 : i64} {
+tessera.define @tessera_simple_func() attributes {tessera.convert = #tessera<convert "tessera_simple_func" byref = [] sizes = [] pure = false>, tessera.original_name = "simple_func", CConv = #llvm.cconv<ccc>, linkage = #llvm.linkage<external>, unnamed_addr = 0 : i64, visibility_ = 0 : i64} {
   tessera.return
 }
 
@@ -9,7 +9,7 @@ tessera.define @tessera_simple_func() attributes {tessera.original_name = "simpl
 
 // -----
 
-tessera.define @tessera_func_with_args(%arg0: i32, %arg1: f32) -> i32 attributes {tessera.original_name = "func_with_args", CConv = #llvm.cconv<ccc>, linkage = #llvm.linkage<external>, unnamed_addr = 0 : i64, visibility_ = 0 : i64} {
+tessera.define @tessera_func_with_args(%arg0: i32, %arg1: f32) -> i32 attributes {tessera.convert = #tessera<convert "tessera_simple_func" byref = [false, false] sizes = [4, 4] pure = false>, tessera.original_name = "func_with_args", CConv = #llvm.cconv<ccc>, linkage = #llvm.linkage<external>, unnamed_addr = 0 : i64, visibility_ = 0 : i64} {
   tessera.return %arg0 : i32
 }
 
@@ -18,11 +18,11 @@ tessera.define @tessera_func_with_args(%arg0: i32, %arg1: f32) -> i32 attributes
 
 // -----
 
-tessera.define @tessera_helper() attributes {tessera.original_name = "helper", CConv = #llvm.cconv<ccc>, linkage = #llvm.linkage<external>, unnamed_addr = 0 : i64, visibility_ = 0 : i64} {
+tessera.define @tessera_helper() attributes {tessera.convert = #tessera<convert "tessera_pure_func" byref = [] sizes = [] pure = false>, tessera.original_name = "helper", CConv = #llvm.cconv<ccc>, linkage = #llvm.linkage<external>, unnamed_addr = 0 : i64, visibility_ = 0 : i64} {
   tessera.return
 }
 
-tessera.define @tessera_func_with_call() attributes {tessera.original_name = "func_with_call", CConv = #llvm.cconv<ccc>, linkage = #llvm.linkage<external>, unnamed_addr = 0 : i64, visibility_ = 0 : i64} {
+tessera.define @tessera_func_with_call() attributes {tessera.convert = #tessera<convert "tessera_func_with_call" byref = [] sizes = [] pure = false>, tessera.original_name = "func_with_call", CConv = #llvm.cconv<ccc>, linkage = #llvm.linkage<external>, unnamed_addr = 0 : i64, visibility_ = 0 : i64} {
   tessera.call @tessera_helper() {CConv = #llvm.cconv<ccc>, TailCallKind = #llvm.tailcallkind<none>, fastmathFlags = #llvm.fastmath<none>, op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 0, 0>} : () -> ()
   tessera.return
 }
@@ -36,7 +36,7 @@ tessera.define @tessera_func_with_call() attributes {tessera.original_name = "fu
 
 // -----
 
-tessera.define @tessera_sret_func(%arg0: !llvm.ptr {llvm.align = 8 : i64, llvm.nonnull, llvm.sret = !llvm.struct<(f32, f32)>}, %arg1: !llvm.ptr {llvm.noundef, llvm.readonly}) attributes {CConv = #llvm.cconv<ccc>, linkage = #llvm.linkage<external>, tessera.original_name = "sret_func", tessera.sret_attrs = {llvm.align = 8 : i64, llvm.nonnull, llvm.sret = !llvm.struct<(f32, f32)>}, unnamed_addr = 0 : i64, visibility_ = 0 : i64} {
+tessera.define @tessera_sret_func(%arg0: !llvm.ptr {llvm.align = 8 : i64, llvm.nonnull, llvm.sret = !llvm.struct<(f32, f32)>}, %arg1: !llvm.ptr {llvm.noundef, llvm.readonly}) attributes {CConv = #llvm.cconv<ccc>, linkage = #llvm.linkage<external>, tessera.convert = #tessera<convert "tessera_sret_func" byref = [true] sizes = [64] pure = true>, tessera.original_name = "sret_func", tessera.sret_attrs = {llvm.align = 8 : i64, llvm.nonnull, llvm.sret = !llvm.struct<(f32, f32)>}, unnamed_addr = 0 : i64, visibility_ = 0 : i64} {
   %0 = llvm.load %arg1 {alignment = 8 : i64} : !llvm.ptr -> f32
   llvm.store %0, %arg0 {alignment = 8 : i64} : f32, !llvm.ptr
   tessera.return

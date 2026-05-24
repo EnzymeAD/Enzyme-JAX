@@ -52,7 +52,8 @@ public:
         funcOp->getAttrOfType<enzyme::tessera::ConvertAttr>("tessera.convert");
     if (!convertAttr)
       return failure();
-    auto tesseraName = convertAttr.getValue();
+    auto tesseraName = convertAttr.getOpName();
+    auto isPure = convertAttr.getPure();
     auto module = funcOp->getParentOfType<ModuleOp>();
     auto *ctx = funcOp->getContext();
     auto funcName = funcOp.getName();
@@ -60,13 +61,13 @@ public:
     auto params = llvmFuncType.getParams();
     auto retType = llvmFuncType.getReturnType();
 
-    // Check if first argument has sret attribute
+    // Check if first argument has sret attribute and if function is side
+    // effect free
     bool hasSret = false;
     auto argAttrs = funcOp.getArgAttrsAttr();
     if (!params.empty() && argAttrs) {
-      auto firstArgAttrs = cast<DictionaryAttr>(argAttrs[0]);
       if (auto sretAttr =
-              firstArgAttrs.get(LLVM::LLVMDialect::getStructRetAttrName()))
+              funcOp.getArgAttr(0, LLVM::LLVMDialect::getStructRetAttrName()))
         hasSret = true;
     }
 
@@ -87,8 +88,7 @@ public:
     // and tessera.convert attribute.
     for (const auto &namedAttr : funcOp->getAttrs()) {
       if (namedAttr.getName() != funcOp.getFunctionTypeAttrName() &&
-          namedAttr.getName() != SymbolTable::getSymbolAttrName() &&
-          namedAttr.getName() != "tessera.convert")
+          namedAttr.getName() != SymbolTable::getSymbolAttrName())
         tesseraDefineOp->setAttr(namedAttr.getName(), namedAttr.getValue());
     }
     // Store the original function name so we can convert back to it later
@@ -99,6 +99,11 @@ public:
     // attributes for exact reconstruction later
     if (hasSret)
       tesseraDefineOp->setAttr("tessera.sret_attrs", argAttrs[0]);
+
+    if (isPure) {
+      tesseraDefineOp->setAttr("tessera.side_effect_free",
+                               rewriter.getUnitAttr());
+    }
 
     // Clone body of function
     if (!funcOp.isExternal()) {
@@ -127,30 +132,26 @@ public:
     auto callee = SymbolTable::lookupSymbolIn(
         callOp->getParentOfType<ModuleOp>(), calleeAttr);
     // Only rewrite if callee is a tessera.define op
-    if (!isa_and_nonnull<tessera::DefineOp>(callee))
+    auto defineOp = dyn_cast_or_null<tessera::DefineOp>(callee);
+    if (!defineOp)
       return failure();
 
-    // Check if first operand has sret attribute. If so, remove it from
-    // the operand list and use its pointed-to type as the SSA return type,
-    // since tessera.call returns values directly rather than writing through
-    // a pointer.
     Value sretPtr;
     Type sretType;
     auto operands = callOp.getOperands();
     auto argAttrs = callOp.getArgAttrsAttr();
-    SmallVector<Value> newOperands;
     SmallVector<Attribute> newArgAttrs;
     SmallVector<NamedAttribute> newAttrs;
 
+    // Check if first operand has sret attribute. If so, use its pointed-to
+    // type as the SSA return type, since tessera.call returns values directly
+    // rather than writing through a pointer.
     if (!operands.empty() && argAttrs) {
-      auto firstArgAttrs = cast<DictionaryAttr>(argAttrs[0]);
-      if (auto sretAttr =
-              firstArgAttrs.get(LLVM::LLVMDialect::getStructRetAttrName())) {
+      if (auto sretAttr = defineOp.getArgAttr(
+              0, LLVM::LLVMDialect::getStructRetAttrName())) {
         sretPtr = callOp.getOperand(0);
         sretType = cast<TypeAttr>(sretAttr).getValue();
-        // Build operands and arg attributes without first element
-        for (int i = 1; i < operands.size(); i++)
-          newOperands.push_back(callOp.getOperand(i));
+        // Build arg attrs without first element
         for (int j = 1; j < argAttrs.size(); j++)
           newArgAttrs.push_back(argAttrs[j]);
         // Filter out arg_attrs from attributes
@@ -158,8 +159,57 @@ public:
           if (attr.getName() != callOp.getArgAttrsAttrName())
             newAttrs.push_back(attr);
         }
+        newAttrs.push_back(rewriter.getNamedAttr(
+            callOp.getArgAttrsAttrName(), rewriter.getArrayAttr(newArgAttrs)));
       }
     }
+
+    auto convertAttr = defineOp->getAttrOfType<enzyme::tessera::ConvertAttr>(
+        "tessera.convert");
+    if (!convertAttr)
+      return failure();
+    auto byRefArgs = convertAttr.getByRefArgs();
+    auto argSizes = convertAttr.getArgSizes();
+
+    SmallVector<Value> newOperands;
+    SmallVector<int32_t> loadedOperands;
+
+    // Build operands without first element. If a pointer operand has a
+    // byVal attribute or was marked as byRef by the user, load the value
+    // from the pointer and store that as the new operand
+    int argOffset = sretPtr ? 1 : 0;
+    for (int i = argOffset; i < operands.size(); i++) {
+      auto operand = callOp.getOperand(i);
+      int argIdx = i - argOffset;
+
+      if (!isa<LLVM::LLVMPointerType>(operand.getType())) {
+        newOperands.push_back(operand);
+        continue;
+      }
+
+      // Determine whether to load pointer and how many bytes to load
+      Type pointeeType;
+      if (auto byValAttr =
+              defineOp.getArgAttr(i, LLVM::LLVMDialect::getByValAttrName())) {
+        pointeeType = cast<TypeAttr>(byValAttr).getValue();
+      } else if (byRefArgs[argIdx]) {
+        pointeeType =
+            IntegerType::get(rewriter.getContext(), argSizes[argIdx] * 8);
+      }
+
+      if (pointeeType) {
+        auto loadedVal = rewriter.create<LLVM::LoadOp>(callOp.getLoc(),
+                                                       pointeeType, operand);
+        newOperands.push_back(loadedVal);
+        loadedOperands.push_back(argIdx);
+      } else {
+        newOperands.push_back(operand);
+      }
+    }
+
+    newAttrs.push_back(
+        rewriter.getNamedAttr("tessera.loaded_operands",
+                              rewriter.getDenseI32ArrayAttr(loadedOperands)));
 
     // Create tessera.call op with SSA return type
     if (sretPtr) {
@@ -167,12 +217,10 @@ public:
           callOp.getLoc(), TypeRange{sretType}, newOperands, newAttrs);
       rewriter.create<LLVM::StoreOp>(callOp.getLoc(), newCall.getResult(0),
                                      sretPtr);
-      newCall->setAttr(newCall.getArgAttrsAttrName(),
-                       rewriter.getArrayAttr(newArgAttrs));
       rewriter.eraseOp(callOp);
     } else {
       rewriter.replaceOpWithNewOp<tessera::CallOp>(
-          callOp, callOp.getResultTypes(), operands, callOp->getAttrs());
+          callOp, callOp.getResultTypes(), newOperands, callOp->getAttrs());
     }
 
     return success();
