@@ -1715,7 +1715,12 @@ public:
           }
 
           Value oldIV = oldInnerBody->getArgument(0);
-          Value newIV = stepInOuter;
+          Value newIV = stablehlo::AddOp::create(
+              builder, orig->getLoc(), info.getStart(),
+              stablehlo::MulOp::create(
+                  builder, orig->getLoc(), info.getStep(builder),
+                  stablehlo::AddOp::create(builder, orig->getLoc(), stepInOuter,
+                                           innerBody->getArgument(0))));
 
           mapping.map(oldIV, newIV);
 
