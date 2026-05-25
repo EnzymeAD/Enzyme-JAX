@@ -233,7 +233,31 @@ static void moveBeforeTerminator(SmallVectorImpl<Operation *> &ops, Block *tgt) 
 }
 
 
-
+//===----------------------------------------------------------------------===//
+// §1d  stripCasts
+//
+// Walk backwards through scalar type-conversion ops (arith and LLVM dialect)
+// to reach the underlying value.  Used by analyzeReductionCase1 so that a
+// cast chain between a load and the combining binop does not prevent matching.
+//===----------------------------------------------------------------------===//
+static Value stripCasts(Value v) {
+  while (v) {
+    Operation *def = v.getDefiningOp();
+    if (!def || def->getNumOperands() != 1 || def->getNumResults() != 1)
+      break;
+    if (isa<arith::TruncIOp, arith::ExtSIOp,  arith::ExtUIOp,
+            arith::TruncFOp, arith::ExtFOp,
+            arith::FPToSIOp, arith::SIToFPOp,
+            arith::FPToUIOp, arith::UIToFPOp,
+            arith::IndexCastOp, arith::IndexCastUIOp,
+            LLVM::ZExtOp,  LLVM::SExtOp,  LLVM::TruncOp,
+            LLVM::FPExtOp, LLVM::FPTruncOp, LLVM::BitcastOp>(def))
+      v = def->getOperand(0);
+    else
+      break;
+  }
+  return v;
+}
 
 //===----------------------------------------------------------------------===//
 // §2  Nowait detection
@@ -809,11 +833,91 @@ void LLVMToOMPPass::convertTeams(ModuleOp mod) {
     }
     call.erase();
     // Erase fn only after its last fork_teams call has been converted.
-    if (--fnCounts[fn] == 0) fn.erase();
+    if (fn && --fnCounts[fn] == 0 &&
+      SymbolTable::symbolKnownUseEmpty(fn, mod))
+    fn.erase();// added symbolKnownUser for call sites that are not parallelized, I could imagine not erasing the fn should also work
     LLVM_DEBUG(llvm::dbgs() << "[LLVMToOmp] fork_teams → omp.teams\n");
   }
 }
 
+
+/// Simplify all __kmpc_* calls in `fn` for single-threaded (serialized)
+/// execution.  Called for outlined functions preserved on the serialized
+/// (__kmpc_serialized_parallel) path after their fork_call sites are gone.
+static void serializeOutlinedFn(LLVM::LLVMFuncOp fn) {
+  MLIRContext *ctx = fn.getContext();
+  OpBuilder b(ctx);
+
+  SmallVector<LLVM::CallOp> toProcess;
+  fn.walk([&](LLVM::CallOp c) { toProcess.push_back(c); });
+
+  for (LLVM::CallOp c : toProcess) {
+    if (!c->getBlock()) continue;   // already erased
+    StringRef n = getCalleeName(c);
+    b.setInsertionPoint(c);
+    Location loc = c.getLoc();
+
+    // ── reduce: always takes case-1 (direct update), no lock needed ──────
+    if (n == "__kmpc_reduce_nowait" || n == "__kmpc_reduce") {
+      if (!c.getResults().empty()) {
+        Value one = b.create<LLVM::ConstantOp>(
+            loc, b.getI32Type(), b.getI32IntegerAttr(1));
+        c.getResult().replaceAllUsesWith(one);
+      }
+      c.erase(); continue;
+    }
+    if (n == "__kmpc_end_reduce_nowait" || n == "__kmpc_end_reduce") {
+      c.erase(); continue;
+    }
+
+    // ── static wsloop: lb/ub/stride already stored, init is a no-op ──────
+    if (n.starts_with("__kmpc_for_static_init_") ||
+        n == "__kmpc_for_static_fini") {
+      c.erase(); continue;
+    }
+
+    // ── dynamic dispatch: single thread gets the full range, no loop ──────
+    if (n.starts_with("__kmpc_dispatch_init_") ||
+        n.starts_with("__kmpc_dispatch_next_") ||
+        n.starts_with("__kmpc_dispatch_fini_") ||
+        n == "__kmpc_dispatch_deinit") {
+      // dispatch_next returns {more_work, lb, ub, stride}; replace
+      // with {1, stored_lb, stored_ub, stored_stride} if results used.
+      if (!c.getResults().empty()) {
+        Value one = b.create<LLVM::ConstantOp>(
+            loc, b.getI32Type(), b.getI32IntegerAttr(1));
+        c.getResult().replaceAllUsesWith(one);
+      }
+      c.erase(); continue;
+    }
+
+    // ── barrier: no-op with one thread ───────────────────────────────────
+    if (n == "__kmpc_barrier" || n == "__kmpc_cancel_barrier") {
+      c.erase(); continue;
+    }
+
+    // ── single: only thread always executes the single block ─────────────
+    if (n == "__kmpc_single") {
+      if (!c.getResults().empty()) {
+        Value one = b.create<LLVM::ConstantOp>(
+            loc, b.getI32Type(), b.getI32IntegerAttr(1));
+        c.getResult().replaceAllUsesWith(one);
+      }
+      c.erase(); continue;
+    }
+    if (n == "__kmpc_end_single") { c.erase(); continue; }
+
+    // ── gtid: thread 0 in serialized context ─────────────────────────────
+    if (n == "__kmpc_global_thread_num") {
+      if (!c.getResults().empty()) {
+        Value zero = b.create<LLVM::ConstantOp>(
+            loc, b.getI32Type(), b.getI32IntegerAttr(0));
+        c.getResult().replaceAllUsesWith(zero);
+      }
+      c.erase(); continue;
+    }
+  }
+}
 //===----------------------------------------------------------------------===//
 // §10  __kmpc_fork_call / __kmpc_parallel_51 → omp.parallel
 //
@@ -891,8 +995,20 @@ void LLVMToOMPPass::convertParallel(ModuleOp mod) {
 
     call.erase();
     // Erase the outlined function only once all its fork_call sites are gone.
-    if (--fnCounts[fn] == 0) fn.erase();
+    if (--fnCounts[fn] == 0 &&
+        SymbolTable::symbolKnownUseEmpty(fn, mod)) // added symbolKnownUser for call sites that are not parallelized, I could imagine not erasing the fn should also work
+      fn.erase();
     LLVM_DEBUG(llvm::dbgs() << "[LLVMToOmp] fork_call → omp.parallel\n");
+  }
+
+  // Simplify __kmpc_* calls in outlined functions that survived on the
+  // serialized path (SymbolTable::symbolKnownUseEmpty returned false above).
+  for (auto &[fn, count] : fnCounts) {
+    if (count != 0) continue;         // fn was erased — nothing to do
+    if (!fn || fn->getBlock() == nullptr) continue;
+    // fn still exists → it has remaining direct-call uses (serialized path)
+    if (!SymbolTable::symbolKnownUseEmpty(fn, mod))
+      serializeOutlinedFn(fn);
   }
 }
 
@@ -1885,23 +2001,28 @@ static void inlineForBodyIntoNest(OpBuilder &b, Location loc,
 // }
 
 
+
+
 static bool liftClauseValue(Value v, Operation *insertBefore,
                              const SmallPtrSet<Operation *, 32> &erasedSet,
-                             SmallPtrSet<Operation *, 32> &lifted) {
+                             SmallPtrSet<Operation *, 32> &lifted,
+                             Region *noLiftRegion = nullptr) {  // ← add param
   if (!v) return true;
   Operation *def = v.getDefiningOp();
   if (!def) {
     auto ba = cast<BlockArgument>(v);
     if (Operation *p = ba.getOwner()->getParentOp())
-      if (erasedSet.count(p))
-        return false;
+      if (erasedSet.count(p)) return false;
     return true;
   }
-  if (!erasedSet.count(def)) return true;   // defined outside erased range
-  if (lifted.count(def))     return true;   // already moved to correct position
+  if (!erasedSet.count(def)) return true;
+  if (lifted.count(def))     return true;
+  // ↓ NEW: never move an op that lives inside the protected region
+  if (noLiftRegion && noLiftRegion->isAncestor(def->getParentRegion()))
+    return false;
   if (def->getNumRegions() > 0) return false;
   for (Value operand : def->getOperands())
-    if (!liftClauseValue(operand, insertBefore, erasedSet, lifted))
+    if (!liftClauseValue(operand, insertBefore, erasedSet, lifted, noLiftRegion))
       return false;
   def->moveBefore(insertBefore);
   lifted.insert(def);
@@ -1962,14 +2083,31 @@ void LLVMToOMPPass::convertStaticWs(ModuleOp mod) {
     }
 
     scf::WhileOp whileOp = findWhileOpBetween(init, fini);
-    scf::ForOp   forOp;
-    if (!whileOp) forOp = findForOpBetween(init, fini);
-    if (!whileOp && !forOp) {
-      init.emitWarning(
-          "LLVMToOmp: no loop body (scf.while or scf.for) found between "
-          "init/fini — skipped");
-      continue;
-    }
+scf::ForOp   forOp;
+if (!whileOp) forOp = findForOpBetween(init, fini);
+
+// ── NEW: bulk-body fallback ───────────────────────────────────────────
+// Clang sometimes fuses a per-element loop into a single bulk op (e.g.
+// llvm.intr.memset) inside a guarding scf.if, with no inner scf.for/while.
+// Treat the then-block as a single-shot loop body; nestIV goes unused.
+scf::IfOp bodyIf;
+if (!whileOp && !forOp) {
+  bodyIf = findLoopBetween<scf::IfOp>(init, fini);
+  // Require the then-block to have actual work, not just scf.yield.
+  if (bodyIf) {
+    bool hasWork = false;
+    for (Operation &op : bodyIf.getThenRegion().front())
+      if (!isa<scf::YieldOp>(&op)) { hasWork = true; break; }
+    if (!hasWork) bodyIf = {};
+  }
+}
+
+if (!whileOp && !forOp && !bodyIf) {
+  init.emitWarning(
+      "LLVMToOmp: no loop body (scf.while or scf.for) found between "
+      "init/fini — skipped");
+  continue;
+}
 
     // Erase set (built BEFORE any IR modification).
     SmallPtrSet<Operation *, 32> erasedSet;
@@ -2020,9 +2158,22 @@ void LLVMToOMPPass::convertStaticWs(ModuleOp mod) {
 
     // Move-based body extraction.
     if (whileOp)
-      moveWhileBodyIntoNest(b, loc, nestBlk, whileOp, nestIV);
-    else
-      moveForBodyIntoNest(b, loc, nestBlk, forOp, nestIV);
+  moveWhileBodyIntoNest(b, loc, nestBlk, whileOp, nestIV);
+else if (forOp)
+  moveForBodyIntoNest(b, loc, nestBlk, forOp, nestIV);
+else {
+  // Bulk-body: move the scf.if's then-block ops (minus scf.yield)
+  // directly into nestBlk.  nestIV is unused — the body addresses memory
+  // using lb/ub loaded from the allocas, which fixForNest will lift.
+  Block &thenBlk = bodyIf.getThenRegion().front();
+  SmallVector<Operation *> toMove;
+  for (Operation &op : thenBlk.without_terminator())
+    toMove.push_back(&op);
+  for (Operation *op : toMove)
+    op->moveBefore(nestBlk->getTerminator());
+  LLVM_DEBUG(llvm::dbgs() << "[LLVMToOmp] bulk-body wsloop (no inner loop, "
+                              "nestIV unused)\n");
+}
 
     // Lift any erased-range deps still visible from nestBlk.
     // Guard: only lift ops that are OUTSIDE nestRegion (preamble ops, controlOnly
@@ -2031,17 +2182,55 @@ void LLVMToOMPPass::convertStaticWs(ModuleOp mod) {
     // and lifting them creates dominance violations.
     // The shared `lifted` set prevents any op from being moved more than once,
     // which would corrupt SSA ordering between mutually dependent preamble ops.
-    Region *nestRegion = nestBlk->getParent();
-    nestBlk->walk([&](Operation *op) {
-      for (unsigned i = 0, e = op->getNumOperands(); i < e; ++i) {
-        Value v = op->getOperand(i);
-        if (Operation *def = v.getDefiningOp())
-          if (erasedSet.count(def) &&
-              !nestRegion->isAncestor(def->getParentRegion()))
-            liftClauseValue(v, wsOp, erasedSet, lifted);
-      }
-    });
+Region *nestRegion = nestBlk->getParent();
+{
+  llvm::DenseMap<Value, Value> cloneMap;
 
+  // Ensure `v` is accessible from nestBlk:
+  //   1. If liftable (no nestRegion deps in chain) → lift to before wsOp.
+  //   2. If not liftable (chain passes through nestRegion) → clone into nestBlk.
+  std::function<Value(Value, Operation *)> fixForNest;
+  fixForNest = [&](Value v, Operation *insertBefore) -> Value {
+    if (auto it = cloneMap.find(v); it != cloneMap.end()) return it->second;
+    Operation *def = v.getDefiningOp();
+    // Block arg, not in erasedSet, or already inside nestRegion: use as-is.
+    if (!def || !erasedSet.count(def) ||
+        nestRegion->isAncestor(def->getParentRegion()))
+      return v;
+    // Try to lift to before wsOp (pass noLiftRegion so we never pull
+    // nestRegion ops out to the outer scope).
+    if (liftClauseValue(v, wsOp, erasedSet, lifted, nestRegion))
+      return v;  // now in outer scope, dominates nestBlk ✓
+    // Lift failed (operand depends on a nestRegion value) → clone into nestBlk.
+    if (def->getNumRegions() > 0) return v;  // region ops can't be cloned here
+    IRMapping m;
+    for (Value operand : def->getOperands()) {
+      Value fixed = fixForNest(operand, insertBefore);
+      if (fixed != operand) m.map(operand, fixed);
+    }
+    OpBuilder b(insertBefore);
+    Operation *cloned = b.clone(*def, m);
+    for (auto [orig, res] : llvm::zip(def->getResults(), cloned->getResults()))
+      cloneMap[orig] = res;
+    return cloneMap[v];
+  };
+
+  // Collect ops first so clone insertion doesn't invalidate the walk.
+  SmallVector<Operation *> nestOps;
+  nestOp.getRegion().walk([&](Operation *op) { nestOps.push_back(op); });
+
+  for (Operation *op : nestOps) {
+    for (unsigned i = 0, e = op->getNumOperands(); i < e; ++i) {
+      Value v = op->getOperand(i);
+      Operation *def = v.getDefiningOp();
+      if (!def || !erasedSet.count(def) ||
+          nestRegion->isAncestor(def->getParentRegion()))
+        continue;
+      Value fixed = fixForNest(v, op);
+      if (fixed != v) op->setOperand(i, fixed);
+    }
+  }
+}
 
 // ── Pre-erase sanity check ─────────────────────────────────────────────
 // Verify that no value defined inside the erased range still has a user
@@ -2355,15 +2544,54 @@ void LLVMToOMPPass::convertDynWs(ModuleOp mod) {
     //   (2) shared `lifted` prevents re-ordering via repeated moveBefore
     //   (3) insertBefore=wsOp so lifted preamble ops land before the loop
     Region *nestRegion = nestBlk->getParent();
-    nestBlk->walk([&](Operation *op) {
-      for (unsigned i = 0, e = op->getNumOperands(); i < e; ++i) {
-        Value v = op->getOperand(i);
-        if (Operation *def = v.getDefiningOp())
-          if (erasedSet.count(def) &&
-              !nestRegion->isAncestor(def->getParentRegion()))
-            liftClauseValue(v, wsOp, erasedSet, lifted);
-      }
-    });
+{
+  llvm::DenseMap<Value, Value> cloneMap;
+
+  // Ensure `v` is accessible from nestBlk:
+  //   1. If liftable (no nestRegion deps in chain) → lift to before wsOp.
+  //   2. If not liftable (chain passes through nestRegion) → clone into nestBlk.
+  std::function<Value(Value, Operation *)> fixForNest;
+  fixForNest = [&](Value v, Operation *insertBefore) -> Value {
+    if (auto it = cloneMap.find(v); it != cloneMap.end()) return it->second;
+    Operation *def = v.getDefiningOp();
+    // Block arg, not in erasedSet, or already inside nestRegion: use as-is.
+    if (!def || !erasedSet.count(def) ||
+        nestRegion->isAncestor(def->getParentRegion()))
+      return v;
+    // Try to lift to before wsOp (pass noLiftRegion so we never pull
+    // nestRegion ops out to the outer scope).
+    if (liftClauseValue(v, wsOp, erasedSet, lifted, nestRegion))
+      return v;  // now in outer scope, dominates nestBlk ✓
+    // Lift failed (operand depends on a nestRegion value) → clone into nestBlk.
+    if (def->getNumRegions() > 0) return v;  // region ops can't be cloned here
+    IRMapping m;
+    for (Value operand : def->getOperands()) {
+      Value fixed = fixForNest(operand, insertBefore);
+      if (fixed != operand) m.map(operand, fixed);
+    }
+    OpBuilder b(insertBefore);
+    Operation *cloned = b.clone(*def, m);
+    for (auto [orig, res] : llvm::zip(def->getResults(), cloned->getResults()))
+      cloneMap[orig] = res;
+    return cloneMap[v];
+  };
+
+  // Collect ops first so clone insertion doesn't invalidate the walk.
+  SmallVector<Operation *> nestOps;
+  nestOp.getRegion().walk([&](Operation *op) { nestOps.push_back(op); });
+
+  for (Operation *op : nestOps) {
+    for (unsigned i = 0, e = op->getNumOperands(); i < e; ++i) {
+      Value v = op->getOperand(i);
+      Operation *def = v.getDefiningOp();
+      if (!def || !erasedSet.count(def) ||
+          nestRegion->isAncestor(def->getParentRegion()))
+        continue;
+      Value fixed = fixForNest(v, op);
+      if (fixed != v) op->setOperand(i, fixed);
+    }
+  }
+}
 
 
 // ── Pre-erase sanity check ─────────────────────────────────────────────
@@ -3126,75 +3354,203 @@ static scf::IfOp findReduceDispatchIf(LLVM::CallOp reduceCall) {
   return {};
 }
 
-/// Collect the thread-local reduction variable pointers stored into
-/// the reduce_list alloca:  memref.store ptr_i, p2m(reduceListAlloca)[i]
-static SmallVector<Value> extractReduceListPtrs(Value reduceListAlloca) {
-  SmallVector<std::pair<int64_t, Value>> indexed;
-  for (Operation *u : reduceListAlloca.getUsers()) {
-    if (u->getName().getStringRef() != "enzymexla.pointer2memref") continue;
-    Value p2m = u->getResult(0);
-    for (Operation *su : p2m.getUsers()) {
-      auto st = dyn_cast<memref::StoreOp>(su);
-      if (!st || st.getIndices().size() != 1) continue;
-      if (auto idx = getConstIndex(st.getIndices()[0]))
-        indexed.emplace_back(*idx, st.getValueToStore());
+/// Return the last constant index of a GEPOp's index list — for a reduce_list
+/// GEP of the form `gep base[0, i]` that is the array slot number.
+/// Returns -1 if any index is a non-constant Value.
+static int64_t gepLastConstantIndex(LLVM::GEPOp gep) {
+  int64_t slot = 0;
+  bool hasAny = false;
+  for (auto idxUnion : gep.getIndices()) {
+    hasAny = true;
+    if (idxUnion.template is<IntegerAttr>()) {
+      slot = idxUnion.template get<IntegerAttr>().getInt();
+    } else {
+      Value dynIdx = idxUnion.template get<Value>();
+      if (auto c = getConstInt(dynIdx))
+        slot = *c;
+      else
+        return -1; // genuinely dynamic index — cannot determine slot statically
     }
   }
-  llvm::sort(indexed, [](const auto &a, const auto &b) { return a.first < b.first; });
+  return hasAny ? slot : 0;
+}
+
+/// Collect the thread-local reduction variable pointers stored into
+/// the reduce_list alloca.  Handles three IR patterns:
+///   Path 1 (memref bridge): pointer2memref(alloca) → memref.store ptr, [i]
+///   Path 2 (LLVM GEP):      llvm.getelementptr alloca[…, i] → llvm.store ptr
+///   Path 3 (direct store):  llvm.store ptr, alloca  (single-element list)
+static SmallVector<Value> extractReduceListPtrs(Value reduceListAlloca) {
+  SmallVector<std::pair<int64_t, Value>> indexed;
+
+  for (Operation *u : reduceListAlloca.getUsers()) {
+    // ── Path 1: enzymexla.pointer2memref → memref.store ──────────────────
+    if (u->getName().getStringRef() == "enzymexla.pointer2memref" &&
+        u->getNumResults() == 1) {
+      Value p2m = u->getResult(0);
+      for (Operation *su : p2m.getUsers()) {
+        auto st = dyn_cast<memref::StoreOp>(su);
+        if (!st || st.getIndices().size() != 1) continue;
+        if (auto idx = getConstIndex(st.getIndices()[0]))
+          indexed.emplace_back(*idx, st.getValueToStore());
+      }
+      continue;
+    }
+    // ── Path 2: llvm.getelementptr → llvm.store ──────────────────────────
+    if (auto gep = dyn_cast<LLVM::GEPOp>(u)) {
+      int64_t slot = gepLastConstantIndex(gep);
+      if (slot < 0) continue;
+      for (Operation *su : gep.getResult().getUsers())
+        if (auto st = dyn_cast<LLVM::StoreOp>(su))
+          indexed.emplace_back(slot, st.getValue());
+      continue;
+    }
+    // ── Path 3: direct llvm.store (single-element reduce_list) ───────────
+    if (auto st = dyn_cast<LLVM::StoreOp>(u))
+      indexed.emplace_back(0, st.getValue());
+  }
+
+  llvm::sort(indexed,
+             [](const auto &a, const auto &b) { return a.first < b.first; });
   SmallVector<Value> ptrs;
   for (auto &[_, v] : indexed) ptrs.push_back(v);
   return ptrs;
 }
 
+
+//===----------------------------------------------------------------------===//
+// §15a  Select-pattern reduction kind helper
+//
+// Determines whether a (cmpf/cmpi + select) combiner is a max or min, and
+// whether it operates on float / signed-int / unsigned-int.
+//===----------------------------------------------------------------------===//
+enum class SelectRedKind { MaxF, MinF, MaxS, MinS, MaxU, MinU, Unknown };
+
+static SelectRedKind getSelectRedKind(arith::SelectOp selOp) {
+  Value cond     = selOp.getCondition();
+  Value trueVal  = stripCasts(selOp.getTrueValue());
+
+  if (auto cmpf = cond.getDefiningOp<arith::CmpFOp>()) {
+    bool trueIsCmpLhs = (trueVal == stripCasts(cmpf.getLhs()));
+    using P = arith::CmpFPredicate;
+    bool isMax;
+    switch (cmpf.getPredicate()) {
+    case P::OGT: case P::OGE: case P::UGT: case P::UGE:
+      isMax = trueIsCmpLhs;  break;
+    case P::OLT: case P::OLE: case P::ULT: case P::ULE:
+      isMax = !trueIsCmpLhs; break;
+    default: return SelectRedKind::Unknown;
+    }
+    return isMax ? SelectRedKind::MaxF : SelectRedKind::MinF;
+  }
+  if (auto cmpi = cond.getDefiningOp<arith::CmpIOp>()) {
+    bool trueIsCmpLhs = (trueVal == stripCasts(cmpi.getLhs()));
+    using P = arith::CmpIPredicate;
+    bool isMax, isSigned;
+    switch (cmpi.getPredicate()) {
+    case P::sgt: case P::sge: isMax = trueIsCmpLhs;  isSigned = true;  break;
+    case P::slt: case P::sle: isMax = !trueIsCmpLhs; isSigned = true;  break;
+    case P::ugt: case P::uge: isMax = trueIsCmpLhs;  isSigned = false; break;
+    case P::ult: case P::ule: isMax = !trueIsCmpLhs; isSigned = false; break;
+    default: return SelectRedKind::Unknown;
+    }
+    if ( isMax &&  isSigned) return SelectRedKind::MaxS;
+    if (!isMax &&  isSigned) return SelectRedKind::MinS;
+    if ( isMax && !isSigned) return SelectRedKind::MaxU;
+    return SelectRedKind::MinU;
+  }
+  return SelectRedKind::Unknown;
+}
+
+
 struct ReductionBodyInfo { Value globalPtr; Operation *combineOp; };
 
-/// Scan the case-1 (lock-free) body for:
-///   load-from-global, load-from-local, arith-binop, store-to-global
-/// and return the shared variable pointer and the combiner op.
+/// Scan the case-1 (lock-free) body for a combining binary op between a
+/// load of the thread-local accumulator and a load of the shared variable.
+///
+/// Recognises two load forms (memref bridge and direct llvm.load) and
+/// tolerates scalar cast chains between the loads and the combiner.
+//===----------------------------------------------------------------------===//
+// analyzeReductionCase1  (extended: also handles cmpf/cmpi + select pattern)
+//===----------------------------------------------------------------------===//
 static std::optional<ReductionBodyInfo>
 analyzeReductionCase1(Block &body, Value localPtr) {
-  Value localLoad, globalLoad, globalPtr;
+  // ── Pass 1: map every load result to its source pointer ──────────────
+  llvm::DenseMap<Value, Value> loadSrc;
+  for (Operation &op : body) {
+    Value src, result;
+    if (auto ld = dyn_cast<memref::LoadOp>(&op)) {
+      if (ld.getIndices().size() != 1) continue;
+      auto *p2m = ld.getMemRef().getDefiningOp();
+      if (!p2m || p2m->getName().getStringRef() != "enzymexla.pointer2memref"
+          || p2m->getNumOperands() != 1) continue;
+      src = p2m->getOperand(0); result = ld.getResult();
+    } else if (auto ld = dyn_cast<LLVM::LoadOp>(&op)) {
+      src = ld.getAddr(); result = ld.getResult();
+    }
+    if (src && result) loadSrc[result] = src;
+  }
+
+  // ── Pass 2: find combiner — direct binary arith op OR select+cmp ─────
+  Value globalPtr;
   Operation *combiner = nullptr;
 
   for (Operation &op : body) {
-    // Identify loads from local or global through the p2m bridge
-    if (auto ld = dyn_cast<memref::LoadOp>(&op)) {
-      if (ld.getIndices().size() != 1) continue;
-      auto *p2mOp = ld.getMemRef().getDefiningOp();
-      if (!p2mOp ||
-          p2mOp->getName().getStringRef() != "enzymexla.pointer2memref" ||
-          p2mOp->getNumOperands() != 1) continue;
-      Value srcPtr = p2mOp->getOperand(0);
-      if (srcPtr == localPtr)
-        localLoad = ld.getResult();
-      else if (!globalPtr)
-        { globalPtr = srcPtr; globalLoad = ld.getResult(); }
-    }
-    // Identify the combining binary op once both loads are seen
-    if (localLoad && globalLoad && !combiner &&
-        op.getNumOperands() == 2 && op.getNumResults() == 1) {
-      if (isa<arith::AddIOp, arith::AddFOp,
-               arith::MulIOp, arith::MulFOp,
-               arith::AndIOp, arith::OrIOp, arith::XOrIOp,
+    // ── Case A: direct binary arith combiner ─────────────────────────────
+    if (op.getNumOperands() == 2 && op.getNumResults() == 1) {
+      if (isa<arith::AddIOp,  arith::AddFOp,
+               arith::MulIOp,  arith::MulFOp,
+               arith::AndIOp,  arith::OrIOp,   arith::XOrIOp,
                arith::MinSIOp, arith::MaxSIOp,
                arith::MinUIOp, arith::MaxUIOp,
                arith::MinimumFOp, arith::MaximumFOp>(&op)) {
-        Value o0 = op.getOperand(0), o1 = op.getOperand(1);
-        // The combiner mixes the two loads (order-independent for commutative ops)
-        if ((o0 == localLoad || o0 == globalLoad) &&
-            (o1 == localLoad || o1 == globalLoad) && o0 != o1)
-          combiner = &op;
+        Value o0 = stripCasts(op.getOperand(0));
+        Value o1 = stripCasts(op.getOperand(1));
+        Value s0 = o0 ? loadSrc.lookup(o0) : Value{};
+        Value s1 = o1 ? loadSrc.lookup(o1) : Value{};
+        if (!s0 || !s1) continue;
+        if      (s0 == localPtr && s1 != localPtr) globalPtr = s1;
+        else if (s1 == localPtr && s0 != localPtr) globalPtr = s0;
+        else continue;
+        combiner = &op;
+        break;
       }
     }
+
+    // ── Case B: arith.select(cmpf/cmpi PRED, load_a, load_b) ─────────────
+    if (auto selOp = dyn_cast<arith::SelectOp>(&op)) {
+      Value trueVal  = stripCasts(selOp.getTrueValue());
+      Value falseVal = stripCasts(selOp.getFalseValue());
+      Value s0 = trueVal  ? loadSrc.lookup(trueVal)  : Value{};
+      Value s1 = falseVal ? loadSrc.lookup(falseVal) : Value{};
+      if (!s0 || !s1) continue;
+      Value tentGlobal;
+      if      (s0 == localPtr && s1 != localPtr) tentGlobal = s1;
+      else if (s1 == localPtr && s0 != localPtr) tentGlobal = s0;
+      else continue;
+      // Verify condition is a cmpf/cmpi whose operands both come from loads
+      Value cond = selOp.getCondition();
+      Operation *cmpOp = cond.getDefiningOp();
+      if (!cmpOp || !isa<arith::CmpFOp, arith::CmpIOp>(cmpOp)) continue;
+      Value cmpL = stripCasts(cmpOp->getOperand(0));
+      Value cmpR = stripCasts(cmpOp->getOperand(1));
+      if (!loadSrc.count(cmpL) || !loadSrc.count(cmpR)) continue;
+      // Must be a recognisable max/min kind
+      if (getSelectRedKind(selOp) == SelectRedKind::Unknown) continue;
+      globalPtr = tentGlobal;
+      combiner  = &op;
+      break;
+    }
   }
+
   if (!globalPtr || !combiner) return std::nullopt;
   return ReductionBodyInfo{globalPtr, combiner};
 }
 
-/// Return the first value stored into localPtr — the identity / init value.
+/// Return the value of the first store into localPtr — the identity / init
+/// value for the reduction.  Handles memref-bridge stores, direct llvm.store,
+/// and GEP-then-llvm.store.
 static Value findReductionInit(Value localPtr) {
-  // Count how many parent ops separate `op` from the module root.
-  // Shallower depth = structurally earlier in the program = the init store.
   auto nestDepth = [](Operation *op) -> int {
     int d = 0;
     for (Operation *p = op->getParentOp(); p; p = p->getParentOp()) ++d;
@@ -3204,41 +3560,40 @@ static Value findReductionInit(Value localPtr) {
   Operation *earliest = nullptr;
   Value      initVal;
 
-  for (Operation *u : localPtr.getUsers()) {
-    if (u->getName().getStringRef() != "enzymexla.pointer2memref") continue;
-    Value p2m = u->getResult(0);
-
-    for (Operation *su : p2m.getUsers()) {
-      auto st = dyn_cast<memref::StoreOp>(su);
-      if (!st) continue;
-
-      if (!earliest) {
-        earliest = st;
-        initVal  = st.getValueToStore();
-        continue;
-      }
-
-      if (st->getBlock() == earliest->getBlock()) {
-        // Same block — safe to use isBeforeInBlock.
-        if (st->isBeforeInBlock(earliest)) {
-          earliest = st;
-          initVal  = st.getValueToStore();
-        }
-      } else {
-        // Different blocks (e.g. one is inside omp.loop_nest after
-        // convertStaticWs, the other is in the surrounding parallel block).
-        // The shallower store is the pre-loop zero-init; prefer it.
-        if (nestDepth(st) < nestDepth(earliest)) {
-          earliest = st;
-          initVal  = st.getValueToStore();
-        }
-      }
+  auto consider = [&](Operation *st, Value val) {
+    if (!earliest) { earliest = st; initVal = val; return; }
+    if (st->getBlock() == earliest->getBlock()) {
+      if (st->isBeforeInBlock(earliest)) { earliest = st; initVal = val; }
+    } else {
+      if (nestDepth(st) < nestDepth(earliest)) { earliest = st; initVal = val; }
     }
+  };
+
+  for (Operation *u : localPtr.getUsers()) {
+    // Path 1: pointer2memref → memref.store
+    if (u->getName().getStringRef() == "enzymexla.pointer2memref" &&
+        u->getNumResults() == 1) {
+      Value p2m = u->getResult(0);
+      for (Operation *su : p2m.getUsers())
+        if (auto st = dyn_cast<memref::StoreOp>(su))
+          consider(st, st.getValueToStore());
+    }
+    // Path 2: direct llvm.store %val, %localPtr
+    if (auto st = dyn_cast<LLVM::StoreOp>(u))
+      consider(st, st.getValue());
+    // Path 3: llvm.getelementptr %localPtr[…] → llvm.store
+    if (isa<LLVM::GEPOp>(u))
+      for (Operation *su : u->getResult(0).getUsers())
+        if (auto st = dyn_cast<LLVM::StoreOp>(su))
+          consider(st, st.getValue());
   }
   return initVal;
 }
 
 /// Build a unique, stable symbol name: "omp_red_add_i32", "omp_red_mul_f64", …
+//===----------------------------------------------------------------------===//
+// makeRedSymName  (extended)
+//===----------------------------------------------------------------------===//
 static std::string makeRedSymName(Operation *combineOp, Type elemTy) {
   StringRef opStr = "op";
   if      (isa<arith::AddIOp, arith::AddFOp>(combineOp))   opStr = "add";
@@ -3252,31 +3607,61 @@ static std::string makeRedSymName(Operation *combineOp, Type elemTy) {
   else if (isa<arith::MaxUIOp>(combineOp))                  opStr = "maxu";
   else if (isa<arith::MinimumFOp>(combineOp))               opStr = "minf";
   else if (isa<arith::MaximumFOp>(combineOp))               opStr = "maxf";
+  else if (auto sel = dyn_cast<arith::SelectOp>(combineOp)) {
+    switch (getSelectRedKind(sel)) {
+    case SelectRedKind::MaxF: opStr = "maxf"; break;
+    case SelectRedKind::MinF: opStr = "minf"; break;
+    case SelectRedKind::MaxS: opStr = "maxs"; break;
+    case SelectRedKind::MinS: opStr = "mins"; break;
+    case SelectRedKind::MaxU: opStr = "maxu"; break;
+    case SelectRedKind::MinU: opStr = "minu"; break;
+    default: break;
+    }
+  }
   std::string ts; llvm::raw_string_ostream os(ts); elemTy.print(os);
   for (char &c : ts) if (!llvm::isAlnum(c)) c = '_';
   return ("omp_red_" + opStr + "_" + ts).str();
 }
 
 /// Clone the combining operation in the combiner region with fresh block args.
+
+//===----------------------------------------------------------------------===//
+// emitRedCombiner  (extended)
+//===----------------------------------------------------------------------===//
 static Value emitRedCombiner(OpBuilder &b, Location loc,
                                Operation *tmpl, Value lhs, Value rhs) {
-  if (isa<arith::AddIOp>(tmpl))    return b.create<arith::AddIOp>(loc, lhs, rhs);
-  if (isa<arith::AddFOp>(tmpl))    return b.create<arith::AddFOp>(loc, lhs, rhs);
-  if (isa<arith::MulIOp>(tmpl))    return b.create<arith::MulIOp>(loc, lhs, rhs);
-  if (isa<arith::MulFOp>(tmpl))    return b.create<arith::MulFOp>(loc, lhs, rhs);
-  if (isa<arith::AndIOp>(tmpl))    return b.create<arith::AndIOp>(loc, lhs, rhs);
-  if (isa<arith::OrIOp>(tmpl))     return b.create<arith::OrIOp>(loc, lhs, rhs);
-  if (isa<arith::XOrIOp>(tmpl))    return b.create<arith::XOrIOp>(loc, lhs, rhs);
-  if (isa<arith::MinSIOp>(tmpl))   return b.create<arith::MinSIOp>(loc, lhs, rhs);
-  if (isa<arith::MaxSIOp>(tmpl))   return b.create<arith::MaxSIOp>(loc, lhs, rhs);
-  if (isa<arith::MinUIOp>(tmpl))   return b.create<arith::MinUIOp>(loc, lhs, rhs);
-  if (isa<arith::MaxUIOp>(tmpl))   return b.create<arith::MaxUIOp>(loc, lhs, rhs);
-  if (isa<arith::MinimumFOp>(tmpl))return b.create<arith::MinimumFOp>(loc, lhs, rhs);
-  if (isa<arith::MaximumFOp>(tmpl))return b.create<arith::MaximumFOp>(loc, lhs, rhs);
+  if (isa<arith::AddIOp>(tmpl))     return b.create<arith::AddIOp>(loc, lhs, rhs);
+  if (isa<arith::AddFOp>(tmpl))     return b.create<arith::AddFOp>(loc, lhs, rhs);
+  if (isa<arith::MulIOp>(tmpl))     return b.create<arith::MulIOp>(loc, lhs, rhs);
+  if (isa<arith::MulFOp>(tmpl))     return b.create<arith::MulFOp>(loc, lhs, rhs);
+  if (isa<arith::AndIOp>(tmpl))     return b.create<arith::AndIOp>(loc, lhs, rhs);
+  if (isa<arith::OrIOp>(tmpl))      return b.create<arith::OrIOp>(loc, lhs, rhs);
+  if (isa<arith::XOrIOp>(tmpl))     return b.create<arith::XOrIOp>(loc, lhs, rhs);
+  if (isa<arith::MinSIOp>(tmpl))    return b.create<arith::MinSIOp>(loc, lhs, rhs);
+  if (isa<arith::MaxSIOp>(tmpl))    return b.create<arith::MaxSIOp>(loc, lhs, rhs);
+  if (isa<arith::MinUIOp>(tmpl))    return b.create<arith::MinUIOp>(loc, lhs, rhs);
+  if (isa<arith::MaxUIOp>(tmpl))    return b.create<arith::MaxUIOp>(loc, lhs, rhs);
+  if (isa<arith::MinimumFOp>(tmpl)) return b.create<arith::MinimumFOp>(loc, lhs, rhs);
+  if (isa<arith::MaximumFOp>(tmpl)) return b.create<arith::MaximumFOp>(loc, lhs, rhs);
+  if (auto sel = dyn_cast<arith::SelectOp>(tmpl)) {
+    switch (getSelectRedKind(sel)) {
+    case SelectRedKind::MaxF: return b.create<arith::MaximumFOp>(loc, lhs, rhs);
+    case SelectRedKind::MinF: return b.create<arith::MinimumFOp>(loc, lhs, rhs);
+    case SelectRedKind::MaxS: return b.create<arith::MaxSIOp>(loc, lhs, rhs);
+    case SelectRedKind::MinS: return b.create<arith::MinSIOp>(loc, lhs, rhs);
+    case SelectRedKind::MaxU: return b.create<arith::MaxUIOp>(loc, lhs, rhs);
+    case SelectRedKind::MinU: return b.create<arith::MinUIOp>(loc, lhs, rhs);
+    default: return {};
+    }
+  }
   return {};
 }
 
+
 /// Map an arith combiner op to the LLVM atomic bin_op for the atomic region.
+//===----------------------------------------------------------------------===//
+// combineOpToAtomicBinOp  (extended)
+//===----------------------------------------------------------------------===//
 static LLVM::AtomicBinOp combineOpToAtomicBinOp(Operation *combineOp) {
   if (isa<arith::AddIOp>(combineOp))  return LLVM::AtomicBinOp::add;
   if (isa<arith::AddFOp>(combineOp))  return LLVM::AtomicBinOp::fadd;
@@ -3287,17 +3672,43 @@ static LLVM::AtomicBinOp combineOpToAtomicBinOp(Operation *combineOp) {
   if (isa<arith::MaxSIOp>(combineOp)) return LLVM::AtomicBinOp::max;
   if (isa<arith::MinUIOp>(combineOp)) return LLVM::AtomicBinOp::umin;
   if (isa<arith::MaxUIOp>(combineOp)) return LLVM::AtomicBinOp::umax;
+  if (auto sel = dyn_cast<arith::SelectOp>(combineOp)) {
+    switch (getSelectRedKind(sel)) {
+    case SelectRedKind::MaxF: return LLVM::AtomicBinOp::fmax;
+    case SelectRedKind::MinF: return LLVM::AtomicBinOp::fmin;
+    case SelectRedKind::MaxS: return LLVM::AtomicBinOp::max;
+    case SelectRedKind::MinS: return LLVM::AtomicBinOp::min;
+    case SelectRedKind::MaxU: return LLVM::AtomicBinOp::umax;
+    case SelectRedKind::MinU: return LLVM::AtomicBinOp::umin;
+    default: break;
+    }
+  }
   return LLVM::AtomicBinOp::add;  // safe default
 }
 
-/// Erase the reduce_list alloca plus all the pointer stores that fed it.
+/// Erase the reduce_list alloca and all the stores that populated it.
+/// Handles all three patterns recognised by extractReduceListPtrs.
 static void eraseReduceListAlloca(Value reduceListAlloca) {
   for (Operation *u : llvm::make_early_inc_range(reduceListAlloca.getUsers())) {
-    if (u->getName().getStringRef() != "enzymexla.pointer2memref") continue;
-    Value p2m = u->getResult(0);
-    for (Operation *su : llvm::make_early_inc_range(p2m.getUsers()))
-      if (isa<memref::StoreOp>(su)) su->erase();
-    if (p2m.use_empty()) u->erase();
+    // Path 1: pointer2memref → memref.store
+    if (u->getName().getStringRef() == "enzymexla.pointer2memref" &&
+        u->getNumResults() == 1) {
+      Value p2m = u->getResult(0);
+      for (Operation *su : llvm::make_early_inc_range(p2m.getUsers()))
+        if (isa<memref::StoreOp>(su)) su->erase();
+      if (p2m.use_empty()) u->erase();
+      continue;
+    }
+    // Path 2: llvm.getelementptr → llvm.store
+    if (isa<LLVM::GEPOp>(u)) {
+      Value gepRes = u->getResult(0);
+      for (Operation *su : llvm::make_early_inc_range(gepRes.getUsers()))
+        if (isa<LLVM::StoreOp>(su)) su->erase();
+      if (gepRes.use_empty()) u->erase();
+      continue;
+    }
+    // Path 3: direct llvm.store
+    if (isa<LLVM::StoreOp>(u)) { u->erase(); continue; }
   }
   if (reduceListAlloca.use_empty())
     if (auto *op = reduceListAlloca.getDefiningOp()) op->erase();
@@ -3321,9 +3732,23 @@ void LLVMToOMPPass::convertReductions(ModuleOp mod) {
     Location loc = reduceCall.getLoc();
     StringRef calleeName = getCalleeName(reduceCall);
 
+    // llvm::errs() << "\n[RED-DBG] ── processing " << calleeName
+    //              << " at " << loc << " ──\n";
+    // llvm::errs() << "[RED-DBG]   call: " << reduceCall << "\n";
+
     // ── step 1: dispatch scf.if ──────────────────────────────────────────
     scf::IfOp dispatchIf = findReduceDispatchIf(reduceCall);
     if (!dispatchIf) {
+      // llvm::errs() << "[RED-DBG] SKIP step1: no dispatch scf.if found "
+      //                 "immediately after the reduce call\n";
+      // llvm::errs() << "[RED-DBG]   ops after reduce in same block:\n";
+      // bool past = false;
+      // int count = 0;
+      // for (Operation &op : *reduceCall->getBlock()) {
+      //   if (!past) { past = (&op == reduceCall.getOperation()); continue; }
+      //   llvm::errs() << "[RED-DBG]     " << op << "\n";
+      //   if (++count >= 6) { llvm::errs() << "[RED-DBG]     ...\n"; break; }
+      // }
       LLVM_DEBUG(llvm::dbgs()
           << "  SKIP: no dispatch scf.if found after the reduce call\n");
       reduceCall.emitWarning("LLVMToOmp: '") << calleeName
@@ -3331,28 +3756,56 @@ void LLVMToOMPPass::convertReductions(ModuleOp mod) {
              "traced.  Left as llvm.call.";
       continue;
     }
+    // llvm::errs() << "[RED-DBG] step1 OK: found dispatch scf.if\n";
 
     // ── step 2: reduce_list local-var pointers ───────────────────────────
     if (reduceCall.getNumOperands() < 5) {
+      // llvm::errs() << "[RED-DBG] SKIP step2: only "
+      //              << reduceCall.getNumOperands() << " operands (need ≥5)\n";
       LLVM_DEBUG(llvm::dbgs() << "  SKIP: reduce call has only "
                                << reduceCall.getNumOperands() << " operands\n");
       continue;
     }
     Value reduceListAlloca = reduceCall.getOperand(4);
+    // llvm::errs() << "[RED-DBG] step2: reduceListAlloca = "
+    //              << reduceListAlloca << "\n";
+    // llvm::errs() << "[RED-DBG]   reduceListAlloca users:\n";
+    // for (Operation *u : reduceListAlloca.getUsers())
+    //   llvm::errs() << "[RED-DBG]     " << *u << "\n";
+
     SmallVector<Value> localPtrs = extractReduceListPtrs(reduceListAlloca);
     if (localPtrs.empty()) {
+      // llvm::errs() << "[RED-DBG] SKIP step2: extractReduceListPtrs returned "
+      //                 "empty — none of the three store patterns matched\n";
       LLVM_DEBUG(llvm::dbgs()
           << "  SKIP: no stores into reduce_list found\n");
       reduceCall.emitWarning("LLVMToOmp: '") << calleeName
           << "' not converted — cannot trace reduce_list.  Left as llvm.call.";
       continue;
     }
+    // llvm::errs() << "[RED-DBG] step2 OK: found " << localPtrs.size()
+    //              << " local ptr(s)\n";
+    // for (unsigned i = 0; i < localPtrs.size(); ++i)
+      // llvm::errs() << "[RED-DBG]   localPtr[" << i << "] = "
+      //              << localPtrs[i] << "\n";
     Value localPtr = localPtrs[0];
 
     // ── step 3: analyse case-1 (lock-free) body ──────────────────────────
     Block &case1Blk = dispatchIf.getThenRegion().front();
+    // llvm::errs() << "[RED-DBG] step3: case-1 block has "
+    //              << std::distance(case1Blk.begin(), case1Blk.end())
+    //              << " op(s), localPtr = " << localPtr << "\n";
+    // llvm::errs() << "[RED-DBG]   case-1 block ops:\n";
+    // for (Operation &op : case1Blk)
+    //   llvm::errs() << "[RED-DBG]     " << op << "\n";
+
     auto descOpt = analyzeReductionCase1(case1Blk, localPtr);
     if (!descOpt) {
+      // llvm::errs() << "[RED-DBG] SKIP step3: analyzeReductionCase1 returned "
+      //                 "nullopt (no globalPtr/combiner found)\n";
+      // llvm::errs() << "[RED-DBG]   hint: check that the case-1 block contains "
+      //                 "a load of localPtr, a load of a global ptr, and an "
+      //                 "arith.* combiner op between them\n";
       LLVM_DEBUG(llvm::dbgs()
           << "  SKIP: analyzeReductionCase1 found no globalPtr/combiner\n");
       reduceCall.emitWarning("LLVMToOmp: '") << calleeName
@@ -3362,23 +3815,34 @@ void LLVMToOMPPass::convertReductions(ModuleOp mod) {
     }
     Value globalPtr   = descOpt->globalPtr;
     Operation *combOp = descOpt->combineOp;
+    // llvm::errs() << "[RED-DBG] step3 OK: globalPtr=" << globalPtr
+    //              << "  combiner=" << combOp->getName() << "\n";
 
     // ── step 4: element type ──────────────────────────────────────────────
     Type elemTy;
     if (auto alloca = localPtr.getDefiningOp<LLVM::AllocaOp>())
       elemTy = alloca.getElemType();
     if (!elemTy) {
-      LLVM_DEBUG(llvm::dbgs() << "  SKIP: localPtr does not come from llvm.alloca\n");
+      // llvm::errs() << "[RED-DBG] SKIP step4: localPtr not from llvm.alloca\n";
+      // llvm::errs() << "[RED-DBG]   localPtr defining op: "
+      //              << *localPtr.getDefiningOp() << "\n";
+      LLVM_DEBUG(llvm::dbgs()
+          << "  SKIP: localPtr does not come from llvm.alloca\n");
       reduceCall.emitWarning("LLVMToOmp: '") << calleeName
           << "' not converted — cannot determine element type.  Left as llvm.call.";
       continue;
     }
+    // llvm::errs() << "[RED-DBG] step4 OK: elemTy = " << elemTy << "\n";
 
     // ── step 5: init / identity value ─────────────────────────────────────
     Value initVal = findReductionInit(localPtr);
+    // llvm::errs() << "[RED-DBG] step5: initVal = "
+    //              << (initVal ? "" : "(null)") << "\n";
+    // if (initVal) llvm::errs() << "[RED-DBG]   " << initVal << "\n";
 
     // ── step 6: omp.declare_reduction ─────────────────────────────────────
     std::string symName = makeRedSymName(combOp, elemTy);
+    // llvm::errs() << "[RED-DBG] step6: symName = " << symName << "\n";
     if (!mod.lookupSymbol(symName)) {
       OpBuilder mb(mod.getBody(), mod.getBody()->begin());
       auto declOp = mb.create<omp::DeclareReductionOp>(
@@ -3407,6 +3871,8 @@ void LLVMToOMPPass::convertReductions(ModuleOp mod) {
         mb.setInsertionPointToStart(blk);
         Value combined = emitRedCombiner(mb, loc, combOp, lhs, rhs);
         if (!combined) {
+          // llvm::errs() << "[RED-DBG] SKIP step6: emitRedCombiner returned null "
+          //                 "for combiner op " << combOp->getName() << "\n";
           LLVM_DEBUG(llvm::dbgs()
               << "  SKIP: emitRedCombiner returned null for "
               << combOp->getName().getStringRef() << "\n");
@@ -3430,7 +3896,13 @@ void LLVMToOMPPass::convertReductions(ModuleOp mod) {
             LLVM::AtomicOrdering::monotonic);
         mb.create<omp::YieldOp>(loc, ValueRange{});
       }
-    }
+      // llvm::errs() << "[RED-DBG] step6 OK: created omp.declare_reduction @"
+      //              << symName << "\n";
+    } 
+    // else {
+    //   llvm::errs() << "[RED-DBG] step6: symbol @" << symName
+    //                << " already exists, reusing\n";
+    // }
 
     // ── step 7: find enclosing omp.parallel ───────────────────────────────
     {
@@ -3438,12 +3910,33 @@ void LLVMToOMPPass::convertReductions(ModuleOp mod) {
       for (Operation *p = reduceCall->getParentOp(); p; p = p->getParentOp())
         if ((parallelOp = dyn_cast<omp::ParallelOp>(p))) break;
       if (!parallelOp) {
+        // Check whether we're inside a standalone .omp_outlined function
+        // preserved for the __kmpc_serialized_parallel path.  The cloned
+        // copy (inside omp.parallel) was already converted above; this
+        // copy runs single-threaded and needs no OMP dialect representation.
+        bool inOutlinedFn = false;
+        for (Operation *p = reduceCall->getParentOp(); p; p = p->getParentOp())
+          if (auto fn = dyn_cast<LLVM::LLVMFuncOp>(p)) {
+            inOutlinedFn = fn.getName().contains(".omp_outlined");
+            break;
+          }
+        if (inOutlinedFn) {
+          LLVM_DEBUG(llvm::dbgs()
+              << "  SKIP: reduce in serialized outlined fn (single-thread)\n");
+          continue;  // silent — real conversion already happened in inlined copy
+        }
+        // llvm::errs() << "[RED-DBG] SKIP step7: reduce call not inside omp.parallel\n";
+        // llvm::errs() << "[RED-DBG]   parent op chain: ";
+        for (Operation *p = reduceCall->getParentOp(); p; p = p->getParentOp())
+          llvm::errs() << p->getName() << " > ";
+        llvm::errs() << "(top)\n";
         LLVM_DEBUG(llvm::dbgs()
             << "  SKIP: reduce call is not inside an omp.parallel\n");
         reduceCall.emitWarning("LLVMToOmp: '") << calleeName
             << "' not inside omp.parallel — left as llvm.call.";
         continue;
       }
+      // llvm::errs() << "[RED-DBG] step7 OK: found enclosing omp.parallel\n";
       Block *oldEntry = &parallelOp.getRegion().front();
 
       // ── step 8: rebuild omp.parallel with reduction clause ─────────────
@@ -3467,15 +3960,13 @@ void LLVMToOMPPass::convertReductions(ModuleOp mod) {
       auto ptrTy       = LLVM::LLVMPointerType::get(ctx);
       BlockArgument privPtr = newEntry->addArgument(ptrTy, loc);
 
-      // Splice all ops from old entry block into new one (preserves wsloop etc.)
-      newEntry->getOperations().splice(newEntry->end(), oldEntry->getOperations());
-
+      newEntry->getOperations().splice(newEntry->end(),
+                                       oldEntry->getOperations());
       localPtr.replaceAllUsesWith(privPtr);
 
       if (auto allocaOp = localPtr.getDefiningOp<LLVM::AllocaOp>())
-        if (localPtr.use_empty()) {
+        if (localPtr.use_empty())
           allocaOp.erase();
-        }
 
       parallelOp.erase();
 
@@ -3495,6 +3986,9 @@ void LLVMToOMPPass::convertReductions(ModuleOp mod) {
       reduceCall.erase();
       eraseReduceListAlloca(reduceListAlloca);
 
+      // llvm::errs() << "[RED-DBG] step9 OK: conversion complete → "
+      //                 "omp.declare_reduction @" << symName
+      //              << " + omp.parallel reduction\n";
       LLVM_DEBUG(llvm::dbgs() << "[convertReductions] OK: " << calleeName
                                << " → omp.declare_reduction @" << symName
                                << " + omp.parallel reduction\n");
@@ -3507,8 +4001,13 @@ void LLVMToOMPPass::convertReductions(ModuleOp mod) {
   mod.walk([&](LLVM::CallOp c) {
     StringRef n = getCalleeName(c);
     if (n != "__kmpc_reduce" && n != "__kmpc_reduce_nowait") return;
-    c.emitWarning("LLVMToOmp: '") << n
-        << "' could not be converted.  Left as llvm.call.";
+    // Silently skip serialized-path copies in preserved outlined functions.
+    for (Operation *p = c->getParentOp(); p; p = p->getParentOp())
+      if (auto fn = dyn_cast<LLVM::LLVMFuncOp>(p)) {
+        if (fn.getName().contains(".omp_outlined")) return;
+        break;
+      }
+    c.emitWarning("LLVMToOmp: '") << n << "' could not be converted.  Left as llvm.call.";
   });
 }
 //===----------------------------------------------------------------------===//
@@ -3703,6 +4202,63 @@ void LLVMToOMPPass::convertAtomics(ModuleOp mod) {
 }
 
 //===----------------------------------------------------------------------===//
+// §16b  isBenignOmpRuntimeCall
+//
+// Returns true for omp_* / __kmpc_* names that are legitimate runtime
+// query / utility / timing functions with no OMP dialect equivalent.
+// These are silently left as llvm.call by UnhandledPat instead of
+// producing a "no OMP dialect equivalent" warning.
+//
+// Note: omp_get_thread_num / omp_get_num_threads / omp_get_max_threads
+// are handled by a downstream pass; they are listed here so this pass
+// does not warn about them.
+//===----------------------------------------------------------------------===//
+static bool isBenignOmpRuntimeCall(StringRef name) {
+  // Quick prefix gate before the table scan.
+  if (!name.starts_with("omp_") && !name.starts_with("__kmpc_"))
+    return false;
+
+  static const char *const kBenign[] = {
+    // ── Timing ────────────────────────────────────────────────────────
+    "omp_get_wtime", "omp_get_wtick",
+    // ── Thread / team queries (handled by a downstream pass) ──────────
+    "omp_get_thread_num",  "omp_get_num_threads",
+    "omp_get_max_threads", "omp_set_num_threads",
+    "omp_get_num_procs",
+    // ── Nesting / level queries ────────────────────────────────────────
+    "omp_in_parallel",
+    "omp_get_level",           "omp_get_active_level",
+    "omp_get_ancestor_thread_num", "omp_get_team_size",
+    // ── Dynamic / nested toggles ──────────────────────────────────────
+    "omp_set_dynamic", "omp_get_dynamic",
+    "omp_set_nested",  "omp_get_nested",
+    "omp_set_max_active_levels", "omp_get_max_active_levels",
+    // ── Scheduling ────────────────────────────────────────────────────
+    "omp_set_schedule", "omp_get_schedule",
+    // ── Locks ─────────────────────────────────────────────────────────
+    "omp_init_lock",     "omp_destroy_lock",
+    "omp_set_lock",      "omp_unset_lock",     "omp_test_lock",
+    "omp_init_nest_lock","omp_destroy_nest_lock",
+    "omp_set_nest_lock", "omp_unset_nest_lock","omp_test_nest_lock",
+    // ── Device / target queries ────────────────────────────────────────
+    "omp_get_num_devices",    "omp_get_default_device",
+    "omp_set_default_device", "omp_is_initial_device",
+    "omp_get_initial_device", "omp_get_device_num",
+    // ── Affinity ──────────────────────────────────────────────────────
+    "omp_get_place_num_procs", "omp_get_place_proc_ids",
+    "omp_get_partition_place_nums",
+    // ── End-reduce helpers ────────────────────────────────────────────
+    // Erased by convertReductions on success; silently left if conversion
+    // failed rather than producing a spurious "no dialect equivalent" warning.
+    // "__kmpc_end_reduce", "__kmpc_end_reduce_nowait",
+    nullptr
+  };
+  for (const char *const *p = kBenign; *p; ++p)
+    if (name == *p) return true;
+  return false;
+}
+
+//===----------------------------------------------------------------------===//
 // §17  Leaf patterns (Phase 2 — greedy rewrite)
 //===----------------------------------------------------------------------===//
 
@@ -3845,22 +4401,29 @@ struct GpuTargetPat : OpRewritePattern<LLVM::CallOp> {
 };
 
 /// __kmpc_push_num_threads / _proc_bind / _num_teams
-/// These are consumed by collectPendingClauses and have no OMP dialect
-/// equivalent. Erase silently after Phase 1 has already extracted their
-/// operand values.
+///   Consumed by collectPendingClauses; no OMP dialect equivalent.
+/// __kmpc_serialized_parallel / __kmpc_end_serialized_parallel
+///   Bookkeeping wrappers for an if(0) parallel region.  The actual work
+///   is a direct call to the outlined function between the two markers and
+///   is already in place; the markers themselves carry no semantics that
+///   the structured OMP dialect needs to model.
+/// All are erased silently after Phase 1.
 struct PushClausePat : OpRewritePattern<LLVM::CallOp> {
   using OpRewritePattern::OpRewritePattern;
   LogicalResult matchAndRewrite(LLVM::CallOp op,
                                 PatternRewriter &rw) const override {
     StringRef n = getCalleeName(op);
-    if (n != "__kmpc_push_num_threads" &&
-        n != "__kmpc_push_proc_bind"   &&
-        n != "__kmpc_push_num_teams")
+    if (n != "__kmpc_push_num_threads"       &&
+        n != "__kmpc_push_proc_bind"         &&
+        n != "__kmpc_push_num_teams"         &&
+        n != "__kmpc_serialized_parallel"    &&
+        n != "__kmpc_end_serialized_parallel")
       return failure();
     rw.eraseOp(op);
     return success();
   }
 };
+
 
 struct TaskCompleteIf0Pat : OpRewritePattern<LLVM::CallOp> {
   using OpRewritePattern::OpRewritePattern;
@@ -4042,15 +4605,19 @@ struct SectionsDispatchPat : OpRewritePattern<omp::WsloopOp> {
 };
 
 /// Catch-all: warn on any remaining __kmpc_* / omp_* calls (priority 0).
+/// Calls that are known to be benign runtime-query / utility functions are
+/// silently skipped via isBenignOmpRuntimeCall().
 struct UnhandledPat : OpRewritePattern<LLVM::CallOp> {
   UnhandledPat(MLIRContext *ctx) : OpRewritePattern(ctx, /*benefit=*/0) {}
   LogicalResult matchAndRewrite(LLVM::CallOp op,
                                 PatternRewriter &) const override {
     StringRef n = getCalleeName(op);
-    if (!SW(n,"__kmpc_") && !SW(n,"omp_")) return failure();
+    if (!SW(n, "__kmpc_") && !SW(n, "omp_")) return failure();
+    // Silently leave benign runtime-query / utility calls in place.
+    if (isBenignOmpRuntimeCall(n)) return failure();
     op.emitWarning("LLVMToOmp: '") << n
         << "' has no OMP dialect equivalent — left as llvm.call";
-    return failure(); // leave in place intentionally
+    return failure(); // intentionally leave in IR
   }
 };
 
