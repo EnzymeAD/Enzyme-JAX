@@ -7,7 +7,7 @@ func.func @main(%x : tensor<2xf32>) -> tensor<2xf32> {
 }
 
 // FORWARD:  func.func @main(%arg0: tensor<2xf32>, %arg1: tensor<2xf32>) -> (tensor<2xf32>, tensor<2xf32>) {
-// FORWARD-NEXT:    %0 = chlo.constant dense<1.128379e+00> : tensor<2xf32>
+// FORWARD-NEXT:    %0 = chlo.constant dense<{{1\.128379[0-9]*}}> : tensor<2xf32>
 // FORWARD-NEXT:    %1 = stablehlo.multiply %arg0, %arg0 : tensor<2xf32>
 // FORWARD-NEXT:    %2 = stablehlo.negate %1 : tensor<2xf32>
 // FORWARD-NEXT:    %3 = stablehlo.exponential %2 : tensor<2xf32>
@@ -18,7 +18,7 @@ func.func @main(%x : tensor<2xf32>) -> tensor<2xf32> {
 // FORWARD-NEXT:  }
 
 // REVERSE:  func.func @main(%arg0: tensor<2xf32>, %arg1: tensor<2xf32>) -> tensor<2xf32> {
-// REVERSE-NEXT:    %0 = chlo.constant dense<1.128379e+00> : tensor<2xf32>
+// REVERSE-NEXT:    %0 = chlo.constant dense<{{1\.128379[0-9]*}}> : tensor<2xf32>
 // REVERSE-NEXT:    %cst = arith.constant dense<0.000000e+00> : tensor<2xf32>
 // REVERSE-NEXT:    %1 = arith.addf %arg1, %cst : tensor<2xf32>
 // REVERSE-NEXT:    %2 = stablehlo.multiply %arg0, %arg0 : tensor<2xf32>
