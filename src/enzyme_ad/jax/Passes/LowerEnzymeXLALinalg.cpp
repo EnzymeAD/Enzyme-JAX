@@ -51,9 +51,21 @@ struct QRFactorizationOpLowering
 
   LogicalResult matchAndRewrite(enzymexla::QRFactorizationOp op,
                                 PatternRewriter &rewriter) const override {
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPoint(op);
+
     auto geqrfOp = enzymexla::GeqrfOp::create(
         rewriter, op.getLoc(), op->getResultTypes(), op.getInput());
-    rewriter.replaceOp(op, geqrfOp);
+    auto R = geqrfOp.getOutput();
+    auto tau = geqrfOp.getTau();
+    auto info = geqrfOp.getInfo();
+
+    auto orgqrOp = enzymexla::OrgqrOp::create(rewriter, op.getLoc(),
+                                              op->getResultTypes(), R, tau);
+    auto Q = orgqrOp.getOutput();
+
+    rewriter.replaceAllOpUsesWith(op, ValueRange{Q, R, info});
+
     return success();
   }
 };

@@ -6,3 +6,4 @@ func.func @main(%arg0: tensor<64x64xf32>) -> (tensor<64x64xf32>, tensor<64x64xf3
 }
 
 // CHECK: enzymexla.lapack.geqrf
+// CHECK-NEXT: enzymexla.lapack.orgqr
