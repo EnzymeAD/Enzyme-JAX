@@ -665,9 +665,9 @@ class AutoDiffWhileRev
       // while-op rewrite) can pick a static shape instead of falling back
       // to dynamic. Read by enzyme::getBoundsFromIR.
       auto i64Ty = builder.getI64Type();
-      auto resultBounds = builder.getArrayAttr(
-          {builder.getIntegerAttr(i64Ty, 1),
-           builder.getIntegerAttr(i64Ty, nInner)});
+      auto resultBounds =
+          builder.getArrayAttr({builder.getIntegerAttr(i64Ty, 1),
+                                builder.getIntegerAttr(i64Ty, nInner)});
       actualInner.getDefiningOp()->setAttr(
           "enzymexla.bounds", builder.getArrayAttr({resultBounds}));
     }
