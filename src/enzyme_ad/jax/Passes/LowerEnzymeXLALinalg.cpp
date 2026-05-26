@@ -60,8 +60,8 @@ struct QRFactorizationOpLowering
     auto tau = geqrfOp.getTau();
     auto info = geqrfOp.getInfo();
 
-    auto orgqrOp = enzymexla::OrgqrOp::create(rewriter, op.getLoc(),
-                                              op->getResultTypes(), R, tau);
+    auto orgqrOp = enzymexla::OrgqrOp::create(
+        rewriter, op.getLoc(), op->getResult(0).getType(), R, tau);
     auto Q = orgqrOp.getOutput();
 
     rewriter.replaceAllOpUsesWith(op, ValueRange{Q, R, info});
