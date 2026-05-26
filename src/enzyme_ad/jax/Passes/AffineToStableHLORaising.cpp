@@ -1134,9 +1134,9 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
         }
       }
 
-      raisedIdx = stablehlo::ReshapeOp::create(
-          builder, loc, Ty.clone({numIndices, 1}),
-          raisedIdx); // tensor<?x1xi64>
+      raisedIdx =
+          stablehlo::ReshapeOp::create(builder, loc, Ty.clone({numIndices, 1}),
+                                       raisedIdx); // tensor<?x1xi64>
 
       if (indices) {
         int64_t indicesSize =
