@@ -49,6 +49,8 @@ struct WhileLoopInfo {
 
   mlir::Value getStart() { return start; }
 
+  mlir::Value getLimit() { return limit; }
+
   mlir::Value getStep(OpBuilder &builder);
 
   // assumes computeInfo() has been called and was successful

@@ -660,6 +660,16 @@ class AutoDiffWhileRev
       actualInner = stablehlo::MinOp::create(
           builder, orig.getLoc(),
           makeI64Constant(orig.getLoc(), builder, nInner), remainingIters);
+      // Annotate the upper bound (nInner) on the runtime-min limit so
+      // downstream passes (e.g. cache buffer sizing in the reverse-mode
+      // while-op rewrite) can pick a static shape instead of falling back
+      // to dynamic. Read by enzyme::getBoundsFromIR.
+      auto i64Ty = builder.getI64Type();
+      auto resultBounds = builder.getArrayAttr(
+          {builder.getIntegerAttr(i64Ty, 1),
+           builder.getIntegerAttr(i64Ty, nInner)});
+      actualInner.getDefiningOp()->setAttr(
+          "enzymexla.bounds", builder.getArrayAttr({resultBounds}));
     }
 
     Value lastCache = nullptr;
@@ -3097,8 +3107,32 @@ public:
     // while loop with N iterations. For each of these cache, generate a
     // batched tensor with N prepended. Cache pushes become
     // dynamic_update_slice and cache pops become dynamic_slice.
-    auto numIters =
-        info.isConstant() ? info.getConstantNumIters() : ShapedType::kDynamic;
+    //
+    // When the limit is a runtime SSA value but its defining op carries an
+    // `enzymexla.bounds` attribute (e.g. `min(constN, X)` annotated by the
+    // checkpointing rewrite), use the upper bound as a static worst-case
+    // trip count so the cache buffer can be statically shaped. Otherwise
+    // the buffer would be `tensor<?x...>`, which XLA cannot translate.
+    // Slots beyond the actual trip count are never read on the reverse
+    // path, so over-allocation is safe.
+    int64_t numIters;
+    if (info.isConstant()) {
+      numIters = info.getConstantNumIters();
+    } else {
+      numIters = ShapedType::kDynamic;
+      if (info.isConstantStart() && info.isConstantStep() &&
+          info.getConstantStep().value() > 0) {
+        if (auto limitBounds = getBoundsFromIR(info.getLimit(), 64)) {
+          int64_t startVal = info.getConstantStart().value();
+          int64_t stepVal = info.getConstantStep().value();
+          int64_t limitMax = limitBounds->second.getSExtValue();
+          if (limitMax > startVal) {
+            int64_t span = limitMax - startVal;
+            numIters = (span + stepVal - 1) / stepVal; // ceil
+          }
+        }
+      }
+    }
 
     Value inductionVariable; // [0,..., N - 1] counter from within the loop
 
@@ -3163,7 +3197,12 @@ public:
       }
 
       Value initValue;
-      if (info.isConstant()) {
+      // Use a static null value whenever the cache buffer is fully shaped
+      // (either because the loop is constant, or because bounds analysis
+      // recovered a static `numIters` above). Only fall back to
+      // `tensor.empty + dynamic_pad` when the shape genuinely has dynamic
+      // dims — XLA cannot translate `dynamic_pad`.
+      if (numIters != ShapedType::kDynamic) {
         initValue = cast<AutoDiffTypeInterface>(newType).createNullValue(
             rewriter, cinfo.initOp->getLoc());
       } else {
