@@ -1,13 +1,11 @@
 // RUN: enzymexlamlir-opt %s -tessera-apply-pdl | FileCheck %s
 
 module {
-  tessera.define @eigen.inv(%arg0 : f32) -> f32 {
+  tessera.define @eigen.inv(%arg0 : f32) -> f32 attributes {argSizes = array<i64: 4>, byRefArgs = array<i1: false>, pure = true} {
     tessera.return %arg0 : f32
   }
 
-  // CHECK-LABEL: llvm.func @main
   llvm.func @main(%x : f32) -> f32 {
-    // CHECK: llvm.return %arg0
     %0 = tessera.call @eigen.inv(%x) : (f32) -> f32
     %1 = tessera.call @eigen.inv(%0) : (f32) -> f32
     llvm.return %1 : f32
@@ -30,3 +28,10 @@ module {
     }
   }
 }
+
+// CHECK: tessera.define @eigen.inv(%[[ARG0:.*]]: f32) -> f32 attributes {argSizes = array<i64: 4>, byRefArgs = array<i1: false>, pure = true} {
+// CHECK-NEXT: tessera.return %[[ARG0]] : f32
+// CHECK-NEXT: }
+// CHECK-NEXT: llvm.func @main(%[[X:.*]]: f32) -> f32 {
+// CHECK-NEXT: llvm.return %[[X]] : f32
+// CHECK-NEXT: }
