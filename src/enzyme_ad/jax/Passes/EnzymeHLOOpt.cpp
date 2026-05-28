@@ -29436,6 +29436,166 @@ struct DotGeneralDistributiveSimplify
   }
 };
 
+// applies distributive property to op(mul(a,b), mul(a,c)) operations and
+// converts them to mul(a, op(b, c))
+struct MultiplyDistributiveSimplify
+    : public CheckedOpRewritePattern<stablehlo::AddOp,
+                                     MultiplyDistributiveSimplify> {
+  using CheckedOpRewritePattern<
+      stablehlo::AddOp, MultiplyDistributiveSimplify>::CheckedOpRewritePattern;
+
+  void
+  collectCandidateOperands(Operation *op,
+                           SmallVector<stablehlo::MulOp> &candidates) const {
+    // transverse the graph up to find all the mul ops that are connected with
+    // the current op))
+    for (auto operandValue : op->getOperands()) {
+      auto *operandOp = operandValue.getDefiningOp();
+      if (!isOnlyUsedInOperation(operandOp, op))
+        continue;
+
+      if (auto mulOp = dyn_cast<stablehlo::MulOp>(operandOp)) {
+        candidates.push_back(mulOp);
+      } else if (auto addOp = dyn_cast<stablehlo::AddOp>(operandOp)) {
+        collectCandidateOperands(addOp, candidates);
+      }
+      // TODO generalize to `SubstractOp` and combinations of `AddOp` and
+      // `SubstractOp`
+    }
+  }
+
+  LogicalResult matchAndRewriteImpl(stablehlo::AddOp op,
+                                    PatternRewriter &rewriter) const {
+    // let the last AddOp handle the pattern
+    auto users = op.getResult().getUsers();
+    if (llvm::hasSingleElement(users) && isa<stablehlo::AddOp>(*users.begin()))
+      return failure();
+
+    SmallVector<stablehlo::MulOp> mulOps;
+    collectCandidateOperands(op, mulOps);
+
+    if (mulOps.size() <= 1)
+      return failure();
+
+    llvm::SmallDenseMap<Value, SmallVector<Value>> actsWith;
+    for (auto mulOp : mulOps) {
+      auto a = mulOp.getLhs();
+      auto b = mulOp.getRhs();
+      actsWith[a].push_back(b);
+      actsWith[b].push_back(a);
+    }
+
+    SmallVector<Value> selected;
+    for (auto [candidate, colleagues] : actsWith)
+      if (colleagues.size() > 1)
+        selected.push_back(candidate);
+
+    if (selected.size() == 0)
+      return failure();
+
+    // rewrite only the most benefitial, rely on subsequent calls to continue
+    // rewriting
+    llvm::max_element(selected, [&](Value a, Value b) {
+      return actsWith[a].size() < actsWith[b].size();
+    });
+    auto winner = selected[0];
+    auto a = actsWith[winner][0];
+    auto b = actsWith[winner][1];
+
+    // rewrite adds connected to the selected mul ops
+    // - `a` gets replaced by a zero, which will be folded
+    // - `b` gets replaced by the new mulOp result
+    Value mulUser_a;
+    for (auto mulOp : mulOps) {
+      if (mulOp.getLhs() == winner && mulOp.getRhs() == a ||
+          mulOp.getLhs() == a && mulOp.getRhs() == winner) {
+        mulUser_a = mulOp.getResult();
+        break;
+      }
+    }
+
+    Value mulUser_b;
+    for (auto mulOp : mulOps) {
+      if (mulOp.getResult() != mulUser_a &&
+          (mulOp.getLhs() == winner && mulOp.getRhs() == b ||
+           mulOp.getLhs() == b && mulOp.getRhs() == winner)) {
+        mulUser_b = mulOp.getResult();
+        break;
+      }
+    }
+
+    // case mulUser_a == mulUser_b and addUser_a == addUser_b
+    if (!mulUser_b || mulUser_a == mulUser_b)
+      return failure();
+
+    // wait for CSE to clean up the graph before rewriting
+    if (OperationEquivalence::isEquivalentTo(
+            mulUser_a.getDefiningOp(), mulUser_b.getDefiningOp(),
+            (OperationEquivalence::Flags)(
+                OperationEquivalence::IgnoreLocations |
+                OperationEquivalence::IgnoreDiscardableAttrs)))
+      return failure();
+
+    SmallVector<Operation *> uniqueMulUsers_a, uniqueMulUsers_b;
+    for (auto *user : mulUser_a.getUsers())
+      uniqueMulUsers_a.push_back(user);
+    for (auto *user : mulUser_b.getUsers())
+      uniqueMulUsers_b.push_back(user);
+
+    llvm::unique(uniqueMulUsers_a);
+    llvm::unique(uniqueMulUsers_b);
+    assert(llvm::hasSingleElement(uniqueMulUsers_a));
+    assert(llvm::hasSingleElement(uniqueMulUsers_b));
+
+    auto addUser_a = cast<stablehlo::AddOp>(uniqueMulUsers_a[0]);
+    auto addUser_b = cast<stablehlo::AddOp>(uniqueMulUsers_b[0]);
+
+    if (addUser_a == addUser_b) {
+      // TODO decide what to do... do we replace the multiply for a multiply and
+      // an add? it would be same number of ops but one less mul and one more
+      // add
+      return failure();
+    }
+
+    auto lhsValue_a = addUser_a.getLhs() == mulUser_a ? addUser_a.getRhs()
+                                                      : addUser_a.getLhs();
+    auto lhsValue_b = addUser_b.getLhs() == mulUser_b ? addUser_b.getRhs()
+                                                      : addUser_b.getLhs();
+
+    // simplify the distributed equation to a non-distributed one (one less
+    // multiply)
+    auto addOp = stablehlo::AddOp::create(rewriter, op.getLoc(), a, b);
+    auto mulOp = stablehlo::MulOp::create(rewriter, op.getLoc(), winner, addOp);
+
+    auto type = winner.getType();
+    auto zero = stablehlo::ConstantOp::create(
+        rewriter, op.getLoc(), type, cast<ElementsAttr>(makeAttr(type, 0)));
+
+    DominanceInfo di;
+    if (di.dominates(addUser_a.getOperation(), addUser_b.getOperation())) {
+      rewriter.moveOpBefore(zero.getOperation(), addUser_a.getOperation());
+      rewriter.moveOpBefore(addOp.getOperation(), addUser_a.getOperation());
+      rewriter.moveOpAfter(mulOp.getOperation(), addOp.getOperation());
+    } else {
+      rewriter.moveOpBefore(zero.getOperation(), addUser_b.getOperation());
+      rewriter.moveOpBefore(addOp.getOperation(), addUser_b.getOperation());
+      rewriter.moveOpAfter(mulOp.getOperation(), addOp.getOperation());
+    }
+
+    rewriter.startOpModification(addUser_a.getOperation());
+    addUser_a.setOperand(0, lhsValue_a);
+    addUser_a.setOperand(1, zero.getResult());
+    rewriter.finalizeOpModification(addUser_a.getOperation());
+
+    rewriter.startOpModification(addUser_b.getOperation());
+    addUser_b.setOperand(0, lhsValue_b);
+    addUser_b.setOperand(1, mulOp.getResult());
+    rewriter.finalizeOpModification(addUser_b.getOperation());
+
+    return success();
+  }
+};
+
 struct TrivialReduceWindowToReduceOp
     : public CheckedOpRewritePattern<stablehlo::ReduceWindowOp,
                                      TrivialReduceWindowToReduceOp> {
@@ -36098,6 +36258,7 @@ struct EnzymeHLOOptPass
         SubtractMultiplyConstToAddMulConst,
         ReduceMulToDotGeneral,
         SplitReduceAddMulToAddDotGeneral,
+        MultiplyDistributiveSimplify,
         DotGeneralDistributiveSimplify<stablehlo::AddOp>,
         DotGeneralDistributiveSimplify<stablehlo::SubtractOp>,
         TrivialReduceWindowToReduceOp,
