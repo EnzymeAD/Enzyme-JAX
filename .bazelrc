@@ -42,6 +42,7 @@ common --cxxopt=-Wno-range-loop-construct --host_cxxopt=-Wno-range-loop-construc
 # common --cxxopt=-Wno-stringop-overread --host_cxxopt=-Wno-stringop-overread
 
 common --cxxopt=-std=c++17 --host_cxxopt=-std=c++17
+common --cxxopt=-faligned-allocation --host_cxxopt=-faligned-allocation
 
 common --color=yes
 
