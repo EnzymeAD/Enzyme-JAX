@@ -13178,6 +13178,65 @@ struct DUSSliceSimplify final
   }
 };
 
+struct RedirectSliceThroughSlice final
+    : CheckedOpRewritePattern<stablehlo::SliceOp, RedirectSliceThroughSlice> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::SliceOp sliceOp,
+                                    PatternRewriter &rewriter) const {
+    // TODO currently force strides[i] == 1 for simplicity, we need to
+    // generalize it
+    if (!llvm::all_of(sliceOp.getStrides(),
+                      [](int64_t stride) { return stride == 1; }))
+      return failure();
+
+    for (auto *prev : sliceOp.getOperand().getUsers()) {
+      if (prev == sliceOp.getOperation())
+        continue;
+
+      // TODO generalize to dynamic_slice
+      if (auto prevSlice = dyn_cast<stablehlo::SliceOp>(prev)) {
+        // TODO currently force strides[i] == 1 for simplicity, we need to
+        // generalize it
+        if (!llvm::all_of(prevSlice.getStrides(),
+                          [](int64_t stride) { return stride == 1; }))
+          continue;
+
+        bool isContained = llvm::all_of(
+            llvm::zip(prevSlice.getStartIndices(), prevSlice.getLimitIndices(),
+                      sliceOp.getStartIndices(), sliceOp.getLimitIndices()),
+            [](auto inds) {
+              auto [pstart, plimit, sstart, slimit] = inds;
+              return sstart >= pstart && slimit <= plimit;
+            });
+        if (!isContained)
+          continue;
+
+        DominanceInfo di;
+        if (!di.dominates(prevSlice.getOperation(), sliceOp.getOperation()))
+          continue;
+
+        // compute indices shift
+        SmallVector<int64_t> newStarts, newLimits, newStrides;
+        for (auto &&[pstart, sstart, slimit] :
+             llvm::zip(prevSlice.getStartIndices(), sliceOp.getStartIndices(),
+                       sliceOp.getLimitIndices())) {
+          newStarts.push_back(sstart - pstart);
+          newLimits.push_back(slimit - pstart);
+        }
+
+        auto newSliceOp = stablehlo::SliceOp::create(
+            rewriter, sliceOp.getLoc(), prevSlice, newStarts,
+            newLimits, sliceOp.getStrides());
+
+        rewriter.replaceOp(sliceOp, newSliceOp);
+        return success();
+      }
+    }
+    return failure();
+  }
+};
+
 struct DUSToI32 final
     : CheckedOpRewritePattern<stablehlo::DynamicUpdateSliceOp, DUSToI32> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
