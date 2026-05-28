@@ -31003,29 +31003,16 @@ static bool isStencilValue(Value v, Value &H, int &dim,
                             RankedTensorType resTy) {
   if (v.getType() != resTy)
     return false;
-  // Case 1: plain single-dim slice of some base tensor H.
+  // Case 1: plain slice (identity stencil, possibly cropping multiple dims for
+  // halo stripping in multi-dimensional kernels). Does not constrain `dim`.
   if (auto sl = v.getDefiningOp<stablehlo::SliceOp>()) {
-    auto baseTy = cast<RankedTensorType>(sl.getOperand().getType());
-    int slicedDim = -1;
-    for (int i = 0; i < baseTy.getRank(); i++) {
+    for (int i = 0; i < cast<RankedTensorType>(sl.getOperand().getType()).getRank(); i++)
       if (sl.getStrides()[i] != 1)
         return false;
-      if (sl.getStartIndices()[i] != 0 ||
-          sl.getLimitIndices()[i] != baseTy.getShape()[i]) {
-        if (slicedDim != -1)
-          return false;
-        slicedDim = i;
-      }
-    }
-    if (slicedDim == -1)
-      return false;
     Value B = sl.getOperand();
     if (H && H != B)
       return false;
-    if (dim != -1 && dim != slicedDim)
-      return false;
     H = B;
-    dim = slicedDim;
     return true;
   }
   // Case 2: concat(slice(H,A:N), slice(H,0:A)) — cyclic rotation.
