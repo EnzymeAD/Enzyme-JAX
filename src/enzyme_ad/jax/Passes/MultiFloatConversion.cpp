@@ -2546,6 +2546,29 @@ struct CompareOpConversion : public OpConversionPattern<stablehlo::CompareOp> {
       if (res.getType() != resultType) {
         res = rewriter.create<stablehlo::ReshapeOp>(loc, resultType, res);
       }
+
+      // Infinity correction: two multifloat values that both represent ±∞
+      // compare as equal regardless of their lo limbs (which may be NaN due
+      // to inf_f64 - inf_f32 = NaN during splitting). We check only the hi
+      // limb: (hi_lhs == hi_rhs) AND !is_finite(hi_lhs).
+      // NaN is excluded automatically since NaN == NaN is false at f32 level.
+      Value hi_lhs = extractLimb(lhs, 0, rewriter, loc, concatDimension);
+      Value hi_rhs = extractLimb(rhs, 0, rewriter, loc, concatDimension);
+      Value hi_eq_f32 = rewriter.create<stablehlo::CompareOp>(
+          loc, hi_lhs, hi_rhs, stablehlo::ComparisonDirection::EQ);
+      Value hi_not_finite = rewriter.create<stablehlo::NotOp>(
+          loc, rewriter.create<stablehlo::IsFiniteOp>(loc, hi_lhs));
+      Value inf_corr =
+          rewriter.create<stablehlo::AndOp>(loc, hi_eq_f32, hi_not_finite);
+      inf_corr =
+          rewriter.create<stablehlo::ReshapeOp>(loc, resultType, inf_corr);
+      if (direction == stablehlo::ComparisonDirection::EQ) {
+        res = rewriter.create<stablehlo::OrOp>(loc, res, inf_corr);
+      } else {
+        res = rewriter.create<stablehlo::AndOp>(
+            loc, res, rewriter.create<stablehlo::NotOp>(loc, inf_corr));
+      }
+
       rewriter.replaceOp(op, res);
       return success();
     }
@@ -2566,6 +2589,16 @@ struct CompareOpConversion : public OpConversionPattern<stablehlo::CompareOp> {
       lo_eq = rewriter.create<stablehlo::ReshapeOp>(loc, resultType, lo_eq);
 
       res = rewriter.create<stablehlo::AndOp>(loc, hi_eq, lo_eq);
+
+      // Infinity correction: equal hi limbs that are ±inf mean the values
+      // are equal regardless of lo limbs (which may be NaN after splitting).
+      Value hi_not_finite = rewriter.create<stablehlo::NotOp>(
+          loc, rewriter.create<stablehlo::IsFiniteOp>(loc, lhs_hi));
+      hi_not_finite =
+          rewriter.create<stablehlo::ReshapeOp>(loc, resultType, hi_not_finite);
+      Value inf_corr =
+          rewriter.create<stablehlo::AndOp>(loc, hi_eq, hi_not_finite);
+      res = rewriter.create<stablehlo::OrOp>(loc, res, inf_corr);
     } else if (direction == stablehlo::ComparisonDirection::NE) {
       Value hi_ne = rewriter.create<stablehlo::CompareOp>(
           loc, lhs_hi, rhs_hi, stablehlo::ComparisonDirection::NE);
@@ -2576,6 +2609,20 @@ struct CompareOpConversion : public OpConversionPattern<stablehlo::CompareOp> {
       lo_ne = rewriter.create<stablehlo::ReshapeOp>(loc, resultType, lo_ne);
 
       res = rewriter.create<stablehlo::OrOp>(loc, hi_ne, lo_ne);
+
+      // Infinity correction: equal hi limbs that are ±inf mean the values
+      // are NOT unequal (dual of EQ correction).
+      Value hi_eq = rewriter.create<stablehlo::CompareOp>(
+          loc, lhs_hi, rhs_hi, stablehlo::ComparisonDirection::EQ);
+      hi_eq = rewriter.create<stablehlo::ReshapeOp>(loc, resultType, hi_eq);
+      Value hi_not_finite = rewriter.create<stablehlo::NotOp>(
+          loc, rewriter.create<stablehlo::IsFiniteOp>(loc, lhs_hi));
+      hi_not_finite =
+          rewriter.create<stablehlo::ReshapeOp>(loc, resultType, hi_not_finite);
+      Value inf_corr =
+          rewriter.create<stablehlo::AndOp>(loc, hi_eq, hi_not_finite);
+      res = rewriter.create<stablehlo::AndOp>(
+          loc, res, rewriter.create<stablehlo::NotOp>(loc, inf_corr));
     } else {
       stablehlo::ComparisonDirection dir_hi;
       stablehlo::ComparisonDirection dir_lo;
@@ -3146,6 +3193,23 @@ struct LogOpConversion : public OpConversionPattern<stablehlo::LogOp> {
     // Check x == +inf
     Value is_inf = rewriter.create<stablehlo::CompareOp>(
         loc, x_hi, inf, stablehlo::ComparisonDirection::EQ);
+
+    if (concatDimension == "tuple") {
+      // In TUPLE mode the packed result is a TupleType, so we cannot
+      // broadcast a scalar condition over it or use SelectOp on tuples.
+      // Apply the special-case selects per limb, then pack.
+      Value hi = res_hi, lo = res_lo;
+      hi = rewriter.create<stablehlo::SelectOp>(loc, is_one, zero, hi);
+      lo = rewriter.create<stablehlo::SelectOp>(loc, is_one, zero, lo);
+      hi = rewriter.create<stablehlo::SelectOp>(loc, is_inf, inf, hi);
+      lo = rewriter.create<stablehlo::SelectOp>(loc, is_inf, zero, lo);
+      hi = rewriter.create<stablehlo::SelectOp>(loc, is_zero, neg_inf, hi);
+      lo = rewriter.create<stablehlo::SelectOp>(loc, is_zero, zero, lo);
+      hi = rewriter.create<stablehlo::SelectOp>(loc, is_neg, nan, hi);
+      lo = rewriter.create<stablehlo::SelectOp>(loc, is_neg, nan, lo);
+      rewriter.replaceOp(op, packLimbs(hi, lo, rewriter, loc, concatDimension));
+      return success();
+    }
 
     Value packed_res =
         packLimbs(res_hi, res_lo, rewriter, loc, concatDimension);
@@ -4147,6 +4211,186 @@ template <typename OpTy> struct IsResultOrOperandTypeLegal {
   }
 };
 
+// Lower stablehlo.power into ops that the multifloat conversion can handle.
+//
+// The general fallback is exp(y * log(|x|)) with IEEE corrections, but that
+// path compounds the per-call error of log and exp (each itself approximated
+// in multifloat) and is therefore numerically unstable for non-trivial y.
+// We avoid it whenever the exponent reveals a structurally exact form:
+//
+//   * Constant integer n with |n| small  →  exponentiation by squaring
+//     (only multiplications; exact for n>=0, reciprocal for n<0).
+//   * Constant 0.5                       →  stablehlo.sqrt
+//     (multifloat sqrt is much more accurate than exp(0.5*log(x))).
+//
+// For exponents that don't match a fast path (non-constant y, or constants
+// like 2/7 that have no closed form in elementary ops) we fall back to the
+// exp(y * log(|x|)) lowering. Restricted to ops whose lhs element type is
+// the multifloat source type, and skipped inside enzyme.no_multifloat funcs.
+struct PowOpLowerPattern : public OpRewritePattern<stablehlo::PowOp> {
+  Type srcTy;
+  PowOpLowerPattern(MLIRContext *ctx, Type srcTy)
+      : OpRewritePattern<stablehlo::PowOp>(ctx), srcTy(srcTy) {}
+
+  // Return n if v is a constant splat tensor whose value is an exact integer
+  // (within a safe range so the cast is well-defined).
+  static std::optional<int64_t> matchConstantIntegerSplat(Value v) {
+    auto cst = v.getDefiningOp<stablehlo::ConstantOp>();
+    if (!cst)
+      return std::nullopt;
+    auto attr = dyn_cast<DenseElementsAttr>(cst.getValue());
+    if (!attr || !attr.isSplat())
+      return std::nullopt;
+    auto fAttr = dyn_cast<FloatAttr>(attr.getSplatValue<Attribute>());
+    if (!fAttr)
+      return std::nullopt;
+    APFloat f = fAttr.getValue();
+    if (!f.isFinite())
+      return std::nullopt;
+    APSInt asInt(/*BitWidth=*/64, /*isUnsigned=*/false);
+    bool isExact = false;
+    auto status = f.convertToInteger(asInt, APFloat::rmTowardZero, &isExact);
+    if (status != APFloat::opOK || !isExact)
+      return std::nullopt;
+    return asInt.getExtValue();
+  }
+
+  // Return true if v is a constant splat tensor whose value is exactly 0.5.
+  static bool matchConstantHalf(Value v) {
+    auto cst = v.getDefiningOp<stablehlo::ConstantOp>();
+    if (!cst)
+      return false;
+    auto attr = dyn_cast<DenseElementsAttr>(cst.getValue());
+    if (!attr || !attr.isSplat())
+      return false;
+    auto fAttr = dyn_cast<FloatAttr>(attr.getSplatValue<Attribute>());
+    if (!fAttr)
+      return false;
+    APFloat f = fAttr.getValue();
+    APFloat half(f.getSemantics(), "0.5");
+    return f.bitwiseIsEqual(half);
+  }
+
+  LogicalResult matchAndRewrite(stablehlo::PowOp op,
+                                PatternRewriter &rewriter) const override {
+    auto tensorTy = dyn_cast<RankedTensorType>(op.getLhs().getType());
+    if (!tensorTy || tensorTy.getElementType() != srcTy)
+      return failure();
+    if (auto func = op->getParentOfType<func::FuncOp>())
+      if (func->hasAttr("enzyme.no_multifloat"))
+        return failure();
+
+    Location loc = op.getLoc();
+    Value x = op.getLhs();
+    Value y = op.getRhs();
+    auto elemTy = cast<FloatType>(tensorTy.getElementType());
+
+    // Fast path 1: integer exponent → exponentiation by squaring.
+    // Cap unroll so we don't explode IR for extreme exponents.
+    constexpr int64_t kMaxUnrollExponent = 32;
+    if (auto n = matchConstantIntegerSplat(y)) {
+      if (std::abs(*n) <= kMaxUnrollExponent) {
+        auto one = rewriter.create<stablehlo::ConstantOp>(
+            loc, tensorTy,
+            DenseElementsAttr::get(tensorTy,
+                                   rewriter.getFloatAttr(elemTy, 1.0)));
+        if (*n == 0) {
+          rewriter.replaceOp(op, one.getResult());
+          return success();
+        }
+        uint64_t k = static_cast<uint64_t>(std::abs(*n));
+        Value base = x;
+        Value result;
+        while (k > 0) {
+          if (k & 1u) {
+            result = result
+                         ? rewriter.create<stablehlo::MulOp>(loc, result, base)
+                               .getResult()
+                         : base;
+          }
+          k >>= 1;
+          if (k > 0)
+            base = rewriter.create<stablehlo::MulOp>(loc, base, base);
+        }
+        if (*n < 0)
+          result = rewriter.create<stablehlo::DivOp>(loc, one, result);
+        rewriter.replaceOp(op, result);
+        return success();
+      }
+    }
+
+    // Fast path 2: y == 0.5 → sqrt.
+    if (matchConstantHalf(y)) {
+      rewriter.replaceOpWithNewOp<stablehlo::SqrtOp>(op, x);
+      return success();
+    }
+
+    // Fallback: exp(y * log(|x|)) with IEEE special-case corrections.
+    auto makeConst = [&](double val) -> Value {
+      auto attr =
+          DenseElementsAttr::get(tensorTy, rewriter.getFloatAttr(elemTy, val));
+      return rewriter.create<stablehlo::ConstantOp>(loc, tensorTy, attr);
+    };
+    auto makeNaN = [&]() -> Value {
+      APFloat nan = APFloat::getNaN(elemTy.getFloatSemantics());
+      auto attr = DenseElementsAttr::get(tensorTy, FloatAttr::get(elemTy, nan));
+      return rewriter.create<stablehlo::ConstantOp>(loc, tensorTy, attr);
+    };
+
+    Value zero = makeConst(0.0);
+    Value one = makeConst(1.0);
+    Value neg_one = makeConst(-1.0);
+    Value two = makeConst(2.0);
+    Value half = makeConst(0.5);
+    Value pos_inf = makeConst(std::numeric_limits<double>::infinity());
+
+    Value abs_x = rewriter.create<stablehlo::AbsOp>(loc, x);
+    Value log_abs = rewriter.create<stablehlo::LogOp>(loc, abs_x);
+    Value product = rewriter.create<stablehlo::MulOp>(loc, y, log_abs);
+    Value abs_result = rewriter.create<stablehlo::ExpOp>(loc, product);
+
+    Value x_neg = rewriter.create<stablehlo::CompareOp>(
+        loc, x, zero, stablehlo::ComparisonDirection::LT);
+    Value y_floor = rewriter.create<stablehlo::FloorOp>(loc, y);
+    Value y_is_int = rewriter.create<stablehlo::CompareOp>(
+        loc, y, y_floor, stablehlo::ComparisonDirection::EQ);
+    Value half_y_floor = rewriter.create<stablehlo::FloorOp>(
+        loc, rewriter.create<stablehlo::MulOp>(loc, y, half));
+    Value y_mod_2 = rewriter.create<stablehlo::SubtractOp>(
+        loc, y, rewriter.create<stablehlo::MulOp>(loc, two, half_y_floor));
+    Value y_is_odd = rewriter.create<stablehlo::CompareOp>(
+        loc, y_mod_2, one, stablehlo::ComparisonDirection::EQ);
+    Value sign =
+        rewriter.create<stablehlo::SelectOp>(loc, y_is_odd, neg_one, one);
+    Value neg_result = rewriter.create<stablehlo::MulOp>(loc, abs_result, sign);
+    Value neg_base_result = rewriter.create<stablehlo::SelectOp>(
+        loc, y_is_int, neg_result, makeNaN());
+    Value result = rewriter.create<stablehlo::SelectOp>(
+        loc, x_neg, neg_base_result, abs_result);
+
+    Value y_is_zero = rewriter.create<stablehlo::CompareOp>(
+        loc, y, zero, stablehlo::ComparisonDirection::EQ);
+    result = rewriter.create<stablehlo::SelectOp>(loc, y_is_zero, one, result);
+
+    Value x_is_one = rewriter.create<stablehlo::CompareOp>(
+        loc, x, one, stablehlo::ComparisonDirection::EQ);
+    result = rewriter.create<stablehlo::SelectOp>(loc, x_is_one, one, result);
+
+    Value x_is_neg_one = rewriter.create<stablehlo::CompareOp>(
+        loc, x, neg_one, stablehlo::ComparisonDirection::EQ);
+    Value abs_y = rewriter.create<stablehlo::AbsOp>(loc, y);
+    Value y_is_inf = rewriter.create<stablehlo::CompareOp>(
+        loc, abs_y, pos_inf, stablehlo::ComparisonDirection::EQ);
+    Value neg_one_inf =
+        rewriter.create<stablehlo::AndOp>(loc, x_is_neg_one, y_is_inf);
+    result =
+        rewriter.create<stablehlo::SelectOp>(loc, neg_one_inf, one, result);
+
+    rewriter.replaceOp(op, result);
+    return success();
+  }
+};
+
 struct MultiFloatConversionPass
     : public enzyme::impl::MultiFloatConversionPassBase<
           MultiFloatConversionPass> {
@@ -4386,7 +4630,6 @@ struct MultiFloatConversionPass
     IsResultOrOperandTypeLegal<stablehlo::NegOp> negLegal(typeConverter);
     IsResultOrOperandTypeLegal<stablehlo::DynamicUpdateSliceOp>
         dynamicUpdateSliceLegal(typeConverter);
-
     target.addDynamicallyLegalOp<stablehlo::ConstantOp>(
         [&](stablehlo::ConstantOp op) {
           return typeConverter.isLegal(op.getType());
@@ -4509,6 +4752,7 @@ struct MultiFloatConversionPass
       for (auto func : funcsToConvert) {
         RewritePatternSet patterns(context);
         patterns.add<LowerReduceWindowOp>(context, srcTy);
+        patterns.add<PowOpLowerPattern>(context, srcTy);
         if (dotGeneralToReduce)
           patterns.add<DotGeneralToMulReducePattern>(context);
         if (failed(applyPatternsGreedily(func, std::move(patterns), config))) {
