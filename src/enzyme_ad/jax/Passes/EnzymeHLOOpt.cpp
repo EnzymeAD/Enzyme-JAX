@@ -30966,6 +30966,241 @@ private:
   }
 };
 
+// ─── WeightedWindowsToDotGeneral ─────────────────────────────────────────────
+//
+// Recognises an add/sub-tree where every leaf is:
+//   (a) mul(stencil_value, splatConst)
+//   (b) mul(select(cmp, stencil_true, stencil_false), splatConst)
+//
+// A "stencil value" is any tensor with the same type as the result — either a
+// plain slice or a concat(slice,slice) cyclic rotation (both forms appear in
+// the WENO HLO).  All select leaves must share the same comparison value.
+// Mixed (a)/(b) leaves are rejected.
+//
+// Rewrites to:
+//   dot_general(concat([sv_0,...,sv_k], dim=rank), weights)
+//
+// where each sv_i is reshaped to [...,1] before concatenation, giving a
+// [...,nTerms] stacked tensor, and the dot contracts the trailing dim against
+// the single weights dim.  For the upwinded (b) case emits:
+//   select(cmp, dot_general(stack_true, w), dot_general(stack_false, w))
+//
+// This fuses WENO candidate reconstructions (each q̂_r is a 3-point linear
+// stencil) into a single dot_general / matmul.
+// ─────────────────────────────────────────────────────────────────────────────
+
+static bool extractSplatFloat(Value v, double &coeff) {
+  auto tryConstOp = [&](stablehlo::ConstantOp c) -> bool {
+    if (auto sp = dyn_cast<SplatElementsAttr>(c.getValue())) {
+      coeff = sp.getSplatValue<APFloat>().convertToDouble();
+      return true;
+    }
+    if (auto dense = dyn_cast<DenseElementsAttr>(c.getValue())) {
+      if (dense.getNumElements() == 1) {
+        coeff = (*dense.getValues<APFloat>().begin()).convertToDouble();
+        return true;
+      }
+    }
+    return false;
+  };
+  if (auto c = v.getDefiningOp<stablehlo::ConstantOp>())
+    return tryConstOp(c);
+  if (auto bcast = v.getDefiningOp<stablehlo::BroadcastInDimOp>())
+    if (auto c = bcast.getOperand().getDefiningOp<stablehlo::ConstantOp>())
+      return tryConstOp(c);
+  return false;
+}
+
+// Returns true if v is a stencil window derived from base H in dimension dim:
+// either a plain single-dim slice or a concat(slice,slice) cyclic rotation.
+// Both forms appear in WENO: %0 = slice(H,[5:25]) and %18 = concat(slice,slice).
+static bool isStencilValue(Value v, Value &H, int &dim, RankedTensorType resTy) {
+  if (v.getType() != resTy) return false;
+  // Case 1: plain single-dim slice of H.
+  if (auto sl = v.getDefiningOp<stablehlo::SliceOp>()) {
+    auto baseTy = cast<RankedTensorType>(sl.getOperand().getType());
+    int slicedDim = -1;
+    for (int i = 0; i < baseTy.getRank(); i++) {
+      if (sl.getStrides()[i] != 1) return false;
+      if (sl.getStartIndices()[i] != 0 ||
+          sl.getLimitIndices()[i] != baseTy.getShape()[i]) {
+        if (slicedDim != -1) return false;
+        slicedDim = i;
+      }
+    }
+    if (slicedDim == -1) return false;
+    Value B = sl.getOperand();
+    if (H && H != B) return false;
+    if (dim != -1 && dim != slicedDim) return false;
+    H = B; dim = slicedDim;
+    return true;
+  }
+  // Case 2: concat(slice(H,A:N), slice(H,0:A)) — cyclic rotation.
+  if (auto cat = v.getDefiningOp<stablehlo::ConcatenateOp>()) {
+    if (cat.getOperands().size() != 2) return false;
+    stablehlo::SliceOp sl0, sl1;
+    int d = cat.getDimension();
+    if (!isRotateLike(d, cat.getOperands()[0], cat.getOperands()[1], &sl0, &sl1))
+      return false;
+    Value B = sl0.getOperand();
+    if (H && H != B) return false;
+    if (dim != -1 && dim != d) return false;
+    H = B; dim = d;
+    return true;
+  }
+  return false;
+}
+
+struct WSWTerm {
+  Value  shiftedTrue;   // stencil value for this term (or the true-branch)
+  double coeff;         // scalar weight (sign-adjusted)
+  Value  selCmp;        // null iff no select
+  Value  shiftedFalse;  // false-branch stencil value (valid when selCmp != null)
+};
+
+static LogicalResult collectWSWTerms(Value v, double sign,
+                                     Value &base, int &dim, Value &selCmp,
+                                     RankedTensorType resTy,
+                                     SmallVectorImpl<WSWTerm> &terms) {
+  if (auto op = v.getDefiningOp<stablehlo::AddOp>())
+    return success(
+        succeeded(collectWSWTerms(op.getLhs(),  sign, base, dim, selCmp, resTy, terms)) &&
+        succeeded(collectWSWTerms(op.getRhs(),  sign, base, dim, selCmp, resTy, terms)));
+  if (auto op = v.getDefiningOp<stablehlo::SubtractOp>())
+    return success(
+        succeeded(collectWSWTerms(op.getLhs(),  sign, base, dim, selCmp, resTy, terms)) &&
+        succeeded(collectWSWTerms(op.getRhs(), -sign, base, dim, selCmp, resTy, terms)));
+  if (auto op = v.getDefiningOp<stablehlo::NegOp>())
+    return collectWSWTerms(op.getOperand(), -sign, base, dim, selCmp, resTy, terms);
+
+  auto mul = v.getDefiningOp<stablehlo::MulOp>();
+  if (!mul) return failure();
+
+  Value X; double c = 0.0;
+  for (int i = 0; i < 2; i++) {
+    Value a = i ? mul.getRhs() : mul.getLhs();
+    Value b = i ? mul.getLhs() : mul.getRhs();
+    if (!extractSplatFloat(a, c)) continue;
+    X = b; break;
+  }
+  if (!X) return failure();
+
+  // Case (a): pure stencil value (slice or cyclic concat).
+  if (isStencilValue(X, base, dim, resTy)) {
+    if (selCmp) return failure();
+    terms.push_back({X, sign * c, nullptr, nullptr});
+    return success();
+  }
+
+  // Case (b): select(cmp, stencil_true, stencil_false) — upwinded stencil.
+  auto sel = X.getDefiningOp<stablehlo::SelectOp>();
+  if (!sel) return failure();
+  Value thisCmp = sel.getPred();
+  if (selCmp && thisCmp != selCmp) return failure();
+  if (!isStencilValue(sel.getOnTrue(),  base, dim, resTy)) return failure();
+  if (!isStencilValue(sel.getOnFalse(), base, dim, resTy)) return failure();
+  selCmp = thisCmp;
+  terms.push_back({sel.getOnTrue(), sign * c, thisCmp, sel.getOnFalse()});
+  return success();
+}
+
+struct WeightedWindowsToDotGeneral
+    : public CheckedOpRewritePattern<stablehlo::AddOp,
+                                     WeightedWindowsToDotGeneral> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::AddOp op,
+                                    PatternRewriter &rewriter) const {
+    // Only fire at the root of the add-tree so we see all terms at once.
+    for (Operation *user : op->getUsers())
+      if (isa<stablehlo::AddOp, stablehlo::SubtractOp>(user))
+        return failure();
+
+    auto resTy  = cast<RankedTensorType>(op.getType());
+    int rank    = resTy.getRank();
+    auto elemTy = cast<FloatType>(resTy.getElementType());
+
+    Value base; int dim = -1; Value selCmp;
+    SmallVector<WSWTerm> terms;
+    if (failed(collectWSWTerms(op, +1.0, base, dim, selCmp, resTy, terms)))
+      return failure();
+    if (terms.size() < 3)
+      return failure();
+
+    // Reject if any two terms share the same stencil value — indicates an
+    // intermediate β sub-expression rather than a full candidate reconstruction.
+    for (size_t i = 0; i < terms.size(); i++)
+      for (size_t j = i + 1; j < terms.size(); j++)
+        if (terms[i].shiftedTrue == terms[j].shiftedTrue)
+          return failure();
+
+    Location loc = op.getLoc();
+
+    // Weight vector constant.
+    SmallVector<APFloat> coeffValues;
+    for (auto &t : terms) {
+      APFloat apf(t.coeff);
+      bool losesInfo;
+      apf.convert(elemTy.getFloatSemantics(),
+                  APFloat::rmNearestTiesToEven, &losesInfo);
+      coeffValues.push_back(apf);
+    }
+    auto weightTy   = RankedTensorType::get({(int64_t)terms.size()}, elemTy);
+    auto weightAttr = DenseElementsAttr::get(weightTy, coeffValues);
+    Value weights   = stablehlo::ConstantOp::create(rewriter, loc, weightAttr);
+
+    // Reshape each stencil value from [...] to [...,1] then concat → [...,nTerms].
+    SmallVector<int64_t> expandedShape(resTy.getShape());
+    expandedShape.push_back(1);
+    auto expandedTy = RankedTensorType::get(expandedShape, elemTy);
+
+    auto buildStacked = [&](bool useFalseBranch) -> Value {
+      SmallVector<Value> expanded;
+      for (auto &t : terms) {
+        Value sv = useFalseBranch ? t.shiftedFalse : t.shiftedTrue;
+        expanded.push_back(
+            stablehlo::ReshapeOp::create(rewriter, loc, expandedTy, sv));
+      }
+      return stablehlo::ConcatenateOp::create(rewriter, loc, expanded, rank);
+    };
+
+    // dot_general contracting the trailing stencil dim against weights.
+    auto buildDot = [&](Value stacked) -> Value {
+      SmallVector<int64_t> lhsContract = {(int64_t)rank};
+      SmallVector<int64_t> rhsContract = {0};
+      auto dotDims = stablehlo::DotDimensionNumbersAttr::get(
+          rewriter.getContext(), {}, {}, lhsContract, rhsContract);
+      return stablehlo::DotGeneralOp::create(rewriter, loc, resTy, stacked,
+                                             weights, dotDims, nullptr, nullptr);
+    };
+
+    if (!selCmp) {
+      rewriter.replaceOp(op, buildDot(buildStacked(false)));
+      return success();
+    }
+
+    Value dotTrue  = buildDot(buildStacked(false));
+    Value dotFalse = buildDot(buildStacked(true));
+
+    // Broadcast the comparison predicate to the result shape if needed.
+    Value pred = selCmp;
+    auto cmpTy = cast<RankedTensorType>(selCmp.getType());
+    if (cmpTy.getShape() != resTy.getShape()) {
+      auto broadBoolTy = RankedTensorType::get(resTy.getShape(),
+                                               rewriter.getI1Type());
+      SmallVector<int64_t> bcastDims;
+      for (int i = 0; i < rank; i++) bcastDims.push_back(i);
+      pred = stablehlo::BroadcastInDimOp::create(
+          rewriter, loc, broadBoolTy, selCmp,
+          rewriter.getDenseI64ArrayAttr(bcastDims));
+    }
+
+    rewriter.replaceOp(op, stablehlo::SelectOp::create(rewriter, loc, resTy,
+                                                        pred, dotTrue, dotFalse));
+    return success();
+  }
+};
+
 // returns input A and transpose param to syrk if can convert dot_general op to
 // syrk
 std::pair<Value, enzymexla::LapackTranspose>
@@ -36098,6 +36333,7 @@ struct EnzymeHLOOptPass
         SubtractMultiplyConstToAddMulConst,
         ReduceMulToDotGeneral,
         SplitReduceAddMulToAddDotGeneral,
+        WeightedWindowsToDotGeneral,
         DotGeneralDistributiveSimplify<stablehlo::AddOp>,
         DotGeneralDistributiveSimplify<stablehlo::SubtractOp>,
         TrivialReduceWindowToReduceOp,

@@ -3011,6 +3011,10 @@ def ApplySplitReduceAddMulToAddDotGeneralPatterns : EnzymeHLOPatternOp<
     "split_reduce_add_mul_to_add_dot_general"> {
   let patterns = ["SplitReduceAddMulToAddDotGeneral"];
 }
+def ApplyWeightedWindowsToDotGeneralPatterns : EnzymeHLOPatternOp<
+    "weighted_windows_to_dot_general"> {
+  let patterns = ["WeightedWindowsToDotGeneral"];
+}
 
 def ApplyDotGeneralOnlyDiagonalAccessPatterns : EnzymeHLOPatternOp<
     "dot_general_only_diagonal_access"> {

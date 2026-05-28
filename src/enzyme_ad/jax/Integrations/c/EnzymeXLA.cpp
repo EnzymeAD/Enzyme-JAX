@@ -534,6 +534,7 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("multiply_negated_operands_simplify");
   list.push_back("factor_scalars_in_dot_general");
   list.push_back("reduce_mul_to_dot_general");
+  list.push_back("weighted_windows_to_dot_general");
   list.push_back("dot_general_broadcast_in_dim");
   list.push_back("dot_general_broadcast_in_dim_sort_dims");
   list.push_back("dus_dynamic_slice_simplify");
