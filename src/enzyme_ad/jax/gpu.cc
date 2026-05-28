@@ -3,6 +3,8 @@
 #include "xla/ffi/execution_state.h"
 #include "xla/ffi/ffi_api.h"
 #include "xla/stream_executor/stream.h"
+#include <cstdio>
+#include <cuda_runtime_api.h>
 
 #if (defined(_WIN32) || defined(__CYGWIN__)) &&                                \
     !defined(MLIR_CAPI_ENABLE_WINDOWS_DLL_DECLSPEC)
@@ -129,8 +131,22 @@ XLA_FFI_Error *execute(XLA_FFI_CallFrame *call_frame) {
   size_t numargs = call_frame->args.size;
   void *ptrs[numargs];
   for (size_t i = 0; i < numargs; i++) {
-    ptrs[i] =
-        &reinterpret_cast<XLA_FFI_Buffer *>(call_frame->args.args[i])->data;
+    auto *buffer = reinterpret_cast<XLA_FFI_Buffer *>(call_frame->args.args[i]);
+    void *data = buffer->data;
+    ptrs[i] = &buffer->data;
+
+    cudaPointerAttributes attrs;
+    cudaError_t err = cudaPointerGetAttributes(&attrs, data);
+    if (err != cudaSuccess) {
+      std::fprintf(stderr,
+                   "enzymexla gpu debug: arg[%zu] data=%p cudaPointerGetAttributes failed: %s\n",
+                   i, data, cudaGetErrorString(err));
+      cudaGetLastError();
+    } else {
+      std::fprintf(stderr,
+                   "enzymexla gpu debug: arg[%zu] data=%p type=%d device=%d stream=%p\n",
+                   i, data, static_cast<int>(attrs.type), attrs.device, stream);
+    }
   }
 
   void *cufunc = nullptr;
