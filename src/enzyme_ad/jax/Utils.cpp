@@ -1783,11 +1783,13 @@ std::optional<IotaLikeTensor> detectIotaLikeTensor(mlir::Value tensor) {
     return std::nullopt;
   }
 
-  if (auto evaluated = tryEvaluateSmallTreeToConstant(tensor)) {
-    if (auto iotaLike = detectIotaLikeTensor(*evaluated)) {
-      return iotaLike;
-    }
-  }
+  // NOTE: This was added to make it gather simplifications work better,
+  // but we now have a more general solution
+  // if (auto evaluated = tryEvaluateSmallTreeToConstant(tensor)) {
+  //   if (auto iotaLike = detectIotaLikeTensor(*evaluated)) {
+  //     return iotaLike;
+  //   }
+  // }
 
   struct ChainItem {
     mlir::Operation *op;
