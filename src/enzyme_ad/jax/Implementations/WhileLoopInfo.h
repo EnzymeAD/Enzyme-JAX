@@ -51,20 +51,28 @@ struct WhileLoopInfo {
 
   mlir::Value getStep(OpBuilder &builder);
 
-  // assumes computeInfo() has been called and was successful
-  // returns the induction variable in the body of the while op
-  Value getInductionVariable() {
+  // returns the arg number of the iv. assumes computeInfo() has been called and
+  // was successful
+  size_t getArgNumber() {
     auto &condBlk = op.getCond().front();
     auto condTerm = cast<stablehlo::ReturnOp>(condBlk.getTerminator());
     auto condV = condTerm->getOperand(0);
     auto cond = condV.getDefiningOp<stablehlo::CompareOp>();
     if (!cond ||
         cond.getComparisonDirection() != stablehlo::ComparisonDirection::LT) {
-      return nullptr;
+      return -1;
     }
     auto induct = dyn_cast<BlockArgument>(cond.getOperand(0));
-    auto blockArgNum = induct.getArgNumber();
-    return op.getBody().front().getArgument(blockArgNum);
+    size_t blockArgNum = induct.getArgNumber();
+    return blockArgNum;
+  }
+
+  // assumes computeInfo() has been called and was successful
+  // returns the induction variable in the body of the while op
+  Value getInductionVariable() {
+    auto blockArgNum = getArgNumber();
+    return blockArgNum == -1 ? nullptr
+                             : op.getBody().front().getArgument(blockArgNum);
   }
 
   int64_t getConstantNumIters();
