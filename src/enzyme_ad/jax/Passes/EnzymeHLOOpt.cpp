@@ -30979,13 +30979,24 @@ private:
 
 static bool extractSplatFloat(Value v, double &coeff) {
   auto tryDense = [&](ElementsAttr attr) -> bool {
+    auto fTy = dyn_cast<FloatType>(
+        cast<ShapedType>(attr.getType()).getElementType());
+    // Only handle standard IEEE widths — exotic formats (f4, f8, etc.) can
+    // crash LLVM's APFloat iterator and are never WENO weights anyway.
+    if (!fTy || fTy.getWidth() < 16)
+      return false;
+    auto toDouble = [](APFloat f) -> double {
+      bool losesInfo;
+      f.convert(APFloat::IEEEdouble(), APFloat::rmNearestTiesToEven, &losesInfo);
+      return f.convertToDouble();
+    };
     if (auto sp = dyn_cast<SplatElementsAttr>(attr)) {
-      coeff = sp.getSplatValue<APFloat>().convertToDouble();
+      coeff = toDouble(sp.getSplatValue<APFloat>());
       return true;
     }
     if (auto d = dyn_cast<DenseElementsAttr>(attr)) {
       if (d.getNumElements() == 1) {
-        coeff = (*d.getValues<APFloat>().begin()).convertToDouble();
+        coeff = toDouble(*d.getValues<APFloat>().begin());
         return true;
       }
     }
