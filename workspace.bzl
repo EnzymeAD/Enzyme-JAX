@@ -1,4 +1,4 @@
-JAX_COMMIT = "d72694890a8dd1911435edc8f5732af0c58054f5"
+JAX_COMMIT = "c97aeac4f5e19d1cce11f1f737650e5da03c3534"
 JAX_SHA256 = ""
 
 ENZYME_COMMIT = "b7243a734466c3353d8eefa17d98a49910f1fc9d"
@@ -184,9 +184,6 @@ sed -i.bak0 "s/patch_cmds = \\[/patch_cmds = \\[\\\"find . -type f -name config.
     sed -i.bak0 "s/build_file = \\\"/build_file = \\\"@xla/g" third_party/eigen3/workspace.bzl
 
     sed -i.bak0 "s/urls = /patch_cmds = \\[\\\"sed -i.bak -e 's\\/return PACKET_TYPE(0) == PACKET_TYPE(0);\\/return (PACKET_TYPE)(PACKET_TYPE(0) == PACKET_TYPE(0));\\/g' -e 's\\/return CAST_FROM_INT(CAST_TO_INT(a) == CAST_TO_INT(a));\\/return CAST_FROM_INT((decltype(CAST_TO_INT(a)))(CAST_TO_INT(a) == CAST_TO_INT(a)));\\/' Eigen\\/src\\/Core\\/arch\\/clang\\/PacketMath.h\\\"\\],urls = /g" third_party/eigen3/workspace.bzl
-    """,
-    """
-    sed -i.bak0 's/name = "zstd_compressor",*/name = "zstd_compressor",\\n    linkopts = ["-lm"],/g' xla/tools/BUILD
     """,
     """
     echo '#include <cstdio>' >> xla/tsl/util/filewrapper.cc
