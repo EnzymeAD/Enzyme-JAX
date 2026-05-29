@@ -1023,59 +1023,146 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
   SmallVector<int64_t> updateShape;
   SmallVector<int64_t> scatterDimsToOperandDims;
 
-  for (auto [i, raisedIdx] : llvm::enumerate(sIndices)) {
-    auto idxMap = maps.lookup(raisedIdx);
+  // Detect when every sIndex is a sibling slice of the same iteration domain:
+  // identical raised-tensor shape AND identical AffineValueMap operand set.
+  // This happens, for example, when the store indices are computed by
+  // arith.divui / arith.remui on a single linearized iteration index — the
+  // GPU-style flattened addressing that the upstream memref.store handler
+  // forwards directly via mapping.lookup. In that case, each sIndex is one
+  // coordinate per iteration; Cartesian-producting them would blow the scatter
+  // index shape up to O(N^k) (and overflow i64 for realistic kernel sizes).
+  // The correct lowering is to zip them: flatten each to [N, 1] and
+  // concatenate along dim=1, giving scatter indices of shape [N, K].
+  auto sortedIVs = [](affine::AffineValueMap &m) {
+    SmallVector<Value, 4> ivs(m.getOperands().begin(), m.getOperands().end());
+    llvm::sort(ivs, [](Value a, Value b) {
+      return a.getAsOpaquePointer() < b.getAsOpaquePointer();
+    });
+    ivs.erase(std::unique(ivs.begin(), ivs.end()), ivs.end());
+    return ivs;
+  };
 
-    auto Ty = cast<RankedTensorType>(raisedIdx.getType());
+  bool zipSharedDomain = false;
+  if (sIndices.size() >= 2) {
+    auto firstTy = cast<RankedTensorType>(sIndices.front().getType());
+    auto firstMap = maps.lookup(sIndices.front());
+    SmallVector<Value, 4> firstIVs = sortedIVs(firstMap);
+    bool allShare = !firstIVs.empty();
+    for (Value idx : sIndices.drop_front()) {
+      if (!allShare)
+        break;
+      auto Ty = cast<RankedTensorType>(idx.getType());
+      if (Ty.getShape() != firstTy.getShape()) {
+        allShare = false;
+        break;
+      }
+      auto m = maps.lookup(idx);
+      SmallVector<Value, 4> ivs = sortedIVs(m);
+      if (ivs != firstIVs) {
+        allShare = false;
+        break;
+      }
+    }
+    zipSharedDomain = allShare;
+  }
 
-    int64_t numIndices = Ty.getNumElements();
-    scatterDimsToOperandDims.push_back(i);
+  if (zipSharedDomain) {
+    auto firstTy = cast<RankedTensorType>(sIndices.front().getType());
+    auto firstMap = maps.lookup(sIndices.front());
+    int64_t numIndices = firstTy.getNumElements();
 
-    auto S = Ty.getShape();
-    updateShape.append(S.begin(), S.end());
+    // updateShape is the shared iteration-domain shape — i.e., the pre-flatten
+    // shape every sIndex carries.
+    updateShape.append(firstTy.getShape().begin(), firstTy.getShape().end());
 
-    for (auto [j, ex] : llvm::enumerate(idxMap.getAffineMap().getResults())) {
-      auto iv = getIVForExpr(idxMap, ex);
-      for (auto [updateIdx, E] :
-           llvm::enumerate(updateValueMap.getAffineMap().getResults())) {
-        Value updateIV = getIVForExpr(updateValueMap, E);
-        if (updateIV == iv) {
-          if (broadcastDims[updateIdx] != -1) {
-            continue;
-          }
-
-          broadcastDims[updateIdx] =
-              (updateShape.size() - Ty.getShape().size() + j);
+    // For each result of updateValueMap, locate its IV inside the shared IV
+    // operand list and record the broadcast position. Since updateShape is
+    // the iteration shape, the broadcast position equals the IV's index in
+    // the operand list.
+    for (auto [updateIdx, E] :
+         llvm::enumerate(updateValueMap.getAffineMap().getResults())) {
+      Value updateIV = getIVForExpr(updateValueMap, E);
+      for (auto [ivPos, mapIV] : llvm::enumerate(firstMap.getOperands())) {
+        if (mapIV == updateIV) {
+          if (broadcastDims[updateIdx] == -1)
+            broadcastDims[updateIdx] = static_cast<int64_t>(ivPos);
+          break;
         }
       }
     }
 
-    raisedIdx = stablehlo::ReshapeOp::create(
-        builder, loc, Ty.clone({numIndices, 1}), raisedIdx); // tensor<?x1xi64>
+    // Reshape each sIndex to [numIndices, 1] and concatenate along dim=1
+    // — a true zip, not a Cartesian product.
+    SmallVector<Value> reshaped;
+    reshaped.reserve(sIndices.size());
+    for (auto [i, raisedIdx] : llvm::enumerate(sIndices)) {
+      scatterDimsToOperandDims.push_back(i);
+      auto Ty = cast<RankedTensorType>(raisedIdx.getType());
+      reshaped.push_back(stablehlo::ReshapeOp::create(
+          builder, loc, Ty.clone({numIndices, 1}), raisedIdx));
+    }
+    indices = stablehlo::ConcatenateOp::create(
+        builder, loc,
+        RankedTensorType::get({numIndices, (int64_t)sIndices.size()},
+                              firstTy.getElementType()),
+        reshaped, /*dim=*/1);
+  } else {
+    for (auto [i, raisedIdx] : llvm::enumerate(sIndices)) {
+      auto idxMap = maps.lookup(raisedIdx);
 
-    if (indices) {
-      int64_t indicesSize =
-                  cast<RankedTensorType>(indices.getType()).getShape()[0],
-              numDims = cast<RankedTensorType>(indices.getType()).getShape()[1],
-              newSize =
-                  cast<RankedTensorType>(raisedIdx.getType()).getShape()[0];
+      auto Ty = cast<RankedTensorType>(raisedIdx.getType());
 
-      indices = stablehlo::BroadcastInDimOp::create(
-          builder, loc, Ty.clone({indicesSize, newSize, numDims}), indices,
-          llvm::ArrayRef<int64_t>({0, 2}));
-      indices = stablehlo::ReshapeOp::create(
-          builder, loc, Ty.clone({indicesSize * newSize, numDims}), indices);
-      raisedIdx = stablehlo::BroadcastInDimOp::create(
-          builder, loc, Ty.clone({indicesSize, newSize}), raisedIdx,
-          llvm::ArrayRef<int64_t>({1, 0}));
-      raisedIdx = stablehlo::ReshapeOp::create(
-          builder, loc, Ty.clone({indicesSize * newSize, 1}), raisedIdx);
+      int64_t numIndices = Ty.getNumElements();
+      scatterDimsToOperandDims.push_back(i);
 
-      indices = stablehlo::ConcatenateOp::create(
-          builder, loc, Ty.clone({indicesSize * newSize, numDims + 1}),
-          ValueRange{indices, raisedIdx}, 1);
-    } else {
-      indices = raisedIdx;
+      auto S = Ty.getShape();
+      updateShape.append(S.begin(), S.end());
+
+      for (auto [j, ex] : llvm::enumerate(idxMap.getAffineMap().getResults())) {
+        auto iv = getIVForExpr(idxMap, ex);
+        for (auto [updateIdx, E] :
+             llvm::enumerate(updateValueMap.getAffineMap().getResults())) {
+          Value updateIV = getIVForExpr(updateValueMap, E);
+          if (updateIV == iv) {
+            if (broadcastDims[updateIdx] != -1) {
+              continue;
+            }
+
+            broadcastDims[updateIdx] =
+                (updateShape.size() - Ty.getShape().size() + j);
+          }
+        }
+      }
+
+      raisedIdx =
+          stablehlo::ReshapeOp::create(builder, loc, Ty.clone({numIndices, 1}),
+                                       raisedIdx); // tensor<?x1xi64>
+
+      if (indices) {
+        int64_t indicesSize =
+                    cast<RankedTensorType>(indices.getType()).getShape()[0],
+                numDims =
+                    cast<RankedTensorType>(indices.getType()).getShape()[1],
+                newSize =
+                    cast<RankedTensorType>(raisedIdx.getType()).getShape()[0];
+
+        indices = stablehlo::BroadcastInDimOp::create(
+            builder, loc, Ty.clone({indicesSize, newSize, numDims}), indices,
+            llvm::ArrayRef<int64_t>({0, 2}));
+        indices = stablehlo::ReshapeOp::create(
+            builder, loc, Ty.clone({indicesSize * newSize, numDims}), indices);
+        raisedIdx = stablehlo::BroadcastInDimOp::create(
+            builder, loc, Ty.clone({indicesSize, newSize}), raisedIdx,
+            llvm::ArrayRef<int64_t>({1, 0}));
+        raisedIdx = stablehlo::ReshapeOp::create(
+            builder, loc, Ty.clone({indicesSize * newSize, 1}), raisedIdx);
+
+        indices = stablehlo::ConcatenateOp::create(
+            builder, loc, Ty.clone({indicesSize * newSize, numDims + 1}),
+            ValueRange{indices, raisedIdx}, 1);
+      } else {
+        indices = raisedIdx;
+      }
     }
   }
 
