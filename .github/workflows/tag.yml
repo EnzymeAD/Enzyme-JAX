@@ -24,7 +24,7 @@ jobs:
       - uses: actions/setup-python@v6
         with:
           python-version: ${{ matrix.python }}
-      - run: python -m pip install --user numpy twine
+      - run: python -m pip install --user numpy
       - uses: actions/checkout@v6
         with:
           submodules: recursive
@@ -46,7 +46,5 @@ jobs:
           HERMETIC_PYTHON_VERSION=${{ matrix.python }} bazel build --define=xnn_enable_avxvnniint8=false --define=xnn_enable_avx512fp16=false -c opt @llvm-project//llvm:FileCheck
           sudo rm bazel-bin/*.whl || echo
           HERMETIC_PYTHON_VERSION=${{ matrix.python }} bazel build --define=xnn_enable_avxvnniint8=false --define=xnn_enable_avx512fp16=false -c opt :wheel
-      - env:
-          TWINE_USERNAME: __token__
-          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
-        run: python -m twine upload bazel-bin/*.whl
+      - name: Publish package distribution to PyPI
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
