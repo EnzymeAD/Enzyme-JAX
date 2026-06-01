@@ -14,6 +14,7 @@ jobs:
       image: 'ghcr.io/enzymead/reactant-docker-images@sha256:cd45d851f5ea544f88d042eafefa53d948c229fffcab6189019324e3b02b505a'
     strategy:
       fail-fast: false
+      # Must be same matrix as in the job below, also keep them in sync
       matrix:
         os:
           - linux-x86-n2-32
@@ -113,12 +114,26 @@ jobs:
           path: bazel-bin/
 
   publish:
-    name: Publish to PyPI
+    name: Publish to PyPI - ${{ matrix.os }} -- Python ${{ matrix.python }}
     runs-on: ubuntu-latest
     needs: build
+    strategy:
+      fail-fast: false
+      # Must be same matrix as above, always keep them in sync.  We Need to
+      # fetch the artifact for the corresponding previous build.
+      matrix:
+        os:
+          - linux-x86-n2-32
+          - linux-arm64-c4a-32
+        python:
+          - "3.11"
+          - "3.12"
+          - "3.13"
     steps:
       - name: 'Download Artifact'
         uses: actions/download-artifact@v8
+        with:
+          name: build-${{ matrix.os }}-${{ matrix.python }}
       - run: |
           echo '--> ls -lhrt'
           ls -lhrt
@@ -127,5 +142,5 @@ jobs:
       - name: Publish package distribution to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          packages-dir: bazel-bin/
+          # packages-dir: bazel-bin/
           repository-url: https://test.pypi.org/legacy/
