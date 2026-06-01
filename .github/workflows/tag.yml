@@ -11,42 +11,98 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [openstack22-large]
-        python: ["3.11", "3.12", "3.13"]
+        os:
+          - linux-x86-n2-32
+          - linux-arm64-c4a-32
+        python:
+          - "3.11"
+          - "3.12"
+          - "3.13"
     timeout-minutes: 500
     steps:
-      - name: add llvm
+      - name: Set BAZEL_FLAGS
+        shell: bash
         run: |
-            if [ "$(expr substr $(uname -s) 1 5)" == "Linux" ]; then
-              sudo apt-get update
-              sudo apt-get install -y git gcc g++
-            fi
-      - uses: actions/setup-python@v6
-        with:
-          python-version: ${{ matrix.python }}
-      - run: python -m pip install --user numpy twine
+          set -e
+          BAZEL_FLAGS=""
+          if [ ${{ runner.arch }} == ARM64 ] && [ ${{ runner.os }} == Linux ]; then
+              BAZEL_FLAGS="${BAZEL_FLAGS} --linkopt=-fuse-ld=lld"
+          fi
+          BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_TOPOLOGY"
+          BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_WORKER_ID"
+          BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_SKIP_MDS_QUERY=true"
+          BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_TOPOLOGY_WRAP"
+          BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_CHIPS_PER_HOST_BOUNDS"
+          BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_ACCELERATOR_TYPE"
+          BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_RUNTIME_METRICS_PORTS"
+          BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_TOPOLOGY_ALT"
+          BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_HOST_BOUNDS"
+          BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=TPU_WORKER_HOSTNAMES"
+          BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=CHIPS_PER_HOST_BOUNDS"
+          BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=HOST_BOUNDS"
+          BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=ALT=false"
+          BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=WRAP"
+          BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=VBAR_CONTROL_SERVICE_URL"
+          BAZEL_FLAGS="${BAZEL_FLAGS} --repo_env=CC=`which clang`"
+
+          if [[ "${{ matrix.os }}" == *"tpu"* ]]; then
+            BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=JAX_PLATFORMS=tpu"
+          elif [[ "${{ matrix.os }}" == *"a100"* ]]; then
+            BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=JAX_PLATFORMS=cuda"
+          else
+            BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=JAX_PLATFORMS=cpu"
+          fi
+
+          BAZEL_FLAGS="${BAZEL_FLAGS} --config=public_cache_push"
+          echo "BAZEL_FLAGS=${BAZEL_FLAGS}" >> "${GITHUB_ENV}"
       - uses: actions/checkout@v6
+      - uses: bazel-contrib/setup-bazel@0.19.0
+        name: Set up Bazel
         with:
-          submodules: recursive
-      - run: sudo rm -rf ~/.cache/bazel ~/.cache/bazelisk
+          # Avoid downloading Bazel every time.
+          bazelisk-cache: true
+          # Store build cache per workflow only for macOS.
+          disk-cache: ${{ runner.os == 'macOS' && format('build-{0}-{1}-{2}', github.workflow, matrix.os, matrix.python) || false }}
+          # Do not share repository cache between workflows.
+          repository-cache: false
+          bazelisk-version: 1.x
       - run: |
           export TAG=`echo $GITHUB_REF | sed 's/^.*[^0-9]\([0-9]*\.[0-9]*\.[0-9]*\).*$/\1/'`
           echo $TAG
           sed -i.bak "s~version = \"[0-9.]*\"~version = \"$TAG\"~g" BUILD
           cat BUILD
-          sed -i.bak "s~\[\"X86\", \"AArch64\", \"AMDGPU\", \"NVPTX\"\]~\[\"X86\", \"NVPTX\"\]~g" WORKSPACE
+          if [[ "${{ matrix.os }}" == *"x86"* ]]; then
+            sed -i.bak "s~\[\"X86\", \"AArch64\", \"AMDGPU\", \"NVPTX\"\]~\[\"X86\", \"NVPTX\"\]~g" WORKSPACE
+          else
+            sed -i.bak "s~\[\"X86\", \"AArch64\", \"NVPTX\"\]~\[\"X86\", \"NVPTX\"\]~g" WORKSPACE
+          fi
           cat WORKSPACE
-      - uses: bazel-contrib/setup-bazel@0.19.0
+      - name: Update JAX version
+        run: |
+          if [[ "${{ matrix.os }}" == *"tpu"* ]]; then
+            sed -i.bak0 "s/jax\[cuda12\]/jax[tpu]/g" builddeps/requirements.in
+            sed -i.bak0 "s/pypi_jax_cuda12_plugin/pypi_libtpu/g" test/BUILD
+          elif [[ "${{ matrix.os }}" == *"a100"* ]]; then
+            sed -i.bak0 "s/jax\[cuda12\]/jax[cuda13]/g" builddeps/requirements.in
+            sed -i.bak0 "s/pypi_jax_cuda12_plugin/pypi_jax_cuda13_plugin/g" test/BUILD
+          else
+            sed -i.bak0 "s/jax\[cuda12\]/jax[cpu]/g" builddeps/requirements.in
+            sed -i.bak0 "/pypi_jax_cuda12_plugin/d" test/BUILD
+          fi
+          cat builddeps/requirements.in
+          cat test/BUILD
+        shell: bash
+
+      - name: Update Python requirements files
+        run: |
+          bazel run $BAZEL_FLAGS --color=yes //builddeps:requirements.update
+
+      - name: Build wheel
+        timeout-minutes: 240
+        run: |
+          bazel build $BAZEL_FLAGS --color=yes :wheel --test_output=errors
+
+      - name: Publish package distribution to PyPI
+        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
         with:
-          # Avoid downloading Bazel every time.
-          bazelisk-cache: true
-          bazelisk-version: 1.x
-      # - run: sudo find ~/.cache/bazel ~/.cache/bazelisk -iname "*.whl" -exec rm {} \;
-      - run: |
-          HERMETIC_PYTHON_VERSION=${{ matrix.python }} bazel build --define=xnn_enable_avxvnniint8=false --define=xnn_enable_avx512fp16=false -c opt @llvm-project//llvm:FileCheck
-          sudo rm bazel-bin/*.whl || echo
-          HERMETIC_PYTHON_VERSION=${{ matrix.python }} bazel build --define=xnn_enable_avxvnniint8=false --define=xnn_enable_avx512fp16=false -c opt :wheel
-      - env:
-          TWINE_USERNAME: __token__
-          TWINE_PASSWORD: ${{ secrets.PYPI_TOKEN }}
-        run: python -m twine upload bazel-bin/*.whl
+          packages-dir: bazel-bin/
