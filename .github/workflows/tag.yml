@@ -105,6 +105,6 @@ jobs:
           bazel build $BAZEL_FLAGS --color=yes :wheel --test_output=errors
 
       - name: Publish package distribution to PyPI
-        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
+        uses: pypa/gh-action-pypi-publish@release/v1
         with:
           packages-dir: bazel-bin/
