@@ -138,5 +138,5 @@ jobs:
       - name: Publish package distribution to PyPI
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
-          # packages-dir: bazel-bin/
+          packages-dir: '.'
           repository-url: https://test.pypi.org/legacy/
