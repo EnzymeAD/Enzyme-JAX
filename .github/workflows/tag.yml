@@ -13,7 +13,7 @@ jobs:
     container:
       image: 'ghcr.io/enzymead/reactant-docker-images@sha256:cd45d851f5ea544f88d042eafefa53d948c229fffcab6189019324e3b02b505a'
     strategy:
-      fail-fast: false
+      fail-fast: true
       # Must be same matrix as in the job below, also keep them in sync
       matrix:
         os:
@@ -120,7 +120,7 @@ jobs:
     permissions:
       id-token: write  # IMPORTANT: this permission is mandatory for trusted publishing
     strategy:
-      fail-fast: false
+      fail-fast: true
       # Must be same matrix as above, always keep them in sync.  We Need to
       # fetch the artifact for the corresponding previous build.
       matrix:
