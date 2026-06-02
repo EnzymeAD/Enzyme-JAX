@@ -71,7 +71,7 @@ jobs:
           repository-cache: false
           bazelisk-version: 1.x
       - run: |
-          export TAG=0.0.13
+          export TAG=`echo $GITHUB_REF | sed 's/^.*[^0-9]\([0-9]*\.[0-9]*\.[0-9]*\).*$/\1/'`
           echo $TAG
           sed -i.bak "s~version = \"[0-9.]*\"~version = \"$TAG\"~g" BUILD
           cat BUILD
@@ -141,4 +141,3 @@ jobs:
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
         with:
           packages-dir: '.'
-          repository-url: https://test.pypi.org/legacy/
