@@ -111,9 +111,9 @@ jobs:
 
       - name: Isolate wheels
         run: |
-          mkdir -p dist/
-          find bazel-bin/ -name "enzyme*.whl" -exec cp {} dist/ \;
-          
+          mkdir -vp dist/
+          find bazel-bin/ -name "enzyme*.whl" -exec cp -v '{}' dist/ \;
+
       - name: 'Upload build as artifact'
         uses: actions/upload-artifact@v7
         with:
@@ -140,7 +140,7 @@ jobs:
       - name: Merge all wheels into a single directory
         run: |
           mkdir -v dist
-          find . -name '*.whl' -exec mv -v '{}' dist \;
+          find . -name 'enzyme*.whl' -exec mv -v '{}' dist/ \;
       - name: Publish package distribution to PyPI
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
         with:
