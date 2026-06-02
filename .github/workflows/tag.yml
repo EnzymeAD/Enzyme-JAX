@@ -81,11 +81,11 @@ jobs:
           sed -i.bak "s~version = \"[0-9.]*\"~version = \"$TAG\"~g" BUILD
           cat BUILD
           if [[ "${{ matrix.os }}" == *"x86"* ]]; then
-            sed -i.bak "s~\[\"X86\", \"AArch64\", \"AMDGPU\", \"NVPTX\"\]~\[\"X86\", \"NVPTX\"\]~g" WORKSPACE
+            sed -i.bak "s~\[\"X86\", \"AArch64\", \"AMDGPU\", \"NVPTX\"\]~\[\"X86\", \"NVPTX\"\]~g" workspace.bzl
           else
-            sed -i.bak "s~\[\"X86\", \"AArch64\", \"NVPTX\"\]~\[\"X86\", \"NVPTX\"\]~g" WORKSPACE
+            sed -i.bak "s~\[\"X86\", \"AArch64\", \"NVPTX\"\]~\[\"X86\", \"NVPTX\"\]~g" workspace.bzl
           fi
-          cat WORKSPACE
+          cat workspace.bzl
       - name: Update JAX version
         run: |
           if [[ "${{ matrix.os }}" == *"tpu"* ]]; then
