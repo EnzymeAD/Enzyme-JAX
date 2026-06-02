@@ -94,7 +94,9 @@ jobs:
             BAZEL_FLAGS="${BAZEL_FLAGS} --test_env=JAX_PLATFORMS=cpu"
           fi
 
-          BAZEL_FLAGS="${BAZEL_FLAGS} --config=public_cache_push"
+          if [ ${{ runner.os }} == Linux ]; then
+            BAZEL_FLAGS="${BAZEL_FLAGS} --config=public_cache_push"
+          fi
           echo "BAZEL_FLAGS=${BAZEL_FLAGS}" >> "${GITHUB_ENV}"
       - uses: actions/checkout@v6
       - uses: bazel-contrib/setup-bazel@0.19.0
