@@ -108,7 +108,7 @@ jobs:
       - name: Isolate wheels
         run: |
           mkdir -p dist/
-          find bazel-bin/ -name "*.whl" -exec cp {} dist/ \;
+          find bazel-bin/ -name "enzyme*.whl" -exec cp {} dist/ \;
           
       - name: 'Upload build as artifact'
         uses: actions/upload-artifact@v7
@@ -135,12 +135,13 @@ jobs:
         uses: actions/download-artifact@v8
         with:
           name: build-${{ matrix.os }}-${{ matrix.python }}
+          path: dist/
       - run: |
           echo '--> ls -lhrt'
           ls -lhrt
-          echo '--> ls -lhrt *'
-          ls -lhrt *
+          echo '--> ls -lhrt dist/'
+          ls -lhrt dist/
       - name: Publish package distribution to PyPI
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
         with:
-          packages-dir: '.'
+          packages-dir: 'dist'
