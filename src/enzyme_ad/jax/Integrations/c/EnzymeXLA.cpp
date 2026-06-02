@@ -301,7 +301,8 @@ static std::string passWithBenefitAndArg(const char *name, int benefit,
 
 static void addBaseTransformPasses(std::vector<std::string> &list,
                                    int64_t maxConstThreshold,
-                                   int64_t whileUnrollThreshold) {
+                                   int64_t whileUnrollThreshold,
+                                   bool enableWeightedWindows = true) {
   list.push_back("compare_op_canon<16>");
   list.push_back("transpose_transpose<16>");
   list.push_back("broadcast_in_dim_op_canon<16>");
@@ -534,7 +535,8 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("multiply_negated_operands_simplify");
   list.push_back("factor_scalars_in_dot_general");
   list.push_back("reduce_mul_to_dot_general");
-  list.push_back("weighted_windows_to_dot_general");
+  if (enableWeightedWindows)
+    list.push_back("weighted_windows_to_dot_general");
   list.push_back("dot_general_broadcast_in_dim");
   list.push_back("dot_general_broadcast_in_dim_sort_dims");
   list.push_back("dus_dynamic_slice_simplify");
@@ -918,7 +920,8 @@ void enzymexlaGetTransformPassesList(
   bool aggressive = options->aggressive_propagation;
 
   // Base passes
-  addBaseTransformPasses(list, maxConst, whileUnroll);
+  addBaseTransformPasses(list, maxConst, whileUnroll,
+                         options->enable_weighted_windows_to_dot_general);
 
   if (options->enable_self_to_convolution_like_passes) {
     addSelfToConvolutionLikePasses(list);

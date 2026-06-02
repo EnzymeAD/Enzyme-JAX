@@ -202,6 +202,7 @@ typedef struct {
   bool enable_loop_raising_passes;
   bool enable_licm_optimization_passes;
   bool enable_pad_optimization_passes;
+  bool enable_weighted_windows_to_dot_general;
 } EnzymeXLATransformPassesOptions;
 
 //===----------------------------------------------------------------------===//
