@@ -106,12 +106,16 @@ jobs:
         run: |
           bazel build $BAZEL_FLAGS --color=yes :wheel --test_output=errors
 
+      - name: Isolate wheels
+        run: |
+          mkdir -p dist/
+          find bazel-bin/ -name "*.whl" -exec cp {} dist/ \;
+          
       - name: 'Upload build as artifact'
         uses: actions/upload-artifact@v7
         with:
           name: build-${{ matrix.os }}-${{ matrix.python }}
-          path: bazel-bin/
-
+          path: dist/
 
   publish:
     name: Publish to PyPI - ${{ matrix.os }} -- Python ${{ matrix.python }}
