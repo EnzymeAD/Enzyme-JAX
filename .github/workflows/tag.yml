@@ -120,7 +120,7 @@ jobs:
           path: dist/
 
   publish:
-    name: Publish to PyPI - ${{ matrix.os }} -- Python ${{ matrix.python }}
+    name: Publish to PyPI
     # The `pypa/gh-action-pypi-publish` workflow needs to run in a non-Docker
     # environment, so we use a distinct job which runs on `ubuntu-latest`.
     runs-on: ubuntu-latest
@@ -128,22 +128,18 @@ jobs:
     environment: pypi
     permissions:
       id-token: write  # IMPORTANT: this permission is mandatory for trusted publishing
-    strategy:
-      fail-fast: true
-      # Reuse same matrix as above, we Need to fetch the artifact for the
-      # corresponding previous build.
-      matrix: *matrix
     steps:
       - name: 'Download Artifact'
         uses: actions/download-artifact@v8
-        with:
-          name: build-${{ matrix.os }}-${{ matrix.python }}
-          path: dist/
       - run: |
           echo '--> ls -lhrt'
           ls -lhrt
-          echo '--> ls -lhrt dist/'
-          ls -lhrt dist/
+          echo '--> ls -lhrt *'
+          ls -lhrt *
+      - name: Merge all wheels into a single directory
+        run: |
+          mkdir -v dist
+          find . -name '*.whl' -exec mv -v '{}' dist \;
       - name: Publish package distribution to PyPI
         uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
         with:
