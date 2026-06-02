@@ -852,7 +852,7 @@ static void serializeOutlinedFn(LLVM::LLVMFuncOp fn) {
   fn.walk([&](LLVM::CallOp c) { toProcess.push_back(c); });
 
   for (LLVM::CallOp c : toProcess) {
-    if (!c->getBlock()) continue;   // already erased
+    if (!c->getBlock()) continue;
     StringRef n = getCalleeName(c);
     b.setInsertionPoint(c);
     Location loc = c.getLoc();
@@ -876,17 +876,35 @@ static void serializeOutlinedFn(LLVM::LLVMFuncOp fn) {
       c.erase(); continue;
     }
 
-    // ── dynamic dispatch: single thread gets the full range, no loop ──────
+    // ── dynamic dispatch init / fini ─────────────────────────────────────
     if (n.starts_with("__kmpc_dispatch_init_") ||
-        n.starts_with("__kmpc_dispatch_next_") ||
         n.starts_with("__kmpc_dispatch_fini_") ||
         n == "__kmpc_dispatch_deinit") {
-      // dispatch_next returns {more_work, lb, ub, stride}; replace
-      // with {1, stored_lb, stored_ub, stored_stride} if results used.
+      c.erase(); continue;
+    }
+
+    // ── dispatch_next ─────────────────────────────────────────────────────
+    // There are TWO dispatch_next call sites per dispatch loop:
+    //
+    //   (A) INITIAL gate check — immediately after dispatch_init, OUTSIDE
+    //       the scf.while dispatch loop.  The surrounding scf.if checks
+    //       "dispatch_next != 0" to decide whether to enter the loop at all.
+    //       Replace with 1 so the body executes (= there is work to do).
+    //
+    //   (B) CONTINUATION check — inside the scf.while's before-block,
+    //       feeds scf.condition.  Replace with 0 so the loop terminates
+    //       after one pass (single-thread serialised execution of the full
+    //       lb..ub range).  Without this the condition folds to
+    //       scf.condition(true) and the while becomes an infinite loop.
+    if (n.starts_with("__kmpc_dispatch_next_")) {
       if (!c.getResults().empty()) {
-        Value one = b.create<LLVM::ConstantOp>(
-            loc, b.getI32Type(), b.getI32IntegerAttr(1));
-        c.getResult().replaceAllUsesWith(one);
+        bool isInsideWhile = false;
+        for (Operation *p = c->getParentOp(); p; p = p->getParentOp())
+          if (isa<scf::WhileOp>(p)) { isInsideWhile = true; break; }
+        int replacement = isInsideWhile ? 0 : 1;
+        Value repl = b.create<LLVM::ConstantOp>(
+            loc, b.getI32Type(), b.getI32IntegerAttr(replacement));
+        c.getResult().replaceAllUsesWith(repl);
       }
       c.erase(); continue;
     }
@@ -918,6 +936,8 @@ static void serializeOutlinedFn(LLVM::LLVMFuncOp fn) {
     }
   }
 }
+
+
 //===----------------------------------------------------------------------===//
 // §10  __kmpc_fork_call / __kmpc_parallel_51 → omp.parallel
 //
@@ -1579,27 +1599,88 @@ static void moveWhileBodyIntoNest(OpBuilder &b, Location loc,
   Block *beforeBlk = &whileOp.getBefore().front();
 
   // ── Dispatch-while guard ───────────────────────────────────────────────
-  // The dispatch-while (used by convertDynWs) has no before-block arguments:
-  // the before-block only calls dispatch_next and checks the condition.
-  // The real per-iteration work is an inner scf.for in the after-block.
-  // Delegate to moveForBodyIntoNest for the inner for; if none is found,
-  // move the after-block ops directly.
+  // Clang's dispatch scf.while carries no SSA block args — loop state
+  // lives in alloca'd lb/ub/stride/lastiter pointers.  All per-iteration
+  // work sits in the BEFORE-BLOCK, guarded by:
+  //
+  //   scf.if (lb <= ub) {            ← lbUbGuard
+  //     scf.for %i = lb to ub+1 { … }   ← simple element-level work
+  //     — OR —
+  //     scf.while (%i=lb, %acc=…) { … } ← reduction accumulator
+  //   }
+  //   %next = dispatch_next(…)       ← loop-continuation check
+  //   scf.condition(%next != 0)
+  //
+  // The after-block is always just scf.yield.
   if (beforeBlk->getNumArguments() == 0) {
-    Block *afterBlk = &whileOp.getAfter().front();
-    // Find the first (outermost) scf.for in the after-block.
-    scf::ForOp innerFor;
-    for (Operation &op : *afterBlk)
-      if (auto f = dyn_cast<scf::ForOp>(&op)) { innerFor = f; break; }
+    // ── Find the lb<=ub guard ──────────────────────────────────────────
+    scf::IfOp lbUbGuard;
+    for (Operation &op : beforeBlk->without_terminator())
+      if (auto sif = dyn_cast<scf::IfOp>(&op)) { lbUbGuard = sif; break; }
 
-    if (innerFor) {
-      // The inner for's IV maps to nestIV; its body becomes the OMP body.
-      moveForBodyIntoNest(b, loc, nestBlk, innerFor, nestIV);
+    if (lbUbGuard) {
+      // ── Identify the inner loop kind ──────────────────────────────────
+      scf::ForOp   innerFor;
+      scf::WhileOp innerWhile;
+      for (Operation &op : lbUbGuard.getThenRegion().front()) {
+        if (!innerFor && !innerWhile) {
+          if      (auto f = dyn_cast<scf::ForOp>(&op))   innerFor   = f;
+          else if (auto w = dyn_cast<scf::WhileOp>(&op)) innerWhile = w;
+        }
+      }
+
+      if (innerFor) {
+        // ── Simple element-level scf.for (e.g. process_chunk calls) ──────
+        // forIV is remapped to nestIV; body ops are moved into nestBlk.
+        moveForBodyIntoNest(b, loc, nestBlk, innerFor, nestIV);
+
+      } else if (innerWhile) {
+        // ── Reduction accumulator scf.while ──────────────────────────────
+        // The inner while carries (iv, acc, …) as SSA block args.
+        // Strategy:
+        //   1. Move preamble ops (lb_i64 cast, local_sum load, …) that
+        //      precede innerWhile in the then-block into nestBlk so the
+        //      inner while's inits are in scope.
+        //   2. Recursively call moveWhileBodyIntoNest on the inner while.
+        //      It will classify its body vs. control ops, remap the inner
+        //      IV to (cast) nestIV, and emit accumulator write-backs.
+        SmallVector<Operation *> preamble;
+        for (Operation &op : lbUbGuard.getThenRegion().front()) {
+          if (&op == innerWhile.getOperation()) break;
+          if (isa<scf::YieldOp>(&op))           break;
+          preamble.push_back(&op);
+        }
+        for (Operation *op : preamble)
+          op->moveBefore(nestBlk->getTerminator());
+
+        // Recursive call: handles SSA block args, IV remapping, writebacks.
+        moveWhileBodyIntoNest(b, loc, nestBlk, innerWhile, nestIV);
+
+      } else {
+        // ── No inner loop — move all then-block ops directly (bulk body) ──
+        SmallVector<Operation *> toMove;
+        for (Operation &op :
+             lbUbGuard.getThenRegion().front().without_terminator())
+          toMove.push_back(&op);
+        for (Operation *op : toMove)
+          op->moveBefore(nestBlk->getTerminator());
+      }
+
     } else {
-      // No inner for — move all after-block ops (minus scf.yield) directly.
-      SmallVector<Operation *> toMove;
-      for (Operation &op : afterBlk->without_terminator())
-        toMove.push_back(&op);
-      for (Operation *op : toMove) op->moveBefore(nestBlk->getTerminator());
+      // ── No lb<=ub guard in before-block — defensive after-block fallback ──
+      Block *afterBlk = &whileOp.getAfter().front();
+      scf::ForOp innerFor;
+      for (Operation &op : *afterBlk)
+        if (auto f = dyn_cast<scf::ForOp>(&op)) { innerFor = f; break; }
+      if (innerFor) {
+        moveForBodyIntoNest(b, loc, nestBlk, innerFor, nestIV);
+      } else {
+        SmallVector<Operation *> toMove;
+        for (Operation &op : afterBlk->without_terminator())
+          toMove.push_back(&op);
+        for (Operation *op : toMove)
+          op->moveBefore(nestBlk->getTerminator());
+      }
     }
     return;
   }
@@ -1648,7 +1729,7 @@ static void moveWhileBodyIntoNest(OpBuilder &b, Location loc,
     BlockArgument arg;
     Value alloca;       // null → no backing alloca, no writeback
     Value loadedVal;    // load of alloca, or undef if no alloca
-    Value newAccOrig;   // condOp operand at index `argIndex`
+    Value newAccOrig;   // condOp operand at index argIndex
   };
   SmallVector<AccInfo> accInfos;
   for (unsigned i = 1; i < beforeBlk->getNumArguments(); ++i) {
@@ -1669,8 +1750,8 @@ static void moveWhileBodyIntoNest(OpBuilder &b, Location loc,
     else
       loaded = b.create<LLVM::UndefOp>(loc, accArg.getType());
 
-    Value newAcc = (condOp->getNumOperands() > i)
-                       ? condOp->getOperand(i) : Value{};
+    Value newAcc = (condOp->getNumOperands() > (i + 1)) ? condOp->getOperand(i + 1) : Value{};
+    
     accInfos.push_back({accArg, accAlloca, loaded, newAcc});
   }
 
@@ -1690,8 +1771,6 @@ static void moveWhileBodyIntoNest(OpBuilder &b, Location loc,
     acc.arg.replaceUsesWithIf(acc.loadedVal, inNest);
 
   // ── Phase 4: accumulator writebacks before the yield ───────────────────
-  // Translate writeback values that are themselves block args (RAUW only
-  // touches existing uses, not Values we hand to fresh b.create<...> calls).
   auto translate = [&](Value v) -> Value {
     if (v == whileIV) return mappedIV;
     for (auto &a : accInfos)
