@@ -17,6 +17,7 @@ jobs:
         os:
           - linux-x86-n2-32
           - linux-arm64-c4a-32
+          - macOS-latest
         python:
           - "3.11"
           - "3.12"
