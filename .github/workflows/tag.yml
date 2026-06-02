@@ -1,7 +1,6 @@
 name: Build Wheel and Publish to PyPI
 
 on:
-  pull_request:
   release:
     types:
     - created
