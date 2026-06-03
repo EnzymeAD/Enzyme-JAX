@@ -10,7 +10,7 @@ jobs:
     name: Build wheel - ${{ matrix.os }} - Python ${{ matrix.python }}
     runs-on: ${{ matrix.os }}
     container:
-      image: ${{ (contains(matrix.os, 'linux') && 'ghcr.io/enzymead/reactant-docker-images@sha256:cd45d851f5ea544f88d042eafefa53d948c229fffcab6189019324e3b02b505a' ) || '' }}
+      image: ${{ (contains(matrix.os, 'linux') && 'ghcr.io/enzymead/reactant-docker-images_22.04@sha256:15c63cce3519285183e409f69c39a20f074e5d81346196634e7d045e8917031a' ) || '' }}
     strategy:
       fail-fast: true
       matrix: &matrix
