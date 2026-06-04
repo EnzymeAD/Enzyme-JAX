@@ -3959,6 +3959,103 @@ static bool isEligibleForCompactPrint(stablehlo::ReduceOp op) {
   return llvm::equal(innerOp.getResults(), retOp.getOperands());
 }
 
+
+// Imported from upstream StablehloAggressiveFolder; see #1084.
+struct LowerBoolSplatConstantsIntoReduceOpRegion
+    : public CheckedOpRewritePattern<stablehlo::ReduceOp,
+                                     LowerBoolSplatConstantsIntoReduceOpRegion> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ReduceOp op,
+                                    PatternRewriter &rewriter) const {
+    Block &body = op.getBody().front();
+
+    if (body.getOperations().size() != 2)
+      return rewriter.notifyMatchFailure(op, "Incompatible op count in body.");
+    if (!isa<stablehlo::AndOp, stablehlo::OrOp>(body.front()))
+      return rewriter.notifyMatchFailure(op, "Only match AND and OR ops.");
+
+    SmallVector<DenseElementsAttr, 4> bodyArgConstantAttrs;
+
+    for (auto [inputValue, bodyArg] :
+         llvm::zip_equal(op.getOperands(), body.getArguments())) {
+      SplatElementsAttr constantSplatAttr;
+      if (!matchPattern(inputValue, m_Constant(&constantSplatAttr)) ||
+          !constantSplatAttr)
+        return rewriter.notifyMatchFailure(op,
+                                           "Input must be a splat constant.");
+
+      auto bodyArgShapedType = dyn_cast<ShapedType>(bodyArg.getType());
+      if (!bodyArgShapedType)
+        return rewriter.notifyMatchFailure(
+            op, "Could not get the shape of the body argument.");
+
+      bodyArgConstantAttrs.push_back(DenseElementsAttr::get(
+          bodyArgShapedType, constantSplatAttr.getSplatValue<Attribute>()));
+    }
+
+    for (BlockArgument bodyArg : body.getArguments()) {
+      rewriter.replaceAllUsesWith(
+          bodyArg, stablehlo::ConstantOp::create(
+                       rewriter, body.front().getLoc(), bodyArg.getType(),
+                       bodyArgConstantAttrs[bodyArg.getArgNumber()]));
+    }
+
+    return success();
+  }
+};
+
+// Imported from upstream StablehloAggressiveFolder.
+struct FoldReduceOpToConstantInitializer
+    : public CheckedOpRewritePattern<stablehlo::ReduceOp,
+                                     FoldReduceOpToConstantInitializer> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ReduceOp op,
+                                    PatternRewriter &rewriter) const {
+    Block &body = op.getBody().front();
+    if (body.getOperations().size() != 1)
+      return rewriter.notifyMatchFailure(op,
+                                         "Body must contain exactly one op.");
+
+    auto returnOp = dyn_cast<stablehlo::ReturnOp>(body.back());
+    if (!returnOp)
+      return rewriter.notifyMatchFailure(op, "Body must end with a return op.");
+
+    SmallVector<DenseElementsAttr> resultAttrs;
+    for (auto [bodyResult, opResult] :
+         llvm::zip_equal(returnOp.getResults(), op.getResults())) {
+      auto *sourceOfBlockResult = bodyResult.getDefiningOp();
+      if (!sourceOfBlockResult ||
+          !sourceOfBlockResult->hasTrait<OpTrait::ConstantLike>())
+        return rewriter.notifyMatchFailure(op,
+                                           "Body result must be a constant.");
+
+      DenseElementsAttr constantAttr;
+      if (!matchPattern(sourceOfBlockResult, m_Constant(&constantAttr)))
+        return rewriter.notifyMatchFailure(
+            op, "Could not extract constant attribute from body result.");
+
+      auto resultShapedType = dyn_cast<ShapedType>(opResult.getType());
+      if (!resultShapedType)
+        return rewriter.notifyMatchFailure(
+            op, "Could not get the shape of the reduce op's result.");
+
+      resultAttrs.push_back(DenseElementsAttr::get(
+          resultShapedType, {constantAttr.getSplatValue<Attribute>()}));
+    }
+
+    SmallVector<Value> resultValues;
+    for (auto resultAttr : resultAttrs) {
+      resultValues.push_back(stablehlo::ConstantOp::create(
+          rewriter, op.getLoc(), resultAttr.getType(), resultAttr));
+    }
+
+    rewriter.replaceOp(op, resultValues);
+    return success();
+  }
+};
+
 struct ReduceToReshape final
     : CheckedOpRewritePattern<stablehlo::ReduceOp, ReduceToReshape> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -35738,7 +35835,7 @@ struct EnzymeHLOOptPass
         LogSimplify, ShiftRightLogicalSimplify, NegativePadToSlice,
         SliceSimplify, ConvertSimplify, TransposeSimplify, DotGeneralSimplify,
         DotGeneralReshape, DiagonalTensorDotGeneralRewrite,
-        DynamicSliceToStatic, DynamicUpdateSliceElim, ReduceToReshape,
+        DynamicSliceToStatic, DynamicUpdateSliceElim, ReduceToReshape, LowerBoolSplatConstantsIntoReduceOpRegion, FoldReduceOpToConstantInitializer,
         BroadcastToReshape, ReshapeEmptyBroadcast, ReshapeBroadcast,
         BroadcastReshape, ConstPropThroughBarrier, ReplaceNegAddWithSubtract,
         ReplaceSubtractNegWithAdd, SignAbsSimplify, AbsPositiveSimplify,
