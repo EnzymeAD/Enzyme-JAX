@@ -21,7 +21,6 @@ def Add : Inst<"AddOp", "stablehlo">;
 def Sub : Inst<"SubtractOp", "stablehlo">;
 def Mul : Inst<"MulOp", "stablehlo">;
 def Div : Inst<"DivOp", "stablehlo">;
-def Exp : Inst<"ExpOp", "stablehlo">;
 def Neg : Inst<"NegOp", "stablehlo">;
 def Sqrt : Inst<"SqrtOp", "stablehlo">;
 def Exp : Inst<"ExpOp", "stablehlo">;
