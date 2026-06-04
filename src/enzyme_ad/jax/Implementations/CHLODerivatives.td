@@ -23,6 +23,7 @@ def Mul : Inst<"MulOp", "stablehlo">;
 def Div : Inst<"DivOp", "stablehlo">;
 def Neg : Inst<"NegOp", "stablehlo">;
 def Sqrt : Inst<"SqrtOp", "stablehlo">;
+def Exp : Inst<"ExpOp", "stablehlo">;
 def Pow : Inst<"PowOp", "stablehlo">;
 def Cos : Inst<"CosineOp", "stablehlo">;
 def Sin : Inst<"SineOp", "stablehlo">;
@@ -112,6 +113,10 @@ def : HLODerivative<"DigammaOp", (Op $x),
                     [(Mul (DiffeRet), (Polygamma $x, (HLOConstantFP<"2"> $x)))],
                     (Mul (Shadow $x), (Polygamma $x, (HLOConstantFP<"2"> $x)))
 >;
+
+def : HLODerivative<"ErfOp", (Op $x), [
+  (Mul (DiffeRet), (Mul (HLOConstantFP<"1.1283791670955126"> $x), (Exp (Neg (Mul $x, $x)))))
+]>;
 
 def : HLOInactiveOp<"IsInfOp">;
 
