@@ -864,7 +864,7 @@ class AutoDiffWhileRev
     // [ckptStep+split, capo, indexTensor, rematResults..., newCaches...]
 
     innerBodyResults.push_back(
-        stablehlo::AddOp::create(builder, orig->getLoc(), ckptStep, split));
+        stablehlo::AddOp::create(builder, orig->getLoc(), innerBody->getArgument(0), split));
     innerBodyResults.push_back(capo);
     innerBodyResults.push_back(indexTensor);
 
@@ -911,6 +911,8 @@ class AutoDiffWhileRev
     }
 
     mapping = IRMapping();
+
+    // iv = start + step * currentRevStep
     mapping.map(origBody->getArgument(0),
                 stablehlo::AddOp::create(
                     builder, orig->getLoc(),
