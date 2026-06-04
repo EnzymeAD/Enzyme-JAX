@@ -863,8 +863,8 @@ class AutoDiffWhileRev
     SmallVector<Value> innerBodyResults;
     // [ckptStep+split, capo, indexTensor, rematResults..., newCaches...]
 
-    innerBodyResults.push_back(
-        stablehlo::AddOp::create(builder, orig->getLoc(), innerBody->getArgument(0), split));
+    innerBodyResults.push_back(stablehlo::AddOp::create(
+        builder, orig->getLoc(), innerBody->getArgument(0), split));
     innerBodyResults.push_back(capo);
     innerBodyResults.push_back(indexTensor);
 
@@ -912,7 +912,7 @@ class AutoDiffWhileRev
 
     mapping = IRMapping();
 
-    // iv = start + step * currentRevStep
+    // iv = start + step * (currentRevStep - 1)
     mapping.map(origBody->getArgument(0),
                 stablehlo::AddOp::create(
                     builder, orig->getLoc(),
@@ -922,7 +922,9 @@ class AutoDiffWhileRev
                         builder, orig->getLoc(),
                         makeI64Constant(orig->getLoc(), builder,
                                         *revInfo.info.getConstantStep()),
-                        currentRevStep)));
+                        stablehlo::SubtractOp::create(
+                            builder, orig->getLoc(), currentRevStep,
+                            makeI64Constant(orig->getLoc(), builder, 1)))));
 
     for (auto [oRef, pRef] : llvm::zip_equal(outsideRefs, poppedOutsideRefs)) {
       mapping.map(oRef, pRef);
