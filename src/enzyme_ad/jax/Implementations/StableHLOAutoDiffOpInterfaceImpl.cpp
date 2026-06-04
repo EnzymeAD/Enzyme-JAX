@@ -505,8 +505,10 @@ class AutoDiffWhileRev
   static struct ReverseModeInfo getReverseMode(Operation *orig) {
     struct ReverseModeInfo revInfo(cast<stablehlo::WhileOp>(orig));
 
-    if (revInfo.info.computeInfo().succeeded() && revInfo.info.isValid() &&
-        revInfo.info.isConstant()) {
+    if (!revInfo.info.computeInfo().succeeded() || !revInfo.info.isValid())
+      return revInfo;
+
+    if (revInfo.info.isConstant()) {
       const char *checkpointAttrName = "enzymexla.enable_checkpointing";
       auto enableCheckpointing =
           orig->getAttrOfType<BoolAttr>(checkpointAttrName);
@@ -535,6 +537,18 @@ class AutoDiffWhileRev
         revInfo.checkpointPeriod = checkpointPeriod.getInt();
       } else {
         revInfo.mode = CONSTANT;
+      }
+    } else if (orig->hasAttr("enzymexla.binomial_checkpointing")) {
+      auto enableCheckpointing =
+          orig->getAttrOfType<BoolAttr>("enzymexla.enable_checkpointing");
+      if (enableCheckpointing && enableCheckpointing.getValue()) {
+        revInfo.mode = CONSTANT_BINOMIAL;
+        auto checkpointPeriod =
+            orig->getAttrOfType<IntegerAttr>("enzymexla.checkpoint_period");
+        revInfo.checkpointPeriod =
+            (checkpointPeriod && checkpointPeriod.getInt() > 0)
+                ? checkpointPeriod.getInt()
+                : BINOMIAL_SENTINEL_BUDGET;
       }
     }
 
@@ -618,11 +632,6 @@ class AutoDiffWhileRev
           "not being at the first position.");
     }
 
-    if (!revInfo.info.isConstant()) {
-      return orig->emitError("binomial checkpointing: unsupported non-constant "
-                             "bounds for for loop.");
-    }
-
     if (revInfo.checkpointPeriod == BINOMIAL_SENTINEL_BUDGET) {
       return orig->emitError("binomial checkpointing: unprovided or "
                              "unsupported number of checkpoints.");
@@ -638,18 +647,29 @@ class AutoDiffWhileRev
     SetVector<Value> outsideRefs;
     getUsedValuesDefinedAbove(orig->getRegions(), outsideRefs);
 
+    bool isDynamic = !revInfo.info.isConstant();
+    int numDynCaches = isDynamic ? 3 : 0;
     int numOutsideRefs = outsideRefs.size();
-    int nrets = caches.size() - 1 - numOutsideRefs;
+    int nrets = caches.size() - 1 - numOutsideRefs - numDynCaches;
 
     // 1. Build outer loop
     SmallVector<Value> operands;
 
-    // TODO: support dynamic num iters by using caches for this
-    Value numItersRev = makeI64Constant(orig->getLoc(), builder,
-                                        revInfo.info.getConstantNumIters());
+    Value indexTensor = gutils->popCache(caches[caches.size() - 1], builder);
+
+    Value numItersRev, startVal, stepVal;
+    if (isDynamic) {
+      numItersRev =
+          gutils->popCache(caches[nrets + numOutsideRefs + 0], builder);
+      startVal = gutils->popCache(caches[nrets + numOutsideRefs + 1], builder);
+      stepVal = gutils->popCache(caches[nrets + numOutsideRefs + 2], builder);
+    } else {
+      numItersRev = makeI64Constant(orig->getLoc(), builder,
+                                    revInfo.info.getConstantNumIters());
+    }
+
     Value sp =
         makeI64Constant(orig->getLoc(), builder, revInfo.checkpointPeriod);
-    Value indexTensor = gutils->popCache(caches[caches.size() - 1], builder);
 
     // operands.push_back(currentRevStep);
     operands.push_back(sp);
@@ -660,7 +680,7 @@ class AutoDiffWhileRev
     }
 
     SmallVector<Value> poppedOutsideRefs;
-    for (size_t i = nrets; i < caches.size() - 1; ++i) {
+    for (size_t i = nrets; i < nrets + numOutsideRefs; ++i) {
       poppedOutsideRefs.push_back(gutils->popCache(caches[i], builder));
     }
 
@@ -672,11 +692,20 @@ class AutoDiffWhileRev
       }
     }
 
+    // Compute start/step Values before the outer loop so they dominate all
+    // inner regions (innerRematBody, outerBody) where they are used.
+    Value startIV = isDynamic
+                        ? startVal
+                        : makeI64Constant(orig->getLoc(), builder,
+                                          *revInfo.info.getConstantStart());
+    Value stepIV = isDynamic ? stepVal
+                             : makeI64Constant(orig->getLoc(), builder,
+                                               *revInfo.info.getConstantStep());
+
     OpBuilder::InsertionGuard guard(builder);
 
     stablehlo::WhileOp revOuter =
-        makeForLoop(builder, orig->getLoc(), 0,
-                    revInfo.info.getConstantNumIters(), 1, operands);
+        makeForLoop(builder, orig->getLoc(), 0, numItersRev, 1, operands);
 
     Block *outerBody = &revOuter.getBody().front();
     Value newOuterIV = outerBody->getTerminator()->getOperand(0);
@@ -821,15 +850,11 @@ class AutoDiffWhileRev
 
     // iv [ckpt, ckpt+split[ in [0, numIters]
     // innerIV = iv * step + start
+    // startIV/stepIV are defined before revOuter so they dominate here.
     Value innerIV = stablehlo::AddOp::create(
-        builder, orig->getLoc(),
-        makeI64Constant(orig->getLoc(), builder,
-                        *revInfo.info.getConstantStart()),
-        stablehlo::MulOp::create(
-            builder, orig->getLoc(),
-            makeI64Constant(orig->getLoc(), builder,
-                            *revInfo.info.getConstantStep()),
-            innerRematBody->getArgument(0)));
+        builder, orig->getLoc(), startIV,
+        stablehlo::MulOp::create(builder, orig->getLoc(), stepIV,
+                                 innerRematBody->getArgument(0)));
 
     IRMapping mapping;
     mapping.map(origBody->getArgument(0), innerIV);
@@ -915,13 +940,9 @@ class AutoDiffWhileRev
     // iv = start + step * (currentRevStep - 1)
     mapping.map(origBody->getArgument(0),
                 stablehlo::AddOp::create(
-                    builder, orig->getLoc(),
-                    makeI64Constant(orig->getLoc(), builder,
-                                    *revInfo.info.getConstantStart()),
+                    builder, orig->getLoc(), startIV,
                     stablehlo::MulOp::create(
-                        builder, orig->getLoc(),
-                        makeI64Constant(orig->getLoc(), builder,
-                                        *revInfo.info.getConstantStep()),
+                        builder, orig->getLoc(), stepIV,
                         stablehlo::SubtractOp::create(
                             builder, orig->getLoc(), currentRevStep,
                             makeI64Constant(orig->getLoc(), builder, 1)))));
@@ -1442,7 +1463,7 @@ public:
     WhileLoopInfo info(newWhile);
     if (info.computeInfo().succeeded()) {
       // no need to cache number of iterations if it is a known constant.
-      if (info.isValid() && info.isConstant()) {
+      if (info.isValid()) {
 
         // for any value that is a reference from the outside we can hoist the
         // push/pop from outside the outer really.
@@ -1573,6 +1594,7 @@ public:
         } else if (revModeInfo.mode == CONSTANT_BINOMIAL) {
           OpBuilder builder(newWhile);
 
+          bool isDynamic = !info.isConstant();
           Value zero = makeI64Constant(orig->getLoc(), builder, 0);
 
           SetVector<Value> outsideRefs;
@@ -1627,6 +1649,26 @@ public:
                 gutils->getNewFromOriginal(ref), builder));
           }
 
+          // For non-constant bounds, cache numIters/start/step so the reverse
+          // pass can reconstruct loop-carried IVs without needing compile-time
+          // constants. These are inserted before `outer` (loop-invariant).
+          if (isDynamic) {
+            builder.setInsertionPoint(outer);
+            Value numItersVal = info.getNumIters(builder);
+            if (!numItersVal) {
+              orig->emitError(
+                  "binomial checkpointing: cannot compute numIters outside the "
+                  "while op for non-constant loop bounds");
+              return {};
+            }
+            caches.push_back(gutils->initAndPushCache(numItersVal, builder));
+            caches.push_back(
+                gutils->initAndPushCache(info.getStart(), builder));
+            caches.push_back(
+                gutils->initAndPushCache(info.getStep(builder), builder));
+            builder.setInsertionPointAfter(outer);
+          }
+
           // last cache is corresponding to the index tensor
           caches.push_back(gutils->initAndPushCache(
               outer.getResult(outer.getNumResults() - 1), builder));
@@ -1678,11 +1720,12 @@ public:
                                           .slice(1, orig->getNumOperands() - 1)
                                           .end());
 
+          Value limitVal = info.isConstantLimit()
+                               ? makeI64Constant(orig->getLoc(), builder,
+                                                 *info.getConstantLimit())
+                               : info.getLimit();
           Value numSteps = stablehlo::SubtractOp::create(
-              builder, orig->getLoc(),
-              makeI64Constant(orig->getLoc(), builder,
-                              *info.getConstantLimit()),
-              stepInOuter);
+              builder, orig->getLoc(), limitVal, stepInOuter);
 
           Value budget = stablehlo::SubtractOp::create(
               builder, orig->getLoc(),
@@ -1751,8 +1794,11 @@ public:
           term->setOperands(1, term->getNumOperands() - 1, newReturns);
 
           builder.setInsertionPointAfter(outer);
-          SmallVector<Value> newResults{makeI64Constant(
-              oldIV.getLoc(), builder, *info.getConstantLimit())};
+          Value limitForResult = info.isConstantLimit()
+                                     ? makeI64Constant(oldIV.getLoc(), builder,
+                                                       *info.getConstantLimit())
+                                     : info.getLimit();
+          SmallVector<Value> newResults{limitForResult};
 
           newResults.append(
               outer->getResults().slice(1, orig->getNumResults() - 1).begin(),
@@ -1763,9 +1809,12 @@ public:
           gutils->originalToNewFnOps[orig] = outer;
 
           return caches;
+        } else if (info.isConstant()) {
+          // CONSTANT mode: bounds are all compile-time constants, no caching
+          // needed.
+          return {};
         }
-
-        return {};
+        // Non-constant, non-binomial: fall through to numIters caching below.
       }
 
       numIters = info.getNumIters(revBuilder);
