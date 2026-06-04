@@ -136,7 +136,7 @@ struct GeqrfOpLowering : public OpRewritePattern<enzymexla::GeqrfOp> {
       // `101` for row-major, `102` for col-major
       auto layout = LLVM::ConstantOp::create(
           rewriter, op.getLoc(), type_llvm_lapack_int,
-          rewriter.getIntegerAttr(type_lapack_int, 101));
+          rewriter.getIntegerAttr(type_lapack_int, 102));
       auto m = LLVM::ConstantOp::create(
           rewriter, op.getLoc(), type_llvm_lapack_int,
           rewriter.getIntegerAttr(type_lapack_int, inputShape[0]));
@@ -184,7 +184,8 @@ struct GeqrfOpLowering : public OpRewritePattern<enzymexla::GeqrfOp> {
 
     SmallVector<Attribute> aliases;
     for (int i = 0; i < 3; ++i) {
-      aliases.push_back(stablehlo::OutputOperandAliasAttr::get(ctx, {}, i, {}));
+      aliases.push_back(
+          stablehlo::OutputOperandAliasAttr::get(ctx, {i}, i, {}));
     }
 
     auto jit_call_op = enzymexla::JITCallOp::create(
@@ -410,7 +411,7 @@ struct GeqrtOpLowering : public OpRewritePattern<enzymexla::GeqrtOp> {
       // `101` for row-major, `102` for col-major
       auto layout = LLVM::ConstantOp::create(
           rewriter, op.getLoc(), type_llvm_lapack_int,
-          rewriter.getIntegerAttr(type_lapack_int, 101));
+          rewriter.getIntegerAttr(type_lapack_int, 102));
       auto m = LLVM::ConstantOp::create(
           rewriter, op.getLoc(), type_llvm_lapack_int,
           rewriter.getIntegerAttr(type_lapack_int, inputShape[0]));
@@ -472,8 +473,8 @@ struct GeqrtOpLowering : public OpRewritePattern<enzymexla::GeqrtOp> {
         rewriter, op.getLoc(), type_T, cast<ElementsAttr>(makeAttr(type_T, 0)));
 
     SmallVector<bool> isColMajorArr = {true, true, true};
-    SmallVector<int64_t> operandRanks = {2, 1, 0};
-    SmallVector<int64_t> outputRanks = {2, 1, 0};
+    SmallVector<int64_t> operandRanks = {2, 2, 0};
+    SmallVector<int64_t> outputRanks = {2, 2, 0};
     auto operandLayouts =
         getSHLOLayout(rewriter, operandRanks, isColMajorArr, 2);
     auto resultLayouts = getSHLOLayout(rewriter, outputRanks, isColMajorArr, 2);
@@ -617,7 +618,7 @@ struct OrgqrOpLowering : public OpRewritePattern<enzymexla::OrgqrOp> {
       // `101` for row-major, `102` for col-major
       auto layout = LLVM::ConstantOp::create(
           rewriter, op.getLoc(), type_llvm_lapack_int,
-          rewriter.getIntegerAttr(type_lapack_int, 101));
+          rewriter.getIntegerAttr(type_lapack_int, 102));
       auto mC = inputShape[0];
       auto m = LLVM::ConstantOp::create(
           rewriter, op.getLoc(), type_llvm_lapack_int,
@@ -658,7 +659,7 @@ struct OrgqrOpLowering : public OpRewritePattern<enzymexla::OrgqrOp> {
     auto resultLayouts = getSHLOLayout(rewriter, outputRanks, isColMajorArr, 2);
 
     SmallVector<Attribute> aliases;
-    aliases.push_back(stablehlo::OutputOperandAliasAttr::get(ctx, {0}, 0, {}));
+    aliases.push_back(stablehlo::OutputOperandAliasAttr::get(ctx, {}, 0, {}));
 
     auto jit_call_op = enzymexla::JITCallOp::create(
         rewriter, op.getLoc(), TypeRange{inputType},
@@ -931,7 +932,7 @@ struct OrmqrOpLowering : public OpRewritePattern<enzymexla::OrmqrOp> {
       // `101` for row-major, `102` for col-major
       auto layout = LLVM::ConstantOp::create(
           rewriter, op.getLoc(), type_llvm_lapack_int,
-          rewriter.getIntegerAttr(type_lapack_int, 101));
+          rewriter.getIntegerAttr(type_lapack_int, 102));
 
       auto side = LLVM::ConstantOp::create(
           rewriter, op.getLoc(), type_llvm_char,
@@ -1196,7 +1197,7 @@ struct GemqrtOpLowering : public OpRewritePattern<enzymexla::GemqrtOp> {
       // `101` for row-major, `102` for col-major
       auto layout = LLVM::ConstantOp::create(
           rewriter, op.getLoc(), type_llvm_lapack_int,
-          rewriter.getIntegerAttr(type_lapack_int, 101));
+          rewriter.getIntegerAttr(type_lapack_int, 102));
 
       auto side = LLVM::ConstantOp::create(
           rewriter, op.getLoc(), type_llvm_char,

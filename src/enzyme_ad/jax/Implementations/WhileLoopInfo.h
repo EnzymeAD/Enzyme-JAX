@@ -49,6 +49,8 @@ struct WhileLoopInfo {
 
   mlir::Value getStart() { return start; }
 
+  mlir::Value getLimit() { return limit; }
+
   mlir::Value getStep(OpBuilder &builder);
 
   // returns the arg number of the iv. assumes computeInfo() has been called and

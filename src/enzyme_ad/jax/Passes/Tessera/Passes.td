@@ -15,18 +15,6 @@ def LiftTesseraAnnotationsPass : Pass<"lift-tessera-annotations", "ModuleOp"> {
   ];
 }
 
-def FuncAttrToTesseraAttrPass : Pass<"func-attr-to-tessera-attr", "ModuleOp"> {
-  let summary = "Raise generic tessera_op attribute to custom tessera.convert attribute on operations";
-  let description = [{
-    This pass checks if a function has a MLIR tessera_op string attribute attached to its 
-    declaration and replaces it with the custom tessera.convert attribute.
-  }];
-  let dependentDialects = [
-    "LLVM::LLVMDialect",
-    "enzyme::tessera::TesseraDialect"
-  ];
-}
-
 def ParseOptimizationRulesPass : Pass<"parse-optimization-rules", "ModuleOp"> {
   let summary = "Parses the optimization rule strings and converts them into PDL patterns";
   let description = [{

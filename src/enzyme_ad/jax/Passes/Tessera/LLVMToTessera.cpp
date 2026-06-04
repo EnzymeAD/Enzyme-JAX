@@ -47,58 +47,107 @@ public:
   LogicalResult matchAndRewrite(LLVM::LLVMFuncOp funcOp,
                                 PatternRewriter &rewriter) const override {
 
-    // Only rewrite if op has tessera.convert attribute
-    auto convertAttr =
-        funcOp->getAttrOfType<enzyme::tessera::ConvertAttr>("tessera.convert");
-    if (!convertAttr)
-      return failure();
-    auto tesseraName = convertAttr.getValue();
     auto module = funcOp->getParentOfType<ModuleOp>();
     auto *ctx = funcOp->getContext();
+
+    // Only rewrite if op has tessera_op or pure_tessera_op attribute
+    StringAttr tesseraOpAttr;
+    bool isPure = false;
+
+    if (auto attr = funcOp->getAttrOfType<StringAttr>("tessera_op")) {
+      tesseraOpAttr = attr;
+    } else if (auto attr =
+                   funcOp->getAttrOfType<StringAttr>("pure_tessera_op")) {
+      tesseraOpAttr = attr;
+      isPure = true;
+    }
+
+    if (!tesseraOpAttr)
+      return failure();
+
+    // Parse the tessera op attribute to extract the op name, argument passing
+    // style, and argument sizes. The attribute is expected to be in the format:
+    // "tessera_op(arg1:byref, arg2, ...):size1,size2,..." or
+    // "pure_tessera_op(arg1:byref, arg2, ...):size1,size2,..."
+    StringRef raw = tesseraOpAttr.getValue();
+
+    // Parse op name (everything before the '(')
+    StringRef tesseraName = raw.take_while([](char c) { return c != '('; });
+
+    // Parse args in parentheses
+    StringRef argList = raw.slice(raw.find('(') + 1, raw.find(')'));
+    SmallVector<bool> byRefArgs;
+
+    if (!argList.trim().empty()) {
+      SmallVector<StringRef> argParts;
+      argList.split(argParts, ',');
+      for (auto arg : argParts) {
+        arg = arg.trim();
+        if (arg.contains(":byref") || arg.contains(": byref")) {
+          byRefArgs.push_back(true);
+        } else {
+          byRefArgs.push_back(false);
+        }
+      }
+    }
+
+    // Parse sizes of args
+    SmallVector<int64_t> sizes;
+    StringRef sizeStr = raw.substr(raw.find(')') + 1);
+    if (!sizeStr.empty() && sizeStr.consume_front(":")) {
+      SmallVector<StringRef> sizeParts;
+      sizeStr.split(sizeParts, ',');
+      for (auto s : sizeParts) {
+        int64_t size;
+        s.trim().getAsInteger(10, size);
+        sizes.push_back(size);
+      }
+    }
+
+    // Make sure number of arguments matches number of sizes provided
+    if (byRefArgs.size() != sizes.size()) {
+      funcOp->emitError("tessera: number of arguments (")
+          << byRefArgs.size() << ") does not match number of sizes ("
+          << sizes.size() << ")";
+      return failure();
+    }
+
     auto funcName = funcOp.getName();
     auto llvmFuncType = funcOp.getFunctionType();
     auto params = llvmFuncType.getParams();
     auto retType = llvmFuncType.getReturnType();
-
-    // Check if first argument has sret attribute
-    bool hasSret = false;
-    auto argAttrs = funcOp.getArgAttrsAttr();
-    if (!params.empty() && argAttrs) {
-      auto firstArgAttrs = cast<DictionaryAttr>(argAttrs[0]);
-      if (auto sretAttr =
-              firstArgAttrs.get(LLVM::LLVMDialect::getStructRetAttrName()))
-        hasSret = true;
-    }
 
     auto fnType = FunctionType::get(
         ctx, params,
         isa<LLVM::LLVMVoidType>(retType) ? TypeRange{} : TypeRange{retType});
 
     // Replace current function name with tessera name defined in
-    // tessera.convert attribute
+    // tessera_op / pure_tessera_op attribute
     if (failed(SymbolTable::replaceAllSymbolUses(
             funcOp.getSymNameAttr(), StringAttr::get(ctx, tesseraName),
             module)))
       return failure();
-    auto tesseraDefineOp = tessera::DefineOp::create(rewriter, funcOp.getLoc(),
-                                                     tesseraName, fnType);
+
+    // Create the tessera.define op with the new name, function type, byRef
+    // args, sizes, and purity (side effect free) attribute
+    auto tesseraDefineOp = tessera::DefineOp::create(
+        rewriter, funcOp.getLoc(), tesseraName.str(), fnType,
+        DenseBoolArrayAttr::get(ctx, byRefArgs),
+        DenseI64ArrayAttr::get(ctx, sizes), isPure);
 
     // Copy over all attributes other than the function name and type
-    // and tessera.convert attribute.
+    // and tessera_op / pure_tessera_op attribute.
     for (const auto &namedAttr : funcOp->getAttrs()) {
-      if (namedAttr.getName() != funcOp.getFunctionTypeAttrName() &&
-          namedAttr.getName() != SymbolTable::getSymbolAttrName() &&
-          namedAttr.getName() != "tessera.convert")
+      if (namedAttr.getName() != SymbolTable::getSymbolAttrName() &&
+          namedAttr.getName() != funcOp.getFunctionTypeAttrName() &&
+          namedAttr.getName() != "tessera_op" &&
+          namedAttr.getName() != "pure_tessera_op")
         tesseraDefineOp->setAttr(namedAttr.getName(), namedAttr.getValue());
     }
+
     // Store the original function name so we can convert back to it later
     tesseraDefineOp->setAttr("tessera.original_name",
                              rewriter.getStringAttr(funcName));
-
-    // Add attribute if function uses struct return and store the first arg's
-    // attributes for exact reconstruction later
-    if (hasSret)
-      tesseraDefineOp->setAttr("tessera.sret_attrs", argAttrs[0]);
 
     // Clone body of function
     if (!funcOp.isExternal()) {
@@ -127,30 +176,26 @@ public:
     auto callee = SymbolTable::lookupSymbolIn(
         callOp->getParentOfType<ModuleOp>(), calleeAttr);
     // Only rewrite if callee is a tessera.define op
-    if (!isa_and_nonnull<tessera::DefineOp>(callee))
+    auto defineOp = dyn_cast_or_null<tessera::DefineOp>(callee);
+    if (!defineOp)
       return failure();
 
-    // Check if first operand has sret attribute. If so, remove it from
-    // the operand list and use its pointed-to type as the SSA return type,
-    // since tessera.call returns values directly rather than writing through
-    // a pointer.
     Value sretPtr;
     Type sretType;
     auto operands = callOp.getOperands();
     auto argAttrs = callOp.getArgAttrsAttr();
-    SmallVector<Value> newOperands;
     SmallVector<Attribute> newArgAttrs;
     SmallVector<NamedAttribute> newAttrs;
 
+    // Check if first operand has sret attribute. If so, use its pointed-to
+    // type as the SSA return type, since tessera.call returns values directly
+    // rather than writing through a pointer.
     if (!operands.empty() && argAttrs) {
-      auto firstArgAttrs = cast<DictionaryAttr>(argAttrs[0]);
-      if (auto sretAttr =
-              firstArgAttrs.get(LLVM::LLVMDialect::getStructRetAttrName())) {
+      if (auto sretAttr = defineOp.getArgAttr(
+              0, LLVM::LLVMDialect::getStructRetAttrName())) {
         sretPtr = callOp.getOperand(0);
         sretType = cast<TypeAttr>(sretAttr).getValue();
-        // Build operands and arg attributes without first element
-        for (int i = 1; i < operands.size(); i++)
-          newOperands.push_back(callOp.getOperand(i));
+        // Build arg attrs without first element
         for (int j = 1; j < argAttrs.size(); j++)
           newArgAttrs.push_back(argAttrs[j]);
         // Filter out arg_attrs from attributes
@@ -158,8 +203,53 @@ public:
           if (attr.getName() != callOp.getArgAttrsAttrName())
             newAttrs.push_back(attr);
         }
+        newAttrs.push_back(rewriter.getNamedAttr(
+            callOp.getArgAttrsAttrName(), rewriter.getArrayAttr(newArgAttrs)));
       }
     }
+
+    auto byRefArgs = defineOp.getByRefArgs();
+    auto argSizes = defineOp.getArgSizes();
+
+    SmallVector<Value> newOperands;
+    SmallVector<int32_t> loadedOperands;
+
+    // Build operands without first element. If a pointer operand has a
+    // byVal attribute or was marked as byRef by the user, load the value
+    // from the pointer and store that as the new operand
+    int argOffset = sretPtr ? 1 : 0;
+    for (int i = argOffset; i < operands.size(); i++) {
+      auto operand = callOp.getOperand(i);
+      int argIdx = i - argOffset;
+
+      if (!isa<LLVM::LLVMPointerType>(operand.getType())) {
+        newOperands.push_back(operand);
+        continue;
+      }
+
+      // Determine whether to load pointer and how many bytes to load
+      Type pointeeType;
+      if (auto byValAttr =
+              defineOp.getArgAttr(i, LLVM::LLVMDialect::getByValAttrName())) {
+        pointeeType = cast<TypeAttr>(byValAttr).getValue();
+      } else if (byRefArgs[argIdx]) {
+        pointeeType =
+            IntegerType::get(rewriter.getContext(), argSizes[argIdx] * 8);
+      }
+
+      if (pointeeType) {
+        auto loadedVal = rewriter.create<LLVM::LoadOp>(callOp.getLoc(),
+                                                       pointeeType, operand);
+        newOperands.push_back(loadedVal);
+        loadedOperands.push_back(argIdx);
+      } else {
+        newOperands.push_back(operand);
+      }
+    }
+
+    newAttrs.push_back(
+        rewriter.getNamedAttr("tessera.loaded_operands",
+                              rewriter.getDenseI32ArrayAttr(loadedOperands)));
 
     // Create tessera.call op with SSA return type
     if (sretPtr) {
@@ -167,12 +257,10 @@ public:
           callOp.getLoc(), TypeRange{sretType}, newOperands, newAttrs);
       rewriter.create<LLVM::StoreOp>(callOp.getLoc(), newCall.getResult(0),
                                      sretPtr);
-      newCall->setAttr(newCall.getArgAttrsAttrName(),
-                       rewriter.getArrayAttr(newArgAttrs));
       rewriter.eraseOp(callOp);
     } else {
       rewriter.replaceOpWithNewOp<tessera::CallOp>(
-          callOp, callOp.getResultTypes(), operands, callOp->getAttrs());
+          callOp, callOp.getResultTypes(), newOperands, callOp->getAttrs());
     }
 
     return success();

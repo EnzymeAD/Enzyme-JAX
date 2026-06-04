@@ -43,6 +43,7 @@
 #include <isl/set.h>
 #include <isl/space.h>
 #include <isl/val.h>
+#include <limits>
 #include <optional>
 
 namespace mlir {
@@ -1013,7 +1014,8 @@ emitLoadAsGather(Location loc, Value mappedMemref, ValueRange lIndices,
 static Value
 emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
                    OpBuilder &builder,
-                   llvm::DenseMap<Value, affine::AffineValueMap> &maps) {
+                   llvm::DenseMap<Value, affine::AffineValueMap> &maps,
+                   bool *overflow = nullptr) {
   Value indices = nullptr;
 
   affine::AffineValueMap updateValueMap = maps.lookup(update);
@@ -1059,6 +1061,13 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
               numDims = cast<RankedTensorType>(indices.getType()).getShape()[1],
               newSize =
                   cast<RankedTensorType>(raisedIdx.getType()).getShape()[0];
+
+      if (newSize > 0 &&
+          indicesSize > std::numeric_limits<int64_t>::max() / newSize) {
+        if (overflow)
+          *overflow = true;
+        return nullptr;
+      }
 
       indices = stablehlo::BroadcastInDimOp::create(
           builder, loc, Ty.clone({indicesSize, newSize, numDims}), indices,
@@ -2162,10 +2171,14 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
         sIndices.push_back(expandedIndex);
       }
 
+      bool overflow = false;
       Value res = emitStoreAsScatter(
           rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
-          update, operand, sIndices, builder, maps);
+          update, operand, sIndices, builder, maps, &overflow);
       if (!res) {
+        if (overflow) {
+          return op->emitError("scatter index size overflow during raising");
+        }
         auto err = op->emitError("affine.store (scatter) is dependent on "
                                  "less dims than stored value: ")
                    << *op;
@@ -2700,10 +2713,15 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     for (auto idx : storeOp.getIndices())
       sIndices.push_back(mapping.lookup(idx));
 
+    bool overflow = false;
     Value res = emitStoreAsScatter(
         rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
-        mapping.lookup(value), mapping.lookup(memref), sIndices, builder, maps);
+        mapping.lookup(value), mapping.lookup(memref), sIndices, builder, maps,
+        &overflow);
     if (!res) {
+      if (overflow) {
+        return op->emitError("scatter index size overflow during raising");
+      }
       return op->emitError(
                  "memref.store is dependent on less dims than stored value: ")
              << *op;

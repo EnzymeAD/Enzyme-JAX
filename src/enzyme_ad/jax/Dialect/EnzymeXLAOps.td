@@ -754,13 +754,13 @@ def QRFactorizationOp: EnzymeXLA_Op<"linalg.qr", [Pure]> {
   }];
 
   let arguments = (ins
-    HLO_Tensor:$input,
-    DefaultValuedAttr<EnzymeXLA_QrAlgorithmAttr, "mlir::enzymexla::QrAlgorithm::geqrf">:$algorithm
+    HLO_Tensor:$input
   );
 
   let results = (outs
     HLO_Tensor:$Q,
-    HLO_Tensor:$R
+    HLO_Tensor:$R,
+    HLO_Tensor:$info
   );
 
   let assemblyFormat = [{
