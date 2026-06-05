@@ -86,10 +86,10 @@ module @reactant_df attributes {mhlo.num_partitions = 1 : i64, mhlo.num_replicas
 // CHECK-NEXT:      %3 = stablehlo.dynamic_update_slice %iterArg_12, %2, %iterArg, %c_7 : (tensor<3x3xf32>, tensor<1x3xf32>, tensor<i64>, tensor<i64>) -> tensor<3x3xf32>
 // CHECK-NEXT:      %4 = stablehlo.subtract %c_9, %iterArg_13 : tensor<i64>
 // CHECK-NEXT:      %5 = stablehlo.subtract %c_6, %iterArg : tensor<i64>
-// CHECK-NEXT:      %6 = stablehlo.compare EQ, %iterArg, %c_0 : (tensor<i64>, tensor<i64>) -> tensor<i1>
-// CHECK-NEXT:      %7 = stablehlo.compare EQ, %iterArg_13, %c : (tensor<i64>, tensor<i64>) -> tensor<i1>
-// CHECK-NEXT:      %8 = stablehlo.or %7, %6 : tensor<i1>
-// CHECK-NEXT:      %9 = "stablehlo.if"(%8) ({
+// CHECK-DAG:       %[[ns1:.+]] = stablehlo.compare EQ, %iterArg_13, %c : (tensor<i64>, tensor<i64>) -> tensor<i1>
+// CHECK-DAG:       %[[b1:.+]] = stablehlo.compare EQ, %iterArg, %c_0 : (tensor<i64>, tensor<i64>) -> tensor<i1>
+// CHECK-NEXT:      %[[or1:.+]] = stablehlo.or %[[ns1]], %[[b1]] : tensor<i1>
+// CHECK-NEXT:      %9 = "stablehlo.if"(%[[or1]]) ({
 // CHECK-NEXT:        stablehlo.return %c_8 : tensor<i64>
 // CHECK-NEXT:      }, {
 // CHECK-NEXT:        %15:2 = stablehlo.while(%iterArg_15 = %c_8, %iterArg_16 = %5) : tensor<i64>, tensor<i64>
@@ -151,10 +151,10 @@ module @reactant_df attributes {mhlo.num_partitions = 1 : i64, mhlo.num_replicas
 // CHECK-NEXT:      } do {
 // CHECK-NEXT:        %21 = stablehlo.subtract %8, %iterArg_15 : tensor<i64>
 // CHECK-NEXT:        %22 = stablehlo.subtract %c_6, %iterArg_16 : tensor<i64>
-// CHECK-NEXT:        %23 = stablehlo.compare EQ, %iterArg_16, %c_0 : (tensor<i64>, tensor<i64>) -> tensor<i1>
-// CHECK-NEXT:        %24 = stablehlo.compare EQ, %21, %c_8 : (tensor<i64>, tensor<i64>) -> tensor<i1>
-// CHECK-NEXT:        %25 = stablehlo.or %24, %23 : tensor<i1>
-// CHECK-NEXT:        %26 = "stablehlo.if"(%25) ({
+// CHECK-DAG:         %[[ns2:.+]] = stablehlo.compare EQ, %21, %c_8 : (tensor<i64>, tensor<i64>) -> tensor<i1>
+// CHECK-DAG:         %[[b2:.+]] = stablehlo.compare EQ, %iterArg_16, %c_0 : (tensor<i64>, tensor<i64>) -> tensor<i1>
+// CHECK-NEXT:        %[[or2:.+]] = stablehlo.or %[[ns2]], %[[b2]] : tensor<i1>
+// CHECK-NEXT:        %26 = "stablehlo.if"(%[[or2]]) ({
 // CHECK-NEXT:          stablehlo.return %c_8 : tensor<i64>
 // CHECK-NEXT:        }, {
 // CHECK-NEXT:          %37:2 = stablehlo.while(%iterArg_20 = %c_8, %iterArg_21 = %22) : tensor<i64>, tensor<i64>
