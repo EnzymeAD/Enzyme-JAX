@@ -10,6 +10,9 @@ td_library(
         # MPI
         "MPIAttrs.td",
         "MPIOps.td",
+
+        # NCCL
+        "NCCLOps.td",
     ],
     deps = [
         "@llvm-project//mlir:BuiltinDialectTdFiles",
@@ -106,6 +109,25 @@ gentbl_cc_library(
     ],
 )
 
+gentbl_cc_library(
+    name = "CommNCCLOpsIncGen",
+    tbl_outs = [
+        (
+            ["-gen-op-decls"],
+            "NCCLOps.h.inc",
+        ),
+        (
+            ["-gen-op-defs"],
+            "NCCLOps.cpp.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "NCCLOps.td",
+    deps = [
+        ":CommDialectTdFiles",
+    ],
+)
+
 cc_library(
     name = "CommDialect",
     srcs = [
@@ -126,5 +148,8 @@ cc_library(
         # MPI
         ":CommMPIAttrsIncGen",
         ":CommMPIOpsIncGen",
+
+        # NCCL
+        ":CommNCCLOpsIncGen",
     ],
 )
