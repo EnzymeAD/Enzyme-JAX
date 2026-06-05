@@ -115,23 +115,23 @@ def MPI_IrecvOp : Comm_Op<"mpi.irecv", []> {
     I32 : $source,
     MPI_Comm : $comm
   );
-
-  let results = (outs MPI_Requested : $requested);
+  let results = (outs
+    AnyTensor : $buf,
+    MPI_Request : $request
+  );
   let assemblyFormat = "operands attr-dict `:` type(results)";
 }
 
 def MPI_WaitOp : Comm_Op<"mpi.wait", []> {
   let summary = "Equivalent to `MPI_Wait`";
-  let arguments = (ins MPI_Requested : $requested);
-  let results = (outs AnyTensor : $buf);
-  let assemblyFormat = "operands attr-dict `:` functional-type(operands, results)";
+  let arguments = (ins MPI_Request : $request);
+  let assemblyFormat = "operands attr-dict `:` type(operands)";
 }
 
 def MPI_WaitallOp : Comm_Op<"mpi.waitall", []> {
   let summary = "Equivalent to `MPI_Waitall`";
-  let arguments = (ins Variadic<MPI_Requested> : $requesteds);
-  let results = (outs Variadic<AnyTensor> : $bufs);
-  let assemblyFormat = "operands attr-dict `:` functional-type(operands, results)";
+  let arguments = (ins Variadic<MPI_Request> : $requests);
+  let assemblyFormat = "operands attr-dict `:` type(operands)";
 }
 
 def MPI_AllreduceOp : Comm_Op<"mpi.allreduce", []> {
