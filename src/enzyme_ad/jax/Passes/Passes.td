@@ -21,6 +21,11 @@ def CanonicalizeLoopsPass : InterfacePass<"canonicalize-loops",
                                           "mlir::FunctionOpInterface"> {
   let summary = "Canonicalize loops";
   let dependentDialects = ["affine::AffineDialect"];
+  let options = [
+    Option<"speculate_if", "speculate_if", "bool",
+           /*default=*/"false",
+	   "Whether to speculate if statement bodies">
+  ];
 }
 
 def DialectCanonicalize : Pass<"dialect-canonicalize"> {
