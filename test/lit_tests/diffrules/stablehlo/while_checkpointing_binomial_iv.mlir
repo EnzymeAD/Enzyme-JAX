@@ -64,8 +64,8 @@ module @reactant_df attributes {mhlo.num_partitions = 1 : i64, mhlo.num_replicas
 }
 
 // CHECK:  func.func @main() {
-// CHECK-NEXT:    %c = stablehlo.constant dense<9> : tensor<i64>
-// CHECK-NEXT:    %c_0 = stablehlo.constant dense<2> : tensor<i64>
+// CHECK-DAG:    %[[nine:.+]] = stablehlo.constant dense<9> : tensor<i64>
+// CHECK-DAG:    %[[two:.+]] = stablehlo.constant dense<2> : tensor<i64>
 // CHECK-NEXT:    %cst = stablehlo.constant dense<[3.000000e+01, -23.8084774, 26.8712101]> : tensor<3xf32>
 // CHECK-NEXT:    %cst_1 = stablehlo.constant dense<[0.000000e+00, 3.26916253E+18, -3.63422884E+17]> : tensor<3xf32>
 // CHECK-NEXT:    %cst_2 = stablehlo.constant dense<[0.000000e+00, 0.785398185, 0.392699093]> : tensor<3xf32>
@@ -86,8 +86,8 @@ module @reactant_df attributes {mhlo.num_partitions = 1 : i64, mhlo.num_replicas
 // CHECK-NEXT:      %3 = stablehlo.dynamic_update_slice %iterArg_12, %2, %iterArg, %c_7 : (tensor<3x3xf32>, tensor<1x3xf32>, tensor<i64>, tensor<i64>) -> tensor<3x3xf32>
 // CHECK-NEXT:      %4 = stablehlo.subtract %c_9, %iterArg_13 : tensor<i64>
 // CHECK-NEXT:      %5 = stablehlo.subtract %c_6, %iterArg : tensor<i64>
-// CHECK-DAG:       %[[ns1:.+]] = stablehlo.compare EQ, %iterArg_13, %c : (tensor<i64>, tensor<i64>) -> tensor<i1>
-// CHECK-DAG:       %[[b1:.+]] = stablehlo.compare EQ, %iterArg, %c_0 : (tensor<i64>, tensor<i64>) -> tensor<i1>
+// CHECK-DAG:       %[[ns1:.+]] = stablehlo.compare EQ, %iterArg_13, %[[nine]] : (tensor<i64>, tensor<i64>) -> tensor<i1>
+// CHECK-DAG:       %[[b1:.+]] = stablehlo.compare EQ, %iterArg, %[[two]] : (tensor<i64>, tensor<i64>) -> tensor<i1>
 // CHECK-NEXT:      %[[or1:.+]] = stablehlo.or %[[ns1]], %[[b1]] : tensor<i1>
 // CHECK-NEXT:      %9 = "stablehlo.if"(%[[or1]]) ({
 // CHECK-NEXT:        stablehlo.return %c_8 : tensor<i64>
@@ -152,7 +152,7 @@ module @reactant_df attributes {mhlo.num_partitions = 1 : i64, mhlo.num_replicas
 // CHECK-NEXT:        %21 = stablehlo.subtract %8, %iterArg_15 : tensor<i64>
 // CHECK-NEXT:        %22 = stablehlo.subtract %c_6, %iterArg_16 : tensor<i64>
 // CHECK-DAG:         %[[ns2:.+]] = stablehlo.compare EQ, %21, %c_8 : (tensor<i64>, tensor<i64>) -> tensor<i1>
-// CHECK-DAG:         %[[b2:.+]] = stablehlo.compare EQ, %iterArg_16, %c_0 : (tensor<i64>, tensor<i64>) -> tensor<i1>
+// CHECK-DAG:         %[[b2:.+]] = stablehlo.compare EQ, %iterArg_16, %[[two]] : (tensor<i64>, tensor<i64>) -> tensor<i1>
 // CHECK-NEXT:        %[[or2:.+]] = stablehlo.or %[[ns2]], %[[b2]] : tensor<i1>
 // CHECK-NEXT:        %26 = "stablehlo.if"(%[[or2]]) ({
 // CHECK-NEXT:          stablehlo.return %c_8 : tensor<i64>
