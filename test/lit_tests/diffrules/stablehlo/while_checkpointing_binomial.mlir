@@ -120,9 +120,9 @@ module @reactant_df attributes {mhlo.num_partitions = 1 : i64, mhlo.num_replicas
 // CHECK-NEXT:          %23 = stablehlo.divide %22, %19 : tensor<i64>
 // CHECK-NEXT:          stablehlo.return %19, %23 : tensor<i64>, tensor<i64>
 // CHECK-NEXT:        }
-// CHECK-NEXT:        %16 = stablehlo.subtract %15#0, %c_6 : tensor<i64>
-// CHECK-NEXT:        %17 = stablehlo.compare EQ, %15#1, %4 : (tensor<i64>, tensor<i64>) -> tensor<i1>
-// CHECK-NEXT:        %18 = stablehlo.select %17, %15#0, %16 : tensor<i1>, tensor<i64>
+// CHECK-DAG:         %[[sub3:.+]] = stablehlo.subtract %15#0, %c_6 : tensor<i64>
+// CHECK-DAG:         %[[cmp3:.+]] = stablehlo.compare EQ, %15#1, %4 : (tensor<i64>, tensor<i64>) -> tensor<i1>
+// CHECK-NEXT:        %18 = stablehlo.select %[[cmp3]], %15#0, %[[sub3]] : tensor<i1>, tensor<i64>
 // CHECK-NEXT:        stablehlo.return %18 : tensor<i64>
 // CHECK-NEXT:      }) : (tensor<i1>) -> tensor<i64>
 // CHECK-NEXT:      %10 = stablehlo.add %iterArg_12, %9 : tensor<i64>
@@ -180,9 +180,9 @@ module @reactant_df attributes {mhlo.num_partitions = 1 : i64, mhlo.num_replicas
 // CHECK-NEXT:            %43 = stablehlo.divide %42, %39 : tensor<i64>
 // CHECK-NEXT:            stablehlo.return %39, %43 : tensor<i64>, tensor<i64>
 // CHECK-NEXT:          }
-// CHECK-NEXT:          %36 = stablehlo.subtract %35#0, %c_6 : tensor<i64>
-// CHECK-NEXT:          %37 = stablehlo.compare EQ, %35#1, %19 : (tensor<i64>, tensor<i64>) -> tensor<i1>
-// CHECK-NEXT:          %38 = stablehlo.select %37, %35#0, %36 : tensor<i1>, tensor<i64>
+// CHECK-DAG:           %[[sub4:.+]] = stablehlo.subtract %35#0, %c_6 : tensor<i64>
+// CHECK-DAG:           %[[cmp4:.+]] = stablehlo.compare EQ, %35#1, %19 : (tensor<i64>, tensor<i64>) -> tensor<i1>
+// CHECK-NEXT:          %38 = stablehlo.select %[[cmp4]], %35#0, %[[sub4]] : tensor<i1>, tensor<i64>
 // CHECK-NEXT:          stablehlo.return %38 : tensor<i64>
 // CHECK-NEXT:        }) : (tensor<i1>) -> tensor<i64>
 // CHECK-NEXT:        %25 = stablehlo.reshape %iterArg_17 : (tensor<3xf32>) -> tensor<1x3xf32>

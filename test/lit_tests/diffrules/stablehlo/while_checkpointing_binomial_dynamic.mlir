@@ -131,9 +131,9 @@ module @reactant_df attributes {mhlo.num_partitions = 1 : i64, mhlo.num_replicas
 // CHECK-NEXT:          %25 = stablehlo.divide %24, %21 : tensor<i64>
 // CHECK-NEXT:          stablehlo.return %21, %25 : tensor<i64>, tensor<i64>
 // CHECK-NEXT:        }
-// CHECK-NEXT:        %18 = stablehlo.subtract %17#0, %c_8 : tensor<i64>
-// CHECK-NEXT:        %19 = stablehlo.compare EQ, %17#1, %6 : (tensor<i64>, tensor<i64>) -> tensor<i1>
-// CHECK-NEXT:        %20 = stablehlo.select %19, %17#0, %18 : tensor<i1>, tensor<i64>
+// CHECK-DAG:         %[[sub3:.+]] = stablehlo.subtract %17#0, %c_8 : tensor<i64>
+// CHECK-DAG:         %[[cmp3:.+]] = stablehlo.compare EQ, %17#1, %6 : (tensor<i64>, tensor<i64>) -> tensor<i1>
+// CHECK-NEXT:        %20 = stablehlo.select %[[cmp3]], %17#0, %[[sub3]] : tensor<i1>, tensor<i64>
 // CHECK-NEXT:        stablehlo.return %20 : tensor<i64>
 // CHECK-NEXT:      }) : (tensor<i1>) -> tensor<i64>
 // CHECK-NEXT:      %12 = stablehlo.add %iterArg_15, %11 : tensor<i64>
@@ -198,9 +198,9 @@ module @reactant_df attributes {mhlo.num_partitions = 1 : i64, mhlo.num_replicas
 // CHECK-NEXT:            %49 = stablehlo.divide %48, %45 : tensor<i64>
 // CHECK-NEXT:            stablehlo.return %45, %49 : tensor<i64>, tensor<i64>
 // CHECK-NEXT:          }
-// CHECK-NEXT:          %42 = stablehlo.subtract %41#0, %c_8 : tensor<i64>
-// CHECK-NEXT:          %43 = stablehlo.compare EQ, %41#1, %23 : (tensor<i64>, tensor<i64>) -> tensor<i1>
-// CHECK-NEXT:          %44 = stablehlo.select %43, %41#0, %42 : tensor<i1>, tensor<i64>
+// CHECK-DAG:           %[[sub4:.+]] = stablehlo.subtract %41#0, %c_8 : tensor<i64>
+// CHECK-DAG:           %[[cmp4:.+]] = stablehlo.compare EQ, %41#1, %23 : (tensor<i64>, tensor<i64>) -> tensor<i1>
+// CHECK-NEXT:          %44 = stablehlo.select %[[cmp4]], %41#0, %[[sub4]] : tensor<i1>, tensor<i64>
 // CHECK-NEXT:          stablehlo.return %44 : tensor<i64>
 // CHECK-NEXT:        }) : (tensor<i1>) -> tensor<i64>
 // CHECK-NEXT:        %29 = stablehlo.reshape %iterArg_19 : (tensor<i64>) -> tensor<1xi64>
