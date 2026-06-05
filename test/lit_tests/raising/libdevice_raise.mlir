@@ -1084,4 +1084,13 @@ module {
       llvm.return %0 : f32
     }
   }
+  gpu.module @test_module_nvvm_rcp {
+    // CHECK-LABEL: @gpu_nvvm_rcp
+    llvm.func @gpu_nvvm_rcp(%arg0: f32) -> f32 {
+      // CHECK: %[[ONE:.*]] = arith.constant 1.000000e+00 : f32
+      // CHECK: arith.divf %[[ONE]], %arg0 fastmath<afn> : f32
+      %0 = nvvm.rcp.approx.ftz.f %arg0 : f32
+      llvm.return %0 : f32
+    }
+  }
 }

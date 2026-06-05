@@ -395,6 +395,25 @@ public:
   }
 };
 
+class NVVMRcpRaising : public OpRewritePattern<NVVM::RcpApproxFtzF32Op> {
+public:
+  NVVMRcpRaising(MLIRContext *context)
+      : mlir::OpRewritePattern<NVVM::RcpApproxFtzF32Op>(context) {}
+
+  LogicalResult matchAndRewrite(NVVM::RcpApproxFtzF32Op op,
+                                PatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    Type type = op.getResult().getType();
+    Value one = rewriter.create<arith::ConstantOp>(
+        loc, type, rewriter.getFloatAttr(type, 1.0));
+    auto fmfAttr = arith::FastMathFlagsAttr::get(op.getContext(),
+                                                 arith::FastMathFlags::afn);
+    rewriter.replaceOpWithNewOp<arith::DivFOp>(op, one, op->getOperands()[0],
+                                               fmfAttr);
+    return success();
+  }
+};
+
 class RcpRaising : public OpRewritePattern<LLVM::CallOp> {
 public:
   RcpRaising(MLIRContext *context) : OpRewritePattern<LLVM::CallOp>(context) {}
@@ -1011,6 +1030,7 @@ void mlir::enzyme::populateLibDeviceFuncsToOpsPatterns(
 
   patterns.add<IsFPClassRaising>(context);
   patterns.add<RcpRaising>(context);
+  patterns.add<NVVMRcpRaising>(context);
   patterns.add<BF16HalfToFloatRaising>(context);
   patterns.add<HalfMathRaising>(context);
   patterns.add<InlineAsmHalfRaising>(context);
