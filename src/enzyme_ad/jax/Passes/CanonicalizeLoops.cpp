@@ -966,6 +966,7 @@ public:
   }
 };
 
+template <bool Speculate>
 class IfToSelect final : public OpRewritePattern<scf::IfOp> {
 public:
   using OpRewritePattern<scf::IfOp>::OpRewritePattern;
@@ -988,12 +989,18 @@ public:
     auto elseYield = cast<scf::YieldOp>(elseBlock->getTerminator());
 
     // Check if all operations in both blocks are pure
-    if (llvm::any_of(thenBlock->getOperations(),
-                     [](Operation &op) { return !isPure(&op); }))
-      return failure();
-    if (llvm::any_of(elseBlock->getOperations(),
-                     [](Operation &op) { return !isPure(&op); }))
-      return failure();
+    if (Speculate) {
+      if (llvm::any_of(thenBlock->getOperations(),
+                       [](Operation &op) { return !isPure(&op); }))
+        return failure();
+      if (llvm::any_of(elseBlock->getOperations(),
+                       [](Operation &op) { return !isPure(&op); }))
+        return failure();
+    } else {
+      if (thenBlock->getOperations().size() != 1 ||
+          elseBlock->getOperations().size() != 1)
+        return failure();
+    }
 
     // Clone all operations from both branches before their yields
     OpBuilder::InsertionGuard guard(rewriter);
@@ -1043,15 +1050,21 @@ public:
 
 struct CanonicalizeLoopsPass
     : public enzyme::impl::CanonicalizeLoopsPassBase<CanonicalizeLoopsPass> {
+  using CanonicalizeLoopsPassBase::CanonicalizeLoopsPassBase;
   void runOnOperation() override {
 
     // Step 0: Canonicalize loops when possible.
     {
       RewritePatternSet patterns(&getContext());
-      patterns
-          .add<RemoveAffineParallelSingleIter, SwitchToIf,
-               SimplifyIfByRemovingEmptyThen, PartialIfToSelect, IfToSelect>(
-              &getContext());
+      patterns.add<RemoveAffineParallelSingleIter, SwitchToIf,
+                   SimplifyIfByRemovingEmptyThen, PartialIfToSelect>(
+          &getContext());
+
+      if (speculate_if) {
+        patterns.add<IfToSelect<true>>(&getContext());
+      } else {
+        patterns.add<IfToSelect<false>>(&getContext());
+      }
 
       if (failed(
               applyPatternsGreedily(getOperation(), std::move(patterns),
