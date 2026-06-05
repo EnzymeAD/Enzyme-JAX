@@ -11,6 +11,6 @@
 #include "src/enzyme_ad/jax/Dialect/Comm/MPIAttrDefs.h.inc"
 
 #define GET_TYPEDEF_CLASSES
-#include "src/enzyme_ad/jax/Dialect/Comm/MPITypes.h.inc"
+#include "src/enzyme_ad/jax/Dialect/Comm/Types.h.inc"
 
 #endif // ENZYMEXLA_COMM_DIALECT_H

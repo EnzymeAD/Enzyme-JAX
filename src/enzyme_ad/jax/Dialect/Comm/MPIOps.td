@@ -5,7 +5,7 @@ include "Dialect.td"
 
 include "mlir/Interfaces/SideEffectInterfaces.td"
 
-include "MPITypes.td"
+include "Types.td"
 include "MPIAttrs.td"
 
 def MPI_PredefinedCommOp : Comm_Op<"mpi.predefined_comm", [Pure]> {

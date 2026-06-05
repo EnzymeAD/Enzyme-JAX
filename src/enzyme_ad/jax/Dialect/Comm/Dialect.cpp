@@ -14,7 +14,7 @@
 #include "src/enzyme_ad/jax/Dialect/Comm/MPIAttrDefs.cpp.inc"
 
 #define GET_TYPEDEF_CLASSES
-#include "src/enzyme_ad/jax/Dialect/Comm/MPITypes.cpp.inc"
+#include "src/enzyme_ad/jax/Dialect/Comm/Types.cpp.inc"
 
 void mlir::enzymexla::comm::CommDialect::initialize() {
   addAttributes<
@@ -23,7 +23,7 @@ void mlir::enzymexla::comm::CommDialect::initialize() {
       >();
   addTypes<
 #define GET_TYPEDEF_LIST
-#include "src/enzyme_ad/jax/Dialect/Comm/MPITypes.cpp.inc"
+#include "src/enzyme_ad/jax/Dialect/Comm/Types.cpp.inc"
       >();
   addOperations<
 #define GET_OP_LIST

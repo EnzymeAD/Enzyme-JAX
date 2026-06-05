@@ -5,9 +5,9 @@ td_library(
     name = "CommDialectTdFiles",
     srcs = [
         "Dialect.td",
+        "Types.td",
 
         # MPI
-        "MPITypes.td",
         "MPIAttrs.td",
         "MPIOps.td",
     ],
@@ -44,17 +44,17 @@ gentbl_cc_library(
 )
 
 gentbl_cc_library(
-    name = "CommMPITypesIncGen",
+    name = "CommTypesIncGen",
     tbl_outs = {
-        "MPITypes.h.inc": [
+        "Types.h.inc": [
             "-gen-typedef-decls",
         ],
-        "MPITypes.cpp.inc": [
+        "Types.cpp.inc": [
             "-gen-typedef-defs",
         ],
     },
     tblgen = "@llvm-project//mlir:mlir-tblgen",
-    td_file = "MPITypes.td",
+    td_file = "Types.td",
     deps = [
         ":CommDialectTdFiles",
     ],
@@ -119,12 +119,12 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":CommDialectIncGen",
+        ":CommTypesIncGen",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:SideEffectInterfaces",
 
         # MPI
         ":CommMPIAttrsIncGen",
-        ":CommMPITypesIncGen",
         ":CommMPIOpsIncGen",
     ],
 )
