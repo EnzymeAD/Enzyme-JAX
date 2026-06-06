@@ -711,6 +711,27 @@ struct BarrierConvert : public OpRewritePattern<LLVM::CallIntrinsicOp> {
   }
 };
 
+struct NVVMRsqrtApproxRaising : public OpRewritePattern<LLVM::CallIntrinsicOp> {
+  using OpRewritePattern<LLVM::CallIntrinsicOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(LLVM::CallIntrinsicOp op,
+                                PatternRewriter &rewriter) const override {
+    if (op.getIntrin() != "llvm.nvvm.rsqrt.approx.f" &&
+        op.getIntrin() != "llvm.nvvm.rsqrt.approx.d")
+      return failure();
+
+    auto fmfAttr = arith::FastMathFlagsAttr::get(op.getContext(),
+                                                 arith::FastMathFlags::afn);
+    NamedAttrList attrs;
+    attrs.set(math::RsqrtOp::getFastmathAttrName(), fmfAttr);
+    Operation *replacement = rewriter.create(
+        op->getLoc(), rewriter.getStringAttr(math::RsqrtOp::getOperationName()),
+        op.getArgs(), op.getResultTypes(), attrs.getAttrs());
+    rewriter.replaceOp(op, replacement->getResults());
+    return success();
+  }
+};
+
 struct ReadOnlyAllocaElim : public OpRewritePattern<LLVM::AllocaOp> {
   ReadOnlyAllocaElim(MLIRContext *context)
       : OpRewritePattern<LLVM::AllocaOp>(context, /*benefit=*/1) {}
@@ -1160,6 +1181,7 @@ void populateLLVMToMathPatterns(MLIRContext *context,
       converter);
 
   patterns.add<BarrierConvert>(converter);
+  patterns.add<NVVMRsqrtApproxRaising>(converter);
 
   patterns
       .add<GPUConvert<NVVM::BlockDimXOp, gpu::BlockDimOp, gpu::Dimension::x>>(
