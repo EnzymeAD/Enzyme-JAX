@@ -21,9 +21,9 @@ Value extractLimb(Value tensor, int limbIndex, OpBuilder &builder, Location loc,
   if (auto tensorTy = dyn_cast<RankedTensorType>(tensor.getType())) {
     if (isa<ComplexType>(tensorTy.getElementType())) {
       if (limbIndex == 0)
-        return builder.create<stablehlo::RealOp>(loc, tensor);
+        return stablehlo::RealOp::create(builder, loc, tensor);
       else
-        return builder.create<stablehlo::ImagOp>(loc, tensor);
+        return stablehlo::ImagOp::create(builder, loc, tensor);
     }
   }
   bool isTuple = concatDimension == "tuple";
@@ -38,8 +38,8 @@ Value extractLimb(Value tensor, int limbIndex, OpBuilder &builder, Location loc,
         if (auto tupleOp = tupleVal.getDefiningOp<stablehlo::TupleOp>()) {
           return tupleOp.getOperand(limbIndex);
         }
-        return builder.create<stablehlo::GetTupleElementOp>(
-            loc, tupleVal, builder.getI32IntegerAttr(limbIndex));
+        return stablehlo::GetTupleElementOp::create(
+            builder, loc, tupleVal, builder.getI32IntegerAttr(limbIndex));
       }
     } else {
       Value expanded = castOp.getOperand(0);
@@ -60,8 +60,8 @@ Value extractLimb(Value tensor, int limbIndex, OpBuilder &builder, Location loc,
 
         SmallVector<int64_t> strides(expandedType.getRank(), 1);
 
-        return builder.create<stablehlo::SliceOp>(
-            loc,
+        return stablehlo::SliceOp::create(
+            builder, loc,
             RankedTensorType::get(sliceShape, expandedType.getElementType()),
             expanded, builder.getDenseI64ArrayAttr(startIndices),
             builder.getDenseI64ArrayAttr(limitIndices),
@@ -74,8 +74,8 @@ Value extractLimb(Value tensor, int limbIndex, OpBuilder &builder, Location loc,
     if (auto tupleOp = tensor.getDefiningOp<stablehlo::TupleOp>()) {
       return tupleOp.getOperand(limbIndex);
     }
-    return builder.create<stablehlo::GetTupleElementOp>(
-        loc, tensor, builder.getI32IntegerAttr(limbIndex));
+    return stablehlo::GetTupleElementOp::create(
+        builder, loc, tensor, builder.getI32IntegerAttr(limbIndex));
   }
 
   if (auto concatOp = tensor.getDefiningOp<stablehlo::ConcatenateOp>()) {
@@ -92,8 +92,8 @@ Value extractLimb(Value tensor, int limbIndex, OpBuilder &builder, Location loc,
   bool isTuple_fallback = concatDimension == "tuple";
   bool isFirst_fallback = concatDimension == "first";
   if (isTuple_fallback) {
-    return builder.create<stablehlo::GetTupleElementOp>(
-        loc, tensor, builder.getI32IntegerAttr(limbIndex));
+    return stablehlo::GetTupleElementOp::create(
+        builder, loc, tensor, builder.getI32IntegerAttr(limbIndex));
   }
 
   auto type = cast<RankedTensorType>(tensor.getType());
@@ -109,9 +109,9 @@ Value extractLimb(Value tensor, int limbIndex, OpBuilder &builder, Location loc,
 
   SmallVector<int64_t> strides(type.getRank(), 1);
 
-  return builder.create<stablehlo::SliceOp>(
-      loc, RankedTensorType::get(sliceShape, type.getElementType()), tensor,
-      builder.getDenseI64ArrayAttr(startIndices),
+  return stablehlo::SliceOp::create(
+      builder, loc, RankedTensorType::get(sliceShape, type.getElementType()),
+      tensor, builder.getDenseI64ArrayAttr(startIndices),
       builder.getDenseI64ArrayAttr(limitIndices),
       builder.getDenseI64ArrayAttr(strides));
 }
@@ -124,8 +124,8 @@ Value packLimbs(ArrayRef<Value> limbs, OpBuilder &builder, Location loc,
     SmallVector<Type> types;
     for (auto limb : limbs)
       types.push_back(limb.getType());
-    return builder.create<stablehlo::TupleOp>(
-        loc, TupleType::get(limbs[0].getContext(), types), limbs);
+    return stablehlo::TupleOp::create(
+        builder, loc, TupleType::get(limbs[0].getContext(), types), limbs);
   }
   auto type = cast<RankedTensorType>(limbs[0].getType());
 
@@ -135,12 +135,12 @@ Value packLimbs(ArrayRef<Value> limbs, OpBuilder &builder, Location loc,
     auto expandedType =
         RankedTensorType::get(expandedShape, type.getElementType());
     for (auto limb : limbs) {
-      expandedLimbs.push_back(builder.create<stablehlo::BroadcastInDimOp>(
-          loc, expandedType, limb, builder.getDenseI64ArrayAttr({})));
+      expandedLimbs.push_back(stablehlo::BroadcastInDimOp::create(
+          builder, loc, expandedType, limb, builder.getDenseI64ArrayAttr({})));
     }
     SmallVector<int64_t> outShape = {static_cast<int64_t>(limbs.size())};
-    return builder.create<stablehlo::ConcatenateOp>(
-        loc, RankedTensorType::get(outShape, type.getElementType()),
+    return stablehlo::ConcatenateOp::create(
+        builder, loc, RankedTensorType::get(outShape, type.getElementType()),
         expandedLimbs, 0);
   }
 
@@ -149,9 +149,9 @@ Value packLimbs(ArrayRef<Value> limbs, OpBuilder &builder, Location loc,
   SmallVector<int64_t> outShape = llvm::to_vector(type.getShape());
   outShape[concatDim] = limbs.size();
 
-  return builder.create<stablehlo::ConcatenateOp>(
-      loc, RankedTensorType::get(outShape, type.getElementType()), limbs,
-      concatDim);
+  return stablehlo::ConcatenateOp::create(
+      builder, loc, RankedTensorType::get(outShape, type.getElementType()),
+      limbs, concatDim);
 }
 
 Value packLimbs(Value high, Value low, OpBuilder &builder, Location loc,

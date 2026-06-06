@@ -3498,8 +3498,8 @@ struct AffineToStableHLORaisingPass
 
             Value storeVal = arg;
             if (isIndex) {
-              storeVal = b.create<arith::IndexCastOp>(
-                  rewriteLocation(g.getLoc(), options.strip_llvm_debuginfo),
+              storeVal = arith::IndexCastOp::create(
+                  b, rewriteLocation(g.getLoc(), options.strip_llvm_debuginfo),
                   b.getI64Type(), arg);
             }
 
@@ -3519,8 +3519,8 @@ struct AffineToStableHLORaisingPass
             loads.push_back(ld);
             Value ldVal = ld;
             if (isIndex) {
-              ldVal = b.create<arith::IndexCastOp>(
-                  rewriteLocation(g.getLoc(), options.strip_llvm_debuginfo),
+              ldVal = arith::IndexCastOp::create(
+                  b, rewriteLocation(g.getLoc(), options.strip_llvm_debuginfo),
                   b.getIndexType(), ld);
 
               llvm::SmallSetVector<Operation *, 4> opsToReplace;
@@ -3564,8 +3564,8 @@ struct AffineToStableHLORaisingPass
                       B, loadOp.getLoc(), loadOp.getAffineMap(), indices);
                   assert(maybeExpanded.has_value() &&
                          "failed to expand affine map");
-                  auto newLoad = B.create<memref::LoadOp>(
-                      loadOp.getLoc(), loadOp.getMemref(), *maybeExpanded);
+                  auto newLoad = memref::LoadOp::create(
+                      B, loadOp.getLoc(), loadOp.getMemref(), *maybeExpanded);
                   loadOp.replaceAllUsesWith(newLoad.getResult());
                   loadOp.erase();
                 } else {
@@ -3584,9 +3584,9 @@ struct AffineToStableHLORaisingPass
                       B, storeOp.getLoc(), storeOp.getAffineMap(), indices);
                   assert(maybeExpanded.has_value() &&
                          "failed to expand affine map");
-                  B.create<memref::StoreOp>(
-                      storeOp.getLoc(), storeOp.getValueToStore(),
-                      storeOp.getMemref(), *maybeExpanded);
+                  memref::StoreOp::create(B, storeOp.getLoc(),
+                                          storeOp.getValueToStore(),
+                                          storeOp.getMemref(), *maybeExpanded);
                   storeOp.erase();
                 }
               }

@@ -163,14 +163,15 @@ public:
       if (auto sretAlignAttr =
               sretArgAttrs.get(LLVM::LLVMDialect::getAlignAttrName()))
         sret_alignment = cast<IntegerAttr>(sretAlignAttr).getInt();
-      Value one = rewriter.create<LLVM::ConstantOp>(
-          callOp.getLoc(), rewriter.getI32Type(),
-          rewriter.getI32IntegerAttr(1));
+      Value one = LLVM::ConstantOp::create(rewriter, callOp.getLoc(),
+                                           rewriter.getI32Type(),
+                                           rewriter.getI32IntegerAttr(1));
 
       // Allocate stack storage for the sret return value
-      Value sretPtr = rewriter.create<LLVM::AllocaOp>(
-          callOp.getLoc(), LLVM::LLVMPointerType::get(callOp->getContext()),
-          sretType, one, sret_alignment);
+      Value sretPtr = LLVM::AllocaOp::create(
+          rewriter, callOp.getLoc(),
+          LLVM::LLVMPointerType::get(callOp->getContext()), sretType, one,
+          sret_alignment);
 
       // Build new operands with sretPtr as first arg and reconstructed pointers
       SmallVector<Value> newOperands;
@@ -187,10 +188,11 @@ public:
           if (auto alignAttr = defineOp.getArgAttr(
                   i + 1, LLVM::LLVMDialect::getAlignAttrName()))
             alignment = cast<IntegerAttr>(alignAttr).getInt();
-          Value AI = rewriter.create<LLVM::AllocaOp>(
-              callOp.getLoc(), LLVM::LLVMPointerType::get(callOp->getContext()),
+          Value AI = LLVM::AllocaOp::create(
+              rewriter, callOp.getLoc(),
+              LLVM::LLVMPointerType::get(callOp->getContext()),
               operand.getType(), one, alignment);
-          rewriter.create<LLVM::StoreOp>(callOp.getLoc(), operand, AI);
+          LLVM::StoreOp::create(rewriter, callOp.getLoc(), operand, AI);
           newOperands.push_back(AI);
         } else {
           newOperands.push_back(operand);
@@ -208,12 +210,12 @@ public:
       auto newAttrs = buildNewAttrs(callOp->getAttrs(), newOperands.size(),
                                     rewriter.getArrayAttr(newArgAttrs));
 
-      rewriter.create<LLVM::CallOp>(callOp.getLoc(), TypeRange{}, newOperands,
-                                    newAttrs);
+      LLVM::CallOp::create(rewriter, callOp.getLoc(), TypeRange{}, newOperands,
+                           newAttrs);
 
       // Load result from sret pointer and replace uses
       auto loadedResult =
-          rewriter.create<LLVM::LoadOp>(callOp.getLoc(), sretType, sretPtr);
+          LLVM::LoadOp::create(rewriter, callOp.getLoc(), sretType, sretPtr);
       rewriter.replaceOp(callOp, loadedResult.getResult());
     } else {
       auto newAttrs = buildNewAttrs(callOp->getAttrs(),

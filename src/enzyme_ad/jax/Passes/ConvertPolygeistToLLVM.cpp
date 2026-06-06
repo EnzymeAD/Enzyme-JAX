@@ -1025,7 +1025,7 @@ public:
     auto i8 = rewriter.getIntegerType(8);
     Value truncatedValue = value;
     if (value.getType() != i8) {
-      truncatedValue = rewriter.create<LLVM::TruncOp>(loc, i8, value);
+      truncatedValue = LLVM::TruncOp::create(rewriter, loc, i8, value);
     }
 
     if (dstType.getMemorySpaceAsInt() == 0) {
@@ -1056,7 +1056,7 @@ public:
       // 1. Malloc host buffer of size 'count'
       Value countI64 = count;
       if (count.getType() != i64) {
-        countI64 = rewriter.create<LLVM::ZExtOp>(loc, i64, count);
+        countI64 = LLVM::ZExtOp::create(rewriter, loc, i64, count);
       }
 
       auto mallocFunc = LLVM::lookupOrCreateMallocFn(rewriter, moduleOp, i64);
@@ -1198,15 +1198,15 @@ public:
       Block *loopLatch = rewriter.createBlock(remainingOpsBlock);
 
       rewriter.setInsertionPointToEnd(currentBlock);
-      Value zero = rewriter.create<LLVM::ConstantOp>(
-          loc, ivTy, rewriter.getIntegerAttr(ivTy, 0));
-      rewriter.create<LLVM::BrOp>(loc, ValueRange{zero}, loopHeader);
+      Value zero = LLVM::ConstantOp::create(rewriter, loc, ivTy,
+                                            rewriter.getIntegerAttr(ivTy, 0));
+      LLVM::BrOp::create(rewriter, loc, ValueRange{zero}, loopHeader);
 
       Value iv = loopHeader->getArgument(0);
       rewriter.setInsertionPointToEnd(loopHeader);
-      Value cmp = rewriter.create<LLVM::ICmpOp>(loc, LLVM::ICmpPredicate::slt,
-                                                iv, height);
-      rewriter.create<LLVM::CondBrOp>(loc, cmp, loopBody, remainingOpsBlock);
+      Value cmp = LLVM::ICmpOp::create(rewriter, loc, LLVM::ICmpPredicate::slt,
+                                       iv, height);
+      LLVM::CondBrOp::create(rewriter, loc, cmp, loopBody, remainingOpsBlock);
 
       rewriter.setInsertionPointToEnd(loopBody);
 
@@ -1216,8 +1216,8 @@ public:
       Value flatDst = LLVM::AddrSpaceCastOp::create(rewriter, loc, ptrty, dst);
       Value flatSrc = LLVM::AddrSpaceCastOp::create(rewriter, loc, ptrty, src);
 
-      Value dstOff = rewriter.create<LLVM::MulOp>(loc, iv, dpitch);
-      Value srcOff = rewriter.create<LLVM::MulOp>(loc, iv, spitch);
+      Value dstOff = LLVM::MulOp::create(rewriter, loc, iv, dpitch);
+      Value srcOff = LLVM::MulOp::create(rewriter, loc, iv, spitch);
 
       Value dstPtr = LLVM::GEPOp::create(rewriter, loc, ptrty, i8, flatDst,
                                          ValueRange{dstOff});
@@ -1226,13 +1226,13 @@ public:
 
       LLVM::MemcpyOp::create(rewriter, loc, dstPtr, srcPtr, width, false);
 
-      rewriter.create<LLVM::BrOp>(loc, ValueRange(), loopLatch);
+      LLVM::BrOp::create(rewriter, loc, ValueRange(), loopLatch);
 
       rewriter.setInsertionPointToEnd(loopLatch);
-      Value one = rewriter.create<LLVM::ConstantOp>(
-          loc, ivTy, rewriter.getIntegerAttr(ivTy, 1));
-      Value nextIv = rewriter.create<LLVM::AddOp>(loc, iv, one);
-      rewriter.create<LLVM::BrOp>(loc, ValueRange{nextIv}, loopHeader);
+      Value one = LLVM::ConstantOp::create(rewriter, loc, ivTy,
+                                           rewriter.getIntegerAttr(ivTy, 1));
+      Value nextIv = LLVM::AddOp::create(rewriter, loc, iv, one);
+      LLVM::BrOp::create(rewriter, loc, ValueRange{nextIv}, loopHeader);
 
       rewriter.setInsertionPointToStart(remainingOpsBlock);
       rewriter.eraseOp(op);
@@ -1268,18 +1268,18 @@ public:
       Block *loopLatch = rewriter.createBlock(remainingOpsBlock);
 
       rewriter.setInsertionPointToEnd(currentBlock);
-      Value zero = rewriter.create<LLVM::ConstantOp>(
-          loc, ivTy, rewriter.getIntegerAttr(ivTy, 0));
+      Value zero = LLVM::ConstantOp::create(rewriter, loc, ivTy,
+                                            rewriter.getIntegerAttr(ivTy, 0));
 
       auto xdata = insertXLAInitDeinit(moduleOp, backend, rewriter);
 
-      rewriter.create<LLVM::BrOp>(loc, ValueRange{zero}, loopHeader);
+      LLVM::BrOp::create(rewriter, loc, ValueRange{zero}, loopHeader);
 
       Value iv = loopHeader->getArgument(0);
       rewriter.setInsertionPointToEnd(loopHeader);
-      Value cmp = rewriter.create<LLVM::ICmpOp>(loc, LLVM::ICmpPredicate::slt,
-                                                iv, height);
-      rewriter.create<LLVM::CondBrOp>(loc, cmp, loopBody, remainingOpsBlock);
+      Value cmp = LLVM::ICmpOp::create(rewriter, loc, LLVM::ICmpPredicate::slt,
+                                       iv, height);
+      LLVM::CondBrOp::create(rewriter, loc, cmp, loopBody, remainingOpsBlock);
 
       rewriter.setInsertionPointToEnd(loopBody);
 
@@ -1288,8 +1288,8 @@ public:
       Value flatDst = LLVM::AddrSpaceCastOp::create(rewriter, loc, ptrty, dst);
       Value flatSrc = LLVM::AddrSpaceCastOp::create(rewriter, loc, ptrty, src);
 
-      Value dstOff = rewriter.create<LLVM::MulOp>(loc, iv, dpitch);
-      Value srcOff = rewriter.create<LLVM::MulOp>(loc, iv, spitch);
+      Value dstOff = LLVM::MulOp::create(rewriter, loc, iv, dpitch);
+      Value srcOff = LLVM::MulOp::create(rewriter, loc, iv, spitch);
 
       Value dstPtr = LLVM::GEPOp::create(rewriter, loc, ptrty, i8, flatDst,
                                          ValueRange{dstOff});
@@ -1302,13 +1302,13 @@ public:
       SmallVector<Value> args = {xdata, dstPtr, srcPtr, width, directionConst};
       LLVM::CallOp::create(rewriter, loc, memcpyFn.value(), args);
 
-      rewriter.create<LLVM::BrOp>(loc, ValueRange(), loopLatch);
+      LLVM::BrOp::create(rewriter, loc, ValueRange(), loopLatch);
 
       rewriter.setInsertionPointToEnd(loopLatch);
-      Value one = rewriter.create<LLVM::ConstantOp>(
-          loc, ivTy, rewriter.getIntegerAttr(ivTy, 1));
-      Value nextIv = rewriter.create<LLVM::AddOp>(loc, iv, one);
-      rewriter.create<LLVM::BrOp>(loc, ValueRange{nextIv}, loopHeader);
+      Value one = LLVM::ConstantOp::create(rewriter, loc, ivTy,
+                                           rewriter.getIntegerAttr(ivTy, 1));
+      Value nextIv = LLVM::AddOp::create(rewriter, loc, iv, one);
+      LLVM::BrOp::create(rewriter, loc, ValueRange{nextIv}, loopHeader);
 
       rewriter.setInsertionPointToStart(remainingOpsBlock);
       rewriter.eraseOp(op);
@@ -3187,9 +3187,9 @@ private:
       Value ptr_arg = ptr;
       if (ptr.getType() != ptrty) {
         if (isa<LLVM::LLVMPointerType>(ptr.getType())) {
-          ptr_arg = rewriter.create<LLVM::AddrSpaceCastOp>(loc, ptrty, ptr);
+          ptr_arg = LLVM::AddrSpaceCastOp::create(rewriter, loc, ptrty, ptr);
         } else {
-          ptr_arg = rewriter.create<LLVM::BitcastOp>(loc, ptrty, ptr);
+          ptr_arg = LLVM::BitcastOp::create(rewriter, loc, ptrty, ptr);
         }
       }
 
@@ -3209,9 +3209,9 @@ private:
       Value ptr_arg = ptr;
       if (ptr.getType() != ptrty) {
         if (isa<LLVM::LLVMPointerType>(ptr.getType())) {
-          ptr_arg = rewriter.create<LLVM::AddrSpaceCastOp>(loc, ptrty, ptr);
+          ptr_arg = LLVM::AddrSpaceCastOp::create(rewriter, loc, ptrty, ptr);
         } else {
-          ptr_arg = rewriter.create<LLVM::BitcastOp>(loc, ptrty, ptr);
+          ptr_arg = LLVM::BitcastOp::create(rewriter, loc, ptrty, ptr);
         }
       }
       Value args[] = {
@@ -3233,9 +3233,9 @@ private:
       Value ptr_arg = ptr;
       if (ptr.getType() != ptrty) {
         if (isa<LLVM::LLVMPointerType>(ptr.getType())) {
-          ptr_arg = rewriter.create<LLVM::AddrSpaceCastOp>(loc, ptrty, ptr);
+          ptr_arg = LLVM::AddrSpaceCastOp::create(rewriter, loc, ptrty, ptr);
         } else {
-          ptr_arg = rewriter.create<LLVM::BitcastOp>(loc, ptrty, ptr);
+          ptr_arg = LLVM::BitcastOp::create(rewriter, loc, ptrty, ptr);
         }
       }
 
@@ -3262,9 +3262,9 @@ private:
       Value ptr_arg = ptr;
       if (ptr.getType() != ptrty) {
         if (isa<LLVM::LLVMPointerType>(ptr.getType())) {
-          ptr_arg = rewriter.create<LLVM::AddrSpaceCastOp>(loc, ptrty, ptr);
+          ptr_arg = LLVM::AddrSpaceCastOp::create(rewriter, loc, ptrty, ptr);
         } else {
-          ptr_arg = rewriter.create<LLVM::BitcastOp>(loc, ptrty, ptr);
+          ptr_arg = LLVM::BitcastOp::create(rewriter, loc, ptrty, ptr);
         }
       }
 

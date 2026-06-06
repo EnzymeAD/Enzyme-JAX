@@ -161,8 +161,8 @@ struct SymmOpLowering : public OpRewritePattern<enzymexla::SymmOp> {
                                                    llvmPtrType, // ldc
                                                    llvmIntType, llvmIntType},
                                                   false);
-      rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), blasFn, funcType,
-                                        LLVM::Linkage::External);
+      LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), blasFn, funcType,
+                               LLVM::Linkage::External);
     }
 
     if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(blasFnWrapper)) {

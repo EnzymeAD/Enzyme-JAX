@@ -120,8 +120,8 @@ LogicalResult lowerMultiRotateToRotates(enzymexla::MultiRotateOp op,
       continue;
     }
 
-    auto rotateOp = rewriter.create<enzymexla::RotateOp>(
-        op.getLoc(), inputType, input, amount, op.getDimension());
+    auto rotateOp = enzymexla::RotateOp::create(
+        rewriter, op.getLoc(), inputType, input, amount, op.getDimension());
 
     // Propagate sharding if present
     if (shard) {
@@ -14178,8 +14178,8 @@ struct SelectSelectNegCond final
       // Case 3: select(and(c1,c2), c, select(and(c1,not(c2)), a, b))
       //      -> select(and(c1,c2), c, select(c1, a, b))
       if (Value c1 = getAndNegComplement(cond, inner.getPred())) {
-        auto newInner = rewriter.create<stablehlo::SelectOp>(
-            op.getLoc(), c1, inner.getOnTrue(), inner.getOnFalse());
+        auto newInner = stablehlo::SelectOp::create(
+            rewriter, op.getLoc(), c1, inner.getOnTrue(), inner.getOnFalse());
         rewriter.modifyOpInPlace(
             op, [&]() { op.getOnFalseMutable().assign(newInner); });
         return success();
@@ -15177,8 +15177,8 @@ struct SliceReverse final
     // indices for those dims still select the right elements.
     Value src = reverse.getOperand();
     if (!remainingDims.empty())
-      src = rewriter.create<stablehlo::ReverseOp>(op.getLoc(), src,
-                                                  remainingDims);
+      src = stablehlo::ReverseOp::create(rewriter, op.getLoc(), src,
+                                         remainingDims);
     rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(op, src, starts, limits,
                                                     strides);
     return success();
@@ -23713,8 +23713,8 @@ struct RecognizeUpdateWithoutCorners
 
         auto shard = sdy::getShardingPerValue(concat);
 
-        auto extend2 = rewriter.create<enzymexla::ExtendOp>(
-            concat0.getLoc(), extend, x1,
+        auto extend2 = enzymexla::ExtendOp::create(
+            rewriter, concat0.getLoc(), extend, x1,
             concat.getType().getShape()[dimX] - x2, dimX);
         enzymexla::UpdateWithoutCornersOp newUpdate;
 
@@ -33663,8 +33663,8 @@ struct RecognizeMultiSlice
       SmallVector<Type> resultTypes(totalResults, resultType);
 
       rewriter.setInsertionPointAfterValue(input);
-      auto newOp = rewriter.create<enzymexla::MultiSliceOp>(
-          op.getLoc(), resultTypes, input, adjustedStartIndices,
+      auto newOp = enzymexla::MultiSliceOp::create(
+          rewriter, op.getLoc(), resultTypes, input, adjustedStartIndices,
           adjustedLimitIndices, strides, (int32_t)dim, amount);
 
       // Propagate sharding if present (all slices have the same sharding)
@@ -33753,8 +33753,8 @@ struct ReduceUnusedMultiSlice final
         limitIndices[dim] += firstUsed;
       }
 
-      auto sliceOp = rewriter.create<stablehlo::SliceOp>(
-          op.getLoc(), op.getOperand(),
+      auto sliceOp = stablehlo::SliceOp::create(
+          rewriter, op.getLoc(), op.getOperand(),
           rewriter.getDenseI64ArrayAttr(startIndices),
           rewriter.getDenseI64ArrayAttr(limitIndices),
           rewriter.getDenseI64ArrayAttr(strides));
@@ -33788,9 +33788,9 @@ struct ReduceUnusedMultiSlice final
         resultTypes.push_back(resultType);
       }
 
-      auto newOp = rewriter.create<enzymexla::MultiSliceOp>(
-          op.getLoc(), resultTypes, op.getOperand(), startIndices, limitIndices,
-          op.getStrides(), op.getDimension(), newAmount);
+      auto newOp = enzymexla::MultiSliceOp::create(
+          rewriter, op.getLoc(), resultTypes, op.getOperand(), startIndices,
+          limitIndices, op.getStrides(), op.getDimension(), newAmount);
 
       // Propagate sharding if present
       if (auto shard = sdy::getShardingPerValue(op)) {
@@ -33844,8 +33844,8 @@ struct LowerMultiSlice final
         limitIndices[dim] += i;
       }
 
-      auto sliceOp = rewriter.create<stablehlo::SliceOp>(
-          op.getLoc(), op.getOperand(),
+      auto sliceOp = stablehlo::SliceOp::create(
+          rewriter, op.getLoc(), op.getOperand(),
           rewriter.getDenseI64ArrayAttr(startIndices),
           rewriter.getDenseI64ArrayAttr(limitIndices),
           rewriter.getDenseI64ArrayAttr(strides));
@@ -33895,10 +33895,11 @@ struct LowerMultiPad final
       high[dim] = idx;
       low[dim] = amount - idx;
 
-      auto padOp = rewriter.create<stablehlo::PadOp>(
-          op.getLoc(), input, paddingValue, rewriter.getDenseI64ArrayAttr(low),
-          rewriter.getDenseI64ArrayAttr(high),
-          rewriter.getDenseI64ArrayAttr(interior));
+      auto padOp =
+          stablehlo::PadOp::create(rewriter, op.getLoc(), input, paddingValue,
+                                   rewriter.getDenseI64ArrayAttr(low),
+                                   rewriter.getDenseI64ArrayAttr(high),
+                                   rewriter.getDenseI64ArrayAttr(interior));
 
       if (shard) {
         sdy::TensorShardingAttr shards[1] = {shard.getShardings()[idx]};
@@ -34074,9 +34075,9 @@ struct RecognizeMultiRotate
 
     // Create the MultiRotateOp
     rewriter.setInsertionPointAfterValue(input);
-    auto newOp = rewriter.create<enzymexla::MultiRotateOp>(
-        op.getLoc(), SmallVector<Type>(totalResults, input.getType()), input,
-        op.getDimension(), leftAmount, rightAmount);
+    auto newOp = enzymexla::MultiRotateOp::create(
+        rewriter, op.getLoc(), SmallVector<Type>(totalResults, input.getType()),
+        input, op.getDimension(), leftAmount, rightAmount);
 
     // Propagate sharding if present (all rotates have the same sharding)
     if (commonSharding.has_value() && commonSharding.value()) {
@@ -34173,9 +34174,9 @@ struct ReduceUnusedMultiRotate final
         amount += operandType.getShape()[op.getDimension()];
       }
 
-      auto rotateOp = rewriter.create<enzymexla::RotateOp>(
-          op.getLoc(), op.getOperand().getType(), op.getOperand(), amount,
-          op.getDimension());
+      auto rotateOp = enzymexla::RotateOp::create(
+          rewriter, op.getLoc(), op.getOperand().getType(), op.getOperand(),
+          amount, op.getDimension());
       // Propagate sharding if present
       if (auto shard = sdy::getShardingPerValue(op)) {
         sdy::setShardings(rotateOp, shard);
@@ -34188,8 +34189,8 @@ struct ReduceUnusedMultiRotate final
 
     // Otherwise, create a smaller MultiRotateOp
     if (newLeftAmount != leftAmount || newRightAmount != rightAmount) {
-      auto newOp = rewriter.create<enzymexla::MultiRotateOp>(
-          op.getLoc(),
+      auto newOp = enzymexla::MultiRotateOp::create(
+          rewriter, op.getLoc(),
           SmallVector<Type>(newLeftAmount + newRightAmount + 1,
                             op.getOperand().getType()),
           op.getOperand(), op.getDimension(), newLeftAmount, newRightAmount);
@@ -34345,8 +34346,9 @@ struct RecognizeMultiPad final
       resultTypes[i] = resultType;
     }
 
-    auto multiPad = rewriter.create<enzymexla::MultiPadOp>(
-        op.getLoc(), resultTypes, input, paddingValue, dimension, amount);
+    auto multiPad =
+        enzymexla::MultiPadOp::create(rewriter, op.getLoc(), resultTypes, input,
+                                      paddingValue, dimension, amount);
 
     if (commonSharding.has_value() && commonSharding.value()) {
       auto shardings = commonSharding.value().getShardings();

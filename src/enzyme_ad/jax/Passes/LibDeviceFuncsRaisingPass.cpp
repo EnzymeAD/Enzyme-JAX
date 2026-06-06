@@ -404,8 +404,8 @@ public:
                                 PatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
     Type type = op.getResult().getType();
-    Value one = rewriter.create<arith::ConstantOp>(
-        loc, type, rewriter.getFloatAttr(type, 1.0));
+    Value one = arith::ConstantOp::create(rewriter, loc, type,
+                                          rewriter.getFloatAttr(type, 1.0));
     auto fmfAttr = arith::FastMathFlagsAttr::get(op.getContext(),
                                                  arith::FastMathFlags::afn);
     rewriter.replaceOpWithNewOp<arith::DivFOp>(op, one, op->getOperands()[0],
@@ -429,8 +429,8 @@ public:
         callee.getLeafReference() == "__nv_frcp_rn") {
       Location loc = op.getLoc();
       Type type = op.getResultTypes()[0];
-      Value one = rewriter.create<arith::ConstantOp>(
-          loc, type, rewriter.getFloatAttr(type, 1.0));
+      Value one = arith::ConstantOp::create(rewriter, loc, type,
+                                            rewriter.getFloatAttr(type, 1.0));
       rewriter.replaceOpWithNewOp<arith::DivFOp>(op, one, op->getOperands()[0]);
       return success();
     }
@@ -795,12 +795,14 @@ public:
 
     for (Value arg : op.getOperands()) {
       if (isa<LLVM::LLVMPointerType>(arg.getType())) {
-        newArgs.push_back(rewriter.create<LLVM::LoadOp>(loc, fltType, arg));
+        newArgs.push_back(LLVM::LoadOp::create(rewriter, loc, fltType, arg));
       } else if (isa<LLVM::LLVMStructType>(arg.getType())) {
-        Value val = rewriter.create<LLVM::ExtractValueOp>(loc, arg, 0);
-        newArgs.push_back(rewriter.create<arith::BitcastOp>(loc, fltType, val));
+        Value val = LLVM::ExtractValueOp::create(rewriter, loc, arg, 0);
+        newArgs.push_back(
+            arith::BitcastOp::create(rewriter, loc, fltType, val));
       } else if (isa<IntegerType>(arg.getType())) {
-        newArgs.push_back(rewriter.create<arith::BitcastOp>(loc, fltType, arg));
+        newArgs.push_back(
+            arith::BitcastOp::create(rewriter, loc, fltType, arg));
       } else {
         newArgs.push_back(arg);
       }
@@ -809,35 +811,35 @@ public:
     Value res;
     switch (mathOp) {
     case MathOp::Log:
-      res = rewriter.create<math::LogOp>(loc, newArgs[0]);
+      res = math::LogOp::create(rewriter, loc, newArgs[0]);
       break;
     case MathOp::Div:
-      res = rewriter.create<arith::DivFOp>(loc, newArgs[0], newArgs[1]);
+      res = arith::DivFOp::create(rewriter, loc, newArgs[0], newArgs[1]);
       break;
     case MathOp::Abs:
-      res = rewriter.create<math::AbsFOp>(loc, newArgs[0]);
+      res = math::AbsFOp::create(rewriter, loc, newArgs[0]);
       break;
     case MathOp::Mul:
-      res = rewriter.create<arith::MulFOp>(loc, newArgs[0], newArgs[1]);
+      res = arith::MulFOp::create(rewriter, loc, newArgs[0], newArgs[1]);
       break;
     case MathOp::Add:
-      res = rewriter.create<arith::AddFOp>(loc, newArgs[0], newArgs[1]);
+      res = arith::AddFOp::create(rewriter, loc, newArgs[0], newArgs[1]);
       break;
     case MathOp::Sqrt:
-      res = rewriter.create<math::SqrtOp>(loc, newArgs[0]);
+      res = math::SqrtOp::create(rewriter, loc, newArgs[0]);
       break;
     case MathOp::Sub:
-      res = rewriter.create<arith::SubFOp>(loc, newArgs[0], newArgs[1]);
+      res = arith::SubFOp::create(rewriter, loc, newArgs[0], newArgs[1]);
       break;
     case MathOp::Exp:
-      res = rewriter.create<math::ExpOp>(loc, newArgs[0]);
+      res = math::ExpOp::create(rewriter, loc, newArgs[0]);
       break;
     case MathOp::Neg:
-      res = rewriter.create<arith::NegFOp>(loc, newArgs[0]);
+      res = arith::NegFOp::create(rewriter, loc, newArgs[0]);
       break;
     case MathOp::Lt:
-      res = rewriter.create<arith::CmpFOp>(loc, arith::CmpFPredicate::OLT,
-                                           newArgs[0], newArgs[1]);
+      res = arith::CmpFOp::create(rewriter, loc, arith::CmpFPredicate::OLT,
+                                  newArgs[0], newArgs[1]);
       break;
     case MathOp::None:
       llvm_unreachable("Invalid math function");
@@ -846,19 +848,20 @@ public:
     Type resType = op.getResultTypes()[0];
     if (mathOp == MathOp::Lt) {
       if (isa<IntegerType>(resType) && resType.getIntOrFloatBitWidth() > 1) {
-        res = rewriter.create<arith::ExtUIOp>(loc, resType, res);
+        res = arith::ExtUIOp::create(rewriter, loc, resType, res);
       }
     } else {
       if (isa<IntegerType>(resType)) {
-        res = rewriter.create<arith::BitcastOp>(loc, resType, res);
+        res = arith::BitcastOp::create(rewriter, loc, resType, res);
       } else if (auto structTy = dyn_cast<LLVM::LLVMStructType>(resType)) {
         res =
-            rewriter.create<arith::BitcastOp>(loc, rewriter.getI16Type(), res);
-        res = rewriter.create<LLVM::InsertValueOp>(
-            loc, structTy, rewriter.create<LLVM::UndefOp>(loc, structTy), res,
+            arith::BitcastOp::create(rewriter, loc, rewriter.getI16Type(), res);
+        res = LLVM::InsertValueOp::create(
+            rewriter, loc, structTy,
+            LLVM::UndefOp::create(rewriter, loc, structTy), res,
             rewriter.getDenseI64ArrayAttr(0));
       } else if (!isa<FloatType>(resType)) {
-        res = rewriter.create<arith::BitcastOp>(loc, resType, res);
+        res = arith::BitcastOp::create(rewriter, loc, resType, res);
       }
     }
 
@@ -885,13 +888,13 @@ public:
       Location loc = op.getLoc();
       if (isa<LLVM::LLVMPointerType>(input.getType())) {
         input =
-            rewriter.create<LLVM::LoadOp>(loc, rewriter.getF16Type(), input);
+            LLVM::LoadOp::create(rewriter, loc, rewriter.getF16Type(), input);
       } else if (isa<LLVM::LLVMStructType>(input.getType())) {
-        input = rewriter.create<LLVM::ExtractValueOp>(loc, input, 0);
+        input = LLVM::ExtractValueOp::create(rewriter, loc, input, 0);
       }
       if (isa<IntegerType>(input.getType())) {
-        input = rewriter.create<arith::BitcastOp>(loc, rewriter.getF16Type(),
-                                                  input);
+        input = arith::BitcastOp::create(rewriter, loc, rewriter.getF16Type(),
+                                         input);
       }
       rewriter.replaceOpWithNewOp<arith::ExtFOp>(op, op.getResultTypes()[0],
                                                  input);
@@ -905,13 +908,13 @@ public:
       Location loc = op.getLoc();
       if (isa<LLVM::LLVMPointerType>(input.getType())) {
         input =
-            rewriter.create<LLVM::LoadOp>(loc, rewriter.getBF16Type(), input);
+            LLVM::LoadOp::create(rewriter, loc, rewriter.getBF16Type(), input);
       } else if (isa<LLVM::LLVMStructType>(input.getType())) {
-        input = rewriter.create<LLVM::ExtractValueOp>(loc, input, 0);
+        input = LLVM::ExtractValueOp::create(rewriter, loc, input, 0);
       }
       if (isa<IntegerType>(input.getType())) {
-        input = rewriter.create<arith::BitcastOp>(loc, rewriter.getBF16Type(),
-                                                  input);
+        input = arith::BitcastOp::create(rewriter, loc, rewriter.getBF16Type(),
+                                         input);
       }
       rewriter.replaceOpWithNewOp<arith::ExtFOp>(op, op.getResultTypes()[0],
                                                  input);
@@ -923,14 +926,15 @@ public:
       Location loc = op.getLoc();
       Type resType = op.getResultTypes()[0];
       Value res =
-          rewriter.create<arith::TruncFOp>(loc, rewriter.getBF16Type(), input);
+          arith::TruncFOp::create(rewriter, loc, rewriter.getBF16Type(), input);
       if (isa<IntegerType>(resType)) {
-        res = rewriter.create<arith::BitcastOp>(loc, resType, res);
+        res = arith::BitcastOp::create(rewriter, loc, resType, res);
       } else if (auto structTy = dyn_cast<LLVM::LLVMStructType>(resType)) {
         res =
-            rewriter.create<arith::BitcastOp>(loc, rewriter.getI16Type(), res);
-        res = rewriter.create<LLVM::InsertValueOp>(
-            loc, structTy, rewriter.create<LLVM::UndefOp>(loc, structTy), res,
+            arith::BitcastOp::create(rewriter, loc, rewriter.getI16Type(), res);
+        res = LLVM::InsertValueOp::create(
+            rewriter, loc, structTy,
+            LLVM::UndefOp::create(rewriter, loc, structTy), res,
             rewriter.getDenseI64ArrayAttr(0));
       }
       rewriter.replaceOp(op, res);
@@ -942,14 +946,15 @@ public:
       Location loc = op.getLoc();
       Type resType = op.getResultTypes()[0];
       Value res =
-          rewriter.create<arith::TruncFOp>(loc, rewriter.getF16Type(), input);
+          arith::TruncFOp::create(rewriter, loc, rewriter.getF16Type(), input);
       if (isa<IntegerType>(resType)) {
-        res = rewriter.create<arith::BitcastOp>(loc, resType, res);
+        res = arith::BitcastOp::create(rewriter, loc, resType, res);
       } else if (auto structTy = dyn_cast<LLVM::LLVMStructType>(resType)) {
         res =
-            rewriter.create<arith::BitcastOp>(loc, rewriter.getI16Type(), res);
-        res = rewriter.create<LLVM::InsertValueOp>(
-            loc, structTy, rewriter.create<LLVM::UndefOp>(loc, structTy), res,
+            arith::BitcastOp::create(rewriter, loc, rewriter.getI16Type(), res);
+        res = LLVM::InsertValueOp::create(
+            rewriter, loc, structTy,
+            LLVM::UndefOp::create(rewriter, loc, structTy), res,
             rewriter.getDenseI64ArrayAttr(0));
       }
       rewriter.replaceOp(op, res);
@@ -973,9 +978,9 @@ public:
       Location loc = op.getLoc();
       Type resType = op.getResultTypes()[0];
       Value res =
-          rewriter.create<arith::TruncFOp>(loc, rewriter.getF16Type(), input);
+          arith::TruncFOp::create(rewriter, loc, rewriter.getF16Type(), input);
       if (isa<IntegerType>(resType)) {
-        res = rewriter.create<arith::BitcastOp>(loc, resType, res);
+        res = arith::BitcastOp::create(rewriter, loc, resType, res);
       }
       rewriter.replaceOp(op, res);
       return success();
@@ -984,11 +989,11 @@ public:
       Value input = op.getOperand(0);
       Location loc = op.getLoc();
       if (isa<IntegerType>(input.getType())) {
-        input = rewriter.create<arith::BitcastOp>(loc, rewriter.getF16Type(),
-                                                  input);
+        input = arith::BitcastOp::create(rewriter, loc, rewriter.getF16Type(),
+                                         input);
       }
       Value res =
-          rewriter.create<arith::ExtFOp>(loc, rewriter.getF32Type(), input);
+          arith::ExtFOp::create(rewriter, loc, rewriter.getF32Type(), input);
       rewriter.replaceOp(op, res);
       return success();
     }

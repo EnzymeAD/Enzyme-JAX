@@ -79,12 +79,12 @@ static FuncOp createCallee(mlir::affine::AffineForOp forOp, int id, FuncOp f,
   std::string calleeName =
       f.getName().str() + std::string("__PE") + std::to_string(id);
   FunctionType calleeType = b.getFunctionType({}, {});
-  FuncOp callee = b.create<FuncOp>(forOp.getLoc(), calleeName, calleeType);
+  FuncOp callee = FuncOp::create(b, forOp.getLoc(), calleeName, calleeType);
   callee.setVisibility(SymbolTable::Visibility::Private);
 
   Block *entry = callee.addEntryBlock();
   b.setInsertionPointToStart(entry);
-  b.create<mlir::func::ReturnOp>(callee.getLoc());
+  mlir::func::ReturnOp::create(b, callee.getLoc());
   b.setInsertionPointToStart(entry);
 
   llvm::SetVector<Value> args;

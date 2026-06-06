@@ -587,10 +587,10 @@ struct ArithRaisingPass
                   IntegerType::Unsigned);
               auto unsignedType =
                   RankedTensorType::get(lhsType.getShape(), unsignedElemType);
-              lhs = builder.create<stablehlo::ConvertOp>(cmpOp.getLoc(),
-                                                         unsignedType, lhs);
-              rhs = builder.create<stablehlo::ConvertOp>(cmpOp.getLoc(),
-                                                         unsignedType, rhs);
+              lhs = stablehlo::ConvertOp::create(builder, cmpOp.getLoc(),
+                                                 unsignedType, lhs);
+              rhs = stablehlo::ConvertOp::create(builder, cmpOp.getLoc(),
+                                                 unsignedType, rhs);
             }
           }
         }

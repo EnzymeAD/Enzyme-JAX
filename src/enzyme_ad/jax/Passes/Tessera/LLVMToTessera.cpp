@@ -238,8 +238,8 @@ public:
       }
 
       if (pointeeType) {
-        auto loadedVal = rewriter.create<LLVM::LoadOp>(callOp.getLoc(),
-                                                       pointeeType, operand);
+        auto loadedVal = LLVM::LoadOp::create(rewriter, callOp.getLoc(),
+                                              pointeeType, operand);
         newOperands.push_back(loadedVal);
         loadedOperands.push_back(argIdx);
       } else {
@@ -253,10 +253,11 @@ public:
 
     // Create tessera.call op with SSA return type
     if (sretPtr) {
-      auto newCall = rewriter.create<tessera::CallOp>(
-          callOp.getLoc(), TypeRange{sretType}, newOperands, newAttrs);
-      rewriter.create<LLVM::StoreOp>(callOp.getLoc(), newCall.getResult(0),
-                                     sretPtr);
+      auto newCall =
+          tessera::CallOp::create(rewriter, callOp.getLoc(),
+                                  TypeRange{sretType}, newOperands, newAttrs);
+      LLVM::StoreOp::create(rewriter, callOp.getLoc(), newCall.getResult(0),
+                            sretPtr);
       rewriter.eraseOp(callOp);
     } else {
       rewriter.replaceOpWithNewOp<tessera::CallOp>(

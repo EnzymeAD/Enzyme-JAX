@@ -1113,7 +1113,7 @@ Value castToType(Type elType, Value val, Operation *op) {
   } else if ((isa<IntegerType>(val.getType()) ||
               isa<FloatType>(val.getType())) &&
              (isa<IntegerType>(elType) || isa<FloatType>(elType))) {
-    return b.create<arith::BitcastOp>(val.getLoc(), elType, val);
+    return arith::BitcastOp::create(b, val.getLoc(), elType, val);
   } else if (auto ST = dyn_cast<LLVM::LLVMStructType>(elType)) {
     if (ST.getBody().size() == 1) {
       auto ud = LLVM::UndefOp::create(b, val.getLoc(), elType);
@@ -1145,7 +1145,7 @@ Value castToType(Type elType, Value val, Operation *op) {
     if (isa<IntegerType>(elType)) {
       DataLayout dl(op->getParentOfType<ModuleOp>());
       if (dl.getTypeSize(val.getType()) == dl.getTypeSize(elType))
-        return b.create<LLVM::BitcastOp>(val.getLoc(), elType, val);
+        return LLVM::BitcastOp::create(b, val.getLoc(), elType, val);
     }
   }
   llvm::errs() << " mismatched load type, needed: " << elType << " found "

@@ -1444,7 +1444,7 @@ bool liftReduceLikeOperation(
     // Create the operation from the state.
     auto *newOp = mlir::Operation::create(state);
     rewriter.insert(newOp);
-    rewriter.create<stablehlo::ReturnOp>(op->getLoc(), newOp->getResults());
+    stablehlo::ReturnOp::create(rewriter, op->getLoc(), newOp->getResults());
   }
 
   rewriter.setInsertionPointAfter(reduceOp);
