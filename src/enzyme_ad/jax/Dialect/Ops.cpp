@@ -1384,11 +1384,11 @@ struct Memcpy2DOpToMemcpyOp : public OpRewritePattern<enzymexla::Memcpy2DOp> {
         if (heightIsConst) {
           int64_t totalSizeBytes =
               widthConst.getSExtValue() * heightConst.getSExtValue();
-          totalSize = rewriter.create<arith::ConstantIndexOp>(op.getLoc(),
-                                                              totalSizeBytes);
+          totalSize = arith::ConstantIndexOp::create(rewriter, op.getLoc(),
+                                                     totalSizeBytes);
         } else {
           totalSize =
-              rewriter.create<arith::MulIOp>(op.getLoc(), width, height);
+              arith::MulIOp::create(rewriter, op.getLoc(), width, height);
         }
       }
     }
@@ -1396,9 +1396,9 @@ struct Memcpy2DOpToMemcpyOp : public OpRewritePattern<enzymexla::Memcpy2DOp> {
     if (!canSimplify)
       return failure();
 
-    rewriter.create<enzymexla::MemcpyOp>(
-        op.getLoc(), (mlir::Type) nullptr, op.getAsyncDependencies(),
-        op.getTarget(), op.getSource(), totalSize);
+    enzymexla::MemcpyOp::create(rewriter, op.getLoc(), (mlir::Type) nullptr,
+                                op.getAsyncDependencies(), op.getTarget(),
+                                op.getSource(), totalSize);
 
     rewriter.eraseOp(op);
     return success();

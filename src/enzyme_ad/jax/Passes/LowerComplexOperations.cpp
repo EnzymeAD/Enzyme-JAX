@@ -129,9 +129,9 @@ struct RealOpConversion : public OpConversionPattern<stablehlo::RealOp> {
         targetShape.push_back(type.getShape()[i]);
     }
 
-    Value real = rewriter.create<stablehlo::ReshapeOp>(
-        loc, RankedTensorType::get(targetShape, type.getElementType()),
-        realWithDim);
+    Value real = stablehlo::ReshapeOp::create(
+        rewriter, loc,
+        RankedTensorType::get(targetShape, type.getElementType()), realWithDim);
 
     rewriter.replaceOp(op, real);
     return success();
@@ -165,9 +165,9 @@ struct ImagOpConversion : public OpConversionPattern<stablehlo::ImagOp> {
         targetShape.push_back(type.getShape()[i]);
     }
 
-    Value imag = rewriter.create<stablehlo::ReshapeOp>(
-        loc, RankedTensorType::get(targetShape, type.getElementType()),
-        imagWithDim);
+    Value imag = stablehlo::ReshapeOp::create(
+        rewriter, loc,
+        RankedTensorType::get(targetShape, type.getElementType()), imagWithDim);
 
     rewriter.replaceOp(op, imag);
     return success();
@@ -205,9 +205,9 @@ struct ComplexOpConversion : public OpConversionPattern<stablehlo::ComplexOp> {
     auto expandedType =
         RankedTensorType::get(expandedShape, type.getElementType());
     Value expandedReal =
-        rewriter.create<stablehlo::ReshapeOp>(loc, expandedType, real);
+        stablehlo::ReshapeOp::create(rewriter, loc, expandedType, real);
     Value expandedImag =
-        rewriter.create<stablehlo::ReshapeOp>(loc, expandedType, imag);
+        stablehlo::ReshapeOp::create(rewriter, loc, expandedType, imag);
 
     Value packed =
         packLimbs({expandedReal, expandedImag}, rewriter, loc, concatDimension);
@@ -237,13 +237,13 @@ struct MulOpConversion : public OpConversionPattern<stablehlo::MulOp> {
     Value c = extractLimb(rhs, 0, rewriter, loc, concatDimension);
     Value d = extractLimb(rhs, 1, rewriter, loc, concatDimension);
 
-    Value ac = rewriter.create<stablehlo::MulOp>(loc, a, c);
-    Value bd = rewriter.create<stablehlo::MulOp>(loc, b, d);
-    Value ad = rewriter.create<stablehlo::MulOp>(loc, a, d);
-    Value bc = rewriter.create<stablehlo::MulOp>(loc, b, c);
+    Value ac = stablehlo::MulOp::create(rewriter, loc, a, c);
+    Value bd = stablehlo::MulOp::create(rewriter, loc, b, d);
+    Value ad = stablehlo::MulOp::create(rewriter, loc, a, d);
+    Value bc = stablehlo::MulOp::create(rewriter, loc, b, c);
 
-    Value real = rewriter.create<stablehlo::SubtractOp>(loc, ac, bd);
-    Value imag = rewriter.create<stablehlo::AddOp>(loc, ad, bc);
+    Value real = stablehlo::SubtractOp::create(rewriter, loc, ac, bd);
+    Value imag = stablehlo::AddOp::create(rewriter, loc, ad, bc);
 
     Value packed = packLimbs(real, imag, rewriter, loc, concatDimension);
     rewriter.replaceOp(op, packed);
@@ -272,21 +272,21 @@ struct DivOpConversion : public OpConversionPattern<stablehlo::DivOp> {
     Value c = extractLimb(rhs, 0, rewriter, loc, concatDimension);
     Value d = extractLimb(rhs, 1, rewriter, loc, concatDimension);
 
-    Value ac = rewriter.create<stablehlo::MulOp>(loc, a, c);
-    Value bd = rewriter.create<stablehlo::MulOp>(loc, b, d);
-    Value bc = rewriter.create<stablehlo::MulOp>(loc, b, c);
-    Value ad = rewriter.create<stablehlo::MulOp>(loc, a, d);
+    Value ac = stablehlo::MulOp::create(rewriter, loc, a, c);
+    Value bd = stablehlo::MulOp::create(rewriter, loc, b, d);
+    Value bc = stablehlo::MulOp::create(rewriter, loc, b, c);
+    Value ad = stablehlo::MulOp::create(rewriter, loc, a, d);
 
-    Value c2 = rewriter.create<stablehlo::MulOp>(loc, c, c);
-    Value d2 = rewriter.create<stablehlo::MulOp>(loc, d, d);
+    Value c2 = stablehlo::MulOp::create(rewriter, loc, c, c);
+    Value d2 = stablehlo::MulOp::create(rewriter, loc, d, d);
 
-    Value denom = rewriter.create<stablehlo::AddOp>(loc, c2, d2);
+    Value denom = stablehlo::AddOp::create(rewriter, loc, c2, d2);
 
-    Value real_num = rewriter.create<stablehlo::AddOp>(loc, ac, bd);
-    Value imag_num = rewriter.create<stablehlo::SubtractOp>(loc, bc, ad);
+    Value real_num = stablehlo::AddOp::create(rewriter, loc, ac, bd);
+    Value imag_num = stablehlo::SubtractOp::create(rewriter, loc, bc, ad);
 
-    Value real = rewriter.create<stablehlo::DivOp>(loc, real_num, denom);
-    Value imag = rewriter.create<stablehlo::DivOp>(loc, imag_num, denom);
+    Value real = stablehlo::DivOp::create(rewriter, loc, real_num, denom);
+    Value imag = stablehlo::DivOp::create(rewriter, loc, imag_num, denom);
 
     Value packed = packLimbs(real, imag, rewriter, loc, concatDimension);
     rewriter.replaceOp(op, packed);
@@ -315,8 +315,8 @@ struct AddOpConversion : public OpConversionPattern<stablehlo::AddOp> {
     Value c = extractLimb(rhs, 0, rewriter, loc, concatDimension);
     Value d = extractLimb(rhs, 1, rewriter, loc, concatDimension);
 
-    Value real = rewriter.create<stablehlo::AddOp>(loc, a, c);
-    Value imag = rewriter.create<stablehlo::AddOp>(loc, b, d);
+    Value real = stablehlo::AddOp::create(rewriter, loc, a, c);
+    Value imag = stablehlo::AddOp::create(rewriter, loc, b, d);
 
     Value packed = packLimbs(real, imag, rewriter, loc, concatDimension);
     rewriter.replaceOp(op, packed);
@@ -345,8 +345,8 @@ struct SubOpConversion : public OpConversionPattern<stablehlo::SubtractOp> {
     Value c = extractLimb(rhs, 0, rewriter, loc, concatDimension);
     Value d = extractLimb(rhs, 1, rewriter, loc, concatDimension);
 
-    Value real = rewriter.create<stablehlo::SubtractOp>(loc, a, c);
-    Value imag = rewriter.create<stablehlo::SubtractOp>(loc, b, d);
+    Value real = stablehlo::SubtractOp::create(rewriter, loc, a, c);
+    Value imag = stablehlo::SubtractOp::create(rewriter, loc, b, d);
 
     Value packed = packLimbs(real, imag, rewriter, loc, concatDimension);
     rewriter.replaceOp(op, packed);
@@ -385,8 +385,8 @@ struct SliceOpConversion : public OpConversionPattern<stablehlo::SliceOp> {
     auto outType =
         cast<RankedTensorType>(getTypeConverter()->convertType(op.getType()));
 
-    auto sliceOp = rewriter.create<stablehlo::SliceOp>(
-        loc, outType, adaptor.getOperands()[0],
+    auto sliceOp = stablehlo::SliceOp::create(
+        rewriter, loc, outType, adaptor.getOperands()[0],
         rewriter.getDenseI64ArrayAttr(startIndices),
         rewriter.getDenseI64ArrayAttr(limitIndices),
         rewriter.getDenseI64ArrayAttr(strides));
@@ -429,8 +429,8 @@ struct TransposeOpConversion
     auto outType =
         cast<RankedTensorType>(getTypeConverter()->convertType(op.getType()));
 
-    auto transposeOp = rewriter.create<stablehlo::TransposeOp>(
-        loc, outType, adaptor.getOperands()[0],
+    auto transposeOp = stablehlo::TransposeOp::create(
+        rewriter, loc, outType, adaptor.getOperands()[0],
         rewriter.getDenseI64ArrayAttr(newPermutation));
 
     rewriter.replaceOp(op, transposeOp);
@@ -482,13 +482,13 @@ struct LowerComplexOperationsPass
     typeConverter.addSourceMaterialization([](OpBuilder &builder, Type type,
                                               ValueRange inputs,
                                               Location loc) -> Value {
-      return builder.create<UnrealizedConversionCastOp>(loc, type, inputs)
+      return UnrealizedConversionCastOp::create(builder, loc, type, inputs)
           .getResult(0);
     });
     typeConverter.addTargetMaterialization([](OpBuilder &builder, Type type,
                                               ValueRange inputs,
                                               Location loc) -> Value {
-      return builder.create<UnrealizedConversionCastOp>(loc, type, inputs)
+      return UnrealizedConversionCastOp::create(builder, loc, type, inputs)
           .getResult(0);
     });
 
@@ -583,8 +583,8 @@ struct LowerComplexOperationsPass
           if (!needed)
             continue;
 
-          Value real = b.create<stablehlo::RealOp>(loc, arg);
-          Value imag = b.create<stablehlo::ImagOp>(loc, arg);
+          Value real = stablehlo::RealOp::create(b, loc, arg);
+          Value imag = stablehlo::ImagOp::create(b, loc, arg);
           Value converted = packLimbs(real, imag, b, loc, concatDimension);
 
           SmallVector<Operation *> users(arg.getUsers().begin(),
@@ -622,15 +622,17 @@ struct LowerComplexOperationsPass
                 targetShape.push_back(type.getShape()[i]);
             }
 
-            Value real = b_ret.create<stablehlo::ReshapeOp>(
-                loc, RankedTensorType::get(targetShape, type.getElementType()),
+            Value real = stablehlo::ReshapeOp::create(
+                b_ret, loc,
+                RankedTensorType::get(targetShape, type.getElementType()),
                 realWithDim);
-            Value imag = b_ret.create<stablehlo::ReshapeOp>(
-                loc, RankedTensorType::get(targetShape, type.getElementType()),
+            Value imag = stablehlo::ReshapeOp::create(
+                b_ret, loc,
+                RankedTensorType::get(targetShape, type.getElementType()),
                 imagWithDim);
 
             Value converted =
-                b_ret.create<stablehlo::ComplexOp>(loc, real, imag);
+                stablehlo::ComplexOp::create(b_ret, loc, real, imag);
             newOperands.push_back(converted);
             changed = true;
           } else {
