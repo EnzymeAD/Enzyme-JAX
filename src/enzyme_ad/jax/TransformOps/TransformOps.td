@@ -2439,6 +2439,16 @@ def SpeculateIfPadToSelect : EnzymeHLOPatternOp<
   let patterns = ["SpeculateIfPadToSelect"];
 }
 
+def SpeculateIfBinaryOpToSelect : EnzymeHLOPatternOp<
+    "speculate_if_binary_op_to_select"> {
+  let patterns = ["SpeculateIfBinaryOpToSelect"];
+}
+
+def SpeculateOutOfBoundsArrayIndexing : EnzymeHLOPatternOp<
+    "speculate_out_of_bounds_array_indexing"> {
+  let patterns = ["SpeculateOutOfBoundsArrayIndexing"];
+}
+
 def CompareCleanup : EnzymeHLOPatternOp<
     "compare_cleanup"> {
   let patterns = ["CompareCleanup"];

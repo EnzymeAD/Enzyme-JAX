@@ -712,6 +712,8 @@ static void addPadPasses(std::vector<std::string> &list,
   list.push_back("rotate_pad");
   list.push_back("concat_multipad");
   list.push_back("speculate_if_pad_to_select");
+  list.push_back("speculate_if_binary_op_to_select");
+  list.push_back("speculate_out_of_bounds_array_indexing");
   list.push_back("dus_to_dynamic_pad");
   list.push_back("dynamic_pad_to_pad");
 
