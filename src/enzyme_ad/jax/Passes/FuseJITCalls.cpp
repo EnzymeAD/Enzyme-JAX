@@ -1,10 +1,11 @@
 #include "Passes.h"
-#include "src/enzyme_ad/jax/Dialect/EnzymeXLAOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "src/enzyme_ad/jax/Dialect/Dialect.h"
+#include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "llvm/Support/Debug.h"
 
@@ -28,7 +29,7 @@ static SmallVector<enzymexla::JITCallOp> traceRequestHandles(Value requestVal) {
     if (Operation *defOp = current.getDefiningOp()) {
       if (auto concatOp = dyn_cast<stablehlo::ConcatenateOp>(defOp)) {
         auto operands = concatOp.getOperands();
-        for (auto it = operands.rbegin(); it != operands.rend(); ++it) {
+        for (auto it = operands.begin(); it != operands.end(); ++it) {
           worklist.push_back(*it);
         }
       } else if (auto bcastOp = dyn_cast<stablehlo::BroadcastInDimOp>(defOp)) {
@@ -59,28 +60,34 @@ struct FuseJITCallsPattern : public OpRewritePattern<enzymexla::JITCallOp> {
 
     // The request handle is passed as the last operand to the wait call
     Value requestVal = waitCall.getOperand(waitCall.getNumOperands() - 1);
-    
-    SmallVector<enzymexla::JITCallOp> asyncCalls = traceRequestHandles(requestVal);
+
+    SmallVector<enzymexla::JITCallOp> asyncCalls =
+        traceRequestHandles(requestVal);
     if (asyncCalls.empty())
       return failure();
 
     auto module = waitCall->getParentOfType<ModuleOp>();
     auto waitFunc = module.lookupSymbol<LLVM::LLVMFuncOp>(waitFnName);
-    if (!waitFunc || waitFunc.empty()) return failure();
+    if (!waitFunc || waitFunc.empty())
+      return failure();
 
-    // For simplicity in the plan, assume we only fuse if all async calls share the same name (e.g. all Irecv)
-    // and we generate a fused wrapper based on the first one.
+    // For simplicity in the plan, assume we only fuse if all async calls share
+    // the same name (e.g. all Irecv) and we generate a fused wrapper based on
+    // the first one.
     enzymexla::JITCallOp firstAsyncCall = asyncCalls.front();
-    StringRef asyncFnName = firstAsyncCall.getFn().getRootReference().getValue();
+    StringRef asyncFnName =
+        firstAsyncCall.getFn().getRootReference().getValue();
     auto asyncFunc = module.lookupSymbol<LLVM::LLVMFuncOp>(asyncFnName);
-    if (!asyncFunc || asyncFunc.empty()) return failure();
+    if (!asyncFunc || asyncFunc.empty())
+      return failure();
 
     std::string fusedName = asyncFnName.str() + "_" + waitFnName.str();
 
-    // Collect combined unique inputs and their types, excluding the request handles
+    // Collect combined unique inputs and their types, excluding the request
+    // handles
     SmallVector<Value> fusedInputs;
     SmallVector<Type> argTypes;
-    
+
     // Track which async call outputs are request handles so we exclude them
     llvm::SmallPtrSet<Value, 4> requestHandles;
     for (auto call : asyncCalls) {
@@ -95,21 +102,30 @@ struct FuseJITCallsPattern : public OpRewritePattern<enzymexla::JITCallOp> {
       for (Value operand : call.getOperands()) {
         if (llvm::find(fusedInputs, operand) == fusedInputs.end()) {
           fusedInputs.push_back(operand);
-          argTypes.push_back(operand.getType()); // Need to map correctly to LLVM type if needed, but for now we just use the mlir type of the operand? Wait, LLVM wrappers take LLVMPointerType for everything in Enzymexla. Let's get the type from the LLVM function if possible.
+          argTypes.push_back(
+              operand.getType()); // Need to map correctly to LLVM type if
+                                  // needed, but for now we just use the mlir
+                                  // type of the operand? Wait, LLVM wrappers
+                                  // take LLVMPointerType for everything in
+                                  // Enzymexla. Let's get the type from the LLVM
+                                  // function if possible.
         }
       }
     }
-    
+
     // Add inputs from wait call, excluding the request handle itself
     for (auto [idx, operand] : llvm::enumerate(waitCall.getOperands())) {
-      if (idx == waitCall.getNumOperands() - 1) continue; // skip the request
+      if (idx == waitCall.getNumOperands() - 1)
+        continue; // skip the request
       if (llvm::find(fusedInputs, operand) == fusedInputs.end()) {
         fusedInputs.push_back(operand);
       }
     }
 
-    // Since we don't have perfect type mapping, let's derive argTypes from LLVM pointers
-    SmallVector<Type> llvmArgTypes(fusedInputs.size(), LLVM::LLVMPointerType::get(rewriter.getContext()));
+    // Since we don't have perfect type mapping, let's derive argTypes from LLVM
+    // pointers
+    SmallVector<Type> llvmArgTypes(
+        fusedInputs.size(), LLVM::LLVMPointerType::get(rewriter.getContext()));
 
     // 1. Create the fused LLVM wrapper function if it doesn't exist
     auto fusedFunc = module.lookupSymbol<LLVM::LLVMFuncOp>(fusedName);
@@ -117,36 +133,49 @@ struct FuseJITCallsPattern : public OpRewritePattern<enzymexla::JITCallOp> {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPoint(waitFunc);
 
-      auto funcType = LLVM::LLVMFunctionType::get(LLVM::LLVMVoidType::get(rewriter.getContext()), llvmArgTypes);
-      fusedFunc = rewriter.create<LLVM::LLVMFuncOp>(waitCall.getLoc(), fusedName, funcType);
+      auto funcType = LLVM::LLVMFunctionType::get(
+          LLVM::LLVMVoidType::get(rewriter.getContext()), llvmArgTypes);
+      fusedFunc = rewriter.create<LLVM::LLVMFuncOp>(waitCall.getLoc(),
+                                                    fusedName, funcType);
 
       // Implement full LLVM block cloning
-      Block *fusedBlock = fusedFunc.addEntryBlock();
+      Block *fusedBlock = fusedFunc.addEntryBlock(rewriter);
       rewriter.setInsertionPointToEnd(fusedBlock);
-      
+
       IRMapping mapping;
-      
-      // We need local allocation for the request handles since they are no longer passed from outside
-      // Allocate space for the request handles (e.g. array of i32s)
+
+      // We need local allocation for the request handles since they are no
+      // longer passed from outside Allocate space for the request handles (e.g.
+      // array of i32s)
       auto i32Type = IntegerType::get(rewriter.getContext(), 32);
-      auto numRequests = rewriter.create<LLVM::ConstantOp>(waitCall.getLoc(), i32Type, rewriter.getI32IntegerAttr(asyncCalls.size()));
-      Value localReqArray = rewriter.create<LLVM::AllocaOp>(waitCall.getLoc(), LLVM::LLVMPointerType::get(rewriter.getContext()), i32Type, numRequests, /*alignment=*/0);
+      auto numRequests = rewriter.create<LLVM::ConstantOp>(
+          waitCall.getLoc(), i32Type,
+          rewriter.getI32IntegerAttr(asyncCalls.size()));
+      Value localReqArray = rewriter.create<LLVM::AllocaOp>(
+          waitCall.getLoc(), LLVM::LLVMPointerType::get(rewriter.getContext()),
+          i32Type, numRequests, /*alignment=*/0);
 
       // For each async call, clone its block into the fused block
       // We map the async call's arguments to the fused function's arguments.
-      // The last argument of the async wrapper is usually the request pointer. We map it to our local allocation.
+      // The last argument of the async wrapper is usually the request pointer.
+      // We map it to our local allocation.
       for (size_t i = 0; i < asyncCalls.size(); ++i) {
         auto call = asyncCalls[i];
-        
+
         // Map arguments:
-        // This is a simplification. We assume the async LLVM wrapper arguments map 1:1 to the JIT call's operands.
-        // And the last one is the request output pointer.
-        // We find which of the fusedInputs corresponds to this call's operands.
+        // This is a simplification. We assume the async LLVM wrapper arguments
+        // map 1:1 to the JIT call's operands. And the last one is the request
+        // output pointer. We find which of the fusedInputs corresponds to this
+        // call's operands.
         for (auto [argIdx, arg] : llvm::enumerate(asyncFunc.getArguments())) {
           if (argIdx == asyncFunc.getNumArguments() - 1) {
             // Map request pointer to an offset in our localReqArray
-            auto offset = rewriter.create<LLVM::ConstantOp>(waitCall.getLoc(), i32Type, rewriter.getI32IntegerAttr(i));
-            Value reqPtr = rewriter.create<LLVM::GEPOp>(waitCall.getLoc(), LLVM::LLVMPointerType::get(rewriter.getContext()), i32Type, localReqArray, offset);
+            auto offset = rewriter.create<LLVM::ConstantOp>(
+                waitCall.getLoc(), i32Type, rewriter.getI32IntegerAttr(i));
+            Value reqPtr = rewriter.create<LLVM::GEPOp>(
+                waitCall.getLoc(),
+                LLVM::LLVMPointerType::get(rewriter.getContext()), i32Type,
+                localReqArray, ArrayRef<LLVM::GEPArg>{LLVM::GEPArg(offset)});
             mapping.map(arg, reqPtr);
           } else if (argIdx < call.getNumOperands()) {
             Value originalOperand = call.getOperand(argIdx);
@@ -155,26 +184,26 @@ struct FuseJITCallsPattern : public OpRewritePattern<enzymexla::JITCallOp> {
             mapping.map(arg, fusedFunc.getArgument(fusedIdx));
           }
         }
-        
+
         // Clone operations from asyncFunc entry block (excluding return)
         for (auto &op : asyncFunc.front().without_terminator()) {
           rewriter.clone(op, mapping);
         }
       }
-      
+
       // Clone operations from waitFunc entry block
       // The wait function typically takes (count, request_array)
       for (auto [argIdx, arg] : llvm::enumerate(waitFunc.getArguments())) {
         if (argIdx == waitFunc.getNumArguments() - 1) {
-           mapping.map(arg, localReqArray);
+          mapping.map(arg, localReqArray);
         } else if (argIdx < waitCall.getNumOperands() - 1) {
-           Value originalOperand = waitCall.getOperand(argIdx);
-           auto it = llvm::find(fusedInputs, originalOperand);
-           size_t fusedIdx = std::distance(fusedInputs.begin(), it);
-           mapping.map(arg, fusedFunc.getArgument(fusedIdx));
+          Value originalOperand = waitCall.getOperand(argIdx);
+          auto it = llvm::find(fusedInputs, originalOperand);
+          size_t fusedIdx = std::distance(fusedInputs.begin(), it);
+          mapping.map(arg, fusedFunc.getArgument(fusedIdx));
         }
       }
-      
+
       for (auto &op : waitFunc.front().without_terminator()) {
         rewriter.clone(op, mapping);
       }
@@ -193,7 +222,15 @@ struct FuseJITCallsPattern : public OpRewritePattern<enzymexla::JITCallOp> {
     }
 
     auto newCall = rewriter.create<enzymexla::JITCallOp>(
-        waitCall.getLoc(), fusedResultTypes, rewriter.getSymbolRefAttr(fusedName), fusedInputs);
+        waitCall.getLoc(), fusedResultTypes,
+        mlir::FlatSymbolRefAttr::get(rewriter.getContext(), fusedName),
+        fusedInputs, StringAttr::get(rewriter.getContext(), ""),
+        /*operand_layouts=*/nullptr,
+        /*result_layouts=*/nullptr,
+        /*arg_attrs=*/nullptr,
+        /*res_attrs=*/nullptr,
+        /*output_operand_aliases=*/nullptr,
+        /*xla_side_effect_free=*/nullptr);
 
     // 3. Replace uses and erase
     int resIdx = 0;
@@ -204,10 +241,11 @@ struct FuseJITCallsPattern : public OpRewritePattern<enzymexla::JITCallOp> {
         }
       }
     }
-    
+
     // Note: The Wait call has no results, so we don't replace anything for it.
     // The JIT calls will be erased safely by the GreedyPatternRewriteDriver
-    // when they have no uses. We explicitly erase the waitCall here to trigger the pattern success.
+    // when they have no uses. We explicitly erase the waitCall here to trigger
+    // the pattern success.
     rewriter.eraseOp(waitCall);
 
     return success();
@@ -222,7 +260,7 @@ struct FuseJITCallsPass : public impl::FuseJITCallsPassBase<FuseJITCallsPass> {
 
     patterns.add<FuseJITCallsPattern>(context);
 
-    if (failed(applyPatternsAndFoldGreedily(module, std::move(patterns)))) {
+    if (failed(applyPatternsGreedily(module, std::move(patterns)))) {
       signalPassFailure();
     }
   }
