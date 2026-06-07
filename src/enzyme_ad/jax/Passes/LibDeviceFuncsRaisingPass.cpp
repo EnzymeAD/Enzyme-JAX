@@ -722,9 +722,8 @@ struct NVVMRsqrtApproxRaising : public OpRewritePattern<LLVM::CallIntrinsicOp> {
 
     auto fmfAttr = arith::FastMathFlagsAttr::get(op.getContext(),
                                                  arith::FastMathFlags::afn);
-    rewriter.replaceOp(op,
-                       math::RsqrtOp::create(rewriter, op.getLoc(),
-                                             op.getArgs()[0], fmfAttr));
+    rewriter.replaceOp(op, math::RsqrtOp::create(rewriter, op.getLoc(),
+                                                 op.getArgs()[0], fmfAttr));
     return success();
   }
 };
