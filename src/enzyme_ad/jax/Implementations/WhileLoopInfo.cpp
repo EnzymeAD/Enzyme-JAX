@@ -69,11 +69,30 @@ LogicalResult WhileLoopInfo::computeInfo() {
   start = op->getOperand(induct.getArgNumber());
   limit = cond.getOperand(1);
 
+  auto bodyTerm =
+      cast<stablehlo::ReturnOp>(op.getBody().front().getTerminator());
+
+  // Check if limit is constant over iterations
+  if (auto ba = dyn_cast<BlockArgument>(limit)) {
+    if (ba.getOwner() == &op.getCond().front()) {
+      Value limitInit = op->getOperand(ba.getArgNumber());
+      Value newLimit = bodyTerm->getOperand(ba.getArgNumber());
+      BlockArgument newLimitBA = dyn_cast<BlockArgument>(newLimit);
+
+      if (!newLimitBA && newLimit != limitInit)
+        return failure(); // limit changes across iterations
+      else if (newLimitBA && (newLimitBA.getArgNumber() != ba.getArgNumber() ||
+                              newLimitBA.getOwner() != &op.getBody().front())) {
+        return failure();
+      }
+
+      limit = limitInit;
+    }
+  }
+
   propagateAffineIndexInfo();
   auto affineIndexInfoMap = getAffineIndexInfo();
 
-  auto bodyTerm =
-      cast<stablehlo::ReturnOp>(op.getBody().front().getTerminator());
   auto incV = bodyTerm->getOperand(induct.getArgNumber());
 
   // if part of the index map then exit early

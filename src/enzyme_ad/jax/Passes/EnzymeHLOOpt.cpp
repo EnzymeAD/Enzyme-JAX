@@ -6372,6 +6372,50 @@ struct LGammaConstProp final
   }
 };
 
+struct BinomialProgressConstProp final
+    : CheckedOpRewritePattern<enzymexla::BinomialProgressOp,
+                              BinomialProgressConstProp> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  static int64_t binomialProgress(int64_t n, int64_t s) {
+    assert(s > 0 && "no checkpoints available");
+    if (s == 1 || n == 1)
+      return 1;
+
+    int64_t j = 1;
+    int64_t binom = s; // C(s, s-1) = s
+
+    while (binom < n) {
+      ++j;
+      binom = binom * (j + s - 1) / j;
+    }
+
+    return binom == n ? j : j - 1;
+  }
+
+  LogicalResult matchAndRewriteImpl(enzymexla::BinomialProgressOp op,
+                                    PatternRewriter &rewriter) const {
+    APInt numSteps, budget;
+
+    if (!matchPattern(op.getNumSteps(), m_ConstantInt(&numSteps)) ||
+        !matchPattern(op.getBudget(), m_ConstantInt(&budget)))
+      return failure();
+
+    if (budget.isNonPositive() || numSteps.isNonPositive())
+      return failure();
+
+    int64_t progress =
+        binomialProgress(numSteps.getSExtValue(), budget.getSExtValue());
+
+    rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+        op,
+        DenseElementsAttr::get(op.getResult().getType(),
+                               makeAttr(op.getResult().getType(), progress)));
+
+    return success();
+  }
+};
+
 struct CHLOLGammaConstProp final
     : CheckedOpRewritePattern<chlo::LgammaOp, CHLOLGammaConstProp> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -35726,12 +35770,12 @@ struct EnzymeHLOOptPass
         SliceOfUpdateWithoutCorners, SliceElementwise, SliceReshapeElementwise,
         DynamicSliceElementwise, SlicePad, SliceReshapePad, ReshapeSliceReshape,
         DotReshapeDot, ChloInfConstProp, CHLOLGammaConstProp, GammaConstProp,
-        TGammaConstProp, LGammaConstProp, ConcatFuse, ConcatToBroadcast, PadPad,
-        PadReshapePad, ConcatPushBinop<stablehlo::AddOp>,
-        ConcatPushBinop<stablehlo::MulOp>, ScatterToDynamicUpdateSlice,
-        ReduceConcat, ConcatSlice, ConcatMultiPad, ConcatWrap, WidenWrap,
-        WidenExtend, ConcatConcatAxisSwap, SliceConcat, SliceIf,
-        SliceReshapeConcat, BinBroadcastSplat<stablehlo::AddOp>,
+        TGammaConstProp, LGammaConstProp, BinomialProgressConstProp, ConcatFuse,
+        ConcatToBroadcast, PadPad, PadReshapePad,
+        ConcatPushBinop<stablehlo::AddOp>, ConcatPushBinop<stablehlo::MulOp>,
+        ScatterToDynamicUpdateSlice, ReduceConcat, ConcatSlice, ConcatMultiPad,
+        ConcatWrap, WidenWrap, WidenExtend, ConcatConcatAxisSwap, SliceConcat,
+        SliceIf, SliceReshapeConcat, BinBroadcastSplat<stablehlo::AddOp>,
         BinBroadcastSplat<stablehlo::SubtractOp>,
         BinBroadcastSplat<stablehlo::DivOp>,
         BinBroadcastSplat<stablehlo::MulOp>, RotatePad, ConjReal,
