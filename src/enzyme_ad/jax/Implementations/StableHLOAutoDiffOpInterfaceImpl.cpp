@@ -3843,13 +3843,15 @@ public:
             op, "WhileOp does not have induction variable for cache removal");
       }
 
-      auto newType =
-          cast<ShapedType>(cast<AutoDiffTypeInterface>(cinfo.cachedType())
-                               .getShadowType(numIters));
-      // dynamic_update_slice requires operand rank >= 1. For scalar cache use
-      // 1D.
-      if (newType.getRank() == 0) {
-        newType = RankedTensorType::get({numIters}, newType.getElementType());
+      ShapedType newType;
+
+      if (auto TT = dyn_cast<TensorType>(cinfo.cachedType())) {
+        SmallVector<int64_t> newShape;
+        newShape.push_back(numIters);
+        newShape.append(TT.getShape().begin(), TT.getShape().end());
+        newType = TT.clone(newShape);
+      } else {
+        newType = RankedTensorType::get({numIters}, cinfo.cachedType());
       }
 
       Value initValue;
