@@ -29,4 +29,8 @@ void mlir::enzymexla::comm::CommDialect::initialize() {
 #define GET_OP_LIST
 #include "src/enzyme_ad/jax/Dialect/Comm/MPIOps.cpp.inc"
       >();
+  addOperations<
+#define GET_OP_LIST
+#include "src/enzyme_ad/jax/Dialect/Comm/NCCLOps.cpp.inc"
+      >();
 }
