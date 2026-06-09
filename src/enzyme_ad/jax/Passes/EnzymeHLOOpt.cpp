@@ -30240,7 +30240,7 @@ struct RemoveNoOpsFromWhileLoop
           boundsAttrs.push_back(ArrayAttr::get(value.getContext(), {}));
         }
       }
-      auto arattr = ArrayAttr::get(value.getContext(), boundsAttrs)
+      auto arattr = ArrayAttr::get(value.getContext(), boundsAttrs);
       // Only annotate ops we haven't already annotated
       if (!defOp->hasAttr("enzymexla.bounds") && defOp->getAttr("enzymexla.bounds") != arattr) {
         rewriter.startOpModification(defOp);
