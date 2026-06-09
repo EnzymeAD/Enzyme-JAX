@@ -72,7 +72,7 @@ def NCCL_AllReduceOp : Comm_Op<"nccl.all_reduce", []> {
   );
 
   let results = (outs AnyTensor : $recvbuf);
-  let assemblyFormat = "$sendbuf `,` $reduceOpAttr `,` $comm attr-dict `:` functional-type($sendbuf, $recvbuf)";
+  let assemblyFormat = "$sendbuf `,` $reduceOpAttr `,` $comm `,` $stream attr-dict `:` functional-type($sendbuf, $recvbuf)";
 }
 
 def NCCL_BroadcastOp : Comm_Op<"nccl.bcast", []> {
