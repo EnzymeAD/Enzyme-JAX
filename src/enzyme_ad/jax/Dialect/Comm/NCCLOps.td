@@ -75,7 +75,7 @@ def NCCLAllReduceOp : Comm_Op<"nccl.all_reduce", []> {
   let assemblyFormat = "$sendbuf `,` $reduceOpAttr `,` $comm `,` $stream attr-dict `:` functional-type($sendbuf, $recvbuf)";
 }
 
-def NCCLBroadcastOp : Comm_Op<"nccl.bcast", []> {
+def NCCLBroadcastOp : Comm_Op<"nccl.broadcast", []> {
   let summary = "Equivalent to `ncclBroadcast`";
 
   let arguments = (ins
