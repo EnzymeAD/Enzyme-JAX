@@ -12,6 +12,7 @@ td_library(
         "MPIOps.td",
 
         # NCCL
+        "NCCLAttrs.td",
         "NCCLOps.td",
     ],
     deps = [
