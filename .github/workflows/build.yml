@@ -163,7 +163,7 @@ jobs:
             //test/lit_tests/...
 
       - name: Setup upterm session
-        uses: owenthereal/action-upterm@v1
+        uses: mxschmitt/action-tmate@v3
         
       - name: Upload test results
         uses: actions/upload-artifact@v7
