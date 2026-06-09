@@ -81,7 +81,9 @@ def NCCL_BroadcastOp : Comm_Op<"nccl.bcast", []> {
   let arguments = (ins
     AnyTensor : $sendbuff,
     I32 : $root,
-    NCCL_Comm : $comm
+    NCCL_Comm : $comm,
+    NCCL_Stream : $stream
+    // TODO $inplace unit attr for reusing sendbuf as recvbuf
   );
 
   let results = (outs AnyTensor : $recvbuff);
