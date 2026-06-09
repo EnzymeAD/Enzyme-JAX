@@ -11,7 +11,7 @@ func.func @rng(%seed: tensor<2xui64>) -> (tensor<2xui64>, tensor<f64>) {
 }
 
 // CHECK:      func.func private @batched_rng(%arg0: tensor<10x2xui64>) -> (tensor<10x2xui64>, tensor<10xf64>) {
-// CHECK-NEXT:   %[[SLICED:.*]] = stablehlo.slice %arg0 [0, 0] to [1, 2] step [1, 1] : (tensor<10x2xui64>) -> tensor<1x2xui64>
+// CHECK-NEXT:   %[[SLICED:.*]] = stablehlo.slice %arg0 [0:1, 0:2] : (tensor<10x2xui64>) -> tensor<1x2xui64>
 // CHECK-NEXT:   %[[SEED:.*]] = stablehlo.reshape %[[SLICED]] : (tensor<1x2xui64>) -> tensor<2xui64>
 // CHECK-NEXT:   %[[NEW_STATE:.*]], %[[NEW_OUT:.*]] = stablehlo.rng_bit_generator %[[SEED]], algorithm = THREE_FRY : (tensor<2xui64>) -> (tensor<2xui64>, tensor<10xf64>)
 // CHECK-NEXT:   %[[BCAST_STATE:.*]] = stablehlo.broadcast_in_dim %[[NEW_STATE]], dims = [1] : (tensor<2xui64>) -> tensor<10x2xui64>

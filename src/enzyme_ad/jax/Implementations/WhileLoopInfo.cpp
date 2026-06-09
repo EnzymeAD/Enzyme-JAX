@@ -236,13 +236,28 @@ bool WhileLoopInfo::isStepOne() {
 }
 
 bool WhileLoopInfo::isConstantValue(Value v, llvm::APInt &constVal) {
-  if (matchPattern(v, m_ConstantInt(&constVal)))
+  auto getConstantInt = [&](Value val, llvm::APInt &value) {
+    if (matchPattern(val, m_ConstantInt(&value)))
+      return true;
+    if (auto constOp = val.getDefiningOp<stablehlo::ConstantOp>()) {
+      auto attr = constOp.getValue();
+      if (auto denseAttr = dyn_cast<DenseIntElementsAttr>(attr)) {
+        if (denseAttr.isSplat()) {
+          value = denseAttr.getSplatValue<APInt>();
+          return true;
+        }
+      }
+    }
+    return false;
+  };
+
+  if (getConstantInt(v, constVal))
     return true;
 
   Value outerValue;
   SmallVector<Operation *> canBeHoisted;
   if (isConstantAcrossIterations(v, outerValue, canBeHoisted, false) &&
-      matchPattern(outerValue, m_ConstantInt(&constVal)))
+      getConstantInt(outerValue, constVal))
     return true;
   return false;
 }
