@@ -60,18 +60,20 @@ def NCCL_CommUserRankOp : Comm_Op<"nccl.comm_user_rank", [Pure]> {
   let assemblyFormat = "$comm attr-dict `:` type(results)";
 }
 
-// def NCCL_AllreduceOp : Comm_Op<"nccl.allreduce", []> {
-//   let summary = "Equivalent to `NCCL_Allreduce`";
+def NCCL_AllreduceOp : Comm_Op<"nccl.allreduce", []> {
+  let summary = "Equivalent to `NCCL_Allreduce`";
 
-//   let arguments = (ins
-//     AnyTensor : $sendbuf,
-//     NCCL_RedOpAttr : $reduceOpAttr,
-//     NCCL_Comm : $comm
-//   );
+  let arguments = (ins
+    AnyTensor : $sendbuf,
+    NCCL_RedOpAttr : $reduceOpAttr,
+    NCCL_Comm : $comm,
+    NCCL_Stream : $stream
+    // TODO $inplace unit attr for reusing sendbuf as recvbuf
+  );
 
-//   let results = (outs AnyTensor : $recvbuf);
-//   let assemblyFormat = "$sendbuf `,` $reduceOpAttr `,` $comm attr-dict `:` functional-type($sendbuf, results)";
-// }
+  let results = (outs AnyTensor : $recvbuf);
+  let assemblyFormat = "$sendbuf `,` $reduceOpAttr `,` $comm attr-dict `:` functional-type($sendbuf, $recvbuf)";
+}
 
 def NCCL_BroadcastOp : Comm_Op<"nccl.bcast", []> {
   let summary = "Equivalent to `NCCL_Bcast`";
