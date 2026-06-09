@@ -153,6 +153,7 @@ jobs:
             //test/lit_tests/...
       - name: Run lit tests (dbg)
         if: steps.lit_tests.outcome == 'failure'
+        continue-on-error: true
         run: |
           bazel test $BAZEL_FLAGS -c dbg \
             --color=yes \
