@@ -18779,7 +18779,7 @@ struct DUSDUSSubsuming
     computeTensorValueProvenanceImpl(dusResults, provenanceInfo);
 
     DominanceInfo domInfo;
-    DenseMap<Operation *, Operation *> movedSlices;
+    llvm::MapVector<Operation *, Operation *> movedSlices;
     SmallVector<Operation *> originalUsers =
         llvm::to_vector(dus2.getResult().getUsers());
     for (Operation *user : originalUsers) {
@@ -18825,7 +18825,7 @@ struct DUSDUSSubsuming
 
       if (originalSources == it2->second.sources &&
           originalProvenance.isEqual(it2->second.provenanceRelation)) {
-        movedSlices.try_emplace(slice.getOperation(), clonedSlice);
+        movedSlices.insert({slice.getOperation(), clonedSlice});
       } else {
         rewriter.eraseOp(clonedSlice);
 
@@ -30250,10 +30250,8 @@ struct RemoveNoOpsFromWhileLoop
       }
       auto arattr = ArrayAttr::get(value.getContext(), boundsAttrs);
       // Only annotate ops we haven't already annotated
-      llvm::errs() << "EnzymeHLOOpt: op: " << *defOp << ", hasAttr: " << defOp->hasAttr("enzymexla.bounds") << "\n";
-      if (!defOp->hasAttr("enzymexla.bounds") &&
+      if (!defOp->hasAttr("enzymexla.bounds") ||
           defOp->getAttr("enzymexla.bounds") != arattr) {
-        llvm::errs() << "EnzymeHLOOpt: setting bounds attribute on op: " << *defOp << "\n";
         rewriter.startOpModification(defOp);
         defOp->setAttr("enzymexla.bounds", arattr);
         anyOpRewritten = true;

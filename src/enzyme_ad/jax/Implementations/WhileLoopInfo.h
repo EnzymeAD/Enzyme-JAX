@@ -94,7 +94,7 @@ struct WhileLoopInfo {
     return affineIndexInfo;
   }
 
-  llvm::DenseMap<Value, Bounds> &getBoundsMap() { return boundsMap; }
+  llvm::MapVector<Value, Bounds> &getBoundsMap() { return boundsMap; }
 
   unsigned getBoundsBitWidth() const { return boundsBitWidth; }
 
@@ -140,7 +140,7 @@ private:
   llvm::MapVector<Value, AffineIndexInfo> affineIndexInfo;
   DenseSet<Value> affineIndexPropagationVisited;
 
-  llvm::DenseMap<Value, Bounds> boundsMap;
+  llvm::MapVector<Value, Bounds> boundsMap;
   unsigned int boundsBitWidth;
 
   std::optional<Bounds> computeBounds(Operation *op);

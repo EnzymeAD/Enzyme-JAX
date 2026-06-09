@@ -927,7 +927,7 @@ void WhileLoopInfo::propagateBounds(Value v, Bounds curBounds,
 }
 
 std::optional<WhileLoopInfo::Bounds> WhileLoopInfo::getBounds(Value value) {
-  if (boundsMap.contains(value)) {
+  if (boundsMap.count(value)) {
     return boundsMap.lookup(value);
   }
 
