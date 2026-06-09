@@ -30216,6 +30216,19 @@ struct RemoveNoOpsFromWhileLoop
     auto &boundsMap = info.getBoundsMap();
     unsigned bitWidth = info.getBoundsBitWidth();
 
+    // Check if all operations already have bounds annotated
+    bool allAnnotated = true;
+    for (auto &[value, bounds] : boundsMap) {
+      if (auto defOp = value.getDefiningOp()) {
+        if (!defOp->hasAttr("enzymexla.bounds")) {
+          allAnnotated = false;
+          break;
+        }
+      }
+    }
+    if (allAnnotated)
+      return failure();
+
     // Annotate the IR with bounds
     for (auto &[value, bounds] : boundsMap) {
       auto defOp = value.getDefiningOp();
@@ -30239,8 +30252,10 @@ struct RemoveNoOpsFromWhileLoop
           boundsAttrs.push_back(ArrayAttr::get(value.getContext(), {}));
         }
       }
+      rewriter.startOpModification(defOp);
       defOp->setAttr("enzymexla.bounds",
                      ArrayAttr::get(value.getContext(), boundsAttrs));
+      rewriter.finalizeOpModification(defOp);
     }
 
     // Rewrite ops based on computed bounds
@@ -30256,21 +30271,19 @@ struct RemoveNoOpsFromWhileLoop
       toProcess.insert(defOp);
     }
 
-    bool anyOpRewritten = false;
     for (auto op : toProcess) {
-      bool rewritten =
-          llvm::TypeSwitch<Operation *, bool>(op)
-              .Case<stablehlo::RemOp, stablehlo::CompareOp, stablehlo::AbsOp,
-                    stablehlo::ClampOp>([&](auto op) {
-                auto allBounds = getBoundsOfAllOperands(op, info);
-                if (!allBounds.has_value())
-                  return false;
-                return rewriteOperation(rewriter, op, allBounds.value());
-              })
-              .Default([&](Operation *op) { return false; });
-      anyOpRewritten |= rewritten;
+      (void)llvm::TypeSwitch<Operation *, bool>(op)
+          .Case<stablehlo::RemOp, stablehlo::CompareOp, stablehlo::AbsOp,
+                stablehlo::ClampOp>([&](auto op) {
+            auto allBounds = getBoundsOfAllOperands(op, info);
+            if (!allBounds.has_value())
+              return false;
+            return rewriteOperation(rewriter, op, allBounds.value());
+          })
+          .Default([&](Operation *op) { return false; });
     }
-    return anyOpRewritten ? success() : failure();
+
+    return success();
   }
 
 private:
