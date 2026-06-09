@@ -183,8 +183,10 @@ jobs:
             --experimental_ui_max_stdouterr_bytes=-1 \
             --test_verbose_timeout_warnings \
             //test:python_tests
+
       - name: Run tests (dbg)
         if: steps.tests.outcome == 'failure'
+        continue-on-error: true
         run: |
           bazel test $BAZEL_FLAGS \
             --color=yes \
@@ -194,6 +196,9 @@ jobs:
             -c dbg \
             //test:python_tests
 
+      - name: Setup upterm session
+        uses: owenthereal/action-upterm@v1
+        
       - name: Upload test results
         uses: actions/upload-artifact@v7
         if: ${{ !cancelled() }}
