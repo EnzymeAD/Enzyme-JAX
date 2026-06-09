@@ -51,7 +51,7 @@ jobs:
           - 'main'
 
         reactant_commit:
-          - 'aicp'
+          - 'devendor'
         grid:
           - '--float-type=Float64'
           - '--float-type=Float32'
