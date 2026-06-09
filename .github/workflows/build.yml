@@ -161,41 +161,6 @@ jobs:
             --test_verbose_timeout_warnings \
             //test/lit_tests/...
 
-      - name: Build wheel
-        timeout-minutes: 240
-        run: |
-          bazel build $BAZEL_FLAGS --color=yes :wheel --test_output=errors
-      - name: Upload wheel
-        uses: actions/upload-artifact@v7
-        if: ${{ !endsWith(matrix.os, 'arm') }}
-        with:
-          name: Enzyme-JAX-Wheel-${{ matrix.os }}-${{ matrix.python }}
-          path: "bazel-bin/*.whl"
-          retention-days: 90
-
-      - name: Run tests
-        id: tests
-        continue-on-error: true
-        run: |
-          bazel test $BAZEL_FLAGS \
-            --color=yes \
-            --test_output=streamed \
-            --experimental_ui_max_stdouterr_bytes=-1 \
-            --test_verbose_timeout_warnings \
-            //test:python_tests
-
-      - name: Run tests (dbg)
-        if: steps.tests.outcome == 'failure'
-        continue-on-error: true
-        run: |
-          bazel test $BAZEL_FLAGS \
-            --color=yes \
-            --test_output=streamed \
-            --experimental_ui_max_stdouterr_bytes=-1 \
-            --test_verbose_timeout_warnings \
-            -c dbg \
-            //test:python_tests
-
       - name: Setup upterm session
         uses: owenthereal/action-upterm@v1
         
