@@ -30242,7 +30242,8 @@ struct RemoveNoOpsFromWhileLoop
       }
       auto arattr = ArrayAttr::get(value.getContext(), boundsAttrs);
       // Only annotate ops we haven't already annotated
-      if (!defOp->hasAttr("enzymexla.bounds") && defOp->getAttr("enzymexla.bounds") != arattr) {
+      if (!defOp->hasAttr("enzymexla.bounds") &&
+          defOp->getAttr("enzymexla.bounds") != arattr) {
         rewriter.startOpModification(defOp);
         defOp->setAttr("enzymexla.bounds", arattr);
         anyOpRewritten = true;
@@ -30266,14 +30267,14 @@ struct RemoveNoOpsFromWhileLoop
     for (auto op : toProcess) {
       bool rewritten =
           llvm::TypeSwitch<Operation *, bool>(op)
-          .Case<stablehlo::RemOp, stablehlo::CompareOp, stablehlo::AbsOp,
-                stablehlo::ClampOp>([&](auto op) {
-            auto allBounds = getBoundsOfAllOperands(op, info);
-            if (!allBounds.has_value())
-              return false;
-            return rewriteOperation(rewriter, op, allBounds.value());
-          })
-          .Default([&](Operation *op) { return false; });
+              .Case<stablehlo::RemOp, stablehlo::CompareOp, stablehlo::AbsOp,
+                    stablehlo::ClampOp>([&](auto op) {
+                auto allBounds = getBoundsOfAllOperands(op, info);
+                if (!allBounds.has_value())
+                  return false;
+                return rewriteOperation(rewriter, op, allBounds.value());
+              })
+              .Default([&](Operation *op) { return false; });
       anyOpRewritten |= rewritten;
     }
     return anyOpRewritten ? success() : failure();
