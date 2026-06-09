@@ -30201,19 +30201,14 @@ struct RemoveNoOpsFromWhileLoop
 
   LogicalResult matchAndRewriteImpl(stablehlo::WhileOp whileOp,
                                     PatternRewriter &rewriter) const {
-    llvm::errs() << "EnzymeHLOOpt: matchAndRewriteImpl called on WhileOp: " << whileOp << "\n";
     auto info = WhileLoopInfo(whileOp);
     auto computeInfoSuccess = info.computeInfo();
     if (computeInfoSuccess.failed()) {
-      llvm::errs() << "EnzymeHLOOpt: computeInfo failed\n";
       return computeInfoSuccess;
     }
 
     if (!info.isValid() || !info.isConstant() ||
         info.getConstantNumIters() <= 0) {
-      llvm::errs() << "EnzymeHLOOpt: invalid/non-constant loop or iters <= 0. isValid: " 
-                   << info.isValid() << ", isConstant: " << info.isConstant() 
-                   << ", numIters: " << (info.isValid() && info.isConstant() ? info.getConstantNumIters() : -999) << "\n";
       return failure();
     }
 
@@ -30222,7 +30217,6 @@ struct RemoveNoOpsFromWhileLoop
 
     auto &boundsMap = info.getBoundsMap();
     unsigned bitWidth = info.getBoundsBitWidth();
-    llvm::errs() << "EnzymeHLOOpt: boundsMap size: " << boundsMap.size() << "\n";
 
     bool anyOpRewritten = false;
     // Annotate the IR with bounds
@@ -30285,7 +30279,6 @@ struct RemoveNoOpsFromWhileLoop
               .Default([&](Operation *op) { return false; });
       anyOpRewritten |= rewritten;
     }
-    llvm::errs() << "EnzymeHLOOpt: returning " << (anyOpRewritten ? "success" : "failure") << "\n";
     return anyOpRewritten ? success() : failure();
   }
 

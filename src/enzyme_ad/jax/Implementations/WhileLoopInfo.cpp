@@ -51,28 +51,23 @@ LogicalResult WhileLoopInfo::computeInfo() {
   auto &condBlk = op.getCond().front();
   auto condTerm = dyn_cast_or_null<stablehlo::ReturnOp>(condBlk.getTerminator());
   if (!condTerm || condTerm->getNumOperands() != 1) {
-    llvm::errs() << "WhileLoopInfo: condTerm check failed\n";
     return failure();
   }
   auto condV = condTerm->getOperand(0);
   auto cond = condV.getDefiningOp<stablehlo::CompareOp>();
   if (!cond) {
-    llvm::errs() << "WhileLoopInfo: cond is not CompareOp: " << condV << "\n";
     return failure();
   }
 
   auto induct = dyn_cast<BlockArgument>(cond.getOperand(0));
   if (!induct) {
-    llvm::errs() << "WhileLoopInfo: induct check failed: " << cond.getOperand(0) << "\n";
     return failure();
   }
   if (induct.getOwner() != &condBlk) {
-    llvm::errs() << "WhileLoopInfo: induct owner check failed\n";
     return failure();
   }
 
   if (cond.getComparisonDirection() != stablehlo::ComparisonDirection::LT) {
-    llvm::errs() << "WhileLoopInfo: not LT comparison: " << cond << "\n";
     return failure();
   }
 
@@ -112,10 +107,8 @@ LogicalResult WhileLoopInfo::computeInfo() {
       stepInt = indexInfo.offset;
       foundStep = true;
       computeConstantValues();
-      llvm::errs() << "WhileLoopInfo: success early exit, step: " << stepInt.getSExtValue() << ", isConstant: " << isConstant() << "\n";
       return success();
     } else {
-      llvm::errs() << "WhileLoopInfo: scale is not one\n";
       return failure();
     }
   }
@@ -123,7 +116,6 @@ LogicalResult WhileLoopInfo::computeInfo() {
   // simpler check
   auto inc = incV.getDefiningOp<stablehlo::AddOp>();
   if (!inc) {
-    llvm::errs() << "WhileLoopInfo: inc is not AddOp: " << incV << "\n";
     return failure();
   }
 
@@ -147,15 +139,10 @@ LogicalResult WhileLoopInfo::computeInfo() {
   }
 
   if (!foundStep) {
-    llvm::errs() << "WhileLoopInfo: foundStep check failed\n";
     return failure();
   }
 
   computeConstantValues();
-  llvm::errs() << "WhileLoopInfo: success, isConstant: " << isConstant() 
-               << ", constStart: " << constStart.has_value() 
-               << ", constLimit: " << constLimit.has_value() 
-               << ", constStep: " << constStep.has_value() << "\n";
   return success();
 }
 
@@ -256,9 +243,7 @@ bool WhileLoopInfo::isStepOne() {
 }
 
 bool WhileLoopInfo::isConstantValue(Value v, llvm::APInt &constVal) {
-  llvm::errs() << "WhileLoopInfo: isConstantValue called on: " << v << "\n";
   if (matchPattern(v, m_ConstantInt(&constVal))) {
-    llvm::errs() << "WhileLoopInfo: matched directly as " << constVal.getSExtValue() << "\n";
     return true;
   }
 
@@ -266,10 +251,8 @@ bool WhileLoopInfo::isConstantValue(Value v, llvm::APInt &constVal) {
   SmallVector<Operation *> canBeHoisted;
   if (isConstantAcrossIterations(v, outerValue, canBeHoisted, false) &&
       matchPattern(outerValue, m_ConstantInt(&constVal))) {
-    llvm::errs() << "WhileLoopInfo: matched across iterations as " << constVal.getSExtValue() << "\n";
     return true;
   }
-  llvm::errs() << "WhileLoopInfo: match failed\n";
   return false;
 }
 

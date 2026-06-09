@@ -96,12 +96,8 @@ struct DropUnsupportedAttributesPass
           "enzymexla.complex_is_purely_imaginary"};
 
       moduleOp->walk([&](Operation *op) {
-        for (auto attr : op->getAttrs()) {
-          llvm::errs() << "DropUnsupportedAttrs: op " << op->getName() << " has attr: " << attr.getName().strref() << "\n";
-        }
         for (auto removeAttr : enzymexlaAnalysisResultAttrs) {
           if (op->hasAttr(removeAttr)) {
-            llvm::errs() << "DropUnsupportedAttrs: removing " << removeAttr << " from " << op->getName() << "\n";
             op->removeAttr(removeAttr);
           }
         }
