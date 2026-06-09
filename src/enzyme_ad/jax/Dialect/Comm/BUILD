@@ -110,6 +110,33 @@ gentbl_cc_library(
 )
 
 gentbl_cc_library(
+    name = "CommNCCLAttrsIncGen",
+    tbl_outs = {
+        "NCCLAttrEnums.h.inc": [
+            "-gen-enum-decls",
+            "-attrdefs-dialect=comm",
+        ],
+        "NCCLAttrEnums.cpp.inc": [
+            "-gen-enum-defs",
+            "-attrdefs-dialect=comm",
+        ],
+        "NCCLAttrDefs.h.inc": [
+            "-gen-attrdef-decls",
+            "-attrdefs-dialect=comm",
+        ],
+        "NCCLAttrDefs.cpp.inc": [
+            "-gen-attrdef-defs",
+            "-attrdefs-dialect=comm",
+        ],
+    },
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "NCCLAttrs.td",
+    deps = [
+        ":CommDialectTdFiles",
+    ],
+)
+
+gentbl_cc_library(
     name = "CommNCCLOpsIncGen",
     tbl_outs = [
         (
@@ -150,6 +177,7 @@ cc_library(
         ":CommMPIOpsIncGen",
 
         # NCCL
+        ":CommNCCLAttrsIncGen",
         ":CommNCCLOpsIncGen",
     ],
 )

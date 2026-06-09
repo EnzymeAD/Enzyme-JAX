@@ -6,7 +6,7 @@ include "Dialect.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 
 include "Types.td"
-include "MPIAttrs.td"
+include "NCCLAttrs.td"
 
 def NCCL_CommSplitOp : Comm_Op<"nccl.comm_split", []> {
   let summary = "Equivalent to `NCCL_CommSplit`";
