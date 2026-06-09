@@ -4,16 +4,11 @@ load("@rules_cc//cc:cc_library.bzl", "cc_library")
 td_library(
     name = "CommDialectTdFiles",
     srcs = [
+        "Attrs.td",
         "Dialect.td",
-        "Types.td",
-
-        # MPI
-        "MPIAttrs.td",
         "MPIOps.td",
-
-        # NCCL
-        "NCCLAttrs.td",
         "NCCLOps.td",
+        "Types.td",
     ],
     deps = [
         "@llvm-project//mlir:BuiltinDialectTdFiles",
@@ -65,27 +60,27 @@ gentbl_cc_library(
 )
 
 gentbl_cc_library(
-    name = "CommMPIAttrsIncGen",
+    name = "CommAttrsIncGen",
     tbl_outs = {
-        "MPIAttrEnums.h.inc": [
+        "AttrEnums.h.inc": [
             "-gen-enum-decls",
             "-attrdefs-dialect=comm",
         ],
-        "MPIAttrEnums.cpp.inc": [
+        "AttrEnums.cpp.inc": [
             "-gen-enum-defs",
             "-attrdefs-dialect=comm",
         ],
-        "MPIAttrDefs.h.inc": [
+        "AttrDefs.h.inc": [
             "-gen-attrdef-decls",
             "-attrdefs-dialect=comm",
         ],
-        "MPIAttrDefs.cpp.inc": [
+        "AttrDefs.cpp.inc": [
             "-gen-attrdef-defs",
             "-attrdefs-dialect=comm",
         ],
     },
     tblgen = "@llvm-project//mlir:mlir-tblgen",
-    td_file = "MPIAttrs.td",
+    td_file = "Attrs.td",
     deps = [
         ":CommDialectTdFiles",
     ],
@@ -105,33 +100,6 @@ gentbl_cc_library(
     ],
     tblgen = "@llvm-project//mlir:mlir-tblgen",
     td_file = "MPIOps.td",
-    deps = [
-        ":CommDialectTdFiles",
-    ],
-)
-
-gentbl_cc_library(
-    name = "CommNCCLAttrsIncGen",
-    tbl_outs = {
-        "NCCLAttrEnums.h.inc": [
-            "-gen-enum-decls",
-            "-attrdefs-dialect=comm",
-        ],
-        "NCCLAttrEnums.cpp.inc": [
-            "-gen-enum-defs",
-            "-attrdefs-dialect=comm",
-        ],
-        "NCCLAttrDefs.h.inc": [
-            "-gen-attrdef-decls",
-            "-attrdefs-dialect=comm",
-        ],
-        "NCCLAttrDefs.cpp.inc": [
-            "-gen-attrdef-defs",
-            "-attrdefs-dialect=comm",
-        ],
-    },
-    tblgen = "@llvm-project//mlir:mlir-tblgen",
-    td_file = "NCCLAttrs.td",
     deps = [
         ":CommDialectTdFiles",
     ],
@@ -168,17 +136,12 @@ cc_library(
     ],
     visibility = ["//visibility:public"],
     deps = [
+        ":CommAttrsIncGen",
         ":CommDialectIncGen",
+        ":CommMPIOpsIncGen",
+        ":CommNCCLOpsIncGen",
         ":CommTypesIncGen",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:SideEffectInterfaces",
-
-        # MPI
-        ":CommMPIAttrsIncGen",
-        ":CommMPIOpsIncGen",
-
-        # NCCL
-        ":CommNCCLAttrsIncGen",
-        ":CommNCCLOpsIncGen",
     ],
 )

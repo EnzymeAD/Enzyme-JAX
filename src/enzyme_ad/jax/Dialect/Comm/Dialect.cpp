@@ -8,10 +8,10 @@
 
 #include "src/enzyme_ad/jax/Dialect/Comm/CommDialect.cpp.inc"
 
-#include "src/enzyme_ad/jax/Dialect/Comm/MPIAttrEnums.cpp.inc"
+#include "src/enzyme_ad/jax/Dialect/Comm/AttrEnums.cpp.inc"
 
 #define GET_ATTRDEF_CLASSES
-#include "src/enzyme_ad/jax/Dialect/Comm/MPIAttrDefs.cpp.inc"
+#include "src/enzyme_ad/jax/Dialect/Comm/AttrDefs.cpp.inc"
 
 #define GET_TYPEDEF_CLASSES
 #include "src/enzyme_ad/jax/Dialect/Comm/Types.cpp.inc"
@@ -19,7 +19,7 @@
 void mlir::enzymexla::comm::CommDialect::initialize() {
   addAttributes<
 #define GET_ATTRDEF_LIST
-#include "src/enzyme_ad/jax/Dialect/Comm/MPIAttrDefs.cpp.inc"
+#include "src/enzyme_ad/jax/Dialect/Comm/AttrDefs.cpp.inc"
       >();
   addTypes<
 #define GET_TYPEDEF_LIST
