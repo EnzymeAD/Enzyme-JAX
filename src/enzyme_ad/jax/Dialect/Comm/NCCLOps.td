@@ -9,7 +9,7 @@ include "Types.td"
 include "NCCLAttrs.td"
 
 def NCCL_CommSplitOp : Comm_Op<"nccl.comm_split", []> {
-  let summary = "Equivalent to `NCCL_CommSplit`";
+  let summary = "Equivalent to `ncclCommSplit`";
 
   let arguments = (ins
     NCCL_Comm : $comm,
@@ -22,46 +22,46 @@ def NCCL_CommSplitOp : Comm_Op<"nccl.comm_split", []> {
 }
 
 def NCCL_CommFinalizeOp : Comm_Op<"nccl.comm_finalize", []> {
-  let summary = "Equivalent to `NCCL_CommFinalize`";
+  let summary = "Equivalent to `ncclCommFinalize`";
   let arguments = (ins NCCL_Comm : $comm);
   let assemblyFormat = "$comm attr-dict";
 }
 
 def NCCL_CommDestroyOp : Comm_Op<"nccl.comm_destroy", []> {
-  let summary = "Equivalent to `NCCL_CommDestroy`";
+  let summary = "Equivalent to `ncclCommDestroy`";
   let arguments = (ins NCCL_Comm : $comm);
   let assemblyFormat = "$comm attr-dict";
 }
 
 def NCCL_CommAbortOp : Comm_Op<"nccl.comm_abort", []> {
-  let summary = "Equivalent to `NCCL_CommAbort`";
+  let summary = "Equivalent to `ncclCommAbort`";
   let arguments = (ins NCCL_Comm : $comm);
   let assemblyFormat = "$comm attr-dict";
 }
 
 def NCCL_CommCountOp : Comm_Op<"nccl.comm_count", [Pure]> {
-  let summary = "Equivalent to `NCCL_CommCount`";
+  let summary = "Equivalent to `ncclCommCount`";
   let arguments = (ins NCCL_Comm : $comm);
   let results = (outs I32 : $count);
   let assemblyFormat = "$comm attr-dict `:` type(results)";
 }
 
 def NCCL_CommCuDeviceOp : Comm_Op<"nccl.comm_cudevice", [Pure]> {
-  let summary = "Equivalent to `NCCL_CommCuDevice`";
+  let summary = "Equivalent to `ncclCommCuDevice`";
   let arguments = (ins NCCL_Comm : $comm);
   let results = (outs I32 : $cu_device);
   let assemblyFormat = "$comm attr-dict `:` type(results)";
 }
 
 def NCCL_CommUserRankOp : Comm_Op<"nccl.comm_user_rank", [Pure]> {
-  let summary = "Equivalent to `NCCL_CommUserRank`";
+  let summary = "Equivalent to `ncclCommUserRank`";
   let arguments = (ins NCCL_Comm : $comm);
   let results = (outs I32 : $user_rank);
   let assemblyFormat = "$comm attr-dict `:` type(results)";
 }
 
 def NCCL_AllReduceOp : Comm_Op<"nccl.all_reduce", []> {
-  let summary = "Equivalent to `NCCL_Allreduce`";
+  let summary = "Equivalent to `ncclAllReduce`";
 
   let arguments = (ins
     AnyTensor : $sendbuf,
@@ -76,7 +76,7 @@ def NCCL_AllReduceOp : Comm_Op<"nccl.all_reduce", []> {
 }
 
 def NCCL_BroadcastOp : Comm_Op<"nccl.bcast", []> {
-  let summary = "Equivalent to `NCCL_Bcast`";
+  let summary = "Equivalent to `ncclBroadcast`";
 
   let arguments = (ins
     AnyTensor : $sendbuff,
@@ -91,7 +91,7 @@ def NCCL_BroadcastOp : Comm_Op<"nccl.bcast", []> {
 }
 
 def NCCL_SendOp : Comm_Op<"nccl.send", []> {
-  let summary = "Equivalent to `NCCL_Send`";
+  let summary = "Equivalent to `ncclSend`";
 
   let arguments = (ins
     AnyTensor : $sendbuff,
@@ -104,7 +104,7 @@ def NCCL_SendOp : Comm_Op<"nccl.send", []> {
 }
 
 def NCCL_RecvOp : Comm_Op<"nccl.recv", []> {
-  let summary = "Equivalent to `NCCL_Recv`";
+  let summary = "Equivalent to `ncclRecv`";
 
   let arguments = (ins
     I32 : $peer,
