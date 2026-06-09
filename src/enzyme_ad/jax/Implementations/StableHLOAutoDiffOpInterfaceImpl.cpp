@@ -4711,6 +4711,65 @@ struct SHLODynamicUpdateSliceOpBatchInterface
   }
 };
 
+struct SHLORngBitGeneratorOpBatchInterface
+    : public BatchOpInterface::ExternalModel<
+          SHLORngBitGeneratorOpBatchInterface, RngBitGeneratorOp> {
+  mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
+                                  IRMapping &mapper,
+                                  ArrayRef<int64_t> batchSizes) const {
+    auto op = cast<RngBitGeneratorOp>(src);
+
+    auto batchedSeed = mapper.lookup(op.getInitialState());
+    auto batchedSeedType = cast<RankedTensorType>(batchedSeed.getType());
+
+    // Slice the first element along the batch dimensions.
+    // E.g., if batchSizes is [10], shape is [10, 2].
+    // We slice from [0, 0] to [1, 2].
+    SmallVector<int64_t> startIndices(batchSizes.size() + 1, 0);
+    SmallVector<int64_t> limitIndices(batchSizes.begin(), batchSizes.end());
+    for (size_t i = 0; i < batchSizes.size(); ++i) {
+      limitIndices[i] = 1;
+    }
+    limitIndices.push_back(batchedSeedType.getShape().back());
+    SmallVector<int64_t> strides(batchSizes.size() + 1, 1);
+
+    auto slicedSeedType =
+        RankedTensorType::get(limitIndices, batchedSeedType.getElementType());
+    auto slicedSeed =
+        builder.create<SliceOp>(op.getLoc(), slicedSeedType, batchedSeed,
+                                builder.getDenseI64ArrayAttr(startIndices),
+                                builder.getDenseI64ArrayAttr(limitIndices),
+                                builder.getDenseI64ArrayAttr(strides));
+
+    auto unbatchedSeedType =
+        cast<RankedTensorType>(op.getInitialState().getType());
+    auto seed =
+        builder.create<ReshapeOp>(op.getLoc(), unbatchedSeedType, slicedSeed);
+
+    auto origOutputType = cast<RankedTensorType>(op.getOutput().getType());
+    SmallVector<int64_t> batchedOutputShape(batchSizes.begin(),
+                                            batchSizes.end());
+    batchedOutputShape.append(origOutputType.getShape().begin(),
+                              origOutputType.getShape().end());
+    auto batchedOutputType = RankedTensorType::get(
+        batchedOutputShape, origOutputType.getElementType());
+
+    auto newRngOp = builder.create<RngBitGeneratorOp>(
+        op.getLoc(), unbatchedSeedType, batchedOutputType, op.getRngAlgorithm(),
+        seed);
+
+    SmallVector<int64_t> broadcastDims = {
+        static_cast<int64_t>(batchSizes.size())};
+    auto broadcastedState = builder.create<BroadcastInDimOp>(
+        op.getLoc(), batchedSeedType, newRngOp.getOutputState(),
+        builder.getDenseI64ArrayAttr(broadcastDims));
+
+    mapper.map(op.getOutputState(), broadcastedState);
+    mapper.map(op.getOutput(), newRngOp.getOutput());
+    return success();
+  }
+};
+
 struct SHLOIotaOpBatchInterface
     : public BatchOpInterface::ExternalModel<SHLOIotaOpBatchInterface,
                                              stablehlo::IotaOp> {
@@ -5107,6 +5166,8 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     stablehlo::DynamicUpdateSliceOp::attachInterface<
         SHLODynamicUpdateSliceOpBatchInterface>(*context);
     CustomCallOp::attachInterface<SHLOGenericBatchOpInterface<CustomCallOp>>(
+        *context);
+    RngBitGeneratorOp::attachInterface<SHLORngBitGeneratorOpBatchInterface>(
         *context);
     IotaOp::attachInterface<SHLOIotaOpBatchInterface>(*context);
     stablehlo::SelectOp::attachInterface<SHLOSelectOpBatchInterface>(*context);

@@ -18779,7 +18779,7 @@ struct DUSDUSSubsuming
     computeTensorValueProvenanceImpl(dusResults, provenanceInfo);
 
     DominanceInfo domInfo;
-    DenseMap<Operation *, Operation *> movedSlices;
+    llvm::MapVector<Operation *, Operation *> movedSlices;
     SmallVector<Operation *> originalUsers =
         llvm::to_vector(dus2.getResult().getUsers());
     for (Operation *user : originalUsers) {
@@ -18825,7 +18825,7 @@ struct DUSDUSSubsuming
 
       if (originalSources == it2->second.sources &&
           originalProvenance.isEqual(it2->second.provenanceRelation)) {
-        movedSlices.try_emplace(slice.getOperation(), clonedSlice);
+        movedSlices.insert({slice.getOperation(), clonedSlice});
       } else {
         rewriter.eraseOp(clonedSlice);
 
@@ -30203,12 +30203,14 @@ struct RemoveNoOpsFromWhileLoop
                                     PatternRewriter &rewriter) const {
     auto info = WhileLoopInfo(whileOp);
     auto computeInfoSuccess = info.computeInfo();
-    if (computeInfoSuccess.failed())
+    if (computeInfoSuccess.failed()) {
       return computeInfoSuccess;
+    }
 
     if (!info.isValid() || !info.isConstant() ||
-        info.getConstantNumIters() <= 0)
+        info.getConstantNumIters() <= 0) {
       return failure();
+    }
 
     // Propagate bounds using WhileLoopInfo
     info.propagateBounds();
@@ -30216,6 +30218,7 @@ struct RemoveNoOpsFromWhileLoop
     auto &boundsMap = info.getBoundsMap();
     unsigned bitWidth = info.getBoundsBitWidth();
 
+    bool anyOpRewritten = false;
     // Annotate the IR with bounds
     for (auto &[value, bounds] : boundsMap) {
       auto defOp = value.getDefiningOp();
@@ -30239,8 +30242,15 @@ struct RemoveNoOpsFromWhileLoop
           boundsAttrs.push_back(ArrayAttr::get(value.getContext(), {}));
         }
       }
-      defOp->setAttr("enzymexla.bounds",
-                     ArrayAttr::get(value.getContext(), boundsAttrs));
+      auto arattr = ArrayAttr::get(value.getContext(), boundsAttrs);
+      // Only annotate ops we haven't already annotated
+      if (!defOp->hasAttr("enzymexla.bounds") ||
+          defOp->getAttr("enzymexla.bounds") != arattr) {
+        rewriter.startOpModification(defOp);
+        defOp->setAttr("enzymexla.bounds", arattr);
+        anyOpRewritten = true;
+        rewriter.finalizeOpModification(defOp);
+      }
     }
 
     // Rewrite ops based on computed bounds
@@ -30256,7 +30266,6 @@ struct RemoveNoOpsFromWhileLoop
       toProcess.insert(defOp);
     }
 
-    bool anyOpRewritten = false;
     for (auto op : toProcess) {
       bool rewritten =
           llvm::TypeSwitch<Operation *, bool>(op)
