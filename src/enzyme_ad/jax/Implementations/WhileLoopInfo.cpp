@@ -49,9 +49,9 @@ Value WhileLoopInfo::getStep(OpBuilder &builder) {
 
 LogicalResult WhileLoopInfo::computeInfo() {
   auto &condBlk = op.getCond().front();
-  if (condBlk.getOperations().size() != 2)
+  auto condTerm = dyn_cast_or_null<stablehlo::ReturnOp>(condBlk.getTerminator());
+  if (!condTerm || condTerm->getNumOperands() != 1)
     return failure();
-  auto condTerm = cast<stablehlo::ReturnOp>(condBlk.getTerminator());
   auto condV = condTerm->getOperand(0);
   auto cond = condV.getDefiningOp<stablehlo::CompareOp>();
   if (!cond)
