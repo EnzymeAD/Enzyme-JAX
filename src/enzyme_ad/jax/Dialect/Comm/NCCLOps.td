@@ -87,7 +87,7 @@ def NCCL_BroadcastOp : Comm_Op<"nccl.bcast", []> {
   );
 
   let results = (outs AnyTensor : $recvbuff);
-  let assemblyFormat = "operands attr-dict `:` functional-type($sendbuff, results)";
+  let assemblyFormat = "operands attr-dict `:` functional-type($sendbuff, $recvbuff)";
 }
 
 def NCCL_SendOp : Comm_Op<"nccl.send", []> {
@@ -100,7 +100,7 @@ def NCCL_SendOp : Comm_Op<"nccl.send", []> {
     NCCL_Stream : $stream
   );
 
-  let assemblyFormat = "operands attr-dict `:` type(operands)";
+  let assemblyFormat = "operands attr-dict `:` type($sendbuff)";
 }
 
 def NCCL_RecvOp : Comm_Op<"nccl.recv", []> {
@@ -113,7 +113,7 @@ def NCCL_RecvOp : Comm_Op<"nccl.recv", []> {
   );
   let results = (outs AnyTensor : $recvbuff);
 
-  let assemblyFormat = "operands attr-dict `:` type(results)";
+  let assemblyFormat = "operands attr-dict `:` type($recvbuff)";
 }
 
 #endif // ENZYMEXLA_COMM_DIALECT_NCCL_OPS_TD
