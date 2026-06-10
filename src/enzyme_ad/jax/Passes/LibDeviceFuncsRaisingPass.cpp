@@ -458,12 +458,10 @@ public:
       return failure();
 
     auto loc = op.getLoc();
-    llvm::APFloat piFloat(0.0);
-    if (floatType.isF32())
-      piFloat = llvm::APFloat(3.1415927410125732421875f);
-    else if (floatType.isF64())
-      piFloat = llvm::APFloat(3.14159265358979323846264338327950288);
-    else
+    constexpr float kPiF32 = 3.1415927410125732421875f;
+    constexpr double kPiF64 = 3.14159265358979323846264338327950288;
+    llvm::APFloat piFloat = llvm::APFloat(floatType.isF32() ? kPiF32 : kPiF64);
+    if (!floatType.isF32() && !floatType.isF64())
       return failure();
     auto piAttr = rewriter.getFloatAttr(floatType, piFloat);
     Value pi = rewriter.create<arith::ConstantOp>(loc, floatType, piAttr);
