@@ -458,8 +458,7 @@ public:
       return failure();
 
     auto loc = op.getLoc();
-    static const llvm::APFloat piF32(llvm::APFloat::IEEEsingle(),
-                                     "3.141592653589793238462643383279502884");
+    static const llvm::APFloat piF32(llvm::APFloat::IEEEsingle(), "3.1415927");
     static const llvm::APFloat piF64(llvm::APFloat::IEEEdouble(),
                                      "3.141592653589793238462643383279502884");
     FloatAttr piAttr;
