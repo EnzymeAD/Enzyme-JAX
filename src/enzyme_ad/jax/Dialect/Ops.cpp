@@ -1205,8 +1205,8 @@ LogicalResult enzymexla::GemmOp::verify() {
     return emitOpError("Inner dimensions of A and B must match");
   }
 
-  if (shape_A[outer_dim_A] != shape_C[outer_dim_A] ||
-      shape_B[outer_dim_B] != shape_C[outer_dim_B]) {
+  if (shape_A[outer_dim_A] != shape_C[rank - 2] ||
+      shape_B[outer_dim_B] != shape_C[rank - 1]) {
     return emitOpError(
         "Outer dimensions of A and B must match corresponding dimensions of C");
   }
