@@ -30,20 +30,45 @@ test-gb-25:
     - mkdir -p "${LOCAL_BIN}" "${JULIA_DEPOT_PATH}" "${BAZELISK_HOME}" "${BAZEL_OUTPUT_ROOT}"
 
     # -------------------------------------------------------------------------
-    # Download bazelisk into LOCAL_BIN and create a thin `bazel` wrapper that
-    # injects --output_user_root so Bazel never writes outside CI_PROJECT_DIR.
-    # BAZEL_OUTPUT_ROOT is resolved at wrapper-execution time (runtime env var).
+    # Download bazelisk as `bazelisk-real`, then create wrapper scripts for
+    # both `bazelisk` and `bazel` that inject --output_user_root so Bazel
+    # never writes outside CI_PROJECT_DIR.
+    # build_local.jl calls `bazelisk` directly, so the wrapper must intercept
+    # that name. --output_user_root is a Bazel startup option; bazelisk passes
+    # it through transparently.
+    # The wrapper aborts if BAZEL_OUTPUT_ROOT is unset or outside CI_PROJECT_DIR.
     # -------------------------------------------------------------------------
     - |
-      curl -fsSL -o "${LOCAL_BIN}/bazelisk" \
+      curl -fsSL -o "${LOCAL_BIN}/bazelisk-real" \
         https://github.com/bazelbuild/bazelisk/releases/latest/download/bazelisk-linux-amd64
-      chmod +x "${LOCAL_BIN}/bazelisk"
-      # Single-quoted printf format keeps $() and ${} literal in the written file;
-      # they are expanded by bash when the wrapper is actually executed.
-      printf '#!/bin/bash\nexec "$(dirname "$0")/bazelisk" --output_user_root="${BAZEL_OUTPUT_ROOT}" "$@"\n' \
-        > "${LOCAL_BIN}/bazel"
-      chmod +x "${LOCAL_BIN}/bazel"
+      chmod +x "${LOCAL_BIN}/bazelisk-real"
+      for CMD in bazelisk bazel; do
+        cat > "${LOCAL_BIN}/${CMD}" <<'WRAPPER'
+#!/bin/bash
+set -euo pipefail
+if [[ -z "${BAZEL_OUTPUT_ROOT:-}" ]]; then
+  echo "ERROR: BAZEL_OUTPUT_ROOT is not set. Refusing to run bazel (would write to ~/.cache/bazel)." >&2
+  exit 1
+fi
+if [[ "${BAZEL_OUTPUT_ROOT}" != "${CI_PROJECT_DIR}"* ]]; then
+  echo "ERROR: BAZEL_OUTPUT_ROOT (${BAZEL_OUTPUT_ROOT}) is not under CI_PROJECT_DIR (${CI_PROJECT_DIR}). Refusing to run." >&2
+  exit 1
+fi
+exec "$(dirname "$0")/bazelisk-real" --output_user_root="${BAZEL_OUTPUT_ROOT}" "$@"
+WRAPPER
+        chmod +x "${LOCAL_BIN}/${CMD}"
+      done
     - export PATH="${LOCAL_BIN}:${PATH}"
+    # Verify the wrappers are resolved first — catch misconfigured PATH early
+    - |
+      for CMD in bazelisk bazel; do
+        RESOLVED=$(command -v "${CMD}")
+        if [[ "${RESOLVED}" != "${LOCAL_BIN}/${CMD}" ]]; then
+          echo "ERROR: ${CMD} resolves to ${RESOLVED}, expected ${LOCAL_BIN}/${CMD}" >&2
+          exit 1
+        fi
+        echo "OK: ${CMD} -> ${RESOLVED}"
+      done
 
     # -------------------------------------------------------------------------
     # Clone Reactant.jl and patch in the current Enzyme-JAX commit
