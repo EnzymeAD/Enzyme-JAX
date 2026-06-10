@@ -43,19 +43,16 @@ test-gb-25:
         https://github.com/bazelbuild/bazelisk/releases/latest/download/bazelisk-linux-amd64
       chmod +x "${LOCAL_BIN}/bazelisk-real"
       for CMD in bazelisk bazel; do
-        cat > "${LOCAL_BIN}/${CMD}" <<'WRAPPER'
-#!/bin/bash
-set -euo pipefail
-if [[ -z "${BAZEL_OUTPUT_ROOT:-}" ]]; then
-  echo "ERROR: BAZEL_OUTPUT_ROOT is not set. Refusing to run bazel (would write to ~/.cache/bazel)." >&2
-  exit 1
-fi
-if [[ "${BAZEL_OUTPUT_ROOT}" != "${CI_PROJECT_DIR}"* ]]; then
-  echo "ERROR: BAZEL_OUTPUT_ROOT (${BAZEL_OUTPUT_ROOT}) is not under CI_PROJECT_DIR (${CI_PROJECT_DIR}). Refusing to run." >&2
-  exit 1
-fi
-exec "$(dirname "$0")/bazelisk-real" --output_user_root="${BAZEL_OUTPUT_ROOT}" "$@"
-WRAPPER
+        printf '#!/bin/bash\nset -euo pipefail\n' > "${LOCAL_BIN}/${CMD}"
+        printf 'if [[ -z "${BAZEL_OUTPUT_ROOT:-}" ]]; then\n' >> "${LOCAL_BIN}/${CMD}"
+        printf '  echo "ERROR: BAZEL_OUTPUT_ROOT is not set. Refusing to run (would write to ~/.cache/bazel)." >&2\n' >> "${LOCAL_BIN}/${CMD}"
+        printf '  exit 1\n' >> "${LOCAL_BIN}/${CMD}"
+        printf 'fi\n' >> "${LOCAL_BIN}/${CMD}"
+        printf 'if [[ "${BAZEL_OUTPUT_ROOT}" != "${CI_PROJECT_DIR}"* ]]; then\n' >> "${LOCAL_BIN}/${CMD}"
+        printf '  echo "ERROR: BAZEL_OUTPUT_ROOT (${BAZEL_OUTPUT_ROOT}) is not under CI_PROJECT_DIR (${CI_PROJECT_DIR})." >&2\n' >> "${LOCAL_BIN}/${CMD}"
+        printf '  exit 1\n' >> "${LOCAL_BIN}/${CMD}"
+        printf 'fi\n' >> "${LOCAL_BIN}/${CMD}"
+        printf 'exec "$(dirname "$0")/bazelisk-real" --output_user_root="${BAZEL_OUTPUT_ROOT}" "$@"\n' >> "${LOCAL_BIN}/${CMD}"
         chmod +x "${LOCAL_BIN}/${CMD}"
       done
     - export PATH="${LOCAL_BIN}:${PATH}"
