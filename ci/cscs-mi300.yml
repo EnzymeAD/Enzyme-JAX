@@ -1,0 +1,143 @@
+include:
+  - remote: 'https://gitlab.com/cscs-ci/recipes/-/raw/master/templates/v2/.ci-ext.yml'
+
+test-gb-25:
+  extends: .baremetal-runner-beverin-mi300
+  variables:
+    JULIA: /users/lraess/julia_amd/juliaup/julia-1.11.9+0.x64.linux.gnu/bin/julia
+    UENV: b2550889de318ab5
+    JULIA_PKG_SERVER_REGISTRY_PREFERENCE: eager
+    JULIA_MAX_NUM_PRECOMPILE_FILES: 3
+    # Pinned configuration — expand into a matrix once the single case passes
+    REACTANT_COMMIT: main
+    GB25_COMMIT: main
+    FLOAT_TYPE: '--float-type=Float64'
+    # Slurm resource request
+    SLURM_JOB_NUM_NODES: 1
+    SLURM_NTASKS_PER_NODE: 1
+    SLURM_GPUS_PER_TASK: 1
+    SLURM_TIMELIMIT: "02:30:00"
+
+  script:
+    # -------------------------------------------------------------------------
+    # Convenience path variables (export so they persist across all script lines)
+    # -------------------------------------------------------------------------
+    - export REACTANT_DIR="${CI_PROJECT_DIR}/Reactant.jl"
+    - export GB25_DIR="${CI_PROJECT_DIR}/GB-25"
+    - export LOCAL_BIN="${CI_PROJECT_DIR}/bin"
+    - mkdir -p "${LOCAL_BIN}"
+
+    # -------------------------------------------------------------------------
+    # Download bazelisk (runs on the runner/login node which has internet)
+    # The binary is placed under ${CI_PROJECT_DIR}/bin so it survives into srun
+    # via --export=ALL.
+    # -------------------------------------------------------------------------
+    - |
+      if ! command -v bazel &>/dev/null; then
+        curl -fsSL -o "${LOCAL_BIN}/bazel" \
+          https://github.com/bazelbuild/bazelisk/releases/latest/download/bazelisk-linux-amd64
+        chmod +x "${LOCAL_BIN}/bazel"
+      fi
+    - export PATH="${LOCAL_BIN}:${PATH}"
+
+    # -------------------------------------------------------------------------
+    # Clone Reactant.jl and patch in the current Enzyme-JAX commit
+    # -------------------------------------------------------------------------
+    - git clone --depth=1 --branch "${REACTANT_COMMIT}" https://github.com/EnzymeAD/Reactant.jl "${REACTANT_DIR}"
+    - sed -i 's/ENZYMEXLA_COMMIT = ".*"/ENZYMEXLA_COMMIT = "'"${CI_COMMIT_SHA}"'"/' "${REACTANT_DIR}/deps/ReactantExtra/WORKSPACE"
+    - grep ENZYMEXLA_COMMIT "${REACTANT_DIR}/deps/ReactantExtra/WORKSPACE"
+
+    # -------------------------------------------------------------------------
+    # Instantiate the Reactant build environment (no GPU/UENV needed here)
+    # -------------------------------------------------------------------------
+    - cd "${REACTANT_DIR}/deps" && ${JULIA} --project --color=yes -e 'using Pkg; Pkg.instantiate()'
+
+    # -------------------------------------------------------------------------
+    # Build libReactant
+    # --export=ALL forwards PATH (including bazelisk) into the srun job.
+    # The UENV provides clang and ROCm build tools.
+    # Note: Bazel downloads its own dependencies and may require outbound
+    # internet from the compute node; check CSCS network policy if this fails.
+    # -------------------------------------------------------------------------
+    - |
+      srun -n 1 --export=ALL --uenv "${UENV}" --view=default \
+        bash -c "cd ${REACTANT_DIR}/deps && \
+                 ${JULIA} --project --color=yes -O0 build_local.jl \
+                   --cc=clang --gcc_host_compiler_path="
+
+    # -------------------------------------------------------------------------
+    # Clone GB-25 and set up its Julia environment
+    # -------------------------------------------------------------------------
+    - git clone --depth=1 --branch "${GB25_COMMIT}" https://github.com/PRONTOLab/GB-25 "${GB25_DIR}"
+    - cp "${REACTANT_DIR}/LocalPreferences.toml" "${GB25_DIR}/LocalPreferences.toml"
+    - |
+      cd "${GB25_DIR}" && ${JULIA} --project --color=yes -e "
+        using Pkg
+        Pkg.add([
+            PackageSpec(; name=\"ReactantCore\", rev=\"${REACTANT_COMMIT}\"),
+            PackageSpec(; name=\"Reactant\",     rev=\"${REACTANT_COMMIT}\"),
+        ])
+        Pkg.instantiate()
+        Pkg.gc()"
+
+    # -------------------------------------------------------------------------
+    # Compile the GB-25 simulation
+    # -------------------------------------------------------------------------
+    - |
+      srun -n 1 --export=ALL --uenv "${UENV}" --view=default \
+        timeout 29m \
+        ${JULIA} --color=yes --project -O0 --startup-file=no --threads=16 \
+          --compiled-modules=strict \
+          "${GB25_DIR}/sharding/sharded_baroclinic_instability_simulation_compile.jl" \
+          ${FLOAT_TYPE}
+
+    # -------------------------------------------------------------------------
+    # Check remaining collective operations against thresholds
+    # (Thresholds below are copied from the A100 case; adjust for MI300 as needed)
+    # -------------------------------------------------------------------------
+    - |
+      cd "${GB25_DIR}"
+      OK="true"
+      ALL_TO_ALL_THRESHOLD=1000
+      ALL_GATHER_THRESHOLD=1000
+      ALL_REDUCE_THRESHOLD=1000
+      COLLECTIVE_PERMUTE_THRESHOLD=29900  # TODO: calibrate for MI300
+
+      for OP in "all-to-all" "all-gather" "all-reduce" "%collective-permute-start.* ="; do
+          COLLECTIVES=$(find . -name 'optimised_sharded_baroclinic_instability*.xla' \
+              -exec grep --with-filename --line-number --extended-regexp "${OP}" '{}' \; | sort)
+          NUM_COLLECTIVES=$(echo "${COLLECTIVES}" | grep -c . || true)
+          if [[ -n "${COLLECTIVES}" ]]; then
+              echo "Found ${NUM_COLLECTIVES} remaining '${OP}' operations"
+              echo "${COLLECTIVES}"
+              if [[ "${OP}" == "all-to-all" && ${NUM_COLLECTIVES} -gt ${ALL_TO_ALL_THRESHOLD}           ]] || \
+                 [[ "${OP}" == "all-gather" && ${NUM_COLLECTIVES} -gt ${ALL_GATHER_THRESHOLD}           ]] || \
+                 [[ "${OP}" == "all-reduce" && ${NUM_COLLECTIVES} -gt ${ALL_REDUCE_THRESHOLD}           ]] || \
+                 [[ "${OP}" =~ "collective-permute" && ${NUM_COLLECTIVES} -gt ${COLLECTIVE_PERMUTE_THRESHOLD} ]]; then
+                  OK="false"
+              fi
+          fi
+      done
+      [[ "${OK}" == "true" ]] || exit 1
+
+    # -------------------------------------------------------------------------
+    # Run the GB-25 simulation
+    # -------------------------------------------------------------------------
+    - |
+      srun -n 1 --export=ALL --uenv "${UENV}" --view=default \
+        timeout 59m \
+        ${JULIA} --color=yes --project -O0 --startup-file=no --threads=16 \
+          --compiled-modules=strict \
+          "${GB25_DIR}/sharding/sharded_baroclinic_instability_simulation_run.jl" \
+          ${FLOAT_TYPE}
+
+    # -------------------------------------------------------------------------
+    # Test correctness
+    # -------------------------------------------------------------------------
+    - |
+      srun -n 1 --export=ALL --uenv "${UENV}" --view=default \
+        timeout 19m \
+        ${JULIA} --color=yes --project -O0 --startup-file=no --threads=16 \
+          --compiled-modules=strict \
+          "${GB25_DIR}/correctness/correctness_sharded_baroclinic_instability_simulation_run.jl" \
+          ${FLOAT_TYPE}
