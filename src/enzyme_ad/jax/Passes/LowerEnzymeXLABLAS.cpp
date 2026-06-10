@@ -71,6 +71,59 @@ static std::pair<Value, int64_t> createScalarOperand(PatternRewriter &rewriter,
   }
   return {originalVal, 0};
 }
+
+struct GemmOpLowering : public OpRewritePattern<enzymexla::GemmOp> {
+  GemmOpLowering(MLIRContext *context, PatternBenefit benefit = 1)
+      : OpRewritePattern(context, benefit) {}
+
+  LogicalResult matchAndRewrite(enzymexla::GemmOp op,
+                                PatternRewriter &rewriter) const override {
+    auto ctx = op->getContext();
+    LLVMTypeConverter typeConverter(ctx);
+
+    auto alpha = op.getOperand(0);
+    auto A = op.getOperand(1);
+    auto B = op.getOperand(2);
+    auto beta = op.getOperand(3);
+    auto C = op.getOperand(4);
+
+    auto type_A = cast<RankedTensorType>(A.getType());
+    auto type_C = cast<RankedTensorType>(C.getType());
+    auto rank = type_A.getRank();
+
+    auto inner_dim_A = op.getTransa() == enzymexla::LapackTranspose::none
+                           ? rank - 1
+                           : rank - 2;
+    auto inner_dim_B = op.getTransb() == enzymexla::LapackTranspose::none
+                           ? rank - 2
+                           : rank - 1;
+
+    SmallVector<int64_t> leftBatchDims, rightBatchDims;
+    for (int64_t i = 0; i < rank - 2; ++i) {
+      leftBatchDims.push_back(i);
+      rightBatchDims.push_back(i);
+    }
+    SmallVector<int64_t> leftContractDims = {inner_dim_A};
+    SmallVector<int64_t> rightContractDims = {inner_dim_B};
+    auto dotDimsAttr = stablehlo::DotDimensionNumbersAttr::get(
+        ctx, leftBatchDims, rightBatchDims, leftContractDims,
+        rightContractDims);
+    auto dotOp = stablehlo::DotGeneralOp::create(
+        rewriter, op.getLoc(), type_C, A, B, dotDimsAttr, nullptr, nullptr);
+    auto scaledDot =
+        stablehlo::MulOpCreate(rewriter, op->getLoc(), alpha, dotOp);
+
+    auto scaledC = stablehlo::MulOpCreate(rewriter, op->getLoc(), beta, C);
+    auto addOp =
+        stablehlo::AddOpCreate(rewriter, op->getLoc(), scaledDot, scaledC);
+
+    rewriter.replaceAllUsesWith(op.getResult(), addOp);
+    rewriter.eraseOp(op);
+
+    return success();
+  }
+};
+
 struct SymmOpLowering : public OpRewritePattern<enzymexla::SymmOp> {
 
   using OpRewritePattern<enzymexla::SymmOp>::OpRewritePattern;
@@ -995,7 +1048,7 @@ struct LowerEnzymeXLABLASPass
 
     RewritePatternSet patternsSet2(context);
     patternsSet2.add<SyrkOpLowering>(backend, blasIntWidth, context);
-    patternsSet2.add<TrsmOpLowering>(context);
+    patternsSet2.add<GemmOpLowering, TrsmOpLowering>(context);
     if (failed(applyPatternsGreedily(getOperation(), std::move(patternsSet2),
                                      config))) {
       signalPassFailure();
@@ -1003,7 +1056,8 @@ struct LowerEnzymeXLABLASPass
 
     // Verify that all illegal ops have been lowered
     auto walkResult = getOperation()->walk([&](Operation *op) {
-      if (isa<enzymexla::SyrkOp, enzymexla::TrsmOp>(op)) {
+      if (isa<enzymexla::GemmOp, enzymexla::SymmOp, enzymexla::SyrkOp,
+              enzymexla::TrsmOp>(op)) {
         op->emitError("Failed to lower enzymexla.blas operation");
         return WalkResult::interrupt();
       }

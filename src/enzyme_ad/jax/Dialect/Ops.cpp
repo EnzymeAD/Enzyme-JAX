@@ -1154,6 +1154,70 @@ LogicalResult enzymexla::MemcpyOp::verify() {
   return success();
 }
 
+LogicalResult enzymexla::GemmOp::verify() {
+  auto alpha = getAlpha();
+  auto A = getA();
+  auto B = getB();
+  auto beta = getBeta();
+  auto C = getC();
+
+  auto type_alpha = cast<RankedTensorType>(alpha.getType());
+  auto type_A = cast<RankedTensorType>(A.getType());
+  auto type_B = cast<RankedTensorType>(B.getType());
+  auto type_beta = cast<RankedTensorType>(beta.getType());
+  auto type_C = cast<RankedTensorType>(C.getType());
+
+  auto shape_A = type_A.getShape();
+  auto shape_B = type_B.getShape();
+  auto shape_C = type_C.getShape();
+
+  auto type_element = type_alpha.getElementType();
+  auto rank = type_A.getRank();
+
+  auto inner_dim_A =
+      getTransa() == enzymexla::LapackTranspose::none ? rank - 1 : rank - 2;
+  auto inner_dim_B =
+      getTransb() == enzymexla::LapackTranspose::none ? rank - 2 : rank - 1;
+
+  auto outer_dim_A =
+      getTransa() == enzymexla::LapackTranspose::none ? rank - 2 : rank - 1;
+  auto outer_dim_B =
+      getTransb() == enzymexla::LapackTranspose::none ? rank - 1 : rank - 2;
+
+  if (type_A.getElementType() != type_element ||
+      type_B.getElementType() != type_element ||
+      type_C.getElementType() != type_element ||
+      type_beta.getElementType() != type_element) {
+    return emitOpError("Element types of alpha, A, B and C must match");
+  }
+
+  if (type_A.getRank() != type_B.getRank() ||
+      type_A.getRank() != type_C.getRank()) {
+    return emitOpError("Ranks of A, B and C must match");
+  }
+
+  if (shape_A.drop_back(2) != shape_B.drop_back(2) ||
+      shape_A.drop_back(2) != shape_C.drop_back(2)) {
+    return emitOpError("Batch dimensions of A, B and C must match");
+  }
+
+  if (shape_A[inner_dim_A] != shape_B[inner_dim_B]) {
+    return emitOpError("Inner dimensions of A and B must match");
+  }
+
+  if (shape_A[outer_dim_A] != shape_C[outer_dim_A] ||
+      shape_B[outer_dim_B] != shape_C[outer_dim_B]) {
+    return emitOpError(
+        "Outer dimensions of A and B must match corresponding dimensions of C");
+  }
+
+  if (getResult().getType() != type_C) {
+    return emitOpError("Result type must match C's type");
+  }
+
+  return success();
+}
+
 LogicalResult enzymexla::SyrkOp::verify() {
   auto CType = cast<RankedTensorType>(getC().getType());
   bool isComplex = false;
