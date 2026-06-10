@@ -297,6 +297,9 @@ struct QRFactorizationOpInterfaceReverse
                                  MGradientUtilsReverse *gutils) const {
     return {};
   }
+
+  void createShadowValues(Operation *op, OpBuilder &builder,
+                          MGradientUtilsReverse *gutils) const {}
 };
 
 } // namespace
