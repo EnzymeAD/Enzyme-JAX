@@ -17,27 +17,32 @@ test-gb-25:
     SLURM_NTASKS_PER_NODE: 1
     SLURM_GPUS_PER_TASK: 1
     SLURM_TIMELIMIT: "02:30:00"
+    # Paths — all under CI_PROJECT_DIR (scratch) to avoid touching user home/cache
+    REACTANT_DIR: "${CI_PROJECT_DIR}/Reactant.jl"
+    GB25_DIR: "${CI_PROJECT_DIR}/GB-25"
+    LOCAL_BIN: "${CI_PROJECT_DIR}/bin"
+    JULIA_DEPOT_PATH: "${CI_PROJECT_DIR}/.julia"    # overrides default ~/.julia
+    BAZELISK_HOME: "${CI_PROJECT_DIR}/.bazelisk"   # overrides default ~/.cache/bazelisk
+    BAZEL_OUTPUT_ROOT: "${CI_PROJECT_DIR}/.bazel"  # used by the bazel wrapper
 
   script:
-    # -------------------------------------------------------------------------
-    # Convenience path variables (export so they persist across all script lines)
-    # -------------------------------------------------------------------------
-    - export REACTANT_DIR="${CI_PROJECT_DIR}/Reactant.jl"
-    - export GB25_DIR="${CI_PROJECT_DIR}/GB-25"
-    - export LOCAL_BIN="${CI_PROJECT_DIR}/bin"
-    - mkdir -p "${LOCAL_BIN}"
+    # Create all job-scoped directories up front
+    - mkdir -p "${LOCAL_BIN}" "${JULIA_DEPOT_PATH}" "${BAZELISK_HOME}" "${BAZEL_OUTPUT_ROOT}"
 
     # -------------------------------------------------------------------------
-    # Download bazelisk (runs on the runner/login node which has internet)
-    # The binary is placed under ${CI_PROJECT_DIR}/bin so it survives into srun
-    # via --export=ALL.
+    # Download bazelisk into LOCAL_BIN and create a thin `bazel` wrapper that
+    # injects --output_user_root so Bazel never writes outside CI_PROJECT_DIR.
+    # BAZEL_OUTPUT_ROOT is resolved at wrapper-execution time (runtime env var).
     # -------------------------------------------------------------------------
     - |
-      if ! command -v bazel &>/dev/null; then
-        curl -fsSL -o "${LOCAL_BIN}/bazel" \
-          https://github.com/bazelbuild/bazelisk/releases/latest/download/bazelisk-linux-amd64
-        chmod +x "${LOCAL_BIN}/bazel"
-      fi
+      curl -fsSL -o "${LOCAL_BIN}/bazelisk" \
+        https://github.com/bazelbuild/bazelisk/releases/latest/download/bazelisk-linux-amd64
+      chmod +x "${LOCAL_BIN}/bazelisk"
+      # Single-quoted printf format keeps $() and ${} literal in the written file;
+      # they are expanded by bash when the wrapper is actually executed.
+      printf '#!/bin/bash\nexec "$(dirname "$0")/bazelisk" --output_user_root="${BAZEL_OUTPUT_ROOT}" "$@"\n' \
+        > "${LOCAL_BIN}/bazel"
+      chmod +x "${LOCAL_BIN}/bazel"
     - export PATH="${LOCAL_BIN}:${PATH}"
 
     # -------------------------------------------------------------------------
@@ -54,10 +59,10 @@ test-gb-25:
 
     # -------------------------------------------------------------------------
     # Build libReactant
-    # --export=ALL forwards PATH (including bazelisk) into the srun job.
+    # --export=ALL forwards PATH, BAZEL_OUTPUT_ROOT, BAZELISK_HOME, and
+    # JULIA_DEPOT_PATH into the srun allocation. The `bazel` wrapper in
+    # LOCAL_BIN uses BAZEL_OUTPUT_ROOT to keep all output in CI_PROJECT_DIR.
     # The UENV provides clang and ROCm build tools.
-    # Note: Bazel downloads its own dependencies and may require outbound
-    # internet from the compute node; check CSCS network policy if this fails.
     # -------------------------------------------------------------------------
     - |
       srun -n 1 --export=ALL --uenv "${UENV}" --view=default \
