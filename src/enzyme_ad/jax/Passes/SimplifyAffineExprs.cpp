@@ -272,8 +272,41 @@ struct AffineExprToIslAffConverter {
 
 AffineExpr internalAdd(AffineExpr LHS, AffineExpr RHS, bool allownegate = true);
 
+// Decompose `term` into (body, coeff) such that term == body * coeff.
+static std::pair<AffineExpr, int64_t> decomposeMulByConst(AffineExpr term) {
+  if (auto bin = dyn_cast<AffineBinaryOpExpr>(term))
+    if (bin.getKind() == AffineExprKind::Mul)
+      if (auto cst = dyn_cast<AffineConstantExpr>(bin.getRHS()))
+        return {bin.getLHS(), cst.getValue()};
+  return {term, 1};
+}
+
+// Fold the implicit remainder c*e + (-c*k)*(e floordiv k) to (e mod k) * c.
+// This is a pure integer identity, valid for any e and constants c, k > 1.
+static std::optional<AffineExpr> tryFoldImplicitMod(AffineExpr A,
+                                                    AffineExpr B) {
+  for (int i = 0; i < 2; i++) {
+    auto [e, c] = decomposeMulByConst(i == 0 ? A : B);
+    auto [divBody, divCoeff] = decomposeMulByConst(i == 0 ? B : A);
+    auto div = dyn_cast<AffineBinaryOpExpr>(divBody);
+    if (!div || div.getKind() != AffineExprKind::FloorDiv)
+      continue;
+    auto kCst = dyn_cast<AffineConstantExpr>(div.getRHS());
+    if (!kCst || kCst.getValue() < 2)
+      continue;
+    if (div.getLHS() != e)
+      continue;
+    if (divCoeff != -c * kCst.getValue())
+      continue;
+    return (e % kCst.getValue()) * c;
+  }
+  return std::nullopt;
+}
+
 AffineExpr commonAddWithMul(AffineExpr LHS, AffineExpr RHS,
                             bool allownegate = true) {
+  if (auto folded = tryFoldImplicitMod(LHS, RHS))
+    return *folded;
   auto lhsD = llvm::DynamicAPInt(LHS.getLargestKnownDivisor());
   auto rhsD = llvm::DynamicAPInt(RHS.getLargestKnownDivisor());
   auto gcd = llvm::int64fromDynamicAPInt(llvm::gcd(abs(lhsD), abs(rhsD)));
