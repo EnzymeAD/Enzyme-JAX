@@ -29,15 +29,9 @@ test-gb-25:
     # Create all job-scoped directories up front
     - mkdir -p "${LOCAL_BIN}" "${JULIA_DEPOT_PATH}" "${BAZELISK_HOME}" "${BAZEL_OUTPUT_ROOT}"
 
-    # -------------------------------------------------------------------------
-    # Download bazelisk as `bazelisk-real`, then create wrapper scripts for
-    # both `bazelisk` and `bazel` that inject --output_user_root so Bazel
-    # never writes outside CI_PROJECT_DIR.
-    # build_local.jl calls `bazelisk` directly, so the wrapper must intercept
-    # that name. --output_user_root is a Bazel startup option; bazelisk passes
-    # it through transparently.
+    # Download bazelisk and create bazelisk/bazel wrappers that inject --output_user_root.
+    # build_local.jl calls `bazelisk` directly, so the wrapper must intercept that name.
     # The wrapper aborts if BAZEL_OUTPUT_ROOT is unset or outside CI_PROJECT_DIR.
-    # -------------------------------------------------------------------------
     - |
       curl -fsSL -o "${LOCAL_BIN}/bazelisk-real" \
         https://github.com/bazelbuild/bazelisk/releases/latest/download/bazelisk-linux-amd64
@@ -67,34 +61,22 @@ test-gb-25:
         echo "OK: ${CMD} -> ${RESOLVED}"
       done
 
-    # -------------------------------------------------------------------------
     # Clone Reactant.jl and patch in the current Enzyme-JAX commit
-    # -------------------------------------------------------------------------
     - git clone --depth=1 --branch "${REACTANT_COMMIT}" https://github.com/EnzymeAD/Reactant.jl "${REACTANT_DIR}"
     - sed -i 's/ENZYMEXLA_COMMIT = ".*"/ENZYMEXLA_COMMIT = "'"${CI_COMMIT_SHA}"'"/' "${REACTANT_DIR}/deps/ReactantExtra/WORKSPACE"
     - grep ENZYMEXLA_COMMIT "${REACTANT_DIR}/deps/ReactantExtra/WORKSPACE"
 
-    # -------------------------------------------------------------------------
     # Instantiate the Reactant build environment (no GPU/UENV needed here)
-    # -------------------------------------------------------------------------
     - cd "${REACTANT_DIR}/deps" && ${JULIA} --project --color=yes -e 'using Pkg; Pkg.instantiate()'
 
-    # -------------------------------------------------------------------------
-    # Build libReactant
-    # --export=ALL forwards PATH, BAZEL_OUTPUT_ROOT, BAZELISK_HOME, and
-    # JULIA_DEPOT_PATH into the srun allocation. The `bazel` wrapper in
-    # LOCAL_BIN uses BAZEL_OUTPUT_ROOT to keep all output in CI_PROJECT_DIR.
-    # The UENV provides clang and ROCm build tools.
-    # -------------------------------------------------------------------------
+    # Build libReactant — --export=ALL forwards all path/cache env vars into the srun allocation
     - |
       srun -n 1 --export=ALL --uenv "${UENV}" --view=default \
         bash -c "cd ${REACTANT_DIR}/deps && \
                  ${JULIA} --project --color=yes -O0 build_local.jl \
                    --cc=clang --gcc_host_compiler_path="
 
-    # -------------------------------------------------------------------------
     # Clone GB-25 and set up its Julia environment
-    # -------------------------------------------------------------------------
     - git clone --depth=1 --branch "${GB25_COMMIT}" https://github.com/PRONTOLab/GB-25 "${GB25_DIR}"
     - cp "${REACTANT_DIR}/LocalPreferences.toml" "${GB25_DIR}/LocalPreferences.toml"
     - |
@@ -107,9 +89,7 @@ test-gb-25:
         Pkg.instantiate()
         Pkg.gc()"
 
-    # -------------------------------------------------------------------------
     # Compile the GB-25 simulation
-    # -------------------------------------------------------------------------
     - |
       srun -n 1 --export=ALL --uenv "${UENV}" --view=default \
         timeout 29m \
@@ -118,10 +98,7 @@ test-gb-25:
           "${GB25_DIR}/sharding/sharded_baroclinic_instability_simulation_compile.jl" \
           ${FLOAT_TYPE}
 
-    # -------------------------------------------------------------------------
-    # Check remaining collective operations against thresholds
-    # (Thresholds below are copied from the A100 case; adjust for MI300 as needed)
-    # -------------------------------------------------------------------------
+    # Check remaining collective operations against thresholds (copied from A100 case; calibrate for MI300)
     - |
       cd "${GB25_DIR}"
       OK="true"
@@ -147,9 +124,7 @@ test-gb-25:
       done
       [[ "${OK}" == "true" ]] || exit 1
 
-    # -------------------------------------------------------------------------
     # Run the GB-25 simulation
-    # -------------------------------------------------------------------------
     - |
       srun -n 1 --export=ALL --uenv "${UENV}" --view=default \
         timeout 59m \
@@ -158,9 +133,7 @@ test-gb-25:
           "${GB25_DIR}/sharding/sharded_baroclinic_instability_simulation_run.jl" \
           ${FLOAT_TYPE}
 
-    # -------------------------------------------------------------------------
     # Test correctness
-    # -------------------------------------------------------------------------
     - |
       srun -n 1 --export=ALL --uenv "${UENV}" --view=default \
         timeout 19m \
