@@ -240,9 +240,12 @@ struct QRFactorizationOpInterfaceReverse
     auto Qbar = gutils->getNewFromOriginal(Q);
     auto Rbar = gutils->getNewFromOriginal(R);
 
+    auto elemType = Q.getType().cast<RankedTensorType>().getElementType();
+
     // create M = R̄ / R^dag - Q̄^dag * Q
-    auto alpha = stablehlo::ConstantOp::create(op.getLoc(),
-                                               builder.getF64FloatAttr(1.0));
+    auto alpha = stablehlo::ConstantOp::create(
+        builder, op->getLoc(), RankedTensorType::get({n}, elemType),
+        cast<ElementsAttr>(makeAttr(RankedTensorType::get({n}, elemType), 1)));
     auto RbarDivR = enzymexla::TrsmOp::create(
         op.getLoc(), alpha, R, Rbar,
         /*side=*/enzymexla::LapackSide::right,
@@ -250,29 +253,16 @@ struct QRFactorizationOpInterfaceReverse
         /*transa=*/enzymexla::LapackTranspose::adjoint,
         /*unit_diagonal=*/false);
 
-    SmallVector<int64_t> perm;
-    auto rank_q = R.getType().cast<ShapedType>().getRank();
-    for (auto i = 0; i < rank_q; i++) {
-      perm.push_back(i);
-    }
-    perm[rank_q - 1] = rank_q - 2;
-    perm[rank_q - 2] = rank_q - 1;
-    auto QbarConj = chlo::ConjugateOp::create(op.getLoc(), Qbar);
-    auto QbarDag = stablehlo::TransposeOp::create(
-        op.getLoc(), QbarConj.getType(), QbarConj.getResult(),
-        getI64Attr(builder, perm));
+    auto QbarDagMulQ = enzymexla::GemmOp::create(
+        op.getLoc(), Qbar, Q, enzymexla::LapackTranspose::adjoint);
 
-    // TODO add contracting dims and batching dims
-    auto QbarDagMulQ =
-        stablehlo::DotGeneralOp::create(op.getLoc(), QbarDag.getResult(), Q);
-
-    auto M = stablehlo::SubOp::create(op.getLoc(), RbarDivR.getResult(),
-                                      QbarDagMulQ.getResult());
+    auto M = stablehlo::SubOp::create(op.getLoc(), RbarDivR, QbarDagMulQ);
 
     // X = Q̄ + Q * copyltu(M)
     // do not copy triangular lower to upper part... just do symm
-    auto beta = stablehlo::ConstantOp::create(op.getLoc(),
-                                              builder.getF64FloatAttr(0.0));
+    auto beta = stablehlo::ConstantOp::create(
+        builder, op->getLoc(), RankedTensorType::get({}, elemType),
+        cast<ElementsAttr>(makeAttr(RankedTensorType::get({}, elemType), 0)));
     auto C = stablehlo::ConstantOp::create(op.getLoc(),
                                            builder.getZeroAttr(Q.getType()));
     auto QMulM =
@@ -280,12 +270,11 @@ struct QRFactorizationOpInterfaceReverse
                                   /*side=*/enzymexla::LapackSide::right,
                                   /*uplo=*/enzymexla::LapackUplo::lower);
 
-    auto QbarAddQMulM =
-        stablehlo::AddOp::create(op.getLoc(), Qbar, QMulM.getResult());
+    auto X = stablehlo::AddOp::create(op.getLoc(), Qbar, QMulM);
 
-    // X / R^dag
+    // Ā = X / R^dag
     auto Abar = enzymexla::TrsmOp::create(
-        op.getLoc(), alpha, R, QbarAddQMulM.getResult(),
+        op.getLoc(), alpha, R, X,
         /*side=*/enzymexla::LapackSide::right,
         /*uplo=*/enzymexla::LapackUplo::upper,
         /*transa=*/enzymexla::LapackTranspose::adjoint,
