@@ -461,7 +461,8 @@ public:
     if (!floatType.isF32() && !floatType.isF64())
       return failure();
     // Use explicit constants for LLVM18 compatibility (`APFloat::getPi` is
-    // unavailable), while preserving f32/f64-appropriate precision.
+    // unavailable), while preserving f32/f64-appropriate precision
+    // (closest f32 pi literal vs full f64 precision literal).
     llvm::APFloat piFloat(floatType.getFloatSemantics(),
                           floatType.isF32() ? "3.1415927410125732421875"
                                             : "3.14159265358979323846264338327950288");
