@@ -2120,6 +2120,11 @@ struct SimplifySubViewUsers : public OpRewritePattern<memref::SubViewOp> {
                                 PatternRewriter &rewriter) const override {
     bool changed = false;
     int64_t offs = -1;
+    // Only support dynamic offsets in the leading dimension
+    if (llvm::any_of(subindex.getStaticOffsets().drop_front(1),
+                     [](int64_t off) { return off == ShapedType::kDynamic; }))
+      return failure();
+
     for (auto tup :
          llvm::zip(subindex.getStaticOffsets(), subindex.getStaticSizes(),
                    subindex.getStaticStrides())) {
@@ -2135,7 +2140,10 @@ struct SimplifySubViewUsers : public OpRewritePattern<memref::SubViewOp> {
           return failure();
       }
     }
-    Value off = ConstantIndexOp::create(rewriter, subindex.getLoc(), offs);
+    Value off =
+        offs == ShapedType::kDynamic
+            ? subindex.getDynamicOffset(0)
+            : ConstantIndexOp::create(rewriter, subindex.getLoc(), offs);
     assert(off);
 
     for (OpOperand &use : llvm::make_early_inc_range(subindex->getUses())) {
