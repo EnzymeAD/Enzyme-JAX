@@ -8,6 +8,7 @@
 
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
 
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -98,6 +99,16 @@ struct GemmOpLowering : public OpRewritePattern<enzymexla::GemmOp> {
                            ? rank - 2
                            : rank - 1;
 
+    Value maybeConjA = A;
+    if (op.getTransa() == enzymexla::LapackTranspose::adjoint) {
+      maybeConjA = chlo::ConjOp::create(rewriter, op.getLoc(), A);
+    }
+
+    Value maybeConjB = B;
+    if (op.getTransb() == enzymexla::LapackTranspose::adjoint) {
+      maybeConjB = chlo::ConjOp::create(rewriter, op.getLoc(), B);
+    }
+
     SmallVector<int64_t> leftBatchDims, rightBatchDims;
     for (int64_t i = 0; i < rank - 2; ++i) {
       leftBatchDims.push_back(i);
@@ -108,8 +119,9 @@ struct GemmOpLowering : public OpRewritePattern<enzymexla::GemmOp> {
     auto dotDimsAttr = stablehlo::DotDimensionNumbersAttr::get(
         ctx, leftBatchDims, rightBatchDims, leftContractDims,
         rightContractDims);
-    auto dotOp = stablehlo::DotGeneralOp::create(
-        rewriter, op.getLoc(), type_C, A, B, dotDimsAttr, nullptr, nullptr);
+    auto dotOp = stablehlo::DotGeneralOp::create(rewriter, op.getLoc(), type_C,
+                                                 maybeConjA, maybeConjB,
+                                                 dotDimsAttr, nullptr, nullptr);
     auto scaledDot =
         stablehlo::MulOpCreate(rewriter, op->getLoc(), alpha, dotOp);
 
