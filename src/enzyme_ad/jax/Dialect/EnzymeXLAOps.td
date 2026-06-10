@@ -581,8 +581,8 @@ def GemmOp : EnzymeXLA_Op<"blas.gemm", [Pure, SameOperandsAndResultElementType]>
     HLO_Tensor:$B,
     TensorFloat:$beta,
     HLO_Tensor:$C,
-    EnzymeXLA_LapackTransposeAttr:$transa,
-    EnzymeXLA_LapackTransposeAttr:$transb
+    DefaultValuedAttr<EnzymeXLA_LapackTransposeAttr, "::mlir::enzymexla::LapackTranspose::none">:$transa,
+    DefaultValuedAttr<EnzymeXLA_LapackTransposeAttr, "::mlir::enzymexla::LapackTranspose::none">:$transb
   );
 
   let results = (outs
