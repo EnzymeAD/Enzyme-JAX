@@ -1218,6 +1218,50 @@ LogicalResult enzymexla::GemmOp::verify() {
   return success();
 }
 
+void GemmOp::build(OpBuilder &builder, OperationState &result, Value A, Value B,
+                   enzymexla::LapackTranspose transa,
+                   enzymexla::LapackTranspose transb) {
+  auto type_A = cast<RankedTensorType>(A.getType());
+  auto type_B = cast<RankedTensorType>(B.getType());
+
+  auto element_type = type_A.getElementType();
+  auto rank = type_A.getRank();
+
+  auto outer_dim_A =
+      transa == enzymexla::LapackTranspose::none ? rank - 2 : rank - 1;
+  auto outer_dim_B =
+      transb == enzymexla::LapackTranspose::none ? rank - 1 : rank - 2;
+
+  auto shape_a = type_A.getShape();
+  auto shape_b = type_B.getShape();
+  SmallVector<int64_t> shape_c;
+  for (int i = 0; i < rank - 2; i++) {
+    shape_c.push_back(shape_a[i]);
+  }
+  shape_c.push_back(shape_a[outer_dim_A]);
+  shape_c.push_back(shape_b[outer_dim_B]);
+
+  auto type_scalar = RankedTensorType::get({}, element_type);
+  auto alpha = stablehlo::ConstantOp::create(
+      builder, result.location, type_scalar,
+      cast<ElementsAttr>(makeAttr(type_scalar, 1)));
+  auto beta = stablehlo::ConstantOp::create(
+      builder, result.location, type_scalar,
+      cast<ElementsAttr>(makeAttr(type_scalar, 0)));
+
+  auto type_C = RankedTensorType::get(shape_c, element_type);
+  auto C =
+      stablehlo::ConstantOp::create(builder, result.location, type_C,
+                                    cast<ElementsAttr>(makeAttr(type_C, 0)));
+
+  result.addTypes(type_C);
+  result.addOperands({alpha, A, B, beta, C});
+  result.addAttribute("transa", enzymexla::LapackTransposeAttr::get(
+                                    builder.getContext(), transa));
+  result.addAttribute("transb", enzymexla::LapackTransposeAttr::get(
+                                    builder.getContext(), transb));
+}
+
 LogicalResult enzymexla::SyrkOp::verify() {
   auto CType = cast<RankedTensorType>(getC().getType());
   bool isComplex = false;

@@ -594,6 +594,12 @@ def GemmOp : EnzymeXLA_Op<"blas.gemm", [Pure, SameOperandsAndResultElementType]>
   }];
 
   let hasVerifier = 1;
+
+  let builders = [
+    OpBuilder<(ins "Value":$A, "Value":$B,
+      CArg<"enzymexla::LapackTranspose", "enzymexla::LapackTranspose::none">:$transa,
+      CArg<"enzymexla::LapackTranspose", "enzymexla::LapackTranspose::none">:$transb)>
+  ];
 }
 
 def SymmOp : EnzymeXLA_Op<"blas.symm", [Pure, SameOperandsAndResultElementType]> {
