@@ -458,8 +458,7 @@ public:
       return failure();
 
     auto loc = op.getLoc();
-    auto piAttr = rewriter.getFloatAttr(
-        floatType, llvm::APFloat::getPi(floatType.getFloatSemantics()));
+    auto piAttr = rewriter.getFloatAttr(floatType, 3.14159265358979323846);
     Value pi = rewriter.create<arith::ConstantOp>(loc, floatType, piAttr);
     Value piTimesX = rewriter.create<arith::MulFOp>(loc, op.getOperand(0), pi);
     rewriter.replaceOpWithNewOp<math::SinOp>(op, op.getResultTypes(), piTimesX);
