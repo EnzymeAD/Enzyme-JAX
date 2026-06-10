@@ -228,6 +228,77 @@ struct GPUWrapperOpInterfaceReverse
                           MGradientUtilsReverse *gutils) const {}
 };
 
+struct QRFactorizationOpInterfaceReverse
+    : public ReverseAutoDiffOpInterface::ExternalModel<
+          QRFactorizationOpInterfaceReverse, QRFactorizationOp> {
+  LogicalResult createReverseModeAdjoint(Operation *orig, OpBuilder &builder,
+                                         MGradientUtilsReverse *gutils,
+                                         SmallVector<Value> caches) const {
+    auto op = cast<QRFactorizationOp>(orig);
+    auto Q = op.getQ();
+    auto R = op.getR();
+    auto Qbar = gutils->getNewFromOriginal(Q);
+    auto Rbar = gutils->getNewFromOriginal(R);
+
+    // create M = R̄ / R^dag - Q̄^dag * Q
+    auto alpha = stablehlo::ConstantOp::create(op.getLoc(),
+                                               builder.getF64FloatAttr(1.0));
+    auto RbarDivR = enzymexla::TrsmOp::create(
+        op.getLoc(), alpha, R, Rbar,
+        /*side=*/enzymexla::LapackSide::right,
+        /*uplo=*/enzymexla::LapackUplo::upper,
+        /*transa=*/enzymexla::LapackTranspose::adjoint,
+        /*unit_diagonal=*/false);
+
+    SmallVector<int64_t> perm;
+    auto rank_q = R.getType().cast<ShapedType>().getRank();
+    for (auto i = 0; i < rank_q; i++) {
+      perm.push_back(i);
+    }
+    perm[rank_q - 1] = rank_q - 2;
+    perm[rank_q - 2] = rank_q - 1;
+    auto QbarConj = chlo::ConjugateOp::create(op.getLoc(), Qbar);
+    auto QbarDag = stablehlo::TransposeOp::create(
+        op.getLoc(), QbarConj.getType(), QbarConj.getResult(),
+        getI64Attr(builder, perm));
+
+    // TODO add contracting dims and batching dims
+    auto QbarDagMulQ =
+        stablehlo::DotGeneralOp::create(op.getLoc(), QbarDag.getResult(), Q);
+
+    auto M = stablehlo::SubOp::create(op.getLoc(), RbarDivR.getResult(),
+                                      QbarDagMulQ.getResult());
+
+    // X = Q̄ + Q * copyltu(M)
+    // do not copy triangular lower to upper part... just do symm
+    auto beta = stablehlo::ConstantOp::create(op.getLoc(),
+                                              builder.getF64FloatAttr(0.0));
+    auto C = stablehlo::ConstantOp::create(op.getLoc(),
+                                           builder.getZeroAttr(Q.getType()));
+    auto QMulM =
+        enzymexla::SymmOp::create(op.getLoc(), M, Q, C, alpha, beta,
+                                  /*side=*/enzymexla::LapackSide::right,
+                                  /*uplo=*/enzymexla::LapackUplo::lower);
+
+    auto QbarAddQMulM =
+        stablehlo::AddOp::create(op.getLoc(), Qbar, QMulM.getResult());
+
+    // X / R^dag
+    auto Abar = enzymexla::TrsmOp::create(
+        op.getLoc(), alpha, R, QbarAddQMulM.getResult(),
+        /*side=*/enzymexla::LapackSide::right,
+        /*uplo=*/enzymexla::LapackUplo::upper,
+        /*transa=*/enzymexla::LapackTranspose::adjoint,
+        /*unit_diagonal=*/false);
+    gutils->setOutputGradient(Abar.getResult(), 0);
+  }
+
+  SmallVector<Value> cacheValues(Operation *op,
+                                 MGradientUtilsReverse *gutils) const {
+    return {};
+  }
+};
+
 } // namespace
 
 void mlir::enzyme::registerEnzymeXLADialectAutoDiffInterface(
@@ -241,6 +312,10 @@ void mlir::enzyme::registerEnzymeXLADialectAutoDiffInterface(
         ViewCastOpInterfaceReverse<Pointer2MemrefOp>>(*context);
     Memref2PointerOp::attachInterface<
         ViewCastOpInterfaceReverse<Memref2PointerOp>>(*context);
+
+    // linalg diff interfaces
+    QRFactorizationOp::attachInterface<QRFactorizationOpInterfaceReverse>(
+        *context);
 
     // Register batching interfaces
     JITCallOp::attachInterface<SHLOGenericBatchOpInterface<JITCallOp>>(
