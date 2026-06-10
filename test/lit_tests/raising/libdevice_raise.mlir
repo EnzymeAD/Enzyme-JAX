@@ -235,6 +235,25 @@ module {
       llvm.return
     }
   }
+  gpu.module @test_module_sinpi {
+    llvm.func @__nv_sinpif(f32) -> f32
+    llvm.func @__nv_sinpi(f64) -> f64
+    // CHECK-LABEL: @gpu_sinpi
+    llvm.func @gpu_sinpi(%arg0: f32, %arg1: f64) -> !llvm.struct<(f32, f64)> attributes {llvm.emit_c_interface} {
+      // CHECK: %[[PI_F32:.*]] = arith.constant {{.*}} : f32
+      // CHECK: %[[MUL_F32:.*]] = arith.mulf %arg0, %[[PI_F32]] : f32
+      // CHECK: %[[SIN_F32:.*]] = math.sin %[[MUL_F32]] : f32
+      %0 = llvm.call @__nv_sinpif(%arg0) : (f32) -> f32
+      // CHECK: %[[PI_F64:.*]] = arith.constant {{.*}} : f64
+      // CHECK: %[[MUL_F64:.*]] = arith.mulf %arg1, %[[PI_F64]] : f64
+      // CHECK: %[[SIN_F64:.*]] = math.sin %[[MUL_F64]] : f64
+      %1 = llvm.call @__nv_sinpi(%arg1) : (f64) -> f64
+      %2 = llvm.mlir.undef : !llvm.struct<(f32, f64)>
+      %3 = llvm.insertvalue %0, %2[0] : !llvm.struct<(f32, f64)>
+      %4 = llvm.insertvalue %1, %3[1] : !llvm.struct<(f32, f64)>
+      llvm.return %4 : !llvm.struct<(f32, f64)>
+    }
+  }
   gpu.module @test_module_18 {
     llvm.func @__nv_tanf(f32) -> f32
     llvm.func @__nv_tan(f64) -> f64

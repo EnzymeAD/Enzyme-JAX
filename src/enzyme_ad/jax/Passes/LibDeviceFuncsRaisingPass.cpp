@@ -22,6 +22,7 @@
 
 #include "mlir/Conversion/LLVMCommon/VectorPattern.h"
 
+#include "llvm/ADT/APFloat.h"
 #include "llvm/ADT/TypeSwitch.h"
 
 namespace mlir {
@@ -437,6 +438,37 @@ public:
 
     return failure();
   }
+};
+
+class SinPiRaising : public OpRewritePattern<LLVM::CallOp> {
+public:
+  SinPiRaising(MLIRContext *context, StringRef funcNameStr)
+      : OpRewritePattern<LLVM::CallOp>(context),
+        funcName(StringAttr::get(context, funcNameStr)) {}
+
+  LogicalResult matchAndRewrite(LLVM::CallOp op,
+                                PatternRewriter &rewriter) const override {
+    CallInterfaceCallable callable = op.getCallableForCallee();
+    auto callee = dyn_cast<SymbolRefAttr>(callable);
+    if (!callee || callee.getLeafReference() != funcName)
+      return failure();
+
+    auto floatType = dyn_cast<FloatType>(op.getResultTypes()[0]);
+    if (!floatType || op.getNumOperands() != 1)
+      return failure();
+
+    auto loc = op.getLoc();
+    auto piAttr = rewriter.getFloatAttr(
+        floatType, llvm::APFloat::getPi(floatType.getFloatSemantics()));
+    Value pi = arith::ConstantOp::create(rewriter, loc, floatType, piAttr);
+    Value piTimesX =
+        arith::MulFOp::create(rewriter, loc, op.getOperand(0), pi).getResult();
+    rewriter.replaceOpWithNewOp<math::SinOp>(op, op.getResultTypes(), piTimesX);
+    return success();
+  }
+
+private:
+  StringAttr funcName;
 };
 } // namespace
 
@@ -1052,6 +1084,8 @@ void mlir::enzyme::populateLibDeviceFuncsToOpsPatterns(
 
   patterns.add<IsFPClassRaising>(context);
   patterns.add<RcpRaising>(context);
+  patterns.add<SinPiRaising>(context, "__nv_sinpif");
+  patterns.add<SinPiRaising>(context, "__nv_sinpi");
   patterns.add<NVVMRcpRaising>(context);
   patterns.add<BF16HalfToFloatRaising>(context);
   patterns.add<HalfMathRaising>(context);
