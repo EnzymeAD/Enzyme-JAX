@@ -460,9 +460,9 @@ public:
     auto loc = op.getLoc();
     FloatAttr piAttr;
     if (floatType.isF32())
-      piAttr = rewriter.getF32FloatAttr(3.1415927410125732421875f);
+      piAttr = rewriter.getF32FloatAttr(3.14159265f);
     else if (floatType.isF64())
-      piAttr = rewriter.getF64FloatAttr(3.14159265358979323846264338327950288);
+      piAttr = rewriter.getF64FloatAttr(3.141592653589793);
     else
       return failure();
     Value pi = rewriter.create<arith::ConstantOp>(loc, floatType, piAttr);
