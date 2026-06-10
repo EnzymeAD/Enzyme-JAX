@@ -462,9 +462,9 @@ public:
       return failure();
     // Use explicit constants for LLVM18 compatibility (`APFloat::getPi` is
     // unavailable), while preserving f32/f64-appropriate precision.
-    constexpr float kPiF32 = 3.1415927410125732421875f;
-    constexpr double kPiF64 = 3.14159265358979323846264338327950288;
-    llvm::APFloat piFloat = llvm::APFloat(floatType.isF32() ? kPiF32 : kPiF64);
+    llvm::APFloat piFloat(floatType.getFloatSemantics(),
+                          floatType.isF32() ? "3.1415927410125732421875"
+                                            : "3.14159265358979323846264338327950288");
     auto piAttr = rewriter.getFloatAttr(floatType, piFloat);
     Value pi = rewriter.create<arith::ConstantOp>(loc, floatType, piAttr);
     Value piTimesX = rewriter.create<arith::MulFOp>(loc, op.getOperand(0), pi);
