@@ -17,6 +17,43 @@ def TestPolymerPass : Pass<"test-polymer"> {
   ];
 }
 
+def BlasRaisingPass : Pass<"blas-raise"> {
+  let summary = "Convert CuBlas calls into mhlo calls";
+  let dependentDialects = [
+    "arith::ArithDialect",
+    "mhlo::MhloDialect",
+    "stablehlo::StablehloDialect",
+    "chlo::ChloDialect",
+    "enzyme::EnzymeDialect",
+    "enzymexla::EnzymeXLADialect",
+    "mlir::LLVM::LLVMDialect",
+    "memref::MemRefDialect",
+    "tensor::TensorDialect",
+    "affine::AffineDialect",
+  ];
+}
+
+def PropagateShapesPass : Pass<"propagate-shapes"> {
+  let summary = "Propagates shapes known at runtime";
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "tensor::TensorDialect",
+    "enzyme::EnzymeDialect",
+    "enzymexla::EnzymeXLADialect",
+    "chlo::ChloDialect"
+  ];
+
+  let options = [
+    Option<
+      /*C++ variable name=*/"shapes",
+      /*CLI argument=*/"shapes",
+      /*type=*/"std::string",
+      /*default=*/"",
+      /*description=*/"describes the shapes to be propagated"
+    >,
+  ];
+}
+
 def CanonicalizeLoopsPass : InterfacePass<"canonicalize-loops", 
                                           "mlir::FunctionOpInterface"> {
   let summary = "Canonicalize loops";
