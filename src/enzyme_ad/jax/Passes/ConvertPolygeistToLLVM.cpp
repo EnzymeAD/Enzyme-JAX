@@ -62,6 +62,8 @@
 
 #include "mlir/Transforms/DialectConversion.h"
 
+#include "Dialect/Ops.h"
+
 #include "mlir/Dialect/Async/IR/Async.h"
 
 #include "xla/mlir/utils/type_util.h"
@@ -1492,6 +1494,9 @@ convertFunctionType(FuncOpType funcOp, const TypeConverter &typeConverter) {
       funcOp.getNumArguments());
   for (const auto &[index, type] : llvm::enumerate(funcOp.getArgumentTypes())) {
     Type converted = typeConverter.convertType(type);
+    if (!converted) {
+      llvm::errs() << "[conversion] failed to convert type " << type << "\n";
+    }
     if (!converted)
       return std::nullopt;
 
@@ -4482,6 +4487,32 @@ struct ConvertPolygeistToLLVMPass
       signalPassFailure();
       return;
     }
+
+    // TODO: make this a separate pattern/pass. enzyme-to-llvm?
+    SmallVector<Operation *> toDelete;
+    m->walk([&toDelete](enzyme::FillZeroOp op) {
+      auto memRefType = op.getMemref().getType();
+      if (!memRefType.hasStaticShape())
+        return;
+
+      OpBuilder builder(op);
+      auto zero = arith::ConstantOp::create(builder, op.getLoc(),
+                                            builder.getI8IntegerAttr(0));
+      Value ptr = enzymexla::Memref2PointerOp::create(
+          builder, op.getLoc(), LLVM::LLVMPointerType::get(op.getContext()),
+          op.getMemref());
+      int64_t byteSize =
+          memRefType.getNumElements() * memRefType.getElementTypeBitWidth() / 8;
+      auto size = arith::ConstantOp::create(
+          builder, op.getLoc(), builder.getI64IntegerAttr(byteSize));
+      LLVM::MemsetOp::create(builder, op.getLoc(), ptr, zero, size,
+                             /*isVolatile=*/false);
+      toDelete.push_back(op);
+    });
+    for (Operation *op : toDelete) {
+      op->erase();
+    }
+
     if (gpuModule) {
       // Request C wrapper emission.
       for (auto func : m.getOps<func::FuncOp>()) {
