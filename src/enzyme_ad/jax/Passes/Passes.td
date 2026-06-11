@@ -428,6 +428,7 @@ def ConvertPolygeistToLLVM
                 .Block argument types are updated to use LLVM IR types.
   }];
   let dependentDialects = [
+    "enzymexla::EnzymeXLADialect",
     "func::FuncDialect",
     "LLVM::LLVMDialect",
     "memref::MemRefDialect",
