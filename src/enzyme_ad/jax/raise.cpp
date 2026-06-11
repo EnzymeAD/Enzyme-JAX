@@ -22,6 +22,8 @@
 #include "llvm/IRReader/IRReader.h"
 #include "llvm/Support/SourceMgr.h"
 
+#include "llvm/Support/Timer.h"
+
 #include "src/enzyme_ad/jax/RegistryUtils.h"
 #include "llvm/Support/TargetSelect.h"
 #include <system_error>
@@ -33,6 +35,11 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
                                               std::string outfile,
                                               std::string backend,
                                               std::string library) {
+  llvm::outs() << "[raise.cpp] starting llvm to mlir round trip for " << outfile
+               << "\n";
+  llvm::Timer timer;
+  timer.init("raise", "LLVM to MLIR round trip");
+  timer.startTimer();
   llvm::LLVMContext Context;
   Context.setDiscardValueNames(false);
   llvm::SMDiagnostic Err;
@@ -181,10 +188,19 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
         error_stream << diag << "\n";
         return failure();
       });
+  llvm::outs() << "[raise.cpp] running mlir passes\n";
+  timer.stopTimer();
+  timer.clear();
+  timer.startTimer();
   if (!mlir::succeeded(pm.run(cast<mlir::ModuleOp>(*mod)))) {
     llvm::errs() << error_stream.str() << "\n";
     return "";
   }
+  timer.stopTimer();
+  llvm::outs() << "[raise.cpp] completed mlir passes in "
+               << timer.getTotalTime().getWallTime() << " s\n";
+  timer.clear();
+  timer.startTimer();
 
   if (getenv("DEBUG_REACTANT")) {
     llvm::errs() << " final mlir mod: ";
@@ -243,6 +259,9 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
   if (getenv("DEBUG_REACTANT")) {
     llvm::errs() << " final llvm:" << res << "\n";
   }
+  timer.stopTimer();
+  llvm::outs() << "[raise.cpp] completed llvm to mlir round trip in "
+               << timer.getTotalTime().getWallTime() << " s\n";
 
   return res;
 }
