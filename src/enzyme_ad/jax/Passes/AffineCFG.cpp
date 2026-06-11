@@ -4074,7 +4074,13 @@ struct SplitParallelInductions
                 base = newBase;
               } else if (!base.isValue && !newBase.isValue &&
                          (base.i_val == newBase.i_val ||
-                          (kind == AffineExprKind::FloorDiv &&
+                          // Affine uses are rewritten by exact substitution
+                          // (iv -> major * base + minor), so any base dividing
+                          // the seen divisors is correct; keep the smallest.
+                          // This must not depend on the order in which uses
+                          // are visited, so allow it for mod as well.
+                          ((kind == AffineExprKind::FloorDiv ||
+                            kind == AffineExprKind::Mod) &&
                            (base.i_val.urem(newBase.i_val) == 0 ||
                             newBase.i_val.urem(base.i_val) == 0)))) {
                 base.i_val =
