@@ -136,19 +136,21 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
 // arg3 + arg2 * 128 (axis is arg3, arg2)
 // CHECK-NEXT:    %19 = stablehlo.add %17, %18 : tensor<120x18000xi64>
 
-//    arg3 + arg2 * 128 (axis is reshape(arg3, arg2))
-// CHECK-NEXT:    %20 = stablehlo.reshape %19 : (tensor<120x18000xi64>) -> tensor<2160000x1xi64>
+//  arg3 + arg2 * 128 (axis is reshape(arg3, arg2)); scatter mirrors the gather
+//  two-step reshape above (%11/%12): append the index_vector_dim, then flatten.
+// CHECK-NEXT:    %20 = stablehlo.reshape %19 : (tensor<120x18000xi64>) -> tensor<120x18000x1xi64>
+// CHECK-NEXT:    %21 = stablehlo.reshape %20 : (tensor<120x18000x1xi64>) -> tensor<2160000x1xi64>
 
 // arg0[arg3 + arg2 * 128] (axis is (arg3, arg2))
-// CHECK-NEXT:    %21 = stablehlo.broadcast_in_dim %14, dims = [0, 1] : (tensor<120x18000xf32>) -> tensor<120x18000xf32>
+// CHECK-NEXT:    %22 = stablehlo.broadcast_in_dim %14, dims = [0, 1] : (tensor<120x18000xf32>) -> tensor<120x18000xf32>
 
 //  arg3 + arg2 * 128 (axis is reshape(arg3, arg2))
-// CHECK-NEXT:    %22 = stablehlo.reshape %21 : (tensor<120x18000xf32>) -> tensor<2160000xf32>
+// CHECK-NEXT:    %23 = stablehlo.reshape %22 : (tensor<120x18000xf32>) -> tensor<2160000xf32>
 
-// CHECK-NEXT:    %23 = "stablehlo.scatter"(%arg1, %20, %22) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0], scatter_dims_to_operand_dims = [0], index_vector_dim = 1>, unique_indices = true}> ({
+// CHECK-NEXT:    %24 = "stablehlo.scatter"(%arg1, %21, %23) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0], scatter_dims_to_operand_dims = [0], index_vector_dim = 1>, unique_indices = true}> ({
 // CHECK-NEXT:    ^bb0(%arg2: tensor<f32>, %arg3: tensor<f32>):
 // CHECK-NEXT:      stablehlo.return %arg3 : tensor<f32>
 // CHECK-NEXT:    }) : (tensor<?xf32>, tensor<2160000x1xi64>, tensor<2160000xf32>) -> tensor<?xf32>
-// CHECK-NEXT:    return %arg0, %23 : tensor<?xf32>, tensor<?xf32>
+// CHECK-NEXT:    return %arg0, %24 : tensor<?xf32>, tensor<?xf32>
 // CHECK-NEXT:  }
 

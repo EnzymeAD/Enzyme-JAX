@@ -155,16 +155,14 @@ module {
 // CHECK-NEXT:    %54 = stablehlo.broadcast_in_dim %53, dims = [0] : (tensor<16xi64>) -> tensor<16x16xi64>
 // CHECK-NEXT:    %55 = stablehlo.iota dim = 1 : tensor<16x16xi64>
 // CHECK-NEXT:    %56 = stablehlo.add %54, %55 : tensor<16x16xi64>
-// CHECK-NEXT:    %57 = stablehlo.reshape %56 : (tensor<16x16xi64>) -> tensor<256x1xi64>
-// CHECK-NEXT:    %58 = stablehlo.iota dim = 0 : tensor<8x256x1xi64>
-// CHECK-NEXT:    %59 = stablehlo.reshape %58 : (tensor<8x256x1xi64>) -> tensor<2048x1xi64>
-// CHECK-NEXT:    %60 = stablehlo.broadcast_in_dim %57, dims = [1, 0] : (tensor<256x1xi64>) -> tensor<8x256xi64>
-// CHECK-NEXT:    %61 = stablehlo.reshape %60 : (tensor<8x256xi64>) -> tensor<2048x1xi64>
-// CHECK-NEXT:    %62 = stablehlo.concatenate %59, %61, dim = 1 : (tensor<2048x1xi64>, tensor<2048x1xi64>) -> tensor<2048x2xi64>
-// CHECK-NEXT:    %63 = stablehlo.reshape %52 : (tensor<8x16x16xf64>) -> tensor<2048xf64>
-// CHECK-NEXT:    %64 = "stablehlo.scatter"(%arg1, %62, %63) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0, 1], scatter_dims_to_operand_dims = [0, 1], index_vector_dim = 1>, unique_indices = true}> ({
+// CHECK-NEXT:    %57 = stablehlo.broadcast_in_dim %56, dims = [1, 2] : (tensor<16x16xi64>) -> tensor<8x16x16x1xi64>
+// CHECK-NEXT:    %58 = stablehlo.iota dim = 0 : tensor<8x16x16x1xi64>
+// CHECK-NEXT:    %59 = stablehlo.concatenate %58, %57, dim = 3 : (tensor<8x16x16x1xi64>, tensor<8x16x16x1xi64>) -> tensor<8x16x16x2xi64>
+// CHECK-NEXT:    %60 = stablehlo.reshape %59 : (tensor<8x16x16x2xi64>) -> tensor<2048x2xi64>
+// CHECK-NEXT:    %61 = stablehlo.reshape %52 : (tensor<8x16x16xf64>) -> tensor<2048xf64>
+// CHECK-NEXT:    %62 = "stablehlo.scatter"(%arg1, %60, %61) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0, 1], scatter_dims_to_operand_dims = [0, 1], index_vector_dim = 1>, unique_indices = true}> ({
 // CHECK-NEXT:    ^bb0(%arg2: tensor<f64>, %arg3: tensor<f64>):
 // CHECK-NEXT:      stablehlo.return %arg3 : tensor<f64>
 // CHECK-NEXT:    }) : (tensor<8x256xf64>, tensor<2048x2xi64>, tensor<2048xf64>) -> tensor<8x256xf64>
-// CHECK-NEXT:    return %arg0, %64 : tensor<20x50x50xf64>, tensor<8x256xf64>
+// CHECK-NEXT:    return %arg0, %62 : tensor<20x50x50xf64>, tensor<8x256xf64>
 // CHECK-NEXT:  }
