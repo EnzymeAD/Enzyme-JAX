@@ -228,6 +228,107 @@ struct GPUWrapperOpInterfaceReverse
                           MGradientUtilsReverse *gutils) const {}
 };
 
+struct SVDFactorizationOpInterfaceReverse
+    : public ReverseAutoDiffOpInterface::ExternalModel<
+          SVDFactorizationOpInterfaceReverse, SVDFactorizationOp> {
+  LogicalResult createReverseModeAdjoint(Operation *op, OpBuilder &builder,
+                                         MGradientUtilsReverse *gutils,
+                                         SmallVector<Value> caches) const {
+    auto op = cast<SVDFactorizationOp>(op);
+    auto A = op.getA();
+    auto U = gutils->getNewFromOriginal(op.getU());
+    auto S = gutils->getNewFromOriginal(op.getS());
+    auto Vt = gutils->getNewFromOriginal(op.getVt());
+    auto Ubar = gutils->diffe(op.getResult(0), builder);
+    auto Sbar = gutils->diffe(op.getResult(1), builder);
+    auto Vtbar = gutils->diffe(op.getResult(2), builder);
+
+    auto type_A = cast<RankedTensorType>(A.getType());
+    auto rank = type_A.getRank();
+
+    SmallVector<int64_t> perm;
+    for (int64_t i = 0; i < rank - 2; ++i) {
+      perm.push_back(i);
+    }
+    perm.push_back(rank - 1);
+    perm.push_back(rank - 2);
+
+    auto transpose = [&](Value x) -> Value {
+      return stablehlo::TransposeOp::create(
+          builder, x.getLoc(), chlo::ConjOp::create(builder, x.getLoc(), x),
+          perm);
+    };
+    auto matmul = [&](Value a, Value b) -> Value {
+      return enzymexla::GemmOp::create(builder, a.getLoc(), a, b);
+    };
+    auto add = [&](Value a, Value b) -> Value {
+      return stablehlo::AddOp::create(builder, a.getLoc(), a, b);
+    };
+    auto subtract = [&](Value a, Value b) -> Value {
+      return stablehlo::SubtractOp::create(builder, a.getLoc(), a, b);
+    };
+    auto mul = [&](Value a, Value b) -> Value {
+      return stablehlo::MulOp::create(builder, a.getLoc(), a, b);
+    };
+
+    // X = UᵀŪ - ŪᵀU
+    auto X = subtract(matmul(transpose(U), Ubar), matmul(transpose(Ubar), U));
+
+    // Y = VᵀV̄ - V̄ᵀV
+    // NOTE don't worry about extra transpose/conj here. they will be opt away
+    auto V = transpose(Vt);
+    auto Vbar = transpose(Vtbar);
+    auto Y = subtract(matmul(transpose(V), Vbar), matmul(transpose(Vbar), V));
+
+    // TODO F₊[i,j] = 1/(s[j]-s[i]) + 1/(s[j]+s[i]) if i != j else 0
+
+    // TODO F₋[i,j] = 1/(s[j]-s[i]) - 1/(s[j]+s[i]) if i != j else 0
+
+    // Z = F₊ .* X + F₋ .* Y
+    auto Z = add(mul(Fplus, X), mul(Fminus, Y));
+
+    // Ā = 1/2 * U * Z * Vᵀ
+    auto half = stablehlo::ConstantOp::create(
+        builder, op.getLoc(), U.getType(),
+        cast<ElementsAttr>(makeAttr(U.getType(), 0.5)));
+    auto Abar1 = matmul(matmul(mul(half, U), Z), transpose(V));
+
+    // Ā += U * S̄ * Vᵀ
+    auto dotDimsAttr = stablehlo::DotDimensionNumbersAttr::get(
+        builder.getContext(), {rank - 1}, {rank - 2}, {}, {});
+    auto USbar = stablehlo::DotGeneralOp::create(builder, op.getLoc(), U, Sbar,
+                                                 dotDimsAttr, nullptr, nullptr);
+    auto Abar2 = add(Abar1, matmul(USbar, transpose(V)));
+
+    // Ā += (I - U * Uᵀ) * Ū * inv(S) * Vᵀ
+    // TODO auto identity = ...;
+    // TODO auto invS = ...;
+    auto Abar3 = add(
+        Abar2,
+        matmul(matmul(matmul(subtract(identity, matmul(U, transpose(U))), Ubar),
+                      invS),
+               transpose(V)));
+
+    // TODO Ā += U * inv(S) * V̄ᵀ * (I - V * Vᵀ)
+    auto Abar4 = add(
+        Abar3,
+        matmul(U, matmul(invS,
+                         matmul(transpose(Vbar),
+                                subtract(identity, matmul(V, transpose(V)))))));
+
+    gutils->addToDiffe(op.getOperand(), Abar4, builder);
+    return success();
+  }
+
+  SmallVector<Value> cacheValues(Operation *op,
+                                 MGradientUtilsReverse *gutils) const {
+    return {};
+  }
+
+  void createShadowValues(Operation *op, OpBuilder &builder,
+                          MGradientUtilsReverse *gutils) const {}
+};
+
 } // namespace
 
 void mlir::enzyme::registerEnzymeXLADialectAutoDiffInterface(
@@ -236,6 +337,8 @@ void mlir::enzyme::registerEnzymeXLADialectAutoDiffInterface(
     registerInterfaces(context);
     GPUWrapperOp::attachInterface<GPUWrapperOpInterfaceReverse>(*context);
     GPUWrapperOp::attachInterface<GPUWrapperOpEnzymeOpsRemover>(*context);
+    SVDFactorizationOp::attachInterface<SVDFactorizationOpInterfaceReverse>(
+        *context);
 
     Pointer2MemrefOp::attachInterface<
         ViewCastOpInterfaceReverse<Pointer2MemrefOp>>(*context);
