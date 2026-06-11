@@ -261,11 +261,13 @@ struct QRFactorizationOpInterfaceReverse
 
     // X = Q̄ + Q * copyltu(M)
     // do not copy triangular lower to upper part... just do symm
+    auto type_scalar = RankedTensorType::get({}, elemType);
     auto beta = stablehlo::ConstantOp::create(
-        builder, op->getLoc(), RankedTensorType::get({}, elemType),
-        cast<ElementsAttr>(makeAttr(RankedTensorType::get({}, elemType), 0)));
-    auto C = stablehlo::ConstantOp::create(builder, op.getLoc(),
-                                           builder.getZeroAttr(Q.getType()));
+        builder, op->getLoc(), type_scalar,
+        cast<ElementsAttr>(makeAttr(type_scalar, 0)));
+    auto C = stablehlo::ConstantOp::create(
+        builder, op->getLoc(), Q.getType(),
+        cast<ElementsAttr>(makeAttr(Q.getType(), 0)));
     auto QMulM = enzymexla::SymmOp::create(
         builder, op.getLoc(), C.getType(), M, Q, C, alpha, beta,
         /*side=*/enzymexla::LapackSide::right,
