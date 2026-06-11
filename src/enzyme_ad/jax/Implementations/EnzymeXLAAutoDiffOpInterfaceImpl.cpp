@@ -235,51 +235,54 @@ struct QRFactorizationOpInterfaceReverse
                                          MGradientUtilsReverse *gutils,
                                          SmallVector<Value> caches) const {
     auto op = cast<QRFactorizationOp>(orig);
-    auto Q = op.getQ();
-    auto R = op.getR();
-    auto Qbar = gutils->getNewFromOriginal(Q);
-    auto Rbar = gutils->getNewFromOriginal(R);
+    auto Q = gutils->getNewFromOriginal(op.getQ());
+    auto R = gutils->getNewFromOriginal(op.getR());
+    auto Qbar = gutils->diffe(Q, builder);
+    auto Rbar = gutils->diffe(R, builder);
 
-    auto elemType = Q.getType().cast<RankedTensorType>().getElementType();
+    auto elemType = cast<RankedTensorType>(Q.getType()).getElementType();
 
     // create M = R̄ / R^dag - Q̄^dag * Q
     auto alpha = stablehlo::ConstantOp::create(
-        builder, op->getLoc(), RankedTensorType::get({n}, elemType),
-        cast<ElementsAttr>(makeAttr(RankedTensorType::get({n}, elemType), 1)));
+        builder, op.getLoc(), RankedTensorType::get({}, elemType),
+        cast<ElementsAttr>(makeAttr(RankedTensorType::get({}, elemType), 1)));
     auto RbarDivR = enzymexla::TrsmOp::create(
-        op.getLoc(), alpha, R, Rbar,
+        builder, op.getLoc(), R.getType(), alpha, R, Rbar,
         /*side=*/enzymexla::LapackSide::right,
-        /*uplo=*/enzymexla::LapackUplo::upper,
+        /*uplo=*/enzymexla::LapackUplo::U,
         /*transa=*/enzymexla::LapackTranspose::adjoint,
         /*unit_diagonal=*/false);
 
     auto QbarDagMulQ = enzymexla::GemmOp::create(
-        op.getLoc(), Qbar, Q, enzymexla::LapackTranspose::adjoint);
+        builder, op.getLoc(), Qbar, Q, enzymexla::LapackTranspose::adjoint);
 
-    auto M = stablehlo::SubOp::create(op.getLoc(), RbarDivR, QbarDagMulQ);
+    auto M = stablehlo::SubtractOp::create(builder, op.getLoc(), RbarDivR,
+                                           QbarDagMulQ);
 
     // X = Q̄ + Q * copyltu(M)
     // do not copy triangular lower to upper part... just do symm
     auto beta = stablehlo::ConstantOp::create(
         builder, op->getLoc(), RankedTensorType::get({}, elemType),
         cast<ElementsAttr>(makeAttr(RankedTensorType::get({}, elemType), 0)));
-    auto C = stablehlo::ConstantOp::create(op.getLoc(),
+    auto C = stablehlo::ConstantOp::create(builder, op.getLoc(),
                                            builder.getZeroAttr(Q.getType()));
-    auto QMulM =
-        enzymexla::SymmOp::create(op.getLoc(), M, Q, C, alpha, beta,
-                                  /*side=*/enzymexla::LapackSide::right,
-                                  /*uplo=*/enzymexla::LapackUplo::lower);
+    auto QMulM = enzymexla::SymmOp::create(
+        builder, op.getLoc(), C.getType(), M, Q, C, alpha, beta,
+        /*side=*/enzymexla::LapackSide::right,
+        /*uplo=*/enzymexla::LapackUplo::L);
 
-    auto X = stablehlo::AddOp::create(op.getLoc(), Qbar, QMulM);
+    auto X = stablehlo::AddOp::create(builder, op.getLoc(), Qbar, QMulM);
 
     // Ā = X / R^dag
     auto Abar = enzymexla::TrsmOp::create(
-        op.getLoc(), alpha, R, X,
+        builder, op.getLoc(), X.getType(), alpha, R, X,
         /*side=*/enzymexla::LapackSide::right,
-        /*uplo=*/enzymexla::LapackUplo::upper,
+        /*uplo=*/enzymexla::LapackUplo::U,
         /*transa=*/enzymexla::LapackTranspose::adjoint,
         /*unit_diagonal=*/false);
-    gutils->setOutputGradient(Abar.getResult(), 0);
+
+    gutils->addToDiffe(op.getOperand(), Abar, builder);
+    return success();
   }
 
   SmallVector<Value> cacheValues(Operation *op,
