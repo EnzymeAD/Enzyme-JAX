@@ -237,8 +237,8 @@ struct QRFactorizationOpInterfaceReverse
     auto op = cast<QRFactorizationOp>(orig);
     auto Q = gutils->getNewFromOriginal(op.getQ());
     auto R = gutils->getNewFromOriginal(op.getR());
-    auto Qbar = gutils->diffe(Q, builder);
-    auto Rbar = gutils->diffe(R, builder);
+    auto Qbar = gutils->diffe(op.getResult(0), builder);
+    auto Rbar = gutils->diffe(op.getResult(1), builder);
 
     auto elemType = cast<RankedTensorType>(Q.getType()).getElementType();
 
