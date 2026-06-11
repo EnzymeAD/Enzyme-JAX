@@ -2251,7 +2251,18 @@ struct MoveSIToFPToAffine : public OpRewritePattern<arith::SIToFPOp> {
     auto *parentScope = scope->getParentOp();
     DominanceInfo DI(parentScope);
 
-    fully2ComposeAffineMapAndOperands(rewriter, &map, &operands, DI, scope);
+    SmallVector<Operation *> insertedOps;
+    fully2ComposeAffineMapAndOperands(rewriter, &map, &operands, DI, scope,
+                                      &insertedOps);
+
+    if (map.getNumResults() == 1 &&
+        map.getResult(0).getKind() == AffineExprKind::SymbolId) {
+      for (Operation *op : llvm::reverse(insertedOps))
+        if (op->use_empty())
+          rewriter.eraseOp(op);
+      return failure();
+    }
+
     affine::canonicalizeMapAndOperands(&map, &operands);
     map = recreateExpr(map);
 
