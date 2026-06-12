@@ -64,6 +64,8 @@ def DefineOp : TesseraOp<"define", [
     /// compatible.
     void cloneInto(DefineOp dest, IRMapping &mapper);
 
+    ::mlir::Attribute getSretAttr();
+
     //===------------------------------------------------------------------===//
     // FunctionOpInterface Methods
     //===------------------------------------------------------------------===//
@@ -78,6 +80,11 @@ def DefineOp : TesseraOp<"define", [
 
     /// Returns the result types of this function.
     ArrayRef<Type> getResultTypes() { return getFunctionType().getResults(); }
+
+    /// Returns the argument attribute at the given index, accounting for the
+    /// sret argument offset if present.
+    ::mlir::Attribute getArgAttr(unsigned index, mlir::StringAttr name);
+    ::mlir::Attribute getArgAttr(unsigned index, llvm::StringRef name);
 
     //===------------------------------------------------------------------===//
     // SymbolOpInterface Methods

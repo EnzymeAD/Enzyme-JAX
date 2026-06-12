@@ -191,8 +191,7 @@ public:
     // type as the SSA return type, since tessera.call returns values directly
     // rather than writing through a pointer.
     if (!operands.empty() && argAttrs) {
-      if (auto sretAttr = defineOp.getArgAttr(
-              0, LLVM::LLVMDialect::getStructRetAttrName())) {
+      if (auto sretAttr = defineOp.getSretAttr()) {
         sretPtr = callOp.getOperand(0);
         sretType = cast<TypeAttr>(sretAttr).getValue();
         // Build arg attrs without first element
@@ -218,9 +217,8 @@ public:
     // byVal attribute or was marked as byRef by the user, load the value
     // from the pointer and store that as the new operand
     int argOffset = sretPtr ? 1 : 0;
-    for (int i = argOffset; i < operands.size(); i++) {
-      auto operand = callOp.getOperand(i);
-      int argIdx = i - argOffset;
+    for (unsigned i = 0; i < operands.size() - argOffset; i++) {
+      auto operand = callOp.getOperand(i + argOffset);
 
       if (!isa<LLVM::LLVMPointerType>(operand.getType())) {
         newOperands.push_back(operand);
@@ -232,16 +230,15 @@ public:
       if (auto byValAttr =
               defineOp.getArgAttr(i, LLVM::LLVMDialect::getByValAttrName())) {
         pointeeType = cast<TypeAttr>(byValAttr).getValue();
-      } else if (byRefArgs[argIdx]) {
-        pointeeType =
-            IntegerType::get(rewriter.getContext(), argSizes[argIdx] * 8);
+      } else if (byRefArgs[i]) {
+        pointeeType = IntegerType::get(rewriter.getContext(), argSizes[i] * 8);
       }
 
       if (pointeeType) {
         auto loadedVal = LLVM::LoadOp::create(rewriter, callOp.getLoc(),
                                               pointeeType, operand);
         newOperands.push_back(loadedVal);
-        loadedOperands.push_back(argIdx);
+        loadedOperands.push_back(i);
       } else {
         newOperands.push_back(operand);
       }

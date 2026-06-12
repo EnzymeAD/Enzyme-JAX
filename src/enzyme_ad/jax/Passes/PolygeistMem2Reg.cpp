@@ -25,7 +25,6 @@
 #include "mlir/Support/LLVM.h"
 #include "mlir/Transforms/Passes.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
-#include "src/enzyme_ad/jax/Dialect/Tessera/Dialect.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "src/enzyme_ad/jax/Utils.h"
 #include "llvm/ADT/SetVector.h"
@@ -1154,29 +1153,23 @@ Value castToType(Type elType, Value val, Operation *op) {
   llvm_unreachable("mismatched type");
 }
 
-// Check if tessera call captures alloca instance by checking for llvm.nocapture
+// Check if call captures alloca instance by checking for llvm.nocapture
 // attribute
-bool isTesseraCallNonCapturing(tessera::CallOp callOp, Value val) {
-  auto calleeAttr = callOp.getCalleeAttr();
+bool isCallNonCapturing(CallOpInterface callOp, Value val) {
+  auto calleeAttr = dyn_cast<SymbolRefAttr>(callOp.getCallableForCallee());
   if (calleeAttr) {
     auto callee = SymbolTable::lookupSymbolIn(
         callOp->getParentOfType<ModuleOp>(), calleeAttr);
-    auto defineOp = dyn_cast_or_null<tessera::DefineOp>(callee);
-    if (!defineOp)
+    auto fn = dyn_cast_or_null<FunctionOpInterface>(callee);
+    if (!fn)
       return false;
-
-    int offset = 0;
-    if (defineOp.getNumArguments() > 0 &&
-        defineOp.getArgAttr(0, LLVM::LLVMDialect::getStructRetAttrName()))
-      offset = 1;
 
     // Find operand that matches value of alloca we are trying to promote and
     // check for attributes
-    auto operands = callOp.getOperands();
+    auto operands = callOp.getArgOperands();
     for (int i = 0; i < operands.size(); i++) {
-      if (callOp.getOperand(i) == val) {
-        if (defineOp.getArgAttr(i + offset,
-                                LLVM::LLVMDialect::getNoCaptureAttrName()))
+      if (operands[i] == val) {
+        if (fn.getArgAttr(i, LLVM::LLVMDialect::getNoCaptureAttrName()))
           return true;
       }
     }
@@ -1353,31 +1346,14 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
           AliasingStoreOperations.insert(storeOp);
         continue;
       }
-      if (auto callOp = dyn_cast<func::CallOp>(user)) {
-        if (callOp.getCallee() != "free") {
-          LLVM_DEBUG(llvm::dbgs() << "Aliasing Store: " << callOp << "\n");
-          AliasingStoreOperations.insert(callOp);
-          if (!getNonCapturingFunctions().count(callOp.getCallee().str()))
-            captured = true;
-        }
-        continue;
-      }
-      if (auto callOp = dyn_cast<mlir::LLVM::CallOp>(user)) {
-        if (!callOp.getCallee() || *callOp.getCallee() != "free") {
-          LLVM_DEBUG(llvm::dbgs() << "Aliasing Store: " << callOp << "\n");
-          AliasingStoreOperations.insert(callOp);
-          if (!callOp.getCallee() ||
-              !getNonCapturingFunctions().count(callOp.getCallee()->str()))
-            captured = true;
-        }
-        continue;
-      }
-      if (auto callOp = dyn_cast<tessera::CallOp>(user)) {
-        if (callOp.getCallee() != "free") {
-          if (!isTesseraCallNonCapturing(callOp, val)) {
+      if (auto callOp = dyn_cast<CallOpInterface>(user)) {
+        auto callee = dyn_cast<SymbolRefAttr>(callOp.getCallableForCallee());
+        if (!callee || callee.getLeafReference() != "free") {
+          if (!isCallNonCapturing(callOp, val)) {
             LLVM_DEBUG(llvm::dbgs() << "Aliasing Store: " << callOp << "\n");
-            AliasingStoreOperations.insert(callOp);
-            if (!getNonCapturingFunctions().count(callOp.getCallee().str()))
+            AliasingStoreOperations.insert(callOp.getOperation());
+            if (!callee || !getNonCapturingFunctions().count(
+                               callee.getLeafReference().str()))
               captured = true;
           }
         }
@@ -1958,17 +1934,13 @@ bool isPromotable(mlir::Value AI) {
         continue;
       } else if (isa<memref::DeallocOp>(U)) {
         continue;
-      } else if (auto callOp = dyn_cast<func::CallOp>(U)) {
-        if (getNonCapturingFunctions().count(callOp.getCallee().str()))
-          continue;
-      } else if (auto callOp = dyn_cast<LLVM::CallOp>(U)) {
-        if (auto callee = callOp.getCallee())
-          if (getNonCapturingFunctions().count(callee->str()))
+      } else if (auto callOp = dyn_cast<CallOpInterface>(U)) {
+        if (StringAttr callee =
+                dyn_cast<SymbolRefAttr>(callOp.getCallableForCallee())
+                    .getLeafReference())
+          if (isCallNonCapturing(callOp, val) ||
+              getNonCapturingFunctions().count(callee.str()))
             continue;
-      } else if (auto callOp = dyn_cast<tessera::CallOp>(U)) {
-        if (isTesseraCallNonCapturing(callOp, val) ||
-            getNonCapturingFunctions().count(callOp.getCallee().str()))
-          continue;
       } else if (auto CO = dyn_cast<memref::CastOp>(U)) {
         list.push_back(CO);
       } else if (auto CO = dyn_cast<Memref2PointerOp>(U)) {
