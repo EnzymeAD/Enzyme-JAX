@@ -1001,6 +1001,11 @@ def CompareOpCanonPatterns : EnzymeHLOPatternOp<
   let patterns = ["CompareOpCanon"];
 }
 
+def CompareBoolConstPatterns : EnzymeHLOPatternOp<
+    "compare_bool_const"> {
+  let patterns = ["CompareBoolConst"];
+}
+
 def CompareExtPatterns : EnzymeHLOPatternOp<
     "compare_ext"> {
   let patterns = ["CompareExt"];
