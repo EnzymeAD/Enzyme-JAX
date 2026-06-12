@@ -827,10 +827,13 @@ NoNanResultAnalysis::State NoNanResultAnalysis::localGuaranteed(
     recursiveCheck = true;
     operandsToCheck.push_back(op->getOperand(1));
     operandsToCheck.push_back(op->getOperand(2));
-  } else if (isa<stablehlo::DynamicSliceOp, stablehlo::DynamicUpdateSliceOp>(
-                 op)) {
+  } else if (isa<stablehlo::DynamicSliceOp>(op)) {
     recursiveCheck = true;
     operandsToCheck.push_back(op->getOperand(0));
+  } else if (isa<stablehlo::DynamicUpdateSliceOp>(op)) {
+    recursiveCheck = true;
+    operandsToCheck.push_back(op->getOperand(0));
+    operandsToCheck.push_back(op->getOperand(1));
   }
 
   if (recursiveCheck) {
@@ -895,10 +898,13 @@ FiniteResultAnalysis::State FiniteResultAnalysis::localGuaranteed(
     recursiveCheck = true;
     operandsToCheck.push_back(op->getOperand(1));
     operandsToCheck.push_back(op->getOperand(2));
-  } else if (isa<stablehlo::DynamicSliceOp, stablehlo::DynamicUpdateSliceOp>(
-                 op)) {
+  } else if (isa<stablehlo::DynamicSliceOp>(op)) {
     recursiveCheck = true;
     operandsToCheck.push_back(op->getOperand(0));
+  } else if (isa<stablehlo::DynamicUpdateSliceOp>(op)) {
+    recursiveCheck = true;
+    operandsToCheck.push_back(op->getOperand(0));
+    operandsToCheck.push_back(op->getOperand(1));
   }
 
   if (recursiveCheck) {
@@ -1015,10 +1021,13 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
     recursiveCheck = true;
     operandsToCheck.push_back(op->getOperand(1));
     operandsToCheck.push_back(op->getOperand(2));
-  } else if (isa<stablehlo::DynamicSliceOp, stablehlo::DynamicUpdateSliceOp>(
-                 op)) {
+  } else if (isa<stablehlo::DynamicSliceOp>(op)) {
     recursiveCheck = true;
     operandsToCheck.push_back(op->getOperand(0));
+  } else if (isa<stablehlo::DynamicUpdateSliceOp>(op)) {
+    recursiveCheck = true;
+    operandsToCheck.push_back(op->getOperand(0));
+    operandsToCheck.push_back(op->getOperand(1));
   }
 
   if (recursiveCheck) {
@@ -1078,10 +1087,13 @@ PurelyRealResultAnalysis::State PurelyRealResultAnalysis::localGuaranteed(
     recursiveCheck = true;
     operandsToCheck.push_back(op->getOperand(1));
     operandsToCheck.push_back(op->getOperand(2));
-  } else if (isa<stablehlo::DynamicSliceOp, stablehlo::DynamicUpdateSliceOp>(
-                 op)) {
+  } else if (isa<stablehlo::DynamicSliceOp>(op)) {
     recursiveCheck = true;
     operandsToCheck.push_back(op->getOperand(0));
+  } else if (isa<stablehlo::DynamicUpdateSliceOp>(op)) {
+    recursiveCheck = true;
+    operandsToCheck.push_back(op->getOperand(0));
+    operandsToCheck.push_back(op->getOperand(1));
   }
 
   if (recursiveCheck) {
@@ -1132,10 +1144,13 @@ PurelyImagResultAnalysis::State PurelyImagResultAnalysis::localGuaranteed(
     recursiveCheck = true;
     operandsToCheck.push_back(op->getOperand(1));
     operandsToCheck.push_back(op->getOperand(2));
-  } else if (isa<stablehlo::DynamicSliceOp, stablehlo::DynamicUpdateSliceOp>(
-                 op)) {
+  } else if (isa<stablehlo::DynamicSliceOp>(op)) {
     recursiveCheck = true;
     operandsToCheck.push_back(op->getOperand(0));
+  } else if (isa<stablehlo::DynamicUpdateSliceOp>(op)) {
+    recursiveCheck = true;
+    operandsToCheck.push_back(op->getOperand(0));
+    operandsToCheck.push_back(op->getOperand(1));
   }
 
   if (recursiveCheck) {
