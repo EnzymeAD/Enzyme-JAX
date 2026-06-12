@@ -51,8 +51,7 @@ jobs:
           - 'main'
 
         reactant_commit:
-          - 'main'
-          - 'multipad'
+          - 'eraising'
         grid:
           - '--float-type=Float64'
           - '--float-type=Float32'
