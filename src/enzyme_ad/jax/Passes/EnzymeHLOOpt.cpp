@@ -13662,8 +13662,9 @@ struct CompareBoolConst final
       Value boolVal = op->getOperand(1 - i);
 
       // Normalise so boolVal is always the notional left operand.
-      ComparisonDirection dir = (i == 0) ? invertDirection(op.getComparisonDirection())
-                                         : op.getComparisonDirection();
+      ComparisonDirection dir =
+          (i == 0) ? invertDirection(op.getComparisonDirection())
+                   : op.getComparisonDirection();
 
       bool isZero = matchPattern(constVal, m_Zero());
       bool isOne = matchPattern(constVal, m_AllOnes());
@@ -13690,8 +13691,8 @@ struct CompareBoolConst final
         case ComparisonDirection::GE:
           // x >= false -> true
           rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-              op, SplatElementsAttr::get(op.getType(),
-                                        rewriter.getBoolAttr(true)));
+              op,
+              SplatElementsAttr::get(op.getType(), rewriter.getBoolAttr(true)));
           return success();
         }
       }
@@ -13716,8 +13717,8 @@ struct CompareBoolConst final
         case ComparisonDirection::LE:
           // x <= true -> true
           rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-              op, SplatElementsAttr::get(op.getType(),
-                                        rewriter.getBoolAttr(true)));
+              op,
+              SplatElementsAttr::get(op.getType(), rewriter.getBoolAttr(true)));
           return success();
         }
       }
