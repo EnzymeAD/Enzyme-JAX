@@ -43,7 +43,6 @@
 #include <isl/set.h>
 #include <isl/space.h>
 #include <isl/val.h>
-#include <limits>
 #include <optional>
 
 namespace mlir {
@@ -881,18 +880,18 @@ emitIfAsSelect(Operation *ifOp, Value cond, affine::AffineValueMap map,
   return success();
 }
 
-// Builds a flat `[product, numColumns]` index tensor from per-dimension index
+// Builds a `[gridShape..., numColumns]` index tensor from per-dimension index
 // columns, deduplicating induction variables: when the same IV indexes more
 // than one column, the columns share a single grid axis instead of forming a
 // cartesian product. `ivs` is filled with the distinct IVs (one per grid axis,
 // in first-appearance order) and `gridShape` with the extent of each axis.
-// Returns nullptr (and sets *overflow) if the flattened index count overflows;
-// the overflow check is only performed when `overflow` is non-null.
+// The grid axes are kept multi-dimensional (used as implicit batch dims with
+// index_vector_dim = rank - 1) rather than flattened to a single dimension,
+// whose extent could overflow for large grids.
 static Value buildGatherScatterIndices(
     Location loc, ValueRange indexColumns, OpBuilder &builder,
     llvm::DenseMap<Value, affine::AffineValueMap> &maps,
-    SmallVectorImpl<Value> &ivs, SmallVectorImpl<int64_t> &gridShape,
-    bool *overflow = nullptr) {
+    SmallVectorImpl<Value> &ivs, SmallVectorImpl<int64_t> &gridShape) {
   Value indices = nullptr;
 
   for (auto raisedIdx : indexColumns) {
@@ -979,21 +978,6 @@ static Value buildGatherScatterIndices(
     }
   }
 
-  auto Ty = cast<RankedTensorType>(indices.getType());
-  SmallVector<int64_t> productOfIndices = {1, (int64_t)indexColumns.size()};
-
-  for (auto s : Ty.getShape().drop_back()) {
-    if (overflow && s != 0 &&
-        productOfIndices[0] > std::numeric_limits<int64_t>::max() / s) {
-      *overflow = true;
-      return nullptr;
-    }
-    productOfIndices[0] *= s;
-  }
-
-  indices = stablehlo::ReshapeOp::create(builder, loc,
-                                         Ty.clone(productOfIndices), indices);
-
   return indices;
 }
 
@@ -1012,6 +996,8 @@ emitLoadAsGather(Location loc, Value mappedMemref, ValueRange lIndices,
   Value indices =
       buildGatherScatterIndices(loc, lIndices, builder, maps, ivs, outputShape);
 
+  // The grid axes of `indices` act as implicit batch dimensions, so the
+  // gather result directly has shape `outputShape`.
   Value res =
       stablehlo::GatherOp::create(builder, loc, mappedMemref, indices,
                                   stablehlo::GatherDimensionNumbersAttr::get(
@@ -1021,11 +1007,9 @@ emitLoadAsGather(Location loc, Value mappedMemref, ValueRange lIndices,
                                       /*operandBatchingDims*/ {},
                                       /*startIndicesBatchingDims*/ {},
                                       /*startIndexMap*/ startIndexMap,
-                                      /*indexVectorDim*/ 1),
+                                      /*indexVectorDim*/
+                                      (int64_t)outputShape.size()),
                                   sliceSizes);
-
-  auto OT = cast<RankedTensorType>(res.getType());
-  res = stablehlo::ReshapeOp::create(builder, loc, OT.clone(outputShape), res);
 
   affine::AffineValueMap outputMap(
       AffineMap::getMultiDimIdentityMap(ivs.size(), loc.getContext()), ivs);
@@ -1038,8 +1022,7 @@ emitLoadAsGather(Location loc, Value mappedMemref, ValueRange lIndices,
 static Value
 emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
                    OpBuilder &builder,
-                   llvm::DenseMap<Value, affine::AffineValueMap> &maps,
-                   bool *overflow = nullptr) {
+                   llvm::DenseMap<Value, affine::AffineValueMap> &maps) {
   affine::AffineValueMap updateValueMap = maps.lookup(update);
 
   auto UTy = cast<RankedTensorType>(update.getType());
@@ -1049,10 +1032,8 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
   // dimensions reuses a single axis instead of forming a cartesian product.
   SmallVector<Value> ivs;
   SmallVector<int64_t> gridShape;
-  Value indices = buildGatherScatterIndices(loc, sIndices, builder, maps, ivs,
-                                            gridShape, overflow);
-  if (!indices)
-    return nullptr;
+  Value indices =
+      buildGatherScatterIndices(loc, sIndices, builder, maps, ivs, gridShape);
 
   SmallVector<int64_t> scatterDimsToOperandDims;
   for (int64_t i = 0, e = sIndices.size(); i < e; ++i)
@@ -1079,16 +1060,10 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
     return nullptr;
   }
 
-  // Align update to the store indices grid, then flatten to match `indices`.
+  // Align update to the store indices grid; the grid axes act as implicit
+  // batch dimensions of the scatter.
   update = stablehlo::BroadcastInDimOp::create(
       builder, loc, UTy.clone(gridShape), update, broadcastDims);
-
-  update = stablehlo::ReshapeOp::create(
-      builder, loc,
-      RankedTensorType::get(
-          {cast<RankedTensorType>(indices.getType()).getShape()[0]},
-          UTy.getElementType()),
-      update);
 
   auto Ty = cast<RankedTensorType>(input.getType());
   stablehlo::ScatterOp scatter = stablehlo::ScatterOp::create(
@@ -1101,7 +1076,7 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
           /*inputBatchingDims*/ {},
           /*scatterIndicesBatchingDims*/ {},
           /*scatterDimsToOperandDims*/ scatterDimsToOperandDims,
-          /*indexVectorDim*/ 1),
+          /*indexVectorDim*/ (int64_t)gridShape.size()),
       /*indicesAreSorted*/ false,
       /*uniqueIndices*/ true); // Indices must be unique because otherwise the
                                // original program had a race [writing to the
@@ -2157,14 +2132,10 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
         sIndices.push_back(expandedIndex);
       }
 
-      bool overflow = false;
       Value res = emitStoreAsScatter(
           rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
-          update, operand, sIndices, builder, maps, &overflow);
+          update, operand, sIndices, builder, maps);
       if (!res) {
-        if (overflow) {
-          return op->emitError("scatter index size overflow during raising");
-        }
         auto err = op->emitError("affine.store (scatter) is dependent on "
                                  "less dims than stored value: ")
                    << *op;
@@ -2699,15 +2670,10 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     for (auto idx : storeOp.getIndices())
       sIndices.push_back(mapping.lookup(idx));
 
-    bool overflow = false;
     Value res = emitStoreAsScatter(
         rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
-        mapping.lookup(value), mapping.lookup(memref), sIndices, builder, maps,
-        &overflow);
+        mapping.lookup(value), mapping.lookup(memref), sIndices, builder, maps);
     if (!res) {
-      if (overflow) {
-        return op->emitError("scatter index size overflow during raising");
-      }
       return op->emitError(
                  "memref.store is dependent on less dims than stored value: ")
              << *op;
