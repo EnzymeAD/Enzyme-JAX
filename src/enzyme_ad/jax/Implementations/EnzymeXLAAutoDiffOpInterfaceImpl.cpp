@@ -244,6 +244,7 @@ struct SVDFactorizationOpInterfaceReverse
     auto Vtbar = gutils->diffe(op.getResult(2), builder);
 
     auto type_A = cast<RankedTensorType>(A.getType());
+    auto type_elem = type_A.getElementType();
     auto rank = type_A.getRank();
 
     SmallVector<int64_t> perm;
@@ -280,9 +281,53 @@ struct SVDFactorizationOpInterfaceReverse
     auto Vbar = transpose(Vtbar);
     auto Y = subtract(matmul(transpose(V), Vbar), matmul(transpose(Vbar), V));
 
-    // TODO F₊[i,j] = 1/(s[j]-s[i]) + 1/(s[j]+s[i]) if i != j else 0
+    // F₊[i,j] = 1/(s[j]-s[i]) + 1/(s[j]+s[i]) if i != j else 0
+    // F₋[i,j] = 1/(s[j]-s[i]) - 1/(s[j]+s[i]) if i != j else 0
+    SmallVector<int64_t> shape;
+    shape.append(cast<RankedTensorType>(S.getType()).getShape());
+    shape.push_back(shape.back());
 
-    // TODO F₋[i,j] = 1/(s[j]-s[i]) - 1/(s[j]+s[i]) if i != j else 0
+    SmallVector<int64_t> broadcastDims_j;
+    for (int64_t i = 0; i < rank - 2; i++)
+      broadcastDims_j.push_back(i);
+    broadcastDims_j.push_back(rank - 1);
+    auto sj = stablehlo::BroadcastInDimOp::create(builder, op.getLoc(), shape,
+                                                  S, broadcastDims_j);
+
+    SmallVector<int64_t> broadcastDims_i;
+    for (int64_t i = 0; i < rank - 1; i++)
+      broadcastDims_i.push_back(i);
+    auto si = stablehlo::BroadcastInDimOp::create(builder, op.getLoc(), shape,
+                                                  S, broadcastDims_i);
+
+    auto sj_sub_si = subtract(sj, si);
+    auto sj_add_si = add(sj, si);
+
+    auto one = stablehlo::ConstantOp::create(
+        builder, op.getLoc(), sj_sub_si.getType(),
+        cast<ElementsAttr>(makeAttr(sj_sub_si.getType(), 1)));
+    auto reciprocal_sj_sub_si =
+        stablehlo::DivOp::create(builder, op.getLoc(), one, sj_sub_si);
+    auto reciprocal_sj_add_si =
+        stablehlo::DivOp::create(builder, op.getLoc(), one, sj_add_si);
+
+    auto iota_j =
+        stablehlo::IotaOp::create(builder, op.getLoc(), shape, rank - 1);
+    auto iota_i =
+        stablehlo::IotaOp::create(builder, op.getLoc(), shape, rank - 2);
+    auto mask =
+        stablehlo::CompareOp::create(builder, op.getLoc(), iota_j, iota_i,
+                                     stablehlo::ComparisonDirection::EQ);
+    auto zero = stablehlo::ConstantOp::create(
+        builder, op.getLoc(), RankedTensorType::get(shape, type_elem),
+        cast<ElementsAttr>(
+            makeAttr(RankedTensorType::get(shape, type_elem), 0)));
+    auto Fplus = stablehlo::SelectOp::create(
+        builder, op.getLoc(), mask, zero,
+        add(reciprocal_sj_sub_si, reciprocal_sj_add_si));
+    auto Fminus = stablehlo::SelectOp::create(
+        builder, op.getLoc(), mask, zero,
+        subtract(reciprocal_sj_sub_si, reciprocal_sj_add_si));
 
     // Z = F₊ .* X + F₋ .* Y
     auto Z = add(mul(Fplus, X), mul(Fminus, Y));
