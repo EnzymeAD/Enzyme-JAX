@@ -271,6 +271,12 @@ struct SVDFactorizationOpInterfaceReverse
     auto mul = [&](Value a, Value b) -> Value {
       return stablehlo::MulOp::create(builder, a.getLoc(), a, b);
     };
+    auto reciprocal = [&](Value x) -> Value {
+      auto one = stablehlo::ConstantOp::create(
+          builder, x.getLoc(), x.getType(),
+          cast<ElementsAttr>(makeAttr(x.getType(), 1)));
+      return stablehlo::DivOp::create(builder, x.getLoc(), one, x);
+    };
 
     // X = UᵀŪ - ŪᵀU
     auto X = subtract(matmul(transpose(U), Ubar), matmul(transpose(Ubar), U));
@@ -306,10 +312,8 @@ struct SVDFactorizationOpInterfaceReverse
     auto one = stablehlo::ConstantOp::create(
         builder, op.getLoc(), sj_sub_si.getType(),
         cast<ElementsAttr>(makeAttr(sj_sub_si.getType(), 1)));
-    auto reciprocal_sj_sub_si =
-        stablehlo::DivOp::create(builder, op.getLoc(), one, sj_sub_si);
-    auto reciprocal_sj_add_si =
-        stablehlo::DivOp::create(builder, op.getLoc(), one, sj_add_si);
+    auto reciprocal_sj_sub_si = reciprocal(sj_sub_si);
+    auto reciprocal_sj_add_si = reciprocal(sj_add_si);
 
     auto iota_j =
         stablehlo::IotaOp::create(builder, op.getLoc(), shape, rank - 1);
@@ -346,20 +350,67 @@ struct SVDFactorizationOpInterfaceReverse
     auto Abar2 = add(Abar1, matmul(USbar, transpose(V)));
 
     // Ā += (I - U * Uᵀ) * Ū * inv(S) * Vᵀ
-    // TODO auto identity = ...;
-    // TODO auto invS = ...;
+    SmallVector<int64_t> identity_u_shape;
+    identity_u_shape.append(cast<RankedTensorType>(U.getType()).getShape());
+    identity_u_shape[rank - 1] = identity_u_shape[rank - 2];
+    auto iota_i = stablehlo::IotaOp::create(builder, op.getLoc(),
+                                            identity_u_shape, rank - 2);
+    auto iota_j = stablehlo::IotaOp::create(builder, op.getLoc(),
+                                            identity_u_shape, rank - 1);
+    auto identity_mask =
+        stablehlo::CompareOp::create(builder, op.getLoc(), iota_i, iota_j,
+                                     stablehlo::ComparisonDirection::EQ);
+    auto identity_u_one = stablehlo::ConstantOp::create(
+        builder, op.getLoc(),
+        RankedTensorType::get(identity_u_shape, type_elem),
+        cast<ElementsAttr>(
+            makeAttr(RankedTensorType::get(identity_u_shape, type_elem), 1)));
+    auto identity_u_zero = stablehlo::ConstantOp::create(
+        builder, op.getLoc(),
+        RankedTensorType::get(identity_u_shape, type_elem),
+        cast<ElementsAttr>(
+            makeAttr(RankedTensorType::get(identity_u_shape, type_elem), 0)));
+    auto identity_u = stablehlo::SelectOp::create(
+        builder, op.getLoc(), identity_mask, identity_u_one, identity_u_zero);
+
+    auto invS = reciprocal(S);
+    auto UbarinvS = stablehlo::DotGeneralOp::create(
+        builder, op.getLoc(), U, invS, dotDimsAttr, nullptr, nullptr);
     auto Abar3 = add(
         Abar2,
-        matmul(matmul(matmul(subtract(identity, matmul(U, transpose(U))), Ubar),
-                      invS),
+        matmul(matmul(subtract(identity_u, matmul(U, transpose(U))), UbarinvS),
                transpose(V)));
 
-    // TODO Ā += U * inv(S) * V̄ᵀ * (I - V * Vᵀ)
+    // Ā += U * inv(S) * V̄ᵀ * (I - V * Vᵀ)
+    SmallVector<int64_t> identity_v_shape;
+    identity_v_shape.append(cast<RankedTensorType>(V.getType()).getShape());
+    identity_v_shape[rank - 1] = identity_v_shape[rank - 2];
+    auto iota_i = stablehlo::IotaOp::create(builder, op.getLoc(),
+                                            identity_v_shape, rank - 2);
+    auto iota_j = stablehlo::IotaOp::create(builder, op.getLoc(),
+                                            identity_v_shape, rank - 1);
+    auto identity_mask =
+        stablehlo::CompareOp::create(builder, op.getLoc(), iota_i, iota_j,
+                                     stablehlo::ComparisonDirection::EQ);
+    auto identity_v_one = stablehlo::ConstantOp::create(
+        builder, op.getLoc(),
+        RankedTensorType::get(identity_v_shape, type_elem),
+        cast<ElementsAttr>(
+            makeAttr(RankedTensorType::get(identity_v_shape, type_elem), 1)));
+    auto identity_v_zero = stablehlo::ConstantOp::create(
+        builder, op.getLoc(),
+        RankedTensorType::get(identity_v_shape, type_elem),
+        cast<ElementsAttr>(
+            makeAttr(RankedTensorType::get(identity_v_shape, type_elem), 0)));
+    auto identity_v = stablehlo::SelectOp::create(
+        builder, op.getLoc(), identity_mask, identity_v_one, identity_v_zero);
+
+    auto UinvS = stablehlo::DotGeneralOp::create(builder, op.getLoc(), U, invS,
+                                                 dotDimsAttr, nullptr, nullptr);
     auto Abar4 = add(
         Abar3,
-        matmul(U, matmul(invS,
-                         matmul(transpose(Vbar),
-                                subtract(identity, matmul(V, transpose(V)))))));
+        matmul(UinvS, matmul(transpose(Vbar),
+                             subtract(identity_v, matmul(V, transpose(V))))));
 
     gutils->addToDiffe(op.getOperand(), Abar4, builder);
     return success();
