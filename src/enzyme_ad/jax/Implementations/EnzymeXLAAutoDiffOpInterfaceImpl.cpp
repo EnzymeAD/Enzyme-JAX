@@ -318,11 +318,11 @@ struct SVDFactorizationOpInterfaceReverse
     auto reciprocal_sj_add_si = reciprocal(sj_add_si);
 
     auto identity_f_iota_j = stablehlo::IotaOp::create(
-        builder, op.getLoc(), RankedTensorType::get(shape, builder.getI1Type()),
-        rank - 1);
+        builder, op.getLoc(),
+        RankedTensorType::get(shape, builder.getI32Type()), rank - 1);
     auto identity_f_iota_i = stablehlo::IotaOp::create(
-        builder, op.getLoc(), RankedTensorType::get(shape, builder.getI1Type()),
-        rank - 2);
+        builder, op.getLoc(),
+        RankedTensorType::get(shape, builder.getI32Type()), rank - 2);
     auto identity_f_mask = stablehlo::CompareOp::create(
         builder, op.getLoc(), identity_f_iota_j, identity_f_iota_i,
         stablehlo::ComparisonDirection::EQ);
@@ -360,10 +360,12 @@ struct SVDFactorizationOpInterfaceReverse
     identity_u_shape[rank - 1] = identity_u_shape[rank - 2];
     auto identity_u_iota_i = stablehlo::IotaOp::create(
         builder, op.getLoc(),
-        RankedTensorType::get(identity_u_shape, builder.getI1Type()), rank - 2);
+        RankedTensorType::get(identity_u_shape, builder.getI32Type()),
+        rank - 2);
     auto identity_u_iota_j = stablehlo::IotaOp::create(
         builder, op.getLoc(),
-        RankedTensorType::get(identity_u_shape, builder.getI1Type()), rank - 1);
+        RankedTensorType::get(identity_u_shape, builder.getI32Type()),
+        rank - 1);
     auto identity_u_mask = stablehlo::CompareOp::create(
         builder, op.getLoc(), identity_u_iota_i, identity_u_iota_j,
         stablehlo::ComparisonDirection::EQ);
@@ -396,10 +398,12 @@ struct SVDFactorizationOpInterfaceReverse
     identity_v_shape[rank - 1] = identity_v_shape[rank - 2];
     auto identity_v_iota_i = stablehlo::IotaOp::create(
         builder, op.getLoc(),
-        RankedTensorType::get(identity_v_shape, builder.getI1Type()), rank - 2);
+        RankedTensorType::get(identity_v_shape, builder.getI32Type()),
+        rank - 2);
     auto identity_v_iota_j = stablehlo::IotaOp::create(
         builder, op.getLoc(),
-        RankedTensorType::get(identity_v_shape, builder.getI1Type()), rank - 1);
+        RankedTensorType::get(identity_v_shape, builder.getI32Type()),
+        rank - 1);
     auto identity_v_mask = stablehlo::CompareOp::create(
         builder, op.getLoc(), identity_v_iota_i, identity_v_iota_j,
         stablehlo::ComparisonDirection::EQ);
