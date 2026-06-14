@@ -539,6 +539,32 @@ AffineMap mlir::enzyme::recreateExpr(AffineMap map) {
                         map.getContext());
 }
 
+AffineExpr mlir::enzyme::canonicalizeSum(AffineExpr expr) {
+  auto bin = dyn_cast<AffineBinaryOpExpr>(expr);
+  if (!bin)
+    return expr;
+  if (bin.getKind() != AffineExprKind::Add)
+    return getAffineBinaryOpExpr(bin.getKind(), canonicalizeSum(bin.getLHS()),
+                                 canonicalizeSum(bin.getRHS()));
+
+  auto terms = getSumOperands(expr);
+  for (auto &term : terms)
+    term = canonicalizeSum(term);
+  llvm::sort(terms, affineCmp);
+  auto res = terms[0];
+  for (int i = 1; i < terms.size(); i++)
+    res = res + terms[i];
+  return res;
+}
+
+AffineMap mlir::enzyme::canonicalizeSum(AffineMap map) {
+  SmallVector<AffineExpr> exprs;
+  for (auto expr : map.getResults())
+    exprs.push_back(canonicalizeSum(expr));
+  return AffineMap::get(map.getNumDims(), map.getNumSymbols(), exprs,
+                        map.getContext());
+}
+
 struct IslToAffineExprConverter {
   MLIRContext *mlirContext;
   unsigned symOffset;

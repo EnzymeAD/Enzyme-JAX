@@ -43,6 +43,8 @@ void populateLibDeviceFuncsToOpsPatterns(MLIRContext *context,
 
 void addSingleIter(mlir::RewritePatternSet &patterns, mlir::MLIRContext *ctx);
 
+mlir::AffineExpr canonicalizeSum(mlir::AffineExpr expr);
+mlir::AffineMap canonicalizeSum(mlir::AffineMap map);
 mlir::AffineExpr recreateExpr(mlir::AffineExpr expr);
 mlir::AffineMap recreateExpr(mlir::AffineMap expr);
 mlir::IntegerSet recreateExpr(mlir::IntegerSet expr);
