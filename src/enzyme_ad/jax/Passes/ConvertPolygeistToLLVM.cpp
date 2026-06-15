@@ -2909,6 +2909,16 @@ public:
         backend(backend) {}
 
 private:
+struct ShapeMetadata {
+  // enum = 0 for float, enum = 1 for int (probably add more datatypes/switch this to a define later)
+  int64_t datatypeEnum = -1; 
+  int64_t bitWidth = -1;
+
+  int64_t ldimIdx = -1;
+  int64_t transposedIdx = -1;
+  llvm::SmallVector<int64_t, 2> shapeIdxs;
+};
+
   LogicalResult
   matchAndRewrite(enzymexla::XLAWrapperOp wrap, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
@@ -2947,6 +2957,12 @@ private:
 
     auto one = LLVM::ConstantOp::create(rewriter, loc, i64,
                                         rewriter.getI64IntegerAttr(1));
+    auto two = LLVM::ConstantOp::create(rewriter, loc, i64,
+                                        rewriter.getI64IntegerAttr(2));
+    auto three = LLVM::ConstantOp::create(rewriter, loc, i64,
+                                        rewriter.getI64IntegerAttr(3));
+    auto four = LLVM::ConstantOp::create(rewriter, loc, i64,
+                                        rewriter.getI64IntegerAttr(4));
 
     auto nargs = LLVM::ConstantOp::create(
         rewriter, loc, i64,
@@ -2956,18 +2972,121 @@ private:
 
     auto argsPtr = LLVM::AllocaOp::create(rewriter, loc, ptrty, AT, one);
 
+    auto metadataPtr = LLVM::AllocaOp::create(rewriter, loc, ptrty, AT, one);
+
     for (int i = 0; i < adaptor.getInputs().size(); i++) {
       auto idx = LLVM::ConstantOp::create(rewriter, loc, i64,
                                           rewriter.getI64IntegerAttr(i));
       Value idxs[] = {zero, idx};
 
       auto gep = LLVM::GEPOp::create(rewriter, loc, ptrty, AT, argsPtr, idxs);
+      auto metadataGep = LLVM::GEPOp::create(rewriter, loc, ptrty, AT, metadataPtr, idxs);
 
       LLVM::StoreOp::create(rewriter, loc, adaptor.getInputs()[i], gep);
+      
+      ShapeMetadata SI;
+      bool hasShapeInfo = false;
+      for (auto namedAttr : fn.getArgAttrs(i)) {
+        StringRef name = namedAttr.getName().strref();
+        Attribute value = namedAttr.getValue();
+        if (!name.starts_with("shape."))
+          continue;
+        hasShapeInfo = true;
+
+        auto targetIdx = cast<mlir::IntegerAttr>(value).getInt();
+        if (targetIdx < 0) {
+          continue;
+        }
+
+        llvm::StringRef suffix = name.drop_front(strlen("shape."));
+        if (suffix == "ld") {
+          SI.ldimIdx = targetIdx;
+          continue;
+        }
+        if (suffix == "transpose") {
+          SI.transposedIdx = targetIdx;
+          continue;
+        }
+
+        int dimIdx;
+        if (suffix.empty() || suffix.getAsInteger(10, dimIdx))
+          continue;
+        if (SI.shapeIdxs.size() <= dimIdx)
+          SI.shapeIdxs.resize(dimIdx + 1);
+
+        SI.shapeIdxs[dimIdx] = targetIdx;
+      }
+
+      if (hasShapeInfo) {
+        Type ty = fn.getArgument(i).getType();
+
+        if (auto tensorTy = llvm::dyn_cast<ShapedType>(ty)) {
+          Type elemTy = tensorTy.getElementType();
+          if (auto floatTy = llvm::dyn_cast<FloatType>(elemTy)) {
+            SI.datatypeEnum = 0;
+            SI.bitWidth = floatTy.getWidth();
+          }
+
+          if (auto intTy = llvm::dyn_cast<IntegerType>(elemTy)) {
+            SI.datatypeEnum = 1;
+            SI.bitWidth = intTy.getWidth();
+          }
+        }
+
+        if (SI.bitWidth == -1) {
+          SI.bitWidth = 32;
+          llvm::errs() << "ERR: no datatype found\n";
+        }
+
+        auto metadataSubAT = LLVM::LLVMArrayType::get(i64, SI.shapeIdxs.size() + 5);
+
+        auto subArr = LLVM::AllocaOp::create(rewriter, loc, ptrty, metadataSubAT, one);
+        auto metadataSubGepZero = LLVM::GEPOp::create(rewriter, loc, ptrty, metadataSubAT, subArr, {zero, zero});
+        auto metadataSubGepOne = LLVM::GEPOp::create(rewriter, loc, ptrty, metadataSubAT, subArr, {zero, one});
+        auto metadataSubGepTwo = LLVM::GEPOp::create(rewriter, loc, ptrty, metadataSubAT, subArr, {zero, two});
+        auto metadataSubGepThree = LLVM::GEPOp::create(rewriter, loc, ptrty, metadataSubAT, subArr, {zero, three});
+        auto metadataSubGepFour = LLVM::GEPOp::create(rewriter, loc, ptrty, metadataSubAT, subArr, {zero, four});
+
+
+        auto datatypeEnum = LLVM::ConstantOp::create(rewriter, loc, i64,
+                                        SI.datatypeEnum);
+        LLVM::StoreOp::create(rewriter, loc, datatypeEnum, metadataSubGepZero);
+
+        auto bitWidth = LLVM::ConstantOp::create(rewriter, loc, i64,
+                                        SI.bitWidth);
+        LLVM::StoreOp::create(rewriter, loc, bitWidth, metadataSubGepOne);
+
+        auto ldim = LLVM::ConstantOp::create(rewriter, loc, i64,
+                                        SI.ldimIdx);
+        LLVM::StoreOp::create(rewriter, loc, ldim, metadataSubGepTwo);
+
+        auto transposed = LLVM::ConstantOp::create(rewriter, loc, i64,
+                                        SI.transposedIdx);
+        LLVM::StoreOp::create(rewriter, loc, transposed, metadataSubGepThree);
+
+        auto shapeSize = LLVM::ConstantOp::create(rewriter, loc, i64,
+                                        SI.shapeIdxs.size());
+        LLVM::StoreOp::create(rewriter, loc, shapeSize, metadataSubGepFour);
+
+        for (int subI = 0; subI < SI.shapeIdxs.size(); subI++) {
+          auto subIdx = LLVM::ConstantOp::create(rewriter, loc, i64,
+                                        rewriter.getI64IntegerAttr(subI+5));
+          auto metadataSubGepIdx = LLVM::GEPOp::create(rewriter, loc, ptrty, AT, subArr, {zero, subIdx});
+          auto shapeIdx = LLVM::ConstantOp::create(rewriter, loc, i64,
+                                        rewriter.getI64IntegerAttr(SI.shapeIdxs[subI]));
+
+          LLVM::StoreOp::create(rewriter, loc, shapeIdx, metadataSubGepIdx);
+        }
+
+        LLVM::StoreOp::create(rewriter, loc, subArr, metadataGep);
+        
+      } else {
+        LLVM::StoreOp::create(rewriter, loc, zero, metadataGep);
+      }
     }
 
     // handle, module, nargs, argptr
-    Type tys[] = {ptrty, ptrty, i64, ptrty};
+    Type tys[] = {ptrty, ptrty, i64, ptrty, ptrty};
 
     auto moduleOp = wrap->getParentOfType<ModuleOp>();
     auto xlaExecFn = LLVM::lookupOrCreateFn(
@@ -2979,7 +3098,7 @@ private:
     }
 
     auto xdata = insertXLAInitDeinit(moduleOp, backend, rewriter);
-    Value args[4] = {xdata, stringval, nargs, argsPtr};
+    Value args[5] = {xdata, stringval, nargs, argsPtr, metadataPtr};
 
     LLVM::CallOp::create(rewriter, loc, xlaExecFn.value(), args);
 

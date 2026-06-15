@@ -603,8 +603,7 @@ struct BlasRaisingPass
 
   void runOnOperation() override {
     auto op = getOperation();
-    llvm::errs() << "=== BlasRaisingPass running ===\n";
-    llvm::errs().flush();
+    // llvm::errs() << "=== BlasRaisingPass running ===\n";
 
     // op->walk([&](LLVM::LLVMFuncOp callOp) {
     //   auto calleeName = callOp.getName();
@@ -632,8 +631,7 @@ struct BlasRaisingPass
       }
       call.erase();
     }
-    op->dump();
-    llvm::errs() << "=== BlasRaisingPass done ===\n";
+    // llvm::errs() << "=== BlasRaisingPass done ===\n";
     // llvm::errs().flush();
   }
 };
