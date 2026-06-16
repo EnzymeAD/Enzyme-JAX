@@ -890,6 +890,11 @@ isl_set *IslAnalysis::getDomain(Operation *op) {
   return domain;
 }
 
+std::tuple<isl_set *, FlatAffineValueConstraints>
+IslAnalysis::getDomainAndValueConstraints(Operation *op) {
+  return ::getDomain(ctx, op);
+}
+
 std::optional<SmallVector<isl_aff *>> IslAnalysis::getAffExprs(Operation *op) {
   return getAffExprs(op, getAVM(op));
 }
