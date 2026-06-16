@@ -76,11 +76,6 @@ struct BlasRaisingPass
   using CublasOperandTypeFn = std::function<SmallVector<Type>(MLIRContext *)>;
   using CublasOperandShapeFn = std::function<std::map<int, SmallVector<int>>()>;
 
-  std::string getRaisedFuncName(StringRef funcName) {
-    static uint64_t counter = 0;
-    return funcName.str() + std::to_string(counter++);
-  }
-
   SmallVector<Value> transformOperands(LLVM::CallOp call,
                                        SmallVector<Type> targetTypes) {
     OpBuilder builder(call);
@@ -380,8 +375,6 @@ struct BlasRaisingPass
     auto loc = call.getLoc();
     auto module = call->getParentOfType<ModuleOp>();
 
-    std::string fnName = getRaisedFuncName(name);
-
     // Construct new function type
     SmallVector<Type> newInputs;
     for (auto &value_wrapper : operands) {
@@ -393,7 +386,7 @@ struct BlasRaisingPass
     auto newFuncType = mlir::FunctionType::get(ctx, newInputs, results);
 
     // Construct new function
-    func::FuncOp fn = func::FuncOp::create(loc, fnName, newFuncType);
+    func::FuncOp fn = func::FuncOp::create(loc, name, newFuncType);
     fn.setPrivate();
     module.push_back(fn);
 
@@ -446,13 +439,14 @@ struct BlasRaisingPass
   }
 
   void replaceCublasSGemm_v2(LLVM::CallOp call) {
-    std::string name = "CublasSGemm_v2";
+    llvm::StringRef name = "CublasSGemm_v2";
     MLIRContext *ctx = call.getContext();
 
     SmallVector<Value> operands =
         transformOperands(call, getOperandTypesCublasSGemm_v2(ctx));
 
     func::FuncOp f;
+    llvm::errs() << "name: " << name << ", count: " << transformedCublasFunctions.count(name) << "\n";
     if (transformedCublasFunctions.count(name) > 0) {
       f = transformedCublasFunctions[name];
     } else {
@@ -603,7 +597,8 @@ struct BlasRaisingPass
 
   void runOnOperation() override {
     auto op = getOperation();
-    // llvm::errs() << "=== BlasRaisingPass running ===\n";
+    llvm::errs() << "=== BlasRaisingPass running ===\n";
+    op->dump();
 
     // op->walk([&](LLVM::LLVMFuncOp callOp) {
     //   auto calleeName = callOp.getName();
@@ -631,8 +626,10 @@ struct BlasRaisingPass
       }
       call.erase();
     }
-    // llvm::errs() << "=== BlasRaisingPass done ===\n";
+    llvm::errs() << "=== BlasRaisingPass done ===\n";
+    op->dump();
     // llvm::errs().flush();
+    
   }
 };
 
