@@ -939,7 +939,7 @@ struct AffineExprBuilder {
   }
 
   unsigned getPosition(Value v, SmallVectorImpl<Value> &operands,
-                       DenseMap<Value, unsigned> toPos) {
+                       DenseMap<Value, unsigned> &toPos) {
     auto it = toPos.find(v);
     if (it != toPos.end())
       return it->getSecond();
