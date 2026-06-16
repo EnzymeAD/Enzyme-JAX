@@ -966,7 +966,9 @@ struct AffineExprBuilder {
     Value oldV = v;
     if (!isIndexTy)
       v = convertToIndex(v);
-    if (affine::isValidSymbol(v)) {
+    if (affine::isAffineInductionVar(v)) {
+      return getAffineDimExpr(getDimPosition(v), v.getContext());
+    } else if (affine::isValidSymbol(v)) {
       return getAffineSymbolExpr(getSymbolPosition(v), v.getContext());
     } else if (affine::isValidDim(v)) {
       return getAffineDimExpr(getDimPosition(v), v.getContext());
