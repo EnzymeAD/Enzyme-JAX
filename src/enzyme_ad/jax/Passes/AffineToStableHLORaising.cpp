@@ -1022,7 +1022,8 @@ emitLoadAsGather(Location loc, Value mappedMemref, ValueRange lIndices,
 static Value
 emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
                    OpBuilder &builder,
-                   llvm::DenseMap<Value, affine::AffineValueMap> &maps) {
+                   llvm::DenseMap<Value, affine::AffineValueMap> &maps,
+                   const ParallelContext &pc) {
   affine::AffineValueMap updateValueMap = maps.lookup(update);
 
   auto UTy = cast<RankedTensorType>(update.getType());
@@ -1065,6 +1066,49 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
   update = stablehlo::BroadcastInDimOp::create(
       builder, loc, UTy.clone(gridShape), update, broadcastDims);
 
+  // If there is an active mask from an enclosing affine.if, gate the scatter:
+  // masked-out iterations must not overwrite the input, so we gather the
+  // current input values at the scatter positions and use them as the update
+  // for those iterations (a semantic no-op).
+  if (pc.mask) {
+    SmallVector<int64_t> collapsedDims(scatterDimsToOperandDims.begin(),
+                                       scatterDimsToOperandDims.end());
+    SmallVector<int64_t> sliceSizes(collapsedDims.size(), 1);
+    Value orig = stablehlo::GatherOp::create(
+        builder, loc, input, indices,
+        stablehlo::GatherDimensionNumbersAttr::get(
+            loc.getContext(),
+            /*offsetDims*/ {},
+            /*collapsedSliceDims*/ collapsedDims,
+            /*operandBatchingDims*/ {},
+            /*startIndicesBatchingDims*/ {},
+            /*startIndexMap*/ collapsedDims,
+            /*indexVectorDim*/ (int64_t)gridShape.size()),
+        sliceSizes);
+
+    // Broadcast the mask from its IV-space to the update's grid shape.
+    Value mask = pc.mask;
+    affine::AffineValueMap maskMap = maps.lookup(mask);
+    SmallVector<int64_t> maskBroadcastDims;
+    for (auto E : maskMap.getAffineMap().getResults()) {
+      Value maskIV = getIVForExpr(maskMap, E);
+      for (auto [k, iv] : llvm::enumerate(ivs)) {
+        if (iv == maskIV) {
+          maskBroadcastDims.push_back((int64_t)k);
+          break;
+        }
+      }
+    }
+    auto gridTy = cast<RankedTensorType>(update.getType());
+    auto maskGridTy = RankedTensorType::get(gridTy.getShape(),
+                                            builder.getI1Type());
+    Value broadcastedMask = stablehlo::BroadcastInDimOp::create(
+        builder, loc, maskGridTy, mask, maskBroadcastDims);
+
+    update = stablehlo::SelectOp::create(builder, loc, broadcastedMask,
+                                         update, orig);
+  }
+
   auto Ty = cast<RankedTensorType>(input.getType());
   stablehlo::ScatterOp scatter = stablehlo::ScatterOp::create(
       builder, loc, llvm::ArrayRef<Type>{Ty}, ValueRange{input}, indices,
@@ -1078,9 +1122,9 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
           /*scatterDimsToOperandDims*/ scatterDimsToOperandDims,
           /*indexVectorDim*/ (int64_t)gridShape.size()),
       /*indicesAreSorted*/ false,
-      /*uniqueIndices*/ true); // Indices must be unique because otherwise the
-                               // original program had a race [writing to the
-                               // same location across multiple threads].
+      // With a mask, masked-out positions scatter orig back at potentially
+      // repeated indices — uniqueness can only be claimed without a mask.
+      /*uniqueIndices*/ !pc.mask);
   Value res = scatter.getResult(0);
 
   Block *updateBody = new Block();
@@ -2134,7 +2178,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
       Value res = emitStoreAsScatter(
           rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
-          update, operand, sIndices, builder, maps);
+          update, operand, sIndices, builder, maps, pc);
       if (!res) {
         auto err = op->emitError("affine.store (scatter) is dependent on "
                                  "less dims than stored value: ")
@@ -2672,7 +2716,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
     Value res = emitStoreAsScatter(
         rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
-        mapping.lookup(value), mapping.lookup(memref), sIndices, builder, maps);
+        mapping.lookup(value), mapping.lookup(memref), sIndices, builder, maps, pc);
     if (!res) {
       return op->emitError(
                  "memref.store is dependent on less dims than stored value: ")
