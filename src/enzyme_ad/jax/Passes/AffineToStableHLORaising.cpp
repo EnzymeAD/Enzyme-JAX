@@ -670,7 +670,7 @@ expandAffineExpr(OpBuilder &builder, Location loc, AffineExpr expr,
         Value negative = stablehlo::CompareOp::create(
             builder, loc, lhs,
             makeI64Constant(cast<ShapedType>(lhs.getType()), 0),
-            stablehlo::ComparisonDirection::LE);
+            stablehlo::ComparisonDirection::LT);
         Value one = makeI64Constant(cast<ShapedType>(lhs.getType()), 1);
         Value absolute = stablehlo::SelectOp::create(
             builder, loc, negative,
