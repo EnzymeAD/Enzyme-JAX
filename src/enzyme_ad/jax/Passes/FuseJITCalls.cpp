@@ -29,8 +29,8 @@ static SmallVector<enzymexla::JITCallOp> traceRequestHandles(Value requestVal) {
     if (Operation *defOp = current.getDefiningOp()) {
       if (auto concatOp = dyn_cast<stablehlo::ConcatenateOp>(defOp)) {
         auto operands = concatOp.getOperands();
-        for (auto it = operands.begin(); it != operands.end(); ++it) {
-          worklist.push_back(*it);
+        for (int i = operands.size() - 1; i >= 0; --i) {
+          worklist.push_back(operands[i]);
         }
       } else if (auto bcastOp = dyn_cast<stablehlo::BroadcastInDimOp>(defOp)) {
         worklist.push_back(bcastOp.getOperand());
