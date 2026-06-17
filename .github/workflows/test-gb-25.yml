@@ -49,6 +49,7 @@ jobs:
           # - 'b25f3cbed2bc88c8ffef85f6a5319e2cf7b0454c'
         gb25_commit:
           - 'main'
+          - '0590584bf36f610586fb56a6705b966fdca4497b'
 
         reactant_commit:
           - 'main'
