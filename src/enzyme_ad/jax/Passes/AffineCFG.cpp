@@ -3884,11 +3884,6 @@ public:
     if (!op.getReductions().empty() || op.hasMinMaxBounds())
       return failure();
 
-    // TODO: support some dynamic dimensions
-    if (!op.getLowerBoundsOperands().empty() ||
-        !op.getUpperBoundsOperands().empty())
-      return failure();
-
     Block *body = op.getBody();
     AffineIfOp ifOp = nullptr;
     AffineYieldOp termOp = nullptr;
@@ -3987,9 +3982,10 @@ public:
         AffineMap::get(0, 0, newLowerBoundExprs, op.getContext());
     AffineMap upperBoundsMap =
         AffineMap::get(0, 0, newUpperBoundExprs, op.getContext());
+
     rewriter.modifyOpInPlace(op, [&]() {
-      op.setLowerBounds(ValueRange{}, lowerBoundsMap);
-      op.setUpperBounds(ValueRange{}, upperBoundsMap);
+      op.setLowerBounds(op.getLowerBoundsOperands(), lowerBoundsMap);
+      op.setUpperBounds(op.getUpperBoundsOperands(), upperBoundsMap);
     });
 
     return success();
