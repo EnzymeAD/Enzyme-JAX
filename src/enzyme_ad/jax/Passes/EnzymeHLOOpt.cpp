@@ -35338,10 +35338,52 @@ struct NegateReduceWindowSub final
 
 ///////////////  End Imported from stablehlo
 
-// clang-format off
 namespace mlir {
 namespace enzyme {
+
+// runs for all floats and integers only when a % b == 0 (i.e. the division is
+// exact).
+static bool divMulReassociable(mlir::Value res, mlir::Attribute aAttr,
+                               mlir::Attribute bAttr) {
+  auto st = mlir::dyn_cast<mlir::ShapedType>(res.getType());
+  if (!st)
+    return false;
+  if (mlir::isa<mlir::FloatType>(st.getElementType()))
+    return true;
+  auto a = mlir::dyn_cast<mlir::DenseIntElementsAttr>(aAttr);
+  auto b = mlir::dyn_cast<mlir::DenseIntElementsAttr>(bAttr);
+  if (!a || !b)
+    return false;
+  auto exact = [](const llvm::APInt &av, const llvm::APInt &bv) {
+    return !bv.isZero() && av.srem(bv).isZero();
+  };
+  bool aSplat = a.isSplat(), bSplat = b.isSplat();
+  if (aSplat && bSplat)
+    return exact(a.getSplatValue<llvm::APInt>(),
+                 b.getSplatValue<llvm::APInt>());
+  if (aSplat) {
+    auto av = a.getSplatValue<llvm::APInt>();
+    return llvm::all_of(b.getValues<llvm::APInt>(),
+                        [&](const llvm::APInt &bv) { return exact(av, bv); });
+  }
+  if (bSplat) {
+    auto bv = b.getSplatValue<llvm::APInt>();
+    return llvm::all_of(a.getValues<llvm::APInt>(),
+                        [&](const llvm::APInt &av) { return exact(av, bv); });
+  }
+  if (a.getNumElements() != b.getNumElements())
+    return false;
+  for (const auto [av, bv] : llvm::zip_equal(a.getValues<llvm::APInt>(),
+                                             b.getValues<llvm::APInt>())) {
+    if (!exact(av, bv))
+      return false;
+  }
+  return true;
+}
+
+// clang-format off
 #include "src/enzyme_ad/jax/Passes/StablehloOptPatterns.cpp.inc"
+
 }; // namespace enzyme
 }; // namespace mlir
 
