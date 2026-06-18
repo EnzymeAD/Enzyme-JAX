@@ -1886,13 +1886,12 @@ struct InnerParallelSerialization : public OpRewritePattern<scf::ParallelOp> {
     if (!parallelOp->getParentOfType<enzymexla::GPUWrapperOp>()) {
       return failure();
     }
-    size_t parallelCount = 0;
+
+    size_t enclosingGpuDims = 0;
     auto par = parallelOp;
-    while ((par = par->getParentOfType<scf::ParallelOp>())) {
-      parallelCount++;
-    }
-    // is presently one of the three outer parallel loops;
-    if (parallelCount < 2)
+    while ((par = par->getParentOfType<scf::ParallelOp>()))
+      enclosingGpuDims += par.getNumLoops();
+    if (enclosingGpuDims < 6)
       return failure();
 
     // For a parallel loop, we essentially need to create an n-dimensional loop
