@@ -35,6 +35,7 @@
 #include "llvm/ExecutionEngine/SectionMemoryManager.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IRReader/IRReader.h"
+#include "llvm/Support/DynamicLibrary.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/RWMutex.h"
 #include "llvm/Support/SourceMgr.h"
@@ -124,7 +125,8 @@ public:
     }
     auto mod_or_err =
         createLLVMMod(fn, source, out_shapes, out_names, in_shapes, in_names,
-                      pyargv_strs, mode, lang, xla_runtime, pass_pipeline);
+                      pyargv_strs, mode, lang, CallABI::Tensor, xla_runtime,
+                      pass_pipeline);
     if (!mod_or_err.ok()) {
       throw ::nanobind::value_error(mod_or_err.status().ToString().c_str());
     }
@@ -167,8 +169,8 @@ public:
          llvm::ArrayRef<std::string> out_names,
          llvm::ArrayRef<llvm::SmallVector<int64_t>> in_shapes,
          llvm::ArrayRef<std::string> in_names, PyObject *pyargv, ABI mode,
-         Language lang, bool xla_runtime, const std::string &pass_pipeline,
-         const std::string &platform) {
+         Language lang, CallABI call_abi, bool xla_runtime,
+         const std::string &pass_pipeline, const std::string &platform) {
     if (platform != "cpu")
       return std::make_tuple(UNKNOWN_PLATFORM, 0);
     llvm::sys::SmartScopedWriter<true> lock(kernel_mutex);
@@ -194,12 +196,21 @@ public:
     }
     auto mod_or_err =
         createLLVMMod(fn, source, out_shapes, out_names, in_shapes, in_names,
-                      pyargv_strs, mode, lang, xla_runtime, pass_pipeline);
+                      pyargv_strs, mode, lang, call_abi, xla_runtime,
+                      pass_pipeline);
     if (!mod_or_err.ok()) {
       throw nanobind::value_error(mod_or_err.status().ToString().c_str());
     }
     auto [mod, llvm_ctx, num_out, tmpBuf] = std::move(mod_or_err).value();
     if (!JIT) {
+      llvm::sys::DynamicLibrary::LoadLibraryPermanently(nullptr);
+#if defined(__linux__)
+      llvm::sys::DynamicLibrary::LoadLibraryPermanently("libstdc++.so.6");
+      llvm::sys::DynamicLibrary::LoadLibraryPermanently("libc++.so.1");
+#elif defined(__APPLE__)
+      llvm::sys::DynamicLibrary::LoadLibraryPermanently(
+          "/usr/lib/libc++.1.dylib");
+#endif
       DL = std::make_unique<llvm::DataLayout>(mod->getDataLayoutStr());
       auto tJIT =
           llvm::orc::LLJITBuilder()
@@ -355,6 +366,10 @@ NB_MODULE(enzyme_call, m) {
       .value("Reverse", ABI::Reverse)
       .value("Tape", ABI::Tape);
 
+  nanobind::enum_<CallABI>(m, "CallABI")
+      .value("Tensor", CallABI::Tensor)
+      .value("RawEntry", CallABI::RawEntry);
+
   m.def("create_enzyme_kernel",
         [](const std::string &source, const std::string &fn,
            const nanobind::list &py_out_shapes,
@@ -397,7 +412,53 @@ NB_MODULE(enzyme_call, m) {
           }
           return CpuKernel::create(fn, source, out_shapes, out_types, in_shapes,
                                    in_types, pyargv.ptr(), mode, (Language)lang,
-                                   xla_runtime, pass_pipeline, platform);
+                                   CallABI::Tensor, xla_runtime, pass_pipeline,
+                                   platform);
+        });
+
+  m.def("create_cpp_kernel",
+        [](const std::string &source, const std::string &fn,
+           const nanobind::list &py_out_shapes,
+           const nanobind::list &py_in_shapes, nanobind::object pyargv,
+           CallABI call_abi, bool xla_runtime, const std::string &pass_pipeline,
+           const std::string &platform) -> std::tuple<size_t, size_t> {
+          llvm::SmallVector<llvm::SmallVector<int64_t>> out_shapes;
+          out_shapes.reserve(nanobind::len(py_out_shapes));
+          llvm::SmallVector<llvm::SmallVector<int64_t>> in_shapes;
+          in_shapes.reserve(nanobind::len(py_in_shapes));
+
+          llvm::SmallVector<std::string> out_types;
+          out_types.reserve(nanobind::len(py_out_shapes));
+
+          llvm::SmallVector<std::string> in_types;
+          in_types.reserve(nanobind::len(py_in_shapes));
+
+          for (const auto &element : py_out_shapes) {
+            auto se = nanobind::cast<nanobind::tuple>(element);
+            auto dtype = nanobind::cast<std::string>(se[0]);
+            out_types.push_back(dtype);
+            auto nested = nanobind::cast<nanobind::list>(se[1]);
+            llvm::SmallVector<int64_t> &target = out_shapes.emplace_back();
+            target.reserve(nanobind::len(nested));
+            for (const auto &nested_element : nested) {
+              target.push_back(nanobind::cast<int64_t>(nested_element));
+            }
+          }
+          for (const auto &element : py_in_shapes) {
+            auto se = nanobind::cast<nanobind::tuple>(element);
+            auto dtype = nanobind::cast<std::string>(se[0]);
+            in_types.push_back(dtype);
+            auto nested = nanobind::cast<nanobind::list>(se[1]);
+            llvm::SmallVector<int64_t> &target = in_shapes.emplace_back();
+            target.reserve(nanobind::len(nested));
+            for (const auto &nested_element : nested) {
+              target.push_back(nanobind::cast<int64_t>(nested_element));
+            }
+          }
+          return CpuKernel::create(
+              fn, source, out_shapes, out_types, in_shapes, in_types,
+              pyargv.ptr(), ABI::Primal, Language::CPP, call_abi, xla_runtime,
+              pass_pipeline, platform);
         });
 
   m.def("tmp_size",
@@ -471,7 +532,8 @@ NB_MODULE(enzyme_call, m) {
 
           auto mod_or_err = createLLVMMod(
               fn, source, out_shapes, out_types, in_shapes, in_types,
-              pyargv_strs, ABI::Primal, lang, xla_runtime, pass_pipeline);
+              pyargv_strs, ABI::Primal, lang, CallABI::Tensor, xla_runtime,
+              pass_pipeline);
           if (!mod_or_err.ok()) {
             throw nanobind::value_error(mod_or_err.status().ToString().c_str());
           }

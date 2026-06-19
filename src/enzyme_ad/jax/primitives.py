@@ -25,6 +25,8 @@ from .utils import default_nowheel_resource, default_linux_cflags
 LANG_CPP = enzyme_call.Language.CPP
 LANG_LLVM = enzyme_call.Language.LLVM
 LANG_MHLO = enzyme_call.Language.MHLO
+CALL_ABI_TENSOR = enzyme_call.CallABI.Tensor
+CALL_ABI_RAW_ENTRY = enzyme_call.CallABI.RawEntry
 
 Primitive = jax.extend.core.Primitive
 
@@ -338,6 +340,7 @@ def _enzyme_primal_abstract_eval(
     argv: Sequence[str],
     out_shapes: Sequence[jax.core.ShapedArray],
     lang: enzyme_call.Language,
+    call_abi,
     pipeline_options,
 ) -> Sequence[jax.core.ShapedArray]:
     # TODO: we may attempt some lightweight parsing of source to extract the
@@ -523,6 +526,7 @@ def _enzyme_primal_lowering(
     argv: Sequence[str],
     out_shapes: Sequence[jax.core.ShapedArray],
     lang: enzyme_call.Language,
+    call_abi,
     pipeline_options,
 ) -> Sequence[ir.Value]:
     del out_shapes
@@ -673,18 +677,31 @@ def _enzyme_primal_lowering(
             assert len(results) == len(out_shapes)
         else:
             assert len(ctx.module_context.platforms) == 1
-            identifier, tmpBuf = enzyme_call.create_enzyme_kernel(
-                source,
-                fn,
-                out_shapes,
-                in_shapes,
-                argv,
-                enzyme_call.ABI.Primal,
-                lang,
-                pipeline_options.xla_runtime(),
-                pass_pipeline,
-                ctx.module_context.platforms[0],
-            )
+            if call_abi == CALL_ABI_TENSOR:
+                identifier, tmpBuf = enzyme_call.create_enzyme_kernel(
+                    source,
+                    fn,
+                    out_shapes,
+                    in_shapes,
+                    argv,
+                    enzyme_call.ABI.Primal,
+                    lang,
+                    pipeline_options.xla_runtime(),
+                    pass_pipeline,
+                    ctx.module_context.platforms[0],
+                )
+            else:
+                identifier, tmpBuf = enzyme_call.create_cpp_kernel(
+                    source,
+                    fn,
+                    out_shapes,
+                    in_shapes,
+                    argv,
+                    call_abi,
+                    pipeline_options.xla_runtime(),
+                    pass_pipeline,
+                    ctx.module_context.platforms[0],
+                )
             identifier_attr = jax_mlir.dense_int_elements([identifier])
             identifier_op = stablehlo.ConstantOp(identifier_attr)
 
@@ -725,18 +742,31 @@ def _enzyme_primal_lowering(
         results = tuple(results2)
     else:
         assert len(ctx.module_context.platforms) == 1
-        identifier, tmpBuf = enzyme_call.create_enzyme_kernel(
-            source,
-            fn,
-            out_shapes,
-            in_shapes,
-            argv,
-            enzyme_call.ABI.Primal,
-            lang,
-            pipeline_options.xla_runtime(),
-            pass_pipeline,
-            ctx.module_context.platforms[0],
-        )
+        if call_abi == CALL_ABI_TENSOR:
+            identifier, tmpBuf = enzyme_call.create_enzyme_kernel(
+                source,
+                fn,
+                out_shapes,
+                in_shapes,
+                argv,
+                enzyme_call.ABI.Primal,
+                lang,
+                pipeline_options.xla_runtime(),
+                pass_pipeline,
+                ctx.module_context.platforms[0],
+            )
+        else:
+            identifier, tmpBuf = enzyme_call.create_cpp_kernel(
+                source,
+                fn,
+                out_shapes,
+                in_shapes,
+                argv,
+                call_abi,
+                pipeline_options.xla_runtime(),
+                pass_pipeline,
+                ctx.module_context.platforms[0],
+            )
         identifier_attr = jax_mlir.dense_int_elements([identifier])
         identifier_op = stablehlo.ConstantOp(identifier_attr)
 
@@ -1001,6 +1031,7 @@ def ffi_call(
     fn: str = "f",
     argv: tuple[str] = (),
     lang: int = LANG_CPP,
+    call_abi=CALL_ABI_TENSOR,
     pipeline_options=DefaultCPPPipeline,
 ):
     assert isinstance(source, str) or len(source) == 5
@@ -1011,6 +1042,7 @@ def ffi_call(
         argv=argv,
         out_shapes=tuple(out_shapes),
         lang=lang,
+        call_abi=call_abi,
         pipeline_options=pipeline_options,
     )
 
@@ -1081,6 +1113,7 @@ def hlo_call(
         argv=argv,
         out_shapes=tuple(out_shapes),
         lang=LANG_MHLO,
+        call_abi=CALL_ABI_TENSOR,
         pipeline_options=JaXPipeline(passes),
     )
 
@@ -1100,6 +1133,43 @@ def cpp_call(
         argv=argv,
         out_shapes=out_shapes,
         lang=LANG_CPP,
+        call_abi=CALL_ABI_TENSOR,
+        pipeline_options=pipeline_options,
+    )
+
+
+def cpp_call_raw_entry(
+    *args,
+    out_shapes: Sequence[jax.core.ShapedArray],
+    source: str,
+    fn: str = "entry",
+    argv: tuple[str] = (),
+    pipeline_options=DefaultCPPPipeline,
+):
+    """Call no-AD C++ with the public raw custom-call ABI.
+
+    The selected C++ function must be callable with this signature:
+
+      void fn(void** outs, void** ins)
+
+    When `fn="entry"`, the user source must export it as:
+
+      extern "C" void entry(void** outs, void** ins)
+
+    For any other `fn`, Enzyme-JAX emits the unmangled `entry` symbol and calls
+    the named C++ function from that entry point.
+
+    `ins` contains the JAX input buffers in argument order. `outs` contains the
+    output buffers in `out_shapes` order.
+    """
+    return ffi_call(
+        *args,
+        source=source,
+        fn=fn,
+        argv=argv,
+        out_shapes=out_shapes,
+        lang=LANG_CPP,
+        call_abi=CALL_ABI_RAW_ENTRY,
         pipeline_options=pipeline_options,
     )
 
@@ -1125,6 +1195,9 @@ def enzyme_jvp(arg_primals, arg_tangents, **kwargs):
     # TODO propagate activity info rather than make_zero
     def make_zero(tan, prim):
         return lax.zeros_like_array(prim) if type(tan) is ad.Zero else tan
+
+    if kwargs.get("call_abi", CALL_ABI_TENSOR) != CALL_ABI_TENSOR:
+        raise NotImplementedError("AD is not supported for raw C++ cpp_call ABI")
 
     pipeline_options = kwargs["pipeline_options"]
 
@@ -1356,6 +1429,9 @@ pe.custom_partial_eval_rules[_enzyme_primal_p] = primal_partial_eval
 
 
 def enzyme_vjp(shadow_rets, *prim_args, **kwargs):
+    if kwargs.get("call_abi", CALL_ABI_TENSOR) != CALL_ABI_TENSOR:
+        raise NotImplementedError("AD is not supported for raw C++ cpp_call ABI")
+
     pipeline_options = kwargs["pipeline_options"]
     if pipeline_options.mlir_ad() and kwargs["lang"] == LANG_MHLO:
         passes = pipeline_options.pass_pipeline()
@@ -1440,6 +1516,7 @@ def enzyme_vjp(shadow_rets, *prim_args, **kwargs):
             fn=kwargs["fn"],
             argv=kwargs["argv"],
             lang=kwargs["lang"],
+            call_abi=CALL_ABI_TENSOR,
             pipeline_options=pipeline_options,
         )
         res = tuple(None for _ in prim_args) + tuple(shadconv)

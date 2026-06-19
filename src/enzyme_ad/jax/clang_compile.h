@@ -17,6 +17,8 @@ enum class ABI { Primal, Forward, Augmented, Reverse, Tape };
 
 enum class Language : int { CPP = 0, LLVM = 1, MHLO = 2 };
 
+enum class CallABI : int { Tensor = 0, RawEntry = 1 };
+
 absl::StatusOr<std::unique_ptr<llvm::Module>>
 GetLLVMFromJob(std::string filename, std::string filecontents, bool cpp,
                llvm::ArrayRef<std::string> pyargv,
@@ -31,6 +33,6 @@ createLLVMMod(std::string fn, llvm::StringRef source,
               llvm::ArrayRef<llvm::SmallVector<int64_t>> in_shapes,
               llvm::ArrayRef<std::string> in_names,
               const std::vector<std::string> &pyargv_strs, ABI mode,
-              Language lang, bool xla_runtime,
+              Language lang, CallABI call_abi, bool xla_runtime,
               const std::string &pass_pipeline);
 #endif // ENZYME_JAX_CLANG_COMPILE_H

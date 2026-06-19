@@ -680,15 +680,17 @@ createLLVMMod(std::string fn, llvm::StringRef source,
               llvm::ArrayRef<llvm::SmallVector<int64_t>> in_shapes,
               llvm::ArrayRef<std::string> in_names,
               const std::vector<std::string> &pyargv_strs, ABI mode,
-              ::Language lang, bool xla_runtime,
+              ::Language lang, CallABI call_abi, bool xla_runtime,
               const std::string &pass_pipeline) {
   auto llvm_ctx = std::make_unique<llvm::LLVMContext>();
 
   std::string input;
   llvm::raw_string_ostream ss(input);
   ss << "#include <cstdint>\n";
-  ss << "#include <enzyme/tensor>\n";
-  ss << "#include <enzyme/utils>\n";
+  if (call_abi == CallABI::Tensor) {
+    ss << "#include <enzyme/tensor>\n";
+    ss << "#include <enzyme/utils>\n";
+  }
 
   std::unique_ptr<llvm::Module> linkMod;
   std::unique_ptr<xla::LocalExecutable> local_executable;
@@ -696,6 +698,37 @@ createLLVMMod(std::string fn, llvm::StringRef source,
 
   size_t tmpBuf = 0;
   llvm::StringRef origSource = source;
+
+  if (call_abi == CallABI::RawEntry) {
+    if (mode != ABI::Primal) {
+      return absl::InvalidArgumentError(
+          "RawEntry C++ ABI currently supports primal/no-AD calls only");
+    }
+    if (lang != ::Language::CPP) {
+      return absl::InvalidArgumentError(
+          "RawEntry C++ ABI currently expects C++ source");
+    }
+
+    ss << source << "\n";
+    if (fn != "entry") {
+      ss << "extern \"C\" void entry(void** __restrict__ outs, void** "
+            "__restrict__ ins) {\n";
+      ss << "  " << fn << "(outs, ins);\n";
+      ss << "}\n";
+    }
+
+    auto mod_or_err =
+        GetLLVMFromJob("/enzyme_call/source.cpp", ss.str(), /*cpp*/ true,
+                       pyargv_strs, llvm_ctx.get(), std::move(linkMod));
+    if (!mod_or_err.ok()) {
+      llvm::errs() << "Source:\n" << ss.str() << "\n";
+      return mod_or_err.status();
+    }
+    auto mod = std::move(mod_or_err).value();
+    return std::make_tuple(std::move(mod), std::move(llvm_ctx),
+                           out_shapes.size(), /*tmpBuf*/ 0);
+  }
+
   switch (lang) {
   case ::Language::CPP:
     ss << source << "\n";
