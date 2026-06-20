@@ -8014,6 +8014,10 @@ struct RealComplexMulSimplify
     } else {
       return failure();
     }
+    // Should be better handled by constant folding
+    if (matchPattern(purelyRealOperand, m_Constant())) {
+      return failure();
+    }
     auto complexTensorTy = cast<TensorType>(op.getType());
     auto floatElTy =
         cast<ComplexType>(complexTensorTy.getElementType()).getElementType();
@@ -8082,6 +8086,10 @@ struct ImaginaryComplexMulSimplify
       purelyImaginaryOperand = op.getRhs();
       complexOperand = op.getLhs();
     } else {
+      return failure();
+    }
+    // Should be better handled by constant folding
+    if (matchPattern(purelyImaginaryOperand, m_Constant())) {
       return failure();
     }
     auto complexTensorTy = cast<TensorType>(op.getType());
