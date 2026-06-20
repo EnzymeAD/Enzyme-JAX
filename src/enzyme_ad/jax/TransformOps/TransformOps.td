@@ -2691,6 +2691,11 @@ def ApplyRealConvertSimplifyPatterns : EnzymeHLOPatternOp<
   let patterns = ["RealConvertSimplify"];
 }
 
+def ApplyImaginaryComplexMulSimplifyPatterns
+    : EnzymeHLOPatternOp<"imaginary_complex_mul_simplify"> {
+  let patterns = ["ImaginaryComplexMulSimplify"];
+}
+
 def ApplyConjComplexSimplifyPatterns : EnzymeHLOPatternOp<
     "conj_complex_simplify"> {
   let patterns = ["ConjComplexSimplify"];
