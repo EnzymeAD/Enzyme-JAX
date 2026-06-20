@@ -7955,6 +7955,81 @@ struct RealComplexMulSimplify
   }
 };
 
+struct ImaginaryComplexMulSimplify
+    : public CheckedOpRewritePattern<stablehlo::MulOp,
+                                     ImaginaryComplexMulSimplify> {
+  using CheckedOpRewritePattern<
+      stablehlo::MulOp, ImaginaryComplexMulSimplify>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::MulOp op,
+                                    PatternRewriter &rewriter) const {
+    // (a + b*i) * (c + d*i)
+    // with a = 0
+    // (a*c - b*d) + (c*b + a*d)*i = (0*c - b*d) + (c*b + 0*d)*i = -b*d + c*b*i
+    // So if one of the operands is a purely imaginary number, we can
+    // simplify by multiplying the imaginary component with the complex
+    // operand's real and imaginary parts, and negating the real result to
+    // account for i*i = -1.
+
+    auto resultType = cast<ShapedType>(op.getType()).getElementType();
+    if (!isa<ComplexType>(resultType)) {
+      return failure();
+    }
+
+    Value purelyImaginaryOperand = nullptr;
+    Value complexOperand = nullptr;
+
+    auto lhsState = getAttributeFromIR<enzymexla::GuaranteedAnalysisResultAttr>(
+        op.getLhs(), "enzymexla.complex_is_purely_imaginary",
+        enzymexla::GuaranteedAnalysisResult::UNKNOWN);
+    bool lhsIsImaginary =
+        (lhsState == enzymexla::GuaranteedAnalysisResult::GUARANTEED);
+
+    auto rhsState = getAttributeFromIR<enzymexla::GuaranteedAnalysisResultAttr>(
+        op.getRhs(), "enzymexla.complex_is_purely_imaginary",
+        enzymexla::GuaranteedAnalysisResult::UNKNOWN);
+    bool rhsIsImaginary =
+        (rhsState == enzymexla::GuaranteedAnalysisResult::GUARANTEED);
+
+    if (lhsIsImaginary && rhsIsImaginary) {
+      return failure();
+    } else if (lhsIsImaginary) {
+      purelyImaginaryOperand = op.getLhs();
+      complexOperand = op.getRhs();
+    } else if (rhsIsImaginary) {
+      purelyImaginaryOperand = op.getRhs();
+      complexOperand = op.getLhs();
+    } else {
+      return failure();
+    }
+    auto complexTensorTy = cast<TensorType>(op.getType());
+    auto floatElTy =
+        cast<ComplexType>(complexTensorTy.getElementType()).getElementType();
+    auto floatTensorType = complexTensorTy.clone(floatElTy);
+
+    Location loc = op.getLoc();
+    auto imaginaryExtractedFromPurelyImaginary =
+        rewriter.create<stablehlo::ImagOp>(loc, floatTensorType,
+                                           purelyImaginaryOperand);
+    auto realPartOfComplex = rewriter.create<stablehlo::RealOp>(
+        loc, floatTensorType, complexOperand);
+    auto imagPartOfComplex = rewriter.create<stablehlo::ImagOp>(
+        loc, floatTensorType, complexOperand);
+    auto newRealPart = rewriter.create<stablehlo::MulOp>(
+        loc, floatTensorType, imaginaryExtractedFromPurelyImaginary,
+        imagPartOfComplex);
+    auto negatedRealPart =
+        rewriter.create<stablehlo::NegOp>(loc, floatTensorType, newRealPart);
+    auto newImagPart = rewriter.create<stablehlo::MulOp>(
+        loc, floatTensorType, imaginaryExtractedFromPurelyImaginary,
+        realPartOfComplex);
+    auto newComplex = rewriter.create<stablehlo::ComplexOp>(
+        loc, op.getType(), negatedRealPart, newImagPart);
+    rewriter.replaceOp(op, newComplex);
+    return success();
+  }
+};
+
 struct DivSimplify
     : public CheckedOpRewritePattern<stablehlo::DivOp, DivSimplify> {
   using CheckedOpRewritePattern<stablehlo::DivOp,
@@ -36224,6 +36299,7 @@ struct EnzymeHLOOptPass
         ConjComplexSimplify,
         ElementwiseComplexSimplify,
         RealComplexMulSimplify,
+        ImaginaryComplexMulSimplify,
         SplitConvolutionIntoReverseConvolution,
         ScatterMultiplySimplify,
         ScatterDivSimplify,
