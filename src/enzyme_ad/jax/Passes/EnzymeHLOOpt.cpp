@@ -6219,6 +6219,62 @@ struct ConcatFuse final
   }
 };
 
+// concat(slice(src,[N-1:N,...]), slice(src,[N-2:N-1,...]), ..., slice(src,[0:1,...]), dim=D)
+// -> reverse(src, dims=[D])
+struct ConcatSlicesToReverse final
+    : CheckedOpRewritePattern<stablehlo::ConcatenateOp, ConcatSlicesToReverse> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp op,
+                                    PatternRewriter &rewriter) const {
+    auto concatDim = op.getDimension();
+
+    SmallVector<stablehlo::SliceOp> slices;
+    for (auto operand : op.getOperands()) {
+      auto slice = operand.getDefiningOp<stablehlo::SliceOp>();
+      if (!slice)
+        return failure();
+      slices.push_back(slice);
+    }
+
+    if (slices.empty())
+      return failure();
+
+    Value src = slices[0].getOperand();
+    for (auto slice : slices)
+      if (slice.getOperand() != src)
+        return failure();
+
+    auto srcType = cast<RankedTensorType>(src.getType());
+    int64_t rank = srcType.getRank();
+    int64_t N = (int64_t)slices.size();
+
+    if (srcType.getShape()[concatDim] != N)
+      return failure();
+
+    for (int64_t i = 0; i < N; ++i) {
+      auto starts = slices[i].getStartIndices();
+      auto limits = slices[i].getLimitIndices();
+      auto strides = slices[i].getStrides();
+      for (int64_t d = 0; d < rank; ++d) {
+        if (strides[d] != 1)
+          return failure();
+        if (d == (int64_t)concatDim) {
+          if (starts[d] != N - 1 - i || limits[d] != N - i)
+            return failure();
+        } else {
+          if (starts[d] != 0 || limits[d] != srcType.getShape()[d])
+            return failure();
+        }
+      }
+    }
+
+    rewriter.replaceOpWithNewOp<stablehlo::ReverseOp>(
+        op, src, SmallVector<int64_t>{(int64_t)concatDim});
+    return success();
+  }
+};
+
 struct ConcatToBroadcast final
     : CheckedOpRewritePattern<stablehlo::ConcatenateOp, ConcatToBroadcast> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -35816,7 +35872,7 @@ struct EnzymeHLOOptPass
                  RecognizeFromConstant>(max_constant_expansion, context,
                                         PatternBenefit(65000));
 
-    patterns.add<
+patterns.add<
         ConvertConcat, DynamicUpdateToConcat, SliceOfDynamicUpdate,
         SliceOfUpdateWithoutCorners, SliceElementwise, SliceReshapeElementwise,
         DynamicSliceElementwise, SlicePad, SliceReshapePad, ReshapeSliceReshape,
@@ -35832,7 +35888,7 @@ struct EnzymeHLOOptPass
         BinBroadcastSplat<stablehlo::MulOp>, RotatePad, ConjReal,
         ConvertMulConvert, ConvertBinopConvert<stablehlo::MinOp>,
         ConvertBinopConvert<stablehlo::MaxOp>, NegateReduceWindowSub>(context);
-
+        
     // Unary constant propagation patterns
     patterns
         .add<UnaryConstProp<stablehlo::NotOp, stablehlo::notOp>,
