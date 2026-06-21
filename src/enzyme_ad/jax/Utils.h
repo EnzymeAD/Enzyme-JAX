@@ -1280,11 +1280,18 @@ SmallVector<int64_t> computeGatherSliceSizes(stablehlo::ScatterOp &scatterOp);
 
 template <typename T>
 stablehlo::ConstantOp createConstantOpFromScalar(PatternRewriter &rewriter,
-                                                 Operation *op, T value) {
+                                                 Location loc, Type type,
+                                                 T value) {
   return stablehlo::ConstantOp::create(
-      rewriter, op->getLoc(), op->getResult(0).getType(),
-      cast<ElementsAttr>(
-          mlir::enzyme::makeAttr(op->getResult(0).getType(), value)));
+      rewriter, loc, type,
+      cast<ElementsAttr>(mlir::enzyme::makeAttr(type, value)));
+}
+
+template <typename T>
+stablehlo::ConstantOp createConstantOpFromScalar(PatternRewriter &rewriter,
+                                                 Operation *op, T value) {
+  return createConstantOpFromScalar(rewriter, op->getLoc(),
+                                    op->getResult(0).getType(), value);
 }
 
 stablehlo::ComparisonDirection
