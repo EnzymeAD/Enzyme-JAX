@@ -88,5 +88,19 @@ struct CheckedOpTraitRewritePattern : public OpTraitRewritePattern<TraitType> {
   bool supportsDynamicShapes() const { return false; }
 };
 
+template <typename PatternTy> struct CheckedPattern : public PatternTy {
+  using PatternTy::PatternTy;
+
+  LogicalResult matchAndRewrite(Operation *op,
+                                PatternRewriter &rewriter) const override {
+    if (op->hasAttr(kDisablePatternAttrName))
+      return failure();
+    if (failIfFuncOpInterfaceHasAttr(op, kDisablePatternAttrName, rewriter)
+            .failed())
+      return failure();
+    return PatternTy::matchAndRewrite(op, rewriter);
+  }
+};
+
 } // namespace enzyme
 } // namespace mlir

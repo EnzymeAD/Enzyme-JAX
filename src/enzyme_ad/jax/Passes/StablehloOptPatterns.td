@@ -8,6 +8,7 @@
 
 include "mlir/IR/OpBase.td"
 include "stablehlo/dialect/StablehloOps.td"
+include "stablehlo/dialect/ChloOps.td"
 
 ////////
 // Mul/Div || Add/Sub - constant computation lifting
@@ -79,6 +80,7 @@ def SubSubConst : BinOpLiftConstantComputation<StableHLO_SubtractOp, StableHLO_S
 def SubAddConst : BinOpLiftConstantComputation<StableHLO_SubtractOp, StableHLO_AddOp, StableHLO_AddOp, StableHLO_SubtractOp>;
 
 def HasSameType : Constraint<CPred<"$0.getType() == $1.getType()">>;
+def HasDifferentType : Constraint<CPred<"$0.getType() != $1.getType()">>;
 def UseOperand : NativeCodeCall<"$0">;
 
 def BitcastConvertCancellation : Pat<
@@ -86,3 +88,359 @@ def BitcastConvertCancellation : Pat<
   (UseOperand $x),
   [(HasSameType $outer, $x)]
 >;
+
+// ConvertConvertFloat
+def ConvertConvertFloatIdentity : Pat<
+  (StableHLO_ConvertOp:$outer (StableHLO_ConvertOp:$inner $x)),
+  (UseOperand $x),
+  [(IsFloatTensor $outer), (IsFloatTensor $inner), (IsFloatTensor $x), (HasSameType $outer, $x)]>;
+
+def ConvertConvertFloat : Pat<
+  (StableHLO_ConvertOp:$outer (StableHLO_ConvertOp:$inner $x)),
+  (StableHLO_ConvertOp $x),
+  [(IsFloatTensor $outer), (IsFloatTensor $inner), (IsFloatTensor $x), (HasDifferentType $outer, $x)]>;
+
+// ConvertConvertInt
+def IsIntegerTensor : Constraint<CPred<
+  "isa<mlir::IntegerType>(cast<mlir::ShapedType>($0.getType()).getElementType())">,
+  "tensor has an integer element type">;
+
+def IsWideningConvert : Constraint<CPred<
+  "cast<mlir::ShapedType>($0.getType()).getElementType().getIntOrFloatBitWidth() <= "
+  "cast<mlir::ShapedType>($1.getType()).getElementType().getIntOrFloatBitWidth()"
+>, "widening conversion">;
+
+def ConvertConvertIntIdentity : Pat<
+  (StableHLO_ConvertOp:$outer (StableHLO_ConvertOp:$inner $x)),
+  (UseOperand $x),
+  [(IsIntegerTensor $outer), (IsIntegerTensor $inner), (IsIntegerTensor $x),
+   (IsWideningConvert $x, $inner), (HasSameType $outer, $x)]>;
+
+def ConvertConvertInt : Pat<
+  (StableHLO_ConvertOp:$outer (StableHLO_ConvertOp:$inner $x)),
+  (StableHLO_ConvertOp $x),
+  [(IsIntegerTensor $outer), (IsIntegerTensor $inner), (IsIntegerTensor $x),
+   (IsWideningConvert $x, $inner), (HasDifferentType $outer, $x)]>;
+
+// NotSelectSimplify
+def NotSelectSimplify : Pat<
+  (StableHLO_SelectOp (StableHLO_NotOp $cond), $lhs, $rhs),
+  (StableHLO_SelectOp $cond, $rhs, $lhs)>;
+
+// SelectSelectSameCond
+def SelectSelectSameCondFalse : Pat<
+  (StableHLO_SelectOp $cond, $c, (StableHLO_SelectOp $cond, $a, $b)),
+  (StableHLO_SelectOp $cond, $c, $b)>;
+
+def SelectSelectSameCondTrue : Pat<
+  (StableHLO_SelectOp $cond, (StableHLO_SelectOp $cond, $a, $b), $c),
+  (StableHLO_SelectOp $cond, $a, $c)>;
+
+// RealConjSimplify
+def RealConjSimplify : Pat<
+  (StableHLO_RealOp (CHLO_ConjOp $x)),
+  (StableHLO_RealOp $x)>;
+
+// RealConvertSimplify
+def IsNotComplexTensor : Constraint<CPred<
+  "!isa<mlir::ComplexType>(cast<mlir::ShapedType>($0.getType()).getElementType())">,
+  "tensor has a non-complex element type">;
+
+def RealConvertSimplify : Pat<
+  (StableHLO_RealOp (StableHLO_ConvertOp $x)),
+  (UseOperand $x),
+  [(IsNotComplexTensor $x)]>;
+
+// ConjComplexNegate
+def ConjComplexNegate : Pat<
+  (CHLO_ConjOp (StableHLO_ComplexOp $a, (StableHLO_NegOp $b))),
+  (StableHLO_ComplexOp $a, $b)>;
+
+// NegateImagConj
+def NegateImagConj : Pat<
+  (StableHLO_NegOp (StableHLO_ImagOp (CHLO_ConjOp $x))),
+  (StableHLO_ImagOp $x)>;
+
+def IsAnyZero : Constraint<CPred<
+  "mlir::matchPattern($0, mlir::m_AnyZeroFloat()) || "
+  "mlir::matchPattern($0, mlir::m_Zero()) || "
+  "mlir::matchPattern($0, ::mlir::enzyme::m_AnyZeroComplex())"
+>>;
+
+def IsOne : Constraint<CPred<"mlir::matchPattern($0, mlir::m_One()) || mlir::matchPattern($0, mlir::m_OneFloat())">>;
+
+def IsNegOne : Constraint<CPred<"mlir::matchPattern($0, ::mlir::enzyme::m_NegOne()) || mlir::matchPattern($0, ::mlir::enzyme::m_NegOneFloat())">>;
+
+def IsAllOnes : Constraint<CPred<"mlir::matchPattern($0, ::mlir::enzyme::m_AllOnes())">>;
+
+def IsMinusOneValue : Constraint<CPred<
+  "[] (mlir::Value val) { "
+  "  mlir::SplatElementsAttr attr; "
+  "  if (!mlir::matchPattern(val, mlir::m_Constant(&attr))) return false; "
+  "  auto doubleVal = ::mlir::enzyme::getDoubleFromAttr(attr.getSplatValue<mlir::TypedAttr>()); "
+  "  return doubleVal && *doubleVal == -1.0; "
+  "}($0)"
+>>;
+
+def HasOneUse : Constraint<CPred<"$0.hasOneUse()">>;
+
+
+def GuaranteedPurelyReal : Constraint<CPred<
+  "::mlir::enzyme::guaranteedPurelyRealResult($0, rewriter)">,
+  "result is guaranteed purely real">;
+
+def GuaranteedNonNegative : Constraint<CPred<
+  "::mlir::enzyme::guaranteedNonNegativeResult($0.getDefiningOp(), rewriter)">,
+  "result is guaranteed non-negative">;
+
+def IsConstantOp : Constraint<CPred<"mlir::matchPattern($0, mlir::m_Constant())">>;
+
+def IsStaticShapeTensor : Constraint<CPred<
+  "cast<mlir::ShapedType>($0.getType()).hasStaticShape()">,
+  "tensor has a static shape">;
+
+def CreateConstOp0 : NativeCodeCall<"createConstantOpFromScalar($_builder, $_loc, $0.getType(), 0.0)">;
+def CreateConstOp1 : NativeCodeCall<"createConstantOpFromScalar($_builder, $_loc, $0.getType(), 1.0)">;
+
+// InvolutionSimplify
+def NegNegSimplify : Pat<
+  (StableHLO_NegOp (StableHLO_NegOp $x)),
+  (UseOperand $x)>;
+
+def NotNotSimplify : Pat<
+  (StableHLO_NotOp (StableHLO_NotOp $x)),
+  (UseOperand $x)>;
+
+def ConjConjSimplify : Pat<
+  (CHLO_ConjOp (CHLO_ConjOp $x)),
+  (UseOperand $x)>;
+
+// SignAbsSimplify
+def SignAbsSimplify_1 : Pat<
+  (StableHLO_MulOp (StableHLO_SignOp $x), (StableHLO_AbsOp $x)),
+  (UseOperand $x)>;
+
+def SignAbsSimplify_2 : Pat<
+  (StableHLO_MulOp (StableHLO_AbsOp $x), (StableHLO_SignOp $x)),
+  (UseOperand $x)>;
+
+// ReplaceNegAddWithSubtract
+def ReplaceNegAddWithSubtractRHS : Pat<
+  (StableHLO_AddOp $lhs, (StableHLO_NegOp:$neg $rhs)),
+  (StableHLO_SubtractOp $lhs, $rhs),
+  [(HasOneUse $neg)]>;
+
+def ReplaceNegAddWithSubtractLHS : Pat<
+  (StableHLO_AddOp (StableHLO_NegOp:$neg $lhs), $rhs),
+  (StableHLO_SubtractOp $rhs, $lhs),
+  [(HasOneUse $neg)]>;
+
+// ReplaceSubtractNegWithAdd
+def ReplaceSubtractNegWithAdd : Pat<
+  (StableHLO_SubtractOp $lhs, (StableHLO_NegOp:$neg $rhs)),
+  (StableHLO_AddOp $lhs, $rhs),
+  [(HasOneUse $neg)]>;
+
+// ExponentialMinusOneFuse
+def ExponentialMinusOneFuse1 : Pat<
+  (StableHLO_SubtractOp (StableHLO_ExpOp:$exp $x, $accuracy), $one),
+  (StableHLO_Expm1Op $x, $accuracy),
+  [(HasOneUse $exp), (IsOne $one)]>;
+
+def ExponentialMinusOneFuse2 : Pat<
+  (StableHLO_SubtractOp $one, (StableHLO_ExpOp:$exp $x, $accuracy)),
+  (StableHLO_NegOp (StableHLO_Expm1Op $x, $accuracy)),
+  [(HasOneUse $exp), (IsOne $one)]>;
+
+// ExponentialMinusOneAddFuse
+def ExponentialMinusOneAddFuse1 : Pat<
+  (StableHLO_AddOp (StableHLO_ExpOp:$exp $x, $accuracy), $minus_one),
+  (StableHLO_Expm1Op $x, $accuracy),
+  [(HasOneUse $exp), (IsMinusOneValue $minus_one)]>;
+
+def ExponentialMinusOneAddFuse2 : Pat<
+  (StableHLO_AddOp $minus_one, (StableHLO_ExpOp:$exp $x, $accuracy)),
+  (StableHLO_Expm1Op $x, $accuracy),
+  [(HasOneUse $exp), (IsMinusOneValue $minus_one)]>;
+
+// MinSimplify / MaxSimplify
+def MinSimplify : Pat<
+  (StableHLO_MinOp $x, $x),
+  (UseOperand $x)>;
+
+def MaxSimplify : Pat<
+  (StableHLO_MaxOp $x, $x),
+  (UseOperand $x)>;
+
+// AddSimplify
+def AddSimplifyLHS : Pat<
+  (StableHLO_AddOp $zero, $x),
+  (UseOperand $x),
+  [(IsAnyZero $zero)]>;
+
+def AddSimplifyRHS : Pat<
+  (StableHLO_AddOp $x, $zero),
+  (UseOperand $x),
+  [(IsAnyZero $zero)]>;
+
+// SubSimplify
+def SubSimplifyRHSZero : Pat<
+  (StableHLO_SubtractOp $x, $zero),
+  (UseOperand $x),
+  [(IsAnyZero $zero)]>;
+
+def SubSimplifyLHSZero : Pat<
+  (StableHLO_SubtractOp $zero, $x),
+  (StableHLO_NegOp $x),
+  [(IsAnyZero $zero)]>;
+
+def SubSimplifyIdentical : Pat<
+  (StableHLO_SubtractOp:$res $x, $x),
+  (CreateConstOp0 $res),
+  [(IsIntegerTensor $res)]>;
+
+// MulSimplify
+def MulSimplifyOneLHS : Pat<
+  (StableHLO_MulOp $one, $x),
+  (UseOperand $x),
+  [(IsOne $one)]>;
+
+def MulSimplifyOneRHS : Pat<
+  (StableHLO_MulOp $x, $one),
+  (UseOperand $x),
+  [(IsOne $one)]>;
+
+def MulSimplifyNegOneLHS : Pat<
+  (StableHLO_MulOp $negone, $x),
+  (StableHLO_NegOp $x),
+  [(IsNegOne $negone)]>;
+
+def MulSimplifyNegOneRHS : Pat<
+  (StableHLO_MulOp $x, $negone),
+  (StableHLO_NegOp $x),
+  [(IsNegOne $negone)]>;
+
+// AndSimplify
+def AndSimplifyIdentical : Pat<
+  (StableHLO_AndOp $x, $x),
+  (UseOperand $x)>;
+
+def AndSimplifyFalseLHS : Pat<
+  (StableHLO_AndOp $zero, $x),
+  (UseOperand $zero),
+  [(IsAnyZero $zero)]>;
+
+def AndSimplifyFalseRHS : Pat<
+  (StableHLO_AndOp $x, $zero),
+  (UseOperand $zero),
+  [(IsAnyZero $zero)]>;
+
+def AndSimplifyTrueLHS : Pat<
+  (StableHLO_AndOp $ones, $x),
+  (UseOperand $x),
+  [(IsAllOnes $ones)]>;
+
+def AndSimplifyTrueRHS : Pat<
+  (StableHLO_AndOp $x, $ones),
+  (UseOperand $x),
+  [(IsAllOnes $ones)]>;
+
+// OrSimplify
+def OrSimplifyIdentical : Pat<
+  (StableHLO_OrOp $x, $x),
+  (UseOperand $x)>;
+
+def OrSimplifyTrueLHS : Pat<
+  (StableHLO_OrOp $ones, $x),
+  (UseOperand $ones),
+  [(IsAllOnes $ones)]>;
+
+def OrSimplifyTrueRHS : Pat<
+  (StableHLO_OrOp $x, $ones),
+  (UseOperand $ones),
+  [(IsAllOnes $ones)]>;
+
+def OrSimplifyFalseLHS : Pat<
+  (StableHLO_OrOp $zero, $x),
+  (UseOperand $x),
+  [(IsAnyZero $zero)]>;
+
+def OrSimplifyFalseRHS : Pat<
+  (StableHLO_OrOp $x, $zero),
+  (UseOperand $x),
+  [(IsAnyZero $zero)]>;
+
+// XorSimplify
+def XorSimplifyFalseLHS : Pat<
+  (StableHLO_XorOp $zero, $x),
+  (UseOperand $x),
+  [(IsAnyZero $zero)]>;
+
+def XorSimplifyFalseRHS : Pat<
+  (StableHLO_XorOp $x, $zero),
+  (UseOperand $x),
+  [(IsAnyZero $zero)]>;
+
+def XorSimplifyTrueLHS : Pat<
+  (StableHLO_XorOp $ones, $x),
+  (StableHLO_NotOp $x),
+  [(IsAllOnes $ones)]>;
+
+def XorSimplifyTrueRHS : Pat<
+  (StableHLO_XorOp $x, $ones),
+  (StableHLO_NotOp $x),
+  [(IsAllOnes $ones)]>;
+
+// ConvertIotaSimplify
+def ConvertIotaSimplify : Pat<
+  (StableHLO_ConvertOp:$res (StableHLO_IotaOp $dim)),
+  (StableHLO_IotaOp $dim),
+  [(IsIntegerTensor $res)]>;
+
+// ConjReal
+def ConjRealSimplify : Pat<
+  (CHLO_ConjOp $x),
+  (UseOperand $x),
+  [(GuaranteedPurelyReal $x)]>;
+
+// ConjComplexSimplify
+def ConjComplexSimplify : Pat<
+  (CHLO_ConjOp (StableHLO_ComplexOp $lhs, $rhs)),
+  (StableHLO_ComplexOp $lhs, (StableHLO_NegOp $rhs)),
+  [(IsConstantOp $rhs)]>;
+
+// DynamicReshapeOpCanon
+def DynamicReshapeOpCanon : Pat<
+  (StableHLO_DynamicReshapeOp:$res $operand, $shape),
+  (StableHLO_ReshapeOp $operand),
+  [(IsStaticShapeTensor $res)]>;
+
+// AbsPositiveSimplify
+def AbsPositiveSimplify : Pat<
+  (StableHLO_AbsOp:$res $x),
+  (UseOperand $x),
+  [(IsNotComplexTensor $res), (GuaranteedNonNegative $x)]>;
+
+// RemSimplify
+def RemSimplify : Pat<
+  (StableHLO_RemOp:$res $x, $one),
+  (CreateConstOp0 $res),
+  [(IsOne $one)]>;
+
+// PowSimplify
+def PowSimplifyOneRHS : Pat<
+  (StableHLO_PowOp $x, $one),
+  (UseOperand $x),
+  [(IsOne $one)]>;
+
+def PowSimplifyZeroRHS : Pat<
+  (StableHLO_PowOp:$res $x, $zero),
+  (CreateConstOp1 $res),
+  [(IsAnyZero $zero)]>;
+
+def PowSimplifyOneLHS : Pat<
+  (StableHLO_PowOp:$res $one, $x),
+  (CreateConstOp1 $res),
+  [(IsOne $one)]>;
+
+

@@ -97,7 +97,11 @@ static bool emitPopulatePatternsFuncDefs(llvm::raw_ostream &os,
        << "    ::mlir::PatternBenefit benefit) {\n";
 
     for (llvm::StringRef pattern : rec->getValueAsListOfStrings("patterns")) {
-      os << "  patterns.add<" << pattern << ">(&context);\n";
+      if (patternOpStr == "EnzymeHLOPatternOp") {
+        os << "  patterns.add<::mlir::enzyme::CheckedPattern<" << pattern << ">>(&context);\n";
+      } else {
+        os << "  patterns.add<" << pattern << ">(&context);\n";
+      }
     }
     os << "}\n\n";
   }
