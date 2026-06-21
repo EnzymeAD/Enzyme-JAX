@@ -303,6 +303,8 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
                                    int64_t maxConstThreshold,
                                    int64_t whileUnrollThreshold) {
   list.push_back("compare_op_canon<16>");
+  list.push_back("compare_bool_const<16>");
+  list.push_back("compare_ext<16>");
   list.push_back("transpose_transpose<16>");
   list.push_back("broadcast_in_dim_op_canon<16>");
   list.push_back("convert_op_canon<16>");
