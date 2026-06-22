@@ -20828,12 +20828,16 @@ struct ReorderElementwiseAndShapeOp final
     }
 
     // Reorder the operation and rewire the inputs/outputs.
+    rewriter.startOpModification(op);
+    rewriter.startOpModification(definingOp);
     op->moveBefore(definingOp);
     definingOp->getResult(0).setType(result.getType());
     rewriter.replaceAllUsesWith(result, definingOp->getResult(0));
     result.setType(intermediateType);
     op->setOperands(input);
     definingOp->setOperands(result);
+    rewriter.finalizeOpModification(definingOp);
+    rewriter.finalizeOpModification(op);
     return success();
   }
 };
