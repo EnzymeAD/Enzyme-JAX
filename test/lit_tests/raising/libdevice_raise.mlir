@@ -241,11 +241,11 @@ module {
     // CHECK-LABEL: @gpu_sinpi
     llvm.func @gpu_sinpi(%arg0: f32, %arg1: f64) -> !llvm.struct<(f32, f64)> attributes {llvm.emit_c_interface} {
       // CHECK-DAG: %[[PI_F32:.*]] = arith.constant {{.*}} : f32
-      // CHECK-DAG: %[[MUL_F32:.*]] = arith.mulf %arg0, %[[PI_F32]] : f32
-      // CHECK-DAG: %[[SIN_F32:.*]] = math.sin %[[MUL_F32]] : f32
       // CHECK-DAG: %[[PI_F64:.*]] = arith.constant {{.*}} : f64
-      // CHECK-DAG: %[[MUL_F64:.*]] = arith.mulf %arg1, %[[PI_F64]] : f64
-      // CHECK-DAG: %[[SIN_F64:.*]] = math.sin %[[MUL_F64]] : f64
+      // CHECK: %[[MUL_F32:.*]] = arith.mulf %arg0, %[[PI_F32]] : f32
+      // CHECK: %[[SIN_F32:.*]] = math.sin %[[MUL_F32]] : f32
+      // CHECK: %[[MUL_F64:.*]] = arith.mulf %arg1, %[[PI_F64]] : f64
+      // CHECK: %[[SIN_F64:.*]] = math.sin %[[MUL_F64]] : f64
       %0 = llvm.call @__nv_sinpif(%arg0) : (f32) -> f32
       %1 = llvm.call @__nv_sinpi(%arg1) : (f64) -> f64
       %2 = llvm.mlir.undef : !llvm.struct<(f32, f64)>
