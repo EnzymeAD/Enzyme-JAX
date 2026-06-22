@@ -5,7 +5,7 @@ load("@rules_python//python:py_library.bzl", "py_library")
 load("@xla//xla/tsl:tsl.bzl", pybind_extension = "tsl_pybind_extension_opensource")
 
 package(
-    default_visibility = ["//visibility:public"],
+    default_visibility = ["//:__subpackages__"],
     features = ["layering_check"],
 )
 
