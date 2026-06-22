@@ -1262,6 +1262,116 @@ void GemmOp::build(OpBuilder &builder, OperationState &result, Value A, Value B,
                                     builder.getContext(), transb));
 }
 
+LogicalResult enzymexla::HemmOp::verify() {
+  auto alpha = op.getAlpha();
+  auto a = op.getA();
+  auto b = op.getB();
+  auto beta = op.getBeta();
+  auto c = op.getC();
+  auto side = op.getSide();
+
+  auto type_alpha = cast<RankedTensorType>(alpha.getType());
+  auto type_A = cast<RankedTensorType>(A.getType());
+  auto type_B = cast<RankedTensorType>(B.getType());
+  auto type_beta = cast<RankedTensorType>(beta.getType());
+  auto type_C = cast<RankedTensorType>(C.getType());
+
+  auto shape_A = type_A.getShape();
+  auto shape_B = type_B.getShape();
+  auto shape_C = type_C.getShape();
+
+  auto type_element = type_alpha.getElementType();
+  auto rank = type_A.getRank();
+
+  auto inner_dim_A =
+      side == enzymexla::LapackSide::left ? rank - 1 : rank - 2;
+  auto inner_dim_B =
+      side == enzymexla::LapackSide::left ? rank - 2 : rank - 1;
+
+  auto outer_dim_A =
+      side == enzymexla::LapackSide::left ? rank - 2 : rank - 1;
+  auto outer_dim_B =
+      side == enzymexla::LapackSide::left ? rank - 1 : rank - 2;
+
+  if (type_A.getElementType() != type_element ||
+      type_B.getElementType() != type_element ||
+      type_C.getElementType() != type_element ||
+      type_beta.getElementType() != type_element) {
+    return emitOpError("Element types of alpha, A, B and C must match");
+  }
+
+  if (!isa<mlir::ComplexType>(type_element)) {
+    return emitOpError("Hemm works only with complex element type")
+  }
+
+  if (type_A.getRank() != type_B.getRank() ||
+      type_A.getRank() != type_C.getRank()) {
+    return emitOpError("Ranks of A, B and C must match");
+  }
+
+  if (shape_A.drop_back(2) != shape_B.drop_back(2) ||
+      shape_A.drop_back(2) != shape_C.drop_back(2)) {
+    return emitOpError("Batch dimensions of A, B and C must match");
+  }
+
+  if (shape_A[inner_dim_A] != shape_B[inner_dim_B]) {
+    return emitOpError("Inner dimensions of A and B must match");
+  }
+
+  if (shape_A[outer_dim_A] != shape_C[rank - 2] ||
+      shape_B[outer_dim_B] != shape_C[rank - 1]) {
+    return emitOpError(
+        "Outer dimensions of A and B must match corresponding dimensions of C");
+  }
+
+  if (getResult().getType() != type_C) {
+    return emitOpError("Result type must match C's type");
+  }
+
+  return success();
+}
+
+void HemmOp::build(OpBuilder &builder, OperationState &result, Value A, Value B,
+                   enzymexla::LapackSide side, enzymexla::LapackUplo uplo) {
+  auto type_A = cast<RankedTensorType>(A.getType());
+  auto type_B = cast<RankedTensorType>(B.getType());
+
+  auto element_type = type_A.getElementType();
+  auto rank = type_A.getRank();
+
+  auto outer_dim_A = 
+      side == enzymexla::LapackTranspose::left ? rank - 2 : rank - 1;
+  auto outer_dim_B =
+      uplo == enzymexla::LapackTranspose::right ? rank - 1 : rank - 2;
+
+  auto shape_a = type_A.getShape();
+  auto shape_b = type_B.getShape();
+  SmallVector<int64_t> shape_c;
+  for (int i = 0; i < rank - 2; i++) {
+    shape_c.push_back(shape_a[i]);
+  }
+  shape_c.push_back(shape_a[outer_dim_A]);
+  shape_c.push_back(shape_b[outer_dim_B]);
+
+  auto type_scalar = RankedTensorType::get({}, element_type);
+  auto alpha = stablehlo::ConstantOp::create(
+      builder, result.location, type_scalar,
+      cast<ElementsAttr>(makeAttr(type_scalar, 1)));
+  auto beta = stablehlo::ConstantOp::create(
+      builder, result.location, type_scalar,
+      cast<ElementsAttr>(makeAttr(type_scalar, 0)));
+
+  auto type_C = RankedTensorType::get(shape_c, element_type);
+  auto C =
+      stablehlo::ConstantOp::create(builder, result.location, type_C,
+                                    cast<ElementsAttr>(makeAttr(type_C, 0)));
+
+  result.addTypes(type_C);
+  result.addOperands({alpha, A, B, beta, C});
+  result.addAttribute("side", enzymexla::LapackSideAttr::get(builder.getContext(), side));
+  result.addAttribute("uplo", enzymexla::LapackUploAttr::get(builder.getContext(), uplo));
+}
+
 LogicalResult enzymexla::SyrkOp::verify() {
   auto CType = cast<RankedTensorType>(getC().getType());
   bool isComplex = false;
