@@ -8,27 +8,29 @@ func.func @cbrt(%x : tensor<2xf32>) -> tensor<2xf32> {
 }
 
 // FORWARD:  func.func @cbrt(%arg0: tensor<2xf32>, %arg1: tensor<2xf32>) -> (tensor<2xf32>, tensor<2xf32>) {
-// FORWARD-NEXT:    %cst = stablehlo.constant dense<0.333333343> : tensor<2xf32>
-// FORWARD-NEXT:    %cst_0 = stablehlo.constant dense<-0.666666686> : tensor<2xf32>
-// FORWARD-NEXT:    %0 = stablehlo.power %arg0, %cst_0 : tensor<2xf32>
-// FORWARD-NEXT:    %1 = stablehlo.multiply %0, %cst : tensor<2xf32>
-// FORWARD-NEXT:    %2 = stablehlo.multiply %arg1, %1 : tensor<2xf32>
-// FORWARD-NEXT:    %3 = stablehlo.cbrt %arg0 : tensor<2xf32>
-// FORWARD-NEXT:    return %3, %2 : tensor<2xf32>, tensor<2xf32>
+// FORWARD-NEXT:    %cst = stablehlo.constant dense<3.000000e+00> : tensor<2xf32>
+// FORWARD-NEXT:    %0 = stablehlo.cbrt %arg0 : tensor<2xf32>
+// FORWARD-NEXT:    %1 = stablehlo.multiply %0, %0 : tensor<2xf32>
+// FORWARD-NEXT:    %2 = stablehlo.multiply %cst, %1 : tensor<2xf32>
+// FORWARD-NEXT:    %3 = stablehlo.divide %arg1, %2 : tensor<2xf32>
+// FORWARD-NEXT:    return %0, %3 : tensor<2xf32>, tensor<2xf32>
 // FORWARD-NEXT:  }
 
 // REVERSE:  func.func @cbrt(%arg0: tensor<2xf32>, %arg1: tensor<2xf32>) -> tensor<2xf32> {
-// REVERSE-NEXT:    %cst = stablehlo.constant dense<0.333333343> : tensor<2xf32>
-// REVERSE-NEXT:    %cst_0 = stablehlo.constant dense<-0.666666686> : tensor<2xf32>
-// REVERSE-NEXT:    %0 = stablehlo.power %arg0, %cst_0 : tensor<2xf32>
-// REVERSE-NEXT:    %1 = stablehlo.multiply %0, %cst : tensor<2xf32>
-// REVERSE-NEXT:    %2 = stablehlo.multiply %arg1, %1 : tensor<2xf32>
-// REVERSE-NEXT:    return %2 : tensor<2xf32>
+// REVERSE-NEXT:    %cst = stablehlo.constant dense<3.000000e+00> : tensor<2xf32>
+// REVERSE-NEXT:    %0 = stablehlo.cbrt %arg0 : tensor<2xf32>
+// REVERSE-NEXT:    %1 = stablehlo.multiply %0, %0 : tensor<2xf32>
+// REVERSE-NEXT:    %2 = stablehlo.multiply %cst, %1 : tensor<2xf32>
+// REVERSE-NEXT:    %3 = stablehlo.divide %arg1, %2 : tensor<2xf32>
+// REVERSE-NEXT:    return %3 : tensor<2xf32>
 // REVERSE-NEXT:  }
 
+// Negative inputs: cbrt is real and smooth for x < 0 (cbrt(-8) = -2), so the
+// true gradient 1/(3*cbrt(x)^2) is a finite real with the same magnitude as on
+// the positives. The old pow(x,-2/3) rule returned NaN here. See issue #2571.
 func.func @main() {
-  %x = stablehlo.constant dense<[8.0, 27.0]> : tensor<2xf32>
-  %out = stablehlo.constant dense<[2.0, 3.0]> : tensor<2xf32>
+  %x = stablehlo.constant dense<[-8.0, -27.0]> : tensor<2xf32>
+  %out = stablehlo.constant dense<[-2.0, -3.0]> : tensor<2xf32>
   %expected = stablehlo.constant dense<[0.083333336, 0.037037037]> : tensor<2xf32>
 
   %dx = stablehlo.constant dense<1.0> : tensor<2xf32>
