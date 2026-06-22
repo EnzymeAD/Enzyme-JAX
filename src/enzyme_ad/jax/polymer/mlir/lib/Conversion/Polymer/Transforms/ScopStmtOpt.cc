@@ -101,11 +101,11 @@ static Operation *apply(mlir::AffineMap affMap, ValueRange operands,
   // TODO: properly handle these index casting cases.
   for (size_t i = 0; i < newOperands.size(); i++)
     if (newOperands[i].getType() != b.getIndexType())
-      newOperands[i] = b.create<arith::IndexCastOp>(
-          call.getLoc(), b.getIndexType(), newOperands[i]);
+      newOperands[i] = arith::IndexCastOp::create(
+          b, call.getLoc(), b.getIndexType(), newOperands[i]);
 
-  return b.create<mlir::affine::AffineApplyOp>(call.getLoc(), affMap,
-                                               newOperands);
+  return mlir::affine::AffineApplyOp::create(b, call.getLoc(), affMap,
+                                             newOperands);
 }
 
 static void projectAllOutExcept(affine::FlatAffineValueConstraints &cst,
@@ -170,8 +170,8 @@ static void getMemRefSize(MutableArrayRef<mlir::affine::AffineForOp> forOps,
     b.setInsertionPointAfterValue(
         findLastDefined(ValueRange({lbOp->getResult(0), ubOp->getResult(0)})));
 
-    Value size = b.create<mlir::affine::AffineApplyOp>(
-        forOps.back().getLoc(),
+    Value size = mlir::affine::AffineApplyOp::create(
+        b, forOps.back().getLoc(),
         mlir::AffineMap::get(
             0, 2, b.getAffineSymbolExpr(1) - b.getAffineSymbolExpr(0)),
         ValueRange{lbOp->getResult(0), ubOp->getResult(0)});
@@ -227,7 +227,7 @@ static void scopStmtSplit(ModuleOp m, OpBuilder &b, func::FuncOp f,
   b.setInsertionPointAfterValue(findLastDefined(ValueRange(memSizes)));
   // Allocation of the scratchpad memory.
   Operation *scrAlloc =
-      b.create<memref::AllocaOp>(forOp.getLoc(), memType, memSizes);
+      memref::AllocaOp::create(b, forOp.getLoc(), memType, memSizes);
   scrAlloc->setAttr("scop.scratchpad", b.getUnitAttr());
 
   // Pass it into the target function.
@@ -239,22 +239,22 @@ static void scopStmtSplit(ModuleOp m, OpBuilder &b, func::FuncOp f,
   SmallVector<Value, 4> addrs;
   for (int dim = 0; dim < numDims; dim++) {
     mlir::affine::AffineForOp curr = forOps[forOps.size() - numDims + dim];
-    Value lb = b.create<mlir::affine::AffineApplyOp>(
-        op->getLoc(), curr.getLowerBoundMap(), curr.getLowerBoundOperands());
-    Value addr = b.create<mlir::affine::AffineApplyOp>(
-        op->getLoc(),
+    Value lb = mlir::affine::AffineApplyOp::create(
+        b, op->getLoc(), curr.getLowerBoundMap(), curr.getLowerBoundOperands());
+    Value addr = mlir::affine::AffineApplyOp::create(
+        b, op->getLoc(),
         AffineMap::get(2, 0, b.getAffineDimExpr(0) - b.getAffineDimExpr(1)),
         ValueRange({curr.getInductionVar(), lb}));
     addrs.push_back(addr);
   }
 
   Operation *loadOp =
-      b.create<mlir::affine::AffineLoadOp>(op->getLoc(), scrInFunc, addrs);
+      mlir::affine::AffineLoadOp::create(b, op->getLoc(), scrInFunc, addrs);
   op->replaceAllUsesWith(loadOp);
 
   b.setInsertionPointAfterValue(addrs.back());
-  b.create<mlir::affine::AffineStoreOp>(op->getLoc(), op->getResult(0),
-                                        scrInFunc, addrs);
+  mlir::affine::AffineStoreOp::create(b, op->getLoc(), op->getResult(0),
+                                      scrInFunc, addrs);
 }
 
 /// Find the target function and the op to split within it.
@@ -499,7 +499,7 @@ struct SinkScratchpadPass
         if (indices.find(i) == indices.end())
           newArgs.push_back(caller.getOperand(i));
 
-      b.create<mlir::func::CallOp>(caller->getLoc(), callee, newArgs);
+      mlir::func::CallOp::create(b, caller->getLoc(), callee, newArgs);
 
       caller.erase();
     }
@@ -640,15 +640,15 @@ static void unifyScratchpad(func::FuncOp f, ModuleOp m, OpBuilder &b) {
       dims.push_back(op.getOperand(d));
     }
 
-    Value maxDim = b.create<mlir::affine::AffineMaxOp>(
-        dims.front().getLoc(), dims.front().getType(),
+    Value maxDim = mlir::affine::AffineMaxOp::create(
+        b, dims.front().getLoc(), dims.front().getType(),
         b.getMultiDimIdentityMap(dims.size()), ValueRange(dims));
     maxDims.push_back(maxDim);
   }
 
   Value newScr =
-      b.create<memref::AllocaOp>(scratchpads.back().getDefiningOp()->getLoc(),
-                                 newMemType, ValueRange(maxDims));
+      memref::AllocaOp::create(b, scratchpads.back().getDefiningOp()->getLoc(),
+                               newMemType, ValueRange(maxDims));
 
   // Then, replace the use of the first scratchpads with this one.
   scratchpads.front().replaceAllUsesWith(newScr);

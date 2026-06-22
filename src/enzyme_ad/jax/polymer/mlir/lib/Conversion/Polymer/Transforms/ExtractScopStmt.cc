@@ -73,8 +73,8 @@ insertScratchpadForInterprocUses(mlir::Operation *defOp,
 
   // The memref shape is 1 and the type is derived from val.
   mlir::Type memrefType = MemRefType::get({1}, val.getType());
-  mlir::Operation *allocaOp =
-      b.create<memref::AllocaOp>(defOp->getLoc(), cast<MemRefType>(memrefType));
+  mlir::Operation *allocaOp = memref::AllocaOp::create(
+      b, defOp->getLoc(), cast<MemRefType>(memrefType));
   mlir::Value memref = allocaOp->getResult(0);
 
   // Give the callee an additional argument
@@ -94,8 +94,8 @@ insertScratchpadForInterprocUses(mlir::Operation *defOp,
 
   // Store within the callee for the used value.
   b.setInsertionPointAfter(defInCalleeOp);
-  b.create<mlir::affine::AffineStoreOp>(
-      allocaOp->getLoc(), defInCalleeOp->getResult(0), scratchpad,
+  mlir::affine::AffineStoreOp::create(
+      b, allocaOp->getLoc(), defInCalleeOp->getResult(0), scratchpad,
       b.getConstantAffineMap(0), std::vector<mlir::Value>());
 
   // llvm::errs() << "Updated callee interface:\n";
@@ -114,8 +114,8 @@ insertScratchpadForInterprocUses(mlir::Operation *defOp,
     OpBuilder::InsertionGuard guard(b);
     b.setInsertionPointAfter(callerOp);
     mlir::func::CallOp newCaller =
-        b.create<mlir::func::CallOp>(callerOp->getLoc(), caller.getCallee(),
-                                     caller.getResultTypes(), newOperands);
+        mlir::func::CallOp::create(b, callerOp->getLoc(), caller.getCallee(),
+                                   caller.getResultTypes(), newOperands);
     calleeToCallers[calleeOp].insert(newCaller);
     callerOpsToRemove.insert(callerOp);
     callerOp->erase();
@@ -218,8 +218,8 @@ static void getScopStmtOps(Operation *writeOp,
       args.insert(scratchpad);
 
       b.setInsertionPointAfter(op);
-      mlir::Operation *loadOp = b.create<mlir::affine::AffineLoadOp>(
-          op->getLoc(), scratchpad, b.getConstantAffineMap(0),
+      mlir::Operation *loadOp = mlir::affine::AffineLoadOp::create(
+          b, op->getLoc(), scratchpad, b.getConstantAffineMap(0),
           std::vector<mlir::Value>());
 
       ops.insert(loadOp);
@@ -302,11 +302,11 @@ createCallee(StringRef calleeName, const llvm::SetVector<Operation *> &ops,
 
   // Create the callee. Its loc is determined by the writeOp.
   mlir::func::FuncOp callee =
-      b.create<mlir::func::FuncOp>(writeOp->getLoc(), calleeName, calleeType);
+      mlir::func::FuncOp::create(b, writeOp->getLoc(), calleeName, calleeType);
   mlir::Block *entryBlock = callee.addEntryBlock();
   b.setInsertionPointToStart(entryBlock);
   // Terminator
-  b.create<mlir::func::ReturnOp>(callee.getLoc());
+  mlir::func::ReturnOp::create(b, callee.getLoc());
   b.setInsertionPointToStart(entryBlock);
 
   // Create the mapping from the args to the newly created BlockArguments, to
@@ -369,8 +369,8 @@ static mlir::func::CallOp createCaller(mlir::func::FuncOp callee,
   b.setInsertionPointAfter(writeOp);
   // writeOp->dump();
 
-  return b.create<mlir::func::CallOp>(writeOp->getLoc(), callee,
-                                      ValueRange(args.getArrayRef()));
+  return mlir::func::CallOp::create(b, writeOp->getLoc(), callee,
+                                    ValueRange(args.getArrayRef()));
 }
 
 /// Remove those ops that are already in the callee, and not have uses by other
@@ -488,8 +488,8 @@ void replaceUsesByStored(mlir::func::FuncOp f, OpBuilder &b) {
     b.setInsertionPointAfter(storeOp);
 
     affine::MemRefAccess access(storeOp);
-    mlir::affine::AffineLoadOp loadOp = b.create<mlir::affine::AffineLoadOp>(
-        storeOp.getLoc(), storeOp.getMemRef(), storeOp.getAffineMap(),
+    mlir::affine::AffineLoadOp loadOp = mlir::affine::AffineLoadOp::create(
+        b, storeOp.getLoc(), storeOp.getMemRef(), storeOp.getAffineMap(),
         access.indices);
 
     LLVM_DEBUG(dbgs() << " + Created load : \n\t" << loadOp

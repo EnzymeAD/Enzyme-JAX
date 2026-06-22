@@ -1,17 +1,15 @@
 // RUN: enzymexlamlir-opt %s -tessera-apply-pdl | FileCheck %s
 
 module {
-  tessera.define @eigen.mag(%arg0 : f32, %arg1 : f32, %arg2 : f32) -> f32 {
+  tessera.define @eigen.mag(%arg0 : f32, %arg1 : f32, %arg2 : f32) -> f32 attributes {argSizes = array<i64: 4, 4, 4>, byRefArgs = array<i1: false, false, false>, pure = true} {
       tessera.return %arg0 : f32
   }
   
-  tessera.define @arith.negf(%arg0 : f32) -> f32 {
+  tessera.define @arith.negf(%arg0 : f32) -> f32 attributes {argSizes = array<i64: 4>, byRefArgs = array<i1: false>, pure = true} {
       tessera.return %arg0 : f32
   }
-  
-  // CHECK-LABEL: llvm.func @main
+
   llvm.func @main(%arg0 : f32, %arg1 : f32, %arg2 : f32) -> f32 {
-      // CHECK: tessera.call @eigen.mag(%arg0, %arg1, %arg2)
       %0 = tessera.call @arith.negf(%arg0) : (f32) -> f32
       %1 = tessera.call @eigen.mag(%0, %arg1, %arg2) : (f32, f32, f32) -> f32
       llvm.return %1 : f32
@@ -40,3 +38,14 @@ module {
     }
   }
 }
+
+// CHECK: tessera.define @eigen.mag(%arg0: f32, %arg1: f32, %arg2: f32) -> f32 attributes {argSizes = array<i64: 4, 4, 4>, byRefArgs = array<i1: false, false, false>, pure = true} {
+// CHECK-NEXT: tessera.return %arg0 : f32
+// CHECK-NEXT: }
+// CHECK-NEXT: tessera.define @arith.negf(%arg0: f32) -> f32 attributes {argSizes = array<i64: 4>, byRefArgs = array<i1: false>, pure = true} {
+// CHECK-NEXT: tessera.return %arg0 : f32
+// CHECK-NEXT: }
+// CHECK-NEXT: llvm.func @main(%arg0: f32, %arg1: f32, %arg2: f32) -> f32 {
+// CHECK-NEXT: %[[RES:.*]] = tessera.call @eigen.mag(%arg0, %arg1, %arg2) : (f32, f32, f32) -> f32
+// CHECK-NEXT: llvm.return %[[RES]] : f32
+// CHECK-NEXT: }

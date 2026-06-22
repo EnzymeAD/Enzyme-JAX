@@ -256,24 +256,24 @@ EnzymeRefineArgumentsPass::refineArguments(func::FuncOp func,
         reshapeShape.push_back(dstSize);
 
         auto reshapeType = RankedTensorType::get(reshapeShape, srcElType);
-        Value reshapedInput = builder.create<stablehlo::ReshapeOp>(
-            wrapper.getLoc(), reshapeType, input);
+        Value reshapedInput = stablehlo::ReshapeOp::create(
+            builder, wrapper.getLoc(), reshapeType, input);
 
         SmallVector<int64_t> bitcastShape =
             llvm::to_vector(refinedTensorType.getShape());
         bitcastShape.back() /= dstSize;
         auto bitcastType = RankedTensorType::get(bitcastShape, dstElType);
 
-        Value convertedVal = builder.create<stablehlo::BitcastConvertOp>(
-            wrapper.getLoc(), bitcastType, reshapedInput);
+        Value convertedVal = stablehlo::BitcastConvertOp::create(
+            builder, wrapper.getLoc(), bitcastType, reshapedInput);
 
         // Update wrapper to use convertedVal
         wrapper.setOperand(0, convertedVal);
 
         // Update shape operand of wrapper
         auto newShapeAttr = builder.getI64TensorAttr(bitcastType.getShape());
-        auto newShapeConst = builder.create<stablehlo::ConstantOp>(
-            wrapper.getLoc(), newShapeAttr);
+        auto newShapeConst = stablehlo::ConstantOp::create(
+            builder, wrapper.getLoc(), newShapeAttr);
         wrapper.setOperand(1, newShapeConst);
       }
     }
@@ -311,8 +311,8 @@ EnzymeRefineArgumentsPass::refineArguments(func::FuncOp func,
             staticShape.back() /= srcSize;
 
             auto staticType = RankedTensorType::get(staticShape, srcElType);
-            val = builder.create<stablehlo::ReshapeOp>(returnOp.getLoc(),
-                                                       staticType, val);
+            val = stablehlo::ReshapeOp::create(builder, returnOp.getLoc(),
+                                               staticType, val);
 
             SmallVector<int64_t> bitcastShape =
                 llvm::to_vector(refinedTensorType.getShape());
@@ -320,11 +320,11 @@ EnzymeRefineArgumentsPass::refineArguments(func::FuncOp func,
             bitcastShape.push_back(srcSize);
 
             auto bitcastType = RankedTensorType::get(bitcastShape, dstElType);
-            val = builder.create<stablehlo::BitcastConvertOp>(returnOp.getLoc(),
-                                                              bitcastType, val);
+            val = stablehlo::BitcastConvertOp::create(
+                builder, returnOp.getLoc(), bitcastType, val);
 
-            val = builder.create<stablehlo::ReshapeOp>(returnOp.getLoc(),
-                                                       refinedType, val);
+            val = stablehlo::ReshapeOp::create(builder, returnOp.getLoc(),
+                                               refinedType, val);
 
             newReturnOperands.push_back(val);
           } else {

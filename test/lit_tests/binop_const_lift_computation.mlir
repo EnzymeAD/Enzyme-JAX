@@ -128,3 +128,28 @@ func.func @mul_chain(%arg0: tensor<3xi64>) -> tensor<3xi64> {
   %2 = stablehlo.multiply %1, %c : tensor<3xi64>
   return %2 : tensor<3xi64>
 }
+
+// Integer floor-division must NOT be reassociated with multiplication:
+// (x / 16) * 2 != x * (2 / 16) == x * 0. The divide and multiply must remain.
+func.func @muldivconst_int(%arg0: tensor<32xi64>) -> tensor<32xi64> {
+  // CHECK-LABEL: func @muldivconst_int
+  // CHECK: stablehlo.divide
+  // CHECK: stablehlo.multiply
+  %c16 = stablehlo.constant dense<16> : tensor<32xi64>
+  %c2 = stablehlo.constant dense<2> : tensor<32xi64>
+  %0 = stablehlo.divide %arg0, %c16 : tensor<32xi64>
+  %1 = stablehlo.multiply %0, %c2 : tensor<32xi64>
+  return %1 : tensor<32xi64>
+}
+
+// (x * 2) / 16 != x * (2 / 16) == x * 0 for integers either.
+func.func @divmulconst_int(%arg0: tensor<32xi64>) -> tensor<32xi64> {
+  // CHECK-LABEL: func @divmulconst_int
+  // CHECK: stablehlo.multiply
+  // CHECK: stablehlo.divide
+  %c16 = stablehlo.constant dense<16> : tensor<32xi64>
+  %c2 = stablehlo.constant dense<2> : tensor<32xi64>
+  %0 = stablehlo.multiply %arg0, %c2 : tensor<32xi64>
+  %1 = stablehlo.divide %0, %c16 : tensor<32xi64>
+  return %1 : tensor<32xi64>
+}

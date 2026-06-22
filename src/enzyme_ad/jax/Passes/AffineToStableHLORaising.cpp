@@ -670,7 +670,7 @@ expandAffineExpr(OpBuilder &builder, Location loc, AffineExpr expr,
         Value negative = stablehlo::CompareOp::create(
             builder, loc, lhs,
             makeI64Constant(cast<ShapedType>(lhs.getType()), 0),
-            stablehlo::ComparisonDirection::LE);
+            stablehlo::ComparisonDirection::LT);
         Value one = makeI64Constant(cast<ShapedType>(lhs.getType()), 1);
         Value absolute = stablehlo::SelectOp::create(
             builder, loc, negative,
@@ -880,20 +880,21 @@ emitIfAsSelect(Operation *ifOp, Value cond, affine::AffineValueMap map,
   return success();
 }
 
-static Value
-emitLoadAsGather(Location loc, Value mappedMemref, ValueRange lIndices,
-                 OpBuilder &builder,
-                 llvm::DenseMap<Value, affine::AffineValueMap> &maps) {
+// Builds a `[gridShape..., numColumns]` index tensor from per-dimension index
+// columns, deduplicating induction variables: when the same IV indexes more
+// than one column, the columns share a single grid axis instead of forming a
+// cartesian product. `ivs` is filled with the distinct IVs (one per grid axis,
+// in first-appearance order) and `gridShape` with the extent of each axis.
+// The grid axes are kept multi-dimensional (used as implicit batch dims with
+// index_vector_dim = rank - 1) rather than flattened to a single dimension,
+// whose extent could overflow for large grids.
+static Value buildGatherScatterIndices(
+    Location loc, ValueRange indexColumns, OpBuilder &builder,
+    llvm::DenseMap<Value, affine::AffineValueMap> &maps,
+    SmallVectorImpl<Value> &ivs, SmallVectorImpl<int64_t> &gridShape) {
   Value indices = nullptr;
 
-  SmallVector<int64_t> sliceSizes(lIndices.size(), 1);
-  SmallVector<int64_t> startIndexMap;
-  SmallVector<int64_t> outputShape;
-  SmallVector<Value> ivs;
-
-  for (auto raisedIdx : lIndices) {
-    startIndexMap.push_back(startIndexMap.size());
-
+  for (auto raisedIdx : indexColumns) {
     auto Ty = cast<RankedTensorType>(raisedIdx.getType());
 
     SmallVector<int64_t> dimsToBroadcast;
@@ -911,7 +912,7 @@ emitLoadAsGather(Location loc, Value mappedMemref, ValueRange lIndices,
       }
 
       if (ivPos == ivs.size()) {
-        outputShape.push_back(Ty.getShape()[i]);
+        gridShape.push_back(Ty.getShape()[i]);
         dimsToBroadcast.push_back(ivs.size());
         ivs.push_back(iv);
       } else {
@@ -977,16 +978,26 @@ emitLoadAsGather(Location loc, Value mappedMemref, ValueRange lIndices,
     }
   }
 
-  auto Ty = cast<RankedTensorType>(indices.getType());
-  SmallVector<int64_t> productOfIndices = {1, (int64_t)lIndices.size()};
+  return indices;
+}
 
-  for (auto s : Ty.getShape().drop_back()) {
-    productOfIndices[0] *= s;
-  }
+static Value
+emitLoadAsGather(Location loc, Value mappedMemref, ValueRange lIndices,
+                 OpBuilder &builder,
+                 llvm::DenseMap<Value, affine::AffineValueMap> &maps) {
+  SmallVector<int64_t> sliceSizes(lIndices.size(), 1);
+  SmallVector<int64_t> startIndexMap;
+  for (int64_t i = 0, e = lIndices.size(); i < e; ++i)
+    startIndexMap.push_back(i);
 
-  indices = stablehlo::ReshapeOp::create(builder, loc,
-                                         Ty.clone(productOfIndices), indices);
+  SmallVector<int64_t> outputShape;
+  SmallVector<Value> ivs;
 
+  Value indices =
+      buildGatherScatterIndices(loc, lIndices, builder, maps, ivs, outputShape);
+
+  // The grid axes of `indices` act as implicit batch dimensions, so the
+  // gather result directly has shape `outputShape`.
   Value res =
       stablehlo::GatherOp::create(builder, loc, mappedMemref, indices,
                                   stablehlo::GatherDimensionNumbersAttr::get(
@@ -996,11 +1007,9 @@ emitLoadAsGather(Location loc, Value mappedMemref, ValueRange lIndices,
                                       /*operandBatchingDims*/ {},
                                       /*startIndicesBatchingDims*/ {},
                                       /*startIndexMap*/ startIndexMap,
-                                      /*indexVectorDim*/ 1),
+                                      /*indexVectorDim*/
+                                      (int64_t)outputShape.size()),
                                   sliceSizes);
-
-  auto OT = cast<RankedTensorType>(res.getType());
-  res = stablehlo::ReshapeOp::create(builder, loc, OT.clone(outputShape), res);
 
   affine::AffineValueMap outputMap(
       AffineMap::getMultiDimIdentityMap(ivs.size(), loc.getContext()), ivs);
@@ -1013,87 +1022,88 @@ emitLoadAsGather(Location loc, Value mappedMemref, ValueRange lIndices,
 static Value
 emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
                    OpBuilder &builder,
-                   llvm::DenseMap<Value, affine::AffineValueMap> &maps) {
-  Value indices = nullptr;
-
+                   llvm::DenseMap<Value, affine::AffineValueMap> &maps,
+                   const ParallelContext &pc) {
   affine::AffineValueMap updateValueMap = maps.lookup(update);
 
   auto UTy = cast<RankedTensorType>(update.getType());
-  SmallVector<int64_t> broadcastDims(UTy.getShape().size(), -1);
-  SmallVector<int64_t> updateShape;
+
+  // Build the scatter indices the same way the gather path does: one grid axis
+  // per distinct induction variable, so an IV that indexes several memref
+  // dimensions reuses a single axis instead of forming a cartesian product.
+  SmallVector<Value> ivs;
+  SmallVector<int64_t> gridShape;
+  Value indices =
+      buildGatherScatterIndices(loc, sIndices, builder, maps, ivs, gridShape);
+
   SmallVector<int64_t> scatterDimsToOperandDims;
-
-  for (auto [i, raisedIdx] : llvm::enumerate(sIndices)) {
-    auto idxMap = maps.lookup(raisedIdx);
-
-    auto Ty = cast<RankedTensorType>(raisedIdx.getType());
-
-    int64_t numIndices = Ty.getNumElements();
+  for (int64_t i = 0, e = sIndices.size(); i < e; ++i)
     scatterDimsToOperandDims.push_back(i);
 
-    auto S = Ty.getShape();
-    updateShape.append(S.begin(), S.end());
-
-    for (auto [j, ex] : llvm::enumerate(idxMap.getAffineMap().getResults())) {
-      auto iv = getIVForExpr(idxMap, ex);
-      for (auto [updateIdx, E] :
-           llvm::enumerate(updateValueMap.getAffineMap().getResults())) {
-        Value updateIV = getIVForExpr(updateValueMap, E);
-        if (updateIV == iv) {
-          if (broadcastDims[updateIdx] != -1) {
-            continue;
-          }
-
-          broadcastDims[updateIdx] =
-              (updateShape.size() - Ty.getShape().size() + j);
-        }
+  // Map each dimension of the stored value to the grid axis of the induction
+  // variable that indexes it. Grid axes not targeted by any update dimension
+  // are broadcast across (the stored value is constant along them).
+  SmallVector<int64_t> broadcastDims(UTy.getShape().size(), -1);
+  for (auto [updateIdx, E] :
+       llvm::enumerate(updateValueMap.getAffineMap().getResults())) {
+    Value updateIV = getIVForExpr(updateValueMap, E);
+    for (auto [k, iv] : llvm::enumerate(ivs)) {
+      if (iv == updateIV) {
+        broadcastDims[updateIdx] = (int64_t)k;
+        break;
       }
-    }
-
-    raisedIdx = stablehlo::ReshapeOp::create(
-        builder, loc, Ty.clone({numIndices, 1}), raisedIdx); // tensor<?x1xi64>
-
-    if (indices) {
-      int64_t indicesSize =
-                  cast<RankedTensorType>(indices.getType()).getShape()[0],
-              numDims = cast<RankedTensorType>(indices.getType()).getShape()[1],
-              newSize =
-                  cast<RankedTensorType>(raisedIdx.getType()).getShape()[0];
-
-      indices = stablehlo::BroadcastInDimOp::create(
-          builder, loc, Ty.clone({indicesSize, newSize, numDims}), indices,
-          llvm::ArrayRef<int64_t>({0, 2}));
-      indices = stablehlo::ReshapeOp::create(
-          builder, loc, Ty.clone({indicesSize * newSize, numDims}), indices);
-      raisedIdx = stablehlo::BroadcastInDimOp::create(
-          builder, loc, Ty.clone({indicesSize, newSize}), raisedIdx,
-          llvm::ArrayRef<int64_t>({1, 0}));
-      raisedIdx = stablehlo::ReshapeOp::create(
-          builder, loc, Ty.clone({indicesSize * newSize, 1}), raisedIdx);
-
-      indices = stablehlo::ConcatenateOp::create(
-          builder, loc, Ty.clone({indicesSize * newSize, numDims + 1}),
-          ValueRange{indices, raisedIdx}, 1);
-    } else {
-      indices = raisedIdx;
     }
   }
 
+  // The stored value must not vary along a dimension that is absent from the
+  // store indices.
   if (llvm::any_of(broadcastDims, [](int64_t dim) { return dim == -1; })) {
     return nullptr;
   }
 
-  // Align update to the store indices.
+  // Align update to the store indices grid; the grid axes act as implicit
+  // batch dimensions of the scatter.
   update = stablehlo::BroadcastInDimOp::create(
-      builder, loc, cast<RankedTensorType>(update.getType()).clone(updateShape),
-      update, broadcastDims);
+      builder, loc, UTy.clone(gridShape), update, broadcastDims);
 
-  update = stablehlo::ReshapeOp::create(
-      builder, loc,
-      RankedTensorType::get(
-          {cast<RankedTensorType>(indices.getType()).getShape()[0]},
-          cast<RankedTensorType>(update.getType()).getElementType()),
-      update);
+  if (pc.mask) {
+    SmallVector<int64_t> collapsedDims(scatterDimsToOperandDims.begin(),
+                                       scatterDimsToOperandDims.end());
+    SmallVector<int64_t> sliceSizes(collapsedDims.size(), 1);
+    Value orig = stablehlo::GatherOp::create(
+        builder, loc, input, indices,
+        stablehlo::GatherDimensionNumbersAttr::get(
+            loc.getContext(),
+            /*offsetDims*/ {},
+            /*collapsedSliceDims*/ collapsedDims,
+            /*operandBatchingDims*/ {},
+            /*startIndicesBatchingDims*/ {},
+            /*startIndexMap*/ collapsedDims,
+            /*indexVectorDim*/ (int64_t)gridShape.size()),
+        sliceSizes);
+
+    // Broadcast the mask from its IV-space to the update's grid shape.
+    Value mask = pc.mask;
+    affine::AffineValueMap maskMap = maps.lookup(mask);
+    SmallVector<int64_t> maskBroadcastDims;
+    for (auto E : maskMap.getAffineMap().getResults()) {
+      Value maskIV = getIVForExpr(maskMap, E);
+      for (auto [k, iv] : llvm::enumerate(ivs)) {
+        if (iv == maskIV) {
+          maskBroadcastDims.push_back((int64_t)k);
+          break;
+        }
+      }
+    }
+    auto gridTy = cast<RankedTensorType>(update.getType());
+    auto maskGridTy =
+        RankedTensorType::get(gridTy.getShape(), builder.getI1Type());
+    Value broadcastedMask = stablehlo::BroadcastInDimOp::create(
+        builder, loc, maskGridTy, mask, maskBroadcastDims);
+
+    update = stablehlo::SelectOp::create(builder, loc, broadcastedMask, update,
+                                         orig);
+  }
 
   auto Ty = cast<RankedTensorType>(input.getType());
   stablehlo::ScatterOp scatter = stablehlo::ScatterOp::create(
@@ -1106,11 +1116,11 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
           /*inputBatchingDims*/ {},
           /*scatterIndicesBatchingDims*/ {},
           /*scatterDimsToOperandDims*/ scatterDimsToOperandDims,
-          /*indexVectorDim*/ 1),
+          /*indexVectorDim*/ (int64_t)gridShape.size()),
       /*indicesAreSorted*/ false,
-      /*uniqueIndices*/ true); // Indices must be unique because otherwise the
-                               // original program had a race [writing to the
-                               // same location across multiple threads].
+      // With a mask, masked-out positions scatter orig back at potentially
+      // repeated indices — uniqueness can only be claimed without a mask.
+      /*uniqueIndices*/ !pc.mask);
   Value res = scatter.getResult(0);
 
   Block *updateBody = new Block();
@@ -2164,7 +2174,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
       Value res = emitStoreAsScatter(
           rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
-          update, operand, sIndices, builder, maps);
+          update, operand, sIndices, builder, maps, pc);
       if (!res) {
         auto err = op->emitError("affine.store (scatter) is dependent on "
                                  "less dims than stored value: ")
@@ -2702,7 +2712,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
     Value res = emitStoreAsScatter(
         rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
-        mapping.lookup(value), mapping.lookup(memref), sIndices, builder, maps);
+        mapping.lookup(value), mapping.lookup(memref), sIndices, builder, maps,
+        pc);
     if (!res) {
       return op->emitError(
                  "memref.store is dependent on less dims than stored value: ")
@@ -3480,8 +3491,8 @@ struct AffineToStableHLORaisingPass
 
             Value storeVal = arg;
             if (isIndex) {
-              storeVal = b.create<arith::IndexCastOp>(
-                  rewriteLocation(g.getLoc(), options.strip_llvm_debuginfo),
+              storeVal = arith::IndexCastOp::create(
+                  b, rewriteLocation(g.getLoc(), options.strip_llvm_debuginfo),
                   b.getI64Type(), arg);
             }
 
@@ -3501,8 +3512,8 @@ struct AffineToStableHLORaisingPass
             loads.push_back(ld);
             Value ldVal = ld;
             if (isIndex) {
-              ldVal = b.create<arith::IndexCastOp>(
-                  rewriteLocation(g.getLoc(), options.strip_llvm_debuginfo),
+              ldVal = arith::IndexCastOp::create(
+                  b, rewriteLocation(g.getLoc(), options.strip_llvm_debuginfo),
                   b.getIndexType(), ld);
 
               llvm::SmallSetVector<Operation *, 4> opsToReplace;
@@ -3546,8 +3557,8 @@ struct AffineToStableHLORaisingPass
                       B, loadOp.getLoc(), loadOp.getAffineMap(), indices);
                   assert(maybeExpanded.has_value() &&
                          "failed to expand affine map");
-                  auto newLoad = B.create<memref::LoadOp>(
-                      loadOp.getLoc(), loadOp.getMemref(), *maybeExpanded);
+                  auto newLoad = memref::LoadOp::create(
+                      B, loadOp.getLoc(), loadOp.getMemref(), *maybeExpanded);
                   loadOp.replaceAllUsesWith(newLoad.getResult());
                   loadOp.erase();
                 } else {
@@ -3566,9 +3577,9 @@ struct AffineToStableHLORaisingPass
                       B, storeOp.getLoc(), storeOp.getAffineMap(), indices);
                   assert(maybeExpanded.has_value() &&
                          "failed to expand affine map");
-                  B.create<memref::StoreOp>(
-                      storeOp.getLoc(), storeOp.getValueToStore(),
-                      storeOp.getMemref(), *maybeExpanded);
+                  memref::StoreOp::create(B, storeOp.getLoc(),
+                                          storeOp.getValueToStore(),
+                                          storeOp.getMemref(), *maybeExpanded);
                   storeOp.erase();
                 }
               }

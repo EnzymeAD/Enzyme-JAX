@@ -1076,4 +1076,35 @@ module {
       llvm.return %0 : f32
     }
   }
+  gpu.module @test_module_fmuladd {
+    // CHECK-LABEL: @llvm_fmuladd
+    llvm.func @llvm_fmuladd(%arg0: f32, %arg1: f32, %arg2: f32) -> f32 {
+      // CHECK: math.fma
+      %0 = "llvm.intr.fmuladd"(%arg0, %arg1, %arg2) : (f32, f32, f32) -> f32
+      llvm.return %0 : f32
+    }
+  }
+  gpu.module @test_module_nvvm_rcp {
+    // CHECK-LABEL: @gpu_nvvm_rcp
+    llvm.func @gpu_nvvm_rcp(%arg0: f32) -> f32 {
+      // CHECK: %[[ONE:.*]] = arith.constant 1.000000e+00 : f32
+      // CHECK: arith.divf %[[ONE]], %arg0 fastmath<afn> : f32
+      %0 = nvvm.rcp.approx.ftz.f %arg0 : f32
+      llvm.return %0 : f32
+    }
+  }
+  gpu.module @test_module_nvvm_rsqrt_approx {
+    // CHECK-LABEL: @gpu_nvvm_rsqrt_approx_f
+    llvm.func @gpu_nvvm_rsqrt_approx_f(%arg0: f32) -> f32 {
+      // CHECK: math.rsqrt %arg0 fastmath<afn> : f32
+      %0 = llvm.call_intrinsic "llvm.nvvm.rsqrt.approx.f"(%arg0) : (f32) -> f32
+      llvm.return %0 : f32
+    }
+    // CHECK-LABEL: @gpu_nvvm_rsqrt_approx_d
+    llvm.func @gpu_nvvm_rsqrt_approx_d(%arg0: f64) -> f64 {
+      // CHECK: math.rsqrt %arg0 fastmath<afn> : f64
+      %0 = llvm.call_intrinsic "llvm.nvvm.rsqrt.approx.d"(%arg0) : (f64) -> f64
+      llvm.return %0 : f64
+    }
+  }
 }

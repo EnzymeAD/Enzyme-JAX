@@ -2172,8 +2172,8 @@ struct RotateSpmdOptimize : public OpRewritePattern<enzymexla::RotateOp> {
       SmallVector<Type, 2> resultTypes(rotateAmount + 1, rotate.getType());
 
       // Replace with a custom call
-      auto ccall = rewriter.create<stablehlo::CustomCallOp>(
-          rotate.getLoc(), resultTypes, rotate->getOperands(), fnSym,
+      auto ccall = stablehlo::CustomCallOp::create(
+          rewriter, rotate.getLoc(), resultTypes, rotate->getOperands(), fnSym,
           /*has_side_effect=*/rewriter.getBoolAttr(false),
           /*backend_config=*/rewriter.getStringAttr(opaque),
           /*api_version=*/nullptr,
@@ -2215,8 +2215,8 @@ struct RotateSpmdOptimize : public OpRewritePattern<enzymexla::RotateOp> {
       SmallVector<Type, 2> resultTypes(right_amount + 1, rotate.getType());
 
       // Replace with a custom call
-      auto ccall = rewriter.create<stablehlo::CustomCallOp>(
-          rotate.getLoc(), resultTypes, rotate->getOperands(), fnSym,
+      auto ccall = stablehlo::CustomCallOp::create(
+          rewriter, rotate.getLoc(), resultTypes, rotate->getOperands(), fnSym,
           /*has_side_effect=*/rewriter.getBoolAttr(false),
           /*backend_config=*/rewriter.getStringAttr(opaque),
           /*api_version=*/nullptr,
@@ -2552,8 +2552,9 @@ struct MultiSliceCustomCallOptimize
         }
       }
 
-      auto preSliceOp = rewriter.create<stablehlo::SliceOp>(
-          slice.getLoc(), customCallOperand, preStart, preLimit, preStrides);
+      auto preSliceOp = stablehlo::SliceOp::create(rewriter, slice.getLoc(),
+                                                   customCallOperand, preStart,
+                                                   preLimit, preStrides);
 
       SmallVector<TensorShardingAttr> opShardings(1, sliceSharding);
       sdy::setShardings(preSliceOp, TensorShardingPerValueAttr::get(
@@ -2789,8 +2790,8 @@ struct MultiRotateSpmdOptimize
       auto zero = stablehlo::ConstantOp::create(
           rewriter, rotate.getLoc(),
           rewriter.getZeroAttr(getElementTypeOrSelf(inputType)));
-      input = rewriter.create<stablehlo::PadOp>(
-          rotate.getLoc(),
+      input = stablehlo::PadOp::create(
+          rewriter, rotate.getLoc(),
           RankedTensorType::get(paddedShape, inputType.getElementType()), input,
           zero, paddingLow, paddingHigh, paddingInterior);
       sdy::setSharding(input, rotateSharding);
@@ -2920,44 +2921,45 @@ struct MultiRotateSpmdOptimize
       // right_amount, shard_size - padding]. We need to conditionally select
       // the start index.
 
-      Value baseStart = rewriter.create<stablehlo::ConstantOp>(
-          rotate.getLoc(),
+      Value baseStart = stablehlo::ConstantOp::create(
+          rewriter, rotate.getLoc(),
           rewriter.getI32IntegerAttr(shard_size - right_amount));
-      Value paddingVal = rewriter.create<stablehlo::ConstantOp>(
-          rotate.getLoc(), rewriter.getI32IntegerAttr(padding));
+      Value paddingVal = stablehlo::ConstantOp::create(
+          rewriter, rotate.getLoc(), rewriter.getI32IntegerAttr(padding));
 
       // Get Partition ID along dimension
       // Inside ManualComputationOp, partition_id returns the index in the
       // manual mesh. Since we have 1 manual axis, this is the scalar index.
-      auto partitionId = rewriter.create<stablehlo::PartitionIdOp>(
-          rotate.getLoc(),
+      auto partitionId = stablehlo::PartitionIdOp::create(
+          rewriter, rotate.getLoc(),
           RankedTensorType::get({}, IntegerType::get(rewriter.getContext(), 32,
                                                      IntegerType::Unsigned)));
 
-      Value dimId = rewriter.create<stablehlo::ConvertOp>(
-          rotate.getLoc(), RankedTensorType::get({}, rewriter.getI32Type()),
-          partitionId);
+      Value dimId = stablehlo::ConvertOp::create(
+          rewriter, rotate.getLoc(),
+          RankedTensorType::get({}, rewriter.getI32Type()), partitionId);
 
-      Value lastShardId = rewriter.create<stablehlo::ConstantOp>(
-          rotate.getLoc(), rewriter.getI32IntegerAttr(total_mesh_size - 1));
+      Value lastShardId = stablehlo::ConstantOp::create(
+          rewriter, rotate.getLoc(),
+          rewriter.getI32IntegerAttr(total_mesh_size - 1));
 
-      Value isLast = rewriter.create<stablehlo::CompareOp>(
-          rotate.getLoc(), dimId, lastShardId,
+      Value isLast = stablehlo::CompareOp::create(
+          rewriter, rotate.getLoc(), dimId, lastShardId,
           stablehlo::ComparisonDirection::EQ);
 
-      Value offset = rewriter.create<stablehlo::SelectOp>(
-          rotate.getLoc(), isLast, paddingVal,
-          rewriter.create<stablehlo::ConstantOp>(
-              rotate.getLoc(), rewriter.getI32IntegerAttr(0)));
+      Value offset = stablehlo::SelectOp::create(
+          rewriter, rotate.getLoc(), isLast, paddingVal,
+          stablehlo::ConstantOp::create(rewriter, rotate.getLoc(),
+                                        rewriter.getI32IntegerAttr(0)));
 
-      Value startIdx = rewriter.create<stablehlo::SubtractOp>(
-          rotate.getLoc(), baseStart, offset);
+      Value startIdx = stablehlo::SubtractOp::create(rewriter, rotate.getLoc(),
+                                                     baseStart, offset);
 
       // Dynamic Slice
       SmallVector<Value> startIndices(
           rotateShape.size(),
-          rewriter.create<stablehlo::ConstantOp>(
-              rotate.getLoc(), rewriter.getI32IntegerAttr(0)));
+          stablehlo::ConstantOp::create(rewriter, rotate.getLoc(),
+                                        rewriter.getI32IntegerAttr(0)));
       startIndices[rotateDimension] = startIdx;
 
       SmallVector<int64_t> sliceSizes(localShape.begin(), localShape.end());
@@ -3033,7 +3035,7 @@ struct MultiRotateSpmdOptimize
       results.push_back(sliced);
     }
 
-    rewriter.create<sdy::ReturnOp>(rotate.getLoc(), results);
+    sdy::ReturnOp::create(rewriter, rotate.getLoc(), results);
 
     rewriter.setInsertionPointAfter(manual);
 
@@ -4345,8 +4347,8 @@ struct DUSOfConcatSlicesOptimize
         }
       }
 
-      auto newDus = rewriter.create<stablehlo::DynamicUpdateSliceOp>(
-          dus.getLoc(), dus.getType(), current, arg, newIndices);
+      auto newDus = stablehlo::DynamicUpdateSliceOp::create(
+          rewriter, dus.getLoc(), dus.getType(), current, arg, newIndices);
       sdy::setShardings(newDus, sdy::getShardingPerValue(dus));
       current = newDus.getResult();
 

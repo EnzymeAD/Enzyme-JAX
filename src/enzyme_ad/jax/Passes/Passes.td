@@ -21,6 +21,11 @@ def CanonicalizeLoopsPass : InterfacePass<"canonicalize-loops",
                                           "mlir::FunctionOpInterface"> {
   let summary = "Canonicalize loops";
   let dependentDialects = ["affine::AffineDialect"];
+  let options = [
+    Option<"speculate_if", "speculate_if", "bool",
+           /*default=*/"false",
+	   "Whether to speculate if statement bodies">
+  ];
 }
 
 def DialectCanonicalize : Pass<"dialect-canonicalize"> {
@@ -635,8 +640,17 @@ def LowerImpulseTraceOpsPass : Pass<"lower-impulse-trace-ops"> {
   ];
 }
 
+def LowerEnzymeXLAMathPass : Pass<"lower-enzymexla-math"> {
+  let summary = "Lower enzymexla math ops to stablehlo";
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "chlo::ChloDialect",
+    "enzymexla::EnzymeXLADialect",
+  ];
+}
+
 def LowerEnzymeXLAMLPass : Pass<"lower-enzymexla-ml"> {
-  let summary = "Lower enzymexla mlops to stablehlo";
+  let summary = "Lower enzymexla math ops to stablehlo (deprecated alias for lower-enzymexla-math)";
   let dependentDialects = [
     "stablehlo::StablehloDialect",
     "chlo::ChloDialect",
@@ -936,6 +950,9 @@ def ConvertParallelToGPU2 : Pass<"convert-parallel-to-gpu2"> {
 
 def PolygeistMem2Reg : Pass<"polygeist-mem2reg"> {
   let summary = "Replace scf.if and similar with affine.if";
+  let dependentDialects = [
+    "arith::ArithDialect"
+  ];
 }
 
 def OptimizeCommunication : Pass<"optimize-communication"> {

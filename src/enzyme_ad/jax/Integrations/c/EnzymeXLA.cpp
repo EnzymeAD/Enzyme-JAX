@@ -727,6 +727,7 @@ static void addConstPropPasses(std::vector<std::string> &list,
   list.push_back("tgamma_const_prop<16>");
   list.push_back("lgamma_const_prop<16>");
   list.push_back("gamma_const_prop<16>");
+  list.push_back("binomial_progress_const_prop<16>");
   list.push_back("abs_const_prop<16>");
   list.push_back("log_const_prop<1>");
   list.push_back("log_plus_one_const_prop<1>");
