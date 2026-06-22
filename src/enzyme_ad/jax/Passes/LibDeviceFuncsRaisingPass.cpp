@@ -11,6 +11,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
@@ -244,6 +245,8 @@ void parseEnzymeCall(FunctionOpInterface funcToDiff, ValueRange eoperands,
        llvm::enumerate(funcToDiff.getResultTypes())) {
     retActivities.push_back(
         llvm::TypeSwitch<Type, enzyme::Activity>(retType)
+            .Case<LLVM::LLVMStructType>(
+                [](auto type) { return enzyme::Activity::enzyme_activenoneed; })
             .Case<FloatType, ComplexType>(
                 [](auto type) { return enzyme::Activity::enzyme_active; })
             .Default([](Type type) { return enzyme::Activity::enzyme_const; }));
