@@ -51,11 +51,15 @@ def main(argv):
             ),
         ]
 
-    # Uses too much ram on the 4070 in CI
+    # Too long for cpu ci
+    if jax.default_backend() != "cpu":
+        benchfns += [
+            ("mistral_predict", benchmark.mistral.mistral_predict_run, Both),
+        ]
+
+    # TODO some inferencfe issue?
     if False:
         benchfns += [
-            # Seems fine on gpu
-            ("mistral_predict", benchmark.mistral.mistral_predict_run, Both),
             ("mistral_fit", benchmark.mistral.mistral_fit_run, Both),
         ]
 
