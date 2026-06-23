@@ -540,13 +540,20 @@ struct ArithRaisingPass
 
       Value newCmpOp;
       if (use_stablehlo) {
-        stablehlo::ComparisonType compType = stablehlo::ComparisonType::SIGNED;
         auto predicate = cmpOp.getPredicate();
-        if (predicate == arith::CmpIPredicate::ugt ||
-            predicate == arith::CmpIPredicate::uge ||
-            predicate == arith::CmpIPredicate::ult ||
-            predicate == arith::CmpIPredicate::ule)
-          compType = stablehlo::ComparisonType::UNSIGNED;
+        // Booleans (i1) and unsigned integers lower to PRED/unsigned HLO types,
+        // which require an UNSIGNED comparison type regardless of the predicate.
+        auto elemType =
+            cast<RankedTensorType>(cmpOp.getOperand(0).getType()).getElementType();
+        bool unsignedPredicate = predicate == arith::CmpIPredicate::ugt ||
+                                 predicate == arith::CmpIPredicate::uge ||
+                                 predicate == arith::CmpIPredicate::ult ||
+                                 predicate == arith::CmpIPredicate::ule;
+        stablehlo::ComparisonType compType =
+            (unsignedPredicate || elemType.isUnsignedInteger() ||
+             elemType.isInteger(1))
+                ? stablehlo::ComparisonType::UNSIGNED
+                : stablehlo::ComparisonType::SIGNED;
 
         stablehlo::ComparisonDirection direction;
         switch (predicate) {
@@ -577,10 +584,9 @@ struct ArithRaisingPass
         }
         Value lhs = cmpOp.getOperand(0);
         Value rhs = cmpOp.getOperand(1);
-        if (compType == stablehlo::ComparisonType::UNSIGNED) {
+        if (unsignedPredicate) {
           auto lhsType = dyn_cast<RankedTensorType>(lhs.getType());
           if (lhsType) {
-            auto elemType = lhsType.getElementType();
             if (elemType.isSignlessInteger() || elemType.isSignedInteger()) {
               auto unsignedElemType = IntegerType::get(
                   builder.getContext(), elemType.getIntOrFloatBitWidth(),
