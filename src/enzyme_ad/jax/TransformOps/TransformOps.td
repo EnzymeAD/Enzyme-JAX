@@ -2762,6 +2762,11 @@ def ApplyDotGeneralSubtractDistributiveSimplifyPatterns : EnzymeHLOPatternOp<
   let patterns = ["DotGeneralDistributiveSimplify<stablehlo::SubtractOp>"];
 }
 
+def ApplyMultiplyDistributiveSimplifyPatterns : EnzymeHLOPatternOp<
+    "multiply_distributive_simplify"> {
+  let patterns = ["MultiplyDistributiveSimplify"];
+}
+
 def ApplyTrivialReduceWindowToReduceOpPatterns : EnzymeHLOPatternOp<
     "trivial_reduce_window_to_reduce_op"> {
   let patterns = ["TrivialReduceWindowToReduceOp"];
