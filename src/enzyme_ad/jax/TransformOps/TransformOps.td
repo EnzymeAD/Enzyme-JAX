@@ -686,6 +686,11 @@ def ApplyTransposePartialSymmetrySimplify : EnzymeHLOPatternOp<
   let patterns = ["TransposePartialSymmetrySimplify"];
 }
 
+def ApplyLUFactorizationTriSimplify : EnzymeHLOPatternOp<
+    "lu_factorization_tri_simplify"> {
+  let patterns = ["LUFactorizationTriSimplify"];
+}
+
 def ApplyFactorScalarsInDotGeneral : EnzymeHLOPatternOp<
     "factor_scalars_in_dot_general"> {
   let patterns = ["FactorScalarsInDotGeneral"];
