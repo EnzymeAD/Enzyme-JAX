@@ -15740,6 +15740,316 @@ struct SpeculateIfPadToSelect final
   }
 };
 
+// General speculation of binary operations in stablehlo::IfOp
+struct SpeculateIfBinaryOpToSelect final
+    : public CheckedOpRewritePattern<stablehlo::IfOp,
+                                     SpeculateIfBinaryOpToSelect> {
+  using CheckedOpRewritePattern<
+      stablehlo::IfOp, SpeculateIfBinaryOpToSelect>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::IfOp op,
+                                    PatternRewriter &rewriter) const {
+    if (op->getNumResults() == 0 || op.getTrueBranch().empty() ||
+        op.getFalseBranch().empty())
+      return failure();
+
+    auto trueOperands =
+        op.getTrueBranch().front().getTerminator()->getOperands();
+    auto falseOperands =
+        op.getFalseBranch().front().getTerminator()->getOperands();
+
+    struct Candidate {
+      unsigned idx;
+      Operation *binOp;
+      Value lhs;
+      Value rhs;
+      bool isTrueBranchOp;
+      bool useRightIdentity;
+      int64_t identityVal;
+    };
+
+    SmallVector<Candidate> candidates;
+
+    auto getIdentity = [](Operation *op,
+                          bool isLeft) -> std::optional<int64_t> {
+      if (isa<stablehlo::AddOp>(op))
+        return 0;
+      if (isa<stablehlo::SubtractOp>(op)) {
+        if (!isLeft)
+          return 0; // right-identity is 0
+        return std::nullopt;
+      }
+      if (isa<stablehlo::MulOp>(op))
+        return 1;
+      if (isa<stablehlo::DivOp>(op)) {
+        if (!isLeft)
+          return 1; // right-identity is 1
+        return std::nullopt;
+      }
+      if (isa<stablehlo::AndOp>(op))
+        return -1;
+      if (isa<stablehlo::OrOp>(op))
+        return 0;
+      if (isa<stablehlo::XorOp>(op))
+        return 0;
+      return std::nullopt;
+    };
+
+    auto isSupportedType = [](Type type) {
+      if (auto TT = dyn_cast<RankedTensorType>(type))
+        type = TT.getElementType();
+      return isa<FloatType>(type) || isa<IntegerType>(type) ||
+             isa<ComplexType>(type);
+    };
+
+    for (auto [idx, pair] :
+         llvm::enumerate(llvm::zip(trueOperands, falseOperands))) {
+      Value trueVal = std::get<0>(pair);
+      Value falseVal = std::get<1>(pair);
+
+      // Case 1: trueVal is defined outside true branch, falseVal is defined
+      // inside false branch
+      if (&op.getTrueBranch() != trueVal.getParentRegion() &&
+          &op.getFalseBranch() == falseVal.getParentRegion()) {
+        if (Operation *binOp = falseVal.getDefiningOp()) {
+          if (binOp->getNumOperands() == 2) {
+            Value lhs = binOp->getOperand(0);
+            Value rhs = binOp->getOperand(1);
+            if (lhs.getType() == rhs.getType() &&
+                lhs.getType() == falseVal.getType() &&
+                isSupportedType(lhs.getType())) {
+              if (trueVal == lhs) {
+                if (auto id = getIdentity(binOp, /*isLeft=*/false)) {
+                  candidates.push_back({(unsigned)idx, binOp, lhs, rhs,
+                                        /*isTrueBranchOp=*/false,
+                                        /*useRightIdentity=*/true, *id});
+                }
+              } else if (trueVal == rhs) {
+                if (auto id = getIdentity(binOp, /*isLeft=*/true)) {
+                  candidates.push_back({(unsigned)idx, binOp, lhs, rhs,
+                                        /*isTrueBranchOp=*/false,
+                                        /*useRightIdentity=*/false, *id});
+                }
+              }
+            }
+          }
+        }
+      }
+
+      // Case 2: falseVal is defined outside false branch, trueVal is defined
+      // inside true branch
+      if (&op.getFalseBranch() != falseVal.getParentRegion() &&
+          &op.getTrueBranch() == trueVal.getParentRegion()) {
+        if (Operation *binOp = trueVal.getDefiningOp()) {
+          if (binOp->getNumOperands() == 2) {
+            Value lhs = binOp->getOperand(0);
+            Value rhs = binOp->getOperand(1);
+            if (lhs.getType() == rhs.getType() &&
+                lhs.getType() == trueVal.getType() &&
+                isSupportedType(lhs.getType())) {
+              if (falseVal == lhs) {
+                if (auto id = getIdentity(binOp, /*isLeft=*/false)) {
+                  candidates.push_back({(unsigned)idx, binOp, lhs, rhs,
+                                        /*isTrueBranchOp=*/true,
+                                        /*useRightIdentity=*/true, *id});
+                }
+              } else if (falseVal == rhs) {
+                if (auto id = getIdentity(binOp, /*isLeft=*/true)) {
+                  candidates.push_back({(unsigned)idx, binOp, lhs, rhs,
+                                        /*isTrueBranchOp=*/true,
+                                        /*useRightIdentity=*/false, *id});
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+
+    if (candidates.empty())
+      return failure();
+
+    auto trueTerm = op.getTrueBranch().front().getTerminator();
+    auto falseTerm = op.getFalseBranch().front().getTerminator();
+
+    for (const auto &c : candidates) {
+      // Create the identity constant outside the IfOp
+      rewriter.setInsertionPoint(op);
+      auto identityAttr = makeAttr(c.lhs.getType(), c.identityVal);
+      auto identityConst =
+          stablehlo::ConstantOp::create(rewriter, op.getLoc(), c.lhs.getType(),
+                                        cast<ElementsAttr>(identityAttr));
+
+      Value yieldedVal = c.useRightIdentity ? c.rhs : c.lhs;
+
+      if (c.isTrueBranchOp) {
+        rewriter.modifyOpInPlace(
+            trueTerm, [&]() { trueTerm->setOperand(c.idx, yieldedVal); });
+        rewriter.modifyOpInPlace(
+            falseTerm, [&]() { falseTerm->setOperand(c.idx, identityConst); });
+      } else {
+        rewriter.modifyOpInPlace(
+            trueTerm, [&]() { trueTerm->setOperand(c.idx, identityConst); });
+        rewriter.modifyOpInPlace(
+            falseTerm, [&]() { falseTerm->setOperand(c.idx, yieldedVal); });
+      }
+
+      // Create the new binary operation outside the IfOp
+      rewriter.setInsertionPointAfter(op);
+      Value lhsOutside = c.useRightIdentity ? c.lhs : op.getResult(c.idx);
+      Value rhsOutside = c.useRightIdentity ? op.getResult(c.idx) : c.rhs;
+
+      Value newBinOp =
+          createBinOp(rewriter, op.getLoc(), c.binOp, lhsOutside, rhsOutside);
+      if (Operation *newOp = newBinOp.getDefiningOp()) {
+        newOp->setAttrs(c.binOp->getAttrs());
+        SmallPtrSet<Operation *, 2> except = {newOp};
+        rewriter.replaceAllUsesExcept(op.getResult(c.idx), newBinOp, except);
+      }
+    }
+
+    return success();
+  }
+
+private:
+  static Value createBinOp(PatternRewriter &rewriter, Location loc,
+                           Operation *origOp, Value lhs, Value rhs) {
+    if (isa<stablehlo::AddOp>(origOp))
+      return stablehlo::AddOp::create(rewriter, loc, lhs, rhs);
+    if (isa<stablehlo::SubtractOp>(origOp))
+      return stablehlo::SubtractOp::create(rewriter, loc, lhs, rhs);
+    if (isa<stablehlo::MulOp>(origOp))
+      return stablehlo::MulOp::create(rewriter, loc, lhs, rhs);
+    if (isa<stablehlo::DivOp>(origOp))
+      return stablehlo::DivOp::create(rewriter, loc, lhs, rhs);
+    if (isa<stablehlo::AndOp>(origOp))
+      return stablehlo::AndOp::create(rewriter, loc, lhs, rhs);
+    if (isa<stablehlo::OrOp>(origOp))
+      return stablehlo::OrOp::create(rewriter, loc, lhs, rhs);
+    if (isa<stablehlo::XorOp>(origOp))
+      return stablehlo::XorOp::create(rewriter, loc, lhs, rhs);
+    llvm_unreachable("Unsupported binary op");
+  }
+};
+
+struct SpeculateOutOfBoundsArrayIndexing final
+    : public CheckedOpRewritePattern<stablehlo::IfOp,
+                                     SpeculateOutOfBoundsArrayIndexing> {
+  using CheckedOpRewritePattern<
+      stablehlo::IfOp,
+      SpeculateOutOfBoundsArrayIndexing>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::IfOp op,
+                                    PatternRewriter &rewriter) const {
+    if (op->getNumResults() == 0 || op.getTrueBranch().empty() ||
+        op.getFalseBranch().empty())
+      return failure();
+
+    auto trueOperands =
+        op.getTrueBranch().front().getTerminator()->getOperands();
+    auto falseOperands =
+        op.getFalseBranch().front().getTerminator()->getOperands();
+    auto pred = op.getPred();
+
+    bool anySpeculated = false;
+
+    for (unsigned i = 0; i < op->getNumResults(); ++i) {
+      Value trueVal = trueOperands[i];
+      Value falseVal = falseOperands[i];
+
+      Value insideVal;
+      Value outsideVal;
+      Region *branchRegion = nullptr;
+      bool isTrueBranchInside = false;
+
+      if (&op.getTrueBranch() == trueVal.getParentRegion() &&
+          &op.getFalseBranch() != falseVal.getParentRegion()) {
+        insideVal = trueVal;
+        outsideVal = falseVal;
+        branchRegion = &op.getTrueBranch();
+        isTrueBranchInside = true;
+      } else if (&op.getFalseBranch() == falseVal.getParentRegion() &&
+                 &op.getTrueBranch() != trueVal.getParentRegion()) {
+        insideVal = falseVal;
+        outsideVal = trueVal;
+        branchRegion = &op.getFalseBranch();
+        isTrueBranchInside = false;
+      }
+
+      if (!branchRegion)
+        continue;
+
+      llvm::SetVector<Operation *> opsToSpeculate;
+      std::vector<Value> worklist = {insideVal};
+      bool safe = true;
+
+      while (!worklist.empty()) {
+        Value v = worklist.back();
+        worklist.pop_back();
+        Operation *def = v.getDefiningOp();
+        if (!def)
+          continue;
+        if (def->getParentRegion() != branchRegion)
+          continue;
+        if (opsToSpeculate.count(def))
+          continue;
+
+        if (!isa<stablehlo::AddOp, stablehlo::SubtractOp, stablehlo::MulOp,
+                 stablehlo::DivOp, stablehlo::AndOp, stablehlo::OrOp,
+                 stablehlo::XorOp, stablehlo::CompareOp, stablehlo::ConvertOp,
+                 stablehlo::ReshapeOp, stablehlo::DynamicSliceOp,
+                 stablehlo::DynamicUpdateSliceOp, stablehlo::BroadcastInDimOp,
+                 stablehlo::ConstantOp>(def)) {
+          safe = false;
+          break;
+        }
+
+        opsToSpeculate.insert(def);
+        for (Value operand : def->getOperands()) {
+          worklist.push_back(operand);
+        }
+      }
+
+      if (safe && !opsToSpeculate.empty()) {
+        rewriter.setInsertionPoint(op);
+        IRMapping mapping;
+
+        // Clone operations in the topological order of the block
+        for (Operation &blockOp : branchRegion->front()) {
+          if (opsToSpeculate.count(&blockOp)) {
+            rewriter.clone(blockOp, mapping);
+          }
+        }
+
+        Value speculatedRes = mapping.lookup(insideVal);
+        Value selectRes;
+        if (isTrueBranchInside) {
+          selectRes = stablehlo::SelectOp::create(rewriter, op.getLoc(), pred,
+                                                  speculatedRes, outsideVal);
+          // Replace terminator operand to make the old branch operations dead
+          auto term = op.getTrueBranch().front().getTerminator();
+          rewriter.modifyOpInPlace(term,
+                                   [&]() { term->setOperand(i, outsideVal); });
+        } else {
+          selectRes = stablehlo::SelectOp::create(rewriter, op.getLoc(), pred,
+                                                  outsideVal, speculatedRes);
+          auto term = op.getFalseBranch().front().getTerminator();
+          rewriter.modifyOpInPlace(term,
+                                   [&]() { term->setOperand(i, outsideVal); });
+        }
+
+        rewriter.replaceAllUsesWith(op.getResult(i), selectRes);
+        anySpeculated = true;
+      }
+    }
+
+    if (anySpeculated)
+      return success();
+    else
+      return failure();
+  }
+};
+
 bool verifyInversePermutations(stablehlo::TransposeOp innerTrans,
                                stablehlo::TransposeOp outerTrans) {
   auto innerPerm = innerTrans.getPermutation();
@@ -36080,6 +36390,8 @@ struct EnzymeHLOOptPass
 
     // clang-format off
     patterns.add<
+        SpeculateIfBinaryOpToSelect,
+        SpeculateOutOfBoundsArrayIndexing,
         WhileRepeatedInductionReduction,
         WhileOpInductionReplacement,
         WhilePadInductionReduction,
