@@ -608,12 +608,21 @@ ffi::Error HemmDispatch(CUstream stream, bool side, bool uplo,
                         ffi::AnyBuffer alpha_, ffi::AnyBuffer beta_,
                         ffi::Result<ffi::AnyBuffer> c_out) {
   auto dataType = c_in.element_type();
-  SOLVER_BLAS_DISPATCH_IMPL(HemmImpl, stream, side, uplo, use_alpha_attribute,
+  switch (dataType) {
+  case ffi::C64:
+    return HemmImpl<cuComplex>(stream, side, uplo, use_alpha_attribute,
                             alpha_real, alpha_imag, use_beta_attribute,
                             beta_real, beta_imag, a, b, c_in, alpha_, beta_,
                             c_out);
-  return ffi::Error::InvalidArgument(absl::StrFormat(
+  case ffi::C128:
+    return HemmImpl<cuDoubleComplex>(stream, side, uplo, use_alpha_attribute,
+                            alpha_real, alpha_imag, use_beta_attribute,
+                            beta_real, beta_imag, a, b, c_in, alpha_, beta_,
+                            c_out);
+  default:
+    return ffi::Error::InvalidArgument(absl::StrFormat(
       "Unsupported dtype %s in hemm", absl::FormatStreamed(dataType)));
+  }
 }
 
 ffi::Error HemmNoCDispatch(CUstream stream, bool side, bool uplo,
@@ -622,10 +631,17 @@ ffi::Error HemmNoCDispatch(CUstream stream, bool side, bool uplo,
                            ffi::AnyBuffer b, ffi::AnyBuffer alpha_,
                            ffi::Result<ffi::AnyBuffer> c_out) {
   auto dataType = a.element_type();
-  SOLVER_BLAS_DISPATCH_IMPL(HemmImpl, stream, side, uplo, use_alpha_attribute,
+  switch (dataType) {
+  case ffi::C64:
+    return HemmImpl<cuComplex>(stream, side, uplo, use_alpha_attribute,
                             alpha_real, alpha_imag, a, b, alpha_, c_out);
-  return ffi::Error::InvalidArgument(absl::StrFormat(
+  case ffi::C128:
+    return HemmImpl<cuDoubleComplex>(stream, side, uplo, use_alpha_attribute,
+                            alpha_real, alpha_imag, a, b, alpha_, c_out);
+  default:
+    return ffi::Error::InvalidArgument(absl::StrFormat(
       "Unsupported dtype %s in hemm", absl::FormatStreamed(dataType)));
+  }
 }
 
 XLA_FFI_DEFINE_HANDLER(
