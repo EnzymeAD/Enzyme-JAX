@@ -138,6 +138,8 @@ def CheckedDiv : SubRoutine<(Op $diffret, $x),
                     (Div $diffret, $x)
                   )>;
 
+def Trmm : Inst<"TrmmOp", "enzymexla", "", "">;
+
 // Helpers
 def PadToSliceStart : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   op.getEdgePaddingLow();
@@ -1473,4 +1475,152 @@ def : HLODerivative<"FftOp",
     (
       Fft (Shadow $x), (FftType), (FftLength)
     )
+>;
+
+def TriangularSolveShadowDotDims : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  auto type_A = cast<RankedTensorType>(op.getA().getType());
+  auto type_b = cast<RankedTensorType>(op.getB().getType());
+  int64_t rank_A = type_A.getRank();
+  int64_t rank_b = type_b.getRank();
+
+  SmallVector<int64_t> batch_dims_A;
+  for (int i = 0; i < rank_A - 2; ++i) {
+    batch_dims_A.push_back(i);
+  }
+
+  SmallVector<int64_t> batch_dims_b;
+  for (int i = 0; i < rank_b - 2; ++i) {
+    batch_dims_b.push_back(i);
+  }
+
+  auto transpose_A = op.getTransposeA();
+  SmallVector<int64_t> contract_dims_A;
+  if (transpose_A == decltype(transpose_A)::NO_TRANSPOSE)
+    contract_dims_A.push_back(rank_A - 1);
+  else if (transpose_A == decltype(transpose_A)::TRANSPOSE || transpose_A == decltype(transpose_A)::ADJOINT)
+    contract_dims_A.push_back(rank_A - 2);
+  else
+    llvm::errs() << "Unexpected `transpose_a` attribute value in TriangularSolveOp";
+
+  SmallVector<int64_t> contract_dims_b;
+  if (op.getLeftSide())
+    contract_dims_b.push_back(rank_b - 2);
+  else
+    contract_dims_b.push_back(rank_b - 1);
+
+  DotDimensionNumbersAttr::get(
+    op.getContext(),
+    batch_dims_A,
+    batch_dims_b,
+    contract_dims_A,
+    contract_dims_b
+  );
+}]>;
+
+def TriangularSolveDiffOuterDotDims : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  auto rank = cast<RankedTensorType>(op.getResult().getType()).getRank();
+
+  SmallVector<int64_t> batch_dims;
+  for (int i = 0; i < rank - 2; ++i) {
+    batch_dims.push_back(i);
+  }
+
+  SmallVector<int64_t> contract_dims;
+
+  DotDimensionNumbersAttr::get(
+    op.getContext(),
+    batch_dims,
+    batch_dims,
+    contract_dims,
+    contract_dims
+  );
+}]>;
+
+def SelectIfLeftSide : StaticSelect<"cast<TriangularSolveOp>(op).getLeftSide() == true;">;
+
+def TriangularSolveGetResultType : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  op.getResult().getType();
+}]>;
+def TriangularSolveGetLeftSide : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{op.getLeftSide();}]>;
+def TriangularSolveGetLower : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{op.getLower();}]>;
+def TriangularSolveGetUnitDiagonal : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{op.getUnitDiagonal();}]>;
+def TriangularSolveGetTransposeA : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{op.getTransposeA();}]>;
+
+def TriangularSolveLike : SubRoutine<(Op $A, $b),
+  (TriangularSolve
+    $A,
+    $b,
+    (TriangularSolveGetLeftSide),
+    (TriangularSolveGetLower),
+    (TriangularSolveGetUnitDiagonal),
+    (TriangularSolveGetTransposeA)
+  )>;
+
+def TrmmLikeTriangularSolveGetAlpha : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  auto resType = cast<RankedTensorType>(op.getResult().getType());
+  auto elemType = resType.getElementType();
+  ConstantOp::create(builder, 
+    op->getLoc(), RankedTensorType::get({}, elemType),
+    cast<ElementsAttr>(makeAttr(RankedTensorType::get({}, elemType), 1)));
+}]>;
+
+// TODO check that `left_side=true` in TriangularSolveOp is semantically equivalent to `side=left` in TrmmOp
+def TrmmLikeTriangularSolveGetSide : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  op.getLeftSide() ? ::enzymexla::LapackSide::left : ::enzymexla::LapackSide::right;
+}]>;
+
+def TrmmLikeTriangularSolveGetUplo : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  op.getLower() ? ::enzymexla::LapackUplo::L : ::enzymexla::LapackUplo::U;
+}]>;
+
+def TrmmLikeTriangularSolveGetUnitDiagonal : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  op.getUnitDiagonal();
+}]>;
+
+def TrmmLikeTriangularSolveGetTransposeA : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  ::enzymexla::LapackTranspose transA;
+  auto hloTransA = op.getTransposeA();
+  switch (hloTransA) {
+    case decltype(hloTransA)::NO_TRANSPOSE:
+      transA = ::enzymexla::LapackTranspose::none;
+      break;
+    case decltype(hloTransA)::TRANSPOSE:
+      transA = ::enzymexla::LapackTranspose::transpose;
+      break;
+    case decltype(hloTransA)::ADJOINT:
+      transA = ::enzymexla::LapackTranspose::adjoint;
+      break;
+    default:
+      op->emitError() << "Unexpected `transpose_a` attribute value in TriangularSolveOp\n";
+  }
+  transA;
+}]>;
+
+def TrmmLikeTriangularSolve : SubRoutine<(Op $A, $b),
+  (Trmm
+    (TriangularSolveGetResultType),
+    $A,
+    $b,
+    (TrmmLikeTriangularSolveGetAlpha),
+    (TrmmLikeTriangularSolveGetSide),
+    (TrmmLikeTriangularSolveGetUplo),
+    (TrmmLikeTriangularSolveGetTransposeA),
+    (TrmmLikeTriangularSolveGetUnitDiagonal)
+  )>;
+
+def : HLODerivative<"TriangularSolveOp", (Op $A, $b),
+  [
+    // (TriangularSolveLike
+    //   $A,
+    //   (DotGeneral // bar(x) * adjoint(x)
+    //   )),
+    (Neg $A),
+    (TrmmLikeTriangularSolve $A, (DiffeRet)) // TODO check whether we need to do sth on $A when `transpose_a = TRANSPOSE` or `ADJOINT`
+  ],
+  (TriangularSolveLike
+    $A,
+    (Sub
+      (Shadow $b),
+      (TrmmLikeTriangularSolve (Shadow $A), (TriangularSolveLike $A, $b)))
+  )
 >;
