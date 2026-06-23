@@ -126,7 +126,7 @@ def MultiFloatConversionPass : Pass<"multi-float-conversion"> {
     Option<"convertSignatures", "convert-signatures", "bool", "false", "Whether to convert function signatures">,
     Option<"divSubsteps", "div-substeps", "int32_t", "0", "Number of Newton-Raphson iterations for division (0 for Dekker's algorithm)">,
     Option<"dotGeneralToReduce", "dot-general-to-reduce", "bool", "true", "Whether to rewrite dot_general to mul + reduce as preprocessing">,
-    Option<"preciseReduce", "precise-reduce", "bool", "false", "Whether to use precise MultiFloat reduction with custom addition in block">,
+    Option<"preciseReduce", "precise-reduce", "bool", "true", "Whether to use precise MultiFloat reduction with custom addition in block">,
   ];
 }
 
