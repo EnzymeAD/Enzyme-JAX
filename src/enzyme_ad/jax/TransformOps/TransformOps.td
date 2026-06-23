@@ -1496,6 +1496,7 @@ def SelectSelectNegCond : EnzymeHLOPatternOp<
   let patterns = ["SelectSelectNegCond"];
 }
 
+
 def AndPadPad : EnzymeHLOPatternOp<
     "and_pad_pad"> {
   let patterns = ["AndPadPad"];
