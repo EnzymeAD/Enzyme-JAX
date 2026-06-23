@@ -628,6 +628,38 @@ def SymmOp : EnzymeXLA_Op<"blas.symm", [Pure, SameOperandsAndResultElementType]>
   }];
 }
 
+def HemmOp : EnzymeXLA_Op<"blas.hemm", [Pure, SameOperandsAndResultElementType]> {
+  let summary = "Multiplication involving an Hermitian matrix";
+
+  let description = [{
+    C := alpha*A*B + beta*C, or C := alpha*B*A + beta*C, where alpha and beta are scalars, A is an Hermitian matrix"
+  }];
+
+  let arguments = (ins
+    TensorFloat:$alpha,
+    HLO_Tensor:$A,
+    HLO_Tensor:$B,
+    TensorFloat:$beta,
+    HLO_Tensor:$C,
+    EnzymeXLA_LapackSideAttr:$side,
+    EnzymeXLA_LapackUploAttr:$uplo
+  );
+
+  let results = (outs
+    HLO_Tensor: $output
+  );
+
+  let assemblyFormat = [{
+     $alpha `,` $A `,` $B `,` $beta `,` $C attr-dict `:` functional-type(operands, results)
+  }];
+
+  let hasVerifier = 1;
+
+  let builders = [
+    OpBuilder<(ins "Value":$A, "Value":$B, "enzymexla::LapackSide":$side, "enzymexla::LapackUplo":$uplo)>
+  ];
+}
+
 def SyrkOp: EnzymeXLA_Op<"blas.syrk", [Pure, SameOperandsAndResultElementType]> {
   let summary = "Multiplication involving a symmetric matrix";
 
