@@ -213,9 +213,12 @@ struct FuseJITCallsPattern : public OpRewritePattern<enzymexla::JITCallOp> {
 
     // 2. Create the fused JITCallOp
     SmallVector<Type> fusedResultTypes;
+    DenseMap<Value, int> originalToFusedResultIdx;
+
     for (auto call : asyncCalls) {
       for (auto res : call.getResults()) {
         if (!requestHandles.count(res)) {
+          originalToFusedResultIdx[res] = fusedResultTypes.size();
           fusedResultTypes.push_back(res.getType());
         }
       }
@@ -232,20 +235,18 @@ struct FuseJITCallsPattern : public OpRewritePattern<enzymexla::JITCallOp> {
         /*output_operand_aliases=*/nullptr,
         /*xla_side_effect_free=*/nullptr);
 
-    // 3. Replace uses and erase
-    int resIdx = 0;
+    // 3. Replace uses securely using the pre-computed map
     for (auto call : asyncCalls) {
       for (auto res : call.getResults()) {
         if (!requestHandles.count(res)) {
-          rewriter.replaceAllUsesWith(res, newCall.getResult(resIdx++));
+          int mappedIdx = originalToFusedResultIdx[res];
+          rewriter.replaceAllUsesWith(res, newCall.getResult(mappedIdx));
         }
       }
+      rewriter.eraseOp(call);
     }
 
-    // Note: The Wait call has no results, so we don't replace anything for it.
-    // The JIT calls will be erased safely by the GreedyPatternRewriteDriver
-    // when they have no uses. We explicitly erase the waitCall here to trigger
-    // the pattern success.
+    // Explicitly erase the Wait call to trigger pattern success
     rewriter.eraseOp(waitCall);
 
     return success();
