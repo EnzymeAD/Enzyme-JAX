@@ -542,9 +542,10 @@ struct ArithRaisingPass
       if (use_stablehlo) {
         auto predicate = cmpOp.getPredicate();
         // Booleans (i1) and unsigned integers lower to PRED/unsigned HLO types,
-        // which require an UNSIGNED comparison type regardless of the predicate.
-        auto elemType =
-            cast<RankedTensorType>(cmpOp.getOperand(0).getType()).getElementType();
+        // which require an UNSIGNED comparison type regardless of the
+        // predicate.
+        auto elemType = cast<RankedTensorType>(cmpOp.getOperand(0).getType())
+                            .getElementType();
         bool unsignedPredicate = predicate == arith::CmpIPredicate::ugt ||
                                  predicate == arith::CmpIPredicate::uge ||
                                  predicate == arith::CmpIPredicate::ult ||
