@@ -11,7 +11,7 @@ module {
     llvm.return
   }
   
-  // Verify the new fused function is emitted with 4 pointer arguments (deduplicated inputs)
+  // The Waitall case fuses two Irecv wrappers into one wrapper with deduplicated inputs.
   // CHECK-LABEL: llvm.func @enzymexla_wrapper_MPI_Irecv_enzymexla_wrapper_MPI_Waitall
   // CHECK-SAME: (%{{.*}}: !llvm.ptr, %{{.*}}: !llvm.ptr, %{{.*}}: !llvm.ptr, %{{.*}}: !llvm.ptr) {
 
@@ -23,8 +23,6 @@ module {
   // CHECK-LABEL: func.func @main
   func.func @main(%arg0: tensor<5xf64>) -> tensor<5xf64> {
     %c_0 = stablehlo.constant dense<5> : tensor<i32>
-    // Note: Fusion currently leaves the original calls as they have multiple results.
-    // We check that the fused call is created and used.
     // CHECK: %[[FUSED:.*]] = enzymexla.jit_call @enzymexla_wrapper_MPI_Irecv_enzymexla_wrapper_MPI_Wait
     %1:2 = enzymexla.jit_call @enzymexla_wrapper_MPI_Irecv (%arg0, %c_0) : (tensor<5xf64>, tensor<i32>) -> (tensor<5xf64>, tensor<i32>)
     enzymexla.jit_call @enzymexla_wrapper_MPI_Wait (%1#1) : (tensor<i32>) -> ()
@@ -38,13 +36,11 @@ module {
     // CHECK-DAG: %[[C0:.*]] = stablehlo.constant dense<5>
     %c_0 = stablehlo.constant dense<5> : tensor<i32>
     
-    // First Irecv
     %1:2 = enzymexla.jit_call @enzymexla_wrapper_MPI_Irecv (%arg0, %c_0) : (tensor<5xf64>, tensor<i32>) -> (tensor<5xf64>, tensor<i32>)
     
-    // Second Irecv
     %2:2 = enzymexla.jit_call @enzymexla_wrapper_MPI_Irecv (%arg1, %c_0) : (tensor<5xf64>, tensor<i32>) -> (tensor<5xf64>, tensor<i32>)
     
-    // Concat requests (as done in JAX lowering)
+    // Match the request array shape produced by JAX lowering for Waitall.
     %req1_bcast = stablehlo.broadcast_in_dim %1#1, dims = [] : (tensor<i32>) -> tensor<1xi32>
     %req2_bcast = stablehlo.broadcast_in_dim %2#1, dims = [] : (tensor<i32>) -> tensor<1xi32>
     %req_concat = stablehlo.concatenate %req1_bcast, %req2_bcast, dim = 0 : (tensor<1xi32>, tensor<1xi32>) -> tensor<2xi32>
@@ -52,10 +48,9 @@ module {
     // CHECK-DAG: %[[C2:.*]] = stablehlo.constant dense<2>
     %c_2 = stablehlo.constant dense<2> : tensor<i32>
     
-    // Waitall takes count and requests
     enzymexla.jit_call @enzymexla_wrapper_MPI_Waitall (%c_2, %req_concat) : (tensor<i32>, tensor<2xi32>) -> ()
     
-    // Ensure dead ops are folded away (these should be removed by the greedy driver if their uses are gone)
+    // The request array is internal to the fused wrapper after rewriting.
     // CHECK-NOT: stablehlo.concatenate
     // CHECK-NOT: stablehlo.broadcast_in_dim
 
