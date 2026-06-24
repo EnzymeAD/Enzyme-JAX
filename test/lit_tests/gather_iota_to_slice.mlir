@@ -258,3 +258,38 @@ func.func @gather_reshaped_iota_to_slice(%arg0: tensor<10xi64>) -> tensor<4xi64>
 // CHECK-LABEL: func.func @gather_reshaped_iota_to_slice
 // CHECK-NEXT: %[[SLICE:.+]] = stablehlo.slice %arg0 [1:5]
 // CHECK-NEXT: return %[[SLICE]]
+
+// Gather with 3D reshaped iota indices
+func.func @gather_reshaped_3d_iota_to_slice(%arg0: tensor<100xi64>) -> tensor<2x2x2xi64> {
+    %iota1 = stablehlo.iota dim = 0 : tensor<2x2x2xi64>
+    %iota2 = stablehlo.iota dim = 1 : tensor<2x2x2xi64>
+    %iota3 = stablehlo.iota dim = 2 : tensor<2x2x2xi64>
+    %c10 = stablehlo.constant dense<10> : tensor<2x2x2xi64>
+    %c5 = stablehlo.constant dense<5> : tensor<2x2x2xi64>
+    %c_offset = stablehlo.constant dense<1> : tensor<2x2x2xi64>
+
+    %scaled1 = stablehlo.multiply %iota1, %c10 : tensor<2x2x2xi64>
+    %scaled2 = stablehlo.multiply %iota2, %c5 : tensor<2x2x2xi64>
+
+    %added1 = stablehlo.add %scaled1, %scaled2 : tensor<2x2x2xi64>
+    %added2 = stablehlo.add %added1, %iota3 : tensor<2x2x2xi64>
+    %indices_3d = stablehlo.add %added2, %c_offset : tensor<2x2x2xi64>
+
+    %indices = stablehlo.reshape %indices_3d : (tensor<2x2x2xi64>) -> tensor<8x1xi64>
+
+    %0 = "stablehlo.gather"(%arg0, %indices) {
+      dimension_numbers = #stablehlo.gather<
+        collapsed_slice_dims = [0],
+        start_index_map = [0],
+        index_vector_dim = 1
+      >,
+      slice_sizes = array<i64: 1>
+    } : (tensor<100xi64>, tensor<8x1xi64>) -> tensor<8xi64>
+
+    %1 = stablehlo.reshape %0 : (tensor<8xi64>) -> tensor<2x2x2xi64>
+    return %1 : tensor<2x2x2xi64>
+}
+// CHECK-LABEL: func.func @gather_reshaped_3d_iota_to_slice
+// CHECK-NEXT: %[[RESHAPE:.+]] = stablehlo.reshape %arg0 : (tensor<100xi64>) -> tensor<10x2x5xi64>
+// CHECK-NEXT: %[[SLICE:.+]] = stablehlo.slice %[[RESHAPE]] [0:2, 0:2, 1:3] : (tensor<10x2x5xi64>) -> tensor<2x2x2xi64>
+// CHECK-NEXT: return %[[SLICE]]
