@@ -260,9 +260,9 @@ struct SVDFactorizationOpInterfaceReverse
     auto transpose = [&](Value x) -> Value {
       // TODO fix error: "LLVM ERROR: classof on 'chlo.conj' failed due to the
       // operation not being registered"
-      // Value conj_x = chlo::ConjOp::create(builder, x.getLoc(), x);
-      return stablehlo::TransposeOp::create(builder, x.getLoc(), /*conj_x*/ x,
-                                            perm);
+      Value conj_x = chlo::ConjOp::create(builder, x.getLoc(), x);
+      return stablehlo::TransposeOp::create(builder, x.getLoc(),
+                                            /*conj_x*/ conj_x, perm);
     };
     auto matmul = [&](Value a, Value b) -> Value {
       return enzymexla::GemmOp::create(builder, a.getLoc(), a, b);
