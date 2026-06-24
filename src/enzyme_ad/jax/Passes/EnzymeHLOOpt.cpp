@@ -4194,62 +4194,6 @@ struct ConvertConcat final
   }
 };
 
-struct ConvertConvertFloat final
-    : CheckedOpRewritePattern<stablehlo::ConvertOp, ConvertConvertFloat> {
-  using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  LogicalResult matchAndRewriteImpl(stablehlo::ConvertOp op,
-                                    PatternRewriter &rewriter) const {
-    auto conv0 = op.getOperand().getDefiningOp<stablehlo::ConvertOp>();
-    if (!conv0)
-      return failure();
-
-    auto prev = conv0.getOperand();
-    if (isa<FloatType>(prev.getType().getElementType()) &&
-        isa<FloatType>(op.getType().getElementType()) &&
-        isa<FloatType>(conv0.getType().getElementType())) {
-      if (prev.getType() == op.getType()) {
-        rewriter.replaceOp(op, prev);
-        return success();
-      }
-      rewriter.replaceOpWithNewOp<stablehlo::ConvertOp>(op, op.getType(), prev);
-      return success();
-    }
-    return failure();
-  }
-};
-
-struct ConvertConvertInt final
-    : CheckedOpRewritePattern<stablehlo::ConvertOp, ConvertConvertInt> {
-  using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  LogicalResult matchAndRewriteImpl(stablehlo::ConvertOp op,
-                                    PatternRewriter &rewriter) const {
-    auto conv0 = op.getOperand().getDefiningOp<stablehlo::ConvertOp>();
-    if (!conv0)
-      return failure();
-
-    auto prev = conv0.getOperand();
-    if (isa<IntegerType>(prev.getType().getElementType()) &&
-        isa<IntegerType>(op.getType().getElementType()) &&
-        isa<IntegerType>(conv0.getType().getElementType())) {
-      // we only do the elimination if we go from low bitwidth to high bitwidth
-      auto prevwidth = prev.getType().getElementType().getIntOrFloatBitWidth();
-      auto midwidth = conv0.getType().getElementType().getIntOrFloatBitWidth();
-      if (prevwidth > midwidth)
-        return rewriter.notifyMatchFailure(op, "prevwidth > midwidth");
-
-      if (prev.getType() == op.getType()) {
-        rewriter.replaceOp(op, prev);
-        return success();
-      }
-      rewriter.replaceOpWithNewOp<stablehlo::ConvertOp>(op, op.getType(), prev);
-      return success();
-    }
-    return failure();
-  }
-};
-
 struct ReduceConcat final
     : CheckedOpRewritePattern<stablehlo::ReduceOp, ReduceConcat> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -7476,193 +7420,6 @@ struct TransposeElementwiseTransposeSimplify
   }
 };
 
-struct AddSimplify
-    : public CheckedOpRewritePattern<stablehlo::AddOp, AddSimplify> {
-  using CheckedOpRewritePattern<stablehlo::AddOp,
-                                AddSimplify>::CheckedOpRewritePattern;
-
-  LogicalResult matchAndRewriteImpl(stablehlo::AddOp op,
-                                    PatternRewriter &rewriter) const {
-    Attribute lhsAttr, rhsAttr;
-    bool lhsConst = matchPattern(op.getLhs(), m_Constant(&lhsAttr));
-    bool rhsConst = matchPattern(op.getRhs(), m_Constant(&rhsAttr));
-
-    if (lhsConst && (matchPattern(lhsAttr, m_AnyZeroFloat()) ||
-                     matchPattern(lhsAttr, m_Zero()) ||
-                     matchPattern(lhsAttr, m_AnyZeroComplex()))) {
-      rewriter.replaceOp(op, op.getRhs());
-      return success();
-    }
-
-    if (rhsConst && (matchPattern(rhsAttr, m_AnyZeroFloat()) ||
-                     matchPattern(rhsAttr, m_Zero()) ||
-                     matchPattern(rhsAttr, m_AnyZeroComplex()))) {
-      rewriter.replaceOp(op, op.getLhs());
-      return success();
-    }
-
-    return failure();
-  }
-};
-
-struct ReplaceNegAddWithSubtract
-    : public CheckedOpRewritePattern<stablehlo::AddOp,
-                                     ReplaceNegAddWithSubtract> {
-  using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  LogicalResult matchAndRewriteImpl(stablehlo::AddOp op,
-                                    PatternRewriter &rewriter) const {
-    if (auto rhsNegateOp = op.getRhs().getDefiningOp<stablehlo::NegOp>()) {
-      if (llvm::hasSingleElement(rhsNegateOp->getUsers())) {
-        rewriter.replaceOpWithNewOp<stablehlo::SubtractOp>(
-            op, op.getLhs(), rhsNegateOp.getOperand());
-        return success();
-      }
-    }
-
-    if (auto lhsNegateOp = op.getLhs().getDefiningOp<stablehlo::NegOp>()) {
-      if (llvm::hasSingleElement(lhsNegateOp->getUsers())) {
-        rewriter.replaceOpWithNewOp<stablehlo::SubtractOp>(
-            op, op.getRhs(), lhsNegateOp.getOperand());
-        return success();
-      }
-    }
-
-    return failure();
-  }
-};
-
-struct ReplaceSubtractNegWithAdd
-    : CheckedOpRewritePattern<stablehlo::SubtractOp,
-                              ReplaceSubtractNegWithAdd> {
-  using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  LogicalResult matchAndRewriteImpl(stablehlo::SubtractOp op,
-                                    PatternRewriter &rewriter) const {
-    if (auto rhsNegateOp = op.getRhs().getDefiningOp<stablehlo::NegOp>()) {
-      if (llvm::hasSingleElement(rhsNegateOp->getUsers())) {
-        rewriter.replaceOpWithNewOp<stablehlo::AddOp>(op, op.getLhs(),
-                                                      rhsNegateOp.getOperand());
-        return success();
-      }
-    }
-
-    return failure();
-  }
-};
-
-struct SubSimplify
-    : public CheckedOpRewritePattern<stablehlo::SubtractOp, SubSimplify> {
-  using CheckedOpRewritePattern<stablehlo::SubtractOp,
-                                SubSimplify>::CheckedOpRewritePattern;
-
-  LogicalResult matchAndRewriteImpl(stablehlo::SubtractOp op,
-                                    PatternRewriter &rewriter) const {
-    Attribute lhsAttr, rhsAttr;
-    bool lhsConst = matchPattern(op.getLhs(), m_Constant(&lhsAttr));
-    bool rhsConst = matchPattern(op.getRhs(), m_Constant(&rhsAttr));
-
-    if (rhsConst && (matchPattern(rhsAttr, m_AnyZeroFloat()) ||
-                     matchPattern(rhsAttr, m_Zero()) ||
-                     matchPattern(rhsAttr, m_AnyZeroComplex()))) {
-      rewriter.replaceOp(op, op.getLhs());
-      return success();
-    }
-
-    if (lhsConst && (matchPattern(lhsAttr, m_AnyZeroFloat()) ||
-                     matchPattern(lhsAttr, m_Zero()) ||
-                     matchPattern(lhsAttr, m_AnyZeroComplex()))) {
-      rewriter.replaceOpWithNewOp<stablehlo::NegOp>(op, op.getRhs());
-      return success();
-    }
-
-    if (isa<IntegerType>(op.getType().getElementType()) &&
-        op.getLhs() == op.getRhs()) {
-      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-          op, rewriter.getZeroAttr(op.getType()));
-      return success();
-    }
-
-    return failure();
-  }
-};
-
-struct ExponentialMinusOneFuse
-    : public CheckedOpRewritePattern<stablehlo::SubtractOp,
-                                     ExponentialMinusOneFuse> {
-  using CheckedOpRewritePattern<
-      stablehlo::SubtractOp, ExponentialMinusOneFuse>::CheckedOpRewritePattern;
-
-  LogicalResult matchAndRewriteImpl(stablehlo::SubtractOp op,
-                                    PatternRewriter &rewriter) const {
-    auto lhs = op.getLhs();
-    auto rhs = op.getRhs();
-
-    { // exp(x) - 1 -> expm1(x)
-      auto defOp = lhs.getDefiningOp<stablehlo::ExpOp>();
-      if (defOp && llvm::hasSingleElement(defOp->getUsers()) &&
-          (matchPattern(rhs, m_One()) || matchPattern(rhs, m_OneFloat()))) {
-        rewriter.replaceOpWithNewOp<stablehlo::Expm1Op>(op, defOp.getOperand());
-        return success();
-      }
-    }
-
-    { // 1 - exp(x) -> -expm1(x)
-      auto defOp = rhs.getDefiningOp<stablehlo::ExpOp>();
-      if (defOp && llvm::hasSingleElement(defOp->getUsers()) &&
-          (matchPattern(lhs, m_One()) || matchPattern(lhs, m_OneFloat()))) {
-        auto expm1 = stablehlo::Expm1Op::create(
-            rewriter, op.getLoc(), op.getType(), defOp.getOperand());
-        rewriter.replaceOpWithNewOp<stablehlo::NegOp>(op, expm1);
-        return success();
-      }
-    }
-
-    return failure();
-  }
-};
-
-struct ExponentialMinusOneAddFuse
-    : public CheckedOpRewritePattern<stablehlo::AddOp,
-                                     ExponentialMinusOneAddFuse> {
-  using CheckedOpRewritePattern<
-      stablehlo::AddOp, ExponentialMinusOneAddFuse>::CheckedOpRewritePattern;
-
-  LogicalResult matchAndRewriteImpl(stablehlo::AddOp op,
-                                    PatternRewriter &rewriter) const {
-    auto lhs = op.getLhs();
-    auto rhs = op.getRhs();
-
-    auto isMinusOne = [](Value val) {
-      SplatElementsAttr attr;
-      if (!matchPattern(val, m_Constant(&attr)))
-        return false;
-      auto doubleVal = getDoubleFromAttr(attr.getSplatValue<mlir::TypedAttr>());
-      return doubleVal && *doubleVal == -1.0;
-    };
-
-    { // exp(x) + -1 -> expm1(x)
-      auto defOp = lhs.getDefiningOp<stablehlo::ExpOp>();
-      if (defOp && llvm::hasSingleElement(defOp->getUsers()) &&
-          isMinusOne(rhs)) {
-        rewriter.replaceOpWithNewOp<stablehlo::Expm1Op>(op, defOp.getOperand());
-        return success();
-      }
-    }
-
-    { // -1 + exp(x) -> expm1(x)
-      auto defOp = rhs.getDefiningOp<stablehlo::ExpOp>();
-      if (defOp && llvm::hasSingleElement(defOp->getUsers()) &&
-          isMinusOne(lhs)) {
-        rewriter.replaceOpWithNewOp<stablehlo::Expm1Op>(op, defOp.getOperand());
-        return success();
-      }
-    }
-
-    return failure();
-  }
-};
-
 struct TransposeSymmetricSimplify
     : public CheckedOpRewritePattern<stablehlo::TransposeOp,
                                      TransposeSymmetricSimplify> {
@@ -7742,145 +7499,6 @@ struct NoNanSelfSubSimplify
             op, rewriter.getZeroAttr(op.getType()));
         return success();
       }
-    }
-
-    return failure();
-  }
-};
-
-struct AndSimplify
-    : public CheckedOpRewritePattern<stablehlo::AndOp, AndSimplify> {
-  using CheckedOpRewritePattern<stablehlo::AndOp,
-                                AndSimplify>::CheckedOpRewritePattern;
-
-  LogicalResult matchAndRewriteImpl(stablehlo::AndOp op,
-                                    PatternRewriter &rewriter) const {
-
-    if (op.getLhs() == op.getRhs()) {
-      rewriter.replaceOp(op, op.getLhs());
-      return success();
-    }
-
-    for (int i = 0; i < 2; i++) {
-      Attribute attr;
-      if (!matchPattern(op.getOperand(i), m_Constant(&attr)))
-        continue;
-      // false & x -> false
-      if (matchPattern(attr, m_Zero())) {
-        rewriter.replaceOp(op, op.getOperand(i));
-        return success();
-      }
-      // true & x -> x
-      if (matchPattern(attr, m_AllOnes())) {
-        rewriter.replaceOp(op, op.getOperand(1 - i));
-        return success();
-      }
-    }
-
-    return failure();
-  }
-};
-
-struct OrSimplify
-    : public CheckedOpRewritePattern<stablehlo::OrOp, OrSimplify> {
-  using CheckedOpRewritePattern<stablehlo::OrOp,
-                                OrSimplify>::CheckedOpRewritePattern;
-
-  LogicalResult matchAndRewriteImpl(stablehlo::OrOp op,
-                                    PatternRewriter &rewriter) const {
-
-    if (op.getLhs() == op.getRhs()) {
-      rewriter.replaceOp(op, op.getLhs());
-      return success();
-    }
-
-    for (int i = 0; i < 2; i++) {
-      Attribute attr;
-      if (!matchPattern(op.getOperand(i), m_Constant(&attr)))
-        continue;
-      // true | x -> true
-      if (matchPattern(attr, m_AllOnes())) {
-        rewriter.replaceOp(op, op.getOperand(i));
-        return success();
-      }
-      // false | x -> x
-      if (matchPattern(attr, m_Zero())) {
-        rewriter.replaceOp(op, op.getOperand(1 - i));
-        return success();
-      }
-    }
-
-    return failure();
-  }
-};
-
-struct XorSimplify
-    : public CheckedOpRewritePattern<stablehlo::XorOp, XorSimplify> {
-  using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  LogicalResult matchAndRewriteImpl(stablehlo::XorOp op,
-                                    PatternRewriter &rewriter) const {
-
-    for (int i = 0; i < 2; i++) {
-      Attribute attr;
-      if (!matchPattern(op.getOperand(i), m_Constant(&attr)))
-        continue;
-      // false ^ x -> x
-      if (matchPattern(attr, m_Zero())) {
-        rewriter.replaceOp(op, op.getOperand(1 - i));
-        return success();
-      }
-      // true ^ x -> not x
-      if (matchPattern(attr, m_AllOnes())) {
-        rewriter.replaceOpWithNewOp<stablehlo::NotOp>(op, op.getOperand(1 - i));
-        return success();
-      }
-    }
-
-    return failure();
-  }
-};
-
-struct MulSimplify
-    : public CheckedOpRewritePattern<stablehlo::MulOp, MulSimplify> {
-  using CheckedOpRewritePattern<stablehlo::MulOp,
-                                MulSimplify>::CheckedOpRewritePattern;
-
-  LogicalResult matchAndRewriteImpl(stablehlo::MulOp op,
-                                    PatternRewriter &rewriter) const {
-    Attribute lhsAttr, rhsAttr;
-    bool lhsConst = matchPattern(op.getLhs(), m_Constant(&lhsAttr));
-    bool rhsConst = matchPattern(op.getRhs(), m_Constant(&rhsAttr));
-
-    // 1 * x -> x
-    if (lhsConst && (matchPattern(lhsAttr, m_One()) ||
-                     matchPattern(lhsAttr, m_OneFloat()))) {
-      rewriter.replaceOp(op, op.getRhs());
-      return success();
-    }
-
-    // -1 * x -> negate x
-    if (lhsConst && (matchPattern(lhsAttr, m_NegOne()) ||
-                     matchPattern(lhsAttr, m_NegOneFloat()))) {
-      rewriter.replaceOpWithNewOp<stablehlo::NegOp>(op, op.getRhs());
-      return success();
-    }
-
-    if (!rhsConst)
-      return failure();
-
-    // x * 1 -> x
-    if (rhsConst && (matchPattern(rhsAttr, m_One()) ||
-                     matchPattern(rhsAttr, m_OneFloat()))) {
-      rewriter.replaceOp(op, op.getLhs());
-      return success();
-    }
-
-    // x * -1 -> negate x
-    if (rhsConst && (matchPattern(rhsAttr, m_NegOne()) ||
-                     matchPattern(rhsAttr, m_NegOneFloat()))) {
-      rewriter.replaceOpWithNewOp<stablehlo::NegOp>(op, op.getLhs());
-      return success();
     }
 
     return failure();
@@ -7975,24 +7593,6 @@ struct NoNanDivSimplify final
             op, op.getType(), cast<ElementsAttr>(makeAttr(op.getType(), 1)));
         return success();
       }
-    }
-
-    return failure();
-  }
-};
-
-struct RemSimplify
-    : public CheckedOpRewritePattern<stablehlo::RemOp, RemSimplify> {
-  using CheckedOpRewritePattern<stablehlo::RemOp,
-                                RemSimplify>::CheckedOpRewritePattern;
-
-  LogicalResult matchAndRewriteImpl(stablehlo::RemOp op,
-                                    PatternRewriter &rewriter) const {
-
-    if (matchPattern(op.getRhs(), m_One())) {
-      rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-          op, cast<ElementsAttr>(makeAttr(op.getType(), 0)));
-      return success();
     }
 
     return failure();
@@ -8459,29 +8059,6 @@ struct ConvertSimplify
       return success();
     }
     return failure();
-  }
-};
-
-struct ConvertIotaSimplify
-    : public CheckedOpRewritePattern<stablehlo::ConvertOp,
-                                     ConvertIotaSimplify> {
-  using CheckedOpRewritePattern<stablehlo::ConvertOp,
-                                ConvertIotaSimplify>::CheckedOpRewritePattern;
-
-  LogicalResult matchAndRewriteImpl(stablehlo::ConvertOp convertOp,
-                                    PatternRewriter &rewriter) const {
-    auto operand = convertOp.getOperand();
-    auto iota = operand.getDefiningOp<stablehlo::IotaOp>();
-    if (!iota)
-      return failure();
-
-    auto targetType = convertOp.getType();
-    if (!targetType.getElementType().isInteger())
-      return failure();
-
-    rewriter.replaceOpWithNewOp<stablehlo::IotaOp>(convertOp, targetType,
-                                                   iota.getIotaDimension());
-    return success();
   }
 };
 
@@ -9767,38 +9344,6 @@ struct TransposeSimplify
       rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, op.getType(), out);
       return success();
     }
-    return failure();
-  }
-};
-
-struct MaxSimplify
-    : public CheckedOpRewritePattern<stablehlo::MaxOp, MaxSimplify> {
-  using CheckedOpRewritePattern<stablehlo::MaxOp,
-                                MaxSimplify>::CheckedOpRewritePattern;
-
-  LogicalResult matchAndRewriteImpl(stablehlo::MaxOp op,
-                                    PatternRewriter &rewriter) const {
-    if (op.getOperand(0) == op.getOperand(1)) {
-      rewriter.replaceOp(op, op.getOperand(0));
-      return success();
-    }
-
-    return failure();
-  }
-};
-
-struct MinSimplify
-    : public CheckedOpRewritePattern<stablehlo::MinOp, MinSimplify> {
-  using CheckedOpRewritePattern<stablehlo::MinOp,
-                                MinSimplify>::CheckedOpRewritePattern;
-
-  LogicalResult matchAndRewriteImpl(stablehlo::MinOp op,
-                                    PatternRewriter &rewriter) const {
-    if (op.getOperand(0) == op.getOperand(1)) {
-      rewriter.replaceOp(op, op.getOperand(0));
-      return success();
-    }
-
     return failure();
   }
 };
@@ -14141,38 +13686,6 @@ struct SelectPadToDUS final
   }
 };
 
-struct SelectSelectSameCond final
-    : CheckedOpRewritePattern<stablehlo::SelectOp, SelectSelectSameCond> {
-  using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  LogicalResult matchAndRewriteImpl(stablehlo::SelectOp op,
-                                    PatternRewriter &rewriter) const {
-    Value cond = op.getPred();
-
-    // Case 1: false branch is another select with the same condition
-    //   select(cond, c, select(cond, a, b)) -> select(cond, c, b)
-    if (auto inner = op.getOnFalse().getDefiningOp<stablehlo::SelectOp>()) {
-      if (inner.getPred() == cond) {
-        rewriter.modifyOpInPlace(
-            op, [&]() { op.getOnFalseMutable().assign(inner.getOnFalse()); });
-        return success();
-      }
-    }
-
-    // Case 2: true branch is another select with the same condition
-    //   select(cond, select(cond, a, b), c) -> select(cond, a, c)
-    if (auto inner = op.getOnTrue().getDefiningOp<stablehlo::SelectOp>()) {
-      if (inner.getPred() == cond) {
-        rewriter.modifyOpInPlace(
-            op, [&]() { op.getOnTrueMutable().assign(inner.getOnTrue()); });
-        return success();
-      }
-    }
-
-    return failure();
-  }
-};
-
 struct SelectSelectNegCond final
     : CheckedOpRewritePattern<stablehlo::SelectOp, SelectSelectNegCond> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -14963,24 +14476,6 @@ struct EmptyReduceOpCanon final
   }
 };
 
-struct DynamicReshapeOpCanon final
-    : CheckedOpRewritePattern<stablehlo::DynamicReshapeOp,
-                              DynamicReshapeOpCanon> {
-  using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  LogicalResult matchAndRewriteImpl(stablehlo::DynamicReshapeOp op,
-                                    PatternRewriter &rewriter) const {
-    // This is a noop when the output type is already a static shape.
-    RankedTensorType type = op.getType();
-    if (!type.hasStaticShape())
-      return failure();
-
-    rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, type,
-                                                      op.getOperand());
-    return success();
-  }
-};
-
 struct GetTupleElementOpCanon final
     : CheckedOpRewritePattern<stablehlo::GetTupleElementOp,
                               GetTupleElementOpCanon> {
@@ -15047,48 +14542,6 @@ struct ImagOpCanon final
     }
 
     return failure();
-  }
-};
-
-// (conj (complex a, (neg b))) -> (complex a b)
-struct ConjComplexNegate final
-    : CheckedOpRewritePattern<chlo::ConjOp, ConjComplexNegate> {
-  using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  LogicalResult matchAndRewriteImpl(chlo::ConjOp op,
-                                    PatternRewriter &rewriter) const {
-    auto complex = op.getOperand().getDefiningOp<stablehlo::ComplexOp>();
-    if (!complex)
-      return failure();
-
-    auto neg = complex.getRhs().getDefiningOp<stablehlo::NegOp>();
-    if (!neg)
-      return failure();
-
-    rewriter.replaceOpWithNewOp<stablehlo::ComplexOp>(
-        op, op.getType(), complex.getLhs(), neg.getOperand());
-    return success();
-  }
-};
-
-// (neg (imag (conj x))) -> (imag x)
-struct NegateImagConj final
-    : CheckedOpRewritePattern<stablehlo::NegOp, NegateImagConj> {
-  using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  LogicalResult matchAndRewriteImpl(stablehlo::NegOp op,
-                                    PatternRewriter &rewriter) const {
-    auto imag = op.getOperand().getDefiningOp<stablehlo::ImagOp>();
-    if (!imag)
-      return failure();
-
-    auto conj = imag.getOperand().getDefiningOp<chlo::ConjOp>();
-    if (!conj)
-      return failure();
-
-    rewriter.replaceOpWithNewOp<stablehlo::ImagOp>(op, op.getType(),
-                                                   conj.getOperand());
-    return success();
   }
 };
 
@@ -21001,24 +20454,6 @@ struct CompareSelectSimplify
   }
 };
 
-// select(!op, lhs, rhs) --> select(op, rhs, lhs)
-struct NotSelectSimplify
-    : public CheckedOpRewritePattern<stablehlo::SelectOp, NotSelectSimplify> {
-  using CheckedOpRewritePattern<stablehlo::SelectOp,
-                                NotSelectSimplify>::CheckedOpRewritePattern;
-
-  LogicalResult matchAndRewriteImpl(stablehlo::SelectOp op,
-                                    PatternRewriter &rewriter) const {
-    auto notOp = op.getPred().getDefiningOp<stablehlo::NotOp>();
-    if (!notOp)
-      return failure();
-
-    rewriter.replaceOpWithNewOp<stablehlo::SelectOp>(
-        op, notOp.getOperand(), op.getOnFalse(), op.getOnTrue());
-    return success();
-  }
-};
-
 struct NotCompare
     : public CheckedOpRewritePattern<stablehlo::NotOp, NotCompare> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -21811,68 +21246,6 @@ struct ReduceTransposeSimplify
     rewriter.replaceOpWithNewOp<stablehlo::TransposeOp>(
         op, newReduceOp.getResult(0), finalPermutation);
     return success();
-  }
-};
-
-// (mul (sign x) (abs x)) -> x
-// (mul (abs x) (sign x)) -> x
-struct SignAbsSimplify
-    : public CheckedOpRewritePattern<stablehlo::MulOp, SignAbsSimplify> {
-  using CheckedOpRewritePattern<stablehlo::MulOp,
-                                SignAbsSimplify>::CheckedOpRewritePattern;
-
-  LogicalResult matchAndRewriteImpl(stablehlo::MulOp op,
-                                    PatternRewriter &rewriter) const {
-    auto lhs = op.getOperand(0);
-    auto rhs = op.getOperand(1);
-
-    auto lhsSignOp = lhs.getDefiningOp<stablehlo::SignOp>();
-    if (lhsSignOp) {
-      auto rhsAbsOp = rhs.getDefiningOp<stablehlo::AbsOp>();
-      if (!rhsAbsOp)
-        return failure();
-
-      if (lhsSignOp.getOperand() != rhsAbsOp.getOperand())
-        return failure();
-
-      rewriter.replaceOp(op, lhsSignOp.getOperand());
-      return success();
-    }
-
-    auto rhsSignOp = rhs.getDefiningOp<stablehlo::SignOp>();
-    if (rhsSignOp) {
-      auto lhsAbsOp = lhs.getDefiningOp<stablehlo::AbsOp>();
-      if (!lhsAbsOp)
-        return failure();
-
-      if (rhsSignOp.getOperand() != lhsAbsOp.getOperand())
-        return failure();
-
-      rewriter.replaceOp(op, rhsSignOp.getOperand());
-      return success();
-    }
-
-    return failure();
-  }
-};
-
-struct AbsPositiveSimplify
-    : public CheckedOpRewritePattern<stablehlo::AbsOp, AbsPositiveSimplify> {
-  using CheckedOpRewritePattern<stablehlo::AbsOp,
-                                AbsPositiveSimplify>::CheckedOpRewritePattern;
-
-  LogicalResult matchAndRewriteImpl(stablehlo::AbsOp op,
-                                    PatternRewriter &rewriter) const {
-
-    auto operand = op.getOperand();
-    if (isa<ComplexType>(operand.getType().getElementType()))
-      return failure();
-
-    if (guaranteedNonNegativeResult(operand.getDefiningOp(), rewriter)) {
-      rewriter.replaceOp(op, op.getOperand());
-      return success();
-    }
-    return failure();
   }
 };
 
@@ -25786,24 +25159,6 @@ struct ReduceReduce final
   }
 };
 
-struct ConjReal final : public CheckedOpRewritePattern<chlo::ConjOp, ConjReal> {
-  using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  bool supportsDynamicShapes() { return true; }
-
-  LogicalResult matchAndRewriteImpl(chlo::ConjOp op,
-                                    PatternRewriter &rewriter) const {
-    auto input = op.getOperand();
-
-    if (guaranteedPurelyRealResult(input, rewriter)) {
-      rewriter.replaceOp(op, input);
-      return success();
-    }
-
-    return failure();
-  }
-};
-
 struct ConcatReshapeElementwise final
     : public CheckedOpRewritePattern<stablehlo::ConcatenateOp,
                                      ConcatReshapeElementwise> {
@@ -26135,78 +25490,6 @@ struct IfOpLiftCommonOps final
       rewriter.replaceOp(falseOp, trueOp);
     }
 
-    return success();
-  }
-};
-
-// used for ops that dont define the Involution trait
-template <typename OpTy>
-struct InvolutionSimplify
-    : public CheckedOpRewritePattern<OpTy, InvolutionSimplify<OpTy>> {
-  using CheckedOpRewritePattern<
-      OpTy, InvolutionSimplify<OpTy>>::CheckedOpRewritePattern;
-
-  LogicalResult matchAndRewriteImpl(OpTy op, PatternRewriter &rewriter) const {
-    auto operandOp = op.getOperand().template getDefiningOp<OpTy>();
-    if (!operandOp)
-      return failure();
-
-    rewriter.replaceOp(op, operandOp.getOperand());
-    return success();
-  }
-};
-
-struct RealConjSimplify final
-    : public CheckedOpRewritePattern<stablehlo::RealOp, RealConjSimplify> {
-  using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  LogicalResult matchAndRewriteImpl(stablehlo::RealOp op,
-                                    PatternRewriter &rewriter) const {
-    auto operandOp = op.getOperand().getDefiningOp<chlo::ConjOp>();
-    if (!operandOp)
-      return failure();
-
-    rewriter.replaceOpWithNewOp<stablehlo::RealOp>(op, operandOp.getOperand());
-    return success();
-  }
-};
-
-struct RealConvertSimplify final
-    : public CheckedOpRewritePattern<stablehlo::RealOp, RealConvertSimplify> {
-  using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  LogicalResult matchAndRewriteImpl(stablehlo::RealOp op,
-                                    PatternRewriter &rewriter) const {
-    auto operandOp = op.getOperand().getDefiningOp<stablehlo::ConvertOp>();
-    if (!operandOp || isa<ComplexType>(cast<RankedTensorType>(
-                                           operandOp.getOperand().getType())
-                                           .getElementType())) {
-      return failure();
-    }
-
-    rewriter.replaceOp(op, operandOp.getOperand());
-    return success();
-  }
-};
-
-struct ConjComplexSimplify final
-    : public CheckedOpRewritePattern<chlo::ConjOp, ConjComplexSimplify> {
-  using CheckedOpRewritePattern::CheckedOpRewritePattern;
-
-  LogicalResult matchAndRewriteImpl(chlo::ConjOp op,
-                                    PatternRewriter &rewriter) const {
-    auto operandOp = op.getOperand().getDefiningOp<stablehlo::ComplexOp>();
-    if (!operandOp)
-      return failure();
-
-    auto rhs = operandOp.getRhs();
-    if (!matchPattern(rhs, m_Constant())) {
-      return failure();
-    }
-
-    auto negateRhs = stablehlo::NegOp::create(rewriter, op.getLoc(), rhs);
-    rewriter.replaceOpWithNewOp<stablehlo::ComplexOp>(op, operandOp.getLhs(),
-                                                      negateRhs);
     return success();
   }
 };
@@ -35781,35 +35064,31 @@ struct EnzymeHLOOptPass
     patterns.add<SelectPad>(context);
     patterns.add<BitcastConvertCancellation>(context);
 
-    patterns.add<
-        AddSimplify, SubSimplify, AndSimplify, MaxSimplify, MinSimplify,
-        OrSimplify, XorSimplify, MulSimplify, DivSimplify, RemSimplify,
-        PowSimplify, NoopSlice, NoopReverse, SliceReverse, SliceSlice,
-        DynamicSliceDynamicSlice, DynamicSliceSlice, SliceDynamicSlice,
-        LogSimplify, ShiftRightLogicalSimplify, NegativePadToSlice,
-        SliceSimplify, ConvertSimplify, TransposeSimplify, DotGeneralSimplify,
-        DotGeneralReshape, DiagonalTensorDotGeneralRewrite,
-        DynamicSliceToStatic, DynamicUpdateSliceElim, ReduceToReshape,
-        BroadcastToReshape, ReshapeEmptyBroadcast, ReshapeBroadcast,
-        BroadcastReshape, ConstPropThroughBarrier, ReplaceNegAddWithSubtract,
-        ReplaceSubtractNegWithAdd, SignAbsSimplify, AbsPositiveSimplify,
-        SimplifyBoundary<enzymexla::ExtendOp>,
-        SimplifyBoundary<enzymexla::WrapOp>,
-        SimplifyBoundary<enzymexla::RotateOp>, TransposeReshapeToBroadcast,
-        ReshapeTransposeToBroadcast, SelectBroadcastInDim, PowerMultiplyToPower,
-        NegMulConstSimplify, NegDivConstSimplify,
-        NegatedConstantMulFactoring<stablehlo::AddOp>,
-        NegatedConstantMulFactoring<stablehlo::SubtractOp>,
-        ReshapeDeletionsBroadcastInDimSimplify,
-        ReshapeInsertionsBroadcastInDimSimplify, CompareIotaConstSimplify,
-        ConvertIotaSimplify, MinMaxIotaConstSimplify<stablehlo::MaxOp>,
-        MinMaxIotaConstSimplify<stablehlo::MinOp>, ClampIotaConstSimplify,
-        CompareAbs, CompareMul, CompareConvert, AddSelects,
-        CompareNegateConstSimplify, CompareSubtractConstSimplify,
-        SelectSimplify, DynamicSliceReshapeDynamicSlice,
-        DynamicSliceReshapeSlice, SliceReshapeDynamicSlice, SliceReshapeSlice,
-        ExponentialMinusOneFuse, ExponentialMinusOneAddFuse>(
-        context, PatternBenefit(65000));
+    patterns
+        .add<DivSimplify, PowSimplify, NoopSlice, NoopReverse, SliceReverse,
+             SliceSlice, DynamicSliceDynamicSlice, DynamicSliceSlice,
+             SliceDynamicSlice, LogSimplify, ShiftRightLogicalSimplify,
+             NegativePadToSlice, SliceSimplify, ConvertSimplify,
+             TransposeSimplify, DotGeneralSimplify, DotGeneralReshape,
+             DiagonalTensorDotGeneralRewrite, DynamicSliceToStatic,
+             DynamicUpdateSliceElim, ReduceToReshape, BroadcastToReshape,
+             ReshapeEmptyBroadcast, ReshapeBroadcast, BroadcastReshape,
+             ConstPropThroughBarrier, SimplifyBoundary<enzymexla::ExtendOp>,
+             SimplifyBoundary<enzymexla::WrapOp>,
+             SimplifyBoundary<enzymexla::RotateOp>, TransposeReshapeToBroadcast,
+             ReshapeTransposeToBroadcast, SelectBroadcastInDim,
+             PowerMultiplyToPower, NegMulConstSimplify, NegDivConstSimplify,
+             NegatedConstantMulFactoring<stablehlo::AddOp>,
+             NegatedConstantMulFactoring<stablehlo::SubtractOp>,
+             ReshapeDeletionsBroadcastInDimSimplify,
+             ReshapeInsertionsBroadcastInDimSimplify, CompareIotaConstSimplify,
+             MinMaxIotaConstSimplify<stablehlo::MaxOp>,
+             MinMaxIotaConstSimplify<stablehlo::MinOp>, ClampIotaConstSimplify,
+             CompareAbs, CompareMul, CompareConvert, AddSelects,
+             CompareNegateConstSimplify, CompareSubtractConstSimplify,
+             SelectSimplify, DynamicSliceReshapeDynamicSlice,
+             DynamicSliceReshapeSlice, SliceReshapeDynamicSlice,
+             SliceReshapeSlice>(context, PatternBenefit(65000));
 
     patterns.add<IotaSimplify, BroadcastInDimSimplify, ConcatConstProp,
                  DynamicUpdateSliceConstProp, PadSimplify, ScatterConstFold,
@@ -35829,8 +35108,8 @@ struct EnzymeHLOOptPass
         SliceIf, SliceReshapeConcat, BinBroadcastSplat<stablehlo::AddOp>,
         BinBroadcastSplat<stablehlo::SubtractOp>,
         BinBroadcastSplat<stablehlo::DivOp>,
-        BinBroadcastSplat<stablehlo::MulOp>, RotatePad, ConjReal,
-        ConvertMulConvert, ConvertBinopConvert<stablehlo::MinOp>,
+        BinBroadcastSplat<stablehlo::MulOp>, RotatePad, ConvertMulConvert,
+        ConvertBinopConvert<stablehlo::MinOp>,
         ConvertBinopConvert<stablehlo::MaxOp>, NegateReduceWindowSub>(context);
 
     // Unary constant propagation patterns
@@ -35894,12 +35173,13 @@ struct EnzymeHLOOptPass
     if (passses & 512) {
       patterns.add<TransposeDotReorder, DotTranspose, ConvolutionTranspose,
                    TransposeConvolution, EinsumTranspose, TransposeEinsum,
-                   ConvertConvertFloat, ConvertConvertInt, ConcatToPad,
-                   ConcatAppendingReshape, ReshapeIota, DUSDUS, DUSDUSConcat,
-                   DUSConcat, DUSPad, DUSDUSSubsuming, SliceDUSToConcat,
-                   ConcatConcatToDUS>(context);
+                   ConcatToPad, ConcatAppendingReshape, ReshapeIota, DUSDUS,
+                   DUSDUSConcat, DUSConcat, DUSPad, DUSDUSSubsuming,
+                   SliceDUSToConcat, ConcatConcatToDUS>(context);
       patterns.add<LICM<stablehlo::DynamicUpdateSliceOp>,
                    LICM<stablehlo::DynamicSliceOp>>(false, context);
+      patterns.add<ConvertConvertFloatIdentity, ConvertConvertFloat,
+                   ConvertConvertIntIdentity, ConvertConvertInt>(context);
     }
 
     if (passses & 1024)
@@ -36090,14 +35370,11 @@ struct EnzymeHLOOptPass
         ChainedDynamicBroadcastInDimCanonicalization,
         CompareOpCanon,
         CompareExt,
-        ConjComplexNegate,
-        NegateImagConj,
         ConvertOpCanon,
         DivideSqrtToMultiplyRsqrt,
         DynamicBroadcastInDimAllDimsNonExpanding,
         DynamicBroadcastInDimOpNotActuallyDynamic,
         DynamicGatherOpIsNotDynamic,
-        DynamicReshapeOpCanon,
         EmptyReduceOpCanon,
         GatherOpCanon,
         ScatterOpCanon,
@@ -36116,7 +35393,6 @@ struct EnzymeHLOOptPass
         SelectCompIotaConstToDUS,
         SelectCompIotaConstSimplify,
         SelectPadToDUS,
-        SelectSelectSameCond,
         SelectSelectNegCond,
         AndPadPad,
         SelectOpUsedWithinIf,
@@ -36128,7 +35404,6 @@ struct EnzymeHLOOptPass
         WhileDeadResults,
         ZeroExtentTensorCanon,
         CompareSelectSimplify,
-        NotSelectSimplify,
         CommonCompareExpressionRewrite,
         ScatterUpdateComputationConstProp,
         ScatterIndicesAreUnique,
@@ -36148,12 +35423,6 @@ struct EnzymeHLOOptPass
         TransposeAllUsersSlice,
         ReduceReduce,
         IfOpLiftCommonOps,
-        InvolutionSimplify<stablehlo::NegOp>,
-        InvolutionSimplify<stablehlo::NotOp>,
-        InvolutionSimplify<chlo::ConjOp>,
-        RealConjSimplify,
-        RealConvertSimplify,
-        ConjComplexSimplify,
         ElementwiseComplexSimplify,
         SplitConvolutionIntoReverseConvolution,
         ScatterMultiplySimplify,
@@ -36234,6 +35503,9 @@ struct EnzymeHLOOptPass
                                 PatternBenefit(65000));
     patterns.add<ConcatenateOpCanon>(max_constant_expansion, context,
                                      PatternBenefit(65000));
+    patterns.add<ConjComplexNegate, NegateImagConj, SelectSelectSameCondFalse,
+                 SelectSelectSameCondTrue, NotSelectSimplify, RealConjSimplify,
+                 RealConvertSimplify>(context);
 
     if (enable_auto_batching_passes) {
       mlir::enzyme::AutoBatchingPassPipelineOptions options{
