@@ -27390,7 +27390,11 @@ struct LogSimplify final
 
     { // log(pow(x, y)) -> y * log(x)
       auto defOp = op.getOperand().getDefiningOp<stablehlo::PowOp>();
-      if (defOp) {
+      // Only sound when the base x is provably non-negative. For x < 0,
+      // log(pow(x, y)) can be a finite real (e.g. even integer y, where
+      // pow(x, y) > 0) while y * log(x) is NaN; likewise y = 0 gives
+      // log(pow(x, 0)) = 0 but 0 * log(x) = NaN. See issue #2570.
+      if (defOp && guaranteedNonNegativeResult(defOp.getLhs(), rewriter)) {
         rewriter.replaceOpWithNewOp<stablehlo::MulOp>(
             op, defOp.getRhs(),
             stablehlo::LogOp::create(rewriter, op.getLoc(), defOp.getLhs()));
@@ -27403,23 +27407,35 @@ struct LogSimplify final
       if (defOp) {
         auto lhs = defOp.getLhs();
         auto rhs = defOp.getRhs();
-        if (lhs == rhs) { // log(mul(a, a)) -> 2 * log(a)
+        if (lhs == rhs) { // log(mul(a, a)) -> 2 * log(abs(a))
+          // a*a is non-negative for every real a, but 2 * log(a) is NaN for
+          // a < 0. Take the log of |a| so the rewrite keeps log(a*a)'s domain
+          // (log(a*a) = 2 * log|a|). See issue #2570.
           rewriter.replaceOpWithNewOp<stablehlo::MulOp>(
               op,
               stablehlo::ConstantOp::create(
                   rewriter, op.getLoc(), lhs.getType(),
                   cast<ElementsAttr>(makeAttr(lhs.getType(), 2))),
-              stablehlo::LogOp::create(rewriter, op.getLoc(), lhs));
+              stablehlo::LogOp::create(
+                  rewriter, op.getLoc(),
+                  stablehlo::AbsOp::create(rewriter, op.getLoc(),
+                                           lhs.getType(), lhs)));
           return success();
         }
 
         if (anyOperandIsConstant(defOp) &&
             !allOperandsAreConstant(defOp)) { // log(mul(a, b)) -> log(a) +
                                               // log(b) if a or b is constant
-          rewriter.replaceOpWithNewOp<stablehlo::AddOp>(
-              op, stablehlo::LogOp::create(rewriter, op.getLoc(), lhs),
-              stablehlo::LogOp::create(rewriter, op.getLoc(), rhs));
-          return success();
+          // Only sound when the constant operand is non-negative: a negative
+          // constant makes log(const) NaN where log(a*b) was a finite real
+          // (a < 0 makes both sides NaN, so they still agree). Issue #2570.
+          Value cst = matchPattern(lhs, m_Constant()) ? lhs : rhs;
+          if (guaranteedNonNegativeResult(cst, rewriter)) {
+            rewriter.replaceOpWithNewOp<stablehlo::AddOp>(
+                op, stablehlo::LogOp::create(rewriter, op.getLoc(), lhs),
+                stablehlo::LogOp::create(rewriter, op.getLoc(), rhs));
+            return success();
+          }
         }
       }
     }
@@ -27469,10 +27485,16 @@ struct LogSimplify final
         if (anyOperandIsConstant(defOp) &&
             !allOperandsAreConstant(defOp)) { // log(div(a, b)) -> log(a) -
                                               // log(b) if a or b is constant
-          rewriter.replaceOpWithNewOp<stablehlo::SubtractOp>(
-              op, stablehlo::LogOp::create(rewriter, op.getLoc(), lhs),
-              stablehlo::LogOp::create(rewriter, op.getLoc(), rhs));
-          return success();
+          // Only sound when the constant operand is non-negative: a negative
+          // constant makes log(const) NaN where log(a/b) was a finite real.
+          // Issue #2570.
+          Value cst = matchPattern(lhs, m_Constant()) ? lhs : rhs;
+          if (guaranteedNonNegativeResult(cst, rewriter)) {
+            rewriter.replaceOpWithNewOp<stablehlo::SubtractOp>(
+                op, stablehlo::LogOp::create(rewriter, op.getLoc(), lhs),
+                stablehlo::LogOp::create(rewriter, op.getLoc(), rhs));
+            return success();
+          }
         }
       }
     }
