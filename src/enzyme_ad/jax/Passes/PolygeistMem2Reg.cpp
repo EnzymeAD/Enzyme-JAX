@@ -1081,18 +1081,17 @@ void removeRedundantBlockArgs(
 }
 
 // Recursively extract all scalar leaves from a nested struct/array aggregate
-static void collectLeaves(OpBuilder &b, Value val, SmallVectorImpl<Value> &leaves) {
+static void collectLeaves(OpBuilder &b, Value val,
+                          SmallVectorImpl<Value> &leaves) {
   Type t = val.getType();
   if (auto ST = dyn_cast<LLVM::LLVMStructType>(t)) {
     for (unsigned i = 0; i < ST.getBody().size(); i++) {
-      Value extracted =
-          LLVM::ExtractValueOp::create(b, val.getLoc(), val, i);
+      Value extracted = LLVM::ExtractValueOp::create(b, val.getLoc(), val, i);
       collectLeaves(b, extracted, leaves);
     }
   } else if (auto AT = dyn_cast<LLVM::LLVMArrayType>(t)) {
     for (unsigned i = 0; i < AT.getNumElements(); i++) {
-      Value extracted =
-          LLVM::ExtractValueOp::create(b, val.getLoc(), val, i);
+      Value extracted = LLVM::ExtractValueOp::create(b, val.getLoc(), val, i);
       collectLeaves(b, extracted, leaves);
     }
   } else {
@@ -1127,25 +1126,30 @@ Value castToType(Type elType, Value val, Operation *op) {
     SmallVector<Value> leaves;
     collectLeaves(b, val, leaves);
     assert(!leaves.empty());
+
+    // If there's only one leaf and it already matches, no vector needed
+    if (leaves.size() == 1)
+      return castToType(elType, leaves[0], op);
+
     // Check that leaves are all the same type
     Type leafType = leaves[0].getType();
-    assert(llvm::all_of(leaves, [&](Value v) { 
-      return v.getType() == leafType; 
-    }));
+    assert(
+        llvm::all_of(leaves, [&](Value v) { return v.getType() == leafType; }));
+
+    // Create a vector of the leaves
     auto vecType = VectorType::get(leaves.size(), leafType);
     Value vec = LLVM::PoisonOp::create(b, val.getLoc(), vecType);
     for (auto [i, leaf] : llvm::enumerate(leaves)) {
       Value idx = LLVM::ConstantOp::create(b, val.getLoc(), b.getI32Type(),
-                                          b.getI32IntegerAttr(i));
-      vec =
-          LLVM::InsertElementOp::create(b, val.getLoc(), vec, leaf, idx);
+                                           b.getI32IntegerAttr(i));
+      vec = LLVM::InsertElementOp::create(b, val.getLoc(), vec, leaf, idx);
     }
     return castToType(elType, vec, op);
 
   } else if (auto VT = dyn_cast<VectorType>(val.getType())) {
-    if (isa<IntegerType>(elType)) {
-      DataLayout dl(op->getParentOfType<ModuleOp>());
-      if (dl.getTypeSize(val.getType()) == dl.getTypeSize(elType))
+    DataLayout dl(op->getParentOfType<ModuleOp>());
+    if (dl.getTypeSize(val.getType()) == dl.getTypeSize(elType)) {
+      if (isa<IntegerType>(elType) || isa<FloatType>(elType))
         return LLVM::BitcastOp::create(b, val.getLoc(), elType, val);
     }
   }
