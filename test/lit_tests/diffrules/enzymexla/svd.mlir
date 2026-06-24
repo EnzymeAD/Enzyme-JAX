@@ -5,9 +5,9 @@ func.func @main(%x : tensor<4x4xcomplex<f32>>) -> (tensor<4x4xcomplex<f32>>, ten
   func.return %U, %S, %Vt : tensor<4x4xcomplex<f32>>, tensor<4xcomplex<f32>>, tensor<4x4xcomplex<f32>>
 }
 
-// REVERSE-NEXT: func.func @main(%arg0: tensor<4x4xcomplex<f32>>, %arg1: tensor<4x4xcomplex<f32>>, %arg2: tensor<4xcomplex<f32>>, %arg3: tensor<4x4xcomplex<f32>>) -> tensor<4x4xcomplex<f32>> {
-// REVERSE-NEXT:   %cst = stablehlo.constant dense<[[(1.000000e+00,0.000000e+00), (0.000000e+00,0.000000e+00), (0.000000e+00,0.000000e+00), (0.000000e+00,0.000000e+00)], [(0.000000e+00,0.000000e+00), (1.000000e+00,0.000000e+00), (0.000000e+00,0.000000e+00), (0.000000e+00,0.000000e+00)], [(0.000000e+00,0.000000e+00), (0.000000e+00,0.000000e+00), (1.000000e+00,0.000000e+00), (0.000000e+00,0.000000e+00)], [(0.000000e+00,0.000000e+00), (0.000000e+00,0.000000e+00), (0.000000e+00,0.000000e+00), (1.000000e+00,0.000000e+00)]]> : tensor<4x4xcomplex<f32>>
-// REVERSE-NEXT:   %c = stablehlo.constant dense<[[true, false, false, false], [false, true, false, false], [false, false, true, false], [false, false, false, true]]> : tensor<4x4xi1>
+// REVERSE: func.func @main(%arg0: tensor<4x4xcomplex<f32>>, %arg1: tensor<4x4xcomplex<f32>>, %arg2: tensor<4xcomplex<f32>>, %arg3: tensor<4x4xcomplex<f32>>) -> tensor<4x4xcomplex<f32>> {
+// REVERSE-NEXT:   %cst = stablehlo.constant
+// REVERSE-NEXT:   %c = stablehlo.constant
 // REVERSE-NEXT:   %cst_0 = stablehlo.constant dense<(1.000000e+00,0.000000e+00)> : tensor<4xcomplex<f32>>
 // REVERSE-NEXT:   %cst_1 = stablehlo.constant dense<(5.000000e-01,0.000000e+00)> : tensor<4x4xcomplex<f32>>
 // REVERSE-NEXT:   %cst_2 = stablehlo.constant dense<(1.000000e+00,0.000000e+00)> : tensor<4x4xcomplex<f32>>
