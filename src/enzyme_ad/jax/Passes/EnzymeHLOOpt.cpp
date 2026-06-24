@@ -20476,6 +20476,92 @@ struct WhileLICM
   }
 };
 
+// For a stablehlo.while whose body contains a stablehlo.if with a
+// loop-invariant predicate, hoist the conditional out of the loop by creating
+// two specialised while loops — one per branch — wrapped in an outer
+// stablehlo.if.  The pattern fires once per qualifying if; the greedy driver
+// iterates until no more loop-invariant ifs remain.
+struct WhileIfVersioning
+    : public CheckedOpRewritePattern<stablehlo::WhileOp, WhileIfVersioning> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::WhileOp whileOp,
+                                    PatternRewriter &rewriter) const {
+    // Find the first stablehlo.if in the body whose predicate is defined
+    // outside the while loop.
+    stablehlo::IfOp targetIf;
+    for (Operation &op : whileOp.getBody().front().without_terminator()) {
+      if (auto ifOp = dyn_cast<stablehlo::IfOp>(&op)) {
+        if (definedOutside(ifOp.getPred(), whileOp)) {
+          targetIf = ifOp;
+          break;
+        }
+      }
+    }
+    if (!targetIf)
+      return failure();
+
+    Value pred = targetIf.getPred();
+    Location loc = whileOp.getLoc();
+
+    // Clone the while and inline one branch of the cloned if in place of the
+    // if itself.  Because pred is defined outside the while, the clone does not
+    // remap it, so we can locate the cloned if by predicate identity.
+    auto buildVersionedWhile = [&](bool useTrue) -> stablehlo::WhileOp {
+      IRMapping mapper;
+      auto newWhile =
+          cast<stablehlo::WhileOp>(rewriter.clone(*whileOp, mapper));
+
+      stablehlo::IfOp clonedIf;
+      for (Operation &op : newWhile.getBody().front().without_terminator()) {
+        if (auto ifOp = dyn_cast<stablehlo::IfOp>(&op);
+            ifOp && ifOp.getPred() == pred) {
+          clonedIf = ifOp;
+          break;
+        }
+      }
+      assert(clonedIf && "cloned while must contain the target if");
+
+      Region &inlineBranch =
+          useTrue ? clonedIf.getTrueBranch() : clonedIf.getFalseBranch();
+      Operation *branchTerm = inlineBranch.front().getTerminator();
+      SmallVector<Value> branchReturns(branchTerm->getOperands());
+
+      rewriter.setInsertionPoint(clonedIf);
+      for (Operation &innerOp : llvm::make_early_inc_range(
+               inlineBranch.front().without_terminator()))
+        rewriter.modifyOpInPlace(&innerOp,
+                                 [&] { innerOp.moveBefore(clonedIf); });
+
+      rewriter.replaceOp(clonedIf, branchReturns);
+      return newWhile;
+    };
+
+    rewriter.setInsertionPoint(whileOp);
+    auto outerIf =
+        stablehlo::IfOp::create(rewriter, loc, whileOp->getResultTypes(), pred);
+
+    // IfOp::create leaves both regions empty; we must add blocks before use.
+    {
+      OpBuilder::InsertionGuard g(rewriter);
+      Block *trueBlock = rewriter.createBlock(&outerIf.getTrueBranch());
+      auto trueWhile = buildVersionedWhile(/*useTrue=*/true);
+      rewriter.setInsertionPointToEnd(trueBlock);
+      stablehlo::ReturnOp::create(rewriter, loc, trueWhile.getResults());
+    }
+    {
+      OpBuilder::InsertionGuard g(rewriter);
+      Block *falseBlock = rewriter.createBlock(&outerIf.getFalseBranch());
+      auto falseWhile = buildVersionedWhile(/*useTrue=*/false);
+      rewriter.setInsertionPointToEnd(falseBlock);
+      stablehlo::ReturnOp::create(rewriter, loc, falseWhile.getResults());
+    }
+
+    rewriter.replaceOp(whileOp, outerIf.getResults());
+    return success();
+  }
+};
+
 // Replace a while op consisting of DUS chains for each iter arg where each DUS
 // doesn't depend on values evolving in the loop. This can be later extended to
 // support other similarly idempotent ops. The loop is expected to have a
@@ -35458,6 +35544,12 @@ void mlir::transform::addWhileLICM(RewritePatternSet &patterns, bool hoistAll,
                                    MLIRContext &context,
                                    PatternBenefit benefit) {
   patterns.insert<WhileLICM>(hoistAll, &context, benefit);
+}
+
+void mlir::transform::addWhileIfVersioning(RewritePatternSet &patterns,
+                                           MLIRContext &context,
+                                           PatternBenefit benefit) {
+  patterns.insert<WhileIfVersioning>(&context, benefit);
 }
 
 void mlir::transform::addSliceLICM(RewritePatternSet &patterns,

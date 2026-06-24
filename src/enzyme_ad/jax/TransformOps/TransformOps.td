@@ -1171,6 +1171,11 @@ def ApplyWhileLICMPatterns : EnzymeHLOParameterizedPatternOp<
   }];
 }
 
+def ApplyWhileIfVersioningPatterns : EnzymeHLOPatternOp<
+    "while_if_versioning"> {
+  let patterns = ["WhileIfVersioning"];
+}
+
 def ApplySliceLICMPatterns : EnzymeHLOParameterizedPatternOp<
     "slice_licm"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
