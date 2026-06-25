@@ -234,10 +234,23 @@ struct QRFactorizationOpFwdDerivative
   LogicalResult createForwardModeTangent(Operation *orig, OpBuilder &builder,
                                          MGradientUtils *gutils) const {
     auto op = cast<enzymexla::QRFactorizationOp>(orig);
+    gutils->eraseIfUnused(op);
+    if (gutils->isConstantInstruction(op))
+      return success();
+
+    if (gutils->isConstantValue(op.getInput())) {
+      gutils->setDiffe(op.getQ(), nullptr, builder);
+      gutils->setDiffe(op.getR(), nullptr, builder);
+      return success();
+    }
+
     auto A = op.getInput();
-    auto dA = gutils->invertPointerM(A, builder);
-    auto Q = op.getQ();
-    auto R = op.getR();
+    auto dA = gutils->invertPointerM(op.getInput(), builder);
+    auto Q = gutils->getNewFromOriginal(op.getQ());
+    auto R = gutils->getNewFromOriginal(op.getR());
+
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointAfter(op);
 
     auto type_a = cast<RankedTensorType>(A.getType());
     auto rank = type_a.getRank();
@@ -281,8 +294,9 @@ struct QRFactorizationOpFwdDerivative
                                         enzymexla::LapackSide::left,
                                         enzymexla::LapackUplo::U);
 
-    gutils->setDiffe(Q, dQ, builder);
-    gutils->setDiffe(R, dR, builder);
+    gutils->setDiffe(op.getQ(), dQ.getResult(), builder);
+    gutils->setDiffe(op.getR(), dR.getResult(), builder);
+
     return success();
   }
 };
