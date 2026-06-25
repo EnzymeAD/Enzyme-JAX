@@ -1344,6 +1344,48 @@ void enzymexla::TrsmOp::build(OpBuilder &builder, OperationState &result,
     result.addAttribute("unit_diagonal", UnitAttr::get(builder.getContext()));
 }
 
+void TrmmOp::build(OpBuilder &builder, OperationState &result, Value A, Value B,
+                   enzymexla::LapackSide side, enzymexla::LapackUplo uplo,
+                   enzymexla::LapackTranspose transa, bool unit) {
+  auto type_A = cast<RankedTensorType>(A.getType());
+  auto type_B = cast<RankedTensorType>(B.getType());
+
+  auto element_type = type_A.getElementType();
+  auto rank = type_A.getRank();
+
+  auto shape_a = type_A.getShape();
+  auto shape_b = type_B.getShape();
+  SmallVector<int64_t> shape_c;
+  for (int i = 0; i < rank - 2; i++) {
+    shape_c.push_back(shape_a[i]);
+  }
+  if (side == enzymexla::LapackSide::left) {
+    shape_c.push_back(shape_a[rank - 2]);
+    shape_c.push_back(shape_b[rank - 1]);
+  } else {
+    shape_c.push_back(shape_b[rank - 2]);
+    shape_c.push_back(shape_a[rank - 1]);
+  }
+
+  auto type_scalar = RankedTensorType::get({}, element_type);
+  auto alpha = stablehlo::ConstantOp::create(
+      builder, result.location, type_scalar,
+      cast<ElementsAttr>(makeAttr(type_scalar, 1)));
+
+  auto type_C = RankedTensorType::get(shape_c, element_type);
+
+  result.addTypes(type_C);
+  result.addOperands({A, B, alpha});
+  result.addAttribute(
+      "side", enzymexla::LapackSideAttr::get(builder.getContext(), side));
+  result.addAttribute(
+      "uplo", enzymexla::LapackUploAttr::get(builder.getContext(), uplo));
+  result.addAttribute("transpose", enzymexla::LapackTransposeAttr::get(
+                                       builder.getContext(), transa));
+  if (unit)
+    result.addAttribute("unit_diagonal", UnitAttr::get(builder.getContext()));
+}
+
 namespace {
 
 /// Erases a common case of copy ops where a destination value is used only by

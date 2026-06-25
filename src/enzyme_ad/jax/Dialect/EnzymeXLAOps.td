@@ -698,6 +698,16 @@ def TrmmOp: EnzymeXLA_Op<"blas.trmm", [Pure, SameOperandsAndResultElementType]> 
   let assemblyFormat = [{
     $A `,` $B `,` $alpha attr-dict `:` functional-type(operands, results)
   }];
+
+  let builders = [
+    OpBuilder<(ins
+      "Value":$A,
+      "Value":$B,
+      "enzymexla::LapackSide":$side,
+      "enzymexla::LapackUplo":$uplo,
+      CArg<"enzymexla::LapackTranspose", "enzymexla::LapackTranspose::none">:$transa,
+      CArg<"bool", "false">:$unit)>
+  ];
 }
 
 def TrsmOp : EnzymeXLA_Op<"blas.trsm", [Pure]> {
