@@ -1262,6 +1262,50 @@ void GemmOp::build(OpBuilder &builder, OperationState &result, Value A, Value B,
                                     builder.getContext(), transb));
 }
 
+void enzymexla::SymmOp::build(OpBuilder &builder, OperationState &result,
+                              Value A, Value B, enzymexla::LapackSide side,
+                              enzymexla::LapackUplo uplo) {
+  auto type_A = cast<RankedTensorType>(A.getType());
+  auto type_B = cast<RankedTensorType>(B.getType());
+
+  auto element_type = type_A.getElementType();
+  auto rank = type_A.getRank();
+
+  auto shape_a = type_A.getShape();
+  auto shape_b = type_B.getShape();
+  SmallVector<int64_t> shape_c;
+  for (int i = 0; i < rank - 2; i++) {
+    shape_c.push_back(shape_a[i]);
+  }
+  if (side == enzymexla::LapackSide::left) {
+    shape_c.push_back(shape_a[rank - 2]);
+    shape_c.push_back(shape_b[rank - 1]);
+  } else {
+    shape_c.push_back(shape_b[rank - 2]);
+    shape_c.push_back(shape_a[rank - 1]);
+  }
+
+  auto type_scalar = RankedTensorType::get({}, element_type);
+  auto alpha = stablehlo::ConstantOp::create(
+      builder, result.location, type_scalar,
+      cast<ElementsAttr>(makeAttr(type_scalar, 1)));
+  auto beta = stablehlo::ConstantOp::create(
+      builder, result.location, type_scalar,
+      cast<ElementsAttr>(makeAttr(type_scalar, 0)));
+
+  auto type_C = RankedTensorType::get(shape_c, element_type);
+  auto C =
+      stablehlo::ConstantOp::create(builder, result.location, type_C,
+                                    cast<ElementsAttr>(makeAttr(type_C, 0)));
+
+  result.addTypes(type_C);
+  result.addOperands({A, B, C, alpha, beta});
+  result.addAttribute(
+      "side", enzymexla::LapackSideAttr::get(builder.getContext(), side));
+  result.addAttribute(
+      "uplo", enzymexla::LapackUploAttr::get(builder.getContext(), uplo));
+}
+
 LogicalResult enzymexla::SyrkOp::verify() {
   auto CType = cast<RankedTensorType>(getC().getType());
   bool isComplex = false;
@@ -1274,6 +1318,30 @@ LogicalResult enzymexla::SyrkOp::verify() {
   }
 
   return success();
+}
+
+void enzymexla::TrsmOp::build(OpBuilder &builder, OperationState &result,
+                              Value A, Value B, enzymexla::LapackSide side,
+                              enzymexla::LapackUplo uplo,
+                              enzymexla::LapackTranspose transa,
+                              bool unit_diagonal) {
+  auto type_B = cast<RankedTensorType>(B.getType());
+  auto element_type = type_B.getElementType();
+  auto type_scalar = RankedTensorType::get({}, element_type);
+  auto alpha = stablehlo::ConstantOp::create(
+      builder, result.location, type_scalar,
+      cast<ElementsAttr>(makeAttr(type_scalar, 1)));
+
+  result.addTypes(type_B);
+  result.addOperands({alpha, A, B});
+  result.addAttribute(
+      "side", enzymexla::LapackSideAttr::get(builder.getContext(), side));
+  result.addAttribute(
+      "uplo", enzymexla::LapackUploAttr::get(builder.getContext(), uplo));
+  result.addAttribute("transa", enzymexla::LapackTransposeAttr::get(
+                                    builder.getContext(), transa));
+  if (unit_diagonal)
+    result.addAttribute("unit_diagonal", UnitAttr::get(builder.getContext()));
 }
 
 namespace {
