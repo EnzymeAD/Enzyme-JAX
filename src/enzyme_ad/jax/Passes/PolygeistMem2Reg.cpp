@@ -1080,30 +1080,23 @@ void removeRedundantBlockArgs(
   }
 }
 
-// Recursively extract sub-values, stopping as soon as a node matches the target
-// type. Falls all the way to scalar leaves when no intermediate match is found.
-static void collectSubvalues(OpBuilder &b, Value val,
-                             SmallVectorImpl<Value> &subvalues,
-                             Type targetType) {
+// Recursively extract leaves
+static void collectLeaves(OpBuilder &b, Value val,
+                          SmallVectorImpl<Value> &leaves) {
   Type t = val.getType();
-
-  if (t == targetType) {
-    subvalues.push_back(val);
-    return;
-  }
 
   if (auto ST = dyn_cast<LLVM::LLVMStructType>(t)) {
     for (unsigned i = 0; i < ST.getBody().size(); i++) {
       Value extracted = LLVM::ExtractValueOp::create(b, val.getLoc(), val, i);
-      collectSubvalues(b, extracted, subvalues, targetType);
+      collectLeaves(b, extracted, leaves);
     }
   } else if (auto AT = dyn_cast<LLVM::LLVMArrayType>(t)) {
     for (unsigned i = 0; i < AT.getNumElements(); i++) {
       Value extracted = LLVM::ExtractValueOp::create(b, val.getLoc(), val, i);
-      collectSubvalues(b, extracted, subvalues, targetType);
+      collectLeaves(b, extracted, leaves);
     }
   } else {
-    subvalues.push_back(val);
+    leaves.push_back(val);
   }
 }
 
@@ -1123,28 +1116,37 @@ Value castToType(Type elType, Value val, Operation *op) {
              (isa<IntegerType>(elType) || isa<FloatType>(elType))) {
     return arith::BitcastOp::create(b, val.getLoc(), elType, val);
   } else if (isa<LLVM::LLVMStructType, LLVM::LLVMArrayType>(val.getType())) {
-    SmallVector<Value> subvalues;
-    collectSubvalues(b, val, subvalues, elType);
-    assert(!subvalues.empty());
-
-    // If there's only one subvalue and it already matches, no vector needed
-    if (subvalues.size() == 1)
-      return castToType(elType, subvalues[0], op);
-
-    // Check that subvalues are all the same type
-    Type leafType = subvalues[0].getType();
-    assert(llvm::all_of(subvalues,
-                        [&](Value v) { return v.getType() == leafType; }));
-
-    // Create a vector of the subvalues
-    auto vecType = VectorType::get(subvalues.size(), leafType);
-    Value vec = LLVM::PoisonOp::create(b, val.getLoc(), vecType);
-    for (auto [i, subvalue] : llvm::enumerate(subvalues)) {
-      Value idx = LLVM::ConstantOp::create(b, val.getLoc(), b.getI32Type(),
-                                           b.getI32IntegerAttr(i));
-      vec = LLVM::InsertElementOp::create(b, val.getLoc(), vec, subvalue, idx);
+    // If the aggregate has only one element, extract and recurse
+    if (auto ST = dyn_cast<LLVM::LLVMStructType>(val.getType())) {
+      if (ST.getBody().size() == 1) {
+        Value extracted = LLVM::ExtractValueOp::create(b, val.getLoc(), val, 0);
+        return castToType(elType, extracted, op);
+      }
+    } else if (auto AT = dyn_cast<LLVM::LLVMArrayType>(val.getType())) {
+      if (AT.getNumElements() == 1) {
+        Value extracted = LLVM::ExtractValueOp::create(b, val.getLoc(), val, 0);
+        return castToType(elType, extracted, op);
+      }
     }
-    return castToType(elType, vec, op);
+    SmallVector<Value> leaves;
+    collectLeaves(b, val, leaves);
+
+    // Only cast if leaves are of the same type
+    if (!leaves.empty()) {
+      Type leafType = leaves[0].getType();
+      if (llvm::all_of(leaves,
+                       [&](Value v) { return v.getType() == leafType; })) {
+        // Create a vector of the leaves
+        auto vecType = VectorType::get(leaves.size(), leafType);
+        Value vec = LLVM::PoisonOp::create(b, val.getLoc(), vecType);
+        for (auto [i, leaf] : llvm::enumerate(leaves)) {
+          Value idx = LLVM::ConstantOp::create(b, val.getLoc(), b.getI32Type(),
+                                               b.getI32IntegerAttr(i));
+          vec = LLVM::InsertElementOp::create(b, val.getLoc(), vec, leaf, idx);
+        }
+        return castToType(elType, vec, op);
+      }
+    }
 
   } else if (auto VT = dyn_cast<VectorType>(val.getType())) {
     DataLayout dl(op->getParentOfType<ModuleOp>());
