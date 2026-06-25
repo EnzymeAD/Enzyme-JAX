@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=while_if_versioning" --transform-interpreter --enzyme-hlo-remove-transform %s | FileCheck %s
+// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=loop_unswitch" --transform-interpreter --enzyme-hlo-remove-transform %s | FileCheck %s
 
 // A while loop whose body contains an if with a loop-invariant predicate should
 // be split into two specialised while loops wrapped in an outer if.

@@ -1171,9 +1171,9 @@ def ApplyWhileLICMPatterns : EnzymeHLOParameterizedPatternOp<
   }];
 }
 
-def ApplyWhileIfVersioningPatterns : EnzymeHLOPatternOp<
-    "while_if_versioning"> {
-  let patterns = ["WhileIfVersioning"];
+def ApplyLoopUnswitchPatterns : EnzymeHLOPatternOp<
+    "loop_unswitch"> {
+  let patterns = ["LoopUnswitch"];
 }
 
 def ApplySliceLICMPatterns : EnzymeHLOParameterizedPatternOp<

@@ -20481,8 +20481,8 @@ struct WhileLICM
 // two specialised while loops — one per branch — wrapped in an outer
 // stablehlo.if.  The pattern fires once per qualifying if; the greedy driver
 // iterates until no more loop-invariant ifs remain.
-struct WhileIfVersioning
-    : public CheckedOpRewritePattern<stablehlo::WhileOp, WhileIfVersioning> {
+struct LoopUnswitch
+    : public CheckedOpRewritePattern<stablehlo::WhileOp, LoopUnswitch> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::WhileOp whileOp,
@@ -35546,10 +35546,10 @@ void mlir::transform::addWhileLICM(RewritePatternSet &patterns, bool hoistAll,
   patterns.insert<WhileLICM>(hoistAll, &context, benefit);
 }
 
-void mlir::transform::addWhileIfVersioning(RewritePatternSet &patterns,
-                                           MLIRContext &context,
-                                           PatternBenefit benefit) {
-  patterns.insert<WhileIfVersioning>(&context, benefit);
+void mlir::transform::addLoopUnswitch(RewritePatternSet &patterns,
+                                      MLIRContext &context,
+                                      PatternBenefit benefit) {
+  patterns.insert<LoopUnswitch>(&context, benefit);
 }
 
 void mlir::transform::addSliceLICM(RewritePatternSet &patterns,
@@ -36321,7 +36321,7 @@ struct EnzymeHLOOptPass
 
     patterns.add<WhileLICM>(false, context);
 
-    patterns.add<WhileIfVersioning>(context);
+    patterns.add<LoopUnswitch>(context);
 
     // clang-format on
     patterns.add<SelectOpCanon>(max_constant_expansion, context,
