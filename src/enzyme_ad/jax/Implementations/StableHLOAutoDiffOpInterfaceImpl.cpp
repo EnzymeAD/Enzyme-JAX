@@ -2494,44 +2494,6 @@ public:
                           MGradientUtilsReverse *gutils) const {}
 };
 
-struct SHLOConstantOpBatchInterface
-    : public BatchOpInterface::ExternalModel<SHLOConstantOpBatchInterface,
-                                             ConstantOp> {
-
-  mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
-                                  IRMapping &mapper,
-                                  ArrayRef<int64_t> batchSizes) const {
-    auto constOp = cast<ConstantOp>(src);
-
-    auto T = cast<TensorType>(constOp.getType());
-    SmallVector<int64_t> shape(batchSizes.begin(), batchSizes.end());
-    shape.append(T.getShape().begin(), T.getShape().end());
-    auto Ty = T.clone(shape);
-
-    // If splatted attr then we can easily batch it
-    auto eattr = cast<DenseElementsAttr>(constOp.getValue());
-    if (eattr.isSplat()) {
-      auto splatAttr = cast<SplatElementsAttr>(constOp.getValue());
-      auto newSplattedConstOp = ConstantOp::create(
-          builder, constOp->getLoc(), Ty,
-          cast<ElementsAttr>(splatAttr.resizeSplat(cast<ShapedType>(Ty))));
-      mapper.map(src->getResult(0), newSplattedConstOp->getResult(0));
-      return success();
-    }
-
-    // otherwise do a broadcast in dim
-    SmallVector<int64_t> mapping(T.getShape().size());
-    std::iota(mapping.begin(), mapping.end(), batchSizes.size());
-
-    auto constOpCloned = builder.clone(*constOp);
-    auto bcastOp = BroadcastInDimOp::create(
-        builder, src->getLoc(), Ty, constOpCloned->getResult(0),
-        builder.getDenseI64ArrayAttr(mapping));
-    mapper.map(src->getResult(0), bcastOp->getResult(0));
-    return success();
-  }
-};
-
 struct SHLOGetDimensionSizeOpBatchInterface
     : public BatchOpInterface::ExternalModel<
           SHLOGetDimensionSizeOpBatchInterface, GetDimensionSizeOp> {
@@ -5148,7 +5110,8 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     BatchNormTrainingOp::attachInterface<AutoDiffBatchNormTrainingRev>(
         *context);
 
-    ConstantOp::attachInterface<SHLOConstantOpBatchInterface>(*context);
+    ConstantOp::attachInterface<
+        HLOConstantOpBatchInterface<stablehlo::ConstantOp>>(*context);
     TransposeOp::attachInterface<SHLOTransposeOpBatchInterface>(*context);
     stablehlo::IfOp::attachInterface<
         SHLOGenericBatchOpInterface<stablehlo::IfOp>>(*context);
