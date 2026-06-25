@@ -36321,6 +36321,8 @@ struct EnzymeHLOOptPass
 
     patterns.add<WhileLICM>(false, context);
 
+    patterns.add<WhileIfVersioning>(context);
+
     // clang-format on
     patterns.add<SelectOpCanon>(max_constant_expansion, context,
                                 PatternBenefit(65000));
