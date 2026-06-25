@@ -1,7 +1,19 @@
-// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=loop_unswitch" --transform-interpreter --enzyme-hlo-remove-transform %s | FileCheck %s
+// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=loop_unswitch(10)" --transform-interpreter --enzyme-hlo-remove-transform %s | FileCheck %s
+// RUN: enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=loop_unswitch(1)" --transform-interpreter --enzyme-hlo-remove-transform %s | FileCheck %s --check-prefix=THRESHOLD
 
 // A while loop whose body contains an if with a loop-invariant predicate should
 // be split into two specialised while loops wrapped in an outer if.
+// With a tight threshold (max_ops_outside=1) the body has 2 ops outside the if,
+// so the pattern must not fire.
+
+// THRESHOLD-LABEL: func.func @versioning_basic
+// THRESHOLD-NEXT:    %{{.*}} = stablehlo.constant dense<0> : tensor<i64>
+// THRESHOLD-NEXT:    %{{.*}} = stablehlo.constant dense<1> : tensor<i64>
+// THRESHOLD-NEXT:    %{{.*}} = stablehlo.constant dense<2> : tensor<i64>
+// The result must be the while directly, not an outer if wrapping two whiles.
+// THRESHOLD-NEXT:    %[[RES:.*]]:2 = stablehlo.while(
+// THRESHOLD:           "stablehlo.if"(
+// THRESHOLD:         return %[[RES]]#1
 
 // CHECK-LABEL: func.func @versioning_basic
 // CHECK-NEXT:    %[[C0:.*]] = stablehlo.constant dense<0> : tensor<i64>

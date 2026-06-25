@@ -20483,7 +20483,12 @@ struct WhileLICM
 // iterates until no more loop-invariant ifs remain.
 struct LoopUnswitch
     : public CheckedOpRewritePattern<stablehlo::WhileOp, LoopUnswitch> {
-  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+  int64_t maxOpsOutside;
+  LoopUnswitch(int64_t maxOpsOutside, MLIRContext *context,
+               PatternBenefit benefit = 1,
+               ArrayRef<StringRef> generatedNames = {})
+      : CheckedOpRewritePattern(context, benefit, generatedNames),
+        maxOpsOutside(maxOpsOutside) {}
 
   LogicalResult matchAndRewriteImpl(stablehlo::WhileOp whileOp,
                                     PatternRewriter &rewriter) const {
@@ -20499,6 +20504,15 @@ struct LoopUnswitch
       }
     }
     if (!targetIf)
+      return failure();
+
+    // Count ops in the body outside the target if (excluding the terminator).
+    // Unswitching duplicates all of these; skip if too many.
+    int64_t opsOutside = 0;
+    for (Operation &op : whileOp.getBody().front().without_terminator())
+      if (&op != targetIf.getOperation())
+        ++opsOutside;
+    if (opsOutside > maxOpsOutside)
       return failure();
 
     Value pred = targetIf.getPred();
@@ -35547,9 +35561,10 @@ void mlir::transform::addWhileLICM(RewritePatternSet &patterns, bool hoistAll,
 }
 
 void mlir::transform::addLoopUnswitch(RewritePatternSet &patterns,
+                                      int64_t maxOpsOutside,
                                       MLIRContext &context,
                                       PatternBenefit benefit) {
-  patterns.insert<LoopUnswitch>(&context, benefit);
+  patterns.insert<LoopUnswitch>(maxOpsOutside, &context, benefit);
 }
 
 void mlir::transform::addSliceLICM(RewritePatternSet &patterns,
@@ -36321,7 +36336,7 @@ struct EnzymeHLOOptPass
 
     patterns.add<WhileLICM>(false, context);
 
-    patterns.add<LoopUnswitch>(context);
+    patterns.add<LoopUnswitch>(/*maxOpsOutside=*/10, context);
 
     // clang-format on
     patterns.add<SelectOpCanon>(max_constant_expansion, context,
