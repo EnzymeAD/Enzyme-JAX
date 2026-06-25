@@ -244,3 +244,39 @@ llvm.func @forward_nested_aggregate_to_integer(%val: !llvm.struct<(array<2 x arr
 // CHECK-NEXT: %[[BC:.*]] = llvm.bitcast %[[V3]] : vector<4xf32> to i128
 // CHECK-NEXT: llvm.return %[[BC]] : i128
 // CHECK-NEXT: }
+
+// -----
+
+// Nested struct A{B} stored, inner struct B loaded
+
+llvm.func @forward_outer_to_inner_struct(%val: !llvm.struct<(struct<(array<100 x i8>)>)>) -> !llvm.struct<(array<100 x i8>)> {
+  %c1 = llvm.mlir.constant(1 : i32) : i32
+  %al = llvm.alloca %c1 x !llvm.struct<(struct<(array<100 x i8>)>)> : (i32) -> !llvm.ptr
+  llvm.store %val, %al : !llvm.struct<(struct<(array<100 x i8>)>)>, !llvm.ptr
+  %0 = llvm.load %al : !llvm.ptr -> !llvm.struct<(array<100 x i8>)>
+  llvm.return %0 : !llvm.struct<(array<100 x i8>)>
+}
+
+// CHECK: llvm.func @forward_outer_to_inner_struct(%[[VAL:.*]]: !llvm.struct<(struct<(array<100 x i8>)>)>) -> !llvm.struct<(array<100 x i8>)> {
+// CHECK-NEXT: %[[C1:.*]] = llvm.mlir.constant(1 : i32) : i32
+// CHECK-NEXT: %[[EV:.*]] = llvm.extractvalue %[[VAL]][0] : !llvm.struct<(struct<(array<100 x i8>)>)>
+// CHECK-NEXT: llvm.return %[[EV]] : !llvm.struct<(array<100 x i8>)>
+// CHECK-NEXT: }
+
+// -----
+
+// Nested array stored, inner array loaded
+
+llvm.func @forward_outer_to_inner_array(%val: !llvm.array<1 x array<100 x i8>>) -> !llvm.array<100 x i8> {
+  %c1 = llvm.mlir.constant(1 : i32) : i32
+  %al = llvm.alloca %c1 x !llvm.array<1 x array<100 x i8>> : (i32) -> !llvm.ptr
+  llvm.store %val, %al : !llvm.array<1 x array<100 x i8>>, !llvm.ptr
+  %0 = llvm.load %al : !llvm.ptr -> !llvm.array<100 x i8>
+  llvm.return %0 : !llvm.array<100 x i8>
+}
+
+// CHECK: llvm.func @forward_outer_to_inner_array(%arg0: !llvm.array<1 x array<100 x i8>>) -> !llvm.array<100 x i8> {
+// CHECK-NEXT: %[[C1:.*]] = llvm.mlir.constant(1 : i32) : i32
+// CHECK-NEXT: %[[EV:.*]] = llvm.extractvalue %arg0[0] : !llvm.array<1 x array<100 x i8>>
+// CHECK-NEXT: llvm.return %[[EV]] : !llvm.array<100 x i8>
+// CHECK-NEXT: }

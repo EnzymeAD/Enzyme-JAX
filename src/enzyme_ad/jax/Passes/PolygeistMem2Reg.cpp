@@ -1080,22 +1080,30 @@ void removeRedundantBlockArgs(
   }
 }
 
-// Recursively extract all scalar leaves from a nested struct/array aggregate
-static void collectLeaves(OpBuilder &b, Value val,
-                          SmallVectorImpl<Value> &leaves) {
+// Recursively extract sub-values, stopping as soon as a node matches the target
+// type. Falls all the way to scalar leaves when no intermediate match is found.
+static void collectSubvalues(OpBuilder &b, Value val,
+                             SmallVectorImpl<Value> &subvalues,
+                             Type targetType) {
   Type t = val.getType();
+
+  if (t == targetType) {
+    subvalues.push_back(val);
+    return;
+  }
+
   if (auto ST = dyn_cast<LLVM::LLVMStructType>(t)) {
     for (unsigned i = 0; i < ST.getBody().size(); i++) {
       Value extracted = LLVM::ExtractValueOp::create(b, val.getLoc(), val, i);
-      collectLeaves(b, extracted, leaves);
+      collectSubvalues(b, extracted, subvalues, targetType);
     }
   } else if (auto AT = dyn_cast<LLVM::LLVMArrayType>(t)) {
     for (unsigned i = 0; i < AT.getNumElements(); i++) {
       Value extracted = LLVM::ExtractValueOp::create(b, val.getLoc(), val, i);
-      collectLeaves(b, extracted, leaves);
+      collectSubvalues(b, extracted, subvalues, targetType);
     }
   } else {
-    leaves.push_back(val);
+    subvalues.push_back(val);
   }
 }
 
@@ -1114,35 +1122,27 @@ Value castToType(Type elType, Value val, Operation *op) {
               isa<FloatType>(val.getType())) &&
              (isa<IntegerType>(elType) || isa<FloatType>(elType))) {
     return arith::BitcastOp::create(b, val.getLoc(), elType, val);
-  } else if (auto ST = dyn_cast<LLVM::LLVMStructType>(elType)) {
-    if (ST.getBody().size() == 1) {
-      auto ud = LLVM::UndefOp::create(b, val.getLoc(), elType);
-      auto c0 = castToType(ST.getBody()[0], val, op);
-      b.setInsertionPoint(op);
-      return LLVM::InsertValueOp::create(b, val.getLoc(), ud, c0,
-                                         b.getDenseI64ArrayAttr({0}));
-    }
   } else if (isa<LLVM::LLVMStructType, LLVM::LLVMArrayType>(val.getType())) {
-    SmallVector<Value> leaves;
-    collectLeaves(b, val, leaves);
-    assert(!leaves.empty());
+    SmallVector<Value> subvalues;
+    collectSubvalues(b, val, subvalues, elType);
+    assert(!subvalues.empty());
 
-    // If there's only one leaf and it already matches, no vector needed
-    if (leaves.size() == 1)
-      return castToType(elType, leaves[0], op);
+    // If there's only one subvalue and it already matches, no vector needed
+    if (subvalues.size() == 1)
+      return castToType(elType, subvalues[0], op);
 
-    // Check that leaves are all the same type
-    Type leafType = leaves[0].getType();
-    assert(
-        llvm::all_of(leaves, [&](Value v) { return v.getType() == leafType; }));
+    // Check that subvalues are all the same type
+    Type leafType = subvalues[0].getType();
+    assert(llvm::all_of(subvalues,
+                        [&](Value v) { return v.getType() == leafType; }));
 
-    // Create a vector of the leaves
-    auto vecType = VectorType::get(leaves.size(), leafType);
+    // Create a vector of the subvalues
+    auto vecType = VectorType::get(subvalues.size(), leafType);
     Value vec = LLVM::PoisonOp::create(b, val.getLoc(), vecType);
-    for (auto [i, leaf] : llvm::enumerate(leaves)) {
+    for (auto [i, subvalue] : llvm::enumerate(subvalues)) {
       Value idx = LLVM::ConstantOp::create(b, val.getLoc(), b.getI32Type(),
                                            b.getI32IntegerAttr(i));
-      vec = LLVM::InsertElementOp::create(b, val.getLoc(), vec, leaf, idx);
+      vec = LLVM::InsertElementOp::create(b, val.getLoc(), vec, subvalue, idx);
     }
     return castToType(elType, vec, op);
 
@@ -1151,6 +1151,14 @@ Value castToType(Type elType, Value val, Operation *op) {
     if (dl.getTypeSize(val.getType()) == dl.getTypeSize(elType)) {
       if (isa<IntegerType>(elType) || isa<FloatType>(elType))
         return LLVM::BitcastOp::create(b, val.getLoc(), elType, val);
+    }
+  } else if (auto ST = dyn_cast<LLVM::LLVMStructType>(elType)) {
+    if (ST.getBody().size() == 1) {
+      auto ud = LLVM::UndefOp::create(b, val.getLoc(), elType);
+      auto c0 = castToType(ST.getBody()[0], val, op);
+      b.setInsertionPoint(op);
+      return LLVM::InsertValueOp::create(b, val.getLoc(), ud, c0,
+                                         b.getDenseI64ArrayAttr({0}));
     }
   }
   llvm::errs() << " mismatched load type, needed: " << elType << " found "
