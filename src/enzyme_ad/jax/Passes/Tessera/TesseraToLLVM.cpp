@@ -152,8 +152,7 @@ public:
       return newAttrs;
     };
 
-    if (defineOp.getNumArguments() > 0 &&
-        defineOp.getArgAttr(0, LLVM::LLVMDialect::getStructRetAttrName())) {
+    if (defineOp.getNumArguments() > 0 && defineOp.getSretAttr()) {
       auto sretArgAttrs = defineOp.getArgAttrDict(0);
       if (callOp.getNumResults() == 0)
         return callOp.emitOpError(
@@ -185,8 +184,8 @@ public:
       for (auto [i, operand] : llvm::enumerate(callOp.getOperands())) {
         if (llvm::is_contained(argsToReplace, (int32_t)i)) {
           int64_t alignment = 0;
-          if (auto alignAttr = defineOp.getArgAttr(
-                  i + 1, LLVM::LLVMDialect::getAlignAttrName()))
+          if (auto alignAttr =
+                  defineOp.getArgAttr(i, LLVM::LLVMDialect::getAlignAttrName()))
             alignment = cast<IntegerAttr>(alignAttr).getInt();
           Value AI = LLVM::AllocaOp::create(
               rewriter, callOp.getLoc(),
