@@ -3,6 +3,27 @@
 
 include "mlir/IR/OpBase.td"
 
+def AxisTypeInterface : TypeInterface<"AxisTypeInterface"> {
+    let cppNamespace = "::mlir::enzyme::distributed";
+    let description = [{
+        Interface for axis types with a statically encoded extent.
+    }];
+
+    let methods = [
+        InterfaceMethod<
+            [{Returns the compile-time extent of this axis.}],
+            "unsigned", "extent", (ins), "",
+            [{
+                return $_type.getExtent();
+            }]>,
+        InterfaceMethod<
+            [{Returns whether two axis SSA values refer to the same underlying axis under this axis type's semantics. 
+              Axis are allowed to either be fully equivalent or disjoint: canonical axes may not partially alias.}],
+            "bool", "aliases",
+            (ins "::mlir::Value":$selfAxis, "::mlir::Value":$otherAxis)>
+    ];
+}
+
 def PhysicalCommAxisOpInterface :
         OpInterface<"PhysicalCommAxisOpInterface"> {
     let description = [{
@@ -15,27 +36,6 @@ def PhysicalCommAxisOpInterface :
             "int64_t", "getPhysicalAxisSize", (ins)>
     ];
 }
-
-def LogicalCommAxisOpInterface :
-        OpInterface<"LogicalCommAxisOpInterface"> {
-    let description = [{
-        Interface for ops that define logical communication axes. Since one
-        op may define multiple logical axes, methods are keyed by the queried
-        SSA axis value.
-    }];
-
-    let methods = [
-        InterfaceMethod<
-            [{Returns the extent/size of the queried logical axis in number of devices.}],
-            "int64_t", "getAxisSize", (ins "::mlir::enzyme::distributed::TypedOpResult<::mlir::enzyme::distributed::LogicalCommAxisType>":$axis)>,
-        InterfaceMethod<
-            [{Decomposes the queried logical axis into atomic factors and appends them to `atomicFactors`.}],
-            "void", "resolveToAtomicFactors",
-            (ins "::mlir::enzyme::distributed::TypedOpResult<::mlir::enzyme::distributed::LogicalCommAxisType>":$axis,
-                 "::llvm::SmallVectorImpl<::mlir::enzyme::distributed::TypedOpResult<::mlir::enzyme::distributed::LogicalCommAxisType>> &":$atomicFactors)>
-    ];
-}
-
 
 // Interfaces for timing analysis
 def LaneOpInterface :

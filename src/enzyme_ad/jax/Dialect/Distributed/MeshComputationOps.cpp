@@ -1,4 +1,5 @@
 #include "Dialect.h"
+#include "Utilities.h"
 
 #include "shardy/dialect/sdy/ir/utils.h"
 
@@ -133,7 +134,8 @@ const Region &MeshComputationOp::getDeviceBody(unsigned idx) const {
 }
 
 // Maps a multi-axis MPMD device coordinate to a flat index in the device-body
-// partition. Higher-index MPMD axes are treated as higher-significance.
+// partition. Lower-index (leftmost) MPMD axes are treated as higher
+// significance.
 FailureOr<unsigned> MeshComputationOp::findComputationBodyIndexByDeviceIndex(
     const DeviceIndex &deviceIndex) const {
   auto mpmdAxes = getMpmdAxes();
@@ -143,11 +145,9 @@ FailureOr<unsigned> MeshComputationOp::findComputationBodyIndexByDeviceIndex(
 
   unsigned flatIndex = 0;
   unsigned stride = 1;
-  for (size_t axisPos = 0; axisPos < mpmdAxes.size(); ++axisPos) {
+  for (size_t axisPos = mpmdAxes.size(); axisPos-- > 0;) {
     Value axis = mpmdAxes[axisPos];
-    int64_t axisSize =
-        static_cast<int64_t>(getAxisSize(TypedOpResult<LogicalCommAxisType>(
-            axis)));
+    int64_t axisSize = static_cast<int64_t>(getAxisSize(axis));
     if (axisSize <= 0) {
       return failure();
     }
@@ -285,8 +285,7 @@ LogicalResult MeshComputationOp::verify() {
   // Check device region count matches the product of MPMD axis sizes
   int64_t expectedDeviceBodyCount = 1;
   for (Value axis : getMpmdAxes()) {
-    expectedDeviceBodyCount *= static_cast<int64_t>(
-        getAxisSize(TypedOpResult<LogicalCommAxisType>(axis)));
+    expectedDeviceBodyCount *= static_cast<int64_t>(getAxisSize(axis));
   }
   if (expectedDeviceBodyCount != getNumDeviceBodies()) {
     return emitOpError()
@@ -294,14 +293,19 @@ LogicalResult MeshComputationOp::verify() {
               "the MPMD axis sizes";
   }
 
-  // Check all axis are disjoint
-  llvm::SmallVector<Value> logicalAxes;
-  logicalAxes.append(getSpmdAxes().begin(), getSpmdAxes().end());
-  logicalAxes.append(getMpmdAxes().begin(), getMpmdAxes().end());
-  if (!areLogicalAxesDisjoint(logicalAxes)) {
-    return emitOpError()
-           << "requires SPMD and MPMD axes to be disjoint, and all factors "
-              "for the same physical axis to come from one factorization op";
+  // Check there are no duplicated canonical logical axes.
+  llvm::SmallDenseSet<Value> seenAxes;
+  for (Value axis : getSpmdAxes()) {
+    if (!seenAxes.insert(axis).second) {
+      return emitOpError()
+             << "requires SPMD and MPMD axes to be pairwise disjoint";
+    }
+  }
+  for (Value axis : getMpmdAxes()) {
+    if (!seenAxes.insert(axis).second) {
+      return emitOpError()
+             << "requires SPMD and MPMD axes to be pairwise disjoint";
+    }
   }
 
   return success();

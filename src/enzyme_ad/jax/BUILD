@@ -680,6 +680,25 @@ gentbl_cc_library(
     ],
 )
 
+gentbl_cc_library(
+    name = "DistributedTypeInterfacesIncGen",
+    tbl_outs = [
+        (
+            ["--gen-type-interface-decls"],
+            "Dialect/Distributed/DistributedTypeInterfaces.h.inc",
+        ),
+        (
+            ["--gen-type-interface-defs"],
+            "Dialect/Distributed/DistributedTypeInterfaces.cpp.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Dialect/Distributed/Interfaces.td",
+    deps = [
+        ":DistributedDialectFiles",
+    ],
+)
+
 td_library(
     name = "TesseraDialectTdFiles",
     srcs = [
@@ -1248,6 +1267,7 @@ cc_library(
         ":DistributedInterfacesIncGen",
         ":DistributedPassesIncGen",
         ":DistributedOpsIncGen",
+        ":DistributedTypeInterfacesIncGen",
         ":DistributedTypesIncGen",
         ":EnzymeHLOPatternsIncGen",
         ":EnzymeXLAAttrsIncGen",
