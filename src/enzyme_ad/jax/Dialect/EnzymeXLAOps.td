@@ -823,6 +823,25 @@ def SVDFactorizationOp : EnzymeXLA_Op<"linalg.svd", [Pure]> {
   }];
 }
 
+def EigenFactorizationOp : EnzymeXLA_Op<"linalg.eigen", [Pure]> {
+  let summary = "Eigenvalue decomposition operation for symmetric/Hermitian matrices.";
+
+  let arguments = (ins
+    HLO_Tensor:$input,
+    DefaultValuedAttr<BoolAttr, "false">:$compute_left_eigenvectors
+  );
+
+  let results = (outs
+    HLO_Tensor:$eigenvalues,
+    HLO_Tensor:$eigenvectors,
+    HLO_Tensor:$info
+  );
+
+  let assemblyFormat = [{
+    $input attr-dict `:` functional-type($input, results)
+  }];
+}
+
 def GeqrfOp : EnzymeXLA_Op<"lapack.geqrf", [Pure]> {
   let summary = "QR factorization operation (low-level op)";
 
@@ -1062,6 +1081,26 @@ def PotrfOp : EnzymeXLA_Op<"lapack.potrf", [Pure]> {
 
   let results = (outs
     HLO_Tensor:$output,
+    HLO_Tensor:$info
+  );
+
+  let assemblyFormat = [{
+    $input attr-dict `:` functional-type(operands, results)
+  }];
+}
+
+def HeevOp : EnzymeXLA_Op<"lapack.heev", [Pure]> {
+  let summary = "Eigendecomposition of a symmetric/Hermitian matrix";
+
+  let arguments = (ins
+    HLO_Tensor:$input,
+    EnzymeXLA_LapackUploAttr:$uplo,
+    DefaultValuedAttr<BoolAttr, "false">:$compute_eigenvectors
+  );
+
+  let results = (outs
+    HLO_Tensor:$eigenvalues,
+    Optional<HLO_Tensor>:$eigenvectors,
     HLO_Tensor:$info
   );
 
