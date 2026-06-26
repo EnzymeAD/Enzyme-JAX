@@ -391,8 +391,15 @@ void mlir::enzyme::registerEnzymeXLADialectAutoDiffInterface(
         ViewCastOpInterfaceReverse<Memref2PointerOp>>(*context);
 
     // linalg diff interfaces
-    QRFactorizationOp::attachInterface<QRFactorizationOpFwdDerivative>(
-        *context);
+    // NOTE requires C++ implementation because TableGen
+    // `EnzymeXLADerivative`...
+    // - ...doesn't support fwd diff rules for multiple results
+    // - ...automatic implementation of fotward mode with rev diff rule errors
+    // TODO forward diff errors with on `ActivityAnalysis::isConstantValue`:
+    // `Assertion `0 && "must've put arguments in constant/nonconstant"'
+    // failed.`
+    // QRFactorizationOp::attachInterface<QRFactorizationOpFwdDerivative>(
+    //     *context);
     QRFactorizationOp::attachInterface<QRFactorizationOpRevDerivative>(
         *context);
 
