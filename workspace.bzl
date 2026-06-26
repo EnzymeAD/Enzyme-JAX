@@ -16,6 +16,10 @@ HEDRON_COMPILE_COMMANDS_SHA256 = ""
 
 XLA_PATCHES = [
     """
+    # Use clang not msvc
+    sed -i.bak0 "s|/std:c++17|-std=c++17|g" third_party/mkl_dnn/mkldnn_v1.BUILD
+    """,
+    """
     # Fix support for rocm ygg build
     sed -i.bak0 "s|clang/18/include|clang/22/include|g" third_party/gpus/rocm_configure.bzl
     """,
