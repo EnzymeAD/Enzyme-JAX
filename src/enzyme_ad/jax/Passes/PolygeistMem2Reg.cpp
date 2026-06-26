@@ -1168,6 +1168,30 @@ Value castToType(Type elType, Value val, Operation *op) {
   llvm_unreachable("mismatched type");
 }
 
+// Check if call captures alloca instance by checking for llvm.nocapture
+// attribute
+bool isCallNonCapturing(CallOpInterface callOp, Value val) {
+  auto calleeAttr = dyn_cast<SymbolRefAttr>(callOp.getCallableForCallee());
+  if (calleeAttr) {
+    auto callee = SymbolTable::lookupSymbolIn(
+        callOp->getParentOfType<ModuleOp>(), calleeAttr);
+    auto fn = dyn_cast_or_null<FunctionOpInterface>(callee);
+    if (!fn)
+      return false;
+
+    // Find operand that matches value of alloca we are trying to promote and
+    // check for attributes
+    auto operands = callOp.getArgOperands();
+    for (int i = 0; i < operands.size(); i++) {
+      if (operands[i] == val) {
+        if (fn.getArgAttr(i, LLVM::LLVMDialect::getNoCaptureAttrName()))
+          return true;
+      }
+    }
+  }
+  return false;
+}
+
 // fopen, fclose
 std::set<std::string> NoWriteFunctions = {"exit", "__errno_location"};
 // This is a straightforward implementation not optimized for speed. Optimize
@@ -1337,22 +1361,16 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
           AliasingStoreOperations.insert(storeOp);
         continue;
       }
-      if (auto callOp = dyn_cast<func::CallOp>(user)) {
-        if (callOp.getCallee() != "free") {
-          LLVM_DEBUG(llvm::dbgs() << "Aliasing Store: " << callOp << "\n");
-          AliasingStoreOperations.insert(callOp);
-          if (!getNonCapturingFunctions().count(callOp.getCallee().str()))
-            captured = true;
-        }
-        continue;
-      }
-      if (auto callOp = dyn_cast<mlir::LLVM::CallOp>(user)) {
-        if (!callOp.getCallee() || *callOp.getCallee() != "free") {
-          LLVM_DEBUG(llvm::dbgs() << "Aliasing Store: " << callOp << "\n");
-          AliasingStoreOperations.insert(callOp);
-          if (!callOp.getCallee() ||
-              !getNonCapturingFunctions().count(callOp.getCallee()->str()))
-            captured = true;
+      if (auto callOp = dyn_cast<CallOpInterface>(user)) {
+        auto callee = dyn_cast<SymbolRefAttr>(callOp.getCallableForCallee());
+        if (!callee || callee.getLeafReference() != "free") {
+          if (!isCallNonCapturing(callOp, val)) {
+            LLVM_DEBUG(llvm::dbgs() << "Aliasing Store: " << callOp << "\n");
+            AliasingStoreOperations.insert(callOp.getOperation());
+            if (!callee || !getNonCapturingFunctions().count(
+                               callee.getLeafReference().str()))
+              captured = true;
+          }
         }
         continue;
       }
@@ -1931,12 +1949,12 @@ bool isPromotable(mlir::Value AI) {
         continue;
       } else if (isa<memref::DeallocOp>(U)) {
         continue;
-      } else if (auto callOp = dyn_cast<func::CallOp>(U)) {
-        if (getNonCapturingFunctions().count(callOp.getCallee().str()))
-          continue;
-      } else if (auto callOp = dyn_cast<LLVM::CallOp>(U)) {
-        if (auto callee = callOp.getCallee())
-          if (getNonCapturingFunctions().count(callee->str()))
+      } else if (auto callOp = dyn_cast<CallOpInterface>(U)) {
+        if (StringAttr callee =
+                dyn_cast<SymbolRefAttr>(callOp.getCallableForCallee())
+                    .getLeafReference())
+          if (isCallNonCapturing(callOp, val) ||
+              getNonCapturingFunctions().count(callee.str()))
             continue;
       } else if (auto CO = dyn_cast<memref::CastOp>(U)) {
         list.push_back(CO);

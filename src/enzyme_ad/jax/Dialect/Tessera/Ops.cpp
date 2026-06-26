@@ -133,6 +133,35 @@ DefineOp DefineOp::clone() {
   return clone(mapper);
 }
 
+Attribute DefineOp::getSretAttr() {
+  if (getFunctionType().getNumInputs() == 0)
+    return nullptr;
+  if (auto argAttrs = getAllArgAttrs())
+    return cast<DictionaryAttr>(argAttrs[0])
+        .get(LLVM::LLVMDialect::getStructRetAttrName());
+  return nullptr;
+}
+
+// Override getArgAttr to map call-side indices to define-side indices.
+// tessera::DefineOp has one extra argument at index 0 for sret, which
+// is not present in tessera::CallOp operands. This allows generic
+// FunctionOpInterface callers to use call-side indices directly.
+Attribute DefineOp::getArgAttr(unsigned index, StringAttr name) {
+  int offset = getSretAttr() != nullptr ? 1 : 0;
+  if (auto dict = mlir::function_interface_impl::getArgAttrDict(
+          cast<FunctionOpInterface>(getOperation()), index + offset))
+    return dict.get(name);
+  return nullptr;
+}
+
+Attribute DefineOp::getArgAttr(unsigned index, StringRef name) {
+  int offset = getSretAttr() != nullptr ? 1 : 0;
+  if (auto dict = mlir::function_interface_impl::getArgAttrDict(
+          cast<FunctionOpInterface>(getOperation()), index + offset))
+    return dict.get(name);
+  return nullptr;
+}
+
 //===----------------------------------------------------------------------===//
 // CallOp
 //===----------------------------------------------------------------------===//
@@ -151,8 +180,7 @@ LogicalResult CallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
 
   // Verify that the operand and result types match the callee,
   // unless callee has attribute to indicate struct return.
-  bool has_sret = fn.getNumArguments() > 0 &&
-                  fn.getArgAttr(0, LLVM::LLVMDialect::getStructRetAttrName());
+  bool has_sret = fn.getSretAttr() != nullptr;
 
   // If tessera.define has sret attribute,
   // tessera.call operand count = tessera.define input count - 1
@@ -167,17 +195,16 @@ LogicalResult CallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   // Allow type mismatch only for byref pointer args that have been converted
   // to values
   int argOffset = has_sret ? 1 : 0;
-  for (unsigned i = argOffset, e = fnType.getNumInputs(); i != e; ++i) {
-    int argIdx = i - argOffset;
-    if (getOperand(argIdx).getType() == fnType.getInput(i))
+  for (unsigned i = 0, e = getNumOperands(); i != e; ++i) {
+    if (getOperand(i).getType() == fnType.getInput(i + argOffset))
       continue;
-    if (isa<LLVM::LLVMPointerType>(fnType.getInput(i)) &&
+    if (isa<LLVM::LLVMPointerType>(fnType.getInput(i + argOffset)) &&
         (fn.getArgAttr(i, LLVM::LLVMDialect::getByValAttrName()) ||
-         byRefArgs[argIdx]))
+         byRefArgs[i]))
       continue;
     return emitOpError("operand type mismatch: expected operand type ")
-           << fnType.getInput(i) << ", but provided "
-           << getOperand(argIdx).getType() << " for operand number " << argIdx;
+           << fnType.getInput(i) << ", but provided " << getOperand(i).getType()
+           << " for operand number " << i;
   }
 
   // If tessera.define has sret attribute,
@@ -188,22 +215,21 @@ LogicalResult CallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
     return emitOpError("incorrect number of results for callee");
 
   if (has_sret) {
-    auto sretType =
-        cast<TypeAttr>(
-            fn.getArgAttr(0, LLVM::LLVMDialect::getStructRetAttrName()))
-            .getValue();
+    auto sret = fn.getSretAttr();
+    auto sretType = cast<TypeAttr>(sret).getValue();
     if (getResult(0).getType() != sretType)
       return emitOpError("result type mismatch: expected ")
              << sretType << " but got " << getResult(0).getType();
-  } else {
-    for (unsigned i = 0, e = fnType.getNumResults(); i != e; ++i)
-      if (getResult(i).getType() != fnType.getResult(i)) {
-        auto diag = emitOpError("result type mismatch at index ") << i;
-        diag.attachNote() << "      op result types: " << getResultTypes();
-        diag.attachNote() << "function result types: " << fnType.getResults();
-        return diag;
-      }
   }
+
+  int offset = has_sret ? 1 : 0;
+  for (unsigned i = 0, e = fnType.getNumResults(); i != e; ++i)
+    if (getResult(i + offset).getType() != fnType.getResult(i)) {
+      auto diag = emitOpError("result type mismatch at index ") << i + offset;
+      diag.attachNote() << "      op result types: " << getResultTypes();
+      diag.attachNote() << "function result types: " << fnType.getResults();
+      return diag;
+    }
 
   return success();
 }
