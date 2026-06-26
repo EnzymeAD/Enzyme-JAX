@@ -31,35 +31,6 @@ def GetPhysicalAxisOp : DistributedOp<"GetPhysicalAxis", [PureDistributedMetadat
     let hasVerifier = 1;
 }
 
-def GenericAxisOp : DistributedOp<"GenericAxis", [PureDistributedMetadata]> {
-    let description = [{
-        Produces a generic SSA axis value of the requested axis type.
-     }];
-    let results = (outs AnyType:$axis);
-    let assemblyFormat = "attr-dict `:` type($axis)";
-    let hasVerifier = 1;
-}
-
-def AxisFactorOp : DistributedOp<"AxisFactor", [
-    PureDistributedMetadata,
-    DeclareOpInterfaceMethods<InferTypeOpInterface>
-]> {
-    let description = [{
-       Factors an axis value into multiple axis factors according to a static
-       array of extents.
-       Leftmost factors are most major. For factor i:
-         stride_i = product(extents_j for j > i)
-       Factors must multiply to the extent of the source axis.
-     }];
-    let arguments = (ins
-        AnyType:$axis,
-        DenseI32ArrayAttr:$factor_extents
-    );
-    let results = (outs Variadic<AxisFactorType>:$axis_factors);
-    let assemblyFormat = "$axis $factor_extents attr-dict `:` type($axis) `->` type($axis_factors)";
-    let hasVerifier = 1;
-}
-
 def MeshComputationOp : DistributedOp<"MeshComputation", [
     AttrSizedOperandSegments,
     DeclareOpInterfaceMethods<LaneOpInterface>
