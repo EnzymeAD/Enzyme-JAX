@@ -12,11 +12,11 @@ func.func @multi_rotate_valid(%arg0: tensor<20x24x80xf64>) -> tensor<20x24x80xf6
 
 // -----
 
-func.func @multi_rotate_negative_left_amount(%arg0: tensor<20x24x80xf64>) -> tensor<20x24x80xf64> {
-    // expected-error @+1 {{left_amount must be non-negative, got -1}}
+func.func @multi_rotate_negative_left_amount_excess(%arg0: tensor<20x24x80xf64>) -> tensor<20x24x80xf64> {
+    // expected-error @+1 {{if left_amount is negative, its absolute value must be less than or equal to right_amount, got -2 (left) and 1 (right)}}
     %0 = "enzymexla.multi_rotate"(%arg0) <{
         dimension = 0 : i32,
-        left_amount = -1 : i32,
+        left_amount = -2 : i32,
         right_amount = 1 : i32
     }> : (tensor<20x24x80xf64>) -> tensor<20x24x80xf64>
     return %0 : tensor<20x24x80xf64>
@@ -25,7 +25,7 @@ func.func @multi_rotate_negative_left_amount(%arg0: tensor<20x24x80xf64>) -> ten
 // -----
 
 func.func @multi_rotate_negative_right_amount(%arg0: tensor<20x24x80xf64>) -> tensor<20x24x80xf64> {
-    // expected-error @+1 {{right_amount must be non-negative, got -2}}
+    // expected-error @+1 {{if right_amount is negative, its absolute value must be less than or equal to left_amount, got 1 (left) and -2 (right)}}
     %0, %1 = "enzymexla.multi_rotate"(%arg0) <{
         dimension = 0 : i32,
         left_amount = 1 : i32,
