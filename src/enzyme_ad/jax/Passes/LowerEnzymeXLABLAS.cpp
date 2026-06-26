@@ -475,7 +475,8 @@ struct SymmOpLowering : public OpRewritePattern<enzymexla::SymmOp> {
         getSHLOLayout(rewriter, operandRanks, areColMajor, rank),
         /*result_layouts*/
         getSHLOLayout(rewriter, {rank}, SmallVector<bool>(rank, false), rank),
-        /*output_operand_aliases*/ aliases);
+        /*output_operand_aliases*/ aliases,
+        /*result_tilings*/nullptr);
 
     Value result = customCall.getResult(0);
     rewriter.replaceAllUsesWith(op.getResult(), result);
@@ -883,7 +884,8 @@ struct SyrkOpLowering : public OpRewritePattern<enzymexla::SyrkOp> {
         getSHLOLayout(rewriter, operandRanks, areColMajor, rank),
         /*result_layouts*/
         getSHLOLayout(rewriter, {rank}, SmallVector<bool>(rank, false), rank),
-        /*output_operand_aliases*/ aliases);
+        /*output_operand_aliases*/ aliases,
+        /*result_tilings*/nullptr);
 
     Value result = customCall.getResult(0);
     switch (needsCopy) {
