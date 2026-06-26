@@ -16,6 +16,10 @@ HEDRON_COMPILE_COMMANDS_SHA256 = ""
 
 XLA_PATCHES = [
     """
+    # Fix support for rocm ygg build
+    sed -i.bak0 "s|clang/18/include|clang/22/include|g" third_party/gpus/rocm_configure.bzl
+    """,
+    """
     # Fix support for musl stacktrace issue where execinfo.h is otherwise included
     sed -i.bak0 "s/defined(__clang__) || defined(__GNUC__)/defined(__GLIBC__)/g" xla/tsl/platform/default/stacktrace.h
     """,
