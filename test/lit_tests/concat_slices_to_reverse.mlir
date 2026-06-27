@@ -38,3 +38,39 @@ func.func @no_fold_wrong_order(%arg0: tensor<4xf32>) -> tensor<4xf32> {
   return %4 : tensor<4xf32>
   // CHECK-NOT: stablehlo.reverse
 }
+
+// Negative: one operand is not a slice → must not fold
+// CHECK-LABEL: func.func @no_fold_not_all_slices
+func.func @no_fold_not_all_slices(%arg0: tensor<4xf32>, %arg1: tensor<1xf32>) -> tensor<4xf32> {
+  %0 = stablehlo.slice %arg0 [3:4] : (tensor<4xf32>) -> tensor<1xf32>
+  %1 = stablehlo.slice %arg0 [2:3] : (tensor<4xf32>) -> tensor<1xf32>
+  %2 = stablehlo.slice %arg0 [1:2] : (tensor<4xf32>) -> tensor<1xf32>
+  // fourth operand is a plain argument, not a slice
+  %3 = stablehlo.concatenate %0, %1, %2, %arg1, dim = 0 : (tensor<1xf32>, tensor<1xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<4xf32>
+  return %3 : tensor<4xf32>
+  // CHECK-NOT: stablehlo.reverse
+}
+
+// Negative: slices come from different source tensors → must not fold
+// CHECK-LABEL: func.func @no_fold_different_sources
+func.func @no_fold_different_sources(%arg0: tensor<4xf32>, %arg1: tensor<4xf32>) -> tensor<4xf32> {
+  %0 = stablehlo.slice %arg0 [3:4] : (tensor<4xf32>) -> tensor<1xf32>
+  %1 = stablehlo.slice %arg0 [2:3] : (tensor<4xf32>) -> tensor<1xf32>
+  %2 = stablehlo.slice %arg1 [1:2] : (tensor<4xf32>) -> tensor<1xf32>
+  %3 = stablehlo.slice %arg0 [0:1] : (tensor<4xf32>) -> tensor<1xf32>
+  %4 = stablehlo.concatenate %0, %1, %2, %3, dim = 0 : (tensor<1xf32>, tensor<1xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<4xf32>
+  return %4 : tensor<4xf32>
+  // CHECK-NOT: stablehlo.reverse
+}
+
+// Negative: fewer slices than source extent (N=3, extent=4) → must not fold
+// CHECK-LABEL: func.func @no_fold_incomplete_coverage
+func.func @no_fold_incomplete_coverage(%arg0: tensor<4xf32>) -> tensor<3xf32> {
+  %0 = stablehlo.slice %arg0 [3:4] : (tensor<4xf32>) -> tensor<1xf32>
+  %1 = stablehlo.slice %arg0 [2:3] : (tensor<4xf32>) -> tensor<1xf32>
+  %2 = stablehlo.slice %arg0 [1:2] : (tensor<4xf32>) -> tensor<1xf32>
+  // [0:1] is missing; N=3 but source extent=4
+  %3 = stablehlo.concatenate %0, %1, %2, dim = 0 : (tensor<1xf32>, tensor<1xf32>, tensor<1xf32>) -> tensor<3xf32>
+  return %3 : tensor<3xf32>
+  // CHECK-NOT: stablehlo.reverse
+}
