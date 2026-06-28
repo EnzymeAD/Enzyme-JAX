@@ -25,6 +25,13 @@ def AxisFactorType : AxisDialectType<"AxisFactor", "axis_factor"> {
   let assemblyFormat = "`<` $axisType `,` $extent `,` $stride `>`";
 }
 
+// Contiguous linear segment of a canonical axis with static extent and offset.
+def AxisSegmentType : AxisDialectType<"AxisSegment", "axis_segment"> {
+  let parameters =
+      (ins "::mlir::Type":$axisType, "unsigned":$extent, "unsigned":$offset);
+  let assemblyFormat = "`<` $axisType `,` $extent `,` $offset `>`";
+}
+
 // Virtual axis reconstructed from a list of factors.
 def FactorGroupType : AxisDialectType<"FactorGroup", "factor_group"> {
   let parameters = (ins "unsigned":$extent);
