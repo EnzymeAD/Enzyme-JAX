@@ -9,6 +9,19 @@ include "Dialect.td"
 include "Interfaces.td"
 include "Types.td"
 
+def AxisGetAxisOp : AxisOp<"getaxis", [Pure, DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
+  let description = [{
+    Materializes a canonical ShapeAxis value for one ranked, static shape index.
+  }];
+  let arguments = (ins
+    TypeAttr:$shape_type,
+    I32Attr:$axis_index
+  );
+  let results = (outs ShapeAxisType:$axis);
+  let assemblyFormat = "$shape_type $axis_index attr-dict";
+  let hasVerifier = 1;
+}
+
 def AxisFactorOp : AxisOp<"factor", [Pure, DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
   let description = [{
     Factors one canonical axis into leftmost-major factors with static extents.
@@ -18,7 +31,7 @@ def AxisFactorOp : AxisOp<"factor", [Pure, DeclareOpInterfaceMethods<InferTypeOp
     DenseI32ArrayAttr:$factor_extents
   );
   let results = (outs Variadic<AxisFactorType>:$axis_factors);
-  let assemblyFormat = "$axis $factor_extents attr-dict `:` type($axis) `->` type($axis_factors)";
+  let assemblyFormat = "$axis $factor_extents attr-dict `:` type($axis)";
   let hasVerifier = 1;
 }
 
@@ -28,7 +41,7 @@ def AxisGroupOp : AxisOp<"group", [Pure, DeclareOpInterfaceMethods<InferTypeOpIn
   }];
   let arguments = (ins Variadic<AxisFactorType>:$factors);
   let results = (outs FactorGroupType:$group);
-  let assemblyFormat = "$factors attr-dict `:` type($factors) `->` type($group)";
+  let assemblyFormat = "$factors attr-dict `:` type($factors)";
   let hasVerifier = 1;
 }
 
