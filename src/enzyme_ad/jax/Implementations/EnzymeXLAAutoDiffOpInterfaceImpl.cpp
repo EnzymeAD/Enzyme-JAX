@@ -321,6 +321,154 @@ struct GPUWrapperOpInterfaceReverse
                           MGradientUtilsReverse *gutils) const {}
 };
 
+struct QRFactorizationOpFwdDerivative
+    : public AutoDiffOpInterface::ExternalModel<QRFactorizationOpFwdDerivative,
+                                                enzymexla::QRFactorizationOp> {
+  LogicalResult createForwardModeTangent(Operation *orig, OpBuilder &builder,
+                                         MGradientUtils *gutils) const {
+    auto op = cast<enzymexla::QRFactorizationOp>(orig);
+    gutils->eraseIfUnused(op);
+    if (gutils->isConstantInstruction(op))
+      return success();
+
+    if (gutils->isConstantValue(op.getInput())) {
+      gutils->setDiffe(op.getQ(), nullptr, builder);
+      gutils->setDiffe(op.getR(), nullptr, builder);
+      return success();
+    }
+
+    auto A = op.getInput();
+    auto dA = gutils->invertPointerM(op.getInput(), builder);
+    auto Q = gutils->getNewFromOriginal(op.getQ());
+    auto R = gutils->getNewFromOriginal(op.getR());
+
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointAfter(op);
+
+    auto type_a = cast<RankedTensorType>(A.getType());
+    auto rank = type_a.getRank();
+
+    // B = dA * R^-1 = dA / R
+    auto B = enzymexla::TrsmOp::create(builder, op.getLoc(), R, dA,
+                                       enzymexla::LapackSide::right,
+                                       enzymexla::LapackUplo::U);
+
+    // E = Q^dag * B
+    SmallVector<int64_t> perm;
+    for (int64_t i = 0; i < rank - 2; i++)
+      perm.push_back(i);
+    perm.push_back(rank - 1);
+    perm.push_back(rank - 2);
+
+    auto Qconj = chlo::ConjOp::create(builder, op.getLoc(), Q);
+    auto Qdag =
+        stablehlo::TransposeOp::create(builder, op.getLoc(), Qconj, perm);
+
+    auto E = enzymexla::GemmOp::create(builder, op.getLoc(), Qdag, B);
+
+    // Psi = (U .* E) + (L^hat .* E)^dag = U .* (E + E^dag)
+    // NOTE we avoid doing the lower-to-upper triangular part copying by using
+    // `TrmmOp` instead of `GemmOp` on its uses
+    auto Econj = chlo::ConjOp::create(builder, op.getLoc(), E);
+    auto Edag =
+        stablehlo::TransposeOp::create(builder, op.getLoc(), Econj, perm);
+    auto Psi = stablehlo::AddOp::create(builder, op.getLoc(), E, Edag);
+
+    // dQ = B - Q * Psi
+    auto QxPsi = enzymexla::TrmmOp::create(builder, op.getLoc(), Psi, Q,
+                                           enzymexla::LapackSide::right,
+                                           enzymexla::LapackUplo::U);
+    auto dQ = stablehlo::SubtractOp::create(builder, op.getLoc(), B, QxPsi);
+
+    // dR = Psi * R
+    // NOTE we use TrmmOp on Psi to avoid issues of not lower triangular part,
+    // as R is truly upper triangular
+    auto dR = enzymexla::TrmmOp::create(builder, op.getLoc(), Psi, R,
+                                        enzymexla::LapackSide::left,
+                                        enzymexla::LapackUplo::U);
+
+    gutils->setDiffe(op.getQ(), dQ.getResult(), builder);
+    gutils->setDiffe(op.getR(), dR.getResult(), builder);
+
+    return success();
+  }
+};
+
+struct QRFactorizationOpRevDerivative
+    : public ReverseAutoDiffOpInterface::ExternalModel<
+          QRFactorizationOpRevDerivative, QRFactorizationOp> {
+  LogicalResult createReverseModeAdjoint(Operation *orig, OpBuilder &builder,
+                                         MGradientUtilsReverse *gutils,
+                                         SmallVector<Value> caches) const {
+    auto op = cast<QRFactorizationOp>(orig);
+    auto Q = gutils->getNewFromOriginal(op.getQ());
+    auto R = gutils->getNewFromOriginal(op.getR());
+    auto Qbar = gutils->diffe(op.getResult(0), builder);
+    auto Rbar = gutils->diffe(op.getResult(1), builder);
+
+    // create M = R̄ / R^dag - Q̄^dag * Q
+    auto RbarDivR = enzymexla::TrsmOp::create(
+        builder, op.getLoc(), R, Rbar,
+        /*side=*/enzymexla::LapackSide::right,
+        /*uplo=*/enzymexla::LapackUplo::U,
+        /*transa=*/enzymexla::LapackTranspose::adjoint,
+        /*unit_diagonal=*/false);
+
+    auto QbarDagMulQ = enzymexla::GemmOp::create(
+        builder, op.getLoc(), Qbar, Q, enzymexla::LapackTranspose::adjoint);
+
+    auto M = stablehlo::SubtractOp::create(builder, op.getLoc(), RbarDivR,
+                                           QbarDagMulQ);
+
+    // X = Q̄ + Q * copyltu(M)
+    // do not copy triangular lower to upper part... just do symm
+    // TODO check whether this is numerically correct or we need to copy
+    auto QMulM =
+        enzymexla::SymmOp::create(builder, op.getLoc(), M, Q,
+                                  /*side=*/enzymexla::LapackSide::right,
+                                  /*uplo=*/enzymexla::LapackUplo::L);
+
+    auto X = stablehlo::AddOp::create(builder, op.getLoc(), Qbar, QMulM);
+
+    // Ā = X / R^dag
+    auto Abar = enzymexla::TrsmOp::create(
+        builder, op.getLoc(), R, X,
+        /*side=*/enzymexla::LapackSide::right,
+        /*uplo=*/enzymexla::LapackUplo::U,
+        /*transa=*/enzymexla::LapackTranspose::adjoint,
+        /*unit_diagonal=*/false);
+
+    gutils->addToDiffe(op.getOperand(), Abar, builder);
+    return success();
+  }
+
+  SmallVector<Value> cacheValues(Operation *op,
+                                 MGradientUtilsReverse *gutils) const {
+    if (gutils->isConstantInstruction(op) ||
+        gutils->isConstantValue(op->getResult(0)))
+      return {};
+    auto neededArgs = cachedArguments(op, gutils);
+    SmallVector<Value> toret;
+    OpBuilder builder(gutils->getNewFromOriginal(op));
+    for (auto en : llvm::enumerate(neededArgs))
+      if (en.value()) {
+        Value cache = gutils->initAndPushCache(
+            gutils->getNewFromOriginal(op->getOperand(en.index())), builder);
+        toret.push_back(cache);
+      }
+    return toret;
+  }
+
+  SmallVector<bool> cachedArguments(Operation *op,
+                                    MGradientUtilsReverse *gutils) const {
+    SmallVector<bool> toret(op->getNumOperands(), false);
+    return toret;
+  }
+
+  void createShadowValues(Operation *op, OpBuilder &builder,
+                          MGradientUtilsReverse *gutils) const {}
+};
+
 } // namespace
 
 void mlir::enzyme::registerEnzymeXLADialectAutoDiffInterface(
@@ -334,6 +482,19 @@ void mlir::enzyme::registerEnzymeXLADialectAutoDiffInterface(
         ViewCastOpInterfaceReverse<Pointer2MemrefOp>>(*context);
     Memref2PointerOp::attachInterface<
         ViewCastOpInterfaceReverse<Memref2PointerOp>>(*context);
+
+    // linalg diff interfaces
+    // NOTE requires C++ implementation because TableGen
+    // `EnzymeXLADerivative`...
+    // - ...doesn't support fwd diff rules for multiple results
+    // - ...automatic implementation of fotward mode with rev diff rule errors
+    // TODO forward diff errors with on `ActivityAnalysis::isConstantValue`:
+    // `Assertion `0 && "must've put arguments in constant/nonconstant"'
+    // failed.`
+    // QRFactorizationOp::attachInterface<QRFactorizationOpFwdDerivative>(
+    //     *context);
+    QRFactorizationOp::attachInterface<QRFactorizationOpRevDerivative>(
+        *context);
 
     // Register batching interfaces
     JITCallOp::attachInterface<SHLOGenericBatchOpInterface<JITCallOp>>(
