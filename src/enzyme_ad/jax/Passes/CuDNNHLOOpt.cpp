@@ -121,7 +121,7 @@ struct DotGeneralElementwiseToCuDNNFusion
         /*operand_layouts=*/nullptr,
         /*result_layouts=*/nullptr,
         /*output_operand_aliases=*/nullptr,
-        /*result_tilings*/nullptr);
+        /*result_tilings*/ nullptr);
 
     auto funcTy = rewriter.getFunctionType(
         {dotGeneralLhsTy, dotGeneralRhsTy, elemOtherTy}, {resultTy});

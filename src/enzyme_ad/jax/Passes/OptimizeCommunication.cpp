@@ -2181,7 +2181,7 @@ struct RotateSpmdOptimize : public OpRewritePattern<enzymexla::RotateOp> {
           /*operand_layouts=*/nullptr,
           /*result_layouts=*/nullptr,
           /*output_operand_aliases=*/nullptr,
-          /*result_tilings*/nullptr);
+          /*result_tilings*/ nullptr);
 
       SmallVector<sdy::TensorShardingAttr> newShardings(rotateAmount + 1,
                                                         rotateSharding);
@@ -2225,7 +2225,7 @@ struct RotateSpmdOptimize : public OpRewritePattern<enzymexla::RotateOp> {
           /*operand_layouts=*/nullptr,
           /*result_layouts=*/nullptr,
           /*output_operand_aliases=*/nullptr,
-          /*result_tilings*/nullptr);
+          /*result_tilings*/ nullptr);
 
       SmallVector<sdy::TensorShardingAttr> newShardings(right_amount + 1,
                                                         rotateSharding);
@@ -2265,7 +2265,7 @@ struct RotateSpmdOptimize : public OpRewritePattern<enzymexla::RotateOp> {
         /*operand_layouts=*/nullptr,
         /*result_layouts=*/nullptr,
         /*output_operand_aliases=*/nullptr,
-        /*result_tilings*/nullptr);
+        /*result_tilings*/ nullptr);
     mlir::sdy::setShardings(ccall, rotateSharding);
     return success();
   }
@@ -2321,7 +2321,7 @@ struct MultiRotateCustomCallOptimize
         /*operand_layouts=*/nullptr,
         /*result_layouts=*/nullptr,
         /*output_operand_aliases=*/nullptr,
-        /*result_tilings*/nullptr);
+        /*result_tilings*/ nullptr);
     mlir::sdy::setShardings(ccall, TensorShardingPerValueAttr::get(
                                        rewriter.getContext(), opShardings));
     return success();
@@ -2382,7 +2382,7 @@ struct MultiPadCustomCallOptimize
         /*operand_layouts=*/nullptr,
         /*result_layouts=*/nullptr,
         /*output_operand_aliases=*/nullptr,
-        /*result_tilings*/nullptr);
+        /*result_tilings*/ nullptr);
 
     mlir::sdy::setShardings(ccall, TensorShardingPerValueAttr::get(
                                        rewriter.getContext(), opShardings));
@@ -2595,7 +2595,7 @@ struct MultiSliceCustomCallOptimize
         /*operand_layouts=*/nullptr,
         /*result_layouts=*/nullptr,
         /*output_operand_aliases=*/nullptr,
-        /*result_tilings*/nullptr);
+        /*result_tilings*/ nullptr);
     mlir::sdy::setShardings(ccall, TensorShardingPerValueAttr::get(
                                        rewriter.getContext(), opShardings));
     return success();
@@ -2642,7 +2642,7 @@ struct WrapCustomCallOptimize : public OpRewritePattern<enzymexla::WrapOp> {
         /*operand_layouts=*/nullptr,
         /*result_layouts=*/nullptr,
         /*output_operand_aliases=*/nullptr,
-        /*result_tilings*/nullptr);
+        /*result_tilings*/ nullptr);
     mlir::sdy::setSharding(ccall.getResult(0), rotateSharding);
     return success();
   }
