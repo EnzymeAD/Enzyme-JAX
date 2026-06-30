@@ -5,7 +5,7 @@ test-gb-25:
   extends: .baremetal-runner-beverin-mi300
   variables:
     JULIA: /users/lraess/julia_amd/juliaup/julia-1.11.9+0.x64.linux.gnu/bin/julia
-    UENV: b2550889de318ab5
+    UENV: 10d4b63b15c81616
     JULIA_PKG_SERVER_REGISTRY_PREFERENCE: eager
     JULIA_MAX_NUM_PRECOMPILE_FILES: 3
     # Pinned configuration — expand into a matrix once the single case passes
