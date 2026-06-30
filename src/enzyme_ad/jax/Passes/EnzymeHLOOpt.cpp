@@ -7279,11 +7279,40 @@ struct BroadcastPad final
 // Given a value and index idx, determine whether all values are the same along
 // idx. If so, return said value
 std::optional<Value> is_same_in_axis(OpBuilder &rewriter, ShapedType outTy,
-                                     Value v, size_t idx) {
+                                     Value v, size_t idx,
+                                     int64_t indexVectorDim) {
   mlir::SplatElementsAttr splat;
   if (matchPattern(v, m_Constant(&splat))) {
     return stablehlo::ConstantOp::create(rewriter, v.getLoc(), outTy,
                                          splat.resizeSplat(outTy));
+  }
+
+  if (auto iota = v.getDefiningOp<stablehlo::IotaOp>()) {
+    if (iota.getIotaDimension() == indexVectorDim) {
+      return stablehlo::ConstantOp::create(
+          rewriter, v.getLoc(), outTy,
+          cast<ElementsAttr>(makeAttr(outTy, (int64_t)idx)));
+    }
+  }
+
+  return {};
+}
+
+std::optional<std::pair<Value, int64_t>>
+is_iota_in_axis(OpBuilder &rewriter, ShapedType outTy, Value v, size_t idx,
+                int64_t indexVectorDim) {
+  auto iota = detectIotaLikeTensor(v);
+  if (iota && iota->dimension != indexVectorDim) {
+    if (isOneAttr(iota->scale)) {
+      auto startVal = getDoubleFromAttr(iota->start);
+      if (startVal) {
+        return std::make_pair(
+            stablehlo::ConstantOp::create(
+                rewriter, v.getLoc(), outTy,
+                cast<ElementsAttr>(makeAttr(outTy, (int64_t)*startVal))),
+            iota->dimension);
+      }
+    }
   }
 
   return {};
@@ -7296,59 +7325,81 @@ struct ScatterToDynamicUpdateSlice final
 
   LogicalResult matchAndRewriteImpl(stablehlo::ScatterOp op,
                                     PatternRewriter &rewriter) const {
-    if (op.getInputs().size() != 1) {
+    Block &body = op.getUpdateComputation().front();
+    if (body.getOperations().size() != 1)
       return failure();
     }
 
-    CheckCommonScatterOp scatterCheck(op);
-    if (scatterCheck.kind != ScatterOpKind::Setindex &&
-        scatterCheck.kind != ScatterOpKind::ConstantSetindex) {
+    Operation &innerOp = body.front();
+    if (!isa<stablehlo::ReturnOp>(&innerOp)) {
       return failure();
+    }
+    if (innerOp.getNumOperands() != 1) {
+      return failure();
+    }
+
+    if (op.getInputs().size() != 1)
+      return failure();
+
+    // For us to proceed, either we are returning the last block argument or we
+    // are returning a constant
+    Value update = nullptr;
+    DenseElementsAttr splatAttr;
+
+    auto retop = dyn_cast<BlockArgument>(innerOp.getOperand(0));
+    if (retop) {
+      if (retop.getOwner() != &body)
+        return failure();
+      if (retop.getArgNumber() != 1)
+        return failure();
+      update = op.getUpdates()[0];
+    } else {
+      DenseElementsAttr attr;
+      if (matchPattern(innerOp.getOperand(0), m_Constant(&attr))) {
+        splatAttr = DenseElementsAttr::get(
+            cast<ShapedType>(op.getUpdates()[0].getType()),
+            attr.getSplatValue<Attribute>());
+      } else {
+        return failure();
+      }
     }
 
     auto dims = op.getScatterDimensionNumbers();
 
     auto input = op.getInputs()[0];
     auto scatter = op.getScatterIndices();
-    auto updatesTy = cast<RankedTensorType>(op.getUpdates()[0].getType());
-    auto updateRank = updatesTy.getRank();
+    auto updateShape =
+        cast<ShapedType>(op.getUpdates()[0].getType()).getShape();
 
-    if (dims.getInsertedWindowDims().size() != 0 ||
-        dims.getUpdateWindowDims().size() != updateRank) {
-      return failure();
+    if (dims.getInsertedWindowDims().size() == 0 &&
+        dims.getUpdateWindowDims().size() == updateShape.size()) {
+
+      if (update == nullptr) {
+        update = stablehlo::ConstantOp::create(
+            rewriter, op.getLoc(), op.getUpdates()[0].getType(), splatAttr);
+      }
+
+      auto ity = RankedTensorType::get(
+          {}, cast<ShapedType>(scatter.getType()).getElementType());
+      SmallVector<Value> start(updateShape.size(), 0);
+      for (auto en : llvm::enumerate(dims.getScatterDimsToOperandDims())) {
+        auto startval = is_same_in_axis(rewriter, ity, scatter, en.index());
+        if (!startval)
+          return failure();
+        start[en.value()] = *startval;
+      }
+      for (auto &v : start) {
+        if (v != nullptr)
+          continue;
+        v = stablehlo::ConstantOp::create(rewriter, op.getLoc(), ity,
+                                          cast<ElementsAttr>(makeAttr(ity, 0)));
+      }
+      rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(
+          op, op.getResult(0).getType(), input, update, start);
+      return success();
     }
 
-    Value update;
-    if (scatterCheck.kind == ScatterOpKind::Setindex) {
-      update = op.getUpdates()[0];
-    } else if (scatterCheck.kind == ScatterOpKind::ConstantSetindex) {
-      auto splatAttr = DenseElementsAttr::get(
-          cast<ShapedType>(op.getUpdates()[0].getType()),
-          scatterCheck.constant.getSplatValue<Attribute>());
-      update = stablehlo::ConstantOp::create(rewriter, op.getLoc(), updatesTy,
-                                             splatAttr);
-    } else {
-      return failure();
-    }
-
-    auto ity = RankedTensorType::get(
-        {}, cast<ShapedType>(scatter.getType()).getElementType());
-    SmallVector<Value> start(updateRank, 0);
-    for (auto en : llvm::enumerate(dims.getScatterDimsToOperandDims())) {
-      auto startval = is_same_in_axis(rewriter, ity, scatter, en.index());
-      if (!startval)
-        return failure();
-      start[en.value()] = *startval;
-    }
-    for (auto &v : start) {
-      if (v != nullptr)
-        continue;
-      v = stablehlo::ConstantOp::create(rewriter, op.getLoc(), ity,
-                                        cast<ElementsAttr>(makeAttr(ity, 0)));
-    }
-    rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(
-        op, op.getResult(0).getType(), input, update, start);
-    return success();
+    return failure();
   }
 };
 
@@ -13163,8 +13214,7 @@ struct DUSSliceSimplify final
         });
 
     LLVM_DEBUG(
-        for (auto [idx, operandSize, updateSize]
-             : llvm::zip_equal(
+        for (auto [idx, operandSize, updateSize] : llvm::zip_equal(
                  newDusIndices,
                  cast<RankedTensorType>(preSliceOperand.getType()).getShape(),
                  cast<RankedTensorType>(preSliceUpdate.getType()).getShape())) {
