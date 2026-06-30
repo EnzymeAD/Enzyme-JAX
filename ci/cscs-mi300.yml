@@ -74,6 +74,26 @@ test-gb-25:
     # Instantiate the Reactant build environment (no GPU/UENV needed here)
     - cd "${REACTANT_DIR}/deps" && ${JULIA} --project --color=yes -e 'using Pkg; Pkg.instantiate()'
 
+    # MIOpen is not merged into the UENV view, so rocm_configure.bzl cannot find
+    # version.h under ROCM_PATH/include/miopen. Build a local overlay that combines
+    # the view with a symlink to the MIOpen package, then redirect ROCM_PATH there.
+    - |
+      ROCM_OVERLAY="${CI_PROJECT_DIR}/.rocm"
+      mkdir -p "${ROCM_OVERLAY}/include"
+      for f in /user-environment/env/default/include/*; do
+        ln -sfn "$f" "${ROCM_OVERLAY}/include/$(basename "$f")"
+      done
+      ln -sfn "${CPATH}" "${ROCM_OVERLAY}/include/miopen"
+      for d in lib lib64 bin share; do
+        [[ -e "/user-environment/env/default/${d}" ]] && \
+          ln -sfn "/user-environment/env/default/${d}" "${ROCM_OVERLAY}/${d}"
+      done
+      export ROCM_PATH="${ROCM_OVERLAY}"
+
+    # Forward ROCM_PATH (now the overlay) into Bazel repository rules via .bazelrc.
+    # Without --repo_env, rocm_configure.bzl runs in a sandbox and cannot see env vars.
+    - echo "build --repo_env=ROCM_PATH=${ROCM_PATH}" >> "${REACTANT_DIR}/deps/ReactantExtra/.bazelrc"
+
     # Build libReactant — --export=ALL forwards all path/cache env vars into the srun allocation
     - |
       srun -n 1 --export=ALL --uenv "${UENV}" --view=default \
