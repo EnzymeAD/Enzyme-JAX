@@ -24,9 +24,11 @@ test-gb-25:
     JULIA_DEPOT_PATH: "${CI_PROJECT_DIR}/.julia"    # overrides default ~/.julia
     BAZELISK_HOME: "${CI_PROJECT_DIR}/.bazelisk"   # overrides default ~/.cache/bazelisk
     BAZEL_OUTPUT_ROOT: "${CI_PROJECT_DIR}/.bazel"  # used by the bazel wrapper
-    # MIOpen headers required by the ROCm build; path is UENV-specific and must be
-    # updated when the UENV hash changes .
-    CPATH: "/user-environment/linux-zen3/miopen-hip-7.2.3-22x3pq72goxi4xwkknlspqhxbx72owes/include/miopen"
+    # ROCm/MIOpen paths — UENV-specific, must be updated when the UENV hash changes.
+    # ROCM_PATH is used by Bazel's rocm_configure.bzl to locate headers and libraries.
+    # CPATH adds the MIOpen include directory so clang finds <miopen/miopen.h>.
+    ROCM_PATH: "/user-environment/env/default"
+    CPATH: "/user-environment/linux-zen3/miopen-hip-7.2.3-22x3pq72goxi4xwkknlspqhxbx72owes/include"
 
   script:
     # Create all job-scoped directories up front
