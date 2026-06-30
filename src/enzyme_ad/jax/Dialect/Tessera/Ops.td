@@ -30,7 +30,7 @@ def DefineOp : TesseraOp<"define", [
   let arguments = (ins SymbolNameAttr:$sym_name,
                        TypeAttrOf<FunctionType>:$function_type,
 	                     DenseBoolArrayAttr:$byRefArgs,
-	                     DenseI64ArrayAttr:$argSizes,
+	                     DenseI64ArrayAttr:$globalTypeIndices,
                        BoolAttr:$pure,
                        OptionalAttr<StrAttr>:$sym_visibility,
                        OptionalAttr<DictArrayAttr>:$arg_attrs,
@@ -41,7 +41,7 @@ def DefineOp : TesseraOp<"define", [
   let builders = [OpBuilder<(ins
     "StringRef":$name, "FunctionType":$type,
     "DenseBoolArrayAttr":$byRefArgs,
-    "DenseI64ArrayAttr":$argSizes,
+    "DenseI64ArrayAttr":$globalTypeIndices,
     "bool":$pure,
     CArg<"StringAttr", "{}">:$sym_visibility,
     CArg<"ArrayRef<NamedAttribute>", "{}">:$attrs,
