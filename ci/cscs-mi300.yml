@@ -91,7 +91,20 @@ test-gb-25:
 
     # Forward ROCM_PATH (now the overlay) into Bazel repository rules via .bazelrc.
     # Without --repo_env, rocm_configure.bzl runs in a sandbox and cannot see env vars.
-    - echo "build --repo_env=ROCM_PATH=${ROCM_PATH}" >> "${REACTANT_DIR}/deps/ReactantExtra/.bazelrc"
+    # Use ${CI_PROJECT_DIR} directly (not ${ROCM_PATH}) to avoid GitLab pre-expanding
+    # the CI variable to its original value before the overlay export takes effect.
+    - echo "build --repo_env=ROCM_PATH=${CI_PROJECT_DIR}/.rocm" >> "${REACTANT_DIR}/deps/ReactantExtra/.bazelrc"
+
+    # Diagnostic: verify overlay and .bazelrc look correct before invoking Bazel
+    - |
+      echo "=== ROCM overlay check ==="
+      echo "ROCM_PATH=${ROCM_PATH}"
+      grep ROCM_PATH "${REACTANT_DIR}/deps/ReactantExtra/.bazelrc" || echo "(no ROCM_PATH in .bazelrc)"
+      for f in rocm-core/rocm_version.h miopen/version.h hip/hip_version.h; do
+        path="${CI_PROJECT_DIR}/.rocm/include/${f}"
+        [[ -e "${path}" ]] && echo "OK: ${f}" || echo "MISSING: ${f}"
+      done
+      echo "==========================="
 
     # Build libReactant — --export=ALL forwards all path/cache env vars into the srun allocation
     - |
