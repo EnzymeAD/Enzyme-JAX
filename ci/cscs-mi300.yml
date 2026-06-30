@@ -74,16 +74,27 @@ test-gb-25:
     # Instantiate the Reactant build environment (no GPU/UENV needed here)
     - cd "${REACTANT_DIR}/deps" && ${JULIA} --project --color=yes -e 'using Pkg; Pkg.instantiate()'
 
-    # MIOpen is not merged into the UENV view, so rocm_configure.bzl cannot find
-    # version.h under ROCM_PATH/include/miopen. Build a local overlay that combines
-    # the view with a symlink to the MIOpen package, then redirect ROCM_PATH there.
+    # MIOpen and other ROCm packages are not merged into the UENV view, so
+    # rocm_configure.bzl cannot find their headers under ROCM_PATH. Build a
+    # local overlay that combines the view with every spack package's include/
+    # directory, then redirect ROCM_PATH there.
     - |
       ROCM_OVERLAY="${CI_PROJECT_DIR}/.rocm"
       mkdir -p "${ROCM_OVERLAY}/include"
+      # Seed the overlay from the UENV view
       for f in /user-environment/env/default/include/*; do
-        ln -sfn "$f" "${ROCM_OVERLAY}/include/$(basename "$f")"
+        [[ -e "$f" ]] && ln -sfn "$f" "${ROCM_OVERLAY}/include/$(basename "$f")"
       done
-      ln -sfn "${CPATH}" "${ROCM_OVERLAY}/include/miopen"
+      # Add any header directories from spack packages not merged into the view
+      for pkg_include in /user-environment/linux-zen3/*/include; do
+        [[ -d "${pkg_include}" ]] || continue
+        for f in "${pkg_include}"/*; do
+          name=$(basename "$f")
+          [[ -e "${ROCM_OVERLAY}/include/${name}" ]] || \
+            ln -sfn "$f" "${ROCM_OVERLAY}/include/${name}"
+        done
+      done
+      # Symlink lib, lib64, bin, share from the view
       for d in lib lib64 bin share; do
         [[ -e "/user-environment/env/default/${d}" ]] && \
           ln -sfn "/user-environment/env/default/${d}" "${ROCM_OVERLAY}/${d}"
