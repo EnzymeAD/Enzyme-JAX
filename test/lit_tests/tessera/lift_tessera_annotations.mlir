@@ -45,7 +45,7 @@ module {
   }
 }
 
-// CHECK: llvm.func @inverse(%[[ARG0:.*]]: f32) -> f32 attributes {tessera_op = "eigen.inv(x):globals=4"} {
+// CHECK: llvm.func @inverse(%[[ARG0:.*]]: f32) -> f32 attributes {tessera_op = "eigen.inv(x:byref):globals=4"} {
 // CHECK-NEXT: llvm.return %[[ARG0]] : f32
 // CHECK-NEXT: }
 // CHECK-NEXT: llvm.func @main(%[[X:.*]]: f32) -> f32 {

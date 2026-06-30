@@ -119,6 +119,6 @@ llvm.func @caller() {
 // CHECK-NEXT: %[[RES:.*]] = tessera.call @tessera_sret_func(%[[LOADED]])
 // CHECK-SAME: arg_attrs = [{llvm.nonnull, llvm.noundef}]
 // CHECK-SAME: tessera.loaded_operands = array<i32: 0>
-// CHECK-SAME: !llvm.struct<(f32, f32)> -> !llvm.struct<(f32, f32)>
+// CHECK-SAME: (!llvm.struct<(f32, f32)>) -> !llvm.struct<(f32, f32)>
 // CHECK-NEXT: llvm.store %[[RES]], %[[A1]] : !llvm.struct<(f32, f32)>, !llvm.ptr
 // CHECK-NEXT: llvm.return
