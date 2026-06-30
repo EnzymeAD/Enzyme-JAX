@@ -92,23 +92,25 @@ public:
     }
 
     // Parse sizes of args
-    SmallVector<int64_t> sizes;
-    StringRef sizeStr = raw.substr(raw.find(')') + 1);
-    if (!sizeStr.empty() && sizeStr.consume_front(":")) {
-      SmallVector<StringRef> sizeParts;
-      sizeStr.split(sizeParts, ',');
-      for (auto s : sizeParts) {
-        int64_t size;
-        s.trim().getAsInteger(10, size);
-        sizes.push_back(size);
+    SmallVector<int64_t> globalTypeIndices;
+    StringRef indicesStr = raw.substr(raw.find(')') + 1);
+    if (!indicesStr.empty() && indicesStr.consume_front(":globals=")) {
+      SmallVector<StringRef> indexList;
+      indicesStr.split(indexList, ',');
+      for (auto i : indexList) {
+        int64_t index;
+        i.trim().getAsInteger(10, index);
+        globalTypeIndices.push_back(index);
       }
     }
 
-    // Make sure number of arguments matches number of sizes provided
-    if (byRefArgs.size() != sizes.size()) {
-      funcOp->emitError("tessera: number of arguments (")
-          << byRefArgs.size() << ") does not match number of sizes ("
-          << sizes.size() << ")";
+    // Make sure number of arguments marked byref matches number of global
+    // indices provided
+    unsigned numByref = llvm::count(byRefArgs, true);
+    if (numByref != globalTypeIndices.size()) {
+      funcOp->emitError("tessera: number of byref arguments (")
+          << numByref << ") does not match number of global indices ("
+          << globalTypeIndices.size() << ")";
       return failure();
     }
 
@@ -133,7 +135,7 @@ public:
     auto tesseraDefineOp = tessera::DefineOp::create(
         rewriter, funcOp.getLoc(), tesseraName.str(), fnType,
         DenseBoolArrayAttr::get(ctx, byRefArgs),
-        DenseI64ArrayAttr::get(ctx, sizes), isPure);
+        DenseI64ArrayAttr::get(ctx, globalTypeIndices), isPure);
 
     // Copy over all attributes other than the function name and type
     // and tessera_op / pure_tessera_op attribute.
@@ -169,12 +171,13 @@ public:
   LogicalResult matchAndRewrite(LLVM::CallOp callOp,
                                 PatternRewriter &rewriter) const override {
 
+    auto module = callOp->getParentOfType<ModuleOp>();
+
     auto calleeAttr = callOp.getCalleeAttr();
     if (!calleeAttr)
       return failure();
 
-    auto callee = SymbolTable::lookupSymbolIn(
-        callOp->getParentOfType<ModuleOp>(), calleeAttr);
+    auto callee = SymbolTable::lookupSymbolIn(module, calleeAttr);
     // Only rewrite if callee is a tessera.define op
     auto defineOp = dyn_cast_or_null<tessera::DefineOp>(callee);
     if (!defineOp)
@@ -207,8 +210,13 @@ public:
       }
     }
 
+    // Only arguments marked byref will have corresponding global indices, since
+    // they are the only ones with global variables created for them. The sizes
+    // of byRefArgs and globalTypeIndices therefore may not match, but the
+    // number of true values in byRefArgs should match the number of
+    // globalTypeIndices.
     auto byRefArgs = defineOp.getByRefArgs();
-    auto argSizes = defineOp.getArgSizes();
+    auto globalTypeIndices = defineOp.getGlobalTypeIndices();
 
     SmallVector<Value> newOperands;
     SmallVector<int32_t> loadedOperands;
@@ -217,6 +225,7 @@ public:
     // byVal attribute or was marked as byRef by the user, load the value
     // from the pointer and store that as the new operand
     int argOffset = sretPtr ? 1 : 0;
+    unsigned byrefCount = 0;
     for (unsigned i = 0; i < operands.size() - argOffset; i++) {
       auto operand = callOp.getOperand(i + argOffset);
 
@@ -225,13 +234,19 @@ public:
         continue;
       }
 
-      // Determine whether to load pointer and how many bytes to load
+      // Determine whether to load pointer and what type to load based on byVal
+      // attribute or type stored in global variable for byref argument
       Type pointeeType;
       if (auto byValAttr =
               defineOp.getArgAttr(i, LLVM::LLVMDialect::getByValAttrName())) {
         pointeeType = cast<TypeAttr>(byValAttr).getValue();
       } else if (byRefArgs[i]) {
-        pointeeType = IntegerType::get(rewriter.getContext(), argSizes[i] * 8);
+        auto idx = globalTypeIndices[byrefCount++];
+        std::string suffix = "__tessera_byref_arg_type_" + std::to_string(idx);
+        for (auto global : module.getOps<mlir::LLVM::GlobalOp>()) {
+          if (global.getSymName().ends_with(suffix))
+            pointeeType = global.getType();
+        }
       }
 
       if (pointeeType) {

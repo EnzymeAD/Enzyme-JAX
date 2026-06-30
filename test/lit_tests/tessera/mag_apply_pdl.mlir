@@ -1,11 +1,11 @@
 // RUN: enzymexlamlir-opt %s -tessera-apply-pdl | FileCheck %s
 
 module {
-  tessera.define @eigen.mag(%arg0 : f32, %arg1 : f32, %arg2 : f32) -> f32 attributes {argSizes = array<i64: 4, 4, 4>, byRefArgs = array<i1: false, false, false>, pure = true} {
+  tessera.define @eigen.mag(%arg0 : f32, %arg1 : f32, %arg2 : f32) -> f32 attributes {byRefArgs = array<i1: false, false, false>, globalTypeIndices = array<i64>, pure = true} {
       tessera.return %arg0 : f32
   }
   
-  tessera.define @arith.negf(%arg0 : f32) -> f32 attributes {argSizes = array<i64: 4>, byRefArgs = array<i1: false>, pure = true} {
+  tessera.define @arith.negf(%arg0 : f32) -> f32 attributes {byRefArgs = array<i1: false>, globalTypeIndices = array<i64>, pure = true} {
       tessera.return %arg0 : f32
   }
 

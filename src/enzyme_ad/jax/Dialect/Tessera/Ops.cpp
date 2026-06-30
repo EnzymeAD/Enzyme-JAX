@@ -24,7 +24,7 @@ namespace mlir::enzyme::tessera {} // namespace mlir::enzyme::tessera
 
 void DefineOp::build(OpBuilder &builder, OperationState &state, StringRef name,
                      FunctionType type, DenseBoolArrayAttr byRefArgs,
-                     DenseI64ArrayAttr argSizes, bool pure,
+                     DenseI64ArrayAttr globalTypeIndices, bool pure,
                      StringAttr sym_visibility, ArrayRef<NamedAttribute> attrs,
                      ArrayRef<DictionaryAttr> argAttrs) {
   state.addAttribute(SymbolTable::getSymbolAttrName(),
@@ -32,7 +32,7 @@ void DefineOp::build(OpBuilder &builder, OperationState &state, StringRef name,
   state.addAttribute(getFunctionTypeAttrName(state.name), TypeAttr::get(type));
   state.addAttribute("pure", builder.getBoolAttr(pure));
   state.addAttribute("byRefArgs", byRefArgs);
-  state.addAttribute("argSizes", argSizes);
+  state.addAttribute("globalTypeIndices", globalTypeIndices);
 
   if (sym_visibility)
     state.addAttribute(getSymVisibilityAttrName(state.name), sym_visibility);
