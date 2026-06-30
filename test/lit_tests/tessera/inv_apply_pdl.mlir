@@ -29,7 +29,7 @@ module {
   }
 }
 
-// CHECK: tessera.define @eigen.inv(%[[ARG0:.*]]: f32) -> f32 attributes {byRefArgs = array<i1: false>, globalTypeIndices = array<i64: 0>, pure = true} {
+// CHECK: tessera.define @eigen.inv(%[[ARG0:.*]]: f32) -> f32 attributes {byRefArgs = array<i1: false>, globalTypeIndices = array<i64>, pure = true} {
 // CHECK-NEXT: tessera.return %[[ARG0]] : f32
 // CHECK-NEXT: }
 // CHECK-NEXT: llvm.func @main(%[[X:.*]]: f32) -> f32 {

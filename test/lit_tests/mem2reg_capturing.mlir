@@ -98,10 +98,10 @@ func.func @func_store_to_load_not_forwarded() -> i32 {
 
 // -----
 
-tessera.define @tessera_foo_nocapture(%arg0: !llvm.ptr {llvm.nocapture}) attributes {argSizes = array<i64: 64>, byRefArgs = array<i1: true>, pure = false} {
+tessera.define @tessera_foo_nocapture(%arg0: !llvm.ptr {llvm.nocapture}) attributes {byRefArgs = array<i1: true>, globalTypeIndices = array<i64>, pure = false} {
   tessera.return
 }
-tessera.define @tessera_store_to_load_forwarded() -> i32 attributes {argSizes = array<i64>, byRefArgs = array<i1>, pure = false} {
+tessera.define @tessera_store_to_load_forwarded() -> i32 attributes {byRefArgs = array<i1>, globalTypeIndices = array<i64>, pure = false} {
   %c1 = llvm.mlir.constant(1 : i32) : i32
   %mem = llvm.alloca %c1 x i32 : (i32) -> !llvm.ptr
   %val = llvm.mlir.constant(42 : i32) : i32
@@ -111,7 +111,7 @@ tessera.define @tessera_store_to_load_forwarded() -> i32 attributes {argSizes = 
   tessera.return %loaded : i32
 }
 
-// CHECK: tessera.define @tessera_store_to_load_forwarded() -> i32 attributes {argSizes = array<i64>, byRefArgs = array<i1>, pure = false} {
+// CHECK: tessera.define @tessera_store_to_load_forwarded() -> i32 attributes {byRefArgs = array<i1>, globalTypeIndices = array<i64>, pure = false} {
 // CHECK-NEXT: %[[C1:.*]] = llvm.mlir.constant(1 : i32) : i32
 // CHECK-NEXT: %[[AL:.*]] = llvm.alloca %[[C1]] x i32 : (i32) -> !llvm.ptr
 // CHECK-NEXT: %[[C2:.*]] = llvm.mlir.constant(42 : i32) : i32
@@ -122,10 +122,10 @@ tessera.define @tessera_store_to_load_forwarded() -> i32 attributes {argSizes = 
 
 // -----
 
-tessera.define @tessera_foo_capturing(%arg0: !llvm.ptr) attributes {argSizes = array<i64: 64>, byRefArgs = array<i1: true>, pure = false} {
+tessera.define @tessera_foo_capturing(%arg0: !llvm.ptr) attributes {byRefArgs = array<i1: true>, globalTypeIndices = array<i64: 0>, pure = false} {
   tessera.return
 }
-tessera.define @tessera_store_to_load_not_forwarded() -> i32 attributes {argSizes = array<i64>, byRefArgs = array<i1>, pure = false} {
+tessera.define @tessera_store_to_load_not_forwarded() -> i32 attributes {byRefArgs = array<i1>, globalTypeIndices = array<i64>, pure = false} {
   %c1 = llvm.mlir.constant(1 : i32) : i32
   %mem = llvm.alloca %c1 x i32 : (i32) -> !llvm.ptr
   %val = llvm.mlir.constant(42 : i32) : i32
@@ -135,7 +135,7 @@ tessera.define @tessera_store_to_load_not_forwarded() -> i32 attributes {argSize
   tessera.return %loaded : i32
 }
 
-// CHECK: tessera.define @tessera_store_to_load_not_forwarded() -> i32 attributes {argSizes = array<i64>, byRefArgs = array<i1>, pure = false} {
+// CHECK: tessera.define @tessera_store_to_load_not_forwarded() -> i32 attributes {byRefArgs = array<i1>, globalTypeIndices = array<i64>, pure = false} {
 // CHECK-NEXT: %[[C1:.*]] = llvm.mlir.constant(1 : i32) : i32
 // CHECK-NEXT: %[[AL:.*]] = llvm.alloca %[[C1]] x i32 : (i32) -> !llvm.ptr
 // CHECK-NEXT: %[[C2:.*]] = llvm.mlir.constant(42 : i32) : i32
