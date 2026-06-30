@@ -74,15 +74,20 @@ test-gb-25:
     # Instantiate the Reactant build environment (no GPU/UENV needed here)
     - cd "${REACTANT_DIR}/deps" && ${JULIA} --project --color=yes -e 'using Pkg; Pkg.instantiate()'
 
-    # The UENV view has all ROCm headers except MIOpen (separate spack package).
-    # Build a minimal overlay: seed from the view, then add include/miopen on top.
+    # The UENV view has most ROCm headers, but MIOpen and rocm-core are separate
+    # spack packages not merged into the view. Build an overlay: seed every
+    # include/ entry from the view, then graft in the two missing packages.
     - |
       ROCM_OVERLAY="${CI_PROJECT_DIR}/.rocm"
       mkdir -p "${ROCM_OVERLAY}/include"
       for f in /user-environment/env/default/include/*; do
         [[ -e "$f" ]] && ln -sfn "$f" "${ROCM_OVERLAY}/include/$(basename "$f")"
       done
+      # MIOpen — separate spack package
       ln -sfn "${CPATH}/miopen" "${ROCM_OVERLAY}/include/miopen"
+      # rocm-core — separate spack package (provides rocm_version.h)
+      ROCM_CORE_INC="/user-environment/linux-zen3/rocm-core-7.2.3-tz3xefoxhonk33cfyuhbhp7fxouru4sn/include/rocm-core"
+      ln -sfn "${ROCM_CORE_INC}" "${ROCM_OVERLAY}/include/rocm-core"
       for d in lib lib64 bin share; do
         [[ -e "/user-environment/env/default/${d}" ]] && \
           ln -sfn "/user-environment/env/default/${d}" "${ROCM_OVERLAY}/${d}"
@@ -100,7 +105,19 @@ test-gb-25:
       echo "=== ROCM overlay check ==="
       echo "ROCM_PATH=${ROCM_PATH}"
       grep ROCM_PATH "${REACTANT_DIR}/deps/ReactantExtra/.bazelrc" || echo "(no ROCM_PATH in .bazelrc)"
-      for f in rocm-core/rocm_version.h miopen/version.h hip/hip_version.h; do
+      # All header files that find_rocm_config.py requires
+      for f in \
+        rocm-core/rocm_version.h \
+        hip/hip_version.h \
+        miopen/version.h \
+        rocblas/internal/rocblas-version.h \
+        rocrand/rocrand_version.h \
+        rocfft/rocfft-version.h \
+        hipfft/hipfft-version.h \
+        roctracer/roctracer.h \
+        hipsparse/hipsparse-version.h \
+        hipsolver/internal/hipsolver-version.h \
+        rocsolver/rocsolver-version.h; do
         path="${CI_PROJECT_DIR}/.rocm/include/${f}"
         [[ -e "${path}" ]] && echo "OK: ${f}" || echo "MISSING: ${f}"
       done
