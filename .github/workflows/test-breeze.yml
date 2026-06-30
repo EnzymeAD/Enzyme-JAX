@@ -47,7 +47,7 @@ jobs:
         xla_commit:
           - ''
         breeze_commit:
-          - 'dkz/scalarbench'
+          - 'main'
         reactant_commit:
           - 'main'
         # The vanilla (eager KernelAbstractions/CUDA) backend has no TPU path,
