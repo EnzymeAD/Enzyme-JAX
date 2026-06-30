@@ -6,7 +6,7 @@ test-gb-25:
   variables:
     JULIA: /users/lraess/julia_amd/juliaup/julia-1.11.9+0.x64.linux.gnu/bin/julia
     UENV: 10d4b63b15c81616
-    JULIA_PKG_SERVER_REGISTRY_PREFERENCE: eager
+    JULIA_PKG_SERVER_REGISTRY_PREFERENCE: conservative
     JULIA_MAX_NUM_PRECOMPILE_FILES: 3
     # Pinned configuration — expand into a matrix once the single case passes
     REACTANT_COMMIT: main
