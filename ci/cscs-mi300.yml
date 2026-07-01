@@ -24,11 +24,10 @@ test-gb-25:
     JULIA_DEPOT_PATH: "${CI_PROJECT_DIR}/.julia"    # overrides default ~/.julia
     BAZELISK_HOME: "${CI_PROJECT_DIR}/.bazelisk"   # overrides default ~/.cache/bazelisk
     BAZEL_OUTPUT_ROOT: "${CI_PROJECT_DIR}/.bazel"  # used by the bazel wrapper
-    # ROCm/MIOpen paths — UENV-specific, must be updated when the UENV hash changes.
-    # ROCM_PATH is used by Bazel's rocm_configure.bzl to locate headers and libraries.
-    # CPATH adds the MIOpen include directory so clang finds <miopen/miopen.h>.
+    # ROCm path — UENV-specific, update when the UENV hash changes.
+    # ROCM_PATH is passed to Bazel's rocm_configure.bzl via --repo_env.
+    # TF_ROCM_AMDGPU_TARGETS bypasses rocm_agent_enumerator (only works inside srun).
     ROCM_PATH: "/user-environment/env/default"
-    CPATH: "/user-environment/linux-zen3/miopen-hip-7.2.3-22x3pq72goxi4xwkknlspqhxbx72owes/include"
 
   script:
     # Create all job-scoped directories up front
@@ -74,80 +73,14 @@ test-gb-25:
     # Instantiate the Reactant build environment (no GPU/UENV needed here)
     - cd "${REACTANT_DIR}/deps" && ${JULIA} --project --color=yes -e 'using Pkg; Pkg.instantiate()'
 
-    # Build a ROCm overlay that Bazel's rocm_configure.bzl can use.
-    #
-    # Problem: the UENV spack view at /user-environment/env/default merges
-    # headers from all installed packages, but some packages (rocm-core, hip,
-    # miopen, etc.) end up with *incomplete* include subdirectories in the view
-    # — they're present so [[ -e ]] passes, but the specific version headers
-    # that find_rocm_config.py requires are missing.
-    #
-    # Solution: seed from the view, then for each of the 11 headers that
-    # find_rocm_config.py checks, glob for the spack package that actually
-    # contains the file and unconditionally symlink that package's subdir into
-    # the overlay (overwriting whatever the view put there).  Finally auto-fill
-    # any remaining gaps from the full spack install tree.
-    - |
-      SPACK="/user-environment/linux-zen3"
-      ROCM_OVERLAY="${CI_PROJECT_DIR}/.rocm"
-      mkdir -p "${ROCM_OVERLAY}/include"
-      # Step 1: seed from the UENV view
-      for f in /user-environment/env/default/include/*; do
-        [[ -e "$f" ]] && ln -sfn "$f" "${ROCM_OVERLAY}/include/$(basename "$f")"
-      done
-      # Step 2: for every include subdir that find_rocm_config.py checks,
-      # find the spack package that actually has the version file and force-override.
-      # Format: "<overlay_subdir>:<spack_pkg_name_glob>:<verify_file_relative_to_subdir>"
-      for entry in \
-          "rocm-core:rocm-core-*:rocm_version.h" \
-          "hip:hip-*:hip_version.h" \
-          "miopen:miopen-hip-*:version.h" \
-          "rocblas:rocblas-*:internal/rocblas-version.h" \
-          "rocrand:rocrand-*:rocrand_version.h" \
-          "rocfft:rocfft-*:rocfft-version.h" \
-          "hipfft:hipfft-*:hipfft-version.h" \
-          "roctracer:roctracer-*:roctracer.h" \
-          "hipsparse:hipsparse-*:hipsparse-version.h" \
-          "hipsolver:hipsolver-*:internal/hipsolver-version.h" \
-          "rocsolver:rocsolver-*:rocsolver-version.h"; do
-        IFS=: read -r subdir pkg_glob verify <<< "${entry}"
-        for pkg in "${SPACK}"/${pkg_glob}/; do
-          [[ -f "${pkg}include/${subdir}/${verify}" ]] || continue
-          ln -sfn "${pkg}include/${subdir}" "${ROCM_OVERLAY}/include/${subdir}"
-          echo "overlay: ${subdir} -> ${pkg}include/${subdir}"
-          break
-        done
-      done
-      # Step 3: auto-fill any remaining missing include items from all spack packages
-      for pkg in "${SPACK}"/*/; do
-        [[ -d "${pkg}include" ]] || continue
-        for inc_item in "${pkg}include/"*; do
-          [[ -e "${inc_item}" ]] || continue
-          name="$(basename "${inc_item}")"
-          target="${ROCM_OVERLAY}/include/${name}"
-          [[ -e "${target}" ]] || ln -sfn "${inc_item}" "${target}"
-        done
-      done
-      # Step 4: top-level dirs from view
-      for d in lib lib64 bin share; do
-        [[ -e "/user-environment/env/default/${d}" ]] && \
-          ln -sfn "/user-environment/env/default/${d}" "${ROCM_OVERLAY}/${d}"
-      done
-      export ROCM_PATH="${ROCM_OVERLAY}"
-
-    # Forward ROCM_PATH and TF_ROCM_AMDGPU_TARGETS into Bazel repository rules.
-    # ROCM_PATH tells rocm_configure where the overlay is.
-    # TF_ROCM_AMDGPU_TARGETS prevents rocm_configure from calling rocm_agent_enumerator
-    # (which only works inside a GPU srun allocation, not in this CI step).
-    - echo "build --repo_env=ROCM_PATH=${CI_PROJECT_DIR}/.rocm" >> "${REACTANT_DIR}/deps/ReactantExtra/.bazelrc"
+    # Tell Bazel where ROCm is (rocm_configure reads ROCM_PATH via --repo_env)
+    # and suppress rocm_agent_enumerator (only works inside an srun GPU allocation).
+    - echo "build --repo_env=ROCM_PATH=${ROCM_PATH}" >> "${REACTANT_DIR}/deps/ReactantExtra/.bazelrc"
     - echo "build --repo_env=TF_ROCM_AMDGPU_TARGETS=gfx942" >> "${REACTANT_DIR}/deps/ReactantExtra/.bazelrc"
 
-    # Diagnostic: verify overlay and .bazelrc look correct before invoking Bazel
+    # Diagnostic: confirm the headers that find_rocm_config.py requires are visible
     - |
-      echo "=== ROCM overlay check ==="
-      echo "ROCM_PATH=${ROCM_PATH}"
-      grep ROCM_PATH "${REACTANT_DIR}/deps/ReactantExtra/.bazelrc" || echo "(no ROCM_PATH in .bazelrc)"
-      # All header files that find_rocm_config.py requires
+      echo "=== ROCm header check (ROCM_PATH=${ROCM_PATH}) ==="
       for f in \
         rocm-core/rocm_version.h \
         hip/hip_version.h \
@@ -160,10 +93,9 @@ test-gb-25:
         hipsparse/hipsparse-version.h \
         hipsolver/internal/hipsolver-version.h \
         rocsolver/rocsolver-version.h; do
-        path="${CI_PROJECT_DIR}/.rocm/include/${f}"
-        [[ -e "${path}" ]] && echo "OK: ${f}" || echo "MISSING: ${f}"
+        [[ -e "${ROCM_PATH}/include/${f}" ]] && echo "OK: ${f}" || echo "MISSING: ${f}"
       done
-      echo "==========================="
+      echo "================================================"
 
     # Build libReactant — --export=ALL forwards all path/cache env vars into the srun allocation
     - |
