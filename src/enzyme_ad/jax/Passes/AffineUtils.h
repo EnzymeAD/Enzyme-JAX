@@ -1,6 +1,7 @@
 #ifndef ENZYME_JAX_PASSES_AFFINEUTILS_H_
 #define ENZYME_JAX_PASSES_AFFINEUTILS_H_
 
+#include "mlir/Dialect/Affine/Analysis/AffineStructures.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/IR/AffineValueMap.h"
 #include "llvm/ADT/SmallVector.h"
@@ -22,6 +23,9 @@ public:
   isl_map *getAccessMap(mlir::Operation *op);
 
   isl_set *getDomain(Operation *op);
+
+  std::tuple<isl_set *, mlir::affine::FlatAffineValueConstraints>
+  getDomainAndValueConstraints(Operation *op);
 
   isl_set *getMemrefShape(MemRefType ty);
 

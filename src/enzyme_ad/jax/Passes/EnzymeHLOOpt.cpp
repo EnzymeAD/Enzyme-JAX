@@ -120,8 +120,8 @@ LogicalResult lowerMultiRotateToRotates(enzymexla::MultiRotateOp op,
       continue;
     }
 
-    auto rotateOp = rewriter.create<enzymexla::RotateOp>(
-        op.getLoc(), inputType, input, amount, op.getDimension());
+    auto rotateOp = enzymexla::RotateOp::create(
+        rewriter, op.getLoc(), inputType, input, amount, op.getDimension());
 
     // Propagate sharding if present
     if (shard) {
@@ -6219,6 +6219,59 @@ struct ConcatFuse final
   }
 };
 
+// concat(slice(src,[N-1:N,...]), slice(src,[N-2:N-1,...]), ...,
+// slice(src,[0:1,...]), dim=D)
+// -> reverse(src, dims=[D])
+struct ConcatSlicesToReverse final
+    : CheckedOpRewritePattern<stablehlo::ConcatenateOp, ConcatSlicesToReverse> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp op,
+                                    PatternRewriter &rewriter) const {
+    auto concatDim = op.getDimension();
+    auto operands = op.getOperands();
+    int64_t N = (int64_t)operands.size();
+
+    if (N == 0)
+      return failure();
+
+    auto firstSlice = operands[0].getDefiningOp<stablehlo::SliceOp>();
+    if (!firstSlice)
+      return failure();
+
+    Value src = firstSlice.getOperand();
+    auto srcType = cast<RankedTensorType>(src.getType());
+    int64_t rank = srcType.getRank();
+
+    if (srcType.getShape()[concatDim] != N)
+      return failure();
+
+    for (int64_t i = 0; i < N; ++i) {
+      auto slice = operands[i].getDefiningOp<stablehlo::SliceOp>();
+      if (!slice || slice.getOperand() != src)
+        return failure();
+      auto starts = slice.getStartIndices();
+      auto limits = slice.getLimitIndices();
+      auto strides = slice.getStrides();
+      for (int64_t d = 0; d < rank; ++d) {
+        if (strides[d] != 1)
+          return failure();
+        if (d == (int64_t)concatDim) {
+          if (starts[d] != N - 1 - i || limits[d] != N - i)
+            return failure();
+        } else {
+          if (starts[d] != 0 || limits[d] != srcType.getShape()[d])
+            return failure();
+        }
+      }
+    }
+
+    rewriter.replaceOpWithNewOp<stablehlo::ReverseOp>(
+        op, src, SmallVector<int64_t>{(int64_t)concatDim});
+    return success();
+  }
+};
+
 struct ConcatToBroadcast final
     : CheckedOpRewritePattern<stablehlo::ConcatenateOp, ConcatToBroadcast> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -6368,6 +6421,50 @@ struct LGammaConstProp final
 
     rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
         op, DenseElementsAttr::get(resultType, results));
+    return success();
+  }
+};
+
+struct BinomialProgressConstProp final
+    : CheckedOpRewritePattern<enzymexla::BinomialProgressOp,
+                              BinomialProgressConstProp> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  static int64_t binomialProgress(int64_t n, int64_t s) {
+    assert(s > 0 && "no checkpoints available");
+    if (s == 1 || n == 1)
+      return 1;
+
+    int64_t j = 1;
+    int64_t binom = s; // C(s, s-1) = s
+
+    while (binom < n) {
+      ++j;
+      binom = binom * (j + s - 1) / j;
+    }
+
+    return binom == n ? j : j - 1;
+  }
+
+  LogicalResult matchAndRewriteImpl(enzymexla::BinomialProgressOp op,
+                                    PatternRewriter &rewriter) const {
+    APInt numSteps, budget;
+
+    if (!matchPattern(op.getNumSteps(), m_ConstantInt(&numSteps)) ||
+        !matchPattern(op.getBudget(), m_ConstantInt(&budget)))
+      return failure();
+
+    if (budget.isNonPositive() || numSteps.isNonPositive())
+      return failure();
+
+    int64_t progress =
+        binomialProgress(numSteps.getSExtValue(), budget.getSExtValue());
+
+    rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+        op,
+        DenseElementsAttr::get(op.getResult().getType(),
+                               makeAttr(op.getResult().getType(), progress)));
+
     return success();
   }
 };
@@ -7252,80 +7349,59 @@ struct ScatterToDynamicUpdateSlice final
 
   LogicalResult matchAndRewriteImpl(stablehlo::ScatterOp op,
                                     PatternRewriter &rewriter) const {
-    Block &body = op.getUpdateComputation().front();
-    if (body.getOperations().size() != 1)
-      return failure();
-
-    Operation &innerOp = body.front();
-    if (!isa<stablehlo::ReturnOp>(&innerOp)) {
-      return failure();
-    }
-    if (innerOp.getNumOperands() != 1) {
+    if (op.getInputs().size() != 1) {
       return failure();
     }
 
-    if (op.getInputs().size() != 1)
+    CheckCommonScatterOp scatterCheck(op);
+    if (scatterCheck.kind != ScatterOpKind::Setindex &&
+        scatterCheck.kind != ScatterOpKind::ConstantSetindex) {
       return failure();
-
-    // For us to proceed, either we are returning the last block argument or we
-    // are returning a constant
-    Value update = nullptr;
-    DenseElementsAttr splatAttr;
-
-    auto retop = dyn_cast<BlockArgument>(innerOp.getOperand(0));
-    if (retop) {
-      if (retop.getOwner() != &body)
-        return failure();
-      if (retop.getArgNumber() != 1)
-        return failure();
-      update = op.getUpdates()[0];
-    } else {
-      DenseElementsAttr attr;
-      if (matchPattern(innerOp.getOperand(0), m_Constant(&attr))) {
-        splatAttr = DenseElementsAttr::get(
-            cast<ShapedType>(op.getUpdates()[0].getType()),
-            attr.getSplatValue<Attribute>());
-      } else {
-        return failure();
-      }
     }
 
     auto dims = op.getScatterDimensionNumbers();
 
     auto input = op.getInputs()[0];
     auto scatter = op.getScatterIndices();
-    auto updateShape =
-        cast<ShapedType>(op.getUpdates()[0].getType()).getShape();
+    auto updatesTy = cast<RankedTensorType>(op.getUpdates()[0].getType());
+    auto updateRank = updatesTy.getRank();
 
-    if (dims.getInsertedWindowDims().size() == 0 &&
-        dims.getUpdateWindowDims().size() == updateShape.size()) {
-
-      if (update == nullptr) {
-        update = stablehlo::ConstantOp::create(
-            rewriter, op.getLoc(), op.getUpdates()[0].getType(), splatAttr);
-      }
-
-      auto ity = RankedTensorType::get(
-          {}, cast<ShapedType>(scatter.getType()).getElementType());
-      SmallVector<Value> start(updateShape.size(), 0);
-      for (auto en : llvm::enumerate(dims.getScatterDimsToOperandDims())) {
-        auto startval = is_same_in_axis(rewriter, ity, scatter, en.index());
-        if (!startval)
-          return failure();
-        start[en.value()] = *startval;
-      }
-      for (auto &v : start) {
-        if (v != nullptr)
-          continue;
-        v = stablehlo::ConstantOp::create(rewriter, op.getLoc(), ity,
-                                          cast<ElementsAttr>(makeAttr(ity, 0)));
-      }
-      rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(
-          op, op.getResult(0).getType(), input, update, start);
-      return success();
+    if (dims.getInsertedWindowDims().size() != 0 ||
+        dims.getUpdateWindowDims().size() != updateRank) {
+      return failure();
     }
 
-    return failure();
+    Value update;
+    if (scatterCheck.kind == ScatterOpKind::Setindex) {
+      update = op.getUpdates()[0];
+    } else if (scatterCheck.kind == ScatterOpKind::ConstantSetindex) {
+      auto splatAttr = DenseElementsAttr::get(
+          cast<ShapedType>(op.getUpdates()[0].getType()),
+          scatterCheck.constant.getSplatValue<Attribute>());
+      update = stablehlo::ConstantOp::create(rewriter, op.getLoc(), updatesTy,
+                                             splatAttr);
+    } else {
+      return failure();
+    }
+
+    auto ity = RankedTensorType::get(
+        {}, cast<ShapedType>(scatter.getType()).getElementType());
+    SmallVector<Value> start(updateRank, 0);
+    for (auto en : llvm::enumerate(dims.getScatterDimsToOperandDims())) {
+      auto startval = is_same_in_axis(rewriter, ity, scatter, en.index());
+      if (!startval)
+        return failure();
+      start[en.value()] = *startval;
+    }
+    for (auto &v : start) {
+      if (v != nullptr)
+        continue;
+      v = stablehlo::ConstantOp::create(rewriter, op.getLoc(), ity,
+                                        cast<ElementsAttr>(makeAttr(ity, 0)));
+    }
+    rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(
+        op, op.getResult(0).getType(), input, update, start);
+    return success();
   }
 };
 
@@ -14199,8 +14275,8 @@ struct SelectSelectNegCond final
       // Case 3: select(and(c1,c2), c, select(and(c1,not(c2)), a, b))
       //      -> select(and(c1,c2), c, select(c1, a, b))
       if (Value c1 = getAndNegComplement(cond, inner.getPred())) {
-        auto newInner = rewriter.create<stablehlo::SelectOp>(
-            op.getLoc(), c1, inner.getOnTrue(), inner.getOnFalse());
+        auto newInner = stablehlo::SelectOp::create(
+            rewriter, op.getLoc(), c1, inner.getOnTrue(), inner.getOnFalse());
         rewriter.modifyOpInPlace(
             op, [&]() { op.getOnFalseMutable().assign(newInner); });
         return success();
@@ -15198,8 +15274,8 @@ struct SliceReverse final
     // indices for those dims still select the right elements.
     Value src = reverse.getOperand();
     if (!remainingDims.empty())
-      src = rewriter.create<stablehlo::ReverseOp>(op.getLoc(), src,
-                                                  remainingDims);
+      src = stablehlo::ReverseOp::create(rewriter, op.getLoc(), src,
+                                         remainingDims);
     rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(op, src, starts, limits,
                                                     strides);
     return success();
@@ -18756,7 +18832,7 @@ struct DUSDUSSubsuming
     computeTensorValueProvenanceImpl(dusResults, provenanceInfo);
 
     DominanceInfo domInfo;
-    DenseMap<Operation *, Operation *> movedSlices;
+    llvm::MapVector<Operation *, Operation *> movedSlices;
     SmallVector<Operation *> originalUsers =
         llvm::to_vector(dus2.getResult().getUsers());
     for (Operation *user : originalUsers) {
@@ -18802,7 +18878,7 @@ struct DUSDUSSubsuming
 
       if (originalSources == it2->second.sources &&
           originalProvenance.isEqual(it2->second.provenanceRelation)) {
-        movedSlices.try_emplace(slice.getOperation(), clonedSlice);
+        movedSlices.insert({slice.getOperation(), clonedSlice});
       } else {
         rewriter.eraseOp(clonedSlice);
 
@@ -23734,8 +23810,8 @@ struct RecognizeUpdateWithoutCorners
 
         auto shard = sdy::getShardingPerValue(concat);
 
-        auto extend2 = rewriter.create<enzymexla::ExtendOp>(
-            concat0.getLoc(), extend, x1,
+        auto extend2 = enzymexla::ExtendOp::create(
+            rewriter, concat0.getLoc(), extend, x1,
             concat.getType().getShape()[dimX] - x2, dimX);
         enzymexla::UpdateWithoutCornersOp newUpdate;
 
@@ -30180,12 +30256,14 @@ struct RemoveNoOpsFromWhileLoop
                                     PatternRewriter &rewriter) const {
     auto info = WhileLoopInfo(whileOp);
     auto computeInfoSuccess = info.computeInfo();
-    if (computeInfoSuccess.failed())
+    if (computeInfoSuccess.failed()) {
       return computeInfoSuccess;
+    }
 
     if (!info.isValid() || !info.isConstant() ||
-        info.getConstantNumIters() <= 0)
+        info.getConstantNumIters() <= 0) {
       return failure();
+    }
 
     // Propagate bounds using WhileLoopInfo
     info.propagateBounds();
@@ -30193,6 +30271,7 @@ struct RemoveNoOpsFromWhileLoop
     auto &boundsMap = info.getBoundsMap();
     unsigned bitWidth = info.getBoundsBitWidth();
 
+    bool anyOpRewritten = false;
     // Annotate the IR with bounds
     for (auto &[value, bounds] : boundsMap) {
       auto defOp = value.getDefiningOp();
@@ -30216,8 +30295,15 @@ struct RemoveNoOpsFromWhileLoop
           boundsAttrs.push_back(ArrayAttr::get(value.getContext(), {}));
         }
       }
-      defOp->setAttr("enzymexla.bounds",
-                     ArrayAttr::get(value.getContext(), boundsAttrs));
+      auto arattr = ArrayAttr::get(value.getContext(), boundsAttrs);
+      // Only annotate ops we haven't already annotated
+      if (!defOp->hasAttr("enzymexla.bounds") ||
+          defOp->getAttr("enzymexla.bounds") != arattr) {
+        rewriter.startOpModification(defOp);
+        defOp->setAttr("enzymexla.bounds", arattr);
+        anyOpRewritten = true;
+        rewriter.finalizeOpModification(defOp);
+      }
     }
 
     // Rewrite ops based on computed bounds
@@ -30233,7 +30319,6 @@ struct RemoveNoOpsFromWhileLoop
       toProcess.insert(defOp);
     }
 
-    bool anyOpRewritten = false;
     for (auto op : toProcess) {
       bool rewritten =
           llvm::TypeSwitch<Operation *, bool>(op)
@@ -33684,8 +33769,8 @@ struct RecognizeMultiSlice
       SmallVector<Type> resultTypes(totalResults, resultType);
 
       rewriter.setInsertionPointAfterValue(input);
-      auto newOp = rewriter.create<enzymexla::MultiSliceOp>(
-          op.getLoc(), resultTypes, input, adjustedStartIndices,
+      auto newOp = enzymexla::MultiSliceOp::create(
+          rewriter, op.getLoc(), resultTypes, input, adjustedStartIndices,
           adjustedLimitIndices, strides, (int32_t)dim, amount);
 
       // Propagate sharding if present (all slices have the same sharding)
@@ -33774,8 +33859,8 @@ struct ReduceUnusedMultiSlice final
         limitIndices[dim] += firstUsed;
       }
 
-      auto sliceOp = rewriter.create<stablehlo::SliceOp>(
-          op.getLoc(), op.getOperand(),
+      auto sliceOp = stablehlo::SliceOp::create(
+          rewriter, op.getLoc(), op.getOperand(),
           rewriter.getDenseI64ArrayAttr(startIndices),
           rewriter.getDenseI64ArrayAttr(limitIndices),
           rewriter.getDenseI64ArrayAttr(strides));
@@ -33809,9 +33894,9 @@ struct ReduceUnusedMultiSlice final
         resultTypes.push_back(resultType);
       }
 
-      auto newOp = rewriter.create<enzymexla::MultiSliceOp>(
-          op.getLoc(), resultTypes, op.getOperand(), startIndices, limitIndices,
-          op.getStrides(), op.getDimension(), newAmount);
+      auto newOp = enzymexla::MultiSliceOp::create(
+          rewriter, op.getLoc(), resultTypes, op.getOperand(), startIndices,
+          limitIndices, op.getStrides(), op.getDimension(), newAmount);
 
       // Propagate sharding if present
       if (auto shard = sdy::getShardingPerValue(op)) {
@@ -33865,8 +33950,8 @@ struct LowerMultiSlice final
         limitIndices[dim] += i;
       }
 
-      auto sliceOp = rewriter.create<stablehlo::SliceOp>(
-          op.getLoc(), op.getOperand(),
+      auto sliceOp = stablehlo::SliceOp::create(
+          rewriter, op.getLoc(), op.getOperand(),
           rewriter.getDenseI64ArrayAttr(startIndices),
           rewriter.getDenseI64ArrayAttr(limitIndices),
           rewriter.getDenseI64ArrayAttr(strides));
@@ -33916,10 +34001,11 @@ struct LowerMultiPad final
       high[dim] = idx;
       low[dim] = amount - idx;
 
-      auto padOp = rewriter.create<stablehlo::PadOp>(
-          op.getLoc(), input, paddingValue, rewriter.getDenseI64ArrayAttr(low),
-          rewriter.getDenseI64ArrayAttr(high),
-          rewriter.getDenseI64ArrayAttr(interior));
+      auto padOp =
+          stablehlo::PadOp::create(rewriter, op.getLoc(), input, paddingValue,
+                                   rewriter.getDenseI64ArrayAttr(low),
+                                   rewriter.getDenseI64ArrayAttr(high),
+                                   rewriter.getDenseI64ArrayAttr(interior));
 
       if (shard) {
         sdy::TensorShardingAttr shards[1] = {shard.getShardings()[idx]};
@@ -34095,9 +34181,9 @@ struct RecognizeMultiRotate
 
     // Create the MultiRotateOp
     rewriter.setInsertionPointAfterValue(input);
-    auto newOp = rewriter.create<enzymexla::MultiRotateOp>(
-        op.getLoc(), SmallVector<Type>(totalResults, input.getType()), input,
-        op.getDimension(), leftAmount, rightAmount);
+    auto newOp = enzymexla::MultiRotateOp::create(
+        rewriter, op.getLoc(), SmallVector<Type>(totalResults, input.getType()),
+        input, op.getDimension(), leftAmount, rightAmount);
 
     // Propagate sharding if present (all rotates have the same sharding)
     if (commonSharding.has_value() && commonSharding.value()) {
@@ -34194,9 +34280,9 @@ struct ReduceUnusedMultiRotate final
         amount += operandType.getShape()[op.getDimension()];
       }
 
-      auto rotateOp = rewriter.create<enzymexla::RotateOp>(
-          op.getLoc(), op.getOperand().getType(), op.getOperand(), amount,
-          op.getDimension());
+      auto rotateOp = enzymexla::RotateOp::create(
+          rewriter, op.getLoc(), op.getOperand().getType(), op.getOperand(),
+          amount, op.getDimension());
       // Propagate sharding if present
       if (auto shard = sdy::getShardingPerValue(op)) {
         sdy::setShardings(rotateOp, shard);
@@ -34209,8 +34295,8 @@ struct ReduceUnusedMultiRotate final
 
     // Otherwise, create a smaller MultiRotateOp
     if (newLeftAmount != leftAmount || newRightAmount != rightAmount) {
-      auto newOp = rewriter.create<enzymexla::MultiRotateOp>(
-          op.getLoc(),
+      auto newOp = enzymexla::MultiRotateOp::create(
+          rewriter, op.getLoc(),
           SmallVector<Type>(newLeftAmount + newRightAmount + 1,
                             op.getOperand().getType()),
           op.getOperand(), op.getDimension(), newLeftAmount, newRightAmount);
@@ -34366,8 +34452,9 @@ struct RecognizeMultiPad final
       resultTypes[i] = resultType;
     }
 
-    auto multiPad = rewriter.create<enzymexla::MultiPadOp>(
-        op.getLoc(), resultTypes, input, paddingValue, dimension, amount);
+    auto multiPad =
+        enzymexla::MultiPadOp::create(rewriter, op.getLoc(), resultTypes, input,
+                                      paddingValue, dimension, amount);
 
     if (commonSharding.has_value() && commonSharding.value()) {
       auto shardings = commonSharding.value().getShardings();
@@ -35304,10 +35391,52 @@ struct NegateReduceWindowSub final
 
 ///////////////  End Imported from stablehlo
 
-// clang-format off
 namespace mlir {
 namespace enzyme {
+
+// runs for all floats and integers only when a % b == 0 (i.e. the division is
+// exact).
+static bool divMulReassociable(mlir::Value res, mlir::Attribute aAttr,
+                               mlir::Attribute bAttr) {
+  auto st = mlir::dyn_cast<mlir::ShapedType>(res.getType());
+  if (!st)
+    return false;
+  if (mlir::isa<mlir::FloatType>(st.getElementType()))
+    return true;
+  auto a = mlir::dyn_cast<mlir::DenseIntElementsAttr>(aAttr);
+  auto b = mlir::dyn_cast<mlir::DenseIntElementsAttr>(bAttr);
+  if (!a || !b)
+    return false;
+  auto exact = [](const llvm::APInt &av, const llvm::APInt &bv) {
+    return !bv.isZero() && av.srem(bv).isZero();
+  };
+  bool aSplat = a.isSplat(), bSplat = b.isSplat();
+  if (aSplat && bSplat)
+    return exact(a.getSplatValue<llvm::APInt>(),
+                 b.getSplatValue<llvm::APInt>());
+  if (aSplat) {
+    auto av = a.getSplatValue<llvm::APInt>();
+    return llvm::all_of(b.getValues<llvm::APInt>(),
+                        [&](const llvm::APInt &bv) { return exact(av, bv); });
+  }
+  if (bSplat) {
+    auto bv = b.getSplatValue<llvm::APInt>();
+    return llvm::all_of(a.getValues<llvm::APInt>(),
+                        [&](const llvm::APInt &av) { return exact(av, bv); });
+  }
+  if (a.getNumElements() != b.getNumElements())
+    return false;
+  for (const auto [av, bv] : llvm::zip_equal(a.getValues<llvm::APInt>(),
+                                             b.getValues<llvm::APInt>())) {
+    if (!exact(av, bv))
+      return false;
+  }
+  return true;
+}
+
+// clang-format off
 #include "src/enzyme_ad/jax/Passes/StablehloOptPatterns.cpp.inc"
+
 }; // namespace enzyme
 }; // namespace mlir
 
@@ -35745,12 +35874,12 @@ struct EnzymeHLOOptPass
         SliceOfUpdateWithoutCorners, SliceElementwise, SliceReshapeElementwise,
         DynamicSliceElementwise, SlicePad, SliceReshapePad, ReshapeSliceReshape,
         DotReshapeDot, ChloInfConstProp, CHLOLGammaConstProp, GammaConstProp,
-        TGammaConstProp, LGammaConstProp, ConcatFuse, ConcatToBroadcast, PadPad,
-        PadReshapePad, ConcatPushBinop<stablehlo::AddOp>,
-        ConcatPushBinop<stablehlo::MulOp>, ScatterToDynamicUpdateSlice,
-        ReduceConcat, ConcatSlice, ConcatMultiPad, ConcatWrap, WidenWrap,
-        WidenExtend, ConcatConcatAxisSwap, SliceConcat, SliceIf,
-        SliceReshapeConcat, BinBroadcastSplat<stablehlo::AddOp>,
+        TGammaConstProp, LGammaConstProp, BinomialProgressConstProp, ConcatFuse,
+        ConcatToBroadcast, ConcatSlicesToReverse, PadPad, PadReshapePad,
+        ConcatPushBinop<stablehlo::AddOp>, ConcatPushBinop<stablehlo::MulOp>,
+        ScatterToDynamicUpdateSlice, ReduceConcat, ConcatSlice, ConcatMultiPad,
+        ConcatWrap, WidenWrap, WidenExtend, ConcatConcatAxisSwap, SliceConcat,
+        SliceIf, SliceReshapeConcat, BinBroadcastSplat<stablehlo::AddOp>,
         BinBroadcastSplat<stablehlo::SubtractOp>,
         BinBroadcastSplat<stablehlo::DivOp>,
         BinBroadcastSplat<stablehlo::MulOp>, RotatePad, ConjReal,

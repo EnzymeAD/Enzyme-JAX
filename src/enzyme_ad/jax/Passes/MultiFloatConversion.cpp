@@ -114,12 +114,12 @@ Value convertToMultifloat(DenseElementsAttr val, OpBuilder &b, Location loc,
     }
 
     if (concatDimension == "tuple") {
-      limbs.push_back(b.create<stablehlo::ConstantOp>(loc, limb));
+      limbs.push_back(stablehlo::ConstantOp::create(b, loc, limb));
     } else if (expansionSize > 1) {
       limbs.push_back(
-          b.create<stablehlo::ConstantOp>(loc, limb.reshape(expandedType)));
+          stablehlo::ConstantOp::create(b, loc, limb.reshape(expandedType)));
     } else {
-      limbs.push_back(b.create<stablehlo::ConstantOp>(loc, limb));
+      limbs.push_back(stablehlo::ConstantOp::create(b, loc, limb));
     }
 
     if (i < expansionSize - 1) {
@@ -163,12 +163,12 @@ Value convertToMultifloat(Value val, OpBuilder &b, Location loc, Type tgtTy,
   SmallVector<Value> limbs;
   Value rem = val;
   for (int i = 0; i < expansionSize; ++i) {
-    Value limb = b.create<stablehlo::ConvertOp>(
-        loc, RankedTensorType::get(tensorType.getShape(), tgtTy), rem);
+    Value limb = stablehlo::ConvertOp::create(
+        b, loc, RankedTensorType::get(tensorType.getShape(), tgtTy), rem);
     limbs.push_back(limb);
     if (i < expansionSize - 1) {
-      Value limbBack = b.create<stablehlo::ConvertOp>(loc, tensorType, limb);
-      rem = b.create<stablehlo::SubtractOp>(loc, rem, limbBack);
+      Value limbBack = stablehlo::ConvertOp::create(b, loc, tensorType, limb);
+      rem = stablehlo::SubtractOp::create(b, loc, rem, limbBack);
     }
   }
 
@@ -187,7 +187,7 @@ Value convertToMultifloat(Value val, OpBuilder &b, Location loc, Type tgtTy,
     SmallVector<Value> reshapedLimbs;
     for (auto limb : limbs) {
       reshapedLimbs.push_back(
-          b.create<stablehlo::ReshapeOp>(loc, expandedType, limb));
+          stablehlo::ReshapeOp::create(b, loc, expandedType, limb));
     }
     return packLimbs(reshapedLimbs, b, loc, concatDimension);
   }
@@ -201,7 +201,7 @@ Value convertFromMultifloat(Value packedVal, OpBuilder &b, Location loc,
     auto tensorType = cast<RankedTensorType>(packedVal.getType());
     auto f64PackedType = RankedTensorType::get(tensorType.getShape(), srcTy);
     Value packed64 =
-        b.create<stablehlo::ConvertOp>(loc, f64PackedType, packedVal);
+        stablehlo::ConvertOp::create(b, loc, f64PackedType, packedVal);
 
     int reduceDim =
         (concatDimension == "first") ? 0 : (tensorType.getRank() - 1);
@@ -218,10 +218,11 @@ Value convertFromMultifloat(Value packedVal, OpBuilder &b, Location loc,
     auto zeroAttr =
         DenseElementsAttr::get(scalarType, b.getFloatAttr(srcTy, 0.0));
     if (!zero)
-      zero = b.create<stablehlo::ConstantOp>(loc, scalarType, zeroAttr);
+      zero = stablehlo::ConstantOp::create(b, loc, scalarType, zeroAttr);
 
-    auto reduceOp = b.create<stablehlo::ReduceOp>(
-        loc, resultType, packed64, zero, b.getDenseI64ArrayAttr({reduceDim}));
+    auto reduceOp =
+        stablehlo::ReduceOp::create(b, loc, resultType, packed64, zero,
+                                    b.getDenseI64ArrayAttr({reduceDim}));
 
     {
       OpBuilder::InsertionGuard guard(b);
@@ -229,9 +230,9 @@ Value convertFromMultifloat(Value packedVal, OpBuilder &b, Location loc,
       auto *block =
           b.createBlock(&region, {}, {scalarType, scalarType}, {loc, loc});
       b.setInsertionPointToStart(block);
-      Value added = b.create<stablehlo::AddOp>(loc, block->getArgument(0),
-                                               block->getArgument(1));
-      b.create<stablehlo::ReturnOp>(loc, added);
+      Value added = stablehlo::AddOp::create(b, loc, block->getArgument(0),
+                                             block->getArgument(1));
+      stablehlo::ReturnOp::create(b, loc, added);
     }
 
     return reduceOp.getResult(0);
@@ -241,27 +242,27 @@ Value convertFromMultifloat(Value packedVal, OpBuilder &b, Location loc,
   Value low = extractLimb(packedVal, 1, b, loc, concatDimension);
   auto f64Type = RankedTensorType::get(
       cast<RankedTensorType>(high.getType()).getShape(), srcTy);
-  Value high64 = b.create<stablehlo::ConvertOp>(loc, f64Type, high);
-  Value low64 = b.create<stablehlo::ConvertOp>(loc, f64Type, low);
-  return b.create<stablehlo::AddOp>(loc, high64, low64);
+  Value high64 = stablehlo::ConvertOp::create(b, loc, f64Type, high);
+  Value low64 = stablehlo::ConvertOp::create(b, loc, f64Type, low);
+  return stablehlo::AddOp::create(b, loc, high64, low64);
 }
 
 std::pair<Value, Value> twoSum(Value a, Value b, OpBuilder &builder,
                                Location loc) {
-  Value sum = builder.create<stablehlo::AddOp>(loc, a, b);
-  Value a_prime = builder.create<stablehlo::SubtractOp>(loc, sum, b);
-  Value b_prime = builder.create<stablehlo::SubtractOp>(loc, sum, a_prime);
-  Value a_err = builder.create<stablehlo::SubtractOp>(loc, a, a_prime);
-  Value b_err = builder.create<stablehlo::SubtractOp>(loc, b, b_prime);
-  Value err = builder.create<stablehlo::AddOp>(loc, a_err, b_err);
+  Value sum = stablehlo::AddOp::create(builder, loc, a, b);
+  Value a_prime = stablehlo::SubtractOp::create(builder, loc, sum, b);
+  Value b_prime = stablehlo::SubtractOp::create(builder, loc, sum, a_prime);
+  Value a_err = stablehlo::SubtractOp::create(builder, loc, a, a_prime);
+  Value b_err = stablehlo::SubtractOp::create(builder, loc, b, b_prime);
+  Value err = stablehlo::AddOp::create(builder, loc, a_err, b_err);
   return {sum, err};
 }
 
 std::pair<Value, Value> fastTwoSum(Value a, Value b, OpBuilder &builder,
                                    Location loc) {
-  Value sum = builder.create<stablehlo::AddOp>(loc, a, b);
-  Value b_prime = builder.create<stablehlo::SubtractOp>(loc, sum, a);
-  Value b_err = builder.create<stablehlo::SubtractOp>(loc, b, b_prime);
+  Value sum = stablehlo::AddOp::create(builder, loc, a, b);
+  Value b_prime = stablehlo::SubtractOp::create(builder, loc, sum, a);
+  Value b_err = stablehlo::SubtractOp::create(builder, loc, b, b_prime);
   return {sum, b_err};
 }
 
@@ -297,34 +298,34 @@ Value getSplitConstant(Type type, OpBuilder &builder, Location loc) {
 
   auto attr = builder.getFloatAttr(floatTy, apVal);
   auto splatAttr = SplatElementsAttr::get(tensorTy, attr);
-  return builder.create<stablehlo::ConstantOp>(loc, splatAttr);
+  return stablehlo::ConstantOp::create(builder, loc, splatAttr);
 }
 
 std::pair<Value, Value> split(Value a, OpBuilder &builder, Location loc) {
   Value c_const = getSplitConstant(a.getType(), builder, loc);
-  Value c = builder.create<stablehlo::MulOp>(loc, a, c_const);
-  Value a_big = builder.create<stablehlo::SubtractOp>(loc, c, a);
-  Value a_hi = builder.create<stablehlo::SubtractOp>(loc, c, a_big);
-  Value a_lo = builder.create<stablehlo::SubtractOp>(loc, a, a_hi);
+  Value c = stablehlo::MulOp::create(builder, loc, a, c_const);
+  Value a_big = stablehlo::SubtractOp::create(builder, loc, c, a);
+  Value a_hi = stablehlo::SubtractOp::create(builder, loc, c, a_big);
+  Value a_lo = stablehlo::SubtractOp::create(builder, loc, a, a_hi);
   return {a_hi, a_lo};
 }
 
 std::pair<Value, Value> twoProdDekker(Value a, Value b, OpBuilder &builder,
                                       Location loc) {
-  Value p = builder.create<stablehlo::MulOp>(loc, a, b);
+  Value p = stablehlo::MulOp::create(builder, loc, a, b);
   auto [a_hi, a_lo] = split(a, builder, loc);
   auto [b_hi, b_lo] = split(b, builder, loc);
 
-  Value p1 = builder.create<stablehlo::MulOp>(loc, a_hi, b_hi);
-  Value p2 = builder.create<stablehlo::MulOp>(loc, a_hi, b_lo);
-  Value p3 = builder.create<stablehlo::MulOp>(loc, a_lo, b_hi);
-  Value p4 = builder.create<stablehlo::MulOp>(loc, a_lo, b_lo);
+  Value p1 = stablehlo::MulOp::create(builder, loc, a_hi, b_hi);
+  Value p2 = stablehlo::MulOp::create(builder, loc, a_hi, b_lo);
+  Value p3 = stablehlo::MulOp::create(builder, loc, a_lo, b_hi);
+  Value p4 = stablehlo::MulOp::create(builder, loc, a_lo, b_lo);
 
-  Value err1 = builder.create<stablehlo::SubtractOp>(loc, p1, p);
-  Value err2 = builder.create<stablehlo::AddOp>(
-      loc, p2, p3); // Group cross terms for accuracy
-  Value err3 = builder.create<stablehlo::AddOp>(loc, err1, err2);
-  Value err4 = builder.create<stablehlo::AddOp>(loc, err3, p4);
+  Value err1 = stablehlo::SubtractOp::create(builder, loc, p1, p);
+  Value err2 = stablehlo::AddOp::create(builder, loc, p2,
+                                        p3); // Group cross terms for accuracy
+  Value err3 = stablehlo::AddOp::create(builder, loc, err1, err2);
+  Value err4 = stablehlo::AddOp::create(builder, loc, err3, p4);
 
   return {p, err4};
 }
@@ -332,10 +333,10 @@ std::pair<Value, Value> twoProdDekker(Value a, Value b, OpBuilder &builder,
 std::pair<Value, Value> multiFloatMul(Value x1, Value x2, Value y1, Value y2,
                                       OpBuilder &builder, Location loc) {
   auto [p00, e00] = twoProdDekker(x1, y1, builder, loc);
-  Value p01 = builder.create<stablehlo::MulOp>(loc, x1, y2);
-  Value p10 = builder.create<stablehlo::MulOp>(loc, x2, y1);
-  Value p01_p10 = builder.create<stablehlo::AddOp>(loc, p01, p10);
-  Value e00_new = builder.create<stablehlo::AddOp>(loc, e00, p01_p10);
+  Value p01 = stablehlo::MulOp::create(builder, loc, x1, y2);
+  Value p10 = stablehlo::MulOp::create(builder, loc, x2, y1);
+  Value p01_p10 = stablehlo::AddOp::create(builder, loc, p01, p10);
+  Value e00_new = stablehlo::AddOp::create(builder, loc, e00, p01_p10);
   return fastTwoSum(p00, e00_new, builder, loc);
 }
 
@@ -344,8 +345,8 @@ std::pair<Value, Value> multiFloatAdd(Value x1, Value x2, Value y1, Value y2,
   auto [a, b] = twoSum(x1, y1, builder, loc);
   auto [c, d] = twoSum(x2, y2, builder, loc);
   auto [new_a, new_c] = fastTwoSum(a, c, builder, loc);
-  Value b2 = builder.create<stablehlo::AddOp>(loc, b, d);
-  Value b3 = builder.create<stablehlo::AddOp>(loc, b2, new_c);
+  Value b2 = stablehlo::AddOp::create(builder, loc, b, d);
+  Value b3 = stablehlo::AddOp::create(builder, loc, b2, new_c);
   return fastTwoSum(new_a, b3, builder, loc);
 }
 
@@ -354,17 +355,17 @@ std::pair<Value, Value> multiFloatDiv(Value x1, Value x2, Value y1, Value y2,
   auto tensorType = cast<RankedTensorType>(x1.getType());
   auto floatTy = cast<FloatType>(tensorType.getElementType());
   auto zeroAttr = builder.getFloatAttr(floatTy, 0.0);
-  Value zero = builder.create<stablehlo::ConstantOp>(
-      loc, SplatElementsAttr::get(tensorType, zeroAttr));
+  Value zero = stablehlo::ConstantOp::create(
+      builder, loc, SplatElementsAttr::get(tensorType, zeroAttr));
 
-  Value q1 = builder.create<stablehlo::DivOp>(loc, x1, y1);
+  Value q1 = stablehlo::DivOp::create(builder, loc, x1, y1);
   auto [p_hi, p_lo] = multiFloatMul(q1, zero, y1, y2, builder, loc);
 
-  Value neg_p_hi = builder.create<stablehlo::NegOp>(loc, p_hi);
-  Value neg_p_lo = builder.create<stablehlo::NegOp>(loc, p_lo);
+  Value neg_p_hi = stablehlo::NegOp::create(builder, loc, p_hi);
+  Value neg_p_lo = stablehlo::NegOp::create(builder, loc, p_lo);
   auto [r_hi, r_lo] = multiFloatAdd(x1, x2, neg_p_hi, neg_p_lo, builder, loc);
 
-  Value q2 = builder.create<stablehlo::DivOp>(loc, r_hi, y1);
+  Value q2 = stablehlo::DivOp::create(builder, loc, r_hi, y1);
   return fastTwoSum(q1, q2, builder, loc);
 }
 
@@ -451,18 +452,18 @@ std::pair<Value, Value> mfAdd(Value x_hi, Value x_lo, Value y_hi, Value y_lo,
   auto [a, b] = twoSum(x_hi, y_hi, builder, loc);
   auto [c, d] = twoSum(x_lo, y_lo, builder, loc);
   auto [new_a, new_c] = fastTwoSum(a, c, builder, loc);
-  Value b2 = builder.create<stablehlo::AddOp>(loc, b, d);
-  Value b3 = builder.create<stablehlo::AddOp>(loc, b2, new_c);
+  Value b2 = stablehlo::AddOp::create(builder, loc, b, d);
+  Value b3 = stablehlo::AddOp::create(builder, loc, b2, new_c);
   return fastTwoSum(new_a, b3, builder, loc);
 }
 
 std::pair<Value, Value> mfMul(Value x_hi, Value x_lo, Value y_hi, Value y_lo,
                               OpBuilder &builder, Location loc) {
   auto [p00, e00] = twoProdDekker(x_hi, y_hi, builder, loc);
-  Value p01 = builder.create<stablehlo::MulOp>(loc, x_hi, y_lo);
-  Value p10 = builder.create<stablehlo::MulOp>(loc, x_lo, y_hi);
-  Value p01_p10 = builder.create<stablehlo::AddOp>(loc, p01, p10);
-  Value e00_new = builder.create<stablehlo::AddOp>(loc, e00, p01_p10);
+  Value p01 = stablehlo::MulOp::create(builder, loc, x_hi, y_lo);
+  Value p10 = stablehlo::MulOp::create(builder, loc, x_lo, y_hi);
+  Value p01_p10 = stablehlo::AddOp::create(builder, loc, p01, p10);
+  Value e00_new = stablehlo::AddOp::create(builder, loc, e00, p01_p10);
   return fastTwoSum(p00, e00_new, builder, loc);
 }
 
@@ -619,7 +620,7 @@ struct ReduceOpConversion : public OpConversionPattern<stablehlo::ReduceOp> {
         dims.push_back(dim);
       }
       auto reduceOp =
-          rewriter.create<stablehlo::ReduceOp>(loc, newInputs, newInits, dims);
+          stablehlo::ReduceOp::create(rewriter, loc, newInputs, newInits, dims);
 
       Block *reduceBlock = new Block();
       reduceOp.getBody().push_back(reduceBlock);
@@ -641,23 +642,26 @@ struct ReduceOpConversion : public OpConversionPattern<stablehlo::ReduceOp> {
         final_lo = l;
       } else {
         // Lexicographical comparison for MaxOp
-        Value cmp = blockBuilder.create<stablehlo::CompareOp>(
-            loc, acc_hi, val_hi, stablehlo::ComparisonDirection::GT);
-        Value eq = blockBuilder.create<stablehlo::CompareOp>(
-            loc, acc_hi, val_hi, stablehlo::ComparisonDirection::EQ);
-        Value lo_cmp = blockBuilder.create<stablehlo::CompareOp>(
-            loc, acc_lo, val_lo, stablehlo::ComparisonDirection::GT);
+        Value cmp =
+            stablehlo::CompareOp::create(blockBuilder, loc, acc_hi, val_hi,
+                                         stablehlo::ComparisonDirection::GT);
+        Value eq =
+            stablehlo::CompareOp::create(blockBuilder, loc, acc_hi, val_hi,
+                                         stablehlo::ComparisonDirection::EQ);
+        Value lo_cmp =
+            stablehlo::CompareOp::create(blockBuilder, loc, acc_lo, val_lo,
+                                         stablehlo::ComparisonDirection::GT);
         Value final_cmp =
-            blockBuilder.create<stablehlo::SelectOp>(loc, eq, lo_cmp, cmp);
+            stablehlo::SelectOp::create(blockBuilder, loc, eq, lo_cmp, cmp);
 
-        final_hi = blockBuilder.create<stablehlo::SelectOp>(loc, final_cmp,
-                                                            acc_hi, val_hi);
-        final_lo = blockBuilder.create<stablehlo::SelectOp>(loc, final_cmp,
-                                                            acc_lo, val_lo);
+        final_hi = stablehlo::SelectOp::create(blockBuilder, loc, final_cmp,
+                                               acc_hi, val_hi);
+        final_lo = stablehlo::SelectOp::create(blockBuilder, loc, final_cmp,
+                                               acc_lo, val_lo);
       }
 
-      blockBuilder.create<stablehlo::ReturnOp>(loc,
-                                               ValueRange{final_hi, final_lo});
+      stablehlo::ReturnOp::create(blockBuilder, loc,
+                                  ValueRange{final_hi, final_lo});
 
       Value res_hi = reduceOp.getResult(0);
       Value res_lo = reduceOp.getResult(1);
@@ -684,10 +688,10 @@ struct ReduceOpConversion : public OpConversionPattern<stablehlo::ReduceOp> {
         reduceBlock->addArguments({scalarType, scalarType}, {loc, loc});
 
         auto blockBuilder = OpBuilder::atBlockBegin(reduceBlock);
-        Value add = blockBuilder.create<stablehlo::AddOp>(
-            loc, scalarType, reduceBlock->getArgument(0),
-            reduceBlock->getArgument(1));
-        blockBuilder.create<stablehlo::ReturnOp>(loc, add);
+        Value add = stablehlo::AddOp::create(blockBuilder, loc, scalarType,
+                                             reduceBlock->getArgument(0),
+                                             reduceBlock->getArgument(1));
+        stablehlo::ReturnOp::create(blockBuilder, loc, add);
       };
 
       if (concatDimension == "tuple") {
@@ -695,27 +699,27 @@ struct ReduceOpConversion : public OpConversionPattern<stablehlo::ReduceOp> {
         Value input_lo = extractLimb(input, 1, rewriter, loc, concatDimension);
 
         auto reduceOp_hi =
-            rewriter.create<stablehlo::ReduceOp>(loc, input_hi, init_hi, dims);
+            stablehlo::ReduceOp::create(rewriter, loc, input_hi, init_hi, dims);
         createReducer(reduceOp_hi);
 
         auto reduceOp_lo =
-            rewriter.create<stablehlo::ReduceOp>(loc, input_lo, init_lo, dims);
+            stablehlo::ReduceOp::create(rewriter, loc, input_lo, init_lo, dims);
         createReducer(reduceOp_lo);
 
         auto finalF64Type = op.getResult(0).getType();
-        Value conv_hi = rewriter.create<stablehlo::ConvertOp>(
-            loc, finalF64Type, reduceOp_hi.getResult(0));
-        Value conv_lo = rewriter.create<stablehlo::ConvertOp>(
-            loc, finalF64Type, reduceOp_lo.getResult(0));
-        Value final_sum = rewriter.create<stablehlo::AddOp>(loc, finalF64Type,
-                                                            conv_hi, conv_lo);
+        Value conv_hi = stablehlo::ConvertOp::create(
+            rewriter, loc, finalF64Type, reduceOp_hi.getResult(0));
+        Value conv_lo = stablehlo::ConvertOp::create(
+            rewriter, loc, finalF64Type, reduceOp_lo.getResult(0));
+        Value final_sum = stablehlo::AddOp::create(rewriter, loc, finalF64Type,
+                                                   conv_hi, conv_lo);
 
         rewriter.replaceOp(op, final_sum);
         return success();
       }
 
       auto reduceOp =
-          rewriter.create<stablehlo::ReduceOp>(loc, input, init_hi, dims);
+          stablehlo::ReduceOp::create(rewriter, loc, input, init_hi, dims);
       createReducer(reduceOp);
 
       Value res_all = reduceOp.getResult(0);
@@ -729,13 +733,13 @@ struct ReduceOpConversion : public OpConversionPattern<stablehlo::ReduceOp> {
         SmallVector<int64_t> sliceStrides(resType.getRank(), 1);
 
         sliceLimits[0] = 1;
-        res_hi = rewriter.create<stablehlo::SliceOp>(loc, res_all, sliceOffsets,
-                                                     sliceLimits, sliceStrides);
+        res_hi = stablehlo::SliceOp::create(
+            rewriter, loc, res_all, sliceOffsets, sliceLimits, sliceStrides);
 
         sliceOffsets[0] = 1;
         sliceLimits[0] = 2;
-        res_lo = rewriter.create<stablehlo::SliceOp>(loc, res_all, sliceOffsets,
-                                                     sliceLimits, sliceStrides);
+        res_lo = stablehlo::SliceOp::create(
+            rewriter, loc, res_all, sliceOffsets, sliceLimits, sliceStrides);
       } else {
         int lastDim = resType.getRank() - 1;
         SmallVector<int64_t> sliceOffsets(resType.getRank(), 0);
@@ -743,13 +747,13 @@ struct ReduceOpConversion : public OpConversionPattern<stablehlo::ReduceOp> {
         SmallVector<int64_t> sliceStrides(resType.getRank(), 1);
 
         sliceLimits[lastDim] = 1;
-        res_hi = rewriter.create<stablehlo::SliceOp>(loc, res_all, sliceOffsets,
-                                                     sliceLimits, sliceStrides);
+        res_hi = stablehlo::SliceOp::create(
+            rewriter, loc, res_all, sliceOffsets, sliceLimits, sliceStrides);
 
         sliceOffsets[lastDim] = 1;
         sliceLimits[lastDim] = 2;
-        res_lo = rewriter.create<stablehlo::SliceOp>(loc, res_all, sliceOffsets,
-                                                     sliceLimits, sliceStrides);
+        res_lo = stablehlo::SliceOp::create(
+            rewriter, loc, res_all, sliceOffsets, sliceLimits, sliceStrides);
       }
 
       auto finalF64Type = op.getResult(0).getType();
@@ -757,17 +761,17 @@ struct ReduceOpConversion : public OpConversionPattern<stablehlo::ReduceOp> {
           cast<RankedTensorType>(finalF64Type).getShape(), targetType);
 
       Value reshaped_hi =
-          rewriter.create<stablehlo::ReshapeOp>(loc, finalF32Type, res_hi);
+          stablehlo::ReshapeOp::create(rewriter, loc, finalF32Type, res_hi);
       Value reshaped_lo =
-          rewriter.create<stablehlo::ReshapeOp>(loc, finalF32Type, res_lo);
+          stablehlo::ReshapeOp::create(rewriter, loc, finalF32Type, res_lo);
 
-      Value conv_hi =
-          rewriter.create<stablehlo::ConvertOp>(loc, finalF64Type, reshaped_hi);
-      Value conv_lo =
-          rewriter.create<stablehlo::ConvertOp>(loc, finalF64Type, reshaped_lo);
+      Value conv_hi = stablehlo::ConvertOp::create(rewriter, loc, finalF64Type,
+                                                   reshaped_hi);
+      Value conv_lo = stablehlo::ConvertOp::create(rewriter, loc, finalF64Type,
+                                                   reshaped_lo);
 
-      Value sum = rewriter.create<stablehlo::AddOp>(loc, finalF64Type, conv_hi,
-                                                    conv_lo);
+      Value sum = stablehlo::AddOp::create(rewriter, loc, finalF64Type, conv_hi,
+                                           conv_lo);
       rewriter.replaceOp(op, sum);
       return success();
     }
@@ -796,14 +800,14 @@ struct SubOpConversion : public OpConversionPattern<stablehlo::SubtractOp> {
     Value y2 = extractLimb(adaptor.getOperands()[1], 1, rewriter, loc,
                            concatDimension);
 
-    Value neg_y1 = rewriter.create<stablehlo::NegOp>(loc, y1);
-    Value neg_y2 = rewriter.create<stablehlo::NegOp>(loc, y2);
+    Value neg_y1 = stablehlo::NegOp::create(rewriter, loc, y1);
+    Value neg_y2 = stablehlo::NegOp::create(rewriter, loc, y2);
 
     auto [a, b] = twoSum(x1, neg_y1, rewriter, loc);
     auto [c, d] = twoSum(x2, neg_y2, rewriter, loc);
     auto [new_a, new_c] = fastTwoSum(a, c, rewriter, loc);
-    Value b2 = rewriter.create<stablehlo::AddOp>(loc, b, d);
-    Value b3 = rewriter.create<stablehlo::AddOp>(loc, b2, new_c);
+    Value b2 = stablehlo::AddOp::create(rewriter, loc, b, d);
+    Value b3 = stablehlo::AddOp::create(rewriter, loc, b2, new_c);
     auto [final_a, final_b] = fastTwoSum(new_a, b3, rewriter, loc);
 
     Value packed = packLimbs(final_a, final_b, rewriter, loc, concatDimension);
@@ -837,37 +841,38 @@ struct DivOpConversion : public OpConversionPattern<stablehlo::DivOp> {
 
     if (divSubsteps == 0) {
       // 1. q_hi = x_hi / y_hi
-      Value q_hi = rewriter.create<stablehlo::DivOp>(loc, x1, y1);
+      Value q_hi = stablehlo::DivOp::create(rewriter, loc, x1, y1);
 
       // 2. (p, e) = twoProdDekker(q_hi, y_hi)
       auto [p, e] = twoProdDekker(q_hi, y1, rewriter, loc);
 
       // 3. rem = x_hi - p - e + x_lo - q_hi * y_lo
-      Value neg_p = rewriter.create<stablehlo::NegOp>(loc, p);
-      Value neg_e = rewriter.create<stablehlo::NegOp>(loc, e);
+      Value neg_p = stablehlo::NegOp::create(rewriter, loc, p);
+      Value neg_e = stablehlo::NegOp::create(rewriter, loc, e);
 
       // x_hi - p
-      Value rem1 = rewriter.create<stablehlo::AddOp>(loc, x1, neg_p);
+      Value rem1 = stablehlo::AddOp::create(rewriter, loc, x1, neg_p);
       // (x_hi - p) - e
-      Value rem2 = rewriter.create<stablehlo::AddOp>(loc, rem1, neg_e);
+      Value rem2 = stablehlo::AddOp::create(rewriter, loc, rem1, neg_e);
       // ((x_hi - p) - e) + x_lo
-      Value rem3 = rewriter.create<stablehlo::AddOp>(loc, rem2, x2);
+      Value rem3 = stablehlo::AddOp::create(rewriter, loc, rem2, x2);
 
       // q_hi * y_lo
-      Value q_hi_y_lo = rewriter.create<stablehlo::MulOp>(loc, q_hi, y2);
-      Value neg_q_hi_y_lo = rewriter.create<stablehlo::NegOp>(loc, q_hi_y_lo);
+      Value q_hi_y_lo = stablehlo::MulOp::create(rewriter, loc, q_hi, y2);
+      Value neg_q_hi_y_lo = stablehlo::NegOp::create(rewriter, loc, q_hi_y_lo);
 
       // rem = rem3 - q_hi * y_lo
-      Value rem = rewriter.create<stablehlo::AddOp>(loc, rem3, neg_q_hi_y_lo);
+      Value rem = stablehlo::AddOp::create(rewriter, loc, rem3, neg_q_hi_y_lo);
 
       // 4. q_lo = rem / y_hi
-      Value q_lo = rewriter.create<stablehlo::DivOp>(loc, rem, y1);
+      Value q_lo = stablehlo::DivOp::create(rewriter, loc, rem, y1);
 
       // 5. Combine q_hi and q_lo into a normalized MultiFloat (fast_two_sum)
-      Value final_h = rewriter.create<stablehlo::AddOp>(loc, q_hi, q_lo);
-      Value h_diff = rewriter.create<stablehlo::SubtractOp>(loc, final_h, q_hi);
+      Value final_h = stablehlo::AddOp::create(rewriter, loc, q_hi, q_lo);
+      Value h_diff =
+          stablehlo::SubtractOp::create(rewriter, loc, final_h, q_hi);
       Value q_lo_diff =
-          rewriter.create<stablehlo::SubtractOp>(loc, q_lo, h_diff);
+          stablehlo::SubtractOp::create(rewriter, loc, q_lo, h_diff);
       Value final_l = q_lo_diff;
 
       Value packed =
@@ -878,20 +883,20 @@ struct DivOpConversion : public OpConversionPattern<stablehlo::DivOp> {
       auto floatTy = cast<FloatType>(tensorType.getElementType());
 
       auto oneAttr = rewriter.getFloatAttr(floatTy, 1.0);
-      Value one = rewriter.create<stablehlo::ConstantOp>(
-          loc, SplatElementsAttr::get(tensorType, oneAttr));
+      Value one = stablehlo::ConstantOp::create(
+          rewriter, loc, SplatElementsAttr::get(tensorType, oneAttr));
 
       auto zeroAttr = rewriter.getFloatAttr(floatTy, 0.0);
-      Value zero = rewriter.create<stablehlo::ConstantOp>(
-          loc, SplatElementsAttr::get(tensorType, zeroAttr));
+      Value zero = stablehlo::ConstantOp::create(
+          rewriter, loc, SplatElementsAttr::get(tensorType, zeroAttr));
 
       auto twoAttr = rewriter.getFloatAttr(floatTy, 2.0);
-      Value two_hi = rewriter.create<stablehlo::ConstantOp>(
-          loc, SplatElementsAttr::get(tensorType, twoAttr));
+      Value two_hi = stablehlo::ConstantOp::create(
+          rewriter, loc, SplatElementsAttr::get(tensorType, twoAttr));
       Value two_lo = zero;
 
       // u0 = 1 / y1
-      Value u_hi = rewriter.create<stablehlo::DivOp>(loc, one, y1);
+      Value u_hi = stablehlo::DivOp::create(rewriter, loc, one, y1);
       Value u_lo = zero;
 
       for (int i = 0; i < divSubsteps; ++i) {
@@ -899,8 +904,8 @@ struct DivOpConversion : public OpConversionPattern<stablehlo::DivOp> {
         auto [Y_u_hi, Y_u_lo] =
             multiFloatMul(y1, y2, u_hi, u_lo, rewriter, loc);
         // 2 - Y * u
-        Value neg_Y_u_hi = rewriter.create<stablehlo::NegOp>(loc, Y_u_hi);
-        Value neg_Y_u_lo = rewriter.create<stablehlo::NegOp>(loc, Y_u_lo);
+        Value neg_Y_u_hi = stablehlo::NegOp::create(rewriter, loc, Y_u_hi);
+        Value neg_Y_u_lo = stablehlo::NegOp::create(rewriter, loc, Y_u_lo);
         auto [diff_hi, diff_lo] = multiFloatAdd(two_hi, two_lo, neg_Y_u_hi,
                                                 neg_Y_u_lo, rewriter, loc);
         // u = u * (2 - Y * u)
@@ -946,10 +951,10 @@ struct SelectOpConversion : public OpConversionPattern<stablehlo::SelectOp> {
       Value onFalseLow = extractLimb(adaptor.getOperands()[2], 1, rewriter, loc,
                                      concatDimension);
 
-      auto selectHigh = rewriter.create<stablehlo::SelectOp>(
-          loc, adaptor.getOperands()[0], onTrueHigh, onFalseHigh);
-      auto selectLow = rewriter.create<stablehlo::SelectOp>(
-          loc, adaptor.getOperands()[0], onTrueLow, onFalseLow);
+      auto selectHigh = stablehlo::SelectOp::create(
+          rewriter, loc, adaptor.getOperands()[0], onTrueHigh, onFalseHigh);
+      auto selectLow = stablehlo::SelectOp::create(
+          rewriter, loc, adaptor.getOperands()[0], onTrueLow, onFalseLow);
 
       Value packed =
           packLimbs(selectHigh, selectLow, rewriter, loc, concatDimension);
@@ -962,9 +967,9 @@ struct SelectOpConversion : public OpConversionPattern<stablehlo::SelectOp> {
     Value onFalse = adaptor.getOperands()[2];
 
     if (onTrue.getType() != expectedType) {
-      onTrue =
-          rewriter.create<UnrealizedConversionCastOp>(loc, expectedType, onTrue)
-              .getResult(0);
+      onTrue = UnrealizedConversionCastOp::create(rewriter, loc, expectedType,
+                                                  onTrue)
+                   .getResult(0);
     }
     if (onFalse.getType() != expectedType) {
       onFalse =
@@ -994,8 +999,8 @@ struct SelectOpConversion : public OpConversionPattern<stablehlo::SelectOp> {
 
       auto outType = RankedTensorType::get(valuesType.getShape(),
                                            predType.getElementType());
-      pred = rewriter.create<stablehlo::BroadcastInDimOp>(
-          loc, outType, adaptor.getOperands()[0],
+      pred = stablehlo::BroadcastInDimOp::create(
+          rewriter, loc, outType, adaptor.getOperands()[0],
           rewriter.getDenseI64ArrayAttr(broadcastDims));
     }
 
@@ -1005,8 +1010,8 @@ struct SelectOpConversion : public OpConversionPattern<stablehlo::SelectOp> {
     LLVM_DEBUG(llvm::dbgs() << "  onTrue type: " << onTrue.getType() << "\n");
     LLVM_DEBUG(llvm::dbgs() << "  onFalse type: " << onFalse.getType() << "\n");
 
-    auto selectOp = rewriter.create<stablehlo::SelectOp>(loc, valuesType, pred,
-                                                         onTrue, onFalse);
+    auto selectOp = stablehlo::SelectOp::create(rewriter, loc, valuesType, pred,
+                                                onTrue, onFalse);
 
     rewriter.replaceOp(op, selectOp);
     return success();
@@ -1059,14 +1064,15 @@ struct ConvertOpConversion : public OpConversionPattern<stablehlo::ConvertOp> {
         Value high = extractLimb(adaptor.getOperands()[0], 0, rewriter, loc,
                                  concatDimension);
         if (!isTuple) {
-          high = rewriter.create<stablehlo::ReshapeOp>(
-              loc, RankedTensorType::get(outTensorType.getShape(), targetType),
+          high = stablehlo::ReshapeOp::create(
+              rewriter, loc,
+              RankedTensorType::get(outTensorType.getShape(), targetType),
               high);
         }
         if (outElType != targetType) {
-          high = rewriter.create<stablehlo::ConvertOp>(
-              loc, RankedTensorType::get(outTensorType.getShape(), outElType),
-              high);
+          high = stablehlo::ConvertOp::create(
+              rewriter, loc,
+              RankedTensorType::get(outTensorType.getShape(), outElType), high);
         }
         rewriter.replaceOp(op, high);
         return success();
@@ -1085,11 +1091,11 @@ struct ConvertOpConversion : public OpConversionPattern<stablehlo::ConvertOp> {
         for (int i = 0; i < expansionSize; ++i) {
           Value limb = extractLimb(adaptor.getOperands()[0], i, rewriter, loc,
                                    concatDimension);
-          Value convertedLimb = rewriter.create<stablehlo::ConvertOp>(
-              loc, RankedTensorType::get(outTensorType.getShape(), outElType),
-              limb);
+          Value convertedLimb = stablehlo::ConvertOp::create(
+              rewriter, loc,
+              RankedTensorType::get(outTensorType.getShape(), outElType), limb);
           if (sum) {
-            sum = rewriter.create<stablehlo::AddOp>(loc, sum, convertedLimb);
+            sum = stablehlo::AddOp::create(rewriter, loc, sum, convertedLimb);
           } else {
             sum = convertedLimb;
           }
@@ -1105,21 +1111,21 @@ struct ConvertOpConversion : public OpConversionPattern<stablehlo::ConvertOp> {
       if (isSubsetFloat(inElType, targetType)) {
         Value high = adaptor.getOperands()[0];
         if (inElType != targetType) {
-          high = rewriter.create<stablehlo::ConvertOp>(
-              loc, RankedTensorType::get(inTensorType.getShape(), targetType),
-              high);
+          high = stablehlo::ConvertOp::create(
+              rewriter, loc,
+              RankedTensorType::get(inTensorType.getShape(), targetType), high);
         }
         Value highPacked = high;
         if (!isTuple) {
           highPacked =
-              rewriter.create<stablehlo::ReshapeOp>(loc, limbType, high);
+              stablehlo::ReshapeOp::create(rewriter, loc, limbType, high);
         }
 
         SmallVector<Value> packedLimbsList;
         packedLimbsList.push_back(highPacked);
         for (int i = 1; i < expansionSize; ++i) {
-          packedLimbsList.push_back(rewriter.create<stablehlo::ConstantOp>(
-              loc, rewriter.getZeroAttr(limbType)));
+          packedLimbsList.push_back(stablehlo::ConstantOp::create(
+              rewriter, loc, rewriter.getZeroAttr(limbType)));
         }
 
         Value packed =
@@ -1151,14 +1157,15 @@ struct ConvertOpConversion : public OpConversionPattern<stablehlo::ConvertOp> {
         Value limb = extractLimb(adaptor.getOperands()[0], i, rewriter, loc,
                                  concatDimension);
         if (!isTuple) {
-          limb = rewriter.create<stablehlo::ReshapeOp>(
-              loc, RankedTensorType::get(outTensorType.getShape(), targetType),
+          limb = stablehlo::ReshapeOp::create(
+              rewriter, loc,
+              RankedTensorType::get(outTensorType.getShape(), targetType),
               limb);
         }
         Value convertedLimb =
-            rewriter.create<stablehlo::ConvertOp>(loc, outType, limb);
+            stablehlo::ConvertOp::create(rewriter, loc, outType, limb);
         if (sum) {
-          sum = rewriter.create<stablehlo::AddOp>(loc, sum, convertedLimb);
+          sum = stablehlo::AddOp::create(rewriter, loc, sum, convertedLimb);
         } else {
           sum = convertedLimb;
         }
@@ -1202,9 +1209,9 @@ struct ReverseOpConversion : public OpConversionPattern<stablehlo::ReverseOp> {
                               concatDimension);
 
       Value revHigh =
-          rewriter.create<stablehlo::ReverseOp>(loc, high, op.getDimensions());
+          stablehlo::ReverseOp::create(rewriter, loc, high, op.getDimensions());
       Value revLow =
-          rewriter.create<stablehlo::ReverseOp>(loc, low, op.getDimensions());
+          stablehlo::ReverseOp::create(rewriter, loc, low, op.getDimensions());
 
       Value packed = packLimbs(revHigh, revLow, rewriter, loc, concatDimension);
       rewriter.replaceOp(op, packed);
@@ -1218,8 +1225,9 @@ struct ReverseOpConversion : public OpConversionPattern<stablehlo::ReverseOp> {
       }
     }
 
-    Value reversed = rewriter.create<stablehlo::ReverseOp>(
-        loc, adaptor.getOperands()[0], rewriter.getDenseI64ArrayAttr(dims));
+    Value reversed =
+        stablehlo::ReverseOp::create(rewriter, loc, adaptor.getOperands()[0],
+                                     rewriter.getDenseI64ArrayAttr(dims));
     rewriter.replaceOp(op, reversed);
     return success();
   }
@@ -1246,12 +1254,12 @@ struct SliceOpConversion : public OpConversionPattern<stablehlo::SliceOp> {
       Value low = extractLimb(adaptor.getOperands()[0], 1, rewriter, loc,
                               concatDimension);
 
-      auto sliceHigh = rewriter.create<stablehlo::SliceOp>(
-          loc, high, op.getStartIndices(), op.getLimitIndices(),
-          op.getStrides());
-      auto sliceLow = rewriter.create<stablehlo::SliceOp>(
-          loc, low, op.getStartIndices(), op.getLimitIndices(),
-          op.getStrides());
+      auto sliceHigh =
+          stablehlo::SliceOp::create(rewriter, loc, high, op.getStartIndices(),
+                                     op.getLimitIndices(), op.getStrides());
+      auto sliceLow =
+          stablehlo::SliceOp::create(rewriter, loc, low, op.getStartIndices(),
+                                     op.getLimitIndices(), op.getStrides());
 
       Value packed =
           packLimbs(sliceHigh, sliceLow, rewriter, loc, concatDimension);
@@ -1276,8 +1284,8 @@ struct SliceOpConversion : public OpConversionPattern<stablehlo::SliceOp> {
     auto outType =
         cast<RankedTensorType>(getTypeConverter()->convertType(op.getType()));
 
-    auto sliceOp = rewriter.create<stablehlo::SliceOp>(
-        loc, outType, adaptor.getOperands()[0],
+    auto sliceOp = stablehlo::SliceOp::create(
+        rewriter, loc, outType, adaptor.getOperands()[0],
         rewriter.getDenseI64ArrayAttr(startIndices),
         rewriter.getDenseI64ArrayAttr(limitIndices),
         rewriter.getDenseI64ArrayAttr(strides));
@@ -1308,22 +1316,22 @@ struct AbsOpConversion : public OpConversionPattern<stablehlo::AbsOp> {
 
     auto zeroAttr = rewriter.getFloatAttr(floatTy, 0.0);
     auto splatAttr = SplatElementsAttr::get(tensorType, zeroAttr);
-    Value zero = rewriter.create<stablehlo::ConstantOp>(loc, splatAttr);
+    Value zero = stablehlo::ConstantOp::create(rewriter, loc, splatAttr);
 
-    Value isPositive = rewriter.create<stablehlo::CompareOp>(
-        loc, hi, zero, stablehlo::ComparisonDirection::GE);
+    Value isPositive = stablehlo::CompareOp::create(
+        rewriter, loc, hi, zero, stablehlo::ComparisonDirection::GE);
 
     bool isTuple = concatDimension == "tuple";
 
     if (isTuple) {
       Value lo = extractLimb(input, 1, rewriter, loc, concatDimension);
-      Value neg_hi = rewriter.create<stablehlo::NegOp>(loc, hi);
-      Value neg_lo = rewriter.create<stablehlo::NegOp>(loc, lo);
+      Value neg_hi = stablehlo::NegOp::create(rewriter, loc, hi);
+      Value neg_lo = stablehlo::NegOp::create(rewriter, loc, lo);
 
       Value res_hi =
-          rewriter.create<stablehlo::SelectOp>(loc, isPositive, hi, neg_hi);
+          stablehlo::SelectOp::create(rewriter, loc, isPositive, hi, neg_hi);
       Value res_lo =
-          rewriter.create<stablehlo::SelectOp>(loc, isPositive, lo, neg_lo);
+          stablehlo::SelectOp::create(rewriter, loc, isPositive, lo, neg_lo);
 
       Value packed = packLimbs(res_hi, res_lo, rewriter, loc, concatDimension);
       rewriter.replaceOp(op, packed);
@@ -1336,14 +1344,13 @@ struct AbsOpConversion : public OpConversionPattern<stablehlo::AbsOp> {
       for (int i = 0; i < fullType.getRank(); ++i) {
         broadcastDims.push_back(i);
       }
-      Value broadcasted_isPositive =
-          rewriter.create<stablehlo::BroadcastInDimOp>(
-              loc, predType, isPositive,
-              rewriter.getDenseI64ArrayAttr(broadcastDims));
+      Value broadcasted_isPositive = stablehlo::BroadcastInDimOp::create(
+          rewriter, loc, predType, isPositive,
+          rewriter.getDenseI64ArrayAttr(broadcastDims));
 
-      Value neg = rewriter.create<stablehlo::NegOp>(loc, input);
-      Value res = rewriter.create<stablehlo::SelectOp>(
-          loc, fullType, broadcasted_isPositive, input, neg);
+      Value neg = stablehlo::NegOp::create(rewriter, loc, input);
+      Value res = stablehlo::SelectOp::create(
+          rewriter, loc, fullType, broadcasted_isPositive, input, neg);
       rewriter.replaceOp(op, res);
     }
     return success();
@@ -1371,30 +1378,30 @@ struct FloorOpConversion : public OpConversionPattern<stablehlo::FloorOp> {
     auto floatTy = cast<FloatType>(tensorType.getElementType());
 
     // 1. fh = floor(xh)
-    Value fh = rewriter.create<stablehlo::FloorOp>(loc, hi);
+    Value fh = stablehlo::FloorOp::create(rewriter, loc, hi);
 
     // 2. diff = xh - fh
-    Value diff = rewriter.create<stablehlo::SubtractOp>(loc, hi, fh);
+    Value diff = stablehlo::SubtractOp::create(rewriter, loc, hi, fh);
 
     // 3. is_negative = compare(LT, diff, negate(xl))
-    Value neg_lo = rewriter.create<stablehlo::NegOp>(loc, lo);
-    Value is_negative = rewriter.create<stablehlo::CompareOp>(
-        loc, diff, neg_lo, stablehlo::ComparisonDirection::LT);
+    Value neg_lo = stablehlo::NegOp::create(rewriter, loc, lo);
+    Value is_negative = stablehlo::CompareOp::create(
+        rewriter, loc, diff, neg_lo, stablehlo::ComparisonDirection::LT);
 
     // 4. fh_minus_1 = fh - 1
     auto oneAttr = rewriter.getFloatAttr(floatTy, 1.0);
     auto splatAttr = SplatElementsAttr::get(tensorType, oneAttr);
-    Value one = rewriter.create<stablehlo::ConstantOp>(loc, splatAttr);
-    Value fh_minus_1 = rewriter.create<stablehlo::SubtractOp>(loc, fh, one);
+    Value one = stablehlo::ConstantOp::create(rewriter, loc, splatAttr);
+    Value fh_minus_1 = stablehlo::SubtractOp::create(rewriter, loc, fh, one);
 
     // 5. res_hi = select(is_negative, fh_minus_1, fh)
     Value res_hi =
-        rewriter.create<stablehlo::SelectOp>(loc, is_negative, fh_minus_1, fh);
+        stablehlo::SelectOp::create(rewriter, loc, is_negative, fh_minus_1, fh);
 
     // 6. res_lo = 0
     auto zeroAttr = rewriter.getFloatAttr(floatTy, 0.0);
     auto zeroSplatAttr = SplatElementsAttr::get(tensorType, zeroAttr);
-    Value zero = rewriter.create<stablehlo::ConstantOp>(loc, zeroSplatAttr);
+    Value zero = stablehlo::ConstantOp::create(rewriter, loc, zeroSplatAttr);
 
     // 7. Pack res_hi and res_lo
     Value packed = packLimbs(res_hi, zero, rewriter, loc, concatDimension);
@@ -1425,31 +1432,31 @@ struct CeilOpConversion : public OpConversionPattern<stablehlo::CeilOp> {
     auto floatTy = cast<FloatType>(tensorType.getElementType());
 
     // 1. ch = ceil(xh)
-    Value ch = rewriter.create<stablehlo::CeilOp>(loc, hi);
+    Value ch = stablehlo::CeilOp::create(rewriter, loc, hi);
 
     // 2. is_int = compare(EQ, ch, hi)
-    Value is_int = rewriter.create<stablehlo::CompareOp>(
-        loc, ch, hi, stablehlo::ComparisonDirection::EQ);
+    Value is_int = stablehlo::CompareOp::create(
+        rewriter, loc, ch, hi, stablehlo::ComparisonDirection::EQ);
 
     // 3. is_pos = compare(GT, lo, 0)
     auto zeroAttr = rewriter.getFloatAttr(floatTy, 0.0);
     auto zeroSplatAttr = SplatElementsAttr::get(tensorType, zeroAttr);
-    Value zero = rewriter.create<stablehlo::ConstantOp>(loc, zeroSplatAttr);
-    Value is_pos = rewriter.create<stablehlo::CompareOp>(
-        loc, lo, zero, stablehlo::ComparisonDirection::GT);
+    Value zero = stablehlo::ConstantOp::create(rewriter, loc, zeroSplatAttr);
+    Value is_pos = stablehlo::CompareOp::create(
+        rewriter, loc, lo, zero, stablehlo::ComparisonDirection::GT);
 
     // 4. should_inc = and(is_int, is_pos)
-    Value should_inc = rewriter.create<stablehlo::AndOp>(loc, is_int, is_pos);
+    Value should_inc = stablehlo::AndOp::create(rewriter, loc, is_int, is_pos);
 
     // 5. ch_plus_1 = ch + 1
     auto oneAttr = rewriter.getFloatAttr(floatTy, 1.0);
     auto splatAttr = SplatElementsAttr::get(tensorType, oneAttr);
-    Value one = rewriter.create<stablehlo::ConstantOp>(loc, splatAttr);
-    Value ch_plus_1 = rewriter.create<stablehlo::AddOp>(loc, ch, one);
+    Value one = stablehlo::ConstantOp::create(rewriter, loc, splatAttr);
+    Value ch_plus_1 = stablehlo::AddOp::create(rewriter, loc, ch, one);
 
     // 6. res_hi = select(should_inc, ch_plus_1, ch)
     Value res_hi =
-        rewriter.create<stablehlo::SelectOp>(loc, should_inc, ch_plus_1, ch);
+        stablehlo::SelectOp::create(rewriter, loc, should_inc, ch_plus_1, ch);
 
     // 7. Pack res_hi and zero (res_lo is 0)
     Value packed = packLimbs(res_hi, zero, rewriter, loc, concatDimension);
@@ -1472,15 +1479,16 @@ struct ExpOpConversion : public OpConversionPattern<stablehlo::ExpOp> {
                RankedTensorType type) const {
     auto floatTy =
         cast<FloatType>(cast<RankedTensorType>(type).getElementType());
-    Value res = rewriter.create<stablehlo::ConstantOp>(
-        loc,
+    Value res = stablehlo::ConstantOp::create(
+        rewriter, loc,
         SplatElementsAttr::get(type, rewriter.getFloatAttr(floatTy, coefs[0])));
     for (size_t i = 1; i < coefs.size(); ++i) {
-      Value c = rewriter.create<stablehlo::ConstantOp>(
-          loc, SplatElementsAttr::get(
-                   type, rewriter.getFloatAttr(floatTy, coefs[i])));
-      res = rewriter.create<stablehlo::MulOp>(loc, res, x);
-      res = rewriter.create<stablehlo::AddOp>(loc, res, c);
+      Value c = stablehlo::ConstantOp::create(
+          rewriter, loc,
+          SplatElementsAttr::get(type,
+                                 rewriter.getFloatAttr(floatTy, coefs[i])));
+      res = stablehlo::MulOp::create(rewriter, loc, res, x);
+      res = stablehlo::AddOp::create(rewriter, loc, res, c);
     }
     return res;
   }
@@ -1503,41 +1511,41 @@ struct ExpOpConversion : public OpConversionPattern<stablehlo::ExpOp> {
     // C2 = Float32(+0x1.4AE0C0p-026) = 1.9259629911678385e-8
     auto c1Attr = rewriter.getFloatAttr(floatTy, 1.4426950216293335);
     auto c1Splat = SplatElementsAttr::get(tensorType, c1Attr);
-    Value c1 = rewriter.create<stablehlo::ConstantOp>(loc, c1Splat);
+    Value c1 = stablehlo::ConstantOp::create(rewriter, loc, c1Splat);
 
     auto c2Attr = rewriter.getFloatAttr(floatTy, 1.9259629911678385e-8);
     auto c2Splat = SplatElementsAttr::get(tensorType, c2Attr);
-    Value c2 = rewriter.create<stablehlo::ConstantOp>(loc, c2Splat);
+    Value c2 = stablehlo::ConstantOp::create(rewriter, loc, c2Splat);
 
     auto [p00, e00] = twoProdDekker(hi, c1, rewriter, loc);
-    Value p01 = rewriter.create<stablehlo::MulOp>(loc, hi, c2);
-    Value p10 = rewriter.create<stablehlo::MulOp>(loc, lo, c1);
-    Value p01_p10 = rewriter.create<stablehlo::AddOp>(loc, p01, p10);
-    Value e00_new = rewriter.create<stablehlo::AddOp>(loc, e00, p01_p10);
+    Value p01 = stablehlo::MulOp::create(rewriter, loc, hi, c2);
+    Value p10 = stablehlo::MulOp::create(rewriter, loc, lo, c1);
+    Value p01_p10 = stablehlo::AddOp::create(rewriter, loc, p01, p10);
+    Value e00_new = stablehlo::AddOp::create(rewriter, loc, e00, p01_p10);
     auto [y_hi, y_lo] = fastTwoSum(p00, e00_new, rewriter, loc);
 
     // 2. n = floor(y_hi + 0.5)
     auto halfAttr = rewriter.getFloatAttr(floatTy, 0.5);
     auto halfSplat = SplatElementsAttr::get(tensorType, halfAttr);
-    Value half = rewriter.create<stablehlo::ConstantOp>(loc, halfSplat);
-    Value add_half = rewriter.create<stablehlo::AddOp>(loc, y_hi, half);
-    Value n = rewriter.create<stablehlo::FloorOp>(loc, add_half);
+    Value half = stablehlo::ConstantOp::create(rewriter, loc, halfSplat);
+    Value add_half = stablehlo::AddOp::create(rewriter, loc, y_hi, half);
+    Value n = stablehlo::FloorOp::create(rewriter, loc, add_half);
 
     // 3. r = y - n in multi-float!
-    Value neg_n = rewriter.create<stablehlo::NegOp>(loc, n);
+    Value neg_n = stablehlo::NegOp::create(rewriter, loc, n);
     auto [r_hi, r_lo_err] = twoSum(y_hi, neg_n, rewriter, loc);
-    Value r_lo = rewriter.create<stablehlo::AddOp>(loc, y_lo, r_lo_err);
+    Value r_lo = stablehlo::AddOp::create(rewriter, loc, y_lo, r_lo_err);
     auto [r_hi_final, r_lo_final] = fastTwoSum(r_hi, r_lo, rewriter, loc);
 
     // 4. Scale r by 1/8
     auto one_eighthAttr = rewriter.getFloatAttr(floatTy, 0.125);
     auto one_eighthSplat = SplatElementsAttr::get(tensorType, one_eighthAttr);
     Value one_eighth =
-        rewriter.create<stablehlo::ConstantOp>(loc, one_eighthSplat);
+        stablehlo::ConstantOp::create(rewriter, loc, one_eighthSplat);
     Value r_prime_hi =
-        rewriter.create<stablehlo::MulOp>(loc, r_hi_final, one_eighth);
+        stablehlo::MulOp::create(rewriter, loc, r_hi_final, one_eighth);
     Value r_prime_lo =
-        rewriter.create<stablehlo::MulOp>(loc, r_lo_final, one_eighth);
+        stablehlo::MulOp::create(rewriter, loc, r_lo_final, one_eighth);
 
     // 5. Evaluate polynomial of degree 7 on r_prime in multi-float!
     // Coefficients from MultiFloats.jl for Float32, Val{2}:
@@ -1564,9 +1572,10 @@ struct ExpOpConversion : public OpConversionPattern<stablehlo::ExpOp> {
     // Horner's method in multi-float!
     // Start with last coefficient!
     auto getConst = [&](double val) {
-      return rewriter.create<stablehlo::ConstantOp>(
-          loc, SplatElementsAttr::get(tensorType,
-                                      rewriter.getFloatAttr(floatTy, val)));
+      return stablehlo::ConstantOp::create(
+          rewriter, loc,
+          SplatElementsAttr::get(tensorType,
+                                 rewriter.getFloatAttr(floatTy, val)));
     };
 
     Value p_hi = getConst(kCoefs[7][0]);
@@ -1591,11 +1600,11 @@ struct ExpOpConversion : public OpConversionPattern<stablehlo::ExpOp> {
     // We can use stablehlo.pow(2.0, n) and multiply!
     auto twoAttr = rewriter.getFloatAttr(floatTy, 2.0);
     auto twoSplat = SplatElementsAttr::get(tensorType, twoAttr);
-    Value two = rewriter.create<stablehlo::ConstantOp>(loc, twoSplat);
-    Value scale = rewriter.create<stablehlo::PowOp>(loc, two, n);
+    Value two = stablehlo::ConstantOp::create(rewriter, loc, twoSplat);
+    Value scale = stablehlo::PowOp::create(rewriter, loc, two, n);
 
-    res_hi = rewriter.create<stablehlo::MulOp>(loc, res_hi, scale);
-    res_lo = rewriter.create<stablehlo::MulOp>(loc, res_lo, scale);
+    res_hi = stablehlo::MulOp::create(rewriter, loc, res_hi, scale);
+    res_lo = stablehlo::MulOp::create(rewriter, loc, res_lo, scale);
 
     // Pack limbs
     Value packed = packLimbs(res_hi, res_lo, rewriter, loc, concatDimension);
@@ -1620,7 +1629,7 @@ struct NegOpConversion : public OpConversionPattern<stablehlo::NegOp> {
 
     Value packed = applyElementwiseOpToLimbs(
         adaptor.getOperands()[0], rewriter, loc, concatDimension,
-        [&](Value v) { return rewriter.create<stablehlo::NegOp>(loc, v); });
+        [&](Value v) { return stablehlo::NegOp::create(rewriter, loc, v); });
     rewriter.replaceOp(op, packed);
     return success();
   }
@@ -1650,10 +1659,10 @@ struct SineOpConversion : public OpConversionPattern<stablehlo::SineOp> {
     // 1/pi constants
     auto hiInvPiAttr = rewriter.getFloatAttr(floatTy, 0.31830987334251403809);
     auto loInvPiAttr = rewriter.getFloatAttr(floatTy, 0.00000001284127648660);
-    Value hi_inv_pi = rewriter.create<stablehlo::ConstantOp>(
-        loc, SplatElementsAttr::get(tensorType, hiInvPiAttr));
-    Value lo_inv_pi = rewriter.create<stablehlo::ConstantOp>(
-        loc, SplatElementsAttr::get(tensorType, loInvPiAttr));
+    Value hi_inv_pi = stablehlo::ConstantOp::create(
+        rewriter, loc, SplatElementsAttr::get(tensorType, hiInvPiAttr));
+    Value lo_inv_pi = stablehlo::ConstantOp::create(
+        rewriter, loc, SplatElementsAttr::get(tensorType, loInvPiAttr));
 
     // x_pi = x * (1/pi)
     auto [x_pi_hi, x_pi_lo] =
@@ -1661,58 +1670,58 @@ struct SineOpConversion : public OpConversionPattern<stablehlo::SineOp> {
 
     // Absolute value of x_pi
     auto zeroAttr = rewriter.getFloatAttr(floatTy, 0.0);
-    Value zero = rewriter.create<stablehlo::ConstantOp>(
-        loc, SplatElementsAttr::get(tensorType, zeroAttr));
-    Value lt_zero = rewriter.create<stablehlo::CompareOp>(
-        loc, x_pi_hi, zero, stablehlo::ComparisonDirection::LT);
-    Value neg_x_pi_hi = rewriter.create<stablehlo::NegOp>(loc, x_pi_hi);
+    Value zero = stablehlo::ConstantOp::create(
+        rewriter, loc, SplatElementsAttr::get(tensorType, zeroAttr));
+    Value lt_zero = stablehlo::CompareOp::create(
+        rewriter, loc, x_pi_hi, zero, stablehlo::ComparisonDirection::LT);
+    Value neg_x_pi_hi = stablehlo::NegOp::create(rewriter, loc, x_pi_hi);
 
-    Value abs_x_hi = rewriter.create<stablehlo::SelectOp>(loc, lt_zero,
-                                                          neg_x_pi_hi, x_pi_hi);
+    Value abs_x_hi = stablehlo::SelectOp::create(rewriter, loc, lt_zero,
+                                                 neg_x_pi_hi, x_pi_hi);
 
     // n = round(2 * abs_x_hi)
     // Using trunc(2 * abs_x_hi + 0.5) as a proxy for round for positive
     // numbers.
     auto twoAttr = rewriter.getFloatAttr(floatTy, 2.0);
-    Value two = rewriter.create<stablehlo::ConstantOp>(
-        loc, SplatElementsAttr::get(tensorType, twoAttr));
-    Value two_abs_x_hi = rewriter.create<stablehlo::MulOp>(loc, two, abs_x_hi);
+    Value two = stablehlo::ConstantOp::create(
+        rewriter, loc, SplatElementsAttr::get(tensorType, twoAttr));
+    Value two_abs_x_hi = stablehlo::MulOp::create(rewriter, loc, two, abs_x_hi);
 
     auto halfAttr = rewriter.getFloatAttr(floatTy, 0.5);
-    Value half = rewriter.create<stablehlo::ConstantOp>(
-        loc, SplatElementsAttr::get(tensorType, halfAttr));
+    Value half = stablehlo::ConstantOp::create(
+        rewriter, loc, SplatElementsAttr::get(tensorType, halfAttr));
     Value two_abs_x_hi_plus_half =
-        rewriter.create<stablehlo::AddOp>(loc, two_abs_x_hi, half);
+        stablehlo::AddOp::create(rewriter, loc, two_abs_x_hi, half);
 
     auto intType =
         RankedTensorType::get(tensorType.getShape(), rewriter.getI32Type());
-    Value n_int = rewriter.create<stablehlo::ConvertOp>(loc, intType,
-                                                        two_abs_x_hi_plus_half);
+    Value n_int = stablehlo::ConvertOp::create(rewriter, loc, intType,
+                                               two_abs_x_hi_plus_half);
     Value n_float =
-        rewriter.create<stablehlo::ConvertOp>(loc, tensorType, n_int);
+        stablehlo::ConvertOp::create(rewriter, loc, tensorType, n_int);
 
     // rx = abs_x - 0.5 * n
-    Value half_n = rewriter.create<stablehlo::MulOp>(loc, half, n_float);
-    Value neg_half_n = rewriter.create<stablehlo::NegOp>(loc, half_n);
+    Value half_n = stablehlo::MulOp::create(rewriter, loc, half, n_float);
+    Value neg_half_n = stablehlo::NegOp::create(rewriter, loc, half_n);
 
-    Value neg_x_pi_lo = rewriter.create<stablehlo::NegOp>(loc, x_pi_lo);
-    Value abs_x_lo = rewriter.create<stablehlo::SelectOp>(loc, lt_zero,
-                                                          neg_x_pi_lo, x_pi_lo);
+    Value neg_x_pi_lo = stablehlo::NegOp::create(rewriter, loc, x_pi_lo);
+    Value abs_x_lo = stablehlo::SelectOp::create(rewriter, loc, lt_zero,
+                                                 neg_x_pi_lo, x_pi_lo);
 
     auto [rx_hi, rx_lo] =
         multiFloatAdd(abs_x_hi, abs_x_lo, neg_half_n, zero, rewriter, loc);
 
     // quadrant = n_int & 3
     auto threeAttr = rewriter.getIntegerAttr(rewriter.getI32Type(), 3);
-    Value three = rewriter.create<stablehlo::ConstantOp>(
-        loc, SplatElementsAttr::get(intType, threeAttr));
-    Value quadrant = rewriter.create<stablehlo::AndOp>(loc, n_int, three);
+    Value three = stablehlo::ConstantOp::create(
+        rewriter, loc, SplatElementsAttr::get(intType, threeAttr));
+    Value quadrant = stablehlo::AndOp::create(rewriter, loc, n_int, three);
 
     // Polynomial evaluation constants
     auto getConstant = [&](float val) -> Value {
       auto attr = rewriter.getFloatAttr(floatTy, val);
-      return rewriter.create<stablehlo::ConstantOp>(
-          loc, SplatElementsAttr::get(tensorType, attr));
+      return stablehlo::ConstantOp::create(
+          rewriter, loc, SplatElementsAttr::get(tensorType, attr));
     };
 
     SmallVector<std::pair<float, float>> sin_coefs = {
@@ -1772,50 +1781,54 @@ struct SineOpConversion : public OpConversionPattern<stablehlo::SineOp> {
 
     // Selection based on quadrant
     auto zeroIntAttr = rewriter.getIntegerAttr(rewriter.getI32Type(), 0);
-    Value zero_int = rewriter.create<stablehlo::ConstantOp>(
-        loc, SplatElementsAttr::get(intType, zeroIntAttr));
+    Value zero_int = stablehlo::ConstantOp::create(
+        rewriter, loc, SplatElementsAttr::get(intType, zeroIntAttr));
 
     auto oneIntAttr = rewriter.getIntegerAttr(rewriter.getI32Type(), 1);
-    Value one_int = rewriter.create<stablehlo::ConstantOp>(
-        loc, SplatElementsAttr::get(intType, oneIntAttr));
+    Value one_int = stablehlo::ConstantOp::create(
+        rewriter, loc, SplatElementsAttr::get(intType, oneIntAttr));
     Value quadrant_and_1 =
-        rewriter.create<stablehlo::AndOp>(loc, quadrant, one_int);
-    Value is_sine_quad = rewriter.create<stablehlo::CompareOp>(
-        loc, quadrant_and_1, zero_int, stablehlo::ComparisonDirection::EQ);
+        stablehlo::AndOp::create(rewriter, loc, quadrant, one_int);
+    Value is_sine_quad =
+        stablehlo::CompareOp::create(rewriter, loc, quadrant_and_1, zero_int,
+                                     stablehlo::ComparisonDirection::EQ);
 
-    Value final_raw_hi = rewriter.create<stablehlo::SelectOp>(
-        loc, is_sine_quad, res_sine_hi, res_cosine_hi);
-    Value final_raw_lo = rewriter.create<stablehlo::SelectOp>(
-        loc, is_sine_quad, res_sine_lo, res_cosine_lo);
+    Value final_raw_hi = stablehlo::SelectOp::create(
+        rewriter, loc, is_sine_quad, res_sine_hi, res_cosine_hi);
+    Value final_raw_lo = stablehlo::SelectOp::create(
+        rewriter, loc, is_sine_quad, res_sine_lo, res_cosine_lo);
 
     bool isTuple = concatDimension == "tuple";
 
     // Apply quadrant sign
     auto twoIntAttr = rewriter.getIntegerAttr(rewriter.getI32Type(), 2);
-    Value two_int = rewriter.create<stablehlo::ConstantOp>(
-        loc, SplatElementsAttr::get(intType, twoIntAttr));
+    Value two_int = stablehlo::ConstantOp::create(
+        rewriter, loc, SplatElementsAttr::get(intType, twoIntAttr));
     Value quadrant_and_2 =
-        rewriter.create<stablehlo::AndOp>(loc, quadrant, two_int);
-    Value is_neg_quad = rewriter.create<stablehlo::CompareOp>(
-        loc, quadrant_and_2, zero_int, stablehlo::ComparisonDirection::NE);
+        stablehlo::AndOp::create(rewriter, loc, quadrant, two_int);
+    Value is_neg_quad =
+        stablehlo::CompareOp::create(rewriter, loc, quadrant_and_2, zero_int,
+                                     stablehlo::ComparisonDirection::NE);
 
     if (isTuple) {
-      Value neg_final_hi = rewriter.create<stablehlo::NegOp>(loc, final_raw_hi);
-      Value neg_final_lo = rewriter.create<stablehlo::NegOp>(loc, final_raw_lo);
+      Value neg_final_hi =
+          stablehlo::NegOp::create(rewriter, loc, final_raw_hi);
+      Value neg_final_lo =
+          stablehlo::NegOp::create(rewriter, loc, final_raw_lo);
 
-      Value final_hi = rewriter.create<stablehlo::SelectOp>(
-          loc, is_neg_quad, neg_final_hi, final_raw_hi);
-      Value final_lo = rewriter.create<stablehlo::SelectOp>(
-          loc, is_neg_quad, neg_final_lo, final_raw_lo);
+      Value final_hi = stablehlo::SelectOp::create(rewriter, loc, is_neg_quad,
+                                                   neg_final_hi, final_raw_hi);
+      Value final_lo = stablehlo::SelectOp::create(rewriter, loc, is_neg_quad,
+                                                   neg_final_lo, final_raw_lo);
 
       // Apply original sign (lt_zero)
-      Value neg_final2_hi = rewriter.create<stablehlo::NegOp>(loc, final_hi);
-      Value neg_final2_lo = rewriter.create<stablehlo::NegOp>(loc, final_lo);
+      Value neg_final2_hi = stablehlo::NegOp::create(rewriter, loc, final_hi);
+      Value neg_final2_lo = stablehlo::NegOp::create(rewriter, loc, final_lo);
 
-      Value res_h = rewriter.create<stablehlo::SelectOp>(
-          loc, lt_zero, neg_final2_hi, final_hi);
-      Value res_l = rewriter.create<stablehlo::SelectOp>(
-          loc, lt_zero, neg_final2_lo, final_lo);
+      Value res_h = stablehlo::SelectOp::create(rewriter, loc, lt_zero,
+                                                neg_final2_hi, final_hi);
+      Value res_l = stablehlo::SelectOp::create(rewriter, loc, lt_zero,
+                                                neg_final2_lo, final_lo);
 
       Value packed = packLimbs(res_h, res_l, rewriter, loc, concatDimension);
       rewriter.replaceOp(op, packed);
@@ -1832,21 +1845,22 @@ struct SineOpConversion : public OpConversionPattern<stablehlo::SineOp> {
       }
 
       // Broadcast is_neg_quad
-      Value bcast_is_neg_quad = rewriter.create<stablehlo::BroadcastInDimOp>(
-          loc, predType, is_neg_quad,
+      Value bcast_is_neg_quad = stablehlo::BroadcastInDimOp::create(
+          rewriter, loc, predType, is_neg_quad,
           rewriter.getDenseI64ArrayAttr(broadcastDims));
 
-      Value neg_final = rewriter.create<stablehlo::NegOp>(loc, final_raw);
-      Value final_signed = rewriter.create<stablehlo::SelectOp>(
-          loc, fullType, bcast_is_neg_quad, neg_final, final_raw);
+      Value neg_final = stablehlo::NegOp::create(rewriter, loc, final_raw);
+      Value final_signed = stablehlo::SelectOp::create(
+          rewriter, loc, fullType, bcast_is_neg_quad, neg_final, final_raw);
 
       // Broadcast lt_zero
-      Value bcast_lt_zero = rewriter.create<stablehlo::BroadcastInDimOp>(
-          loc, predType, lt_zero, rewriter.getDenseI64ArrayAttr(broadcastDims));
+      Value bcast_lt_zero = stablehlo::BroadcastInDimOp::create(
+          rewriter, loc, predType, lt_zero,
+          rewriter.getDenseI64ArrayAttr(broadcastDims));
 
-      Value neg_final2 = rewriter.create<stablehlo::NegOp>(loc, final_signed);
-      Value res = rewriter.create<stablehlo::SelectOp>(
-          loc, fullType, bcast_lt_zero, neg_final2, final_signed);
+      Value neg_final2 = stablehlo::NegOp::create(rewriter, loc, final_signed);
+      Value res = stablehlo::SelectOp::create(
+          rewriter, loc, fullType, bcast_lt_zero, neg_final2, final_signed);
 
       rewriter.replaceOp(op, res);
     }
@@ -1876,23 +1890,23 @@ struct SqrtOpConversion : public OpConversionPattern<stablehlo::SqrtOp> {
     auto floatTy = cast<FloatType>(tensorType.getElementType());
 
     auto zeroAttr = rewriter.getFloatAttr(floatTy, 0.0);
-    Value zero = rewriter.create<stablehlo::ConstantOp>(
-        loc, SplatElementsAttr::get(tensorType, zeroAttr));
+    Value zero = stablehlo::ConstantOp::create(
+        rewriter, loc, SplatElementsAttr::get(tensorType, zeroAttr));
 
     auto oneAttr = rewriter.getFloatAttr(floatTy, 1.0);
-    Value one = rewriter.create<stablehlo::ConstantOp>(
-        loc, SplatElementsAttr::get(tensorType, oneAttr));
+    Value one = stablehlo::ConstantOp::create(
+        rewriter, loc, SplatElementsAttr::get(tensorType, oneAttr));
 
     // Ensure input is positive to avoid NaN in rsqrt
-    Value is_le_zero = rewriter.create<stablehlo::CompareOp>(
-        loc, x_hi, zero, stablehlo::ComparisonDirection::LE);
+    Value is_le_zero = stablehlo::CompareOp::create(
+        rewriter, loc, x_hi, zero, stablehlo::ComparisonDirection::LE);
 
     // x_hi_safe = is_le_zero ? 1.0 : x_hi
     Value x_hi_safe =
-        rewriter.create<stablehlo::SelectOp>(loc, is_le_zero, one, x_hi);
+        stablehlo::SelectOp::create(rewriter, loc, is_le_zero, one, x_hi);
 
     // u0 = rsqrt(x_hi_safe)
-    Value u0 = rewriter.create<stablehlo::RsqrtOp>(loc, x_hi_safe);
+    Value u0 = stablehlo::RsqrtOp::create(rewriter, loc, x_hi_safe);
 
     // root = X * u0
     auto [root_hi, root_lo] =
@@ -1901,24 +1915,24 @@ struct SqrtOpConversion : public OpConversionPattern<stablehlo::SqrtOp> {
     // residual = root^2 - X
     auto [root_sq_hi, root_sq_lo] =
         multiFloatMul(root_hi, root_lo, root_hi, root_lo, rewriter, loc);
-    Value neg_x_hi = rewriter.create<stablehlo::NegOp>(loc, x_hi);
-    Value neg_x_lo = rewriter.create<stablehlo::NegOp>(loc, x_lo);
+    Value neg_x_hi = stablehlo::NegOp::create(rewriter, loc, x_hi);
+    Value neg_x_lo = stablehlo::NegOp::create(rewriter, loc, x_lo);
     auto [res_hi, res_lo] = multiFloatAdd(root_sq_hi, root_sq_lo, neg_x_hi,
                                           neg_x_lo, rewriter, loc);
 
     // u_over_2 = 0.5 * u0
     auto halfAttr = rewriter.getFloatAttr(floatTy, 0.5);
-    Value half = rewriter.create<stablehlo::ConstantOp>(
-        loc, SplatElementsAttr::get(tensorType, halfAttr));
-    Value u_over_2 = rewriter.create<stablehlo::MulOp>(loc, half, u0);
+    Value half = stablehlo::ConstantOp::create(
+        rewriter, loc, SplatElementsAttr::get(tensorType, halfAttr));
+    Value u_over_2 = stablehlo::MulOp::create(rewriter, loc, half, u0);
 
     // correction = residual * u_over_2
     auto [corr_hi, corr_lo] =
         multiFloatMul(res_hi, res_lo, u_over_2, zero, rewriter, loc);
 
     // result = root - correction
-    Value neg_corr_hi = rewriter.create<stablehlo::NegOp>(loc, corr_hi);
-    Value neg_corr_lo = rewriter.create<stablehlo::NegOp>(loc, corr_lo);
+    Value neg_corr_hi = stablehlo::NegOp::create(rewriter, loc, corr_hi);
+    Value neg_corr_lo = stablehlo::NegOp::create(rewriter, loc, corr_lo);
     auto [final_h, final_l] = multiFloatAdd(root_hi, root_lo, neg_corr_hi,
                                             neg_corr_lo, rewriter, loc);
 
@@ -1927,9 +1941,9 @@ struct SqrtOpConversion : public OpConversionPattern<stablehlo::SqrtOp> {
     if (isTuple) {
       // If is_le_zero, result is zero
       Value res_h =
-          rewriter.create<stablehlo::SelectOp>(loc, is_le_zero, zero, final_h);
+          stablehlo::SelectOp::create(rewriter, loc, is_le_zero, zero, final_h);
       Value res_l =
-          rewriter.create<stablehlo::SelectOp>(loc, is_le_zero, zero, final_l);
+          stablehlo::SelectOp::create(rewriter, loc, is_le_zero, zero, final_l);
 
       Value packed = packLimbs(res_h, res_l, rewriter, loc, concatDimension);
       rewriter.replaceOp(op, packed);
@@ -1946,18 +1960,18 @@ struct SqrtOpConversion : public OpConversionPattern<stablehlo::SqrtOp> {
       }
 
       // Broadcast is_le_zero
-      Value bcast_is_zero = rewriter.create<stablehlo::BroadcastInDimOp>(
-          loc, predType, is_le_zero,
+      Value bcast_is_zero = stablehlo::BroadcastInDimOp::create(
+          rewriter, loc, predType, is_le_zero,
           rewriter.getDenseI64ArrayAttr(broadcastDims));
 
       // Create a full zero tensor of the same shape
       auto floatTy = cast<FloatType>(fullType.getElementType());
       auto zeroAttr = rewriter.getFloatAttr(floatTy, 0.0);
       auto splatAttr = SplatElementsAttr::get(fullType, zeroAttr);
-      Value full_zero = rewriter.create<stablehlo::ConstantOp>(loc, splatAttr);
+      Value full_zero = stablehlo::ConstantOp::create(rewriter, loc, splatAttr);
 
-      Value res = rewriter.create<stablehlo::SelectOp>(
-          loc, fullType, bcast_is_zero, full_zero, final_packed);
+      Value res = stablehlo::SelectOp::create(
+          rewriter, loc, fullType, bcast_is_zero, full_zero, final_packed);
 
       rewriter.replaceOp(op, res);
     }
@@ -1994,7 +2008,7 @@ struct WhileOpConversion : public OpConversionPattern<stablehlo::WhileOp> {
         for (unsigned j = 0; j < tupleTy.size(); ++j) {
           flatConvertedTypes.push_back(tupleTy.getType(j));
           flatOperands.push_back(
-              rewriter.create<stablehlo::GetTupleElementOp>(loc, operand, j));
+              stablehlo::GetTupleElementOp::create(rewriter, loc, operand, j));
           types.push_back(tupleTy.getType(j));
         }
         signatureConversion.addInputs(i, types);
@@ -2005,8 +2019,8 @@ struct WhileOpConversion : public OpConversionPattern<stablehlo::WhileOp> {
       }
     }
 
-    auto newWhileOp = rewriter.create<stablehlo::WhileOp>(
-        loc, flatConvertedTypes, flatOperands);
+    auto newWhileOp = stablehlo::WhileOp::create(
+        rewriter, loc, flatConvertedTypes, flatOperands);
     newWhileOp.getOperation()->setAttrs(op.getOperation()->getAttrs());
 
     rewriter.inlineRegionBefore(op.getCond(), newWhileOp.getCond(),
@@ -2032,7 +2046,7 @@ struct WhileOpConversion : public OpConversionPattern<stablehlo::WhileOp> {
           tupleElements.push_back(newWhileOp.getResult(flatResIdx++));
         }
         replacements.push_back(
-            rewriter.create<stablehlo::TupleOp>(loc, tupleElements));
+            stablehlo::TupleOp::create(rewriter, loc, tupleElements));
       } else {
         replacements.push_back(newWhileOp.getResult(flatResIdx++));
       }
@@ -2107,9 +2121,9 @@ struct ReturnOpConversion : public OpConversionPattern<stablehlo::ReturnOp> {
       if (convertSignatures) {
         if (concatDimension == "tuple" && isa<TupleType>(operand.getType())) {
           newOperands.push_back(
-              rewriter.create<stablehlo::GetTupleElementOp>(loc, operand, 0));
+              stablehlo::GetTupleElementOp::create(rewriter, loc, operand, 0));
           newOperands.push_back(
-              rewriter.create<stablehlo::GetTupleElementOp>(loc, operand, 1));
+              stablehlo::GetTupleElementOp::create(rewriter, loc, operand, 1));
         } else {
           newOperands.push_back(operand);
         }
@@ -2134,8 +2148,8 @@ struct ReturnOpConversion : public OpConversionPattern<stablehlo::ReturnOp> {
           if (expansionSize == 1) {
             auto f64Type =
                 RankedTensorType::get(tensorType.getShape(), sourceType);
-            Value f64Val = rewriter.create<stablehlo::ConvertOp>(loc, f64Type,
-                                                                 actualOperand);
+            Value f64Val = stablehlo::ConvertOp::create(rewriter, loc, f64Type,
+                                                        actualOperand);
             newOperands.push_back(f64Val);
             continue;
           }
@@ -2153,18 +2167,18 @@ struct ReturnOpConversion : public OpConversionPattern<stablehlo::ReturnOp> {
             origShape.erase(origShape.begin() +
                             (isFirst ? 0 : origShape.size() - 1));
             auto origTensorType = RankedTensorType::get(origShape, targetType);
-            high = rewriter.create<stablehlo::ReshapeOp>(loc, origTensorType,
-                                                         high);
-            low =
-                rewriter.create<stablehlo::ReshapeOp>(loc, origTensorType, low);
+            high = stablehlo::ReshapeOp::create(rewriter, loc, origTensorType,
+                                                high);
+            low = stablehlo::ReshapeOp::create(rewriter, loc, origTensorType,
+                                               low);
 
             auto f64Type = RankedTensorType::get(origShape, sourceType);
             Value high64 =
-                rewriter.create<stablehlo::ConvertOp>(loc, f64Type, high);
+                stablehlo::ConvertOp::create(rewriter, loc, f64Type, high);
             Value low64 =
-                rewriter.create<stablehlo::ConvertOp>(loc, f64Type, low);
+                stablehlo::ConvertOp::create(rewriter, loc, f64Type, low);
 
-            Value sum = rewriter.create<stablehlo::AddOp>(loc, high64, low64);
+            Value sum = stablehlo::AddOp::create(rewriter, loc, high64, low64);
             newOperands.push_back(sum);
             continue;
           }
@@ -2177,11 +2191,11 @@ struct ReturnOpConversion : public OpConversionPattern<stablehlo::ReturnOp> {
           auto f64Type = RankedTensorType::get(
               cast<RankedTensorType>(high.getType()).getShape(), sourceType);
           Value high64 =
-              rewriter.create<stablehlo::ConvertOp>(loc, f64Type, high);
+              stablehlo::ConvertOp::create(rewriter, loc, f64Type, high);
           Value low64 =
-              rewriter.create<stablehlo::ConvertOp>(loc, f64Type, low);
+              stablehlo::ConvertOp::create(rewriter, loc, f64Type, low);
 
-          Value sum = rewriter.create<stablehlo::AddOp>(loc, high64, low64);
+          Value sum = stablehlo::AddOp::create(rewriter, loc, high64, low64);
           newOperands.push_back(sum);
           continue;
         }
@@ -2235,8 +2249,8 @@ struct ReduceWindowOpConversion
       auto outType = cast<RankedTensorType>(op.getResults()[0].getType());
       auto partType = RankedTensorType::get(outType.getShape(), targetType);
 
-      auto newOp = rewriter.create<stablehlo::ReduceWindowOp>(
-          loc, partType, operand, initValue, op.getWindowDimensions(),
+      auto newOp = stablehlo::ReduceWindowOp::create(
+          rewriter, loc, partType, operand, initValue, op.getWindowDimensions(),
           op.getWindowStridesAttr() ? op.getWindowStridesAttr() : nullptr,
           op.getBaseDilationsAttr() ? op.getBaseDilationsAttr() : nullptr,
           op.getWindowDilationsAttr() ? op.getWindowDilationsAttr() : nullptr,
@@ -2267,8 +2281,8 @@ struct ReduceWindowOpConversion
     auto outType = cast<RankedTensorType>(op.getResults()[0].getType());
     auto partType = RankedTensorType::get(outType.getShape(), targetType);
 
-    auto hi_op = rewriter.create<stablehlo::ReduceWindowOp>(
-        loc, partType, hi_operand, hi_init, op.getWindowDimensions(),
+    auto hi_op = stablehlo::ReduceWindowOp::create(
+        rewriter, loc, partType, hi_operand, hi_init, op.getWindowDimensions(),
         op.getWindowStridesAttr() ? op.getWindowStridesAttr() : nullptr,
         op.getBaseDilationsAttr() ? op.getBaseDilationsAttr() : nullptr,
         op.getWindowDilationsAttr() ? op.getWindowDilationsAttr() : nullptr,
@@ -2280,8 +2294,8 @@ struct ReduceWindowOpConversion
                                            *getTypeConverter())))
       return failure();
 
-    auto lo_op = rewriter.create<stablehlo::ReduceWindowOp>(
-        loc, partType, lo_operand, lo_init, op.getWindowDimensions(),
+    auto lo_op = stablehlo::ReduceWindowOp::create(
+        rewriter, loc, partType, lo_operand, lo_init, op.getWindowDimensions(),
         op.getWindowStridesAttr() ? op.getWindowStridesAttr() : nullptr,
         op.getBaseDilationsAttr() ? op.getBaseDilationsAttr() : nullptr,
         op.getWindowDilationsAttr() ? op.getWindowDilationsAttr() : nullptr,
@@ -2324,10 +2338,10 @@ struct BroadcastInDimOpConversion
           cast<TupleType>(getTypeConverter()->convertType(op.getType()));
       auto partType = outType.getType(0);
 
-      auto bcastHigh = rewriter.create<stablehlo::BroadcastInDimOp>(
-          loc, partType, high, op.getBroadcastDimensions());
-      auto bcastLow = rewriter.create<stablehlo::BroadcastInDimOp>(
-          loc, partType, low, op.getBroadcastDimensions());
+      auto bcastHigh = stablehlo::BroadcastInDimOp::create(
+          rewriter, loc, partType, high, op.getBroadcastDimensions());
+      auto bcastLow = stablehlo::BroadcastInDimOp::create(
+          rewriter, loc, partType, low, op.getBroadcastDimensions());
 
       Value packed =
           packLimbs(bcastHigh, bcastLow, rewriter, loc, concatDimension);
@@ -2353,8 +2367,8 @@ struct BroadcastInDimOpConversion
       broadcastDims.push_back(outType.getRank() - 1);
     }
 
-    auto bcastOp = rewriter.create<stablehlo::BroadcastInDimOp>(
-        loc, outType, adaptor.getOperands()[0],
+    auto bcastOp = stablehlo::BroadcastInDimOp::create(
+        rewriter, loc, outType, adaptor.getOperands()[0],
         rewriter.getDenseI64ArrayAttr(broadcastDims));
 
     rewriter.replaceOp(op, bcastOp);
@@ -2388,10 +2402,10 @@ struct TransposeOpConversion
           cast<TupleType>(getTypeConverter()->convertType(op.getType()));
       auto partType = outType.getType(0);
 
-      auto transHigh = rewriter.create<stablehlo::TransposeOp>(
-          loc, partType, high, op.getPermutation());
-      auto transLow = rewriter.create<stablehlo::TransposeOp>(
-          loc, partType, low, op.getPermutation());
+      auto transHigh = stablehlo::TransposeOp::create(
+          rewriter, loc, partType, high, op.getPermutation());
+      auto transLow = stablehlo::TransposeOp::create(rewriter, loc, partType,
+                                                     low, op.getPermutation());
 
       Value packed =
           packLimbs(transHigh, transLow, rewriter, loc, concatDimension);
@@ -2414,8 +2428,8 @@ struct TransposeOpConversion
       permutation.push_back(outType.getRank() - 1);
     }
 
-    auto transOp = rewriter.create<stablehlo::TransposeOp>(
-        loc, outType, adaptor.getOperands()[0],
+    auto transOp = stablehlo::TransposeOp::create(
+        rewriter, loc, outType, adaptor.getOperands()[0],
         rewriter.getDenseI64ArrayAttr(permutation));
 
     rewriter.replaceOp(op, transOp);
@@ -2448,9 +2462,9 @@ struct ReshapeOpConversion : public OpConversionPattern<stablehlo::ReshapeOp> {
       auto partType = outType.getType(0);
 
       auto reshapeHigh =
-          rewriter.create<stablehlo::ReshapeOp>(loc, partType, high);
+          stablehlo::ReshapeOp::create(rewriter, loc, partType, high);
       auto reshapeLow =
-          rewriter.create<stablehlo::ReshapeOp>(loc, partType, low);
+          stablehlo::ReshapeOp::create(rewriter, loc, partType, low);
 
       Value packed =
           packLimbs(reshapeHigh, reshapeLow, rewriter, loc, concatDimension);
@@ -2461,8 +2475,8 @@ struct ReshapeOpConversion : public OpConversionPattern<stablehlo::ReshapeOp> {
     auto outType =
         cast<RankedTensorType>(getTypeConverter()->convertType(op.getType()));
 
-    auto reshapeOp = rewriter.create<stablehlo::ReshapeOp>(
-        loc, outType, adaptor.getOperands()[0]);
+    auto reshapeOp = stablehlo::ReshapeOp::create(rewriter, loc, outType,
+                                                  adaptor.getOperands()[0]);
 
     rewriter.replaceOp(op, reshapeOp);
     return success();
@@ -2493,19 +2507,21 @@ struct CompareOpConversion : public OpConversionPattern<stablehlo::CompareOp> {
         getTypeConverter()->convertType(op.getOperands()[1].getType());
 
     if (lhs.getType() != expectedLhsTy) {
-      lhs = rewriter.create<UnrealizedConversionCastOp>(loc, expectedLhsTy, lhs)
-                .getResult(0);
+      lhs =
+          UnrealizedConversionCastOp::create(rewriter, loc, expectedLhsTy, lhs)
+              .getResult(0);
     }
     if (rhs.getType() != expectedRhsTy) {
-      rhs = rewriter.create<UnrealizedConversionCastOp>(loc, expectedRhsTy, rhs)
-                .getResult(0);
+      rhs =
+          UnrealizedConversionCastOp::create(rewriter, loc, expectedRhsTy, rhs)
+              .getResult(0);
     }
 
     bool isTuple = (concatDimension == "tuple");
     if (!isTuple && (direction == stablehlo::ComparisonDirection::EQ ||
                      direction == stablehlo::ComparisonDirection::NE)) {
       Value cmp =
-          rewriter.create<stablehlo::CompareOp>(loc, lhs, rhs, direction);
+          stablehlo::CompareOp::create(rewriter, loc, lhs, rhs, direction);
       auto tensorType = cast<RankedTensorType>(lhs.getType());
       int reduceDim =
           (concatDimension == "first") ? 0 : (tensorType.getRank() - 1);
@@ -2513,19 +2529,20 @@ struct CompareOpConversion : public OpConversionPattern<stablehlo::CompareOp> {
       Value init_val;
       auto boolType = rewriter.getI1Type();
       if (direction == stablehlo::ComparisonDirection::EQ) {
-        init_val = rewriter.create<stablehlo::ConstantOp>(
-            loc,
+        init_val = stablehlo::ConstantOp::create(
+            rewriter, loc,
             DenseElementsAttr::get(
                 RankedTensorType::get(ArrayRef<int64_t>{}, boolType), true));
       } else {
-        init_val = rewriter.create<stablehlo::ConstantOp>(
-            loc,
+        init_val = stablehlo::ConstantOp::create(
+            rewriter, loc,
             DenseElementsAttr::get(
                 RankedTensorType::get(ArrayRef<int64_t>{}, boolType), false));
       }
 
-      auto reduceOp = rewriter.create<stablehlo::ReduceOp>(
-          loc, cmp, init_val, rewriter.getDenseI64ArrayAttr({reduceDim}));
+      auto reduceOp = stablehlo::ReduceOp::create(
+          rewriter, loc, cmp, init_val,
+          rewriter.getDenseI64ArrayAttr({reduceDim}));
       Block *reduceBlock = new Block();
       reduceOp.getBody().push_back(reduceBlock);
       auto tensorBoolType =
@@ -2534,17 +2551,19 @@ struct CompareOpConversion : public OpConversionPattern<stablehlo::CompareOp> {
       auto blockBuilder = OpBuilder::atBlockBegin(reduceBlock);
       Value reducedRes;
       if (direction == stablehlo::ComparisonDirection::EQ) {
-        reducedRes = blockBuilder.create<stablehlo::AndOp>(
-            loc, reduceBlock->getArgument(0), reduceBlock->getArgument(1));
+        reducedRes = stablehlo::AndOp::create(blockBuilder, loc,
+                                              reduceBlock->getArgument(0),
+                                              reduceBlock->getArgument(1));
       } else {
-        reducedRes = blockBuilder.create<stablehlo::OrOp>(
-            loc, reduceBlock->getArgument(0), reduceBlock->getArgument(1));
+        reducedRes = stablehlo::OrOp::create(blockBuilder, loc,
+                                             reduceBlock->getArgument(0),
+                                             reduceBlock->getArgument(1));
       }
-      blockBuilder.create<stablehlo::ReturnOp>(loc, reducedRes);
+      stablehlo::ReturnOp::create(blockBuilder, loc, reducedRes);
 
       Value res = reduceOp.getResults()[0];
       if (res.getType() != resultType) {
-        res = rewriter.create<stablehlo::ReshapeOp>(loc, resultType, res);
+        res = stablehlo::ReshapeOp::create(rewriter, loc, resultType, res);
       }
 
       // Infinity correction: two multifloat values that both represent ±∞
@@ -2580,49 +2599,49 @@ struct CompareOpConversion : public OpConversionPattern<stablehlo::CompareOp> {
 
     Value res;
     if (direction == stablehlo::ComparisonDirection::EQ) {
-      Value hi_eq = rewriter.create<stablehlo::CompareOp>(
-          loc, lhs_hi, rhs_hi, stablehlo::ComparisonDirection::EQ);
-      Value lo_eq = rewriter.create<stablehlo::CompareOp>(
-          loc, lhs_lo, rhs_lo, stablehlo::ComparisonDirection::EQ);
+      Value hi_eq = stablehlo::CompareOp::create(
+          rewriter, loc, lhs_hi, rhs_hi, stablehlo::ComparisonDirection::EQ);
+      Value lo_eq = stablehlo::CompareOp::create(
+          rewriter, loc, lhs_lo, rhs_lo, stablehlo::ComparisonDirection::EQ);
 
-      hi_eq = rewriter.create<stablehlo::ReshapeOp>(loc, resultType, hi_eq);
-      lo_eq = rewriter.create<stablehlo::ReshapeOp>(loc, resultType, lo_eq);
+      hi_eq = stablehlo::ReshapeOp::create(rewriter, loc, resultType, hi_eq);
+      lo_eq = stablehlo::ReshapeOp::create(rewriter, loc, resultType, lo_eq);
 
-      res = rewriter.create<stablehlo::AndOp>(loc, hi_eq, lo_eq);
+      res = stablehlo::AndOp::create(rewriter, loc, hi_eq, lo_eq);
 
       // Infinity correction: equal hi limbs that are ±inf mean the values
       // are equal regardless of lo limbs (which may be NaN after splitting).
-      Value hi_not_finite = rewriter.create<stablehlo::NotOp>(
-          loc, rewriter.create<stablehlo::IsFiniteOp>(loc, lhs_hi));
-      hi_not_finite =
-          rewriter.create<stablehlo::ReshapeOp>(loc, resultType, hi_not_finite);
+      Value hi_not_finite = stablehlo::NotOp::create(
+          rewriter, loc, stablehlo::IsFiniteOp::create(rewriter, loc, lhs_hi));
+      hi_not_finite = stablehlo::ReshapeOp::create(rewriter, loc, resultType,
+                                                   hi_not_finite);
       Value inf_corr =
-          rewriter.create<stablehlo::AndOp>(loc, hi_eq, hi_not_finite);
-      res = rewriter.create<stablehlo::OrOp>(loc, res, inf_corr);
+          stablehlo::AndOp::create(rewriter, loc, hi_eq, hi_not_finite);
+      res = stablehlo::OrOp::create(rewriter, loc, res, inf_corr);
     } else if (direction == stablehlo::ComparisonDirection::NE) {
-      Value hi_ne = rewriter.create<stablehlo::CompareOp>(
-          loc, lhs_hi, rhs_hi, stablehlo::ComparisonDirection::NE);
-      Value lo_ne = rewriter.create<stablehlo::CompareOp>(
-          loc, lhs_lo, rhs_lo, stablehlo::ComparisonDirection::NE);
+      Value hi_ne = stablehlo::CompareOp::create(
+          rewriter, loc, lhs_hi, rhs_hi, stablehlo::ComparisonDirection::NE);
+      Value lo_ne = stablehlo::CompareOp::create(
+          rewriter, loc, lhs_lo, rhs_lo, stablehlo::ComparisonDirection::NE);
 
-      hi_ne = rewriter.create<stablehlo::ReshapeOp>(loc, resultType, hi_ne);
-      lo_ne = rewriter.create<stablehlo::ReshapeOp>(loc, resultType, lo_ne);
+      hi_ne = stablehlo::ReshapeOp::create(rewriter, loc, resultType, hi_ne);
+      lo_ne = stablehlo::ReshapeOp::create(rewriter, loc, resultType, lo_ne);
 
-      res = rewriter.create<stablehlo::OrOp>(loc, hi_ne, lo_ne);
+      res = stablehlo::OrOp::create(rewriter, loc, hi_ne, lo_ne);
 
       // Infinity correction: equal hi limbs that are ±inf mean the values
       // are NOT unequal (dual of EQ correction).
-      Value hi_eq = rewriter.create<stablehlo::CompareOp>(
-          loc, lhs_hi, rhs_hi, stablehlo::ComparisonDirection::EQ);
-      hi_eq = rewriter.create<stablehlo::ReshapeOp>(loc, resultType, hi_eq);
-      Value hi_not_finite = rewriter.create<stablehlo::NotOp>(
-          loc, rewriter.create<stablehlo::IsFiniteOp>(loc, lhs_hi));
-      hi_not_finite =
-          rewriter.create<stablehlo::ReshapeOp>(loc, resultType, hi_not_finite);
+      Value hi_eq = stablehlo::CompareOp::create(
+          rewriter, loc, lhs_hi, rhs_hi, stablehlo::ComparisonDirection::EQ);
+      hi_eq = stablehlo::ReshapeOp::create(rewriter, loc, resultType, hi_eq);
+      Value hi_not_finite = stablehlo::NotOp::create(
+          rewriter, loc, stablehlo::IsFiniteOp::create(rewriter, loc, lhs_hi));
+      hi_not_finite = stablehlo::ReshapeOp::create(rewriter, loc, resultType,
+                                                   hi_not_finite);
       Value inf_corr =
-          rewriter.create<stablehlo::AndOp>(loc, hi_eq, hi_not_finite);
-      res = rewriter.create<stablehlo::AndOp>(
-          loc, res, rewriter.create<stablehlo::NotOp>(loc, inf_corr));
+          stablehlo::AndOp::create(rewriter, loc, hi_eq, hi_not_finite);
+      res = stablehlo::AndOp::create(
+          rewriter, loc, res, stablehlo::NotOp::create(rewriter, loc, inf_corr));
     } else {
       stablehlo::ComparisonDirection dir_hi;
       stablehlo::ComparisonDirection dir_lo;
@@ -2643,11 +2662,11 @@ struct CompareOpConversion : public OpConversionPattern<stablehlo::CompareOp> {
       }
 
       Value hi_gt =
-          rewriter.create<stablehlo::CompareOp>(loc, lhs_hi, rhs_hi, dir_hi);
-      Value hi_eq = rewriter.create<stablehlo::CompareOp>(
-          loc, lhs_hi, rhs_hi, stablehlo::ComparisonDirection::EQ);
+          stablehlo::CompareOp::create(rewriter, loc, lhs_hi, rhs_hi, dir_hi);
+      Value hi_eq = stablehlo::CompareOp::create(
+          rewriter, loc, lhs_hi, rhs_hi, stablehlo::ComparisonDirection::EQ);
       Value lo_cond =
-          rewriter.create<stablehlo::CompareOp>(loc, lhs_lo, rhs_lo, dir_lo);
+          stablehlo::CompareOp::create(rewriter, loc, lhs_lo, rhs_lo, dir_lo);
 
       LLVM_DEBUG(llvm::dbgs() << "CompareOpConversion other SelectOp:\n");
       LLVM_DEBUG(llvm::dbgs() << "  hi_eq type: " << hi_eq.getType() << "\n");
@@ -2655,11 +2674,11 @@ struct CompareOpConversion : public OpConversionPattern<stablehlo::CompareOp> {
                  << "  lo_cond type: " << lo_cond.getType() << "\n");
       LLVM_DEBUG(llvm::dbgs() << "  hi_gt type: " << hi_gt.getType() << "\n");
 
-      res = rewriter.create<stablehlo::SelectOp>(loc, hi_eq, lo_cond, hi_gt);
+      res = stablehlo::SelectOp::create(rewriter, loc, hi_eq, lo_cond, hi_gt);
     }
 
     if (res.getType() != resultType) {
-      res = rewriter.create<stablehlo::ReshapeOp>(loc, resultType, res);
+      res = stablehlo::ReshapeOp::create(rewriter, loc, resultType, res);
     }
 
     rewriter.replaceOp(op, res);
@@ -2682,12 +2701,12 @@ struct MaxOpConversion : public OpConversionPattern<stablehlo::MaxOp> {
     Value uncoverted_lhs = op.getOperands()[0];
     Value uncoverted_rhs = op.getOperands()[1];
 
-    Value cmp = rewriter.create<stablehlo::CompareOp>(
-        loc, uncoverted_lhs, uncoverted_rhs,
+    Value cmp = stablehlo::CompareOp::create(
+        rewriter, loc, uncoverted_lhs, uncoverted_rhs,
         stablehlo::ComparisonDirection::GT);
 
-    Value select = rewriter.create<stablehlo::SelectOp>(
-        loc, cmp, uncoverted_lhs, uncoverted_rhs);
+    Value select = stablehlo::SelectOp::create(rewriter, loc, cmp,
+                                               uncoverted_lhs, uncoverted_rhs);
 
     rewriter.replaceOp(op, select);
     return success();
@@ -2720,11 +2739,11 @@ struct DynamicUpdateSliceOpConversion
       Type indexType = indices[0].getType();
       Value zero;
       if (auto tensorType = dyn_cast<RankedTensorType>(indexType)) {
-        zero = rewriter.create<stablehlo::ConstantOp>(
-            loc, DenseIntElementsAttr::get(tensorType, 0));
+        zero = stablehlo::ConstantOp::create(
+            rewriter, loc, DenseIntElementsAttr::get(tensorType, 0));
       } else {
-        zero = rewriter.create<stablehlo::ConstantOp>(
-            loc, rewriter.getIntegerAttr(indexType, 0));
+        zero = stablehlo::ConstantOp::create(
+            rewriter, loc, rewriter.getIntegerAttr(indexType, 0));
       }
 
       SmallVector<Value> newIndices;
@@ -2738,8 +2757,8 @@ struct DynamicUpdateSliceOpConversion
         newIndices.push_back(zero);
       }
 
-      Value res = rewriter.create<stablehlo::DynamicUpdateSliceOp>(
-          loc, operand.getType(), operand, update, newIndices);
+      Value res = stablehlo::DynamicUpdateSliceOp::create(
+          rewriter, loc, operand.getType(), operand, update, newIndices);
       rewriter.replaceOp(op, res);
       return success();
     }
@@ -2749,10 +2768,10 @@ struct DynamicUpdateSliceOpConversion
     Value update_hi = extractLimb(update, 0, rewriter, loc, concatDimension);
     Value update_lo = extractLimb(update, 1, rewriter, loc, concatDimension);
 
-    Value hi_N = rewriter.create<stablehlo::DynamicUpdateSliceOp>(
-        loc, operand_hi.getType(), operand_hi, update_hi, indices);
-    Value lo_N = rewriter.create<stablehlo::DynamicUpdateSliceOp>(
-        loc, operand_lo.getType(), operand_lo, update_lo, indices);
+    Value hi_N = stablehlo::DynamicUpdateSliceOp::create(
+        rewriter, loc, operand_hi.getType(), operand_hi, update_hi, indices);
+    Value lo_N = stablehlo::DynamicUpdateSliceOp::create(
+        rewriter, loc, operand_lo.getType(), operand_lo, update_lo, indices);
 
     Value packed = packLimbs(hi_N, lo_N, rewriter, loc, concatDimension);
     rewriter.replaceOp(op, packed);
@@ -2788,19 +2807,19 @@ struct DotGeneralToMulReducePattern
     auto dimsToReduce = lhsAllContracted ? rhsContracting : lhsContracting;
 
     if (lhsAllContracted) {
-      broadcastedLhs = rewriter.create<stablehlo::BroadcastInDimOp>(
-          op.getLoc(), rhs.getType(), lhs,
+      broadcastedLhs = stablehlo::BroadcastInDimOp::create(
+          rewriter, op.getLoc(), rhs.getType(), lhs,
           rewriter.getDenseI64ArrayAttr(rhsContracting));
     } else {
       broadcastedLhs = lhs;
-      Value broadcastedRhs = rewriter.create<stablehlo::BroadcastInDimOp>(
-          op.getLoc(), lhs.getType(), rhs,
+      Value broadcastedRhs = stablehlo::BroadcastInDimOp::create(
+          rewriter, op.getLoc(), lhs.getType(), rhs,
           rewriter.getDenseI64ArrayAttr(lhsContracting));
       rhs = broadcastedRhs;
     }
 
-    Value mul = rewriter.create<stablehlo::MulOp>(
-        op.getLoc(), broadcastedLhs.getType(), broadcastedLhs, rhs);
+    Value mul = stablehlo::MulOp::create(
+        rewriter, op.getLoc(), broadcastedLhs.getType(), broadcastedLhs, rhs);
 
     auto elemType = lhsType.getElementType();
 
@@ -2820,8 +2839,9 @@ struct DotGeneralToMulReducePattern
           startIndices[reduceDim] = i;
           limitIndices[reduceDim] = i + 1;
 
-          Value slice = rewriter.create<stablehlo::SliceOp>(
-              op.getLoc(), mul, rewriter.getDenseI64ArrayAttr(startIndices),
+          Value slice = stablehlo::SliceOp::create(
+              rewriter, op.getLoc(), mul,
+              rewriter.getDenseI64ArrayAttr(startIndices),
               rewriter.getDenseI64ArrayAttr(limitIndices),
               rewriter.getDenseI64ArrayAttr(strides));
 
@@ -2833,14 +2853,14 @@ struct DotGeneralToMulReducePattern
           }
           auto reshapedType =
               RankedTensorType::get(newShape, mulType.getElementType());
-          Value reshapedSlice = rewriter.create<stablehlo::ReshapeOp>(
-              op.getLoc(), reshapedType, slice);
+          Value reshapedSlice = stablehlo::ReshapeOp::create(
+              rewriter, op.getLoc(), reshapedType, slice);
 
           if (i == 0) {
             sum = reshapedSlice;
           } else {
-            sum = rewriter.create<stablehlo::AddOp>(op.getLoc(), reshapedType,
-                                                    sum, reshapedSlice);
+            sum = stablehlo::AddOp::create(rewriter, op.getLoc(), reshapedType,
+                                           sum, reshapedSlice);
           }
         }
         rewriter.replaceOp(op, sum);
@@ -2850,20 +2870,21 @@ struct DotGeneralToMulReducePattern
 
     auto zeroAttr = rewriter.getFloatAttr(elemType, 0.0);
     auto scalarType = RankedTensorType::get({}, elemType);
-    Value zero = rewriter.create<stablehlo::ConstantOp>(
-        op.getLoc(), SplatElementsAttr::get(scalarType, zeroAttr));
+    Value zero = stablehlo::ConstantOp::create(
+        rewriter, op.getLoc(), SplatElementsAttr::get(scalarType, zeroAttr));
 
-    auto reduceOp = rewriter.create<stablehlo::ReduceOp>(
-        op.getLoc(), op.getType(), mul, zero,
+    auto reduceOp = stablehlo::ReduceOp::create(
+        rewriter, op.getLoc(), op.getType(), mul, zero,
         rewriter.getDenseI64ArrayAttr(dimsToReduce));
 
     Block *block = new Block();
     reduceOp.getBody().push_back(block);
     block->addArguments({scalarType, scalarType}, {op.getLoc(), op.getLoc()});
     auto b = OpBuilder::atBlockBegin(block);
-    Value add = b.create<stablehlo::AddOp>(
-        op.getLoc(), scalarType, block->getArgument(0), block->getArgument(1));
-    b.create<stablehlo::ReturnOp>(op.getLoc(), add);
+    Value add =
+        stablehlo::AddOp::create(b, op.getLoc(), scalarType,
+                                 block->getArgument(0), block->getArgument(1));
+    stablehlo::ReturnOp::create(b, op.getLoc(), add);
 
     rewriter.replaceOp(op, reduceOp.getResults());
     return success();
@@ -2871,20 +2892,20 @@ struct DotGeneralToMulReducePattern
 };
 Value getMaxValue(Value tensor, OpBuilder &builder, Location loc) {
   auto type = cast<RankedTensorType>(tensor.getType());
-  auto absOp = builder.create<stablehlo::AbsOp>(loc, tensor);
+  auto absOp = stablehlo::AbsOp::create(builder, loc, tensor);
 
   auto elemType = type.getElementType();
   auto zeroAttr = builder.getFloatAttr(elemType, 0.0);
   auto scalarType = RankedTensorType::get({}, elemType);
-  Value zero = builder.create<stablehlo::ConstantOp>(
-      loc, SplatElementsAttr::get(scalarType, zeroAttr));
+  Value zero = stablehlo::ConstantOp::create(
+      builder, loc, SplatElementsAttr::get(scalarType, zeroAttr));
 
   SmallVector<int64_t> dims;
   for (int64_t i = 0; i < type.getRank(); ++i)
     dims.push_back(i);
 
-  auto reduceOp = builder.create<stablehlo::ReduceOp>(
-      loc, TypeRange{scalarType}, ValueRange{absOp.getResult()},
+  auto reduceOp = stablehlo::ReduceOp::create(
+      builder, loc, TypeRange{scalarType}, ValueRange{absOp.getResult()},
       ValueRange{zero}, builder.getDenseI64ArrayAttr(dims));
 
   Block *block = new Block();
@@ -2892,9 +2913,9 @@ Value getMaxValue(Value tensor, OpBuilder &builder, Location loc) {
   block->addArguments({scalarType, scalarType}, {loc, loc});
 
   auto b = OpBuilder::atBlockBegin(block);
-  Value max = b.create<stablehlo::MaxOp>(loc, block->getArgument(0),
-                                         block->getArgument(1));
-  b.create<stablehlo::ReturnOp>(loc, max);
+  Value max = stablehlo::MaxOp::create(b, loc, block->getArgument(0),
+                                       block->getArgument(1));
+  stablehlo::ReturnOp::create(b, loc, max);
 
   return reduceOp.getResult(0);
 }
@@ -2904,16 +2925,18 @@ Value lookupTable(Value index, ArrayRef<double> table, OpBuilder &builder,
   auto floatTy = cast<FloatType>(rankedTensorType.getElementType());
 
   auto getConst = [&](double val) {
-    return builder.create<stablehlo::ConstantOp>(
-        loc, SplatElementsAttr::get(rankedTensorType,
-                                    builder.getFloatAttr(floatTy, val)));
+    return stablehlo::ConstantOp::create(
+        builder, loc,
+        SplatElementsAttr::get(rankedTensorType,
+                               builder.getFloatAttr(floatTy, val)));
   };
 
   auto getIntConst = [&](int val) {
     auto intType = RankedTensorType::get(rankedTensorType.getShape(),
                                          builder.getI32Type());
-    return builder.create<stablehlo::ConstantOp>(
-        loc, SplatElementsAttr::get(intType, builder.getI32IntegerAttr(val)));
+    return stablehlo::ConstantOp::create(
+        builder, loc,
+        SplatElementsAttr::get(intType, builder.getI32IntegerAttr(val)));
   };
 
   std::vector<Value> current_level;
@@ -2924,16 +2947,16 @@ Value lookupTable(Value index, ArrayRef<double> table, OpBuilder &builder,
   for (int bit = 0; bit < 5; ++bit) {
     std::vector<Value> next_level;
     Value bit_mask = getIntConst(1 << bit);
-    Value is_set_bits = builder.create<stablehlo::AndOp>(loc, index, bit_mask);
+    Value is_set_bits = stablehlo::AndOp::create(builder, loc, index, bit_mask);
     Value zero = getIntConst(0);
-    Value cond = builder.create<stablehlo::CompareOp>(
-        loc, is_set_bits, zero, stablehlo::ComparisonDirection::NE);
+    Value cond = stablehlo::CompareOp::create(
+        builder, loc, is_set_bits, zero, stablehlo::ComparisonDirection::NE);
 
     for (size_t i = 0; i < current_level.size(); i += 2) {
       Value false_val = current_level[i];
       Value true_val = current_level[i + 1];
       Value selected =
-          builder.create<stablehlo::SelectOp>(loc, cond, true_val, false_val);
+          stablehlo::SelectOp::create(builder, loc, cond, true_val, false_val);
       next_level.push_back(selected);
     }
     current_level = next_level;
@@ -2966,9 +2989,10 @@ struct LogOpConversion : public OpConversionPattern<stablehlo::LogOp> {
     auto floatTy = cast<FloatType>(tensorType.getElementType());
 
     auto getConst = [&](double val) {
-      return rewriter.create<stablehlo::ConstantOp>(
-          loc, SplatElementsAttr::get(tensorType,
-                                      rewriter.getFloatAttr(floatTy, val)));
+      return stablehlo::ConstantOp::create(
+          rewriter, loc,
+          SplatElementsAttr::get(tensorType,
+                                 rewriter.getFloatAttr(floatTy, val)));
     };
 
     // Tables from MultiFloats.jl
@@ -3016,12 +3040,13 @@ struct LogOpConversion : public OpConversionPattern<stablehlo::LogOp> {
     Type intEltTy = rewriter.getIntegerType(floatTy.getWidth());
     auto intType = RankedTensorType::get(tensorType.getShape(), intEltTy);
     Value bits =
-        rewriter.create<stablehlo::BitcastConvertOp>(loc, intType, x_hi);
+        stablehlo::BitcastConvertOp::create(rewriter, loc, intType, x_hi);
 
     auto getIntConst = [&](int val) {
-      return rewriter.create<stablehlo::ConstantOp>(
-          loc, SplatElementsAttr::get(intType,
-                                      rewriter.getIntegerAttr(intEltTy, val)));
+      return stablehlo::ConstantOp::create(
+          rewriter, loc,
+          SplatElementsAttr::get(intType,
+                                 rewriter.getIntegerAttr(intEltTy, val)));
     };
 
     int mantissaWidth = floatTy.getFPMantissaWidth() - 1;
@@ -3032,34 +3057,34 @@ struct LogOpConversion : public OpConversionPattern<stablehlo::LogOp> {
     int shiftAmount = mantissaWidth;
 
     Value mask = getIntConst(maskVal);
-    Value biased_bits = rewriter.create<stablehlo::AndOp>(loc, bits, mask);
-    Value biased_exp = rewriter.create<stablehlo::ShiftRightLogicalOp>(
-        loc, biased_bits, getIntConst(shiftAmount));
-    Value exp = rewriter.create<stablehlo::SubtractOp>(loc, biased_exp,
-                                                       getIntConst(bias));
+    Value biased_bits = stablehlo::AndOp::create(rewriter, loc, bits, mask);
+    Value biased_exp = stablehlo::ShiftRightLogicalOp::create(
+        rewriter, loc, biased_bits, getIntConst(shiftAmount));
+    Value exp = stablehlo::SubtractOp::create(rewriter, loc, biased_exp,
+                                              getIntConst(bias));
 
     Value biased_neg_exp =
-        rewriter.create<stablehlo::SubtractOp>(loc, getIntConst(bias), exp);
-    Value scale_bits = rewriter.create<stablehlo::ShiftLeftOp>(
-        loc, biased_neg_exp, getIntConst(shiftAmount));
-    Value scale = rewriter.create<stablehlo::BitcastConvertOp>(loc, tensorType,
-                                                               scale_bits);
+        stablehlo::SubtractOp::create(rewriter, loc, getIntConst(bias), exp);
+    Value scale_bits = stablehlo::ShiftLeftOp::create(
+        rewriter, loc, biased_neg_exp, getIntConst(shiftAmount));
+    Value scale = stablehlo::BitcastConvertOp::create(rewriter, loc, tensorType,
+                                                      scale_bits);
 
     // m = ldexp(x, -e)
-    Value m_hi = rewriter.create<stablehlo::MulOp>(loc, x_hi, scale);
-    Value m_lo = rewriter.create<stablehlo::MulOp>(loc, x_lo, scale);
+    Value m_hi = stablehlo::MulOp::create(rewriter, loc, x_hi, scale);
+    Value m_lo = stablehlo::MulOp::create(rewriter, loc, x_lo, scale);
 
     // 2. Table lookup
-    Value index_bits = rewriter.create<stablehlo::ShiftRightLogicalOp>(
-        loc, bits, getIntConst(mantissaWidth - 5));
+    Value index_bits = stablehlo::ShiftRightLogicalOp::create(
+        rewriter, loc, bits, getIntConst(mantissaWidth - 5));
     Value index =
-        rewriter.create<stablehlo::AndOp>(loc, index_bits, getIntConst(0x1F));
+        stablehlo::AndOp::create(rewriter, loc, index_bits, getIntConst(0x1F));
 
     Value index_i32 = index;
     if (floatTy.getWidth() != 32) {
       auto int32Type =
           RankedTensorType::get(tensorType.getShape(), rewriter.getI32Type());
-      index_i32 = rewriter.create<stablehlo::ConvertOp>(loc, int32Type, index);
+      index_i32 = stablehlo::ConvertOp::create(rewriter, loc, int32Type, index);
     }
 
     Value center_hi =
@@ -3090,8 +3115,8 @@ struct LogOpConversion : public OpConversionPattern<stablehlo::LogOp> {
                       x_plus_one_lo, rewriter, loc);
 
     // t_table = (m - center) / (m + center)
-    Value neg_center_hi = rewriter.create<stablehlo::NegOp>(loc, center_hi);
-    Value neg_center_lo = rewriter.create<stablehlo::NegOp>(loc, center_lo);
+    Value neg_center_hi = stablehlo::NegOp::create(rewriter, loc, center_hi);
+    Value neg_center_lo = stablehlo::NegOp::create(rewriter, loc, center_lo);
     auto [m_minus_center_hi, m_minus_center_lo] =
         multiFloatAdd(m_hi, m_lo, neg_center_hi, neg_center_lo, rewriter, loc);
     auto [m_plus_center_hi, m_plus_center_lo] =
@@ -3141,7 +3166,7 @@ struct LogOpConversion : public OpConversionPattern<stablehlo::LogOp> {
     auto [res_table_hi, res_table_lo] = multiFloatMul(
         t_table_hi, t_table_lo, p_table_hi, p_table_lo, rewriter, loc);
     // 4. Combine results
-    Value e_f32 = rewriter.create<stablehlo::ConvertOp>(loc, tensorType, exp);
+    Value e_f32 = stablehlo::ConvertOp::create(rewriter, loc, tensorType, exp);
     auto [e_plus_val_hi, e_plus_val_lo] =
         multiFloatAdd(e_f32, getConst(0.0), val_hi, val_lo, rewriter, loc);
     auto [else_hi, else_lo] =
@@ -3151,16 +3176,16 @@ struct LogOpConversion : public OpConversionPattern<stablehlo::LogOp> {
     Value direct_lo = getConst(0.9375);
     Value direct_hi = getConst(1.0625);
 
-    Value cond1 = rewriter.create<stablehlo::CompareOp>(
-        loc, direct_lo, x_hi, stablehlo::ComparisonDirection::LT);
-    Value cond2 = rewriter.create<stablehlo::CompareOp>(
-        loc, x_hi, direct_hi, stablehlo::ComparisonDirection::LT);
-    Value cond = rewriter.create<stablehlo::AndOp>(loc, cond1, cond2);
+    Value cond1 = stablehlo::CompareOp::create(
+        rewriter, loc, direct_lo, x_hi, stablehlo::ComparisonDirection::LT);
+    Value cond2 = stablehlo::CompareOp::create(
+        rewriter, loc, x_hi, direct_hi, stablehlo::ComparisonDirection::LT);
+    Value cond = stablehlo::AndOp::create(rewriter, loc, cond1, cond2);
 
-    Value log2_hi =
-        rewriter.create<stablehlo::SelectOp>(loc, cond, res_direct_hi, else_hi);
-    Value log2_lo =
-        rewriter.create<stablehlo::SelectOp>(loc, cond, res_direct_lo, else_lo);
+    Value log2_hi = stablehlo::SelectOp::create(rewriter, loc, cond,
+                                                res_direct_hi, else_hi);
+    Value log2_lo = stablehlo::SelectOp::create(rewriter, loc, cond,
+                                                res_direct_lo, else_lo);
 
     // Multiply by ln(2)
     Value ln2_hi = getConst(kLn2[0]);
@@ -3176,23 +3201,24 @@ struct LogOpConversion : public OpConversionPattern<stablehlo::LogOp> {
     Value neg_inf = getConst(-std::numeric_limits<double>::infinity());
 
     // Check x == 0
-    Value is_zero = rewriter.create<stablehlo::CompareOp>(
-        loc, x_hi, zero, stablehlo::ComparisonDirection::EQ);
+    Value is_zero = stablehlo::CompareOp::create(
+        rewriter, loc, x_hi, zero, stablehlo::ComparisonDirection::EQ);
 
     // Check x == 1
-    Value is_one_hi = rewriter.create<stablehlo::CompareOp>(
-        loc, x_hi, one, stablehlo::ComparisonDirection::EQ);
-    Value is_one_lo = rewriter.create<stablehlo::CompareOp>(
-        loc, x_lo, zero, stablehlo::ComparisonDirection::EQ);
-    Value is_one = rewriter.create<stablehlo::AndOp>(loc, is_one_hi, is_one_lo);
+    Value is_one_hi = stablehlo::CompareOp::create(
+        rewriter, loc, x_hi, one, stablehlo::ComparisonDirection::EQ);
+    Value is_one_lo = stablehlo::CompareOp::create(
+        rewriter, loc, x_lo, zero, stablehlo::ComparisonDirection::EQ);
+    Value is_one =
+        stablehlo::AndOp::create(rewriter, loc, is_one_hi, is_one_lo);
 
     // Check x < 0
-    Value is_neg = rewriter.create<stablehlo::CompareOp>(
-        loc, x_hi, zero, stablehlo::ComparisonDirection::LT);
+    Value is_neg = stablehlo::CompareOp::create(
+        rewriter, loc, x_hi, zero, stablehlo::ComparisonDirection::LT);
 
     // Check x == +inf
-    Value is_inf = rewriter.create<stablehlo::CompareOp>(
-        loc, x_hi, inf, stablehlo::ComparisonDirection::EQ);
+    Value is_inf = stablehlo::CompareOp::create(
+        rewriter, loc, x_hi, inf, stablehlo::ComparisonDirection::EQ);
 
     if (concatDimension == "tuple") {
       // In TUPLE mode the packed result is a TupleType, so we cannot
@@ -3230,8 +3256,8 @@ struct LogOpConversion : public OpConversionPattern<stablehlo::LogOp> {
       bcastDims.push_back(i);
 
     auto broadcastCond = [&](Value c) {
-      return rewriter.create<stablehlo::BroadcastInDimOp>(loc, i1Type, c,
-                                                          bcastDims);
+      return stablehlo::BroadcastInDimOp::create(rewriter, loc, i1Type, c,
+                                                 bcastDims);
     };
 
     Value is_one_bcast = broadcastCond(is_one);
@@ -3242,20 +3268,20 @@ struct LogOpConversion : public OpConversionPattern<stablehlo::LogOp> {
     Value final_packed = packed_res;
 
     // If x == 1 -> 0
-    final_packed = rewriter.create<stablehlo::SelectOp>(
-        loc, is_one_bcast, packed_zero, final_packed);
+    final_packed = stablehlo::SelectOp::create(rewriter, loc, is_one_bcast,
+                                               packed_zero, final_packed);
 
     // If x == +inf -> +inf
-    final_packed = rewriter.create<stablehlo::SelectOp>(
-        loc, is_inf_bcast, packed_inf, final_packed);
+    final_packed = stablehlo::SelectOp::create(rewriter, loc, is_inf_bcast,
+                                               packed_inf, final_packed);
 
     // If x == 0 -> -inf
-    final_packed = rewriter.create<stablehlo::SelectOp>(
-        loc, is_zero_bcast, packed_neg_inf, final_packed);
+    final_packed = stablehlo::SelectOp::create(rewriter, loc, is_zero_bcast,
+                                               packed_neg_inf, final_packed);
 
     // If x < 0 -> NaN
-    final_packed = rewriter.create<stablehlo::SelectOp>(
-        loc, is_neg_bcast, packed_nan, final_packed);
+    final_packed = stablehlo::SelectOp::create(rewriter, loc, is_neg_bcast,
+                                               packed_nan, final_packed);
 
     rewriter.replaceOp(op, final_packed);
     return success();
@@ -3287,12 +3313,14 @@ struct DotGeneralOpConversion
         getTypeConverter()->convertType(op.getOperands()[1].getType());
 
     if (lhs.getType() != expectedLhsTy) {
-      lhs = rewriter.create<UnrealizedConversionCastOp>(loc, expectedLhsTy, lhs)
-                .getResult(0);
+      lhs =
+          UnrealizedConversionCastOp::create(rewriter, loc, expectedLhsTy, lhs)
+              .getResult(0);
     }
     if (rhs.getType() != expectedRhsTy) {
-      rhs = rewriter.create<UnrealizedConversionCastOp>(loc, expectedRhsTy, rhs)
-                .getResult(0);
+      rhs =
+          UnrealizedConversionCastOp::create(rewriter, loc, expectedRhsTy, rhs)
+              .getResult(0);
     }
 
     Value lhs_hi = extractLimb(lhs, 0, rewriter, loc, concatDimension);
@@ -3303,14 +3331,18 @@ struct DotGeneralOpConversion
     auto origLhsTy = cast<RankedTensorType>(op.getOperands()[0].getType());
     auto origRhsTy = cast<RankedTensorType>(op.getOperands()[1].getType());
 
-    lhs_hi = rewriter.create<stablehlo::ReshapeOp>(
-        loc, RankedTensorType::get(origLhsTy.getShape(), targetType), lhs_hi);
-    lhs_lo = rewriter.create<stablehlo::ReshapeOp>(
-        loc, RankedTensorType::get(origLhsTy.getShape(), targetType), lhs_lo);
-    rhs_hi = rewriter.create<stablehlo::ReshapeOp>(
-        loc, RankedTensorType::get(origRhsTy.getShape(), targetType), rhs_hi);
-    rhs_lo = rewriter.create<stablehlo::ReshapeOp>(
-        loc, RankedTensorType::get(origRhsTy.getShape(), targetType), rhs_lo);
+    lhs_hi = stablehlo::ReshapeOp::create(
+        rewriter, loc, RankedTensorType::get(origLhsTy.getShape(), targetType),
+        lhs_hi);
+    lhs_lo = stablehlo::ReshapeOp::create(
+        rewriter, loc, RankedTensorType::get(origLhsTy.getShape(), targetType),
+        lhs_lo);
+    rhs_hi = stablehlo::ReshapeOp::create(
+        rewriter, loc, RankedTensorType::get(origRhsTy.getShape(), targetType),
+        rhs_hi);
+    rhs_lo = stablehlo::ReshapeOp::create(
+        rewriter, loc, RankedTensorType::get(origRhsTy.getShape(), targetType),
+        rhs_lo);
 
     auto origType = cast<RankedTensorType>(op.getType());
     auto origShape = origType.getShape();
@@ -3323,19 +3355,19 @@ struct DotGeneralOpConversion
     auto sourceTensorRhsType =
         RankedTensorType::get(origRhsTy.getShape(), sourceType);
 
-    Value lhs_hi_src =
-        rewriter.create<stablehlo::ConvertOp>(loc, sourceTensorLhsType, lhs_hi);
-    Value lhs_lo_src =
-        rewriter.create<stablehlo::ConvertOp>(loc, sourceTensorLhsType, lhs_lo);
-    Value lhs_combined = rewriter.create<stablehlo::AddOp>(
-        loc, sourceTensorLhsType, lhs_hi_src, lhs_lo_src);
+    Value lhs_hi_src = stablehlo::ConvertOp::create(
+        rewriter, loc, sourceTensorLhsType, lhs_hi);
+    Value lhs_lo_src = stablehlo::ConvertOp::create(
+        rewriter, loc, sourceTensorLhsType, lhs_lo);
+    Value lhs_combined = stablehlo::AddOp::create(
+        rewriter, loc, sourceTensorLhsType, lhs_hi_src, lhs_lo_src);
 
-    Value rhs_hi_src =
-        rewriter.create<stablehlo::ConvertOp>(loc, sourceTensorRhsType, rhs_hi);
-    Value rhs_lo_src =
-        rewriter.create<stablehlo::ConvertOp>(loc, sourceTensorRhsType, rhs_lo);
-    Value rhs_combined = rewriter.create<stablehlo::AddOp>(
-        loc, sourceTensorRhsType, rhs_hi_src, rhs_lo_src);
+    Value rhs_hi_src = stablehlo::ConvertOp::create(
+        rewriter, loc, sourceTensorRhsType, rhs_hi);
+    Value rhs_lo_src = stablehlo::ConvertOp::create(
+        rewriter, loc, sourceTensorRhsType, rhs_lo);
+    Value rhs_combined = stablehlo::AddOp::create(
+        rewriter, loc, sourceTensorRhsType, rhs_hi_src, rhs_lo_src);
 
     auto floatTargetType = cast<FloatType>(targetType);
     unsigned mantissaWidth = floatTargetType.getFPMantissaWidth();
@@ -3363,64 +3395,65 @@ struct DotGeneralOpConversion
     Value max_B = getMaxValue(rhs_combined, rewriter, loc);
 
     auto sourceScalarType = RankedTensorType::get({}, sourceType);
-    Value ln_2 = rewriter.create<stablehlo::ConstantOp>(
-        loc, SplatElementsAttr::get(
-                 sourceScalarType,
-                 rewriter.getFloatAttr(sourceType, std::log(2.0))));
+    Value ln_2 = stablehlo::ConstantOp::create(
+        rewriter, loc,
+        SplatElementsAttr::get(
+            sourceScalarType,
+            rewriter.getFloatAttr(sourceType, std::log(2.0))));
 
     // Compute scale_A
     assert(ln_2.getType() == max_A.getType());
-    Value ln_A = rewriter.create<stablehlo::LogOp>(loc, max_A);
-    Value log2_A = rewriter.create<stablehlo::DivOp>(loc, ln_A, ln_2);
-    Value ceil_log2_A = rewriter.create<stablehlo::CeilOp>(loc, log2_A);
+    Value ln_A = stablehlo::LogOp::create(rewriter, loc, max_A);
+    Value log2_A = stablehlo::DivOp::create(rewriter, loc, ln_A, ln_2);
+    Value ceil_log2_A = stablehlo::CeilOp::create(rewriter, loc, log2_A);
     Value scaled_log2_A =
-        rewriter.create<stablehlo::MulOp>(loc, ceil_log2_A, ln_2);
+        stablehlo::MulOp::create(rewriter, loc, ceil_log2_A, ln_2);
     Value scale_A_scalar =
-        rewriter.create<stablehlo::ExpOp>(loc, scaled_log2_A);
+        stablehlo::ExpOp::create(rewriter, loc, scaled_log2_A);
 
-    Value scale_A = rewriter.create<stablehlo::BroadcastInDimOp>(
-        loc, sourceTensorLhsType, scale_A_scalar,
+    Value scale_A = stablehlo::BroadcastInDimOp::create(
+        rewriter, loc, sourceTensorLhsType, scale_A_scalar,
         rewriter.getDenseI64ArrayAttr({}));
 
     // Compute scale_B
-    Value ln_B = rewriter.create<stablehlo::LogOp>(loc, max_B);
-    Value log2_B = rewriter.create<stablehlo::DivOp>(loc, ln_B, ln_2);
-    Value ceil_log2_B = rewriter.create<stablehlo::CeilOp>(loc, log2_B);
+    Value ln_B = stablehlo::LogOp::create(rewriter, loc, max_B);
+    Value log2_B = stablehlo::DivOp::create(rewriter, loc, ln_B, ln_2);
+    Value ceil_log2_B = stablehlo::CeilOp::create(rewriter, loc, log2_B);
     Value scaled_log2_B =
-        rewriter.create<stablehlo::MulOp>(loc, ceil_log2_B, ln_2);
+        stablehlo::MulOp::create(rewriter, loc, ceil_log2_B, ln_2);
     Value scale_B_scalar =
-        rewriter.create<stablehlo::ExpOp>(loc, scaled_log2_B);
+        stablehlo::ExpOp::create(rewriter, loc, scaled_log2_B);
 
-    Value scale_B = rewriter.create<stablehlo::BroadcastInDimOp>(
-        loc, sourceTensorRhsType, scale_B_scalar,
+    Value scale_B = stablehlo::BroadcastInDimOp::create(
+        rewriter, loc, sourceTensorRhsType, scale_B_scalar,
         rewriter.getDenseI64ArrayAttr({}));
 
     Value lhs_norm =
-        rewriter.create<stablehlo::DivOp>(loc, lhs_combined, scale_A);
+        stablehlo::DivOp::create(rewriter, loc, lhs_combined, scale_A);
     Value rhs_norm =
-        rewriter.create<stablehlo::DivOp>(loc, rhs_combined, scale_B);
+        stablehlo::DivOp::create(rewriter, loc, rhs_combined, scale_B);
 
-    Value scale_const = rewriter.create<stablehlo::ConstantOp>(
-        loc,
+    Value scale_const = stablehlo::ConstantOp::create(
+        rewriter, loc,
         SplatElementsAttr::get(sourceTensorLhsType,
                                rewriter.getFloatAttr(sourceType, splitFactor)));
     Value scaled_A =
-        rewriter.create<stablehlo::MulOp>(loc, lhs_norm, scale_const);
-    Value floored_A = rewriter.create<stablehlo::FloorOp>(loc, scaled_A);
+        stablehlo::MulOp::create(rewriter, loc, lhs_norm, scale_const);
+    Value floored_A = stablehlo::FloorOp::create(rewriter, loc, scaled_A);
     Value A_hi = floored_A;
     Value A_lo =
-        rewriter.create<stablehlo::SubtractOp>(loc, scaled_A, floored_A);
+        stablehlo::SubtractOp::create(rewriter, loc, scaled_A, floored_A);
 
-    Value scale_const_B = rewriter.create<stablehlo::ConstantOp>(
-        loc,
+    Value scale_const_B = stablehlo::ConstantOp::create(
+        rewriter, loc,
         SplatElementsAttr::get(sourceTensorRhsType,
                                rewriter.getFloatAttr(sourceType, splitFactor)));
     Value scaled_B =
-        rewriter.create<stablehlo::MulOp>(loc, rhs_norm, scale_const_B);
-    Value floored_B = rewriter.create<stablehlo::FloorOp>(loc, scaled_B);
+        stablehlo::MulOp::create(rewriter, loc, rhs_norm, scale_const_B);
+    Value floored_B = stablehlo::FloorOp::create(rewriter, loc, scaled_B);
     Value B_hi = floored_B;
     Value B_lo =
-        rewriter.create<stablehlo::SubtractOp>(loc, scaled_B, floored_B);
+        stablehlo::SubtractOp::create(rewriter, loc, scaled_B, floored_B);
 
     auto targetTensorLhsType =
         RankedTensorType::get(origLhsTy.getShape(), targetType);
@@ -3428,62 +3461,67 @@ struct DotGeneralOpConversion
         RankedTensorType::get(origRhsTy.getShape(), targetType);
 
     Value lhs_hi_hi =
-        rewriter.create<stablehlo::ConvertOp>(loc, targetTensorLhsType, A_hi);
+        stablehlo::ConvertOp::create(rewriter, loc, targetTensorLhsType, A_hi);
     Value lhs_hi_lo =
-        rewriter.create<stablehlo::ConvertOp>(loc, targetTensorLhsType, A_lo);
+        stablehlo::ConvertOp::create(rewriter, loc, targetTensorLhsType, A_lo);
     Value rhs_hi_hi =
-        rewriter.create<stablehlo::ConvertOp>(loc, targetTensorRhsType, B_hi);
+        stablehlo::ConvertOp::create(rewriter, loc, targetTensorRhsType, B_hi);
     Value rhs_hi_lo =
-        rewriter.create<stablehlo::ConvertOp>(loc, targetTensorRhsType, B_lo);
+        stablehlo::ConvertOp::create(rewriter, loc, targetTensorRhsType, B_lo);
 
-    Value p1 = rewriter.create<stablehlo::DotGeneralOp>(
-        loc, prodType, lhs_hi_hi, rhs_hi_hi, op.getDotDimensionNumbers(),
-        op.getPrecisionConfigAttr(), op.getAlgorithmAttr());
-    Value p2 = rewriter.create<stablehlo::DotGeneralOp>(
-        loc, prodType, lhs_hi_hi, rhs_hi_lo, op.getDotDimensionNumbers(),
-        op.getPrecisionConfigAttr(), op.getAlgorithmAttr());
-    Value p3 = rewriter.create<stablehlo::DotGeneralOp>(
-        loc, prodType, lhs_hi_lo, rhs_hi_hi, op.getDotDimensionNumbers(),
-        op.getPrecisionConfigAttr(), op.getAlgorithmAttr());
-    Value p4 = rewriter.create<stablehlo::DotGeneralOp>(
-        loc, prodType, lhs_hi_lo, rhs_hi_lo, op.getDotDimensionNumbers(),
-        op.getPrecisionConfigAttr(), op.getAlgorithmAttr());
+    Value p1 = stablehlo::DotGeneralOp::create(
+        rewriter, loc, prodType, lhs_hi_hi, rhs_hi_hi,
+        op.getDotDimensionNumbers(), op.getPrecisionConfigAttr(),
+        op.getAlgorithmAttr());
+    Value p2 = stablehlo::DotGeneralOp::create(
+        rewriter, loc, prodType, lhs_hi_hi, rhs_hi_lo,
+        op.getDotDimensionNumbers(), op.getPrecisionConfigAttr(),
+        op.getAlgorithmAttr());
+    Value p3 = stablehlo::DotGeneralOp::create(
+        rewriter, loc, prodType, lhs_hi_lo, rhs_hi_hi,
+        op.getDotDimensionNumbers(), op.getPrecisionConfigAttr(),
+        op.getAlgorithmAttr());
+    Value p4 = stablehlo::DotGeneralOp::create(
+        rewriter, loc, prodType, lhs_hi_lo, rhs_hi_lo,
+        op.getDotDimensionNumbers(), op.getPrecisionConfigAttr(),
+        op.getAlgorithmAttr());
 
     // Scale back and sum in sourceType
     auto sourceProdType = RankedTensorType::get(origShape, sourceType);
     Value p1_src =
-        rewriter.create<stablehlo::ConvertOp>(loc, sourceProdType, p1);
+        stablehlo::ConvertOp::create(rewriter, loc, sourceProdType, p1);
     Value p2_src =
-        rewriter.create<stablehlo::ConvertOp>(loc, sourceProdType, p2);
+        stablehlo::ConvertOp::create(rewriter, loc, sourceProdType, p2);
     Value p3_src =
-        rewriter.create<stablehlo::ConvertOp>(loc, sourceProdType, p3);
+        stablehlo::ConvertOp::create(rewriter, loc, sourceProdType, p3);
     Value p4_src =
-        rewriter.create<stablehlo::ConvertOp>(loc, sourceProdType, p4);
+        stablehlo::ConvertOp::create(rewriter, loc, sourceProdType, p4);
 
     Value total_scale =
-        rewriter.create<stablehlo::MulOp>(loc, scale_A_scalar, scale_B_scalar);
-    Value split_factor_squared = rewriter.create<stablehlo::ConstantOp>(
-        loc, SplatElementsAttr::get(
-                 sourceScalarType,
-                 rewriter.getFloatAttr(sourceType, splitFactor * splitFactor)));
-    Value scale_back_scalar = rewriter.create<stablehlo::DivOp>(
-        loc, total_scale, split_factor_squared);
+        stablehlo::MulOp::create(rewriter, loc, scale_A_scalar, scale_B_scalar);
+    Value split_factor_squared = stablehlo::ConstantOp::create(
+        rewriter, loc,
+        SplatElementsAttr::get(
+            sourceScalarType,
+            rewriter.getFloatAttr(sourceType, splitFactor * splitFactor)));
+    Value scale_back_scalar = stablehlo::DivOp::create(
+        rewriter, loc, total_scale, split_factor_squared);
 
-    Value scale_back = rewriter.create<stablehlo::BroadcastInDimOp>(
-        loc, sourceProdType, scale_back_scalar,
+    Value scale_back = stablehlo::BroadcastInDimOp::create(
+        rewriter, loc, sourceProdType, scale_back_scalar,
         rewriter.getDenseI64ArrayAttr({}));
 
-    p1_src = rewriter.create<stablehlo::MulOp>(loc, p1_src, scale_back);
-    p2_src = rewriter.create<stablehlo::MulOp>(loc, p2_src, scale_back);
-    p3_src = rewriter.create<stablehlo::MulOp>(loc, p3_src, scale_back);
-    p4_src = rewriter.create<stablehlo::MulOp>(loc, p4_src, scale_back);
+    p1_src = stablehlo::MulOp::create(rewriter, loc, p1_src, scale_back);
+    p2_src = stablehlo::MulOp::create(rewriter, loc, p2_src, scale_back);
+    p3_src = stablehlo::MulOp::create(rewriter, loc, p3_src, scale_back);
+    p4_src = stablehlo::MulOp::create(rewriter, loc, p4_src, scale_back);
 
     Value sum1 =
-        rewriter.create<stablehlo::AddOp>(loc, sourceProdType, p1_src, p2_src);
+        stablehlo::AddOp::create(rewriter, loc, sourceProdType, p1_src, p2_src);
     Value sum2 =
-        rewriter.create<stablehlo::AddOp>(loc, sourceProdType, p3_src, p4_src);
+        stablehlo::AddOp::create(rewriter, loc, sourceProdType, p3_src, p4_src);
     Value sum =
-        rewriter.create<stablehlo::AddOp>(loc, sourceProdType, sum1, sum2);
+        stablehlo::AddOp::create(rewriter, loc, sourceProdType, sum1, sum2);
 
     int expansionSize = 2; // Hardcoded for now
     Value packed = convertToMultifloat(sum, rewriter, loc, targetType,
@@ -3520,10 +3558,12 @@ struct WrapOpConversion : public OpConversionPattern<enzymexla::WrapOp> {
       Type hiType = tupleType.getType(0);
       Type loType = tupleType.getType(1);
 
-      auto hiOp = rewriter.create<enzymexla::WrapOp>(
-          loc, TypeRange{hiType}, ValueRange{input_hi}, op->getAttrs());
-      auto loOp = rewriter.create<enzymexla::WrapOp>(
-          loc, TypeRange{loType}, ValueRange{input_lo}, op->getAttrs());
+      auto hiOp =
+          enzymexla::WrapOp::create(rewriter, loc, TypeRange{hiType},
+                                    ValueRange{input_hi}, op->getAttrs());
+      auto loOp =
+          enzymexla::WrapOp::create(rewriter, loc, TypeRange{loType},
+                                    ValueRange{input_lo}, op->getAttrs());
 
       Value packed = packLimbs(hiOp.getResult(), loOp.getResult(), rewriter,
                                loc, concatDimension);
@@ -3546,8 +3586,8 @@ struct WrapOpConversion : public OpConversionPattern<enzymexla::WrapOp> {
       }
     }
 
-    auto newOp = rewriter.create<enzymexla::WrapOp>(
-        loc, TypeRange{convertedType}, ValueRange{input}, newAttrs);
+    auto newOp = enzymexla::WrapOp::create(
+        rewriter, loc, TypeRange{convertedType}, ValueRange{input}, newAttrs);
 
     rewriter.replaceOp(op, newOp.getResult());
     return success();
@@ -3580,10 +3620,12 @@ struct RotateOpConversion : public OpConversionPattern<enzymexla::RotateOp> {
       Type hiType = tupleType.getType(0);
       Type loType = tupleType.getType(1);
 
-      auto hiOp = rewriter.create<enzymexla::RotateOp>(
-          loc, TypeRange{hiType}, ValueRange{input_hi}, op->getAttrs());
-      auto loOp = rewriter.create<enzymexla::RotateOp>(
-          loc, TypeRange{loType}, ValueRange{input_lo}, op->getAttrs());
+      auto hiOp =
+          enzymexla::RotateOp::create(rewriter, loc, TypeRange{hiType},
+                                      ValueRange{input_hi}, op->getAttrs());
+      auto loOp =
+          enzymexla::RotateOp::create(rewriter, loc, TypeRange{loType},
+                                      ValueRange{input_lo}, op->getAttrs());
 
       Value packed = packLimbs(hiOp.getResult(), loOp.getResult(), rewriter,
                                loc, concatDimension);
@@ -3606,8 +3648,8 @@ struct RotateOpConversion : public OpConversionPattern<enzymexla::RotateOp> {
       }
     }
 
-    auto newOp = rewriter.create<enzymexla::RotateOp>(
-        loc, TypeRange{convertedType}, ValueRange{input}, newAttrs);
+    auto newOp = enzymexla::RotateOp::create(
+        rewriter, loc, TypeRange{convertedType}, ValueRange{input}, newAttrs);
 
     rewriter.replaceOp(op, newOp.getResult());
     return success();
@@ -3640,12 +3682,12 @@ struct ExtendOpConversion : public OpConversionPattern<enzymexla::ExtendOp> {
       Type hiType = tupleType.getType(0);
       Type loType = tupleType.getType(1);
 
-      auto hiOp = rewriter.create<enzymexla::ExtendOp>(
-          loc, hiType, input_hi, op.getLhsAttr(), op.getRhsAttr(),
-          op.getDimensionAttr());
-      auto loOp = rewriter.create<enzymexla::ExtendOp>(
-          loc, loType, input_lo, op.getLhsAttr(), op.getRhsAttr(),
-          op.getDimensionAttr());
+      auto hiOp = enzymexla::ExtendOp::create(rewriter, loc, hiType, input_hi,
+                                              op.getLhsAttr(), op.getRhsAttr(),
+                                              op.getDimensionAttr());
+      auto loOp = enzymexla::ExtendOp::create(rewriter, loc, loType, input_lo,
+                                              op.getLhsAttr(), op.getRhsAttr(),
+                                              op.getDimensionAttr());
 
       Value packed = packLimbs(hiOp.getResult(), loOp.getResult(), rewriter,
                                loc, concatDimension);
@@ -3658,8 +3700,8 @@ struct ExtendOpConversion : public OpConversionPattern<enzymexla::ExtendOp> {
       dim += 1;
     }
 
-    auto newOp = rewriter.create<enzymexla::ExtendOp>(
-        loc, convertedType, input, op.getLhsAttr(), op.getRhsAttr(),
+    auto newOp = enzymexla::ExtendOp::create(
+        rewriter, loc, convertedType, input, op.getLhsAttr(), op.getRhsAttr(),
         rewriter.getI64IntegerAttr(dim));
 
     rewriter.replaceOp(op, newOp.getResult());
@@ -3702,11 +3744,11 @@ struct UpdateWithoutCornersOpConversion
       Type hiType = tupleType.getType(0);
       Type loType = tupleType.getType(1);
 
-      auto hiOp = rewriter.create<enzymexla::UpdateWithoutCornersOp>(
-          loc, TypeRange{hiType}, ValueRange{operand_hi, update_hi},
+      auto hiOp = enzymexla::UpdateWithoutCornersOp::create(
+          rewriter, loc, TypeRange{hiType}, ValueRange{operand_hi, update_hi},
           op->getAttrs());
-      auto loOp = rewriter.create<enzymexla::UpdateWithoutCornersOp>(
-          loc, TypeRange{loType}, ValueRange{operand_lo, update_lo},
+      auto loOp = enzymexla::UpdateWithoutCornersOp::create(
+          rewriter, loc, TypeRange{loType}, ValueRange{operand_lo, update_lo},
           op->getAttrs());
 
       Value packed = packLimbs(hiOp.getResult(), loOp.getResult(), rewriter,
@@ -3735,8 +3777,8 @@ struct UpdateWithoutCornersOpConversion
       }
     }
 
-    auto newOp = rewriter.create<enzymexla::UpdateWithoutCornersOp>(
-        loc, TypeRange{convertedType},
+    auto newOp = enzymexla::UpdateWithoutCornersOp::create(
+        rewriter, loc, TypeRange{convertedType},
         ValueRange{adaptor.getOperand(), adaptor.getUpdate()}, newAttrs);
 
     rewriter.replaceOp(op, newOp.getResult());
@@ -3793,8 +3835,8 @@ struct ConcatenateOpOptimization
       }
       auto outType = RankedTensorType::get(newShape, type.getElementType());
 
-      auto newConcat = rewriter.create<stablehlo::ConcatenateOp>(
-          op.getLoc(), outType, operandsToConcat, op.getDimension());
+      auto newConcat = stablehlo::ConcatenateOp::create(
+          rewriter, op.getLoc(), outType, operandsToConcat, op.getDimension());
       newOperands.push_back(newConcat);
     }
 
@@ -3840,8 +3882,9 @@ struct ConcatenateOpConversion
 
       SmallVector<Value> concatenatedLimbs;
       for (unsigned j = 0; j < numLimbs; ++j) {
-        concatenatedLimbs.push_back(rewriter.create<stablehlo::ConcatenateOp>(
-            loc, tupleType.getType(j), limbsOperands[j], op.getDimension()));
+        concatenatedLimbs.push_back(stablehlo::ConcatenateOp::create(
+            rewriter, loc, tupleType.getType(j), limbsOperands[j],
+            op.getDimension()));
       }
 
       Value packed = packLimbs(concatenatedLimbs, rewriter, loc, "tuple");
@@ -3860,8 +3903,8 @@ struct ConcatenateOpConversion
       mappedDim = dim;
     }
 
-    Value newOp = rewriter.create<stablehlo::ConcatenateOp>(
-        loc, outType, adaptor.getOperands(), mappedDim);
+    Value newOp = stablehlo::ConcatenateOp::create(
+        rewriter, loc, outType, adaptor.getOperands(), mappedDim);
     rewriter.replaceOp(op, newOp);
     return success();
   }
@@ -3895,12 +3938,12 @@ struct PadOpConversion : public OpConversionPattern<stablehlo::PadOp> {
       Value loPadValue =
           extractLimb(adaptor.getPaddingValue(), 1, rewriter, loc, "tuple");
 
-      Value hi = rewriter.create<stablehlo::PadOp>(
-          loc, tupleType.getType(0), hiOperand, hiPadValue,
+      Value hi = stablehlo::PadOp::create(
+          rewriter, loc, tupleType.getType(0), hiOperand, hiPadValue,
           op.getEdgePaddingLow(), op.getEdgePaddingHigh(),
           op.getInteriorPadding());
-      Value lo = rewriter.create<stablehlo::PadOp>(
-          loc, tupleType.getType(1), loOperand, loPadValue,
+      Value lo = stablehlo::PadOp::create(
+          rewriter, loc, tupleType.getType(1), loOperand, loPadValue,
           op.getEdgePaddingLow(), op.getEdgePaddingHigh(),
           op.getInteriorPadding());
       Value packed = packLimbs(hi, lo, rewriter, loc, "tuple");
@@ -3931,7 +3974,7 @@ struct PadOpConversion : public OpConversionPattern<stablehlo::PadOp> {
       auto zeroAttr = rewriter.getFloatAttr(floatTy, 0.0);
       auto splatAttr =
           SplatElementsAttr::get(RankedTensorType::get({}, floatTy), zeroAttr);
-      Value zeroConst = rewriter.create<stablehlo::ConstantOp>(loc, splatAttr);
+      Value zeroConst = stablehlo::ConstantOp::create(rewriter, loc, splatAttr);
 
       SmallVector<int64_t> low = llvm::to_vector(op.getEdgePaddingLow());
       SmallVector<int64_t> high = llvm::to_vector(op.getEdgePaddingHigh());
@@ -3947,8 +3990,8 @@ struct PadOpConversion : public OpConversionPattern<stablehlo::PadOp> {
         interior.push_back(0);
       }
 
-      Value newOp = rewriter.create<stablehlo::PadOp>(
-          loc, adaptor.getOperand(), zeroConst,
+      Value newOp = stablehlo::PadOp::create(
+          rewriter, loc, adaptor.getOperand(), zeroConst,
           rewriter.getDenseI64ArrayAttr(low),
           rewriter.getDenseI64ArrayAttr(high),
           rewriter.getDenseI64ArrayAttr(interior));
@@ -3968,9 +4011,9 @@ struct PadOpConversion : public OpConversionPattern<stablehlo::PadOp> {
     auto scalarType = RankedTensorType::get(
         {}, cast<RankedTensorType>(hiPadValue.getType()).getElementType());
     hiPadValue =
-        rewriter.create<stablehlo::ReshapeOp>(loc, scalarType, hiPadValue);
+        stablehlo::ReshapeOp::create(rewriter, loc, scalarType, hiPadValue);
     loPadValue =
-        rewriter.create<stablehlo::ReshapeOp>(loc, scalarType, loPadValue);
+        stablehlo::ReshapeOp::create(rewriter, loc, scalarType, loPadValue);
 
     SmallVector<int64_t> low = llvm::to_vector(op.getEdgePaddingLow());
     SmallVector<int64_t> high = llvm::to_vector(op.getEdgePaddingHigh());
@@ -3986,13 +4029,13 @@ struct PadOpConversion : public OpConversionPattern<stablehlo::PadOp> {
       interior.push_back(0);
     }
 
-    Value hi = rewriter.create<stablehlo::PadOp>(
-        loc, hiOperand, hiPadValue, rewriter.getDenseI64ArrayAttr(low),
-        rewriter.getDenseI64ArrayAttr(high),
+    Value hi = stablehlo::PadOp::create(
+        rewriter, loc, hiOperand, hiPadValue,
+        rewriter.getDenseI64ArrayAttr(low), rewriter.getDenseI64ArrayAttr(high),
         rewriter.getDenseI64ArrayAttr(interior));
-    Value lo = rewriter.create<stablehlo::PadOp>(
-        loc, loOperand, loPadValue, rewriter.getDenseI64ArrayAttr(low),
-        rewriter.getDenseI64ArrayAttr(high),
+    Value lo = stablehlo::PadOp::create(
+        rewriter, loc, loOperand, loPadValue,
+        rewriter.getDenseI64ArrayAttr(low), rewriter.getDenseI64ArrayAttr(high),
         rewriter.getDenseI64ArrayAttr(interior));
 
     Value packed = packLimbs(hi, lo, rewriter, loc, concatDimension);
@@ -4474,18 +4517,18 @@ struct MultiFloatConversionPass
                                               ValueRange inputs,
                                               Location loc) -> Value {
       if (inputs.size() == 1)
-        return builder.create<UnrealizedConversionCastOp>(loc, type, inputs[0])
+        return UnrealizedConversionCastOp::create(builder, loc, type, inputs[0])
             .getResult(0);
-      return builder.create<UnrealizedConversionCastOp>(loc, type, inputs)
+      return UnrealizedConversionCastOp::create(builder, loc, type, inputs)
           .getResult(0);
     });
     typeConverter.addTargetMaterialization([](OpBuilder &builder, Type type,
                                               ValueRange inputs,
                                               Location loc) -> Value {
       if (inputs.size() == 1)
-        return builder.create<UnrealizedConversionCastOp>(loc, type, inputs[0])
+        return UnrealizedConversionCastOp::create(builder, loc, type, inputs[0])
             .getResult(0);
-      return builder.create<UnrealizedConversionCastOp>(loc, type, inputs)
+      return UnrealizedConversionCastOp::create(builder, loc, type, inputs)
           .getResult(0);
     });
 
@@ -4561,8 +4604,8 @@ struct MultiFloatConversionPass
             Type newType = newArgTypes[i];
             if (oldType != newType) {
               block.getArgument(i).setType(newType);
-              auto cast = builder.create<UnrealizedConversionCastOp>(
-                  func.getLoc(), oldType, block.getArgument(i));
+              auto cast = UnrealizedConversionCastOp::create(
+                  builder, func.getLoc(), oldType, block.getArgument(i));
               block.getArgument(i).replaceAllUsesExcept(cast.getResult(0),
                                                         cast);
             }
@@ -4577,8 +4620,8 @@ struct MultiFloatConversionPass
             Type oldType = returnOp.getOperand(i).getType();
             Type newType = newResTypes[i];
             if (oldType != newType) {
-              auto cast = builder.create<UnrealizedConversionCastOp>(
-                  returnOp.getLoc(), newType, returnOp.getOperand(i));
+              auto cast = UnrealizedConversionCastOp::create(
+                  builder, returnOp.getLoc(), newType, returnOp.getOperand(i));
               newReturnOperands.push_back(cast.getResult(0));
             } else {
               newReturnOperands.push_back(returnOp.getOperand(i));

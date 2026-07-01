@@ -23,6 +23,7 @@ def Mul : Inst<"MulOp", "stablehlo">;
 def Div : Inst<"DivOp", "stablehlo">;
 def Neg : Inst<"NegOp", "stablehlo">;
 def Sqrt : Inst<"SqrtOp", "stablehlo">;
+def Exp : Inst<"ExpOp", "stablehlo">;
 def Pow : Inst<"PowOp", "stablehlo">;
 def Cos : Inst<"CosineOp", "stablehlo">;
 def Sin : Inst<"SineOp", "stablehlo">;
@@ -113,6 +114,10 @@ def : HLODerivative<"DigammaOp", (Op $x),
                     (Mul (Shadow $x), (Polygamma $x, (HLOConstantFP<"2"> $x)))
 >;
 
+def : HLODerivative<"ErfOp", (Op $x), [
+  (Mul (DiffeRet), (Mul (HLOConstantFP<"1.1283791670955126"> $x), (Exp (Neg (Mul $x, $x)))))
+]>;
+
 def : HLOInactiveOp<"IsInfOp">;
 
 def : HLOInactiveOp<"IsNegInfOp">;
@@ -140,3 +145,17 @@ def : HLODerivative<"SquareOp", (Op $x), [
 def : HLODerivative<"TanOp", (Op $x), [
   (Div (DiffeRet), (Mul (Cos $x), (Cos $x)))
 ]>;
+
+// erfc(x):   d/dx = -(2/sqrt(pi)) * exp(-x^2)
+def : HLODerivative<"ErfcOp", (Op $x), [
+  (Neg (Mul (DiffeRet), (Mul (HLOConstantFP<"1.1283791670955126"> $x), (Exp (Neg (Mul $x, $x))))))
+],
+  (Neg (Mul (Shadow $x), (Mul (HLOConstantFP<"1.1283791670955126"> $x), (Exp (Neg (Mul $x, $x))))))
+>;
+
+// erfinv(x): d/dx = (sqrt(pi)/2) * exp(erfinv(x)^2)
+def : HLODerivative<"ErfInvOp", (Op $x), [
+  (Mul (DiffeRet), (Mul (HLOConstantFP<"0.8862269254527580"> $x), (Exp (Mul (ErfInv $x), (ErfInv $x)))))
+],
+  (Mul (Shadow $x), (Mul (HLOConstantFP<"0.8862269254527580"> $x), (Exp (Mul (ErfInv $x), (ErfInv $x)))))
+>;
