@@ -1,0 +1,171 @@
+include:
+  - remote: 'https://gitlab.com/cscs-ci/recipes/-/raw/master/templates/v2/.ci-ext.yml'
+
+test-gb-25:
+  extends: .baremetal-runner-beverin-mi300
+  variables:
+    JULIA: /users/lraess/julia_amd/juliaup/julia-1.11.9+0.x64.linux.gnu/bin/julia
+    UENV: 10d4b63b15c81616
+    JULIA_PKG_SERVER_REGISTRY_PREFERENCE: conservative
+    JULIA_MAX_NUM_PRECOMPILE_FILES: 3
+    # Pinned configuration — expand into a matrix once the single case passes
+    REACTANT_COMMIT: main
+    GB25_COMMIT: main
+    FLOAT_TYPE: '--float-type=Float64'
+    # Slurm resource request
+    SLURM_JOB_NUM_NODES: 1
+    SLURM_NTASKS_PER_NODE: 1
+    SLURM_GPUS_PER_TASK: 4
+    SLURM_TIMELIMIT: "02:30:00"
+    # Paths — all under CI_PROJECT_DIR (scratch) to avoid touching user home/cache
+    REACTANT_DIR: "${CI_PROJECT_DIR}/Reactant.jl"
+    GB25_DIR: "${CI_PROJECT_DIR}/GB-25"
+    LOCAL_BIN: "${CI_PROJECT_DIR}/bin"
+    JULIA_DEPOT_PATH: "${CI_PROJECT_DIR}/.julia"    # overrides default ~/.julia
+    BAZELISK_HOME: "${CI_PROJECT_DIR}/.bazelisk"   # overrides default ~/.cache/bazelisk
+    BAZEL_OUTPUT_ROOT: "${CI_PROJECT_DIR}/.bazel"  # used by the bazel wrapper
+    # ROCm path — UENV-specific, update when the UENV hash changes.
+    # ROCM_PATH is passed to Bazel's rocm_configure.bzl via --repo_env.
+    # TF_ROCM_AMDGPU_TARGETS bypasses rocm_agent_enumerator (only works inside srun).
+    ROCM_PATH: "/user-environment/env/default"
+
+  script:
+    # Create all job-scoped directories up front
+    - mkdir -p "${LOCAL_BIN}" "${JULIA_DEPOT_PATH}" "${BAZELISK_HOME}" "${BAZEL_OUTPUT_ROOT}"
+
+    # Download bazelisk and create bazelisk/bazel wrappers that inject --output_user_root.
+    # build_local.jl calls `bazelisk` directly, so the wrapper must intercept that name.
+    # The wrapper aborts if BAZEL_OUTPUT_ROOT is unset or outside CI_PROJECT_DIR.
+    - |
+      curl -fsSL -o "${LOCAL_BIN}/bazelisk-real" \
+        https://github.com/bazelbuild/bazelisk/releases/latest/download/bazelisk-linux-amd64
+      chmod +x "${LOCAL_BIN}/bazelisk-real"
+      for CMD in bazelisk bazel; do
+        printf '#!/bin/bash\nset -euo pipefail\n' > "${LOCAL_BIN}/${CMD}"
+        printf 'if [[ -z "${BAZEL_OUTPUT_ROOT:-}" ]]; then\n' >> "${LOCAL_BIN}/${CMD}"
+        printf '  echo "ERROR: BAZEL_OUTPUT_ROOT is not set. Refusing to run (would write to ~/.cache/bazel)." >&2\n' >> "${LOCAL_BIN}/${CMD}"
+        printf '  exit 1\n' >> "${LOCAL_BIN}/${CMD}"
+        printf 'fi\n' >> "${LOCAL_BIN}/${CMD}"
+        printf 'if [[ "${BAZEL_OUTPUT_ROOT}" != "${CI_PROJECT_DIR}"* ]]; then\n' >> "${LOCAL_BIN}/${CMD}"
+        printf '  echo "ERROR: BAZEL_OUTPUT_ROOT (${BAZEL_OUTPUT_ROOT}) is not under CI_PROJECT_DIR (${CI_PROJECT_DIR})." >&2\n' >> "${LOCAL_BIN}/${CMD}"
+        printf '  exit 1\n' >> "${LOCAL_BIN}/${CMD}"
+        printf 'fi\n' >> "${LOCAL_BIN}/${CMD}"
+        printf 'exec "$(dirname "$0")/bazelisk-real" --output_user_root="${BAZEL_OUTPUT_ROOT}" "$@"\n' >> "${LOCAL_BIN}/${CMD}"
+        chmod +x "${LOCAL_BIN}/${CMD}"
+      done
+    - export PATH="${LOCAL_BIN}:${PATH}"
+    # Verify the wrappers are resolved first — catch misconfigured PATH early
+    - |
+      for CMD in bazelisk bazel; do
+        RESOLVED=$(command -v "${CMD}")
+        if [[ "${RESOLVED}" != "${LOCAL_BIN}/${CMD}" ]]; then
+          echo "ERROR: ${CMD} resolves to ${RESOLVED}, expected ${LOCAL_BIN}/${CMD}" >&2
+          exit 1
+        fi
+        echo "OK: ${CMD} -> ${RESOLVED}"
+      done
+
+    # Clone Reactant.jl and patch in the current Enzyme-JAX commit
+    - git clone --depth=1 --branch "${REACTANT_COMMIT}" https://github.com/EnzymeAD/Reactant.jl "${REACTANT_DIR}"
+    - sed -i 's/ENZYMEXLA_COMMIT = ".*"/ENZYMEXLA_COMMIT = "'"${CI_COMMIT_SHA}"'"/' "${REACTANT_DIR}/deps/ReactantExtra/WORKSPACE"
+    - grep ENZYMEXLA_COMMIT "${REACTANT_DIR}/deps/ReactantExtra/WORKSPACE"
+
+    # Instantiate the Reactant build environment (no GPU/UENV needed here)
+    - cd "${REACTANT_DIR}/deps" && ${JULIA} --project --color=yes -e 'using Pkg; Pkg.instantiate()'
+
+    # Tell Bazel where ROCm is (rocm_configure reads ROCM_PATH via --repo_env)
+    # and suppress rocm_agent_enumerator (only works inside an srun GPU allocation).
+    - echo "build --repo_env=ROCM_PATH=${ROCM_PATH}" >> "${REACTANT_DIR}/deps/ReactantExtra/.bazelrc"
+    - echo "build --repo_env=TF_ROCM_AMDGPU_TARGETS=gfx942" >> "${REACTANT_DIR}/deps/ReactantExtra/.bazelrc"
+
+    # Diagnostic: confirm the headers that find_rocm_config.py requires are visible
+    - |
+      echo "=== ROCm header check (ROCM_PATH=${ROCM_PATH}) ==="
+      for f in \
+        rocm-core/rocm_version.h \
+        hip/hip_version.h \
+        miopen/version.h \
+        rocblas/internal/rocblas-version.h \
+        rocrand/rocrand_version.h \
+        rocfft/rocfft-version.h \
+        hipfft/hipfft-version.h \
+        roctracer/roctracer.h \
+        hipsparse/hipsparse-version.h \
+        hipsolver/internal/hipsolver-version.h \
+        rocsolver/rocsolver-version.h; do
+        [[ -e "${ROCM_PATH}/include/${f}" ]] && echo "OK: ${f}" || echo "MISSING: ${f}"
+      done
+      echo "================================================"
+
+    # Build libReactant — --export=ALL forwards all path/cache env vars into the srun allocation
+    - |
+      srun -n 1 --export=ALL --uenv "${UENV}" --view=default \
+        bash -c "cd ${REACTANT_DIR}/deps && \
+                 ${JULIA} --project --color=yes -O0 build_local.jl \
+                   --cc=clang --gcc_host_compiler_path="
+
+    # Clone GB-25 and set up its Julia environment
+    - git clone --depth=1 --branch "${GB25_COMMIT}" https://github.com/PRONTOLab/GB-25 "${GB25_DIR}"
+    - cp "${REACTANT_DIR}/LocalPreferences.toml" "${GB25_DIR}/LocalPreferences.toml"
+    - |
+      cd "${GB25_DIR}" && ${JULIA} --project --color=yes -e "
+        using Pkg
+        Pkg.add([
+            PackageSpec(; name=\"ReactantCore\", rev=\"${REACTANT_COMMIT}\"),
+            PackageSpec(; name=\"Reactant\",     rev=\"${REACTANT_COMMIT}\"),
+        ])
+        Pkg.instantiate()
+        Pkg.gc()"
+
+    # Compile the GB-25 simulation
+    - |
+      srun -n 1 --export=ALL --uenv "${UENV}" --view=default \
+        timeout 29m \
+        ${JULIA} --color=yes --project -O0 --startup-file=no --threads=16 \
+          --compiled-modules=strict \
+          "${GB25_DIR}/sharding/sharded_baroclinic_instability_simulation_compile.jl" \
+          ${FLOAT_TYPE}
+
+    # Check remaining collective operations against thresholds (copied from A100 case; calibrate for MI300)
+    - |
+      cd "${GB25_DIR}"
+      OK="true"
+      ALL_TO_ALL_THRESHOLD=1000
+      ALL_GATHER_THRESHOLD=1000
+      ALL_REDUCE_THRESHOLD=1000
+      COLLECTIVE_PERMUTE_THRESHOLD=29900  # TODO: calibrate for MI300
+
+      for OP in "all-to-all" "all-gather" "all-reduce" "%collective-permute-start.* ="; do
+          COLLECTIVES=$(find . -name 'optimised_sharded_baroclinic_instability*.xla' \
+              -exec grep --with-filename --line-number --extended-regexp "${OP}" '{}' \; | sort)
+          NUM_COLLECTIVES=$(echo "${COLLECTIVES}" | grep -c . || true)
+          if [[ -n "${COLLECTIVES}" ]]; then
+              echo "Found ${NUM_COLLECTIVES} remaining '${OP}' operations"
+              echo "${COLLECTIVES}"
+              if [[ "${OP}" == "all-to-all" && ${NUM_COLLECTIVES} -gt ${ALL_TO_ALL_THRESHOLD}           ]] || \
+                 [[ "${OP}" == "all-gather" && ${NUM_COLLECTIVES} -gt ${ALL_GATHER_THRESHOLD}           ]] || \
+                 [[ "${OP}" == "all-reduce" && ${NUM_COLLECTIVES} -gt ${ALL_REDUCE_THRESHOLD}           ]] || \
+                 [[ "${OP}" =~ "collective-permute" && ${NUM_COLLECTIVES} -gt ${COLLECTIVE_PERMUTE_THRESHOLD} ]]; then
+                  OK="false"
+              fi
+          fi
+      done
+      [[ "${OK}" == "true" ]] || exit 1
+
+    # Run the GB-25 simulation
+    - |
+      srun -n 1 --export=ALL --uenv "${UENV}" --view=default \
+        timeout 59m \
+        ${JULIA} --color=yes --project -O0 --startup-file=no --threads=16 \
+          --compiled-modules=strict \
+          "${GB25_DIR}/sharding/sharded_baroclinic_instability_simulation_run.jl" \
+          ${FLOAT_TYPE}
+
+    # Test correctness
+    - |
+      srun -n 1 --export=ALL --uenv "${UENV}" --view=default \
+        timeout 19m \
+        ${JULIA} --color=yes --project -O0 --startup-file=no --threads=16 \
+          --compiled-modules=strict \
+          "${GB25_DIR}/correctness/correctness_sharded_baroclinic_instability_simulation_run.jl" \
+          ${FLOAT_TYPE}
