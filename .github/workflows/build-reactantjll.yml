@@ -58,4 +58,4 @@ jobs:
       enzyme_jax_commit: ${{ github.sha }}
       # If you want to use a different commit than `main`, put here the sha256
       # hash, but it must always be a hash, can't use branch name here.
-      reactant_commit: 'ss/xla-update' # ${{ needs.get-reactant-commit.outputs.reactant_main }}
+      reactant_commit: '31faf8e8bbfd698ee12da5254a443d9ef6d155d5' # ${{ needs.get-reactant-commit.outputs.reactant_main }}
