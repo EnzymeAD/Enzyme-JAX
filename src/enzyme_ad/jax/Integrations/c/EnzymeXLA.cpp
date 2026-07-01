@@ -377,6 +377,8 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("dynamic_update_slice_elim<16>");
   list.push_back("concat_to_broadcast<16>");
   list.push_back("reduce_to_reshape<16>");
+  list.push_back("lower_bool_splat_constants_into_reduce_op_region<16>");
+  list.push_back("fold_reduce_op_to_constant_initializer<16>");
   list.push_back("broadcast_to_reshape<16>");
   list.push_back("slice_internal");
   list.push_back(passWithBenefitAndArg("iota_simplify", 16, maxConstThreshold));
