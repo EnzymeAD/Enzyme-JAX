@@ -1396,6 +1396,19 @@ def CoscOp: EnzymeXLA_Op<"math.cosc", [Pure, SameOperandsAndResultType, Elementw
   }];
 }
 
+def NufftOp : EnzymeXLA_Op<"nufft", [Pure]> {
+  let summary = "Non-Uniform Fast Fourier Transform (NUFFT)";
+
+  let arguments = (ins
+    HLO_Tensor:$input,
+    HLO_Tensor:$points,
+  );
+
+  let results = (outs HLO_Tensor:$output);
+
+  let assemblyFormat = "`(` operands `)` attr-dict `:` functional-type(operands, results)";
+}
+
 def CacheLoadOp : EnzymeXLA_Op<"cacheload"> {
   let arguments = (ins Arg<AnyMemRef, "the reference to load from",
                            [MemRead]>:$memref,
