@@ -74,12 +74,12 @@ test-gb-25:
     # Instantiate the Reactant build environment (no GPU/UENV needed here)
     - cd "${REACTANT_DIR}/deps" && ${JULIA} --project --color=yes -e 'using Pkg; Pkg.instantiate()'
 
-    # Build a ROCm overlay by merging the UENV view with every spack package
-    # in the install tree. The view has most ROCm headers, but MIOpen, rocm-core,
-    # HIP, and others may be separate packages not merged into the view.
-    # Rather than hardcoding individual package paths, we discover them
-    # automatically: seed from the view, then fill any missing include
-    # subdirectories from all packages under /user-environment/linux-zen3/.
+    # Build a ROCm overlay seeded from the UENV view.  Two spack packages are
+    # NOT in the view and must be force-overlaid (ln -sfn without a guard):
+    #   miopen  — separate spack package at ${CPATH}
+    #   rocm-core — separate spack package; the view has an incomplete rocm-core/
+    #               directory that is missing rocm_version.h
+    # Everything else is filled in from the automatic discovery loop.
     - |
       ROCM_OVERLAY="${CI_PROJECT_DIR}/.rocm"
       mkdir -p "${ROCM_OVERLAY}/include"
@@ -87,8 +87,11 @@ test-gb-25:
       for f in /user-environment/env/default/include/*; do
         [[ -e "$f" ]] && ln -sfn "$f" "${ROCM_OVERLAY}/include/$(basename "$f")"
       done
-      # Step 2: graft in any include item missing from the view,
-      # from every spack package in the install tree (first one wins)
+      # Step 2: force-override known incomplete packages (overwrites whatever step 1 put there)
+      ln -sfn "${CPATH}/miopen" "${ROCM_OVERLAY}/include/miopen"
+      ROCM_CORE_INC="/user-environment/linux-zen3/rocm-core-7.2.3-tz3xefoxhonk33cfyuhbhp7fxouru4sn/include/rocm-core"
+      ln -sfn "${ROCM_CORE_INC}" "${ROCM_OVERLAY}/include/rocm-core"
+      # Step 3: auto-fill any other missing include items from all spack packages
       for pkg in /user-environment/linux-zen3/*/; do
         [[ -d "${pkg}include" ]] || continue
         for inc_item in "${pkg}include/"*; do
@@ -98,18 +101,19 @@ test-gb-25:
           [[ -e "${target}" ]] || ln -sfn "${inc_item}" "${target}"
         done
       done
-      # Step 3: symlink top-level dirs (lib, lib64, bin, share) from the view
+      # Step 4: top-level dirs from view
       for d in lib lib64 bin share; do
         [[ -e "/user-environment/env/default/${d}" ]] && \
           ln -sfn "/user-environment/env/default/${d}" "${ROCM_OVERLAY}/${d}"
       done
       export ROCM_PATH="${ROCM_OVERLAY}"
 
-    # Forward ROCM_PATH (now the overlay) into Bazel repository rules via .bazelrc.
-    # Without --repo_env, rocm_configure.bzl runs in a sandbox and cannot see env vars.
-    # Use ${CI_PROJECT_DIR} directly (not ${ROCM_PATH}) to avoid GitLab pre-expanding
-    # the CI variable to its original value before the overlay export takes effect.
+    # Forward ROCM_PATH and TF_ROCM_AMDGPU_TARGETS into Bazel repository rules.
+    # ROCM_PATH tells rocm_configure where the overlay is.
+    # TF_ROCM_AMDGPU_TARGETS prevents rocm_configure from calling rocm_agent_enumerator
+    # (which only works inside a GPU srun allocation, not in this CI step).
     - echo "build --repo_env=ROCM_PATH=${CI_PROJECT_DIR}/.rocm" >> "${REACTANT_DIR}/deps/ReactantExtra/.bazelrc"
+    - echo "build --repo_env=TF_ROCM_AMDGPU_TARGETS=gfx942" >> "${REACTANT_DIR}/deps/ReactantExtra/.bazelrc"
 
     # Diagnostic: verify overlay and .bazelrc look correct before invoking Bazel
     - |
