@@ -6,6 +6,11 @@ include "mlir/Pass/PassBase.td"
 def PrintShardyFunctionNamesPass
 		: Pass<"print-shardy-function-names", "::mlir::ModuleOp"> {
 	let summary = "Print names of functions that carry Shardy IR";
+    let dependentDialects = [
+        "enzyme::axis::AxisDialect",
+        "sdy::SdyDialect",
+        "enzyme::distributed::DistributedDialect"
+    ];
 	let description = [{
 		Scans func.func operations and prints the symbol names of functions that
 		either carry sdy-prefixed attributes on the function/signature or contain
@@ -15,6 +20,11 @@ def PrintShardyFunctionNamesPass
 
 def ShardyToDistributedPass : Pass<"shardy-to-distributed", "::mlir::ModuleOp"> {
     let summary = "Convert Shardy functions to Distributed mesh computations.";
+    let dependentDialects = [
+        "enzyme::axis::AxisDialect",
+        "sdy::SdyDialect",
+        "enzyme::distributed::DistributedDialect"
+    ];
     let description = [{
         Converts from Shardy to Distributed IR. This pass requires all Shardy functions
         to be available in the module: calling external functions is not supported.
