@@ -844,6 +844,7 @@ static void addTransposePropagateUpPasses(std::vector<std::string> &list,
   list.push_back("transpose_if");
   list.push_back("transpose_fft");
   list.push_back("transpose_reshape");
+  list.push_back(passWithArg("while_cyclic_transpose_propagate", true));
 
   if (aggressive) {
     list.push_back("transpose_elementwise(0)");
@@ -864,6 +865,7 @@ static void addTransposePropagateDownPasses(std::vector<std::string> &list) {
   list.push_back("reduce_transpose_simplify");
   list.push_back("reverse_transpose");
   list.push_back("transpose_all_users_slice");
+  list.push_back(passWithArg("while_cyclic_transpose_propagate", false));
 }
 
 static void addNoNanPasses(std::vector<std::string> &list, bool noNan) {
