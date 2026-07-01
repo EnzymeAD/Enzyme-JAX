@@ -388,6 +388,7 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("slice_elementwise<1>");
   list.push_back("dot_reshape_dot<1>");
   list.push_back("concat_fuse<1>");
+  list.push_back("concat_slices_to_reverse<1>");
   list.push_back("concat_push_binop_add<1>");
   list.push_back("concat_push_binop_mul<1>");
   list.push_back("reduce_concat<1>");
