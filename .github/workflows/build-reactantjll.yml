@@ -54,7 +54,7 @@ jobs:
     needs: get-reactant-commit
     secrets: inherit
     with:
-      reactantbuilder_ref: 'ss/bump-nccl-version'
+      reactantbuilder_ref: 'main'
       enzyme_jax_commit: ${{ github.sha }}
       # If you want to use a different commit than `main`, put here the sha256
       # hash, but it must always be a hash, can't use branch name here.
