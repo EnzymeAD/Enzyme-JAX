@@ -674,6 +674,20 @@ SymmetricResultAnalysis::State SymmetricResultAnalysis::localGuaranteed(
         return State::GUARANTEED;
       }
 
+      if (lhs == rhs && lhsCDims[0] == 1 - rhsCDims[0]) {
+        auto found = valueCache.find(lhs);
+        if (found != valueCache.end()) {
+          if (found->second) {
+            return State::GUARANTEED;
+          } else {
+            return State::NOTGUARANTEED;
+          }
+        }
+
+        localtodo.push_back(lhs);
+        return State::PENDING;
+      }
+
       if (auto lhsT = lhs.getDefiningOp<stablehlo::TransposeOp>()) {
         if (isTrueTranspose(lhsT) && lhsT.getOperand() == rhs &&
             lhsCDims[0] == 1 - rhsCDims[0]) {
