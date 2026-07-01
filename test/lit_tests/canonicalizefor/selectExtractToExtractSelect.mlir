@@ -30,6 +30,32 @@ func.func @select_extract_multiple_indices(
 
 // -----
 
+func.func @select_extract_vector_cond(%cond: vector<4xi1>, %a: vector<4xf32>, %b: vector<4xf32>, %idx: i32) -> f32 {
+  %sel = arith.select %cond, %a, %b : vector<4xi1>, vector<4xf32>
+  %result = llvm.extractelement %sel[%idx : i32] : vector<4xf32>
+  return %result : f32
+}
+// CHECK-LABEL: func @select_extract_vector_cond
+// CHECK: [[COND_EXTRACT:%[a-zA-Z0-9_]+]] = llvm.extractelement %arg0[%arg3 : i32] : vector<4xi1>
+// CHECK: [[A_EXTRACT:%[a-zA-Z0-9_]+]] = llvm.extractelement %arg1[%arg3 : i32] : vector<4xf32>
+// CHECK: [[B_EXTRACT:%[a-zA-Z0-9_]+]] = llvm.extractelement %arg2[%arg3 : i32] : vector<4xf32>
+// CHECK: arith.select [[COND_EXTRACT]], [[A_EXTRACT]], [[B_EXTRACT]] : f32
+
+// -----
+
+func.func @llvm_select_extract_vector_cond(%cond: vector<4xi1>, %a: vector<4xf32>, %b: vector<4xf32>, %idx: i32) -> f32 {
+  %sel = llvm.select %cond, %a, %b : vector<4xi1>, vector<4xf32>
+  %result = llvm.extractelement %sel[%idx : i32] : vector<4xf32>
+  return %result : f32
+}
+// CHECK-LABEL: func @llvm_select_extract_vector_cond
+// CHECK: [[COND_EXTRACT:%[a-zA-Z0-9_]+]] = llvm.extractelement %arg0[%arg3 : i32] : vector<4xi1>
+// CHECK: [[A_EXTRACT:%[a-zA-Z0-9_]+]] = llvm.extractelement %arg1[%arg3 : i32] : vector<4xf32>
+// CHECK: [[B_EXTRACT:%[a-zA-Z0-9_]+]] = llvm.extractelement %arg2[%arg3 : i32] : vector<4xf32>
+// CHECK: llvm.select [[COND_EXTRACT]], [[A_EXTRACT]], [[B_EXTRACT]] : i1, f32
+
+// -----
+
 func.func @negative_test(%a: vector<2xf32>, %idx: i32) -> f32 {
   %result = llvm.extractelement %a[%idx : i32] : vector<2xf32>
   return %result : f32
@@ -38,3 +64,4 @@ func.func @negative_test(%a: vector<2xf32>, %idx: i32) -> f32 {
 // Should NOT trigger the transformation
 // CHECK: llvm.extractelement {{.*}} : vector<2xf32>
 // CHECK-NOT: arith.select
+
