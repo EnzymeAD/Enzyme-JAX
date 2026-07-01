@@ -667,6 +667,7 @@ static void addLICMPasses(std::vector<std::string> &list) {
   list.push_back("rotate_licm(0)");
   list.push_back("wrap_licm(0)");
   list.push_back("extend_licm(0)");
+  list.push_back("loop_unswitch(10)");
 }
 
 static void addPadPasses(std::vector<std::string> &list,
