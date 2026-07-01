@@ -74,25 +74,52 @@ test-gb-25:
     # Instantiate the Reactant build environment (no GPU/UENV needed here)
     - cd "${REACTANT_DIR}/deps" && ${JULIA} --project --color=yes -e 'using Pkg; Pkg.instantiate()'
 
-    # Build a ROCm overlay seeded from the UENV view.  Two spack packages are
-    # NOT in the view and must be force-overlaid (ln -sfn without a guard):
-    #   miopen  — separate spack package at ${CPATH}
-    #   rocm-core — separate spack package; the view has an incomplete rocm-core/
-    #               directory that is missing rocm_version.h
-    # Everything else is filled in from the automatic discovery loop.
+    # Build a ROCm overlay that Bazel's rocm_configure.bzl can use.
+    #
+    # Problem: the UENV spack view at /user-environment/env/default merges
+    # headers from all installed packages, but some packages (rocm-core, hip,
+    # miopen, etc.) end up with *incomplete* include subdirectories in the view
+    # — they're present so [[ -e ]] passes, but the specific version headers
+    # that find_rocm_config.py requires are missing.
+    #
+    # Solution: seed from the view, then for each of the 11 headers that
+    # find_rocm_config.py checks, glob for the spack package that actually
+    # contains the file and unconditionally symlink that package's subdir into
+    # the overlay (overwriting whatever the view put there).  Finally auto-fill
+    # any remaining gaps from the full spack install tree.
     - |
+      SPACK="/user-environment/linux-zen3"
       ROCM_OVERLAY="${CI_PROJECT_DIR}/.rocm"
       mkdir -p "${ROCM_OVERLAY}/include"
       # Step 1: seed from the UENV view
       for f in /user-environment/env/default/include/*; do
         [[ -e "$f" ]] && ln -sfn "$f" "${ROCM_OVERLAY}/include/$(basename "$f")"
       done
-      # Step 2: force-override known incomplete packages (overwrites whatever step 1 put there)
-      ln -sfn "${CPATH}/miopen" "${ROCM_OVERLAY}/include/miopen"
-      ROCM_CORE_INC="/user-environment/linux-zen3/rocm-core-7.2.3-tz3xefoxhonk33cfyuhbhp7fxouru4sn/include/rocm-core"
-      ln -sfn "${ROCM_CORE_INC}" "${ROCM_OVERLAY}/include/rocm-core"
-      # Step 3: auto-fill any other missing include items from all spack packages
-      for pkg in /user-environment/linux-zen3/*/; do
+      # Step 2: for every include subdir that find_rocm_config.py checks,
+      # find the spack package that actually has the version file and force-override.
+      # Format: "<overlay_subdir>:<spack_pkg_name_glob>:<verify_file_relative_to_subdir>"
+      for entry in \
+          "rocm-core:rocm-core-*:rocm_version.h" \
+          "hip:hip-*:hip_version.h" \
+          "miopen:miopen-hip-*:version.h" \
+          "rocblas:rocblas-*:internal/rocblas-version.h" \
+          "rocrand:rocrand-*:rocrand_version.h" \
+          "rocfft:rocfft-*:rocfft-version.h" \
+          "hipfft:hipfft-*:hipfft-version.h" \
+          "roctracer:roctracer-*:roctracer.h" \
+          "hipsparse:hipsparse-*:hipsparse-version.h" \
+          "hipsolver:hipsolver-*:internal/hipsolver-version.h" \
+          "rocsolver:rocsolver-*:rocsolver-version.h"; do
+        IFS=: read -r subdir pkg_glob verify <<< "${entry}"
+        for pkg in "${SPACK}"/${pkg_glob}/; do
+          [[ -f "${pkg}include/${subdir}/${verify}" ]] || continue
+          ln -sfn "${pkg}include/${subdir}" "${ROCM_OVERLAY}/include/${subdir}"
+          echo "overlay: ${subdir} -> ${pkg}include/${subdir}"
+          break
+        done
+      done
+      # Step 3: auto-fill any remaining missing include items from all spack packages
+      for pkg in "${SPACK}"/*/; do
         [[ -d "${pkg}include" ]] || continue
         for inc_item in "${pkg}include/"*; do
           [[ -e "${inc_item}" ]] || continue
