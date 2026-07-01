@@ -1078,7 +1078,7 @@ struct LowerJITPass
                 rewriter.getContext(),
                 mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
             /*calledcomputations*/ nullptr, operand_layouts, result_layouts,
-            output_operand_aliases);
+            output_operand_aliases, /*result_tilings*/ nullptr);
       else if (backend == "cpu")
         replacement = stablehlo::CustomCallOp::create(
             rewriter, op.getLoc(), op.getResultTypes(), op.getInputs(),
@@ -1093,7 +1093,7 @@ struct LowerJITPass
                 mlir::stablehlo::CustomCallApiVersion::
                     API_VERSION_STATUS_RETURNING_UNIFIED),
             /*calledcomputations*/ nullptr, operand_layouts, result_layouts,
-            output_operand_aliases);
+            output_operand_aliases, /*result_tilings*/ nullptr);
 
       op.replaceAllUsesWith(replacement);
       op.erase();

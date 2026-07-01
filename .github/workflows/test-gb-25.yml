@@ -51,8 +51,8 @@ jobs:
           - 'main'
 
         reactant_commit:
-          - 'main'
-          - 'multipad'
+          - 'ss/xla-update'
+          # - 'multipad'
         grid:
           - '--float-type=Float64'
           - '--float-type=Float32'
