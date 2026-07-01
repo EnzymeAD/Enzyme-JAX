@@ -74,20 +74,31 @@ test-gb-25:
     # Instantiate the Reactant build environment (no GPU/UENV needed here)
     - cd "${REACTANT_DIR}/deps" && ${JULIA} --project --color=yes -e 'using Pkg; Pkg.instantiate()'
 
-    # The UENV view has most ROCm headers, but MIOpen and rocm-core are separate
-    # spack packages not merged into the view. Build an overlay: seed every
-    # include/ entry from the view, then graft in the two missing packages.
+    # Build a ROCm overlay by merging the UENV view with every spack package
+    # in the install tree. The view has most ROCm headers, but MIOpen, rocm-core,
+    # HIP, and others may be separate packages not merged into the view.
+    # Rather than hardcoding individual package paths, we discover them
+    # automatically: seed from the view, then fill any missing include
+    # subdirectories from all packages under /user-environment/linux-zen3/.
     - |
       ROCM_OVERLAY="${CI_PROJECT_DIR}/.rocm"
       mkdir -p "${ROCM_OVERLAY}/include"
+      # Step 1: seed from the UENV view
       for f in /user-environment/env/default/include/*; do
         [[ -e "$f" ]] && ln -sfn "$f" "${ROCM_OVERLAY}/include/$(basename "$f")"
       done
-      # MIOpen — separate spack package
-      ln -sfn "${CPATH}/miopen" "${ROCM_OVERLAY}/include/miopen"
-      # rocm-core — separate spack package (provides rocm_version.h)
-      ROCM_CORE_INC="/user-environment/linux-zen3/rocm-core-7.2.3-tz3xefoxhonk33cfyuhbhp7fxouru4sn/include/rocm-core"
-      ln -sfn "${ROCM_CORE_INC}" "${ROCM_OVERLAY}/include/rocm-core"
+      # Step 2: graft in any include item missing from the view,
+      # from every spack package in the install tree (first one wins)
+      for pkg in /user-environment/linux-zen3/*/; do
+        [[ -d "${pkg}include" ]] || continue
+        for inc_item in "${pkg}include/"*; do
+          [[ -e "${inc_item}" ]] || continue
+          name="$(basename "${inc_item}")"
+          target="${ROCM_OVERLAY}/include/${name}"
+          [[ -e "${target}" ]] || ln -sfn "${inc_item}" "${target}"
+        done
+      done
+      # Step 3: symlink top-level dirs (lib, lib64, bin, share) from the view
       for d in lib lib64 bin share; do
         [[ -e "/user-environment/env/default/${d}" ]] && \
           ln -sfn "/user-environment/env/default/${d}" "${ROCM_OVERLAY}/${d}"
