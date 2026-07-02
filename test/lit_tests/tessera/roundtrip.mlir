@@ -1,6 +1,6 @@
 // RUN: enzymexlamlir-opt %s | FileCheck %s
 
-tessera.define @foo() attributes {byRefArgs = array<i1>, globalTypeIndices = array<i64>, pure = false} {
+tessera.define @foo() attributes {byRefArgs = array<i1>, byRefTypes = [], pure = false} {
   tessera.return
 }
 
@@ -9,7 +9,7 @@ tessera.define @foo() attributes {byRefArgs = array<i1>, globalTypeIndices = arr
 
 // -----
 
-tessera.define @bar() -> i32 attributes {byRefArgs = array<i1>, globalTypeIndices = array<i64>, pure = false} {
+tessera.define @bar() -> i32 attributes {byRefArgs = array<i1>, byRefTypes = [], pure = false} {
   %0 = arith.constant 42 : i32
   tessera.return %0 : i32
 }
@@ -19,7 +19,7 @@ tessera.define @bar() -> i32 attributes {byRefArgs = array<i1>, globalTypeIndice
 
 // -----
 
-tessera.define @caller() attributes {byRefArgs = array<i1>, globalTypeIndices = array<i64>, pure = false} {
+tessera.define @caller() attributes {byRefArgs = array<i1>, byRefTypes = [], pure = false} {
   tessera.call @foo() : () -> ()
   tessera.return
 }
@@ -30,7 +30,7 @@ tessera.define @caller() attributes {byRefArgs = array<i1>, globalTypeIndices = 
 
 // -----
 
-tessera.define @with_args(%arg0: i32, %arg1: f32) -> i32 attributes {byRefArgs = array<i1: false, false>, globalTypeIndices = array<i64>, pure = false} {
+tessera.define @with_args(%arg0: i32, %arg1: f32) -> i32 attributes {byRefArgs = array<i1: false, false>, byRefTypes = [], pure = false} {
   %0 = tessera.call @bar() : () -> i32
   tessera.return %0 : i32
 }
