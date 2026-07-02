@@ -42,7 +42,10 @@ namespace {
 // Rewrite 'llvm.func' -> 'tessera.define'
 class FuncOpRewrite final : public OpRewritePattern<LLVM::LLVMFuncOp> {
 public:
-  using OpRewritePattern<LLVM::LLVMFuncOp>::OpRewritePattern;
+  FuncOpRewrite(MLIRContext *ctx,
+                const llvm::DenseMap<unsigned, mlir::Type> &byRefTypesByIndex)
+      : OpRewritePattern<LLVM::LLVMFuncOp>(ctx),
+        byRefTypesByIndex(byRefTypesByIndex) {}
 
   LogicalResult matchAndRewrite(LLVM::LLVMFuncOp funcOp,
                                 PatternRewriter &rewriter) const override {
@@ -91,26 +94,37 @@ public:
       }
     }
 
-    // Parse sizes of args
-    SmallVector<int64_t> globalTypeIndices;
+    // Find the types of the byref arguments by looking for global variables
+    // with names that match the pattern "__tessera_byref_arg_type_<index>"
+    // where <index> is a number parsed in the tessera_op attribute after
+    // "globals=".
+    SmallVector<Attribute> byRefTypes;
     StringRef indicesStr = raw.substr(raw.find(')') + 1);
     if (!indicesStr.empty() && indicesStr.consume_front(":globals=")) {
       SmallVector<StringRef> indexList;
       indicesStr.split(indexList, ',');
       for (auto i : indexList) {
-        int64_t index;
-        i.trim().getAsInteger(10, index);
-        globalTypeIndices.push_back(index);
+        i = i.trim();
+        unsigned idx;
+        if (i.getAsInteger(10, idx)) {
+          funcOp->emitError("tessera: invalid byref type index: ") << i;
+          return failure();
+        }
+        auto it = byRefTypesByIndex.find(idx);
+        if (it == byRefTypesByIndex.end()) {
+          funcOp->emitError("tessera: no byref type found for index: ") << idx;
+          return failure();
+        }
+        byRefTypes.push_back(TypeAttr::get(it->second));
       }
     }
 
-    // Make sure number of arguments marked byref matches number of global
-    // indices provided
-    unsigned numByref = llvm::count(byRefArgs, true);
-    if (numByref != globalTypeIndices.size()) {
+    // Make sure number of arguments marked byref matches number of types found
+    unsigned numByRef = llvm::count(byRefArgs, true);
+    if (numByRef != byRefTypes.size()) {
       funcOp->emitError("tessera: number of byref arguments (")
-          << numByref << ") does not match number of global indices ("
-          << globalTypeIndices.size() << ")";
+          << numByRef << ") does not match number of byref types ("
+          << byRefTypes.size() << ")";
       return failure();
     }
 
@@ -135,7 +149,7 @@ public:
     auto tesseraDefineOp = tessera::DefineOp::create(
         rewriter, funcOp.getLoc(), tesseraName.str(), fnType,
         DenseBoolArrayAttr::get(ctx, byRefArgs),
-        DenseI64ArrayAttr::get(ctx, globalTypeIndices), isPure);
+        ArrayAttr::get(ctx, byRefTypes), isPure);
 
     // Copy over all attributes other than the function name and type
     // and tessera_op / pure_tessera_op attribute.
@@ -161,6 +175,9 @@ public:
 
     return success();
   }
+
+private:
+  const llvm::DenseMap<unsigned, mlir::Type> &byRefTypesByIndex;
 };
 
 // Rewrite 'llvm.call' -> 'tessera.call'
@@ -210,22 +227,20 @@ public:
       }
     }
 
-    // Only arguments marked byref will have corresponding global indices, since
-    // they are the only ones with global variables created for them. The sizes
-    // of byRefArgs and globalTypeIndices therefore may not match, but the
-    // number of true values in byRefArgs should match the number of
-    // globalTypeIndices.
+    // Load the indices and types of arguments that were marked as byref
+    // in the tessera.define op
     auto byRefArgs = defineOp.getByRefArgs();
-    auto globalTypeIndices = defineOp.getGlobalTypeIndices();
+    auto byRefTypes = defineOp.getByRefTypes();
 
     SmallVector<Value> newOperands;
     SmallVector<int32_t> loadedOperands;
 
-    // Build operands without first element. If a pointer operand has a
-    // byVal attribute or was marked as byRef by the user, load the value
-    // from the pointer and store that as the new operand
+    // Build operands without first element if sretPtr is present.
+    // If a pointer operand has a byVal attribute or was marked as
+    // byRef by the user, load the value from the pointer and store
+    // that as the new operand.
     int argOffset = sretPtr ? 1 : 0;
-    unsigned byrefCount = 0;
+    unsigned byRefCount = 0;
     for (unsigned i = 0; i < operands.size() - argOffset; i++) {
       auto operand = callOp.getOperand(i + argOffset);
 
@@ -241,12 +256,7 @@ public:
               defineOp.getArgAttr(i, LLVM::LLVMDialect::getByValAttrName())) {
         pointeeType = cast<TypeAttr>(byValAttr).getValue();
       } else if (byRefArgs[i]) {
-        auto idx = globalTypeIndices[byrefCount++];
-        std::string suffix = "__tessera_byref_arg_type_" + std::to_string(idx);
-        for (auto global : module.getOps<mlir::LLVM::GlobalOp>()) {
-          if (global.getSymName().ends_with(suffix))
-            pointeeType = global.getType();
-        }
+        pointeeType = cast<TypeAttr>(byRefTypes[byRefCount++]).getValue();
       }
 
       if (pointeeType) {
@@ -309,8 +319,39 @@ struct LLVMToTesseraPass
   void runOnOperation() override {
     MLIRContext *ctx = &getContext();
     RewritePatternSet patterns(ctx);
+    auto module = cast<ModuleOp>(getOperation());
 
-    patterns.add<FuncOpRewrite, CallOpRewrite, ReturnOpRewrite>(ctx);
+    // Build a lookup of byref argument index -> resolved type by scanning the
+    // module once for globals named "__tessera_byref_arg_type_<index>" (names
+    // may be mangled with compiler-added prefixes, e.g.
+    // "_ZL26__tessera_byref_arg_type_0", so we search for the marker rather
+    // than requiring it at the start). Each tessera.define op's own byref index
+    // list (from its "globals=" attribute) is later resolved against this map,
+    // avoiding a full module rescan per op.
+    llvm::DenseMap<unsigned, mlir::Type> byRefTypesByIndex;
+    StringRef prefix = "__tessera_byref_arg_type_";
+    for (auto global : module.getOps<mlir::LLVM::GlobalOp>()) {
+      StringRef name = global.getSymName();
+      size_t pos = name.find(prefix);
+      if (pos == StringRef::npos)
+        continue;
+      StringRef idxStr = name.drop_front(pos + prefix.size());
+      unsigned idx;
+      if (idxStr.getAsInteger(10, idx))
+        continue; // not a well-formed index suffix, skip
+
+      auto [it, inserted] =
+          byRefTypesByIndex.try_emplace(idx, global.getType());
+      if (!inserted) {
+        llvm::errs()
+            << "Tessera: found multiple globals matching byref type index "
+            << idx << ":\n";
+        return signalPassFailure();
+      }
+    }
+
+    patterns.add<FuncOpRewrite>(ctx, byRefTypesByIndex);
+    patterns.add<CallOpRewrite, ReturnOpRewrite>(ctx);
 
     GreedyRewriteConfig config;
     config.setUseTopDownTraversal(true);
@@ -318,11 +359,10 @@ struct LLVMToTesseraPass
                                      config))) {
       llvm::errs() << "Failed to convert LLVM dialect operations to tessera "
                       "dialect operations\n";
-      signalPassFailure();
+      return signalPassFailure();
     }
 
     // Clean up llvm.global.annotations after conversion if it still exists
-    auto module = cast<ModuleOp>(getOperation());
     if (auto annotations = module.lookupSymbol("llvm.global.annotations")) {
       annotations->erase();
     }

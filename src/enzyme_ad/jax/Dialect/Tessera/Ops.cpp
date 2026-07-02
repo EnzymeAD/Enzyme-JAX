@@ -24,15 +24,15 @@ namespace mlir::enzyme::tessera {} // namespace mlir::enzyme::tessera
 
 void DefineOp::build(OpBuilder &builder, OperationState &state, StringRef name,
                      FunctionType type, DenseBoolArrayAttr byRefArgs,
-                     DenseI64ArrayAttr globalTypeIndices, bool pure,
-                     StringAttr sym_visibility, ArrayRef<NamedAttribute> attrs,
+                     ArrayAttr byRefTypes, bool pure, StringAttr sym_visibility,
+                     ArrayRef<NamedAttribute> attrs,
                      ArrayRef<DictionaryAttr> argAttrs) {
   state.addAttribute(SymbolTable::getSymbolAttrName(),
                      builder.getStringAttr(name));
   state.addAttribute(getFunctionTypeAttrName(state.name), TypeAttr::get(type));
   state.addAttribute("pure", builder.getBoolAttr(pure));
   state.addAttribute("byRefArgs", byRefArgs);
-  state.addAttribute("globalTypeIndices", globalTypeIndices);
+  state.addAttribute("byRefTypes", byRefTypes);
 
   if (sym_visibility)
     state.addAttribute(getSymVisibilityAttrName(state.name), sym_visibility);
@@ -160,6 +160,20 @@ Attribute DefineOp::getArgAttr(unsigned index, StringRef name) {
           cast<FunctionOpInterface>(getOperation()), index + offset))
     return dict.get(name);
   return nullptr;
+}
+
+LogicalResult DefineOp::verify() {
+  for (Attribute a : getByRefTypes())
+    if (!isa<TypeAttr>(a))
+      return emitOpError("byRefTypes must contain only TypeAttr elements");
+
+  unsigned numByRef = llvm::count(getByRefArgs(), true);
+  if (getByRefTypes().size() != numByRef)
+    return emitOpError("byRefTypes size (")
+           << getByRefTypes().size() << ") must match number of byRef args ("
+           << numByRef << ")";
+
+  return success();
 }
 
 //===----------------------------------------------------------------------===//

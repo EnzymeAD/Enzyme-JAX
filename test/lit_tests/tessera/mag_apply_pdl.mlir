@@ -1,11 +1,11 @@
 // RUN: enzymexlamlir-opt %s -tessera-apply-pdl | FileCheck %s
 
 module {
-  tessera.define @eigen.mag(%arg0 : f32, %arg1 : f32, %arg2 : f32) -> f32 attributes {byRefArgs = array<i1: false, false, false>, globalTypeIndices = array<i64>, pure = true} {
+  tessera.define @eigen.mag(%arg0 : f32, %arg1 : f32, %arg2 : f32) -> f32 attributes {byRefArgs = array<i1: false, false, false>, byRefTypes = [], pure = true} {
       tessera.return %arg0 : f32
   }
   
-  tessera.define @arith.negf(%arg0 : f32) -> f32 attributes {byRefArgs = array<i1: false>, globalTypeIndices = array<i64>, pure = true} {
+  tessera.define @arith.negf(%arg0 : f32) -> f32 attributes {byRefArgs = array<i1: false>, byRefTypes = [], pure = true} {
       tessera.return %arg0 : f32
   }
 
@@ -39,10 +39,10 @@ module {
   }
 }
 
-// CHECK: tessera.define @eigen.mag(%arg0: f32, %arg1: f32, %arg2: f32) -> f32 attributes {byRefArgs = array<i1: false, false, false>, globalTypeIndices = array<i64>, pure = true} {
+// CHECK: tessera.define @eigen.mag(%arg0: f32, %arg1: f32, %arg2: f32) -> f32 attributes {byRefArgs = array<i1: false, false, false>, byRefTypes = [], pure = true} {
 // CHECK-NEXT: tessera.return %arg0 : f32
 // CHECK-NEXT: }
-// CHECK-NEXT: tessera.define @arith.negf(%arg0: f32) -> f32 attributes {byRefArgs = array<i1: false>, globalTypeIndices = array<i64>, pure = true} {
+// CHECK-NEXT: tessera.define @arith.negf(%arg0: f32) -> f32 attributes {byRefArgs = array<i1: false>, byRefTypes = [], pure = true} {
 // CHECK-NEXT: tessera.return %arg0 : f32
 // CHECK-NEXT: }
 // CHECK-NEXT: llvm.func @main(%arg0: f32, %arg1: f32, %arg2: f32) -> f32 {

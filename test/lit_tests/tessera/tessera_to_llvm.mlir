@@ -1,6 +1,6 @@
 // RUN: enzymexlamlir-opt %s -tessera-to-llvm -split-input-file | FileCheck %s
 
-tessera.define @tessera_simple_func() attributes {byRefArgs = array<i1>, globalTypeIndices = array<i64>, pure = false, tessera.original_name = "simple_func"} {
+tessera.define @tessera_simple_func() attributes {byRefArgs = array<i1>, byRefTypes = [], pure = false, tessera.original_name = "simple_func"} {
   tessera.return
 }
 
@@ -9,7 +9,7 @@ tessera.define @tessera_simple_func() attributes {byRefArgs = array<i1>, globalT
 
 // -----
 
-tessera.define @tessera_func_with_args(%arg0: i32, %arg1: f32) -> i32 attributes {byRefArgs = array<i1: false, false>, globalTypeIndices = array<i64>, pure = false, tessera.original_name = "func_with_args"} {
+tessera.define @tessera_func_with_args(%arg0: i32, %arg1: f32) -> i32 attributes {byRefArgs = array<i1: false, false>, byRefTypes = [], pure = false, tessera.original_name = "func_with_args"} {
   tessera.return %arg0 : i32
 }
 
@@ -18,11 +18,11 @@ tessera.define @tessera_func_with_args(%arg0: i32, %arg1: f32) -> i32 attributes
 
 // -----
 
-tessera.define @tessera_helper() attributes {byRefArgs = array<i1>, globalTypeIndices = array<i64>, pure = false, tessera.original_name = "helper"} {
+tessera.define @tessera_helper() attributes {byRefArgs = array<i1>, byRefTypes = [], pure = false, tessera.original_name = "helper"} {
   tessera.return
 }
 
-tessera.define @tessera_func_with_call() attributes {byRefArgs = array<i1>, globalTypeIndices = array<i64>, pure = false, tessera.original_name = "func_with_call"} {
+tessera.define @tessera_func_with_call() attributes {byRefArgs = array<i1>, byRefTypes = [], pure = false, tessera.original_name = "func_with_call"} {
   tessera.call @tessera_helper() {op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 0, 0>} : () -> ()
   tessera.return
 }
@@ -37,7 +37,7 @@ tessera.define @tessera_func_with_call() attributes {byRefArgs = array<i1>, glob
 // -----
 
 tessera.define @tessera_sret_func(%arg0: !llvm.ptr {llvm.align = 8 : i64, llvm.nonnull, llvm.sret = !llvm.struct<(f32, f32)>}, %arg1: !llvm.ptr {llvm.noundef, llvm.readonly}) 
-attributes {byRefArgs = array<i1: true>, globalTypeIndices = array<i64: 0>, linkage = #llvm.linkage<external>, pure = true, tessera.original_name = "sret_func"} {
+attributes {byRefArgs = array<i1: true>, byRefTypes = array<i64: 0>, linkage = #llvm.linkage<external>, pure = true, tessera.original_name = "sret_func"} {
   %0 = llvm.load %arg1 {alignment = 8 : i64} : !llvm.ptr -> f32
   llvm.store %0, %arg0 {alignment = 8 : i64} : f32, !llvm.ptr
   tessera.return
