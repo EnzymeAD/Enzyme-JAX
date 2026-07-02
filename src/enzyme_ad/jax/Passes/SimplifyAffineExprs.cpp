@@ -207,6 +207,14 @@ getDomain(isl_ctx *ctx, Operation *op, bool overApproximationAllowed = false) {
 
   isl_space *space =
       isl_space_set_alloc(ctx, cst.getNumSymbolVars(), cst.getNumDimVars());
+  for (unsigned i = 0; i < cst.getNumDimVars(); i++) {
+    isl_id *id = isl_id_alloc(ctx, "dim", (void *)(size_t)(i + 1));
+    space = isl_space_set_dim_id(space, isl_dim_set, i, id);
+  }
+  for (unsigned i = 0; i < cst.getNumSymbolVars(); i++) {
+    isl_id *id = isl_id_alloc(ctx, "sym", (void *)(size_t)(i + 1));
+    space = isl_space_set_dim_id(space, isl_dim_param, i, id);
+  }
   LLVM_DEBUG(llvm::dbgs() << "space: ");
   LLVM_DEBUG(isl_space_dump(space));
   return {isl_set_from_basic_set(isl_basic_set_from_constraint_matrices(
@@ -864,7 +872,7 @@ IslAnalysis::getAffExprs(Operation *op, AffineValueMap avm) {
   unsigned symOffset = cst.getNumDimVars();
   for (unsigned i = 0; i < cst.getNumSymbolVars(); i++) {
     isl_id *id = isl_id_alloc(ctx, "sym", (void *)(size_t)(symOffset + i + 1));
-    space = isl_space_set_dim_id(space, isl_dim_set, i, id);
+    space = isl_space_set_dim_id(space, isl_dim_param, i, id);
   }
 
   isl_local_space *ls = isl_local_space_from_space(isl_space_copy(space));
@@ -966,7 +974,7 @@ std::optional<AffineMap> handleAffineValueMap(IslAnalysis &islAnalysis,
   unsigned symOffset = cst.getNumDimVars();
   for (unsigned i = 0; i < cst.getNumSymbolVars(); i++) {
     isl_id *id = isl_id_alloc(ctx, "sym", (void *)(size_t)(symOffset + i + 1));
-    space = isl_space_set_dim_id(space, isl_dim_set, i, id);
+    space = isl_space_set_dim_id(space, isl_dim_param, i, id);
   }
 
   isl_ast_build *build =
