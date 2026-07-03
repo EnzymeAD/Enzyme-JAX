@@ -40,7 +40,7 @@ jobs:
           - linux-x86-a2-48-a100-4gpu
           - linux-x86-ct6e-180-4tpu
     name: '${{ matrix.os }} Integration'
-    uses: EnzymeAD/Reactant.jl/.github/workflows/CommonCI.yml@main
+    uses: EnzymeAD/Reactant.jl/.github/workflows/CommonCI.yml@ss/xla-update
     secrets: inherit
     with:
       enzymejax_commit: ${{ inputs.enzymejax_commit || github.sha }}
@@ -48,3 +48,4 @@ jobs:
       os: ${{ matrix.os }}
       localjll: true
       runtime: "ifrt"
+      ref: 'ss/xla-update'
