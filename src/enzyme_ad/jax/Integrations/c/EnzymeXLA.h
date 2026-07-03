@@ -203,6 +203,11 @@ typedef struct {
   bool enable_licm_optimization_passes;
   int64_t loop_unswitch_threshold;
   bool enable_pad_optimization_passes;
+
+  // Passes to exclude by base name (e.g. "loop_unswitch"). The pointed-to
+  // strings must remain valid for the duration of the call.
+  const char **excluded_passes;
+  size_t num_excluded_passes;
 } EnzymeXLATransformPassesOptions;
 
 //===----------------------------------------------------------------------===//

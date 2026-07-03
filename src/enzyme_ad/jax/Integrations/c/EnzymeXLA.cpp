@@ -1,8 +1,10 @@
 #include "EnzymeXLA.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "mlir/CAPI/IR.h"
@@ -1040,6 +1042,25 @@ void enzymexlaGetTransformPassesList(
   // Lower comms (added to lower list only)
   if (options->lower_comms) {
     addLowerCommsPasses(lowerList);
+  }
+
+  // Exclude passes by base name (everything before the first '(' or '<').
+  if (options->num_excluded_passes > 0) {
+    std::unordered_set<std::string> excluded(options->excluded_passes,
+                                             options->excluded_passes +
+                                                 options->num_excluded_passes);
+    auto baseName = [](const std::string &pass) -> std::string {
+      auto end = pass.find_first_of("(<");
+      return end == std::string::npos ? pass : pass.substr(0, end);
+    };
+    auto shouldExclude = [&](const std::string &p) {
+      return excluded.count(baseName(p)) > 0;
+    };
+    list.erase(std::remove_if(list.begin(), list.end(), shouldExclude),
+               list.end());
+    lowerList.erase(
+        std::remove_if(lowerList.begin(), lowerList.end(), shouldExclude),
+        lowerList.end());
   }
 
   // Output
