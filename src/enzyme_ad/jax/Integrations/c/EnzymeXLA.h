@@ -201,6 +201,7 @@ typedef struct {
   bool enable_concat_to_batch_passes;
   bool enable_loop_raising_passes;
   bool enable_licm_optimization_passes;
+  int64_t loop_unswitch_threshold;
   bool enable_pad_optimization_passes;
 } EnzymeXLATransformPassesOptions;
 
