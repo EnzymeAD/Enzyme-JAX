@@ -60,5 +60,4 @@ def AxisProductOp : AxisOp<"product", [MetadataOpTrait, DeclareOpInterfaceMethod
   let assemblyFormat = "$factors attr-dict `:` type($factors)";
   let hasVerifier = 1;
 }
-
 #endif // ENZYME_AD_JAX_DIALECT_AXIS_OPS_TD
