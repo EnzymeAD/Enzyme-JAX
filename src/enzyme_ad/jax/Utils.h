@@ -679,6 +679,10 @@ public:
     UNKNOWN = 3
   };
 
+  void assume(mlir::Value value, bool guaranteed) {
+    valueCache[value] = guaranteed;
+  }
+
   bool guaranteed(mlir::Value value, PatternRewriter &rewriter) {
     auto it = valueCache.find(value);
     if (it != valueCache.end())
