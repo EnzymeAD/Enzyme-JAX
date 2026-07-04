@@ -1812,12 +1812,6 @@ std::optional<IotaLikeTensor> detectIotaLikeTensor(mlir::Value tensor) {
     return std::nullopt;
   }
 
-  if (auto evaluated = tryEvaluateSmallTreeToConstant(tensor)) {
-    if (auto iotaLike = detectIotaLikeTensor(*evaluated)) {
-      return iotaLike;
-    }
-  }
-
   struct ChainItem {
     mlir::Operation *op;
     TypedAttr offset; // only populated for AddOp/SubtractOp (nullptr otherwise)
