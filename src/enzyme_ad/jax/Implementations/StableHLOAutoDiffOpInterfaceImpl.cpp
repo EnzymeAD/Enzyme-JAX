@@ -5154,6 +5154,332 @@ struct StablehloSubSimplifyMathInterface
   }
 };
 
+static Value transpose2D(OpBuilder &builder, Location loc, Value input) {
+  auto inputType = cast<RankedTensorType>(input.getType());
+  auto rank = inputType.getRank();
+  assert(rank >= 2 && "transpose2D requires rank >= 2");
+  SmallVector<int64_t> perm;
+  for (int64_t i = 0; i < rank; i++)
+    perm.push_back(i);
+  std::swap(perm[rank - 2], perm[rank - 1]);
+  return stablehlo::TransposeOp::create(builder, loc, input, perm);
+}
+
+static Value matMul2D(OpBuilder &builder, Location loc, Value lhs, Value rhs) {
+  auto ctx = builder.getContext();
+  auto lhsType = cast<RankedTensorType>(lhs.getType());
+  auto rhsType = cast<RankedTensorType>(rhs.getType());
+  auto lhsRank = lhsType.getRank();
+  auto rhsRank = rhsType.getRank();
+
+  SmallVector<int64_t> lhsBatch, rhsBatch;
+  for (int64_t i = 0; i < lhsRank - 2; i++) {
+    lhsBatch.push_back(i);
+    rhsBatch.push_back(i);
+  }
+
+  auto dotDims = stablehlo::DotDimensionNumbersAttr::get(
+      ctx, lhsBatch, rhsBatch, {lhsRank - 1}, {rhsRank - 2});
+
+  auto lhsShape = lhsType.getShape();
+  auto rhsShape = rhsType.getShape();
+  SmallVector<int64_t> resultShape;
+  for (int64_t i = 0; i < lhsRank - 2; i++)
+    resultShape.push_back(lhsShape[i]);
+  resultShape.push_back(lhsShape[lhsRank - 2]);
+  resultShape.push_back(rhsShape[rhsRank - 1]);
+
+  auto resultType =
+      RankedTensorType::get(resultShape, lhsType.getElementType());
+  return stablehlo::DotGeneralOp::create(builder, loc, resultType, lhs, rhs,
+                                         dotDims, nullptr, nullptr);
+}
+
+static Value createSplatF(OpBuilder &builder, Location loc,
+                          RankedTensorType type, double val) {
+  auto elemTy = type.getElementType();
+  Attribute attr = builder.getFloatAttr(elemTy, val);
+  return stablehlo::ConstantOp::create(builder, loc,
+                                       SplatElementsAttr::get(type, attr));
+}
+
+static Value triWithHalvedDiag(OpBuilder &builder, Location loc, Value S,
+                               bool lower) {
+  auto matType = cast<RankedTensorType>(S.getType());
+  auto shape = matType.getShape();
+  auto rank = matType.getRank();
+
+  auto intType = RankedTensorType::get(shape, builder.getI64Type());
+  auto rowIdx = stablehlo::IotaOp::create(builder, loc, intType, rank - 2);
+  auto colIdx = stablehlo::IotaOp::create(builder, loc, intType, rank - 1);
+
+  Value strictMask;
+  if (lower)
+    strictMask = stablehlo::CompareOp::create(builder, loc, rowIdx, colIdx,
+                                              ComparisonDirection::GT);
+  else
+    strictMask = stablehlo::CompareOp::create(builder, loc, rowIdx, colIdx,
+                                              ComparisonDirection::LT);
+
+  auto diagMask = stablehlo::CompareOp::create(builder, loc, rowIdx, colIdx,
+                                               ComparisonDirection::EQ);
+
+  auto zero = createSplatF(builder, loc, matType, 0.0);
+  auto half = createSplatF(builder, loc, matType, 0.5);
+
+  auto strictTri =
+      stablehlo::SelectOp::create(builder, loc, matType, strictMask, S, zero);
+
+  auto halfS = stablehlo::MulOp::create(builder, loc, S, half);
+  auto halfDiag =
+      stablehlo::SelectOp::create(builder, loc, matType, diagMask, halfS, zero);
+
+  return stablehlo::AddOp::create(builder, loc, strictTri, halfDiag);
+}
+
+static Value maskToTriangle(OpBuilder &builder, Location loc, Value input,
+                            bool lower, bool excludeDiagonal = false) {
+  auto matType = cast<RankedTensorType>(input.getType());
+  auto shape = matType.getShape();
+  auto rank = matType.getRank();
+
+  auto intType = RankedTensorType::get(shape, builder.getI64Type());
+  auto rowIdx = stablehlo::IotaOp::create(builder, loc, intType, rank - 2);
+  auto colIdx = stablehlo::IotaOp::create(builder, loc, intType, rank - 1);
+
+  Value triMask;
+  if (lower) {
+    triMask = stablehlo::CompareOp::create(
+        builder, loc, rowIdx, colIdx,
+        excludeDiagonal ? ComparisonDirection::GT : ComparisonDirection::GE);
+  } else {
+    triMask = stablehlo::CompareOp::create(
+        builder, loc, rowIdx, colIdx,
+        excludeDiagonal ? ComparisonDirection::LT : ComparisonDirection::LE);
+  }
+
+  auto zero = createSplatF(builder, loc, matType, 0.0);
+  return stablehlo::SelectOp::create(builder, loc, matType, triMask, input,
+                                     zero);
+}
+
+class AutoDiffTriangularSolveRev
+    : public ReverseAutoDiffOpInterface::ExternalModel<
+          AutoDiffTriangularSolveRev, stablehlo::TriangularSolveOp> {
+public:
+  LogicalResult createReverseModeAdjoint(Operation *orig, OpBuilder &builder,
+                                         MGradientUtilsReverse *gutils,
+                                         SmallVector<Value> caches) const {
+    auto op = cast<stablehlo::TriangularSolveOp>(orig);
+    auto loc = op.getLoc();
+
+    if (gutils->isConstantValue(op.getResult()))
+      return success();
+
+    auto xBar = gutils->diffe(op, builder);
+    gutils->zeroDiffe(op, builder);
+
+    Value A = gutils->popCache(caches[0], builder);
+    Value X = gutils->popCache(caches[1], builder);
+
+    bool leftSide = op.getLeftSide();
+    bool lower = op.getLower();
+    bool unitDiag = op.getUnitDiagonal();
+    auto transposeA = op.getTransposeA();
+
+    stablehlo::Transpose adjTranspose;
+    switch (transposeA) {
+    case stablehlo::Transpose::NO_TRANSPOSE:
+      adjTranspose = stablehlo::Transpose::TRANSPOSE;
+      break;
+    case stablehlo::Transpose::TRANSPOSE:
+    case stablehlo::Transpose::ADJOINT:
+    default:
+      adjTranspose = stablehlo::Transpose::NO_TRANSPOSE;
+      break;
+    }
+
+    auto xType = cast<RankedTensorType>(X.getType());
+
+    if (leftSide) {
+      Value bBar = stablehlo::TriangularSolveOp::create(builder, loc, xType, A,
+                                                        xBar, leftSide, lower,
+                                                        unitDiag, adjTranspose);
+
+      if (!gutils->isConstantValue(op.getB()))
+        gutils->addToDiffe(op.getB(), bBar, builder);
+
+      if (!gutils->isConstantValue(op.getA())) {
+        Value negBBar = stablehlo::NegOp::create(builder, loc, bBar);
+        Value aBar;
+        if (transposeA == stablehlo::Transpose::NO_TRANSPOSE) {
+          // A X = B → A_bar = -B_bar @ X^T
+          aBar = matMul2D(builder, loc, negBBar, transpose2D(builder, loc, X));
+        } else {
+          // A^T X = B → A_bar = -X @ B_bar^T
+          Value negX = stablehlo::NegOp::create(builder, loc, X);
+          Value bBarT = transpose2D(builder, loc, bBar);
+          aBar = matMul2D(builder, loc, negX, bBarT);
+        }
+        aBar = maskToTriangle(builder, loc, aBar, lower,
+                              /*excludeDiagonal=*/unitDiag);
+        gutils->addToDiffe(op.getA(), aBar, builder);
+      }
+    } else {
+      Value bBar = stablehlo::TriangularSolveOp::create(builder, loc, xType, A,
+                                                        xBar, leftSide, lower,
+                                                        unitDiag, adjTranspose);
+
+      if (!gutils->isConstantValue(op.getB()))
+        gutils->addToDiffe(op.getB(), bBar, builder);
+
+      if (!gutils->isConstantValue(op.getA())) {
+        Value aBar;
+        if (transposeA == stablehlo::Transpose::NO_TRANSPOSE) {
+          // X A = B → A_bar = -X^T @ B_bar
+          aBar =
+              matMul2D(builder, loc,
+                       transpose2D(builder, loc,
+                                   stablehlo::NegOp::create(builder, loc, X)),
+                       bBar);
+        } else {
+          // X A^T = B → A_bar = -B_bar^T @ X
+          aBar = matMul2D(
+              builder, loc,
+              transpose2D(builder, loc,
+                          stablehlo::NegOp::create(builder, loc, bBar)),
+              X);
+        }
+        aBar = maskToTriangle(builder, loc, aBar, lower,
+                              /*excludeDiagonal=*/unitDiag);
+        gutils->addToDiffe(op.getA(), aBar, builder);
+      }
+    }
+
+    return success();
+  }
+
+  SmallVector<Value> cacheValues(Operation *orig,
+                                 MGradientUtilsReverse *gutils) const {
+    SmallVector<Value> caches;
+    Operation *newOp = gutils->getNewFromOriginal(orig);
+    OpBuilder cacheBuilder(newOp);
+
+    caches.push_back(gutils->initAndPushCache(
+        gutils->getNewFromOriginal(orig->getOperand(0)), cacheBuilder));
+    cacheBuilder.setInsertionPointAfter(newOp);
+    caches.push_back(
+        gutils->initAndPushCache(newOp->getResult(0), cacheBuilder));
+
+    return caches;
+  }
+
+  void createShadowValues(Operation *op, OpBuilder &builder,
+                          MGradientUtilsReverse *gutils) const {}
+};
+
+/// For L = chol(A) where A = LL^T (lower=true):
+///   S = L^T @ L_bar
+///   Phi = tril(S) with halved diagonal
+///   A_bar = sym(L^{-T} Phi L^{-1})
+/// For U = chol(A) where A = U^TU (lower=false):
+///   S = U @ U_bar^T
+///   Phi = tril(S) with halved diagonal  (always lower triangle)
+///   A_bar = sym(U^{-1} Phi U^{-T})
+///
+/// Reference: Murray (2016), "Differentiation of the Cholesky decomposition"
+class AutoDiffCholeskyRev
+    : public ReverseAutoDiffOpInterface::ExternalModel<AutoDiffCholeskyRev,
+                                                       stablehlo::CholeskyOp> {
+public:
+  LogicalResult createReverseModeAdjoint(Operation *orig, OpBuilder &builder,
+                                         MGradientUtilsReverse *gutils,
+                                         SmallVector<Value> caches) const {
+    auto op = cast<stablehlo::CholeskyOp>(orig);
+    auto loc = op.getLoc();
+
+    if (gutils->isConstantValue(op.getResult()))
+      return success();
+    if (gutils->isConstantValue(op.getOperand()))
+      return success();
+
+    auto lBar = gutils->diffe(op, builder);
+    gutils->zeroDiffe(op, builder);
+
+    Value L = gutils->popCache(caches[0], builder);
+
+    bool lower = op.getLower();
+    auto matType = cast<RankedTensorType>(L.getType());
+
+    // Step 1: S = L^T @ L_bar (lower) or U @ U_bar^T (upper)
+    Value S;
+    if (lower)
+      S = matMul2D(builder, loc, transpose2D(builder, loc, L), lBar);
+    else
+      S = matMul2D(builder, loc, L, transpose2D(builder, loc, lBar));
+
+    // Step 2: Phi = tril(S) with halved diagonal
+    // Always use lower=true because the Phi function from Murray's formula
+    // always extracts the lower triangle (even for upper Cholesky, since
+    // we converted via L = U^T).
+    Value phi = triWithHalvedDiag(builder, loc, S, /*lower=*/true);
+
+    // Steps 3-4: A_bar via two triangular solves on Phi directly.
+    // The final symmetrization 0.5*(aBar + aBar^T) in step 5 effectively
+    // computes sym(L^{-T} Phi L^{-1}) = 0.5 * L^{-T} (Phi+Phi^T) L^{-1}.
+    Value aBar;
+    if (lower) {
+      // Y = L^{-T} Phi  (solve L^T Y = Phi)
+      Value Y = stablehlo::TriangularSolveOp::create(
+          builder, loc, matType, L, phi, /*leftSide=*/true, /*lower=*/true,
+          /*unitDiagonal=*/false, stablehlo::Transpose::TRANSPOSE);
+      // Z = L^{-T} Y^T  (solve L^T Z = Y^T)
+      Value Z = stablehlo::TriangularSolveOp::create(
+          builder, loc, matType, L, transpose2D(builder, loc, Y),
+          /*leftSide=*/true, /*lower=*/true, /*unitDiagonal=*/false,
+          stablehlo::Transpose::TRANSPOSE);
+      aBar = transpose2D(builder, loc, Z);
+    } else {
+      // Y = U^{-1} Phi  (solve U Y = Phi)
+      Value Y = stablehlo::TriangularSolveOp::create(
+          builder, loc, matType, L, phi, /*leftSide=*/true, /*lower=*/false,
+          /*unitDiagonal=*/false, stablehlo::Transpose::NO_TRANSPOSE);
+      // Z = U^{-1} Y^T  (solve U Z = Y^T)
+      Value Z = stablehlo::TriangularSolveOp::create(
+          builder, loc, matType, L, transpose2D(builder, loc, Y),
+          /*leftSide=*/true, /*lower=*/false, /*unitDiagonal=*/false,
+          stablehlo::Transpose::NO_TRANSPOSE);
+      aBar = transpose2D(builder, loc, Z);
+    }
+
+    // Step 6: Symmetrize for numerical stability
+    auto half = createSplatF(builder, loc, matType, 0.5);
+    auto aBarSum = stablehlo::AddOp::create(builder, loc, aBar,
+                                            transpose2D(builder, loc, aBar));
+    aBar = stablehlo::MulOp::create(builder, loc, aBarSum, half);
+
+    gutils->addToDiffe(op.getOperand(), aBar, builder);
+
+    return success();
+  }
+
+  SmallVector<Value> cacheValues(Operation *orig,
+                                 MGradientUtilsReverse *gutils) const {
+    SmallVector<Value> caches;
+    Operation *newOp = gutils->getNewFromOriginal(orig);
+    OpBuilder cacheBuilder(newOp);
+
+    cacheBuilder.setInsertionPointAfter(newOp);
+    caches.push_back(
+        gutils->initAndPushCache(newOp->getResult(0), cacheBuilder));
+
+    return caches;
+  }
+
+  void createShadowValues(Operation *op, OpBuilder &builder,
+                          MGradientUtilsReverse *gutils) const {}
+};
+
 } // namespace
 
 void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
@@ -5199,6 +5525,9 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     ReduceWindowOp::attachInterface<AutoDiffReduceWindowRev>(*context);
     ConcatenateOp::attachInterface<AutoDiffConcatenateRev>(*context);
     BatchNormTrainingOp::attachInterface<AutoDiffBatchNormTrainingRev>(
+        *context);
+    stablehlo::CholeskyOp::attachInterface<AutoDiffCholeskyRev>(*context);
+    stablehlo::TriangularSolveOp::attachInterface<AutoDiffTriangularSolveRev>(
         *context);
 
     ConstantOp::attachInterface<
