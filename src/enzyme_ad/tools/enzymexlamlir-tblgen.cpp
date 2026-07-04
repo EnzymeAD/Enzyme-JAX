@@ -21,6 +21,9 @@ enum ActionType {
   GenPopulateRaisingPatternsFuncDecl,
   GenPopulateRaisingPatternsFuncDef,
   GenPopulateRaisingPatternsInterfaceImpl,
+  GenPopulateImpulsePatternsFuncDecl,
+  GenPopulateImpulsePatternsFuncDef,
+  GenPopulateImpulsePatternsInterfaceImpl,
 };
 
 static llvm::cl::opt<ActionType> action(
@@ -38,6 +41,14 @@ static llvm::cl::opt<ActionType> action(
                                 "gen-populate-raising-patterns-func-defs", "")),
     llvm::cl::values(clEnumValN(GenPopulateRaisingPatternsInterfaceImpl,
                                 "gen-populate-raising-patterns-interface-impl",
+                                "")),
+    llvm::cl::values(clEnumValN(GenPopulateImpulsePatternsFuncDecl,
+                                "gen-populate-impulse-patterns-func-decls",
+                                "")),
+    llvm::cl::values(clEnumValN(GenPopulateImpulsePatternsFuncDef,
+                                "gen-populate-impulse-patterns-func-defs", "")),
+    llvm::cl::values(clEnumValN(GenPopulateImpulsePatternsInterfaceImpl,
+                                "gen-populate-impulse-patterns-interface-impl",
                                 "")));
 
 llvm::StringRef getPopulateFunctionNameSuffix(const llvm::Record *rec) {
@@ -138,6 +149,12 @@ static bool tablegenMain(llvm::raw_ostream &os,
     return emitPopulatePatternsFuncDefs(os, records, "RaisingPatternOp");
   case GenPopulateRaisingPatternsInterfaceImpl:
     return emitPopulatePatterns(os, records, "RaisingPatternOp");
+  case GenPopulateImpulsePatternsFuncDecl:
+    return emitPopulatePatternsFuncDecls(os, records, "ImpulsePatternOp");
+  case GenPopulateImpulsePatternsFuncDef:
+    return emitPopulatePatternsFuncDefs(os, records, "ImpulsePatternOp");
+  case GenPopulateImpulsePatternsInterfaceImpl:
+    return emitPopulatePatterns(os, records, "ImpulsePatternOp");
   default:
     llvm::report_fatal_error("unknown action");
     return true;
