@@ -15,7 +15,7 @@ module {
     %step_size = stablehlo.constant dense<0.1> : tensor<f64>
     %std = stablehlo.constant dense<1.0> : tensor<3xf64>
     // CHECK: ^bb0(%{{.+}}: tensor<2xui64>, %[[OMEGA:.+]]: tensor<3x3xf64>):
-    %res:8 = impulse.infer_region @model(%rng, %Omega) given %trace step_size = %step_size sampler {
+    %res:8 = impulse.infer_region @model(%rng, %Omega) given %trace init_step_size = %step_size sampler {
     ^bb0(%arg_rng: tensor<2xui64>, %arg_Omega: tensor<3x3xf64>):
       %sigma:2 = impulse.sample_region(%arg_rng, %std) sampler {
       ^bb0(%r: tensor<2xui64>, %s: tensor<3xf64>):
@@ -47,7 +47,7 @@ module {
     %step_size = stablehlo.constant dense<0.1> : tensor<f64>
     %std = stablehlo.constant dense<1.0> : tensor<3xf64>
     // CHECK: ^bb0(%{{.+}}: tensor<2xui64>, %[[NOMEGA:.+]]: tensor<3x3xf64>):
-    %res:8 = impulse.infer_region @model(%rng, %Omega) given %trace step_size = %step_size sampler {
+    %res:8 = impulse.infer_region @model(%rng, %Omega) given %trace init_step_size = %step_size sampler {
     ^bb0(%arg_rng: tensor<2xui64>, %arg_Omega: tensor<3x3xf64>):
       %sigma:2 = impulse.sample_region(%arg_rng, %std) sampler {
       ^bb0(%r: tensor<2xui64>, %s: tensor<3xf64>):

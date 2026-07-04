@@ -15,7 +15,7 @@ module {
     %step_size = stablehlo.constant dense<0.1> : tensor<f64>
     %std = stablehlo.constant dense<1.0> : tensor<f64>
     // CHECK: ^bb0(%{{.+}}: tensor<2xui64>, %[[R:.+]]: tensor<3x3xf64>):
-    %res:8 = impulse.infer_region @model(%rng, %R) given %trace step_size = %step_size sampler {
+    %res:8 = impulse.infer_region @model(%rng, %R) given %trace init_step_size = %step_size sampler {
     ^bb0(%arg_rng: tensor<2xui64>, %arg_R: tensor<3x3xf64>):
       %tau:2 = impulse.sample_region(%arg_rng, %std) sampler {
       ^bb0(%r: tensor<2xui64>, %s: tensor<f64>):
