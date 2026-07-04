@@ -2592,6 +2592,8 @@ public:
     switch (checkCommonScatterOp.kind) {
     case stablehlo::ScatterOpKind::Setindex:
     case stablehlo::ScatterOpKind::ConstantSetindex:
+    // Same rule as ConstantSetindex once the captured value is inactive.
+    case stablehlo::ScatterOpKind::SetindexOutsideValue:
     case stablehlo::ScatterOpKind::Add:
     case stablehlo::ScatterOpKind::AddConstantUpdate:
     case stablehlo::ScatterOpKind::AddConstantInput:
@@ -2603,6 +2605,14 @@ public:
     default:
       op->emitError("AutoDiffScatterRev only supports Setindex, AddScatter, "
                     "SubScatter and MulScatter operations");
+      return failure();
+    }
+
+    // The rule drops the cotangent of `outsideValue`, so it must be inactive.
+    if (checkCommonScatterOp.kind == ScatterOpKind::SetindexOutsideValue &&
+        !gutils->isConstantValue(checkCommonScatterOp.outsideValue)) {
+      op->emitError("AutoDiffScatterRev: overwrite-with-external-value scatter "
+                    "whose overwrite value is differentiable is unsupported");
       return failure();
     }
 
@@ -2705,6 +2715,7 @@ public:
     bool noInputDependencies =
         checkCommonScatterOp.kind == ScatterOpKind::Setindex ||
         checkCommonScatterOp.kind == ScatterOpKind::ConstantSetindex ||
+        checkCommonScatterOp.kind == ScatterOpKind::SetindexOutsideValue ||
         checkCommonScatterOp.kind == ScatterOpKind::AddConstantInput ||
         checkCommonScatterOp.kind == ScatterOpKind::MulConstantInput;
     if (noInputDependencies ||
@@ -2813,7 +2824,8 @@ public:
     using ScatterOpKind = mlir::stablehlo::ScatterOpKind;
     if (checkCommonScatterOp.kind == ScatterOpKind::MulConstantUpdate ||
         checkCommonScatterOp.kind == ScatterOpKind::AddConstantUpdate ||
-        checkCommonScatterOp.kind == ScatterOpKind::ConstantSetindex) {
+        checkCommonScatterOp.kind == ScatterOpKind::ConstantSetindex ||
+        checkCommonScatterOp.kind == ScatterOpKind::SetindexOutsideValue) {
       return; // no dependence on the updates
     }
 
