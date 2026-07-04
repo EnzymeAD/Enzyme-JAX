@@ -790,6 +790,30 @@ def LowerImpulseToStableHLOPass : Pass<"lower-impulse-to-stablehlo"> {
   ];
 }
 
+def SICMPass : Pass<"sicm"> {
+  let summary = "Sample-invariant code motion with domain-specific rewrites";
+  let description = [{
+    For each impulse.infer_region, iterates to fixpoint:
+    1. Apply domain-specific StableHLO pattern rewrites that split expensive
+       sample-dependent ops into cheap sample-dependent + expensive invariant parts.
+    2. Hoist sample-invariant operations out of the region.
+
+    Between the sampler-region and logpdf-region targets, constructs the
+    logpdf region from the (already optimized) sampler, so the logpdf
+    is born optimized.
+  }];
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "enzyme::EnzymeDialect",
+    "impulse::ImpulseDialect",
+    "enzymexla::EnzymeXLADialect",
+  ];
+  let options = [
+    Option<"maxIterations", "max-iterations", "int64_t", "10",
+           "Maximum rewrite+hoist iterations per region">,
+  ];
+}
+
 def LowerImpulseTraceOpsPass : Pass<"lower-impulse-trace-ops"> {
   let summary = "Lower Impulse trace manipulation ops to JIT calls";
   let description = [{

@@ -334,6 +334,87 @@ gentbl_cc_library(
     ],
 )
 
+td_library(
+    name = "ImpulseTransformOpsTdFiles",
+    srcs = [
+        "TransformOps/ImpulseTransformOps.td",
+    ],
+    deps = [
+        "@llvm-project//mlir:TransformDialectTdFiles",
+    ],
+)
+
+gentbl_cc_library(
+    name = "ImpulseTransformOpsIncGen",
+    tbl_outs = [
+        (
+            ["-gen-op-decls"],
+            "TransformOps/ImpulseTransformOps.h.inc",
+        ),
+        (
+            ["-gen-op-defs"],
+            "TransformOps/ImpulseTransformOps.cpp.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "TransformOps/ImpulseTransformOps.td",
+    deps = [
+        ":ImpulseTransformOpsTdFiles",
+    ],
+)
+
+gentbl_cc_library(
+    name = "ImpulseTransformOpsImplIncGen",
+    tbl_outs = [(
+        ["-gen-populate-impulse-patterns-interface-impl"],
+        "TransformOps/ImpulseTransformOpsImpl.cpp.inc",
+    )],
+    tblgen = "//:enzymexlamlir-tblgen",
+    td_file = "TransformOps/ImpulseTransformOps.td",
+    deps = [
+        ":ImpulseTransformOpsTdFiles",
+    ],
+)
+
+gentbl_cc_library(
+    name = "ImpulseTransformPatternsIncGen",
+    tbl_outs = [
+        (
+            ["-gen-populate-impulse-patterns-func-decls"],
+            "TransformOps/ImpulseTransformPatterns.h.inc",
+        ),
+        (
+            ["-gen-populate-impulse-patterns-func-defs"],
+            "TransformOps/ImpulseTransformPatterns.cpp.inc",
+        ),
+    ],
+    tblgen = "//:enzymexlamlir-tblgen",
+    td_file = "TransformOps/ImpulseTransformOps.td",
+    deps = [
+        ":ImpulseTransformOpsTdFiles",
+    ],
+)
+
+cc_library(
+    name = "ImpulseTransformOps",
+    srcs = ["TransformOps/ImpulseTransformOps.cpp"],
+    hdrs = ["TransformOps/ImpulseTransformOps.h"],
+    copts = select({
+        "@rules_cc//cc/compiler:gcc": [],
+        "//conditions:default": ["-fbracket-depth=768"],
+    }),
+    deps = [
+        ":ImpulseTransformOpsImplIncGen",
+        ":ImpulseTransformOpsIncGen",
+        ":ImpulseTransformPatternsIncGen",
+        ":XLADerivatives",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:Pass",
+        "@llvm-project//mlir:TransformDialect",
+        "@llvm-project//mlir:TransformDialectInterfaces",
+    ],
+)
+
 cc_library(
     name = "RaisingTransformOps",
     srcs = ["TransformOps/RaisingTransformOps.cpp"],
@@ -1484,6 +1565,7 @@ cc_library(
         ":EnzymeXLADialectUtils",
         ":EnzymeXLAOpsIncGen",
         ":EnzymeXLAPassesIncGen",
+        ":ImpulseTransformPatternsIncGen",
         ":LowerEnzymeXLAMathPatternsIncGen",
         ":Polymer",
         ":RaisingTransformOps",
@@ -1638,6 +1720,7 @@ cc_library(
     ],
     copts = triton_copts + z3_copts,
     deps = [
+               ":ImpulseTransformOps",
                ":TransformOps",
                ":XLADerivatives",
                ":TritonExtDialect",

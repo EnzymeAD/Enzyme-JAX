@@ -150,6 +150,7 @@ namespace mlir {
 namespace enzyme {
 void registerEnzymeJaxTransformExtension(mlir::DialectRegistry &registry);
 void registerRaisingTransformExtension(mlir::DialectRegistry &registry);
+void registerImpulseTransformExtension(mlir::DialectRegistry &registry);
 } // namespace enzyme
 } // namespace mlir
 
@@ -363,6 +364,7 @@ void registerInterfaces(mlir::DialectRegistry &registry) {
 
   mlir::enzyme::registerEnzymeJaxTransformExtension(registry);
   mlir::enzyme::registerRaisingTransformExtension(registry);
+  mlir::enzyme::registerImpulseTransformExtension(registry);
 
   mlir::registerLLVMDialectImport(registry);
   mlir::registerNVVMDialectImport(registry);
