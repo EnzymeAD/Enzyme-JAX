@@ -28748,22 +28748,39 @@ struct ScatterUpdateComputationConstProp
       auto blockArgInput = block.getArgument(0);
       auto blockArgUpdate = block.getArgument(1);
 
-      if (constInput && !blockArgInput.getUses().empty()) {
-        inputTransformed = true;
-        auto denseAttr = DenseElementsAttr::get(
-            cast<ShapedType>(blockArgInput.getType()), inputSplatAttr);
-        auto constInputOp =
-            stablehlo::ConstantOp::create(rewriter, op.getLoc(), denseAttr);
-        blockArgInput.replaceAllUsesWith(constInputOp);
-      }
+      // Leave terminator uses alone: a returned constant can be hoisted out of
+      // the region, and XLA export rejects a region-external return value.
+      auto *terminator = block.getTerminator();
+      auto isReplaceableUse = [&](OpOperand &use) {
+        return use.getOwner() != terminator;
+      };
+      auto hasReplaceableUse = [&](BlockArgument arg) {
+        return llvm::any_of(arg.getUses(), isReplaceableUse);
+      };
 
-      if (constUpdate && !blockArgUpdate.getUses().empty()) {
-        updateTransformed = true;
-        auto denseAttr = DenseElementsAttr::get(
-            cast<ShapedType>(blockArgUpdate.getType()), updateSplatAttr);
-        auto constUpdateOp =
-            stablehlo::ConstantOp::create(rewriter, op.getLoc(), denseAttr);
-        blockArgUpdate.replaceAllUsesWith(constUpdateOp);
+      {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToStart(&block);
+
+        if (constInput && hasReplaceableUse(blockArgInput)) {
+          inputTransformed = true;
+          auto denseAttr = DenseElementsAttr::get(
+              cast<ShapedType>(blockArgInput.getType()), inputSplatAttr);
+          auto constInputOp =
+              stablehlo::ConstantOp::create(rewriter, op.getLoc(), denseAttr);
+          rewriter.replaceUsesWithIf(blockArgInput, constInputOp.getResult(),
+                                     isReplaceableUse);
+        }
+
+        if (constUpdate && hasReplaceableUse(blockArgUpdate)) {
+          updateTransformed = true;
+          auto denseAttr = DenseElementsAttr::get(
+              cast<ShapedType>(blockArgUpdate.getType()), updateSplatAttr);
+          auto constUpdateOp =
+              stablehlo::ConstantOp::create(rewriter, op.getLoc(), denseAttr);
+          rewriter.replaceUsesWithIf(blockArgUpdate, constUpdateOp.getResult(),
+                                     isReplaceableUse);
+        }
       }
 
       if (!inputTransformed && !updateTransformed)

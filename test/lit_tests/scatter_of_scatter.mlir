@@ -43,11 +43,11 @@ module {
       stablehlo.return %add : tensor<f64>
     }) : (tensor<3000x3000xf64>, tensor<3000x2xi64>, tensor<3000xf64>) -> tensor<3000x3000xf64>
 
-    // Outer: Setindex (returns arg4, ignores arg3)
-    // CHECK: %[[CST_2_0:.*]] = stablehlo.constant dense<2.000000e-01> : tensor<f64>
-    // CHECK: %[[RES:.*]] = "stablehlo.scatter"
+    // Outer: Setindex; terminator-only uses are not const-propagated.
+    // CHECK: %[[CST_2_0:.*]] = stablehlo.constant dense<2.000000e-01> : tensor<3000xf64>
+    // CHECK: %[[RES:.*]] = "stablehlo.scatter"({{.*}}, {{.*}}, %[[CST_2_0]])
     // CHECK: ^bb0(%[[ARG1:.*]]: tensor<f64>, %[[ARG2:.*]]: tensor<f64>):
-    // CHECK-NEXT: stablehlo.return %[[CST_2_0]]
+    // CHECK-NEXT: stablehlo.return %[[ARG2]]
     %2 = "stablehlo.scatter"(%1, %0, %cst_0) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0, 1], scatter_dims_to_operand_dims = [0, 1], index_vector_dim = 1>, unique_indices = true}> ({
     ^bb0(%arg3: tensor<f64>, %arg4: tensor<f64>):
       stablehlo.return %arg4 : tensor<f64>
