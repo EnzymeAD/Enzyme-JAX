@@ -31,24 +31,22 @@ module {
   // CHECK-NEXT:   impulse.yield %[[RS]] : tensor<f64>
   func.func @main(%rng : tensor<2xui64>,
                   %B : tensor<4x8xcomplex<f64>>)
-      -> (tensor<1x8xf64>, tensor<1xi1>, tensor<2xui64>) {
+      -> (tensor<1x8xf64>, tensor<1x2xi1>, tensor<1xf64>, tensor<2xui64>) {
     %init_pos = stablehlo.constant dense<0.0> : tensor<1x8xf64>
     %step_size = stablehlo.constant dense<0.1> : tensor<f64>
     %imm = stablehlo.constant dense<1.0> : tensor<8xf64>
     // Custom-logpdf-mode infer op. The pretty form is not round-trippable when
     // `fn` is absent, so use the generic form (as mcmc_custom_logpdf.mlir does).
-    //   inputs=2, state_in=0, original_trace=0, init_inverse_mass_matrix=1,
-    //   init_step_size=1, init_position=1
-    %res:3 = "impulse.infer"(%rng, %B, %imm, %step_size, %init_pos) {
+    %res:4 = "impulse.infer"(%rng, %B, %imm, %step_size, %init_pos) {
       logpdf_fn = @model_logpdf,
       nuts_config = #impulse.nuts_config<max_tree_depth = 3, max_delta_energy = 1000.0, adapt_step_size = false, adapt_mass_matrix = false>,
       selection = [],
       all_addresses = [],
       num_warmup = 0,
       num_samples = 1,
-      operand_segment_sizes = array<i32: 2, 0, 0, 1, 1, 1>
+      operand_segment_sizes = array<i32: 2, 0, 0, 0, 1, 1, 1, 0>
     } : (tensor<2xui64>, tensor<4x8xcomplex<f64>>, tensor<8xf64>, tensor<f64>, tensor<1x8xf64>)
-        -> (tensor<1x8xf64>, tensor<1xi1>, tensor<2xui64>)
-    return %res#0, %res#1, %res#2 : tensor<1x8xf64>, tensor<1xi1>, tensor<2xui64>
+        -> (tensor<1x8xf64>, tensor<1x2xi1>, tensor<1xf64>, tensor<2xui64>)
+    return %res#0, %res#1, %res#2, %res#3 : tensor<1x8xf64>, tensor<1x2xi1>, tensor<1xf64>, tensor<2xui64>
   }
 }
