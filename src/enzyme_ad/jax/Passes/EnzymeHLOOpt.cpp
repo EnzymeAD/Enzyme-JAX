@@ -910,6 +910,24 @@ struct ReshapeDUS final
     // %update_resahepd = reshape %update
     // dynamic_update_slice %arg0_reshaped, %update_reshaped
 
+    // Dry-run on sentinels first: mutating the IR and then failing would keep
+    // the greedy driver from converging.
+    {
+      int64_t zeroSentinel = 0, oneSentinel = 1;
+      SmallVector<int64_t> startProbe;
+      for (Value idx : dus.getStartIndices())
+        startProbe.push_back(matchPattern(idx, m_Zero()) ? 0 : 1);
+      if (!transformReshapeSlice<int64_t>(op, startProbe, /*toFill*/ 0,
+                                          /*checkRemoved*/ &zeroSentinel))
+        return failure();
+      SmallVector<int64_t> updateProbe(
+          dus.getUpdate().getType().getShape().begin(),
+          dus.getUpdate().getType().getShape().end());
+      if (!transformReshapeSlice<int64_t>(op, updateProbe, /*toFill*/ 1,
+                                          /*checkRemoved*/ &oneSentinel))
+        return failure();
+    }
+
     SmallVector<Value> startIndices(dus.getStartIndices().begin(),
                                     dus.getStartIndices().end());
     auto itype = startIndices.size() > 0
