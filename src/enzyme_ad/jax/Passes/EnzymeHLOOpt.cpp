@@ -7389,6 +7389,10 @@ struct BinopPadToConcat final
               op->getOperand(i).template getDefiningOp<stablehlo::PadOp>()) {
         if (anyPadSizesNegative(lhs))
           continue;
+        // Not implied by SameOperandsAndResultShape: the greedy driver does not
+        // re-verify, so an operand may transiently have another shape.
+        if (lhs.getType() != type)
+          continue;
         auto rhs = op->getOperand(1 - i);
 
         Attribute padValAttr;
