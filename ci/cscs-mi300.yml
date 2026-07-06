@@ -94,6 +94,22 @@ test-gb-25:
         export CPATH="\${pkg}include\${CPATH:+:\${CPATH}}"
         break
       done
+      # rocm-smi-lib is likewise a separate spack package not exposed in the view.
+      # Newer XLA (xla/stream_executor/rocm/rocm_smi_util.cc) includes
+      # rocm/include/rocm_smi/rocm_smi.h, so seed rocm_smi/ from its package.
+      if [[ ! -e "${CI_PROJECT_DIR}/.rocm/include/rocm_smi/rocm_smi.h" ]]; then
+        # Try the well-known package names first, then fall back to scanning all
+        # spack packages for the header (the -f guard keeps the match specific).
+        for pkg in /user-environment/linux-zen3/rocm-smi-lib-*/ \
+                   /user-environment/linux-zen3/rocm-smi-*/ \
+                   /user-environment/linux-zen3/*/; do
+          [[ -f "\${pkg}include/rocm_smi/rocm_smi.h" ]] || continue
+          ln -sfn "\${pkg}include/rocm_smi" "${CI_PROJECT_DIR}/.rocm/include/rocm_smi"
+          export CPATH="\${pkg}include\${CPATH:+:\${CPATH}}"
+          echo "rocm_smi -> \${pkg}include/rocm_smi"
+          break
+        done
+      fi
       # NB: amdgcn is intentionally NOT seeded as a whole-dir symlink here. It must
       # stay a real, writable directory so the device-bitcode block below can place
       # a `bitcode` symlink under it. Symlinking it to the read-only UENV view makes
@@ -250,7 +266,8 @@ test-gb-25:
                rocblas/internal/rocblas-version.h rocrand/rocrand_version.h \
                rocfft/rocfft-version.h hipfft/hipfft-version.h \
                roctracer/roctracer.h hipsparse/hipsparse-version.h \
-               hipsolver/internal/hipsolver-version.h rocsolver/rocsolver-version.h; do
+               hipsolver/internal/hipsolver-version.h rocsolver/rocsolver-version.h \
+               rocm_smi/rocm_smi.h; do
         [[ -e "${CI_PROJECT_DIR}/.rocm/include/\${f}" ]] && echo "OK: \${f}" || echo "MISSING: \${f}"
       done
       [[ -e "${CI_PROJECT_DIR}/.rocm/amdgcn/bitcode/ocml.bc" ]] && echo "OK: amdgcn/bitcode/ocml.bc" || echo "MISSING: amdgcn/bitcode/ocml.bc"
