@@ -788,14 +788,16 @@ def LowerImpulseToStableHLOPass : Pass<"lower-impulse-to-stablehlo"> {
         /*default=*/"false",
         /*description=*/"Enable debug dump">,
     Option<
-        /*C++ variable name=*/"linalgOnly",
-        /*CLI argument=*/"linalg-only",
+        /*C++ variable name=*/"mathTwinsOnly",
+        /*CLI argument=*/"math-twins-only",
         /*type=*/"bool",
         /*default=*/"false",
-        /*description=*/"Canonicalise the emitted distributions' impulse compute "
-                        "ops (cholesky, triangular_solve, dot) into the "
-                        "pipeline's optimizer dialect (StableHLO here), leaving "
-                        "the probprog, control-flow, and RNG ops intact. A "
+        /*description=*/"Canonicalise the emitted distributions' impulse "
+                        "math-twin ops (cholesky, triangular_solve, dot) into "
+                        "the pipeline's optimizer dialect (StableHLO here), "
+                        "leaving the probprog, control-flow, and RNG ops intact. "
+                        "This does NOT involve the linalg dialect; it converts "
+                        "the impulse ops that mirror StableHLO compute ops. A "
                         "per-target instantiation point run before SICM so the "
                         "StableHLO scale patterns fire on emitted matrix math "
                         "(MVN) identically to the traced form; a different "
