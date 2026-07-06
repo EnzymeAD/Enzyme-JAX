@@ -166,11 +166,10 @@ ArrayRef<Attribute> DefineOp::getByRefTypesArray() {
 
 Type DefineOp::getByRefType(unsigned argIdx) {
   auto types = getByRefTypesArray();
-  if (argIdx >= types.size())
-    return Type();
+  assert(argIdx < types.size() && "argIdx out of bounds in getByRefType");
   auto attr = types[argIdx];
   if (!isa<TypeAttr>(attr))
-    return Type();
+    return nullptr;
   return cast<TypeAttr>(attr).getValue();
 }
 
