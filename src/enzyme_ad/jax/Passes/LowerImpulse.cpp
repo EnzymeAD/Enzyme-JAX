@@ -1438,6 +1438,38 @@ struct LowerImpulseToStableHLOPass
 
     RewritePatternSet patterns(context);
 
+    if (linalgOnly) {
+      // Canonicalise the emitted distributions' impulse compute ops into the
+      // they saw the traced StableHLO bodies. This is a per-target
+      // instantiation point, not an inherent StableHLO commitment: a future
+      // compute-dialect target adds a sibling instantiation of the same
+      // conversion patterns rather than touching the emitters (DistBuilder) or
+      // this stage's pipeline position. Everything else (probprog ops, control
+      // flow, RNG, slices) stays impulse for the later full lowering after
+      // expand-impulse.
+      ConversionTarget linalgTarget(*context);
+      linalgTarget.addLegalDialect<stablehlo::StablehloDialect>();
+      linalgTarget.addLegalDialect<chlo::ChloDialect>();
+      linalgTarget.addLegalDialect<arith::ArithDialect>();
+      linalgTarget.addLegalDialect<func::FuncDialect>();
+      linalgTarget.addLegalDialect<tensor::TensorDialect>();
+      linalgTarget.addLegalDialect<enzyme::EnzymeDialect>();
+      linalgTarget.addLegalDialect<impulse::ImpulseDialect>();
+      linalgTarget.addLegalOp<UnrealizedConversionCastOp>();
+      linalgTarget.addIllegalOp<impulse::CholeskyOp>();
+      linalgTarget.addIllegalOp<impulse::TriangularSolveOp>();
+      linalgTarget.addIllegalOp<impulse::DotOp>();
+
+      patterns.add<CholeskyOpConversion, TriangularSolveOpConversion,
+                   DotOpConversion>(backend, context);
+
+      if (failed(applyPartialConversion(getOperation(), linalgTarget,
+                                        std::move(patterns)))) {
+        signalPassFailure();
+      }
+      return;
+    }
+
     patterns.add<RandomOpConversion, CholeskyOpConversion,
                  TriangularSolveOpConversion, DotOpConversion,
                  LogAddExpOpConversion, LogisticOpConversion,
