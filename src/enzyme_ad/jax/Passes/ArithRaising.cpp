@@ -814,6 +814,7 @@ struct ArithRaisingPass
         RaiseUnary<math::Log1pOp,       stablehlo::Log1pOp,    stablehlo::Log1pOp>,
         RaiseUnary<math::ExpOp,         stablehlo::ExpOp,      mhlo::ExpOp>,
         RaiseUnary<math::ExpM1Op,       stablehlo::Expm1Op,    stablehlo::Expm1Op>,
+        RaiseUnary<math::TanOp,         stablehlo::TanOp,      stablehlo::TanOp>,
         RaiseUnary<math::TanhOp,        stablehlo::TanhOp,     stablehlo::TanhOp>,
         RaiseUnary<math::SqrtOp,        stablehlo::SqrtOp,     mhlo::SqrtOp>,
         RaiseUnary<math::RsqrtOp,       stablehlo::RsqrtOp,    mhlo::RsqrtOp>,
