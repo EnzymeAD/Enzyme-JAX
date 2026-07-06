@@ -629,6 +629,25 @@ struct LogisticOpConversion : public OpConversionPattern<impulse::LogisticOp> {
   }
 };
 
+struct LgammaOpConversion : public OpConversionPattern<impulse::LgammaOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  std::string backend;
+  LgammaOpConversion(std::string backend, MLIRContext *context,
+                     PatternBenefit benefit = 1)
+      : OpConversionPattern(context, benefit), backend(backend) {}
+
+  LogicalResult
+  matchAndRewrite(impulse::LgammaOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto operand = adaptor.getOperand();
+    auto resultType = cast<RankedTensorType>(op.getResult().getType());
+
+    rewriter.replaceOpWithNewOp<chlo::LgammaOp>(op, resultType, operand);
+    return success();
+  }
+};
+
 struct RandomOpConversion : public OpConversionPattern<impulse::RandomOp> {
   using OpConversionPattern::OpConversionPattern;
 
@@ -1404,6 +1423,7 @@ struct LowerImpulseToStableHLOPass
     target.addIllegalOp<impulse::DotOp>();
     target.addIllegalOp<impulse::LogAddExpOp>();
     target.addIllegalOp<impulse::LogisticOp>();
+    target.addIllegalOp<impulse::LgammaOp>();
     target.addIllegalOp<impulse::ForOp>();
     target.addIllegalOp<impulse::WhileOp>();
     target.addIllegalOp<impulse::IfOp>();
@@ -1421,8 +1441,8 @@ struct LowerImpulseToStableHLOPass
     patterns.add<RandomOpConversion, CholeskyOpConversion,
                  TriangularSolveOpConversion, DotOpConversion,
                  LogAddExpOpConversion, LogisticOpConversion,
-                 ForLoopOpConversion, WhileLoopOpConversion, IfOpConversion,
-                 PopcountOpConversion, SliceOpConversion,
+                 LgammaOpConversion, ForLoopOpConversion, WhileLoopOpConversion,
+                 IfOpConversion, PopcountOpConversion, SliceOpConversion,
                  DynamicSliceOpConversion, DynamicUpdateSliceOpConversion,
                  SelectOpConversion, ReshapeOpConversion>(backend, context);
     patterns.add<RandomSplitOpConversion>(backend, debugDump, context);
