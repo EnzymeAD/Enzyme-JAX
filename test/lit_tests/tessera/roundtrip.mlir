@@ -1,6 +1,6 @@
 // RUN: enzymexlamlir-opt %s | FileCheck %s
 
-tessera.define @foo() attributes {byRefArgs = array<i1>, byRefTypes = [], pure = false} {
+tessera.define @foo() attributes {byRefTypes = [], pure = false} {
   tessera.return
 }
 
@@ -9,7 +9,7 @@ tessera.define @foo() attributes {byRefArgs = array<i1>, byRefTypes = [], pure =
 
 // -----
 
-tessera.define @bar() -> i32 attributes {byRefArgs = array<i1>, byRefTypes = [], pure = false} {
+tessera.define @bar() -> i32 attributes {byRefTypes = [], pure = false} {
   %0 = arith.constant 42 : i32
   tessera.return %0 : i32
 }
@@ -19,7 +19,7 @@ tessera.define @bar() -> i32 attributes {byRefArgs = array<i1>, byRefTypes = [],
 
 // -----
 
-tessera.define @caller() attributes {byRefArgs = array<i1>, byRefTypes = [], pure = false} {
+tessera.define @caller() attributes {byRefTypes = [], pure = false} {
   tessera.call @foo() : () -> ()
   tessera.return
 }
@@ -30,7 +30,7 @@ tessera.define @caller() attributes {byRefArgs = array<i1>, byRefTypes = [], pur
 
 // -----
 
-tessera.define @with_args(%arg0: i32, %arg1: f32) -> i32 attributes {byRefArgs = array<i1: false, false>, byRefTypes = [], pure = false} {
+tessera.define @with_args(%arg0: i32, %arg1: f32) -> i32 attributes {byRefTypes = [unit, unit], pure = false} {
   %0 = tessera.call @bar() : () -> i32
   tessera.return %0 : i32
 }

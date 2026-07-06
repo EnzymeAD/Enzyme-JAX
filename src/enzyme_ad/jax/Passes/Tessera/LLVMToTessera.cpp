@@ -68,10 +68,12 @@ public:
     if (!tesseraOpAttr)
       return failure();
 
-    // Parse the tessera op attribute to extract the op name, argument passing
-    // style, and argument sizes. The attribute is expected to be in the format:
-    // "tessera_op(arg1:byref, arg2, ...):size1,size2,..." or
-    // "pure_tessera_op(arg1:byref, arg2, ...):size1,size2,..."
+    // Parse the tessera op attribute, which is expected to be in the format:
+    // "tessera_op(arg1:byref, arg2, ...):globals=index1,..." or
+    // "pure_tessera_op(arg1:byref, arg2, ...):globals=index1,..." where
+    // index1,... corresponds positionally, in left-to-right order, to the byref
+    // args in the arg list above, and are used to look up the types of the
+    // byref args.
     StringRef raw = tesseraOpAttr.getValue();
 
     // Parse op name (everything before the '(')
@@ -79,35 +81,46 @@ public:
 
     // Parse args in parentheses
     StringRef argList = raw.slice(raw.find('(') + 1, raw.find(')'));
-    SmallVector<bool> byRefArgs;
 
+    // Parse indices after ":globals=" (order corresponds to order byref
+    // args appear in argList)
+    SmallVector<StringRef> indexList;
+    StringRef indicesStr = raw.substr(raw.find(')') + 1);
+    if (!indicesStr.empty() && indicesStr.consume_front(":globals=")) {
+      indicesStr.split(indexList, ',');
+    }
+
+    // Identify which args are marked byref and look up their types in
+    // byRefTypesByIndex map
+    SmallVector<Attribute> byRefTypes;
+    unsigned numByRefFound = 0;
     if (!argList.trim().empty()) {
       SmallVector<StringRef> argParts;
       argList.split(argParts, ',');
-      for (auto arg : argParts) {
-        arg = arg.trim();
-        if (arg.contains(":byref") || arg.contains(": byref")) {
-          byRefArgs.push_back(true);
-        } else {
-          byRefArgs.push_back(false);
-        }
-      }
-    }
+      for (unsigned i = 0, e = argParts.size(); i != e; ++i) {
+        StringRef arg = argParts[i].trim();
 
-    // Find the types of the byref arguments by looking for global variables
-    // with names that match the pattern "__tessera_byref_arg_type_<index>"
-    // where <index> is a number parsed in the tessera_op attribute after
-    // "globals=".
-    SmallVector<Attribute> byRefTypes;
-    StringRef indicesStr = raw.substr(raw.find(')') + 1);
-    if (!indicesStr.empty() && indicesStr.consume_front(":globals=")) {
-      SmallVector<StringRef> indexList;
-      indicesStr.split(indexList, ',');
-      for (auto i : indexList) {
-        i = i.trim();
+        // Check if arg is marked as byref. If not, push a unit attribute so
+        // that the byRefTypes array has the same size as the number of args.
+        if (!arg.contains(":byref") && !arg.contains(": byref")) {
+          byRefTypes.push_back(UnitAttr::get(ctx));
+          continue;
+        }
+
+        if (numByRefFound >= indexList.size()) {
+          funcOp->emitError("tessera: not enough byref indices for byref args");
+          return failure();
+        }
+
+        // Find the types of the byref arguments by looking for global variables
+        // with names that match the pattern "__tessera_byref_arg_type_<idx>"
+        // where <idx> is a number parsed in the tessera_op attribute after
+        // "globals=".
+        auto byRefIndex = indexList[numByRefFound++];
         unsigned idx;
-        if (i.getAsInteger(10, idx)) {
-          funcOp->emitError("tessera: invalid byref type index: ") << i;
+        if (byRefIndex.trim().getAsInteger(10, idx)) {
+          funcOp->emitError("tessera: invalid byref type index: ")
+              << byRefIndex;
           return failure();
         }
         auto it = byRefTypesByIndex.find(idx);
@@ -119,12 +132,12 @@ public:
       }
     }
 
-    // Make sure number of arguments marked byref matches number of types found
-    unsigned numByRef = llvm::count(byRefArgs, true);
-    if (numByRef != byRefTypes.size()) {
-      funcOp->emitError("tessera: number of byref arguments (")
-          << numByRef << ") does not match number of byref types ("
-          << byRefTypes.size() << ")";
+    // The format guarantees one global index per byref arg.
+    // A mismatch means the annotation string is malformed or the Clang
+    // plugin's emission order has drifted from this parser's assumption.
+    if (numByRefFound != indexList.size()) {
+      funcOp->emitError(
+          "tessera: mismatch between byref arg count and global index count");
       return failure();
     }
 
@@ -148,7 +161,6 @@ public:
     // args, sizes, and purity (side effect free) attribute
     auto tesseraDefineOp = tessera::DefineOp::create(
         rewriter, funcOp.getLoc(), tesseraName.str(), fnType,
-        DenseBoolArrayAttr::get(ctx, byRefArgs),
         ArrayAttr::get(ctx, byRefTypes), isPure);
 
     // Copy over all attributes other than the function name and type
@@ -172,7 +184,6 @@ public:
     }
 
     rewriter.eraseOp(funcOp);
-
     return success();
   }
 
@@ -227,11 +238,6 @@ public:
       }
     }
 
-    // Load the indices and types of arguments that were marked as byref
-    // in the tessera.define op
-    auto byRefArgs = defineOp.getByRefArgs();
-    auto byRefTypes = defineOp.getByRefTypes();
-
     SmallVector<Value> newOperands;
     SmallVector<int32_t> loadedOperands;
 
@@ -240,7 +246,6 @@ public:
     // byRef by the user, load the value from the pointer and store
     // that as the new operand.
     int argOffset = sretPtr ? 1 : 0;
-    unsigned byRefCount = 0;
     for (unsigned i = 0; i < operands.size() - argOffset; i++) {
       auto operand = callOp.getOperand(i + argOffset);
 
@@ -249,14 +254,15 @@ public:
         continue;
       }
 
-      // Determine whether to load pointer and what type to load based on byVal
-      // attribute or type stored in global variable for byref argument
+      // Determine whether to load pointer and what type to load based on
+      // byVal attribute or byRef attribute on the tessera.define op.
+      // If neither is present, just pass the pointer through.
       Type pointeeType;
       if (auto byValAttr =
               defineOp.getArgAttr(i, LLVM::LLVMDialect::getByValAttrName())) {
         pointeeType = cast<TypeAttr>(byValAttr).getValue();
-      } else if (byRefArgs[i]) {
-        pointeeType = cast<TypeAttr>(byRefTypes[byRefCount++]).getValue();
+      } else if (auto byRefType = defineOp.getByRefType(i)) {
+        pointeeType = byRefType;
       }
 
       if (pointeeType) {

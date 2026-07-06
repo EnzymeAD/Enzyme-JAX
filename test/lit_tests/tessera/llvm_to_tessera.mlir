@@ -5,7 +5,6 @@ llvm.func @simple_func() attributes {tessera_op = "tessera_simple_func()"} {
 }
 
 // CHECK: tessera.define @tessera_simple_func()
-// CHECK-SAME: byRefArgs = array<i1>
 // CHECK-SAME: byRefTypes = []
 // CHECK-SAME: pure = false
 // CHECK-SAME: tessera.original_name = "simple_func"
@@ -19,8 +18,7 @@ llvm.func @func_with_args(%arg0: i32, %arg1: f32) -> i32 attributes {tessera_op 
 }
 
 // CHECK: tessera.define @tessera_func_with_args(%arg0: i32, %arg1: f32)
-// CHECK-SAME: byRefArgs = array<i1: false, false>
-// CHECK-SAME: byRefTypes = []
+// CHECK-SAME: byRefTypes = [unit, unit]
 // CHECK-SAME: pure = false
 // CHECK-SAME: tessera.original_name = "func_with_args"
 // CHECK-NEXT: tessera.return %arg0 : i32
@@ -29,13 +27,12 @@ llvm.func @func_with_args(%arg0: i32, %arg1: f32) -> i32 attributes {tessera_op 
 
 llvm.mlir.global internal constant @_ZL26__tessera_byref_arg_type_0() : !llvm.struct<(f32)>
 
-llvm.func @pure_func(%arg0: i32, %arg1: f32) -> i32 attributes {pure_tessera_op = "tessera_pure_func(x, y:byref):globals=0"} {
+llvm.func @pure_func(%arg0: i32, %arg1: !llvm.ptr) -> i32 attributes {pure_tessera_op = "tessera_pure_func(x, y:byref):globals=0"} {
   llvm.return %arg0 : i32
 }
 
-// CHECK: tessera.define @tessera_pure_func(%arg0: i32, %arg1: f32)
-// CHECK-SAME: byRefArgs = array<i1: false, true>
-// CHECK-SAME: byRefTypes = [!llvm.struct<(f32)>]
+// CHECK: tessera.define @tessera_pure_func(%arg0: i32, %arg1: !llvm.ptr)
+// CHECK-SAME: byRefTypes = [unit, !llvm.struct<(f32)>]
 // CHECK-SAME: pure = true
 // CHECK-SAME: tessera.original_name = "pure_func"
 // CHECK-NEXT: tessera.return %arg0 : i32
@@ -52,14 +49,12 @@ llvm.func @func_with_call() attributes {tessera_op = "tessera_func_with_call()"}
 }
 
 // CHECK: tessera.define @tessera_helper()
-// CHECK-SAME: byRefArgs = array<i1>
 // CHECK-SAME: byRefTypes = []
 // CHECK-SAME: pure = false
 // CHECK-SAME: tessera.original_name = "helper"
 // CHECK-NEXT: tessera.return
 
 // CHECK: tessera.define @tessera_func_with_call()
-// CHECK-SAME: byRefArgs = array<i1>
 // CHECK-SAME: byRefTypes = []
 // CHECK-SAME: pure = false
 // CHECK-SAME: tessera.original_name = "func_with_call"
@@ -105,7 +100,6 @@ llvm.func @caller() {
 }
 
 // CHECK: tessera.define @tessera_sret_func(%arg0: !llvm.ptr {llvm.align = 8 : i64, llvm.nonnull, llvm.sret = !llvm.struct<(f32, f32)>}, %arg1: !llvm.ptr {llvm.noundef, llvm.readonly})
-// CHECK-SAME: byRefArgs = array<i1: true>
 // CHECK-SAME: byRefTypes = [!llvm.struct<(f32, f32)>]
 // CHECK-SAME: pure = true
 // CHECK-SAME: tessera.original_name = "sret_func"
