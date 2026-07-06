@@ -38040,6 +38040,11 @@ private:
       return {false, SliceInfo()};
     }
 
+    // matchReduceSlice checks this too, but only after getDimensions()[0].
+    if (reduce.getDimensions().size() != 1) {
+      return {false, SliceInfo()};
+    }
+
     auto inputType = cast<RankedTensorType>(reshapeOp.getOperand().getType());
     auto outputType = cast<RankedTensorType>(reshapeOp.getType());
     auto reduceDim = reduce.getDimensions()[0];
