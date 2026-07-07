@@ -2695,6 +2695,7 @@ LLVM::LLVMFuncOp emitSundialsIdaJacTimesRegistration(ModuleOp module,
   MLIRContext *context = module.getContext();
   Type ptrType = LLVM::LLVMPointerType::get(context);
   Type i32Type = IntegerType::get(context, 32);
+  Type i64Type = IntegerType::get(context, 64);
 
   OpBuilder::InsertionGuard guard(builder);
   builder.setInsertionPointToStart(module.getBody());
@@ -2729,8 +2730,6 @@ LLVM::LLVMFuncOp emitSundialsIdaJacTimesRegistration(ModuleOp module,
 
   Value pretypeNone = LLVM::ConstantOp::create(
       builder, loc, i32Type, builder.getIntegerAttr(i32Type, 0));
-  Value defaultKrylovDim = LLVM::ConstantOp::create(
-      builder, loc, i32Type, builder.getIntegerAttr(i32Type, 0));
   Value nullPtr = LLVM::ZeroOp::create(builder, loc, ptrType);
 
   auto registerContext = LLVM::CallOp::create(
@@ -2747,10 +2746,18 @@ LLVM::LLVMFuncOp emitSundialsIdaJacTimesRegistration(ModuleOp module,
       ValueRange{idaMem, userData});
   setSundialsCallRole(setUserData, builder, "ida_user_data_registration");
 
+  auto krylovDim64 = LLVM::CallOp::create(
+      builder, loc, TypeRange{i64Type},
+      SymbolRefAttr::get(context, "N_VGetLength"), ValueRange{yyTemplate});
+  setSundialsCallRole(krylovDim64, builder,
+                      "ida_iterative_linear_solver_dimension");
+  Value krylovDim =
+      LLVM::TruncOp::create(builder, loc, i32Type, krylovDim64.getResult());
+
   auto linearSolver = LLVM::CallOp::create(
       builder, loc, TypeRange{ptrType}, SymbolRefAttr::get(context,
                                                            "SUNLinSol_SPGMR"),
-      ValueRange{yyTemplate, pretypeNone, defaultKrylovDim, sunctx});
+      ValueRange{yyTemplate, pretypeNone, krylovDim, sunctx});
   setSundialsCallRole(linearSolver, builder, "ida_iterative_linear_solver");
 
   auto rememberLinearSolver = LLVM::CallOp::create(

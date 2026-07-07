@@ -133,7 +133,11 @@ module {
 // CHECK-SAME: enzymexla.sundials.runtime_context_input_count = 4 : i64
 // CHECK-SAME: enzymexla.sundials.runtime_context_input_indices = [0, 3]
 // CHECK-SAME: enzymexla.sundials.runtime_non_model_context_input_indices = [3]
-// CHECK: %[[LS:.*]] = llvm.call @SUNLinSol_SPGMR
+// CHECK: %[[PRETYPE:.*]] = llvm.mlir.constant(0 : i32) : i32
+// CHECK: %[[KRYLOV_DIM64:.*]] = llvm.call @N_VGetLength(%arg1)
+// CHECK-SAME: enzymexla.sundials.role = "ida_iterative_linear_solver_dimension"
+// CHECK: %[[MAXL:.*]] = llvm.trunc %[[KRYLOV_DIM64]] : i64 to i32
+// CHECK: %[[LS:.*]] = llvm.call @SUNLinSol_SPGMR(%arg1, %[[PRETYPE]], %[[MAXL]], %arg2)
 // CHECK-SAME: enzymexla.sundials.role = "ida_iterative_linear_solver"
 // CHECK: llvm.call @__enzymexla_sundials_ida_remember_linear_solver
 // CHECK-SAME: %[[LS]]

@@ -166,13 +166,15 @@ module {
 // CHECK-SAME: enzymexla.sundials.runtime_role = "ida_jactimes_registration"
 // CHECK-SAME: enzymexla.sundials.source_function = "host_configure"
 // CHECK: %[[PRETYPE:.*]] = llvm.mlir.constant(0 : i32) : i32
-// CHECK: %[[MAXL:.*]] = llvm.mlir.constant(0 : i32) : i32
 // CHECK: %[[NULL:.*]] = llvm.mlir.zero : !llvm.ptr
 // CHECK: llvm.call @__enzymexla_sundials_ida_register_jvp_context
 // CHECK-SAME: enzymexla.sundials.role = "ida_jvp_context_registration"
 // CHECK: llvm.call @IDASetUserData
 // CHECK-SAME: enzymexla.sundials.role = "ida_user_data_registration"
-// CHECK: %[[LS:.*]] = llvm.call @SUNLinSol_SPGMR
+// CHECK: %[[KRYLOV_DIM64:.*]] = llvm.call @N_VGetLength(%arg1)
+// CHECK-SAME: enzymexla.sundials.role = "ida_iterative_linear_solver_dimension"
+// CHECK: %[[MAXL:.*]] = llvm.trunc %[[KRYLOV_DIM64]] : i64 to i32
+// CHECK: %[[LS:.*]] = llvm.call @SUNLinSol_SPGMR(%arg1, %[[PRETYPE]], %[[MAXL]], %arg2)
 // CHECK-SAME: enzymexla.sundials.role = "ida_iterative_linear_solver"
 // CHECK: llvm.call @__enzymexla_sundials_ida_remember_linear_solver
 // CHECK-SAME: %arg0
