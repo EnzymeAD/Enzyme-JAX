@@ -1747,11 +1747,18 @@ matchScaledInvariantPlusDiagShift(Value value,
   return {};
 }
 
+/// ADJOINT and TRANSPOSE coincide for the real factors these patterns target.
+static bool isAdjointLikeTranspose(stablehlo::Transpose t) {
+  return t == stablehlo::Transpose::ADJOINT ||
+         t == stablehlo::Transpose::TRANSPOSE;
+}
+
 /// Detect chained triangular_solve pairs that compute Σ^{-1}b.
 ///
 /// Pattern: triangular_solve(F, triangular_solve(F, b, ADJOINT), NO_TRANSPOSE)
 /// where F is a Cholesky factor (upper or lower). The outer solve's `b` operand
-/// IS the inner solve result.
+/// IS the inner solve result. (The inner solve may use TRANSPOSE instead of
+/// ADJOINT — equivalent for the real factors here.)
 static Value matchFullCholeskySolve(stablehlo::TriangularSolveOp outerSolve,
                                     Value cholResult) {
   // The outer solve must use Cholesky result directly, NO_TRANSPOSE
@@ -1763,7 +1770,7 @@ static Value matchFullCholeskySolve(stablehlo::TriangularSolveOp outerSolve,
     return nullptr;
 
   // The outer solve's B must come from an inner triangular_solve using the
-  // same Cholesky, with ADJOINT transpose
+  // same Cholesky, with ADJOINT (or, equivalently, TRANSPOSE) transpose
   auto innerSolve =
       outerSolve.getB().getDefiningOp<stablehlo::TriangularSolveOp>();
   if (!innerSolve)
@@ -1772,7 +1779,7 @@ static Value matchFullCholeskySolve(stablehlo::TriangularSolveOp outerSolve,
     return nullptr;
   if (!innerSolve.getLeftSide())
     return nullptr;
-  if (innerSolve.getTransposeA() != stablehlo::Transpose::ADJOINT)
+  if (!isAdjointLikeTranspose(innerSolve.getTransposeA()))
     return nullptr;
 
   return innerSolve.getB();
@@ -1902,7 +1909,8 @@ struct CholeskyEigenLiftHLO : public OpRewritePattern<stablehlo::CholeskyOp> {
       auto transpose = triSolve.getTransposeA();
       if (transpose == stablehlo::Transpose::NO_TRANSPOSE) {
         match.singleSolves.push_back({triSolve, /*isAdjoint=*/false});
-      } else if (transpose == stablehlo::Transpose::ADJOINT) {
+      } else if (isAdjointLikeTranspose(transpose)) {
+        // ADJOINT or TRANSPOSE — equivalent for the real factors here.
         match.singleSolves.push_back({triSolve, /*isAdjoint=*/true});
       } else {
         return failure();
