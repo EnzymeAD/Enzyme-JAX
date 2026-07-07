@@ -28,6 +28,7 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/StringSet.h"
 #include <cstdint>
+#include <limits>
 #include <optional>
 #include <string>
 
@@ -2694,6 +2695,7 @@ LLVM::LLVMFuncOp emitSundialsIdaJacTimesRegistration(ModuleOp module,
                                                      Operation *solve) {
   MLIRContext *context = module.getContext();
   Type ptrType = LLVM::LLVMPointerType::get(context);
+  Type i1Type = IntegerType::get(context, 1);
   Type i32Type = IntegerType::get(context, 32);
   Type i64Type = IntegerType::get(context, 64);
 
@@ -2751,8 +2753,19 @@ LLVM::LLVMFuncOp emitSundialsIdaJacTimesRegistration(ModuleOp module,
       SymbolRefAttr::get(context, "N_VGetLength"), ValueRange{yyTemplate});
   setSundialsCallRole(krylovDim64, builder,
                       "ida_iterative_linear_solver_dimension");
-  Value krylovDim =
+  Value krylovDimFitsLowerBound = LLVM::ICmpOp::create(
+      builder, loc, LLVM::ICmpPredicate::sgt, krylovDim64.getResult(),
+      createI64Constant(builder, loc, 0));
+  Value krylovDimFitsUpperBound = LLVM::ICmpOp::create(
+      builder, loc, LLVM::ICmpPredicate::sle, krylovDim64.getResult(),
+      createI64Constant(builder, loc, std::numeric_limits<int32_t>::max()));
+  Value krylovDimFitsInt32 = LLVM::AndOp::create(
+      builder, loc, i1Type, krylovDimFitsLowerBound, krylovDimFitsUpperBound);
+  Value krylovDimTruncated =
       LLVM::TruncOp::create(builder, loc, i32Type, krylovDim64.getResult());
+  Value krylovDim = LLVM::SelectOp::create(
+      builder, loc, i32Type, krylovDimFitsInt32, krylovDimTruncated,
+      createI32Zero(builder, loc));
 
   auto linearSolver = LLVM::CallOp::create(
       builder, loc, TypeRange{ptrType}, SymbolRefAttr::get(context,

@@ -173,7 +173,14 @@ module {
 // CHECK-SAME: enzymexla.sundials.role = "ida_user_data_registration"
 // CHECK: %[[KRYLOV_DIM64:.*]] = llvm.call @N_VGetLength(%arg1)
 // CHECK-SAME: enzymexla.sundials.role = "ida_iterative_linear_solver_dimension"
-// CHECK: %[[MAXL:.*]] = llvm.trunc %[[KRYLOV_DIM64]] : i64 to i32
+// CHECK: %[[ZERO64:.*]] = llvm.mlir.constant(0 : i64) : i64
+// CHECK: %[[GT_ZERO:.*]] = llvm.icmp "sgt" %[[KRYLOV_DIM64]], %[[ZERO64]] : i64
+// CHECK: %[[INT_MAX64:.*]] = llvm.mlir.constant(2147483647 : i64) : i64
+// CHECK: %[[LE_INT_MAX:.*]] = llvm.icmp "sle" %[[KRYLOV_DIM64]], %[[INT_MAX64]] : i64
+// CHECK: %[[IN_INT_RANGE:.*]] = llvm.and %[[GT_ZERO]], %[[LE_INT_MAX]] : i1
+// CHECK: %[[TRUNCATED_MAXL:.*]] = llvm.trunc %[[KRYLOV_DIM64]] : i64 to i32
+// CHECK: %[[DEFAULT_MAXL:.*]] = llvm.mlir.zero : i32
+// CHECK: %[[MAXL:.*]] = llvm.select %[[IN_INT_RANGE]], %[[TRUNCATED_MAXL]], %[[DEFAULT_MAXL]] : i1, i32
 // CHECK: %[[LS:.*]] = llvm.call @SUNLinSol_SPGMR(%arg1, %[[PRETYPE]], %[[MAXL]], %arg2)
 // CHECK-SAME: enzymexla.sundials.role = "ida_iterative_linear_solver"
 // CHECK: llvm.call @__enzymexla_sundials_ida_remember_linear_solver
