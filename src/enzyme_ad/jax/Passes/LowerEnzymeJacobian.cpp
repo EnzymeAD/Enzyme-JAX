@@ -1026,6 +1026,12 @@ void copyJacobianActionMetadata(Operation *materialization,
 
 struct SundialsIdaLLVMConfig {
   std::string sourceFunction;
+  std::optional<std::string> residualRegistrationSourceFunction;
+  std::optional<std::string> userDataSourceFunction;
+  std::optional<std::string> linearSolverSourceFunction;
+  std::optional<std::string> jacobianRegistrationSourceFunction;
+  std::optional<std::string> jacobianActionRegistrationSourceFunction;
+  std::optional<std::string> preconditionerRegistrationSourceFunction;
   std::optional<std::string> residual;
   std::optional<std::string> jacobian;
   std::optional<std::string> jacobianAction;
@@ -1107,6 +1113,11 @@ void setSundialsCallRole(LLVM::CallOp call, Builder &builder, StringRef role) {
   call->setAttr(kSundialsRoleAttr, builder.getStringAttr(role));
 }
 
+void setSundialsCallOperandIndex(LLVM::CallOp call, Builder &builder,
+                                 StringRef attrName, int64_t operandIndex) {
+  call->setAttr(attrName, builder.getI64IntegerAttr(operandIndex));
+}
+
 bool mergeOptionalSymbol(std::optional<std::string> &dest,
                          const std::optional<std::string> &src) {
   if (dest || !src)
@@ -1118,6 +1129,18 @@ bool mergeOptionalSymbol(std::optional<std::string> &dest,
 bool mergeSundialsIdaLLVMConfig(SundialsIdaLLVMConfig &dest,
                                 const SundialsIdaLLVMConfig &src) {
   bool changed = false;
+  changed |= mergeOptionalSymbol(dest.residualRegistrationSourceFunction,
+                                 src.residualRegistrationSourceFunction);
+  changed |= mergeOptionalSymbol(dest.userDataSourceFunction,
+                                 src.userDataSourceFunction);
+  changed |= mergeOptionalSymbol(dest.linearSolverSourceFunction,
+                                 src.linearSolverSourceFunction);
+  changed |= mergeOptionalSymbol(dest.jacobianRegistrationSourceFunction,
+                                 src.jacobianRegistrationSourceFunction);
+  changed |= mergeOptionalSymbol(dest.jacobianActionRegistrationSourceFunction,
+                                 src.jacobianActionRegistrationSourceFunction);
+  changed |= mergeOptionalSymbol(dest.preconditionerRegistrationSourceFunction,
+                                 src.preconditionerRegistrationSourceFunction);
   changed |= mergeOptionalSymbol(dest.residual, src.residual);
   changed |= mergeOptionalSymbol(dest.jacobian, src.jacobian);
   changed |= mergeOptionalSymbol(dest.jacobianAction, src.jacobianAction);
@@ -1170,51 +1193,105 @@ collectLocalSundialsIdaLLVMConfig(LLVM::LLVMFuncOp func, Builder &builder) {
     StringRef name = *callee;
     if (isSundialsIdaInitCallee(name)) {
       config.hasLocalResidualRegistration = true;
+      config.residualRegistrationSourceFunction = config.sourceFunction;
       if (!config.residual)
         config.residual = getCallOperandSymbol(call, 1);
       setSundialsCallRole(call, builder, "ida_residual_registration");
+      setSundialsCallOperandIndex(
+          call, builder, "enzymexla.sundials.ida_mem_operand", 0);
+      setSundialsCallOperandIndex(
+          call, builder, "enzymexla.sundials.residual_callback_operand", 1);
+      setSundialsCallOperandIndex(
+          call, builder, "enzymexla.sundials.yy_template_operand", 3);
+      setSundialsCallOperandIndex(
+          call, builder, "enzymexla.sundials.yp_template_operand", 4);
       return;
     }
     if (isSundialsIdaSetUserDataCallee(name)) {
       config.hasUserDataRegistration = true;
+      config.userDataSourceFunction = config.sourceFunction;
       setSundialsCallRole(call, builder, "ida_user_data_registration");
+      setSundialsCallOperandIndex(
+          call, builder, "enzymexla.sundials.ida_mem_operand", 0);
+      setSundialsCallOperandIndex(
+          call, builder, "enzymexla.sundials.jvp_setup_model_operand", 1);
       return;
     }
     if (isSundialsIdaSetLinearSolverCallee(name)) {
       setSundialsCallRole(call, builder, "ida_linear_solver_registration");
+      setSundialsCallOperandIndex(
+          call, builder, "enzymexla.sundials.jvp_setup_ida_mem_operand", 0);
+      setSundialsCallOperandIndex(
+          call, builder, "enzymexla.sundials.linear_solver_operand", 1);
+      setSundialsCallOperandIndex(
+          call, builder, "enzymexla.sundials.matrix_operand", 2);
       return;
     }
     if (isSundialsIdaSetJacFnCallee(name)) {
+      config.jacobianRegistrationSourceFunction = config.sourceFunction;
       if (!config.jacobian)
         config.jacobian = getCallOperandSymbol(call, 1);
       setSundialsCallRole(call, builder, "ida_jacobian_registration");
+      setSundialsCallOperandIndex(
+          call, builder, "enzymexla.sundials.ida_mem_operand", 0);
+      setSundialsCallOperandIndex(
+          call, builder, "enzymexla.sundials.jacobian_callback_operand", 1);
       return;
     }
     if (isSundialsIdaSetJacTimesCallee(name)) {
+      config.jacobianActionRegistrationSourceFunction = config.sourceFunction;
       if (!config.jacobianAction)
         config.jacobianAction = getLastCallOperandSymbol(call);
       setSundialsCallRole(call, builder, "ida_jacobian_action_registration");
+      setSundialsCallOperandIndex(
+          call, builder, "enzymexla.sundials.ida_mem_operand", 0);
+      setSundialsCallOperandIndex(
+          call, builder, "enzymexla.sundials.jactimes_callback_operand", 2);
       return;
     }
     if (isSundialsIdaSetPreconditionerCallee(name)) {
+      config.preconditionerRegistrationSourceFunction = config.sourceFunction;
       if (!config.preconditioner)
         config.preconditioner = getLastCallOperandSymbol(call);
       setSundialsCallRole(call, builder, "ida_preconditioner_registration");
+      setSundialsCallOperandIndex(
+          call, builder, "enzymexla.sundials.ida_mem_operand", 0);
+      setSundialsCallOperandIndex(
+          call, builder, "enzymexla.sundials.preconditioner_callback_operand",
+          2);
       return;
     }
     if (isSundialsKluLinearSolverCallee(name)) {
       config.hasKluLinearSolver = true;
+      config.linearSolverSourceFunction = config.sourceFunction;
       setSundialsCallRole(call, builder, "ida_sparse_direct_linear_solver");
+      setSundialsCallOperandIndex(
+          call, builder, "enzymexla.sundials.jvp_setup_yy_template_operand",
+          0);
+      setSundialsCallOperandIndex(
+          call, builder, "enzymexla.sundials.jvp_setup_sunctx_operand", 2);
       return;
     }
     if (isSundialsDenseLinearSolverCallee(name)) {
       config.hasDenseLinearSolver = true;
+      config.linearSolverSourceFunction = config.sourceFunction;
       setSundialsCallRole(call, builder, "ida_dense_direct_linear_solver");
+      setSundialsCallOperandIndex(
+          call, builder, "enzymexla.sundials.jvp_setup_yy_template_operand",
+          0);
+      setSundialsCallOperandIndex(
+          call, builder, "enzymexla.sundials.jvp_setup_sunctx_operand", 2);
       return;
     }
     if (isSundialsIterativeLinearSolverCallee(name)) {
       config.hasIterativeLinearSolver = true;
+      config.linearSolverSourceFunction = config.sourceFunction;
       setSundialsCallRole(call, builder, "ida_iterative_linear_solver");
+      setSundialsCallOperandIndex(
+          call, builder, "enzymexla.sundials.jvp_setup_yy_template_operand",
+          0);
+      setSundialsCallOperandIndex(
+          call, builder, "enzymexla.sundials.jvp_setup_sunctx_operand", 3);
       return;
     }
   });
@@ -1352,6 +1429,32 @@ struct RecoverSundialsIdaLLVM
       if (config.hasUserDataRegistration)
         state.addAttribute(kSundialsUserDataRegisteredAttr,
                            builder.getUnitAttr());
+      if (config.residualRegistrationSourceFunction)
+        state.addAttribute("residual_registration_source_function",
+                           builder.getStringAttr(
+                               *config.residualRegistrationSourceFunction));
+      if (config.userDataSourceFunction)
+        state.addAttribute(
+            "user_data_source_function",
+            builder.getStringAttr(*config.userDataSourceFunction));
+      if (config.linearSolverSourceFunction)
+        state.addAttribute(
+            "linear_solver_source_function",
+            builder.getStringAttr(*config.linearSolverSourceFunction));
+      if (config.jacobianRegistrationSourceFunction)
+        state.addAttribute("jacobian_registration_source_function",
+                           builder.getStringAttr(
+                               *config.jacobianRegistrationSourceFunction));
+      if (config.jacobianActionRegistrationSourceFunction)
+        state.addAttribute(
+            "jacobian_action_registration_source_function",
+            builder.getStringAttr(
+                *config.jacobianActionRegistrationSourceFunction));
+      if (config.preconditionerRegistrationSourceFunction)
+        state.addAttribute(
+            "preconditioner_registration_source_function",
+            builder.getStringAttr(
+                *config.preconditionerRegistrationSourceFunction));
       state.addAttribute("source", builder.getStringAttr("llvm_sundials_ida"));
       state.addAttribute("source_function",
                          builder.getStringAttr(config.sourceFunction));
@@ -1918,6 +2021,31 @@ void copyAttrIfPresent(Operation *source, Operation *dest, StringRef sourceName,
     dest->setAttr(destName, attr);
 }
 
+void copySundialsHostSpliceProvenance(Operation *solve, Operation *dest) {
+  copyAttrIfPresent(solve, dest, "source_function",
+                    "enzymexla.sundials.host_configure_source_function");
+  copyAttrIfPresent(solve, dest, "bridge_host_source_function",
+                    "enzymexla.sundials.host_configure_source_function");
+  copyAttrIfPresent(
+      solve, dest, "residual_registration_source_function",
+      "enzymexla.sundials.host_residual_registration_source_function");
+  copyAttrIfPresent(
+      solve, dest, "user_data_source_function",
+      "enzymexla.sundials.host_user_data_source_function");
+  copyAttrIfPresent(
+      solve, dest, "linear_solver_source_function",
+      "enzymexla.sundials.host_linear_solver_source_function");
+  copyAttrIfPresent(
+      solve, dest, "bridge_host_linear_solver_source_function",
+      "enzymexla.sundials.host_linear_solver_source_function");
+  copyAttrIfPresent(
+      solve, dest, "jacobian_registration_source_function",
+      "enzymexla.sundials.host_jacobian_registration_source_function");
+  copyAttrIfPresent(
+      solve, dest, "bridge_host_jacobian_registration_source_function",
+      "enzymexla.sundials.host_jacobian_registration_source_function");
+}
+
 void copyJacobianActionProvenance(Operation *actionRecord, Operation *dest) {
   copyAttrIfPresent(actionRecord, dest, "materialization",
                     "enzymexla.sundials.materialization");
@@ -2373,6 +2501,7 @@ LLVM::LLVMFuncOp emitSundialsIdaJacTimesCallback(ModuleOp module,
   if (Attribute sourceFunction = solve->getAttr("source_function")) {
     callback->setAttr("enzymexla.sundials.source_function", sourceFunction);
   }
+  copySundialsHostSpliceProvenance(solve, callback);
 
   LLVM::LLVMFuncOp actionCallee =
       getSundialsIdaJacTimesActionCallee(module, solve, ptrType, i32Type,
@@ -2435,6 +2564,7 @@ LLVM::LLVMFuncOp emitSundialsIdaJacTimesRegistration(ModuleOp module,
     registration->setAttr("enzymexla.sundials.source_function",
                           sourceFunction);
   }
+  copySundialsHostSpliceProvenance(solve, registration);
 
   Block *entry = registration.addEntryBlock(builder);
   builder.setInsertionPointToStart(entry);
@@ -2519,6 +2649,7 @@ LLVM::LLVMFuncOp emitSundialsIdaJvpContextSetup(ModuleOp module,
     setup->setAttr("enzymexla.sundials.jacobian_action", jacobianAction);
   if (Attribute sourceFunction = solve->getAttr("source_function"))
     setup->setAttr("enzymexla.sundials.source_function", sourceFunction);
+  copySundialsHostSpliceProvenance(solve, setup);
 
   Block *entry = setup.addEntryBlock(builder);
   builder.setInsertionPointToStart(entry);
@@ -2577,6 +2708,7 @@ LLVM::LLVMFuncOp emitSundialsIdaJvpContextTeardown(ModuleOp module,
     teardown->setAttr("enzymexla.sundials.jacobian_action", jacobianAction);
   if (Attribute sourceFunction = solve->getAttr("source_function"))
     teardown->setAttr("enzymexla.sundials.source_function", sourceFunction);
+  copySundialsHostSpliceProvenance(solve, teardown);
 
   Block *entry = teardown.addEntryBlock(builder);
   builder.setInsertionPointToStart(entry);

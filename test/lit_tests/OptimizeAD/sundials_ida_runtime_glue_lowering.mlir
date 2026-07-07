@@ -24,6 +24,9 @@ module {
       linear_solver = <jacobian_action_iterative>
       jacobian_demand = <jacobian_action>
       (%y, %yp) {enzymexla.sundials.matrix_free_selected,
+                 jacobian_registration_source_function = "host_configure_linear_solver",
+                 linear_solver_source_function = "host_configure_linear_solver",
+                 residual_registration_source_function = "host_configure",
                  source_function = "host_configure"}
       : (tensor<4xf64>, tensor<4xf64>) -> tensor<4xf64>
     return %state : tensor<4xf64>
@@ -43,6 +46,10 @@ module {
 
 // CHECK-LABEL: llvm.func @__enzymexla_sundials_ida_teardown_jactimes_0
 // CHECK-SAME: enzymexla.sundials.context_deallocator = @__enzymexla_sundials_ida_destroy_jvp_context
+// CHECK-SAME: enzymexla.sundials.host_configure_source_function = "host_configure"
+// CHECK-SAME: enzymexla.sundials.host_jacobian_registration_source_function = "host_configure_linear_solver"
+// CHECK-SAME: enzymexla.sundials.host_linear_solver_source_function = "host_configure_linear_solver"
+// CHECK-SAME: enzymexla.sundials.host_residual_registration_source_function = "host_configure"
 // CHECK-SAME: enzymexla.sundials.jacobian_action = @ida_effective_action
 // CHECK-SAME: enzymexla.sundials.runtime_role = "ida_jvp_context_teardown"
 // CHECK-SAME: enzymexla.sundials.source_function = "host_configure"
@@ -52,6 +59,10 @@ module {
 
 // CHECK-LABEL: llvm.func @__enzymexla_sundials_ida_setup_jactimes_0
 // CHECK-SAME: enzymexla.sundials.context_allocator = @__enzymexla_sundials_ida_create_jvp_context
+// CHECK-SAME: enzymexla.sundials.host_configure_source_function = "host_configure"
+// CHECK-SAME: enzymexla.sundials.host_jacobian_registration_source_function = "host_configure_linear_solver"
+// CHECK-SAME: enzymexla.sundials.host_linear_solver_source_function = "host_configure_linear_solver"
+// CHECK-SAME: enzymexla.sundials.host_residual_registration_source_function = "host_configure"
 // CHECK-SAME: enzymexla.sundials.jacobian_action = @ida_effective_action
 // CHECK-SAME: enzymexla.sundials.runtime_registration = @__enzymexla_sundials_ida_register_jactimes_0
 // CHECK-SAME: enzymexla.sundials.runtime_role = "ida_jvp_context_setup"
@@ -70,6 +81,10 @@ module {
 
 // CHECK-LABEL: llvm.func @__enzymexla_sundials_ida_register_jactimes_0
 // CHECK-SAME: enzymexla.sundials.callback_context = "ida_jvp_user_data_context"
+// CHECK-SAME: enzymexla.sundials.host_configure_source_function = "host_configure"
+// CHECK-SAME: enzymexla.sundials.host_jacobian_registration_source_function = "host_configure_linear_solver"
+// CHECK-SAME: enzymexla.sundials.host_linear_solver_source_function = "host_configure_linear_solver"
+// CHECK-SAME: enzymexla.sundials.host_residual_registration_source_function = "host_configure"
 // CHECK-SAME: enzymexla.sundials.jacobian_action = @ida_effective_action
 // CHECK-SAME: enzymexla.sundials.jactimes_callback = @__enzymexla_sundials_ida_jactimes_0
 // CHECK-SAME: enzymexla.sundials.linear_solver = "SUNLinSol_SPGMR"
@@ -93,6 +108,10 @@ module {
 
 // CHECK-LABEL: llvm.func @__enzymexla_sundials_ida_jactimes_0
 // CHECK-SAME: enzymexla.sundials.callback_body = "delegates_jvp_kernel"
+// CHECK-SAME: enzymexla.sundials.host_configure_source_function = "host_configure"
+// CHECK-SAME: enzymexla.sundials.host_jacobian_registration_source_function = "host_configure_linear_solver"
+// CHECK-SAME: enzymexla.sundials.host_linear_solver_source_function = "host_configure_linear_solver"
+// CHECK-SAME: enzymexla.sundials.host_residual_registration_source_function = "host_configure"
 // CHECK-SAME: enzymexla.sundials.jacobian_action = @ida_effective_action
 // CHECK-SAME: enzymexla.sundials.jvp_kernel = @__enzymexla_sundials_ida_jvp_kernel_0
 // CHECK-SAME: enzymexla.sundials.residual = @residual

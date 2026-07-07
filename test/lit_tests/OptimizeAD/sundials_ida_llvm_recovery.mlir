@@ -23,8 +23,12 @@ module {
   // CHECK-SAME: linear_solver = <explicit_sparse_direct>
   // CHECK-SAME: jacobian_demand = <explicit_matrix>
   // CHECK-SAME: enzymexla.sundials.user_data_registered
+  // CHECK-SAME: jacobian_registration_source_function = "host_sparse"
+  // CHECK-SAME: linear_solver_source_function = "host_sparse"
+  // CHECK-SAME: residual_registration_source_function = "host_sparse"
   // CHECK-SAME: source = "llvm_sundials_ida"
   // CHECK-SAME: source_function = "host_sparse"
+  // CHECK-SAME: user_data_source_function = "host_sparse"
 
   // CHECK: enzymexla.sundials.ida_solve residual = @residual
   // CHECK-SAME: jacobian_action = @jactimes
@@ -32,23 +36,35 @@ module {
   // CHECK-SAME: linear_solver = <jacobian_action_iterative>
   // CHECK-SAME: jacobian_demand = <jacobian_action>
   // CHECK-SAME: enzymexla.sundials.user_data_registered
+  // CHECK-SAME: jacobian_action_registration_source_function = "host_iterative"
+  // CHECK-SAME: linear_solver_source_function = "host_iterative"
+  // CHECK-SAME: preconditioner_registration_source_function = "host_iterative"
+  // CHECK-SAME: residual_registration_source_function = "host_iterative"
   // CHECK-SAME: source = "llvm_sundials_ida"
   // CHECK-SAME: source_function = "host_iterative"
+  // CHECK-SAME: user_data_source_function = "host_iterative"
 
   // CHECK: enzymexla.sundials.ida_solve residual = @residual
   // CHECK-SAME: linear_solver = <explicit_dense_direct>
   // CHECK-SAME: jacobian_demand = <none>
   // CHECK-SAME: enzymexla.sundials.user_data_registered
+  // CHECK-SAME: linear_solver_source_function = "host_dense"
+  // CHECK-SAME: residual_registration_source_function = "host_dense"
   // CHECK-SAME: source = "llvm_sundials_ida"
   // CHECK-SAME: source_function = "host_dense"
+  // CHECK-SAME: user_data_source_function = "host_dense"
 
   // CHECK: enzymexla.sundials.ida_solve residual = @residual
   // CHECK-SAME: jacobian = @jacobian
   // CHECK-SAME: linear_solver = <explicit_sparse_direct>
   // CHECK-SAME: jacobian_demand = <explicit_matrix>
   // CHECK-SAME: enzymexla.sundials.user_data_registered
+  // CHECK-SAME: jacobian_registration_source_function = "configure_sparse"
+  // CHECK-SAME: linear_solver_source_function = "configure_sparse"
+  // CHECK-SAME: residual_registration_source_function = "host_split"
   // CHECK-SAME: source = "llvm_sundials_ida"
   // CHECK-SAME: source_function = "host_split"
+  // CHECK-SAME: user_data_source_function = "host_split"
 
   // CHECK-LABEL: llvm.func @host_sparse
   llvm.func @host_sparse(%mem: !llvm.ptr, %yy: !llvm.ptr, %yp: !llvm.ptr, %mat: !llvm.ptr, %ctx: !llvm.ptr) {
@@ -56,18 +72,29 @@ module {
     %jacobian = llvm.mlir.addressof @jacobian : !llvm.ptr
     %t0 = llvm.mlir.constant(0.000000e+00 : f64) : f64
     // CHECK: llvm.call @IDAInit
+    // CHECK-SAME: enzymexla.sundials.ida_mem_operand = 0 : i64
+    // CHECK-SAME: enzymexla.sundials.residual_callback_operand = 1 : i64
     // CHECK-SAME: enzymexla.sundials.role = "ida_residual_registration"
+    // CHECK-SAME: enzymexla.sundials.yp_template_operand = 4 : i64
+    // CHECK-SAME: enzymexla.sundials.yy_template_operand = 3 : i64
     %0 = llvm.call @IDAInit(%mem, %residual, %t0, %yy, %yp) : (!llvm.ptr, !llvm.ptr, f64, !llvm.ptr, !llvm.ptr) -> i32
     // CHECK: llvm.call @IDASetUserData
+    // CHECK-SAME: enzymexla.sundials.jvp_setup_model_operand = 1 : i64
     // CHECK-SAME: enzymexla.sundials.role = "ida_user_data_registration"
     %user = llvm.call @IDASetUserData(%mem, %ctx) : (!llvm.ptr, !llvm.ptr) -> i32
     // CHECK: llvm.call @SUNLinSol_KLU
+    // CHECK-SAME: enzymexla.sundials.jvp_setup_sunctx_operand = 2 : i64
+    // CHECK-SAME: enzymexla.sundials.jvp_setup_yy_template_operand = 0 : i64
     // CHECK-SAME: enzymexla.sundials.role = "ida_sparse_direct_linear_solver"
     %ls = llvm.call @SUNLinSol_KLU(%yy, %mat, %ctx) : (!llvm.ptr, !llvm.ptr, !llvm.ptr) -> !llvm.ptr
     // CHECK: llvm.call @IDASetLinearSolver
+    // CHECK-SAME: enzymexla.sundials.jvp_setup_ida_mem_operand = 0 : i64
+    // CHECK-SAME: enzymexla.sundials.linear_solver_operand = 1 : i64
+    // CHECK-SAME: enzymexla.sundials.matrix_operand = 2 : i64
     // CHECK-SAME: enzymexla.sundials.role = "ida_linear_solver_registration"
     %1 = llvm.call @IDASetLinearSolver(%mem, %ls, %mat) : (!llvm.ptr, !llvm.ptr, !llvm.ptr) -> i32
     // CHECK: llvm.call @IDASetJacFn
+    // CHECK-SAME: enzymexla.sundials.jacobian_callback_operand = 1 : i64
     // CHECK-SAME: enzymexla.sundials.role = "ida_jacobian_registration"
     %2 = llvm.call @IDASetJacFn(%mem, %jacobian) : (!llvm.ptr, !llvm.ptr) -> i32
     llvm.return
@@ -87,13 +114,17 @@ module {
     // CHECK-SAME: enzymexla.sundials.role = "ida_user_data_registration"
     %user = llvm.call @IDASetUserData(%mem, %ctx) : (!llvm.ptr, !llvm.ptr) -> i32
     // CHECK: llvm.call @SUNLinSol_SPGMR
+    // CHECK-SAME: enzymexla.sundials.jvp_setup_sunctx_operand = 3 : i64
+    // CHECK-SAME: enzymexla.sundials.jvp_setup_yy_template_operand = 0 : i64
     // CHECK-SAME: enzymexla.sundials.role = "ida_iterative_linear_solver"
     %ls = llvm.call @SUNLinSol_SPGMR(%yy, %solver_kind, %maxl, %ctx) : (!llvm.ptr, i32, i32, !llvm.ptr) -> !llvm.ptr
     %1 = llvm.call @IDASetLinearSolver(%mem, %ls, %null) : (!llvm.ptr, !llvm.ptr, !llvm.ptr) -> i32
     // CHECK: llvm.call @IDASetJacTimes
+    // CHECK-SAME: enzymexla.sundials.jactimes_callback_operand = 2 : i64
     // CHECK-SAME: enzymexla.sundials.role = "ida_jacobian_action_registration"
     %2 = llvm.call @IDASetJacTimes(%mem, %null, %jactimes) : (!llvm.ptr, !llvm.ptr, !llvm.ptr) -> i32
     // CHECK: llvm.call @IDASetPreconditioner
+    // CHECK-SAME: enzymexla.sundials.preconditioner_callback_operand = 2 : i64
     // CHECK-SAME: enzymexla.sundials.role = "ida_preconditioner_registration"
     %3 = llvm.call @IDASetPreconditioner(%mem, %null, %preconditioner) : (!llvm.ptr, !llvm.ptr, !llvm.ptr) -> i32
     llvm.return
@@ -127,8 +158,20 @@ module {
   // CHECK-LABEL: llvm.func @configure_sparse
   llvm.func @configure_sparse(%mem: !llvm.ptr, %yy: !llvm.ptr, %mat: !llvm.ptr, %ctx: !llvm.ptr) -> i32 {
     %jacobian = llvm.mlir.addressof @jacobian : !llvm.ptr
+    // CHECK: llvm.call @SUNLinSol_KLU
+    // CHECK-SAME: enzymexla.sundials.jvp_setup_sunctx_operand = 2 : i64
+    // CHECK-SAME: enzymexla.sundials.jvp_setup_yy_template_operand = 0 : i64
+    // CHECK-SAME: enzymexla.sundials.role = "ida_sparse_direct_linear_solver"
     %ls = llvm.call @SUNLinSol_KLU(%yy, %mat, %ctx) : (!llvm.ptr, !llvm.ptr, !llvm.ptr) -> !llvm.ptr
+    // CHECK: llvm.call @IDASetLinearSolver
+    // CHECK-SAME: enzymexla.sundials.jvp_setup_ida_mem_operand = 0 : i64
+    // CHECK-SAME: enzymexla.sundials.linear_solver_operand = 1 : i64
+    // CHECK-SAME: enzymexla.sundials.matrix_operand = 2 : i64
+    // CHECK-SAME: enzymexla.sundials.role = "ida_linear_solver_registration"
     %0 = llvm.call @IDASetLinearSolver(%mem, %ls, %mat) : (!llvm.ptr, !llvm.ptr, !llvm.ptr) -> i32
+    // CHECK: llvm.call @IDASetJacFn
+    // CHECK-SAME: enzymexla.sundials.jacobian_callback_operand = 1 : i64
+    // CHECK-SAME: enzymexla.sundials.role = "ida_jacobian_registration"
     %1 = llvm.call @IDASetJacFn(%mem, %jacobian) : (!llvm.ptr, !llvm.ptr) -> i32
     llvm.return %1 : i32
   }
