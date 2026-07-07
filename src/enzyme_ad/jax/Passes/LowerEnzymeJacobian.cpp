@@ -90,6 +90,12 @@ constexpr llvm::StringLiteral kSundialsAllowMatrixFreeAttr =
     "enzymexla.sundials.allow_matrix_free";
 constexpr llvm::StringLiteral kSundialsMatrixFreeSelectedAttr =
     "enzymexla.sundials.matrix_free_selected";
+constexpr llvm::StringLiteral kSundialsUniqueHostJacobianBridgeAttr =
+    "enzymexla.sundials.unique_host_jacobian_bridge";
+constexpr llvm::StringLiteral kSundialsUniqueHostJacobianBridgesAttr =
+    "enzymexla.sundials.ida_unique_host_jacobian_bridges";
+constexpr llvm::StringLiteral kSundialsBridgeJacobianMaterializerAttr =
+    "enzymexla.sundials.bridge_jacobian_materializer";
 constexpr llvm::StringLiteral kSundialsUserDataRegisteredAttr =
     "enzymexla.sundials.user_data_registered";
 constexpr llvm::StringLiteral kSundialsIdaEffectiveJacobianActionAttr =
@@ -989,6 +995,18 @@ bool isMatrixFreeCandidateSolve(enzymexla::SundialsIdaSolveOp solve) {
               enzymexla::SundialsIdaLinearSolver::explicit_dense_direct);
 }
 
+bool isExplicitMatrixDirectSolve(enzymexla::SundialsIdaSolveOp solve) {
+  if (solve.getJacobianAction())
+    return false;
+  if (solve.getJacobianDemand() !=
+      enzymexla::SundialsIdaJacobianDemand::explicit_matrix)
+    return false;
+  return solve.getLinearSolver() ==
+             enzymexla::SundialsIdaLinearSolver::explicit_sparse_direct ||
+         solve.getLinearSolver() ==
+             enzymexla::SundialsIdaLinearSolver::explicit_dense_direct;
+}
+
 std::optional<JacobianMaterializationSummary>
 findUniqueMaterializationForResidual(
     ArrayRef<JacobianMaterializationSummary> materializations,
@@ -1033,6 +1051,36 @@ std::optional<JacobianMaterializationSummary> findYpMaterializationForY(
       materializations, yMaterialization.residual,
       yMaterialization.activeInputIndex + 1,
       yMaterialization.activeOutputIndex);
+}
+
+std::optional<JacobianMaterializationSummary>
+findUniqueHostBridgeYMaterialization(
+    enzymexla::SundialsIdaSolveOp solve,
+    const llvm::StringMap<JacobianMaterializationSummary>
+        &materializationBySymbol,
+    ArrayRef<JacobianMaterializationSummary> materializations) {
+  if (std::optional<std::string> bridgeMaterializer =
+          getRootSymbolString(
+              solve->getAttr(kSundialsBridgeJacobianMaterializerAttr))) {
+    auto iter = materializationBySymbol.find(*bridgeMaterializer);
+    if (iter != materializationBySymbol.end())
+      return iter->second;
+    return std::nullopt;
+  }
+
+  std::optional<JacobianMaterializationSummary> result;
+  for (const JacobianMaterializationSummary &candidate : materializations) {
+    if (candidate.activeOutputIndex != 0)
+      continue;
+    std::optional<JacobianMaterializationSummary> ypMaterialization =
+        findYpMaterializationForY(candidate, materializations);
+    if (!ypMaterialization)
+      continue;
+    if (result)
+      return std::nullopt;
+    result = candidate;
+  }
+  return result;
 }
 
 void copyJacobianActionMetadata(Operation *materialization,
@@ -1530,6 +1578,10 @@ struct RecoverSundialsIdaLLVM
 struct SynthesizeSundialsIdaJacobianActions
     : public mlir::enzyme::impl::SynthesizeSundialsIdaJacobianActionsBase<
           SynthesizeSundialsIdaJacobianActions> {
+  using Base =
+      mlir::enzyme::impl::SynthesizeSundialsIdaJacobianActionsBase<
+          SynthesizeSundialsIdaJacobianActions>;
+  using Base::Base;
 
   void runOnOperation() override {
     ModuleOp module = getOperation();
@@ -1545,6 +1597,7 @@ struct SynthesizeSundialsIdaJacobianActions
     llvm::StringMap<std::string> effectiveActionByPair;
     SmallVector<std::pair<Operation *, std::string>, 8> actionsToCreate;
     SmallVector<EffectiveIdaActionToCreate, 4> effectiveActionsToCreate;
+    unsigned uniqueHostJacobianBridges = 0;
 
     module.walk([&](Operation *op) {
       if (auto symName = op->getAttrOfType<StringAttr>(
@@ -1607,12 +1660,39 @@ struct SynthesizeSundialsIdaJacobianActions
     });
 
     module.walk([&](enzymexla::SundialsIdaSolveOp solve) {
-      if (!isMatrixFreeCandidateSolve(solve))
+      bool allowUniqueBridge =
+          allowUniqueHostJacobianBridge && isExplicitMatrixDirectSolve(solve);
+      if (!isMatrixFreeCandidateSolve(solve) && !allowUniqueBridge)
         return;
 
       std::optional<JacobianMaterializationSummary> yMaterialization =
           findYMaterializationForSolve(solve, materializationBySymbol,
                                        materializations);
+      if (!yMaterialization && allowUniqueBridge) {
+        yMaterialization = findUniqueHostBridgeYMaterialization(
+            solve, materializationBySymbol, materializations);
+        if (yMaterialization) {
+          if (std::optional<std::string> hostJacobian =
+                  getRootSymbolString(solve->getAttr("jacobian")))
+            solve->setAttr("bridge_host_jacobian_callback",
+                           builder.getStringAttr(*hostJacobian));
+          if (std::optional<std::string> hostResidual =
+                  getRootSymbolString(solve->getAttr("residual")))
+            solve->setAttr("bridge_host_residual_callback",
+                           builder.getStringAttr(*hostResidual));
+          solve->setAttr(
+              "residual",
+              SymbolRefAttr::get(context, yMaterialization->residual));
+          solve->setAttr(
+              "jacobian",
+              SymbolRefAttr::get(context, yMaterialization->materializer));
+          solve->setAttr(kSundialsAllowMatrixFreeAttr,
+                         builder.getUnitAttr());
+          solve->setAttr(kSundialsUniqueHostJacobianBridgeAttr,
+                         builder.getUnitAttr());
+          ++uniqueHostJacobianBridges;
+        }
+      }
       if (!yMaterialization)
         return;
       std::optional<JacobianMaterializationSummary> ypMaterialization =
@@ -1745,6 +1825,12 @@ struct SynthesizeSundialsIdaJacobianActions
     if (linkedSolves != 0)
       module->setAttr(kLinkedSundialsIdaJacobianActionsAttr,
                       builder.getI64IntegerAttr(linkedSolves));
+    if (uniqueHostJacobianBridges != 0)
+      module->setAttr(kSundialsUniqueHostJacobianBridgesAttr,
+                      builder.getI64IntegerAttr(
+                          getExistingI64ModuleAttr(
+                              module, kSundialsUniqueHostJacobianBridgesAttr) +
+                          uniqueHostJacobianBridges));
   }
 };
 

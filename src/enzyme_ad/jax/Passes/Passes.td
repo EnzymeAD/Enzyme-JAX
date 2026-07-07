@@ -1432,6 +1432,17 @@ def SynthesizeSundialsIdaJacobianActions
     Jacobian materialization and the solver-side Jacobian-action demand before
     runtime callback lowering.
   }];
+  let options = [
+    Option<
+      "allowUniqueHostJacobianBridge",
+      "allow-unique-host-jacobian-bridge",
+      "bool",
+      /*default=*/"false",
+      "Allow an explicit sparse/direct IDA solve with an unmatched host "
+      "Jacobian callback to be bridged to a unique semantic y/yp Jacobian "
+      "materialization pair. The default remains conservative and does not "
+      "change recovered host solves without an explicit bridge opt-in.">
+  ];
   let dependentDialects = [
     "enzymexla::EnzymeXLADialect"
   ];
