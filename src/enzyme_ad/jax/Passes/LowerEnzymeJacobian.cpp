@@ -1736,6 +1736,9 @@ void ensureSundialsIdaRuntimeDeclarations(ModuleOp module, OpBuilder &builder,
       module, builder, loc, "N_VGetArrayPointer",
       LLVM::LLVMFunctionType::get(ptrType, {ptrType}, /*isVarArg=*/false));
   getOrCreateLLVMDeclaration(
+      module, builder, loc, "N_VGetLength",
+      LLVM::LLVMFunctionType::get(i64Type, {ptrType}, /*isVarArg=*/false));
+  getOrCreateLLVMDeclaration(
       module, builder, loc, "N_VScale",
       LLVM::LLVMFunctionType::get(LLVM::LLVMVoidType::get(context),
                                   {f64Type, ptrType, ptrType},
@@ -2501,7 +2504,7 @@ LLVM::LLVMFuncOp emitSundialsIdaJvpContextSetup(ModuleOp module,
   builder.setInsertionPointToStart(module.getBody());
   auto setupType = LLVM::LLVMFunctionType::get(
       i32Type,
-      {ptrType, ptrType, ptrType, ptrType, ptrType, i64Type, i64Type, ptrType},
+      {ptrType, ptrType, ptrType, ptrType, ptrType, i64Type, ptrType},
       /*isVarArg=*/false);
   LLVM::LLVMFuncOp setup =
       LLVM::LLVMFuncOp::create(builder, loc, setupName, setupType);
@@ -2525,14 +2528,18 @@ LLVM::LLVMFuncOp emitSundialsIdaJvpContextSetup(ModuleOp module,
   Value model = entry->getArgument(3);
   Value inputs = entry->getArgument(4);
   Value inputCount = entry->getArgument(5);
-  Value outputSize = entry->getArgument(6);
-  Value contextOut = entry->getArgument(7);
+  Value contextOut = entry->getArgument(6);
+
+  auto outputSize = LLVM::CallOp::create(
+      builder, loc, TypeRange{i64Type},
+      SymbolRefAttr::get(context, "N_VGetLength"), ValueRange{yyTemplate});
+  setSundialsCallRole(outputSize, builder, "ida_jvp_context_output_size");
 
   auto jvpContext = LLVM::CallOp::create(
       builder, loc, TypeRange{ptrType},
       SymbolRefAttr::get(context,
                          "__enzymexla_sundials_ida_create_jvp_context"),
-      ValueRange{model, inputs, inputCount, outputSize});
+      ValueRange{model, inputs, inputCount, outputSize.getResult()});
   setSundialsCallRole(jvpContext, builder, "ida_jvp_context_create");
   LLVM::StoreOp::create(builder, loc, jvpContext.getResult(), contextOut);
 

@@ -56,10 +56,13 @@ module {
 // CHECK-SAME: enzymexla.sundials.runtime_registration = @__enzymexla_sundials_ida_register_jactimes_0
 // CHECK-SAME: enzymexla.sundials.runtime_role = "ida_jvp_context_setup"
 // CHECK-SAME: enzymexla.sundials.source_function = "host_configure"
+// CHECK: %[[OUT_SIZE:.*]] = llvm.call @N_VGetLength
+// CHECK-SAME: enzymexla.sundials.role = "ida_jvp_context_output_size"
 // CHECK: %[[CTX:.*]] = llvm.call @__enzymexla_sundials_ida_create_jvp_context
+// CHECK-SAME: %[[OUT_SIZE]]
 // CHECK-SAME: enzymexla.sundials.role = "ida_jvp_context_create"
 // CHECK-SAME: (!llvm.ptr, !llvm.ptr, i64, i64) -> !llvm.ptr
-// CHECK: llvm.store %[[CTX]], %arg7 : !llvm.ptr, !llvm.ptr
+// CHECK: llvm.store %[[CTX]], %arg6 : !llvm.ptr, !llvm.ptr
 // CHECK: %[[SETUP_STATUS:.*]] = llvm.call @__enzymexla_sundials_ida_register_jactimes_0
 // CHECK-SAME: %[[CTX]]
 // CHECK-SAME: enzymexla.sundials.role = "ida_jvp_context_registration_helper"
@@ -133,6 +136,7 @@ module {
 // CHECK: llvm.func @__enzymexla_sundials_ida_create_jvp_context(!llvm.ptr, !llvm.ptr, i64, i64) -> !llvm.ptr
 // CHECK: llvm.func @__enzymexla_sundials_ida_register_jvp_context(!llvm.ptr)
 // CHECK: llvm.func @N_VScale(f64, !llvm.ptr, !llvm.ptr)
+// CHECK: llvm.func @N_VGetLength(!llvm.ptr) -> i64
 // CHECK: llvm.func @N_VGetArrayPointer(!llvm.ptr) -> !llvm.ptr
 // CHECK: llvm.func @IDASetJacTimes(!llvm.ptr, !llvm.ptr, !llvm.ptr) -> i32
 // CHECK: llvm.func @IDASetUserData(!llvm.ptr, !llvm.ptr) -> i32
