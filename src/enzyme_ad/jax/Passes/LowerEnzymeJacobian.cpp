@@ -117,6 +117,8 @@ constexpr llvm::StringLiteral kSundialsRuntimeHostSetupDispatcherAttr =
     "enzymexla.sundials.runtime_host_setup_dispatcher";
 constexpr llvm::StringLiteral kSundialsRuntimeHostTeardownDispatcherAttr =
     "enzymexla.sundials.runtime_host_teardown_dispatcher";
+constexpr llvm::StringLiteral kSundialsRuntimeHostInputProviderAttr =
+    "enzymexla.sundials.runtime_host_input_provider";
 constexpr llvm::StringLiteral kSundialsContextInputIndicesAttr =
     "enzymexla.sundials.context_input_indices";
 constexpr llvm::StringLiteral kSundialsNonModelContextInputIndicesAttr =
@@ -144,6 +146,8 @@ constexpr llvm::StringLiteral kSundialsIdaHostSplicesEmittedAttr =
     "enzymexla.sundials.ida_host_splices_emitted";
 constexpr llvm::StringLiteral kSundialsIdaHostSpliceDispatchersEmittedAttr =
     "enzymexla.sundials.ida_host_splice_dispatchers_emitted";
+constexpr llvm::StringLiteral kSundialsIdaHostInputProvidersEmittedAttr =
+    "enzymexla.sundials.ida_host_input_providers_emitted";
 constexpr llvm::StringLiteral kSundialsIdaSolveOpName =
     "enzymexla.sundials.ida_solve";
 constexpr llvm::StringLiteral kSundialsIdaHostSpliceOpName =
@@ -1895,6 +1899,11 @@ void ensureSundialsIdaRuntimeDeclarations(ModuleOp module, OpBuilder &builder,
       LLVM::LLVMFunctionType::get(LLVM::LLVMVoidType::get(context), {ptrType},
                                   /*isVarArg=*/false));
   getOrCreateLLVMDeclaration(
+      module, builder, loc,
+      "__enzymexla_sundials_ida_resolve_generated_jvp_input",
+      LLVM::LLVMFunctionType::get(ptrType, {ptrType, i64Type},
+                                  /*isVarArg=*/false));
+  getOrCreateLLVMDeclaration(
       module, builder, loc, "__enzymexla_sundials_ida_create_jvp_context",
       LLVM::LLVMFunctionType::get(ptrType, {ptrType, ptrType, i64Type, i64Type},
                                   /*isVarArg=*/false));
@@ -2108,6 +2117,18 @@ void copySundialsRuntimeContextInputContract(Operation *solve,
                     kSundialsRuntimeNonModelContextInputIndicesAttr);
   copyAttrIfPresent(solve, dest, kSundialsRuntimeContextInputCountAttr,
                     kSundialsRuntimeContextInputCountAttr);
+}
+
+SmallVector<int64_t> getI64ArrayAttrValues(Operation *op, StringRef attrName) {
+  SmallVector<int64_t> values;
+  auto arrayAttr = op->getAttrOfType<ArrayAttr>(attrName);
+  if (!arrayAttr)
+    return values;
+  for (Attribute attr : arrayAttr) {
+    if (auto intAttr = dyn_cast<IntegerAttr>(attr))
+      values.push_back(intAttr.getInt());
+  }
+  return values;
 }
 
 void copyJacobianActionProvenance(Operation *actionRecord, Operation *dest) {
@@ -2938,12 +2959,114 @@ LLVM::LLVMFuncOp emitSundialsIdaHostTeardownDispatcher(
   return dispatcher;
 }
 
+LLVM::LLVMFuncOp emitSundialsIdaGeneratedInputProvider(
+    ModuleOp module, OpBuilder &builder, Location loc, StringRef providerName,
+    Operation *solve) {
+  MLIRContext *context = module.getContext();
+  Type ptrType = LLVM::LLVMPointerType::get(context);
+  Type i1Type = IntegerType::get(context, 1);
+  Type i64Type = IntegerType::get(context, 64);
+
+  int64_t inputCount =
+      getI64AttrValue(solve, kSundialsRuntimeContextInputCountAttr).value_or(1);
+  if (inputCount < 1)
+    inputCount = 1;
+  SmallVector<int64_t> nonModelInputIndices =
+      getI64ArrayAttrValues(solve,
+                            kSundialsRuntimeNonModelContextInputIndicesAttr);
+
+  OpBuilder::InsertionGuard guard(builder);
+  builder.setInsertionPointToStart(module.getBody());
+  auto providerType = LLVM::LLVMFunctionType::get(
+      i64Type, {ptrType, ptrType, i64Type}, /*isVarArg=*/false);
+  LLVM::LLVMFuncOp provider =
+      LLVM::LLVMFuncOp::create(builder, loc, providerName, providerType);
+  provider->setAttr(kSundialsRuntimeRoleAttr,
+                    builder.getStringAttr("ida_jvp_context_input_provider"));
+  provider->setAttr(kSundialsRuntimeContextInputCountAttr,
+                    builder.getI64IntegerAttr(inputCount));
+  provider->setAttr(kSundialsRuntimeNonModelContextInputIndicesAttr,
+                    builder.getI64ArrayAttr(nonModelInputIndices));
+  if (Attribute jacobianAction = solve->getAttr("jacobian_action"))
+    provider->setAttr("enzymexla.sundials.jacobian_action", jacobianAction);
+  if (Attribute sourceFunction = solve->getAttr("source_function"))
+    provider->setAttr("enzymexla.sundials.source_function", sourceFunction);
+  copySundialsHostSpliceProvenance(solve, provider);
+
+  Block *entry = provider.addEntryBlock(builder);
+  Block *queryReturn = builder.createBlock(&provider.getBody());
+  Block *capacityCheck = builder.createBlock(&provider.getBody());
+  Block *fail = builder.createBlock(&provider.getBody());
+  Block *fill = builder.createBlock(&provider.getBody());
+  Block *success = builder.createBlock(&provider.getBody());
+
+  builder.setInsertionPointToStart(entry);
+  Value model = entry->getArgument(0);
+  Value inputs = entry->getArgument(1);
+  Value capacity = entry->getArgument(2);
+  Value count = createI64Constant(builder, loc, inputCount);
+  Value minusOne = createI64Constant(builder, loc, -1);
+  Value nullPtr = LLVM::ZeroOp::create(builder, loc, ptrType);
+  Value isQuery =
+      LLVM::ICmpOp::create(builder, loc, LLVM::ICmpPredicate::eq, inputs,
+                           nullPtr);
+  LLVM::CondBrOp::create(builder, loc, isQuery, queryReturn, capacityCheck);
+
+  builder.setInsertionPointToStart(queryReturn);
+  LLVM::ReturnOp::create(builder, loc, ValueRange{count});
+
+  builder.setInsertionPointToStart(capacityCheck);
+  Value tooSmall =
+      LLVM::ICmpOp::create(builder, loc, LLVM::ICmpPredicate::slt, capacity,
+                           count);
+  LLVM::CondBrOp::create(builder, loc, tooSmall, fail, fill);
+
+  builder.setInsertionPointToStart(fail);
+  LLVM::ReturnOp::create(builder, loc, ValueRange{minusOne});
+
+  builder.setInsertionPointToStart(fill);
+  for (int64_t inputIndex = 0; inputIndex < inputCount; ++inputIndex) {
+    Value slot = LLVM::GEPOp::create(
+        builder, loc, ptrType, ptrType, inputs,
+        ValueRange{createI64Constant(builder, loc, inputIndex)});
+    Value value = inputIndex == 0 ? model : nullPtr;
+    LLVM::StoreOp::create(builder, loc, value, slot);
+  }
+
+  Value anyMissing = LLVM::ConstantOp::create(
+      builder, loc, i1Type, builder.getIntegerAttr(i1Type, 0));
+  for (int64_t inputIndex : nonModelInputIndices) {
+    Value indexValue = createI64Constant(builder, loc, inputIndex);
+    auto resolved = LLVM::CallOp::create(
+        builder, loc, TypeRange{ptrType},
+        SymbolRefAttr::get(
+            context, "__enzymexla_sundials_ida_resolve_generated_jvp_input"),
+        ValueRange{model, indexValue});
+    setSundialsCallRole(resolved, builder,
+                        "ida_jvp_context_non_model_input_resolve");
+    resolved->setAttr("enzymexla.sundials.input_index",
+                      builder.getI64IntegerAttr(inputIndex));
+    Value slot = LLVM::GEPOp::create(builder, loc, ptrType, ptrType, inputs,
+                                     ValueRange{indexValue});
+    LLVM::StoreOp::create(builder, loc, resolved.getResult(), slot);
+    Value isMissing = LLVM::ICmpOp::create(
+        builder, loc, LLVM::ICmpPredicate::eq, resolved.getResult(), nullPtr);
+    anyMissing = LLVM::OrOp::create(builder, loc, anyMissing, isMissing);
+  }
+  LLVM::CondBrOp::create(builder, loc, anyMissing, fail, success);
+
+  builder.setInsertionPointToStart(success);
+  LLVM::ReturnOp::create(builder, loc, ValueRange{count});
+  return provider;
+}
+
 Operation *emitSundialsIdaHostSplicePlan(ModuleOp module, OpBuilder &builder,
                                          Location loc, StringRef spliceName,
                                          StringRef setupName,
                                          StringRef teardownName,
                                          StringRef setupDispatcherName,
                                          StringRef teardownDispatcherName,
+                                         StringRef inputProviderName,
                                          StringRef registrationName,
                                          StringRef callbackName,
                                          Operation *solve) {
@@ -2960,6 +3083,8 @@ Operation *emitSundialsIdaHostSplicePlan(ModuleOp module, OpBuilder &builder,
                      SymbolRefAttr::get(context, setupDispatcherName));
   state.addAttribute("teardown_dispatcher",
                      SymbolRefAttr::get(context, teardownDispatcherName));
+  state.addAttribute("input_provider",
+                     SymbolRefAttr::get(context, inputProviderName));
   state.addAttribute("registration",
                      SymbolRefAttr::get(context, registrationName));
   state.addAttribute("jactimes_callback",
@@ -3014,7 +3139,8 @@ struct EmitSundialsIdaRuntimeGlueLLVM
           solve->hasAttr(kSundialsRuntimeContextSetupAttr) &&
           solve->hasAttr(kSundialsRuntimeContextTeardownAttr) &&
           solve->hasAttr(kSundialsRuntimeHostSetupDispatcherAttr) &&
-          solve->hasAttr(kSundialsRuntimeHostTeardownDispatcherAttr))
+          solve->hasAttr(kSundialsRuntimeHostTeardownDispatcherAttr) &&
+          solve->hasAttr(kSundialsRuntimeHostInputProviderAttr))
         return;
       targetSolves.push_back(solve);
     });
@@ -3029,6 +3155,7 @@ struct EmitSundialsIdaRuntimeGlueLLVM
     unsigned emittedRawJvpKernels = 0;
     unsigned linkedLoweredRawJvpKernels = 0;
     unsigned emittedHostSpliceDispatchers = 0;
+    unsigned emittedHostInputProviders = 0;
     for (enzymexla::SundialsIdaSolveOp solve : targetSolves) {
       std::string callbackName = getUniqueSundialsRuntimeSymbol(
           usedSymbols, "__enzymexla_sundials_ida_jactimes_");
@@ -3054,6 +3181,15 @@ struct EmitSundialsIdaRuntimeGlueLLVM
                     "__enzymexla_sundials_ida_host_teardown_")
               : getUniqueSundialsRuntimeSymbol(
                     usedSymbols, "__enzymexla_sundials_ida_host_teardown_");
+      std::string hostInputProviderName =
+          targetSolves.size() == 1
+              ? getPreferredOrUniqueSundialsRuntimeSymbol(
+                    usedSymbols,
+                    "__enzymexla_sundials_ida_fill_generated_jvp_inputs",
+                    "__enzymexla_sundials_ida_host_input_provider_")
+              : getUniqueSundialsRuntimeSymbol(
+                    usedSymbols,
+                    "__enzymexla_sundials_ida_host_input_provider_");
       std::string hostSpliceName = getUniqueSundialsRuntimeSymbol(
           usedSymbols, "__enzymexla_sundials_ida_host_splice_");
 
@@ -3125,6 +3261,10 @@ struct EmitSundialsIdaRuntimeGlueLLVM
           module, builder, solve.getLoc(), hostTeardownDispatcherName,
           contextTeardownName, solve.getOperation());
       emittedHostSpliceDispatchers += 2;
+      emitSundialsIdaGeneratedInputProvider(
+          module, builder, solve.getLoc(), hostInputProviderName,
+          solve.getOperation());
+      ++emittedHostInputProviders;
 
       solve->setAttr(kSundialsRuntimeJacTimesCallbackAttr,
                      SymbolRefAttr::get(context, callbackName));
@@ -3138,11 +3278,13 @@ struct EmitSundialsIdaRuntimeGlueLLVM
                      SymbolRefAttr::get(context, hostSetupDispatcherName));
       solve->setAttr(kSundialsRuntimeHostTeardownDispatcherAttr,
                      SymbolRefAttr::get(context, hostTeardownDispatcherName));
+      solve->setAttr(kSundialsRuntimeHostInputProviderAttr,
+                     SymbolRefAttr::get(context, hostInputProviderName));
       emitSundialsIdaHostSplicePlan(
           module, builder, solve.getLoc(), hostSpliceName, contextSetupName,
           contextTeardownName, hostSetupDispatcherName,
-          hostTeardownDispatcherName, registrationName, callbackName,
-          solve.getOperation());
+          hostTeardownDispatcherName, hostInputProviderName, registrationName,
+          callbackName, solve.getOperation());
       solve->setAttr(kSundialsRuntimeHostSpliceAttr,
                      SymbolRefAttr::get(context, hostSpliceName));
       ++emitted;
@@ -3166,6 +3308,10 @@ struct EmitSundialsIdaRuntimeGlueLLVM
       module->setAttr(kSundialsIdaHostSpliceDispatchersEmittedAttr,
                       attrBuilder.getI64IntegerAttr(
                           emittedHostSpliceDispatchers));
+    if (emittedHostInputProviders != 0)
+      module->setAttr(kSundialsIdaHostInputProvidersEmittedAttr,
+                      attrBuilder.getI64IntegerAttr(
+                          emittedHostInputProviders));
   }
 };
 
