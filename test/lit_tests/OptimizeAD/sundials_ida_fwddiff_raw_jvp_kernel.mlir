@@ -57,10 +57,23 @@ module {
 // CHECK-SAME: enzymexla.sundials.ida_raw_jvp_kernels_emitted = 1 : i64
 // CHECK-SAME: enzymexla.sundials.ida_runtime_glue_emitted = 1 : i64
 
+// CHECK-LABEL: llvm.func @__enzymexla_sundials_ida_setup_jactimes_0
+// CHECK-SAME: enzymexla.sundials.runtime_context_input_count = 4 : i64
+// CHECK-SAME: enzymexla.sundials.runtime_context_input_indices = [0, 3]
+// CHECK-SAME: enzymexla.sundials.runtime_non_model_context_input_indices = [3]
+
+// CHECK-LABEL: llvm.func @__enzymexla_sundials_ida_register_jactimes_0
+// CHECK-SAME: enzymexla.sundials.runtime_context_input_count = 4 : i64
+// CHECK-SAME: enzymexla.sundials.runtime_context_input_indices = [0, 3]
+// CHECK-SAME: enzymexla.sundials.runtime_non_model_context_input_indices = [3]
+
 // CHECK-LABEL: llvm.func @__enzymexla_sundials_ida_raw_jvp_kernel_0
 // CHECK-SAME: enzymexla.sundials.callback_context = "context_input_accessor"
+// CHECK-SAME: enzymexla.sundials.context_input_count = 4 : i64
+// CHECK-SAME: enzymexla.sundials.context_input_indices = [0, 3]
 // CHECK-SAME: enzymexla.sundials.jacobian_action = @ida_effective_action
 // CHECK-SAME: enzymexla.sundials.jvp_kernel_body = "enzyme_fwddiff_raw_buffer_calls"
+// CHECK-SAME: enzymexla.sundials.non_model_context_input_indices = [3]
 // CHECK-SAME: enzymexla.sundials.raw_jvp_accumulation = "context_accumulate"
 // CHECK-SAME: enzymexla.sundials.runtime_role = "ida_raw_jvp_kernel"
 // CHECK: %[[CTX_MODEL:.*]] = llvm.call @__enzymexla_sundials_ida_context_input
@@ -94,4 +107,7 @@ module {
 // CHECK-DAG: llvm.func @__enzymexla_sundials_ida_accumulate_raw_jvp(!llvm.ptr, !llvm.ptr, !llvm.ptr) -> i32
 
 // CHECK-LABEL: enzymexla.sundials.ida_solve residual = @residual
+// CHECK-SAME: enzymexla.sundials.runtime_context_input_count = 4 : i64
+// CHECK-SAME: enzymexla.sundials.runtime_context_input_indices = [0, 3]
+// CHECK-SAME: enzymexla.sundials.runtime_non_model_context_input_indices = [3]
 // CHECK-SAME: enzymexla.sundials.runtime_raw_jvp_kernel = @__enzymexla_sundials_ida_raw_jvp_kernel_0

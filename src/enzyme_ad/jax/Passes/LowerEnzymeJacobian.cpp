@@ -111,6 +111,19 @@ constexpr llvm::StringLiteral kSundialsRuntimeContextSetupAttr =
     "enzymexla.sundials.runtime_context_setup";
 constexpr llvm::StringLiteral kSundialsRuntimeContextTeardownAttr =
     "enzymexla.sundials.runtime_context_teardown";
+constexpr llvm::StringLiteral kSundialsContextInputIndicesAttr =
+    "enzymexla.sundials.context_input_indices";
+constexpr llvm::StringLiteral kSundialsNonModelContextInputIndicesAttr =
+    "enzymexla.sundials.non_model_context_input_indices";
+constexpr llvm::StringLiteral kSundialsContextInputCountAttr =
+    "enzymexla.sundials.context_input_count";
+constexpr llvm::StringLiteral kSundialsRuntimeContextInputIndicesAttr =
+    "enzymexla.sundials.runtime_context_input_indices";
+constexpr llvm::StringLiteral
+    kSundialsRuntimeNonModelContextInputIndicesAttr =
+        "enzymexla.sundials.runtime_non_model_context_input_indices";
+constexpr llvm::StringLiteral kSundialsRuntimeContextInputCountAttr =
+    "enzymexla.sundials.runtime_context_input_count";
 constexpr llvm::StringLiteral kSundialsLoweredRawJvpKernelAttr =
     "enzymexla.sundials.lowered_raw_jvp_kernel";
 constexpr llvm::StringLiteral kSundialsRuntimeRoleAttr =
@@ -2046,6 +2059,17 @@ void copySundialsHostSpliceProvenance(Operation *solve, Operation *dest) {
       "enzymexla.sundials.host_jacobian_registration_source_function");
 }
 
+void copySundialsRuntimeContextInputContract(Operation *solve,
+                                             Operation *dest) {
+  copyAttrIfPresent(solve, dest, kSundialsRuntimeContextInputIndicesAttr,
+                    kSundialsRuntimeContextInputIndicesAttr);
+  copyAttrIfPresent(solve, dest,
+                    kSundialsRuntimeNonModelContextInputIndicesAttr,
+                    kSundialsRuntimeNonModelContextInputIndicesAttr);
+  copyAttrIfPresent(solve, dest, kSundialsRuntimeContextInputCountAttr,
+                    kSundialsRuntimeContextInputCountAttr);
+}
+
 void copyJacobianActionProvenance(Operation *actionRecord, Operation *dest) {
   copyAttrIfPresent(actionRecord, dest, "materialization",
                     "enzymexla.sundials.materialization");
@@ -2132,6 +2156,38 @@ struct RawJvpFwddiffPlan {
   int64_t outputCount = -1;
   std::string residual;
 };
+
+SmallVector<int64_t> getRawJvpContextInputIndices(
+    const RawJvpFwddiffPlan &plan, bool includeModelSlot) {
+  SmallVector<int64_t> indices;
+  for (int64_t inputIndex = 0; inputIndex < plan.inputCount; ++inputIndex) {
+    if (inputIndex == 1 || inputIndex == 2)
+      continue;
+    if (!includeModelSlot && inputIndex == 0)
+      continue;
+    indices.push_back(inputIndex);
+  }
+  return indices;
+}
+
+void setRawJvpContextInputContract(Operation *dest, OpBuilder &builder,
+                                   const RawJvpFwddiffPlan &plan,
+                                   bool runtimeNames) {
+  SmallVector<int64_t> contextInputs =
+      getRawJvpContextInputIndices(plan, /*includeModelSlot=*/true);
+  SmallVector<int64_t> nonModelContextInputs =
+      getRawJvpContextInputIndices(plan, /*includeModelSlot=*/false);
+
+  dest->setAttr(runtimeNames ? kSundialsRuntimeContextInputIndicesAttr
+                             : kSundialsContextInputIndicesAttr,
+                builder.getI64ArrayAttr(contextInputs));
+  dest->setAttr(runtimeNames ? kSundialsRuntimeNonModelContextInputIndicesAttr
+                             : kSundialsNonModelContextInputIndicesAttr,
+                builder.getI64ArrayAttr(nonModelContextInputs));
+  dest->setAttr(runtimeNames ? kSundialsRuntimeContextInputCountAttr
+                             : kSundialsContextInputCountAttr,
+                builder.getI64IntegerAttr(plan.inputCount));
+}
 
 std::optional<RawJvpFwddiffPlan>
 getRawJvpFwddiffPlan(ModuleOp module, Operation *actionRecord) {
@@ -2307,6 +2363,8 @@ LLVM::LLVMFuncOp emitSundialsIdaFwddiffRawJvpKernel(
                      builder.getStringAttr("enzyme_fwddiff_raw_buffer_calls"));
   rawKernel->setAttr("enzymexla.sundials.callback_context",
                      builder.getStringAttr("context_input_accessor"));
+  setRawJvpContextInputContract(rawKernel, builder, plan,
+                                /*runtimeNames=*/false);
   if (plan.ypCall)
     rawKernel->setAttr("enzymexla.sundials.raw_jvp_accumulation",
                        builder.getStringAttr("context_accumulate"));
@@ -2394,8 +2452,12 @@ LLVM::LLVMFuncOp emitSundialsIdaRawJvpKernel(ModuleOp module,
     if (std::optional<RawJvpFwddiffPlan> plan =
             getRawJvpFwddiffPlan(module, actionRecord)) {
       if (LLVM::LLVMFuncOp rawKernel = emitSundialsIdaFwddiffRawJvpKernel(
-              module, builder, loc, rawKernelName, solve, actionRecord, *plan))
+              module, builder, loc, rawKernelName, solve, actionRecord,
+              *plan)) {
+        setRawJvpContextInputContract(solve, builder, *plan,
+                                      /*runtimeNames=*/true);
         return rawKernel;
+      }
     }
   }
 
@@ -2565,6 +2627,7 @@ LLVM::LLVMFuncOp emitSundialsIdaJacTimesRegistration(ModuleOp module,
                           sourceFunction);
   }
   copySundialsHostSpliceProvenance(solve, registration);
+  copySundialsRuntimeContextInputContract(solve, registration);
 
   Block *entry = registration.addEntryBlock(builder);
   builder.setInsertionPointToStart(entry);
@@ -2650,6 +2713,7 @@ LLVM::LLVMFuncOp emitSundialsIdaJvpContextSetup(ModuleOp module,
   if (Attribute sourceFunction = solve->getAttr("source_function"))
     setup->setAttr("enzymexla.sundials.source_function", sourceFunction);
   copySundialsHostSpliceProvenance(solve, setup);
+  copySundialsRuntimeContextInputContract(solve, setup);
 
   Block *entry = setup.addEntryBlock(builder);
   builder.setInsertionPointToStart(entry);
