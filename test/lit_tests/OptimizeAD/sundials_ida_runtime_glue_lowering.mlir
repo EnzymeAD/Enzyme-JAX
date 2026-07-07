@@ -41,6 +41,30 @@ module {
 
 // CHECK: module attributes {enzymexla.sundials.ida_jvp_kernel_adapters_emitted = 1 : i64, enzymexla.sundials.ida_raw_jvp_kernels_emitted = 1 : i64, enzymexla.sundials.ida_runtime_glue_emitted = 1 : i64}
 
+// CHECK-LABEL: llvm.func @__enzymexla_sundials_ida_teardown_jactimes_0
+// CHECK-SAME: enzymexla.sundials.context_deallocator = @__enzymexla_sundials_ida_destroy_jvp_context
+// CHECK-SAME: enzymexla.sundials.jacobian_action = @ida_effective_action
+// CHECK-SAME: enzymexla.sundials.runtime_role = "ida_jvp_context_teardown"
+// CHECK-SAME: enzymexla.sundials.source_function = "host_configure"
+// CHECK: llvm.call @__enzymexla_sundials_ida_destroy_jvp_context
+// CHECK-SAME: enzymexla.sundials.role = "ida_jvp_context_destroy"
+// CHECK: llvm.return
+
+// CHECK-LABEL: llvm.func @__enzymexla_sundials_ida_setup_jactimes_0
+// CHECK-SAME: enzymexla.sundials.context_allocator = @__enzymexla_sundials_ida_create_jvp_context
+// CHECK-SAME: enzymexla.sundials.jacobian_action = @ida_effective_action
+// CHECK-SAME: enzymexla.sundials.runtime_registration = @__enzymexla_sundials_ida_register_jactimes_0
+// CHECK-SAME: enzymexla.sundials.runtime_role = "ida_jvp_context_setup"
+// CHECK-SAME: enzymexla.sundials.source_function = "host_configure"
+// CHECK: %[[CTX:.*]] = llvm.call @__enzymexla_sundials_ida_create_jvp_context
+// CHECK-SAME: enzymexla.sundials.role = "ida_jvp_context_create"
+// CHECK-SAME: (!llvm.ptr, !llvm.ptr, i64, i64) -> !llvm.ptr
+// CHECK: llvm.store %[[CTX]], %arg7 : !llvm.ptr, !llvm.ptr
+// CHECK: %[[SETUP_STATUS:.*]] = llvm.call @__enzymexla_sundials_ida_register_jactimes_0
+// CHECK-SAME: %[[CTX]]
+// CHECK-SAME: enzymexla.sundials.role = "ida_jvp_context_registration_helper"
+// CHECK: llvm.return %[[SETUP_STATUS]] : i32
+
 // CHECK-LABEL: llvm.func @__enzymexla_sundials_ida_register_jactimes_0
 // CHECK-SAME: enzymexla.sundials.callback_context = "ida_jvp_user_data_context"
 // CHECK-SAME: enzymexla.sundials.jacobian_action = @ida_effective_action
@@ -105,6 +129,8 @@ module {
 // CHECK: %[[UNIMPLEMENTED:.*]] = llvm.mlir.constant(1 : i32) : i32
 // CHECK: llvm.return %[[UNIMPLEMENTED]] : i32
 
+// CHECK: llvm.func @__enzymexla_sundials_ida_destroy_jvp_context(!llvm.ptr)
+// CHECK: llvm.func @__enzymexla_sundials_ida_create_jvp_context(!llvm.ptr, !llvm.ptr, i64, i64) -> !llvm.ptr
 // CHECK: llvm.func @__enzymexla_sundials_ida_register_jvp_context(!llvm.ptr)
 // CHECK: llvm.func @N_VScale(f64, !llvm.ptr, !llvm.ptr)
 // CHECK: llvm.func @N_VGetArrayPointer(!llvm.ptr) -> !llvm.ptr
@@ -120,6 +146,8 @@ module {
 // CHECK-SAME: linear_solver = <jacobian_action_iterative>
 // CHECK-SAME: jacobian_demand = <jacobian_action>
 // CHECK-SAME: enzymexla.sundials.matrix_free_selected
+// CHECK-SAME: enzymexla.sundials.runtime_context_setup = @__enzymexla_sundials_ida_setup_jactimes_0
+// CHECK-SAME: enzymexla.sundials.runtime_context_teardown = @__enzymexla_sundials_ida_teardown_jactimes_0
 // CHECK-SAME: enzymexla.sundials.runtime_jactimes_callback = @__enzymexla_sundials_ida_jactimes_0
 // CHECK-SAME: enzymexla.sundials.runtime_jvp_kernel = @__enzymexla_sundials_ida_jvp_kernel_0
 // CHECK-SAME: enzymexla.sundials.runtime_raw_jvp_kernel = @__enzymexla_sundials_ida_raw_jvp_kernel_0

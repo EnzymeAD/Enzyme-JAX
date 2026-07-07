@@ -107,6 +107,10 @@ constexpr llvm::StringLiteral kSundialsRuntimeJvpKernelAttr =
     "enzymexla.sundials.runtime_jvp_kernel";
 constexpr llvm::StringLiteral kSundialsRuntimeRawJvpKernelAttr =
     "enzymexla.sundials.runtime_raw_jvp_kernel";
+constexpr llvm::StringLiteral kSundialsRuntimeContextSetupAttr =
+    "enzymexla.sundials.runtime_context_setup";
+constexpr llvm::StringLiteral kSundialsRuntimeContextTeardownAttr =
+    "enzymexla.sundials.runtime_context_teardown";
 constexpr llvm::StringLiteral kSundialsLoweredRawJvpKernelAttr =
     "enzymexla.sundials.lowered_raw_jvp_kernel";
 constexpr llvm::StringLiteral kSundialsRuntimeRoleAttr =
@@ -1709,6 +1713,7 @@ void ensureSundialsIdaRuntimeDeclarations(ModuleOp module, OpBuilder &builder,
   MLIRContext *context = module.getContext();
   Type ptrType = LLVM::LLVMPointerType::get(context);
   Type i32Type = IntegerType::get(context, 32);
+  Type i64Type = IntegerType::get(context, 64);
   Type f64Type = Float64Type::get(context);
 
   getOrCreateLLVMDeclaration(
@@ -1737,6 +1742,14 @@ void ensureSundialsIdaRuntimeDeclarations(ModuleOp module, OpBuilder &builder,
                                   /*isVarArg=*/false));
   getOrCreateLLVMDeclaration(
       module, builder, loc, "__enzymexla_sundials_ida_register_jvp_context",
+      LLVM::LLVMFunctionType::get(LLVM::LLVMVoidType::get(context), {ptrType},
+                                  /*isVarArg=*/false));
+  getOrCreateLLVMDeclaration(
+      module, builder, loc, "__enzymexla_sundials_ida_create_jvp_context",
+      LLVM::LLVMFunctionType::get(ptrType, {ptrType, ptrType, i64Type, i64Type},
+                                  /*isVarArg=*/false));
+  getOrCreateLLVMDeclaration(
+      module, builder, loc, "__enzymexla_sundials_ida_destroy_jvp_context",
       LLVM::LLVMFunctionType::get(LLVM::LLVMVoidType::get(context), {ptrType},
                                   /*isVarArg=*/false));
 }
@@ -2473,6 +2486,104 @@ LLVM::LLVMFuncOp emitSundialsIdaJacTimesRegistration(ModuleOp module,
   return registration;
 }
 
+LLVM::LLVMFuncOp emitSundialsIdaJvpContextSetup(ModuleOp module,
+                                                OpBuilder &builder,
+                                                Location loc,
+                                                StringRef setupName,
+                                                StringRef registrationName,
+                                                Operation *solve) {
+  MLIRContext *context = module.getContext();
+  Type ptrType = LLVM::LLVMPointerType::get(context);
+  Type i32Type = IntegerType::get(context, 32);
+  Type i64Type = IntegerType::get(context, 64);
+
+  OpBuilder::InsertionGuard guard(builder);
+  builder.setInsertionPointToStart(module.getBody());
+  auto setupType = LLVM::LLVMFunctionType::get(
+      i32Type,
+      {ptrType, ptrType, ptrType, ptrType, ptrType, i64Type, i64Type, ptrType},
+      /*isVarArg=*/false);
+  LLVM::LLVMFuncOp setup =
+      LLVM::LLVMFuncOp::create(builder, loc, setupName, setupType);
+  setup->setAttr(kSundialsRuntimeRoleAttr,
+                 builder.getStringAttr("ida_jvp_context_setup"));
+  setup->setAttr(kSundialsRuntimeRegistrationAttr,
+                 SymbolRefAttr::get(context, registrationName));
+  setup->setAttr("enzymexla.sundials.context_allocator",
+                 SymbolRefAttr::get(
+                     context, "__enzymexla_sundials_ida_create_jvp_context"));
+  if (Attribute jacobianAction = solve->getAttr("jacobian_action"))
+    setup->setAttr("enzymexla.sundials.jacobian_action", jacobianAction);
+  if (Attribute sourceFunction = solve->getAttr("source_function"))
+    setup->setAttr("enzymexla.sundials.source_function", sourceFunction);
+
+  Block *entry = setup.addEntryBlock(builder);
+  builder.setInsertionPointToStart(entry);
+  Value idaMem = entry->getArgument(0);
+  Value yyTemplate = entry->getArgument(1);
+  Value sunctx = entry->getArgument(2);
+  Value model = entry->getArgument(3);
+  Value inputs = entry->getArgument(4);
+  Value inputCount = entry->getArgument(5);
+  Value outputSize = entry->getArgument(6);
+  Value contextOut = entry->getArgument(7);
+
+  auto jvpContext = LLVM::CallOp::create(
+      builder, loc, TypeRange{ptrType},
+      SymbolRefAttr::get(context,
+                         "__enzymexla_sundials_ida_create_jvp_context"),
+      ValueRange{model, inputs, inputCount, outputSize});
+  setSundialsCallRole(jvpContext, builder, "ida_jvp_context_create");
+  LLVM::StoreOp::create(builder, loc, jvpContext.getResult(), contextOut);
+
+  auto status = LLVM::CallOp::create(
+      builder, loc, TypeRange{i32Type},
+      SymbolRefAttr::get(context, registrationName),
+      ValueRange{idaMem, yyTemplate, sunctx, jvpContext.getResult()});
+  setSundialsCallRole(status, builder,
+                      "ida_jvp_context_registration_helper");
+  LLVM::ReturnOp::create(builder, loc, ValueRange{status.getResult()});
+  return setup;
+}
+
+LLVM::LLVMFuncOp emitSundialsIdaJvpContextTeardown(ModuleOp module,
+                                                   OpBuilder &builder,
+                                                   Location loc,
+                                                   StringRef teardownName,
+                                                   Operation *solve) {
+  MLIRContext *context = module.getContext();
+  Type ptrType = LLVM::LLVMPointerType::get(context);
+
+  OpBuilder::InsertionGuard guard(builder);
+  builder.setInsertionPointToStart(module.getBody());
+  auto teardownType = LLVM::LLVMFunctionType::get(
+      LLVM::LLVMVoidType::get(context), {ptrType}, /*isVarArg=*/false);
+  LLVM::LLVMFuncOp teardown =
+      LLVM::LLVMFuncOp::create(builder, loc, teardownName, teardownType);
+  teardown->setAttr(kSundialsRuntimeRoleAttr,
+                    builder.getStringAttr("ida_jvp_context_teardown"));
+  teardown->setAttr("enzymexla.sundials.context_deallocator",
+                    SymbolRefAttr::get(
+                        context,
+                        "__enzymexla_sundials_ida_destroy_jvp_context"));
+  if (Attribute jacobianAction = solve->getAttr("jacobian_action"))
+    teardown->setAttr("enzymexla.sundials.jacobian_action", jacobianAction);
+  if (Attribute sourceFunction = solve->getAttr("source_function"))
+    teardown->setAttr("enzymexla.sundials.source_function", sourceFunction);
+
+  Block *entry = teardown.addEntryBlock(builder);
+  builder.setInsertionPointToStart(entry);
+  Value jvpContext = entry->getArgument(0);
+  auto destroy = LLVM::CallOp::create(
+      builder, loc, TypeRange{},
+      SymbolRefAttr::get(context,
+                         "__enzymexla_sundials_ida_destroy_jvp_context"),
+      ValueRange{jvpContext});
+  setSundialsCallRole(destroy, builder, "ida_jvp_context_destroy");
+  LLVM::ReturnOp::create(builder, loc, ValueRange{});
+  return teardown;
+}
+
 struct EmitSundialsIdaRuntimeGlueLLVM
     : public mlir::enzyme::impl::EmitSundialsIdaRuntimeGlueLLVMBase<
           EmitSundialsIdaRuntimeGlueLLVM> {
@@ -2501,7 +2612,9 @@ struct EmitSundialsIdaRuntimeGlueLLVM
       if (!solve.getJacobianAction())
         return;
       if (solve->hasAttr(kSundialsRuntimeJacTimesCallbackAttr) &&
-          solve->hasAttr(kSundialsRuntimeRegistrationAttr))
+          solve->hasAttr(kSundialsRuntimeRegistrationAttr) &&
+          solve->hasAttr(kSundialsRuntimeContextSetupAttr) &&
+          solve->hasAttr(kSundialsRuntimeContextTeardownAttr))
         return;
       targetSolves.push_back(solve);
     });
@@ -2520,6 +2633,10 @@ struct EmitSundialsIdaRuntimeGlueLLVM
           usedSymbols, "__enzymexla_sundials_ida_jactimes_");
       std::string registrationName = getUniqueSundialsRuntimeSymbol(
           usedSymbols, "__enzymexla_sundials_ida_register_jactimes_");
+      std::string contextSetupName = getUniqueSundialsRuntimeSymbol(
+          usedSymbols, "__enzymexla_sundials_ida_setup_jactimes_");
+      std::string contextTeardownName = getUniqueSundialsRuntimeSymbol(
+          usedSymbols, "__enzymexla_sundials_ida_teardown_jactimes_");
 
       if (!getSundialsIdaJacTimesActionCallee(
               module, solve.getOperation(), LLVM::LLVMPointerType::get(context),
@@ -2576,11 +2693,21 @@ struct EmitSundialsIdaRuntimeGlueLLVM
       emitSundialsIdaJacTimesRegistration(module, builder, solve.getLoc(),
                                           registrationName, callbackName,
                                           solve.getOperation());
+      emitSundialsIdaJvpContextSetup(module, builder, solve.getLoc(),
+                                     contextSetupName, registrationName,
+                                     solve.getOperation());
+      emitSundialsIdaJvpContextTeardown(module, builder, solve.getLoc(),
+                                        contextTeardownName,
+                                        solve.getOperation());
 
       solve->setAttr(kSundialsRuntimeJacTimesCallbackAttr,
                      SymbolRefAttr::get(context, callbackName));
       solve->setAttr(kSundialsRuntimeRegistrationAttr,
                      SymbolRefAttr::get(context, registrationName));
+      solve->setAttr(kSundialsRuntimeContextSetupAttr,
+                     SymbolRefAttr::get(context, contextSetupName));
+      solve->setAttr(kSundialsRuntimeContextTeardownAttr,
+                     SymbolRefAttr::get(context, contextTeardownName));
       ++emitted;
     }
 
