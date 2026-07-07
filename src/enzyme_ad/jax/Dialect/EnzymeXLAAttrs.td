@@ -205,6 +205,81 @@ def EnzymeXLA_PartialSymmetryAnalysisResultAttr : AttrDef<EnzymeXLA_Dialect,
   let mnemonic = "partial_symmetry";
 }
 
+// Jacobian materialization
+
+def EnzymeXLA_JacobianMaterializationMethod : I32EnumAttr<
+    "JacobianMaterializationMethod",
+    "How an explicit Jacobian is produced before optimization",
+    [
+      I32EnumAttrCase<"one_hot_forward", 0>
+    ]> {
+  let genSpecializedAttr = 0;
+  let cppNamespace = "::mlir::enzymexla";
+}
+
+def EnzymeXLA_JacobianMaterializationMethodAttr
+    : EnumAttr<EnzymeXLA_Dialect, EnzymeXLA_JacobianMaterializationMethod,
+               "jacobian_materialization_method"> {
+  let assemblyFormat = "`<` $value `>`";
+}
+
+def EnzymeXLA_JacobianStorage : I32EnumAttr<
+    "JacobianStorage",
+    "Storage or assembly target for an explicit Jacobian materialization",
+    [
+      I32EnumAttrCase<"dense", 0>,
+      I32EnumAttrCase<"sparse_callback", 1>,
+      I32EnumAttrCase<"sparse_coo", 2>,
+      I32EnumAttrCase<"sparse_csr", 3>
+    ]> {
+  let genSpecializedAttr = 0;
+  let cppNamespace = "::mlir::enzymexla";
+}
+
+def EnzymeXLA_JacobianStorageAttr
+    : EnumAttr<EnzymeXLA_Dialect, EnzymeXLA_JacobianStorage,
+               "jacobian_storage"> {
+  let assemblyFormat = "`<` $value `>`";
+}
+
+// SUNDIALS
+
+def EnzymeXLA_SundialsIdaLinearSolver : I32EnumAttr<
+    "SundialsIdaLinearSolver",
+    "SUNDIALS IDA linear solver strategy visible to the compiler",
+    [
+      I32EnumAttrCase<"explicit_sparse_direct", 0>,
+      I32EnumAttrCase<"explicit_dense_direct", 1>,
+      I32EnumAttrCase<"jacobian_action_iterative", 2>
+    ]> {
+  let genSpecializedAttr = 0;
+  let cppNamespace = "::mlir::enzymexla";
+}
+
+def EnzymeXLA_SundialsIdaLinearSolverAttr
+    : EnumAttr<EnzymeXLA_Dialect, EnzymeXLA_SundialsIdaLinearSolver,
+               "ida_linear_solver"> {
+  let assemblyFormat = "`<` $value `>`";
+}
+
+def EnzymeXLA_SundialsIdaJacobianDemand : I32EnumAttr<
+    "SundialsIdaJacobianDemand",
+    "Derivative information requested by a SUNDIALS IDA solve",
+    [
+      I32EnumAttrCase<"none", 0>,
+      I32EnumAttrCase<"explicit_matrix", 1>,
+      I32EnumAttrCase<"jacobian_action", 2>
+    ]> {
+  let genSpecializedAttr = 0;
+  let cppNamespace = "::mlir::enzymexla";
+}
+
+def EnzymeXLA_SundialsIdaJacobianDemandAttr
+    : EnumAttr<EnzymeXLA_Dialect, EnzymeXLA_SundialsIdaJacobianDemand,
+               "ida_jacobian_demand"> {
+  let assemblyFormat = "`<` $value `>`";
+}
+
 // MPI
 
 def EnzymeXLA_MPIDatatype : I32EnumAttr<"MPIDatatype",

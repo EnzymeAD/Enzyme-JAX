@@ -1386,6 +1386,124 @@ def LowerEnzymeJacobianStableHLO : Pass<"lower-enzyme-jacobian-stablehlo"> {
   ];
 }
 
+def LowerGridKitIdaJacobianActionStableHLO
+    : Pass<"lower-gridkit-ida-jacobian-action-stablehlo"> {
+  let summary = "Lower GridKit IDA Jacobian actions to fwddiff/autodiff calls";
+  let description = [{
+    Rewrites Jacobian-vector and vector-Jacobian products into Enzyme
+    differential calls only when the consuming StableHLO dot_general carries
+    the GridKit/IDA JacTimes solver marker. This keeps the transformation tied
+    to iterative linear solver semantics instead of treating every explicit
+    Jacobian materialization as matrix-free legal.
+  }];
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "enzyme::EnzymeDialect"
+  ];
+}
+
+def LowerSundialsIdaJacobianActionStableHLO
+    : Pass<"lower-sundials-ida-jacobian-action-stablehlo", "ModuleOp"> {
+  let summary = "Lower SUNDIALS IDA Jacobian-action functions to fwddiff/autodiff calls";
+  let description = [{
+    Uses enzymexla.sundials.ida_solve solver semantics to decide which
+    Jacobian-action functions are legal to rewrite. Only solves with
+    jacobian_demand = <jacobian_action> and
+    linear_solver = <jacobian_action_iterative> are considered. The pass then
+    rewrites Jacobian-vector products inside the referenced jacobian_action
+    function into Enzyme differential calls.
+  }];
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "enzyme::EnzymeDialect",
+    "enzymexla::EnzymeXLADialect"
+  ];
+}
+
+def SynthesizeSundialsIdaJacobianActions
+    : Pass<"synthesize-sundials-ida-jacobian-actions", "ModuleOp"> {
+  let summary = "Synthesize semantic Jacobian-action records for SUNDIALS IDA";
+  let description = [{
+    Creates enzymexla.jacobian_action symbols from complete
+    enzymexla.jacobian_materialization records and links
+    enzymexla.sundials.ida_solve operations that request a Jacobian action to
+    the synthesized symbol when their explicit Jacobian producer is the source
+    materializer. This closes the semantic gap between recovered explicit
+    Jacobian materialization and the solver-side Jacobian-action demand before
+    runtime callback lowering.
+  }];
+  let dependentDialects = [
+    "enzymexla::EnzymeXLADialect"
+  ];
+}
+
+def SelectSundialsIdaMatrixFree
+    : Pass<"select-sundials-ida-matrix-free", "ModuleOp"> {
+  let summary = "Select matrix-free SUNDIALS IDA Jacobian-action solves";
+  let description = [{
+    Retargets eligible enzymexla.sundials.ida_solve operations from explicit
+    matrix demand to Jacobian-action demand. This pass is intentionally
+    conservative: it only changes solves that carry the
+    enzymexla.sundials.allow_matrix_free opt-in attribute and for which a
+    synthesized or pre-existing enzymexla.jacobian_action can be resolved from
+    the explicit Jacobian materializer or an unambiguous residual match.
+  }];
+  let dependentDialects = [
+    "enzymexla::EnzymeXLADialect"
+  ];
+}
+
+def EmitSundialsIdaRuntimeGlueLLVM
+    : Pass<"emit-sundials-ida-runtime-glue-llvm", "ModuleOp"> {
+  let summary = "Emit LLVM-dialect SUNDIALS IDA Jacobian-action runtime glue";
+  let description = [{
+    Lowers selected enzymexla.sundials.ida_solve records that demand a
+    Jacobian action to generated host/runtime ABI glue. The pass emits SUNDIALS
+    declarations, a generated IDA JacTimes callback symbol carrying the selected
+    Jacobian-action provenance, and a registration helper that constructs an
+    iterative SUNLinearSolver and calls IDASetJacTimes. This keeps callback
+    registration compiler-generated instead of requiring the source program to
+    manually switch to a JVP callback.
+  }];
+  let dependentDialects = [
+    "mlir::LLVM::LLVMDialect",
+    "enzymexla::EnzymeXLADialect"
+  ];
+}
+
+def RecoverSundialsIdaLLVM
+    : Pass<"recover-sundials-ida-llvm", "ModuleOp"> {
+  let summary = "Recover semantic SUNDIALS IDA solve records from LLVM calls";
+  let description = [{
+    Recognizes host-side SUNDIALS IDA configuration calls in LLVM dialect
+    without raising the SUNDIALS implementation. The pass recovers residual
+    registration, explicit Jacobian callbacks, Jacobian-times callbacks,
+    linear solver family, and optional preconditioner callbacks into
+    enzymexla.sundials.ida_solve records. This makes solver demand visible to
+    later Jacobian-to-JVP and runtime lowering passes.
+  }];
+  let dependentDialects = [
+    "mlir::LLVM::LLVMDialect",
+    "enzymexla::EnzymeXLADialect"
+  ];
+}
+
+def MarkGridKitSparseJacobianLLVM
+    : Pass<"mark-gridkit-sparse-jacobian-llvm", "ModuleOp"> {
+  let summary = "Mark GridKit Enzyme sparse Jacobian materialization in LLVM dialect";
+  let description = [{
+    Recognizes the existing GridKit Enzyme sparse Jacobian helper shape after
+    LLVM IR import: a DfDy/DfDyp/DfDwb/DhDy helper with sparse-store callback
+    addresses, __enzyme_todense wrappers, and __enzyme_fwddiff residual calls.
+    The pass preserves the original materialization and attaches metadata that
+    later passes can use to decide whether an IDA JacTimes JVP rewrite is legal.
+  }];
+  let dependentDialects = [
+    "mlir::LLVM::LLVMDialect",
+    "enzymexla::EnzymeXLADialect"
+  ];
+}
+
 def PartialSymmetryAnnotatePass : Pass<"partial-symmetry-annotate", "ModuleOp"> {
   let summary = "Annotate operations using partial symmetry analysis";
   let dependentDialects = [

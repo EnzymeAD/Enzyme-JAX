@@ -181,6 +181,112 @@ def Memcpy2DOp : EnzymeXLA_Op<"memcpy2d"> {
   let hasCanonicalizer = 1;
 }
 
+def JacobianMaterializationOp
+    : EnzymeXLA_Op<"jacobian_materialization"> {
+  let summary = "Semantic record for an explicit Jacobian materialization";
+
+  let description = [{
+    Records that a function materializes a Jacobian before later optimization.
+    This op is a compiler-visible semantic handle for recovered low-level
+    patterns such as repeated one-hot forward-mode differentiation feeding a
+    sparse assembly callback. It does not execute the materialization by
+    itself; it points at the materializer function that still contains the
+    raised implementation.
+  }];
+
+  let arguments = (ins
+    SymbolRefAttr:$materializer,
+    OptionalAttr<SymbolRefAttr>:$residual,
+    EnzymeXLA_JacobianMaterializationMethodAttr:$method,
+    EnzymeXLA_JacobianStorageAttr:$storage,
+    I64Attr:$fwddiff_calls,
+    I64Attr:$todense_calls,
+    I64Attr:$sparse_store_callbacks,
+    OptionalAttr<StrAttr>:$source
+  );
+
+  let assemblyFormat = [{
+    `materializer` `=` $materializer
+    ( `residual` `=` $residual^ )?
+    `method` `=` $method
+    `storage` `=` $storage
+    `fwddiff_calls` `=` $fwddiff_calls
+    `todense_calls` `=` $todense_calls
+    `sparse_store_callbacks` `=` $sparse_store_callbacks
+    attr-dict
+  }];
+}
+
+def JacobianActionOp : EnzymeXLA_Op<"jacobian_action", [Symbol]> {
+  let summary = "Semantic record for a Jacobian-vector action";
+
+  let description = [{
+    Records that a compiler pass has selected a Jacobian-vector action view of
+    a previously explicit Jacobian materialization. The op is a module-level
+    symbol that later solver lowering can reference when generating runtime
+    callback glue. It points back at the source materialization and residual
+    and carries activity, dimension, and layout metadata needed to build the
+    JVP callback without requiring the source program to register one manually.
+  }];
+
+  let arguments = (ins
+    SymbolNameAttr:$sym_name,
+    SymbolRefAttr:$materialization,
+    SymbolRefAttr:$residual,
+    I64Attr:$active_input_index,
+    I64Attr:$active_output_index,
+    OptionalAttr<StrAttr>:$source
+  );
+
+  let assemblyFormat = [{
+    $sym_name
+    `materialization` `=` $materialization
+    `residual` `=` $residual
+    `active_input_index` `=` $active_input_index
+    `active_output_index` `=` $active_output_index
+    attr-dict
+  }];
+}
+
+def SundialsIdaSolveOp : EnzymeXLA_Op<"sundials.ida_solve"> {
+  let summary = "Semantic SUNDIALS IDA solve configuration";
+
+  let description = [{
+    Models the compiler-visible parts of a SUNDIALS IDA solve while keeping the
+    SUNDIALS implementation itself external host runtime code. The op records
+    the residual callback, optional explicit Jacobian producer, optional
+    Jacobian-action producer, optional preconditioner, the selected linear
+    solver strategy, and the derivative demand made by the solve.
+
+    The effective IDA Jacobian is dF/dy + cj * dF/dyp. A solve with
+    `jacobian_demand = jacobian_action` may legally consume a JVP-style action
+    instead of materializing a full COO/CSR matrix when later legality checks
+    prove the Jacobian does not escape.
+  }];
+
+  let arguments = (ins
+    SymbolRefAttr:$residual,
+    OptionalAttr<SymbolRefAttr>:$jacobian,
+    OptionalAttr<SymbolRefAttr>:$jacobian_action,
+    OptionalAttr<SymbolRefAttr>:$preconditioner,
+    EnzymeXLA_SundialsIdaLinearSolverAttr:$linear_solver,
+    EnzymeXLA_SundialsIdaJacobianDemandAttr:$jacobian_demand,
+    Variadic<AnyType>:$inputs
+  );
+
+  let results = (outs Variadic<AnyType>:$results);
+
+  let assemblyFormat = [{
+    `residual` `=` $residual
+    ( `jacobian` `=` $jacobian^ )?
+    ( `jacobian_action` `=` $jacobian_action^ )?
+    ( `preconditioner` `=` $preconditioner^ )?
+    `linear_solver` `=` $linear_solver
+    `jacobian_demand` `=` $jacobian_demand
+    `(` $inputs `)` attr-dict `:` functional-type($inputs, results)
+  }];
+}
+
 def JITCallOp: EnzymeXLA_Op<"jit_call", [DeclareOpInterfaceMethods<SymbolUserOpInterface>, DeclareOpInterfaceMethods<CallOpInterface>, DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "JIT Call operation";
 
