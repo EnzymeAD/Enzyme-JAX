@@ -540,13 +540,19 @@ matchJacobianVectorAction(stablehlo::DotGeneralOp op) {
   if (!inputType)
     return std::nullopt;
 
-  auto totaldims = jacobianType.getNumElements();
-  auto nindims = inputType.getNumElements();
-  auto noutdims = totaldims - nindims;
+  auto outputType =
+      dyn_cast<RankedTensorType>(fn.getResultTypes()[diffoIdx]);
+  if (!outputType)
+    return std::nullopt;
+
+  int64_t inputRank = inputType.getRank();
+  int64_t outputRank = outputType.getRank();
+  if (jacobianType.getRank() != inputRank + outputRank)
+    return std::nullopt;
 
   for (auto dimid : jrdims) {
-    isJVP = isJVP && (dimid < noutdims);
-    isVJP = isVJP && (dimid >= noutdims);
+    isJVP = isJVP && (dimid >= outputRank);
+    isVJP = isVJP && (dimid < outputRank);
   }
 
   if (!isJVP && !isVJP)
