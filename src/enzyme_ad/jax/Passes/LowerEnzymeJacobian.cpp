@@ -1735,6 +1735,10 @@ void ensureSundialsIdaRuntimeDeclarations(ModuleOp module, OpBuilder &builder,
       LLVM::LLVMFunctionType::get(LLVM::LLVMVoidType::get(context),
                                   {f64Type, ptrType, ptrType},
                                   /*isVarArg=*/false));
+  getOrCreateLLVMDeclaration(
+      module, builder, loc, "__enzymexla_sundials_ida_register_jvp_context",
+      LLVM::LLVMFunctionType::get(LLVM::LLVMVoidType::get(context), {ptrType},
+                                  /*isVarArg=*/false));
 }
 
 void ensureSundialsIdaRawJvpContextDeclarations(ModuleOp module,
@@ -2403,7 +2407,7 @@ LLVM::LLVMFuncOp emitSundialsIdaJacTimesRegistration(ModuleOp module,
   registration->setAttr(kSundialsRuntimeRoleAttr,
                         builder.getStringAttr("ida_jactimes_registration"));
   registration->setAttr("enzymexla.sundials.callback_context",
-                        builder.getStringAttr("user_data_argument"));
+                        builder.getStringAttr("ida_jvp_user_data_context"));
   registration->setAttr("enzymexla.sundials.jactimes_callback",
                         SymbolRefAttr::get(context, callbackName));
   registration->setAttr("enzymexla.sundials.linear_solver",
@@ -2428,6 +2432,14 @@ LLVM::LLVMFuncOp emitSundialsIdaJacTimesRegistration(ModuleOp module,
   Value defaultKrylovDim = LLVM::ConstantOp::create(
       builder, loc, i32Type, builder.getIntegerAttr(i32Type, 0));
   Value nullPtr = LLVM::ZeroOp::create(builder, loc, ptrType);
+
+  auto registerContext = LLVM::CallOp::create(
+      builder, loc, TypeRange{},
+      SymbolRefAttr::get(context,
+                         "__enzymexla_sundials_ida_register_jvp_context"),
+      ValueRange{userData});
+  setSundialsCallRole(registerContext, builder,
+                      "ida_jvp_context_registration");
 
   auto setUserData = LLVM::CallOp::create(
       builder, loc, TypeRange{i32Type},
