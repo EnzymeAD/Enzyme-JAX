@@ -104,6 +104,8 @@ module {
 // CHECK-SAME: enzymexla.sundials.runtime_role = "ida_jvp_context_teardown"
 // CHECK-SAME: enzymexla.sundials.source_function = "host_configure"
 // CHECK-SAME: enzymexla.sundials.teardown_argument = "ida_mem"
+// CHECK: llvm.call @__enzymexla_sundials_ida_destroy_remembered_linear_solver
+// CHECK-SAME: enzymexla.sundials.role = "ida_iterative_linear_solver_destroy_for_ida_mem"
 // CHECK: llvm.call @__enzymexla_sundials_ida_destroy_remembered_jvp_context
 // CHECK-SAME: enzymexla.sundials.role = "ida_jvp_context_destroy_for_ida_mem"
 // CHECK: llvm.return
@@ -155,6 +157,10 @@ module {
 // CHECK-SAME: enzymexla.sundials.role = "ida_user_data_registration"
 // CHECK: %[[LS:.*]] = llvm.call @SUNLinSol_SPGMR
 // CHECK-SAME: enzymexla.sundials.role = "ida_iterative_linear_solver"
+// CHECK: llvm.call @__enzymexla_sundials_ida_remember_linear_solver
+// CHECK-SAME: %arg0
+// CHECK-SAME: %[[LS]]
+// CHECK-SAME: enzymexla.sundials.role = "ida_iterative_linear_solver_remember"
 // CHECK: llvm.call @IDASetLinearSolver
 // CHECK-SAME: enzymexla.sundials.role = "ida_linear_solver_registration"
 // CHECK: llvm.mlir.addressof @__enzymexla_sundials_ida_jactimes_0 : !llvm.ptr
@@ -207,18 +213,20 @@ module {
 // CHECK: %[[UNIMPLEMENTED:.*]] = llvm.mlir.constant(1 : i32) : i32
 // CHECK: llvm.return %[[UNIMPLEMENTED]] : i32
 
-// CHECK: llvm.func @__enzymexla_sundials_ida_destroy_remembered_jvp_context(!llvm.ptr)
-// CHECK: llvm.func @__enzymexla_sundials_ida_remember_jvp_context(!llvm.ptr, !llvm.ptr)
-// CHECK: llvm.func @__enzymexla_sundials_ida_destroy_jvp_context(!llvm.ptr)
-// CHECK: llvm.func @__enzymexla_sundials_ida_create_jvp_context(!llvm.ptr, !llvm.ptr, i64, i64) -> !llvm.ptr
-// CHECK: llvm.func @__enzymexla_sundials_ida_register_jvp_context(!llvm.ptr)
-// CHECK: llvm.func @N_VScale(f64, !llvm.ptr, !llvm.ptr)
-// CHECK: llvm.func @N_VGetLength(!llvm.ptr) -> i64
-// CHECK: llvm.func @N_VGetArrayPointer(!llvm.ptr) -> !llvm.ptr
-// CHECK: llvm.func @IDASetJacTimes(!llvm.ptr, !llvm.ptr, !llvm.ptr) -> i32
-// CHECK: llvm.func @IDASetUserData(!llvm.ptr, !llvm.ptr) -> i32
-// CHECK: llvm.func @IDASetLinearSolver(!llvm.ptr, !llvm.ptr, !llvm.ptr) -> i32
-// CHECK: llvm.func @SUNLinSol_SPGMR(!llvm.ptr, i32, i32, !llvm.ptr) -> !llvm.ptr
+// CHECK-DAG: llvm.func @__enzymexla_sundials_ida_destroy_remembered_jvp_context(!llvm.ptr)
+// CHECK-DAG: llvm.func @__enzymexla_sundials_ida_destroy_remembered_linear_solver(!llvm.ptr)
+// CHECK-DAG: llvm.func @__enzymexla_sundials_ida_remember_jvp_context(!llvm.ptr, !llvm.ptr)
+// CHECK-DAG: llvm.func @__enzymexla_sundials_ida_remember_linear_solver(!llvm.ptr, !llvm.ptr)
+// CHECK-DAG: llvm.func @__enzymexla_sundials_ida_destroy_jvp_context(!llvm.ptr)
+// CHECK-DAG: llvm.func @__enzymexla_sundials_ida_create_jvp_context(!llvm.ptr, !llvm.ptr, i64, i64) -> !llvm.ptr
+// CHECK-DAG: llvm.func @__enzymexla_sundials_ida_register_jvp_context(!llvm.ptr)
+// CHECK-DAG: llvm.func @N_VScale(f64, !llvm.ptr, !llvm.ptr)
+// CHECK-DAG: llvm.func @N_VGetLength(!llvm.ptr) -> i64
+// CHECK-DAG: llvm.func @N_VGetArrayPointer(!llvm.ptr) -> !llvm.ptr
+// CHECK-DAG: llvm.func @IDASetJacTimes(!llvm.ptr, !llvm.ptr, !llvm.ptr) -> i32
+// CHECK-DAG: llvm.func @IDASetUserData(!llvm.ptr, !llvm.ptr) -> i32
+// CHECK-DAG: llvm.func @IDASetLinearSolver(!llvm.ptr, !llvm.ptr, !llvm.ptr) -> i32
+// CHECK-DAG: llvm.func @SUNLinSol_SPGMR(!llvm.ptr, i32, i32, !llvm.ptr) -> !llvm.ptr
 
 // CHECK-LABEL: func.func @selected_solve
 // CHECK: enzymexla.sundials.ida_solve residual = @residual

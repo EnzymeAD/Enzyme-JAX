@@ -1885,6 +1885,16 @@ void ensureSundialsIdaRuntimeDeclarations(ModuleOp module, OpBuilder &builder,
       LLVM::LLVMFunctionType::get(LLVM::LLVMVoidType::get(context), {ptrType},
                                   /*isVarArg=*/false));
   getOrCreateLLVMDeclaration(
+      module, builder, loc,
+      "__enzymexla_sundials_ida_remember_linear_solver",
+      LLVM::LLVMFunctionType::get(LLVM::LLVMVoidType::get(context),
+                                  {ptrType, ptrType}, /*isVarArg=*/false));
+  getOrCreateLLVMDeclaration(
+      module, builder, loc,
+      "__enzymexla_sundials_ida_destroy_remembered_linear_solver",
+      LLVM::LLVMFunctionType::get(LLVM::LLVMVoidType::get(context), {ptrType},
+                                  /*isVarArg=*/false));
+  getOrCreateLLVMDeclaration(
       module, builder, loc, "__enzymexla_sundials_ida_create_jvp_context",
       LLVM::LLVMFunctionType::get(ptrType, {ptrType, ptrType, i64Type, i64Type},
                                   /*isVarArg=*/false));
@@ -2692,6 +2702,14 @@ LLVM::LLVMFuncOp emitSundialsIdaJacTimesRegistration(ModuleOp module,
       ValueRange{yyTemplate, pretypeNone, defaultKrylovDim, sunctx});
   setSundialsCallRole(linearSolver, builder, "ida_iterative_linear_solver");
 
+  auto rememberLinearSolver = LLVM::CallOp::create(
+      builder, loc, TypeRange{},
+      SymbolRefAttr::get(
+          context, "__enzymexla_sundials_ida_remember_linear_solver"),
+      ValueRange{idaMem, linearSolver.getResult()});
+  setSundialsCallRole(rememberLinearSolver, builder,
+                      "ida_iterative_linear_solver_remember");
+
   auto setLinearSolver = LLVM::CallOp::create(
       builder, loc, TypeRange{i32Type},
       SymbolRefAttr::get(context, "IDASetLinearSolver"),
@@ -2820,6 +2838,14 @@ LLVM::LLVMFuncOp emitSundialsIdaJvpContextTeardown(ModuleOp module,
   Block *entry = teardown.addEntryBlock(builder);
   builder.setInsertionPointToStart(entry);
   Value idaMem = entry->getArgument(0);
+  auto destroyLinearSolver = LLVM::CallOp::create(
+      builder, loc, TypeRange{},
+      SymbolRefAttr::get(
+          context,
+          "__enzymexla_sundials_ida_destroy_remembered_linear_solver"),
+      ValueRange{idaMem});
+  setSundialsCallRole(destroyLinearSolver, builder,
+                      "ida_iterative_linear_solver_destroy_for_ida_mem");
   auto destroy = LLVM::CallOp::create(
       builder, loc, TypeRange{},
       SymbolRefAttr::get(

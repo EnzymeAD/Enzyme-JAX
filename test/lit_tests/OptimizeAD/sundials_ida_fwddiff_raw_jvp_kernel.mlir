@@ -95,6 +95,8 @@ module {
 // CHECK-LABEL: llvm.func @__enzymexla_sundials_ida_teardown_jactimes_0
 // CHECK-SAME: enzymexla.sundials.context_deallocator = @__enzymexla_sundials_ida_destroy_remembered_jvp_context
 // CHECK-SAME: enzymexla.sundials.teardown_argument = "ida_mem"
+// CHECK: llvm.call @__enzymexla_sundials_ida_destroy_remembered_linear_solver
+// CHECK-SAME: enzymexla.sundials.role = "ida_iterative_linear_solver_destroy_for_ida_mem"
 // CHECK: llvm.call @__enzymexla_sundials_ida_destroy_remembered_jvp_context
 // CHECK-SAME: enzymexla.sundials.role = "ida_jvp_context_destroy_for_ida_mem"
 
@@ -110,6 +112,11 @@ module {
 // CHECK-SAME: enzymexla.sundials.runtime_context_input_count = 4 : i64
 // CHECK-SAME: enzymexla.sundials.runtime_context_input_indices = [0, 3]
 // CHECK-SAME: enzymexla.sundials.runtime_non_model_context_input_indices = [3]
+// CHECK: %[[LS:.*]] = llvm.call @SUNLinSol_SPGMR
+// CHECK-SAME: enzymexla.sundials.role = "ida_iterative_linear_solver"
+// CHECK: llvm.call @__enzymexla_sundials_ida_remember_linear_solver
+// CHECK-SAME: %[[LS]]
+// CHECK-SAME: enzymexla.sundials.role = "ida_iterative_linear_solver_remember"
 
 // CHECK-LABEL: llvm.func @__enzymexla_sundials_ida_raw_jvp_kernel_0
 // CHECK-SAME: enzymexla.sundials.callback_context = "context_input_accessor"
@@ -151,6 +158,8 @@ module {
 // CHECK-DAG: llvm.func @__enzymexla_sundials_ida_accumulate_raw_jvp(!llvm.ptr, !llvm.ptr, !llvm.ptr) -> i32
 // CHECK-DAG: llvm.func @__enzymexla_sundials_ida_destroy_remembered_jvp_context(!llvm.ptr)
 // CHECK-DAG: llvm.func @__enzymexla_sundials_ida_remember_jvp_context(!llvm.ptr, !llvm.ptr)
+// CHECK-DAG: llvm.func @__enzymexla_sundials_ida_destroy_remembered_linear_solver(!llvm.ptr)
+// CHECK-DAG: llvm.func @__enzymexla_sundials_ida_remember_linear_solver(!llvm.ptr, !llvm.ptr)
 
 // CHECK-LABEL: enzymexla.sundials.ida_solve residual = @residual
 // CHECK-SAME: enzymexla.sundials.runtime_context_input_count = 4 : i64
