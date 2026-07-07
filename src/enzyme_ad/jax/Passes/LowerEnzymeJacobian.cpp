@@ -111,6 +111,8 @@ constexpr llvm::StringLiteral kSundialsRuntimeContextSetupAttr =
     "enzymexla.sundials.runtime_context_setup";
 constexpr llvm::StringLiteral kSundialsRuntimeContextTeardownAttr =
     "enzymexla.sundials.runtime_context_teardown";
+constexpr llvm::StringLiteral kSundialsRuntimeHostSpliceAttr =
+    "enzymexla.sundials.runtime_host_splice";
 constexpr llvm::StringLiteral kSundialsContextInputIndicesAttr =
     "enzymexla.sundials.context_input_indices";
 constexpr llvm::StringLiteral kSundialsNonModelContextInputIndicesAttr =
@@ -134,8 +136,12 @@ constexpr llvm::StringLiteral kSundialsIdaRawJvpKernelsEmittedAttr =
     "enzymexla.sundials.ida_raw_jvp_kernels_emitted";
 constexpr llvm::StringLiteral kSundialsIdaLoweredRawJvpKernelsLinkedAttr =
     "enzymexla.sundials.ida_lowered_raw_jvp_kernels_linked";
+constexpr llvm::StringLiteral kSundialsIdaHostSplicesEmittedAttr =
+    "enzymexla.sundials.ida_host_splices_emitted";
 constexpr llvm::StringLiteral kSundialsIdaSolveOpName =
     "enzymexla.sundials.ida_solve";
+constexpr llvm::StringLiteral kSundialsIdaHostSpliceOpName =
+    "enzymexla.sundials.ida_host_splice";
 constexpr llvm::StringLiteral kSundialsRoleAttr = "enzymexla.sundials.role";
 
 struct JacobianVectorAction {
@@ -2787,6 +2793,44 @@ LLVM::LLVMFuncOp emitSundialsIdaJvpContextTeardown(ModuleOp module,
   return teardown;
 }
 
+Operation *emitSundialsIdaHostSplicePlan(ModuleOp module, OpBuilder &builder,
+                                         Location loc, StringRef spliceName,
+                                         StringRef setupName,
+                                         StringRef teardownName,
+                                         StringRef registrationName,
+                                         StringRef callbackName,
+                                         Operation *solve) {
+  MLIRContext *context = module.getContext();
+
+  OpBuilder::InsertionGuard guard(builder);
+  builder.setInsertionPointToStart(module.getBody());
+  OperationState state(loc, kSundialsIdaHostSpliceOpName);
+  state.addAttribute(SymbolTable::getSymbolAttrName(),
+                     builder.getStringAttr(spliceName));
+  state.addAttribute("setup", SymbolRefAttr::get(context, setupName));
+  state.addAttribute("teardown", SymbolRefAttr::get(context, teardownName));
+  state.addAttribute("registration",
+                     SymbolRefAttr::get(context, registrationName));
+  state.addAttribute("jactimes_callback",
+                     SymbolRefAttr::get(context, callbackName));
+  state.addAttribute("source",
+                     builder.getStringAttr("generated_ida_jvp_host_splice"));
+  if (Attribute jvpKernel = solve->getAttr(kSundialsRuntimeJvpKernelAttr))
+    state.addAttribute("jvp_kernel", jvpKernel);
+  if (Attribute rawKernel = solve->getAttr(kSundialsRuntimeRawJvpKernelAttr))
+    state.addAttribute("raw_jvp_kernel", rawKernel);
+  if (Attribute jacobianAction = solve->getAttr("jacobian_action"))
+    state.addAttribute("jacobian_action", jacobianAction);
+  if (Attribute residual = solve->getAttr("residual"))
+    state.addAttribute("residual", residual);
+  Operation *splice = builder.create(state);
+  splice->setAttr(kSundialsRuntimeRoleAttr,
+                  builder.getStringAttr("ida_jvp_host_splice_plan"));
+  copySundialsHostSpliceProvenance(solve, splice);
+  copySundialsRuntimeContextInputContract(solve, splice);
+  return splice;
+}
+
 struct EmitSundialsIdaRuntimeGlueLLVM
     : public mlir::enzyme::impl::EmitSundialsIdaRuntimeGlueLLVMBase<
           EmitSundialsIdaRuntimeGlueLLVM> {
@@ -2840,6 +2884,8 @@ struct EmitSundialsIdaRuntimeGlueLLVM
           usedSymbols, "__enzymexla_sundials_ida_setup_jactimes_");
       std::string contextTeardownName = getUniqueSundialsRuntimeSymbol(
           usedSymbols, "__enzymexla_sundials_ida_teardown_jactimes_");
+      std::string hostSpliceName = getUniqueSundialsRuntimeSymbol(
+          usedSymbols, "__enzymexla_sundials_ida_host_splice_");
 
       if (!getSundialsIdaJacTimesActionCallee(
               module, solve.getOperation(), LLVM::LLVMPointerType::get(context),
@@ -2911,6 +2957,12 @@ struct EmitSundialsIdaRuntimeGlueLLVM
                      SymbolRefAttr::get(context, contextSetupName));
       solve->setAttr(kSundialsRuntimeContextTeardownAttr,
                      SymbolRefAttr::get(context, contextTeardownName));
+      emitSundialsIdaHostSplicePlan(
+          module, builder, solve.getLoc(), hostSpliceName, contextSetupName,
+          contextTeardownName, registrationName, callbackName,
+          solve.getOperation());
+      solve->setAttr(kSundialsRuntimeHostSpliceAttr,
+                     SymbolRefAttr::get(context, hostSpliceName));
       ++emitted;
     }
 
@@ -2926,6 +2978,8 @@ struct EmitSundialsIdaRuntimeGlueLLVM
       module->setAttr(
           kSundialsIdaLoweredRawJvpKernelsLinkedAttr,
           attrBuilder.getI64IntegerAttr(linkedLoweredRawJvpKernels));
+    module->setAttr(kSundialsIdaHostSplicesEmittedAttr,
+                    attrBuilder.getI64IntegerAttr(emitted));
   }
 };
 

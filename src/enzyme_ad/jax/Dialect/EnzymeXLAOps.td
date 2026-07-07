@@ -287,6 +287,45 @@ def SundialsIdaSolveOp : EnzymeXLA_Op<"sundials.ida_solve"> {
   }];
 }
 
+def SundialsIdaHostSpliceOp
+    : EnzymeXLA_Op<"sundials.ida_host_splice", [Symbol]> {
+  let summary = "Host splice plan for generated SUNDIALS IDA JVP glue";
+
+  let description = [{
+    Records the compiler-generated host/runtime functions that must be spliced
+    into an existing SUNDIALS IDA host configuration path after a solve has
+    been retargeted from explicit Jacobian materialization to a Jacobian-action
+    callback. The op does not execute the splice by itself; it is a symbolic
+    plan tying the selected solve to generated setup, registration, JacTimes,
+    and teardown helpers plus the provenance and callback-context metadata
+    needed by a later host rewrite.
+  }];
+
+  let arguments = (ins
+    SymbolNameAttr:$sym_name,
+    SymbolRefAttr:$setup,
+    SymbolRefAttr:$teardown,
+    SymbolRefAttr:$registration,
+    SymbolRefAttr:$jactimes_callback,
+    OptionalAttr<SymbolRefAttr>:$jvp_kernel,
+    OptionalAttr<SymbolRefAttr>:$raw_jvp_kernel,
+    OptionalAttr<SymbolRefAttr>:$jacobian_action,
+    OptionalAttr<SymbolRefAttr>:$residual,
+    OptionalAttr<StrAttr>:$source
+  );
+
+  let assemblyFormat = [{
+    $sym_name
+    `setup` `=` $setup
+    `teardown` `=` $teardown
+    `registration` `=` $registration
+    `jactimes_callback` `=` $jactimes_callback
+    ( `jvp_kernel` `=` $jvp_kernel^ )?
+    ( `raw_jvp_kernel` `=` $raw_jvp_kernel^ )?
+    attr-dict
+  }];
+}
+
 def JITCallOp: EnzymeXLA_Op<"jit_call", [DeclareOpInterfaceMethods<SymbolUserOpInterface>, DeclareOpInterfaceMethods<CallOpInterface>, DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "JIT Call operation";
 

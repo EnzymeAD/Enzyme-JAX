@@ -1460,10 +1460,11 @@ def EmitSundialsIdaRuntimeGlueLLVM
     Lowers selected enzymexla.sundials.ida_solve records that demand a
     Jacobian action to generated host/runtime ABI glue. The pass emits SUNDIALS
     declarations, a generated IDA JacTimes callback symbol carrying the selected
-    Jacobian-action provenance, context setup/teardown helpers, and a
-    registration helper that constructs an iterative SUNLinearSolver and calls
-    IDASetJacTimes. This keeps callback registration compiler-generated instead
-    of requiring the source program to manually switch to a JVP callback.
+    Jacobian-action provenance, context setup/teardown helpers, a symbolic
+    host-splice plan, and a registration helper that constructs an iterative
+    SUNLinearSolver and calls IDASetJacTimes. This keeps callback registration
+    compiler-generated instead of requiring the source program to manually
+    switch to a JVP callback.
   }];
   let dependentDialects = [
     "mlir::LLVM::LLVMDialect",
