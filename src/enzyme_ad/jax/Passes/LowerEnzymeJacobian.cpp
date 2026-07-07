@@ -41,6 +41,7 @@ namespace enzyme {
 #define GEN_PASS_DEF_SYNTHESIZESUNDIALSIDAJACOBIANACTIONS
 #define GEN_PASS_DEF_SELECTSUNDIALSIDAMATRIXFREE
 #define GEN_PASS_DEF_EMITSUNDIALSIDARUNTIMEGLUELLVM
+#define GEN_PASS_DEF_STRIPSUNDIALSIDARUNTIMEGLUEMETADATA
 #define GEN_PASS_DEF_RECOVERSUNDIALSIDALLVM
 #define GEN_PASS_DEF_MARKGRIDKITSPARSEJACOBIANLLVM
 #include "src/enzyme_ad/jax/Passes/Passes.h.inc"
@@ -1074,6 +1075,29 @@ struct SundialsIdaLLVMConfig {
 
 bool isSundialsIdaSolveRecord(Operation *op) {
   return op->getName().getStringRef() == kSundialsIdaSolveOpName;
+}
+
+bool isSundialsIdaRuntimeGlueMetadataOp(Operation *op) {
+  StringRef name = op->getName().getStringRef();
+  return name == kSundialsIdaHostSpliceOpName ||
+         name == kSundialsIdaSolveOpName ||
+         name == kJacobianMaterializationOpName ||
+         name == kJacobianActionOpName;
+}
+
+bool isRuntimeGlueProvenanceAttr(StringRef name) {
+  return name.starts_with("enzymexla.") || name.starts_with("gridkit.");
+}
+
+unsigned stripRuntimeGlueProvenanceAttrs(Operation *op) {
+  SmallVector<StringAttr, 8> attrsToRemove;
+  for (NamedAttribute attr : op->getAttrs()) {
+    if (isRuntimeGlueProvenanceAttr(attr.getName().getValue()))
+      attrsToRemove.push_back(attr.getName());
+  }
+  for (StringAttr attrName : attrsToRemove)
+    op->removeAttr(attrName);
+  return attrsToRemove.size();
 }
 
 bool isSundialsIdaInitCallee(StringRef name) { return name == "IDAInit"; }
@@ -3312,6 +3336,46 @@ struct EmitSundialsIdaRuntimeGlueLLVM
       module->setAttr(kSundialsIdaHostInputProvidersEmittedAttr,
                       attrBuilder.getI64IntegerAttr(
                           emittedHostInputProviders));
+  }
+};
+
+struct StripSundialsIdaRuntimeGlueMetadata
+    : public mlir::enzyme::impl::StripSundialsIdaRuntimeGlueMetadataBase<
+          StripSundialsIdaRuntimeGlueMetadata> {
+
+  void runOnOperation() override {
+    ModuleOp module = getOperation();
+    SmallVector<Operation *, 16> metadataOps;
+    bool hasLiveMetadataUse = false;
+
+    stripRuntimeGlueProvenanceAttrs(module.getOperation());
+
+    WalkResult result = module.walk([&](Operation *op) {
+      if (op == module.getOperation())
+        return WalkResult::advance();
+
+      if (isSundialsIdaRuntimeGlueMetadataOp(op)) {
+        if (!op->use_empty()) {
+          op->emitError() << "cannot strip SUNDIALS IDA runtime-glue metadata "
+                             "operation with live SSA uses";
+          hasLiveMetadataUse = true;
+          return WalkResult::interrupt();
+        }
+        metadataOps.push_back(op);
+        return WalkResult::skip();
+      }
+
+      stripRuntimeGlueProvenanceAttrs(op);
+      return WalkResult::advance();
+    });
+
+    if (result.wasInterrupted() || hasLiveMetadataUse) {
+      signalPassFailure();
+      return;
+    }
+
+    while (!metadataOps.empty())
+      metadataOps.pop_back_val()->erase();
   }
 };
 

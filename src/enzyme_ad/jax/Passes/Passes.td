@@ -1472,6 +1472,23 @@ def EmitSundialsIdaRuntimeGlueLLVM
   ];
 }
 
+def StripSundialsIdaRuntimeGlueMetadata
+    : Pass<"strip-sundials-ida-runtime-glue-metadata", "ModuleOp"> {
+  let summary = "Strip SUNDIALS IDA runtime-glue semantic metadata";
+  let description = [{
+    Erases EnzymeXLA semantic marker operations and EnzymeXLA/GridKit
+    provenance attributes after SUNDIALS IDA runtime glue has been emitted.
+    The remaining module is intended to contain LLVM-dialect runtime helpers
+    and declarations that can be translated to LLVM IR and compiled into an
+    object file, while the unstripped glue remains available as compiler
+    evidence.
+  }];
+  let dependentDialects = [
+    "mlir::LLVM::LLVMDialect",
+    "enzymexla::EnzymeXLADialect"
+  ];
+}
+
 def RecoverSundialsIdaLLVM
     : Pass<"recover-sundials-ida-llvm", "ModuleOp"> {
   let summary = "Recover semantic SUNDIALS IDA solve records from LLVM calls";
