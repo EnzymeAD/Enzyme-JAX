@@ -1877,6 +1877,15 @@ void ensureSundialsIdaRuntimeDeclarations(ModuleOp module, OpBuilder &builder,
       module, builder, loc, "__enzymexla_sundials_ida_destroy_jvp_context",
       LLVM::LLVMFunctionType::get(LLVM::LLVMVoidType::get(context), {ptrType},
                                   /*isVarArg=*/false));
+  getOrCreateLLVMDeclaration(
+      module, builder, loc, "__enzymexla_sundials_ida_remember_jvp_context",
+      LLVM::LLVMFunctionType::get(LLVM::LLVMVoidType::get(context),
+                                  {ptrType, ptrType}, /*isVarArg=*/false));
+  getOrCreateLLVMDeclaration(
+      module, builder, loc,
+      "__enzymexla_sundials_ida_destroy_remembered_jvp_context",
+      LLVM::LLVMFunctionType::get(LLVM::LLVMVoidType::get(context), {ptrType},
+                                  /*isVarArg=*/false));
 }
 
 void ensureSundialsIdaRawJvpContextDeclarations(ModuleOp module,
@@ -2714,6 +2723,10 @@ LLVM::LLVMFuncOp emitSundialsIdaJvpContextSetup(ModuleOp module,
   setup->setAttr("enzymexla.sundials.context_allocator",
                  SymbolRefAttr::get(
                      context, "__enzymexla_sundials_ida_create_jvp_context"));
+  setup->setAttr("enzymexla.sundials.context_owner_registry",
+                 SymbolRefAttr::get(
+                     context,
+                     "__enzymexla_sundials_ida_remember_jvp_context"));
   if (Attribute jacobianAction = solve->getAttr("jacobian_action"))
     setup->setAttr("enzymexla.sundials.jacobian_action", jacobianAction);
   if (Attribute sourceFunction = solve->getAttr("source_function"))
@@ -2742,6 +2755,13 @@ LLVM::LLVMFuncOp emitSundialsIdaJvpContextSetup(ModuleOp module,
                          "__enzymexla_sundials_ida_create_jvp_context"),
       ValueRange{model, inputs, inputCount, outputSize.getResult()});
   setSundialsCallRole(jvpContext, builder, "ida_jvp_context_create");
+
+  auto remember = LLVM::CallOp::create(
+      builder, loc, TypeRange{},
+      SymbolRefAttr::get(context,
+                         "__enzymexla_sundials_ida_remember_jvp_context"),
+      ValueRange{idaMem, jvpContext.getResult()});
+  setSundialsCallRole(remember, builder, "ida_jvp_context_remember");
   LLVM::StoreOp::create(builder, loc, jvpContext.getResult(), contextOut);
 
   auto status = LLVM::CallOp::create(
@@ -2773,7 +2793,9 @@ LLVM::LLVMFuncOp emitSundialsIdaJvpContextTeardown(ModuleOp module,
   teardown->setAttr("enzymexla.sundials.context_deallocator",
                     SymbolRefAttr::get(
                         context,
-                        "__enzymexla_sundials_ida_destroy_jvp_context"));
+                        "__enzymexla_sundials_ida_destroy_remembered_jvp_context"));
+  teardown->setAttr("enzymexla.sundials.teardown_argument",
+                    builder.getStringAttr("ida_mem"));
   if (Attribute jacobianAction = solve->getAttr("jacobian_action"))
     teardown->setAttr("enzymexla.sundials.jacobian_action", jacobianAction);
   if (Attribute sourceFunction = solve->getAttr("source_function"))
@@ -2782,13 +2804,14 @@ LLVM::LLVMFuncOp emitSundialsIdaJvpContextTeardown(ModuleOp module,
 
   Block *entry = teardown.addEntryBlock(builder);
   builder.setInsertionPointToStart(entry);
-  Value jvpContext = entry->getArgument(0);
+  Value idaMem = entry->getArgument(0);
   auto destroy = LLVM::CallOp::create(
       builder, loc, TypeRange{},
-      SymbolRefAttr::get(context,
-                         "__enzymexla_sundials_ida_destroy_jvp_context"),
-      ValueRange{jvpContext});
-  setSundialsCallRole(destroy, builder, "ida_jvp_context_destroy");
+      SymbolRefAttr::get(
+          context, "__enzymexla_sundials_ida_destroy_remembered_jvp_context"),
+      ValueRange{idaMem});
+  setSundialsCallRole(destroy, builder,
+                      "ida_jvp_context_destroy_for_ida_mem");
   LLVM::ReturnOp::create(builder, loc, ValueRange{});
   return teardown;
 }
