@@ -17,6 +17,8 @@ module {
      perfify.cost "arith.muli" 3 // op
      perfify.cost "func.return" 0
      perfify.cost "scf.yield" 0
+     perfify.cost "arith.cmpi" 0
+     perfify.cost "scf.if" 0
    
      perfify.conditions @foo true pre { // true here meaning verification is enabled
         %b0 = perfify.arg 0
