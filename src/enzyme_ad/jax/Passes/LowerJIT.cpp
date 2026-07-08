@@ -274,7 +274,8 @@ bool initJIT() {
         llvm::orc::LLJITBuilder()
             .setLinkProcessSymbolsByDefault(true)
             .setObjectLinkingLayerCreator(
-                [](llvm::orc::ExecutionSession &ES)
+                [](llvm::orc::ExecutionSession &ES,
+                   llvm::jitlink::JITLinkMemoryManager &)
                     -> llvm::Expected<std::unique_ptr<llvm::orc::ObjectLayer>> {
                   auto obj = std::make_unique<
                       llvm::orc::RTDyldObjectLinkingLayer>(
@@ -603,9 +604,18 @@ void rewriteKernelCallABI(
     auto pfunc = op->getParentOfType<LLVM::LLVMFuncOp>();
     mlir::Value cufunc = pfunc.getBody().begin()->getArgument(2);
 
-    auto ldop = op.getKernelOperands().front().getDefiningOp<LLVM::LoadOp>();
-    assert(ldop);
-    auto params = ldop.getOperand();
+    mlir::Value params;
+    LLVM::LoadOp ldop = nullptr;
+    if (op.getKernelOperands().empty()) {
+      // Kernels with no runtime arguments (e.g. fully static configs baked
+      // in as compile-time constants) legitimately have no packed params
+      // struct to load; pass a null pointer as cuLaunchKernel accepts.
+      params = LLVM::ZeroOp::create(builder, loc, ptrty);
+    } else {
+      ldop = op.getKernelOperands().front().getDefiningOp<LLVM::LoadOp>();
+      assert(ldop);
+      params = ldop.getOperand();
+    }
 
     llvm::SmallVector<mlir::Value> args = {
         cufunc,
@@ -670,7 +680,8 @@ void rewriteKernelCallABI(
     }
 
     op.erase();
-    ldop.erase();
+    if (ldop)
+      ldop.erase();
   });
 }
 
@@ -1077,7 +1088,7 @@ struct LowerJITPass
                 rewriter.getContext(),
                 mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
             /*calledcomputations*/ nullptr, operand_layouts, result_layouts,
-            output_operand_aliases);
+            output_operand_aliases, /*result_tilings*/ nullptr);
       else if (backend == "cpu")
         replacement = stablehlo::CustomCallOp::create(
             rewriter, op.getLoc(), op.getResultTypes(), op.getInputs(),
@@ -1092,7 +1103,7 @@ struct LowerJITPass
                 mlir::stablehlo::CustomCallApiVersion::
                     API_VERSION_STATUS_RETURNING_UNIFIED),
             /*calledcomputations*/ nullptr, operand_layouts, result_layouts,
-            output_operand_aliases);
+            output_operand_aliases, /*result_tilings*/ nullptr);
 
       op.replaceAllUsesWith(replacement);
       op.erase();

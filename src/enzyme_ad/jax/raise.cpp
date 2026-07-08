@@ -85,7 +85,7 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
   std::string pass_pipeline =
       "inline{default-pipeline=canonicalize "
       "max-iterations=4},sroa-wrappers{set_private=false attributor=false},"
-      "lift-tessera-annotations,func-attr-to-tessera-attr,parse-optimization-rules,"
+      "lift-tessera-annotations,parse-optimization-rules,"
       "gpu-launch-recognition{backend=";
   pass_pipeline += backend;
   pass_pipeline += "}";
@@ -131,7 +131,7 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       if (outfile.size() && getenv("EXPORT_REACTANT")) {
         pass_pipeline += "print{filename="+outfile+".mlir},";
       }
-      pass_pipeline += "symbol-dce,enzyme,remove-unnecessary-enzyme-ops,lower-affine";
+      pass_pipeline += "symbol-dce,outline-enzyme-regions,enzyme,remove-unnecessary-enzyme-ops,lower-affine";
       if (backend == "rocm")
         pass_pipeline += ",convert-cudart-to-hiprt";
       if (backend != "cpu") {

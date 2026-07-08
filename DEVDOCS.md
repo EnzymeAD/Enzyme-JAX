@@ -44,8 +44,32 @@ MLIR dialects define custom operations and types for Enzyme-JAX.
 MLIR passes implement transformations and optimizations.
 
 - Tablegen definitions in `src/enzyme_ad/jax/Passes/Passes.td`
+- **AffineCFG.cpp** - Perform optimizations and control-flow raisings using affine constructs.
+- **AffineToStableHLORaising.cpp** - Raises affine loop nests to tensor operations using the stablehlo
+  dialect.
+- **ArithRaising.cpp** - Raises arith and math operations on tensors to the stablehlo / chlo dialects.
+- **CanonicalizeFor.cpp** & **CanonicalizeLoops.cpp** - Raise scf.while to scf.for loops and other
+  canonicalizations.
+- **ConsumingInterpreterPass.cpp** - Apply transform ops patterns to the module.
+- **ControlFlowToSCF.cpp** - Upstream ControlFlowToSCF checked in.
+- **DelinearizeIndexing.cpp** - Transforms linear memory accesses to affine expressions.
+- **DropUnsupportedAttributesPass.cpp** - Removes internal enzymexla attributes that are not
+  supported by XLA.
 - **EnzymeHLOOpt.cpp** - Core optimization patterns for StableHLO and EnzymeXLA operations
-  This file contains (nearly) all the stablehlo tensor optimizations.
+  This file contains (nearly) all the stablehlo tensor optimizations. Other optimization patterns
+  are written in Tablegen and located in **StablehloOptPatterns.td**.
+- **EnzymeHLOUnroll.cpp** - Unroll stablehlo.while ops in for loop forms.
+- **KernelCastPass.cpp** - Changes the floating type from GPU kernels to another floating point.
+  Used to support number types such as bfloat16 when the frontend cannot generate correct code
+  for it.
+- **LibDeviceFuncsRaisingPass.cpp** - Raise device side function calls and llvm intrinsics to higher
+  level MLIR operations of the relevant dialects (math, arith, nvvm).
+- **LLVMToAffineAccess.cpp** - Transform linear loads and stores from the llvm dialect to affine
+  constructs.
+- **LLVMToControlFlow.cpp** - From llvm to control flow.
+- **SimplifyAffineExprs.cpp** - Try to simplify affine expressions using the Integer Set Library (ISL).
+- **SortMemory.cpp** - Sort memory accesses if non-overlapping.
+- **SROAWrappers.cpp** - Calls the LLVM SROA pass on LLVM functions contained in the given MLIR module.
 
 #### 3. **Transform Operations** (`src/enzyme_ad/jax/TransformOps/`)
 In order to have more granular control over which pattern is applied, patterns are also registered as transform operations.
@@ -70,7 +94,7 @@ enzymexlamlir-opt --enzyme-hlo-generate-td="patterns=and_pad_pad" --transform-in
 3. Implement `matchAndRewrite()` method
 4. Register in `EnzymeHLOOptPass::runOnOperation()`
 5. Register as Transform operation in `TransformOps.td`
-6. Add the pass to the appropriate pass list in `src/enzyme_ad/jax/primitives.py`
+6. Add the pass to the appropriate pass list in `src/enzyme_ad/jax/Integrations/c/EnzymeXLA.cpp` using the name from `TransformOps.td`
 
 ### Adding a new lowering pass
 1. Define the pass in `src/enzyme_ad/jax/Passes/Passes.td`, e.g. `LowerEnzymeXLALinalgPass`

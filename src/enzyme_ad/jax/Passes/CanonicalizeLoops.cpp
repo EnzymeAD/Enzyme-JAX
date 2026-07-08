@@ -151,7 +151,9 @@ struct RemoveAffineParallelSingleIter
   }
 };
 
-namespace {
+} // namespace
+
+namespace mlir::enzyme {
 
 /// Integer range analysis determines the integer value range of SSA values
 /// using operations that define `InferIntRangeInterface` and also sets the
@@ -344,6 +346,10 @@ LogicalResult AffineIntegerRangeAnalysis::visitOperation(
   inferrable.inferResultRangesFromOptional(argRanges, joinCallback);
   return success();
 }
+
+} // namespace mlir::enzyme
+
+namespace {
 
 std::optional<int64_t> maxSize(mlir::Value v) {
   if (auto ba = dyn_cast<BlockArgument>(v)) {
@@ -924,6 +930,8 @@ public:
           return v;
         if (!ifOp->isAncestor(op))
           return v;
+        if (op->getNumRegions() > 0)
+          return std::nullopt;
         if (!isPure(op))
           return std::nullopt;
         SmallVector<Value> rOprs;
@@ -953,16 +961,19 @@ public:
       rewriter.replaceAllUsesWith(ifOp->getResult(i), select);
       succeeded = true;
     }
+
     return success(succeeded);
   }
 };
 
+template <bool Speculate>
 class IfToSelect final : public OpRewritePattern<scf::IfOp> {
 public:
   using OpRewritePattern<scf::IfOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(scf::IfOp ifOp,
                                 PatternRewriter &rewriter) const override {
+
     // Check if if has both then and else regions
     bool hasElse = !ifOp.getElseRegion().empty();
     if (!hasElse)
@@ -978,12 +989,18 @@ public:
     auto elseYield = cast<scf::YieldOp>(elseBlock->getTerminator());
 
     // Check if all operations in both blocks are pure
-    if (llvm::any_of(thenBlock->getOperations(),
-                     [](Operation &op) { return !isPure(&op); }))
-      return failure();
-    if (llvm::any_of(elseBlock->getOperations(),
-                     [](Operation &op) { return !isPure(&op); }))
-      return failure();
+    if (Speculate) {
+      if (llvm::any_of(thenBlock->getOperations(),
+                       [](Operation &op) { return !isPure(&op); }))
+        return failure();
+      if (llvm::any_of(elseBlock->getOperations(),
+                       [](Operation &op) { return !isPure(&op); }))
+        return failure();
+    } else {
+      if (thenBlock->getOperations().size() != 1 ||
+          elseBlock->getOperations().size() != 1)
+        return failure();
+    }
 
     // Clone all operations from both branches before their yields
     OpBuilder::InsertionGuard guard(rewriter);
@@ -1024,6 +1041,7 @@ public:
     }
 
     rewriter.replaceOp(ifOp, results);
+
     return success();
   }
 };
@@ -1032,15 +1050,21 @@ public:
 
 struct CanonicalizeLoopsPass
     : public enzyme::impl::CanonicalizeLoopsPassBase<CanonicalizeLoopsPass> {
+  using CanonicalizeLoopsPassBase::CanonicalizeLoopsPassBase;
   void runOnOperation() override {
 
     // Step 0: Canonicalize loops when possible.
     {
       RewritePatternSet patterns(&getContext());
-      patterns
-          .add<RemoveAffineParallelSingleIter, SwitchToIf,
-               SimplifyIfByRemovingEmptyThen, PartialIfToSelect, IfToSelect>(
-              &getContext());
+      patterns.add<RemoveAffineParallelSingleIter, SwitchToIf,
+                   SimplifyIfByRemovingEmptyThen, PartialIfToSelect>(
+          &getContext());
+
+      if (speculate_if) {
+        patterns.add<IfToSelect<true>>(&getContext());
+      } else {
+        patterns.add<IfToSelect<false>>(&getContext());
+      }
 
       if (failed(
               applyPatternsGreedily(getOperation(), std::move(patterns),
@@ -1307,7 +1331,6 @@ struct CanonicalizeLoopsPass
     }
   }
 };
-} // namespace
 
 void mlir::enzyme::addSingleIter(RewritePatternSet &patterns,
                                  MLIRContext *ctx) {

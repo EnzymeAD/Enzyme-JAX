@@ -21,6 +21,11 @@ def CanonicalizeLoopsPass : InterfacePass<"canonicalize-loops",
                                           "mlir::FunctionOpInterface"> {
   let summary = "Canonicalize loops";
   let dependentDialects = ["affine::AffineDialect"];
+  let options = [
+    Option<"speculate_if", "speculate_if", "bool",
+           /*default=*/"false",
+	   "Whether to speculate if statement bodies">
+  ];
 }
 
 def DialectCanonicalize : Pass<"dialect-canonicalize"> {
@@ -125,7 +130,17 @@ def MultiFloatConversionPass : Pass<"multi-float-conversion"> {
   ];
 }
 
-
+def LowerComplexOperationsPass : Pass<"lower-complex-operations"> {
+  let summary = "Lower operations on complex-element tensor types to use real elements with an extra dimension.";
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "tensor::TensorDialect",
+    "arith::ArithDialect",
+  ];
+  let options = [
+    Option<"concatDimension", "concat-dimension", "std::string", "\"first\"", "Dimension to concatenate ('first' or 'last')">,
+  ];
+}
 
 def TensorEmptyOpRaisingPass : Pass<"tensor-empty-raise"> {
   let summary = "Raise tensor.empty ops";
@@ -247,6 +262,18 @@ def EnzymeHLOUnrollPass : Pass<"enzyme-hlo-unroll"> {
         /*type=*/"int",
         /*default=*/"-1",
         /*description=*/"Only unroll if total operations is less than this value. If -1, no limit.">
+  ];
+}
+
+def EnzymeRefineArgumentsPass : Pass<"enzyme-refine-arguments", "ModuleOp"> {
+  let summary = "Refine function arguments with potential type conversion.";
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "tensor::TensorDialect",
+  ];
+  let options = [
+    ListOption<"refinedTypesOption", "refined-types", "std::string",
+               "List of refined types for function arguments">
   ];
 }
 
@@ -613,8 +640,17 @@ def LowerImpulseTraceOpsPass : Pass<"lower-impulse-trace-ops"> {
   ];
 }
 
+def LowerEnzymeXLAMathPass : Pass<"lower-enzymexla-math"> {
+  let summary = "Lower enzymexla math ops to stablehlo";
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "chlo::ChloDialect",
+    "enzymexla::EnzymeXLADialect",
+  ];
+}
+
 def LowerEnzymeXLAMLPass : Pass<"lower-enzymexla-ml"> {
-  let summary = "Lower enzymexla mlops to stablehlo";
+  let summary = "Lower enzymexla math ops to stablehlo (deprecated alias for lower-enzymexla-math)";
   let dependentDialects = [
     "stablehlo::StablehloDialect",
     "chlo::ChloDialect",
@@ -914,6 +950,9 @@ def ConvertParallelToGPU2 : Pass<"convert-parallel-to-gpu2"> {
 
 def PolygeistMem2Reg : Pass<"polygeist-mem2reg"> {
   let summary = "Replace scf.if and similar with affine.if";
+  let dependentDialects = [
+    "arith::ArithDialect"
+  ];
 }
 
 def OptimizeCommunication : Pass<"optimize-communication"> {
@@ -1102,8 +1141,11 @@ def AffineToStableHLORaising : Pass<"raise-affine-to-stablehlo"> {
   let summary = "Raise affine parallel loops to stablehlo ops if possible";
   let dependentDialects = [
     "affine::AffineDialect",
+    "memref::MemRefDialect",
+    "scf::SCFDialect",
     "stablehlo::StablehloDialect",
     "func::FuncDialect",
+    "gpu::GPUDialect",
   ];
   let options =
       [Option<

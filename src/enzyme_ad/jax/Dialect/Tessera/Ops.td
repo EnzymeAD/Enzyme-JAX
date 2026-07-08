@@ -29,14 +29,19 @@ def DefineOp : TesseraOp<"define", [
 
   let arguments = (ins SymbolNameAttr:$sym_name,
                        TypeAttrOf<FunctionType>:$function_type,
+	                     ArrayAttr:$byRefTypes,
+                       BoolAttr:$pure,
                        OptionalAttr<StrAttr>:$sym_visibility,
                        OptionalAttr<DictArrayAttr>:$arg_attrs,
                        OptionalAttr<DictArrayAttr>:$res_attrs
-                    );
+                  );
   let regions = (region AnyRegion:$body);
 
   let builders = [OpBuilder<(ins
     "StringRef":$name, "FunctionType":$type,
+    "ArrayAttr":$byRefTypes,
+    "bool":$pure,
+    CArg<"StringAttr", "{}">:$sym_visibility,
     CArg<"ArrayRef<NamedAttribute>", "{}">:$attrs,
     CArg<"ArrayRef<DictionaryAttr>", "{}">:$argAttrs)
   >];
@@ -57,6 +62,18 @@ def DefineOp : TesseraOp<"define", [
     /// compatible.
     void cloneInto(DefineOp dest, IRMapping &mapper);
 
+    ::mlir::Attribute getSretAttr();
+
+    // Returns the stored byref-type array as an ArrayRef. Index convention: sret-excluded
+    // argument index, since it is based on the argument list in the annotation string,
+    // which does not include the sret argument. Each entry is either a TypeAttr
+    // (arg is byref) or null (arg is not byref).
+    ::mlir::ArrayRef<Attribute> getByRefTypesArray();
+
+    // Returns the byref type for a given argument index, or null if the argument is not byref.
+    ::mlir::Type getByRefType(unsigned argIdx);
+
+
     //===------------------------------------------------------------------===//
     // FunctionOpInterface Methods
     //===------------------------------------------------------------------===//
@@ -72,6 +89,11 @@ def DefineOp : TesseraOp<"define", [
     /// Returns the result types of this function.
     ArrayRef<Type> getResultTypes() { return getFunctionType().getResults(); }
 
+    /// Returns the argument attribute at the given index, accounting for the
+    /// sret argument offset if present.
+    ::mlir::Attribute getArgAttr(unsigned index, mlir::StringAttr name);
+    ::mlir::Attribute getArgAttr(unsigned index, llvm::StringRef name);
+
     //===------------------------------------------------------------------===//
     // SymbolOpInterface Methods
     //===------------------------------------------------------------------===//
@@ -80,6 +102,7 @@ def DefineOp : TesseraOp<"define", [
 
   }];
   let hasCustomAssemblyFormat = 1;
+  let hasVerifier = 1;
 }
 
 //===----------------------------------------------------------------------===//
@@ -88,7 +111,8 @@ def DefineOp : TesseraOp<"define", [
 
 def CallOp : TesseraOp<"call",
     [CallOpInterface, MemRefsNormalizable,
-     DeclareOpInterfaceMethods<SymbolUserOpInterface>]> {
+     DeclareOpInterfaceMethods<SymbolUserOpInterface>,
+     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "call operation";
   let description = [{
     The 'tessera.call' operation represents a call to the custom operation defined by the user.
@@ -127,18 +151,6 @@ def CallOp : TesseraOp<"call",
       CArg<"ValueRange", "{}">:$operands), [{
       build($_builder, $_state, StringAttr::get($_builder.getContext(), callee),
             results, operands);
-    }]>,
-    OpBuilder<(ins "TypeRange":$results, "FlatSymbolRefAttr":$callee,
-      CArg<"ValueRange", "{}">:$operands), [{
-      build($_builder, $_state, callee, results, operands);
-    }]>,
-    OpBuilder<(ins "TypeRange":$results, "StringAttr":$callee,
-      CArg<"ValueRange", "{}">:$operands), [{
-      build($_builder, $_state, callee, results, operands);
-    }]>,
-    OpBuilder<(ins "TypeRange":$results, "StringRef":$callee,
-      CArg<"ValueRange", "{}">:$operands), [{
-      build($_builder, $_state, callee, results, operands);
     }]>];
 
   let extraClassDeclaration = [{
@@ -180,10 +192,6 @@ def ReturnOp : TesseraOp<"return", [Pure, HasParent<"DefineOp">, ReturnLike, Ter
   }];
 
   let arguments = (ins Variadic<AnyType>:$operands);
-
-  let builders = [OpBuilder<(ins), [{
-    build($_builder, $_state, {});
-  }]>];
 
   let assemblyFormat = "attr-dict ($operands^ `:` type($operands))?";
   let hasVerifier = 1;

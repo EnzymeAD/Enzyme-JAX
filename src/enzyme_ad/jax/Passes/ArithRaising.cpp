@@ -91,6 +91,7 @@ struct ArithRaisingPass
     RAISE_BINARY(arith::XOrIOp, stablehlo::XorOp, mhlo::XorOp);
     RAISE_BINARY(math::PowFOp, stablehlo::PowOp, mhlo::PowOp);
     RAISE_BINARY(arith::RemFOp, stablehlo::RemOp, mhlo::RemOp);
+    RAISE_BINARY(arith::RemSIOp, stablehlo::RemOp, mhlo::RemOp);
     RAISE_BINARY(arith::RemUIOp, stablehlo::RemOp, mhlo::RemOp);
 
 #undef RAISE_BINARY
@@ -121,10 +122,16 @@ struct ArithRaisingPass
     RAISE_UNARY(math::SqrtOp, stablehlo::SqrtOp, mhlo::SqrtOp);
     RAISE_UNARY(math::RsqrtOp, stablehlo::RsqrtOp, mhlo::RsqrtOp);
     RAISE_UNARY(math::CbrtOp, stablehlo::CbrtOp, mhlo::CbrtOp);
+    RAISE_UNARY(math::CountLeadingZerosOp, stablehlo::ClzOp, mhlo::ClzOp);
+    RAISE_UNARY(math::CtPopOp, stablehlo::PopulationCountOp,
+                mhlo::PopulationCountOp);
     RAISE_UNARY(math::AbsFOp, stablehlo::AbsOp, mhlo::AbsOp);
     RAISE_UNARY(math::IsFiniteOp, stablehlo::IsFiniteOp, mhlo::IsFiniteOp);
     RAISE_UNARY(math::CeilOp, stablehlo::CeilOp, mhlo::CeilOp);
     RAISE_UNARY(math::FloorOp, stablehlo::FloorOp, mhlo::FloorOp);
+    RAISE_UNARY(math::RoundEvenOp, stablehlo::RoundNearestEvenOp,
+                mhlo::RoundNearestEvenOp);
+    RAISE_UNARY(math::RoundOp, stablehlo::RoundOp, mhlo::RoundOp);
     RAISE_UNARY(math::ErfOp, chlo::ErfOp, chlo::ErfOp);
     RAISE_UNARY(arith::NegFOp, stablehlo::NegOp, mhlo::NegOp);
     RAISE_UNARY(enzymexla::LGammaOp, chlo::LgammaOp, chlo::LgammaOp);
@@ -539,13 +546,21 @@ struct ArithRaisingPass
 
       Value newCmpOp;
       if (use_stablehlo) {
-        stablehlo::ComparisonType compType = stablehlo::ComparisonType::SIGNED;
         auto predicate = cmpOp.getPredicate();
-        if (predicate == arith::CmpIPredicate::ugt ||
-            predicate == arith::CmpIPredicate::uge ||
-            predicate == arith::CmpIPredicate::ult ||
-            predicate == arith::CmpIPredicate::ule)
-          compType = stablehlo::ComparisonType::UNSIGNED;
+        // Booleans (i1) and unsigned integers lower to PRED/unsigned HLO types,
+        // which require an UNSIGNED comparison type regardless of the
+        // predicate.
+        auto elemType = cast<RankedTensorType>(cmpOp.getOperand(0).getType())
+                            .getElementType();
+        bool unsignedPredicate = predicate == arith::CmpIPredicate::ugt ||
+                                 predicate == arith::CmpIPredicate::uge ||
+                                 predicate == arith::CmpIPredicate::ult ||
+                                 predicate == arith::CmpIPredicate::ule;
+        stablehlo::ComparisonType compType =
+            (unsignedPredicate || elemType.isUnsignedInteger() ||
+             elemType.isInteger(1))
+                ? stablehlo::ComparisonType::UNSIGNED
+                : stablehlo::ComparisonType::SIGNED;
 
         stablehlo::ComparisonDirection direction;
         switch (predicate) {
@@ -574,9 +589,26 @@ struct ArithRaisingPass
         default:
           return;
         }
-        newCmpOp = stablehlo::CompareOp::create(
-            builder, cmpOp->getLoc(), cmpOp->getOperand(0),
-            cmpOp->getOperand(1), direction, compType);
+        Value lhs = cmpOp.getOperand(0);
+        Value rhs = cmpOp.getOperand(1);
+        if (unsignedPredicate) {
+          auto lhsType = dyn_cast<RankedTensorType>(lhs.getType());
+          if (lhsType) {
+            if (elemType.isSignlessInteger() || elemType.isSignedInteger()) {
+              auto unsignedElemType = IntegerType::get(
+                  builder.getContext(), elemType.getIntOrFloatBitWidth(),
+                  IntegerType::Unsigned);
+              auto unsignedType =
+                  RankedTensorType::get(lhsType.getShape(), unsignedElemType);
+              lhs = stablehlo::ConvertOp::create(builder, cmpOp.getLoc(),
+                                                 unsignedType, lhs);
+              rhs = stablehlo::ConvertOp::create(builder, cmpOp.getLoc(),
+                                                 unsignedType, rhs);
+            }
+          }
+        }
+        newCmpOp = stablehlo::CompareOp::create(builder, cmpOp->getLoc(), lhs,
+                                                rhs, direction, compType);
       } else {
         return;
       }

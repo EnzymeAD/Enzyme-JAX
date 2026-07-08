@@ -674,6 +674,20 @@ SymmetricResultAnalysis::State SymmetricResultAnalysis::localGuaranteed(
         return State::GUARANTEED;
       }
 
+      if (lhs == rhs && lhsCDims[0] == 1 - rhsCDims[0]) {
+        auto found = valueCache.find(lhs);
+        if (found != valueCache.end()) {
+          if (found->second) {
+            return State::GUARANTEED;
+          } else {
+            return State::NOTGUARANTEED;
+          }
+        }
+
+        localtodo.push_back(lhs);
+        return State::PENDING;
+      }
+
       if (auto lhsT = lhs.getDefiningOp<stablehlo::TransposeOp>()) {
         if (isTrueTranspose(lhsT) && lhsT.getOperand() == rhs &&
             lhsCDims[0] == 1 - rhsCDims[0]) {
@@ -827,10 +841,13 @@ NoNanResultAnalysis::State NoNanResultAnalysis::localGuaranteed(
     recursiveCheck = true;
     operandsToCheck.push_back(op->getOperand(1));
     operandsToCheck.push_back(op->getOperand(2));
-  } else if (isa<stablehlo::DynamicSliceOp, stablehlo::DynamicUpdateSliceOp>(
-                 op)) {
+  } else if (isa<stablehlo::DynamicSliceOp>(op)) {
     recursiveCheck = true;
     operandsToCheck.push_back(op->getOperand(0));
+  } else if (isa<stablehlo::DynamicUpdateSliceOp>(op)) {
+    recursiveCheck = true;
+    operandsToCheck.push_back(op->getOperand(0));
+    operandsToCheck.push_back(op->getOperand(1));
   }
 
   if (recursiveCheck) {
@@ -895,10 +912,13 @@ FiniteResultAnalysis::State FiniteResultAnalysis::localGuaranteed(
     recursiveCheck = true;
     operandsToCheck.push_back(op->getOperand(1));
     operandsToCheck.push_back(op->getOperand(2));
-  } else if (isa<stablehlo::DynamicSliceOp, stablehlo::DynamicUpdateSliceOp>(
-                 op)) {
+  } else if (isa<stablehlo::DynamicSliceOp>(op)) {
     recursiveCheck = true;
     operandsToCheck.push_back(op->getOperand(0));
+  } else if (isa<stablehlo::DynamicUpdateSliceOp>(op)) {
+    recursiveCheck = true;
+    operandsToCheck.push_back(op->getOperand(0));
+    operandsToCheck.push_back(op->getOperand(1));
   }
 
   if (recursiveCheck) {
@@ -1015,10 +1035,13 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
     recursiveCheck = true;
     operandsToCheck.push_back(op->getOperand(1));
     operandsToCheck.push_back(op->getOperand(2));
-  } else if (isa<stablehlo::DynamicSliceOp, stablehlo::DynamicUpdateSliceOp>(
-                 op)) {
+  } else if (isa<stablehlo::DynamicSliceOp>(op)) {
     recursiveCheck = true;
     operandsToCheck.push_back(op->getOperand(0));
+  } else if (isa<stablehlo::DynamicUpdateSliceOp>(op)) {
+    recursiveCheck = true;
+    operandsToCheck.push_back(op->getOperand(0));
+    operandsToCheck.push_back(op->getOperand(1));
   }
 
   if (recursiveCheck) {
@@ -1029,7 +1052,7 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
 }
 
 bool PurelyRealResultAnalysis::constantComplexCheck(DenseElementsAttr attr) {
-  for (auto value : attr.getValues<std::complex<llvm::APFloat>>()) {
+  for (auto value : attr.getValues<mlir::Complex<llvm::APFloat>>()) {
     if (!value.imag().isZero()) {
       return false;
     }
@@ -1078,10 +1101,13 @@ PurelyRealResultAnalysis::State PurelyRealResultAnalysis::localGuaranteed(
     recursiveCheck = true;
     operandsToCheck.push_back(op->getOperand(1));
     operandsToCheck.push_back(op->getOperand(2));
-  } else if (isa<stablehlo::DynamicSliceOp, stablehlo::DynamicUpdateSliceOp>(
-                 op)) {
+  } else if (isa<stablehlo::DynamicSliceOp>(op)) {
     recursiveCheck = true;
     operandsToCheck.push_back(op->getOperand(0));
+  } else if (isa<stablehlo::DynamicUpdateSliceOp>(op)) {
+    recursiveCheck = true;
+    operandsToCheck.push_back(op->getOperand(0));
+    operandsToCheck.push_back(op->getOperand(1));
   }
 
   if (recursiveCheck) {
@@ -1092,7 +1118,7 @@ PurelyRealResultAnalysis::State PurelyRealResultAnalysis::localGuaranteed(
 }
 
 bool PurelyImagResultAnalysis::constantComplexCheck(DenseElementsAttr attr) {
-  for (auto value : attr.getValues<std::complex<llvm::APFloat>>()) {
+  for (auto value : attr.getValues<mlir::Complex<llvm::APFloat>>()) {
     if (!value.real().isZero()) {
       return false;
     }
@@ -1132,10 +1158,13 @@ PurelyImagResultAnalysis::State PurelyImagResultAnalysis::localGuaranteed(
     recursiveCheck = true;
     operandsToCheck.push_back(op->getOperand(1));
     operandsToCheck.push_back(op->getOperand(2));
-  } else if (isa<stablehlo::DynamicSliceOp, stablehlo::DynamicUpdateSliceOp>(
-                 op)) {
+  } else if (isa<stablehlo::DynamicSliceOp>(op)) {
     recursiveCheck = true;
     operandsToCheck.push_back(op->getOperand(0));
+  } else if (isa<stablehlo::DynamicUpdateSliceOp>(op)) {
+    recursiveCheck = true;
+    operandsToCheck.push_back(op->getOperand(0));
+    operandsToCheck.push_back(op->getOperand(1));
   }
 
   if (recursiveCheck) {
@@ -1723,6 +1752,61 @@ detectIotaLikeTensor(DenseElementsAttr denseAttr) {
   return std::nullopt;
 }
 
+std::optional<DenseElementsAttr>
+tryEvaluateSmallTreeToConstant(mlir::Value val, int64_t maxElements = 1024) {
+  auto type = dyn_cast<RankedTensorType>(val.getType());
+  if (!type || !type.hasStaticShape() || type.getNumElements() > maxElements)
+    return std::nullopt;
+
+  if (auto constOp = val.getDefiningOp<stablehlo::ConstantOp>()) {
+    return dyn_cast_or_null<DenseElementsAttr>(constOp.getValue());
+  }
+
+  if (auto iotaOp = val.getDefiningOp<stablehlo::IotaOp>()) {
+    int64_t iotaDim = iotaOp.getIotaDimension();
+    auto elemTy = type.getElementType();
+    auto strides = computeStrides(type.getShape());
+    int64_t numElements = type.getNumElements();
+
+    if (isa<IntegerType>(elemTy)) {
+      SmallVector<APInt> values;
+      values.reserve(numElements);
+      for (int64_t i = 0; i < numElements; ++i) {
+        SmallVector<int64_t> multiIndex;
+        linearToMultiIndex(i, strides, multiIndex);
+        values.push_back(
+            APInt(elemTy.getIntOrFloatBitWidth(), multiIndex[iotaDim], true));
+      }
+      return DenseElementsAttr::get(type, values);
+    }
+    // Only integer for now
+    return std::nullopt;
+  }
+
+  Operation *op = val.getDefiningOp();
+  if (!op)
+    return std::nullopt;
+
+  if (isa<stablehlo::ReshapeOp, stablehlo::AddOp, stablehlo::MulOp>(op)) {
+    SmallVector<Attribute> operands;
+    for (auto operand : op->getOperands()) {
+      auto evalOp = tryEvaluateSmallTreeToConstant(operand, maxElements);
+      if (!evalOp)
+        return std::nullopt;
+      operands.push_back(*evalOp);
+    }
+
+    SmallVector<OpFoldResult> foldResults;
+    if (succeeded(op->fold(operands, foldResults)) && foldResults.size() == 1) {
+      if (auto attr = llvm::dyn_cast_if_present<Attribute>(foldResults[0])) {
+        return dyn_cast<DenseElementsAttr>(attr);
+      }
+    }
+  }
+
+  return std::nullopt;
+}
+
 std::optional<IotaLikeTensor> detectIotaLikeTensor(mlir::Value tensor) {
   if (!tensor) {
     return std::nullopt;
@@ -2199,7 +2283,7 @@ Value getIdentityValueForOp<stablehlo::AddOp>(OpBuilder &builder, Location loc,
   if (auto complexType = dyn_cast<ComplexType>(elemType)) {
     auto floatType = cast<FloatType>(complexType.getElementType());
     auto zero = APFloat::getZero(floatType.getFloatSemantics());
-    auto complexZero = std::complex<APFloat>(zero, zero);
+    auto complexZero = mlir::Complex<APFloat>(zero, zero);
     zeroVal = DenseElementsAttr::get(RankedTensorType::get({}, elemType),
                                      complexZero);
   } else {
@@ -2216,7 +2300,7 @@ Value getIdentityValueForOp<stablehlo::MulOp>(OpBuilder &builder, Location loc,
     auto floatType = cast<FloatType>(complexType.getElementType());
     auto one = APFloat(floatType.getFloatSemantics(), 1);
     auto zero = APFloat::getZero(floatType.getFloatSemantics());
-    auto complexOne = std::complex<APFloat>(one, zero);
+    auto complexOne = mlir::Complex<APFloat>(one, zero);
     identityVal =
         DenseElementsAttr::get(RankedTensorType::get({}, elemType), complexOne);
   } else {

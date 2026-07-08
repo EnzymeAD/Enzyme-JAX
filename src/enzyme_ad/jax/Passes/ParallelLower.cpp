@@ -552,7 +552,7 @@ void ParallelLower::runOnOperation() {
     getOperation()->walk(
         [&](mlir::gpu::GridDimOp bidx) { inlineOps.push_back(bidx); });
     getOperation()->walk(
-        [&](mlir::NVVM::Barrier0Op bidx) { inlineOps.push_back(bidx); });
+        [&](mlir::NVVM::BarrierOp bidx) { inlineOps.push_back(bidx); });
 
     SymbolUserMap symbolUserMap(symbolTable, getOperation());
     while (inlineOps.size()) {
@@ -922,7 +922,7 @@ void ParallelLower::runOnOperation() {
       builder.replaceOp(bidx, ValueRange(threadB->getArgument(idx)));
     });
 
-    container.walk([&](mlir::NVVM::Barrier0Op op) {
+    container.walk([&](mlir::NVVM::BarrierOp op) {
       builder.setInsertionPoint(op);
       builder.replaceOpWithNewOp<mlir::enzymexla::BarrierOp>(
           op, threadB->getArguments());
@@ -1397,7 +1397,7 @@ void ConvertCudaRTtoHipRT::runOnOperation() {
     op->erase();
 
   OpBuilder builder(&getContext());
-  getOperation().walk([&](mlir::NVVM::Barrier0Op op) {
+  getOperation().walk([&](mlir::NVVM::BarrierOp op) {
     builder.setInsertionPoint(op);
     mlir::ROCDL::BarrierOp::create(builder, op->getLoc());
     op->erase();

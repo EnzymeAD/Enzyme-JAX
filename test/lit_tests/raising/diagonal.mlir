@@ -17,16 +17,11 @@ module {
 // CHECK-NEXT:    %[[v0:.+]] = stablehlo.iota dim = 0 : tensor<289x2xi64>
 // CHECK-NEXT:    %[[v1:.+]] = "stablehlo.gather"(%arg1, %[[v0]]) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0, 1], start_index_map = [0, 1], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1, 1>}> : (tensor<17x17xf64>, tensor<289x2xi64>) -> tensor<289xf64>
 // CHECK-NEXT:    %[[v2:.+]] = stablehlo.multiply %[[v1]], %cst : tensor<289xf64>
-// CHECK-NEXT:    %[[v3:.+]] = stablehlo.iota dim = 0 : tensor<289x289x1xi64>
-// CHECK-NEXT:    %[[v4:.+]] = stablehlo.reshape %[[v3]] : (tensor<289x289x1xi64>) -> tensor<83521x1xi64>
-// CHECK-NEXT:    %[[v5:.+]] = stablehlo.iota dim = 1 : tensor<289x289xi64>
-// CHECK-NEXT:    %[[v6:.+]] = stablehlo.reshape %[[v5]] : (tensor<289x289xi64>) -> tensor<83521x1xi64>
-// CHECK-NEXT:    %[[v7:.+]] = stablehlo.concatenate %[[v4]], %[[v6]], dim = 1 : (tensor<83521x1xi64>, tensor<83521x1xi64>) -> tensor<83521x2xi64>
-// CHECK-NEXT:    %[[v8:.+]] = stablehlo.broadcast_in_dim %[[v2]], dims = [0] : (tensor<289xf64>) -> tensor<289x289xf64>
-// CHECK-NEXT:    %[[v9:.+]] = stablehlo.reshape %[[v8]] : (tensor<289x289xf64>) -> tensor<83521xf64>
-// CHECK-NEXT:    %[[v10:.+]] = "stablehlo.scatter"(%arg0, %[[v7]], %[[v9]]) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0, 1], scatter_dims_to_operand_dims = [0, 1], index_vector_dim = 1>, unique_indices = true}> ({
+// The scatter writes only the 289 diagonal entries, reusing the same [289, 2]
+// index grid as the gather above — not a 289 x 289 = 83521 cartesian product.
+// CHECK-NEXT:    %[[v3:.+]] = "stablehlo.scatter"(%arg0, %[[v0]], %[[v2]]) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0, 1], scatter_dims_to_operand_dims = [0, 1], index_vector_dim = 1>, unique_indices = true}> ({
 // CHECK-NEXT:    ^bb0(%arg2: tensor<f64>, %arg3: tensor<f64>):
 // CHECK-NEXT:      stablehlo.return %arg3 : tensor<f64>
-// CHECK-NEXT:    }) : (tensor<17x17xf64>, tensor<83521x2xi64>, tensor<83521xf64>) -> tensor<17x17xf64>
-// CHECK-NEXT:    return %[[v10]], %arg1 : tensor<17x17xf64>, tensor<17x17xf64>
+// CHECK-NEXT:    }) : (tensor<17x17xf64>, tensor<289x2xi64>, tensor<289xf64>) -> tensor<17x17xf64>
+// CHECK-NEXT:    return %[[v3]], %arg1 : tensor<17x17xf64>, tensor<17x17xf64>
 // CHECK-NEXT:  }

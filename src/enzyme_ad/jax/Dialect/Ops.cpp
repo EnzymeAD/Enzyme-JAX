@@ -646,7 +646,7 @@ public:
   LogicalResult matchAndRewrite(T op,
                                 PatternRewriter &rewriter) const override {
     // FIXME: Only handle memref.load with single index for now
-    if (op.getIndices().size() != 1)
+    if (op.getMemRefType().getRank() != 1)
       return failure();
 
     // Match pointer2memref -> load pattern
@@ -677,6 +677,15 @@ public:
       auto elemTy = gep.getElemType();
       if (elemTy.isIntOrFloat()) {
         gepElemSize = elemTy.getIntOrFloatBitWidth() / 8;
+      } else if (auto arrayTy = dyn_cast<LLVM::LLVMArrayType>(elemTy)) {
+        auto baseTy = arrayTy.getElementType();
+        if (baseTy.isIntOrFloat()) {
+          gepElemSize =
+              (baseTy.getIntOrFloatBitWidth() / 8) * arrayTy.getNumElements();
+        } else {
+          // Nested arrays not supported yet, or other types
+          break;
+        }
       } else {
         // Unknown type to get size from, bail early.
         break;
@@ -1035,10 +1044,12 @@ OpFoldResult Pointer2MemrefOp::fold(FoldAdaptor adaptor) {
   return nullptr;
 }
 
-LogicalResult WrapOp::inferReturnTypes(
-    MLIRContext * /*context*/, std::optional<Location> location,
-    ValueRange operands, DictionaryAttr attributes, OpaqueProperties properties,
-    RegionRange regions, SmallVectorImpl<Type> &inferredReturnTypes) {
+LogicalResult
+WrapOp::inferReturnTypes(MLIRContext * /*context*/,
+                         std::optional<Location> location, ValueRange operands,
+                         DictionaryAttr attributes,
+                         mlir::PropertyRef properties, RegionRange regions,
+                         SmallVectorImpl<Type> &inferredReturnTypes) {
   WrapOpAdaptor adaptor(operands, attributes, properties, regions);
   if (adaptor.getLhs() < 0)
     return failure();
@@ -1058,10 +1069,12 @@ LogicalResult WrapOp::inferReturnTypes(
   return success();
 }
 
-LogicalResult ExtendOp::inferReturnTypes(
-    MLIRContext * /*context*/, std::optional<Location> location,
-    ValueRange operands, DictionaryAttr attributes, OpaqueProperties properties,
-    RegionRange regions, SmallVectorImpl<Type> &inferredReturnTypes) {
+LogicalResult
+ExtendOp::inferReturnTypes(MLIRContext * /*context*/,
+                           std::optional<Location> location,
+                           ValueRange operands, DictionaryAttr attributes,
+                           mlir::PropertyRef properties, RegionRange regions,
+                           SmallVectorImpl<Type> &inferredReturnTypes) {
   ExtendOpAdaptor adaptor(operands, attributes, properties, regions);
   if (adaptor.getLhs() < 0)
     return failure();
@@ -1083,8 +1096,9 @@ LogicalResult ExtendOp::inferReturnTypes(
 
 LogicalResult UpdateWithoutCornersOp::inferReturnTypes(
     MLIRContext * /*context*/, std::optional<Location> location,
-    ValueRange operands, DictionaryAttr attributes, OpaqueProperties properties,
-    RegionRange regions, SmallVectorImpl<Type> &inferredReturnTypes) {
+    ValueRange operands, DictionaryAttr attributes,
+    mlir::PropertyRef properties, RegionRange regions,
+    SmallVectorImpl<Type> &inferredReturnTypes) {
   UpdateWithoutCornersOpAdaptor adaptor(operands, attributes, properties,
                                         regions);
   auto RT = cast<RankedTensorType>(adaptor.getOperand().getType());
@@ -1138,6 +1152,114 @@ LogicalResult enzymexla::MemcpyOp::verify() {
     return emitOpError("arguments have incompatible element type");
 
   return success();
+}
+
+LogicalResult enzymexla::GemmOp::verify() {
+  auto alpha = getAlpha();
+  auto A = getA();
+  auto B = getB();
+  auto beta = getBeta();
+  auto C = getC();
+
+  auto type_alpha = cast<RankedTensorType>(alpha.getType());
+  auto type_A = cast<RankedTensorType>(A.getType());
+  auto type_B = cast<RankedTensorType>(B.getType());
+  auto type_beta = cast<RankedTensorType>(beta.getType());
+  auto type_C = cast<RankedTensorType>(C.getType());
+
+  auto shape_A = type_A.getShape();
+  auto shape_B = type_B.getShape();
+  auto shape_C = type_C.getShape();
+
+  auto type_element = type_alpha.getElementType();
+  auto rank = type_A.getRank();
+
+  auto inner_dim_A =
+      getTransa() == enzymexla::LapackTranspose::none ? rank - 1 : rank - 2;
+  auto inner_dim_B =
+      getTransb() == enzymexla::LapackTranspose::none ? rank - 2 : rank - 1;
+
+  auto outer_dim_A =
+      getTransa() == enzymexla::LapackTranspose::none ? rank - 2 : rank - 1;
+  auto outer_dim_B =
+      getTransb() == enzymexla::LapackTranspose::none ? rank - 1 : rank - 2;
+
+  if (type_A.getElementType() != type_element ||
+      type_B.getElementType() != type_element ||
+      type_C.getElementType() != type_element ||
+      type_beta.getElementType() != type_element) {
+    return emitOpError("Element types of alpha, A, B and C must match");
+  }
+
+  if (type_A.getRank() != type_B.getRank() ||
+      type_A.getRank() != type_C.getRank()) {
+    return emitOpError("Ranks of A, B and C must match");
+  }
+
+  if (shape_A.drop_back(2) != shape_B.drop_back(2) ||
+      shape_A.drop_back(2) != shape_C.drop_back(2)) {
+    return emitOpError("Batch dimensions of A, B and C must match");
+  }
+
+  if (shape_A[inner_dim_A] != shape_B[inner_dim_B]) {
+    return emitOpError("Inner dimensions of A and B must match");
+  }
+
+  if (shape_A[outer_dim_A] != shape_C[rank - 2] ||
+      shape_B[outer_dim_B] != shape_C[rank - 1]) {
+    return emitOpError(
+        "Outer dimensions of A and B must match corresponding dimensions of C");
+  }
+
+  if (getResult().getType() != type_C) {
+    return emitOpError("Result type must match C's type");
+  }
+
+  return success();
+}
+
+void GemmOp::build(OpBuilder &builder, OperationState &result, Value A, Value B,
+                   enzymexla::LapackTranspose transa,
+                   enzymexla::LapackTranspose transb) {
+  auto type_A = cast<RankedTensorType>(A.getType());
+  auto type_B = cast<RankedTensorType>(B.getType());
+
+  auto element_type = type_A.getElementType();
+  auto rank = type_A.getRank();
+
+  auto outer_dim_A =
+      transa == enzymexla::LapackTranspose::none ? rank - 2 : rank - 1;
+  auto outer_dim_B =
+      transb == enzymexla::LapackTranspose::none ? rank - 1 : rank - 2;
+
+  auto shape_a = type_A.getShape();
+  auto shape_b = type_B.getShape();
+  SmallVector<int64_t> shape_c;
+  for (int i = 0; i < rank - 2; i++) {
+    shape_c.push_back(shape_a[i]);
+  }
+  shape_c.push_back(shape_a[outer_dim_A]);
+  shape_c.push_back(shape_b[outer_dim_B]);
+
+  auto type_scalar = RankedTensorType::get({}, element_type);
+  auto alpha = stablehlo::ConstantOp::create(
+      builder, result.location, type_scalar,
+      cast<ElementsAttr>(makeAttr(type_scalar, 1)));
+  auto beta = stablehlo::ConstantOp::create(
+      builder, result.location, type_scalar,
+      cast<ElementsAttr>(makeAttr(type_scalar, 0)));
+
+  auto type_C = RankedTensorType::get(shape_c, element_type);
+  auto C =
+      stablehlo::ConstantOp::create(builder, result.location, type_C,
+                                    cast<ElementsAttr>(makeAttr(type_C, 0)));
+
+  result.addTypes(type_C);
+  result.addOperands({alpha, A, B, beta, C});
+  result.addAttribute("transa", enzymexla::LapackTransposeAttr::get(
+                                    builder.getContext(), transa));
+  result.addAttribute("transb", enzymexla::LapackTransposeAttr::get(
+                                    builder.getContext(), transb));
 }
 
 LogicalResult enzymexla::SyrkOp::verify() {
@@ -1342,11 +1464,65 @@ struct CopyWithTypes : public OpRewritePattern<enzymexla::MemcpyOp> {
   }
 };
 
+struct Memcpy2DOpToMemcpyOp : public OpRewritePattern<enzymexla::Memcpy2DOp> {
+  using OpRewritePattern<enzymexla::Memcpy2DOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::Memcpy2DOp op,
+                                PatternRewriter &rewriter) const override {
+    Value dpitch = op.getDpitch();
+    Value spitch = op.getSpitch();
+    Value width = op.getWidth();
+    Value height = op.getHeight();
+
+    APInt dpitchConst, spitchConst, widthConst, heightConst;
+    bool dpitchIsConst = matchPattern(dpitch, m_ConstantInt(&dpitchConst));
+    bool spitchIsConst = matchPattern(spitch, m_ConstantInt(&spitchConst));
+    bool widthIsConst = matchPattern(width, m_ConstantInt(&widthConst));
+    bool heightIsConst = matchPattern(height, m_ConstantInt(&heightConst));
+
+    bool canSimplify = false;
+    Value totalSize = nullptr;
+
+    if (heightIsConst && heightConst.getSExtValue() == 1) {
+      canSimplify = true;
+      totalSize = width;
+    } else if (dpitchIsConst && spitchIsConst && widthIsConst) {
+      if (dpitchConst == widthConst && spitchConst == widthConst) {
+        canSimplify = true;
+        if (heightIsConst) {
+          int64_t totalSizeBytes =
+              widthConst.getSExtValue() * heightConst.getSExtValue();
+          totalSize = arith::ConstantIndexOp::create(rewriter, op.getLoc(),
+                                                     totalSizeBytes);
+        } else {
+          totalSize =
+              arith::MulIOp::create(rewriter, op.getLoc(), width, height);
+        }
+      }
+    }
+
+    if (!canSimplify)
+      return failure();
+
+    enzymexla::MemcpyOp::create(rewriter, op.getLoc(), (mlir::Type) nullptr,
+                                op.getAsyncDependencies(), op.getTarget(),
+                                op.getSource(), totalSize);
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 } // end anonymous namespace
 
 void enzymexla::MemcpyOp::getCanonicalizationPatterns(
     RewritePatternSet &results, MLIRContext *context) {
   results.add<EraseTrivialCopyOp, CopyWithTypes>(context);
+}
+
+void enzymexla::Memcpy2DOp::getCanonicalizationPatterns(
+    RewritePatternSet &results, MLIRContext *context) {
+  results.add<Memcpy2DOpToMemcpyOp>(context);
 }
 
 LogicalResult
@@ -2052,6 +2228,11 @@ struct SimplifySubViewUsers : public OpRewritePattern<memref::SubViewOp> {
                                 PatternRewriter &rewriter) const override {
     bool changed = false;
     int64_t offs = -1;
+    // Only support dynamic offsets in the leading dimension
+    if (llvm::any_of(subindex.getStaticOffsets().drop_front(1),
+                     [](int64_t off) { return off == ShapedType::kDynamic; }))
+      return failure();
+
     for (auto tup :
          llvm::zip(subindex.getStaticOffsets(), subindex.getStaticSizes(),
                    subindex.getStaticStrides())) {
@@ -2067,7 +2248,10 @@ struct SimplifySubViewUsers : public OpRewritePattern<memref::SubViewOp> {
           return failure();
       }
     }
-    Value off = ConstantIndexOp::create(rewriter, subindex.getLoc(), offs);
+    Value off =
+        offs == ShapedType::kDynamic
+            ? subindex.getDynamicOffset(0)
+            : ConstantIndexOp::create(rewriter, subindex.getLoc(), offs);
     assert(off);
 
     for (OpOperand &use : llvm::make_early_inc_range(subindex->getUses())) {

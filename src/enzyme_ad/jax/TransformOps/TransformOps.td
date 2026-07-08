@@ -265,8 +265,12 @@ def ApplyLGammaConstProp : EnzymeHLOPatternOp<
     "lgamma_const_prop">{
   let patterns = ["LGammaConstProp", "CHLOLGammaConstProp"];
 }
+def ApplyBinomialProgressConstProp : EnzymeHLOPatternOp<
+    "binomial_progress_const_prop"> {
+  let patterns = ["BinomialProgressConstProp"];
+}
 def ApplySoftplusConstProp : EnzymeHLOPatternOp<
-    "softplus_const_prop">{
+    "softplus_const_prop"> {
   let patterns = ["UnaryConstProp<enzymexla::SoftplusOp,softplusOp>"];
 }
 def SignAbsSimplifyPatterns : EnzymeHLOPatternOp<
@@ -839,6 +843,11 @@ def ApplyBinopConstSimplify : EnzymeHLOPatternOp<
     "MulDivConst", "MulMulConst", "DivMulConst", "DivDivConst",
     "AddSubConst", "AddAddConst", "SubAddConst", "SubSubConst"
   ];
+}
+
+def ApplyBitcastConvertCancellation : EnzymeHLOPatternOp<
+    "bitcast_convert_cancellation"> {
+  let patterns = ["BitcastConvertCancellation"];
 }
 def ApplyUnaryPadPushConvertPatterns : EnzymeHLOPatternOp<
     "unary_pad_push_convert"> {
@@ -1579,6 +1588,10 @@ def ConcatToBroadcastPatterns : EnzymeHLOPatternOp<
     "concat_to_broadcast"> {
   let patterns = ["ConcatToBroadcast"];
 }
+def ConcatSlicesToReversePatterns : EnzymeHLOPatternOp<
+    "concat_slices_to_reverse"> {
+  let patterns = ["ConcatSlicesToReverse"];
+}
 def DotReshapePadPatterns : EnzymeHLOPatternOp<
     "dot_reshape_pad"> {
   let patterns = ["DotReshapePad"];
@@ -1655,6 +1668,10 @@ def CompareIotaConstSimplifyPatterns : EnzymeHLOPatternOp<
   "compare_iota_const_simplify"
 > {
   let patterns = ["CompareIotaConstSimplify"];
+}
+
+def ConvertIotaSimplifyPatterns : EnzymeHLOPatternOp<"convert_iota_simplify"> {
+  let patterns = ["ConvertIotaSimplify"];
 }
 
 def MinMaxIotaConstSimplifyPatterns : EnzymeHLOPatternOp<
@@ -2354,7 +2371,7 @@ def LowerMultiRotate : EnzymeHLOPatternOp<
     "lower_multirotate"> {
   let patterns = ["LowerMultiRotate"];
 }
-    
+
 def ReduceUnusedMultiRotate : EnzymeHLOPatternOp<
     "reduce_unused_multirotate"> {
   let patterns = ["ReduceUnusedMultiRotate"];

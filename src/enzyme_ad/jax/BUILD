@@ -91,6 +91,8 @@ cc_library(
     ],
     deps = [
         ":compile_with_xla",
+        "@com_google_absl//absl/status",
+        "@com_google_absl//absl/status:statusor",
         "@enzyme//:EnzymeStatic",
         "@llvm-project//clang:ast",
         "@llvm-project//clang:basic",
@@ -111,7 +113,6 @@ cc_library(
         "@llvm-project//llvm:OrcJIT",
         "@llvm-project//llvm:Support",
         "@llvm-project//llvm:TargetParser",
-        "@nanobind",
         "@xla//xla/client:local_client",
         "@xla//xla/hlo/ir:hlo",
         "@xla//xla/service/cpu:cpu_executable",
@@ -543,6 +544,37 @@ td_library(
     ],
 )
 
+gentbl_cc_library(
+    name = "LowerEnzymeXLAMathPatternsIncGen",
+    tbl_outs = [
+        (
+            ["--gen-rewriters"],
+            "Passes/LowerEnzymeXLAMathPatterns.cpp.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Passes/LowerEnzymeXLAMathPatterns.td",
+    deps = [
+        ":LowerEnzymeXLAMathPatternsTdFiles",
+    ],
+)
+
+td_library(
+    name = "LowerEnzymeXLAMathPatternsTdFiles",
+    srcs = [
+        "Passes/LowerEnzymeXLAMathPatterns.td",
+    ],
+    includes = ["Dialect"],
+    deps = [
+        ":EnzymeXLADialectTdFiles",
+        "@llvm-project//mlir:BuiltinDialectTdFiles",
+        "@llvm-project//mlir:GPUOpsTdFiles",
+        "@llvm-project//mlir:OpBaseTdFiles",
+        "@stablehlo//:chlo_ops_td_files",
+        "@stablehlo//:stablehlo_ops_td_files",
+    ],
+)
+
 td_library(
     name = "DistributedDialectFiles",
     srcs = [
@@ -642,7 +674,6 @@ gentbl_cc_library(
 td_library(
     name = "TesseraDialectTdFiles",
     srcs = [
-        "Dialect/Tessera/Attrs.td",
         "Dialect/Tessera/Dialect.td",
         "Dialect/Tessera/Ops.td",
     ],
@@ -678,25 +709,6 @@ gentbl_cc_library(
     ],
     tblgen = "@llvm-project//mlir:mlir-tblgen",
     td_file = "Dialect/Tessera/Dialect.td",
-    deps = [
-        ":TesseraDialectTdFiles",
-    ],
-)
-
-gentbl_cc_library(
-    name = "TesseraAttrsIncGen",
-    tbl_outs = [
-        (
-            ["--gen-attrdef-decls"],
-            "Dialect/Tessera/TesseraAttrs.h.inc",
-        ),
-        (
-            ["--gen-attrdef-defs"],
-            "Dialect/Tessera/TesseraAttrs.cpp.inc",
-        ),
-    ],
-    tblgen = "@llvm-project//mlir:mlir-tblgen",
-    td_file = "Dialect/Tessera/Attrs.td",
     deps = [
         ":TesseraDialectTdFiles",
     ],
@@ -1258,7 +1270,11 @@ cc_library(
             "Dialect/Distributed/*.cpp",
             "Dialect/Tessera/*.cpp",
         ],
-        exclude = ["Dialect/Utils.cpp"],
+        exclude = [
+            "Dialect/Utils.cpp",
+            "Dialect/Ops.cpp",
+            "Dialect/Dialect.cpp",
+        ],
     ) + [
         "Utils.cpp",
     ],
@@ -1294,6 +1310,7 @@ cc_library(
         ":EnzymeXLADialectUtils",
         ":EnzymeXLAOpsIncGen",
         ":EnzymeXLAPassesIncGen",
+        ":LowerEnzymeXLAMathPatternsIncGen",
         ":Perfify",
         ":Polymer",
         ":RaisingTransformOps",
@@ -1301,7 +1318,6 @@ cc_library(
         ":RaisingTransformOpsIncGen",
         ":RaisingTransformPatternsIncGen",
         ":StablehloOptPatternsIncGen",
-        ":TesseraAttrsIncGen",
         ":TesseraDialectIncGen",
         ":TesseraOpsIncGen",
         ":TesseraPassesIncGen",
@@ -1338,6 +1354,7 @@ cc_library(
         "@llvm-project//mlir:ArithDialect",
         "@llvm-project//mlir:ArithToLLVM",
         "@llvm-project//mlir:ArithUtils",
+        "@llvm-project//mlir:AsmParser",
         "@llvm-project//mlir:AsyncDialect",
         "@llvm-project//mlir:BytecodeOpInterface",
         "@llvm-project//mlir:BytecodeWriter",
@@ -1587,6 +1604,9 @@ cc_library(
         # CUDA Tile
         "@cuda_tile//:CudaTileDialect",
         "@cuda_tile//:CudaTileTransforms",
+
+        # Comm dialect
+        "//src/enzyme_ad/jax/Dialect/Comm:CommDialect",
     ],
 )
 
@@ -1603,7 +1623,6 @@ cc_library(
         "-Wno-vla-cxx-extension",
     ],
     deps = [
-        "@nanobind",
         ":XLADerivatives",
         ":TransformOps",
         ":RegistryUtils",
@@ -1717,6 +1736,7 @@ cc_library(
 
         # EnzymeMLIR
         "@enzyme//:EnzymeMLIR",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/status:statusor",
 
         # Mosaic
