@@ -245,7 +245,8 @@ struct GeqrfOpLowering : public OpRewritePattern<enzymexla::GeqrfOp> {
         /*result_layouts*/
         getSHLOLayout(rewriter, ranks_results, isColMajorArrOutputs,
                       rank_input),
-        /*output_operand_aliases*/ rewriter.getArrayAttr(aliases));
+        /*output_operand_aliases*/ rewriter.getArrayAttr(aliases),
+        /*result_tilings*/ nullptr);
 
     rewriter.replaceAllUsesWith(op.getResult(0), cusolver_call_op.getResult(0));
     rewriter.replaceAllUsesWith(op.getResult(1), cusolver_call_op.getResult(1));
@@ -284,7 +285,8 @@ struct GeqrfOpLowering : public OpRewritePattern<enzymexla::GeqrfOp> {
         /*calledcomputations*/ nullptr,
         /*operand_layouts*/ nullptr,
         /*result_layouts*/ nullptr,
-        /*output_operand_aliases*/ nullptr);
+        /*output_operand_aliases*/ nullptr,
+        /*result_tilings*/ nullptr);
 
     rewriter.replaceAllUsesWith(op.getResult(0), customCall.getResult(0));
     rewriter.replaceAllUsesWith(op.getResult(1), customCall.getResult(1));
@@ -716,7 +718,8 @@ struct OrgqrOpLowering : public OpRewritePattern<enzymexla::OrgqrOp> {
         /*result_layouts*/
         getSHLOLayout(rewriter, ranks_results, isColMajorArrOutputs,
                       rank_input),
-        /*output_operand_aliases*/ rewriter.getArrayAttr(aliases));
+        /*output_operand_aliases*/ rewriter.getArrayAttr(aliases),
+        /*result_tilings*/ nullptr);
 
     rewriter.replaceAllUsesWith(op.getResult(), cusolver_call_op.getResult(0));
     rewriter.eraseOp(op);
@@ -742,7 +745,8 @@ struct OrgqrOpLowering : public OpRewritePattern<enzymexla::OrgqrOp> {
         /*calledcomputations*/ nullptr,
         /*operand_layouts*/ nullptr,
         /*result_layouts*/ nullptr,
-        /*output_operand_aliases*/ nullptr);
+        /*output_operand_aliases*/ nullptr,
+        /*result_tilings*/ nullptr);
 
     rewriter.replaceAllUsesWith(op.getResult(), customCall.getResult(0));
 
@@ -1804,7 +1808,8 @@ private:
         /*output_operand_aliases*/
         rewriter.getArrayAttr({stablehlo::OutputOperandAliasAttr::get(
             op.getContext(), std::vector<int64_t>{0}, 0,
-            std::vector<int64_t>{})}));
+            std::vector<int64_t>{})}),
+        /*result_tilings*/ nullptr);
 
     // unused custom call not getting optimized away. so adding a manual
     // check
@@ -1836,7 +1841,8 @@ private:
           /*result_layouts*/
           getSHLOLayout(rewriter, {pivotRank}, SmallVector<bool>{true},
                         inputRank),
-          /*output_operand_aliases*/ nullptr);
+          /*output_operand_aliases*/ nullptr,
+          /*result_tilings*/ nullptr);
       auto permutation1Indexed = stablehlo::AddOp::create(
           rewriter, op.getLoc(), permutation.getResult(0), pivotOnes);
       rewriter.replaceAllUsesWith(op.getResult(2), permutation1Indexed);
@@ -1890,7 +1896,8 @@ private:
         /*calledcomputations*/ nullptr,
         /*operand_layouts*/ nullptr,
         /*result_layouts*/ nullptr,
-        /*output_operand_aliases*/ nullptr);
+        /*output_operand_aliases*/ nullptr,
+        /*result_tilings*/ nullptr);
 
     // LAPACK returns 1-indexed pivots, while XLA returns 0-indexed pivots.
     // We make it consistent with LAPACK by adding 1 to the pivots.
@@ -2524,7 +2531,8 @@ LogicalResult lowerSVDAlgorithmGPU(OpTy op, PatternRewriter &rewriter,
                     rank_input),
       /*result_layouts*/
       getSHLOLayout(rewriter, ranks_results, isColMajorArrOutputs, rank_input),
-      /*output_operand_aliases*/ rewriter.getArrayAttr(aliases));
+      /*output_operand_aliases*/ rewriter.getArrayAttr(aliases),
+      /*result_tilings*/ nullptr);
 
   auto info = stablehlo::ConvertOp::create(rewriter, op.getLoc(),
                                            op.getResult(3).getType(),
@@ -2683,7 +2691,8 @@ struct GesvjOpLowering : public OpRewritePattern<enzymexla::GesvjOp> {
         /*calledcomputations*/ nullptr,
         /*operand_layouts*/ nullptr,
         /*result_layouts*/ nullptr,
-        /*output_operand_aliases*/ nullptr);
+        /*output_operand_aliases*/ nullptr,
+        /*result_tilings*/ nullptr);
 
     rewriter.replaceAllUsesWith(op.getResult(0), customCall.getResult(0));
     rewriter.replaceAllUsesWith(op.getResult(1), customCall.getResult(1));
