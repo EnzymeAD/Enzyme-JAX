@@ -647,7 +647,8 @@ static void addLoopRaisingPasses(std::vector<std::string> &list) {
   list.push_back("remove_loop_carried_dependencies_from_while_load_operations");
 }
 
-static void addLICMPasses(std::vector<std::string> &list) {
+static void addLICMPasses(std::vector<std::string> &list,
+                          int64_t loopUnswitchThreshold) {
   list.push_back("dus_licm(0)");
   list.push_back("slice_licm(0)");
   list.push_back("elementwise_licm(0)");
@@ -668,6 +669,9 @@ static void addLICMPasses(std::vector<std::string> &list) {
   list.push_back("rotate_licm(0)");
   list.push_back("wrap_licm(0)");
   list.push_back("extend_licm(0)");
+  if (loopUnswitchThreshold >= 0) {
+    list.push_back(passWithArg("loop_unswitch", loopUnswitchThreshold));
+  }
 }
 
 static void addPadPasses(std::vector<std::string> &list,
@@ -970,7 +974,7 @@ void enzymexlaGetTransformPassesList(
 
   // LICM
   if (options->enable_licm_optimization_passes) {
-    addLICMPasses(list);
+    addLICMPasses(list, options->loop_unswitch_threshold);
   }
 
   // Pad passes

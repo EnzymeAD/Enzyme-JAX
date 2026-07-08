@@ -602,7 +602,7 @@ NB_MODULE(enzyme_call, m) {
            bool enable_reduce_slice_fusion_passes,
            bool enable_concat_to_batch_passes, bool enable_loop_raising_passes,
            bool enable_licm_optimization_passes,
-           bool enable_pad_optimization_passes,
+           int64_t loop_unswitch_threshold, bool enable_pad_optimization_passes,
            bool enable_self_to_convolution_like_passes)
             -> std::pair<std::string, std::string> {
           EnzymeXLATransformPassesOptions options;
@@ -638,6 +638,7 @@ NB_MODULE(enzyme_call, m) {
           options.enable_loop_raising_passes = enable_loop_raising_passes;
           options.enable_licm_optimization_passes =
               enable_licm_optimization_passes;
+          options.loop_unswitch_threshold = loop_unswitch_threshold;
           options.enable_pad_optimization_passes =
               enable_pad_optimization_passes;
           options.enable_self_to_convolution_like_passes =
