@@ -500,23 +500,32 @@ class AutoDiffWhileRev
     ReverseModeInfo(stablehlo::WhileOp op) : info(op) {}
   };
 
+  static const int64_t BINOMIAL_SENTINEL_BUDGET = ~0;
+
   static struct ReverseModeInfo getReverseMode(Operation *orig) {
     struct ReverseModeInfo revInfo(cast<stablehlo::WhileOp>(orig));
 
-    if (revInfo.info.computeInfo().succeeded() && revInfo.info.isValid() &&
-        revInfo.info.isConstant()) {
+    if (!revInfo.info.computeInfo().succeeded() || !revInfo.info.isValid())
+      return revInfo;
+
+    if (revInfo.info.isConstant()) {
       const char *checkpointAttrName = "enzymexla.enable_checkpointing";
       auto enableCheckpointing =
           orig->getAttrOfType<BoolAttr>(checkpointAttrName);
       const char *periodicCheckpointAttrName = "enzymexla.checkpoint_period";
       auto checkpointPeriod =
           orig->getAttrOfType<IntegerAttr>(periodicCheckpointAttrName);
+      auto enableBinomialCheckpointing =
+          orig->hasAttr("enzymexla.binomial_checkpointing");
 
       if (enableCheckpointing && enableCheckpointing.getValue()) {
         // CONSTANT_CHECKPOINTING: use provided period or default to sqrt(N).
-        revInfo.mode = CONSTANT_CHECKPOINTING;
+        revInfo.mode = enableBinomialCheckpointing ? CONSTANT_BINOMIAL
+                                                   : CONSTANT_CHECKPOINTING;
         if (checkpointPeriod && checkpointPeriod.getInt() > 0) {
           revInfo.checkpointPeriod = checkpointPeriod.getInt();
+        } else if (enableBinomialCheckpointing) {
+          revInfo.checkpointPeriod = BINOMIAL_SENTINEL_BUDGET;
         } else {
           // Default to sqrt checkpointing when no period is specified
           int64_t numIters = revInfo.info.getConstantNumIters();
@@ -529,9 +538,38 @@ class AutoDiffWhileRev
       } else {
         revInfo.mode = CONSTANT;
       }
+    } else if (orig->hasAttr("enzymexla.binomial_checkpointing")) {
+      auto enableCheckpointing =
+          orig->getAttrOfType<BoolAttr>("enzymexla.enable_checkpointing");
+      if (enableCheckpointing && enableCheckpointing.getValue()) {
+        revInfo.mode = CONSTANT_BINOMIAL;
+        auto checkpointPeriod =
+            orig->getAttrOfType<IntegerAttr>("enzymexla.checkpoint_period");
+        revInfo.checkpointPeriod =
+            (checkpointPeriod && checkpointPeriod.getInt() > 0)
+                ? checkpointPeriod.getInt()
+                : BINOMIAL_SENTINEL_BUDGET;
+      }
     }
 
     return revInfo;
+  }
+
+  // arr[index:index+1, :, :, :] = val
+  static Value setIndex(OpBuilder &builder, Value arr, Value index, Value val) {
+    SmallVector<int64_t> updateShape{1};
+    SmallVector<Value> startIndices{index};
+    Value zero = makeI64Constant(val.getLoc(), builder, 0);
+    for (auto s : cast<ShapedType>(val.getType()).getShape()) {
+      startIndices.push_back(zero);
+      updateShape.push_back(s);
+    }
+
+    arr = stablehlo::DynamicUpdateSliceOp::create(
+        builder, arr.getLoc(), arr,
+        ReshapeOpCreate(builder, val.getLoc(), val, updateShape), startIndices);
+
+    return arr;
   }
 
   static stablehlo::WhileOp makeForLoop(OpBuilder &builder, Location loc,
@@ -580,6 +618,399 @@ class AutoDiffWhileRev
     stablehlo::ReturnOp::create(builder, loc, operandsWithInduction);
 
     return whileOp;
+  }
+
+  // Reverse pass for CONSTANT_BINOMIAL
+  static LogicalResult reverseWithBinomialCheckpointing(
+      stablehlo::WhileOp orig, struct ReverseModeInfo revInfo,
+      OpBuilder &builder, MGradientUtilsReverse *gutils,
+      SmallVector<Value> caches, ArrayRef<bool> operandsActive) {
+
+    if (revInfo.info.getArgNumber() != 0) {
+      return orig->emitError(
+          "binomial checkpointing: unsupported non-canonical for loop with iv "
+          "not being at the first position.");
+    }
+
+    if (revInfo.checkpointPeriod == BINOMIAL_SENTINEL_BUDGET) {
+      return orig->emitError("binomial checkpointing: unprovided or "
+                             "unsupported number of checkpoints.");
+    }
+
+    if (revInfo.checkpointPeriod <= 1) {
+      return orig->emitError()
+             << "binomial checkpointing: budget of " << revInfo.checkpointPeriod
+             << " is too small for binomial checkpointing. Use periodic "
+                "checkpointing instead.";
+    }
+
+    SetVector<Value> outsideRefs;
+    getUsedValuesDefinedAbove(orig->getRegions(), outsideRefs);
+
+    bool isDynamic = !revInfo.info.isConstant();
+    int numDynCaches = isDynamic ? 3 : 0;
+    int numOutsideRefs = outsideRefs.size();
+    int nrets = caches.size() - 1 - numOutsideRefs - numDynCaches;
+
+    // 1. Build outer loop
+    SmallVector<Value> operands;
+
+    Value indexTensor = gutils->popCache(caches[caches.size() - 1], builder);
+
+    Value numItersRev, startVal, stepVal;
+    if (isDynamic) {
+      numItersRev =
+          gutils->popCache(caches[nrets + numOutsideRefs + 0], builder);
+      startVal = gutils->popCache(caches[nrets + numOutsideRefs + 1], builder);
+      stepVal = gutils->popCache(caches[nrets + numOutsideRefs + 2], builder);
+    } else {
+      numItersRev = makeI64Constant(orig->getLoc(), builder,
+                                    revInfo.info.getConstantNumIters());
+    }
+
+    Value sp =
+        makeI64Constant(orig->getLoc(), builder, revInfo.checkpointPeriod);
+
+    // operands.push_back(currentRevStep);
+    operands.push_back(sp);
+    operands.push_back(indexTensor);
+
+    for (size_t i = 0; i < nrets; ++i) {
+      operands.push_back(gutils->popCache(caches[i], builder));
+    }
+
+    SmallVector<Value> poppedOutsideRefs;
+    for (size_t i = nrets; i < nrets + numOutsideRefs; ++i) {
+      poppedOutsideRefs.push_back(gutils->popCache(caches[i], builder));
+    }
+
+    for (auto [active, res] : llvm::zip(operandsActive, orig->getResults())) {
+      if (active) {
+        operands.push_back(gutils->diffe(res, builder));
+        if (!gutils->isConstantValue(res))
+          gutils->zeroDiffe(res, builder);
+      }
+    }
+
+    // Compute start/step Values before the outer loop so they dominate all
+    // inner regions (innerRematBody, outerBody) where they are used.
+    Value startIV = isDynamic
+                        ? startVal
+                        : makeI64Constant(orig->getLoc(), builder,
+                                          *revInfo.info.getConstantStart());
+    Value stepIV = isDynamic ? stepVal
+                             : makeI64Constant(orig->getLoc(), builder,
+                                               *revInfo.info.getConstantStep());
+
+    OpBuilder::InsertionGuard guard(builder);
+
+    stablehlo::WhileOp revOuter =
+        makeForLoop(builder, orig->getLoc(), 0, numItersRev, 1, operands);
+
+    Block *outerBody = &revOuter.getBody().front();
+    Value newOuterIV = outerBody->getTerminator()->getOperand(0);
+    outerBody->getTerminator()->erase();
+    builder.setInsertionPointToEnd(outerBody);
+
+    Value capo = stablehlo::SubtractOp::create(
+        builder, orig->getLoc(), outerBody->getArgument(1),
+        makeI64Constant(orig->getLoc(), builder, 1));
+
+    Value zero = makeI64Constant(orig->getLoc(), builder, 0);
+    SmallVector<Value> innerArgs;
+    SmallVector<Value> cacheArgs;
+    for (size_t i = 0; i < nrets; ++i) {
+      Value cache = outerBody->getArgument(3 + i);
+      cacheArgs.push_back(cache);
+      auto cacheTy = cast<ShapedType>(cache.getType());
+
+      SmallVector<Value> startIndices;
+      startIndices.push_back(capo);
+      for (int i = 0; i < cacheTy.getRank() - 1; i++)
+        startIndices.push_back(zero);
+
+      SmallVector<int64_t> sliceSizes(cacheTy.getShape().begin(),
+                                      cacheTy.getShape().end());
+      sliceSizes[0] = 1;
+
+      Value arg = DynamicSliceOp::create(builder, orig->getLoc(), cache,
+                                         startIndices, sliceSizes);
+
+      SmallVector<int64_t> shape(sliceSizes.size() - 1, 0);
+      for (int i = 0; i < shape.size(); i++)
+        shape[i] = sliceSizes[i + 1];
+
+      arg = ReshapeOpCreate(builder, orig->getLoc(), arg, shape);
+
+      innerArgs.push_back(arg);
+    }
+
+    Value ckptStep =
+        ReshapeOpCreate(builder, orig->getLoc(),
+                        DynamicSliceOp::create(builder, orig->getLoc(),
+                                               outerBody->getArgument(2),
+                                               ValueRange{capo}, {1}),
+                        {});
+
+    // 2. Builder inner remat loop
+    SmallVector<Value> innerOperands;
+
+    innerOperands.push_back(ckptStep);
+    innerOperands.push_back(capo);
+    innerOperands.push_back(outerBody->getArgument(2));
+    innerOperands.append(innerArgs);
+    innerOperands.append(cacheArgs);
+
+    // [0, N-1] -> [N, 1]
+    Value currentRevStep = stablehlo::SubtractOp::create(
+        builder, orig->getLoc(), numItersRev, outerBody->getArgument(0));
+
+    // innerOperands = [ckptStep, capo, indexTensor, args..., cacheArgs...]
+
+    auto innerWhile =
+        stablehlo::WhileOp::create(builder, orig->getLoc(), innerOperands);
+    TypeRange innerOperandTypes = ValueRange(innerOperands).getTypes();
+    SmallVector<Location> innerOperandLocs = llvm::map_to_vector(
+        innerOperands, [](Value operand) { return operand.getLoc(); });
+    { // inner cond
+      Block *innerCond = builder.createBlock(
+          &innerWhile.getCond(), {}, innerOperandTypes, innerOperandLocs);
+      Value cmp = stablehlo::CompareOp::create(
+          builder, orig->getLoc(),
+          stablehlo::AddOp::create(builder, orig->getLoc(),
+                                   innerCond->getArgument(0),
+                                   makeI64Constant(orig->getLoc(), builder, 1)),
+          currentRevStep, stablehlo::ComparisonDirection::LT);
+      ReturnOp::create(builder, orig->getLoc(), cmp);
+    }
+
+    Block *innerBody = builder.createBlock(&innerWhile.getBody(), {},
+                                           innerOperandTypes, innerOperandLocs);
+
+    // Store args state to cacheArgs
+    // and store current step to indexTensor
+    indexTensor = innerBody->getArgument(2);
+    capo = innerBody->getArgument(1);
+
+    Value remaining = stablehlo::SubtractOp::create(
+        builder, orig->getLoc(), currentRevStep, innerBody->getArgument(0));
+    Value budget = stablehlo::SubtractOp::create(
+        builder, orig->getLoc(),
+        makeI64Constant(orig->getLoc(), builder, revInfo.checkpointPeriod),
+        capo);
+    Value split = enzymexla::BinomialProgressOp::create(
+        builder, orig->getLoc(), remaining, budget, nullptr);
+
+    SmallVector<Value> innerBodyCaches;
+
+    zero = makeI64Constant(orig->getLoc(), builder, 0);
+    for (int i = 0, e = orig->getNumOperands() - 1; i < e; ++i) {
+      Value arg = innerBody->getArgument(i + 3);
+      Value argCache =
+          innerBody->getArgument(i + 3 + orig->getNumOperands() - 1);
+
+      innerBodyCaches.push_back(setIndex(builder, argCache, capo, arg));
+    }
+
+    indexTensor =
+        setIndex(builder, indexTensor, capo, innerBody->getArgument(0));
+
+    Block *origBody = &orig.getBody().front();
+
+    SmallVector<Value> innerRematOperands;
+
+    for (int i = 0, e = origBody->getNumArguments() - 1; i < e; ++i) {
+      innerRematOperands.push_back(innerBody->getArgument(i + 3));
+    }
+
+    // if this is the last iteration, then we do one less rematerialization
+    // iteration since we need the input to compute at time t
+    Value rematUB = stablehlo::AddOp::create(builder, orig->getLoc(),
+                                             innerBody->getArgument(0), split);
+    rematUB = stablehlo::SubtractOp::create(
+        builder, orig->getLoc(), rematUB,
+        stablehlo::ConvertOp::create(
+            builder, orig->getLoc(),
+            RankedTensorType::get({}, builder.getI64Type()),
+            stablehlo::CompareOp::create(builder, orig->getLoc(), rematUB,
+                                         currentRevStep,
+                                         stablehlo::ComparisonDirection::EQ)));
+
+    auto innerRemat = makeForLoop(
+        builder, orig->getLoc(), innerBody->getArgument(0), rematUB,
+        makeI64Constant(orig->getLoc(), builder, 1), innerRematOperands);
+    Block *innerRematBody = &innerRemat.getBody().front();
+
+    innerRemat->setAttrs(orig->getAttrs());
+    innerRemat->removeAttr("enzymexla.enable_checkpointing");
+    innerRemat->removeAttr("enzymexla.checkpoint_period");
+    innerRemat->removeAttr("enzymexla.binomial_checkpointing");
+
+    builder.setInsertionPointToStart(innerRematBody);
+
+    // iv [ckpt, ckpt+split[ in [0, numIters]
+    // innerIV = iv * step + start
+    // startIV/stepIV are defined before revOuter so they dominate here.
+    Value innerIV = stablehlo::AddOp::create(
+        builder, orig->getLoc(), startIV,
+        stablehlo::MulOp::create(builder, orig->getLoc(), stepIV,
+                                 innerRematBody->getArgument(0)));
+
+    IRMapping mapping;
+    mapping.map(origBody->getArgument(0), innerIV);
+
+    for (int i = 1, e = orig->getNumOperands(); i < e; ++i) {
+      mapping.map(origBody->getArgument(i), innerRematBody->getArgument(i));
+    }
+
+    for (auto [oRef, pRef] : llvm::zip_equal(outsideRefs, poppedOutsideRefs)) {
+      mapping.map(oRef, pRef);
+    }
+
+    for (Operation &op : origBody->without_terminator()) {
+      Operation *newOp = builder.clone(op, mapping);
+      builder.setInsertionPointAfter(newOp);
+    }
+
+    auto innerRematTerm = cast<ReturnOp>(innerRematBody->getTerminator());
+    auto origTerm = cast<ReturnOp>(origBody->getTerminator());
+
+    for (int i = 1, e = origTerm->getNumOperands(); i < e; i++) {
+      innerRematTerm->setOperand(i, mapping.lookup(origTerm->getOperand(i)));
+    }
+
+    builder.setInsertionPointToEnd(innerBody);
+
+    capo =
+        stablehlo::AddOp::create(builder, orig->getLoc(), capo,
+                                 makeI64Constant(orig->getLoc(), builder, 1));
+
+    SmallVector<Value> innerBodyResults;
+    // [ckptStep+split, capo, indexTensor, rematResults..., newCaches...]
+
+    innerBodyResults.push_back(stablehlo::AddOp::create(
+        builder, orig->getLoc(), innerBody->getArgument(0), split));
+    innerBodyResults.push_back(capo);
+    innerBodyResults.push_back(indexTensor);
+
+    for (int i = 1, e = innerRemat->getNumResults(); i < e; ++i) {
+      innerBodyResults.push_back(innerRemat->getResult(i));
+    }
+
+    innerBodyResults.append(innerBodyCaches);
+
+    ReturnOp::create(builder, orig->getLoc(), innerBodyResults);
+
+    // 3. Combined aug fwd + rev
+    builder.setInsertionPointToEnd(outerBody);
+
+    Block *oBB = origBody;
+    auto term = oBB->getTerminator();
+    OpBuilder bodyBuilder = builder;
+
+    // All values defined in the body should have no use outside this block
+    // therefore we can set their diffe to zero upon entering the reverse
+    // block to simplify the work of the remove-unnecessary-enzyme-ops pass.
+    for (auto operand : oBB->getArguments()) {
+      if (!gutils->isConstantValue(operand)) {
+        gutils->zeroDiffe(operand, bodyBuilder);
+      }
+    }
+
+    for (auto &it : oBB->getOperations()) {
+      for (auto res : it.getResults()) {
+        if (!gutils->isConstantValue(res)) {
+          gutils->zeroDiffe(res, bodyBuilder);
+        }
+      }
+    }
+
+    int revIdx = 3 + orig->getNumOperands() - 1;
+    for (auto &&[active, operand] :
+         llvm::zip(operandsActive, term->getOperands())) {
+      if (active) {
+        gutils->addToDiffe(operand, outerBody->getArgument(revIdx),
+                           bodyBuilder);
+        revIdx++;
+      }
+    }
+
+    mapping = IRMapping();
+
+    // iv = start + step * (currentRevStep - 1)
+    mapping.map(origBody->getArgument(0),
+                stablehlo::AddOp::create(
+                    builder, orig->getLoc(), startIV,
+                    stablehlo::MulOp::create(
+                        builder, orig->getLoc(), stepIV,
+                        stablehlo::SubtractOp::create(
+                            builder, orig->getLoc(), currentRevStep,
+                            makeI64Constant(orig->getLoc(), builder, 1)))));
+
+    for (auto [oRef, pRef] : llvm::zip_equal(outsideRefs, poppedOutsideRefs)) {
+      mapping.map(oRef, pRef);
+    }
+
+    for (int i = 0, e = origBody->getNumArguments() - 1; i < e; ++i) {
+      Value origArg = origBody->getArgument(i + 1);
+      Value newArg = innerWhile->getResult(i + 3);
+      mapping.map(origArg, newArg);
+      gutils->originalToNewFn.map(origArg, newArg);
+    }
+
+    for (Operation &op : origBody->without_terminator()) {
+      Operation *newOp = builder.clone(op, mapping);
+      gutils->originalToNewFnOps[&op] = newOp;
+      for (auto &&[oldv, newv] :
+           llvm::zip_equal(op.getResults(), newOp->getResults())) {
+        gutils->originalToNewFn.map(oldv, newv);
+      }
+    }
+
+    bool anyFailed = false;
+
+    auto rstart = origBody->rbegin(), rend = origBody->rend();
+    rstart++;
+    for (auto it = rstart; it != rend; it++) {
+      Operation *op = &*it;
+      anyFailed |= gutils->Logic.visitChild(op, builder, gutils).failed();
+    }
+
+    SmallVector<Value> outerBodyResults;
+
+    outerBodyResults.push_back(newOuterIV);
+    outerBodyResults.push_back(innerWhile->getResult(1));
+    outerBodyResults.push_back(innerWhile->getResult(2));
+
+    for (int i = 0, e = orig->getNumOperands() - 1; i < e; ++i) {
+      outerBodyResults.push_back(
+          innerWhile.getResult(i + 3 + orig->getNumOperands() - 1));
+    }
+
+    for (auto [active, arg] :
+         llvm::zip(operandsActive, origBody->getArguments())) {
+      if (active) {
+        outerBodyResults.push_back(gutils->diffe(arg, builder));
+      }
+    }
+
+    // 4. Finish and set gradients
+    ReturnOp::create(builder, orig->getLoc(), outerBodyResults);
+
+    builder.setInsertionPointAfter(revOuter);
+
+    revIdx = 3 + orig->getNumOperands() - 1;
+    for (auto &&[active, arg] :
+         llvm::zip_equal(operandsActive, orig->getOperands())) {
+      if (active) {
+        if (!gutils->isConstantValue(arg)) {
+          gutils->addToDiffe(arg, revOuter->getResult(revIdx), builder);
+        }
+        revIdx++;
+      }
+    }
+
+    return success(!anyFailed);
   }
 
   // Reverse pass for CONSTANT_CHECKPOINTING (explicit period or default sqrt).
@@ -859,6 +1290,10 @@ public:
     if (revInfo.mode == CONSTANT_CHECKPOINTING) {
       return reverseWithCheckpointing(cast<stablehlo::WhileOp>(orig), revInfo,
                                       builder, gutils, caches, operandsActive);
+    } else if (revInfo.mode == CONSTANT_BINOMIAL) {
+      return reverseWithBinomialCheckpointing(cast<stablehlo::WhileOp>(orig),
+                                              revInfo, builder, gutils, caches,
+                                              operandsActive);
     } else if (revInfo.mode == CONSTANT) {
       auto iterType = orig->getOperand(0).getType();
       numIters = stablehlo::ConstantOp::create(
@@ -1028,7 +1463,7 @@ public:
     WhileLoopInfo info(newWhile);
     if (info.computeInfo().succeeded()) {
       // no need to cache number of iterations if it is a known constant.
-      if (info.isValid() && info.isConstant()) {
+      if (info.isValid()) {
 
         // for any value that is a reference from the outside we can hoist the
         // push/pop from outside the outer really.
@@ -1156,9 +1591,230 @@ public:
           gutils->originalToNewFnOps[orig] = outer;
 
           return caches;
-        }
+        } else if (revModeInfo.mode == CONSTANT_BINOMIAL) {
+          OpBuilder builder(newWhile);
 
-        return {};
+          bool isDynamic = !info.isConstant();
+          Value zero = makeI64Constant(orig->getLoc(), builder, 0);
+
+          SetVector<Value> outsideRefs;
+          getUsedValuesDefinedAbove(orig->getRegions(), outsideRefs);
+          SmallVector<Value> caches;
+
+          SmallVector<Value> outerOperands(
+              newWhile.getOperands().slice(1, newWhile.getNumOperands() - 1));
+
+          for (auto operand : outerOperands) {
+            auto operandType = cast<ShapedType>(operand.getType());
+            SmallVector<int64_t> cacheShape;
+            cacheShape.push_back(revModeInfo.checkpointPeriod);
+            cacheShape.append(operandType.getShape().begin(),
+                              operandType.getShape().end());
+            auto cacheType = operandType.clone(cacheShape);
+            auto zeroCache =
+                cast<AutoDiffTypeInterface>(cacheType).createNullValue(
+                    builder, operand.getLoc());
+            outerOperands.push_back(zeroCache);
+          }
+
+          outerOperands.push_back(zero);
+
+          auto outerCacheIndicesTy = RankedTensorType::get(
+              {revModeInfo.checkpointPeriod}, builder.getI64Type());
+          Value outerCacheIndices =
+              stablehlo::ConstantOp::create(
+                  builder, orig->getLoc(), outerCacheIndicesTy,
+                  SplatElementsAttr::get(outerCacheIndicesTy,
+                                         ArrayRef<Attribute>(IntegerAttr::get(
+                                             builder.getI64Type(), 0))))
+                  .getResult();
+
+          outerOperands.push_back(outerCacheIndices);
+
+          stablehlo::WhileOp outer =
+              makeForLoop(builder, orig->getLoc(), 0,
+                          revModeInfo.checkpointPeriod, 1, outerOperands);
+
+          Block *outerBody = &outer.getBody().front();
+
+          builder.setInsertionPointAfter(outer);
+
+          for (auto argCache : outer.getResults().slice(
+                   orig->getNumOperands(), orig->getNumOperands() - 1)) {
+            caches.push_back(gutils->initAndPushCache(argCache, builder));
+          }
+
+          for (auto ref : outsideRefs) {
+            caches.push_back(gutils->initAndPushCache(
+                gutils->getNewFromOriginal(ref), builder));
+          }
+
+          // For non-constant bounds, cache numIters/start/step so the reverse
+          // pass can reconstruct loop-carried IVs without needing compile-time
+          // constants. These are inserted before `outer` (loop-invariant).
+          if (isDynamic) {
+            builder.setInsertionPoint(outer);
+            Value numItersVal = info.getNumIters(builder);
+            if (!numItersVal) {
+              orig->emitError(
+                  "binomial checkpointing: cannot compute numIters outside the "
+                  "while op for non-constant loop bounds");
+              return {};
+            }
+            caches.push_back(gutils->initAndPushCache(numItersVal, builder));
+            caches.push_back(
+                gutils->initAndPushCache(info.getStart(), builder));
+            caches.push_back(
+                gutils->initAndPushCache(info.getStep(builder), builder));
+            builder.setInsertionPointAfter(outer);
+          }
+
+          // last cache is corresponding to the index tensor
+          caches.push_back(gutils->initAndPushCache(
+              outer.getResult(outer.getNumResults() - 1), builder));
+
+          builder.setInsertionPointToStart(outerBody);
+
+          Value stepInOuter =
+              outerBody->getArgument(outerBody->getNumArguments() - 2);
+
+          auto setCache = [&](Value cache, Value val) {
+            auto valTy = cast<ShapedType>(val.getType());
+            SmallVector<Value> startIndices;
+            startIndices.push_back(
+
+                outerBody->getArgument(0)
+
+            );
+
+            for (size_t i = 0, e = valTy.getRank(); i < e; ++i) {
+              startIndices.push_back(zero);
+            }
+
+            SmallVector<int64_t> reshapedShape;
+            reshapedShape.push_back(1);
+            reshapedShape.append(valTy.getShape().begin(),
+                                 valTy.getShape().end());
+            Value reshapedVal = stablehlo::ReshapeOp::create(
+                builder, cache.getLoc(), valTy.clone(reshapedShape), val);
+
+            Value newCache = stablehlo::DynamicUpdateSliceOp::create(
+                builder, cache.getLoc(), cache, reshapedVal, startIndices);
+            return newCache;
+          };
+
+          Operation *outerTerm = outerBody->getTerminator();
+
+          for (size_t i = 1, e = orig->getNumOperands(); i < e; ++i) {
+            auto operand = outerBody->getArgument(i);
+            Value newCache =
+                setCache(outerBody->getArgument(i + orig->getNumOperands() - 1),
+                         operand);
+            outerTerm->setOperand(i + orig->getNumOperands() - 1, newCache);
+          }
+
+          SmallVector<Value> operands(outerBody->getArguments()
+                                          .slice(1, orig->getNumOperands() - 1)
+                                          .begin(),
+                                      outerBody->getArguments()
+                                          .slice(1, orig->getNumOperands() - 1)
+                                          .end());
+
+          Value limitVal = info.isConstantLimit()
+                               ? makeI64Constant(orig->getLoc(), builder,
+                                                 *info.getConstantLimit())
+                               : info.getLimit();
+          Value numSteps = stablehlo::SubtractOp::create(
+              builder, orig->getLoc(), limitVal, stepInOuter);
+
+          Value budget = stablehlo::SubtractOp::create(
+              builder, orig->getLoc(),
+              makeI64Constant(orig->getLoc(), builder,
+                              revModeInfo.checkpointPeriod),
+              outerBody->getArgument(0));
+          Value innerLimit = enzymexla::BinomialProgressOp::create(
+              builder, orig->getLoc(), numSteps, budget, nullptr);
+
+          outerTerm->setOperand(
+              outerTerm->getNumOperands() - 2,
+              stablehlo::AddOp::create(builder, stepInOuter.getLoc(),
+                                       stepInOuter, innerLimit));
+          outerTerm->setOperand(
+              outerTerm->getNumOperands() - 1,
+              stablehlo::DynamicUpdateSliceOp::create(
+                  builder, orig->getLoc(),
+                  outerBody->getArgument(outerBody->getNumArguments() - 1),
+                  stablehlo::ReshapeOpCreate(builder, orig->getLoc(),
+                                             stepInOuter, {1}),
+                  ValueRange{outerBody->getArgument(0)}));
+
+          auto inner =
+              makeForLoop(builder, orig->getLoc(), 0, innerLimit, 1, operands);
+
+          inner->setAttrs(orig->getAttrs());
+          inner->removeAttr("enzymexla.enable_checkpointing");
+          inner->removeAttr("enzymexla.checkpoint_period");
+          inner->removeAttr("enzymexla.binomial_checkpointing");
+
+          outerTerm->setOperands(
+              1, inner.getNumResults() - 1,
+              inner.getResults().slice(1, inner.getNumResults() - 1));
+
+          Block *innerBody = &inner.getBody().front();
+          Block *oldInnerBody = &newWhile.getBody().front();
+          builder.setInsertionPointToStart(innerBody);
+
+          IRMapping mapping;
+
+          for (auto [oldArg, newArg] : llvm::zip_equal(
+                   oldInnerBody->getArguments(), innerBody->getArguments())) {
+            mapping.map(oldArg, newArg);
+          }
+
+          Value oldIV = oldInnerBody->getArgument(0);
+          Value newIV = stablehlo::AddOp::create(
+              builder, orig->getLoc(), info.getStart(),
+              stablehlo::MulOp::create(
+                  builder, orig->getLoc(), info.getStep(builder),
+                  stablehlo::AddOp::create(builder, orig->getLoc(), stepInOuter,
+                                           innerBody->getArgument(0))));
+
+          mapping.map(oldIV, newIV);
+
+          for (Operation &innerOp : oldInnerBody->without_terminator()) {
+            builder.clone(innerOp, mapping);
+          }
+
+          SmallVector<Value> newReturns;
+          for (auto oldRes : oldInnerBody->getTerminator()->getOperands().slice(
+                   1, oldInnerBody->getTerminator()->getNumOperands() - 1)) {
+            newReturns.push_back(mapping.lookupOrDefault(oldRes));
+          }
+          Operation *term = innerBody->getTerminator();
+          term->setOperands(1, term->getNumOperands() - 1, newReturns);
+
+          builder.setInsertionPointAfter(outer);
+          Value limitForResult = info.isConstantLimit()
+                                     ? makeI64Constant(oldIV.getLoc(), builder,
+                                                       *info.getConstantLimit())
+                                     : info.getLimit();
+          SmallVector<Value> newResults{limitForResult};
+
+          newResults.append(
+              outer->getResults().slice(1, orig->getNumResults() - 1).begin(),
+              outer->getResults().slice(1, orig->getNumResults() - 1).end());
+
+          gutils->replaceOrigOpWith(orig, newResults);
+          gutils->erase(newWhile);
+          gutils->originalToNewFnOps[orig] = outer;
+
+          return caches;
+        } else if (info.isConstant()) {
+          // CONSTANT mode: bounds are all compile-time constants, no caching
+          // needed.
+          return {};
+        }
+        // Non-constant, non-binomial: fall through to numIters caching below.
       }
 
       numIters = info.getNumIters(revBuilder);
@@ -1836,44 +2492,6 @@ public:
 
   void createShadowValues(Operation *op, OpBuilder &builder,
                           MGradientUtilsReverse *gutils) const {}
-};
-
-struct SHLOConstantOpBatchInterface
-    : public BatchOpInterface::ExternalModel<SHLOConstantOpBatchInterface,
-                                             ConstantOp> {
-
-  mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
-                                  IRMapping &mapper,
-                                  ArrayRef<int64_t> batchSizes) const {
-    auto constOp = cast<ConstantOp>(src);
-
-    auto T = cast<TensorType>(constOp.getType());
-    SmallVector<int64_t> shape(batchSizes.begin(), batchSizes.end());
-    shape.append(T.getShape().begin(), T.getShape().end());
-    auto Ty = T.clone(shape);
-
-    // If splatted attr then we can easily batch it
-    auto eattr = cast<DenseElementsAttr>(constOp.getValue());
-    if (eattr.isSplat()) {
-      auto splatAttr = cast<SplatElementsAttr>(constOp.getValue());
-      auto newSplattedConstOp = ConstantOp::create(
-          builder, constOp->getLoc(), Ty,
-          cast<ElementsAttr>(splatAttr.resizeSplat(cast<ShapedType>(Ty))));
-      mapper.map(src->getResult(0), newSplattedConstOp->getResult(0));
-      return success();
-    }
-
-    // otherwise do a broadcast in dim
-    SmallVector<int64_t> mapping(T.getShape().size());
-    std::iota(mapping.begin(), mapping.end(), batchSizes.size());
-
-    auto constOpCloned = builder.clone(*constOp);
-    auto bcastOp = BroadcastInDimOp::create(
-        builder, src->getLoc(), Ty, constOpCloned->getResult(0),
-        builder.getDenseI64ArrayAttr(mapping));
-    mapper.map(src->getResult(0), bcastOp->getResult(0));
-    return success();
-  }
 };
 
 struct SHLOGetDimensionSizeOpBatchInterface
@@ -3187,13 +3805,15 @@ public:
             op, "WhileOp does not have induction variable for cache removal");
       }
 
-      auto newType =
-          cast<ShapedType>(cast<AutoDiffTypeInterface>(cinfo.cachedType())
-                               .getShadowType(numIters));
-      // dynamic_update_slice requires operand rank >= 1. For scalar cache use
-      // 1D.
-      if (newType.getRank() == 0) {
-        newType = RankedTensorType::get({numIters}, newType.getElementType());
+      ShapedType newType;
+
+      if (auto TT = dyn_cast<TensorType>(cinfo.cachedType())) {
+        SmallVector<int64_t> newShape;
+        newShape.push_back(numIters);
+        newShape.append(TT.getShape().begin(), TT.getShape().end());
+        newType = TT.clone(newShape);
+      } else {
+        newType = RankedTensorType::get({numIters}, cinfo.cachedType());
       }
 
       Value initValue;
@@ -4053,6 +4673,65 @@ struct SHLODynamicUpdateSliceOpBatchInterface
   }
 };
 
+struct SHLORngBitGeneratorOpBatchInterface
+    : public BatchOpInterface::ExternalModel<
+          SHLORngBitGeneratorOpBatchInterface, RngBitGeneratorOp> {
+  mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
+                                  IRMapping &mapper,
+                                  ArrayRef<int64_t> batchSizes) const {
+    auto op = cast<RngBitGeneratorOp>(src);
+
+    auto batchedSeed = mapper.lookup(op.getInitialState());
+    auto batchedSeedType = cast<RankedTensorType>(batchedSeed.getType());
+
+    // Slice the first element along the batch dimensions.
+    // E.g., if batchSizes is [10], shape is [10, 2].
+    // We slice from [0, 0] to [1, 2].
+    SmallVector<int64_t> startIndices(batchSizes.size() + 1, 0);
+    SmallVector<int64_t> limitIndices(batchSizes.begin(), batchSizes.end());
+    for (size_t i = 0; i < batchSizes.size(); ++i) {
+      limitIndices[i] = 1;
+    }
+    limitIndices.push_back(batchedSeedType.getShape().back());
+    SmallVector<int64_t> strides(batchSizes.size() + 1, 1);
+
+    auto slicedSeedType =
+        RankedTensorType::get(limitIndices, batchedSeedType.getElementType());
+    auto slicedSeed =
+        builder.create<SliceOp>(op.getLoc(), slicedSeedType, batchedSeed,
+                                builder.getDenseI64ArrayAttr(startIndices),
+                                builder.getDenseI64ArrayAttr(limitIndices),
+                                builder.getDenseI64ArrayAttr(strides));
+
+    auto unbatchedSeedType =
+        cast<RankedTensorType>(op.getInitialState().getType());
+    auto seed =
+        builder.create<ReshapeOp>(op.getLoc(), unbatchedSeedType, slicedSeed);
+
+    auto origOutputType = cast<RankedTensorType>(op.getOutput().getType());
+    SmallVector<int64_t> batchedOutputShape(batchSizes.begin(),
+                                            batchSizes.end());
+    batchedOutputShape.append(origOutputType.getShape().begin(),
+                              origOutputType.getShape().end());
+    auto batchedOutputType = RankedTensorType::get(
+        batchedOutputShape, origOutputType.getElementType());
+
+    auto newRngOp = builder.create<RngBitGeneratorOp>(
+        op.getLoc(), unbatchedSeedType, batchedOutputType, op.getRngAlgorithm(),
+        seed);
+
+    SmallVector<int64_t> broadcastDims = {
+        static_cast<int64_t>(batchSizes.size())};
+    auto broadcastedState = builder.create<BroadcastInDimOp>(
+        op.getLoc(), batchedSeedType, newRngOp.getOutputState(),
+        builder.getDenseI64ArrayAttr(broadcastDims));
+
+    mapper.map(op.getOutputState(), broadcastedState);
+    mapper.map(op.getOutput(), newRngOp.getOutput());
+    return success();
+  }
+};
+
 struct SHLOIotaOpBatchInterface
     : public BatchOpInterface::ExternalModel<SHLOIotaOpBatchInterface,
                                              stablehlo::IotaOp> {
@@ -4431,7 +5110,8 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     BatchNormTrainingOp::attachInterface<AutoDiffBatchNormTrainingRev>(
         *context);
 
-    ConstantOp::attachInterface<SHLOConstantOpBatchInterface>(*context);
+    ConstantOp::attachInterface<
+        HLOConstantOpBatchInterface<stablehlo::ConstantOp>>(*context);
     TransposeOp::attachInterface<SHLOTransposeOpBatchInterface>(*context);
     stablehlo::IfOp::attachInterface<
         SHLOGenericBatchOpInterface<stablehlo::IfOp>>(*context);
@@ -4449,6 +5129,8 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     stablehlo::DynamicUpdateSliceOp::attachInterface<
         SHLODynamicUpdateSliceOpBatchInterface>(*context);
     CustomCallOp::attachInterface<SHLOGenericBatchOpInterface<CustomCallOp>>(
+        *context);
+    RngBitGeneratorOp::attachInterface<SHLORngBitGeneratorOpBatchInterface>(
         *context);
     IotaOp::attachInterface<SHLOIotaOpBatchInterface>(*context);
     stablehlo::SelectOp::attachInterface<SHLOSelectOpBatchInterface>(*context);
