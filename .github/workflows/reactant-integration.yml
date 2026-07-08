@@ -48,3 +48,4 @@ jobs:
       os: ${{ matrix.os }}
       localjll: true
       runtime: "ifrt"
+      ref: "ss/update-xla"
