@@ -17,7 +17,7 @@ test-gb-25:
     SLURM_NTASKS_PER_NODE: 1
     SLURM_GPUS_PER_TASK: 4
     SLURM_TIMELIMIT: "02:30:00"
-    # Paths — all under CI_PROJECT_DIR (scratch) to avoid touching user home/cache.
+    # Paths — all under CI_PROJECT_DIR (scratch) to avoid touching user home/cache
     REACTANT_DIR: "${CI_PROJECT_DIR}/Reactant.jl"
     GB25_DIR: "${CI_PROJECT_DIR}/GB-25"
     LOCAL_BIN: "${CI_PROJECT_DIR}/bin"
