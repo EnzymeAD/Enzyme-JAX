@@ -37,10 +37,10 @@ jobs:
         os:
           - linux-x86-n2-32
           # - macOS-latest
-          - linux-x86-a2-48-a100-4gpu
-          - linux-x86-ct6e-180-4tpu
+          # - linux-x86-a2-48-a100-4gpu
+          # - linux-x86-ct6e-180-4tpu
     name: '${{ matrix.os }} Integration'
-    uses: EnzymeAD/Reactant.jl/.github/workflows/CommonCI.yml@main
+    uses: EnzymeAD/Reactant.jl/.github/workflows/CommonCI.yml@ss/update-xla
     secrets: inherit
     with:
       enzymejax_commit: ${{ inputs.enzymejax_commit || github.sha }}
