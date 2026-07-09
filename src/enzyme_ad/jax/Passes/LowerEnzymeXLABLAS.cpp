@@ -528,6 +528,171 @@ struct SymmOpLowering : public OpRewritePattern<enzymexla::SymmOp> {
   }
 };
 
+struct HemmOpLowering : public OpRewritePattern<enzymexla::HemmOp> {
+  using OpRewritePattern<enzymexla::HemmOp>::OpRewritePattern;
+
+  std::string backend;
+  int64_t blasIntWidth;
+
+  HemmOpLowering(std::string backend, int64_t blasIntWidth,
+                 MLIRContext *context, PatternBenefit benefit = 1)
+      : OpRewritePattern(context, benefit), backend(backend),
+        blasIntWidth(blasIntWidth) {}
+
+  LogicalResult matchAndRewrite(enzymexla::HemmOp op,
+                                PatternRewriter &rewriter) const override {
+    auto AType = cast<RankedTensorType>(op.getA().getType());
+    auto nBatchDims = AType.getRank() - 2;
+
+    if (nBatchDims == 0) {
+      if (backend == "cpu") {
+        return matchAndRewriteCPU(op, rewriter);
+      } else if (backend == "cuda") {
+        return matchAndRewriteCUDA(op, rewriter);
+      }
+    }
+
+    return matchAndRewriteFallback(op, rewriter);
+  }
+
+  LogicalResult matchAndRewriteCPU(enzymexla::HemmOp op,
+                                   PatternRewriter &rewriter) const {
+    auto ctx = op->getContext();
+    LLVMTypeConverter typeConverter(ctx);
+
+    auto alpha = op.getAlpha();
+    auto a = op.getA();
+    auto b = op.getB();
+    auto beta = op.getBeta();
+    auto c = op.getC();
+    auto side = op.getSide().getBlasChar();
+    auto uplo = op.getUplo().getBlasChar();
+
+    auto type_a = cast<RankedTensorType>(a.getType());
+    auto type_b = cast<RankedTensorType>(b.getType());
+    auto type_c = cast<RankedTensorType>(c.getType());
+    auto type_elem = type_a.getElementType();
+
+    if (!type_a || !type_b || !type_c)
+      return rewriter.notifyMatchFailure(
+          op, "expected ranked tensor types");
+
+    if (type_a.getRank() != 2 || type_b.getRank() > 2 || type_c.getRank() > 2)
+      return rewriter.notifyMatchFailure(op,"only 2D matrices supported for HemmOp");
+
+    std::string fn;
+    if (auto prefix = lapackPrecisionPrefix(elementType)) {
+      fn = *prefix + "hemm_";
+    } else {
+      op->emitOpError() << "Unsupported element type: " << elementType;
+      return rewriter.notifyMatchFailure(op, "unsupported element type");
+    }
+    std::string bind_fn = "enzymexla_blas_bind_" + fn;
+    std::string wrapper_fn = "enzymexla_blas_wrap_" + fn;
+
+    auto type_char = rewriter.getI8Type();
+    auto type_blas_int = rewriter.getIntegerType(blasIntWidth);
+    auto type_llvm_char = typeConverter.convertType(type_llvm_char);
+    auto type_llvm_blas_int = typeConverter.convertType(type_blas_int);
+    auto type_llvm_ptr = LLVM::LLVMPointerType::get(ctx);
+    auto type_llvm_void = LLVM::LLVMVoidType::get(ctx);
+    auto type_llvm_elem = typeConverter.convertType(type_elem);
+
+    auto moduleOp = op->getParentOfType<ModuleOp>();
+
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(blasFn)) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+      auto funcType = LLVM::LLVMFunctionType::get(type_llvm_void,
+        {
+          type_llvm_char,     // side
+          type_llvm_char,     // uplo
+          type_llvm_blas_int, // m
+          type_llvm_blas_int, // n
+          type_llvm_ptr,      // alpha
+          type_llvm_ptr,      // A
+          type_llvm_blas_int, // lda
+          type_llvm_ptr,      // B
+          type_llvm_blas_int, // ldb
+          type_llvm_ptr,      // beta
+          type_llvm_ptr,      // C
+          type_llvm_blas_int, // ldc
+        },
+        false
+      );
+      LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), bind_fn, funcType,
+                               LLVM::Linkage::External);
+    }
+
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapper_fn)) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+      auto funcType = LLVM::LLVMFunctionType::get(type_llvm_void, {/*side*/type_llvm_ptr, /*uplo*/type_llvm_ptr, /*m*/type_llvm_ptr, /*n*/type_llvm_ptr, /*alpha*/type_llvm_ptr, /*A*/type_llvm_ptr, /*lda*/type_llvm_ptr, /*B*/type_llvm_ptr, /*ldb*/type_llvm_ptr, /*beta*/type_llvm_ptr, /*C*/type_llvm_ptr, /*ldc*/type_llvm_ptr}, false);
+      auto funcOp = LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), wrapper_fn, funcType, LLVM::Linkage::Private);
+      rewriter.setInsertionPointToStart(funcOp.addEntryBlock(rewriter));
+
+      auto opn_side = LLVM::LoadOp(rewriter, op.getLoc(), type_llvm_char, funcOp.getArgument(0));
+      auto opn_uplo = LLVM::LoadOp(rewriter, op.getLoc(), type_llvm_char, funcOp.getArgument(1));
+      auto opn_m = funcOp.getArgument(2);
+      auto opn_n = funcOp.getArgument(3);
+      auto opn_alpha = funcOp.getArgument(4);
+      auto opn_a = funcOp.getArgument(5);
+      auto opn_lda = LLVM::LoadOp(rewriter, op.getLoc(), type_llvm_blas_int, funcOp.getArgument(6));
+      auto opn_b = funcOp.getArgument(7);
+      auto opn_ldb = LLVM::LoadOp(rewriter, op.getLoc(), type_llvm_blas_int, funcOp.getArgument(8));
+      auto opn_beta = funcOp.getArgument(9);
+      auto opn_c = LLVM::LoadOp(rewriter, op.getLoc(), type_llvm_blas_int, funcOp.getArgument(10));
+      auto opn_ldc = LLVM::LoadOp(rewriter, op.getLoc(), type_llvm_blas_int, funcOp.getArgument(11));
+
+      LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{}, SymbolRefAttr::get(ctx, bind_fn), {opn_side, opn_uplo, opn_m, opn_n, opn_alpha, opn_a, opn_lda, opn_b, opn_ldb, opn_beta, opn_c, opn_ldc});
+      LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
+    }
+
+    SmallVector<bool> isColMajorArr(12, true);
+    SmallVector<int64_t> operandRanks = {0, 0, 0, 0, 0, type_a.getRank(), 0, type_b.getRank(), 0, 0, type_c.getRank(), 0};
+    SmallVector<int64_t> outputRanks = {type_c.getRank()};
+    auto operandLayouts = getSHLOLayout(rewriter, operandRanks, isColMajorArr, 2);
+    auto resultLayouts = getSHLOLayout(rewriter, outputRanks, {true}, 2);
+
+    SmallVector<Attribute> aliases = {stablehlo::OutputOperandAliasAttr::get(ctx, {}, 10, {})};
+
+    auto side_value = stablehlo::ConstantOp::create(rewriter, op.getLoc(), type_char, cast<ElementsAttr>(makeAttr(type_char, side)));
+    auto side_value = stablehlo::ConstantOp::create(rewriter, op.getLoc(), type_char, cast<ElementsAttr>(makeAttr(type_char, uplo)));
+    auto m = stablehlo::ConvertOp::create(rewriter, op.getLoc(), type_blas_int, stablehlo::GetDimensionSizeOp::create(rewriter, op.getLoc(), C, type_c.getRank() - 2));
+    auto n = stablehlo::ConvertOp::create(rewriter, op.getLoc(), type_blas_int, stablehlo::GetDimensionSizeOp::create(rewriter, op.getLoc(), C, type_c.getRank() - 1));
+    auto lda = stablehlo::ConvertOp::create(rewriter, op.getLoc(), type_blas_int, stablehlo::GetDimensionSizeOp::create(rewriter, op.getLoc(), A, type_a.getRank() - 2));
+    auto ldb = stablehlo::ConvertOp::create(rewriter, op.getLoc(), type_blas_int, stablehlo::GetDimensionSizeOp::create(rewriter, op.getLoc(), B, type_b.getRank() - 2));
+    auto ldc = stablehlo::ConvertOp::create(rewriter, op.getLoc(), type_blas_int, stablehlo::GetDimensionSizeOp::create(rewriter, op.getLoc(), C, type_c.getRank() - 2));
+
+    auto jitCall = enzymexla::JITCallOp::create(
+        rewriter, op.getLoc(), TypeRange{type_c},
+        mlir::FlatSymbolRefAttr::get(ctx, wrapper_fn),
+        ValueRange{side_value, uplo_value, m, n, alpha, A, lda, B, ldb, beta, C, ldc},
+        rewriter.getStringAttr(""),
+        /*operand_layouts=*/operandLayouts,
+        /*result_layouts=*/resultLayouts,
+        /*arg_attrs=*/nullptr,
+        /*res_attrs=*/nullptr,
+        /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
+        /*xla_side_effect_free=*/rewriter.getUnitAttr());
+
+    rewriter.replaceOp(op, jitCall);
+
+    return success();
+  }t
+
+  LogicalResult matchAndRewriteCUDA(enzymexla::HemmOp op,
+                                    PatternRewriter &rewriter) const {
+    return success();
+  }
+
+  LogicalResult matchAndRewriteFallback(enzymexla::HemmOp op,
+                                        PatternRewriter &rewriter) const {
+    return success();
+  }
+};
+
 struct SyrkOpLowering : public OpRewritePattern<enzymexla::SyrkOp> {
   using OpRewritePattern<enzymexla::SyrkOp>::OpRewritePattern;
 
@@ -1054,7 +1219,7 @@ struct LowerEnzymeXLABLASPass
     // We need to run SymmOp lowering first, since it conditionally lowers
     // to a custom call that needs us to detect potential Syrk Ops
     RewritePatternSet patternsSet1(context);
-    patternsSet1.add<SymmOpLowering>(backend, blasIntWidth, context);
+    patternsSet1.add<SymmOpLowering, HemmOpLowering>(backend, blasIntWidth, context);
     if (failed(applyPatternsGreedily(getOperation(), std::move(patternsSet1),
                                      config))) {
       signalPassFailure();
