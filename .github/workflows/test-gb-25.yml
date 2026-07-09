@@ -56,12 +56,14 @@ jobs:
         grid:
           - '--float-type=Float64'
           - '--float-type=Float32'
+          # Multifloat (f32 -> bf16, first packing) — exercises the
+          # MultiFloatConversion pass end-to-end on TPU + GPU.
+          - '--float-type=Float32 --target-float-type=BFloat16 --dimension=first'
+          #- '--float-type=Float32 --target-float-type=BFloat16 --dimension=last'
+          #- '--float-type=Float32 --target-float-type=BFloat16 --dimension=tuple'
           #- '--float-type=Float64 --target-float-type=Float32 --dimension=first'
           #- '--float-type=Float64 --target-float-type=Float32 --dimension=last'
           #- '--float-type=Float64 --target-float-type=Float32 --dimension=tuple'
-          #- '--float-type=Float32 --target-float-type=BFloat16 --dimension=first'
-          #- '--float-type=Float32 --target-float-type=BFloat16 --dimension=last'
-          #- '--float-type=Float32 --target-float-type=BFloat16 --dimension=tuple'
 
     steps:
       - name: Check GPUs
