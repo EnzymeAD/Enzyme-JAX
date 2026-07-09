@@ -14,6 +14,8 @@
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_join.h"
 
+#include "llvm/Support/raw_ostream.h"
+
 MlirAttribute enzymexlaLapackLayoutAttrGet(MlirContext ctx,
                                            EnzymeXlaLapackLayout layout) {
   mlir::enzymexla::LapackLayout l;
@@ -918,26 +920,33 @@ void enzymexlaGetTransformPassesList(
   int64_t whileUnroll = options->while_unroll_threshold;
   bool aggressive = options->aggressive_propagation;
 
+  llvm::errs() << "[@] Inside enzymexlaGetTransformPassesList\n";
+
   // Base passes
+  llvm::errs() << "[@] Calling addBaseTransformPasses\n";
   addBaseTransformPasses(list, maxConst, whileUnroll);
 
   if (options->enable_self_to_convolution_like_passes) {
+    llvm::errs() << "[@] Calling addSelfToConvolutionLikePasses\n";
     addSelfToConvolutionLikePasses(list);
   }
 
   // Structured tensors detection (syrk) — only when not sharded
   if (!options->is_sharded && options->raise_shlo_to_blas_lapack &&
       options->enable_structured_tensors_detection_passes) {
+    llvm::errs() << "[@] Calling addStructuredTensorsSyrkPasses\n";
     addStructuredTensorsSyrkPasses(list);
   }
 
   // Structured tensors passes
   if (options->enable_structured_tensors_passes) {
+    llvm::errs() << "[@] Calling addStructuredTensorsPasses\n";
     addStructuredTensorsPasses(list);
   }
 
   // Scatter/gather
   if (options->enable_scatter_gather_optimization_passes) {
+    llvm::errs() << "[@] Calling addScatterGatherPasses\n";
     addScatterGatherPasses(list, maxConst);
   }
 
@@ -945,36 +954,43 @@ void enzymexlaGetTransformPassesList(
   // tensors)
   if (options->enable_scatter_gather_optimization_passes &&
       options->enable_structured_tensors_passes) {
+    llvm::errs() << "[@] Calling addDiagonalTensorRewritePasses\n";
     list.push_back("diagonal_tensor_dot_general_rewrite");
   }
 
   // Slice to batch
   if (options->enable_slice_to_batch_passes) {
+    llvm::errs() << "[@] Calling addSliceToBatchPasses\n";
     addSliceToBatchPasses(list);
   }
 
   // Reduce slice fusion
   if (options->enable_reduce_slice_fusion_passes) {
+    llvm::errs() << "[@] Calling addReduceSliceFusionPasses\n";
     addReduceSliceFusionPasses(list);
   }
 
   // Concat to batch
   if (options->enable_concat_to_batch_passes) {
+    llvm::errs() << "[@] Calling addConcatToBatchPasses\n";
     addConcatToBatchPasses(list);
   }
 
   // Loop raising
   if (options->enable_loop_raising_passes) {
+    llvm::errs() << "[@] Calling addLoopRaisingPasses\n";
     addLoopRaisingPasses(list);
   }
 
   // LICM
   if (options->enable_licm_optimization_passes) {
+    llvm::errs() << "[@] Calling addLICMPasses\n";
     addLICMPasses(list);
   }
 
   // Pad passes
   if (options->enable_pad_optimization_passes) {
+    llvm::errs() << "[@] Calling addPadPasses\n";
     addPadPasses(list, maxConst, options->enable_licm_optimization_passes);
   }
 
@@ -1005,23 +1021,29 @@ void enzymexlaGetTransformPassesList(
 
   // Reshape propagation
   if (options->reshape_propagate == ENZYMEXLA_PROPAGATE_UP) {
+    llvm::errs() << "[@] Calling addReshapePropagateUpPasses\n";
     addReshapePropagateUpPasses(list, aggressive);
   } else if (options->reshape_propagate == ENZYMEXLA_PROPAGATE_DOWN) {
+    llvm::errs() << "[@] Calling addReshapePropagateDownPasses\n";
     addReshapePropagateDownPasses(list, aggressive);
   }
 
   // Transpose propagation
   if (options->transpose_propagate == ENZYMEXLA_PROPAGATE_UP) {
+    llvm::errs() << "[@] Calling addTransposePropagateUpPasses\n";
     addTransposePropagateUpPasses(list, aggressive);
   } else if (options->transpose_propagate == ENZYMEXLA_PROPAGATE_DOWN) {
+    llvm::errs() << "[@] Calling addTransposePropagateDownPasses\n";
     addTransposePropagateDownPasses(list);
   }
 
   // no_nan passes (always added, parameterized by flag)
+  llvm::errs() << "[@] Calling addNoNanPasses\n";
   addNoNanPasses(list, options->no_nan);
 
   // all_finite
   if (options->all_finite) {
+    llvm::errs() << "[@] Calling addAllFinitePasses\n";
     addAllFinitePasses(list);
   }
 
@@ -1030,20 +1052,30 @@ void enzymexlaGetTransformPassesList(
 
   // Recognize comms (added to main list only)
   if (options->recognize_comms) {
+    llvm::errs() << "[@] Calling addRecognizeCommsPasses\n";
     addRecognizeCommsPasses(list);
   }
 
   // Lower comms (added to lower list only)
   if (options->lower_comms) {
+    llvm::errs() << "[@] Calling addLowerCommsPasses\n";
     addLowerCommsPasses(lowerList);
   }
 
   // Output
+  llvm::errs() << "[@] Joining main list into string\n";
   std::string mainStr = absl::StrJoin(list, ";");
+  llvm::errs() << "[@] Joining lower list into string\n";
   std::string lowerStr = absl::StrJoin(lowerList, ";");
 
   *mainPasses = strdupCopy(mainStr);
   *lowerPasses = strdupCopy(lowerStr);
+
+  llvm::errs() << "[@] Finished enzymexlaGetTransformPassesList\n";
 }
 
-void enzymexlaFreeTransformPassesList(char *passes) { free(passes); }
+void enzymexlaFreeTransformPassesList(char *passes) {
+  llvm::errs() << "[@] Freeing passes list\n";
+  free(passes);
+  llvm::errs() << "[@] Finished freeing passes list\n";
+}
