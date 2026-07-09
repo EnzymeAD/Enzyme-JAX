@@ -84,9 +84,23 @@ test-gb-25:
       set -euo pipefail
       # Build ROCm overlay inside srun (UENV now mounted, /user-environment/ accessible).
       # Seed from UENV view; add MIOpen from its separate spack package via glob.
+      #
+      # IMPORTANT: exclude the LLVM/Clang toolchain headers (llvm/, mlir/, clang/, ...).
+      # rocm_configure globs \${ROCM_PATH}/include into local_config_rocm's
+      # rocm_headers_includes, and Bazel places that -I *ahead of*
+      # -isystem external/llvm-project/..., so the UENV's LLVM headers would SHADOW
+      # the LLVM/MLIR that XLA is actually built against (LLVM 23). Symptoms:
+      #   "no member named 'getEmptyKey' in 'llvm::DenseMapInfo<xla::SymbolicExpr>'"
+      #   "no type named 'PropertyRef' in namespace 'mlir'"
+      # Only ROCm's own headers (hip/, rocblas/, miopen/, ...) belong in the overlay.
       mkdir -p "${CI_PROJECT_DIR}/.rocm/include"
       for f in /user-environment/env/default/include/*; do
-        [[ -e "\$f" ]] && ln -sfn "\$f" "${CI_PROJECT_DIR}/.rocm/include/\$(basename "\$f")"
+        [[ -e "\$f" ]] || continue
+        name="\$(basename "\$f")"
+        case "\${name}" in
+          llvm|llvm-c|mlir|mlir-c|clang|clang-c|lld|lldb|polly) continue ;;
+        esac
+        ln -sfn "\$f" "${CI_PROJECT_DIR}/.rocm/include/\${name}"
       done
       for pkg in /user-environment/linux-zen3/miopen-hip-*/; do
         [[ -f "\${pkg}include/miopen/version.h" ]] || continue
@@ -269,6 +283,14 @@ test-gb-25:
                hipsolver/internal/hipsolver-version.h rocsolver/rocsolver-version.h \
                rocm_smi/rocm_smi.h; do
         [[ -e "${CI_PROJECT_DIR}/.rocm/include/\${f}" ]] && echo "OK: \${f}" || echo "MISSING: \${f}"
+      done
+      # These must NOT be in the overlay: they shadow XLA's own LLVM/MLIR headers.
+      for d in llvm mlir clang; do
+        if [[ -e "${CI_PROJECT_DIR}/.rocm/include/\${d}" ]]; then
+          echo "ERROR: .rocm/include/\${d} exists; it will shadow external/llvm-project headers" >&2
+          exit 1
+        fi
+        echo "OK: no .rocm/include/\${d} (no LLVM header shadowing)"
       done
       [[ -e "${CI_PROJECT_DIR}/.rocm/amdgcn/bitcode/ocml.bc" ]] && echo "OK: amdgcn/bitcode/ocml.bc" || echo "MISSING: amdgcn/bitcode/ocml.bc"
       [[ -e "${CI_PROJECT_DIR}/.rocm/lib/llvm/amdgcn/bitcode/ocml.bc" ]] && echo "OK: lib/llvm/amdgcn/bitcode/ocml.bc" || echo "MISSING: lib/llvm/amdgcn/bitcode/ocml.bc"
