@@ -1,8 +1,10 @@
 #include "EnzymeXLA.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "mlir/CAPI/IR.h"
@@ -649,7 +651,8 @@ static void addLoopRaisingPasses(std::vector<std::string> &list) {
   list.push_back("remove_loop_carried_dependencies_from_while_load_operations");
 }
 
-static void addLICMPasses(std::vector<std::string> &list) {
+static void addLICMPasses(std::vector<std::string> &list,
+                          int64_t loopUnswitchThreshold) {
   list.push_back("dus_licm(0)");
   list.push_back("slice_licm(0)");
   list.push_back("elementwise_licm(0)");
@@ -670,6 +673,9 @@ static void addLICMPasses(std::vector<std::string> &list) {
   list.push_back("rotate_licm(0)");
   list.push_back("wrap_licm(0)");
   list.push_back("extend_licm(0)");
+  if (loopUnswitchThreshold >= 0) {
+    list.push_back(passWithArg("loop_unswitch", loopUnswitchThreshold));
+  }
 }
 
 static void addPadPasses(std::vector<std::string> &list,
@@ -985,7 +991,7 @@ void enzymexlaGetTransformPassesList(
   // LICM
   if (options->enable_licm_optimization_passes) {
     llvm::errs() << "[@] Calling addLICMPasses\n";
-    addLICMPasses(list);
+    addLICMPasses(list, options->loop_unswitch_threshold);
   }
 
   // Pad passes
@@ -1060,6 +1066,25 @@ void enzymexlaGetTransformPassesList(
   if (options->lower_comms) {
     llvm::errs() << "[@] Calling addLowerCommsPasses\n";
     addLowerCommsPasses(lowerList);
+  }
+
+  // Exclude passes by base name (everything before the first '(' or '<').
+  if (options->num_excluded_passes > 0) {
+    std::unordered_set<std::string> excluded(options->excluded_passes,
+                                             options->excluded_passes +
+                                                 options->num_excluded_passes);
+    auto baseName = [](const std::string &pass) -> std::string {
+      auto end = pass.find_first_of("(<");
+      return end == std::string::npos ? pass : pass.substr(0, end);
+    };
+    auto shouldExclude = [&](const std::string &p) {
+      return excluded.count(baseName(p)) > 0;
+    };
+    list.erase(std::remove_if(list.begin(), list.end(), shouldExclude),
+               list.end());
+    lowerList.erase(
+        std::remove_if(lowerList.begin(), lowerList.end(), shouldExclude),
+        lowerList.end());
   }
 
   // Output

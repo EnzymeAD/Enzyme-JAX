@@ -76,6 +76,10 @@ void ApplyWhileLICMPatterns::populatePatterns(RewritePatternSet &patterns) {
   addWhileLICM(patterns, getParameter(), *getContext(),
                PatternBenefit(getBenefit().value_or(0)));
 }
+void ApplyLoopUnswitchPatterns::populatePatterns(RewritePatternSet &patterns) {
+  addLoopUnswitch(patterns, getParameter(), *getContext(),
+                  PatternBenefit(getBenefit().value_or(1)));
+}
 void ApplySliceLICMPatterns::populatePatterns(RewritePatternSet &patterns) {
   addSliceLICM(patterns, getParameter(), *getContext(),
                PatternBenefit(getBenefit().value_or(1)));

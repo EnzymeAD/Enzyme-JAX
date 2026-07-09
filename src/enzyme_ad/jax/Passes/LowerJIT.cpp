@@ -604,9 +604,18 @@ void rewriteKernelCallABI(
     auto pfunc = op->getParentOfType<LLVM::LLVMFuncOp>();
     mlir::Value cufunc = pfunc.getBody().begin()->getArgument(2);
 
-    auto ldop = op.getKernelOperands().front().getDefiningOp<LLVM::LoadOp>();
-    assert(ldop);
-    auto params = ldop.getOperand();
+    mlir::Value params;
+    LLVM::LoadOp ldop = nullptr;
+    if (op.getKernelOperands().empty()) {
+      // Kernels with no runtime arguments (e.g. fully static configs baked
+      // in as compile-time constants) legitimately have no packed params
+      // struct to load; pass a null pointer as cuLaunchKernel accepts.
+      params = LLVM::ZeroOp::create(builder, loc, ptrty);
+    } else {
+      ldop = op.getKernelOperands().front().getDefiningOp<LLVM::LoadOp>();
+      assert(ldop);
+      params = ldop.getOperand();
+    }
 
     llvm::SmallVector<mlir::Value> args = {
         cufunc,
@@ -671,7 +680,8 @@ void rewriteKernelCallABI(
     }
 
     op.erase();
-    ldop.erase();
+    if (ldop)
+      ldop.erase();
   });
 }
 
