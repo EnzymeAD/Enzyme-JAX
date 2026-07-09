@@ -42,7 +42,10 @@ namespace {
 // Rewrite 'llvm.func' -> 'tessera.define'
 class FuncOpRewrite final : public OpRewritePattern<LLVM::LLVMFuncOp> {
 public:
-  using OpRewritePattern<LLVM::LLVMFuncOp>::OpRewritePattern;
+  FuncOpRewrite(MLIRContext *ctx,
+                const llvm::DenseMap<unsigned, mlir::Type> &byRefTypesByIndex)
+      : OpRewritePattern<LLVM::LLVMFuncOp>(ctx),
+        byRefTypesByIndex(byRefTypesByIndex) {}
 
   LogicalResult matchAndRewrite(LLVM::LLVMFuncOp funcOp,
                                 PatternRewriter &rewriter) const override {
@@ -65,10 +68,12 @@ public:
     if (!tesseraOpAttr)
       return failure();
 
-    // Parse the tessera op attribute to extract the op name, argument passing
-    // style, and argument sizes. The attribute is expected to be in the format:
-    // "tessera_op(arg1:byref, arg2, ...):size1,size2,..." or
-    // "pure_tessera_op(arg1:byref, arg2, ...):size1,size2,..."
+    // Parse the tessera op attribute, which is expected to be in the format:
+    // "tessera_op(arg1:byref, arg2, ...):globals=index1,..." or
+    // "pure_tessera_op(arg1:byref, arg2, ...):globals=index1,..." where
+    // index1,... corresponds positionally, in left-to-right order, to the byref
+    // args in the arg list above, and are used to look up the types of the
+    // byref args.
     StringRef raw = tesseraOpAttr.getValue();
 
     // Parse op name (everything before the '(')
@@ -76,39 +81,63 @@ public:
 
     // Parse args in parentheses
     StringRef argList = raw.slice(raw.find('(') + 1, raw.find(')'));
-    SmallVector<bool> byRefArgs;
 
+    // Parse indices after ":globals=" (order corresponds to order byref
+    // args appear in argList)
+    SmallVector<StringRef> indexList;
+    StringRef indicesStr = raw.substr(raw.find(')') + 1);
+    if (!indicesStr.empty() && indicesStr.consume_front(":globals=")) {
+      indicesStr.split(indexList, ',');
+    }
+
+    // Identify which args are marked byref and look up their types in
+    // byRefTypesByIndex map
+    SmallVector<Attribute> byRefTypes;
+    unsigned numByRefFound = 0;
     if (!argList.trim().empty()) {
       SmallVector<StringRef> argParts;
       argList.split(argParts, ',');
-      for (auto arg : argParts) {
-        arg = arg.trim();
-        if (arg.contains(":byref") || arg.contains(": byref")) {
-          byRefArgs.push_back(true);
-        } else {
-          byRefArgs.push_back(false);
+      for (unsigned i = 0, e = argParts.size(); i != e; ++i) {
+        StringRef arg = argParts[i].trim();
+
+        // Check if arg is marked as byref. If not, push a unit attribute so
+        // that the byRefTypes array has the same size as the number of args.
+        if (!arg.contains(":byref") && !arg.contains(": byref")) {
+          byRefTypes.push_back(UnitAttr::get(ctx));
+          continue;
         }
+
+        if (numByRefFound >= indexList.size()) {
+          funcOp->emitError("tessera: not enough byref indices for byref args");
+          return failure();
+        }
+
+        // Find the types of the byref arguments by looking for global variables
+        // with names that match the pattern "__tessera_byref_arg_type_<idx>"
+        // where <idx> is a number parsed in the tessera_op attribute after
+        // "globals=".
+        auto byRefIndex = indexList[numByRefFound++];
+        unsigned idx;
+        if (byRefIndex.trim().getAsInteger(10, idx)) {
+          funcOp->emitError("tessera: invalid byref type index: ")
+              << byRefIndex;
+          return failure();
+        }
+        auto it = byRefTypesByIndex.find(idx);
+        if (it == byRefTypesByIndex.end()) {
+          funcOp->emitError("tessera: no byref type found for index: ") << idx;
+          return failure();
+        }
+        byRefTypes.push_back(TypeAttr::get(it->second));
       }
     }
 
-    // Parse sizes of args
-    SmallVector<int64_t> sizes;
-    StringRef sizeStr = raw.substr(raw.find(')') + 1);
-    if (!sizeStr.empty() && sizeStr.consume_front(":")) {
-      SmallVector<StringRef> sizeParts;
-      sizeStr.split(sizeParts, ',');
-      for (auto s : sizeParts) {
-        int64_t size;
-        s.trim().getAsInteger(10, size);
-        sizes.push_back(size);
-      }
-    }
-
-    // Make sure number of arguments matches number of sizes provided
-    if (byRefArgs.size() != sizes.size()) {
-      funcOp->emitError("tessera: number of arguments (")
-          << byRefArgs.size() << ") does not match number of sizes ("
-          << sizes.size() << ")";
+    // The format guarantees one global index per byref arg.
+    // A mismatch means the annotation string is malformed or the Clang
+    // plugin's emission order has drifted from this parser's assumption.
+    if (numByRefFound != indexList.size()) {
+      funcOp->emitError(
+          "tessera: mismatch between byref arg count and global index count");
       return failure();
     }
 
@@ -132,8 +161,7 @@ public:
     // args, sizes, and purity (side effect free) attribute
     auto tesseraDefineOp = tessera::DefineOp::create(
         rewriter, funcOp.getLoc(), tesseraName.str(), fnType,
-        DenseBoolArrayAttr::get(ctx, byRefArgs),
-        DenseI64ArrayAttr::get(ctx, sizes), isPure);
+        ArrayAttr::get(ctx, byRefTypes), isPure);
 
     // Copy over all attributes other than the function name and type
     // and tessera_op / pure_tessera_op attribute.
@@ -156,9 +184,11 @@ public:
     }
 
     rewriter.eraseOp(funcOp);
-
     return success();
   }
+
+private:
+  const llvm::DenseMap<unsigned, mlir::Type> &byRefTypesByIndex;
 };
 
 // Rewrite 'llvm.call' -> 'tessera.call'
@@ -169,12 +199,13 @@ public:
   LogicalResult matchAndRewrite(LLVM::CallOp callOp,
                                 PatternRewriter &rewriter) const override {
 
+    auto module = callOp->getParentOfType<ModuleOp>();
+
     auto calleeAttr = callOp.getCalleeAttr();
     if (!calleeAttr)
       return failure();
 
-    auto callee = SymbolTable::lookupSymbolIn(
-        callOp->getParentOfType<ModuleOp>(), calleeAttr);
+    auto callee = SymbolTable::lookupSymbolIn(module, calleeAttr);
     // Only rewrite if callee is a tessera.define op
     auto defineOp = dyn_cast_or_null<tessera::DefineOp>(callee);
     if (!defineOp)
@@ -207,15 +238,13 @@ public:
       }
     }
 
-    auto byRefArgs = defineOp.getByRefArgs();
-    auto argSizes = defineOp.getArgSizes();
-
     SmallVector<Value> newOperands;
     SmallVector<int32_t> loadedOperands;
 
-    // Build operands without first element. If a pointer operand has a
-    // byVal attribute or was marked as byRef by the user, load the value
-    // from the pointer and store that as the new operand
+    // Build operands without first element if sretPtr is present.
+    // If a pointer operand has a byVal attribute or was marked as
+    // byRef by the user, load the value from the pointer and store
+    // that as the new operand.
     int argOffset = sretPtr ? 1 : 0;
     for (unsigned i = 0; i < operands.size() - argOffset; i++) {
       auto operand = callOp.getOperand(i + argOffset);
@@ -225,13 +254,15 @@ public:
         continue;
       }
 
-      // Determine whether to load pointer and how many bytes to load
+      // Determine whether to load pointer and what type to load based on
+      // byVal attribute or byRef attribute on the tessera.define op.
+      // If neither is present, just pass the pointer through.
       Type pointeeType;
       if (auto byValAttr =
               defineOp.getArgAttr(i, LLVM::LLVMDialect::getByValAttrName())) {
         pointeeType = cast<TypeAttr>(byValAttr).getValue();
-      } else if (byRefArgs[i]) {
-        pointeeType = IntegerType::get(rewriter.getContext(), argSizes[i] * 8);
+      } else if (auto byRefType = defineOp.getByRefType(i)) {
+        pointeeType = byRefType;
       }
 
       if (pointeeType) {
@@ -294,8 +325,39 @@ struct LLVMToTesseraPass
   void runOnOperation() override {
     MLIRContext *ctx = &getContext();
     RewritePatternSet patterns(ctx);
+    auto module = cast<ModuleOp>(getOperation());
 
-    patterns.add<FuncOpRewrite, CallOpRewrite, ReturnOpRewrite>(ctx);
+    // Build a lookup of byref argument index -> resolved type by scanning the
+    // module once for globals named "__tessera_byref_arg_type_<index>" (names
+    // may be mangled with compiler-added prefixes, e.g.
+    // "_ZL26__tessera_byref_arg_type_0", so we search for the marker rather
+    // than requiring it at the start). Each tessera.define op's own byref index
+    // list (from its "globals=" attribute) is later resolved against this map,
+    // avoiding a full module rescan per op.
+    llvm::DenseMap<unsigned, mlir::Type> byRefTypesByIndex;
+    StringRef prefix = "__tessera_byref_arg_type_";
+    for (auto global : module.getOps<mlir::LLVM::GlobalOp>()) {
+      StringRef name = global.getSymName();
+      size_t pos = name.find(prefix);
+      if (pos == StringRef::npos)
+        continue;
+      StringRef idxStr = name.drop_front(pos + prefix.size());
+      unsigned idx;
+      if (idxStr.getAsInteger(10, idx))
+        continue; // not a well-formed index suffix, skip
+
+      auto [it, inserted] =
+          byRefTypesByIndex.try_emplace(idx, global.getType());
+      if (!inserted) {
+        llvm::errs()
+            << "Tessera: found multiple globals matching byref type index "
+            << idx << ":\n";
+        return signalPassFailure();
+      }
+    }
+
+    patterns.add<FuncOpRewrite>(ctx, byRefTypesByIndex);
+    patterns.add<CallOpRewrite, ReturnOpRewrite>(ctx);
 
     GreedyRewriteConfig config;
     config.setUseTopDownTraversal(true);
@@ -303,11 +365,10 @@ struct LLVMToTesseraPass
                                      config))) {
       llvm::errs() << "Failed to convert LLVM dialect operations to tessera "
                       "dialect operations\n";
-      signalPassFailure();
+      return signalPassFailure();
     }
 
     // Clean up llvm.global.annotations after conversion if it still exists
-    auto module = cast<ModuleOp>(getOperation());
     if (auto annotations = module.lookupSymbol("llvm.global.annotations")) {
       annotations->erase();
     }
