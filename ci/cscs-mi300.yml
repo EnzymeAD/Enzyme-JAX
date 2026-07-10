@@ -301,6 +301,26 @@ test-gb-25:
         found=\$(ls -1 "${CI_PROJECT_DIR}/.rocm/lib/\${lib}".so* 2>/dev/null | xargs -n1 basename 2>/dev/null | tr '\n' ' ')
         echo "  \${lib}: \${found:-MISSING}"
       done
+      # Curate a lib dir for run_julia.sh: every overlay ROCm .so EXCEPT any whose
+      # soname Julia also bundles (libcurl, libstdc++, libLLVM, libz, ...). Putting
+      # the full view/.rocm lib dir on LD_LIBRARY_PATH shadowed Julia's own libcurl
+      # and broke Pkg downloads ("curl_easy_setopt: 48"). Excluded libs that ROCm
+      # needs still resolve via each ROCm lib's own (spack) RPATH.
+      JULIA_LIBDIR="\$(dirname "\$(dirname "${JULIA}")")/lib/julia"
+      CURATED="${CI_PROJECT_DIR}/.rocm/reactant_libs"
+      rm -rf "\${CURATED}"; mkdir -p "\${CURATED}"
+      shopt -s nullglob
+      for f in "${CI_PROJECT_DIR}/.rocm/lib/"*.so*; do
+        [[ -e "\$f" ]] || continue
+        base="\$(basename "\$f")"
+        stem="\${base%%.so*}"
+        # skip if Julia bundles any version of this soname (avoid shadowing)
+        jmatch=("\${JULIA_LIBDIR}/\${stem}".so*)
+        (( \${#jmatch[@]} )) && continue
+        ln -sfn "\$f" "\${CURATED}/\${base}"
+      done
+      shopt -u nullglob
+      echo "curated \$(ls -1 "\${CURATED}" 2>/dev/null | wc -l) ROCm libs (excluding Julia-bundled sonames) into reactant_libs/"
       echo "llvm/bin/clang: \${CLANG_BIN}"
       echo "========================="
       # Pass ROCM_PATH and TF_ROCM_AMDGPU_TARGETS via --extraopt so they reach
@@ -333,7 +353,12 @@ test-gb-25:
       cat > "${CI_PROJECT_DIR}/run_julia.sh" << 'RUNSCRIPT'
       #!/bin/bash
       set -euo pipefail
-      export LD_LIBRARY_PATH="${CI_PROJECT_DIR}/.rocm/lib:${CI_PROJECT_DIR}/.rocm/lib64:${LD_LIBRARY_PATH:-}"
+      # Only the curated ROCm libs (see build_reactant.sh) go on LD_LIBRARY_PATH.
+      # Deliberately do NOT append the inherited (UENV view) LD_LIBRARY_PATH: it
+      # points at /user-environment/env/default/lib, whose old libcurl/libstdc++
+      # would shadow Julia's bundled copies. The curated dir excludes exactly those
+      # sonames, so ROCm libs load while Julia keeps its own runtime libraries.
+      export LD_LIBRARY_PATH="${CI_PROJECT_DIR}/.rocm/reactant_libs"
       exec "${JULIA}" "$@"
       RUNSCRIPT
       chmod +x "${CI_PROJECT_DIR}/run_julia.sh"
