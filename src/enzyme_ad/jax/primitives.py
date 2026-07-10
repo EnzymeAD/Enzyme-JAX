@@ -110,6 +110,8 @@ def optimization_passes(
     reshape_propagate: str = "up",
     max_constant_threshold: int = 1024,
     enable_licm_optimization_passes: bool = True,
+    loop_unswitch_threshold: int = 10,
+    excluded_passes: list = [],
     enable_scatter_gather_optimization_passes: bool = True,
     enable_pad_optimization_passes: bool = True,
     enable_self_to_convolution_like_passes: bool = False,
@@ -153,8 +155,10 @@ def optimization_passes(
         enable_concat_to_batch_passes,  # enable_concat_to_batch_passes
         enable_loop_raising_passes,  # enable_loop_raising_passes
         enable_licm_optimization_passes,  # enable_licm_optimization_passes
+        loop_unswitch_threshold,  # loop_unswitch_threshold
         enable_pad_optimization_passes,  # enable_pad_optimization_passes
         enable_self_to_convolution_like_passes,  # enable_self_to_convolution_like_passes
+        excluded_passes,  # excluded_passes
     )
 
     transform_passes = ",".join(

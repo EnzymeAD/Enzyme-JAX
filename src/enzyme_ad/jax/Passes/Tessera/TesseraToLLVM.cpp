@@ -83,8 +83,7 @@ public:
     for (const auto &namedAttr : defineOp->getAttrs()) {
       if (namedAttr.getName() != SymbolTable::getSymbolAttrName() &&
           namedAttr.getName() != defineOp.getFunctionTypeAttrName() &&
-          namedAttr.getName() != defineOp.getByRefArgsAttrName() &&
-          namedAttr.getName() != defineOp.getArgSizesAttrName() &&
+          namedAttr.getName() != defineOp.getByRefTypesAttrName() &&
           namedAttr.getName() != defineOp.getPureAttrName() &&
           namedAttr.getName() != "tessera.original_name")
         funcOp->setAttr(namedAttr.getName(), namedAttr.getValue());
@@ -259,9 +258,9 @@ struct TesseraToLLVMPass
     patterns.add<CallOpRewrite, ReturnOpRewrite>(ctx);
 
     if (failed(applyPatternsGreedily(getOperation(), std::move(patterns)))) {
-      signalPassFailure();
       llvm::errs() << "Failed to convert tessera dialect operations to LLVM "
                       "dialect operations\n";
+      return signalPassFailure();
     }
   }
 };

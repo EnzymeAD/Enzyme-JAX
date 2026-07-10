@@ -74,6 +74,7 @@
 #include "nanobind/stl/pair.h"
 #include "nanobind/stl/string.h"
 #include "nanobind/stl/tuple.h"
+#include "nanobind/stl/vector.h"
 
 #include "stablehlo/transforms/Passes.h"
 
@@ -602,8 +603,9 @@ NB_MODULE(enzyme_call, m) {
            bool enable_reduce_slice_fusion_passes,
            bool enable_concat_to_batch_passes, bool enable_loop_raising_passes,
            bool enable_licm_optimization_passes,
-           bool enable_pad_optimization_passes,
-           bool enable_self_to_convolution_like_passes)
+           int64_t loop_unswitch_threshold, bool enable_pad_optimization_passes,
+           bool enable_self_to_convolution_like_passes,
+           std::vector<std::string> excluded_passes)
             -> std::pair<std::string, std::string> {
           EnzymeXLATransformPassesOptions options;
           options.max_constant_threshold = max_constant_threshold;
@@ -638,10 +640,19 @@ NB_MODULE(enzyme_call, m) {
           options.enable_loop_raising_passes = enable_loop_raising_passes;
           options.enable_licm_optimization_passes =
               enable_licm_optimization_passes;
+          options.loop_unswitch_threshold = loop_unswitch_threshold;
           options.enable_pad_optimization_passes =
               enable_pad_optimization_passes;
           options.enable_self_to_convolution_like_passes =
               enable_self_to_convolution_like_passes;
+
+          std::vector<const char *> excluded_cstrs;
+          excluded_cstrs.reserve(excluded_passes.size());
+          for (const auto &s : excluded_passes)
+            excluded_cstrs.push_back(s.c_str());
+          options.excluded_passes =
+              excluded_cstrs.empty() ? nullptr : excluded_cstrs.data();
+          options.num_excluded_passes = excluded_cstrs.size();
 
           char *mainPasses = nullptr;
           char *lowerPasses = nullptr;
