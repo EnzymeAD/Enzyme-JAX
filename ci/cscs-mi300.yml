@@ -294,6 +294,13 @@ test-gb-25:
       done
       [[ -e "${CI_PROJECT_DIR}/.rocm/amdgcn/bitcode/ocml.bc" ]] && echo "OK: amdgcn/bitcode/ocml.bc" || echo "MISSING: amdgcn/bitcode/ocml.bc"
       [[ -e "${CI_PROJECT_DIR}/.rocm/lib/llvm/amdgcn/bitcode/ocml.bc" ]] && echo "OK: lib/llvm/amdgcn/bitcode/ocml.bc" || echo "MISSING: lib/llvm/amdgcn/bitcode/ocml.bc"
+      # Runtime libs libReactantExtra.so dlopens (LD_LIBRARY_PATH must reach these
+      # at Julia load time via run_julia.sh). Show the versioned sonames present.
+      echo "runtime libs in overlay lib/:"
+      for lib in librocblas librocsolver libhipblas librocfft libamdhip64 libhsa-runtime64 libMIOpen librocrand; do
+        found=\$(ls -1 "${CI_PROJECT_DIR}/.rocm/lib/\${lib}".so* 2>/dev/null | xargs -n1 basename 2>/dev/null | tr '\n' ' ')
+        echo "  \${lib}: \${found:-MISSING}"
+      done
       echo "llvm/bin/clang: \${CLANG_BIN}"
       echo "========================="
       # Pass ROCM_PATH and TF_ROCM_AMDGPU_TARGETS via --extraopt so they reach
@@ -315,11 +322,30 @@ test-gb-25:
     # Build libReactant — the script creates the ROCm overlay then invokes Bazel
     - srun -n 1 --export=ALL --uenv "${UENV}" --view=default "${CI_PROJECT_DIR}/build_reactant.sh"
 
+    # Wrapper: prepend the ROCm overlay libs to LD_LIBRARY_PATH before launching
+    # Julia, so libReactantExtra.so can dlopen its ROCm deps (librocblas.so.5, ...)
+    # at load time. Every Reactant-loading Julia step (precompile + sims) must run
+    # via this wrapper INSIDE `srun --uenv`, so /user-environment (the overlay
+    # symlink targets) is mounted. Quoted heredoc: CI_PROJECT_DIR / JULIA /
+    # LD_LIBRARY_PATH resolve at run time inside srun (forwarded by --export=ALL),
+    # after the UENV view has set its own paths, so we append to them.
+    - |
+      cat > "${CI_PROJECT_DIR}/run_julia.sh" << 'RUNSCRIPT'
+      #!/bin/bash
+      set -euo pipefail
+      export LD_LIBRARY_PATH="${CI_PROJECT_DIR}/.rocm/lib:${CI_PROJECT_DIR}/.rocm/lib64:${LD_LIBRARY_PATH:-}"
+      exec "${JULIA}" "$@"
+      RUNSCRIPT
+      chmod +x "${CI_PROJECT_DIR}/run_julia.sh"
+
     # Clone GB-25 and set up its Julia environment
     - git clone --depth=1 --branch "${GB25_COMMIT}" https://github.com/PRONTOLab/GB-25 "${GB25_DIR}"
     - cp "${REACTANT_DIR}/LocalPreferences.toml" "${GB25_DIR}/LocalPreferences.toml"
+    # Runs inside srun so /user-environment is mounted and libReactantExtra.so's
+    # ROCm deps resolve while Pkg precompiles Reactant.
     - |
-      cd "${GB25_DIR}" && ${JULIA} --project --color=yes -e "
+      srun -n 1 --export=ALL --uenv "${UENV}" --view=default \
+        "${CI_PROJECT_DIR}/run_julia.sh" --project="${GB25_DIR}" --color=yes -e "
         using Pkg
         Pkg.add([
             PackageSpec(; name=\"ReactantCore\", rev=\"${REACTANT_COMMIT}\"),
@@ -332,7 +358,7 @@ test-gb-25:
     - |
       srun -n 1 --export=ALL --uenv "${UENV}" --view=default \
         timeout 29m \
-        ${JULIA} --color=yes --project -O0 --startup-file=no --threads=16 \
+        "${CI_PROJECT_DIR}/run_julia.sh" --color=yes --project="${GB25_DIR}" -O0 --startup-file=no --threads=16 \
           --compiled-modules=strict \
           "${GB25_DIR}/sharding/sharded_baroclinic_instability_simulation_compile.jl" \
           ${FLOAT_TYPE}
@@ -367,7 +393,7 @@ test-gb-25:
     - |
       srun -n 1 --export=ALL --uenv "${UENV}" --view=default \
         timeout 59m \
-        ${JULIA} --color=yes --project -O0 --startup-file=no --threads=16 \
+        "${CI_PROJECT_DIR}/run_julia.sh" --color=yes --project="${GB25_DIR}" -O0 --startup-file=no --threads=16 \
           --compiled-modules=strict \
           "${GB25_DIR}/sharding/sharded_baroclinic_instability_simulation_run.jl" \
           ${FLOAT_TYPE}
@@ -376,7 +402,7 @@ test-gb-25:
     - |
       srun -n 1 --export=ALL --uenv "${UENV}" --view=default \
         timeout 19m \
-        ${JULIA} --color=yes --project -O0 --startup-file=no --threads=16 \
+        "${CI_PROJECT_DIR}/run_julia.sh" --color=yes --project="${GB25_DIR}" -O0 --startup-file=no --threads=16 \
           --compiled-modules=strict \
           "${GB25_DIR}/correctness/correctness_sharded_baroclinic_instability_simulation_run.jl" \
           ${FLOAT_TYPE}
