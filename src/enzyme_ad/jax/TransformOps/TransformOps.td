@@ -1171,6 +1171,20 @@ def ApplyWhileLICMPatterns : EnzymeHLOParameterizedPatternOp<
   }];
 }
 
+def ApplyLoopUnswitchPatterns : EnzymeHLOParameterizedPatternOp<
+    "loop_unswitch"> {
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, I64Attr:$parameter);
+  let assemblyFormat = "attr-dict";
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getI64IntegerAttr(10)))};
+    }
+  }];
+}
+
 def ApplySliceLICMPatterns : EnzymeHLOParameterizedPatternOp<
     "slice_licm"> {
   let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
@@ -1587,6 +1601,10 @@ def ApplySliceDynamicSlicePatterns : EnzymeHLOPatternOp<
 def ConcatToBroadcastPatterns : EnzymeHLOPatternOp<
     "concat_to_broadcast"> {
   let patterns = ["ConcatToBroadcast"];
+}
+def ConcatSlicesToReversePatterns : EnzymeHLOPatternOp<
+    "concat_slices_to_reverse"> {
+  let patterns = ["ConcatSlicesToReverse"];
 }
 def DotReshapePadPatterns : EnzymeHLOPatternOp<
     "dot_reshape_pad"> {

@@ -6219,6 +6219,59 @@ struct ConcatFuse final
   }
 };
 
+// concat(slice(src,[N-1:N,...]), slice(src,[N-2:N-1,...]), ...,
+// slice(src,[0:1,...]), dim=D)
+// -> reverse(src, dims=[D])
+struct ConcatSlicesToReverse final
+    : CheckedOpRewritePattern<stablehlo::ConcatenateOp, ConcatSlicesToReverse> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ConcatenateOp op,
+                                    PatternRewriter &rewriter) const {
+    auto concatDim = op.getDimension();
+    auto operands = op.getOperands();
+    int64_t N = (int64_t)operands.size();
+
+    if (N == 0)
+      return failure();
+
+    auto firstSlice = operands[0].getDefiningOp<stablehlo::SliceOp>();
+    if (!firstSlice)
+      return failure();
+
+    Value src = firstSlice.getOperand();
+    auto srcType = cast<RankedTensorType>(src.getType());
+    int64_t rank = srcType.getRank();
+
+    if (srcType.getShape()[concatDim] != N)
+      return failure();
+
+    for (int64_t i = 0; i < N; ++i) {
+      auto slice = operands[i].getDefiningOp<stablehlo::SliceOp>();
+      if (!slice || slice.getOperand() != src)
+        return failure();
+      auto starts = slice.getStartIndices();
+      auto limits = slice.getLimitIndices();
+      auto strides = slice.getStrides();
+      for (int64_t d = 0; d < rank; ++d) {
+        if (strides[d] != 1)
+          return failure();
+        if (d == (int64_t)concatDim) {
+          if (starts[d] != N - 1 - i || limits[d] != N - i)
+            return failure();
+        } else {
+          if (starts[d] != 0 || limits[d] != srcType.getShape()[d])
+            return failure();
+        }
+      }
+    }
+
+    rewriter.replaceOpWithNewOp<stablehlo::ReverseOp>(
+        op, src, SmallVector<int64_t>{(int64_t)concatDim});
+    return success();
+  }
+};
+
 struct ConcatToBroadcast final
     : CheckedOpRewritePattern<stablehlo::ConcatenateOp, ConcatToBroadcast> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -15249,6 +15302,55 @@ struct GatherOpCanon final
     return failure();
   }
 
+  // Recursively extracts components of a grid index expression (like additions
+  // of iotas and splat constants) to represent them as a list of
+  // IotaLikeTensors.
+  static bool extractGridIotas(Value val,
+                               SmallVectorImpl<IotaLikeTensor> &result) {
+    if (auto iota = detectIotaLikeTensor(val)) {
+      result.push_back(*iota);
+      return true;
+    }
+
+    if (auto addOp = val.getDefiningOp<stablehlo::AddOp>()) {
+      SmallVector<IotaLikeTensor> lhsIotas;
+      if (!extractGridIotas(addOp.getLhs(), lhsIotas)) {
+        return false;
+      }
+      SmallVector<IotaLikeTensor> rhsIotas;
+      if (!extractGridIotas(addOp.getRhs(), rhsIotas)) {
+        return false;
+      }
+      result.append(lhsIotas.begin(), lhsIotas.end());
+      result.append(rhsIotas.begin(), rhsIotas.end());
+      return true;
+    }
+
+    DenseElementsAttr constAttr;
+    if (matchPattern(val, m_Constant(&constAttr)) && constAttr.isSplat()) {
+      auto elemType = constAttr.getType().getElementType();
+      TypedAttr zeroScale;
+      if (isa<IntegerType>(elemType)) {
+        zeroScale = IntegerAttr::get(elemType, 0);
+      } else {
+        return false;
+      }
+      IotaLikeTensor constIota;
+      constIota.dimension = 0;
+      constIota.scale = zeroScale;
+      constIota.start = constAttr.getSplatValue<TypedAttr>();
+      constIota.tensorType = cast<RankedTensorType>(constAttr.getType());
+      result.push_back(constIota);
+      return true;
+    }
+
+    return false;
+  }
+
+  // Attempt to rewrite a gather operation with iota-like indexing into a slice.
+  // This supports cases where indices are computed from one or more iota
+  // operations, representing a multi-dimensional grid layout that indexes into
+  // a 1D operand.
   LogicalResult
   tryRewriteGatherWithIotaIndexing(stablehlo::GatherOp op,
                                    PatternRewriter &rewriter) const {
@@ -15268,7 +15370,8 @@ struct GatherOpCanon final
 
     auto indices = op.getStartIndices();
 
-    // size 1 index is implicitly an iota
+    // If the index tensor has only 1 element, it represents a single scalar
+    // index. Rewrite it directly to a dynamic slice.
     if (indices.getType().getNumElements() == 1) {
       auto scalarIndex =
           stablehlo::ReshapeOpCreate(rewriter, op.getLoc(), indices, {});
@@ -15281,68 +15384,235 @@ struct GatherOpCanon final
       return success();
     }
 
-    auto iotaLike = detectIotaLikeTensor(indices);
-    if (!iotaLike) {
+    // Unwrap any reshape to find the underlying grid index expression.
+    Value grid = indices;
+    if (auto reshapeOp = indices.getDefiningOp<stablehlo::ReshapeOp>()) {
+      grid = reshapeOp.getOperand();
+    }
+
+    // Extract all component iotas and constant offsets from the grid
+    // expression.
+    SmallVector<IotaLikeTensor> iotas;
+    if (!extractGridIotas(grid, iotas)) {
       return failure();
     }
 
-    auto iota = *iotaLike;
+    auto gridTy = cast<RankedTensorType>(grid.getType());
+    int64_t gridRank = gridTy.getRank();
+    if (gridRank == 0) {
+      return failure();
+    }
+
     auto dimNumbers = op.getDimensionNumbers();
-
-    if (dimNumbers.getStartIndexMap().size() <= iota.dimension ||
-        dimNumbers.getStartIndexMap()[iota.dimension] != 0) {
-      return failure();
-    }
-
     auto indicesTy = cast<RankedTensorType>(indices.getType());
     int64_t indexVectorDim = dimNumbers.getIndexVectorDim();
     if (indexVectorDim < indicesTy.getRank() &&
         indicesTy.getDimSize(indexVectorDim) != 1) {
       return failure();
     }
-
-    int64_t start = cast<IntegerAttr>(iota.start).getValue().getSExtValue();
-    int64_t count = indicesTy.getDimSize(iota.dimension);
-    int64_t stride = cast<IntegerAttr>(iota.scale).getValue().getSExtValue();
-
-    auto resultTy = cast<RankedTensorType>(op.getType());
-    if (resultTy.getNumElements() != count) {
-      LLVM_DEBUG(op->emitError("expected num elements of result to match"));
+    if (dimNumbers.getStartIndexMap().size() != 1 ||
+        dimNumbers.getStartIndexMap()[0] != 0) {
       return failure();
     }
 
-    int64_t limit;
-    bool needsReverse = false;
-    if (stride > 0) {
-      limit = start + count * stride;
-    } else {
-      needsReverse = true;
-      // For negative stride, the iota accesses indices in descending order:
-      //   start, start+stride, start+2*stride, ... (where stride < 0)
-      // The smallest index is start + (count-1)*stride, the largest is start.
-      // We slice in the forward direction with abs(stride), then reverse.
-      limit = start + 1;                    // one past the largest index
-      start = start + (count - 1) * stride; // smallest index
-      stride = -stride;
+    // Sum the scales and constant offsets for each grid dimension.
+    SmallVector<int64_t> dimScales(gridRank, 0);
+    int64_t totalStart = 0;
+
+    for (auto &iota : iotas) {
+      int64_t start = cast<IntegerAttr>(iota.start).getValue().getSExtValue();
+      int64_t scale = cast<IntegerAttr>(iota.scale).getValue().getSExtValue();
+      totalStart += start;
+      if (scale != 0) {
+        if (iota.dimension >= gridRank)
+          return failure();
+        dimScales[iota.dimension] += scale;
+      }
     }
 
-    if (limit > operandTy.getDimSize(0)) { // gather clamps indices
+    // Map each grid dimension with a non-zero scale to its stride.
+    struct DimMapping {
+      int64_t gridDim;
+      int64_t scale;
+      int64_t absScale;
+    };
+    SmallVector<DimMapping> mappings;
+    for (int64_t d = 0; d < gridRank; ++d) {
+      if (dimScales[d] != 0) {
+        mappings.push_back({d, dimScales[d], std::abs(dimScales[d])});
+      }
+    }
+
+    if (mappings.empty())
       return failure();
+
+    // Sort the mappings by descending absolute scale. We will reshape the 1D
+    // operand tensor into a multi-dimensional tensor where each dimension has
+    // strides matching these scales.
+    llvm::sort(mappings, [](const DimMapping &a, const DimMapping &b) {
+      return a.absScale > b.absScale;
+    });
+
+    int64_t N = operandTy.getDimSize(0);
+
+    // Factorize the 1D operand size N into a multi-dimensional shape where each
+    // stride corresponds to one of the grid dimension scales.
+    int64_t currentDivisor = N;
+    SmallVector<int64_t> operandShape;
+    for (const auto &map : mappings) {
+      if (map.absScale == 0 || currentDivisor % map.absScale != 0)
+        return failure();
+      operandShape.push_back(currentDivisor / map.absScale);
+      currentDivisor = map.absScale;
+    }
+    if (currentDivisor > 1) {
+      operandShape.push_back(currentDivisor);
     }
 
-    Value result = stablehlo::SliceOpCreate(rewriter, op.getLoc(), operand,
-                                            {start}, {limit}, {stride});
-    if (needsReverse) {
-      result = stablehlo::ReverseOp::create(rewriter, op.getLoc(), result,
-                                            rewriter.getDenseI64ArrayAttr({0}));
+    int64_t opRank = operandShape.size();
+
+    // Compute strides for the reshaped operand.
+    SmallVector<int64_t> opStrides(opRank);
+    int64_t st = 1;
+    for (int64_t k = opRank - 1; k >= 0; --k) {
+      opStrides[k] = st;
+      st *= operandShape[k];
     }
 
-    if (result.getType() == resultTy) {
+    // Calculate the minimum total starting offset, adjusting for any negative
+    // scales that effectively offset the slice starts in the grid.
+    int64_t minTotalOffset = totalStart;
+    for (int64_t d = 0; d < gridRank; ++d) {
+      if (dimScales[d] < 0) {
+        minTotalOffset += (gridTy.getDimSize(d) - 1) * dimScales[d];
+      }
+    }
+
+    if (minTotalOffset < 0)
+      return failure();
+
+    SmallVector<int64_t> sliceSizes(mappings.size(), 1);
+    for (size_t m = 0; m < mappings.size(); ++m) {
+      int64_t gridDim = mappings[m].gridDim;
+      sliceSizes[m] = gridTy.getDimSize(gridDim);
+    }
+
+    // Special case: If there is only one active grid dimension mapping, we can
+    // slice directly out of the 1D operand without reshaping/broadcasting.
+    if (mappings.size() == 1) {
+      int64_t stride = mappings[0].scale;
+      int64_t count = sliceSizes[0];
+      int64_t start = minTotalOffset;
+
+      int64_t limit;
+      bool needsReverse = false;
+      if (stride > 0) {
+        limit = start + count * stride;
+      } else {
+        needsReverse = true;
+        int64_t start_original = start - (count - 1) * stride;
+        // For negative stride, the iota accesses indices in descending order:
+        //   start, start+stride, start+2*stride, ... (where stride < 0)
+        // The smallest index is start + (count-1)*stride, the largest is start.
+        // We slice in the forward direction with abs(stride), then reverse.
+        limit = start_original + 1; // one past the largest index
+        stride = -stride;
+      }
+
+      if (limit > operandTy.getDimSize(0)) { // gather clamps indices
+        return failure();
+      }
+
+      Value result = stablehlo::SliceOpCreate(rewriter, op.getLoc(), operand,
+                                              {start}, {limit}, {stride});
+      if (needsReverse) {
+        result = stablehlo::ReverseOp::create(
+            rewriter, op.getLoc(), result, rewriter.getDenseI64ArrayAttr({0}));
+      }
+
+      if (result.getType() != op.getType()) {
+        result = stablehlo::ReshapeOp::create(rewriter, op.getLoc(),
+                                              op.getType(), result);
+      }
       rewriter.replaceOp(op, result);
       return success();
     }
 
-    rewriter.replaceOpWithNewOp<stablehlo::ReshapeOp>(op, resultTy, result);
+    // General case: We have multiple grid dimensions mapped.
+    // Decompose the 1D starting offset into coordinates for each dimension of
+    // the multi-dimensional reshaped operand.
+    SmallVector<int64_t> sliceStarts(opRank, 0);
+    int64_t rem = minTotalOffset;
+    for (int64_t k = 0; k < opRank; ++k) {
+      sliceStarts[k] = rem / opStrides[k];
+      rem %= opStrides[k];
+    }
+
+    // Check that the sliced region is within bounds along all dimensions.
+    for (int64_t k = 0; k < opRank; ++k) {
+      if (sliceStarts[k] + sliceSizes[k] > operandShape[k]) {
+        return failure();
+      }
+    }
+
+    // Reshape the 1D operand to the factored multi-dimensional shape.
+    Value reshapedOperand = stablehlo::ReshapeOpCreate(rewriter, op.getLoc(),
+                                                       operand, operandShape);
+
+    SmallVector<int64_t> sliceLimits(opRank);
+    SmallVector<int64_t> sliceStrides(opRank, 1);
+    for (int64_t k = 0; k < opRank; ++k) {
+      sliceLimits[k] = sliceStarts[k] + sliceSizes[k];
+    }
+
+    // Slice the multi-dimensional sub-tensor.
+    Value sliced =
+        stablehlo::SliceOpCreate(rewriter, op.getLoc(), reshapedOperand,
+                                 sliceStarts, sliceLimits, sliceStrides);
+
+    // Reverse any slice dimensions that had a negative scale in the grid index.
+    SmallVector<int64_t> reverseDims;
+    for (size_t m = 0; m < mappings.size(); ++m) {
+      if (mappings[m].scale < 0) {
+        reverseDims.push_back(m);
+      }
+    }
+    if (!reverseDims.empty()) {
+      sliced = stablehlo::ReverseOp::create(
+          rewriter, op.getLoc(), sliced,
+          rewriter.getDenseI64ArrayAttr(reverseDims));
+    }
+
+    // Drop trailing singleton dimensions if the reshaped operand has higher
+    // rank.
+    SmallVector<int64_t> mappedShape;
+    for (size_t m = 0; m < mappings.size(); ++m) {
+      mappedShape.push_back(sliceSizes[m]);
+    }
+    if (opRank > (int64_t)mappings.size()) {
+      sliced = stablehlo::ReshapeOpCreate(rewriter, op.getLoc(), sliced,
+                                          mappedShape);
+    }
+
+    // Broadcast the sliced result back to the dimensions of the full grid
+    // shape.
+    SmallVector<int64_t> broadcastDims;
+    for (size_t m = 0; m < mappings.size(); ++m) {
+      broadcastDims.push_back(mappings[m].gridDim);
+    }
+
+    auto gridResultTy =
+        RankedTensorType::get(gridTy.getShape(), operandTy.getElementType());
+    sliced = stablehlo::BroadcastInDimOp::create(
+        rewriter, op.getLoc(), gridResultTy, sliced,
+        rewriter.getDenseI64ArrayAttr(broadcastDims));
+
+    // Finally, reshape to the expected gather output type.
+    sliced = stablehlo::ReshapeOpCreate(
+        rewriter, op.getLoc(), sliced,
+        cast<RankedTensorType>(op.getType()).getShape());
+
+    rewriter.replaceOp(op, sliced);
     return success();
   }
 
@@ -20472,6 +20742,106 @@ struct WhileLICM
 
     rewriter.eraseOp(op);
 
+    return success();
+  }
+};
+
+// For a stablehlo.while whose body contains a stablehlo.if with a
+// loop-invariant predicate, hoist the conditional out of the loop by creating
+// two specialised while loops — one per branch — wrapped in an outer
+// stablehlo.if.  The pattern fires once per qualifying if; the greedy driver
+// iterates until no more loop-invariant ifs remain.
+struct LoopUnswitch
+    : public CheckedOpRewritePattern<stablehlo::WhileOp, LoopUnswitch> {
+  int64_t maxOpsOutside;
+  LoopUnswitch(int64_t maxOpsOutside, MLIRContext *context,
+               PatternBenefit benefit = 1,
+               ArrayRef<StringRef> generatedNames = {})
+      : CheckedOpRewritePattern(context, benefit, generatedNames),
+        maxOpsOutside(maxOpsOutside) {}
+
+  LogicalResult matchAndRewriteImpl(stablehlo::WhileOp whileOp,
+                                    PatternRewriter &rewriter) const {
+    // Find the first stablehlo.if in the body whose predicate is defined
+    // outside the while loop.
+    stablehlo::IfOp targetIf;
+    for (Operation &op : whileOp.getBody().front().without_terminator()) {
+      if (auto ifOp = dyn_cast<stablehlo::IfOp>(&op)) {
+        if (definedOutside(ifOp.getPred(), whileOp)) {
+          targetIf = ifOp;
+          break;
+        }
+      }
+    }
+    if (!targetIf)
+      return failure();
+
+    // Count ops in the body outside the target if (excluding the terminator).
+    // Unswitching duplicates all of these; skip if too many.
+    int64_t opsOutside = 0;
+    for (Operation &op : whileOp.getBody().front().without_terminator())
+      if (&op != targetIf.getOperation())
+        ++opsOutside;
+    if (opsOutside > maxOpsOutside)
+      return failure();
+
+    Value pred = targetIf.getPred();
+    Location loc = whileOp.getLoc();
+
+    // Clone the while and inline one branch of the cloned if in place of the
+    // if itself.  Because pred is defined outside the while, the clone does not
+    // remap it, so we can locate the cloned if by predicate identity.
+    auto buildVersionedWhile = [&](bool useTrue) -> stablehlo::WhileOp {
+      IRMapping mapper;
+      auto newWhile =
+          cast<stablehlo::WhileOp>(rewriter.clone(*whileOp, mapper));
+
+      stablehlo::IfOp clonedIf;
+      for (Operation &op : newWhile.getBody().front().without_terminator()) {
+        if (auto ifOp = dyn_cast<stablehlo::IfOp>(&op);
+            ifOp && ifOp.getPred() == pred) {
+          clonedIf = ifOp;
+          break;
+        }
+      }
+      assert(clonedIf && "cloned while must contain the target if");
+
+      Region &inlineBranch =
+          useTrue ? clonedIf.getTrueBranch() : clonedIf.getFalseBranch();
+      Operation *branchTerm = inlineBranch.front().getTerminator();
+      SmallVector<Value> branchReturns(branchTerm->getOperands());
+
+      rewriter.setInsertionPoint(clonedIf);
+      for (Operation &innerOp : llvm::make_early_inc_range(
+               inlineBranch.front().without_terminator()))
+        rewriter.modifyOpInPlace(&innerOp,
+                                 [&] { innerOp.moveBefore(clonedIf); });
+
+      rewriter.replaceOp(clonedIf, branchReturns);
+      return newWhile;
+    };
+
+    rewriter.setInsertionPoint(whileOp);
+    auto outerIf =
+        stablehlo::IfOp::create(rewriter, loc, whileOp->getResultTypes(), pred);
+
+    // IfOp::create leaves both regions empty; we must add blocks before use.
+    {
+      OpBuilder::InsertionGuard g(rewriter);
+      Block *trueBlock = rewriter.createBlock(&outerIf.getTrueBranch());
+      auto trueWhile = buildVersionedWhile(/*useTrue=*/true);
+      rewriter.setInsertionPointToEnd(trueBlock);
+      stablehlo::ReturnOp::create(rewriter, loc, trueWhile.getResults());
+    }
+    {
+      OpBuilder::InsertionGuard g(rewriter);
+      Block *falseBlock = rewriter.createBlock(&outerIf.getFalseBranch());
+      auto falseWhile = buildVersionedWhile(/*useTrue=*/false);
+      rewriter.setInsertionPointToEnd(falseBlock);
+      stablehlo::ReturnOp::create(rewriter, loc, falseWhile.getResults());
+    }
+
+    rewriter.replaceOp(whileOp, outerIf.getResults());
     return success();
   }
 };
@@ -35460,6 +35830,13 @@ void mlir::transform::addWhileLICM(RewritePatternSet &patterns, bool hoistAll,
   patterns.insert<WhileLICM>(hoistAll, &context, benefit);
 }
 
+void mlir::transform::addLoopUnswitch(RewritePatternSet &patterns,
+                                      int64_t maxOpsOutside,
+                                      MLIRContext &context,
+                                      PatternBenefit benefit) {
+  patterns.insert<LoopUnswitch>(maxOpsOutside, &context, benefit);
+}
+
 void mlir::transform::addSliceLICM(RewritePatternSet &patterns,
                                    bool single_user, MLIRContext &context,
                                    PatternBenefit benefit) {
@@ -35822,7 +36199,7 @@ struct EnzymeHLOOptPass
         DynamicSliceElementwise, SlicePad, SliceReshapePad, ReshapeSliceReshape,
         DotReshapeDot, ChloInfConstProp, CHLOLGammaConstProp, GammaConstProp,
         TGammaConstProp, LGammaConstProp, BinomialProgressConstProp, ConcatFuse,
-        ConcatToBroadcast, PadPad, PadReshapePad,
+        ConcatToBroadcast, ConcatSlicesToReverse, PadPad, PadReshapePad,
         ConcatPushBinop<stablehlo::AddOp>, ConcatPushBinop<stablehlo::MulOp>,
         ScatterToDynamicUpdateSlice, ReduceConcat, ConcatSlice, ConcatMultiPad,
         ConcatWrap, WidenWrap, WidenExtend, ConcatConcatAxisSwap, SliceConcat,
@@ -36228,6 +36605,8 @@ struct EnzymeHLOOptPass
     patterns.add<WhileSimplify>(false, context);
 
     patterns.add<WhileLICM>(false, context);
+
+    patterns.add<LoopUnswitch>(/*maxOpsOutside=*/10, context);
 
     // clang-format on
     patterns.add<SelectOpCanon>(max_constant_expansion, context,

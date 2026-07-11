@@ -144,7 +144,7 @@ bool CompileGPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
       }
 
       op.getFunctionBody().cloneInto(&gpufunc.getBody(), map);
-      gpufunc->setAttr("gpu.kernel", builder.getUnitAttr());
+      gpufunc.setKernelAttr(builder.getUnitAttr());
 
       auto second = entry->getNextNode();
       entry->getOperations().splice(entry->getOperations().end(),

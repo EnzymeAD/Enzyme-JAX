@@ -250,6 +250,11 @@ LogicalResult reshapeAtAddr(enzymexla::Pointer2MemrefOp &atAddr) {
       if (&(ba.getOwner()->getParent()->front()) == ba.getOwner()) {
 
         auto memref = atAddr.getResult();
+        auto oldMt = cast<MemRefType>(memref.getType());
+
+        if (newMt.getElementType() != oldMt.getElementType())
+          return failure();
+
         return reshapeMemref2(memref, shape, [&](RewriterBase &rewriter) {
           rewriter.setInsertionPoint(atAddr);
 
