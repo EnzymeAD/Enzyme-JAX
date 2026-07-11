@@ -194,8 +194,10 @@ sed -i.bak0 "s/patch_cmds = \\[/patch_cmds = \\[\\\"find . -type f -name config.
     sed -i.bak0 "s/urls = /patch_cmds = \\[\\\"sed -i.bak -e 's\\/return PACKET_TYPE(0) == PACKET_TYPE(0);\\/return (PACKET_TYPE)(PACKET_TYPE(0) == PACKET_TYPE(0));\\/g' -e 's\\/return CAST_FROM_INT(CAST_TO_INT(a) == CAST_TO_INT(a));\\/return CAST_FROM_INT((decltype(CAST_TO_INT(a)))(CAST_TO_INT(a) == CAST_TO_INT(a)));\\/' Eigen\\/src\\/Core\\/arch\\/clang\\/PacketMath.h\\\"\\],urls = /g" third_party/eigen3/workspace.bzl
     """,
     """
+    echo '#ifdef REACTANT_TOOLCHAIN_IS_BB' >> xla/tsl/util/filewrapper.cc
     echo '#include <cstdio>' >> xla/tsl/util/filewrapper.cc
     echo 'namespace std { __attribute__((weak)) void __throw_bad_array_new_length() { fprintf(stderr, "erring in throw_bad_array_new_length\\n"); __builtin_trap(); } }' >> xla/tsl/util/filewrapper.cc
+    echo '#endif' >> xla/tsl/util/filewrapper.cc
     """,
 ]
 
