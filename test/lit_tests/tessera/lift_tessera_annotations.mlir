@@ -4,7 +4,7 @@ module {
   llvm.mlir.global internal @__tessera_optimize_rule_0(0 : i32) {addr_space = 0 : i32, alignment = 4 : i64, dso_local} : i32
   llvm.mlir.global private unnamed_addr constant @".str"("tessera_optimize=eigen.inv(eigen.inv(x)) -> x\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
   llvm.mlir.global private unnamed_addr constant @".str.1"("<invalid loc>\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
-  llvm.mlir.global private unnamed_addr constant @".str.2"("tessera_op=eigen.inv(x):4\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
+  llvm.mlir.global private unnamed_addr constant @".str.2"("tessera_op=eigen.inv(x:byref):globals=4\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
   llvm.mlir.global private unnamed_addr constant @".str.3"("/home/jessicacotturone21/Reactant/enzyme/pragma_test.c\00") {addr_space = 0 : i32, dso_local, section = "llvm.metadata"}
   llvm.mlir.global appending @llvm.global.annotations() {addr_space = 0 : i32, section = "llvm.metadata"} : !llvm.array<2 x struct<(ptr, ptr, ptr, i32, ptr)>> {
     %0 = llvm.mlir.zero : !llvm.ptr
@@ -45,7 +45,7 @@ module {
   }
 }
 
-// CHECK: llvm.func @inverse(%[[ARG0:.*]]: f32) -> f32 attributes {tessera_op = "eigen.inv(x):4"} {
+// CHECK: llvm.func @inverse(%[[ARG0:.*]]: f32) -> f32 attributes {tessera_op = "eigen.inv(x:byref):globals=4"} {
 // CHECK-NEXT: llvm.return %[[ARG0]] : f32
 // CHECK-NEXT: }
 // CHECK-NEXT: llvm.func @main(%[[X:.*]]: f32) -> f32 {
