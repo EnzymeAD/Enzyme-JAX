@@ -72,27 +72,17 @@ test-gb-25:
     # Instantiate the Reactant build environment (no GPU/UENV needed here)
     - cd "${REACTANT_DIR}/deps" && ${JULIA} --project --color=yes -e 'using Pkg; Pkg.instantiate()'
 
-    # Write the Reactant build script.
-    # IMPORTANT: the baremetal-runner runs script: commands on the compute node but
-    # WITHOUT the UENV mounted — /user-environment/ is only accessible inside srun.
-    # The overlay must therefore be built inside the srun allocation, before Bazel runs.
-    # CI variables (CI_PROJECT_DIR, REACTANT_DIR, JULIA) are expanded at write time
-    # by the unquoted heredoc marker; script-internal shell vars use \$ escaping.
+    # Generate build_reactant.sh; it runs later inside srun (where the UENV is
+    # mounted) and builds the ROCm overlay before invoking Bazel. Unquoted heredoc:
+    # CI_PROJECT_DIR/REACTANT_DIR/JULIA expand at write time, runtime shell vars use
+    # \$ escaping. Overlay design + all workarounds: see cscs-mi300.md.
     - |
       cat > "${CI_PROJECT_DIR}/build_reactant.sh" << BUILDSCRIPT
       #!/bin/bash
       set -euo pipefail
-      # Build ROCm overlay inside srun (UENV now mounted, /user-environment/ accessible).
-      # Seed from UENV view; add MIOpen from its separate spack package via glob.
-      #
-      # IMPORTANT: exclude the LLVM/Clang toolchain headers (llvm/, mlir/, clang/, ...).
-      # rocm_configure globs \${ROCM_PATH}/include into local_config_rocm's
-      # rocm_headers_includes, and Bazel places that -I *ahead of*
-      # -isystem external/llvm-project/..., so the UENV's LLVM headers would SHADOW
-      # the LLVM/MLIR that XLA is actually built against (LLVM 23). Symptoms:
-      #   "no member named 'getEmptyKey' in 'llvm::DenseMapInfo<xla::SymbolicExpr>'"
-      #   "no type named 'PropertyRef' in namespace 'mlir'"
-      # Only ROCm's own headers (hip/, rocblas/, miopen/, ...) belong in the overlay.
+      # Seed the overlay's include/ from the UENV view, but SKIP LLVM/clang toolchain
+      # headers: they shadow XLA's own LLVM/MLIR and miscompile ROCm targets (the
+      # shadow guard below enforces it). See cscs-mi300.md: "LLVM headers".
       mkdir -p "${CI_PROJECT_DIR}/.rocm/include"
       for f in /user-environment/env/default/include/*; do
         [[ -e "\$f" ]] || continue
@@ -102,18 +92,17 @@ test-gb-25:
         esac
         ln -sfn "\$f" "${CI_PROJECT_DIR}/.rocm/include/\${name}"
       done
+      # MIOpen: separate spack package (not in the view), seed miopen/ from it.
       for pkg in /user-environment/linux-zen3/miopen-hip-*/; do
         [[ -f "\${pkg}include/miopen/version.h" ]] || continue
         ln -sfn "\${pkg}include/miopen" "${CI_PROJECT_DIR}/.rocm/include/miopen"
         export CPATH="\${pkg}include\${CPATH:+:\${CPATH}}"
         break
       done
-      # rocm-smi-lib is likewise a separate spack package not exposed in the view.
-      # Newer XLA (xla/stream_executor/rocm/rocm_smi_util.cc) includes
-      # rocm/include/rocm_smi/rocm_smi.h, so seed rocm_smi/ from its package.
+      # rocm-smi-lib: separate spack package needed by newer XLA (rocm_smi_util.cc).
+      # See cscs-mi300.md: "rocm-smi header".
       if [[ ! -e "${CI_PROJECT_DIR}/.rocm/include/rocm_smi/rocm_smi.h" ]]; then
-        # Try the well-known package names first, then fall back to scanning all
-        # spack packages for the header (the -f guard keeps the match specific).
+        # well-known names first, then a header-gated scan of all spack packages
         for pkg in /user-environment/linux-zen3/rocm-smi-lib-*/ \
                    /user-environment/linux-zen3/rocm-smi-*/ \
                    /user-environment/linux-zen3/*/; do
@@ -124,18 +113,15 @@ test-gb-25:
           break
         done
       fi
-      # NB: amdgcn is intentionally NOT seeded as a whole-dir symlink here. It must
-      # stay a real, writable directory so the device-bitcode block below can place
-      # a `bitcode` symlink under it. Symlinking it to the read-only UENV view makes
-      # \${ROCM_PATH}/amdgcn/bitcode read-only ("rm: ... Is a directory").
+      # NB: amdgcn is intentionally excluded — it must stay a real, writable dir for
+      # the device-bitcode block below. See cscs-mi300.md: "amdgcn must stay a real dir".
       for d in lib64 share; do
         [[ -e "/user-environment/env/default/\${d}" ]] && \
           ln -sfn "/user-environment/env/default/\${d}" "${CI_PROJECT_DIR}/.rocm/\${d}"
       done
-      # bin/ must be a real directory (not a whole-dir symlink) so we can override
-      # clang/clang++ with our resource-dir wrappers. HIP compiles invoke
-      # \${ROCM_PATH}/bin/clang++ directly, bypassing PATH, so the overrides must
-      # live here to force the overlay resource dir for HIP wrapper headers too.
+      # bin/ is a real dir (not a whole-dir symlink) so we can override clang/clang++
+      # with the resource-dir wrappers below (HIP invokes \${ROCM_PATH}/bin/clang++
+      # directly, bypassing PATH). See cscs-mi300.md: "clang wrapper + HIP_CLANG_PATH".
       mkdir -p "${CI_PROJECT_DIR}/.rocm/bin"
       for f in /user-environment/env/default/bin/*; do
         [[ -e "\$f" ]] || continue
@@ -143,13 +129,9 @@ test-gb-25:
         [[ -e "${CI_PROJECT_DIR}/.rocm/bin/\${name}" ]] || \
           ln -sfn "\$f" "${CI_PROJECT_DIR}/.rocm/bin/\${name}"
       done
-      # ROCm device bitcode (ocml.bc, ockl.bc, ...) is needed in two places:
-      #   1. \${ROCM_PATH}/amdgcn/bitcode        -- HIP clang's default search path
-      #   2. \${ROCM_PATH}/lib/llvm/amdgcn/bitcode -- XLA's generate_amdgpu_device_lib_data
-      #      genrule references rocm_dist/lib/llvm/amdgcn/bitcode/{ocml,ockl}.bc.
-      # Resolve the source dir (following an existing top-level link if present),
-      # then symlink both locations at it. Some CSCS/UENV views do not expose these
-      # directories, so fall back to the package store.
+      # ROCm device bitcode must appear at BOTH \${ROCM_PATH}/amdgcn/bitcode (HIP
+      # clang default) and \${ROCM_PATH}/lib/llvm/amdgcn/bitcode (XLA genrule). Resolve
+      # the source dir (view or spack), then link both. See cscs-mi300.md: "Device bitcode".
       DEVICE_LIB_DIR=""
       if [[ -f "${CI_PROJECT_DIR}/.rocm/amdgcn/bitcode/ocml.bc" ]]; then
         DEVICE_LIB_DIR="\$(dirname "\$(readlink -f "${CI_PROJECT_DIR}/.rocm/amdgcn/bitcode/ocml.bc")")"
@@ -167,10 +149,9 @@ test-gb-25:
         done
       fi
       if [[ -n "\${DEVICE_LIB_DIR}" ]]; then
-        # The parent dirs must be real and writable: if either is a symlink into
-        # the read-only UENV view, writing `bitcode` under it fails ("Read-only
-        # file system" / "Is a directory"). Replace any such symlink with a real
-        # dir (removing a symlink never touches its target).
+        # Parents must be real, writable dirs: a symlink into the read-only view makes
+        # writing `bitcode` fail. Replace any such symlink (removing it never touches
+        # its target). See cscs-mi300.md: "amdgcn must stay a real dir".
         for parent in "${CI_PROJECT_DIR}/.rocm/amdgcn" "${CI_PROJECT_DIR}/.rocm/lib/llvm/amdgcn"; do
           [[ -L "\${parent}" ]] && rm -f "\${parent}"
           mkdir -p "\${parent}"
@@ -184,9 +165,8 @@ test-gb-25:
       else
         echo "WARNING: ROCm device libraries not found; HIP compilation may fail"
       fi
-      # lib/ uses per-file symlinks so missing libraries can be supplemented.
-      # rocm_configure BUILD template always references rocm_dist/lib/<libname>,
-      # so we must populate overlay/lib/ even for libs that live in lib64/.
+      # lib/ uses per-file symlinks (rocm_configure references rocm_dist/lib/<name>,
+      # so lib64-only libs must appear here too), seeded from the view then spack.
       mkdir -p "${CI_PROJECT_DIR}/.rocm/lib"
       # Seed from view lib/ and lib64/
       for subdir in lib lib64; do
@@ -209,10 +189,9 @@ test-gb-25:
           done
         done
       done
-      # rocm_configure.bzl hardcodes \${ROCM_PATH}/llvm/bin/clang for -print-resource-dir.
-      # Use the UENV clang, but wrap it so its resource-dir is inside the overlay.
-      # Otherwise clang reports /user-environment/linux-zen3/.../lib/clang/22/include,
-      # which Bazel treats as an undeclared absolute include path for assembly files.
+      # Wrap the UENV clang so -print-resource-dir reports (and -resource-dir forces)
+      # an overlay path; otherwise Bazel sees an undeclared absolute include and the
+      # assembly compiles fail. See cscs-mi300.md: "clang wrapper + HIP_CLANG_PATH".
       REAL_CLANG_BIN="\$(which clang 2>/dev/null || true)"
       if [[ -n "\${REAL_CLANG_BIN}" && -x "\${REAL_CLANG_BIN}" ]]; then
         REAL_CLANGXX_BIN="\$(dirname "\${REAL_CLANG_BIN}")/clang++"
@@ -261,20 +240,14 @@ test-gb-25:
         CLANG_BIN="${CI_PROJECT_DIR}/.rocm/llvm/bin/clang"
         CLANGXX_BIN="${CI_PROJECT_DIR}/.rocm/llvm/bin/clang++"
         export PATH="${CI_PROJECT_DIR}/.rocm/llvm/bin:\${PATH}"
-        # HIP compiles (.cu.cc) go through hipcc, which locates clang via
-        # HIP_CLANG_PATH and would otherwise reach the view clang directly,
-        # reporting /user-environment/env/default/lib/clang/<v>/include as its
-        # resource dir -- an absolute include path Bazel never declared. Point
-        # HIP_CLANG_PATH at the wrapper dir so hipcc's clang is our wrapper too,
-        # forcing -resource-dir <overlay> and matching the declared builtins.
+        # HIP .cu.cc compiles go through hipcc, which finds clang via HIP_CLANG_PATH;
+        # point it at the wrapper dir so those funnel through the wrapper too.
         export HIP_CLANG_PATH="${CI_PROJECT_DIR}/.rocm/llvm/bin"
-        echo "llvm/bin/clang wrapper -> \${REAL_CLANG_BIN}"
-        echo "llvm/bin/clang++ wrapper -> \${REAL_CLANGXX_BIN}"
-        echo "llvm resource dir -> \${OVERLAY_RESOURCE_DIR}"
       else
         echo "ERROR: clang not found in PATH; llvm/bin/clang wrapper not created" >&2
         exit 1
       fi
+      # Overlay sanity check (compact, always-on): key headers + device bitcode.
       echo "=== ROCm overlay check ==="
       for f in rocm-core/rocm_version.h hip/hip_version.h miopen/version.h \
                rocblas/internal/rocblas-version.h rocrand/rocrand_version.h \
@@ -282,30 +255,20 @@ test-gb-25:
                roctracer/roctracer.h hipsparse/hipsparse-version.h \
                hipsolver/internal/hipsolver-version.h rocsolver/rocsolver-version.h \
                rocm_smi/rocm_smi.h; do
-        [[ -e "${CI_PROJECT_DIR}/.rocm/include/\${f}" ]] && echo "OK: \${f}" || echo "MISSING: \${f}"
+        [[ -e "${CI_PROJECT_DIR}/.rocm/include/\${f}" ]] && echo "  ok   \${f}" || echo "  MISS \${f}"
       done
-      # These must NOT be in the overlay: they shadow XLA's own LLVM/MLIR headers.
+      for b in amdgcn/bitcode/ocml.bc lib/llvm/amdgcn/bitcode/ocml.bc; do
+        [[ -e "${CI_PROJECT_DIR}/.rocm/\${b}" ]] && echo "  ok   \${b}" || echo "  MISS \${b}"
+      done
+      # Functional guard (not just diagnostic): LLVM/clang headers in the overlay
+      # miscompile ROCm targets. See cscs-mi300.md: "LLVM headers".
       for d in llvm mlir clang; do
-        if [[ -e "${CI_PROJECT_DIR}/.rocm/include/\${d}" ]]; then
-          echo "ERROR: .rocm/include/\${d} exists; it will shadow external/llvm-project headers" >&2
-          exit 1
-        fi
-        echo "OK: no .rocm/include/\${d} (no LLVM header shadowing)"
+        [[ -e "${CI_PROJECT_DIR}/.rocm/include/\${d}" ]] && \
+          { echo "FATAL: overlay include/\${d} shadows XLA's LLVM/MLIR" >&2; exit 1; }
       done
-      [[ -e "${CI_PROJECT_DIR}/.rocm/amdgcn/bitcode/ocml.bc" ]] && echo "OK: amdgcn/bitcode/ocml.bc" || echo "MISSING: amdgcn/bitcode/ocml.bc"
-      [[ -e "${CI_PROJECT_DIR}/.rocm/lib/llvm/amdgcn/bitcode/ocml.bc" ]] && echo "OK: lib/llvm/amdgcn/bitcode/ocml.bc" || echo "MISSING: lib/llvm/amdgcn/bitcode/ocml.bc"
-      # Runtime libs libReactantExtra.so dlopens (LD_LIBRARY_PATH must reach these
-      # at Julia load time via run_julia.sh). Show the versioned sonames present.
-      echo "runtime libs in overlay lib/:"
-      for lib in librocblas librocsolver libhipblas librocfft libamdhip64 libhsa-runtime64 libMIOpen librocrand; do
-        found=\$(ls -1 "${CI_PROJECT_DIR}/.rocm/lib/\${lib}".so* 2>/dev/null | xargs -n1 basename 2>/dev/null | tr '\n' ' ')
-        echo "  \${lib}: \${found:-MISSING}"
-      done
-      # Curate a lib dir for run_julia.sh: every overlay ROCm .so EXCEPT any whose
-      # soname Julia also bundles (libcurl, libstdc++, libLLVM, libz, ...). Putting
-      # the full view/.rocm lib dir on LD_LIBRARY_PATH shadowed Julia's own libcurl
-      # and broke Pkg downloads ("curl_easy_setopt: 48"). Excluded libs that ROCm
-      # needs still resolve via each ROCm lib's own (spack) RPATH.
+      # Curate reactant_libs/ for run_julia.sh: overlay ROCm libs minus any soname
+      # Julia bundles (else its old libcurl/libstdc++ shadow Julia's and break Pkg,
+      # "curl_easy_setopt: 48"). See cscs-mi300.md: "Curated runtime libs".
       JULIA_LIBDIR="\$(dirname "\$(dirname "${JULIA}")")/lib/julia"
       CURATED="${CI_PROJECT_DIR}/.rocm/reactant_libs"
       rm -rf "\${CURATED}"; mkdir -p "\${CURATED}"
@@ -320,12 +283,11 @@ test-gb-25:
         ln -sfn "\$f" "\${CURATED}/\${base}"
       done
       shopt -u nullglob
-      echo "curated \$(ls -1 "\${CURATED}" 2>/dev/null | wc -l) ROCm libs (excluding Julia-bundled sonames) into reactant_libs/"
-      echo "llvm/bin/clang: \${CLANG_BIN}"
+      echo "  curated \$(ls -1 "\${CURATED}" 2>/dev/null | wc -l) runtime libs"
       echo "========================="
-      # Pass ROCM_PATH and TF_ROCM_AMDGPU_TARGETS via --extraopt so they reach
-      # rocm_configure repository rule without touching the checked-in .bazelrc.
-      # TF_ROCM_AMDGPU_TARGETS suppresses rocm_agent_enumerator (needs GPU srun).
+      # --extraopt passes overlay/toolchain settings to rocm_configure without editing
+      # the checked-in .bazelrc. TF_ROCM_AMDGPU_TARGETS also suppresses
+      # rocm_agent_enumerator (which needs a GPU srun).
       cd "${REACTANT_DIR}/deps" && ${JULIA} --project --color=yes -O0 build_local.jl \
         --cc=clang --gcc_host_compiler_path= \
         --extraopt="--repo_env=ROCM_PATH=${CI_PROJECT_DIR}/.rocm" \
@@ -342,22 +304,16 @@ test-gb-25:
     # Build libReactant — the script creates the ROCm overlay then invokes Bazel
     - srun -n 1 --export=ALL --uenv "${UENV}" --view=default "${CI_PROJECT_DIR}/build_reactant.sh"
 
-    # Wrapper: prepend the ROCm overlay libs to LD_LIBRARY_PATH before launching
-    # Julia, so libReactantExtra.so can dlopen its ROCm deps (librocblas.so.5, ...)
-    # at load time. Every Reactant-loading Julia step (precompile + sims) must run
-    # via this wrapper INSIDE `srun --uenv`, so /user-environment (the overlay
-    # symlink targets) is mounted. Quoted heredoc: CI_PROJECT_DIR / JULIA /
-    # LD_LIBRARY_PATH resolve at run time inside srun (forwarded by --export=ALL),
-    # after the UENV view has set its own paths, so we append to them.
+    # Generate run_julia.sh: launches Julia with LD_LIBRARY_PATH = curated ROCm libs
+    # so libReactantExtra.so's deps dlopen at load time. Every Reactant-loading Julia
+    # step (precompile + sims) uses it INSIDE `srun --uenv`. Quoted heredoc: vars
+    # resolve at run time. See cscs-mi300.md: "run_julia.sh".
     - |
       cat > "${CI_PROJECT_DIR}/run_julia.sh" << 'RUNSCRIPT'
       #!/bin/bash
       set -euo pipefail
-      # Only the curated ROCm libs (see build_reactant.sh) go on LD_LIBRARY_PATH.
-      # Deliberately do NOT append the inherited (UENV view) LD_LIBRARY_PATH: it
-      # points at /user-environment/env/default/lib, whose old libcurl/libstdc++
-      # would shadow Julia's bundled copies. The curated dir excludes exactly those
-      # sonames, so ROCm libs load while Julia keeps its own runtime libraries.
+      # Curated dir ONLY — not the inherited view LD_LIBRARY_PATH (its old libcurl/
+      # libstdc++ would shadow Julia's). See cscs-mi300.md: "Curated runtime libs".
       export LD_LIBRARY_PATH="${CI_PROJECT_DIR}/.rocm/reactant_libs"
       exec "${JULIA}" "$@"
       RUNSCRIPT
