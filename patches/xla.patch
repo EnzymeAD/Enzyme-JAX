@@ -2,7 +2,7 @@ diff --git a/third_party/gpus/rocm/BUILD.tpl b/third_party/gpus/rocm/BUILD.tpl
 index 6e05471a99..c29d37acd3 100644
 --- a/third_party/gpus/rocm/BUILD.tpl
 +++ b/third_party/gpus/rocm/BUILD.tpl
-@@ -422,6 +422,36 @@ cc_library(
+@@ -468,6 +468,36 @@ cc_library(
      data = [":system_libs_data"],
  )
  
@@ -43,7 +43,7 @@ diff --git a/third_party/rocm_device_libs/build_defs.bzl b/third_party/rocm_devi
 index 5b9aee4f08..f55aabe5ad 100644
 --- a/third_party/rocm_device_libs/build_defs.bzl
 +++ b/third_party/rocm_device_libs/build_defs.bzl
-@@ -103,6 +103,7 @@ def _bitcode_library_impl(ctx):
+@@ -111,6 +111,7 @@ def _bitcode_library_impl(ctx):
          inputs = [strip_out],
          outputs = [final_bc],
          arguments = [strip_out.path, "-o", final_bc.path],
@@ -51,7 +51,7 @@ index 5b9aee4f08..f55aabe5ad 100644
          progress_message = "Preparing final bitcode for {}".format(ctx.label.name),
          mnemonic = "BitcodeFinalize",
      )
-@@ -118,17 +119,17 @@ bitcode_library = rule(
+@@ -127,17 +128,17 @@ bitcode_library = rule(
          "hdrs": attr.label_list(allow_files = [".h"]),
          "file_specific_flags": attr.string_list_dict(),
          "_clang": attr.label(
@@ -76,7 +76,7 @@ diff --git a/third_party/rocm_device_libs/rocm_device_libs.BUILD b/third_party/r
 index ee162b63ab..98a55618a4 100644
 --- a/third_party/rocm_device_libs/rocm_device_libs.BUILD
 +++ b/third_party/rocm_device_libs/rocm_device_libs.BUILD
-@@ -28,50 +28,12 @@ cc_binary(
+@@ -28,36 +28,12 @@ cc_binary(
      ],
  )
  
@@ -114,20 +114,6 @@ index ee162b63ab..98a55618a4 100644
 -    ]),
 -    file_specific_flags = {
 -        "gaaf.cl": ["-munsafe-fp-atomics"],
--        "media.cl": [
--            "-Xclang",
--            "-target-feature",
--            "-Xclang",
--            "+msad-insts",
--            "-Xclang",
--            "-target-feature",
--            "-Xclang",
--            "+mqsad-pk-insts",
--            "-Xclang",
--            "-target-feature",
--            "-Xclang",
--            "+mqsad-insts",
--        ],
 -    },
 +    actual = "@local_config_rocm//rocm:ocml"
  )
