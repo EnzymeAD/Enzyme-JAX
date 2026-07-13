@@ -51,8 +51,7 @@ jobs:
           - 'main'
 
         reactant_commit:
-          - 'main'
-          - 'multipad'
+          - 'wsmoses-patch-18'
         grid:
           - '--float-type=Float64'
           - '--float-type=Float32'
