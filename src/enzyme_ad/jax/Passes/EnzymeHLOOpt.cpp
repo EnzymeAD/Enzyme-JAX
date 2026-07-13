@@ -27418,8 +27418,8 @@ struct LogSimplify final
                   cast<ElementsAttr>(makeAttr(lhs.getType(), 2))),
               stablehlo::LogOp::create(
                   rewriter, op.getLoc(),
-                  stablehlo::AbsOp::create(rewriter, op.getLoc(),
-                                           lhs.getType(), lhs)));
+                  stablehlo::AbsOp::create(rewriter, op.getLoc(), lhs.getType(),
+                                           lhs)));
           return success();
         }
 

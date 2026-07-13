@@ -161,7 +161,7 @@ func.func @main_neg_mul(%arg0: tensor<f64>) -> tensor<f64> {
 }
 
 // CHECK: func.func @main_neg_mul(%arg0: tensor<f64>) -> tensor<f64> {
-// CHECK-NEXT:     %cst = stablehlo.constant dense<-4.000000e+00> : tensor<f64>
+// CHECK-NEXT:     %cst = stablehlo.constant {enzymexla.non_negative = [#enzymexla<guaranteed NOTGUARANTEED>]} dense<-4.000000e+00> : tensor<f64>
 // CHECK-NEXT:     %0 = stablehlo.multiply %arg0, %cst : tensor<f64>
 // CHECK-NEXT:     %1 = stablehlo.log %0 : tensor<f64>
 // CHECK-NEXT:     return %1 : tensor<f64>
@@ -176,7 +176,7 @@ func.func @main_neg_div(%arg0: tensor<f64>) -> tensor<f64> {
 }
 
 // CHECK: func.func @main_neg_div(%arg0: tensor<f64>) -> tensor<f64> {
-// CHECK-NEXT:     %cst = stablehlo.constant dense<-4.000000e+00> : tensor<f64>
+// CHECK-NEXT:     %cst = stablehlo.constant {enzymexla.non_negative = [#enzymexla<guaranteed NOTGUARANTEED>]} dense<-4.000000e+00> : tensor<f64>
 // CHECK-NEXT:     %0 = stablehlo.divide %arg0, %cst : tensor<f64>
 // CHECK-NEXT:     %1 = stablehlo.log %0 : tensor<f64>
 // CHECK-NEXT:     return %1 : tensor<f64>
