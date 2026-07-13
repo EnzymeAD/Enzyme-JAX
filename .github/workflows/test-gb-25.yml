@@ -51,7 +51,7 @@ jobs:
           - 'glw/up'
 
         reactant_commit:
-          - 'pb/aliasing-reads'
+          - 'main'
           # - 'multipad'
         grid:
           - '--float-type=Float64'
