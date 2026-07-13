@@ -1,5 +1,5 @@
-#include "absl/base/call_once.h"
 #include "cuda/register.h"
+#include "absl/base/call_once.h"
 #include "host/register.h"
 
 #if (defined(_WIN32) || defined(__CYGWIN__)) &&                                \
