@@ -20,7 +20,6 @@
 #define MLIR_CAPI_EXPORTED __attribute__((visibility("default")))
 #endif
 
-
 extern "C" MLIR_CAPI_EXPORTED void registerEnzymeJaXXLAFFI() {
   static absl::once_flag once;
   absl::call_once(once, []() {
