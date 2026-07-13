@@ -62,6 +62,7 @@ cc_library(
     }),
     visibility = ["//visibility:public"],
     deps = [
+        "@com_google_absl//absl/base",
         "@com_google_absl//absl/strings:str_format",
         "@xla//xla/ffi:ffi_api",
         "@xla//xla/ffi/api:c_api",
