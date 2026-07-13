@@ -1,5 +1,3 @@
-#include <mutex>
-
 #include "absl/base/call_once.h"
 #include "cuda/register.h"
 #include "host/register.h"
