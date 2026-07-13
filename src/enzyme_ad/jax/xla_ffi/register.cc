@@ -1,5 +1,6 @@
 #include <mutex>
 
+#include "absl/base/call_once.h"
 #include "cuda/register.h"
 #include "host/register.h"
 
@@ -19,9 +20,10 @@
 #define MLIR_CAPI_EXPORTED __attribute__((visibility("default")))
 #endif
 
+
 extern "C" MLIR_CAPI_EXPORTED void registerEnzymeJaXXLAFFI() {
-  static std::once_flag once;
-  std::call_once(once, []() {
+  static absl::once_flag once;
+  absl::call_once(once, []() {
     enzymexla::ffi_internal::registerEnzymeJaXXLAHostFFI();
     enzymexla::ffi_internal::registerEnzymeJaXXLACudaFFI();
   });
