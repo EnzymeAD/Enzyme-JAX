@@ -293,9 +293,7 @@ void registerInterfaces(mlir::DialectRegistry &registry) {
 
   mlir::func::registerInlinerExtension(registry);
   mlir::LLVM::registerInlinerInterface(registry);
-  mlir::NVVM::registerInlinerInterface(registry);
 
-  mlir::registerConvertNVVMToLLVMInterface(registry);
   mlir::registerConvertNVVMToLLVMInterface(registry);
   mlir::registerConvertComplexToLLVMInterface(registry);
   mlir::registerConvertMemRefToLLVMInterface(registry);
@@ -305,7 +303,6 @@ void registerInterfaces(mlir::DialectRegistry &registry) {
   mlir::cf::registerConvertControlFlowToLLVMInterface(registry);
   mlir::ub::registerConvertUBToLLVMInterface(registry);
   mlir::arith::registerConvertArithToLLVMInterface(registry);
-  mlir::registerConvertMemRefToLLVMInterface(registry);
   mlir::gpu::registerOffloadingLLVMTranslationInterfaceExternalModels(registry);
   mlir::NVVM::registerNVVMTargetInterfaceExternalModels(registry);
   mlir::ROCDL::registerROCDLTargetInterfaceExternalModels(registry);
