@@ -63,7 +63,7 @@ echo "     ArrayRef<InterpreterValue> inputs, std::queue<StringAttr>& infeed," >
 echo "     SmallVector<SmallVector<StringAttr>> programs, SymbolTable& symbolTable," >> third_party/stablehlo/temporary.patch
 echo "     InterpreterFallback* fallback) {" >> third_party/stablehlo/temporary.patch
 echo "+#if (defined(_WIN32) || defined(__CYGWIN__))" >> third_party/stablehlo/temporary.patch
-echo "+  llvm::report_fatal_error(\"Op not supported on windows due to std::future\");" >> third_party/stablehlo/temporary.patch
+echo "+  llvm::report_fatal_error(\\"Op not supported on windows due to std::future\\");" >> third_party/stablehlo/temporary.patch
 echo "+#else" >> third_party/stablehlo/temporary.patch
 echo "   llvm::DefaultThreadPool threadPool;" >> third_party/stablehlo/temporary.patch
 echo "   SmallVector<std::shared_future<SmallVector<InterpreterValue>>> futures;" >> third_party/stablehlo/temporary.patch
