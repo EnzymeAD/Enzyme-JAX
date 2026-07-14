@@ -1,6 +1,7 @@
 load("@jax//jaxlib:symlink_files.bzl", "symlink_inputs")
 load("@llvm-project//mlir:tblgen.bzl", "gentbl_cc_library", "td_library")
 load("@rules_cc//cc:cc_library.bzl", "cc_library")
+load("@rules_cc//cc:cc_test.bzl", "cc_test")
 load("@rules_python//python:py_library.bzl", "py_library")
 load("@xla//xla/tsl:tsl.bzl", pybind_extension = "tsl_pybind_extension_opensource")
 
@@ -62,6 +63,7 @@ cc_library(
     }),
     visibility = ["//visibility:public"],
     deps = [
+        "@com_google_absl//absl/base",
         "@com_google_absl//absl/strings:str_format",
         "@xla//xla/ffi:ffi_api",
         "@xla//xla/ffi/api:c_api",
@@ -893,6 +895,31 @@ cc_library(
         "@llvm-project//mlir:Support",
     ],
     alwayslink = True,
+)
+
+cc_library(
+    name = "triton_dialect_capi_objects",
+    srcs = ["Integrations/c/triton_dialect_capi.cpp"],
+    hdrs = ["Integrations/c/triton_dialect_capi.h"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:CAPIIRObjects",
+        "@llvm-project//mlir:IR",
+        "@triton//:TritonDialects",
+    ],
+    alwayslink = True,
+)
+
+cc_test(
+    name = "triton_dialect_capi_test",
+    srcs = ["Integrations/c/triton_dialect_capi_test.cpp"],
+    deps = [
+        ":triton_dialect_capi_objects",
+        "@com_google_googletest//:gtest_main",
+        "@llvm-project//mlir:CAPIIR",
+        "@llvm-project//mlir:IR",
+    ],
 )
 
 td_library(
