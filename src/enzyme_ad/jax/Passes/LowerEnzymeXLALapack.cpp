@@ -2607,6 +2607,51 @@ struct GesvdOpLowering : public OpRewritePattern<enzymexla::GesvdOp> {
     auto solverDispatch =
         backend == "cuda" ? "cusolver_gesvd_ffi" : "hipsolver_gesvd_ffi";
 
+    // `cusolver_gesvd` requires m >= n, so transpose input & output if so
+    auto input = op.getOperand();
+    auto type_input = cast<RankedTensorType>(input.getType());
+    auto rank = type_input.getRank();
+    auto m = type_input.getShape()[rank - 2];
+    auto n = type_input.getShape()[rank - 1];
+
+    // modify op to reuse `lowerSVDAlgorithmGPU`
+    if (m < n) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      auto perm = llvm::to_vector(llvm::seq<int64_t>(0, rank));
+      std::swap(perm[rank - 2], perm[rank - 1]);
+
+      // transpose the input
+      rewriter.setInsertionPoint(op);
+      auto transposedInput =
+          stablehlo::TransposeOp::create(rewriter, op.getLoc(), input, perm);
+      rewriter.startOpModification(op);
+      op.setOperand(transposedInput);
+      if (op.getComputeUv()) {
+        auto type_u = cast<RankedTensorType>(op.getResult(0).getType());
+        auto type_vt = cast<RankedTensorType>(op.getResult(2).getType());
+
+        auto type_trans_u = getVType(type_vt);
+        auto type_trans_vt = getVType(type_u);
+
+        op.getResult(0).setType(type_trans_u);
+        op.getResult(2).setType(type_trans_vt);
+      }
+      rewriter.finalizeOpModification(op);
+
+      // swap and transpose U and Vt outputs
+      if (op.getComputeUv()) {
+        rewriter.setInsertionPointAfter(op);
+        auto trans_u = op.getResult(0);
+        auto trans_vt = op.getResult(2);
+        auto u = stablehlo::TransposeOp::create(rewriter, op.getLoc(), trans_vt,
+                                                perm);
+        auto vt = stablehlo::TransposeOp::create(rewriter, op.getLoc(), trans_u,
+                                                 perm);
+        rewriter.replaceAllUsesExcept(trans_u, u, vt);
+        rewriter.replaceAllUsesExcept(trans_vt, vt, u);
+      }
+    }
+
     return lowerSVDAlgorithmGPU(op, rewriter, backend_config,
                                 !op.getComputeUv(), solverDispatch);
   }
