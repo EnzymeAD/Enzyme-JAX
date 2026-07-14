@@ -51,6 +51,29 @@ XLA_PATCHES = [
     sed -i.bak0 "s,third_party/llvm/llvm-project/mlir/include/,,g" third_party/stablehlo/temporary.patch
     """,
     """
+    # Required for windows due to mingw std::call_once issue in ygg
+echo "diff --git a/stablehlo/reference/InterpreterOps.cpp b/stablehlo/reference/InterpreterOps.cpp" > third_party/stablehlo/temporary.patch
+echo "--- a/stablehlo/reference/InterpreterOps.cpp" >> third_party/stablehlo/temporary.patch
+echo "+++ b/stablehlo/reference/InterpreterOps.cpp" >> third_party/stablehlo/temporary.patch
+echo "@@ -172,6 +172,10 @@" >> third_party/stablehlo/temporary.patch
+echo " SmallVector<InterpreterValue> evalRunParallelOp(" >> third_party/stablehlo/temporary.patch
+echo "     ArrayRef<InterpreterValue> inputs, std::queue<StringAttr>& infeed," >> third_party/stablehlo/temporary.patch
+echo "     SmallVector<SmallVector<StringAttr>> programs, SymbolTable& symbolTable) {" >> third_party/stablehlo/temporary.patch
+echo "+#if (defined(_WIN32) || defined(__CYGWIN__))" >> third_party/stablehlo/temporary.patch
+echo "+  llvm::report_fatal_error(\"Op not supported on windows due to std::future\");" >> third_party/stablehlo/temporary.patch
+echo "+#else" >> third_party/stablehlo/temporary.patch
+echo "   llvm::DefaultThreadPool threadPool;" >> third_party/stablehlo/temporary.patch
+echo "   SmallVector<std::shared_future<SmallVector<InterpreterValue>>> futures;" >> third_party/stablehlo/temporary.patch
+echo "@@ -205,6 +209,7 @@" >> third_party/stablehlo/temporary.patch
+echo "   for (auto& future : futures) results.append(future.get());" >> third_party/stablehlo/temporary.patch
+echo "   // TODO(#1725): Figure out how to test the outfeed queue." >> third_party/stablehlo/temporary.patch
+echo "   return results;" >> third_party/stablehlo/temporary.patch
+echo "+#endif" >> third_party/stablehlo/temporary.patch
+echo " }" >> third_party/stablehlo/temporary.patch
+echo " " >> third_party/stablehlo/temporary.patch
+echo " llvm::Error evalPrintOp(PrintOp& op, InterpreterValue operand) {" >> third_party/stablehlo/temporary.patch
+    """,
+    """
     sed -i.bak0 "s/\\/\\/third_party:repo.bzl/@bazel_tools\\/\\/tools\\/build_defs\\/repo:http.bzl/g" third_party/llvm/workspace.bzl
     """,
     """
