@@ -43,6 +43,7 @@
 #include <isl/set.h>
 #include <isl/space.h>
 #include <isl/val.h>
+#include <limits>
 #include <optional>
 
 namespace mlir {
@@ -1662,23 +1663,101 @@ static LogicalResult tryRaisingParallelOpToStableHLO(
         return failure();
       auto kind = arith::symbolizeAtomicRMWKind(intAttr.getInt()).value();
 
-      switch (kind) {
-      case arith::AtomicRMWKind::addf:
-      case arith::AtomicRMWKind::addi:
-        break;
-      default:
-        return failure();
-      }
-
+      Value inits[1] = {nullptr};
       Value inputs[] = {val};
       Type types[] = {RankedTensorType::get(redshape, res.getType())};
 
-      auto unrankedTensorType = RankedTensorType::get(
-          {}, cast<RankedTensorType>(val.getType()).getElementType());
-      Value inits[1] = {stablehlo::ConstantOp::create(
-          builder,
-          rewriteLocation(res.getLoc(), pc.options.strip_llvm_debuginfo),
-          builder.getZeroAttr(unrankedTensorType))};
+      mlir::Type ET = cast<RankedTensorType>(val.getType()).getElementType();
+      auto unrankedTensorType = RankedTensorType::get({}, ET);
+
+      std::string innerRedName;
+
+      switch (kind) {
+      case arith::AtomicRMWKind::addf:
+      case arith::AtomicRMWKind::addi:
+        inits[0] = stablehlo::ConstantOp::create(
+            builder,
+            rewriteLocation(res.getLoc(), pc.options.strip_llvm_debuginfo),
+            builder.getZeroAttr(unrankedTensorType));
+        innerRedName = "stablehlo.add";
+        break;
+      case arith::AtomicRMWKind::mulf:
+      case arith::AtomicRMWKind::muli:
+        inits[0] = stablehlo::ConstantOp::create(
+            builder,
+            rewriteLocation(res.getLoc(), pc.options.strip_llvm_debuginfo),
+            builder.getOneAttr(unrankedTensorType));
+        innerRedName = "stablehlo.multiply";
+        break;
+      case arith::AtomicRMWKind::ori:
+        inits[0] = stablehlo::ConstantOp::create(
+            builder,
+            rewriteLocation(res.getLoc(), pc.options.strip_llvm_debuginfo),
+            builder.getZeroAttr(unrankedTensorType));
+        innerRedName = "stablehlo.or";
+        break;
+      case arith::AtomicRMWKind::xori:
+        inits[0] = stablehlo::ConstantOp::create(
+            builder,
+            rewriteLocation(res.getLoc(), pc.options.strip_llvm_debuginfo),
+            builder.getZeroAttr(unrankedTensorType));
+        innerRedName = "stablehlo.xor";
+        break;
+      case arith::AtomicRMWKind::andi:
+        inits[0] = stablehlo::ConstantOp::create(
+            builder,
+            rewriteLocation(res.getLoc(), pc.options.strip_llvm_debuginfo),
+            SplatElementsAttr::get(
+                unrankedTensorType,
+                ArrayRef<Attribute>(IntegerAttr::get(
+                    ET, APInt::getAllOnes(ET.getIntOrFloatBitWidth())))));
+        innerRedName = "stablehlo.and";
+        break;
+      case arith::AtomicRMWKind::maximumf:
+        inits[0] = stablehlo::ConstantOp::create(
+            builder,
+            rewriteLocation(res.getLoc(), pc.options.strip_llvm_debuginfo),
+            SplatElementsAttr::get(
+                unrankedTensorType,
+                ArrayRef<Attribute>(FloatAttr::get(
+                    ET, -std::numeric_limits<double>::infinity()))));
+        innerRedName = "stablehlo.maximum";
+        break;
+      case arith::AtomicRMWKind::maxnumf:
+        inits[0] = stablehlo::ConstantOp::create(
+            builder,
+            rewriteLocation(res.getLoc(), pc.options.strip_llvm_debuginfo),
+            SplatElementsAttr::get(
+                unrankedTensorType,
+                ArrayRef<Attribute>(FloatAttr::get(
+                    ET, -std::numeric_limits<double>::infinity()))));
+        innerRedName = "arith.maxnumf";
+        break;
+      case arith::AtomicRMWKind::minimumf:
+        inits[0] = stablehlo::ConstantOp::create(
+            builder,
+            rewriteLocation(res.getLoc(), pc.options.strip_llvm_debuginfo),
+            SplatElementsAttr::get(
+                unrankedTensorType,
+                ArrayRef<Attribute>(FloatAttr::get(
+                    ET, std::numeric_limits<double>::infinity()))));
+        innerRedName = "stablehlo.minimum";
+        break;
+      case arith::AtomicRMWKind::minnumf:
+        inits[0] = stablehlo::ConstantOp::create(
+            builder,
+            rewriteLocation(res.getLoc(), pc.options.strip_llvm_debuginfo),
+            SplatElementsAttr::get(
+                unrankedTensorType,
+                ArrayRef<Attribute>(FloatAttr::get(
+                    ET, std::numeric_limits<double>::infinity()))));
+        innerRedName = "arith.minnumf";
+        break;
+      default:
+        parallelOp->emitError()
+            << "unsupported parallel reduction kind \"" << kind << "\"";
+        return failure();
+      }
 
       auto red = stablehlo::ReduceOp::create(
           builder,
@@ -1697,14 +1776,14 @@ static LogicalResult tryRaisingParallelOpToStableHLO(
 
       {
         OpBuilder builder(block, block->end());
-        auto addOp = stablehlo::AddOp::create(
-            builder,
-            rewriteLocation(res.getLoc(), pc.options.strip_llvm_debuginfo), a,
-            b);
+        auto innerRedOp = builder.create(
+            rewriteLocation(res.getLoc(), pc.options.strip_llvm_debuginfo),
+            StringAttr::get(res.getContext(), innerRedName), ValueRange{a, b},
+            TypeRange{unrankedTensorType});
         stablehlo::ReturnOp::create(
             builder,
             rewriteLocation(res.getLoc(), pc.options.strip_llvm_debuginfo),
-            addOp.getResult());
+            innerRedOp->getResult(0));
       }
 
       SmallVector<Value> vals;
