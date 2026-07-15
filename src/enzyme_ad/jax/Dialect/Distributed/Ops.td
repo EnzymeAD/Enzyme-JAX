@@ -4,137 +4,177 @@
 include "mlir/IR/BuiltinAttributes.td"
 include "mlir/IR/SymbolInterfaces.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
+include "stablehlo/dialect/Base.td"
+include "shardy/dialect/sdy/ir/attrs.td"
 
 include "Dialect.td"
 include "Types.td"
 include "Interfaces.td"
 
-// Mesh definition ops
-def PhysicalMeshOp : DistributedOp<"PhysicalMesh"> {
-    let description = [{Defines a physical mesh of devices based on the hardware topology. A physical mesh is a Cartesian product
-    of zero or more physical axes. Axes should be distinct! Two copies of the same axis is permitted (but may better be represented
-    as a larger axis), but passing the same axis twice is an error.}];
-    let arguments = (ins
-        Variadic<PhysicalCommAxisType>:$axes
-    );
-    let results = (outs PhysicalMeshType:$mesh);
-    let assemblyFormat = "$axes attr-dict";
+defvar TensorType = HLO_Tensor;
+defvar ShardedTensorType = HLO_Tensor; // Subject to change, for now shardy just adds attributes on top of a regular tensor.
+defvar ShardingAttribute = Sdy_TensorSharding;
+
+def DistributedMetadataTrait
+    : NativeOpTrait<"enzyme::distributed::MetadataTrait">;
+
+// Marker for distributed metadata ops. Includes builtin Pure.
+def PureDistributedMetadata : TraitList<[Pure, DistributedMetadataTrait]>;
+
+def GetPhysicalAxisOp : DistributedOp<"GetPhysicalAxis", [PureDistributedMetadata]> {
+    let description = [{
+        Resolves a module-level physical axis symbol into an SSA axis value.
+     }];
+    let arguments = (ins FlatSymbolRefAttr:$physical_axis);
+    let results = (outs PhysicalCommAxisType:$axis);
+    let assemblyFormat = "$physical_axis attr-dict `:` type($axis)";
+    let hasVerifier = 1;
 }
 
-def AxisFactorOp : DistributedOp<"AxisFactor", [DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
+def GenericAxisOp : DistributedOp<"GenericAxis", [PureDistributedMetadata]> {
     let description = [{
-       Factors a physical axis into multiple logical axes, according to a static array of factor sizes.
-       The lowest index of factors corresponds to the lowest-significance / most contiguous new axis.
-       Factors must multiply into the original physical axis size.
-       Returns a logical axis per factor.
+        Produces a generic SSA axis value of the requested axis type.
+     }];
+    let results = (outs AnyType:$axis);
+    let assemblyFormat = "attr-dict `:` type($axis)";
+    let hasVerifier = 1;
+}
+
+def AxisFactorOp : DistributedOp<"AxisFactor", [
+    PureDistributedMetadata,
+    DeclareOpInterfaceMethods<InferTypeOpInterface>
+]> {
+    let description = [{
+       Factors an axis value into multiple axis factors according to a static
+       array of extents.
+       Leftmost factors are most major. For factor i:
+         stride_i = product(extents_j for j > i)
+       Factors must multiply to the extent of the source axis.
      }];
     let arguments = (ins
-        PhysicalCommAxisType:$physical_axis,
-        I32ArrayAttr:$factors
+        AnyType:$axis,
+        DenseI32ArrayAttr:$factor_extents
     );
-    let results = (outs Variadic<LogicalCommAxisType>:$logical_axes);
-    let assemblyFormat = "$physical_axis $factors attr-dict";
-    let hasVerifier = 1; // TODO: verify factors multiply to physical axis size, and correct number of outputs.
+    let results = (outs Variadic<AxisFactorType>:$axis_factors);
+    let assemblyFormat = "$axis $factor_extents attr-dict `:` type($axis) `->` type($axis_factors)";
+    let hasVerifier = 1;
 }
 
-
-def AxisProductOp : DistributedOp<"AxisProduct"> {
+def MeshComputationOp : DistributedOp<"MeshComputation", [
+    AttrSizedOperandSegments,
+    DeclareOpInterfaceMethods<LaneOpInterface>
+]> {
     let description = [{
-       Combines multiple logical axes into a single logical axis. Logical axis must be disjoint,
-       but may come from any mix of physical axes, including different strides over the same physical
-       axis. The order encodes the significance, with the lowest-index/first logical axis being
-       index as the least-significant/most contiguous dimension. 
-       For simplicity for implementation, we require any factors of the same physical axis to be
-       defined from the same factorization op. (For instance, this makes disjointness easier)
+       Unified mesh computation op with explicit SPMD and MPMD decomposition.
+       SPMD axes define the replicated program space, while MPMD axes define per-device programs.
+       Device computation regions are indexed by the MPMD device space and implicitly replicated
+         over the SPMD axes. Communication regions define cross-device transfer/collective behavior.
+         All bodies are stored in a single variadic region list. The first num_device_bodies regions
+         are device programs. The remaining regions are communication programs, ordered with SPMD
+         communication bodies first and MPMD communication bodies after that.
      }];
     let arguments = (ins
-        Variadic<LogicalCommAxisType>:$logical_axes
+        Variadic<LogicalMeshAxisType>:$spmd_axes,
+        Variadic<LogicalMeshAxisType>:$mpmd_axes,
+        ArrayAttr:$shardy_axis_names,
+        Variadic<ShardedTensorType>:$input_tensors,
+        I32Attr:$num_device_bodies,
+        I32Attr:$num_communication_bodies
     );
-    let results = (outs LogicalCommAxisType:$logical_axis);
-    let assemblyFormat = "$logical_axes attr-dict";
-    let hasVerifier = 1; // TODO: axis disjointness.
+    let results = (outs Variadic<ShardedTensorType>:$output_tensors);
+    let regions = (region VariadicRegion<SizedRegion<1>>:$bodies);
+        let assemblyFormat = [{
+            `spmd` `(` $spmd_axes `:` type($spmd_axes) `)`
+            `mpmd` `(` $mpmd_axes `:` type($mpmd_axes) `)`
+            `shardy_axis_names` $shardy_axis_names
+            $input_tensors type($input_tensors)
+            `->` type($output_tensors)
+            `num_device_bodies` $num_device_bodies
+            `num_communication_bodies` $num_communication_bodies
+            `regions` $bodies
+            attr-dict
+        }];
+    let extraClassDeclaration = [{
+        // Multi-axis MPMD device coordinates. One coordinate per MPMD axis.
+        using DeviceIndex = ::llvm::SmallVector<unsigned, 4>;
+
+                // Const overloads for segmented operands/attrs generated as
+                // mutable-only accessors by ODS.
+            ::mlir::ValueRange getSpmdAxes() const;
+            ::mlir::ValueRange getMpmdAxes() const;
+            uint32_t getNumDeviceBodies() const;
+            uint32_t getNumCommunicationBodies() const;
+
+        // Axis-name/axis-value conversion helpers for mixed Shardy/distributed
+        // lowering states.
+        ::mlir::FailureOr<::mlir::Value>
+        findLogicalAxisForShardyAxisName(::llvm::StringRef shardyAxisName) const;
+        ::mlir::FailureOr<::mlir::StringAttr>
+        findShardyAxisNameForLogicalAxis(::mlir::Value logicalAxis) const;
+
+        // Looks up one of the input tensor operands by SSA value.
+        ::mlir::FailureOr<unsigned>
+        findInputTensorIndex(::mlir::Value tensor) const;
+
+        // Rewrites the sharding attached to one of the input tensor operands.
+        ::mlir::LogicalResult
+        setInputTensorSharding(::mlir::Value tensor,
+                                                        ::mlir::sdy::TensorShardingAttr sharding);
+
+        // Indices are zero-based within the device-body partition.
+      ::mlir::Region &getDeviceBody(unsigned idx);
+      const ::mlir::Region &getDeviceBody(unsigned idx) const;
+
+        // Converts a DeviceIndex into a flat index in the device-body partition.
+        // Axis flattening treats lower-index (leftmost) MPMD axes as more
+        // significant.
+        ::mlir::FailureOr<unsigned>
+        findComputationBodyIndexByDeviceIndex(const DeviceIndex &deviceIndex) const;
+
+        // Convenience helpers for direct DeviceIndex -> Region lookup.
+        ::mlir::Region &getDeviceBodyByDeviceIndex(const DeviceIndex &deviceIndex);
+        const ::mlir::Region &
+        getDeviceBodyByDeviceIndex(const DeviceIndex &deviceIndex) const;
+
+        // Indices are zero-based within the combined communication-body partition.
+        // SPMD communication bodies occupy the lower indices, followed by MPMD
+        // communication bodies.
+      ::mlir::Region &getCommunicationBody(unsigned idx);
+      const ::mlir::Region &getCommunicationBody(unsigned idx) const;
+
+        // Returns the index of the communication body associated with the given
+        // logical axis, relative to the combined communication-body partition.
+        // SPMD axes map to lower indices than MPMD axes.
+        ::mlir::FailureOr<unsigned>
+        findCommunicationBodyIndexForAxis(::mlir::Value axis) const;
+
+        // Convenience helper for resolving the communication body associated with
+        // the given logical axis.
+      ::mlir::Region &getCommunicationBodyForAxis(::mlir::Value axis);
+      const ::mlir::Region &getCommunicationBodyForAxis(::mlir::Value axis) const;
+    }];
+    let hasVerifier = 1;
 }
 
 
-// Device definition ops
-
-def ChannelOp : DistributedOp<"Channel", [Symbol, ChannelDefTrait, DeclareOpInterfaceMethods<SymbolUserOpInterface>]>{
-    let arguments = (ins 
-        SymbolNameAttr:$sym_name,
-        // a variadic list of devices connected by this channel
-        ArrayAttr:$sending_devices,
-        ArrayAttr:$receiving_devices
-        // TODO: channel type, bandwidth, latency, etc
-    );
-    let assemblyFormat = "$sym_name $sending_devices $receiving_devices attr-dict";
+// Need a "return" terminator for both mesh and region computations.
+def DistributedYieldOp : DistributedOp<"DistributedYield", [Terminator]> {
+    let description = [{
+        Terminator for MeshComputation regions. Yields tensor input shard values back to 
+        a more global context.
+     }];
+    let arguments = (ins Variadic<ShardedTensorType>:$output_tensors);
+    let assemblyFormat = "$output_tensors type($output_tensors) attr-dict";
 }
 
-def LeafDeviceOp : DistributedOp<"LeafDevice", [Symbol, DeviceDefTrait]>{
-    let arguments = (ins 
-        SymbolNameAttr:$sym_name
-        // TODO: device type, e.g. TPU, GPU, CPU, and other attributes
-    );
-    let assemblyFormat = "$sym_name attr-dict";
-}
-
-def DeviceGroupOp : DistributedOp<"DeviceGroup", [Symbol, DeviceDefTrait, DeclareOpInterfaceMethods<SymbolUserOpInterface>]>{
+def ShardingReduceOp : DistributedOp<"ShardingReduce", [PureDistributedMetadata]> {
+    let description = [{
+       An axis used exclusively to indicate a reduction axis in the right hand side of a collective
+       communication. 
+     }];
     let arguments = (ins
-        SymbolNameAttr:$sym_name,
-        // a variadic list of devices in the group
-        ArrayAttr:$devices, // TODO verify array of SymbolRefAttr of devices
-        // Interconnects between devices
-        ArrayAttr:$channels // TODO verify array of SymbolRefAttr of channels
     );
-    let assemblyFormat = "$sym_name $devices $channels attr-dict";
-}
-def DeviceMeshOp : DistributedOp<"DeviceMesh", [Symbol, DeviceDefTrait, DeclareOpInterfaceMethods<SymbolUserOpInterface>]>{
-    let arguments = (ins
-        SymbolNameAttr:$sym_name,
-        SymbolRefAttr:$device_type,
-        ArrayAttr:$shape
-        // TODO attributes of mesh interconnect
-    );
-    let assemblyFormat = "$sym_name $device_type $shape attr-dict";
-}
-
-// Ops for breaking down computation across the device hierarchy
-
-def MeshForOp : DistributedOp<"MeshFor", [DeclareOpInterfaceMethods<SymbolUserOpInterface>, NoTerminator, SingleBlock]>{
-    let arguments = (ins SymbolRefAttr:$mesh); // TODO: verify it's a mesh
-    let regions = (region MaxSizedRegion<1>:$body); // TODO: body's block args are device type and mesh index
-    let results = (outs ); // TODO
-    // let hasVerifier = 1; // TODO: verify body's block args take mesh index
-    let assemblyFormat = "$mesh $body attr-dict";
-}
-
-def GroupSplitOp : DistributedOp<"GroupSplit", [DeclareOpInterfaceMethods<SymbolUserOpInterface>, NoTerminator, SingleBlock]>{
-    let arguments = (ins
-        SymbolRefAttr:$device_group // TODO: verify it's a group
-    );
-    let regions = (region SizedRegion<1>:$declarations); // Takes as args the devices and channels in the group
-    let results = (outs ); // TODO
-    // let hasVerifier = 1; // TODO
-    // let hasCanonicalizer = 1; // TODO: token declarations up front, followed by device and channel branches in order of listing in the group
-    let assemblyFormat = "$device_group $declarations  attr-dict";
-}
-
-def SplitBranchOp : DistributedOp<"SplitBranch", [DeclareOpInterfaceMethods<SymbolUserOpInterface>, NoTerminator, SingleBlock]>{
-    let arguments = (ins
-        SymbolRefAttr:$device_or_channel // TODO: verify it's a device or channel
-        );
-    let regions = (region MaxSizedRegion<1>:$body); // Takes as args the device or channel
-    let results = (outs ); // TODO
-    // let hasVerifier = 1; // TODO: parent is a groupsplitop
-    let assemblyFormat = "$device_or_channel $body attr-dict";
-}
-
-def DefineTokenOp : DistributedOp<"DefineToken", [DeclareOpInterfaceMethods<SymbolUserOpInterface>]>{
-    let arguments = (ins
-            SymbolRefAttr:$channel
-        );
-    let results = (outs TokenType:$token_out);
-    // let hasVerifier = 1; // TODO: verify writers and readers are connected to the channel
-    let assemblyFormat = "$channel attr-dict";
+    let results = (outs ShardingAxisType:$reduction_axis);
 }
 
 #endif // ENZYME_AD_JAX_DIALECT_DISTRIBUTED_OPS_TD
