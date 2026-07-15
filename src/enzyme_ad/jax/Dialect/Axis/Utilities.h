@@ -47,6 +47,12 @@ bool arePairwiseSegmentsDisjoint(::mlir::Value lhsSegment,
 // Checks that segment intervals are pairwise non-overlapping per source axis.
 bool areSegmentsDisjoint(::mlir::ValueRange segments);
 
+// Returns true when two factor lists cover the same index space modulo
+// permutation order. This checks multiset equality over factor metadata and
+// provenance-axis equivalence, but does not require matching list order.
+bool areFactorIndexSpacesEqual(::mlir::ValueRange lhsFactors,
+                               ::mlir::ValueRange rhsFactors);
+
 // Checks that factors cover an axis exactly and therefore are disjoint.
 bool areFactorsComplete(::mlir::Value axis, ::mlir::ValueRange factors);
 

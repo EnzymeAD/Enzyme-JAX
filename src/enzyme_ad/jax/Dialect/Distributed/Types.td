@@ -5,25 +5,25 @@ include "Dialect.td"
 include "Interfaces.td"
 include "src/enzyme_ad/jax/Dialect/Axis/Interfaces.td"
 
-class AxisType<string name, string type_mnemonic, list<Trait> traits = []>
+class DistributedAxisType<string name, string type_mnemonic, list<Trait> traits = []>
 		: DistributedType<name, type_mnemonic,
 											[DeclareTypeInterfaceMethods<AxisTypeInterface>] #
 													traits>;
 
 // A natural axis defined by the hardware topology.
-def PhysicalCommAxisType : AxisType<"PhysicalCommAxis", "physical_comm_axis"> {
+def PhysicalCommAxisType : DistributedAxisType<"PhysicalCommAxis", "physical_comm_axis"> {
 	let parameters = (ins "unsigned":$extent);
 	let assemblyFormat = "`<` $extent `>`";
 }
 
 // Axis of a logical mesh where hardware details are abstracted away.
-def LogicalMeshAxisType : AxisType<"LogicalMeshAxis", "logical_mesh_axis"> {
+def LogicalMeshAxisType : DistributedAxisType<"LogicalMeshAxis", "logical_mesh_axis"> {
 	let parameters = (ins "unsigned":$extent);
 	let assemblyFormat = "`<` $extent `>`";
 }
 
 // A standalone axis type used to represent replication.
-def ReplicationAxisType : AxisType<"ReplicationAxis", "replication_axis"> {
+def ReplicationAxisType : DistributedAxisType<"ReplicationAxis", "replication_axis"> {
 	let parameters = (ins "unsigned":$extent);
 	let assemblyFormat = "`<` $extent `>`";
 }
