@@ -256,7 +256,8 @@ struct ShardyFunctionToDistributedPass
 
     auto logicalMeshType = LogicalMeshType::get(funcOp.getContext());
     auto logicalMesh = builder.create<LogicalMeshOp>(
-        funcOp.getLoc(), logicalMeshType, newLogicalAxes);
+      funcOp.getLoc(), logicalMeshType, physicalMesh.getSymNameAttr(),
+      newLogicalAxes);
 
     return logicalMesh.getMesh();
   }
