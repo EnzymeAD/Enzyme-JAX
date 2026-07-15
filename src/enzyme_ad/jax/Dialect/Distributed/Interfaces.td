@@ -16,17 +16,6 @@ def PhysicalCommAxisOpInterface :
     ];
 }
 
-// Interfaces for timing analysis
-def LaneOpInterface :
-        OpInterface<"LaneOpInterface"> {
-    let methods = [
-        InterfaceMethod<
-            [{Returns the regions corresponding to the different lanes of this operation}],
-            "llvm::SmallVector<mlir::Region *>", "getLanes", (ins)
-        >
-    ];
-}
-
 def HandleDeclarationOpInterface :
         OpInterface<"HandleDeclarationOpInterface"> {
         let methods = [
