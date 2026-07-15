@@ -35,6 +35,53 @@ static void computeMajorToMinorStrides(ArrayRef<int32_t> extents,
 
 } // namespace
 
+LogicalResult AxisGetAxisOp::verify() {
+  auto shaped = dyn_cast<ShapedType>(getShapeType());
+  if (!shaped) {
+    return emitOpError() << "requires shape_type to be a shaped type";
+  }
+  if (!shaped.hasRank()) {
+    return emitOpError() << "requires shape_type to be ranked";
+  }
+
+  int64_t axisIndex = getAxisIndex();
+  if (axisIndex < 0 || axisIndex >= shaped.getRank()) {
+    return emitOpError() << "requires axis_index in [0, rank), got "
+                         << axisIndex << " for rank " << shaped.getRank();
+  }
+  if (shaped.isDynamicDim(static_cast<unsigned>(axisIndex))) {
+    return emitOpError() << "requires static shape dimension at axis_index "
+                         << axisIndex;
+  }
+
+  auto expectedType = ShapeAxisType::get(getContext(), getShapeType(),
+                                         static_cast<unsigned>(axisIndex));
+  if (getAxis().getType() != expectedType) {
+    return emitOpError()
+           << "requires result type to match shape_type and axis_index";
+  }
+
+  return success();
+}
+
+LogicalResult AxisGetAxisOp::inferReturnTypes(
+    MLIRContext *context, std::optional<Location> location, ValueRange operands,
+    DictionaryAttr attributes, PropertyRef properties, RegionRange regions,
+    SmallVectorImpl<Type> &inferredReturnTypes) {
+  AxisGetAxisOpAdaptor adaptor(operands, attributes, properties, regions);
+  int64_t axisIndex = adaptor.getAxisIndex();
+  if (axisIndex < 0) {
+    if (location) {
+      mlir::emitError(*location) << "requires non-negative axis_index";
+    }
+    return failure();
+  }
+
+  inferredReturnTypes.push_back(ShapeAxisType::get(
+      context, adaptor.getShapeType(), static_cast<unsigned>(axisIndex)));
+  return success();
+}
+
 LogicalResult AxisFactorOp::verify() {
   if (failed(getAxisProvenanceOp(getAxis()))) {
     return emitOpError()
@@ -87,7 +134,7 @@ LogicalResult AxisFactorOp::verify() {
 
 LogicalResult AxisFactorOp::inferReturnTypes(
     MLIRContext *context, std::optional<Location> location, ValueRange operands,
-    DictionaryAttr attributes, OpaqueProperties properties, RegionRange regions,
+    DictionaryAttr attributes, PropertyRef properties, RegionRange regions,
     SmallVectorImpl<Type> &inferredReturnTypes) {
   AxisFactorOpAdaptor adaptor(operands, attributes, properties, regions);
   ArrayRef<int32_t> factorExtents = adaptor.getFactorExtents();
@@ -131,7 +178,7 @@ LogicalResult AxisGroupOp::verify() {
 
 LogicalResult AxisGroupOp::inferReturnTypes(
     MLIRContext *context, std::optional<Location> location, ValueRange operands,
-    DictionaryAttr attributes, OpaqueProperties properties, RegionRange regions,
+    DictionaryAttr attributes, PropertyRef properties, RegionRange regions,
     SmallVectorImpl<Type> &inferredReturnTypes) {
   AxisGroupOpAdaptor adaptor(operands, attributes, properties, regions);
   uint64_t extentProduct = 1;
