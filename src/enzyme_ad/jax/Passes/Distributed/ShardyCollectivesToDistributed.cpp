@@ -188,8 +188,8 @@ LogicalResult lowerTensorTransfer(Operation *op, Value tensorIn,
   auto collective = rewriter.create<CollectiveOp>(
       op->getLoc(), MessageTokenType::get(rewriter.getContext()),
       collectiveAxes, globalInputTensorTypeAttr, globalOutputTensorTypeAttr,
-      localInputTensorTypeAttr, localOutputTensorTypeAttr,
-      *inputShardingAxes, *outputShardingAxes);
+      localInputTensorTypeAttr, localOutputTensorTypeAttr, *inputShardingAxes,
+      *outputShardingAxes);
 
   rewriter.setInsertionPoint(op);
   rewriter.create<SendOp>(op->getLoc(), collective.getToken(), tensorIn);
@@ -208,7 +208,8 @@ LogicalResult lowerTensorTransfer(Operation *op, Value tensorIn,
     transferAxis = collectiveAxes.front();
   }
   if (!outputShardingAxes->empty()) {
-    if (auto shardingOp = outputShardingAxes->front().getDefiningOp<ShardingOp>()) {
+    if (auto shardingOp =
+            outputShardingAxes->front().getDefiningOp<ShardingOp>()) {
       if (!shardingOp.getAxes().empty()) {
         transferAxis = shardingOp.getAxes().front();
       }
@@ -316,7 +317,8 @@ llvm::LogicalResult rewriteShardyCollectivesInFunction(func::FuncOp funcOp) {
   SmallVector<Operation *> collectivesInOrder;
   funcOp.walk([&](Operation *op) {
     if ((isa<sdy::CollectiveOpInterface>(op) &&
-         sharding_encapsulates_behavior(op)) || isa<sdy::ReshardOp>(op)) {
+         sharding_encapsulates_behavior(op)) ||
+        isa<sdy::ReshardOp>(op)) {
       collectivesInOrder.push_back(op);
     }
   });

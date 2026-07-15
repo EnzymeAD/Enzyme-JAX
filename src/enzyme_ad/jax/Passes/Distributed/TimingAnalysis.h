@@ -4,8 +4,8 @@
 #include <cstdint>
 #include <utility>
 
-#include "llvm/ADT/DenseMap.h"
 #include "src/enzyme_ad/jax/Passes/Distributed/HappensBeforeAnalysis.h"
+#include "llvm/ADT/DenseMap.h"
 
 namespace mlir {
 namespace enzyme {

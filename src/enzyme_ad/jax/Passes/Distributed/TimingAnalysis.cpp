@@ -3,14 +3,14 @@
 #include <algorithm>
 #include <optional>
 
-#include "llvm/ADT/Twine.h"
-#include "llvm/Support/ErrorHandling.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/IR/SymbolTable.h"
 #include "shardy/dialect/sdy/ir/dialect.h"
-#include "stablehlo/dialect/StablehloOps.h"
 #include "src/enzyme_ad/jax/Dialect/Distributed/Dialect.h"
+#include "stablehlo/dialect/StablehloOps.h"
+#include "llvm/ADT/Twine.h"
+#include "llvm/Support/ErrorHandling.h"
 
 namespace mlir {
 namespace enzyme {
@@ -58,9 +58,9 @@ int64_t getTensorNumElementsFromType(Type ty) {
 std::optional<sdy::TensorShardingAttr>
 getTensorShardingForCosting(Value value) {
   if (auto opResult = dyn_cast<OpResult>(value)) {
-    if (auto perValue = opResult.getOwner()
-                            ->getAttrOfType<sdy::TensorShardingPerValueAttr>(
-                                "sdy.sharding")) {
+    if (auto perValue =
+            opResult.getOwner()->getAttrOfType<sdy::TensorShardingPerValueAttr>(
+                "sdy.sharding")) {
       unsigned resultIndex = opResult.getResultNumber();
       if (resultIndex < perValue.getShardings().size()) {
         return perValue.getShardings()[resultIndex];
@@ -97,8 +97,7 @@ getTensorShardingForCosting(Value value) {
 }
 
 double estimateDotLikeOpKflops(ShapedType lhsTy, ShapedType rhsTy,
-                 ShapedType outTy,
-                 int64_t reductionSize) {
+                               ShapedType outTy, int64_t reductionSize) {
   if (!lhsTy || !rhsTy || !outTy || !lhsTy.hasStaticShape() ||
       !rhsTy.hasStaticShape() || !outTy.hasStaticShape() ||
       !lhsTy.getElementType().isIntOrFloat() ||
@@ -136,7 +135,8 @@ int64_t getDotGeneralReductionSize(stablehlo::DotGeneralOp dot,
   for (size_t i = 0, e = lhsContracting.size(); i < e; ++i) {
     int64_t lhsDim = lhsContracting[i];
     int64_t rhsDim = rhsContracting[i];
-    if (lhsDim < 0 || rhsDim < 0 || lhsDim >= static_cast<int64_t>(lhsShape.size()) ||
+    if (lhsDim < 0 || rhsDim < 0 ||
+        lhsDim >= static_cast<int64_t>(lhsShape.size()) ||
         rhsDim >= static_cast<int64_t>(rhsShape.size())) {
       llvm::report_fatal_error(
           "stablehlo.dot_general has out-of-bounds contracting dimension");
@@ -159,7 +159,8 @@ int64_t getDotReductionSize(ShapedType lhsTy, ShapedType rhsTy) {
   int64_t lhsContractDim = lhsShape.back();
   int64_t rhsContractDim = rhsShape.front();
   if (lhsContractDim != rhsContractDim) {
-    llvm::report_fatal_error("stablehlo.dot has incompatible contracted dimensions");
+    llvm::report_fatal_error(
+        "stablehlo.dot has incompatible contracted dimensions");
   }
   return lhsContractDim;
 }
@@ -243,8 +244,8 @@ double getTransferSizeBytes(Operation *op) {
   if (auto transfer = dyn_cast<TransferOp>(op)) {
     Value token = transfer.getToken();
     if (auto collective = token.getDefiningOp<CollectiveOp>()) {
-      return static_cast<double>(getTensorSizeBytesFromType(
-          collective.getLocalOutputTensorType()));
+      return static_cast<double>(
+          getTensorSizeBytesFromType(collective.getLocalOutputTensorType()));
     }
     if (auto parts = token.getDefiningOp<SubmeshCollectivePartsOp>()) {
       return static_cast<double>(
@@ -331,7 +332,8 @@ TimingAnalysis::TimeRange TimingAnalysis::getTimeRange(Operation *op) const {
   Operation *root = hb->classRoot(op);
   assert(root && "Operation is not tracked by HappensBeforeAnalysis");
   auto it = rootToTimeRange.find(root);
-  assert(it != rootToTimeRange.end() && "Operation class root has no timing entry");
+  assert(it != rootToTimeRange.end() &&
+         "Operation class root has no timing entry");
   return it->second;
 }
 

@@ -374,7 +374,7 @@ struct ShardyFunctionToDistributedPass
     uint32_t numDeviceBodies = 1;
     uint32_t numCommunicationBodies = static_cast<uint32_t>(spmdAxes.size());
     unsigned bodiesCount =
-      static_cast<unsigned>(numDeviceBodies + numCommunicationBodies);
+        static_cast<unsigned>(numDeviceBodies + numCommunicationBodies);
 
     llvm::SmallVector<Type> meshComputationResultTypes =
         llvm::to_vector(funcOp.getResultTypes());
@@ -385,13 +385,14 @@ struct ShardyFunctionToDistributedPass
     llvm::SmallVector<Attribute> shardyAxisNameAttrs;
     shardyAxisNameAttrs.reserve(shardyMesh.getAxes().size());
     for (auto shardyAxis : shardyMesh.getAxes()) {
-      shardyAxisNameAttrs.push_back(builder.getStringAttr(shardyAxis.getName()));
+      shardyAxisNameAttrs.push_back(
+          builder.getStringAttr(shardyAxis.getName()));
     }
 
     auto meshComputationOp = builder.create<MeshComputationOp>(
-      funcOp.getLoc(), meshComputationResultTypes, spmdAxes, mpmdAxes,
-      builder.getArrayAttr(shardyAxisNameAttrs), meshComputationInputs,
-      numDeviceBodies, numCommunicationBodies, bodiesCount);
+        funcOp.getLoc(), meshComputationResultTypes, spmdAxes, mpmdAxes,
+        builder.getArrayAttr(shardyAxisNameAttrs), meshComputationInputs,
+        numDeviceBodies, numCommunicationBodies, bodiesCount);
 
     // Create all regions required by the current op invariants. Communication
     // bodies are intentionally left as placeholder no-op regions for now.

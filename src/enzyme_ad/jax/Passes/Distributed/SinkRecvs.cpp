@@ -1,8 +1,8 @@
 #include "src/enzyme_ad/jax/Passes/Distributed/Passes.h"
 
-#include "llvm/ADT/SmallVector.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "src/enzyme_ad/jax/Dialect/Distributed/Dialect.h"
+#include "llvm/ADT/SmallVector.h"
 
 namespace mlir {
 namespace enzyme {
@@ -78,14 +78,13 @@ struct DistributedSinkRecvsModulePass
 
   void runOnOperation() override {
     SmallVector<MeshComputationOp> meshOps;
-    getOperation().walk(
-        [&](MeshComputationOp op) { meshOps.push_back(op); });
+    getOperation().walk([&](MeshComputationOp op) { meshOps.push_back(op); });
     for (MeshComputationOp op : meshOps)
       sinkRecvs(op);
   }
 };
 
-} // namespace (anonymous)
+} // namespace
 
 } // namespace distributed
 } // namespace enzyme

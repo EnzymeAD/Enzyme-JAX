@@ -2,8 +2,8 @@
 #define ENZYME_AD_JAX_PASSES_DISTRIBUTED_HAPPENSBEFOREANALYSIS_H
 
 #include "mlir/Pass/AnalysisManager.h"
-#include "llvm/ADT/EquivalenceClasses.h"
 #include "src/enzyme_ad/jax/Dialect/Distributed/Dialect.h"
+#include "llvm/ADT/EquivalenceClasses.h"
 
 namespace mlir {
 namespace enzyme {
@@ -45,7 +45,7 @@ private:
   llvm::DenseMap<Operation *, llvm::SmallVector<Operation *>> predecessorsMap;
   // should be transpose of predecessorsMap, for lookups in the other direction
   llvm::DenseMap<Operation *, llvm::SmallVector<Operation *>> successorsMap;
-  
+
   void markSimultaneous(Operation *a, Operation *b);
   void scanSimultaneousOperations(LaneOpInterface laneOp);
 

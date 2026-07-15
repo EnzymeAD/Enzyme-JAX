@@ -4,9 +4,9 @@
 
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/PatternMatch.h"
-#include "stablehlo/dialect/StablehloOps.h"
 #include "src/enzyme_ad/jax/Dialect/Distributed/Dialect.h"
 #include "src/enzyme_ad/jax/Passes/Distributed/TimingAnalysis.h"
+#include "stablehlo/dialect/StablehloOps.h"
 
 namespace mlir {
 namespace enzyme {
@@ -81,8 +81,7 @@ CollectiveInfo gatherCollectiveInfo(Value token, MeshComputationOp meshOp) {
 // Ordinal-based collective correspondence for clone matching.
 // ===----------------------------------------------------------------------===
 
-unsigned findCollectiveOrdinal(CollectiveOp target,
-                               MeshComputationOp meshOp) {
+unsigned findCollectiveOrdinal(CollectiveOp target, MeshComputationOp meshOp) {
   unsigned idx = 0;
   for (Operation &op : meshOp->getBlock()->getOperations()) {
     if (auto coll = dyn_cast<CollectiveOp>(&op)) {
@@ -95,7 +94,7 @@ unsigned findCollectiveOrdinal(CollectiveOp target,
 }
 
 CollectiveOp findCollectiveByOrdinal(unsigned targetIdx,
-                                      MeshComputationOp meshOp) {
+                                     MeshComputationOp meshOp) {
   unsigned idx = 0;
   for (Operation &op : meshOp->getBlock()->getOperations()) {
     if (auto coll = dyn_cast<CollectiveOp>(&op)) {
@@ -116,7 +115,7 @@ CollectiveOp findCollectiveByOrdinal(unsigned targetIdx,
 /// at operand position `operandIdx`.  Returns true if the op is a known
 /// compute op; false if unknown (we conservatively mark all dims as used).
 static bool getContractingDimsForOperand(Operation *op, unsigned operandIdx,
-                                          llvm::SmallDenseSet<int64_t> &out) {
+                                         llvm::SmallDenseSet<int64_t> &out) {
   if (auto dotGen = dyn_cast<stablehlo::DotGeneralOp>(op)) {
     auto dn = dotGen.getDotDimensionNumbers();
     ArrayRef<int64_t> contracting;
@@ -241,7 +240,8 @@ int64_t findTilableDimension(CollectiveInfo &info) {
 //
 // For each Send, hoists the slice through the producer op (e.g. dot) so that
 // N smaller producer ops are created, each immediately followed by its Send.
-// This allows the first transfer to start as soon as the first tile is computed.
+// This allows the first transfer to start as soon as the first tile is
+// computed.
 //
 // For each Recv, clones each immediate consumer per tile and concatenates
 // results so that consumers can begin as soon as each tile arrives.
@@ -249,8 +249,8 @@ int64_t findTilableDimension(CollectiveInfo &info) {
 
 /// Slice a single tile out of `input` along `dim`.
 static Value sliceOneTile(Value input, int64_t dim, int64_t tile,
-                           int64_t tilingFactor, Location loc,
-                           IRRewriter &rewriter) {
+                          int64_t tilingFactor, Location loc,
+                          IRRewriter &rewriter) {
   auto ty = cast<RankedTensorType>(input.getType());
   int64_t fullSize = ty.getShape()[dim];
   int64_t tileSize = fullSize / tilingFactor;
@@ -267,10 +267,10 @@ static Value sliceOneTile(Value input, int64_t dim, int64_t tile,
 
 /// Concatenate values along `dim`.
 static Value concatAlongDim(ValueRange pieces, int64_t dim,
-                             RankedTensorType resultType, Location loc,
-                             IRRewriter &rewriter) {
+                            RankedTensorType resultType, Location loc,
+                            IRRewriter &rewriter) {
   return stablehlo::ConcatenateOp::create(rewriter, loc, resultType, pieces,
-                                           dim)
+                                          dim)
       .getResult();
 }
 
@@ -292,7 +292,7 @@ struct OutputDimMapping {
 };
 
 static std::optional<InputDimMapping> mapOutputDimToInput(Operation *producer,
-                                                           int64_t outputDim) {
+                                                          int64_t outputDim) {
   if (auto dot = dyn_cast<stablehlo::DotOp>(producer)) {
     auto lhsTy = cast<RankedTensorType>(dot.getLhs().getType());
     auto rhsTy = cast<RankedTensorType>(dot.getRhs().getType());
@@ -342,8 +342,9 @@ static std::optional<InputDimMapping> mapOutputDimToInput(Operation *producer,
   return std::nullopt;
 }
 
-static std::optional<OutputDimMapping>
-mapInputDimToOutput(Operation *consumer, unsigned operandIdx, int64_t inputDim) {
+static std::optional<OutputDimMapping> mapInputDimToOutput(Operation *consumer,
+                                                           unsigned operandIdx,
+                                                           int64_t inputDim) {
   if (auto dot = dyn_cast<stablehlo::DotOp>(consumer)) {
     auto lhsTy = cast<RankedTensorType>(dot.getLhs().getType());
     auto rhsTy = cast<RankedTensorType>(dot.getRhs().getType());
@@ -404,8 +405,7 @@ mapInputDimToOutput(Operation *consumer, unsigned operandIdx, int64_t inputDim) 
 }
 
 void applyTiling(CollectiveOp collective, MeshComputationOp meshOp,
-                 int64_t tilingFactor, int64_t tileDim,
-                 IRRewriter &rewriter) {
+                 int64_t tilingFactor, int64_t tileDim, IRRewriter &rewriter) {
   CollectiveInfo info = gatherCollectiveInfo(collective.getToken(), meshOp);
 
   auto localInTy =
@@ -434,9 +434,9 @@ void applyTiling(CollectiveOp collective, MeshComputationOp meshOp,
     auto newColl = CollectiveOp::create(
         rewriter, loc, MessageTokenType::get(ctx), collective.getAxes(),
         collective.getGlobalInputTensorTypeAttr(),
-        collective.getGlobalOutputTensorTypeAttr(),
-        TypeAttr::get(slicedInType), TypeAttr::get(slicedOutType),
-        collective.getInputSharding(), collective.getOutputSharding());
+        collective.getGlobalOutputTensorTypeAttr(), TypeAttr::get(slicedInType),
+        TypeAttr::get(slicedOutType), collective.getInputSharding(),
+        collective.getOutputSharding());
     newCollectives.push_back(newColl);
   }
 
@@ -470,8 +470,8 @@ void applyTiling(CollectiveOp collective, MeshComputationOp meshOp,
         int64_t inDim = dimMapping->inputDim;
         Value origInput = producer->getOperand(opIdx);
 
-        Value slicedInput = sliceOneTile(origInput, inDim, tile, tilingFactor,
-                                         loc, rewriter);
+        Value slicedInput =
+            sliceOneTile(origInput, inDim, tile, tilingFactor, loc, rewriter);
 
         IRMapping mapping;
         mapping.map(origInput, slicedInput);
@@ -553,8 +553,9 @@ void applyTiling(CollectiveOp collective, MeshComputationOp meshOp,
             SmallVector<int64_t> newShape(resTy.getShape());
             if (resultDimMapping->outputDim >=
                 static_cast<int64_t>(newShape.size())) {
-              llvm::outs() << "Skipping tiling for consumer result rank mismatch: "
-                           << consumer->getName() << "\n";
+              llvm::outs()
+                  << "Skipping tiling for consumer result rank mismatch: "
+                  << consumer->getName() << "\n";
               rewriter.eraseOp(cloned);
               tiledResults[r].clear();
               break;
@@ -572,15 +573,14 @@ void applyTiling(CollectiveOp collective, MeshComputationOp meshOp,
           break;
         auto origResTy =
             cast<RankedTensorType>(consumer->getResult(r).getType());
-        Value concatenated = concatAlongDim(tiledResults[r],
-                                            resultDimMapping->outputDim,
-                                            origResTy, loc, rewriter);
+        Value concatenated =
+            concatAlongDim(tiledResults[r], resultDimMapping->outputDim,
+                           origResTy, loc, rewriter);
         consumer->getResult(r).replaceAllUsesWith(concatenated);
       }
-      if (!llvm::all_of(tiledResults,
-                        [](const SmallVector<Value> &values) {
-                          return !values.empty();
-                        })) {
+      if (!llvm::all_of(tiledResults, [](const SmallVector<Value> &values) {
+            return !values.empty();
+          })) {
         continue;
       }
       rewriter.eraseOp(consumer);
@@ -606,7 +606,8 @@ static void simplifySliceOfConcat(MeshComputationOp meshOp) {
   while (changed) {
     changed = false;
     meshOp->walk([&](stablehlo::SliceOp sliceOp) {
-      if (changed) return; // restart walk after mutation
+      if (changed)
+        return; // restart walk after mutation
       auto concat =
           sliceOp.getOperand().getDefiningOp<stablehlo::ConcatenateOp>();
       if (!concat)
@@ -711,7 +712,7 @@ static void simplifyNoopSlices(MeshComputationOp meshOp) {
 // ===----------------------------------------------------------------------===
 
 int64_t findBestTilingFactor(CollectiveOp collective, int64_t tileDim,
-                              int64_t kMax, MeshComputationOp meshOp) {
+                             int64_t kMax, MeshComputationOp meshOp) {
   auto localTy =
       dyn_cast<RankedTensorType>(collective.getLocalInputTensorType());
   int64_t dimSize = localTy.getShape()[tileDim];
@@ -762,13 +763,14 @@ int64_t findBestTilingFactor(CollectiveOp collective, int64_t tileDim,
     simplifySliceOfConcat(clonedMeshOp);
     simplifyNoopSlices(clonedMeshOp);
 
-    // Sink recvs so timing sees the reduced latency from earlier recv placement.
+    // Sink recvs so timing sees the reduced latency from earlier recv
+    // placement.
     sinkRecvs(clonedMeshOp);
 
     // Measure critical path on the tiled clone.
     TimingResult timing = analyzeTiming(clonedMeshOp);
-    llvm::outs() << "  k=" << exp << " factor=" << factor << " time="
-                 << timing.criticalPathTime << "\n";
+    llvm::outs() << "  k=" << exp << " factor=" << factor
+                 << " time=" << timing.criticalPathTime << "\n";
     if (timing.criticalPathTime < bestTime) {
       bestTime = timing.criticalPathTime;
       bestFactor = factor;
@@ -804,8 +806,7 @@ void runOverlapCommunication(MeshComputationOp meshOp, int64_t kMaxVal) {
   llvm::outs() << "Found " << collectives.size() << " collectives.\n";
 
   for (CollectiveOp collective : collectives) {
-    CollectiveInfo info =
-        gatherCollectiveInfo(collective.getToken(), meshOp);
+    CollectiveInfo info = gatherCollectiveInfo(collective.getToken(), meshOp);
 
     int64_t tileDim = findTilableDimension(info);
     if (tileDim < 0) {
@@ -860,8 +861,7 @@ struct DistributedOverlapCommunicationModulePass
   void runOnOperation() override {
     ModuleOp moduleOp = getOperation();
     SmallVector<MeshComputationOp> meshOps;
-    moduleOp.walk(
-        [&](MeshComputationOp meshOp) { meshOps.push_back(meshOp); });
+    moduleOp.walk([&](MeshComputationOp meshOp) { meshOps.push_back(meshOp); });
     for (MeshComputationOp meshOp : meshOps)
       runOverlapCommunication(meshOp, kMax);
   }
