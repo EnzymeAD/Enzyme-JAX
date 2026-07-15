@@ -57,7 +57,8 @@ def MeshComputationOp : DistributedOp<"MeshComputation", [
     HasOnlyGraphRegion,
     NoTerminator,
     Symbol,
-    SymbolTable
+    SymbolTable,
+    IsolatedFromAbove
 ]> {
     let description = [{
         Represents a closed distributed program. Contains a mix non-computational SSA values
