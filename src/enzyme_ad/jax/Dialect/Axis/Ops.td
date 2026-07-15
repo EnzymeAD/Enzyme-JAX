@@ -80,6 +80,7 @@ def AxisMapOp : AxisOp<"map", [
     Variadic<FactorGroupType>:$mapping_lhs,
     Variadic<FactorGroupType>:$mapping_rhs
   );
+  let results = (outs AxisMapType:$map);
   let assemblyFormat = [{
     $mapping_lhs `to` $mapping_rhs
     attr-dict

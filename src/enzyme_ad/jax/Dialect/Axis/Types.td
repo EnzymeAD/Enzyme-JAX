@@ -38,4 +38,7 @@ def FactorGroupType : AxisDialectType<"FactorGroup", "factor_group"> {
   let assemblyFormat = "`<` $extent `>`";
 }
 
+// Opaque SSA value representing an axis.map declaration.
+def AxisMapType : AxisDialectType<"AxisMap", "map">;
+
 #endif // ENZYME_AD_JAX_DIALECT_AXIS_TYPES_TD

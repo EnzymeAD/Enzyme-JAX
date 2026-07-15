@@ -50,6 +50,9 @@ int getAxisExtent(::mlir::TypedValue<AxisTypeInterface> axis);
 // Returns the static extent for any factor SSA value.
 int getFactorExtent(::mlir::TypedValue<AxisFactorType> factor);
 
+// Returns the static stride for any factor SSA value.
+int getFactorStride(::mlir::TypedValue<AxisFactorType> factor);
+
 // Returns the static extent for any segment SSA value.
 int getSegmentExtent(::mlir::TypedValue<AxisSegmentType> segment);
 
@@ -129,6 +132,18 @@ viewAxesAsFactors(TypedValueArrayRef<AxisTypeInterface> axes,
 llvm::SmallVector<::mlir::TypedValue<AxisFactorType>>
 factorAxisByExtents(::mlir::Value axis, llvm::ArrayRef<int32_t> extents,
                     ::mlir::OpBuilder &builder, ::mlir::Location loc);
+
+// Splits each lhs/rhs factor-group mapping pair into maximal one-to-one
+// submappings where possible, and minimal indivisible units where not possible.
+// The outputs are always populated with the computed split mapping. The return
+// value is true only if every produced mapping pair is fully atomic on both
+// sides.
+bool split_divisible(
+    llvm::ArrayRef<::mlir::TypedValue<FactorGroupType>> lhs,
+    llvm::ArrayRef<::mlir::TypedValue<FactorGroupType>> rhs,
+    llvm::SmallVector<::mlir::TypedValue<FactorGroupType>> &lhs_out,
+    llvm::SmallVector<::mlir::TypedValue<FactorGroupType>> &rhs_out,
+    ::mlir::OpBuilder &builder);
 } // namespace mlir::enzyme::axis
 
 #endif // ENZYME_AD_JAX_DIALECT_AXIS_UTILITIES_H
