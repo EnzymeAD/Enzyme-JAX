@@ -2645,10 +2645,44 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
           rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo), mask,
           vals[0], vals[1]);
 
-      update = stablehlo::ReshapeOp::create(
+      SmallVector<int64_t> maskedUpdateBroadcastDims(
+          storeValueMap.getNumResults(), -1);
+
+      for (auto [i, E] :
+           llvm::enumerate(storeValueMap.getAffineMap().getResults())) {
+        assert(!E.isSymbolicOrConstant()); // constant dims have been removed
+        auto iv = getIVForExpr(storeValueMap, E);
+
+        for (auto [j, EE] : llvm::enumerate(storeOp.getMap().getResults())) {
+          if (EE.isSymbolicOrConstant())
+            continue;
+
+          int ivPos = 0;
+          for (int e = storeOp.getMap().getNumDims(); ivPos < e; ++ivPos) {
+            if (EE.isFunctionOfDim(ivPos))
+              break;
+          }
+
+          auto storeIV = storeOp.getIndices()[ivPos];
+
+          if (iv == storeIV) {
+            assert(maskedUpdateBroadcastDims[i] == -1);
+            maskedUpdateBroadcastDims[i] = j;
+            break;
+          }
+        }
+      }
+
+      if (llvm::any_of(maskedUpdateBroadcastDims,
+                       [](int64_t dim) { return dim == -1; })) {
+        return op->emitError(
+            "could not align masked update to the store location");
+      }
+
+      update = stablehlo::BroadcastInDimOp::create(
           builder,
           rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
-          updateType, maskedUpdate);
+          updateType, maskedUpdate, maskedUpdateBroadcastDims);
     }
 
     if (needPad) {
