@@ -114,18 +114,6 @@ buildIndexLocalizedSharding(sdy::TensorShardingAttr sharding,
       updatedReplicatedAxes, updatedUnreducedAxes);
 }
 
-void dumpBindingLookup(Value clonedTensor, Value originalTensor,
-             int64_t deviceIndex, const TensorBindingChoice &choice,
-             bool matched) {
-  llvm::errs() << "[localize-distributed] binding lookup: clone="
-               << clonedTensor << " original=" << originalTensor
-               << " localized-axis=" << choice.localizedAxis
-         << " tensor-axis=" << choice.tensorAxis
-         << " chosen-device-index=" << choice.chosenDeviceIndex
-         << " device-index=" << deviceIndex
-         << " matched=" << (matched ? "true" : "false") << '\n';
-}
-
 FailureOr<TensorBindingChoice>
 getBindingChoiceForClonedOp(const DenseMap<Value, Value> &clonedToOriginal,
                             const TensorBindingMap &bindings,
@@ -208,17 +196,28 @@ LogicalResult applyLocalizedBindingsToClone(
 
     auto bindingIt = bindings.find(originalTensor);
     if (bindingIt == bindings.end()) {
-      llvm::errs() << "[localize-distributed] binding lookup: clone="
-                   << clonedTensor << " original=" << originalTensor
-                   << " -> <no binding>\n";
       continue;
     }
 
     const TensorBindingChoice &choice = bindingIt->second;
-    bool matched = choice.localizedAxis == localizedAxis &&
-                   choice.chosenDeviceIndex == deviceIndex;
-    dumpBindingLookup(clonedTensor, originalTensor, deviceIndex, choice,
-                      matched);
+    
+    // Determine if this binding applies to the current device based on sharding mode
+    bool matched = false;
+    switch (choice.shardingMode) {
+      case ShardingMode::IndexBased:
+        // Device-specific: only apply if axis matches and device index matches
+        matched = choice.localizedAxis == localizedAxis &&
+                  choice.chosenDeviceIndex == deviceIndex;
+        break;
+      case ShardingMode::Sharded:
+        // Distributed: apply to all devices (only check axis match for locality)
+        matched = choice.localizedAxis == localizedAxis;
+        break;
+      case ShardingMode::Replicated:
+        // Replicated: apply to all devices identically
+        matched = choice.localizedAxis == localizedAxis;
+        break;
+    }
 
     if (!matched) {
       continue;
@@ -372,7 +371,21 @@ LogicalResult cloneMeshComputationForLocalizedAxis(
           continue;
         }
 
-        if (choiceOr->chosenDeviceIndex != axisCoord) {
+        // Only prune for IndexBased mode; keep clones for Sharded/Replicated
+        bool shouldPrune = false;
+        switch (choiceOr->shardingMode) {
+          case ShardingMode::IndexBased:
+            // Prune if this clone is for a different device index
+            shouldPrune = choiceOr->chosenDeviceIndex != axisCoord;
+            break;
+          case ShardingMode::Sharded:
+          case ShardingMode::Replicated:
+            // Don't prune: all devices need this operation
+            shouldPrune = false;
+            break;
+        }
+
+        if (shouldPrune) {
           if (failed(eraseClonedOpAndSendUsers(clonedOp))) {
             return failure();
           }
