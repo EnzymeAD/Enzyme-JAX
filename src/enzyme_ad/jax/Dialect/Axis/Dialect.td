@@ -7,6 +7,8 @@ include "mlir/IR/OpBase.td"
 include "mlir/IR/Traits.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 
+include "Interfaces.td"
+
 def AxisDialect : Dialect {
   let name = "axis";
   let description = [{SSA algebra over canonical axes and axis factors.}];
