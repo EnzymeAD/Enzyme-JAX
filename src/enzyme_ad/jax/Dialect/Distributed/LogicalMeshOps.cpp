@@ -21,33 +21,36 @@ FailureOr<PhysicalMeshOp> LogicalMeshOp::resolvePhysicalMesh() {
   return *physicalMeshOr;
 }
 
-LogicalResult
-LogicalMeshOp::resolveToAtomicFactors(SmallVectorImpl<Value> &atomicFactors) {
-  for (Value logicalAxis : getAxes()) {
+LogicalResult LogicalMeshOp::resolveToAtomicFactors(
+    SmallVectorImpl<TypedOpResult<LogicalCommAxisType>> &atomicFactors) {
+  for (auto logicalAxis : getAxes()) {
     resolveLogicalAxisToAtomicFactors(logicalAxis, atomicFactors);
   }
   return success();
 }
 
 bool LogicalMeshOp::isDisjoint() {
-  llvm::SmallVector<Value> atomicFactors;
+  llvm::SmallVector<TypedOpResult<LogicalCommAxisType>> atomicFactors;
   if (failed(resolveToAtomicFactors(atomicFactors))) {
     return false;
   }
 
   llvm::SmallVector<SymbolRefAttr> physicalAxisRefs;
-  for (Value atomicFactor : atomicFactors) {
-    auto definingOp = atomicFactor.getDefiningOp();
+  for (auto atomicFactor : atomicFactors) {
+    auto atomicFactorResult = atomicFactor.asOpResult();
+    auto definingOp = atomicFactorResult.getDefiningOp();
     auto axisFactorOp = cast<AxisFactorOp>(definingOp);
     physicalAxisRefs.push_back(axisFactorOp.getPhysicalAxisAttr());
   }
 
   for (size_t i = 0; i < atomicFactors.size(); ++i) {
-    auto def_op = atomicFactors[i].getDefiningOp();
+    auto factorIResult = atomicFactors[i].asOpResult();
+    auto def_op = factorIResult.getDefiningOp();
 
     for (size_t j = i + 1; j < atomicFactors.size(); ++j) {
-      auto other_def_op = atomicFactors[j].getDefiningOp();
-      if (atomicFactors[i] == atomicFactors[j]) {
+      auto factorJResult = atomicFactors[j].asOpResult();
+      auto other_def_op = factorJResult.getDefiningOp();
+      if (factorIResult == factorJResult) {
         return false;
       }
       if (physicalAxisRefs[i] == physicalAxisRefs[j] &&
@@ -61,8 +64,8 @@ bool LogicalMeshOp::isDisjoint() {
 }
 
 bool LogicalMeshOp::isSubmesh(LogicalMeshOp submesh) {
-  llvm::SmallVector<Value> logicalMeshAtomicFactors;
-  llvm::SmallVector<Value> submeshAtomicFactors;
+  llvm::SmallVector<TypedOpResult<LogicalCommAxisType>> logicalMeshAtomicFactors;
+  llvm::SmallVector<TypedOpResult<LogicalCommAxisType>> submeshAtomicFactors;
 
   if (failed(resolveToAtomicFactors(logicalMeshAtomicFactors))) {
     return false;
@@ -75,10 +78,12 @@ bool LogicalMeshOp::isSubmesh(LogicalMeshOp submesh) {
     return false;
   }
 
-  for (Value submeshFactor : submeshAtomicFactors) {
+  for (auto submeshFactor : submeshAtomicFactors) {
+    auto submeshFactorResult = submeshFactor.asOpResult();
     bool foundMatch = false;
     for (size_t i = 0; i < logicalMeshAtomicFactors.size(); ++i) {
-      if (logicalMeshAtomicFactors[i] == submeshFactor) {
+      auto logicalMeshFactorResult = logicalMeshAtomicFactors[i].asOpResult();
+      if (logicalMeshFactorResult == submeshFactorResult) {
         foundMatch = true;
         break;
       }
@@ -92,15 +97,17 @@ bool LogicalMeshOp::isSubmesh(LogicalMeshOp submesh) {
 }
 
 FailureOr<int64_t> LogicalMeshOp::getMeshSize() {
-  llvm::SmallVector<Value> atomicFactors;
+  llvm::SmallVector<TypedOpResult<LogicalCommAxisType>> atomicFactors;
   if (failed(resolveToAtomicFactors(atomicFactors))) {
     return failure();
   }
 
   int64_t meshSize = 1;
-  for (Value atomicFactor : atomicFactors) {
-    auto definingOp = atomicFactor.getDefiningOp();
-    auto axisInterface = dyn_cast_or_null<LogicalCommAxisOpInterface>(definingOp);
+  for (auto atomicFactor : atomicFactors) {
+    auto atomicFactorResult = atomicFactor.asOpResult();
+    auto definingOp = atomicFactorResult.getDefiningOp();
+    auto axisInterface =
+        dyn_cast_or_null<LogicalCommAxisOpInterface>(definingOp);
     if (!axisInterface) {
       return failure();
     }

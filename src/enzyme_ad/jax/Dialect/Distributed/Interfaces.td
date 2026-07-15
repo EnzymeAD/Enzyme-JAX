@@ -27,12 +27,12 @@ def LogicalCommAxisOpInterface :
     let methods = [
         InterfaceMethod<
             [{Returns the extent/size of the queried logical axis in number of devices.}],
-            "int64_t", "getAxisSize", (ins "::mlir::Value":$axis)>,
+            "int64_t", "getAxisSize", (ins "::mlir::enzyme::distributed::TypedOpResult<::mlir::enzyme::distributed::LogicalCommAxisType>":$axis)>,
         InterfaceMethod<
             [{Decomposes the queried logical axis into atomic factors and appends them to `atomicFactors`.}],
             "void", "resolveToAtomicFactors",
-            (ins "::mlir::Value":$axis,
-                 "::llvm::SmallVectorImpl<::mlir::Value> &":$atomicFactors)>
+            (ins "::mlir::enzyme::distributed::TypedOpResult<::mlir::enzyme::distributed::LogicalCommAxisType>":$axis,
+                 "::llvm::SmallVectorImpl<::mlir::enzyme::distributed::TypedOpResult<::mlir::enzyme::distributed::LogicalCommAxisType>> &":$atomicFactors)>
     ];
 }
 

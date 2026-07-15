@@ -2,26 +2,13 @@
 
 namespace mlir::enzyme::distributed {
 
-void
-resolveLogicalAxisToAtomicFactors(Value logicalAxis,
-                                  SmallVectorImpl<Value> &atomicFactors) {
-  Operation *definingOp = logicalAxis.getDefiningOp();
-  if (!definingOp) {
-    emitError(logicalAxis.getLoc())
-        << "logical axis must be defined by an op implementing "
-        << "LogicalCommAxisOpInterface";
-      return;
-  }
+void resolveLogicalAxisToAtomicFactors(
+    TypedOpResult<LogicalCommAxisType> logicalAxis,
+    SmallVectorImpl<TypedOpResult<LogicalCommAxisType>> &atomicFactors) {
+  auto ax = logicalAxis.asOpResult();
+  Operation *definingOp = ax.getDefiningOp();
 
-  auto axisInterface = dyn_cast<LogicalCommAxisOpInterface>(definingOp);
-  if (!axisInterface) {
-    emitError(logicalAxis.getLoc())
-        << "logical axis is defined by op '"
-        << definingOp->getName().getStringRef()
-        << "' which does not implement LogicalCommAxisOpInterface";
-    return;
-  }
-
+  auto axisInterface = cast<LogicalCommAxisOpInterface>(definingOp);
   axisInterface.resolveToAtomicFactors(logicalAxis, atomicFactors);
 }
 
