@@ -68,52 +68,6 @@ static void printReductionGroups(OpAsmPrinter &printer, Operation *op,
   printer << ')';
 }
 
-static ParseResult
-parseAxisMapping(OpAsmParser &parser,
-                 SmallVectorImpl<OpAsmParser::UnresolvedOperand> &mappingLhs,
-                 SmallVectorImpl<OpAsmParser::UnresolvedOperand> &mappingRhs) {
-  if (parser.parseLParen()) {
-    return failure();
-  }
-
-  if (succeeded(parser.parseOptionalRParen())) {
-    return success();
-  }
-
-  while (true) {
-    OpAsmParser::UnresolvedOperand lhs;
-    OpAsmParser::UnresolvedOperand rhs;
-    if (parser.parseOperand(lhs) || parser.parseArrow() ||
-        parser.parseOperand(rhs)) {
-      return failure();
-    }
-    mappingLhs.push_back(lhs);
-    mappingRhs.push_back(rhs);
-
-    if (succeeded(parser.parseOptionalComma())) {
-      continue;
-    }
-    if (parser.parseRParen()) {
-      return failure();
-    }
-    break;
-  }
-
-  return success();
-}
-
-static void printAxisMapping(OpAsmPrinter &printer, Operation *op,
-                             OperandRange mappingLhs, OperandRange mappingRhs) {
-  printer << '(';
-  for (auto [idx, lhs] : llvm::enumerate(mappingLhs)) {
-    if (idx != 0) {
-      printer << ", ";
-    }
-    printer << lhs << " -> " << mappingRhs[idx];
-  }
-  printer << ')';
-}
-
 } // namespace mlir::enzyme::distributed
 
 #endif // ENZYME_AD_JAX_DIALECT_DISTRIBUTED_COLLECTIVE_OPS_H

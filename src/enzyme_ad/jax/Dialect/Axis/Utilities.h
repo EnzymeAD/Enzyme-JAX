@@ -133,6 +133,22 @@ llvm::SmallVector<::mlir::TypedValue<AxisFactorType>>
 factorAxisByExtents(::mlir::Value axis, llvm::ArrayRef<int32_t> extents,
                     ::mlir::OpBuilder &builder, ::mlir::Location loc);
 
+// Subtracts subtrahend factors from a factor-group and returns the remaining
+// factors in major-first order. Subtrahend factors must be representable as
+// factors of the minuend index space.
+::mlir::FailureOr<llvm::SmallVector<::mlir::TypedValue<AxisFactorType>>>
+subtractFactorsFromFactorGroup(
+  ::mlir::TypedValue<FactorGroupType> minuend,
+  llvm::ArrayRef<::mlir::TypedValue<AxisFactorType>> subtrahend,
+  ::mlir::OpBuilder &builder);
+
+// Infers an axis.map over one virtual index space from explicit RHS indices.
+// rhs_indices must be ordered by LHS index (rhs_indices[i] = j means i -> j).
+::mlir::FailureOr<::mlir::TypedValue<AxisMapType>>
+inferMapFromIndices(::mlir::TypedValue<FactorGroupType> index_space,
+                    llvm::ArrayRef<int> rhs_indices,
+                    ::mlir::OpBuilder &builder);
+
 // Splits each lhs/rhs factor-group mapping pair into maximal one-to-one
 // submappings where possible, and minimal indivisible units where not possible.
 // The outputs are always populated with the computed split mapping. The return

@@ -42,6 +42,20 @@ def ShardyToDistributedPass : Pass<"shardy-to-distributed", "::mlir::ModuleOp"> 
     }];
 }
 
+def InsertPhysicalMeshPass : Pass<"insert-physical-mesh", "::mlir::ModuleOp"> {
+    let summary = "Insert a mock distributed.PhysicalMesh derived from Shardy mesh metadata.";
+    let dependentDialects = [
+        "sdy::SdyDialect",
+        "enzyme::distributed::DistributedDialect"
+    ];
+    let description = [{
+        Inserts a module-level distributed.PhysicalMesh when none exists by
+        inferring axis extents from the common Shardy mesh seen in sharded
+        functions. This currently uses a mock device_target and is intended
+        to be replaced with loading an external physical mesh configuration.
+    }];
+}
+
 def DistributedToHloPass : Pass<"distributed-to-hlo", "::mlir::ModuleOp"> {
     let summary = "Lower distributed dialect constructs to StableHLO.";
     let dependentDialects = [
