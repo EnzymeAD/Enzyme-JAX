@@ -382,18 +382,16 @@ struct ShardyFunctionToDistributedPass
         newEntryBlock->getArguments().begin(),
         newEntryBlock->getArguments().end());
 
-    auto meshComputationOp = builder.create<MeshComputationOp>(
-        funcOp.getLoc(), meshComputationResultTypes, spmdAxes, mpmdAxes,
-        meshComputationInputs, numDeviceBodies, numCommunicationBodies,
-        bodiesCount);
-
     llvm::SmallVector<Attribute> shardyAxisNameAttrs;
     shardyAxisNameAttrs.reserve(shardyMesh.getAxes().size());
     for (auto shardyAxis : shardyMesh.getAxes()) {
       shardyAxisNameAttrs.push_back(builder.getStringAttr(shardyAxis.getName()));
     }
-    meshComputationOp->setAttr(kShardyAxisNamesAttr,
-                               builder.getArrayAttr(shardyAxisNameAttrs));
+
+    auto meshComputationOp = builder.create<MeshComputationOp>(
+      funcOp.getLoc(), meshComputationResultTypes, spmdAxes, mpmdAxes,
+      builder.getArrayAttr(shardyAxisNameAttrs), meshComputationInputs,
+      numDeviceBodies, numCommunicationBodies, bodiesCount);
 
     // Create all regions required by the current op invariants. Communication
     // bodies are intentionally left as placeholder no-op regions for now.

@@ -39,6 +39,22 @@ def ShardyFunctionToDistributedPass
   ];
 }
 
+def InsertIdentityReshardPass
+    : Pass<"insert-identity-reshard", "func::FuncOp"> {
+  let summary = "Insert identity reshard ops on tensor operands";
+  let description = [{
+    This prepass inserts an identity sdy.reshard on every tensor operand so
+    the distributed lowering sees a graph where tensor values are explicitly
+    separated from the communication boundaries that define their sharding.
+  }];
+  let dependentDialects = [
+    "sdy::SdyDialect",
+    "func::FuncDialect",
+  ];
+}
+
+// TODO(distributed-ir-migration): Re-enable these pass defs one-by-one as
+// each pass implementation is migrated to the unified MeshComputation IR.
 def ShardyCollectivesToDistributedPass
     : Pass<"shardy-collectives-to-distributed", "func::FuncOp"> {
   let summary = "Rewrite Shardy collectives to Distributed collectives";
@@ -53,25 +69,44 @@ def ShardyCollectivesToDistributedPass
   ];
 }
 
-def LocalizeDistributedPass : Pass<"localize-distributed", "distributed::MeshComputationOp"> {
-  let summary = "Based on a localization and partitioning strategy, localize a mesh computation op to a region computation.";
+def ParameterizedLocalizeDistributedPass
+    : Pass<"parameterized-localize-distributed",
+           "distributed::MeshComputationOp"> {
+  let summary = "Prototype parameterized localization for one mesh computation";
   let description = [{
-    This pass takes a mesh computation op and localizes it to a region computation op. For each region 
-    suggested by the partitioning strategy, a new region computation op is created. The region op uses
-    a submesh suggested by the localization strategy. Ops formerly within the mesh computation are de-sharded
-    and each chunk is placed in the appropriate region. }];
+    Prototype pass that localizes a single MPMD axis within one
+    distributed.MeshComputationOp.
+    The first implementation only resolves the target axis binding and
+    validates the requested tensor axis; communication and scheduling rewrites
+    are deferred.
+  }];
+  let options = [
+    Option<
+      /*C++ variable name=*/"targetMpmdAxisIndex",
+      /*CLI argument=*/"target-mpmd-axis-index",
+      /*type=*/"int64_t",
+      /*default=*/"-1",
+      /*description=*/"Index of the MPMD axis to localize">,
+    Option<
+      /*C++ variable name=*/"tensorAxis",
+      /*CLI argument=*/"tensor-axis",
+      /*type=*/"int64_t",
+      /*default=*/"0",
+      /*description=*/"Tensor axis to bind the target MPMD axis to">,
+  ];
   let dependentDialects = [
     "enzyme::distributed::DistributedDialect",
     "func::FuncDialect",
-    "sdy::SdyDialect", // still dependent on their sharding attributes.
   ];
 }
 
 def LocalizeDistributedModulePass : Pass<"localize-distributed-module", "ModuleOp"> {
-  let summary = "Run localize-distributed on all distributed mesh computations in a module";
+  let summary = "Run deterministic pseudo-random localization on all distributed mesh computations in a module";
   let description = [{
-    This wrapper pass finds distributed.MeshComputation ops inside the module
-    and runs localize-distributed on each one.
+    This wrapper pass finds every distributed.MeshComputationOp in the module,
+    generates a fixed-seed pseudo-random localization configuration for it, and
+    applies the parameterized localization entrypoint. The generated choices are
+    intentionally a stand-in for the future search procedure.
   }];
   let dependentDialects = [
     "enzyme::distributed::DistributedDialect",
@@ -81,11 +116,11 @@ def LocalizeDistributedModulePass : Pass<"localize-distributed-module", "ModuleO
 }
 
 def PrintTimingAnalysisPass
-    : Pass<"print-timing-analysis", "distributed::RegionComputationOp"> {
+    : Pass<"print-timing-analysis", "distributed::MeshComputationOp"> {
   let summary = "Print timing analysis results for each lane and op";
   let description = [{
-    This debugging pass computes the distributed timing analysis for a
-    RegionComputationOp and prints the resulting time range for each op in each
+    This debugging pass computes distributed timing analysis for a
+    MeshComputationOp and prints the resulting time range for each op in each
     lane.
   }];
   let dependentDialects = [
@@ -95,9 +130,9 @@ def PrintTimingAnalysisPass
 
 def PrintTimingAnalysisModulePass
     : Pass<"print-timing-analysis-module", "ModuleOp"> {
-  let summary = "Print timing analysis results for all distributed regions";
+  let summary = "Print timing analysis results for all distributed mesh computations";
   let description = [{
-    This wrapper pass finds every distributed.RegionComputationOp in the
+    This wrapper pass finds every distributed.MeshComputationOp in the
     module and prints timing analysis results for each lane and op.
   }];
   let dependentDialects = [
