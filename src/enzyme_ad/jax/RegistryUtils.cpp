@@ -94,6 +94,7 @@
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Comm/Passes.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
+#include "src/enzyme_ad/jax/Passes/Distributed/Passes.h"
 #include "src/enzyme_ad/jax/Passes/Tessera/Passes.h"
 
 #include "src/enzyme_ad/jax/Dialect/Comm/Dialect.h"
@@ -345,6 +346,7 @@ void registerInterfaces(mlir::DialectRegistry &registry) {
 void initializePasses() {
   registerenzymePasses();
   enzyme::registerenzymexlaPasses();
+  mlir::enzyme::distributed::registerdistributedPasses();
   mlir::enzyme::tessera::registertesseraPasses();
   mlir::comm::registercommPasses();
 
