@@ -12,4 +12,11 @@ void resolveLogicalAxisToAtomicFactors(
   axisInterface.resolveToAtomicFactors(logicalAxis, atomicFactors);
 }
 
+int getAxisSize(TypedOpResult<LogicalCommAxisType> logicalAxis) {
+  auto ax = logicalAxis.asOpResult();
+  Operation *definingOp = ax.getDefiningOp();
+
+  auto axisInterface = cast<LogicalCommAxisOpInterface>(definingOp);
+  return axisInterface.getAxisSize(logicalAxis);
+}
 } // namespace mlir::enzyme::distributed
