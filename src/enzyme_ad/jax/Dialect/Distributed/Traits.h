@@ -4,13 +4,11 @@
 #include "mlir/IR/OpDefinition.h"
 
 namespace mlir::OpTrait::enzyme::distributed {
-template <typename ConcreteType>
-class DeviceDefTrait : public OpTrait::TraitBase<ConcreteType, DeviceDefTrait> {
-};
+
 
 template <typename ConcreteType>
-class ChannelDefTrait
-    : public OpTrait::TraitBase<ConcreteType, DeviceDefTrait> {};
+class MetadataTrait : public OpTrait::TraitBase<ConcreteType, MetadataTrait> {
+};
 } // namespace mlir::OpTrait::enzyme::distributed
 
 #endif // ENZYME_AD_JAX_DIALECT_DISTRIBUTED_TRAITS_H
