@@ -123,36 +123,69 @@ def AxisProductOp : DistributedOp<"AxisProduct", [
     let hasVerifier = 1; // TODO: axis disjointness.
 }
 
-def MeshComputationOp : DistributedOp<"MeshComputation"> {
+def MeshComputationOp : DistributedOp<"MeshComputation", [AttrSizedOperandSegments]> {
     let description = [{
-       A computation performed across a mesh. SPMD style with collectives.
-       (Multiple) "Region" computations can be inserted into a mesh computation
-       to break SPMD and perform different computations on devices within the region.
+       Unified mesh computation op with explicit SPMD and MPMD decomposition.
+       SPMD axes define the replicated program space, while MPMD axes define per-device programs.
+       Device computation regions are indexed by the MPMD device space and implicitly replicated
+         over the SPMD axes. Communication regions define cross-device transfer/collective behavior.
+         All bodies are stored in a single variadic region list. The first num_device_bodies regions
+         are device programs. The remaining regions are communication programs, ordered with SPMD
+         communication bodies first and MPMD communication bodies after that.
      }];
     let arguments = (ins
-        LogicalMeshType:$mesh, Variadic<ShardedTensorType>:$input_tensors
+        Variadic<LogicalCommAxisType>:$spmd_axes,
+        Variadic<LogicalCommAxisType>:$mpmd_axes,
+        Variadic<ShardedTensorType>:$input_tensors,
+        I32Attr:$num_device_bodies,
+        I32Attr:$num_communication_bodies
     );
     let results = (outs Variadic<ShardedTensorType>:$output_tensors);
-    let regions = (region SizedRegion<1>:$body);
-    let assemblyFormat = "$mesh $input_tensors type($input_tensors) `->` type($output_tensors) $body attr-dict";
-}
+    let regions = (region VariadicRegion<SizedRegion<1>>:$bodies);
+        let assemblyFormat = [{
+            `spmd` `(` $spmd_axes `)` `mpmd` `(` $mpmd_axes `)`
+            $input_tensors type($input_tensors)
+            `->` type($output_tensors)
+            `num_device_bodies` $num_device_bodies
+            `num_communication_bodies` $num_communication_bodies
+            `regions` $bodies
+            attr-dict
+        }];
+    let extraClassDeclaration = [{
+        // Multi-axis MPMD device coordinates. One coordinate per MPMD axis.
+        using DeviceIndex = ::llvm::SmallVector<unsigned, 4>;
 
-def RegionComputationOp : DistributedOp<"RegionComputation", [DeclareOpInterfaceMethods<LaneOpInterface>]> {
-    let description = [{
-       A computation performed across a submesh region of a parent MeshComputation. Any axis (factors) within the 
-       region are decomposed into individual programs, while axes outside the region replicate the same program. 
-     }];
-    let arguments = (ins
-        LogicalMeshType:$submesh, Variadic<ShardedTensorType>:$input_tensors
-    );
-    let results = (outs Variadic<ShardedTensorType>:$output_tensors);
-    let regions = (region VariadicRegion<SizedRegion<1>>:$device_bodies);
-    let assemblyFormat = "$submesh $input_tensors type($input_tensors) `->` type($output_tensors) $device_bodies attr-dict";
-    // TODO: verify number of regoins matches number of devices in submesh,
-    // each region has only one block, the block arguments match the shard componets
-    // of the input tensors, and the region outputs match the output tensors.
-    // Additionally, this op can only be called within a MeshComputationOp, and the submesh
-    // must be subset or equal to the parent mesh.
+        // Indices are zero-based within the device-body partition.
+      ::mlir::Region &getDeviceBody(unsigned idx);
+      const ::mlir::Region &getDeviceBody(unsigned idx) const;
+
+        // Converts a DeviceIndex into a flat index in the device-body partition.
+        // Axis flattening treats higher-index MPMD axes as more significant.
+        ::mlir::FailureOr<unsigned>
+        findComputationBodyIndexByDeviceIndex(const DeviceIndex &deviceIndex) const;
+
+        // Convenience helpers for direct DeviceIndex -> Region lookup.
+        ::mlir::Region &getDeviceBodyByDeviceIndex(const DeviceIndex &deviceIndex);
+        const ::mlir::Region &
+        getDeviceBodyByDeviceIndex(const DeviceIndex &deviceIndex) const;
+
+        // Indices are zero-based within the combined communication-body partition.
+        // SPMD communication bodies occupy the lower indices, followed by MPMD
+        // communication bodies.
+      ::mlir::Region &getCommunicationBody(unsigned idx);
+      const ::mlir::Region &getCommunicationBody(unsigned idx) const;
+
+        // Returns the index of the communication body associated with the given
+        // logical axis, relative to the combined communication-body partition.
+        // SPMD axes map to lower indices than MPMD axes.
+        ::mlir::FailureOr<unsigned>
+        findCommunicationBodyIndexForAxis(::mlir::Value axis) const;
+
+        // Convenience helper for resolving the communication body associated with
+        // the given logical axis.
+      ::mlir::Region &getCommunicationBodyForAxis(::mlir::Value axis);
+      const ::mlir::Region &getCommunicationBodyForAxis(::mlir::Value axis) const;
+    }];
     let hasVerifier = 1;
 }
 
@@ -160,7 +193,8 @@ def RegionComputationOp : DistributedOp<"RegionComputation", [DeclareOpInterface
 // Need a "return" terminator for both mesh and region computations.
 def DistributedYieldOp : DistributedOp<"DistributedYield", [Terminator]> {
     let description = [{
-       Terminator for MeshComputation and RegionComputation ops. Returns values from the computation. 
+        Terminator for MeshComputation regions. Yields tensor input shard values back to 
+        a more global context.
      }];
     let arguments = (ins Variadic<ShardedTensorType>:$output_tensors);
     let assemblyFormat = "$output_tensors type($output_tensors) attr-dict";
