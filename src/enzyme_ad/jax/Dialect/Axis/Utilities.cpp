@@ -2,7 +2,25 @@
 
 #include <algorithm>
 
+#include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/raw_ostream.h"
+
 namespace mlir::enzyme::axis {
+
+template <typename T>
+static TypedValue<T> castTypedValue(Value value, llvm::StringRef expectedType) {
+  if (auto typed = dyn_cast<TypedValue<T>>(value)) {
+    return typed;
+  }
+
+  std::string typeString;
+  llvm::raw_string_ostream os(typeString);
+  value.getType().print(os);
+  os.flush();
+  llvm::errs() << "castTypedValue failed: expected " << expectedType
+               << ", got value type " << typeString << "\n";
+  llvm::report_fatal_error("invalid typed value cast");
+}
 
 // Dispatches alias checks for canonical axes. Canonical axes are
 // either equivalent or wholly disjoint.
@@ -27,18 +45,14 @@ static bool areAxesEquivalent(Value lhs, Value rhs) {
 bool arePairwiseFactorsDisjoint(Value lhsFactor, Value rhsFactor,
                                 Value lhsProvenanceAxis,
                                 Value rhsProvenanceAxis) {
-  auto lhsType = dyn_cast<AxisFactorType>(lhsFactor.getType());
-  auto rhsType = dyn_cast<AxisFactorType>(rhsFactor.getType());
-  assert(lhsType && "factor value must have AxisFactorType");
-  assert(rhsType && "factor value must have AxisFactorType");
-  if (!lhsType || !rhsType) {
-    return false;
-  }
+  auto lhsTyped = castTypedValue<AxisFactorType>(lhsFactor, "AxisFactorType");
+  auto rhsTyped = castTypedValue<AxisFactorType>(rhsFactor, "AxisFactorType");
+  auto lhsType = lhsTyped.getType();
+  auto rhsType = rhsTyped.getType();
 
   Value lhsAxis = lhsProvenanceAxis;
   if (!lhsAxis) {
-    auto lhsProvenance =
-        getFactorProvenanceAxis(cast<TypedValue<AxisFactorType>>(lhsFactor));
+    auto lhsProvenance = getFactorProvenanceAxis(lhsTyped);
     assert(succeeded(lhsProvenance) && "factor must have a provenance axis");
     if (failed(lhsProvenance)) {
       return false;
@@ -48,8 +62,7 @@ bool arePairwiseFactorsDisjoint(Value lhsFactor, Value rhsFactor,
 
   Value rhsAxis = rhsProvenanceAxis;
   if (!rhsAxis) {
-    auto rhsProvenance =
-        getFactorProvenanceAxis(cast<TypedValue<AxisFactorType>>(rhsFactor));
+    auto rhsProvenance = getFactorProvenanceAxis(rhsTyped);
     assert(succeeded(rhsProvenance) && "factor must have a provenance axis");
     if (failed(rhsProvenance)) {
       return false;
@@ -83,24 +96,18 @@ bool arePairwiseFactorsDisjoint(Value lhsFactor, Value rhsFactor,
 }
 
 // Asserts an axis (not factor) type and gets the extent.
-int getAxisExtent(Value axis) {
-  auto axisInterface = dyn_cast<AxisTypeInterface>(axis.getType());
-  assert(axisInterface && "axis type must implement AxisTypeInterface");
-  return static_cast<int>(axisInterface.extent());
+int getAxisExtent(TypedValue<AxisTypeInterface> axis) {
+  return static_cast<int>(axis.getType().extent());
 }
 
 // Asserts a factor type and gets the extent.
-int getFactorExtent(Value factor) {
-  auto factorType = dyn_cast<AxisFactorType>(factor.getType());
-  assert(factorType && "factor type must be AxisFactorType");
-  return static_cast<int>(factorType.getExtent());
+int getFactorExtent(TypedValue<AxisFactorType> factor) {
+  return static_cast<int>(factor.getType().getExtent());
 }
 
 // Asserts a segment type and gets the extent.
-int getSegmentExtent(Value segment) {
-  auto segmentType = dyn_cast<AxisSegmentType>(segment.getType());
-  assert(segmentType && "segment type must be AxisSegmentType");
-  return static_cast<int>(segmentType.getExtent());
+int getSegmentExtent(TypedValue<AxisSegmentType> segment) {
+  return static_cast<int>(segment.getType().getExtent());
 }
 
 // Returns the defining op for a canonical axis SSA value.
@@ -140,6 +147,26 @@ getProductProvenanceFactors(TypedValue<FactorGroupType> factorProduct) {
   return productOp.getFactors();
 }
 
+// Returns the product of extents for a factor-product SSA value.
+FailureOr<uint64_t>
+getFactorGroupExtent(TypedValue<FactorGroupType> factorProduct) {
+  auto factors = getProductProvenanceFactors(factorProduct);
+  if (failed(factors)) {
+    return failure();
+  }
+
+  uint64_t extent = 1;
+  for (Value factor : *factors) {
+    auto factorType = dyn_cast<AxisFactorType>(factor.getType());
+    if (!factorType) {
+      return failure();
+    }
+    extent *= static_cast<uint64_t>(factorType.getExtent());
+  }
+
+  return extent;
+}
+
 // Checks factor compatibility and pairwise non-overlap metadata.
 bool areFactorsDisjoint(ValueRange factors) {
   if (factors.empty()) {
@@ -157,16 +184,12 @@ bool areFactorsDisjoint(ValueRange factors) {
   SmallVector<FactorInfo> cachedFactors;
   cachedFactors.reserve(factors.size());
   for (Value factor : factors) {
-    auto factorType = dyn_cast<AxisFactorType>(factor.getType());
-    assert(factorType && "factor value must have AxisFactorType");
-    if (!factorType) {
-      return false;
-    }
+    auto factorTyped = castTypedValue<AxisFactorType>(factor, "AxisFactorType");
+    auto factorType = factorTyped.getType();
     assert(factorType.getExtent() > 0 && "factor extent must be positive");
     assert(factorType.getStride() > 0 && "factor stride must be positive");
 
-    auto provenance =
-        getFactorProvenanceAxis(cast<TypedValue<AxisFactorType>>(factor));
+    auto provenance = getFactorProvenanceAxis(factorTyped);
     assert(succeeded(provenance) && "factor must have a provenance axis");
     cachedFactors.push_back({*provenance});
   }
@@ -208,12 +231,10 @@ bool areFactorIndexSpacesEqual(ValueRange lhsFactors, ValueRange rhsFactors) {
     out.clear();
     out.reserve(factors.size());
     for (Value factor : factors) {
-      auto factorType = dyn_cast<AxisFactorType>(factor.getType());
-      if (!factorType) {
-        return false;
-      }
-      auto provenance =
-          getFactorProvenanceAxis(cast<TypedValue<AxisFactorType>>(factor));
+      auto factorTyped =
+          castTypedValue<AxisFactorType>(factor, "AxisFactorType");
+      auto factorType = factorTyped.getType();
+      auto provenance = getFactorProvenanceAxis(factorTyped);
       if (failed(provenance)) {
         return false;
       }
@@ -259,18 +280,16 @@ bool areFactorIndexSpacesEqual(ValueRange lhsFactors, ValueRange rhsFactors) {
 bool arePairwiseSegmentsDisjoint(Value lhsSegment, Value rhsSegment,
                                  Value lhsProvenanceAxis,
                                  Value rhsProvenanceAxis) {
-  auto lhsType = dyn_cast<AxisSegmentType>(lhsSegment.getType());
-  auto rhsType = dyn_cast<AxisSegmentType>(rhsSegment.getType());
-  assert(lhsType && "segment value must have AxisSegmentType");
-  assert(rhsType && "segment value must have AxisSegmentType");
-  if (!lhsType || !rhsType) {
-    return false;
-  }
+  auto lhsTyped =
+      castTypedValue<AxisSegmentType>(lhsSegment, "AxisSegmentType");
+  auto rhsTyped =
+      castTypedValue<AxisSegmentType>(rhsSegment, "AxisSegmentType");
+  auto lhsType = lhsTyped.getType();
+  auto rhsType = rhsTyped.getType();
 
   Value lhsAxis = lhsProvenanceAxis;
   if (!lhsAxis) {
-    auto lhsProvenance =
-        getSegmentProvenanceAxis(cast<TypedValue<AxisSegmentType>>(lhsSegment));
+    auto lhsProvenance = getSegmentProvenanceAxis(lhsTyped);
     assert(succeeded(lhsProvenance) && "segment must have a provenance axis");
     if (failed(lhsProvenance)) {
       return false;
@@ -280,8 +299,7 @@ bool arePairwiseSegmentsDisjoint(Value lhsSegment, Value rhsSegment,
 
   Value rhsAxis = rhsProvenanceAxis;
   if (!rhsAxis) {
-    auto rhsProvenance =
-        getSegmentProvenanceAxis(cast<TypedValue<AxisSegmentType>>(rhsSegment));
+    auto rhsProvenance = getSegmentProvenanceAxis(rhsTyped);
     assert(succeeded(rhsProvenance) && "segment must have a provenance axis");
     if (failed(rhsProvenance)) {
       return false;
@@ -313,15 +331,12 @@ bool areSegmentsDisjoint(ValueRange segments) {
   SmallVector<Value> provenanceAxes;
   provenanceAxes.reserve(segments.size());
   for (Value segment : segments) {
-    auto segmentType = dyn_cast<AxisSegmentType>(segment.getType());
-    assert(segmentType && "segment value must have AxisSegmentType");
-    if (!segmentType) {
-      return false;
-    }
+    auto segmentTyped =
+        castTypedValue<AxisSegmentType>(segment, "AxisSegmentType");
+    auto segmentType = segmentTyped.getType();
     assert(segmentType.getExtent() > 0 && "segment extent must be positive");
 
-    auto provenance =
-        getSegmentProvenanceAxis(cast<TypedValue<AxisSegmentType>>(segment));
+    auto provenance = getSegmentProvenanceAxis(segmentTyped);
     assert(succeeded(provenance) && "segment must have a provenance axis");
     if (failed(provenance)) {
       return false;
@@ -354,23 +369,20 @@ bool areFactorsComplete(Value axis, ValueRange factors) {
   // axis and their extents cover the whole source-axis extent.
   uint64_t product = 1;
   for (Value factor : factors) {
-    auto factorType = dyn_cast<AxisFactorType>(factor.getType());
-    assert(factorType && "factor value must have AxisFactorType");
-    if (!factorType) {
-      return false;
-    }
+    auto factorTyped = castTypedValue<AxisFactorType>(factor, "AxisFactorType");
 
-    auto provenance =
-        getFactorProvenanceAxis(cast<TypedValue<AxisFactorType>>(factor));
+    auto provenance = getFactorProvenanceAxis(factorTyped);
     assert(succeeded(provenance) && "factor must have a provenance axis");
     if (failed(provenance) || *provenance != axis) {
       return false;
     }
 
-    product *= static_cast<uint64_t>(getFactorExtent(factor));
+    product *= static_cast<uint64_t>(getFactorExtent(factorTyped));
   }
 
-  return product == static_cast<uint64_t>(getAxisExtent(axis));
+  return product ==
+         static_cast<uint64_t>(getAxisExtent(
+             castTypedValue<AxisTypeInterface>(axis, "AxisTypeInterface")));
 }
 
 // Checks that segments reconstruct the full source axis interval [0, extent).
@@ -383,14 +395,11 @@ bool areSegmentsComplete(Value axis, ValueRange segments) {
   intervals.reserve(segments.size());
 
   for (Value segment : segments) {
-    auto segmentType = dyn_cast<AxisSegmentType>(segment.getType());
-    assert(segmentType && "segment value must have AxisSegmentType");
-    if (!segmentType) {
-      return false;
-    }
+    auto segmentTyped =
+        castTypedValue<AxisSegmentType>(segment, "AxisSegmentType");
+    auto segmentType = segmentTyped.getType();
 
-    auto provenance =
-        getSegmentProvenanceAxis(cast<TypedValue<AxisSegmentType>>(segment));
+    auto provenance = getSegmentProvenanceAxis(segmentTyped);
     assert(succeeded(provenance) && "segment must have a provenance axis");
     if (failed(provenance) || *provenance != axis) {
       return false;
@@ -414,7 +423,61 @@ bool areSegmentsComplete(Value axis, ValueRange segments) {
     cursor = end;
   }
 
-  return cursor == static_cast<uint64_t>(getAxisExtent(axis));
+  return cursor ==
+         static_cast<uint64_t>(getAxisExtent(
+             castTypedValue<AxisTypeInterface>(axis, "AxisTypeInterface")));
 }
 
+llvm::SmallVector<::mlir::Value>
+flattenGroupsToFactors(::mlir::ValueRange factorGroups) {
+  llvm::SmallVector<::mlir::Value> flattenedFactors;
+  for (auto group : factorGroups) {
+    auto typedGroup =
+        cast<::mlir::TypedValue<::mlir::enzyme::axis::FactorGroupType>>(group);
+    auto factors = getProductProvenanceFactors(typedGroup);
+    if (failed(factors)) {
+      llvm::report_fatal_error(
+          "flattenGroupsToFactors failed to get factors from FactorGroupType");
+    }
+    flattenedFactors.append(factors->begin(), factors->end());
+  }
+  return flattenedFactors;
+}
+
+bool areFactorGroupsDisjoint(::mlir::ValueRange factorGroups) {
+  auto flattenedFactors = flattenGroupsToFactors(factorGroups);
+  return areFactorsDisjoint(ValueRange(flattenedFactors));
+}
+
+llvm::SmallVector<::mlir::Value>
+createAxesForRankedShape(::mlir::Type shapeType, ::mlir::OpBuilder &builder,
+                         ::mlir::Location loc) {
+  auto rankedShapeType = cast<ShapedType>(shapeType);
+  auto type_attr = TypeAttr::get(rankedShapeType);
+  int rank = rankedShapeType.getRank();
+  llvm::SmallVector<::mlir::Value> axes;
+  axes.reserve(rank);
+  for (int i = 0; i < rank; ++i) {
+    auto rank_attr = builder.getI32IntegerAttr(i);
+    auto axis = builder.create<AxisGetAxisOp>(loc, type_attr, rank_attr);
+    axes.push_back(axis);
+  }
+  return axes;
+}
+
+llvm::SmallVector<::mlir::Value> viewAxesAsFactors(::mlir::ValueRange axes,
+                                                   ::mlir::OpBuilder &builder,
+                                                   ::mlir::Location loc) {
+  llvm::SmallVector<::mlir::Value> factors;
+  factors.reserve(axes.size());
+  for (auto axis : axes) {
+    auto axis_typed =
+        castTypedValue<AxisTypeInterface>(axis, "AxisTypeInterface");
+    int extent = getAxisExtent(axis_typed);
+    auto factor =
+        builder.create<AxisFactorOp>(loc, axis, ArrayRef<int32_t>{extent});
+    factors.push_back(factor.getResult(0));
+  }
+  return factors;
+}
 } // namespace mlir::enzyme::axis
