@@ -24,15 +24,15 @@ template <typename OpTy>
   return typedOp;
 }
 
-using ::mlir::enzyme::axis::areFactorsComplete;
-using ::mlir::enzyme::axis::areFactorsDisjoint;
-using ::mlir::enzyme::axis::areSegmentsComplete;
-using ::mlir::enzyme::axis::areSegmentsDisjoint;
-using ::mlir::enzyme::axis::getAxisExtent;
-using ::mlir::enzyme::axis::getFactorExtent;
-using ::mlir::enzyme::axis::getFactorProvenanceAxis;
-using ::mlir::enzyme::axis::getSegmentExtent;
-using ::mlir::enzyme::axis::getSegmentProvenanceAxis;
+// Returns the execution-context FactorGroup value from the nearest enclosing
+// distributed.function.
+::mlir::FailureOr<::mlir::TypedValue<::mlir::enzyme::axis::FactorGroupType>>
+getEnclosingExecutionContext(::mlir::Operation *op);
+
+// Expands an axis.factor_group value into its defining axis.factor list.
+::mlir::FailureOr<::llvm::SmallVector<::mlir::Value>>
+expandExecutionContextFactors(
+    ::mlir::TypedValue<::mlir::enzyme::axis::FactorGroupType> context);
 
 } // namespace mlir::enzyme::distributed
 

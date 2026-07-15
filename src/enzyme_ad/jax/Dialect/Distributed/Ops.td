@@ -12,6 +12,7 @@ include "Dialect.td"
 include "Types.td"
 include "Interfaces.td"
 include "src/enzyme_ad/jax/Dialect/Axis/Dialect.td"
+include "src/enzyme_ad/jax/Dialect/Axis/Types.td"
 
 defvar TensorType = HLO_Tensor;
 defvar ShardedTensorType = HLO_Tensor; // Subject to change, for now shardy just adds attributes on top of a regular tensor.
@@ -45,13 +46,36 @@ def MeshComputationOp : DistributedOp<"MeshComputation", [
         for optimization decisions.
      }];
     let arguments = (ins
-        SymbolNameAttr:$computation_name,
+        SymbolNameAttr:$sym_name,
         FlatSymbolRefAttr:$physical_mesh
     );
     let regions = (region SizedRegion<1>:$body);
         let assemblyFormat = [{
-            $computation_name `mesh` $physical_mesh $body attr-dict
+            $sym_name `mesh` $physical_mesh $body attr-dict
         }];
+    let hasVerifier = 1;
+}
+
+def DistributedFunctionOp : DistributedOp<"Function", [Symbol]> {
+    let description = [{
+        Represents a distributed function. Functions have an execution context indicating what subspace of
+        the logical/physical mesh they are executed on, and can only be called from a matching enclosing 
+        context. All arguments and return values are local values, rather than global tensors with
+        a sharding annotation.
+    }];
+    let arguments = (ins
+        SymbolNameAttr:$sym_name,
+        FactorGroupType:$execution_context,
+        ArrayAttr:$argument_types,
+        ArrayAttr:$return_types
+    );
+    let regions = (region SizedRegion<1>:$body);
+    let assemblyFormat = [{
+        $sym_name `context` $execution_context
+        `:` type($execution_context)
+        `arg_types` $argument_types `ret_types` $return_types
+        $body attr-dict
+    }];
     let hasVerifier = 1;
 }
 
@@ -59,7 +83,21 @@ def DistributedYieldOp : DistributedOp<"DistributedYield", [Terminator]> {
     let description = [{
         Terminator for distributed functions. Yields local values back to the caller.
      }];
-    let arguments = (ins Variadic<ShardedTensorType>:$returns);
+    let arguments = (ins Variadic<AnyType>:$returns);
     let assemblyFormat = "$returns type($returns) attr-dict";
+}
+
+def DistributedCallOp : DistributedOp<"DistributedCall", []> {
+    let description = [{
+        Calls a distributed function. The execution context must match the enclosing context.
+     }];
+    let arguments = (ins
+        FlatSymbolRefAttr:$callee,
+        FactorGroupType:$replicate_over,
+        Variadic<AnyType>:$arguments
+    );
+    let results = (outs Variadic<AnyType>:$returns);
+    let assemblyFormat = "$callee `replicate_over` $replicate_over $arguments attr-dict `:` type($replicate_over) `,` type($arguments) `->` type($returns)";
+    let hasVerifier = 1;
 }
 #endif // ENZYME_AD_JAX_DIALECT_DISTRIBUTED_OPS_TD
