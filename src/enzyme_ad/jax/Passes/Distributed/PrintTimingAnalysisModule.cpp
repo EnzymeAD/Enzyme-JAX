@@ -13,21 +13,20 @@ namespace distributed {
 
 namespace {
 
-void printTimingAnalysisForRegion(RegionComputationOp regionOp) {
-  HappensBeforeAnalysis hb(regionOp);
+void printTimingAnalysisForMesh(MeshComputationOp meshOp) {
+  HappensBeforeAnalysis hb(meshOp);
   UnitTimingCostModel costModel;
   TimingAnalysis timing(hb, costModel);
 
-  llvm::outs() << "Timing analysis for " << regionOp.getOperationName()
-               << "\n";
+  llvm::outs() << "Timing analysis for " << meshOp.getOperationName() << "\n";
 
   unsigned laneIndex = 0;
-  for (Region *lane : regionOp.getLanes()) {
+  for (Region *lane : meshOp.getLanes()) {
     llvm::outs() << "  lane " << laneIndex++ << ":\n";
     for (Operation &op : lane->getOps()) {
       TimingAnalysis::TimeRange timeRange = timing.getTimeRange(&op);
-      llvm::outs() << "    [" << timeRange.first << ", "
-                   << timeRange.second << ") ";
+      llvm::outs() << "    [" << timeRange.first << ", " << timeRange.second
+                   << ") ";
       if (Operation *root = hb.classRoot(&op)) {
         if (root != &op)
           llvm::outs() << "(rooted at " << root->getName() << ") ";
@@ -46,11 +45,11 @@ struct PrintTimingAnalysisModulePass
   void runOnOperation() override {
     ModuleOp moduleOp = getOperation();
 
-    SmallVector<RegionComputationOp> regionOps;
-    moduleOp.walk([&](RegionComputationOp regionOp) { regionOps.push_back(regionOp); });
+    SmallVector<MeshComputationOp> meshOps;
+    moduleOp.walk([&](MeshComputationOp meshOp) { meshOps.push_back(meshOp); });
 
-    for (RegionComputationOp regionOp : regionOps)
-      printTimingAnalysisForRegion(regionOp);
+    for (MeshComputationOp meshOp : meshOps)
+      printTimingAnalysisForMesh(meshOp);
   }
 };
 

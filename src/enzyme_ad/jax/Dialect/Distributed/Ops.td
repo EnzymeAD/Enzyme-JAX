@@ -123,7 +123,10 @@ def AxisProductOp : DistributedOp<"AxisProduct", [
     let hasVerifier = 1; // TODO: axis disjointness.
 }
 
-def MeshComputationOp : DistributedOp<"MeshComputation", [AttrSizedOperandSegments]> {
+def MeshComputationOp : DistributedOp<"MeshComputation", [
+    AttrSizedOperandSegments,
+    DeclareOpInterfaceMethods<LaneOpInterface>
+]> {
     let description = [{
        Unified mesh computation op with explicit SPMD and MPMD decomposition.
        SPMD axes define the replicated program space, while MPMD axes define per-device programs.

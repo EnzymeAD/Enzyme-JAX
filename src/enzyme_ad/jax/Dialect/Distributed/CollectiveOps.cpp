@@ -44,19 +44,24 @@ mlir::Value CollectiveOp::getHandle() { return getToken(); }
 llvm::SmallVector<mlir::Value> SendOp::happensAfter() {
   return {}; // sending is first in the chain
 }
+llvm::SmallVector<mlir::Value> SendOp::happensBefore() {
+  return {getToken()};
+}
 llvm::SmallVector<mlir::Value> SendOp::simultaneousWith() {
-  return {getToken()}; // satisfies its send token
+  return {};
 }
 bool SendOp::concurrentWith(Operation *other) { return false; }
 llvm::SmallVector<mlir::Value> RecvOp::happensAfter() {
   return {getToken()}; // receiving happens after the token is satisfied
 }
+llvm::SmallVector<mlir::Value> RecvOp::happensBefore() { return {}; }
 llvm::SmallVector<mlir::Value> RecvOp::simultaneousWith() {
   return {}; // receiving is last in the chain
 }
 bool RecvOp::concurrentWith(Operation *other) { return false; }
 
 llvm::SmallVector<mlir::Value> TransferOp::happensAfter() { return {}; }
+llvm::SmallVector<mlir::Value> TransferOp::happensBefore() { return {}; }
 llvm::SmallVector<mlir::Value> TransferOp::simultaneousWith() {
   return {getToken()};
 }

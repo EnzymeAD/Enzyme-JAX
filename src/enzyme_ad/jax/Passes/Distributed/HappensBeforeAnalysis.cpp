@@ -166,6 +166,13 @@ void HappensBeforeAnalysis::scanHappensBeforeEdges(LaneOpInterface laneOp) {
                                  &op);
           }
         }
+
+        for (Value handle : eventOp.happensBefore()) {
+          auto representitive_other = any_event_simultaneous_with(handle);
+          if (representitive_other) {
+            addHappensBeforeEdge(&op, representitive_other->getOperation());
+          }
+        }
       }
     }
   }
