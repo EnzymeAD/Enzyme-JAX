@@ -22,6 +22,24 @@ static LogicalResult verifyFactorExtents(ArrayRef<int32_t> extents,
   return success();
 }
 
+static LogicalResult verifySegmentExtents(ArrayRef<int32_t> extents,
+                                          unsigned sourceExtent,
+                                          Operation *op) {
+  uint64_t sum = 0;
+  for (int32_t extent : extents) {
+    if (extent <= 0) {
+      return op->emitOpError() << "requires all segment extents to be > 0";
+    }
+    sum += static_cast<uint64_t>(extent);
+  }
+  if (sum != sourceExtent) {
+    return op->emitOpError() << "requires sum(segment_extents) == axis extent "
+                                "("
+                             << sum << " != " << sourceExtent << ")";
+  }
+  return success();
+}
+
 static void computeMajorToMinorStrides(ArrayRef<int32_t> extents,
                                        SmallVectorImpl<unsigned> &strides) {
   // Leftmost factors are most major.
@@ -151,7 +169,75 @@ LogicalResult AxisFactorOp::inferReturnTypes(
   return success();
 }
 
-LogicalResult AxisGroupOp::verify() {
+LogicalResult AxisSegmentOp::verify() {
+  if (failed(getAxisProvenanceOp(getAxis()))) {
+    return emitOpError()
+           << "requires axis operand to be traceable to an op result";
+  }
+
+  auto axisIface = dyn_cast<AxisTypeInterface>(getAxis().getType());
+  if (!axisIface) {
+    return emitOpError() << "requires axis operand type to implement "
+                            "AxisTypeInterface";
+  }
+
+  ArrayRef<int32_t> segmentExtents = getSegmentExtents();
+  if (failed(verifySegmentExtents(segmentExtents, axisIface.extent(),
+                                  getOperation()))) {
+    return failure();
+  }
+
+  if (getAxisSegments().size() != segmentExtents.size()) {
+    return emitOpError() << "requires number of results to match number of "
+                            "segment extents";
+  }
+
+  unsigned runningOffset = 0;
+  for (auto [idx, axisSegmentVal] : llvm::enumerate(getAxisSegments())) {
+    auto axisSegmentType = dyn_cast<AxisSegmentType>(axisSegmentVal.getType());
+    if (!axisSegmentType) {
+      return emitOpError() << "requires all results to have AxisSegmentType";
+    }
+    if (axisSegmentType.getAxisType() != getAxis().getType()) {
+      return emitOpError() << "requires result #" << idx
+                           << " to have base axis type equal to operand type";
+    }
+    if (axisSegmentType.getExtent() !=
+        static_cast<unsigned>(segmentExtents[idx])) {
+      return emitOpError() << "requires result #" << idx
+                           << " extent to match segment extent";
+    }
+    if (axisSegmentType.getOffset() != runningOffset) {
+      return emitOpError() << "requires result #" << idx
+                           << " offset to match cumulative segment layout "
+                              "(low result index maps to low axis values)";
+    }
+    runningOffset += static_cast<unsigned>(segmentExtents[idx]);
+  }
+
+  return success();
+}
+
+LogicalResult AxisSegmentOp::inferReturnTypes(
+    MLIRContext *context, std::optional<Location> location, ValueRange operands,
+    DictionaryAttr attributes, PropertyRef properties, RegionRange regions,
+    SmallVectorImpl<Type> &inferredReturnTypes) {
+  AxisSegmentOpAdaptor adaptor(operands, attributes, properties, regions);
+  ArrayRef<int32_t> segmentExtents = adaptor.getSegmentExtents();
+
+  inferredReturnTypes.reserve(segmentExtents.size());
+  Type axisType = adaptor.getAxis().getType();
+  unsigned runningOffset = 0;
+  for (int32_t segmentExtent : segmentExtents) {
+    inferredReturnTypes.push_back(AxisSegmentType::get(
+        context, axisType, static_cast<unsigned>(segmentExtent),
+        runningOffset));
+    runningOffset += static_cast<unsigned>(segmentExtent);
+  }
+  return success();
+}
+
+LogicalResult AxisProductOp::verify() {
   uint64_t extentProduct = 1;
   for (Value factor : getFactors()) {
     if (!isa<OpResult>(factor)) {
@@ -169,18 +255,18 @@ LogicalResult AxisGroupOp::verify() {
     extentProduct *= static_cast<uint64_t>(factorType.getExtent());
   }
 
-  if (getGroup().getType().getExtent() != extentProduct) {
+  if (getProduct().getType().getExtent() != extentProduct) {
     return emitOpError()
-           << "requires group extent to equal product of factor extents";
+           << "requires product extent to equal product of factor extents";
   }
   return success();
 }
 
-LogicalResult AxisGroupOp::inferReturnTypes(
+LogicalResult AxisProductOp::inferReturnTypes(
     MLIRContext *context, std::optional<Location> location, ValueRange operands,
     DictionaryAttr attributes, PropertyRef properties, RegionRange regions,
     SmallVectorImpl<Type> &inferredReturnTypes) {
-  AxisGroupOpAdaptor adaptor(operands, attributes, properties, regions);
+  AxisProductOpAdaptor adaptor(operands, attributes, properties, regions);
   uint64_t extentProduct = 1;
   for (Value factor : adaptor.getFactors()) {
     auto factorType = dyn_cast<AxisFactorType>(factor.getType());
