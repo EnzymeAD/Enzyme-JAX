@@ -138,8 +138,7 @@ struct FuncReturnToDistributedYieldPattern
 // reduction and permuted dimension mappings.
 template <typename StablehloCollectiveOp>
 LogicalResult getDimMappings(
-    StablehloCollectiveOp op,
-  PatternRewriter &rewriter,
+    StablehloCollectiveOp op, PatternRewriter &rewriter,
     const llvm::StringMap<Value> &shardyToDistributedAxis,
     llvm::ArrayRef<TypedValue<axis::AxisFactorType>> inputTensorFactors,
     llvm::ArrayRef<TypedValue<axis::AxisFactorType>> outputTensorFactors,
@@ -150,11 +149,180 @@ LogicalResult getDimMappings(
     llvm::SmallVector<llvm::SmallVector<TypedValue<axis::AxisFactorType>>>
         &out_mappingRHS);
 
+// Parses replica_group_mesh_axes and resolves each named shardy axis to a
+// distributed axis factor.
+template <typename StablehloCollectiveOp>
+LogicalResult collectReplicaGroupMeshAxes(
+    StablehloCollectiveOp op,
+    const llvm::StringMap<Value> &shardyToDistributedAxis,
+    llvm::SmallVector<TypedValue<axis::AxisFactorType>> &out_meshAxes) {
+  auto replicaGroupsAttr = op.getReplicaGroups();
+  using ReplicaGroupMeshAxesAttr = ::mlir::stablehlo::ReplicaGroupMeshAxesAttr;
+  ReplicaGroupMeshAxesAttr replicaGroupMeshAxesAttr =
+      dyn_cast<ReplicaGroupMeshAxesAttr>(replicaGroupsAttr);
+  if (!replicaGroupMeshAxesAttr) {
+    return op.emitOpError(
+               "expected op to have #stablehlo.replica_group_mesh_axes "
+               "attribute, instead found ")
+           << replicaGroupsAttr;
+  }
+
+  for (Attribute axisAttr : replicaGroupMeshAxesAttr.getAxes()) {
+    std::string axisName;
+    if (auto axisNameAttr = dyn_cast<StringAttr>(axisAttr)) {
+      axisName = axisNameAttr.getValue().str();
+    } else if (auto axisRefAttr = dyn_cast<sdy::AxisRefAttr>(axisAttr)) {
+      axisName = axisRefAttr.getName().str();
+    }
+    if (axisName.empty()) {
+      return op.emitOpError(
+                 "expected replica_group_mesh_axes to contain sdy.axis_ref "
+                 "or string attributes, instead found ")
+             << axisAttr;
+    }
+
+    auto axisMappingIt = shardyToDistributedAxis.find(axisName);
+    if (axisMappingIt == shardyToDistributedAxis.end()) {
+      return op.emitOpError(
+                 "expected replica_group_mesh_axes axis to have a mapping "
+                 "in shardyToDistributedAxis, instead found none for axis ")
+             << axisName;
+    }
+
+    out_meshAxes.push_back(castTypedValue<axis::AxisFactorType>(
+        axisMappingIt->getValue(), "AxisFactorType"));
+  }
+
+  return success();
+}
+
+// Specialization for stablehlo.all_gather
+template <>
+LogicalResult getDimMappings(
+    stablehlo::AllGatherOp op, PatternRewriter &rewriter,
+    const llvm::StringMap<Value> &shardyToDistributedAxis,
+    llvm::ArrayRef<TypedValue<axis::AxisFactorType>> inputTensorFactors,
+    llvm::ArrayRef<TypedValue<axis::AxisFactorType>> outputTensorFactors,
+    llvm::SmallVector<TypedValue<axis::AxisFactorType>> &out_reductionDims,
+    std::optional<FlatSymbolRefAttr> &out_reductionFunction,
+    llvm::SmallVector<llvm::SmallVector<TypedValue<axis::AxisFactorType>>>
+        &out_mappingLHS,
+    llvm::SmallVector<llvm::SmallVector<TypedValue<axis::AxisFactorType>>>
+        &out_mappingRHS) {
+  // Assert single-tensor operand
+  if (op.getOperands().size() != 1) {
+    return op.emitOpError(
+        "expected all_gather to have a single tensor operand");
+  }
+
+  // For this collective, no reduction dims, but we need to know which part
+  // of the output tensor to map our gather axis to: gatherOn --> newTensorAx,
+  // and replicate(N) --> gatherOn. The allGather op gives a tensor rank to
+  // concat on, so we need to take the R rank axis from the output tensor and
+  // factor it into two parts: the most major part with extent equal number of
+  // devices, and the minor part which we expect to have extent equal to the
+  // input tensor's axis extent. Then we map all of our mesh axis to the major
+  // part. Assume that majority of concatenation follows the majority in the
+  // axis attribute from the shardy op.
+
+  llvm::SmallVector<TypedValue<axis::AxisFactorType>> gatheredMeshAxes;
+  if (failed(collectReplicaGroupMeshAxes(op, shardyToDistributedAxis,
+                                         gatheredMeshAxes))) {
+    return failure();
+  }
+
+  int64_t concatDim = op.getAllGatherDim();
+  if (concatDim < 0 ||
+      concatDim >= static_cast<int64_t>(inputTensorFactors.size()) ||
+      concatDim >= static_cast<int64_t>(outputTensorFactors.size())) {
+    return op.emitOpError() << "all_gather dimension " << concatDim
+                            << " out of range for tensor ranks (input "
+                            << inputTensorFactors.size() << ", output "
+                            << outputTensorFactors.size() << ")";
+  }
+
+  auto outputGatherFactor = outputTensorFactors[concatDim];
+  auto outputGatherAxis = axis::getFactorProvenanceAxis(outputGatherFactor);
+  if (failed(outputGatherAxis)) {
+    return op.emitOpError(
+        "failed to resolve provenance axis for all_gather output factor");
+  }
+
+  // The size of the concatenated output dimension should be equal to the
+  // product of the gather-over dimensions and the corresponding rank of the
+  // input tensor.
+  llvm::SmallVector<int32_t> gatherRefactorExtents;
+  gatherRefactorExtents.reserve(gatheredMeshAxes.size() + 1);
+  for (TypedValue<axis::AxisFactorType> gatheredMeshAxis : gatheredMeshAxes) {
+    gatherRefactorExtents.push_back(
+        static_cast<int32_t>(gatheredMeshAxis.getType().getExtent()));
+  }
+  gatherRefactorExtents.push_back(static_cast<int32_t>(
+      inputTensorFactors[concatDim].getType().getExtent()));
+
+  // factor the output tensor axis to allow the mapping to be built.
+  auto gatheredOutputFactors = rewriter.create<axis::AxisFactorOp>(
+      op.getLoc(), *outputGatherAxis,
+      rewriter.getDenseI32ArrayAttr(gatherRefactorExtents));
+  auto gatheredOutputFactorValues = castTypedValueList<axis::AxisFactorType>(
+      gatheredOutputFactors.getAxisFactors(), "AxisFactorType");
+  if (gatheredOutputFactorValues.size() != gatherRefactorExtents.size()) {
+    return op.emitOpError(
+        "failed to refactor all_gather output axis into expected factors");
+  }
+
+  // map each gathered mesh axis to its matching major output gather factor.
+  for (auto [idx, gatheredMeshAxis] : llvm::enumerate(gatheredMeshAxes)) {
+    out_mappingLHS.push_back({gatheredMeshAxis});
+    out_mappingRHS.push_back({gatheredOutputFactorValues[idx]});
+  }
+
+  // map the input gather dimension to the remaining minor output gather factor.
+  out_mappingLHS.push_back({inputTensorFactors[concatDim]});
+  out_mappingRHS.push_back({gatheredOutputFactorValues.back()});
+
+  // Identity map remaining tensor factors.
+  for (int64_t i = 0; i < static_cast<int64_t>(inputTensorFactors.size());
+       ++i) {
+    if (i == concatDim) {
+      continue;
+    }
+    auto inputFactor = inputTensorFactors[i];
+    auto outputFactor = outputTensorFactors[i];
+    // input, output tensor types not the same so we only expect
+    // matching extents.
+    auto in_extent = inputFactor.getType().getExtent();
+    auto out_extent = outputFactor.getType().getExtent();
+    if (in_extent != out_extent) {
+      return op.emitOpError(
+                 "expected non-gather input/output tensor factors to have "
+                 "equal index space, instead found ")
+             << inputFactor << " and " << outputFactor;
+    }
+    out_mappingLHS.push_back({inputFactor});
+    out_mappingRHS.push_back({outputFactor});
+  }
+
+  // Identity map mesh axes that are not part of this gather.
+  for (const auto &pair : shardyToDistributedAxis) {
+    auto axisFactor =
+        castTypedValue<axis::AxisFactorType>(pair.getValue(), "AxisFactorType");
+    if (std::find(gatheredMeshAxes.begin(), gatheredMeshAxes.end(),
+                  axisFactor) == gatheredMeshAxes.end()) {
+      out_mappingLHS.push_back({axisFactor});
+      out_mappingRHS.push_back({axisFactor});
+    }
+  }
+
+  // all_gather has no reductions.
+  out_reductionDims.clear();
+  out_reductionFunction = std::nullopt;
+  return success();
+}
 // Specialization for stablehlo.all_reduce
 template <>
 LogicalResult getDimMappings(
-    stablehlo::AllReduceOp op,
-  PatternRewriter &rewriter,
+    stablehlo::AllReduceOp op, PatternRewriter &rewriter,
     const llvm::StringMap<Value> &shardyToDistributedAxis,
     llvm::ArrayRef<TypedValue<axis::AxisFactorType>> inputTensorFactors,
     llvm::ArrayRef<TypedValue<axis::AxisFactorType>> outputTensorFactors,
@@ -170,57 +338,23 @@ LogicalResult getDimMappings(
         "expected all_reduce to have a single tensor operand");
   }
 
-  // expect to see #stablehlo.replica_group_mesh_axes instead of
-  // an array of device id literals.
-  auto replicaGroupsAttr = op.getReplicaGroups();
-  using ReplicaGroupMeshAxesAttr = ::mlir::stablehlo::ReplicaGroupMeshAxesAttr;
-  ReplicaGroupMeshAxesAttr replicaGroupMeshAxesAttr =
-      dyn_cast<ReplicaGroupMeshAxesAttr>(replicaGroupsAttr);
-  if (!replicaGroupMeshAxesAttr) {
-    return op.emitOpError(
-               "expected all_reduce to have #stablehlo.replica_group_mesh_axes "
-               "attribute, instead found ")
-           << replicaGroupsAttr;
+  llvm::SmallVector<TypedValue<axis::AxisFactorType>> reductionDims;
+  if (failed(collectReplicaGroupMeshAxes(op, shardyToDistributedAxis,
+                                         reductionDims))) {
+    return failure();
   }
 
-  llvm::SmallVector<TypedValue<axis::AxisFactorType>> reductionDims;
-  for (Attribute axisAttr : replicaGroupMeshAxesAttr.getAxes()) {
-    // Accept either a direct string attr or the current shardy axis_ref attr.
-    std::string axisName;
-    if (auto axisNameAttr = dyn_cast<StringAttr>(axisAttr)) {
-      axisName = axisNameAttr.getValue().str();
-    } else if (auto axisRefAttr = dyn_cast<sdy::AxisRefAttr>(axisAttr)) {
-      axisName = axisRefAttr.getName().str();
-    }
-    if (axisName.empty()) {
-      return op.emitOpError(
-                 "expected all_reduce replica_group_mesh_axes to contain "
-                 "sdy.axis_ref or string attributes, instead found ")
-             << axisAttr;
-    }
-    // expect name to have an axis mapping. If not, print the axis name for
-    // debugging.
-    auto axisMappingIt = shardyToDistributedAxis.find(axisName);
-    if (axisMappingIt == shardyToDistributedAxis.end()) {
-      return op.emitOpError(
-                 "expected all_reduce replica_group_mesh_axes to have a "
-                 "mapping in shardyToDistributedAxis, instead found ")
-             << axisName;
-    }
-    // add the axis factor to the reductionDims list.
-    auto reducedFactor = castTypedValue<axis::AxisFactorType>(
-        axisMappingIt->getValue(), "AxisFactorType");
-    reductionDims.push_back(reducedFactor);
+  for (TypedValue<axis::AxisFactorType> reducedFactor : reductionDims) {
     // Since this is an all-reduce, every device in that spatial dimension
     // gets the same value, so we need to add replicate(n) --> reduceAx mapping
     int extent = static_cast<int>(reducedFactor.getType().getExtent());
     auto replicationAxis = rewriter.create<distributed::ReplicationAxisOp>(
-      op.getLoc(), rewriter.getI32IntegerAttr(extent));
+        op.getLoc(), rewriter.getI32IntegerAttr(extent));
     auto replicationFactors = axis::viewAxesAsFactors(
-      ValueRange{replicationAxis.getAxis()}, rewriter, op.getLoc());
+        ValueRange{replicationAxis.getAxis()}, rewriter, op.getLoc());
     if (replicationFactors.size() != 1) {
       return op.emitOpError(
-        "failed to create replication factor for all_reduce mapping");
+          "failed to create replication factor for all_reduce mapping");
     }
     auto replicationFactor = replicationFactors.front();
     out_mappingLHS.push_back({replicationFactor});
@@ -233,7 +367,8 @@ LogicalResult getDimMappings(
   for (int i = 0; i < inputTensorFactors.size(); ++i) {
     auto inputFactor = inputTensorFactors[i];
     auto outputFactor = outputTensorFactors[i];
-    if (axis::areFactorIndexSpacesEqual({inputFactor}, {outputFactor}) == false) {
+    if (axis::areFactorIndexSpacesEqual({inputFactor}, {outputFactor}) ==
+        false) {
       return op.emitOpError(
                  "expected input and output tensor factors to be identical, "
                  "instead found ")
@@ -257,6 +392,7 @@ LogicalResult getDimMappings(
 
   // TODO we need to make reduction function somewhere,
   // for now make an obviously bogus symbol
+  out_reductionDims = reductionDims;
   out_reductionFunction = FlatSymbolRefAttr::get(
       op.getContext(),
       "not_yet_implemented_sdy_to_distributed_all_reduce_conversion");
@@ -312,10 +448,10 @@ struct StablehloCollectiveToDistributedCollectivePattern
         mappingLHS;
     llvm::SmallVector<llvm::SmallVector<TypedValue<axis::AxisFactorType>>>
         mappingRHS;
-    auto result = getDimMappings(
-      op, rewriter, shardyToDistributedAxis, inputTensorFactors,
-      outputTensorFactors,
-        reductionDims, reductionFunction, mappingLHS, mappingRHS);
+    auto result =
+        getDimMappings(op, rewriter, shardyToDistributedAxis,
+                       inputTensorFactors, outputTensorFactors, reductionDims,
+                       reductionFunction, mappingLHS, mappingRHS);
     if (failed(result)) {
       return rewriter.notifyMatchFailure(
           op, "failed to get dimension mappings for collective op");
@@ -588,8 +724,10 @@ struct ShardyToDistributedPass
     //              StablehloRecvToDistributedCollectivePattern>(
     //     moduleOp.getContext());
     patterns.add<StablehloCollectiveToDistributedCollectivePattern<
-        stablehlo::AllReduceOp>>(moduleOp.getContext(),
-                                 shardyToDistributedAxis);
+                     stablehlo::AllReduceOp>,
+                 StablehloCollectiveToDistributedCollectivePattern<
+                     stablehlo::AllGatherOp>>(moduleOp.getContext(),
+                                              shardyToDistributedAxis);
 
     if (failed(applyPatternsGreedily(meshComputation, std::move(patterns)))) {
       signalPassFailure();
