@@ -23,7 +23,7 @@ func.func @test_if_0(%arg0: memref<10xf32>, %arg1: memref<i1>) {
 // CHECK:           %[[VAL_9:.*]] = stablehlo.reshape %[[VAL_7]] : (tensor<1xf32>) -> tensor<f32>
 // CHECK:           %[[VAL_10:.*]] = stablehlo.reshape %[[VAL_8]] : (tensor<1xf32>) -> tensor<f32>
 // CHECK:           %[[VAL_11:.*]] = stablehlo.select %[[VAL_2]], %[[VAL_9]], %[[VAL_10]] : tensor<i1>, tensor<f32>
-// CHECK:           %[[VAL_12:.*]] = stablehlo.reshape %[[VAL_11]] : (tensor<f32>) -> tensor<1xf32>
+// CHECK:           %[[VAL_12:.*]] = stablehlo.broadcast_in_dim %[[VAL_11]], dims = [] : (tensor<f32>) -> tensor<1xf32>
 // CHECK:           %[[VAL_13:.*]] = stablehlo.dynamic_update_slice %[[VAL_0]], %[[VAL_12]], %[[VAL_6]] : (tensor<10xf32>, tensor<1xf32>, tensor<i64>) -> tensor<10xf32>
 // CHECK:           return %[[VAL_13]], %[[VAL_1]] : tensor<10xf32>, tensor<i1>
 // CHECK:         }
