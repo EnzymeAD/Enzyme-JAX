@@ -634,10 +634,16 @@ td_library(
         "Dialect/Distributed/Ops.td",
         "Dialect/Distributed/Types.td",
     ],
+    includes = [
+        ".",
+        "../../../external/shardy",
+    ],
     deps = [
         "@llvm-project//mlir:BuiltinDialectTdFiles",
         "@llvm-project//mlir:InferTypeOpInterfaceTdFiles",
         "@llvm-project//mlir:OpBaseTdFiles",
+        "@stablehlo//:stablehlo_ops_td_files",
+        "@shardy//shardy/dialect/sdy/ir:sdy_td_files",
     ],
 )
 
@@ -683,6 +689,7 @@ gentbl_cc_library(
     deps = [
         ":DistributedDialectFiles",
         "@llvm-project//mlir:InferTypeOpInterface",
+        "@shardy//shardy/dialect/sdy/ir:sdy_td_files",
     ],
 )
 
@@ -715,6 +722,25 @@ gentbl_cc_library(
         (
             ["--gen-op-interface-defs"],
             "Dialect/Distributed/DistributedInterfaces.cpp.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Dialect/Distributed/Interfaces.td",
+    deps = [
+        ":DistributedDialectFiles",
+    ],
+)
+
+gentbl_cc_library(
+    name = "DistributedTypeInterfacesIncGen",
+    tbl_outs = [
+        (
+            ["--gen-type-interface-decls"],
+            "Dialect/Distributed/DistributedTypeInterfaces.h.inc",
+        ),
+        (
+            ["--gen-type-interface-defs"],
+            "Dialect/Distributed/DistributedTypeInterfaces.cpp.inc",
         ),
     ],
     tblgen = "@llvm-project//mlir:mlir-tblgen",
@@ -871,6 +897,33 @@ gentbl_cc_library(
     td_file = "Passes/Tessera/Passes.td",
     deps = [
         ":TesseraPassesTdFiles",
+        "@llvm-project//mlir:FunctionInterfacesTdFiles",
+    ],
+)
+
+td_library(
+    name = "DistributedPassesTdFiles",
+    srcs = [],
+    deps = [
+        "@llvm-project//mlir:PassBaseTdFiles",
+    ],
+)
+
+gentbl_cc_library(
+    name = "DistributedPassesIncGen",
+    tbl_outs = [
+        (
+            [
+                "-gen-pass-decls",
+                "-name=distributed",
+            ],
+            "Passes/Distributed/Passes.h.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Passes/Distributed/Passes.td",
+    deps = [
+        ":DistributedPassesTdFiles",
         "@llvm-project//mlir:FunctionInterfacesTdFiles",
     ],
 )
@@ -1246,6 +1299,7 @@ cc_library(
             "Analysis/*.cpp",
             "Implementations/*.cpp",
             "Passes/*.cpp",
+            "Passes/Distributed/*.cpp",
             "Passes/Tessera/*.cpp",
             "Dialect/*.cpp",
             "Dialect/Distributed/*.cpp",
@@ -1264,6 +1318,7 @@ cc_library(
         "Analysis/*.h",
         "Implementations/*.h",
         "Passes/*.h",
+        "Passes/Distributed/*.h",
         "Passes/Tessera/*.h",
         "Dialect/*.h",
         "Dialect/Distributed/*.h",
@@ -1285,7 +1340,10 @@ cc_library(
     deps = [
         ":CheckedRewrite",
         ":DistributedDialectIncGen",
+        ":DistributedInterfacesIncGen",
+        ":DistributedPassesIncGen",
         ":DistributedOpsIncGen",
+        ":DistributedTypeInterfacesIncGen",
         ":DistributedTypesIncGen",
         ":EnzymeHLOPatternsIncGen",
         ":EnzymeXLAAttrsIncGen",
