@@ -3436,7 +3436,7 @@ struct ForLoopApplyEnzymeAttributes
           loop->setAttr("enzyme.binomial_checkpointing",
                         rewriter.getUnitAttr());
         }
-        if (hasPeriod) {
+        if (hasPeriod && !checkpointingPeriod.isAllOnes()) {
           loop->setAttr("enzyme.checkpoint_period",
                         rewriter.getIntegerAttr(rewriter.getI64Type(),
                                                 checkpointingPeriod));
