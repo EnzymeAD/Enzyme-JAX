@@ -6,6 +6,11 @@
 
 namespace mlir::enzyme::distributed {
 
+// Walks parent operations and checks each symbol table scope for a flat symbol.
+::mlir::Operation *
+lookupSymbolInEnclosingScopes(::mlir::Operation *from,
+                              ::mlir::FlatSymbolRefAttr symRef);
+
 template <typename OpTy>
 ::mlir::FailureOr<OpTy> resolveSymbolOpFromAttr(::mlir::Operation *from,
                                                 ::mlir::Attribute opAttr) {
@@ -14,16 +19,11 @@ template <typename OpTy>
     return ::mlir::failure();
   }
 
-  for (auto *scope = from; scope; scope = scope->getParentOp()) {
-    if (!scope->hasTrait<::mlir::OpTrait::SymbolTable>()) {
-      continue;
+  if (auto *op = lookupSymbolInEnclosingScopes(from, symRef)) {
+    if (auto typedOp = llvm::dyn_cast<OpTy>(op)) {
+      return typedOp;
     }
-    if (auto *op = ::mlir::SymbolTable::lookupSymbolIn(scope, symRef)) {
-      if (auto typedOp = llvm::dyn_cast<OpTy>(op)) {
-        return typedOp;
-      }
-      return ::mlir::failure();
-    }
+    return ::mlir::failure();
   }
 
   return ::mlir::failure();
@@ -38,6 +38,10 @@ getEnclosingExecutionContext(::mlir::Operation *op);
 ::mlir::FailureOr<::llvm::SmallVector<::mlir::Value>>
 expandExecutionContextFactors(
     ::mlir::TypedValue<::mlir::enzyme::axis::FactorGroupType> context);
+
+// Creates a new range with all replication axes removed from the input range.
+::llvm::SmallVector<::mlir::Value>
+filterOutReplicationFactors(::mlir::ValueRange factors);
 
 } // namespace mlir::enzyme::distributed
 
