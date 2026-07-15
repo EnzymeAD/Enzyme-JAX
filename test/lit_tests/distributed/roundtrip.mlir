@@ -62,6 +62,7 @@ module {
     // rhs_group_1 = %mesh_out
     %lhs_group_2 = axis.product %lf0, %tf_remain : !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>, !axis.axis_factor<!axis.shape_axis<tensor<8xf32>, 0>, 2, 1>
     %rhs_group_2 = axis.product %tf_out : !axis.axis_factor<!axis.shape_axis<tensor<4xf32>, 0>, 4, 1>
+    axis.map %lhs_group_1, %lhs_group_2 to %mesh_out, %rhs_group_2 : [!axis.factor_group<4>, !axis.factor_group<4>] [!axis.factor_group<4>, !axis.factor_group<4>]
     
     distributed.Function @collective context %mesh_in : !axis.factor_group<4> arg_types [tensor<8xf32>] ret_types [tensor<4xf32>] {
     ^bb0(%arg0: tensor<8xf32>):
@@ -74,6 +75,7 @@ module {
 
 // CHECK: func.func @add(%{{.*}}: f32, %{{.*}}: f32) -> f32
 // CHECK: distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2>, !distributed.physical_comm_axis<2>]
+// CHECK: axis.map %{{.*}}, %{{.*}} to %{{.*}}, %{{.*}} : [!axis.factor_group<4>, !axis.factor_group<4>] [!axis.factor_group<4>, !axis.factor_group<4>]
 // CHECK: %{{.*}} = distributed.Collective %{{.*}} : tensor<8xf32> on %{{.*}} : !axis.factor_group<4> to tensor<8xf32> on %{{.*}} : !axis.factor_group<4> reduces (%{{.*}} @add) : !axis.factor_group<2> maps (%{{.*}} -> %{{.*}}) : [!axis.factor_group<16>] [!axis.factor_group<16>]
 // CHECK: %{{.*}} = distributed.Await %{{.*}} : !distributed.asynch_handle<tensor<8xf32>> -> tensor<8xf32>
 

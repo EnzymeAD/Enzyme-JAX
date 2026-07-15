@@ -284,6 +284,58 @@ LogicalResult AxisProductOp::inferReturnTypes(
   return success();
 }
 
+LogicalResult AxisMapOp::verify() {
+  if (getMappingLhs().size() != getMappingRhs().size()) {
+    return emitOpError() << "requires the lhs and rhs mapping lists to have "
+                            "the same length";
+  }
+
+  for (auto [idx, lhsGroup] : llvm::enumerate(getMappingLhs())) {
+    auto rhsGroup = getMappingRhs()[idx];
+    auto lhsProduct =
+        castTypedValue<FactorGroupType>(lhsGroup, "FactorGroupType");
+    auto rhsProduct =
+        castTypedValue<FactorGroupType>(rhsGroup, "FactorGroupType");
+
+    auto lhsFactors = getProductProvenanceFactors(lhsProduct);
+    if (failed(lhsFactors)) {
+      return emitOpError() << "requires mapping lhs group #" << idx
+                           << " to be produced by axis.product";
+    }
+    if (!areFactorsDisjoint(*lhsFactors)) {
+      return emitOpError() << "requires mapping lhs group #" << idx
+                           << " to be internally disjoint";
+    }
+
+    auto rhsFactors = getProductProvenanceFactors(rhsProduct);
+    if (failed(rhsFactors)) {
+      return emitOpError() << "requires mapping rhs group #" << idx
+                           << " to be produced by axis.product";
+    }
+    if (!areFactorsDisjoint(*rhsFactors)) {
+      return emitOpError() << "requires mapping rhs group #" << idx
+                           << " to be internally disjoint";
+    }
+
+    auto lhsExtent = getFactorGroupExtent(lhsProduct);
+    if (failed(lhsExtent)) {
+      return emitOpError() << "requires mapping lhs group #" << idx
+                           << " to have a computable extent";
+    }
+    auto rhsExtent = getFactorGroupExtent(rhsProduct);
+    if (failed(rhsExtent)) {
+      return emitOpError() << "requires mapping rhs group #" << idx
+                           << " to have a computable extent";
+    }
+    if (*lhsExtent != *rhsExtent) {
+      return emitOpError() << "requires mapping group #" << idx
+                           << " to have the same extent on the lhs and rhs";
+    }
+  }
+
+  return success();
+}
+
 } // namespace mlir::enzyme::axis
 
 #define GET_OP_CLASSES
