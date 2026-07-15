@@ -173,7 +173,8 @@ struct ShardyFunctionToDistributedPass
   /**
    * For a given logical shardy mesh, attempt to find a projection
    * onto the physical mesh, which may require factoring both physical
-   * and logical axes.
+   * and logical axes. Returns the ssa value of the logical mesh whose
+   * axis should match the shardy mesh axes.
    */
   FailureOr<Value> projectToPhysicalMesh(func::FuncOp funcOp,
                                          OpBuilder &builder,
@@ -354,14 +355,54 @@ struct ShardyFunctionToDistributedPass
     // block, where the argument and return types match that of the function.
     // Then we can move the old entry block into the region of the
     // MeshComputationOp.
+    auto logicalMeshOp = (*logicalMesh).getDefiningOp<LogicalMeshOp>();
+    if (!logicalMeshOp) {
+      funcOp.emitError()
+          << "expected projected logical mesh value to be defined by "
+             "LogicalMeshOp";
+      signalPassFailure();
+      return;
+    }
+
+    llvm::SmallVector<Value> spmdAxes(logicalMeshOp.getAxes().begin(),
+                                      logicalMeshOp.getAxes().end());
+    llvm::SmallVector<Value> mpmdAxes;
+
+    // For now this lowering encodes pure SPMD as no MPMD axes, a single
+    // computation body, and one (placeholder) communication body per SPMD
+    // axis.
+    uint32_t numDeviceBodies = 1;
+    uint32_t numCommunicationBodies = static_cast<uint32_t>(spmdAxes.size());
+    unsigned bodiesCount =
+      static_cast<unsigned>(numDeviceBodies + numCommunicationBodies);
+
     llvm::SmallVector<Type> meshComputationResultTypes =
         llvm::to_vector(funcOp.getResultTypes());
     llvm::SmallVector<Value> meshComputationInputs(
         newEntryBlock->getArguments().begin(),
         newEntryBlock->getArguments().end());
+
     auto meshComputationOp = builder.create<MeshComputationOp>(
-        funcOp.getLoc(), meshComputationResultTypes, *logicalMesh,
-        meshComputationInputs);
+        funcOp.getLoc(), meshComputationResultTypes, spmdAxes, mpmdAxes,
+        meshComputationInputs, numDeviceBodies, numCommunicationBodies,
+        bodiesCount);
+
+    llvm::SmallVector<Attribute> shardyAxisNameAttrs;
+    shardyAxisNameAttrs.reserve(shardyMesh.getAxes().size());
+    for (auto shardyAxis : shardyMesh.getAxes()) {
+      shardyAxisNameAttrs.push_back(builder.getStringAttr(shardyAxis.getName()));
+    }
+    meshComputationOp->setAttr(kShardyAxisNamesAttr,
+                               builder.getArrayAttr(shardyAxisNameAttrs));
+
+    // Create all regions required by the current op invariants. Communication
+    // bodies are intentionally left as placeholder no-op regions for now.
+    for (unsigned i = 0; i < bodiesCount; ++i) {
+      Region &region = meshComputationOp->getRegion(i);
+      if (region.empty()) {
+        region.emplaceBlock();
+      }
+    }
 
     Region &meshBody = meshComputationOp->getRegion(0);
     if (!meshBody.empty()) {
@@ -375,6 +416,16 @@ struct ShardyFunctionToDistributedPass
     builder.create<DistributedYieldOp>(oldReturn.getLoc(),
                                        oldReturn.getOperands());
     oldReturn.erase();
+
+    // Placeholder communication regions: no communication yet, just explicit
+    // empty yields to satisfy region structure until communication lowering is
+    // implemented.
+    for (uint32_t i = 0; i < numCommunicationBodies; ++i) {
+      Region &commBody = meshComputationOp.getCommunicationBody(i);
+      Block &commBlock = commBody.front();
+      builder.setInsertionPointToEnd(&commBlock);
+      builder.create<DistributedYieldOp>(funcOp.getLoc(), ValueRange{});
+    }
 
     builder.setInsertionPointToEnd(newEntryBlock);
     builder.create<func::ReturnOp>(funcOp.getLoc(),
