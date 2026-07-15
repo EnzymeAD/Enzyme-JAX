@@ -22,6 +22,35 @@ Operation *lookupSymbolInEnclosingScopes(Operation *from,
   return nullptr;
 }
 
+FailureOr<PhysicalMeshOp> findUniquePhysicalMesh(ModuleOp moduleOp) {
+  if (!moduleOp) {
+    return failure();
+  }
+
+  unsigned physicalMeshCount = 0;
+  PhysicalMeshOp physicalMesh;
+  for (PhysicalMeshOp meshOp : moduleOp.getOps<PhysicalMeshOp>()) {
+    ++physicalMeshCount;
+    if (physicalMeshCount == 1) {
+      physicalMesh = meshOp;
+    }
+    if (physicalMeshCount > 1) {
+      moduleOp.emitError()
+          << "expected exactly one distributed physical mesh in module, found "
+          << physicalMeshCount;
+      return failure();
+    }
+  }
+
+  if (physicalMeshCount == 0) {
+    moduleOp.emitError()
+        << "expected exactly one distributed physical mesh in module, found 0";
+    return failure();
+  }
+
+  return physicalMesh;
+}
+
 FailureOr<TypedValue<FactorGroupType>>
 getEnclosingExecutionContext(Operation *op) {
   auto parentFunction = op ? op->getParentOfType<DistributedFunctionOp>()

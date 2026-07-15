@@ -28,7 +28,7 @@ def ShardyToDistributedPass : Pass<"shardy-to-distributed", "::mlir::ModuleOp"> 
         shardy passes:
          --sdy-propagation-pipeline 
          --sdy-export-pipeline='enable-insert-explicit-collectives=true'
-         --sdy-convert-global-to-local
+         --sdy-convert-global-to-local='enable-rgv3=true'
     }];
 }
 

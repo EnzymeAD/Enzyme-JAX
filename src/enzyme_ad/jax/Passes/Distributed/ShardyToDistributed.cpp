@@ -1,4 +1,5 @@
 #include "src/enzyme_ad/jax/Dialect/Distributed/Dialect.h"
+#include "src/enzyme_ad/jax/Dialect/Distributed/Utilities.h"
 #include "src/enzyme_ad/jax/Passes/Distributed/FindShardyFunctionsAnalysis.h"
 #include "src/enzyme_ad/jax/Passes/Distributed/Passes.h"
 
@@ -44,30 +45,11 @@ struct ShardyToDistributedPass
   }
 
   void runOnOperation() override {
-    ModuleOp module = getOperation();
+    ModuleOp moduleOp = getOperation();
 
-    unsigned physicalMeshCount = 0;
-    distributed::PhysicalMeshOp physicalMesh;
-    for (distributed::PhysicalMeshOp meshOp :
-         module.getOps<distributed::PhysicalMeshOp>()) {
-      ++physicalMeshCount;
-      if (physicalMeshCount == 1) {
-        physicalMesh = meshOp;
-      }
-      if (physicalMeshCount > 1) {
-        module.emitError()
-            << "expected exactly one distributed physical mesh in module, "
-               "found "
-            << physicalMeshCount;
-        signalPassFailure();
-        return;
-      }
-    }
-
-    if (physicalMeshCount == 0) {
-      module.emitError()
-          << "expected exactly one distributed physical mesh in module, "
-             "found 0";
+    FailureOr<distributed::PhysicalMeshOp> physicalMesh =
+        distributed::findUniquePhysicalMesh(moduleOp);
+    if (failed(physicalMesh)) {
       signalPassFailure();
       return;
     }
@@ -79,7 +61,7 @@ struct ShardyToDistributedPass
       return;
     }
     if (analysis.getShardyFunctions().empty()) {
-      module.emitRemark() << "no shardy functions found, skipping pass";
+      moduleOp.emitRemark() << "no shardy functions found, skipping pass";
       return;
     }
 
@@ -89,13 +71,13 @@ struct ShardyToDistributedPass
     }
 
     // Create a new mesh computation using the modules pysical mesh
-    OpBuilder builder(module.getContext());
+  OpBuilder builder(moduleOp.getContext());
     builder.setInsertionPointAfter(
-        physicalMesh); // graph region, doesn't matter
+    *physicalMesh); // graph region, doesn't matter
     distributed::MeshComputationOp meshComputation =
         builder.create<distributed::MeshComputationOp>(
-            module.getLoc(), builder.getStringAttr("mesh_computation"),
-            FlatSymbolRefAttr::get(physicalMesh.getSymNameAttr()));
+      moduleOp.getLoc(), builder.getStringAttr("mesh_computation"),
+      FlatSymbolRefAttr::get(physicalMesh->getSymNameAttr()));
     Region &meshComputationBody = meshComputation.getBody();
     if (meshComputationBody.empty()) {
       meshComputationBody.emplaceBlock();
@@ -110,8 +92,8 @@ struct ShardyToDistributedPass
     for (sdy::MeshAxisAttr axis : commonMesh.getAxes()) {
       int64_t axisSize = axis.getSize();
       if (axisSize <= 0 || axisSize > std::numeric_limits<int32_t>::max()) {
-        module.emitError() << "unsupported shardy mesh axis size " << axisSize
-                           << " for axis " << axis.getName();
+        moduleOp.emitError() << "unsupported shardy mesh axis size " << axisSize
+                             << " for axis " << axis.getName();
         signalPassFailure();
         return;
       }
@@ -121,7 +103,7 @@ struct ShardyToDistributedPass
 
     distributed::LogicalMeshAxesOp logicalMeshAxes =
         builder.create<distributed::LogicalMeshAxesOp>(
-            module.getLoc(), builder.getDenseI32ArrayAttr(logicalAxisExtents));
+        moduleOp.getLoc(), builder.getDenseI32ArrayAttr(logicalAxisExtents));
 
     llvm::DenseMap<StringAttr, Value> shardyToDistributedAxis;
     for (auto [idx, distributedAxis] :
