@@ -22,16 +22,21 @@ def AxisGetAxisOp : AxisOp<"getaxis", [MetadataOpTrait, DeclareOpInterfaceMethod
   let hasVerifier = 1;
 }
 
-def AxisFactorOp : AxisOp<"factor", [MetadataOpTrait, DeclareOpInterfaceMethods<InferTypeOpInterface>, DeclareOpInterfaceMethods<MaybeTemporaryInterface>]> {
+def AxisFactorOp : AxisOp<"factor", [MetadataOpTrait, DeclareOpInterfaceMethods<MaybeTemporaryInterface>]> {
   let description = [{
-    Factors one canonical axis into leftmost-major factors with static extents.
+    Defines one factor of a canonical axis with static extent and stride, encoded by the type
   }];
-  let arguments = (ins
-    AnyType:$axis,
-    DenseI32ArrayAttr:$factor_extents
-  );
-  let results = (outs Variadic<AxisFactorType>:$axis_factors);
-  let assemblyFormat = "$axis $factor_extents attr-dict `:` type($axis)";
+  let arguments = (ins AnyType:$axis);
+  let results = (outs AxisFactorType:$axis_factor);
+  let assemblyFormat = "$axis attr-dict `:` functional-type(operands, results)";
+  let builders = [
+    OpBuilder<(ins "Value":$axis, "int32_t":$extent, "int32_t":$stride), [{
+      auto factorType = AxisFactorType::get(
+          $_builder.getContext(), axis.getType(),
+          static_cast<unsigned>(extent), static_cast<unsigned>(stride));
+      build($_builder, $_state, factorType, axis);
+    }]>
+  ];
   let hasVerifier = 1;
 }
 

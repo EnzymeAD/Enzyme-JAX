@@ -3,7 +3,7 @@
 module {
   distributed.MeshComputation @mc0 mesh @mesh0 {
     %axis = axis.getaxis tensor<8xf32> 0
-    %f0 = axis.factor %axis [8] : !axis.shape_axis<tensor<8xf32>, 0>
+    %f0 = axis.factor %axis : (!axis.shape_axis<tensor<8xf32>, 0>) -> !axis.axis_factor<!axis.shape_axis<tensor<8xf32>, 0>, 8, 1>
     %ctx = axis.product %f0 : !axis.axis_factor<!axis.shape_axis<tensor<8xf32>, 0>, 8, 1>
 
     // expected-error @+1 {{requires body block argument #0 to have type 'i32', but got 'f32'}}
@@ -19,7 +19,7 @@ module {
 module {
   distributed.MeshComputation @mc1 mesh @mesh0 {
     %axis = axis.getaxis tensor<8xf32> 0
-    %f0 = axis.factor %axis [8] : !axis.shape_axis<tensor<8xf32>, 0>
+    %f0 = axis.factor %axis : (!axis.shape_axis<tensor<8xf32>, 0>) -> !axis.axis_factor<!axis.shape_axis<tensor<8xf32>, 0>, 8, 1>
     %ctx = axis.product %f0 : !axis.axis_factor<!axis.shape_axis<tensor<8xf32>, 0>, 8, 1>
 
     // expected-error @+1 {{requires distributed.DistributedYield operand #0 to have type 'i32', but got 'f32'}}

@@ -4,7 +4,12 @@
 module {
   distributed.MeshComputation @mc mesh @mesh0 {
     %ax = axis.getaxis tensor<360xf32> 0
-    %f0, %f1, %f2, %f3, %f4, %f5 = axis.factor %ax [2, 2, 2, 3, 3, 5] : !axis.shape_axis<tensor<360xf32>, 0>
+    %f0 = axis.factor %ax : (!axis.shape_axis<tensor<360xf32>, 0>) -> !axis.axis_factor<!axis.shape_axis<tensor<360xf32>, 0>, 2, 180>
+    %f1 = axis.factor %ax : (!axis.shape_axis<tensor<360xf32>, 0>) -> !axis.axis_factor<!axis.shape_axis<tensor<360xf32>, 0>, 2, 90>
+    %f2 = axis.factor %ax : (!axis.shape_axis<tensor<360xf32>, 0>) -> !axis.axis_factor<!axis.shape_axis<tensor<360xf32>, 0>, 2, 45>
+    %f3 = axis.factor %ax : (!axis.shape_axis<tensor<360xf32>, 0>) -> !axis.axis_factor<!axis.shape_axis<tensor<360xf32>, 0>, 3, 15>
+    %f4 = axis.factor %ax : (!axis.shape_axis<tensor<360xf32>, 0>) -> !axis.axis_factor<!axis.shape_axis<tensor<360xf32>, 0>, 3, 5>
+    %f5 = axis.factor %ax : (!axis.shape_axis<tensor<360xf32>, 0>) -> !axis.axis_factor<!axis.shape_axis<tensor<360xf32>, 0>, 5, 1>
 
     %ctx_callee = axis.product %f0, %f1, %f2, %f3 : !axis.axis_factor<!axis.shape_axis<tensor<360xf32>, 0>, 2, 180>, !axis.axis_factor<!axis.shape_axis<tensor<360xf32>, 0>, 2, 90>, !axis.axis_factor<!axis.shape_axis<tensor<360xf32>, 0>, 2, 45>, !axis.axis_factor<!axis.shape_axis<tensor<360xf32>, 0>, 3, 15>
     %ctx_rep = axis.product %f4, %f5 : !axis.axis_factor<!axis.shape_axis<tensor<360xf32>, 0>, 3, 5>, !axis.axis_factor<!axis.shape_axis<tensor<360xf32>, 0>, 5, 1>
