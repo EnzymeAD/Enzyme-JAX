@@ -2,6 +2,7 @@
 #define ENZYME_AD_JAX_DIALECT_DISTRIBUTED_UTILITIES_H
 
 #include "Dialect.h"
+#include "src/enzyme_ad/jax/Dialect/Axis/Utilities.h"
 
 namespace mlir::enzyme::distributed {
 
@@ -23,22 +24,11 @@ template <typename OpTy>
   return typedOp;
 }
 
-// Returns the static extent for any axis-typed SSA value.
-int getAxisSize(::mlir::Value axis);
-
-// Returns the static extent for any factor-typed SSA value.
-int getFactorSize(::mlir::Value factor);
-
-// Resolves the source axis used to produce a factor value.
-::mlir::FailureOr<::mlir::Value> getFactorProvenanceAxis(::mlir::Value factor);
-
-// Checks that factors are pairwise non-overlapping for one source axis.
-// Replication factors are treated as always disjoint.
-bool areFactorsDisjoint(::mlir::ValueRange factors);
-
-// Checks that factors cover an axis exactly and therefore are disjoint.
-// Replication axes/factors are ignored by this check.
-bool areFactorsComplete(::mlir::Value axis, ::mlir::ValueRange factors);
+using ::mlir::enzyme::axis::areFactorsComplete;
+using ::mlir::enzyme::axis::areFactorsDisjoint;
+using ::mlir::enzyme::axis::getAxisExtent;
+using ::mlir::enzyme::axis::getFactorExtent;
+using ::mlir::enzyme::axis::getFactorProvenanceAxis;
 
 } // namespace mlir::enzyme::distributed
 
