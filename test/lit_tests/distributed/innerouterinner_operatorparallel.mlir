@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --sdy-propagation-pipeline '--sdy-insert-explicit-reshards=enable-full-version=true' --sdy-reshard-to-collectives %s | FileCheck %s
+// RUN: enzymexlamlir-opt --sdy-propagation-pipeline  --sdy-insert-explicit-reshards=enable-full-version=true --sdy-reshard-to-collectives --shardy-to-distributed --localize-distributed-module --cse | FileCheck %s
 // A somewhat unrealistic example of an inner-product * outer-product * inner-product which should
 // be ideal for pipelining, on the basis that only communicating the inner products is much cheaper
 // than communicating the outer products.
@@ -21,3 +21,5 @@ func.func @innerouterinneroperatorparallel(
     %4 = stablehlo.dot %3, %w3 : (tensor<512x8192xf32>, tensor<8192x10xf32>) -> tensor<512x10xf32>
     return %4 : tensor<512x10xf32>
 }
+
+// TODO: filecheck expected output

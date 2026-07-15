@@ -383,14 +383,6 @@ struct ShardyFunctionToDistributedPass
       signalPassFailure();
       return;
     }
-
-    {// TODO remove
-      mlir::OpPrintingFlags flags;
-      flags.assumeVerified(true);
-      llvm::outs() << "After ShardyFunctionToDistributedPass:\n";
-      funcOp.print(llvm::outs(), flags);
-      llvm::outs() << "\n";
-    }
   }
 };
 
