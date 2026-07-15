@@ -212,63 +212,101 @@ bool areFactorsDisjoint(ValueRange factors) {
   return true;
 }
 
-// Compares two factor lists as index-space descriptors, ignoring ordering.
-// This is multiset equality over (extent, stride, provenance-axis equivalence)
-// and is intentionally permutation-invariant.
-bool areFactorIndexSpacesEqual(ValueRange lhsFactors, ValueRange rhsFactors) {
-  if (lhsFactors.size() != rhsFactors.size()) {
-    return false;
+// From a list of factors known to be from the same axis,
+// creates a list of pairs indicating the maximum factor ranges.
+// Ranges are gauranteed to be return in major-first order.
+llvm::SmallVector<std::pair<int, int>> build_max_factors(ValueRange factors) {
+  if (factors.empty()) {
+    return {};
   }
+  // convert into intervals
+  llvm::SmallVector<std::pair<int, int>> factor_pairs;
+  for (Value factor : factors) {
+    auto factorTyped = castTypedValue<AxisFactorType>(factor, "AxisFactorType");
+    auto factorType = factorTyped.getType();
+    int extent = static_cast<int>(factorType.getExtent());
+    int stride = static_cast<int>(factorType.getStride());
+    factor_pairs.push_back({extent, stride});
+  }
+  // sort intervals by stride
+  std::sort(
+      factor_pairs.begin(), factor_pairs.end(),
+      [](const auto &lhs, const auto &rhs) { return lhs.second > rhs.second; });
 
-  struct FactorInfo {
+  llvm::SmallVector<std::pair<int, int>> max_factors;
+  std::pair<int, int> current_factor = factor_pairs[0];
+  for (size_t i = 1; i < factor_pairs.size(); ++i) {
+    // if the stride of the current factor = stride * extent of the next factor,
+    // they can be combined.
+    const auto &next_factor = factor_pairs[i];
+    if (current_factor.second == next_factor.first * next_factor.second) {
+      current_factor.first *= next_factor.first;
+      current_factor.second = next_factor.second;
+    } else {
+      max_factors.push_back(current_factor);
+      current_factor = next_factor;
+    }
+  }
+  max_factors.push_back(current_factor);
+  return max_factors;
+}
+
+// Compares two factor lists as index-space descriptors, ignoring ordering.
+// This is multiset equality over (extent, stride, provenance-axis
+// equivalence) and is intentionally permutation-invariant.
+bool areFactorIndexSpacesEqual(ValueRange lhsFactors, ValueRange rhsFactors) {
+  struct AxisFactors {
     Value provenance;
-    unsigned extent;
-    unsigned stride;
+    SmallVector<Value> lhsFactors;
+    SmallVector<Value> rhsFactors;
   };
 
-  auto buildFactorInfo = [](ValueRange factors,
-                            SmallVectorImpl<FactorInfo> &out) -> bool {
-    out.clear();
-    out.reserve(factors.size());
+  auto addFactorsToBuckets = [](ValueRange factors, bool isLhs,
+                                SmallVectorImpl<AxisFactors> &grouped) {
     for (Value factor : factors) {
       auto factorTyped =
           castTypedValue<AxisFactorType>(factor, "AxisFactorType");
-      auto factorType = factorTyped.getType();
       auto provenance = getFactorProvenanceAxis(factorTyped);
       if (failed(provenance)) {
         return false;
       }
-      out.push_back(
-          {*provenance, factorType.getExtent(), factorType.getStride()});
+
+      bool inserted = false;
+      for (AxisFactors &bucket : grouped) {
+        if (areAxesEquivalent(bucket.provenance, *provenance)) {
+          if (isLhs) {
+            bucket.lhsFactors.push_back(factor);
+          } else {
+            bucket.rhsFactors.push_back(factor);
+          }
+          inserted = true;
+          break;
+        }
+      }
+      if (!inserted) {
+        AxisFactors bucket;
+        bucket.provenance = *provenance;
+        if (isLhs) {
+          bucket.lhsFactors.push_back(factor);
+        } else {
+          bucket.rhsFactors.push_back(factor);
+        }
+        grouped.push_back(std::move(bucket));
+      }
     }
     return true;
   };
 
-  SmallVector<FactorInfo> lhsInfo;
-  SmallVector<FactorInfo> rhsInfo;
-  if (!buildFactorInfo(lhsFactors, lhsInfo) ||
-      !buildFactorInfo(rhsFactors, rhsInfo)) {
+  SmallVector<AxisFactors> grouped;
+  if (!addFactorsToBuckets(lhsFactors, /*isLhs=*/true, grouped) ||
+      !addFactorsToBuckets(rhsFactors, /*isLhs=*/false, grouped)) {
     return false;
   }
 
-  SmallVector<bool> rhsMatched(rhsInfo.size(), false);
-  for (const FactorInfo &lhs : lhsInfo) {
-    bool foundMatch = false;
-    for (auto [rhsIndex, rhs] : llvm::enumerate(rhsInfo)) {
-      if (rhsMatched[rhsIndex]) {
-        continue;
-      }
-      if (lhs.extent != rhs.extent || lhs.stride != rhs.stride) {
-        continue;
-      }
-      if (!areAxesEquivalent(lhs.provenance, rhs.provenance)) {
-        continue;
-      }
-      rhsMatched[rhsIndex] = true;
-      foundMatch = true;
-      break;
-    }
-    if (!foundMatch) {
+  for (AxisFactors &bucket : grouped) {
+    auto lhsMaxFactors = build_max_factors(ValueRange(bucket.lhsFactors));
+    auto rhsMaxFactors = build_max_factors(ValueRange(bucket.rhsFactors));
+    if (lhsMaxFactors != rhsMaxFactors) {
       return false;
     }
   }
