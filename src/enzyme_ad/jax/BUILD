@@ -578,6 +578,105 @@ td_library(
 )
 
 td_library(
+    name = "AxisDialectFiles",
+    srcs = [
+        "Dialect/Axis/Dialect.td",
+        "Dialect/Axis/Interfaces.td",
+        "Dialect/Axis/Ops.td",
+        "Dialect/Axis/Types.td",
+    ],
+    includes = ["."],
+    deps = [
+        "@llvm-project//mlir:BuiltinDialectTdFiles",
+        "@llvm-project//mlir:InferTypeOpInterfaceTdFiles",
+        "@llvm-project//mlir:OpBaseTdFiles",
+    ],
+)
+
+gentbl_cc_library(
+    name = "AxisDialectIncGen",
+    tbl_outs = [
+        (
+            [
+                "-gen-dialect-decls",
+                "-dialect=axis",
+            ],
+            "Dialect/Axis/AxisDialect.h.inc",
+        ),
+        (
+            [
+                "-gen-dialect-defs",
+                "-dialect=axis",
+            ],
+            "Dialect/Axis/AxisDialect.cpp.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Dialect/Axis/Dialect.td",
+    deps = [
+        ":AxisDialectFiles",
+    ],
+)
+
+gentbl_cc_library(
+    name = "AxisOpsIncGen",
+    tbl_outs = [
+        (
+            ["-gen-op-decls"],
+            "Dialect/Axis/AxisOps.h.inc",
+        ),
+        (
+            ["-gen-op-defs"],
+            "Dialect/Axis/AxisOps.cpp.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Dialect/Axis/Ops.td",
+    deps = [
+        ":AxisDialectFiles",
+        "@llvm-project//mlir:InferTypeOpInterface",
+    ],
+)
+
+gentbl_cc_library(
+    name = "AxisTypesIncGen",
+    tbl_outs = [
+        (
+            ["--gen-typedef-decls"],
+            "Dialect/Axis/AxisTypes.h.inc",
+        ),
+        (
+            ["--gen-typedef-defs"],
+            "Dialect/Axis/AxisTypes.cpp.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Dialect/Axis/Types.td",
+    deps = [
+        ":AxisDialectFiles",
+    ],
+)
+
+gentbl_cc_library(
+    name = "AxisTypeInterfacesIncGen",
+    tbl_outs = [
+        (
+            ["--gen-type-interface-decls"],
+            "Dialect/Axis/AxisTypeInterfaces.h.inc",
+        ),
+        (
+            ["--gen-type-interface-defs"],
+            "Dialect/Axis/AxisTypeInterfaces.cpp.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Dialect/Axis/Interfaces.td",
+    deps = [
+        ":AxisDialectFiles",
+    ],
+)
+
+td_library(
     name = "DistributedDialectFiles",
     srcs = [
         "Dialect/Distributed/Dialect.td",
@@ -590,6 +689,7 @@ td_library(
         "../../../external/shardy",
     ],
     deps = [
+        ":AxisDialectFiles",
         "@llvm-project//mlir:BuiltinDialectTdFiles",
         "@llvm-project//mlir:InferTypeOpInterfaceTdFiles",
         "@llvm-project//mlir:OpBaseTdFiles",
@@ -1253,6 +1353,7 @@ cc_library(
             "Passes/Distributed/*.cpp",
             "Passes/Tessera/*.cpp",
             "Dialect/*.cpp",
+            "Dialect/Axis/*.cpp",
             "Dialect/Distributed/*.cpp",
             "Dialect/Tessera/*.cpp",
             "Dialect/Perfify/*.cpp",
@@ -1272,6 +1373,7 @@ cc_library(
         "Passes/Distributed/*.h",
         "Passes/Tessera/*.h",
         "Dialect/*.h",
+        "Dialect/Axis/*.h",
         "Dialect/Distributed/*.h",
         "Dialect/Tessera/*.h",
         "Dialect/Perfify/*.h",
@@ -1290,6 +1392,10 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":CheckedRewrite",
+        ":AxisDialectIncGen",
+        ":AxisOpsIncGen",
+        ":AxisTypeInterfacesIncGen",
+        ":AxisTypesIncGen",
         ":DistributedDialectIncGen",
         ":DistributedInterfacesIncGen",
         ":DistributedPassesIncGen",

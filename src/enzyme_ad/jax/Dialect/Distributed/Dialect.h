@@ -15,6 +15,7 @@
 #include "stablehlo/dialect/Base.h"
 
 #include "shardy/dialect/sdy/ir/dialect.h"
+#include "src/enzyme_ad/jax/Dialect/Axis/Dialect.h"
 
 // Need to declare the TypedOpResult struct before including the generated
 // interface declarations
@@ -37,8 +38,6 @@ template <typename TypeTy> struct TypedOpResult {
 #include "src/enzyme_ad/jax/Dialect/Distributed/DistributedDialect.h.inc"
 // Traits
 #include "Traits.h"
-// Type interfaces
-#include "src/enzyme_ad/jax/Dialect/Distributed/DistributedTypeInterfaces.h.inc"
 // Types
 #define GET_TYPEDEF_CLASSES
 #include "src/enzyme_ad/jax/Dialect/Distributed/DistributedTypes.h.inc"
