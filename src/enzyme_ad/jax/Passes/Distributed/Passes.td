@@ -160,4 +160,51 @@ def DistributedSimplifyCollectivesPass
   ];
 }
 
+def DistributedOverlapCommunicationPass
+    : Pass<"distributed-overlap-communication", "distributed::MeshComputationOp"> {
+  let summary = "Overlap communication via greedy tiling factor search";
+  let description = [{
+    This pass greedily tiles communication-producing matmuls along their longest
+    free dimension to enable send/recv pipelining. For each original matmul
+    (in program order), it tries tiling factors 1, 2, 4, ..., 2^kMax and
+    selects the factor that minimizes the critical path via timing analysis.
+  }];
+  let options = [
+    Option<
+      /*C++ variable name=*/"kMax",
+      /*CLI argument=*/"k-max",
+      /*type=*/"int64_t",
+      /*default=*/"4",
+      /*description=*/"Maximum exponent: try tiling factors 2^0 through 2^kMax">,
+  ];
+  let dependentDialects = [
+    "enzyme::distributed::DistributedDialect",
+    "stablehlo::StablehloDialect",
+    "sdy::SdyDialect",
+  ];
+}
+
+def DistributedOverlapCommunicationModulePass
+    : Pass<"distributed-overlap-communication-module", "ModuleOp"> {
+  let summary = "Module wrapper for greedy communication overlap via tiling";
+  let description = [{
+    This pass finds every distributed.MeshComputationOp in the module
+    and applies the greedy communication overlap optimization.
+  }];
+  let options = [
+    Option<
+      /*C++ variable name=*/"kMax",
+      /*CLI argument=*/"k-max",
+      /*type=*/"int64_t",
+      /*default=*/"4",
+      /*description=*/"Maximum exponent: try tiling factors 2^0 through 2^kMax">,
+  ];
+  let dependentDialects = [
+    "enzyme::distributed::DistributedDialect",
+    "stablehlo::StablehloDialect",
+    "sdy::SdyDialect",
+    "func::FuncDialect",
+  ];
+}
+
 #endif // ENZYME_AD_JAX_DISTRIBUTED_PASSES
