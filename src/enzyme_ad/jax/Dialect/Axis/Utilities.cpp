@@ -90,6 +90,11 @@ int getFactorExtent(TypedValue<AxisFactorType> factor) {
   return static_cast<int>(factor.getType().getExtent());
 }
 
+// Asserts a factor type and gets the stride.
+int getFactorStride(TypedValue<AxisFactorType> factor) {
+  return static_cast<int>(factor.getType().getStride());
+}
+
 // Asserts a segment type and gets the extent.
 int getSegmentExtent(TypedValue<AxisSegmentType> segment) {
   return static_cast<int>(segment.getType().getExtent());
@@ -502,7 +507,7 @@ viewAxesAsFactors(TypedValueArrayRef<AxisTypeInterface> axes,
     int extent = getAxisExtent(axis);
     auto factor = builder.create<AxisFactorOp>(loc, axis, extent, 1);
     factors.push_back(
-      castTypedValue<AxisFactorType>(factor.getResult(), "AxisFactorType"));
+        castTypedValue<AxisFactorType>(factor.getResult(), "AxisFactorType"));
   }
   return factors;
 }
@@ -524,9 +529,8 @@ factorAxisByExtents(::mlir::Value axis, llvm::ArrayRef<int32_t> extents,
   llvm::SmallVector<::mlir::TypedValue<AxisFactorType>> factors;
   factors.reserve(extents.size());
   for (auto [extent, stride] : llvm::zip_equal(extents, strides)) {
-    auto factor =
-        builder.create<AxisFactorOp>(loc, axis, extent,
-                                     static_cast<int32_t>(stride));
+    auto factor = builder.create<AxisFactorOp>(loc, axis, extent,
+                                               static_cast<int32_t>(stride));
     factors.push_back(
         castTypedValue<AxisFactorType>(factor.getResult(), "AxisFactorType"));
   }
@@ -629,7 +633,8 @@ compute_splits(ArrayRef<TypedValue<AxisFactorType>> lhs,
 bool split_divisible(ArrayRef<TypedValue<FactorGroupType>> lhs,
                      ArrayRef<TypedValue<FactorGroupType>> rhs,
                      llvm::SmallVector<TypedValue<FactorGroupType>> &lhs_out,
-                     llvm::SmallVector<TypedValue<FactorGroupType>> &rhs_out) {
+                     llvm::SmallVector<TypedValue<FactorGroupType>> &rhs_out,
+                     mlir::OpBuilder &builder) {
   lhs_out.clear();
   rhs_out.clear();
 
@@ -642,6 +647,7 @@ bool split_divisible(ArrayRef<TypedValue<FactorGroupType>> lhs,
     if (g1_factors->size() == 1 && g2_factors->size() == 1) {
       lhs_out.push_back(g1);
       rhs_out.push_back(g2);
+      continue;
     }
 
     // Nonatomic product group
@@ -649,32 +655,55 @@ bool split_divisible(ArrayRef<TypedValue<FactorGroupType>> lhs,
     auto construct_splits =
         [&](ArrayRef<TypedValue<AxisFactorType>> factors,
             llvm::SmallVector<TypedValue<FactorGroupType>> &out) {
-          struct factorshape {
-            int extent;
-            int stride;
-          };
-          llvm::SmallVector<factorshape> subfactors;
+          llvm::SmallVector<Value> currentGroup;
           auto factor_it = factors.begin();
           int factor_taken = 1;
           auto split_it = splits.begin();
           int split_taken = 1;
-          auto finish_factor = [&]() {
-            // TODO construct the floating ops for the factor types
-            // or, if we are reworking the factor op itself, we can
-            // construct them on the fly.
 
-            // reset for next it
-            subfactors.clear();
-            ++factor_it;
-            factor_taken = 1;
-          };
-          (void)finish_factor;
           while (split_it != splits.end()) {
             // because of our iteration order we are visiting high-order first
             int factor_remaining = getFactorExtent(*factor_it) / factor_taken;
             int split_remaining = *split_it / split_taken;
-            (void)factor_remaining;
-            (void)split_remaining;
+            // expect split to divide factor or vice versa, or both if equal.
+            assert(factor_remaining % split_remaining == 0 ||
+                   split_remaining % factor_remaining == 0);
+            int take = std::min(factor_remaining, split_remaining);
+            int new_factor_extent = take;
+            int new_factor_stride = getFactorStride(*factor_it) *
+                                    (factor_remaining / new_factor_extent);
+            auto factor_axis = getFactorProvenanceAxis(*factor_it);
+            assert(succeeded(factor_axis) &&
+                   "factor must have a provenance axis");
+            auto loc = g1.getLoc();
+            auto splitFactor = builder.create<AxisFactorOp>(
+                loc, *factor_axis, new_factor_extent, new_factor_stride);
+            currentGroup.push_back(splitFactor.getResult());
+            split_taken *= take;
+            factor_taken *= take;
+            bool splitFullyConsumed = (split_taken == *split_it);
+            bool factorFullyConsumed =
+                (factor_taken == getFactorExtent(*factor_it));
+
+            if (splitFullyConsumed) {
+              // Push our current group to out
+              auto product = builder.create<AxisProductOp>(
+                  g1.getLoc(), ValueRange(currentGroup));
+              out.push_back(castTypedValue<FactorGroupType>(product.getResult(),
+                                                            "FactorGroupType"));
+              success = success && (currentGroup.size() ==
+                                    1); // record if atomic factors found
+              currentGroup.clear();
+
+              // reset the split
+              split_it++;
+              split_taken = 1;
+            }
+            if (factorFullyConsumed) {
+              // Move to the next factor
+              factor_it++;
+              factor_taken = 1;
+            }
           }
         };
     construct_splits(*g1_factors, lhs_out);

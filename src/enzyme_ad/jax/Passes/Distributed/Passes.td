@@ -54,4 +54,16 @@ def DistributedToHloPass : Pass<"distributed-to-hlo", "::mlir::ModuleOp"> {
     }];
 }
 
+def CanonicalizeAxisMapsPass
+    : Pass<"canonicalize-axis-maps", "::mlir::ModuleOp"> {
+    let summary = "Rewrite axis.map mappings into maximal indivisible form.";
+    let dependentDialects = [
+        "enzyme::axis::AxisDialect"
+    ];
+    let description = [{
+        Rewrites each axis.map pair using split_divisible, replacing mapping
+        groups with maximal one-to-one split groups.
+    }];
+}
+
 #endif // ENZYME_AD_JAX_DISTRIBUTED_PASSES
