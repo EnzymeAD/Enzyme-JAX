@@ -60,4 +60,26 @@ def AxisProductOp : AxisOp<"product", [MetadataOpTrait, DeclareOpInterfaceMethod
   let assemblyFormat = "$factors attr-dict `:` type($factors)";
   let hasVerifier = 1;
 }
+
+def AxisMapOp : AxisOp<"map", [
+  MetadataOpTrait,
+  AttrSizedOperandSegments,
+  DeclareOpInterfaceMethods<MaybeTemporaryInterface>
+]> {
+  let description = [{
+    Declares a mapping between groups of axis products.
+    This op is intended to replace per-collective embedded mapping lists in
+    distributed collectives.
+  }];
+  let arguments = (ins
+    Variadic<FactorGroupType>:$mapping_lhs,
+    Variadic<FactorGroupType>:$mapping_rhs
+  );
+  let assemblyFormat = [{
+    $mapping_lhs `to` $mapping_rhs
+    attr-dict
+    `:` `[` type($mapping_lhs) `]` `[` type($mapping_rhs) `]`
+  }];
+  let hasVerifier = 1;
+}
 #endif // ENZYME_AD_JAX_DIALECT_AXIS_OPS_TD
