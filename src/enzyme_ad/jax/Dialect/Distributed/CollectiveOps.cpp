@@ -1,11 +1,22 @@
 #include "CollectiveOps.h"
 
 namespace mlir::enzyme::distributed {
+using namespace ::mlir::enzyme::axis;
 
 // small helper
 llvm::SmallVector<::mlir::Value> concatRanges(::mlir::ValueRange lhs,
                                               ::mlir::ValueRange rhs) {
   llvm::SmallVector<::mlir::Value> result;
+  result.reserve(lhs.size() + rhs.size());
+  result.append(lhs.begin(), lhs.end());
+  result.append(rhs.begin(), rhs.end());
+  return result;
+}
+
+template <typename VT>
+llvm::SmallVector<TypedValue<VT>>
+concatTypedRanges(TypedValueArrayRef<VT> lhs, TypedValueArrayRef<VT> rhs) {
+  llvm::SmallVector<TypedValue<VT>> result;
   result.reserve(lhs.size() + rhs.size());
   result.append(lhs.begin(), lhs.end());
   result.append(rhs.begin(), rhs.end());
@@ -56,10 +67,17 @@ LogicalResult DistributedCollectiveOp::verify() {
     }
   }
 
+  auto typedReductionGroups = axis::castTypedValueList<axis::FactorGroupType>(
+      getReductionGroups(), "FactorGroupType");
+  auto typedMappingLHS = axis::castTypedValueList<axis::FactorGroupType>(
+      getMappingLhs(), "FactorGroupType");
+  auto typedMappingRHS = axis::castTypedValueList<axis::FactorGroupType>(
+      getMappingRhs(), "FactorGroupType");
   auto reduction_group_factors =
-      axis::flattenGroupsToFactors(getReductionGroups());
-  auto mapping_lhs_factors = axis::flattenGroupsToFactors(getMappingLhs());
-  auto mapping_rhs_factors = axis::flattenGroupsToFactors(getMappingRhs());
+      axis::flattenGroupsToFactors(typedReductionGroups);
+  SmallVector<TypedValue<AxisFactorType>> mapping_lhs_factors =
+      axis::flattenGroupsToFactors(typedMappingLHS);
+  auto mapping_rhs_factors = axis::flattenGroupsToFactors(typedMappingRHS);
   auto lhs_filtered = filterOutReplicationFactors(mapping_lhs_factors);
   auto rhs_filtered = filterOutReplicationFactors(mapping_rhs_factors);
 
@@ -71,6 +89,7 @@ LogicalResult DistributedCollectiveOp::verify() {
       axis::createAxesForRankedShape(getInputObject().getType(), builder, loc);
   auto expected_output_tensor_axes =
       axis::createAxesForRankedShape(getOutputTensorType(), builder, loc);
+
   auto expected_input_factors =
       axis::viewAxesAsFactors(expected_input_tensor_axes, builder, loc);
   auto expected_output_factors =
@@ -82,11 +101,13 @@ LogicalResult DistributedCollectiveOp::verify() {
    * - reduction + lhs_filtered = input_mesh + tensor axes
    * - rhs_filtered = output_mesh + tensor axes
    */
-  auto lhs_space = concatRanges(reduction_group_factors, lhs_filtered);
-  auto expected_input_space =
-      concatRanges(*inputMeshFactors, expected_input_factors);
-  auto expected_output_space =
-      concatRanges(*outputMeshFactors, expected_output_factors);
+  // llvm::SmallVector<TypedValue<AxisFactorType>> lhs_space;
+  auto lhs_space =
+      concatTypedRanges<AxisFactorType>(reduction_group_factors, lhs_filtered);
+  auto expected_input_space = concatTypedRanges<AxisFactorType>(
+      *inputMeshFactors, expected_input_factors);
+  auto expected_output_space = concatTypedRanges<AxisFactorType>(
+      *outputMeshFactors, expected_output_factors);
   if (!axis::areFactorsDisjoint(lhs_space)) {
     return emitOpError()
            << "requires reduction_groups + mapping_lhs to be disjoint";
@@ -104,7 +125,7 @@ LogicalResult DistributedCollectiveOp::verify() {
            << "requires mapping_rhs to match output_mesh + output_tensor axes";
   }
 
-  if (!axis::areFactorGroupsDisjoint(getReductionGroups())) {
+  if (!axis::areFactorGroupsDisjoint(typedReductionGroups)) {
     return emitOpError() << "requires reduction_groups to be pairwise disjoint";
   }
 

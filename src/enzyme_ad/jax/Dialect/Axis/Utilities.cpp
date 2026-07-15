@@ -22,6 +22,17 @@ static TypedValue<T> castTypedValue(Value value, llvm::StringRef expectedType) {
   llvm::report_fatal_error("invalid typed value cast");
 }
 
+template <typename T>
+llvm::SmallVector<TypedValue<T>>
+castTypedValueList(ValueRange values, llvm::StringRef expectedType) {
+  llvm::SmallVector<TypedValue<T>> typedValues;
+  typedValues.reserve(values.size());
+  for (Value value : values) {
+    typedValues.push_back(castTypedValue<T>(value, expectedType));
+  }
+  return typedValues;
+}
+
 // Dispatches alias checks for canonical axes. Canonical axes are
 // either equivalent or wholly disjoint.
 static bool areAxesEquivalent(Value lhs, Value rhs) {
@@ -138,13 +149,14 @@ FailureOr<Value> getSegmentProvenanceAxis(TypedValue<AxisSegmentType> segment) {
 }
 
 // Returns the factor list used to build a factor-product SSA value.
-FailureOr<ValueRange>
+FailureOr<llvm::SmallVector<::mlir::TypedValue<AxisFactorType>>>
 getProductProvenanceFactors(TypedValue<FactorGroupType> factorProduct) {
   auto productOp = factorProduct.getDefiningOp<AxisProductOp>();
   if (!productOp) {
     return failure();
   }
-  return productOp.getFactors();
+  return castTypedValueList<AxisFactorType>(ValueRange(productOp.getFactors()),
+                                            "AxisFactorType");
 }
 
 // Returns the product of extents for a factor-product SSA value.
@@ -168,7 +180,8 @@ getFactorGroupExtent(TypedValue<FactorGroupType> factorProduct) {
 }
 
 // Checks factor compatibility and pairwise non-overlap metadata.
-bool areFactorsDisjoint(ValueRange factors) {
+bool areFactorsDisjoint(
+    llvm::ArrayRef<::mlir::TypedValue<AxisFactorType>> factors) {
   if (factors.empty()) {
     return true;
   }
@@ -183,13 +196,12 @@ bool areFactorsDisjoint(ValueRange factors) {
   // Cache provenance once so pairwise checks remain pure and cheap.
   SmallVector<FactorInfo> cachedFactors;
   cachedFactors.reserve(factors.size());
-  for (Value factor : factors) {
-    auto factorTyped = castTypedValue<AxisFactorType>(factor, "AxisFactorType");
-    auto factorType = factorTyped.getType();
+  for (auto factor : factors) {
+    auto factorType = factor.getType();
     assert(factorType.getExtent() > 0 && "factor extent must be positive");
     assert(factorType.getStride() > 0 && "factor stride must be positive");
 
-    auto provenance = getFactorProvenanceAxis(factorTyped);
+    auto provenance = getFactorProvenanceAxis(factor);
     assert(succeeded(provenance) && "factor must have a provenance axis");
     cachedFactors.push_back({*provenance});
   }
@@ -398,7 +410,8 @@ bool areSegmentsDisjoint(ValueRange segments) {
 }
 
 // Checks that factors reconstruct the full source axis extent.
-bool areFactorsComplete(Value axis, ValueRange factors) {
+bool areFactorsComplete(Value axis,
+                        TypedValueArrayRef<AxisFactorType> factors) {
   if (factors.empty() || !areFactorsDisjoint(factors)) {
     return false;
   }
@@ -406,16 +419,12 @@ bool areFactorsComplete(Value axis, ValueRange factors) {
   // Given disjointness, we are complete iff all factors belong to the target
   // axis and their extents cover the whole source-axis extent.
   uint64_t product = 1;
-  for (Value factor : factors) {
-    auto factorTyped = castTypedValue<AxisFactorType>(factor, "AxisFactorType");
-
-    auto provenance = getFactorProvenanceAxis(factorTyped);
+  for (TypedValue<AxisFactorType> factor : factors) {
+    auto provenance = getFactorProvenanceAxis(factor);
     assert(succeeded(provenance) && "factor must have a provenance axis");
-    if (failed(provenance) || *provenance != axis) {
-      return false;
-    }
+    assert(*provenance == axis && "factor must belong to the target axis");
 
-    product *= static_cast<uint64_t>(getFactorExtent(factorTyped));
+    product *= static_cast<uint64_t>(getFactorExtent(factor));
   }
 
   return product ==
@@ -466,13 +475,11 @@ bool areSegmentsComplete(Value axis, ValueRange segments) {
              castTypedValue<AxisTypeInterface>(axis, "AxisTypeInterface")));
 }
 
-llvm::SmallVector<::mlir::Value>
-flattenGroupsToFactors(::mlir::ValueRange factorGroups) {
-  llvm::SmallVector<::mlir::Value> flattenedFactors;
+llvm::SmallVector<::mlir::TypedValue<AxisFactorType>>
+flattenGroupsToFactors(TypedValueArrayRef<FactorGroupType> factorGroups) {
+  llvm::SmallVector<::mlir::TypedValue<AxisFactorType>> flattenedFactors;
   for (auto group : factorGroups) {
-    auto typedGroup =
-        cast<::mlir::TypedValue<::mlir::enzyme::axis::FactorGroupType>>(group);
-    auto factors = getProductProvenanceFactors(typedGroup);
+    auto factors = getProductProvenanceFactors(group);
     if (failed(factors)) {
       llvm::report_fatal_error(
           "flattenGroupsToFactors failed to get factors from FactorGroupType");
@@ -482,39 +489,47 @@ flattenGroupsToFactors(::mlir::ValueRange factorGroups) {
   return flattenedFactors;
 }
 
-bool areFactorGroupsDisjoint(::mlir::ValueRange factorGroups) {
+bool areFactorGroupsDisjoint(TypedValueArrayRef<FactorGroupType> factorGroups) {
   auto flattenedFactors = flattenGroupsToFactors(factorGroups);
-  return areFactorsDisjoint(ValueRange(flattenedFactors));
+  return areFactorsDisjoint(flattenedFactors);
 }
 
-llvm::SmallVector<::mlir::Value>
+llvm::SmallVector<::mlir::TypedValue<AxisTypeInterface>>
 createAxesForRankedShape(::mlir::Type shapeType, ::mlir::OpBuilder &builder,
                          ::mlir::Location loc) {
   auto rankedShapeType = cast<ShapedType>(shapeType);
   auto type_attr = TypeAttr::get(rankedShapeType);
   int rank = rankedShapeType.getRank();
-  llvm::SmallVector<::mlir::Value> axes;
+  llvm::SmallVector<::mlir::TypedValue<AxisTypeInterface>> axes;
   axes.reserve(rank);
   for (int i = 0; i < rank; ++i) {
     auto rank_attr = builder.getI32IntegerAttr(i);
     auto axis = builder.create<AxisGetAxisOp>(loc, type_attr, rank_attr);
-    axes.push_back(axis);
+    axes.push_back(castTypedValue<AxisTypeInterface>(axis.getResult(),
+                                                     "AxisTypeInterface"));
   }
   return axes;
 }
 
-llvm::SmallVector<::mlir::Value> viewAxesAsFactors(::mlir::ValueRange axes,
-                                                   ::mlir::OpBuilder &builder,
-                                                   ::mlir::Location loc) {
-  llvm::SmallVector<::mlir::Value> factors;
+llvm::SmallVector<::mlir::TypedValue<AxisFactorType>>
+viewAxesAsFactors(::mlir::ValueRange axes, ::mlir::OpBuilder &builder,
+                  ::mlir::Location loc) {
+  auto typedAxes =
+      castTypedValueList<AxisTypeInterface>(axes, "AxisTypeInterface");
+  return viewAxesAsFactors(typedAxes, builder, loc);
+}
+
+llvm::SmallVector<::mlir::TypedValue<AxisFactorType>>
+viewAxesAsFactors(TypedValueArrayRef<AxisTypeInterface> axes,
+                  ::mlir::OpBuilder &builder, ::mlir::Location loc) {
+  llvm::SmallVector<::mlir::TypedValue<AxisFactorType>> factors;
   factors.reserve(axes.size());
   for (auto axis : axes) {
-    auto axis_typed =
-        castTypedValue<AxisTypeInterface>(axis, "AxisTypeInterface");
-    int extent = getAxisExtent(axis_typed);
+    int extent = getAxisExtent(axis);
     auto factor =
         builder.create<AxisFactorOp>(loc, axis, ArrayRef<int32_t>{extent});
-    factors.push_back(factor.getResult(0));
+    factors.push_back(
+        castTypedValue<AxisFactorType>(factor.getResult(0), "AxisFactorType"));
   }
   return factors;
 }

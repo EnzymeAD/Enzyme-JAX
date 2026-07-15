@@ -125,19 +125,16 @@ LogicalResult DistributedCallOp::verify() {
                          << "replicate_over to be FactorGroupType";
   }
 
-  FailureOr<llvm::SmallVector<Value>> callerFactors =
-      expandExecutionContextFactors(*callerContext);
-  FailureOr<llvm::SmallVector<Value>> calleeFactors =
-      expandExecutionContextFactors(calleeContext);
-  FailureOr<llvm::SmallVector<Value>> replicateFactors =
-      expandExecutionContextFactors(replicateOver);
+  auto callerFactors = axis::getProductProvenanceFactors(*callerContext);
+  auto calleeFactors = axis::getProductProvenanceFactors(calleeContext);
+  auto replicateFactors = axis::getProductProvenanceFactors(replicateOver);
   if (failed(callerFactors) || failed(calleeFactors) ||
       failed(replicateFactors)) {
     return emitOpError() << "requires execution contexts to be produced by "
                          << "axis.product so factor provenance can be checked";
   }
 
-  llvm::SmallVector<Value> expectedCallerFactors = *calleeFactors;
+  auto expectedCallerFactors = *calleeFactors;
   expectedCallerFactors.append(replicateFactors->begin(),
                                replicateFactors->end());
   if (!axis::areFactorIndexSpacesEqual(*callerFactors, expectedCallerFactors)) {
