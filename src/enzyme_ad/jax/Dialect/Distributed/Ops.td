@@ -3,10 +3,58 @@
 
 include "mlir/IR/BuiltinAttributes.td"
 include "mlir/IR/SymbolInterfaces.td"
+include "mlir/Interfaces/InferTypeOpInterface.td"
 
 include "Dialect.td"
 include "Types.td"
 include "Interfaces.td"
+
+// Mesh definition ops
+def PhysicalMeshOp : DistributedOp<"PhysicalMesh"> {
+    let description = [{Defines a physical mesh of devices based on the hardware topology. A physical mesh is a Cartesian product
+    of zero or more physical axes. Axes should be distinct! Two copies of the same axis is permitted (but may better be represented
+    as a larger axis), but passing the same axis twice is an error.}];
+    let arguments = (ins
+        Variadic<PhysicalCommAxisType>:$axes
+    );
+    let results = (outs PhysicalMeshType:$mesh);
+    let assemblyFormat = "$axes attr-dict";
+}
+
+def AxisFactorOp : DistributedOp<"AxisFactor", [DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
+    let description = [{
+       Factors a physical axis into multiple logical axes, according to a static array of factor sizes.
+       The lowest index of factors corresponds to the lowest-significance / most contiguous new axis.
+       Factors must multiply into the original physical axis size.
+       Returns a logical axis per factor.
+     }];
+    let arguments = (ins
+        PhysicalCommAxisType:$physical_axis,
+        I32ArrayAttr:$factors
+    );
+    let results = (outs Variadic<LogicalCommAxisType>:$logical_axes);
+    let assemblyFormat = "$physical_axis $factors attr-dict";
+    let hasVerifier = 1; // TODO: verify factors multiply to physical axis size, and correct number of outputs.
+}
+
+
+def AxisProductOp : DistributedOp<"AxisProduct"> {
+    let description = [{
+       Combines multiple logical axes into a single logical axis. Logical axis must be disjoint,
+       but may come from any mix of physical axes, including different strides over the same physical
+       axis. The order encodes the significance, with the lowest-index/first logical axis being
+       index as the least-significant/most contiguous dimension. 
+       For simplicity for implementation, we require any factors of the same physical axis to be
+       defined from the same factorization op. (For instance, this makes disjointness easier)
+     }];
+    let arguments = (ins
+        Variadic<LogicalCommAxisType>:$logical_axes
+    );
+    let results = (outs LogicalCommAxisType:$logical_axis);
+    let assemblyFormat = "$logical_axes attr-dict";
+    let hasVerifier = 1; // TODO: axis disjointness.
+}
+
 
 // Device definition ops
 
