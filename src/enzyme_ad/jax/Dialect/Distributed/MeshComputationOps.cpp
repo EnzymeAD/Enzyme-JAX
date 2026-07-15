@@ -1,6 +1,8 @@
 #include "CollectiveOps.h"
 #include "Dialect.h"
 
+#include "stablehlo/dialect/StablehloOps.h"
+
 namespace mlir::enzyme::distributed {
 
 LogicalResult MeshComputationOp::verify() {
@@ -8,9 +10,11 @@ LogicalResult MeshComputationOp::verify() {
   for (Operation &op : bodyBlock.getOperations()) {
     bool isMetadataOp = op.hasTrait<OpTrait::enzyme::axis::MetadataTrait>();
     bool isDistributedFunction = isa<DistributedFunctionOp>(op);
-    if (!isMetadataOp && !isDistributedFunction) {
+    bool isStablehloConstant = isa<stablehlo::ConstantOp>(op);
+    if (!isMetadataOp && !isDistributedFunction && !isStablehloConstant) {
       return emitOpError()
-             << "only distributed.Function and static metadata ops are "
+             << "only distributed.Function, stablehlo.constant, and static "
+                "metadata ops are "
              << "allowed in the mesh body; operation '" << op.getName()
              << "' is neither";
     }
