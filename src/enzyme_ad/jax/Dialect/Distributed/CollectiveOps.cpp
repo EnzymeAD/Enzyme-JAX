@@ -32,7 +32,7 @@ LogicalResult SubmeshCollectivePartsOp::inferReturnTypes(
 
   inferredReturnTypes.reserve(static_cast<size_t>(2 * (*meshSize)));
   for (int64_t i = 0; i < *meshSize; ++i) {
-    inferredReturnTypes.push_back(CollectiveTokenType::get(context));
+    inferredReturnTypes.push_back(MessageTokenType::get(context));
   }
 
   return success();
@@ -40,7 +40,7 @@ LogicalResult SubmeshCollectivePartsOp::inferReturnTypes(
 
 mlir::Value CollectiveOp::getHandle() { return getToken(); }
 
-// Send, Recv, and SendRecv op interface
+// Send, Recv, and Transfer op interface
 llvm::SmallVector<mlir::Value> SendOp::happensAfter() {
   return {}; // sending is first in the chain
 }
@@ -56,37 +56,28 @@ llvm::SmallVector<mlir::Value> RecvOp::simultaneousWith() {
 }
 bool RecvOp::concurrentWith(Operation *other) { return false; }
 
-// SendRecv behaves differently since it is a synchronous protocol
-llvm::SmallVector<mlir::Value> SendRecvOp::happensAfter() { return {}; }
-llvm::SmallVector<mlir::Value> SendRecvOp::simultaneousWith() {
-  // Need to walk the token back to its defining collective- it could be defined
-  // by a parts op.
-  auto tok = resolveCollectiveTokenToRootCollective(getToken()).asOpResult();
-  assert(tok.getDefiningOp<CollectiveOp>() &&
-         "SendRecv token must be ultimately defined by a CollectiveOp");
-  return {tok}; // satisfies its send/recv token
+llvm::SmallVector<mlir::Value> TransferOp::happensAfter() { return {}; }
+llvm::SmallVector<mlir::Value> TransferOp::simultaneousWith() {
+  return {getToken()};
 }
-bool SendRecvOp::concurrentWith(Operation *other) {
-  // Must commute with other SendRecvOps on the same token so long as there is
-  // no SSA dependency between them
-  if (auto otherSendRecv = dyn_cast<SendRecvOp>(other)) {
-    if (getToken() == otherSendRecv.getToken()) {
-      // Check for SSA dependencies
-      for (Value operand : getOperands()) {
-        if (llvm::is_contained(otherSendRecv.getOperands(), operand)) {
-          return false; // There is an SSA dependency, cannot commute
-        }
-      }
-      for (Value result : getOperation()->getResults()) {
-        if (llvm::is_contained(otherSendRecv.getOperation()->getResults(),
-                               result)) {
-          return false; // There is an SSA dependency, cannot commute
-        }
-      }
-      return true; // No SSA dependencies, can commute
+bool TransferOp::concurrentWith(Operation *other) { return false; }
+
+LogicalResult TransferOp::verify() {
+  auto meshComputation = (*this)->getParentOfType<MeshComputationOp>();
+  if (!meshComputation) {
+    return emitOpError() << "must be nested in a distributed.MeshComputation";
+  }
+
+  Region *parentRegion = (*this)->getParentRegion();
+  for (uint32_t i = 0; i < meshComputation.getNumCommunicationBodies(); ++i) {
+    if (&meshComputation.getCommunicationBody(i) == parentRegion) {
+      return success();
     }
   }
-  return false; // Don't care about commuting with other ops
+
+  return emitOpError()
+         << "must be placed in a communication region of its parent "
+            "distributed.MeshComputation";
 }
 
 } // namespace mlir::enzyme::distributed

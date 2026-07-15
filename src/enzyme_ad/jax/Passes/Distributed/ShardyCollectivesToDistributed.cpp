@@ -185,9 +185,12 @@ struct LowerSdyCollectiveToDistributedPattern : public RewritePattern {
 					op, "failed to build Shardy-to-distributed axis mapping");
 		}
 
+		OpBuilder::InsertionGuard guard(rewriter);
+		rewriter.setInsertionPoint(meshComputation);
+
 		FailureOr<SmallVector<Value>> inputShardingAxes =
 				buildDistributedShardingForTensor(*inputSharding, *axisMap, rewriter,
-																					op->getLoc());
+																		op->getLoc());
 		if (failed(inputShardingAxes)) {
 			return rewriter.notifyMatchFailure(
 					op, "failed to lower input Shardy sharding to distributed sharding "
@@ -211,16 +214,55 @@ struct LowerSdyCollectiveToDistributedPattern : public RewritePattern {
 		auto localOutputTensorTypeAttr = globalOutputTensorTypeAttr;
 
 		auto collective = rewriter.create<CollectiveOp>(
-				op->getLoc(), CollectiveTokenType::get(getContext()),
+				op->getLoc(), MessageTokenType::get(getContext()),
 			collectiveAxes, globalInputTensorTypeAttr,
 				globalOutputTensorTypeAttr, localInputTensorTypeAttr,
 				localOutputTensorTypeAttr, *inputShardingAxes, *outputShardingAxes);
 
-		auto sendRecv = rewriter.create<SendRecvOp>(
-				op->getLoc(), tensorOutType, collective.getToken(), tensorIn);
-		sdy::setSharding(sendRecv.getResponse(), outputSharding);
+		rewriter.setInsertionPoint(op);
+		rewriter.create<SendOp>(op->getLoc(), collective.getToken(), tensorIn);
+		auto recv =
+			rewriter.create<RecvOp>(op->getLoc(), tensorOutType, collective.getToken());
+		sdy::setSharding(recv.getMessage(), outputSharding);
 
-		rewriter.replaceOp(op, sendRecv.getResponse());
+		if (meshComputation.getNumCommunicationBodies() == 0) {
+			return rewriter.notifyMatchFailure(
+				op, "expected at least one communication region for transfer op");
+		}
+
+		Value transferAxis;
+		if (!collectiveAxes.empty()) {
+			transferAxis = collectiveAxes.front();
+		}
+		if (!outputShardingAxes->empty()) {
+			if (auto shardingOp =
+						outputShardingAxes->front().getDefiningOp<ShardingOp>()) {
+				if (!shardingOp.getAxes().empty()) {
+					transferAxis = shardingOp.getAxes().front();
+				}
+			}
+		}
+
+		unsigned communicationBodyIndex = 0;
+		if (transferAxis) {
+			auto communicationBodyIndexOr =
+					meshComputation.findCommunicationBodyIndexForAxis(transferAxis);
+			if (succeeded(communicationBodyIndexOr)) {
+				communicationBodyIndex = *communicationBodyIndexOr;
+			}
+		}
+
+		Region &communicationBody =
+				meshComputation.getCommunicationBody(communicationBodyIndex);
+		Block &communicationBlock = communicationBody.front();
+		auto transferInsertIt = communicationBlock.end();
+		if (!communicationBlock.empty()) {
+			transferInsertIt = Block::iterator(communicationBlock.getTerminator());
+		}
+		rewriter.setInsertionPoint(&communicationBlock, transferInsertIt);
+		rewriter.create<TransferOp>(op->getLoc(), collective.getToken());
+
+		rewriter.replaceOp(op, recv.getMessage());
 		return success();
 	}
 };

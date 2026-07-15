@@ -250,7 +250,7 @@ def CollectiveOp : DistributedOp<"Collective", [
         Variadic<ShardingAxisType>:$input_sharding,
         Variadic<ShardingAxisType>:$output_sharding
     );
-    let results = (outs CollectiveTokenType:$token);
+    let results = (outs MessageTokenType:$token);
     let assemblyFormat = "$axes `(`$global_input_tensor_type `>` $local_input_tensor_type`,` $input_sharding `)` `->` `(`$global_output_tensor_type `>` $local_output_tensor_type`,` $output_sharding`)` attr-dict";
     // let hasVerifier = 1; // TODO verify sharding axes match the mesh, and that the input and output shardings are compatible with each other and the global/local tensor shapes.
 }
@@ -261,12 +261,12 @@ def SubmeshCollectivePartsOp : DistributedOp<"SubmeshCollectiveParts", [PureDist
        per submesh device, which can then be manipulated individually
        }];
     let arguments = (ins
-    CollectiveTokenType:$collective,
+    MessageTokenType:$collective,
     LogicalMeshType:$submesh,
     TypeAttr:$input_tensor_type,
     TypeAttr:$output_tensor_type
     );
-    let results = (outs Variadic<CollectiveTokenType>:$device_specific_tokens);
+    let results = (outs Variadic<MessageTokenType>:$device_specific_tokens);
     let assemblyFormat = "$collective $submesh $input_tensor_type`->` $output_tensor_type attr-dict";
 }
 
@@ -290,14 +290,14 @@ def RecvOp : DistributedOp<"Recv", [DeclareOpInterfaceMethods<EventOpInterface>]
     let assemblyFormat = "$token type($message) attr-dict";
 }
 
-def SendRecvOp : DistributedOp<"SendRecv", [DeclareOpInterfaceMethods<EventOpInterface>]> {
+def TransferOp : DistributedOp<"Transfer", [DeclareOpInterfaceMethods<EventOpInterface>]> {
     let description = [{
-       Synchronously participates in a send-recieve collective routine among potentially
-       multiple other devices. 
+       Declares communication transfer work associated with a collective token.
+       This op is intended only for communication regions of MeshComputation.
      }];
-    let arguments = (ins CollectiveTokenType:$token, TensorType:$message);
-    let results = (outs TensorType:$response);
-    let assemblyFormat = "$token $message type($message) `->` type($response) attr-dict";
+    let arguments = (ins MessageTokenType:$token);
+    let assemblyFormat = "$token attr-dict";
+    let hasVerifier = 1;
 }
 
 #endif // ENZYME_AD_JAX_DIALECT_DISTRIBUTED_OPS_TD
