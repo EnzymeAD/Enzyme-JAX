@@ -44,6 +44,19 @@ def GetPhysicalMeshAxesOp : DistributedOp<"GetPhysicalMeshAxes", [PureDistribute
     let hasVerifier = 1;
 }
 
+def LogicalMeshAxesOp : DistributedOp<"LogicalMeshAxes", [PureDistributedMetadata, DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
+    let description = [{
+        Declares a new logical mesh of axes, which may or may not correspond to a
+        physical mesh. 
+    }];
+    let arguments = (ins
+        DenseI32ArrayAttr:$axis_extents
+    );
+    let results = (outs Variadic<LogicalMeshAxisType>:$axes);
+    let assemblyFormat = "$axis_extents attr-dict `:` type($axes)";
+    let hasVerifier = 1;
+}
+
 def MeshComputationOp : DistributedOp<"MeshComputation", [
     HasOnlyGraphRegion,
     NoTerminator,
