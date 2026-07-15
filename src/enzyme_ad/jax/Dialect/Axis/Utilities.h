@@ -123,6 +123,12 @@ viewAxesAsFactors(::mlir::ValueRange axes, ::mlir::OpBuilder &builder,
 llvm::SmallVector<::mlir::TypedValue<AxisFactorType>>
 viewAxesAsFactors(TypedValueArrayRef<AxisTypeInterface> axes,
                   ::mlir::OpBuilder &builder, ::mlir::Location loc);
+
+// Creates a full major-first factorization for one axis from major-first
+// extents. Strides are inferred
+llvm::SmallVector<::mlir::TypedValue<AxisFactorType>>
+factorAxisByExtents(::mlir::Value axis, llvm::ArrayRef<int32_t> extents,
+                    ::mlir::OpBuilder &builder, ::mlir::Location loc);
 } // namespace mlir::enzyme::axis
 
 #endif // ENZYME_AD_JAX_DIALECT_AXIS_UTILITIES_H
