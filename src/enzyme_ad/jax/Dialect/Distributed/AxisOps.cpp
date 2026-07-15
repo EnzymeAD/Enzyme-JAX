@@ -1,45 +1,117 @@
 #include "Dialect.h"
-#include "llvm/Support/ErrorHandling.h"
+#include "Utilities.h"
 
 namespace mlir::enzyme::distributed {
 
-using llvm::report_fatal_error;
+namespace {
 
-int64_t AxisAllToAllOp::getPhysicalAxisSize() {
-  return static_cast<int64_t>(getAxisSize());
+static LogicalResult verifyFactorExtents(ArrayRef<int32_t> extents,
+                                         unsigned sourceExtent,
+                                         Operation *op) {
+  uint64_t product = 1;
+  for (int32_t extent : extents) {
+    if (extent <= 0) {
+      return op->emitOpError() << "requires all factor extents to be > 0";
+    }
+    product *= static_cast<uint64_t>(extent);
+  }
+  if (product != sourceExtent) {
+    return op->emitOpError() << "requires product(factor_extents) == axis "
+                                "extent ("
+                             << product << " != " << sourceExtent << ")";
+  }
+  return success();
+}
+
+static void computeMajorToMinorStrides(ArrayRef<int32_t> extents,
+                                       SmallVectorImpl<unsigned> &strides) {
+  // Leftmost factors are most major.
+  strides.resize(extents.size());
+  unsigned running = 1;
+  for (int i = static_cast<int>(extents.size()) - 1; i >= 0; --i) {
+    strides[i] = running;
+    running *= static_cast<unsigned>(extents[i]);
+  }
+}
+
+} // namespace
+
+LogicalResult GetPhysicalAxisOp::verify() {
+  FailureOr<PhysicalCommAxisOpInterface> physicalAxis =
+      resolveSymbolOpFromAttr<PhysicalCommAxisOpInterface>(*this,
+                                                           getPhysicalAxisAttr());
+  if (failed(physicalAxis)) {
+    return emitOpError() << "references unknown physical axis symbol "
+                         << getPhysicalAxisAttr();
+  }
+
+  auto axisType = dyn_cast<PhysicalCommAxisType>(getAxis().getType());
+  if (!axisType) {
+    return emitOpError() << "requires result type to be PhysicalCommAxisType";
+  }
+
+  unsigned expectedExtent =
+      static_cast<unsigned>(physicalAxis->getPhysicalAxisSize());
+  if (axisType.getExtent() != expectedExtent) {
+    return emitOpError() << "requires result type extent to match referenced "
+                            "physical axis size ("
+                         << axisType.getExtent() << " != " << expectedExtent
+                         << ")";
+  }
+
+  return success();
+}
+
+LogicalResult GenericAxisOp::verify() {
+  if (!isa<AxisTypeInterface>(getAxis().getType())) {
+    return emitOpError() << "requires result type to implement AxisTypeInterface";
+  }
+
+  return success();
 }
 
 LogicalResult AxisFactorOp::verify() {
-  FailureOr<PhysicalCommAxisOpInterface> physicalAxis =
-      resolveSymbolOpFromAttr<PhysicalCommAxisOpInterface>(
-          *this, (*this)->getAttr("physical_axis"));
-  if (failed(physicalAxis)) {
-    return emitOpError() << "references unknown physical axis symbol "
-                         << (*this)->getAttr("physical_axis");
+  auto axisIface = dyn_cast<AxisTypeInterface>(getAxis().getType());
+  if (!axisIface) {
+    return emitOpError() << "requires axis operand type to implement "
+                            "AxisTypeInterface";
   }
 
-  auto factors = getFactors();
-  int64_t factorProduct = 1;
-  for (auto factor_attr : factors) {
-    if (auto factor = dyn_cast<IntegerAttr>(factor_attr)) {
-      int64_t factorValue = factor.getValue().getSExtValue();
-      if (factorValue <= 0) {
-        return emitOpError() << "requires all factors to be > 0";
-      }
-      factorProduct *= factorValue;
-    } else {
-      return emitOpError() << "requires all factors to be integer attributes";
+  ArrayRef<int32_t> factorExtents = getFactorExtents();
+
+  if (failed(verifyFactorExtents(factorExtents, axisIface.extent(),
+                                 getOperation()))) {
+    return failure();
+  }
+
+  if (getAxisFactors().size() != factorExtents.size()) {
+    return emitOpError() << "requires number of results to match number of "
+                            "factor extents";
+  }
+
+  SmallVector<unsigned> expectedStrides;
+  computeMajorToMinorStrides(factorExtents, expectedStrides);
+
+  for (auto [idx, axisFactorVal] : llvm::enumerate(getAxisFactors())) {
+    auto axisFactorType = dyn_cast<AxisFactorType>(axisFactorVal.getType());
+    if (!axisFactorType) {
+      return emitOpError() << "requires all results to have AxisFactorType";
+    }
+    if (axisFactorType.getAxisType() != getAxis().getType()) {
+      return emitOpError() << "requires result #" << idx
+                           << " to have base axis type equal to operand type";
+    }
+    if (axisFactorType.getExtent() != static_cast<unsigned>(factorExtents[idx])) {
+      return emitOpError() << "requires result #" << idx
+                           << " extent to match factor extent";
+    }
+    if (axisFactorType.getStride() != expectedStrides[idx]) {
+      return emitOpError() << "requires result #" << idx
+                           << " stride to follow leftmost-major convention";
     }
   }
 
-  int64_t physicalAxisSize = physicalAxis->getPhysicalAxisSize();
-  if (factorProduct != physicalAxisSize) {
-    return emitOpError()
-           << "requires product(factors) == referenced physical axis size ("
-           << factorProduct << " != " << physicalAxisSize << ")";
-  }
-
-  return mlir::success();
+  return success();
 }
 
 LogicalResult AxisFactorOp::inferReturnTypes(
@@ -47,95 +119,18 @@ LogicalResult AxisFactorOp::inferReturnTypes(
     DictionaryAttr attributes, OpaqueProperties properties, RegionRange regions,
     SmallVectorImpl<Type> &inferredReturnTypes) {
   AxisFactorOpAdaptor adaptor(operands, attributes, properties, regions);
-  if (!adaptor.getFactors()) {
-    if (location)
-      mlir::emitError(*location) << "missing factor size attribute";
-    return mlir::failure();
-  }
+  ArrayRef<int32_t> factorExtents = adaptor.getFactorExtents();
 
-  inferredReturnTypes.reserve(adaptor.getFactors().size());
-  for (int i = 0; i < adaptor.getFactors().size(); ++i) {
-    inferredReturnTypes.push_back(LogicalCommAxisType::get(context));
-  }
-  return mlir::success();
-}
+  SmallVector<unsigned> strides;
+  computeMajorToMinorStrides(factorExtents, strides);
 
-int64_t AxisFactorOp::getAxisSize(TypedOpResult<LogicalCommAxisType> axis) {
-  auto ax = axis.asOpResult();
-  if (ax.getDefiningOp() != getOperation()) {
-    report_fatal_error("axis not defined by this op");
+  inferredReturnTypes.reserve(factorExtents.size());
+  Type axisType = adaptor.getAxis().getType();
+  for (auto [idx, factorExtent] : llvm::enumerate(factorExtents)) {
+    inferredReturnTypes.push_back(AxisFactorType::get(
+        context, axisType, static_cast<unsigned>(factorExtent), strides[idx]));
   }
-  unsigned i = ax.getResultNumber();
-  // zero, unless we add more results in the future.
-  unsigned offset = getLogicalAxes()[0].getResultNumber();
-  i -= offset;
-  auto factor_attr = getFactors()[i];
-  auto factor = dyn_cast<IntegerAttr>(factor_attr);
-  assert(factor && "factors must be integer attributes");
-  return factor.getValue().getSExtValue();
-}
-
-void AxisFactorOp::resolveToAtomicFactors(
-    TypedOpResult<LogicalCommAxisType> typed_axis,
-    llvm::SmallVectorImpl<TypedOpResult<LogicalCommAxisType>> &atomicFactors) {
-  auto axis = typed_axis.asOpResult();
-  assert(axis.getOwner() == getOperation() &&
-         "cannot resolve atomic factors for axis not defined by this "
-         "AxisFactorOp");
-  atomicFactors.push_back(axis);
-}
-
-LogicalResult AxisProductOp::verify() {
-  for (auto operand : getLogicalAxes()) {
-    auto defining_op = operand.getDefiningOp();
-    if (!isa<LogicalCommAxisOpInterface>(defining_op)) {
-      return emitOpError() << "requires all factors to be defined by ops "
-                           << "implementing the LogicalCommAxisOpInterface";
-    }
-  }
-
-  if (!areLogicalAxesDisjoint(getLogicalAxis())) {
-    return emitOpError()
-           << "requires atomic factors to be distinct, and all factors "
-              "for the same physical axis to come from one factorization op";
-  }
-
-  return mlir::success();
-}
-
-int64_t
-AxisProductOp::getAxisSize(TypedOpResult<LogicalCommAxisType> typed_axis) {
-  auto axis = typed_axis.asOpResult();
-  // This op defines a single value, so just check if the
-  // proper value is passed.
-  if (getLogicalAxis() != axis) {
-    report_fatal_error("axis not defined by this op");
-  }
-  int64_t size = 1;
-  for (auto operand : getLogicalAxes()) {
-    // get the defining op and assert it should implement
-    // the LogicalCommAxisOpInterface
-    auto defining_op = operand.getDefiningOp();
-    auto comm_axis_op = dyn_cast<LogicalCommAxisOpInterface>(defining_op);
-    size *= comm_axis_op.getAxisSize(operand);
-  }
-  return size;
-}
-
-void AxisProductOp::resolveToAtomicFactors(
-    TypedOpResult<LogicalCommAxisType> typed_axis,
-    llvm::SmallVectorImpl<TypedOpResult<LogicalCommAxisType>> &atomicFactors) {
-  auto axis = typed_axis.asOpResult();
-  if (getLogicalAxis() != axis) {
-    emitOpError()
-        << "cannot resolve atomic factors for axis not defined by this "
-        << "AxisProductOp";
-    return;
-  }
-
-  for (auto operandAxis : getLogicalAxes()) {
-    resolveLogicalAxisToAtomicFactors(operandAxis, atomicFactors);
-  }
+  return success();
 }
 
 } // namespace mlir::enzyme::distributed

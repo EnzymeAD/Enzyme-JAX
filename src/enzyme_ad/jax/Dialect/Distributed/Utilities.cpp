@@ -1,71 +1,161 @@
+#include "Utilities.h"
 #include "Dialect.h"
 
 namespace mlir::enzyme::distributed {
 
-namespace {
+// Dispatches alias checks for canonical axes. Canonical axes are
+// either equivalent or wholly disjoint.
+static bool areAxesEquivalent(Value lhs, Value rhs) {
+  if (!isa<AxisTypeInterface>(lhs.getType()) ||
+      !isa<AxisTypeInterface>(rhs.getType())) {
+    return false;
+  }
+  if (lhs.getType().getTypeID() != rhs.getType().getTypeID()) {
+    return false;
+  }
+  auto lhsAxisIface = dyn_cast<AxisTypeInterface>(lhs.getType());
+  assert(lhsAxisIface && "axis value type must implement AxisTypeInterface");
+  if (!lhsAxisIface) {
+    return false;
+  }
+  return lhsAxisIface.aliases(lhs, rhs);
+}
 
-bool areAtomicFactorsDisjoint(
-    ArrayRef<TypedOpResult<LogicalCommAxisType>> atomicFactors) {
-  llvm::SmallDenseSet<OpResult> seenAtomicFactors;
-  llvm::SmallDenseMap<Attribute, Operation *> physicalAxisToFactorization;
+// Tests if two axis factors are disjoint members of some valid factorization
+// of a shared source axis. Assumes both factors are derived from the same
+// source axis.
+static bool arePairwiseFactorsDisjoint(const AxisFactorType &f1,
+                                       const AxisFactorType &f2) {
+  unsigned majorStride = f1.getStride();
+  unsigned majorExtent = f1.getExtent();
+  unsigned minorStride = f2.getStride();
+  unsigned minorExtent = f2.getExtent();
+  if (majorStride < minorStride) {
+    std::swap(majorStride, minorStride);
+    std::swap(majorExtent, minorExtent);
+  }
 
-  for (TypedOpResult<LogicalCommAxisType> atomicFactor : atomicFactors) {
-    OpResult factorResult = atomicFactor.asOpResult();
-    if (!seenAtomicFactors.insert(factorResult).second) {
+  (void)majorExtent;
+  unsigned minorSpan = minorStride * minorExtent;
+  if (majorStride < minorSpan) {
+    return false;
+  }
+  if ((majorStride % minorSpan) != 0) {
+    return false;
+  }
+  return true;
+}
+
+// Asserts an axis (not factor) type and gets the extent
+int getAxisSize(Value axis) {
+  auto axisInterface = dyn_cast<AxisTypeInterface>(axis.getType());
+  assert(axisInterface && "axis type must implement AxisTypeInterface");
+  return static_cast<int>(axisInterface.extent());
+}
+
+// Asserts a factor type and gets the extent.
+int getFactorSize(Value factor) {
+  auto factorType = dyn_cast<AxisFactorType>(factor.getType());
+  assert(factorType && "factor type must be AxisFactorType");
+  return static_cast<int>(factorType.getExtent());
+}
+
+// Returns the defining source axis for a factor value.
+FailureOr<Value> getFactorProvenanceAxis(Value factor) {
+  if (!isa<AxisFactorType>(factor.getType())) {
+    return failure();
+  }
+
+  if (auto axisFactor = factor.getDefiningOp<AxisFactorOp>()) {
+    return axisFactor.getAxis();
+  }
+
+  return failure();
+}
+
+// Checks factor compatibility and pairwise non-overlap metadata.
+bool areFactorsDisjoint(ValueRange factors) {
+  if (factors.empty()) {
+    return true;
+  }
+
+  assert(factors.size() < 100 &&
+         "factor disjointness uses quadratic pairwise checks");
+
+  struct FactorInfo {
+    AxisFactorType factorType;
+    Value provenance;
+  };
+
+  // Cache provenance once so pairwise checks remain pure and cheap.
+  SmallVector<FactorInfo> cachedFactors;
+  cachedFactors.reserve(factors.size());
+  for (Value factor : factors) {
+    auto factorType = dyn_cast<AxisFactorType>(factor.getType());
+    assert(factorType && "factor value must have AxisFactorType");
+    if (!factorType) {
       return false;
     }
+    assert(factorType.getExtent() > 0 && "factor extent must be positive");
+    assert(factorType.getStride() > 0 && "factor stride must be positive");
 
-    auto axisFactorOp =
-        dyn_cast_or_null<AxisFactorOp>(factorResult.getDefiningOp());
-    if (!axisFactorOp) {
-      return false;
-    }
+    auto provenance = getFactorProvenanceAxis(factor);
+    assert(succeeded(provenance) && "factor must have a provenance axis");
+    cachedFactors.push_back({factorType, *provenance});
+  }
 
-    Attribute physicalAxis = axisFactorOp.getPhysicalAxisAttr();
-    Operation *&firstFactorization = physicalAxisToFactorization[physicalAxis];
-    if (!firstFactorization) {
-      firstFactorization = axisFactorOp.getOperation();
-      continue;
-    }
+  for (size_t i = 0; i < cachedFactors.size(); ++i) {
+    for (size_t j = i + 1; j < cachedFactors.size(); ++j) {
+      const auto &[lhsType, lhsAxis] = cachedFactors[i];
+      const auto &[rhsType, rhsAxis] = cachedFactors[j];
 
-    if (firstFactorization != axisFactorOp.getOperation()) {
-      return false;
+      if (!areAxesEquivalent(lhsAxis, rhsAxis)) {
+        continue;
+      }
+      if (!arePairwiseFactorsDisjoint(lhsType, rhsType)) {
+        return false;
+      }
     }
   }
 
   return true;
 }
 
-} // namespace
+// Checks that factors reconstruct the full source axis extent.
+bool areFactorsComplete(Value axis, ValueRange factors) {
+  if (factors.empty() || !areFactorsDisjoint(factors)) {
+    return false;
+  }
 
-void resolveLogicalAxisToAtomicFactors(
-    TypedOpResult<LogicalCommAxisType> logicalAxis,
-    SmallVectorImpl<TypedOpResult<LogicalCommAxisType>> &atomicFactors) {
-  auto ax = logicalAxis.asOpResult();
-  Operation *definingOp = ax.getDefiningOp();
+  // Replication axes do not participate in completeness checks.
+  if (isa<ReplicationAxisType>(axis.getType())) {
+    return true;
+  }
 
-  auto axisInterface = cast<LogicalCommAxisOpInterface>(definingOp);
-  axisInterface.resolveToAtomicFactors(logicalAxis, atomicFactors);
-}
-
-int getAxisSize(TypedOpResult<LogicalCommAxisType> logicalAxis) {
-  auto ax = logicalAxis.asOpResult();
-  Operation *definingOp = ax.getDefiningOp();
-
-  auto axisInterface = cast<LogicalCommAxisOpInterface>(definingOp);
-  return axisInterface.getAxisSize(logicalAxis);
-}
-
-bool areLogicalAxesDisjoint(ValueRange logicalAxes) {
-  llvm::SmallVector<TypedOpResult<LogicalCommAxisType>> atomicFactors;
-  for (Value logicalAxis : logicalAxes) {
-    if (!isa<LogicalCommAxisType>(logicalAxis.getType())) {
+  // given disjointness, we are complete iff all factors
+  // belong to the target axis and the extents cover the whole
+  // extent of the source axis.
+  uint64_t product = 1;
+  for (Value factor : factors) {
+    auto factorType = dyn_cast<AxisFactorType>(factor.getType());
+    assert(factorType && "factor value must have AxisFactorType");
+    if (!factorType) {
       return false;
     }
-    resolveLogicalAxisToAtomicFactors(
-        TypedOpResult<LogicalCommAxisType>(logicalAxis), atomicFactors);
+    if (isa<ReplicationAxisType>(factorType.getAxisType())) {
+      continue;
+    }
+
+    auto provenance = getFactorProvenanceAxis(factor);
+    assert(succeeded(provenance) && "factor must have a provenance axis");
+    if (failed(provenance) || *provenance != axis) {
+      return false;
+    }
+
+    product *= static_cast<uint64_t>(getFactorSize(factor));
   }
-  return areAtomicFactorsDisjoint(atomicFactors);
+
+  return product == static_cast<uint64_t>(getAxisSize(axis));
 }
 
 } // namespace mlir::enzyme::distributed
