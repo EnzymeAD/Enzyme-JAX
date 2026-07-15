@@ -17,6 +17,8 @@ namespace mlir::enzyme::distributed {
 
 namespace {
 
+// Rewrite pattern to convert shardy functions (func.func with shardy ops)
+// to distributed functions within a given mesh computations.
 struct FuncToDistributedFunctionPattern
     : public OpRewritePattern<func::FuncOp> {
   FuncToDistributedFunctionPattern(
@@ -233,7 +235,7 @@ struct ShardyToDistributedPass
       distributedFunctionNames.insert(info.symName);
     }
 
-    // Now we copy the shardy functions into the mesh computation,
+    // Now we move the shardy functions into the mesh computation,
     // rewrite them to use the distributed dialect ops for functions,
     // yield, and call, and raise their collectives to our collective
     // abstractions. Normal HLO ops can be left as-is, since they are
@@ -242,7 +244,8 @@ struct ShardyToDistributedPass
     for (const FindShardyFunctionsAnalysis::FunctionInfo &info :
          analysis.getShardyFunctions()) {
       func::FuncOp shardyFunction = info.funcOp;
-      builder.clone(*shardyFunction.getOperation());
+      shardyFunction->moveBefore(&meshComputationBody.front(),
+                                 meshComputationBody.front().end());
     }
 
     RewritePatternSet patterns(moduleOp.getContext());
