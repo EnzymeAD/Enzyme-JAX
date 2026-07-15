@@ -1011,7 +1011,7 @@ gentbl_cc_library(
 
 td_library(
     name = "DistributedPassesTdFiles",
-    srcs = [],
+    srcs = ["Passes/Distributed/Passes.td"],
     deps = [
         "@llvm-project//mlir:PassBaseTdFiles",
     ],
