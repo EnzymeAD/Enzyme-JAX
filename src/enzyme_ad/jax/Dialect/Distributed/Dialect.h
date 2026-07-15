@@ -73,6 +73,9 @@ void resolveLogicalAxisToAtomicFactors(
     TypedOpResult<LogicalCommAxisType> logicalAxis,
     ::llvm::SmallVectorImpl<TypedOpResult<LogicalCommAxisType>> &atomicFactors);
 
+TypedOpResult<CollectiveTokenType> resolveCollectiveTokenToRootCollective(
+    TypedOpResult<CollectiveTokenType> token);
+
 int getAxisSize(TypedOpResult<LogicalCommAxisType> logicalAxis);
 
 } // namespace mlir::enzyme::distributed
