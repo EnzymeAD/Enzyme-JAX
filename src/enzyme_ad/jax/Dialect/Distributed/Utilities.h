@@ -13,15 +13,20 @@ template <typename OpTy>
   if (!symRef) {
     return ::mlir::failure();
   }
-  auto *op = ::mlir::SymbolTable::lookupNearestSymbolFrom(from, symRef);
-  if (!op) {
-    return ::mlir::failure();
+
+  for (auto *scope = from; scope; scope = scope->getParentOp()) {
+    if (!scope->hasTrait<::mlir::OpTrait::SymbolTable>()) {
+      continue;
+    }
+    if (auto *op = ::mlir::SymbolTable::lookupSymbolIn(scope, symRef)) {
+      if (auto typedOp = llvm::dyn_cast<OpTy>(op)) {
+        return typedOp;
+      }
+      return ::mlir::failure();
+    }
   }
-  auto typedOp = llvm::dyn_cast<OpTy>(op);
-  if (!typedOp) {
-    return ::mlir::failure();
-  }
-  return typedOp;
+
+  return ::mlir::failure();
 }
 
 // Returns the execution-context FactorGroup value from the nearest enclosing
