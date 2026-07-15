@@ -280,8 +280,9 @@ struct ShardyFunctionToDistributedPass
 
     FailureOr<PhysicalMeshOp> physicalMesh = findPhysicalMesh(funcOp);
     if (failed(physicalMesh)) {
-      funcOp.emitError() << "references unknown or invalid physical mesh symbol '"
-                         << physicalMeshSymName << "'";
+      funcOp.emitError()
+          << "references unknown or invalid physical mesh symbol '"
+          << physicalMeshSymName << "'";
       signalPassFailure();
       return;
     }
@@ -305,37 +306,60 @@ struct ShardyFunctionToDistributedPass
     }
     auto shardyMesh = (*shardyMeshes)[0];
 
-    OpBuilder builder(funcOp);
-    builder.setInsertionPointToStart(&funcOp.getBody().front());
+    // Create a new entry block with identical block arguments as the
+    // current function body block. We insert new ops into this block, allowing
+    // the old block to be copied as-is in the future.
+    Block *oldEntryBlock = &funcOp.getBody().front();
+    llvm::SmallVector<Location> argLocs;
+    argLocs.reserve(oldEntryBlock->getNumArguments());
+    for (BlockArgument arg : oldEntryBlock->getArguments()) {
+      argLocs.push_back(arg.getLoc());
+    }
+    Block *newEntryBlock = new Block();
+    newEntryBlock->addArguments(oldEntryBlock->getArgumentTypes(), argLocs);
+    funcOp.getBody().push_front(newEntryBlock);
 
+    OpBuilder builder(funcOp);
+    builder.setInsertionPointToStart(newEntryBlock);
+
+    // Find the logical mesh projection and insert into the new entry block.
     FailureOr<Value> logicalMesh =
-      projectToPhysicalMesh(funcOp, builder, shardyMesh, *physicalMesh);
+        projectToPhysicalMesh(funcOp, builder, shardyMesh, *physicalMesh);
     if (failed(logicalMesh)) {
-      funcOp.emitError()
-          << "failed to factor shardy mesh " << shardyMesh
-          << " onto physical mesh " << *physicalMesh;
+      funcOp.emitError() << "failed to factor shardy mesh " << shardyMesh
+                         << " onto physical mesh " << *physicalMesh;
       signalPassFailure();
       return;
     }
-    // We need to convert the (logical) shardy mesh into its projection onto
-    // the physical mesh. There may be multiple projections, and in the case
-    // of communication heterogeneity, result in different performance!
-    // We will try to project logical mesh axis to physical mesh axes using
-    // their relative order, but this is a heuristic.
 
-    // Functions are isolated from above, so the live-ins and live-outs
-    // are just the function arguments and return values. We can then wrap the
-    // body of the function in a mesh computation region for our dialect. We
-    // need to:
-    // - Define the return types (and counts) of the mesh computation to match
-    // the return
-    //   types of the function.
-    // - Define the arg types of the mesh computation to match the argument
-    // types
-    //   of the function.
-    // - Wire the SSA values between function and mesh.
-    // - To do LATER: resolve submeshing, subdevices, and copy function code
-    // into the mesh region.
+    // Create a new MeshComputationOp with the logical mesh in the new entry
+    // block, where the argument and return types match that of the function.
+    // Then we can move the old entry block into the region of the
+    // MeshComputationOp.
+    llvm::SmallVector<Type> meshComputationResultTypes =
+        llvm::to_vector(funcOp.getResultTypes());
+    llvm::SmallVector<Value> meshComputationInputs(
+        newEntryBlock->getArguments().begin(),
+        newEntryBlock->getArguments().end());
+    auto meshComputationOp = builder.create<MeshComputationOp>(
+        funcOp.getLoc(), meshComputationResultTypes, *logicalMesh,
+        meshComputationInputs);
+
+    Region &meshBody = meshComputationOp->getRegion(0);
+    if (!meshBody.empty()) {
+      meshBody.front().erase();
+    }
+    oldEntryBlock->moveBefore(&meshBody, meshBody.begin());
+
+    auto oldReturn = cast<func::ReturnOp>(oldEntryBlock->getTerminator());
+
+    builder.setInsertionPoint(oldReturn);
+    builder.create<DistributedYieldOp>(oldReturn.getLoc(),
+                                       oldReturn.getOperands());
+    oldReturn.erase();
+
+    builder.setInsertionPointToEnd(newEntryBlock);
+    builder.create<func::ReturnOp>(funcOp.getLoc(), meshComputationOp.getResults());
   }
 };
 
