@@ -28,21 +28,11 @@ def ReplicationAxisType : DistributedAxisType<"ReplicationAxis", "replication_ax
 	let assemblyFormat = "`<` $extent `>`";
 }
 
-
-// Small (unecessary?) type wrapping products of logical axis and "reduce" for sharding annotations.
-def ShardingAxisType : DistributedType<"Sharding", "sharding">;
-
-def PhysicalMeshType : DistributedType<"PhysicalMesh", "physical_mesh">;
-def LogicalMeshType : DistributedType<"LogicalMesh", "logical_mesh">;
-
 // Wraps a value type that may be synchronized at a later point.
 def AsynchHandleType : DistributedType<"AsynchHandle", "asynch_handle"> {
   let summary = "Handle to a value that can be synchronized later";
   let parameters = (ins "::mlir::Type":$valueType);
   let assemblyFormat = "`<` $valueType `>`";
 }
-
-// Single token type used for collective declaration and message events.
-def MessageTokenType : DistributedType<"MessageToken", "message_token">;
 
 #endif // ENZYME_DISTRIBUTED_DIALECT_TYPES_H
