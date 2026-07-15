@@ -9,7 +9,7 @@ include "Dialect.td"
 include "Interfaces.td"
 include "Types.td"
 
-def AxisGetAxisOp : AxisOp<"getaxis", [Pure, DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
+def AxisGetAxisOp : AxisOp<"getaxis", [MetadataOpTrait, DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
   let description = [{
     Materializes a canonical ShapeAxis value for one ranked, static shape index.
   }];
@@ -22,7 +22,7 @@ def AxisGetAxisOp : AxisOp<"getaxis", [Pure, DeclareOpInterfaceMethods<InferType
   let hasVerifier = 1;
 }
 
-def AxisFactorOp : AxisOp<"factor", [Pure, DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
+def AxisFactorOp : AxisOp<"factor", [MetadataOpTrait, DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
   let description = [{
     Factors one canonical axis into leftmost-major factors with static extents.
   }];
@@ -35,7 +35,7 @@ def AxisFactorOp : AxisOp<"factor", [Pure, DeclareOpInterfaceMethods<InferTypeOp
   let hasVerifier = 1;
 }
 
-def AxisSegmentOp : AxisOp<"segment", [Pure, DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
+def AxisSegmentOp : AxisOp<"segment", [MetadataOpTrait, DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
   let description = [{
     Splits one canonical axis into left-to-right contiguous linear segments.
     Segment result index is value-ordered: lower result indices denote lower
@@ -51,7 +51,7 @@ def AxisSegmentOp : AxisOp<"segment", [Pure, DeclareOpInterfaceMethods<InferType
   let hasVerifier = 1;
 }
 
-def AxisProductOp : AxisOp<"product", [Pure, DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
+def AxisProductOp : AxisOp<"product", [MetadataOpTrait, DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
   let description = [{
     Recombines a leftmost-major factor list into one virtual factor product.
   }];
