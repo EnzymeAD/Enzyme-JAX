@@ -14,16 +14,18 @@ defvar TensorType = HLO_Tensor;
 defvar ShardedTensorType = HLO_Tensor; // Subject to change, for now shardy just adds attributes on top of a regular tensor.
 
 // Mesh definition ops
-def PhysicalMeshOp : DistributedOp<"PhysicalMesh"> {
+def PhysicalMeshOp : DistributedOp<"PhysicalMesh", [Symbol]> {
     let description = [{Defines a physical mesh of devices based on the hardware topology.
     A physical mesh is a Cartesian product of zero or more physical axes. Axes should be distinct!
     Two copies of the same axis is permitted (but may better be represented as a larger axis), but
     passing the same axis twice is an error.}];
     let arguments = (ins
-        Variadic<PhysicalCommAxisType>:$axes
+        SymbolNameAttr:$sym_name,
+        FlatSymbolRefArrayAttr:$axes,
+        OptionalAttr<StrAttr>:$sym_visibility
     );
-    let results = (outs PhysicalMeshType:$mesh);
-    let assemblyFormat = "$axes attr-dict";
+    let assemblyFormat = "$sym_name $axes attr-dict";
+    let hasVerifier = 1;
 }
 
 def LogicalMeshOp : DistributedOp<"LogicalMesh"> {
@@ -38,26 +40,26 @@ def LogicalMeshOp : DistributedOp<"LogicalMesh"> {
 }
 
 def AxisAllToAllOp : DistributedOp<"AxisAllToAll", [
-    DeclareOpInterfaceMethods<CommAxisOpInterface>,
+    Symbol,
     DeclareOpInterfaceMethods<PhysicalCommAxisOpInterface>
-] > {
+]> {
     let description = [{
        A communication channel where any device can communicate to any other device without
        bandwidth conflict or latency scaling with index distance. 
      }];
     let arguments = (ins
+        SymbolNameAttr:$sym_name,
         UI32Attr:$axis_size,
         // TODO should these be floats?
         UI64Attr:$bandwidth, // in bytes per picosecond
-        UI64Attr:$latency // in picoseconds.
+        UI64Attr:$latency, // in picoseconds.
+        OptionalAttr<StrAttr>:$sym_visibility
     );
-    let results = (outs PhysicalCommAxisType:$axis);
-    let assemblyFormat = "$axis_size $bandwidth $latency attr-dict";
+    let assemblyFormat = "$sym_name $axis_size $bandwidth $latency attr-dict";
 }
 
 def AxisFactorOp : DistributedOp<"AxisFactor", [
     DeclareOpInterfaceMethods<InferTypeOpInterface>,
-    DeclareOpInterfaceMethods<CommAxisOpInterface>,
     DeclareOpInterfaceMethods<LogicalCommAxisOpInterface>
 ]> {
     let description = [{
@@ -67,7 +69,7 @@ def AxisFactorOp : DistributedOp<"AxisFactor", [
        Returns a logical axis per factor.
      }];
     let arguments = (ins
-        PhysicalCommAxisType:$physical_axis,
+        FlatSymbolRefAttr:$physical_axis,
         I32ArrayAttr:$factors
     );
     let results = (outs Variadic<LogicalCommAxisType>:$logical_axes);
@@ -77,7 +79,6 @@ def AxisFactorOp : DistributedOp<"AxisFactor", [
 
 
 def AxisProductOp : DistributedOp<"AxisProduct", [
-    DeclareOpInterfaceMethods<CommAxisOpInterface>,
     DeclareOpInterfaceMethods<LogicalCommAxisOpInterface>
 ]> {
     let description = [{

@@ -10,35 +10,64 @@ using llvm::report_fatal_error;
 
 namespace mlir::enzyme::distributed {
 
-int64_t AxisAllToAllOp::getAxisSize(::mlir::Value axis) {
-  // This op defines a single value, so just check if the
-  // proper value is passed.
-  if (getAxis() != axis) {
-    report_fatal_error("axis not defined by this op");
+LogicalResult PhysicalMeshOp::verify() {
+  for (auto axisRef : getAxes()) {
+    auto axisSymRef = dyn_cast<FlatSymbolRefAttr>(axisRef);
+    if (!axisSymRef)
+      return emitOpError() << "requires axes to be flat symbol refs";
+    Operation *axisOp = SymbolTable::lookupNearestSymbolFrom(*this, axisSymRef);
+    if (!axisOp)
+      return emitOpError() << "references unknown physical axis symbol "
+                           << axisSymRef;
+    if (!isa<PhysicalCommAxisOpInterface>(axisOp)) {
+      return emitOpError() << "requires all referenced axes to implement "
+                           << "PhysicalCommAxisOpInterface";
+    }
   }
-  auto axisSizeValues = getAxisSizeAttr().getValue();
-  return axisSizeValues.getSExtValue();
+  return mlir::success();
+}
+
+int64_t AxisAllToAllOp::getPhysicalAxisSize() {
+  return static_cast<int64_t>(getAxisSize());
 }
 
 LogicalResult AxisFactorOp::verify() {
+  auto physicalAxisRef = (*this)->getAttrOfType<FlatSymbolRefAttr>("physical_axis");
+  if (!physicalAxisRef)
+    return emitOpError() << "requires physical_axis symbol reference";
+
+  Operation *physicalAxisOp =
+      SymbolTable::lookupNearestSymbolFrom(*this, physicalAxisRef);
+  if (!physicalAxisOp)
+    return emitOpError() << "references unknown physical axis symbol "
+                         << physicalAxisRef;
+
+  auto physicalAxis = dyn_cast<PhysicalCommAxisOpInterface>(physicalAxisOp);
+  if (!physicalAxis)
+    return emitOpError() << "requires physical_axis to reference an op "
+                         << "implementing PhysicalCommAxisOpInterface";
+
   auto factors = getFactors();
+  int64_t factorProduct = 1;
   for (auto factor_attr : factors) {
     if (auto factor = dyn_cast<IntegerAttr>(factor_attr)) {
-      if (factor.getValue().getSExtValue() <= 0) {
+      int64_t factorValue = factor.getValue().getSExtValue();
+      if (factorValue <= 0) {
         return emitOpError() << "requires all factors to be > 0";
       }
+      factorProduct *= factorValue;
     } else {
       return emitOpError() << "requires all factors to be integer attributes";
     }
   }
 
-  if (getLogicalAxes().size() != factors.size()) {
-    return emitOpError() << "requires one logical axis result per factor (got "
-                         << getLogicalAxes().size() << " results for "
-                         << factors.size() << " factors)";
+  int64_t physicalAxisSize = physicalAxis.getPhysicalAxisSize();
+  if (factorProduct != physicalAxisSize) {
+    return emitOpError()
+           << "requires product(factors) == referenced physical axis size ("
+           << factorProduct << " != " << physicalAxisSize << ")";
   }
 
-  // TODO: Verify that product(factors) equals physical_axis size.
   return mlir::success();
 }
 
@@ -77,9 +106,9 @@ int64_t AxisFactorOp::getAxisSize(::mlir::Value axis) {
 LogicalResult AxisProductOp::verify() {
   for (auto operand : getLogicalAxes()) {
     auto defining_op = operand.getDefiningOp();
-    if (!isa<CommAxisOpInterface>(defining_op)) {
+    if (!isa<LogicalCommAxisOpInterface>(defining_op)) {
       return emitOpError() << "requires all factors to be defined by ops "
-                           << "implementing the CommAxisOpInterface";
+                           << "implementing the LogicalCommAxisOpInterface";
     }
   }
   // TODO disjointness
@@ -95,9 +124,9 @@ int64_t AxisProductOp::getAxisSize(::mlir::Value axis) {
   int64_t size = 1;
   for (auto operand : getLogicalAxes()) {
     // get the defining op and assert it should implement
-    // the CommAxisOpInterface
+    // the LogicalCommAxisOpInterface
     auto defining_op = operand.getDefiningOp();
-    auto comm_axis_op = dyn_cast<CommAxisOpInterface>(defining_op);
+    auto comm_axis_op = dyn_cast<LogicalCommAxisOpInterface>(defining_op);
     size *= comm_axis_op.getAxisSize(operand);
   }
   return size;
