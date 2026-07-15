@@ -1,3 +1,4 @@
+#include "CollectiveOps.h"
 #include "Dialect.h"
 
 namespace mlir::enzyme::distributed {
