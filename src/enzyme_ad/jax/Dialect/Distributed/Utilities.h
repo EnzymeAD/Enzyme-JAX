@@ -26,9 +26,13 @@ template <typename OpTy>
 
 using ::mlir::enzyme::axis::areFactorsComplete;
 using ::mlir::enzyme::axis::areFactorsDisjoint;
+using ::mlir::enzyme::axis::areSegmentsComplete;
+using ::mlir::enzyme::axis::areSegmentsDisjoint;
 using ::mlir::enzyme::axis::getAxisExtent;
 using ::mlir::enzyme::axis::getFactorExtent;
 using ::mlir::enzyme::axis::getFactorProvenanceAxis;
+using ::mlir::enzyme::axis::getSegmentExtent;
+using ::mlir::enzyme::axis::getSegmentProvenanceAxis;
 
 } // namespace mlir::enzyme::distributed
 

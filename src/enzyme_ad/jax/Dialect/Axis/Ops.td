@@ -35,12 +35,28 @@ def AxisFactorOp : AxisOp<"factor", [Pure, DeclareOpInterfaceMethods<InferTypeOp
   let hasVerifier = 1;
 }
 
-def AxisGroupOp : AxisOp<"group", [Pure, DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
+def AxisSegmentOp : AxisOp<"segment", [Pure, DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
   let description = [{
-    Recombines a leftmost-major factor list into one virtual factor group.
+    Splits one canonical axis into left-to-right contiguous linear segments.
+    Segment result index is value-ordered: lower result indices denote lower
+    axis values. Concretely, result #0 starts at offset 0 and each following
+    result starts at the cumulative extent of all prior segments.
+  }];
+  let arguments = (ins
+    AnyType:$axis,
+    DenseI32ArrayAttr:$segment_extents
+  );
+  let results = (outs Variadic<AxisSegmentType>:$axis_segments);
+  let assemblyFormat = "$axis $segment_extents attr-dict `:` type($axis)";
+  let hasVerifier = 1;
+}
+
+def AxisProductOp : AxisOp<"product", [Pure, DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
+  let description = [{
+    Recombines a leftmost-major factor list into one virtual factor product.
   }];
   let arguments = (ins Variadic<AxisFactorType>:$factors);
-  let results = (outs FactorGroupType:$group);
+  let results = (outs FactorGroupType:$product);
   let assemblyFormat = "$factors attr-dict `:` type($factors)";
   let hasVerifier = 1;
 }
