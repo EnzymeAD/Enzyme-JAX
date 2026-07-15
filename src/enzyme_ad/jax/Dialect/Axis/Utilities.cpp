@@ -189,6 +189,72 @@ bool areFactorsDisjoint(ValueRange factors) {
   return true;
 }
 
+// Compares two factor lists as index-space descriptors, ignoring ordering.
+// This is multiset equality over (extent, stride, provenance-axis equivalence)
+// and is intentionally permutation-invariant.
+bool areFactorIndexSpacesEqual(ValueRange lhsFactors, ValueRange rhsFactors) {
+  if (lhsFactors.size() != rhsFactors.size()) {
+    return false;
+  }
+
+  struct FactorInfo {
+    Value provenance;
+    unsigned extent;
+    unsigned stride;
+  };
+
+  auto buildFactorInfo = [](ValueRange factors,
+                            SmallVectorImpl<FactorInfo> &out) -> bool {
+    out.clear();
+    out.reserve(factors.size());
+    for (Value factor : factors) {
+      auto factorType = dyn_cast<AxisFactorType>(factor.getType());
+      if (!factorType) {
+        return false;
+      }
+      auto provenance =
+          getFactorProvenanceAxis(cast<TypedValue<AxisFactorType>>(factor));
+      if (failed(provenance)) {
+        return false;
+      }
+      out.push_back(
+          {*provenance, factorType.getExtent(), factorType.getStride()});
+    }
+    return true;
+  };
+
+  SmallVector<FactorInfo> lhsInfo;
+  SmallVector<FactorInfo> rhsInfo;
+  if (!buildFactorInfo(lhsFactors, lhsInfo) ||
+      !buildFactorInfo(rhsFactors, rhsInfo)) {
+    return false;
+  }
+
+  SmallVector<bool> rhsMatched(rhsInfo.size(), false);
+  for (const FactorInfo &lhs : lhsInfo) {
+    bool foundMatch = false;
+    for (auto [rhsIndex, rhs] : llvm::enumerate(rhsInfo)) {
+      if (rhsMatched[rhsIndex]) {
+        continue;
+      }
+      if (lhs.extent != rhs.extent || lhs.stride != rhs.stride) {
+        continue;
+      }
+      if (!areAxesEquivalent(lhs.provenance, rhs.provenance)) {
+        continue;
+      }
+      rhsMatched[rhsIndex] = true;
+      foundMatch = true;
+      break;
+    }
+    if (!foundMatch) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 // Checks segment pairwise non-overlap metadata.
 bool arePairwiseSegmentsDisjoint(Value lhsSegment, Value rhsSegment,
                                  Value lhsProvenanceAxis,
