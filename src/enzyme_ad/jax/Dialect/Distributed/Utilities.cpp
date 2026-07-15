@@ -124,4 +124,23 @@ bool isLogicalMeshSubmesh(LogicalMeshOp logicalMesh, LogicalMeshOp submesh) {
   return true;
 }
 
+FailureOr<int64_t> getLogicalMeshSize(LogicalMeshOp logicalMesh) {
+  llvm::SmallVector<Value> atomicFactors;
+  if (failed(resolveLogicalMeshToAtomicFactors(logicalMesh, atomicFactors))) {
+    return failure();
+  }
+
+  int64_t meshSize = 1;
+  for (Value atomicFactor : atomicFactors) {
+    auto definingOp = atomicFactor.getDefiningOp();
+    auto axisInterface = dyn_cast_or_null<LogicalCommAxisOpInterface>(definingOp);
+    if (!axisInterface) {
+      return failure();
+    }
+    meshSize *= axisInterface.getAxisSize(atomicFactor);
+  }
+
+  return meshSize;
+}
+
 } // namespace mlir::enzyme::distributed
