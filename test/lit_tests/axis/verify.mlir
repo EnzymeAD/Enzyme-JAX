@@ -74,29 +74,65 @@ func.func @factor_requires_stride_convention() {
 
 // -----
 
-func.func @group_requires_factor_op_results(%arg0: !axis.axis_factor<!axis.shape_axis<tensor<6xf32>, 0>, 2, 3>) {
+func.func @product_requires_factor_op_results(%arg0: !axis.axis_factor<!axis.shape_axis<tensor<6xf32>, 0>, 2, 3>) {
   // expected-error @+1 {{requires factor operands to be op results}}
-  %g = axis.group %arg0 : !axis.axis_factor<!axis.shape_axis<tensor<6xf32>, 0>, 2, 3>
+  %g = axis.product %arg0 : !axis.axis_factor<!axis.shape_axis<tensor<6xf32>, 0>, 2, 3>
   return
 }
 
 // -----
 
-func.func @group_requires_axis_factor_producer() {
+func.func @product_requires_axis_factor_producer() {
   %axis = axis.getaxis tensor<6xf32> 0
   %f0, %f1 = axis.factor %axis [2, 3] : !axis.shape_axis<tensor<6xf32>, 0>
   %fake = builtin.unrealized_conversion_cast %f0 : !axis.axis_factor<!axis.shape_axis<tensor<6xf32>, 0>, 2, 3> to !axis.axis_factor<!axis.shape_axis<tensor<6xf32>, 0>, 2, 3>
   // expected-error @+1 {{requires factor operands to be produced by axis.factor}}
-  %g = axis.group %fake, %f1 : !axis.axis_factor<!axis.shape_axis<tensor<6xf32>, 0>, 2, 3>, !axis.axis_factor<!axis.shape_axis<tensor<6xf32>, 0>, 3, 1>
+  %g = axis.product %fake, %f1 : !axis.axis_factor<!axis.shape_axis<tensor<6xf32>, 0>, 2, 3>, !axis.axis_factor<!axis.shape_axis<tensor<6xf32>, 0>, 3, 1>
   return
 }
 
 // -----
 
-func.func @group_requires_extent_product_match() {
+func.func @product_requires_extent_product_match() {
   %axis = axis.getaxis tensor<6xf32> 0
   %f0, %f1 = axis.factor %axis [2, 3] : !axis.shape_axis<tensor<6xf32>, 0>
-  // expected-error @+1 {{requires group extent to equal product of factor extents}}
-  %g = "axis.group"(%f0, %f1) : (!axis.axis_factor<!axis.shape_axis<tensor<6xf32>, 0>, 2, 3>, !axis.axis_factor<!axis.shape_axis<tensor<6xf32>, 0>, 3, 1>) -> !axis.factor_group<5>
+  // expected-error @+1 {{requires product extent to equal product of factor extents}}
+  %g = "axis.product"(%f0, %f1) : (!axis.axis_factor<!axis.shape_axis<tensor<6xf32>, 0>, 2, 3>, !axis.axis_factor<!axis.shape_axis<tensor<6xf32>, 0>, 3, 1>) -> !axis.factor_group<5>
+  return
+}
+
+// -----
+
+func.func @segment_requires_positive_extents() {
+  %axis = axis.getaxis tensor<6xf32> 0
+  // expected-error @+1 {{requires all segment extents to be > 0}}
+  %s0, %s1 = axis.segment %axis [0, 6] : !axis.shape_axis<tensor<6xf32>, 0>
+  return
+}
+
+// -----
+
+func.func @segment_requires_extent_sum_match() {
+  %axis = axis.getaxis tensor<6xf32> 0
+  // expected-error @+1 {{requires sum(segment_extents) == axis extent (4 != 6)}}
+  %s0, %s1 = axis.segment %axis [2, 2] : !axis.shape_axis<tensor<6xf32>, 0>
+  return
+}
+
+// -----
+
+func.func @segment_requires_offset_layout() {
+  %axis = axis.getaxis tensor<6xf32> 0
+  // expected-error @+1 {{requires result #1 offset to match cumulative segment layout (low result index maps to low axis values)}}
+  %s0, %s1 = "axis.segment"(%axis) {segment_extents = array<i32: 2, 4>} : (!axis.shape_axis<tensor<6xf32>, 0>) -> (!axis.axis_segment<!axis.shape_axis<tensor<6xf32>, 0>, 2, 0>, !axis.axis_segment<!axis.shape_axis<tensor<6xf32>, 0>, 4, 1>)
+  return
+}
+
+// -----
+
+func.func @segment_requires_first_result_to_start_at_low_values() {
+  %axis = axis.getaxis tensor<6xf32> 0
+  // expected-error @+1 {{requires result #0 offset to match cumulative segment layout (low result index maps to low axis values)}}
+  %s0, %s1 = "axis.segment"(%axis) {segment_extents = array<i32: 2, 4>} : (!axis.shape_axis<tensor<6xf32>, 0>) -> (!axis.axis_segment<!axis.shape_axis<tensor<6xf32>, 0>, 2, 1>, !axis.axis_segment<!axis.shape_axis<tensor<6xf32>, 0>, 4, 3>)
   return
 }
