@@ -21,13 +21,26 @@ defvar ShardingAttribute = Sdy_TensorSharding;
 // Marker for distributed metadata ops. Includes builtin Pure.
 def PureDistributedMetadata : TraitList<[MetadataOpTrait]>;
 
-def GetPhysicalAxisOp : DistributedOp<"GetPhysicalAxis", [PureDistributedMetadata]> {
+def PhysicalMeshOp : DistributedOp<"PhysicalMesh", [PureDistributedMetadata, Symbol]> {
     let description = [{
-        Resolves a module-level physical axis symbol into an SSA axis value.
+        Declares a mesh of device targets along with their local communication hierarchy.
+        }];
+    let arguments = (ins
+        SymbolNameAttr:$sym_name,
+        StrAttr:$device_target,
+        ArrayAttr:$axes // array of physical axis types.
+    );
+    let assemblyFormat = "$sym_name `device_target` $device_target `axes` $axes attr-dict";
+    let hasVerifier = 1;
+}
+
+def GetPhysicalMeshAxesOp : DistributedOp<"GetPhysicalMeshAxes", [PureDistributedMetadata]> {
+    let description = [{
+        Resolves a module-level physical mesh symbol into one SSA axis value per mesh axis.
      }];
-    let arguments = (ins FlatSymbolRefAttr:$physical_axis);
-    let results = (outs PhysicalCommAxisType:$axis);
-    let assemblyFormat = "$physical_axis attr-dict `:` type($axis)";
+    let arguments = (ins FlatSymbolRefAttr:$physical_mesh);
+    let results = (outs Variadic<PhysicalCommAxisType>:$axes);
+    let assemblyFormat = "$physical_mesh attr-dict `:` type($axes)";
     let hasVerifier = 1;
 }
 
