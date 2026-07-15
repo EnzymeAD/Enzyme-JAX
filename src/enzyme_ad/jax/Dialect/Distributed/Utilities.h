@@ -11,6 +11,10 @@ namespace mlir::enzyme::distributed {
 lookupSymbolInEnclosingScopes(::mlir::Operation *from,
                               ::mlir::FlatSymbolRefAttr symRef);
 
+// Finds the unique distributed physical mesh in the module.
+::mlir::FailureOr<::mlir::enzyme::distributed::PhysicalMeshOp>
+findUniquePhysicalMesh(::mlir::ModuleOp moduleOp);
+
 template <typename OpTy>
 ::mlir::FailureOr<OpTy> resolveSymbolOpFromAttr(::mlir::Operation *from,
                                                 ::mlir::Attribute opAttr) {
