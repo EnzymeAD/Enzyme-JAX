@@ -13,6 +13,7 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
 
+#include <cassert>
 #include <numeric>
 #include <optional>
 #include <string>
@@ -23,6 +24,31 @@ namespace mlir::enzyme::distributed {
 #include "src/enzyme_ad/jax/Passes/Distributed/Passes.h.inc"
 
 namespace {
+
+constexpr llvm::StringLiteral kAllReducePlaceholderSymbol =
+    "not_yet_implemented_sdy_to_distributed_all_reduce_conversion";
+
+static void ensurePlaceholderAllReduceReductionFunction(ModuleOp moduleOp) {
+  if (moduleOp.lookupSymbol<func::FuncOp>(kAllReducePlaceholderSymbol)) {
+    return;
+  }
+
+  OpBuilder builder(moduleOp.getContext());
+  builder.setInsertionPointToStart(moduleOp.getBody());
+
+  auto scalarTensorType = RankedTensorType::get({}, builder.getF32Type());
+  auto reductionFnType = builder.getFunctionType(
+      {scalarTensorType, scalarTensorType}, {scalarTensorType});
+  auto reductionFn = builder.create<func::FuncOp>(
+      moduleOp.getLoc(), kAllReducePlaceholderSymbol, reductionFnType);
+  reductionFn.setPrivate();
+
+  Block *entry = reductionFn.addEntryBlock();
+  builder.setInsertionPointToStart(entry);
+  auto add = builder.create<stablehlo::AddOp>(
+      moduleOp.getLoc(), entry->getArgument(0), entry->getArgument(1));
+  builder.create<func::ReturnOp>(moduleOp.getLoc(), add.getResult());
+}
 
 // Casts a range of values/typed-values to untyped values, mostly for
 // meeting builder interface requirements.
@@ -155,7 +181,7 @@ LogicalResult getDimMappings(
 // distributed axis factor.
 template <typename StablehloCollectiveOp>
 LogicalResult collectReplicaGroupMeshAxes(
-    StablehloCollectiveOp op,
+    StablehloCollectiveOp op, PatternRewriter &rewriter,
     const llvm::StringMap<Value> &shardyToDistributedAxis,
     llvm::SmallVector<TypedValue<axis::AxisFactorType>> &out_meshAxes) {
   auto replicaGroupsAttr = op.getReplicaGroups();
@@ -170,10 +196,12 @@ LogicalResult collectReplicaGroupMeshAxes(
   }
 
   for (Attribute axisAttr : replicaGroupMeshAxesAttr.getAxes()) {
+    std::optional<sdy::AxisRefAttr> axisRef;
     std::string axisName;
     if (auto axisNameAttr = dyn_cast<StringAttr>(axisAttr)) {
       axisName = axisNameAttr.getValue().str();
     } else if (auto axisRefAttr = dyn_cast<sdy::AxisRefAttr>(axisAttr)) {
+      axisRef = axisRefAttr;
       axisName = axisRefAttr.getName().str();
     }
     if (axisName.empty()) {
@@ -191,8 +219,36 @@ LogicalResult collectReplicaGroupMeshAxes(
              << axisName;
     }
 
-    out_meshAxes.push_back(castTypedValue<axis::AxisFactorType>(
-        axisMappingIt->getValue(), "AxisFactorType"));
+    auto mappedAxisFactor = castTypedValue<axis::AxisFactorType>(
+        axisMappingIt->getValue(), "AxisFactorType");
+
+    if (axisRef && axisRef->getSubAxisInfo()) {
+      int subAxisExtent = static_cast<int>(axisRef->getSubAxisInfo().getSize());
+      int subAxisStride =
+          static_cast<int>(axisRef->getSubAxisInfo().getPreSize());
+      int fullAxisExtent = axis::getFactorExtent(mappedAxisFactor);
+
+      if (subAxisExtent <= 0 || subAxisStride <= 0 ||
+          (fullAxisExtent % (subAxisExtent * subAxisStride)) != 0) {
+        return op.emitOpError() << "invalid subaxis " << *axisRef
+                                << " for mesh axis factor " << mappedAxisFactor;
+      }
+
+      auto provenanceAxis = axis::getFactorProvenanceAxis(mappedAxisFactor);
+      if (failed(provenanceAxis)) {
+        return op.emitOpError()
+               << "failed to resolve provenance axis for mesh factor "
+               << mappedAxisFactor;
+      }
+
+      auto subAxisFactor = rewriter.create<axis::AxisFactorOp>(
+          op.getLoc(), *provenanceAxis, subAxisExtent, subAxisStride);
+      out_meshAxes.push_back(axis::castTypedValue<axis::AxisFactorType>(
+          subAxisFactor.getResult(), "AxisFactorType"));
+      continue;
+    }
+
+    out_meshAxes.push_back(mappedAxisFactor);
   }
 
   return success();
@@ -229,7 +285,7 @@ LogicalResult getDimMappings(
   // axis attribute from the shardy op.
 
   llvm::SmallVector<TypedValue<axis::AxisFactorType>> gatheredMeshAxes;
-  if (failed(collectReplicaGroupMeshAxes(op, shardyToDistributedAxis,
+  if (failed(collectReplicaGroupMeshAxes(op, rewriter, shardyToDistributedAxis,
                                          gatheredMeshAxes))) {
     return failure();
   }
@@ -244,38 +300,32 @@ LogicalResult getDimMappings(
                             << outputTensorFactors.size() << ")";
   }
 
-  auto outputGatherFactor = outputTensorFactors[concatDim];
-  auto outputGatherAxis = axis::getFactorProvenanceAxis(outputGatherFactor);
-  if (failed(outputGatherAxis)) {
-    return op.emitOpError(
-        "failed to resolve provenance axis for all_gather output factor");
-  }
-
-  // The size of the concatenated output dimension should be equal to the
-  // product of the gather-over dimensions and the corresponding rank of the
-  // input tensor.
-  llvm::SmallVector<int32_t> gatherRefactorExtents;
-  gatherRefactorExtents.reserve(gatheredMeshAxes.size() + 1);
+  // Keep output mesh as full execution context. For gathered mesh axes, add
+  // replicate(extent) -> mesh-axis mappings so mapping_rhs still covers output
+  // mesh factors without adding extra non-replication factors on mapping_lhs.
   for (TypedValue<axis::AxisFactorType> gatheredMeshAxis : gatheredMeshAxes) {
-    gatherRefactorExtents.push_back(
-        static_cast<int32_t>(gatheredMeshAxis.getType().getExtent()));
-  }
-  gatherRefactorExtents.push_back(static_cast<int32_t>(
-      inputTensorFactors[concatDim].getType().getExtent()));
-
-  llvm::SmallVector<TypedValue<axis::AxisFactorType>>
-      gatheredOutputFactorValues = axis::factorAxisByExtents(
-          *outputGatherAxis, gatherRefactorExtents, rewriter, op.getLoc());
-
-  // map each gathered mesh axis to its matching major output gather factor.
-  for (auto [idx, gatheredMeshAxis] : llvm::enumerate(gatheredMeshAxes)) {
-    out_mappingLHS.push_back({gatheredMeshAxis});
-    out_mappingRHS.push_back({gatheredOutputFactorValues[idx]});
+    int extent = static_cast<int>(gatheredMeshAxis.getType().getExtent());
+    auto replicationAxis = rewriter.create<distributed::ReplicationAxisOp>(
+        op.getLoc(), rewriter.getI32IntegerAttr(extent));
+    auto replicationFactors = axis::viewAxesAsFactors(
+        ValueRange{replicationAxis.getAxis()}, rewriter, op.getLoc());
+    if (replicationFactors.size() != 1) {
+      return op.emitOpError(
+          "failed to create replication factor for all_gather mapping");
+    }
+    out_mappingLHS.push_back({replicationFactors.front()});
+    out_mappingRHS.push_back({gatheredMeshAxis});
   }
 
-  // map the input gather dimension to the remaining minor output gather factor.
-  out_mappingLHS.push_back({inputTensorFactors[concatDim]});
-  out_mappingRHS.push_back({gatheredOutputFactorValues.back()});
+  // Map gathered mesh factors + input gather factor to the full output gather
+  // factor. This avoids over-constraining factorization details while
+  // preserving extent equality for the mapping pair.
+  llvm::SmallVector<TypedValue<axis::AxisFactorType>> gatherLHS;
+  gatherLHS.reserve(gatheredMeshAxes.size() + 1);
+  gatherLHS.append(gatheredMeshAxes.begin(), gatheredMeshAxes.end());
+  gatherLHS.push_back(inputTensorFactors[concatDim]);
+  out_mappingLHS.push_back(gatherLHS);
+  out_mappingRHS.push_back({outputTensorFactors[concatDim]});
 
   // Identity map remaining tensor factors.
   for (int64_t i = 0; i < static_cast<int64_t>(inputTensorFactors.size());
@@ -299,14 +349,21 @@ LogicalResult getDimMappings(
     out_mappingRHS.push_back({outputFactor});
   }
 
-  // Identity map mesh axes that are not part of this gather.
-  for (TypedValue<axis::AxisFactorType> axisFactor :
-       meshAxisFactorsMajorFirst) {
-    if (std::find(gatheredMeshAxes.begin(), gatheredMeshAxes.end(),
-                  axisFactor) == gatheredMeshAxes.end()) {
-      out_mappingLHS.push_back({axisFactor});
-      out_mappingRHS.push_back({axisFactor});
-    }
+  auto fullMeshGroup =
+      rewriter.create<axis::AxisProductOp>(op.getLoc(), asValues(meshAxisFactorsMajorFirst))
+          .getProduct();
+  auto remainingMeshFactors =
+      axis::subtractFactorsFromFactorGroup(fullMeshGroup, gatheredMeshAxes,
+                                           rewriter);
+  if (failed(remainingMeshFactors)) {
+    return op.emitOpError(
+        "failed to subtract gathered mesh factors from execution mesh factors");
+  }
+
+  // Identity map mesh factors that remain after removing gathered subaxes.
+  for (TypedValue<axis::AxisFactorType> axisFactor : *remainingMeshFactors) {
+    out_mappingLHS.push_back({axisFactor});
+    out_mappingRHS.push_back({axisFactor});
   }
 
   // all_gather has no reductions.
@@ -352,8 +409,6 @@ LogicalResult getDimMappings(
   // group of mesh factors to mesh factors (since without matching size
   // gaurantees we don't know if the mapping is divisible)
 
-  (void)rewriter;
-
   llvm::SmallVector<TypedValue<axis::AxisFactorType>> orderedMeshFactors(
       meshAxisFactorsMajorFirst.begin(), meshAxisFactorsMajorFirst.end());
 
@@ -386,109 +441,67 @@ LogicalResult getDimMappings(
         "expected non-empty source_target_pairs with [source, target] rows");
   }
 
-  llvm::SmallVector<uint64_t> extents;
-  extents.reserve(orderedMeshFactors.size());
-  for (TypedValue<axis::AxisFactorType> factor : orderedMeshFactors) {
-    extents.push_back(static_cast<uint64_t>(factor.getType().getExtent()));
+  auto meshIndexSpace = rewriter
+                            .create<axis::AxisProductOp>(
+                                op.getLoc(), asValues(orderedMeshFactors))
+                            .getProduct();
+  auto meshIndexSpaceExtent = axis::getFactorGroupExtent(meshIndexSpace);
+  if (failed(meshIndexSpaceExtent) ||
+      *meshIndexSpaceExtent >
+          static_cast<uint64_t>(std::numeric_limits<int>::max())) {
+    return op.emitOpError("failed to compute valid mesh index-space extent for "
+                          "collective_permute");
   }
 
-  auto buildMajorToMinorStrides = [](llvm::ArrayRef<uint64_t> axisExtents) {
-    llvm::SmallVector<uint64_t> strides(axisExtents.size(), 1);
-    uint64_t running = 1;
-    for (int i = static_cast<int>(axisExtents.size()) - 1; i >= 0; --i) {
-      strides[i] = running;
-      running *= axisExtents[i];
-    }
-    return strides;
-  };
-
-  uint64_t totalMeshSize = 1;
-  for (uint64_t extent : extents) {
-    totalMeshSize *= extent;
-  }
+  int totalMeshSize = static_cast<int>(*meshIndexSpaceExtent);
+  llvm::SmallVector<int> rhsIndices(totalMeshSize, -1);
   for (size_t i = 0; i < sourceTargetPairs.size(); i += 2) {
     int64_t source = sourceTargetPairs[i];
     int64_t target = sourceTargetPairs[i + 1];
     if (source < 0 || target < 0 ||
-        static_cast<uint64_t>(source) >= totalMeshSize ||
-        static_cast<uint64_t>(target) >= totalMeshSize) {
+        source >= static_cast<int64_t>(totalMeshSize) ||
+        target >= static_cast<int64_t>(totalMeshSize)) {
       return op.emitOpError()
              << "source_target_pairs contains id outside mesh range [0, "
              << totalMeshSize << "): [" << source << ", " << target << "]";
     }
+    if (rhsIndices[static_cast<size_t>(source)] != -1) {
+      return op.emitOpError()
+             << "source_target_pairs contains duplicate source id " << source;
+    }
+    rhsIndices[static_cast<size_t>(source)] = static_cast<int>(target);
   }
 
-  llvm::SmallVector<uint64_t> sourceStrides = buildMajorToMinorStrides(extents);
-
-  llvm::SmallVector<unsigned> permutation(extents.size());
-  std::iota(permutation.begin(), permutation.end(), 0);
-
-  llvm::SmallVector<unsigned> inferredPermutation;
-  bool foundPermutation = false;
-  bool ambiguousPermutation = false;
-
-  do {
-    llvm::SmallVector<uint64_t> permutedExtents;
-    permutedExtents.reserve(extents.size());
-    for (unsigned axisIdx : permutation) {
-      permutedExtents.push_back(extents[axisIdx]);
-    }
-
-    llvm::SmallVector<uint64_t> targetOrderStrides =
-        buildMajorToMinorStrides(permutedExtents);
-    llvm::SmallVector<uint64_t> targetStridesByAxis(extents.size(), 0);
-    for (auto [position, axisIdx] : llvm::enumerate(permutation)) {
-      targetStridesByAxis[axisIdx] = targetOrderStrides[position];
-    }
-
-    bool permutationMatches = true;
-    for (size_t i = 0; i < sourceTargetPairs.size() && permutationMatches;
-         i += 2) {
-      uint64_t source = static_cast<uint64_t>(sourceTargetPairs[i]);
-      uint64_t target = static_cast<uint64_t>(sourceTargetPairs[i + 1]);
-      for (size_t axisIdx = 0; axisIdx < extents.size(); ++axisIdx) {
-        uint64_t sourceCoord =
-            (source / sourceStrides[axisIdx]) % extents[axisIdx];
-        uint64_t targetCoord =
-            (target / targetStridesByAxis[axisIdx]) % extents[axisIdx];
-        if (sourceCoord != targetCoord) {
-          permutationMatches = false;
-          break;
-        }
-      }
-    }
-
-    if (permutationMatches) {
-      if (foundPermutation) {
-        ambiguousPermutation = true;
-        break;
-      }
-      inferredPermutation = permutation;
-      foundPermutation = true;
-    }
-  } while (std::next_permutation(permutation.begin(), permutation.end()));
-
-  if (!foundPermutation) {
+  if (std::find(rhsIndices.begin(), rhsIndices.end(), -1) != rhsIndices.end()) {
     return op.emitOpError(
-        "failed to infer mesh-axis permutation from source_target_pairs");
-  }
-  if (ambiguousPermutation) {
-    return op.emitOpError(
-        "source_target_pairs underconstrained: multiple mesh permutations "
-        "satisfy the mapping");
+        "source_target_pairs must define a total source->target mapping for "
+        "collective_permute");
   }
 
-  llvm::SmallVector<TypedValue<axis::AxisFactorType>> sourceMeshFactors;
-  llvm::SmallVector<TypedValue<axis::AxisFactorType>> targetMeshFactors;
-  sourceMeshFactors.reserve(orderedMeshFactors.size());
-  targetMeshFactors.reserve(orderedMeshFactors.size());
-  sourceMeshFactors.append(orderedMeshFactors.begin(),
-                           orderedMeshFactors.end());
-  for (unsigned axisIdx : inferredPermutation) {
-    targetMeshFactors.push_back(orderedMeshFactors[axisIdx]);
+  auto inferredMap =
+      axis::inferMapFromIndices(meshIndexSpace, rhsIndices, rewriter);
+  if (failed(inferredMap)) {
+    return op.emitOpError(
+        "failed to infer axis.map from collective_permute source_target_pairs");
   }
-  out_mappingLHS.push_back(sourceMeshFactors);
-  out_mappingRHS.push_back(targetMeshFactors);
+
+  auto inferredMapOp = (*inferredMap).template getDefiningOp<axis::AxisMapOp>();
+  if (!inferredMapOp || inferredMapOp.getMappingRhs().size() != 1) {
+    return op.emitOpError(
+        "expected inferred collective_permute map to have exactly one RHS "
+        "factor group");
+  }
+
+  auto rhsGroup = axis::castTypedValue<axis::FactorGroupType>(
+      inferredMapOp.getMappingRhs().front(), "FactorGroupType");
+  auto inferredRhsFactors = axis::getProductProvenanceFactors(rhsGroup);
+  if (failed(inferredRhsFactors)) {
+    return op.emitOpError(
+        "failed to extract inferred RHS factors for collective_permute");
+  }
+
+  out_mappingLHS.push_back(orderedMeshFactors);
+  out_mappingRHS.push_back(*inferredRhsFactors);
 
   // collective_permute should preserve local tensor shape; map tensor factors
   // by rank position with equal extent.
@@ -536,7 +549,7 @@ LogicalResult getDimMappings(
   }
 
   llvm::SmallVector<TypedValue<axis::AxisFactorType>> reductionDims;
-  if (failed(collectReplicaGroupMeshAxes(op, shardyToDistributedAxis,
+  if (failed(collectReplicaGroupMeshAxes(op, rewriter, shardyToDistributedAxis,
                                          reductionDims))) {
     return failure();
   }
@@ -589,9 +602,8 @@ LogicalResult getDimMappings(
   // TODO we need to make reduction function somewhere,
   // for now make an obviously bogus symbol
   out_reductionDims = reductionDims;
-  out_reductionFunction = FlatSymbolRefAttr::get(
-      op.getContext(),
-      "not_yet_implemented_sdy_to_distributed_all_reduce_conversion");
+  out_reductionFunction =
+      FlatSymbolRefAttr::get(op.getContext(), kAllReducePlaceholderSymbol);
 
   return success();
 }
@@ -688,9 +700,14 @@ struct StablehloCollectiveToDistributedCollectivePattern
     llvm::SmallVector<Attribute> reductionFunctions;
     reductionFunctions.reserve(reductionFunction.has_value() ? 1 : 0);
 
-    reductionGroups.push_back(makeFactorGroup(reductionDims));
+    if (!reductionDims.empty() || reductionFunction.has_value()) {
+      reductionGroups.push_back(makeFactorGroup(reductionDims));
+    }
     if (reductionFunction.has_value()) {
       reductionFunctions.push_back(*reductionFunction);
+    }
+    if (reductionFunctions.empty()) {
+      reductionGroups.clear();
     }
 
     llvm::SmallVector<TypedValue<axis::FactorGroupType>> mappingLHSGroups =
@@ -701,6 +718,9 @@ struct StablehloCollectiveToDistributedCollectivePattern
     llvm::SmallVector<Value> reductionGroupValues = asValues(reductionGroups);
     llvm::SmallVector<Value> mappingLHSValues = asValues(mappingLHSGroups);
     llvm::SmallVector<Value> mappingRHSValues = asValues(mappingRHSGroups);
+    auto axisMap = rewriter.create<axis::AxisMapOp>(
+        op.getLoc(), ValueRange(mappingLHSValues),
+        ValueRange(mappingRHSValues));
 
     // Step 2: create the distributed collective op.
     auto enclosingDistributedFunction =
@@ -716,8 +736,7 @@ struct StablehloCollectiveToDistributedCollectivePattern
         rewriter.create<distributed::DistributedCollectiveOp>(
             op.getLoc(), op->getOperand(0), executionContext, executionContext,
             ValueRange(reductionGroupValues),
-            rewriter.getArrayAttr(reductionFunctions),
-            ValueRange(mappingLHSValues), ValueRange(mappingRHSValues),
+            rewriter.getArrayAttr(reductionFunctions), axisMap.getMap(),
             TypeAttr::get(outputTensorAsTensorType));
 
     // Step 3: get the distributed collective op result handle,
@@ -802,6 +821,8 @@ struct ShardyToDistributedPass
 
   void runOnOperation() override {
     ModuleOp moduleOp = getOperation();
+
+    ensurePlaceholderAllReduceReductionFunction(moduleOp);
 
     FailureOr<distributed::PhysicalMeshOp> physicalMesh =
         distributed::findUniquePhysicalMesh(moduleOp);

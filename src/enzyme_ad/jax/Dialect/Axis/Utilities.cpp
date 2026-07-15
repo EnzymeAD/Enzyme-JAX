@@ -1,9 +1,14 @@
 #include "Utilities.h"
 
 #include <algorithm>
+#include <limits>
+#include <numeric>
 
+#include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
+
+#define DEBUG_TYPE "axis-infer-map"
 
 namespace mlir::enzyme::axis {
 
@@ -176,9 +181,8 @@ bool areFactorsDisjoint(
   SmallVector<FactorInfo> cachedFactors;
   cachedFactors.reserve(factors.size());
   for (auto factor : factors) {
-    auto factorType = factor.getType();
-    assert(factorType.getExtent() > 0 && "factor extent must be positive");
-    assert(factorType.getStride() > 0 && "factor stride must be positive");
+    assert(getFactorExtent(factor) > 0 && "factor extent must be positive");
+    assert(getFactorStride(factor) > 0 && "factor stride must be positive");
 
     auto provenance = getFactorProvenanceAxis(factor);
     assert(succeeded(provenance) && "factor must have a provenance axis");
@@ -362,8 +366,8 @@ bool areSegmentsDisjoint(ValueRange segments) {
   for (Value segment : segments) {
     auto segmentTyped =
         castTypedValue<AxisSegmentType>(segment, "AxisSegmentType");
-    auto segmentType = segmentTyped.getType();
-    assert(segmentType.getExtent() > 0 && "segment extent must be positive");
+    assert(getSegmentExtent(segmentTyped) > 0 &&
+           "segment extent must be positive");
 
     auto provenance = getSegmentProvenanceAxis(segmentTyped);
     assert(succeeded(provenance) && "segment must have a provenance axis");
@@ -402,6 +406,8 @@ bool areFactorsComplete(Value axis,
     auto provenance = getFactorProvenanceAxis(factor);
     assert(succeeded(provenance) && "factor must have a provenance axis");
     assert(*provenance == axis && "factor must belong to the target axis");
+    if (*provenance != axis)
+      return false; // for non-debug builds
 
     product *= static_cast<uint64_t>(getFactorExtent(factor));
   }
@@ -711,6 +717,368 @@ bool split_divisible(ArrayRef<TypedValue<FactorGroupType>> lhs,
   }
 
   return success;
+}
+
+// Subtract one factor from one factor. Returns major-first remainder factors.
+static FailureOr<llvm::SmallVector<TypedValue<AxisFactorType>>>
+subtractFactorFromFactor(TypedValue<AxisFactorType> minuend,
+                         TypedValue<AxisFactorType> subtrahend,
+                         OpBuilder &builder, Location loc) {
+  if (arePairwiseFactorsDisjoint(minuend, subtrahend)) {
+    return llvm::SmallVector<TypedValue<AxisFactorType>>{minuend};
+  }
+
+  auto minuendAxis = getFactorProvenanceAxis(minuend);
+  auto subAxis = getFactorProvenanceAxis(subtrahend);
+  if (failed(minuendAxis) || failed(subAxis) ||
+      !areAxesEquivalent(*minuendAxis, *subAxis)) {
+    return failure();
+  }
+
+  int aExtent = getFactorExtent(minuend);
+  int aStride = getFactorStride(minuend);
+  int bExtent = getFactorExtent(subtrahend);
+  int bStride = getFactorStride(subtrahend);
+  if (aExtent <= 1 || aStride <= 1 || bExtent <= 1 || bStride <= 1) {
+    return failure();
+  }
+
+  int64_t aSpan = static_cast<int64_t>(aExtent) * static_cast<int64_t>(aStride);
+  int64_t bSpan = static_cast<int64_t>(bExtent) * static_cast<int64_t>(bStride);
+
+  llvm::SmallVector<TypedValue<AxisFactorType>> remainder;
+
+  // Upper remainder: larger covered range than the removed factor.
+  if (aSpan > bSpan) {
+    if ((aSpan % bSpan) != 0) {
+      return failure();
+    }
+    int64_t upperExtent = aSpan / bSpan;
+    if (upperExtent > 1) {
+      if (upperExtent > std::numeric_limits<int32_t>::max()) {
+        return failure();
+      }
+      auto upperFactor = builder.create<AxisFactorOp>(
+          loc, *minuendAxis, static_cast<int32_t>(upperExtent),
+          static_cast<int32_t>(bSpan));
+      remainder.push_back(castTypedValue<AxisFactorType>(
+          upperFactor.getResult(), "AxisFactorType"));
+    }
+  }
+
+  // Lower remainder: retained minor regions below the removed factor stride.
+  if (aStride < bStride) {
+    if ((bStride % aStride) != 0) {
+      return failure();
+    }
+    int64_t lowerExtent = bStride / aStride;
+    if (lowerExtent > 1) {
+      if (lowerExtent > std::numeric_limits<int32_t>::max()) {
+        return failure();
+      }
+      auto lowerFactor = builder.create<AxisFactorOp>(
+          loc, *minuendAxis, static_cast<int32_t>(lowerExtent),
+          static_cast<int32_t>(aStride));
+      remainder.push_back(castTypedValue<AxisFactorType>(
+          lowerFactor.getResult(), "AxisFactorType"));
+    }
+  }
+
+  // Neither condition means minuend is eclipsed by subtrahend under this
+  // factor-space subtraction model.
+  return remainder;
+}
+
+FailureOr<llvm::SmallVector<TypedValue<AxisFactorType>>>
+subtractFactorsFromFactorGroup(
+    TypedValue<FactorGroupType> minuend,
+    llvm::ArrayRef<TypedValue<AxisFactorType>> subtrahend, OpBuilder &builder) {
+  auto remainder = getProductProvenanceFactors(minuend);
+  if (failed(remainder)) {
+    return failure();
+  }
+  auto loc = minuend.getLoc();
+
+  for (TypedValue<AxisFactorType> removedFactor : subtrahend) {
+    llvm::SmallVector<TypedValue<AxisFactorType>> nextRemainder;
+    nextRemainder.reserve(remainder->size());
+
+    bool hadAliasOverlap = false;
+    for (TypedValue<AxisFactorType> candidate : *remainder) {
+      auto candidateAxis = getFactorProvenanceAxis(candidate);
+      auto removedAxis = getFactorProvenanceAxis(removedFactor);
+      if (failed(candidateAxis) || failed(removedAxis)) {
+        return failure();
+      }
+      hadAliasOverlap =
+          hadAliasOverlap || areAxesEquivalent(*candidateAxis, *removedAxis);
+
+      auto partialRemainder =
+          subtractFactorFromFactor(candidate, removedFactor, builder, loc);
+      if (failed(partialRemainder)) {
+        return failure();
+      }
+      nextRemainder.append(partialRemainder->begin(), partialRemainder->end());
+    }
+
+    // If there is no aliasing factor in the current remainder, subtraction is
+    // undefined for this removed factor.
+    if (!hadAliasOverlap) {
+      return failure();
+    }
+
+    *remainder = std::move(nextRemainder);
+  }
+
+  return *remainder;
+}
+
+struct _global_factor {
+  int extent;
+  int global_stride;
+};
+
+// Projects one factor defined in a virtual factor-group index space onto
+// factors of the real underlying axes.
+static FailureOr<llvm::SmallVector<TypedValue<AxisFactorType>>>
+projectVirtualFactorToRealFactors(TypedValue<FactorGroupType> virtualAxis,
+                                  int virtualStride, int virtualExtent,
+                                  OpBuilder &builder, Location loc) {
+  LLVM_DEBUG(llvm::dbgs() << "[axis-infer-map] project start stride="
+                          << virtualStride << " extent=" << virtualExtent
+                          << "\n");
+  if (virtualStride <= 0 || virtualExtent <= 0) {
+    return failure();
+  }
+
+  auto virtualFactors = getProductProvenanceFactors(virtualAxis);
+  if (failed(virtualFactors) || virtualFactors->empty()) {
+    return failure();
+  }
+
+  // Remove complete minor-most virtual factors from the virtual stride,
+  // then split the first partially-covered factor as needed.
+  int pivot = static_cast<int>(virtualFactors->size()) - 1;
+  int localStrideInPivot = virtualStride;
+  while (pivot >= 0 &&
+         localStrideInPivot >= getFactorExtent((*virtualFactors)[pivot])) {
+    if (localStrideInPivot % getFactorExtent((*virtualFactors)[pivot]) != 0) {
+      return failure();
+    }
+    localStrideInPivot /= getFactorExtent((*virtualFactors)[pivot]);
+    --pivot;
+  }
+  LLVM_DEBUG(llvm::dbgs() << "[axis-infer-map] project pivot=" << pivot
+                          << " localStrideInPivot=" << localStrideInPivot
+                          << "\n");
+  assert(pivot >= 0 && "Virtual factor must fit within product group extent");
+
+  int remainingExtent = virtualExtent;
+  llvm::SmallVector<TypedValue<AxisFactorType>> projectedMinorToMajor;
+
+  for (int i = pivot; i >= 0 && remainingExtent > 1; --i) {
+    auto sourceFactor = (*virtualFactors)[i];
+    int sourceExtent = getFactorExtent(sourceFactor);
+    int sourceStride = getFactorStride(sourceFactor);
+    int sourcePieceExtent = sourceExtent;
+    int sourcePieceStride = sourceStride;
+
+    if (i == pivot) {
+      sourcePieceExtent = sourceExtent / localStrideInPivot;
+      sourcePieceStride = sourceStride * localStrideInPivot;
+    }
+
+    int takeExtent = 0;
+    if (remainingExtent >= sourcePieceExtent) {
+      if (remainingExtent % sourcePieceExtent != 0) {
+        return failure();
+      }
+      takeExtent = sourcePieceExtent;
+    } else {
+      if (sourcePieceExtent % remainingExtent != 0) {
+        return failure();
+      }
+      takeExtent = remainingExtent;
+    }
+
+    // For partial picks, take the minor-most subpiece of the available source
+    // piece so disjoint virtual factors project to disjoint real factors.
+    int projectedStride = sourcePieceStride;
+    if (takeExtent <= 1) {
+      return failure();
+    }
+
+    auto provenanceAxis = getFactorProvenanceAxis(sourceFactor);
+    if (failed(provenanceAxis)) {
+      return failure();
+    }
+
+    auto projected = builder.create<AxisFactorOp>(loc, *provenanceAxis,
+                                                  takeExtent, projectedStride);
+    LLVM_DEBUG(llvm::dbgs()
+               << "[axis-infer-map]   project factor i=" << i
+               << " src(ext=" << sourceExtent << ", stride=" << sourceStride
+               << ") piece(ext=" << sourcePieceExtent
+               << ", stride=" << sourcePieceStride << ") take=" << takeExtent
+               << " -> projected stride=" << projectedStride << "\n");
+    projectedMinorToMajor.push_back(castTypedValue<AxisFactorType>(
+        projected.getResult(), "AxisFactorType"));
+    remainingExtent /= takeExtent;
+  }
+
+  if (remainingExtent != 1) {
+    return failure();
+  }
+
+  std::reverse(projectedMinorToMajor.begin(), projectedMinorToMajor.end());
+  return projectedMinorToMajor;
+}
+
+// against convention takes MINORMOST FIRST
+llvm::SmallVector<int>
+_globalFactorsToRHSIndices(ArrayRef<_global_factor> factors) {
+  llvm::SmallVector<int> rhs_indices;
+  rhs_indices.push_back(0);
+  for (const auto &factor : factors) {
+    int existing = rhs_indices.size();
+    for (int i = 1; i < factor.extent; ++i) {
+      for (int j = 0; j < existing; ++j) {
+        rhs_indices.push_back(rhs_indices[j] + i * factor.global_stride);
+      }
+    }
+  }
+  return rhs_indices;
+}
+
+// rhs_indices are in the same index space,
+// and are in-order according to their LHS indices
+// (rhs_indices[i] = j means i->j, with i the i'th
+// element within the index space regardless of how the
+// index space is actually laid out.)
+FailureOr<TypedValue<AxisMapType>>
+inferMapFromIndices(TypedValue<FactorGroupType> index_space,
+                    llvm::ArrayRef<int> rhs_indices, OpBuilder &builder) {
+  LLVM_DEBUG(llvm::dbgs() << "[axis-infer-map] inferMapFromIndices rhs size="
+                          << rhs_indices.size() << "\n");
+  auto indexSpaceExtent = getFactorGroupExtent(index_space);
+  if (failed(indexSpaceExtent)) {
+    return failure();
+  }
+  assert(*indexSpaceExtent == rhs_indices.size() &&
+         "index-space extent must match rhs index count");
+  if (*indexSpaceExtent != rhs_indices.size()) {
+    return failure();
+  }
+  if (rhs_indices.size() <= 1) {
+    return failure();
+  }
+  if (rhs_indices[0] != 0) {
+    // no axis map moves zero
+    return failure();
+  }
+
+  auto loc = index_space.getLoc();
+
+  // minormost first, against convention, since it is in this
+  // case easiest to construct the global factors in this order.
+  llvm::SmallVector<_global_factor> factors;
+  int group_stride = 1;
+  int factor_working_extent = 1;
+  int factor_working_stride = rhs_indices[1] - rhs_indices[0];
+  while (group_stride < rhs_indices.size()) {
+    int i1 = group_stride * (factor_working_extent - 1);
+    int i2 = group_stride * factor_working_extent;
+    if (i2 >= rhs_indices.size()) {
+      // finished all of our runs
+      break;
+    }
+    int diff = rhs_indices[i2] - rhs_indices[i1];
+    if (diff != factor_working_stride) {
+      // we've found the end of the run!
+      factors.push_back({factor_working_extent, factor_working_stride});
+      group_stride *= factor_working_extent;
+      if (rhs_indices.size() % group_stride != 0) {
+        // indices don't implement a regular axis mapping
+        return failure();
+      }
+      factor_working_extent = 1;
+      factor_working_stride = rhs_indices[group_stride] - rhs_indices[0];
+    } else {
+      // extend the current run
+      factor_working_extent++;
+    }
+  }
+  // push the last run if it exists
+  if (factor_working_extent > 1) {
+    factors.push_back({factor_working_extent, factor_working_stride});
+  }
+
+  // verify that the reconstructed RHS indices match the original
+  // (we didn't check every index, so this is a final verification)
+  if (_globalFactorsToRHSIndices(factors) != rhs_indices) {
+    return failure();
+  }
+
+  LLVM_DEBUG({
+    llvm::dbgs() << "[axis-infer-map] global factors (minor->major):";
+    for (const auto &factor : factors) {
+      llvm::dbgs() << " (ext=" << factor.extent
+                   << ", stride=" << factor.global_stride << ")";
+    }
+    llvm::dbgs() << "\n";
+  });
+
+  // reverse order of global factors now to meet the
+  // major-most convention used elswhere
+  std::reverse(factors.begin(), factors.end());
+
+  LLVM_DEBUG({
+    llvm::dbgs() << "[axis-infer-map] global factors (major->minor):";
+    for (const auto &factor : factors) {
+      llvm::dbgs() << " (ext=" << factor.extent
+                   << ", stride=" << factor.global_stride << ")";
+    }
+    llvm::dbgs() << "\n";
+  });
+
+  llvm::SmallVector<TypedValue<AxisFactorType>> rhsFactors;
+  for (const auto &globalFactor : factors) {
+    LLVM_DEBUG(llvm::dbgs() << "[axis-infer-map] project global factor ext="
+                            << globalFactor.extent << " stride="
+                            << globalFactor.global_stride << "\n");
+    auto projected = projectVirtualFactorToRealFactors(
+        index_space, globalFactor.global_stride, globalFactor.extent, builder,
+        loc);
+    if (failed(projected)) {
+      return failure();
+    }
+    rhsFactors.append(projected->begin(), projected->end());
+  }
+
+  LLVM_DEBUG({
+    llvm::dbgs() << "[axis-infer-map] rhs factors:";
+    for (TypedValue<AxisFactorType> factor : rhsFactors) {
+      llvm::dbgs() << " (ext=" << getFactorExtent(factor)
+                   << ", stride=" << getFactorStride(factor) << ")";
+    }
+    llvm::dbgs() << "\n";
+  });
+
+  llvm::SmallVector<Value> rhsValues;
+  rhsValues.reserve(rhsFactors.size());
+  for (TypedValue<AxisFactorType> factor : rhsFactors) {
+    rhsValues.push_back(factor);
+  }
+
+  auto rhsGroup =
+      builder.create<AxisProductOp>(loc, ValueRange(rhsValues)).getProduct();
+  llvm::SmallVector<Value> lhsGroups;
+  lhsGroups.push_back(index_space);
+  llvm::SmallVector<Value> rhsGroups;
+  rhsGroups.push_back(rhsGroup);
+  auto mapOp = builder.create<AxisMapOp>(loc, ValueRange(lhsGroups),
+                                         ValueRange(rhsGroups));
+  return castTypedValue<AxisMapType>(mapOp.getMap(), "AxisMapType");
 }
 
 } // namespace mlir::enzyme::axis
