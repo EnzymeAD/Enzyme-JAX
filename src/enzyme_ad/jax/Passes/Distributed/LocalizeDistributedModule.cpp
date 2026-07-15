@@ -20,8 +20,9 @@ namespace distributed {
 #define GEN_PASS_DEF_LOCALIZEDISTRIBUTEDMODULEPASS
 #include "src/enzyme_ad/jax/Passes/Distributed/Passes.h.inc"
 
-// Forward declaration from OverlapCommunication.cpp.
+// Forward declarations from other distributed pass TUs.
 void runOverlapCommunication(MeshComputationOp meshOp, int64_t kMaxVal);
+void sinkRecvs(MeshComputationOp meshOp);
 
 namespace {
 
@@ -114,15 +115,6 @@ TensorBindingMap buildBindingMap(ArrayRef<Operation *> tensorOps,
 // Forward declarations — implemented as member functions of
 // LocalizeDistributedModulePass to access the protected runPipeline.
 
-static const char *modeToString(ShardingMode mode) {
-  switch (mode) {
-  case ShardingMode::Replicated: return "Replicated";
-  case ShardingMode::Sharded:    return "Sharded";
-  case ShardingMode::IndexBased: return "IndexBased";
-  }
-  return "Unknown";
-}
-
 struct LocalizeDistributedModulePass
     : public enzyme::distributed::impl::LocalizeDistributedModulePassBase<
           LocalizeDistributedModulePass> {
@@ -206,6 +198,10 @@ struct LocalizeDistributedModulePass
       runOverlapCommunication(op, /*kMaxVal=*/4);
     });
 
+    // Sink recvs to just before their first use so consumers can start
+    // as soon as their tile arrives rather than waiting behind earlier recvs.
+    clonedFunc.walk([&](MeshComputationOp op) { sinkRecvs(op); });
+
     // Measure the critical path across all MeshComputationOps.
     double maxTime = 0.0;
     clonedFunc.walk([&](MeshComputationOp op) {
@@ -244,28 +240,8 @@ struct LocalizeDistributedModulePass
     // Represent the current config as a mixed-radix counter.
     SmallVector<size_t> indices(numOps, 0);
 
-    // Compute total for logging.
-    uint64_t totalConfigs = 1;
-    bool overflow = false;
-    for (size_t i = 0; i < numOps; ++i) {
-      if (totalConfigs > 1000000 / numCandidatesPerOp) {
-        overflow = true;
-        break;
-      }
-      totalConfigs *= numCandidatesPerOp;
-    }
-
-    if (overflow) {
-      llvm::outs() << "Search space: " << numCandidatesPerOp << "^" << numOps
-                   << " (>1M configs, enumerating exhaustively)\n";
-    } else {
-      llvm::outs() << "Search space: " << totalConfigs << " configurations ("
-                   << numCandidatesPerOp << "^" << numOps << ")\n";
-    }
-
     double bestTime = std::numeric_limits<double>::max();
     SmallVector<BindingCandidate> bestChoices;
-    uint64_t configIndex = 0;
 
     // Enumerate via mixed-radix increment.
     for (;;) {
@@ -274,32 +250,31 @@ struct LocalizeDistributedModulePass
       for (size_t i = 0; i < numOps; ++i)
         current[i] = perOpCandidates[indices[i]];
 
-      double time = evaluateBindingConfig(funcOp, meshOp, tensorOps, current);
-
-      // Log every config and when we find a new best.
-      bool newBest = time < bestTime;
-      {
-        llvm::outs() << "Config " << configIndex;
-        if (!overflow)
-          llvm::outs() << "/" << totalConfigs;
-        llvm::outs() << " time=" << time;
-        if (newBest)
-          llvm::outs() << " (new best)";
-        llvm::outs() << " [";
-        for (size_t i = 0; i < numOps; ++i) {
-          if (i > 0) llvm::outs() << ", ";
-          llvm::outs() << modeToString(current[i].mode)
-                       << "(d=" << current[i].deviceIndex << ")";
+      // TODO for testing purposes
+      // Require at least one tensor to be placed at an indexed position.
+      bool hasIndexBased = llvm::any_of(
+          current, [](const BindingCandidate &c) {
+            return c.mode == ShardingMode::IndexBased;
+          });
+      if (!hasIndexBased) {
+        // Increment mixed-radix counter.
+        bool done = true;
+        for (size_t i = numOps; i-- > 0;) {
+          ++indices[i];
+          if (indices[i] < numCandidatesPerOp) { done = false; break; }
+          indices[i] = 0;
         }
-        llvm::outs() << "]\n";
+        if (done) break;
+        continue;
       }
+
+      double time = evaluateBindingConfig(funcOp, meshOp, tensorOps, current);
+      bool newBest = time < bestTime;
 
       if (newBest) {
         bestTime = time;
         bestChoices = current;
       }
-
-      ++configIndex;
 
       // Increment the mixed-radix counter (rightmost digit first).
       bool done = true;
@@ -315,20 +290,12 @@ struct LocalizeDistributedModulePass
         break;
     }
 
-    llvm::outs() << "Best config (time=" << bestTime << "): [";
-    for (size_t i = 0; i < bestChoices.size(); ++i) {
-      if (i > 0) llvm::outs() << ", ";
-      llvm::outs() << modeToString(bestChoices[i].mode)
-                   << "(dim=" << bestChoices[i].tensorAxis
-                   << ", dev=" << bestChoices[i].deviceIndex << ")";
-    }
-    llvm::outs() << "]\n";
-
     return bestChoices;
   }
 
   void runOnOperation() override {
     ModuleOp moduleOp = getOperation();
+    bool localizedAnyMesh = false;
     SmallVector<MeshComputationOp> meshComputations;
     moduleOp.walk([&](MeshComputationOp meshOp) {
       meshComputations.push_back(meshOp);
@@ -355,10 +322,6 @@ struct LocalizeDistributedModulePass
       if (!funcOp)
         continue;
 
-      llvm::outs() << "Localizing MeshComputation " << meshIndex << " with "
-                   << tensorOps.size() << " tensor ops and "
-                   << localizationAxes.size() << " axes.\n";
-
       // Search for best bindings via exhaustive enumeration.
       SmallVector<BindingCandidate> bestChoices =
           searchBestBindings(funcOp, meshOp, tensorOps, localizationAxes);
@@ -374,7 +337,10 @@ struct LocalizeDistributedModulePass
         signalPassFailure();
         return;
       }
+      localizedAnyMesh = true;
     }
+
+    (void)localizedAnyMesh;
   }
 };
 
