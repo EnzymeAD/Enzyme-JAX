@@ -11,8 +11,10 @@
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringMap.h"
 
 #include <optional>
+#include <string>
 
 namespace mlir::enzyme::distributed {
 
@@ -137,9 +139,10 @@ struct FuncReturnToDistributedYieldPattern
 template <typename StablehloCollectiveOp>
 LogicalResult getDimMappings(
     StablehloCollectiveOp op,
-    const llvm::DenseMap<StringAttr, Value> &shardyToDistributedAxis,
-  llvm::ArrayRef<TypedValue<axis::AxisFactorType>> inputTensorFactors,
-  llvm::ArrayRef<TypedValue<axis::AxisFactorType>> outputTensorFactors,
+  PatternRewriter &rewriter,
+    const llvm::StringMap<Value> &shardyToDistributedAxis,
+    llvm::ArrayRef<TypedValue<axis::AxisFactorType>> inputTensorFactors,
+    llvm::ArrayRef<TypedValue<axis::AxisFactorType>> outputTensorFactors,
     llvm::SmallVector<TypedValue<axis::AxisFactorType>> &out_reductionDims,
     std::optional<FlatSymbolRefAttr> &out_reductionFunction,
     llvm::SmallVector<llvm::SmallVector<TypedValue<axis::AxisFactorType>>>
@@ -151,9 +154,10 @@ LogicalResult getDimMappings(
 template <>
 LogicalResult getDimMappings(
     stablehlo::AllReduceOp op,
-    const llvm::DenseMap<StringAttr, Value> &shardyToDistributedAxis,
-  llvm::ArrayRef<TypedValue<axis::AxisFactorType>> inputTensorFactors,
-  llvm::ArrayRef<TypedValue<axis::AxisFactorType>> outputTensorFactors,
+  PatternRewriter &rewriter,
+    const llvm::StringMap<Value> &shardyToDistributedAxis,
+    llvm::ArrayRef<TypedValue<axis::AxisFactorType>> inputTensorFactors,
+    llvm::ArrayRef<TypedValue<axis::AxisFactorType>> outputTensorFactors,
     llvm::SmallVector<TypedValue<axis::AxisFactorType>> &out_reductionDims,
     std::optional<FlatSymbolRefAttr> &out_reductionFunction,
     llvm::SmallVector<llvm::SmallVector<TypedValue<axis::AxisFactorType>>>
@@ -181,27 +185,46 @@ LogicalResult getDimMappings(
 
   llvm::SmallVector<TypedValue<axis::AxisFactorType>> reductionDims;
   for (Attribute axisAttr : replicaGroupMeshAxesAttr.getAxes()) {
-    // expect these to be a string attr with an axis name.
-    // If not, print the attribute string and its type for debugging.
-    auto axisNameAttr = dyn_cast<StringAttr>(axisAttr);
-    if (!axisNameAttr) {
+    // Accept either a direct string attr or the current shardy axis_ref attr.
+    std::string axisName;
+    if (auto axisNameAttr = dyn_cast<StringAttr>(axisAttr)) {
+      axisName = axisNameAttr.getValue().str();
+    } else if (auto axisRefAttr = dyn_cast<sdy::AxisRefAttr>(axisAttr)) {
+      axisName = axisRefAttr.getName().str();
+    }
+    if (axisName.empty()) {
       return op.emitOpError(
                  "expected all_reduce replica_group_mesh_axes to contain "
-                 "string attributes, instead found ")
+                 "sdy.axis_ref or string attributes, instead found ")
              << axisAttr;
     }
     // expect name to have an axis mapping. If not, print the axis name for
     // debugging.
-    auto axisMappingIt = shardyToDistributedAxis.find(axisNameAttr);
+    auto axisMappingIt = shardyToDistributedAxis.find(axisName);
     if (axisMappingIt == shardyToDistributedAxis.end()) {
       return op.emitOpError(
                  "expected all_reduce replica_group_mesh_axes to have a "
                  "mapping in shardyToDistributedAxis, instead found ")
-             << axisNameAttr;
+             << axisName;
     }
     // add the axis factor to the reductionDims list.
-    reductionDims.push_back(castTypedValue<axis::AxisFactorType>(
-        axisMappingIt->second, "AxisFactorType"));
+    auto reducedFactor = castTypedValue<axis::AxisFactorType>(
+        axisMappingIt->getValue(), "AxisFactorType");
+    reductionDims.push_back(reducedFactor);
+    // Since this is an all-reduce, every device in that spatial dimension
+    // gets the same value, so we need to add replicate(n) --> reduceAx mapping
+    int extent = static_cast<int>(reducedFactor.getType().getExtent());
+    auto replicationAxis = rewriter.create<distributed::ReplicationAxisOp>(
+      op.getLoc(), rewriter.getI32IntegerAttr(extent));
+    auto replicationFactors = axis::viewAxesAsFactors(
+      ValueRange{replicationAxis.getAxis()}, rewriter, op.getLoc());
+    if (replicationFactors.size() != 1) {
+      return op.emitOpError(
+        "failed to create replication factor for all_reduce mapping");
+    }
+    auto replicationFactor = replicationFactors.front();
+    out_mappingLHS.push_back({replicationFactor});
+    out_mappingRHS.push_back({reducedFactor});
   }
 
   // Need to identity map the mesh, tensor axis not being reduced.
@@ -210,8 +233,7 @@ LogicalResult getDimMappings(
   for (int i = 0; i < inputTensorFactors.size(); ++i) {
     auto inputFactor = inputTensorFactors[i];
     auto outputFactor = outputTensorFactors[i];
-    // TODO: this should be "structural" equality not SSA equality.
-    if (inputFactor != outputFactor) {
+    if (axis::areFactorIndexSpacesEqual({inputFactor}, {outputFactor}) == false) {
       return op.emitOpError(
                  "expected input and output tensor factors to be identical, "
                  "instead found ")
@@ -224,8 +246,8 @@ LogicalResult getDimMappings(
   // Anything left in the map that isn't in the reductionDims should also be
   // identity mapped.
   for (const auto &pair : shardyToDistributedAxis) {
-    auto axisFactor = castTypedValue<axis::AxisFactorType>(
-        pair.second, "AxisFactorType");
+    auto axisFactor =
+        castTypedValue<axis::AxisFactorType>(pair.getValue(), "AxisFactorType");
     if (std::find(reductionDims.begin(), reductionDims.end(), axisFactor) ==
         reductionDims.end()) {
       out_mappingLHS.push_back({axisFactor});
@@ -247,7 +269,7 @@ struct StablehloCollectiveToDistributedCollectivePattern
     : public OpRewritePattern<StablehloCollectiveOp> {
   StablehloCollectiveToDistributedCollectivePattern(
       MLIRContext *context,
-      const llvm::DenseMap<StringAttr, Value> &shardyToDistributedAxis)
+      const llvm::StringMap<Value> &shardyToDistributedAxis)
       : OpRewritePattern<StablehloCollectiveOp>(context),
         shardyToDistributedAxis(shardyToDistributedAxis) {}
 
@@ -279,9 +301,9 @@ struct StablehloCollectiveToDistributedCollectivePattern
     llvm::SmallVector<TypedValue<axis::AxisTypeInterface>> outputTensorAxes =
         axis::createAxesForRankedShape(outputTensorType, rewriter, op.getLoc());
     llvm::SmallVector<TypedValue<axis::AxisFactorType>> inputTensorFactors =
-      axis::viewAxesAsFactors(inputTensorAxes, rewriter, op.getLoc());
+        axis::viewAxesAsFactors(inputTensorAxes, rewriter, op.getLoc());
     llvm::SmallVector<TypedValue<axis::AxisFactorType>> outputTensorFactors =
-      axis::viewAxesAsFactors(outputTensorAxes, rewriter, op.getLoc());
+        axis::viewAxesAsFactors(outputTensorAxes, rewriter, op.getLoc());
 
     // Get the mappings per collective op.
     llvm::SmallVector<TypedValue<axis::AxisFactorType>> reductionDims;
@@ -290,10 +312,10 @@ struct StablehloCollectiveToDistributedCollectivePattern
         mappingLHS;
     llvm::SmallVector<llvm::SmallVector<TypedValue<axis::AxisFactorType>>>
         mappingRHS;
-    auto result = getDimMappings(op, shardyToDistributedAxis,
-                   inputTensorFactors, outputTensorFactors,
-                   reductionDims,
-                                 reductionFunction, mappingLHS, mappingRHS);
+    auto result = getDimMappings(
+      op, rewriter, shardyToDistributedAxis, inputTensorFactors,
+      outputTensorFactors,
+        reductionDims, reductionFunction, mappingLHS, mappingRHS);
     if (failed(result)) {
       return rewriter.notifyMatchFailure(
           op, "failed to get dimension mappings for collective op");
@@ -373,7 +395,7 @@ struct StablehloCollectiveToDistributedCollectivePattern
   }
 
 private:
-  llvm::DenseMap<StringAttr, Value> shardyToDistributedAxis;
+  llvm::StringMap<Value> shardyToDistributedAxis;
 };
 
 struct StablehloSendToDistributedCollectivePattern
@@ -485,7 +507,7 @@ struct ShardyToDistributedPass
     // shardy mesh for axis sizes. Internally record a mapping from shardy axis
     // names to distributed axis values.
     llvm::SmallVector<int32_t> logicalAxisExtents;
-    llvm::SmallVector<StringAttr> shardyAxisNames;
+    llvm::SmallVector<std::string> shardyAxisNames;
     for (sdy::MeshAxisAttr axis : commonMesh.getAxes()) {
       int64_t axisSize = axis.getSize();
       if (axisSize <= 0 || axisSize > std::numeric_limits<int32_t>::max()) {
@@ -495,7 +517,7 @@ struct ShardyToDistributedPass
         return;
       }
       logicalAxisExtents.push_back(static_cast<int32_t>(axisSize));
-      shardyAxisNames.push_back(builder.getStringAttr(axis.getName()));
+      shardyAxisNames.push_back(axis.getName().str());
     }
 
     distributed::LogicalMeshAxesOp logicalMeshAxes =
@@ -503,7 +525,7 @@ struct ShardyToDistributedPass
             moduleOp.getLoc(),
             builder.getDenseI32ArrayAttr(logicalAxisExtents));
 
-    llvm::DenseMap<StringAttr, Value> shardyToDistributedAxis;
+    llvm::StringMap<Value> shardyToDistributedAxis;
     // Map the canonical logical mesh axis to factor
     // types. Shardy works on full axes so we produce only one factor
     // per axis, which we can subdivide in transformations later if needed.
@@ -515,8 +537,8 @@ struct ShardyToDistributedPass
     }
 
     auto executionContext =
-      builder
-        .create<axis::AxisProductOp>(moduleOp.getLoc(), asValues(factors))
+        builder
+            .create<axis::AxisProductOp>(moduleOp.getLoc(), asValues(factors))
             .getProduct();
     auto replicateOver =
         builder.create<axis::AxisProductOp>(moduleOp.getLoc(), ValueRange())
@@ -565,6 +587,9 @@ struct ShardyToDistributedPass
     // patterns.add<StablehloSendToDistributedCollectivePattern,
     //              StablehloRecvToDistributedCollectivePattern>(
     //     moduleOp.getContext());
+    patterns.add<StablehloCollectiveToDistributedCollectivePattern<
+        stablehlo::AllReduceOp>>(moduleOp.getContext(),
+                                 shardyToDistributedAxis);
 
     if (failed(applyPatternsGreedily(meshComputation, std::move(patterns)))) {
       signalPassFailure();

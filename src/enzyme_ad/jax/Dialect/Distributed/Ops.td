@@ -53,6 +53,19 @@ def LogicalMeshAxesOp : DistributedOp<"LogicalMeshAxes", [PureDistributedMetadat
     let hasVerifier = 1;
 }
 
+def ReplicationAxisOp : DistributedOp<"ReplicationAxis", [PureDistributedMetadata, DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
+    let description = [{
+        Declares a new replication axis, which is a logical mesh axis that is replicated
+        across all devices in the physical mesh. 
+    }];
+    let arguments = (ins
+        I32Attr:$extent
+    );
+    let results = (outs ReplicationAxisType:$axis);
+    let assemblyFormat = "$extent attr-dict `:` type($axis)";
+}
+
+
 def MeshComputationOp : DistributedOp<"MeshComputation", [
     HasOnlyGraphRegion,
     NoTerminator,
