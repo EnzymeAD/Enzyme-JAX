@@ -16,11 +16,16 @@
 #include "src/enzyme_ad/jax/Dialect/Distributed/DistributedDialect.h.inc"
 // Traits and interfaces
 #include "Traits.h"
+#include "src/enzyme_ad/jax/Dialect/Distributed/DistributedInterfaces.h.inc"
 // Types
 #define GET_TYPEDEF_CLASSES
 #include "src/enzyme_ad/jax/Dialect/Distributed/DistributedTypes.h.inc"
 // Operations
 #define GET_OP_CLASSES
 #include "src/enzyme_ad/jax/Dialect/Distributed/DistributedOps.h.inc"
+
+
+// Utilities
+
 
 #endif // ENZYME_AD_JAX_DIALECT_DISTRIBUTED_DIALECT_H

@@ -6,9 +6,19 @@
 
 #include "Dialect.h"
 
-using mlir::OpTrait::enzyme::distributed::ChannelDefTrait;
-using mlir::OpTrait::enzyme::distributed::DeviceDefTrait;
+using llvm::report_fatal_error;
+
 namespace mlir::enzyme::distributed {
+
+int64_t AxisAllToAllOp::getAxisSize(::mlir::Value axis) {
+  // This op defines a single value, so just check if the
+  // proper value is passed.
+  if (getAxis() != axis) {
+    report_fatal_error("axis not defined by this op");
+  }
+  auto axisSizeValues = getAxisSizeAttr().getValue();
+  return axisSizeValues.getSExtValue();
+}
 
 LogicalResult AxisFactorOp::verify() {
   auto factors = getFactors();
@@ -50,8 +60,51 @@ LogicalResult AxisFactorOp::inferReturnTypes(
   return mlir::success();
 }
 
+int64_t AxisFactorOp::getAxisSize(::mlir::Value axis) {
+  int i = 0;
+  for (auto result : getLogicalAxes()) {
+    if (result == axis) {
+      auto factor_attr = getFactors()[i];
+      auto factor = dyn_cast<IntegerAttr>(factor_attr);
+      assert(factor && "factors must be integer attributes");
+      return factor.getValue().getSExtValue();
+    }
+    i++;
+  }
+  report_fatal_error("axis not defined by this op");
+}
+
 LogicalResult AxisProductOp::verify() {
+  for (auto operand : getLogicalAxes()) {
+    auto defining_op = operand.getDefiningOp();
+    if (!isa<CommAxisOpInterface>(defining_op)) {
+      return emitOpError() << "requires all factors to be defined by ops "
+                           << "implementing the CommAxisOpInterface";
+    }
+  }
   // TODO disjointness
+  return mlir::success();
+}
+
+int64_t AxisProductOp::getAxisSize(::mlir::Value axis) {
+  // This op defines a single value, so just check if the
+  // proper value is passed.
+  if (getLogicalAxis() != axis) {
+    report_fatal_error("axis not defined by this op");
+  }
+  int64_t size = 1;
+  for (auto operand : getLogicalAxes()) {
+    // get the defining op and assert it should implement
+    // the CommAxisOpInterface
+    auto defining_op = operand.getDefiningOp();
+    auto comm_axis_op = dyn_cast<CommAxisOpInterface>(defining_op);
+    size *= comm_axis_op.getAxisSize(operand);
+  }
+  return size;
+}
+
+LogicalResult RegionComputationOp::verify() {
+  // TODO
   return mlir::success();
 }
 

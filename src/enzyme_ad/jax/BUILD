@@ -1237,6 +1237,7 @@ cc_library(
     deps = [
         ":CheckedRewrite",
         ":DistributedDialectIncGen",
+        ":DistributedInterfacesIncGen",
         ":DistributedOpsIncGen",
         ":DistributedTypesIncGen",
         ":EnzymeHLOPatternsIncGen",
