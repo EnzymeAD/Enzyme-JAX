@@ -3,27 +3,6 @@
 
 include "mlir/IR/OpBase.td"
 
-def AxisTypeInterface : TypeInterface<"AxisTypeInterface"> {
-    let cppNamespace = "::mlir::enzyme::distributed";
-    let description = [{
-        Interface for axis types with a statically encoded extent.
-    }];
-
-    let methods = [
-        InterfaceMethod<
-            [{Returns the compile-time extent of this axis.}],
-            "unsigned", "extent", (ins), "",
-            [{
-                return $_type.getExtent();
-            }]>,
-        InterfaceMethod<
-            [{Returns whether two axis SSA values refer to the same underlying axis under this axis type's semantics. 
-              Axis are allowed to either be fully equivalent or disjoint: canonical axes may not partially alias.}],
-            "bool", "aliases",
-            (ins "::mlir::Value":$selfAxis, "::mlir::Value":$otherAxis)>
-    ];
-}
-
 def PhysicalCommAxisOpInterface :
         OpInterface<"PhysicalCommAxisOpInterface"> {
     let description = [{
@@ -32,8 +11,8 @@ def PhysicalCommAxisOpInterface :
 
     let methods = [
         InterfaceMethod<
-            [{Returns the extent/size of this physical axis in number of devices.}],
-            "int64_t", "getPhysicalAxisSize", (ins)>
+            [{Returns the extent of this physical axis in number of devices.}],
+            "int64_t", "getPhysicalAxisExtent", (ins)>
     ];
 }
 

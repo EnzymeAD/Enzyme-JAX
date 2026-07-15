@@ -1,6 +1,8 @@
 #include "Dialect.h"
 #include "Utilities.h"
 
+using mlir::enzyme::axis::AxisTypeInterface;
+
 #include "shardy/dialect/sdy/ir/utils.h"
 
 namespace mlir::enzyme::distributed {
@@ -15,7 +17,8 @@ llvm::SmallVector<mlir::Region *> MeshComputationOp::getLanes() {
 }
 
 // Resolves a tensor SSA value back to its input-operand slot.
-FailureOr<unsigned> MeshComputationOp::findInputTensorIndex(Value tensor) const {
+FailureOr<unsigned>
+MeshComputationOp::findInputTensorIndex(Value tensor) const {
   auto inputTensors = const_cast<MeshComputationOp *>(this)->getInputTensors();
   for (auto [index, inputTensor] : llvm::enumerate(inputTensors)) {
     if (inputTensor == tensor) {
@@ -25,8 +28,9 @@ FailureOr<unsigned> MeshComputationOp::findInputTensorIndex(Value tensor) const 
   return failure();
 }
 
-LogicalResult MeshComputationOp::setInputTensorSharding(
-    Value tensor, sdy::TensorShardingAttr sharding) {
+LogicalResult
+MeshComputationOp::setInputTensorSharding(Value tensor,
+                                          sdy::TensorShardingAttr sharding) {
   if (failed(findInputTensorIndex(tensor))) {
     return emitOpError()
            << "expected tensor to be one of the mesh computation input tensors";
@@ -37,9 +41,10 @@ LogicalResult MeshComputationOp::setInputTensorSharding(
 
 // Looks up the distributed logical axis corresponding to a recorded Shardy
 // axis name.
-FailureOr<Value>
-MeshComputationOp::findLogicalAxisForShardyAxisName(StringRef shardyAxisName) const {
-  ArrayAttr shardyAxisNames = const_cast<MeshComputationOp *>(this)->getShardyAxisNames();
+FailureOr<Value> MeshComputationOp::findLogicalAxisForShardyAxisName(
+    StringRef shardyAxisName) const {
+  ArrayAttr shardyAxisNames =
+      const_cast<MeshComputationOp *>(this)->getShardyAxisNames();
   if (!shardyAxisNames) {
     return failure();
   }
@@ -68,7 +73,8 @@ MeshComputationOp::findLogicalAxisForShardyAxisName(StringRef shardyAxisName) co
 // value.
 FailureOr<StringAttr>
 MeshComputationOp::findShardyAxisNameForLogicalAxis(Value logicalAxis) const {
-  ArrayAttr shardyAxisNames = const_cast<MeshComputationOp *>(this)->getShardyAxisNames();
+  ArrayAttr shardyAxisNames =
+      const_cast<MeshComputationOp *>(this)->getShardyAxisNames();
   if (!shardyAxisNames) {
     return failure();
   }
@@ -109,9 +115,8 @@ ValueRange MeshComputationOp::getMpmdAxes() const {
   if (!segmentSizesAttr || segmentSizesAttr.size() != 3) {
     return {};
   }
-  return ValueRange(
-      (*this)->getOperands().slice(/*start=*/segmentSizesAttr[0],
-                                   segmentSizesAttr[1]));
+  return ValueRange((*this)->getOperands().slice(/*start=*/segmentSizesAttr[0],
+                                                 segmentSizesAttr[1]));
 }
 
 uint32_t MeshComputationOp::getNumDeviceBodies() const {
@@ -120,8 +125,7 @@ uint32_t MeshComputationOp::getNumDeviceBodies() const {
 }
 
 uint32_t MeshComputationOp::getNumCommunicationBodies() const {
-  auto attr =
-      (*this)->getAttrOfType<IntegerAttr>("num_communication_bodies");
+  auto attr = (*this)->getAttrOfType<IntegerAttr>("num_communication_bodies");
   return attr ? static_cast<uint32_t>(attr.getInt()) : 0;
 }
 
@@ -147,18 +151,18 @@ FailureOr<unsigned> MeshComputationOp::findComputationBodyIndexByDeviceIndex(
   unsigned stride = 1;
   for (size_t axisPos = mpmdAxes.size(); axisPos-- > 0;) {
     Value axis = mpmdAxes[axisPos];
-    int64_t axisSize = static_cast<int64_t>(getAxisSize(axis));
-    if (axisSize <= 0) {
+    int64_t axisExtent = static_cast<int64_t>(getAxisExtent(axis));
+    if (axisExtent <= 0) {
       return failure();
     }
 
     unsigned coordinate = deviceIndex[axisPos];
-    if (coordinate >= static_cast<unsigned>(axisSize)) {
+    if (coordinate >= static_cast<unsigned>(axisExtent)) {
       return failure();
     }
 
     flatIndex += coordinate * stride;
-    stride *= static_cast<unsigned>(axisSize);
+    stride *= static_cast<unsigned>(axisExtent);
   }
 
   uint32_t numDeviceBodies = getNumDeviceBodies();
@@ -168,8 +172,8 @@ FailureOr<unsigned> MeshComputationOp::findComputationBodyIndexByDeviceIndex(
   return flatIndex;
 }
 
-Region &MeshComputationOp::getDeviceBodyByDeviceIndex(
-    const DeviceIndex &deviceIndex) {
+Region &
+MeshComputationOp::getDeviceBodyByDeviceIndex(const DeviceIndex &deviceIndex) {
   auto bodyIndex = findComputationBodyIndexByDeviceIndex(deviceIndex);
   assert(succeeded(bodyIndex) &&
          "expected a valid DeviceIndex in the MPMD submesh");
@@ -238,9 +242,8 @@ LogicalResult MeshComputationOp::verify() {
     return emitOpError() << "requires operandSegmentSizes attribute";
   }
   if (segmentSizesAttr.size() != 3) {
-    return emitOpError()
-           << "requires operandSegmentSizes to have 3 entries "
-              "(spmd_axes, mpmd_axes, input_tensors)";
+    return emitOpError() << "requires operandSegmentSizes to have 3 entries "
+                            "(spmd_axes, mpmd_axes, input_tensors)";
   }
 
   auto numDeviceBodiesAttr =
@@ -282,15 +285,15 @@ LogicalResult MeshComputationOp::verify() {
               "number of SPMD + MPMD axes";
   }
 
-  // Check device region count matches the product of MPMD axis sizes
+  // Check device region count matches the product of MPMD axis extents
   int64_t expectedDeviceBodyCount = 1;
   for (Value axis : getMpmdAxes()) {
-    expectedDeviceBodyCount *= static_cast<int64_t>(getAxisSize(axis));
+    expectedDeviceBodyCount *= static_cast<int64_t>(getAxisExtent(axis));
   }
   if (expectedDeviceBodyCount != getNumDeviceBodies()) {
     return emitOpError()
            << "requires the number of device bodies to equal the product of "
-              "the MPMD axis sizes";
+              "the MPMD axis extents";
   }
 
   // Check there are no duplicated canonical logical axes.

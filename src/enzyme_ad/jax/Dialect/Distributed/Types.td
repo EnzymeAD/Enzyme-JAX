@@ -3,6 +3,7 @@
 
 include "Dialect.td"
 include "Interfaces.td"
+include "src/enzyme_ad/jax/Dialect/Axis/Interfaces.td"
 
 class AxisType<string name, string type_mnemonic, list<Trait> traits = []>
 		: DistributedType<name, type_mnemonic,
@@ -27,31 +28,6 @@ def ReplicationAxisType : AxisType<"ReplicationAxis", "replication_axis"> {
 	let assemblyFormat = "`<` $extent `>`";
 }
 
-// Tensor axis type with extent inferred from the tensor type.
-def TensorAxisType : AxisType<"TensorAxis", "tensor_axis"> {
-	let parameters = (ins "::mlir::Type":$tensorType, "unsigned":$axisIndex);
-	let assemblyFormat = "`<` $tensorType `,` $axisIndex `>`";
-	let extraClassDeclaration = [{
-		unsigned getExtent() const {
-			auto shaped = ::mlir::dyn_cast<::mlir::ShapedType>(getTensorType());
-			assert(shaped && "TensorAxisType expects a shaped tensor type");
-			// TODO: support non-static/dynamic dimensions when AxisTypeInterface
-			// allows non-constant extents.
-			assert(shaped.hasRank() && "TensorAxisType expects a ranked tensor type");
-			assert(getAxisIndex() < shaped.getRank() && "axis index out of range");
-			assert(!shaped.isDynamicDim(getAxisIndex()) &&
-						 "dynamic tensor dimensions are not yet supported");
-			return static_cast<unsigned>(shaped.getDimSize(getAxisIndex()));
-		}
-	}];
-}
-
-// Generic factor wrapper for axis algebra.
-def AxisFactorType : DistributedType<"AxisFactor", "axis_factor"> {
-	let parameters =
-			(ins "::mlir::Type":$axisType, "unsigned":$extent, "unsigned":$stride);
-	let assemblyFormat = "`<` $axisType `,` $extent `,` $stride `>`";
-}
 
 // Small (unecessary?) type wrapping products of logical axis and "reduce" for sharding annotations.
 def ShardingAxisType : DistributedType<"Sharding", "sharding">;
