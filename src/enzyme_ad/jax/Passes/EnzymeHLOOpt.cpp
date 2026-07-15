@@ -4333,6 +4333,34 @@ struct FullReduceReshapeOrTranspose final
     RankedTensorType changeType = nullptr;
     SmallVector<Operation *> reshapeOrTransposes;
     llvm::MapVector<Operation *, int> toclone;
+    // Hoisting the full reduce below the leaves rewrites each leaf to its
+    // operand. This preserves semantics only if the transform is applied
+    // uniformly to every operand of each elementwise op it flows through: a
+    // full reduction is invariant under a transform T iff
+    // `f(T(a), T(b), ...) == T(f(a, b, ...))`. A *unary* op passes any transform
+    // through freely (`u(T(x)) == T(u(x))`), so a transpose feeding only unary
+    // ops is always safe; but a *multi-operand* op requires all of its operands
+    // to carry the *same* transform. Matching source types is not enough -- e.g.
+    // the transposes [0, 2, 1] and [2, 1, 0] on a 2x2x2 tensor share source and
+    // result types but permute differently, so combining them in a binary op and
+    // dropping both would change which elements are paired. `xform` records the
+    // transform each cone value carries so we can check agreement per op below.
+    //
+    // A reshape is fully determined by its (source, result) types, so any two
+    // reshape leaves denote the same map (source == changeType, result == the
+    // uniform elementwise cone shape); a reshape and a transpose do not.
+    struct Xform {
+      bool isTranspose = false;
+      SmallVector<int64_t> perm; // valid iff isTranspose
+      Type reshapeResult;        // valid iff !isTranspose
+      bool operator==(const Xform &o) const {
+        if (isTranspose != o.isTranspose)
+          return false;
+        return isTranspose ? perm == o.perm : reshapeResult == o.reshapeResult;
+      }
+      bool operator!=(const Xform &o) const { return !(*this == o); }
+    };
+    llvm::DenseMap<Value, Xform> xform;
     {
       SmallVector<Value> todo = {op.getInputs()[0]};
       while (todo.size()) {
@@ -4347,6 +4375,9 @@ struct FullReduceReshapeOrTranspose final
           } else {
             changeType = rs.getOperand().getType();
           }
+          xform[rs.getResult()] = Xform{/*isTranspose=*/false,
+                                        /*perm=*/{},
+                                        /*reshapeResult=*/rs.getType()};
           reshapeOrTransposes.push_back(rs);
           continue;
         }
@@ -4357,6 +4388,9 @@ struct FullReduceReshapeOrTranspose final
           } else {
             changeType = rs.getOperand().getType();
           }
+          xform[rs.getResult()] = Xform{/*isTranspose=*/true,
+                                        llvm::to_vector(rs.getPermutation()),
+                                        /*reshapeResult=*/Type()};
           reshapeOrTransposes.push_back(rs);
           continue;
         }
@@ -4367,6 +4401,43 @@ struct FullReduceReshapeOrTranspose final
         for (auto op : curOp->getOperands())
           todo.push_back(op);
         toclone[curOp] = curOp->getNumOperands();
+      }
+    }
+
+    // Propagate transforms bottom-up through the elementwise cone and require
+    // agreement among the operands of every multi-operand op. No IR is created
+    // here so it is safe to bail out on a mismatch.
+    {
+      llvm::MapVector<Operation *, int> pending = toclone;
+      SmallVector<Operation *> ready;
+      auto notify = [&](Value v) {
+        for (auto *u : v.getUsers()) {
+          auto it = pending.find(u);
+          if (it != pending.end() && --it->second == 0) {
+            ready.push_back(u);
+            pending.erase(u);
+          }
+        }
+      };
+      for (auto *leaf : reshapeOrTransposes)
+        notify(leaf->getResult(0));
+      while (!ready.empty()) {
+        auto *cur = ready.pop_back_val();
+        Xform curX;
+        bool first = true;
+        for (auto operand : cur->getOperands()) {
+          auto it = xform.find(operand);
+          if (it == xform.end())
+            return failure();
+          if (first) {
+            curX = it->second;
+            first = false;
+          } else if (it->second != curX) {
+            return failure();
+          }
+        }
+        xform[cur->getResult(0)] = curX;
+        notify(cur->getResult(0));
       }
     }
 
