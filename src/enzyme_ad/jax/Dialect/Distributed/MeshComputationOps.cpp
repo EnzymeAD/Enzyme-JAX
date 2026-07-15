@@ -104,9 +104,9 @@ const Region &MeshComputationOp::getCommunicationBodyForAxis(Value axis) const {
 }
 
 // Verifies region partition sizes and axis/body cardinality invariants.
-// TODO: keep this verifier minimal and move reusable axis checks into shared
-// helpers as they are introduced.
 LogicalResult MeshComputationOp::verify() {
+
+  // Check overall region count
   unsigned expectedBodyCount =
       static_cast<unsigned>(getNumDeviceBodies()) +
       static_cast<unsigned>(getNumCommunicationBodies());
@@ -116,6 +116,7 @@ LogicalResult MeshComputationOp::verify() {
               "communication bodies";
   }
 
+  // Check communication region count matches attributes
   size_t expectedCommunicationBodyCount =
       getSpmdAxes().size() + getMpmdAxes().size();
   if (expectedCommunicationBodyCount !=
@@ -125,6 +126,7 @@ LogicalResult MeshComputationOp::verify() {
               "number of SPMD + MPMD axes";
   }
 
+  // Check device region count matches the product of MPMD axis sizes
   int64_t expectedDeviceBodyCount = 1;
   for (Value axis : getMpmdAxes()) {
     expectedDeviceBodyCount *= static_cast<int64_t>(
@@ -136,9 +138,15 @@ LogicalResult MeshComputationOp::verify() {
               "the MPMD axis sizes";
   }
 
-  // TODO: factor axis-disjointness checking into a reusable helper shared with
-  // LogicalMeshOp. The check should consider all SPMD and MPMD axes together
-  // and reject any overlapping atomic factors.
+  // Check all axis are disjoint
+  llvm::SmallVector<Value> logicalAxes;
+  logicalAxes.append(getSpmdAxes().begin(), getSpmdAxes().end());
+  logicalAxes.append(getMpmdAxes().begin(), getMpmdAxes().end());
+  if (!areLogicalAxesDisjoint(logicalAxes)) {
+    return emitOpError()
+           << "requires SPMD and MPMD axes to be disjoint, and all factors "
+              "for the same physical axis to come from one factorization op";
+  }
 
   return success();
 }
