@@ -3,6 +3,9 @@
 
 #include "Dialect.h"
 
+#include "llvm/Support/ErrorHandling.h"
+#include "llvm/Support/raw_ostream.h"
+
 namespace mlir::enzyme::axis {
 template <typename T> using TypedValueArrayRef = llvm::ArrayRef<TypedValue<T>>;
 
@@ -14,6 +17,32 @@ TypedValue<T> castTypedValue(::mlir::Value value, llvm::StringRef expectedType);
 template <typename T>
 llvm::SmallVector<TypedValue<T>> castTypedValueList(ValueRange values,
                                                     llvm::StringRef expectedType);
+
+template <typename T>
+TypedValue<T> castTypedValue(::mlir::Value value,
+                                                         llvm::StringRef expectedType) {
+    if (auto typed = dyn_cast<TypedValue<T>>(value)) {
+        return typed;
+    }
+    std::string typeString;
+    llvm::raw_string_ostream os(typeString);
+    value.getType().print(os);
+    os.flush();
+    llvm::errs() << "castTypedValue failed: expected " << expectedType
+                             << ", got value type " << typeString << "\n";
+    llvm::report_fatal_error("invalid typed value cast");
+}
+
+template <typename T>
+llvm::SmallVector<TypedValue<T>> castTypedValueList(
+        ValueRange values, llvm::StringRef expectedType) {
+    llvm::SmallVector<TypedValue<T>> typedValues;
+    typedValues.reserve(values.size());
+    for (Value value : values) {
+        typedValues.push_back(castTypedValue<T>(value, expectedType));
+    }
+    return typedValues;
+}
 
 
 // Returns the static extent for any canonical axis SSA value.
