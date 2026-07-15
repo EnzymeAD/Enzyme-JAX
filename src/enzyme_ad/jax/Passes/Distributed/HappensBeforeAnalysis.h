@@ -20,7 +20,7 @@ public:
   // Query methods
   /// Returns true if `a`'s class is an immediate predecessor of `b`'s class.
   bool happensBefore(Operation *a, Operation *b) const;
-  bool simulatenousWith(Operation *a, Operation *b) const;
+  bool simultaneousWith(Operation *a, Operation *b) const;
 
   /// Returns all members of the class rooted at `classRoot`.
   llvm::SmallVector<Operation *> classList(Operation *classRoot) const;
