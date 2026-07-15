@@ -34,6 +34,9 @@ def PhysicalMeshOp : DistributedOp<"PhysicalMesh", [Symbol, PureDistributedMetad
     );
     let assemblyFormat = "$sym_name $axes attr-dict";
     let hasVerifier = 1;
+        let extraClassDeclaration = [{
+            unsigned getPhysicalAxisPosition(FlatSymbolRefAttr axis);
+        }];
 }
 
 def LogicalMeshOp : DistributedOp<"LogicalMesh", [PureDistributedMetadata]> {
@@ -47,6 +50,14 @@ def LogicalMeshOp : DistributedOp<"LogicalMesh", [PureDistributedMetadata]> {
     let results = (outs LogicalMeshType:$mesh);
     let assemblyFormat = "$axes attr-dict";
     let hasVerifier = 1;
+        let extraClassDeclaration = [{
+            ::mlir::FailureOr<PhysicalMeshOp> resolvePhysicalMesh();
+            ::mlir::LogicalResult
+            resolveToAtomicFactors(::llvm::SmallVectorImpl<::mlir::Value> &atomicFactors);
+            bool isDisjoint();
+            bool isSubmesh(LogicalMeshOp submesh);
+            ::mlir::FailureOr<int64_t> getMeshSize();
+        }];
 }
 
 def AxisAllToAllOp : DistributedOp<"AxisAllToAll", [

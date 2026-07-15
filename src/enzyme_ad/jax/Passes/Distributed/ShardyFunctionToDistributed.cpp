@@ -12,7 +12,7 @@ namespace enzyme {
 namespace distributed {
 
 static constexpr llvm::StringLiteral kShardyAxisNamesAttr =
-  "enzyme.shardy_axis_names";
+    "enzyme.shardy_axis_names";
 
 #define GEN_PASS_DEF_SHARDYFUNCTIONTODISTRIBUTEDPASS
 #include "src/enzyme_ad/jax/Passes/Distributed/Passes.h.inc"
@@ -196,7 +196,8 @@ struct ShardyFunctionToDistributedPass
     for (auto physAxisAttr : physAxes) {
       auto physAxisRef = cast<FlatSymbolRefAttr>(physAxisAttr);
       FailureOr<PhysicalCommAxisOpInterface> physAxisInterface =
-          resolvePhysicalAxisInterfaceFromAttr(physicalMesh, physAxisRef);
+          resolveSymbolOpFromAttr<PhysicalCommAxisOpInterface>(physicalMesh,
+                                                               physAxisRef);
       physAxisSizes.push_back((*physAxisInterface).getPhysicalAxisSize());
     }
 
@@ -212,7 +213,8 @@ struct ShardyFunctionToDistributedPass
     for (auto physicalAxisAttr : physAxes) {
       auto physicalAxisRef = cast<FlatSymbolRefAttr>(physicalAxisAttr);
       FailureOr<PhysicalCommAxisOpInterface> axisInterface =
-          resolvePhysicalAxisInterfaceFromAttr(physicalMesh, physicalAxisRef);
+          resolveSymbolOpFromAttr<PhysicalCommAxisOpInterface>(physicalMesh,
+                                                               physicalAxisRef);
 
       int64_t size = (*axisInterface).getPhysicalAxisSize();
       int64_t product = 1;
@@ -269,7 +271,8 @@ struct ShardyFunctionToDistributedPass
     llvm::SmallVector<Attribute> shardyAxisNameAttrs;
     shardyAxisNameAttrs.reserve(sdyAxes.size());
     for (auto shardyAxis : sdyAxes) {
-      shardyAxisNameAttrs.push_back(builder.getStringAttr(shardyAxis.getName()));
+      shardyAxisNameAttrs.push_back(
+          builder.getStringAttr(shardyAxis.getName()));
     }
     logicalMesh->setAttr(kShardyAxisNamesAttr,
                          builder.getArrayAttr(shardyAxisNameAttrs));
