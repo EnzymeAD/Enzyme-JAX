@@ -7,32 +7,6 @@
 
 namespace mlir::enzyme::axis {
 
-template <typename T>
-static TypedValue<T> castTypedValue(Value value, llvm::StringRef expectedType) {
-  if (auto typed = dyn_cast<TypedValue<T>>(value)) {
-    return typed;
-  }
-
-  std::string typeString;
-  llvm::raw_string_ostream os(typeString);
-  value.getType().print(os);
-  os.flush();
-  llvm::errs() << "castTypedValue failed: expected " << expectedType
-               << ", got value type " << typeString << "\n";
-  llvm::report_fatal_error("invalid typed value cast");
-}
-
-template <typename T>
-llvm::SmallVector<TypedValue<T>>
-castTypedValueList(ValueRange values, llvm::StringRef expectedType) {
-  llvm::SmallVector<TypedValue<T>> typedValues;
-  typedValues.reserve(values.size());
-  for (Value value : values) {
-    typedValues.push_back(castTypedValue<T>(value, expectedType));
-  }
-  return typedValues;
-}
-
 // Dispatches alias checks for canonical axes. Canonical axes are
 // either equivalent or wholly disjoint.
 static bool areAxesEquivalent(Value lhs, Value rhs) {
@@ -266,19 +240,19 @@ llvm::SmallVector<std::pair<int, int>> build_max_factors(ValueRange factors) {
 // Compares two factor lists as index-space descriptors, ignoring ordering.
 // This is multiset equality over (extent, stride, provenance-axis
 // equivalence) and is intentionally permutation-invariant.
-bool areFactorIndexSpacesEqual(ValueRange lhsFactors, ValueRange rhsFactors) {
+bool areFactorIndexSpacesEqual(TypedValueArrayRef<AxisFactorType> lhsFactors,
+                               TypedValueArrayRef<AxisFactorType> rhsFactors) {
   struct AxisFactors {
     Value provenance;
     SmallVector<Value> lhsFactors;
     SmallVector<Value> rhsFactors;
   };
 
-  auto addFactorsToBuckets = [](ValueRange factors, bool isLhs,
+  auto addFactorsToBuckets = [](TypedValueArrayRef<AxisFactorType> factors,
+                                bool isLhs,
                                 SmallVectorImpl<AxisFactors> &grouped) {
-    for (Value factor : factors) {
-      auto factorTyped =
-          castTypedValue<AxisFactorType>(factor, "AxisFactorType");
-      auto provenance = getFactorProvenanceAxis(factorTyped);
+    for (TypedValue<AxisFactorType> factor : factors) {
+      auto provenance = getFactorProvenanceAxis(factor);
       if (failed(provenance)) {
         return false;
       }
