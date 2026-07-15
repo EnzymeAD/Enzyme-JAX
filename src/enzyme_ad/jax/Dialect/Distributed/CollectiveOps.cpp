@@ -67,12 +67,16 @@ LogicalResult DistributedCollectiveOp::verify() {
     }
   }
 
-  auto typedReductionGroups = axis::castTypedValueList<axis::FactorGroupType>(
+    auto typedReductionGroups = axis::castTypedValueList<axis::FactorGroupType>(
       getReductionGroups(), "FactorGroupType");
-  auto typedMappingLHS = axis::castTypedValueList<axis::FactorGroupType>(
-      getMappingLhs(), "FactorGroupType");
-  auto typedMappingRHS = axis::castTypedValueList<axis::FactorGroupType>(
-      getMappingRhs(), "FactorGroupType");
+    auto mappingOp = getMapping().getDefiningOp<axis::AxisMapOp>();
+    if (!mappingOp) {
+    return emitOpError() << "requires mapping to be produced by axis.map";
+    }
+    auto typedMappingLHS = axis::castTypedValueList<axis::FactorGroupType>(
+      mappingOp.getMappingLhs(), "FactorGroupType");
+    auto typedMappingRHS = axis::castTypedValueList<axis::FactorGroupType>(
+      mappingOp.getMappingRhs(), "FactorGroupType");
   auto reduction_group_factors =
       axis::flattenGroupsToFactors(typedReductionGroups);
   SmallVector<TypedValue<AxisFactorType>> mapping_lhs_factors =
@@ -129,24 +133,22 @@ LogicalResult DistributedCollectiveOp::verify() {
     return emitOpError() << "requires reduction_groups to be pairwise disjoint";
   }
 
-  if (getMappingLhs().size() != getMappingRhs().size()) {
+  if (typedMappingLHS.size() != typedMappingRHS.size()) {
     return emitOpError() << "requires mapping_lhs and mapping_rhs to have the"
-                         << " same length (" << getMappingLhs().size()
-                         << " != " << getMappingRhs().size() << ")";
+                         << " same length (" << typedMappingLHS.size()
+                         << " != " << typedMappingRHS.size() << ")";
   }
 
-  for (auto [idx, lhsMapping] : llvm::enumerate(getMappingLhs())) {
-    Value rhsMapping = getMappingRhs()[idx];
+  for (auto [idx, lhsMapping] : llvm::enumerate(typedMappingLHS)) {
+    TypedValue<axis::FactorGroupType> rhsMapping = typedMappingRHS[idx];
 
-    FailureOr<uint64_t> lhsExtent = axis::getFactorGroupExtent(
-        cast<TypedValue<axis::FactorGroupType>>(lhsMapping));
+    FailureOr<uint64_t> lhsExtent = axis::getFactorGroupExtent(lhsMapping);
     if (failed(lhsExtent)) {
       return emitOpError() << "requires mapping_lhs[" << idx
                            << "] to be produced by axis.product";
     }
 
-    FailureOr<uint64_t> rhsExtent = axis::getFactorGroupExtent(
-        cast<TypedValue<axis::FactorGroupType>>(rhsMapping));
+    FailureOr<uint64_t> rhsExtent = axis::getFactorGroupExtent(rhsMapping);
     if (failed(rhsExtent)) {
       return emitOpError() << "requires mapping_rhs[" << idx
                            << "] to be produced by axis.product";

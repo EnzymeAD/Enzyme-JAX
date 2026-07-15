@@ -149,8 +149,7 @@ def DistributedCallOp : DistributedOp<"DistributedCall", []> {
 }
 
 def DistributedCollectiveOp : DistributedOp<"Collective", [
-    DeclareOpInterfaceMethods<InferTypeOpInterface>,
-    AttrSizedOperandSegments
+    DeclareOpInterfaceMethods<InferTypeOpInterface>
 ]> {
     let description = [{
         An operation representing reductions and resharding along multiple axis. Does not 
@@ -181,8 +180,8 @@ def DistributedCollectiveOp : DistributedOp<"Collective", [
         - reduction_groups: a list of FactorGroups to reduce over (pairwise disjoint).
         - reduction_functions: ArrayAttr of FlatSymbolRefAttr naming single-device reduction 
                                functions. Size must match reduction_groups.
-        - mapping_lhs: input axis groups to map from (post-reduction).
-        - mapping_rhs: output axis groups to map to (same length, compatible index spaces).
+        - mapping: an axis.map value whose lhs/rhs groups encode the
+               post-reduction input/output mapping.
         
         Output:
         - An AsynchHandleType wrapping the output tensor type.
@@ -190,8 +189,7 @@ def DistributedCollectiveOp : DistributedOp<"Collective", [
         Custom format:
         - Reductions are specified as (%axisgroup @reduction_function), and are collected by
           the parser into the reduction_groups list and reduction_functions attributes.
-        - Mappings are specified as (%axisgroup -> %axisgroup), and are collected by the parser into
-          the mapping_lhs and mapping_rhs lists.
+                - Mappings are specified via one axis.map SSA value.
     }];
     let arguments = (ins
         AnyTypeOf<[AnyTensor, AnyMemRef]>:$input_object,
@@ -199,8 +197,7 @@ def DistributedCollectiveOp : DistributedOp<"Collective", [
         FactorGroupType:$output_mesh,
         Variadic<FactorGroupType>:$reduction_groups,
         ArrayAttr:$reduction_functions,
-        Variadic<FactorGroupType>:$mapping_lhs,
-        Variadic<FactorGroupType>:$mapping_rhs,
+        AxisMapType:$mapping,
         TypeAttrOf<AnyTensor>:$output_tensor_type
     );
     let results = (outs AsynchHandleType:$async_handle);
@@ -209,8 +206,7 @@ def DistributedCollectiveOp : DistributedOp<"Collective", [
         `to` $output_tensor_type `on` $output_mesh `:` type($output_mesh)
         `reduces` custom<ReductionGroups>($reduction_groups, $reduction_functions)
         `:` type($reduction_groups)
-        `maps` custom<AxisMapping>($mapping_lhs, $mapping_rhs)
-        `:` `[` type($mapping_lhs) `]` `[` type($mapping_rhs) `]`
+        `maps` $mapping `:` type($mapping)
         attr-dict
     }];
     let hasVerifier = 1;
