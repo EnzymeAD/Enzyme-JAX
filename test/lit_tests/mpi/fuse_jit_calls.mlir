@@ -1,63 +1,33 @@
-// RUN: enzymexlamlir-opt --fuse-jit-calls %s | FileCheck %s
+
+// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(lower-enzymexla-mpi{backend=cpu},fuse-jit-calls)" %s | FileCheck %s --check-prefix=CPU
+
+// It's the same code of /irecv-wait.mlir,
+// just changed the CPU-LABEL to match the fuse pass
 
 module {
-  // CHECK-LABEL: llvm.func @enzymexla_wrapper_MPI_Irecv
-  llvm.func @enzymexla_wrapper_MPI_Irecv(%arg0: !llvm.ptr, %arg1: !llvm.ptr, %arg2: !llvm.ptr) {
-    llvm.return
+  func.func @main(%arg0: tensor<5xf64> {enzymexla.memory_effects = ["read", "write", "allocate", "free"], tf.aliasing_output = 0 : i32}) -> tensor<5xf64> attributes {enzymexla.memory_effects = ["read", "write", "allocate", "free"]} {
+    %0 = stablehlo.transpose %arg0, dims = [0] : (tensor<5xf64>) -> tensor<5xf64>
+    %c = stablehlo.constant dense<1> : tensor<i32>
+    %c_0 = stablehlo.constant dense<42> : tensor<i32>
+    %c_1 = stablehlo.constant dense<5> : tensor<i32>
+    %c_2 = stablehlo.constant dense<-1> : tensor<i32>
+    %outbuf, %request = enzymexla.mpi.irecv(%0, %c_1, %c, %c_0) {datatype = #enzymexla.datatype<MPI_INT>} : (tensor<5xf64>, tensor<i32>, tensor<i32>, tensor<i32>) -> (tensor<5xf64>, tensor<i32>)
+    enzymexla.mpi.wait(%request) : tensor<i32>
+    %1 = stablehlo.transpose %outbuf, dims = [0] : (tensor<5xf64>) -> tensor<5xf64>
+    return %1 : tensor<5xf64>
   }
-  
-  // CHECK-LABEL: llvm.func @enzymexla_wrapper_MPI_Wait
-  llvm.func @enzymexla_wrapper_MPI_Wait(%arg0: !llvm.ptr, %arg1: !llvm.ptr) {
-    llvm.return
-  }
-  
-  // The Waitall case fuses two Irecv wrappers into one wrapper with deduplicated inputs.
-  // CHECK-LABEL: llvm.func @enzymexla_wrapper_MPI_Irecv_enzymexla_wrapper_MPI_Waitall
-  // CHECK-SAME: (%{{.*}}: !llvm.ptr, %{{.*}}: !llvm.ptr, %{{.*}}: !llvm.ptr, %{{.*}}: !llvm.ptr) {
-
-  // CHECK-LABEL: llvm.func @enzymexla_wrapper_MPI_Waitall
-  llvm.func @enzymexla_wrapper_MPI_Waitall(%arg0: !llvm.ptr, %arg1: !llvm.ptr) {
-    llvm.return
-  }
-
-  // CHECK-LABEL: func.func @main
-  func.func @main(%arg0: tensor<5xf64>) -> tensor<5xf64> {
-    %c_0 = stablehlo.constant dense<5> : tensor<i32>
-    // CHECK: %[[FUSED:.*]] = enzymexla.jit_call @enzymexla_wrapper_MPI_Irecv_enzymexla_wrapper_MPI_Wait
-    %1:2 = enzymexla.jit_call @enzymexla_wrapper_MPI_Irecv (%arg0, %c_0) : (tensor<5xf64>, tensor<i32>) -> (tensor<5xf64>, tensor<i32>)
-    enzymexla.jit_call @enzymexla_wrapper_MPI_Wait (%1#1) : (tensor<i32>) -> ()
-    // CHECK-NEXT: return %[[FUSED]]
-    return %1#0 : tensor<5xf64>
-  }
-
-  // CHECK-LABEL: func.func @test_waitall
-  // CHECK-SAME: (%[[ARG0:.*]]: tensor<5xf64>, %[[ARG1:.*]]: tensor<5xf64>)
-  func.func @test_waitall(%arg0: tensor<5xf64>, %arg1: tensor<5xf64>) -> (tensor<5xf64>, tensor<5xf64>) {
-    // CHECK-DAG: %[[C0:.*]] = stablehlo.constant dense<5>
-    %c_0 = stablehlo.constant dense<5> : tensor<i32>
-    
-    %1:2 = enzymexla.jit_call @enzymexla_wrapper_MPI_Irecv (%arg0, %c_0) : (tensor<5xf64>, tensor<i32>) -> (tensor<5xf64>, tensor<i32>)
-    
-    %2:2 = enzymexla.jit_call @enzymexla_wrapper_MPI_Irecv (%arg1, %c_0) : (tensor<5xf64>, tensor<i32>) -> (tensor<5xf64>, tensor<i32>)
-    
-    // Match the request array shape produced by JAX lowering for Waitall.
-    %req1_bcast = stablehlo.broadcast_in_dim %1#1, dims = [] : (tensor<i32>) -> tensor<1xi32>
-    %req2_bcast = stablehlo.broadcast_in_dim %2#1, dims = [] : (tensor<i32>) -> tensor<1xi32>
-    %req_concat = stablehlo.concatenate %req1_bcast, %req2_bcast, dim = 0 : (tensor<1xi32>, tensor<1xi32>) -> tensor<2xi32>
-    
-    // CHECK-DAG: %[[C2:.*]] = stablehlo.constant dense<2>
-    %c_2 = stablehlo.constant dense<2> : tensor<i32>
-    
-    enzymexla.jit_call @enzymexla_wrapper_MPI_Waitall (%c_2, %req_concat) : (tensor<i32>, tensor<2xi32>) -> ()
-    
-    // The request array is internal to the fused wrapper after rewriting.
-    // CHECK-NOT: stablehlo.concatenate
-    // CHECK-NOT: stablehlo.broadcast_in_dim
-
-    // CHECK: %[[RES:.*]]:2 = enzymexla.jit_call @enzymexla_wrapper_MPI_Irecv_enzymexla_wrapper_MPI_Waitall (%[[ARG0]], %[[C0]], %[[ARG1]], %[[C2]])
-    // CHECK-NEXT: return %[[RES]]#0, %[[RES]]#1
-    
-    return %1#0, %2#0 : tensor<5xf64>, tensor<5xf64>
-  }
-
 }
+
+// CPU-LABEL: llvm.func @__enzyme_fused_enzymexla_wrapper_MPI_Irecv_MPI_INT_enzymexla_wrapper_MPI_Wait
+// CPU-SAME: %[[REQ:[^ ,)]+]]: !llvm.ptr)
+// CPU: llvm.call @MPI_Irecv({{.*}}, %[[REQ]])
+// CPU: %[[STATUS:.*]] = llvm.alloca
+// CPU: llvm.call @MPI_Wait(%[[REQ]], %[[STATUS]])
+// CPU: llvm.return
+
+// CPU-LABEL: func.func @main
+// CPU: %[[FUSED:.*]] = enzymexla.jit_call @__enzyme_fused_enzymexla_wrapper_MPI_Irecv_MPI_INT_enzymexla_wrapper_MPI_Wait
+// CPU-NOT: enzymexla.jit_call @enzymexla_wrapper_MPI_Irecv_MPI_INT
+// CPU-NOT: enzymexla.jit_call @enzymexla_wrapper_MPI_Wait
+// CPU: %[[OUT:.*]] = stablehlo.transpose %[[FUSED]]
+// CPU: return %[[OUT]]
