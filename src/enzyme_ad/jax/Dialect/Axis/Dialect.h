@@ -11,6 +11,8 @@
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Support/LLVM.h"
 
+#include "Traits.h"
+
 // Include the dialect
 #include "src/enzyme_ad/jax/Dialect/Axis/AxisDialect.h.inc"
 // Type interfaces
