@@ -32,8 +32,7 @@ def GetPhysicalAxisOp : DistributedOp<"GetPhysicalAxis", [PureDistributedMetadat
 }
 
 def MeshComputationOp : DistributedOp<"MeshComputation", [
-    AttrSizedOperandSegments,
-    DeclareOpInterfaceMethods<LaneOpInterface>
+    AttrSizedOperandSegments
 ]> {
     let description = [{
        Unified mesh computation op with explicit SPMD and MPMD decomposition.
