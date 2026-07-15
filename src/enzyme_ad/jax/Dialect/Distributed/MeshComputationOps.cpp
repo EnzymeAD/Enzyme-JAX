@@ -7,15 +7,6 @@ using mlir::enzyme::axis::AxisTypeInterface;
 
 namespace mlir::enzyme::distributed {
 
-llvm::SmallVector<mlir::Region *> MeshComputationOp::getLanes() {
-  llvm::SmallVector<mlir::Region *> lanes;
-  lanes.reserve((*this)->getNumRegions());
-  for (Region &region : (*this)->getRegions()) {
-    lanes.push_back(&region);
-  }
-  return lanes;
-}
-
 // Resolves a tensor SSA value back to its input-operand slot.
 FailureOr<unsigned>
 MeshComputationOp::findInputTensorIndex(Value tensor) const {
