@@ -13,8 +13,19 @@
 
 #include "Traits.h"
 
+namespace mlir {
+class Block;
+class Operation;
+} // namespace mlir
+
+namespace mlir::enzyme::axis {
+void materializeMaybeTemporaryOp(::mlir::Operation *op, ::mlir::Block &block);
+} // namespace mlir::enzyme::axis
+
 // Include the dialect
 #include "src/enzyme_ad/jax/Dialect/Axis/AxisDialect.h.inc"
+// Op interfaces
+#include "src/enzyme_ad/jax/Dialect/Axis/AxisInterfaces.h.inc"
 // Type interfaces
 #include "src/enzyme_ad/jax/Dialect/Axis/AxisTypeInterfaces.h.inc"
 // Types

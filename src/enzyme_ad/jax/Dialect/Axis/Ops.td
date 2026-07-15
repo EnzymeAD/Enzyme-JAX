@@ -22,7 +22,7 @@ def AxisGetAxisOp : AxisOp<"getaxis", [MetadataOpTrait, DeclareOpInterfaceMethod
   let hasVerifier = 1;
 }
 
-def AxisFactorOp : AxisOp<"factor", [MetadataOpTrait, DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
+def AxisFactorOp : AxisOp<"factor", [MetadataOpTrait, DeclareOpInterfaceMethods<InferTypeOpInterface>, DeclareOpInterfaceMethods<MaybeTemporaryInterface>]> {
   let description = [{
     Factors one canonical axis into leftmost-major factors with static extents.
   }];
@@ -35,7 +35,7 @@ def AxisFactorOp : AxisOp<"factor", [MetadataOpTrait, DeclareOpInterfaceMethods<
   let hasVerifier = 1;
 }
 
-def AxisSegmentOp : AxisOp<"segment", [MetadataOpTrait, DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
+def AxisSegmentOp : AxisOp<"segment", [MetadataOpTrait, DeclareOpInterfaceMethods<InferTypeOpInterface>, DeclareOpInterfaceMethods<MaybeTemporaryInterface>]> {
   let description = [{
     Splits one canonical axis into left-to-right contiguous linear segments.
     Segment result index is value-ordered: lower result indices denote lower
@@ -51,7 +51,7 @@ def AxisSegmentOp : AxisOp<"segment", [MetadataOpTrait, DeclareOpInterfaceMethod
   let hasVerifier = 1;
 }
 
-def AxisProductOp : AxisOp<"product", [MetadataOpTrait, DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
+def AxisProductOp : AxisOp<"product", [MetadataOpTrait, DeclareOpInterfaceMethods<InferTypeOpInterface>, DeclareOpInterfaceMethods<MaybeTemporaryInterface>]> {
   let description = [{
     Recombines a leftmost-major factor list into one virtual factor product.
   }];
