@@ -41,7 +41,7 @@ func.func @getaxis_requires_static_dim() {
 
 func.func @factor_requires_axis_op_result(%arg0: !axis.shape_axis<tensor<6xf32>, 0>) {
   // expected-error @+1 {{requires axis operand to be traceable to an op result}}
-  %f0, %f1 = axis.factor %arg0 [2, 3] : !axis.shape_axis<tensor<6xf32>, 0>
+  %f0 = axis.factor %arg0 : (!axis.shape_axis<tensor<6xf32>, 0>) -> !axis.axis_factor<!axis.shape_axis<tensor<6xf32>, 0>, 2, 3>
   return
 }
 
@@ -49,26 +49,26 @@ func.func @factor_requires_axis_op_result(%arg0: !axis.shape_axis<tensor<6xf32>,
 
 func.func @factor_requires_positive_extents() {
   %axis = axis.getaxis tensor<6xf32> 0
-  // expected-error @+1 {{requires all factor extents to be > 0}}
-  %f0, %f1 = axis.factor %axis [0, 6] : !axis.shape_axis<tensor<6xf32>, 0>
+  // expected-error @+1 {{requires factor extent to be > 0}}
+  %f0 = axis.factor %axis : (!axis.shape_axis<tensor<6xf32>, 0>) -> !axis.axis_factor<!axis.shape_axis<tensor<6xf32>, 0>, 0, 1>
   return
 }
 
 // -----
 
-func.func @factor_requires_extent_product_match() {
+func.func @factor_requires_positive_stride() {
   %axis = axis.getaxis tensor<6xf32> 0
-  // expected-error @+1 {{requires product(factor_extents) == axis extent (4 != 6)}}
-  %f0, %f1 = axis.factor %axis [2, 2] : !axis.shape_axis<tensor<6xf32>, 0>
+  // expected-error @+1 {{requires factor stride to be > 0}}
+  %f0 = axis.factor %axis : (!axis.shape_axis<tensor<6xf32>, 0>) -> !axis.axis_factor<!axis.shape_axis<tensor<6xf32>, 0>, 2, 0>
   return
 }
 
 // -----
 
-func.func @factor_requires_stride_convention() {
+func.func @factor_requires_result_stride_match() {
   %axis = axis.getaxis tensor<6xf32> 0
-  // expected-error @+1 {{requires result #0 stride to follow leftmost-major convention}}
-  %f0, %f1 = "axis.factor"(%axis) {factor_extents = array<i32: 2, 3>} : (!axis.shape_axis<tensor<6xf32>, 0>) -> (!axis.axis_factor<!axis.shape_axis<tensor<6xf32>, 0>, 2, 1>, !axis.axis_factor<!axis.shape_axis<tensor<6xf32>, 0>, 3, 1>)
+  // expected-error @+1 {{requires factor to divide source axis}}
+  %f0 = "axis.factor"(%axis) : (!axis.shape_axis<tensor<6xf32>, 0>) -> !axis.axis_factor<!axis.shape_axis<tensor<6xf32>, 0>, 2, 4>
   return
 }
 
@@ -84,7 +84,8 @@ func.func @product_requires_factor_op_results(%arg0: !axis.axis_factor<!axis.sha
 
 func.func @product_requires_axis_factor_producer() {
   %axis = axis.getaxis tensor<6xf32> 0
-  %f0, %f1 = axis.factor %axis [2, 3] : !axis.shape_axis<tensor<6xf32>, 0>
+  %f0 = axis.factor %axis : (!axis.shape_axis<tensor<6xf32>, 0>) -> !axis.axis_factor<!axis.shape_axis<tensor<6xf32>, 0>, 2, 3>
+  %f1 = axis.factor %axis : (!axis.shape_axis<tensor<6xf32>, 0>) -> !axis.axis_factor<!axis.shape_axis<tensor<6xf32>, 0>, 3, 1>
   %fake = builtin.unrealized_conversion_cast %f0 : !axis.axis_factor<!axis.shape_axis<tensor<6xf32>, 0>, 2, 3> to !axis.axis_factor<!axis.shape_axis<tensor<6xf32>, 0>, 2, 3>
   // expected-error @+1 {{requires factor operands to be produced by axis.factor}}
   %g = axis.product %fake, %f1 : !axis.axis_factor<!axis.shape_axis<tensor<6xf32>, 0>, 2, 3>, !axis.axis_factor<!axis.shape_axis<tensor<6xf32>, 0>, 3, 1>
@@ -95,7 +96,8 @@ func.func @product_requires_axis_factor_producer() {
 
 func.func @product_requires_extent_product_match() {
   %axis = axis.getaxis tensor<6xf32> 0
-  %f0, %f1 = axis.factor %axis [2, 3] : !axis.shape_axis<tensor<6xf32>, 0>
+  %f0 = axis.factor %axis : (!axis.shape_axis<tensor<6xf32>, 0>) -> !axis.axis_factor<!axis.shape_axis<tensor<6xf32>, 0>, 2, 3>
+  %f1 = axis.factor %axis : (!axis.shape_axis<tensor<6xf32>, 0>) -> !axis.axis_factor<!axis.shape_axis<tensor<6xf32>, 0>, 3, 1>
   // expected-error @+1 {{requires product extent to equal product of factor extents}}
   %g = "axis.product"(%f0, %f1) : (!axis.axis_factor<!axis.shape_axis<tensor<6xf32>, 0>, 2, 3>, !axis.axis_factor<!axis.shape_axis<tensor<6xf32>, 0>, 3, 1>) -> !axis.factor_group<5>
   return

@@ -4,7 +4,9 @@
 module {
   distributed.MeshComputation @mc0 mesh @mesh0 {
     %ax = axis.getaxis tensor<12xf32> 0
-    %f0, %f1, %f2 = axis.factor %ax [2, 2, 3] : !axis.shape_axis<tensor<12xf32>, 0>
+    %f0 = axis.factor %ax : (!axis.shape_axis<tensor<12xf32>, 0>) -> !axis.axis_factor<!axis.shape_axis<tensor<12xf32>, 0>, 2, 6>
+    %f1 = axis.factor %ax : (!axis.shape_axis<tensor<12xf32>, 0>) -> !axis.axis_factor<!axis.shape_axis<tensor<12xf32>, 0>, 2, 3>
+    %f2 = axis.factor %ax : (!axis.shape_axis<tensor<12xf32>, 0>) -> !axis.axis_factor<!axis.shape_axis<tensor<12xf32>, 0>, 3, 1>
     %ctx_callee = axis.product %f0, %f1 : !axis.axis_factor<!axis.shape_axis<tensor<12xf32>, 0>, 2, 6>, !axis.axis_factor<!axis.shape_axis<tensor<12xf32>, 0>, 2, 3>
     %ctx_rep = axis.product %f2 : !axis.axis_factor<!axis.shape_axis<tensor<12xf32>, 0>, 3, 1>
     %ctx_caller = axis.product %f0, %f1, %f2 : !axis.axis_factor<!axis.shape_axis<tensor<12xf32>, 0>, 2, 6>, !axis.axis_factor<!axis.shape_axis<tensor<12xf32>, 0>, 2, 3>, !axis.axis_factor<!axis.shape_axis<tensor<12xf32>, 0>, 3, 1>
@@ -28,15 +30,15 @@ module {
 module {
   distributed.MeshComputation @mc1 mesh @mesh0 {
     %ax4 = axis.getaxis tensor<4xf32> 0
-    %f4 = axis.factor %ax4 [4] : !axis.shape_axis<tensor<4xf32>, 0>
+    %f4 = axis.factor %ax4 : (!axis.shape_axis<tensor<4xf32>, 0>) -> !axis.axis_factor<!axis.shape_axis<tensor<4xf32>, 0>, 4, 1>
     %ctx4 = axis.product %f4 : !axis.axis_factor<!axis.shape_axis<tensor<4xf32>, 0>, 4, 1>
 
     %ax2 = axis.getaxis tensor<2xf32> 0
-    %f2 = axis.factor %ax2 [2] : !axis.shape_axis<tensor<2xf32>, 0>
+    %f2 = axis.factor %ax2 : (!axis.shape_axis<tensor<2xf32>, 0>) -> !axis.axis_factor<!axis.shape_axis<tensor<2xf32>, 0>, 2, 1>
     %ctx2 = axis.product %f2 : !axis.axis_factor<!axis.shape_axis<tensor<2xf32>, 0>, 2, 1>
 
     %ax1 = axis.getaxis tensor<1xf32> 0
-    %f1 = axis.factor %ax1 [1] : !axis.shape_axis<tensor<1xf32>, 0>
+    %f1 = axis.factor %ax1 : (!axis.shape_axis<tensor<1xf32>, 0>) -> !axis.axis_factor<!axis.shape_axis<tensor<1xf32>, 0>, 1, 1>
     %ctx1 = axis.product %f1 : !axis.axis_factor<!axis.shape_axis<tensor<1xf32>, 0>, 1, 1>
 
     distributed.Function @callee context %ctx1 : !axis.factor_group<1> arg_types [i32] ret_types [i32] {

@@ -4,7 +4,9 @@
 module {
   distributed.MeshComputation @mc0 mesh @mesh0 {
     %ax = axis.getaxis tensor<12xf32> 0
-    %f0, %f1, %f2 = axis.factor %ax [2, 2, 3] : !axis.shape_axis<tensor<12xf32>, 0>
+    %f0 = axis.factor %ax : (!axis.shape_axis<tensor<12xf32>, 0>) -> !axis.axis_factor<!axis.shape_axis<tensor<12xf32>, 0>, 2, 6>
+    %f1 = axis.factor %ax : (!axis.shape_axis<tensor<12xf32>, 0>) -> !axis.axis_factor<!axis.shape_axis<tensor<12xf32>, 0>, 2, 3>
+    %f2 = axis.factor %ax : (!axis.shape_axis<tensor<12xf32>, 0>) -> !axis.axis_factor<!axis.shape_axis<tensor<12xf32>, 0>, 3, 1>
 
     %ctx_callee = axis.product %f0, %f1 : !axis.axis_factor<!axis.shape_axis<tensor<12xf32>, 0>, 2, 6>, !axis.axis_factor<!axis.shape_axis<tensor<12xf32>, 0>, 2, 3>
     %ctx_rep = axis.product %f2 : !axis.axis_factor<!axis.shape_axis<tensor<12xf32>, 0>, 3, 1>
@@ -30,11 +32,13 @@ module {
 module {
   distributed.MeshComputation @mc1 mesh @mesh0 {
     %axA = axis.getaxis tensor<6xf32> 0
-    %a0, %a1 = axis.factor %axA [2, 3] : !axis.shape_axis<tensor<6xf32>, 0>
+    %a0 = axis.factor %axA : (!axis.shape_axis<tensor<6xf32>, 0>) -> !axis.axis_factor<!axis.shape_axis<tensor<6xf32>, 0>, 2, 3>
+    %a1 = axis.factor %axA : (!axis.shape_axis<tensor<6xf32>, 0>) -> !axis.axis_factor<!axis.shape_axis<tensor<6xf32>, 0>, 3, 1>
     %ctxA = axis.product %a0, %a1 : !axis.axis_factor<!axis.shape_axis<tensor<6xf32>, 0>, 2, 3>, !axis.axis_factor<!axis.shape_axis<tensor<6xf32>, 0>, 3, 1>
 
     %axB = axis.getaxis tensor<6xf32> 0
-    %b0, %b1 = axis.factor %axB [2, 3] : !axis.shape_axis<tensor<6xf32>, 0>
+    %b0 = axis.factor %axB : (!axis.shape_axis<tensor<6xf32>, 0>) -> !axis.axis_factor<!axis.shape_axis<tensor<6xf32>, 0>, 2, 3>
+    %b1 = axis.factor %axB : (!axis.shape_axis<tensor<6xf32>, 0>) -> !axis.axis_factor<!axis.shape_axis<tensor<6xf32>, 0>, 3, 1>
     %ctxB = axis.product %b0, %b1 : !axis.axis_factor<!axis.shape_axis<tensor<6xf32>, 0>, 2, 3>, !axis.axis_factor<!axis.shape_axis<tensor<6xf32>, 0>, 3, 1>
 
     distributed.Function @callee context %ctxA : !axis.factor_group<6> arg_types [i32] ret_types [i32] {

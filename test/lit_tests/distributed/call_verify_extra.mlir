@@ -3,7 +3,7 @@
 module {
   distributed.MeshComputation @mc0 mesh @mesh0 {
     %ax = axis.getaxis tensor<4xf32> 0
-    %f0 = axis.factor %ax [4] : !axis.shape_axis<tensor<4xf32>, 0>
+    %f0 = axis.factor %ax : (!axis.shape_axis<tensor<4xf32>, 0>) -> !axis.axis_factor<!axis.shape_axis<tensor<4xf32>, 0>, 4, 1>
     %ctx = axis.product %f0 : !axis.axis_factor<!axis.shape_axis<tensor<4xf32>, 0>, 4, 1>
 
     distributed.Function @callee context %ctx : !axis.factor_group<4> arg_types [i32] ret_types [i32] {
@@ -25,7 +25,7 @@ module {
 module {
   distributed.MeshComputation @mc1 mesh @mesh0 {
     %ax = axis.getaxis tensor<4xf32> 0
-    %f0 = axis.factor %ax [4] : !axis.shape_axis<tensor<4xf32>, 0>
+    %f0 = axis.factor %ax : (!axis.shape_axis<tensor<4xf32>, 0>) -> !axis.axis_factor<!axis.shape_axis<tensor<4xf32>, 0>, 4, 1>
     %ctx = axis.product %f0 : !axis.axis_factor<!axis.shape_axis<tensor<4xf32>, 0>, 4, 1>
 
     distributed.Function @caller context %ctx : !axis.factor_group<4> arg_types [i32] ret_types [i32] {
@@ -41,7 +41,7 @@ module {
 
 module {
   %ax = axis.getaxis tensor<4xf32> 0
-  %f0 = axis.factor %ax [4] : !axis.shape_axis<tensor<4xf32>, 0>
+  %f0 = axis.factor %ax : (!axis.shape_axis<tensor<4xf32>, 0>) -> !axis.axis_factor<!axis.shape_axis<tensor<4xf32>, 0>, 4, 1>
   %ctx = axis.product %f0 : !axis.axis_factor<!axis.shape_axis<tensor<4xf32>, 0>, 4, 1>
 
   distributed.MeshComputation @mc2 mesh @mesh0 {
