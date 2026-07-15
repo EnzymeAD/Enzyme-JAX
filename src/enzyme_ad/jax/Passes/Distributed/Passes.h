@@ -2,6 +2,7 @@
 #define DISTRIBUTED_PASSES_H
 
 #include "mlir/Pass/Pass.h"
+#include "stablehlo/dialect/StablehloOps.h"
 
 #include "shardy/dialect/sdy/ir/dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Axis/Dialect.h"

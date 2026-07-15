@@ -4,7 +4,8 @@ func.func @roundtrip_axis_ops() -> (!axis.shape_axis<tensor<6x4xf32>, 1>, !axis.
   %axis0 = axis.getaxis tensor<6x4xf32> 0
   %axis1 = axis.getaxis tensor<6x4xf32> 1
 
-  %f0, %f1 = axis.factor %axis0 [2, 3] : !axis.shape_axis<tensor<6x4xf32>, 0>
+  %f0 = axis.factor %axis0 : (!axis.shape_axis<tensor<6x4xf32>, 0>) -> !axis.axis_factor<!axis.shape_axis<tensor<6x4xf32>, 0>, 2, 3>
+  %f1 = axis.factor %axis0 : (!axis.shape_axis<tensor<6x4xf32>, 0>) -> !axis.axis_factor<!axis.shape_axis<tensor<6x4xf32>, 0>, 3, 1>
   %g = axis.product %f0, %f1 : !axis.axis_factor<!axis.shape_axis<tensor<6x4xf32>, 0>, 2, 3>, !axis.axis_factor<!axis.shape_axis<tensor<6x4xf32>, 0>, 3, 1>
 
   %s0, %s1 = axis.segment %axis1 [1, 3] : !axis.shape_axis<tensor<6x4xf32>, 1>
@@ -15,7 +16,8 @@ func.func @roundtrip_axis_ops() -> (!axis.shape_axis<tensor<6x4xf32>, 1>, !axis.
 // CHECK-LABEL: func.func @roundtrip_axis_ops()
 // CHECK: %[[AX0:.*]] = axis.getaxis tensor<6x4xf32> 0
 // CHECK: %[[AX1:.*]] = axis.getaxis tensor<6x4xf32> 1
-// CHECK: %[[FPAIR:.*]]:2 = axis.factor %[[AX0]] [2, 3] : !axis.shape_axis<tensor<6x4xf32>, 0>
-// CHECK: %[[G:.*]] = axis.product %[[FPAIR]]#0, %[[FPAIR]]#1 : !axis.axis_factor<!axis.shape_axis<tensor<6x4xf32>, 0>, 2, 3>, !axis.axis_factor<!axis.shape_axis<tensor<6x4xf32>, 0>, 3, 1>
+// CHECK: %[[F0:.*]] = axis.factor %[[AX0]] : (!axis.shape_axis<tensor<6x4xf32>, 0>) -> !axis.axis_factor<!axis.shape_axis<tensor<6x4xf32>, 0>, 2, 3>
+// CHECK: %[[F1:.*]] = axis.factor %[[AX0]] : (!axis.shape_axis<tensor<6x4xf32>, 0>) -> !axis.axis_factor<!axis.shape_axis<tensor<6x4xf32>, 0>, 3, 1>
+// CHECK: %[[G:.*]] = axis.product %[[F0]], %[[F1]] : !axis.axis_factor<!axis.shape_axis<tensor<6x4xf32>, 0>, 2, 3>, !axis.axis_factor<!axis.shape_axis<tensor<6x4xf32>, 0>, 3, 1>
 // CHECK: %[[SEGS:.*]]:2 = axis.segment %[[AX1]] [1, 3] : !axis.shape_axis<tensor<6x4xf32>, 1>
 // CHECK: return %[[AX1]], %[[G]] : !axis.shape_axis<tensor<6x4xf32>, 1>, !axis.factor_group<6>

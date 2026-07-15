@@ -263,16 +263,9 @@ LogicalResult getDimMappings(
   gatherRefactorExtents.push_back(static_cast<int32_t>(
       inputTensorFactors[concatDim].getType().getExtent()));
 
-  // factor the output tensor axis to allow the mapping to be built.
-  auto gatheredOutputFactors = rewriter.create<axis::AxisFactorOp>(
-      op.getLoc(), *outputGatherAxis,
-      rewriter.getDenseI32ArrayAttr(gatherRefactorExtents));
-  auto gatheredOutputFactorValues = castTypedValueList<axis::AxisFactorType>(
-      gatheredOutputFactors.getAxisFactors(), "AxisFactorType");
-  if (gatheredOutputFactorValues.size() != gatherRefactorExtents.size()) {
-    return op.emitOpError(
-        "failed to refactor all_gather output axis into expected factors");
-  }
+  llvm::SmallVector<TypedValue<axis::AxisFactorType>>
+      gatheredOutputFactorValues = axis::factorAxisByExtents(
+          *outputGatherAxis, gatherRefactorExtents, rewriter, op.getLoc());
 
   // map each gathered mesh axis to its matching major output gather factor.
   for (auto [idx, gatheredMeshAxis] : llvm::enumerate(gatheredMeshAxes)) {

@@ -42,4 +42,16 @@ def ShardyToDistributedPass : Pass<"shardy-to-distributed", "::mlir::ModuleOp"> 
     }];
 }
 
+def DistributedToHloPass : Pass<"distributed-to-hlo", "::mlir::ModuleOp"> {
+    let summary = "Lower distributed dialect constructs to StableHLO.";
+    let dependentDialects = [
+        "enzyme::distributed::DistributedDialect",
+        "stablehlo::StablehloDialect"
+    ];
+    let description = [{
+        Skeleton pass for lowering the distributed dialect to StableHLO.
+        This pass currently performs no rewrites.
+    }];
+}
+
 #endif // ENZYME_AD_JAX_DISTRIBUTED_PASSES

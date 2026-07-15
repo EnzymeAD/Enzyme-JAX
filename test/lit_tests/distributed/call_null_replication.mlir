@@ -4,7 +4,7 @@
 module {
   distributed.MeshComputation @mc0 mesh @mesh0 {
     %ax_main = axis.getaxis tensor<6xf32> 0
-    %fmain = axis.factor %ax_main [6] : !axis.shape_axis<tensor<6xf32>, 0>
+    %fmain = axis.factor %ax_main : (!axis.shape_axis<tensor<6xf32>, 0>) -> !axis.axis_factor<!axis.shape_axis<tensor<6xf32>, 0>, 6, 1>
     %ctx = axis.product %fmain : !axis.axis_factor<!axis.shape_axis<tensor<6xf32>, 0>, 6, 1>
 
     %rep = "axis.product"() : () -> !axis.factor_group<1>
@@ -28,11 +28,11 @@ module {
 module {
   distributed.MeshComputation @mc1 mesh @mesh0 {
     %ax6 = axis.getaxis tensor<6xf32> 0
-    %f6 = axis.factor %ax6 [6] : !axis.shape_axis<tensor<6xf32>, 0>
+    %f6 = axis.factor %ax6 : (!axis.shape_axis<tensor<6xf32>, 0>) -> !axis.axis_factor<!axis.shape_axis<tensor<6xf32>, 0>, 6, 1>
     %ctx6 = axis.product %f6 : !axis.axis_factor<!axis.shape_axis<tensor<6xf32>, 0>, 6, 1>
 
     %ax3 = axis.getaxis tensor<3xf32> 0
-    %f3 = axis.factor %ax3 [3] : !axis.shape_axis<tensor<3xf32>, 0>
+    %f3 = axis.factor %ax3 : (!axis.shape_axis<tensor<3xf32>, 0>) -> !axis.axis_factor<!axis.shape_axis<tensor<3xf32>, 0>, 3, 1>
     %ctx3 = axis.product %f3 : !axis.axis_factor<!axis.shape_axis<tensor<3xf32>, 0>, 3, 1>
 
     distributed.Function @callee context %ctx3 : !axis.factor_group<3> arg_types [i32] ret_types [i32] {
@@ -55,11 +55,11 @@ module {
 module {
   distributed.MeshComputation @mc2 mesh @mesh0 {
     %ax6 = axis.getaxis tensor<6xf32> 0
-    %f6 = axis.factor %ax6 [6] : !axis.shape_axis<tensor<6xf32>, 0>
+    %f6 = axis.factor %ax6 : (!axis.shape_axis<tensor<6xf32>, 0>) -> !axis.axis_factor<!axis.shape_axis<tensor<6xf32>, 0>, 6, 1>
     %ctx6 = axis.product %f6 : !axis.axis_factor<!axis.shape_axis<tensor<6xf32>, 0>, 6, 1>
 
     %ax3 = axis.getaxis tensor<3xf32> 0
-    %f3 = axis.factor %ax3 [3] : !axis.shape_axis<tensor<3xf32>, 0>
+    %f3 = axis.factor %ax3 : (!axis.shape_axis<tensor<3xf32>, 0>) -> !axis.axis_factor<!axis.shape_axis<tensor<3xf32>, 0>, 3, 1>
     %ctx3 = axis.product %f3 : !axis.axis_factor<!axis.shape_axis<tensor<3xf32>, 0>, 3, 1>
 
     %rep = "axis.product"() : () -> !axis.factor_group<1>
