@@ -9,6 +9,8 @@
 #include "mlir/IR/Region.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/IR/Types.h"
+#include "mlir/Interfaces/InferTypeOpInterface.h"
+
 
 // Include the dialect
 #include "src/enzyme_ad/jax/Dialect/Distributed/DistributedDialect.h.inc"
