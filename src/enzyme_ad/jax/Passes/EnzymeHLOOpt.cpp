@@ -27743,25 +27743,6 @@ struct CommonAssociativeCommutativeOpReorder final
   }
 };
 
-static bool isNonNegativeConstant(Value value) {
-  DenseElementsAttr attr;
-  if (!matchPattern(value, m_Constant(&attr)) ||
-      !isa<FloatType>(attr.getElementType()))
-    return false;
-
-  return llvm::all_of(attr.getValues<APFloat>(), [](const APFloat &element) {
-    return !element.isNaN() && !element.isNegative();
-  });
-}
-
-static bool isStrictlyPositiveConstant(Value value) {
-  DenseElementsAttr attr;
-  return isNonNegativeConstant(value) &&
-         matchPattern(value, m_Constant(&attr)) &&
-         llvm::none_of(attr.getValues<APFloat>(),
-                       [](const APFloat &element) { return element.isZero(); });
-}
-
 struct LogSimplify final
     : public CheckedOpRewritePattern<stablehlo::LogOp, LogSimplify> {
   using CheckedOpRewritePattern<stablehlo::LogOp,
@@ -27769,6 +27750,20 @@ struct LogSimplify final
 
   LogicalResult matchAndRewriteImpl(stablehlo::LogOp op,
                                     PatternRewriter &rewriter) const {
+    auto isValidLogSplitConstant = [](Value value, bool allowZero) {
+      DenseElementsAttr attr;
+      if (!matchPattern(value, m_Constant(&attr)) ||
+          !isa<FloatType>(attr.getElementType()))
+        return false;
+
+      return llvm::all_of(attr.getValues<APFloat>(),
+                          [allowZero](const APFloat &element) {
+                            return !element.isNaN() &&
+                                   !element.isNegative() &&
+                                   (allowZero || !element.isZero());
+                          });
+    };
+
     { // log(exp(x)) -> x
       auto defOp = op.getOperand().getDefiningOp<stablehlo::ExpOp>();
       if (defOp) {
@@ -27805,7 +27800,7 @@ struct LogSimplify final
           // domain for negative or zero constants. This does not make the
           // rewrite bit-exact under floating-point rounding. See issue #2570.
           Value cst = matchPattern(lhs, m_Constant()) ? lhs : rhs;
-          if (isStrictlyPositiveConstant(cst)) {
+          if (isValidLogSplitConstant(cst, /*allowZero=*/false)) {
             rewriter.replaceOpWithNewOp<stablehlo::AddOp>(
                 op, stablehlo::LogOp::create(rewriter, op.getLoc(), lhs),
                 stablehlo::LogOp::create(rewriter, op.getLoc(), rhs));
@@ -27867,8 +27862,7 @@ struct LogSimplify final
           // rounding. See issue #2570.
           bool constantIsLhs = matchPattern(lhs, m_Constant());
           Value cst = constantIsLhs ? lhs : rhs;
-          if ((constantIsLhs && isStrictlyPositiveConstant(cst)) ||
-              (!constantIsLhs && isNonNegativeConstant(cst))) {
+          if (isValidLogSplitConstant(cst, /*allowZero=*/!constantIsLhs)) {
             rewriter.replaceOpWithNewOp<stablehlo::SubtractOp>(
                 op, stablehlo::LogOp::create(rewriter, op.getLoc(), lhs),
                 stablehlo::LogOp::create(rewriter, op.getLoc(), rhs));
