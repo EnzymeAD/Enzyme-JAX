@@ -1082,8 +1082,6 @@ struct ParallelizeBlockOps : public OpRewritePattern<scf::ParallelOp> {
           llvm_unreachable("Unhandled case");
           break;
         } else if (auto alloca = dyn_cast<LLVM::AllocaOp>(&op)) {
-          mlir::OpBuilder::InsertionGuard guard(rewriter);
-          rewriter.setInsertionPointToStart(ifOp.thenBlock());
           auto *newOp = rewriter.clone(op, mapping);
           rewriter.replaceOpUsesWithinBlock(&op, newOp->getResults(),
                                             innerBlock);
@@ -1654,6 +1652,11 @@ struct ParallelToGPULaunch : public OpRewritePattern<enzymexla::GPUWrapperOp> {
         gridPop.getBody(), /* allowAllocas */ true);
     if (!blockPop)
       return failure();
+
+    for (auto it = gridPop.begin(); !isa<scf::ParallelOp>(&*it); ++it)
+      if (isa<LLVM::AllocaOp>(&*it))
+        llvm_unreachable("LLVM::AllocaOp before block parallel not yet "
+                         "supported in ParallelToGPULaunch");
 
     rewriter.setInsertionPoint(wrapper);
     auto errOp = enzymexla::GPUErrorOp::create(rewriter, loc);
