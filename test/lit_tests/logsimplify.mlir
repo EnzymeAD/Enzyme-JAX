@@ -10,6 +10,67 @@ func.func @main1(%arg0: tensor<f64>) -> tensor<f64> {
 // CHECK-NEXT:     return %arg0 : tensor<f64>
 // CHECK-NEXT: }
 
+// A zero constant must not split: for a negative argument, the original is
+// log(-0) = -inf while log(0) + log(argument) is NaN.
+func.func @main_zero_mul(%arg0: tensor<f64>) -> tensor<f64> {
+    %cst = stablehlo.constant dense<0.000000e+00> : tensor<f64>
+    %0 = stablehlo.multiply %cst, %arg0 : tensor<f64>
+    %1 = stablehlo.log %0 : tensor<f64>
+    return %1 : tensor<f64>
+}
+
+// CHECK: func.func @main_zero_mul(%arg0: tensor<f64>) -> tensor<f64> {
+// CHECK-NEXT:     %cst = stablehlo.constant dense<0.000000e+00> : tensor<f64>
+// CHECK-NEXT:     %0 = stablehlo.multiply %cst, %arg0 : tensor<f64>
+// CHECK-NEXT:     %1 = stablehlo.log %0 : tensor<f64>
+// CHECK-NEXT:     return %1 : tensor<f64>
+// CHECK-NEXT: }
+
+// A zero numerator must not split for the same signed-zero reason.
+func.func @main_zero_div(%arg0: tensor<f64>) -> tensor<f64> {
+    %cst = stablehlo.constant dense<0.000000e+00> : tensor<f64>
+    %0 = stablehlo.divide %cst, %arg0 : tensor<f64>
+    %1 = stablehlo.log %0 : tensor<f64>
+    return %1 : tensor<f64>
+}
+
+// CHECK: func.func @main_zero_div(%arg0: tensor<f64>) -> tensor<f64> {
+// CHECK-NEXT:     %cst = stablehlo.constant dense<0.000000e+00> : tensor<f64>
+// CHECK-NEXT:     %0 = stablehlo.divide %cst, %arg0 : tensor<f64>
+// CHECK-NEXT:     %1 = stablehlo.log %0 : tensor<f64>
+// CHECK-NEXT:     return %1 : tensor<f64>
+// CHECK-NEXT: }
+
+// The power rewrite is disabled: zero bases and infinite exponents can change
+// finite results into NaNs (e.g. pow(0, 0) and pow(1, inf)).
+func.func @main_pow_zero(%arg0: tensor<f64>) -> tensor<f64> {
+    %cst = stablehlo.constant dense<0.000000e+00> : tensor<f64>
+    %0 = stablehlo.power %cst, %arg0 : tensor<f64>
+    %1 = stablehlo.log %0 : tensor<f64>
+    return %1 : tensor<f64>
+}
+
+// CHECK: func.func @main_pow_zero(%arg0: tensor<f64>) -> tensor<f64> {
+// CHECK-NEXT:     %cst = stablehlo.constant dense<0.000000e+00> : tensor<f64>
+// CHECK-NEXT:     %0 = stablehlo.power %cst, %arg0 : tensor<f64>
+// CHECK-NEXT:     %1 = stablehlo.log %0 : tensor<f64>
+// CHECK-NEXT:     return %1 : tensor<f64>
+// CHECK-NEXT: }
+
+func.func @main_pow_positive(%arg0: tensor<f64>) -> tensor<f64> {
+    %cst = stablehlo.constant dense<1.000000e+00> : tensor<f64>
+    %0 = stablehlo.power %cst, %arg0 : tensor<f64>
+    %1 = stablehlo.log %0 : tensor<f64>
+    return %1 : tensor<f64>
+}
+
+// CHECK: func.func @main_pow_positive(%arg0: tensor<f64>) -> tensor<f64> {
+// CHECK-NEXT:     %cst = stablehlo.constant dense<1.000000e+00> : tensor<f64>
+// CHECK-NEXT:     %0 = stablehlo.power %cst, %arg0 : tensor<f64>
+// CHECK-NEXT:     %1 = stablehlo.log %0 : tensor<f64>
+// CHECK-NEXT:     return %1 : tensor<f64>
+// CHECK-NEXT: }
+
 func.func @main2(%arg0: tensor<f64>) -> tensor<f64> {
     %0 = stablehlo.multiply %arg0, %arg0 : tensor<f64>
     %1 = stablehlo.multiply %0, %0 : tensor<f64>
@@ -161,7 +222,7 @@ func.func @main_neg_mul(%arg0: tensor<f64>) -> tensor<f64> {
 }
 
 // CHECK: func.func @main_neg_mul(%arg0: tensor<f64>) -> tensor<f64> {
-// CHECK-NEXT:     %cst = stablehlo.constant {enzymexla.non_negative = [#enzymexla<guaranteed NOTGUARANTEED>]} dense<-4.000000e+00> : tensor<f64>
+// CHECK-NEXT:     %cst = stablehlo.constant dense<-4.000000e+00> : tensor<f64>
 // CHECK-NEXT:     %0 = stablehlo.multiply %arg0, %cst : tensor<f64>
 // CHECK-NEXT:     %1 = stablehlo.log %0 : tensor<f64>
 // CHECK-NEXT:     return %1 : tensor<f64>
@@ -176,7 +237,7 @@ func.func @main_neg_div(%arg0: tensor<f64>) -> tensor<f64> {
 }
 
 // CHECK: func.func @main_neg_div(%arg0: tensor<f64>) -> tensor<f64> {
-// CHECK-NEXT:     %cst = stablehlo.constant {enzymexla.non_negative = [#enzymexla<guaranteed NOTGUARANTEED>]} dense<-4.000000e+00> : tensor<f64>
+// CHECK-NEXT:     %cst = stablehlo.constant dense<-4.000000e+00> : tensor<f64>
 // CHECK-NEXT:     %0 = stablehlo.divide %arg0, %cst : tensor<f64>
 // CHECK-NEXT:     %1 = stablehlo.log %0 : tensor<f64>
 // CHECK-NEXT:     return %1 : tensor<f64>

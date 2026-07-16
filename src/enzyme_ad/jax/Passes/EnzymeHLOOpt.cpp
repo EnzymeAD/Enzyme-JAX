@@ -27743,6 +27743,25 @@ struct CommonAssociativeCommutativeOpReorder final
   }
 };
 
+static bool isNonNegativeConstant(Value value) {
+  DenseElementsAttr attr;
+  if (!matchPattern(value, m_Constant(&attr)) ||
+      !isa<FloatType>(attr.getElementType()))
+    return false;
+
+  return llvm::all_of(attr.getValues<APFloat>(), [](const APFloat &element) {
+    return !element.isNaN() && !element.isNegative();
+  });
+}
+
+static bool isStrictlyPositiveConstant(Value value) {
+  DenseElementsAttr attr;
+  return isNonNegativeConstant(value) &&
+         matchPattern(value, m_Constant(&attr)) &&
+         llvm::none_of(attr.getValues<APFloat>(),
+                       [](const APFloat &element) { return element.isZero(); });
+}
+
 struct LogSimplify final
     : public CheckedOpRewritePattern<stablehlo::LogOp, LogSimplify> {
   using CheckedOpRewritePattern<stablehlo::LogOp,
@@ -27754,20 +27773,6 @@ struct LogSimplify final
       auto defOp = op.getOperand().getDefiningOp<stablehlo::ExpOp>();
       if (defOp) {
         rewriter.replaceAllUsesWith(op.getResult(), defOp.getOperand());
-        return success();
-      }
-    }
-
-    { // log(pow(x, y)) -> y * log(x)
-      auto defOp = op.getOperand().getDefiningOp<stablehlo::PowOp>();
-      // Only sound when the base x is provably non-negative. For x < 0,
-      // log(pow(x, y)) can be a finite real (e.g. even integer y, where
-      // pow(x, y) > 0) while y * log(x) is NaN; likewise y = 0 gives
-      // log(pow(x, 0)) = 0 but 0 * log(x) = NaN. See issue #2570.
-      if (defOp && guaranteedNonNegativeResult(defOp.getLhs(), rewriter)) {
-        rewriter.replaceOpWithNewOp<stablehlo::MulOp>(
-            op, defOp.getRhs(),
-            stablehlo::LogOp::create(rewriter, op.getLoc(), defOp.getLhs()));
         return success();
       }
     }
@@ -27796,11 +27801,11 @@ struct LogSimplify final
         if (anyOperandIsConstant(defOp) &&
             !allOperandsAreConstant(defOp)) { // log(mul(a, b)) -> log(a) +
                                               // log(b) if a or b is constant
-          // Only sound when the constant operand is non-negative: a negative
-          // constant makes log(const) NaN where log(a*b) was a finite real
-          // (a < 0 makes both sides NaN, so they still agree). Issue #2570.
+          // Require a strictly positive constant to avoid narrowing the
+          // domain for negative or zero constants. This does not make the
+          // rewrite bit-exact under floating-point rounding. See issue #2570.
           Value cst = matchPattern(lhs, m_Constant()) ? lhs : rhs;
-          if (guaranteedNonNegativeResult(cst, rewriter)) {
+          if (isStrictlyPositiveConstant(cst)) {
             rewriter.replaceOpWithNewOp<stablehlo::AddOp>(
                 op, stablehlo::LogOp::create(rewriter, op.getLoc(), lhs),
                 stablehlo::LogOp::create(rewriter, op.getLoc(), rhs));
@@ -27855,11 +27860,15 @@ struct LogSimplify final
         if (anyOperandIsConstant(defOp) &&
             !allOperandsAreConstant(defOp)) { // log(div(a, b)) -> log(a) -
                                               // log(b) if a or b is constant
-          // Only sound when the constant operand is non-negative: a negative
-          // constant makes log(const) NaN where log(a/b) was a finite real.
-          // Issue #2570.
-          Value cst = matchPattern(lhs, m_Constant()) ? lhs : rhs;
-          if (guaranteedNonNegativeResult(cst, rewriter)) {
+          // A constant numerator must be strictly positive; a zero numerator
+          // can turn a finite log(-0) into NaN after splitting. A zero
+          // denominator is safe here, so it only needs to be non-negative.
+          // This does not make the rewrite bit-exact under floating-point
+          // rounding. See issue #2570.
+          bool constantIsLhs = matchPattern(lhs, m_Constant());
+          Value cst = constantIsLhs ? lhs : rhs;
+          if ((constantIsLhs && isStrictlyPositiveConstant(cst)) ||
+              (!constantIsLhs && isNonNegativeConstant(cst))) {
             rewriter.replaceOpWithNewOp<stablehlo::SubtractOp>(
                 op, stablehlo::LogOp::create(rewriter, op.getLoc(), lhs),
                 stablehlo::LogOp::create(rewriter, op.getLoc(), rhs));
