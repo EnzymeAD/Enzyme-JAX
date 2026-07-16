@@ -1887,11 +1887,14 @@ struct InnerParallelSerialization : public OpRewritePattern<scf::ParallelOp> {
       return failure();
     }
 
+    size_t parallelCount = 0;
     size_t enclosingGpuDims = 0;
     auto par = parallelOp;
-    while ((par = par->getParentOfType<scf::ParallelOp>()))
+    while ((par = par->getParentOfType<scf::ParallelOp>())) {
+      parallelCount++;
       enclosingGpuDims += par.getNumLoops();
-    if (enclosingGpuDims < 6)
+    }
+    if (parallelCount < 2 && enclosingGpuDims < 6)
       return failure();
 
     // For a parallel loop, we essentially need to create an n-dimensional loop
