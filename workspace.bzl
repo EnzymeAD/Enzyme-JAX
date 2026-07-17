@@ -9,10 +9,8 @@ ML_TOOLCHAIN_SHA256 = ""
 
 # If the empty string this will automatically use the commit above
 # otherwise this should be a path to the folder containing the BUILD file for enzyme
+# OVERRIDE_ENZYME_PATH = "/mnt/vimarsh6739/hiord/Enzyme/enzyme/"
 OVERRIDE_ENZYME_PATH = ""
-
-HEDRON_COMPILE_COMMANDS_COMMIT = "84c8aadfeee9a09105ec22cc85d0f478c90a788a"
-HEDRON_COMPILE_COMMANDS_SHA256 = ""
 
 XLA_PATCHES = [
     """
