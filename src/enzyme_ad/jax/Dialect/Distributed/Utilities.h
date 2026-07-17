@@ -7,7 +7,7 @@
 namespace mlir::enzyme::distributed {
 
 using ::mlir::enzyme::axis::castTypedValue;
-using ::mlir::enzyme::axis::castTypedValueList; 
+using ::mlir::enzyme::axis::castTypedValueList;
 using ::mlir::enzyme::axis::TypedValueArrayRef;
 
 // Walks parent operations and checks each symbol table scope for a flat symbol.
@@ -44,7 +44,8 @@ getEnclosingExecutionContext(::mlir::Operation *op);
 
 // Creates a new range with all replication axes removed from the input range.
 ::llvm::SmallVector<TypedValue<::mlir::enzyme::axis::AxisFactorType>>
-filterOutReplicationFactors(TypedValueArrayRef<::mlir::enzyme::axis::AxisFactorType> factors);
+filterOutReplicationFactors(
+    TypedValueArrayRef<::mlir::enzyme::axis::AxisFactorType> factors);
 
 } // namespace mlir::enzyme::distributed
 

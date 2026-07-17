@@ -349,12 +349,12 @@ LogicalResult getDimMappings(
     out_mappingRHS.push_back({outputFactor});
   }
 
-  auto fullMeshGroup =
-      rewriter.create<axis::AxisProductOp>(op.getLoc(), asValues(meshAxisFactorsMajorFirst))
-          .getProduct();
-  auto remainingMeshFactors =
-      axis::subtractFactorsFromFactorGroup(fullMeshGroup, gatheredMeshAxes,
-                                           rewriter);
+  auto fullMeshGroup = rewriter
+                           .create<axis::AxisProductOp>(
+                               op.getLoc(), asValues(meshAxisFactorsMajorFirst))
+                           .getProduct();
+  auto remainingMeshFactors = axis::subtractFactorsFromFactorGroup(
+      fullMeshGroup, gatheredMeshAxes, rewriter);
   if (failed(remainingMeshFactors)) {
     return op.emitOpError(
         "failed to subtract gathered mesh factors from execution mesh factors");

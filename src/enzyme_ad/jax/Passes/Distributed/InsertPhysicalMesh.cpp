@@ -26,9 +26,9 @@ struct InsertPhysicalMeshPass
       (void)meshOp;
       ++physicalMeshCount;
       if (physicalMeshCount > 1) {
-        moduleOp.emitError()
-            << "expected at most one distributed physical mesh in module, found "
-            << physicalMeshCount;
+        moduleOp.emitError() << "expected at most one distributed physical "
+                                "mesh in module, found "
+                             << physicalMeshCount;
         signalPassFailure();
         return;
       }
@@ -95,8 +95,8 @@ struct InsertPhysicalMeshPass
         return;
       }
 
-      Type axisType =
-          PhysicalCommAxisType::get(moduleOp.getContext(), static_cast<unsigned>(extent));
+      Type axisType = PhysicalCommAxisType::get(moduleOp.getContext(),
+                                                static_cast<unsigned>(extent));
       axisAttrs.push_back(TypeAttr::get(axisType));
     }
 
@@ -108,10 +108,9 @@ struct InsertPhysicalMeshPass
 
     OpBuilder builder(moduleOp.getContext());
     builder.setInsertionPointToStart(moduleOp.getBody());
-    builder.create<PhysicalMeshOp>(moduleOp.getLoc(),
-                                   builder.getStringAttr(symbolName),
-                                   builder.getStringAttr("mock"),
-                                   builder.getArrayAttr(axisAttrs));
+    builder.create<PhysicalMeshOp>(
+        moduleOp.getLoc(), builder.getStringAttr(symbolName),
+        builder.getStringAttr("mock"), builder.getArrayAttr(axisAttrs));
   }
 };
 

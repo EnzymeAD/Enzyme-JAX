@@ -11,10 +11,10 @@
 #include "src/enzyme_ad/jax/Dialect/Axis/AxisInterfaces.cpp.inc"
 #include "src/enzyme_ad/jax/Dialect/Axis/AxisTypeInterfaces.cpp.inc"
 
-// Materializes one maybe-temporary op into the target graph (non-SSACFG!) block, then
-// recursively materializes maybe-temporary SSA dependencies.
+// Materializes one maybe-temporary op into the target graph (non-SSACFG!)
+// block, then recursively materializes maybe-temporary SSA dependencies.
 void mlir::enzyme::axis::materializeMaybeTemporaryOp(::mlir::Operation *op,
-                                                      ::mlir::Block &block) {
+                                                     ::mlir::Block &block) {
   if (!op) {
     return;
   }
