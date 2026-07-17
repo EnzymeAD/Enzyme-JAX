@@ -17,8 +17,9 @@ include "src/enzyme_ad/jax/Dialect/Axis/Types.td"
 // Marker for distributed metadata ops. Includes builtin Pure.
 def PureDistributedMetadata : TraitList<[MetadataOpTrait]>;
 
-def PhysicalMeshOp : DistributedOp<"PhysicalMesh", [PureDistributedMetadata, Symbol]> {
-    let description = [{
+def PhysicalMeshOp
+    : DistributedOp<"PhysicalMesh", [PureDistributedMetadata, Symbol]> {
+  let description = [{
         Declares a mesh of device targets along with their local communication hierarchy.
         }];
     let arguments = (ins
@@ -40,7 +41,9 @@ def GetPhysicalMeshAxesOp : DistributedOp<"GetPhysicalMeshAxes", [PureDistribute
     let hasVerifier = 1;
 }
 
-def LogicalMeshAxesOp : DistributedOp<"LogicalMeshAxes", [PureDistributedMetadata, DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
+def LogicalMeshAxesOp : Distr ibutedOp<"LogicalMeshAxes", [
+    PureDistributedMetadata, DeclareOpInterfaceMethods<InferTypeOpInterface>
+  ]> {
     let description = [{
         Declares a new logical mesh of axes, which may or may not correspond to a
         physical mesh. 
@@ -53,11 +56,25 @@ def LogicalMeshAxesOp : DistributedOp<"LogicalMeshAxes", [PureDistributedMetadat
     let hasVerifier = 1;
 }
 
+def ReplicationAxisOp : DistributedOp<"ReplicationAxis", [PureDistributedMetadata, DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
+    let description = [{
+        Declares a new replication axis, which is a logical mesh axis that is replicated
+        across all devices in the physical mesh. 
+    }];
+    let arguments = (ins
+        I32Attr:$extent
+    );
+    let results = (outs ReplicationAxisType:$axis);
+    let assemblyFormat = "$extent attr-dict `:` type($axis)";
+}
+
+
 def MeshComputationOp : DistributedOp<"MeshComputation", [
     HasOnlyGraphRegion,
     NoTerminator,
     Symbol,
-    SymbolTable
+    SymbolTable,
+    IsolatedFromAbove
 ]> {
     let description = [{
         Represents a closed distributed program. Contains a mix non-computational SSA values
@@ -78,8 +95,8 @@ def MeshComputationOp : DistributedOp<"MeshComputation", [
     let hasVerifier = 1;
 }
 
-def DistributedFunctionOp : DistributedOp<"Function", [Symbol]> {
-    let description = [{
+def DistributedFunctionO p : DistributedOp<"Function", [Symbol]> {
+      let description = [{
         Represents a distributed function. Functions have an execution context indicating what subspace of
         the logical/physical mesh they are executed on, and can only be called from a matching enclosing 
         context. All arguments and return values are local values, rather than global tensors with
@@ -135,8 +152,7 @@ def DistributedCallOp : DistributedOp<"DistributedCall", []> {
 }
 
 def DistributedCollectiveOp : DistributedOp<"Collective", [
-    DeclareOpInterfaceMethods<InferTypeOpInterface>,
-    AttrSizedOperandSegments
+    DeclareOpInterfaceMethods<InferTypeOpInterface>
 ]> {
     let description = [{
         An operation representing reductions and resharding along multiple axis. Does not 
@@ -163,21 +179,25 @@ def DistributedCollectiveOp : DistributedOp<"Collective", [
         - input_object: a shaped tensor (tensor or memref).
         - input_mesh: the mesh axes (FactorGroup) that the input object is distributed over.
         - output_mesh: the mesh axes (FactorGroup) that the output object is distributed over.
-                       Must have equal index space to input_mesh.
-        - reduction_groups: a list of FactorGroups to reduce over (pairwise disjoint).
-        - reduction_functions: ArrayAttr of FlatSymbolRefAttr naming single-device reduction 
-                               functions. Size must match reduction_groups.
-        - mapping_lhs: input axis groups to map from (post-reduction).
-        - mapping_rhs: output axis groups to map to (same length, compatible index spaces).
-        
-        Output:
-        - An AsynchHandleType wrapping the output tensor type.
+                       Must have equal index space to input_mesh.-
+                        reduction_groups
+          : a list of FactorGroups to reduce over(pairwise disjoint)
+                .-
+                        reduction_functions
+          : ArrayAttr of FlatSymbolRefAttr naming single -
+            device reduction functions.Size must match reduction_groups.-
+            mapping : an axis.map value whose lhs / rhs groups encode the post -
+            reduction input / output mapping
+                                  .
 
-        Custom format:
-        - Reductions are specified as (%axisgroup @reduction_function), and are collected by
-          the parser into the reduction_groups list and reduction_functions attributes.
-        - Mappings are specified as (%axisgroup -> %axisgroup), and are collected by the parser into
-          the mapping_lhs and mapping_rhs lists.
+                              Output
+          : -An AsynchHandleType wrapping the output tensor type.
+
+            Custom format
+          : -Reductions are specified as(% axisgroup @reduction_function),
+          and are collected by the parser into the reduction_groups list and
+                  reduction_functions attributes.-
+              Mappings are specified via one axis.map SSA value.
     }];
     let arguments = (ins
         AnyTypeOf<[AnyTensor, AnyMemRef]>:$input_object,
@@ -185,18 +205,16 @@ def DistributedCollectiveOp : DistributedOp<"Collective", [
         FactorGroupType:$output_mesh,
         Variadic<FactorGroupType>:$reduction_groups,
         ArrayAttr:$reduction_functions,
-        Variadic<FactorGroupType>:$mapping_lhs,
-        Variadic<FactorGroupType>:$mapping_rhs,
+        AxisMapType:$mapping,
         TypeAttrOf<AnyTensor>:$output_tensor_type
     );
-    let results = (outs AsynchHandleType:$async_handle);
+    let results = (outs AsynchHandleType : $async_handle);
     let assemblyFormat = [{
         $input_object `:` type($input_object) `on` $input_mesh `:` type($input_mesh) 
         `to` $output_tensor_type `on` $output_mesh `:` type($output_mesh)
         `reduces` custom<ReductionGroups>($reduction_groups, $reduction_functions)
         `:` type($reduction_groups)
-        `maps` custom<AxisMapping>($mapping_lhs, $mapping_rhs)
-        `:` `[` type($mapping_lhs) `]` `[` type($mapping_rhs) `]`
+        `maps` $mapping `:` type($mapping)
         attr-dict
     }];
     let hasVerifier = 1;

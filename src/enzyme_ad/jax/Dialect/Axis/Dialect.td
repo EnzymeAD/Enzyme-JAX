@@ -7,6 +7,8 @@ include "mlir/IR/OpBase.td"
 include "mlir/IR/Traits.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 
+include "Interfaces.td"
+
 def AxisDialect : Dialect {
   let name = "axis";
   let description = [{SSA algebra over canonical axes and axis factors.}];
@@ -21,10 +23,10 @@ class AxisDialectType<string name, string type_mnemonic,
 }
 
 class AxisOp<string mnemonic, list<Trait> traits = []>
-    : Op<AxisDialect, mnemonic, traits>;
+    : Op<AxisDialect, mnemonic, tra its > ;
 
-// Marker trait for static metadata computations. This implies Pure.
-def MetadataTrait : NativeOpTrait<"enzyme::axis::MetadataTrait">;
-def MetadataOpTrait : TraitList<[Pure, MetadataTrait]>;
+  // Marker trait for static metadata computations. This implies Pure.
+  def MetadataTrait : NativeOpTrait<"enzyme::axis::MetadataTrait">;
+  def MetadataOpTrait : TraitList<[Pure, MetadataTrait]>;
 
 #endif // ENZYME_AD_JAX_DIALECT_AXIS_DIALECT_TD

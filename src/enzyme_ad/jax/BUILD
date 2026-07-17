@@ -619,6 +619,25 @@ gentbl_cc_library(
 )
 
 gentbl_cc_library(
+    name = "AxisInterfacesIncGen",
+    tbl_outs = [
+        (
+            ["-gen-op-interface-decls"],
+            "Dialect/Axis/AxisInterfaces.h.inc",
+        ),
+        (
+            ["-gen-op-interface-defs"],
+            "Dialect/Axis/AxisInterfaces.cpp.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Dialect/Axis/Interfaces.td",
+    deps = [
+        ":AxisDialectFiles",
+    ],
+)
+
+gentbl_cc_library(
     name = "AxisOpsIncGen",
     tbl_outs = [
         (
@@ -1392,6 +1411,7 @@ cc_library(
     visibility = ["//visibility:public"],
     deps = [
         ":AxisDialectIncGen",
+        ":AxisInterfacesIncGen",
         ":AxisOpsIncGen",
         ":AxisTypeInterfacesIncGen",
         ":AxisTypesIncGen",

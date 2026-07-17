@@ -6,6 +6,10 @@
 
 namespace mlir::enzyme::distributed {
 
+using ::mlir::enzyme::axis::castTypedValue;
+using ::mlir::enzyme::axis::castTypedValueList;
+using ::mlir::enzyme::axis::TypedValueArrayRef;
+
 // Walks parent operations and checks each symbol table scope for a flat symbol.
 ::mlir::Operation *
 lookupSymbolInEnclosingScopes(::mlir::Operation *from,
@@ -38,14 +42,10 @@ template <typename OpTy>
 ::mlir::FailureOr<::mlir::TypedValue<::mlir::enzyme::axis::FactorGroupType>>
 getEnclosingExecutionContext(::mlir::Operation *op);
 
-// Expands an axis.factor_group value into its defining axis.factor list.
-::mlir::FailureOr<::llvm::SmallVector<::mlir::Value>>
-expandExecutionContextFactors(
-    ::mlir::TypedValue<::mlir::enzyme::axis::FactorGroupType> context);
-
 // Creates a new range with all replication axes removed from the input range.
-::llvm::SmallVector<::mlir::Value>
-filterOutReplicationFactors(::mlir::ValueRange factors);
+::llvm::SmallVector<TypedValue<::mlir::enzyme::axis::AxisFactorType>>
+filterOutReplicationFactors(
+    TypedValueArrayRef<::mlir::enzyme::axis::AxisFactorType> factors);
 
 } // namespace mlir::enzyme::distributed
 

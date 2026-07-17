@@ -5,19 +5,16 @@ namespace mlir::enzyme::axis {
 
 namespace {
 
-static LogicalResult verifyFactorExtents(ArrayRef<int32_t> extents,
-                                         unsigned sourceExtent, Operation *op) {
-  uint64_t product = 1;
-  for (int32_t extent : extents) {
-    if (extent <= 0) {
-      return op->emitOpError() << "requires all factor extents to be > 0";
-    }
-    product *= static_cast<uint64_t>(extent);
+static LogicalResult verifyFactorShape(unsigned extent, unsigned stride,
+                                       unsigned sourceExtent, Operation *op) {
+  if (extent <= 0) {
+    return op->emitOpError() << "requires factor extent to be > 0";
   }
-  if (product != sourceExtent) {
-    return op->emitOpError() << "requires product(factor_extents) == axis "
-                                "extent ("
-                             << product << " != " << sourceExtent << ")";
+  if (stride <= 0) {
+    return op->emitOpError() << "requires factor stride to be > 0";
+  }
+  if (sourceExtent % (stride * extent) != 0) {
+    return op->emitOpError() << "requires factor to divide source axis";
   }
   return success();
 }
@@ -38,17 +35,6 @@ static LogicalResult verifySegmentExtents(ArrayRef<int32_t> extents,
                              << sum << " != " << sourceExtent << ")";
   }
   return success();
-}
-
-static void computeMajorToMinorStrides(ArrayRef<int32_t> extents,
-                                       SmallVectorImpl<unsigned> &strides) {
-  // Leftmost factors are most major.
-  strides.resize(extents.size());
-  unsigned running = 1;
-  for (int i = static_cast<int>(extents.size()) - 1; i >= 0; --i) {
-    strides[i] = running;
-    running *= static_cast<unsigned>(extents[i]);
-  }
 }
 
 } // namespace
@@ -112,60 +98,20 @@ LogicalResult AxisFactorOp::verify() {
                             "AxisTypeInterface";
   }
 
-  ArrayRef<int32_t> factorExtents = getFactorExtents();
-
-  if (failed(verifyFactorExtents(factorExtents, axisIface.extent(),
-                                 getOperation()))) {
+  auto axisFactorType = dyn_cast<AxisFactorType>(getResult().getType());
+  if (!axisFactorType) {
+    return emitOpError() << "requires result to have AxisFactorType";
+  }
+  if (axisFactorType.getAxisType() != getAxis().getType()) {
+    return emitOpError()
+           << "requires result to have base axis type equal to operand type";
+  }
+  if (failed(verifyFactorShape(axisFactorType.getExtent(),
+                               axisFactorType.getStride(), axisIface.extent(),
+                               getOperation()))) {
     return failure();
   }
 
-  if (getAxisFactors().size() != factorExtents.size()) {
-    return emitOpError() << "requires number of results to match number of "
-                            "factor extents";
-  }
-
-  SmallVector<unsigned> expectedStrides;
-  computeMajorToMinorStrides(factorExtents, expectedStrides);
-
-  for (auto [idx, axisFactorVal] : llvm::enumerate(getAxisFactors())) {
-    auto axisFactorType = dyn_cast<AxisFactorType>(axisFactorVal.getType());
-    if (!axisFactorType) {
-      return emitOpError() << "requires all results to have AxisFactorType";
-    }
-    if (axisFactorType.getAxisType() != getAxis().getType()) {
-      return emitOpError() << "requires result #" << idx
-                           << " to have base axis type equal to operand type";
-    }
-    if (axisFactorType.getExtent() !=
-        static_cast<unsigned>(factorExtents[idx])) {
-      return emitOpError() << "requires result #" << idx
-                           << " extent to match factor extent";
-    }
-    if (axisFactorType.getStride() != expectedStrides[idx]) {
-      return emitOpError() << "requires result #" << idx
-                           << " stride to follow leftmost-major convention";
-    }
-  }
-
-  return success();
-}
-
-LogicalResult AxisFactorOp::inferReturnTypes(
-    MLIRContext *context, std::optional<Location> location, ValueRange operands,
-    DictionaryAttr attributes, PropertyRef properties, RegionRange regions,
-    SmallVectorImpl<Type> &inferredReturnTypes) {
-  AxisFactorOpAdaptor adaptor(operands, attributes, properties, regions);
-  ArrayRef<int32_t> factorExtents = adaptor.getFactorExtents();
-
-  SmallVector<unsigned> strides;
-  computeMajorToMinorStrides(factorExtents, strides);
-
-  inferredReturnTypes.reserve(factorExtents.size());
-  Type axisType = adaptor.getAxis().getType();
-  for (auto [idx, factorExtent] : llvm::enumerate(factorExtents)) {
-    inferredReturnTypes.push_back(AxisFactorType::get(
-        context, axisType, static_cast<unsigned>(factorExtent), strides[idx]));
-  }
   return success();
 }
 
@@ -281,6 +227,58 @@ LogicalResult AxisProductOp::inferReturnTypes(
 
   inferredReturnTypes.push_back(
       FactorGroupType::get(context, static_cast<unsigned>(extentProduct)));
+  return success();
+}
+
+LogicalResult AxisMapOp::verify() {
+  if (getMappingLhs().size() != getMappingRhs().size()) {
+    return emitOpError() << "requires the lhs and rhs mapping lists to have "
+                            "the same length";
+  }
+
+  for (auto [idx, lhsGroup] : llvm::enumerate(getMappingLhs())) {
+    auto rhsGroup = getMappingRhs()[idx];
+    auto lhsProduct =
+        castTypedValue<FactorGroupType>(lhsGroup, "FactorGroupType");
+    auto rhsProduct =
+        castTypedValue<FactorGroupType>(rhsGroup, "FactorGroupType");
+
+    auto lhsFactors = getProductProvenanceFactors(lhsProduct);
+    if (failed(lhsFactors)) {
+      return emitOpError() << "requires mapping lhs group #" << idx
+                           << " to be produced by axis.product";
+    }
+    if (!areFactorsDisjoint(*lhsFactors)) {
+      return emitOpError() << "requires mapping lhs group #" << idx
+                           << " to be internally disjoint";
+    }
+
+    auto rhsFactors = getProductProvenanceFactors(rhsProduct);
+    if (failed(rhsFactors)) {
+      return emitOpError() << "requires mapping rhs group #" << idx
+                           << " to be produced by axis.product";
+    }
+    if (!areFactorsDisjoint(*rhsFactors)) {
+      return emitOpError() << "requires mapping rhs group #" << idx
+                           << " to be internally disjoint";
+    }
+
+    auto lhsExtent = getFactorGroupExtent(lhsProduct);
+    if (failed(lhsExtent)) {
+      return emitOpError() << "requires mapping lhs group #" << idx
+                           << " to have a computable extent";
+    }
+    auto rhsExtent = getFactorGroupExtent(rhsProduct);
+    if (failed(rhsExtent)) {
+      return emitOpError() << "requires mapping rhs group #" << idx
+                           << " to have a computable extent";
+    }
+    if (*lhsExtent != *rhsExtent) {
+      return emitOpError() << "requires mapping group #" << idx
+                           << " to have the same extent on the lhs and rhs";
+    }
+  }
+
   return success();
 }
 

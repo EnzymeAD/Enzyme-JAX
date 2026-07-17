@@ -22,20 +22,25 @@ def AxisGetAxisOp : AxisOp<"getaxis", [MetadataOpTrait, DeclareOpInterfaceMethod
   let hasVerifier = 1;
 }
 
-def AxisFactorOp : AxisOp<"factor", [MetadataOpTrait, DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
+def AxisFactorOp : AxisOp<"factor", [MetadataOpTrait, DeclareOpInterfaceMethods<MaybeTemporaryInterface>]> {
   let description = [{
-    Factors one canonical axis into leftmost-major factors with static extents.
+    Defines one factor of a canonical axis with static extent and stride, encoded by the type
   }];
-  let arguments = (ins
-    AnyType:$axis,
-    DenseI32ArrayAttr:$factor_extents
-  );
-  let results = (outs Variadic<AxisFactorType>:$axis_factors);
-  let assemblyFormat = "$axis $factor_extents attr-dict `:` type($axis)";
+let arguments = (ins AnyType : $axis);
+let results = (outs AxisFactorType : $axis_factor);
+let assemblyFormat = "$axis attr-dict `:` functional-type(operands, results)";
+  let builders = [
+    OpBuilder<(ins "Value":$axis, "int32_t":$extent, "int32_t":$stride), [{
+      auto factorType = AxisFactorType::get(
+          $_builder.getContext(), axis.getType(),
+          static_cast<unsigned>(extent), static_cast<unsigned>(stride));
+      build($_builder, $_state, factorType, axis);
+    }]>
+  ];
   let hasVerifier = 1;
 }
 
-def AxisSegmentOp : AxisOp<"segment", [MetadataOpTrait, DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
+def AxisSegmentOp : AxisOp<"segment", [MetadataOpTrait, DeclareOpInterfaceMethods<InferTypeOpInterface>, DeclareOpInterfaceMethods<MaybeTemporaryInterface>]> {
   let description = [{
     Splits one canonical axis into left-to-right contiguous linear segments.
     Segment result index is value-ordered: lower result indices denote lower
@@ -51,7 +56,7 @@ def AxisSegmentOp : AxisOp<"segment", [MetadataOpTrait, DeclareOpInterfaceMethod
   let hasVerifier = 1;
 }
 
-def AxisProductOp : AxisOp<"product", [MetadataOpTrait, DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
+def AxisProductOp : AxisOp<"product", [MetadataOpTrait, DeclareOpInterfaceMethods<InferTypeOpInterface>, DeclareOpInterfaceMethods<MaybeTemporaryInterface>]> {
   let description = [{
     Recombines a leftmost-major factor list into one virtual factor product.
   }];
@@ -59,6 +64,27 @@ def AxisProductOp : AxisOp<"product", [MetadataOpTrait, DeclareOpInterfaceMethod
   let results = (outs FactorGroupType:$product);
   let assemblyFormat = "$factors attr-dict `:` type($factors)";
   let hasVerifier = 1;
-}
+  }
 
+  def AxisMapOp : AxisOp<"map", [
+    MetadataOpTrait, AttrSizedOperandSegments,
+    DeclareOpInterfaceMethods<MaybeTemporaryInterface>
+  ]> {
+    let description = [{
+    Declares a mapping between groups of axis products.
+    This op is intended to replace per-collective embedded mapping lists in
+    distributed collectives.
+  }];
+  let arguments = (ins
+    Variadic<FactorGroupType>:$mapping_lhs,
+    Variadic<FactorGroupType>:$mapping_rhs
+  );
+  let results = (outs AxisMapType:$map);
+  let assemblyFormat = [{
+    $mapping_lhs `to` $mapping_rhs
+    attr-dict
+    `:` `[` type($mapping_lhs) `]` `[` type($mapping_rhs) `]`
+  }];
+  let hasVerifier = 1;
+}
 #endif // ENZYME_AD_JAX_DIALECT_AXIS_OPS_TD

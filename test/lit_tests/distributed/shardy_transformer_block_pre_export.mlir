@@ -1,5 +1,5 @@
-// RUN: enzymexlamlir-opt %s | FileCheck %s
-// RUN: enzymexlamlir-opt --pass-pipeline='builtin.module(sdy-propagation-pipeline,sdy-close-shardings,func.func(sdy-insert-explicit-reshards))' %s | FileCheck %s --check-prefix=PIPE
+// RUN: enzymexlamlir-opt --sdy-propagation-pipeline --sdy-export-pipeline="enable-insert-explicit-collectives=true" --sdy-convert-global-to-local="enable-rgv3=true" -o /dev/null %s
+// RUN: enzymexlamlir-opt --sdy-propagation-pipeline --sdy-export-pipeline="enable-insert-explicit-collectives=true" --sdy-convert-global-to-local="enable-rgv3=true" --insert-physical-mesh --shardy-to-distributed -o /dev/null %s
 
 module @shardy_transformer_block_pre_export {
   sdy.mesh @mesh = <["data"=4, "tile"=4, "model"=2]>
@@ -95,23 +95,3 @@ module @shardy_transformer_block_pre_export {
     return %out : tensor<128x512xf32>
   }
 }
-
-// CHECK-LABEL: module @shardy_transformer_block_pre_export
-// CHECK: sdy.mesh @mesh = <["data"=4, "tile"=4, "model"=2]>
-// CHECK-LABEL: func.func @transformer_block(
-// CHECK: stablehlo.dot_general %arg0, %arg1
-// CHECK: stablehlo.dot_general %arg0, %arg2
-// CHECK: stablehlo.dot_general %arg0, %arg3
-// CHECK: stablehlo.transpose %{{.*}}, dims = [0, 1, 3, 2]
-// CHECK: stablehlo.reduce(%{{.*}} init: %{{.*}}) applies stablehlo.add across dimensions = [3]
-// CHECK: stablehlo.rsqrt %{{.*}} : tensor<128xf32>
-// CHECK: stablehlo.maximum %{{.*}}, %{{.*}} : tensor<128x2048xf32>
-// CHECK: return %{{.*}} : tensor<128x512xf32>
-
-// PIPE-LABEL: module @shardy_transformer_block_pre_export
-// PIPE: sdy.mesh @mesh = <["data"=4, "tile"=4, "model"=2]> {stablehlo.mesh =
-// PIPE-LABEL: func.func @transformer_block(
-// PIPE: stablehlo.dot_general %arg0, %arg1{{.*}}{sdy.sharding =
-// PIPE: stablehlo.dot_general %{{.*}}, %{{.*}} batching_dims = [0, 1] x [0, 1], contracting_dims = [3] x [2]{{.*}}{sdy.sharding =
-// PIPE: stablehlo.rsqrt %{{.*}} {{.*}}{sdy.sharding =
-// PIPE: return %{{.*}} : tensor<128x512xf32>

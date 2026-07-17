@@ -66,20 +66,11 @@ getEnclosingExecutionContext(Operation *op) {
   return typedContext;
 }
 
-FailureOr<llvm::SmallVector<Value>>
-expandExecutionContextFactors(TypedValue<FactorGroupType> context) {
-  FailureOr<ValueRange> factors = getProductProvenanceFactors(context);
-  if (failed(factors)) {
-    return failure();
-  }
-  llvm::SmallVector<Value> copiedFactors;
-  copiedFactors.append(factors->begin(), factors->end());
-  return copiedFactors;
-}
-
-::llvm::SmallVector<::mlir::Value>
-filterOutReplicationFactors(::mlir::ValueRange factors) {
-  llvm::SmallVector<::mlir::Value> filteredFactors;
+::llvm::SmallVector<TypedValue<::mlir::enzyme::axis::AxisFactorType>>
+filterOutReplicationFactors(
+    TypedValueArrayRef<::mlir::enzyme::axis::AxisFactorType> factors) {
+  llvm::SmallVector<TypedValue<::mlir::enzyme::axis::AxisFactorType>>
+      filteredFactors;
   for (auto factor : factors) {
     // type of factor should wrap replication axis if it is a replication factor
     auto factorType =
