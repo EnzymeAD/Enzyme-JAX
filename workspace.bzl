@@ -9,7 +9,6 @@ ML_TOOLCHAIN_SHA256 = ""
 
 # If the empty string this will automatically use the commit above
 # otherwise this should be a path to the folder containing the BUILD file for enzyme
-# OVERRIDE_ENZYME_PATH = "/mnt/vimarsh6739/hiord/Enzyme/enzyme/"
 OVERRIDE_ENZYME_PATH = ""
 
 XLA_PATCHES = [
