@@ -26,16 +26,14 @@ def AxisFactorOp : AxisOp<"factor", [Pure, DeclareOpInterfaceMethods<InferTypeOp
   let description = [{
     Factors one canonical axis into leftmost-major factors with static extents.
   }];
-  let arguments = (ins
-    AnyType:$axis,
-    DenseI32ArrayAttr:$factor_extents
-  );
-  let results = (outs Variadic<AxisFactorType>:$axis_factors);
-  let assemblyFormat = "$axis $factor_extents attr-dict `:` type($axis)";
-  let hasVerifier = 1;
+let arguments = (ins AnyType : $axis, DenseI32ArrayAttr : $factor_extents);
+let results = (outs Variadic<AxisFactorType> : $axis_factors);
+let assemblyFormat = "$axis $factor_extents attr-dict `:` type($axis)";
+let hasVerifier = 1;
 }
 
-def AxisGroupOp : AxisOp<"group", [Pure, DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
+def AxisGroupOp
+    : AxisOp<"group", [Pure, DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
   let description = [{
     Recombines a leftmost-major factor list into one virtual factor group.
   }];
