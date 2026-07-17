@@ -7,7 +7,11 @@ namespace mlir {
 namespace enzyme {
 namespace distributed {
 
-void registerdistributedPasses();
+#define GEN_PASS_DECL
+#include "src/enzyme_ad/jax/Passes/Distributed/Passes.h.inc"
+
+#define GEN_PASS_REGISTRATION
+#include "src/enzyme_ad/jax/Passes/Distributed/Passes.h.inc"
 
 } // namespace distributed
 } // namespace enzyme

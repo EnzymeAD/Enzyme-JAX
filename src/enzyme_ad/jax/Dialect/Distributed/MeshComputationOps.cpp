@@ -1,3 +1,4 @@
+#include "CollectiveOps.h"
 #include "Dialect.h"
 
 namespace mlir::enzyme::distributed {
@@ -5,11 +6,13 @@ namespace mlir::enzyme::distributed {
 LogicalResult MeshComputationOp::verify() {
   Block &bodyBlock = getBody().front();
   for (Operation &op : bodyBlock.getOperations()) {
-    if (!op.hasTrait<OpTrait::enzyme::axis::MetadataTrait>()) {
+    bool isMetadataOp = op.hasTrait<OpTrait::enzyme::axis::MetadataTrait>();
+    bool isDistributedFunction = isa<DistributedFunctionOp>(op);
+    if (!isMetadataOp && !isDistributedFunction) {
       return emitOpError()
-             << "only static metadata ops are allowed in the mesh body; "
-             << "operation '" << op.getName() << "' is not marked with "
-             << "metadata trait";
+             << "only distributed.Function and static metadata ops are "
+             << "allowed in the mesh body; operation '" << op.getName()
+             << "' is neither";
     }
   }
   return success();

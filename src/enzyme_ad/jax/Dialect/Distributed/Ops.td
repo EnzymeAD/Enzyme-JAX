@@ -12,21 +12,44 @@ include "Dialect.td"
 include "Types.td"
 include "Interfaces.td"
 include "src/enzyme_ad/jax/Dialect/Axis/Dialect.td"
-
-defvar TensorType = HLO_Tensor;
-defvar ShardedTensorType = HLO_Tensor; // Subject to change, for now shardy just adds attributes on top of a regular tensor.
-defvar ShardingAttribute = Sdy_TensorSharding;
+include "src/enzyme_ad/jax/Dialect/Axis/Types.td"
 
 // Marker for distributed metadata ops. Includes builtin Pure.
 def PureDistributedMetadata : TraitList<[MetadataOpTrait]>;
 
-def GetPhysicalAxisOp : DistributedOp<"GetPhysicalAxis", [PureDistributedMetadata]> {
+def PhysicalMeshOp : DistributedOp<"PhysicalMesh", [PureDistributedMetadata, Symbol]> {
     let description = [{
-        Resolves a module-level physical axis symbol into an SSA axis value.
+        Declares a mesh of device targets along with their local communication hierarchy.
+        }];
+    let arguments = (ins
+        SymbolNameAttr:$sym_name,
+        StrAttr:$device_target,
+        ArrayAttr:$axes // array of physical axis types.
+    );
+    let assemblyFormat = "$sym_name `device_target` $device_target `axes` $axes attr-dict";
+    let hasVerifier = 1;
+}
+
+def GetPhysicalMeshAxesOp : DistributedOp<"GetPhysicalMeshAxes", [PureDistributedMetadata]> {
+    let description = [{
+        Resolves a module-level physical mesh symbol into one SSA axis value per mesh axis.
      }];
-    let arguments = (ins FlatSymbolRefAttr:$physical_axis);
-    let results = (outs PhysicalCommAxisType:$axis);
-    let assemblyFormat = "$physical_axis attr-dict `:` type($axis)";
+    let arguments = (ins FlatSymbolRefAttr:$physical_mesh);
+    let results = (outs Variadic<PhysicalCommAxisType>:$axes);
+    let assemblyFormat = "$physical_mesh attr-dict `:` type($axes)";
+    let hasVerifier = 1;
+}
+
+def LogicalMeshAxesOp : DistributedOp<"LogicalMeshAxes", [PureDistributedMetadata, DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
+    let description = [{
+        Declares a new logical mesh of axes, which may or may not correspond to a
+        physical mesh. 
+    }];
+    let arguments = (ins
+        DenseI32ArrayAttr:$axis_extents
+    );
+    let results = (outs Variadic<LogicalMeshAxisType>:$axes);
+    let assemblyFormat = "$axis_extents attr-dict `:` type($axes)";
     let hasVerifier = 1;
 }
 
@@ -45,13 +68,36 @@ def MeshComputationOp : DistributedOp<"MeshComputation", [
         for optimization decisions.
      }];
     let arguments = (ins
-        SymbolNameAttr:$computation_name,
+        SymbolNameAttr:$sym_name,
         FlatSymbolRefAttr:$physical_mesh
     );
     let regions = (region SizedRegion<1>:$body);
         let assemblyFormat = [{
-            $computation_name `mesh` $physical_mesh $body attr-dict
+            $sym_name `mesh` $physical_mesh $body attr-dict
         }];
+    let hasVerifier = 1;
+}
+
+def DistributedFunctionOp : DistributedOp<"Function", [Symbol]> {
+    let description = [{
+        Represents a distributed function. Functions have an execution context indicating what subspace of
+        the logical/physical mesh they are executed on, and can only be called from a matching enclosing 
+        context. All arguments and return values are local values, rather than global tensors with
+        a sharding annotation.
+    }];
+    let arguments = (ins
+        SymbolNameAttr:$sym_name,
+        FactorGroupType:$execution_context,
+        ArrayAttr:$argument_types,
+        ArrayAttr:$return_types
+    );
+    let regions = (region SizedRegion<1>:$body);
+    let assemblyFormat = [{
+        $sym_name `context` $execution_context
+        `:` type($execution_context)
+        `arg_types` $argument_types `ret_types` $return_types
+        $body attr-dict
+    }];
     let hasVerifier = 1;
 }
 
@@ -59,7 +105,100 @@ def DistributedYieldOp : DistributedOp<"DistributedYield", [Terminator]> {
     let description = [{
         Terminator for distributed functions. Yields local values back to the caller.
      }];
-    let arguments = (ins Variadic<ShardedTensorType>:$returns);
+    let arguments = (ins Variadic<AnyType>:$returns);
     let assemblyFormat = "$returns type($returns) attr-dict";
+}
+
+def DistributedAwait : DistributedOp<"Await", [DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
+    let description = [{
+        Awaits a value that is being computed asynchronously. Extracts the value
+        from an AsynchHandleType. This is a no-op if the value is already available.
+    }];
+    let arguments = (ins AsynchHandleType:$async_handle);
+    let results = (outs AnyType:$value);
+    let assemblyFormat = "$async_handle attr-dict `:` type($async_handle) `->` type($value)";
+    let hasVerifier = 1;
+}
+
+def DistributedCallOp : DistributedOp<"DistributedCall", []> {
+    let description = [{
+        Calls a distributed function. The execution context must match the enclosing context.
+     }];
+    let arguments = (ins
+        FlatSymbolRefAttr:$callee,
+        FactorGroupType:$replicate_over,
+        Variadic<AnyType>:$arguments
+    );
+    let results = (outs Variadic<AnyType>:$returns);
+    let assemblyFormat = "$callee `replicate_over` $replicate_over $arguments attr-dict `:` type($replicate_over) `,` type($arguments) `->` type($returns)";
+    let hasVerifier = 1;
+}
+
+def DistributedCollectiveOp : DistributedOp<"Collective", [
+    DeclareOpInterfaceMethods<InferTypeOpInterface>,
+    AttrSizedOperandSegments
+]> {
+    let description = [{
+        An operation representing reductions and resharding along multiple axis. Does not 
+        cover collective permutes and point-to-point communication. 
+        
+        A collective operation happens over the mesh and tile axis, and maps input mesh/tile 
+        axis factors to output mesh/tile axis factors. Essentially, this is a 
+        reduce-transpose-reshape operation. 
+
+        Reductions are specified as different groups of axis factors to reduce over.
+        Reductions take custom binary functions as input, which must be associative.
+        Each group of reduction axes may have a different reduction function function, 
+        but these must be commutative with each other: for now, use two distinct collectives 
+        when reductions cannot be fused.
+
+        The transpose/reshape is specified as a mapping between non-reduced input/output axis factors.
+        This mapping space can also include replicate(N) factors on either side: mapping an input axis
+        to replicate means that you are asserting each device on that dimension contributes identical values,
+        while mapping replicate to an output axis means you are cloning the result over that axis.
+
+        Collectives must be between the same mesh (verified via index space equality).
+
+        Inputs:
+        - input_object: a shaped tensor (tensor or memref).
+        - input_mesh: the mesh axes (FactorGroup) that the input object is distributed over.
+        - output_mesh: the mesh axes (FactorGroup) that the output object is distributed over.
+                       Must have equal index space to input_mesh.
+        - reduction_groups: a list of FactorGroups to reduce over (pairwise disjoint).
+        - reduction_functions: ArrayAttr of FlatSymbolRefAttr naming single-device reduction 
+                               functions. Size must match reduction_groups.
+        - mapping_lhs: input axis groups to map from (post-reduction).
+        - mapping_rhs: output axis groups to map to (same length, compatible index spaces).
+        
+        Output:
+        - An AsynchHandleType wrapping the output tensor type.
+
+        Custom format:
+        - Reductions are specified as (%axisgroup @reduction_function), and are collected by
+          the parser into the reduction_groups list and reduction_functions attributes.
+        - Mappings are specified as (%axisgroup -> %axisgroup), and are collected by the parser into
+          the mapping_lhs and mapping_rhs lists.
+    }];
+    let arguments = (ins
+        AnyTypeOf<[AnyTensor, AnyMemRef]>:$input_object,
+        FactorGroupType:$input_mesh,
+        FactorGroupType:$output_mesh,
+        Variadic<FactorGroupType>:$reduction_groups,
+        ArrayAttr:$reduction_functions,
+        Variadic<FactorGroupType>:$mapping_lhs,
+        Variadic<FactorGroupType>:$mapping_rhs,
+        TypeAttrOf<AnyTensor>:$output_tensor_type
+    );
+    let results = (outs AsynchHandleType:$async_handle);
+    let assemblyFormat = [{
+        $input_object `:` type($input_object) `on` $input_mesh `:` type($input_mesh) 
+        `to` $output_tensor_type `on` $output_mesh `:` type($output_mesh)
+        `reduces` custom<ReductionGroups>($reduction_groups, $reduction_functions)
+        `:` type($reduction_groups)
+        `maps` custom<AxisMapping>($mapping_lhs, $mapping_rhs)
+        `:` `[` type($mapping_lhs) `]` `[` type($mapping_rhs) `]`
+        attr-dict
+    }];
+    let hasVerifier = 1;
 }
 #endif // ENZYME_AD_JAX_DIALECT_DISTRIBUTED_OPS_TD
