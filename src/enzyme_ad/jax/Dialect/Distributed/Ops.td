@@ -17,8 +17,9 @@ include "src/enzyme_ad/jax/Dialect/Axis/Types.td"
 // Marker for distributed metadata ops. Includes builtin Pure.
 def PureDistributedMetadata : TraitList<[MetadataOpTrait]>;
 
-def PhysicalMeshOp : DistributedOp<"PhysicalMesh", [PureDistributedMetadata, Symbol]> {
-    let description = [{
+def PhysicalMeshOp
+    : DistributedOp<"PhysicalMesh", [PureDistributedMetadata, Symbol]> {
+  let description = [{
         Declares a mesh of device targets along with their local communication hierarchy.
         }];
     let arguments = (ins
@@ -40,7 +41,9 @@ def GetPhysicalMeshAxesOp : DistributedOp<"GetPhysicalMeshAxes", [PureDistribute
     let hasVerifier = 1;
 }
 
-def LogicalMeshAxesOp : DistributedOp<"LogicalMeshAxes", [PureDistributedMetadata, DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
+def LogicalMeshAxesOp : Distr ibutedOp<"LogicalMeshAxes", [
+    PureDistributedMetadata, DeclareOpInterfaceMethods<InferTypeOpInterface>
+  ]> {
     let description = [{
         Declares a new logical mesh of axes, which may or may not correspond to a
         physical mesh. 
@@ -92,8 +95,8 @@ def MeshComputationOp : DistributedOp<"MeshComputation", [
     let hasVerifier = 1;
 }
 
-def DistributedFunctionOp : DistributedOp<"Function", [Symbol]> {
-    let description = [{
+def DistributedFunctionO p : DistributedOp<"Function", [Symbol]> {
+      let description = [{
         Represents a distributed function. Functions have an execution context indicating what subspace of
         the logical/physical mesh they are executed on, and can only be called from a matching enclosing 
         context. All arguments and return values are local values, rather than global tensors with
@@ -176,20 +179,25 @@ def DistributedCollectiveOp : DistributedOp<"Collective", [
         - input_object: a shaped tensor (tensor or memref).
         - input_mesh: the mesh axes (FactorGroup) that the input object is distributed over.
         - output_mesh: the mesh axes (FactorGroup) that the output object is distributed over.
-                       Must have equal index space to input_mesh.
-        - reduction_groups: a list of FactorGroups to reduce over (pairwise disjoint).
-        - reduction_functions: ArrayAttr of FlatSymbolRefAttr naming single-device reduction 
-                               functions. Size must match reduction_groups.
-        - mapping: an axis.map value whose lhs/rhs groups encode the
-               post-reduction input/output mapping.
-        
-        Output:
-        - An AsynchHandleType wrapping the output tensor type.
+                       Must have equal index space to input_mesh.-
+                        reduction_groups
+          : a list of FactorGroups to reduce over(pairwise disjoint)
+                .-
+                        reduction_functions
+          : ArrayAttr of FlatSymbolRefAttr naming single -
+            device reduction functions.Size must match reduction_groups.-
+            mapping : an axis.map value whose lhs / rhs groups encode the post -
+            reduction input / output mapping
+                                  .
 
-        Custom format:
-        - Reductions are specified as (%axisgroup @reduction_function), and are collected by
-          the parser into the reduction_groups list and reduction_functions attributes.
-                - Mappings are specified via one axis.map SSA value.
+                              Output
+          : -An AsynchHandleType wrapping the output tensor type.
+
+            Custom format
+          : -Reductions are specified as(% axisgroup @reduction_function),
+          and are collected by the parser into the reduction_groups list and
+                  reduction_functions attributes.-
+              Mappings are specified via one axis.map SSA value.
     }];
     let arguments = (ins
         AnyTypeOf<[AnyTensor, AnyMemRef]>:$input_object,
@@ -200,7 +208,7 @@ def DistributedCollectiveOp : DistributedOp<"Collective", [
         AxisMapType:$mapping,
         TypeAttrOf<AnyTensor>:$output_tensor_type
     );
-    let results = (outs AsynchHandleType:$async_handle);
+    let results = (outs AsynchHandleType : $async_handle);
     let assemblyFormat = [{
         $input_object `:` type($input_object) `on` $input_mesh `:` type($input_mesh) 
         `to` $output_tensor_type `on` $output_mesh `:` type($output_mesh)

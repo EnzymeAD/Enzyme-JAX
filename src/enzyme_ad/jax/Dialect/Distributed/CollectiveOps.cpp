@@ -67,15 +67,15 @@ LogicalResult DistributedCollectiveOp::verify() {
     }
   }
 
-    auto typedReductionGroups = axis::castTypedValueList<axis::FactorGroupType>(
+  auto typedReductionGroups = axis::castTypedValueList<axis::FactorGroupType>(
       getReductionGroups(), "FactorGroupType");
-    auto mappingOp = getMapping().getDefiningOp<axis::AxisMapOp>();
-    if (!mappingOp) {
+  auto mappingOp = getMapping().getDefiningOp<axis::AxisMapOp>();
+  if (!mappingOp) {
     return emitOpError() << "requires mapping to be produced by axis.map";
-    }
-    auto typedMappingLHS = axis::castTypedValueList<axis::FactorGroupType>(
+  }
+  auto typedMappingLHS = axis::castTypedValueList<axis::FactorGroupType>(
       mappingOp.getMappingLhs(), "FactorGroupType");
-    auto typedMappingRHS = axis::castTypedValueList<axis::FactorGroupType>(
+  auto typedMappingRHS = axis::castTypedValueList<axis::FactorGroupType>(
       mappingOp.getMappingRhs(), "FactorGroupType");
   auto reduction_group_factors =
       axis::flattenGroupsToFactors(typedReductionGroups);

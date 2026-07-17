@@ -67,8 +67,10 @@ getEnclosingExecutionContext(Operation *op) {
 }
 
 ::llvm::SmallVector<TypedValue<::mlir::enzyme::axis::AxisFactorType>>
-filterOutReplicationFactors(TypedValueArrayRef<::mlir::enzyme::axis::AxisFactorType> factors) {
-  llvm::SmallVector<TypedValue<::mlir::enzyme::axis::AxisFactorType>> filteredFactors;
+filterOutReplicationFactors(
+    TypedValueArrayRef<::mlir::enzyme::axis::AxisFactorType> factors) {
+  llvm::SmallVector<TypedValue<::mlir::enzyme::axis::AxisFactorType>>
+      filteredFactors;
   for (auto factor : factors) {
     // type of factor should wrap replication axis if it is a replication factor
     auto factorType =

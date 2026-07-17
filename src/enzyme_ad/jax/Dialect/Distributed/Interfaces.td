@@ -3,8 +3,7 @@
 
 include "mlir/IR/OpBase.td"
 
-def PhysicalCommAxisOpInterface :
-        OpInterface<"PhysicalCommAxisOpInterface"> {
+def PhysicalCommAxisOpInterface : OpInterface<"PhysicalCommAxisOpInterface"> {
     let description = [{
         Interface for ops that define a physical communication axis.
     }];

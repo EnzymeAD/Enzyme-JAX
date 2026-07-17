@@ -138,9 +138,9 @@ factorAxisByExtents(::mlir::Value axis, llvm::ArrayRef<int32_t> extents,
 // factors of the minuend index space.
 ::mlir::FailureOr<llvm::SmallVector<::mlir::TypedValue<AxisFactorType>>>
 subtractFactorsFromFactorGroup(
-  ::mlir::TypedValue<FactorGroupType> minuend,
-  llvm::ArrayRef<::mlir::TypedValue<AxisFactorType>> subtrahend,
-  ::mlir::OpBuilder &builder);
+    ::mlir::TypedValue<FactorGroupType> minuend,
+    llvm::ArrayRef<::mlir::TypedValue<AxisFactorType>> subtrahend,
+    ::mlir::OpBuilder &builder);
 
 // Infers an axis.map over one virtual index space from explicit RHS indices.
 // rhs_indices must be ordered by LHS index (rhs_indices[i] = j means i -> j).

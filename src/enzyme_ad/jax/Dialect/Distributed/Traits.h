@@ -5,10 +5,8 @@
 
 namespace mlir::OpTrait::enzyme::distributed {
 
-
 template <typename ConcreteType>
-class MetadataTrait : public OpTrait::TraitBase<ConcreteType, MetadataTrait> {
-};
+class MetadataTrait : public OpTrait::TraitBase<ConcreteType, MetadataTrait> {};
 } // namespace mlir::OpTrait::enzyme::distributed
 
 #endif // ENZYME_AD_JAX_DIALECT_DISTRIBUTED_TRAITS_H
