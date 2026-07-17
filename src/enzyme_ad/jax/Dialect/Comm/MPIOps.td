@@ -5,8 +5,8 @@ include "Dialect.td"
 
 include "mlir/Interfaces/SideEffectInterfaces.td"
 
-include "MPITypes.td"
-include "MPIAttrs.td"
+include "Types.td"
+include "Attrs.td"
 
 def MPI_PredefinedCommOp : Comm_Op<"mpi.predefined_comm", [Pure]> {
   let summary = "Get the named predefined MPI communicator";

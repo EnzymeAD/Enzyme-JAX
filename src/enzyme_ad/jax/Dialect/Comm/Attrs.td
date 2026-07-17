@@ -1,10 +1,11 @@
-#ifndef ENZYMEXLA_COMM_DIALECT_MPI_ATTRS_TD
-#define ENZYMEXLA_COMM_DIALECT_MPI_ATTRS_TD
+#ifndef ENZYMEXLA_COMM_DIALECT_ATTRS_TD
+#define ENZYMEXLA_COMM_DIALECT_ATTRS_TD
 
 include "Dialect.td"
 
 include "mlir/IR/EnumAttr.td"
 
+// MPI
 def MPI_Comms : I32EnumAttr<"MPI_Comms", "Named predefined MPI communicators", [
       I32EnumAttrCase<"MPI_COMM_NULL", 256>,
       I32EnumAttrCase<"MPI_COMM_WORLD", 257>,
@@ -126,4 +127,20 @@ def MPI_OpsAttr : EnumAttr<Comm_Dialect, MPI_Ops, "mpi.op"> {
   let assemblyFormat = "`<` $value `>`";
 }
 
-#endif // ENZYMEXLA_COMM_DIALECT_MPI_ATTRS_TD
+// NCCL
+def NCCL_RedOps : I32EnumAttr<"NCCL_RedOps", "Named predefined NCCL reduction operators", [
+      I32EnumAttrCase<"NCCL_SUM", 0>,
+      I32EnumAttrCase<"NCCL_PROD", 1>,
+      I32EnumAttrCase<"NCCL_MIN", 2>,
+      I32EnumAttrCase<"NCCL_MAX", 3>,
+      I32EnumAttrCase<"NCCL_AVG", 4>,
+    ]> {
+  let genSpecializedAttr = 0;
+  let cppNamespace = "::mlir::enzymexla::comm";
+}
+
+def NCCL_RedOpAttr : EnumAttr<Comm_Dialect, NCCL_RedOps, "nccl.red_op"> {
+  let assemblyFormat = "`<` $value `>`";
+}
+
+#endif // ENZYMEXLA_COMM_DIALECT_ATTRS_TD
