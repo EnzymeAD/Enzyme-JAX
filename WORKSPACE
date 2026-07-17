@@ -343,8 +343,9 @@ enzyme_workspace()
 cuda_tile_workspace()
 
 # add support for generating compile_commands
-load("@enzyme//third_party/hedron_compile_commands:workspace.bzl", 
-  hedron_compile_commands_workspace = "repo"
+load(
+    "@enzyme//third_party/hedron_compile_commands:workspace.bzl",
+    hedron_compile_commands_workspace = "repo",
 )
 
 hedron_compile_commands_workspace()
