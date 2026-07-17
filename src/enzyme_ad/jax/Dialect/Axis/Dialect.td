@@ -14,18 +14,16 @@ def AxisDialect : Dialect {
   let useDefaultTypePrinterParser = 1;
 }
 
-class AxisDialectType<string name, string type_mnemonic,
-                      list<Trait> traits = []>
-    : TypeDef<AxisDialect, name, traits> {
+class AxisDialectType<string name, string type_mnemonic, list<Trait> traits = [
+]> : TypeDef<AxisDialect, name, traits> {
   let mnemonic = type_mnemonic;
 }
 
 class AxisOp<string mnemonic, list<Trait> traits = []>
-    : Op<A xisDialect,
-      mnemonic, traits > ;
+    : Op<AxisDialect, mnemonic, traits>;
 
-  // Marker trait for static metadata computations. This implies Pure.
-  def MetadataTrait : NativeOpTrait<"enzyme::axis::MetadataTrait">;
-  def MetadataOpTrait : TraitList<[Pure, MetadataTrait]>;
+// Marker trait for static metadata computations. This implies Pure.
+def MetadataTrait : NativeOpTrait<"enzyme::axis::MetadataTrait">;
+def MetadataOpTrait : TraitList<[Pure, MetadataTrait]>;
 
 #endif // ENZYME_AD_JAX_DIALECT_AXIS_DIALECT_TD
