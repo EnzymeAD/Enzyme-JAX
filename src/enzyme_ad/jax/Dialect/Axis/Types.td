@@ -6,12 +6,11 @@ include "Interfaces.td"
 
 class AxisType<string name, string type_mnemonic, list<Trait> traits = []>
     : AxisDialectType<name, type_mnemonic,
-                      [DeclareTypeInterfaceMethods<AxisTypeInterface>] #
-                          traits>;
+                      [DeclareTypeInterfaceMethods<AxisTypeInterface>] #traits>;
 
 // Canonical axis for ranked shape dimensions.
 def ShapeAxisType : AxisType<"ShapeAxis", "shape_axis"> {
-  let parameters = (ins "::mlir::Type":$shapeType, "unsigned":$axisIndex);
+  let parameters = (ins "::mlir::Type" : $shapeType, "unsigned" : $axisIndex);
   let assemblyFormat = "`<` $shapeType `,` $axisIndex `>`";
   let extraClassDeclaration = [{
     unsigned getExtent() const;

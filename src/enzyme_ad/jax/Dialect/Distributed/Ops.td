@@ -14,14 +14,17 @@ include "Interfaces.td"
 include "src/enzyme_ad/jax/Dialect/Axis/Dialect.td"
 
 defvar TensorType = HLO_Tensor;
-defvar ShardedTensorType = HLO_Tensor; // Subject to change, for now shardy just adds attributes on top of a regular tensor.
+defvar ShardedTensorType =
+    HLO_Tensor; // Subject to change, for now shardy just adds attributes on top
+                // of a regular tensor.
 defvar ShardingAttribute = Sdy_TensorSharding;
 
 // Marker for distributed metadata ops. Includes builtin Pure.
 def PureDistributedMetadata : TraitList<[MetadataOpTrait]>;
 
-def GetPhysicalAxisOp : DistributedOp<"GetPhysicalAxis", [PureDistributedMetadata]> {
-    let description = [{
+def GetPhysicalAxisOp
+    : DistributedOp<"GetPhysicalAxis", [PureDistributedMetadata]> {
+  let description = [{
         Resolves a module-level physical axis symbol into an SSA axis value.
      }];
     let arguments = (ins FlatSymbolRefAttr:$physical_axis);
@@ -44,12 +47,11 @@ def MeshComputationOp : DistributedOp<"MeshComputation", [
         must be fully contained in this region, allowing us to reason about the whole call graph
         for optimization decisions.
      }];
-    let arguments = (ins
-        SymbolNameAttr:$computation_name,
-        FlatSymbolRefAttr:$physical_mesh
-    );
-    let regions = (region SizedRegion<1>:$body);
-        let assemblyFormat = [{
+    let argu ments = (ins SymbolNameAttr
+                      : $computation_name, FlatSymbolRefAttr
+                      : $physical_mesh);
+  let regions = (region SizedRegion<1> : $body);
+  let assemblyFormat = [{
             $computation_name `mesh` $physical_mesh $body attr-dict
         }];
     let hasVerifier = 1;
