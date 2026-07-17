@@ -26,16 +26,15 @@ def AxisFactorOp : AxisOp<"factor", [MetadataOpTrait, DeclareOpInterfaceMethods<
   let description = [{
     Factors one canonical axis into leftmost-major factors with static extents.
   }];
-  let arguments = (ins
-    AnyType:$axis,
-    DenseI32ArrayAttr:$factor_extents
-  );
-  let results = (outs Variadic<AxisFactorType>:$axis_factors);
-  let assemblyFormat = "$axis $factor_extents attr-dict `:` type($axis)";
-  let hasVerifier = 1;
+let arguments = (ins AnyType : $axis, DenseI32ArrayAttr : $factor_extents);
+let results = (outs Variadic<AxisFactorType> : $axis_factors);
+let assemblyFormat = "$axis $factor_extents attr-dict `:` type($axis)";
+let hasVerifier = 1;
 }
 
-def AxisSegmentOp : AxisOp<"segment", [MetadataOpTrait, DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
+def AxisSegmentOp : AxisOp<"segment", [
+  MetadataOpTrait, DeclareOpInterfaceMethods<InferTypeOpInterface>
+]> {
   let description = [{
     Splits one canonical axis into left-to-right contiguous linear segments.
     Segment result index is value-ordered: lower result indices denote lower

@@ -17,8 +17,9 @@ include "src/enzyme_ad/jax/Dialect/Axis/Types.td"
 // Marker for distributed metadata ops. Includes builtin Pure.
 def PureDistributedMetadata : TraitList<[MetadataOpTrait]>;
 
-def PhysicalMeshOp : DistributedOp<"PhysicalMesh", [PureDistributedMetadata, Symbol]> {
-    let description = [{
+def PhysicalMeshOp
+    : DistributedOp<"PhysicalMesh", [PureDistributedMetadata, Symbol]> {
+  let description = [{
         Declares a mesh of device targets along with their local communication hierarchy.
         }];
     let arguments = (ins
@@ -40,7 +41,9 @@ def GetPhysicalMeshAxesOp : DistributedOp<"GetPhysicalMeshAxes", [PureDistribute
     let hasVerifier = 1;
 }
 
-def LogicalMeshAxesOp : DistributedOp<"LogicalMeshAxes", [PureDistributedMetadata, DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
+def LogicalMeshAxesOp : Distr ibutedOp<"LogicalMeshAxes", [
+    PureDistributedMetadata, DeclareOpInterfaceMethods<InferTypeOpInterface>
+  ]> {
     let description = [{
         Declares a new logical mesh of axes, which may or may not correspond to a
         physical mesh. 
@@ -91,7 +94,7 @@ def DistributedFunctionOp : DistributedOp<"Function", [Symbol]> {
         ArrayAttr:$argument_types,
         ArrayAttr:$return_types
     );
-    let regions = (region SizedRegion<1>:$body);
+    let regions = (region SizedRegion<1> : $body);
     let assemblyFormat = [{
         $sym_name `context` $execution_context
         `:` type($execution_context)
@@ -173,13 +176,15 @@ def DistributedCollectiveOp : DistributedOp<"Collective", [
         Output:
         - An AsynchHandleType wrapping the output tensor type.
 
-        Custom format:
-        - Reductions are specified as (%axisgroup @reduction_function), and are collected by
-          the parser into the reduction_groups list and reduction_functions attributes.
-        - Mappings are specified as (%axisgroup -> %axisgroup), and are collected by the parser into
-          the mapping_lhs and mapping_rhs lists.
-    }];
-    let arguments = (ins
+                         Custom format
+        : -Reductions are specified as(% axisgroup @reduction_function),
+        and are collected by the parser into the reduction_groups list and
+                reduction_functions attributes.-
+            Mappings are specified as(% axisgroup->% axisgroup),
+        and are collected by the parser into the mapping_lhs and mapping_rhs
+            lists.
+  }];
+  let arguments = (ins
         AnyTypeOf<[AnyTensor, AnyMemRef]>:$input_object,
         FactorGroupType:$input_mesh,
         FactorGroupType:$output_mesh,
@@ -189,8 +194,8 @@ def DistributedCollectiveOp : DistributedOp<"Collective", [
         Variadic<FactorGroupType>:$mapping_rhs,
         TypeAttrOf<AnyTensor>:$output_tensor_type
     );
-    let results = (outs AsynchHandleType:$async_handle);
-    let assemblyFormat = [{
+  let results = (outs AsynchHandleType : $async_handle);
+  let assemblyFormat = [{
         $input_object `:` type($input_object) `on` $input_mesh `:` type($input_mesh) 
         `to` $output_tensor_type `on` $output_mesh `:` type($output_mesh)
         `reduces` custom<ReductionGroups>($reduction_groups, $reduction_functions)

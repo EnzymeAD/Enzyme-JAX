@@ -71,13 +71,13 @@ struct ShardyToDistributedPass
     }
 
     // Create a new mesh computation using the modules pysical mesh
-  OpBuilder builder(moduleOp.getContext());
+    OpBuilder builder(moduleOp.getContext());
     builder.setInsertionPointAfter(
-    *physicalMesh); // graph region, doesn't matter
+        *physicalMesh); // graph region, doesn't matter
     distributed::MeshComputationOp meshComputation =
         builder.create<distributed::MeshComputationOp>(
-      moduleOp.getLoc(), builder.getStringAttr("mesh_computation"),
-      FlatSymbolRefAttr::get(physicalMesh->getSymNameAttr()));
+            moduleOp.getLoc(), builder.getStringAttr("mesh_computation"),
+            FlatSymbolRefAttr::get(physicalMesh->getSymNameAttr()));
     Region &meshComputationBody = meshComputation.getBody();
     if (meshComputationBody.empty()) {
       meshComputationBody.emplaceBlock();
@@ -103,7 +103,8 @@ struct ShardyToDistributedPass
 
     distributed::LogicalMeshAxesOp logicalMeshAxes =
         builder.create<distributed::LogicalMeshAxesOp>(
-        moduleOp.getLoc(), builder.getDenseI32ArrayAttr(logicalAxisExtents));
+            moduleOp.getLoc(),
+            builder.getDenseI32ArrayAttr(logicalAxisExtents));
 
     llvm::DenseMap<StringAttr, Value> shardyToDistributedAxis;
     for (auto [idx, distributedAxis] :
