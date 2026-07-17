@@ -693,8 +693,8 @@ td_library(
         "@llvm-project//mlir:BuiltinDialectTdFiles",
         "@llvm-project//mlir:InferTypeOpInterfaceTdFiles",
         "@llvm-project//mlir:OpBaseTdFiles",
-        "@stablehlo//:stablehlo_ops_td_files",
         "@shardy//shardy/dialect/sdy/ir:sdy_td_files",
+        "@stablehlo//:stablehlo_ops_td_files",
     ],
 )
 
@@ -1391,15 +1391,15 @@ cc_library(
     ],
     visibility = ["//visibility:public"],
     deps = [
-        ":CheckedRewrite",
         ":AxisDialectIncGen",
         ":AxisOpsIncGen",
         ":AxisTypeInterfacesIncGen",
         ":AxisTypesIncGen",
+        ":CheckedRewrite",
         ":DistributedDialectIncGen",
         ":DistributedInterfacesIncGen",
-        ":DistributedPassesIncGen",
         ":DistributedOpsIncGen",
+        ":DistributedPassesIncGen",
         ":DistributedTypeInterfacesIncGen",
         ":DistributedTypesIncGen",
         ":EnzymeHLOPatternsIncGen",
