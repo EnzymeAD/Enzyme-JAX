@@ -27,3 +27,11 @@ func.func @bcast_rank0_runtime(%s: tensor<f32>, %arg1: tensor<1024x32xf32>) -> t
 }
 // CHECK-LABEL: func.func @bcast_rank0_runtime
 // CHECK-NOT: stablehlo.dot_general
+// Variant C -- broadcast of a RUNTIME scalar on the RHS operand.
+func.func @bcast_rank0_runtime_rhs(%s: tensor<f32>, %arg0: tensor<32x1024xf32>) -> tensor<32x24xf32> {
+    %ones = stablehlo.broadcast_in_dim %s, dims = [] : (tensor<f32>) -> tensor<1024x24xf32>
+    %r = stablehlo.dot_general %arg0, %ones, contracting_dims = [1] x [0], precision = [DEFAULT, DEFAULT] : (tensor<32x1024xf32>, tensor<1024x24xf32>) -> tensor<32x24xf32>
+    return %r : tensor<32x24xf32>
+}
+// CHECK-LABEL: func.func @bcast_rank0_runtime_rhs
+// CHECK-NOT: stablehlo.dot_general
