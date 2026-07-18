@@ -9648,6 +9648,19 @@ struct BroadcastIotaSimplify
   }
 };
 
+
+
+// Returns the rank-0 scalar operand of a broadcast_in_dim that splats a scalar
+// across its entire result (empty broadcast_dimensions <=> rank-0 input), else
+// a null Value. The scalar may be a runtime value, hence a Value rather than an
+// attribute (cf. extractSplatInt).
+static Value extractBroadcastScalar(Value v) {
+  if (auto bcast = v.getDefiningOp<stablehlo::BroadcastInDimOp>())
+    if (bcast.getBroadcastDimensions().empty())
+      return bcast.getOperand();
+  return Value();
+}
+
 struct DotGeneralSimplify
     : public CheckedOpRewritePattern<stablehlo::DotGeneralOp,
                                      DotGeneralSimplify> {
@@ -9685,8 +9698,26 @@ struct DotGeneralSimplify
     Value reduceSumInput;
     SmallVector<int64_t> reduceDims, broadcastDims, broadcastShape;
     SplatElementsAttr splatElementsAttr;
+    Value splatScalar;  // runtime scalar from a rank-0 broadcast, else null
 
-    if (matchPattern(op.getLhs(), m_Constant(&splatElementsAttr))) {
+    bool lhsSplat = matchPattern(op.getLhs(), m_Constant(&splatElementsAttr));
+    if (!lhsSplat)
+      if (Value s = extractBroadcastScalar(op.getLhs())) {
+        lhsSplat = true;
+        splatScalar = s;
+      }
+
+    bool rhsSplat = false;
+    if (!lhsSplat) {
+      rhsSplat = matchPattern(op.getRhs(), m_Constant(&splatElementsAttr));
+      if (!rhsSplat)
+        if (Value s = extractBroadcastScalar(op.getRhs())) {
+          rhsSplat = true;
+          splatScalar = s;
+        }
+    }
+
+    if (lhsSplat) {
       reduceDims = llvm::to_vector(rhsContractingDims);
       reduceSumInput = op.getRhs();
 
@@ -9713,7 +9744,7 @@ struct DotGeneralSimplify
           broadcastDims.push_back(dim);
         }
       }
-    } else if (matchPattern(op.getRhs(), m_Constant(&splatElementsAttr))) {
+    } else if (rhsSplat) {
       reduceDims = llvm::to_vector(lhsContractingDims);
       reduceSumInput = op.getLhs();
 
@@ -9742,7 +9773,7 @@ struct DotGeneralSimplify
       }
     }
 
-    if (splatElementsAttr) {
+    if (lhsSplat || rhsSplat) {
       auto inputType = cast<RankedTensorType>(reduceSumInput.getType());
       auto elemType = inputType.getElementType();
       auto rank0Type = RankedTensorType::get({}, elemType);
@@ -9771,11 +9802,21 @@ struct DotGeneralSimplify
           RankedTensorType::get(broadcastShape, elemType),
           reduceOp.getResult(0), broadcastDims);
 
-      rewriter.replaceOpWithNewOp<stablehlo::MulOp>(
-          op, bcastOp,
-          stablehlo::ConstantOp::create(
-              rewriter, op.getLoc(), bcastOp.getType(),
-              splatElementsAttr.resizeSplat(bcastOp.getType())));
+      // Scale the reduced sum by the splat value. Constant path uses the splat
+      // attribute; runtime path broadcasts the rank-0 scalar to the result
+      // shape. elemType comes from the non-splat operand, and dot_general
+      // requires matching operand element types, so it equals the scalar's type.
+      Value scaleFactor;
+      if (splatElementsAttr) {
+        scaleFactor = stablehlo::ConstantOp::create(
+            rewriter, op.getLoc(), bcastOp.getType(),
+            splatElementsAttr.resizeSplat(bcastOp.getType()));
+      } else {
+        scaleFactor = stablehlo::BroadcastInDimOp::create(
+            rewriter, op.getLoc(), bcastOp.getType(), splatScalar,
+            SmallVector<int64_t>{});
+      }
+      rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, bcastOp, scaleFactor);
       return success();
     }
 
