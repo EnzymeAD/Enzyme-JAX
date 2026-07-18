@@ -531,7 +531,14 @@ def _enzyme_primal_lowering(
 ) -> Sequence[ir.Value]:
     del out_shapes
 
-    out_types = tuple(itertools.chain(*map(jax_mlir.aval_to_ir_types, ctx.avals_out)))
+    out_types = tuple(
+        itertools.chain(
+            *map(
+                lambda x: jax_mlir.aval_to_ir_types(ctx.module_context, x),
+                ctx.avals_out,
+            )
+        )
+    )
 
     out_shapes = list(map(maketup, out_types))
     in_shapes = list(map(lambda x: maketup(x.type), args_flat))
@@ -608,8 +615,7 @@ def _enzyme_primal_lowering(
             if i not in in_idx_map or in_idx_map[i] in kept
         ]
         if pipeline_options.stablehlo_inject():
-            ins = ir.InsertionPoint.current
-            mod = ins.block.region.owner.parent
+            mod = ctx.module_context.module.operation
             fns = []
             for f in mod.regions[0].blocks[0]:
                 fns.append(f.sym_name.value)
@@ -780,7 +786,14 @@ def _enzyme_fwd_lowering(
 ) -> Sequence[ir.Value]:
     del out_shapes
 
-    out_types = tuple(itertools.chain(*map(jax_mlir.aval_to_ir_types, ctx.avals_out)))
+    out_types = tuple(
+        itertools.chain(
+            *map(
+                lambda x: jax_mlir.aval_to_ir_types(ctx.module_context, x),
+                ctx.avals_out,
+            )
+        )
+    )
 
     out_shapes = list(map(maketup, out_types[::2]))
 
@@ -852,7 +865,14 @@ def _enzyme_aug_lowering(
 ) -> Sequence[ir.Value]:
     del out_shapes
 
-    out_types = tuple(itertools.chain(*map(jax_mlir.aval_to_ir_types, ctx.avals_out)))
+    out_types = tuple(
+        itertools.chain(
+            *map(
+                lambda x: jax_mlir.aval_to_ir_types(ctx.module_context, x),
+                ctx.avals_out,
+            )
+        )
+    )
 
     out_shapes = list(map(maketup, out_types[: len(out_types) - 1]))
 
@@ -924,7 +944,12 @@ def _enzyme_rev_lowering(
     del in_shapes
 
     pre_in_types = tuple(
-        itertools.chain(*map(jax_mlir.aval_to_ir_types, ctx.avals_out))
+        itertools.chain(
+            *map(
+                lambda x: jax_mlir.aval_to_ir_types(ctx.module_context, x),
+                ctx.avals_out,
+            )
+        )
     )
 
     in_shapes = list(map(maketup, pre_in_types))
@@ -1128,7 +1153,7 @@ register_custom_call_target("jaxzyme.fwd", enzyme_call.get_callback())
 def enzyme_jvp(arg_primals, arg_tangents, **kwargs):
     # TODO propagate activity info rather than make_zero
     def make_zero(tan, prim):
-        return lax.zeros_like_array(prim) if type(tan) is ad.Zero else tan
+        return lax.full_like(prim, 0) if type(tan) is ad.Zero else tan
 
     pipeline_options = kwargs["pipeline_options"]
 
