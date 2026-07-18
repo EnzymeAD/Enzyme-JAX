@@ -3,6 +3,7 @@
 from functools import partial
 from collections.abc import Callable, Sequence
 from typing import Any
+import inspect
 import itertools
 import os
 import tempfile
@@ -37,6 +38,19 @@ except AttributeError:
 
 if hasattr(enzyme_call, "register_enzymexla_xla_ffi"):
     enzyme_call.register_enzymexla_xla_ffi()
+
+
+_aval_to_ir_types_impl: Any = jax_mlir.aval_to_ir_types
+_aval_to_ir_types_takes_module_context = (
+    len(inspect.signature(_aval_to_ir_types_impl).parameters) > 1
+)
+
+
+def _aval_to_ir_types(ctx: jax_mlir.LoweringRuleContext, aval):
+    """Call aval_to_ir_types with its JAX-version-dependent signature."""
+    if _aval_to_ir_types_takes_module_context:
+        return _aval_to_ir_types_impl(ctx.module_context, aval)
+    return _aval_to_ir_types_impl(aval)
 
 
 class PipelineConfig:
@@ -532,12 +546,7 @@ def _enzyme_primal_lowering(
     del out_shapes
 
     out_types = tuple(
-        itertools.chain(
-            *map(
-                lambda x: jax_mlir.aval_to_ir_types(ctx.module_context, x),
-                ctx.avals_out,
-            )
-        )
+        itertools.chain(*map(lambda x: _aval_to_ir_types(ctx, x), ctx.avals_out))
     )
 
     out_shapes = list(map(maketup, out_types))
@@ -787,12 +796,7 @@ def _enzyme_fwd_lowering(
     del out_shapes
 
     out_types = tuple(
-        itertools.chain(
-            *map(
-                lambda x: jax_mlir.aval_to_ir_types(ctx.module_context, x),
-                ctx.avals_out,
-            )
-        )
+        itertools.chain(*map(lambda x: _aval_to_ir_types(ctx, x), ctx.avals_out))
     )
 
     out_shapes = list(map(maketup, out_types[::2]))
@@ -866,12 +870,7 @@ def _enzyme_aug_lowering(
     del out_shapes
 
     out_types = tuple(
-        itertools.chain(
-            *map(
-                lambda x: jax_mlir.aval_to_ir_types(ctx.module_context, x),
-                ctx.avals_out,
-            )
-        )
+        itertools.chain(*map(lambda x: _aval_to_ir_types(ctx, x), ctx.avals_out))
     )
 
     out_shapes = list(map(maketup, out_types[: len(out_types) - 1]))
@@ -944,12 +943,7 @@ def _enzyme_rev_lowering(
     del in_shapes
 
     pre_in_types = tuple(
-        itertools.chain(
-            *map(
-                lambda x: jax_mlir.aval_to_ir_types(ctx.module_context, x),
-                ctx.avals_out,
-            )
-        )
+        itertools.chain(*map(lambda x: _aval_to_ir_types(ctx, x), ctx.avals_out))
     )
 
     in_shapes = list(map(maketup, pre_in_types))
