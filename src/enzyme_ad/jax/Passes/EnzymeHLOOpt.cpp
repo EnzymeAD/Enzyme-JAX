@@ -6272,6 +6272,104 @@ struct ConcatSlicesToReverse final
   }
 };
 
+// slice(gather(x, ind)) -> gather(x, slice(ind))
+//
+// The batch dimensions of a gather's result correspond, in order, to the
+// start_indices dimensions other than index_vector_dim. Slicing those batch
+// dimensions of the result is therefore equivalent to slicing the matching
+// dimensions of the start_indices, which lets us drop the intermediate gather.
+struct SliceOfGather final
+    : CheckedOpRewritePattern<stablehlo::SliceOp, SliceOfGather> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::SliceOp op,
+                                    PatternRewriter &rewriter) const {
+    auto gather = op.getOperand().getDefiningOp<stablehlo::GatherOp>();
+    if (!gather)
+      return failure();
+
+    // Only fold when the gather is solely consumed by this slice; otherwise we
+    // would keep the original gather around and add a second one.
+    if (!gather->hasOneUse())
+      return failure();
+
+    auto sliceType = dyn_cast<RankedTensorType>(op.getType());
+    auto gatherType = dyn_cast<RankedTensorType>(gather.getType());
+    auto indicesType =
+        dyn_cast<RankedTensorType>(gather.getStartIndices().getType());
+    if (!sliceType || !gatherType || !indicesType)
+      return failure();
+
+    auto dimNumbers = gather.getDimensionNumbers();
+    int64_t indexVectorDim = dimNumbers.getIndexVectorDim();
+
+    llvm::SmallDenseSet<int64_t> offsetDims(dimNumbers.getOffsetDims().begin(),
+                                            dimNumbers.getOffsetDims().end());
+    llvm::SmallDenseSet<int64_t> startIndicesBatchingDims(
+        dimNumbers.getStartIndicesBatchingDims().begin(),
+        dimNumbers.getStartIndicesBatchingDims().end());
+
+    auto sliceStarts = op.getStartIndices();
+    auto sliceLimits = op.getLimitIndices();
+    auto sliceStrides = op.getStrides();
+
+    int64_t indicesRank = indicesType.getRank();
+
+    // Build the new start_indices slice by pushing the output slice on the
+    // batch dims onto the matching index dims, leaving offset and index-vector
+    // dims full.
+    SmallVector<int64_t> idxStarts(indicesRank, 0);
+    SmallVector<int64_t> idxLimits(indicesType.getShape().begin(),
+                                   indicesType.getShape().end());
+    SmallVector<int64_t> idxStrides(indicesRank, 1);
+
+    int64_t nextIndexDim = 0;
+    auto advanceIndexDim = [&]() -> int64_t {
+      while (nextIndexDim == indexVectorDim)
+        ++nextIndexDim;
+      return nextIndexDim++;
+    };
+
+    for (int64_t outDim = 0, outRank = sliceType.getRank(); outDim < outRank;
+         ++outDim) {
+      if (offsetDims.contains(outDim)) {
+        // Offset dims come from the gathered slice, not the indices; we can
+        // only push a slice that is a no-op on them.
+        if (sliceStarts[outDim] != 0 ||
+            sliceLimits[outDim] != gatherType.getShape()[outDim] ||
+            sliceStrides[outDim] != 1)
+          return failure();
+        continue;
+      }
+
+      int64_t idxDim = advanceIndexDim();
+
+      bool trivial = sliceStarts[outDim] == 0 &&
+                     sliceLimits[outDim] == indicesType.getShape()[idxDim] &&
+                     sliceStrides[outDim] == 1;
+
+      // Slicing a batching dim of the indices would require a matching slice of
+      // the operand batching dim, which we do not do here.
+      if (!trivial && startIndicesBatchingDims.contains(idxDim))
+        return failure();
+
+      idxStarts[idxDim] = sliceStarts[outDim];
+      idxLimits[idxDim] = sliceLimits[outDim];
+      idxStrides[idxDim] = sliceStrides[outDim];
+    }
+
+    auto newIndices = stablehlo::SliceOp::create(
+        rewriter, op.getLoc(), gather.getStartIndices(), idxStarts, idxLimits,
+        idxStrides);
+
+    rewriter.replaceOpWithNewOp<stablehlo::GatherOp>(
+        op, sliceType, gather.getOperand(), newIndices,
+        gather.getDimensionNumbersAttr(), gather.getSliceSizesAttr(),
+        gather.getIndicesAreSortedAttr());
+    return success();
+  }
+};
+
 struct ConcatToBroadcast final
     : CheckedOpRewritePattern<stablehlo::ConcatenateOp, ConcatToBroadcast> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -36222,11 +36320,12 @@ struct EnzymeHLOOptPass
         DynamicSliceElementwise, SlicePad, SliceReshapePad, ReshapeSliceReshape,
         DotReshapeDot, ChloInfConstProp, CHLOLGammaConstProp, GammaConstProp,
         TGammaConstProp, LGammaConstProp, BinomialProgressConstProp, ConcatFuse,
-        ConcatToBroadcast, ConcatSlicesToReverse, PadPad, PadReshapePad,
-        ConcatPushBinop<stablehlo::AddOp>, ConcatPushBinop<stablehlo::MulOp>,
-        ScatterToDynamicUpdateSlice, ReduceConcat, ConcatSlice, ConcatMultiPad,
-        ConcatWrap, WidenWrap, WidenExtend, ConcatConcatAxisSwap, SliceConcat,
-        SliceIf, SliceReshapeConcat, BinBroadcastSplat<stablehlo::AddOp>,
+        ConcatToBroadcast, ConcatSlicesToReverse, SliceOfGather, PadPad,
+        PadReshapePad, ConcatPushBinop<stablehlo::AddOp>,
+        ConcatPushBinop<stablehlo::MulOp>, ScatterToDynamicUpdateSlice,
+        ReduceConcat, ConcatSlice, ConcatMultiPad, ConcatWrap, WidenWrap,
+        WidenExtend, ConcatConcatAxisSwap, SliceConcat, SliceIf,
+        SliceReshapeConcat, BinBroadcastSplat<stablehlo::AddOp>,
         BinBroadcastSplat<stablehlo::SubtractOp>,
         BinBroadcastSplat<stablehlo::DivOp>,
         BinBroadcastSplat<stablehlo::MulOp>, RotatePad, ConjReal,
