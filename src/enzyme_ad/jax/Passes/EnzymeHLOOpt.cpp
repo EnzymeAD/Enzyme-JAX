@@ -15117,6 +15117,11 @@ struct RealOfExpSimplify final
     if (!exp)
       return failure();
 
+    // Only rewrite when the exp feeds nothing but this op, otherwise the
+    // original exp stays live and we just add redundant work.
+    if (!llvm::hasSingleElement(exp->getUsers()))
+      return failure();
+
     auto loc = op.getLoc();
     auto re = stablehlo::RealOp::create(rewriter, loc, exp.getOperand());
     auto im = stablehlo::ImagOp::create(rewriter, loc, exp.getOperand());
@@ -15141,6 +15146,11 @@ struct ImagOfExpSimplify final
     if (!exp)
       return failure();
 
+    // Only rewrite when the exp feeds nothing but this op, otherwise the
+    // original exp stays live and we just add redundant work.
+    if (!llvm::hasSingleElement(exp->getUsers()))
+      return failure();
+
     auto loc = op.getLoc();
     auto re = stablehlo::RealOp::create(rewriter, loc, exp.getOperand());
     auto im = stablehlo::ImagOp::create(rewriter, loc, exp.getOperand());
@@ -15163,6 +15173,11 @@ struct AbsOfExpSimplify final
 
     auto exp = op.getOperand().getDefiningOp<stablehlo::ExpOp>();
     if (!exp)
+      return failure();
+
+    // Only rewrite when the exp feeds nothing but this op, otherwise the
+    // original exp stays live and we just add redundant work.
+    if (!llvm::hasSingleElement(exp->getUsers()))
       return failure();
 
     auto re =

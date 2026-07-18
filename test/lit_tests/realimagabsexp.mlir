@@ -38,3 +38,16 @@ func.func @abs_of_exp(%arg0: tensor<complex<f64>>) -> tensor<f64> {
 // CHECK:       %[[RE:.+]] = stablehlo.real %arg0
 // CHECK:       %[[EXP:.+]] = stablehlo.exponential %[[RE]]
 // CHECK:       return %[[EXP]]
+
+// The rewrite is skipped when the exp has another user, so it stays as-is.
+func.func @real_of_exp_multi_use(%arg0: tensor<complex<f64>>)
+    -> (tensor<f64>, tensor<complex<f64>>) {
+  %0 = stablehlo.exponential %arg0 : tensor<complex<f64>>
+  %1 = stablehlo.real %0 : (tensor<complex<f64>>) -> tensor<f64>
+  return %1, %0 : tensor<f64>, tensor<complex<f64>>
+}
+
+// CHECK-LABEL: func.func @real_of_exp_multi_use(
+// CHECK:       %[[EXP:.+]] = stablehlo.exponential %arg0
+// CHECK:       %[[REAL:.+]] = stablehlo.real %[[EXP]]
+// CHECK:       return %[[REAL]], %[[EXP]]
