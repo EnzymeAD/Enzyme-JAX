@@ -15165,7 +15165,8 @@ struct AbsOfExpSimplify final
     if (!exp)
       return failure();
 
-    auto re = stablehlo::RealOp::create(rewriter, op.getLoc(), exp.getOperand());
+    auto re =
+        stablehlo::RealOp::create(rewriter, op.getLoc(), exp.getOperand());
     rewriter.replaceOpWithNewOp<stablehlo::ExpOp>(op, re);
     return success();
   }
