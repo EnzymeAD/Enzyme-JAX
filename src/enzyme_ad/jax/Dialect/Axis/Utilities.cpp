@@ -309,6 +309,36 @@ bool areFactorIndexSpacesEqual(TypedValueArrayRef<AxisFactorType> lhsFactors,
   return true;
 }
 
+// Compares two factor lists structurally, preserving list order.
+// This requires matching length and pairwise equality of
+// (provenance-axis equivalence, extent, stride).
+bool areFactorListsStructurallyEqual(
+    TypedValueArrayRef<AxisFactorType> lhsFactors,
+    TypedValueArrayRef<AxisFactorType> rhsFactors) {
+  if (lhsFactors.size() != rhsFactors.size()) {
+    return false;
+  }
+
+  for (auto [lhsFactor, rhsFactor] : llvm::zip(lhsFactors, rhsFactors)) {
+    auto lhsProvenance = getFactorProvenanceAxis(lhsFactor);
+    auto rhsProvenance = getFactorProvenanceAxis(rhsFactor);
+    if (failed(lhsProvenance) || failed(rhsProvenance)) {
+      return false;
+    }
+    if (!areAxesEquivalent(*lhsProvenance, *rhsProvenance)) {
+      return false;
+    }
+    if (getFactorExtent(lhsFactor) != getFactorExtent(rhsFactor)) {
+      return false;
+    }
+    if (getFactorStride(lhsFactor) != getFactorStride(rhsFactor)) {
+      return false;
+    }
+  }
+
+  return true;
+}
+
 // Checks segment pairwise non-overlap metadata.
 bool arePairwiseSegmentsDisjoint(Value lhsSegment, Value rhsSegment,
                                  Value lhsProvenanceAxis,
