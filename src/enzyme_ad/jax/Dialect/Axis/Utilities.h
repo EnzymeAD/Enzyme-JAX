@@ -99,6 +99,13 @@ bool areSegmentsDisjoint(::mlir::ValueRange segments);
 bool areFactorIndexSpacesEqual(TypedValueArrayRef<AxisFactorType> lhsFactors,
                                TypedValueArrayRef<AxisFactorType> rhsFactors);
 
+// Returns true when two factor lists are structurally equal in-order.
+// This requires equal length and pairwise equality of
+// (provenance-axis equivalence, extent, stride) at each position.
+bool areFactorListsStructurallyEqual(
+  TypedValueArrayRef<AxisFactorType> lhsFactors,
+  TypedValueArrayRef<AxisFactorType> rhsFactors);
+
 // Checks that factors cover an axis exactly and therefore are disjoint.
 bool areFactorsComplete(::mlir::Value axis,
                         TypedValueArrayRef<AxisFactorType> factors);

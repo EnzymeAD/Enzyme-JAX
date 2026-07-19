@@ -11,10 +11,12 @@ class DistributedAxisType<string name, string type_mnemonic,
                       [DeclareTypeInterfaceMethods<AxisTypeInterface>] #traits>;
 
 // A natural axis defined by the hardware topology.
+// ID stride is for conversion between device IDs to
+// axis coordinates.
 def PhysicalCommAxisType
     : DistributedAxisType<"PhysicalCommAxis", "physical_comm_axis"> {
-  let parameters = (ins "unsigned" : $extent);
-  let assemblyFormat = "`<` $extent `>`";
+  let parameters = (ins "unsigned" : $extent, "unsigned" : $idStride);
+  let assemblyFormat = "`<` $extent `,` $idStride `>`";
 }
 
 // Axis of a logical mesh where hardware details are abstracted away.

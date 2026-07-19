@@ -26,5 +26,5 @@ module {
 // GetPhysicalMeshAxes verifier should reject unknown symbol references.
 module {
   // expected-error @+1 {{references unknown physical mesh symbol @missing_mesh}}
-  %a = distributed.GetPhysicalMeshAxes @missing_mesh : !distributed.physical_comm_axis<4>
+  %a = distributed.GetPhysicalMeshAxes @missing_mesh : !distributed.physical_comm_axis<4, 1>
 }

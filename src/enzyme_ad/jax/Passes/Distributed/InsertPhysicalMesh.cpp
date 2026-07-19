@@ -83,9 +83,18 @@ struct InsertPhysicalMeshPass
       return;
     }
 
+    SmallVector<sdy::MeshAxisAttr> meshAxes(commonMesh.getAxes().begin(),
+                                            commonMesh.getAxes().end());
+
     SmallVector<Attribute> axisAttrs;
-    axisAttrs.reserve(commonMesh.getAxes().size());
-    for (sdy::MeshAxisAttr axis : commonMesh.getAxes()) {
+    axisAttrs.reserve(meshAxes.size());
+    SmallVector<unsigned> axisExtents(meshAxes.size());
+    SmallVector<unsigned> axisStrides(meshAxes.size());
+
+    // Compute id_stride as a minormost-to-majormost cumulative product.
+    uint64_t runningStride = 1;
+    for (size_t idx = meshAxes.size(); idx-- > 0;) {
+      auto axis = meshAxes[idx];
       int64_t extent = axis.getSize();
       if (extent <= 0 ||
           extent > static_cast<int64_t>(std::numeric_limits<unsigned>::max())) {
@@ -94,9 +103,24 @@ struct InsertPhysicalMeshPass
         signalPassFailure();
         return;
       }
+      if (runningStride >
+          static_cast<uint64_t>(std::numeric_limits<unsigned>::max())) {
+        moduleOp.emitError() << "mesh axis id_stride overflow for axis "
+                             << axis.getName();
+        signalPassFailure();
+        return;
+      }
 
-      Type axisType = PhysicalCommAxisType::get(moduleOp.getContext(),
-                                                static_cast<unsigned>(extent));
+      axisExtents[idx] = static_cast<unsigned>(extent);
+      axisStrides[idx] = static_cast<unsigned>(runningStride);
+      runningStride *= static_cast<uint64_t>(extent);
+    }
+
+    // Emit axes in declared order so mesh axis ordering remains unchanged.
+    for (auto [axisIdx, axis] : llvm::enumerate(meshAxes)) {
+      (void)axis;
+      Type axisType = PhysicalCommAxisType::get(
+          moduleOp.getContext(), axisExtents[axisIdx], axisStrides[axisIdx]);
       axisAttrs.push_back(TypeAttr::get(axisType));
     }
 

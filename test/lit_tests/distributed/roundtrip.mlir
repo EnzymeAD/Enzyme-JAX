@@ -3,10 +3,10 @@
 // Roundtrip distributed.Function / distributed.DistributedCall /
 // distributed.DistributedYield.
 module {
-  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2>, !distributed.physical_comm_axis<3>]
+  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 3>, !distributed.physical_comm_axis<3, 1>]
 
   distributed.MeshComputation @mc mesh @mesh0 {
-    %p0, %p1 = distributed.GetPhysicalMeshAxes @mesh0 : !distributed.physical_comm_axis<2>, !distributed.physical_comm_axis<3>
+    %p0, %p1 = distributed.GetPhysicalMeshAxes @mesh0 : !distributed.physical_comm_axis<2, 3>, !distributed.physical_comm_axis<3, 1>
 
     %axis = axis.getaxis tensor<12xf32> 0
     %f0 = axis.factor %axis : (!axis.shape_axis<tensor<12xf32>, 0>) -> !axis.axis_factor<!axis.shape_axis<tensor<12xf32>, 0>, 2, 6>
@@ -30,8 +30,8 @@ module {
 }
 
 // CHECK-LABEL: module {
-// CHECK: distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2>, !distributed.physical_comm_axis<3>]
-// CHECK: %{{.*}}:2 = distributed.GetPhysicalMeshAxes @mesh0 : !distributed.physical_comm_axis<2>, !distributed.physical_comm_axis<3>
+// CHECK: distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 3>, !distributed.physical_comm_axis<3, 1>]
+// CHECK: %{{.*}}:2 = distributed.GetPhysicalMeshAxes @mesh0 : !distributed.physical_comm_axis<2, 3>, !distributed.physical_comm_axis<3, 1>
 // CHECK: distributed.Function @callee context
 // CHECK: distributed.Function @caller context
 // CHECK: distributed.DistributedCall @callee replicate_over
@@ -45,10 +45,10 @@ module {
     return %0 : f32
   }
 
-  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2>, !distributed.physical_comm_axis<2>]
+  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>]
 
   distributed.MeshComputation @mc mesh @mesh0 {
-    %p0, %p1 = distributed.GetPhysicalMeshAxes @mesh0 : !distributed.physical_comm_axis<2>, !distributed.physical_comm_axis<2>
+    %p0, %p1 = distributed.GetPhysicalMeshAxes @mesh0 : !distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>
 
     %l0, %l1 = distributed.LogicalMeshAxes [2, 2] : !distributed.logical_mesh_axis<2>, !distributed.logical_mesh_axis<2>
     %lf0 = axis.factor %l0 : (!distributed.logical_mesh_axis<2>) -> !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>
@@ -77,7 +77,7 @@ module {
 }
 
 // CHECK: func.func @add(%{{.*}}: f32, %{{.*}}: f32) -> f32
-// CHECK: distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2>, !distributed.physical_comm_axis<2>]
+// CHECK: distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>]
 // CHECK: axis.map %{{.*}}, %{{.*}} to %{{.*}}, %{{.*}} : [!axis.factor_group<4>, !axis.factor_group<4>] [!axis.factor_group<4>, !axis.factor_group<4>]
 // CHECK: %{{.*}} = distributed.Collective %{{.*}} : tensor<8xf32> on %{{.*}} : <4> to tensor<4xf32> on %{{.*}} : <4> reduces (%{{.*}} @add) : !axis.factor_group<2> maps %{{.*}} : !axis.map
 // CHECK: %{{.*}} = distributed.Await %{{.*}} : <tensor<4xf32>> -> tensor<4xf32>
@@ -86,14 +86,14 @@ module {
 
 // Roundtrip distributed.MeshComputation with a minimal metadata-only body.
 module {
-  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<4>]
+  distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<4, 1>]
 
   distributed.MeshComputation @mc mesh @mesh0 {
-    %p0 = distributed.GetPhysicalMeshAxes @mesh0 : !distributed.physical_comm_axis<4>
+    %p0 = distributed.GetPhysicalMeshAxes @mesh0 : !distributed.physical_comm_axis<4, 1>
     %a = axis.getaxis tensor<4xf32> 0
   }
 }
 
-// CHECK: distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<4>]
+// CHECK: distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<4, 1>]
 // CHECK: distributed.MeshComputation @mc mesh @mesh0
-// CHECK: %{{.*}} = distributed.GetPhysicalMeshAxes @mesh0 : !distributed.physical_comm_axis<4>
+// CHECK: %{{.*}} = distributed.GetPhysicalMeshAxes @mesh0 : !distributed.physical_comm_axis<4, 1>
