@@ -4,6 +4,8 @@
 #include <limits>
 #include <numeric>
 
+#include "mlir/Interfaces/InferTypeOpInterface.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
@@ -11,6 +13,35 @@
 #define DEBUG_TYPE "axis-infer-map"
 
 namespace mlir::enzyme::axis {
+
+// Refreshes one operation in-place and reports whether any result type changed.
+// Uses InferTypeOpInterface so result types stay driven by op attributes.
+static FailureOr<bool> refreshResultTypesInPlace(Operation *op) {
+  auto inferIface = dyn_cast<InferTypeOpInterface>(op);
+  if (!inferIface) {
+    return false;
+  }
+
+  SmallVector<Type> inferredResultTypes;
+  if (failed(inferIface.inferReturnTypes(
+          op->getContext(), op->getLoc(), op->getOperands(),
+          op->getAttrDictionary(), op->getPropertiesStorage(), op->getRegions(),
+          inferredResultTypes))) {
+    return op->emitOpError()
+           << "failed to infer return types during type propagation";
+  }
+
+  bool changed = false;
+  for (auto [result, inferredType] :
+       llvm::zip_equal(op->getResults(), inferredResultTypes)) {
+    if (result.getType() == inferredType) {
+      continue;
+    }
+    result.setType(inferredType);
+    changed = true;
+  }
+  return changed;
+}
 
 // Dispatches alias checks for canonical axes. Canonical axes are
 // either equivalent or wholly disjoint.
@@ -1109,6 +1140,58 @@ inferMapFromIndices(TypedValue<FactorGroupType> index_space,
   auto mapOp = builder.create<AxisMapOp>(loc, ValueRange(lhsGroups),
                                          ValueRange(rhsGroups));
   return castTypedValue<AxisMapType>(mapOp.getMap(), "AxisMapType");
+}
+
+LogicalResult propagateResultTypeChanges(ArrayRef<Operation *> initialUsers) {
+  // Use a set-backed worklist so each op is refreshed at most once per wave.
+  llvm::SmallSetVector<Operation *, 32> worklist;
+  for (Operation *user : initialUsers) {
+    if (user) {
+      worklist.insert(user);
+    }
+  }
+
+  while (!worklist.empty()) {
+    Operation *op = worklist.pop_back_val();
+    if (!op || !op->getBlock()) {
+      continue;
+    }
+
+    auto changed = refreshResultTypesInPlace(op);
+    if (failed(changed)) {
+      return failure();
+    }
+    if (!*changed) {
+      continue;
+    }
+
+    // A result-type change can require all downstream users to refresh too.
+    for (Value result : op->getResults()) {
+      for (Operation *user : result.getUsers()) {
+        worklist.insert(user);
+      }
+    }
+  }
+
+  return success();
+}
+
+LogicalResult replaceAndTypePropagate(Value from, Value to) {
+  if (from == to) {
+    return success();
+  }
+
+  // Snapshot current users because RAUW invalidates use iteration.
+  SmallVector<Operation *> affectedUsers;
+  for (Operation *user : from.getUsers()) {
+    affectedUsers.push_back(user);
+  }
+
+  from.replaceAllUsesWith(to);
+  if (from.getType() == to.getType()) {
+    return success();
+  }
+  return propagateResultTypeChanges(affectedUsers);
 }
 
 } // namespace mlir::enzyme::axis

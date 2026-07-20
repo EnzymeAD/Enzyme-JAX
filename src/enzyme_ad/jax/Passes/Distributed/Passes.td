@@ -10,21 +10,21 @@ def PrintShardyFunctionNamesPass
     "enzyme::axis::AxisDialect", "sdy::SdyDialect",
     "enzyme::distributed::DistributedDialect"
   ];
-  let description = [{
-		Scans func.func operations and prints the symbol names of functions that
-		either carry sdy-prefixed attributes on the function/signature or contain
-		sdy dialect operations/attributes in their bodies.
-	}];
+  let description = [{Scans func.func operations and prints the symbol names of
+                          functions that either carry sdy -
+                      prefixed attributes on the function /
+                          signature or contain sdy dialect operations /
+                          attributes in their bodies.}];
 }
 
-def ShardyToDistributedPass : Pass<"shardy-to-distributed", "::mlir::ModuleOp"> {
-    let summary = "Convert Shardy functions to Distributed mesh computations.";
-    let dependentDialects = [
-        "enzyme::axis::AxisDialect",
-        "sdy::SdyDialect",
-        "enzyme::distributed::DistributedDialect"
-    ];
-    let description = [{
+def ShardyToDistributedPass
+    : Pass<"shardy-to-distributed", "::mlir::ModuleOp"> {
+  let summary = "Convert Shardy functions to Distributed mesh computations.";
+  let dependentDialects = [
+    "enzyme::axis::AxisDialect", "sdy::SdyDialect",
+    "enzyme::distributed::DistributedDialect"
+  ];
+  let description = [{
         Converts from Shardy to Distributed IR. This pass requires all Shardy functions
         to be  available in the module
       : calling external functions is not supported
@@ -40,7 +40,7 @@ def ShardyToDistributedPass : Pass<"shardy-to-distributed", "::mlir::ModuleOp"> 
           propagation - pipeline-- sdy - export -
           pipeline = 'enable-insert-explicit-collectives=true' --sdy - convert -
                      global - to - local = 'enable-rgv3=true'
-}];
+  }];
 }
 
 def InsertPhysicalMeshPass : Pass<"insert-physical-mesh", "::mlir::ModuleOp"> {
@@ -49,35 +49,51 @@ def InsertPhysicalMeshPass : Pass<"insert-physical-mesh", "::mlir::ModuleOp"> {
   let dependentDialects =
       ["sdy::SdyDialect", "enzyme::distributed::DistributedDialect"];
   let description = [{
-        Inserts a module-level distributed.PhysicalMesh when none exists by
-        inferring axis extents from the common Shardy mesh seen in sharded
-        functions. This currently uses a mock device_target and is intended
-        to be replaced with loading an external physical mesh configuration.
-    }];
+      Inserts a module -
+      level distributed
+          .PhysicalMesh when none exists by inferring axis extents from the
+              common Shardy mesh seen in sharded functions
+          .This currently uses a mock device_target and is intended to be
+              replaced with loading an external physical mesh configuration.}];
+}
+
+def NaiveLogicalToPhysicalMeshPass
+    : Pass<"naive-logical-to-physical-mesh", "::mlir::ModuleOp"> {
+  let summary = "Naively replace logical mesh axes with in-region physical "
+                "mesh axes per distributed mesh computation.";
+  let dependentDialects = ["enzyme::distributed::DistributedDialect"];
+  let description = [{
+      Scopes rewriting to each distributed.MeshComputation.For each computation,
+      expects exactly one
+          distributed.LogicalMeshAxes op and exactly one distributed
+              .GetPhysicalMeshAxes op in that computation.Verifies that logical
+                  and physical axis extents match positionally,
+      then rewrites logical - axis uses to the physical -
+          axis values and erases the logical mesh op.This pass is module -
+          invoked but computation -
+          scoped(a module -
+                 level shim applies the rewrite to each mesh computation)
+              .}];
 }
 
 def DistributedToHloPass : Pass<"distributed-to-hlo", "::mlir::ModuleOp"> {
-    let summary = "Lower distributed dialect constructs to StableHLO.";
-    let dependentDialects = [
-        "enzyme::distributed::DistributedDialect",
-        "stablehlo::StablehloDialect"
-    ];
-    let description = [{
+  let summary = "Lower distributed dialect constructs to StableHLO.";
+  let dependentDialects = [
+    "enzyme::distributed::DistributedDialect", "stablehlo::StablehloDialect"
+  ];
+  let description = [{
         Skeleton pass for lowering the distributed dialect to StableHLO.
         This pass currently performs no rewrites.
-    }];
+  }];
 }
 
 def CanonicalizeAxisMapsPass
     : Pass<"canonicalize-axis-maps", "::mlir::ModuleOp"> {
-    let summary = "Rewrite axis.map mappings into maximal indivisible form.";
-    let dependentDialects = [
-        "enzyme::axis::AxisDialect"
-    ];
-    let description = [{
-        Rewrites each axis.map pair using split_divisible, replacing mapping
-        groups with maximal one-to-one split groups.
-    }];
+  let summary = "Rewrite axis.map mappings into maximal indivisible form.";
+  let dependentDialects = ["enzyme::axis::AxisDialect"];
+  let description =
+      [{Rewrites each axis.map pair using split_divisible,
+        replacing mapping groups with maximal one - to - one split groups.}];
 }
 
 #endif // ENZYME_AD_JAX_DISTRIBUTED_PASSES

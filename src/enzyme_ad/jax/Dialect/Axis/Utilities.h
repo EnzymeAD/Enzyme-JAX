@@ -103,8 +103,8 @@ bool areFactorIndexSpacesEqual(TypedValueArrayRef<AxisFactorType> lhsFactors,
 // This requires equal length and pairwise equality of
 // (provenance-axis equivalence, extent, stride) at each position.
 bool areFactorListsStructurallyEqual(
-  TypedValueArrayRef<AxisFactorType> lhsFactors,
-  TypedValueArrayRef<AxisFactorType> rhsFactors);
+    TypedValueArrayRef<AxisFactorType> lhsFactors,
+    TypedValueArrayRef<AxisFactorType> rhsFactors);
 
 // Checks that factors cover an axis exactly and therefore are disjoint.
 bool areFactorsComplete(::mlir::Value axis,
@@ -167,6 +167,19 @@ bool split_divisible(
     llvm::SmallVector<::mlir::TypedValue<FactorGroupType>> &lhs_out,
     llvm::SmallVector<::mlir::TypedValue<FactorGroupType>> &rhs_out,
     ::mlir::OpBuilder &builder);
+
+// Recursively refreshes result types of user ops after a type-changing edit.
+// This utility only performs in-place result-type updates. Propogation
+// assumes that type changes are determined entirely by local op information
+// and the types of the direct operands: no traversal to other ops is considered
+// when marking users for update. 
+::mlir::LogicalResult
+propagateResultTypeChanges(::llvm::ArrayRef<::mlir::Operation *> initialUsers);
+
+// Replaces all uses of `from` with `to`, then propagates result-type updates
+// through impacted users only when the replacement crosses a type boundary.
+::mlir::LogicalResult replaceAndTypePropagate(::mlir::Value from,
+                                              ::mlir::Value to);
 } // namespace mlir::enzyme::axis
 
 #endif // ENZYME_AD_JAX_DIALECT_AXIS_UTILITIES_H

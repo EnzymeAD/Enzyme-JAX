@@ -102,16 +102,65 @@ LogicalResult AxisFactorOp::verify() {
   if (!axisFactorType) {
     return emitOpError() << "requires result to have AxisFactorType";
   }
-  if (axisFactorType.getAxisType() != getAxis().getType()) {
+
+  auto expectedType = AxisFactorType::get(getContext(), getAxis().getType(),
+                                          static_cast<unsigned>(getExtent()),
+                                          static_cast<unsigned>(getStride()));
+  if (axisFactorType != expectedType) {
     return emitOpError()
-           << "requires result to have base axis type equal to operand type";
+           << "requires result type to match axis, extent, and stride attrs";
   }
+
   if (failed(verifyFactorShape(axisFactorType.getExtent(),
                                axisFactorType.getStride(), axisIface.extent(),
                                getOperation()))) {
     return failure();
   }
 
+  return success();
+}
+
+LogicalResult AxisFactorOp::inferReturnTypes(
+    MLIRContext *context, std::optional<Location> location, ValueRange operands,
+    DictionaryAttr attributes, PropertyRef properties, RegionRange regions,
+    SmallVectorImpl<Type> &inferredReturnTypes) {
+  AxisFactorOpAdaptor adaptor(operands, attributes, properties, regions);
+
+  auto axisType = dyn_cast<AxisTypeInterface>(adaptor.getAxis().getType());
+  if (!axisType) {
+    if (location) {
+      mlir::emitError(*location)
+          << "requires axis operand type to implement AxisTypeInterface";
+    }
+    return failure();
+  }
+
+  int32_t extent = adaptor.getExtent();
+  int32_t stride = adaptor.getStride();
+  if (extent <= 0) {
+    if (location) {
+      mlir::emitError(*location)
+          << "requires extent to be positive, got " << extent;
+    }
+    return failure();
+  }
+  if (stride <= 0) {
+    if (location) {
+      mlir::emitError(*location)
+          << "requires stride to be positive, got " << stride;
+    }
+    return failure();
+  }
+  if (axisType.extent() % (extent * stride) != 0) {
+    if (location) {
+      mlir::emitError(*location) << "requires factor to divide source axis";
+    }
+    return failure();
+  }
+
+  inferredReturnTypes.push_back(AxisFactorType::get(
+      context, adaptor.getAxis().getType(), static_cast<unsigned>(extent),
+      static_cast<unsigned>(stride)));
   return success();
 }
 
