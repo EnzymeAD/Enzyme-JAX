@@ -22,13 +22,13 @@ def AxisGetAxisOp : AxisOp<"getaxis", [MetadataOpTrait, DeclareOpInterfaceMethod
   let hasVerifier = 1;
 }
 
-def AxisFactorOp : AxisOp<"factor", [MetadataOpTrait, DeclareOpInterfaceMethods<MaybeTemporaryInterface>]> {
+def AxisFactorOp : AxisOp<"factor", [MetadataOpTrait, DeclareOpInterfaceMethods<InferTypeOpInterface>, DeclareOpInterfaceMethods<MaybeTemporaryInterface>]> {
   let description = [{
-    Defines one factor of a canonical axis with static extent and stride, encoded by the type
+    Defines one factor of a canonical axis with static extent and stride, encoded by the type.
   }];
-let arguments = (ins AnyType : $axis);
-let results = (outs AxisFactorType : $axis_factor);
-let assemblyFormat = "$axis attr-dict `:` functional-type(operands, results)";
+  let arguments = (ins AnyType:$axis, I32Attr:$extent, I32Attr:$stride);
+  let results = (outs AxisFactorType:$axis_factor);
+  let assemblyFormat = "$axis attr-dict `:` type($axis)`<`$extent`,`$stride`>`";
   let builders = [
     OpBuilder<(ins "Value":$axis, "int32_t":$extent, "int32_t":$stride), [{
       auto factorType = AxisFactorType::get(
@@ -64,13 +64,13 @@ def AxisProductOp : AxisOp<"product", [MetadataOpTrait, DeclareOpInterfaceMethod
   let results = (outs FactorGroupType:$product);
   let assemblyFormat = "$factors attr-dict `:` type($factors)";
   let hasVerifier = 1;
-  }
+}
 
-  def AxisMapOp : AxisOp<"map", [
-    MetadataOpTrait, AttrSizedOperandSegments,
-    DeclareOpInterfaceMethods<MaybeTemporaryInterface>
-  ]> {
-    let description = [{
+def AxisMapOp : AxisOp<"map", [
+  MetadataOpTrait, AttrSizedOperandSegments,
+  DeclareOpInterfaceMethods<MaybeTemporaryInterface>
+]> {
+  let description = [{
     Declares a mapping between groups of axis products.
     This op is intended to replace per-collective embedded mapping lists in
     distributed collectives.

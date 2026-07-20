@@ -15,7 +15,7 @@ module {
   distributed.MeshComputation @bad mesh @mesh0 {
   ^bb0:
     %axis = axis.getaxis tensor<4xf32> 0
-    %f0 = axis.factor %axis : (!axis.shape_axis<tensor<4xf32>, 0>) -> !axis.axis_factor<!axis.shape_axis<tensor<4xf32>, 0>, 4, 1>
+    %f0 = axis.factor %axis : !axis.shape_axis<tensor<4xf32>, 0> <4, 1>
     %ctx = axis.product %f0 : !axis.axis_factor<!axis.shape_axis<tensor<4xf32>, 0>, 4, 1>
     %c0 = arith.constant 0 : i32
   }

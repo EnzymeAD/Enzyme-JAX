@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --split-input-file --canonicalize --distributed-to-hlo %s | FileCheck %s
+// RUN: enzymexlamlir-opt --split-input-file --naive-logical-to-physical-mesh --canonicalize --distributed-to-hlo %s | FileCheck %s
 
 module {
   func.func @add(%lhs: tensor<8xf32>, %rhs: tensor<8xf32>) -> tensor<8xf32> {
@@ -12,15 +12,15 @@ module {
     %p0, %p1 = distributed.GetPhysicalMeshAxes @mesh0 : !distributed.physical_comm_axis<4, 2>, !distributed.physical_comm_axis<2, 1>
 
     %l0, %l1 = distributed.LogicalMeshAxes [4, 2] : !distributed.logical_mesh_axis<4>, !distributed.logical_mesh_axis<2>
-    %lf0_upper = axis.factor %l0 : (!distributed.logical_mesh_axis<4>) -> !axis.axis_factor<!distributed.logical_mesh_axis<4>, 2, 2>
-    %lf0_lower = axis.factor %l0 : (!distributed.logical_mesh_axis<4>) -> !axis.axis_factor<!distributed.logical_mesh_axis<4>, 2, 1>
-    %lf1 = axis.factor %l1 : (!distributed.logical_mesh_axis<2>) -> !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>
+    %lf0_upper = axis.factor %l0 : !distributed.logical_mesh_axis<4> <2, 2>
+    %lf0_lower = axis.factor %l0 : !distributed.logical_mesh_axis<4> <2, 1>
+    %lf1 = axis.factor %l1 : !distributed.logical_mesh_axis<2> <2, 1>
 
     %ta = axis.getaxis tensor<8xf32> 0
-    %tf0 = axis.factor %ta : (!axis.shape_axis<tensor<8xf32>, 0>) -> !axis.axis_factor<!axis.shape_axis<tensor<8xf32>, 0>, 8, 1>
+    %tf0 = axis.factor %ta : !axis.shape_axis<tensor<8xf32>, 0> <8, 1>
 
     %r0 = distributed.ReplicationAxis 2 : !distributed.replication_axis<2>
-    %rf0 = axis.factor %r0 : (!distributed.replication_axis<2>) -> !axis.axis_factor<!distributed.replication_axis<2>, 2, 1>
+    %rf0 = axis.factor %r0 : !distributed.replication_axis<2> <2, 1>
 
     %mesh_in = axis.product %lf0_upper, %lf0_lower, %lf1 : !axis.axis_factor<!distributed.logical_mesh_axis<4>, 2, 2>, !axis.axis_factor<!distributed.logical_mesh_axis<4>, 2, 1>, !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>
     %mesh_out = axis.product %lf0_upper, %lf0_lower, %lf1 : !axis.axis_factor<!distributed.logical_mesh_axis<4>, 2, 2>, !axis.axis_factor<!distributed.logical_mesh_axis<4>, 2, 1>, !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>

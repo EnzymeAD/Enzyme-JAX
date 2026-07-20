@@ -9,9 +9,9 @@ module {
     %p0, %p1 = distributed.GetPhysicalMeshAxes @mesh0 : !distributed.physical_comm_axis<2, 3>, !distributed.physical_comm_axis<3, 1>
 
     %axis = axis.getaxis tensor<12xf32> 0
-    %f0 = axis.factor %axis : (!axis.shape_axis<tensor<12xf32>, 0>) -> !axis.axis_factor<!axis.shape_axis<tensor<12xf32>, 0>, 2, 6>
-    %f1 = axis.factor %axis : (!axis.shape_axis<tensor<12xf32>, 0>) -> !axis.axis_factor<!axis.shape_axis<tensor<12xf32>, 0>, 2, 3>
-    %f2 = axis.factor %axis : (!axis.shape_axis<tensor<12xf32>, 0>) -> !axis.axis_factor<!axis.shape_axis<tensor<12xf32>, 0>, 3, 1>
+    %f0 = axis.factor %axis : !axis.shape_axis<tensor<12xf32>, 0> <2, 6>
+    %f1 = axis.factor %axis : !axis.shape_axis<tensor<12xf32>, 0> <2, 3>
+    %f2 = axis.factor %axis : !axis.shape_axis<tensor<12xf32>, 0> <3, 1>
     %ctx_callee = axis.product %f0, %f1 : !axis.axis_factor<!axis.shape_axis<tensor<12xf32>, 0>, 2, 6>, !axis.axis_factor<!axis.shape_axis<tensor<12xf32>, 0>, 2, 3>
     %ctx_rep = axis.product %f2 : !axis.axis_factor<!axis.shape_axis<tensor<12xf32>, 0>, 3, 1>
     %ctx_caller = axis.product %f0, %f1, %f2 : !axis.axis_factor<!axis.shape_axis<tensor<12xf32>, 0>, 2, 6>, !axis.axis_factor<!axis.shape_axis<tensor<12xf32>, 0>, 2, 3>, !axis.axis_factor<!axis.shape_axis<tensor<12xf32>, 0>, 3, 1>
@@ -51,13 +51,13 @@ module {
     %p0, %p1 = distributed.GetPhysicalMeshAxes @mesh0 : !distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>
 
     %l0, %l1 = distributed.LogicalMeshAxes [2, 2] : !distributed.logical_mesh_axis<2>, !distributed.logical_mesh_axis<2>
-    %lf0 = axis.factor %l0 : (!distributed.logical_mesh_axis<2>) -> !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>
-    %lf1 = axis.factor %l1 : (!distributed.logical_mesh_axis<2>) -> !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>
+    %lf0 = axis.factor %l0 : !distributed.logical_mesh_axis<2> <2, 1>
+    %lf1 = axis.factor %l1 : !distributed.logical_mesh_axis<2> <2, 1>
     %ta = axis.getaxis tensor<8xf32> 0
     %ta_out = axis.getaxis tensor<4xf32> 0
-    %tf_out = axis.factor %ta_out : (!axis.shape_axis<tensor<4xf32>, 0>) -> !axis.axis_factor<!axis.shape_axis<tensor<4xf32>, 0>, 4, 1>
-    %tf_to_mesh = axis.factor %ta : (!axis.shape_axis<tensor<8xf32>, 0>) -> !axis.axis_factor<!axis.shape_axis<tensor<8xf32>, 0>, 4, 2>
-    %tf_remain = axis.factor %ta : (!axis.shape_axis<tensor<8xf32>, 0>) -> !axis.axis_factor<!axis.shape_axis<tensor<8xf32>, 0>, 2, 1>
+    %tf_out = axis.factor %ta_out : !axis.shape_axis<tensor<4xf32>, 0> <4, 1>
+    %tf_to_mesh = axis.factor %ta : !axis.shape_axis<tensor<8xf32>, 0> <4, 2>
+    %tf_remain = axis.factor %ta : !axis.shape_axis<tensor<8xf32>, 0> <2, 1>
     %mesh_in = axis.product %lf0, %lf1 : !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>, !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>
     %mesh_out = axis.product %lf0, %lf1 : !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>, !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>
     %reduction = axis.product %lf1 : !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>
