@@ -129,34 +129,61 @@ struct SimpleCycleAnalysisPass
       }
     } else if (auto cmpOp = dyn_cast<CompareOp>(op)) {
       CmpPredicate pred = cmpOp.getPredicateAttr().getValue();
-      if (pred == CmpPredicate::eq) {
-        auto region_num = cmpOp->getParentRegion()->getRegionNumber();
-        auto pre_post_cost =
-            constant_costs.find(static_cast<HoareStates>(region_num));
-        z3::expr p =
-            (cost_var[0] ==
-             solver.ctx().int_val(pre_post_cost->second)); // precondition
-        z3::expr q =
-            (cost_var[cost_var.size() - 1] !=
-             solver.ctx().int_val(pre_post_cost->second)); // postcondition
-        if (region_num == 0) {
-          solver.add(p);
-        } else {
-          solver.add(q); // if satisfiable -> assignment exists s.t. perf
-                         // counter doesn't equal expected value?
+      auto region_num = cmpOp->getParentRegion()->getRegionNumber();
+      auto pre_post_cost =
+          constant_costs.find(static_cast<HoareStates>(region_num));
+      z3::expr p = solver.ctx().bool_val(true);
+      z3::expr q = solver.ctx().bool_val(false); // should return false if nothing else?
+      if (region_num == 0) {
+        if (pred == CmpPredicate::eq) {
+          p = z3::expr(cost_var[0] == solver.ctx().int_val(pre_post_cost->second)); // precondition
+        } else if (pred == CmpPredicate::ne) {
+          p = z3::expr(cost_var[0] != solver.ctx().int_val(pre_post_cost->second));
+        } else if (pred == CmpPredicate::lt) {
+          p = z3::expr(cost_var[0] < solver.ctx().int_val(pre_post_cost->second));  
+        } else if (pred == CmpPredicate::le) {
+          p = z3::expr(cost_var[0] <= solver.ctx().int_val(pre_post_cost->second));
+        } else if (pred == CmpPredicate::gt) {
+          p = z3::expr(cost_var[0] > solver.ctx().int_val(pre_post_cost->second)); 
+        } else if (pred == CmpPredicate::ge) {
+          p = z3::expr(cost_var[0] >= solver.ctx().int_val(pre_post_cost->second));
         }
+        solver.add(p);
+      } else {
+        if (pred == CmpPredicate::eq) {
+          q = z3::expr(cost_var[cost_var.size() - 1] != solver.ctx().int_val(pre_post_cost->second)); // postcondition
+        } else if (pred == CmpPredicate::ne) {
+          q = z3::expr(cost_var[cost_var.size() - 1] == solver.ctx().int_val(pre_post_cost->second));
+        } else if (pred == CmpPredicate::lt) {
+          q = z3::expr(cost_var[cost_var.size() - 1] >= solver.ctx().int_val(pre_post_cost->second));
+        } else if (pred == CmpPredicate::le) {
+          q = z3::expr(cost_var[cost_var.size() - 1] > solver.ctx().int_val(pre_post_cost->second));
+        } else if (pred == CmpPredicate::gt) {
+          q = z3::expr(cost_var[cost_var.size() - 1] <= solver.ctx().int_val(pre_post_cost->second));
+        } else if (pred == CmpPredicate::ge) {
+          q = z3::expr(cost_var[cost_var.size() - 1] < solver.ctx().int_val(pre_post_cost->second));
+        }
+        solver.add(q); // if satisfiable -> assignment exists s.t. perf
+                        // counter doesn't equal expected value?
       }
     } else if (auto assumeOp = dyn_cast<AssumeOp>(op)) {
       // todo: trigger traceup from the provided register argument, evaluate or
       // fetch the cmp set up the hoare triple here
+      #ifdef Z3_DEBUG_PERFIFY
       std::cout << solver << std::endl;
-      auto region_num = assumeOp->getParentRegion()->getRegionNumber();
-      auto check_res = solver.check();
-      llvm::outs() << (((region_num == 0 && check_res == 1) ||
-                        (region_num != 0 && check_res == 0))
+      llvm::outs() << (((region_num == 0 && check_res == 1) || // the precondition should be satisfiable
+                        (region_num != 0 && check_res == 0)) // the postcondition should be unsat since we negated the predicate
                            ? "Met perf check!"
                            : "Did not meet perf check")
-                   << "\n"; // this should always be true
+                   << "\n";
+      #endif
+      auto region_num = assumeOp->getParentRegion()->getRegionNumber();
+      auto check_res = solver.check();
+      if ((region_num == 0 && check_res == 1) || (region_num != 0 && check_res == 0)) {
+        assumeOp.setSatresAttr(BoolAttr::get(&getContext(), true));
+      } else {
+        assumeOp.setSatresAttr(BoolAttr::get(&getContext(), false));
+      }
     }
     for (Region &region : op->getRegions())
       visitRegion(region, state, solver, cost_var);
@@ -174,5 +201,4 @@ struct SimpleCycleAnalysisPass
       visitOperation(&op, state, solver, cost_var);
   }
 };
-
-} // namespace
+}

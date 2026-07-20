@@ -8,11 +8,7 @@ include "mlir/Interfaces/ControlFlowInterfaces.td"
 include "Dialect.td"
 include "Types.td"
 
-// Perfify.cost op
 def CostOp : PerfifyOp<"cost", []> {
-  // summary
-  // description
-  // arguments
   let arguments = (ins StrAttr:$target_op, 
                   APIntAttr:$cycle_cost);
   let assemblyFormat = "$target_op $cycle_cost attr-dict";
@@ -47,8 +43,8 @@ def ArgOp : PerfifyOp<"arg", []> {
 }
 
 def AssumeOp : PerfifyOp<"assume", [HasParent<"ConditionsOp">, Terminator]> {
-  let arguments = (ins I1:$precondition);
-  let assemblyFormat = "$precondition attr-dict";
+  let arguments = (ins I1:$condition, OptionalAttr<BoolAttr>:$satres);
+  let assemblyFormat = "$condition attr-dict";
 }
 
 def ConditionsOp : PerfifyOp<"conditions", [HasParent<"AssumptionsOp">, Terminator]> {
