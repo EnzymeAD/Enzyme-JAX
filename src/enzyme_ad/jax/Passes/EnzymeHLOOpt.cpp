@@ -21179,8 +21179,10 @@ struct ReorderElementwiseAndShapeOp final
 
     Value input = definingOp->getOperand(0);
     Value result = op->getResult(0);
-    auto intermediateType = cast<ShapedType>(input.getType())
-                                .clone(getElementTypeOrSelf(result.getType()));
+    auto originalResultType = result.getType();
+    auto intermediateType =
+        cast<ShapedType>(input.getType())
+            .clone(getElementTypeOrSelf(originalResultType));
 
     // avoid reordering if we have high-priority fusions
     auto inputDefOp = input.getDefiningOp();
@@ -21197,13 +21199,17 @@ struct ReorderElementwiseAndShapeOp final
       }
     }
 
-    // Reorder the operation and rewire the inputs/outputs.
+    // Reorder the operation and rewire the inputs/outputs in place safely.
+    rewriter.startOpModification(op);
+    rewriter.startOpModification(definingOp);
     op->moveBefore(definingOp);
-    definingOp->getResult(0).setType(result.getType());
-    rewriter.replaceAllUsesWith(result, definingOp->getResult(0));
-    result.setType(intermediateType);
     op->setOperands(input);
+    result.setType(intermediateType);
     definingOp->setOperands(result);
+    definingOp->getResult(0).setType(originalResultType);
+    rewriter.replaceAllUsesExcept(result, definingOp->getResult(0), definingOp);
+    rewriter.finalizeOpModification(definingOp);
+    rewriter.finalizeOpModification(op);
     return success();
   }
 };
