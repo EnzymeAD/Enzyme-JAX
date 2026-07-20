@@ -40,7 +40,6 @@ jobs:
       fail-fast: false
       matrix:
         os:
-          - linux-x86-a2-48-a100-4gpu
           - linux-x86-ct6e-180-4tpu
         julia_version:
           - '1.11'
@@ -51,7 +50,7 @@ jobs:
           - 'main'
 
         reactant_commit:
-          - 'wsmoses-patch-18'
+          - 'main'
         grid:
           - '--float-type=Float64'
           - '--float-type=Float32'
