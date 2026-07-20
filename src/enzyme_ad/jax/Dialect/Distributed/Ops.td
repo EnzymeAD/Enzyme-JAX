@@ -6,7 +6,6 @@ include "mlir/IR/RegionKindInterface.td"
 include "mlir/IR/SymbolInterfaces.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
 include "stablehlo/dialect/Base.td"
-include "shardy/dialect/sdy/ir/attrs.td"
 
 include "Dialect.td"
 include "Types.td"
@@ -17,7 +16,6 @@ defvar TensorType = HLO_Tensor;
 defvar ShardedTensorType =
     HLO_Tensor; // Subject to change, for now shardy just adds attributes on top
                 // of a regular tensor.
-defvar ShardingAttribute = Sdy_TensorSharding;
 
 // Marker for distributed metadata ops. Includes builtin Pure.
 def PureDistributedMetadata : TraitList<[MetadataOpTrait]>;
