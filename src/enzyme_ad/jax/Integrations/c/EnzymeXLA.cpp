@@ -555,6 +555,8 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("reduce_max_min_mul_positive_scalar");
   list.push_back("add_complex_simplify");
   list.push_back("sub_complex_simplify");
+  list.push_back("real_complex_mul_simplify");
+  list.push_back("imaginary_complex_mul_simplify");
   list.push_back("exponential_minus_one_fuse");
   list.push_back("scatter_of_scatter_simplify");
 }
