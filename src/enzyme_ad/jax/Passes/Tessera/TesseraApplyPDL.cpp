@@ -5,6 +5,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/PDL/IR/PDL.h"
 #include "mlir/Dialect/PDLInterp/IR/PDLInterp.h"
 #include "mlir/IR/PatternMatch.h"
@@ -27,6 +28,32 @@ using namespace mlir::enzyme;
 using namespace mlir::enzyme::tessera;
 
 namespace {
+
+static LogicalResult isConstantEqualTo(PatternRewriter &rewriter,
+                                       PDLResultList &results,
+                                       ArrayRef<PDLValue> args) {
+  // args[0]: the matched llvm.mlir.constant Operation*
+  // args[1]: the expected i64 value, passed as a PDL attribute (IntegerAttr)
+  Operation *constOp = args[0].cast<Operation *>();
+  auto expectedAttr = args[1].cast<Attribute>();
+
+  auto llvmConst = dyn_cast<LLVM::ConstantOp>(constOp);
+  if (!llvmConst)
+    return failure();
+
+  auto actualIntAttr = dyn_cast<IntegerAttr>(llvmConst.getValue());
+  auto expectedIntAttr = dyn_cast<IntegerAttr>(expectedAttr);
+  if (!actualIntAttr || !expectedIntAttr)
+    return failure();
+
+  // Compare numeric value only, ignoring bit-width, so this stays robust
+  // if the constant's width ever differs from what the annotation assumed.
+  if (actualIntAttr.getValue().getSExtValue() !=
+      expectedIntAttr.getValue().getSExtValue())
+    return failure();
+
+  return success();
+}
 
 struct TesseraApplyPDLPass
     : public enzyme::tessera::impl::TesseraApplyPDLPassBase<
@@ -52,6 +79,10 @@ struct TesseraApplyPDLPass
     // Process the pattern module.
     patternModule.getOperation()->remove();
     PDLPatternModule pdlPattern(patternModule);
+
+    // Register native constraints referenced by generated PDL patterns.
+    pdlPattern.registerConstraintFunction("isConstantEqualTo",
+                                          isConstantEqualTo);
 
     patternList.add(std::move(pdlPattern));
 

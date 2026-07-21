@@ -264,13 +264,28 @@ emitMatchPDL(const Expr &expr, OpBuilder &builder, Location loc,
             return {boundVars[v.name], mlir::Value()};
           },
           [&](const Num &n) -> std::pair<mlir::Value, mlir::Value> {
-            auto attrVal = pdl::AttributeOp::create(
-                builder, loc, builder.getI64IntegerAttr(n.value));
-            auto constOp = pdl::OperationOp::create(
-                builder, loc, "arith.constant",
-                /*operands=*/ValueRange{},
-                /*attrNames=*/ArrayRef<StringRef>{"value"},
-                /*attrs=*/ValueRange{attrVal}, /*types=*/ValueRange{});
+            // Match any llvm.mlir.constant, no attribute constraint here —
+            // the value check happens via native constraint below, since
+            // `value` lives in the op's properties storage, not its
+            // discardable attribute dict, and PDL's declarative attribute
+            // matching doesn't see it.
+            auto resultTypeOp = pdl::TypeOp::create(
+                builder, loc, builder.getType<pdl::TypeType>(),
+                /*type=*/TypeAttr());
+            auto constOp =
+                pdl::OperationOp::create(builder, loc, "llvm.mlir.constant",
+                                         /*operands=*/ValueRange{},
+                                         /*attrNames=*/ArrayRef<StringRef>{},
+                                         /*attrs=*/ValueRange{},
+                                         /*types=*/ValueRange{resultTypeOp});
+
+            auto expectedAttr = pdl::AttributeOp::create(
+                builder, loc, builder.getI32IntegerAttr(n.value));
+
+            pdl::ApplyNativeConstraintOp::create(
+                builder, loc, TypeRange{}, "isConstantEqualTo",
+                ValueRange{constOp, expectedAttr});
+
             return {pdl::ResultOp::create(
                         builder, loc, builder.getType<pdl::ValueType>(),
                         constOp, builder.getI32IntegerAttr(0)),
@@ -314,9 +329,9 @@ emitRewritePDL(const Expr &expr, OpBuilder &builder, Location loc,
           },
           [&](const Num &n) -> std::pair<mlir::Value, mlir::Value> {
             auto attrVal = pdl::AttributeOp::create(
-                builder, loc, builder.getI64IntegerAttr(n.value));
+                builder, loc, builder.getI32IntegerAttr(n.value));
             auto constOp = pdl::OperationOp::create(
-                builder, loc, "arith.constant",
+                builder, loc, "llvm.mlir.constant",
                 /*operands=*/ValueRange{},
                 /*attrNames=*/ArrayRef<StringRef>{"value"},
                 /*attrs=*/ValueRange{attrVal}, /*types=*/ValueRange{});
