@@ -4,10 +4,31 @@ module {
   tessera.optimizations {
     tessera.optimization "eigen.inv(eigen.inv(x)) -> x"
     tessera.optimization "eigen.mag(arith.negf(x),y,z) -> eigen.mag(x,y,z)"
+    tessera.optimization "tessera.pow(x, 2) -> tessera.mul(x, x)"
   }
 }
 
 // CHECK: module @patterns
+
+// CHECK: pdl.pattern : benefit(1) {
+// CHECK-NEXT:   %[[X0:.*]] = operand
+// CHECK-NEXT:   %[[T0:.*]] = type
+// CHECK-NEXT:   %[[C0:.*]] = operation "llvm.mlir.constant"  -> (%[[T0]] : !pdl.type)
+// CHECK-NEXT:   %[[TWO:.*]] = attribute = 2 : i32
+// CHECK-NEXT:   apply_native_constraint "isConstantEqualTo"(%[[C0]], %[[TWO]] : !pdl.operation, !pdl.attribute)
+// CHECK-NEXT:   %[[RES0:.*]] = result 0 of %[[C0]]
+// CHECK-NEXT:   %[[POW:.*]] = attribute = @tessera.pow
+// CHECK-NEXT:   %[[T1:.*]] = type
+// CHECK-NEXT:   %[[POW_CALL:.*]] = operation "tessera.call"(%[[X0]], %[[RES0]] : !pdl.value, !pdl.value)  {"callee" = %[[POW]]} -> (%[[T1]] : !pdl.type)
+// CHECK-NEXT:   %[[POW_RES:.*]] = result 0 of %[[POW_CALL]]
+// CHECK-NEXT:   rewrite %[[POW_CALL]] {
+// CHECK-NEXT:     %[[MUL:.*]] = attribute = @tessera.mul
+// CHECK-NEXT:     %[[T2:.*]] = type
+// CHECK-NEXT:     %[[MUL_CALL:.*]] = operation "tessera.call"(%[[X0]], %[[X0]] : !pdl.value, !pdl.value)  {"callee" = %[[MUL]]} -> (%[[T2]] : !pdl.type)
+// CHECK-NEXT:     %[[MUL_RES:.*]] = result 0 of %[[MUL_CALL]]
+// CHECK-NEXT:     replace %[[POW_CALL]] with %[[MUL_CALL]]
+// CHECK-NEXT:   }
+// CHECK-NEXT: }
 
 // CHECK: pdl.pattern : benefit(1) {
 // CHECK-NEXT:   %[[X0:.*]] = operand
