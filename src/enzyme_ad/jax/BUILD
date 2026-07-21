@@ -542,6 +542,7 @@ td_library(
     deps = [
         "@llvm-project//mlir:BuiltinDialectTdFiles",
         "@llvm-project//mlir:OpBaseTdFiles",
+        "@stablehlo//:chlo_ops_td_files",
         "@stablehlo//:stablehlo_ops_td_files",
     ],
 )

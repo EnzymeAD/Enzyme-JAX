@@ -30,15 +30,6 @@ using namespace mlir;
 using namespace mlir::enzyme;
 using namespace mlir::stablehlo;
 
-template <typename T>
-static stablehlo::ConstantOp
-createConstantOpFromScalar(PatternRewriter &rewriter, Location loc, Type type,
-                           T value) {
-  return stablehlo::ConstantOp::create(
-      rewriter, loc, type,
-      cast<ElementsAttr>(mlir::enzyme::makeAttr(type, value)));
-}
-
 namespace {
 #include "src/enzyme_ad/jax/Passes/LowerEnzymeXLAMathPatterns.cpp.inc"
 

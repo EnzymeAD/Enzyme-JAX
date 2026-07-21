@@ -1,5 +1,7 @@
 #pragma once
 
+#include <type_traits>
+
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
 
@@ -39,6 +41,24 @@ static LogicalResult failIfFuncOpInterfaceHasAttr(Operation *op,
   return success();
 }
 
+static LogicalResult checkPreconditions(Operation *op,
+                                        PatternRewriter &rewriter,
+                                        bool supportsDynamicShapes) {
+  if (op->hasAttr(kDisablePatternAttrName))
+    return rewriter.notifyMatchFailure(op, "disabled by attribute.");
+
+  if (failIfFuncOpInterfaceHasAttr(op, kDisablePatternAttrName, rewriter)
+          .failed())
+    return failure();
+
+  if (!supportsDynamicShapes) {
+    if (failIfDynamicShape(op, rewriter).failed())
+      return failure();
+  }
+
+  return success();
+}
+
 template <typename OpTy, typename Child>
 struct CheckedOpRewritePattern : public OpRewritePattern<OpTy> {
   using Base = OpRewritePattern<OpTy>;
@@ -46,16 +66,10 @@ struct CheckedOpRewritePattern : public OpRewritePattern<OpTy> {
 
   LogicalResult
   matchAndRewrite(OpTy op, PatternRewriter &rewriter) const override final {
-    LogicalResult res =
-        failIfFuncOpInterfaceHasAttr(op, kDisablePatternAttrName, rewriter);
-    if (res.failed())
-      return res;
-
-    if (!((Child *)this)->supportsDynamicShapes()) {
-      LogicalResult res = failIfDynamicShape(op, rewriter);
-      if (res.failed())
-        return res;
-    }
+    if (checkPreconditions(op, rewriter,
+                           ((Child *)this)->supportsDynamicShapes())
+            .failed())
+      return failure();
 
     return ((Child *)this)->matchAndRewriteImpl(op, rewriter);
   }
@@ -71,21 +85,40 @@ struct CheckedOpTraitRewritePattern : public OpTraitRewritePattern<TraitType> {
   LogicalResult
   matchAndRewrite(Operation *op,
                   PatternRewriter &rewriter) const override final {
-    LogicalResult res =
-        failIfFuncOpInterfaceHasAttr(op, kDisablePatternAttrName, rewriter);
-    if (res.failed())
-      return res;
-
-    if (!((Child *)this)->supportsDynamicShapes()) {
-      auto res = failIfDynamicShape(op, rewriter);
-      if (res.failed())
-        return res;
-    }
+    if (checkPreconditions(op, rewriter,
+                           ((Child *)this)->supportsDynamicShapes())
+            .failed())
+      return failure();
 
     return ((Child *)this)->matchAndRewriteImpl(op, rewriter);
   }
 
   bool supportsDynamicShapes() const { return false; }
+};
+
+template <typename T, typename = void>
+struct has_supports_dynamic_shapes : std::false_type {};
+
+template <typename T>
+struct has_supports_dynamic_shapes<
+    T, std::void_t<decltype(std::declval<T>().supportsDynamicShapes())>>
+    : std::true_type {};
+
+template <typename PatternTy> struct CheckedPattern : public PatternTy {
+  using PatternTy::PatternTy;
+
+  LogicalResult matchAndRewrite(Operation *op,
+                                PatternRewriter &rewriter) const override {
+    bool supportsDynamic = false;
+    if constexpr (has_supports_dynamic_shapes<PatternTy>::value) {
+      supportsDynamic = this->supportsDynamicShapes();
+    }
+
+    if (checkPreconditions(op, rewriter, supportsDynamic).failed())
+      return failure();
+
+    return PatternTy::matchAndRewrite(op, rewriter);
+  }
 };
 
 } // namespace enzyme

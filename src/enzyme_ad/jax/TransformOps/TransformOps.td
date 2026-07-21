@@ -43,11 +43,11 @@ class EnzymeHLOParameterizedPatternOp<string mnemonic, list<Trait> traits = []>
 // benefit 65k
 def ApplyAddSimplifyPatterns : EnzymeHLOPatternOp<
     "add_simplify"> {
-  let patterns = ["AddSimplify"];
+  let patterns = ["AddSimplifyLHS", "AddSimplifyRHS"];
 }
 def ApplyReplaceNegAddWithSubtract: EnzymeHLOPatternOp<
     "replace_neg_add_with_subtract"> {
-  let patterns = ["ReplaceNegAddWithSubtract"];
+  let patterns = ["ReplaceNegAddWithSubtractRHS", "ReplaceNegAddWithSubtractLHS"];
 }
 def ApplyReplaceSubtractNegWithAdd: EnzymeHLOPatternOp<
     "replace_subtract_neg_with_add"> {
@@ -55,11 +55,11 @@ def ApplyReplaceSubtractNegWithAdd: EnzymeHLOPatternOp<
 }
 def ApplySubSimplifyPatterns : EnzymeHLOPatternOp<
     "sub_simplify"> {
-  let patterns = ["SubSimplify"];
+  let patterns = ["SubSimplifyRHSZero", "SubSimplifyLHSZero", "SubSimplifyIdentical"];
 }
 def ApplyAndSimplifyPatterns : EnzymeHLOPatternOp<
     "and_simplify"> {
-  let patterns = ["AndSimplify"];
+  let patterns = ["AndSimplifyIdentical", "AndSimplifyFalseLHS", "AndSimplifyFalseRHS", "AndSimplifyTrueLHS", "AndSimplifyTrueRHS"];
 }
 def ApplyMaxSimplifyPatterns : EnzymeHLOPatternOp<
     "max_simplify"> {
@@ -71,19 +71,19 @@ def ApplyMinSimplifyPatterns : EnzymeHLOPatternOp<
 }
 def ApplyOrSimplifyPatterns : EnzymeHLOPatternOp<
     "or_simplify"> {
-  let patterns = ["OrSimplify"];
+  let patterns = ["OrSimplifyIdentical", "OrSimplifyTrueLHS", "OrSimplifyTrueRHS", "OrSimplifyFalseLHS", "OrSimplifyFalseRHS"];
 }
 def ApplyMulSimplifyPatterns : EnzymeHLOPatternOp<
     "mul_simplify"> {
-  let patterns = ["MulSimplify"];
+  let patterns = ["MulSimplifyOneLHS", "MulSimplifyOneRHS", "MulSimplifyNegOneLHS", "MulSimplifyNegOneRHS"];
 }
 def ApplyDivSimplifyPatterns : EnzymeHLOPatternOp<
     "div_simplify"> {
-  let patterns = ["DivSimplify"];
+  let patterns = ["DivSimplifyOneRHS", "DivSimplifyNegOneRHS", "DivConstToMulReciprocal"];
 }
 def ApplyPowSimplifyPatterns : EnzymeHLOPatternOp<
     "pow_simplify"> {
-  let patterns = ["PowSimplify"];
+  let patterns = ["PowSimplifyOneRHS", "PowSimplifyZeroRHS", "PowSimplifyOneLHS", "PowSimplifyNegOneRHS", "PowSimplifyNegHalfRHS", "PowSimplifyHalfRHS", "PowSimplifyTwoRHS"];
 }
 def ApplyNoopSlicePatterns : EnzymeHLOPatternOp<
     "noop_slice"> {
@@ -275,7 +275,7 @@ def ApplySoftplusConstProp : EnzymeHLOPatternOp<
 }
 def SignAbsSimplifyPatterns : EnzymeHLOPatternOp<
     "sign_abs_simplify"> {
-  let patterns = ["SignAbsSimplify"];
+  let patterns = ["SignAbsSimplify_1", "SignAbsSimplify_2"];
 }
 def AbsPositiveSimplifyPatterns : EnzymeHLOPatternOp<
     "abs_positive_simplify"> {
@@ -284,7 +284,7 @@ def AbsPositiveSimplifyPatterns : EnzymeHLOPatternOp<
 
 def ApplySquareAbsSimplifyPatterns : EnzymeHLOPatternOp<
     "square_abs_simplify"> {
-  let patterns = ["SquareAbsSimplify"];
+  let patterns = ["SquareAbsSimplify", "SquareAbsSimplifyComplex"];
 }
 
 def ApplyDivideDivideSimplifyPatterns : EnzymeHLOPatternOp<
@@ -445,11 +445,11 @@ def ApplyDotTransposePatterns : EnzymeHLOPatternOp<
 }
 def ApplyConvertConvertFloatPatterns : EnzymeHLOPatternOp<
     "convert_convert_float"> {
-  let patterns = ["ConvertConvertFloat"];
+  let patterns = ["ConvertConvertFloatIdentity", "ConvertConvertFloat"];
 }
 def ApplyConvertConvertIntPatterns : EnzymeHLOPatternOp<
     "convert_convert_int"> {
-  let patterns = ["ConvertConvertInt"];
+  let patterns = ["ConvertConvertIntIdentity", "ConvertConvertInt"];
 }
 def ApplyConvertMulConvertPatterns : EnzymeHLOPatternOp<
     "convert_mul_convert"> {
@@ -1502,7 +1502,7 @@ def SelectPadToDUS : EnzymeHLOPatternOp<
 
 def SelectSelectSameCond : EnzymeHLOPatternOp<
     "select_select_same_cond"> {
-  let patterns = ["SelectSelectSameCond"];
+  let patterns = ["SelectSelectSameCondFalse", "SelectSelectSameCondTrue"];
 }
 
 def SelectSelectNegCond : EnzymeHLOPatternOp<
@@ -2040,7 +2040,7 @@ def ApplySumToConvPatterns : EnzymeHLOParameterizedPatternOp<
 
 def ApplyXOrSimplifyPatterns : EnzymeHLOPatternOp<
     "xor_simplify"> {
-  let patterns = ["XorSimplify"];
+  let patterns = ["XorSimplifyFalseLHS", "XorSimplifyFalseRHS", "XorSimplifyTrueLHS", "XorSimplifyTrueRHS"];
 }
 
 def SumToReduceWindow : EnzymeHLOPatternOp<
@@ -2503,7 +2503,7 @@ def ReduceReduce : EnzymeHLOPatternOp<
 
 def ConjReal : EnzymeHLOPatternOp<
   "conj_real"> {
-  let patterns = ["ConjReal"];
+  let patterns = ["ConjRealSimplify"];
 }
 
 def ApplyTransposeBatchNormTrainingPatterns : EnzymeHLOPatternOp<
@@ -2538,17 +2538,17 @@ def ApplyIfOpLiftCommonOpsPatterns : EnzymeHLOPatternOp<
 
 def ApplyInvolutionNegSimplifyPatterns : EnzymeHLOPatternOp<
     "involution_neg_simplify"> {
-  let patterns = ["InvolutionSimplify<stablehlo::NegOp>"];
+  let patterns = ["NegNegSimplify"];
 }
 
 def ApplyInvolutionConjSimplifyPatterns : EnzymeHLOPatternOp<
     "involution_conj_simplify"> {
-  let patterns = ["InvolutionSimplify<chlo::ConjOp>"];
+  let patterns = ["ConjConjSimplify"];
 }
 
 def ApplyInvolutionNotSimplifyPatterns : EnzymeHLOPatternOp<
     "involution_not_simplify"> {
-  let patterns = ["InvolutionSimplify<stablehlo::NotOp>"];
+  let patterns = ["NotNotSimplify"];
 }
 
 def ApplyRealConjSimplifyPatterns : EnzymeHLOPatternOp<
@@ -2570,7 +2570,7 @@ def ApplyConjComplexSimplifyPatterns : EnzymeHLOPatternOp<
 //       ConjReal now performs a detailed analysis that covers this case.
 def ApplyConjConvertSimplifyPatterns : EnzymeHLOPatternOp<
     "conj_convert_simplify"> {
-  let patterns = ["ConjReal"];
+  let patterns = ["ConjRealSimplify"];
 }
 
 def ApplyElementwiseComplexSimplifyPatterns : EnzymeHLOPatternOp<
@@ -2690,19 +2690,19 @@ def ApplyPowerMultiplyToPower : EnzymeHLOPatternOp<"power_multiply_to_power"> {
 }
 
 def ApplyLogSimplify : EnzymeHLOPatternOp<"log_simplify"> {
-  let patterns = ["LogSimplify"];
+  let patterns = ["LogExpSimplify", "LogPowSimplify", "LogMulIdenticalSimplify", "LogMulConstSimplify", "LogAddIdenticalSimplify", "LogAddOneRHSSimplify", "LogAddOneLHSSimplify", "LogDivConstSimplify", "LogSqrtSimplify", "LogCbrtSimplify", "LogRsqrtSimplify"];
 }
 
 def ApplyExponentialMinusOneFuse : EnzymeHLOPatternOp<"exponential_minus_one_fuse"> {
-  let patterns = ["ExponentialMinusOneFuse", "ExponentialMinusOneAddFuse"];
+  let patterns = ["ExponentialMinusOneFuse1", "ExponentialMinusOneFuse2", "ExponentialMinusOneAddFuse1", "ExponentialMinusOneAddFuse2"];
 }
 
 def ApplyNegMulConstSimplify : EnzymeHLOPatternOp<"neg_mul_const_simplify"> {
-  let patterns = ["NegMulConstSimplify"];
+  let patterns = ["NegMulConstLHSSimplify", "NegMulConstRHSSimplify"];
 }
 
 def ApplyNegDivConstSimplify : EnzymeHLOPatternOp<"neg_div_const_simplify"> {
-  let patterns = ["NegDivConstSimplify"];
+  let patterns = ["NegDivConstLHSSimplify", "NegDivConstRHSSimplify"];
 }
 
 def ApplyNegatedConstantMulFactoring : EnzymeHLOPatternOp<"negated_constant_mul_factoring"> {
