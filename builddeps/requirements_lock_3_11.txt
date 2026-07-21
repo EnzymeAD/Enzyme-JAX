@@ -405,20 +405,18 @@ einops==0.8.1 \
     --hash=sha256:919387eb55330f5757c6bea9165c5ff5cfe63a642682ea788a6d472576d81737 \
     --hash=sha256:de5d960a7a761225532e0f1959e5315ebeafc0cd43394732f103ca44b9837e84
     # via jax-md
-etils[epath]==1.13.0 \
+etils[epath, epy]==1.13.0 \
     --hash=sha256:a5b60c71f95bcd2d43d4e9fb3dc3879120c1f60472bb5ce19f7a860b1d44f607 \
     --hash=sha256:d9cd4f40fbe77ad6613b7348a18132cc511237b6c076dbb89105c0b520a4c6bb
     # via
     #   orbax-checkpoint
     #   xprof
-etils[epy]==1.13.0 \
-    --hash=sha256:a5b60c71f95bcd2d43d4e9fb3dc3879120c1f60472bb5ce19f7a860b1d44f607 \
-    --hash=sha256:d9cd4f40fbe77ad6613b7348a18132cc511237b6c076dbb89105c0b520a4c6bb
-    # via orbax-checkpoint
 flax==0.12.2 \
     --hash=sha256:912fdd8a7c623ec8b2694b28d2827608e7fc82a3a6f8fff17ec5038f2bca66f4 \
     --hash=sha256:e9723b0881e571abe61885bb8770f53fdb3c383b6b3f5a923dcf6f1e9a687905
-    # via jax-md
+    # via
+    #   jax-md
+    #   jaxpi
 flexcache==0.3 \
     --hash=sha256:18743bd5a0621bfe2cf8d519e4c3bfdf57a269c15d1ced3fb4b64e0ff4600656 \
     --hash=sha256:d43c9fea82336af6e0115e308d9d33a185390b8346a017564611f1466dcd2e32
@@ -920,6 +918,7 @@ jax[cuda12]==0.8.2 \
     #   e3nn-jax
     #   flax
     #   jax-md
+    #   jaxpi
     #   jraph
     #   neuralgcm
     #   optax
@@ -980,6 +979,9 @@ jaxlib==0.8.2 \
     #   jraph
     #   neuralgcm
     #   optax
+jaxpi @ https://github.com/vimarsh6739/jaxpi/archive/6c22cfa9ac17eac4993aebf454b3af5d074fe430.tar.gz \
+    --hash=sha256:3d0a0e003718c18d8ed588da053cefe467f86b0245461f7131dc422638ff9b32
+    # via -r builddeps/test-requirements.txt
 jmp==0.0.4 \
     --hash=sha256:5dfeb0fd7c7a9f72a70fff0aab9d0cbfae32a809c02f4037ff3485ceb33e1730 \
     --hash=sha256:6aa7adbddf2bd574b28c7faf6e81a735eb11f53386447896909c6968dc36807d
@@ -1641,6 +1643,7 @@ numpy==2.1.3 \
     #   jax
     #   jax-md
     #   jaxlib
+    #   jaxpi
     #   jmp
     #   jraph
     #   matplotlib
@@ -1741,6 +1744,7 @@ optax==0.2.6 \
     # via
     #   flax
     #   jax-md
+    #   jaxpi
     #   neuralgcm
 orbax-checkpoint==0.11.31 \
     --hash=sha256:b00e39cd61cbd6c7c78b091ccac0ed1bbf3cf7788e761618e7070761195bfcc0 \
