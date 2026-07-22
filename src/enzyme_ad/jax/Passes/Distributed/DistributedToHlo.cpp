@@ -237,6 +237,89 @@ auto bindFailWithRemark(distributed::DistributedCollectiveOp op,
   };
 }
 
+// Validated and prepared async collective inputs.
+struct CollectiveInputs {
+  Value tensorOperand;
+  TensorType inputTensorType;
+  TensorType outputTensorType;
+};
+
+// Validates and prepares common inputs for async collectives. Validates mesh
+// index space alignment and extracts/validates tensor operands and output type.
+static LogicalResult validateAndPrepareCollectiveInputs(
+    distributed::DistributedCollectiveOp op,
+    const std::function<LogicalResult(StringRef)> &failWithRemark,
+    CollectiveInputs &result) {
+  // Validate that input/output meshes span the same index space
+  if (!hasSameInputOutputMeshIndexSpace(op)) {
+    return failWithRemark("input/output meshes must have equal index space");
+  }
+
+  Value tensorOperand = op.getInputObject();
+  auto inputTensorType = dyn_cast<TensorType>(tensorOperand.getType());
+  if (!inputTensorType) {
+    return failWithRemark("input operand must be a tensor type");
+  }
+
+  auto outputTensorType = dyn_cast<TensorType>(op.getOutputTensorType());
+  if (!outputTensorType) {
+    return failWithRemark("output type must be a tensor type");
+  }
+
+  result.tensorOperand = tensorOperand;
+  result.inputTensorType = inputTensorType;
+  result.outputTensorType = outputTensorType;
+  return success();
+}
+
+// Validates reduction-specific collective inputs: confirms that reductions exist
+// and there is exactly one spatial reduction group.
+static LogicalResult validateReductionCollectiveInputs(
+    distributed::DistributedCollectiveOp op,
+    const std::function<LogicalResult(StringRef)> &failWithRemark) {
+  if (!hasAnyReduction(op)) {
+    return failWithRemark("collective has no reductions");
+  }
+
+  if (!hasSingleSpatialReduction(op)) {
+    return failWithRemark("expected exactly one spatial reduction group");
+  }
+
+  return success();
+}
+
+// Builds an asynchronous collective operation wrapped in StableHLO AsyncStart,
+// then replaces the distributed op with an UnrealizedConversionCastOp that
+// adapts the future to the distributed async handle type. The collective
+// operation is built by the provided callback, which receives the async tensor
+// operand to build the appropriate collective op.
+static LogicalResult buildAndReplaceAsyncCollective(
+    distributed::DistributedCollectiveOp op,
+    const CollectiveInputs &inputs,
+    const std::function<void(Value, RegionBuilder&)> &buildCollectiveOp,
+    PatternRewriter &rewriter) {
+  auto buildAsyncStartRegion = [&](RegionBuilder &rb) -> void {
+    Value asyncTensorOperand =
+        Argument(rb, inputs.tensorOperand.getType()).getValue();
+    buildCollectiveOp(asyncTensorOperand, rb);
+  };
+
+  MlirBuilder asyncStartBuilder(rewriter, op.getLoc());
+  SmallVector<MlirOp> asyncStartOperands =
+      wrap(asyncStartBuilder, ValueRange{inputs.tensorOperand});
+  Type asyncStartResultType = stablehlo::FutureType::get(
+      op.getContext(), SmallVector<Type>{inputs.outputTensorType});
+  MlirOp asyncStart =
+      buildAsyncStart(asyncStartBuilder, asyncStartResultType,
+                      asyncStartOperands, buildAsyncStartRegion);
+
+  auto convertedHandle = rewriter.create<UnrealizedConversionCastOp>(
+      op.getLoc(), TypeRange{op.getAsyncHandle().getType()},
+      ValueRange{asyncStart.getValue()});
+  rewriter.replaceOp(op, convertedHandle.getResults());
+  return success();
+}
+
 // Case 1: all-reduce
 struct DistributedCollectiveAllReduceToStablehloPattern
     : public OpRewritePattern<distributed::DistributedCollectiveOp> {
@@ -246,18 +329,13 @@ struct DistributedCollectiveAllReduceToStablehloPattern
                                 PatternRewriter &rewriter) const override {
     auto failWithRemark = bindFailWithRemark(op, rewriter, "all-reduce");
 
-    if (!hasSameInputOutputMeshIndexSpace(op)) {
-      return failWithRemark("input/output meshes must have equal index space");
+    CollectiveInputs inputs;
+    if (failed(validateAndPrepareCollectiveInputs(op, failWithRemark, inputs))) {
+      return failure();
     }
 
-    if (!hasAnyReduction(op)) {
-      return failWithRemark("collective has no reductions");
-    }
-
-    // all reductions currently expect only
-    // spatial reductions for lowering
-    if (!hasSingleSpatialReduction(op)) {
-      return failWithRemark("expected exactly one spatial reduction group");
+    if (failed(validateReductionCollectiveInputs(op, failWithRemark))) {
+      return failure();
     }
 
     // Happens when all non-reduction axes have an identity map, all
@@ -355,31 +433,18 @@ struct DistributedCollectiveAllReduceToStablehloPattern
           "reduction function must be a flat symbol reference");
     }
 
-    Value tensorOperand = op.getInputObject();
-    auto inputTensorType = dyn_cast<TensorType>(tensorOperand.getType());
-    if (!inputTensorType) {
-      return failWithRemark("input operand must be a tensor type");
-    }
-
     RankedTensorType scalarReductionTensorType;
     std::string signatureError;
     if (failed(validateScalarReductionFunctionSignature(
-            op, reductionFunction, inputTensorType.getElementType(),
+            op, reductionFunction, inputs.inputTensorType.getElementType(),
             scalarReductionTensorType, signatureError))) {
       return failWithRemark(signatureError);
-    }
-
-    auto outputTensorType = dyn_cast<TensorType>(op.getOutputTensorType());
-    if (!outputTensorType) {
-      return failWithRemark("output type must be a tensor type");
     }
 
     auto buildComputation = bindBuildReductionComputation(
         reductionFunction, scalarReductionTensorType);
 
-    auto buildAsyncStartRegion = [&](RegionBuilder &rb) -> void {
-      Value asyncTensorOperand =
-          Argument(rb, tensorOperand.getType()).getValue();
+    auto buildCollectiveOp = [&](Value asyncTensorOperand, RegionBuilder &rb) -> void {
       SmallVector<MlirOp> reductionOperands =
           wrap(rb, ValueRange{asyncTensorOperand});
       stablehlo::ChannelHandleAttr channelHandle =
@@ -393,20 +458,7 @@ struct DistributedCollectiveAllReduceToStablehloPattern
                                                     hloReduce[0].getValue());
     };
 
-    MlirBuilder asyncStartBuilder(rewriter, op.getLoc());
-    SmallVector<MlirOp> asyncStartOperands =
-        wrap(asyncStartBuilder, ValueRange{tensorOperand});
-    Type asyncStartResultType = stablehlo::FutureType::get(
-        op.getContext(), SmallVector<Type>{outputTensorType});
-    MlirOp asyncStart =
-        buildAsyncStart(asyncStartBuilder, asyncStartResultType,
-                        asyncStartOperands, buildAsyncStartRegion);
-
-    auto convertedHandle = rewriter.create<UnrealizedConversionCastOp>(
-        op.getLoc(), TypeRange{op.getAsyncHandle().getType()},
-        ValueRange{asyncStart.getValue()});
-    rewriter.replaceOp(op, convertedHandle.getResults());
-    return success();
+    return buildAndReplaceAsyncCollective(op, inputs, buildCollectiveOp, rewriter);
   }
 };
 
@@ -418,16 +470,14 @@ struct DistributedCollectiveReduceScatterToStablehloPattern
   LogicalResult matchAndRewrite(distributed::DistributedCollectiveOp op,
                                 PatternRewriter &rewriter) const override {
     auto failWithRemark = bindFailWithRemark(op, rewriter, "Reduce-Scatter");
-    if (!hasSameInputOutputMeshIndexSpace(op)) {
-      return failWithRemark("input/output meshes must have equal index space");
+
+    CollectiveInputs inputs;
+    if (failed(validateAndPrepareCollectiveInputs(op, failWithRemark, inputs))) {
+      return failure();
     }
-    if (!hasAnyReduction(op)) {
-      return failWithRemark("collective has no reductions");
-    }
-    // all reductions currently expect only
-    // spatial reductions for lowering
-    if (!hasSingleSpatialReduction(op)) {
-      return failWithRemark("expected exactly one spatial reduction group");
+
+    if (failed(validateReductionCollectiveInputs(op, failWithRemark))) {
+      return failure();
     }
     // Happens when all reduction axes are spatial axes,
     // exactly 1 tensor axis maps to the product of the spatial axes,
@@ -540,61 +590,35 @@ struct DistributedCollectiveReduceScatterToStablehloPattern
     }
     int scatter_dim = axis::getAxisDimIndex(tensor_axis_typed);
 
-    Value tensorOperand = op.getInputObject();
-    auto inputTensorType = dyn_cast<TensorType>(tensorOperand.getType());
-    if (!inputTensorType) {
-      return failWithRemark("input operand must be a tensor type");
-    }
 
     RankedTensorType scalarReductionTensorType;
     std::string signatureError;
     FlatSymbolRefAttr reductionFunction =
         cast<FlatSymbolRefAttr>(op.getReductionFunctionsAttr()[0]);
     if (failed(validateScalarReductionFunctionSignature(
-            op, reductionFunction, inputTensorType.getElementType(),
+            op, reductionFunction, inputs.inputTensorType.getElementType(),
             scalarReductionTensorType, signatureError))) {
       return failWithRemark(signatureError);
-    }
-
-    auto outputTensorType = dyn_cast<TensorType>(op.getOutputTensorType());
-    if (!outputTensorType) {
-      return failWithRemark("output type must be a tensor type");
     }
 
     auto buildComputation = bindBuildReductionComputation(
         reductionFunction, scalarReductionTensorType);
 
-    auto buildAsyncStartRegion = [&](RegionBuilder &rb) -> void {
-      Value asyncTensorOperand =
-          Argument(rb, tensorOperand.getType()).getValue();
+    auto buildCollectiveOp = [&](Value asyncTensorOperand, RegionBuilder &rb) -> void {
       SmallVector<MlirOp> reductionOperands =
           wrap(rb, ValueRange{asyncTensorOperand});
       stablehlo::ChannelHandleAttr channelHandle =
           createUniqueStablehloChannelHandle(op);
-      // For ReduceScatter, we need to use the builder with explicit result type
       MlirBuilder scatterBuilder(rb.getOpBuilder(), rb.getLoc());
       MlirOp scatterOperand = reductionOperands[0];
       MlirOp hloReduce = stablehlo::ReduceScatter(
-          outputTensorType, scatterOperand, buildComputation, scatter_dim,
+          inputs.outputTensorType, scatterOperand, buildComputation, scatter_dim,
           *replicaGroups, channelHandle, /*use_global_device_ids=*/true);
       rb.getOpBuilder().create<stablehlo::ReturnOp>(rb.getLoc(),
                                                     hloReduce.getValue());
     };
 
-    MlirBuilder asyncStartBuilder(rewriter, op.getLoc());
-    SmallVector<MlirOp> asyncStartOperands =
-        wrap(asyncStartBuilder, ValueRange{tensorOperand});
-    Type asyncStartResultType = stablehlo::FutureType::get(
-        op.getContext(), SmallVector<Type>{outputTensorType});
-    MlirOp asyncStart =
-        buildAsyncStart(asyncStartBuilder, asyncStartResultType,
-                        asyncStartOperands, buildAsyncStartRegion);
-
-    auto convertedHandle = rewriter.create<UnrealizedConversionCastOp>(
-        op.getLoc(), TypeRange{op.getAsyncHandle().getType()},
-        ValueRange{asyncStart.getValue()});
-    rewriter.replaceOp(op, convertedHandle.getResults());
-    return success();
+    return buildAndReplaceAsyncCollective(op, inputs, buildCollectiveOp, rewriter);
   }
 };
 
