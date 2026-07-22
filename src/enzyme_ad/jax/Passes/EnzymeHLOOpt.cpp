@@ -27748,21 +27748,25 @@ struct LogSimplify final
   using CheckedOpRewritePattern<stablehlo::LogOp,
                                 LogSimplify>::CheckedOpRewritePattern;
 
+  // True iff `value` is a float constant whose every element is non-NaN and
+  // non-negative (and, unless allowZero, strictly positive). Keeps the
+  // log-splitting rewrites below from narrowing the domain on negative or zero
+  // constants.
+  static bool isPositiveNonNanConstant(Value value, bool allowZero) {
+    DenseElementsAttr attr;
+    if (!matchPattern(value, m_Constant(&attr)) ||
+        !isa<FloatType>(attr.getElementType()))
+      return false;
+
+    return llvm::all_of(attr.getValues<APFloat>(),
+                        [allowZero](const APFloat &element) {
+                          return !element.isNaN() && !element.isNegative() &&
+                                 (allowZero || !element.isZero());
+                        });
+  }
+
   LogicalResult matchAndRewriteImpl(stablehlo::LogOp op,
                                     PatternRewriter &rewriter) const {
-    auto isPositiveNonNanConstant = [](Value value, bool allowZero) {
-      DenseElementsAttr attr;
-      if (!matchPattern(value, m_Constant(&attr)) ||
-          !isa<FloatType>(attr.getElementType()))
-        return false;
-
-      return llvm::all_of(attr.getValues<APFloat>(),
-                          [allowZero](const APFloat &element) {
-                            return !element.isNaN() && !element.isNegative() &&
-                                   (allowZero || !element.isZero());
-                          });
-    };
-
     { // log(exp(x)) -> x
       auto defOp = op.getOperand().getDefiningOp<stablehlo::ExpOp>();
       if (defOp) {
