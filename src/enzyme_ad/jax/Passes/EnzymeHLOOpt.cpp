@@ -6273,11 +6273,6 @@ struct ConcatSlicesToReverse final
 };
 
 // slice(gather(x, ind)) -> gather(x, slice(ind))
-//
-// The batch dimensions of a gather's result correspond, in order, to the
-// start_indices dimensions other than index_vector_dim. Slicing those batch
-// dimensions of the result is therefore equivalent to slicing the matching
-// dimensions of the start_indices, which lets us drop the intermediate gather.
 struct SliceOfGather final
     : CheckedOpRewritePattern<stablehlo::SliceOp, SliceOfGather> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -6288,8 +6283,7 @@ struct SliceOfGather final
     if (!gather)
       return failure();
 
-    // Only fold when the gather is solely consumed by this slice; otherwise we
-    // would keep the original gather around and add a second one.
+    // Avoid duplicating the gather.
     if (!gather->hasOneUse())
       return failure();
 
@@ -6315,9 +6309,7 @@ struct SliceOfGather final
 
     int64_t indicesRank = indicesType.getRank();
 
-    // Build the new start_indices slice by pushing the output slice on the
-    // batch dims onto the matching index dims, leaving offset and index-vector
-    // dims full.
+    // Slice the batch dims of start_indices; keep offset/index-vector dims full.
     SmallVector<int64_t> idxStarts(indicesRank, 0);
     SmallVector<int64_t> idxLimits(indicesType.getShape().begin(),
                                    indicesType.getShape().end());
@@ -6333,8 +6325,7 @@ struct SliceOfGather final
     for (int64_t outDim = 0, outRank = sliceType.getRank(); outDim < outRank;
          ++outDim) {
       if (offsetDims.contains(outDim)) {
-        // Offset dims come from the gathered slice, not the indices; we can
-        // only push a slice that is a no-op on them.
+        // Offset dims aren't indexed; only a no-op slice is foldable.
         if (sliceStarts[outDim] != 0 ||
             sliceLimits[outDim] != gatherType.getShape()[outDim] ||
             sliceStrides[outDim] != 1)
@@ -6348,8 +6339,7 @@ struct SliceOfGather final
                      sliceLimits[outDim] == indicesType.getShape()[idxDim] &&
                      sliceStrides[outDim] == 1;
 
-      // Slicing a batching dim of the indices would require a matching slice of
-      // the operand batching dim, which we do not do here.
+      // Can't slice a batching index dim without slicing the operand.
       if (!trivial && startIndicesBatchingDims.contains(idxDim))
         return failure();
 
