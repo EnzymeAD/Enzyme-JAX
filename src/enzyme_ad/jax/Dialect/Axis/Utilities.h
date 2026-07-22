@@ -47,25 +47,20 @@ castTypedValueList(ValueRange values, llvm::StringRef expectedType) {
 // Returns the static extent for any canonical axis SSA value.
 int getAxisExtent(::mlir::TypedValue<AxisTypeInterface> axis);
 
+int getAxisDimIndex(::mlir::TypedValue<ShapeAxisType> axis);
+
 // Returns the static extent for any factor SSA value.
 int getFactorExtent(::mlir::TypedValue<AxisFactorType> factor);
 
 // Returns the static stride for any factor SSA value.
 int getFactorStride(::mlir::TypedValue<AxisFactorType> factor);
 
-// Returns the static extent for any segment SSA value.
-int getSegmentExtent(::mlir::TypedValue<AxisSegmentType> segment);
-
 // Returns the defining op for a canonical axis SSA value.
 ::mlir::FailureOr<::mlir::Operation *> getAxisProvenanceOp(::mlir::Value axis);
 
 // Resolves the source canonical axis used to produce a factor value.
-::mlir::FailureOr<::mlir::Value>
+::mlir::FailureOr<::mlir::TypedValue<AxisTypeInterface>>
 getFactorProvenanceAxis(::mlir::TypedValue<AxisFactorType> factor);
-
-// Resolves the source canonical axis used to produce a segment value.
-::mlir::FailureOr<::mlir::Value>
-getSegmentProvenanceAxis(::mlir::TypedValue<AxisSegmentType> segment);
 
 // Returns the factor list used to build a factor-product SSA value.
 ::mlir::FailureOr<llvm::SmallVector<::mlir::TypedValue<AxisFactorType>>>
@@ -75,23 +70,19 @@ getProductProvenanceFactors(::mlir::TypedValue<FactorGroupType> factorProduct);
 ::mlir::FailureOr<uint64_t>
 getFactorGroupExtent(::mlir::TypedValue<FactorGroupType> factorProduct);
 
+// Checks that two canonical axes are equivalent using the aliases semantics.
+// Canonical axes are either equivalent or wholly disjoint.
+bool areAxesEquivalent(::mlir::TypedValue<AxisTypeInterface> lhs,
+                       ::mlir::TypedValue<AxisTypeInterface> rhs);
+
 // Checks that factors are pairwise non-overlapping for one source axis.
-bool arePairwiseFactorsDisjoint(::mlir::Value lhsFactor,
-                                ::mlir::Value rhsFactor,
-                                ::mlir::Value lhsProvenanceAxis = nullptr,
-                                ::mlir::Value rhsProvenanceAxis = nullptr);
+bool arePairwiseFactorsDisjoint(::mlir::TypedValue<AxisFactorType> lhsFactor,
+                                ::mlir::TypedValue<AxisFactorType> rhsFactor,
+                                ::mlir::TypedValue<AxisTypeInterface> lhsProvenanceAxis = nullptr,
+                                ::mlir::TypedValue<AxisTypeInterface> rhsProvenanceAxis = nullptr);
 
 // Checks that factors are pairwise non-overlapping for one source axis.
 bool areFactorsDisjoint(TypedValueArrayRef<AxisFactorType> factors);
-
-// Checks that segment intervals are pairwise non-overlapping per source axis.
-bool arePairwiseSegmentsDisjoint(::mlir::Value lhsSegment,
-                                 ::mlir::Value rhsSegment,
-                                 ::mlir::Value lhsProvenanceAxis = nullptr,
-                                 ::mlir::Value rhsProvenanceAxis = nullptr);
-
-// Checks that segment intervals are pairwise non-overlapping per source axis.
-bool areSegmentsDisjoint(::mlir::ValueRange segments);
 
 // Returns true when two factor lists cover the same index space modulo
 // permutation order. This checks multiset equality over factor metadata and
@@ -108,11 +99,8 @@ bool areFactorListsStructurallyEqual(
     bool respectShapeTypes = true);
 
 // Checks that factors cover an axis exactly and therefore are disjoint.
-bool areFactorsComplete(::mlir::Value axis,
+bool areFactorsComplete(::mlir::TypedValue<AxisTypeInterface> axis,
                         TypedValueArrayRef<AxisFactorType> factors);
-
-// Checks that segments exactly cover [0, axis extent) with no overlap or gaps.
-bool areSegmentsComplete(::mlir::Value axis, ::mlir::ValueRange segments);
 
 // Small utlity for extracting all factors from one or more factor groups.
 llvm::SmallVector<::mlir::TypedValue<AxisFactorType>>
@@ -197,6 +185,13 @@ template <typename T> Predicate<T> predNot(Predicate<T> pred) {
 Predicate<std::pair<::mlir::TypedValue<FactorGroupType>,
                     ::mlir::TypedValue<FactorGroupType>>>
 predGroupPairIsIdentity(bool respectShapeTypes = true);
+
+// From a list of factors known to be from the same axis,
+// creates a list of pairs indicating the maximum factor ranges.
+// Ranges are gauranteed to be return in major-first order.
+llvm::SmallVector<std::pair<int, int>>
+build_max_factors(TypedValueArrayRef<AxisFactorType> factors);
+llvm::SmallVector<std::pair<int, int>> build_max_factors(ValueRange factors);
 
 } // namespace mlir::enzyme::axis
 

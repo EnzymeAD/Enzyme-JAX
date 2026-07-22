@@ -45,35 +45,29 @@ static FailureOr<bool> refreshResultTypesInPlace(Operation *op) {
 
 // Dispatches alias checks for canonical axes. Canonical axes are
 // either equivalent or wholly disjoint.
-static bool areAxesEquivalent(Value lhs, Value rhs) {
-  if (!isa<AxisTypeInterface>(lhs.getType()) ||
-      !isa<AxisTypeInterface>(rhs.getType())) {
-    return false;
-  }
+bool areAxesEquivalent(TypedValue<AxisTypeInterface> lhs,
+                       TypedValue<AxisTypeInterface> rhs) {
   if (lhs.getType().getTypeID() != rhs.getType().getTypeID()) {
     return false;
   }
-  auto lhsAxisIface = dyn_cast<AxisTypeInterface>(lhs.getType());
-  assert(lhsAxisIface && "axis value type must implement AxisTypeInterface");
-  if (!lhsAxisIface) {
-    return false;
-  }
+  auto lhsAxisIface = lhs.getType();
   return lhsAxisIface.aliases(lhs, rhs);
 }
 
 // Tests if two axis factors are disjoint members of some valid factorization
 // of a shared source axis.
-bool arePairwiseFactorsDisjoint(Value lhsFactor, Value rhsFactor,
-                                Value lhsProvenanceAxis,
-                                Value rhsProvenanceAxis) {
-  auto lhsTyped = castTypedValue<AxisFactorType>(lhsFactor, "AxisFactorType");
-  auto rhsTyped = castTypedValue<AxisFactorType>(rhsFactor, "AxisFactorType");
-  auto lhsType = lhsTyped.getType();
-  auto rhsType = rhsTyped.getType();
+bool arePairwiseFactorsDisjoint(TypedValue<AxisFactorType> lhsFactor,
+                                TypedValue<AxisFactorType> rhsFactor,
+                                TypedValue<AxisTypeInterface> lhsProvenanceAxis,
+                                TypedValue<AxisTypeInterface> rhsProvenanceAxis) {
+  auto lhsType = lhsFactor.getType();
+  auto rhsType = rhsFactor.getType();
 
-  Value lhsAxis = lhsProvenanceAxis;
-  if (!lhsAxis) {
-    auto lhsProvenance = getFactorProvenanceAxis(lhsTyped);
+  TypedValue<AxisTypeInterface> lhsAxis;
+  if (lhsProvenanceAxis) {
+    lhsAxis = lhsProvenanceAxis;
+  } else {
+    auto lhsProvenance = getFactorProvenanceAxis(lhsFactor);
     assert(succeeded(lhsProvenance) && "factor must have a provenance axis");
     if (failed(lhsProvenance)) {
       return false;
@@ -81,9 +75,11 @@ bool arePairwiseFactorsDisjoint(Value lhsFactor, Value rhsFactor,
     lhsAxis = *lhsProvenance;
   }
 
-  Value rhsAxis = rhsProvenanceAxis;
-  if (!rhsAxis) {
-    auto rhsProvenance = getFactorProvenanceAxis(rhsTyped);
+  TypedValue<AxisTypeInterface> rhsAxis;
+  if (rhsProvenanceAxis) {
+    rhsAxis = rhsProvenanceAxis;
+  } else {
+    auto rhsProvenance = getFactorProvenanceAxis(rhsFactor);
     assert(succeeded(rhsProvenance) && "factor must have a provenance axis");
     if (failed(rhsProvenance)) {
       return false;
@@ -121,6 +117,10 @@ int getAxisExtent(TypedValue<AxisTypeInterface> axis) {
   return static_cast<int>(axis.getType().extent());
 }
 
+int getAxisDimIndex(TypedValue<ShapeAxisType> axis) {
+  return static_cast<int>(axis.getType().getAxisIndex());
+}
+
 // Asserts a factor type and gets the extent.
 int getFactorExtent(TypedValue<AxisFactorType> factor) {
   return static_cast<int>(factor.getType().getExtent());
@@ -132,10 +132,6 @@ int getFactorStride(TypedValue<AxisFactorType> factor) {
 }
 
 // Asserts a segment type and gets the extent.
-int getSegmentExtent(TypedValue<AxisSegmentType> segment) {
-  return static_cast<int>(segment.getType().getExtent());
-}
-
 // Returns the defining op for a canonical axis SSA value.
 FailureOr<Operation *> getAxisProvenanceOp(Value axis) {
   auto result = dyn_cast<OpResult>(axis);
@@ -146,20 +142,12 @@ FailureOr<Operation *> getAxisProvenanceOp(Value axis) {
 }
 
 // Returns the defining source axis for a factor value.
-FailureOr<Value> getFactorProvenanceAxis(TypedValue<AxisFactorType> factor) {
+FailureOr<TypedValue<AxisTypeInterface>>
+getFactorProvenanceAxis(TypedValue<AxisFactorType> factor) {
   if (auto axisFactor = factor.getDefiningOp<AxisFactorOp>()) {
-    return axisFactor.getAxis();
+    auto axisValue = axisFactor.getAxis();
+    return castTypedValue<AxisTypeInterface>(axisValue, "AxisTypeInterface");
   }
-
-  return failure();
-}
-
-// Returns the defining source axis for a segment value.
-FailureOr<Value> getSegmentProvenanceAxis(TypedValue<AxisSegmentType> segment) {
-  if (auto axisSegment = segment.getDefiningOp<AxisSegmentOp>()) {
-    return axisSegment.getAxis();
-  }
-
   return failure();
 }
 
@@ -204,32 +192,25 @@ bool areFactorsDisjoint(
   assert(factors.size() < 100 &&
          "factor disjointness uses quadratic pairwise checks");
 
-  struct FactorInfo {
-    Value provenance;
-  };
-
   // Cache provenance once so pairwise checks remain pure and cheap.
-  SmallVector<FactorInfo> cachedFactors;
-  cachedFactors.reserve(factors.size());
+  SmallVector<TypedValue<AxisTypeInterface>> cachedProvenances;
+  cachedProvenances.reserve(factors.size());
   for (auto factor : factors) {
     assert(getFactorExtent(factor) > 0 && "factor extent must be positive");
     assert(getFactorStride(factor) > 0 && "factor stride must be positive");
 
     auto provenance = getFactorProvenanceAxis(factor);
     assert(succeeded(provenance) && "factor must have a provenance axis");
-    cachedFactors.push_back({*provenance});
+    cachedProvenances.push_back(*provenance);
   }
 
-  for (size_t i = 0; i < cachedFactors.size(); ++i) {
-    for (size_t j = i + 1; j < cachedFactors.size(); ++j) {
-      Value lhsAxis = cachedFactors[i].provenance;
-      Value rhsAxis = cachedFactors[j].provenance;
-
-      if (!areAxesEquivalent(lhsAxis, rhsAxis)) {
+  for (size_t i = 0; i < cachedProvenances.size(); ++i) {
+    for (size_t j = i + 1; j < cachedProvenances.size(); ++j) {
+      if (!areAxesEquivalent(cachedProvenances[i], cachedProvenances[j])) {
         continue;
       }
-      if (!arePairwiseFactorsDisjoint(factors[i], factors[j], lhsAxis,
-                                      rhsAxis)) {
+      if (!arePairwiseFactorsDisjoint(factors[i], factors[j],
+                                      cachedProvenances[i], cachedProvenances[j])) {
         return false;
       }
     }
@@ -241,15 +222,15 @@ bool areFactorsDisjoint(
 // From a list of factors known to be from the same axis,
 // creates a list of pairs indicating the maximum factor ranges.
 // Ranges are gauranteed to be return in major-first order.
-llvm::SmallVector<std::pair<int, int>> build_max_factors(ValueRange factors) {
+llvm::SmallVector<std::pair<int, int>>
+build_max_factors(TypedValueArrayRef<AxisFactorType> factors) {
   if (factors.empty()) {
     return {};
   }
   // convert into intervals
   llvm::SmallVector<std::pair<int, int>> factor_pairs;
-  for (Value factor : factors) {
-    auto factorTyped = castTypedValue<AxisFactorType>(factor, "AxisFactorType");
-    auto factorType = factorTyped.getType();
+  for (TypedValue<AxisFactorType> factor : factors) {
+    auto factorType = factor.getType();
     int extent = static_cast<int>(factorType.getExtent());
     int stride = static_cast<int>(factorType.getStride());
     factor_pairs.push_back({extent, stride});
@@ -277,13 +258,25 @@ llvm::SmallVector<std::pair<int, int>> build_max_factors(ValueRange factors) {
   return max_factors;
 }
 
+llvm::SmallVector<std::pair<int, int>> build_max_factors(ValueRange factors) {
+  if (factors.empty()) {
+    return {};
+  }
+  llvm::SmallVector<TypedValue<AxisFactorType>> typedFactors;
+  typedFactors.reserve(factors.size());
+  for (Value factor : factors) {
+    typedFactors.push_back(castTypedValue<AxisFactorType>(factor, "AxisFactorType"));
+  }
+  return build_max_factors(TypedValueArrayRef<AxisFactorType>(typedFactors));
+}
+
 // Compares two factor lists as index-space descriptors, ignoring ordering.
 // This is multiset equality over (extent, stride, provenance-axis
 // equivalence) and is intentionally permutation-invariant.
 bool areFactorIndexSpacesEqual(TypedValueArrayRef<AxisFactorType> lhsFactors,
                                TypedValueArrayRef<AxisFactorType> rhsFactors) {
   struct AxisFactors {
-    Value provenance;
+    TypedValue<AxisTypeInterface> provenance;
     SmallVector<Value> lhsFactors;
     SmallVector<Value> rhsFactors;
   };
@@ -384,91 +377,8 @@ bool areFactorListsStructurallyEqual(
   return true;
 }
 
-// Checks segment pairwise non-overlap metadata.
-bool arePairwiseSegmentsDisjoint(Value lhsSegment, Value rhsSegment,
-                                 Value lhsProvenanceAxis,
-                                 Value rhsProvenanceAxis) {
-  auto lhsTyped =
-      castTypedValue<AxisSegmentType>(lhsSegment, "AxisSegmentType");
-  auto rhsTyped =
-      castTypedValue<AxisSegmentType>(rhsSegment, "AxisSegmentType");
-  auto lhsType = lhsTyped.getType();
-  auto rhsType = rhsTyped.getType();
-
-  Value lhsAxis = lhsProvenanceAxis;
-  if (!lhsAxis) {
-    auto lhsProvenance = getSegmentProvenanceAxis(lhsTyped);
-    assert(succeeded(lhsProvenance) && "segment must have a provenance axis");
-    if (failed(lhsProvenance)) {
-      return false;
-    }
-    lhsAxis = *lhsProvenance;
-  }
-
-  Value rhsAxis = rhsProvenanceAxis;
-  if (!rhsAxis) {
-    auto rhsProvenance = getSegmentProvenanceAxis(rhsTyped);
-    assert(succeeded(rhsProvenance) && "segment must have a provenance axis");
-    if (failed(rhsProvenance)) {
-      return false;
-    }
-    rhsAxis = *rhsProvenance;
-  }
-
-  // Segments from different canonical axes are disjoint by definition.
-  if (!areAxesEquivalent(lhsAxis, rhsAxis)) {
-    return true;
-  }
-
-  uint64_t lhsStart = static_cast<uint64_t>(lhsType.getOffset());
-  uint64_t lhsEnd = lhsStart + static_cast<uint64_t>(lhsType.getExtent());
-  uint64_t rhsStart = static_cast<uint64_t>(rhsType.getOffset());
-  uint64_t rhsEnd = rhsStart + static_cast<uint64_t>(rhsType.getExtent());
-  return lhsEnd <= rhsStart || rhsEnd <= lhsStart;
-}
-
-// Checks segment group pairwise non-overlap metadata.
-bool areSegmentsDisjoint(ValueRange segments) {
-  if (segments.empty()) {
-    return true;
-  }
-
-  assert(segments.size() < 100 &&
-         "segment disjointness uses quadratic pairwise checks");
-
-  SmallVector<Value> provenanceAxes;
-  provenanceAxes.reserve(segments.size());
-  for (Value segment : segments) {
-    auto segmentTyped =
-        castTypedValue<AxisSegmentType>(segment, "AxisSegmentType");
-    assert(getSegmentExtent(segmentTyped) > 0 &&
-           "segment extent must be positive");
-
-    auto provenance = getSegmentProvenanceAxis(segmentTyped);
-    assert(succeeded(provenance) && "segment must have a provenance axis");
-    if (failed(provenance)) {
-      return false;
-    }
-    provenanceAxes.push_back(*provenance);
-  }
-
-  for (size_t i = 0; i < segments.size(); ++i) {
-    for (size_t j = i + 1; j < segments.size(); ++j) {
-      if (!areAxesEquivalent(provenanceAxes[i], provenanceAxes[j])) {
-        continue;
-      }
-      if (!arePairwiseSegmentsDisjoint(segments[i], segments[j],
-                                       provenanceAxes[i], provenanceAxes[j])) {
-        return false;
-      }
-    }
-  }
-
-  return true;
-}
-
 // Checks that factors reconstruct the full source axis extent.
-bool areFactorsComplete(Value axis,
+bool areFactorsComplete(TypedValue<AxisTypeInterface> axis,
                         TypedValueArrayRef<AxisFactorType> factors) {
   if (factors.empty() || !areFactorsDisjoint(factors)) {
     return false;
@@ -487,52 +397,7 @@ bool areFactorsComplete(Value axis,
     product *= static_cast<uint64_t>(getFactorExtent(factor));
   }
 
-  return product ==
-         static_cast<uint64_t>(getAxisExtent(
-             castTypedValue<AxisTypeInterface>(axis, "AxisTypeInterface")));
-}
-
-// Checks that segments reconstruct the full source axis interval [0, extent).
-bool areSegmentsComplete(Value axis, ValueRange segments) {
-  if (segments.empty() || !areSegmentsDisjoint(segments)) {
-    return false;
-  }
-
-  SmallVector<std::pair<uint64_t, uint64_t>> intervals;
-  intervals.reserve(segments.size());
-
-  for (Value segment : segments) {
-    auto segmentTyped =
-        castTypedValue<AxisSegmentType>(segment, "AxisSegmentType");
-    auto segmentType = segmentTyped.getType();
-
-    auto provenance = getSegmentProvenanceAxis(segmentTyped);
-    assert(succeeded(provenance) && "segment must have a provenance axis");
-    if (failed(provenance) || *provenance != axis) {
-      return false;
-    }
-
-    uint64_t start = static_cast<uint64_t>(segmentType.getOffset());
-    uint64_t end = start + static_cast<uint64_t>(segmentType.getExtent());
-    intervals.emplace_back(start, end);
-  }
-
-  std::sort(intervals.begin(), intervals.end());
-  if (intervals.front().first != 0) {
-    return false;
-  }
-
-  uint64_t cursor = 0;
-  for (auto [start, end] : intervals) {
-    if (start != cursor) {
-      return false;
-    }
-    cursor = end;
-  }
-
-  return cursor ==
-         static_cast<uint64_t>(getAxisExtent(
-             castTypedValue<AxisTypeInterface>(axis, "AxisTypeInterface")));
+  return product == static_cast<uint64_t>(getAxisExtent(axis));
 }
 
 llvm::SmallVector<::mlir::TypedValue<AxisFactorType>>
@@ -805,8 +670,10 @@ subtractFactorFromFactor(TypedValue<AxisFactorType> minuend,
 
   auto minuendAxis = getFactorProvenanceAxis(minuend);
   auto subAxis = getFactorProvenanceAxis(subtrahend);
-  if (failed(minuendAxis) || failed(subAxis) ||
-      !areAxesEquivalent(*minuendAxis, *subAxis)) {
+  if (failed(minuendAxis) || failed(subAxis)) {
+    return failure();
+  }
+  if (!areAxesEquivalent(*minuendAxis, *subAxis)) {
     return failure();
   }
 
