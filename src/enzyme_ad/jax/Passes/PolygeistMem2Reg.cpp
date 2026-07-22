@@ -1950,12 +1950,12 @@ bool isPromotable(mlir::Value AI) {
       } else if (isa<memref::DeallocOp>(U)) {
         continue;
       } else if (auto callOp = dyn_cast<CallOpInterface>(U)) {
-        if (StringAttr callee =
-                dyn_cast<SymbolRefAttr>(callOp.getCallableForCallee())
-                    .getLeafReference())
-          if (isCallNonCapturing(callOp, val) ||
-              getNonCapturingFunctions().count(callee.str()))
-            continue;
+        if (auto sym = dyn_cast<SymbolRefAttr>(callOp.getCallableForCallee())) {
+          if (StringAttr callee = sym.getLeafReference())
+            if (isCallNonCapturing(callOp, val) ||
+                getNonCapturingFunctions().count(callee.str()))
+              continue;
+        }
       } else if (auto CO = dyn_cast<memref::CastOp>(U)) {
         list.push_back(CO);
       } else if (auto CO = dyn_cast<Memref2PointerOp>(U)) {
