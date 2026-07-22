@@ -508,13 +508,14 @@ class AutoDiffWhileRev
     if (!revInfo.info.computeInfo().succeeded() || !revInfo.info.isValid())
       return revInfo;
 
+    const char *checkpointAttrName = "enzymexla.enable_checkpointing";
+    const char *periodicCheckpointAttrName = "enzymexla.checkpoint_period";
+
+    auto enableCheckpointingAttr =
+        orig->getAttrOfType<BoolAttr>(checkpointAttrName);
+    bool enableCheckpointing =
+        enableCheckpointingAttr && enableCheckpointingAttr.getValue();
     if (revInfo.info.isConstant()) {
-      const char *checkpointAttrName = "enzymexla.enable_checkpointing";
-      auto enableCheckpointingAttr =
-          orig->getAttrOfType<BoolAttr>(checkpointAttrName);
-      bool enableCheckpointing =
-          enableCheckpointingAttr && enableCheckpointingAttr.getValue();
-      const char *periodicCheckpointAttrName = "enzymexla.checkpoint_period";
       auto checkpointPeriod =
           orig->getAttrOfType<IntegerAttr>(periodicCheckpointAttrName);
       bool enableBinomialCheckpointing =
@@ -542,9 +543,7 @@ class AutoDiffWhileRev
         revInfo.mode = CONSTANT;
       }
     } else if (orig->hasAttr("enzymexla.binomial_checkpointing")) {
-      auto enableCheckpointing =
-          orig->getAttrOfType<BoolAttr>("enzymexla.enable_checkpointing");
-      if (enableCheckpointing && enableCheckpointing.getValue()) {
+      if (enableCheckpointing) {
         revInfo.mode = CONSTANT_BINOMIAL;
         auto checkpointPeriod =
             orig->getAttrOfType<IntegerAttr>("enzymexla.checkpoint_period");
@@ -553,6 +552,10 @@ class AutoDiffWhileRev
                 ? checkpointPeriod.getInt()
                 : BINOMIAL_SENTINEL_BUDGET;
       }
+    } else if (enableCheckpointing) {
+      orig->emitWarning("requested periodic checkpointing on a loop that does "
+                        "not have constant iteration bounds. this is currently "
+                        "not supported");
     }
 
     return revInfo;
@@ -1482,7 +1485,7 @@ public:
 
     Value numIters;
 
-    WhileLoopInfo info(newWhile);
+    WhileLoopInfo info(cast<WhileOp>(orig));
     if (info.computeInfo().succeeded()) {
       // no need to cache number of iterations if it is a known constant.
       if (info.isValid()) {
@@ -1676,7 +1679,8 @@ public:
           // constants. These are inserted before `outer` (loop-invariant).
           if (isDynamic) {
             builder.setInsertionPoint(outer);
-            Value numItersVal = info.getNumIters(builder);
+            Value numItersVal = gutils->originalToNewFn.lookupOrDefault(
+                info.getNumIters(builder, gutils->originalToNewFn));
             if (!numItersVal) {
               orig->emitError(
                   "binomial checkpointing: cannot compute numIters outside the "
@@ -1684,10 +1688,11 @@ public:
               return {};
             }
             caches.push_back(gutils->initAndPushCache(numItersVal, builder));
-            caches.push_back(
-                gutils->initAndPushCache(info.getStart(), builder));
-            caches.push_back(
-                gutils->initAndPushCache(info.getStep(builder), builder));
+            caches.push_back(gutils->initAndPushCache(
+                gutils->originalToNewFn.lookupOrDefault(info.getStart()),
+                builder));
+            caches.push_back(gutils->initAndPushCache(
+                info.getStep(builder, gutils->originalToNewFn), builder));
             builder.setInsertionPointAfter(outer);
           }
 
@@ -1742,10 +1747,11 @@ public:
                                           .slice(1, orig->getNumOperands() - 1)
                                           .end());
 
-          Value limitVal = info.isConstantLimit()
-                               ? makeI64Constant(orig->getLoc(), builder,
-                                                 *info.getConstantLimit())
-                               : info.getLimit();
+          Value limitVal =
+              info.isConstantLimit()
+                  ? makeI64Constant(orig->getLoc(), builder,
+                                    *info.getConstantLimit())
+                  : gutils->originalToNewFn.lookupOrDefault(info.getLimit());
           Value numSteps = stablehlo::SubtractOp::create(
               builder, orig->getLoc(), limitVal, stepInOuter);
 
@@ -1795,9 +1801,12 @@ public:
 
           Value oldIV = oldInnerBody->getArgument(0);
           Value newIV = stablehlo::AddOp::create(
-              builder, orig->getLoc(), info.getStart(),
+              builder, orig->getLoc(),
+              gutils->originalToNewFn.lookupOrDefault(info.getStart()),
               stablehlo::MulOp::create(
-                  builder, orig->getLoc(), info.getStep(builder),
+                  builder, orig->getLoc(),
+                  gutils->originalToNewFn.lookupOrDefault(
+                      info.getStep(builder)),
                   stablehlo::AddOp::create(builder, orig->getLoc(), stepInOuter,
                                            innerBody->getArgument(0))));
 
@@ -1816,10 +1825,11 @@ public:
           term->setOperands(1, term->getNumOperands() - 1, newReturns);
 
           builder.setInsertionPointAfter(outer);
-          Value limitForResult = info.isConstantLimit()
-                                     ? makeI64Constant(oldIV.getLoc(), builder,
-                                                       *info.getConstantLimit())
-                                     : info.getLimit();
+          Value limitForResult =
+              info.isConstantLimit()
+                  ? makeI64Constant(oldIV.getLoc(), builder,
+                                    *info.getConstantLimit())
+                  : gutils->originalToNewFn.lookupOrDefault(info.getLimit());
           SmallVector<Value> newResults{limitForResult};
 
           newResults.append(
@@ -1839,7 +1849,8 @@ public:
         // Non-constant, non-binomial: fall through to numIters caching below.
       }
 
-      numIters = info.getNumIters(revBuilder);
+      numIters = gutils->originalToNewFn.lookupOrDefault(
+          info.getNumIters(revBuilder, gutils->originalToNewFn));
     }
 
     if (!numIters) {
