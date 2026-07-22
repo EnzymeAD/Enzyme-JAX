@@ -1,9 +1,9 @@
 // RUN: enzymexlamlir-opt --split-input-file --naive-logical-to-physical-mesh --canonicalize --distributed-to-hlo %s | FileCheck %s
 
 module {
-  func.func @add(%lhs: tensor<8xf32>, %rhs: tensor<8xf32>) -> tensor<8xf32> {
-    %0 = stablehlo.add %lhs, %rhs : tensor<8xf32>
-    return %0 : tensor<8xf32>
+  func.func @add(%lhs: tensor<f32>, %rhs: tensor<f32>) -> tensor<f32> {
+    %0 = stablehlo.add %lhs, %rhs : tensor<f32>
+    return %0 : tensor<f32>
   }
 
   distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<4, 2>, !distributed.physical_comm_axis<2, 1>]

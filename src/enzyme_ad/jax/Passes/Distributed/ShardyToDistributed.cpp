@@ -12,7 +12,9 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringMap.h"
+#include "llvm/Support/raw_ostream.h"
 
+#include <cctype>
 #include <cassert>
 #include <numeric>
 #include <optional>
@@ -25,29 +27,44 @@ namespace mlir::enzyme::distributed {
 
 namespace {
 
-constexpr llvm::StringLiteral kAllReducePlaceholderSymbol =
-    "not_yet_implemented_sdy_to_distributed_all_reduce_conversion";
+static std::string getTypeSuffix(Type type) {
+  std::string suffix;
+  llvm::raw_string_ostream os(suffix);
+  type.print(os);
+  os.flush();
+  for (char &c : suffix) {
+    if (!std::isalnum(static_cast<unsigned char>(c))) {
+      c = '_';
+    }
+  }
+  return suffix;
+}
 
-static void ensurePlaceholderAllReduceReductionFunction(ModuleOp moduleOp) {
-  if (moduleOp.lookupSymbol<func::FuncOp>(kAllReducePlaceholderSymbol)) {
-    return;
+static FlatSymbolRefAttr
+ensurePlaceholderAllReduceReductionFunction(ModuleOp moduleOp,
+                                            Type elementType) {
+  std::string symbolName =
+      ("_distributed_addscalar_" + getTypeSuffix(elementType));
+
+  if (!moduleOp.lookupSymbol<func::FuncOp>(symbolName)) {
+    OpBuilder builder(moduleOp.getContext());
+    builder.setInsertionPointToStart(moduleOp.getBody());
+
+    auto scalarTensorType = RankedTensorType::get({}, elementType);
+    auto reductionFnType = builder.getFunctionType(
+        {scalarTensorType, scalarTensorType}, {scalarTensorType});
+    auto reductionFn = builder.create<func::FuncOp>(
+        moduleOp.getLoc(), symbolName, reductionFnType);
+    reductionFn.setPrivate();
+
+    Block *entry = reductionFn.addEntryBlock();
+    builder.setInsertionPointToStart(entry);
+    auto add = builder.create<stablehlo::AddOp>(
+        moduleOp.getLoc(), entry->getArgument(0), entry->getArgument(1));
+    builder.create<func::ReturnOp>(moduleOp.getLoc(), add.getResult());
   }
 
-  OpBuilder builder(moduleOp.getContext());
-  builder.setInsertionPointToStart(moduleOp.getBody());
-
-  auto scalarTensorType = RankedTensorType::get({}, builder.getF32Type());
-  auto reductionFnType = builder.getFunctionType(
-      {scalarTensorType, scalarTensorType}, {scalarTensorType});
-  auto reductionFn = builder.create<func::FuncOp>(
-      moduleOp.getLoc(), kAllReducePlaceholderSymbol, reductionFnType);
-  reductionFn.setPrivate();
-
-  Block *entry = reductionFn.addEntryBlock();
-  builder.setInsertionPointToStart(entry);
-  auto add = builder.create<stablehlo::AddOp>(
-      moduleOp.getLoc(), entry->getArgument(0), entry->getArgument(1));
-  builder.create<func::ReturnOp>(moduleOp.getLoc(), add.getResult());
+  return FlatSymbolRefAttr::get(moduleOp.getContext(), symbolName);
 }
 
 // Casts a range of values/typed-values to untyped values, mostly for
@@ -541,7 +558,7 @@ LogicalResult getDimMappings(
     llvm::SmallVector<llvm::SmallVector<TypedValue<axis::AxisFactorType>>>
         &out_mappingLHS,
     llvm::SmallVector<llvm::SmallVector<TypedValue<axis::AxisFactorType>>>
-        &out_mappingRHS) {
+      &out_mappingRHS) {
   // Assert single-tensor operand
   if (op.getOperands().size() != 1) {
     return op.emitOpError(
@@ -599,11 +616,19 @@ LogicalResult getDimMappings(
     }
   }
 
-  // TODO we need to make reduction function somewhere,
-  // for now make an obviously bogus symbol
+  auto moduleOp = op->getParentOfType<ModuleOp>();
+  if (!moduleOp) {
+    return op.emitOpError("expected all_reduce to be nested in a module");
+  }
+
+  auto inputTensorType = dyn_cast<TensorType>(op->getOperand(0).getType());
+  if (!inputTensorType) {
+    return op.emitOpError("expected tensor operand type for all_reduce");
+  }
+
   out_reductionDims = reductionDims;
-  out_reductionFunction =
-      FlatSymbolRefAttr::get(op.getContext(), kAllReducePlaceholderSymbol);
+  out_reductionFunction = ensurePlaceholderAllReduceReductionFunction(
+      moduleOp, inputTensorType.getElementType());
 
   return success();
 }
@@ -821,8 +846,6 @@ struct ShardyToDistributedPass
 
   void runOnOperation() override {
     ModuleOp moduleOp = getOperation();
-
-    ensurePlaceholderAllReduceReductionFunction(moduleOp);
 
     FailureOr<distributed::PhysicalMeshOp> physicalMesh =
         distributed::findUniquePhysicalMesh(moduleOp);
