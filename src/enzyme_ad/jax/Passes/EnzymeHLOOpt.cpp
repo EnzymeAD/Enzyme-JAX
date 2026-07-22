@@ -27758,8 +27758,7 @@ struct LogSimplify final
 
       return llvm::all_of(attr.getValues<APFloat>(),
                           [allowZero](const APFloat &element) {
-                            return !element.isNaN() &&
-                                   !element.isNegative() &&
+                            return !element.isNaN() && !element.isNegative() &&
                                    (allowZero || !element.isZero());
                           });
     };
