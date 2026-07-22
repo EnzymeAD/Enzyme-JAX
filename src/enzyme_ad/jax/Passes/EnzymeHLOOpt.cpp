@@ -27780,11 +27780,9 @@ struct LogSimplify final
       if (defOp) {
         auto lhs = defOp.getLhs();
         auto rhs = defOp.getRhs();
-        // log(mul(a, a)) -> 2 * log(a) when a is provably non-negative.
-        // For a < 0, 2 * log(a) is NaN even though log(a*a) is finite, so we
-        // only fire this when a is provably non-negative. Gating on the
-        // non-negative analysis keeps the rewrite correct without inserting an
-        // abs (which may be slower than the mul). See issue #2570.
+        // log(mul(a, a)) -> 2 * log(a). Only when a >= 0: for a < 0, 2*log(a)
+        // is NaN while log(a*a) is finite. Gating on the analysis avoids an abs
+        // (possibly slower than the mul). See #2570.
         if (lhs == rhs && guaranteedNonNegativeResult(lhs, rewriter)) {
           rewriter.replaceOpWithNewOp<stablehlo::MulOp>(
               op,
@@ -27798,9 +27796,9 @@ struct LogSimplify final
         if (anyOperandIsConstant(defOp) &&
             !allOperandsAreConstant(defOp)) { // log(mul(a, b)) -> log(a) +
                                               // log(b) if a or b is constant
-          // Require a strictly positive constant to avoid narrowing the
-          // domain for negative or zero constants. This does not make the
-          // rewrite bit-exact under floating-point rounding. See issue #2570.
+          // Split only for a strictly positive constant; negative/zero narrows
+          // the domain, and the split isn't bit-exact under FP rounding. See
+          // #2570.
           Value cst = matchPattern(lhs, m_Constant()) ? lhs : rhs;
           if (isPositiveNonNanConstant(cst, /*allowZero=*/false)) {
             rewriter.replaceOpWithNewOp<stablehlo::AddOp>(
@@ -27857,11 +27855,9 @@ struct LogSimplify final
         if (anyOperandIsConstant(defOp) &&
             !allOperandsAreConstant(defOp)) { // log(div(a, b)) -> log(a) -
                                               // log(b) if a or b is constant
-          // A constant numerator must be strictly positive; a zero numerator
-          // can turn a finite log(-0) into NaN after splitting. A zero
-          // denominator is safe here, so it only needs to be non-negative.
-          // This does not make the rewrite bit-exact under floating-point
-          // rounding. See issue #2570.
+          // Constant numerator must be strictly positive: a zero numerator
+          // turns a finite log(-0) into NaN after splitting. A zero denominator
+          // is safe, so it only needs to be non-negative. See #2570.
           bool constantIsLhs = matchPattern(lhs, m_Constant());
           Value cst = constantIsLhs ? lhs : rhs;
           if (isPositiveNonNanConstant(cst, /*allowZero=*/!constantIsLhs)) {
