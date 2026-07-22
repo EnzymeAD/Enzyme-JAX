@@ -74,7 +74,7 @@ hasSameInputOutputMeshIndexSpace(distributed::DistributedCollectiveOp op) {
   return axis::areFactorIndexSpacesEqual(*inputMeshFactors, *outputMeshFactors);
 }
 
-static FailureOr<Attribute> createReplicaGroupsFromPhysicalReductionFactors(
+static FailureOr<Attribute> createReplicaGroupsFromPhysicalFactors(
     int64_t flatMeshExtent,
     ArrayRef<TypedValue<axis::AxisFactorType>> reductionFactors,
     OpBuilder &builder) {
@@ -317,23 +317,8 @@ struct DistributedCollectiveAllReduceToStablehloPattern
                             "match reduces() factors");
     }
 
-    // Now lower into an asynchrounous stablehlo
-    // all-reduce op.
-    // operands: just the tensor operand of the collective op
-    // replica_groups: we need to convert the reduction axes
-    // to the replica groups. This is fairly common, so we want
-    // a utility that takes a list of factors on PHYSICAL AXES ONLY
-    // and converts to a stablehlo ReplicaGroupMeshAxes using the
-    // subaxis info ~= stride and extent of the factors AND of their
-    // underlying axes for proper ordering / numbering.
-    // channel_id: use llvm unique identifier and turn it into a channel handle
-    // Reduction takes a region builder for reduction function, we can just
-    // splice in a call op to the function symbol we should have on hand.
-    // We will need this for reduce_Scatter as well so implement the region
-    // builder generically.
-
+    // Lower to an asynchronous stablehlo.all_reduce
     auto inputMesh = cast<TypedValue<axis::FactorGroupType>>(op.getInputMesh());
-
     auto inputMeshFactors = axis::getProductProvenanceFactors(inputMesh);
     if (failed(inputMeshFactors)) {
       return failWithRemark("failed to extract input mesh provenance factors");
@@ -352,7 +337,7 @@ struct DistributedCollectiveAllReduceToStablehloPattern
       flatMeshExtent *= axisExtent;
     }
 
-    auto replicaGroups = createReplicaGroupsFromPhysicalReductionFactors(
+    auto replicaGroups = createReplicaGroupsFromPhysicalFactors(
         flatMeshExtent, reduction_factors, rewriter);
     if (failed(replicaGroups)) {
       return failWithRemark("failed to build stablehlo replica groups from "
@@ -461,7 +446,155 @@ struct DistributedCollectiveReduceScatterToStablehloPattern
     auto paired_groups = map_op.getTypedMappingPairs();
     llvm::erase_if(paired_groups, axis::predGroupPairIsIdentity(false));
 
-    return failure();
+    // If match, we expect to see one upper range of the tensor mapped to
+    // the same space as the reduction axes.
+    llvm::SmallVector<std::pair<int, TypedValue<axis::AxisFactorType>>>
+        rhs_space_factors;
+    int min_tensor_stride = INT_MAX;
+    std::optional<TypedValue<axis::ShapeAxisType>> tensor_axis;
+    llvm::SmallVector<TypedValue<axis::AxisFactorType>> tensor_factors;
+    for (auto [lhs_group, rhs_group] : paired_groups) {
+      auto lhs_factors = axis::getProductProvenanceFactors(lhs_group);
+      auto rhs_factors = axis::getProductProvenanceFactors(rhs_group);
+      if (failed(lhs_factors) || failed(rhs_factors)) {
+        return failWithRemark("failed to extract provenance factors from map");
+      }
+      // Expect single factor in each list due to indivisible factor form
+      if (lhs_factors->size() != 1 || rhs_factors->size() != 1) {
+        return failWithRemark(
+            "non-identity axis.map pair must contain exactly one factor");
+      }
+
+      // expect to see tensor --> spatial, on a single tensor axis
+      auto this_tensor_axis_factor = (*lhs_factors)[0];
+      auto this_tensor_axis_type = dyn_cast<axis::ShapeAxisType>(
+          this_tensor_axis_factor.getType().getAxisType());
+      if (!this_tensor_axis_type) {
+        return failWithRemark(
+            "non-identity axis.map pair LHS is not a tensor shape axis");
+      }
+      // Get the provenance axis (the actual axis value being split)
+      auto this_tensor_axis_result =
+          axis::getFactorProvenanceAxis(this_tensor_axis_factor);
+      if (failed(this_tensor_axis_result)) {
+        return failWithRemark("failed to get provenance axis from factor");
+      }
+      auto this_tensor_axis_typed = *this_tensor_axis_result;
+
+      // Cast the provenance axis value to the expected ShapeAxisType
+      auto this_tensor_axis_shape_typed =
+          axis::castTypedValue<axis::ShapeAxisType>(
+              static_cast<Value>(this_tensor_axis_typed), "ShapeAxisType");
+
+      if (!tensor_axis.has_value()) {
+        // Write down the first tensor axis value we see
+        tensor_axis = this_tensor_axis_shape_typed;
+      } else {
+        // Check that all LHS tensor axes are the same
+        Value stored_axis_value = *tensor_axis;
+        if (stored_axis_value != static_cast<Value>(this_tensor_axis_typed)) {
+          return failWithRemark("splitting over multiple tensor axes");
+        }
+      }
+      int this_tensor_stride = axis::getFactorStride((*lhs_factors)[0]);
+      min_tensor_stride = std::min(min_tensor_stride, this_tensor_stride);
+      tensor_factors.push_back((*lhs_factors)[0]);
+      rhs_space_factors.push_back({this_tensor_stride, (*rhs_factors)[0]});
+    }
+
+    // Check that we have a contiguous upper range of the tensor axis we are
+    // splitting. this is equivalent to covering the whole space upwards of
+    // min_tensor_stride
+    llvm::SmallVector<std::pair<int, int>> max_factor_pairs =
+        axis::build_max_factors(tensor_factors);
+    if (max_factor_pairs.size() != 1) {
+      return failWithRemark(
+          "tensor factors do not cover a contiguous upper range of the "
+          "tensor axis");
+    }
+    int total_extent = max_factor_pairs[0].first * max_factor_pairs[0].second;
+    if (!tensor_axis.has_value()) {
+      return failWithRemark("no tensor axis was identified for reduce-scatter");
+    }
+    auto tensor_axis_typed = *tensor_axis;
+    int total_expected_extent = axis::getAxisExtent(tensor_axis_typed);
+    if (total_extent != total_expected_extent) {
+      return failWithRemark("tensor factors does not cover full upper range");
+    }
+
+    // Ok, we are sharding over the upper range of a single tensor axis.
+    // Now we sort the spatial factors by stride (major/highest first)
+    // to get our replica group ordering
+    std::sort(
+        rhs_space_factors.begin(), rhs_space_factors.end(),
+        [](const auto &lhs, const auto &rhs) { return lhs.first > rhs.first; });
+    auto sorted_rhs_space_factors = llvm::to_vector<4>(llvm::map_range(
+        rhs_space_factors, [](const auto &pair) { return pair.second; }));
+
+    // Build the reduce_scatter
+    FailureOr<Attribute> replicaGroups = createReplicaGroupsFromPhysicalFactors(
+        total_expected_extent, sorted_rhs_space_factors, rewriter);
+    if (failed(replicaGroups)) {
+      return failWithRemark("failed to build stablehlo replica groups from "
+                            "reduction factors");
+    }
+    int scatter_dim = axis::getAxisDimIndex(tensor_axis_typed);
+
+    Value tensorOperand = op.getInputObject();
+    auto inputTensorType = dyn_cast<TensorType>(tensorOperand.getType());
+    if (!inputTensorType) {
+      return failWithRemark("input operand must be a tensor type");
+    }
+
+    RankedTensorType scalarReductionTensorType;
+    std::string signatureError;
+    FlatSymbolRefAttr reductionFunction =
+        cast<FlatSymbolRefAttr>(op.getReductionFunctionsAttr()[0]);
+    if (failed(validateScalarReductionFunctionSignature(
+            op, reductionFunction, inputTensorType.getElementType(),
+            scalarReductionTensorType, signatureError))) {
+      return failWithRemark(signatureError);
+    }
+
+    auto outputTensorType = dyn_cast<TensorType>(op.getOutputTensorType());
+    if (!outputTensorType) {
+      return failWithRemark("output type must be a tensor type");
+    }
+
+    auto buildComputation = bindBuildReductionComputation(
+        reductionFunction, scalarReductionTensorType);
+
+    auto buildAsyncStartRegion = [&](RegionBuilder &rb) -> void {
+      Value asyncTensorOperand =
+          Argument(rb, tensorOperand.getType()).getValue();
+      SmallVector<MlirOp> reductionOperands =
+          wrap(rb, ValueRange{asyncTensorOperand});
+      stablehlo::ChannelHandleAttr channelHandle =
+          createUniqueStablehloChannelHandle(op);
+      // For ReduceScatter, we need to use the builder with explicit result type
+      MlirBuilder scatterBuilder(rb.getOpBuilder(), rb.getLoc());
+      MlirOp scatterOperand = reductionOperands[0];
+      MlirOp hloReduce = stablehlo::ReduceScatter(
+          outputTensorType, scatterOperand, buildComputation, scatter_dim,
+          *replicaGroups, channelHandle, /*use_global_device_ids=*/true);
+      rb.getOpBuilder().create<stablehlo::ReturnOp>(rb.getLoc(),
+                                                    hloReduce.getValue());
+    };
+
+    MlirBuilder asyncStartBuilder(rewriter, op.getLoc());
+    SmallVector<MlirOp> asyncStartOperands =
+        wrap(asyncStartBuilder, ValueRange{tensorOperand});
+    Type asyncStartResultType = stablehlo::FutureType::get(
+        op.getContext(), SmallVector<Type>{outputTensorType});
+    MlirOp asyncStart =
+        buildAsyncStart(asyncStartBuilder, asyncStartResultType,
+                        asyncStartOperands, buildAsyncStartRegion);
+
+    auto convertedHandle = rewriter.create<UnrealizedConversionCastOp>(
+        op.getLoc(), TypeRange{op.getAsyncHandle().getType()},
+        ValueRange{asyncStart.getValue()});
+    rewriter.replaceOp(op, convertedHandle.getResults());
+    return success();
   }
 };
 
@@ -597,7 +730,8 @@ struct DistributedToHloPass
   using DistributedToHloPassBase::DistributedToHloPassBase;
 
   void runOnOperation() override {
-    // First lower collectives greedily, then convert await via type conversion.
+    // First lower collectives greedily, then convert await via type
+    // conversion.
     RewritePatternSet collectivePatterns(&getContext());
     populateDistributedCollectiveToStablehloPatterns(collectivePatterns);
 
