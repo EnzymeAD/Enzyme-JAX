@@ -510,15 +510,17 @@ class AutoDiffWhileRev
 
     if (revInfo.info.isConstant()) {
       const char *checkpointAttrName = "enzymexla.enable_checkpointing";
-      auto enableCheckpointing =
+      auto enableCheckpointingAttr =
           orig->getAttrOfType<BoolAttr>(checkpointAttrName);
+      bool enableCheckpointing =
+          enableCheckpointingAttr && enableCheckpointingAttr.getValue();
       const char *periodicCheckpointAttrName = "enzymexla.checkpoint_period";
       auto checkpointPeriod =
           orig->getAttrOfType<IntegerAttr>(periodicCheckpointAttrName);
-      auto enableBinomialCheckpointing =
+      bool enableBinomialCheckpointing =
           orig->hasAttr("enzymexla.binomial_checkpointing");
 
-      if (enableCheckpointing && enableCheckpointing.getValue()) {
+      if (enableCheckpointing) {
         // CONSTANT_CHECKPOINTING: use provided period or default to sqrt(N).
         revInfo.mode = enableBinomialCheckpointing ? CONSTANT_BINOMIAL
                                                    : CONSTANT_CHECKPOINTING;
@@ -531,7 +533,8 @@ class AutoDiffWhileRev
           int64_t numIters = revInfo.info.getConstantNumIters();
           revInfo.checkpointPeriod = std::sqrt(numIters);
         }
-      } else if (checkpointPeriod && checkpointPeriod.getInt() > 0) {
+      } else if (enableCheckpointing && checkpointPeriod &&
+                 checkpointPeriod.getInt() > 0) {
         // Explicit period specified without enable_checkpointing
         revInfo.mode = CONSTANT_CHECKPOINTING;
         revInfo.checkpointPeriod = checkpointPeriod.getInt();
@@ -967,13 +970,28 @@ class AutoDiffWhileRev
       }
     }
 
+    for (auto [oldOp, newOp] : mapping.getOperationMap()) {
+      gutils->originalToNewFnOps[oldOp] = newOp;
+    }
+
     bool anyFailed = false;
 
-    auto rstart = origBody->rbegin(), rend = origBody->rend();
-    rstart++;
-    for (auto it = rstart; it != rend; it++) {
-      Operation *op = &*it;
-      anyFailed |= gutils->Logic.visitChild(op, builder, gutils).failed();
+    {
+      OpBuilder cacheBuilder(innerWhile);
+      auto loc = orig->getLoc();
+      auto cacheCreator = [&](Type t) {
+        Value cache = enzyme::InitOp::create(cacheBuilder, loc, t);
+        return std::make_pair(cache, cache);
+      };
+      gutils->registerCacheCreatorHook(cacheCreator);
+
+      auto rstart = origBody->rbegin(), rend = origBody->rend();
+      rstart++;
+      for (auto it = rstart; it != rend; it++) {
+        Operation *op = &*it;
+        anyFailed |= gutils->Logic.visitChild(op, builder, gutils).failed();
+      }
+      gutils->deregisterCacheCreatorHook(cacheCreator);
     }
 
     SmallVector<Value> outerBodyResults;
@@ -1205,6 +1223,10 @@ class AutoDiffWhileRev
         gutils->addToDiffe(operand, revLoopBody->getArgument(revIdx), builder);
         revIdx++;
       }
+    }
+
+    for (auto [oldOp, newOp] : mapping.getOperationMap()) {
+      gutils->originalToNewFnOps[oldOp] = newOp;
     }
 
     bool anyFailed = false;
