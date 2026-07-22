@@ -27750,7 +27750,7 @@ struct LogSimplify final
 
   LogicalResult matchAndRewriteImpl(stablehlo::LogOp op,
                                     PatternRewriter &rewriter) const {
-    auto isValidLogSplitConstant = [](Value value, bool allowZero) {
+    auto isPositiveFiniteConstant = [](Value value, bool allowZero) {
       DenseElementsAttr attr;
       if (!matchPattern(value, m_Constant(&attr)) ||
           !isa<FloatType>(attr.getElementType()))
@@ -27798,7 +27798,7 @@ struct LogSimplify final
           // domain for negative or zero constants. This does not make the
           // rewrite bit-exact under floating-point rounding. See issue #2570.
           Value cst = matchPattern(lhs, m_Constant()) ? lhs : rhs;
-          if (isValidLogSplitConstant(cst, /*allowZero=*/false)) {
+          if (isPositiveFiniteConstant(cst, /*allowZero=*/false)) {
             rewriter.replaceOpWithNewOp<stablehlo::AddOp>(
                 op, stablehlo::LogOp::create(rewriter, op.getLoc(), lhs),
                 stablehlo::LogOp::create(rewriter, op.getLoc(), rhs));
@@ -27860,7 +27860,7 @@ struct LogSimplify final
           // rounding. See issue #2570.
           bool constantIsLhs = matchPattern(lhs, m_Constant());
           Value cst = constantIsLhs ? lhs : rhs;
-          if (isValidLogSplitConstant(cst, /*allowZero=*/!constantIsLhs)) {
+          if (isPositiveFiniteConstant(cst, /*allowZero=*/!constantIsLhs)) {
             rewriter.replaceOpWithNewOp<stablehlo::SubtractOp>(
                 op, stablehlo::LogOp::create(rewriter, op.getLoc(), lhs),
                 stablehlo::LogOp::create(rewriter, op.getLoc(), rhs));
