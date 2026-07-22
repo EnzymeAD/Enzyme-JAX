@@ -279,6 +279,32 @@ LogicalResult AxisProductOp::inferReturnTypes(
   return success();
 }
 
+llvm::SmallVector<TypedValue<FactorGroupType>> AxisMapOp::getTypedMappingLhs() {
+  return castTypedValueList<FactorGroupType>(getMappingLhs(),
+                                             "FactorGroupType");
+}
+
+llvm::SmallVector<TypedValue<FactorGroupType>> AxisMapOp::getTypedMappingRhs() {
+  return castTypedValueList<FactorGroupType>(getMappingRhs(),
+                                             "FactorGroupType");
+}
+
+llvm::SmallVector<
+    std::pair<TypedValue<FactorGroupType>, TypedValue<FactorGroupType>>>
+AxisMapOp::getTypedMappingPairs() {
+  auto typedLhs = getTypedMappingLhs();
+  auto typedRhs = getTypedMappingRhs();
+
+  llvm::SmallVector<
+      std::pair<TypedValue<FactorGroupType>, TypedValue<FactorGroupType>>>
+      typedPairs;
+  typedPairs.reserve(typedLhs.size());
+  for (auto [lhs, rhs] : llvm::zip_equal(typedLhs, typedRhs)) {
+    typedPairs.emplace_back(lhs, rhs);
+  }
+  return typedPairs;
+}
+
 LogicalResult AxisMapOp::verify() {
   if (getMappingLhs().size() != getMappingRhs().size()) {
     return emitOpError() << "requires the lhs and rhs mapping lists to have "
