@@ -61,6 +61,7 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include "mlir/Transforms/DialectConversion.h"
+#include "llvm/ADT/TypeSwitch.h"
 
 #include "Dialect/Ops.h"
 
@@ -799,7 +800,7 @@ public:
     rewriter.replaceOpWithNewOp<LLVM::LoadOp>(
         loadOp,
         typeConverter->convertType(loadOp.getMemRefType().getElementType()),
-        address);
+        address, loadOp.getAlignment().value_or(0));
     return success();
   }
 };
@@ -807,8 +808,8 @@ public:
 /// Try to match the kind of a memref.atomic_rmw to determine whether to use a
 /// lowering to llvm.atomicrmw or fallback to llvm.cmpxchg.
 static std::optional<LLVM::AtomicBinOp>
-matchSimpleAtomicOp(memref::AtomicRMWOp atomicOp) {
-  switch (atomicOp.getKind()) {
+matchSimpleAtomicOp(arith::AtomicRMWKind atomicKind) {
+  switch (atomicKind) {
   case arith::AtomicRMWKind::addf:
     return LLVM::AtomicBinOp::fadd;
   case arith::AtomicRMWKind::addi:
@@ -837,13 +838,32 @@ matchSimpleAtomicOp(memref::AtomicRMWOp atomicOp) {
   llvm_unreachable("Invalid AtomicRMWKind");
 }
 
+LLVM::AtomicOrdering convertAtomicOrdering(enzyme::Ordering ordering) {
+  switch (ordering) {
+  case mlir::enzyme::Ordering::not_atomic:
+    return LLVM::AtomicOrdering::not_atomic;
+  case mlir::enzyme::Ordering::unordered:
+    return LLVM::AtomicOrdering::unordered;
+  case mlir::enzyme::Ordering::monotonic:
+    return LLVM::AtomicOrdering::monotonic;
+  case mlir::enzyme::Ordering::acquire:
+    return LLVM::AtomicOrdering::acquire;
+  case mlir::enzyme::Ordering::release:
+    return LLVM::AtomicOrdering::release;
+  case mlir::enzyme::Ordering::acq_rel:
+    return LLVM::AtomicOrdering::acq_rel;
+  case mlir::enzyme::Ordering::seq_cst:
+    return LLVM::AtomicOrdering::seq_cst;
+  }
+}
+
 struct CAtomicRMWOpLowering : public CLoadStoreOpLowering<memref::AtomicRMWOp> {
   using CLoadStoreOpLowering<memref::AtomicRMWOp>::CLoadStoreOpLowering;
 
   LogicalResult
   matchAndRewrite(memref::AtomicRMWOp atomicOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto maybeKind = matchSimpleAtomicOp(atomicOp);
+    auto maybeKind = matchSimpleAtomicOp(atomicOp.getKind());
     if (!maybeKind)
       return failure();
     auto dataPtr = getAddress(atomicOp, adaptor, rewriter);
@@ -852,6 +872,27 @@ struct CAtomicRMWOpLowering : public CLoadStoreOpLowering<memref::AtomicRMWOp> {
     rewriter.replaceOpWithNewOp<LLVM::AtomicRMWOp>(
         atomicOp, *maybeKind, dataPtr, adaptor.getValue(),
         LLVM::AtomicOrdering::acq_rel);
+    return success();
+  }
+};
+
+struct CEnzymeAtomicRMWOpLowering
+    : public CLoadStoreOpLowering<enzyme::AtomicRMWOp> {
+  using CLoadStoreOpLowering<enzyme::AtomicRMWOp>::CLoadStoreOpLowering;
+
+  LogicalResult
+  matchAndRewrite(enzyme::AtomicRMWOp atomicOp, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto maybeKind = matchSimpleAtomicOp(atomicOp.getKind());
+    if (!maybeKind)
+      return failure();
+    auto dataPtr = getAddress(atomicOp, adaptor, rewriter);
+    if (!dataPtr)
+      return failure();
+    rewriter.replaceOpWithNewOp<LLVM::AtomicRMWOp>(
+        atomicOp, *maybeKind, dataPtr, adaptor.getValue(),
+        convertAtomicOrdering(atomicOp.getOrdering()),
+        /*syncscope=*/StringRef(), atomicOp.getAlignment().value_or(0));
     return success();
   }
 };
@@ -868,8 +909,9 @@ public:
     if (!address)
       return failure();
 
-    rewriter.replaceOpWithNewOp<LLVM::StoreOp>(storeOp, adaptor.getValue(),
-                                               address);
+    rewriter.replaceOpWithNewOp<LLVM::StoreOp>(
+        storeOp, adaptor.getValue(), address,
+        storeOp.getAlignment().value_or(0));
     return success();
   }
 };
@@ -3837,8 +3879,8 @@ populateCStyleMemRefLoweringPatterns(RewritePatternSet &patterns,
                                      StringRef backend) {
   patterns.add<CAllocaOpLowering, CAllocOpLowering, CDeallocOpLowering,
                GetGlobalOpLowering, GlobalOpLowering, CLoadOpLowering,
-               CStoreOpLowering, AllocaScopeOpLowering, CAtomicRMWOpLowering>(
-      typeConverter);
+               CStoreOpLowering, AllocaScopeOpLowering, CAtomicRMWOpLowering,
+               CEnzymeAtomicRMWOpLowering>(typeConverter);
   patterns.add<CMemcpyOpLowering>(typeConverter, backend);
   patterns.add<CMemsetOpLowering>(typeConverter, backend);
   patterns.add<CMemcpy2DOpLowering>(typeConverter, backend);
@@ -4513,6 +4555,17 @@ struct ConvertPolygeistToLLVMPass
       op->erase();
     }
 
+    // m.walk([](gpu::GPUFuncOp funcOp) {
+    //   for (auto &&[i, arg] : llvm::enumerate(funcOp.getArgumentTypes())) {
+    //     if (isa<LLVM::LLVMPointerType, MemRefType>(arg)) {
+    //       funcOp.setArgAttr(i, "llvm.noundef",
+    //                         UnitAttr::get(funcOp.getContext()));
+    //       funcOp.setArgAttr(i, "llvm.noalias",
+    //                         UnitAttr::get(funcOp.getContext()));
+    //     }
+    //   }
+    // });
+
     if (gpuModule) {
       // Request C wrapper emission.
       for (auto func : m.getOps<func::FuncOp>()) {
@@ -4542,6 +4595,23 @@ struct ConvertPolygeistToLLVMPass
         return LLVM::LLVMPointerType::get(type.getContext(),
                                           type.getMemorySpaceAsInt());
       });
+      converter.addTargetMaterialization(
+          [&](OpBuilder &builder, Type resultType, ValueRange inputs,
+              Location loc, Type originalType) -> Value {
+            if (inputs.size() != 1)
+              return Value();
+
+            auto resPtrType = dyn_cast<LLVM::LLVMPointerType>(resultType);
+            auto inPtrType =
+                dyn_cast<LLVM::LLVMPointerType>(inputs.front().getType());
+            if (resPtrType && inPtrType &&
+                resPtrType.getAddressSpace() != inPtrType.getAddressSpace()) {
+              llvm::errs() << "**double check the address spaces**\n";
+              return LLVM::AddrSpaceCastOp::create(builder, loc, resultType,
+                                                   inputs.front());
+            }
+            return Value();
+          });
     }
     addOpaquePointerConversion<gpu::AsyncTokenType>(converter);
 
@@ -4858,6 +4928,29 @@ struct ConvertPolygeistToLLVMPass
   void runOnOperation() override {
     ModuleOp m = getOperation();
     convertModule(m, /* gpuModule */ false);
+    // // Force alignment attributes
+    // m.walk([](gpu::GPUModuleOp mod) {
+    //   auto getWidth = [&](Type typ) {
+    //     return llvm::TypeSwitch<Type, std::optional<unsigned>>(typ)
+    //         .Case<IntegerType, FloatType>([](auto intOrFloat) {
+    //           return intOrFloat.getIntOrFloatBitWidth() / 8;
+    //         })
+    //         .Default([](Type typ) {
+    //           llvm::errs() << "[align] unhandled type " << typ << "\n";
+    //           return std::nullopt;
+    //         });
+    //   };
+    //   mod.walk([&](LLVM::StoreOp op) {
+    //     if (!op.getAlignment().has_value()) {
+    //       op.setAlignment(getWidth(op.getValue().getType()));
+    //     }
+    //   });
+    //   mod.walk([&](LLVM::LoadOp op) {
+    //     if (!op.getAlignment().has_value()) {
+    //       op.setAlignment(getWidth(op.getRes().getType()));
+    //     }
+    //   });
+    // });
   }
 };
 } // namespace

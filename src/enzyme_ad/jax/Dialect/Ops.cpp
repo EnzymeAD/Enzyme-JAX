@@ -837,7 +837,8 @@ template <>
 void LoadStorePointer2MemrefGEP<memref::LoadOp>::createNewOp(
     memref::LoadOp op, Value baseMemref, SmallVector<Value> idxs,
     PatternRewriter &rewriter) const {
-  rewriter.replaceOpWithNewOp<memref::LoadOp>(op, baseMemref, idxs);
+  rewriter.replaceOpWithNewOp<memref::LoadOp>(
+      op, baseMemref, idxs, op.getNontemporal(), op.getMaybeAlign());
 }
 
 template <>
@@ -852,7 +853,8 @@ void LoadStorePointer2MemrefGEP<memref::StoreOp>::createNewOp(
     memref::StoreOp op, Value baseMemref, SmallVector<Value> idxs,
     PatternRewriter &rewriter) const {
   rewriter.replaceOpWithNewOp<memref::StoreOp>(op, op.getValue(), baseMemref,
-                                               idxs);
+                                               idxs, op.getNontemporal(),
+                                               op.getMaybeAlign());
 }
 
 template <>

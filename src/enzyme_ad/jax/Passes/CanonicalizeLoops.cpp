@@ -1058,7 +1058,7 @@ struct CanonicalizeLoopsPass
     {
       RewritePatternSet patterns(&getContext());
       patterns.add<RemoveAffineParallelSingleIter, SwitchToIf,
-                   SimplifyIfByRemovingEmptyThen, PartialIfToSelect>(
+                   SimplifyIfByRemovingEmptyThen /*, PartialIfToSelect*/>(
           &getContext());
 
       if (speculate_if) {
