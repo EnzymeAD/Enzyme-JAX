@@ -29,14 +29,6 @@ def AxisFactorOp : AxisOp<"factor", [MetadataOpTrait, DeclareOpInterfaceMethods<
   let arguments = (ins AnyType:$axis, I32Attr:$extent, I32Attr:$stride);
   let results = (outs AxisFactorType:$axis_factor);
   let assemblyFormat = "$axis attr-dict `:` type($axis)`<`$extent`,`$stride`>`";
-  let builders = [
-    OpBuilder<(ins "Value":$axis, "int32_t":$extent, "int32_t":$stride), [{
-      auto factorType = AxisFactorType::get(
-          $_builder.getContext(), axis.getType(),
-          static_cast<unsigned>(extent), static_cast<unsigned>(stride));
-      build($_builder, $_state, factorType, axis);
-    }]>
-  ];
   let hasVerifier = 1;
 }
 
