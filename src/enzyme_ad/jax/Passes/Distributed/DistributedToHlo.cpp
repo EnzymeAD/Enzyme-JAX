@@ -136,8 +136,8 @@ static LogicalResult validateScalarReductionFunctionSignature(
     return failure();
   }
 
-  auto reductionFunc =
-      moduleOp.lookupSymbol<func::FuncOp>(reductionFunction.getValue());
+  auto reductionFunc = SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
+      anchor, reductionFunction);
   if (!reductionFunc) {
     outError = "failed to resolve reduction function symbol";
     return failure();
@@ -450,8 +450,16 @@ struct DistributedCollectiveReduceScatterToStablehloPattern
     // Note: identity map here must account for the differing tensor
     // types on the LHS and RHS. Essentially, aside from the split
     // dimension, we are looking for same rank, extent, and stride.
-    llvm::SmallVector<TypedValue<axis::AxisFactorType>> non_identity_lhs;
-    llvm::SmallVector<TypedValue<axis::AxisFactorType>> non_identity_rhs;
+
+    auto map_val = op.getMapping();
+    axis::AxisMapOp map_op = map_val.getDefiningOp<axis::AxisMapOp>();
+    if (!map_op) {
+      return failWithRemark(
+          "expected axis.map to be defined by an axis.map op");
+    }
+
+    auto paired_groups = map_op.getTypedMappingPairs();
+    llvm::erase_if(paired_groups, axis::predGroupPairIsIdentity(false));
 
     return failure();
   }
