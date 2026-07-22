@@ -27776,19 +27776,18 @@ struct LogSimplify final
       if (defOp) {
         auto lhs = defOp.getLhs();
         auto rhs = defOp.getRhs();
-        if (lhs == rhs) { // log(mul(a, a)) -> 2 * log(abs(a))
-          // a*a is non-negative for every real a, but 2 * log(a) is NaN for
-          // a < 0. Take the log of |a| so the rewrite keeps log(a*a)'s domain
-          // (log(a*a) = 2 * log|a|). See issue #2570.
+        // log(mul(a, a)) -> 2 * log(a) when a is provably non-negative.
+        // For a < 0, 2 * log(a) is NaN even though log(a*a) is finite, so we
+        // only fire this when a is provably non-negative. Gating on the
+        // non-negative analysis keeps the rewrite correct without inserting an
+        // abs (which may be slower than the mul). See issue #2570.
+        if (lhs == rhs && guaranteedNonNegativeResult(lhs, rewriter)) {
           rewriter.replaceOpWithNewOp<stablehlo::MulOp>(
               op,
               stablehlo::ConstantOp::create(
                   rewriter, op.getLoc(), lhs.getType(),
                   cast<ElementsAttr>(makeAttr(lhs.getType(), 2))),
-              stablehlo::LogOp::create(
-                  rewriter, op.getLoc(),
-                  stablehlo::AbsOp::create(rewriter, op.getLoc(), lhs.getType(),
-                                           lhs)));
+              stablehlo::LogOp::create(rewriter, op.getLoc(), lhs));
           return success();
         }
 

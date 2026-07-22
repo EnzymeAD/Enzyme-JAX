@@ -78,13 +78,14 @@ func.func @main2(%arg0: tensor<f64>) -> tensor<f64> {
     return %2 : tensor<f64>
 }
 
+// arg0 * arg0 is provably non-negative, so log(mul(sq, sq)) folds to
+// 2 * log(sq) without inserting an abs.
 // CHECK: func.func @main2(%arg0: tensor<f64>) -> tensor<f64> {
 // CHECK-NEXT:    %cst = stablehlo.constant dense<2.000000e+00> : tensor<f64>
 // CHECK-NEXT:    %0 = stablehlo.multiply %arg0, %arg0 : tensor<f64>
-// CHECK-NEXT:    %1 = stablehlo.abs %0 : tensor<f64>
-// CHECK-NEXT:    %2 = stablehlo.log %1 : tensor<f64>
-// CHECK-NEXT:    %3 = stablehlo.multiply %cst, %2 : tensor<f64>
-// CHECK-NEXT:    return %3 : tensor<f64>
+// CHECK-NEXT:    %1 = stablehlo.log %0 : tensor<f64>
+// CHECK-NEXT:    %2 = stablehlo.multiply %cst, %1 : tensor<f64>
+// CHECK-NEXT:    return %2 : tensor<f64>
 // CHECK-NEXT:  }
 
 func.func @main3(%arg0: tensor<f64>) -> tensor<f64> {
@@ -134,12 +135,12 @@ func.func @main6(%arg0: tensor<f64>) -> tensor<f64> {
     return %1 : tensor<f64>
 }
 
+// arg0 is not provably non-negative, so log(arg0 * arg0) is left untouched
+// rather than folded to a NaN-producing 2 * log(arg0).
 // CHECK: func.func @main6(%arg0: tensor<f64>) -> tensor<f64> {
-// CHECK-NEXT:     %cst = stablehlo.constant dense<2.000000e+00> : tensor<f64>
-// CHECK-NEXT:     %0 = stablehlo.abs %arg0 : tensor<f64>
+// CHECK-NEXT:     %0 = stablehlo.multiply %arg0, %arg0 : tensor<f64>
 // CHECK-NEXT:     %1 = stablehlo.log %0 : tensor<f64>
-// CHECK-NEXT:     %2 = stablehlo.multiply %cst, %1 : tensor<f64>
-// CHECK-NEXT:     return %2 : tensor<f64>
+// CHECK-NEXT:     return %1 : tensor<f64>
 // CHECK-NEXT: }
 
 func.func @main7(%arg0: tensor<f64>) -> tensor<f64> {
@@ -255,4 +256,21 @@ func.func @main_pow_unknown(%arg0: tensor<f64>, %arg1: tensor<f64>) -> tensor<f6
 // CHECK-NEXT:     %0 = stablehlo.power %arg0, %arg1 : tensor<f64>
 // CHECK-NEXT:     %1 = stablehlo.log %0 : tensor<f64>
 // CHECK-NEXT:     return %1 : tensor<f64>
+// CHECK-NEXT: }
+
+// abs(arg0) is provably non-negative, so log(mul(a, a)) folds to 2 * log(a)
+// directly, with no extra abs inserted.
+func.func @main_square_nonneg(%arg0: tensor<f64>) -> tensor<f64> {
+    %a = stablehlo.abs %arg0 : tensor<f64>
+    %0 = stablehlo.multiply %a, %a : tensor<f64>
+    %1 = stablehlo.log %0 : tensor<f64>
+    return %1 : tensor<f64>
+}
+
+// CHECK: func.func @main_square_nonneg(%arg0: tensor<f64>) -> tensor<f64> {
+// CHECK-NEXT:     %cst = stablehlo.constant dense<2.000000e+00> : tensor<f64>
+// CHECK-NEXT:     %0 = stablehlo.abs %arg0 : tensor<f64>
+// CHECK-NEXT:     %1 = stablehlo.log %0 : tensor<f64>
+// CHECK-NEXT:     %2 = stablehlo.multiply %cst, %1 : tensor<f64>
+// CHECK-NEXT:     return %2 : tensor<f64>
 // CHECK-NEXT: }
