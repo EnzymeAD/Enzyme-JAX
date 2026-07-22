@@ -8,8 +8,10 @@
 #include "src/enzyme_ad/jax/Dialect/Axis/Utilities.h"
 #include "src/enzyme_ad/jax/Dialect/Distributed/Dialect.h"
 #include "stablehlo/dialect/StablehloOps.h"
+#include "stablehlo/integrations/cpp/builder/StablehloBuilder.h"
 
 #include <atomic>
+#include <string>
 
 namespace mlir::enzyme::distributed {
 
@@ -124,6 +126,63 @@ static int64_t getNextStablehloChannelId() {
   return nextChannelId.fetch_add(1, std::memory_order_relaxed);
 }
 
+static LogicalResult validateScalarReductionFunctionSignature(
+    Operation *anchor, FlatSymbolRefAttr reductionFunction,
+    Type expectedElementType, RankedTensorType &outScalarTensorType,
+    std::string &outError) {
+  auto moduleOp = anchor->getParentOfType<ModuleOp>();
+  if (!moduleOp) {
+    outError = "failed to locate parent module for reduction function lookup";
+    return failure();
+  }
+
+  auto reductionFunc =
+      moduleOp.lookupSymbol<func::FuncOp>(reductionFunction.getValue());
+  if (!reductionFunc) {
+    outError = "failed to resolve reduction function symbol";
+    return failure();
+  }
+
+  FunctionType functionType = reductionFunc.getFunctionType();
+  if (functionType.getNumInputs() != 2 || functionType.getNumResults() != 1) {
+    outError =
+        "reduction function must have signature (tensor<elem>, tensor<elem>) "
+        "-> tensor<elem>";
+    return failure();
+  }
+
+  auto lhsType = dyn_cast<RankedTensorType>(functionType.getInput(0));
+  auto rhsType = dyn_cast<RankedTensorType>(functionType.getInput(1));
+  auto resultType = dyn_cast<RankedTensorType>(functionType.getResult(0));
+  if (!lhsType || !rhsType || !resultType) {
+    outError = "reduction function operands/result must be ranked tensors";
+    return failure();
+  }
+
+  if (lhsType.getRank() != 0 || rhsType.getRank() != 0 ||
+      resultType.getRank() != 0) {
+    outError = "reduction function operands/result must be scalar tensors";
+    return failure();
+  }
+
+  if (lhsType != rhsType || lhsType != resultType) {
+    outError =
+        "reduction function scalar tensor operands/result must have identical "
+        "types";
+    return failure();
+  }
+
+  if (lhsType.getElementType() != expectedElementType) {
+    outError =
+        "reduction function scalar element type must match collective tensor "
+        "element type";
+    return failure();
+  }
+
+  outScalarTensorType = lhsType;
+  return success();
+}
+
 static stablehlo::ChannelHandleAttr
 createUniqueStablehloChannelHandle(Operation *op) {
   // StableHLO collectives use channel type 0.
@@ -133,83 +192,37 @@ createUniqueStablehloChannelHandle(Operation *op) {
                                            kCollectiveChannelType);
 }
 
-// StableHLO reduction ops expect a 2-arg function to be embedded.
-// Our distributed collective have a function symbol reference.
-// Create the region to call into the reduction function.
-template <typename StablehloReductionOp>
-static void
-buildStableHLOReductionFunction(StablehloReductionOp reductionOp,
-                                FlatSymbolRefAttr reductionFunction,
-                                OpBuilder &builder) {
-  // Materialize a 2-arg scalar reduction region expected by stablehlo ops.
-  auto inputTensorType =
-      dyn_cast<ShapedType>(reductionOp->getOperand(0).getType());
-  assert(inputTensorType &&
-         "stablehlo reduction operand must be shaped for scalarization");
-
-  auto scalarTensorType =
-      RankedTensorType::get({}, inputTensorType.getElementType());
-
-  Region &computation = reductionOp.getComputation();
-  Block *body = nullptr;
-  if (computation.empty()) {
-    body = new Block();
-    computation.push_back(body);
-  } else {
-    body = &computation.front();
-  }
-
-  if (body->empty()) {
-    body->addArgument(scalarTensorType, reductionOp.getLoc());
-    body->addArgument(scalarTensorType, reductionOp.getLoc());
-  }
-  if (!body->empty() && isa<stablehlo::ReturnOp>(body->back())) {
-    body->back().erase();
-  }
-
-  OpBuilder::InsertionGuard guard(builder);
-  builder.setInsertionPointToStart(body);
-
-  if (!SymbolTable::lookupNearestSymbolFrom(reductionOp, reductionFunction)) {
-    auto add = builder.create<stablehlo::AddOp>(
-        reductionOp.getLoc(), body->getArgument(0), body->getArgument(1));
-    builder.create<stablehlo::ReturnOp>(reductionOp.getLoc(), add.getResult());
-    return;
-  }
-
-  auto call = builder.create<func::CallOp>(
-      reductionOp.getLoc(), reductionFunction.getValue(),
-      TypeRange{scalarTensorType},
-      ValueRange{body->getArgument(0), body->getArgument(1)});
-  builder.create<stablehlo::ReturnOp>(reductionOp.getLoc(), call.getResults());
+auto bindBuildReductionComputation(FlatSymbolRefAttr reductionFunc,
+                                   RankedTensorType reductionResultType) {
+  return [reductionFunc, reductionResultType](RegionBuilder &rb) -> void {
+    OpBuilder &builder = rb.getOpBuilder();
+    Value lhs = Argument(rb, reductionResultType).getValue();
+    Value rhs = Argument(rb, reductionResultType).getValue();
+    auto op = builder.create<func::CallOp>(rb.getLoc(), reductionFunc,
+                                           TypeRange{reductionResultType},
+                                           ValueRange{lhs, rhs});
+    builder.create<stablehlo::ReturnOp>(rb.getLoc(), op.getResults());
+  };
 }
 
-static stablehlo::AsyncStartOp createStablehloAsyncStartOp(
-    PatternRewriter &rewriter, Location loc, Type resultType,
-    ValueRange operands,
-    llvm::function_ref<Value(OpBuilder &, Location, ValueRange)> buildBody) {
-  // Build async_start with a single-block body and caller-supplied payload op.
-  auto futureType = stablehlo::FutureType::get(rewriter.getContext(),
-                                               SmallVector<Type>{resultType});
-  auto asyncStart =
-      rewriter.create<stablehlo::AsyncStartOp>(loc, futureType, operands);
+// Replacement AsyncStart builder for a broken generated StableHLO builder
+// path: build the op with an explicit future result type before populating the
+// body region. This works around the generated StableHLO builder constructing
+// the op before the callback can fill the required single-block region.
+static MlirOp buildAsyncStart(MlirBuilder &builder, Type resultType,
+                                  ArrayRef<MlirOp> operands,
+                                  const RegionBuilderCallback &body) {
+  OperationState state(builder.getLoc(),
+                       stablehlo::AsyncStartOp::getOperationName());
+  state.addOperands(unwrap(operands));
+  state.addTypes(resultType);
+  state.addRegion();
 
-  Block *bodyBlock = &asyncStart.getBody().front();
-
-  if (bodyBlock->empty()) {
-    for (Value operand : operands) {
-      bodyBlock->addArgument(operand.getType(), loc);
-    }
-  }
-  OpBuilder::InsertionGuard guard(rewriter);
-  rewriter.setInsertionPointToStart(bodyBlock);
-  Value bodyResult = buildBody(rewriter, loc, bodyBlock->getArguments());
-  assert(
-      (!bodyBlock->empty() && !isa<stablehlo::ReturnOp>(bodyBlock->back())) &&
-      "async_start buildBody must not emit stablehlo.return; helper owns the "
-      "return");
-  rewriter.create<stablehlo::ReturnOp>(loc, bodyResult);
-  return asyncStart;
+  auto asyncStartOp = cast<stablehlo::AsyncStartOp>(
+      builder.getOpBuilder().create(state));
+  RegionBuilder bodyBuilder(builder, asyncStartOp->getRegion(0));
+  body(bodyBuilder);
+  return MlirOp(builder, asyncStartOp.getResult());
 }
 
 // Case 1: all-reduce
@@ -284,7 +297,7 @@ struct DistributedCollectiveAllReduceToStablehloPattern
               (*lhs_factors)[0].getType().getAxisType());
       if (!lhsSpatialRhsReplication && !rhsSpatialLhsReplication) {
         return failWithRemark(
-          "non-identity axis.map pair is not spatial<->replication");
+            "non-identity axis.map pair is not spatial<->replication");
       }
       reduction_factors.push_back(lhsSpatialRhsReplication ? (*lhs_factors)[0]
                                                            : (*rhs_factors)[0]);
@@ -303,8 +316,8 @@ struct DistributedCollectiveAllReduceToStablehloPattern
     bool match = axis::areFactorListsStructurallyEqual(reduction_factors,
                                                        *reduced_factors);
     if (!match) {
-      return failWithRemark(
-        "reduction factors derived from axis.map do not match reduces() factors");
+      return failWithRemark("reduction factors derived from axis.map do not "
+                            "match reduces() factors");
     }
 
     // Now lower into an asynchrounous stablehlo
@@ -335,7 +348,7 @@ struct DistributedCollectiveAllReduceToStablehloPattern
           meshFactor.getType().getAxisType());
       if (!physicalAxisType) {
         return failWithRemark(
-          "input mesh factor is not a physical communication axis");
+            "input mesh factor is not a physical communication axis");
       }
       (void)physicalAxisType;
       int64_t axisExtent = axis::getFactorExtent(meshFactor);
@@ -345,8 +358,8 @@ struct DistributedCollectiveAllReduceToStablehloPattern
     auto replicaGroups = createReplicaGroupsFromPhysicalReductionFactors(
         flatMeshExtent, reduction_factors, rewriter);
     if (failed(replicaGroups)) {
-      return failWithRemark(
-        "failed to build stablehlo replica groups from reduction factors (expected physical axes)");
+      return failWithRemark("failed to build stablehlo replica groups from "
+                            "reduction factors (expected physical axes)");
     }
 
     auto reductionFunctionsAttr = op.getReductionFunctionsAttr();
@@ -356,32 +369,60 @@ struct DistributedCollectiveAllReduceToStablehloPattern
     auto reductionFunction =
         dyn_cast<FlatSymbolRefAttr>(reductionFunctionsAttr[0]);
     if (!reductionFunction) {
-      return failWithRemark("reduction function must be a flat symbol reference");
+      return failWithRemark(
+          "reduction function must be a flat symbol reference");
     }
 
     Value tensorOperand = op.getInputObject();
+    auto inputTensorType = dyn_cast<TensorType>(tensorOperand.getType());
+    if (!inputTensorType) {
+      return failWithRemark("input operand must be a tensor type");
+    }
+
+    RankedTensorType scalarReductionTensorType;
+    std::string signatureError;
+    if (failed(validateScalarReductionFunctionSignature(
+            op, reductionFunction, inputTensorType.getElementType(),
+            scalarReductionTensorType, signatureError))) {
+      return failWithRemark(signatureError);
+    }
+
     auto outputTensorType = dyn_cast<TensorType>(op.getOutputTensorType());
     if (!outputTensorType) {
       return failWithRemark("output type must be a tensor type");
     }
 
-    auto asyncStart = createStablehloAsyncStartOp(
-        rewriter, op.getLoc(), outputTensorType, ValueRange{tensorOperand},
-        [&](OpBuilder &bodyBuilder, Location bodyLoc,
-            ValueRange bodyOperands) -> Value {
-          auto allReduce = stablehlo::AllReduceOp::create(
-              bodyBuilder, bodyLoc, TypeRange{outputTensorType},
-              ValueRange{bodyOperands[0]}, *replicaGroups,
-              createUniqueStablehloChannelHandle(op),
-              /*use_global_device_ids=*/true);
-          buildStableHLOReductionFunction(allReduce, reductionFunction,
-                                          bodyBuilder);
-          return allReduce.getResult(0);
-        });
+    auto buildComputation = bindBuildReductionComputation(
+      reductionFunction, scalarReductionTensorType);
+
+    auto buildAsyncStartRegion = [&](RegionBuilder &rb) -> void {
+      Value asyncTensorOperand = Argument(rb, tensorOperand.getType()).getValue();
+      SmallVector<MlirOp> reductionOperands =
+          wrap(rb, ValueRange{asyncTensorOperand});
+      stablehlo::ChannelHandleAttr channelHandle =
+          createUniqueStablehloChannelHandle(op);
+      SmallVector<MlirOp> hloReduce = stablehlo::AllReduce(
+          rb, reductionOperands, buildComputation, *replicaGroups,
+          channelHandle, /*use_global_device_ids=*/true);
+      assert(hloReduce.size() == 1 &&
+             "expected exactly one result from stablehlo.all_reduce");
+      rb.getOpBuilder().create<stablehlo::ReturnOp>(rb.getLoc(),
+                                                    hloReduce[0].getValue());
+    };
+
+    MlirBuilder asyncStartBuilder(rewriter, op.getLoc());
+    SmallVector<MlirOp> asyncStartOperands =
+        wrap(asyncStartBuilder, ValueRange{tensorOperand});
+        Type asyncStartResultType = stablehlo::FutureType::get(
+          op.getContext(), SmallVector<Type>{outputTensorType});
+        MlirOp asyncStart = buildAsyncStart(asyncStartBuilder,
+                            asyncStartResultType,
+                            asyncStartOperands,
+                            buildAsyncStartRegion);
 
     auto convertedHandle = rewriter.create<UnrealizedConversionCastOp>(
         op.getLoc(), TypeRange{op.getAsyncHandle().getType()},
-        ValueRange{asyncStart.getResult()});
+        ValueRange{asyncStart.getValue()});
     rewriter.replaceOp(op, convertedHandle.getResults());
     return success();
   }
@@ -518,11 +559,10 @@ struct DistributedAwaitToStablehloAsyncDoneConversionPattern
   LogicalResult
   matchAndRewrite(distributed::DistributedAwait op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    Value future = adaptor.getAsyncHandle();
-
-    auto asyncDone = rewriter.create<stablehlo::AsyncDoneOp>(
-        op.getLoc(), op.getValue().getType(), future);
-    rewriter.replaceOp(op, asyncDone.getResult());
+    MlirBuilder asyncDoneBuilder(rewriter, op.getLoc());
+    MlirOp future(asyncDoneBuilder, adaptor.getAsyncHandle());
+    MlirOp asyncDone = stablehlo::AsyncDone(future);
+    rewriter.replaceOp(op, asyncDone.getValue());
     return success();
   }
 };
