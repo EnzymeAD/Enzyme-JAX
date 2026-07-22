@@ -85,6 +85,13 @@ def AxisMapOp : AxisOp<"map", [
     attr-dict
     `:` `[` type($mapping_lhs) `]` `[` type($mapping_rhs) `]`
   }];
+  let extraClassDeclaration = [{
+    llvm::SmallVector<TypedValue<FactorGroupType>> getTypedMappingLhs();
+    llvm::SmallVector<TypedValue<FactorGroupType>> getTypedMappingRhs();
+    llvm::SmallVector<std::pair<TypedValue<FactorGroupType>,
+                                TypedValue<FactorGroupType>>>
+    getTypedMappingPairs();
+  }];
   let hasVerifier = 1;
 }
 #endif // ENZYME_AD_JAX_DIALECT_AXIS_OPS_TD

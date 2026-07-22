@@ -210,19 +210,31 @@ auto bindBuildReductionComputation(FlatSymbolRefAttr reductionFunc,
 // body region. This works around the generated StableHLO builder constructing
 // the op before the callback can fill the required single-block region.
 static MlirOp buildAsyncStart(MlirBuilder &builder, Type resultType,
-                                  ArrayRef<MlirOp> operands,
-                                  const RegionBuilderCallback &body) {
+                              ArrayRef<MlirOp> operands,
+                              const RegionBuilderCallback &body) {
   OperationState state(builder.getLoc(),
                        stablehlo::AsyncStartOp::getOperationName());
   state.addOperands(unwrap(operands));
   state.addTypes(resultType);
   state.addRegion();
 
-  auto asyncStartOp = cast<stablehlo::AsyncStartOp>(
-      builder.getOpBuilder().create(state));
+  auto asyncStartOp =
+      cast<stablehlo::AsyncStartOp>(builder.getOpBuilder().create(state));
   RegionBuilder bodyBuilder(builder, asyncStartOp->getRegion(0));
   body(bodyBuilder);
   return MlirOp(builder, asyncStartOp.getResult());
+}
+
+// So we can tweak debugging accross patterns easier
+auto bindFailWithRemark(distributed::DistributedCollectiveOp op,
+                        PatternRewriter &rewriter, StringRef collectiveKind) {
+  // mutable because emitRemark() is not const
+  return [op, &rewriter,
+          collectiveKind](StringRef msg) mutable -> LogicalResult {
+    op.emitRemark() << "[distributed-to-hlo match failure: " << collectiveKind
+                    << "] " << msg;
+    return rewriter.notifyMatchFailure(op, msg);
+  };
 }
 
 // Case 1: all-reduce
@@ -232,11 +244,7 @@ struct DistributedCollectiveAllReduceToStablehloPattern
 
   LogicalResult matchAndRewrite(distributed::DistributedCollectiveOp op,
                                 PatternRewriter &rewriter) const override {
-    auto failWithRemark = [&](StringRef msg) -> LogicalResult {
-      op.emitRemark() << "[distributed-to-hlo all-reduce match failure] "
-                      << msg;
-      return rewriter.notifyMatchFailure(op, msg);
-    };
+    auto failWithRemark = bindFailWithRemark(op, rewriter, "all-reduce");
 
     if (!hasSameInputOutputMeshIndexSpace(op)) {
       return failWithRemark("input/output meshes must have equal index space");
@@ -262,22 +270,16 @@ struct DistributedCollectiveAllReduceToStablehloPattern
     TypedValue<axis::AxisMapType> map_val = op.getMapping();
     // know we should see a non-null value here from the verifier conditions
     axis::AxisMapOp map = map_val.getDefiningOp<axis::AxisMapOp>();
-    for (auto [lhs, rhs] :
-         llvm::zip(map.getMappingLhs(), map.getMappingRhs())) {
-      auto lhs_group = dyn_cast<TypedValue<axis::FactorGroupType>>(lhs);
-      auto rhs_group = dyn_cast<TypedValue<axis::FactorGroupType>>(rhs);
-      if (!lhs_group || !rhs_group) {
-        return failWithRemark(
-            "axis.map entries must be factor-group typed values");
-      }
+    auto paired_groups = map.getTypedMappingPairs();
+    llvm::erase_if(paired_groups, axis::predGroupPairIsIdentity());
 
+    // We expect to see only replicate --> spatial mappings covering
+    // the reduction space for an all-reduce.
+    for (auto [lhs_group, rhs_group] : paired_groups) {
       auto lhs_factors = axis::getProductProvenanceFactors(lhs_group);
       auto rhs_factors = axis::getProductProvenanceFactors(rhs_group);
       if (failed(lhs_factors) || failed(rhs_factors)) {
-        return failWithRemark("failed to extract axis.map provenance factors");
-      }
-      if (axis::areFactorListsStructurallyEqual(*lhs_factors, *rhs_factors)) {
-        continue;
+        return failWithRemark("failed to extract provenance factors from map");
       }
       // If we see a non-identity mapping, it must be a spatial -->
       // replicate mapping for a reduction axis.
@@ -287,20 +289,15 @@ struct DistributedCollectiveAllReduceToStablehloPattern
             "non-identity axis.map pair must contain exactly one factor");
       }
 
-      bool lhsSpatialRhsReplication =
-          isAxisSpatial((*lhs_factors)[0].getType().getAxisType()) &&
-          isa<distributed::ReplicationAxisType>(
-              (*rhs_factors)[0].getType().getAxisType());
       bool rhsSpatialLhsReplication =
           isAxisSpatial((*rhs_factors)[0].getType().getAxisType()) &&
           isa<distributed::ReplicationAxisType>(
               (*lhs_factors)[0].getType().getAxisType());
-      if (!lhsSpatialRhsReplication && !rhsSpatialLhsReplication) {
+      if (!rhsSpatialLhsReplication) {
         return failWithRemark(
             "non-identity axis.map pair is not spatial<->replication");
       }
-      reduction_factors.push_back(lhsSpatialRhsReplication ? (*lhs_factors)[0]
-                                                           : (*rhs_factors)[0]);
+      reduction_factors.push_back((*rhs_factors)[0]);
     }
 
     // if the reduction axes all mapped to replicate, then we have a valid
@@ -393,10 +390,11 @@ struct DistributedCollectiveAllReduceToStablehloPattern
     }
 
     auto buildComputation = bindBuildReductionComputation(
-      reductionFunction, scalarReductionTensorType);
+        reductionFunction, scalarReductionTensorType);
 
     auto buildAsyncStartRegion = [&](RegionBuilder &rb) -> void {
-      Value asyncTensorOperand = Argument(rb, tensorOperand.getType()).getValue();
+      Value asyncTensorOperand =
+          Argument(rb, tensorOperand.getType()).getValue();
       SmallVector<MlirOp> reductionOperands =
           wrap(rb, ValueRange{asyncTensorOperand});
       stablehlo::ChannelHandleAttr channelHandle =
@@ -413,12 +411,11 @@ struct DistributedCollectiveAllReduceToStablehloPattern
     MlirBuilder asyncStartBuilder(rewriter, op.getLoc());
     SmallVector<MlirOp> asyncStartOperands =
         wrap(asyncStartBuilder, ValueRange{tensorOperand});
-        Type asyncStartResultType = stablehlo::FutureType::get(
-          op.getContext(), SmallVector<Type>{outputTensorType});
-        MlirOp asyncStart = buildAsyncStart(asyncStartBuilder,
-                            asyncStartResultType,
-                            asyncStartOperands,
-                            buildAsyncStartRegion);
+    Type asyncStartResultType = stablehlo::FutureType::get(
+        op.getContext(), SmallVector<Type>{outputTensorType});
+    MlirOp asyncStart =
+        buildAsyncStart(asyncStartBuilder, asyncStartResultType,
+                        asyncStartOperands, buildAsyncStartRegion);
 
     auto convertedHandle = rewriter.create<UnrealizedConversionCastOp>(
         op.getLoc(), TypeRange{op.getAsyncHandle().getType()},
@@ -435,24 +432,27 @@ struct DistributedCollectiveReduceScatterToStablehloPattern
 
   LogicalResult matchAndRewrite(distributed::DistributedCollectiveOp op,
                                 PatternRewriter &rewriter) const override {
-    if (!hasAnyReduction(op)) {
-      return failure();
+    auto failWithRemark = bindFailWithRemark(op, rewriter, "Reduce-Scatter");
+    if (!hasSameInputOutputMeshIndexSpace(op)) {
+      return failWithRemark("input/output meshes must have equal index space");
     }
-
+    if (!hasAnyReduction(op)) {
+      return failWithRemark("collective has no reductions");
+    }
     // all reductions currently expect only
     // spatial reductions for lowering
     if (!hasSingleSpatialReduction(op)) {
-      return failure();
+      return failWithRemark("expected exactly one spatial reduction group");
     }
-
     // Happens when all reduction axes are spatial axes,
     // exactly 1 tensor axis maps to the product of the spatial axes,
     // and all other tensor axes have an identy map.
     // Note: identity map here must account for the differing tensor
     // types on the LHS and RHS. Essentially, aside from the split
     // dimension, we are looking for same rank, extent, and stride.
-    (void)op;
-    (void)rewriter;
+    llvm::SmallVector<TypedValue<axis::AxisFactorType>> non_identity_lhs;
+    llvm::SmallVector<TypedValue<axis::AxisFactorType>> non_identity_rhs;
+
     return failure();
   }
 };

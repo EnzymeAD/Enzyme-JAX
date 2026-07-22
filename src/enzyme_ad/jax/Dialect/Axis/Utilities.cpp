@@ -345,7 +345,7 @@ bool areFactorIndexSpacesEqual(TypedValueArrayRef<AxisFactorType> lhsFactors,
 // (provenance-axis equivalence, extent, stride).
 bool areFactorListsStructurallyEqual(
     TypedValueArrayRef<AxisFactorType> lhsFactors,
-    TypedValueArrayRef<AxisFactorType> rhsFactors) {
+    TypedValueArrayRef<AxisFactorType> rhsFactors, bool respectShapeTypes) {
   if (lhsFactors.size() != rhsFactors.size()) {
     return false;
   }
@@ -356,9 +356,23 @@ bool areFactorListsStructurallyEqual(
     if (failed(lhsProvenance) || failed(rhsProvenance)) {
       return false;
     }
-    if (!areAxesEquivalent(*lhsProvenance, *rhsProvenance)) {
+    bool axes_ok = areAxesEquivalent(*lhsProvenance, *rhsProvenance);
+
+    if (!respectShapeTypes) {
+      // if we are two shape axes, then they are OK if they have the same
+      // axis index
+      ShapeAxisType lhsShape =
+          dyn_cast<ShapeAxisType>((*lhsProvenance).getType());
+      ShapeAxisType rhsShape =
+          dyn_cast<ShapeAxisType>((*rhsProvenance).getType());
+      if (lhsShape && rhsShape) {
+        axes_ok = lhsShape.getAxisIndex() == rhsShape.getAxisIndex();
+      }
+    }
+    if (!axes_ok) {
       return false;
     }
+
     if (getFactorExtent(lhsFactor) != getFactorExtent(rhsFactor)) {
       return false;
     }
@@ -527,7 +541,7 @@ flattenGroupsToFactors(TypedValueArrayRef<FactorGroupType> factorGroups) {
   for (auto group : factorGroups) {
     auto factors = getProductProvenanceFactors(group);
     if (failed(factors)) {
-      llvm::report_fatal_error(
+      llvm_unreachable(
           "flattenGroupsToFactors failed to get factors from FactorGroupType");
     }
     flattenedFactors.append(factors->begin(), factors->end());
@@ -1192,6 +1206,24 @@ LogicalResult replaceAndTypePropagate(Value from, Value to) {
     return success();
   }
   return propagateResultTypeChanges(affectedUsers);
+}
+
+Predicate<std::pair<::mlir::TypedValue<FactorGroupType>,
+                    ::mlir::TypedValue<FactorGroupType>>>
+predGroupPairIsIdentity(bool respectShapeTypes) {
+  return [respectShapeTypes](std::pair<::mlir::TypedValue<FactorGroupType>,
+                                       ::mlir::TypedValue<FactorGroupType>>
+                                 groupPair) {
+    auto lhsFactors = getProductProvenanceFactors(groupPair.first);
+    auto rhsFactors = getProductProvenanceFactors(groupPair.second);
+    if (failed(lhsFactors) || failed(rhsFactors)) {
+      llvm_unreachable(
+          "predGroupPairIsIdentity failed to get factors from FactorGroupType");
+    }
+
+    return areFactorListsStructurallyEqual(*lhsFactors, *rhsFactors,
+                                           respectShapeTypes);
+  };
 }
 
 } // namespace mlir::enzyme::axis

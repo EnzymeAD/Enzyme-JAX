@@ -30,7 +30,7 @@ TypedValue<T> castTypedValue(::mlir::Value value,
   os.flush();
   llvm::errs() << "castTypedValue failed: expected " << expectedType
                << ", got value type " << typeString << "\n";
-  llvm::report_fatal_error("invalid typed value cast");
+  llvm_unreachable("invalid typed value cast");
 }
 
 template <typename T>
@@ -104,7 +104,8 @@ bool areFactorIndexSpacesEqual(TypedValueArrayRef<AxisFactorType> lhsFactors,
 // (provenance-axis equivalence, extent, stride) at each position.
 bool areFactorListsStructurallyEqual(
     TypedValueArrayRef<AxisFactorType> lhsFactors,
-    TypedValueArrayRef<AxisFactorType> rhsFactors);
+    TypedValueArrayRef<AxisFactorType> rhsFactors,
+    bool respectShapeTypes = true);
 
 // Checks that factors cover an axis exactly and therefore are disjoint.
 bool areFactorsComplete(::mlir::Value axis,
@@ -172,7 +173,7 @@ bool split_divisible(
 // This utility only performs in-place result-type updates. Propogation
 // assumes that type changes are determined entirely by local op information
 // and the types of the direct operands: no traversal to other ops is considered
-// when marking users for update. 
+// when marking users for update.
 ::mlir::LogicalResult
 propagateResultTypeChanges(::llvm::ArrayRef<::mlir::Operation *> initialUsers);
 
@@ -180,6 +181,23 @@ propagateResultTypeChanges(::llvm::ArrayRef<::mlir::Operation *> initialUsers);
 // through impacted users only when the replacement crosses a type boundary.
 ::mlir::LogicalResult replaceAndTypePropagate(::mlir::Value from,
                                               ::mlir::Value to);
+
+// some filtering / predicate utilities
+template <typename T> using Predicate = std::function<bool(T)>;
+
+template <typename T> Predicate<T> predNot(Predicate<T> pred) {
+  return [pred](T val) { return !pred(val); };
+}
+
+// If respectShapeTypes is true, then identity includes
+// matching shape/tensor types. Otherwise, any factors
+// over different shapes but on the same rank, stride,
+// and extent are considered identity. This is useful
+// for certain maps between different tensor types.
+Predicate<std::pair<::mlir::TypedValue<FactorGroupType>,
+                    ::mlir::TypedValue<FactorGroupType>>>
+predGroupPairIsIdentity(bool respectShapeTypes = true);
+
 } // namespace mlir::enzyme::axis
 
 #endif // ENZYME_AD_JAX_DIALECT_AXIS_UTILITIES_H

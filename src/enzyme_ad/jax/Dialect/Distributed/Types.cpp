@@ -10,16 +10,18 @@ bool PhysicalCommAxisType::aliases(Value ax1, Value ax2) const {
   auto result1 = dyn_cast<OpResult>(ax1);
   auto result2 = dyn_cast<OpResult>(ax2);
   if (!result1 || !result2) {
-    llvm::report_fatal_error(
-        "PhysicalCommAxisType::aliases requires both axes to be OpResults");
+    assert(result1 && result2 &&
+           "PhysicalCommAxisType::aliases requires both axes to be OpResults");
+    return false;
   }
 
   auto physicalMesh1 = result1.getOwner()->getParentOfType<MeshComputationOp>();
   auto physicalMesh2 = result2.getOwner()->getParentOfType<MeshComputationOp>();
   if (!physicalMesh1 || !physicalMesh2) {
-    llvm::report_fatal_error(
-        "PhysicalCommAxisType::aliases requires both axes to be inside a "
-        "distributed.MeshComputation");
+    assert(physicalMesh1 && physicalMesh2 &&
+           "PhysicalCommAxisType::aliases requires both axes to be inside a "
+           "distributed.MeshComputation");
+    return false;
   }
 
   // Physical axes alias iff they come from the same physical mesh symbol,
@@ -34,8 +36,9 @@ bool LogicalMeshAxisType::aliases(Value ax1, Value ax2) const {
   auto result1 = dyn_cast<OpResult>(ax1);
   auto result2 = dyn_cast<OpResult>(ax2);
   if (!result1 || !result2) {
-    llvm::report_fatal_error(
-        "LogicalMeshAxisType::aliases requires both axes to be OpResults");
+    assert(result1 && result2 &&
+           "LogicalMeshAxisType::aliases requires both axes to be OpResults");
+    return false;
   }
   return result1.getOwner() == result2.getOwner() &&
          result1.getResultNumber() == result2.getResultNumber();
