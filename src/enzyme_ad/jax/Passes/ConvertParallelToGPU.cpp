@@ -185,7 +185,8 @@ getDirectlyNestedSingleParallel_(const char *PATTERN, Block *block,
                                  bool allowAllocas = false,
                                  bool allowIndexComputation = false) {
   auto it = block->begin();
-  while ((allowAllocas && isa<memref::AllocaOp>(&*it)) ||
+  while ((allowAllocas &&
+          (isa<memref::AllocaOp>(&*it) || isa<LLVM::AllocaOp>(&*it))) ||
          (allowIndexComputation && isa<arith::ArithDialect>(it->getDialect())))
     it++;
   auto pop = dyn_cast<scf::ParallelOp>(&*it);
@@ -1057,6 +1058,8 @@ struct ParallelizeBlockOps : public OpRewritePattern<scf::ParallelOp> {
     {
       auto zeroindex = arith::ConstantIndexOp::create(rewriter, loc, 0);
       rewriter.setInsertionPoint(innerBlock->getTerminator());
+      mlir::enzymexla::BarrierOp::create(rewriter, loc,
+                                         innerBlock->getArguments());
       auto cmpOp =
           arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::eq,
                                 zeroindex, innerBlock->getArgument(0));
@@ -1079,8 +1082,11 @@ struct ParallelizeBlockOps : public OpRewritePattern<scf::ParallelOp> {
           llvm_unreachable("Unhandled case");
           break;
         } else if (auto alloca = dyn_cast<LLVM::AllocaOp>(&op)) {
-          llvm_unreachable("Unhandled case");
-          break;
+          auto *newOp = rewriter.clone(op, mapping);
+          rewriter.replaceOpUsesWithinBlock(&op, newOp->getResults(),
+                                            innerBlock);
+          toErase.push_back(&op);
+          continue;
         } else {
           rewriter.clone(op, mapping);
         }
@@ -1647,6 +1653,11 @@ struct ParallelToGPULaunch : public OpRewritePattern<enzymexla::GPUWrapperOp> {
     if (!blockPop)
       return failure();
 
+    for (auto it = gridPop.begin(); !isa<scf::ParallelOp>(&*it); ++it)
+      if (isa<LLVM::AllocaOp>(&*it))
+        llvm_unreachable("LLVM::AllocaOp before block parallel not yet "
+                         "supported in ParallelToGPULaunch");
+
     rewriter.setInsertionPoint(wrapper);
     auto errOp = enzymexla::GPUErrorOp::create(rewriter, loc);
 
@@ -2022,6 +2033,7 @@ struct ConvertParallelToGPU1Pass
       populateNormalizationPatterns(patterns);
       GreedyRewriteConfig config;
       config.enableFolding();
+
       if (failed(applyPatternsGreedily(m, std::move(patterns), config))) {
         signalPassFailure();
         return;
