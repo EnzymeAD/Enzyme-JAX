@@ -3959,11 +3959,10 @@ static bool isEligibleForCompactPrint(stablehlo::ReduceOp op) {
   return llvm::equal(innerOp.getResults(), retOp.getOperands());
 }
 
-
 // Imported from upstream StablehloAggressiveFolder; see #1084.
 struct LowerBoolSplatConstantsIntoReduceOpRegion
-    : public CheckedOpRewritePattern<stablehlo::ReduceOp,
-                                     LowerBoolSplatConstantsIntoReduceOpRegion> {
+    : public CheckedOpRewritePattern<
+          stablehlo::ReduceOp, LowerBoolSplatConstantsIntoReduceOpRegion> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::ReduceOp op,
@@ -36263,9 +36262,11 @@ struct EnzymeHLOOptPass
         LogSimplify, ShiftRightLogicalSimplify, NegativePadToSlice,
         SliceSimplify, ConvertSimplify, TransposeSimplify, DotGeneralSimplify,
         DotGeneralReshape, DiagonalTensorDotGeneralRewrite,
-        DynamicSliceToStatic, DynamicUpdateSliceElim, ReduceToReshape, LowerBoolSplatConstantsIntoReduceOpRegion, FoldReduceOpToConstantInitializer,
-        BroadcastToReshape, ReshapeEmptyBroadcast, ReshapeBroadcast,
-        BroadcastReshape, ConstPropThroughBarrier, ReplaceNegAddWithSubtract,
+        DynamicSliceToStatic, DynamicUpdateSliceElim, ReduceToReshape,
+        LowerBoolSplatConstantsIntoReduceOpRegion,
+        FoldReduceOpToConstantInitializer, BroadcastToReshape,
+        ReshapeEmptyBroadcast, ReshapeBroadcast, BroadcastReshape,
+        ConstPropThroughBarrier, ReplaceNegAddWithSubtract,
         ReplaceSubtractNegWithAdd, SignAbsSimplify, AbsPositiveSimplify,
         SimplifyBoundary<enzymexla::ExtendOp>,
         SimplifyBoundary<enzymexla::WrapOp>,
