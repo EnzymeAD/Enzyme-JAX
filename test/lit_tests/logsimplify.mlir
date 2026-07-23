@@ -285,7 +285,7 @@ func.func @main_square_nonneg(%arg0: tensor<f64>) -> tensor<f64> {
 
 // CHECK: func.func @main_square_nonneg(%arg0: tensor<f64>) -> tensor<f64> {
 // CHECK-NEXT:     %cst = stablehlo.constant dense<2.000000e+00> : tensor<f64>
-// CHECK-NEXT:     %0 = stablehlo.abs %arg0 : tensor<f64>
+// CHECK-NEXT:     %0 = stablehlo.abs %arg0 {enzymexla.non_negative = [#enzymexla<guaranteed GUARANTEED>]} : tensor<f64>
 // CHECK-NEXT:     %1 = stablehlo.log %0 : tensor<f64>
 // CHECK-NEXT:     %2 = stablehlo.multiply %cst, %1 : tensor<f64>
 // CHECK-NEXT:     return %2 : tensor<f64>
