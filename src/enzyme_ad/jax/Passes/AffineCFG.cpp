@@ -1917,19 +1917,19 @@ struct CanonicalieForBounds : public OpRewritePattern<affine::AffineForOp> {
     // ubMap.dump();
     // forOp.dump();
 
-    // Any canonicalization change in map or operands always leads to updated
-    // map(s).
-    if ((lbMap == prevLbMap && ubMap == prevUbMap) &&
-        (!areChanged(lbOperands, origLbOperands)) &&
-        (!areChanged(ubOperands, origUbOperands)))
+    bool lbChanged = canonicalizeSum(lbMap) != canonicalizeSum(prevLbMap) ||
+                     areChanged(lbOperands, origLbOperands);
+    bool ubChanged = canonicalizeSum(ubMap) != canonicalizeSum(prevUbMap) ||
+                     areChanged(ubOperands, origUbOperands);
+    if (!lbChanged && !ubChanged)
       return failure();
 
     // llvm::errs() << "oldParent:" << *forOp.getParentOp() << "\n";
     // llvm::errs() << "oldfor:" << forOp << "\n";
 
-    if ((lbMap != prevLbMap) || areChanged(lbOperands, origLbOperands))
+    if (lbChanged)
       forOp.setLowerBound(lbOperands, lbMap);
-    if ((ubMap != prevUbMap) || areChanged(ubOperands, origUbOperands))
+    if (ubChanged)
       forOp.setUpperBound(ubOperands, ubMap);
 
     // llvm::errs() << "newfor:" << forOp << "\n";
