@@ -29,8 +29,7 @@ def DefineOp : TesseraOp<"define", [
 
   let arguments = (ins SymbolNameAttr:$sym_name,
                        TypeAttrOf<FunctionType>:$function_type,
-	                     DenseBoolArrayAttr:$byRefArgs,
-	                     DenseI64ArrayAttr:$argSizes,
+	                     ArrayAttr:$byRefTypes,
                        BoolAttr:$pure,
                        OptionalAttr<StrAttr>:$sym_visibility,
                        OptionalAttr<DictArrayAttr>:$arg_attrs,
@@ -40,8 +39,7 @@ def DefineOp : TesseraOp<"define", [
 
   let builders = [OpBuilder<(ins
     "StringRef":$name, "FunctionType":$type,
-    "DenseBoolArrayAttr":$byRefArgs,
-    "DenseI64ArrayAttr":$argSizes,
+    "ArrayAttr":$byRefTypes,
     "bool":$pure,
     CArg<"StringAttr", "{}">:$sym_visibility,
     CArg<"ArrayRef<NamedAttribute>", "{}">:$attrs,
@@ -64,6 +62,18 @@ def DefineOp : TesseraOp<"define", [
     /// compatible.
     void cloneInto(DefineOp dest, IRMapping &mapper);
 
+    ::mlir::Attribute getSretAttr();
+
+    // Returns the stored byref-type array as an ArrayRef. Index convention: sret-excluded
+    // argument index, since it is based on the argument list in the annotation string,
+    // which does not include the sret argument. Each entry is either a TypeAttr
+    // (arg is byref) or null (arg is not byref).
+    ::mlir::ArrayRef<Attribute> getByRefTypesArray();
+
+    // Returns the byref type for a given argument index, or null if the argument is not byref.
+    ::mlir::Type getByRefType(unsigned argIdx);
+
+
     //===------------------------------------------------------------------===//
     // FunctionOpInterface Methods
     //===------------------------------------------------------------------===//
@@ -79,6 +89,11 @@ def DefineOp : TesseraOp<"define", [
     /// Returns the result types of this function.
     ArrayRef<Type> getResultTypes() { return getFunctionType().getResults(); }
 
+    /// Returns the argument attribute at the given index, accounting for the
+    /// sret argument offset if present.
+    ::mlir::Attribute getArgAttr(unsigned index, mlir::StringAttr name);
+    ::mlir::Attribute getArgAttr(unsigned index, llvm::StringRef name);
+
     //===------------------------------------------------------------------===//
     // SymbolOpInterface Methods
     //===------------------------------------------------------------------===//
@@ -87,6 +102,7 @@ def DefineOp : TesseraOp<"define", [
 
   }];
   let hasCustomAssemblyFormat = 1;
+  let hasVerifier = 1;
 }
 
 //===----------------------------------------------------------------------===//

@@ -98,7 +98,7 @@ jobs:
             BAZEL_FLAGS="${BAZEL_FLAGS} --config=public_cache_push"
           fi
           echo "BAZEL_FLAGS=${BAZEL_FLAGS}" >> "${GITHUB_ENV}"
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - uses: bazel-contrib/setup-bazel@0.19.0
         name: Set up Bazel
         with:
@@ -244,7 +244,7 @@ jobs:
       - name: Install Dependencies
         run: |
           curl -LsSf https://astral.sh/uv/install.sh | sh
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
       - name: Download all benchmark artifacts
         uses: actions/download-artifact@v8
         with:

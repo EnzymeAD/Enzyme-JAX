@@ -674,6 +674,20 @@ SymmetricResultAnalysis::State SymmetricResultAnalysis::localGuaranteed(
         return State::GUARANTEED;
       }
 
+      if (lhs == rhs && lhsCDims[0] == 1 - rhsCDims[0]) {
+        auto found = valueCache.find(lhs);
+        if (found != valueCache.end()) {
+          if (found->second) {
+            return State::GUARANTEED;
+          } else {
+            return State::NOTGUARANTEED;
+          }
+        }
+
+        localtodo.push_back(lhs);
+        return State::PENDING;
+      }
+
       if (auto lhsT = lhs.getDefiningOp<stablehlo::TransposeOp>()) {
         if (isTrueTranspose(lhsT) && lhsT.getOperand() == rhs &&
             lhsCDims[0] == 1 - rhsCDims[0]) {
@@ -827,10 +841,13 @@ NoNanResultAnalysis::State NoNanResultAnalysis::localGuaranteed(
     recursiveCheck = true;
     operandsToCheck.push_back(op->getOperand(1));
     operandsToCheck.push_back(op->getOperand(2));
-  } else if (isa<stablehlo::DynamicSliceOp, stablehlo::DynamicUpdateSliceOp>(
-                 op)) {
+  } else if (isa<stablehlo::DynamicSliceOp>(op)) {
     recursiveCheck = true;
     operandsToCheck.push_back(op->getOperand(0));
+  } else if (isa<stablehlo::DynamicUpdateSliceOp>(op)) {
+    recursiveCheck = true;
+    operandsToCheck.push_back(op->getOperand(0));
+    operandsToCheck.push_back(op->getOperand(1));
   }
 
   if (recursiveCheck) {
@@ -895,10 +912,13 @@ FiniteResultAnalysis::State FiniteResultAnalysis::localGuaranteed(
     recursiveCheck = true;
     operandsToCheck.push_back(op->getOperand(1));
     operandsToCheck.push_back(op->getOperand(2));
-  } else if (isa<stablehlo::DynamicSliceOp, stablehlo::DynamicUpdateSliceOp>(
-                 op)) {
+  } else if (isa<stablehlo::DynamicSliceOp>(op)) {
     recursiveCheck = true;
     operandsToCheck.push_back(op->getOperand(0));
+  } else if (isa<stablehlo::DynamicUpdateSliceOp>(op)) {
+    recursiveCheck = true;
+    operandsToCheck.push_back(op->getOperand(0));
+    operandsToCheck.push_back(op->getOperand(1));
   }
 
   if (recursiveCheck) {
@@ -1015,10 +1035,13 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
     recursiveCheck = true;
     operandsToCheck.push_back(op->getOperand(1));
     operandsToCheck.push_back(op->getOperand(2));
-  } else if (isa<stablehlo::DynamicSliceOp, stablehlo::DynamicUpdateSliceOp>(
-                 op)) {
+  } else if (isa<stablehlo::DynamicSliceOp>(op)) {
     recursiveCheck = true;
     operandsToCheck.push_back(op->getOperand(0));
+  } else if (isa<stablehlo::DynamicUpdateSliceOp>(op)) {
+    recursiveCheck = true;
+    operandsToCheck.push_back(op->getOperand(0));
+    operandsToCheck.push_back(op->getOperand(1));
   }
 
   if (recursiveCheck) {
@@ -1078,10 +1101,13 @@ PurelyRealResultAnalysis::State PurelyRealResultAnalysis::localGuaranteed(
     recursiveCheck = true;
     operandsToCheck.push_back(op->getOperand(1));
     operandsToCheck.push_back(op->getOperand(2));
-  } else if (isa<stablehlo::DynamicSliceOp, stablehlo::DynamicUpdateSliceOp>(
-                 op)) {
+  } else if (isa<stablehlo::DynamicSliceOp>(op)) {
     recursiveCheck = true;
     operandsToCheck.push_back(op->getOperand(0));
+  } else if (isa<stablehlo::DynamicUpdateSliceOp>(op)) {
+    recursiveCheck = true;
+    operandsToCheck.push_back(op->getOperand(0));
+    operandsToCheck.push_back(op->getOperand(1));
   }
 
   if (recursiveCheck) {
@@ -1132,10 +1158,13 @@ PurelyImagResultAnalysis::State PurelyImagResultAnalysis::localGuaranteed(
     recursiveCheck = true;
     operandsToCheck.push_back(op->getOperand(1));
     operandsToCheck.push_back(op->getOperand(2));
-  } else if (isa<stablehlo::DynamicSliceOp, stablehlo::DynamicUpdateSliceOp>(
-                 op)) {
+  } else if (isa<stablehlo::DynamicSliceOp>(op)) {
     recursiveCheck = true;
     operandsToCheck.push_back(op->getOperand(0));
+  } else if (isa<stablehlo::DynamicUpdateSliceOp>(op)) {
+    recursiveCheck = true;
+    operandsToCheck.push_back(op->getOperand(0));
+    operandsToCheck.push_back(op->getOperand(1));
   }
 
   if (recursiveCheck) {
@@ -1781,12 +1810,6 @@ tryEvaluateSmallTreeToConstant(mlir::Value val, int64_t maxElements = 1024) {
 std::optional<IotaLikeTensor> detectIotaLikeTensor(mlir::Value tensor) {
   if (!tensor) {
     return std::nullopt;
-  }
-
-  if (auto evaluated = tryEvaluateSmallTreeToConstant(tensor)) {
-    if (auto iotaLike = detectIotaLikeTensor(*evaluated)) {
-      return iotaLike;
-    }
   }
 
   struct ChainItem {

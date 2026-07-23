@@ -1,4 +1,4 @@
-//===- CHLOAutoDiffOpInterfaceImpl.cpp - Interface external model --------===//
+//===- EnzymeXLAAutoDiffOpInterfaceImpl.cpp - Interface external model ----===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -7,7 +7,7 @@
 //===----------------------------------------------------------------------===//
 //
 // This file contains the external model implementation of the automatic
-// differentiation op interfaces for the upstream MLIR arithmetic dialect.
+// differentiation op interfaces for the EnzymeXLA dialect.
 //
 //===----------------------------------------------------------------------===//
 
@@ -15,8 +15,10 @@
 #include "Enzyme/MLIR/Interfaces/AutoDiffOpInterface.h"
 #include "Enzyme/MLIR/Interfaces/GradientUtils.h"
 #include "Enzyme/MLIR/Interfaces/GradientUtilsReverse.h"
+#include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/Support/LogicalResult.h"
+#include "mlir/Transforms/RegionUtils.h"
 #include "src/enzyme_ad/jax/Implementations/SHLOGenericBatchOpInterface.h"
 #include "src/enzyme_ad/jax/Utils.h"
 
@@ -43,8 +45,44 @@ static mlir::DenseI64ArrayAttr getI64Attr(OpBuilder &builder,
   return builder.getDenseI64ArrayAttr(vals);
 }
 
+static Type updateMemorySpace(Type typ, Attribute globalMemSpace) {
+  return llvm::TypeSwitch<Type, Type>(typ)
+      .Case<enzyme::CacheType>([&](auto cacheType) {
+        return enzyme::CacheType::get(
+            typ.getContext(),
+            updateMemorySpace(cacheType.getType(), globalMemSpace));
+      })
+      .Case<MemRefType>([&](auto memrefType) {
+        return *memrefType.clonePtrWith(globalMemSpace, std::nullopt);
+      })
+      .Default(typ);
+};
+
 namespace {
 #include "src/enzyme_ad/jax/Implementations/EnzymeXLADerivatives.inc"
+
+void traverseDownDefUseChains(
+    SmallVectorImpl<Value> &frontier,
+    function_ref<void(Operation *)> processOperation) {
+  DenseSet<Value> visited;
+  while (!frontier.empty()) {
+    Value v = frontier.back();
+    Operation *definingOp = v.getDefiningOp();
+    frontier.pop_back();
+
+    if (!definingOp)
+      continue;
+
+    processOperation(definingOp);
+
+    for (Operation *user : v.getUsers())
+      for (auto result : user->getResults())
+        if (!visited.contains(result)) {
+          frontier.push_back(result);
+          visited.insert(result);
+        }
+  }
+}
 
 struct GPUWrapperOpEnzymeOpsRemover
     : public EnzymeOpsRemoverOpInterface::ExternalModel<
@@ -70,61 +108,116 @@ struct GPUWrapperOpEnzymeOpsRemover
     if (gradients.empty() && pushedCaches.empty())
       return success();
 
-    if (gradients.size())
-      return failure();
-
-    if (pushedCaches.size())
-      return failure();
-
-    // TODO need to convert to gpu allocations and conversion/copy
-
-    /*
-    for (auto grad : gradients) {
-      auto trueValue = trueMapping.lookupOrNull(grad);
-      trueTerm->insertOperands(trueTerm->getNumOperands(),
-                               ValueRange(trueValue));
-
+    llvm::MapVector<Value, CacheInfo> cachesMap;
+    for (auto &it : *wrapOp.getBody()) {
+      Operation *op = &it;
+      if (auto pushOp = dyn_cast<enzyme::PushOp>(op)) {
+        CacheInfo info(pushOp.getCache());
+        if (cachesMap.contains(pushOp.getValue()))
+          info = info.merge(cachesMap.lookup(pushOp.getValue()), rewriter);
+        cachesMap[pushOp.getValue()] = info;
+      }
     }
-    */
+    SmallVector<CacheInfo> caches =
+        llvm::map_to_vector(cachesMap, [](auto p) { return std::get<1>(p); });
 
-    /*
-    for (auto &[pushedValue, info] : pushedCaches) {
-      trueTerm->insertOperands(trueTerm->getNumOperands(),
-                               ValueRange(trueValue));
+    if (caches.empty())
+      return success();
+
+    SetVector<Value> visited;
+    getUsedValuesDefinedAbove(wrapOp.getBodyRegion(), visited);
+    SmallVector<Value> frontier = llvm::map_to_vector(
+        caches, [](CacheInfo info) { return info.pushedValue(); });
+    SetVector<Operation *> opsToMove;
+    // Traverse backward from pushed values to find operations that the pushed
+    // value depends on
+    while (!frontier.empty()) {
+      Value v = frontier.back();
+      Operation *definingOp = v.getDefiningOp();
+      frontier.pop_back();
+
+      if (!definingOp)
+        continue;
+      if (definingOp->getBlock() != &wrapOp.getBodyRegion().front())
+        continue;
+
+      // Assume allocations and frees are legal to move
+      if (hasEffect<MemoryEffects::Read>(definingOp) ||
+          hasEffect<MemoryEffects::Write>(definingOp)) {
+        definingOp->emitError() << "cannot move op with side effects";
+        return failure();
+      }
+      opsToMove.insert(definingOp);
+
+      for (Value operand : definingOp->getOperands()) {
+        if (visited.contains(operand))
+          continue;
+
+        frontier.push_back(operand);
+        visited.insert(operand);
+      }
     }
-    */
 
-    /*
-    size_t idx = ifOp->getNumResults();
-    for (auto grad : gradients) {
-      enzyme::SetOp::create(rewriter, grad.getLoc(), grad,
-                                     newIf->getResult(idx));
-      idx++;
+    // Move the push and dependent values outside of the wrapper
+    OpBuilder::InsertionGuard guard(rewriter);
+    IRMapping map;
+    rewriter.setInsertionPoint(wrapOp);
+    // Assume caches are in global memory (address space 1)
+    auto globalMemSpace = rewriter.getI64IntegerAttr(1);
+    for (Operation *toMove : llvm::reverse(opsToMove)) {
+      Operation *cloned = rewriter.clone(*toMove, map);
+      toMove->replaceAllUsesWith(cloned->getResults());
+
+      if (auto allocOp = dyn_cast<memref::AllocOp>(cloned)) {
+        auto gpuAlloc = gpu::AllocOp::create(
+            rewriter, allocOp.getLoc(),
+            *allocOp.getType().clonePtrWith(globalMemSpace, std::nullopt),
+            /*asyncDependencies=*/ValueRange(), allocOp.getDynamicSizes(),
+            /*symbolOperands=*/ValueRange());
+        allocOp.replaceAllUsesWith(gpuAlloc.getResult(0));
+        rewriter.eraseOp(allocOp);
+
+        // Update the memory space of any users
+        SmallVector<Value> frontier{gpuAlloc.getResult(0)};
+        traverseDownDefUseChains(frontier, [globalMemSpace](Operation *op) {
+          if (auto pushOp = dyn_cast<enzyme::PushOp>(op)) {
+            Type newType =
+                updateMemorySpace(pushOp.getCache().getType(), globalMemSpace);
+            pushOp.getCache().setType(newType);
+          }
+          if (auto subviewOp = dyn_cast<memref::SubViewOp>(op)) {
+            auto newType = cast<MemRefType>(
+                updateMemorySpace(subviewOp.getType(), globalMemSpace));
+            subviewOp.getResult().setType(newType);
+          }
+        });
+      }
+    }
+    for (auto &info : caches) {
+      rewriter.moveOpBefore(info.pushOp, wrapOp);
+      auto revWrapper = info.popOp->getParentOfType<enzymexla::GPUWrapperOp>();
+      assert(revWrapper && "failed to find reverse gpu_wrapper");
+      rewriter.moveOpBefore(info.popOp, revWrapper);
+
+      SmallVector<Value> frontier{info.popOp.getResult()};
+      traverseDownDefUseChains(frontier, [globalMemSpace](Operation *op) {
+        if (auto subviewOp = dyn_cast<memref::SubViewOp>(op)) {
+          auto newType = cast<MemRefType>(
+              updateMemorySpace(subviewOp.getType(), globalMemSpace));
+          subviewOp.getResult().setType(newType);
+        }
+      });
+
+      for (auto user : info.popOp.getResult().getUsers()) {
+        if (hasSingleEffect<MemoryEffects::Free>(user)) {
+          rewriter.setInsertionPointAfter(revWrapper);
+          gpu::DeallocOp::create(rewriter, wrapOp.getLoc(), TypeRange(),
+                                 info.popOp.getResult());
+          rewriter.eraseOp(user);
+        }
+      }
     }
 
-    for (auto &[pushedValue, info] : pushedCaches) {
-      enzyme::PushOp::create(rewriter, info.pushOp->getLoc(),
-                                      info.initOp.getResult(),
-                                      newIf->getResult(idx));
-      rewriter.eraseOp(info.pushOp);
-
-      OpBuilder::InsertionGuard guard(rewriter);
-      rewriter.setInsertionPoint(info.popOp->getParentOp());
-
-      auto newPop = enzyme::PopOp::create(rewriter,
-          info.popOp->getLoc(), info.popOp.getResult().getType(),
-          info.popOp.getCache());
-      rewriter.replaceAllUsesWith(info.popOp.getResult(), newPop);
-      rewriter.eraseOp(info.popOp);
-
-      idx++;
-    }
-
-    rewriter.replaceAllUsesWith(
-        ifOp->getResults(),
-        newIf->getResults().slice(0, ifOp->getNumResults()));
-    rewriter.eraseOp(ifOp);
-    */
     return success();
   }
 };

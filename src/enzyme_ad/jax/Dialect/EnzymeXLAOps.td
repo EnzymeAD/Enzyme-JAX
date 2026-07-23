@@ -568,6 +568,40 @@ def CommRegionOp : EnzymeXLA_Op<"comm_region", [
 
 // Linear Algebra Ops
 
+def GemmOp : EnzymeXLA_Op<"blas.gemm", [Pure, SameOperandsAndResultElementType]> {
+  let summary = "(Batch) Matrix multiplication with optional transposition of the inputs";
+
+  let description = [{
+    C := alpha*op(A)*op(B) + beta*C"
+  }];
+
+  let arguments = (ins
+    TensorFloat:$alpha,
+    HLO_Tensor:$A,
+    HLO_Tensor:$B,
+    TensorFloat:$beta,
+    HLO_Tensor:$C,
+    DefaultValuedAttr<EnzymeXLA_LapackTransposeAttr, "::mlir::enzymexla::LapackTranspose::none">:$transa,
+    DefaultValuedAttr<EnzymeXLA_LapackTransposeAttr, "::mlir::enzymexla::LapackTranspose::none">:$transb
+  );
+
+  let results = (outs
+    HLO_Tensor: $output
+  );
+
+  let assemblyFormat = [{
+    $alpha `,` $A `,` $B `,` $beta `,` $C attr-dict `:` functional-type(operands, results)
+  }];
+
+  let hasVerifier = 1;
+
+  let builders = [
+    OpBuilder<(ins "Value":$A, "Value":$B,
+      CArg<"enzymexla::LapackTranspose", "enzymexla::LapackTranspose::none">:$transa,
+      CArg<"enzymexla::LapackTranspose", "enzymexla::LapackTranspose::none">:$transb)>
+  ];
+}
+
 def SymmOp : EnzymeXLA_Op<"blas.symm", [Pure, SameOperandsAndResultElementType]> {
   let summary = "Multiplication involving a symmetric matrix";
 

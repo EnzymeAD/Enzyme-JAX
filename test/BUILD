@@ -142,6 +142,19 @@ py_test(
 )
 
 py_test(
+    name = "jaxpi_benchmark",
+    timeout = "long",
+    srcs = [
+        "jaxpi_benchmark.py",
+        "test_utils.py",
+        "xprof_utils.py",
+    ],
+    imports = ["."],
+    tags = ["exclusive"],
+    deps = TEST_DEPS + ["@pypi_jaxpi//:pkg"],
+)
+
+py_test(
     name = "neuralgcm_test",
     timeout = "eternal",
     srcs = [
@@ -193,6 +206,7 @@ test_suite(
     tests = [
         ":bench_vs_xla",
         ":jaxmd",
+        ":jaxpi_benchmark",
         ":llama",
         ":neuralgcm_test",
         ":test",

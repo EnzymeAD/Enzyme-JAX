@@ -497,7 +497,7 @@ enum __device_builtin__ cudaMemcpyKind
           }
         }
 
-        gpufunc->setAttr("gpu.kernel", builder.getUnitAttr());
+        gpufunc.setKernelAttr(builder.getUnitAttr());
 
         gpufunc->walk([](LLVM::ReturnOp op) {
           OpBuilder rewriter(op);

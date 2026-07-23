@@ -508,17 +508,20 @@ class AutoDiffWhileRev
     if (!revInfo.info.computeInfo().succeeded() || !revInfo.info.isValid())
       return revInfo;
 
+    const char *checkpointAttrName = "enzymexla.enable_checkpointing";
+    const char *periodicCheckpointAttrName = "enzymexla.checkpoint_period";
+
+    auto enableCheckpointingAttr =
+        orig->getAttrOfType<BoolAttr>(checkpointAttrName);
+    bool enableCheckpointing =
+        enableCheckpointingAttr && enableCheckpointingAttr.getValue();
     if (revInfo.info.isConstant()) {
-      const char *checkpointAttrName = "enzymexla.enable_checkpointing";
-      auto enableCheckpointing =
-          orig->getAttrOfType<BoolAttr>(checkpointAttrName);
-      const char *periodicCheckpointAttrName = "enzymexla.checkpoint_period";
       auto checkpointPeriod =
           orig->getAttrOfType<IntegerAttr>(periodicCheckpointAttrName);
-      auto enableBinomialCheckpointing =
+      bool enableBinomialCheckpointing =
           orig->hasAttr("enzymexla.binomial_checkpointing");
 
-      if (enableCheckpointing && enableCheckpointing.getValue()) {
+      if (enableCheckpointing) {
         // CONSTANT_CHECKPOINTING: use provided period or default to sqrt(N).
         revInfo.mode = enableBinomialCheckpointing ? CONSTANT_BINOMIAL
                                                    : CONSTANT_CHECKPOINTING;
@@ -531,7 +534,8 @@ class AutoDiffWhileRev
           int64_t numIters = revInfo.info.getConstantNumIters();
           revInfo.checkpointPeriod = std::sqrt(numIters);
         }
-      } else if (checkpointPeriod && checkpointPeriod.getInt() > 0) {
+      } else if (enableCheckpointing && checkpointPeriod &&
+                 checkpointPeriod.getInt() > 0) {
         // Explicit period specified without enable_checkpointing
         revInfo.mode = CONSTANT_CHECKPOINTING;
         revInfo.checkpointPeriod = checkpointPeriod.getInt();
@@ -539,9 +543,7 @@ class AutoDiffWhileRev
         revInfo.mode = CONSTANT;
       }
     } else if (orig->hasAttr("enzymexla.binomial_checkpointing")) {
-      auto enableCheckpointing =
-          orig->getAttrOfType<BoolAttr>("enzymexla.enable_checkpointing");
-      if (enableCheckpointing && enableCheckpointing.getValue()) {
+      if (enableCheckpointing) {
         revInfo.mode = CONSTANT_BINOMIAL;
         auto checkpointPeriod =
             orig->getAttrOfType<IntegerAttr>("enzymexla.checkpoint_period");
@@ -550,6 +552,10 @@ class AutoDiffWhileRev
                 ? checkpointPeriod.getInt()
                 : BINOMIAL_SENTINEL_BUDGET;
       }
+    } else if (enableCheckpointing) {
+      orig->emitWarning("requested periodic checkpointing on a loop that does "
+                        "not have constant iteration bounds. this is currently "
+                        "not supported");
     }
 
     return revInfo;
@@ -967,13 +973,28 @@ class AutoDiffWhileRev
       }
     }
 
+    for (auto [oldOp, newOp] : mapping.getOperationMap()) {
+      gutils->originalToNewFnOps[oldOp] = newOp;
+    }
+
     bool anyFailed = false;
 
-    auto rstart = origBody->rbegin(), rend = origBody->rend();
-    rstart++;
-    for (auto it = rstart; it != rend; it++) {
-      Operation *op = &*it;
-      anyFailed |= gutils->Logic.visitChild(op, builder, gutils).failed();
+    {
+      OpBuilder cacheBuilder(innerWhile);
+      auto loc = orig->getLoc();
+      auto cacheCreator = [&](Type t) {
+        Value cache = enzyme::InitOp::create(cacheBuilder, loc, t);
+        return std::make_pair(cache, cache);
+      };
+      gutils->registerCacheCreatorHook(cacheCreator);
+
+      auto rstart = origBody->rbegin(), rend = origBody->rend();
+      rstart++;
+      for (auto it = rstart; it != rend; it++) {
+        Operation *op = &*it;
+        anyFailed |= gutils->Logic.visitChild(op, builder, gutils).failed();
+      }
+      gutils->deregisterCacheCreatorHook(cacheCreator);
     }
 
     SmallVector<Value> outerBodyResults;
@@ -1205,6 +1226,10 @@ class AutoDiffWhileRev
         gutils->addToDiffe(operand, revLoopBody->getArgument(revIdx), builder);
         revIdx++;
       }
+    }
+
+    for (auto [oldOp, newOp] : mapping.getOperationMap()) {
+      gutils->originalToNewFnOps[oldOp] = newOp;
     }
 
     bool anyFailed = false;
@@ -1460,7 +1485,7 @@ public:
 
     Value numIters;
 
-    WhileLoopInfo info(newWhile);
+    WhileLoopInfo info(cast<WhileOp>(orig));
     if (info.computeInfo().succeeded()) {
       // no need to cache number of iterations if it is a known constant.
       if (info.isValid()) {
@@ -1654,7 +1679,8 @@ public:
           // constants. These are inserted before `outer` (loop-invariant).
           if (isDynamic) {
             builder.setInsertionPoint(outer);
-            Value numItersVal = info.getNumIters(builder);
+            Value numItersVal = gutils->originalToNewFn.lookupOrDefault(
+                info.getNumIters(builder, gutils->originalToNewFn));
             if (!numItersVal) {
               orig->emitError(
                   "binomial checkpointing: cannot compute numIters outside the "
@@ -1662,10 +1688,11 @@ public:
               return {};
             }
             caches.push_back(gutils->initAndPushCache(numItersVal, builder));
-            caches.push_back(
-                gutils->initAndPushCache(info.getStart(), builder));
-            caches.push_back(
-                gutils->initAndPushCache(info.getStep(builder), builder));
+            caches.push_back(gutils->initAndPushCache(
+                gutils->originalToNewFn.lookupOrDefault(info.getStart()),
+                builder));
+            caches.push_back(gutils->initAndPushCache(
+                info.getStep(builder, gutils->originalToNewFn), builder));
             builder.setInsertionPointAfter(outer);
           }
 
@@ -1720,10 +1747,11 @@ public:
                                           .slice(1, orig->getNumOperands() - 1)
                                           .end());
 
-          Value limitVal = info.isConstantLimit()
-                               ? makeI64Constant(orig->getLoc(), builder,
-                                                 *info.getConstantLimit())
-                               : info.getLimit();
+          Value limitVal =
+              info.isConstantLimit()
+                  ? makeI64Constant(orig->getLoc(), builder,
+                                    *info.getConstantLimit())
+                  : gutils->originalToNewFn.lookupOrDefault(info.getLimit());
           Value numSteps = stablehlo::SubtractOp::create(
               builder, orig->getLoc(), limitVal, stepInOuter);
 
@@ -1773,9 +1801,12 @@ public:
 
           Value oldIV = oldInnerBody->getArgument(0);
           Value newIV = stablehlo::AddOp::create(
-              builder, orig->getLoc(), info.getStart(),
+              builder, orig->getLoc(),
+              gutils->originalToNewFn.lookupOrDefault(info.getStart()),
               stablehlo::MulOp::create(
-                  builder, orig->getLoc(), info.getStep(builder),
+                  builder, orig->getLoc(),
+                  gutils->originalToNewFn.lookupOrDefault(
+                      info.getStep(builder)),
                   stablehlo::AddOp::create(builder, orig->getLoc(), stepInOuter,
                                            innerBody->getArgument(0))));
 
@@ -1794,10 +1825,11 @@ public:
           term->setOperands(1, term->getNumOperands() - 1, newReturns);
 
           builder.setInsertionPointAfter(outer);
-          Value limitForResult = info.isConstantLimit()
-                                     ? makeI64Constant(oldIV.getLoc(), builder,
-                                                       *info.getConstantLimit())
-                                     : info.getLimit();
+          Value limitForResult =
+              info.isConstantLimit()
+                  ? makeI64Constant(oldIV.getLoc(), builder,
+                                    *info.getConstantLimit())
+                  : gutils->originalToNewFn.lookupOrDefault(info.getLimit());
           SmallVector<Value> newResults{limitForResult};
 
           newResults.append(
@@ -1817,7 +1849,8 @@ public:
         // Non-constant, non-binomial: fall through to numIters caching below.
       }
 
-      numIters = info.getNumIters(revBuilder);
+      numIters = gutils->originalToNewFn.lookupOrDefault(
+          info.getNumIters(revBuilder, gutils->originalToNewFn));
     }
 
     if (!numIters) {
@@ -2492,44 +2525,6 @@ public:
 
   void createShadowValues(Operation *op, OpBuilder &builder,
                           MGradientUtilsReverse *gutils) const {}
-};
-
-struct SHLOConstantOpBatchInterface
-    : public BatchOpInterface::ExternalModel<SHLOConstantOpBatchInterface,
-                                             ConstantOp> {
-
-  mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
-                                  IRMapping &mapper,
-                                  ArrayRef<int64_t> batchSizes) const {
-    auto constOp = cast<ConstantOp>(src);
-
-    auto T = cast<TensorType>(constOp.getType());
-    SmallVector<int64_t> shape(batchSizes.begin(), batchSizes.end());
-    shape.append(T.getShape().begin(), T.getShape().end());
-    auto Ty = T.clone(shape);
-
-    // If splatted attr then we can easily batch it
-    auto eattr = cast<DenseElementsAttr>(constOp.getValue());
-    if (eattr.isSplat()) {
-      auto splatAttr = cast<SplatElementsAttr>(constOp.getValue());
-      auto newSplattedConstOp = ConstantOp::create(
-          builder, constOp->getLoc(), Ty,
-          cast<ElementsAttr>(splatAttr.resizeSplat(cast<ShapedType>(Ty))));
-      mapper.map(src->getResult(0), newSplattedConstOp->getResult(0));
-      return success();
-    }
-
-    // otherwise do a broadcast in dim
-    SmallVector<int64_t> mapping(T.getShape().size());
-    std::iota(mapping.begin(), mapping.end(), batchSizes.size());
-
-    auto constOpCloned = builder.clone(*constOp);
-    auto bcastOp = BroadcastInDimOp::create(
-        builder, src->getLoc(), Ty, constOpCloned->getResult(0),
-        builder.getDenseI64ArrayAttr(mapping));
-    mapper.map(src->getResult(0), bcastOp->getResult(0));
-    return success();
-  }
 };
 
 struct SHLOGetDimensionSizeOpBatchInterface
@@ -4711,6 +4706,65 @@ struct SHLODynamicUpdateSliceOpBatchInterface
   }
 };
 
+struct SHLORngBitGeneratorOpBatchInterface
+    : public BatchOpInterface::ExternalModel<
+          SHLORngBitGeneratorOpBatchInterface, RngBitGeneratorOp> {
+  mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
+                                  IRMapping &mapper,
+                                  ArrayRef<int64_t> batchSizes) const {
+    auto op = cast<RngBitGeneratorOp>(src);
+
+    auto batchedSeed = mapper.lookup(op.getInitialState());
+    auto batchedSeedType = cast<RankedTensorType>(batchedSeed.getType());
+
+    // Slice the first element along the batch dimensions.
+    // E.g., if batchSizes is [10], shape is [10, 2].
+    // We slice from [0, 0] to [1, 2].
+    SmallVector<int64_t> startIndices(batchSizes.size() + 1, 0);
+    SmallVector<int64_t> limitIndices(batchSizes.begin(), batchSizes.end());
+    for (size_t i = 0; i < batchSizes.size(); ++i) {
+      limitIndices[i] = 1;
+    }
+    limitIndices.push_back(batchedSeedType.getShape().back());
+    SmallVector<int64_t> strides(batchSizes.size() + 1, 1);
+
+    auto slicedSeedType =
+        RankedTensorType::get(limitIndices, batchedSeedType.getElementType());
+    auto slicedSeed =
+        builder.create<SliceOp>(op.getLoc(), slicedSeedType, batchedSeed,
+                                builder.getDenseI64ArrayAttr(startIndices),
+                                builder.getDenseI64ArrayAttr(limitIndices),
+                                builder.getDenseI64ArrayAttr(strides));
+
+    auto unbatchedSeedType =
+        cast<RankedTensorType>(op.getInitialState().getType());
+    auto seed =
+        builder.create<ReshapeOp>(op.getLoc(), unbatchedSeedType, slicedSeed);
+
+    auto origOutputType = cast<RankedTensorType>(op.getOutput().getType());
+    SmallVector<int64_t> batchedOutputShape(batchSizes.begin(),
+                                            batchSizes.end());
+    batchedOutputShape.append(origOutputType.getShape().begin(),
+                              origOutputType.getShape().end());
+    auto batchedOutputType = RankedTensorType::get(
+        batchedOutputShape, origOutputType.getElementType());
+
+    auto newRngOp = builder.create<RngBitGeneratorOp>(
+        op.getLoc(), unbatchedSeedType, batchedOutputType, op.getRngAlgorithm(),
+        seed);
+
+    SmallVector<int64_t> broadcastDims = {
+        static_cast<int64_t>(batchSizes.size())};
+    auto broadcastedState = builder.create<BroadcastInDimOp>(
+        op.getLoc(), batchedSeedType, newRngOp.getOutputState(),
+        builder.getDenseI64ArrayAttr(broadcastDims));
+
+    mapper.map(op.getOutputState(), broadcastedState);
+    mapper.map(op.getOutput(), newRngOp.getOutput());
+    return success();
+  }
+};
+
 struct SHLOIotaOpBatchInterface
     : public BatchOpInterface::ExternalModel<SHLOIotaOpBatchInterface,
                                              stablehlo::IotaOp> {
@@ -5089,7 +5143,8 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     BatchNormTrainingOp::attachInterface<AutoDiffBatchNormTrainingRev>(
         *context);
 
-    ConstantOp::attachInterface<SHLOConstantOpBatchInterface>(*context);
+    ConstantOp::attachInterface<
+        HLOConstantOpBatchInterface<stablehlo::ConstantOp>>(*context);
     TransposeOp::attachInterface<SHLOTransposeOpBatchInterface>(*context);
     stablehlo::IfOp::attachInterface<
         SHLOGenericBatchOpInterface<stablehlo::IfOp>>(*context);
@@ -5107,6 +5162,8 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     stablehlo::DynamicUpdateSliceOp::attachInterface<
         SHLODynamicUpdateSliceOpBatchInterface>(*context);
     CustomCallOp::attachInterface<SHLOGenericBatchOpInterface<CustomCallOp>>(
+        *context);
+    RngBitGeneratorOp::attachInterface<SHLORngBitGeneratorOpBatchInterface>(
         *context);
     IotaOp::attachInterface<SHLOIotaOpBatchInterface>(*context);
     stablehlo::SelectOp::attachInterface<SHLOSelectOpBatchInterface>(*context);

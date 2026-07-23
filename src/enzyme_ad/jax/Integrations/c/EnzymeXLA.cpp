@@ -1,8 +1,10 @@
 #include "EnzymeXLA.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "mlir/CAPI/IR.h"
@@ -390,6 +392,7 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("slice_elementwise<1>");
   list.push_back("dot_reshape_dot<1>");
   list.push_back("concat_fuse<1>");
+  list.push_back("concat_slices_to_reverse<1>");
   list.push_back("concat_push_binop_add<1>");
   list.push_back("concat_push_binop_mul<1>");
   list.push_back("reduce_concat<1>");
@@ -648,7 +651,8 @@ static void addLoopRaisingPasses(std::vector<std::string> &list) {
   list.push_back("remove_loop_carried_dependencies_from_while_load_operations");
 }
 
-static void addLICMPasses(std::vector<std::string> &list) {
+static void addLICMPasses(std::vector<std::string> &list,
+                          int64_t loopUnswitchThreshold) {
   list.push_back("dus_licm(0)");
   list.push_back("slice_licm(0)");
   list.push_back("elementwise_licm(0)");
@@ -669,6 +673,9 @@ static void addLICMPasses(std::vector<std::string> &list) {
   list.push_back("rotate_licm(0)");
   list.push_back("wrap_licm(0)");
   list.push_back("extend_licm(0)");
+  if (loopUnswitchThreshold >= 0) {
+    list.push_back(passWithArg("loop_unswitch", loopUnswitchThreshold));
+  }
 }
 
 static void addPadPasses(std::vector<std::string> &list,
@@ -971,7 +978,7 @@ void enzymexlaGetTransformPassesList(
 
   // LICM
   if (options->enable_licm_optimization_passes) {
-    addLICMPasses(list);
+    addLICMPasses(list, options->loop_unswitch_threshold);
   }
 
   // Pad passes
@@ -1037,6 +1044,25 @@ void enzymexlaGetTransformPassesList(
   // Lower comms (added to lower list only)
   if (options->lower_comms) {
     addLowerCommsPasses(lowerList);
+  }
+
+  // Exclude passes by base name (everything before the first '(' or '<').
+  if (options->num_excluded_passes > 0) {
+    std::unordered_set<std::string> excluded(options->excluded_passes,
+                                             options->excluded_passes +
+                                                 options->num_excluded_passes);
+    auto baseName = [](const std::string &pass) -> std::string {
+      auto end = pass.find_first_of("(<");
+      return end == std::string::npos ? pass : pass.substr(0, end);
+    };
+    auto shouldExclude = [&](const std::string &p) {
+      return excluded.count(baseName(p)) > 0;
+    };
+    list.erase(std::remove_if(list.begin(), list.end(), shouldExclude),
+               list.end());
+    lowerList.erase(
+        std::remove_if(lowerList.begin(), lowerList.end(), shouldExclude),
+        lowerList.end());
   }
 
   // Output

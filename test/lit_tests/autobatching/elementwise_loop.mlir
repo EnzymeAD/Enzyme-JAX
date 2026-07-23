@@ -132,15 +132,15 @@ module {
 // CHECK-NEXT:     %7 = stablehlo.compare  LT, %iterArg, %c_1 : (tensor<i64>, tensor<i64>) -> tensor<i1>
 // CHECK-NEXT:     stablehlo.return %7 : tensor<i1>
 // CHECK-NEXT:   } do {
-// CHECK-NEXT:     %7 = stablehlo.add %c_2, %iterArg {enzymexla.bounds = {{.*}}} : tensor<i64>
-// CHECK-NEXT:     %8 = stablehlo.divide %iterArg, %c_2 {enzymexla.bounds = {{.*}}} : tensor<i64>
-// CHECK-NEXT:     %9 = stablehlo.dynamic_slice %5, %8, sizes = [1] : (tensor<4xf64>, tensor<i64>) -> tensor<1xf64>
-// CHECK-NEXT:     %10 = stablehlo.dynamic_slice %2, %8, sizes = [1] : (tensor<4xf64>, tensor<i64>) -> tensor<1xf64>
-// CHECK-NEXT:     %11 = stablehlo.subtract %10, %9 : tensor<1xf64>
-// CHECK-NEXT:     %12 = stablehlo.convert %7 {enzymexla.bounds = {{.*}}} : (tensor<i64>) -> tensor<i32>
-// CHECK-NEXT:     %13 = stablehlo.subtract %12, %c {enzymexla.bounds = {{.*}}} : tensor<i32>
-// CHECK-NEXT:     %14 = stablehlo.dynamic_update_slice %iterArg_4, %11, %13 : (tensor<10xf64>, tensor<1xf64>, tensor<i32>) -> tensor<10xf64>
-// CHECK-NEXT:     stablehlo.return %7, %14 : tensor<i64>, tensor<10xf64>
+// CHECK-NEXT:     %[[a7:.+]] = stablehlo.add %c_2, %iterArg {enzymexla.bounds = {{.*}}} : tensor<i64>
+// CHECK-NEXT:     %[[a12:.+]] = stablehlo.convert %[[a7]] {enzymexla.bounds = {{.*}}} : (tensor<i64>) -> tensor<i32>
+// CHECK-NEXT:     %[[a13:.+]] = stablehlo.subtract %[[a12]], %c {enzymexla.bounds = {{.*}}} : tensor<i32>
+// CHECK-NEXT:     %[[a8:.+]] = stablehlo.divide %iterArg, %c_2 {enzymexla.bounds = {{.*}}} : tensor<i64>
+// CHECK-NEXT:     %[[a9:.+]] = stablehlo.dynamic_slice %5, %[[a8]], sizes = [1] : (tensor<4xf64>, tensor<i64>) -> tensor<1xf64>
+// CHECK-NEXT:     %[[a10:.+]] = stablehlo.dynamic_slice %2, %[[a8]], sizes = [1] : (tensor<4xf64>, tensor<i64>) -> tensor<1xf64>
+// CHECK-NEXT:     %[[a11:.+]] = stablehlo.subtract %[[a10]], %[[a9]] : tensor<1xf64>
+// CHECK-NEXT:     %[[a14:.+]] = stablehlo.dynamic_update_slice %iterArg_4, %[[a11]], %[[a13]] : (tensor<10xf64>, tensor<1xf64>, tensor<i32>) -> tensor<10xf64>
+// CHECK-NEXT:     stablehlo.return %[[a7]], %[[a14]] : tensor<i64>, tensor<10xf64>
 // CHECK-NEXT:   }
 // CHECK-NEXT:   return %6#1 : tensor<10xf64>
 // CHECK-NEXT: }
