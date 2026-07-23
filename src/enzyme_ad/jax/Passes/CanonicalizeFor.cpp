@@ -1493,18 +1493,22 @@ struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
 
     for (Value arg : condOp.getArgs()) {
       Value newArg = nullptr;
+      Block *condBlock = &condOp->getParentRegion()->front();
       if (auto blockArg = dyn_cast<BlockArgument>(arg)) {
-        if (blockArg.getOwner() == &condOp->getParentRegion()->front()) {
+        if (blockArg.getOwner() == condBlock) {
           newArg = loop.getOperand(blockArg.getArgNumber());
         }
       } else if (auto selectOp = arg.getDefiningOp<arith::SelectOp>()) {
-
         if (auto trueBlockArg =
                 dyn_cast<BlockArgument>(selectOp.getTrueValue())) {
-          newArg = loop.getOperand(trueBlockArg.getArgNumber());
+          if (trueBlockArg.getOwner() == condBlock) {
+            newArg = loop.getOperand(trueBlockArg.getArgNumber());
+          }
         } else if (auto falseBlockArg =
                        dyn_cast<BlockArgument>(selectOp.getFalseValue())) {
-          newArg = loop.getOperand(falseBlockArg.getArgNumber());
+          if (falseBlockArg.getOwner() == condBlock) {
+            newArg = loop.getOperand(falseBlockArg.getArgNumber());
+          }
         }
       }
       if (!newArg)

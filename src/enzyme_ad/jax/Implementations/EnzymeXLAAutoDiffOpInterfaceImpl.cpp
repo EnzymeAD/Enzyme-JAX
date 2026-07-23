@@ -16,11 +16,13 @@
 #include "Enzyme/MLIR/Interfaces/GradientUtils.h"
 #include "Enzyme/MLIR/Interfaces/GradientUtilsReverse.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/Support/LogicalResult.h"
 #include "mlir/Transforms/RegionUtils.h"
 #include "src/enzyme_ad/jax/Implementations/SHLOGenericBatchOpInterface.h"
 #include "src/enzyme_ad/jax/Utils.h"
+#include "llvm/ADT/TypeSwitch.h"
 
 #include "Dialect/Ops.h"
 #include "mlir/IR/TypeSupport.h"
@@ -162,7 +164,7 @@ struct GPUWrapperOpEnzymeOpsRemover
     OpBuilder::InsertionGuard guard(rewriter);
     IRMapping map;
     rewriter.setInsertionPoint(wrapOp);
-    // Assume caches are in global memory (address space 1)
+    // Assume GPU allocations need to be in address space 1
     auto globalMemSpace = rewriter.getI64IntegerAttr(1);
     for (Operation *toMove : llvm::reverse(opsToMove)) {
       Operation *cloned = rewriter.clone(*toMove, map);
@@ -174,6 +176,9 @@ struct GPUWrapperOpEnzymeOpsRemover
             *allocOp.getType().clonePtrWith(globalMemSpace, std::nullopt),
             /*asyncDependencies=*/ValueRange(), allocOp.getDynamicSizes(),
             /*symbolOperands=*/ValueRange());
+        // if (allocOp->hasAttr("enzyme.cache_alloc"))
+        //   gpuAlloc->setAttr("enzyme.cache_alloc",
+        //                     allocOp->getAttr("enzyme.cache_alloc"));
         allocOp.replaceAllUsesWith(gpuAlloc.getResult(0));
         rewriter.eraseOp(allocOp);
 
@@ -203,7 +208,7 @@ struct GPUWrapperOpEnzymeOpsRemover
       traverseDownDefUseChains(frontier, [globalMemSpace](Operation *op) {
         if (auto subviewOp = dyn_cast<memref::SubViewOp>(op)) {
           auto newType = cast<MemRefType>(
-              updateMemorySpace(subviewOp.getType(), globalMemSpace));
+              *subviewOp.getType().clonePtrWith(globalMemSpace, std::nullopt));
           subviewOp.getResult().setType(newType);
         }
       });
@@ -321,6 +326,31 @@ struct GPUWrapperOpInterfaceReverse
                           MGradientUtilsReverse *gutils) const {}
 };
 
+class Pointer2MemrefRev : public ReverseAutoDiffOpInterface::ExternalModel<
+                              Pointer2MemrefRev, enzymexla::Pointer2MemrefOp> {
+public:
+  LogicalResult createReverseModeAdjoint(Operation *orig, OpBuilder &builder,
+                                         MGradientUtilsReverse *gutils,
+                                         SmallVector<Value> caches) const {
+    return success();
+  }
+
+  SmallVector<Value> cacheValues(Operation *orig,
+                                 MGradientUtilsReverse *gutils) const {
+    return SmallVector<Value>();
+  }
+
+  void createShadowValues(Operation *op, OpBuilder &builder,
+                          MGradientUtilsReverse *gutils) const {
+    auto p2m = cast<enzymexla::Pointer2MemrefOp>(op);
+    if (!gutils->isConstantValue(p2m)) {
+      Value dres = gutils->invertPointerM(p2m.getSource(), builder);
+      Value shadow = builder.create<enzymexla::Pointer2MemrefOp>(
+          p2m.getLoc(), p2m.getType(), dres);
+      gutils->setInvertedPointer(p2m, shadow);
+    }
+  }
+};
 } // namespace
 
 void mlir::enzyme::registerEnzymeXLADialectAutoDiffInterface(
@@ -329,6 +359,7 @@ void mlir::enzyme::registerEnzymeXLADialectAutoDiffInterface(
     registerInterfaces(context);
     GPUWrapperOp::attachInterface<GPUWrapperOpInterfaceReverse>(*context);
     GPUWrapperOp::attachInterface<GPUWrapperOpEnzymeOpsRemover>(*context);
+    enzymexla::Pointer2MemrefOp::attachInterface<Pointer2MemrefRev>(*context);
 
     Pointer2MemrefOp::attachInterface<
         ViewCastOpInterfaceReverse<Pointer2MemrefOp>>(*context);

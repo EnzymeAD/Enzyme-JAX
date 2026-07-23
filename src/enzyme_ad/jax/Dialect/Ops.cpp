@@ -837,7 +837,8 @@ template <>
 void LoadStorePointer2MemrefGEP<memref::LoadOp>::createNewOp(
     memref::LoadOp op, Value baseMemref, SmallVector<Value> idxs,
     PatternRewriter &rewriter) const {
-  rewriter.replaceOpWithNewOp<memref::LoadOp>(op, baseMemref, idxs);
+  rewriter.replaceOpWithNewOp<memref::LoadOp>(
+      op, baseMemref, idxs, op.getNontemporal(), op.getMaybeAlign());
 }
 
 template <>
@@ -852,7 +853,8 @@ void LoadStorePointer2MemrefGEP<memref::StoreOp>::createNewOp(
     memref::StoreOp op, Value baseMemref, SmallVector<Value> idxs,
     PatternRewriter &rewriter) const {
   rewriter.replaceOpWithNewOp<memref::StoreOp>(op, op.getValue(), baseMemref,
-                                               idxs);
+                                               idxs, op.getNontemporal(),
+                                               op.getMaybeAlign());
 }
 
 template <>
@@ -1643,6 +1645,22 @@ void GPUWrapperOp::build(OpBuilder &builder, OperationState &result) {
   Region *bodyRegion = result.addRegion();
   builder.createBlock(bodyRegion);
   GPUWrapperOp::ensureTerminator(*bodyRegion, builder, result.location);
+}
+
+void GPUWrapperOp::getSuccessorRegions(
+    RegionBranchPoint point, SmallVectorImpl<RegionSuccessor> &regions) {
+  // If the predecessor is the GPUWrapperOp, branch into the body.
+  if (point.isParent()) {
+    regions.push_back(RegionSuccessor(&getRegion()));
+    return;
+  }
+
+  // Otherwise, the region branches back to the parent operation.
+  regions.push_back(RegionSuccessor(getOperation()));
+}
+
+ValueRange GPUWrapperOp::getSuccessorInputs(RegionSuccessor successor) {
+  return ValueRange();
 }
 
 LogicalResult fixupGetFunc(LLVM::CallOp op, OpBuilder &rewriter,

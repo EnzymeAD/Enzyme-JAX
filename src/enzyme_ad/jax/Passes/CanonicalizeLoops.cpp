@@ -23,6 +23,8 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "llvm/Support/Debug.h"
 
+#include "mlir/IR/Verifier.h"
+
 #include <llvm/ADT/STLExtras.h>
 #include <numeric>
 
@@ -1052,12 +1054,11 @@ struct CanonicalizeLoopsPass
     : public enzyme::impl::CanonicalizeLoopsPassBase<CanonicalizeLoopsPass> {
   using CanonicalizeLoopsPassBase::CanonicalizeLoopsPassBase;
   void runOnOperation() override {
-
     // Step 0: Canonicalize loops when possible.
     {
       RewritePatternSet patterns(&getContext());
       patterns.add<RemoveAffineParallelSingleIter, SwitchToIf,
-                   SimplifyIfByRemovingEmptyThen, PartialIfToSelect>(
+                   SimplifyIfByRemovingEmptyThen /*, PartialIfToSelect*/>(
           &getContext());
 
       if (speculate_if) {
@@ -1072,6 +1073,11 @@ struct CanonicalizeLoopsPass
         signalPassFailure();
         return;
       }
+    }
+
+    if (failed(mlir::verify(getOperation()))) {
+      signalPassFailure();
+      return;
     }
 
     // Step 1: Run data flow analysis and do additional simplifications.

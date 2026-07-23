@@ -969,6 +969,8 @@ void fully2ComposeIntegerSetAndOperands(
 
 namespace {
 struct AffineCFGPass : public enzyme::impl::AffineCFGBase<AffineCFGPass> {
+  using AffineCFGBase::AffineCFGBase;
+
   void runOnOperation() override;
 };
 } // namespace
@@ -1688,9 +1690,11 @@ struct MoveRMWToAffine : public OpRewritePattern<memref::AtomicRMWOp> {
     map = recreateExpr(map);
     assert(map.getNumInputs() == operands.size());
 
+    auto alignment = rmw->getAttrOfType<IntegerAttr>(
+        memref::AllocOp::getAlignmentAttrStrName());
     auto affineLoad = enzyme::AffineAtomicRMWOp::create(
         rewriter, rmw.getLoc(), rmw.getValue().getType(), rmw.getKind(),
-        rmw.getValue(), rmw.getMemref(), operands, map);
+        rmw.getValue(), rmw.getMemref(), operands, map, alignment);
     rmw.getResult().replaceAllUsesWith(affineLoad.getResult());
     rewriter.eraseOp(rmw);
     return success();
@@ -1738,6 +1742,10 @@ struct MoveLoadToAffine : public OpRewritePattern<memref::LoadOp> {
 
     affine::AffineLoadOp affineLoad = affine::AffineLoadOp::create(
         rewriter, load.getLoc(), load.getMemRef(), map, operands);
+    if (load->hasAttr(load.getAlignmentAttrName())) {
+      affineLoad->setAttr(load.getAlignmentAttrName(), load.getAlignmentAttr());
+    }
+
     load.getResult().replaceAllUsesWith(affineLoad.getResult());
     rewriter.eraseOp(load);
     return success();
@@ -1777,9 +1785,13 @@ struct MoveStoreToAffine : public OpRewritePattern<memref::StoreOp> {
     affine::canonicalizeMapAndOperands(&map, &operands);
     map = recreateExpr(map);
 
-    affine::AffineStoreOp::create(rewriter, store.getLoc(),
-                                  store.getValueToStore(), store.getMemRef(),
-                                  map, operands);
+    auto affineStore = affine::AffineStoreOp::create(
+        rewriter, store.getLoc(), store.getValueToStore(), store.getMemRef(),
+        map, operands);
+    if (store->hasAttr(store.getAlignmentAttrName())) {
+      affineStore->setAttr(store.getAlignmentAttrName(),
+                           store.getAlignmentAttr());
+    }
     rewriter.eraseOp(store);
     return success();
   }
@@ -1837,8 +1849,13 @@ template <>
 void AffineFixup<affine::AffineLoadOp>::replaceAffineOp(
     PatternRewriter &rewriter, affine::AffineLoadOp load, AffineMap map,
     ArrayRef<Value> mapOperands) const {
-  rewriter.replaceOpWithNewOp<affine::AffineLoadOp>(load, load.getMemRef(), map,
-                                                    mapOperands);
+  auto alignAttrName = memref::AllocOp::getAlignmentAttrStrName();
+  auto alignAttr = load->getAttr(alignAttrName);
+  auto newLoad = rewriter.replaceOpWithNewOp<affine::AffineLoadOp>(
+      load, load.getMemRef(), map, mapOperands);
+  if (alignAttr) {
+    newLoad->setAttr(alignAttrName, alignAttr);
+  }
 }
 template <>
 void AffineFixup<affine::AffinePrefetchOp>::replaceAffineOp(
@@ -1853,8 +1870,13 @@ template <>
 void AffineFixup<affine::AffineStoreOp>::replaceAffineOp(
     PatternRewriter &rewriter, affine::AffineStoreOp store, AffineMap map,
     ArrayRef<Value> mapOperands) const {
-  rewriter.replaceOpWithNewOp<affine::AffineStoreOp>(
+  auto alignAttrName = "alignment";
+  auto alignAttr = store->getAttr(alignAttrName);
+  auto newStore = rewriter.replaceOpWithNewOp<affine::AffineStoreOp>(
       store, store.getValueToStore(), store.getMemRef(), map, mapOperands);
+  if (alignAttr) {
+    newStore->setAttr(alignAttrName, alignAttr);
+  }
 }
 template <>
 void AffineFixup<affine::AffineVectorLoadOp>::replaceAffineOp(
@@ -6188,10 +6210,10 @@ void mlir::enzyme::populateAffineCFGPatterns(RewritePatternSet &rpl) {
   rpl.add</*SimplfyIntegerCastMath, */ CanonicalizeAffineApply, ForOpRaising,
           ParallelOpRaising, CanonicalizeIndexCast<IndexCastOp>,
           CanonicalizeIndexCast<IndexCastUIOp>, AffineIfYieldMovementPattern,
-          /* IndexCastMovement,*/ AffineFixup<affine::AffineLoadOp>,
+          /* IndexCastMovement, */ AffineFixup<affine::AffineLoadOp>,
           AffineFixup<affine::AffineStoreOp>, CanonicalizIfBounds,
           MoveStoreToAffine, MoveIfToAffine, MoveRMWToAffine, MoveLoadToAffine,
-          MoveExtToAffine, MoveSIToFPToAffine, CmpExt, MoveSelectToAffine,
+          MoveExtToAffine, MoveSIToFPToAffine, CmpExt, /*MoveSelectToAffine,*/
           AffineIfSimplification, AffineIfSimplificationIsl, CombineAffineIfs,
           MergeNestedAffineParallelLoops, PrepMergeNestedAffineParallelLoops,
           MergeNestedAffineParallelIf, MergeParallelInductions, OptimizeRem,
