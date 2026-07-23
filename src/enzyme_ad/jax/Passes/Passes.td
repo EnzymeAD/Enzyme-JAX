@@ -539,6 +539,15 @@ def LowerEnzymeXLAMPIPass : Pass<"lower-enzymexla-mpi"> {
   ];
 }
 
+def FuseJITCallsPass : Pass<"fuse-jit-calls", "mlir::ModuleOp"> {
+  let summary = "Fuse sequential JIT calls that depend on each other";
+  let dependentDialects = [
+    "enzymexla::EnzymeXLADialect",
+    "LLVM::LLVMDialect",
+    "stablehlo::StablehloDialect",
+  ];
+}
+
 def LowerEnzymeXLALapackPass : Pass<"lower-enzymexla-lapack"> {
   let summary = "Lower enzymexla.lapack ops to stablehlo";
   let dependentDialects = [
