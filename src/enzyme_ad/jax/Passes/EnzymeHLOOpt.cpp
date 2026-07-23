@@ -73,6 +73,24 @@
 #include <ostream>
 #define DEBUG_TYPE "enzymehloopt"
 
+// Domain-guard triage (branch scope/domain-guard-triage).
+//
+// Emit one debug line at each rewrite that trusts a domain-narrowing analysis
+// fact (non_negative / no_nan / finite). The predicate and the trusted value are
+// already recoverable from the IR (setGuaranteedInIR writes e.g.
+// `enzymexla.non_negative = GUARANTEED` onto the value and it survives to the
+// pass output). What this adds is the only bit that is NOT on the IR: the name
+// of the *consuming rewrite*, plus a time-ordered trace. A later
+// domain-narrowing NaN is then one grep ("[domain-guard]") from the rewrite that
+// produced it.
+//
+// Zero always-on cost: LLVM_DEBUG compiles out entirely under NDEBUG and is a
+// single DebugFlag branch otherwise. No lit test uses -debug-only, so this never
+// affects FileCheck. Enable with `-debug-only=enzymehloopt`.
+#define DOMAIN_GUARD_TRUST(REWRITE, PREDICATE, VALUE)                          \
+  LLVM_DEBUG(llvm::dbgs() << "[domain-guard] " REWRITE " trusted " PREDICATE   \
+                          << " on " << (VALUE) << "\n")
+
 namespace mlir {
 namespace enzyme {
 #define GEN_PASS_DEF_ENZYMEHLOOPTPASS
@@ -10541,6 +10559,7 @@ struct ReduceMaxMinMulPositiveScalar
         // For now, we accept non-negative which includes zero
         // This is still correct for max/min but could potentially
         // multiply by zero which doesn't break correctness
+        DOMAIN_GUARD_TRUST("ReduceMaxMinMulPositiveScalar", "non_negative", v);
         return true;
       }
       return false;
@@ -13678,6 +13697,10 @@ struct CompareOpCanon final
         if ((compType && *compType == ComparisonType::SIGNED) ||
             (isFloat && (!compType || *compType == ComparisonType::FLOAT) &&
              guaranteedNoNanResult(otherOperand, rewriter))) {
+          // isFloat is true only on the no_nan-trusting arm; the SIGNED arm is
+          // integer (isFloat == false) and consults no analysis fact.
+          if (isFloat)
+            DOMAIN_GUARD_TRUST("CompareSimplify", "no_nan", otherOperand);
           if (isNegative) {
             switch (direction) {
             case ComparisonDirection::EQ:
@@ -13721,11 +13744,13 @@ struct CompareOpCanon final
     };
 
     if (rhsAttr && guaranteedNonNegativeResult(lhs, rewriter)) {
+      DOMAIN_GUARD_TRUST("CompareSimplify", "non_negative", lhs);
       if (succeeded(simplifyNonNegative(rhsAttr, direction, lhs))) {
         return success();
       }
     }
     if (lhsAttr && guaranteedNonNegativeResult(rhs, rewriter)) {
+      DOMAIN_GUARD_TRUST("CompareSimplify", "non_negative", rhs);
       if (succeeded(
               simplifyNonNegative(lhsAttr, invertDirection(direction), rhs))) {
         return success();
@@ -22239,6 +22264,7 @@ struct AbsPositiveSimplify
       return failure();
 
     if (guaranteedNonNegativeResult(operand.getDefiningOp(), rewriter)) {
+      DOMAIN_GUARD_TRUST("AbsPositiveSimplify", "non_negative", operand);
       rewriter.replaceOp(op, op.getOperand());
       return success();
     }
