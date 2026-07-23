@@ -25,31 +25,53 @@ func.func @cbrt(%x : tensor<2xf32>) -> tensor<2xf32> {
 // REVERSE-NEXT:    return %3 : tensor<2xf32>
 // REVERSE-NEXT:  }
 
-// Negative inputs: cbrt is real and smooth for x < 0 (cbrt(-8) = -2), so the
+// Exercise both signs. cbrt is real and smooth for x < 0 (cbrt(-8) = -2), so the
 // true gradient 1/(3*cbrt(x)^2) is a finite real with the same magnitude as on
-// the positives. The old pow(x,-2/3) rule returned NaN here. See issue #2571.
+// the positives. The old pow(x,-2/3) rule returned NaN on negatives. See issue #2571.
 func.func @main() {
-  %x = stablehlo.constant dense<[-8.0, -27.0]> : tensor<2xf32>
-  %out = stablehlo.constant dense<[-2.0, -3.0]> : tensor<2xf32>
-  %expected = stablehlo.constant dense<[0.083333336, 0.037037037]> : tensor<2xf32>
-
   %dx = stablehlo.constant dense<1.0> : tensor<2xf32>
 
-  %fwd:2 = enzyme.fwddiff @cbrt(%x, %dx) {
+  // Positive inputs: unchanged from the pre-fix behavior.
+  %xp = stablehlo.constant dense<[8.0, 27.0]> : tensor<2xf32>
+  %outp = stablehlo.constant dense<[2.0, 3.0]> : tensor<2xf32>
+  %expectedp = stablehlo.constant dense<[0.083333336, 0.037037037]> : tensor<2xf32>
+
+  %fwdp:2 = enzyme.fwddiff @cbrt(%xp, %dx) {
     activity=[#enzyme<activity enzyme_dup>],
     ret_activity=[#enzyme<activity enzyme_dup>]
   } : (tensor<2xf32>, tensor<2xf32>) -> (tensor<2xf32>, tensor<2xf32>)
 
-  check.expect_almost_eq %fwd#0, %out : tensor<2xf32>
-  check.expect_almost_eq %fwd#1, %expected : tensor<2xf32>
+  check.expect_almost_eq %fwdp#0, %outp : tensor<2xf32>
+  check.expect_almost_eq %fwdp#1, %expectedp : tensor<2xf32>
 
-  %rev:2 = enzyme.autodiff @cbrt(%x, %dx) {
+  %revp:2 = enzyme.autodiff @cbrt(%xp, %dx) {
     activity=[#enzyme<activity enzyme_active>],
     ret_activity=[#enzyme<activity enzyme_active>]
   } : (tensor<2xf32>, tensor<2xf32>) -> (tensor<2xf32>, tensor<2xf32>)
 
-  check.expect_almost_eq %rev#0, %out : tensor<2xf32>
-  check.expect_almost_eq %rev#1, %expected : tensor<2xf32>
+  check.expect_almost_eq %revp#0, %outp : tensor<2xf32>
+  check.expect_almost_eq %revp#1, %expectedp : tensor<2xf32>
+
+  // Negative inputs: the regression this PR fixes. Same gradient magnitude.
+  %xn = stablehlo.constant dense<[-8.0, -27.0]> : tensor<2xf32>
+  %outn = stablehlo.constant dense<[-2.0, -3.0]> : tensor<2xf32>
+  %expectedn = stablehlo.constant dense<[0.083333336, 0.037037037]> : tensor<2xf32>
+
+  %fwdn:2 = enzyme.fwddiff @cbrt(%xn, %dx) {
+    activity=[#enzyme<activity enzyme_dup>],
+    ret_activity=[#enzyme<activity enzyme_dup>]
+  } : (tensor<2xf32>, tensor<2xf32>) -> (tensor<2xf32>, tensor<2xf32>)
+
+  check.expect_almost_eq %fwdn#0, %outn : tensor<2xf32>
+  check.expect_almost_eq %fwdn#1, %expectedn : tensor<2xf32>
+
+  %revn:2 = enzyme.autodiff @cbrt(%xn, %dx) {
+    activity=[#enzyme<activity enzyme_active>],
+    ret_activity=[#enzyme<activity enzyme_active>]
+  } : (tensor<2xf32>, tensor<2xf32>) -> (tensor<2xf32>, tensor<2xf32>)
+
+  check.expect_almost_eq %revn#0, %outn : tensor<2xf32>
+  check.expect_almost_eq %revn#1, %expectedn : tensor<2xf32>
 
   func.return
 }
