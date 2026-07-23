@@ -39,7 +39,7 @@ module {
 }
 
 // CHECK:  func.func public @main(%arg0: tensor<3xf64>) -> tensor<3xf64> {
-// CHECK-NEXT:    %cst = arith.constant dense<0.000000e+00> : tensor<1x3xf64>
+// CHECK-NEXT:    %cst = stablehlo.constant dense<0.000000e+00> : tensor<1x3xf64>
 // CHECK-NEXT:    %c = stablehlo.constant dense<0> : tensor<i64>
 // CHECK-NEXT:    %c_0 = stablehlo.constant dense<1> : tensor<i64>
 // CHECK-NEXT:    %cst_1 = stablehlo.constant dense<1.000000e+00> : tensor<3xf64>
