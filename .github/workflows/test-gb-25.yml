@@ -48,11 +48,11 @@ jobs:
           - ''
           # - 'b25f3cbed2bc88c8ffef85f6a5319e2cf7b0454c'
         gb25_commit:
-          - 'main'
+          - 'glw/up'
 
         reactant_commit:
           - 'main'
-          - 'multipad'
+          # - 'multipad'
         grid:
           - '--float-type=Float64'
           - '--float-type=Float32'
