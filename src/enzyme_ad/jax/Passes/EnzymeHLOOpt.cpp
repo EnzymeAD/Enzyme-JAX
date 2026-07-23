@@ -27748,11 +27748,11 @@ struct LogSimplify final
   using CheckedOpRewritePattern<stablehlo::LogOp,
                                 LogSimplify>::CheckedOpRewritePattern;
 
-  // True iff `value` is a float constant whose every element is non-NaN and
-  // non-negative (and, unless allowZero, strictly positive). Keeps the
-  // log-splitting rewrites below from narrowing the domain on negative or zero
-  // constants.
-  static bool isPositiveNonNanConstant(Value value, bool allowZero) {
+  // True iff `value` is a finite float constant whose every element is
+  // non-negative (and, unless allowZero, strictly positive). Excludes NaN,
+  // negatives, and infinities, which would let the log-splits below narrow the
+  // domain. See #2570.
+  static bool isPositiveFiniteConstant(Value value, bool allowZero) {
     DenseElementsAttr attr;
     if (!matchPattern(value, m_Constant(&attr)) ||
         !isa<FloatType>(attr.getElementType()))
@@ -27760,7 +27760,7 @@ struct LogSimplify final
 
     return llvm::all_of(attr.getValues<APFloat>(),
                         [allowZero](const APFloat &element) {
-                          return !element.isNaN() && !element.isNegative() &&
+                          return element.isFinite() && !element.isNegative() &&
                                  (allowZero || !element.isZero());
                         });
   }
@@ -27800,7 +27800,7 @@ struct LogSimplify final
           // the domain, and the split isn't bit-exact under FP rounding. See
           // #2570.
           Value cst = matchPattern(lhs, m_Constant()) ? lhs : rhs;
-          if (isPositiveNonNanConstant(cst, /*allowZero=*/false)) {
+          if (isPositiveFiniteConstant(cst, /*allowZero=*/false)) {
             rewriter.replaceOpWithNewOp<stablehlo::AddOp>(
                 op, stablehlo::LogOp::create(rewriter, op.getLoc(), lhs),
                 stablehlo::LogOp::create(rewriter, op.getLoc(), rhs));
@@ -27860,7 +27860,7 @@ struct LogSimplify final
           // is safe, so it only needs to be non-negative. See #2570.
           bool constantIsLhs = matchPattern(lhs, m_Constant());
           Value cst = constantIsLhs ? lhs : rhs;
-          if (isPositiveNonNanConstant(cst, /*allowZero=*/!constantIsLhs)) {
+          if (isPositiveFiniteConstant(cst, /*allowZero=*/!constantIsLhs)) {
             rewriter.replaceOpWithNewOp<stablehlo::SubtractOp>(
                 op, stablehlo::LogOp::create(rewriter, op.getLoc(), lhs),
                 stablehlo::LogOp::create(rewriter, op.getLoc(), rhs));

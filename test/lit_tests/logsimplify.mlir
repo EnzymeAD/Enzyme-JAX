@@ -244,6 +244,22 @@ func.func @main_neg_div(%arg0: tensor<f64>) -> tensor<f64> {
 // CHECK-NEXT:     return %1 : tensor<f64>
 // CHECK-NEXT: }
 
+// log(a * c) with an infinite constant must stay as-is: log(x * inf) is a
+// finite -inf/NaN that splitting to log(x) + log(inf) would not preserve.
+func.func @main_inf_mul(%arg0: tensor<f64>) -> tensor<f64> {
+    %cst = stablehlo.constant dense<0x7FF0000000000000> : tensor<f64>
+    %0 = stablehlo.multiply %arg0, %cst : tensor<f64>
+    %1 = stablehlo.log %0 : tensor<f64>
+    return %1 : tensor<f64>
+}
+
+// CHECK: func.func @main_inf_mul(%arg0: tensor<f64>) -> tensor<f64> {
+// CHECK-NEXT:     %cst = stablehlo.constant dense<0x7FF0000000000000> : tensor<f64>
+// CHECK-NEXT:     %0 = stablehlo.multiply %arg0, %cst : tensor<f64>
+// CHECK-NEXT:     %1 = stablehlo.log %0 : tensor<f64>
+// CHECK-NEXT:     return %1 : tensor<f64>
+// CHECK-NEXT: }
+
 // log(pow(x, y)) must stay as-is when x is not provably non-negative: for x < 0,
 // log(pow(x, y)) can be a finite real while y * log(x) is NaN.
 func.func @main_pow_unknown(%arg0: tensor<f64>, %arg1: tensor<f64>) -> tensor<f64> {
