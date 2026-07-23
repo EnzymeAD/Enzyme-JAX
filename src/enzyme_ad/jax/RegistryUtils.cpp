@@ -91,9 +91,11 @@
 #include "mlir/Target/LLVMIR/Dialect/ROCDL/ROCDLToLLVMIRTranslation.h"
 
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
+#include "src/enzyme_ad/jax/Passes/Distributed/Passes.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "src/enzyme_ad/jax/Passes/Tessera/Passes.h"
 
+#include "src/enzyme_ad/jax/Dialect/Axis/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Comm/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Distributed/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Perfify/Dialect.h"
@@ -235,6 +237,7 @@ void registerDialects(mlir::DialectRegistry &registry) {
   registry.insert<mlir::enzyme::EnzymeDialect>();
   registry.insert<mlir::impulse::ImpulseDialect>();
   registry.insert<mlir::enzymexla::EnzymeXLADialect>();
+  registry.insert<mlir::enzyme::axis::AxisDialect>();
   registry.insert<mlir::enzymexla::comm::CommDialect>();
   registry.insert<mlir::enzyme::distributed::DistributedDialect>();
   registry.insert<mlir::enzyme::tessera::TesseraDialect>();
@@ -278,6 +281,7 @@ void loadAllRegisteredDialects(mlir::MLIRContext &context) {
   context.loadDialect<mlir::enzyme::EnzymeDialect>();
   context.loadDialect<mlir::impulse::ImpulseDialect>();
   context.loadDialect<mlir::enzymexla::EnzymeXLADialect>();
+  context.loadDialect<mlir::enzyme::axis::AxisDialect>();
   context.loadDialect<mlir::enzymexla::comm::CommDialect>();
   context.loadDialect<mlir::enzymexla::triton_ext::TritonExtDialect>();
   context.loadDialect<mlir::sdy::SdyDialect>();
@@ -331,6 +335,7 @@ void registerInterfaces(mlir::DialectRegistry &registry) {
 void initializePasses() {
   registerenzymePasses();
   enzyme::registerenzymexlaPasses();
+  mlir::enzyme::distributed::registerdistributedPasses();
   mlir::enzyme::tessera::registertesseraPasses();
 
   // Register the standard passes we want.
