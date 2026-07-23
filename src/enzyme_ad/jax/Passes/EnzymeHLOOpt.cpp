@@ -15103,6 +15103,90 @@ struct ImagOpCanon final
   }
 };
 
+// real(exp(x)) -> exp(real(x)) * cos(imag(x))
+struct RealOfExpSimplify final
+    : CheckedOpRewritePattern<stablehlo::RealOp, RealOfExpSimplify> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::RealOp op,
+                                    PatternRewriter &rewriter) const {
+    if (!isa<ComplexType>(op.getOperand().getType().getElementType()))
+      return failure();
+
+    auto exp = op.getOperand().getDefiningOp<stablehlo::ExpOp>();
+    if (!exp)
+      return failure();
+
+    // Only rewrite when the exp feeds nothing but this op, otherwise the
+    // original exp stays live and we just add redundant work.
+    if (!llvm::hasSingleElement(exp->getUsers()))
+      return failure();
+
+    auto loc = op.getLoc();
+    auto re = stablehlo::RealOp::create(rewriter, loc, exp.getOperand());
+    auto im = stablehlo::ImagOp::create(rewriter, loc, exp.getOperand());
+    auto expRe = stablehlo::ExpOp::create(rewriter, loc, re);
+    auto cosIm = stablehlo::CosineOp::create(rewriter, loc, im);
+    rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, expRe, cosIm);
+    return success();
+  }
+};
+
+// imag(exp(x)) -> exp(real(x)) * sin(imag(x))
+struct ImagOfExpSimplify final
+    : CheckedOpRewritePattern<stablehlo::ImagOp, ImagOfExpSimplify> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ImagOp op,
+                                    PatternRewriter &rewriter) const {
+    if (!isa<ComplexType>(op.getOperand().getType().getElementType()))
+      return failure();
+
+    auto exp = op.getOperand().getDefiningOp<stablehlo::ExpOp>();
+    if (!exp)
+      return failure();
+
+    // Only rewrite when the exp feeds nothing but this op, otherwise the
+    // original exp stays live and we just add redundant work.
+    if (!llvm::hasSingleElement(exp->getUsers()))
+      return failure();
+
+    auto loc = op.getLoc();
+    auto re = stablehlo::RealOp::create(rewriter, loc, exp.getOperand());
+    auto im = stablehlo::ImagOp::create(rewriter, loc, exp.getOperand());
+    auto expRe = stablehlo::ExpOp::create(rewriter, loc, re);
+    auto sinIm = stablehlo::SineOp::create(rewriter, loc, im);
+    rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, expRe, sinIm);
+    return success();
+  }
+};
+
+// abs(exp(x)) -> exp(real(x))
+struct AbsOfExpSimplify final
+    : CheckedOpRewritePattern<stablehlo::AbsOp, AbsOfExpSimplify> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::AbsOp op,
+                                    PatternRewriter &rewriter) const {
+    if (!isa<ComplexType>(op.getOperand().getType().getElementType()))
+      return failure();
+
+    auto exp = op.getOperand().getDefiningOp<stablehlo::ExpOp>();
+    if (!exp)
+      return failure();
+
+    // Only rewrite when the exp feeds nothing but this op, otherwise the
+    // original exp stays live and we just add redundant work.
+    if (!llvm::hasSingleElement(exp->getUsers()))
+      return failure();
+
+    auto re =
+        stablehlo::RealOp::create(rewriter, op.getLoc(), exp.getOperand());
+    rewriter.replaceOpWithNewOp<stablehlo::ExpOp>(op, re);
+    return success();
+  }
+};
+
 // (conj (complex a, (neg b))) -> (complex a b)
 struct ConjComplexNegate final
     : CheckedOpRewritePattern<chlo::ConjOp, ConjComplexNegate> {
@@ -36508,6 +36592,9 @@ struct EnzymeHLOOptPass
         IfToSelect,
         IfPredPropagation,
         ImagOpCanon,
+        RealOfExpSimplify,
+        ImagOfExpSimplify,
+        AbsOfExpSimplify,
         MergeConsecutiveReshapes,
         NoopReduceOpCanon,
         RealOpCanon,
