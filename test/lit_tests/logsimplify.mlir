@@ -82,7 +82,7 @@ func.func @main2(%arg0: tensor<f64>) -> tensor<f64> {
 // 2 * log(sq) without inserting an abs.
 // CHECK: func.func @main2(%arg0: tensor<f64>) -> tensor<f64> {
 // CHECK-NEXT:    %cst = stablehlo.constant dense<2.000000e+00> : tensor<f64>
-// CHECK-NEXT:    %0 = stablehlo.multiply %arg0, %arg0 : tensor<f64>
+// CHECK-NEXT:    %0 = stablehlo.multiply %arg0, %arg0 {enzymexla.non_negative = [#enzymexla<guaranteed GUARANTEED>]} : tensor<f64>
 // CHECK-NEXT:    %1 = stablehlo.log %0 : tensor<f64>
 // CHECK-NEXT:    %2 = stablehlo.multiply %cst, %1 : tensor<f64>
 // CHECK-NEXT:    return %2 : tensor<f64>
