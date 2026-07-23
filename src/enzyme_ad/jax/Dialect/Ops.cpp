@@ -1656,7 +1656,7 @@ void GPUWrapperOp::getSuccessorRegions(
   }
 
   // Otherwise, the region branches back to the parent operation.
-  regions.push_back(RegionSuccessor::parent());
+  regions.push_back(RegionSuccessor(getOperation()));
 }
 
 ValueRange GPUWrapperOp::getSuccessorInputs(RegionSuccessor successor) {
