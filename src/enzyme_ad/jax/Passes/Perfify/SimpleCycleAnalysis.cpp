@@ -133,53 +133,73 @@ struct SimpleCycleAnalysisPass
       auto pre_post_cost =
           constant_costs.find(static_cast<HoareStates>(region_num));
       z3::expr p = solver.ctx().bool_val(true);
-      z3::expr q = solver.ctx().bool_val(false); // should return false if nothing else?
+      z3::expr q =
+          solver.ctx().bool_val(false); // should return false if nothing else?
       if (region_num == 0) {
         if (pred == CmpPredicate::eq) {
-          p = z3::expr(cost_var[0] == solver.ctx().int_val(pre_post_cost->second)); // precondition
+          p = z3::expr(
+              cost_var[0] ==
+              solver.ctx().int_val(pre_post_cost->second)); // precondition
         } else if (pred == CmpPredicate::ne) {
-          p = z3::expr(cost_var[0] != solver.ctx().int_val(pre_post_cost->second));
+          p = z3::expr(cost_var[0] !=
+                       solver.ctx().int_val(pre_post_cost->second));
         } else if (pred == CmpPredicate::lt) {
-          p = z3::expr(cost_var[0] < solver.ctx().int_val(pre_post_cost->second));  
+          p = z3::expr(cost_var[0] <
+                       solver.ctx().int_val(pre_post_cost->second));
         } else if (pred == CmpPredicate::le) {
-          p = z3::expr(cost_var[0] <= solver.ctx().int_val(pre_post_cost->second));
+          p = z3::expr(cost_var[0] <=
+                       solver.ctx().int_val(pre_post_cost->second));
         } else if (pred == CmpPredicate::gt) {
-          p = z3::expr(cost_var[0] > solver.ctx().int_val(pre_post_cost->second)); 
+          p = z3::expr(cost_var[0] >
+                       solver.ctx().int_val(pre_post_cost->second));
         } else if (pred == CmpPredicate::ge) {
-          p = z3::expr(cost_var[0] >= solver.ctx().int_val(pre_post_cost->second));
+          p = z3::expr(cost_var[0] >=
+                       solver.ctx().int_val(pre_post_cost->second));
         }
         solver.add(p);
       } else {
         if (pred == CmpPredicate::eq) {
-          q = z3::expr(cost_var[cost_var.size() - 1] != solver.ctx().int_val(pre_post_cost->second)); // postcondition
+          q = z3::expr(
+              cost_var[cost_var.size() - 1] !=
+              solver.ctx().int_val(pre_post_cost->second)); // postcondition
         } else if (pred == CmpPredicate::ne) {
-          q = z3::expr(cost_var[cost_var.size() - 1] == solver.ctx().int_val(pre_post_cost->second));
+          q = z3::expr(cost_var[cost_var.size() - 1] ==
+                       solver.ctx().int_val(pre_post_cost->second));
         } else if (pred == CmpPredicate::lt) {
-          q = z3::expr(cost_var[cost_var.size() - 1] >= solver.ctx().int_val(pre_post_cost->second));
+          q = z3::expr(cost_var[cost_var.size() - 1] >=
+                       solver.ctx().int_val(pre_post_cost->second));
         } else if (pred == CmpPredicate::le) {
-          q = z3::expr(cost_var[cost_var.size() - 1] > solver.ctx().int_val(pre_post_cost->second));
+          q = z3::expr(cost_var[cost_var.size() - 1] >
+                       solver.ctx().int_val(pre_post_cost->second));
         } else if (pred == CmpPredicate::gt) {
-          q = z3::expr(cost_var[cost_var.size() - 1] <= solver.ctx().int_val(pre_post_cost->second));
+          q = z3::expr(cost_var[cost_var.size() - 1] <=
+                       solver.ctx().int_val(pre_post_cost->second));
         } else if (pred == CmpPredicate::ge) {
-          q = z3::expr(cost_var[cost_var.size() - 1] < solver.ctx().int_val(pre_post_cost->second));
+          q = z3::expr(cost_var[cost_var.size() - 1] <
+                       solver.ctx().int_val(pre_post_cost->second));
         }
         solver.add(q); // if satisfiable -> assignment exists s.t. perf
-                        // counter doesn't equal expected value?
+                       // counter doesn't equal expected value?
       }
     } else if (auto assumeOp = dyn_cast<AssumeOp>(op)) {
-      // todo: trigger traceup from the provided register argument, evaluate or
-      // fetch the cmp set up the hoare triple here
-      #ifdef Z3_DEBUG_PERFIFY
+// todo: trigger traceup from the provided register argument, evaluate or
+// fetch the cmp set up the hoare triple here
+#ifdef Z3_DEBUG_PERFIFY
       std::cout << solver << std::endl;
-      llvm::outs() << (((region_num == 0 && check_res == 1) || // the precondition should be satisfiable
-                        (region_num != 0 && check_res == 0)) // the postcondition should be unsat since we negated the predicate
+      llvm::outs() << (((region_num == 0 &&
+                         check_res ==
+                             1) || // the precondition should be satisfiable
+                        (region_num != 0 &&
+                         check_res == 0)) // the postcondition should be unsat
+                                          // since we negated the predicate
                            ? "Met perf check!"
                            : "Did not meet perf check")
                    << "\n";
-      #endif
+#endif
       auto region_num = assumeOp->getParentRegion()->getRegionNumber();
       auto check_res = solver.check();
-      if ((region_num == 0 && check_res == 1) || (region_num != 0 && check_res == 0)) {
+      if ((region_num == 0 && check_res == 1) ||
+          (region_num != 0 && check_res == 0)) {
         assumeOp.setSatresAttr(BoolAttr::get(&getContext(), true));
       } else {
         assumeOp.setSatresAttr(BoolAttr::get(&getContext(), false));
@@ -201,4 +221,4 @@ struct SimpleCycleAnalysisPass
       visitOperation(&op, state, solver, cost_var);
   }
 };
-}
+} // namespace
