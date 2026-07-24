@@ -323,6 +323,15 @@ bool isSafeToRemoveAtomicImpl(enzyme::AffineAtomicRMWOp rmw, IslScop &scop) {
       if (!mayAlias(thisArray, theArray))
         continue;
 
+      // A may-write to an aliasing memref (e.g. effects summarized from
+      // conditional regions) is too imprecise to prove non-racy, so keep the
+      // atomic operation.
+      if (ma->isMayWrite()) {
+        LDBG() << "Found aliasing may-write; keeping atomic: "
+               << *stmt.getOperation();
+        return false;
+      }
+
       if (thisArray != theArray) {
         if (isAnyInstanceRacy(rmwStmt, stmt)) {
           LDBG() << "Found racy write to an aliasing array: "
