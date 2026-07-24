@@ -15,6 +15,8 @@
 #include "src/enzyme_ad/jax/Dialect/Perfify/PerfifyDialect.h.inc"
 
 // Types
+#define GET_TYPE_INTERFACE_CLASSES
+#include "src/enzyme_ad/jax/Dialect/Perfify/PerfifyTypeInterfaces.h.inc"
 #define GET_TYPEDEF_CLASSES
 #include "src/enzyme_ad/jax/Dialect/Perfify/PerfifyTypes.h.inc"
 #define GET_ENUM_CLASSES

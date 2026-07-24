@@ -15,31 +15,30 @@ def CostOp : PerfifyOp<"cost", []> {
 }
 
 def FnCostOp : PerfifyOp<"fn_cost", []> { // this should be where we calculate the cost in the pass
-  let results = (outs CostType:$out_cost);
+  let results = (outs PolyConstantCostTypeInterface:$out_cost);
   let assemblyFormat = "attr-dict `:` type($out_cost)"; 
 }
 
 def CompareOp : PerfifyOp<"cmp", []> {
   let arguments = (ins
     PerfifyCmpPredicateAttr:$predicate,
-    CostType:$constant_cost,
-    CostType:$func_cost
+    PolyConstantCostTypeInterface:$exp_cost,
+    PolyConstantCostTypeInterface:$func_cost
   );
-  let assemblyFormat = "$predicate `,` $constant_cost `,` $func_cost attr-dict";
+  let assemblyFormat = "$predicate `,` $exp_cost `,` $func_cost attr-dict `:` type($exp_cost) `,` type($func_cost)";
   let results = (outs I1:$result);
 }
 
-// Perfify.constant_cost op
 def ConstantCostOp : PerfifyOp<"constant_cost", []> {
   let arguments = (ins I64Attr:$cycle_cost);
   let assemblyFormat = "$cycle_cost attr-dict `:` type($out_cost)"; 
-  let results = (outs CostType:$out_cost);
+  let results = (outs ConstantCostType:$out_cost);
 }
 
 def ArgOp : PerfifyOp<"arg", []> {
   let arguments = (ins I64Attr:$val);
-  let assemblyFormat = "$val attr-dict";
-  let results = (outs CostType:$argval);
+  let assemblyFormat = "$val attr-dict `:` type($argval)";
+  let results = (outs PolyConstantCostTypeInterface:$argval);
 }
 
 def AssumeOp : PerfifyOp<"assume", [HasParent<"ConditionsOp">, Terminator]> {

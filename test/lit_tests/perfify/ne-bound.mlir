@@ -21,14 +21,14 @@ module {
      perfify.cost "scf.if" 0
    
      perfify.conditions @foo true pre { // true here meaning verification is enabled
-        %b0 = perfify.arg 0
-        %c0 = perfify.constant_cost 0 : !perfify.cost
-        %cmp = perfify.cmp eq, %c0, %b0
+        %b0 = perfify.arg 0 : !perfify.ccost
+        %c0 = perfify.constant_cost 0 : !perfify.ccost
+        %cmp = perfify.cmp eq, %c0, %b0 : !perfify.ccost, !perfify.ccost
         perfify.assume %cmp
      } post {
-        %cost = perfify.fn_cost : !perfify.cost // compute the value of the defined operation (func.return)
-        %c9 = perfify.constant_cost 9 : !perfify.cost // set up our cost as 9
-        %cmp = perfify.cmp ne, %cost, %c9
+        %cost = perfify.fn_cost : !perfify.ccost // compute the value of the defined operation (func.return)
+        %c9 = perfify.constant_cost 9 : !perfify.ccost // set up our cost as 9
+        %cmp = perfify.cmp ne, %cost, %c9 : !perfify.ccost, !perfify.ccost
         perfify.assume %cmp
      }
     }
