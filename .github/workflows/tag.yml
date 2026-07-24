@@ -80,7 +80,7 @@ jobs:
           echo $TAG
           sed -i.bak "s~version = \"[0-9.]*\"~version = \"$TAG\"~g" BUILD
           cat BUILD
-          if [[ "${{ matrix.os }}" == *"macOS"* || "${{ matrix.os }}" == *"macos"* ]]; then
+          if [[ "${{ runner.os }}" == "macOS" ]]; then
             if [ "${{ runner.arch }}" == "ARM64" ]; then
               sed -i.bak -e 's/"AMDGPU", //g' -e 's/, "AMDGPU"//g' -e 's/"X86", //g' -e 's/, "X86"//g' workspace.bzl
             else
