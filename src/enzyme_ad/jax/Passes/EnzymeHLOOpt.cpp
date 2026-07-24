@@ -6291,7 +6291,11 @@ struct SliceOfGather final
     auto gatherType = dyn_cast<RankedTensorType>(gather.getType());
     auto indicesType =
         dyn_cast<RankedTensorType>(gather.getStartIndices().getType());
-    if (!sliceType || !gatherType || !indicesType)
+    auto operandType =
+        dyn_cast<RankedTensorType>(gather.getOperand().getType());
+    if (!sliceType || !gatherType || !indicesType || !operandType)
+      return failure();
+    if (!indicesType.hasStaticShape() || !gatherType.hasStaticShape())
       return failure();
 
     auto dimNumbers = gather.getDimensionNumbers();
@@ -6299,9 +6303,11 @@ struct SliceOfGather final
 
     llvm::SmallDenseSet<int64_t> offsetDims(dimNumbers.getOffsetDims().begin(),
                                             dimNumbers.getOffsetDims().end());
-    llvm::SmallDenseSet<int64_t> startIndicesBatchingDims(
-        dimNumbers.getStartIndicesBatchingDims().begin(),
-        dimNumbers.getStartIndicesBatchingDims().end());
+    llvm::SmallDenseMap<int64_t, int64_t> startToOperandBatchingDim;
+    for (auto [operandDim, startDim] :
+         llvm::zip_equal(dimNumbers.getOperandBatchingDims(),
+                         dimNumbers.getStartIndicesBatchingDims()))
+      startToOperandBatchingDim[startDim] = operandDim;
 
     auto sliceStarts = op.getStartIndices();
     auto sliceLimits = op.getLimitIndices();
@@ -6316,9 +6322,16 @@ struct SliceOfGather final
                                    indicesType.getShape().end());
     SmallVector<int64_t> idxStrides(indicesRank, 1);
 
+    int64_t operandRank = operandType.getRank();
+    SmallVector<int64_t> operandStarts(operandRank, 0);
+    SmallVector<int64_t> operandLimits(operandType.getShape().begin(),
+                                       operandType.getShape().end());
+    SmallVector<int64_t> operandStrides(operandRank, 1);
+    bool sliceOperand = false;
+
     int64_t nextIndexDim = 0;
     auto advanceIndexDim = [&]() -> int64_t {
-      while (nextIndexDim == indexVectorDim)
+      if (nextIndexDim == indexVectorDim)
         ++nextIndexDim;
       return nextIndexDim++;
     };
@@ -6340,9 +6353,18 @@ struct SliceOfGather final
                      sliceLimits[outDim] == indicesType.getShape()[idxDim] &&
                      sliceStrides[outDim] == 1;
 
-      // Can't slice a batching index dim without slicing the operand.
-      if (!trivial && startIndicesBatchingDims.contains(idxDim))
-        return failure();
+      if (!trivial) {
+        auto it = startToOperandBatchingDim.find(idxDim);
+        if (it != startToOperandBatchingDim.end()) {
+          if (!operandType.hasStaticShape())
+            return failure();
+          int64_t operandDim = it->second;
+          operandStarts[operandDim] = sliceStarts[outDim];
+          operandLimits[operandDim] = sliceLimits[outDim];
+          operandStrides[operandDim] = sliceStrides[outDim];
+          sliceOperand = true;
+        }
+      }
 
       idxStarts[idxDim] = sliceStarts[outDim];
       idxLimits[idxDim] = sliceLimits[outDim];
@@ -6353,10 +6375,15 @@ struct SliceOfGather final
         rewriter, op.getLoc(), gather.getStartIndices(), idxStarts, idxLimits,
         idxStrides);
 
+    Value newOperand = gather.getOperand();
+    if (sliceOperand)
+      newOperand = stablehlo::SliceOp::create(
+          rewriter, op.getLoc(), gather.getOperand(), operandStarts,
+          operandLimits, operandStrides);
+
     rewriter.replaceOpWithNewOp<stablehlo::GatherOp>(
-        op, sliceType, gather.getOperand(), newIndices,
-        gather.getDimensionNumbersAttr(), gather.getSliceSizesAttr(),
-        gather.getIndicesAreSortedAttr());
+        op, sliceType, newOperand, newIndices, gather.getDimensionNumbersAttr(),
+        gather.getSliceSizesAttr(), gather.getIndicesAreSortedAttr());
     return success();
   }
 };
