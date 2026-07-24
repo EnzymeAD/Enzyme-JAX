@@ -1735,7 +1735,7 @@ struct MPIAllreduceOpLowering
 
       std::string ncclFunctionName = "ncclAllReduce";
       std::string printfFunctionName = "printf";
-      std::string cudaStreamSynchronizeFunctionName = "cudaStreamSynchronize";
+      std::string cuStreamSynchronizeFunctionName = "cuStreamSynchronize";
 
       auto datatype = op.getDatatype();
       StringRef datatypeName = stringifyMPIDatatype(datatype);
@@ -1777,12 +1777,12 @@ struct MPIAllreduceOpLowering
                                             LLVM::Linkage::External);
         }
         if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(
-                cudaStreamSynchronizeFunctionName)) {
-          auto cudaStreamSynchronizeType =
+                cuStreamSynchronizeFunctionName)) {
+          auto cuStreamSynchronizeType =
               LLVM::LLVMFunctionType::get(i32Type, {llvmPtrType}, false);
           rewriter.create<LLVM::LLVMFuncOp>(
-              op.getLoc(), cudaStreamSynchronizeFunctionName,
-              cudaStreamSynchronizeType, LLVM::Linkage::External);
+              op.getLoc(), cuStreamSynchronizeFunctionName,
+              cuStreamSynchronizeType, LLVM::Linkage::External);
         }
 
         std::string printfFormatName =
@@ -1799,11 +1799,11 @@ struct MPIAllreduceOpLowering
               /*addrSpace=*/0);
         }
         std::string cudaSyncPrintfFormatName =
-            wrapperFunctionName + "_cuda_stream_sync_printf_format";
+            wrapperFunctionName + "_cu_stream_sync_printf_format";
         if (!moduleOp.lookupSymbol<LLVM::GlobalOp>(
                 cudaSyncPrintfFormatName)) {
           std::string printfFormat =
-              "enzymexla cudaStreamSynchronize returned %d\n";
+              "enzymexla cuStreamSynchronize returned %d\n";
           auto printfFormatType = LLVM::LLVMArrayType::get(
               IntegerType::get(context, 8), printfFormat.size() + 1);
           rewriter.create<LLVM::GlobalOp>(
@@ -1872,7 +1872,7 @@ struct MPIAllreduceOpLowering
 
         auto cudaSyncStatus = rewriter.create<LLVM::CallOp>(
             op.getLoc(), TypeRange{i32Type},
-            SymbolRefAttr::get(context, cudaStreamSynchronizeFunctionName),
+            SymbolRefAttr::get(context, cuStreamSynchronizeFunctionName),
             ValueRange{stream});
         Value cudaSyncPrintfFormat = rewriter.create<LLVM::AddressOfOp>(
             op.getLoc(), llvmPtrType, cudaSyncPrintfFormatName);
