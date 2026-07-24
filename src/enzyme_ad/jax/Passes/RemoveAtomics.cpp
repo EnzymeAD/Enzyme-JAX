@@ -428,8 +428,8 @@ void handleGPUWrapper(enzymexla::GPUWrapperOp wrapperOp) {
     return;
   }
 
-  std::unique_ptr<polymer::IslScop> scop =
-      polymer::createIslFromFuncOp(wrapperOp);
+  std::unique_ptr<polymer::IslScop> scop = polymer::createIslFromFuncOp(
+      wrapperOp, /*allowScfIfConditionalWritesAsMay=*/true);
   if (!scop) {
     LDBG() << "Failed to build scop";
     return;

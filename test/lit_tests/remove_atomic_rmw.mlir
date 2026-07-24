@@ -802,3 +802,44 @@ module {
     return
   }
 }
+
+// -----
+
+#map = affine_map<(d0, d1) -> (d0 + d1 * 5 + 14)>
+module {
+// CHECK-LABEL:   func.func @scf_if_conditional(
+// CHECK:           affine.parallel (%[[I:.*]], %[[J:.*]]) = (0, 0) to (4, 5) {
+// CHECK:             %[[PRED:.*]] = arith.cmpi eq, %{{.*}}, %{{.*}} : i32
+// CHECK:             %[[SEL:.*]] = scf.if %[[PRED]] -> (f32) {
+// CHECK:             } else {
+// CHECK:             %[[OLD:.*]] = affine.load %[[ARR:.*]]{{\[}}%[[I]] + %[[J]] * 5 + 14] : memref<?xf32>
+// CHECK:             %[[NEW:.*]] = arith.addf %[[OLD]], %[[SEL]] : f32
+// CHECK:             affine.store %[[NEW]], %[[ARR]]{{\[}}%[[I]] + %[[J]] * 5 + 14] : memref<?xf32>
+// CHECK-NOT:         enzyme.affine_atomic_rmw
+  func.func @scf_if_conditional(%arg0: !llvm.ptr, %arg1: !llvm.ptr) {
+    %cst = arith.constant 1.000000e+00 : f32
+    %c0_i32 = arith.constant 0 : i32
+    %c1_i32 = arith.constant 1 : i32
+    %c4 = arith.constant 4 : index
+    %c5 = arith.constant 5 : index
+    %0 = "enzymexla.pointer2memref"(%arg0) : (!llvm.ptr) -> memref<?xf32>
+    %1 = "enzymexla.gpu_wrapper"(%c4, %c5) ({
+      affine.parallel (%arg2, %arg3) = (0, 0) to (4, 5) {
+        %2 = "enzymexla.pointer2memref"(%arg1) : (!llvm.ptr) -> memref<?xi8>
+        %3 = affine.load %2[%arg2] : memref<?xi8>
+        %4 = arith.extui %3 : i8 to i32
+        %5 = arith.andi %4, %c1_i32 : i32
+        %6 = arith.cmpi eq, %5, %c0_i32 : i32
+        %7 = scf.if %6 -> (f32) {
+          scf.yield %cst : f32
+        } else {
+          %9 = affine.load %0[%arg2 + %arg3 * 5 + 16] : memref<?xf32>
+          scf.yield %9 : f32
+        }
+        %8 = enzyme.affine_atomic_rmw addf %7, %0, (#map) [%arg2, %arg3] : (f32, memref<?xf32>) -> f32
+      }
+      "enzymexla.polygeist_yield"() : () -> ()
+    }) : (index, index) -> index
+    return
+  }
+}
