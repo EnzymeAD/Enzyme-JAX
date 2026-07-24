@@ -139,6 +139,14 @@ def ApplyReduceToReshapePatterns : EnzymeHLOPatternOp<
     "reduce_to_reshape"> {
   let patterns = ["ReduceToReshape"];
 }
+def ApplyLowerBoolSplatConstantsIntoReduceOpRegionPatterns : EnzymeHLOPatternOp<
+    "lower_bool_splat_constants_into_reduce_op_region"> {
+  let patterns = ["LowerBoolSplatConstantsIntoReduceOpRegion"];
+}
+def ApplyFoldReduceOpToConstantInitializerPatterns : EnzymeHLOPatternOp<
+    "fold_reduce_op_to_constant_initializer"> {
+  let patterns = ["FoldReduceOpToConstantInitializer"];
+}
 def ApplyBroadcastToReshapePatterns : EnzymeHLOPatternOp<
     "broadcast_to_reshape"> {
   let patterns = ["BroadcastToReshape"];
