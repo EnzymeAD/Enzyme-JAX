@@ -170,11 +170,13 @@ bool isParallel(__isl_keep isl_union_map *Schedule,
   return IsParallel;
 }
 
-// Gather write-write dependencies of two statements.
+// Gather read-after-write, write-after-write and write-after-read dependencies
+// of two statements.
 // TODO check for leaks
 isl::union_map getDeps(ScopStmt &stmtA, MemoryAccess *accessA, ScopStmt &stmtB,
                        MemoryAccess *accessB) {
   isl_space *Space = stmtA.getParent()->getParamSpace().release();
+  isl_union_map *Read = isl_union_map_empty(isl_space_copy(Space));
   isl_union_map *MayWrite = isl_union_map_empty(isl_space_copy(Space));
   isl_union_map *MustWrite = isl_union_map_empty(isl_space_copy(Space));
   isl_union_map *Kill = isl_union_map_empty(isl_space_copy(Space));
@@ -187,7 +189,9 @@ isl::union_map getDeps(ScopStmt &stmtA, MemoryAccess *accessA, ScopStmt &stmtB,
     isl_map *accdom = MA->getAccessRelation().release();
 
     accdom = isl_map_intersect_domain(accdom, domcp);
-    if (MA->isMayWrite())
+    if (MA->isRead())
+      Read = isl_union_map_add_map(Read, accdom);
+    else if (MA->isMayWrite())
       MayWrite = isl_union_map_add_map(MayWrite, accdom);
     else if (MA->isMustWrite())
       MustWrite = isl_union_map_add_map(MustWrite, accdom);
@@ -197,33 +201,73 @@ isl::union_map getDeps(ScopStmt &stmtA, MemoryAccess *accessA, ScopStmt &stmtB,
       llvm_unreachable("unknown access type");
   }
 
+  Read = isl_union_map_coalesce(Read);
   MustWrite = isl_union_map_coalesce(MustWrite);
   MayWrite = isl_union_map_coalesce(MayWrite);
   isl_union_map *Write = isl_union_map_union(isl_union_map_copy(MustWrite),
                                              isl_union_map_copy(MayWrite));
-
-  isl_union_access_info *AI;
+  Write = isl_union_map_coalesce(Write);
 
   isl_schedule *Schedule = stmtA.getParent()->getScheduleTree().release();
 
+  auto buildFlow = [&](isl_union_map *Sink, isl_union_map *MaySource,
+                       isl_union_map *MustSource, isl_union_map *Kill) {
+    isl_union_access_info *AI =
+        isl_union_access_info_from_sink(isl_union_map_copy(Sink));
+    if (MaySource)
+      AI = isl_union_access_info_set_may_source(AI,
+                                                isl_union_map_copy(MaySource));
+    if (MustSource)
+      AI = isl_union_access_info_set_must_source(
+          AI, isl_union_map_copy(MustSource));
+    if (Kill)
+      AI = isl_union_access_info_set_kill(AI, isl_union_map_copy(Kill));
+    AI = isl_union_access_info_set_schedule(AI, isl_schedule_copy(Schedule));
+    isl_union_flow *Flow = isl_union_access_info_compute_flow(AI);
+    LLVM_DEBUG(if (!Flow) llvm::dbgs()
+                   << "last error: "
+                   << isl_ctx_last_error(isl_schedule_get_ctx(Schedule)) << " "
+                   << isl_ctx_last_error_msg(isl_schedule_get_ctx(Schedule))
+                   << '\n';);
+    return Flow;
+  };
+
   LDBG_ISL_DUMP(MayWrite);
   LDBG_ISL_DUMP(MustWrite);
+  LDBG_ISL_DUMP(Read);
   LDBG_ISL_DUMP(Kill);
-  AI = isl_union_access_info_from_sink(isl_union_map_copy(Write));
-  AI = isl_union_access_info_set_may_source(AI, isl_union_map_copy(MayWrite));
-  AI = isl_union_access_info_set_must_source(AI, isl_union_map_copy(MustWrite));
-  AI = isl_union_access_info_set_schedule(AI, isl_schedule_copy(Schedule));
-  auto Flow = isl_union_access_info_compute_flow(AI);
-  LLVM_DEBUG(if (!Flow) llvm::dbgs()
-                 << "last error: "
-                 << isl_ctx_last_error(isl_schedule_get_ctx(Schedule)) << " "
-                 << isl_ctx_last_error_msg(isl_schedule_get_ctx(Schedule))
-                 << '\n';);
+
+  isl_union_flow *Flow = buildFlow(Read, MayWrite, MustWrite, nullptr);
+  isl_union_map *raw = isl_union_flow_get_may_dependence(Flow);
+  isl_union_flow_free(Flow);
+
+  Flow = buildFlow(Write, MayWrite, MustWrite, nullptr);
   isl_union_map *waw = isl_union_flow_get_may_dependence(Flow);
+  isl_union_flow_free(Flow);
+
+  Flow = buildFlow(Write, Read, nullptr, MustWrite);
+  isl_union_map *war = isl_union_flow_get_may_dependence(Flow);
+  isl_union_flow_free(Flow);
+
+  LDBG() << "RAW\n";
+  LLVM_DEBUG(isl_union_map_dump(raw));
   LDBG() << "WAW\n";
   LLVM_DEBUG(isl_union_map_dump(waw));
+  LDBG() << "WAR\n";
+  LLVM_DEBUG(isl_union_map_dump(war));
 
-  return isl::manage(waw);
+  isl_union_map *deps = isl_union_map_union(raw, waw);
+  deps = isl_union_map_union(deps, war);
+  deps = isl_union_map_coalesce(deps);
+
+  isl_union_map_free(Read);
+  isl_union_map_free(MayWrite);
+  isl_union_map_free(MustWrite);
+  isl_union_map_free(Kill);
+  isl_union_map_free(Write);
+  isl_schedule_free(Schedule);
+
+  return isl::manage(deps);
 }
 
 // Determine whether the accesses with dependency `deps` are racy. This is done
@@ -280,7 +324,7 @@ bool isAccessRacy(ScopStmt &stmtA, MemoryAccess *accessA, ScopStmt &stmtB,
   LLVM_DEBUG(polly::dumpIslObj(stmtA.getSchedule()));
   LLVM_DEBUG(polly::dumpIslObj(stmtB.getSchedule()));
 
-  isl::union_map waw = getDeps(stmtA, accessA, stmtB, accessB);
+  isl::union_map deps = getDeps(stmtA, accessA, stmtB, accessB);
 
   isl::schedule schedule = stmtA.getParent()->getScheduleTree();
   LDBG_ISL_DUMP(schedule);
@@ -292,13 +336,13 @@ bool isAccessRacy(ScopStmt &stmtA, MemoryAccess *accessA, ScopStmt &stmtB,
     LDBG_ISL_DUMP(intersectedSchedule);
   });
 
-  return isAccessRacy(schedule.get_root().child(0), waw);
+  return isAccessRacy(schedule.get_root().child(0), deps);
 }
 
 // Determines whether it is safe to "remove", i.e. convert an atomic rmw to
 // non-atomic read-modify-store.
 //
-// This is safe when there is no racy store w.r.t. to the rmw.
+// This is safe when there is no racy access w.r.t. to the rmw.
 bool isSafeToRemoveAtomicImpl(enzyme::AffineAtomicRMWOp rmw, IslScop &scop) {
   LDBG() << "Handling rmw: " << rmw;
   ScopStmt &rmwStmt = scop.getStatement(rmw);
@@ -316,31 +360,42 @@ bool isSafeToRemoveAtomicImpl(enzyme::AffineAtomicRMWOp rmw, IslScop &scop) {
     for (MemoryAccess *ma : stmt) {
       if (ma->Kind == MemoryAccess::MT_Value)
         continue;
-      if (!ma->isWrite())
+      if (!ma->isRead() && !ma->isWrite())
         continue;
 
       mlir::Value thisArray = ma->AI->val;
       if (!mayAlias(thisArray, theArray))
         continue;
 
-      // A may-write to an aliasing memref (e.g. effects summarized from
-      // conditional regions) is too imprecise to prove non-racy, so keep the
-      // atomic operation.
-      if (ma->isMayWrite()) {
-        LDBG() << "Found aliasing may-write; keeping atomic: "
-               << *stmt.getOperation();
-        return false;
-      }
-
-      if (thisArray != theArray) {
+      if (ma->isWrite() && thisArray != theArray) {
         if (isAnyInstanceRacy(rmwStmt, stmt)) {
-          LDBG() << "Found racy write to an aliasing array: "
+          if (ma->isMayWrite())
+            LDBG() << "Found racy may-write to an aliasing array: "
+                   << *stmt.getOperation();
+          else
+            LDBG() << "Found racy write to an aliasing array: "
+                   << *stmt.getOperation();
+          return false;
+        }
+      } else if (ma->isWrite()) {
+        if (isAccessRacy(rmwStmt, theArrayWrite, stmt, ma)) {
+          if (ma->isMayWrite())
+            LDBG() << "Found racy may-write to the same array: "
+                   << *stmt.getOperation();
+          else
+            LDBG() << "Found racy write to the same array: "
+                   << *stmt.getOperation();
+          return false;
+        }
+      } else if (thisArray != theArray) {
+        if (isAnyInstanceRacy(rmwStmt, stmt)) {
+          LDBG() << "Found racy read from an aliasing array: "
                  << *stmt.getOperation();
           return false;
         }
       } else {
         if (isAccessRacy(rmwStmt, theArrayWrite, stmt, ma)) {
-          LDBG() << "Found racy write to the same array: "
+          LDBG() << "Found racy read from the same array: "
                  << *stmt.getOperation();
           return false;
         }
