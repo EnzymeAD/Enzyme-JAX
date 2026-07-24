@@ -6309,7 +6309,8 @@ struct SliceOfGather final
 
     int64_t indicesRank = indicesType.getRank();
 
-    // Slice the batch dims of start_indices; keep offset/index-vector dims full.
+    // Slice the batch dims of start_indices; keep offset/index-vector dims
+    // full.
     SmallVector<int64_t> idxStarts(indicesRank, 0);
     SmallVector<int64_t> idxLimits(indicesType.getShape().begin(),
                                    indicesType.getShape().end());
