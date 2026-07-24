@@ -1894,7 +1894,8 @@ struct InnerParallelSerialization : public OpRewritePattern<scf::ParallelOp> {
       parallelCount++;
       enclosingGpuDims += par.getNumLoops();
     }
-    if (parallelCount < 2 && enclosingGpuDims < 6)
+    bool shouldInline = parallelCount >= 2 || enclosingGpuDims >= 6;
+    if (!shouldInline)
       return failure();
 
     // For a parallel loop, we essentially need to create an n-dimensional loop
