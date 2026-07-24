@@ -40,7 +40,6 @@ jobs:
       fail-fast: false
       matrix:
         os:
-          - linux-x86-a2-48-a100-4gpu
           - linux-x86-ct6e-180-4tpu
         julia_version:
           - '1.11'
@@ -52,10 +51,8 @@ jobs:
 
         reactant_commit:
           - 'main'
-          - 'multipad'
         grid:
           - '--float-type=Float64'
-          - '--float-type=Float32'
           #- '--float-type=Float64 --target-float-type=Float32 --dimension=first'
           #- '--float-type=Float64 --target-float-type=Float32 --dimension=last'
           #- '--float-type=Float64 --target-float-type=Float32 --dimension=tuple'
