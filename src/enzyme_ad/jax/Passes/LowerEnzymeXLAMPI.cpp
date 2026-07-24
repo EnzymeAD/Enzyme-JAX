@@ -1927,13 +1927,17 @@ struct MPIAllreduceOpLowering
             copyAndPrintBits(preRecvBitsPrintfFormatName, inbufPtr);
         copyDeviceAddressAndPrintBits(preRecvDataBitsPrintfFormatName,
                                       preRecvDataPtr);
+        Value sendDataPtr = rewriter.create<LLVM::IntToPtrOp>(
+            op.getLoc(), llvmPtrType, preSendDataPtr);
+        Value recvDataPtr = rewriter.create<LLVM::IntToPtrOp>(
+            op.getLoc(), llvmPtrType, preRecvDataPtr);
 
         // Call ncclAllReduce
         // TODO error handling
         auto ncclStatus = rewriter.create<LLVM::CallOp>(
             op.getLoc(), TypeRange{i32Type},
             SymbolRefAttr::get(context, ncclFunctionName),
-            ValueRange{sendbufPtr, inbufPtr, count, dtype, redOp, ncclComm,
+            ValueRange{sendDataPtr, recvDataPtr, count, dtype, redOp, ncclComm,
                        stream});
         printI32(ncclPrintfFormatName, ncclStatus.getResult());
 
