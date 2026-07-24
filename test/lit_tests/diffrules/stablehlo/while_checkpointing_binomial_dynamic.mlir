@@ -96,13 +96,13 @@ module @reactant_df attributes {mhlo.num_partitions = 1 : i64, mhlo.num_replicas
 // CHECK-NEXT:    %c_2 = stablehlo.constant dense<3> : tensor<i64>
 // CHECK-NEXT:    %cst_3 = stablehlo.constant dense<1.000000e+00> : tensor<3xf32>
 // CHECK-NEXT:    %cst_4 = stablehlo.constant dense<[0.000000e+00, 0.785398185, 0.392699093]> : tensor<3xf32>
-// CHECK-NEXT:    %c_5 = stablehlo.constant dense<0> : tensor<3xi64>
-// CHECK-NEXT:    %cst_6 = stablehlo.constant dense<0.000000e+00> : tensor<3x3xf32>
+// CHECK-NEXT:    %cst_5 = stablehlo.constant dense<0.000000e+00> : tensor<3x3xf32>
+// CHECK-NEXT:    %c_6 = stablehlo.constant dense<0> : tensor<3xi64>
 // CHECK-NEXT:    %c_7 = stablehlo.constant dense<0> : tensor<i64>
 // CHECK-NEXT:    %c_8 = stablehlo.constant dense<1> : tensor<i64>
 // CHECK-NEXT:    %cst_9 = stablehlo.constant dense<6.28318548> : tensor<3xf32>
 // CHECK-NEXT:    %c_10 = stablehlo.constant dense<10> : tensor<i64>
-// CHECK-NEXT:    %0:7 = stablehlo.while(%iterArg = %c_7, %iterArg_11 = %c_10, %iterArg_12 = %cst_4, %iterArg_13 = %c_5, %iterArg_14 = %cst_6, %iterArg_15 = %c_7, %iterArg_16 = %c_5) : tensor<i64>, tensor<i64>, tensor<3xf32>, tensor<3xi64>, tensor<3x3xf32>, tensor<i64>, tensor<3xi64>
+// CHECK-NEXT:    %0:7 = stablehlo.while(%iterArg = %c_7, %iterArg_11 = %c_10, %iterArg_12 = %cst_4, %iterArg_13 = %c_6, %iterArg_14 = %cst_5, %iterArg_15 = %c_7, %iterArg_16 = %c_6) : tensor<i64>, tensor<i64>, tensor<3xf32>, tensor<3xi64>, tensor<3x3xf32>, tensor<i64>, tensor<3xi64>
 // CHECK-NEXT:    cond {
 // CHECK-NEXT:      %2 = stablehlo.compare LT, %iterArg, %c_2 : (tensor<i64>, tensor<i64>) -> tensor<i1>
 // CHECK-NEXT:      stablehlo.return %2 : tensor<i1>

@@ -1687,10 +1687,11 @@ struct MoveRMWToAffine : public OpRewritePattern<memref::AtomicRMWOp> {
     affine::canonicalizeMapAndOperands(&map, &operands);
     map = recreateExpr(map);
     assert(map.getNumInputs() == operands.size());
-
+    auto alignment = rmw->getAttrOfType<IntegerAttr>(
+        memref::AllocOp::getAlignmentAttrStrName());
     auto affineLoad = enzyme::AffineAtomicRMWOp::create(
         rewriter, rmw.getLoc(), rmw.getValue().getType(), rmw.getKind(),
-        rmw.getValue(), rmw.getMemref(), operands, map);
+        rmw.getValue(), rmw.getMemref(), operands, map, alignment);
     rmw.getResult().replaceAllUsesWith(affineLoad.getResult());
     rewriter.eraseOp(rmw);
     return success();

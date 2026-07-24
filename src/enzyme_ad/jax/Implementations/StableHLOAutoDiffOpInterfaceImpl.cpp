@@ -81,6 +81,14 @@ static Value makeI32Constant(Location loc, OpBuilder &builder, int32_t val) {
   return makeIntegerConstant(loc, builder, builder.getI32Type(), val);
 }
 
+static Value makeZero(OpBuilder &builder, Location loc, Type T) {
+  auto TT = dyn_cast<mlir::ShapedType>(T);
+  return TT && TT.getElementType().isIntOrIndexOrFloat()
+             ? stablehlo::ConstantOp::create(builder, loc, T,
+                                             cast<ElementsAttr>(makeAttr(T, 0)))
+             : cast<AutoDiffTypeInterface>(T).createNullValue(builder, loc);
+}
+
 static inline Operation *createAddRegion(Operation *op) {
   mlir::OpBuilder builder(op->getContext());
   mlir::Block *block = new Block();
@@ -1636,9 +1644,7 @@ public:
             cacheShape.append(operandType.getShape().begin(),
                               operandType.getShape().end());
             auto cacheType = operandType.clone(cacheShape);
-            auto zeroCache =
-                cast<AutoDiffTypeInterface>(cacheType).createNullValue(
-                    builder, operand.getLoc());
+            auto zeroCache = makeZero(builder, operand.getLoc(), cacheType);
             outerOperands.push_back(zeroCache);
           }
 
@@ -3856,8 +3862,7 @@ public:
       // `tensor.empty + dynamic_pad` when the shape genuinely has dynamic
       // dims — XLA cannot translate `dynamic_pad`.
       if (numIters != ShapedType::kDynamic) {
-        initValue = cast<AutoDiffTypeInterface>(newType).createNullValue(
-            rewriter, cinfo.initOp->getLoc());
+        initValue = makeZero(rewriter, cinfo.initOp->getLoc(), newType);
       } else {
         if (!itersV)
           itersV = info.getNumIters(rewriter);
@@ -3866,14 +3871,13 @@ public:
           if (v == ShapedType::kDynamic)
             v = 0;
         }
-        auto op = cast<AutoDiffTypeInterface>(
-                      RankedTensorType::get(zeros, newType.getElementType()))
-                      .createNullValue(rewriter, cinfo.initOp->getLoc());
+        auto op =
+            makeZero(rewriter, cinfo.initOp->getLoc(),
+                     RankedTensorType::get(zeros, newType.getElementType()));
 
-        auto zeroOp = cast<AutoDiffTypeInterface>(
-                          RankedTensorType::get(ArrayRef<int64_t>(),
-                                                newType.getElementType()))
-                          .createNullValue(rewriter, cinfo.initOp->getLoc());
+        auto zeroOp = makeZero(rewriter, cinfo.initOp->getLoc(),
+                               RankedTensorType::get(ArrayRef<int64_t>(),
+                                                     newType.getElementType()));
 
         auto zeroInt = stablehlo::ConstantOp::create(
             rewriter, cinfo.initOp->getLoc(), itersV.getType(),
@@ -4184,8 +4188,8 @@ struct IfOpEnzymeOpsRemover
     }
 
     for (auto &[pushedValue, info] : pushedCaches) {
-      Value dummy = cast<AutoDiffTypeInterface>(pushedValue.getType())
-                        .createNullValue(rewriter, pushedValue.getLoc());
+      Value dummy =
+          makeZero(rewriter, pushedValue.getLoc(), pushedValue.getType());
 
       Value trueValue =
           pushedValue.getParentBlock() == trueBlock ? pushedValue : dummy;

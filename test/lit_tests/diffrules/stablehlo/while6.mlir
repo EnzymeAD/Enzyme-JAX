@@ -45,7 +45,7 @@ func.func @main(%arg0: tensor<12x16x4xf32>) -> (tensor<12x4xf32>) {
 
 // REVERSE: func.func @main(%arg0: tensor<12x16x4xf32>, %arg1: tensor<12x4xf32>) -> tensor<12x16x4xf32> {
 // REVERSE-DAG:     %[[C14:.+]] = stablehlo.constant dense<14> : tensor<i64>
-// REVERSE-DAG:     %[[ZERO:.+]] = arith.constant dense<0> : tensor<15xi32>
+// REVERSE-DAG:     %[[ZERO:.+]] = stablehlo.constant dense<0> : tensor<15xi32>
 // REVERSE-DAG:     %[[C15:.+]] = stablehlo.constant dense<15> : tensor<i64>
 // REVERSE-DAG:     %[[cst_1:.+]] = stablehlo.constant dense<0.000000e+00> : tensor<12x16x4xf32>
 // REVERSE-DAG:     %[[c_2:.+]] = stablehlo.constant dense<1> : tensor<i64>

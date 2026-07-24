@@ -240,6 +240,7 @@ jobs:
       statuses: read
       deployments: write # deployments permission to deploy GitHub pages website
       pull-requests: write
+      actions: read # to download Breeze tendency artifacts from the Test Breeze workflow run
     steps:
       - name: Install Dependencies
         run: |
@@ -257,6 +258,59 @@ jobs:
             --artifact_dir=benchmark-results \
             --csv_file=combined_results.csv \
             --json_file=combined_results.json
+      - name: Download latest Breeze tendency results
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Fold the Breeze tendency benchmarks (produced by the separate
+          # "Test Breeze" workflow) onto this same dashboard. Best-effort: grab
+          # the most recent successful Test Breeze run on this branch, else main.
+          RUN_ID=$(gh run list --workflow test-breeze.yml --branch "${{ github.ref_name }}" --status success --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+          if [ -z "${RUN_ID}" ]; then
+            RUN_ID=$(gh run list --workflow test-breeze.yml --branch main --status success --limit 1 --json databaseId --jq '.[0].databaseId // empty')
+          fi
+          if [ -n "${RUN_ID}" ]; then
+            echo "Downloading Breeze tendency results from Test Breeze run ${RUN_ID}"
+            gh run download "${RUN_ID}" --pattern 'benchmark-results-*' --dir breeze-results || true
+          else
+            echo "No successful Test Breeze run found; publishing Enzyme-JAX benchmarks only."
+          fi
+      - name: Fold Breeze tendency results into combined results
+        shell: python
+        run: |
+          # Append Breeze tendency benches to the EnzymeJAX Benchmarks suite so
+          # they land on the same dashboard, matching its 4-level convention
+          #   Benchmark Name / Pass Pipeline / Backend / Key
+          #   = group        / lines         / device set / chart
+          # unit "s", value = per-eval time (smaller is better). So:
+          #   <ScalarTendency|ModelTendency> / <ft> <backend(+raise)> / <cuda|tpu> / WENO<order>
+          #   group (per figure)   lines (configs)   device-set (GPU/TPU)   chart (per WENO order)
+          import glob, json
+
+          with open('combined_results.json') as f:
+              records = json.load(f)
+
+          ft_short = {'Float32': 'F32', 'BFloat16': 'BF16', 'Float64': 'F64'}
+          n = 0
+          for path in glob.glob('breeze-results/**/benchmark_results.json', recursive=True):
+              with open(path) as f:
+                  for d in json.load(f):
+                      if d.get('mode') not in ('scalar_tendency', 'model_tendency'):
+                          continue
+                      base = d['name'].split('_')[0]                       # ScalarTendency / ModelTendency
+                      gpu = d['metadata'].get('gpu_name')
+                      # Device set (seg3), matching the existing cpu/cuda/tpu axis.
+                      # TPU shows up as no CUDA name (or a "TPU" platform label).
+                      device = 'tpu' if (not gpu or gpu.upper() == 'TPU') else 'cuda'
+                      fts = ft_short.get(d['float_type'], d['float_type'])
+                      backend = d.get('backend', 'vanilla')                # includes "reactant raise=true/false"
+                      name = f"{base} / {fts} {backend} / {device} / {d['advection']}"
+                      records.append({'name': name, 'unit': 's', 'value': d['time_per_step_seconds']})
+                      n += 1
+
+          with open('combined_results.json', 'w') as f:
+              json.dump(records, f, indent=2)
+          print(f"Folded in {n} Breeze tendency records")
       - name: Upload benchmark results
         uses: actions/upload-artifact@v7
         if: ${{ !cancelled() }}
