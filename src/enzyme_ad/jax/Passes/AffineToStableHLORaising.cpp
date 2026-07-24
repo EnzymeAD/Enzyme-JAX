@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "src/enzyme_ad/jax/Passes/AffineUtils.h"
+#include "src/enzyme_ad/jax/Passes/EnzymeHLOUnroll.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "src/enzyme_ad/jax/Utils.h"
 
@@ -785,6 +786,11 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
                         llvm::DenseMap<Value, affine::AffineValueMap> &maps,
                         ParallelContext pc);
 
+static LogicalResult tryRaisingForOpToStableHLOWhile(
+    affine::AffineForOp forOp, IRMapping &parentMapping, OpBuilder &builder,
+    llvm::DenseMap<Value, affine::AffineValueMap> &maps, ParallelContext pc,
+    stablehlo::WhileOp *createdWhileOp = nullptr);
+
 static LogicalResult
 emitIfAsSelect(Operation *ifOp, Value cond, affine::AffineValueMap map,
                OpBuilder &builder, IRMapping &mapping,
@@ -1144,79 +1150,43 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
 static LogicalResult tryRaisingForOpToStableHLOUnroll(
     affine::AffineForOp forOp, IRMapping &mapping, OpBuilder &builder,
     llvm::DenseMap<Value, affine::AffineValueMap> &maps, ParallelContext pc) {
-  // Materialize an unrolled version of the loop in a temporary block and
-  // generate the raised version of that. The unrolled version will be deleted
-  // afterwards and the results of the original for loop will be mapped to it.
 
-  // There arises a problem with the affine maps contained in the for loop which
-  // until now correctly identified the loop iv as an affine dim, but will now
-  // take constants as inputs. We need to canonicalize those maps before raising
-  // the operations because we assume dim inputs to be loop ivs. This is the
-  // reason we need to canonicalize all affine maps before we raise them in the
-  // other parts of the code.
-  auto tmpBlock = std::make_unique<Block>();
-  OpBuilder oldFuncBuilder(builder.getContext());
-  oldFuncBuilder.setInsertionPointToStart(tmpBlock.get());
-  auto clonedFor = cast<affine::AffineForOp>(oldFuncBuilder.clone(*forOp));
-  auto yield = affine::AffineYieldOp::create(
-      oldFuncBuilder,
-      rewriteLocation(clonedFor.getLoc(), pc.options.strip_llvm_debuginfo),
-      clonedFor.getResults());
-  if (failed(affine::loopUnrollFull(clonedFor))) {
-    llvm::errs() << " failed to fully unroll loop: " << *clonedFor << "\n";
+  stablehlo::WhileOp whileOp;
+  if (tryRaisingForOpToStableHLOWhile(forOp, mapping, builder, maps, pc,
+                                      &whileOp)
+          .failed()) {
     return failure();
   }
 
-  // Make a temporary new mapping because we will map values from the temporary
-  // block which we will delete later.
-  IRMapping forMapping = mapping;
-  for (auto &innerOp : tmpBlock->without_terminator()) {
-    if (tryRaisingOpToStableHLO(&innerOp, forMapping, builder, maps, pc)
-            .failed()) {
-      return failure();
-    }
+  unsigned numIterArgs = forOp.getNumRegionIterArgs();
+  SmallVector<affine::AffineValueMap> resMaps;
+  resMaps.reserve(forOp.getNumResults());
+  for (unsigned i = 0, e = forOp.getNumResults(); i < e; ++i)
+    resMaps.push_back(maps.lookup(whileOp.getResult(1 + i)));
+
+  IRRewriter rewriter(builder);
+  rewriter.setInsertionPoint(whileOp);
+  SmallVector<Value> results;
+  if (failed(unrollWhileOp(whileOp, rewriter, /*maxNumIterations=*/-1,
+                           /*maxOperationThreshold=*/-1, &results))) {
+    return failure();
   }
-  // Remap the results of the loop in the main mapping which will be needed for
-  // raising subsequent ops.
-  for (auto [yielded, res] :
-       llvm::zip_equal(yield.getOperands(), forOp.getResults())) {
-    auto mapped = forMapping.lookupOrNull(yielded);
-    assert(mapped);
-    mapping.map(res, mapped);
+
+  for (auto [i, forRes] : llvm::enumerate(forOp.getResults())) {
+    mapping.map(forRes, results[1 + i]);
+    maps[results[1 + i]] = resMaps[i];
   }
-  for (auto [from, to] : forMapping.getValueMap()) {
-    Block *b = from.getParentBlock();
-    // This checks whether `tmpBlock` is an ancestor of `from`. If it is not,
-    // then we need to reflect any change in the `forMapping` in the global
-    // `mapping`. We need to do this because memref arguments to the function we
-    // are raising get remapped as the raising process goes on.
-    bool shouldRemap;
-    while (true) {
-      if (!b) {
-        shouldRemap = true;
-        break;
-      }
-      if (b == tmpBlock.get()) {
-        shouldRemap = false;
-        break;
-      }
-      Operation *op = b->getParentOp();
-      if (op) {
-        b = op->getBlock();
-      } else {
-        shouldRemap = true;
-        break;
-      }
-    }
-    if (shouldRemap)
-      mapping.map(from, to);
-  }
+
+  Block *entryBlock = &forOp->getParentOfType<func::FuncOp>().getBody().front();
+  for (auto [i, memref] : llvm::enumerate(entryBlock->getArguments()))
+    mapping.map(memref, results[1 + numIterArgs + i]);
   return success();
 }
 
 static LogicalResult tryRaisingForOpToStableHLOWhile(
     affine::AffineForOp forOp, IRMapping &parentMapping, OpBuilder &builder,
-    llvm::DenseMap<Value, affine::AffineValueMap> &maps, ParallelContext pc) {
+    llvm::DenseMap<Value, affine::AffineValueMap> &maps, ParallelContext pc,
+    stablehlo::WhileOp *createdWhileOp) {
   IRMapping mapping = parentMapping;
   if (!forOp.hasConstantBounds()) {
     return forOp.emitError("CPU kernels do not support cluster");
@@ -1295,6 +1265,9 @@ static LogicalResult tryRaisingForOpToStableHLOWhile(
 
   whileOp->getRegion(0).push_back(cond);
   whileOp->getRegion(1).push_back(body);
+
+  if (createdWhileOp)
+    *createdWhileOp = whileOp;
 
   {
     OpBuilder::InsertionGuard guard(builder);

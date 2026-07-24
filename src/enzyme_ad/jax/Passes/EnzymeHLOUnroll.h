@@ -36,3 +36,8 @@ struct WhileUnroll
   LogicalResult matchAndRewriteImpl(stablehlo::WhileOp op,
                                     PatternRewriter &rewriter) const;
 };
+
+LogicalResult unrollWhileOp(mlir::stablehlo::WhileOp op, RewriterBase &rewriter,
+                            int64_t maxNumIterations = -1,
+                            int64_t maxOperationThreshold = -1,
+                            SmallVectorImpl<Value> *replacements = nullptr);
