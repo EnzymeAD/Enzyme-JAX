@@ -80,10 +80,16 @@ jobs:
           echo $TAG
           sed -i.bak "s~version = \"[0-9.]*\"~version = \"$TAG\"~g" BUILD
           cat BUILD
-          if [[ "${{ matrix.os }}" == *"x86"* ]]; then
-            sed -i.bak "s~\[\"X86\", \"AArch64\", \"AMDGPU\", \"NVPTX\"\]~\[\"X86\", \"NVPTX\"\]~g" workspace.bzl
+          if [[ "${{ matrix.os }}" == *"macOS"* || "${{ matrix.os }}" == *"macos"* ]]; then
+            if [ "${{ runner.arch }}" == "ARM64" ]; then
+              sed -i.bak -e 's/"AMDGPU", //g' -e 's/, "AMDGPU"//g' -e 's/"X86", //g' -e 's/, "X86"//g' workspace.bzl
+            else
+              sed -i.bak -e 's/"AMDGPU", //g' -e 's/, "AMDGPU"//g' -e 's/"AArch64", //g' -e 's/, "AArch64"//g' workspace.bzl
+            fi
+          elif [[ "${{ matrix.os }}" == *"x86"* ]]; then
+            sed -i.bak -e 's/"AArch64", //g' -e 's/, "AArch64"//g' workspace.bzl
           else
-            sed -i.bak "s~\[\"X86\", \"AArch64\", \"NVPTX\"\]~\[\"X86\", \"NVPTX\"\]~g" workspace.bzl
+            sed -i.bak -e 's/"X86", //g' -e 's/, "X86"//g' workspace.bzl
           fi
           cat workspace.bzl
       - name: Update JAX version
