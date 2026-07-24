@@ -744,12 +744,17 @@ td_library(
     srcs = [
         "Dialect/Perfify/Dialect.td",
         "Dialect/Perfify/Ops.td",
+        "Dialect/Perfify/Types.td",
     ],
     deps = [
         "@llvm-project//mlir:BuiltinDialectTdFiles",
+        "@llvm-project//mlir:CallOpInterfaces",
         "@llvm-project//mlir:ControlFlowInterfacesTdFiles",
+        "@llvm-project//mlir:FunctionInterfacesTdFiles",
+        "@llvm-project//mlir:InferTypeOpInterfaceTdFiles",
         "@llvm-project//mlir:OpBaseTdFiles",
         "@llvm-project//mlir:SideEffectInterfaces",
+        "@llvm-project//mlir:SideEffectInterfacesTdFiles",
     ],
 )
 
@@ -794,6 +799,106 @@ gentbl_cc_library(
     td_file = "Dialect/Perfify/Ops.td",
     deps = [
         ":PerfifyDialectFiles",
+    ],
+)
+
+gentbl_cc_library(
+    name = "PerfifyTypesIncGen",
+    tbl_outs = [
+        (
+            ["--gen-typedef-decls"],
+            "Dialect/Perfify/PerfifyTypes.h.inc",
+        ),
+        (
+            ["--gen-typedef-defs"],
+            "Dialect/Perfify/PerfifyTypes.cpp.inc",
+        ),
+        (
+            ["--gen-type-interface-decls"], 
+            "Dialect/Perfify/PerfifyTypeInterfaces.h.inc"
+        ),
+        (
+            ["--gen-type-interface-defs"], 
+            "Dialect/Perfify/PerfifyTypeInterfaces.cpp.inc"
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Dialect/Perfify/Types.td",
+    deps = [
+        ":PerfifyDialectFiles",
+    ],
+)
+
+gentbl_cc_library(
+    name = "PerfifyAttributesIncGen",
+    tbl_outs = [
+        (
+            [
+                "-gen-attrdef-decls",
+                "-attrdefs-dialect=perfify",
+            ],
+            "Dialect/Perfify/PerfifyAttributes.h.inc",
+        ),
+        (
+            [
+                "-gen-attrdef-defs",
+                "-attrdefs-dialect=perfify",
+            ],
+            "Dialect/Perfify/PerfifyAttributes.cpp.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Dialect/Perfify/Dialect.td",
+    deps = [":PerfifyDialectFiles"],
+)
+
+gentbl_cc_library(
+    name = "PerfifyEnumsIncGen",
+    tbl_outs = [
+        (
+            [
+                "-gen-enum-decls",
+                "-attrdefs-dialect=perfify",
+            ],
+            "Dialect/Perfify/PerfifyDialectEnums.h.inc",
+        ),
+        (
+            [
+                "-gen-enum-defs",
+                "-attrdefs-dialect=perfify",
+            ],
+            "Dialect/Perfify/PerfifyDialectEnums.cpp.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Dialect/Perfify/Dialect.td",
+    deps = [":PerfifyDialectFiles"],
+)
+
+td_library(
+    name = "PerfifyPassesTdFiles",
+    srcs = [],
+    deps = [
+        "@llvm-project//mlir:PassBaseTdFiles",
+    ],
+)
+
+gentbl_cc_library(
+    name = "PerfifyPassesIncGen",
+    tbl_outs = [
+        (
+            [
+                "-gen-pass-decls",
+                "-name=perfify",
+            ],
+            "Passes/Perfify/Passes.h.inc",
+        ),
+    ],
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Passes/Perfify/Passes.td",
+    deps = [
+        ":PerfifyPassesTdFiles",
+        "@llvm-project//mlir:FunctionInterfacesTdFiles",
     ],
 )
 
@@ -1199,7 +1304,6 @@ cc_library(
             "Dialect/*.cpp",
             "Dialect/Distributed/*.cpp",
             "Dialect/Tessera/*.cpp",
-            "Dialect/Perfify/*.cpp",
         ],
         exclude = [
             "Dialect/Utils.cpp",
@@ -1217,7 +1321,6 @@ cc_library(
         "Dialect/*.h",
         "Dialect/Distributed/*.h",
         "Dialect/Tessera/*.h",
-        "Dialect/Perfify/*.h",
     ]) + [
         "Utils.h",
     ],
@@ -1243,8 +1346,7 @@ cc_library(
         ":EnzymeXLAOpsIncGen",
         ":EnzymeXLAPassesIncGen",
         ":LowerEnzymeXLAMathPatternsIncGen",
-        ":PerfifyDialectIncGen",
-        ":PerfifyOpsIncGen",
+        ":Perfify",
         ":Polymer",
         ":RaisingTransformOps",
         ":RaisingTransformOpsImplIncGen",
@@ -1396,6 +1498,7 @@ cc_library(
         ":XLADerivatives",
         ":TritonExtDialect",
         ":EnzymeXLAPassesIncGen",
+        ":Perfify",
         "@com_google_protobuf//:protobuf",
         "@tsl//tsl/platform:env",
         "@tsl//tsl/platform:env_impl",
@@ -1789,5 +1892,42 @@ pybind_extension(
         "@xla//xla/stream_executor:stream_executor_impl",
         "@xla//xla/stream_executor/cuda:cuda_compute_capability_proto_cc_impl",
         "@xla//xla/tsl/profiler/backends/cpu:annotation_stack_impl",
+    ],
+)
+
+cc_library(
+    name = "Perfify",
+    srcs = glob([
+        "Dialect/Perfify/*.cpp",
+        "Passes/Perfify/*.cpp",
+    ]),
+    hdrs = glob([
+        "Passes/Perfify/*.h",
+        "Dialect/Perfify/*.h",
+    ]),
+    copts = [
+        "-Werror=implicit-fallthrough",
+        "-Werror=switch",
+        "-Werror=unused-variable",
+        "-Werror=unused-result",
+        "-Werror=unused-but-set-variable",
+        "-Werror=return-type",
+        "-Werror=unused-result",
+    ],
+    deps = [
+        ":PerfifyAttributesIncGen",
+        ":PerfifyDialectIncGen",
+        ":PerfifyEnumsIncGen",
+        ":PerfifyOpsIncGen",
+        ":PerfifyPassesIncGen",
+        ":PerfifyTypesIncGen",
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:BytecodeOpInterface",
+        "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:FunctionInterfaces",
+        "@llvm-project//mlir:IR",
+        "@llvm-project//mlir:LLVMDialect",
+        "@llvm-project//mlir:Pass",
+        "@z3",
     ],
 )
