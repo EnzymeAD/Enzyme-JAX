@@ -1734,6 +1734,7 @@ struct MPIAllreduceOpLowering
       auto i64Type = IntegerType::get(context, 64);
 
       std::string ncclFunctionName = "ncclAllReduce";
+      std::string printfFunctionName = "printf";
 
       auto datatype = op.getDatatype();
       StringRef datatypeName = stringifyMPIDatatype(datatype);
@@ -1766,6 +1767,28 @@ struct MPIAllreduceOpLowering
 
         auto wrapperFunc = rewriter.create<LLVM::LLVMFuncOp>(
             op.getLoc(), wrapperFunctionName, funcType);
+
+        if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(printfFunctionName)) {
+          auto printfType =
+              LLVM::LLVMFunctionType::get(i32Type, {llvmPtrType, i32Type}, false);
+          rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), printfFunctionName,
+                                            printfType,
+                                            LLVM::Linkage::External);
+        }
+
+        std::string printfFormatName =
+            wrapperFunctionName + "_nccl_return_printf_format";
+        if (!moduleOp.lookupSymbol<LLVM::GlobalOp>(printfFormatName)) {
+          std::string printfFormat = "enzymexla ncclAllReduce returned %d\n";
+          auto printfFormatType = LLVM::LLVMArrayType::get(
+              IntegerType::get(context, 8), printfFormat.size() + 1);
+          rewriter.create<LLVM::GlobalOp>(
+              op.getLoc(), printfFormatType,
+              /*isConstant=*/true, LLVM::Linkage::Internal, printfFormatName,
+              rewriter.getStringAttr(printfFormat + '\0'),
+              /*alignment=*/0,
+              /*addrSpace=*/0);
+        }
 
         // Add function-level memory effects attribute
         auto memoryEffectsAttr = rewriter.getArrayAttr(
@@ -1810,11 +1833,17 @@ struct MPIAllreduceOpLowering
 
         // Call ncclAllReduce
         // TODO error handling
-        rewriter.create<LLVM::CallOp>(
+        auto ncclStatus = rewriter.create<LLVM::CallOp>(
             op.getLoc(), TypeRange{i32Type},
             SymbolRefAttr::get(context, ncclFunctionName),
             ValueRange{sendbufPtr, inbufPtr, count, dtype, redOp, ncclComm,
                        stream});
+        Value printfFormat = rewriter.create<LLVM::AddressOfOp>(
+            op.getLoc(), llvmPtrType, printfFormatName);
+        rewriter.create<LLVM::CallOp>(
+            op.getLoc(), TypeRange{i32Type},
+            SymbolRefAttr::get(context, printfFunctionName),
+            ValueRange{printfFormat, ncclStatus.getResult()});
 
         rewriter.create<LLVM::ReturnOp>(op.getLoc(), ValueRange{});
       }
