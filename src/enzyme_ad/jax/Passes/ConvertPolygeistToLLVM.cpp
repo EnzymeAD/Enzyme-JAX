@@ -882,6 +882,7 @@ LLVM::AtomicOrdering convertAtomicOrdering(enzyme::Ordering ordering) {
   case mlir::enzyme::Ordering::seq_cst:
     return LLVM::AtomicOrdering::seq_cst;
   }
+  llvm_unreachable("Invalid Ordering");
 }
 
 struct CAtomicRMWOpLowering : public CLoadStoreOpLowering<memref::AtomicRMWOp> {
