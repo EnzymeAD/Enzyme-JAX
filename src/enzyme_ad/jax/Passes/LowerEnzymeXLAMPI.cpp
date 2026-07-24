@@ -1736,6 +1736,7 @@ struct MPIAllreduceOpLowering
       std::string ncclFunctionName = "ncclAllReduce";
       std::string printfFunctionName = "printf";
       std::string cuStreamSynchronizeFunctionName = "cuStreamSynchronize";
+      std::string cuMemcpyDtoHFunctionName = "cuMemcpyDtoH_v2";
 
       auto datatype = op.getDatatype();
       StringRef datatypeName = stringifyMPIDatatype(datatype);
@@ -1771,7 +1772,7 @@ struct MPIAllreduceOpLowering
 
         if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(printfFunctionName)) {
           auto printfType = LLVM::LLVMFunctionType::get(
-              i32Type, {llvmPtrType, i32Type}, false);
+              i32Type, {llvmPtrType, i64Type}, false);
           rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), printfFunctionName,
                                             printfType,
                                             LLVM::Linkage::External);
@@ -1784,36 +1785,51 @@ struct MPIAllreduceOpLowering
               op.getLoc(), cuStreamSynchronizeFunctionName,
               cuStreamSynchronizeType, LLVM::Linkage::External);
         }
+        if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(
+                cuMemcpyDtoHFunctionName)) {
+          auto cuMemcpyDtoHType = LLVM::LLVMFunctionType::get(
+              i32Type, {llvmPtrType, i64Type, i64Type}, false);
+          rewriter.create<LLVM::LLVMFuncOp>(
+              op.getLoc(), cuMemcpyDtoHFunctionName, cuMemcpyDtoHType,
+              LLVM::Linkage::External);
+        }
 
-        std::string printfFormatName =
-            wrapperFunctionName + "_nccl_return_printf_format";
-        if (!moduleOp.lookupSymbol<LLVM::GlobalOp>(printfFormatName)) {
-          std::string printfFormat = "enzymexla ncclAllReduce returned %d\n";
-          auto printfFormatType = LLVM::LLVMArrayType::get(
-              IntegerType::get(context, 8), printfFormat.size() + 1);
-          rewriter.create<LLVM::GlobalOp>(
-              op.getLoc(), printfFormatType,
-              /*isConstant=*/true, LLVM::Linkage::Internal, printfFormatName,
-              rewriter.getStringAttr(printfFormat + '\0'),
-              /*alignment=*/0,
-              /*addrSpace=*/0);
-        }
-        std::string cudaSyncPrintfFormatName =
-            wrapperFunctionName + "_cu_stream_sync_printf_format";
-        if (!moduleOp.lookupSymbol<LLVM::GlobalOp>(
-                cudaSyncPrintfFormatName)) {
-          std::string printfFormat =
-              "enzymexla cuStreamSynchronize returned %d\n";
-          auto printfFormatType = LLVM::LLVMArrayType::get(
-              IntegerType::get(context, 8), printfFormat.size() + 1);
-          rewriter.create<LLVM::GlobalOp>(
-              op.getLoc(), printfFormatType,
-              /*isConstant=*/true, LLVM::Linkage::Internal,
-              cudaSyncPrintfFormatName,
-              rewriter.getStringAttr(printfFormat + '\0'),
-              /*alignment=*/0,
-              /*addrSpace=*/0);
-        }
+        auto createPrintfFormat = [&](StringRef suffix,
+                                      StringRef value) -> std::string {
+          std::string printfFormatName =
+              wrapperFunctionName + "_" + suffix.str();
+          if (!moduleOp.lookupSymbol<LLVM::GlobalOp>(printfFormatName)) {
+            std::string printfFormat = value.str();
+            auto printfFormatType = LLVM::LLVMArrayType::get(
+                IntegerType::get(context, 8), printfFormat.size() + 1);
+            rewriter.create<LLVM::GlobalOp>(
+                op.getLoc(), printfFormatType,
+                /*isConstant=*/true, LLVM::Linkage::Internal,
+                printfFormatName, rewriter.getStringAttr(printfFormat + '\0'),
+                /*alignment=*/0,
+                /*addrSpace=*/0);
+          }
+          return printfFormatName;
+        };
+
+        std::string ncclPrintfFormatName = createPrintfFormat(
+            "nccl_return_printf_format",
+            "enzymexla ncclAllReduce returned %lld\n");
+        std::string cuSyncPrintfFormatName = createPrintfFormat(
+            "cu_stream_sync_printf_format",
+            "enzymexla cuStreamSynchronize returned %lld\n");
+        std::string memcpyDtoHPrintfFormatName = createPrintfFormat(
+            "cu_memcpy_dtoh_printf_format",
+            "enzymexla cuMemcpyDtoH_v2 returned %lld\n");
+        std::string preSendBitsPrintfFormatName = createPrintfFormat(
+            "pre_sendbuf_bits_printf_format",
+            "enzymexla pre sendbuf bits 0x%016llx\n");
+        std::string preRecvBitsPrintfFormatName = createPrintfFormat(
+            "pre_recvbuf_bits_printf_format",
+            "enzymexla pre recvbuf bits 0x%016llx\n");
+        std::string postRecvBitsPrintfFormatName = createPrintfFormat(
+            "post_recvbuf_bits_printf_format",
+            "enzymexla post recvbuf bits 0x%016llx\n");
 
         // Add function-level memory effects attribute
         auto memoryEffectsAttr = rewriter.getArrayAttr(
@@ -1856,6 +1872,42 @@ struct MPIAllreduceOpLowering
         Value stream =
             enzymexla::GetStreamOp::create(rewriter, op.getLoc(), llvmPtrType);
 
+        auto printI64 = [&](const std::string &formatName, Value value) {
+          Value printfFormat = rewriter.create<LLVM::AddressOfOp>(
+              op.getLoc(), llvmPtrType, formatName);
+          rewriter.create<LLVM::CallOp>(
+              op.getLoc(), TypeRange{i32Type},
+              SymbolRefAttr::get(context, printfFunctionName),
+              ValueRange{printfFormat, value});
+        };
+        auto printI32 = [&](const std::string &formatName, Value value) {
+          Value value64 = rewriter.create<LLVM::ZExtOp>(op.getLoc(), i64Type,
+                                                        value);
+          printI64(formatName, value64);
+        };
+        auto copyAndPrintBits = [&](const std::string &bitsFormatName,
+                                    Value devicePtr) {
+          Value one = rewriter.create<LLVM::ConstantOp>(
+              op.getLoc(), i64Type, rewriter.getI64IntegerAttr(1));
+          Value bytes = rewriter.create<LLVM::ConstantOp>(
+              op.getLoc(), i64Type, rewriter.getI64IntegerAttr(8));
+          Value hostSlot = rewriter.create<LLVM::AllocaOp>(
+              op.getLoc(), llvmPtrType, i64Type, one);
+          Value devicePtrInt = rewriter.create<LLVM::PtrToIntOp>(
+              op.getLoc(), i64Type, devicePtr);
+          auto copyStatus = rewriter.create<LLVM::CallOp>(
+              op.getLoc(), TypeRange{i32Type},
+              SymbolRefAttr::get(context, cuMemcpyDtoHFunctionName),
+              ValueRange{hostSlot, devicePtrInt, bytes});
+          printI32(memcpyDtoHPrintfFormatName, copyStatus.getResult());
+          Value bits =
+              rewriter.create<LLVM::LoadOp>(op.getLoc(), i64Type, hostSlot);
+          printI64(bitsFormatName, bits);
+        };
+
+        copyAndPrintBits(preSendBitsPrintfFormatName, sendbufPtr);
+        copyAndPrintBits(preRecvBitsPrintfFormatName, inbufPtr);
+
         // Call ncclAllReduce
         // TODO error handling
         auto ncclStatus = rewriter.create<LLVM::CallOp>(
@@ -1863,23 +1915,14 @@ struct MPIAllreduceOpLowering
             SymbolRefAttr::get(context, ncclFunctionName),
             ValueRange{sendbufPtr, inbufPtr, count, dtype, redOp, ncclComm,
                        stream});
-        Value printfFormat = rewriter.create<LLVM::AddressOfOp>(
-            op.getLoc(), llvmPtrType, printfFormatName);
-        rewriter.create<LLVM::CallOp>(
-            op.getLoc(), TypeRange{i32Type},
-            SymbolRefAttr::get(context, printfFunctionName),
-            ValueRange{printfFormat, ncclStatus.getResult()});
+        printI32(ncclPrintfFormatName, ncclStatus.getResult());
 
         auto cudaSyncStatus = rewriter.create<LLVM::CallOp>(
             op.getLoc(), TypeRange{i32Type},
             SymbolRefAttr::get(context, cuStreamSynchronizeFunctionName),
             ValueRange{stream});
-        Value cudaSyncPrintfFormat = rewriter.create<LLVM::AddressOfOp>(
-            op.getLoc(), llvmPtrType, cudaSyncPrintfFormatName);
-        rewriter.create<LLVM::CallOp>(
-            op.getLoc(), TypeRange{i32Type},
-            SymbolRefAttr::get(context, printfFunctionName),
-            ValueRange{cudaSyncPrintfFormat, cudaSyncStatus.getResult()});
+        printI32(cuSyncPrintfFormatName, cudaSyncStatus.getResult());
+        copyAndPrintBits(postRecvBitsPrintfFormatName, inbufPtr);
 
         rewriter.create<LLVM::ReturnOp>(op.getLoc(), ValueRange{});
       }
