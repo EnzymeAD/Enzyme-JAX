@@ -1830,6 +1830,15 @@ struct MPIAllreduceOpLowering
         std::string postRecvBitsPrintfFormatName = createPrintfFormat(
             "post_recvbuf_bits_printf_format",
             "enzymexla post recvbuf bits 0x%016llx\n");
+        std::string preSendDataBitsPrintfFormatName = createPrintfFormat(
+            "pre_sendbuf_data_bits_printf_format",
+            "enzymexla pre sendbuf data bits 0x%016llx\n");
+        std::string preRecvDataBitsPrintfFormatName = createPrintfFormat(
+            "pre_recvbuf_data_bits_printf_format",
+            "enzymexla pre recvbuf data bits 0x%016llx\n");
+        std::string postRecvDataBitsPrintfFormatName = createPrintfFormat(
+            "post_recvbuf_data_bits_printf_format",
+            "enzymexla post recvbuf data bits 0x%016llx\n");
 
         // Add function-level memory effects attribute
         auto memoryEffectsAttr = rewriter.getArrayAttr(
@@ -1885,16 +1894,14 @@ struct MPIAllreduceOpLowering
                                                         value);
           printI64(formatName, value64);
         };
-        auto copyAndPrintBits = [&](const std::string &bitsFormatName,
-                                    Value devicePtr) {
+        auto copyDeviceAddressAndPrintBits = [&](const std::string &bitsFormatName,
+                                                 Value devicePtrInt) -> Value {
           Value one = rewriter.create<LLVM::ConstantOp>(
               op.getLoc(), i64Type, rewriter.getI64IntegerAttr(1));
           Value bytes = rewriter.create<LLVM::ConstantOp>(
               op.getLoc(), i64Type, rewriter.getI64IntegerAttr(8));
           Value hostSlot = rewriter.create<LLVM::AllocaOp>(
               op.getLoc(), llvmPtrType, i64Type, one);
-          Value devicePtrInt = rewriter.create<LLVM::PtrToIntOp>(
-              op.getLoc(), i64Type, devicePtr);
           auto copyStatus = rewriter.create<LLVM::CallOp>(
               op.getLoc(), TypeRange{i32Type},
               SymbolRefAttr::get(context, cuMemcpyDtoHFunctionName),
@@ -1903,10 +1910,23 @@ struct MPIAllreduceOpLowering
           Value bits =
               rewriter.create<LLVM::LoadOp>(op.getLoc(), i64Type, hostSlot);
           printI64(bitsFormatName, bits);
+          return bits;
+        };
+        auto copyAndPrintBits = [&](const std::string &bitsFormatName,
+                                    Value devicePtr) -> Value {
+          Value devicePtrInt = rewriter.create<LLVM::PtrToIntOp>(
+              op.getLoc(), i64Type, devicePtr);
+          return copyDeviceAddressAndPrintBits(bitsFormatName, devicePtrInt);
         };
 
-        copyAndPrintBits(preSendBitsPrintfFormatName, sendbufPtr);
-        copyAndPrintBits(preRecvBitsPrintfFormatName, inbufPtr);
+        Value preSendDataPtr =
+            copyAndPrintBits(preSendBitsPrintfFormatName, sendbufPtr);
+        copyDeviceAddressAndPrintBits(preSendDataBitsPrintfFormatName,
+                                      preSendDataPtr);
+        Value preRecvDataPtr =
+            copyAndPrintBits(preRecvBitsPrintfFormatName, inbufPtr);
+        copyDeviceAddressAndPrintBits(preRecvDataBitsPrintfFormatName,
+                                      preRecvDataPtr);
 
         // Call ncclAllReduce
         // TODO error handling
@@ -1923,6 +1943,8 @@ struct MPIAllreduceOpLowering
             ValueRange{stream});
         printI32(cuSyncPrintfFormatName, cudaSyncStatus.getResult());
         copyAndPrintBits(postRecvBitsPrintfFormatName, inbufPtr);
+        copyDeviceAddressAndPrintBits(postRecvDataBitsPrintfFormatName,
+                                      preRecvDataPtr);
 
         rewriter.create<LLVM::ReturnOp>(op.getLoc(), ValueRange{});
       }
