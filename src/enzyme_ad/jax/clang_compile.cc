@@ -767,8 +767,8 @@ createLLVMMod(std::string fn, llvm::StringRef source,
     }
     assert(linkMod);
     if (lang == ::Language::MHLO) {
-      auto *cpu_executable = static_cast<xla::cpu::CpuExecutable *>(
-          local_executable.get());
+      auto *cpu_executable =
+          static_cast<xla::cpu::CpuExecutable *>(local_executable.get());
       llvm::StringRef fname = cpu_executable->module_name();
       if (fname.size() && fname[0] == '_')
         fname = fname.substr(1);
@@ -829,8 +829,8 @@ createLLVMMod(std::string fn, llvm::StringRef source,
     }
 
     if (local_executable && !xla_runtime) {
-      auto *cpu_executable = static_cast<xla::cpu::CpuExecutable *>(
-          local_executable.get());
+      auto *cpu_executable =
+          static_cast<xla::cpu::CpuExecutable *>(local_executable.get());
       auto &assignment = cpu_executable->buffer_assignment();
       for (auto &buf : assignment.Allocations()) {
         if (!buf.is_constant())
@@ -961,8 +961,8 @@ createLLVMMod(std::string fn, llvm::StringRef source,
       size_t numBuffers = out_shapes.size() + in_shapes.size();
       std::vector<int> out_idxs;
       if (local_executable) {
-        auto *cpu_executable = static_cast<xla::cpu::CpuExecutable *>(
-            local_executable.get());
+        auto *cpu_executable =
+            static_cast<xla::cpu::CpuExecutable *>(local_executable.get());
         auto &assignment = cpu_executable->buffer_assignment();
         numBuffers = assignment.Allocations().size();
         if (out_shapes.size() == 1) {
@@ -1056,8 +1056,8 @@ createLLVMMod(std::string fn, llvm::StringRef source,
       ss << "  void* buffers[" << numBuffers << "] = {";
 
       if (local_executable) {
-        auto *cpu_executable = static_cast<xla::cpu::CpuExecutable *>(
-            local_executable.get());
+        auto *cpu_executable =
+            static_cast<xla::cpu::CpuExecutable *>(local_executable.get());
         auto &assignment = cpu_executable->buffer_assignment();
         for (auto &buf : assignment.Allocations()) {
           if (buf.index() != 0)
