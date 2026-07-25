@@ -76,7 +76,6 @@ def MarkFunctionMemoryEffectsPass : Pass<"mark-func-memory-effects", "ModuleOp">
   let summary = "Attach enzymexla.memory_effects attribute summarizing memory access";
   let dependentDialects = [
     "mlir::LLVM::LLVMDialect",
-    "triton_ext::TritonExtDialect",
     "memref::MemRefDialect",
   ];
   let options = [
