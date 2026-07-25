@@ -254,7 +254,7 @@ BuildExecutable(xla::Service *self, const xla::HloModuleProto &module_proto,
 }
 
 // Compile an MHLO module given as a string to LLVM IR using XLA.
-absl::StatusOr<std::unique_ptr<xla::Executable>>
+absl::StatusOr<std::unique_ptr<xla::LocalExecutable>>
 compile_mhlo_to_llvm_with_xla(llvm::StringRef mhlo_text, std::string &output,
                               bool xla_runtime,
                               const std::string &pass_pipeline) {
@@ -388,9 +388,13 @@ compile_mhlo_to_llvm_with_xla(llvm::StringRef mhlo_text, std::string &output,
     return executable.status();
   }
 
-  auto exec = std::move(executable.value());
-  auto *cpu_executable = static_cast<xla::cpu::CpuExecutable *>(exec.get());
+  auto local_executable = std::make_unique<xla::LocalExecutable>(
+      std::move(executable.value()),
+      local_client->local_service()->mutable_backend(), build_options);
+
+  auto *cpu_executable =
+      static_cast<xla::cpu::CpuExecutable *>(local_executable->executable());
 
   output = cpu_executable->ir_module_string();
-  return exec;
+  return std::move(local_executable);
 }

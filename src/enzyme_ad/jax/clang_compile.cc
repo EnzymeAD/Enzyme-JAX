@@ -691,7 +691,7 @@ createLLVMMod(std::string fn, llvm::StringRef source,
   ss << "#include <enzyme/utils>\n";
 
   std::unique_ptr<llvm::Module> linkMod;
-  std::unique_ptr<xla::Executable> local_executable;
+  std::unique_ptr<xla::LocalExecutable> local_executable;
   std::string stringbuf;
 
   size_t tmpBuf = 0;
@@ -709,7 +709,7 @@ createLLVMMod(std::string fn, llvm::StringRef source,
     }
     local_executable = std::move(exec_or_err).value();
     auto *cpu_executable =
-        static_cast<xla::cpu::CpuExecutable *>(local_executable.get());
+        static_cast<xla::cpu::CpuExecutable *>(local_executable->executable());
     auto &assignment = cpu_executable->buffer_assignment();
     if (!xla_runtime) {
       size_t num_in = 0;
@@ -768,7 +768,7 @@ createLLVMMod(std::string fn, llvm::StringRef source,
     assert(linkMod);
     if (lang == ::Language::MHLO) {
       auto *cpu_executable =
-          static_cast<xla::cpu::CpuExecutable *>(local_executable.get());
+          static_cast<xla::cpu::CpuExecutable *>(local_executable->executable());
       llvm::StringRef fname = cpu_executable->module_name();
       if (fname.size() && fname[0] == '_')
         fname = fname.substr(1);
@@ -830,7 +830,7 @@ createLLVMMod(std::string fn, llvm::StringRef source,
 
     if (local_executable && !xla_runtime) {
       auto *cpu_executable =
-          static_cast<xla::cpu::CpuExecutable *>(local_executable.get());
+          static_cast<xla::cpu::CpuExecutable *>(local_executable->executable());
       auto &assignment = cpu_executable->buffer_assignment();
       for (auto &buf : assignment.Allocations()) {
         if (!buf.is_constant())
@@ -962,7 +962,7 @@ createLLVMMod(std::string fn, llvm::StringRef source,
       std::vector<int> out_idxs;
       if (local_executable) {
         auto *cpu_executable =
-            static_cast<xla::cpu::CpuExecutable *>(local_executable.get());
+            static_cast<xla::cpu::CpuExecutable *>(local_executable->executable());
         auto &assignment = cpu_executable->buffer_assignment();
         numBuffers = assignment.Allocations().size();
         if (out_shapes.size() == 1) {
@@ -1057,7 +1057,7 @@ createLLVMMod(std::string fn, llvm::StringRef source,
 
       if (local_executable) {
         auto *cpu_executable =
-            static_cast<xla::cpu::CpuExecutable *>(local_executable.get());
+            static_cast<xla::cpu::CpuExecutable *>(local_executable->executable());
         auto &assignment = cpu_executable->buffer_assignment();
         for (auto &buf : assignment.Allocations()) {
           if (buf.index() != 0)
@@ -1092,7 +1092,7 @@ createLLVMMod(std::string fn, llvm::StringRef source,
             ess << " Failed to compile mhlo, unknown buffer type\n";
             ess << origSource << "\n";
             ess << source << "\n";
-            ess << local_executable->module().ToString() << "\n";
+            ess << local_executable->executable()->module().ToString() << "\n";
             ess << " unknown buffer type: " << buf.ToString() << "\n";
             return absl::InternalError(ess.str());
           }
