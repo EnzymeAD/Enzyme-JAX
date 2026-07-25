@@ -253,7 +253,7 @@ BuildExecutable(xla::Service *self, const xla::HloModuleProto &module_proto,
 }
 
 // Compile an MHLO module given as a string to LLVM IR using XLA.
-absl::StatusOr<std::unique_ptr<xla::LocalExecutable>>
+absl::StatusOr<std::unique_ptr<xla::Executable>>
 compile_mhlo_to_llvm_with_xla(llvm::StringRef mhlo_text, std::string &output,
                               bool xla_runtime,
                               const std::string &pass_pipeline) {
