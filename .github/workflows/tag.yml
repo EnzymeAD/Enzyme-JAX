@@ -64,7 +64,7 @@ jobs:
             BAZEL_FLAGS="${BAZEL_FLAGS} --config=public_cache_push"
           fi
           if [ ${{ runner.os }} == macOS ]; then
-            BAZEL_FLAGS="${BAZEL_FLAGS} --define=enable_triton=false"
+            BAZEL_FLAGS="${BAZEL_FLAGS} --define=enable_triton=false --cxxopt=-Wno-nullability-completeness --host_cxxopt=-Wno-nullability-completeness"
           fi
           echo "BAZEL_FLAGS=${BAZEL_FLAGS}" >> "${GITHUB_ENV}"
       - uses: actions/checkout@v7
