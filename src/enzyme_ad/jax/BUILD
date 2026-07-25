@@ -21,6 +21,55 @@ exports_files([
 
 licenses(["notice"])
 
+config_setting(
+    name = "disable_triton_config",
+    define_values = {"enable_triton": "false"},
+)
+
+triton_copts = select({
+    ":disable_triton_config": ["-DENZYME_JAX_ENABLE_TRITON=0"],
+    "//conditions:default": ["-DENZYME_JAX_ENABLE_TRITON=1"],
+})
+
+if_triton = select({
+    ":disable_triton_config": [],
+    "//conditions:default": [
+        "@triton//:TritonDialects",
+        "@triton//:TritonGPUToLLVM",
+        "@triton//:TritonGPUTransforms",
+        "@triton//:TritonLLVMIR",
+        "@triton//:TritonNvidiaGPUTransforms",
+        "@triton//:TritonToTritonGPU",
+        "@triton//:TritonToTritonGPUPasses",
+        "@triton//:TritonTransforms",
+        "@triton//:WarpSpecialization",
+        "@triton//:triton_conversion_triton_to_triton_gpu_passes_inc_gen",
+        "@triton//:triton_nvidia_gpu_transforms_inc_gen",
+        "@triton//third_party/amd:TritonAMDGPU",
+        "@triton//third_party/amd:TritonAMDGPUToLLVM",
+        "@triton//third_party/amd:TritonAMDGPUTransforms",
+        "@triton//third_party/nvidia:NVGPUDialect",
+        "@triton//third_party/nvidia:NVGPUToLLVM",
+        "@triton//third_party/nvidia:NVHopperTransforms",
+        "@triton//third_party/nvidia:NVWSDialect",
+        "@triton//third_party/nvidia:NVWSTransforms",
+        "@triton//third_party/nvidia:TritonNVIDIAGPUToLLVM",
+    ],
+})
+
+if_triton_dialects = select({
+    ":disable_triton_config": [],
+    "//conditions:default": ["@triton//:TritonDialects"],
+})
+
+if_triton_passes = select({
+    ":disable_triton_config": [],
+    "//conditions:default": [
+        "@triton//:TritonDialects",
+        "@triton//:TritonToTritonGPUPasses",
+    ],
+})
+
 cc_library(
     name = "gpu",
     srcs = ["gpu.cc"],
@@ -901,13 +950,13 @@ cc_library(
     name = "triton_dialect_capi_objects",
     srcs = ["Integrations/c/triton_dialect_capi.cpp"],
     hdrs = ["Integrations/c/triton_dialect_capi.h"],
+    copts = triton_copts,
     visibility = ["//visibility:public"],
     deps = [
         "@llvm-project//llvm:Support",
         "@llvm-project//mlir:CAPIIRObjects",
         "@llvm-project//mlir:IR",
-        "@triton//:TritonDialects",
-    ],
+    ] + if_triton_dialects,
     alwayslink = True,
 )
 
@@ -1374,8 +1423,7 @@ cc_library(
         "@stablehlo//:stablehlo_ops",
         "@stablehlo//:stablehlo_passes",
         "@stablehlo//:stablehlo_type_inference",
-        "@triton//:TritonDialects",
-        "@triton//:TritonToTritonGPUPasses",
+    ] + if_triton_passes + [
         "@xla//xla/mlir/utils:type_util",
         "@xla//xla/mlir_hlo",
         "@zlib",
@@ -1391,6 +1439,7 @@ cc_library(
     ]) + [
         "RegistryUtils.h",
     ],
+    copts = triton_copts,
     deps = [
         ":TransformOps",
         ":XLADerivatives",
@@ -1478,29 +1527,7 @@ cc_library(
         "@llvm-project//mlir:LLVMCommonConversion",
         "@llvm-project//mlir:Transforms",
         "@llvm-project//mlir:PDLDialect",
-
-        # Triton
-        "@triton//:TritonDialects",
-        "@triton//:TritonGPUToLLVM",
-        "@triton//:TritonGPUTransforms",
-        "@triton//:TritonLLVMIR",
-        "@triton//:TritonNvidiaGPUTransforms",
-        "@triton//:TritonToTritonGPU",
-        "@triton//:TritonToTritonGPUPasses",
-        "@triton//:TritonTransforms",
-        "@triton//:WarpSpecialization",
-        "@triton//:triton_conversion_triton_to_triton_gpu_passes_inc_gen",
-        "@triton//:triton_nvidia_gpu_transforms_inc_gen",
-        "@triton//third_party/amd:TritonAMDGPU",
-        "@triton//third_party/amd:TritonAMDGPUToLLVM",
-        "@triton//third_party/amd:TritonAMDGPUTransforms",
-        "@triton//third_party/nvidia:NVGPUDialect",
-        "@triton//third_party/nvidia:NVGPUToLLVM",
-        "@triton//third_party/nvidia:NVHopperTransforms",
-        "@triton//third_party/nvidia:NVWSDialect",
-        "@triton//third_party/nvidia:NVWSTransforms",
-        "@triton//third_party/nvidia:TritonNVIDIAGPUToLLVM",
-
+    ] + if_triton + [
         # Shardy stuff
         "@shardy//shardy/dialect/sdy/ir:dialect",
         "@shardy//shardy/dialect/sdy/transforms/propagation:op_sharding_rule_builder",

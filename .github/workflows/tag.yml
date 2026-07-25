@@ -63,6 +63,9 @@ jobs:
           if [ ${{ runner.os }} == Linux ]; then
             BAZEL_FLAGS="${BAZEL_FLAGS} --config=public_cache_push"
           fi
+          if [ ${{ runner.os }} == macOS ]; then
+            BAZEL_FLAGS="${BAZEL_FLAGS} --define=enable_triton=false"
+          fi
           echo "BAZEL_FLAGS=${BAZEL_FLAGS}" >> "${GITHUB_ENV}"
       - uses: actions/checkout@v7
       - uses: bazel-contrib/setup-bazel@0.19.0
@@ -70,10 +73,11 @@ jobs:
         with:
           # Avoid downloading Bazel every time.
           bazelisk-cache: true
-          # Store build cache per workflow only for macOS.
-          disk-cache: ${{ runner.os == 'macOS' && format('build-{0}-{1}-{2}', github.workflow, matrix.os, matrix.python) || false }}
-          # Do not share repository cache between workflows.
-          repository-cache: false
+          # Store build cache per Python version, with fallback restore-keys to share C++ objects across Python versions.
+          disk-cache: ${{ runner.os == 'macOS' && format('tag-{0}-{1}-{2}', github.workflow, matrix.os, matrix.python) || false }}
+          restore-keys: ${{ runner.os == 'macOS' && format('tag-{0}-{1}-', github.workflow, matrix.os) || false }}
+          repository-cache: true
+          save-always: true
           bazelisk-version: 1.x
       - shell: bash
         run: |
@@ -117,7 +121,7 @@ jobs:
           bazel run $BAZEL_FLAGS --color=yes //builddeps:requirements.update
 
       - name: Build wheel
-        timeout-minutes: 240
+        timeout-minutes: 480
         run: |
           bazel build $BAZEL_FLAGS --color=yes :wheel --test_output=errors
 
