@@ -152,8 +152,8 @@ public:
         throw ::nanobind::value_error(exec_or_err.status().ToString().c_str());
       }
       auto local_executable = std::move(exec_or_err).value();
-      auto *cpu_executable = static_cast<xla::cpu::CpuExecutable *>(
-          local_executable->executable());
+      auto *cpu_executable =
+          static_cast<xla::cpu::CpuExecutable *>(local_executable.get());
       auto &assignment = cpu_executable->buffer_assignment();
       return assignment.temp_allocation_total_size();
     }
