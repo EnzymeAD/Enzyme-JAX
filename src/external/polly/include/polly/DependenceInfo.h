@@ -223,7 +223,7 @@ struct DependenceAnalysis final : public AnalysisInfoMixin<DependenceAnalysis> {
 };
 
 struct DependenceInfoPrinterPass final
-    : RequiredPassInfoMixin<DependenceInfoPrinterPass> {
+    : llvm::RequiredPassInfoMixin<DependenceInfoPrinterPass> {
   DependenceInfoPrinterPass(raw_ostream &OS) : OS(OS) {}
 
   PreservedAnalyses run(Scop &S, ScopAnalysisManager &,
