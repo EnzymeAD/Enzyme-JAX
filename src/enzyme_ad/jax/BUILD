@@ -1278,7 +1278,7 @@ cc_library(
         "-Werror=unused-but-set-variable",
         "-Werror=return-type",
         "-Werror=unused-result",
-    ],
+    ] + triton_copts,
     visibility = ["//visibility:public"],
     deps = [
         ":CheckedRewrite",
