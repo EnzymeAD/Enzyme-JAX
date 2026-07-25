@@ -2727,6 +2727,7 @@ private:
   matchAndRewrite(gpu::LaunchFuncOp launchOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override;
 
+  [[maybe_unused]] bool kernelBarePtrCallConv;
   bool kernelIntersperseSizeCallConv;
 };
 
