@@ -387,13 +387,9 @@ compile_mhlo_to_llvm_with_xla(llvm::StringRef mhlo_text, std::string &output,
     return executable.status();
   }
 
-  auto local_executable = std::make_unique<xla::LocalExecutable>(
-      std::move(executable.value()),
-      local_client->local_service()->mutable_backend(), build_options);
-
-  auto *cpu_executable =
-      static_cast<xla::cpu::CpuExecutable *>(local_executable->executable());
+  auto exec = std::move(executable.value());
+  auto *cpu_executable = static_cast<xla::cpu::CpuExecutable *>(exec.get());
 
   output = cpu_executable->ir_module_string();
-  return std::move(local_executable);
+  return exec;
 }
