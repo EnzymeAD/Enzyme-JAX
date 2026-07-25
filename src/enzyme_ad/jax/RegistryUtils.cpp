@@ -248,10 +248,12 @@ void registerDialects(mlir::DialectRegistry &registry) {
   registry.insert<mlir::enzymexla::triton_ext::TritonExtDialect>();
   registry.insert<mlir::sdy::SdyDialect>();
   registry.insert<mlir::ub::UBDialect>();
+#if ENZYME_JAX_ENABLE_TRITON
   registry.insert<mlir::triton::TritonDialect>();
   registry.insert<mlir::triton::nvidia_gpu::TritonNvidiaGPUDialect>();
   registry.insert<mlir::triton::gpu::TritonGPUDialect>();
   registry.insert<mlir::cuda_tile::CudaTileDialect>();
+#endif
 }
 
 void loadAllRegisteredDialects(mlir::MLIRContext &context) {
@@ -292,8 +294,8 @@ void loadAllRegisteredDialects(mlir::MLIRContext &context) {
   context.loadDialect<mlir::triton::TritonDialect>();
   context.loadDialect<mlir::triton::nvidia_gpu::TritonNvidiaGPUDialect>();
   context.loadDialect<mlir::triton::gpu::TritonGPUDialect>();
-#endif
   context.loadDialect<mlir::cuda_tile::CudaTileDialect>();
+#endif
 }
 
 void registerInterfaces(mlir::DialectRegistry &registry) {
@@ -418,11 +420,11 @@ void initializePasses() {
   mlir::triton::registerConvertWarpSpecializeToLLVM();
   mlir::triton::registerConvertTritonGPUToLLVMPass();
   mlir::triton::registerConvertNVGPUToLLVMPass();
-#endif
   mlir::registerLLVMDIScopePass();
 
   // CUDA Tile passes
   mlir::cuda_tile::registerCudaTilePasses();
+#endif
 }
 
 } // namespace enzyme
