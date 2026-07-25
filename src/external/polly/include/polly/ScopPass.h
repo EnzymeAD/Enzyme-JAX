@@ -217,7 +217,7 @@ private:
 
 template <typename ScopPassT>
 struct FunctionToScopPassAdaptor final
-    : OptionalPassInfoMixin<FunctionToScopPassAdaptor<ScopPassT>> {
+    : llvm::OptionalPassInfoMixin<FunctionToScopPassAdaptor<ScopPassT>> {
   explicit FunctionToScopPassAdaptor(ScopPassT Pass) : Pass(std::move(Pass)) {}
 
   PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM) {
