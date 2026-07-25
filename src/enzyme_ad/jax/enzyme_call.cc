@@ -86,7 +86,7 @@ class CpuKernel {
   static std::unique_ptr<llvm::DataLayout> DL;
   static std::unique_ptr<llvm::orc::LLJIT> JIT;
 
-  int64_t identifier;
+  [[maybe_unused]] int64_t identifier;
   size_t num_out;
   uint64_t addr;
 
