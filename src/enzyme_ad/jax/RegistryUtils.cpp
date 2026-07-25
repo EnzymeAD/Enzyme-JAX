@@ -114,7 +114,7 @@
 #include "xla/service/spmd/shardy/stablehlo_round_trip/stablehlo_import.h"
 
 #ifndef ENZYME_JAX_ENABLE_TRITON
-#define ENZYME_JAX_ENABLE_TRITON 0
+#define ENZYME_JAX_ENABLE_TRITON 1
 #endif
 
 #if ENZYME_JAX_ENABLE_TRITON
