@@ -2716,10 +2716,8 @@ class LegalizeLaunchFuncOpPattern
     : public ConvertOpToGpuRuntimeCallPattern<gpu::LaunchFuncOp> {
 public:
   LegalizeLaunchFuncOpPattern(LLVMTypeConverter &typeConverter,
-                              bool kernelBarePtrCallConv,
                               bool kernelIntersperseSizeCallConv)
       : ConvertOpToGpuRuntimeCallPattern<gpu::LaunchFuncOp>(typeConverter),
-        kernelBarePtrCallConv(kernelBarePtrCallConv),
         kernelIntersperseSizeCallConv(kernelIntersperseSizeCallConv) {}
 
 private:
@@ -2727,7 +2725,6 @@ private:
   matchAndRewrite(gpu::LaunchFuncOp launchOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override;
 
-  bool kernelBarePtrCallConv;
   bool kernelIntersperseSizeCallConv;
 };
 
