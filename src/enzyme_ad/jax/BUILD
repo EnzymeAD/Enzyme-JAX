@@ -1584,6 +1584,7 @@ cc_library(
         "@com_google_protobuf//:protobuf",
         "@tsl//tsl/platform:env",
         "@tsl//tsl/platform:env_impl",
+        "@xla//xla/client:client_library",
         "@xla//xla/client:local_client",
         "@xla//xla/service",
         "@xla//xla/service:executable",
