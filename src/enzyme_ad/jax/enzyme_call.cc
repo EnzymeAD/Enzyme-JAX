@@ -92,8 +92,7 @@ class CpuKernel {
 public:
   static constexpr size_t UNKNOWN_PLATFORM = 0x1000000000;
 
-  CpuKernel(size_t num_out, uint64_t addr)
-      : num_out(num_out), addr(addr) {}
+  CpuKernel(size_t num_out, uint64_t addr) : num_out(num_out), addr(addr) {}
 
   static std::pair<size_t, size_t>
   tapeAndTempSize(std::string fn, llvm::StringRef source,
@@ -255,8 +254,8 @@ public:
     // Cast the entry point address to a function pointer.
     auto Entry = EntrySym->getValue();
 
-    kernels.try_emplace(
-        identifier, std::make_unique<CpuKernel>(num_out, Entry));
+    kernels.try_emplace(identifier,
+                        std::make_unique<CpuKernel>(num_out, Entry));
     return std::make_tuple(identifier, tmpBuf);
   }
 
