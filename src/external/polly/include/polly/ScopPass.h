@@ -94,7 +94,7 @@ private:
 template <typename AnalysisT>
 struct RequireAnalysisPass<AnalysisT, Scop, ScopAnalysisManager,
                            ScopStandardAnalysisResults &, SPMUpdater &>
-    : PassInfoMixin<
+    : RequiredPassInfoMixin<
           RequireAnalysisPass<AnalysisT, Scop, ScopAnalysisManager,
                               ScopStandardAnalysisResults &, SPMUpdater &>> {
   PreservedAnalyses run(Scop &L, ScopAnalysisManager &AM,
@@ -217,7 +217,7 @@ private:
 
 template <typename ScopPassT>
 struct FunctionToScopPassAdaptor final
-    : PassInfoMixin<FunctionToScopPassAdaptor<ScopPassT>> {
+    : OptionalPassInfoMixin<FunctionToScopPassAdaptor<ScopPassT>> {
   explicit FunctionToScopPassAdaptor(ScopPassT Pass) : Pass(std::move(Pass)) {}
 
   PreservedAnalyses run(Function &F, FunctionAnalysisManager &AM) {
