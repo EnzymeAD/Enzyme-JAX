@@ -86,15 +86,14 @@ class CpuKernel {
   static std::unique_ptr<llvm::DataLayout> DL;
   static std::unique_ptr<llvm::orc::LLJIT> JIT;
 
-  [[maybe_unused]] int64_t identifier;
   size_t num_out;
   uint64_t addr;
 
 public:
   static constexpr size_t UNKNOWN_PLATFORM = 0x1000000000;
 
-  CpuKernel(int64_t identifier, size_t num_out, uint64_t addr)
-      : identifier(identifier), num_out(num_out), addr(addr) {}
+  CpuKernel(int64_t /*identifier*/, size_t num_out, uint64_t addr)
+      : num_out(num_out), addr(addr) {}
 
   static std::pair<size_t, size_t>
   tapeAndTempSize(std::string fn, llvm::StringRef source,
