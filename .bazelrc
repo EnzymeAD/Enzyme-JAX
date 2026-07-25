@@ -37,7 +37,6 @@ common --cxxopt=-Wno-unused-local-typedefs --host_cxxopt=-Wno-unused-local-typed
 common --cxxopt=-Wno-reorder --host_cxxopt=-Wno-reorder
 common --cxxopt=-Wno-missing-braces --host_cxxopt=-Wno-missing-braces
 common --cxxopt=-Wno-range-loop-construct --host_cxxopt=-Wno-range-loop-construct
-common --cxxopt=-Wno-nullability-completeness --host_cxxopt=-Wno-nullability-completeness
 
 # for gcc
 # common --cxxopt=-Wno-class-memaccess --host_cxxopt=-Wno-class-memaccess
