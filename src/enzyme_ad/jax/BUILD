@@ -1586,6 +1586,7 @@ cc_library(
         "@tsl//tsl/platform:env_impl",
         "@xla//xla/client:local_client",
         "@xla//xla/service",
+        "@xla//xla/service:executable",
         "@xla//xla/service:local_service",
         "@xla//xla/service:local_service_utils",
         "@xla//xla/service/cpu:cpu_executable",
