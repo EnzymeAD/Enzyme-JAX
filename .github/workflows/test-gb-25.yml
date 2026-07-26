@@ -111,7 +111,6 @@ jobs:
       - name: Load Julia packages from cache
         uses: julia-actions/cache@3.2.0
         with:
-          cache-name: workflow=${{ matrix.julia_version }}-${{ matrix.os }}-${{ matrix.reactant_commit }}-${{ matrix.gb25_commit }}
           gcp-bucket: ${{ (contains(matrix.os, 'linux') && 'enzyme-ci-transient' ) || '' }}
           key-prefix: enzymejax-gb25/
 
