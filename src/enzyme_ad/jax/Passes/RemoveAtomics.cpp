@@ -339,74 +339,90 @@ bool isAccessRacy(ScopStmt &stmtA, MemoryAccess *accessA, ScopStmt &stmtB,
   return isAccessRacy(schedule.get_root().child(0), deps);
 }
 
+ScopStmt *getStatementContaining(IslScop &scop, Operation *op) {
+  for (ScopStmt &stmt : scop)
+    if (stmt.getOperation() == op || stmt.getOperation()->isAncestor(op))
+      return &stmt;
+  return nullptr;
+}
+
+MemoryAccess *getAtomicArrayWrite(enzyme::AffineAtomicRMWOp rmw,
+                                  ScopStmt &stmt) {
+  MemoryAccess *write = nullptr;
+  for (MemoryAccess *ma : stmt) {
+    if (ma->Kind != MemoryAccess::MT_Array || !ma->isWrite())
+      continue;
+    if (ma->AI->val != rmw.getMemref())
+      continue;
+    if (write)
+      return nullptr;
+    write = ma;
+  }
+  return write;
+}
+
 // Determines whether it is safe to "remove", i.e. convert an atomic rmw to
 // non-atomic read-modify-store.
 //
-// This is safe when there is no racy access w.r.t. to the rmw.
-bool isSafeToRemoveAtomicImpl(enzyme::AffineAtomicRMWOp rmw, IslScop &scop) {
+// This is safe when there is no other racy atomic rmw w.r.t. this rmw. Regular
+// load/store races are ignored because those races already exist in the input.
+bool isSafeToRemoveAtomicImpl(enzyme::AffineAtomicRMWOp rmw, IslScop &scop,
+                              ArrayRef<enzyme::AffineAtomicRMWOp> rmws) {
   LDBG() << "Handling rmw: " << rmw;
-  ScopStmt &rmwStmt = scop.getStatement(rmw);
-  MemoryAccess *theArrayWrite = nullptr;
-  for (MemoryAccess *ma : rmwStmt)
-    if (ma->Kind == MemoryAccess::MT_Array && ma->isMustWrite())
-      theArrayWrite = ma;
+  ScopStmt *rmwStmt = getStatementContaining(scop, rmw);
+  if (!rmwStmt) {
+    LDBG() << "Failed to find statement for rmw";
+    return false;
+  }
+  MemoryAccess *theArrayWrite = getAtomicArrayWrite(rmw, *rmwStmt);
+  if (!theArrayWrite) {
+    LDBG() << "Failed to identify atomic write for rmw";
+    return false;
+  }
   assert(theArrayWrite);
   LDBG() << "Found array write";
   LLVM_DEBUG(polly::dumpIslObj(theArrayWrite->getAccessRelation()));
 
   TypedValue<MemRefType> theArray = rmw.getMemref();
   assert(theArray == theArrayWrite->AI->val);
-  for (ScopStmt &stmt : scop) {
-    for (MemoryAccess *ma : stmt) {
-      if (ma->Kind == MemoryAccess::MT_Value)
-        continue;
-      if (!ma->isRead() && !ma->isWrite())
-        continue;
+  for (auto otherRmw : rmws) {
+    if (otherRmw == rmw)
+      continue;
 
-      mlir::Value thisArray = ma->AI->val;
-      if (!mayAlias(thisArray, theArray))
-        continue;
+    TypedValue<MemRefType> otherArray = otherRmw.getMemref();
+    if (!mayAlias(otherArray, theArray))
+      continue;
 
-      if (ma->isWrite() && thisArray != theArray) {
-        if (isAnyInstanceRacy(rmwStmt, stmt)) {
-          if (ma->isMayWrite())
-            LDBG() << "Found racy may-write to an aliasing array: "
-                   << *stmt.getOperation();
-          else
-            LDBG() << "Found racy write to an aliasing array: "
-                   << *stmt.getOperation();
-          return false;
-        }
-      } else if (ma->isWrite()) {
-        if (isAccessRacy(rmwStmt, theArrayWrite, stmt, ma)) {
-          if (ma->isMayWrite())
-            LDBG() << "Found racy may-write to the same array: "
-                   << *stmt.getOperation();
-          else
-            LDBG() << "Found racy write to the same array: "
-                   << *stmt.getOperation();
-          return false;
-        }
-      } else if (thisArray != theArray) {
-        if (isAnyInstanceRacy(rmwStmt, stmt)) {
-          LDBG() << "Found racy read from an aliasing array: "
-                 << *stmt.getOperation();
-          return false;
-        }
-      } else {
-        if (isAccessRacy(rmwStmt, theArrayWrite, stmt, ma)) {
-          LDBG() << "Found racy read from the same array: "
-                 << *stmt.getOperation();
-          return false;
-        }
+    ScopStmt *otherStmt = getStatementContaining(scop, otherRmw);
+    if (!otherStmt) {
+      LDBG() << "Failed to find statement for other rmw";
+      return false;
+    }
+
+    MemoryAccess *otherArrayWrite = getAtomicArrayWrite(otherRmw, *otherStmt);
+    if (!otherArrayWrite) {
+      LDBG() << "Failed to identify atomic write for other rmw";
+      return false;
+    }
+
+    if (otherArray != theArray) {
+      if (isAnyInstanceRacy(*rmwStmt, *otherStmt)) {
+        LDBG() << "Found racy atomic to an aliasing array: " << otherRmw;
+        return false;
+      }
+    } else {
+      if (isAccessRacy(*rmwStmt, theArrayWrite, *otherStmt, otherArrayWrite)) {
+        LDBG() << "Found racy atomic to the same array: " << otherRmw;
+        return false;
       }
     }
   }
   return true;
 }
 
-bool isSafeToRemoveAtomic(enzyme::AffineAtomicRMWOp rmw, IslScop &scop) {
-  if (isSafeToRemoveAtomicImpl(rmw, scop)) {
+bool isSafeToRemoveAtomic(enzyme::AffineAtomicRMWOp rmw, IslScop &scop,
+                          ArrayRef<enzyme::AffineAtomicRMWOp> rmws) {
+  if (isSafeToRemoveAtomicImpl(rmw, scop, rmws)) {
     LDBG("remove-atomics-decision") << "Legal to remove atomic from " << rmw;
     return true;
   } else {
@@ -509,7 +525,7 @@ void handleGPUWrapper(enzymexla::GPUWrapperOp wrapperOp) {
 
   SmallVector<enzyme::AffineAtomicRMWOp> toConvert;
   for (auto rmw : rmws)
-    if (isSafeToRemoveAtomic(rmw, *scop))
+    if (isSafeToRemoveAtomic(rmw, *scop, rmws))
       toConvert.push_back(rmw);
 
   for (auto rmw : toConvert)
