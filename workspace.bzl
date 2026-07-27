@@ -103,7 +103,11 @@ echo " llvm::Error evalPrintOp(PrintOp& op, InterpreterValue operand) {" >> thir
     sed -i.bak0 "s/strip_prefix/patch_cmds = [\\\"sed -i.bak0 's\\/_MSC_VER\\/_WIN32\\/g' src\\/pthreads.c\\\"], strip_prefix/g" third_party/pthreadpool/workspace.bzl
     """,
     """
-    sed -i.bak0 "s/strip_prefix/patch_cmds = [\\\"find . -type f -name config.bzl -exec sed -i.bak0 's\\/HAVE_BACKTRACE=1\\/NO_HAVE_BACKTRACE=0\\/g' {} +\\\"], strip_prefix/g" third_party/llvm/workspace.bzl
+    # The second command disables llvm's use of __builtin_cpu_supports on apple
+    # platforms (e.g. clang's SSE4.2 identifier lexer fast path).  The darwin
+    # compiler-rt shipped by the cross toolchain does not provide __cpu_model,
+    # so leaving it enabled breaks linking libReactantExtra on x86_64-apple-darwin.
+    sed -i.bak0 "s/strip_prefix/patch_cmds = [\\\"find . -type f -name config.bzl -exec sed -i.bak0 's\\/HAVE_BACKTRACE=1\\/NO_HAVE_BACKTRACE=0\\/g' {} +\\\", \\\"sed -i.bak0 's\\/ || defined(__APPLE__))\\/)\\/' llvm\\/include\\/llvm\\/Support\\/Compiler.h\\\"], strip_prefix/g" third_party/llvm/workspace.bzl
     """,
     "find . -type f -name BUILD -exec sed -i.bak1 's/\\/\\/third_party\\/py\\/enzyme_ad\\/\\.\\.\\./public/g' {} +",
     "find . -type f -name BUILD -exec sed -i.bak2 's/\\/\\/xla\\/mlir\\/memref:friends/\\/\\/visibility:public/g' {} +",
