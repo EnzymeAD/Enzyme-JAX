@@ -1,5 +1,5 @@
 diff --git a/mlir/include/mlir/Analysis/FlatLinearValueConstraints.h b/mlir/include/mlir/Analysis/FlatLinearValueConstraints.h
-index e481ef85562b..79fb201935f0 100644
+index e481ef85562b..28ad01ed6680 100644
 --- a/mlir/include/mlir/Analysis/FlatLinearValueConstraints.h
 +++ b/mlir/include/mlir/Analysis/FlatLinearValueConstraints.h
 @@ -334,8 +334,10 @@ public:
@@ -10,8 +10,8 @@ index e481ef85562b..79fb201935f0 100644
 -  explicit FlatLinearValueConstraints(IntegerSet set, ValueRange operands = {});
 +  /// Creates an affine constraint system from an IntegerSet. Returns failure
 +  /// if `set` is semi-affine, as flattening is not implemented for those.
-+  static FailureOr<FlatLinearValueConstraints>
-+  create(IntegerSet set, ValueRange operands = {});
++  static FailureOr<FlatLinearValueConstraints> create(IntegerSet set,
++                                                      ValueRange operands = {});
  
    /// Return the kind of this object.
    Kind getKind() const override { return Kind::FlatLinearValueConstraints; }
@@ -29,7 +29,7 @@ index e481ef85562b..79fb201935f0 100644
  
  /// Flattens 'expr' into 'flattenedExpr', which contains the coefficients of the
 diff --git a/mlir/include/mlir/Dialect/Affine/Analysis/AffineStructures.h b/mlir/include/mlir/Dialect/Affine/Analysis/AffineStructures.h
-index e6596f2e010d..49903c3c3f67 100644
+index e6596f2e010d..477834156028 100644
 --- a/mlir/include/mlir/Dialect/Affine/Analysis/AffineStructures.h
 +++ b/mlir/include/mlir/Dialect/Affine/Analysis/AffineStructures.h
 @@ -45,6 +45,11 @@ class FlatAffineValueConstraints : public FlatLinearValueConstraints {
@@ -38,8 +38,8 @@ index e6596f2e010d..49903c3c3f67 100644
  
 +  /// Creates an affine constraint system from an IntegerSet. Returns failure
 +  /// if `set` is semi-affine, as flattening is not implemented for those.
-+  static FailureOr<FlatAffineValueConstraints>
-+  create(IntegerSet set, ValueRange operands = {});
++  static FailureOr<FlatAffineValueConstraints> create(IntegerSet set,
++                                                      ValueRange operands = {});
 +
    /// Return the kind of this object.
    Kind getKind() const override { return Kind::FlatAffineValueConstraints; }
@@ -161,16 +161,17 @@ index cac305df8ba7..321c8e34d907 100644
    return simplifiedSet;
  }
 diff --git a/mlir/unittests/Analysis/Presburger/Parser.h b/mlir/unittests/Analysis/Presburger/Parser.h
-index 75842fb054e2..992e86c8b41a 100644
+index 75842fb054e2..39ddc1d8c2e1 100644
 --- a/mlir/unittests/Analysis/Presburger/Parser.h
 +++ b/mlir/unittests/Analysis/Presburger/Parser.h
-@@ -30,7 +30,10 @@ namespace presburger {
+@@ -30,7 +30,11 @@ namespace presburger {
  /// represents a valid IntegerSet.
  inline IntegerPolyhedron parseIntegerPolyhedron(StringRef str) {
    MLIRContext context(MLIRContext::Threading::DISABLED);
 -  return affine::FlatAffineValueConstraints(parseIntegerSet(str, &context));
 +  FailureOr<affine::FlatAffineValueConstraints> cst =
-+      affine::FlatAffineValueConstraints::create(parseIntegerSet(str, &context));
++      affine::FlatAffineValueConstraints::create(
++          parseIntegerSet(str, &context));
 +  assert(succeeded(cst) && "expected a valid IntegerSet");
 +  return *cst;
  }

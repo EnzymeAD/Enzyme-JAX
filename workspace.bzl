@@ -82,8 +82,10 @@ echo " llvm::Error evalPrintOp(PrintOp& op, InterpreterValue operand) {" >> thir
     # Apply our own patches on top of the LLVM pinned by XLA. This lets us use
     # upstream APIs which have not yet made it into the pinned commit. Drop the
     # corresponding hunks from patches/llvm.patch once XLA moves to an LLVM
-    # which already contains them.
-    sed -i.bak0 "s|patches = \\[|patches = [\\\"//:patches/llvm.patch\\\",|g" third_party/llvm/workspace.bzl
+    # which already contains them. The label is written in escaped form so that
+    # downstream users of this file (e.g. Reactant.jl) can rewrite it to
+    # @enzyme_ad//:patches when this repo is not the main one.
+    sed -i.bak0 "s/patches = \\[/patches = [\\\"\\/\\/:patches\\/llvm.patch\\\",/g" third_party/llvm/workspace.bzl
     """,
     """
     sed -i.bak0 "s/Node::Leaf(std::forward<decltype(value)>/Node::Leaf(std::forward<T>/g" xla/tuple_tree.h
