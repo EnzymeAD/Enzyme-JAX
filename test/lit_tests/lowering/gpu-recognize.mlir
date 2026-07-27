@@ -111,7 +111,9 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
 // CHECK-NEXT:    enzymexla.memcpy  %29, %30, %31 : memref<?xi8>, memref<?xi8, 1>
 // CHECK-NEXT:    %32 = llvm.mlir.zero : i32
 // CHECK-NEXT:    %33 = llvm.load %10 {alignment = 8 : i64, tbaa = [#tbaa_tag1]} : !llvm.ptr -> !llvm.ptr
-// CHECK-NEXT:    %34 = llvm.call @cudaFree(%33) : (!llvm.ptr {llvm.noundef}) -> i32
+// CHECK-NEXT:    %34 = "enzymexla.pointer2memref"(%33) : (!llvm.ptr) -> memref<?xi8, 1>
+// CHECK-NEXT:    gpu.dealloc  %34 : memref<?xi8, 1>
+// CHECK-NEXT:    %35 = llvm.mlir.zero : i32
 // CHECK-NEXT:    llvm.intr.lifetime.end %12 : !llvm.ptr
 // CHECK-NEXT:    llvm.intr.lifetime.end %11 : !llvm.ptr
 // CHECK-NEXT:    llvm.intr.lifetime.end %10 : !llvm.ptr

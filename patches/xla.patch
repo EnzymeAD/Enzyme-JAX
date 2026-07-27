@@ -1,9 +1,9 @@
 diff --git a/third_party/gpus/rocm/BUILD.tpl b/third_party/gpus/rocm/BUILD.tpl
-index c95f9a9593..6e9ac4f185 100644
+index 6e05471a99..c29d37acd3 100644
 --- a/third_party/gpus/rocm/BUILD.tpl
 +++ b/third_party/gpus/rocm/BUILD.tpl
-@@ -594,6 +594,36 @@ filegroup(
-     visibility = ["//visibility:public"],
+@@ -468,6 +468,36 @@ cc_library(
+     data = [":system_libs_data"],
  )
  
 +sh_binary(
@@ -38,12 +38,12 @@ index c95f9a9593..6e9ac4f185 100644
 +
  filegroup(
      name = "toolchain_data",
-     srcs = glob([
+     srcs = glob(
 diff --git a/third_party/rocm_device_libs/build_defs.bzl b/third_party/rocm_device_libs/build_defs.bzl
 index 5b9aee4f08..f55aabe5ad 100644
 --- a/third_party/rocm_device_libs/build_defs.bzl
 +++ b/third_party/rocm_device_libs/build_defs.bzl
-@@ -103,6 +103,7 @@ def _bitcode_library_impl(ctx):
+@@ -111,6 +111,7 @@ def _bitcode_library_impl(ctx):
          inputs = [strip_out],
          outputs = [final_bc],
          arguments = [strip_out.path, "-o", final_bc.path],
@@ -51,7 +51,7 @@ index 5b9aee4f08..f55aabe5ad 100644
          progress_message = "Preparing final bitcode for {}".format(ctx.label.name),
          mnemonic = "BitcodeFinalize",
      )
-@@ -118,17 +119,17 @@ bitcode_library = rule(
+@@ -127,17 +128,17 @@ bitcode_library = rule(
          "hdrs": attr.label_list(allow_files = [".h"]),
          "file_specific_flags": attr.string_list_dict(),
          "_clang": attr.label(
@@ -73,10 +73,10 @@ index 5b9aee4f08..f55aabe5ad 100644
              cfg = "exec",
          ),
 diff --git a/third_party/rocm_device_libs/rocm_device_libs.BUILD b/third_party/rocm_device_libs/rocm_device_libs.BUILD
-index 11795b3537..24ba30ec5e 100644
+index ee162b63ab..98a55618a4 100644
 --- a/third_party/rocm_device_libs/rocm_device_libs.BUILD
 +++ b/third_party/rocm_device_libs/rocm_device_libs.BUILD
-@@ -27,36 +27,12 @@ cc_binary(
+@@ -28,36 +28,12 @@ cc_binary(
      ],
  )
  
@@ -115,5 +115,5 @@ index 11795b3537..24ba30ec5e 100644
 -    file_specific_flags = {
 -        "gaaf.cl": ["-munsafe-fp-atomics"],
 -    },
-+    actual = "@local_config_rocm//rocm:ockl"
++    actual = "@local_config_rocm//rocm:ocml"
  )

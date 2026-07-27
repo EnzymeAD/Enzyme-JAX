@@ -590,13 +590,13 @@ void Importer::initializeFuncOpInterface() {
     funcName = std::string(formatv("__polymer_opt_{0}", sourceFuncName));
   }
   // Create the function interface.
-  func = b.create<FuncOp>(sourceFuncOp.getLoc(), funcName,
-                          sourceFuncOp.getFunctionType());
+  func = FuncOp::create(b, sourceFuncOp.getLoc(), funcName,
+                        sourceFuncOp.getFunctionType());
 
   // Initialize the symbol table for these entryBlock arguments
   auto &entryBlock = *func.addEntryBlock();
   b.setInsertionPointToStart(&entryBlock);
-  b.create<mlir::func::ReturnOp>(UnknownLoc::get(context));
+  mlir::func::ReturnOp::create(b, UnknownLoc::get(context));
 
   b.setInsertionPointToStart(&entryBlock);
   for (unsigned i = 0; i < entryBlock.getNumArguments(); i++) {
@@ -606,8 +606,8 @@ void Importer::initializeFuncOpInterface() {
     // If the source type is not index, cast it to index then.
     if (scop->isParameterSymbol(argSymbol) &&
         arg.getType() != b.getIndexType()) {
-      mlir::Operation *op = b.create<mlir::arith::IndexCastOp>(
-          sourceFuncOp.getLoc(), b.getIndexType(), arg);
+      mlir::Operation *op = mlir::arith::IndexCastOp::create(
+          b, sourceFuncOp.getLoc(), b.getIndexType(), arg);
       symbolTable[argSymbol] = op->getResult(0);
     } else {
       symbolTable[argSymbol] = arg;
@@ -734,8 +734,8 @@ void Importer::initializeSymbolTable() {
 
   /// Constants
   symbolTable["zero"] =
-      b.create<mlir::arith::ConstantOp>(b.getUnknownLoc(), b.getIndexType(),
-                                        b.getIntegerAttr(b.getIndexType(), 0));
+      mlir::arith::ConstantOp::create(b, b.getUnknownLoc(), b.getIndexType(),
+                                      b.getIntegerAttr(b.getIndexType(), 0));
 
   for (const auto &it : *oslSymbolTable)
     initializeSymbol(it.second);
@@ -801,7 +801,7 @@ void Importer::createCalleeAndCallerArgs(
   // TODO: should we set insertion point for the callee before the main
   // function?
   b.setInsertionPoint(module.getBody(), getFuncInsertPt());
-  callee = b.create<FuncOp>(UnknownLoc::get(context), calleeName, calleeType);
+  callee = FuncOp::create(b, UnknownLoc::get(context), calleeName, calleeType);
   calleeMap[calleeName] = callee;
 
   // Create the caller.
@@ -912,13 +912,13 @@ void Importer::getInductionVars(clast_user_stmt *userStmt, osl_body_p body,
 
       mlir::Operation *op;
       if (substMap.isSingleConstant())
-        op = b.create<mlir::arith::ConstantOp>(
-            b.getUnknownLoc(), b.getIndexType(),
+        op = mlir::arith::ConstantOp::create(
+            b, b.getUnknownLoc(), b.getIndexType(),
             b.getIntegerAttr(b.getIndexType(),
                              substMap.getSingleConstantResult()));
       else
-        op = b.create<mlir::affine::AffineApplyOp>(b.getUnknownLoc(), substMap,
-                                                   substOperands);
+        op = mlir::affine::AffineApplyOp::create(b, b.getUnknownLoc(), substMap,
+                                                 substOperands);
 
       inductionVars.push_back(op->getResult(0));
     } else {
@@ -1010,8 +1010,8 @@ LogicalResult Importer::processStmt(clast_user_stmt *userStmt) {
         if (arg.getType() != val.getType()) {
           OpBuilder::InsertionGuard guard(b);
           b.setInsertionPointAfterValue(val);
-          mlir::Operation *castOp = b.create<mlir::arith::IndexCastOp>(
-              b.getUnknownLoc(), arg.getType(), val);
+          mlir::Operation *castOp = mlir::arith::IndexCastOp::create(
+              b, b.getUnknownLoc(), arg.getType(), val);
           callerArgs.push_back(castOp->getResult(0));
         } else {
           callerArgs.push_back(val);
@@ -1068,7 +1068,7 @@ LogicalResult Importer::processStmt(clast_user_stmt *userStmt) {
   }
 
   // Finally create the CallOp.
-  b.create<mlir::func::CallOp>(loc, callee, callerArgs);
+  mlir::func::CallOp::create(b, loc, callee, callerArgs);
 
   return success();
 }
@@ -1144,8 +1144,8 @@ LogicalResult Importer::processStmt(clast_guard *guardStmt) {
   IntegerSet iset = IntegerSet::get(builder.dimNames.size(),
                                     builder.symbolNames.size(), conds, eqFlags);
 
-  mlir::affine::AffineIfOp ifOp = b.create<mlir::affine::AffineIfOp>(
-      b.getUnknownLoc(), iset, operands, false);
+  mlir::affine::AffineIfOp ifOp = mlir::affine::AffineIfOp::create(
+      b, b.getUnknownLoc(), iset, operands, false);
 
   Block *entryBlock = ifOp.getThenBlock();
   b.setInsertionPointToStart(entryBlock);
@@ -1260,8 +1260,9 @@ LogicalResult Importer::processStmt(clast_for *forStmt) {
   }
 
   // Create the for operation.
-  mlir::affine::AffineForOp forOp = b.create<mlir::affine::AffineForOp>(
-      UnknownLoc::get(context), lbOperands, lbMap, ubOperands, ubMap, stride);
+  mlir::affine::AffineForOp forOp =
+      mlir::affine::AffineForOp::create(b, UnknownLoc::get(context), lbOperands,
+                                        lbMap, ubOperands, ubMap, stride);
 
   // Update the loop IV mapping.
   auto &entryBlock = *forOp.getBody();
@@ -1316,21 +1317,21 @@ LogicalResult Importer::processStmt(clast_for *forStmt) {
   mlir::FunctionType funcTy =
       b.getFunctionType(TypeRange(args.getArrayRef()), {});
   b.setInsertionPoint(&*getFuncInsertPt());
-  mlir::func::FuncOp func = b.create<mlir::func::FuncOp>(
-      forOp->getLoc(), std::string("T") + std::to_string(numInternalFunctions),
-      funcTy);
+  mlir::func::FuncOp func = mlir::func::FuncOp::create(
+      b, forOp->getLoc(),
+      std::string("T") + std::to_string(numInternalFunctions), funcTy);
   numInternalFunctions++;
   Block *newEntry = func.addEntryBlock();
   IRMapping vMap;
   vMap.map(args, func.getArguments());
   b.setInsertionPointToStart(newEntry);
   b.clone(*forOp.getOperation(), vMap);
-  b.create<mlir::func::ReturnOp>(func.getLoc());
+  mlir::func::ReturnOp::create(b, func.getLoc());
 
   // Create function call.
   b.setInsertionPointAfter(forOp);
-  b.create<mlir::func::CallOp>(forOp.getLoc(), func,
-                               ValueRange(args.getArrayRef()));
+  mlir::func::CallOp::create(b, forOp.getLoc(), func,
+                             ValueRange(args.getArrayRef()));
 
   // Clean up
   forOp.erase();
@@ -1355,23 +1356,23 @@ LogicalResult Importer::processStmt(clast_assignment *ass) {
 
   mlir::Operation *op;
   if (substMap.isSingleConstant()) {
-    op = b.create<mlir::arith::ConstantOp>(
-        b.getUnknownLoc(), b.getIndexType(),
+    op = mlir::arith::ConstantOp::create(
+        b, b.getUnknownLoc(), b.getIndexType(),
         b.getIntegerAttr(b.getIndexType(), substMap.getSingleConstantResult()));
   } else if (substMap.getNumResults() == 1) {
-    op = b.create<mlir::affine::AffineApplyOp>(b.getUnknownLoc(), substMap,
-                                               substOperands);
+    op = mlir::affine::AffineApplyOp::create(b, b.getUnknownLoc(), substMap,
+                                             substOperands);
   } else {
     assert(ass->RHS->type == clast_expr_red);
     clast_reduction *red = reinterpret_cast<clast_reduction *>(ass->RHS);
 
     assert(red->type != clast_red_sum);
     if (red->type == clast_red_max)
-      op = b.create<mlir::affine::AffineMaxOp>(b.getUnknownLoc(), substMap,
-                                               substOperands);
+      op = mlir::affine::AffineMaxOp::create(b, b.getUnknownLoc(), substMap,
+                                             substOperands);
     else
-      op = b.create<mlir::affine::AffineMinOp>(b.getUnknownLoc(), substMap,
-                                               substOperands);
+      op = mlir::affine::AffineMinOp::create(b, b.getUnknownLoc(), substMap,
+                                             substOperands);
   }
 
   assert(op->getNumResults() == 1);

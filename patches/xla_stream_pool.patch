@@ -1,0 +1,84 @@
+diff --git a/xla/service/BUILD b/xla/service/BUILD
+index 58b657b..cd2e8bd 100644
+--- a/xla/service/BUILD
++++ b/xla/service/BUILD
+@@ -4879,9 +4879,11 @@ cc_library(
+         "//xla/stream_executor:platform",
+         "//xla/stream_executor:stream",
+         "//xla/stream_executor:stream_executor_h",
++        "//xla/tsl/platform:status_macros",
+         "@com_google_absl//absl/base:core_headers",
+         "@com_google_absl//absl/container:flat_hash_map",
+         "@com_google_absl//absl/log",
++        "@com_google_absl//absl/status:statusor",
+         "@com_google_absl//absl/strings:str_format",
+         "@com_google_absl//absl/synchronization",
+     ],
+diff --git a/xla/service/backend.cc b/xla/service/backend.cc
+index 9719dbe..1707eed 100644
+--- a/xla/service/backend.cc
++++ b/xla/service/backend.cc
+@@ -231,7 +231,8 @@ absl::StatusOr<std::vector<StreamPool::Ptr>> Backend::BorrowStreams(
+ 
+   std::vector<StreamPool::Ptr> ptrs;
+   for (int i = 0; i < num_streams; i++) {
+-    StreamPool::Ptr ptr = stream_pools_.at(executor)->BorrowStream(priority);
++    ASSIGN_OR_RETURN(StreamPool::Ptr ptr,
++                     stream_pools_.at(executor)->BorrowStream(priority));
+     ptrs.push_back(std::move(ptr));
+   }
+   return ptrs;
+diff --git a/xla/service/stream_pool.cc b/xla/service/stream_pool.cc
+index 9699538..80b6298 100644
+--- a/xla/service/stream_pool.cc
++++ b/xla/service/stream_pool.cc
+@@ -20,6 +20,8 @@ limitations under the License.
+ #include <vector>
+ 
+ #include "absl/log/log.h"
++#include "absl/status/statusor.h"
++#include "xla/tsl/platform/status_macros.h"
+ #include "absl/strings/str_format.h"
+ #include "absl/synchronization/mutex.h"
+ #include "xla/stream_executor/platform.h"
+@@ -27,7 +29,8 @@ limitations under the License.
+ 
+ namespace xla {
+ 
+-StreamPool::Ptr StreamPool::BorrowStream(se::StreamPriority priority) {
++absl::StatusOr<StreamPool::Ptr> StreamPool::BorrowStream(
++    se::StreamPriority priority) {
+   std::unique_ptr<se::Stream> stream = nullptr;
+ 
+   {
+@@ -55,7 +58,7 @@ StreamPool::Ptr StreamPool::BorrowStream(se::StreamPriority priority) {
+ 
+   if (!stream) {
+     // Create a new stream.
+-    stream = executor_->CreateStream(priority).value();
++    ASSIGN_OR_RETURN(stream, executor_->CreateStream(priority));
+     stream->SetName(absl::StrFormat("%s pool stream",
+                                     se::StreamPriorityToString(priority)));
+     VLOG(1) << absl::StrFormat("Created new stream (%p) with priority = %s",
+diff --git a/xla/service/stream_pool.h b/xla/service/stream_pool.h
+index fc78840..cea5608 100644
+--- a/xla/service/stream_pool.h
++++ b/xla/service/stream_pool.h
+@@ -21,6 +21,7 @@ limitations under the License.
+ 
+ #include "absl/base/thread_annotations.h"
+ #include "absl/container/flat_hash_map.h"
++#include "absl/status/statusor.h"
+ #include "absl/synchronization/mutex.h"
+ #include "xla/stream_executor/platform.h"
+ #include "xla/stream_executor/stream.h"
+@@ -49,7 +50,8 @@ class StreamPool {
+   // returns the stream to the pool on destruction.
+   //
+   // This method is thread-safe.
+-  Ptr BorrowStream(se::StreamPriority priority = se::StreamPriority::Default);
++  absl::StatusOr<Ptr> BorrowStream(
++      se::StreamPriority priority = se::StreamPriority::Default);
+ 
+  private:
+   // Puts a pointer to a stream back into the pool, leaving it free

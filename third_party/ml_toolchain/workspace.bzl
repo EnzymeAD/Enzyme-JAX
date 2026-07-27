@@ -10,6 +10,7 @@ ML_TOOLCHAIN_PATCHES = [
 ]
 
 def repo(extra_patches = [], override_commit = ""):
+    return
     commit = ML_TOOLCHAIN_COMMIT
     sha = ML_TOOLCHAIN_SHA256
     if len(override_commit):

@@ -2,7 +2,6 @@
 #define ENZYME_AD_JAX_DIALECT_TESSERA_DIALECT_H
 
 #include "mlir/Bytecode/BytecodeOpInterface.h"
-#include "mlir/IR/Attributes.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Dialect.h"
 #include "mlir/IR/DialectImplementation.h"
@@ -17,10 +16,6 @@
 
 // Include the dialect
 #include "src/enzyme_ad/jax/Dialect/Tessera/TesseraDialect.h.inc"
-
-// Attribute declarations
-#define GET_ATTRDEF_CLASSES
-#include "src/enzyme_ad/jax/Dialect/Tessera/TesseraAttrs.h.inc"
 
 // Include ops
 #define GET_OP_CLASSES

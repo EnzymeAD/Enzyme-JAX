@@ -1228,6 +1228,22 @@ struct WhileToForHelper {
               continue;
             if (ba2.getOwner() != &loop.getBefore().front())
               continue;
+            auto afterYield =
+                cast<scf::YieldOp>(loop.getAfter().front().getTerminator());
+            auto afterValue = afterYield.getOperand(ba2.getArgNumber());
+            auto ba3 = dyn_cast<BlockArgument>(afterValue);
+            if (!ba3) {
+              continue;
+            }
+            if (ba3.getOwner() != &loop.getAfter().front()) {
+              continue;
+            }
+            auto beforeYield = cast<scf::ConditionOp>(
+                loop.getBefore().front().getTerminator());
+            auto inductValue = beforeYield.getArgs()[ba3.getArgNumber()];
+            if (inductValue != steppingVal) {
+              continue;
+            }
             arg = ba2;
           }
         } else {
@@ -1458,6 +1474,7 @@ struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
         legal = true;
         assert(helper.lb);
         assert(helper.ub);
+        break;
       }
       if (!legal) {
         return rewriter.notifyMatchFailure(loop,
@@ -3390,7 +3407,19 @@ struct ForLoopApplyEnzymeAttributes
       auto user = use.getUser();
       assert(isa<LLVM::CallOp>(user));
 
-      bool enable = matchPattern(user->getOperand(0), m_One());
+      APInt ckptType;
+      if (!matchPattern(user->getOperand(0), m_ConstantInt(&ckptType))) {
+        user->emitWarning() << "dynamic checkpointing type is not supported";
+        continue;
+      }
+
+      bool enable = ckptType.getSExtValue() >= 1,
+           enableBinomial = ckptType.getSExtValue() == 2, hasPeriod = false;
+
+      APInt checkpointingPeriod;
+      if (user->getNumOperands() >= 2)
+        hasPeriod = matchPattern(user->getOperand(1),
+                                 m_ConstantInt(&checkpointingPeriod));
 
       Operation *loop = user->getParentOp();
       while (loop && !isa<scf::ForOp, scf::WhileOp>(loop)) {
@@ -3398,9 +3427,20 @@ struct ForLoopApplyEnzymeAttributes
       }
 
       if (loop && isa<scf::ForOp, scf::WhileOp>(loop)) {
-        loop->setAttr(isCheckpointingAttr ? "enzyme_enable_checkpointing"
-                                          : "enzyme_enable_mincut",
+
+        loop->setAttr(isCheckpointingAttr ? "enzyme.enable_checkpointing"
+                                          : "enzyme.enable_mincut",
                       rewriter.getBoolAttr(enable));
+
+        if (enableBinomial) {
+          loop->setAttr("enzyme.binomial_checkpointing",
+                        rewriter.getUnitAttr());
+        }
+        if (hasPeriod && !checkpointingPeriod.isAllOnes()) {
+          loop->setAttr("enzyme.checkpoint_period",
+                        rewriter.getIntegerAttr(rewriter.getI64Type(),
+                                                checkpointingPeriod));
+        }
       }
 
       rewriter.eraseOp(user);

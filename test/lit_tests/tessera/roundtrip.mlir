@@ -1,6 +1,6 @@
 // RUN: enzymexlamlir-opt %s | FileCheck %s
 
-tessera.define @foo() {
+tessera.define @foo() attributes {byRefTypes = [], pure = false} {
   tessera.return
 }
 
@@ -9,9 +9,9 @@ tessera.define @foo() {
 
 // -----
 
-tessera.define @bar() -> i32 {
-  %c42_i32 = arith.constant 42 : i32
-  tessera.return %c42_i32 : i32
+tessera.define @bar() -> i32 attributes {byRefTypes = [], pure = false} {
+  %0 = arith.constant 42 : i32
+  tessera.return %0 : i32
 }
 
 // CHECK-LABEL: tessera.define @bar
@@ -19,7 +19,7 @@ tessera.define @bar() -> i32 {
 
 // -----
 
-tessera.define @caller() {
+tessera.define @caller() attributes {byRefTypes = [], pure = false} {
   tessera.call @foo() : () -> ()
   tessera.return
 }
@@ -30,7 +30,7 @@ tessera.define @caller() {
 
 // -----
 
-tessera.define @with_args(%arg0: i32, %arg1: f32) -> i32 {
+tessera.define @with_args(%arg0: i32, %arg1: f32) -> i32 attributes {byRefTypes = [unit, unit], pure = false} {
   %0 = tessera.call @bar() : () -> i32
   tessera.return %0 : i32
 }

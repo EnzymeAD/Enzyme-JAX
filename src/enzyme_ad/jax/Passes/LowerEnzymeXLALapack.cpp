@@ -136,7 +136,7 @@ struct GeqrfOpLowering : public OpRewritePattern<enzymexla::GeqrfOp> {
       // `101` for row-major, `102` for col-major
       auto layout = LLVM::ConstantOp::create(
           rewriter, op.getLoc(), type_llvm_lapack_int,
-          rewriter.getIntegerAttr(type_lapack_int, 101));
+          rewriter.getIntegerAttr(type_lapack_int, 102));
       auto m = LLVM::ConstantOp::create(
           rewriter, op.getLoc(), type_llvm_lapack_int,
           rewriter.getIntegerAttr(type_lapack_int, inputShape[0]));
@@ -184,7 +184,8 @@ struct GeqrfOpLowering : public OpRewritePattern<enzymexla::GeqrfOp> {
 
     SmallVector<Attribute> aliases;
     for (int i = 0; i < 3; ++i) {
-      aliases.push_back(stablehlo::OutputOperandAliasAttr::get(ctx, {}, i, {}));
+      aliases.push_back(
+          stablehlo::OutputOperandAliasAttr::get(ctx, {i}, i, {}));
     }
 
     auto jit_call_op = enzymexla::JITCallOp::create(
@@ -244,7 +245,8 @@ struct GeqrfOpLowering : public OpRewritePattern<enzymexla::GeqrfOp> {
         /*result_layouts*/
         getSHLOLayout(rewriter, ranks_results, isColMajorArrOutputs,
                       rank_input),
-        /*output_operand_aliases*/ rewriter.getArrayAttr(aliases));
+        /*output_operand_aliases*/ rewriter.getArrayAttr(aliases),
+        /*result_tilings*/ nullptr);
 
     rewriter.replaceAllUsesWith(op.getResult(0), cusolver_call_op.getResult(0));
     rewriter.replaceAllUsesWith(op.getResult(1), cusolver_call_op.getResult(1));
@@ -283,7 +285,8 @@ struct GeqrfOpLowering : public OpRewritePattern<enzymexla::GeqrfOp> {
         /*calledcomputations*/ nullptr,
         /*operand_layouts*/ nullptr,
         /*result_layouts*/ nullptr,
-        /*output_operand_aliases*/ nullptr);
+        /*output_operand_aliases*/ nullptr,
+        /*result_tilings*/ nullptr);
 
     rewriter.replaceAllUsesWith(op.getResult(0), customCall.getResult(0));
     rewriter.replaceAllUsesWith(op.getResult(1), customCall.getResult(1));
@@ -410,7 +413,7 @@ struct GeqrtOpLowering : public OpRewritePattern<enzymexla::GeqrtOp> {
       // `101` for row-major, `102` for col-major
       auto layout = LLVM::ConstantOp::create(
           rewriter, op.getLoc(), type_llvm_lapack_int,
-          rewriter.getIntegerAttr(type_lapack_int, 101));
+          rewriter.getIntegerAttr(type_lapack_int, 102));
       auto m = LLVM::ConstantOp::create(
           rewriter, op.getLoc(), type_llvm_lapack_int,
           rewriter.getIntegerAttr(type_lapack_int, inputShape[0]));
@@ -472,8 +475,8 @@ struct GeqrtOpLowering : public OpRewritePattern<enzymexla::GeqrtOp> {
         rewriter, op.getLoc(), type_T, cast<ElementsAttr>(makeAttr(type_T, 0)));
 
     SmallVector<bool> isColMajorArr = {true, true, true};
-    SmallVector<int64_t> operandRanks = {2, 1, 0};
-    SmallVector<int64_t> outputRanks = {2, 1, 0};
+    SmallVector<int64_t> operandRanks = {2, 2, 0};
+    SmallVector<int64_t> outputRanks = {2, 2, 0};
     auto operandLayouts =
         getSHLOLayout(rewriter, operandRanks, isColMajorArr, 2);
     auto resultLayouts = getSHLOLayout(rewriter, outputRanks, isColMajorArr, 2);
@@ -617,7 +620,7 @@ struct OrgqrOpLowering : public OpRewritePattern<enzymexla::OrgqrOp> {
       // `101` for row-major, `102` for col-major
       auto layout = LLVM::ConstantOp::create(
           rewriter, op.getLoc(), type_llvm_lapack_int,
-          rewriter.getIntegerAttr(type_lapack_int, 101));
+          rewriter.getIntegerAttr(type_lapack_int, 102));
       auto mC = inputShape[0];
       auto m = LLVM::ConstantOp::create(
           rewriter, op.getLoc(), type_llvm_lapack_int,
@@ -658,7 +661,7 @@ struct OrgqrOpLowering : public OpRewritePattern<enzymexla::OrgqrOp> {
     auto resultLayouts = getSHLOLayout(rewriter, outputRanks, isColMajorArr, 2);
 
     SmallVector<Attribute> aliases;
-    aliases.push_back(stablehlo::OutputOperandAliasAttr::get(ctx, {0}, 0, {}));
+    aliases.push_back(stablehlo::OutputOperandAliasAttr::get(ctx, {}, 0, {}));
 
     auto jit_call_op = enzymexla::JITCallOp::create(
         rewriter, op.getLoc(), TypeRange{inputType},
@@ -715,7 +718,8 @@ struct OrgqrOpLowering : public OpRewritePattern<enzymexla::OrgqrOp> {
         /*result_layouts*/
         getSHLOLayout(rewriter, ranks_results, isColMajorArrOutputs,
                       rank_input),
-        /*output_operand_aliases*/ rewriter.getArrayAttr(aliases));
+        /*output_operand_aliases*/ rewriter.getArrayAttr(aliases),
+        /*result_tilings*/ nullptr);
 
     rewriter.replaceAllUsesWith(op.getResult(), cusolver_call_op.getResult(0));
     rewriter.eraseOp(op);
@@ -741,7 +745,8 @@ struct OrgqrOpLowering : public OpRewritePattern<enzymexla::OrgqrOp> {
         /*calledcomputations*/ nullptr,
         /*operand_layouts*/ nullptr,
         /*result_layouts*/ nullptr,
-        /*output_operand_aliases*/ nullptr);
+        /*output_operand_aliases*/ nullptr,
+        /*result_tilings*/ nullptr);
 
     rewriter.replaceAllUsesWith(op.getResult(), customCall.getResult(0));
 
@@ -931,7 +936,7 @@ struct OrmqrOpLowering : public OpRewritePattern<enzymexla::OrmqrOp> {
       // `101` for row-major, `102` for col-major
       auto layout = LLVM::ConstantOp::create(
           rewriter, op.getLoc(), type_llvm_lapack_int,
-          rewriter.getIntegerAttr(type_lapack_int, 101));
+          rewriter.getIntegerAttr(type_lapack_int, 102));
 
       auto side = LLVM::ConstantOp::create(
           rewriter, op.getLoc(), type_llvm_char,
@@ -1196,7 +1201,7 @@ struct GemqrtOpLowering : public OpRewritePattern<enzymexla::GemqrtOp> {
       // `101` for row-major, `102` for col-major
       auto layout = LLVM::ConstantOp::create(
           rewriter, op.getLoc(), type_llvm_lapack_int,
-          rewriter.getIntegerAttr(type_lapack_int, 101));
+          rewriter.getIntegerAttr(type_lapack_int, 102));
 
       auto side = LLVM::ConstantOp::create(
           rewriter, op.getLoc(), type_llvm_char,
@@ -1803,7 +1808,8 @@ private:
         /*output_operand_aliases*/
         rewriter.getArrayAttr({stablehlo::OutputOperandAliasAttr::get(
             op.getContext(), std::vector<int64_t>{0}, 0,
-            std::vector<int64_t>{})}));
+            std::vector<int64_t>{})}),
+        /*result_tilings*/ nullptr);
 
     // unused custom call not getting optimized away. so adding a manual
     // check
@@ -1835,7 +1841,8 @@ private:
           /*result_layouts*/
           getSHLOLayout(rewriter, {pivotRank}, SmallVector<bool>{true},
                         inputRank),
-          /*output_operand_aliases*/ nullptr);
+          /*output_operand_aliases*/ nullptr,
+          /*result_tilings*/ nullptr);
       auto permutation1Indexed = stablehlo::AddOp::create(
           rewriter, op.getLoc(), permutation.getResult(0), pivotOnes);
       rewriter.replaceAllUsesWith(op.getResult(2), permutation1Indexed);
@@ -1889,7 +1896,8 @@ private:
         /*calledcomputations*/ nullptr,
         /*operand_layouts*/ nullptr,
         /*result_layouts*/ nullptr,
-        /*output_operand_aliases*/ nullptr);
+        /*output_operand_aliases*/ nullptr,
+        /*result_tilings*/ nullptr);
 
     // LAPACK returns 1-indexed pivots, while XLA returns 0-indexed pivots.
     // We make it consistent with LAPACK by adding 1 to the pivots.
@@ -2523,7 +2531,8 @@ LogicalResult lowerSVDAlgorithmGPU(OpTy op, PatternRewriter &rewriter,
                     rank_input),
       /*result_layouts*/
       getSHLOLayout(rewriter, ranks_results, isColMajorArrOutputs, rank_input),
-      /*output_operand_aliases*/ rewriter.getArrayAttr(aliases));
+      /*output_operand_aliases*/ rewriter.getArrayAttr(aliases),
+      /*result_tilings*/ nullptr);
 
   auto info = stablehlo::ConvertOp::create(rewriter, op.getLoc(),
                                            op.getResult(3).getType(),
@@ -2682,7 +2691,8 @@ struct GesvjOpLowering : public OpRewritePattern<enzymexla::GesvjOp> {
         /*calledcomputations*/ nullptr,
         /*operand_layouts*/ nullptr,
         /*result_layouts*/ nullptr,
-        /*output_operand_aliases*/ nullptr);
+        /*output_operand_aliases*/ nullptr,
+        /*result_tilings*/ nullptr);
 
     rewriter.replaceAllUsesWith(op.getResult(0), customCall.getResult(0));
     rewriter.replaceAllUsesWith(op.getResult(1), customCall.getResult(1));

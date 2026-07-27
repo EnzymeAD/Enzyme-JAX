@@ -8,6 +8,7 @@
 
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
 
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -40,7 +41,7 @@ static bool extractConstantScalar(Value val, double &realPart,
 
   if (auto complexType = dyn_cast<ComplexType>(elemType)) {
     // Complex scalar
-    auto complexVal = attr.getSplatValue<std::complex<APFloat>>();
+    auto complexVal = attr.getSplatValue<mlir::Complex<APFloat>>();
     realPart = complexVal.real().convertToDouble();
     imagPart = complexVal.imag().convertToDouble();
     return true;
@@ -71,6 +72,70 @@ static std::pair<Value, int64_t> createScalarOperand(PatternRewriter &rewriter,
   }
   return {originalVal, 0};
 }
+
+struct GemmOpLowering : public OpRewritePattern<enzymexla::GemmOp> {
+  GemmOpLowering(MLIRContext *context, PatternBenefit benefit = 1)
+      : OpRewritePattern(context, benefit) {}
+
+  LogicalResult matchAndRewrite(enzymexla::GemmOp op,
+                                PatternRewriter &rewriter) const override {
+    auto ctx = op->getContext();
+    LLVMTypeConverter typeConverter(ctx);
+
+    auto alpha = op.getOperand(0);
+    auto A = op.getOperand(1);
+    auto B = op.getOperand(2);
+    auto beta = op.getOperand(3);
+    auto C = op.getOperand(4);
+
+    auto type_A = cast<RankedTensorType>(A.getType());
+    auto type_C = cast<RankedTensorType>(C.getType());
+    auto rank = type_A.getRank();
+
+    auto inner_dim_A = op.getTransa() == enzymexla::LapackTranspose::none
+                           ? rank - 1
+                           : rank - 2;
+    auto inner_dim_B = op.getTransb() == enzymexla::LapackTranspose::none
+                           ? rank - 2
+                           : rank - 1;
+
+    Value maybeConjA = A;
+    if (op.getTransa() == enzymexla::LapackTranspose::adjoint) {
+      maybeConjA = chlo::ConjOp::create(rewriter, op.getLoc(), A);
+    }
+
+    Value maybeConjB = B;
+    if (op.getTransb() == enzymexla::LapackTranspose::adjoint) {
+      maybeConjB = chlo::ConjOp::create(rewriter, op.getLoc(), B);
+    }
+
+    SmallVector<int64_t> leftBatchDims, rightBatchDims;
+    for (int64_t i = 0; i < rank - 2; ++i) {
+      leftBatchDims.push_back(i);
+      rightBatchDims.push_back(i);
+    }
+    SmallVector<int64_t> leftContractDims = {inner_dim_A};
+    SmallVector<int64_t> rightContractDims = {inner_dim_B};
+    auto dotDimsAttr = stablehlo::DotDimensionNumbersAttr::get(
+        ctx, leftBatchDims, rightBatchDims, leftContractDims,
+        rightContractDims);
+    auto dotOp = stablehlo::DotGeneralOp::create(rewriter, op.getLoc(), type_C,
+                                                 maybeConjA, maybeConjB,
+                                                 dotDimsAttr, nullptr, nullptr);
+    auto scaledDot =
+        stablehlo::MulOpCreate(rewriter, op->getLoc(), alpha, dotOp);
+
+    auto scaledC = stablehlo::MulOpCreate(rewriter, op->getLoc(), beta, C);
+    auto addOp =
+        stablehlo::AddOpCreate(rewriter, op->getLoc(), scaledDot, scaledC);
+
+    rewriter.replaceAllUsesWith(op.getResult(), addOp);
+    rewriter.eraseOp(op);
+
+    return success();
+  }
+};
+
 struct SymmOpLowering : public OpRewritePattern<enzymexla::SymmOp> {
 
   using OpRewritePattern<enzymexla::SymmOp>::OpRewritePattern;
@@ -90,6 +155,8 @@ struct SymmOpLowering : public OpRewritePattern<enzymexla::SymmOp> {
     if (nBatchDims == 0) {
       if (backend == "cpu") {
         return matchAndRewriteCPU(op, rewriter);
+      } else if (backend == "cuda") {
+        return matchAndRewriteCUDA(op, rewriter);
       }
     }
 
@@ -159,8 +226,8 @@ struct SymmOpLowering : public OpRewritePattern<enzymexla::SymmOp> {
                                                    llvmPtrType, // ldc
                                                    llvmIntType, llvmIntType},
                                                   false);
-      rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), blasFn, funcType,
-                                        LLVM::Linkage::External);
+      LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), blasFn, funcType,
+                               LLVM::Linkage::External);
     }
 
     if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(blasFnWrapper)) {
@@ -205,14 +272,19 @@ struct SymmOpLowering : public OpRewritePattern<enzymexla::SymmOp> {
     static int64_t fn_counter = 0;
     std::string funcFnName = blasFnWrapper + "_" + std::to_string(fn_counter++);
 
-    SmallVector<bool> isColMajorArr(12, true);
+    // Pass A, B and C in row-major format (isColMajor = false) to avoid layout
+    // transforms. This requires flipping uplo and side parameters below,
+    // similar to the CUDA FFI implementation in xla_ffi.cpp.
+    // operandRanks: {uplo, side, m, n, alpha, A, lda, B, ldb, beta, C, ldc}
+
+    SmallVector<bool> isColMajorArr(12, false);
     SmallVector<int64_t> operandRanks = {
         0, 0, 0, 0, 0, 2, 0, op.getB().getType().getRank(), 0, 0, 2, 0};
     SmallVector<int64_t> outputRanks = {2};
     auto operandLayouts =
         getSHLOLayout(rewriter, operandRanks, isColMajorArr, 2);
     auto resultLayouts =
-        getSHLOLayout(rewriter, outputRanks, SmallVector<bool>{true}, 2);
+        getSHLOLayout(rewriter, outputRanks, SmallVector<bool>{false}, 2);
 
     SmallVector<Attribute> aliases;
     aliases.push_back(
@@ -247,26 +319,37 @@ struct SymmOpLowering : public OpRewritePattern<enzymexla::SymmOp> {
       auto alpha = entryBlock.getArgument(3);
       auto beta = entryBlock.getArgument(4);
 
+      // We can swap side since (A*B)^T = B^T*A^T, where B^T is also the
+      // column-major interpretation of B. Essentially we ask BLAS to compute
+      // C^T in col-major, which is equivalent to C in row-major
       auto side = stablehlo::ConstantOp::create(
           rewriter, op.getLoc(), uint8Type,
-          cast<ElementsAttr>(makeAttr(uint8Type, side_value)));
+          cast<ElementsAttr>(
+              makeAttr(uint8Type, side_value == 'L' ? 'R' : 'L')));
+
+      // We flip uplo here because A is passed in row-major format.
+      // Row-major A is equivalent to A^T in column-major, and since A is
+      // symmetric, this means we need to swap upper/lower triangular.
       auto uplo = stablehlo::ConstantOp::create(
           rewriter, op.getLoc(), uint8Type,
-          cast<ElementsAttr>(makeAttr(uint8Type, uplo_value)));
+          cast<ElementsAttr>(
+              makeAttr(uint8Type, uplo_value == 'U' ? 'L' : 'U')));
 
+      // For row-major format, lda is the trailing dimension (columns in shape)
+      // This is dimension 1 for a 2D matrix
       auto lda = stablehlo::ConvertOp::create(
           rewriter, op.getLoc(), intType,
-          stablehlo::GetDimensionSizeOp::create(rewriter, op.getLoc(), A, 0));
+          stablehlo::GetDimensionSizeOp::create(rewriter, op.getLoc(), A, 1));
       auto ldb = stablehlo::ConvertOp::create(
           rewriter, op.getLoc(), intType,
-          stablehlo::GetDimensionSizeOp::create(rewriter, op.getLoc(), B, 0));
+          stablehlo::GetDimensionSizeOp::create(rewriter, op.getLoc(), B, 1));
       auto ldc = stablehlo::ConvertOp::create(
           rewriter, op.getLoc(), intType,
-          stablehlo::GetDimensionSizeOp::create(rewriter, op.getLoc(), C, 0));
+          stablehlo::GetDimensionSizeOp::create(rewriter, op.getLoc(), C, 1));
       auto mSize = ldc;
       auto nSize = stablehlo::ConvertOp::create(
           rewriter, op.getLoc(), intType,
-          stablehlo::GetDimensionSizeOp::create(rewriter, op.getLoc(), C, 1));
+          stablehlo::GetDimensionSizeOp::create(rewriter, op.getLoc(), C, 0));
 
       auto jitCall = enzymexla::JITCallOp::create(
           rewriter, op.getLoc(), TypeRange{op.getC().getType()},
@@ -291,6 +374,112 @@ struct SymmOpLowering : public OpRewritePattern<enzymexla::SymmOp> {
                                         op.getAlpha(), op.getBeta()});
 
     rewriter.replaceOp(op, callOp);
+
+    return success();
+  }
+
+  LogicalResult matchAndRewriteCUDA(enzymexla::SymmOp op,
+                                    PatternRewriter &rewriter) const {
+    Value A = op.getA();
+    if (stablehlo::IsTensorFilled(A)) {
+      // CUDA runtime performance for SYMM when the entire tensor is filled is
+      // extremely suboptimal. So if the tensor is pre-populated, we can just
+      // use the gemm-lowering
+      return matchAndRewriteFallback(op, rewriter);
+    }
+
+    auto CType = cast<RankedTensorType>(op.getC().getType());
+    auto rank = CType.getRank();
+
+    // Try to extract alpha and beta as constants
+    double alphaReal = 0.0, alphaImag = 0.0;
+    double betaReal = 0.0, betaImag = 0.0;
+    bool useAlphaAttr =
+        extractConstantScalar(op.getAlpha(), alphaReal, alphaImag);
+    bool useBetaAttr = extractConstantScalar(op.getBeta(), betaReal, betaImag);
+
+    // Build operands list - use empty tensors for constant alpha/beta
+    SmallVector<Value> operands;
+    SmallVector<int64_t> operandRanks;
+    SmallVector<bool> areColMajor;
+
+    auto B = op.getB();
+    auto C = op.getC();
+
+    auto [alphaOperand, alphaRank] =
+        createScalarOperand(rewriter, op.getLoc(), op.getAlpha(), useAlphaAttr);
+    operands.push_back(alphaOperand);
+    operandRanks.push_back(alphaRank);
+
+    auto [betaOperand, betaRank] =
+        createScalarOperand(rewriter, op.getLoc(), op.getBeta(), useBetaAttr);
+    operands.push_back(betaOperand);
+    operandRanks.push_back(betaRank);
+
+    StringAttr customCallTarget;
+    ArrayAttr aliases;
+
+    SmallVector<NamedAttribute> configAttrs = {
+        rewriter.getNamedAttr(
+            "side",
+            rewriter.getBoolAttr(op.getSide() != enzymexla::LapackSide::left)),
+        rewriter.getNamedAttr(
+            "uplo",
+            rewriter.getBoolAttr(op.getUplo() == enzymexla::LapackUplo::U)),
+        rewriter.getNamedAttr("use_alpha_attribute",
+                              rewriter.getBoolAttr(useAlphaAttr)),
+        rewriter.getNamedAttr("alpha_real",
+                              rewriter.getF64FloatAttr(alphaReal)),
+        rewriter.getNamedAttr("alpha_imag",
+                              rewriter.getF64FloatAttr(alphaImag))};
+
+    if (matchPattern(betaOperand, m_AnyZeroFloat()) ||
+        matchPattern(betaOperand, m_Zero()) ||
+        matchPattern(op.getC(), m_AnyZeroFloat()) ||
+        matchPattern(op.getC(), m_Zero())) {
+      customCallTarget =
+          rewriter.getStringAttr("enzymejax_cublas_symm_no_c_ffi");
+      operands = {A, B, alphaOperand};
+      operandRanks = {rank, rank, alphaRank};
+      aliases = rewriter.getArrayAttr({});
+      areColMajor = {false, false, false};
+    } else {
+      customCallTarget = rewriter.getStringAttr("enzymejax_cublas_symm_ffi");
+      operands = {A, B, C, alphaOperand, betaOperand};
+      operandRanks = {rank, rank, rank, alphaRank, betaRank};
+
+      configAttrs.push_back(rewriter.getNamedAttr(
+          "use_beta_attribute", rewriter.getBoolAttr(useBetaAttr)));
+      configAttrs.push_back(rewriter.getNamedAttr(
+          "beta_real", rewriter.getF64FloatAttr(betaReal)));
+      configAttrs.push_back(rewriter.getNamedAttr(
+          "beta_imag", rewriter.getF64FloatAttr(betaImag)));
+
+      aliases = rewriter.getArrayAttr(
+          {stablehlo::OutputOperandAliasAttr::get(op.getContext(), {}, 2, {})});
+      areColMajor = {false, false, false, true, true};
+    }
+
+    DictionaryAttr backendConfig = rewriter.getDictionaryAttr(configAttrs);
+
+    auto customCall = stablehlo::CustomCallOp::create(
+        rewriter, op.getLoc(), TypeRange{CType}, operands, customCallTarget,
+        /*has_side_effect*/ nullptr,
+        /*backend_config*/ backendConfig,
+        /*api_version*/
+        stablehlo::CustomCallApiVersionAttr::get(
+            rewriter.getContext(),
+            mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
+        /*calledcomputations*/ nullptr,
+        /*operand_layouts*/
+        getSHLOLayout(rewriter, operandRanks, areColMajor, rank),
+        /*result_layouts*/
+        getSHLOLayout(rewriter, {rank}, SmallVector<bool>(rank, false), rank),
+        /*output_operand_aliases*/ aliases,
+        /*result_tilings*/ nullptr);
+
+    Value result = customCall.getResult(0);
+    rewriter.replaceAllUsesWith(op.getResult(), result);
 
     return success();
   }
@@ -658,13 +847,13 @@ struct SyrkOpLowering : public OpRewritePattern<enzymexla::SyrkOp> {
         matchPattern(op.getC(), m_AnyZeroFloat()) ||
         matchPattern(op.getC(), m_Zero())) {
       customCallTarget =
-          rewriter.getStringAttr("reactant_cublas_syrk_no_c_ffi");
+          rewriter.getStringAttr("enzymejax_cublas_syrk_no_c_ffi");
       operands = {A, alphaOperand};
       operandRanks = {rank, alphaRank};
       aliases = rewriter.getArrayAttr({});
       areColMajor = {false, false};
     } else {
-      customCallTarget = rewriter.getStringAttr("reactant_cublas_syrk_ffi");
+      customCallTarget = rewriter.getStringAttr("enzymejax_cublas_syrk_ffi");
       operands = {A, C, alphaOperand, betaOperand};
       operandRanks = {rank, rank, alphaRank, betaRank};
 
@@ -695,7 +884,8 @@ struct SyrkOpLowering : public OpRewritePattern<enzymexla::SyrkOp> {
         getSHLOLayout(rewriter, operandRanks, areColMajor, rank),
         /*result_layouts*/
         getSHLOLayout(rewriter, {rank}, SmallVector<bool>(rank, false), rank),
-        /*output_operand_aliases*/ aliases);
+        /*output_operand_aliases*/ aliases,
+        /*result_tilings*/ nullptr);
 
     Value result = customCall.getResult(0);
     switch (needsCopy) {
@@ -839,7 +1029,7 @@ struct TrsmOpLowering : public OpRewritePattern<enzymexla::TrsmOp> {
         rewriter, op.getLoc(), TypeRange{type_B}, A, scaledB,
         /*left_side=*/op.getSide() == enzymexla::LapackSide::left,
         /*lower=*/op.getUplo() == enzymexla::LapackUplo::L,
-        /*unit_diagonal=*/op.getDiag() == enzymexla::LapackDiag::unit,
+        /*unit_diagonal=*/op.getUnitDiagonal(),
         /*transpose_a=*/transa);
 
     // replace enzymexla.blas.trsm with the trisolve_op
@@ -856,23 +1046,32 @@ struct LowerEnzymeXLABLASPass
 
   void runOnOperation() override {
     auto context = getOperation()->getContext();
-    RewritePatternSet patterns(context);
-
-    patterns.add<SyrkOpLowering, SymmOpLowering>(backend, blasIntWidth,
-                                                 context);
-    patterns.add<TrsmOpLowering>(context);
 
     GreedyRewriteConfig config;
     config.setUseTopDownTraversal(true);
     config.enableFolding();
-    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
+
+    // We need to run SymmOp lowering first, since it conditionally lowers
+    // to a custom call that needs us to detect potential Syrk Ops
+    RewritePatternSet patternsSet1(context);
+    patternsSet1.add<SymmOpLowering>(backend, blasIntWidth, context);
+    if (failed(applyPatternsGreedily(getOperation(), std::move(patternsSet1),
+                                     config))) {
+      signalPassFailure();
+    }
+
+    RewritePatternSet patternsSet2(context);
+    patternsSet2.add<SyrkOpLowering>(backend, blasIntWidth, context);
+    patternsSet2.add<GemmOpLowering, TrsmOpLowering>(context);
+    if (failed(applyPatternsGreedily(getOperation(), std::move(patternsSet2),
                                      config))) {
       signalPassFailure();
     }
 
     // Verify that all illegal ops have been lowered
     auto walkResult = getOperation()->walk([&](Operation *op) {
-      if (isa<enzymexla::SyrkOp, enzymexla::TrsmOp>(op)) {
+      if (isa<enzymexla::GemmOp, enzymexla::SymmOp, enzymexla::SyrkOp,
+              enzymexla::TrsmOp>(op)) {
         op->emitError("Failed to lower enzymexla.blas operation");
         return WalkResult::interrupt();
       }

@@ -1,0 +1,507 @@
+#include <type_traits>
+
+#include "absl/strings/str_format.h"
+#include "xla/ffi/api/c_api.h"
+#include "xla/ffi/api/ffi.h"
+#include "xla/ffi/ffi_api.h"
+
+#if defined(ENZYMEJAX_CUDA)
+#include "jaxlib/ffi_helpers.h"
+#include "jaxlib/gpu/blas_handle_pool.h"
+#include "third_party/gpus/cuda/include/cuComplex.h"
+#include "third_party/gpus/cuda/include/cublas_v2.h"
+#include "third_party/gpus/cuda/include/cuda.h"
+#include "third_party/gpus/cuda/include/cuda_runtime_api.h"
+
+namespace enzymexla {
+namespace ffi_internal {
+
+using namespace jax;
+namespace ffi = xla::ffi;
+
+#define SOLVER_BLAS_DISPATCH_IMPL(impl, ...)                                   \
+  switch (dataType) {                                                          \
+  case ffi::F32:                                                               \
+    return impl<float>(__VA_ARGS__);                                           \
+  case ffi::F64:                                                               \
+    return impl<double>(__VA_ARGS__);                                          \
+  case ffi::C64:                                                               \
+    return impl<cuComplex>(__VA_ARGS__);                                       \
+  case ffi::C128:                                                              \
+    return impl<cuDoubleComplex>(__VA_ARGS__);                                 \
+  default:                                                                     \
+    break;                                                                     \
+  }
+
+template <typename T>
+ffi::Error GetHostScalar(double value_real, double value_imag, T *host_value) {
+  if constexpr (std::is_same<T, float>::value) {
+    *host_value = static_cast<float>(value_real);
+  } else if constexpr (std::is_same<T, double>::value) {
+    *host_value = value_real;
+  } else if constexpr (std::is_same<T, cuComplex>::value) {
+    *host_value = cuComplex{static_cast<float>(value_real),
+                            static_cast<float>(value_imag)};
+  } else if constexpr (std::is_same<T, cuDoubleComplex>::value) {
+    *host_value = cuDoubleComplex{value_real, value_imag};
+  }
+  return ffi::Error::Success();
+}
+
+template <typename T>
+ffi::Error GetHostScalar(CUstream stream, ffi::AnyBuffer buffer,
+                         T *host_value) {
+  if (buffer.element_count() != 1) {
+    return ffi::Error::InvalidArgument(
+        absl::StrFormat("Expected scalar buffer with 1 element, got %d",
+                        buffer.element_count()));
+  }
+  cudaError_t err = cudaMemcpyAsync(host_value, buffer.untyped_data(),
+                                    sizeof(T), cudaMemcpyDeviceToHost, stream);
+  if (err != cudaSuccess) {
+    return ffi::Error::InvalidArgument(
+        absl::StrFormat("cudaMemcpyAsync failed: %s", cudaGetErrorString(err)));
+  }
+  return ffi::Error::Success();
+}
+
+template <typename T>
+ffi::Error GetHostScalar(CUstream stream, bool use_attribute, double value_real,
+                         double value_imag, ffi::AnyBuffer buffer,
+                         T *host_value) {
+  if (use_attribute) {
+    return GetHostScalar<T>(value_real, value_imag, host_value);
+  }
+  return GetHostScalar<T>(stream, buffer, host_value);
+}
+
+inline ffi::Error CublasStatusToError(cublasStatus_t status,
+                                      const char *op_name) {
+  if (status == CUBLAS_STATUS_SUCCESS) {
+    return ffi::Error::Success();
+  }
+  const char *error_name;
+  switch (status) {
+  case CUBLAS_STATUS_NOT_INITIALIZED:
+    error_name = "CUBLAS_STATUS_NOT_INITIALIZED";
+    break;
+  case CUBLAS_STATUS_ALLOC_FAILED:
+    error_name = "CUBLAS_STATUS_ALLOC_FAILED";
+    break;
+  case CUBLAS_STATUS_INVALID_VALUE:
+    error_name = "CUBLAS_STATUS_INVALID_VALUE";
+    break;
+  case CUBLAS_STATUS_ARCH_MISMATCH:
+    error_name = "CUBLAS_STATUS_ARCH_MISMATCH";
+    break;
+  case CUBLAS_STATUS_MAPPING_ERROR:
+    error_name = "CUBLAS_STATUS_MAPPING_ERROR";
+    break;
+  case CUBLAS_STATUS_EXECUTION_FAILED:
+    error_name = "CUBLAS_STATUS_EXECUTION_FAILED";
+    break;
+  case CUBLAS_STATUS_INTERNAL_ERROR:
+    error_name = "CUBLAS_STATUS_INTERNAL_ERROR";
+    break;
+  case CUBLAS_STATUS_NOT_SUPPORTED:
+    error_name = "CUBLAS_STATUS_NOT_SUPPORTED";
+    break;
+  default:
+    error_name = "UNKNOWN";
+    break;
+  }
+  return ffi::Error::InvalidArgument(
+      absl::StrFormat("%s failed with status %s", op_name, error_name));
+}
+
+namespace blas {
+
+template <typename T>
+ffi::Error Syrk(cublasHandle_t handle, cublasFillMode_t uplo,
+                cublasOperation_t trans, int n, int k, const T *alpha,
+                const T *a, int lda, const T *beta, T *c, int ldc) {
+  return ffi::Error::InvalidArgument("Unsupported type for syrk");
+}
+
+template <typename T>
+ffi::Error Symm(cublasHandle_t handle, cublasSideMode_t side,
+                cublasFillMode_t uplo, int m, int n, const T *alpha, const T *A,
+                int lda, const T *B, int ldb, const T *beta, T *C, int ldc) {
+  return ffi::Error::InvalidArgument("Unsupported type for symm");
+}
+
+#define SYRK_SPECIALIZATION(T, cublas_func)                                    \
+  template <>                                                                  \
+  ffi::Error Syrk<T>(cublasHandle_t handle, cublasFillMode_t uplo,             \
+                     cublasOperation_t trans, int n, int k, const T *alpha,    \
+                     const T *a, int lda, const T *beta, T *c, int ldc) {      \
+    cublasStatus_t status =                                                    \
+        cublas_func(handle, uplo, trans, n, k, alpha, a, lda, beta, c, ldc);   \
+    return CublasStatusToError(status, #cublas_func);                          \
+  }
+
+SYRK_SPECIALIZATION(float, cublasSsyrk)
+SYRK_SPECIALIZATION(double, cublasDsyrk)
+SYRK_SPECIALIZATION(cuComplex, cublasCsyrk)
+SYRK_SPECIALIZATION(cuDoubleComplex, cublasZsyrk)
+
+#undef SYRK_SPECIALIZATION
+
+#define SYMM_SPECIALIZATION(T, cublas_func)                                    \
+  template <>                                                                  \
+  ffi::Error Symm<T>(cublasHandle_t handle, cublasSideMode_t side,             \
+                     cublasFillMode_t uplo, int m, int n, const T *alpha,      \
+                     const T *A, int lda, const T *B, int ldb, const T *beta,  \
+                     T *C, int ldc) {                                          \
+    cublasStatus_t status = cublas_func(handle, side, uplo, m, n, alpha, A,    \
+                                        lda, B, ldb, beta, C, ldc);            \
+    return CublasStatusToError(status, #cublas_func);                          \
+  }
+
+SYMM_SPECIALIZATION(float, cublasSsymm)
+SYMM_SPECIALIZATION(double, cublasDsymm)
+SYMM_SPECIALIZATION(cuComplex, cublasCsymm)
+SYMM_SPECIALIZATION(cuDoubleComplex, cublasZsymm)
+
+#undef SYMM_SPECIALIZATION
+
+} // namespace blas
+
+template <typename T>
+ffi::Error SyrkImpl(CUstream stream, bool transpose, bool uplo_,
+                    ffi::AnyBuffer a, const T *alpha, const T *beta,
+                    ffi::Result<ffi::AnyBuffer> c_out) {
+  FFI_ASSIGN_OR_RETURN((auto [batch, rows, cols]),
+                       SplitBatch2D(a.dimensions()));
+  auto size = transpose ? cols : rows;
+  FFI_RETURN_IF_ERROR(
+      CheckShape(c_out->dimensions(), {batch, size, size}, "c_out", "syrk"));
+
+  FFI_ASSIGN_OR_RETURN(auto n,
+                       MaybeCastNoOverflow<int>(transpose ? cols : rows));
+  FFI_ASSIGN_OR_RETURN(auto k,
+                       MaybeCastNoOverflow<int>(transpose ? rows : cols));
+
+  cublasFillMode_t uplo =
+      uplo_ ? CUBLAS_FILL_MODE_LOWER : CUBLAS_FILL_MODE_UPPER;
+  cublasOperation_t trans = transpose ? CUBLAS_OP_N : CUBLAS_OP_T;
+
+  const T *a_data = static_cast<const T *>(a.untyped_data());
+  T *c_out_data = static_cast<T *>(c_out->untyped_data());
+
+  FFI_ASSIGN_OR_RETURN(auto handle, BlasHandlePool::Borrow(stream));
+  int lda = trans == CUBLAS_OP_N ? n : k;
+  int ldc = n;
+  for (int i = 0; i < batch; ++i) {
+    FFI_RETURN_IF_ERROR(blas::Syrk<T>(handle.get(), uplo, trans, n, k, alpha,
+                                      a_data, lda, beta, c_out_data, ldc));
+    a_data += k * n;
+    c_out_data += n * n;
+  }
+  return ffi::Error::Success();
+}
+
+template <typename T>
+ffi::Error SyrkImpl(CUstream stream, bool transpose, bool uplo_,
+                    ffi::AnyBuffer a, ffi::AnyBuffer c_in, const T *alpha,
+                    const T *beta, ffi::Result<ffi::AnyBuffer> c_out) {
+  FFI_ASSIGN_OR_RETURN((auto [batch, rows, cols]),
+                       SplitBatch2D(a.dimensions()));
+  auto size = transpose ? cols : rows;
+  FFI_RETURN_IF_ERROR(
+      CheckShape(c_in.dimensions(), {batch, size, size}, "c_in", "syrk"));
+
+  T *c_data = static_cast<T *>(c_in.untyped_data());
+  T *c_out_data = static_cast<T *>(c_out->untyped_data());
+
+  if (c_data != c_out_data) {
+    cudaError_t err = cudaMemcpyAsync(c_out_data, c_data, c_in.size_bytes(),
+                                      cudaMemcpyDeviceToDevice, stream);
+    if (err != cudaSuccess) {
+      return ffi::Error::InvalidArgument(absl::StrFormat(
+          "cudaMemcpyAsync failed: %s", cudaGetErrorString(err)));
+    }
+  }
+  return SyrkImpl<T>(stream, transpose, uplo_, a, alpha, beta, c_out);
+}
+
+template <typename T>
+ffi::Error SyrkImpl(CUstream stream, bool transpose, bool uplo,
+                    bool use_alpha_attribute, double alpha_real,
+                    double alpha_imag, bool use_beta_attribute,
+                    double beta_real, double beta_imag, ffi::AnyBuffer a,
+                    ffi::AnyBuffer c_in, ffi::AnyBuffer alpha_,
+                    ffi::AnyBuffer beta_, ffi::Result<ffi::AnyBuffer> c_out) {
+  T host_alpha, host_beta;
+  FFI_RETURN_IF_ERROR(GetHostScalar<T>(stream, use_alpha_attribute, alpha_real,
+                                       alpha_imag, alpha_, &host_alpha));
+  FFI_RETURN_IF_ERROR(GetHostScalar<T>(stream, use_beta_attribute, beta_real,
+                                       beta_imag, beta_, &host_beta));
+  return SyrkImpl<T>(stream, transpose, uplo, a, c_in, &host_alpha, &host_beta,
+                     c_out);
+}
+
+template <typename T>
+ffi::Error SyrkImpl(CUstream stream, bool transpose, bool uplo,
+                    bool use_alpha_attribute, double alpha_real,
+                    double alpha_imag, ffi::AnyBuffer a, ffi::AnyBuffer alpha_,
+                    ffi::Result<ffi::AnyBuffer> c_out) {
+  T host_alpha, host_beta;
+  FFI_RETURN_IF_ERROR(GetHostScalar<T>(stream, use_alpha_attribute, alpha_real,
+                                       alpha_imag, alpha_, &host_alpha));
+  FFI_RETURN_IF_ERROR(GetHostScalar<T>(0.0, 0.0, &host_beta));
+  return SyrkImpl<T>(stream, transpose, uplo, a, &host_alpha, &host_beta,
+                     c_out);
+}
+
+ffi::Error SyrkDispatch(CUstream stream, bool transpose, bool uplo,
+                        bool use_alpha_attribute, double alpha_real,
+                        double alpha_imag, bool use_beta_attribute,
+                        double beta_real, double beta_imag, ffi::AnyBuffer a,
+                        ffi::AnyBuffer c_in, ffi::AnyBuffer alpha_,
+                        ffi::AnyBuffer beta_,
+                        ffi::Result<ffi::AnyBuffer> c_out) {
+  auto dataType = c_in.element_type();
+  SOLVER_BLAS_DISPATCH_IMPL(SyrkImpl, stream, transpose, uplo,
+                            use_alpha_attribute, alpha_real, alpha_imag,
+                            use_beta_attribute, beta_real, beta_imag, a, c_in,
+                            alpha_, beta_, c_out);
+  return ffi::Error::InvalidArgument(absl::StrFormat(
+      "Unsupported dtype %s in syrk", absl::FormatStreamed(dataType)));
+}
+
+ffi::Error SyrkNoCDispatch(CUstream stream, bool transpose, bool uplo,
+                           bool use_alpha_attribute, double alpha_real,
+                           double alpha_imag, ffi::AnyBuffer a,
+                           ffi::AnyBuffer alpha_,
+                           ffi::Result<ffi::AnyBuffer> c_out) {
+  auto dataType = a.element_type();
+  SOLVER_BLAS_DISPATCH_IMPL(SyrkImpl, stream, transpose, uplo,
+                            use_alpha_attribute, alpha_real, alpha_imag, a,
+                            alpha_, c_out);
+  return ffi::Error::InvalidArgument(absl::StrFormat(
+      "Unsupported dtype %s in syrk", absl::FormatStreamed(dataType)));
+}
+
+XLA_FFI_DEFINE_HANDLER(SyrkFfi, SyrkDispatch,
+                       xla::ffi::Ffi::Bind()
+                           .Ctx<ffi::PlatformStream<CUstream>>()
+                           .Attr<bool>("transpose")
+                           .Attr<bool>("uplo")
+                           .Attr<bool>("use_alpha_attribute")
+                           .Attr<double>("alpha_real")
+                           .Attr<double>("alpha_imag")
+                           .Attr<bool>("use_beta_attribute")
+                           .Attr<double>("beta_real")
+                           .Attr<double>("beta_imag")
+                           .Arg<ffi::AnyBuffer>()
+                           .Arg<ffi::AnyBuffer>()
+                           .Arg<ffi::AnyBuffer>()
+                           .Arg<ffi::AnyBuffer>()
+                           .Ret<ffi::AnyBuffer>());
+
+XLA_FFI_DEFINE_HANDLER(SyrkNoCFfi, SyrkNoCDispatch,
+                       xla::ffi::Ffi::Bind()
+                           .Ctx<ffi::PlatformStream<CUstream>>()
+                           .Attr<bool>("transpose")
+                           .Attr<bool>("uplo")
+                           .Attr<bool>("use_alpha_attribute")
+                           .Attr<double>("alpha_real")
+                           .Attr<double>("alpha_imag")
+                           .Arg<ffi::AnyBuffer>()
+                           .Arg<ffi::AnyBuffer>()
+                           .Ret<ffi::AnyBuffer>());
+
+template <typename T>
+ffi::Error SymmImpl(CUstream stream, bool side_, bool uplo_, ffi::AnyBuffer a,
+                    ffi::AnyBuffer b, const T *alpha, const T *beta,
+                    ffi::Result<ffi::AnyBuffer> c_out) {
+  FFI_ASSIGN_OR_RETURN((auto [batch, rows, cols]),
+                       SplitBatch2D(b.dimensions()));
+  int a_size = side_ ? cols : rows; // cols if right, rows if left
+
+  FFI_RETURN_IF_ERROR(
+      CheckShape(a.dimensions(), {batch, a_size, a_size}, "a", "symm"));
+  // C should have same shape as B
+  FFI_RETURN_IF_ERROR(
+      CheckShape(c_out->dimensions(), {batch, rows, cols}, "c_out", "symm"));
+
+  FFI_ASSIGN_OR_RETURN(auto n, MaybeCastNoOverflow<int>(rows));
+  FFI_ASSIGN_OR_RETURN(auto m, MaybeCastNoOverflow<int>(cols));
+
+  // We flip uplo here because A is passed in row-major format.
+  // Row-major A is equivalent to A^T in column-major, and since A is
+  // symmetric, this means we need to swap upper/lower triangular.
+  cublasFillMode_t uplo =
+      uplo_ ? CUBLAS_FILL_MODE_LOWER : CUBLAS_FILL_MODE_UPPER;
+  // We can swap side since (A*B)^T = B^T*A, where B^T is also the column-major
+  // interpretation of B
+  cublasSideMode_t side = side_ ? CUBLAS_SIDE_LEFT : CUBLAS_SIDE_RIGHT;
+
+  const T *a_data = static_cast<const T *>(a.untyped_data());
+  const T *b_data = static_cast<const T *>(b.untyped_data());
+  T *c_out_data = static_cast<T *>(c_out->untyped_data());
+
+  FFI_ASSIGN_OR_RETURN(auto handle, BlasHandlePool::Borrow(stream));
+  // lda is the leading dimension of a, etc.
+  int lda = side == CUBLAS_SIDE_LEFT ? m : n;
+  int ldb = m;
+  int ldc = m;
+  for (int i = 0; i < batch; ++i) {
+    FFI_RETURN_IF_ERROR(blas::Symm<T>(handle.get(), side, uplo, m, n, alpha,
+                                      a_data, lda, b_data, ldb, beta,
+                                      c_out_data, ldc));
+    a_data += lda * lda;
+    b_data += m * n;
+    c_out_data += m * n;
+  }
+  return ffi::Error::Success();
+}
+
+template <typename T>
+ffi::Error SymmImpl(CUstream stream, bool side_, bool uplo_, ffi::AnyBuffer a,
+                    ffi::AnyBuffer b, ffi::AnyBuffer c_in, const T *alpha,
+                    const T *beta, ffi::Result<ffi::AnyBuffer> c_out) {
+  FFI_ASSIGN_OR_RETURN((auto [batch, rows, cols]),
+                       SplitBatch2D(b.dimensions()));
+  int a_size = side_ ? cols : rows;
+
+  FFI_RETURN_IF_ERROR(
+      CheckShape(a.dimensions(), {batch, a_size, a_size}, "a", "symm"));
+  FFI_RETURN_IF_ERROR(
+      CheckShape(c_out->dimensions(), {batch, rows, cols}, "c_out", "symm"));
+
+  T *c_data = static_cast<T *>(c_in.untyped_data());
+  T *c_out_data = static_cast<T *>(c_out->untyped_data());
+
+  if (c_data != c_out_data) {
+    cudaError_t err = cudaMemcpyAsync(c_out_data, c_data, c_in.size_bytes(),
+                                      cudaMemcpyDeviceToDevice, stream);
+    if (err != cudaSuccess) {
+      return ffi::Error::InvalidArgument(absl::StrFormat(
+          "cudaMemcpyAsync failed: %s", cudaGetErrorString(err)));
+    }
+  }
+  return SymmImpl<T>(stream, side_, uplo_, a, b, alpha, beta, c_out);
+}
+
+template <typename T>
+ffi::Error
+SymmImpl(CUstream stream, bool side, bool uplo, bool use_alpha_attribute,
+         double alpha_real, double alpha_imag, bool use_beta_attribute,
+         double beta_real, double beta_imag, ffi::AnyBuffer a, ffi::AnyBuffer b,
+         ffi::AnyBuffer c_in, ffi::AnyBuffer alpha_, ffi::AnyBuffer beta_,
+         ffi::Result<ffi::AnyBuffer> c_out) {
+  T host_alpha, host_beta;
+  FFI_RETURN_IF_ERROR(GetHostScalar<T>(stream, use_alpha_attribute, alpha_real,
+                                       alpha_imag, alpha_, &host_alpha));
+  FFI_RETURN_IF_ERROR(GetHostScalar<T>(stream, use_beta_attribute, beta_real,
+                                       beta_imag, beta_, &host_beta));
+  return SymmImpl<T>(stream, side, uplo, a, b, c_in, &host_alpha, &host_beta,
+                     c_out);
+}
+
+template <typename T>
+ffi::Error SymmImpl(CUstream stream, bool side, bool uplo,
+                    bool use_alpha_attribute, double alpha_real,
+                    double alpha_imag, ffi::AnyBuffer a, ffi::AnyBuffer b,
+                    ffi::AnyBuffer alpha_, ffi::Result<ffi::AnyBuffer> c_out) {
+  T host_alpha, host_beta;
+  FFI_RETURN_IF_ERROR(GetHostScalar<T>(stream, use_alpha_attribute, alpha_real,
+                                       alpha_imag, alpha_, &host_alpha));
+  FFI_RETURN_IF_ERROR(GetHostScalar<T>(0.0, 0.0, &host_beta));
+  return SymmImpl<T>(stream, side, uplo, a, b, &host_alpha, &host_beta, c_out);
+}
+
+ffi::Error SymmDispatch(CUstream stream, bool side, bool uplo,
+                        bool use_alpha_attribute, double alpha_real,
+                        double alpha_imag, bool use_beta_attribute,
+                        double beta_real, double beta_imag, ffi::AnyBuffer a,
+                        ffi::AnyBuffer b, ffi::AnyBuffer c_in,
+                        ffi::AnyBuffer alpha_, ffi::AnyBuffer beta_,
+                        ffi::Result<ffi::AnyBuffer> c_out) {
+  auto dataType = c_in.element_type();
+  SOLVER_BLAS_DISPATCH_IMPL(SymmImpl, stream, side, uplo, use_alpha_attribute,
+                            alpha_real, alpha_imag, use_beta_attribute,
+                            beta_real, beta_imag, a, b, c_in, alpha_, beta_,
+                            c_out);
+  return ffi::Error::InvalidArgument(absl::StrFormat(
+      "Unsupported dtype %s in symm", absl::FormatStreamed(dataType)));
+}
+
+ffi::Error SymmNoCDispatch(CUstream stream, bool side, bool uplo,
+                           bool use_alpha_attribute, double alpha_real,
+                           double alpha_imag, ffi::AnyBuffer a,
+                           ffi::AnyBuffer b, ffi::AnyBuffer alpha_,
+                           ffi::Result<ffi::AnyBuffer> c_out) {
+  auto dataType = a.element_type();
+  SOLVER_BLAS_DISPATCH_IMPL(SymmImpl, stream, side, uplo, use_alpha_attribute,
+                            alpha_real, alpha_imag, a, b, alpha_, c_out);
+  return ffi::Error::InvalidArgument(absl::StrFormat(
+      "Unsupported dtype %s in symm", absl::FormatStreamed(dataType)));
+}
+
+XLA_FFI_DEFINE_HANDLER(
+    SymmFfi, SymmDispatch,
+    xla::ffi::Ffi::Bind()
+        .Ctx<ffi::PlatformStream<CUstream>>()
+        .Attr<bool>("side")                // side
+        .Attr<bool>("uplo")                // uplo
+        .Attr<bool>("use_alpha_attribute") // use_alpha_attribute
+        .Attr<double>("alpha_real")        // alpha_real
+        .Attr<double>("alpha_imag")        // alpha_imag
+        .Attr<bool>("use_beta_attribute")  // use_beta_attribute
+        .Attr<double>("beta_real")         // beta_real
+        .Attr<double>("beta_imag")         // beta_imag
+        .Arg<ffi::AnyBuffer>()             // a
+        .Arg<ffi::AnyBuffer>()             // b
+        .Arg<ffi::AnyBuffer>()             // c_in
+        .Arg<ffi::AnyBuffer>()             // alpha
+        .Arg<ffi::AnyBuffer>()             // beta
+        .Ret<ffi::AnyBuffer>()             // c_out
+);
+
+XLA_FFI_DEFINE_HANDLER(
+    SymmNoCFfi, SymmNoCDispatch,
+    xla::ffi::Ffi::Bind()
+        .Ctx<ffi::PlatformStream<CUstream>>()
+        .Attr<bool>("side")                // side
+        .Attr<bool>("uplo")                // uplo
+        .Attr<bool>("use_alpha_attribute") // use_alpha_attribute
+        .Attr<double>("alpha_real")        // alpha_real
+        .Attr<double>("alpha_imag")        // alpha_imag
+        .Arg<ffi::AnyBuffer>()             // a
+        .Arg<ffi::AnyBuffer>()             // b
+        .Arg<ffi::AnyBuffer>()             // alpha
+        .Ret<ffi::AnyBuffer>()             // c_out
+);
+
+#undef SOLVER_BLAS_DISPATCH_IMPL
+
+void registerEnzymeJaXXLACudaBlasFFI() {
+  XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(),
+                           "enzymejax_cublas_syrk_ffi", "CUDA", SyrkFfi);
+  XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(),
+                           "enzymejax_cublas_syrk_no_c_ffi", "CUDA",
+                           SyrkNoCFfi);
+  XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(),
+                           "enzymejax_cublas_symm_ffi", "CUDA", SymmFfi);
+  XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(),
+                           "enzymejax_cublas_symm_no_c_ffi", "CUDA",
+                           SymmNoCFfi);
+}
+
+} // namespace ffi_internal
+} // namespace enzymexla
+
+#else
+
+namespace enzymexla {
+namespace ffi_internal {
+
+void registerEnzymeJaXXLACudaBlasFFI() {}
+
+} // namespace ffi_internal
+} // namespace enzymexla
+
+#endif

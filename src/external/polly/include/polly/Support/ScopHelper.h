@@ -19,6 +19,7 @@
 #include "llvm/IR/ValueHandle.h"
 #include "isl/isl-noexceptions.h"
 #include <optional>
+#include "llvm/IR/Dominators.h"
 
 namespace llvm {
 class LoopInfo;

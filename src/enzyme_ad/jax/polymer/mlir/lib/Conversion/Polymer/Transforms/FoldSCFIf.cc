@@ -142,8 +142,9 @@ static LogicalResult liftStoreOps(scf::IfOp ifOp, func::FuncOp f,
   SmallVector<Type> resultTypes(ifOp.getResultTypes());
   resultTypes.append(storeTypes);
 
-  scf::IfOp newIfOp = b.create<scf::IfOp>(loc, resultTypes, ifOp.getCondition(),
-                                          /*withElseRegion=*/true);
+  scf::IfOp newIfOp =
+      scf::IfOp::create(b, loc, resultTypes, ifOp.getCondition(),
+                        /*withElseRegion=*/true);
 
   auto cloneBlock = [&](Block *target, Block *source) {
     IRMapping vmap;
@@ -169,7 +170,7 @@ static LogicalResult liftStoreOps(scf::IfOp ifOp, func::FuncOp f,
     for (auto operand : enumerate(yieldOp.getOperands()))
       results[operand.index()] = vmap.lookupOrDefault(operand.value());
 
-    b.create<scf::YieldOp>(loc, results);
+    scf::YieldOp::create(b, loc, results);
   };
 
   cloneBlock(newIfOp.thenBlock(), ifOp.thenBlock());
@@ -183,12 +184,12 @@ static LogicalResult liftStoreOps(scf::IfOp ifOp, func::FuncOp f,
     std::tie(memref, info) = p;
 
     if (auto storeOp = dyn_cast<mlir::affine::AffineStoreOp>(info.source))
-      b.create<mlir::affine::AffineStoreOp>(
-          loc, newIfOp.getResult(ifOp.getNumResults() + info.index), memref,
+      mlir::affine::AffineStoreOp::create(
+          b, loc, newIfOp.getResult(ifOp.getNumResults() + info.index), memref,
           storeOp.getAffineMap(), info.operands);
     else if (auto storeOp = dyn_cast<memref::StoreOp>(info.source))
-      b.create<memref::StoreOp>(
-          loc, newIfOp.getResult(ifOp.getNumResults() + info.index), memref,
+      memref::StoreOp::create(
+          b, loc, newIfOp.getResult(ifOp.getNumResults() + info.index), memref,
           info.operands);
   }
 
@@ -248,9 +249,9 @@ static bool foldSCFIf(scf::IfOp ifOp, func::FuncOp f, OpBuilder &b) {
     cloneAfter(ifOp.elseBlock(), elseResults);
 
     for (auto ifResult : enumerate(ifOp.getResults())) {
-      Value newResult = b.create<arith::SelectOp>(
-          loc, ifOp.getCondition(), thenResults[ifResult.index()],
-          elseResults[ifResult.index()]);
+      Value newResult = arith::SelectOp::create(b, loc, ifOp.getCondition(),
+                                                thenResults[ifResult.index()],
+                                                elseResults[ifResult.index()]);
       ifResult.value().replaceAllUsesWith(newResult);
     }
   }

@@ -4,6 +4,10 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 from enzyme_ad.jax import cpp_call
+import glob
+import platform
+import os
+
 
 def lower(fn, vals, parameters=None):
     if hasattr(fn, "trace"):
@@ -17,7 +21,34 @@ def lower(fn, vals, parameters=None):
         else:
             return fn.lower(*vals)
 
-argv = ("-I/usr/include/c++/11", "-I/usr/include/x86_64-linux-gnu/c++/11")
+def get_cpp_include_args():
+    cpp_dir = "/usr/include/c++"
+    if not os.path.isdir(cpp_dir):
+        return ()
+        
+    versions = [d for d in os.listdir(cpp_dir) if d.isdigit()]
+    if not versions:
+        return ()
+        
+    latest_version = sorted(versions, key=int)[-1]
+    paths = [os.path.join(cpp_dir, latest_version)]
+    
+    arch_dirs = glob.glob(f"/usr/include/*-linux-gnu/c++/{latest_version}")
+    if arch_dirs:
+        paths.append(arch_dirs[0])
+    else:
+        # Fallback to checking for specific known dirs if glob fails
+        arch = platform.machine()
+        if arch == "x86_64" and os.path.isdir(f"/usr/include/x86_64-linux-gnu/c++/{latest_version}"):
+            paths.append(f"/usr/include/x86_64-linux-gnu/c++/{latest_version}")
+        elif arch == "aarch64" and os.path.isdir(f"/usr/include/aarch64-linux-gnu/c++/{latest_version}"):
+            paths.append(f"/usr/include/aarch64-linux-gnu/c++/{latest_version}")
+            
+    return tuple(f"-I{p}" for p in paths)
+
+argv = get_cpp_include_args()
+
+
 
 def do_something(ones, twos):
     shape = jax.core.ShapedArray(tuple(3 * s for s in ones.shape), ones.dtype)

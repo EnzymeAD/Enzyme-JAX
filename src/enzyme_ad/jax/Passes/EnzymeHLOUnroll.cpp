@@ -44,9 +44,10 @@ using namespace mlir;
 using namespace mlir::enzyme;
 using namespace enzyme;
 
-LogicalResult
-WhileUnroll::matchAndRewriteImpl(mlir::stablehlo::WhileOp op,
-                                 PatternRewriter &rewriter) const {
+LogicalResult unrollWhileOp(mlir::stablehlo::WhileOp op, RewriterBase &rewriter,
+                            int64_t maxNumIterations,
+                            int64_t maxOperationThreshold,
+                            SmallVectorImpl<Value> *replacements) {
 
   WhileLoopInfo info(op);
   if (info.computeInfo().failed() || !info.isConstant())
@@ -57,14 +58,12 @@ WhileUnroll::matchAndRewriteImpl(mlir::stablehlo::WhileOp op,
 
   auto iters = info.getConstantNumIters();
   if (maxNumIterations != -1 && iters > maxNumIterations)
-    return rewriter.notifyMatchFailure(op,
-                                       "max iterations for unrolling exceeded");
+    return failure();
 
   if (iters > 1 && maxOperationThreshold > -1 &&
       std::distance(loopBodyBlock->begin(), loopBodyBlock->end()) >
           maxOperationThreshold)
-    return rewriter.notifyMatchFailure(op,
-                                       "max operations for unrolling exceeded");
+    return failure();
 
   SmallVector<Value> results(op.getOperands().begin(), op.getOperands().end());
 
@@ -81,8 +80,18 @@ WhileUnroll::matchAndRewriteImpl(mlir::stablehlo::WhileOp op,
       results.push_back(operandMap.lookupOrDefault(r));
     }
   }
+
+  if (replacements)
+    *replacements = results;
+
   rewriter.replaceOp(op, results);
   return success();
+}
+
+LogicalResult
+WhileUnroll::matchAndRewriteImpl(mlir::stablehlo::WhileOp op,
+                                 PatternRewriter &rewriter) const {
+  return unrollWhileOp(op, rewriter, maxNumIterations, maxOperationThreshold);
 }
 
 struct EnzymeHLOUnrollPass

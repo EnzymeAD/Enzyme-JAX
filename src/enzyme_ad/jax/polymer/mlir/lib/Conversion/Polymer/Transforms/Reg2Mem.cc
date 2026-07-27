@@ -141,8 +141,8 @@ static memref::AllocaOp createScratchpadAllocaOp(mlir::OpResult val,
   b.setInsertionPointToStart(entryBlock);
 
   // The memref shape is 1 and the type is derived from val.
-  return annotateScratchpad(b.create<memref::AllocaOp>(
-      defOp->getLoc(), MemRefType::get({1}, val.getType())));
+  return annotateScratchpad(memref::AllocaOp::create(
+      b, defOp->getLoc(), MemRefType::get({1}, val.getType())));
 }
 
 /// Creata an affine::AffineStoreOp for the value to be stored on the
@@ -156,8 +156,8 @@ createScratchpadStoreOp(mlir::Value valToStore, memref::AllocaOp allocaOp,
   OpBuilder::InsertionGuard guard(b);
   b.setInsertionPointAfterValue(valToStore);
 
-  return b.create<mlir::affine::AffineStoreOp>(
-      allocaOp.getLoc(), valToStore, allocaOp.getResult(),
+  return mlir::affine::AffineStoreOp::create(
+      b, allocaOp.getLoc(), valToStore, allocaOp.getResult(),
       b.getConstantAffineMap(0), std::vector<mlir::Value>());
 }
 
@@ -177,8 +177,8 @@ createScratchpadLoadOp(memref::AllocaOp allocaOp, mlir::Operation *useOp,
   // The location is set to be the useOp that will finally use this newly
   // created load op. The address is set to be 0 since the memory has only one
   // element in it. You will need to replace the input to useOp outside.
-  return b.create<mlir::affine::AffineLoadOp>(
-      useOp->getLoc(), allocaOp.getResult(), b.getConstantAffineMap(0),
+  return mlir::affine::AffineLoadOp::create(
+      b, useOp->getLoc(), allocaOp.getResult(), b.getConstantAffineMap(0),
       std::vector<mlir::Value>());
 }
 
@@ -384,8 +384,8 @@ static void insertRedundantLoad(mlir::func::FuncOp f, OpBuilder &b) {
 
     Value value = storeOpToLoad.getValueToStore();
     Value memref = storeOpToLoad.getMemRef();
-    mlir::affine::AffineLoadOp loadOp = b.create<mlir::affine::AffineLoadOp>(
-        storeOpToLoad.getLoc(), memref, storeOpToLoad.getAffineMap(),
+    mlir::affine::AffineLoadOp loadOp = mlir::affine::AffineLoadOp::create(
+        b, storeOpToLoad.getLoc(), memref, storeOpToLoad.getAffineMap(),
         storeOpToLoad.getMapOperands());
 
     value.replaceUsesWithIf(loadOp.getResult(), [=](mlir::OpOperand &operand) {
@@ -442,8 +442,8 @@ static mlir::Value createIterScratchpad(mlir::Value iterArg,
   assert(!iterArgToMem.count(iterArg) &&
          "A scratchpad has been created for the given iterArg");
 
-  mlir::Value spad = annotateScratchpad(b.create<memref::AllocaOp>(
-      forOp.getLoc(), MemRefType::get({1}, iterArg.getType())));
+  mlir::Value spad = annotateScratchpad(memref::AllocaOp::create(
+      b, forOp.getLoc(), MemRefType::get({1}, iterArg.getType())));
   iterArgToMem[iterArg] = spad;
 
   return spad;
@@ -453,8 +453,8 @@ static void storeInitValue(mlir::Value initVal, mlir::Value spad,
                            mlir::affine::AffineForOp forOp, OpBuilder &b) {
   OpBuilder::InsertionGuard guard(b);
   b.setInsertionPointAfterValue(spad);
-  b.create<mlir::affine::AffineStoreOp>(
-      spad.getLoc(), initVal, spad, b.getConstantAffineMap(0), ValueRange());
+  mlir::affine::AffineStoreOp::create(b, spad.getLoc(), initVal, spad,
+                                      b.getConstantAffineMap(0), ValueRange());
 }
 
 static mlir::Value loadIterArg(mlir::Value iterArg,
@@ -465,8 +465,8 @@ static mlir::Value loadIterArg(mlir::Value iterArg,
 
   assert(iterArgToMem.count(iterArg));
 
-  return b.create<mlir::affine::AffineLoadOp>(
-      forOp.getLoc(), iterArgToMem[iterArg], b.getConstantAffineMap(0),
+  return mlir::affine::AffineLoadOp::create(
+      b, forOp.getLoc(), iterArgToMem[iterArg], b.getConstantAffineMap(0),
       ValueRange());
 }
 
@@ -478,9 +478,9 @@ static void storeIterArg(int idx, mlir::Value spad,
                          mlir::affine::AffineYieldOp yieldOp, OpBuilder &b) {
   OpBuilder::InsertionGuard guard(b);
   b.setInsertionPoint(yieldOp);
-  b.create<mlir::affine::AffineStoreOp>(
-      yieldOp.getLoc(), yieldOp.getOperand(idx), spad,
-      b.getConstantAffineMap(0), ValueRange());
+  mlir::affine::AffineStoreOp::create(b, yieldOp.getLoc(),
+                                      yieldOp.getOperand(idx), spad,
+                                      b.getConstantAffineMap(0), ValueRange());
 }
 
 static mlir::Value loadFinalIterVal(mlir::Value spad,
@@ -489,8 +489,8 @@ static mlir::Value loadFinalIterVal(mlir::Value spad,
   OpBuilder::InsertionGuard guard(b);
   b.setInsertionPointAfter(forOp);
 
-  return b.create<mlir::affine::AffineLoadOp>(
-      forOp.getLoc(), spad, b.getConstantAffineMap(0), ValueRange());
+  return mlir::affine::AffineLoadOp::create(
+      b, forOp.getLoc(), spad, b.getConstantAffineMap(0), ValueRange());
 }
 
 static void replaceResult(int idx, mlir::affine::AffineForOp forOp,
@@ -504,10 +504,10 @@ cloneAffineForWithoutIterArgs(mlir::affine::AffineForOp forOp, OpBuilder &b) {
   OpBuilder::InsertionGuard guard(b);
   b.setInsertionPointAfter(forOp);
 
-  mlir::affine::AffineForOp newForOp = b.create<mlir::affine::AffineForOp>(
-      forOp.getLoc(), forOp.getLowerBoundOperands(), forOp.getLowerBoundMap(),
-      forOp.getUpperBoundOperands(), forOp.getUpperBoundMap(),
-      forOp.getStep().getSExtValue());
+  mlir::affine::AffineForOp newForOp = mlir::affine::AffineForOp::create(
+      b, forOp.getLoc(), forOp.getLowerBoundOperands(),
+      forOp.getLowerBoundMap(), forOp.getUpperBoundOperands(),
+      forOp.getUpperBoundMap(), forOp.getStep().getSExtValue());
 
   IRMapping mapping;
   mapping.map(forOp.getInductionVar(), newForOp.getInductionVar());
@@ -802,18 +802,18 @@ createScratchpadAllocaOp(mlir::func::FuncOp f, mlir::Value spad,
     getLowerOrUpperBound(i, false, domain, lbMap, lbOperands, b);
 
     mlir::Value lb =
-        b.create<mlir::affine::AffineMinOp>(spad.getLoc(), lbMap, lbOperands);
+        mlir::affine::AffineMinOp::create(b, spad.getLoc(), lbMap, lbOperands);
     mlir::Value ub =
-        b.create<mlir::affine::AffineMaxOp>(spad.getLoc(), ubMap, ubOperands);
-    mlir::Value size = b.create<mlir::affine::AffineApplyOp>(
-        spad.getLoc(),
+        mlir::affine::AffineMaxOp::create(b, spad.getLoc(), ubMap, ubOperands);
+    mlir::Value size = mlir::affine::AffineApplyOp::create(
+        b, spad.getLoc(),
         AffineMap::get(0, 2,
                        b.getAffineSymbolExpr(0) - b.getAffineSymbolExpr(1)),
         ValueRange({ub, lb}));
     memSizes[i] = size;
   }
 
-  return b.create<memref::AllocaOp>(spad.getLoc(), memRefType, memSizes);
+  return memref::AllocaOp::create(b, spad.getLoc(), memRefType, memSizes);
 }
 
 static void resetLoadAndStoreOpsToScratchpad(mlir::func::FuncOp f,
@@ -836,8 +836,8 @@ static void resetLoadAndStoreOpsToScratchpad(mlir::func::FuncOp f,
         mlir::AffineMap lbMap = forOp.value().getLowerBoundMap();
         llvm::SmallVector<mlir::Value, 4> lbOperands{
             forOp.value().getLowerBoundOperands()};
-        mlir::Value lb = b.create<mlir::affine::AffineApplyOp>(
-            op->getLoc(), lbMap, lbOperands);
+        mlir::Value lb = mlir::affine::AffineApplyOp::create(b, op->getLoc(),
+                                                             lbMap, lbOperands);
 
         indices[forOp.index()] = b.getAffineDimExpr(numOperands) -
                                  b.getAffineDimExpr(numOperands + 1);
@@ -854,16 +854,16 @@ static void resetLoadAndStoreOpsToScratchpad(mlir::func::FuncOp f,
         mlir::affine::AffineLoadOp loadOp =
             dyn_cast<mlir::affine::AffineLoadOp>(op);
         mlir::affine::AffineLoadOp newLoadOp =
-            b.create<mlir::affine::AffineLoadOp>(
-                op->getLoc(), loadOp.getMemRef(), affMap, operands);
+            mlir::affine::AffineLoadOp::create(
+                b, op->getLoc(), loadOp.getMemRef(), affMap, operands);
         loadOp.replaceAllUsesWith(newLoadOp.getOperation());
         loadOp.erase();
       } else {
         assert(isa<mlir::affine::AffineStoreOp>(op));
         mlir::affine::AffineStoreOp storeOp =
             dyn_cast<mlir::affine::AffineStoreOp>(op);
-        b.create<mlir::affine::AffineStoreOp>(
-            op->getLoc(), storeOp.getValueToStore(), storeOp.getMemRef(),
+        mlir::affine::AffineStoreOp::create(
+            b, op->getLoc(), storeOp.getValueToStore(), storeOp.getMemRef(),
             affMap, operands);
         storeOp.erase();
       }

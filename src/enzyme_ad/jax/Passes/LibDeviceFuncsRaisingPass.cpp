@@ -13,6 +13,7 @@
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "src/enzyme_ad/jax/Passes/SelectPatterns.h"
 
@@ -393,6 +394,50 @@ public:
     return failure();
   }
 };
+
+class NVVMRcpRaising : public OpRewritePattern<NVVM::RcpApproxFtzF32Op> {
+public:
+  NVVMRcpRaising(MLIRContext *context)
+      : mlir::OpRewritePattern<NVVM::RcpApproxFtzF32Op>(context) {}
+
+  LogicalResult matchAndRewrite(NVVM::RcpApproxFtzF32Op op,
+                                PatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+    Type type = op.getResult().getType();
+    Value one = arith::ConstantOp::create(rewriter, loc, type,
+                                          rewriter.getFloatAttr(type, 1.0));
+    auto fmfAttr = arith::FastMathFlagsAttr::get(op.getContext(),
+                                                 arith::FastMathFlags::afn);
+    rewriter.replaceOpWithNewOp<arith::DivFOp>(op, one, op->getOperands()[0],
+                                               fmfAttr);
+    return success();
+  }
+};
+
+class RcpRaising : public OpRewritePattern<LLVM::CallOp> {
+public:
+  RcpRaising(MLIRContext *context) : OpRewritePattern<LLVM::CallOp>(context) {}
+
+  LogicalResult matchAndRewrite(LLVM::CallOp op,
+                                PatternRewriter &rewriter) const override {
+    CallInterfaceCallable callable = op.getCallableForCallee();
+    auto callee = dyn_cast<SymbolRefAttr>(callable);
+    if (!callee)
+      return failure();
+
+    if (callee.getLeafReference() == "__nv_drcp_rn" ||
+        callee.getLeafReference() == "__nv_frcp_rn") {
+      Location loc = op.getLoc();
+      Type type = op.getResultTypes()[0];
+      Value one = arith::ConstantOp::create(rewriter, loc, type,
+                                            rewriter.getFloatAttr(type, 1.0));
+      rewriter.replaceOpWithNewOp<arith::DivFOp>(op, one, op->getOperands()[0]);
+      return success();
+    }
+
+    return failure();
+  }
+};
 } // namespace
 
 template <typename TargetOp, typename Arg, typename... Args>
@@ -666,6 +711,23 @@ struct BarrierConvert : public OpRewritePattern<LLVM::CallIntrinsicOp> {
   }
 };
 
+struct NVVMRsqrtApproxRaising : public OpRewritePattern<LLVM::CallIntrinsicOp> {
+  using OpRewritePattern<LLVM::CallIntrinsicOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(LLVM::CallIntrinsicOp op,
+                                PatternRewriter &rewriter) const override {
+    if (op.getIntrin() != "llvm.nvvm.rsqrt.approx.f" &&
+        op.getIntrin() != "llvm.nvvm.rsqrt.approx.d")
+      return failure();
+
+    auto fmfAttr = arith::FastMathFlagsAttr::get(op.getContext(),
+                                                 arith::FastMathFlags::afn);
+    rewriter.replaceOp(op, math::RsqrtOp::create(rewriter, op.getLoc(),
+                                                 op.getArgs()[0], fmfAttr));
+    return success();
+  }
+};
+
 struct ReadOnlyAllocaElim : public OpRewritePattern<LLVM::AllocaOp> {
   ReadOnlyAllocaElim(MLIRContext *context)
       : OpRewritePattern<LLVM::AllocaOp>(context, /*benefit=*/1) {}
@@ -704,6 +766,281 @@ struct ReadOnlyAllocaElim : public OpRewritePattern<LLVM::AllocaOp> {
   }
 };
 
+class HalfMathRaising : public OpRewritePattern<LLVM::CallOp> {
+public:
+  HalfMathRaising(MLIRContext *context)
+      : OpRewritePattern<LLVM::CallOp>(context) {}
+
+  enum class MathOp { Log, Div, Abs, Mul, Add, Sqrt, Sub, Exp, Neg, Lt, None };
+
+  LogicalResult matchAndRewrite(LLVM::CallOp op,
+                                PatternRewriter &rewriter) const override {
+    CallInterfaceCallable callable = op.getCallableForCallee();
+    auto callee = dyn_cast<SymbolRefAttr>(callable);
+    if (!callee)
+      return failure();
+
+    MathOp mathOp =
+        llvm::StringSwitch<MathOp>(callee.getLeafReference().getValue())
+            .Case("_ZL4hlog6__half", MathOp::Log)
+            .Case("_ZL6__hdiv6__halfS_", MathOp::Div)
+            .Case("_ZL22__internal_device_hdiv13__nv_bfloat16S_", MathOp::Div)
+            .Case("_ZL6__habs6__half", MathOp::Abs)
+            .Case("_ZL6__hmul6__halfS_", MathOp::Mul)
+            .Case("_ZL27__internal_sm80_device_hmul13__nv_bfloat16S_",
+                  MathOp::Mul)
+            .Case("_ZL6__hadd6__halfS_", MathOp::Add)
+            .Case("_ZL6__hadd13__nv_bfloat16S_", MathOp::Add)
+            .Case("_ZL5hsqrt6__half", MathOp::Sqrt)
+            .Case("_ZL6__hsub6__halfS_", MathOp::Sub)
+            .Case("_ZL27__internal_sm80_device_hsub13__nv_bfloat16S_",
+                  MathOp::Sub)
+            .Case("_ZL4hexp6__half", MathOp::Exp)
+            .Case("_ZL6__hneg6__half", MathOp::Neg)
+            .Case("_ZL22__internal_device_hneg13__nv_bfloat16", MathOp::Neg)
+            .Case("_ZL5__hlt6__halfS_", MathOp::Lt)
+            .Default(MathOp::None);
+
+    if (mathOp == MathOp::None)
+      return failure();
+
+    Location loc = op.getLoc();
+    SmallVector<Value> newArgs;
+    Type fltType = callee.getLeafReference().getValue().contains("bfloat16")
+                       ? rewriter.getBF16Type()
+                       : rewriter.getF16Type();
+
+    for (Value arg : op.getOperands()) {
+      if (isa<LLVM::LLVMPointerType>(arg.getType())) {
+        newArgs.push_back(LLVM::LoadOp::create(rewriter, loc, fltType, arg));
+      } else if (isa<LLVM::LLVMStructType>(arg.getType())) {
+        Value val = LLVM::ExtractValueOp::create(rewriter, loc, arg, 0);
+        newArgs.push_back(
+            arith::BitcastOp::create(rewriter, loc, fltType, val));
+      } else if (isa<IntegerType>(arg.getType())) {
+        newArgs.push_back(
+            arith::BitcastOp::create(rewriter, loc, fltType, arg));
+      } else {
+        newArgs.push_back(arg);
+      }
+    }
+
+    Value res;
+    switch (mathOp) {
+    case MathOp::Log:
+      res = math::LogOp::create(rewriter, loc, newArgs[0]);
+      break;
+    case MathOp::Div:
+      res = arith::DivFOp::create(rewriter, loc, newArgs[0], newArgs[1]);
+      break;
+    case MathOp::Abs:
+      res = math::AbsFOp::create(rewriter, loc, newArgs[0]);
+      break;
+    case MathOp::Mul:
+      res = arith::MulFOp::create(rewriter, loc, newArgs[0], newArgs[1]);
+      break;
+    case MathOp::Add:
+      res = arith::AddFOp::create(rewriter, loc, newArgs[0], newArgs[1]);
+      break;
+    case MathOp::Sqrt:
+      res = math::SqrtOp::create(rewriter, loc, newArgs[0]);
+      break;
+    case MathOp::Sub:
+      res = arith::SubFOp::create(rewriter, loc, newArgs[0], newArgs[1]);
+      break;
+    case MathOp::Exp:
+      res = math::ExpOp::create(rewriter, loc, newArgs[0]);
+      break;
+    case MathOp::Neg:
+      res = arith::NegFOp::create(rewriter, loc, newArgs[0]);
+      break;
+    case MathOp::Lt:
+      res = arith::CmpFOp::create(rewriter, loc, arith::CmpFPredicate::OLT,
+                                  newArgs[0], newArgs[1]);
+      break;
+    case MathOp::None:
+      llvm_unreachable("Invalid math function");
+    }
+
+    Type resType = op.getResultTypes()[0];
+    if (mathOp == MathOp::Lt) {
+      if (isa<IntegerType>(resType) && resType.getIntOrFloatBitWidth() > 1) {
+        res = arith::ExtUIOp::create(rewriter, loc, resType, res);
+      }
+    } else {
+      if (isa<IntegerType>(resType)) {
+        res = arith::BitcastOp::create(rewriter, loc, resType, res);
+      } else if (auto structTy = dyn_cast<LLVM::LLVMStructType>(resType)) {
+        res =
+            arith::BitcastOp::create(rewriter, loc, rewriter.getI16Type(), res);
+        res = LLVM::InsertValueOp::create(
+            rewriter, loc, structTy,
+            LLVM::UndefOp::create(rewriter, loc, structTy), res,
+            rewriter.getDenseI64ArrayAttr(0));
+      } else if (!isa<FloatType>(resType)) {
+        res = arith::BitcastOp::create(rewriter, loc, resType, res);
+      }
+    }
+
+    rewriter.replaceOp(op, res);
+    return success();
+  }
+};
+
+class BF16HalfToFloatRaising : public OpRewritePattern<LLVM::CallOp> {
+public:
+  BF16HalfToFloatRaising(MLIRContext *context)
+      : OpRewritePattern<LLVM::CallOp>(context) {}
+
+  LogicalResult matchAndRewrite(LLVM::CallOp op,
+                                PatternRewriter &rewriter) const override {
+    CallInterfaceCallable callable = op.getCallableForCallee();
+    auto callee = dyn_cast<SymbolRefAttr>(callable);
+    if (!callee)
+      return failure();
+
+    StringRef funcName = callee.getLeafReference();
+    if (funcName == "__half2float" || funcName == "_ZL12__half2float6__half") {
+      Value input = op.getOperand(0);
+      Location loc = op.getLoc();
+      if (isa<LLVM::LLVMPointerType>(input.getType())) {
+        input =
+            LLVM::LoadOp::create(rewriter, loc, rewriter.getF16Type(), input);
+      } else if (isa<LLVM::LLVMStructType>(input.getType())) {
+        input = LLVM::ExtractValueOp::create(rewriter, loc, input, 0);
+      }
+      if (isa<IntegerType>(input.getType())) {
+        input = arith::BitcastOp::create(rewriter, loc, rewriter.getF16Type(),
+                                         input);
+      }
+      rewriter.replaceOpWithNewOp<arith::ExtFOp>(op, op.getResultTypes()[0],
+                                                 input);
+      return success();
+    }
+    if (funcName == "__bfloat162float" ||
+        funcName == "_ZL16__bfloat162float13__nv_bfloat16" ||
+        funcName == "_ZL25__internal_bfloat162floatt" ||
+        funcName == "_ZL32__internal_device_bfloat162floatt") {
+      Value input = op.getOperand(0);
+      Location loc = op.getLoc();
+      if (isa<LLVM::LLVMPointerType>(input.getType())) {
+        input =
+            LLVM::LoadOp::create(rewriter, loc, rewriter.getBF16Type(), input);
+      } else if (isa<LLVM::LLVMStructType>(input.getType())) {
+        input = LLVM::ExtractValueOp::create(rewriter, loc, input, 0);
+      }
+      if (isa<IntegerType>(input.getType())) {
+        input = arith::BitcastOp::create(rewriter, loc, rewriter.getBF16Type(),
+                                         input);
+      }
+      rewriter.replaceOpWithNewOp<arith::ExtFOp>(op, op.getResultTypes()[0],
+                                                 input);
+      return success();
+    }
+    if (funcName == "__float2bfloat16" ||
+        funcName == "_ZL16__float2bfloat16f") {
+      Value input = op.getOperand(0);
+      Location loc = op.getLoc();
+      Type resType = op.getResultTypes()[0];
+      Value res =
+          arith::TruncFOp::create(rewriter, loc, rewriter.getBF16Type(), input);
+      if (isa<IntegerType>(resType)) {
+        res = arith::BitcastOp::create(rewriter, loc, resType, res);
+      } else if (auto structTy = dyn_cast<LLVM::LLVMStructType>(resType)) {
+        res =
+            arith::BitcastOp::create(rewriter, loc, rewriter.getI16Type(), res);
+        res = LLVM::InsertValueOp::create(
+            rewriter, loc, structTy,
+            LLVM::UndefOp::create(rewriter, loc, structTy), res,
+            rewriter.getDenseI64ArrayAttr(0));
+      }
+      rewriter.replaceOp(op, res);
+      return success();
+    }
+    if (funcName == "_ZL12__float2halff" ||
+        funcName == "_ZL21__internal_float2halffRjS_") {
+      Value input = op.getOperand(0);
+      Location loc = op.getLoc();
+      Type resType = op.getResultTypes()[0];
+      Value res =
+          arith::TruncFOp::create(rewriter, loc, rewriter.getF16Type(), input);
+      if (isa<IntegerType>(resType)) {
+        res = arith::BitcastOp::create(rewriter, loc, resType, res);
+      } else if (auto structTy = dyn_cast<LLVM::LLVMStructType>(resType)) {
+        res =
+            arith::BitcastOp::create(rewriter, loc, rewriter.getI16Type(), res);
+        res = LLVM::InsertValueOp::create(
+            rewriter, loc, structTy,
+            LLVM::UndefOp::create(rewriter, loc, structTy), res,
+            rewriter.getDenseI64ArrayAttr(0));
+      }
+      rewriter.replaceOp(op, res);
+      return success();
+    }
+
+    return failure();
+  }
+};
+
+class InlineAsmHalfRaising : public OpRewritePattern<LLVM::InlineAsmOp> {
+public:
+  InlineAsmHalfRaising(MLIRContext *context)
+      : OpRewritePattern<LLVM::InlineAsmOp>(context) {}
+
+  LogicalResult matchAndRewrite(LLVM::InlineAsmOp op,
+                                PatternRewriter &rewriter) const override {
+    StringRef asmStr = op.getAsmString();
+    if (asmStr == "{  cvt.rn.f16.f32 $0, $1;}\n") {
+      Value input = op.getOperand(0);
+      Location loc = op.getLoc();
+      Type resType = op.getResultTypes()[0];
+      Value res =
+          arith::TruncFOp::create(rewriter, loc, rewriter.getF16Type(), input);
+      if (isa<IntegerType>(resType)) {
+        res = arith::BitcastOp::create(rewriter, loc, resType, res);
+      }
+      rewriter.replaceOp(op, res);
+      return success();
+    }
+    if (asmStr == "{  cvt.f32.f16 $0, $1;}\n") {
+      Value input = op.getOperand(0);
+      Location loc = op.getLoc();
+      if (isa<IntegerType>(input.getType())) {
+        input = arith::BitcastOp::create(rewriter, loc, rewriter.getF16Type(),
+                                         input);
+      }
+      Value res =
+          arith::ExtFOp::create(rewriter, loc, rewriter.getF32Type(), input);
+      rewriter.replaceOp(op, res);
+      return success();
+    }
+    return failure();
+  }
+};
+
+class FMulAddRaising : public RewritePattern {
+public:
+  FMulAddRaising(MLIRContext *context)
+      : RewritePattern(MatchAnyOpTypeTag(), /*benefit=*/1, context) {}
+
+  LogicalResult matchAndRewrite(Operation *op,
+                                PatternRewriter &rewriter) const override {
+    if (op->getName().getStringRef() != "llvm.intr.fmuladd")
+      return failure();
+
+    if (op->getNumOperands() != 3 || op->getNumResults() != 1)
+      return failure();
+
+    Value a = op->getOperand(0);
+    Value b = op->getOperand(1);
+    Value c = op->getOperand(2);
+
+    rewriter.replaceOpWithNewOp<math::FmaOp>(op, op->getResultTypes()[0], a, b,
+                                             c);
+    return success();
+  }
+};
+
 } // namespace
 
 void mlir::enzyme::populateLibDeviceFuncsToOpsPatterns(
@@ -714,6 +1051,11 @@ void mlir::enzyme::populateLibDeviceFuncsToOpsPatterns(
   auto *converter = context;
 
   patterns.add<IsFPClassRaising>(context);
+  patterns.add<RcpRaising>(context);
+  patterns.add<NVVMRcpRaising>(context);
+  patterns.add<BF16HalfToFloatRaising>(context);
+  patterns.add<HalfMathRaising>(context);
+  patterns.add<InlineAsmHalfRaising>(context);
   patterns.add<CallToOpIntAdaptRaising<math::CountLeadingZerosOp>>(context,
                                                                    "__nv_clz");
   patterns.add<CallToOpIntAdaptRaising<math::CountLeadingZerosOp>>(
@@ -797,6 +1139,10 @@ void mlir::enzyme::populateLibDeviceFuncsToOpsPatterns(
                                        "__nv_fminf");
   populateOpPatterns<math::TruncOp>(converter, patterns, "__nv_trunc",
                                     "__nv_truncf");
+  populateOpPatterns<enzymexla::TGammaOp>(converter, patterns, "__nv_tgamma",
+                                          "__nv_tgammaf");
+  populateOpPatterns<enzymexla::LGammaOp>(converter, patterns, "__nv_lgamma",
+                                          "__nv_lgammaf");
 }
 
 void populateLLVMToMathPatterns(MLIRContext *context,
@@ -816,6 +1162,7 @@ void populateLLVMToMathPatterns(MLIRContext *context,
                RoundEvenOpLowering, RoundOpLowering, RintOpLowering,
                // RsqrtOpLowering,
                SinOpLowering, SqrtOpLowering, FTruncOpLowering>(converter);
+  patterns.add<FMulAddRaising>(converter);
 
   patterns
       .add<GPUConvert<NVVM::ThreadIdXOp, gpu::ThreadIdOp, gpu::Dimension::x>>(
@@ -835,6 +1182,7 @@ void populateLLVMToMathPatterns(MLIRContext *context,
       converter);
 
   patterns.add<BarrierConvert>(converter);
+  patterns.add<NVVMRsqrtApproxRaising>(converter);
 
   patterns
       .add<GPUConvert<NVVM::BlockDimXOp, gpu::BlockDimOp, gpu::Dimension::x>>(
@@ -889,7 +1237,13 @@ struct LibDeviceFuncsRaisingPass
     if (remove_freeze)
       patterns.add<RemoveFreeze>(getOperation()->getContext());
     patterns.add<EnzymeAutodiffOpRaising>(getOperation()->getContext());
-    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns)))) {
+    GreedyRewriteConfig config;
+    // We disable region simplification to avoid inadvertently merging
+    // llvm.cond_br now that there is an index type.
+    config.setRegionSimplificationLevel(
+        mlir::GreedySimplifyRegionLevel::Disabled);
+    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
+                                     config))) {
       emitError(getOperation()->getLoc()) << "failed to raise __nv functions";
       return signalPassFailure();
     }

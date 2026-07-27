@@ -11,6 +11,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 
@@ -61,6 +62,8 @@
 #include "llvm/Support/raw_ostream.h"
 
 #include "mlir/Transforms/DialectConversion.h"
+
+#include "Dialect/Ops.h"
 
 #include "mlir/Dialect/Async/IR/Async.h"
 
@@ -113,6 +116,18 @@ Type convertMemrefElementTypeForLLVMPointer(
       converted = LLVM::LLVMArrayType::get(converted, size);
   }
   return converted;
+}
+
+static Block *getAllocaBlock(Operation *op) {
+  Operation *currentOp = op;
+  while (Operation *parentOp = currentOp->getParentOp()) {
+    if (parentOp->mightHaveTrait<OpTrait::IsIsolatedFromAbove>() ||
+        parentOp->mightHaveTrait<OpTrait::AutomaticAllocationScope>()) {
+      return &currentOp->getParentRegion()->front();
+    }
+    currentOp = parentOp;
+  }
+  return nullptr;
 }
 
 static Value insertXLAInitDeinit(mlir::ModuleOp moduleOp, StringRef backend,
@@ -545,6 +560,14 @@ public:
   }
 };
 
+static func::FuncOp lookupFunc(Operation *op, StringRef funcName) {
+  if (auto gpuModule = op->getParentOfType<gpu::GPUModuleOp>()) {
+    return gpuModule.lookupSymbol<func::FuncOp>(funcName);
+  }
+  auto moduleOp = op->getParentOfType<ModuleOp>();
+  return moduleOp.lookupSymbol<func::FuncOp>(funcName);
+}
+
 /// Pattern for lowering heap allocations via malloc.
 struct CAllocOpLowering : public AllocLikeOpLowering<memref::AllocOp> {
 public:
@@ -553,7 +576,7 @@ public:
   LogicalResult
   matchAndRewrite(memref::AllocOp allocOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto module = allocOp->getParentOfType<ModuleOp>();
+    Operation *module = allocOp->getParentWithTrait<OpTrait::SymbolTable>();
     Location loc = allocOp.getLoc();
     MemRefType originalType = allocOp.getType();
     auto convertedType = dyn_cast_or_null<LLVM::LLVMPointerType>(
@@ -583,7 +606,7 @@ public:
     getMemRefDescriptorSizes(loc, originalType, adaptor.getDynamicSizes(),
                              rewriter, shape, strides, sizeBytes);
 
-    if (auto F = module.lookupSymbol<mlir::func::FuncOp>("malloc")) {
+    if (auto F = lookupFunc(allocOp, "malloc")) {
       Value allocated =
           func::CallOp::create(rewriter, loc, F, sizeBytes).getResult(0);
       rewriter.replaceOpWithNewOp<enzymexla::Memref2PointerOp>(
@@ -614,8 +637,8 @@ public:
   LogicalResult
   matchAndRewrite(memref::DeallocOp deallocOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto module = deallocOp->getParentOfType<ModuleOp>();
-    if (auto F = module.lookupSymbol<mlir::func::FuncOp>("free")) {
+    Operation *module = deallocOp->getParentWithTrait<OpTrait::SymbolTable>();
+    if (auto F = lookupFunc(deallocOp, "free")) {
       Value casted = enzymexla::Pointer2MemrefOp::create(
           rewriter, deallocOp->getLoc(),
           MemRefType::get({-1}, rewriter.getI8Type()), adaptor.getMemref());
@@ -727,6 +750,33 @@ public:
   }
 };
 
+struct FillZeroOpLowering : public ConvertOpToLLVMPattern<enzyme::FillZeroOp> {
+public:
+  using ConvertOpToLLVMPattern<enzyme::FillZeroOp>::ConvertOpToLLVMPattern;
+
+  LogicalResult
+  matchAndRewrite(enzyme::FillZeroOp fillZeroOp, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto memRefType = fillZeroOp.getMemref().getType();
+    if (!memRefType.hasStaticShape())
+      return rewriter.notifyMatchFailure(
+          fillZeroOp, "fill_zero for dynamic shapes not yet implemented");
+
+    ImplicitLocOpBuilder builder(fillZeroOp.getLoc(), rewriter);
+    auto zero = arith::ConstantOp::create(builder, builder.getI8IntegerAttr(0));
+    Value ptr = enzymexla::Memref2PointerOp::create(
+        builder, LLVM::LLVMPointerType::get(builder.getContext()),
+        fillZeroOp.getMemref());
+    int64_t byteSize =
+        memRefType.getNumElements() * memRefType.getElementTypeBitWidth() / 8;
+    auto size =
+        arith::ConstantOp::create(builder, builder.getI64IntegerAttr(byteSize));
+    rewriter.replaceOpWithNewOp<LLVM::MemsetOp>(fillZeroOp, ptr, zero, size,
+                                                /*isVolatile=*/false);
+    return success();
+  }
+};
+
 /// Base class for patterns lowering memory access operations.
 template <typename OpTy>
 struct CLoadStoreOpLowering : public ConvertOpToLLVMPattern<OpTy> {
@@ -785,8 +835,8 @@ public:
 /// Try to match the kind of a memref.atomic_rmw to determine whether to use a
 /// lowering to llvm.atomicrmw or fallback to llvm.cmpxchg.
 static std::optional<LLVM::AtomicBinOp>
-matchSimpleAtomicOp(memref::AtomicRMWOp atomicOp) {
-  switch (atomicOp.getKind()) {
+matchSimpleAtomicOp(arith::AtomicRMWKind atomicKind) {
+  switch (atomicKind) {
   case arith::AtomicRMWKind::addf:
     return LLVM::AtomicBinOp::fadd;
   case arith::AtomicRMWKind::addi:
@@ -815,13 +865,33 @@ matchSimpleAtomicOp(memref::AtomicRMWOp atomicOp) {
   llvm_unreachable("Invalid AtomicRMWKind");
 }
 
+LLVM::AtomicOrdering convertAtomicOrdering(enzyme::Ordering ordering) {
+  switch (ordering) {
+  case mlir::enzyme::Ordering::not_atomic:
+    return LLVM::AtomicOrdering::not_atomic;
+  case mlir::enzyme::Ordering::unordered:
+    return LLVM::AtomicOrdering::unordered;
+  case mlir::enzyme::Ordering::monotonic:
+    return LLVM::AtomicOrdering::monotonic;
+  case mlir::enzyme::Ordering::acquire:
+    return LLVM::AtomicOrdering::acquire;
+  case mlir::enzyme::Ordering::release:
+    return LLVM::AtomicOrdering::release;
+  case mlir::enzyme::Ordering::acq_rel:
+    return LLVM::AtomicOrdering::acq_rel;
+  case mlir::enzyme::Ordering::seq_cst:
+    return LLVM::AtomicOrdering::seq_cst;
+  }
+  llvm_unreachable("Invalid Ordering");
+}
+
 struct CAtomicRMWOpLowering : public CLoadStoreOpLowering<memref::AtomicRMWOp> {
   using CLoadStoreOpLowering<memref::AtomicRMWOp>::CLoadStoreOpLowering;
 
   LogicalResult
   matchAndRewrite(memref::AtomicRMWOp atomicOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto maybeKind = matchSimpleAtomicOp(atomicOp);
+    auto maybeKind = matchSimpleAtomicOp(atomicOp.getKind());
     if (!maybeKind)
       return failure();
     auto dataPtr = getAddress(atomicOp, adaptor, rewriter);
@@ -830,6 +900,27 @@ struct CAtomicRMWOpLowering : public CLoadStoreOpLowering<memref::AtomicRMWOp> {
     rewriter.replaceOpWithNewOp<LLVM::AtomicRMWOp>(
         atomicOp, *maybeKind, dataPtr, adaptor.getValue(),
         LLVM::AtomicOrdering::acq_rel);
+    return success();
+  }
+};
+
+struct CEnzymeAtomicRMWOpLowering
+    : public CLoadStoreOpLowering<enzyme::AtomicRMWOp> {
+  using CLoadStoreOpLowering<enzyme::AtomicRMWOp>::CLoadStoreOpLowering;
+
+  LogicalResult
+  matchAndRewrite(enzyme::AtomicRMWOp atomicOp, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto maybeKind = matchSimpleAtomicOp(atomicOp.getKind());
+    if (!maybeKind)
+      return failure();
+    auto dataPtr = getAddress(atomicOp, adaptor, rewriter);
+    if (!dataPtr)
+      return failure();
+    rewriter.replaceOpWithNewOp<LLVM::AtomicRMWOp>(
+        atomicOp, *maybeKind, dataPtr, adaptor.getValue(),
+        convertAtomicOrdering(atomicOp.getOrdering()),
+        /*syncscope=*/StringRef(), atomicOp.getAlignment().value_or(0));
     return success();
   }
 };
@@ -984,6 +1075,360 @@ public:
     return success();
   }
 };
+
+struct CMemsetOpLowering : public CLoadStoreOpLowering<enzymexla::MemsetOp> {
+public:
+  StringRef backend;
+
+  CMemsetOpLowering(LLVMTypeConverter &typeConverter, StringRef backend)
+      : CLoadStoreOpLowering<enzymexla::MemsetOp>(typeConverter),
+        backend(backend) {}
+
+  LogicalResult
+  matchAndRewrite(enzymexla::MemsetOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+
+    MemRefType dstType = op.getTarget().getType();
+    auto convertedDstType = dyn_cast_or_null<LLVM::LLVMPointerType>(
+        this->getTypeConverter()->convertType(dstType));
+    if (!convertedDstType) {
+      (void)rewriter.notifyMatchFailure(loc, "unsupported memref type");
+      return failure();
+    }
+
+    Value dst = adaptor.getTarget();
+    Value value = adaptor.getValue();
+    Value count = adaptor.getCount();
+
+    auto i8 = rewriter.getIntegerType(8);
+    Value truncatedValue = value;
+    if (value.getType() != i8) {
+      truncatedValue = LLVM::TruncOp::create(rewriter, loc, i8, value);
+    }
+
+    if (dstType.getMemorySpaceAsInt() == 0) {
+      // CPU / Host memory
+      LLVM::MemsetOp::create(rewriter, loc, dst, truncatedValue, count, false);
+      rewriter.eraseOp(op);
+      return success();
+    }
+
+    if (backend == "cpu") {
+      dst = LLVM::AddrSpaceCastOp::create(
+          rewriter, loc, LLVM::LLVMPointerType::get(op.getContext()), dst);
+      LLVM::MemsetOp::create(rewriter, loc, dst, truncatedValue, count, false);
+      rewriter.eraseOp(op);
+      return success();
+    }
+
+    auto moduleOp = op->getParentOfType<ModuleOp>();
+    auto ptrty = LLVM::LLVMPointerType::get(op.getContext());
+    auto i32 = rewriter.getIntegerType(32);
+
+    std::string memsetFuncName;
+    bool xla = backend.starts_with("xla");
+
+    if (xla) {
+      auto i64 = rewriter.getIntegerType(64);
+
+      // 1. Malloc host buffer of size 'count'
+      Value countI64 = count;
+      if (count.getType() != i64) {
+        countI64 = LLVM::ZExtOp::create(rewriter, loc, i64, count);
+      }
+
+      auto mallocFunc = LLVM::lookupOrCreateMallocFn(rewriter, moduleOp, i64);
+      if (failed(mallocFunc))
+        return failure();
+
+      Value hostPtr =
+          LLVM::CallOp::create(rewriter, loc, mallocFunc.value(), countI64)
+              ->getResult(0);
+
+      // 2. Memset host buffer
+      LLVM::MemsetOp::create(rewriter, loc, hostPtr, truncatedValue, countI64,
+                             false);
+
+      // 3. reactantXLAMemcpy from host to device
+      SmallVector<Type> memcpyTys = {ptrty, ptrty, countI64.getType(), i32};
+      memcpyTys.insert(memcpyTys.begin(), ptrty); // for xdata
+
+      auto memcpyFn = LLVM::lookupOrCreateFn(
+          rewriter, moduleOp, "reactantXLAMemcpy", memcpyTys,
+          LLVM::LLVMVoidType::get(rewriter.getContext()));
+      if (failed(memcpyFn)) {
+        return failure();
+      }
+
+      auto xdata = insertXLAInitDeinit(moduleOp, backend, rewriter);
+
+      Value directionConst =
+          LLVM::ConstantOp::create(rewriter, loc, i32, 1); // HostToDevice
+
+      Value flatDst = dst;
+      if (dst.getType() != ptrty)
+        flatDst = LLVM::AddrSpaceCastOp::create(rewriter, loc, ptrty, dst);
+
+      SmallVector<Value> memcpyArgs = {xdata, flatDst, hostPtr, countI64,
+                                       directionConst};
+      LLVM::CallOp::create(rewriter, loc, memcpyFn.value(), memcpyArgs);
+
+      // 4. Free host buffer
+      auto freeFunc = LLVM::lookupOrCreateFreeFn(rewriter, moduleOp);
+      if (failed(freeFunc))
+        return failure();
+
+      LLVM::CallOp::create(rewriter, loc, freeFunc.value(), hostPtr);
+
+      rewriter.eraseOp(op);
+      return success();
+    }
+
+    if (backend == "cuda") {
+      memsetFuncName = "cudaMemset";
+    } else if (backend == "rocm") {
+      memsetFuncName = "hipMemset";
+    } else {
+      return failure(); // Unknown backend
+    }
+
+    SmallVector<Type> tys = {ptrty, value.getType(), count.getType()};
+
+    auto memsetFn = LLVM::lookupOrCreateFn(rewriter, moduleOp, memsetFuncName,
+                                           tys, (mlir::Type)i32);
+    if (failed(memsetFn)) {
+      return failure();
+    }
+
+    SmallVector<Value> args = {dst, value, count};
+    if (args[0].getType() != tys[0])
+      args[0] = LLVM::AddrSpaceCastOp::create(rewriter, loc, tys[0], args[0]);
+
+    LLVM::CallOp::create(rewriter, loc, memsetFn.value(), args);
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+struct CMemcpy2DOpLowering
+    : public CLoadStoreOpLowering<enzymexla::Memcpy2DOp> {
+public:
+  StringRef backend;
+
+  CMemcpy2DOpLowering(LLVMTypeConverter &typeConverter, StringRef backend)
+      : CLoadStoreOpLowering<enzymexla::Memcpy2DOp>(typeConverter),
+        backend(backend) {}
+
+  LogicalResult
+  matchAndRewrite(enzymexla::Memcpy2DOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    Location loc = op.getLoc();
+
+    MemRefType dstType = op.getTarget().getType();
+    auto convertedDstType = dyn_cast_or_null<LLVM::LLVMPointerType>(
+        this->getTypeConverter()->convertType(dstType));
+    if (!convertedDstType) {
+      (void)rewriter.notifyMatchFailure(loc, "unsupported memref type");
+      return failure();
+    }
+
+    MemRefType srcType = op.getSource().getType();
+    auto convertedSrcType = dyn_cast_or_null<LLVM::LLVMPointerType>(
+        this->getTypeConverter()->convertType(srcType));
+    if (!convertedSrcType) {
+      (void)rewriter.notifyMatchFailure(loc, "unsupported memref type");
+      return failure();
+    }
+
+    Value dst = adaptor.getTarget();
+    Value dpitch = adaptor.getDpitch();
+    Value src = adaptor.getSource();
+    Value spitch = adaptor.getSpitch();
+    Value width = adaptor.getWidth();
+    Value height = adaptor.getHeight();
+
+    int direction = 0;
+    if (dstType.getMemorySpaceAsInt() == 0 &&
+        srcType.getMemorySpaceAsInt() == 0) {
+      direction = 0;
+    } else if (dstType.getMemorySpaceAsInt() == 1 &&
+               srcType.getMemorySpaceAsInt() == 0) {
+      direction = 1;
+    } else if (dstType.getMemorySpaceAsInt() == 0 &&
+               srcType.getMemorySpaceAsInt() == 1) {
+      direction = 2;
+    } else if (dstType.getMemorySpaceAsInt() == 1 &&
+               srcType.getMemorySpaceAsInt() == 1) {
+      direction = 3;
+    } else {
+      return failure();
+    }
+
+    if (backend == "cpu") {
+      auto *currentBlock = rewriter.getInsertionBlock();
+      auto *remainingOpsBlock =
+          rewriter.splitBlock(currentBlock, rewriter.getInsertionPoint());
+
+      Type ivTy = height.getType();
+      Block *loopHeader =
+          rewriter.createBlock(remainingOpsBlock, {ivTy}, {loc});
+      Block *loopBody = rewriter.createBlock(remainingOpsBlock);
+      Block *loopLatch = rewriter.createBlock(remainingOpsBlock);
+
+      rewriter.setInsertionPointToEnd(currentBlock);
+      Value zero = LLVM::ConstantOp::create(rewriter, loc, ivTy,
+                                            rewriter.getIntegerAttr(ivTy, 0));
+      LLVM::BrOp::create(rewriter, loc, ValueRange{zero}, loopHeader);
+
+      Value iv = loopHeader->getArgument(0);
+      rewriter.setInsertionPointToEnd(loopHeader);
+      Value cmp = LLVM::ICmpOp::create(rewriter, loc, LLVM::ICmpPredicate::slt,
+                                       iv, height);
+      LLVM::CondBrOp::create(rewriter, loc, cmp, loopBody, remainingOpsBlock);
+
+      rewriter.setInsertionPointToEnd(loopBody);
+
+      auto ptrty = LLVM::LLVMPointerType::get(op.getContext());
+      auto i8 = rewriter.getIntegerType(8);
+
+      Value flatDst = LLVM::AddrSpaceCastOp::create(rewriter, loc, ptrty, dst);
+      Value flatSrc = LLVM::AddrSpaceCastOp::create(rewriter, loc, ptrty, src);
+
+      Value dstOff = LLVM::MulOp::create(rewriter, loc, iv, dpitch);
+      Value srcOff = LLVM::MulOp::create(rewriter, loc, iv, spitch);
+
+      Value dstPtr = LLVM::GEPOp::create(rewriter, loc, ptrty, i8, flatDst,
+                                         ValueRange{dstOff});
+      Value srcPtr = LLVM::GEPOp::create(rewriter, loc, ptrty, i8, flatSrc,
+                                         ValueRange{srcOff});
+
+      LLVM::MemcpyOp::create(rewriter, loc, dstPtr, srcPtr, width, false);
+
+      LLVM::BrOp::create(rewriter, loc, ValueRange(), loopLatch);
+
+      rewriter.setInsertionPointToEnd(loopLatch);
+      Value one = LLVM::ConstantOp::create(rewriter, loc, ivTy,
+                                           rewriter.getIntegerAttr(ivTy, 1));
+      Value nextIv = LLVM::AddOp::create(rewriter, loc, iv, one);
+      LLVM::BrOp::create(rewriter, loc, ValueRange{nextIv}, loopHeader);
+
+      rewriter.setInsertionPointToStart(remainingOpsBlock);
+      rewriter.eraseOp(op);
+      return success();
+    }
+
+    auto moduleOp = op->getParentOfType<ModuleOp>();
+    auto ptrty = LLVM::LLVMPointerType::get(op.getContext());
+    auto i32 = rewriter.getIntegerType(32);
+
+    std::string memcpy2DFuncName;
+    bool xla = backend.starts_with("xla");
+
+    if (xla) {
+      SmallVector<Type> tys = {ptrty, ptrty, width.getType(), i32};
+      tys.insert(tys.begin(), ptrty); // for xdata
+
+      auto memcpyFn = LLVM::lookupOrCreateFn(
+          rewriter, moduleOp, "reactantXLAMemcpy", tys,
+          LLVM::LLVMVoidType::get(rewriter.getContext()));
+      if (failed(memcpyFn)) {
+        return failure();
+      }
+
+      auto *currentBlock = rewriter.getInsertionBlock();
+      auto *remainingOpsBlock =
+          rewriter.splitBlock(currentBlock, rewriter.getInsertionPoint());
+
+      Type ivTy = height.getType();
+      Block *loopHeader =
+          rewriter.createBlock(remainingOpsBlock, {ivTy}, {loc});
+      Block *loopBody = rewriter.createBlock(remainingOpsBlock);
+      Block *loopLatch = rewriter.createBlock(remainingOpsBlock);
+
+      rewriter.setInsertionPointToEnd(currentBlock);
+      Value zero = LLVM::ConstantOp::create(rewriter, loc, ivTy,
+                                            rewriter.getIntegerAttr(ivTy, 0));
+
+      auto xdata = insertXLAInitDeinit(moduleOp, backend, rewriter);
+
+      LLVM::BrOp::create(rewriter, loc, ValueRange{zero}, loopHeader);
+
+      Value iv = loopHeader->getArgument(0);
+      rewriter.setInsertionPointToEnd(loopHeader);
+      Value cmp = LLVM::ICmpOp::create(rewriter, loc, LLVM::ICmpPredicate::slt,
+                                       iv, height);
+      LLVM::CondBrOp::create(rewriter, loc, cmp, loopBody, remainingOpsBlock);
+
+      rewriter.setInsertionPointToEnd(loopBody);
+
+      auto i8 = rewriter.getIntegerType(8);
+
+      Value flatDst = LLVM::AddrSpaceCastOp::create(rewriter, loc, ptrty, dst);
+      Value flatSrc = LLVM::AddrSpaceCastOp::create(rewriter, loc, ptrty, src);
+
+      Value dstOff = LLVM::MulOp::create(rewriter, loc, iv, dpitch);
+      Value srcOff = LLVM::MulOp::create(rewriter, loc, iv, spitch);
+
+      Value dstPtr = LLVM::GEPOp::create(rewriter, loc, ptrty, i8, flatDst,
+                                         ValueRange{dstOff});
+      Value srcPtr = LLVM::GEPOp::create(rewriter, loc, ptrty, i8, flatSrc,
+                                         ValueRange{srcOff});
+
+      Value directionConst =
+          LLVM::ConstantOp::create(rewriter, loc, i32, direction);
+
+      SmallVector<Value> args = {xdata, dstPtr, srcPtr, width, directionConst};
+      LLVM::CallOp::create(rewriter, loc, memcpyFn.value(), args);
+
+      LLVM::BrOp::create(rewriter, loc, ValueRange(), loopLatch);
+
+      rewriter.setInsertionPointToEnd(loopLatch);
+      Value one = LLVM::ConstantOp::create(rewriter, loc, ivTy,
+                                           rewriter.getIntegerAttr(ivTy, 1));
+      Value nextIv = LLVM::AddOp::create(rewriter, loc, iv, one);
+      LLVM::BrOp::create(rewriter, loc, ValueRange{nextIv}, loopHeader);
+
+      rewriter.setInsertionPointToStart(remainingOpsBlock);
+      rewriter.eraseOp(op);
+      return success();
+    }
+
+    if (backend == "cuda") {
+      memcpy2DFuncName = "cudaMemcpy2D";
+    } else if (backend == "rocm") {
+      memcpy2DFuncName = "hipMemcpy2D";
+    }
+
+    SmallVector<Type> tys = {
+        ptrty,           dpitch.getType(), ptrty, spitch.getType(),
+        width.getType(), height.getType(), i32};
+
+    auto memcpy2DFn =
+        LLVM::lookupOrCreateFn(rewriter, moduleOp, memcpy2DFuncName, tys, i32);
+    if (failed(memcpy2DFn)) {
+      return failure();
+    }
+
+    SmallVector<Value> args = {
+        dst,
+        dpitch,
+        src,
+        spitch,
+        width,
+        height,
+        LLVM::ConstantOp::create(rewriter, loc, i32, direction)};
+
+    for (int i : {0, 2})
+      if (args[i].getType() != tys[i])
+        args[i] = LLVM::AddrSpaceCastOp::create(rewriter, loc, tys[i], args[i]);
+
+    LLVM::CallOp::create(rewriter, loc, memcpy2DFn.value(), args);
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 } // namespace
 
 /// Only retain those attributes that are not constructed by
@@ -1946,8 +2391,8 @@ ConvertGPUModuleOp::matchAndRewrite(gpu::GPUModuleOp kernelModule,
       LLVM::StoreOp::create(ctorBuilder, loc, module->getResult(0),
                             aoo->getResult(0));
       for (Operation &op : kernelModule->getRegion(0).front()) {
-        if (auto f = dyn_cast<FunctionOpInterface>(op)) {
-          if (!f->getAttr("gpu.kernel"))
+        if (auto f = dyn_cast<gpu::GPUFuncOp>(op)) {
+          if (!f.isKernel())
             continue;
           auto kernelName = generateKernelNameConstant(
               kernelModule.getName(), f.getName(), ctorloc, ctorBuilder);
@@ -2138,18 +2583,7 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
     return rewriter.notifyMatchFailure(
         launchOp, "Cannot convert with more than one async dependency.");
 
-  Block *allocaBlock = nullptr;
-  {
-    Operation *currentOp = launchOp;
-    while (Operation *parentOp = currentOp->getParentOp()) {
-      if (parentOp->mightHaveTrait<OpTrait::IsIsolatedFromAbove>() ||
-          parentOp->mightHaveTrait<OpTrait::AutomaticAllocationScope>()) {
-        allocaBlock = &currentOp->getParentRegion()->front();
-        break;
-      }
-      currentOp = parentOp;
-    }
-  }
+  Block *allocaBlock = getAllocaBlock(launchOp);
 
   Location loc = launchOp.getLoc();
 
@@ -2282,10 +2716,8 @@ class LegalizeLaunchFuncOpPattern
     : public ConvertOpToGpuRuntimeCallPattern<gpu::LaunchFuncOp> {
 public:
   LegalizeLaunchFuncOpPattern(LLVMTypeConverter &typeConverter,
-                              bool kernelBarePtrCallConv,
                               bool kernelIntersperseSizeCallConv)
       : ConvertOpToGpuRuntimeCallPattern<gpu::LaunchFuncOp>(typeConverter),
-        kernelBarePtrCallConv(kernelBarePtrCallConv),
         kernelIntersperseSizeCallConv(kernelIntersperseSizeCallConv) {}
 
 private:
@@ -2293,7 +2725,6 @@ private:
   matchAndRewrite(gpu::LaunchFuncOp launchOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override;
 
-  bool kernelBarePtrCallConv;
   bool kernelIntersperseSizeCallConv;
 };
 
@@ -2492,9 +2923,17 @@ private:
       auto ptr1ty = LLVM::LLVMPointerType::get(rewriter.getContext(), 1);
 
       if (backend == "cuda") {
-        auto one = LLVM::ConstantOp::create(rewriter, loc, i64,
-                                            rewriter.getI64IntegerAttr(1));
-        auto ptr = LLVM::AllocaOp::create(rewriter, loc, ptrty, ptr1ty, one);
+        Value ptr;
+        {
+          Block *allocaBlock = getAllocaBlock(allocOp);
+          assert(allocaBlock &&
+                 "AllocOp must be inside a function or allocation scope");
+          OpBuilder::InsertionGuard guard(rewriter);
+          rewriter.setInsertionPointToStart(allocaBlock);
+          auto one_entry = LLVM::ConstantOp::create(
+              rewriter, loc, i64, rewriter.getIntegerAttr(i64, 1));
+          ptr = LLVM::AllocaOp::create(rewriter, loc, ptrty, ptr1ty, one_entry);
+        }
         Type tys[] = {ptrty, i64};
         auto cudaMallocFn =
             LLVM::lookupOrCreateFn(rewriter, moduleOp, "cudaMalloc", tys, i32);
@@ -2511,9 +2950,17 @@ private:
         LLVM::CallOp::create(rewriter, loc, cudaMallocFn.value(), args);
         allocatedPtr = LLVM::LoadOp::create(rewriter, loc, ptr1ty, ptr);
       } else if (backend == "rocm") {
-        auto one = LLVM::ConstantOp::create(rewriter, loc, i64,
-                                            rewriter.getI64IntegerAttr(1));
-        auto ptr = LLVM::AllocaOp::create(rewriter, loc, ptrty, ptr1ty, one);
+        Value ptr;
+        {
+          Block *allocaBlock = getAllocaBlock(allocOp);
+          assert(allocaBlock &&
+                 "AllocOp must be inside a function or allocation scope");
+          OpBuilder::InsertionGuard guard(rewriter);
+          rewriter.setInsertionPointToStart(allocaBlock);
+          auto one_entry = LLVM::ConstantOp::create(
+              rewriter, loc, i64, rewriter.getIntegerAttr(i64, 1));
+          ptr = LLVM::AllocaOp::create(rewriter, loc, ptrty, ptr1ty, one_entry);
+        }
         Type tys[] = {ptrty, i64};
         auto hipMallocFn =
             LLVM::lookupOrCreateFn(rewriter, moduleOp, "hipMalloc", tys, i32);
@@ -2556,9 +3003,6 @@ private:
         auto zero = LLVM::ConstantOp::create(rewriter, loc, i64,
                                              rewriter.getI64IntegerAttr(0));
 
-        auto one = LLVM::ConstantOp::create(rewriter, loc, i64,
-                                            rewriter.getI64IntegerAttr(1));
-
         auto tyid =
             LLVM::ConstantOp::create(rewriter, loc, i64,
                                      rewriter.getI64IntegerAttr(xla_type_id(
@@ -2570,7 +3014,18 @@ private:
 
         auto AT = LLVM::LLVMArrayType::get(i64, memRefType.getShape().size());
 
-        auto shapePtr = LLVM::AllocaOp::create(rewriter, loc, ptrty, AT, one);
+        Value shapePtr;
+        {
+          Block *allocaBlock = getAllocaBlock(allocOp);
+          assert(allocaBlock &&
+                 "AllocOp must be inside a function or allocation scope");
+          OpBuilder::InsertionGuard guard(rewriter);
+          rewriter.setInsertionPointToStart(allocaBlock);
+          auto one_entry = LLVM::ConstantOp::create(
+              rewriter, loc, i64, rewriter.getIntegerAttr(i64, 1));
+          shapePtr =
+              LLVM::AllocaOp::create(rewriter, loc, ptrty, AT, one_entry);
+        }
 
         int dynIdx = 0;
         for (int i = 0; i < memRefType.getShape().size(); i++) {
@@ -2699,10 +3154,17 @@ private:
       return failure();
     }
 
-    auto one = LLVM::ConstantOp::create(rewriter, loc, i64,
-                                        rewriter.getI64IntegerAttr(1));
-
-    auto ptr = LLVM::AllocaOp::create(rewriter, loc, ptrty, intty, one);
+    Value ptr;
+    {
+      Block *allocaBlock = getAllocaBlock(op);
+      assert(allocaBlock &&
+             "OccupancyOp must be inside a function or allocation scope");
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(allocaBlock);
+      auto one_entry = LLVM::ConstantOp::create(
+          rewriter, loc, i64, rewriter.getIntegerAttr(i64, 1));
+      ptr = LLVM::AllocaOp::create(rewriter, loc, ptrty, intty, one_entry);
+    }
 
     std::string funcStubName =
         getFuncStubName(op.getFn().getRootReference().getValue(),
@@ -2786,11 +3248,11 @@ private:
     auto i32 = rewriter.getIntegerType(32);
     auto moduleOp = deallocOp->getParentOfType<ModuleOp>();
 
-    auto ptr1ty = LLVM::LLVMPointerType::get(rewriter.getContext(), 1);
+    auto ptrty = LLVM::LLVMPointerType::get(rewriter.getContext());
 
     if (backend == "cuda") {
 
-      Type tys[] = {ptr1ty};
+      Type tys[] = {ptrty};
       auto cudaFreeFn =
           LLVM::lookupOrCreateFn(rewriter, moduleOp, "cudaFree", tys, i32);
       if (failed(cudaFreeFn)) {
@@ -2798,12 +3260,21 @@ private:
         return failure();
       }
 
+      Value ptr_arg = ptr;
+      if (ptr.getType() != ptrty) {
+        if (isa<LLVM::LLVMPointerType>(ptr.getType())) {
+          ptr_arg = LLVM::AddrSpaceCastOp::create(rewriter, loc, ptrty, ptr);
+        } else {
+          ptr_arg = LLVM::BitcastOp::create(rewriter, loc, ptrty, ptr);
+        }
+      }
+
       Value args[] = {
-          ptr,
+          ptr_arg,
       };
       LLVM::CallOp::create(rewriter, loc, cudaFreeFn.value(), args);
     } else if (backend == "rocm") {
-      Type tys[] = {ptr1ty};
+      Type tys[] = {ptrty};
       auto hipFreeFn =
           LLVM::lookupOrCreateFn(rewriter, moduleOp, "hipFree", tys, i32);
 
@@ -2811,8 +3282,16 @@ private:
         llvm::errs() << " hipfree already exists with different types\n";
         return failure();
       }
+      Value ptr_arg = ptr;
+      if (ptr.getType() != ptrty) {
+        if (isa<LLVM::LLVMPointerType>(ptr.getType())) {
+          ptr_arg = LLVM::AddrSpaceCastOp::create(rewriter, loc, ptrty, ptr);
+        } else {
+          ptr_arg = LLVM::BitcastOp::create(rewriter, loc, ptrty, ptr);
+        }
+      }
       Value args[] = {
-          ptr,
+          ptr_arg,
       };
       LLVM::CallOp::create(rewriter, loc, hipFreeFn.value(), args);
 
@@ -2826,8 +3305,18 @@ private:
         return failure();
       }
 
+      auto ptrty = LLVM::LLVMPointerType::get(rewriter.getContext());
+      Value ptr_arg = ptr;
+      if (ptr.getType() != ptrty) {
+        if (isa<LLVM::LLVMPointerType>(ptr.getType())) {
+          ptr_arg = LLVM::AddrSpaceCastOp::create(rewriter, loc, ptrty, ptr);
+        } else {
+          ptr_arg = LLVM::BitcastOp::create(rewriter, loc, ptrty, ptr);
+        }
+      }
+
       Value args[] = {
-          ptr,
+          ptr_arg,
       };
       LLVM::CallOp::create(rewriter, loc, freeFunc.value(), args);
     } else if (backend.starts_with("xla")) {
@@ -2846,7 +3335,16 @@ private:
 
       auto xdata = insertXLAInitDeinit(moduleOp, backend, rewriter);
 
-      Value args[] = {xdata, ptr};
+      Value ptr_arg = ptr;
+      if (ptr.getType() != ptrty) {
+        if (isa<LLVM::LLVMPointerType>(ptr.getType())) {
+          ptr_arg = LLVM::AddrSpaceCastOp::create(rewriter, loc, ptrty, ptr);
+        } else {
+          ptr_arg = LLVM::BitcastOp::create(rewriter, loc, ptrty, ptr);
+        }
+      }
+
+      Value args[] = {xdata, ptr_arg};
 
       LLVM::CallOp::create(rewriter, loc, xlaFreeFn.value(), args);
     } else {
@@ -2901,16 +3399,23 @@ private:
     auto zero = LLVM::ConstantOp::create(rewriter, loc, i64,
                                          rewriter.getI64IntegerAttr(0));
 
-    auto one = LLVM::ConstantOp::create(rewriter, loc, i64,
-                                        rewriter.getI64IntegerAttr(1));
-
     auto nargs = LLVM::ConstantOp::create(
         rewriter, loc, i64,
         rewriter.getI64IntegerAttr(adaptor.getInputs().size()));
 
     auto AT = LLVM::LLVMArrayType::get(i64, adaptor.getInputs().size());
 
-    auto argsPtr = LLVM::AllocaOp::create(rewriter, loc, ptrty, AT, one);
+    Value argsPtr;
+    {
+      Block *allocaBlock = getAllocaBlock(wrap);
+      assert(allocaBlock &&
+             "XLAWrapperOp must be inside a function or allocation scope");
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(allocaBlock);
+      auto one_entry = LLVM::ConstantOp::create(rewriter, loc, i64,
+                                                rewriter.getI64IntegerAttr(1));
+      argsPtr = LLVM::AllocaOp::create(rewriter, loc, ptrty, AT, one_entry);
+    }
 
     for (int i = 0; i < adaptor.getInputs().size(); i++) {
       auto idx = LLVM::ConstantOp::create(rewriter, loc, i64,
@@ -3024,7 +3529,7 @@ public:
     SmallVector<LLVM::GlobalOp, 3> workgroupBuffers;
     workgroupBuffers.reserve(gpuFuncOp.getNumWorkgroupAttributions());
     for (const auto &en :
-         llvm::enumerate(gpuFuncOp.getWorkgroupAttributions())) {
+         llvm::enumerate(gpuFuncOp.getWorkgroupAttributionBBArgs())) {
       Value attribution = en.value();
 
       auto type = dyn_cast<MemRefType>(attribution.getType());
@@ -3057,8 +3562,7 @@ public:
     for (const auto &attr : gpuFuncOp->getAttrs()) {
       if (attr.getName() == SymbolTable::getSymbolAttrName() ||
           attr.getName() == gpuFuncOp.getFunctionTypeAttrName() ||
-          attr.getName() ==
-              gpu::GPUFuncOp::getNumWorkgroupAttributionsAttrName())
+          attr.getName() == gpuFuncOp.getWorkgroupAttributionsAttrName())
         continue;
       attributes.push_back(attr);
     }
@@ -3092,7 +3596,8 @@ public:
         // existing memref infrastructure. This may use more registers than
         // otherwise necessary given that memref sizes are fixed, but we can try
         // and canonicalize that away later.
-        Value attribution = gpuFuncOp.getWorkgroupAttributions()[en.index()];
+        Value attribution =
+            gpuFuncOp.getWorkgroupAttributionBBArgs()[en.index()];
         auto type = cast<MemRefType>(attribution.getType());
         Value descr = MemRefDescriptor::fromStaticShape(
             rewriter, loc, *getTypeConverter(), type, memory);
@@ -3397,9 +3902,12 @@ populateCStyleMemRefLoweringPatterns(RewritePatternSet &patterns,
                                      StringRef backend) {
   patterns.add<CAllocaOpLowering, CAllocOpLowering, CDeallocOpLowering,
                GetGlobalOpLowering, GlobalOpLowering, CLoadOpLowering,
-               CStoreOpLowering, AllocaScopeOpLowering, CAtomicRMWOpLowering>(
-      typeConverter);
+               CStoreOpLowering, AllocaScopeOpLowering, CAtomicRMWOpLowering,
+               CEnzymeAtomicRMWOpLowering>(typeConverter);
+  patterns.add<FillZeroOpLowering>(typeConverter);
   patterns.add<CMemcpyOpLowering>(typeConverter, backend);
+  patterns.add<CMemsetOpLowering>(typeConverter, backend);
+  patterns.add<CMemcpy2DOpLowering>(typeConverter, backend);
 }
 
 struct GPUShuffleOpLowering : public ConvertOpToLLVMPattern<gpu::ShuffleOp> {
@@ -3527,7 +4035,7 @@ struct GPUBarrierToNVVM : ConvertOpToLLVMPattern<gpu::BarrierOp> {
   LogicalResult
   matchAndRewrite(gpu::BarrierOp op, gpu::BarrierOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    rewriter.replaceOpWithNewOp<NVVM::Barrier0Op>(op);
+    rewriter.replaceOpWithNewOp<NVVM::BarrierOp>(op);
     return success();
   }
 };
@@ -3576,7 +4084,7 @@ public:
                   ConversionPatternRewriter &rewriter) const override {
     auto loc = op->getLoc();
     MLIRContext *context = rewriter.getContext();
-    Operation *newOp;
+    Operation *newOp = nullptr;
     switch (op.getDimension()) {
     case gpu::Dimension::x:
       newOp = XOp::create(rewriter, loc, IntegerType::get(context, 32));
@@ -4074,6 +4582,24 @@ struct ConvertPolygeistToLLVMPass
         return LLVM::LLVMPointerType::get(type.getContext(),
                                           type.getMemorySpaceAsInt());
       });
+      converter.addTargetMaterialization(
+          [&](OpBuilder &builder, Type resultType, ValueRange inputs,
+              Location loc, Type originalType) -> Value {
+            if (inputs.size() != 1)
+              return Value();
+
+            auto resPtrType = dyn_cast<LLVM::LLVMPointerType>(resultType);
+            auto inPtrType =
+                dyn_cast<LLVM::LLVMPointerType>(inputs.front().getType());
+            if (resPtrType && inPtrType &&
+                resPtrType.getAddressSpace() != inPtrType.getAddressSpace()) {
+              emitWarning(inputs.front().getLoc())
+                  << "mismatched address space, emitting addrspacecast";
+              return LLVM::AddrSpaceCastOp::create(builder, loc, resultType,
+                                                   inputs.front());
+            }
+            return Value();
+          });
     }
     addOpaquePointerConversion<gpu::AsyncTokenType>(converter);
 
@@ -4170,6 +4696,9 @@ struct ConvertPolygeistToLLVMPass
         patterns.add<AsyncOpLowering>(converter);
       else
         patterns.add<NoAsyncOpLowering>(patterns.getContext());
+    } else if (backend == "xla-gpu" || backend == "xla-tpu" ||
+               backend == "xla-cpu") {
+      patterns.add<NoAsyncOpLowering>(patterns.getContext());
     }
     // Our custom versions of the gpu patterns
     if (useCStyleMemRef) {

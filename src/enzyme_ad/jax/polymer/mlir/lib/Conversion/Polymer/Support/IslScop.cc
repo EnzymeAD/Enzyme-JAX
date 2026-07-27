@@ -813,8 +813,8 @@ public:
             strides));
     LLVM_DEBUG(llvm::dbgs() << "Inferred " << inferredType << "\n");
 
-    auto subview = b.create<memref::SubViewOp>(
-        array->val.getLoc(), cast<MemRefType>(inferredType), expandedArray,
+    auto subview = memref::SubViewOp::create(
+        b, array->val.getLoc(), cast<MemRefType>(inferredType), expandedArray,
         offsets, /*sizes=*/sizes, /*strides=*/strides);
 
     return {cast<MemrefValue>(originalArray),
@@ -878,13 +878,13 @@ public:
   }
 
   Value createMul(Value LHS, Value RHS, std::string Name = "") {
-    return b.create<arith::MulIOp>(loc, LHS, RHS);
+    return arith::MulIOp::create(b, loc, LHS, RHS);
   }
   Value createSub(Value LHS, Value RHS, std::string Name = "") {
-    return b.create<arith::SubIOp>(loc, LHS, RHS);
+    return arith::SubIOp::create(b, loc, LHS, RHS);
   }
   Value createAdd(Value LHS, Value RHS, std::string Name = "") {
-    return b.create<arith::AddIOp>(loc, LHS, RHS);
+    return arith::AddIOp::create(b, loc, LHS, RHS);
   }
 
   Value createOpBin(__isl_take isl_ast_expr *Expr) {
@@ -917,16 +917,16 @@ public:
       Res = createMul(LHS, RHS);
       break;
     case isl_ast_op_div:
-      Res = b.create<arith::DivSIOp>(loc, LHS, RHS);
+      Res = arith::DivSIOp::create(b, loc, LHS, RHS);
       break;
     case isl_ast_op_pdiv_q: // Dividend is non-negative
-      Res = b.create<arith::DivUIOp>(loc, LHS, RHS);
+      Res = arith::DivUIOp::create(b, loc, LHS, RHS);
       break;
     case isl_ast_op_fdiv_q: { // Round towards -infty
       // if (auto Const = dyn_cast<arith::ConstantIntOp>(RHS)) {
       //   auto &Val = Const.getValue();
       //   if (Val.isPowerOf2() && Val.isNonNegative()) {
-      //     Res = b.create<arith::ShRSIOp>(loc, LHS, Val.ceilLogBase2());
+      //     Res = arith::ShRSIOp::create(b, loc, LHS, Val.ceilLogBase2());
       //     break;
       //   }
       // }
@@ -935,21 +935,21 @@ public:
       //       incorrect overflow in some edge cases.
       //
       // floord(n,d) ((n < 0) ? (n - d + 1) : n) / d
-      Value One = b.create<arith::ConstantIntOp>(loc, MaxType, 1);
-      Value Zero = b.create<arith::ConstantIntOp>(loc, MaxType, 0);
+      Value One = arith::ConstantIntOp::create(b, loc, MaxType, 1);
+      Value Zero = arith::ConstantIntOp::create(b, loc, MaxType, 0);
       Value Sum1 = createSub(LHS, RHS, "pexp.fdiv_q.0");
       Value Sum2 = createAdd(Sum1, One, "pexp.fdiv_q.1");
       Value isNegative =
-          b.create<arith::CmpIOp>(loc, arith::CmpIPredicate::slt, LHS, Zero);
-      Value Dividend = b.create<arith::SelectOp>(loc, isNegative, Sum2, LHS);
-      Res = b.create<arith::DivSIOp>(loc, Dividend, RHS);
+          arith::CmpIOp::create(b, loc, arith::CmpIPredicate::slt, LHS, Zero);
+      Value Dividend = arith::SelectOp::create(b, loc, isNegative, Sum2, LHS);
+      Res = arith::DivSIOp::create(b, loc, Dividend, RHS);
       break;
     }
     case isl_ast_op_pdiv_r: // Dividend is non-negative
-      Res = b.create<arith::RemUIOp>(loc, LHS, RHS);
+      Res = arith::RemUIOp::create(b, loc, LHS, RHS);
       break;
     case isl_ast_op_zdiv_r: // Result only compared against zero
-      Res = b.create<arith::RemSIOp>(loc, LHS, RHS);
+      Res = arith::RemSIOp::create(b, loc, LHS, RHS);
       break;
     }
     isl_ast_expr_free(Expr);
@@ -968,12 +968,12 @@ public:
       llvm_unreachable("This is not a an n-ary isl ast expression");
     case isl_ast_op_max:
       Aggregate = [&](Value x, Value y) {
-        return b.create<arith::MaxSIOp>(loc, x, y);
+        return arith::MaxSIOp::create(b, loc, x, y);
       };
       break;
     case isl_ast_op_min:
       Aggregate = [&](Value x, Value y) {
-        return b.create<arith::MinSIOp>(loc, x, y);
+        return arith::MinSIOp::create(b, loc, x, y);
       };
       break;
     }
@@ -1030,8 +1030,8 @@ public:
         {arith::CmpIPredicate::sgt, arith::CmpIPredicate::ugt},
     };
 
-    Res = b.create<arith::CmpIOp>(
-        loc, Predicates[OpType - isl_ast_op_eq][UseUnsignedCmp], LHS, RHS);
+    Res = arith::CmpIOp::create(
+        b, loc, Predicates[OpType - isl_ast_op_eq][UseUnsignedCmp], LHS, RHS);
 
     isl_ast_expr_free(Expr);
     return Res;
@@ -1076,10 +1076,10 @@ public:
     default:
       llvm_unreachable("Unsupported boolean expression");
     case isl_ast_op_and:
-      Res = b.create<arith::AndIOp>(LHS.getLoc(), LHS, RHS);
+      Res = arith::AndIOp::create(b, LHS.getLoc(), LHS, RHS);
       break;
     case isl_ast_op_or:
-      Res = b.create<arith::OrIOp>(LHS.getLoc(), LHS, RHS);
+      Res = arith::OrIOp::create(b, LHS.getLoc(), LHS, RHS);
       break;
     }
 
@@ -1136,7 +1136,7 @@ public:
       T = b.getIntegerType(BitWidth);
 
     APValue = APValue.sext(T.getWidth());
-    V = b.create<arith::ConstantIntOp>(loc, T, APValue.getSExtValue());
+    V = arith::ConstantIntOp::create(b, loc, T, APValue.getSExtValue());
 
     isl_ast_expr_free(Expr);
     return V;
@@ -1236,7 +1236,7 @@ public:
             // This can only happen to index types as we may have replaced them
             // with the target system width
             assert(isa<IndexType>(origArg.getType()));
-            arg = b.create<arith::IndexCastOp>(loc, origArg.getType(), arg);
+            arg = arith::IndexCastOp::create(b, loc, origArg.getType(), arg);
           }
           stmtMapping.map(origArg, arg);
         } else {
@@ -1256,8 +1256,8 @@ public:
     if (getenv("ISL_SCOP_GENERATE_TEST_STMT_CALLS")) {
       SmallVector<Value> args = ivs;
       args.insert(args.end(), arrayArgs.begin(), arrayArgs.end());
-      b.create<func::CallOp>(origCaller->getLoc(), CalleeName, TypeRange{},
-                             args);
+      func::CallOp::create(b, origCaller->getLoc(), CalleeName, TypeRange{},
+                           args);
     } else {
       Operation *newStmt = b.clone(*origCaller, stmtMapping);
 
@@ -1324,8 +1324,8 @@ public:
           layout = {};
           MemRefType newType = MemRefType::get(shape, ty.getElementType(),
                                                layout, ty.getMemorySpace());
-          auto newAllocaOp = b.create<memref::AllocaOp>(
-              allocaOp->getLoc(), newType, allocaOp.getDynamicSizes(),
+          auto newAllocaOp = memref::AllocaOp::create(
+              b, allocaOp->getLoc(), newType, allocaOp.getDynamicSizes(),
               allocaOp.getSymbolOperands(), allocaOp.getAlignmentAttr());
           funcMapping.map(allocaOp.getResult(), newAllocaOp.getResult());
         }
@@ -1340,7 +1340,7 @@ public:
       if (!getenv("GPU_AFFINE_OPT_DISABLE_CONVERT_TO_ASYNC")) {
         AsyncWaitGroupInfo *info =
             (AsyncWaitGroupInfo *)isl::manage_copy(Id).get_user();
-        b.create<NVVM::CpAsyncWaitGroupOp>(b.getUnknownLoc(), info->num);
+        NVVM::CpAsyncWaitGroupOp::create(b, b.getUnknownLoc(), info->num);
       }
       create(Child);
     } else {
@@ -1357,19 +1357,19 @@ public:
     Value Predicate = create(Cond);
 
     bool hasElse = isl_ast_node_if_has_else(If);
-    auto ifOp = b.create<scf::IfOp>(loc, TypeRange(), Predicate,
-                                    /*addThenBlock=*/true,
-                                    /*addElseBlock=*/hasElse);
+    auto ifOp = scf::IfOp::create(b, loc, TypeRange(), Predicate,
+                                  /*addThenBlock=*/true,
+                                  /*addElseBlock=*/hasElse);
 
     OpBuilder::InsertionGuard g(b);
     b.setInsertionPointToStart(&ifOp.getThenRegion().front());
-    b.create<scf::YieldOp>(loc);
+    scf::YieldOp::create(b, loc);
     b.setInsertionPointToStart(&ifOp.getThenRegion().front());
     create(isl_ast_node_if_get_then(If));
 
     if (hasElse) {
       b.setInsertionPointToStart(&ifOp.getElseRegion().front());
-      b.create<scf::YieldOp>(loc);
+      scf::YieldOp::create(b, loc);
       b.setInsertionPointToStart(&ifOp.getElseRegion().front());
       create(isl_ast_node_if_get_else(If));
     }
@@ -1442,7 +1442,7 @@ public:
       Type Ty = Args[I]->getType();
       if (!isa<IndexType>(Ty)) {
         *Args[I] =
-            b.create<arith::IndexCastOp>(loc, b.getIndexType(), *Args[I]);
+            arith::IndexCastOp::create(b, loc, b.getIndexType(), *Args[I]);
       }
     }
   }
@@ -1473,9 +1473,9 @@ public:
     for (unsigned I = 0; I < Args.size(); I++) {
       Type Ty = Args[I]->getType();
       if (isa<IndexType>(Ty)) {
-        *Args[I] = b.create<arith::IndexCastOp>(loc, MaxType, *Args[I]);
+        *Args[I] = arith::IndexCastOp::create(b, loc, MaxType, *Args[I]);
       } else if (Ty != MaxType) {
-        *Args[I] = b.create<arith::ExtSIOp>(loc, MaxType, *Args[I]);
+        *Args[I] = arith::ExtSIOp::create(b, loc, MaxType, *Args[I]);
       }
     }
     return MaxType;
@@ -1509,9 +1509,9 @@ public:
       convertToMaxWidth(ValueLB, ValueUB, ValueInc);
 
       if (Predicate == arith::CmpIPredicate::sle)
-        ValueUB = b.create<arith::AddIOp>(
-            loc, ValueUB,
-            b.create<arith::ConstantIntOp>(loc, ValueUB.getType(), 1));
+        ValueUB = arith::AddIOp::create(
+            b, loc, ValueUB,
+            arith::ConstantIntOp::create(b, loc, ValueUB.getType(), 1));
 
       convertToIndex(ValueLB, ValueUB, ValueInc);
 
@@ -1532,7 +1532,7 @@ public:
     assert(Body);
     assert(nLoops == 0 && "Not enough nested loops");
 
-    auto pop = b.create<scf::ParallelOp>(loc, LBs, UBs, Incs);
+    auto pop = scf::ParallelOp::create(b, loc, LBs, UBs, Incs);
 
     for (unsigned i = 0; i < pop.getNumLoops(); i++) {
       IDToValue[Iterators[i]] = pop.getInductionVars()[i];
@@ -1567,16 +1567,16 @@ public:
     convertToMaxWidth(ValueLB, ValueUB, ValueInc);
 
     if (Predicate == arith::CmpIPredicate::sle)
-      ValueUB = b.create<arith::AddIOp>(
-          loc, ValueUB,
-          b.create<arith::ConstantIntOp>(loc, ValueUB.getType(), 1));
+      ValueUB = arith::AddIOp::create(
+          b, loc, ValueUB,
+          arith::ConstantIntOp::create(b, loc, ValueUB.getType(), 1));
 
     // scf::ParallelOp only supports index as bounds
     if constexpr (std::is_same<ForOpTy, scf::ParallelOp>::value) {
       convertToIndex(ValueLB, ValueUB, ValueInc);
     }
 
-    auto forOp = b.create<ForOpTy>(loc, ValueLB, ValueUB, ValueInc);
+    auto forOp = ForOpTy::create(b, loc, ValueLB, ValueUB, ValueInc);
 
     IDToValue[IteratorID] = forOp.getInductionVar();
 
@@ -2038,8 +2038,8 @@ static void createParallelIterArgAccesses(affine::AffineParallelOp parallelOp,
                                           IRMapping &map) {
   OpBuilder builder(parallelOp);
   for (auto res : ValueRange(parallelOp.getResults()))
-    builder.create<enzymexla::AffineStoreVar>(
-        parallelOp.getLoc(), ValueRange{res},
+    enzymexla::AffineStoreVar::create(
+        builder, parallelOp.getLoc(), ValueRange{res},
         builder.getStringAttr("parallel.iv.init"));
   map.map(parallelOp.getRegionIterArgs(), parallelOp.getResults());
 }
@@ -2049,9 +2049,9 @@ static void createForIterArgAccesses(affine::AffineForOp forOp,
   OpBuilder builder(forOp);
   for (auto [init, res] : llvm::zip(ValueRange(forOp.getInitsMutable()),
                                     ValueRange(forOp.getResults())))
-    builder.create<enzymexla::AffineStoreVar>(
-        forOp.getLoc(), ValueRange{init, res},
-        builder.getStringAttr("for.iv.init"));
+    enzymexla::AffineStoreVar::create(builder, forOp.getLoc(),
+                                      ValueRange{init, res},
+                                      builder.getStringAttr("for.iv.init"));
   map.map(forOp.getRegionIterArgs(), forOp.getResults());
 }
 

@@ -41,7 +41,7 @@ jobs:
         id: get-reactant-main
         shell: bash
         run: |
-          REACTANT_MAIN="$(git ls-remote https://github.com/EnzymeAD/Reactant.jl.git main | awk '{print $1}')"
+          REACTANT_MAIN="$(git ls-remote https://github.com/EnzymeAD/Reactant.jl.git refs/heads/main | awk '{print $1}')"
           echo "reactant_main=${REACTANT_MAIN}"
           echo "reactant_main=${REACTANT_MAIN}" >> "${GITHUB_OUTPUT}"
     outputs:

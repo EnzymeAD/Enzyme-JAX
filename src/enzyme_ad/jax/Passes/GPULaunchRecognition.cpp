@@ -140,6 +140,23 @@ struct GPULaunchRecognitionPass
         return;
       }
 
+      if (callee == "cudaFree") {
+        Value arg = call->getOperand(0);
+        auto src = enzymexla::Pointer2MemrefOp::create(
+            builder, call->getLoc(),
+            MemRefType::get({ShapedType::kDynamic}, i8,
+                            MemRefLayoutAttrInterface{},
+                            builder.getI64IntegerAttr(1)),
+            arg);
+        gpu::DeallocOp::create(builder, call.getLoc(), (mlir::Type) nullptr,
+                               ValueRange(), src);
+        auto replace =
+            LLVM::ZeroOp::create(builder, call.getLoc(), call.getType(0));
+        call->replaceAllUsesWith(replace);
+        call->erase();
+        return;
+      }
+
       if (callee == "cudaOccupancyMaxActiveBlocksPerMultiprocessorWithFlags") {
         auto intType = call.getArgOperands()[2].getType();
 
@@ -232,6 +249,106 @@ enum __device_builtin__ cudaMemcpyKind
           enzymexla::MemcpyOp::create(builder, call.getLoc(),
                                       (mlir::Type) nullptr, ValueRange(), dst,
                                       src, arg);
+          auto replace =
+              LLVM::ZeroOp::create(builder, call.getLoc(), call.getType(0));
+          call->replaceAllUsesWith(replace);
+          call->erase();
+          return;
+        }
+      }
+
+      if (callee == "cudaMemset" || callee == "cudaMemsetAsync") {
+        Value devPtr = call->getOperand(0);
+        devPtr = enzymexla::Pointer2MemrefOp::create(
+            builder, call->getLoc(),
+            MemRefType::get({ShapedType::kDynamic}, i8,
+                            MemRefLayoutAttrInterface{},
+                            builder.getI64IntegerAttr(1)),
+            devPtr);
+
+        Value value = call->getOperand(1);
+        Value count = call->getOperand(2);
+        if (!isa<IndexType>(count.getType()))
+          count = arith::IndexCastOp::create(builder, call->getLoc(),
+                                             builder.getIndexType(), count);
+
+        SmallVector<Value, 1> asyncDeps;
+        if (callee == "cudaMemsetAsync") {
+          Value stream = call->getOperand(3);
+          if (!stream.getDefiningOp<LLVM::ZeroOp>()) {
+            auto token = enzymexla::StreamToTokenOp::create(
+                builder, call.getLoc(),
+                gpu::AsyncTokenType::get(call.getContext()), stream);
+            asyncDeps.push_back(token.getResult());
+          }
+        }
+
+        enzymexla::MemsetOp::create(builder, call.getLoc(),
+                                    (mlir::Type) nullptr, ValueRange(asyncDeps),
+                                    devPtr, value, count);
+        auto replace =
+            LLVM::ZeroOp::create(builder, call.getLoc(), call.getType(0));
+        call->replaceAllUsesWith(replace);
+        call->erase();
+        return;
+      }
+
+      if (callee == "cudaMemcpy2D") {
+        APInt directionA;
+        if (matchPattern(call->getOperand(6), m_ConstantInt(&directionA))) {
+          auto dst = call->getOperand(0);
+          if (directionA == 0 || directionA == 2)
+            dst = enzymexla::Pointer2MemrefOp::create(
+                builder, call->getLoc(),
+                MemRefType::get({ShapedType::kDynamic}, i8,
+                                MemRefLayoutAttrInterface{}),
+                dst);
+          else
+            dst = enzymexla::Pointer2MemrefOp::create(
+                builder, call->getLoc(),
+                MemRefType::get({ShapedType::kDynamic}, i8,
+                                MemRefLayoutAttrInterface{},
+                                builder.getI64IntegerAttr(1)),
+                dst);
+
+          Value dpitch = call->getOperand(1);
+          if (!isa<IndexType>(dpitch.getType()))
+            dpitch = arith::IndexCastOp::create(builder, call->getLoc(),
+                                                builder.getIndexType(), dpitch);
+
+          auto src = call->getOperand(2);
+          if (directionA == 0 || directionA == 1)
+            src = enzymexla::Pointer2MemrefOp::create(
+                builder, call->getLoc(),
+                MemRefType::get({ShapedType::kDynamic}, i8,
+                                MemRefLayoutAttrInterface{}),
+                src);
+          else
+            src = enzymexla::Pointer2MemrefOp::create(
+                builder, call->getLoc(),
+                MemRefType::get({ShapedType::kDynamic}, i8,
+                                MemRefLayoutAttrInterface{},
+                                builder.getI64IntegerAttr(1)),
+                src);
+
+          Value spitch = call->getOperand(3);
+          if (!isa<IndexType>(spitch.getType()))
+            spitch = arith::IndexCastOp::create(builder, call->getLoc(),
+                                                builder.getIndexType(), spitch);
+
+          Value width = call->getOperand(4);
+          if (!isa<IndexType>(width.getType()))
+            width = arith::IndexCastOp::create(builder, call->getLoc(),
+                                               builder.getIndexType(), width);
+
+          Value height = call->getOperand(5);
+          if (!isa<IndexType>(height.getType()))
+            height = arith::IndexCastOp::create(builder, call->getLoc(),
+                                                builder.getIndexType(), height);
+
+          enzymexla::Memcpy2DOp::create(builder, call.getLoc(),
+                                        (mlir::Type) nullptr, ValueRange(), dst,
+                                        dpitch, src, spitch, width, height);
           auto replace =
               LLVM::ZeroOp::create(builder, call.getLoc(), call.getType(0));
           call->replaceAllUsesWith(replace);
@@ -380,7 +497,7 @@ enum __device_builtin__ cudaMemcpyKind
           }
         }
 
-        gpufunc->setAttr("gpu.kernel", builder.getUnitAttr());
+        gpufunc.setKernelAttr(builder.getUnitAttr());
 
         gpufunc->walk([](LLVM::ReturnOp op) {
           OpBuilder rewriter(op);
@@ -450,8 +567,37 @@ enum __device_builtin__ cudaMemcpyKind
             builder, loc, builder.getI32Type(), cop.getArgOperands()[7]);
         auto stream = cop.getArgOperands()[8];
         llvm::SmallVector<mlir::Value> args;
-        for (unsigned i = 9; i < cop.getArgOperands().size(); i++)
-          args.push_back(cop.getArgOperands()[i]);
+        for (unsigned i = 9; i < cop.getArgOperands().size(); i++) {
+          mlir::Value arg = cop.getArgOperands()[i];
+          auto gpuTy0 = cur.getFunctionType();
+          mlir::Type expectedTy;
+          if (auto funcTy = dyn_cast<FunctionType>(gpuTy0)) {
+            expectedTy = funcTy.getInput(i - 9);
+          } else if (auto llvmFuncTy =
+                         dyn_cast<LLVM::LLVMFunctionType>(gpuTy0)) {
+            expectedTy = llvmFuncTy.getParamType(i - 9);
+          } else {
+            expectedTy =
+                arg.getType(); // Should not happen given earlier checks
+          }
+
+          if (arg.getType() != expectedTy) {
+            if (isa<LLVM::LLVMPointerType>(arg.getType()) &&
+                isa<LLVM::LLVMPointerType>(expectedTy)) {
+              arg =
+                  LLVM::AddrSpaceCastOp::create(builder, loc, expectedTy, arg);
+            } else if (arg.getType().isIntOrIndexOrFloat() &&
+                       expectedTy.isIntOrIndexOrFloat() &&
+                       arg.getType().getIntOrFloatBitWidth() ==
+                           expectedTy.getIntOrFloatBitWidth()) {
+              arg = LLVM::BitcastOp::create(builder, loc, expectedTy, arg);
+            } else {
+              arg = LLVM::BitcastOp::create(builder, loc, expectedTy,
+                                            arg); // Fallback
+            }
+          }
+          args.push_back(arg);
+        }
 
         Value grid[3];
         for (int i = 0; i < 3; i++) {

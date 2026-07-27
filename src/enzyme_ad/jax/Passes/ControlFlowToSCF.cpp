@@ -31,6 +31,77 @@ namespace enzyme {
 
 using namespace mlir;
 
+static void lowerIndexSwitchToIfChain(scf::IndexSwitchOp switchOp,
+                                      IRRewriter &rewriter) {
+  Location loc = switchOp.getLoc();
+  int numCases = switchOp.getNumCases();
+  TypeRange resultTypes = switchOp.getResultTypes();
+
+  if (numCases == 0) {
+    rewriter.setInsertionPoint(switchOp);
+    Block &defaultBlock = switchOp.getDefaultBlock();
+    Operation *yield = defaultBlock.getTerminator();
+    SmallVector<Value> yieldOperands(yield->getOperands());
+    rewriter.inlineBlockBefore(&defaultBlock, switchOp);
+    rewriter.eraseOp(yield);
+    rewriter.replaceOp(switchOp, yieldOperands);
+    return;
+  }
+
+  rewriter.setInsertionPoint(switchOp);
+  ArrayRef<int64_t> cases = switchOp.getCases();
+  Value arg = switchOp.getArg();
+
+  // Create the outermost if for case 0
+  Value caseVal = arith::ConstantIndexOp::create(rewriter, loc, cases[0]);
+  Value cmp = arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::eq,
+                                    arg, caseVal);
+  scf::IfOp outerIf = scf::IfOp::create(rewriter, loc, resultTypes, cmp,
+                                        /*withElseRegion=*/true);
+
+  // Merge case 0 into the then block
+  if (outerIf.thenBlock()->mightHaveTerminator())
+    rewriter.eraseOp(outerIf.thenBlock()->getTerminator());
+  if (outerIf.elseBlock()->mightHaveTerminator())
+    rewriter.eraseOp(outerIf.elseBlock()->getTerminator());
+
+  Block &caseBlock0 = switchOp.getCaseBlock(0);
+  rewriter.mergeBlocks(&caseBlock0, outerIf.thenBlock());
+
+  Block *prevElseBlock = outerIf.elseBlock();
+
+  // Create nested ifs for cases 1..N-1
+  for (int i = 1; i < numCases; i++) {
+    rewriter.setInsertionPointToStart(prevElseBlock);
+
+    Value caseVal = arith::ConstantIndexOp::create(rewriter, loc, cases[i]);
+    Value cmp = arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::eq,
+                                      arg, caseVal);
+    scf::IfOp nestedIf = scf::IfOp::create(rewriter, loc, resultTypes, cmp,
+                                           /*withElseRegion=*/true);
+
+    // Yield nested if results from the previous else block
+    scf::YieldOp::create(rewriter, loc, nestedIf.getResults());
+
+    // Merge case i into the then block
+    if (nestedIf.thenBlock()->mightHaveTerminator())
+      rewriter.eraseOp(nestedIf.thenBlock()->getTerminator());
+    if (nestedIf.elseBlock()->mightHaveTerminator())
+      rewriter.eraseOp(nestedIf.elseBlock()->getTerminator());
+
+    Block &caseBlockI = switchOp.getCaseBlock(i);
+    rewriter.mergeBlocks(&caseBlockI, nestedIf.thenBlock());
+
+    prevElseBlock = nestedIf.elseBlock();
+  }
+
+  // Merge default block into the last else
+  Block &defaultBlock = switchOp.getDefaultBlock();
+  rewriter.mergeBlocks(&defaultBlock, prevElseBlock);
+
+  rewriter.replaceOp(switchOp, outerIf.getResults());
+}
+
 namespace {
 
 struct EnzymeLiftControlFlowToSCF
@@ -72,6 +143,18 @@ struct EnzymeLiftControlFlowToSCF
     });
     if (result.wasInterrupted())
       return signalPassFailure();
+
+    if (rewrite_index_switch) {
+      SmallVector<scf::IndexSwitchOp> switchOps;
+      op->walk(
+          [&](scf::IndexSwitchOp switchOp) { switchOps.push_back(switchOp); });
+      if (!switchOps.empty()) {
+        IRRewriter rewriter(&getContext());
+        for (auto switchOp : switchOps)
+          lowerIndexSwitchToIfChain(switchOp, rewriter);
+        changed = true;
+      }
+    }
 
     if (!changed)
       markAllAnalysesPreserved();

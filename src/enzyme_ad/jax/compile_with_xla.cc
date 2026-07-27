@@ -26,12 +26,9 @@
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Parser/Parser.h"
 #include "mlir/Pass/PassManager.h"
-#include "nanobind/nanobind.h"
 #include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "xla/client/client_library.h"
-#include "xla/client/executable_build_options.h"
-#include "xla/hlo/builder/xla_computation.h"
 #include "xla/hlo/ir/hlo_casting_utils.h"
 #include "xla/hlo/ir/hlo_instructions.h"
 #include "xla/hlo/translate/mhlo_to_hlo/mlir_hlo_to_hlo.h"
@@ -96,7 +93,8 @@ updateSymbolAndAllUses(mlir::SymbolOpInterface op, mlir::ModuleOp target,
   return success();
 }
 
-void run_pass_pipeline(mlir::Operation *mod, const std::string &pass_pipeline) {
+absl::Status run_pass_pipeline(mlir::Operation *mod,
+                               const std::string &pass_pipeline) {
   using namespace llvm;
   using namespace mlir;
 
@@ -113,7 +111,7 @@ void run_pass_pipeline(mlir::Operation *mod, const std::string &pass_pipeline) {
   mlir::LogicalResult result =
       mlir::parsePassPipeline(pass_pipeline, pm, error_stream);
   if (mlir::failed(result)) {
-    throw nanobind::value_error(error_message.c_str());
+    return absl::InvalidArgumentError(error_message);
   }
 
   DiagnosticEngine &engine = mod->getContext()->getDiagEngine();
@@ -124,11 +122,11 @@ void run_pass_pipeline(mlir::Operation *mod, const std::string &pass_pipeline) {
         return failure();
       });
   if (!mlir::succeeded(pm.run(cast<mlir::ModuleOp>(mod)))) {
-    throw nanobind::value_error(error_stream.str().c_str());
+    return absl::InternalError(error_stream.str());
   }
 }
 
-std::pair<std::string, std::string>
+absl::StatusOr<std::pair<std::string, std::string>>
 run_pass_pipeline(const std::vector<std::string> &oldsym_vec,
                   const std::string &mlir, const std::string &pass_pipeline) {
   using namespace llvm;
@@ -146,7 +144,7 @@ run_pass_pipeline(const std::vector<std::string> &oldsym_vec,
   mlir::OwningOpRef<mlir::ModuleOp> parsed_module =
       mlir::parseSourceString<mlir::ModuleOp>(mlir, parser_config);
   if (!parsed_module) {
-    throw nanobind::value_error("Failed to parse module");
+    return absl::InvalidArgumentError("Failed to parse module");
   }
 
   mlir::PassManager pm(&context);
@@ -157,7 +155,7 @@ run_pass_pipeline(const std::vector<std::string> &oldsym_vec,
   mlir::LogicalResult result =
       mlir::parsePassPipeline(pass_pipeline, pm, error_stream);
   if (mlir::failed(result)) {
-    throw nanobind::value_error(error_message.c_str());
+    return absl::InvalidArgumentError(error_message);
   }
 
   DiagnosticEngine &engine = context.getDiagEngine();
@@ -168,7 +166,7 @@ run_pass_pipeline(const std::vector<std::string> &oldsym_vec,
         return failure();
       });
   if (!mlir::succeeded(pm.run(cast<mlir::ModuleOp>(*parsed_module)))) {
-    throw nanobind::value_error(error_stream.str().c_str());
+    return absl::InternalError(error_stream.str());
   }
 
   StringRef entryfn = "main";
@@ -184,7 +182,7 @@ run_pass_pipeline(const std::vector<std::string> &oldsym_vec,
 
     if (failed(updateSymbolAndAllUses(symbolOp, *parsed_module, oldsyms,
                                       lastUsedID)))
-      throw nanobind::value_error("failed to update all uses");
+      return absl::InternalError("failed to update all uses");
 
     StringRef newSymName = symbolOp.getName();
     if (oldSymName != newSymName) {
@@ -256,7 +254,7 @@ BuildExecutable(xla::Service *self, const xla::HloModuleProto &module_proto,
 }
 
 // Compile an MHLO module given as a string to LLVM IR using XLA.
-std::unique_ptr<xla::LocalExecutable>
+absl::StatusOr<std::unique_ptr<xla::LocalExecutable>>
 compile_mhlo_to_llvm_with_xla(llvm::StringRef mhlo_text, std::string &output,
                               bool xla_runtime,
                               const std::string &pass_pipeline) {
@@ -270,7 +268,7 @@ compile_mhlo_to_llvm_with_xla(llvm::StringRef mhlo_text, std::string &output,
   mlir::OwningOpRef<mlir::ModuleOp> parsed_module =
       mlir::parseSourceString<mlir::ModuleOp>(mhlo_text, parser_config);
   if (!parsed_module) {
-    throw nanobind::value_error("Failed to parse module");
+    return absl::InvalidArgumentError("Failed to parse module");
   }
 
   llvm::StringRef cur_pipeline = pass_pipeline;
@@ -291,11 +289,11 @@ compile_mhlo_to_llvm_with_xla(llvm::StringRef mhlo_text, std::string &output,
     error_stream << "Failed to parse pre stablehlo pipeline\n";
     mlir::LogicalResult result = mlir::parsePassPipeline(pre, pm, error_stream);
     if (mlir::failed(result)) {
-      throw nanobind::value_error(error_message.c_str());
+      return absl::InvalidArgumentError(error_message);
     }
   }
   if (!mlir::succeeded(pm.run(*parsed_module))) {
-    throw nanobind::value_error("StableHLO => MHLO failed");
+    return absl::InternalError("StableHLO => MHLO failed");
   }
 
   // Convert to XLA Computation.
@@ -305,7 +303,7 @@ compile_mhlo_to_llvm_with_xla(llvm::StringRef mhlo_text, std::string &output,
                                           /*return_tuple=*/false);
 
   if (!status.ok()) {
-    throw nanobind::value_error(std::string(status.message()).c_str());
+    return absl::InternalError(std::string(status.message()));
   }
 
   for (auto &computation :
@@ -347,8 +345,7 @@ compile_mhlo_to_llvm_with_xla(llvm::StringRef mhlo_text, std::string &output,
   absl::StatusOr<xla::LocalClient *> local_client_or_error =
       xla::ClientLibrary::GetOrCreateLocalClient();
   if (!local_client_or_error.ok()) {
-    throw nanobind::value_error(
-        local_client_or_error.status().ToString().c_str());
+    return local_client_or_error.status();
   }
   xla::LocalClient *local_client = local_client_or_error.value();
 
@@ -369,15 +366,14 @@ compile_mhlo_to_llvm_with_xla(llvm::StringRef mhlo_text, std::string &output,
           /*(serice) options=*/&local_client->local_service()->options_,
           local_client->mutable_backend());
   if (!module_config_or_error.ok()) {
-    throw nanobind::value_error(
-        module_config_or_error.status().ToString().c_str());
+    return module_config_or_error.status();
   }
   module_config_or_error.value()->set_intra_op_parallelism_threads(1);
 
   auto executor = local_client->mutable_backend()->stream_executor(
       build_options.device_ordinal());
   if (!executor.ok()) {
-    throw nanobind::value_error(executor.status().ToString().c_str());
+    return executor.status();
   }
 
   xla::Compiler::CompileOptions opts = {
@@ -389,7 +385,7 @@ compile_mhlo_to_llvm_with_xla(llvm::StringRef mhlo_text, std::string &output,
                       local_client->mutable_backend(), executor.value(), opts,
                       build_options.run_backend_only(), xla_runtime);
   if (!executable.ok()) {
-    throw nanobind::value_error(executable.status().ToString().c_str());
+    return executable.status();
   }
 
   auto local_executable = std::make_unique<xla::LocalExecutable>(

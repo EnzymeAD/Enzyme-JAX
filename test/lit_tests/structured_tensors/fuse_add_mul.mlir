@@ -35,7 +35,7 @@ func.func @test2(%arg0: tensor<64x64xf32>, %arg1: tensor<64xf32>, %arg2: tensor<
 // CHECK-DAG:    %[[cst2:.+]] = stablehlo.constant dense<2.000000e+00> : tensor<f32>
 // CHECK-DAG:    %[[cst3:.+]] = stablehlo.constant dense<3.000000e+00> : tensor<f32>
 // CHECK-DAG:    %[[cst4:.+]] = stablehlo.constant dense<4.000000e+00> : tensor<f32>
-// CHECK-NEXT:    %0 = stablehlo.broadcast_in_dim %[[cst4]], dims = [] {enzymexla.symmetric_matrix = [#enzymexla<guaranteed GUARANTEED>]} : (tensor<f32>) -> tensor<64x64xf32>
+// CHECK-NEXT:    %0 = stablehlo.broadcast_in_dim %[[cst4]], dims = [] : (tensor<f32>) -> tensor<64x64xf32>
 // CHECK-NEXT:    %1 = stablehlo.broadcast_in_dim %[[cst3]], dims = [] : (tensor<f32>) -> tensor<64x64xf32>
 // CHECK-NEXT:    %2 = stablehlo.multiply %arg2, %1 : tensor<64x64xf32>
 // CHECK-NEXT:    %3 = stablehlo.add %2, %0 : tensor<64x64xf32>
@@ -69,10 +69,12 @@ func.func @test3(%arg0: tensor<64x64xf32>, %arg1: tensor<64x64xf32>, %arg2: tens
 // CHECK-NEXT:   %1 = stablehlo.add %arg0, %0 {enzymexla.symmetric_matrix = [#enzymexla<guaranteed GUARANTEED>]} : tensor<64x64xf32>
 // CHECK-NEXT:   %2 = stablehlo.multiply %[[cstm0]], %[[cst2]] : tensor<f32>
 // CHECK-NEXT:   %3 = stablehlo.multiply %[[cst1]], %[[cst2]] : tensor<f32>
-// CHECK-NEXT:   %4 = enzymexla.blas.symm %1, %arg1, %[[cstC]], %3, %2 {side = #enzymexla.side<left>, uplo = #enzymexla.uplo<F>} : (tensor<64x64xf32>, tensor<64x64xf32>, tensor<64x64xf32>, tensor<f32>, tensor<f32>) -> tensor<64x64xf32>
-// CHECK-NEXT:   %5 = stablehlo.broadcast_in_dim %[[cst3]], dims = [] : (tensor<f32>) -> tensor<64x64xf32>
-// CHECK-NEXT:   %6 = stablehlo.multiply %arg2, %5 {enzymexla.symmetric_matrix = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<64x64xf32>
-// CHECK-NEXT:   %7 = stablehlo.add %4, %6 : tensor<64x64xf32>
-// CHECK-NEXT:   return %7 : tensor<64x64xf32>
+// CHECK-NEXT:   %4 = stablehlo.broadcast_in_dim %[[cst3]], dims = [] : (tensor<f32>) -> tensor<64x64xf32>
+// CHECK-NEXT:   %5 = stablehlo.multiply %arg2, %4 : tensor<64x64xf32>
+// CHECK-NEXT:   %6 = stablehlo.broadcast_in_dim %2, dims = [] : (tensor<f32>) -> tensor<64x64xf32>
+// CHECK-NEXT:   %7 = stablehlo.multiply %[[cstC]], %6 : tensor<64x64xf32>
+// CHECK-NEXT:   %8 = stablehlo.add %7, %5 : tensor<64x64xf32>
+// CHECK-NEXT:   %9 = enzymexla.blas.symm %1, %arg1, %8, %3, %[[cst1]] {side = #enzymexla.side<left>, uplo = #enzymexla.uplo<F>} : (tensor<64x64xf32>, tensor<64x64xf32>, tensor<64x64xf32>, tensor<f32>, tensor<f32>) -> tensor<64x64xf32>
+// CHECK-NEXT:   return %9 : tensor<64x64xf32>
 // CHECK-NEXT: }
 // CHECK-NEXT: }

@@ -58,7 +58,7 @@ module {
 
 // REVERSE:  func.func private @diffef(%arg0: tensor<f64>, %arg1: tensor<f64>) -> (tensor<f64>, tensor<f64>) {
 // REVERSE-NEXT:    %c = stablehlo.constant dense<2> : tensor<i64>
-// REVERSE-NEXT:    %cst = arith.constant dense<0.000000e+00> : tensor<3xf64>
+// REVERSE-NEXT:    %cst = stablehlo.constant dense<0.000000e+00> : tensor<3xf64>
 // REVERSE-NEXT:    %c_0 = stablehlo.constant dense<3> : tensor<i64>
 // REVERSE-NEXT:    %c_1 = stablehlo.constant dense<1> : tensor<i64>
 // REVERSE-NEXT:    %c_2 = stablehlo.constant dense<0> : tensor<i64>

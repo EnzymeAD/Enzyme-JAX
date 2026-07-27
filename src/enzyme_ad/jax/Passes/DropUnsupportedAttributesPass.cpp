@@ -71,28 +71,31 @@ struct DropUnsupportedAttributesPass
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
 
+    Operation *moduleOp = getOperation();
+
     if (enzymexla_memory_effects) {
       patterns.add<RemoveMemoryEffectAttributes>(context);
     }
 
     GreedyRewriteConfig config;
     config.enableFolding();
-    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
-                                     config))) {
+    if (failed(applyPatternsGreedily(moduleOp, std::move(patterns), config))) {
       signalPassFailure();
     }
 
+    moduleOp->removeAttr("llvm.data_layout");
+
     if (enzymexla_analysis_result) {
-      auto moduleOp = getOperation();
       SmallVector<StringRef, 6> enzymexlaAnalysisResultAttrs = {
           "enzymexla.symmetric_matrix",
           "enzymexla.non_negative",
           "enzymexla.finite",
+          "enzymexla.bounds",
           "enzymexla.no_nan",
           "enzymexla.complex_is_purely_real",
           "enzymexla.complex_is_purely_imaginary"};
 
-      moduleOp.walk([&](Operation *op) {
+      moduleOp->walk([&](Operation *op) {
         for (auto removeAttr : enzymexlaAnalysisResultAttrs) {
           if (op->hasAttr(removeAttr)) {
             op->removeAttr(removeAttr);

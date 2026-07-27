@@ -9,8 +9,10 @@
 // This file implements a pass to raise operations to arith dialect.
 //===---------------------------------------------------------------------===//
 
+#ifndef DISABLE_POLYMER
 #include "../polymer/mlir/include/mlir/Conversion/Polymer/Support/IslScop.h"
 #include "../polymer/mlir/include/mlir/Conversion/Polymer/Target/ISL.h"
+#endif
 #include "Enzyme/MLIR/Dialect/Dialect.h"
 #include "Enzyme/MLIR/Dialect/Ops.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -41,6 +43,7 @@ struct TestPolymerPass
     : public enzyme::impl::TestPolymerPassBase<TestPolymerPass> {
   using TestPolymerPassBase::TestPolymerPassBase;
   void runOnOperation() override {
+#ifndef DISABLE_POLYMER
     getOperation()->walk([](Operation *op) {
       if (!isa<func::FuncOp, enzymexla::GPUWrapperOp>(op))
         return;
@@ -60,6 +63,7 @@ struct TestPolymerPass
         llvm::errs() << "Failed to build schedule\n";
       }
     });
+#endif
   }
 };
 } // namespace

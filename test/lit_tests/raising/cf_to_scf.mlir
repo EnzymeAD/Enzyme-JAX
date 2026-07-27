@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s -split-input-file -allow-unregistered-dialect --pass-pipeline="builtin.module(enzyme-lift-cf-to-scf)" | FileCheck %s
+// RUN: enzymexlamlir-opt %s -split-input-file -allow-unregistered-dialect --pass-pipeline="builtin.module(enzyme-lift-cf-to-scf{rewrite_index_switch=false})" | FileCheck %s
 
 func.func @simple_if() {
   %cond = "test.test1"() : () -> i1

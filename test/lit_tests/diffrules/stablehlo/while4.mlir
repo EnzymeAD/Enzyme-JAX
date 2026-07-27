@@ -115,9 +115,9 @@ module {
 
 // CHECK:    func.func private @"diffeConst{typeof(sumabs2)}(Main.sumabs2)_autodiff"(%arg0: tensor<6x2x3xf32>, %arg1: tensor<3x3xf32>, %arg2: tensor<3x3xf32>, %arg3: tensor<3xf32>, %arg4: tensor<3xf32>, %arg5: tensor<2xui64>, %arg6: tensor<f32>, %arg7: tensor<2xui64>, %arg8: tensor<3x3xf32>, %arg9: tensor<3x3xf32>, %arg10: tensor<3xf32>, %arg11: tensor<3xf32>) -> (tensor<6x2x3xf32>, tensor<3x3xf32>, tensor<3x3xf32>, tensor<3xf32>, tensor<3xf32>, tensor<2xui64>, tensor<3x3xf32>, tensor<3x3xf32>, tensor<3xf32>, tensor<3xf32>) {
 // CHECK-NEXT:    %c = stablehlo.constant dense<4> : tensor<i64>
-// CHECK-NEXT:    %cst = arith.constant dense<0.000000e+00> : tensor<5x3x2x1xf32>
-// CHECK-NEXT:    %cst_0 = arith.constant dense<0.000000e+00> : tensor<5x3x2xf32>
-// CHECK-NEXT:    %cst_1 = arith.constant dense<0.000000e+00> : tensor<5x3x3xf32>
+// CHECK-NEXT:    %cst = stablehlo.constant dense<0.000000e+00> : tensor<5x3x2x1xf32>
+// CHECK-NEXT:    %cst_0 = stablehlo.constant dense<0.000000e+00> : tensor<5x3x2xf32>
+// CHECK-NEXT:    %cst_1 = stablehlo.constant dense<0.000000e+00> : tensor<5x3x3xf32>
 // CHECK-NEXT:    %c_2 = stablehlo.constant dense<5> : tensor<i64>
 // CHECK-NEXT:    %cst_3 = stablehlo.constant dense<1.000000e+00> : tensor<3x2xf32>
 // CHECK-NEXT:    %c_4 = stablehlo.constant dense<0> : tensor<i64>

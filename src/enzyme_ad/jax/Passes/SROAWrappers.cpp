@@ -64,6 +64,7 @@ struct SROAWrappersPass
     auto mToTranslate = b.cloneWithoutRegions(m);
 
     llvm::SmallVector<mlir::Operation *> toOpt;
+    llvm::StringMap<mlir::DictionaryAttr> funcDiscardableAttrs;
     for (auto [oldRegion, newRegion] :
          llvm::zip(m->getRegions(), mToTranslate->getRegions())) {
       for (auto &oldBlock : oldRegion.getBlocks()) {
@@ -79,6 +80,10 @@ struct SROAWrappersPass
           // FIXME we also need to mark them `used` so the llvm optimizer
           // does not get rid of them.
           if (llvm::isa<mlir::LLVM::LLVMDialect>(op.getDialect())) {
+            if (auto func = llvm::dyn_cast<mlir::LLVM::LLVMFuncOp>(op)) {
+              funcDiscardableAttrs[func.getSymName()] =
+                  func->getDiscardableAttrDictionary();
+            }
             // There should be no need for mapping because all top level
             // operations in the module should be isolated from above
             auto cloned = b.clone(op);
@@ -113,7 +118,6 @@ struct SROAWrappersPass
       signalPassFailure();
       return;
     }
-
     if (dump_prellvm)
       llvm::errs() << "sroa pre llvm\n" << *llvmModule << "\n";
     {
@@ -132,6 +136,11 @@ struct SROAWrappersPass
       CGSCCAnalysisManager CGAM;
       ModuleAnalysisManager MAM;
 
+      if (auto dlAttr = mToTranslate->getAttrOfType<mlir::StringAttr>(
+              "llvm.data_layout")) {
+        llvmModule->setDataLayout(dlAttr.getValue());
+      }
+
       PassInstrumentationCallbacks PIC;
       PassBuilder PB(nullptr, PTO, std::nullopt, nullptr);
 
@@ -142,7 +151,6 @@ struct SROAWrappersPass
       PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
 
       ModulePassManager MPM;
-      FunctionPassManager FPM;
       if (sroa)
         MPM.addPass(createModuleToFunctionPassAdaptor(
             SROAPass(SROAOptions::ModifyCFG)));
@@ -152,6 +160,7 @@ struct SROAWrappersPass
         MPM.addPass(createModuleToFunctionPassAdaptor(InstSimplifyPass()));
       if (attributor)
         MPM.addPass(llvm::AttributorPass());
+
       MPM.run(*llvmModule, MAM);
     }
     if (dump_postllvm)
@@ -188,11 +197,21 @@ struct SROAWrappersPass
               func.setVisibility(mlir::SymbolTable::Visibility::Private);
             }
           } else if (auto glob = llvm::dyn_cast<mlir::LLVM::GlobalOp>(op)) {
-            glob.setVisibility(mlir::SymbolTable::Visibility::Private);
+            if (set_private)
+              glob.setVisibility(mlir::SymbolTable::Visibility::Private);
           }
           // There should be no need for mapping because all top level
           // operations in the module should be isolated from above
-          b.clone(op);
+          auto clonedOp = b.clone(op);
+          if (auto func = llvm::dyn_cast<mlir::LLVM::LLVMFuncOp>(clonedOp)) {
+            auto it = funcDiscardableAttrs.find(func.getSymName());
+            if (it != funcDiscardableAttrs.end()) {
+              for (auto namedAttr : it->second) {
+                func->setDiscardableAttr(namedAttr.getName(),
+                                         namedAttr.getValue());
+              }
+            }
+          }
         }
       }
     }

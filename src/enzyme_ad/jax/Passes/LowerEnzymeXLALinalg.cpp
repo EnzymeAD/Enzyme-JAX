@@ -45,6 +45,31 @@ struct LUFactorizationOpLowering
   }
 };
 
+struct QRFactorizationOpLowering
+    : public OpRewritePattern<enzymexla::QRFactorizationOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::QRFactorizationOp op,
+                                PatternRewriter &rewriter) const override {
+    OpBuilder::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPoint(op);
+
+    auto geqrfOp = enzymexla::GeqrfOp::create(
+        rewriter, op.getLoc(), op->getResultTypes(), op.getInput());
+    auto R = geqrfOp.getOutput();
+    auto tau = geqrfOp.getTau();
+    auto info = geqrfOp.getInfo();
+
+    auto orgqrOp = enzymexla::OrgqrOp::create(
+        rewriter, op.getLoc(), op->getResult(0).getType(), R, tau);
+    auto Q = orgqrOp.getOutput();
+
+    rewriter.replaceAllOpUsesWith(op, ValueRange{Q, R, info});
+
+    return success();
+  }
+};
+
 struct SVDFactorizationOpLowering
     : public OpRewritePattern<enzymexla::SVDFactorizationOp> {
   std::string backend;
@@ -108,7 +133,7 @@ struct LowerEnzymeXLALinalgPass
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
 
-    patterns.add<LUFactorizationOpLowering>(context);
+    patterns.add<LUFactorizationOpLowering, QRFactorizationOpLowering>(context);
     patterns.add<SVDFactorizationOpLowering>(backend, context);
 
     GreedyRewriteConfig config;
@@ -120,8 +145,8 @@ struct LowerEnzymeXLALinalgPass
 
     // Verify that all illegal ops have been lowered
     auto walkResult = getOperation()->walk([&](Operation *op) {
-      if (isa<enzymexla::LUFactorizationOp, enzymexla::SVDFactorizationOp>(
-              op)) {
+      if (isa<enzymexla::LUFactorizationOp, enzymexla::QRFactorizationOp,
+              enzymexla::SVDFactorizationOp>(op)) {
         op->emitError("Failed to lower enzymexla linalg operation");
         return WalkResult::interrupt();
       }
