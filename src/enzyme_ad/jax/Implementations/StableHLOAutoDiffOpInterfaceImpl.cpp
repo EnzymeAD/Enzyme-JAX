@@ -1174,13 +1174,7 @@ class AutoDiffWhileRev
 
     builder.setInsertionPointToStart(revInnerBody);
 
-    // innerIV iterates in reverse: actualInner - 1 - idx
-    Value innerIV = stablehlo::SubtractOp::create(
-        builder, orig.getLoc(),
-        stablehlo::SubtractOp::create(
-            builder, orig.getLoc(), actualInner,
-            makeI64Constant(orig.getLoc(), builder, 1)),
-        revInnerBody->getArgument(0));
+    Value innerIV = revInnerBody->getArgument(0);
 
     Value currentStep =
         stablehlo::AddOp::create(builder, orig.getLoc(), outerStart, innerIV);
