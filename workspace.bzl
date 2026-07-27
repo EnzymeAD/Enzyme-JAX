@@ -79,6 +79,13 @@ echo " llvm::Error evalPrintOp(PrintOp& op, InterpreterValue operand) {" >> thir
     sed -i.bak0 "s/patch_file/patch_args = [\\\"-p1\\\"],patches/g" third_party/llvm/workspace.bzl
     """,
     """
+    # Apply our own patches on top of the LLVM pinned by XLA. This lets us use
+    # upstream APIs which have not yet made it into the pinned commit. Drop the
+    # corresponding hunks from patches/llvm.patch once XLA moves to an LLVM
+    # which already contains them.
+    sed -i.bak0 "s|patches = \\[|patches = [\\\"//:patches/llvm.patch\\\",|g" third_party/llvm/workspace.bzl
+    """,
+    """
     sed -i.bak0 "s/Node::Leaf(std::forward<decltype(value)>/Node::Leaf(std::forward<T>/g" xla/tuple_tree.h
     """,
     """
