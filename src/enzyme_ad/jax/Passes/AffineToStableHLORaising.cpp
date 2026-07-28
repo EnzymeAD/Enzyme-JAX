@@ -3037,7 +3037,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
           arith::ShLIOp, arith::MinimumFOp, arith::MaximumFOp, arith::MaxNumFOp,
           arith::MinNumFOp, arith::MinUIOp, arith::MinSIOp, arith::MaxUIOp,
           arith::MaxSIOp, arith::RemSIOp, arith::RemUIOp, arith::RemFOp,
-          math::CopySignOp, math::PowFOp>(op)) {
+          math::CopySignOp, math::AtanOp, math::Atan2Op, math::PowFOp>(op)) {
     assert(op->getNumOperands() == 2 && op->getNumResults() == 1);
 
     Value a = mapping.lookup(op->getOperand(0)),

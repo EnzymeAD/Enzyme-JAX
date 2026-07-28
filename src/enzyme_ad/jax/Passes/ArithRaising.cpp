@@ -93,6 +93,7 @@ struct ArithRaisingPass
     RAISE_BINARY(arith::RemFOp, stablehlo::RemOp, mhlo::RemOp);
     RAISE_BINARY(arith::RemSIOp, stablehlo::RemOp, mhlo::RemOp);
     RAISE_BINARY(arith::RemUIOp, stablehlo::RemOp, mhlo::RemOp);
+    RAISE_BINARY(math::Atan2Op, stablehlo::Atan2Op, mhlo::Atan2Op);
 
 #undef RAISE_BINARY
 
