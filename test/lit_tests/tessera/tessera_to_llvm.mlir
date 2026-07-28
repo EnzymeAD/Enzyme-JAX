@@ -63,9 +63,9 @@ llvm.func @caller() {
 // CHECK-NEXT: %[[A1:.*]] = llvm.alloca %[[ONE]] x !llvm.struct<(f32, f32)> {alignment = 8 : i64} : (i32) -> !llvm.ptr
 // CHECK-NEXT: %[[A2:.*]] = llvm.alloca %[[ONE]] x !llvm.struct<(f32, f32)> {alignment = 8 : i64} : (i32) -> !llvm.ptr
 // CHECK-NEXT: %[[LOADED:.*]] = llvm.load %[[A2]] : !llvm.ptr -> !llvm.struct<(f32, f32)>
-// CHECK-NEXT: %[[SRET:.*]] = llvm.alloca %[[ONE]] x !llvm.struct<(f32, f32)> {alignment = 8 : i64} : (i32) -> !llvm.ptr
 // CHECK-NEXT: %[[A3:.*]] = llvm.alloca %[[ONE]] x !llvm.struct<(f32, f32)> : (i32) -> !llvm.ptr
 // CHECK-NEXT: llvm.store %[[LOADED]], %[[A3]] : !llvm.struct<(f32, f32)>, !llvm.ptr
+// CHECK-NEXT: %[[SRET:.*]] = llvm.alloca %[[ONE]] x !llvm.struct<(f32, f32)> {alignment = 8 : i64} : (i32) -> !llvm.ptr
 // CHECK-NEXT: llvm.call @sret_func(%[[SRET]], %[[A3]]) : (!llvm.ptr {llvm.align = 8 : i64, llvm.nonnull, llvm.sret = !llvm.struct<(f32, f32)>}, !llvm.ptr {llvm.nonnull, llvm.noundef}) -> ()
 // CHECK-NEXT: %[[LOADED:.*]] = llvm.load %[[SRET]] : !llvm.ptr -> !llvm.struct<(f32, f32)>
 // CHECK-NEXT: llvm.store %[[LOADED]], %[[A1]] : !llvm.struct<(f32, f32)>, !llvm.ptr
