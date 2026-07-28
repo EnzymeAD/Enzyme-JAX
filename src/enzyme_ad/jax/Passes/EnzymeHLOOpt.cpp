@@ -6577,9 +6577,7 @@ struct BinomialProgressConstProp final
         binomialProgress(numSteps.getSExtValue(), budget.getSExtValue());
 
     rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-        op,
-        DenseElementsAttr::get(op.getResult().getType(),
-                               makeAttr(op.getResult().getType(), progress)));
+        op, cast<ElementsAttr>(makeAttr(op.getResult().getType(), progress)));
 
     return success();
   }
