@@ -80,6 +80,10 @@ public:
   AffineExpr aff;
   SmallVector<Value> dim;
   SmallVector<Value> sym;
+  Offset(int64_t index) {
+    idx = index;
+    type = Type::Index;
+  }
   Offset(mlir::Value v) {
     if (auto op = v.getDefiningOp<ConstantIntOp>()) {
       idx = op.value();
@@ -225,6 +229,90 @@ struct PolygeistMem2Reg
       SmallVectorImpl<Operation *> &loadOpsToErase,
       DenseMap<Operation *, SmallVector<Operation *>> &capturedAliasing);
 };
+
+static std::optional<int64_t> getConstantInt(Value v) {
+  if (auto op = v.getDefiningOp<ConstantIntOp>())
+    return op.value();
+  if (auto op = v.getDefiningOp<ConstantIndexOp>())
+    return op.value();
+  if (auto op = v.getDefiningOp<LLVM::ConstantOp>()) {
+    if (auto intAttr = dyn_cast<IntegerAttr>(op.getValue()))
+      return intAttr.getInt();
+  }
+  return std::nullopt;
+}
+
+static std::optional<int64_t> getGEPIndexConstant(llvm::PointerUnion<IntegerAttr, Value> index) {
+  if (auto attr = dyn_cast<IntegerAttr>(index)) {
+    return attr.getInt();
+  }
+  if (auto val = dyn_cast<Value>(index)) {
+    return getConstantInt(val);
+  }
+  return std::nullopt;
+}
+
+static bool getLLVMAccessPath(Value addr, Value AI, std::vector<Offset> &path) {
+  Value cur = addr;
+  SmallVector<Offset> reversedPath;
+  while (cur != AI) {
+    if (auto gep = cur.getDefiningOp<LLVM::GEPOp>()) {
+      auto indices = gep.getIndices();
+      bool isRoot = (gep.getBase() == AI);
+      
+      if (indices.size() == 0) {
+        cur = gep.getBase();
+        continue;
+      }
+      
+      size_t startIdx = isRoot ? 0 : 1;
+      for (size_t i = indices.size(); i > startIdx; --i) {
+        auto idxVal = indices[i - 1];
+        auto constOpt = getGEPIndexConstant(idxVal);
+        if (!constOpt.has_value())
+          return false;
+        reversedPath.push_back(Offset(*constOpt));
+      }
+      
+      cur = gep.getBase();
+    } else if (auto castOp = cur.getDefiningOp<LLVM::AddrSpaceCastOp>()) {
+      cur = castOp.getArg();
+    } else {
+      return false;
+    }
+  }
+  
+  for (auto it = reversedPath.rbegin(); it != reversedPath.rend(); ++it) {
+    path.push_back(*it);
+  }
+  return true;
+}
+
+static bool isPrefix(const std::vector<Offset> &prefix, const std::vector<Offset> &path) {
+  if (prefix.size() > path.size())
+    return false;
+  for (size_t i = 0; i < prefix.size(); ++i) {
+    if (prefix[i].matches(path[i]) != Match::Exact)
+      return false;
+  }
+  return true;
+}
+
+static Match matchesIndices(const std::vector<Offset> &a, const std::vector<Offset> &b) {
+  if (a.size() != b.size())
+    return Match::None;
+  for (size_t i = 0; i < a.size(); i++) {
+    switch (a[i].matches(b[i])) {
+    case Match::None:
+      return Match::None;
+    case Match::Maybe:
+      return Match::Maybe;
+    case Match::Exact:
+      break;
+    }
+  }
+  return Match::Exact;
+}
 
 } // end anonymous namespace
 
@@ -1283,13 +1371,18 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
         continue;
       }
       if (auto loadOp = dyn_cast<mlir::LLVM::LoadOp>(user)) {
-        if (!modified) {
-          subType = loadOp.getType();
-          if (subType == elType || elType == nullptr) {
-            elType = subType;
-            loadOps.insert(loadOp);
-            LLVM_DEBUG(llvm::dbgs() << "Matching Load: " << loadOp << "\n");
+        std::vector<Offset> loadIdx;
+        if (getLLVMAccessPath(loadOp.getAddr(), AI, loadIdx)) {
+          if (isPrefix(idx, loadIdx)) {
+            subType = loadOp.getType();
+            if (subType == elType || elType == nullptr) {
+              elType = subType;
+              loadOps.insert(loadOp);
+              LLVM_DEBUG(llvm::dbgs() << "Matching Load: " << loadOp << "\n");
+            }
           }
+        } else {
+          LLVM_DEBUG(llvm::dbgs() << "Unknown Load address: " << loadOp << "\n");
         }
         continue;
       }
@@ -1328,14 +1421,23 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
         continue;
       }
       if (auto storeOp = dyn_cast<LLVM::StoreOp>(user)) {
-
         if (storeOp.getValue() == val) {
           captured = true;
-        } else if (!modified) {
-          LLVM_DEBUG(llvm::dbgs() << "Matching Store: " << storeOp << "\n");
-          allStoreOps.insert(storeOp);
-        } else
-          AliasingStoreOperations.insert(storeOp);
+        } else {
+          std::vector<Offset> storeIdx;
+          if (getLLVMAccessPath(storeOp.getAddr(), AI, storeIdx)) {
+            if (matchesIndices(storeIdx, idx) == Match::Exact) {
+              LLVM_DEBUG(llvm::dbgs() << "Matching Store: " << storeOp << "\n");
+              allStoreOps.insert(storeOp);
+            } else if (isPrefix(storeIdx, idx) || isPrefix(idx, storeIdx)) {
+              LLVM_DEBUG(llvm::dbgs() << "Aliasing Store (overlap): " << storeOp << "\n");
+              AliasingStoreOperations.insert(storeOp);
+            }
+          } else {
+            LLVM_DEBUG(llvm::dbgs() << "Aliasing Store (unknown path): " << storeOp << "\n");
+            AliasingStoreOperations.insert(storeOp);
+          }
+        }
         continue;
       }
 
@@ -1542,7 +1644,22 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
     } else if (replacement->val) {
       changed = true;
       assert(orig != replacement->val);
-      auto castVal = castToType(elType, replacement->val, orig.getDefiningOp());
+      Value valToUse = replacement->val;
+      if (auto loadOp = dyn_cast<LLVM::LoadOp>(orig.getDefiningOp())) {
+        std::vector<Offset> loadIdx;
+        if (getLLVMAccessPath(loadOp.getAddr(), AI, loadIdx)) {
+          if (loadIdx.size() > idx.size()) {
+            SmallVector<int64_t> extractIndices;
+            size_t start = idx.empty() ? 1 : idx.size();
+            for (size_t i = start; i < loadIdx.size(); ++i) {
+              extractIndices.push_back(loadIdx[i].idx);
+            }
+            OpBuilder builder(loadOp);
+            valToUse = LLVM::ExtractValueOp::create(builder, loadOp.getLoc(), valToUse, extractIndices);
+          }
+        }
+      }
+      auto castVal = castToType(elType, valToUse, orig.getDefiningOp());
       LLVM_DEBUG(llvm::dbgs()
                  << " replaced " << orig << " with " << castVal << "\n");
       metaMap.replaceValue(orig, castVal);
@@ -1962,6 +2079,23 @@ bool isPromotable(mlir::Value AI) {
         list.push_back(CO);
       } else if (auto CO = dyn_cast<Pointer2MemrefOp>(U)) {
         list.push_back(CO);
+      } else if (auto gep = dyn_cast<LLVM::GEPOp>(U)) {
+        bool allConstant = true;
+        for (auto idx : gep.getIndices()) {
+          if (!getGEPIndexConstant(idx).has_value()) {
+            allConstant = false;
+            break;
+          }
+        }
+        if (allConstant) {
+          list.push_back(gep.getResult());
+        } else {
+          LLVM_DEBUG(llvm::dbgs()
+                     << "non promotable " << AI << " due to dynamic GEP " << *gep << "\n");
+          return false;
+        }
+      } else if (auto castOp = dyn_cast<LLVM::AddrSpaceCastOp>(U)) {
+        list.push_back(castOp.getResult());
       } else {
         LLVM_DEBUG(llvm::dbgs()
                    << "non promotable " << AI << " due to " << *U << "\n");
@@ -1973,7 +2107,8 @@ bool isPromotable(mlir::Value AI) {
 }
 
 std::vector<std::vector<Offset>> getLastStored(mlir::Value AI) {
-  std::map<std::vector<Offset>, unsigned> lastStored;
+  std::set<std::vector<Offset>> storePaths;
+  std::set<std::vector<Offset>> loadPaths;
 
   std::deque<mlir::Value> list = {AI};
 
@@ -1986,7 +2121,7 @@ std::vector<std::vector<Offset>> getLastStored(mlir::Value AI) {
         for (auto idx : SO.getIndices()) {
           vec.emplace_back(idx);
         }
-        lastStored[vec]++;
+        storePaths.insert(vec);
       } else if (auto SO = dyn_cast<affine::AffineLoadOp>(U)) {
         std::vector<Offset> vec;
         auto map = SO.getAffineMapAttr().getValue();
@@ -1994,19 +2129,23 @@ std::vector<std::vector<Offset>> getLastStored(mlir::Value AI) {
           vec.emplace_back(idx, map.getNumDims(), map.getNumSymbols(),
                            SO.getMapOperands());
         }
-        lastStored[vec]++;
-      } else if (isa<LLVM::LoadOp>(U)) {
+        loadPaths.insert(vec);
+      } else if (auto load = dyn_cast<LLVM::LoadOp>(U)) {
         std::vector<Offset> vec;
-        lastStored[vec]++;
-      } else if (isa<LLVM::StoreOp>(U)) {
+        if (getLLVMAccessPath(load.getAddr(), AI, vec)) {
+          loadPaths.insert(vec);
+        }
+      } else if (auto store = dyn_cast<LLVM::StoreOp>(U)) {
         std::vector<Offset> vec;
-        lastStored[vec]++;
+        if (getLLVMAccessPath(store.getAddr(), AI, vec)) {
+          storePaths.insert(vec);
+        }
       } else if (auto SO = dyn_cast<memref::LoadOp>(U)) {
         std::vector<Offset> vec;
         for (auto idx : SO.getIndices()) {
           vec.emplace_back(idx);
         }
-        lastStored[vec]++;
+        loadPaths.insert(vec);
       } else if (auto SO = dyn_cast<affine::AffineStoreOp>(U)) {
         std::vector<Offset> vec;
         auto map = SO.getAffineMapAttr().getValue();
@@ -2014,17 +2153,29 @@ std::vector<std::vector<Offset>> getLastStored(mlir::Value AI) {
           vec.emplace_back(idx, map.getNumDims(), map.getNumSymbols(),
                            SO.getMapOperands());
         }
-        lastStored[vec]++;
+        storePaths.insert(vec);
       } else if (auto CO = dyn_cast<memref::CastOp>(U)) {
         list.push_back(CO);
+      } else if (auto gep = dyn_cast<LLVM::GEPOp>(U)) {
+        list.push_back(gep);
+      } else if (auto castOp = dyn_cast<LLVM::AddrSpaceCastOp>(U)) {
+        list.push_back(castOp);
       }
     }
   }
 
   std::vector<std::vector<Offset>> todo;
-  for (auto &pair : lastStored) {
-    if (pair.second > 1)
-      todo.push_back(pair.first);
+  for (const auto &s_path : storePaths) {
+    bool hasOverlappingLoad = false;
+    for (const auto &l_path : loadPaths) {
+      if (isPrefix(s_path, l_path) || isPrefix(l_path, s_path)) {
+        hasOverlappingLoad = true;
+        break;
+      }
+    }
+    if (hasOverlappingLoad) {
+      todo.push_back(s_path);
+    }
   }
   return todo;
 }
@@ -2143,6 +2294,12 @@ void PolygeistMem2Reg::runOnOperation() {
           } else if (auto CO = dyn_cast<memref::CastOp>(U)) {
             toErase.push_back(U);
             list.push_back(CO);
+          } else if (auto gep = dyn_cast<LLVM::GEPOp>(U)) {
+            toErase.push_back(U);
+            list.push_back(gep.getResult());
+          } else if (auto castOp = dyn_cast<LLVM::AddrSpaceCastOp>(U)) {
+            toErase.push_back(U);
+            list.push_back(castOp.getResult());
             //} else if (auto CO = dyn_cast<SubIndexOp>(U)) {
             //  toErase.push_back(U);
             //  list.push_back(CO);
