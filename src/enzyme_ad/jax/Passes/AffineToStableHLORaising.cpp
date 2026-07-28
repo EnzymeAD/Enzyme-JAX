@@ -1183,6 +1183,27 @@ static LogicalResult tryRaisingForOpToStableHLOUnroll(
   return success();
 }
 
+static bool equivUpToConstant(const affine::AffineValueMap &a,
+                              const affine::AffineValueMap &b) {
+  if (a.getOperands() != b.getOperands())
+    return false;
+
+  auto amap = a.getAffineMap(), bmap = b.getAffineMap();
+
+  if (amap.getNumDims() != bmap.getNumDims() ||
+      amap.getNumSymbols() != bmap.getNumSymbols() ||
+      amap.getNumResults() != bmap.getNumResults())
+    return false;
+
+  for (auto [EA, EB] : llvm::zip_equal(amap.getResults(), bmap.getResults())) {
+    AffineExpr E = EA - EB;
+    if (!E.isSymbolicOrConstant())
+      return false;
+  }
+
+  return true;
+}
+
 static LogicalResult tryRaisingForOpToStableHLOWhile(
     affine::AffineForOp forOp, IRMapping &parentMapping, OpBuilder &builder,
     llvm::DenseMap<Value, affine::AffineValueMap> &maps, ParallelContext pc,
@@ -1306,8 +1327,8 @@ static LogicalResult tryRaisingForOpToStableHLOWhile(
     for (auto [iterArg, yieldedIterArgs] :
          llvm::zip(forOp.getRegionIterArgs(),
                    forOp.getBody()->getTerminator()->getOperands())) {
-      if (maps.lookup(mapping.lookup(iterArg)) !=
-          maps.lookup(mapping.lookup(yieldedIterArgs))) {
+      if (!equivUpToConstant(maps.lookup(mapping.lookup(iterArg)),
+                             maps.lookup(mapping.lookup(yieldedIterArgs)))) {
         auto err = forOp.emitError("invalid init for iterArg: ") << iterArg;
         whileOp->erase();
         return err;
