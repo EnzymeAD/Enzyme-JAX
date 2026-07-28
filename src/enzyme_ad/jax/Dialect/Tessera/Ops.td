@@ -31,6 +31,7 @@ def DefineOp : TesseraOp<"define", [
                        TypeAttrOf<FunctionType>:$function_type,
 	                     ArrayAttr:$byRefTypes,
                        BoolAttr:$pure,
+                       OptionalAttr<ArrayAttr>:$resultArgTypes,
                        OptionalAttr<StrAttr>:$sym_visibility,
                        OptionalAttr<DictArrayAttr>:$arg_attrs,
                        OptionalAttr<DictArrayAttr>:$res_attrs
@@ -41,6 +42,7 @@ def DefineOp : TesseraOp<"define", [
     "StringRef":$name, "FunctionType":$type,
     "ArrayAttr":$byRefTypes,
     "bool":$pure,
+    CArg<"ArrayAttr", "{}">:$resultArgTypes,
     CArg<"StringAttr", "{}">:$sym_visibility,
     CArg<"ArrayRef<NamedAttribute>", "{}">:$attrs,
     CArg<"ArrayRef<DictionaryAttr>", "{}">:$argAttrs)
@@ -73,6 +75,31 @@ def DefineOp : TesseraOp<"define", [
     // Returns the byref type for a given argument index, or null if the argument is not byref.
     ::mlir::Type getByRefType(unsigned argIdx);
 
+    // Returns the stored result-type array as an ArrayRef. Index convention: sret-excluded
+    // argument index, since it is based on the argument list in the annotation string,
+    // which does not include the sret argument. Each entry is either a TypeAttr
+    // (arg is output/result) or null (arg is not output/result). Function may return null
+    // if the result type array is not present (i.e. the function has no output parameters).
+    ::mlir::ArrayRef<Attribute> getResultArgTypesArray();
+
+    // Returns the result type for a given argument index, or null if the argument is not 
+    // a result/output.
+    ::mlir::Type getResultArgType(unsigned argIdx);
+
+    // Number of arguments marked :result, i.e. the number of training results
+    // the tessera.call adds beyond the callee's natural (function_type) results.
+    // Equal to the number of non-unit entries in resultArgTypes array.
+    unsigned getNumResultArgs();
+
+    // True if this argument is marked :result but not :byref, i.e. it is a
+    // pure output param that does NOT consume a tessera.call operand slot
+    // (unlike an inout arg, which is both byref and result and still
+    // consumes an operand).
+    bool isResultOnlyArg(unsigned argIdx);
+
+    // Number of operands tessera.call should have for this callee: every
+    // sret-excluded argument, minus the pure-output (isResultOnlyArg) ones.
+    unsigned getNumCallOperands();
 
     //===------------------------------------------------------------------===//
     // FunctionOpInterface Methods
