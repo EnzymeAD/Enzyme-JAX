@@ -25,7 +25,7 @@ llvm.func @func_with_args(%arg0: i32, %arg1: f32) -> i32 attributes {tessera_op 
 
 // -----
 
-llvm.mlir.global internal constant @_ZL26__tessera_byref_arg_type_0() : !llvm.struct<(f32)>
+llvm.mlir.global internal constant @_ZL20__tessera_arg_type_0() : !llvm.struct<(f32)>
 
 llvm.func @pure_func(%arg0: i32, %arg1: !llvm.ptr) -> i32 attributes {pure_tessera_op = "tessera_pure_func(x, y:byref):globals=0"} {
   llvm.return %arg0 : i32
@@ -83,7 +83,7 @@ llvm.func @func_with_indirect_call(%arg0: !llvm.ptr) {
 
 // -----
 
-llvm.mlir.global internal constant @_ZL26__tessera_byref_arg_type_1() : !llvm.struct<(f32, f32)>
+llvm.mlir.global internal constant @_ZL20__tessera_arg_type_1() : !llvm.struct<(f32, f32)>
 
 llvm.func @sret_func(%arg0: !llvm.ptr {llvm.sret = !llvm.struct<(f32, f32)>, llvm.align = 8 : i64, llvm.nonnull}, %arg1: !llvm.ptr {llvm.noundef, llvm.readonly}) attributes {pure_tessera_op = "tessera_sret_func(x:byref):globals=1"} {
   %0 = llvm.load %arg1 {alignment = 8 : i64} : !llvm.ptr -> f32

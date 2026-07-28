@@ -24,6 +24,7 @@ namespace mlir::enzyme::tessera {} // namespace mlir::enzyme::tessera
 
 void DefineOp::build(OpBuilder &builder, OperationState &state, StringRef name,
                      FunctionType type, ArrayAttr byRefTypes, bool pure,
+                     ArrayAttr resultArgTypes,
                      StringAttr sym_visibility, ArrayRef<NamedAttribute> attrs,
                      ArrayRef<DictionaryAttr> argAttrs) {
   state.addAttribute(SymbolTable::getSymbolAttrName(),
@@ -31,6 +32,9 @@ void DefineOp::build(OpBuilder &builder, OperationState &state, StringRef name,
   state.addAttribute(getFunctionTypeAttrName(state.name), TypeAttr::get(type));
   state.addAttribute("pure", builder.getBoolAttr(pure));
   state.addAttribute("byRefTypes", byRefTypes);
+
+  if (resultArgTypes)
+    state.addAttribute("resultArgTypes", resultArgTypes);
 
   if (sym_visibility)
     state.addAttribute(getSymVisibilityAttrName(state.name), sym_visibility);
@@ -173,6 +177,50 @@ Type DefineOp::getByRefType(unsigned argIdx) {
   return cast<TypeAttr>(attr).getValue();
 }
 
+ArrayRef<Attribute> DefineOp::getResultArgTypesArray() {
+  if (auto resultArgTypes = getResultArgTypes())
+    return resultArgTypes->getValue();
+  else
+    return ArrayRef<Attribute>();
+}
+
+Type DefineOp::getResultArgType(unsigned argIdx) {
+  auto types = getResultArgTypesArray();
+  if (types.empty())
+    return nullptr;
+  assert(argIdx < types.size() && "argIdx out of bounds in getResultArgType");
+  auto attr = types[argIdx];
+  if (!isa<TypeAttr>(attr))
+    return nullptr;
+  return cast<TypeAttr>(attr).getValue();
+}
+
+unsigned DefineOp::getNumResultArgs() {
+  if (auto resultArgTypes = getResultArgTypes()) {
+    unsigned count = 0;
+    for (Attribute a : resultArgTypes->getValue()) {
+      if (isa<TypeAttr>(a))
+        count++;
+    }
+    return count;
+  } else {
+    return 0;
+  }
+}
+
+bool DefineOp::isResultOnlyArg(unsigned argIdx) {
+  return getResultArgType(argIdx) != nullptr &&
+         getByRefType(argIdx) == nullptr;
+}
+
+unsigned DefineOp::getNumCallOperands() {
+  unsigned count = 0;
+  for (unsigned i = 0, e = getByRefTypesArray().size(); i != e; ++i)
+    if (!isResultOnlyArg(i))
+      count++;
+  return count;
+}
+
 LogicalResult DefineOp::verify() {
   for (Attribute a : getByRefTypes())
     if (!isa<TypeAttr>(a) && !isa<UnitAttr>(a))
@@ -185,6 +233,24 @@ LogicalResult DefineOp::verify() {
     return emitOpError("byRefTypes size (")
            << getByRefTypes().size() << ") must match number of args ("
            << getFunctionType().getNumInputs() - offset << ")";
+
+  if (auto resultArgTypes = getResultArgTypes()) {
+    for (Attribute a : resultArgTypes->getValue())
+      if (!isa<TypeAttr>(a) && !isa<UnitAttr>(a))
+        return emitOpError(
+                   "resultArgTypes entry must be TypeAttr or UnitAttr, but got ")
+               << a;
+    if (resultArgTypes->getValue().size() != getByRefTypes().size())
+      return emitOpError("resultArgTypes size (")
+             << resultArgTypes->getValue().size() << ") must match number of byRef types ("
+             << getByRefTypes().size() << ")";
+  }
+
+  if (getSretAttr() && getNumResultArgs() > 0)
+    return emitOpError("cannot have both sret and resultArgTypes");
+
+  if (getSretAttr() && !getFunctionType().getResults().empty())
+    return emitOpError("sret function must have a void (empty) natural result list");
 
   return success();
 }
@@ -205,39 +271,52 @@ LogicalResult CallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
 
   auto fnType = fn.getFunctionType();
 
-  // Verify that the operand and result types match the callee,
-  // unless callee has attribute to indicate struct return.
+  // tessera.call operand count = every non-sret argument, minus any
+  // pure-output (:result but not :byref) args, which are dropped from the
+  // operand list and added as trailing results.
+  unsigned expectedNumOperands = fn.getNumCallOperands();
+  if (getNumOperands() != expectedNumOperands)
+    return emitOpError("incorrect number of operands for callee: expected ")
+           << expectedNumOperands << ", got " << getNumOperands();
+
+  // Walk the callee's sret-excluded arguments in order, matching each
+  // argument to the next tessera.call operand, skipping any pure-output
+  // args are skipped. Allow type mismatch only for byref pointer args 
+  // that have been converted to values.
   bool has_sret = fn.getSretAttr() != nullptr;
-
-  // If tessera.define has sret attribute,
-  // tessera.call operand count = tessera.define input count - 1
-  if (has_sret && (fnType.getNumInputs() == 0 ||
-                   (fnType.getNumInputs() - 1) != getNumOperands()))
-    return emitOpError("incorrect number of operands for callee");
-  if (!has_sret && fnType.getNumInputs() != getNumOperands())
-    return emitOpError("incorrect number of operands for callee");
-
-  // Allow type mismatch only for byref pointer args that have been converted
-  // to values
   unsigned argOffset = has_sret ? 1 : 0;
-  for (unsigned i = 0, e = getNumOperands(); i != e; ++i) {
-    if (getOperand(i).getType() == fnType.getInput(i + argOffset))
-      continue;
-    if (isa<LLVM::LLVMPointerType>(fnType.getInput(i + argOffset)) &&
+  unsigned operandIdx = 0;
+  for (unsigned i = 0, e = fn.getByRefTypesArray().size(); i != e; ++i) {
+    if (fn.isResultOnlyArg(i))
+      continue; // call operand list does not include pure-output args
+    Type expectedType = fnType.getInput(i + argOffset);
+    if (getOperand(operandIdx).getType() == expectedType) {
+      operandIdx++;
+      continue; // operand type matches expected type
+    }
+    if (isa<LLVM::LLVMPointerType>(expectedType) &&
         (fn.getArgAttr(i, LLVM::LLVMDialect::getByValAttrName()) ||
-         fn.getByRefType(i)))
-      continue;
+         fn.getByRefType(i))) {
+      operandIdx++;
+      continue; // operand was loaded from a byref pointer, so type mismatch is allowed
+    }
     return emitOpError("operand type mismatch: expected operand type ")
-           << fnType.getInput(i + argOffset) << ", but provided "
-           << getOperand(i).getType() << " for operand number " << i;
+           << expectedType << ", but provided "
+           << getOperand(operandIdx).getType() << " for operand number "
+           << operandIdx;
   }
 
-  // If tessera.define has sret attribute,
-  // tessera.call result count = tessera.define result count + 1
-  if (has_sret && getNumResults() != 1)
-    return emitOpError("incorrect number of results for callee");
-  if (!has_sret && fnType.getNumResults() != getNumResults())
-    return emitOpError("incorrect number of results for callee");
+  // tessera.call result count = one leading result per :result-marked
+  // argument (in argument order), followed by the callee's natural
+  // function_type results; if a sret is present, the result count is 1
+  // (the sret-derived value).
+  unsigned calleeNumResults = fnType.getNumResults();
+  unsigned numResultArgs = fn.getNumResultArgs();
+  unsigned expectedNumResults =
+      has_sret ? 1 : (calleeNumResults + numResultArgs);
+  if (getNumResults() != expectedNumResults)
+    return emitOpError("incorrect number of results for callee: expected ")
+           << expectedNumResults << ", got " << getNumResults();
 
   if (has_sret) {
     auto sret = fn.getSretAttr();
@@ -245,16 +324,32 @@ LogicalResult CallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
     if (getResult(0).getType() != sretType)
       return emitOpError("result type mismatch: expected ")
              << sretType << " but got " << getResult(0).getType();
-  }
-
-  unsigned offset = has_sret ? 1 : 0;
-  for (unsigned i = 0, e = fnType.getNumResults(); i != e; ++i)
-    if (getResult(i + offset).getType() != fnType.getResult(i)) {
-      auto diag = emitOpError("result type mismatch at index ") << i + offset;
-      diag.attachNote() << "      op result types: " << getResultTypes();
-      diag.attachNote() << "function result types: " << fnType.getResults();
-      return diag;
+  } else {
+    // Verify leading, :result-arg-derived result types, in argument order.
+    unsigned resultArgIdx = 0;
+    for (unsigned i = 0, e = fn.getByRefTypesArray().size(); i != e; ++i) {
+      Type resultType = fn.getResultArgType(i);
+      if (!resultType)
+        continue;
+      Value result = getResult(resultArgIdx);
+      if (result.getType() != resultType)
+        return emitOpError("result type mismatch for output-param argument ")
+               << i << ": expected " << resultType << " but got "
+               << result.getType();
+      resultArgIdx++;
     }
+
+    // Verify the callee's natural (function_type) results, trailing after
+    // the result-arg-derived ones.
+    for (unsigned i = 0, e = calleeNumResults; i != e; ++i)
+      if (getResult(numResultArgs + i).getType() != fnType.getResult(i)) {
+        auto diag = emitOpError("result type mismatch at index ")
+                    << numResultArgs + i;
+        diag.attachNote() << "      op result types: " << getResultTypes();
+        diag.attachNote() << "function result types: " << fnType.getResults();
+        return diag;
+      }
+  }
 
   return success();
 }

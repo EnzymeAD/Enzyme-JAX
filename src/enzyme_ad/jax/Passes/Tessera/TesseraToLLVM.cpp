@@ -85,6 +85,7 @@ public:
           namedAttr.getName() != defineOp.getFunctionTypeAttrName() &&
           namedAttr.getName() != defineOp.getByRefTypesAttrName() &&
           namedAttr.getName() != defineOp.getPureAttrName() &&
+          namedAttr.getName() != defineOp.getResultArgTypesAttrName() &&
           namedAttr.getName() != "tessera.original_name")
         funcOp->setAttr(namedAttr.getName(), namedAttr.getValue());
     }
@@ -151,6 +152,42 @@ public:
       return newAttrs;
     };
 
+    // For each of callOp's operands marked in "tessera.loaded_operands"
+    // (i.e. it was loaded from a byref/byval pointer when converting from
+    // LLVM to tessera), allocate fresh stack storage, store the operand's
+    // value into it, and substitute that pointer in its place; all other
+    // operands pass through unchanged. This is independent of sret --
+    // byref-loadedness and sret-ness are separate properties of a callee's
+    // arguments, so this reconstruction applies regardless of which branch
+    // below is taken.
+    SmallVector<int32_t> argsToReplace;
+    if (auto loadedOperands = callOp->getAttrOfType<DenseI32ArrayAttr>(
+            "tessera.loaded_operands"))
+      argsToReplace = llvm::to_vector(loadedOperands.asArrayRef());
+
+    Value one;
+    SmallVector<Value> reconstructedOperands;
+    for (auto [i, operand] : llvm::enumerate(callOp.getOperands())) {
+      if (llvm::is_contained(argsToReplace, (int32_t)i)) {
+        if (!one)
+          one = LLVM::ConstantOp::create(rewriter, callOp.getLoc(),
+                                         rewriter.getI32Type(),
+                                         rewriter.getI32IntegerAttr(1));
+        int64_t alignment = 0;
+        if (auto alignAttr =
+                defineOp.getArgAttr(i, LLVM::LLVMDialect::getAlignAttrName()))
+          alignment = cast<IntegerAttr>(alignAttr).getInt();
+        Value AI = LLVM::AllocaOp::create(
+            rewriter, callOp.getLoc(),
+            LLVM::LLVMPointerType::get(callOp->getContext()),
+            operand.getType(), one, alignment);
+        LLVM::StoreOp::create(rewriter, callOp.getLoc(), operand, AI);
+        reconstructedOperands.push_back(AI);
+      } else {
+        reconstructedOperands.push_back(operand);
+      }
+    }
+
     if (defineOp.getNumArguments() > 0 && defineOp.getSretAttr()) {
       auto sretArgAttrs = defineOp.getArgAttrDict(0);
       if (callOp.getNumResults() == 0)
@@ -161,9 +198,10 @@ public:
       if (auto sretAlignAttr =
               sretArgAttrs.get(LLVM::LLVMDialect::getAlignAttrName()))
         sret_alignment = cast<IntegerAttr>(sretAlignAttr).getInt();
-      Value one = LLVM::ConstantOp::create(rewriter, callOp.getLoc(),
-                                           rewriter.getI32Type(),
-                                           rewriter.getI32IntegerAttr(1));
+      if (!one)
+        one = LLVM::ConstantOp::create(rewriter, callOp.getLoc(),
+                                       rewriter.getI32Type(),
+                                       rewriter.getI32IntegerAttr(1));
 
       // Allocate stack storage for the sret return value
       Value sretPtr = LLVM::AllocaOp::create(
@@ -171,31 +209,12 @@ public:
           LLVM::LLVMPointerType::get(callOp->getContext()), sretType, one,
           sret_alignment);
 
-      // Build new operands with sretPtr as first arg and reconstructed pointers
+      // Build new operands with sretPtr as first arg, followed by the
+      // reconstructed (byref-resolved) operands
       SmallVector<Value> newOperands;
       newOperands.push_back(sretPtr);
-
-      SmallVector<int32_t> argsToReplace;
-      if (auto loadedOperands = callOp->getAttrOfType<DenseI32ArrayAttr>(
-              "tessera.loaded_operands"))
-        argsToReplace = llvm::to_vector(loadedOperands.asArrayRef());
-
-      for (auto [i, operand] : llvm::enumerate(callOp.getOperands())) {
-        if (llvm::is_contained(argsToReplace, (int32_t)i)) {
-          int64_t alignment = 0;
-          if (auto alignAttr =
-                  defineOp.getArgAttr(i, LLVM::LLVMDialect::getAlignAttrName()))
-            alignment = cast<IntegerAttr>(alignAttr).getInt();
-          Value AI = LLVM::AllocaOp::create(
-              rewriter, callOp.getLoc(),
-              LLVM::LLVMPointerType::get(callOp->getContext()),
-              operand.getType(), one, alignment);
-          LLVM::StoreOp::create(rewriter, callOp.getLoc(), operand, AI);
-          newOperands.push_back(AI);
-        } else {
-          newOperands.push_back(operand);
-        }
-      }
+      newOperands.append(reconstructedOperands.begin(),
+                         reconstructedOperands.end());
 
       // Reconstruct arg attributes with sret attr first
       SmallVector<Attribute> newArgAttrs;
@@ -215,12 +234,84 @@ public:
       auto loadedResult =
           LLVM::LoadOp::create(rewriter, callOp.getLoc(), sretType, sretPtr);
       rewriter.replaceOp(callOp, loadedResult.getResult());
-    } else {
+    } else if (defineOp.getNumResultArgs() == 0) {
       auto newAttrs = buildNewAttrs(callOp->getAttrs(),
-                                    callOp.getOperands().size(), std::nullopt);
+                                    reconstructedOperands.size(), std::nullopt);
+      rewriter.replaceOpWithNewOp<LLVM::CallOp>(
+          callOp, callOp.getResultTypes(), reconstructedOperands, newAttrs);
+    } else {
+      // Allocate stack storage for each result argument, and splice those
+      // pointers into the operand list in the right positions, so that the
+      // LLVM::CallOp can be issued with the callee's real function type
+      // and the result-only arguments passed by pointer.
+      SmallVector<Value> newOperands;
+      SmallVector<Attribute> newArgAttrs;
+      SmallVector<Value> resultArgPtrs;
+      SmallVector<Type> resultArgTypes;
+      unsigned tesseraCallIdx = 0;
+      for (unsigned i = 0, e = defineOp.getNumArguments(); i != e; ++i) {
+        if (defineOp.isResultOnlyArg(i)) {
+          int64_t alignment = 0;
+          auto resultArgAttrs = defineOp.getArgAttrDict(i);
+          if (resultArgAttrs) {
+            if (auto alignAttr =
+                  resultArgAttrs.get(LLVM::LLVMDialect::getAlignAttrName()))
+            alignment = cast<IntegerAttr>(alignAttr).getInt();
+          }
+          if (!one)
+            one = LLVM::ConstantOp::create(rewriter, callOp.getLoc(),
+                                          rewriter.getI32Type(),
+                                          rewriter.getI32IntegerAttr(1));
 
-      rewriter.replaceOpWithNewOp<LLVM::CallOp>(callOp, callOp.getResultTypes(),
-                                                callOp.getOperands(), newAttrs);
+          Type resultArgType = defineOp.getResultArgType(i);
+          if (!resultArgType)
+            return callOp.emitOpError(
+                "tessera.call to function with result-only argument must "
+                "have a result type for that argument");
+          // Allocate stack storage for the result/output argument
+          Value resultArgPtr = LLVM::AllocaOp::create(
+              rewriter, callOp.getLoc(),
+              LLVM::LLVMPointerType::get(callOp->getContext()), resultArgType, 
+              one, alignment);
+          newOperands.push_back(resultArgPtr);
+          resultArgPtrs.push_back(resultArgPtr);
+          resultArgTypes.push_back(resultArgType);
+          newArgAttrs.push_back(resultArgAttrs ? resultArgAttrs
+                                : rewriter.getDictionaryAttr({}));
+        } else {
+          if (tesseraCallIdx >= reconstructedOperands.size())
+            return callOp.emitOpError(
+                "tessera.call has fewer operands than expected by callee");
+          newOperands.push_back(reconstructedOperands[tesseraCallIdx]);
+          auto callArgAttrs = callOp.getArgAttrsAttr();
+          newArgAttrs.push_back(callArgAttrs ? callArgAttrs[tesseraCallIdx]
+                                : rewriter.getDictionaryAttr({}));
+          ++tesseraCallIdx;
+        }
+      }
+
+      auto newAttrs = buildNewAttrs(callOp->getAttrs(), newOperands.size(),
+                                    rewriter.getArrayAttr(newArgAttrs));
+
+      auto fnType = defineOp.getFunctionType();
+      auto returnType = fnType.getNumResults() == 0
+                        ? TypeRange{} : TypeRange{fnType.getResult(0)};
+      auto newCall = LLVM::CallOp::create(rewriter, callOp.getLoc(), returnType,
+                             newOperands, newAttrs);
+
+      // Load each result arg's value back from its alloca, then replace
+      // callOp's results: one loaded value per result-only argument (the
+      // leading results on the tessera.call), in argument order, followed
+      // by the natural result (if any), matching the new LLVM call's
+      // direct result.
+      SmallVector<Value> replacementValues;
+      for (auto [ptr, type] : llvm::zip(resultArgPtrs, resultArgTypes)) {
+        auto loaded = LLVM::LoadOp::create(rewriter, callOp.getLoc(), type, ptr);
+        replacementValues.push_back(loaded.getResult());
+      }
+      if (fnType.getNumResults() > 0)
+        replacementValues.push_back(newCall.getResult());
+      rewriter.replaceOp(callOp, replacementValues);
     }
 
     return success();
