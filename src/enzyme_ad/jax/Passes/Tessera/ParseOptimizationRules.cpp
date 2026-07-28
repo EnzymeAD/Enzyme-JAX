@@ -286,15 +286,20 @@ emitMatchPDL(const Expr &expr, OpBuilder &builder, Location loc,
                 builder, loc,
                 FlatSymbolRefAttr::get(builder.getContext(),
                                        c.dialect + "." + c.opname));
-            auto resultTypeOp = pdl::TypeOp::create(
-                builder, loc, builder.getType<pdl::TypeType>(),
-                /*type=*/TypeAttr());
+            // Use an unbound pdl.types range (rather than a single pdl.type) so the match
+            // doesn't constrain the result count of the tessera.call op since
+            // it may vary (1 for a plain call, 1 + N for a callee with
+            // N output-param arguments).
+            auto resultTypesOp = pdl::TypesOp::create(
+                builder, loc,
+                pdl::RangeType::get(builder.getType<pdl::TypeType>()),
+                /*constantTypes=*/ArrayAttr());
             auto callOp = pdl::OperationOp::create(
                 builder, loc, "tessera.call",
                 /*operands=*/argValues,
                 /*attrNames=*/ArrayRef<StringRef>{"callee"},
                 /*attrs=*/ValueRange{calleeAttr},
-                /*types=*/ValueRange{resultTypeOp});
+                /*types=*/ValueRange{resultTypesOp});
             return {pdl::ResultOp::create(builder, loc,
                                           builder.getType<pdl::ValueType>(),
                                           callOp, builder.getI32IntegerAttr(0)),
@@ -335,15 +340,16 @@ emitRewritePDL(const Expr &expr, OpBuilder &builder, Location loc,
                 builder, loc,
                 FlatSymbolRefAttr::get(builder.getContext(),
                                        c.dialect + "." + c.opname));
-            auto resultTypeOp = pdl::TypeOp::create(
-                builder, loc, builder.getType<pdl::TypeType>(),
-                /*type=*/TypeAttr());
+            auto resultTypesOp = pdl::TypesOp::create(
+                builder, loc,
+                pdl::RangeType::get(builder.getType<pdl::TypeType>()),
+                /*constantTypes=*/ArrayAttr());
             auto callOp = pdl::OperationOp::create(
                 builder, loc, "tessera.call",
                 /*operands=*/argValues,
                 /*attrNames=*/ArrayRef<StringRef>{"callee"},
                 /*attrs=*/ValueRange{calleeAttr},
-                /*types=*/ValueRange{resultTypeOp});
+                /*types=*/ValueRange{resultTypesOp});
             return {pdl::ResultOp::create(builder, loc,
                                           builder.getType<pdl::ValueType>(),
                                           callOp, builder.getI32IntegerAttr(0)),
