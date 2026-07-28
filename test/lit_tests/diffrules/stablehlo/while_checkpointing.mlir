@@ -117,9 +117,7 @@ module {
 // CHECK-NEXT:        %10 = stablehlo.compare  LT, %iterArg_8, %c_0 : (tensor<i64>, tensor<i64>) -> tensor<i1>
 // CHECK-NEXT:        stablehlo.return %10 : tensor<i1>
 // CHECK-NEXT:      } do {
-// CHECK-NEXT:        %[[subc:.+]] = stablehlo.subtract %c_0, %c_2 : tensor<i64>
-// CHECK-NEXT:        %[[subi:.+]] = stablehlo.subtract %[[subc]], %iterArg_8 : tensor<i64>
-// CHECK-NEXT:        %[[add:.+]] = stablehlo.add %5, %[[subi]] : tensor<i64>
+// CHECK-NEXT:        %[[add:.+]] = stablehlo.add %5, %iterArg_8 : tensor<i64>
 // CHECK-NEXT:        %[[mul:.+]] = stablehlo.multiply %c_2, %[[add]] : tensor<i64>
 // CHECK-NEXT:        %[[add2:.+]] = stablehlo.add %[[mul]], %c_2 : tensor<i64>
 // CHECK-NEXT:        %[[conv:.+]] = stablehlo.convert %[[add2]] : (tensor<i64>) -> tensor<f64>
