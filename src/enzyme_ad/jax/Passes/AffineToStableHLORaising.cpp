@@ -1183,8 +1183,16 @@ static LogicalResult tryRaisingForOpToStableHLOUnroll(
   return success();
 }
 
-static bool equivUpToConstant(const affine::AffineValueMap &a,
-                              const affine::AffineValueMap &b) {
+// compares the two AffineValueMap and return whether they are aligned
+// under their respective dynamic dimensions. that is:
+//
+//  - they depend on the same induction variables
+//  - they have the same number of results
+//  - each result depending on the same induction variable as the corresponding
+//    result in the other map (up to a constant offset).
+//
+static bool equivalentUnderAlignMemory(const affine::AffineValueMap &a,
+                                       const affine::AffineValueMap &b) {
   if (a.getOperands() != b.getOperands())
     return false;
 
@@ -1327,8 +1335,9 @@ static LogicalResult tryRaisingForOpToStableHLOWhile(
     for (auto [iterArg, yieldedIterArgs] :
          llvm::zip(forOp.getRegionIterArgs(),
                    forOp.getBody()->getTerminator()->getOperands())) {
-      if (!equivUpToConstant(maps.lookup(mapping.lookup(iterArg)),
-                             maps.lookup(mapping.lookup(yieldedIterArgs)))) {
+      if (!equivalentUnderAlignMemory(
+              maps.lookup(mapping.lookup(iterArg)),
+              maps.lookup(mapping.lookup(yieldedIterArgs)))) {
         auto err = forOp.emitError("invalid init for iterArg: ") << iterArg;
         whileOp->erase();
         return err;
