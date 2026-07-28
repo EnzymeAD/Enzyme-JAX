@@ -24,7 +24,10 @@ def CanonicalizeLoopsPass : InterfacePass<"canonicalize-loops",
   let options = [
     Option<"speculate_if", "speculate_if", "bool",
            /*default=*/"false",
-	   "Whether to speculate if statement bodies">
+	   "Whether to speculate if statement bodies">,
+    Option<"speculate_partial_if", "speculate_partial_if", "bool",
+           /*default=*/"false",
+	   "Whether to partially speculate if statement bodies">
   ];
 }
 
