@@ -161,8 +161,8 @@ public:
     // arguments, so this reconstruction applies regardless of which branch
     // below is taken.
     SmallVector<int32_t> argsToReplace;
-    if (auto loadedOperands = callOp->getAttrOfType<DenseI32ArrayAttr>(
-            "tessera.loaded_operands"))
+    if (auto loadedOperands =
+            callOp->getAttrOfType<DenseI32ArrayAttr>("tessera.loaded_operands"))
       argsToReplace = llvm::to_vector(loadedOperands.asArrayRef());
 
     Value one;
@@ -179,8 +179,8 @@ public:
           alignment = cast<IntegerAttr>(alignAttr).getInt();
         Value AI = LLVM::AllocaOp::create(
             rewriter, callOp.getLoc(),
-            LLVM::LLVMPointerType::get(callOp->getContext()),
-            operand.getType(), one, alignment);
+            LLVM::LLVMPointerType::get(callOp->getContext()), operand.getType(),
+            one, alignment);
         LLVM::StoreOp::create(rewriter, callOp.getLoc(), operand, AI);
         reconstructedOperands.push_back(AI);
       } else {
@@ -255,13 +255,13 @@ public:
           auto resultArgAttrs = defineOp.getArgAttrDict(i);
           if (resultArgAttrs) {
             if (auto alignAttr =
-                  resultArgAttrs.get(LLVM::LLVMDialect::getAlignAttrName()))
-            alignment = cast<IntegerAttr>(alignAttr).getInt();
+                    resultArgAttrs.get(LLVM::LLVMDialect::getAlignAttrName()))
+              alignment = cast<IntegerAttr>(alignAttr).getInt();
           }
           if (!one)
             one = LLVM::ConstantOp::create(rewriter, callOp.getLoc(),
-                                          rewriter.getI32Type(),
-                                          rewriter.getI32IntegerAttr(1));
+                                           rewriter.getI32Type(),
+                                           rewriter.getI32IntegerAttr(1));
 
           Type resultArgType = defineOp.getResultArgType(i);
           if (!resultArgType)
@@ -271,13 +271,13 @@ public:
           // Allocate stack storage for the result/output argument
           Value resultArgPtr = LLVM::AllocaOp::create(
               rewriter, callOp.getLoc(),
-              LLVM::LLVMPointerType::get(callOp->getContext()), resultArgType, 
+              LLVM::LLVMPointerType::get(callOp->getContext()), resultArgType,
               one, alignment);
           newOperands.push_back(resultArgPtr);
           resultArgPtrs.push_back(resultArgPtr);
           resultArgTypes.push_back(resultArgType);
-          newArgAttrs.push_back(resultArgAttrs ? resultArgAttrs
-                                : rewriter.getDictionaryAttr({}));
+          newArgAttrs.push_back(
+              resultArgAttrs ? resultArgAttrs : rewriter.getDictionaryAttr({}));
         } else {
           if (tesseraCallIdx >= reconstructedOperands.size())
             return callOp.emitOpError(
@@ -285,7 +285,7 @@ public:
           newOperands.push_back(reconstructedOperands[tesseraCallIdx]);
           auto callArgAttrs = callOp.getArgAttrsAttr();
           newArgAttrs.push_back(callArgAttrs ? callArgAttrs[tesseraCallIdx]
-                                : rewriter.getDictionaryAttr({}));
+                                             : rewriter.getDictionaryAttr({}));
           ++tesseraCallIdx;
         }
       }
@@ -294,10 +294,11 @@ public:
                                     rewriter.getArrayAttr(newArgAttrs));
 
       auto fnType = defineOp.getFunctionType();
-      auto returnType = fnType.getNumResults() == 0
-                        ? TypeRange{} : TypeRange{fnType.getResult(0)};
+      Type resultType =
+          fnType.getNumResults() > 0 ? fnType.getResult(0) : Type();
+      TypeRange returnType = resultType ? TypeRange(resultType) : TypeRange();
       auto newCall = LLVM::CallOp::create(rewriter, callOp.getLoc(), returnType,
-                             newOperands, newAttrs);
+                                          newOperands, newAttrs);
 
       // Load each result arg's value back from its alloca, then replace
       // callOp's results: one loaded value per result-only argument (the
@@ -306,7 +307,8 @@ public:
       // direct result.
       SmallVector<Value> replacementValues;
       for (auto [ptr, type] : llvm::zip(resultArgPtrs, resultArgTypes)) {
-        auto loaded = LLVM::LoadOp::create(rewriter, callOp.getLoc(), type, ptr);
+        auto loaded =
+            LLVM::LoadOp::create(rewriter, callOp.getLoc(), type, ptr);
         replacementValues.push_back(loaded.getResult());
       }
       if (fnType.getNumResults() > 0)
