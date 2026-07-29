@@ -1184,7 +1184,8 @@ bool isCallNonCapturing(CallOpInterface callOp, Value val) {
     auto operands = callOp.getArgOperands();
     for (int i = 0; i < operands.size(); i++) {
       if (operands[i] == val) {
-        if (fn.getArgAttr(i, LLVM::LLVMDialect::getNoCaptureAttrName()))
+        if (i < fn.getNumArguments() &&
+            fn.getArgAttr(i, LLVM::LLVMDialect::getNoCaptureAttrName()))
           return true;
       }
     }
