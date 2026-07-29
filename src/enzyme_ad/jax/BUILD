@@ -1534,6 +1534,7 @@ cc_library(
 
         # EnzymeMLIR
         "@enzyme//:EnzymeMLIR",
+        "@enzyme//:LLVMExtDialect",
 
         # Mosaic
         # "@jax//jaxlib/mosaic:tpu_dialect",

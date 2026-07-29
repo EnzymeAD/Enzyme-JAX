@@ -2635,6 +2635,24 @@ gdgo->erase();
         }
       });
     });
+
+    // Outlining can leave a gpu.module behind that nothing launches -- e.g. the
+    // primal kernel that reverse-mode AD replaced with its differentiated
+    // counterpart. symbol-dce keeps them (gpu.module symbols are public), they
+    // never got a target above (no launch, so the walk never saw them), and
+    // gpu-module-to-binary then hard-errors with "the module has no target
+    // attributes". Drop the unreferenced ones instead.
+    {
+      SmallVector<gpu::GPUModuleOp> dead;
+      getOperation()->walk([&](gpu::GPUModuleOp gmod) {
+        if (gmod.getTargetsAttr() && !gmod.getTargetsAttr().empty())
+          return;
+        if (SymbolTable::symbolKnownUseEmpty(gmod, getOperation()))
+          dead.push_back(gmod);
+      });
+      for (auto gmod : dead)
+        gmod.erase();
+    }
   }
 };
 
