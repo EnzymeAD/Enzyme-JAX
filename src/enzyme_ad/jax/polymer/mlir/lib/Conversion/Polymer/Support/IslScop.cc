@@ -356,7 +356,8 @@ void IslScop::dumpAccesses(llvm::raw_ostream &os) {
   domain = isl_union_set_free(domain);
   o(0) << "accesses:\n";
   for (auto &stmt : *this) {
-    o(2) << "- " << stmt.name << ":" << "\n";
+    o(2) << "- " << stmt.name << ":"
+         << "\n";
     for (MemoryAccess *MA : stmt) {
       std::string type;
       if (MA->isRead())
