@@ -104,16 +104,18 @@ public:
     // Consumes the next shared global index for a byref/result-marked arg,
     // looks up its pointee type by that index in argTypesByIndex, and
     // appends the resolved TypeAttr to `out`.
-    auto consumeMarkedArg = [&](StringRef kindName,
-                                 SmallVectorImpl<Attribute> &out) -> LogicalResult {
+    auto consumeMarkedArg =
+        [&](StringRef kindName,
+            SmallVectorImpl<Attribute> &out) -> LogicalResult {
       if (numIndicesFound >= indexList.size()) {
         funcOp->emitError(
             "tessera: not enough global indices for byref/result args");
         return failure();
       }
       // Find the types of the byref/result arguments by looking for global
-      // variables with names that match the pattern "__tessera_arg_type_<idx>" 
-      // where <idx> is a number parsed in the tessera_op attribute after "globals=".
+      // variables with names that match the pattern "__tessera_arg_type_<idx>"
+      // where <idx> is a number parsed in the tessera_op attribute after
+      // "globals=".
       StringRef indexStr = indexList[numIndicesFound++];
       unsigned idx;
       if (indexStr.trim().getAsInteger(10, idx)) {
@@ -164,8 +166,8 @@ public:
     // A mismatch means the annotation string is malformed or the Clang
     // plugin's emission order has drifted from this parser's assumption.
     if (numIndicesFound != indexList.size()) {
-      funcOp->emitError(
-          "tessera: mismatch between byref/result arg count and global index count");
+      funcOp->emitError("tessera: mismatch between byref/result arg count and "
+                        "global index count");
       return failure();
     }
 
@@ -185,9 +187,8 @@ public:
             module)))
       return failure();
 
-    bool hasResultArg = llvm::any_of(resultArgTypes, [](Attribute attr) {
-      return isa<TypeAttr>(attr);
-    });
+    bool hasResultArg = llvm::any_of(
+        resultArgTypes, [](Attribute attr) { return isa<TypeAttr>(attr); });
 
     // Create the tessera.define op with the new name, function type, byRef
     // args, sizes, and purity (side effect free) attribute
@@ -311,11 +312,15 @@ public:
       }
 
       // Determine whether to load pointer and what type to load based on LLVM
-      // byVal attribute or user-marked byRef attribute on the tessera.define 
+      // byVal attribute or user-marked byRef attribute on the tessera.define
       // op. If neither is present, just pass the pointer through.
+      // newOperands.size() is the number of tessera.call operands emitted
+      // so far, i.e. the call-operand index this entry will land at once
+      // pushed below -- getArgAttr expects that stripped index, not the
+      // pre-strip loop index i.
       Type pointeeType;
-      if (auto byValAttr =
-              defineOp.getArgAttr(i, LLVM::LLVMDialect::getByValAttrName())) {
+      if (auto byValAttr = defineOp.getArgAttr(
+              newOperands.size(), LLVM::LLVMDialect::getByValAttrName())) {
         pointeeType = cast<TypeAttr>(byValAttr).getValue();
       } else if (auto byRefType = defineOp.getByRefType(i)) {
         pointeeType = byRefType;
@@ -337,10 +342,11 @@ public:
 
     // Create tessera.call op with results conveyed as direct SSA values rather
     // than written through pointers -- either the sret-derived value, or the
-    // natural return (if any) plus one trailing value per result/output argument.
+    // natural return (if any) plus one trailing value per result/output
+    // argument.
     if (sretPtr) {
-      // Set the result type of the new tessera.call op to be the sret pointee type
-      // and store the result back through the sret pointer.
+      // Set the result type of the new tessera.call op to be the sret pointee
+      // type and store the result back through the sret pointer.
       auto newCall =
           tessera::CallOp::create(rewriter, callOp.getLoc(),
                                   TypeRange{sretType}, newOperands, newAttrs);
@@ -355,22 +361,23 @@ public:
       // rule referencing result 0 always sees the semantically meaningful
       // output-param value rather than the natural/ternary return.
       SmallVector<Type> newResultTypes(resultArgTypes.begin(),
-                                        resultArgTypes.end());
+                                       resultArgTypes.end());
       newResultTypes.append(callOp.getResultTypes().begin(),
                             callOp.getResultTypes().end());
-      auto newCall = tessera::CallOp::create(rewriter, callOp.getLoc(),
-                                    newResultTypes, newOperands, newAttrs);
+      auto newCall = tessera::CallOp::create(
+          rewriter, callOp.getLoc(), newResultTypes, newOperands, newAttrs);
       // Store each leading result back through its original pointer so any
       // pre-existing downstream load from that pointer still sees the right
       // value.
       for (auto [idx, ptr] : llvm::enumerate(resultArgPtrs)) {
-        LLVM::StoreOp::create(rewriter, callOp.getLoc(),
-                      newCall.getResult(idx), ptr);
+        LLVM::StoreOp::create(rewriter, callOp.getLoc(), newCall.getResult(idx),
+                              ptr);
       }
       // If the original call had any (natural) results, replace them with
       // the new call's trailing results.
       unsigned originalNumResults = callOp.getNumResults();
-      rewriter.replaceOp(callOp, newCall.getResults().take_back(originalNumResults));
+      rewriter.replaceOp(callOp,
+                         newCall.getResults().take_back(originalNumResults));
     }
     return success();
   }
@@ -426,8 +433,7 @@ struct LLVMToTesseraPass
       if (idxStr.getAsInteger(10, idx))
         continue; // not a well-formed index suffix, skip
 
-      auto [it, inserted] =
-          argTypesByIndex.try_emplace(idx, global.getType());
+      auto [it, inserted] = argTypesByIndex.try_emplace(idx, global.getType());
       if (!inserted) {
         llvm::errs()
             << "Tessera: found multiple globals matching argument type index "
