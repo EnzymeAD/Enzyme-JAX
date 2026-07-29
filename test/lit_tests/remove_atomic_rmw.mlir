@@ -334,6 +334,9 @@ module {
 // CHECK:               affine.store %[[CONSTANT_0]], %[[ARG4]]{{\[}}%[[VAL_2]]] : memref<?xf32>
 // CHECK:               %[[MULF_1:.*]] = arith.mulf %[[LOAD_2]], %[[ARG0]] : f32
 // CHECK:               %[[MULF_2:.*]] = arith.mulf %[[LOAD_2]], %[[LOAD_1]] : f32
+// CHECK:               %[[LOAD_3:.*]] = affine.load %[[ARG2]][0] : memref<?xf32>
+// CHECK:               %[[ADDF_0:.*]] = arith.addf %[[LOAD_3]], %[[MULF_1]] : f32
+// CHECK:               affine.store %[[ADDF_0]], %[[ARG2]][0] : memref<?xf32>
 // CHECK:               affine.yield %[[MULF_2]] : f32
 // CHECK:             }
 // CHECK:             memref.dealloc %[[ALLOC_0]] : memref<4xf32>
@@ -383,6 +386,10 @@ module {
 // CHECK:           %[[VAL_0:.*]] = "enzymexla.gpu_wrapper"(%[[CONSTANT_1]], %[[CONSTANT_1]], %[[CONSTANT_1]], %[[CONSTANT_1]], %[[CONSTANT_1]], %[[CONSTANT_1]]) ({
 // CHECK:             affine.parallel (%[[VAL_1:.*]]) = (1) to (4) {
 // CHECK:               affine.store %[[ARG0]], %[[ARG2]]{{\[}}%[[VAL_1]] - 1] : memref<?xf32>
+// CHECK:               %[[OLD:.*]] = affine.load %[[ARG2]]{{\[}}%[[VAL_1]]] : memref<?xf32>
+// CHECK:               %[[NEW:.*]] = arith.addf %[[OLD]], %[[ARG0]] : f32
+// CHECK:               affine.store %[[NEW]], %[[ARG2]]{{\[}}%[[VAL_1]]] : memref<?xf32>
+// CHECK-NOT:           enzyme.affine_atomic_rmw
 // CHECK:             }
 // CHECK:             "enzymexla.polygeist_yield"() : () -> ()
 // CHECK:           }) : (index, index, index, index, index, index) -> index
@@ -417,6 +424,10 @@ module {
 // CHECK:           %[[VAL_0:.*]] = "enzymexla.gpu_wrapper"(%[[CONSTANT_1]], %[[CONSTANT_1]], %[[CONSTANT_1]], %[[CONSTANT_1]], %[[CONSTANT_1]], %[[CONSTANT_1]]) ({
 // CHECK:             affine.parallel (%[[VAL_1:.*]]) = (1) to (4) {
 // CHECK:               affine.store %[[ARG0]], %[[ARG2]]{{\[}}%[[VAL_1]] + 1] : memref<?xf32>
+// CHECK:               %[[OLD:.*]] = affine.load %[[ARG2]]{{\[}}%[[VAL_1]]] : memref<?xf32>
+// CHECK:               %[[NEW:.*]] = arith.addf %[[OLD]], %[[ARG0]] : f32
+// CHECK:               affine.store %[[NEW]], %[[ARG2]]{{\[}}%[[VAL_1]]] : memref<?xf32>
+// CHECK-NOT:           enzyme.affine_atomic_rmw
 // CHECK:             }
 // CHECK:             "enzymexla.polygeist_yield"() : () -> ()
 // CHECK:           }) : (index, index, index, index, index, index) -> index
@@ -570,6 +581,10 @@ module {
 // CHECK:           %[[VAL_0:.*]] = "enzymexla.gpu_wrapper"(%[[CONSTANT_1]], %[[CONSTANT_1]], %[[CONSTANT_1]], %[[CONSTANT_1]], %[[CONSTANT_1]], %[[CONSTANT_1]]) ({
 // CHECK:             affine.parallel (%[[VAL_1:.*]]) = (0) to (4) {
 // CHECK:               affine.store %[[ARG0]], %[[ARG1]]{{\[}}%[[VAL_1]] + 4] : memref<?xf32>
+// CHECK:               %[[OLD:.*]] = affine.load %[[ARG2]]{{\[}}%[[VAL_1]]] : memref<?xf32>
+// CHECK:               %[[NEW:.*]] = arith.addf %[[OLD]], %[[ARG0]] : f32
+// CHECK:               affine.store %[[NEW]], %[[ARG2]]{{\[}}%[[VAL_1]]] : memref<?xf32>
+// CHECK-NOT:           enzyme.affine_atomic_rmw
 // CHECK:             }
 // CHECK:             "enzymexla.polygeist_yield"() : () -> ()
 // CHECK:           }) : (index, index, index, index, index, index) -> index
@@ -714,6 +729,10 @@ module {
 // CHECK:             affine.parallel (%[[VAL_1:.*]]) = (0) to (4) {
 // CHECK:               affine.parallel (%[[VAL_2:.*]]) = (0) to (4) {
 // CHECK:                 affine.store %[[ARG0]], %[[ARG1]]{{\[}}%[[VAL_1]] + 4, %[[VAL_2]]] : memref<?x?xf32>
+// CHECK:                 %[[OLD:.*]] = affine.load %[[ARG1]]{{\[}}%[[VAL_1]] + 1, %[[VAL_2]]] : memref<?x?xf32>
+// CHECK:                 %[[NEW:.*]] = arith.addf %[[OLD]], %[[ARG0]] : f32
+// CHECK:                 affine.store %[[NEW]], %[[ARG1]]{{\[}}%[[VAL_1]] + 1, %[[VAL_2]]] : memref<?x?xf32>
+// CHECK-NOT:             enzyme.affine_atomic_rmw
 // CHECK:               }
 // CHECK:             }
 // CHECK:             "enzymexla.polygeist_yield"() : () -> ()
@@ -787,6 +806,10 @@ module {
 // CHECK:             affine.parallel (%[[VAL_1:.*]]) = (0) to (4) {
 // CHECK:               affine.parallel (%[[VAL_2:.*]]) = (0) to (4) {
 // CHECK:                 affine.store %[[ARG0]], %[[ARG1]]{{\[}}%[[VAL_1]], %[[VAL_2]] + 4] : memref<?x?xf32>
+// CHECK:                 %[[OLD:.*]] = affine.load %[[ARG1]]{{\[}}%[[VAL_1]], %[[VAL_2]] + 1] : memref<?x?xf32>
+// CHECK:                 %[[NEW:.*]] = arith.addf %[[OLD]], %[[ARG0]] : f32
+// CHECK:                 affine.store %[[NEW]], %[[ARG1]]{{\[}}%[[VAL_1]], %[[VAL_2]] + 1] : memref<?x?xf32>
+// CHECK-NOT:             enzyme.affine_atomic_rmw
 // CHECK:               }
 // CHECK:             }
 // CHECK:             "enzymexla.polygeist_yield"() : () -> ()
@@ -893,6 +916,10 @@ module {
 // CHECK:           %[[VAL_0:.*]] = "enzymexla.gpu_wrapper"(%[[CONSTANT_1]], %[[CONSTANT_1]], %[[CONSTANT_1]], %[[CONSTANT_1]], %[[CONSTANT_1]], %[[CONSTANT_1]]) ({
 // CHECK:             affine.parallel (%[[VAL_1:.*]], %[[VAL_2:.*]]) = (0, 0) to (4, 4) {
 // CHECK:               affine.store %[[ARG0]], %[[ARG1]]{{\[}}%[[VAL_1]] + 4, %[[VAL_2]]] : memref<?x?xf32>
+// CHECK:               %[[OLD:.*]] = affine.load %[[ARG1]]{{\[}}%[[VAL_1]] + 1, %[[VAL_2]]] : memref<?x?xf32>
+// CHECK:               %[[NEW:.*]] = arith.addf %[[OLD]], %[[ARG0]] : f32
+// CHECK:               affine.store %[[NEW]], %[[ARG1]]{{\[}}%[[VAL_1]] + 1, %[[VAL_2]]] : memref<?x?xf32>
+// CHECK-NOT:           enzyme.affine_atomic_rmw
 // CHECK:             }
 // CHECK:             "enzymexla.polygeist_yield"() : () -> ()
 // CHECK:           }) : (index, index, index, index, index, index) -> index
