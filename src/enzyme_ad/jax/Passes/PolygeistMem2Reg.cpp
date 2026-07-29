@@ -1184,6 +1184,10 @@ bool isCallNonCapturing(CallOpInterface callOp, Value val) {
     auto operands = callOp.getArgOperands();
     for (int i = 0; i < operands.size(); i++) {
       if (operands[i] == val) {
+        // Operands beyond the callee's declared arguments correspond to
+        // varargs, which have no argument attribute slot to check.
+        if (i >= (int)fn.getNumArguments())
+          continue;
         if (fn.getArgAttr(i, LLVM::LLVMDialect::getNoCaptureAttrName()))
           return true;
       }

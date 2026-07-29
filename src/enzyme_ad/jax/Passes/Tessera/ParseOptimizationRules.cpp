@@ -286,9 +286,9 @@ emitMatchPDL(const Expr &expr, OpBuilder &builder, Location loc,
                 builder, loc,
                 FlatSymbolRefAttr::get(builder.getContext(),
                                        c.dialect + "." + c.opname));
-            // Use an unbound pdl.types range (rather than a single pdl.type) so the match
-            // doesn't constrain the result count of the tessera.call op since
-            // it may vary (1 for a plain call, 1 + N for a callee with
+            // Use an unbound pdl.types range (rather than a single pdl.type) so
+            // the match doesn't constrain the result count of the tessera.call
+            // op since it may vary (1 for a plain call, 1 + N for a callee with
             // N output-param arguments).
             auto resultTypesOp = pdl::TypesOp::create(
                 builder, loc,

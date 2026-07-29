@@ -10,6 +10,8 @@
 #include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Interfaces/SideEffectInterfaces.h"
 
+#include <optional>
+
 using namespace mlir;
 using namespace mlir::enzyme::tessera;
 
@@ -24,8 +26,8 @@ namespace mlir::enzyme::tessera {} // namespace mlir::enzyme::tessera
 
 void DefineOp::build(OpBuilder &builder, OperationState &state, StringRef name,
                      FunctionType type, ArrayAttr byRefTypes, bool pure,
-                     ArrayAttr resultArgTypes,
-                     StringAttr sym_visibility, ArrayRef<NamedAttribute> attrs,
+                     ArrayAttr resultArgTypes, StringAttr sym_visibility,
+                     ArrayRef<NamedAttribute> attrs,
                      ArrayRef<DictionaryAttr> argAttrs) {
   state.addAttribute(SymbolTable::getSymbolAttrName(),
                      builder.getStringAttr(name));
@@ -144,22 +146,44 @@ Attribute DefineOp::getSretAttr() {
   return nullptr;
 }
 
-// Override getArgAttr to map call-side indices to define-side indices.
-// tessera::DefineOp has one extra argument at index 0 for sret, which
-// is not present in tessera::CallOp operands. This allows generic
-// FunctionOpInterface callers to use call-side indices directly.
+// Translate a tessera.call operand index into the corresponding raw
+// tessera.define argument index. tessera.call's operand list excludes the
+// sret argument (if any) and any pure result/output arguments (see
+// CallOpRewrite in LLVMToTessera.cpp), so both must be skipped when mapping
+// back onto the define op's own argument list.
+static std::optional<unsigned> translateCallOperandIndex(DefineOp defineOp,
+                                                         unsigned index) {
+  unsigned offset = defineOp.getSretAttr() != nullptr ? 1 : 0;
+  unsigned seen = 0;
+  for (unsigned i = 0, e = defineOp.getByRefTypesArray().size(); i != e; ++i) {
+    if (defineOp.isResultOnlyArg(i))
+      continue;
+    if (seen == index)
+      return i + offset;
+    ++seen;
+  }
+  return std::nullopt;
+}
+
+// Override getArgAttr to map call-side indices to define-side indices, so
+// that generic FunctionOpInterface callers (e.g. mem2reg) can index by a
+// tessera.call's operand position directly.
 Attribute DefineOp::getArgAttr(unsigned index, StringAttr name) {
-  unsigned offset = getSretAttr() != nullptr ? 1 : 0;
+  auto rawIndex = translateCallOperandIndex(*this, index);
+  if (!rawIndex)
+    return nullptr;
   if (auto dict = mlir::function_interface_impl::getArgAttrDict(
-          cast<FunctionOpInterface>(getOperation()), index + offset))
+          cast<FunctionOpInterface>(getOperation()), *rawIndex))
     return dict.get(name);
   return nullptr;
 }
 
 Attribute DefineOp::getArgAttr(unsigned index, StringRef name) {
-  unsigned offset = getSretAttr() != nullptr ? 1 : 0;
+  auto rawIndex = translateCallOperandIndex(*this, index);
+  if (!rawIndex)
+    return nullptr;
   if (auto dict = mlir::function_interface_impl::getArgAttrDict(
-          cast<FunctionOpInterface>(getOperation()), index + offset))
+          cast<FunctionOpInterface>(getOperation()), *rawIndex))
     return dict.get(name);
   return nullptr;
 }
@@ -209,8 +233,7 @@ unsigned DefineOp::getNumResultArgs() {
 }
 
 bool DefineOp::isResultOnlyArg(unsigned argIdx) {
-  return getResultArgType(argIdx) != nullptr &&
-         getByRefType(argIdx) == nullptr;
+  return getResultArgType(argIdx) != nullptr && getByRefType(argIdx) == nullptr;
 }
 
 unsigned DefineOp::getNumCallOperands() {
@@ -237,20 +260,22 @@ LogicalResult DefineOp::verify() {
   if (auto resultArgTypes = getResultArgTypes()) {
     for (Attribute a : resultArgTypes->getValue())
       if (!isa<TypeAttr>(a) && !isa<UnitAttr>(a))
-        return emitOpError(
-                   "resultArgTypes entry must be TypeAttr or UnitAttr, but got ")
+        return emitOpError("resultArgTypes entry must be TypeAttr or UnitAttr, "
+                           "but got ")
                << a;
     if (resultArgTypes->getValue().size() != getByRefTypes().size())
       return emitOpError("resultArgTypes size (")
-             << resultArgTypes->getValue().size() << ") must match number of byRef types ("
-             << getByRefTypes().size() << ")";
+             << resultArgTypes->getValue().size()
+             << ") must match number of byRef types (" << getByRefTypes().size()
+             << ")";
   }
 
   if (getSretAttr() && getNumResultArgs() > 0)
     return emitOpError("cannot have both sret and resultArgTypes");
 
   if (getSretAttr() && !getFunctionType().getResults().empty())
-    return emitOpError("sret function must have a void (empty) natural result list");
+    return emitOpError(
+        "sret function must have a void (empty) natural result list");
 
   return success();
 }
@@ -281,7 +306,7 @@ LogicalResult CallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
 
   // Walk the callee's sret-excluded arguments in order, matching each
   // argument to the next tessera.call operand, skipping any pure-output
-  // args are skipped. Allow type mismatch only for byref pointer args 
+  // args are skipped. Allow type mismatch only for byref pointer args
   // that have been converted to values.
   bool has_sret = fn.getSretAttr() != nullptr;
   unsigned argOffset = has_sret ? 1 : 0;
@@ -295,10 +320,11 @@ LogicalResult CallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
       continue; // operand type matches expected type
     }
     if (isa<LLVM::LLVMPointerType>(expectedType) &&
-        (fn.getArgAttr(i, LLVM::LLVMDialect::getByValAttrName()) ||
+        (fn.getArgAttr(operandIdx, LLVM::LLVMDialect::getByValAttrName()) ||
          fn.getByRefType(i))) {
       operandIdx++;
-      continue; // operand was loaded from a byref pointer, so type mismatch is allowed
+      continue; // operand was loaded from a byref pointer, so type mismatch is
+                // allowed
     }
     return emitOpError("operand type mismatch: expected operand type ")
            << expectedType << ", but provided "
