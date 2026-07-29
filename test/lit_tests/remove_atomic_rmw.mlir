@@ -457,6 +457,52 @@ module {
 
 #map = affine_map<(d0) -> (d0)>
 module {
+// CHECK-LABEL:   func.func @enzyme_atomic_rmw_keeps_affine_atomic(
+// CHECK:           enzyme.atomic_rmw addf
+// CHECK:           enzyme.affine_atomic_rmw addf
+  func.func @enzyme_atomic_rmw_keeps_affine_atomic(%v: f32, %a: memref<?xf32>) {
+    %c1 = arith.constant 1 : index
+    %0 = "enzymexla.gpu_wrapper"(%c1, %c1, %c1, %c1, %c1, %c1) ({
+      affine.parallel (%i) = (0) to (4) {
+        %other = enzyme.atomic_rmw addf %v, %a[%i] monotonic : (f32, memref<?xf32>) -> f32
+        %r = enzyme.affine_atomic_rmw addf %v, %a, (#map) [%i] : (f32, memref<?xf32>) -> f32
+      }
+      "enzymexla.polygeist_yield"() : () -> ()
+    }) : (index, index, index, index, index, index) -> index
+    return
+  }
+}
+
+// -----
+
+#map = affine_map<(d0) -> (d0)>
+module {
+// CHECK-LABEL:   func.func @enzyme_atomic_rmw_noalias_removes_affine_atomic(
+// CHECK:           enzyme.atomic_rmw addf
+// CHECK:           %[[OLD:.*]] = affine.load %[[A:.*]]{{\[}}%[[I:.*]]] : memref<?xf32>
+// CHECK:           %[[NEW:.*]] = arith.addf %[[OLD]], %[[V:.*]] : f32
+// CHECK:           affine.store %[[NEW]], %[[A]]{{\[}}%[[I]]] : memref<?xf32>
+// CHECK-NOT:       enzyme.affine_atomic_rmw
+// CHECK:           return
+  func.func @enzyme_atomic_rmw_noalias_removes_affine_atomic(%v: f32,
+      %a: memref<?xf32> {llvm.noalias},
+      %b: memref<?xf32> {llvm.noalias}) {
+    %c1 = arith.constant 1 : index
+    %0 = "enzymexla.gpu_wrapper"(%c1, %c1, %c1, %c1, %c1, %c1) ({
+      affine.parallel (%i) = (0) to (4) {
+        %other = enzyme.atomic_rmw addf %v, %b[%i] monotonic : (f32, memref<?xf32>) -> f32
+        %r = enzyme.affine_atomic_rmw addf %v, %a, (#map) [%i] : (f32, memref<?xf32>) -> f32
+      }
+      "enzymexla.polygeist_yield"() : () -> ()
+    }) : (index, index, index, index, index, index) -> index
+    return
+  }
+}
+
+// -----
+
+#map = affine_map<(d0) -> (d0)>
+module {
 // CHECK-LABEL:   func.func @affine(
 // CHECK-SAME:                      %[[ARG0:[0-9]+|[a-zA-Z$._-][a-zA-Z0-9$._-]*]]: f32,
 // CHECK-SAME:                      %[[ARG1:[0-9]+|[a-zA-Z$._-][a-zA-Z0-9$._-]*]]: memref<?xf32>,

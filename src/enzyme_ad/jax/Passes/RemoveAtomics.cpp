@@ -369,6 +369,8 @@ TypedValue<MemRefType> getMemrefAtomicMemref(Operation *op) {
     return rmw.getMemref();
   if (auto rmw = dyn_cast<memref::GenericAtomicRMWOp>(op))
     return rmw.getMemref();
+  if (auto rmw = dyn_cast<enzyme::AtomicRMWOp>(op))
+    return rmw.getMemref();
   return nullptr;
 }
 

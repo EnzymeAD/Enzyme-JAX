@@ -2023,6 +2023,17 @@ IslScopBuilder::build(Operation *f, bool allowScfIfConditionalWritesAsMay) {
                          unitVMap);
             return true;
           }
+
+          if (auto rmw = dyn_cast<enzyme::AtomicRMWOp>(opToHandle)) {
+            addLoad(rmw.getValue(), polymer::MemoryAccess::MT_Value, unitVMap);
+            for (Value index : rmw.getIndices())
+              addLoad(index, polymer::MemoryAccess::MT_Value, unitVMap);
+            addWholeLoad(rmw.getMemref(), polymer::MemoryAccess::MT_Array);
+            addWholeMayStore(rmw.getMemref(), polymer::MemoryAccess::MT_Array);
+            addMustStore(rmw.getResult(), polymer::MemoryAccess::MT_Value,
+                         unitVMap);
+            return true;
+          }
         }
 
         if (isa<memref::AllocOp, memref::AllocaOp, memref::DeallocOp>(
