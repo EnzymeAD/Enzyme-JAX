@@ -426,6 +426,27 @@ CallInfo CompileHostModule(std::string &key, mlir::ModuleOp modOp,
   return CallInfo{(void (*)(void *, void *, void **))ptr, (void *(*)())nvptr};
 }
 
+static void replaceGetStreamOpsWithCudaABIStreamArg(mlir::ModuleOp &submod) {
+  SmallVector<enzymexla::GetStreamOp> streams;
+  submod.walk([&](enzymexla::GetStreamOp op) { streams.push_back(op); });
+  for (auto op : streams) {
+    auto pfunc = op->getParentOfType<LLVM::LLVMFuncOp>();
+    assert(pfunc && "expected get_stream to be inside an LLVM function");
+    mlir::Value stream = pfunc.getBody().begin()->getArgument(1);
+    for (auto u : llvm::make_early_inc_range(op.getResult().getUsers())) {
+      if (auto ur = dyn_cast<UnrealizedConversionCastOp>(u)) {
+        assert(ur->getResult(0).getType() == stream.getType());
+        ur->getResult(0).replaceAllUsesWith(stream);
+        ur.erase();
+        continue;
+      }
+      assert(op.getResult().getType() == stream.getType());
+      u->replaceUsesOfWith(op.getResult(), stream);
+    }
+    op.erase();
+  }
+}
+
 void rewriteKernelCallABI(
     mlir::ModuleOp &submod, mlir::Location loc, const std::string &legalName,
     bool debug, enzymexla::JITCallOp jitCallOp, const std::string &modstr,
@@ -628,20 +649,7 @@ void rewriteKernelCallABI(
     LLVM::ReturnOp::create(builder, loc, ValueRange(func));
   }
 
-  SmallVector<enzymexla::GetStreamOp> streams;
-  submod.walk([&](enzymexla::GetStreamOp op) { streams.push_back(op); });
-  for (auto op : streams) {
-    OpBuilder builder(op);
-    auto pfunc = op->getParentOfType<LLVM::LLVMFuncOp>();
-    mlir::Value stream = pfunc.getBody().begin()->getArgument(1);
-    for (auto u : llvm::make_early_inc_range(op->getResult(0).getUsers())) {
-      auto ur = cast<UnrealizedConversionCastOp>(u);
-      assert(ur->getResult(0).getType() == stream.getType());
-      ur->getResult(0).replaceAllUsesWith(stream);
-      ur.erase();
-    }
-    op.erase();
-  }
+  replaceGetStreamOpsWithCudaABIStreamArg(submod);
 
   submod.walk([&](gpu::LaunchFuncOp op) {
     builder.setInsertionPoint(op);
@@ -739,7 +747,8 @@ CallInfo CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
                      const std::string &cubinFormat, int cuOptLevel,
                      const std::string &toolkitPath,
                      const llvm::SmallVectorImpl<std::string> &linkFiles,
-                     bool debug, bool returnPtr, bool dump_final_module) {
+                     bool debug, bool returnPtr, bool dump_final_module,
+                     bool useCudaABI) {
 
   OpBuilder builder(op);
 
@@ -766,7 +775,6 @@ CallInfo CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
   auto submod = ModuleOp::create(builder, loc);
 
   int numGPUModule = 0;
-
   SmallVector<Operation *> tocopy;
   op->walk([&](gpu::LaunchFuncOp cop) {
     tocopy.push_back(SymbolTable::lookupNearestSymbolFrom<gpu::GPUModuleOp>(
@@ -823,7 +831,7 @@ CallInfo CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
   builder.setInsertionPointToEnd(&submod.getBodyRegion().front());
 
   SmallVector<mlir::Type, 1> intys = {ptrty};
-  if (numGPUModule != 0) {
+  if (useCudaABI) {
     intys.push_back(ptrty);
     intys.push_back(ptrty);
   }
@@ -943,6 +951,8 @@ CallInfo CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
         submod.erase();
         return {};
       }
+      if (useCudaABI)
+        replaceGetStreamOpsWithCudaABIStreamArg(submod);
     } else {
       submod->walk([](gpu::GPUModuleOp gmod) {
         auto str = gmod.getName();
@@ -1094,7 +1104,7 @@ struct LowerJITPass
           symbolTable, op.getLoc(), fn, jit, op, openmp, cuResultHandlerPtr,
           cuStreamSynchronizePtr, indexBitWidth, cubinTriple, cubinChip,
           cubinFeatures, cubinFormat, cuOptLevel, toolkitPath, linkFilesArray,
-          debug, hasReturn, dump_final_module);
+          debug, hasReturn, dump_final_module, backend == "cuda");
 
       std::string backendinfo((char *)&cdata, sizeof(CallInfo));
       if (jit) {
