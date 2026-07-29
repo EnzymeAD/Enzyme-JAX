@@ -1,11 +1,14 @@
 #include "Dialect.h"
 #include "Utilities.h"
 
+#include "mlir/IR/BuiltinOps.h"
+
 namespace mlir::enzyme::distributed {
 
 LogicalResult DistributedFunctionOp::verify() {
-  if (!(*this)->getParentOfType<MeshComputationOp>()) {
-    return emitOpError() << "must be nested in distributed.MeshComputation";
+  Operation *parentOp = (*this)->getParentOp();
+  if (!isa<ModuleOp>(parentOp)) {
+    return emitOpError() << "must be directly nested in module";
   }
 
   ArrayAttr argumentTypesAttr =

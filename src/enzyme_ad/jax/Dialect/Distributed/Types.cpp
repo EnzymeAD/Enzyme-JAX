@@ -15,19 +15,19 @@ bool PhysicalCommAxisType::aliases(Value ax1, Value ax2) const {
     return false;
   }
 
-  auto physicalMesh1 = result1.getOwner()->getParentOfType<MeshComputationOp>();
-  auto physicalMesh2 = result2.getOwner()->getParentOfType<MeshComputationOp>();
-  if (!physicalMesh1 || !physicalMesh2) {
-    assert(physicalMesh1 && physicalMesh2 &&
-           "PhysicalCommAxisType::aliases requires both axes to be inside a "
-           "distributed.MeshComputation");
+  auto getMeshAxes1 = dyn_cast<GetPhysicalMeshAxesOp>(result1.getOwner());
+  auto getMeshAxes2 = dyn_cast<GetPhysicalMeshAxesOp>(result2.getOwner());
+  if (!getMeshAxes1 || !getMeshAxes2) {
+    assert(getMeshAxes1 && getMeshAxes2 &&
+           "PhysicalCommAxisType::aliases requires both axes to be produced "
+           "by distributed.GetPhysicalMeshAxes");
     return false;
   }
 
-  // Physical axes alias iff they come from the same physical mesh symbol,
-  // even if they are distinct result ops within that computation.
-  return physicalMesh1.getPhysicalMeshAttr() ==
-             physicalMesh2.getPhysicalMeshAttr() &&
+  // Physical axes alias iff they reference the same physical mesh symbol and
+  // correspond to the same axis index.
+  return getMeshAxes1.getPhysicalMeshAttr() ==
+             getMeshAxes2.getPhysicalMeshAttr() &&
          result1.getResultNumber() == result2.getResultNumber();
 }
 

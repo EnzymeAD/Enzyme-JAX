@@ -65,28 +65,12 @@ def ReplicationAxisOp : DistributedOp<"ReplicationAxis", [
   let assemblyFormat = "$extent attr-dict `:` type($axis)";
 }
 
-def MeshComputationOp : DistributedOp<"MeshComputation", [
-  HasOnlyGraphRegion, NoTerminator, Symbol, SymbolTable, IsolatedFromAbove
-]> {
-  let description = [{
-        Represents a closed distributed program. Contains a mix non-computational SSA values
-        (operations that represent a static computation, like axis algebra) and distributed
-        functions. Distributed functions can call into normal single-device MLIR functions
-        outside of this region, but all functions with internal distributed logic (communication)
-        must be fully contained in this region, allowing us to reason about the whole call graph
-        for optimization decisions.
-  }];
-  let arguments = (ins SymbolNameAttr
-                   : $sym_name, FlatSymbolRefAttr
-                   : $physical_mesh);
-  let regions = (region SizedRegion<1> : $body);
-  let assemblyFormat = "$sym_name `mesh` $physical_mesh $body attr-dict";
-  let hasVerifier = 1;
-}
-
 def DistributedFunctionOp : DistributedOp<"Function", [Symbol]> {
   let description =
-      [{Represents a distributed function.Functions have an execution context
+    [{Represents a distributed function. Functions are module-level symbols,
+    with a single function named `main` serving as the distributed entrypoint
+    under the current IR contract. Non-entry floating compute units should use
+    distributed.kernel instead of distributed.Function. Functions have an execution context
                 indicating what subspace of the logical /
             physical mesh they are executed on,
         and can only be called from a matching enclosing context.All arguments

@@ -14,8 +14,8 @@
 #include "llvm/ADT/StringMap.h"
 #include "llvm/Support/raw_ostream.h"
 
-#include <cctype>
 #include <cassert>
+#include <cctype>
 #include <numeric>
 #include <optional>
 #include <string>
@@ -80,7 +80,7 @@ static llvm::SmallVector<Value> asValues(const RangeT &groups) {
 }
 
 // Rewrite pattern to convert shardy functions (func.func with shardy ops)
-// to distributed functions within a given mesh computations.
+// to module-level distributed functions.
 struct FuncToDistributedFunctionPattern
     : public OpRewritePattern<func::FuncOp> {
   FuncToDistributedFunctionPattern(
@@ -89,7 +89,7 @@ struct FuncToDistributedFunctionPattern
 
   LogicalResult matchAndRewrite(func::FuncOp funcOp,
                                 PatternRewriter &rewriter) const override {
-    if (!funcOp->getParentOfType<distributed::MeshComputationOp>()) {
+    if (!isa<ModuleOp>(funcOp->getParentOp())) {
       return failure();
     }
 
@@ -558,7 +558,7 @@ LogicalResult getDimMappings(
     llvm::SmallVector<llvm::SmallVector<TypedValue<axis::AxisFactorType>>>
         &out_mappingLHS,
     llvm::SmallVector<llvm::SmallVector<TypedValue<axis::AxisFactorType>>>
-      &out_mappingRHS) {
+        &out_mappingRHS) {
   // Assert single-tensor operand
   if (op.getOperands().size() != 1) {
     return op.emitOpError(
@@ -870,22 +870,13 @@ struct ShardyToDistributedPass
       return;
     }
 
-    // Create a new mesh computation using the modules pysical mesh
+    // Create module-level logical mesh axes using the common shardy mesh for
+    // axis sizes.
     OpBuilder builder(moduleOp.getContext());
     builder.setInsertionPointAfter(
         *physicalMesh); // graph region, doesn't matter
-    distributed::MeshComputationOp meshComputation =
-        builder.create<distributed::MeshComputationOp>(
-            moduleOp.getLoc(), builder.getStringAttr("mesh_computation"),
-            FlatSymbolRefAttr::get(physicalMesh->getSymNameAttr()));
-    Region &meshComputationBody = meshComputation.getBody();
-    if (meshComputationBody.empty()) {
-      meshComputationBody.emplaceBlock();
-    }
-    builder.setInsertionPointToStart(&meshComputationBody.front());
 
-    // Create a new logical mesh inside of the mesh computation using the common
-    // shardy mesh for axis sizes. Internally record a mapping from shardy axis
+    // Internally record a mapping from shardy axis
     // names to distributed axis values.
     llvm::SmallVector<int32_t> logicalAxisExtents;
     llvm::SmallVector<std::string> shardyAxisNames;
@@ -931,19 +922,11 @@ struct ShardyToDistributedPass
       distributedFunctionNames.insert(info.symName);
     }
 
-    // Now we move the shardy functions into the mesh computation,
-    // rewrite them to use the distributed dialect ops for functions,
+    // Rewrite shardy functions to use the distributed dialect ops for
+    // functions,
     // yield, and call, and raise their collectives to our collective
     // abstractions. Normal HLO ops can be left as-is, since they are
     // supposed to be local sizes anyway.
-    builder.setInsertionPointToEnd(&meshComputationBody.front());
-    for (const FindShardyFunctionsAnalysis::FunctionInfo &info :
-         analysis.getShardyFunctions()) {
-      func::FuncOp shardyFunction = info.funcOp;
-      shardyFunction->moveBefore(&meshComputationBody.front(),
-                                 meshComputationBody.front().end());
-    }
-
     RewritePatternSet patterns(moduleOp.getContext());
     patterns.add<FuncToDistributedFunctionPattern>(moduleOp.getContext(),
                                                    executionContext);
@@ -976,7 +959,7 @@ struct ShardyToDistributedPass
                      stablehlo::CollectivePermuteOp>>(
         moduleOp.getContext(), shardyToDistributedAxis, factors);
 
-    if (failed(applyPatternsGreedily(meshComputation, std::move(patterns)))) {
+    if (failed(applyPatternsGreedily(moduleOp, std::move(patterns)))) {
       signalPassFailure();
       return;
     }

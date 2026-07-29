@@ -59,21 +59,14 @@ def InsertPhysicalMeshPass : Pass<"insert-physical-mesh", "::mlir::ModuleOp"> {
 
 def NaiveLogicalToPhysicalMeshPass
     : Pass<"naive-logical-to-physical-mesh", "::mlir::ModuleOp"> {
-  let summary = "Naively replace logical mesh axes with in-region physical "
-                "mesh axes per distributed mesh computation.";
+  let summary = "Naively replace module-level logical mesh axes with "
+        "module-level physical mesh axes.";
   let dependentDialects = ["enzyme::distributed::DistributedDialect"];
   let description = [{
-      Scopes rewriting to each distributed.MeshComputation.For each computation,
-      expects exactly one
-          distributed.LogicalMeshAxes op and exactly one distributed
-              .GetPhysicalMeshAxes op in that computation.Verifies that logical
-                  and physical axis extents match positionally,
-      then rewrites logical - axis uses to the physical -
-          axis values and erases the logical mesh op.This pass is module -
-          invoked but computation -
-          scoped(a module -
-                 level shim applies the rewrite to each mesh computation)
-              .}];
+    Expects exactly one distributed.LogicalMeshAxes op and exactly one
+    distributed.GetPhysicalMeshAxes op in module scope. Verifies that logical
+    and physical axis extents match positionally, then rewrites logical-axis
+    uses to the physical-axis values and erases the logical mesh op.}];
 }
 
 def DistributedToHloPass : Pass<"distributed-to-hlo", "::mlir::ModuleOp"> {

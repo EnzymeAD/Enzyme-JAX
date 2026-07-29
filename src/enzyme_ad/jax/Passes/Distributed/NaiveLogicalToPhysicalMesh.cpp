@@ -10,36 +10,40 @@ namespace mlir::enzyme::distributed {
 
 namespace {
 
-static LogicalResult rewriteLogicalMeshToPhysicalAxesInComputation(
-    MeshComputationOp meshComputation) {
+template <typename ScopeOpT>
+static LogicalResult
+rewriteLogicalMeshToPhysicalAxesInScope(ScopeOpT scopeOp, StringRef scopeName) {
   SmallVector<LogicalMeshAxesOp> logicalMeshOps;
-  meshComputation.walk(
-      [&](LogicalMeshAxesOp op) { logicalMeshOps.push_back(op); });
-  if (logicalMeshOps.empty()) {
-    return meshComputation.emitOpError()
-           << "expected exactly one distributed.LogicalMeshAxes op in mesh "
-              "computation, found 0";
+  SmallVector<GetPhysicalMeshAxesOp> getPhysicalAxesOps;
+
+  for (LogicalMeshAxesOp op : scopeOp.template getOps<LogicalMeshAxesOp>()) {
+    logicalMeshOps.push_back(op);
   }
-  if (logicalMeshOps.size() != 1) {
-    return meshComputation.emitOpError()
-           << "expected exactly one distributed.LogicalMeshAxes op in mesh "
-              "computation, found "
-           << logicalMeshOps.size();
+  for (GetPhysicalMeshAxesOp op :
+       scopeOp.template getOps<GetPhysicalMeshAxesOp>()) {
+    getPhysicalAxesOps.push_back(op);
   }
 
-  SmallVector<GetPhysicalMeshAxesOp> getPhysicalAxesOps;
-  meshComputation.walk(
-      [&](GetPhysicalMeshAxesOp op) { getPhysicalAxesOps.push_back(op); });
+  if (logicalMeshOps.empty()) {
+    return scopeOp.emitOpError()
+           << "expected exactly one distributed.LogicalMeshAxes op in "
+           << scopeName << ", found 0";
+  }
+  if (logicalMeshOps.size() != 1) {
+    return scopeOp.emitOpError()
+           << "expected exactly one distributed.LogicalMeshAxes op in "
+           << scopeName << ", found " << logicalMeshOps.size();
+  }
+
   if (getPhysicalAxesOps.empty()) {
-    return meshComputation.emitOpError()
+    return scopeOp.emitOpError()
            << "expected exactly one distributed.GetPhysicalMeshAxes op in "
-              "mesh computation, found 0";
+           << scopeName << ", found 0";
   }
   if (getPhysicalAxesOps.size() != 1) {
-    return meshComputation.emitOpError()
+    return scopeOp.emitOpError()
            << "expected exactly one distributed.GetPhysicalMeshAxes op in "
-              "mesh computation, found "
-           << getPhysicalAxesOps.size();
+           << scopeName << ", found " << getPhysicalAxesOps.size();
   }
 
   LogicalMeshAxesOp logicalMesh = logicalMeshOps.front();
@@ -86,6 +90,10 @@ static LogicalResult rewriteLogicalMeshToPhysicalAxesInComputation(
   return success();
 }
 
+static LogicalResult rewriteLogicalMeshToPhysicalAxesInModule(ModuleOp module) {
+  return rewriteLogicalMeshToPhysicalAxesInScope(module, "module");
+}
+
 struct NaiveLogicalToPhysicalMeshPass
     : public impl::NaiveLogicalToPhysicalMeshPassBase<
           NaiveLogicalToPhysicalMeshPass> {
@@ -94,20 +102,7 @@ struct NaiveLogicalToPhysicalMeshPass
   void runOnOperation() override {
     ModuleOp module = getOperation();
 
-    bool sawMeshComputation = false;
-    for (MeshComputationOp meshComputation :
-         module.getOps<MeshComputationOp>()) {
-      sawMeshComputation = true;
-      if (failed(
-              rewriteLogicalMeshToPhysicalAxesInComputation(meshComputation))) {
-        signalPassFailure();
-        return;
-      }
-    }
-
-    if (!sawMeshComputation) {
-      module.emitError() << "expected at least one distributed.MeshComputation"
-                            " in module";
+    if (failed(rewriteLogicalMeshToPhysicalAxesInModule(module))) {
       signalPassFailure();
       return;
     }

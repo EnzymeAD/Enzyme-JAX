@@ -1,23 +1,13 @@
 // RUN: enzymexlamlir-opt --split-input-file --verify-diagnostics %s
 
-// Valid metadata-only mesh body.
+// Module-level axis and function wiring is valid without mesh wrapper.
 module {
-  distributed.MeshComputation @ok mesh @mesh0 {
-  ^bb0:
-  }
-}
-
-// -----
-
-// Non-metadata, non-function op in mesh body should fail verification.
-module {
-  // expected-error @+1 {{only distributed.Function, stablehlo.constant, and static metadata ops are allowed in the mesh body; operation 'arith.constant' is neither}}
-  distributed.MeshComputation @bad mesh @mesh0 {
-  ^bb0:
-    %axis = axis.getaxis tensor<4xf32> 0
-    %f0 = axis.factor %axis : !axis.shape_axis<tensor<4xf32>, 0> <4, 1>
-    %ctx = axis.product %f0 : !axis.axis_factor<!axis.shape_axis<tensor<4xf32>, 0>, 4, 1>
-    %c0 = arith.constant 0 : i32
+  %axis = axis.getaxis tensor<4xf32> 0
+  %f0 = axis.factor %axis : !axis.shape_axis<tensor<4xf32>, 0> <4, 1>
+  %ctx = axis.product %f0 : !axis.axis_factor<!axis.shape_axis<tensor<4xf32>, 0>, 4, 1>
+  distributed.Function @main context %ctx : !axis.factor_group<4> arg_types [i32] ret_types [i32] {
+  ^bb0(%arg0: i32):
+    distributed.DistributedYield %arg0 i32
   }
 }
 
