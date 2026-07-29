@@ -293,11 +293,17 @@ public:
     parseEnzymeCall(funcToDiff, operands, arguments, argActivities,
                     retActivities);
     MLIRContext *ctx = rewriter.getContext();
+    bool atomicAdd = false;
+    if (auto llFunc = dyn_cast<LLVM::LLVMFuncOp>(funcToDiff.getOperation())) {
+      auto targetFeatures = llFunc.getTargetCpu();
+      if (targetFeatures && targetFeatures->starts_with("sm_"))
+        atomicAdd = true;
+    }
     rewriter.replaceOpWithNewOp<enzyme::AutoDiffOp>(
         op, op.getResultTypes(), funcToDiffSymbol.getValue(), arguments,
         getActivityArrayAttr(ctx, argActivities),
         getActivityArrayAttr(ctx, retActivities),
-        /*width=*/1, /*strong_zero=*/false);
+        /*width=*/1, /*strong_zero=*/false, atomicAdd);
     return success();
   }
 };

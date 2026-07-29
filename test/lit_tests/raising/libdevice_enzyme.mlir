@@ -44,3 +44,20 @@ llvm.func @marked_const(%x: !llvm.ptr, %out: !llvm.ptr, %dout: !llvm.ptr) {
   llvm.call @__enzyme_autodiff2(%f, %cstv, %x, %out, %dout) : (!llvm.ptr, i32, !llvm.ptr, !llvm.ptr, !llvm.ptr) -> ()
   llvm.return
 }
+
+llvm.func internal @store_cuda(%x: !llvm.ptr, %out: !llvm.ptr) attributes {target_cpu = "sm_120"} {
+  %val = llvm.load %x : !llvm.ptr -> f32
+  llvm.store %val, %out : f32, !llvm.ptr
+  llvm.return
+}
+
+// CHECK: llvm.func @with_atomic
+llvm.func @with_atomic(%x: !llvm.ptr, %dx: !llvm.ptr, %out: !llvm.ptr, %dout: !llvm.ptr) {
+  %edup = llvm.mlir.addressof @enzyme_dup : !llvm.ptr<1>
+  %cast = llvm.addrspacecast %edup : !llvm.ptr<1> to !llvm.ptr
+  %dupv = llvm.load %cast : !llvm.ptr -> i32
+  %f = llvm.mlir.addressof @store_cuda : !llvm.ptr
+  // CHECK: enzyme.autodiff @store_cuda(%arg0, %arg1, %arg2, %arg3) {activity = [#enzyme<activity enzyme_dup>, #enzyme<activity enzyme_dup>], atomic_add = true, ret_activity = []} : (!llvm.ptr, !llvm.ptr, !llvm.ptr, !llvm.ptr) -> ()
+  llvm.call @_Z17__enzyme_autodiffIJiPfS0_iS0_S0_EEiPvDpT_(%f, %dupv, %x, %dx, %dupv, %out, %dout) : (!llvm.ptr, i32, !llvm.ptr, !llvm.ptr, i32, !llvm.ptr, !llvm.ptr) -> ()
+  llvm.return
+}
