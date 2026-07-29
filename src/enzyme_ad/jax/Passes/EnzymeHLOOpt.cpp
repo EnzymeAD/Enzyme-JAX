@@ -6557,9 +6557,7 @@ struct BinomialProgressConstProp final
         binomialProgress(numSteps.getSExtValue(), budget.getSExtValue());
 
     rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-        op,
-        DenseElementsAttr::get(op.getResult().getType(),
-                               makeAttr(op.getResult().getType(), progress)));
+        op, cast<ElementsAttr>(makeAttr(op.getResult().getType(), progress)));
 
     return success();
   }
@@ -27844,6 +27842,23 @@ struct LogSimplify final
   using CheckedOpRewritePattern<stablehlo::LogOp,
                                 LogSimplify>::CheckedOpRewritePattern;
 
+  // True iff `value` is a finite float constant whose every element is
+  // non-negative (and, unless allowZero, strictly positive). Excludes NaN,
+  // negatives, and infinities, which would let the log-splits below narrow the
+  // domain. See #2570.
+  static bool isPositiveFiniteConstant(Value value, bool allowZero) {
+    DenseElementsAttr attr;
+    if (!matchPattern(value, m_Constant(&attr)) ||
+        !isa<FloatType>(attr.getElementType()))
+      return false;
+
+    return llvm::all_of(attr.getValues<APFloat>(),
+                        [allowZero](const APFloat &element) {
+                          return element.isFinite() && !element.isNegative() &&
+                                 (allowZero || !element.isZero());
+                        });
+  }
+
   LogicalResult matchAndRewriteImpl(stablehlo::LogOp op,
                                     PatternRewriter &rewriter) const {
     { // log(exp(x)) -> x
@@ -27854,22 +27869,15 @@ struct LogSimplify final
       }
     }
 
-    { // log(pow(x, y)) -> y * log(x)
-      auto defOp = op.getOperand().getDefiningOp<stablehlo::PowOp>();
-      if (defOp) {
-        rewriter.replaceOpWithNewOp<stablehlo::MulOp>(
-            op, defOp.getRhs(),
-            stablehlo::LogOp::create(rewriter, op.getLoc(), defOp.getLhs()));
-        return success();
-      }
-    }
-
     {
       auto defOp = op.getOperand().getDefiningOp<stablehlo::MulOp>();
       if (defOp) {
         auto lhs = defOp.getLhs();
         auto rhs = defOp.getRhs();
-        if (lhs == rhs) { // log(mul(a, a)) -> 2 * log(a)
+        // log(mul(a, a)) -> 2 * log(a). Only when a >= 0: for a < 0, 2*log(a)
+        // is NaN while log(a*a) is finite. Gating on the analysis avoids an abs
+        // (possibly slower than the mul). See #2570.
+        if (lhs == rhs && guaranteedNonNegativeResult(lhs, rewriter)) {
           rewriter.replaceOpWithNewOp<stablehlo::MulOp>(
               op,
               stablehlo::ConstantOp::create(
@@ -27882,10 +27890,16 @@ struct LogSimplify final
         if (anyOperandIsConstant(defOp) &&
             !allOperandsAreConstant(defOp)) { // log(mul(a, b)) -> log(a) +
                                               // log(b) if a or b is constant
-          rewriter.replaceOpWithNewOp<stablehlo::AddOp>(
-              op, stablehlo::LogOp::create(rewriter, op.getLoc(), lhs),
-              stablehlo::LogOp::create(rewriter, op.getLoc(), rhs));
-          return success();
+          // Split only for a strictly positive constant; negative/zero narrows
+          // the domain, and the split isn't bit-exact under FP rounding. See
+          // #2570.
+          Value cst = matchPattern(lhs, m_Constant()) ? lhs : rhs;
+          if (isPositiveFiniteConstant(cst, /*allowZero=*/false)) {
+            rewriter.replaceOpWithNewOp<stablehlo::AddOp>(
+                op, stablehlo::LogOp::create(rewriter, op.getLoc(), lhs),
+                stablehlo::LogOp::create(rewriter, op.getLoc(), rhs));
+            return success();
+          }
         }
       }
     }
@@ -27935,10 +27949,17 @@ struct LogSimplify final
         if (anyOperandIsConstant(defOp) &&
             !allOperandsAreConstant(defOp)) { // log(div(a, b)) -> log(a) -
                                               // log(b) if a or b is constant
-          rewriter.replaceOpWithNewOp<stablehlo::SubtractOp>(
-              op, stablehlo::LogOp::create(rewriter, op.getLoc(), lhs),
-              stablehlo::LogOp::create(rewriter, op.getLoc(), rhs));
-          return success();
+          // Constant numerator must be strictly positive: a zero numerator
+          // turns a finite log(-0) into NaN after splitting. A zero denominator
+          // is safe, so it only needs to be non-negative. See #2570.
+          bool constantIsLhs = matchPattern(lhs, m_Constant());
+          Value cst = constantIsLhs ? lhs : rhs;
+          if (isPositiveFiniteConstant(cst, /*allowZero=*/!constantIsLhs)) {
+            rewriter.replaceOpWithNewOp<stablehlo::SubtractOp>(
+                op, stablehlo::LogOp::create(rewriter, op.getLoc(), lhs),
+                stablehlo::LogOp::create(rewriter, op.getLoc(), rhs));
+            return success();
+          }
         }
       }
     }

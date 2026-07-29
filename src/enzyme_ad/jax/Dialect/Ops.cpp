@@ -1645,6 +1645,22 @@ void GPUWrapperOp::build(OpBuilder &builder, OperationState &result) {
   GPUWrapperOp::ensureTerminator(*bodyRegion, builder, result.location);
 }
 
+void GPUWrapperOp::getSuccessorRegions(
+    RegionBranchPoint point, SmallVectorImpl<RegionSuccessor> &regions) {
+  // If the predecessor is the GPUWrapperOp, branch into the body.
+  if (point.isParent()) {
+    regions.push_back(RegionSuccessor(&getRegion()));
+    return;
+  }
+
+  // Otherwise, the region branches back to the parent operation.
+  regions.push_back(RegionSuccessor(getOperation()));
+}
+
+ValueRange GPUWrapperOp::getSuccessorInputs(RegionSuccessor successor) {
+  return ValueRange();
+}
+
 LogicalResult fixupGetFunc(LLVM::CallOp op, OpBuilder &rewriter,
                            SmallVectorImpl<Value> &vals) {
   if (op.getCallee())

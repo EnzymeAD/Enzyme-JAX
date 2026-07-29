@@ -24,7 +24,10 @@ def CanonicalizeLoopsPass : InterfacePass<"canonicalize-loops",
   let options = [
     Option<"speculate_if", "speculate_if", "bool",
            /*default=*/"false",
-	   "Whether to speculate if statement bodies">
+	   "Whether to speculate if statement bodies">,
+    Option<"speculate_partial_if", "speculate_partial_if", "bool",
+           /*default=*/"false",
+	   "Whether to partially speculate if statement bodies">
   ];
 }
 
@@ -76,7 +79,6 @@ def MarkFunctionMemoryEffectsPass : Pass<"mark-func-memory-effects", "ModuleOp">
   let summary = "Attach enzymexla.memory_effects attribute summarizing memory access";
   let dependentDialects = [
     "mlir::LLVM::LLVMDialect",
-    "triton::TritonDialect",
     "memref::MemRefDialect",
   ];
   let options = [
@@ -428,6 +430,7 @@ def ConvertPolygeistToLLVM
                 .Block argument types are updated to use LLVM IR types.
   }];
   let dependentDialects = [
+    "enzymexla::EnzymeXLADialect",
     "func::FuncDialect",
     "LLVM::LLVMDialect",
     "memref::MemRefDialect",

@@ -35,7 +35,6 @@ py_package(
 cc_binary(
     name = "enzymexlamlir-opt",
     srcs = [
-        "//src/enzyme_ad/jax:RegistryUtils.cpp",
         "//src/enzyme_ad/jax:enzymexlamlir-opt.cpp",
     ],
     copts = [
@@ -75,7 +74,6 @@ cc_binary(
 cc_library(
     name = "RaiseLib",
     srcs = [
-        "//src/enzyme_ad/jax:RegistryUtils.cpp",
         "//src/enzyme_ad/jax:raise.cpp",
     ],
     hdrs = [

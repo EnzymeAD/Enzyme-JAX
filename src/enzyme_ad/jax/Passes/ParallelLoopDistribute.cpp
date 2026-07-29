@@ -64,6 +64,13 @@ static bool couldWrite(Operation *op) {
   return true;
 }
 
+// Internal linkage: Enzyme's RemovalUtils.cpp declares an unrelated
+// `struct Node` at global scope. Two distinct definitions of the same
+// name would be an ODR violation, and the linker would silently pick one
+// COMDAT copy of `Node::Node()` (and of every `std::deque<Node>` member)
+// for both, corrupting the stack of whichever translation unit lost.
+namespace {
+
 struct Node {
   Operation *O;
   Value V;
@@ -114,6 +121,8 @@ void dump(Graph &G) {
     }
   }
 }
+
+} // namespace
 
 /* Returns true if there is a path from source 's' to sink 't' in
    residual graph. Also fills parent[] to store the path */
