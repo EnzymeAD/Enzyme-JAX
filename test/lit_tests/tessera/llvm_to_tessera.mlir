@@ -25,7 +25,7 @@ llvm.func @func_with_args(%arg0: i32, %arg1: f32) -> i32 attributes {tessera_op 
 
 // -----
 
-llvm.mlir.global internal constant @_ZL26__tessera_byref_arg_type_0() : !llvm.struct<(f32)>
+llvm.mlir.global internal constant @_ZL20__tessera_arg_type_0() : !llvm.struct<(f32)>
 
 llvm.func @pure_func(%arg0: i32, %arg1: !llvm.ptr) -> i32 attributes {pure_tessera_op = "tessera_pure_func(x, y:byref):globals=0"} {
   llvm.return %arg0 : i32
@@ -43,7 +43,7 @@ llvm.func @helper() attributes {tessera_op = "tessera_helper()"} {
   llvm.return
 }
 
-llvm.func @func_with_call() attributes {tessera_op = "tessera_func_with_call()"} {
+llvm.func @func_with_call() {
   llvm.call @helper() : () -> ()
   llvm.return
 }
@@ -54,12 +54,9 @@ llvm.func @func_with_call() attributes {tessera_op = "tessera_func_with_call()"}
 // CHECK-SAME: tessera.original_name = "helper"
 // CHECK-NEXT: tessera.return
 
-// CHECK: tessera.define @tessera_func_with_call()
-// CHECK-SAME: byRefTypes = []
-// CHECK-SAME: pure = false
-// CHECK-SAME: tessera.original_name = "func_with_call"
+// CHECK: llvm.func @func_with_call()
 // CHECK-NEXT: tessera.call @tessera_helper()
-// CHECK-NEXT: tessera.return
+// CHECK-NEXT: llvm.return
 
 // -----
 
@@ -83,7 +80,7 @@ llvm.func @func_with_indirect_call(%arg0: !llvm.ptr) {
 
 // -----
 
-llvm.mlir.global internal constant @_ZL26__tessera_byref_arg_type_1() : !llvm.struct<(f32, f32)>
+llvm.mlir.global internal constant @_ZL20__tessera_arg_type_1() : !llvm.struct<(f32, f32)>
 
 llvm.func @sret_func(%arg0: !llvm.ptr {llvm.sret = !llvm.struct<(f32, f32)>, llvm.align = 8 : i64, llvm.nonnull}, %arg1: !llvm.ptr {llvm.noundef, llvm.readonly}) attributes {pure_tessera_op = "tessera_sret_func(x:byref):globals=1"} {
   %0 = llvm.load %arg1 {alignment = 8 : i64} : !llvm.ptr -> f32
@@ -118,3 +115,37 @@ llvm.func @caller() {
 // CHECK-SAME: (!llvm.struct<(f32, f32)>) -> !llvm.struct<(f32, f32)>
 // CHECK-NEXT: llvm.store %[[RES]], %[[A1]] : !llvm.struct<(f32, f32)>, !llvm.ptr
 // CHECK-NEXT: llvm.return
+
+// -----
+
+llvm.mlir.global internal constant @_ZL20__tessera_arg_type_2() : i32
+
+llvm.func @func_with_result_arg(%arg0: !llvm.ptr, %arg1: i32) -> i32 attributes {tessera_op = "tessera_func_with_result_arg(x:result, y):globals=2"} {
+  llvm.store %arg1, %arg0 : i32, !llvm.ptr
+  llvm.return %arg1 : i32
+}
+
+llvm.func @result_arg_func_caller() {
+  %0 = llvm.mlir.constant(1 : i32) : i32
+  %1 = llvm.alloca %0 x i32 : (i32) -> !llvm.ptr
+  %2 = llvm.call @func_with_result_arg(%1, %0) : (!llvm.ptr, i32) -> i32
+  %3 = llvm.load %1 : !llvm.ptr -> i32
+  llvm.return
+}
+
+// CHECK: tessera.define @tessera_func_with_result_arg(%[[ARG0:.*]]: !llvm.ptr, %[[ARG1:.*]]: i32) -> i32
+// CHECK-SAME: byRefTypes = [unit, unit]
+// CHECK-SAME: pure = false
+// CHECK-SAME: resultArgTypes = [i32, unit]
+// CHECK-SAME: tessera.original_name = "func_with_result_arg"
+// CHECK-NEXT: llvm.store %[[ARG1]], %[[ARG0]] : i32, !llvm.ptr
+// CHECK-NEXT: tessera.return %[[ARG1]] : i32
+
+// CHECK: llvm.func @result_arg_func_caller() {
+// CHECK-NEXT: %[[ONE:.*]] = llvm.mlir.constant(1 : i32) : i32
+// CHECK-NEXT: %[[AL:.*]] = llvm.alloca %[[ONE]] x i32 : (i32) -> !llvm.ptr
+// CHECK-NEXT: %[[RES:.*]]:2 = tessera.call @tessera_func_with_result_arg(%[[ONE]])
+// CHECK-SAME: (i32) -> (i32, i32)
+// CHECK-NEXT: llvm.store %[[RES]]#0, %[[AL]] : i32, !llvm.ptr
+// CHECK-NEXT: llvm.return
+// CHECK-NEXT: }

@@ -63,10 +63,40 @@ llvm.func @caller() {
 // CHECK-NEXT: %[[A1:.*]] = llvm.alloca %[[ONE]] x !llvm.struct<(f32, f32)> {alignment = 8 : i64} : (i32) -> !llvm.ptr
 // CHECK-NEXT: %[[A2:.*]] = llvm.alloca %[[ONE]] x !llvm.struct<(f32, f32)> {alignment = 8 : i64} : (i32) -> !llvm.ptr
 // CHECK-NEXT: %[[LOADED:.*]] = llvm.load %[[A2]] : !llvm.ptr -> !llvm.struct<(f32, f32)>
-// CHECK-NEXT: %[[SRET:.*]] = llvm.alloca %[[ONE]] x !llvm.struct<(f32, f32)> {alignment = 8 : i64} : (i32) -> !llvm.ptr
 // CHECK-NEXT: %[[A3:.*]] = llvm.alloca %[[ONE]] x !llvm.struct<(f32, f32)> : (i32) -> !llvm.ptr
 // CHECK-NEXT: llvm.store %[[LOADED]], %[[A3]] : !llvm.struct<(f32, f32)>, !llvm.ptr
+// CHECK-NEXT: %[[SRET:.*]] = llvm.alloca %[[ONE]] x !llvm.struct<(f32, f32)> {alignment = 8 : i64} : (i32) -> !llvm.ptr
 // CHECK-NEXT: llvm.call @sret_func(%[[SRET]], %[[A3]]) : (!llvm.ptr {llvm.align = 8 : i64, llvm.nonnull, llvm.sret = !llvm.struct<(f32, f32)>}, !llvm.ptr {llvm.nonnull, llvm.noundef}) -> ()
 // CHECK-NEXT: %[[LOADED:.*]] = llvm.load %[[SRET]] : !llvm.ptr -> !llvm.struct<(f32, f32)>
 // CHECK-NEXT: llvm.store %[[LOADED]], %[[A1]] : !llvm.struct<(f32, f32)>, !llvm.ptr
 // CHECK-NEXT: llvm.return
+
+// -----
+
+tessera.define @tessera_func_with_result_arg(%arg0: !llvm.ptr, %arg1: i32) -> i32 attributes {byRefTypes = [unit, unit], pure = false, resultArgTypes = [i32, unit], tessera.original_name = "func_with_result_arg"} {
+  llvm.store %arg1, %arg0 : i32, !llvm.ptr
+  tessera.return %arg1 : i32
+}
+
+llvm.func @result_arg_func_caller() {
+  %0 = llvm.mlir.constant(1 : i32) : i32
+  %1 = llvm.alloca %0 x i32 : (i32) -> !llvm.ptr
+  %2:2 = tessera.call @tessera_func_with_result_arg(%0) {tessera.loaded_operands = array<i32>} : (i32) -> (i32, i32)
+  llvm.store %2#0, %1 : i32, !llvm.ptr
+  llvm.return
+}
+
+// CHECK: llvm.func @func_with_result_arg(%[[ARG0:.*]]: !llvm.ptr, %[[ARG1:.*]]: i32) -> i32 {
+// CHECK-NEXT: llvm.store %[[ARG1]], %[[ARG0]] : i32, !llvm.ptr
+// CHECK-NEXT: llvm.return %[[ARG1]] : i32
+// CHECK-NEXT: }
+
+// CHECK: llvm.func @result_arg_func_caller() {
+// CHECK-NEXT: %[[ONE:.*]] = llvm.mlir.constant(1 : i32) : i32
+// CHECK-NEXT: %[[AL:.*]] = llvm.alloca %[[ONE]] x i32 : (i32) -> !llvm.ptr
+// CHECK-NEXT: %[[AL2:.*]] = llvm.alloca %[[ONE]] x i32 : (i32) -> !llvm.ptr
+// CHECK-NEXT: %[[RES:.*]] = llvm.call @func_with_result_arg(%[[AL2]], %[[ONE]]) : (!llvm.ptr, i32) -> i32
+// CHECK-NEXT: %[[LOAD:.*]] = llvm.load %[[AL2]] : !llvm.ptr -> i32
+// CHECK-NEXT: llvm.store %[[LOAD]], %[[AL]] : i32, !llvm.ptr
+// CHECK-NEXT: llvm.return
+// CHECK-NEXT: }
