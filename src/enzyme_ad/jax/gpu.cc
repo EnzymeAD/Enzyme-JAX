@@ -40,6 +40,14 @@ struct CuFuncWrapper {
   void *func;
 };
 
+// static void *emptyGPUInit() { return new CuFuncWrapper{nullptr}; }
+
+static void emptyGPUFunction() {}
+
+static void *emptyGPUInit() {
+  return (void *)(&emptyGPUFunction);
+}
+
 template <bool withError>
 XLA_FFI_Error *initialize(XLA_FFI_CallFrame *call_frame) {
   assert(call_frame->attrs.size == 1);
@@ -73,11 +81,8 @@ XLA_FFI_Error *initialize(XLA_FFI_CallFrame *call_frame) {
   err = cuCtxPushCurrent (pctx);
   */
 
-  if (cinfo->init == nullptr) {
-    return nullptr;
-  }
-
-  void *cufunc = cinfo->init();
+  auto init = cinfo->init ? cinfo->init : emptyGPUInit;
+  void *cufunc = init();
 
   /*
   CUcontext tctx;
@@ -135,13 +140,10 @@ XLA_FFI_Error *execute(XLA_FFI_CallFrame *call_frame) {
         &reinterpret_cast<XLA_FFI_Buffer *>(call_frame->args.args[i])->data;
   }
 
-  void *cufunc = nullptr;
   auto *execution_state = reinterpret_cast<xla::ffi::ExecutionState *>(
       internal_api->XLA_FFI_INTERNAL_ExecutionState_Get(
           ctx, XLA_FFI_ExecutionStage_INITIALIZE));
-  if (execution_state != nullptr && execution_state->IsSet()) {
-    cufunc = (void *)execution_state->Get<CuFuncWrapper>().value();
-  }
+  auto cufunc = (void *)execution_state->Get<CuFuncWrapper>().value();
 
   const void **const_ptrs = const_cast<const void **>(ptrs);
 
