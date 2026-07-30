@@ -137,6 +137,11 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       if (options->preADLowerAffine)
         pass_pipeline += "lower-affine,";
 
+      // A checkpointed loop must not capture both a value and a view of it:
+      // it would snapshot the same buffer twice. Has to precede `enzyme`,
+      // which is what reads the captures.
+      pass_pipeline += "sink-checkpoint-views,";
+
       pass_pipeline += "enzyme{";
       if (options->dataflow)
         pass_pipeline += "dataflow ";
