@@ -2479,6 +2479,7 @@ struct ConvertParallelToGPU1Pass
         return;
 
       OpBuilder builder(launchOpBody);
+      builder.setInsertionPointToStart(&launchOpBody.front());
       for (Operation *op : toBeSunk) {
         Operation *clonedOp = builder.clone(*op);
         // Only replace uses within the launch op.

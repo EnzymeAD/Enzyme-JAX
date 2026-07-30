@@ -786,7 +786,7 @@ module {
 // CHECK:               %[[LOAD_0:.*]] = affine.load %[[ARG2]]{{\[}}%[[VAL_1]]] : memref<?xf32>
 // CHECK:               %[[ADDF_0:.*]] = arith.addf %[[LOAD_0]], %[[ARG0]] : f32
 // CHECK:               affine.store %[[ADDF_0]], %[[ARG2]]{{\[}}%[[VAL_1]]] : memref<?xf32>
-// CHECK:               affine.store %[[ADDF_0]], %[[ARG2]]{{\[}}%[[VAL_1]] + 4] : memref<?xf32>
+// CHECK:               affine.store %[[LOAD_0]], %[[ARG2]]{{\[}}%[[VAL_1]] + 4] : memref<?xf32>
 // CHECK:             }
 // CHECK:             "enzymexla.polygeist_yield"() : () -> ()
 // CHECK:           }) : (index, index, index, index, index, index) -> index
