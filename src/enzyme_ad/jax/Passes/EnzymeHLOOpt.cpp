@@ -6461,9 +6461,7 @@ struct BinomialProgressConstProp final
         binomialProgress(numSteps.getSExtValue(), budget.getSExtValue());
 
     rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-        op,
-        DenseElementsAttr::get(op.getResult().getType(),
-                               makeAttr(op.getResult().getType(), progress)));
+        op, cast<ElementsAttr>(makeAttr(op.getResult().getType(), progress)));
 
     return success();
   }
@@ -20834,6 +20832,106 @@ struct WhileLICM
   }
 };
 
+// For a stablehlo.while whose body contains a stablehlo.if with a
+// loop-invariant predicate, hoist the conditional out of the loop by creating
+// two specialised while loops — one per branch — wrapped in an outer
+// stablehlo.if.  The pattern fires once per qualifying if; the greedy driver
+// iterates until no more loop-invariant ifs remain.
+struct LoopUnswitch
+    : public CheckedOpRewritePattern<stablehlo::WhileOp, LoopUnswitch> {
+  int64_t maxOpsOutside;
+  LoopUnswitch(int64_t maxOpsOutside, MLIRContext *context,
+               PatternBenefit benefit = 1,
+               ArrayRef<StringRef> generatedNames = {})
+      : CheckedOpRewritePattern(context, benefit, generatedNames),
+        maxOpsOutside(maxOpsOutside) {}
+
+  LogicalResult matchAndRewriteImpl(stablehlo::WhileOp whileOp,
+                                    PatternRewriter &rewriter) const {
+    // Find the first stablehlo.if in the body whose predicate is defined
+    // outside the while loop.
+    stablehlo::IfOp targetIf;
+    for (Operation &op : whileOp.getBody().front().without_terminator()) {
+      if (auto ifOp = dyn_cast<stablehlo::IfOp>(&op)) {
+        if (definedOutside(ifOp.getPred(), whileOp)) {
+          targetIf = ifOp;
+          break;
+        }
+      }
+    }
+    if (!targetIf)
+      return failure();
+
+    // Count ops in the body outside the target if (excluding the terminator).
+    // Unswitching duplicates all of these; skip if too many.
+    int64_t opsOutside = 0;
+    for (Operation &op : whileOp.getBody().front().without_terminator())
+      if (&op != targetIf.getOperation())
+        ++opsOutside;
+    if (opsOutside > maxOpsOutside)
+      return failure();
+
+    Value pred = targetIf.getPred();
+    Location loc = whileOp.getLoc();
+
+    // Clone the while and inline one branch of the cloned if in place of the
+    // if itself.  Because pred is defined outside the while, the clone does not
+    // remap it, so we can locate the cloned if by predicate identity.
+    auto buildVersionedWhile = [&](bool useTrue) -> stablehlo::WhileOp {
+      IRMapping mapper;
+      auto newWhile =
+          cast<stablehlo::WhileOp>(rewriter.clone(*whileOp, mapper));
+
+      stablehlo::IfOp clonedIf;
+      for (Operation &op : newWhile.getBody().front().without_terminator()) {
+        if (auto ifOp = dyn_cast<stablehlo::IfOp>(&op);
+            ifOp && ifOp.getPred() == pred) {
+          clonedIf = ifOp;
+          break;
+        }
+      }
+      assert(clonedIf && "cloned while must contain the target if");
+
+      Region &inlineBranch =
+          useTrue ? clonedIf.getTrueBranch() : clonedIf.getFalseBranch();
+      Operation *branchTerm = inlineBranch.front().getTerminator();
+      SmallVector<Value> branchReturns(branchTerm->getOperands());
+
+      rewriter.setInsertionPoint(clonedIf);
+      for (Operation &innerOp : llvm::make_early_inc_range(
+               inlineBranch.front().without_terminator()))
+        rewriter.modifyOpInPlace(&innerOp,
+                                 [&] { innerOp.moveBefore(clonedIf); });
+
+      rewriter.replaceOp(clonedIf, branchReturns);
+      return newWhile;
+    };
+
+    rewriter.setInsertionPoint(whileOp);
+    auto outerIf =
+        stablehlo::IfOp::create(rewriter, loc, whileOp->getResultTypes(), pred);
+
+    // IfOp::create leaves both regions empty; we must add blocks before use.
+    {
+      OpBuilder::InsertionGuard g(rewriter);
+      Block *trueBlock = rewriter.createBlock(&outerIf.getTrueBranch());
+      auto trueWhile = buildVersionedWhile(/*useTrue=*/true);
+      rewriter.setInsertionPointToEnd(trueBlock);
+      stablehlo::ReturnOp::create(rewriter, loc, trueWhile.getResults());
+    }
+    {
+      OpBuilder::InsertionGuard g(rewriter);
+      Block *falseBlock = rewriter.createBlock(&outerIf.getFalseBranch());
+      auto falseWhile = buildVersionedWhile(/*useTrue=*/false);
+      rewriter.setInsertionPointToEnd(falseBlock);
+      stablehlo::ReturnOp::create(rewriter, loc, falseWhile.getResults());
+    }
+
+    rewriter.replaceOp(whileOp, outerIf.getResults());
+    return success();
+  }
+};
+
 // Replace a while op consisting of DUS chains for each iter arg where each DUS
 // doesn't depend on values evolving in the loop. This can be later extended to
 // support other similarly idempotent ops. The loop is expected to have a
@@ -27736,6 +27834,23 @@ struct LogSimplify final
   using CheckedOpRewritePattern<stablehlo::LogOp,
                                 LogSimplify>::CheckedOpRewritePattern;
 
+  // True iff `value` is a finite float constant whose every element is
+  // non-negative (and, unless allowZero, strictly positive). Excludes NaN,
+  // negatives, and infinities, which would let the log-splits below narrow the
+  // domain. See #2570.
+  static bool isPositiveFiniteConstant(Value value, bool allowZero) {
+    DenseElementsAttr attr;
+    if (!matchPattern(value, m_Constant(&attr)) ||
+        !isa<FloatType>(attr.getElementType()))
+      return false;
+
+    return llvm::all_of(attr.getValues<APFloat>(),
+                        [allowZero](const APFloat &element) {
+                          return element.isFinite() && !element.isNegative() &&
+                                 (allowZero || !element.isZero());
+                        });
+  }
+
   LogicalResult matchAndRewriteImpl(stablehlo::LogOp op,
                                     PatternRewriter &rewriter) const {
     { // log(exp(x)) -> x
@@ -27746,22 +27861,15 @@ struct LogSimplify final
       }
     }
 
-    { // log(pow(x, y)) -> y * log(x)
-      auto defOp = op.getOperand().getDefiningOp<stablehlo::PowOp>();
-      if (defOp) {
-        rewriter.replaceOpWithNewOp<stablehlo::MulOp>(
-            op, defOp.getRhs(),
-            stablehlo::LogOp::create(rewriter, op.getLoc(), defOp.getLhs()));
-        return success();
-      }
-    }
-
     {
       auto defOp = op.getOperand().getDefiningOp<stablehlo::MulOp>();
       if (defOp) {
         auto lhs = defOp.getLhs();
         auto rhs = defOp.getRhs();
-        if (lhs == rhs) { // log(mul(a, a)) -> 2 * log(a)
+        // log(mul(a, a)) -> 2 * log(a). Only when a >= 0: for a < 0, 2*log(a)
+        // is NaN while log(a*a) is finite. Gating on the analysis avoids an abs
+        // (possibly slower than the mul). See #2570.
+        if (lhs == rhs && guaranteedNonNegativeResult(lhs, rewriter)) {
           rewriter.replaceOpWithNewOp<stablehlo::MulOp>(
               op,
               stablehlo::ConstantOp::create(
@@ -27774,10 +27882,16 @@ struct LogSimplify final
         if (anyOperandIsConstant(defOp) &&
             !allOperandsAreConstant(defOp)) { // log(mul(a, b)) -> log(a) +
                                               // log(b) if a or b is constant
-          rewriter.replaceOpWithNewOp<stablehlo::AddOp>(
-              op, stablehlo::LogOp::create(rewriter, op.getLoc(), lhs),
-              stablehlo::LogOp::create(rewriter, op.getLoc(), rhs));
-          return success();
+          // Split only for a strictly positive constant; negative/zero narrows
+          // the domain, and the split isn't bit-exact under FP rounding. See
+          // #2570.
+          Value cst = matchPattern(lhs, m_Constant()) ? lhs : rhs;
+          if (isPositiveFiniteConstant(cst, /*allowZero=*/false)) {
+            rewriter.replaceOpWithNewOp<stablehlo::AddOp>(
+                op, stablehlo::LogOp::create(rewriter, op.getLoc(), lhs),
+                stablehlo::LogOp::create(rewriter, op.getLoc(), rhs));
+            return success();
+          }
         }
       }
     }
@@ -27827,10 +27941,17 @@ struct LogSimplify final
         if (anyOperandIsConstant(defOp) &&
             !allOperandsAreConstant(defOp)) { // log(div(a, b)) -> log(a) -
                                               // log(b) if a or b is constant
-          rewriter.replaceOpWithNewOp<stablehlo::SubtractOp>(
-              op, stablehlo::LogOp::create(rewriter, op.getLoc(), lhs),
-              stablehlo::LogOp::create(rewriter, op.getLoc(), rhs));
-          return success();
+          // Constant numerator must be strictly positive: a zero numerator
+          // turns a finite log(-0) into NaN after splitting. A zero denominator
+          // is safe, so it only needs to be non-negative. See #2570.
+          bool constantIsLhs = matchPattern(lhs, m_Constant());
+          Value cst = constantIsLhs ? lhs : rhs;
+          if (isPositiveFiniteConstant(cst, /*allowZero=*/!constantIsLhs)) {
+            rewriter.replaceOpWithNewOp<stablehlo::SubtractOp>(
+                op, stablehlo::LogOp::create(rewriter, op.getLoc(), lhs),
+                stablehlo::LogOp::create(rewriter, op.getLoc(), rhs));
+            return success();
+          }
         }
       }
     }
@@ -30095,6 +30216,9 @@ private:
 
   std::tuple<bool, SliceInfo>
   matchReduceSlice(stablehlo::ReduceOp reduceOp) const {
+    if (reduceOp.getDimensions().size() == 0)
+      return {false, SliceInfo()};
+
     if (reduceOp.getInputs().size() != 1 ||
         reduceOp.getDimensions().size() != 1 ||
         !((Child *)this)->isCompatibleReduction(reduceOp)) {
@@ -30118,7 +30242,7 @@ private:
   matchReshapeReduceSlice(stablehlo::ReshapeOp reshapeOp) const {
     auto reduce =
         reshapeOp.getOperand().template getDefiningOp<stablehlo::ReduceOp>();
-    if (!reduce) {
+    if (!reduce || reduce.getDimensions().empty()) {
       return {false, SliceInfo()};
     }
 
@@ -35818,6 +35942,13 @@ void mlir::transform::addWhileLICM(RewritePatternSet &patterns, bool hoistAll,
   patterns.insert<WhileLICM>(hoistAll, &context, benefit);
 }
 
+void mlir::transform::addLoopUnswitch(RewritePatternSet &patterns,
+                                      int64_t maxOpsOutside,
+                                      MLIRContext &context,
+                                      PatternBenefit benefit) {
+  patterns.insert<LoopUnswitch>(maxOpsOutside, &context, benefit);
+}
+
 void mlir::transform::addSliceLICM(RewritePatternSet &patterns,
                                    bool single_user, MLIRContext &context,
                                    PatternBenefit benefit) {
@@ -36587,6 +36718,8 @@ struct EnzymeHLOOptPass
     patterns.add<WhileSimplify>(false, context);
 
     patterns.add<WhileLICM>(false, context);
+
+    patterns.add<LoopUnswitch>(/*maxOpsOutside=*/10, context);
 
     // clang-format on
     patterns.add<SelectOpCanon>(max_constant_expansion, context,

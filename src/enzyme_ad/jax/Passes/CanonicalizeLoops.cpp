@@ -889,6 +889,7 @@ public:
   }
 };
 
+template <bool Speculate>
 class PartialIfToSelect final : public OpRewritePattern<scf::IfOp> {
 public:
   using OpRewritePattern<scf::IfOp>::OpRewritePattern;
@@ -930,6 +931,12 @@ public:
           return v;
         if (!ifOp->isAncestor(op))
           return v;
+        // If speculation is disabled, transform only if ops that solely contain
+        // yields
+        if (!Speculate && (thenBlock->getOperations().size() != 1 ||
+                           elseBlock->getOperations().size() != 1)) {
+          return std::nullopt;
+        }
         if (op->getNumRegions() > 0)
           return std::nullopt;
         if (!isPure(op))
@@ -1057,13 +1064,17 @@ struct CanonicalizeLoopsPass
     {
       RewritePatternSet patterns(&getContext());
       patterns.add<RemoveAffineParallelSingleIter, SwitchToIf,
-                   SimplifyIfByRemovingEmptyThen, PartialIfToSelect>(
-          &getContext());
+                   SimplifyIfByRemovingEmptyThen>(&getContext());
 
       if (speculate_if) {
         patterns.add<IfToSelect<true>>(&getContext());
       } else {
         patterns.add<IfToSelect<false>>(&getContext());
+      }
+      if (speculate_partial_if) {
+        patterns.add<PartialIfToSelect<true>>(&getContext());
+      } else {
+        patterns.add<PartialIfToSelect<false>>(&getContext());
       }
 
       if (failed(

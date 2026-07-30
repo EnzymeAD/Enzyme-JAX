@@ -63,6 +63,9 @@ jobs:
           if [ ${{ runner.os }} == Linux ]; then
             BAZEL_FLAGS="${BAZEL_FLAGS} --config=public_cache_push"
           fi
+          if [ ${{ runner.os }} == macOS ]; then
+            BAZEL_FLAGS="${BAZEL_FLAGS} --define=enable_triton=false --cxxopt=-Wno-nullability-completeness --host_cxxopt=-Wno-nullability-completeness"
+          fi
           echo "BAZEL_FLAGS=${BAZEL_FLAGS}" >> "${GITHUB_ENV}"
       - uses: actions/checkout@v7
       - uses: bazel-contrib/setup-bazel@0.19.0
@@ -70,21 +73,32 @@ jobs:
         with:
           # Avoid downloading Bazel every time.
           bazelisk-cache: true
-          # Store build cache per workflow only for macOS.
-          disk-cache: ${{ runner.os == 'macOS' && format('build-{0}-{1}-{2}', github.workflow, matrix.os, matrix.python) || false }}
-          # Do not share repository cache between workflows.
-          repository-cache: false
+          # Store build cache per Python version, with fallback restore-keys to share C++ objects across Python versions.
+          disk-cache: ${{ runner.os == 'macOS' && format('tag-{0}-{1}-{2}', github.workflow, matrix.os, matrix.python) || false }}
+          restore-keys: ${{ runner.os == 'macOS' && format('tag-{0}-{1}-', github.workflow, matrix.os) || false }}
+          repository-cache: true
+          save-always: true
           bazelisk-version: 1.x
-      - run: |
+      - shell: bash
+        run: |
           export TAG=`echo $GITHUB_REF | sed 's/^.*[^0-9]\([0-9]*\.[0-9]*\.[0-9]*\).*$/\1/'`
           echo $TAG
           sed -i.bak "s~version = \"[0-9.]*\"~version = \"$TAG\"~g" BUILD
           cat BUILD
-          if [[ "${{ matrix.os }}" == *"x86"* ]]; then
-            sed -i.bak "s~\[\"X86\", \"AArch64\", \"AMDGPU\", \"NVPTX\"\]~\[\"X86\", \"NVPTX\"\]~g" workspace.bzl
-          else
-            sed -i.bak "s~\[\"X86\", \"AArch64\", \"NVPTX\"\]~\[\"X86\", \"NVPTX\"\]~g" workspace.bzl
-          fi
+          case "${{ matrix.os }}" in
+            *macOS*|*macos*)
+              if [ "${{ runner.arch }}" = "ARM64" ]; then
+                sed -i.bak -e 's/"AMDGPU", //g' -e 's/, "AMDGPU"//g' -e 's/"X86", //g' -e 's/, "X86"//g' workspace.bzl
+              else
+                sed -i.bak -e 's/"AMDGPU", //g' -e 's/, "AMDGPU"//g' workspace.bzl
+              fi
+              ;;
+            *arm64*|*arm*)
+              sed -i.bak -e 's/"X86", //g' -e 's/, "X86"//g' workspace.bzl
+              ;;
+            *)
+              ;;
+          esac
           cat workspace.bzl
       - name: Update JAX version
         run: |
@@ -107,7 +121,7 @@ jobs:
           bazel run $BAZEL_FLAGS --color=yes //builddeps:requirements.update
 
       - name: Build wheel
-        timeout-minutes: 240
+        timeout-minutes: 480
         run: |
           bazel build $BAZEL_FLAGS --color=yes :wheel --test_output=errors
 
@@ -144,6 +158,6 @@ jobs:
           mkdir -v dist
           find . -name 'enzyme*.whl' -exec mv -v '{}' dist/ \;
       - name: Publish package distribution to PyPI
-        uses: pypa/gh-action-pypi-publish@cef221092ed1bacb1cc03d23a2d87d1d172e277b # v1.14.0
+        uses: pypa/gh-action-pypi-publish@ba38be9e461d3875417946c167d0b5f3d385a247 # v1.14.1
         with:
           packages-dir: 'dist'

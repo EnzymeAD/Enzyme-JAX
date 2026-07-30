@@ -46,7 +46,7 @@ cc_library(
     http_archive(
         name = "com_github_googlecloudplatform_google_cloud_cpp",
         patch_cmds = [
-            """find . -type f -exec sed -i.bak -e 's/Windows.h/windows.h/g' -e 's/Ntstatus.h/ntstatus.h/g' {} +""",
+            """find . -type f -name '*.cc' -exec sed -i.bak -e 's/Windows.h/windows.h/g' -e 's/Ntstatus.h/ntstatus.h/g' {} +""",
         ],
         repo_mapping = {
             "@com_github_curl_curl": "@curl",

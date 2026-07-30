@@ -25,7 +25,6 @@
 #include "src/enzyme_ad/jax/Dialect/TritonExt/Dialect.h"
 #include "src/enzyme_ad/jax/Utils.h"
 #include "stablehlo/dialect/StablehloOps.h"
-#include "triton/Dialect/Triton/IR/Dialect.h"
 
 #include "jaxlib/gpu/triton.pb.h"
 

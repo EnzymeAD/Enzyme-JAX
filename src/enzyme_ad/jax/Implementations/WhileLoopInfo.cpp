@@ -36,9 +36,9 @@ void WhileLoopInfo::computeConstantValues() {
   constStart = getConstantStartCalculate();
 }
 
-Value WhileLoopInfo::getStep(OpBuilder &builder) {
+Value WhileLoopInfo::getStep(OpBuilder &builder, const IRMapping &mapping) {
   if (step)
-    return step;
+    return mapping.lookupOrDefault(step);
 
   auto Ty =
       RankedTensorType::get({}, builder.getIntegerType(stepInt.getBitWidth()));
@@ -189,7 +189,8 @@ int64_t WhileLoopInfo::getConstantNumIters() {
   return (limit - start + step - 1) / step; // ceil division
 }
 
-Value WhileLoopInfo::getNumIters(mlir::OpBuilder &builder) {
+Value WhileLoopInfo::getNumIters(mlir::OpBuilder &builder,
+                                 const IRMapping &mapping) {
   auto opReg = op->getParentRegion();
   if (!opReg->isAncestor(limit.getParentRegion()) ||
       (step && !opReg->isAncestor(step.getParentRegion()))) {
@@ -204,18 +205,12 @@ Value WhileLoopInfo::getNumIters(mlir::OpBuilder &builder) {
         cast<ElementsAttr>(makeAttr(start.getType(), getConstantNumIters())));
   } else {
     // numIters = (limit - start) / step;
-    Value stepVal;
-    if (step) {
-      stepVal = step;
-    } else {
-      stepVal = stablehlo::ConstantOp::create(
-          builder, op->getLoc(), start.getType(),
-          cast<ElementsAttr>(
-              makeAttr(start.getType(), stepInt.getSExtValue())));
-    }
+    Value stepVal = getStep(builder, mapping);
     numIters = stablehlo::DivOp::create(
         builder, op->getLoc(),
-        stablehlo::SubtractOp::create(builder, op->getLoc(), limit, start),
+        stablehlo::SubtractOp::create(builder, op->getLoc(),
+                                      mapping.lookupOrDefault(limit),
+                                      mapping.lookupOrDefault(start)),
         stepVal);
   }
 

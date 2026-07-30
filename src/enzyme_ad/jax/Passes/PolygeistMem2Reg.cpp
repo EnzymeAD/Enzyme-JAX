@@ -1184,7 +1184,8 @@ bool isCallNonCapturing(CallOpInterface callOp, Value val) {
     auto operands = callOp.getArgOperands();
     for (int i = 0; i < operands.size(); i++) {
       if (operands[i] == val) {
-        if (fn.getArgAttr(i, LLVM::LLVMDialect::getNoCaptureAttrName()))
+        if (i < fn.getNumArguments() &&
+            fn.getArgAttr(i, LLVM::LLVMDialect::getNoCaptureAttrName()))
           return true;
       }
     }
@@ -1950,12 +1951,12 @@ bool isPromotable(mlir::Value AI) {
       } else if (isa<memref::DeallocOp>(U)) {
         continue;
       } else if (auto callOp = dyn_cast<CallOpInterface>(U)) {
-        if (StringAttr callee =
-                dyn_cast<SymbolRefAttr>(callOp.getCallableForCallee())
-                    .getLeafReference())
-          if (isCallNonCapturing(callOp, val) ||
-              getNonCapturingFunctions().count(callee.str()))
-            continue;
+        if (auto sym = dyn_cast<SymbolRefAttr>(callOp.getCallableForCallee())) {
+          if (StringAttr callee = sym.getLeafReference())
+            if (isCallNonCapturing(callOp, val) ||
+                getNonCapturingFunctions().count(callee.str()))
+              continue;
+        }
       } else if (auto CO = dyn_cast<memref::CastOp>(U)) {
         list.push_back(CO);
       } else if (auto CO = dyn_cast<Memref2PointerOp>(U)) {

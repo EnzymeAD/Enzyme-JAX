@@ -90,7 +90,7 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
   pass_pipeline += backend;
   pass_pipeline += "}";
   pass_pipeline += ","
-      "canonicalize,libdevice-funcs-raise,canonicalize,symbol-dce,";
+      "canonicalize,libdevice-funcs-raise,canonicalize,inline-enzyme-regions,symbol-dce,";
   
   if (backend == "cpu")
     pass_pipeline += "parallel-lower{wrapParallelOps=false},";
@@ -131,11 +131,15 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       if (outfile.size() && getenv("EXPORT_REACTANT")) {
         pass_pipeline += "print{filename="+outfile+".mlir},";
       }
-      pass_pipeline += "symbol-dce,outline-enzyme-regions,enzyme,remove-unnecessary-enzyme-ops,lower-affine";
+      pass_pipeline += "symbol-dce,outline-enzyme-regions,"
+        "enzyme,canonicalize,split-multi-results,remove-unnecessary-enzyme-ops,"
+        "flatten-enzyme-caches,enzyme-simplify-math,"
+        // canonicalize here folds away memref.subview ops before gpu-kernel-outlining
+        "canonicalize,cse,lower-affine";
       if (backend == "rocm")
         pass_pipeline += ",convert-cudart-to-hiprt";
       if (backend != "cpu") {
-        pass_pipeline += ",convert-parallel-to-gpu1,gpu-kernel-outlining,canonicalize,convert-parallel-to-gpu2{backend=";
+        pass_pipeline += ",convert-parallel-to-gpu1,gpu-kernel-outlining,canonicalize,symbol-dce,convert-parallel-to-gpu2{backend=";
         pass_pipeline += backend;
         pass_pipeline += "}";
         pass_pipeline += ",lower-affine";

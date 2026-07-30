@@ -81,6 +81,14 @@ static Value makeI32Constant(Location loc, OpBuilder &builder, int32_t val) {
   return makeIntegerConstant(loc, builder, builder.getI32Type(), val);
 }
 
+static Value makeZero(OpBuilder &builder, Location loc, Type T) {
+  auto TT = dyn_cast<mlir::ShapedType>(T);
+  return TT && TT.getElementType().isIntOrIndexOrFloat()
+             ? stablehlo::ConstantOp::create(builder, loc, T,
+                                             cast<ElementsAttr>(makeAttr(T, 0)))
+             : cast<AutoDiffTypeInterface>(T).createNullValue(builder, loc);
+}
+
 static inline Operation *createAddRegion(Operation *op) {
   mlir::OpBuilder builder(op->getContext());
   mlir::Block *block = new Block();
@@ -508,17 +516,20 @@ class AutoDiffWhileRev
     if (!revInfo.info.computeInfo().succeeded() || !revInfo.info.isValid())
       return revInfo;
 
+    const char *checkpointAttrName = "enzymexla.enable_checkpointing";
+    const char *periodicCheckpointAttrName = "enzymexla.checkpoint_period";
+
+    auto enableCheckpointingAttr =
+        orig->getAttrOfType<BoolAttr>(checkpointAttrName);
+    bool enableCheckpointing =
+        enableCheckpointingAttr && enableCheckpointingAttr.getValue();
     if (revInfo.info.isConstant()) {
-      const char *checkpointAttrName = "enzymexla.enable_checkpointing";
-      auto enableCheckpointing =
-          orig->getAttrOfType<BoolAttr>(checkpointAttrName);
-      const char *periodicCheckpointAttrName = "enzymexla.checkpoint_period";
       auto checkpointPeriod =
           orig->getAttrOfType<IntegerAttr>(periodicCheckpointAttrName);
-      auto enableBinomialCheckpointing =
+      bool enableBinomialCheckpointing =
           orig->hasAttr("enzymexla.binomial_checkpointing");
 
-      if (enableCheckpointing && enableCheckpointing.getValue()) {
+      if (enableCheckpointing) {
         // CONSTANT_CHECKPOINTING: use provided period or default to sqrt(N).
         revInfo.mode = enableBinomialCheckpointing ? CONSTANT_BINOMIAL
                                                    : CONSTANT_CHECKPOINTING;
@@ -531,7 +542,8 @@ class AutoDiffWhileRev
           int64_t numIters = revInfo.info.getConstantNumIters();
           revInfo.checkpointPeriod = std::sqrt(numIters);
         }
-      } else if (checkpointPeriod && checkpointPeriod.getInt() > 0) {
+      } else if (enableCheckpointing && checkpointPeriod &&
+                 checkpointPeriod.getInt() > 0) {
         // Explicit period specified without enable_checkpointing
         revInfo.mode = CONSTANT_CHECKPOINTING;
         revInfo.checkpointPeriod = checkpointPeriod.getInt();
@@ -539,9 +551,7 @@ class AutoDiffWhileRev
         revInfo.mode = CONSTANT;
       }
     } else if (orig->hasAttr("enzymexla.binomial_checkpointing")) {
-      auto enableCheckpointing =
-          orig->getAttrOfType<BoolAttr>("enzymexla.enable_checkpointing");
-      if (enableCheckpointing && enableCheckpointing.getValue()) {
+      if (enableCheckpointing) {
         revInfo.mode = CONSTANT_BINOMIAL;
         auto checkpointPeriod =
             orig->getAttrOfType<IntegerAttr>("enzymexla.checkpoint_period");
@@ -550,6 +560,10 @@ class AutoDiffWhileRev
                 ? checkpointPeriod.getInt()
                 : BINOMIAL_SENTINEL_BUDGET;
       }
+    } else if (enableCheckpointing) {
+      orig->emitWarning("requested periodic checkpointing on a loop that does "
+                        "not have constant iteration bounds. this is currently "
+                        "not supported");
     }
 
     return revInfo;
@@ -967,13 +981,28 @@ class AutoDiffWhileRev
       }
     }
 
+    for (auto [oldOp, newOp] : mapping.getOperationMap()) {
+      gutils->originalToNewFnOps[oldOp] = newOp;
+    }
+
     bool anyFailed = false;
 
-    auto rstart = origBody->rbegin(), rend = origBody->rend();
-    rstart++;
-    for (auto it = rstart; it != rend; it++) {
-      Operation *op = &*it;
-      anyFailed |= gutils->Logic.visitChild(op, builder, gutils).failed();
+    {
+      OpBuilder cacheBuilder(innerWhile);
+      auto loc = orig->getLoc();
+      auto cacheCreator = [&](Type t) {
+        Value cache = enzyme::InitOp::create(cacheBuilder, loc, t);
+        return std::make_pair(cache, cache);
+      };
+      gutils->registerCacheCreatorHook(cacheCreator);
+
+      auto rstart = origBody->rbegin(), rend = origBody->rend();
+      rstart++;
+      for (auto it = rstart; it != rend; it++) {
+        Operation *op = &*it;
+        anyFailed |= gutils->Logic.visitChild(op, builder, gutils).failed();
+      }
+      gutils->deregisterCacheCreatorHook(cacheCreator);
     }
 
     SmallVector<Value> outerBodyResults;
@@ -1145,13 +1174,7 @@ class AutoDiffWhileRev
 
     builder.setInsertionPointToStart(revInnerBody);
 
-    // innerIV iterates in reverse: actualInner - 1 - idx
-    Value innerIV = stablehlo::SubtractOp::create(
-        builder, orig.getLoc(),
-        stablehlo::SubtractOp::create(
-            builder, orig.getLoc(), actualInner,
-            makeI64Constant(orig.getLoc(), builder, 1)),
-        revInnerBody->getArgument(0));
+    Value innerIV = revInnerBody->getArgument(0);
 
     Value currentStep =
         stablehlo::AddOp::create(builder, orig.getLoc(), outerStart, innerIV);
@@ -1205,6 +1228,10 @@ class AutoDiffWhileRev
         gutils->addToDiffe(operand, revLoopBody->getArgument(revIdx), builder);
         revIdx++;
       }
+    }
+
+    for (auto [oldOp, newOp] : mapping.getOperationMap()) {
+      gutils->originalToNewFnOps[oldOp] = newOp;
     }
 
     bool anyFailed = false;
@@ -1460,7 +1487,7 @@ public:
 
     Value numIters;
 
-    WhileLoopInfo info(newWhile);
+    WhileLoopInfo info(cast<WhileOp>(orig));
     if (info.computeInfo().succeeded()) {
       // no need to cache number of iterations if it is a known constant.
       if (info.isValid()) {
@@ -1611,9 +1638,7 @@ public:
             cacheShape.append(operandType.getShape().begin(),
                               operandType.getShape().end());
             auto cacheType = operandType.clone(cacheShape);
-            auto zeroCache =
-                cast<AutoDiffTypeInterface>(cacheType).createNullValue(
-                    builder, operand.getLoc());
+            auto zeroCache = makeZero(builder, operand.getLoc(), cacheType);
             outerOperands.push_back(zeroCache);
           }
 
@@ -1654,7 +1679,8 @@ public:
           // constants. These are inserted before `outer` (loop-invariant).
           if (isDynamic) {
             builder.setInsertionPoint(outer);
-            Value numItersVal = info.getNumIters(builder);
+            Value numItersVal = gutils->originalToNewFn.lookupOrDefault(
+                info.getNumIters(builder, gutils->originalToNewFn));
             if (!numItersVal) {
               orig->emitError(
                   "binomial checkpointing: cannot compute numIters outside the "
@@ -1662,10 +1688,11 @@ public:
               return {};
             }
             caches.push_back(gutils->initAndPushCache(numItersVal, builder));
-            caches.push_back(
-                gutils->initAndPushCache(info.getStart(), builder));
-            caches.push_back(
-                gutils->initAndPushCache(info.getStep(builder), builder));
+            caches.push_back(gutils->initAndPushCache(
+                gutils->originalToNewFn.lookupOrDefault(info.getStart()),
+                builder));
+            caches.push_back(gutils->initAndPushCache(
+                info.getStep(builder, gutils->originalToNewFn), builder));
             builder.setInsertionPointAfter(outer);
           }
 
@@ -1720,10 +1747,11 @@ public:
                                           .slice(1, orig->getNumOperands() - 1)
                                           .end());
 
-          Value limitVal = info.isConstantLimit()
-                               ? makeI64Constant(orig->getLoc(), builder,
-                                                 *info.getConstantLimit())
-                               : info.getLimit();
+          Value limitVal =
+              info.isConstantLimit()
+                  ? makeI64Constant(orig->getLoc(), builder,
+                                    *info.getConstantLimit())
+                  : gutils->originalToNewFn.lookupOrDefault(info.getLimit());
           Value numSteps = stablehlo::SubtractOp::create(
               builder, orig->getLoc(), limitVal, stepInOuter);
 
@@ -1773,9 +1801,12 @@ public:
 
           Value oldIV = oldInnerBody->getArgument(0);
           Value newIV = stablehlo::AddOp::create(
-              builder, orig->getLoc(), info.getStart(),
+              builder, orig->getLoc(),
+              gutils->originalToNewFn.lookupOrDefault(info.getStart()),
               stablehlo::MulOp::create(
-                  builder, orig->getLoc(), info.getStep(builder),
+                  builder, orig->getLoc(),
+                  gutils->originalToNewFn.lookupOrDefault(
+                      info.getStep(builder)),
                   stablehlo::AddOp::create(builder, orig->getLoc(), stepInOuter,
                                            innerBody->getArgument(0))));
 
@@ -1794,10 +1825,11 @@ public:
           term->setOperands(1, term->getNumOperands() - 1, newReturns);
 
           builder.setInsertionPointAfter(outer);
-          Value limitForResult = info.isConstantLimit()
-                                     ? makeI64Constant(oldIV.getLoc(), builder,
-                                                       *info.getConstantLimit())
-                                     : info.getLimit();
+          Value limitForResult =
+              info.isConstantLimit()
+                  ? makeI64Constant(oldIV.getLoc(), builder,
+                                    *info.getConstantLimit())
+                  : gutils->originalToNewFn.lookupOrDefault(info.getLimit());
           SmallVector<Value> newResults{limitForResult};
 
           newResults.append(
@@ -1817,7 +1849,8 @@ public:
         // Non-constant, non-binomial: fall through to numIters caching below.
       }
 
-      numIters = info.getNumIters(revBuilder);
+      numIters = gutils->originalToNewFn.lookupOrDefault(
+          info.getNumIters(revBuilder, gutils->originalToNewFn));
     }
 
     if (!numIters) {
@@ -3823,8 +3856,7 @@ public:
       // `tensor.empty + dynamic_pad` when the shape genuinely has dynamic
       // dims — XLA cannot translate `dynamic_pad`.
       if (numIters != ShapedType::kDynamic) {
-        initValue = cast<AutoDiffTypeInterface>(newType).createNullValue(
-            rewriter, cinfo.initOp->getLoc());
+        initValue = makeZero(rewriter, cinfo.initOp->getLoc(), newType);
       } else {
         if (!itersV)
           itersV = info.getNumIters(rewriter);
@@ -3833,14 +3865,13 @@ public:
           if (v == ShapedType::kDynamic)
             v = 0;
         }
-        auto op = cast<AutoDiffTypeInterface>(
-                      RankedTensorType::get(zeros, newType.getElementType()))
-                      .createNullValue(rewriter, cinfo.initOp->getLoc());
+        auto op =
+            makeZero(rewriter, cinfo.initOp->getLoc(),
+                     RankedTensorType::get(zeros, newType.getElementType()));
 
-        auto zeroOp = cast<AutoDiffTypeInterface>(
-                          RankedTensorType::get(ArrayRef<int64_t>(),
-                                                newType.getElementType()))
-                          .createNullValue(rewriter, cinfo.initOp->getLoc());
+        auto zeroOp = makeZero(rewriter, cinfo.initOp->getLoc(),
+                               RankedTensorType::get(ArrayRef<int64_t>(),
+                                                     newType.getElementType()));
 
         auto zeroInt = stablehlo::ConstantOp::create(
             rewriter, cinfo.initOp->getLoc(), itersV.getType(),
@@ -4151,8 +4182,8 @@ struct IfOpEnzymeOpsRemover
     }
 
     for (auto &[pushedValue, info] : pushedCaches) {
-      Value dummy = cast<AutoDiffTypeInterface>(pushedValue.getType())
-                        .createNullValue(rewriter, pushedValue.getLoc());
+      Value dummy =
+          makeZero(rewriter, pushedValue.getLoc(), pushedValue.getType());
 
       Value trueValue =
           pushedValue.getParentBlock() == trueBlock ? pushedValue : dummy;

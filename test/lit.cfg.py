@@ -42,6 +42,9 @@ base_paths = [
 path = os.path.pathsep.join(base_paths)  # + config.extra_paths)
 config.environment["PATH"] = path
 config.environment["ENZYME_TEST_NOWHEEL"] = "1"
+if getattr(config, "enable_triton", True):
+    config.available_features.add("triton")
+
 if "PYTHONPATH" in os.environ:
     config.environment["PYTHONPATH"] = os.environ["PYTHONPATH"]
 config.substitutions.append(("python", sys.executable))
