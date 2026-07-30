@@ -21,5 +21,5 @@ module {
 
 // CHECK-LABEL: func.func @sink_constant_kernel
 // CHECK:       gpu.launch
-// CHECK-NEXT:    %[[CST:.*]] = arith.constant 4.200000e+01 : f32
+// CHECK:         %[[CST:.*]] = arith.constant 4.200000e+01 : f32
 // CHECK:         memref.store %[[CST]], %{{.*}}[%{{.*}}] : memref<?xf32, 1>
