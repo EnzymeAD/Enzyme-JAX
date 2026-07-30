@@ -345,7 +345,7 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
       }
       for (auto &r : todo->getRegions()) {
         for (auto &b : r.getBlocks())
-          for (auto &o2 : b.without_terminator())
+          for (auto &o2 : b)
             getAllOps(&o2);
       }
     };
