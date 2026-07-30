@@ -240,6 +240,14 @@ struct CallInfo {
   void *(*init)();
 };
 
+struct CuFuncWrapper {
+  void *func;
+};
+
+extern "C" MLIR_CAPI_EXPORTED void *EnzymeJaXEmptyGPUInit() {
+  return new CuFuncWrapper{nullptr};
+}
+
 llvm::StringMap<CallInfo> jitkernels;
 llvm::sys::SmartRWMutex<true> jit_kernel_mutex;
 std::unique_ptr<llvm::orc::LLJIT> JIT = nullptr;
@@ -330,6 +338,11 @@ bool initJIT() {
     JIT = std::move(tJIT.get());
     assert(JIT);
     auto GlobalPrefix = JIT->getDataLayout().getGlobalPrefix();
+
+    MappedSymbols[JIT->mangleAndIntern("EnzymeJaXEmptyGPUInit")] =
+        llvm::orc::ExecutorSymbolDef(
+            llvm::orc::ExecutorAddr::fromPtr((void *)&EnzymeJaXEmptyGPUInit),
+            llvm::JITSymbolFlags());
 
     llvm::orc::DynamicLibrarySearchGenerator::SymbolPredicate Pred;
 
@@ -445,6 +458,25 @@ static void replaceGetStreamOpsWithCudaABIStreamArg(mlir::ModuleOp &submod) {
     }
     op.erase();
   }
+}
+
+static void insertEmptyGPUInit(mlir::ModuleOp &submod, mlir::Location loc) {
+  OpBuilder builder(submod);
+  builder.setInsertionPointToStart(&submod.getBodyRegion().front());
+
+  auto ptrty = LLVM::LLVMPointerType::get(builder.getContext());
+  auto initTy = LLVM::LLVMFunctionType::get(ptrty, {}, false);
+  auto helper = LLVM::LLVMFuncOp::create(builder, loc, "EnzymeJaXEmptyGPUInit",
+                                         initTy, LLVM::Linkage::External);
+  auto initfn = LLVM::LLVMFuncOp::create(builder, loc, "nv_func_init", initTy,
+                                         LLVM::Linkage::External);
+
+  auto blk = new Block();
+  initfn.getRegion().push_back(blk);
+  builder.setInsertionPointToEnd(blk);
+  SmallVector<mlir::Value> args;
+  auto cufunc = LLVM::CallOp::create(builder, loc, helper, args)->getResult(0);
+  LLVM::ReturnOp::create(builder, loc, ValueRange(cufunc));
 }
 
 void rewriteKernelCallABI(
@@ -951,8 +983,10 @@ CallInfo CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
         submod.erase();
         return {};
       }
-      if (useCudaABI)
+      if (useCudaABI) {
         replaceGetStreamOpsWithCudaABIStreamArg(submod);
+        insertEmptyGPUInit(submod, loc);
+      }
     } else {
       submod->walk([](gpu::GPUModuleOp gmod) {
         auto str = gmod.getName();
@@ -1005,7 +1039,8 @@ CallInfo CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
                            cubinFormat, cuOptLevel, toolkitPath, linkFiles);
     }
 
-    auto ptr = CompileHostModule(ss.str(), submod, numGPUModule != 0,
+    auto ptr = CompileHostModule(ss.str(), submod,
+                                 numGPUModule != 0 || useCudaABI,
                                  dump_final_module);
     jitkernels[ss.str()] = ptr;
     submod.erase();

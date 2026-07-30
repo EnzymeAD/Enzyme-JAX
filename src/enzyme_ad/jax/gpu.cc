@@ -41,14 +41,6 @@ struct CuFuncWrapper {
   void operator delete(void *ptr) noexcept {}
 };
 
-// static void *emptyGPUInit() { return new CuFuncWrapper{nullptr}; }
-
-static void emptyGPUFunction() {}
-
-static void *emptyGPUInit() {
-  return (void *)(&emptyGPUFunction);
-}
-
 template <bool withError>
 XLA_FFI_Error *initialize(XLA_FFI_CallFrame *call_frame) {
   assert(call_frame->attrs.size == 1);
@@ -82,8 +74,7 @@ XLA_FFI_Error *initialize(XLA_FFI_CallFrame *call_frame) {
   err = cuCtxPushCurrent (pctx);
   */
 
-  auto init = cinfo->init ? cinfo->init : emptyGPUInit;
-  void *cufunc = init();
+  void *cufunc = cinfo->init();
 
   /*
   CUcontext tctx;
