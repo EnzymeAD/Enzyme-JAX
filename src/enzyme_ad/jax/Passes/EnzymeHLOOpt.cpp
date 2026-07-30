@@ -30128,6 +30128,9 @@ private:
 
   std::tuple<bool, SliceInfo>
   matchReduceSlice(stablehlo::ReduceOp reduceOp) const {
+    if (reduceOp.getDimensions().size() == 0)
+      return {false, SliceInfo()};
+
     if (reduceOp.getInputs().size() != 1 ||
         reduceOp.getDimensions().size() != 1 ||
         !((Child *)this)->isCompatibleReduction(reduceOp)) {
@@ -30151,7 +30154,7 @@ private:
   matchReshapeReduceSlice(stablehlo::ReshapeOp reshapeOp) const {
     auto reduce =
         reshapeOp.getOperand().template getDefiningOp<stablehlo::ReduceOp>();
-    if (!reduce) {
+    if (!reduce || reduce.getDimensions().empty()) {
       return {false, SliceInfo()};
     }
 
