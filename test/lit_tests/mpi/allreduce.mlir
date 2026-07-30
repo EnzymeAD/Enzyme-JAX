@@ -34,7 +34,7 @@ module {
 
 // CUDA:  module {
 // CUDA-NEXT:    llvm.func @ncclAllReduce(!llvm.ptr, !llvm.ptr, i64, i32, i32, !llvm.ptr, !llvm.ptr) -> i32
-// CUDA-NEXT:    llvm.func @enzymexla_wrapper_ncclAllReduce_MPI_SUM_MPI_INT64_T(%arg0: !llvm.ptr {enzymexla.memory_effects = ["read", "write", "allocate", "free"]}, %arg1: !llvm.ptr {enzymexla.memory_effects = ["read", "write", "allocate", "free"]}) attributes {enzymexla.memory_effects = ["read", "write", "allocate", "free"]} {
+// CUDA-NEXT:    llvm.func @enzymexla_wrapper_ncclAllReduce_MPI_SUM_MPI_INT64_T(%arg0: !llvm.ptr {enzymexla.memory_effects = ["read", "write", "allocate", "free"]}, %arg1: !llvm.ptr {enzymexla.memory_effects = ["read", "write", "allocate", "free"]}) attributes {{.*}}enzymexla.requires_cuda_abi{{.*}} {
 // CUDA-NEXT:      %0 = llvm.mlir.constant(0 : i32) : i32
 // CUDA-NEXT:      %1 = llvm.mlir.constant(1 : i64) : i64
 // CUDA-NEXT:      %2 = llvm.mlir.constant(4 : i32) : i32
