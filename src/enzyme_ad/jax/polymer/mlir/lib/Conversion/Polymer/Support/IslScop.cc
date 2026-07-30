@@ -1932,6 +1932,18 @@ IslScopBuilder::build(Operation *f, bool allowScfIfConditionalWritesAsMay) {
       bool needToStoreResults = true;
       auto unitMap = AffineMap::get(op->getContext());
       affine::AffineValueMap unitVMap(unitMap, ValueRange{}, ValueRange{});
+      auto addWholeLoad = [&](Value memref, MemoryAccess::MemoryKind kind) {
+        if (needsMemEffects(memref))
+          (void)scop->addAccessRelation(stmt, kind, polymer::MemoryAccess::READ,
+                                        redirectMap.lookupOrDefault(memref),
+                                        unitVMap, true, domain);
+      };
+      auto addWholeMayStore = [&](Value memref, MemoryAccess::MemoryKind kind) {
+        if (needsMemEffects(memref))
+          (void)scop->addAccessRelation(
+              stmt, kind, polymer::MemoryAccess::MAY_WRITE,
+              redirectMap.lookupOrDefault(memref), unitVMap, true, domain);
+      };
 
       auto collectKnownEffects = [&](Operation *opToHandle,
                                      bool conditionalWritesAsMay) {
@@ -1989,6 +2001,40 @@ IslScopBuilder::build(Operation *f, bool allowScfIfConditionalWritesAsMay) {
           addMustStore(rmw.getResult(), polymer::MemoryAccess::MT_Value,
                        unitVMap);
           return true;
+        }
+
+        if (allowScfIfConditionalWritesAsMay) {
+          if (auto rmw = dyn_cast<memref::AtomicRMWOp>(opToHandle)) {
+            addLoad(rmw.getValue(), polymer::MemoryAccess::MT_Value, unitVMap);
+            for (Value index : rmw.getIndices())
+              addLoad(index, polymer::MemoryAccess::MT_Value, unitVMap);
+            addWholeLoad(rmw.getMemref(), polymer::MemoryAccess::MT_Array);
+            addWholeMayStore(rmw.getMemref(), polymer::MemoryAccess::MT_Array);
+            addMustStore(rmw.getResult(), polymer::MemoryAccess::MT_Value,
+                         unitVMap);
+            return true;
+          }
+
+          if (auto rmw = dyn_cast<memref::GenericAtomicRMWOp>(opToHandle)) {
+            for (Value index : rmw.getIndices())
+              addLoad(index, polymer::MemoryAccess::MT_Value, unitVMap);
+            addWholeLoad(rmw.getMemref(), polymer::MemoryAccess::MT_Array);
+            addWholeMayStore(rmw.getMemref(), polymer::MemoryAccess::MT_Array);
+            addMustStore(rmw.getResult(), polymer::MemoryAccess::MT_Value,
+                         unitVMap);
+            return true;
+          }
+
+          if (auto rmw = dyn_cast<enzyme::AtomicRMWOp>(opToHandle)) {
+            addLoad(rmw.getValue(), polymer::MemoryAccess::MT_Value, unitVMap);
+            for (Value index : rmw.getIndices())
+              addLoad(index, polymer::MemoryAccess::MT_Value, unitVMap);
+            addWholeLoad(rmw.getMemref(), polymer::MemoryAccess::MT_Array);
+            addWholeMayStore(rmw.getMemref(), polymer::MemoryAccess::MT_Array);
+            addMustStore(rmw.getResult(), polymer::MemoryAccess::MT_Value,
+                         unitVMap);
+            return true;
+          }
         }
 
         if (isa<memref::AllocOp, memref::AllocaOp, memref::DeallocOp>(

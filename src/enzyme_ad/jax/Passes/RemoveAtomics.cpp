@@ -15,6 +15,9 @@
 #endif
 #include "Enzyme/MLIR/Dialect/Ops.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Interfaces/FunctionInterfaces.h"
 #include "polly/Support/GICHelper.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
@@ -361,13 +364,57 @@ MemoryAccess *getAtomicArrayWrite(enzyme::AffineAtomicRMWOp rmw,
   return write;
 }
 
+TypedValue<MemRefType> getMemrefAtomicMemref(Operation *op) {
+  if (auto rmw = dyn_cast<memref::AtomicRMWOp>(op))
+    return rmw.getMemref();
+  if (auto rmw = dyn_cast<memref::GenericAtomicRMWOp>(op))
+    return rmw.getMemref();
+  if (auto rmw = dyn_cast<enzyme::AtomicRMWOp>(op))
+    return rmw.getMemref();
+  return nullptr;
+}
+
+Value stripMemrefCasts(Value value) {
+  while (auto cast = value.getDefiningOp<memref::CastOp>())
+    value = cast.getSource();
+  return value;
+}
+
+bool areDistinctNoAliasFunctionArgs(Value lhs, Value rhs) {
+  lhs = stripMemrefCasts(lhs);
+  rhs = stripMemrefCasts(rhs);
+  if (lhs == rhs)
+    return false;
+
+  auto lhsArg = dyn_cast<BlockArgument>(lhs);
+  auto rhsArg = dyn_cast<BlockArgument>(rhs);
+  if (!lhsArg || !rhsArg || lhsArg.getOwner() != rhsArg.getOwner())
+    return false;
+
+  auto function =
+      dyn_cast<FunctionOpInterface>(lhsArg.getOwner()->getParentOp());
+  if (!function)
+    return false;
+
+  StringRef noAliasAttr = LLVM::LLVMDialect::getNoAliasAttrName();
+  return function.getArgAttr(lhsArg.getArgNumber(), noAliasAttr) &&
+         function.getArgAttr(rhsArg.getArgNumber(), noAliasAttr);
+}
+
+bool mayAliasForAtomicRemoval(Value lhs, Value rhs) {
+  if (areDistinctNoAliasFunctionArgs(lhs, rhs))
+    return false;
+  return mayAlias(lhs, rhs);
+}
+
 // Determines whether it is safe to "remove", i.e. convert an atomic rmw to
 // non-atomic read-modify-store.
 //
 // This is safe when there is no other racy atomic rmw w.r.t. this rmw. Regular
 // load/store races are ignored because those races already exist in the input.
 bool isSafeToRemoveAtomicImpl(enzyme::AffineAtomicRMWOp rmw, IslScop &scop,
-                              ArrayRef<enzyme::AffineAtomicRMWOp> rmws) {
+                              ArrayRef<enzyme::AffineAtomicRMWOp> rmws,
+                              ArrayRef<Operation *> memrefAtomics) {
   LDBG() << "Handling rmw: " << rmw;
   ScopStmt *rmwStmt = getStatementContaining(scop, rmw);
   if (!rmwStmt) {
@@ -385,12 +432,23 @@ bool isSafeToRemoveAtomicImpl(enzyme::AffineAtomicRMWOp rmw, IslScop &scop,
 
   TypedValue<MemRefType> theArray = rmw.getMemref();
   assert(theArray == theArrayWrite->AI->val);
+
+  for (Operation *memrefAtomic : memrefAtomics) {
+    TypedValue<MemRefType> otherArray = getMemrefAtomicMemref(memrefAtomic);
+    assert(otherArray);
+    if (!mayAliasForAtomicRemoval(otherArray, theArray))
+      continue;
+
+    LDBG() << "Found atomic operation to an aliasing memref: " << *memrefAtomic;
+    return false;
+  }
+
   for (auto otherRmw : rmws) {
     if (otherRmw == rmw)
       continue;
 
     TypedValue<MemRefType> otherArray = otherRmw.getMemref();
-    if (!mayAlias(otherArray, theArray))
+    if (!mayAliasForAtomicRemoval(otherArray, theArray))
       continue;
 
     ScopStmt *otherStmt = getStatementContaining(scop, otherRmw);
@@ -421,8 +479,9 @@ bool isSafeToRemoveAtomicImpl(enzyme::AffineAtomicRMWOp rmw, IslScop &scop,
 }
 
 bool isSafeToRemoveAtomic(enzyme::AffineAtomicRMWOp rmw, IslScop &scop,
-                          ArrayRef<enzyme::AffineAtomicRMWOp> rmws) {
-  if (isSafeToRemoveAtomicImpl(rmw, scop, rmws)) {
+                          ArrayRef<enzyme::AffineAtomicRMWOp> rmws,
+                          ArrayRef<Operation *> memrefAtomics) {
+  if (isSafeToRemoveAtomicImpl(rmw, scop, rmws, memrefAtomics)) {
     LDBG("remove-atomics-decision") << "Legal to remove atomic from " << rmw;
     return true;
   } else {
@@ -503,6 +562,11 @@ void handleGPUWrapper(enzymexla::GPUWrapperOp wrapperOp) {
 
   llvm::SmallVector<enzyme::AffineAtomicRMWOp> rmws;
   wrapperOp->walk([&](enzyme::AffineAtomicRMWOp rmw) { rmws.push_back(rmw); });
+  SmallVector<Operation *> memrefAtomics;
+  wrapperOp->walk([&](Operation *op) {
+    if (getMemrefAtomicMemref(op))
+      memrefAtomics.push_back(op);
+  });
   if (rmws.empty()) {
     LDBG() << "No RMWs";
     return;
@@ -525,7 +589,7 @@ void handleGPUWrapper(enzymexla::GPUWrapperOp wrapperOp) {
 
   SmallVector<enzyme::AffineAtomicRMWOp> toConvert;
   for (auto rmw : rmws)
-    if (isSafeToRemoveAtomic(rmw, *scop, rmws))
+    if (isSafeToRemoveAtomic(rmw, *scop, rmws, memrefAtomics))
       toConvert.push_back(rmw);
 
   for (auto rmw : toConvert)
