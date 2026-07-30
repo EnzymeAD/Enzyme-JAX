@@ -780,7 +780,7 @@ CallInfo CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
                      const std::string &toolkitPath,
                      const llvm::SmallVectorImpl<std::string> &linkFiles,
                      bool debug, bool returnPtr, bool dump_final_module,
-                     bool useCudaABI) {
+                     bool requiresCudaABI) {
 
   OpBuilder builder(op);
 
@@ -863,7 +863,7 @@ CallInfo CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
   builder.setInsertionPointToEnd(&submod.getBodyRegion().front());
 
   SmallVector<mlir::Type, 1> intys = {ptrty};
-  if (useCudaABI) {
+  if (numGPUModule != 0 || requiresCudaABI) {
     intys.push_back(ptrty);
     intys.push_back(ptrty);
   }
@@ -983,7 +983,7 @@ CallInfo CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
         submod.erase();
         return {};
       }
-      if (useCudaABI) {
+      if (requiresCudaABI) {
         replaceGetStreamOpsWithCudaABIStreamArg(submod);
         insertEmptyGPUInit(submod, loc);
       }
@@ -1033,7 +1033,7 @@ CallInfo CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
     }
 
     auto ptr = CompileHostModule(ss.str(), submod,
-                                 numGPUModule != 0 || useCudaABI,
+                                 numGPUModule != 0 || requiresCudaABI,
                                  dump_final_module);
     jitkernels[ss.str()] = ptr;
     submod.erase();
@@ -1139,7 +1139,8 @@ struct LowerJITPass
           symbolTable, op.getLoc(), fn, jit, op, openmp, cuResultHandlerPtr,
           cuStreamSynchronizePtr, indexBitWidth, cubinTriple, cubinChip,
           cubinFeatures, cubinFormat, cuOptLevel, toolkitPath, linkFilesArray,
-          debug, hasReturn, dump_final_module, backend == "cuda");
+          debug, hasReturn, dump_final_module,
+          fn->hasAttr("enzymexla.requires_cuda_abi"));
 
       std::string backendinfo((char *)&cdata, sizeof(CallInfo));
       if (jit) {

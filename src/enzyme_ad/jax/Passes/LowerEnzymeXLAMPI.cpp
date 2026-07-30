@@ -1655,6 +1655,8 @@ struct MPIAllreduceOpLowering
              rewriter.getStringAttr("allocate"),
              rewriter.getStringAttr("free")});
         wrapperFunc->setAttr("enzymexla.memory_effects", memoryEffectsAttr);
+        wrapperFunc->setAttr("enzymexla.requires_cuda_abi",
+                             rewriter.getUnitAttr());
 
         Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
         rewriter.setInsertionPointToStart(entryBlock);
