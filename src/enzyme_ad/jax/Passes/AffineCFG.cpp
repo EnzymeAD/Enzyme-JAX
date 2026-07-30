@@ -1358,7 +1358,7 @@ bool handle(PatternRewriter &b, AffineIfOp ifOp, size_t idx,
   auto tval =
       cast<AffineYieldOp>(ifOp.getThenBlock()->getTerminator()).getOperand(idx);
   auto fval =
-      cast<AffineYieldOp>(ifOp.getThenBlock()->getTerminator()).getOperand(idx);
+      cast<AffineYieldOp>(ifOp.getElseBlock()->getTerminator()).getOperand(idx);
   if (!negated && matchPattern(tval, m_One()) && matchPattern(fval, m_Zero())) {
     auto iset = ifOp.getCondition();
     for (auto expr : iset.getConstraints()) {
