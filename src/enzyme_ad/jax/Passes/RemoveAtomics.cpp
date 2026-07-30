@@ -550,7 +550,7 @@ void convertRmw(enzyme::AffineAtomicRMWOp rmw) {
 
   affine::AffineStoreOp::create(b, rmw.getLoc(), modify, rmw.getMemref(),
                                 rmw.getMap(), rmw.getIndices());
-  rmw.getResult().replaceAllUsesWith(modify);
+  rmw.getResult().replaceAllUsesWith(read);
   rmw.erase();
 }
 
