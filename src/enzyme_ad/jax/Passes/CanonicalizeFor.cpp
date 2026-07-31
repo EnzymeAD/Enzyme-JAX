@@ -3472,9 +3472,15 @@ struct ForLoopApplyEnzymeAttributes
       }
 
       if (loop && isa<scf::ForOp, scf::WhileOp>(loop)) {
+        if (isMincutAttr) {
+          if (!enable)
+            loop->setAttr("enzyme.disable_mincut", rewriter.getUnitAttr());
 
-        loop->setAttr(isCheckpointingAttr ? "enzyme.enable_checkpointing"
-                                          : "enzyme.enable_mincut",
+          continue;
+        }
+
+        assert(isCheckpointingAttr);
+        loop->setAttr("enzyme.enable_checkpointing",
                       rewriter.getBoolAttr(enable));
 
         if (enableBinomial) {
