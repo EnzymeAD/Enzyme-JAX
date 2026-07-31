@@ -769,18 +769,16 @@ void rewriteKernelCallABI(
   });
 }
 
-CallInfo CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
-                     FunctionOpInterface op, bool jit,
-                     enzymexla::JITCallOp jcall, bool openmp,
-                     size_t cuResultHandlerPtr, size_t cuStreamSynchronizePtr,
-                     int indexBitWidth, const std::string &cubinTriple,
-                     const std::string &cubinChip,
-                     const std::string &cubinFeatures,
-                     const std::string &cubinFormat, int cuOptLevel,
-                     const std::string &toolkitPath,
-                     const llvm::SmallVectorImpl<std::string> &linkFiles,
-                     bool debug, bool returnPtr, bool dump_final_module,
-                     bool requiresCudaABI) {
+CallInfo
+CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
+            FunctionOpInterface op, bool jit, enzymexla::JITCallOp jcall,
+            bool openmp, size_t cuResultHandlerPtr,
+            size_t cuStreamSynchronizePtr, int indexBitWidth,
+            const std::string &cubinTriple, const std::string &cubinChip,
+            const std::string &cubinFeatures, const std::string &cubinFormat,
+            int cuOptLevel, const std::string &toolkitPath,
+            const llvm::SmallVectorImpl<std::string> &linkFiles, bool debug,
+            bool returnPtr, bool dump_final_module, bool requiresCudaABI) {
 
   OpBuilder builder(op);
 
