@@ -931,12 +931,13 @@ public:
           return v;
         if (!ifOp->isAncestor(op))
           return v;
-        // If speculation is disabled, transform only if ops that solely contain
-        // yields
-        if (!Speculate && (thenBlock->getOperations().size() != 1 ||
-                           elseBlock->getOperations().size() != 1)) {
+        // Recomputing an op defined inside the if outside of it speculates it,
+        // so only do so when speculation is enabled. Integer and index values
+        // are always safe to speculate, as they aren't differentiable and thus
+        // cannot introduce strong-zero-like numeric changes during
+        // differentiation.
+        if (!Speculate && !v.getType().isIntOrIndex())
           return std::nullopt;
-        }
         if (op->getNumRegions() > 0)
           return std::nullopt;
         if (!isPure(op))
