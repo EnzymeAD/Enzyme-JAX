@@ -1596,21 +1596,7 @@ struct MPIAllreduceOpLowering
     } else if (backend == "cuda") {
 
       auto moduleOp = op->getParentOfType<ModuleOp>();
-      auto sendbufType = dyn_cast<RankedTensorType>(op.getOperand(0).getType());
-      auto recvbufType = dyn_cast<RankedTensorType>(op.getOperand(1).getType());
-      if (!sendbufType || !sendbufType.hasStaticShape())
-        return rewriter.notifyMatchFailure(
-            op, "CUDA NCCL allreduce lowering requires statically shaped "
-                "sendbuf to derive the element count");
-      if (!recvbufType || !recvbufType.hasStaticShape())
-        return rewriter.notifyMatchFailure(
-            op, "CUDA NCCL allreduce lowering requires statically shaped "
-                "recvbuf to validate the element count");
-      if (sendbufType.getShape() != recvbufType.getShape())
-        return rewriter.notifyMatchFailure(
-            op, "CUDA NCCL allreduce lowering requires sendbuf and recvbuf to "
-                "have the same shape");
-
+      auto sendbufType = cast<RankedTensorType>(op.getOperand(0).getType());
       auto llvmPtrType = LLVM::LLVMPointerType::get(context);
       auto llvmVoidType = LLVM::LLVMVoidType::get(context);
       auto i32Type = IntegerType::get(context, 32);
@@ -1621,18 +1607,10 @@ struct MPIAllreduceOpLowering
       auto datatype = op.getDatatype();
       StringRef datatypeName = stringifyMPIDatatype(datatype);
       auto ncclDatatype = mapMPIToNCCLDatatype(datatype);
-      if (failed(ncclDatatype))
-        return rewriter.notifyMatchFailure(
-            op, "MPI datatype not supported by NCCL lowering: " +
-                    datatypeName.str());
 
       auto mpiOp = op.getOp();
       StringRef mpiOpName = stringifyMPIOp(mpiOp);
       auto ncclRedOp = mapMPIToNCCLRedOp(mpiOp);
-      if (failed(ncclRedOp))
-        return rewriter.notifyMatchFailure(
-            op, "MPI reduction op not supported by NCCL lowering: " +
-                    mpiOpName.str());
 
       // Generate the enzymexla_wrapper LLVM function body
       std::string wrapperFunctionName =
@@ -1937,8 +1915,6 @@ struct LowerEnzymeXLAMPIPass
 
     auto context = module->getContext();
 
-    // fail if no nccl communicator was provided, but backend==cuda and we're
-    // trying to lower an MPI ops which needs a communicator
     if (backend == "cuda" && !ncclCommPtr) {
       bool hasLowerableMPIOp = false;
       module.walk([&](Operation *op) {
@@ -1953,6 +1929,53 @@ struct LowerEnzymeXLAMPIPass
       if (hasLowerableMPIOp) {
         module.emitError() << "lower-enzymexla-mpi with backend=cuda requires "
                               "a valid NCCL communicator pointer";
+        signalPassFailure();
+        return;
+      }
+    }
+
+    if (backend == "cuda") {
+      bool hasUnsupportedAllreduce = false;
+      module.walk([&](enzymexla::MPIAllreduceOp op) {
+        auto sendbufType =
+            dyn_cast<RankedTensorType>(op.getOperand(0).getType());
+        auto recvbufType =
+            dyn_cast<RankedTensorType>(op.getOperand(1).getType());
+        if (!sendbufType || !sendbufType.hasStaticShape()) {
+          op.emitError() << "CUDA NCCL allreduce lowering requires statically "
+                            "shaped sendbuf to derive the element count";
+          hasUnsupportedAllreduce = true;
+          return;
+        }
+        if (!recvbufType || !recvbufType.hasStaticShape()) {
+          op.emitError() << "CUDA NCCL allreduce lowering requires statically "
+                            "shaped recvbuf to validate the element count";
+          hasUnsupportedAllreduce = true;
+          return;
+        }
+        if (sendbufType.getShape() != recvbufType.getShape()) {
+          op.emitError() << "CUDA NCCL allreduce lowering requires sendbuf and "
+                            "recvbuf to have the same shape";
+          hasUnsupportedAllreduce = true;
+          return;
+        }
+
+        auto datatype = op.getDatatype();
+        if (failed(mapMPIToNCCLDatatype(datatype))) {
+          op.emitError() << "MPI datatype not supported by NCCL lowering: "
+                         << stringifyMPIDatatype(datatype);
+          hasUnsupportedAllreduce = true;
+          return;
+        }
+
+        auto mpiOp = op.getOp();
+        if (failed(mapMPIToNCCLRedOp(mpiOp))) {
+          op.emitError() << "MPI reduction op not supported by NCCL lowering: "
+                         << stringifyMPIOp(mpiOp);
+          hasUnsupportedAllreduce = true;
+        }
+      });
+      if (hasUnsupportedAllreduce) {
         signalPassFailure();
         return;
       }
