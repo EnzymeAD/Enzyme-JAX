@@ -100,15 +100,7 @@ bool isValidSymbolInt(Operation *defOp, bool recur, Region *scope) {
     }
     if (auto ifOp = dyn_cast<scf::IfOp>(defOp)) {
       if (isValidSymbolInt(ifOp.getCondition(), recur, scope)) {
-        if (llvm::all_of(ifOp.thenBlock()->without_terminator(),
-                         [&](Operation &o) {
-                           return isValidSymbolInt(&o, recur, scope);
-                         }) &&
-            llvm::all_of(ifOp.elseBlock()->without_terminator(),
-                         [&](Operation &o) {
-                           return isValidSymbolInt(&o, recur, scope);
-                         }) &&
-            llvm::all_of(
+        if (llvm::all_of(
                 ifOp.thenBlock()->getTerminator()->getOperands(),
                 [&](Value v) { return isValidSymbolInt(v, recur, scope); }) &&
             llvm::all_of(
@@ -121,15 +113,7 @@ bool isValidSymbolInt(Operation *defOp, bool recur, Region *scope) {
       if (llvm::all_of(ifOp.getOperands(), [&](Value o) {
             return isValidSymbolInt(o, recur, scope);
           }))
-        if (llvm::all_of(ifOp.getThenBlock()->without_terminator(),
-                         [&](Operation &o) {
-                           return isValidSymbolInt(&o, recur, scope);
-                         }) &&
-            llvm::all_of(ifOp.getElseBlock()->without_terminator(),
-                         [&](Operation &o) {
-                           return isValidSymbolInt(&o, recur, scope);
-                         }) &&
-            llvm::all_of(
+        if (llvm::all_of(
                 ifOp.getThenBlock()->getTerminator()->getOperands(),
                 [&](Value v) { return isValidSymbolInt(v, recur, scope); }) &&
             llvm::all_of(
