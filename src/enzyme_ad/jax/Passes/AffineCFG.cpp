@@ -2451,7 +2451,7 @@ struct MoveSelectToAffine : public OpRewritePattern<arith::SelectOp> {
           auto idx = cast<OpResult>(opv.get()).getResultNumber();
           auto tval = cast<AffineYieldOp>(midIf.getThenBlock()->getTerminator())
                           .getOperand(idx);
-          auto fval = cast<AffineYieldOp>(midIf.getThenBlock()->getTerminator())
+          auto fval = cast<AffineYieldOp>(midIf.getElseBlock()->getTerminator())
                           .getOperand(idx);
           if (matchPattern(tval, m_One()) && matchPattern(fval, m_Zero()))
             continue;
