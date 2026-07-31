@@ -2718,14 +2718,12 @@ struct ForOpRaising : public OpRewritePattern<scf::ForOp> {
   // no longer find an scf::ForOp/scf::WhileOp ancestor). So leave such loops
   // as scf.for regardless of whether they are otherwise affine-representable.
   bool hasEnzymeCheckpointingRequest(scf::ForOp loop) const {
-    if (loop->hasAttr("enzyme.enable_checkpointing") ||
-        loop->hasAttr("enzyme.enable_mincut"))
+    if (loop->hasAttr("enzyme.enable_checkpointing"))
       return true;
     bool found = false;
     loop.getBody()->walk([&](LLVM::CallOp call) {
       if (auto callee = call.getCallee())
-        if (callee->contains("__enzyme_set_checkpointing") ||
-            callee->contains("__enzyme_set_mincut"))
+        if (callee->contains("__enzyme_set_checkpointing"))
           found = true;
     });
     return found;
