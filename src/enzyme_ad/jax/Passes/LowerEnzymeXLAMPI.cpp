@@ -1414,9 +1414,10 @@ struct MPIAllreduceOpLowering
 
   std::string backend;
   size_t ncclCommPtr;
-  MPIAllreduceOpLowering(std::string backend, size_t ncclCommPtr, MLIRContext *context,
-                         PatternBenefit benefit = 1)
-      : OpRewritePattern(context, benefit), backend(backend), ncclCommPtr(ncclCommPtr) {}
+  MPIAllreduceOpLowering(std::string backend, size_t ncclCommPtr,
+                         MLIRContext *context, PatternBenefit benefit = 1)
+      : OpRewritePattern(context, benefit), backend(backend),
+        ncclCommPtr(ncclCommPtr) {}
 
   LogicalResult matchAndRewrite(enzymexla::MPIAllreduceOp op,
                                 PatternRewriter &rewriter) const override {
@@ -1634,9 +1635,9 @@ struct MPIAllreduceOpLowering
                     mpiOpName.str());
 
       // Generate the enzymexla_wrapper LLVM function body
-      std::string wrapperFunctionName = "enzymexla_wrapper_" + ncclFunctionName +
-                                        "_" + mpiOpName.str() + "_" +
-                                        datatypeName.str();
+      std::string wrapperFunctionName =
+          "enzymexla_wrapper_" + ncclFunctionName + "_" + mpiOpName.str() +
+          "_" + datatypeName.str();
 
       if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapperFunctionName)) {
         OpBuilder::InsertionGuard guard(rewriter);
@@ -1676,8 +1677,7 @@ struct MPIAllreduceOpLowering
             rewriter.getI64IntegerAttr(sendbufType.getNumElements()));
 
         Value dtype = rewriter.create<LLVM::ConstantOp>(
-            op.getLoc(), i32Type,
-            rewriter.getI32IntegerAttr(*ncclDatatype));
+            op.getLoc(), i32Type, rewriter.getI32IntegerAttr(*ncclDatatype));
 
         // Get the address of the communicator
         Value ncclCommInt = rewriter.create<LLVM::ConstantOp>(
@@ -1686,8 +1686,7 @@ struct MPIAllreduceOpLowering
             op.getLoc(), llvmPtrType, ncclCommInt);
 
         Value redOp = rewriter.create<LLVM::ConstantOp>(
-            op.getLoc(), i32Type,
-            rewriter.getI32IntegerAttr(*ncclRedOp));
+            op.getLoc(), i32Type, rewriter.getI32IntegerAttr(*ncclRedOp));
 
         Value stream =
             enzymexla::GetStreamOp::create(rewriter, op.getLoc(), llvmPtrType);
@@ -1713,11 +1712,11 @@ struct MPIAllreduceOpLowering
         OpBuilder::InsertionGuard guard(rewriter);
         rewriter.setInsertionPointToStart(moduleOp.getBody());
 
-        auto funcType = LLVM::LLVMFunctionType::get(
-            i32Type,
-            {llvmPtrType, llvmPtrType, i64Type, i32Type, i32Type, llvmPtrType,
-             llvmPtrType},
-            false);
+        auto funcType = LLVM::LLVMFunctionType::get(i32Type,
+                                                    {llvmPtrType, llvmPtrType,
+                                                     i64Type, i32Type, i32Type,
+                                                     llvmPtrType, llvmPtrType},
+                                                    false);
 
         rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), ncclFunctionName,
                                           funcType, LLVM::Linkage::External);
@@ -1938,8 +1937,8 @@ struct LowerEnzymeXLAMPIPass
 
     auto context = module->getContext();
 
-    // fail if no nccl communicator was provided, but backend==cuda and we're trying
-    // to lower an MPI ops which needs a communicator
+    // fail if no nccl communicator was provided, but backend==cuda and we're
+    // trying to lower an MPI ops which needs a communicator
     if (backend == "cuda" && !ncclCommPtr) {
       bool hasLowerableMPIOp = false;
       module.walk([&](Operation *op) {
@@ -1952,13 +1951,13 @@ struct LowerEnzymeXLAMPIPass
         }
       });
       if (hasLowerableMPIOp) {
-        module.emitError()
-            << "lower-enzymexla-mpi with backend=cuda requires a valid NCCL communicator pointer";
+        module.emitError() << "lower-enzymexla-mpi with backend=cuda requires "
+                              "a valid NCCL communicator pointer";
         signalPassFailure();
         return;
       }
     }
-    
+
     RewritePatternSet patterns(context);
 
     patterns.add<MPICommRankOpLowering>(backend, context);
@@ -1975,8 +1974,7 @@ struct LowerEnzymeXLAMPIPass
 
     GreedyRewriteConfig config;
     config.enableFolding();
-    if (failed(applyPatternsGreedily(module, std::move(patterns),
-                                     config))) {
+    if (failed(applyPatternsGreedily(module, std::move(patterns), config))) {
       signalPassFailure();
     }
   }
