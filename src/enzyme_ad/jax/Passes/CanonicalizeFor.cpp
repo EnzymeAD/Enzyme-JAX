@@ -1562,6 +1562,17 @@ struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
       }
     }
 
+    // With an extra condition the loop may also exit by exhausting the trip
+    // count. In that case the while still evaluates the before region one final
+    // time -- the evaluation whose comparison fails -- and it is that
+    // evaluation's condition args which become the loop results. That final
+    // evaluation is only observable through its side effects, which already
+    // force the extra iteration above, and through the loop results, so it is
+    // only needed here if the results are actually used. The after region stays
+    // guarded by the original bound, so it does not run an extra time.
+    if (lookThrough && !loop->use_empty())
+      doWhile = true;
+
     bool mutableAfter = false;
     if (doWhile) {
       for (auto &blk : loop.getAfter()) {
