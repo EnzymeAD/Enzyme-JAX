@@ -105,26 +105,11 @@ Type convertMemrefElementTypeForLLVMPointer(
   if (llvm::any_of(type.getShape().drop_front(), ShapedType::isDynamic))
     return Type();
 
-  // Only identity layout is supported, or a strided layout whose strides
-  // happen to match what the identity layout's strides would be for this
-  // (static) shape -- the offset is allowed to differ (including being
-  // dynamic), since this bare-pointer lowering bakes the offset into the
-  // runtime pointer value rather than encoding it in the static type (e.g.
-  // a memref::SubViewOp row/slice extracted at a dynamic index still has
-  // identity-equivalent strides, just a dynamic offset).
-  if (!type.getLayout().isIdentity()) {
-    SmallVector<int64_t> strides;
-    int64_t offset;
-    if (failed(type.getStridesAndOffset(strides, offset)))
-      return Type();
-    int64_t expectedStride = 1;
-    for (int64_t i = type.getRank() - 1; i >= 0; --i) {
-      if (strides[i] != expectedStride)
-        return Type();
-      // Dims other than the leading one are already known static here.
-      expectedStride *= type.getShape()[i];
-    }
-  }
+  // Only identity layout is supported.
+  // TODO: detect the strided layout that is equivalent to identity
+  // given the static part of the shape.
+  if (!type.getLayout().isIdentity())
+    return Type();
 
   if (type.getRank() > 0) {
     for (int64_t size : llvm::reverse(type.getShape().drop_front()))
@@ -958,108 +943,6 @@ public:
   }
 };
 
-/// Under the C-style memref lowering a memref *is* a bare pointer, so a
-/// contiguous `memref.subview` is pure pointer arithmetic: the result is the
-/// source pointer advanced to the slice's origin. The slice's sizes have no
-/// runtime representation (they live in the result type) and unit strides mean
-/// the slice stays contiguous, so nothing else needs materializing. Rank
-/// reduction is likewise free.
-///
-/// Without this pattern a host-side `memref.subview` -- e.g. the row slice of a
-/// checkpoint buffer that reverse-mode AD emits -- has no legalization at all,
-/// and the conversion driver falls through to `SubViewOp::fold` on a source
-/// operand that has already been remapped to `!llvm.ptr`.
-struct CSubViewOpLowering : public ConvertOpToLLVMPattern<memref::SubViewOp> {
-public:
-  using ConvertOpToLLVMPattern<memref::SubViewOp>::ConvertOpToLLVMPattern;
-
-  LogicalResult
-  matchAndRewrite(memref::SubViewOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    MemRefType srcType = op.getSourceType();
-    if (!isa_and_nonnull<LLVM::LLVMPointerType>(
-            getTypeConverter()->convertType(op.getType())))
-      return rewriter.notifyMatchFailure(op, "unsupported result memref type");
-
-    // Encodes the source's trailing (static) dimensions as nested LLVM arrays,
-    // so a multi-index GEP indexes the source exactly like memref.load does.
-    Type elTy =
-        convertMemrefElementTypeForLLVMPointer(srcType, *getTypeConverter());
-    if (!elTy)
-      return rewriter.notifyMatchFailure(op, "unsupported source memref type");
-
-    // A non-unit stride would make the slice non-contiguous, which a bare
-    // pointer cannot express.
-    for (OpFoldResult stride : op.getMixedStrides())
-      if (!isConstantIntValue(stride, 1))
-        return rewriter.notifyMatchFailure(op, "non-unit stride");
-
-    SmallVector<LLVM::GEPArg> args;
-    unsigned dynIdx = 0;
-    for (int64_t offset : op.getStaticOffsets()) {
-      if (ShapedType::isDynamic(offset))
-        args.push_back(LLVM::GEPArg(adaptor.getOffsets()[dynIdx++]));
-      else
-        args.push_back(LLVM::GEPArg(static_cast<int32_t>(offset)));
-    }
-
-    rewriter.replaceOpWithNewOp<LLVM::GEPOp>(
-        op,
-        LLVM::LLVMPointerType::get(op.getContext(),
-                                   srcType.getMemorySpaceAsInt()),
-        elTy, adaptor.getSource(), args);
-    return success();
-  }
-};
-
-/// `memref.copy` between two host buffers whose layouts are identity-equivalent
-/// (which is all the memref -> bare pointer conversion accepts) is a flat
-/// `llvm.memcpy`. Reverse-mode AD emits one of these per cached buffer -- e.g.
-/// snapshotting a grid into a checkpoint slot -- and without a pattern the
-/// conversion driver instead tries to materialize a memref descriptor for the
-/// operands, which is impossible for a bare pointer.
-struct CCopyOpLowering : public ConvertOpToLLVMPattern<memref::CopyOp> {
-public:
-  using ConvertOpToLLVMPattern<memref::CopyOp>::ConvertOpToLLVMPattern;
-
-  LogicalResult
-  matchAndRewrite(memref::CopyOp op, OpAdaptor adaptor,
-                  ConversionPatternRewriter &rewriter) const override {
-    auto srcType = dyn_cast<MemRefType>(op.getSource().getType());
-    auto dstType = dyn_cast<MemRefType>(op.getTarget().getType());
-    if (!srcType || !dstType)
-      return rewriter.notifyMatchFailure(op, "unranked memref");
-
-    // Cross-address-space copies need a runtime call (see CMemcpyOpLowering);
-    // leave them to fail loudly rather than emitting a wrong memcpy.
-    if (srcType.getMemorySpaceAsInt() != 0 || dstType.getMemorySpaceAsInt() != 0)
-      return rewriter.notifyMatchFailure(op, "non-host memory space");
-
-    // Rejects anything whose strides are not identity-equivalent, so a flat
-    // copy of getNumElements() elements is faithful.
-    if (!convertMemrefElementTypeForLLVMPointer(srcType, *getTypeConverter()) ||
-        !convertMemrefElementTypeForLLVMPointer(dstType, *getTypeConverter()))
-      return rewriter.notifyMatchFailure(op, "unsupported memref type");
-
-    // The two shapes agree (op verifier), so either side may supply the count;
-    // one of them being dynamic does not make the copy size unknown.
-    MemRefType sizedType = srcType.hasStaticShape() ? srcType : dstType;
-    if (!sizedType.hasStaticShape())
-      return rewriter.notifyMatchFailure(op, "dynamic copy size");
-    unsigned bits = sizedType.getElementTypeBitWidth();
-    if (bits == 0 || bits % 8 != 0)
-      return rewriter.notifyMatchFailure(op, "sub-byte element type");
-
-    Value bytes = LLVM::ConstantOp::create(
-        rewriter, op.getLoc(), rewriter.getI64Type(),
-        rewriter.getI64IntegerAttr(sizedType.getNumElements() * (bits / 8)));
-    LLVM::MemcpyOp::create(rewriter, op.getLoc(), adaptor.getTarget(),
-                           adaptor.getSource(), bytes, /*isVolatile=*/false);
-    rewriter.eraseOp(op);
-    return success();
-  }
-};
-
 struct CMemcpyOpLowering : public CLoadStoreOpLowering<enzymexla::MemcpyOp> {
 public:
   StringRef backend;
@@ -1655,11 +1538,6 @@ static SmallVector<NamedAttribute> convertFuncAttributes(
 static Type
 convertAndPackFunctionResultType(FunctionType type,
                                  const TypeConverter &typeConverter) {
-  if (getenv("ENZYME_DEBUG_FUNCTYPE")) {
-    llvm::errs() << "DEBUG convertAndPackFunctionResultType: type=" << type
-                 << " numResults=" << type.getNumResults()
-                 << " numInputs=" << type.getNumInputs() << "\n";
-  }
   SmallVector<Type> convertedResultTypes;
   if (failed(
           typeConverter.convertTypes(type.getResults(), convertedResultTypes)))
@@ -1685,13 +1563,8 @@ convertFunctionType(FuncOpType funcOp, const TypeConverter &typeConverter) {
       funcOp.getNumArguments());
   for (const auto &[index, type] : llvm::enumerate(funcOp.getArgumentTypes())) {
     Type converted = typeConverter.convertType(type);
-    if (!converted) {
-      if (getenv("ENZYME_DEBUG_FUNCTYPE"))
-        llvm::errs() << "DEBUG convertFunctionType: arg #" << index
-                     << " type=" << type << " FAILED to convert (funcOp="
-                     << funcOp.getName() << ")\n";
+    if (!converted)
       return std::nullopt;
-    }
 
     signatureConversion.addInputs(index, converted);
   }
@@ -3651,22 +3524,6 @@ public:
   LogicalResult
   matchAndRewrite(gpu::GPUFuncOp gpuFuncOp, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    if (getenv("ENZYME_DEBUG_FUNCTYPE")) {
-      static int callCounter = 0;
-      llvm::errs() << "DEBUG matchAndRewrite ENTRY #" << callCounter
-                   << " for " << gpuFuncOp.getName() << "\n";
-      if (auto topModule = gpuFuncOp->getParentOfType<ModuleOp>()) {
-        Operation *top = topModule;
-        while (auto parentModule = top->getParentOfType<ModuleOp>())
-          top = parentModule;
-        top->walk([&](gpu::GPUFuncOp f) {
-          llvm::errs() << "  DEBUG snapshot#" << callCounter
-                       << " gpu.func name=" << f.getName()
-                       << " type=" << f.getFunctionType() << "\n";
-        });
-      }
-      callCounter++;
-    }
     Location loc = gpuFuncOp.getLoc();
 
     SmallVector<LLVM::GlobalOp, 3> workgroupBuffers;
@@ -4045,9 +3902,8 @@ populateCStyleMemRefLoweringPatterns(RewritePatternSet &patterns,
                                      StringRef backend) {
   patterns.add<CAllocaOpLowering, CAllocOpLowering, CDeallocOpLowering,
                GetGlobalOpLowering, GlobalOpLowering, CLoadOpLowering,
-               CStoreOpLowering, CSubViewOpLowering, CCopyOpLowering,
-               AllocaScopeOpLowering,
-               CAtomicRMWOpLowering, CEnzymeAtomicRMWOpLowering>(typeConverter);
+               CStoreOpLowering, AllocaScopeOpLowering, CAtomicRMWOpLowering,
+               CEnzymeAtomicRMWOpLowering>(typeConverter);
   patterns.add<FillZeroOpLowering>(typeConverter);
   patterns.add<CMemcpyOpLowering>(typeConverter, backend);
   patterns.add<CMemsetOpLowering>(typeConverter, backend);
@@ -4679,12 +4535,6 @@ struct ConvertPolygeistToLLVMPass
   using ConvertPolygeistToLLVMBase::ConvertPolygeistToLLVMBase;
 
   void convertModule(ModuleOp m, bool gpuModule) {
-    if (getenv("ENZYME_DEBUG_FUNCTYPE")) {
-      m->walk([](gpu::GPUFuncOp f) {
-        llvm::errs() << "DEBUG pre-convert gpu.func name=" << f.getName()
-                     << " type=" << f.getFunctionType() << "\n";
-      });
-    }
     const auto &dataLayoutAnalysis = getAnalysis<DataLayoutAnalysis>();
 
     if (m->walk([](enzymexla::AlternativesOp op) {

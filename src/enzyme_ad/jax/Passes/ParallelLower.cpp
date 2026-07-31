@@ -235,17 +235,6 @@ prepareForGPUInline(LLVM::CallOp callOp, Operation *hostInsertionPoint,
     return {callOp, lfn};
 
   OpBuilder hostBuilder(hostInsertionPoint);
-  // hostInsertionPoint is normally the enclosing gpu.launch/GPUWrapperOp of a
-  // genuine host-to-device launch-prep call, so byval struct arguments (host
-  // pointers) are safe to load once at that outer, host-level scope. But
-  // when callOp is itself nested *inside* that GPU region (e.g. a plain
-  // device-side call to an Enzyme custom-derivative marker such as
-  // __enzyme_reverse, whose byval "tape" pointer is a thread-local address
-  // computed inside the kernel body), hoisting the load out to
-  // hostInsertionPoint would use a value that doesn't dominate it there.
-  // Fall back to loading right before callOp (already in the correct scope)
-  // in that case.
-  DominanceInfo domInfo(callOp->getParentOfType<ModuleOp>());
 
   SmallVector<Value> newArgs;
   SmallVector<DictionaryAttr> newArgAttrs;
@@ -259,15 +248,8 @@ prepareForGPUInline(LLVM::CallOp callOp, Operation *hostInsertionPoint,
       if (std::optional<NamedAttribute> attr =
               argumentAttrs.getNamed(LLVM::LLVMDialect::getByValAttrName())) {
         Type elementType = cast<TypeAttr>(attr->getValue()).getValue();
-        Value newArg;
-        if (domInfo.properlyDominates(arg, hostInsertionPoint)) {
-          newArg =
-              LLVM::LoadOp::create(hostBuilder, arg.getLoc(), elementType, arg);
-        } else {
-          OpBuilder localBuilder(callOp);
-          newArg = LLVM::LoadOp::create(localBuilder, arg.getLoc(),
-                                        elementType, arg);
-        }
+        Value newArg =
+            LLVM::LoadOp::create(hostBuilder, arg.getLoc(), elementType, arg);
         newArgs.push_back(newArg);
         newArgAttrs.push_back(
             NamedAttrList().getDictionary(callOp->getContext()));
@@ -340,16 +322,7 @@ prepareForGPUInline(LLVM::CallOp callOp, Operation *hostInsertionPoint,
 
   auto nestedCallOp =
       LLVM::CallOp::create(fnBuilder, callOp.getLoc(), lfn, argsForCall);
-  // The trampoline's declared type mirrors lfn's (possibly non-void) return
-  // type -- forward the nested call's result rather than always returning
-  // void, otherwise callers expecting a result (e.g. Enzyme's
-  // __enzyme_augmentfwd/__enzyme_reverse custom-derivative markers, which
-  // return a tape by value) see a return-arity mismatch downstream.
-  if (isa<LLVM::LLVMVoidType>(oldFnTy.getReturnType()))
-    LLVM::ReturnOp::create(fnBuilder, callOp.getLoc(), ValueRange{});
-  else
-    LLVM::ReturnOp::create(fnBuilder, callOp.getLoc(),
-                           ValueRange{nestedCallOp.getResult()});
+  LLVM::ReturnOp::create(fnBuilder, callOp.getLoc(), nullptr);
 
   return {nestedCallOp, newFn};
 }
@@ -561,24 +534,11 @@ void ParallelLower::runOnOperation() {
     SmallVector<CallOp> dimsToInline;
     getOperation()->walk([&](CallOp bidx) {
       if (bidx.getCallee() == "_ZN4dim3C1EOS_" ||
-          bidx.getCallee() == "_ZN4dim3C1Ejjj" ||
-          bidx.getCallee() == "_ZN4dim3C2EOS_" ||
-          bidx.getCallee() == "_ZN4dim3C2Ejjj")
+          bidx.getCallee() == "_ZN4dim3C1Ejjj")
         dimsToInline.push_back(bidx);
     });
-    for (auto op : dimsToInline) {
-      // Resolve the callable before inlining erases the call op, so its body
-      // can be kept alive afterward. Enzyme's later adjoint synthesis for
-      // plain-old-data locals (e.g. zero-initializing a "shadow" dim3) can
-      // emit fresh calls to this same trivial constructor after this pass
-      // has already run, so its definition must survive even once every
-      // currently-visible call site here has been inlined away.
-      CallableOpInterface callableOp = dyn_cast_or_null<CallableOpInterface>(
-          op.resolveCallableInTable(&symbolTable));
+    for (auto op : dimsToInline)
       callInliner(op);
-      if (callableOp)
-        replacedCallables.erase(callableOp);
-    }
   }
 
   {
@@ -1090,79 +1050,14 @@ void ParallelLower::runOnOperation() {
       }
     }
   }
-  // A function can still contain raw gpu.* ops here (not yet inside a
-  // gpu.module) if its only remaining reason to exist is that its address is
-  // taken as the differentiand of an __enzyme_* marker call (e.g.
-  // __enzyme_augmentfwd/__enzyme_reverse/__enzyme_autodiff custom-derivative
-  // registration). Such functions are never launched themselves -- they are
-  // consumed by the later outline-enzyme-regions/enzyme passes, which clone
-  // (and differentiate) their body directly into the already-outlined
-  // gpu kernel that references them, after which they become dead and get
-  // removed by symbol-dce. Flagging them here would reject every reverse-mode
-  // custom derivative of a device kernel, so we defer to the enzyme pass
-  // instead of failing early.
-  auto isOnlyReachableViaEnzymeMarker = [&](FunctionOpInterface fn) {
-    auto sym = dyn_cast_or_null<SymbolOpInterface>(fn.getOperation());
-    if (!sym)
-      return false;
-    SymbolUserMap userMap(symbolTable, getOperation());
-    // Follow the pointer value forward through ordinary op results as well as
-    // branch operands forwarded to successor block arguments (the SSA-form
-    // control flow at this stage of the pipeline still uses llvm.br /
-    // llvm.cond_br with block arguments rather than cf.*), since Clang's
-    // codegen commonly funnels a function-pointer constant through a
-    // preheader/join block before it reaches the actual enzyme marker call.
-    auto feedsEnzymeMarker = [](Operation *use) {
-      SmallVector<Value> worklist(use->getResults().begin(),
-                                  use->getResults().end());
-      SmallPtrSet<void *, 8> seen;
-      while (!worklist.empty()) {
-        Value v = worklist.pop_back_val();
-        if (!seen.insert(v.getAsOpaquePointer()).second)
-          continue;
-        for (OpOperand &opUse : v.getUses()) {
-          Operation *consumer = opUse.getOwner();
-          if (auto call = dyn_cast<LLVM::CallOp>(consumer)) {
-            if (auto callee = call.getCallee())
-              if (callee->contains("__enzyme_"))
-                return true;
-          }
-          if (auto call = dyn_cast<func::CallOp>(consumer)) {
-            if (call.getCallee().contains("__enzyme_"))
-              return true;
-          }
-          if (auto br = dyn_cast<BranchOpInterface>(consumer)) {
-            for (unsigned succIdx = 0, se = consumer->getNumSuccessors();
-                 succIdx != se; ++succIdx) {
-              SuccessorOperands succOperands =
-                  br.getSuccessorOperands(succIdx);
-              for (unsigned i = 0, ie = succOperands.size(); i != ie; ++i)
-                if (succOperands[i] == v)
-                  worklist.push_back(
-                      consumer->getSuccessor(succIdx)->getArgument(i));
-            }
-          }
-          for (Value res : consumer->getResults())
-            worklist.push_back(res);
-        }
-      }
-      return false;
-    };
-    auto users = userMap.getUsers(sym);
-    if (users.empty())
-      return false;
-    return llvm::all_of(users, feedsEnzymeMarker);
-  };
   if (getOperation()
-          ->walk<WalkOrder::PreOrder>([&](Operation *op) {
+          ->walk<WalkOrder::PreOrder>([](Operation *op) {
             if (isa<gpu::GPUModuleOp>(op))
               return WalkResult::skip();
             if (isa<gpu::ThreadIdOp, gpu::BlockIdOp, gpu::BlockDimOp,
                     gpu::GridDimOp>(op)) {
-              auto fn = op->getParentOfType<FunctionOpInterface>();
-              if (fn && isOnlyReachableViaEnzymeMarker(fn))
-                return WalkResult::skip();
-              llvm::errs() << *fn << "\n";
+              llvm::errs() << *op->getParentOfType<FunctionOpInterface>()
+                           << "\n";
               op->emitError() << " GPU instruction outside of gpu module op "
                                  "(parallel lower)\n";
               return WalkResult::interrupt();

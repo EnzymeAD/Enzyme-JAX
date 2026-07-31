@@ -200,9 +200,6 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
     exit(2);
   }
 
-  if (getenv("DEBUG_REACTANT_PRINT_OP_ON_DIAGNOSTIC"))
-    mod->getContext()->printOpOnDiagnostic(true);
-
   DiagnosticEngine &engine = mod->getContext()->getDiagEngine();
   error_stream << "Pipeline failed:\n";
   DiagnosticEngine::HandlerID id =
@@ -214,11 +211,6 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       });
   if (!mlir::succeeded(pm.run(cast<mlir::ModuleOp>(*mod)))) {
     llvm::errs() << error_stream.str() << "\n";
-    if (auto path = getenv("DEBUG_REACTANT_DUMP_ON_FAILURE")) {
-      std::error_code EC;
-      llvm::raw_fd_ostream os(path, EC);
-      mod->print(os, flags);
-    }
     return "";
   }
 
