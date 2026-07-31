@@ -1,6 +1,8 @@
 #ifndef ENZYME_AD_JAX_DIALECT_AXIS_UTILITIES_H
 #define ENZYME_AD_JAX_DIALECT_AXIS_UTILITIES_H
 
+#include <cstdint>
+
 #include "Dialect.h"
 
 #include "llvm/Support/ErrorHandling.h"
@@ -8,6 +10,12 @@
 
 namespace mlir::enzyme::axis {
 template <typename T> using TypedValueArrayRef = llvm::ArrayRef<TypedValue<T>>;
+
+struct SplitExtentSlice {
+  size_t extentIdx;
+  uint64_t subExtent;
+  uint64_t stride;
+};
 
 // Utility for casting with better error reporting
 template <typename T>
@@ -144,6 +152,19 @@ subtractFactorsFromFactorGroup(
 inferMapFromIndices(::mlir::TypedValue<FactorGroupType> index_space,
                     llvm::ArrayRef<int> rhs_indices,
                     ::mlir::OpBuilder &builder);
+
+// Computes the extent cuts used by split_divisible without materializing SSA
+// factors. The returned extents are maximal one-to-one cuts where possible and
+// minimal indivisible units otherwise.
+llvm::SmallVector<uint64_t> computeSplits(
+  llvm::ArrayRef<uint64_t> lhsExtents,
+  llvm::ArrayRef<uint64_t> rhsExtents);
+
+// Materializes one side of a split plan as, for each cut, the list of source
+// extent slices contributing to that cut.
+llvm::SmallVector<llvm::SmallVector<SplitExtentSlice>>
+computeSplitExtentSlices(llvm::ArrayRef<uint64_t> extents,
+                         llvm::ArrayRef<uint64_t> cuts);
 
 // Splits each lhs/rhs factor-group mapping pair into maximal one-to-one
 // submappings where possible, and minimal indivisible units where not possible.

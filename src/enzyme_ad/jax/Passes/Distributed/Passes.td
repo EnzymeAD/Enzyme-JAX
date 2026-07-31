@@ -43,6 +43,25 @@ def ShardyToDistributedPass
   }];
 }
 
+def ShardyToDistributedHigherLevelPass
+    : Pass<"shardy-to-distributed-higher-level", "::mlir::ModuleOp"> {
+  let summary = "Temporary higher-level skeleton pass for Shardy-to-distributed debugging.";
+  let options = [
+    Option<"dumpLogicalAxes", "dump-logical-axes", "bool", "false",
+           "Print ShardyLogicalAxisAnalysis axis symbols for each operation in main">,
+  ];
+  let dependentDialects = [
+    "enzyme::axis::AxisDialect", "sdy::SdyDialect",
+    "enzyme::distributed::DistributedDialect"
+  ];
+  let description = [{
+    Scans a module for a main function, asserts that it is single-block,
+    runs ShardyLogicalAxisAnalysis on that function, prints the logical axes
+    for each operation in the main block, and runs the SSA block partial-order
+    analysis as a temporary debugging scaffold.
+  }];
+}
+
 def InsertPhysicalMeshPass : Pass<"insert-physical-mesh", "::mlir::ModuleOp"> {
   let summary = "Insert a mock distributed.PhysicalMesh derived from Shardy "
                 "mesh metadata.";

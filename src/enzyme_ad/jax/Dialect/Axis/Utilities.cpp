@@ -1,6 +1,7 @@
 #include "Utilities.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <limits>
 #include <numeric>
 
@@ -10,7 +11,7 @@
 #include "llvm/Support/ErrorHandling.h"
 #include "llvm/Support/raw_ostream.h"
 
-#define DEBUG_TYPE "axis-infer-map"
+#define DEBUG_TYPE "enzyme-axis-utilities"
 
 namespace mlir::enzyme::axis {
 
@@ -56,10 +57,10 @@ bool areAxesEquivalent(TypedValue<AxisTypeInterface> lhs,
 
 // Tests if two axis factors are disjoint members of some valid factorization
 // of a shared source axis.
-bool arePairwiseFactorsDisjoint(TypedValue<AxisFactorType> lhsFactor,
-                                TypedValue<AxisFactorType> rhsFactor,
-                                TypedValue<AxisTypeInterface> lhsProvenanceAxis,
-                                TypedValue<AxisTypeInterface> rhsProvenanceAxis) {
+bool arePairwiseFactorsDisjoint(
+    TypedValue<AxisFactorType> lhsFactor, TypedValue<AxisFactorType> rhsFactor,
+    TypedValue<AxisTypeInterface> lhsProvenanceAxis,
+    TypedValue<AxisTypeInterface> rhsProvenanceAxis) {
   auto lhsType = lhsFactor.getType();
   auto rhsType = rhsFactor.getType();
 
@@ -210,7 +211,8 @@ bool areFactorsDisjoint(
         continue;
       }
       if (!arePairwiseFactorsDisjoint(factors[i], factors[j],
-                                      cachedProvenances[i], cachedProvenances[j])) {
+                                      cachedProvenances[i],
+                                      cachedProvenances[j])) {
         return false;
       }
     }
@@ -265,7 +267,8 @@ llvm::SmallVector<std::pair<int, int>> build_max_factors(ValueRange factors) {
   llvm::SmallVector<TypedValue<AxisFactorType>> typedFactors;
   typedFactors.reserve(factors.size());
   for (Value factor : factors) {
-    typedFactors.push_back(castTypedValue<AxisFactorType>(factor, "AxisFactorType"));
+    typedFactors.push_back(
+        castTypedValue<AxisFactorType>(factor, "AxisFactorType"));
   }
   return build_max_factors(TypedValueArrayRef<AxisFactorType>(typedFactors));
 }
@@ -483,86 +486,168 @@ factorAxisByExtents(::mlir::Value axis, llvm::ArrayRef<int32_t> extents,
   return factors;
 }
 
-llvm::SmallVector<int>
-compute_splits(ArrayRef<TypedValue<AxisFactorType>> lhs,
-               ArrayRef<TypedValue<AxisFactorType>> rhs) {
-  struct cursor {
-    int pos;       // current subfactor we are working on.
-    int subfactor; // "stride" of the factors we haven't yet taken
+llvm::SmallVector<uint64_t> computeSplits(ArrayRef<uint64_t> lhsExtents,
+                                          ArrayRef<uint64_t> rhsExtents) {
+  llvm::SmallVector<uint64_t> splits;
+  if (lhsExtents.empty() || rhsExtents.empty()) {
+    assert(lhsExtents.empty() == rhsExtents.empty() &&
+           "split inputs must both be empty or both be non-empty");
+    return splits;
+  }
+
+#ifndef NDEBUG
+  auto assertValidExtents = [](ArrayRef<uint64_t> extents) {
+    for (uint64_t extent : extents) {
+      assert(extent > 1 && "split extents must be greater than 1");
+    }
   };
-  cursor left_cursor = {0, 1};
-  cursor right_cursor = {0, 1};
+
+  assertValidExtents(lhsExtents);
+  assertValidExtents(rhsExtents);
+#endif
+
+  struct cursor {
+    size_t pos;         // current subfactor we are working on.
+    uint64_t subfactor; // extent already taken from the current factor
+  };
+  cursor leftCursor = {0, 1};
+  cursor rightCursor = {0, 1};
   // when we "take" a subfactor of given extent, this steps the cursor to
   // the next
-  auto advance_cursor =
-      [](cursor &c, ArrayRef<TypedValue<AxisFactorType>> factors, int size) {
-        c.subfactor *= size;
-        int factor_size = getFactorExtent(factors[c.pos]);
-        assert(!(c.subfactor > factor_size) && "Subfactor exceeds factor size");
-        assert(factor_size % c.subfactor == 0 &&
-               "Subfactor does not divide factor size");
-        if (c.subfactor == factor_size) {
-          c.pos++;
-          c.subfactor = 1;
-        }
-      };
-  auto get_next_extent = [](cursor &c,
-                            ArrayRef<TypedValue<AxisFactorType>> factors) {
-    int factor_size = getFactorExtent(factors[c.pos]);
-    int remaining = factor_size / c.subfactor;
+  auto advanceCursor = [](cursor &c, ArrayRef<uint64_t> extents,
+                          uint64_t size) {
+    c.subfactor *= size;
+    uint64_t factorSize = extents[c.pos];
+    assert(!(c.subfactor > factorSize) && "Subfactor exceeds factor size");
+    assert(factorSize % c.subfactor == 0 &&
+           "Subfactor does not divide factor size");
+    if (c.subfactor == factorSize) {
+      c.pos++;
+      c.subfactor = 1;
+    }
+  };
+  auto getNextExtent = [](cursor &c, ArrayRef<uint64_t> extents) {
+    uint64_t factorSize = extents[c.pos];
+    uint64_t remaining = factorSize / c.subfactor;
     assert(remaining > 1 && "Remaining extent must be greater than 1");
     return remaining;
   };
-  llvm::SmallVector<int> splits;
-  int lhs_residual = 1;
-  int rhs_residual = 1;
-  while (left_cursor.pos < lhs.size() && right_cursor.pos < rhs.size()) {
-    int new_rhs = get_next_extent(right_cursor, rhs);
-    int new_lhs = get_next_extent(left_cursor, lhs);
 
-    if (lhs_residual == 1 && rhs_residual == 1) {
+  uint64_t lhsResidual = 1;
+  uint64_t rhsResidual = 1;
+  while (leftCursor.pos < lhsExtents.size() &&
+         rightCursor.pos < rhsExtents.size()) {
+    uint64_t newRhs = getNextExtent(rightCursor, rhsExtents);
+    uint64_t newLhs = getNextExtent(leftCursor, lhsExtents);
+
+    if (lhsResidual == 1 && rhsResidual == 1) {
       // No residual axis parts from previously,
       // so we are aiming for the maximal one-to-one
       // split
-      int common = std::gcd(new_rhs * rhs_residual, new_lhs * lhs_residual);
+      uint64_t common = std::gcd(newRhs * rhsResidual, newLhs * lhsResidual);
       if (common != 1) {
         splits.push_back(common);
-        advance_cursor(left_cursor, lhs, common);
-        advance_cursor(right_cursor, rhs, common);
+        advanceCursor(leftCursor, lhsExtents, common);
+        advanceCursor(rightCursor, rhsExtents, common);
       } else {
-        lhs_residual = new_lhs;
-        rhs_residual = new_rhs;
-        advance_cursor(left_cursor, lhs, new_lhs);
-        advance_cursor(right_cursor, rhs, new_rhs);
+        lhsResidual = newLhs;
+        rhsResidual = newRhs;
+        advanceCursor(leftCursor, lhsExtents, newLhs);
+        advanceCursor(rightCursor, rhsExtents, newRhs);
       }
     } else {
       // residual axis parts from previously,
       // so we are aiming for the smallest correct split
-      int lcm = std::lcm(rhs_residual, lhs_residual);
-      int need_from_lhs = lcm / lhs_residual;
-      int need_from_rhs = lcm / rhs_residual;
-      if (new_lhs % need_from_lhs == 0 && new_rhs % need_from_rhs == 0) {
+      uint64_t lcm = std::lcm(rhsResidual, lhsResidual);
+      uint64_t needFromLhs = lcm / lhsResidual;
+      uint64_t needFromRhs = lcm / rhsResidual;
+      if (newLhs % needFromLhs == 0 && newRhs % needFromRhs == 0) {
         splits.push_back(lcm);
-        lhs_residual = 1;
-        rhs_residual = 1;
-        advance_cursor(left_cursor, lhs, need_from_lhs);
-        advance_cursor(right_cursor, rhs, need_from_rhs);
+        lhsResidual = 1;
+        rhsResidual = 1;
+        advanceCursor(leftCursor, lhsExtents, needFromLhs);
+        advanceCursor(rightCursor, rhsExtents, needFromRhs);
       } else {
         // Still cannot find a factor, need to add whole axis
         // and move on
-        lhs_residual *= new_lhs;
-        rhs_residual *= new_rhs;
-        advance_cursor(left_cursor, lhs, new_lhs);
-        advance_cursor(right_cursor, rhs, new_rhs);
+        lhsResidual *= newLhs;
+        rhsResidual *= newRhs;
+        advanceCursor(leftCursor, lhsExtents, newLhs);
+        advanceCursor(rightCursor, rhsExtents, newRhs);
       }
     }
   }
-  // expect both cursors to have reached end
-  assert(left_cursor.pos == lhs.size() && "Left cursor did not reach end");
-  assert(right_cursor.pos == rhs.size() && "Right cursor did not reach end");
-  assert(lhs_residual == 1 && "Left residual not fully reduced");
-  assert(rhs_residual == 1 && "Right residual not fully reduced");
+
+  assert(leftCursor.pos == lhsExtents.size() &&
+         "Left cursor did not reach end");
+  assert(rightCursor.pos == rhsExtents.size() &&
+         "Right cursor did not reach end");
+  assert(lhsResidual == 1 && "Left residual not fully reduced");
+  assert(rhsResidual == 1 && "Right residual not fully reduced");
   return splits;
+}
+
+llvm::SmallVector<llvm::SmallVector<SplitExtentSlice>>
+computeSplitExtentSlices(ArrayRef<uint64_t> extents, ArrayRef<uint64_t> cuts) {
+  llvm::SmallVector<llvm::SmallVector<SplitExtentSlice>> splitSlices;
+  splitSlices.reserve(cuts.size());
+  if (extents.empty() || cuts.empty()) {
+    assert(extents.empty() == cuts.empty() &&
+           "split slices require extents and cuts to be simultaneously empty");
+    return splitSlices;
+  }
+
+  size_t extentIdx = 0;
+  uint64_t extentTaken = 1;
+  for (uint64_t cut : cuts) {
+    assert(cut > 0 && "split cuts must be positive");
+    llvm::SmallVector<SplitExtentSlice> currentCut;
+    uint64_t cutTaken = 1;
+    while (cutTaken < cut) {
+      assert(extentIdx < extents.size() &&
+             "split slices exhausted extents before cuts");
+      uint64_t extent = extents[extentIdx];
+      uint64_t extentRemaining = extent / extentTaken;
+      uint64_t cutRemaining = cut / cutTaken;
+      assert(extentRemaining % cutRemaining == 0 ||
+             cutRemaining % extentRemaining == 0);
+
+      uint64_t take = std::min(extentRemaining, cutRemaining);
+      currentCut.push_back({extentIdx, take, extentRemaining / take});
+
+      cutTaken *= take;
+      extentTaken *= take;
+      if (extentTaken == extent) {
+        ++extentIdx;
+        extentTaken = 1;
+      }
+    }
+    assert(cutTaken == cut && "split cut was not fully materialized");
+    splitSlices.push_back(std::move(currentCut));
+  }
+
+  assert(extentIdx == extents.size() && "Did not finish slicing extents");
+  assert(extentTaken == 1 && "Extent slicing left a trailing partial extent");
+  return splitSlices;
+}
+
+static llvm::SmallVector<uint64_t>
+computeSplits(ArrayRef<TypedValue<AxisFactorType>> lhs,
+              ArrayRef<TypedValue<AxisFactorType>> rhs) {
+  llvm::SmallVector<uint64_t> lhsExtents;
+  lhsExtents.reserve(lhs.size());
+  for (TypedValue<AxisFactorType> factor : lhs) {
+    lhsExtents.push_back(static_cast<uint64_t>(getFactorExtent(factor)));
+  }
+
+  llvm::SmallVector<uint64_t> rhsExtents;
+  rhsExtents.reserve(rhs.size());
+  for (TypedValue<AxisFactorType> factor : rhs) {
+    rhsExtents.push_back(static_cast<uint64_t>(getFactorExtent(factor)));
+  }
+
+  return computeSplits(ArrayRef<uint64_t>(lhsExtents),
+                       ArrayRef<uint64_t>(rhsExtents));
 }
 
 // Attempts to split a mapping of factor products into one-to-one
@@ -590,6 +675,7 @@ bool split_divisible(ArrayRef<TypedValue<FactorGroupType>> lhs,
     assert(succeeded(g1_factors));
     auto g2_factors = getProductProvenanceFactors(g2);
     assert(succeeded(g2_factors));
+    Location groupLoc = g1.getLoc();
     if (g1_factors->size() == 1 && g2_factors->size() == 1) {
       lhs_out.push_back(g1);
       rhs_out.push_back(g2);
@@ -597,63 +683,51 @@ bool split_divisible(ArrayRef<TypedValue<FactorGroupType>> lhs,
     }
 
     // Nonatomic product group
-    auto splits = compute_splits(*g1_factors, *g2_factors);
+    auto splits = computeSplits(*g1_factors, *g2_factors);
     auto construct_splits =
         [&](ArrayRef<TypedValue<AxisFactorType>> factors,
+            llvm::ArrayRef<uint64_t> factorExtents,
             llvm::SmallVector<TypedValue<FactorGroupType>> &out) {
-          llvm::SmallVector<Value> currentGroup;
-          auto factor_it = factors.begin();
-          int factor_taken = 1;
-          auto split_it = splits.begin();
-          int split_taken = 1;
-
-          while (split_it != splits.end()) {
-            // because of our iteration order we are visiting high-order first
-            int factor_remaining = getFactorExtent(*factor_it) / factor_taken;
-            int split_remaining = *split_it / split_taken;
-            // expect split to divide factor or vice versa, or both if equal.
-            assert(factor_remaining % split_remaining == 0 ||
-                   split_remaining % factor_remaining == 0);
-            int take = std::min(factor_remaining, split_remaining);
-            int new_factor_extent = take;
-            int new_factor_stride = getFactorStride(*factor_it) *
-                                    (factor_remaining / new_factor_extent);
-            auto factor_axis = getFactorProvenanceAxis(*factor_it);
-            assert(succeeded(factor_axis) &&
-                   "factor must have a provenance axis");
-            auto loc = g1.getLoc();
-            auto splitFactor = builder.create<AxisFactorOp>(
-                loc, *factor_axis, new_factor_extent, new_factor_stride);
-            currentGroup.push_back(splitFactor.getResult());
-            split_taken *= take;
-            factor_taken *= take;
-            bool splitFullyConsumed = (split_taken == *split_it);
-            bool factorFullyConsumed =
-                (factor_taken == getFactorExtent(*factor_it));
-
-            if (splitFullyConsumed) {
-              // Push our current group to out
-              auto product = builder.create<AxisProductOp>(
-                  g1.getLoc(), ValueRange(currentGroup));
-              out.push_back(castTypedValue<FactorGroupType>(product.getResult(),
-                                                            "FactorGroupType"));
-              success = success && (currentGroup.size() ==
-                                    1); // record if atomic factors found
-              currentGroup.clear();
-
-              // reset the split
-              split_it++;
-              split_taken = 1;
+          auto slicedFactors = computeSplitExtentSlices(factorExtents, splits);
+          for (const llvm::SmallVector<SplitExtentSlice> &groupSlices :
+               slicedFactors) {
+            llvm::SmallVector<Value> currentGroup;
+            for (const SplitExtentSlice &slice : groupSlices) {
+              TypedValue<AxisFactorType> sourceFactor =
+                  factors[slice.extentIdx];
+              auto factor_axis = getFactorProvenanceAxis(sourceFactor);
+              assert(succeeded(factor_axis) &&
+                     "factor must have a provenance axis");
+              int32_t new_factor_extent = static_cast<int32_t>(slice.subExtent);
+              int32_t new_factor_stride = static_cast<int32_t>(
+                  static_cast<uint64_t>(getFactorStride(sourceFactor)) *
+                  slice.stride);
+              auto splitFactor = builder.create<AxisFactorOp>(
+                  groupLoc, *factor_axis, new_factor_extent, new_factor_stride);
+              currentGroup.push_back(splitFactor.getResult());
             }
-            if (factorFullyConsumed) {
-              // Move to the next factor
-              factor_it++;
-              factor_taken = 1;
-            }
+
+            auto product = builder.create<AxisProductOp>(
+                groupLoc, ValueRange(currentGroup));
+            out.push_back(castTypedValue<FactorGroupType>(product.getResult(),
+                                                          "FactorGroupType"));
+            success = success && (currentGroup.size() == 1);
           }
         };
-    construct_splits(*g1_factors, lhs_out);
-    construct_splits(*g2_factors, rhs_out);
+
+    llvm::SmallVector<uint64_t> g1Extents;
+    g1Extents.reserve(g1_factors->size());
+    for (TypedValue<AxisFactorType> factor : *g1_factors) {
+      g1Extents.push_back(static_cast<uint64_t>(getFactorExtent(factor)));
+    }
+    llvm::SmallVector<uint64_t> g2Extents;
+    g2Extents.reserve(g2_factors->size());
+    for (TypedValue<AxisFactorType> factor : *g2_factors) {
+      g2Extents.push_back(static_cast<uint64_t>(getFactorExtent(factor)));
+    }
+
+    construct_splits(*g1_factors, g1Extents, lhs_out);
+    construct_splits(*g2_factors, g2Extents, rhs_out);
   }
 
   return success;

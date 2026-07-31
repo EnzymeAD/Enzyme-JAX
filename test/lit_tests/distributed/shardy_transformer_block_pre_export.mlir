@@ -4,7 +4,7 @@
 module @shardy_transformer_block_pre_export {
   sdy.mesh @mesh = <["data"=4, "tile"=4, "model"=2]>
 
-  func.func @transformer_block(
+  func.func @main(
       %arg0: tensor<128x512xf32> {sdy.sharding = #sdy.sharding<@mesh, [{"data"}, {"tile"}]>},
       %arg1: tensor<512x512xf32> {sdy.sharding = #sdy.sharding<@mesh, [{"tile"}, {"model"}]>},
       %arg2: tensor<512x512xf32> {sdy.sharding = #sdy.sharding<@mesh, [{"tile"}, {"model"}]>},
