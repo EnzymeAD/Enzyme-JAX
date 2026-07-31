@@ -107,7 +107,13 @@ bool isValidSymbolInt(Operation *defOp, bool recur, Region *scope) {
             llvm::all_of(ifOp.elseBlock()->without_terminator(),
                          [&](Operation &o) {
                            return isValidSymbolInt(&o, recur, scope);
-                         }))
+                         }) &&
+            llvm::all_of(
+                ifOp.thenBlock()->getTerminator()->getOperands(),
+                [&](Value v) { return isValidSymbolInt(v, recur, scope); }) &&
+            llvm::all_of(
+                ifOp.elseBlock()->getTerminator()->getOperands(),
+                [&](Value v) { return isValidSymbolInt(v, recur, scope); }))
           return true;
       }
     }
@@ -122,7 +128,13 @@ bool isValidSymbolInt(Operation *defOp, bool recur, Region *scope) {
             llvm::all_of(ifOp.getElseBlock()->without_terminator(),
                          [&](Operation &o) {
                            return isValidSymbolInt(&o, recur, scope);
-                         }))
+                         }) &&
+            llvm::all_of(
+                ifOp.getThenBlock()->getTerminator()->getOperands(),
+                [&](Value v) { return isValidSymbolInt(v, recur, scope); }) &&
+            llvm::all_of(
+                ifOp.getElseBlock()->getTerminator()->getOperands(),
+                [&](Value v) { return isValidSymbolInt(v, recur, scope); }))
           return true;
     }
   }
