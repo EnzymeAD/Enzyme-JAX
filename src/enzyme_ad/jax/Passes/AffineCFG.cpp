@@ -98,6 +98,10 @@ bool isValidSymbolInt(Operation *defOp, bool recur, Region *scope) {
           matchPattern(shiftOp.getRhs(), m_ConstantInt(&intValue)))
         return true;
     }
+    // A conditional whose regions yield valid symbols produces one: the value
+    // is select(cond, thenYield, elseYield) regardless of what else the regions
+    // do.  Materializing that is AffineApplyNormalizer::fix's job -- see the
+    // scf.if case there -- so a side-effecting body is no obstacle here.
     if (auto ifOp = dyn_cast<scf::IfOp>(defOp)) {
       if (isValidSymbolInt(ifOp.getCondition(), recur, scope)) {
         if (llvm::all_of(
@@ -306,6 +310,23 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
             op = newV;
   };
 
+  // Whether `v` can be computed outside the conditional `guard` that currently
+  // guards it.  Values already defined outside are free; anything still inside
+  // has to be speculatable, since hoisting it means evaluating it on paths that
+  // previously skipped it.
+  std::function<bool(Value, Operation *)> speculatableOutOf =
+      [&](Value v, Operation *guard) -> bool {
+    if (llvm::none_of(guard->getRegions(), [&](Region &r) {
+          return r.isAncestor(v.getParentRegion());
+        }))
+      return true;
+    auto *defOp = v.getDefiningOp();
+    if (!defOp || !isSpeculatable(defOp))
+      return false;
+    return llvm::all_of(defOp->getOperands(),
+                        [&](Value o) { return speculatableOutOf(o, guard); });
+  };
+
   SmallVector<Operation **> operationContext;
   std::function<Value(Value, bool)> fix = [&](Value v,
                                               bool index) -> Value /*legal*/ {
@@ -322,8 +343,38 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
     if (!op)
       llvm::errs() << v << "\n";
     assert(op);
+    // A conditional cannot be cloned out of the control flow that guards it
+    // once its regions have side effects, but the value it produces is still
+    // the then/else pair selected by the condition -- which is what
+    // isValidSymbolInt accepted it on.  Rewrite to just that, leaving the side
+    // effects where they are: an arith.select for scf.if, and a bodiless
+    // affine.if over the same integer set for affine.if, whose condition is a
+    // set rather than an i1 value.  Evaluating both arms unconditionally means
+    // everything hoisted out of a region has to be speculatable.
+    Operation *condIf = nullptr;
+    Value selTrue, selFalse;
+    // Leading entries of `ops` holding the condition: one i1 for scf.if, the
+    // integer set's dim and symbol operands for affine.if.
+    unsigned numCondOperands = 0;
     if (!isReadOnly(op)) {
-      return nullptr;
+      unsigned idx = cast<OpResult>(v).getResultNumber();
+      if (auto ifOp = dyn_cast<scf::IfOp>(op)) {
+        if (ifOp.getElseRegion().empty())
+          return nullptr;
+        selTrue = ifOp.thenYield().getOperand(idx);
+        selFalse = ifOp.elseYield().getOperand(idx);
+        numCondOperands = 1;
+      } else if (auto ifOp = dyn_cast<affine::AffineIfOp>(op)) {
+        if (!ifOp.hasElse())
+          return nullptr;
+        selTrue = ifOp.getThenBlock()->getTerminator()->getOperand(idx);
+        selFalse = ifOp.getElseBlock()->getTerminator()->getOperand(idx);
+        numCondOperands = ifOp.getNumOperands();
+      } else
+        return nullptr;
+      condIf = op;
+      if (!speculatableOutOf(selTrue, op) || !speculatableOutOf(selFalse, op))
+        return nullptr;
     }
     Operation *front = nullptr;
     operationContext.push_back(&front);
@@ -348,7 +399,17 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
 
     if (front)
       assert(front->getBlock());
-    getAllOps(op);
+    if (condIf) {
+      // Only the condition and the two arms have to be legalized; the rest of
+      // the conditional stays put.
+      if (auto ifOp = dyn_cast<scf::IfOp>(condIf))
+        ops.push_back(ifOp.getCondition());
+      else
+        llvm::append_range(ops, condIf->getOperands());
+      ops.push_back(selTrue);
+      ops.push_back(selFalse);
+    } else
+      getAllOps(op);
 
     if (front)
       assert(front->getBlock());
@@ -404,6 +465,53 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
     if (!front)
       op->dump();
     assert(front);
+    if (condIf) {
+      // ops now holds the legalized condition and arms: replaceOp rewrote the
+      // entries as their defining ops were hoisted.
+      if (!rewriter) {
+        operationContext.pop_back();
+        return v;
+      }
+      Value selTrueFixed = ops[numCondOperands];
+      Value selFalseFixed = ops[numCondOperands + 1];
+      Value sel;
+      {
+        PatternRewriter::InsertionGuard B(*rewriter);
+        rewriter->setInsertionPoint(front);
+        if (auto ifOp = dyn_cast<scf::IfOp>(condIf)) {
+          sel = arith::SelectOp::create(*rewriter, ifOp.getLoc(), ops[0],
+                                        selTrueFixed, selFalseFixed);
+        } else {
+          auto affIfOp = cast<affine::AffineIfOp>(condIf);
+          // isValidDim accepts valid symbols, so the legalized operands remain
+          // legal in the set wherever this lands.
+          SmallVector<Value> setOperands(ops.begin(),
+                                         ops.begin() + numCondOperands);
+          auto newIf = affine::AffineIfOp::create(
+              *rewriter, affIfOp.getLoc(), TypeRange{v.getType()},
+              affIfOp.getIntegerSet(), setOperands, /*withElseRegion=*/true);
+          PatternRewriter::InsertionGuard B2(*rewriter);
+          rewriter->setInsertionPointToStart(newIf.getThenBlock());
+          affine::AffineYieldOp::create(*rewriter, affIfOp.getLoc(),
+                                        ValueRange{selTrueFixed});
+          rewriter->setInsertionPointToStart(newIf.getElseBlock());
+          affine::AffineYieldOp::create(*rewriter, affIfOp.getLoc(),
+                                        ValueRange{selFalseFixed});
+          sel = newIf.getResult(0);
+        }
+      }
+      // Point existing uses at the hoisted value, the way the clone path below
+      // does with replaceOp: an op cloned above this conditional must not keep
+      // referring to a result defined inside it.
+      rewriter->replaceAllUsesWith(v, sel);
+      for (auto todo : opsTodos)
+        for (auto &o : *todo)
+          if (o == v)
+            o = sel;
+      operationContext.pop_back();
+      assert(isValidSymbolInt(sel, /*recur*/ false, scope));
+      return sel;
+    }
     if (!rewriter) {
       operationContext.pop_back();
       assert(isValidSymbolInt(op->getResult(0), /*recur*/ false, scope));
@@ -737,6 +845,7 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
         dimReplacements.push_back(affineApplyMap.getResult(0));
     } else {
       if (!isValidSymbolInt(t, /*recur*/ false, scope)) {
+        Value orig = t;
         if (t.getDefiningOp()) {
           if ((t = fix(t, false))) {
             if (!isValidSymbolInt(t, /*recur*/ false, scope)) {
@@ -748,8 +857,22 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
                            << " to become valid symbol\n";
               llvm_unreachable("cannot move");
             }
-          } else
-            llvm_unreachable("cannot move");
+          } else {
+            // Reaching here means a pattern committed to a rewrite whose
+            // operand cannot be made a valid affine symbol.  llvm_unreachable
+            // is UB in a release build and lets execution fall through into
+            // renumberOne{Dim,Symbol} with a null Value, which segfaults far
+            // from the actual mistake; fail loudly instead.
+            llvm::errs() << " operand " << i << " of " << e
+                         << " could not be moved to become a valid symbol: "
+                         << orig << "\n";
+            if (auto *dop = orig.getDefiningOp())
+              if (auto fop = dop->getParentOfType<FunctionOpInterface>())
+                llvm::errs() << " in function: " << fop.getName() << "\n";
+            llvm::report_fatal_error(
+                "AffineApplyNormalizer: cannot move operand to become a valid "
+                "affine symbol");
+          }
         } else
           llvm_unreachable("cannot move2");
       }
