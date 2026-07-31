@@ -1480,6 +1480,40 @@ struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
         return rewriter.notifyMatchFailure(loop,
                                            "No legal and comparison found");
       }
+    } else if (auto ifOp = condOp.getCondition().getDefiningOp<scf::IfOp>()) {
+      // A condition of the form
+      //   %r:N = scf.if %c { yield .., %false, .. } else { yield .., %x, .. }
+      // is logically `!%c && %x`, and symmetrically `%c && %x` when it is the
+      // else branch which yields a constant false. Handle it like the `andi`
+      // case above, using the if's result itself as the extra condition. This
+      // is redundant with (but implied by) the comparison, and unlike %x it is
+      // available at the end of the before region.
+      if (ifOp.getElseRegion().empty()) {
+        return rewriter.notifyMatchFailure(loop, "If condition has no else");
+      }
+      unsigned idx = cast<OpResult>(condOp.getCondition()).getResultNumber();
+      bool thenFalse = matchPattern(ifOp.thenYield().getOperand(idx), m_Zero());
+      if (!thenFalse &&
+          !matchPattern(ifOp.elseYield().getOperand(idx), m_Zero())) {
+        return rewriter.notifyMatchFailure(
+            loop, "If condition does not short circuit to false");
+      }
+      helper.cmpIOp = ifOp.getCondition().getDefiningOp<CmpIOp>();
+      if (!helper.cmpIOp) {
+        return rewriter.notifyMatchFailure(loop, "No comparison found");
+      }
+      // If the then branch is the constant false one, the loop only continues
+      // when the if condition does not hold.
+      helper.cmpNegated = thenFalse;
+      lookThrough = condOp.getCondition();
+
+      if (!helper.computeLegality(rewriter, /*sizeCheck*/ true, lookThrough,
+                                  /*doWhile*/ true)) {
+        return rewriter.notifyMatchFailure(loop,
+                                           "No legal if comparison found");
+      }
+      assert(helper.lb);
+      assert(helper.ub);
     } else {
       return rewriter.notifyMatchFailure(loop, "No comparison found");
     }
