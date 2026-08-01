@@ -1480,8 +1480,24 @@ bool handle(PatternRewriter &b, AffineIfOp ifOp, size_t idx,
       cast<AffineYieldOp>(ifOp.getElseBlock()->getTerminator()).getOperand(idx);
   if (!negated && matchPattern(tval, m_One()) && matchPattern(fval, m_Zero())) {
     auto iset = ifOp.getCondition();
+
+    // The system being built here is symbol-only: symbol i denotes applies[i].
+    // The if's set has its own dim/symbol numbering, and its operands are its
+    // dim operands followed by its symbol operands, so rebase both onto the
+    // symbols appended here. Operands which are not valid symbols (an enclosing
+    // induction variable, say) are fine: canonicalization later promotes them
+    // back to dims of the composed set.
+    unsigned base = applies.size();
+    unsigned numDims = iset.getNumDims();
+    SmallVector<AffineExpr> dimReplacements, symReplacements;
+    for (unsigned i = 0; i < numDims; i++)
+      dimReplacements.push_back(b.getAffineSymbolExpr(base + i));
+    for (unsigned i = 0, e = iset.getNumSymbols(); i < e; i++)
+      symReplacements.push_back(b.getAffineSymbolExpr(base + numDims + i));
+
     for (auto expr : iset.getConstraints()) {
-      exprs.push_back(expr.shiftSymbols(iset.getNumSymbols(), applies.size()));
+      exprs.push_back(
+          expr.replaceDimsAndSymbols(dimReplacements, symReplacements));
     }
     for (auto eq : iset.getEqFlags()) {
       eqflags.push_back(eq);
@@ -1563,10 +1579,11 @@ bool handle(PatternRewriter &b, CmpIOp cmpi, SmallVectorImpl<AffineExpr> &exprs,
       return false;
     eqflags.push_back(true);
 
+    unsigned base = applies.size();
     applies.push_back(lhs[0]);
     applies.push_back(rhs[0]);
-    AffineExpr dims[2] = {b.getAffineSymbolExpr(2 * exprs.size() + 0),
-                          b.getAffineSymbolExpr(2 * exprs.size() + 1)};
+    AffineExpr dims[2] = {b.getAffineSymbolExpr(base + 0),
+                          b.getAffineSymbolExpr(base + 1)};
     exprs.push_back(dims[0] - dims[1]);
   } break;
 
@@ -1629,10 +1646,11 @@ bool handle(PatternRewriter &b, CmpIOp cmpi, SmallVectorImpl<AffineExpr> &exprs,
     for (auto lhspack : lhs)
       for (auto rhspack : rhs) {
         eqflags.push_back(false);
+        unsigned base = applies.size();
         applies.push_back(lhspack);
         applies.push_back(rhspack);
-        AffineExpr dims[2] = {b.getAffineSymbolExpr(2 * exprs.size() + 0),
-                              b.getAffineSymbolExpr(2 * exprs.size() + 1)};
+        AffineExpr dims[2] = {b.getAffineSymbolExpr(base + 0),
+                              b.getAffineSymbolExpr(base + 1)};
         auto expr = dims[0] - dims[1];
         if (pred == CmpIPredicate::sgt || pred == CmpIPredicate::ugt)
           expr = expr - 1;
@@ -1648,9 +1666,10 @@ bool handle(PatternRewriter &b, CmpIOp cmpi, SmallVectorImpl<AffineExpr> &exprs,
         // positive, we can add this as an additional check, that lhs >= 0.
         // Therefore lhs unsigned< rhs -> lhs signed< rhs && lhs >= 0
         eqflags.push_back(false);
+        unsigned base = applies.size();
         applies.push_back(lhspack);
         applies.push_back(lhspack);
-        AffineExpr expr = b.getAffineSymbolExpr(2 * exprs.size() + 0);
+        AffineExpr expr = b.getAffineSymbolExpr(base + 0);
         exprs.push_back(expr);
       }
     }
@@ -1673,10 +1692,11 @@ bool handle(PatternRewriter &b, CmpIOp cmpi, SmallVectorImpl<AffineExpr> &exprs,
     for (auto lhspack : lhs)
       for (auto rhspack : rhs) {
         eqflags.push_back(false);
+        unsigned base = applies.size();
         applies.push_back(lhspack);
         applies.push_back(rhspack);
-        AffineExpr dims[2] = {b.getAffineSymbolExpr(2 * exprs.size() + 0),
-                              b.getAffineSymbolExpr(2 * exprs.size() + 1)};
+        AffineExpr dims[2] = {b.getAffineSymbolExpr(base + 0),
+                              b.getAffineSymbolExpr(base + 1)};
         auto expr = dims[1] - dims[0];
         if (pred == CmpIPredicate::slt || pred == CmpIPredicate::ult)
           expr = expr - 1;
@@ -1719,9 +1739,10 @@ bool handle(PatternRewriter &b, CmpIOp cmpi, SmallVectorImpl<AffineExpr> &exprs,
           break;
         }
         eqflags.push_back(false);
+        unsigned base = applies.size();
         applies.push_back(lhspack);
         applies.push_back(lhspack);
-        AffineExpr expr = b.getAffineSymbolExpr(2 * exprs.size() + 0);
+        AffineExpr expr = b.getAffineSymbolExpr(base + 0);
         exprs.push_back(expr - 1);
       }
       if (legal)
@@ -2193,7 +2214,7 @@ struct MoveIfToAffine : public OpRewritePattern<scf::IfOp> {
       auto *parentScope = scope->getParentOp();
       DominanceInfo DI(parentScope);
 
-      auto iset = IntegerSet::get(/*dim*/ 0, /*symbol*/ 2 * exprs.size(), exprs,
+      auto iset = IntegerSet::get(/*dim*/ 0, /*symbol*/ applies.size(), exprs,
                                   eqflags);
       fully2ComposeIntegerSetAndOperands(rewriter, &iset, &operands, DI, scope);
       affine::canonicalizeSetAndOperands(&iset, &operands);
@@ -2331,7 +2352,7 @@ struct MoveExtToAffine : public OpRewritePattern<arith::ExtUIOp> {
       auto *parentScope = scope->getParentOp();
       DominanceInfo DI(parentScope);
 
-      auto iset = IntegerSet::get(/*dim*/ 0, /*symbol*/ 2 * exprs.size(), exprs,
+      auto iset = IntegerSet::get(/*dim*/ 0, /*symbol*/ applies.size(), exprs,
                                   eqflags);
       fully2ComposeIntegerSetAndOperands(rewriter, &iset, &operands, DI, scope);
       affine::canonicalizeSetAndOperands(&iset, &operands);
@@ -2531,7 +2552,7 @@ struct MoveSelectToAffine : public OpRewritePattern<arith::SelectOp> {
       auto *parentScope = scope->getParentOp();
       DominanceInfo DI(parentScope);
 
-      auto iset = IntegerSet::get(/*dim*/ 0, /*symbol*/ 2 * exprs.size(), exprs,
+      auto iset = IntegerSet::get(/*dim*/ 0, /*symbol*/ applies.size(), exprs,
                                   eqflags);
       fully2ComposeIntegerSetAndOperands(rewriter, &iset, &operands, DI, scope);
       affine::canonicalizeSetAndOperands(&iset, &operands);
@@ -2651,7 +2672,7 @@ struct MoveSelectToAffine : public OpRewritePattern<arith::SelectOp> {
 
           std::vector<mlir::Type> types = {ifOp.getCondition().getType()};
 
-          auto iset = IntegerSet::get(/*dim*/ 0, /*symbol*/ 2 * exprs.size(),
+          auto iset = IntegerSet::get(/*dim*/ 0, /*symbol*/ applies.size(),
                                       exprs, eqflags);
           fully2ComposeIntegerSetAndOperands(rewriter, &iset, &operands, DI,
                                              scope);
