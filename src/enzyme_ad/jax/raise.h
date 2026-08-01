@@ -30,7 +30,15 @@
 #include "mlir/Target/LLVMIR/Dialect/LLVMIR/LLVMToLLVMIRTranslation.h"
 #include "mlir/Target/LLVMIR/Dialect/NVVM/NVVMToLLVMIRTranslation.h"
 
+struct MLIRRoundTripOptions {
+  bool dataflow;
+  bool markReadonly;
+  bool preADLowerAffine;
+  bool splitMultiResults;
+};
+
 extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
                                               std::string outfile,
                                               std::string backend,
-                                              std::string library);
+                                              std::string library,
+                                              MLIRRoundTripOptions *options);
