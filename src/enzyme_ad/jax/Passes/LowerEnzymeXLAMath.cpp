@@ -1,6 +1,8 @@
 // This must come first for windows builds
 #define _USE_MATH_DEFINES
 
+#include "Enzyme/MLIR/Dialect/Dialect.h"
+#include "Enzyme/MLIR/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
@@ -42,9 +44,11 @@ createConstantOpFromScalar(PatternRewriter &rewriter, Location loc, Type type,
 namespace {
 #include "src/enzyme_ad/jax/Passes/LowerEnzymeXLAMathPatterns.cpp.inc"
 
-// Lower enzymexla.math.binomial_progress(n, s) to the Revolve advance distance.
-// This mirrors enzyme/Enzyme/MLIR/Passes/LowerBinomialProgressPass.cpp op for op
-// and must agree with BinomialProgressConstProp in EnzymeHLOOpt.cpp:
+// Lower a tensor-typed enzyme.binomial_progress(n, s) to the Revolve advance
+// distance. Enzyme's own lower-enzyme-binomial-progress handles the scalar form
+// on scf/arith and skips tensors, leaving them to this pattern; the two mirror
+// each other op for op and must agree with BinomialProgressConstProp in
+// EnzymeHLOOpt.cpp:
 //
 //   %r = if (n <= 1) or (s <= 1) {
 //     // n <= 1 yields n (0 or 1); otherwise s <= 1 advances the whole
@@ -64,14 +68,18 @@ namespace {
 // The guard must be a branch, not a select: for s <= 1 the update leaves %beta
 // at 1 and the loop would spin forever.
 struct LowerBinomialProgressOpToStableHLO
-    : public OpRewritePattern<enzymexla::BinomialProgressOp> {
-  using OpRewritePattern<enzymexla::BinomialProgressOp>::OpRewritePattern;
+    : public OpRewritePattern<enzyme::BinomialProgressOp> {
+  using OpRewritePattern<enzyme::BinomialProgressOp>::OpRewritePattern;
 
-  LogicalResult matchAndRewrite(enzymexla::BinomialProgressOp op,
+  LogicalResult matchAndRewrite(enzyme::BinomialProgressOp op,
                                 PatternRewriter &rewriter) const override {
     Location loc = op.getLoc();
     Value n = op.getNumSteps();
     Value s = op.getBudget();
+
+    // Scalar operands are Enzyme's to lower, onto scf/arith.
+    if (!isa<TensorType>(op.getType()))
+      return failure();
 
     auto constOfType = [&](int64_t v) -> Value {
       return stablehlo::ConstantOp::create(
@@ -197,8 +205,16 @@ void lowerEnzymeXLAMath(Operation *op,
     signalPassFailure();
   }
 
-  // Verify that all illegal ops have been lowered
+  // Verify that all illegal ops have been lowered. A tensor-typed
+  // enzyme.binomial_progress counts: nothing downstream of here lowers it, since
+  // Enzyme's own pass only handles the scalar form.
   auto walkResult = op->walk([&](Operation *local_op) {
+    if (auto bp = dyn_cast<enzyme::BinomialProgressOp>(local_op)) {
+      if (!isa<TensorType>(bp.getType()))
+        return WalkResult::advance();
+      bp->emitError("Failed to lower enzyme.binomial_progress");
+      return WalkResult::interrupt();
+    }
     if (local_op->getName().getStringRef().starts_with("enzymexla.math.")) {
       local_op->emitError("Failed to lower enzymexla math operation");
       return WalkResult::interrupt();

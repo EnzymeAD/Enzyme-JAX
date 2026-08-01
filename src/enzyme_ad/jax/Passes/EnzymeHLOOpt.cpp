@@ -6426,7 +6426,7 @@ struct LGammaConstProp final
 };
 
 struct BinomialProgressConstProp final
-    : CheckedOpRewritePattern<enzymexla::BinomialProgressOp,
+    : CheckedOpRewritePattern<enzyme::BinomialProgressOp,
                               BinomialProgressConstProp> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
@@ -6471,9 +6471,15 @@ struct BinomialProgressConstProp final
     return std::max<int64_t>(m, 1);
   }
 
-  LogicalResult matchAndRewriteImpl(enzymexla::BinomialProgressOp op,
+  LogicalResult matchAndRewriteImpl(enzyme::BinomialProgressOp op,
                                     PatternRewriter &rewriter) const {
     APInt numSteps, budget;
+
+    // The op is also used on plain scalars by the scf path, where a
+    // stablehlo.constant replacement would be ill-typed; Enzyme's own folder
+    // handles those.
+    if (!isa<TensorType>(op.getType()))
+      return failure();
 
     if (!matchPattern(op.getNumSteps(), m_ConstantInt(&numSteps)) ||
         !matchPattern(op.getBudget(), m_ConstantInt(&budget)))

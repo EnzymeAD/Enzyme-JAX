@@ -812,8 +812,8 @@ class AutoDiffWhileRev
         builder, orig->getLoc(),
         makeI64Constant(orig->getLoc(), builder, revInfo.checkpointPeriod),
         capo);
-    Value split = enzymexla::BinomialProgressOp::create(
-        builder, orig->getLoc(), remaining, budget, nullptr);
+    Value split = enzyme::BinomialProgressOp::create(
+        builder, orig->getLoc(), remaining.getType(), remaining, budget);
 
     SmallVector<Value> innerBodyCaches;
 
@@ -1760,8 +1760,8 @@ public:
               makeI64Constant(orig->getLoc(), builder,
                               revModeInfo.checkpointPeriod),
               outerBody->getArgument(0));
-          Value innerLimit = enzymexla::BinomialProgressOp::create(
-              builder, orig->getLoc(), numSteps, budget, nullptr);
+          Value innerLimit = enzyme::BinomialProgressOp::create(
+              builder, orig->getLoc(), numSteps.getType(), numSteps, budget);
 
           outerTerm->setOperand(
               outerTerm->getNumOperands() - 2,

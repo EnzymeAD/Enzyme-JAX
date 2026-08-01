@@ -2,12 +2,15 @@
 // RUN: enzymexlamlir-opt --enzyme-hlo-opt %s | FileCheck %s --check-prefix=FOLD
 // RUN: enzymexlamlir-opt --lower-enzymexla-math %s | stablehlo-translate --interpret
 
-// enzymexla.math.binomial_progress returns the Revolve *advance distance*: with
+// enzyme.binomial_progress returns the Revolve *advance distance*: with
 // beta(s,t) = C(s+t,t) and t minimal such that beta(budget,t) >= num_steps, the
 // midpoint of [num_steps - beta(budget-1,t), beta(budget,t-1)] clamped to
 // [1, num_steps-1], then capped at num_steps - (budget-1). It grows like
-// num_steps, not like num_steps^(1/budget). This must agree with
-// enzyme.binomial_progress; see enzyme/test/MLIR/Passes/lower_binomial_progress.mlir.
+// num_steps, not like num_steps^(1/budget).
+//
+// This is the tensor form of the op; Enzyme's own lower-enzyme-binomial-progress
+// lowers the scalar form onto scf/arith and must produce the same values. See
+// enzyme/test/MLIR/Passes/lower_binomial_progress.mlir.
 
 // Constant operands fold to a plain constant. For (9, 3): t = 2, since
 // beta(3,1) = 4 < 9 <= beta(3,2) = 10; the window is
@@ -15,14 +18,14 @@
 func.func @cst() -> tensor<i64> {
   %n = stablehlo.constant dense<9> : tensor<i64>
   %s = stablehlo.constant dense<3> : tensor<i64>
-  %r = enzymexla.math.binomial_progress(%n, %s) : (tensor<i64>, tensor<i64>) -> tensor<i64>
+  %r = enzyme.binomial_progress %n, %s : tensor<i64>
   return %r : tensor<i64>
 }
 
 // FOLD-LABEL: func.func @cst() -> tensor<i64> {
 // FOLD-NEXT:    %[[R:.+]] = stablehlo.constant dense<3> : tensor<i64>
 // FOLD-NEXT:    return %[[R]] : tensor<i64>
-// FOLD-NOT:     enzymexla.math.binomial_progress
+// FOLD-NOT:     enzyme.binomial_progress
 
 // A budget of 1 advances the whole remaining stretch: with one checkpoint left
 // it is replayed from there. This is also what makes the per-slot advances sum
@@ -31,7 +34,7 @@ func.func @cst() -> tensor<i64> {
 func.func @budget_one() -> tensor<i64> {
   %n = stablehlo.constant dense<40> : tensor<i64>
   %s = stablehlo.constant dense<1> : tensor<i64>
-  %r = enzymexla.math.binomial_progress(%n, %s) : (tensor<i64>, tensor<i64>) -> tensor<i64>
+  %r = enzyme.binomial_progress %n, %s : tensor<i64>
   return %r : tensor<i64>
 }
 
@@ -44,7 +47,7 @@ func.func @budget_one() -> tensor<i64> {
 func.func @one_step() -> tensor<i64> {
   %n = stablehlo.constant dense<1> : tensor<i64>
   %s = stablehlo.constant dense<4> : tensor<i64>
-  %r = enzymexla.math.binomial_progress(%n, %s) : (tensor<i64>, tensor<i64>) -> tensor<i64>
+  %r = enzyme.binomial_progress %n, %s : tensor<i64>
   return %r : tensor<i64>
 }
 
@@ -59,7 +62,7 @@ func.func @one_step() -> tensor<i64> {
 func.func @large() -> tensor<i64> {
   %n = stablehlo.constant dense<400> : tensor<i64>
   %s = stablehlo.constant dense<4> : tensor<i64>
-  %r = enzymexla.math.binomial_progress(%n, %s) : (tensor<i64>, tensor<i64>) -> tensor<i64>
+  %r = enzyme.binomial_progress %n, %s : tensor<i64>
   return %r : tensor<i64>
 }
 
@@ -71,7 +74,7 @@ func.func @large() -> tensor<i64> {
 // a branch rather than a select because with budget <= 1 the loop below would
 // leave beta at 1 and never terminate.
 func.func @dyn(%n: tensor<i64>, %s: tensor<i64>) -> tensor<i64> {
-  %r = enzymexla.math.binomial_progress(%n, %s) : (tensor<i64>, tensor<i64>) -> tensor<i64>
+  %r = enzyme.binomial_progress %n, %s : tensor<i64>
   return %r : tensor<i64>
 }
 
@@ -116,7 +119,7 @@ func.func @dyn(%n: tensor<i64>, %s: tensor<i64>) -> tensor<i64> {
 // CHECK-NEXT:      %[[CAPPED:.+]] = stablehlo.minimum %[[MID]], %[[CAP]]
 // CHECK-NEXT:      %[[RES:.+]] = stablehlo.maximum %[[CAPPED]], %[[C1]]
 // CHECK-NEXT:      stablehlo.return %[[RES]] : tensor<i64>
-// CHECK-NOT:     enzymexla.math.binomial_progress
+// CHECK-NOT:     enzyme.binomial_progress
 
 // The lowered dynamic form and the constant folder must agree. Each case below
 // runs the lowering through the interpreter and checks it against the value the
@@ -124,20 +127,20 @@ func.func @dyn(%n: tensor<i64>, %s: tensor<i64>) -> tensor<i64> {
 func.func @main() {
   %c9 = stablehlo.constant dense<9> : tensor<i64>
   %c3 = stablehlo.constant dense<3> : tensor<i64>
-  %r0 = enzymexla.math.binomial_progress(%c9, %c3) : (tensor<i64>, tensor<i64>) -> tensor<i64>
+  %r0 = enzyme.binomial_progress %c9, %c3 : tensor<i64>
   check.expect_eq_const %r0, dense<3> : tensor<i64>
 
   %c40 = stablehlo.constant dense<40> : tensor<i64>
   %c1 = stablehlo.constant dense<1> : tensor<i64>
-  %r1 = enzymexla.math.binomial_progress(%c40, %c1) : (tensor<i64>, tensor<i64>) -> tensor<i64>
+  %r1 = enzyme.binomial_progress %c40, %c1 : tensor<i64>
   check.expect_eq_const %r1, dense<40> : tensor<i64>
 
   %c4 = stablehlo.constant dense<4> : tensor<i64>
-  %r2 = enzymexla.math.binomial_progress(%c1, %c4) : (tensor<i64>, tensor<i64>) -> tensor<i64>
+  %r2 = enzyme.binomial_progress %c1, %c4 : tensor<i64>
   check.expect_eq_const %r2, dense<1> : tensor<i64>
 
   %c400 = stablehlo.constant dense<400> : tensor<i64>
-  %r3 = enzymexla.math.binomial_progress(%c400, %c4) : (tensor<i64>, tensor<i64>) -> tensor<i64>
+  %r3 = enzyme.binomial_progress %c400, %c4 : tensor<i64>
   check.expect_eq_const %r3, dense<282> : tensor<i64>
 
   // The advances for successive slots sum to exactly the trip count: 282 of 400
@@ -145,16 +148,16 @@ func.func @main() {
   // final 8 with 1. That 282 + 83 + 27 + 8 == 400 is what lets a driver walking
   // one slot per iteration reach the end of the primal.
   %c118 = stablehlo.constant dense<118> : tensor<i64>
-  %r4 = enzymexla.math.binomial_progress(%c118, %c3) : (tensor<i64>, tensor<i64>) -> tensor<i64>
+  %r4 = enzyme.binomial_progress %c118, %c3 : tensor<i64>
   check.expect_eq_const %r4, dense<83> : tensor<i64>
 
   %c35 = stablehlo.constant dense<35> : tensor<i64>
   %c2 = stablehlo.constant dense<2> : tensor<i64>
-  %r5 = enzymexla.math.binomial_progress(%c35, %c2) : (tensor<i64>, tensor<i64>) -> tensor<i64>
+  %r5 = enzyme.binomial_progress %c35, %c2 : tensor<i64>
   check.expect_eq_const %r5, dense<27> : tensor<i64>
 
   %c8 = stablehlo.constant dense<8> : tensor<i64>
-  %r6 = enzymexla.math.binomial_progress(%c8, %c1) : (tensor<i64>, tensor<i64>) -> tensor<i64>
+  %r6 = enzyme.binomial_progress %c8, %c1 : tensor<i64>
   check.expect_eq_const %r6, dense<8> : tensor<i64>
 
   return
