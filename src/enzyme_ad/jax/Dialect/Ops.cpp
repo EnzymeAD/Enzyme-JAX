@@ -428,14 +428,13 @@ public:
     Value c0 = arith::ConstantIndexOp::create(rewriter, op.getLoc(), 0);
     Value c1 = arith::ConstantIndexOp::create(rewriter, op.getLoc(), 1);
     SmallVector<Value> idxs;
+    Value lenIdx = arith::IndexCastOp::create(
+        rewriter, op.getLoc(), rewriter.getIndexType(), op.getLen());
+    Value widthCst =
+        arith::ConstantIndexOp::create(rewriter, op.getLoc(), width);
     auto forOp = scf::ForOp::create(
         rewriter, op.getLoc(), c0,
-        arith::DivUIOp::create(
-            rewriter, op.getLoc(),
-            arith::IndexCastOp::create(rewriter, op.getLoc(),
-                                       rewriter.getIndexType(), op.getLen()),
-            arith::ConstantIndexOp::create(rewriter, op.getLoc(), width)),
-        c1);
+        arith::DivUIOp::create(rewriter, op.getLoc(), lenIdx, widthCst), c1);
 
     rewriter.setInsertionPointToStart(&forOp.getRegion().getBlocks().front());
     idxs.push_back(forOp.getInductionVar());
@@ -532,14 +531,13 @@ public:
     Value val = cast<mlir::enzyme::AutoDiffTypeInterface>(elTy).createNullValue(
         rewriter, op.getLoc());
 
+    Value lenIdx = arith::IndexCastOp::create(
+        rewriter, op.getLoc(), rewriter.getIndexType(), op.getLen());
+    Value widthCst =
+        arith::ConstantIndexOp::create(rewriter, op.getLoc(), width);
     auto forOp = scf::ForOp::create(
         rewriter, op.getLoc(), c0,
-        arith::DivUIOp::create(
-            rewriter, op.getLoc(),
-            arith::IndexCastOp::create(rewriter, op.getLoc(),
-                                       rewriter.getIndexType(), op.getLen()),
-            arith::ConstantIndexOp::create(rewriter, op.getLoc(), width)),
-        c1);
+        arith::DivUIOp::create(rewriter, op.getLoc(), lenIdx, widthCst), c1);
 
     rewriter.setInsertionPointToStart(&forOp.getRegion().getBlocks().front());
     idxs.push_back(forOp.getInductionVar());
