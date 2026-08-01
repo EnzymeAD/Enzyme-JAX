@@ -6430,20 +6430,45 @@ struct BinomialProgressConstProp final
                               BinomialProgressConstProp> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
+  // The Revolve advance *distance*: with beta(s, t) = C(s + t, t) and t minimal
+  // such that beta(s, t) >= n, every advance in
+  // [n - beta(s-1, t), beta(s, t-1)] attains that optimal t. Clamp that window
+  // to [1, n-1] and take its midpoint. Must stay in sync with
+  // enzyme/Enzyme/MLIR/Dialect/Ops.cpp's binomialProgress and with
+  // LowerBinomialProgressOpToStableHLO.
+  //
+  // With a single checkpoint left there is nothing better than replaying the
+  // whole remaining stretch from it, so advance all of it. Together with every
+  // other advance landing in [1, n-1], that is what makes the per-slot advances
+  // sum to exactly `n` across `budget` slots -- which is what the callers'
+  // outer loop relies on to reach the end of the primal.
   static int64_t binomialProgress(int64_t n, int64_t s) {
-    assert(s > 0 && "no checkpoints available");
-    if (s == 1 || n == 1)
+    if (n <= 0)
+      return 0;
+    if (n == 1)
       return 1;
+    if (s <= 1)
+      return n;
 
-    int64_t j = 1;
-    int64_t binom = s; // C(s, s-1) = s
-
-    while (binom < n) {
-      ++j;
-      binom = binom * (j + s - 1) / j;
+    int64_t t = 0, beta = 1; // beta == C(s + t, t)
+    while (beta < n) {
+      ++t;
+      beta = beta * (s + t) / t; // C(s+t,t) from C(s+t-1,t-1); exact
     }
 
-    return binom == n ? j : j - 1;
+    // beta(s-1, t) == beta * s / (s + t) and beta(s, t-1) == beta * t / (s + t),
+    // both exact in integers.
+    int64_t lo = std::max<int64_t>(n - beta * s / (s + t), 1);
+    int64_t hi = std::min<int64_t>(beta * t / (s + t), n - 1);
+    int64_t m = (lo + hi) / 2; // lo <= hi, so this is already in [1, n-1]
+
+    // Leave at least one step for each of the s-1 checkpoints still to be
+    // placed. Without this the advances can exhaust the interval before the
+    // slots run out, and a caller that walks one slot per iteration then
+    // records slots at a step past the end -- holding the final state rather
+    // than a checkpoint.
+    m = std::min<int64_t>(m, n - (s - 1));
+    return std::max<int64_t>(m, 1);
   }
 
   LogicalResult matchAndRewriteImpl(enzymexla::BinomialProgressOp op,
