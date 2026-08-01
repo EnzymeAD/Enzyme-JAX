@@ -90,12 +90,11 @@ struct LowerBinomialProgressOpToStableHLO
     Value one = constOfType(1);
 
     // Guard both degenerate cases.
-    Value cond = stablehlo::OrOp::create(
-        rewriter, loc,
-        stablehlo::CompareOp::create(rewriter, loc, n, one,
-                                     stablehlo::ComparisonDirection::LE),
-        stablehlo::CompareOp::create(rewriter, loc, s, one,
-                                     stablehlo::ComparisonDirection::LE));
+    Value nSmall = stablehlo::CompareOp::create(
+        rewriter, loc, n, one, stablehlo::ComparisonDirection::LE);
+    Value sSmall = stablehlo::CompareOp::create(
+        rewriter, loc, s, one, stablehlo::ComparisonDirection::LE);
+    Value cond = stablehlo::OrOp::create(rewriter, loc, nSmall, sSmall);
 
     auto ifOp =
         stablehlo::IfOp::create(rewriter, loc, TypeRange{op.getType()}, cond);
@@ -167,9 +166,9 @@ struct LowerBinomialProgressOpToStableHLO
       Value hi = stablehlo::MinOp::create(
           rewriter, loc, hiRaw,
           stablehlo::SubtractOp::create(rewriter, loc, n, one));
-      Value mid = stablehlo::DivOp::create(
-          rewriter, loc, stablehlo::AddOp::create(rewriter, loc, lo, hi),
-          constOfType(2));
+      Value two = constOfType(2);
+      Value sum = stablehlo::AddOp::create(rewriter, loc, lo, hi);
+      Value mid = stablehlo::DivOp::create(rewriter, loc, sum, two);
 
       // Leave a step for each of the s-1 checkpoints still to be placed.
       // Without this the advances can exhaust the interval before the slots run

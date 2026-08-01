@@ -83,8 +83,8 @@ func.func @dyn(%n: tensor<i64>, %s: tensor<i64>) -> tensor<i64> {
 // CHECK-DAG:     %[[C2:.+]] = stablehlo.constant dense<2> : tensor<i64>
 // CHECK-DAG:     %[[C0:.+]] = stablehlo.constant dense<0> : tensor<i64>
 // CHECK-DAG:     %[[C1:.+]] = stablehlo.constant dense<1> : tensor<i64>
-// CHECK:         %[[SSM:.+]] = stablehlo.compare LE, %[[S]], %[[C1]]
-// CHECK-NEXT:    %[[NSM:.+]] = stablehlo.compare LE, %[[N]], %[[C1]]
+// CHECK:         %[[NSM:.+]] = stablehlo.compare LE, %[[N]], %[[C1]]
+// CHECK-NEXT:    %[[SSM:.+]] = stablehlo.compare LE, %[[S]], %[[C1]]
 // CHECK-NEXT:    %[[G:.+]] = stablehlo.or %[[NSM]], %[[SSM]]
 // CHECK-NEXT:    %{{.+}} = "stablehlo.if"(%[[G]]) ({
 // CHECK-NEXT:      stablehlo.return %[[N]] : tensor<i64>
