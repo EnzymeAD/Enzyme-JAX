@@ -2214,8 +2214,8 @@ struct MoveIfToAffine : public OpRewritePattern<scf::IfOp> {
       auto *parentScope = scope->getParentOp();
       DominanceInfo DI(parentScope);
 
-      auto iset = IntegerSet::get(/*dim*/ 0, /*symbol*/ applies.size(), exprs,
-                                  eqflags);
+      auto iset =
+          IntegerSet::get(/*dim*/ 0, /*symbol*/ applies.size(), exprs, eqflags);
       fully2ComposeIntegerSetAndOperands(rewriter, &iset, &operands, DI, scope);
       affine::canonicalizeSetAndOperands(&iset, &operands);
       affine::AffineIfOp affineIfOp = affine::AffineIfOp::create(
@@ -2352,8 +2352,8 @@ struct MoveExtToAffine : public OpRewritePattern<arith::ExtUIOp> {
       auto *parentScope = scope->getParentOp();
       DominanceInfo DI(parentScope);
 
-      auto iset = IntegerSet::get(/*dim*/ 0, /*symbol*/ applies.size(), exprs,
-                                  eqflags);
+      auto iset =
+          IntegerSet::get(/*dim*/ 0, /*symbol*/ applies.size(), exprs, eqflags);
       fully2ComposeIntegerSetAndOperands(rewriter, &iset, &operands, DI, scope);
       affine::canonicalizeSetAndOperands(&iset, &operands);
       Value tval[1] = {arith::ConstantIntOp::create(rewriter, ifOp.getLoc(),
@@ -2552,8 +2552,8 @@ struct MoveSelectToAffine : public OpRewritePattern<arith::SelectOp> {
       auto *parentScope = scope->getParentOp();
       DominanceInfo DI(parentScope);
 
-      auto iset = IntegerSet::get(/*dim*/ 0, /*symbol*/ applies.size(), exprs,
-                                  eqflags);
+      auto iset =
+          IntegerSet::get(/*dim*/ 0, /*symbol*/ applies.size(), exprs, eqflags);
       fully2ComposeIntegerSetAndOperands(rewriter, &iset, &operands, DI, scope);
       affine::canonicalizeSetAndOperands(&iset, &operands);
       affine::AffineIfOp affineIfOp = affine::AffineIfOp::create(
