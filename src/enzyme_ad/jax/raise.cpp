@@ -11,6 +11,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "src/enzyme_ad/jax/raise.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Pass/PassRegistry.h"
@@ -32,7 +33,8 @@
 extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
                                               std::string outfile,
                                               std::string backend,
-                                              std::string library) {
+                                              std::string library,
+                                              MLIRRoundTripOptions *options) {
   llvm::LLVMContext Context;
   Context.setDiscardValueNames(false);
   llvm::SMDiagnostic Err;
@@ -131,15 +133,26 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       if (outfile.size() && getenv("EXPORT_REACTANT")) {
         pass_pipeline += "print{filename="+outfile+".mlir},";
       }
-      pass_pipeline += "symbol-dce,outline-enzyme-regions,"
-        "enzyme,canonicalize,split-multi-results,remove-unnecessary-enzyme-ops,"
-        "flatten-enzyme-caches,enzyme-simplify-math,"
+      pass_pipeline += "symbol-dce,outline-enzyme-regions,";
+      if (options->preADLowerAffine)
+        pass_pipeline += "lower-affine,";
+
+      pass_pipeline += "enzyme{";
+      if (options->dataflow)
+        pass_pipeline += "dataflow ";
+      if (options->markReadonly)
+        pass_pipeline += "markReadonly";
+      pass_pipeline += "},canonicalize,";
+      if (options->splitMultiResults)
+        pass_pipeline += "split-multi-results,";
+      pass_pipeline += "remove-unnecessary-enzyme-ops,flatten-enzyme-caches,enzyme-simplify-math,"
         // canonicalize here folds away memref.subview ops before gpu-kernel-outlining
         "canonicalize,cse,lower-affine";
       if (backend == "rocm")
         pass_pipeline += ",convert-cudart-to-hiprt";
       if (backend != "cpu") {
-        pass_pipeline += ",convert-parallel-to-gpu1,gpu-kernel-outlining,canonicalize,symbol-dce,convert-parallel-to-gpu2{backend=";
+        pass_pipeline += ",convert-parallel-to-gpu1,symbol-dce,gpu-kernel-outlining,canonicalize,symbol-dce,";
+        pass_pipeline += "convert-parallel-to-gpu2{backend=";
         pass_pipeline += backend;
         pass_pipeline += "}";
         pass_pipeline += ",lower-affine";
