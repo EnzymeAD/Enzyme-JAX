@@ -641,16 +641,18 @@ class AutoDiffWhileRev
   static stablehlo::WhileOp makeForLoop(OpBuilder &builder, Location loc,
                                         int64_t start, int64_t limit,
                                         int64_t step, ValueRange operands) {
-    return makeForLoop(builder, loc, makeI64Constant(loc, builder, start),
-                       makeI64Constant(loc, builder, limit),
-                       makeI64Constant(loc, builder, step), operands);
+    Value startVal = makeI64Constant(loc, builder, start);
+    Value limitVal = makeI64Constant(loc, builder, limit);
+    Value stepVal = makeI64Constant(loc, builder, step);
+    return makeForLoop(builder, loc, startVal, limitVal, stepVal, operands);
   }
 
   static stablehlo::WhileOp makeForLoop(OpBuilder &builder, Location loc,
                                         int64_t start, Value limit,
                                         int64_t step, ValueRange operands) {
-    return makeForLoop(builder, loc, makeI64Constant(loc, builder, start),
-                       limit, makeI64Constant(loc, builder, step), operands);
+    Value startVal = makeI64Constant(loc, builder, start);
+    Value stepVal = makeI64Constant(loc, builder, step);
+    return makeForLoop(builder, loc, startVal, limit, stepVal, operands);
   }
 
   static stablehlo::WhileOp makeForLoop(OpBuilder &builder, Location loc,
@@ -1220,15 +1222,14 @@ class AutoDiffWhileRev
 
     Value currentStep =
         stablehlo::AddOp::create(builder, orig.getLoc(), outerStart, innerIV);
+    Value constantStart = makeI64Constant(
+        orig.getLoc(), builder, revInfo.info.getConstantStart().value());
+    Value constantStep = makeI64Constant(
+        orig.getLoc(), builder, revInfo.info.getConstantStep().value());
     Value currentIV = stablehlo::AddOp::create(
-        builder, orig.getLoc(),
-        makeI64Constant(orig.getLoc(), builder,
-                        revInfo.info.getConstantStart().value()),
-        stablehlo::MulOp::create(
-            builder, orig.getLoc(),
-            makeI64Constant(orig.getLoc(), builder,
-                            revInfo.info.getConstantStep().value()),
-            currentStep));
+        builder, orig.getLoc(), constantStart,
+        stablehlo::MulOp::create(builder, orig.getLoc(), constantStep,
+                                 currentStep));
 
     Block *origBody = &orig.getBody().front();
     for (auto &&[origarg, revinnerarg] : llvm::zip_equal(

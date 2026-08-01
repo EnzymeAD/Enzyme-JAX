@@ -2816,20 +2816,20 @@ struct ForOpRaising : public OpRewritePattern<scf::ForOp> {
       if (!loop.getStep().getDefiningOp<ConstantIndexOp>()) {
         if (ubs.size() != 1 || lbs.size() != 1)
           return failure();
-        ubs[0] = DivUIOp::create(
-            rewriter, loop.getLoc(),
-            AddIOp::create(
-                rewriter, loop.getLoc(),
-                SubIOp::create(
-                    rewriter, loop.getLoc(), loop.getStep(),
-                    isa<IndexType>(loop.getStep().getType())
+        Value one = isa<IndexType>(loop.getStep().getType())
                         ? ConstantIndexOp::create(rewriter, loop.getLoc(), 1)
                               .getResult()
                         : ConstantIntOp::create(rewriter, loop.getLoc(),
-                                                loop.getStep().getType(), 1))
-                    .getResult(),
-                SubIOp::create(rewriter, loop.getLoc(), loop.getUpperBound(),
-                               loop.getLowerBound())),
+                                                loop.getStep().getType(), 1);
+        Value stepMinusOne =
+            SubIOp::create(rewriter, loop.getLoc(), loop.getStep(), one)
+                .getResult();
+        Value range =
+            SubIOp::create(rewriter, loop.getLoc(), loop.getUpperBound(),
+                           loop.getLowerBound());
+        ubs[0] = DivUIOp::create(
+            rewriter, loop.getLoc(),
+            AddIOp::create(rewriter, loop.getLoc(), stepMinusOne, range),
             loop.getStep());
         lbs[0] = ConstantIndexOp::create(rewriter, loop.getLoc(), 0);
         rewrittenStep = true;

@@ -1294,12 +1294,12 @@ struct GemqrtOpLowering : public OpRewritePattern<enzymexla::GemqrtOp> {
 
 Value anyNonFiniteValue(PatternRewriter &rewriter, Location loc, Type outType,
                         Value input, int64_t inputRank) {
-  auto areFinite = stablehlo::AndOp::create(
-      rewriter, loc,
-      stablehlo::IsFiniteOp::create(
-          rewriter, loc, stablehlo::RealOp::create(rewriter, loc, input)),
-      stablehlo::IsFiniteOp::create(
-          rewriter, loc, stablehlo::ImagOp::create(rewriter, loc, input)));
+  auto realFinite = stablehlo::IsFiniteOp::create(
+      rewriter, loc, stablehlo::RealOp::create(rewriter, loc, input));
+  auto imagFinite = stablehlo::IsFiniteOp::create(
+      rewriter, loc, stablehlo::ImagOp::create(rewriter, loc, input));
+  auto areFinite =
+      stablehlo::AndOp::create(rewriter, loc, realFinite, imagFinite);
 
   SmallVector<int64_t> reductionDims;
   for (int i = inputRank - 2; i < inputRank; i++)
@@ -1901,21 +1901,21 @@ private:
 
     // LAPACK returns 1-indexed pivots, while XLA returns 0-indexed pivots.
     // We make it consistent with LAPACK by adding 1 to the pivots.
-    auto pivots1Indexed = stablehlo::AddOp::create(
-        rewriter, op.getLoc(),
-        stablehlo::ConstantOp::create(
-            rewriter, op.getLoc(), pivotType,
-            cast<ElementsAttr>(makeAttr(pivotType, 1))),
-        stablehlo::ConvertOp::create(rewriter, op.getLoc(), pivotType,
-                                     customCall.getResult(1)));
+    auto pivotOne = stablehlo::ConstantOp::create(
+        rewriter, op.getLoc(), pivotType,
+        cast<ElementsAttr>(makeAttr(pivotType, 1)));
+    auto pivots = stablehlo::ConvertOp::create(rewriter, op.getLoc(), pivotType,
+                                               customCall.getResult(1));
+    auto pivots1Indexed =
+        stablehlo::AddOp::create(rewriter, op.getLoc(), pivotOne, pivots);
 
+    auto permutationOne = stablehlo::ConstantOp::create(
+        rewriter, op.getLoc(), permutationType,
+        cast<ElementsAttr>(makeAttr(permutationType, 1)));
+    auto permutation = stablehlo::ConvertOp::create(
+        rewriter, op.getLoc(), permutationType, customCall.getResult(2));
     auto permutation1Indexed = stablehlo::AddOp::create(
-        rewriter, op.getLoc(),
-        stablehlo::ConstantOp::create(
-            rewriter, op.getLoc(), permutationType,
-            cast<ElementsAttr>(makeAttr(permutationType, 1))),
-        stablehlo::ConvertOp::create(rewriter, op.getLoc(), permutationType,
-                                     customCall.getResult(2)));
+        rewriter, op.getLoc(), permutationOne, permutation);
 
     auto info = anyNonFiniteValue(rewriter, op.getLoc(), infoType,
                                   customCall.getResult(0), inputRank);
@@ -2216,12 +2216,12 @@ LogicalResult lowerSVDAlgorithmCPU(OpTy op, PatternRewriter &rewriter,
         auto NVal = LLVM::LoadOp::create(
             rewriter, op.getLoc(), type_llvm_lapack_int, funcOp.getArgument(1));
 
-        auto const5minMN = LLVM::MulOp::create(
-            rewriter, op.getLoc(),
-            LLVM::ConstantOp::create(
-                rewriter, op.getLoc(), type_llvm_lapack_int,
-                rewriter.getIntegerAttr(type_llvm_lapack_int, 5)),
-            arith::MinSIOp::create(rewriter, op.getLoc(), MVal, NVal));
+        auto const5 = LLVM::ConstantOp::create(
+            rewriter, op.getLoc(), type_llvm_lapack_int,
+            rewriter.getIntegerAttr(type_llvm_lapack_int, 5));
+        auto minMN = arith::MinSIOp::create(rewriter, op.getLoc(), MVal, NVal);
+        auto const5minMN =
+            LLVM::MulOp::create(rewriter, op.getLoc(), const5, minMN);
 
         auto rworkptr =
             LLVM::AllocaOp::create(rewriter, op.getLoc(), type_llvm_ptr,

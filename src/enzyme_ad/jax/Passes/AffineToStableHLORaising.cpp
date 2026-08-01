@@ -700,14 +700,16 @@ expandAffineExpr(OpBuilder &builder, Location loc, AffineExpr expr,
             makeI64Constant(cast<ShapedType>(lhs.getType()), 0),
             stablehlo::ComparisonDirection::LE);
         Value one = makeI64Constant(cast<ShapedType>(lhs.getType()), 1);
-        Value absolute = stablehlo::SelectOp::create(
-            builder, loc, negative, stablehlo::NegOp::create(builder, loc, lhs),
-            stablehlo::AddOp::create(builder, loc, lhs, one));
+        Value negLhs = stablehlo::NegOp::create(builder, loc, lhs);
+        Value lhsPlusOne = stablehlo::AddOp::create(builder, loc, lhs, one);
+        Value absolute = stablehlo::SelectOp::create(builder, loc, negative,
+                                                     negLhs, lhsPlusOne);
         Value quotient = stablehlo::DivOp::create(builder, loc, absolute, rhs);
-        result = stablehlo::SelectOp::create(
-            builder, loc, negative,
-            stablehlo::NegOp::create(builder, loc, quotient),
-            stablehlo::AddOp::create(builder, loc, quotient, one));
+        Value negQuotient = stablehlo::NegOp::create(builder, loc, quotient);
+        Value quotientPlusOne =
+            stablehlo::AddOp::create(builder, loc, quotient, one);
+        result = stablehlo::SelectOp::create(builder, loc, negative,
+                                             negQuotient, quotientPlusOne);
       };
       break;
     default:
