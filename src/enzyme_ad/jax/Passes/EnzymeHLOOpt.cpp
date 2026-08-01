@@ -6456,8 +6456,8 @@ struct BinomialProgressConstProp final
       beta = beta * (s + t) / t; // C(s+t,t) from C(s+t-1,t-1); exact
     }
 
-    // beta(s-1, t) == beta * s / (s + t) and beta(s, t-1) == beta * t / (s + t),
-    // both exact in integers.
+    // beta(s-1, t) == beta * s / (s + t) and beta(s, t-1) == beta * t / (s +
+    // t), both exact in integers.
     int64_t lo = std::max<int64_t>(n - beta * s / (s + t), 1);
     int64_t hi = std::min<int64_t>(beta * t / (s + t), n - 1);
     int64_t m = (lo + hi) / 2; // lo <= hi, so this is already in [1, n-1]

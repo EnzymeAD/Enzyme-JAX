@@ -119,9 +119,9 @@ struct LowerBinomialProgressOpToStableHLO
                                            whileOp->getResultTypes(), locs);
         rewriter.setInsertionPointToEnd(cond);
 
-        Value cmp = stablehlo::CompareOp::create(
-            rewriter, loc, cond->getArgument(1), n,
-            stablehlo::ComparisonDirection::LT);
+        Value cmp =
+            stablehlo::CompareOp::create(rewriter, loc, cond->getArgument(1), n,
+                                         stablehlo::ComparisonDirection::LT);
         stablehlo::ReturnOp::create(rewriter, loc, cmp);
       }
 
@@ -147,12 +147,12 @@ struct LowerBinomialProgressOpToStableHLO
 
       Value t = whileOp->getResult(0), beta = whileOp->getResult(1);
 
-      // beta(s-1, t) = beta * s / (s + t) and beta(s, t-1) = beta * t / (s + t),
-      // both exact in integers. Every advance between n - beta(s-1,t) and
+      // beta(s-1, t) = beta * s / (s + t) and beta(s, t-1) = beta * t / (s +
+      // t), both exact in integers. Every advance between n - beta(s-1,t) and
       // beta(s, t-1) attains the optimal repetition count; clamp that window to
       // [1, n-1] -- so the caller always progresses and always leaves a tail --
-      // and take its midpoint, since either edge can collapse onto the clamp and
-      // waste a checkpoint on a one-step advance.
+      // and take its midpoint, since either edge can collapse onto the clamp
+      // and waste a checkpoint on a one-step advance.
       Value sPlusT = stablehlo::AddOp::create(rewriter, loc, s, t);
       Value loRaw = stablehlo::SubtractOp::create(
           rewriter, loc, n,
@@ -173,13 +173,14 @@ struct LowerBinomialProgressOpToStableHLO
 
       // Leave a step for each of the s-1 checkpoints still to be placed.
       // Without this the advances can exhaust the interval before the slots run
-      // out, and a caller walking one slot per iteration then records slots at a
-      // step past the end, holding the final state rather than a checkpoint.
+      // out, and a caller walking one slot per iteration then records slots at
+      // a step past the end, holding the final state rather than a checkpoint.
       Value cap = stablehlo::SubtractOp::create(
           rewriter, loc, n,
           stablehlo::SubtractOp::create(rewriter, loc, s, one));
       Value result = stablehlo::MaxOp::create(
-          rewriter, loc, stablehlo::MinOp::create(rewriter, loc, mid, cap), one);
+          rewriter, loc, stablehlo::MinOp::create(rewriter, loc, mid, cap),
+          one);
 
       stablehlo::ReturnOp::create(rewriter, loc, result);
     }
@@ -206,8 +207,8 @@ void lowerEnzymeXLAMath(Operation *op,
   }
 
   // Verify that all illegal ops have been lowered. A tensor-typed
-  // enzyme.binomial_progress counts: nothing downstream of here lowers it, since
-  // Enzyme's own pass only handles the scalar form.
+  // enzyme.binomial_progress counts: nothing downstream of here lowers it,
+  // since Enzyme's own pass only handles the scalar form.
   auto walkResult = op->walk([&](Operation *local_op) {
     if (auto bp = dyn_cast<enzyme::BinomialProgressOp>(local_op)) {
       if (!isa<TensorType>(bp.getType()))
