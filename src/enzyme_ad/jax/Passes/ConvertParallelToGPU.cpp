@@ -2635,17 +2635,6 @@ gdgo->erase();
         }
       });
     });
-    {
-      SmallVector<gpu::GPUModuleOp> dead;
-      getOperation()->walk([&](gpu::GPUModuleOp gmod) {
-        if (gmod.getTargetsAttr() && !gmod.getTargetsAttr().empty())
-          return;
-        if (SymbolTable::symbolKnownUseEmpty(gmod, getOperation()))
-          dead.push_back(gmod);
-      });
-      for (auto gmod : dead)
-        gmod.erase();
-    }
   }
 };
 
