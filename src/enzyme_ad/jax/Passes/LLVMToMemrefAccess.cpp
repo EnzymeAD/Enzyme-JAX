@@ -7,6 +7,7 @@
 #include "mlir/Dialect/Vector/IR/VectorOps.h"
 #include "mlir/IR/MLIRContext.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
+#include "llvm/ADT/MapVector.h"
 
 #define DEBUG_TYPE "llvm-to-memref-access"
 
@@ -47,7 +48,8 @@ struct LLVMToMemrefAccessPass
 
     // Find all kernels and their enzymexla.kernel_call and enzymexla.jit_call
     // callers
-    DenseMap<FunctionOpInterface, SetVector<CallOpInterface>> funcToKernelMap;
+    llvm::MapVector<FunctionOpInterface, SetVector<CallOpInterface>>
+        funcToKernelMap;
     moduleOp->walk([&](enzymexla::JITCallOp callOp) {
       auto symbolName =
           dyn_cast_or_null<SymbolRefAttr>(callOp.getCallableForCallee());

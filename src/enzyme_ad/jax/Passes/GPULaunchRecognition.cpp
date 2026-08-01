@@ -11,6 +11,7 @@
 #include "mlir/IR/IRMapping.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
+#include "llvm/ADT/MapVector.h"
 #include "llvm/ADT/SmallSet.h"
 #include "llvm/ADT/StringSet.h"
 
@@ -378,7 +379,8 @@ enum __device_builtin__ cudaMemcpyKind
 
     SetVector<Operation *> tocopy;
 
-    DenseMap<LLVM::LLVMFuncOp, SmallVector<CallOpInterface>> kernelLaunches;
+    llvm::MapVector<LLVM::LLVMFuncOp, SmallVector<CallOpInterface>>
+        kernelLaunches;
 
     for (auto launchFunc : launchFuncs) {
       auto launchFuncUses = launchFunc.getSymbolUses(getOperation());
