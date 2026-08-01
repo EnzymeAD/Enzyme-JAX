@@ -649,6 +649,7 @@ def LowerEnzymeXLAMathPass : Pass<"lower-enzymexla-math"> {
     "stablehlo::StablehloDialect",
     "chlo::ChloDialect",
     "enzymexla::EnzymeXLADialect",
+    "enzyme::EnzymeDialect",
   ];
 }
 
@@ -658,6 +659,7 @@ def LowerEnzymeXLAMLPass : Pass<"lower-enzymexla-ml"> {
     "stablehlo::StablehloDialect",
     "chlo::ChloDialect",
     "enzymexla::EnzymeXLADialect",
+    "enzyme::EnzymeDialect",
   ];
 }
 
