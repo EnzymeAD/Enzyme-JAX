@@ -2709,6 +2709,26 @@ struct MoveSelectToAffine : public OpRewritePattern<arith::SelectOp> {
 struct ForOpRaising : public OpRewritePattern<scf::ForOp> {
   using OpRewritePattern<scf::ForOp>::OpRewritePattern;
 
+  // Enzyme's checkpointing/mincut reverse-mode support (see
+  // SCFAutoDiffOpInterfaceImpl.cpp) is only implemented for scf::ForOp, not
+  // affine::AffineForOp. Raising a loop that requests checkpointing to
+  // affine.for would silently drop that support (the attribute, if already
+  // attached, is preserved on the affine.for but never consulted; if not yet
+  // attached, the enclosing-loop walk in ForLoopApplyEnzymeAttributes would
+  // no longer find an scf::ForOp/scf::WhileOp ancestor). So leave such loops
+  // as scf.for regardless of whether they are otherwise affine-representable.
+  bool hasEnzymeCheckpointingRequest(scf::ForOp loop) const {
+    if (loop->hasAttr("enzyme.enable_checkpointing"))
+      return true;
+    bool found = false;
+    loop.getBody()->walk([&](LLVM::CallOp call) {
+      if (auto callee = call.getCallee())
+        if (callee->contains("__enzyme_set_checkpointing"))
+          found = true;
+    });
+    return found;
+  }
+
   // TODO: remove me or rename me.
   bool isAffine(scf::ForOp loop) const {
     // return true;
@@ -2736,6 +2756,8 @@ struct ForOpRaising : public OpRewritePattern<scf::ForOp> {
   }
   LogicalResult matchAndRewrite(scf::ForOp loop,
                                 PatternRewriter &rewriter) const final {
+    if (hasEnzymeCheckpointingRequest(loop))
+      return failure();
     if (isAffine(loop)) {
       auto scope = getLocalAffineScope(loop);
       OpBuilder builder(loop);
