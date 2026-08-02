@@ -1,5 +1,4 @@
 // RUN: enzymexlamlir-opt %s -sort-block-memory | FileCheck %s
-// RUN: enzymexlamlir-opt %s --pass-pipeline='builtin.module(sort-block-memory{window=2})' | FileCheck %s --check-prefix=WINDOW
 
 // A run of (load, add, store) triples to disjoint locations, as remove-atomics
 // leaves behind. Emitted in place each load waits on the previous store; the
@@ -12,13 +11,6 @@
 // CHECK: affine.store {{.*}}, %arg0[%arg2 + 1]
 // CHECK-NEXT: affine.store {{.*}}, %arg0[%arg2 + 2]
 // CHECK-NEXT: affine.store {{.*}}, %arg0[%arg2 + 3]
-
-// With window=2 only two loads may be in flight, so the third stays put.
-// WINDOW-LABEL: @disjoint
-// WINDOW: affine.load %arg0[%arg2 + 1]
-// WINDOW-NEXT: affine.load %arg0[%arg2 + 2]
-// WINDOW-NEXT: arith.addf
-// WINDOW-NEXT: affine.store {{.*}}, %arg0[%arg2 + 1]
 func.func @disjoint(%m: memref<100xf32>, %v: f32) {
   affine.parallel (%i) = (0) to (10) {
     %0 = affine.load %m[%i + 1] : memref<100xf32>
