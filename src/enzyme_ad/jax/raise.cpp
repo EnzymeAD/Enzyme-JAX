@@ -159,11 +159,8 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
         "canonicalize,cse";
       if (options->removeAtomics)
         pass_pipeline += ",affine-cfg,remove-atomics";
-      if (options->sortBlockMemory) {
-        pass_pipeline += ",sort-block-memory{window=";
-        pass_pipeline += std::to_string(options->sortBlockMemoryWindow);
-        pass_pipeline += "}";
-      }
+      if (options->sortBlockMemory)
+        pass_pipeline += ",sort-block-memory";
       pass_pipeline += ",lower-affine";
       if (backend == "rocm")
         pass_pipeline += ",convert-cudart-to-hiprt";

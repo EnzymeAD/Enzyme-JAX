@@ -315,14 +315,6 @@ def SortBlockMemoryPass : Pass<"sort-block-memory"> {
   let dependentDialects = [
     "affine::AffineDialect",
   ];
-  let options = [
-    Option<
-      /*C++ variable name=*/"window",
-      /*CLI argument=*/"window",
-      /*type=*/"unsigned",
-      /*default=*/"0",
-      /*description=*/"Maximum number of loads to keep in flight, bounding the register pressure the clustering may add (0 = no limit)">
-  ];
 }
 
 def PrintLocationPass : Pass<"print-location"> {

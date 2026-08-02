@@ -113,7 +113,7 @@ Operation *earliestOperandPoint(Operation *op, Block *block) {
   return point;
 }
 
-void sortBlock(Block *block, unsigned window) {
+void sortBlock(Block *block) {
   SmallVector<Operation *> loads, stores;
   for (Operation &op : *block) {
     if (isa<AffineLoadOp>(op))
@@ -123,16 +123,6 @@ void sortBlock(Block *block, unsigned window) {
   }
   if (loads.size() < 2 && stores.size() < 2)
     return;
-
-  // Hoisting a load keeps its result live until its consumer, so `window` caps
-  // how many may be in flight at once; without it a long run would inflate
-  // register pressure enough to cost more than the latency it saves.
-  if (window) {
-    if (loads.size() > window)
-      loads.resize(window);
-    if (stores.size() > window)
-      stores.erase(stores.begin(), stores.end() - window);
-  }
 
   // Hoist loads, in order, as far up as both their operands and the accesses
   // in between allow. `cursor` is the last load already hoisted; keeping the
@@ -180,7 +170,7 @@ struct SortBlockMemoryPass
   using SortBlockMemoryPassBase::SortBlockMemoryPassBase;
 
   void runOnOperation() override {
-    getOperation()->walk([&](Block *block) { sortBlock(block, window); });
+    getOperation()->walk([](Block *block) { sortBlock(block); });
   }
 };
 
