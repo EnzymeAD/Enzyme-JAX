@@ -1845,9 +1845,13 @@ IslScopBuilder::build(Operation *f, bool allowScfIfConditionalWritesAsMay) {
 
   if (allowScfIfConditionalWritesAsMay) {
     // The enclosing scf.if statement models effects for its nested ops.
-    // Drop nested statements here to avoid double-counting accesses.
+    // Drop nested statements here to avoid double-counting accesses. Only an
+    // scf.if inside the scop has a statement of its own to do that modelling:
+    // one enclosing the whole scop is not part of it, and treating it as the
+    // modelling statement would drop every statement we just gathered.
     llvm::erase_if(scop->stmts, [&](ScopStmt &stmt) {
-      return stmt.getOperation()->getParentOfType<scf::IfOp>() != nullptr;
+      auto ifOp = stmt.getOperation()->getParentOfType<scf::IfOp>();
+      return ifOp && f->isProperAncestor(ifOp);
     });
   }
 

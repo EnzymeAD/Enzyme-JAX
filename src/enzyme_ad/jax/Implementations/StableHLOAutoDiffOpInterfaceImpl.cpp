@@ -569,6 +569,58 @@ class AutoDiffWhileRev
     return revInfo;
   }
 
+  // Drop the entries `mapping` holds for the block arguments inside `op`'s
+  // regions, so the clone gets its own. Region::cloneInto reuses an existing
+  // entry rather than materializing a fresh argument (`!mapper.contains(arg)`),
+  // so a leftover entry -- from an earlier clone of the same body, or inherited
+  // from the whole-function primal clone -- would leave the cloned regions
+  // argument-less and silently wire their bodies back to that other copy. Block
+  // arguments are the only entities that need this: the cloner maps blocks and
+  // nested op results unconditionally as it goes.
+  static void forgetNestedBlockArgs(Operation *op, IRMapping &mapping) {
+    for (Region &region : op->getRegions())
+      for (Block &block : region) {
+        for (BlockArgument arg : block.getArguments())
+          mapping.erase(Value(arg));
+        for (Operation &nested : block)
+          forgetNestedBlockArgs(&nested, mapping);
+      }
+  }
+
+  // Clone one op of a checkpointed loop body and hand the whole clone -- the op
+  // and everything nested inside it -- to gutils as the new counterpart of the
+  // original. Publishing only the top level is not enough: a nested op's
+  // reverse rule looking up e.g. the inner loop's carried argument would get
+  // the stale entry pointing at the primal clone this rewrite replaced.
+  static Operation *cloneAndPublish(OpBuilder &builder, Operation &op,
+                                    IRMapping &mapping,
+                                    MGradientUtilsReverse *gutils) {
+    forgetNestedBlockArgs(&op, mapping);
+
+    Operation *newOp = builder.clone(op, mapping);
+
+    // The cloner filled `mapping` in as it went, so it already knows the new
+    // counterpart of every op and value inside the clone -- no need to walk the
+    // copy again. originalToNewFnOps is a plain std::map the cloner has never
+    // heard of, so it takes the operation map wholesale.
+    for (auto &&[oldNested, newNested] : mapping.getOperationMap())
+      gutils->originalToNewFnOps[oldNested] = newNested;
+
+    // The value map also holds the caller's seeds -- the values the body reads
+    // from above, mapped to popped caches. Those must stay private to this
+    // clone, so publish only what `op` itself defines: its own results, and the
+    // results and block arguments nested inside it.
+    for (auto &&[oldVal, newVal] : mapping.getValueMap()) {
+      Operation *owner = oldVal.getDefiningOp();
+      if (!owner)
+        owner = cast<BlockArgument>(oldVal).getOwner()->getParentOp();
+      if (owner && op.isAncestor(owner))
+        gutils->originalToNewFn.map(oldVal, newVal);
+    }
+
+    return newOp;
+  }
+
   // arr[index:index+1, :, :, :] = val
   static Value setIndex(OpBuilder &builder, Value arr, Value index, Value val) {
     SmallVector<int64_t> updateShape{1};
@@ -589,16 +641,18 @@ class AutoDiffWhileRev
   static stablehlo::WhileOp makeForLoop(OpBuilder &builder, Location loc,
                                         int64_t start, int64_t limit,
                                         int64_t step, ValueRange operands) {
-    return makeForLoop(builder, loc, makeI64Constant(loc, builder, start),
-                       makeI64Constant(loc, builder, limit),
-                       makeI64Constant(loc, builder, step), operands);
+    Value startVal = makeI64Constant(loc, builder, start);
+    Value limitVal = makeI64Constant(loc, builder, limit);
+    Value stepVal = makeI64Constant(loc, builder, step);
+    return makeForLoop(builder, loc, startVal, limitVal, stepVal, operands);
   }
 
   static stablehlo::WhileOp makeForLoop(OpBuilder &builder, Location loc,
                                         int64_t start, Value limit,
                                         int64_t step, ValueRange operands) {
-    return makeForLoop(builder, loc, makeI64Constant(loc, builder, start),
-                       limit, makeI64Constant(loc, builder, step), operands);
+    Value startVal = makeI64Constant(loc, builder, start);
+    Value stepVal = makeI64Constant(loc, builder, step);
+    return makeForLoop(builder, loc, startVal, limit, stepVal, operands);
   }
 
   static stablehlo::WhileOp makeForLoop(OpBuilder &builder, Location loc,
@@ -812,8 +866,8 @@ class AutoDiffWhileRev
         builder, orig->getLoc(),
         makeI64Constant(orig->getLoc(), builder, revInfo.checkpointPeriod),
         capo);
-    Value split = enzymexla::BinomialProgressOp::create(
-        builder, orig->getLoc(), remaining, budget, nullptr);
+    Value split = enzyme::BinomialProgressOp::create(
+        builder, orig->getLoc(), remaining.getType(), remaining, budget);
 
     SmallVector<Value> innerBodyCaches;
 
@@ -972,18 +1026,8 @@ class AutoDiffWhileRev
       gutils->originalToNewFn.map(origArg, newArg);
     }
 
-    for (Operation &op : origBody->without_terminator()) {
-      Operation *newOp = builder.clone(op, mapping);
-      gutils->originalToNewFnOps[&op] = newOp;
-      for (auto &&[oldv, newv] :
-           llvm::zip_equal(op.getResults(), newOp->getResults())) {
-        gutils->originalToNewFn.map(oldv, newv);
-      }
-    }
-
-    for (auto [oldOp, newOp] : mapping.getOperationMap()) {
-      gutils->originalToNewFnOps[oldOp] = newOp;
-    }
+    for (Operation &op : origBody->without_terminator())
+      cloneAndPublish(builder, op, mapping, gutils);
 
     bool anyFailed = false;
 
@@ -1178,15 +1222,14 @@ class AutoDiffWhileRev
 
     Value currentStep =
         stablehlo::AddOp::create(builder, orig.getLoc(), outerStart, innerIV);
+    Value constantStart = makeI64Constant(
+        orig.getLoc(), builder, revInfo.info.getConstantStart().value());
+    Value constantStep = makeI64Constant(
+        orig.getLoc(), builder, revInfo.info.getConstantStep().value());
     Value currentIV = stablehlo::AddOp::create(
-        builder, orig.getLoc(),
-        makeI64Constant(orig.getLoc(), builder,
-                        revInfo.info.getConstantStart().value()),
-        stablehlo::MulOp::create(
-            builder, orig.getLoc(),
-            makeI64Constant(orig.getLoc(), builder,
-                            revInfo.info.getConstantStep().value()),
-            currentStep));
+        builder, orig.getLoc(), constantStart,
+        stablehlo::MulOp::create(builder, orig.getLoc(), constantStep,
+                                 currentStep));
 
     Block *origBody = &orig.getBody().front();
     for (auto &&[origarg, revinnerarg] : llvm::zip_equal(
@@ -1197,14 +1240,9 @@ class AutoDiffWhileRev
     mapping.map(origBody->getArgument(0), currentIV);
     gutils->originalToNewFn.map(origBody->getArgument(0), currentIV);
 
-    for (Operation &op : origBody->without_terminator()) {
-      auto newOp = builder.clone(op, mapping);
-      gutils->originalToNewFnOps[&op] = newOp;
-      for (auto &&[oldv, newv] :
-           llvm::zip(op.getResults(), newOp->getResults())) {
-        gutils->originalToNewFn.map(oldv, newv);
-      }
-    }
+    for (Operation &op : origBody->without_terminator())
+      cloneAndPublish(builder, op, mapping, gutils);
+
     {
       auto oldTerm = cast<stablehlo::ReturnOp>(origBody->getTerminator());
       auto newTerm = cast<stablehlo::ReturnOp>(revInnerBody->getTerminator());
@@ -1228,10 +1266,6 @@ class AutoDiffWhileRev
         gutils->addToDiffe(operand, revLoopBody->getArgument(revIdx), builder);
         revIdx++;
       }
-    }
-
-    for (auto [oldOp, newOp] : mapping.getOperationMap()) {
-      gutils->originalToNewFnOps[oldOp] = newOp;
     }
 
     bool anyFailed = false;
@@ -1760,8 +1794,8 @@ public:
               makeI64Constant(orig->getLoc(), builder,
                               revModeInfo.checkpointPeriod),
               outerBody->getArgument(0));
-          Value innerLimit = enzymexla::BinomialProgressOp::create(
-              builder, orig->getLoc(), numSteps, budget, nullptr);
+          Value innerLimit = enzyme::BinomialProgressOp::create(
+              builder, orig->getLoc(), numSteps.getType(), numSteps, budget);
 
           outerTerm->setOperand(
               outerTerm->getNumOperands() - 2,

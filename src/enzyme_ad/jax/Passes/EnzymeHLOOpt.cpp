@@ -6426,29 +6426,60 @@ struct LGammaConstProp final
 };
 
 struct BinomialProgressConstProp final
-    : CheckedOpRewritePattern<enzymexla::BinomialProgressOp,
+    : CheckedOpRewritePattern<enzyme::BinomialProgressOp,
                               BinomialProgressConstProp> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
+  // The Revolve advance *distance*: with beta(s, t) = C(s + t, t) and t minimal
+  // such that beta(s, t) >= n, every advance in
+  // [n - beta(s-1, t), beta(s, t-1)] attains that optimal t. Clamp that window
+  // to [1, n-1] and take its midpoint. Must stay in sync with
+  // enzyme/Enzyme/MLIR/Dialect/Ops.cpp's binomialProgress and with
+  // LowerBinomialProgressOpToStableHLO.
+  //
+  // With a single checkpoint left there is nothing better than replaying the
+  // whole remaining stretch from it, so advance all of it. Together with every
+  // other advance landing in [1, n-1], that is what makes the per-slot advances
+  // sum to exactly `n` across `budget` slots -- which is what the callers'
+  // outer loop relies on to reach the end of the primal.
   static int64_t binomialProgress(int64_t n, int64_t s) {
-    assert(s > 0 && "no checkpoints available");
-    if (s == 1 || n == 1)
+    if (n <= 0)
+      return 0;
+    if (n == 1)
       return 1;
+    if (s <= 1)
+      return n;
 
-    int64_t j = 1;
-    int64_t binom = s; // C(s, s-1) = s
-
-    while (binom < n) {
-      ++j;
-      binom = binom * (j + s - 1) / j;
+    int64_t t = 0, beta = 1; // beta == C(s + t, t)
+    while (beta < n) {
+      ++t;
+      beta = beta * (s + t) / t; // C(s+t,t) from C(s+t-1,t-1); exact
     }
 
-    return binom == n ? j : j - 1;
+    // beta(s-1, t) == beta * s / (s + t) and beta(s, t-1) == beta * t / (s +
+    // t), both exact in integers.
+    int64_t lo = std::max<int64_t>(n - beta * s / (s + t), 1);
+    int64_t hi = std::min<int64_t>(beta * t / (s + t), n - 1);
+    int64_t m = (lo + hi) / 2; // lo <= hi, so this is already in [1, n-1]
+
+    // Leave at least one step for each of the s-1 checkpoints still to be
+    // placed. Without this the advances can exhaust the interval before the
+    // slots run out, and a caller that walks one slot per iteration then
+    // records slots at a step past the end -- holding the final state rather
+    // than a checkpoint.
+    m = std::min<int64_t>(m, n - (s - 1));
+    return std::max<int64_t>(m, 1);
   }
 
-  LogicalResult matchAndRewriteImpl(enzymexla::BinomialProgressOp op,
+  LogicalResult matchAndRewriteImpl(enzyme::BinomialProgressOp op,
                                     PatternRewriter &rewriter) const {
     APInt numSteps, budget;
+
+    // The op is also used on plain scalars by the scf path, where a
+    // stablehlo.constant replacement would be ill-typed; Enzyme's own folder
+    // handles those.
+    if (!isa<TensorType>(op.getType()))
+      return failure();
 
     if (!matchPattern(op.getNumSteps(), m_ConstantInt(&numSteps)) ||
         !matchPattern(op.getBudget(), m_ConstantInt(&budget)))
@@ -8148,23 +8179,23 @@ struct NoNanZeroBasePowSimplify final
       // 0 ^ x => x == 0 ? 1 : (x > 0 ? 0 : Inf)
       auto zero = stablehlo::ConstantOp::create(
           rewriter, op.getLoc(), rewriter.getZeroAttr(op.getType()));
-      auto nonZeroCase = stablehlo::SelectOp::create(
-          rewriter, op.getLoc(),
+      auto rhsPositive =
           stablehlo::CompareOp::create(rewriter, op.getLoc(), op.getRhs(), zero,
-                                       stablehlo::ComparisonDirection::GT),
-          zero,
-          stablehlo::ConstantOp::create(
-              rewriter, op.getLoc(), op.getType(),
-              cast<ElementsAttr>(makeAttr(
-                  op.getType(), std::numeric_limits<float>::infinity()))));
-      rewriter.replaceOpWithNewOp<stablehlo::SelectOp>(
-          op,
+                                       stablehlo::ComparisonDirection::GT);
+      auto inf = stablehlo::ConstantOp::create(
+          rewriter, op.getLoc(), op.getType(),
+          cast<ElementsAttr>(
+              makeAttr(op.getType(), std::numeric_limits<float>::infinity())));
+      auto nonZeroCase = stablehlo::SelectOp::create(rewriter, op.getLoc(),
+                                                     rhsPositive, zero, inf);
+      auto rhsIsZero =
           stablehlo::CompareOp::create(rewriter, op.getLoc(), op.getRhs(), zero,
-                                       stablehlo::ComparisonDirection::EQ),
-          stablehlo::ConstantOp::create(
-              rewriter, op.getLoc(), op.getType(),
-              cast<ElementsAttr>(makeAttr(op.getType(), 1))),
-          nonZeroCase);
+                                       stablehlo::ComparisonDirection::EQ);
+      auto one = stablehlo::ConstantOp::create(
+          rewriter, op.getLoc(), op.getType(),
+          cast<ElementsAttr>(makeAttr(op.getType(), 1)));
+      rewriter.replaceOpWithNewOp<stablehlo::SelectOp>(op, rhsIsZero, one,
+                                                       nonZeroCase);
       return success();
     }
 
@@ -13459,14 +13490,14 @@ struct DivideDivideSimplify
           return failure();
 
         // Case III.
-        rewriter.replaceOpWithNewOp<stablehlo::DivOp>(
-            op,
-            stablehlo::MulOp::create(rewriter, op.getLoc(),
-                                     lhsDivOp->getOperand(0),
-                                     rhsDivOp->getOperand(1)),
-            stablehlo::MulOp::create(rewriter, op.getLoc(),
-                                     lhsDivOp->getOperand(1),
-                                     rhsDivOp->getOperand(0)));
+        auto numerator = stablehlo::MulOp::create(rewriter, op.getLoc(),
+                                                  lhsDivOp->getOperand(0),
+                                                  rhsDivOp->getOperand(1));
+        auto denominator = stablehlo::MulOp::create(rewriter, op.getLoc(),
+                                                    lhsDivOp->getOperand(1),
+                                                    rhsDivOp->getOperand(0));
+        rewriter.replaceOpWithNewOp<stablehlo::DivOp>(op, numerator,
+                                                      denominator);
         return success();
       } else {
         // Case II.
@@ -27782,12 +27813,11 @@ struct LogSimplify final
         // is NaN while log(a*a) is finite. Gating on the analysis avoids an abs
         // (possibly slower than the mul). See #2570.
         if (lhs == rhs && guaranteedNonNegativeResult(lhs, rewriter)) {
-          rewriter.replaceOpWithNewOp<stablehlo::MulOp>(
-              op,
-              stablehlo::ConstantOp::create(
-                  rewriter, op.getLoc(), lhs.getType(),
-                  cast<ElementsAttr>(makeAttr(lhs.getType(), 2))),
-              stablehlo::LogOp::create(rewriter, op.getLoc(), lhs));
+          auto two = stablehlo::ConstantOp::create(
+              rewriter, op.getLoc(), lhs.getType(),
+              cast<ElementsAttr>(makeAttr(lhs.getType(), 2)));
+          auto logLhs = stablehlo::LogOp::create(rewriter, op.getLoc(), lhs);
+          rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, two, logLhs);
           return success();
         }
 
@@ -27799,9 +27829,9 @@ struct LogSimplify final
           // #2570.
           Value cst = matchPattern(lhs, m_Constant()) ? lhs : rhs;
           if (isPositiveFiniteConstant(cst, /*allowZero=*/false)) {
-            rewriter.replaceOpWithNewOp<stablehlo::AddOp>(
-                op, stablehlo::LogOp::create(rewriter, op.getLoc(), lhs),
-                stablehlo::LogOp::create(rewriter, op.getLoc(), rhs));
+            auto logLhs = stablehlo::LogOp::create(rewriter, op.getLoc(), lhs);
+            auto logRhs = stablehlo::LogOp::create(rewriter, op.getLoc(), rhs);
+            rewriter.replaceOpWithNewOp<stablehlo::AddOp>(op, logLhs, logRhs);
             return success();
           }
         }
@@ -27814,14 +27844,13 @@ struct LogSimplify final
         auto lhs = defOp.getLhs();
         auto rhs = defOp.getRhs();
         if (lhs == rhs) { // log(add(a, a)) -> log(2) + log(a)
-          rewriter.replaceOpWithNewOp<stablehlo::AddOp>(
-              op,
-              stablehlo::LogOp::create(
-                  rewriter, op.getLoc(),
-                  stablehlo::ConstantOp::create(
-                      rewriter, op.getLoc(), lhs.getType(),
-                      cast<ElementsAttr>(makeAttr(lhs.getType(), 2)))),
-              stablehlo::LogOp::create(rewriter, op.getLoc(), lhs));
+          auto logTwo = stablehlo::LogOp::create(
+              rewriter, op.getLoc(),
+              stablehlo::ConstantOp::create(
+                  rewriter, op.getLoc(), lhs.getType(),
+                  cast<ElementsAttr>(makeAttr(lhs.getType(), 2))));
+          auto logLhs = stablehlo::LogOp::create(rewriter, op.getLoc(), lhs);
+          rewriter.replaceOpWithNewOp<stablehlo::AddOp>(op, logTwo, logLhs);
           return success();
         }
 
@@ -27859,9 +27888,10 @@ struct LogSimplify final
           bool constantIsLhs = matchPattern(lhs, m_Constant());
           Value cst = constantIsLhs ? lhs : rhs;
           if (isPositiveFiniteConstant(cst, /*allowZero=*/!constantIsLhs)) {
-            rewriter.replaceOpWithNewOp<stablehlo::SubtractOp>(
-                op, stablehlo::LogOp::create(rewriter, op.getLoc(), lhs),
-                stablehlo::LogOp::create(rewriter, op.getLoc(), rhs));
+            auto logLhs = stablehlo::LogOp::create(rewriter, op.getLoc(), lhs);
+            auto logRhs = stablehlo::LogOp::create(rewriter, op.getLoc(), rhs);
+            rewriter.replaceOpWithNewOp<stablehlo::SubtractOp>(op, logLhs,
+                                                               logRhs);
             return success();
           }
         }
@@ -27872,12 +27902,12 @@ struct LogSimplify final
       auto defOp = op.getOperand().getDefiningOp<stablehlo::SqrtOp>();
       if (defOp &&
           isOnlyUsedInOperation(defOp, op)) { // log(sqrt(x)) -> log(x) / 2
-        rewriter.replaceOpWithNewOp<stablehlo::DivOp>(
-            op,
-            stablehlo::LogOp::create(rewriter, op.getLoc(), defOp.getOperand()),
-            stablehlo::ConstantOp::create(
-                rewriter, op.getLoc(), defOp.getType(),
-                cast<ElementsAttr>(makeAttr(defOp.getType(), 2))));
+        auto logOperand =
+            stablehlo::LogOp::create(rewriter, op.getLoc(), defOp.getOperand());
+        auto two = stablehlo::ConstantOp::create(
+            rewriter, op.getLoc(), defOp.getType(),
+            cast<ElementsAttr>(makeAttr(defOp.getType(), 2)));
+        rewriter.replaceOpWithNewOp<stablehlo::DivOp>(op, logOperand, two);
         return success();
       }
     }
@@ -27886,12 +27916,12 @@ struct LogSimplify final
       auto defOp = op.getOperand().getDefiningOp<stablehlo::CbrtOp>();
       if (defOp &&
           isOnlyUsedInOperation(defOp, op)) { // log(cbrt(x)) -> log(x) / 3
-        rewriter.replaceOpWithNewOp<stablehlo::DivOp>(
-            op,
-            stablehlo::LogOp::create(rewriter, op.getLoc(), defOp.getOperand()),
-            stablehlo::ConstantOp::create(
-                rewriter, op.getLoc(), defOp.getType(),
-                cast<ElementsAttr>(makeAttr(defOp.getType(), 3))));
+        auto logOperand =
+            stablehlo::LogOp::create(rewriter, op.getLoc(), defOp.getOperand());
+        auto three = stablehlo::ConstantOp::create(
+            rewriter, op.getLoc(), defOp.getType(),
+            cast<ElementsAttr>(makeAttr(defOp.getType(), 3)));
+        rewriter.replaceOpWithNewOp<stablehlo::DivOp>(op, logOperand, three);
         return success();
       }
     }
@@ -27900,12 +27930,12 @@ struct LogSimplify final
       auto defOp = op.getOperand().getDefiningOp<stablehlo::RsqrtOp>();
       if (defOp &&
           isOnlyUsedInOperation(defOp, op)) { // log(rsqrt(x)) -> -log(x) / 2
-        rewriter.replaceOpWithNewOp<stablehlo::DivOp>(
-            op,
-            stablehlo::LogOp::create(rewriter, op.getLoc(), defOp.getOperand()),
-            stablehlo::ConstantOp::create(
-                rewriter, op.getLoc(), defOp.getType(),
-                cast<ElementsAttr>(makeAttr(defOp.getType(), -2))));
+        auto logOperand =
+            stablehlo::LogOp::create(rewriter, op.getLoc(), defOp.getOperand());
+        auto negTwo = stablehlo::ConstantOp::create(
+            rewriter, op.getLoc(), defOp.getType(),
+            cast<ElementsAttr>(makeAttr(defOp.getType(), -2)));
+        rewriter.replaceOpWithNewOp<stablehlo::DivOp>(op, logOperand, negTwo);
         return success();
       }
     }
@@ -30469,15 +30499,14 @@ struct DUSToDynamicPad
     for (auto [i, index] : llvm::enumerate(indices)) {
       auto cType = RankedTensorType::get(
           {}, cast<RankedTensorType>(index.getType()).getElementType());
+      auto lowerBound = stablehlo::ConstantOp::create(
+          rewriter, op.getLoc(), cType, cast<ElementsAttr>(makeAttr(cType, 0)));
+      auto upperBound = stablehlo::ConstantOp::create(
+          rewriter, op.getLoc(), cType,
+          cast<ElementsAttr>(
+              makeAttr(cType, operandShape[i] - updateShape[i])));
       auto clampedIndex = stablehlo::ClampOp::create(
-          rewriter, op.getLoc(),
-          stablehlo::ConstantOp::create(rewriter, op.getLoc(), cType,
-                                        cast<ElementsAttr>(makeAttr(cType, 0))),
-          index,
-          stablehlo::ConstantOp::create(
-              rewriter, op.getLoc(), cType,
-              cast<ElementsAttr>(
-                  makeAttr(cType, operandShape[i] - updateShape[i]))));
+          rewriter, op.getLoc(), lowerBound, index, upperBound);
 
       auto reshapedIndex = stablehlo::ReshapeOpCreate(
           rewriter, op.getLoc(), clampedIndex, ArrayRef<int64_t>{1});
@@ -31187,8 +31216,9 @@ struct BinaryNegatedOperandsSimplify
     if (lhsInfo.kind == NegKind::SUB && rhsInfo.kind == NegKind::SUB)
       return failure();
 
-    rewriter.replaceOpWithNewOp<OpTy>(op, negateOperand(lhsInfo, rewriter),
-                                      negateOperand(rhsInfo, rewriter));
+    Value negatedLhs = negateOperand(lhsInfo, rewriter);
+    Value negatedRhs = negateOperand(rhsInfo, rewriter);
+    rewriter.replaceOpWithNewOp<OpTy>(op, negatedLhs, negatedRhs);
     return success();
   }
 
@@ -31502,17 +31532,18 @@ struct DotGeneralToSyrk
         cast<RankedTensorType>(syrkInput.getType()).getElementType();
     auto alphaType = RankedTensorType::get({}, elemType);
 
+    auto cMatrix = stablehlo::ConstantOp::create(
+        rewriter, op.getLoc(), op.getType(),
+        cast<ElementsAttr>(makeAttr(op.getType(), 0)));
+    auto alpha = stablehlo::ConstantOp::create(
+        rewriter, op.getLoc(), alphaType,
+        cast<ElementsAttr>(makeAttr(alphaType, 1)));
+    auto beta = stablehlo::ConstantOp::create(
+        rewriter, op.getLoc(), alphaType,
+        cast<ElementsAttr>(makeAttr(alphaType, 0)));
     auto syrkOp = enzymexla::SyrkOp::create(
-        rewriter, op.getLoc(), op.getResult().getType(), syrkInput,
-        stablehlo::ConstantOp::create(
-            rewriter, op.getLoc(), op.getType(),
-            cast<ElementsAttr>(makeAttr(op.getType(), 0))),
-        stablehlo::ConstantOp::create(
-            rewriter, op.getLoc(), alphaType,
-            cast<ElementsAttr>(makeAttr(alphaType, 1))),
-        stablehlo::ConstantOp::create(
-            rewriter, op.getLoc(), alphaType,
-            cast<ElementsAttr>(makeAttr(alphaType, 0))),
+        rewriter, op.getLoc(), op.getResult().getType(), syrkInput, cMatrix,
+        alpha, beta,
         enzymexla::LapackUploAttr::get(op.getContext(),
                                        enzymexla::LapackUplo::F),
         enzymexla::LapackUploAttr::get(op.getContext(),
@@ -31589,19 +31620,20 @@ struct DotGeneralToSymm
     auto elemType = cast<RankedTensorType>(lhs.getType()).getElementType();
     auto alphaType = RankedTensorType::get({}, elemType);
 
+    auto cMatrix = stablehlo::ConstantOp::create(
+        rewriter, op.getLoc(), op.getType(),
+        cast<ElementsAttr>(makeAttr(op.getType(), 0)));
+    auto alpha = stablehlo::ConstantOp::create(
+        rewriter, op.getLoc(), alphaType,
+        cast<ElementsAttr>(makeAttr(alphaType, 1)));
+    auto beta = stablehlo::ConstantOp::create(
+        rewriter, op.getLoc(), alphaType,
+        cast<ElementsAttr>(makeAttr(alphaType, 0)));
     auto symmOp = enzymexla::SymmOp::create(
         rewriter, op.getLoc(), op.getResult().getType(),
         symmMatrix, // A (symmetric)
         genMatrix,  // B (general)
-        stablehlo::ConstantOp::create(
-            rewriter, op.getLoc(), op.getType(),
-            cast<ElementsAttr>(makeAttr(op.getType(), 0))), // C
-        stablehlo::ConstantOp::create(
-            rewriter, op.getLoc(), alphaType,
-            cast<ElementsAttr>(makeAttr(alphaType, 1))), // alpha
-        stablehlo::ConstantOp::create(
-            rewriter, op.getLoc(), alphaType,
-            cast<ElementsAttr>(makeAttr(alphaType, 0))), // beta
+        cMatrix, alpha, beta,
         enzymexla::LapackSideAttr::get(op.getContext(), side),
         enzymexla::LapackUploAttr::get(op.getContext(),
                                        enzymexla::LapackUplo::F));

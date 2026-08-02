@@ -2709,6 +2709,26 @@ struct MoveSelectToAffine : public OpRewritePattern<arith::SelectOp> {
 struct ForOpRaising : public OpRewritePattern<scf::ForOp> {
   using OpRewritePattern<scf::ForOp>::OpRewritePattern;
 
+  // Enzyme's checkpointing/mincut reverse-mode support (see
+  // SCFAutoDiffOpInterfaceImpl.cpp) is only implemented for scf::ForOp, not
+  // affine::AffineForOp. Raising a loop that requests checkpointing to
+  // affine.for would silently drop that support (the attribute, if already
+  // attached, is preserved on the affine.for but never consulted; if not yet
+  // attached, the enclosing-loop walk in ForLoopApplyEnzymeAttributes would
+  // no longer find an scf::ForOp/scf::WhileOp ancestor). So leave such loops
+  // as scf.for regardless of whether they are otherwise affine-representable.
+  bool hasEnzymeCheckpointingRequest(scf::ForOp loop) const {
+    if (loop->hasAttr("enzyme.enable_checkpointing"))
+      return true;
+    bool found = false;
+    loop.getBody()->walk([&](LLVM::CallOp call) {
+      if (auto callee = call.getCallee())
+        if (callee->contains("__enzyme_set_checkpointing"))
+          found = true;
+    });
+    return found;
+  }
+
   // TODO: remove me or rename me.
   bool isAffine(scf::ForOp loop) const {
     // return true;
@@ -2736,6 +2756,8 @@ struct ForOpRaising : public OpRewritePattern<scf::ForOp> {
   }
   LogicalResult matchAndRewrite(scf::ForOp loop,
                                 PatternRewriter &rewriter) const final {
+    if (hasEnzymeCheckpointingRequest(loop))
+      return failure();
     if (isAffine(loop)) {
       auto scope = getLocalAffineScope(loop);
       OpBuilder builder(loop);
@@ -2794,20 +2816,20 @@ struct ForOpRaising : public OpRewritePattern<scf::ForOp> {
       if (!loop.getStep().getDefiningOp<ConstantIndexOp>()) {
         if (ubs.size() != 1 || lbs.size() != 1)
           return failure();
-        ubs[0] = DivUIOp::create(
-            rewriter, loop.getLoc(),
-            AddIOp::create(
-                rewriter, loop.getLoc(),
-                SubIOp::create(
-                    rewriter, loop.getLoc(), loop.getStep(),
-                    isa<IndexType>(loop.getStep().getType())
+        Value one = isa<IndexType>(loop.getStep().getType())
                         ? ConstantIndexOp::create(rewriter, loop.getLoc(), 1)
                               .getResult()
                         : ConstantIntOp::create(rewriter, loop.getLoc(),
-                                                loop.getStep().getType(), 1))
-                    .getResult(),
-                SubIOp::create(rewriter, loop.getLoc(), loop.getUpperBound(),
-                               loop.getLowerBound())),
+                                                loop.getStep().getType(), 1);
+        Value stepMinusOne =
+            SubIOp::create(rewriter, loop.getLoc(), loop.getStep(), one)
+                .getResult();
+        Value range =
+            SubIOp::create(rewriter, loop.getLoc(), loop.getUpperBound(),
+                           loop.getLowerBound());
+        ubs[0] = DivUIOp::create(
+            rewriter, loop.getLoc(),
+            AddIOp::create(rewriter, loop.getLoc(), stepMinusOne, range),
             loop.getStep());
         lbs[0] = ConstantIndexOp::create(rewriter, loop.getLoc(), 0);
         rewrittenStep = true;
