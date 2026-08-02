@@ -309,6 +309,22 @@ def SortMemory : Pass<"sort-memory"> {
   let summary = "Sort memory accesses";
 }
 
+def SortBlockMemoryPass : Pass<"sort-block-memory"> {
+  let summary = "Hoist non-overlapping loads to the start of their block and "
+                "sink stores to the end";
+  let dependentDialects = [
+    "affine::AffineDialect",
+  ];
+  let options = [
+    Option<
+      /*C++ variable name=*/"window",
+      /*CLI argument=*/"window",
+      /*type=*/"unsigned",
+      /*default=*/"0",
+      /*description=*/"Maximum number of loads to keep in flight, bounding the register pressure the clustering may add (0 = no limit)">
+  ];
+}
+
 def PrintLocationPass : Pass<"print-location"> {
   let summary = "Print locations of attributed operations";
   let options = [Option<
