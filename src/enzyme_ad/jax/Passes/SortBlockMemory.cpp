@@ -104,7 +104,10 @@ Operation *earliestOperandPoint(Operation *op, Block *block) {
     Operation *def = operand.getDefiningOp();
     if (!def || def->getBlock() != block)
       continue;
-    if (point->isBeforeInBlock(def))
+    // `point` has to end up strictly after `def`, so advance it when the two
+    // are the same op as well -- an op is not before itself, and leaving it
+    // there would place the use ahead of its own definition.
+    if (point == def || point->isBeforeInBlock(def))
       point = def->getNextNode();
   }
   return point;
