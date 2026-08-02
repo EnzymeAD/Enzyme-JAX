@@ -71,6 +71,12 @@ cc_binary(
     ]),
 )
 
+alias(
+    name = "enzymexla-registry",
+    actual = "//src/enzyme_ad/jax:RegistryUtils",
+    visibility = ["//visibility:public"],
+)
+
 cc_binary(
     name = "enzymexla-lsp-server",
     srcs = ["//src/enzyme_ad/tools:EnzymeXLALspServerMain.cpp"],
