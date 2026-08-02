@@ -748,7 +748,14 @@ void ParallelLower::runOnOperation() {
         if (auto passthrough = lfn.getTargetFeatures()) {
           pw->setAttr("target_features", *passthrough);
         }
+        if (auto targetCpu = lfn.getTargetCpuAttr()) {
+          pw->setAttr("target_cpu", targetCpu);
+        }
       }
+      for (auto atname : {"passthrough", "target_features", "target_cpu"})
+        if (!pw->hasAttr(atname))
+          if (auto attr = launchOp->getAttr(atname))
+            pw->setAttr(atname, attr);
       builder.setInsertionPointToStart(pw.getBody());
     }
 

@@ -36,6 +36,8 @@ struct MLIRRoundTripOptions {
   bool preADLowerAffine;
   bool splitMultiResults;
   bool removeAtomics;
+  bool sortBlockMemory;
+  unsigned sortBlockMemoryWindow;
 };
 
 extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
