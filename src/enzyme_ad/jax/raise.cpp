@@ -261,6 +261,9 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
           }
           auto oldG = outModule->getGlobalVariable(oldName, true);
           assert(oldG);
+          if (oldG->hasSection())
+            glob->setSection(oldG->getSection());
+          glob->setAlignment(oldG->getAlign());
           oldG->replaceAllUsesWith(glob);
           oldG->eraseFromParent();
         }
