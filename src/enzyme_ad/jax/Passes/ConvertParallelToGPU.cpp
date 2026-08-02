@@ -2570,7 +2570,8 @@ gdgo->erase();
       }
 
       if (sm.empty())
-        if (auto arch = dyn_cast_or_null<StringAttr>(err->getAttr("target_cpu")))
+        if (auto arch =
+                dyn_cast_or_null<StringAttr>(err->getAttr("target_cpu")))
           sm = arch.getValue().str();
 
       err->walk([&](gpu::LaunchFuncOp launch) {
