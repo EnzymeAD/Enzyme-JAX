@@ -156,7 +156,10 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
         "flatten-enzyme-caches,lower-enzyme-binomial-progress,"
         "enzyme-simplify-math,"
         // canonicalize here folds away memref.subview ops before gpu-kernel-outlining
-        "canonicalize,cse,lower-affine";
+        "canonicalize,cse";
+      if (options->removeAtomics)
+        pass_pipeline += ",affine-cfg,remove-atomics";
+      pass_pipeline += ",lower-affine";
       if (backend == "rocm")
         pass_pipeline += ",convert-cudart-to-hiprt";
       if (backend != "cpu") {
