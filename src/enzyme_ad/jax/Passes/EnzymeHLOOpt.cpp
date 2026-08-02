@@ -15169,7 +15169,10 @@ struct AddPadPadToConcat
           auto sl2 = pad2.getEdgePaddingLow()[en2.index()];
           auto sh1 = pad1.getEdgePaddingHigh()[en2.index()];
           auto sh2 = pad2.getEdgePaddingHigh()[en2.index()];
-          if (sl1 != sl2 || sh1 != sh2) {
+          // Interior padding must match too: the rebuilt pad reuses pad1's.
+          auto si1 = pad1.getInteriorPadding()[en2.index()];
+          auto si2 = pad2.getInteriorPadding()[en2.index()];
+          if (sl1 != sl2 || sh1 != sh2 || si1 != si2) {
             legal = false;
             break;
           }
@@ -15203,7 +15206,9 @@ struct AddPadPadToConcat
           auto sl2 = pad2.getEdgePaddingLow()[en2.index()];
           auto sh1 = pad1.getEdgePaddingHigh()[en2.index()];
           auto sh2 = pad2.getEdgePaddingHigh()[en2.index()];
-          if (sl1 != sl2 || sh1 != sh2) {
+          auto si1 = pad1.getInteriorPadding()[en2.index()];
+          auto si2 = pad2.getInteriorPadding()[en2.index()];
+          if (sl1 != sl2 || sh1 != sh2 || si1 != si2) {
             legal = false;
             break;
           }
