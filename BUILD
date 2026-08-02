@@ -71,6 +71,22 @@ cc_binary(
     ]),
 )
 
+cc_binary(
+    name = "enzymexla-lsp-server",
+    srcs = ["//src/enzyme_ad/tools:EnzymeXLALspServerMain.cpp"],
+    copts = [
+        "-Wno-unused-variable",
+        "-Wno-return-type",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/enzyme_ad/jax:RegistryUtils",
+        "@llvm-project//mlir:MlirLspServerLib",
+        "@stablehlo//:interpreter_ops",
+        "@stablehlo//stablehlo/tests:check_ops",
+    ],
+)
+
 cc_library(
     name = "RaiseLib",
     srcs = [
