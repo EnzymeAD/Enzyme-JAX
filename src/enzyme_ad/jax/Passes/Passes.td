@@ -52,8 +52,8 @@ def DialectCanonicalize : Pass<"dialect-canonicalize"> {
 
 def RemoveDuplicateFuncDefPass
     : Pass<"remove-duplicate-func-def", "mlir::ModuleOp"> {
-  let summary = "Remove duplicate function definitions";
-  let dependentDialects = ["mlir::LLVM::LLVMDialect"];
+  let summary = "Remove duplicate function and gpu module definitions";
+  let dependentDialects = ["mlir::LLVM::LLVMDialect", "mlir::gpu::GPUDialect"];
 }
 
 def PropagateConstantBoundsPass
