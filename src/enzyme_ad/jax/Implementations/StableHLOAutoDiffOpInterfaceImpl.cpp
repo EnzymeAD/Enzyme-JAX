@@ -3841,8 +3841,29 @@ public:
 
     Value itersV = nullptr;
 
+    // Caches whose pushed value is the loop induction variable. The reverse
+    // loop is given its own counter below (step 4) which holds exactly the
+    // forward index being reversed, so taping the induction variable would
+    // materialize an identity map `tape[i] = i`. Worse, reading it back makes
+    // every reverse index data-dependent, which blinds bounds analysis and
+    // stops `while_induction_reduction` (and friends) from shrinking the
+    // loop-carried buffers. Skip materializing these and substitute the
+    // reverse counter in step 5 instead.
+    //
+    // Enzyme's shared loop handling (RemovalUtils.h) achieves this for
+    // scf/affine loops by seeding `fwdrevmap` with the forward IV before
+    // running the min cut, so the IV is never a cut root. stablehlo.while
+    // builds its reverse counter after the min cut has already run, so it is
+    // handled here instead.
+    SmallPtrSet<Operation *, 2> inductionVariableCaches;
+
     for (auto &cinfo : caches) {
       Value cache = cinfo.initOp.getResult();
+
+      if (inductionVariable && cinfo.pushedValue() == inductionVariable) {
+        inductionVariableCaches.insert(cinfo.pushOp);
+        continue;
+      }
 
       // push does not depend on a value inside the loop, we can hoist the
       // push/pop before the for loops.
@@ -4060,6 +4081,24 @@ public:
     for (auto &info : caches) {
       if (info.pushedValue().getParentRegion() != &newWhile.getBody())
         continue;
+
+      // The induction variable is not taped; the reverse loop's own counter
+      // already holds the forward index for the step being reversed.
+      if (inductionVariableCaches.contains(info.pushOp)) {
+        Block *popBody = &otherWhileOp.getBody().front();
+        Value revIV = popBody->getArgument(popBody->getNumArguments() - 1);
+        Value popValue = info.popOp.getResult();
+        if (revIV.getType() != popValue.getType()) {
+          OpBuilder::InsertionGuard guard(rewriter);
+          rewriter.setInsertionPoint(info.popOp);
+          revIV = stablehlo::ConvertOp::create(rewriter, info.popOp->getLoc(),
+                                               popValue.getType(), revIV);
+        }
+        rewriter.replaceAllUsesWith(popValue, revIV);
+        rewriter.eraseOp(info.popOp);
+        rewriter.eraseOp(info.pushOp);
+        continue;
+      }
 
       Value cache = info.initOp.getResult();
 
