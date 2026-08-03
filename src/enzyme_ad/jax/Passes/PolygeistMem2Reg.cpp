@@ -2022,10 +2022,10 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
   mlir::Location loc = AI.getLoc();
   std::set<mlir::Operation *> allStoreOps;
 
+  if (idx.isUnknown()) return changed;
+
   DataLayout dl = DataLayout::closest(AI.getDefiningOp());
-  Type elType = nullptr;
-  if (auto MT = dyn_cast<MemRefType>(AI.getType()))
-    elType = MT.getElementType();
+  Type elType = idx.getBase();
 
   std::deque<std::pair<mlir::Value, OffsetTree>> list = {{AI, OffsetTree()}};
 
