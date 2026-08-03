@@ -1665,7 +1665,8 @@ public:
           SmallVector<Value> outerOperands(
               newWhile.getOperands().slice(1, newWhile.getNumOperands() - 1));
 
-          for (auto operand : outerOperands) {
+          for (int i = 0, e = outerOperands.size(); i < e; i++) {
+            Value operand = outerOperands[i];
             auto operandType = cast<ShapedType>(operand.getType());
             SmallVector<int64_t> cacheShape;
             cacheShape.push_back(revModeInfo.checkpointPeriod);
