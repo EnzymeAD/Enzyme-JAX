@@ -26,6 +26,7 @@
 
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/BitVector.h"
+#include "llvm/ADT/SetVector.h"
 
 namespace mlir {
 namespace enzyme {
@@ -104,6 +105,135 @@ static bool arePairwiseNoAlias(DataFlowSolver &aliasSolver,
     }
   }
   return true;
+}
+
+/// Return true when a host scalar expression can be reconstructed inside a
+/// StableHLO function from constants and one or more device_mirror leaves.
+/// Keep this list in sync with raiseMirroredBoundExpression below.  These are
+/// the integer operations handled by ArithRaising as StableHLO elementwise
+/// operations as well.
+static bool collectMirroredBoundLeaves(Value value, Type hostBoundType,
+                                       llvm::SetVector<Value> &mirrors) {
+  if (value.getType() != hostBoundType)
+    return false;
+
+  if (auto mirror = value.getDefiningOp<enzymexla::DeviceMirrorOp>()) {
+    mirrors.insert(mirror.getResult());
+    return true;
+  }
+
+  APInt constant;
+  if (matchPattern(value, m_ConstantInt(&constant)))
+    return true;
+
+  Operation *operation = value.getDefiningOp();
+  if (!operation || operation->getNumOperands() != 2 ||
+      !isa<arith::AddIOp, arith::SubIOp, arith::MulIOp, arith::DivSIOp,
+           arith::DivUIOp, arith::MaxSIOp, arith::MaxUIOp, arith::MinSIOp,
+           arith::MinUIOp, arith::ShLIOp, arith::ShRSIOp, arith::ShRUIOp,
+           arith::AndIOp, arith::OrIOp, arith::XOrIOp, arith::RemSIOp,
+           arith::RemUIOp>(operation))
+    return false;
+
+  return collectMirroredBoundLeaves(operation->getOperand(0), hostBoundType,
+                                    mirrors) &&
+         collectMirroredBoundLeaves(operation->getOperand(1), hostBoundType,
+                                    mirrors);
+}
+
+static Value makeStableHLOIntegerConstant(OpBuilder &builder, Location loc,
+                                          RankedTensorType tensorType,
+                                          APInt value) {
+  auto scalarType = cast<IntegerType>(tensorType.getElementType());
+  Attribute scalarAttr = IntegerAttr::get(
+      scalarType, value.sextOrTrunc(scalarType.getWidth()));
+  auto tensorAttr = SplatElementsAttr::get(
+      tensorType, ArrayRef<Attribute>{scalarAttr});
+  return stablehlo::ConstantOp::create(builder, loc, tensorType, tensorAttr);
+}
+
+/// Rebuild an expression accepted by collectMirroredBoundLeaves using rank-0
+/// StableHLO tensors.  mirrorArguments maps each annotation result to the XLA
+/// function argument backed by its existing device allocation.
+static Value raiseMirroredBoundExpression(
+    OpBuilder &builder, Value value, RankedTensorType tensorType,
+    const DenseMap<Value, Value> &mirrorArguments,
+    DenseMap<Value, Value> &raisedValues) {
+  if (auto found = raisedValues.find(value); found != raisedValues.end())
+    return found->second;
+
+  if (value.getDefiningOp<enzymexla::DeviceMirrorOp>()) {
+    auto found = mirrorArguments.find(value);
+    if (found == mirrorArguments.end())
+      return {};
+    raisedValues[value] = found->second;
+    return found->second;
+  }
+
+  APInt constant;
+  if (matchPattern(value, m_ConstantInt(&constant))) {
+    Value result = makeStableHLOIntegerConstant(
+        builder, value.getLoc(), tensorType, constant);
+    raisedValues[value] = result;
+    return result;
+  }
+
+  Operation *operation = value.getDefiningOp();
+  if (!operation || operation->getNumOperands() != 2)
+    return {};
+  Value lhs = raiseMirroredBoundExpression(
+      builder, operation->getOperand(0), tensorType, mirrorArguments,
+      raisedValues);
+  Value rhs = raiseMirroredBoundExpression(
+      builder, operation->getOperand(1), tensorType, mirrorArguments,
+      raisedValues);
+  if (!lhs || !rhs)
+    return {};
+
+  Location loc = operation->getLoc();
+  Value result;
+  if (isa<arith::AddIOp>(operation))
+    result = stablehlo::AddOp::create(builder, loc, lhs, rhs);
+  else if (isa<arith::SubIOp>(operation))
+    result = stablehlo::SubtractOp::create(builder, loc, lhs, rhs);
+  else if (isa<arith::MulIOp>(operation))
+    result = stablehlo::MulOp::create(builder, loc, lhs, rhs);
+  else if (isa<arith::DivSIOp, arith::DivUIOp>(operation))
+    result = stablehlo::DivOp::create(builder, loc, lhs, rhs);
+  else if (isa<arith::MaxSIOp, arith::MaxUIOp>(operation))
+    result = stablehlo::MaxOp::create(builder, loc, lhs, rhs);
+  else if (isa<arith::MinSIOp, arith::MinUIOp>(operation))
+    result = stablehlo::MinOp::create(builder, loc, lhs, rhs);
+  else if (isa<arith::ShLIOp>(operation))
+    result = stablehlo::ShiftLeftOp::create(builder, loc, lhs, rhs);
+  else if (isa<arith::ShRSIOp>(operation))
+    result = stablehlo::ShiftRightArithmeticOp::create(builder, loc, lhs, rhs);
+  else if (isa<arith::ShRUIOp>(operation))
+    result = stablehlo::ShiftRightLogicalOp::create(builder, loc, lhs, rhs);
+  else if (isa<arith::AndIOp>(operation))
+    result = stablehlo::AndOp::create(builder, loc, lhs, rhs);
+  else if (isa<arith::OrIOp>(operation))
+    result = stablehlo::OrOp::create(builder, loc, lhs, rhs);
+  else if (isa<arith::XOrIOp>(operation))
+    result = stablehlo::XorOp::create(builder, loc, lhs, rhs);
+  else if (isa<arith::RemSIOp, arith::RemUIOp>(operation))
+    result = stablehlo::RemOp::create(builder, loc, lhs, rhs);
+  else
+    return {};
+
+  raisedValues[value] = result;
+  return result;
+}
+
+static bool isUsableScalarDeviceMirror(enzymexla::DeviceMirrorOp mirror,
+                                       Type scalarType) {
+  Type deviceType = mirror.getDevice().getType();
+  if (isa<LLVM::LLVMPointerType>(deviceType))
+    return true;
+  auto memrefType = dyn_cast<MemRefType>(deviceType);
+  return memrefType && memrefType.getRank() == 1 &&
+         memrefType.getDimSize(0) == 1 &&
+         memrefType.getElementType() == scalarType;
 }
 
 static SmallVector<Value> cloneRaisedFunctionBody(PatternRewriter &rewriter,
@@ -330,16 +460,70 @@ public:
 
     SmallVector<Value, 3> boundValues = {loop.getLowerBound(),
                                          loop.getUpperBound(), loop.getStep()};
-    SmallVector<std::optional<APInt>, 3> constantBounds(3);
-    SmallVector<unsigned, 3> dynamicBoundIndices;
+    struct BoundInfo {
+      std::optional<APInt> constant;
+      llvm::SetVector<Value> mirrorLeaves;
+      std::optional<unsigned> scalarArgumentIndex;
+      bool useMirrorExpression = false;
+    };
+    SmallVector<BoundInfo, 3> bounds(3);
     unsigned scalarBitWidth = cast<IntegerType>(scalarType).getWidth();
     for (auto [index, bound] : llvm::enumerate(boundValues)) {
       APInt constant;
       if (matchPattern(bound, m_ConstantInt(&constant))) {
-        constantBounds[index] = constant.sextOrTrunc(scalarBitWidth);
+        bounds[index].constant = constant.sextOrTrunc(scalarBitWidth);
         continue;
       }
-      dynamicBoundIndices.push_back(index);
+
+      llvm::SetVector<Value> mirrorLeaves;
+      if (collectMirroredBoundLeaves(bound, hostBoundType, mirrorLeaves) &&
+          !mirrorLeaves.empty())
+        bounds[index].mirrorLeaves = std::move(mirrorLeaves);
+    }
+
+    // A mirror is only a replacement for the temporary allocation when its
+    // storage has the scalar representation this transform expects and alias
+    // analysis proves that it is disjoint from every tensor state passed to
+    // the XLA wrapper (including other mirrors).  MayAlias therefore takes the
+    // existing allocation/copy fallback, preserving correctness.
+    llvm::SetVector<Value> uniqueMirrorLeaves;
+    for (BoundInfo &bound : bounds)
+      for (Value mirror : bound.mirrorLeaves)
+        uniqueMirrorLeaves.insert(mirror);
+
+    bool canUseMirrors = !uniqueMirrorLeaves.empty();
+    SmallVector<Value> allDeviceIdentities(identities.begin(),
+                                           identities.end());
+    for (Value mirrorValue : uniqueMirrorLeaves) {
+      auto mirror = mirrorValue.getDefiningOp<enzymexla::DeviceMirrorOp>();
+      if (!mirror || !isUsableScalarDeviceMirror(mirror, scalarType)) {
+        canUseMirrors = false;
+        break;
+      }
+      allDeviceIdentities.push_back(getBufferIdentity(mirror.getDevice()));
+    }
+    if (canUseMirrors &&
+        !arePairwiseNoAlias(aliasSolver, allDeviceIdentities))
+      canUseMirrors = false;
+
+    SmallVector<Value> scalarSources;
+    DenseMap<Value, unsigned> mirrorArgumentIndices;
+    if (canUseMirrors) {
+      for (Value mirror : uniqueMirrorLeaves) {
+        mirrorArgumentIndices[mirror] = scalarSources.size();
+        scalarSources.push_back(mirror);
+      }
+      for (BoundInfo &bound : bounds)
+        bound.useMirrorExpression = !bound.mirrorLeaves.empty();
+    }
+
+    // Bounds that are neither constants nor reconstructible from proven-safe
+    // mirrors retain the conservative host-to-device staging path.
+    for (auto [index, bound] : llvm::enumerate(bounds)) {
+      if (bound.constant || bound.useMirrorExpression)
+        continue;
+      bound.scalarArgumentIndex = scalarSources.size();
+      scalarSources.push_back(boundValues[index]);
     }
 
     // The memcpy size is expressed in bytes. Sub-byte integer types still
@@ -353,9 +537,16 @@ public:
     Location location =
         FusedLoc::get(loop->getContext(), {loop->getLoc(), wrapper.getLoc()});
     auto scalarTensorType = RankedTensorType::get({}, scalarType);
+    // PJRT buffers have a physical one-element shape. Use the usual dynamic
+    // rank-1 wrapper type so argument refinement can discover [1] from the
+    // runtime byte buffer and erase its shape barrier. Then reshape to a
+    // rank-0 tensor inside StableHLO for scalar arithmetic. A rank-0 wrapper
+    // type would instead ask shape refinement to reconcile [1] with [].
+    auto scalarBufferTensorType =
+        RankedTensorType::get({ShapedType::kDynamic}, scalarType);
 
-    SmallVector<Type> megakernelTypes(dynamicBoundIndices.size(),
-                                      scalarTensorType);
+    SmallVector<Type> megakernelTypes(scalarSources.size(),
+                                      scalarBufferTensorType);
     megakernelTypes.append(function.getArgumentTypes().begin(),
                            function.getArgumentTypes().end());
     auto megakernelType =
@@ -373,23 +564,36 @@ public:
       rewriter.setInsertionPointToEnd(entry);
 
       SmallVector<Value, 3> hloBounds(3);
-      unsigned nextDynamicBound = 0;
+      SmallVector<Value> hloScalarArguments;
+      for (Value argument :
+           entry->getArguments().take_front(scalarSources.size()))
+        hloScalarArguments.push_back(stablehlo::ReshapeOp::create(
+            rewriter, location, scalarTensorType, argument));
+      DenseMap<Value, Value> mirrorArguments;
+      for (auto [mirror, argumentIndex] : mirrorArgumentIndices)
+        mirrorArguments[mirror] = hloScalarArguments[argumentIndex];
+      DenseMap<Value, Value> raisedBoundValues;
       for (unsigned index = 0; index < boundValues.size(); ++index) {
-        if (constantBounds[index]) {
-          Attribute scalarAttr =
-              IntegerAttr::get(scalarType, *constantBounds[index]);
-          auto tensorAttr = SplatElementsAttr::get(
-              scalarTensorType, ArrayRef<Attribute>{scalarAttr});
-          hloBounds[index] = stablehlo::ConstantOp::create(
-              rewriter, location, scalarTensorType, tensorAttr);
+        BoundInfo &bound = bounds[index];
+        if (bound.constant) {
+          hloBounds[index] = makeStableHLOIntegerConstant(
+              rewriter, location, scalarTensorType, *bound.constant);
           continue;
         }
-        hloBounds[index] = entry->getArgument(nextDynamicBound++);
+        if (bound.useMirrorExpression) {
+          hloBounds[index] = raiseMirroredBoundExpression(
+              rewriter, boundValues[index], scalarTensorType,
+              mirrorArguments, raisedBoundValues);
+          assert(hloBounds[index] &&
+                 "validated mirrored bound expression failed to raise");
+          continue;
+        }
+        hloBounds[index] = hloScalarArguments[*bound.scalarArgumentIndex];
       }
 
       SmallVector<Value> initialState(hloBounds.begin(), hloBounds.end());
       llvm::append_range(initialState, entry->getArguments().drop_front(
-                                           dynamicBoundIndices.size()));
+                                           scalarSources.size()));
 
       SmallVector<Type> stateTypes(3, scalarTensorType);
       stateTypes.append(function.getArgumentTypes().begin(),
@@ -427,9 +631,11 @@ public:
       stablehlo::ReturnOp::create(rewriter, location, yielded);
 
       rewriter.setInsertionPointAfter(whileOp);
+      // Scalar inputs are read-only. In particular, do not write the final
+      // induction value back into a persistent device mirror.
       SmallVector<Value> results;
-      for (unsigned index : dynamicBoundIndices)
-        results.push_back(whileOp.getResult(index));
+      llvm::append_range(
+          results, entry->getArguments().take_front(scalarSources.size()));
       llvm::append_range(results, whileOp.getResults().drop_front(3));
       func::ReturnOp::create(rewriter, location, results);
     }
@@ -437,28 +643,53 @@ public:
     rewriter.setInsertionPoint(loop.getOperation());
     SmallVector<Value> newWrapperInputs;
     SmallVector<Value, 3> boundAllocations;
-    auto hostMemrefType = MemRefType::get({}, scalarType);
+    auto hostMemrefType = MemRefType::get({1}, scalarType);
     auto deviceMemrefType =
-        MemRefType::get({}, scalarType, MemRefLayoutAttrInterface{},
+        MemRefType::get({1}, scalarType, MemRefLayoutAttrInterface{},
                         rewriter.getI64IntegerAttr(1));
 
     // XLA wrapper operands must refer to allocations registered with the XLA
-    // runtime. Stage every dynamic host scalar through a temporary device
-    // allocation instead of passing the address of its host stack slot.
+    // runtime. Reuse an explicitly associated device mirror where possible;
+    // otherwise stage the dynamic host scalar through a temporary allocation.
     Value copySize;
-    if (!dynamicBoundIndices.empty())
+    if (llvm::any_of(bounds, [](const BoundInfo &bound) {
+          return bound.scalarArgumentIndex.has_value();
+        }))
       copySize = arith::ConstantIndexOp::create(
           rewriter, location, static_cast<int64_t>(scalarByteWidth));
-    for (unsigned index : dynamicBoundIndices) {
-      Value bound = boundValues[index];
+    for (Value scalarSource : scalarSources) {
+      if (mirrorArgumentIndices.contains(scalarSource)) {
+        auto mirror =
+            scalarSource.getDefiningOp<enzymexla::DeviceMirrorOp>();
+        assert(mirror && "mirror scalar source must be a device_mirror result");
+        Value deviceStorage = mirror.getDevice();
+        if (auto pointerType =
+                dyn_cast<LLVM::LLVMPointerType>(deviceStorage.getType())) {
+          Attribute memorySpace;
+          if (pointerType.getAddressSpace() != 0)
+            memorySpace =
+                rewriter.getI64IntegerAttr(pointerType.getAddressSpace());
+          auto mirrorMemrefType = MemRefType::get(
+              {ShapedType::kDynamic}, scalarType,
+              MemRefLayoutAttrInterface{}, memorySpace);
+          deviceStorage = enzymexla::Pointer2MemrefOp::create(
+                              rewriter, location, mirrorMemrefType,
+                              deviceStorage)
+                              .getResult();
+        }
+        newWrapperInputs.push_back(deviceStorage);
+        continue;
+      }
+
+      Value bound = scalarSource;
       if (isa<IndexType>(hostBoundType))
         bound =
             arith::IndexCastOp::create(rewriter, location, scalarType, bound);
 
       Value hostStorage =
           memref::AllocaOp::create(rewriter, location, hostMemrefType);
-      memref::StoreOp::create(rewriter, location, bound, hostStorage,
-                              ValueRange());
+      Value zero = arith::ConstantIndexOp::create(rewriter, location, 0);
+      memref::StoreOp::create(rewriter, location, bound, hostStorage, zero);
       Value deviceStorage =
           gpu::AllocOp::create(rewriter, location, deviceMemrefType,
                                /*asyncToken=*/(Type) nullptr,

@@ -5,10 +5,11 @@
 // flow and wrapper ordering representative of LBM while making the raised
 // StableHLO bodies small enough for a focused regression test.
 module {
-  llvm.func local_unnamed_addr @_Z26CUDA_LBM_kernel_loop_inneriPfS_(
+  llvm.func local_unnamed_addr @_Z26CUDA_LBM_kernel_loop_inneriPKiPfS1_(
       %arg0: i32 {llvm.noundef},
       %arg1: !llvm.ptr {llvm.noalias, llvm.noundef},
-      %arg2: !llvm.ptr {llvm.noalias, llvm.noundef})
+      %arg2: !llvm.ptr {llvm.noalias, llvm.noundef},
+      %arg3: !llvm.ptr {llvm.noalias, llvm.noundef})
       attributes {dso_local, no_signed_zeros_fp_math = true, no_unwind,
                   passthrough = ["mustprogress", ["min-legal-vector-width", "0"],
                                  ["no-trapping-math", "true"]],
@@ -16,20 +17,22 @@ module {
     %c1_i32 = arith.constant 1 : i32
     %c3_i32 = arith.constant 3 : i32
     %c2_i32 = arith.constant 2 : i32
-    %0 = arith.addi %arg0, %c1_i32 : i32
+    %mirrored = enzymexla.device_mirror %arg0, %arg1 :
+        (i32, !llvm.ptr) -> i32
+    %0 = arith.addi %mirrored, %c1_i32 : i32
     %1 = arith.cmpi uge, %0, %c3_i32 : i32
     scf.if %1 {
-      %2 = arith.divsi %arg0, %c2_i32 : i32
+      %2 = arith.divsi %mirrored, %c2_i32 : i32
       %3 = arith.maxui %2, %c1_i32 : i32
       %4 = arith.maxsi %3, %c1_i32 : i32
       %5 = arith.addi %4, %c1_i32 : i32
-      scf.for %arg3 = %c1_i32 to %5 step %c1_i32 : i32 {
-        %6 = "enzymexla.pointer2memref"(%arg1) : (!llvm.ptr) -> memref<?xf32>
-        %7 = "enzymexla.pointer2memref"(%arg2) : (!llvm.ptr) -> memref<?xf32>
+      scf.for %arg4 = %c1_i32 to %5 step %c1_i32 : i32 {
+        %6 = "enzymexla.pointer2memref"(%arg2) : (!llvm.ptr) -> memref<?xf32>
+        %7 = "enzymexla.pointer2memref"(%arg3) : (!llvm.ptr) -> memref<?xf32>
         enzymexla.xla_wrapper @rxla$raised_0 (%6, %7) :
             (memref<?xf32>, memref<?xf32>) -> ()
-        %8 = "enzymexla.pointer2memref"(%arg2) : (!llvm.ptr) -> memref<?xf32>
-        %9 = "enzymexla.pointer2memref"(%arg1) : (!llvm.ptr) -> memref<?xf32>
+        %8 = "enzymexla.pointer2memref"(%arg3) : (!llvm.ptr) -> memref<?xf32>
+        %9 = "enzymexla.pointer2memref"(%arg2) : (!llvm.ptr) -> memref<?xf32>
         enzymexla.xla_wrapper @rxla$raised_1 (%8, %9) :
             (memref<?xf32>, memref<?xf32>) -> ()
       }
@@ -52,18 +55,17 @@ module {
   }
 }
 
-// CHECK-LABEL: llvm.func local_unnamed_addr @_Z26CUDA_LBM_kernel_loop_inneriPfS_(
-// CHECK:         %[[C4:.*]] = arith.constant 4 : index
+// CHECK-LABEL: llvm.func local_unnamed_addr @_Z26CUDA_LBM_kernel_loop_inneriPKiPfS1_(
 // CHECK:         scf.if
 // CHECK-NOT:       scf.for
-// CHECK:           %[[HOST_BOUND:.*]] = memref.alloca() : memref<i32>
-// CHECK:           memref.store %{{.*}}, %[[HOST_BOUND]][] : memref<i32>
-// CHECK:           %[[DEVICE_BOUND:.*]] = gpu.alloc {{.*}}: memref<i32, 1>
-// CHECK:           enzymexla.memcpy %[[DEVICE_BOUND]], %[[HOST_BOUND]], %[[C4]] : memref<i32, 1>, memref<i32>
-// CHECK:           enzymexla.xla_wrapper @[[LBM_KERNEL:rxla[$]megakernel_[0-9]+]]
-// CHECK-NOT:       enzymexla.xla_wrapper
-// CHECK:           gpu.dealloc %[[DEVICE_BOUND]] : memref<i32, 1>
+// CHECK-NOT:       memref.alloca
 // CHECK-NOT:       gpu.alloc
+// CHECK-NOT:       enzymexla.memcpy
+// CHECK:           %[[DEVICE_BOUND:.*]] = "enzymexla.pointer2memref"(%arg1) : (!llvm.ptr) -> memref<?xi32>
+// CHECK:           enzymexla.xla_wrapper @[[LBM_KERNEL:rxla[$]megakernel_[0-9]+]]
+// CHECK-SAME:        (%[[DEVICE_BOUND]], {{.*}}, {{.*}})
+// CHECK-NOT:       enzymexla.xla_wrapper
+// CHECK-NOT:       gpu.dealloc
 // CHECK:         }
 // CHECK:         llvm.return
 
@@ -71,8 +73,13 @@ module {
 // CHECK-NOT: func.func private @rxla$raised_1
 
 // CHECK: func.func private @[[LBM_KERNEL]](
-// CHECK-SAME:  tensor<i32>, tensor<?xf32>, tensor<?xf32>
-// CHECK:       stablehlo.constant dense<1> : tensor<i32>
+// CHECK-SAME:  %[[BOUND_BUFFER:.*]]: tensor<?xi32>, %{{.*}}: tensor<?xf32>, %{{.*}}: tensor<?xf32>
+// CHECK-DAG:   %[[BOUND:.*]] = stablehlo.reshape %[[BOUND_BUFFER]] : (tensor<?xi32>) -> tensor<i32>
+// CHECK-DAG:   stablehlo.constant dense<1> : tensor<i32>
+// CHECK-DAG:   stablehlo.constant dense<2> : tensor<i32>
+// CHECK:       stablehlo.divide
+// CHECK:       stablehlo.maximum
+// CHECK:       stablehlo.maximum
 // CHECK:       stablehlo.while
 // CHECK:       cond {
 // CHECK:         stablehlo.compare LT, {{.*}}, SIGNED
@@ -83,8 +90,8 @@ module {
 // CHECK:         stablehlo.return
 // CHECK:       }
 
-// LOWER-LABEL: llvm.func local_unnamed_addr @_Z26CUDA_LBM_kernel_loop_inneriPfS_(
-// LOWER:         %[[DEVICE_BOUND:.*]] = llvm.call @reactantXLAMalloc
-// LOWER:         llvm.call @reactantXLAMemcpy({{.*}}, %[[DEVICE_BOUND]],
+// LOWER-LABEL: llvm.func local_unnamed_addr @_Z26CUDA_LBM_kernel_loop_inneriPKiPfS1_(
+// LOWER-NOT:     llvm.call @reactantXLAMalloc
+// LOWER-NOT:     llvm.call @reactantXLAMemcpy
 // LOWER:         llvm.call @reactantXLAExec
-// LOWER:         llvm.call @reactantXLAFree({{.*}}, %[[DEVICE_BOUND]])
+// LOWER-NOT:     llvm.call @reactantXLAFree
