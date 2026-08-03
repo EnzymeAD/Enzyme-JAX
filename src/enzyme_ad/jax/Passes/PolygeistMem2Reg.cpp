@@ -2993,7 +2993,13 @@ bool isPromotable(mlir::Value AI) {
 }
 
 std::vector<OffsetTree> getLastStored(mlir::Value AI, const DataLayout &dl) {
-  std::map<OffsetTree, unsigned> lastStored;
+  // Where an access lands and how much of it it reads: two spellings of one
+  // extent are one slot, but the whole of something and the first field of it
+  // start in the same place and are not.
+  auto slotOf = [&](const OffsetTree &tree) {
+    return std::make_pair(typeSize(tree.getBase(), dl).value_or(0), tree);
+  };
+  std::map<std::pair<uint64_t, OffsetTree>, unsigned> lastStored;
 
   std::deque<std::pair<mlir::Value, OffsetTree>> list = {{AI, OffsetTree()}};
 
@@ -3002,33 +3008,37 @@ std::vector<OffsetTree> getLastStored(mlir::Value AI, const DataLayout &dl) {
     list.pop_front();
     for (auto *U : val.getUsers()) {
       if (auto SO = dyn_cast<memref::StoreOp>(U)) {
-        lastStored[tree.add(accessOffsets(SO.getValue().getType(),
-                                          SO.getMemRef(), SO.getIndices(), dl),
-                            dl)]++;
+        lastStored[slotOf(
+            tree.add(accessOffsets(SO.getValue().getType(), SO.getMemRef(),
+                                   SO.getIndices(), dl),
+                     dl))]++;
       } else if (auto LO = dyn_cast<memref::LoadOp>(U)) {
-        lastStored[tree.add(
+        lastStored[slotOf(tree.add(
             accessOffsets(LO.getType(), LO.getMemRef(), LO.getIndices(), dl),
-            dl)]++;
+            dl))]++;
       } else if (auto SO = dyn_cast<affine::AffineStoreOp>(U)) {
-        lastStored[tree.add(accessOffsets(SO.getValue().getType(),
-                                          SO.getMemRef(),
-                                          SO.getAffineMapAttr().getValue(),
-                                          SO.getMapOperands(), dl),
-                            dl)]++;
+        lastStored[slotOf(
+            tree.add(accessOffsets(SO.getValue().getType(), SO.getMemRef(),
+                                   SO.getAffineMapAttr().getValue(),
+                                   SO.getMapOperands(), dl),
+                     dl))]++;
       } else if (auto LO = dyn_cast<affine::AffineLoadOp>(U)) {
-        lastStored[tree.add(accessOffsets(LO.getType(), LO.getMemRef(),
-                                          LO.getAffineMapAttr().getValue(),
-                                          LO.getMapOperands(), dl),
-                            dl)]++;
+        lastStored[slotOf(
+            tree.add(accessOffsets(LO.getType(), LO.getMemRef(),
+                                   LO.getAffineMapAttr().getValue(),
+                                   LO.getMapOperands(), dl),
+                     dl))]++;
       } else if (auto SO = dyn_cast<LLVM::StoreOp>(U)) {
-        lastStored[tree.add(accessOffsets(SO.getValue().getType()), dl)]++;
+        lastStored[slotOf(
+            tree.add(accessOffsets(SO.getValue().getType()), dl))]++;
       } else if (auto LO = dyn_cast<LLVM::LoadOp>(U)) {
-        lastStored[tree.add(accessOffsets(LO.getType()), dl)]++;
+        lastStored[slotOf(tree.add(accessOffsets(LO.getType()), dl))]++;
       } else if (isa<LLVM::MemcpyOp, LLVM::MemmoveOp, LLVM::MemsetOp>(U)) {
         // What a transfer reads or fills is a slot like any other, and the
         // forwarding can only be asked about slots it is told of.
         if (auto bytes = transferLength(U))
-          lastStored[tree.add(transferAccess(*bytes, U->getContext()), dl)]++;
+          lastStored[slotOf(
+              tree.add(transferAccess(*bytes, U->getContext()), dl))]++;
       } else if (auto GO = dyn_cast<LLVM::GEPOp>(U)) {
         list.emplace_back(GO, tree.add(gepOffsets(GO, dl), dl));
       } else if (isa<memref::CastOp, Memref2PointerOp, Pointer2MemrefOp,
@@ -3045,10 +3055,11 @@ std::vector<OffsetTree> getLastStored(mlir::Value AI, const DataLayout &dl) {
   for (auto &pair : lastStored) {
     unsigned count = pair.second;
     for (auto &other : lastStored)
-      if (&other != &pair && pair.first.containsAt(other.first, dl))
+      if (&other != &pair &&
+          pair.first.second.containsAt(other.first.second, dl))
         count += other.second;
     if (count > 1)
-      todo.push_back(pair.first);
+      todo.push_back(pair.first.second);
   }
   return todo;
 }
@@ -3114,7 +3125,13 @@ void PolygeistMem2Reg::runOnOperation() {
     }
 
     // Erase all load op's whose results were replaced with store fwd'ed ones.
+    // One read may be forwarded out of more than one slot -- the whole of
+    // something and a piece of it are both slots it reads -- and is only there
+    // to be erased once.
+    SmallPtrSet<Operation *, 8> erased;
     for (auto *loadOp : loadOpsToErase) {
+      if (!erased.insert(loadOp).second)
+        continue;
       changed = true;
       loadOp->erase();
     }

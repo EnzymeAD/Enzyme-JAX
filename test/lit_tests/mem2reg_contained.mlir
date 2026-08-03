@@ -94,3 +94,25 @@ llvm.func @write_of_a_part(%val: !llvm.struct<(i32, i32)>, %other: i32) -> i32 {
 // CHECK-LABEL: llvm.func @write_of_a_part(
 // CHECK: %[[LD:.+]] = llvm.load
 // CHECK: llvm.return %[[LD]] : i32
+
+// -----
+
+// The whole of something and the first field of it start at the same byte and
+// read different amounts, so they are not one slot: what is stored whole is
+// what the field read takes its piece out of.
+func.func @whole_and_first_field(%val: !llvm.struct<(ptr, i32, i32)>) -> !llvm.ptr {
+  %c0 = arith.constant 0 : index
+  %c1 = llvm.mlir.constant(1 : i32) : i32
+  %mem = llvm.alloca %c1 x !llvm.struct<(ptr, i32, i32)> : (i32) -> !llvm.ptr
+  %view = "enzymexla.pointer2memref"(%mem) : (!llvm.ptr) -> memref<?x!llvm.struct<(ptr, i32, i32)>>
+  memref.store %val, %view[%c0] : memref<?x!llvm.struct<(ptr, i32, i32)>>
+  %punned = "enzymexla.pointer2memref"(%mem) : (!llvm.ptr) -> memref<?x!llvm.ptr>
+  %loaded = memref.load %punned[%c0] : memref<?x!llvm.ptr>
+  return %loaded : !llvm.ptr
+}
+
+// CHECK-LABEL: func.func @whole_and_first_field(
+// CHECK-SAME: %[[VAL:[a-z0-9]+]]: !llvm.struct<(ptr, i32, i32)>
+// CHECK-NOT: llvm.alloca
+// CHECK: %[[F:.+]] = llvm.extractvalue %[[VAL]][0]
+// CHECK: return %[[F]] : !llvm.ptr
