@@ -1,4 +1,4 @@
-//===- XLAWrapperMegakernelize.cpp - Fuse raised XLA wrappers ------------===//
+//===- XLAMegakernelize.cpp - Fuse raised XLA wrappers -------------------===//
 //
 // Part of the LLVM Project, under the Apache License v2.0 with LLVM Exceptions.
 // See https://llvm.org/LICENSE.txt for license information.
@@ -23,7 +23,7 @@
 
 namespace mlir {
 namespace enzyme {
-#define GEN_PASS_DEF_XLAWRAPPERMEGAKERNELIZEPASS
+#define GEN_PASS_DEF_XLAMEGAKERNELIZEPASS
 #include "src/enzyme_ad/jax/Passes/Passes.h.inc"
 } // namespace enzyme
 } // namespace mlir
@@ -237,10 +237,9 @@ private:
   mutable unsigned nextMegakernelId = 0;
 };
 
-struct XLAWrapperMegakernelizePass
-    : public enzyme::impl::XLAWrapperMegakernelizePassBase<
-          XLAWrapperMegakernelizePass> {
-  using XLAWrapperMegakernelizePassBase::XLAWrapperMegakernelizePassBase;
+struct XLAMegakernelizePass
+    : public enzyme::impl::XLAMegakernelizePassBase<XLAMegakernelizePass> {
+  using XLAMegakernelizePassBase::XLAMegakernelizePassBase;
 
   void runOnOperation() override {
     DataFlowSolver aliasSolver(DataFlowConfig().setInterprocedural(false));

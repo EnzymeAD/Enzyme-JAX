@@ -203,9 +203,13 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
                        ",llvm-to-affine-access," + canonicalize + ",";
       pass_pipeline += "func.func(kernelcast),raise-affine-to-stablehlo{prefer_while_raising=false "
       "dump_failed_lockstep=true},canonicalize,arith-raise{stablehlo=true},"
-      "symbol-dce,xla-wrapper-megakernelize,symbol-dce";
+      "symbol-dce" ;
       if (outfile.size() && getenv("EXPORT_REACTANT")) {
-        pass_pipeline += ",print{filename="+outfile+".mlir}";
+        pass_pipeline += ",print{filename="+outfile+".bmk.mlir}";
+      }
+      pass_pipeline += ",xla-megakernelize,symbol-dce";
+      if (outfile.size() && getenv("EXPORT_REACTANT")) {
+        pass_pipeline += ",print{filename="+outfile+".bmk.mlir}";
       }
       pass_pipeline += ",lower-aligned-affine-accesses,lower-affine";
       if (getenv("REACTANT_OMP")) {

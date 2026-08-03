@@ -1298,8 +1298,7 @@ def AffineToStableHLORaising : Pass<"raise-affine-to-stablehlo"> {
   ];
 }
 
-def XLAWrapperMegakernelizePass
-    : Pass<"xla-wrapper-megakernelize", "ModuleOp"> {
+def XLAMegakernelizePass : Pass<"xla-megakernelize", "ModuleOp"> {
   let summary = "Fuse sequential XLA wrappers into a single megakernel";
   let description = [{
     Fuse compatible sequential enzymexla.xla_wrapper operations which are
