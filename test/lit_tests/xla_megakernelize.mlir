@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s --xla-wrapper-megakernelize --symbol-dce | FileCheck %s
+// RUN: enzymexlamlir-opt %s --xla-megakernelize --symbol-dce | FileCheck %s
 
 module {
   llvm.func @fuse_ping_pong(%arg0: !llvm.ptr {llvm.noalias},
