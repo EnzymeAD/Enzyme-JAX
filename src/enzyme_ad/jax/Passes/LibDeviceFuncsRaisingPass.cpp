@@ -82,21 +82,17 @@ template <typename SourceOp, typename TargetOp>
 class AttrConvertOverflowFromLLVM {
 public:
   AttrConvertOverflowFromLLVM(SourceOp srcOp) {
-    // Copy the source attributes.
+    // Copy the source attributes, minus the flags we are translating. The
+    // accessor rather than the attribute dictionary, since the flags are an
+    // inherent attribute and so live in the op's properties.
     convertedAttr = NamedAttrList{srcOp->getAttrs()};
-    // Get the name of the arith overflow attribute.
-    StringRef arithAttrName = SourceOp::getIntegerOverflowAttrName();
-    // Remove the source overflow attribute.
-    if (auto arithAttr = dyn_cast_if_present<LLVM::IntegerOverflowFlagsAttr>(
-            convertedAttr.erase(arithAttrName))) {
-      if (arithAttr.getValue() != LLVM::IntegerOverflowFlags::none) {
-        StringRef targetAttrName = TargetOp::getOverflowFlagsAttrName();
-        convertedAttr.set(targetAttrName, arith::IntegerOverflowFlagsAttr::get(
-                                              srcOp->getContext(),
-                                              convertArithOverflowFlagsFromLLVM(
-                                                  arithAttr.getValue())));
-      }
-    }
+    convertedAttr.erase(SourceOp::getOverflowFlagsAttrName());
+    LLVM::IntegerOverflowFlags llvmFlags = srcOp.getOverflowFlags();
+    if (llvmFlags != LLVM::IntegerOverflowFlags::none)
+      convertedAttr.set(TargetOp::getIntegerOverflowAttrName(),
+                        arith::IntegerOverflowFlagsAttr::get(
+                            srcOp->getContext(),
+                            convertArithOverflowFlagsFromLLVM(llvmFlags)));
   }
 
   ArrayRef<NamedAttribute> getAttrs() const { return convertedAttr.getAttrs(); }
@@ -468,7 +464,7 @@ template <typename SourceOp, typename TargetOp,
           template <typename, typename> typename AttrConvert =
               AttrConvertPassThrough>
 using InvVectorConvertFromLLVMPattern =
-    VectorConvertFromLLVMPattern<TargetOp, SourceOp, AttrConvertPassThrough>;
+    VectorConvertFromLLVMPattern<TargetOp, SourceOp, AttrConvert>;
 
 template <typename SourceOp, typename TargetOp>
 using ConvertFMFMathFromLLVMPattern =
