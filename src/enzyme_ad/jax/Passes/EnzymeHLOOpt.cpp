@@ -36375,20 +36375,34 @@ struct EnzymeHLOOptPass
       patterns.add<ReshapePad>(context);
 
     if (cse) {
-      patterns.add<CSE<stablehlo::BroadcastInDimOp>, CSE<stablehlo::SliceOp>,
-                   CSE<stablehlo::TransposeOp>, CSE<stablehlo::ConvertOp>,
-                   CSE<stablehlo::PadOp>, CSE<stablehlo::DotGeneralOp>,
-                   CSE<stablehlo::ReshapeOp>, CSE<stablehlo::MulOp>,
-                   CSE<stablehlo::DivOp>, CSE<stablehlo::AddOp>,
-                   CSE<stablehlo::SubtractOp>, CSE<stablehlo::PowOp>,
-                   CSE<stablehlo::MinOp>, CSE<stablehlo::ConcatenateOp>,
-                   CSE<stablehlo::MaxOp>, CSE<stablehlo::NegOp>,
-                   CSE<stablehlo::AbsOp>, CSE<enzymexla::RotateOp>,
-                   CSE<enzymexla::WrapOp>, CSE<enzymexla::ExtendOp>, CSEIota,
-                   CSE<stablehlo::CompareOp>, CSE<stablehlo::GatherOp>,
-                   CSE<stablehlo::ScatterOp>, CSE<stablehlo::SelectOp>,
-                   CSE<stablehlo::RealOp>, CSE<chlo::ConjOp>,
-                   CSE<stablehlo::ImagOp>>(context, PatternBenefit(65000));
+      patterns.add<
+          CSE<stablehlo::BroadcastInDimOp>, CSE<stablehlo::SliceOp>,
+          CSE<stablehlo::TransposeOp>, CSE<stablehlo::ConvertOp>,
+          CSE<stablehlo::PadOp>, CSE<stablehlo::DotGeneralOp>,
+          CSE<stablehlo::ReshapeOp>, CSE<stablehlo::MulOp>,
+          CSE<stablehlo::DivOp>, CSE<stablehlo::AddOp>,
+          CSE<stablehlo::SubtractOp>, CSE<stablehlo::PowOp>,
+          CSE<stablehlo::MinOp>, CSE<stablehlo::ConcatenateOp>,
+          CSE<stablehlo::MaxOp>, CSE<stablehlo::NegOp>, CSE<stablehlo::AbsOp>,
+          CSE<enzymexla::RotateOp>, CSE<enzymexla::WrapOp>,
+          CSE<enzymexla::ExtendOp>, CSEIota, CSE<stablehlo::CompareOp>,
+          CSE<stablehlo::GatherOp>, CSE<stablehlo::ScatterOp>,
+          CSE<stablehlo::SelectOp>, CSE<stablehlo::RealOp>, CSE<chlo::ConjOp>,
+          CSE<stablehlo::ImagOp>, CSE<stablehlo::BatchNormTrainingOp>,
+          CSE<stablehlo::BatchNormInferenceOp>, CSE<stablehlo::BatchNormGradOp>,
+          CSE<stablehlo::ExpOp>, CSE<stablehlo::Expm1Op>, CSE<stablehlo::LogOp>,
+          CSE<stablehlo::Log1pOp>, CSE<stablehlo::TanhOp>,
+          CSE<stablehlo::LogisticOp>, CSE<stablehlo::SqrtOp>,
+          CSE<stablehlo::RsqrtOp>, CSE<stablehlo::CbrtOp>,
+          CSE<stablehlo::SineOp>, CSE<stablehlo::CosineOp>,
+          CSE<stablehlo::Atan2Op>, CSE<stablehlo::FloorOp>,
+          CSE<stablehlo::CeilOp>, CSE<stablehlo::RoundOp>,
+          CSE<stablehlo::SignOp>, CSE<stablehlo::IsFiniteOp>,
+          CSE<stablehlo::ClampOp>, CSE<stablehlo::RemOp>, CSE<stablehlo::AndOp>,
+          CSE<stablehlo::OrOp>, CSE<stablehlo::XorOp>,
+          CSE<stablehlo::ConvolutionOp>, CSE<stablehlo::FftOp>,
+          CSE<stablehlo::DynamicSliceOp>, CSE<stablehlo::DynamicUpdateSliceOp>,
+          CSE<stablehlo::ReverseOp>>(context, PatternBenefit(65000));
     }
 
     if (passses & 256)
