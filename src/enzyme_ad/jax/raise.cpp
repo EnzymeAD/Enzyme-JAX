@@ -122,7 +122,7 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       }
       pass_pipeline += ",xla-megakernelize,symbol-dce";
       if (outfile.size() && getenv("EXPORT_REACTANT")) {
-        pass_pipeline += ",print{filename="+outfile+".bmk.mlir}";
+        pass_pipeline += ",print{filename="+outfile+".mlir}";
       }
       pass_pipeline += ",lower-affine";
       if (getenv("REACTANT_OMP")) {
