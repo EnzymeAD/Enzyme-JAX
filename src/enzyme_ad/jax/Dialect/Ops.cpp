@@ -72,6 +72,15 @@ static std::optional<int64_t> getConstant(Value v) {
   return {};
 }
 
+LogicalResult DeviceMirrorOp::verify() {
+  Type deviceType = getDevice().getType();
+  if (!isa<LLVM::LLVMPointerType, BaseMemRefType>(deviceType))
+    return emitOpError("expects the device operand to be an LLVM pointer or "
+                       "memref, but got ")
+           << deviceType;
+  return success();
+}
+
 LogicalResult
 GPUOccupancyOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   // TODO: Verify that the result type is same as the type of the referenced

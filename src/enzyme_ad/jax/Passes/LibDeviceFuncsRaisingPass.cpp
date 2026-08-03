@@ -13,6 +13,7 @@
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "src/enzyme_ad/jax/Passes/SelectPatterns.h"
@@ -304,6 +305,37 @@ public:
         getActivityArrayAttr(ctx, argActivities),
         getActivityArrayAttr(ctx, retActivities),
         /*width=*/1, /*strong_zero=*/false, atomicAdd);
+    return success();
+  }
+};
+
+class EnzymeDeviceMirrorOpRaising : public OpRewritePattern<LLVM::CallOp> {
+public:
+  using OpRewritePattern<LLVM::CallOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(LLVM::CallOp op,
+                                PatternRewriter &rewriter) const override {
+    auto callee = dyn_cast<SymbolRefAttr>(op.getCallableForCallee());
+    if (!callee || !callee.getLeafReference().strref().contains(
+                       "__enzyme_device_mirror"))
+      return failure();
+
+    ValueRange arguments = op.getArgOperands();
+    if (arguments.size() != 2 || op.getNumResults() != 1) {
+      op.emitOpError("expected __enzyme_device_mirror(host, device) to have "
+                     "two arguments and one result");
+      return failure();
+    }
+    if (arguments.front().getType() != op.getResult().getType()) {
+      op.emitOpError("expected the host argument and result to have the same "
+                     "type");
+      return failure();
+    }
+
+    auto mirror = enzymexla::DeviceMirrorOp::create(
+        rewriter, op.getLoc(), op.getResult().getType(), arguments[0],
+        arguments[1]);
+    rewriter.replaceOp(op, mirror.getResult());
     return success();
   }
 };
@@ -1243,6 +1275,8 @@ struct LibDeviceFuncsRaisingPass
     if (remove_freeze)
       patterns.add<RemoveFreeze>(getOperation()->getContext());
     patterns.add<EnzymeAutodiffOpRaising>(getOperation()->getContext());
+    patterns.add<EnzymeDeviceMirrorOpRaising>(
+        getOperation()->getContext());
     GreedyRewriteConfig config;
     // We disable region simplification to avoid inadvertently merging
     // llvm.cond_br now that there is an index type.

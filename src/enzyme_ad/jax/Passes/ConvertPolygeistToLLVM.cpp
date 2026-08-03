@@ -358,6 +358,21 @@ struct Pointer2MemrefOpLowering
   }
 };
 
+struct DeviceMirrorOpLowering
+    : public ConvertOpToLLVMPattern<DeviceMirrorOp> {
+  using ConvertOpToLLVMPattern<DeviceMirrorOp>::ConvertOpToLLVMPattern;
+
+  LogicalResult
+  matchAndRewrite(DeviceMirrorOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    // This is a compile-time association.  Its runtime value is exactly the
+    // host operand; consumers such as XLA megakernelization inspect the device
+    // operand before this final lowering point.
+    rewriter.replaceOp(op, adaptor.getHost());
+    return success();
+  }
+};
+
 void populatePolygeistToLLVMConversionPatterns(LLVMTypeConverter &converter,
                                                RewritePatternSet &patterns) {
   // clang-format off
@@ -368,6 +383,7 @@ void populatePolygeistToLLVMConversionPatterns(LLVMTypeConverter &converter,
   patterns.add<Stream2TokenOpLowering>(converter);
   patterns.add<Memref2PointerOpLowering>(converter);
   patterns.add<Pointer2MemrefOpLowering>(converter);
+  patterns.add<DeviceMirrorOpLowering>(converter);
   // clang-format on
 }
 
