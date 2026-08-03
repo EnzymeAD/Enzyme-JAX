@@ -1807,6 +1807,9 @@ def ApplyReduceMulBroadcastPatterns : EnzymeHLOPatternOp<
 def ApplyWhileScatterAccumulatorReduceSinkPatterns : EnzymeHLOPatternOp<
     "while_scatter_accumulator_reduce_sink"> {
   let patterns = ["WhileScatterAccumulatorReduceSink"];
+def ApplyWhileScatterAccumulatorNoAddPatterns : EnzymeHLOPatternOp<
+    "while_scatter_accumulator_no_add"> {
+  let patterns = ["WhileScatterAccumulatorNoAdd"];
 }
 
 def CompareIotaConstSimplifyPatterns : EnzymeHLOPatternOp<
