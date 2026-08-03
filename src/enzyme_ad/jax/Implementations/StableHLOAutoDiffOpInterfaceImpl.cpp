@@ -655,6 +655,38 @@ class AutoDiffWhileRev
     return makeForLoop(builder, loc, startVal, limit, stepVal, operands);
   }
 
+  // Checkpointing and the loop-splitting rewrites replace one loop with
+  // several, and each of those is still doing the original loop's work, so they
+  // inherit its attributes. Without this, a directive such as
+  // enzyme.disable_mincut applies only to the loop the user wrote and is
+  // silently dropped for every loop derived from it.
+  //
+  // Two kinds of attribute must not come along:
+  //
+  //  - the checkpointing directives, since the split has already happened and
+  //    re-reading them would checkpoint the derived loops again;
+  //  - the memoized analysis results, which are ArrayAttrs indexed by result
+  //    number. A derived loop carries gradients and caches, so its results do
+  //    not correspond to the original's. Readers do check the array length
+  //    against getNumResults(), so a mismatch is merely ignored, but when the
+  //    arities happen to coincide the original's per-result facts would be
+  //    applied to entirely different results.
+  static void inheritAttrs(Operation *orig, Operation *derived) {
+    derived->setAttrs(orig->getAttrs());
+
+    for (StringRef attr :
+         {"enzymexla.enable_checkpointing", "enzymexla.checkpoint_period",
+          "enzymexla.binomial_checkpointing"})
+      derived->removeAttr(attr);
+
+    for (StringRef attr :
+         {"enzymexla.symmetric_matrix", "enzymexla.non_negative",
+          "enzymexla.finite", "enzymexla.bounds", "enzymexla.no_nan",
+          "enzymexla.complex_is_purely_real",
+          "enzymexla.complex_is_purely_imaginary"})
+      derived->removeAttr(attr);
+  }
+
   static stablehlo::WhileOp makeForLoop(OpBuilder &builder, Location loc,
                                         Value start, Value limit, Value step,
                                         ValueRange operands) {
@@ -774,6 +806,7 @@ class AutoDiffWhileRev
 
     stablehlo::WhileOp revOuter =
         makeForLoop(builder, orig->getLoc(), 0, numItersRev, 1, operands);
+    inheritAttrs(orig, revOuter);
 
     Block *outerBody = &revOuter.getBody().front();
     Value newOuterIV = outerBody->getTerminator()->getOperand(0);
@@ -909,10 +942,7 @@ class AutoDiffWhileRev
         makeI64Constant(orig->getLoc(), builder, 1), innerRematOperands);
     Block *innerRematBody = &innerRemat.getBody().front();
 
-    innerRemat->setAttrs(orig->getAttrs());
-    innerRemat->removeAttr("enzymexla.enable_checkpointing");
-    innerRemat->removeAttr("enzymexla.checkpoint_period");
-    innerRemat->removeAttr("enzymexla.binomial_checkpointing");
+    inheritAttrs(orig, innerRemat);
 
     builder.setInsertionPointToStart(innerRematBody);
 
@@ -1128,6 +1158,7 @@ class AutoDiffWhileRev
 
     stablehlo::WhileOp revOuter =
         makeForLoop(builder, orig.getLoc(), 0, nOuter, 1, operands);
+    inheritAttrs(orig, revOuter);
 
     Block *revOuterBody = &revOuter.getBody().front();
     builder.setInsertionPointToStart(revOuterBody);
@@ -1207,13 +1238,12 @@ class AutoDiffWhileRev
         makeForLoop(builder, orig.getLoc(), 0, actualInner, 1, carried);
     Block *revInnerBody = &revInner.getBody().front();
 
-    revInner->setAttrs(orig->getAttrs());
-    revInner->removeAttr("enzymexla.enable_checkpointing");
-    revInner->removeAttr("enzymexla.checkpoint_period");
+    inheritAttrs(orig, revInner);
 
     // Reverse pass within this block
     auto revLoop = makeForLoop(builder, orig.getLoc(), 0, actualInner, 1,
                                revOuterBody->getArguments().drop_front());
+    inheritAttrs(orig, revLoop);
     Block *revLoopBody = &revLoop.getBody().front();
 
     builder.setInsertionPointToStart(revInnerBody);
@@ -1559,6 +1589,7 @@ public:
           auto outer = makeForLoop(
               builder, orig->getLoc(), 0, nOuter, 1,
               newWhile->getOperands().slice(1, newWhile->getNumOperands() - 1));
+          inheritAttrs(orig, outer);
 
           Block *outerBody = &outer.getBody().front();
           builder.setInsertionPointToStart(outerBody);
@@ -1606,6 +1637,7 @@ public:
 
           auto inner =
               makeForLoop(builder, orig->getLoc(), 0, innerLimit, 1, operands);
+          inheritAttrs(orig, inner);
 
           outerBody->getTerminator()->setOperands(
               1, inner.getNumResults() - 1,
@@ -1693,6 +1725,7 @@ public:
           stablehlo::WhileOp outer =
               makeForLoop(builder, orig->getLoc(), 0,
                           revModeInfo.checkpointPeriod, 1, outerOperands);
+          inheritAttrs(orig, outer);
 
           Block *outerBody = &outer.getBody().front();
 
@@ -1812,11 +1845,7 @@ public:
 
           auto inner =
               makeForLoop(builder, orig->getLoc(), 0, innerLimit, 1, operands);
-
-          inner->setAttrs(orig->getAttrs());
-          inner->removeAttr("enzymexla.enable_checkpointing");
-          inner->removeAttr("enzymexla.checkpoint_period");
-          inner->removeAttr("enzymexla.binomial_checkpointing");
+          inheritAttrs(orig, inner);
 
           outerTerm->setOperands(
               1, inner.getNumResults() - 1,
