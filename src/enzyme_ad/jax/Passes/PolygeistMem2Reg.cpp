@@ -553,18 +553,31 @@ public:
     assert(step != 0);
     if (step == ShapedType::kDynamic || bound == ShapedType::kDynamic)
       return false;
-    if (sameExtent) {
-      if ((int64_t)offsets[at].idx * step >= bound)
-        return true;
-    } else if (mySize && oSize) {
-      if (hasDim()) {
+
+    // Reading different amounts, the two only line up once both are counted in
+    // bytes rather than in the elements each reads.
+    if (!sameExtent) {
+      if (!mySize || !oSize)
+        return false;
+      if (hasDim())
         step *= (int64_t)*mySize;
+      if (o.hasDim())
         bound *= (int64_t)*oSize;
-      }
-      if ((int64_t)offsets[at].idx * step >= bound)
-        return true;
     }
-    return false;
+
+    // A dimension counts the elements the other reads, so its bound already
+    // spans what is read at the last of them. A byte offset is only where the
+    // other starts, and what it reads there comes after that.
+    if (!o.hasDim()) {
+      if (!oSize)
+        return false;
+      bound += (int64_t)*oSize;
+    }
+
+    uint64_t idx = offsets[at].idx;
+    if (idx > (uint64_t)(INT64_MAX / step))
+      return false;
+    return (int64_t)idx * step >= bound;
   }
 
   // Whether this index or one outside it is known to move, which is what puts
