@@ -1798,6 +1798,11 @@ def ApplyReduceTransposeSimplifyPatterns : EnzymeHLOPatternOp<
   let patterns = ["ReduceTransposeSimplify"];
 }
 
+def ApplyReduceMulBroadcastPatterns : EnzymeHLOPatternOp<
+    "reduce_mul_broadcast"> {
+  let patterns = ["ReduceMulBroadcast"];
+}
+
 def CompareIotaConstSimplifyPatterns : EnzymeHLOPatternOp<
   "compare_iota_const_simplify"
 > {
