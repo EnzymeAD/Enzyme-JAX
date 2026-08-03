@@ -20584,6 +20584,116 @@ struct WhileWrap
   }
 };
 
+// A while-carried accumulator of the form
+//
+//   init      = <zero splat>
+//   yield[k]  = add(bodyArg[k], dynamic_update_slice(<zero>, row, i))
+//
+// only ever adds into rows that are still zero, provided the scatter index i is
+// distinct on every iteration and never clamped. The add is then a no-op
+// everywhere except the written row, where it adds to zero, so the whole thing
+// collapses to a read-modify-write of that row:
+//
+//   yield[k] = dynamic_update_slice(bodyArg[k], row, i)
+//
+// That turns a full-tensor materialise-and-add -- roughly 4 x S0 x M of traffic
+// per iteration -- into a single row write, which XLA can perform in place
+// since the accumulator is a loop carry with no other reader.
+//
+// This needs only injectivity, not full coverage of [0, S0): rows that are
+// never written keep the zero they started with under either form.
+struct WhileScatterAccumulatorNoAdd final
+    : CheckedOpRewritePattern<stablehlo::AddOp, WhileScatterAccumulatorNoAdd> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::AddOp addOp,
+                                    PatternRewriter &rewriter) const {
+    auto whileOp = dyn_cast<stablehlo::WhileOp>(addOp->getParentOp());
+    if (!whileOp || addOp->getBlock() != &whileOp.getBody().front())
+      return failure();
+
+    // The accumulator must be yielded straight back, and read by nothing else.
+    if (!addOp->hasOneUse())
+      return failure();
+    auto yieldOp = dyn_cast<stablehlo::ReturnOp>(*addOp->getUsers().begin());
+    if (!yieldOp)
+      return failure();
+
+    BlockArgument bodyArg;
+    Value dusSide;
+    for (auto [a, b] : {std::make_pair(addOp.getLhs(), addOp.getRhs()),
+                        std::make_pair(addOp.getRhs(), addOp.getLhs())}) {
+      if (auto arg = dyn_cast<BlockArgument>(a)) {
+        if (arg.getOwner() == &whileOp.getBody().front()) {
+          bodyArg = arg;
+          dusSide = b;
+          break;
+        }
+      }
+    }
+    if (!bodyArg || !bodyArg.hasOneUse())
+      return failure();
+
+    unsigned idx = bodyArg.getArgNumber();
+    if (yieldOp.getOperand(idx) != addOp.getResult())
+      return failure();
+    if (!enzyme::isZero(whileOp.getOperands()[idx]))
+      return failure();
+
+    auto dus = dusSide.getDefiningOp<stablehlo::DynamicUpdateSliceOp>();
+    if (!dus || !dus->hasOneUse() || !enzyme::isZero(dus.getOperand()))
+      return failure();
+
+    auto accTy = cast<RankedTensorType>(dus.getType());
+    auto updateTy = cast<RankedTensorType>(dus.getUpdate().getType());
+    if (updateTy.getRank() != accTy.getRank())
+      return failure();
+
+    // Exactly one dimension may be scattered; the rest must be written whole,
+    // at offset zero, so that "the written row" is well defined.
+    int64_t scatterDim = -1;
+    auto starts = dus.getStartIndices();
+    for (int64_t d = 0; d < accTy.getRank(); ++d) {
+      if (updateTy.getDimSize(d) == accTy.getDimSize(d)) {
+        if (!enzyme::isZero(starts[d]))
+          return failure();
+        continue;
+      }
+      if (updateTy.getDimSize(d) != 1 || scatterDim != -1)
+        return failure();
+      scatterDim = d;
+    }
+    if (scatterDim == -1)
+      return failure();
+
+    enzyme::WhileLoopInfo info(whileOp);
+    if (failed(info.computeInfo()) || !info.isValid() || !info.isConstant())
+      return failure();
+    info.propagateAffineIndexInfo();
+    info.propagateBounds();
+
+    Value index = starts[scatterDim];
+
+    // Distinct on every iteration: the index must actually vary with the
+    // induction variable.
+    auto affine = info.getAffineIndexInfo();
+    auto affineIt = affine.find(index);
+    if (affineIt == affine.end() || affineIt->second.scale.isZero())
+      return failure();
+
+    // Never clamped: dynamic_update_slice would otherwise fold out-of-range
+    // iterations onto the boundary row and genuinely accumulate there.
+    auto bounds = info.getBounds(index);
+    if (!bounds || bounds->min.isNegative() ||
+        bounds->max.getSExtValue() > accTy.getDimSize(scatterDim) - 1)
+      return failure();
+
+    rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(
+        addOp, bodyArg, dus.getUpdate(), starts);
+    return success();
+  }
+};
+
 // Replace while op iteration variables which are not updated with their
 // upcoming value
 struct WhileSimplify
@@ -36609,6 +36719,7 @@ struct EnzymeHLOOptPass
         ScatterUpdateComputationConstProp,
         ScatterIndicesAreUnique,
         ReduceTransposeSimplify,
+        WhileScatterAccumulatorNoAdd,
         BroadcastIotaSimplify,
         BroadcastIota,
         BroadcastCompare,
