@@ -4250,6 +4250,65 @@ struct ConvertConvertInt final
   }
 };
 
+// A sum reduction distributes over addition, subtraction and negation:
+//
+//   reduce_add(add(a, b), dims)      -> add(reduce_add(a), reduce_add(b))
+//   reduce_add(subtract(a, b), dims) -> subtract(reduce_add(a), reduce_add(b))
+//   reduce_add(negate(a), dims)      -> negate(reduce_add(a))
+//
+// Sinking the reduction towards the leaves shrinks the operands of the
+// remaining arithmetic from the pre-reduction shape to the post-reduction
+// shape, and exposes the leaves to CSE and to BroadcastReduce. Only applied
+// when the arithmetic op is single-use, so it is erased rather than duplicated.
+//
+// This is deliberately *not* part of the default pattern set.
+// SplitReduceAddMulToAddDotGeneral already performs the `add` case in the
+// default pipeline, but gated on the split unlocking a dot_general. Splitting
+// unconditionally is only a win when the operands are not already fused into
+// the reduction, so it is exposed as an opt-in pattern
+// (`reduce_linear_sink`) rather than enabled everywhere. Relative to that
+// pattern this additionally covers `subtract` and `negate`.
+struct ReduceLinearSink final
+    : CheckedOpRewritePattern<stablehlo::ReduceOp, ReduceLinearSink> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ReduceOp op,
+                                    PatternRewriter &rewriter) const {
+    if (op.getInputs().size() != 1 || op.getInitValues().size() != 1)
+      return failure();
+
+    if (mlir::stablehlo::CheckCommonReduceOp(op).kind !=
+        stablehlo::ReduceOpKind::Add)
+      return failure();
+
+    Operation *linear = op.getInputs()[0].getDefiningOp();
+    if (!linear || !linear->hasOneUse())
+      return failure();
+    if (!isa<stablehlo::AddOp, stablehlo::SubtractOp, stablehlo::NegOp>(linear))
+      return failure();
+
+    // Reduce each operand separately, then recombine at the reduced shape.
+    auto resultType = op.getResultTypes()[0];
+    SmallVector<Value> reduced;
+    for (Value operand : linear->getOperands()) {
+      auto newReduce = stablehlo::ReduceOp::create(
+          rewriter, op.getLoc(), TypeRange(resultType), ValueRange(operand),
+          op.getInitValues(), op.getDimensions());
+      IRMapping map;
+      op.getRegion().cloneInto(&newReduce.getRegion(), map);
+      reduced.push_back(newReduce.getResult(0));
+    }
+
+    rewriter.replaceOp(op, rewriter
+                               .create(linear->getLoc(),
+                                       linear->getName().getIdentifier(),
+                                       reduced, TypeRange(resultType),
+                                       linear->getAttrs(), {}, {})
+                               ->getResults());
+    return success();
+  }
+};
+
 struct ReduceConcat final
     : CheckedOpRewritePattern<stablehlo::ReduceOp, ReduceConcat> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
