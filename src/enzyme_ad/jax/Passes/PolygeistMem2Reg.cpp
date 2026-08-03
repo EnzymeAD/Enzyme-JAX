@@ -81,15 +81,64 @@ public:
   AffineExpr aff;
   SmallVector<Value> dim;
   SmallVector<Value> sym;
-  Offset(mlir::Value v) {
-    if (auto op = v.getDefiningOp<ConstantIntOp>()) {
-      idx = op.value();
+  Offset(size_t constant) {
+    idx = constant;
+    type = Type::Index;
+  }
+  // An index counts from the start of what it is an offset into, so anything
+  // below that is the expression it is instead, which takes a context to name.
+  Offset(int64_t constant, MLIRContext *ctx) {
+    if (constant >= 0) {
+      idx = constant;
       type = Type::Index;
       return;
     }
-    if (auto op = v.getDefiningOp<ConstantIndexOp>()) {
-      idx = op.value();
-      type = Type::Index;
+    aff = getAffineConstantExpr(constant, ctx);
+    type = Type::Affine;
+  }
+  Offset(AffineExpr expr, SmallVector<Value> dims, SmallVector<Value> syms) {
+    if (auto cst = dyn_cast<AffineConstantExpr>(expr)) {
+      if (cst.getValue() >= 0) {
+        idx = cst.getValue();
+        type = Type::Index;
+      } else {
+        aff = expr;
+        type = Type::Affine;
+      }
+      return;
+    }
+    if (auto d = dyn_cast<AffineDimExpr>(expr)) {
+      val = dims[d.getPosition()];
+      type = Type::Value;
+      return;
+    }
+    if (auto sy = dyn_cast<AffineSymbolExpr>(expr)) {
+      val = syms[sy.getPosition()];
+      type = Type::Value;
+      return;
+    }
+    type = Type::Affine;
+    aff = expr;
+    dim = std::move(dims);
+    sym = std::move(syms);
+  }
+  Offset(mlir::Value v) {
+    std::optional<int64_t> constant;
+    if (auto op = v.getDefiningOp<ConstantIntOp>())
+      constant = op.value();
+    else if (auto op = v.getDefiningOp<ConstantIndexOp>())
+      constant = op.value();
+
+    if (constant) {
+      // An index counts from the start of what it is an offset into, so
+      // anything below that is the expression it is instead.
+      if (*constant >= 0) {
+        idx = *constant;
+        type = Type::Index;
+      } else {
+        aff = getAffineConstantExpr(*constant, v.getContext());
+        type = Type::Affine;
+      }
       return;
     }
     val = v;
@@ -97,9 +146,16 @@ public:
   }
   Offset(AffineExpr op, unsigned numDims, unsigned numSymbols,
          mlir::OperandRange vals) {
+    // An index counts from the start of what it is an offset into, so anything
+    // below that is the expression it is instead, of nothing.
     if (auto opc = dyn_cast<AffineConstantExpr>(op)) {
-      idx = opc.getValue();
-      type = Type::Index;
+      if (opc.getValue() >= 0) {
+        idx = opc.getValue();
+        type = Type::Index;
+      } else {
+        aff = op;
+        type = Type::Affine;
+      }
       return;
     }
     if (auto opd = dyn_cast<AffineDimExpr>(op)) {
@@ -122,21 +178,8 @@ public:
 
     type = Type::Affine;
   }
-  Match matches(const Offset o) const {
-    if (type != o.type)
-      return Match::Maybe;
-    switch (type) {
-    case Type::Affine:
-      return (aff == o.aff && dim == o.dim && sym == o.sym) ? Match::Exact
-                                                            : Match::Maybe;
-    case Type::Value:
-      return (val == o.val) ? Match::Exact : Match::Maybe;
-    case Type::Index:
-      return (idx == o.idx) ? Match::Exact : Match::None;
-    default:
-      llvm_unreachable("Unknown offset type");
-    }
-  }
+  bool isZero() const { return type == Type::Index && idx == 0; }
+
   bool operator<(const Offset o) const {
     if (type != o.type) {
       return type < o.type;
@@ -167,6 +210,746 @@ public:
     }
   }
 };
+
+// The extent of a value, when the layout can say what it is.
+static std::optional<uint64_t> typeSize(mlir::Type ty, const DataLayout &dl) {
+  // Asking for the size of anything the layout cannot measure is fatal rather
+  // than an error to handle, so this asks only about what it can: what
+  // getDefaultTypeSizeInBits answers for, plus whatever brings its own answer.
+  if (!ty ||
+      !(ty.isIntOrFloat() ||
+        isa<IndexType, VectorType, ComplexType, DataLayoutTypeInterface>(ty)))
+    return std::nullopt;
+  return dl.getTypeSize(ty);
+}
+
+// What a single index of an access counts in: bytes of the type a
+// getelementptr steps through, or a dimension of a memref.
+class OffsetType {
+public:
+  enum class Kind { Bytes, Dim } kind = Kind::Bytes;
+  // Bytes: the size an index of this component multiplies.
+  uint64_t stride = 0;
+  // Dim: how many elements the dimension holds.
+  int64_t dimSize = ShapedType::kDynamic;
+
+  static OffsetType bytes(uint64_t stride) {
+    OffsetType res;
+    res.kind = Kind::Bytes;
+    res.stride = stride;
+    return res;
+  }
+  static OffsetType dim(int64_t dimSize) {
+    OffsetType res;
+    res.kind = Kind::Dim;
+    res.dimSize = dimSize;
+    return res;
+  }
+
+  bool operator<(const OffsetType &o) const {
+    if (kind != o.kind)
+      return kind < o.kind;
+    switch (kind) {
+    case Kind::Bytes:
+      return stride < o.stride;
+    case Kind::Dim:
+      return dimSize < o.dimSize;
+    }
+    llvm_unreachable("Unknown offset unit");
+  }
+  bool operator==(const OffsetType &o) const {
+    return !(*this < o) && !(o < *this);
+  }
+};
+
+// Where an access lands within an allocation: one Offset per index, each with
+// the unit it counts in, and the type of the value the access reads or writes.
+// `unknown` is an offset which could be anywhere, the same as an Offset holding
+// a value except that no value has to exist to name it -- which is what adding
+// two offsets counted in units that cannot be mixed produces.
+class OffsetTree {
+  bool unknownOffset = false;
+  std::vector<Offset> offsets;
+  std::vector<OffsetType> units;
+  mlir::Type base;
+
+  void normalize() {
+    if (unknownOffset) {
+      offsets.clear();
+      units.clear();
+      return;
+    }
+
+    // Counting in dimensions of a memref and in bytes of a pointer are two
+    // ways of saying where something is, and one path takes one of them.
+    assert((!hasDim() || !hasByte()) &&
+           "an offset counts in dimensions or in bytes, not both");
+
+    // Naming the start of an allocation is naming no offset into it at all,
+    // whatever the rank of the access that got there. Holding one form of it is
+    // what lets an access at [0, 0] of a view meet the index-free access an
+    // llvm.load performs.
+    if (isZero()) {
+      offsets.clear();
+      units.clear();
+      return;
+    }
+    // A constant lands at one byte however many indices reached it, which is
+    // what lets paths of different shapes that reach it meet.
+    if (auto bytes = constantBytes()) {
+      offsets.assign(1, Offset((size_t)*bytes));
+      units.assign(1, OffsetType::bytes(1));
+      return;
+    }
+
+    // The indices run most significant first, which is what lets the product of
+    // what the ones after an index cover be what that index steps over. A
+    // constant displacement -- a field of a struct -- is no stride at all and
+    // sits wherever the walk into the type put it.
+#ifndef NDEBUG
+    std::optional<uint64_t> last;
+    for (auto &&[off, unit] : llvm::zip(offsets, units)) {
+      if (unit.kind != OffsetType::Kind::Bytes ||
+          off.type == Offset::Type::Index)
+        continue;
+      assert((!last || *last >= unit.stride) &&
+             "byte offsets are held most significant first");
+      last = unit.stride;
+    }
+#endif
+  }
+
+public:
+  OffsetTree(mlir::Type base = {}, std::vector<Offset> offsets = {},
+             std::vector<OffsetType> units = {})
+      : offsets(std::move(offsets)), units(std::move(units)), base(base) {
+    assert(this->offsets.size() == this->units.size());
+    normalize();
+  }
+
+  // An offset which could be anywhere: it may be any other, and is none.
+  static OffsetTree unknown() {
+    OffsetTree res;
+    res.unknownOffset = true;
+    return res;
+  }
+
+  bool isUnknown() const { return unknownOffset; }
+  mlir::Type getBase() const { return base; }
+
+  bool hasDim() const {
+    return llvm::any_of(units, [](const OffsetType &unit) {
+      return unit.kind == OffsetType::Kind::Dim;
+    });
+  }
+  // A byte offset of no bytes is the placeholder for not moving at all, which
+  // is not a way of counting anything.
+  bool hasByte() const {
+    return llvm::any_of(units, [](const OffsetType &unit) {
+      return unit.kind == OffsetType::Kind::Bytes && unit.stride != 0;
+    });
+  }
+
+  void print(llvm::raw_ostream &o) const;
+
+  // Whether this names the start of what it is an offset into.
+  bool isZero() const {
+    if (unknownOffset)
+      return false;
+    return llvm::all_of(offsets,
+                        [](const Offset &off) { return off.isZero(); });
+  }
+
+  // A single constant offset in bytes, when that is all this is.
+  std::optional<uint64_t> constantBytes() const {
+    if (unknownOffset)
+      return std::nullopt;
+    uint64_t total = 0;
+    for (auto [off, unit] : llvm::zip(offsets, units)) {
+      if (off.type != Offset::Type::Index ||
+          unit.kind != OffsetType::Kind::Bytes)
+        return std::nullopt;
+      total += off.idx * unit.stride;
+    }
+    return total;
+  }
+
+  // The expression an offset is, over shared lists of the values everything is
+  // built from: whatever it needs that is already named is reused, and what is
+  // not is added, so several offsets can be put into one numbering.
+  static AffineExpr asAffine(const Offset &off, SmallVector<Value> &dims,
+                             SmallVector<Value> &syms, MLIRContext *ctx) {
+    auto exprFor = [&](Value val, bool asSymbol) -> AffineExpr {
+      auto dim = llvm::find(dims, val);
+      if (dim != dims.end())
+        return getAffineDimExpr(std::distance(dims.begin(), dim), ctx);
+      auto sym = llvm::find(syms, val);
+      if (sym != syms.end())
+        return getAffineSymbolExpr(std::distance(syms.begin(), sym), ctx);
+      if (asSymbol) {
+        syms.push_back(val);
+        return getAffineSymbolExpr(syms.size() - 1, ctx);
+      }
+      dims.push_back(val);
+      return getAffineDimExpr(dims.size() - 1, ctx);
+    };
+
+    switch (off.type) {
+    case Offset::Type::Index:
+      return getAffineConstantExpr(off.idx, ctx);
+    case Offset::Type::Value:
+      // Nothing is known about a value an index just is, which is what a
+      // symbol is for; a dimension is something an affine map may index by.
+      return exprFor(off.val, /*asSymbol=*/true);
+    case Offset::Type::Affine: {
+      SmallVector<AffineExpr> dimMap, symMap;
+      for (Value val : off.dim)
+        dimMap.push_back(exprFor(val, /*asSymbol=*/false));
+      for (Value val : off.sym)
+        symMap.push_back(exprFor(val, /*asSymbol=*/true));
+      return off.aff.replaceDimsAndSymbols(dimMap, symMap);
+    }
+    }
+    llvm_unreachable("Unknown offset type");
+  }
+
+  // Two offsets of the same thing, counted the same way, add up: as
+  // expressions of everything either of them is built from.
+  static Offset addOffsets(const Offset &lhs, const Offset &rhs) {
+    if (lhs.isZero())
+      return rhs;
+    if (rhs.isZero())
+      return lhs;
+    if (lhs.type == Offset::Type::Index && rhs.type == Offset::Type::Index)
+      return Offset(lhs.idx + rhs.idx);
+
+    MLIRContext *ctx = nullptr;
+    for (const Offset *off : {&lhs, &rhs}) {
+      if (off->type == Offset::Type::Value)
+        ctx = off->val.getContext();
+      else if (off->type == Offset::Type::Affine)
+        ctx = off->aff.getContext();
+    }
+
+    SmallVector<Value> dims, syms;
+    AffineExpr expr = asAffine(lhs, dims, syms, ctx);
+    expr = expr + asAffine(rhs, dims, syms, ctx);
+    return Offset(simplifyAffineExpr(expr, dims.size(), syms.size()), dims,
+                  syms);
+  }
+
+  // Composing this path with a further one. The further one names the value
+  // that is read or written, so the result is of its type.
+  OffsetTree add(const OffsetTree &o, const DataLayout &dl) const {
+    if (unknownOffset || o.unknownOffset)
+      return unknown();
+
+    // This path does not move, so it lands wherever the access does.
+    if (isZero())
+      return o;
+
+    // Dimensions count what the access reads, so two paths through them only
+    // compose when what they count is the same size.
+    if ((hasDim() || o.hasDim()) && base != o.base) {
+      auto lhsSize = typeSize(base, dl), rhsSize = typeSize(o.base, dl);
+      if (!lhsSize || !rhsSize || *lhsSize != *rhsSize)
+        return unknown();
+    }
+
+    // The access is at the start of what this path reached, so it lands here,
+    // reading what the access reads.
+    if (o.isZero())
+      return OffsetTree(o.base, offsets, units);
+
+    // Moving the same way twice is moving once by the two together.
+    if (units == o.units) {
+      std::vector<Offset> sum;
+      for (auto &&[lhs, rhs] : llvm::zip(offsets, o.offsets))
+        sum.push_back(addOffsets(lhs, rhs));
+      return OffsetTree(o.base, std::move(sum), units);
+    }
+
+    // Two constant amounts, however many indices reached either, are one.
+    auto lhsBytes = constantBytes(), rhsBytes = o.constantBytes();
+    if (lhsBytes && rhsBytes)
+      return OffsetTree(o.base, {Offset((size_t)(*lhsBytes + *rhsBytes))},
+                        {OffsetType::bytes(1)});
+
+    // Otherwise a constant amount of bytes joins a path that steps by a size it
+    // is a multiple of: it is that many of those steps, taken innermost, which
+    // is where the smallest of them is.
+    auto join = [](const OffsetTree &path, uint64_t bytes,
+                   mlir::Type base) -> OffsetTree {
+      if (path.units.empty() ||
+          path.units.back().kind != OffsetType::Kind::Bytes)
+        return unknown();
+      uint64_t stride = path.units.back().stride;
+      if (!stride || bytes % stride)
+        return unknown();
+      std::vector<Offset> offsets = path.offsets;
+      offsets.back() =
+          addOffsets(path.offsets.back(), Offset((size_t)(bytes / stride)));
+      return OffsetTree(base, std::move(offsets), path.units);
+    };
+    if (rhsBytes)
+      return join(*this, *rhsBytes, o.base);
+    if (lhsBytes)
+      return join(o, *lhsBytes, o.base);
+    return unknown();
+  }
+
+  // The number of elements (if dim) or bytes moved
+  // by changing the i-th index by 1
+  int64_t stepOf(int64_t i) const {
+    assert(i < units.size());
+    if (units[i].kind == OffsetType::Kind::Bytes) {
+      return units[i].stride;
+    } else {
+      int64_t cur = 1;
+      for (int64_t j = i + 1; j < (int64_t)units.size(); j++) {
+        if (units[j].dimSize == ShapedType::kDynamic) {
+          return ShapedType::kDynamic;
+        }
+        cur *= units[j].dimSize;
+      }
+      return cur;
+    }
+  }
+
+  // The maximum value allowed as an arg for the i-th index
+  int64_t maxValue(int64_t i) const {
+    if (units[i].kind == OffsetType::Kind::Bytes) {
+      if (i == 0)
+        return ShapedType::kDynamic;
+      auto prevStep = stepOf(i - 1);
+      auto curStep = stepOf(i);
+      if (prevStep == ShapedType::kDynamic || curStep == ShapedType::kDynamic ||
+          curStep == 0)
+        return ShapedType::kDynamic;
+      assert(prevStep % curStep == 0);
+      assert(prevStep != curStep);
+      return prevStep / curStep;
+    } else {
+      return units[i].dimSize;
+    }
+  }
+
+  // The first index guaranteed not to be touched by this access, if any
+  int64_t reachBound() const {
+    if (units.empty())
+      return 0;
+
+    int64_t step = stepOf(0), extent = maxValue(0);
+    assert(step != 0);
+    if (step == ShapedType::kDynamic || extent == ShapedType::kDynamic)
+      return ShapedType::kDynamic;
+    return step * extent;
+  }
+
+  // Whether a constant index at `at` puts this past everything `o` can name.
+  bool beyond(size_t at, std::optional<uint64_t> mySize, const OffsetTree &o,
+              std::optional<uint64_t> oSize, bool sameExtent) const {
+    int64_t step = stepOf(at), bound = o.reachBound();
+    assert(step != 0);
+    if (step == ShapedType::kDynamic || bound == ShapedType::kDynamic)
+      return false;
+
+    // Reading different amounts, the two only line up once both are counted in
+    // bytes rather than in the elements each reads.
+    if (!sameExtent) {
+      if (!mySize || !oSize)
+        return false;
+      if (hasDim())
+        step *= (int64_t)*mySize;
+      if (o.hasDim())
+        bound *= (int64_t)*oSize;
+    }
+
+    // A dimension counts the elements the other reads, so its bound already
+    // spans what is read at the last of them. A byte offset is only where the
+    // other starts, and what it reads there comes after that.
+    if (!o.hasDim()) {
+      if (!oSize)
+        return false;
+      bound += (int64_t)*oSize;
+    }
+
+    uint64_t idx = offsets[at].idx;
+    if (idx > (uint64_t)(INT64_MAX / step))
+      return false;
+    return (int64_t)idx * step >= bound;
+  }
+
+  // Whether this index or one outside it is known to move, which is what puts
+  // an access past everything the indices within it can reach. The outer ones
+  // are the ones before it.
+  int64_t smallestStrideUpTo(size_t at) const {
+    assert(at < offsets.size());
+
+    if (!hasDim()) {
+      int64_t best = INT64_MAX;
+      for (size_t i = 0; i < at; i++) {
+        if (offsets[i].isZero())
+          continue;
+        assert(units[i].kind == OffsetType::Kind::Bytes);
+        if (units[i].stride < best) {
+          best = units[i].stride;
+        }
+      }
+      return best;
+    } else {
+      if (at == 0)
+        return INT64_MAX;
+      size_t cur = 1;
+      for (size_t i = at; i < offsets.size(); i++) {
+        if (units[i].dimSize == ShapedType::kDynamic) {
+          continue;
+        }
+        cur *= units[i].dimSize;
+      }
+      return (int64_t)cur;
+    }
+  }
+
+  // One index against another, given what a step of each covers, how far all of
+  // each index reaches, how much each access reads, and whether either is known
+  // to have moved at this index or an outer one. What the shapes leave open is
+  // kDynamic, which compares to nothing.
+  static Match compareIndex(const Offset &lhs, int64_t lhsStep,
+                            std::optional<uint64_t> lhsSize,
+                            int64_t lhsSmallestStride, const Offset &rhs,
+                            int64_t rhsStep, std::optional<uint64_t> rhsSize,
+                            int64_t rhsSmallestStride, bool isDim,
+                            bool sameExtent) {
+
+    // The lhs step is smaller than the rhs step, and it can be proven that the
+    // lhs stride cannot possibly equal a single rhs stride.
+    if (lhsStep != ShapedType::kDynamic && rhsStep != ShapedType::kDynamic &&
+        lhsStep < rhsStep && rhsStep % lhsStep == 0) {
+      if (lhs.type == Offset::Type::Index && lhs.idx != 0 &&
+          (int64_t)lhs.idx < rhsStep / lhsStep) {
+        return Match::None;
+      }
+    }
+
+    // Same the other way
+    if (rhsStep != ShapedType::kDynamic && lhsStep != ShapedType::kDynamic &&
+        rhsStep < lhsStep && lhsStep % rhsStep == 0) {
+      if (rhs.type == Offset::Type::Index && rhs.idx != 0 &&
+          (int64_t)rhs.idx < lhsStep / rhsStep) {
+        return Match::None;
+      }
+    }
+
+    if (lhsStep != ShapedType::kDynamic && lhsStep == rhsStep &&
+        (sameExtent || !isDim)) {
+      int64_t difference = INT64_MAX;
+      switch (lhs.type) {
+      case Offset::Type::Affine:
+        if (lhs.dim == rhs.dim && lhs.sym == rhs.sym) {
+          if (lhs.aff == rhs.aff) {
+            return Match::Exact;
+          }
+          if (auto cst = dyn_cast<AffineConstantExpr>(rhs.aff - lhs.aff)) {
+            difference = std::abs(cst.getValue());
+          }
+        }
+        break;
+      case Offset::Type::Value:
+        if (lhs.val == rhs.val)
+          return Match::Exact;
+        break;
+      case Offset::Type::Index:
+        if (lhs.idx == rhs.idx) {
+          return Match::Exact;
+        }
+        difference =
+            (lhs.idx < rhs.idx ? rhs.idx - lhs.idx : lhs.idx - rhs.idx);
+        break;
+      }
+
+      if (difference == INT64_MAX)
+        return Match::Maybe;
+
+      if (isDim) {
+        if (difference < lhsSmallestStride && difference < rhsSmallestStride) {
+          return Match::None;
+        }
+      } else {
+        if (sameExtent || (lhsSize && rhsSize)) {
+          if (!sameExtent) {
+            difference +=
+                *lhsSize > *rhsSize ? *lhsSize - *rhsSize : *rhsSize - *lhsSize;
+          }
+          if (difference < lhsSmallestStride &&
+              difference < rhsSmallestStride) {
+            return Match::None;
+          }
+        }
+      }
+    }
+
+    return Match::Maybe;
+  }
+
+  Match matches(const OffsetTree &o, const DataLayout &dl) const {
+    if (unknownOffset || o.unknownOffset)
+      return Match::Maybe;
+
+    // A different type at the same place may still be the same value, since
+    // castToType converts between spellings of one extent. One type covers the
+    // same bytes as itself whether or not the layout can say how many; two of
+    // them do only if it can say so, and two extents of different length
+    // starting together share no more than a part.
+    std::optional<uint64_t> size = typeSize(base, dl);
+    std::optional<uint64_t> osize =
+        base == o.base ? size : typeSize(o.base, dl);
+    bool sameExtent = base == o.base || (size && osize && *size == *osize);
+    if (!sameExtent && (!size || !osize))
+      return Match::Maybe;
+
+    bool isDim = true;
+
+    if (hasDim() && o.hasDim()) {
+      isDim = true;
+    } else if (!hasDim() && !o.hasDim()) {
+      isDim = false;
+    } else {
+      return Match::Maybe;
+    }
+
+    // The indices run most significant first, so the walk runs the other way:
+    // what an index steps over is everything the ones after it cover, which is
+    // what the running product holds by the time it is reached.
+    ssize_t i = offsets.size() - 1, j = o.offsets.size() - 1;
+
+    bool exact = sameExtent;
+
+    while (i >= 0 && j >= 0) {
+      // An index that does not move lines up with anything, though whatever it
+      // would have stepped over still lies inside the ones outside it.
+      if (offsets[i].isZero()) {
+        i--;
+        continue;
+      }
+      if (o.offsets[j].isZero()) {
+        j--;
+        continue;
+      }
+
+      auto lhsStep = stepOf(i);
+      auto rhsStep = o.stepOf(j);
+
+      auto lhsStride = smallestStrideUpTo(i);
+      auto rhsStride = o.smallestStrideUpTo(j);
+      auto res =
+          compareIndex(offsets[i], lhsStep, size, lhsStride, o.offsets[j],
+                       rhsStep, osize, rhsStride, isDim, sameExtent);
+      if (res == Match::None)
+        return Match::None;
+
+      if (res == Match::Exact) {
+        i--;
+        j--;
+        continue;
+      }
+
+      exact = false;
+
+      if (sameExtent && lhsStep != rhsStep && lhsStep != ShapedType::kDynamic &&
+          rhsStep != ShapedType::kDynamic) {
+        if (lhsStep < rhsStep) {
+          i--;
+        } else {
+          j--;
+        }
+        continue;
+      }
+
+      i--;
+      j--;
+    }
+
+    // Whatever is left over of one path moves on from where the other stopped,
+    // which is wherever the indices it did have put it.
+    for (; i >= 0; i--) {
+      if (offsets[i].isZero()) {
+        continue;
+      }
+      exact = false;
+      if (offsets[i].type == Offset::Type::Index &&
+          beyond(i, size, o, osize, sameExtent)) {
+        return Match::None;
+      }
+    }
+    for (; j >= 0; j--) {
+      if (o.offsets[j].isZero()) {
+        continue;
+      }
+      exact = false;
+      if (o.offsets[j].type == Offset::Type::Index &&
+          o.beyond(j, osize, *this, size, sameExtent)) {
+        return Match::None;
+      }
+    }
+
+    if (exact) {
+      return Match::Exact;
+    } else {
+      return Match::Maybe;
+    }
+  }
+
+  bool operator<(const OffsetTree &o) const {
+    if (unknownOffset != o.unknownOffset)
+      return unknownOffset < o.unknownOffset;
+    if (offsets.size() != o.offsets.size())
+      return offsets.size() < o.offsets.size();
+    for (auto &&[i, off] : llvm::enumerate(offsets)) {
+      if (off < o.offsets[i])
+        return true;
+      if (o.offsets[i] < off)
+        return false;
+      if (units[i] < o.units[i])
+        return true;
+      if (o.units[i] < units[i])
+        return false;
+    }
+    return false;
+  }
+};
+
+static OffsetTree accessOffsets(Type accessed) { return OffsetTree(accessed); }
+
+static OffsetTree accessOffsets(Type accessed, Value memory,
+                                mlir::OperandRange indices,
+                                const DataLayout &dl) {
+  std::vector<Offset> offsets;
+  std::vector<OffsetType> units;
+  auto MT = cast<MemRefType>(memory.getType());
+  assert(MT.getElementType() == accessed);
+  for (auto &&[i, idx] : llvm::enumerate(indices)) {
+    offsets.emplace_back(idx);
+    units.push_back(OffsetType::dim(MT.getShape()[i]));
+  }
+  return OffsetTree(accessed, std::move(offsets), std::move(units));
+}
+
+static OffsetTree accessOffsets(Type accessed, Value memory, AffineMap map,
+                                mlir::OperandRange operands,
+                                const DataLayout &dl) {
+  std::vector<Offset> offsets;
+  std::vector<OffsetType> units;
+  auto MT = cast<MemRefType>(memory.getType());
+  assert(MT.getElementType() == accessed);
+  for (auto &&[i, expr] : llvm::enumerate(map.getResults())) {
+    offsets.emplace_back(expr, map.getNumDims(), map.getNumSymbols(), operands);
+    units.push_back(OffsetType::dim(MT.getShape()[i]));
+  }
+  return OffsetTree(accessed, std::move(offsets), std::move(units));
+}
+
+// A getelementptr walks into its element type: the first index steps over the
+// whole of it, and each one after that into what the previous one selected.
+// What it lands on is only known when every index into an aggregate is.
+static OffsetTree gepOffsets(LLVM::GEPOp gep, const DataLayout &dl) {
+  std::vector<Offset> offsets;
+  std::vector<OffsetType> units;
+  Type cur = gep.getElemType();
+  assert(cur && "a getelementptr walks into a type");
+
+  auto step = [&](std::optional<int64_t> constant, Value dynamic,
+                  uint64_t stride) {
+    if (constant) {
+      offsets.emplace_back(*constant, gep.getContext());
+    } else {
+      offsets.emplace_back(dynamic);
+    }
+    units.push_back(OffsetType::bytes(stride));
+  };
+
+  for (auto &&[i, arg] : llvm::enumerate(gep.getIndices())) {
+    Value dynamic = dyn_cast<Value>(arg);
+    std::optional<int64_t> constant;
+    if (auto attr = dyn_cast<IntegerAttr>(arg))
+      constant = attr.getInt();
+    else if (APInt val; matchPattern(dynamic, m_ConstantInt(&val)))
+      constant = val.getSExtValue();
+
+    if (i == 0) {
+      step(constant, dynamic, dl.getTypeSize(cur));
+      continue;
+    }
+
+    if (auto ST = dyn_cast<LLVM::LLVMStructType>(cur)) {
+      // Only a constant can select a field, and it lands at a fixed byte.
+      if (!constant || *constant < 0 ||
+          (size_t)*constant >= ST.getBody().size())
+        return OffsetTree::unknown();
+      uint64_t byte = 0;
+      for (auto member : ST.getBody().take_front(*constant)) {
+        if (!ST.isPacked())
+          byte = llvm::alignTo(byte, dl.getTypeABIAlignment(member));
+        byte += dl.getTypeSize(member);
+      }
+      if (!ST.isPacked())
+        byte = llvm::alignTo(byte,
+                             dl.getTypeABIAlignment(ST.getBody()[*constant]));
+      offsets.emplace_back((size_t)byte);
+      units.push_back(OffsetType::bytes(1));
+      cur = ST.getBody()[*constant];
+      assert(cur && "a field of a struct is of some type");
+      continue;
+    }
+
+    Type element;
+    if (auto AT = dyn_cast<LLVM::LLVMArrayType>(cur))
+      element = AT.getElementType();
+    else if (auto VT = dyn_cast<VectorType>(cur))
+      element = VT.getElementType();
+    else
+      return OffsetTree::unknown();
+
+    assert(element && "an aggregate is made of something");
+    step(constant, dynamic, dl.getTypeSize(element));
+    cur = element;
+  }
+
+  // Where the walk ended is what an access through this reads.
+  assert(cur && "a getelementptr lands on a type");
+  return OffsetTree(cur, std::move(offsets), std::move(units));
+}
+
+llvm::raw_ostream &operator<<(llvm::raw_ostream &o, const OffsetType unit) {
+  switch (unit.kind) {
+  case OffsetType::Kind::Bytes:
+    return o << unit.stride << "B";
+  case OffsetType::Kind::Dim:
+    return o << "dim<" << unit.dimSize << ">";
+  }
+  llvm_unreachable("Unknown offset unit");
+}
+
+llvm::raw_ostream &operator<<(llvm::raw_ostream &o, const Offset off);
+
+void OffsetTree::print(llvm::raw_ostream &o) const {
+  if (unknownOffset) {
+    o << "unknown";
+    return;
+  }
+  o << "[";
+  for (auto &&[i, off] : llvm::enumerate(offsets)) {
+    if (i)
+      o << ", ";
+    o << off << " x " << units[i];
+  }
+  o << "] of " << base;
+}
+
+llvm::raw_ostream &operator<<(llvm::raw_ostream &o, const OffsetTree &tree) {
+  tree.print(o);
+  return o;
+}
 
 llvm::raw_ostream &operator<<(llvm::raw_ostream &o, const Offset off) {
   switch (off.type) {
@@ -222,47 +1005,12 @@ struct PolygeistMem2Reg
 
   // return if changed
   bool forwardStoreToLoad(
-      mlir::Value AI, std::vector<Offset> idx,
+      mlir::Value AI, OffsetTree idx,
       SmallVectorImpl<Operation *> &loadOpsToErase,
       DenseMap<Operation *, SmallVector<Operation *>> &capturedAliasing);
 };
 
 } // end anonymous namespace
-
-Match matchesIndices(mlir::OperandRange ops, const std::vector<Offset> &idx) {
-  if (ops.size() != idx.size())
-    return Match::None;
-  for (size_t i = 0; i < idx.size(); i++) {
-    switch (idx[i].matches(Offset(ops[i]))) {
-    case Match::None:
-      return Match::None;
-    case Match::Maybe:
-      return Match::Maybe;
-    case Match::Exact:
-      break;
-    }
-  }
-  return Match::Exact;
-}
-
-Match matchesIndices(AffineMap map, mlir::OperandRange ops,
-                     const std::vector<Offset> &idx) {
-  auto idxs = map.getResults();
-  if (idxs.size() != idx.size())
-    return Match::None;
-  for (size_t i = 0; i < idx.size(); i++) {
-    switch (idx[i].matches(
-        Offset(idxs[i], map.getNumDims(), map.getNumSymbols(), ops))) {
-    case Match::None:
-      return Match::None;
-    case Match::Maybe:
-      return Match::Maybe;
-    case Match::Exact:
-      break;
-    }
-  }
-  return Match::Exact;
-}
 
 class ValueOrPlaceholder;
 
@@ -1199,7 +1947,7 @@ std::set<std::string> NoWriteFunctions = {"exit", "__errno_location"};
 // This is a straightforward implementation not optimized for speed. Optimize
 // if needed.
 bool PolygeistMem2Reg::forwardStoreToLoad(
-    mlir::Value AI, std::vector<Offset> idx,
+    mlir::Value AI, OffsetTree idx,
     SmallVectorImpl<Operation *> &loadOpsToErase,
     DenseMap<Operation *, SmallVector<Operation *>> &capturedAliasing) {
   bool changed = false;
@@ -1208,11 +1956,12 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
   mlir::Location loc = AI.getLoc();
   std::set<mlir::Operation *> allStoreOps;
 
+  DataLayout dl = DataLayout::closest(AI.getDefiningOp());
   Type elType = nullptr;
   if (auto MT = dyn_cast<MemRefType>(AI.getType()))
     elType = MT.getElementType();
 
-  std::deque<std::pair<mlir::Value, /*indexed*/ bool>> list = {{AI, false}};
+  std::deque<std::pair<mlir::Value, OffsetTree>> list = {{AI, OffsetTree()}};
 
   SmallPtrSet<Operation *, 4> AliasingStoreOperations;
 
@@ -1232,135 +1981,113 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
       auto PT = dyn_cast<LLVM::LLVMPointerType>(val.getType());
       SharedMemAddr = PT.getAddressSpace() == 5;
     }
-    auto modified = pair.second;
+    auto tree = pair.second;
     list.pop_front();
     for (auto *user : val.getUsers()) {
       if (auto co = dyn_cast<mlir::memref::CastOp>(user)) {
-        list.emplace_back((Value)co, modified);
+        list.emplace_back((Value)co, tree);
         continue;
       }
       if (auto co = dyn_cast<Memref2PointerOp>(user)) {
-        list.emplace_back((Value)co, modified);
+        list.emplace_back((Value)co, tree);
         continue;
       }
       if (auto co = dyn_cast<Pointer2MemrefOp>(user)) {
-        list.emplace_back((Value)co, modified);
+        list.emplace_back((Value)co, tree);
         continue;
       }
-      /*if (auto co = dyn_cast<SubIndexOp>(user)) {
-        list.emplace_back((Value)co, true);
-        continue;
-      }
-      */
       // If at the same index, the "hole" property applies
       // and we can go through.
       if (isa<BarrierOp>(user)) {
         continue;
       }
       if (auto co = dyn_cast<mlir::LLVM::GEPOp>(user)) {
-        list.emplace_back((Value)co, true);
+        list.emplace_back((Value)co, tree.add(gepOffsets(co, dl), dl));
         continue;
       }
       if (auto co = dyn_cast<mlir::LLVM::BitcastOp>(user)) {
-        list.emplace_back((Value)co, modified);
+        list.emplace_back((Value)co, tree);
         continue;
       }
       if (auto co = dyn_cast<mlir::LLVM::AddrSpaceCastOp>(user)) {
-        list.emplace_back((Value)co, modified);
+        list.emplace_back((Value)co, tree);
         continue;
       }
       if (isa<LLVM::LifetimeStartOp, LLVM::LifetimeEndOp>(user)) {
         continue;
       }
-      if (auto loadOp = dyn_cast<mlir::memref::LoadOp>(user)) {
-        if (!modified &&
-            matchesIndices(loadOp.getIndices(), idx) == Match::Exact) {
-          subType = loadOp.getType();
-          if (subType == elType || elType == nullptr) {
-            elType = subType;
-            loadOps.insert(loadOp);
-            LLVM_DEBUG(llvm::dbgs() << "Matching Load: " << loadOp << "\n");
-          }
+      // A load naming the slot reads it; one that may only overlap it reads
+      // something this knows nothing about, which is no reason to stop.
+      auto matchLoad = [&](Operation *loadOp, OffsetTree accessed) {
+        if (idx.matches(tree.add(accessed, dl), dl) != Match::Exact)
+          return;
+        subType = loadOp->getResult(0).getType();
+        // Whichever spelling of the slot is read first is the one the value
+        // forwarded out of it takes.
+        if (elType && subType != elType)
+          return;
+        elType = subType;
+        loadOps.insert(loadOp);
+        LLVM_DEBUG(llvm::dbgs() << "Matching Load: " << *loadOp << "\n");
+      };
+      auto matchStore = [&](Operation *storeOp, OffsetTree accessed) {
+        switch (idx.matches(tree.add(accessed, dl), dl)) {
+        case Match::Exact:
+          LLVM_DEBUG(llvm::dbgs() << "Matching Store: " << *storeOp << "\n");
+          allStoreOps.insert(storeOp);
+          break;
+        case Match::Maybe:
+          LLVM_DEBUG(llvm::dbgs()
+                     << "Mabye Aliasing Store: " << *storeOp << "\n");
+          AliasingStoreOperations.insert(storeOp);
+          break;
+        case Match::None:
+          break;
         }
+      };
+
+      if (auto loadOp = dyn_cast<mlir::memref::LoadOp>(user)) {
+        matchLoad(loadOp, accessOffsets(loadOp.getType(), loadOp.getMemRef(),
+                                        loadOp.getIndices(), dl));
         continue;
       }
       if (auto loadOp = dyn_cast<mlir::LLVM::LoadOp>(user)) {
-        if (!modified) {
-          subType = loadOp.getType();
-          if (subType == elType || elType == nullptr) {
-            elType = subType;
-            loadOps.insert(loadOp);
-            LLVM_DEBUG(llvm::dbgs() << "Matching Load: " << loadOp << "\n");
-          }
-        }
+        matchLoad(loadOp, accessOffsets(loadOp.getType()));
         continue;
       }
       if (auto loadOp = dyn_cast<affine::AffineLoadOp>(user)) {
-        if (!modified &&
-            matchesIndices(loadOp.getAffineMapAttr().getValue(),
-                           loadOp.getMapOperands(), idx) == Match::Exact) {
-          subType = loadOp.getType();
-          if (subType == elType || elType == nullptr) {
-            elType = subType;
-            loadOps.insert(loadOp);
-            LLVM_DEBUG(llvm::dbgs() << "Matching Load: " << loadOp << "\n");
-          }
-        }
+        matchLoad(loadOp, accessOffsets(loadOp.getType(), loadOp.getMemRef(),
+                                        loadOp.getAffineMapAttr().getValue(),
+                                        loadOp.getMapOperands(), dl));
         continue;
       }
       if (auto storeOp = dyn_cast<mlir::memref::StoreOp>(user)) {
         if (storeOp.getValue() == val)
           captured = true;
-        else if (!modified) {
-          switch (matchesIndices(storeOp.getIndices(), idx)) {
-          case Match::Exact:
-            LLVM_DEBUG(llvm::dbgs() << "Matching Store: " << storeOp << "\n");
-            allStoreOps.insert(storeOp);
-            break;
-          case Match::Maybe:
-            LLVM_DEBUG(llvm::dbgs()
-                       << "Mabye Aliasing Store: " << storeOp << "\n");
-            AliasingStoreOperations.insert(storeOp);
-            break;
-          case Match::None:
-            break;
-          }
-        } else
-          AliasingStoreOperations.insert(storeOp);
+        else
+          matchStore(storeOp, accessOffsets(storeOp.getValue().getType(),
+                                            storeOp.getMemRef(),
+                                            storeOp.getIndices(), dl));
         continue;
       }
       if (auto storeOp = dyn_cast<LLVM::StoreOp>(user)) {
 
         if (storeOp.getValue() == val) {
           captured = true;
-        } else if (!modified) {
-          LLVM_DEBUG(llvm::dbgs() << "Matching Store: " << storeOp << "\n");
-          allStoreOps.insert(storeOp);
         } else
-          AliasingStoreOperations.insert(storeOp);
+          matchStore(storeOp, accessOffsets(storeOp.getValue().getType()));
         continue;
       }
 
       if (auto storeOp = dyn_cast<affine::AffineStoreOp>(user)) {
         if (storeOp.getValue() == val) {
           captured = true;
-        } else if (!modified) {
-          switch (matchesIndices(storeOp.getAffineMapAttr().getValue(),
-                                 storeOp.getMapOperands(), idx)) {
-          case Match::Exact:
-            LLVM_DEBUG(llvm::dbgs() << "Matching Store: " << storeOp << "\n");
-            allStoreOps.insert(storeOp);
-            break;
-          case Match::Maybe:
-            LLVM_DEBUG(llvm::dbgs()
-                       << "Mabye Aliasing Store: " << storeOp << "\n");
-            AliasingStoreOperations.insert(storeOp);
-            break;
-          case Match::None:
-            break;
-          }
         } else
-          AliasingStoreOperations.insert(storeOp);
+          matchStore(storeOp,
+                     accessOffsets(storeOp.getValue().getType(),
+                                   storeOp.getMemRef(),
+                                   storeOp.getAffineMapAttr().getValue(),
+                                   storeOp.getMapOperands(), dl));
         continue;
       }
       if (auto callOp = dyn_cast<CallOpInterface>(user)) {
@@ -1993,56 +2720,48 @@ bool isPromotable(mlir::Value AI) {
   return true;
 }
 
-std::vector<std::vector<Offset>> getLastStored(mlir::Value AI) {
-  std::map<std::vector<Offset>, unsigned> lastStored;
+std::vector<OffsetTree> getLastStored(mlir::Value AI, const DataLayout &dl) {
+  std::map<OffsetTree, unsigned> lastStored;
 
-  std::deque<mlir::Value> list = {AI};
+  std::deque<std::pair<mlir::Value, OffsetTree>> list = {{AI, OffsetTree()}};
 
   while (list.size()) {
-    auto val = list.front();
+    auto [val, tree] = list.front();
     list.pop_front();
     for (auto *U : val.getUsers()) {
       if (auto SO = dyn_cast<memref::StoreOp>(U)) {
-        std::vector<Offset> vec;
-        for (auto idx : SO.getIndices()) {
-          vec.emplace_back(idx);
-        }
-        lastStored[vec]++;
-      } else if (auto SO = dyn_cast<affine::AffineLoadOp>(U)) {
-        std::vector<Offset> vec;
-        auto map = SO.getAffineMapAttr().getValue();
-        for (auto idx : map.getResults()) {
-          vec.emplace_back(idx, map.getNumDims(), map.getNumSymbols(),
-                           SO.getMapOperands());
-        }
-        lastStored[vec]++;
-      } else if (isa<LLVM::LoadOp>(U)) {
-        std::vector<Offset> vec;
-        lastStored[vec]++;
-      } else if (isa<LLVM::StoreOp>(U)) {
-        std::vector<Offset> vec;
-        lastStored[vec]++;
-      } else if (auto SO = dyn_cast<memref::LoadOp>(U)) {
-        std::vector<Offset> vec;
-        for (auto idx : SO.getIndices()) {
-          vec.emplace_back(idx);
-        }
-        lastStored[vec]++;
+        lastStored[tree.add(accessOffsets(SO.getValue().getType(),
+                                          SO.getMemRef(), SO.getIndices(), dl),
+                            dl)]++;
+      } else if (auto LO = dyn_cast<memref::LoadOp>(U)) {
+        lastStored[tree.add(
+            accessOffsets(LO.getType(), LO.getMemRef(), LO.getIndices(), dl),
+            dl)]++;
       } else if (auto SO = dyn_cast<affine::AffineStoreOp>(U)) {
-        std::vector<Offset> vec;
-        auto map = SO.getAffineMapAttr().getValue();
-        for (auto idx : map.getResults()) {
-          vec.emplace_back(idx, map.getNumDims(), map.getNumSymbols(),
-                           SO.getMapOperands());
-        }
-        lastStored[vec]++;
-      } else if (auto CO = dyn_cast<memref::CastOp>(U)) {
-        list.push_back(CO);
+        lastStored[tree.add(accessOffsets(SO.getValue().getType(),
+                                          SO.getMemRef(),
+                                          SO.getAffineMapAttr().getValue(),
+                                          SO.getMapOperands(), dl),
+                            dl)]++;
+      } else if (auto LO = dyn_cast<affine::AffineLoadOp>(U)) {
+        lastStored[tree.add(accessOffsets(LO.getType(), LO.getMemRef(),
+                                          LO.getAffineMapAttr().getValue(),
+                                          LO.getMapOperands(), dl),
+                            dl)]++;
+      } else if (auto SO = dyn_cast<LLVM::StoreOp>(U)) {
+        lastStored[tree.add(accessOffsets(SO.getValue().getType()), dl)]++;
+      } else if (auto LO = dyn_cast<LLVM::LoadOp>(U)) {
+        lastStored[tree.add(accessOffsets(LO.getType()), dl)]++;
+      } else if (auto GO = dyn_cast<LLVM::GEPOp>(U)) {
+        list.emplace_back(GO, tree.add(gepOffsets(GO, dl), dl));
+      } else if (isa<memref::CastOp, Memref2PointerOp, Pointer2MemrefOp,
+                     LLVM::BitcastOp, LLVM::AddrSpaceCastOp>(U)) {
+        list.emplace_back(U->getResult(0), tree);
       }
     }
   }
 
-  std::vector<std::vector<Offset>> todo;
+  std::vector<OffsetTree> todo;
   for (auto &pair : lastStored) {
     if (pair.second > 1)
       todo.push_back(pair.first);
@@ -2092,13 +2811,13 @@ void PolygeistMem2Reg::runOnOperation() {
     DenseMap<Operation *, SmallVector<Operation *>> capturedAliasing;
     for (auto AI : toPromote) {
       LLVM_DEBUG(llvm::dbgs() << " attempting to promote " << AI << "\n");
-      auto lastStored = getLastStored(AI);
+      // A nested region may carry a layout of its own, so the sizes an offset
+      // is counted in are the ones in force where the allocation is.
+      auto lastStored =
+          getLastStored(AI, DataLayout::closest(AI.getDefiningOp()));
       for (const auto &vec : lastStored) {
-        LLVM_DEBUG(llvm::dbgs() << " + forwarding vec to promote {";
-                   for (auto m
-                        : vec) llvm::dbgs()
-                   << m << ",";
-                   llvm::dbgs() << "} of " << AI << "\n");
+        LLVM_DEBUG(llvm::dbgs() << " + forwarding vec to promote {" << vec
+                                << "} of " << AI << "\n");
         // llvm::errs() << " PRE " << AI << "\n";
         // f.dump();
         changed |=
