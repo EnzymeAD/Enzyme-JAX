@@ -183,3 +183,101 @@ llvm.func @gep_two_values(%val: f32, %i: i64, %j: i64) -> f32 {
 // CHECK-SAME: %[[VAL:[a-z0-9]+]]: f32
 // CHECK-NOT: llvm.load
 // CHECK: llvm.return %[[VAL]] : f32
+
+// -----
+
+// An index that is not known could be the one being read, so what is written
+// through it may be what a later read finds. Storing a different value than the
+// first store is what makes that visible.
+llvm.func @unknown_index_other_value(%val: f32, %other: f32, %i: i64) -> f32 {
+  %c1 = llvm.mlir.constant(1 : i32) : i32
+  %mem = llvm.alloca %c1 x !llvm.array<4 x f32> : (i32) -> !llvm.ptr
+  %f0 = llvm.getelementptr %mem[0, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<4 x f32>
+  llvm.store %val, %f0 : f32, !llvm.ptr
+  %fi = llvm.getelementptr %mem[0, %i] : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<4 x f32>
+  llvm.store %other, %fi : f32, !llvm.ptr
+  %loaded = llvm.load %f0 : !llvm.ptr -> f32
+  llvm.return %loaded : f32
+}
+
+// CHECK-LABEL: llvm.func @unknown_index_other_value(
+// CHECK: %[[LD:.+]] = llvm.load
+// CHECK: llvm.return %[[LD]] : f32
+
+// -----
+
+// Element 1 of a view of f32 is byte 4. A byte offset of 1 is not that, and
+// counting the two the same way would say it is.
+llvm.func @dim_meets_byte(%val: f32, %other: f32) -> f32 {
+  %c1i = arith.constant 1 : index
+  %c1 = llvm.mlir.constant(1 : i32) : i32
+  %mem = llvm.alloca %c1 x !llvm.array<4 x f32> : (i32) -> !llvm.ptr
+  %view = "enzymexla.pointer2memref"(%mem) : (!llvm.ptr) -> memref<4xf32>
+  memref.store %val, %view[%c1i] : memref<4xf32>
+  %byte1 = llvm.getelementptr %mem[1] : (!llvm.ptr) -> !llvm.ptr, i8
+  llvm.store %other, %byte1 : f32, !llvm.ptr
+  %loaded = memref.load %view[%c1i] : memref<4xf32>
+  llvm.return %loaded : f32
+}
+
+// CHECK-LABEL: llvm.func @dim_meets_byte(
+// CHECK: %[[LD:.+]] = memref.load
+// CHECK: llvm.return %[[LD]] : f32
+
+// -----
+
+// Two f32 one byte apart share three of their four bytes, so the second store
+// is what a read of the first may find.
+llvm.func @overlapping_bytes(%val: f32, %other: f32) -> f32 {
+  %c1 = llvm.mlir.constant(1 : i32) : i32
+  %mem = llvm.alloca %c1 x !llvm.array<8 x i8> : (i32) -> !llvm.ptr
+  %b0 = llvm.getelementptr %mem[0] : (!llvm.ptr) -> !llvm.ptr, i8
+  llvm.store %val, %b0 : f32, !llvm.ptr
+  %b1 = llvm.getelementptr %mem[1] : (!llvm.ptr) -> !llvm.ptr, i8
+  llvm.store %other, %b1 : f32, !llvm.ptr
+  %loaded = llvm.load %b0 : !llvm.ptr -> f32
+  llvm.return %loaded : f32
+}
+
+// CHECK-LABEL: llvm.func @overlapping_bytes(
+// CHECK: %[[LD:.+]] = llvm.load
+// CHECK: llvm.return %[[LD]] : f32
+
+// -----
+
+// Far enough apart, the same two are different places and the first store is
+// what the read finds.
+llvm.func @disjoint_bytes(%val: f32, %other: f32) -> f32 {
+  %c1 = llvm.mlir.constant(1 : i32) : i32
+  %mem = llvm.alloca %c1 x !llvm.array<16 x i8> : (i32) -> !llvm.ptr
+  %b0 = llvm.getelementptr %mem[0] : (!llvm.ptr) -> !llvm.ptr, i8
+  llvm.store %val, %b0 : f32, !llvm.ptr
+  %b8 = llvm.getelementptr %mem[8] : (!llvm.ptr) -> !llvm.ptr, i8
+  llvm.store %other, %b8 : f32, !llvm.ptr
+  %loaded = llvm.load %b0 : !llvm.ptr -> f32
+  llvm.return %loaded : f32
+}
+
+// CHECK-LABEL: llvm.func @disjoint_bytes(
+// CHECK-SAME: %[[VAL:[a-z0-9]+]]: f32
+// CHECK-NOT: llvm.load
+// CHECK: llvm.return %[[VAL]] : f32
+
+// -----
+
+// How far apart is not enough on its own: two values of sixteen bytes, eight
+// apart, still share half of themselves.
+llvm.func @wide_overlap(%val: i128, %other: i128) -> i128 {
+  %c1 = llvm.mlir.constant(1 : i32) : i32
+  %mem = llvm.alloca %c1 x !llvm.array<32 x i8> : (i32) -> !llvm.ptr
+  %b0 = llvm.getelementptr %mem[0] : (!llvm.ptr) -> !llvm.ptr, i8
+  llvm.store %val, %b0 : i128, !llvm.ptr
+  %b8 = llvm.getelementptr %mem[8] : (!llvm.ptr) -> !llvm.ptr, i8
+  llvm.store %other, %b8 : i128, !llvm.ptr
+  %loaded = llvm.load %b0 : !llvm.ptr -> i128
+  llvm.return %loaded : i128
+}
+
+// CHECK-LABEL: llvm.func @wide_overlap(
+// CHECK: %[[LD:.+]] = llvm.load
+// CHECK: llvm.return %[[LD]] : i128

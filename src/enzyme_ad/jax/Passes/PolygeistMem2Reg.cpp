@@ -427,11 +427,19 @@ public:
                   syms);
   }
 
-  // Composing this path with a further one, which names the accessed value and
-  // so says what type and size the result is of.
-  OffsetTree add(const OffsetTree &o) const {
+  // Composing this path with a further one. The further one names the value
+  // that is read or written, so the result is of its type.
+  OffsetTree add(const OffsetTree &o, const DataLayout &dl) const {
     if (unknownOffset || o.unknownOffset)
       return unknown();
+
+    // Dimensions count what the access reads, so two paths through them only
+    // compose when what they count is the same size.
+    if ((hasDim() || o.hasDim()) && base && o.base && base != o.base) {
+      auto lhsSize = typeSize(base, dl), rhsSize = typeSize(o.base, dl);
+      if (!lhsSize || !rhsSize || *lhsSize != *rhsSize)
+        return unknown();
+    }
     if (isZero())
       return o;
     if (o.isZero())
@@ -499,12 +507,46 @@ public:
         return ShapedType::kDynamic;
       auto prevStep = stepOf(i - 1);
       auto curStep = stepOf(i);
+      if (prevStep == ShapedType::kDynamic || curStep == ShapedType::kDynamic ||
+          curStep == 0)
+        return ShapedType::kDynamic;
       assert(prevStep % curStep == 0);
       assert(prevStep != curStep);
       return prevStep / curStep;
     } else {
       return units[i].dimSize;
     }
+  }
+
+  // The first index guaranteed not to be touched by this access, if any
+  int64_t reachBound() const {
+    if (units.empty())
+      return 0;
+
+    int64_t step = stepOf(0), extent = maxValue(0);
+    assert(step != 0);
+    if (step == ShapedType::kDynamic || extent == ShapedType::kDynamic)
+      return ShapedType::kDynamic;
+    return step * extent;
+  }
+
+  // Whether a constant index at `at` puts this past everything `o` can name.
+  bool beyond(size_t at, std::optional<uint64_t> mySize, const OffsetTree &o,
+              std::optional<uint64_t> oSize, bool sameExtent) const {
+    int64_t step = stepOf(at), bound = o.reachBound(oSize);
+    assert(step != 0)
+    if (step == ShapedType::kDynamic || bound == ShapedType::kDynamic)
+      return false;
+    if (sameExtent) {
+	    if (offsets[at].idx * step >= bound) return true;
+    } else if (mySize && oSize) {
+	  if (hasDim()) {
+	    step *= *mySize;
+	    bound *= *osize;
+	  }
+	    if (offsets[at].idx * step >= bound) return true;
+    }
+    return false;
   }
 
   // Whether this index or one outside it is known to move, which is what puts
@@ -639,7 +681,7 @@ public:
 
     if (hasDim() && o.hasDim()) {
       isDim = true;
-    } else if (!o.hasDim() && !o.hasDim()) {
+    } else if (!hasDim() && !o.hasDim()) {
       isDim = false;
     } else {
       return Match::Maybe;
@@ -682,13 +724,14 @@ public:
       }
 
       exact = false;
-      
-      if (lhsStep != rhsStep && lhsStep != ShapedType::kDynamic && rhsStep != ShapedType::kDynamic) {
-	if (lhsStep < rhsStep) {
+
+      if (sameExtent && lhsStep != rhsStep && lhsStep != ShapedType::kDynamic &&
+          rhsStep != ShapedType::kDynamic) {
+        if (lhsStep < rhsStep) {
           i--;
-	} else {
+        } else {
           j--;
-	}
+        }
         continue;
       }
 
@@ -702,20 +745,19 @@ public:
       if (offsets[i].isZero()) {
         continue;
       }
-      if (offsets[i].type == Offset::Type::Value) {
-        if (offsets[i].val != 0) {
-          return Match::None;
-        }
+      exact = false;
+      if (offsets[i].type == Offset::Type::Index && beyond(i, size, o, osize, sameExtent)) {
+        return Match::None;
       }
     }
     for (; j >= 0; j--) {
       if (o.offsets[j].isZero()) {
         continue;
       }
-      if (o.offsets[j].type == Offset::Type::Value) {
-        if (o.offsets[j].val != 0) {
-          return Match::None;
-        }
+      exact = false;
+      if (o.offsets[j].type == Offset::Type::Index &&
+          o.beyond(j, osize, *this, size, sameExtent)) {
+        return Match::None;
       }
     }
 
@@ -745,34 +787,18 @@ public:
   }
 };
 
-// The offset an access lands at within the value it indexes, in the units that
-// value counts in: dimensions of a memref, bytes of an llvm pointer. An access
-// with no indices reads the start of what it is given.
 static OffsetTree accessOffsets(Type accessed) { return OffsetTree(accessed); }
-
-// Dimensions count what the access reads, so an access reading something other
-// than what the memref holds says nothing about where it lands.
-static bool countsWhatItReads(Type accessed, MemRefType MT,
-                              const DataLayout &dl) {
-  if (accessed == MT.getElementType())
-    return true;
-  auto size = typeSize(accessed, dl),
-       elSize = typeSize(MT.getElementType(), dl);
-  return size && elSize && *size == *elSize;
-}
 
 static OffsetTree accessOffsets(Type accessed, Value memory,
                                 mlir::OperandRange indices,
                                 const DataLayout &dl) {
   std::vector<Offset> offsets;
   std::vector<OffsetType> units;
-  if (auto MT = dyn_cast<MemRefType>(memory.getType())) {
-    if (!indices.empty() && !countsWhatItReads(accessed, MT, dl))
-      return OffsetTree::unknown();
-    for (auto &&[i, idx] : llvm::enumerate(indices)) {
-      offsets.emplace_back(idx);
-      units.push_back(OffsetType::dim(MT.getShape()[i]));
-    }
+  auto MT = cast<MemRefType>(memory.getType());
+  assert(MT.getElementType() == accessed);
+  for (auto &&[i, idx] : llvm::enumerate(indices)) {
+    offsets.emplace_back(idx);
+    units.push_back(OffsetType::dim(MT.getShape()[i]));
   }
   return OffsetTree(accessed, std::move(offsets), std::move(units));
 }
@@ -783,8 +809,7 @@ static OffsetTree accessOffsets(Type accessed, Value memory, AffineMap map,
   std::vector<Offset> offsets;
   std::vector<OffsetType> units;
   auto MT = cast<MemRefType>(memory.getType());
-  if (map.getNumResults() && !countsWhatItReads(accessed, MT, dl))
-    return OffsetTree::unknown();
+  assert(MT.getElementType() == accessed);
   for (auto &&[i, expr] : llvm::enumerate(map.getResults())) {
     offsets.emplace_back(expr, map.getNumDims(), map.getNumSymbols(), operands);
     units.push_back(OffsetType::dim(MT.getShape()[i]));
@@ -1941,7 +1966,7 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
         continue;
       }
       if (auto co = dyn_cast<mlir::LLVM::GEPOp>(user)) {
-        list.emplace_back((Value)co, tree.add(gepOffsets(co, dl)));
+        list.emplace_back((Value)co, tree.add(gepOffsets(co, dl), dl));
         continue;
       }
       if (auto co = dyn_cast<mlir::LLVM::BitcastOp>(user)) {
@@ -1958,7 +1983,7 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
       // A load naming the slot reads it; one that may only overlap it reads
       // something this knows nothing about, which is no reason to stop.
       auto matchLoad = [&](Operation *loadOp, OffsetTree accessed) {
-        if (idx.matches(tree.add(accessed), dl) != Match::Exact)
+        if (idx.matches(tree.add(accessed, dl), dl) != Match::Exact)
           return;
         subType = loadOp->getResult(0).getType();
         // Whichever spelling of the slot is read first is the one the value
@@ -1970,7 +1995,7 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
         LLVM_DEBUG(llvm::dbgs() << "Matching Load: " << *loadOp << "\n");
       };
       auto matchStore = [&](Operation *storeOp, OffsetTree accessed) {
-        switch (idx.matches(tree.add(accessed), dl)) {
+        switch (idx.matches(tree.add(accessed, dl), dl)) {
         case Match::Exact:
           LLVM_DEBUG(llvm::dbgs() << "Matching Store: " << *storeOp << "\n");
           allStoreOps.insert(storeOp);
@@ -2669,25 +2694,30 @@ std::vector<OffsetTree> getLastStored(mlir::Value AI, const DataLayout &dl) {
     list.pop_front();
     for (auto *U : val.getUsers()) {
       if (auto SO = dyn_cast<memref::StoreOp>(U)) {
-        lastStored[tree.add(accessOffsets(
-            SO.getValue().getType(), SO.getMemRef(), SO.getIndices(), dl))]++;
+        lastStored[tree.add(accessOffsets(SO.getValue().getType(),
+                                          SO.getMemRef(), SO.getIndices(), dl),
+                            dl)]++;
       } else if (auto LO = dyn_cast<memref::LoadOp>(U)) {
-        lastStored[tree.add(accessOffsets(LO.getType(), LO.getMemRef(),
-                                          LO.getIndices(), dl))]++;
+        lastStored[tree.add(
+            accessOffsets(LO.getType(), LO.getMemRef(), LO.getIndices(), dl),
+            dl)]++;
       } else if (auto SO = dyn_cast<affine::AffineStoreOp>(U)) {
-        lastStored[tree.add(accessOffsets(
-            SO.getValue().getType(), SO.getMemRef(),
-            SO.getAffineMapAttr().getValue(), SO.getMapOperands(), dl))]++;
+        lastStored[tree.add(accessOffsets(SO.getValue().getType(),
+                                          SO.getMemRef(),
+                                          SO.getAffineMapAttr().getValue(),
+                                          SO.getMapOperands(), dl),
+                            dl)]++;
       } else if (auto LO = dyn_cast<affine::AffineLoadOp>(U)) {
         lastStored[tree.add(accessOffsets(LO.getType(), LO.getMemRef(),
                                           LO.getAffineMapAttr().getValue(),
-                                          LO.getMapOperands(), dl))]++;
+                                          LO.getMapOperands(), dl),
+                            dl)]++;
       } else if (auto SO = dyn_cast<LLVM::StoreOp>(U)) {
-        lastStored[tree.add(accessOffsets(SO.getValue().getType()))]++;
+        lastStored[tree.add(accessOffsets(SO.getValue().getType()), dl)]++;
       } else if (auto LO = dyn_cast<LLVM::LoadOp>(U)) {
-        lastStored[tree.add(accessOffsets(LO.getType()))]++;
+        lastStored[tree.add(accessOffsets(LO.getType()), dl)]++;
       } else if (auto GO = dyn_cast<LLVM::GEPOp>(U)) {
-        list.emplace_back(GO, tree.add(gepOffsets(GO, dl)));
+        list.emplace_back(GO, tree.add(gepOffsets(GO, dl), dl));
       } else if (isa<memref::CastOp, Memref2PointerOp, Pointer2MemrefOp,
                      LLVM::BitcastOp, LLVM::AddrSpaceCastOp>(U)) {
         list.emplace_back(U->getResult(0), tree);
