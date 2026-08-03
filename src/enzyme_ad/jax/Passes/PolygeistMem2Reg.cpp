@@ -433,17 +433,18 @@ public:
     if (unknownOffset || o.unknownOffset)
       return unknown();
 
+    if (isZero())
+      return OffsetTree(o.base);
+    if (o.isZero())
+      return o;
+    
     // Dimensions count what the access reads, so two paths through them only
     // compose when what they count is the same size.
-    if ((hasDim() || o.hasDim()) && base && o.base && base != o.base) {
+    if ((hasDim() || o.hasDim()) && base != o.base) {
       auto lhsSize = typeSize(base, dl), rhsSize = typeSize(o.base, dl);
       if (!lhsSize || !rhsSize || *lhsSize != *rhsSize)
         return unknown();
     }
-    if (isZero())
-      return o;
-    if (o.isZero())
-      return OffsetTree(o.base, offsets, units);
 
     // Moving the same way twice is moving once by the two together.
     if (units == o.units) {
@@ -533,18 +534,20 @@ public:
   // Whether a constant index at `at` puts this past everything `o` can name.
   bool beyond(size_t at, std::optional<uint64_t> mySize, const OffsetTree &o,
               std::optional<uint64_t> oSize, bool sameExtent) const {
-    int64_t step = stepOf(at), bound = o.reachBound(oSize);
-    assert(step != 0)
+    int64_t step = stepOf(at), bound = o.reachBound();
+    assert(step != 0);
     if (step == ShapedType::kDynamic || bound == ShapedType::kDynamic)
       return false;
     if (sameExtent) {
-	    if (offsets[at].idx * step >= bound) return true;
+      if ((int64_t)offsets[at].idx * step >= bound)
+        return true;
     } else if (mySize && oSize) {
-	  if (hasDim()) {
-	    step *= *mySize;
-	    bound *= *osize;
-	  }
-	    if (offsets[at].idx * step >= bound) return true;
+      if (hasDim()) {
+        step *= (int64_t)*mySize;
+        bound *= (int64_t)*oSize;
+      }
+      if ((int64_t)offsets[at].idx * step >= bound)
+        return true;
     }
     return false;
   }
@@ -746,7 +749,8 @@ public:
         continue;
       }
       exact = false;
-      if (offsets[i].type == Offset::Type::Index && beyond(i, size, o, osize, sameExtent)) {
+      if (offsets[i].type == Offset::Type::Index &&
+          beyond(i, size, o, osize, sameExtent)) {
         return Match::None;
       }
     }
