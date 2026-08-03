@@ -479,24 +479,25 @@ public:
   int64_t stepOf(int64_t i) const {
     assert(i < units.size());
     if (units[i].kind == OffsetType::Kind::Bytes) {
-       return units[i].stride;
+      return units[i].stride;
     } else {
-       int64_t cur = 1;
-       for (int64_t j=i+1; j<units.size(); j++) {
-          if (units[i].dimSize == ShapedType::kDynamic) {
-	    return ShapedType::kDynamic;
-	  }
-	  cur *= units[i].dimSize;
-       }
-       return cur;
+      int64_t cur = 1;
+      for (int64_t j = i + 1; j < units.size(); j++) {
+        if (units[i].dimSize == ShapedType::kDynamic) {
+          return ShapedType::kDynamic;
+        }
+        cur *= units[i].dimSize;
+      }
+      return cur;
     }
   }
 
   // The maximum value allowed as an arg for the i-th index
   int64_t maxValue(int64_t i) const {
     if (units[i].kind == OffsetType::Kind::Bytes) {
-      if (i == 0) return ShapedType::kDynamic;
-      auto prevStep = stepOf(i-1);
+      if (i == 0)
+        return ShapedType::kDynamic;
+      auto prevStep = stepOf(i - 1);
       auto curStep = stepOf(i);
       assert(prevStep % curStep == 0);
       assert(prevStep != curStep);
@@ -515,21 +516,23 @@ public:
     if (!hasDim()) {
       int64_t best = INT64_MAX;
       for (size_t i = 0; i < at; i++) {
-        if (offsets[i].isZero()) continue;
+        if (offsets[i].isZero())
+          continue;
         assert(units[i].kind == OffsetType::Kind::Bytes);
-	if (units[i].stride < best) {
-	  best = units[i].stride;
-	}
+        if (units[i].stride < best) {
+          best = units[i].stride;
+        }
       }
       return best;
     } else {
-      if (at == 0) return INT64_MAX;
+      if (at == 0)
+        return INT64_MAX;
       size_t cur = 1;
       for (size_t i = at; i < offsets.size(); i++) {
         if (units[i].dimSize == ShapedType::kDynamic) {
-	   continue;
-	}
-	cur *= units[i].dimSize;
+          continue;
+        }
+        cur *= units[i].dimSize;
       }
       return (int64_t)cur;
     }
@@ -540,71 +543,79 @@ public:
   // to have moved at this index or an outer one. What the shapes leave open is
   // kDynamic, which compares to nothing.
   static Match compareIndex(const Offset &lhs, int64_t lhsStep,
-                            std::optional<uint64_t> lhsSize, bool lhsSmallestStride,
-                            const Offset &rhs, int64_t rhsStep,
-                            std::optional<uint64_t> rhsSize, bool rhsSmallestStride, bool isDim, bool sameExtent) {
-    
-    // The lhs step is smaller than the rhs step, and it can be proven that the lhs stride cannot possibly equal a single
-    // rhs stride.
-    if (lhsStep != ShapedType::kDynamic && rhsStep != ShapedType::kDynamic && lhsStep < rhsStep && rhsStep % lhsStep == 0) {
-      if (lhs.type == Offset::Type::Index && lhs.idx != 0 && lhs.idx < rhsStep % lhsStep) {
-	return Match::None;
-      }
-    }
-    
-    // Same the other way
-    if (rhsStep != ShapedType::kDynamic && lhsStep != ShapedType::kDynamic && rhsStep < lhsStep && lhsStep % rhsStep == 0) {
-      if (rhs.type == Offset::Type::Index && rhs.idx != 0 && rhs.idx < lhsStep % rhsStep) {
+                            std::optional<uint64_t> lhsSize,
+                            int64_t lhsSmallestStride, const Offset &rhs,
+                            int64_t rhsStep, std::optional<uint64_t> rhsSize,
+                            int64_t rhsSmallestStride, bool isDim,
+                            bool sameExtent) {
+
+    // The lhs step is smaller than the rhs step, and it can be proven that the
+    // lhs stride cannot possibly equal a single rhs stride.
+    if (lhsStep != ShapedType::kDynamic && rhsStep != ShapedType::kDynamic &&
+        lhsStep < rhsStep && rhsStep % lhsStep == 0) {
+      if (lhs.type == Offset::Type::Index && lhs.idx != 0 &&
+          (int64_t)lhs.idx < rhsStep / lhsStep) {
         return Match::None;
       }
     }
 
-    if (lhsStep != ShapedType::kDynamic && lhsStep == rhsStep && (sameExtent || !isDim)) {
-      switch (lhs.type) {
-      bool first;
+    // Same the other way
+    if (rhsStep != ShapedType::kDynamic && lhsStep != ShapedType::kDynamic &&
+        rhsStep < lhsStep && lhsStep % rhsStep == 0) {
+      if (rhs.type == Offset::Type::Index && rhs.idx != 0 &&
+          (int64_t)rhs.idx < lhsStep / rhsStep) {
+        return Match::None;
+      }
+    }
+
+    if (lhsStep != ShapedType::kDynamic && lhsStep == rhsStep &&
+        (sameExtent || !isDim)) {
       int64_t difference = INT64_MAX;
+      switch (lhs.type) {
       case Offset::Type::Affine:
-	if (lhs.dim == rhs.dim && lhs.sym == rhs.sym) {
-	   if (lhs.aff == rhs.aff) {
-	      return Match::Exact;
-	   }
-	   if (auto cst = dyn_cast<AffineConstantExpr>(rhs.aff - lhs.aff)) {
-      	      first = lhs.idx < rhs.idx;
-	      difference = std::abs(cst.getValue());
-	      break;
-	   }
-	}
+        if (lhs.dim == rhs.dim && lhs.sym == rhs.sym) {
+          if (lhs.aff == rhs.aff) {
+            return Match::Exact;
+          }
+          if (auto cst = dyn_cast<AffineConstantExpr>(rhs.aff - lhs.aff)) {
+            difference = std::abs(cst.getValue());
+          }
+        }
+        break;
       case Offset::Type::Value:
         if (lhs.val == rhs.val)
-	  return Match::Exact;
-	break;
+          return Match::Exact;
+        break;
       case Offset::Type::Index:
         if (lhs.idx == rhs.idx) {
           return Match::Exact;
-	}
-	first = lhs.aff < rhs.aff;
-	difference = (first ? rhs.idx - lhs.idx : lhs.idx - rhs.idx);
+        }
+        difference =
+            (lhs.idx < rhs.idx ? rhs.idx - lhs.idx : lhs.idx - rhs.idx);
         break;
       }
 
-      if (difference == INT64_MAX) return Match::Maybe;
+      if (difference == INT64_MAX)
+        return Match::Maybe;
 
       if (isDim) {
         if (difference < lhsSmallestStride && difference < rhsSmallestStride) {
-	  return Match::None;
-	}
+          return Match::None;
+        }
       } else {
         if (sameExtent || (lhsSize && rhsSize)) {
           if (!sameExtent) {
-	    difference += std::abs(*lhsSize - *rhsSize);
-	  }
-          if (difference < lhsSmallestStride && difference < rhsSmallestStride) {
-	    return Match::None;
-	  }
-	}
+            difference +=
+                *lhsSize > *rhsSize ? *lhsSize - *rhsSize : *rhsSize - *lhsSize;
+          }
+          if (difference < lhsSmallestStride &&
+              difference < rhsSmallestStride) {
+            return Match::None;
+          }
+        }
       }
     }
-    
+
     return Match::Maybe;
   }
 
@@ -655,25 +666,30 @@ public:
 
       auto lhsStep = stepOf(i);
       auto rhsStep = o.stepOf(j);
-      
+
       auto lhsStride = smallestStrideUpTo(i);
       auto rhsStride = o.smallestStrideUpTo(j);
-      auto res = compareIndex(offsets[i], lhsStep, size, smallestStrideUpTo(i),
-                          o.offsets[j], rhsStep, osize,
-                          o.smallestStrideUpTo(j), isDim, sameExtent);
-      if (res == Match::None) return Match::None;
-      
+      auto res =
+          compareIndex(offsets[i], lhsStep, size, lhsStride, o.offsets[j],
+                       rhsStep, osize, rhsStride, isDim, sameExtent);
+      if (res == Match::None)
+        return Match::None;
+
       if (res == Match::Exact) {
         i--;
-	j--;
-	continue;
+        j--;
+        continue;
       }
 
-      if (lhsStep == rhsStep) {
-        exact = false;
-	i--;
-	j--;
-	continue;
+      exact = false;
+      
+      if (lhsStep != rhsStep && lhsStep != ShapedType::kDynamic && rhsStep != ShapedType::kDynamic) {
+	if (lhsStep < rhsStep) {
+          i--;
+	} else {
+          j--;
+	}
+        continue;
       }
 
       i--;
@@ -688,18 +704,18 @@ public:
       }
       if (offsets[i].type == Offset::Type::Value) {
         if (offsets[i].val != 0) {
-	  return Match::None;
-	}
+          return Match::None;
+        }
       }
     }
     for (; j >= 0; j--) {
       if (o.offsets[j].isZero()) {
         continue;
       }
-      if (offsets[j].type == Offset::Type::Value) {
-        if (offsets[j].val != 0) {
-	  return Match::None;
-	}
+      if (o.offsets[j].type == Offset::Type::Value) {
+        if (o.offsets[j].val != 0) {
+          return Match::None;
+        }
       }
     }
 
