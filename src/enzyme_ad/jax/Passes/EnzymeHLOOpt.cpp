@@ -16113,23 +16113,34 @@ struct WhileOpInductionReplacement
       Value yieldedValue = returnOp.getOperand(i);
       Value result = whileOp.getResult(i);
 
-      // Look for a simple addition pattern: either iter_arg + step or step +
-      // iter_arg
-      auto addOp = yieldedValue.getDefiningOp<stablehlo::AddOp>();
-      if (!addOp)
+      // Look for a simple step pattern: iter_arg + step, step + iter_arg, or
+      // iter_arg - step. A counter that walks backwards is exactly as redundant
+      // as one that walks forwards; reverse-mode AD emits the backwards form,
+      // indexing rows from the end while the loop counter runs from the start.
+      Operation *stepOp = yieldedValue.getDefiningOp();
+      if (!isa_and_nonnull<stablehlo::AddOp, stablehlo::SubtractOp>(stepOp))
         continue;
 
-      if (!addOp.getType().getElementType().isInteger())
+      if (!cast<RankedTensorType>(stepOp->getResult(0).getType())
+               .getElementType()
+               .isInteger())
         continue;
 
       // Check which operand is the iteration argument and which is the step
       Value stepValue;
-      if (addOp.getLhs() == iterArg) {
+      bool negateStep = false;
+      if (isa<stablehlo::SubtractOp>(stepOp)) {
+        // Pattern: iter_arg - step. (step - iter_arg is not a counter.)
+        if (stepOp->getOperand(0) != iterArg)
+          continue;
+        stepValue = stepOp->getOperand(1);
+        negateStep = true;
+      } else if (stepOp->getOperand(0) == iterArg) {
         // Pattern: iter_arg + step
-        stepValue = addOp.getRhs();
-      } else if (addOp.getRhs() == iterArg) {
+        stepValue = stepOp->getOperand(1);
+      } else if (stepOp->getOperand(1) == iterArg) {
         // Pattern: step + iter_arg
-        stepValue = addOp.getLhs();
+        stepValue = stepOp->getOperand(0);
       } else {
         // Neither operand is the iteration argument
         continue;
@@ -16139,6 +16150,24 @@ struct WhileOpInductionReplacement
       auto constOp = stepValue.getDefiningOp<stablehlo::ConstantOp>();
       if (!constOp)
         continue;
+
+      // Fold the sign into the constant rather than emitting a negate, so the
+      // rewritten index stays a plain affine expression of the counter.
+      if (negateStep) {
+        DenseIntElementsAttr stepAttr;
+        if (!matchPattern(constOp.getResult(), m_Constant(&stepAttr)))
+          continue;
+        SmallVector<APInt> negated;
+        for (auto v : stepAttr.getValues<APInt>())
+          negated.push_back(-v);
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPoint(whileOp);
+        constOp = stablehlo::ConstantOp::create(
+            rewriter, constOp.getLoc(),
+            DenseIntElementsAttr::get(cast<ShapedType>(constOp.getType()),
+                                      negated));
+        stepValue = constOp.getResult();
+      }
 
       // Similarly replace uses of the result outside the loop
       // with a calculation based on the final counter value
