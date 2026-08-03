@@ -12,6 +12,7 @@
 // dead memref store's and perform more complex forwarding when support for
 // SSA scalars live out of 'affine.for'/'affine.if' statements is available.
 //===----------------------------------------------------------------------===//
+#include "Enzyme/MLIR/Interfaces/AutoDiffOpInterface.h"
 #include "mlir/Dialect/Affine/Analysis/AffineAnalysis.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -1925,6 +1926,15 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
   return changed;
 }
 
+// The pointer a memcpy/memmove reads from; memset has no source.
+static Value transferSource(Operation *op) {
+  if (auto cpy = dyn_cast<LLVM::MemcpyOp>(op))
+    return cpy.getSrc();
+  if (auto mv = dyn_cast<LLVM::MemmoveOp>(op))
+    return mv.getSrc();
+  return nullptr;
+}
+
 bool isPromotable(mlir::Value AI) {
   std::deque<mlir::Value> list = {AI};
 
@@ -1940,13 +1950,19 @@ bool isPromotable(mlir::Value AI) {
         continue;
       } else if (auto LO = dyn_cast<LLVM::LoadOp>(U)) {
         continue;
-      } else if (auto SO = dyn_cast<LLVM::StoreOp>(U)) {
-        continue;
       } else if (auto LO = dyn_cast<affine::AffineLoadOp>(U)) {
         continue;
-      } else if (auto SO = dyn_cast<memref::StoreOp>(U)) {
-        continue;
-      } else if (auto SO = dyn_cast<affine::AffineStoreOp>(U)) {
+      } else if (auto SO = dyn_cast<enzyme::StoreLikeInterface>(U)) {
+        // Only a store *into* val keeps it promotable; storing val itself puts
+        // the pointer into memory, from where anything may reach it.
+        if (SO.getStoredValue() != val)
+          continue;
+        LLVM_DEBUG(llvm::dbgs()
+                   << "non promotable " << AI << " due to " << *U << "\n");
+        return false;
+      } else if (isa<LLVM::MemcpyOp, LLVM::MemmoveOp, LLVM::MemsetOp>(U)) {
+        // The forwarding treats these as an opaque write of the destination and
+        // a read of the source, neither of which lets the pointer escape.
         continue;
       } else if (isa<memref::DeallocOp>(U)) {
         continue;
@@ -1962,6 +1978,10 @@ bool isPromotable(mlir::Value AI) {
       } else if (auto CO = dyn_cast<Memref2PointerOp>(U)) {
         list.push_back(CO);
       } else if (auto CO = dyn_cast<Pointer2MemrefOp>(U)) {
+        list.push_back(CO);
+      } else if (auto CO = dyn_cast<LLVM::GEPOp>(U)) {
+        // Accesses through an offset of the allocation are what the forwarding
+        // marks as indexed: they never match a slot and only block it.
         list.push_back(CO);
       } else {
         LLVM_DEBUG(llvm::dbgs()
@@ -2118,35 +2138,31 @@ void PolygeistMem2Reg::runOnOperation() {
         list.pop_front();
 
         for (auto *U : val.getUsers()) {
-          if (auto SO = dyn_cast<LLVM::StoreOp>(U)) {
-            if (SO.getValue() == val) {
+          if (auto SO = dyn_cast<enzyme::StoreLikeInterface>(U)) {
+            if (SO.getStoredValue() == val) {
               error = true;
               break;
             }
             toErase.push_back(U);
-          } else if (auto SO = dyn_cast<memref::StoreOp>(U)) {
-            if (SO.getValue() == val) {
+          } else if (isa<LLVM::MemsetOp, LLVM::MemcpyOp, LLVM::MemmoveOp>(U)) {
+            // Writing into the allocation goes away with it; reading out of it
+            // writes somewhere else and has to stay.
+            if (transferSource(U) == val) {
               error = true;
               break;
             }
             toErase.push_back(U);
-          } else if (auto SO = dyn_cast<affine::AffineStoreOp>(U)) {
-            if (SO.getValue() == val) {
-              error = true;
-              break;
-            }
+          } else if (isa<LLVM::LifetimeStartOp, LLVM::LifetimeEndOp>(U)) {
             toErase.push_back(U);
           } else if (isa<memref::DeallocOp>(U)) {
             toErase.push_back(U);
           } else if (isa<func::CallOp>(U) &&
                      cast<func::CallOp>(U).getCallee() == "free") {
             toErase.push_back(U);
-          } else if (auto CO = dyn_cast<memref::CastOp>(U)) {
+          } else if (isa<memref::CastOp, Pointer2MemrefOp, Memref2PointerOp,
+                         LLVM::GEPOp>(U)) {
             toErase.push_back(U);
-            list.push_back(CO);
-            //} else if (auto CO = dyn_cast<SubIndexOp>(U)) {
-            //  toErase.push_back(U);
-            //  list.push_back(CO);
+            list.push_back(U->getResult(0));
           } else {
             error = true;
             break;
