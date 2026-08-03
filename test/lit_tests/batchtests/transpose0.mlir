@@ -10,7 +10,7 @@ func.func @func1(%arg0: tensor<2x2xi32>) -> tensor<2x2xi32> {
     return %0 : tensor<2x2x2xi32>
   }
 
-// CHECK:  func.func private @batched_relu_broadcast_scalar(%arg0: tensor<2x5x3x4xf64>) -> tensor<2x5x4x3xf64> {
-// CHECK-NEXT:    %0 = stablehlo.transpose %arg0, dims = [0, 1, 3, 2] : (tensor<2x5x3x4xf64>) -> tensor<2x5x4x3xf64>
-// CHECK-NEXT:    return %0 : tensor<2x5x4x3xf64>
+// CHECK:  func.func private @batched_func1(%arg0: tensor<2x2x2xi32>) -> tensor<2x2x2xi32> {
+// CHECK-NEXT:    %0 = stablehlo.transpose %arg0, dims = [0, 1, 2] : (tensor<2x2x2xi32>) -> tensor<2x2x2xi32>
+// CHECK-NEXT:    return %0 : tensor<2x2x2xi32>
 // CHECK-NEXT:  }
