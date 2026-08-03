@@ -474,14 +474,65 @@ public:
     return unknown();
   }
 
+  // The number of elements (if dim) or bytes moved
+  // by changing the i-th index by 1
+  int64_t stepOf(int64_t i) const {
+    assert(i < units.size());
+    if (units[i].kind == OffsetType::Kind::Bytes) {
+       return units[i].stride;
+    } else {
+       int64_t cur = 1;
+       for (int64_t j=i+1; j<units.size(); j++) {
+          if (units[i].dimSize == ShapedType::kDynamic) {
+	    return ShapedType::kDynamic;
+	  }
+	  cur *= units[i].dimSize;
+       }
+       return cur;
+    }
+  }
+
+  // The maximum value allowed as an arg for the i-th index
+  int64_t maxValue(int64_t i) const {
+    if (units[i].kind == OffsetType::Kind::Bytes) {
+      if (i == 0) return ShapedType::kDynamic;
+      auto prevStep = stepOf(i-1);
+      auto curStep = stepOf(i);
+      assert(prevStep % curStep == 0);
+      assert(prevStep != curStep);
+      return prevStep / curStep;
+    } else {
+      return units[i].dimSize;
+    }
+  }
+
   // Whether this index or one outside it is known to move, which is what puts
   // an access past everything the indices within it can reach. The outer ones
   // are the ones before it.
-  bool movesUpTo(size_t at) const {
-    for (size_t i = 0; i <= at && i < offsets.size(); i++)
-      if (offsets[i].type == Offset::Type::Index && !offsets[i].isZero())
-        return true;
-    return false;
+  int64_t smallestStrideUpTo(size_t at) const {
+    assert(at < offsets.size());
+
+    if (!hasDim()) {
+      int64_t best = INT64_MAX;
+      for (size_t i = 0; i < at; i++) {
+        if (offsets[i].isZero()) continue;
+        assert(units[i].kind == OffsetType::Kind::Bytes);
+	if (units[i].stride < best) {
+	  best = units[i].stride;
+	}
+      }
+      return best;
+    } else {
+      if (at == 0) return INT64_MAX;
+      size_t cur = 1;
+      for (size_t i = at; i < offsets.size(); i++) {
+        if (units[i].dimSize == ShapedType::kDynamic) {
+	   continue;
+	}
+	cur *= units[i].dimSize;
+      }
+      return (int64_t)cur;
+    }
   }
 
   // One index against another, given what a step of each covers, how far all of
@@ -489,45 +540,71 @@ public:
   // to have moved at this index or an outer one. What the shapes leave open is
   // kDynamic, which compares to nothing.
   static Match compareIndex(const Offset &lhs, int64_t lhsStep,
-                            int64_t lhsWhole, int64_t lhsSize, bool lhsMoves,
+                            std::optional<uint64_t> lhsSize, bool lhsSmallestStride,
                             const Offset &rhs, int64_t rhsStep,
-                            int64_t rhsWhole, int64_t rhsSize, bool rhsMoves) {
-    // Stepping over the same amount, the indices can be compared directly.
-    if (lhsStep != ShapedType::kDynamic && lhsStep == rhsStep) {
-      if (lhs.type != rhs.type)
-        return Match::Maybe;
-      switch (lhs.type) {
-      case Offset::Type::Affine:
-        return (lhs.aff == rhs.aff && lhs.dim == rhs.dim && lhs.sym == rhs.sym)
-                   ? Match::Exact
-                   : Match::Maybe;
-      case Offset::Type::Value:
-        return lhs.val == rhs.val ? Match::Exact : Match::Maybe;
-      case Offset::Type::Index:
-        break;
+                            std::optional<uint64_t> rhsSize, bool rhsSmallestStride, bool isDim, bool sameExtent) {
+    
+    // The lhs step is smaller than the rhs step, and it can be proven that the lhs stride cannot possibly equal a single
+    // rhs stride.
+    if (lhsStep != ShapedType::kDynamic && rhsStep != ShapedType::kDynamic && lhsStep < rhsStep && rhsStep % lhsStep == 0) {
+      if (lhs.type == Offset::Type::Index && lhs.idx != 0 && lhs.idx < rhsStep % lhsStep) {
+	return Match::None;
       }
-      if (lhs.idx == rhs.idx)
-        return Match::Exact;
-      // Whichever starts first has to end before the other begins, so the
-      // extent that decides is the one belonging to it.
-      bool first = lhs.idx < rhs.idx;
-      uint64_t between =
-          (first ? rhs.idx - lhs.idx : lhs.idx - rhs.idx) * (uint64_t)lhsStep;
-      int64_t reach = first ? lhsSize : rhsSize;
-      return reach != ShapedType::kDynamic && between >= (uint64_t)reach
-                 ? Match::None
-                 : Match::Maybe;
+    }
+    
+    // Same the other way
+    if (rhsStep != ShapedType::kDynamic && lhsStep != ShapedType::kDynamic && rhsStep < lhsStep && lhsStep % rhsStep == 0) {
+      if (rhs.type == Offset::Type::Index && rhs.idx != 0 && rhs.idx < lhsStep % rhsStep) {
+        return Match::None;
+      }
     }
 
-    // Stepping over different amounts, one is clear of the other when all its
-    // index can reach fits within a single step of the other's, and the other
-    // is known to have taken at least one of those steps.
-    if (lhsWhole != ShapedType::kDynamic && rhsStep != ShapedType::kDynamic &&
-        lhsWhole <= rhsStep && rhsMoves)
-      return Match::None;
-    if (rhsWhole != ShapedType::kDynamic && lhsStep != ShapedType::kDynamic &&
-        rhsWhole <= lhsStep && lhsMoves)
-      return Match::None;
+    if (lhsStep != ShapedType::kDynamic && lhsStep == rhsStep && (sameExtent || !isDim)) {
+      switch (lhs.type) {
+      bool first;
+      int64_t difference = INT64_MAX;
+      case Offset::Type::Affine:
+	if (lhs.dim == rhs.dim && lhs.sym == rhs.sym) {
+	   if (lhs.aff == rhs.aff) {
+	      return Match::Exact;
+	   }
+	   if (auto cst = dyn_cast<AffineConstantExpr>(rhs.aff - lhs.aff)) {
+      	      first = lhs.idx < rhs.idx;
+	      difference = std::abs(cst.getValue());
+	      break;
+	   }
+	}
+      case Offset::Type::Value:
+        if (lhs.val == rhs.val)
+	  return Match::Exact;
+	break;
+      case Offset::Type::Index:
+        if (lhs.idx == rhs.idx) {
+          return Match::Exact;
+	}
+	first = lhs.aff < rhs.aff;
+	difference = (first ? rhs.idx - lhs.idx : lhs.idx - rhs.idx);
+        break;
+      }
+
+      if (difference == INT64_MAX) return Match::Maybe;
+
+      if (isDim) {
+        if (difference < lhsSmallestStride && difference < rhsSmallestStride) {
+	  return Match::None;
+	}
+      } else {
+        if (sameExtent || (lhsSize && rhsSize)) {
+          if (!sameExtent) {
+	    difference += std::abs(*lhsSize - *rhsSize);
+	  }
+          if (difference < lhsSmallestStride && difference < rhsSmallestStride) {
+	    return Match::None;
+	  }
+	}
+      }
+    }
+    
     return Match::Maybe;
   }
 
@@ -547,77 +624,58 @@ public:
     if (!sameExtent && (!size || !osize))
       return Match::Maybe;
 
-    // Counting in dimensions of a memref and counting in bytes of a pointer
-    // cannot be lined up against each other.
-    if ((hasDim() && o.hasByte()) || (o.hasDim() && hasByte()))
+    bool isDim = true;
+
+    if (hasDim() && o.hasDim()) {
+      isDim = true;
+    } else if (!o.hasDim() && !o.hasDim()) {
+      isDim = false;
+    } else {
       return Match::Maybe;
-
-    // A path counts in what its access reads: in those, when both read the
-    // same amount -- the only unit there is when the layout cannot measure
-    // them -- and in bytes when they do not, which is also all a path through
-    // bytes can count in.
-    int64_t reach = 1, oreach = 1;
-    if (!sameExtent || (!hasDim() && !o.hasDim())) {
-      reach = size ? (int64_t)*size : ShapedType::kDynamic;
-      oreach = osize ? (int64_t)*osize : ShapedType::kDynamic;
     }
-
-    // What an index steps over is everything the indices inside it cover, which
-    // is why they are held innermost first: the running product is that.
-    auto stepOf = [](const OffsetType &unit, int64_t inner) -> int64_t {
-      return unit.kind == OffsetType::Kind::Bytes ? (int64_t)unit.stride
-                                                  : inner;
-    };
-    // How far all of an index reaches. A pointer index is given no bound, and
-    // neither is a dimension whose extent the shape leaves open.
-    auto wholeOf = [](const OffsetType &unit, int64_t inner) -> int64_t {
-      if (unit.kind == OffsetType::Kind::Bytes ||
-          inner == ShapedType::kDynamic ||
-          unit.dimSize == ShapedType::kDynamic || unit.dimSize < 0)
-        return ShapedType::kDynamic;
-      return inner * unit.dimSize;
-    };
-
-    // One of whatever is being counted in, to start with.
-    int64_t inner = reach, oinner = oreach;
-    unsigned apart = 0;
-    bool unsure = false;
-
-    auto record = [&](Match m) {
-      if (m == Match::None)
-        apart++;
-      else if (m == Match::Maybe)
-        unsure = true;
-    };
 
     // The indices run most significant first, so the walk runs the other way:
     // what an index steps over is everything the ones after it cover, which is
     // what the running product holds by the time it is reached.
     ssize_t i = offsets.size() - 1, j = o.offsets.size() - 1;
 
+    bool exact = true;
+
     while (i >= 0 && j >= 0) {
       // An index that does not move lines up with anything, though whatever it
       // would have stepped over still lies inside the ones outside it.
       if (offsets[i].isZero()) {
-        inner = wholeOf(units[i], inner);
         i--;
         continue;
       }
       if (o.offsets[j].isZero()) {
-        oinner = wholeOf(o.units[j], oinner);
         j--;
         continue;
       }
 
-      auto lhsStep = stepOf(units[i], inner);
-      auto lhsWhole = wholeOf(units[i], inner);
-      auto rhsStep = stepOf(o.units[j], oinner);
-      auto rhsWhole = wholeOf(o.units[j], oinner);
-      record(compareIndex(offsets[i], lhsStep, lhsWhole, reach, movesUpTo(i),
-                          o.offsets[j], rhsStep, rhsWhole, oreach,
-                          o.movesUpTo(j)));
-      inner = lhsWhole;
-      oinner = rhsWhole;
+      auto lhsStep = stepOf(i);
+      auto rhsStep = o.stepOf(j);
+      
+      auto lhsStride = smallestStrideUpTo(i);
+      auto rhsStride = o.smallestStrideUpTo(j);
+      auto res = compareIndex(offsets[i], lhsStep, size, smallestStrideUpTo(i),
+                          o.offsets[j], rhsStep, osize,
+                          o.smallestStrideUpTo(j), isDim, sameExtent);
+      if (res == Match::None) return Match::None;
+      
+      if (res == Match::Exact) {
+        i--;
+	j--;
+	continue;
+      }
+
+      if (lhsStep == rhsStep) {
+        exact = false;
+	i--;
+	j--;
+	continue;
+      }
+
       i--;
       j--;
     }
@@ -626,38 +684,30 @@ public:
     // which is wherever the indices it did have put it.
     for (; i >= 0; i--) {
       if (offsets[i].isZero()) {
-        inner = wholeOf(units[i], inner);
         continue;
       }
-      auto step = stepOf(units[i], inner);
-      auto whole = wholeOf(units[i], inner);
-      record(compareIndex(offsets[i], step, whole, reach, movesUpTo(i),
-                          Offset((size_t)0), step, step, oreach,
-                          /*moves=*/false));
-      inner = whole;
+      if (offsets[i].type == Offset::Type::Value) {
+        if (offsets[i].val != 0) {
+	  return Match::None;
+	}
+      }
     }
     for (; j >= 0; j--) {
       if (o.offsets[j].isZero()) {
-        oinner = wholeOf(o.units[j], oinner);
         continue;
       }
-      auto step = stepOf(o.units[j], oinner);
-      auto whole = wholeOf(o.units[j], oinner);
-      record(compareIndex(Offset((size_t)0), step, step, reach,
-                          /*moves=*/false, o.offsets[j], step, whole, oreach,
-                          o.movesUpTo(j)));
-      oinner = whole;
+      if (offsets[j].type == Offset::Type::Value) {
+        if (offsets[j].val != 0) {
+	  return Match::None;
+	}
+      }
     }
 
-    // One index landing clear of the other says the two are different places,
-    // but only once every other index is known to land together: what an index
-    // that may land elsewhere adds is what could put them back on the same
-    // byte, and so is a second index that lands clear the other way -- being
-    // four elements behind at one level and a step ahead at the next is the
-    // same byte reached two ways.
-    if (apart)
-      return unsure || apart > 1 ? Match::Maybe : Match::None;
-    return unsure || !sameExtent ? Match::Maybe : Match::Exact;
+    if (exact) {
+      return Match::Exact;
+    } else {
+      return Match::Maybe;
+    }
   }
 
   bool operator<(const OffsetTree &o) const {
