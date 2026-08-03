@@ -20785,6 +20785,432 @@ struct WhileSimplify
   }
 };
 
+// Describes a while-carried value of the form
+//
+//   init                = <zero splat>
+//   body: yield[idx]    = add(bodyArg[idx],
+//                             dynamic_update_slice(<zero splat>, row, i, 0...))
+//
+// i.e. an accumulator whose row `i` is written by exactly one iteration. Such a
+// value satisfies acc[i, ...] == row_i, so any elementwise function of several
+// of them can be evaluated a row at a time inside the loop.
+struct ScatterAccumulatorInfo {
+  unsigned idx; // index into the while op's operands/results
+  Value row;    // the 1 x ... slice written this iteration
+};
+
+// Recognise `acc` at result index `idx` of `whileOp` as a scatter accumulator
+// indexed by `rowIndex`. `rowIndex` is an out-parameter on the first call and
+// an in-parameter afterwards, so that all accumulators are checked to agree.
+static std::optional<ScatterAccumulatorInfo>
+matchScatterAccumulator(stablehlo::WhileOp whileOp, unsigned idx,
+                        Value &rowIndex) {
+  if (!enzyme::isZero(whileOp.getOperands()[idx]))
+    return std::nullopt;
+
+  auto &bodyBlock = whileOp.getBody().front();
+  auto yieldOp = cast<stablehlo::ReturnOp>(bodyBlock.getTerminator());
+  auto bodyArg = bodyBlock.getArgument(idx);
+
+  auto addOp = yieldOp.getOperand(idx).getDefiningOp<stablehlo::AddOp>();
+  if (!addOp || !addOp->hasOneUse())
+    return std::nullopt;
+
+  // The accumulator must feed nothing but its own update, otherwise the rows
+  // observed by other uses would change.
+  if (!bodyArg.hasOneUse() || *bodyArg.user_begin() != addOp.getOperation())
+    return std::nullopt;
+
+  Value dusSide = addOp.getLhs() == bodyArg ? addOp.getRhs() : addOp.getLhs();
+  if (addOp.getLhs() != bodyArg && addOp.getRhs() != bodyArg)
+    return std::nullopt;
+
+  auto dus = dusSide.getDefiningOp<stablehlo::DynamicUpdateSliceOp>();
+  if (!dus)
+    return std::nullopt;
+  if (!enzyme::isZero(dus.getOperand()))
+    return std::nullopt;
+
+  auto accTy = cast<RankedTensorType>(dus.getType());
+  auto updateTy = cast<RankedTensorType>(dus.getUpdate().getType());
+  if (updateTy.getRank() != accTy.getRank() || updateTy.getDimSize(0) != 1)
+    return std::nullopt;
+  for (int64_t d = 1; d < accTy.getRank(); ++d)
+    if (updateTy.getDimSize(d) != accTy.getDimSize(d))
+      return std::nullopt;
+
+  // Scattered along dimension 0, at offset zero in every other dimension.
+  auto starts = dus.getStartIndices();
+  if (starts.size() != (size_t)accTy.getRank())
+    return std::nullopt;
+  for (size_t d = 1; d < starts.size(); ++d)
+    if (!enzyme::isZero(starts[d]))
+      return std::nullopt;
+
+  if (rowIndex && rowIndex != starts[0])
+    return std::nullopt;
+  rowIndex = starts[0];
+
+  return ScatterAccumulatorInfo{idx, dus.getUpdate()};
+}
+
+// Check that `rowIndex` takes each value in [0, extent) exactly once over the
+// loop, which is what makes acc[i, ...] == row_i and what makes it safe to
+// replace the accumulators by their rows. Requires a canonical (0, +1)
+// induction variable with a constant limit equal to `extent`, and a row index
+// that either is that induction variable or is a second counter stepping by one
+// in either direction across the same range.
+static bool rowIndexCoversExactly(stablehlo::WhileOp whileOp, Value rowIndex,
+                                  int64_t extent) {
+  auto ivInfo = extractSimpleIVInfo(whileOp);
+  if (!ivInfo.isValid || !ivInfo.canonical)
+    return false;
+
+  DenseIntElementsAttr limitAttr;
+  if (!matchPattern(ivInfo.limit, m_Constant(&limitAttr)))
+    return false;
+  if ((*limitAttr.begin()).getSExtValue() != extent)
+    return false;
+
+  auto &bodyBlock = whileOp.getBody().front();
+  auto rowArg = dyn_cast<BlockArgument>(rowIndex);
+  if (!rowArg || rowArg.getOwner() != &bodyBlock)
+    return false;
+
+  // The induction variable itself already runs 0, 1, ... extent-1.
+  if ((int)rowArg.getArgNumber() == ivInfo.index)
+    return true;
+
+  unsigned idx = rowArg.getArgNumber();
+  auto yieldOp = cast<stablehlo::ReturnOp>(bodyBlock.getTerminator());
+  Operation *step = yieldOp.getOperand(idx).getDefiningOp();
+  if (!step || !isa<stablehlo::AddOp, stablehlo::SubtractOp>(step))
+    return false;
+  if (step->getOperand(0) != rowArg)
+    return false;
+
+  DenseIntElementsAttr stepAttr, startAttr;
+  if (!matchPattern(step->getOperand(1), m_Constant(&stepAttr)))
+    return false;
+  if (!matchPattern(whileOp.getOperands()[idx], m_Constant(&startAttr)))
+    return false;
+
+  int64_t stepVal = (*stepAttr.begin()).getSExtValue();
+  int64_t startVal = (*startAttr.begin()).getSExtValue();
+  if (isa<stablehlo::SubtractOp>(step))
+    stepVal = -stepVal;
+
+  // Forward over [0, extent) or backward over (extent-1, -1].
+  return (stepVal == 1 && startVal == 0) ||
+         (stepVal == -1 && startVal == extent - 1);
+}
+
+// Sinks an elementwise epilogue and its trailing sum reduction into the loop
+// that produced the accumulators it reads.
+//
+// Reverse-mode AD of a loop whose body was batched *before* differentiation
+// leaves behind
+//
+//   %acc:N = stablehlo.while ...        // N accumulators, each S0 x M
+//   %e     = <elementwise DAG over %acc and loop-invariant S0 x M values>
+//   %out   = stablehlo.reduce(%e) applies add across dimensions = [1..]
+//
+// Every accumulator writes row `i` only at iteration `i`, and the DAG is
+// elementwise, so row `i` of %e depends only on row `i` of its inputs. The
+// whole epilogue can therefore be evaluated a row at a time inside the loop,
+// accumulating directly into a value of the *reduced* shape. That removes both
+// the wide accumulators and the wide epilogue: for the motivating case, nine
+// 256x1024 carries and 79 ops on 1 MB tensors collapse to a single 256xf32
+// carry and the same arithmetic on 1x1024 rows.
+//
+// This is the dual of LICMElementwise: a sink into the loop rather than a hoist
+// out of it.
+struct WhileScatterAccumulatorReduceSink final
+    : CheckedOpRewritePattern<stablehlo::ReduceOp,
+                              WhileScatterAccumulatorReduceSink> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  // An op belongs to the sinkable epilogue if it is elementwise and every
+  // operand and result has the epilogue's wide shape.
+  static bool isInterior(Operation *op, ArrayRef<int64_t> wideShape) {
+    if (!op || op->getNumResults() != 1)
+      return false;
+    // select and compare are elementwise once every operand is known to carry
+    // the same shape, which the checks below establish, but they do not carry
+    // the trait because StableHLO also permits a scalar predicate.
+    if (!op->hasTrait<OpTrait::Elementwise>() &&
+        !isa<stablehlo::SelectOp, stablehlo::CompareOp>(op))
+      return false;
+    auto resTy = dyn_cast<RankedTensorType>(op->getResult(0).getType());
+    if (!resTy || resTy.getShape() != wideShape)
+      return false;
+    for (Value operand : op->getOperands()) {
+      auto ty = dyn_cast<RankedTensorType>(operand.getType());
+      if (!ty || ty.getShape() != wideShape)
+        return false;
+    }
+    return true;
+  }
+
+  // Does `reduce` have the same shape and reduction as the one we are
+  // rewriting? Such reduces share the epilogue and will be rewritten by later
+  // applications of this pattern, so they do not block the sink.
+  static bool isSiblingReduce(Operation *user, ArrayRef<int64_t> wideShape,
+                              ArrayRef<int64_t> dims) {
+    auto red = dyn_cast<stablehlo::ReduceOp>(user);
+    if (!red || red.getInputs().size() != 1)
+      return false;
+    if (mlir::stablehlo::CheckCommonReduceOp(red).kind !=
+        stablehlo::ReduceOpKind::Add)
+      return false;
+    auto inTy = dyn_cast<RankedTensorType>(red.getInputs()[0].getType());
+    return inTy && inTy.getShape() == wideShape && red.getDimensions() == dims;
+  }
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ReduceOp op,
+                                    PatternRewriter &rewriter) const {
+    if (op.getInputs().size() != 1 || op.getInitValues().size() != 1)
+      return failure();
+    if (mlir::stablehlo::CheckCommonReduceOp(op).kind !=
+        stablehlo::ReduceOpKind::Add)
+      return failure();
+
+    auto wideTy = dyn_cast<RankedTensorType>(op.getInputs()[0].getType());
+    auto resTy = dyn_cast<RankedTensorType>(op.getResultTypes()[0]);
+    if (!wideTy || !resTy || wideTy.getRank() < 2)
+      return failure();
+
+    auto dims = op.getDimensions();
+    // Dimension 0 is the scattered dimension and must survive the reduction.
+    if (llvm::is_contained(dims, 0))
+      return failure();
+
+    auto wideShape = wideTy.getShape();
+
+    // Walk up from the reduction collecting the elementwise epilogue. Anything
+    // defined before `boundary` is treated as loop-invariant and stops the
+    // walk: without that cutoff the walk runs straight past the loop and
+    // absorbs the batched primal computation feeding it, which is not part of
+    // the epilogue and is not row-separable against this loop.
+    SetVector<Operation *> interior;
+    SetVector<Value> leaves;
+    auto collect = [&](ArrayRef<stablehlo::ReduceOp> roots,
+                       Operation *boundary) {
+      interior.clear();
+      leaves.clear();
+      SmallVector<Value> worklist;
+      for (auto root : roots)
+        worklist.push_back(root.getInputs()[0]);
+      while (!worklist.empty()) {
+        Value v = worklist.pop_back_val();
+        Operation *def = v.getDefiningOp();
+        if (!isInterior(def, wideShape) || def->getBlock() != op->getBlock() ||
+            (boundary && def->isBeforeInBlock(boundary))) {
+          leaves.insert(v);
+          continue;
+        }
+        if (!interior.insert(def))
+          continue;
+        for (Value operand : def->getOperands())
+          worklist.push_back(operand);
+      }
+    };
+
+    // First pass: find the loop whose accumulators this epilogue reads.
+    collect(op, nullptr);
+    stablehlo::WhileOp whileOp = nullptr;
+    for (Value leaf : leaves) {
+      if (auto w = leaf.getDefiningOp<stablehlo::WhileOp>()) {
+        if (whileOp && whileOp != w)
+          return failure();
+        whileOp = w;
+      }
+    }
+    if (!whileOp || whileOp->getBlock() != op->getBlock())
+      return failure();
+
+    // An epilogue commonly feeds several reductions that share most of their
+    // inputs -- reverse-mode AD emits one per differentiated parameter. Rooting
+    // at a single one would see the others' consumers as escapes, so grow the
+    // root set to a fixpoint and rewrite them together.
+    SetVector<stablehlo::ReduceOp> roots;
+    roots.insert(op);
+    bool grew = true;
+    while (grew) {
+      grew = false;
+      collect(roots.getArrayRef(), whileOp);
+      for (Operation *inner : interior) {
+        for (Operation *user : inner->getResult(0).getUsers()) {
+          if (interior.contains(user))
+            continue;
+          if (!isSiblingReduce(user, wideShape, dims))
+            return failure();
+          if (roots.insert(cast<stablehlo::ReduceOp>(user)))
+            grew = true;
+        }
+      }
+    }
+    if (interior.empty() || leaves.empty())
+      return failure();
+
+    Value rowIndex = nullptr;
+    DenseMap<Value, ScatterAccumulatorInfo> accumulators;
+    SmallVector<Value> invariants;
+    for (Value leaf : leaves) {
+      if (leaf.getDefiningOp() == whileOp.getOperation()) {
+        auto info = matchScatterAccumulator(
+            whileOp, cast<OpResult>(leaf).getResultNumber(), rowIndex);
+        if (!info)
+          return failure();
+        accumulators.try_emplace(leaf, *info);
+        continue;
+      }
+      // Must be usable from inside the loop.
+      if (!definedOutside(leaf, whileOp))
+        return failure();
+      auto ty = dyn_cast<RankedTensorType>(leaf.getType());
+      if (!ty || ty.getShape() != wideShape)
+        return failure();
+      invariants.push_back(leaf);
+    }
+    if (accumulators.empty())
+      return failure();
+
+    if (!rowIndexCoversExactly(whileOp, rowIndex, wideShape[0]))
+      return failure();
+
+    // ---- rewrite ----
+
+    SmallVector<int64_t> rowShape(wideShape.begin(), wideShape.end());
+    rowShape[0] = 1;
+    auto rowTyFor = [&](Type elemTy) {
+      return RankedTensorType::get(rowShape, elemTy);
+    };
+
+    // Shape of one reduced row: the result shape with a leading 1.
+    SmallVector<int64_t> reducedRowShape;
+    reducedRowShape.push_back(1);
+    for (int64_t d = 1; d < wideTy.getRank(); ++d)
+      if (!llvm::is_contained(dims, d))
+        reducedRowShape.push_back(wideShape[d]);
+    auto reducedRowTy =
+        RankedTensorType::get(reducedRowShape, resTy.getElementType());
+
+    Location loc = op.getLoc();
+    unsigned firstNewIdx = whileOp.getNumResults();
+
+    rewriter.setInsertionPoint(whileOp);
+    Value zeroAcc = stablehlo::ConstantOp::create(
+        rewriter, loc, resTy, cast<ElementsAttr>(makeAttr(resTy, 0)));
+
+    SmallVector<Value> newOperands(whileOp.getOperands());
+    SmallVector<Type> newResultTypes(whileOp.getResultTypes());
+    for (unsigned i = 0, e = roots.size(); i < e; ++i) {
+      newOperands.push_back(zeroAcc);
+      newResultTypes.push_back(resTy);
+    }
+
+    auto newWhile = stablehlo::WhileOp::create(rewriter, whileOp.getLoc(),
+                                               newResultTypes, newOperands);
+    newWhile.getCond().takeBody(whileOp.getCond());
+    newWhile.getBody().takeBody(whileOp.getBody());
+    SmallVector<Value> newBodyArgs;
+    for (unsigned i = 0, e = roots.size(); i < e; ++i) {
+      newWhile.getCond().front().addArgument(resTy, loc);
+      newBodyArgs.push_back(newWhile.getBody().front().addArgument(resTy, loc));
+    }
+
+    Block &bodyBlock = newWhile.getBody().front();
+    auto yieldOp = cast<stablehlo::ReturnOp>(bodyBlock.getTerminator());
+
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPoint(yieldOp);
+
+      SmallVector<Value> zeroStarts;
+      for (int64_t d = 1; d < wideTy.getRank(); ++d)
+        zeroStarts.push_back(stablehlo::ConstantOp::create(
+            rewriter, loc, rowIndex.getType(),
+            cast<ElementsAttr>(makeAttr(rowIndex.getType(), 0))));
+
+      IRMapping map;
+      for (auto &[leaf, info] : accumulators)
+        map.map(leaf, info.row);
+      for (Value inv : invariants) {
+        auto invTy = cast<RankedTensorType>(inv.getType());
+        Value row;
+        if (matchPattern(inv, m_Constant())) {
+          // A constant is cheaper to re-materialise narrow than to slice.
+          SplatElementsAttr splat;
+          if (matchPattern(inv, m_Constant(&splat))) {
+            row = stablehlo::ConstantOp::create(
+                rewriter, loc, rowTyFor(invTy.getElementType()),
+                SplatElementsAttr::get(rowTyFor(invTy.getElementType()),
+                                       splat.getSplatValue<Attribute>()));
+          }
+        }
+        if (!row) {
+          SmallVector<Value> starts{rowIndex};
+          starts.append(zeroStarts.begin(), zeroStarts.end());
+          row = stablehlo::DynamicSliceOp::create(rewriter, loc, inv, starts,
+                                                  rowShape);
+        }
+        map.map(inv, row);
+      }
+
+      // Clone the epilogue at row width, in dominance order.
+      SmallVector<Operation *> ordered(interior.begin(), interior.end());
+      llvm::sort(ordered, [](Operation *a, Operation *b) {
+        return a->isBeforeInBlock(b);
+      });
+      for (Operation *inner : ordered) {
+        SmallVector<Value> operands;
+        for (Value operand : inner->getOperands())
+          operands.push_back(map.lookupOrDefault(operand));
+        auto elemTy = cast<RankedTensorType>(inner->getResult(0).getType())
+                          .getElementType();
+        Operation *clone = rewriter.create(
+            inner->getLoc(), inner->getName().getIdentifier(), operands,
+            TypeRange(rowTyFor(elemTy)), inner->getAttrs(), {}, {});
+        map.map(inner->getResult(0), clone->getResult(0));
+      }
+
+      SmallVector<Value> accStarts{rowIndex};
+      for (int64_t d = 1; d < resTy.getRank(); ++d)
+        accStarts.push_back(stablehlo::ConstantOp::create(
+            rewriter, loc, rowIndex.getType(),
+            cast<ElementsAttr>(makeAttr(rowIndex.getType(), 0))));
+
+      SmallVector<Value> updated;
+      for (unsigned i = 0, e = roots.size(); i < e; ++i) {
+        stablehlo::ReduceOp root = roots[i];
+        Value rowValue = map.lookupOrDefault(root.getInputs()[0]);
+        auto rowReduce = stablehlo::ReduceOp::create(
+            rewriter, loc, TypeRange(reducedRowTy), ValueRange(rowValue),
+            root.getInitValues(), dims);
+        IRMapping regionMap;
+        root.getRegion().cloneInto(&rowReduce.getRegion(), regionMap);
+
+        Value scattered = stablehlo::DynamicUpdateSliceOp::create(
+            rewriter, loc, zeroAcc, rowReduce.getResult(0), accStarts);
+        updated.push_back(
+            stablehlo::AddOp::create(rewriter, loc, newBodyArgs[i], scattered));
+      }
+
+      SmallVector<Value> newYields(yieldOp.getOperands());
+      newYields.append(updated.begin(), updated.end());
+      rewriter.setInsertionPoint(yieldOp);
+      stablehlo::ReturnOp::create(rewriter, yieldOp.getLoc(), newYields);
+      rewriter.eraseOp(yieldOp);
+    }
+
+    for (unsigned i = 0, e = roots.size(); i < e; ++i)
+      rewriter.replaceOp(roots[i], newWhile.getResult(firstNewIdx + i));
+    rewriter.replaceOp(whileOp, newWhile.getResults().take_front(firstNewIdx));
+    return success();
+  }
+};
+
 // Replace while op iteration variables which are not updated with their
 // upcoming value
 struct WhileLICM
