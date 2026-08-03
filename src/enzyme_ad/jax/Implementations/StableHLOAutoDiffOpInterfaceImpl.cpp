@@ -3827,6 +3827,23 @@ public:
 
     auto zero = makeI64Constant(whileOp->getLoc(), rewriter, 0);
 
+    // Stand-in for the reverse loop's counter while the min cut runs. The
+    // counter itself can only be built in step 4 (the loop is rebuilt there),
+    // but the min cut needs to know *now* that the forward induction variable
+    // is available in reverse.
+    //
+    // Without this the induction variable is a block argument with no defining
+    // op, so `minCutValues` makes it a flow source that some cut must separate
+    // from the required ops. That is not merely an identity tape `tape[i] = i`:
+    // the solver is handed an extra source, so the cut it returns is optimal
+    // for the wrong graph, and values recomputable from the counter (indexed
+    // reads, affine index arithmetic) look cuttable rather than free.
+    //
+    // enzyme.placeholder rather than a constant: it is Pure but opaque, so
+    // nothing folds, CSEs or constant-propagates through it while the min cut
+    // and its cloning run.
+    enzyme::PlaceholderOp reverseIVPlaceholder = nullptr;
+
     // Run min cut partitioning to limit the amount of values to be cached.
     if (hasMinCut(whileOp) && caches.size()) {
       Block *forward = &whileOp.getBody().front();
@@ -3835,6 +3852,11 @@ public:
       IRMapping fwdrevmap;
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(reverse);
+      if (inductionVariable) {
+        reverseIVPlaceholder = enzyme::PlaceholderOp::create(
+            rewriter, whileOp->getLoc(), inductionVariable.getType());
+        fwdrevmap.map(inductionVariable, reverseIVPlaceholder.getResult());
+      }
       mlir::enzyme::minCutCache(forward, reverse, caches, rewriter, fwdrevmap,
                                 lastFwd);
     }
@@ -3996,7 +4018,14 @@ public:
     // 4. On the other while op (the one containing the pops), we add an
     // induction variable and replace pops with slice from the tensor version
     // of the cache.
-    if (inductionVariable && caches.size() != 0) {
+    // The counter is needed either to index the caches, or because the min cut
+    // recomputed something from the induction variable and left uses of the
+    // placeholder behind. `minCutCache` clears `caches` when every push was
+    // hoisted out of the loop, so the second condition is not implied by the
+    // first.
+    if (inductionVariable &&
+        (caches.size() != 0 ||
+         (reverseIVPlaceholder && !reverseIVPlaceholder->use_empty()))) {
       if (isa<BlockArgument>(inductionVariable) &&
           cast<BlockArgument>(inductionVariable).getArgNumber() != 0)
         resultIdx++;
@@ -4027,6 +4056,20 @@ public:
                              otherWhileOp->getLoc());
       auto otherTerm = otherBody->getTerminator();
 
+      // Now that the real counter exists, retire the placeholder the min cut
+      // was seeded with.
+      if (reverseIVPlaceholder) {
+        OpBuilder::InsertionGuard g(rewriter);
+        rewriter.setInsertionPointToStart(otherBody);
+        Value real = otherInductionVariable;
+        if (real.getType() != reverseIVPlaceholder.getType())
+          real = stablehlo::ConvertOp::create(rewriter, otherWhileOp->getLoc(),
+                                              reverseIVPlaceholder.getType(),
+                                              real);
+        rewriter.replaceOp(reverseIVPlaceholder, real);
+        reverseIVPlaceholder = nullptr;
+      }
+
       rewriter.setInsertionPoint(otherTerm);
 
       otherInductionVariable =
@@ -4054,6 +4097,13 @@ public:
 
       rewriter.eraseOp(otherWhileOp);
       otherWhileOp = newOtherWhileOp;
+    } else if (reverseIVPlaceholder) {
+      // No counter was built, so nothing may still refer to the stand-in.
+      assert(reverseIVPlaceholder->use_empty() &&
+             "reverse induction placeholder outlived the counter that would "
+             "have replaced it");
+      rewriter.eraseOp(reverseIVPlaceholder);
+      reverseIVPlaceholder = nullptr;
     }
 
     // 5. Finally, replace pops with slices.
