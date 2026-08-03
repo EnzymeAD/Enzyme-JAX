@@ -1801,6 +1801,9 @@ def ApplyReduceTransposeSimplifyPatterns : EnzymeHLOPatternOp<
 def ApplyReduceLinearSinkPatterns : EnzymeHLOPatternOp<
     "reduce_linear_sink"> {
   let patterns = ["ReduceLinearSink"];
+def ApplyReduceMulBroadcastPatterns : EnzymeHLOPatternOp<
+    "reduce_mul_broadcast"> {
+  let patterns = ["ReduceMulBroadcast"];
 }
 
 def CompareIotaConstSimplifyPatterns : EnzymeHLOPatternOp<
