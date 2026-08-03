@@ -510,7 +510,6 @@ void convertRmw(enzyme::AffineAtomicRMWOp rmw) {
                                            rmw.getMap(), rmw.getIndices());
 
   mlir::Value modify;
-  // TODO fast math flags?
   switch (rmw.getKind()) {
   case mlir::arith::AtomicRMWKind::addf:
     modify = arith::AddFOp::create(b, rmw.getLoc(), read, rmw.getValue());
@@ -561,6 +560,16 @@ void convertRmw(enzyme::AffineAtomicRMWOp rmw) {
     modify = arith::MinUIOp::create(b, rmw.getLoc(), read, rmw.getValue());
     break;
   }
+
+  // The arithmetic we just wrote out is the arithmetic the atomic stood for,
+  // so it is entitled to the same fast-math flags. `assign` writes the operand
+  // through untouched, and that operand is someone else's op to flag.
+  if (modify != rmw.getValue())
+    if (auto iface =
+            dyn_cast<arith::ArithFastMathInterface>(modify.getDefiningOp()))
+      modify.getDefiningOp()->setAttr(
+          iface.getFastMathAttrName(),
+          arith::FastMathFlagsAttr::get(rmw.getContext(), rmw.getFastmath()));
 
   affine::AffineStoreOp::create(b, rmw.getLoc(), modify, rmw.getMemref(),
                                 rmw.getMap(), rmw.getIndices());

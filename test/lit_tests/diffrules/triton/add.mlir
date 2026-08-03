@@ -58,7 +58,7 @@ module {
 // CHECK-NEXT:        %[[v16:.+]] = tt.addptr %[[v14]], %[[v4]] : tensor<1024x!tt.ptr<f32>>, tensor<1024xi32>
 // CHECK-NEXT:        %[[v17:.+]] = tt.load %[[v15]], %[[v6]] : tensor<1024x!tt.ptr<f32>>
 // CHECK-NEXT:        %[[v18:.+]] = tt.load %[[v16]], %[[v6]] : tensor<1024x!tt.ptr<f32>>
-// CHECK-NEXT:        %[[v19:.+]] = arith.addf %[[v11]], %[[v17]] : tensor<1024xf32>
+// CHECK-NEXT:        %[[v19:.+]] = arith.addf %[[v11]], %[[v17]] fastmath<fast> : tensor<1024xf32>
 // CHECK-NEXT:        %[[v20:.+]] = arith.addf %[[v12]], %[[v18]] : tensor<1024xf32>
 // CHECK-NEXT:        %[[v21:.+]] = tt.splat %arg6 : !tt.ptr<f32> -> tensor<1024x!tt.ptr<f32>>
 // CHECK-NEXT:        %[[v22:.+]] = tt.splat %arg5 : !tt.ptr<f32> -> tensor<1024x!tt.ptr<f32>>
