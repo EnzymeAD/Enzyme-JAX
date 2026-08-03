@@ -337,6 +337,15 @@ def SortMemory : Pass<"sort-memory"> {
   let summary = "Sort memory accesses";
 }
 
+def HoistAllocasPass : Pass<"hoist-allocas"> {
+  let summary = "Move stack allocations to the start of the region that frees "
+                "them";
+  let dependentDialects = [
+    "LLVM::LLVMDialect",
+    "memref::MemRefDialect",
+  ];
+}
+
 def SortBlockMemoryPass : Pass<"sort-block-memory"> {
   let summary = "Hoist non-overlapping loads to the start of their block and "
                 "sink stores to the end";
