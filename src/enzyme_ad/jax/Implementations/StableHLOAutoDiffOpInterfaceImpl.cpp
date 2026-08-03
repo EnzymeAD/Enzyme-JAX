@@ -4023,6 +4023,10 @@ public:
     // placeholder behind. `minCutCache` clears `caches` when every push was
     // hoisted out of the loop, so the second condition is not implied by the
     // first.
+    // Index into the caches from the reverse loop, counting numIters-1 down
+    // to 0. Set by the block below, and read back when pops become slices.
+    Value reverseIndexValue = nullptr;
+
     if (inductionVariable &&
         (caches.size() != 0 ||
          (reverseIVPlaceholder && !reverseIVPlaceholder->use_empty()))) {
@@ -4030,73 +4034,111 @@ public:
           cast<BlockArgument>(inductionVariable).getArgNumber() != 0)
         resultIdx++;
 
-      OpBuilder::InsertionGuard guard(rewriter);
-      rewriter.setInsertionPoint(otherWhileOp);
-      SmallVector<Value> operands(otherWhileOp->getOperands().begin(),
-                                  otherWhileOp->getOperands().end());
-      if (info.isConstant()) {
-        operands.push_back(
-            makeI64Constant(otherWhileOp->getLoc(), rewriter, numIters - 1));
-      } else {
-        if (!itersV)
-          itersV = info.getNumIters(rewriter);
-        auto one = stablehlo::ConstantOp::create(
-            rewriter, otherWhileOp->getLoc(), itersV.getType(),
-            cast<ElementsAttr>(makeAttr(itersV.getType(), 1)));
-        auto sub = stablehlo::SubtractOp::create(
-            rewriter, otherWhileOp->getLoc(), itersV, one);
-        operands.push_back(sub);
-      }
-
-      Block *otherBody = &otherWhileOp.getBody().front();
-      Block *otherCond = &otherWhileOp.getCond().front();
-      Value otherInductionVariable = otherBody->addArgument(
-          operands.back().getType(), otherWhileOp->getLoc());
-      otherCond->addArgument(otherInductionVariable.getType(),
-                             otherWhileOp->getLoc());
-      auto otherTerm = otherBody->getTerminator();
-
-      // Now that the real counter exists, retire the placeholder the min cut
-      // was seeded with.
-      if (reverseIVPlaceholder) {
-        OpBuilder::InsertionGuard g(rewriter);
+      // The reverse loop already counts 0, 1, ... numIters-1 to drive its own
+      // condition, so the index into the caches can simply be derived from it.
+      // Carrying a second counter that walks the other way costs an extra
+      // loop-carried dependence, and hides the index from the loop analyses,
+      // which only see values reachable from the induction variable.
+      enzyme::WhileLoopInfo otherInfo(otherWhileOp);
+      if (info.isConstant() && succeeded(otherInfo.computeInfo()) &&
+          otherInfo.isValid() && otherInfo.isConstantStart() &&
+          *otherInfo.getConstantStart() == 0 && otherInfo.isStepOne()) {
+        Block *otherBody = &otherWhileOp.getBody().front();
+        OpBuilder::InsertionGuard guard(rewriter);
         rewriter.setInsertionPointToStart(otherBody);
-        Value real = otherInductionVariable;
-        if (real.getType() != reverseIVPlaceholder.getType())
-          real = stablehlo::ConvertOp::create(rewriter, otherWhileOp->getLoc(),
-                                              reverseIVPlaceholder.getType(),
-                                              real);
-        rewriter.replaceOp(reverseIVPlaceholder, real);
-        reverseIVPlaceholder = nullptr;
+
+        Value iv = otherInfo.getInductionVariable();
+        Value last = stablehlo::ConstantOp::create(
+            rewriter, otherWhileOp->getLoc(), iv.getType(),
+            cast<ElementsAttr>(makeAttr(iv.getType(), numIters - 1)));
+        Value reverseIndex = stablehlo::SubtractOp::create(
+            rewriter, otherWhileOp->getLoc(), last, iv);
+
+        if (reverseIVPlaceholder) {
+          Value real = reverseIndex;
+          if (real.getType() != reverseIVPlaceholder.getType())
+            real = stablehlo::ConvertOp::create(
+                rewriter, otherWhileOp->getLoc(),
+                reverseIVPlaceholder.getType(), real);
+          rewriter.replaceOp(reverseIVPlaceholder, real);
+          reverseIVPlaceholder = nullptr;
+        }
+
+        reverseIndexValue = reverseIndex;
+      } else {
+
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPoint(otherWhileOp);
+        SmallVector<Value> operands(otherWhileOp->getOperands().begin(),
+                                    otherWhileOp->getOperands().end());
+        if (info.isConstant()) {
+          operands.push_back(
+              makeI64Constant(otherWhileOp->getLoc(), rewriter, numIters - 1));
+        } else {
+          if (!itersV)
+            itersV = info.getNumIters(rewriter);
+          auto one = stablehlo::ConstantOp::create(
+              rewriter, otherWhileOp->getLoc(), itersV.getType(),
+              cast<ElementsAttr>(makeAttr(itersV.getType(), 1)));
+          auto sub = stablehlo::SubtractOp::create(
+              rewriter, otherWhileOp->getLoc(), itersV, one);
+          operands.push_back(sub);
+        }
+
+        Block *otherBody = &otherWhileOp.getBody().front();
+        Block *otherCond = &otherWhileOp.getCond().front();
+        Value otherInductionVariable = otherBody->addArgument(
+            operands.back().getType(), otherWhileOp->getLoc());
+        otherCond->addArgument(otherInductionVariable.getType(),
+                               otherWhileOp->getLoc());
+        auto otherTerm = otherBody->getTerminator();
+
+        // Now that the real counter exists, retire the placeholder the min cut
+        // was seeded with.
+        if (reverseIVPlaceholder) {
+          OpBuilder::InsertionGuard g(rewriter);
+          rewriter.setInsertionPointToStart(otherBody);
+          Value real = otherInductionVariable;
+          if (real.getType() != reverseIVPlaceholder.getType())
+            real = stablehlo::ConvertOp::create(
+                rewriter, otherWhileOp->getLoc(),
+                reverseIVPlaceholder.getType(), real);
+          rewriter.replaceOp(reverseIVPlaceholder, real);
+          reverseIVPlaceholder = nullptr;
+        }
+
+        rewriter.setInsertionPoint(otherTerm);
+
+        otherInductionVariable =
+            stablehlo::SubtractOp::create(
+                rewriter, otherWhileOp->getLoc(), otherInductionVariable,
+                stablehlo::ConstantOp::create(
+                    rewriter, otherWhileOp->getLoc(),
+                    otherInductionVariable.getType(),
+                    cast<ElementsAttr>(
+                        makeAttr(otherInductionVariable.getType(), 1))))
+                .getResult();
+        otherTerm->insertOperands(otherTerm->getNumOperands(),
+                                  ValueRange(otherInductionVariable));
+
+        rewriter.setInsertionPoint(otherWhileOp);
+        auto newOtherWhileOp = stablehlo::WhileOp::create(
+            rewriter, otherWhileOp->getLoc(), operands);
+
+        for (auto &&[res, newRes] : llvm::zip(otherWhileOp->getResults(),
+                                              newOtherWhileOp->getResults())) {
+          rewriter.replaceAllUsesWith(res, newRes);
+        }
+        newOtherWhileOp.getCond().takeBody(otherWhileOp.getCond());
+        newOtherWhileOp.getBody().takeBody(otherWhileOp.getBody());
+
+        rewriter.eraseOp(otherWhileOp);
+        otherWhileOp = newOtherWhileOp;
+
+        Block *popBody = &otherWhileOp.getBody().front();
+        reverseIndexValue =
+            popBody->getArgument(popBody->getNumArguments() - 1);
       }
-
-      rewriter.setInsertionPoint(otherTerm);
-
-      otherInductionVariable =
-          stablehlo::SubtractOp::create(
-              rewriter, otherWhileOp->getLoc(), otherInductionVariable,
-              stablehlo::ConstantOp::create(
-                  rewriter, otherWhileOp->getLoc(),
-                  otherInductionVariable.getType(),
-                  cast<ElementsAttr>(
-                      makeAttr(otherInductionVariable.getType(), 1))))
-              .getResult();
-      otherTerm->insertOperands(otherTerm->getNumOperands(),
-                                ValueRange(otherInductionVariable));
-
-      rewriter.setInsertionPoint(otherWhileOp);
-      auto newOtherWhileOp = stablehlo::WhileOp::create(
-          rewriter, otherWhileOp->getLoc(), operands);
-
-      for (auto &&[res, newRes] : llvm::zip(otherWhileOp->getResults(),
-                                            newOtherWhileOp->getResults())) {
-        rewriter.replaceAllUsesWith(res, newRes);
-      }
-      newOtherWhileOp.getCond().takeBody(otherWhileOp.getCond());
-      newOtherWhileOp.getBody().takeBody(otherWhileOp.getBody());
-
-      rewriter.eraseOp(otherWhileOp);
-      otherWhileOp = newOtherWhileOp;
     } else if (reverseIVPlaceholder) {
       // No counter was built, so nothing may still refer to the stand-in.
       assert(reverseIVPlaceholder->use_empty() &&
@@ -4149,11 +4191,9 @@ public:
         auto popNewValue = enzyme::PopOp::create(rewriter, info.popOp->getLoc(),
                                                  newType, newInit.getResult());
 
-        Block *popBody = &otherWhileOp.getBody().front();
         rewriter.setInsertionPoint(info.popOp);
 
-        Value newInductionVariable =
-            popBody->getArgument(popBody->getNumArguments() - 1);
+        Value newInductionVariable = reverseIndexValue;
 
         Value popValue;
         if (auto TT = dyn_cast<TensorType>(info.cachedType())) {
