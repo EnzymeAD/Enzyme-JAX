@@ -281,3 +281,80 @@ llvm.func @wide_overlap(%val: i128, %other: i128) -> i128 {
 // CHECK-LABEL: llvm.func @wide_overlap(
 // CHECK: %[[LD:.+]] = llvm.load
 // CHECK: llvm.return %[[LD]] : i128
+
+// -----
+
+// The step of an index is what the indices after it cover, not what its own
+// dimension holds: [1, 0] of a 2x4 is element 4, which is past all four
+// elements the other view names, so nothing it writes reaches them.
+func.func @cross_shape_beyond(%val: f32, %other: f32, %j: index) -> f32 {
+  %c0 = arith.constant 0 : index
+  %c1i = arith.constant 1 : index
+  %c1 = llvm.mlir.constant(1 : i32) : i32
+  %mem = llvm.alloca %c1 x !llvm.array<8 x f32> : (i32) -> !llvm.ptr
+  %small = "enzymexla.pointer2memref"(%mem) : (!llvm.ptr) -> memref<4xf32>
+  %rect = "enzymexla.pointer2memref"(%mem) : (!llvm.ptr) -> memref<2x4xf32>
+  memref.store %val, %small[%j] : memref<4xf32>
+  memref.store %other, %rect[%c1i, %c0] : memref<2x4xf32>
+  %loaded = memref.load %small[%j] : memref<4xf32>
+  return %loaded : f32
+}
+
+// CHECK-LABEL: func.func @cross_shape_beyond(
+// CHECK-SAME: %[[VAL:[a-z0-9]+]]: f32
+// CHECK-NOT: memref.load
+// CHECK: return %[[VAL]] : f32
+
+// -----
+
+// An offset below the start of what it offsets into is that, and not a very
+// large one: element 3 is not element 4, and does not reach past the view.
+llvm.func @negative_offset(%val: f32, %other: f32) -> f32 {
+  %c1 = llvm.mlir.constant(1 : i32) : i32
+  %mem = llvm.alloca %c1 x !llvm.array<8 x f32> : (i32) -> !llvm.ptr
+  %mid = llvm.getelementptr %mem[0, 4] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<8 x f32>
+  llvm.store %val, %mid : f32, !llvm.ptr
+  %back = llvm.getelementptr %mid[-1] : (!llvm.ptr) -> !llvm.ptr, f32
+  llvm.store %other, %back : f32, !llvm.ptr
+  %loaded = llvm.load %mid : !llvm.ptr -> f32
+  llvm.return %loaded : f32
+}
+
+// CHECK-LABEL: llvm.func @negative_offset(
+// CHECK-SAME: %[[VAL:[a-z0-9]+]]: f32
+// CHECK-NOT: llvm.load
+// CHECK: llvm.return %[[VAL]] : f32
+
+// -----
+
+// Four bytes of what was written as eight is not what was written, however the
+// two spellings line up at the byte they start from.
+llvm.func @narrower_read(%val: f64) -> f32 {
+  %c1 = llvm.mlir.constant(1 : i32) : i32
+  %mem = llvm.alloca %c1 x f64 : (i32) -> !llvm.ptr
+  llvm.store %val, %mem : f64, !llvm.ptr
+  %loaded = llvm.load %mem : !llvm.ptr -> f32
+  llvm.return %loaded : f32
+}
+
+// CHECK-LABEL: llvm.func @narrower_read(
+// CHECK: %[[LD:.+]] = llvm.load
+// CHECK: llvm.return %[[LD]] : f32
+
+// -----
+
+// Reading as many bytes as were written is reading what was written, whatever
+// the two call it.
+llvm.func @same_extent(%val: i32) -> f32 {
+  %c1 = llvm.mlir.constant(1 : i32) : i32
+  %mem = llvm.alloca %c1 x i32 : (i32) -> !llvm.ptr
+  llvm.store %val, %mem : i32, !llvm.ptr
+  %loaded = llvm.load %mem : !llvm.ptr -> f32
+  llvm.return %loaded : f32
+}
+
+// CHECK-LABEL: llvm.func @same_extent(
+// CHECK-SAME: %[[VAL:[a-z0-9]+]]: i32
+// CHECK-NOT: llvm.load
+// CHECK: %[[BC:.+]] = arith.bitcast %[[VAL]] : i32 to f32
+// CHECK: llvm.return %[[BC]] : f32

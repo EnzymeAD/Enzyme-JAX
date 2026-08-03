@@ -85,6 +85,17 @@ public:
     idx = constant;
     type = Type::Index;
   }
+  // An index counts from the start of what it is an offset into, so anything
+  // below that is the expression it is instead, which takes a context to name.
+  Offset(int64_t constant, MLIRContext *ctx) {
+    if (constant >= 0) {
+      idx = constant;
+      type = Type::Index;
+      return;
+    }
+    aff = getAffineConstantExpr(constant, ctx);
+    type = Type::Affine;
+  }
   Offset(AffineExpr expr, SmallVector<Value> dims, SmallVector<Value> syms) {
     if (auto cst = dyn_cast<AffineConstantExpr>(expr)) {
       if (cst.getValue() >= 0) {
@@ -433,11 +444,10 @@ public:
     if (unknownOffset || o.unknownOffset)
       return unknown();
 
+    // This path does not move, so it lands wherever the access does.
     if (isZero())
-      return OffsetTree(o.base);
-    if (o.isZero())
       return o;
-    
+
     // Dimensions count what the access reads, so two paths through them only
     // compose when what they count is the same size.
     if ((hasDim() || o.hasDim()) && base != o.base) {
@@ -445,6 +455,11 @@ public:
       if (!lhsSize || !rhsSize || *lhsSize != *rhsSize)
         return unknown();
     }
+
+    // The access is at the start of what this path reached, so it lands here,
+    // reading what the access reads.
+    if (o.isZero())
+      return OffsetTree(o.base, offsets, units);
 
     // Moving the same way twice is moving once by the two together.
     if (units == o.units) {
@@ -491,11 +506,11 @@ public:
       return units[i].stride;
     } else {
       int64_t cur = 1;
-      for (int64_t j = i + 1; j < units.size(); j++) {
-        if (units[i].dimSize == ShapedType::kDynamic) {
+      for (int64_t j = i + 1; j < (int64_t)units.size(); j++) {
+        if (units[j].dimSize == ShapedType::kDynamic) {
           return ShapedType::kDynamic;
         }
-        cur *= units[i].dimSize;
+        cur *= units[j].dimSize;
       }
       return cur;
     }
@@ -695,7 +710,7 @@ public:
     // what the running product holds by the time it is reached.
     ssize_t i = offsets.size() - 1, j = o.offsets.size() - 1;
 
-    bool exact = true;
+    bool exact = sameExtent;
 
     while (i >= 0 && j >= 0) {
       // An index that does not move lines up with anything, though whatever it
@@ -828,16 +843,16 @@ static OffsetTree gepOffsets(LLVM::GEPOp gep, const DataLayout &dl) {
   std::vector<Offset> offsets;
   std::vector<OffsetType> units;
   Type cur = gep.getElemType();
+  assert(cur && "a getelementptr walks into a type");
 
   auto step = [&](std::optional<int64_t> constant, Value dynamic,
                   uint64_t stride) {
     if (constant) {
-      offsets.emplace_back((size_t)(*constant * stride));
-      units.push_back(OffsetType::bytes(1));
+      offsets.emplace_back(*constant, gep.getContext());
     } else {
       offsets.emplace_back(dynamic);
-      units.push_back(OffsetType::bytes(stride));
     }
+    units.push_back(OffsetType::bytes(stride));
   };
 
   for (auto &&[i, arg] : llvm::enumerate(gep.getIndices())) {
@@ -870,6 +885,7 @@ static OffsetTree gepOffsets(LLVM::GEPOp gep, const DataLayout &dl) {
       offsets.emplace_back((size_t)byte);
       units.push_back(OffsetType::bytes(1));
       cur = ST.getBody()[*constant];
+      assert(cur && "a field of a struct is of some type");
       continue;
     }
 
@@ -881,11 +897,14 @@ static OffsetTree gepOffsets(LLVM::GEPOp gep, const DataLayout &dl) {
     else
       return OffsetTree::unknown();
 
+    assert(element && "an aggregate is made of something");
     step(constant, dynamic, dl.getTypeSize(element));
     cur = element;
   }
 
-  return OffsetTree({}, std::move(offsets), std::move(units));
+  // Where the walk ended is what an access through this reads.
+  assert(cur && "a getelementptr lands on a type");
+  return OffsetTree(cur, std::move(offsets), std::move(units));
 }
 
 llvm::raw_ostream &operator<<(llvm::raw_ostream &o, const OffsetType unit) {
