@@ -126,7 +126,7 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       } else {
         pass_pipeline += ",parallel-serialization,";
       }
-      pass_pipeline += "canonicalize,convert-polygeist-to-llvm{backend=";
+      pass_pipeline += "canonicalize,hoist-allocas,convert-polygeist-to-llvm{backend=";
       pass_pipeline += backend;
       pass_pipeline += "}";
   } else {
@@ -147,7 +147,10 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
         pass_pipeline += "dataflow ";
       if (options->markReadonly)
         pass_pipeline += "markReadonly";
-      pass_pipeline += "},lower-llvm-ext,canonicalize,";
+      pass_pipeline += "},"
+        "inline{default-pipeline=canonicalize max-iterations=4},"
+        "polygeist-mem2reg,canonicalize,symbol-dce,"
+        "lower-llvm-ext,canonicalize,";
       if (options->splitMultiResults)
         pass_pipeline += "split-multi-results,";
       pass_pipeline += "remove-unnecessary-enzyme-ops,"
@@ -176,7 +179,7 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       } else {
 	      pass_pipeline += ",parallel-serialization,";
       }
-      pass_pipeline += "canonicalize,convert-polygeist-to-llvm{backend=";
+      pass_pipeline += "canonicalize,hoist-allocas,convert-polygeist-to-llvm{backend=";
       pass_pipeline += backend;
       pass_pipeline += "},strip-"
       "gpu-info,gpu-"

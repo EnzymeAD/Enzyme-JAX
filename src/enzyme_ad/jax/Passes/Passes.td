@@ -267,6 +267,34 @@ def EnzymeHLOUnrollPass : Pass<"enzyme-hlo-unroll"> {
   ];
 }
 
+def CanonicalizeElementwiseShapesPass
+    : Pass<"canonicalize-elementwise-shapes"> {
+  let summary = "Give each maximal elementwise chain a single tensor shape";
+  let description = [{
+    `stablehlo.reshape` preserves the linearized element order, so two shapes
+    with the same number of elements denote the same buffer and a reshape
+    between them is a bitcast. Reshape propagation is free to move such a
+    reshape across an elementwise op, and doing so is neutral in isolation.
+
+    It stops being neutral once a value in the chain is consumed at more than
+    one of those shapes, which is common after differentiation: the primal
+    reads an intermediate at the propagated shape while the reverse pass reads
+    it at the pre-propagation shape. The chain then straddles two
+    bitcast-equivalent shapes. XLA groups elementwise producers into a fusion
+    by shape, so a chain whose shape changes part way through can no longer be
+    fused into the op consuming it, and that consumer -- typically a transpose
+    -- is emitted as a standalone kernel instead of absorbing the chain.
+
+    This pass repairs that. For each maximal chain of elementwise ops connected
+    through bitcast reshapes, it picks the shape minimizing the number of
+    reshapes materialized at the chain boundary and rewrites the whole chain
+    into it, leaving reshapes only where a value genuinely escapes to a
+    consumer wanting a different shape. It never increases the boundary reshape
+    count, and does not duplicate arithmetic.
+  }];
+  let dependentDialects = ["stablehlo::StablehloDialect"];
+}
+
 def EnzymeRefineArgumentsPass : Pass<"enzyme-refine-arguments", "ModuleOp"> {
   let summary = "Refine function arguments with potential type conversion.";
   let dependentDialects = [
@@ -307,6 +335,15 @@ def PrintPass : Pass<"print"> {
 
 def SortMemory : Pass<"sort-memory"> {
   let summary = "Sort memory accesses";
+}
+
+def HoistAllocasPass : Pass<"hoist-allocas"> {
+  let summary = "Move stack allocations to the start of the region that frees "
+                "them";
+  let dependentDialects = [
+    "LLVM::LLVMDialect",
+    "memref::MemRefDialect",
+  ];
 }
 
 def SortBlockMemoryPass : Pass<"sort-block-memory"> {
