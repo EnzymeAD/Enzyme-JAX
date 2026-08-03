@@ -1195,6 +1195,23 @@ def AffineToStableHLORaising : Pass<"raise-affine-to-stablehlo"> {
   ];
 }
 
+def XLAWrapperMegakernelizePass
+    : Pass<"xla-wrapper-megakernelize", "ModuleOp"> {
+  let summary = "Fuse sequential XLA wrappers into a single megakernel";
+  let description = [{
+    Fuse compatible sequential enzymexla.xla_wrapper operations which are
+    proven to operate on the same set of non-aliasing buffers. The raised
+    StableHLO function bodies are cloned into a new function and their tensor
+    results are threaded according to the wrapper buffer identities. If alias
+    analysis cannot prove the required MustAlias and NoAlias relationships,
+    the wrappers are left unchanged.
+  }];
+  let dependentDialects = [
+    "enzymexla::EnzymeXLADialect",
+    "func::FuncDialect",
+  ];
+}
+
 def ParallelLower : Pass<"parallel-lower"> {
   let summary = "Lower gpu launch op to parallel ops";
   let dependentDialects = [
