@@ -49,7 +49,9 @@ namespace enzyme {
 } // namespace enzyme
 } // namespace mlir
 
-enum class Match { Exact, Maybe, None };
+// Whether two accesses name the same place, one lies wholly within the other,
+// they may share bytes, or they share none.
+enum class Match { Exact, Contains, Maybe, None };
 
 bool operator<(Value lhs, Value rhs) {
   if (auto lhsBA = dyn_cast<BlockArgument>(lhs)) {
@@ -438,6 +440,44 @@ public:
                   syms);
   }
 
+  // How far from the start of what it is an offset into this lands, in bytes,
+  // when every index says where it goes.
+  std::optional<uint64_t> constantOffset(const DataLayout &dl) const {
+    if (unknownOffset)
+      return std::nullopt;
+    auto element = typeSize(base, dl);
+    uint64_t total = 0;
+    for (auto &&[i, off] : llvm::enumerate(offsets)) {
+      if (off.type != Offset::Type::Index)
+        return std::nullopt;
+      int64_t step = stepOf(i);
+      if (step == ShapedType::kDynamic)
+        return std::nullopt;
+      // A dimension steps by that many of what the access reads.
+      uint64_t bytes = step;
+      if (units[i].kind == OffsetType::Kind::Dim) {
+        if (!element)
+          return std::nullopt;
+        bytes = step * *element;
+      }
+      total += off.idx * bytes;
+    }
+    return total;
+  }
+
+  // Where `o` starts within what this names, when everything it names lies
+  // inside and both say where they land.
+  std::optional<uint64_t> containsAt(const OffsetTree &o,
+                                     const DataLayout &dl) const {
+    auto mine = constantOffset(dl), theirs = o.constantOffset(dl);
+    auto mySize = typeSize(base, dl), oSize = typeSize(o.base, dl);
+    if (!mine || !theirs || !mySize || !oSize)
+      return std::nullopt;
+    if (*theirs < *mine || *theirs + *oSize > *mine + *mySize)
+      return std::nullopt;
+    return *theirs - *mine;
+  }
+
   // Composing this path with a further one. The further one names the value
   // that is read or written, so the result is of its type.
   OffsetTree add(const OffsetTree &o, const DataLayout &dl) const {
@@ -692,7 +732,8 @@ public:
     return Match::Maybe;
   }
 
-  Match matches(const OffsetTree &o, const DataLayout &dl) const {
+  Match matches(const OffsetTree &o, const DataLayout &dl,
+                uint64_t *containedAt = nullptr) const {
     if (unknownOffset || o.unknownOffset)
       return Match::Maybe;
 
@@ -707,6 +748,14 @@ public:
     bool sameExtent = base == o.base || (size && osize && *size == *osize);
     if (!sameExtent && (!size || !osize))
       return Match::Maybe;
+
+    // Lying wholly within is a question of where each lands and how far it
+    // reaches, which needs nothing of how either counts its way there.
+    if (!sameExtent && containedAt)
+      if (auto at = containsAt(o, dl)) {
+        *containedAt = *at;
+        return Match::Contains;
+      }
 
     bool isDim = true;
 
@@ -795,9 +844,9 @@ public:
 
     if (exact) {
       return Match::Exact;
-    } else {
-      return Match::Maybe;
     }
+
+    return Match::Maybe;
   }
 
   bool operator<(const OffsetTree &o) const {
@@ -2010,6 +2059,48 @@ bool isCallNonCapturing(CallOpInterface callOp, Value val) {
 std::set<std::string> NoWriteFunctions = {"exit", "__errno_location"};
 // This is a straightforward implementation not optimized for speed. Optimize
 // if needed.
+// The way into `from` that reaches what lies at `at` bytes into it and is of
+// the size of `want`, as the indices an extractvalue takes. Aggregates are
+// walked into; anything else is only reachable when it is the whole of it.
+static bool extractPath(Type from, uint64_t at, Type want, const DataLayout &dl,
+                        SmallVectorImpl<int64_t> &path) {
+  auto wantSize = typeSize(want, dl), fromSize = typeSize(from, dl);
+  if (!wantSize || !fromSize || at + *wantSize > *fromSize)
+    return false;
+  if (at == 0 && *wantSize == *fromSize)
+    return true;
+
+  if (auto ST = dyn_cast<LLVM::LLVMStructType>(from)) {
+    uint64_t byte = 0;
+    for (auto &&[i, member] : llvm::enumerate(ST.getBody())) {
+      auto size = typeSize(member, dl);
+      if (!size)
+        return false;
+      if (!ST.isPacked())
+        byte = llvm::alignTo(byte, dl.getTypeABIAlignment(member));
+      if (at >= byte && at + *wantSize <= byte + *size) {
+        path.push_back(i);
+        return extractPath(member, at - byte, want, dl, path);
+      }
+      byte += *size;
+    }
+    return false;
+  }
+
+  if (auto AT = dyn_cast<LLVM::LLVMArrayType>(from)) {
+    auto size = typeSize(AT.getElementType(), dl);
+    if (!size || !*size)
+      return false;
+    uint64_t index = at / *size;
+    if (index >= AT.getNumElements() || at % *size + *wantSize > *size)
+      return false;
+    path.push_back(index);
+    return extractPath(AT.getElementType(), at % *size, want, dl, path);
+  }
+
+  return false;
+}
+
 bool PolygeistMem2Reg::forwardStoreToLoad(
     mlir::Value AI, OffsetTree idx,
     SmallVectorImpl<Operation *> &loadOpsToErase,
@@ -2018,6 +2109,8 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
   std::set<mlir::Operation *> loadOps;
   // Transfers that read exactly one slot, which act as a load of it.
   std::set<mlir::Operation *> transferLoads;
+  // Loads of a piece of the slot, and how far into it that piece lies.
+  DenseMap<mlir::Operation *, uint64_t> containedLoads;
   mlir::Type subType = nullptr;
   mlir::Location loc = AI.getLoc();
   std::set<mlir::Operation *> allStoreOps;
@@ -2085,14 +2178,30 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
       // A load naming the slot reads it; one that may only overlap it reads
       // something this knows nothing about, which is no reason to stop.
       auto matchLoad = [&](Operation *loadOp, OffsetTree accessed) {
-        if (idx.matches(tree.add(accessed, dl), dl) != Match::Exact)
+        uint64_t at = 0;
+        Type read = loadOp->getResult(0).getType();
+        switch (idx.matches(tree.add(accessed, dl), dl, &at)) {
+        case Match::Exact:
+          // Whichever spelling of the slot is read first is the one the value
+          // forwarded out of it takes.
+          if (elType && read != elType)
+            return;
+          subType = read;
+          elType = read;
+          break;
+        case Match::Contains: {
+          // Reading a piece of the slot is reading a piece of its value, as
+          // long as there is a way into it that reaches that piece.
+          Type held = elType ? elType : idx.getBase();
+          SmallVector<int64_t> path;
+          if (!held || !extractPath(held, at, read, dl, path))
+            return;
+          containedLoads[loadOp] = at;
+          break;
+        }
+        default:
           return;
-        subType = loadOp->getResult(0).getType();
-        // Whichever spelling of the slot is read first is the one the value
-        // forwarded out of it takes.
-        if (elType && subType != elType)
-          return;
-        elType = subType;
+        }
         loadOps.insert(loadOp);
         LLVM_DEBUG(llvm::dbgs() << "Matching Load: " << *loadOp << "\n");
       };
@@ -2102,6 +2211,7 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
           LLVM_DEBUG(llvm::dbgs() << "Matching Store: " << *storeOp << "\n");
           allStoreOps.insert(storeOp);
           break;
+        case Match::Contains:
         case Match::Maybe:
           LLVM_DEBUG(llvm::dbgs()
                      << "Mabye Aliasing Store: " << *storeOp << "\n");
@@ -2197,6 +2307,7 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
               break;
             }
             LLVM_FALLTHROUGH;
+          case Match::Contains:
           case Match::Maybe:
             LLVM_DEBUG(llvm::dbgs() << "Aliasing Store: " << *user << "\n");
             AliasingStoreOperations.insert(user);
@@ -2271,6 +2382,11 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
       AliasingStoreOperations.insert(op);
     }
   }
+
+  // Only a load that names the whole slot says how it is spelled; when every
+  // load names a piece of it, what it holds is what it was keyed on.
+  if (!elType)
+    elType = subType = idx.getBase();
 
   if (loadOps.size() == 0 && transferLoads.size() == 0) {
     return changed;
@@ -2354,18 +2470,40 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
 
   auto *emptyValue = metaMap.get(nullptr);
 
+  // What a load takes out of the value in the slot: the whole of it, or the
+  // piece of it the load names.
+  auto valueFor = [&](Value orig, Value slotValue) -> Value {
+    auto contained = containedLoads.find(orig.getDefiningOp());
+    if (contained == containedLoads.end())
+      return castToType(elType, slotValue, orig.getDefiningOp());
+    SmallVector<int64_t> path;
+    bool found =
+        extractPath(elType, contained->second, orig.getType(), dl, path);
+    (void)found;
+    assert(found && "a piece that was named cannot be reached");
+    OpBuilder builder(orig.getDefiningOp());
+    Value piece = slotValue.getType() == elType
+                      ? slotValue
+                      : castToType(elType, slotValue, orig.getDefiningOp());
+    if (!path.empty())
+      piece =
+          LLVM::ExtractValueOp::create(builder, orig.getLoc(), slotValue, path);
+    return castToType(orig.getType(), piece, orig.getDefiningOp());
+  };
+
   auto replaceValue =
       [&](Value orig, ValueOrPlaceholder *replacement) -> ValueOrPlaceholder * {
     assert(replacement);
     replacement->materialize(/*full*/ false);
-    assert(orig.getType() == elType);
+    assert(orig.getType() == elType ||
+           containedLoads.count(orig.getDefiningOp()));
     if (replacement->overwritten) {
       loadOps.erase(orig.getDefiningOp());
       return metaMap.get(orig);
     } else if (replacement->val) {
       changed = true;
       assert(orig != replacement->val);
-      auto castVal = castToType(elType, replacement->val, orig.getDefiningOp());
+      auto castVal = valueFor(orig, replacement->val);
       LLVM_DEBUG(llvm::dbgs()
                  << " replaced " << orig << " with " << castVal << "\n");
       metaMap.replaceValue(orig, castVal);
@@ -2457,7 +2595,11 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
             lastVal = emptyValue;
           } else if (loadOps.count(a)) {
             Value loadOp = a->getResult(0);
-            lastVal = replaceValue(loadOp, lastVal);
+            auto *read = replaceValue(loadOp, lastVal);
+            // What a load of the whole slot read is what is in it from here
+            // on; what a load of a piece read says nothing of the rest.
+            if (!containedLoads.count(a))
+              lastVal = read;
           } else if (transferLoads.count(a)) {
             replaceTransfer(a, lastVal);
           } else if (isa<LLVM::MemcpyOp, LLVM::MemmoveOp, LLVM::MemsetOp>(a)) {
@@ -2676,6 +2818,7 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
     changed = true;
     assert(pair.first != val);
     assert(val.getType() == elType);
+    val = valueFor(pair.first, val);
     assert(pair.first.getType() == val.getType() && "mismatched load type");
     LLVM_DEBUG(llvm::dbgs()
                << " replaced " << pair.first << " with " << val << "\n");
@@ -2895,9 +3038,16 @@ std::vector<OffsetTree> getLastStored(mlir::Value AI, const DataLayout &dl) {
     }
   }
 
+  // A slot is worth trying when more than one access names it -- and an access
+  // of a piece of a slot is an access of that slot too, since the piece can be
+  // taken out of what is in it.
   std::vector<OffsetTree> todo;
   for (auto &pair : lastStored) {
-    if (pair.second > 1)
+    unsigned count = pair.second;
+    for (auto &other : lastStored)
+      if (&other != &pair && pair.first.containsAt(other.first, dl))
+        count += other.second;
+    if (count > 1)
       todo.push_back(pair.first);
   }
   return todo;
