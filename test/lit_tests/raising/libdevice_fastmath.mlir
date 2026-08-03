@@ -22,15 +22,32 @@ llvm.func @fastmath(%a: f64, %b: f64, %c: f64) -> f64 {
 
 // -----
 
-// Absent flags stay absent rather than becoming an explicit `none`.
+// Comparisons carry them too.
 
-llvm.func @no_flags(%a: f64, %b: f64) -> f64 {
+llvm.func @compare(%a: f64, %b: f64) -> i1 {
+  %0 = llvm.fcmp "ogt" %a, %b {fastmathFlags = #llvm.fastmath<fast>} : f64
+  llvm.return %0 : i1
+}
+
+// CHECK-LABEL: llvm.func @compare
+// CHECK:         arith.cmpf ogt, %arg0, %arg1 fastmath<fast>
+// CHECK-NOT:     fastmathFlags
+
+// -----
+
+// Absent flags stay absent rather than becoming an explicit `none`, and a
+// `none` written out on the LLVM op does not survive as one either.
+
+llvm.func @no_flags(%a: f64, %b: f64) -> (f64, i1) {
   %0 = llvm.fmul %a, %b : f64
-  llvm.return %0 : f64
+  %1 = llvm.fcmp "ogt" %a, %b {fastmathFlags = #llvm.fastmath<none>} : f64
+  llvm.return %0, %1 : f64, i1
 }
 
 // CHECK-LABEL: llvm.func @no_flags
 // CHECK:         arith.mulf %arg0, %arg1 : f64
+// CHECK:         arith.cmpf ogt, %arg0, %arg1 : f64
+// CHECK-NOT:     fastmath
 
 // -----
 
