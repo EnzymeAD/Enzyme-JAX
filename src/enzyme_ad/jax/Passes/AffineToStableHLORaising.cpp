@@ -1386,7 +1386,8 @@ static LogicalResult tryRaisingParallelOpToStableHLO(
   for (auto iv : getIVs(parallelOp)) {
     auto range = getIVRange(iv);
     if (!range.has_value()) {
-      return parallelOp.getOperation()->emitError(
+      return mlir::emitError(
+          parallelOp.getLoc(),
           "parallel loop has non-constant bounds, which is not currently "
           "supported");
     }
@@ -1911,7 +1912,8 @@ static LogicalResult tryRaisingLockStepForOpToStableHLO(
   }
   LLVM_DEBUG(llvm::dbgs() << "Illegal\n");
   if (pc.options.dump_failed_lockstep) {
-    llvm::errs() << " failed lockstep of for raise: " << *forOp << "\n";
+    llvm::errs() << "failed lockstep raise for " << forOp->getName() << " at "
+                 << forOp.getLoc() << "\n";
   }
   return failure();
 }
@@ -3423,7 +3425,8 @@ struct AffineToStableHLORaisingPass
       bool raised = tryRaisingToStableHLO(kernelFunc, users, options);
       anyRaised |= raised;
       if (!raised && err_if_not_fully_raised) {
-        llvm::errs() << "failed to raise func: " << *kernelFunc << "\n";
+        llvm::errs() << "failed to raise func @" << kernelFunc.getSymName()
+                     << " at " << kernelFunc.getLoc() << "\n";
         signalPassFailure();
       }
       funcs.pop_back();
@@ -3504,8 +3507,8 @@ struct AffineToStableHLORaisingPass
                   });
               arg = ic.getOperand();
 
-              llvm::errs() << " unfolded cast to index new arg: " << arg
-                           << ", old arg: " << ic << "\n";
+              LLVM_DEBUG(llvm::dbgs() << "unfolded cast to index new arg: "
+                                      << arg << ", old arg: " << ic << "\n");
             }
           }
 
@@ -3738,8 +3741,11 @@ struct AffineToStableHLORaisingPass
         if (!MT) {
           failed = true;
           if (err_if_not_fully_raised) {
-            llvm::errs() << "failed to raise operand: " << arg << "\n"
-                         << " within " << g << "\n";
+            llvm::errs() << "failed to raise GPU wrapper operand of type "
+                         << arg.getType() << " to StableHLO";
+            if (Operation *def = arg.getDefiningOp())
+              llvm::errs() << " (defined by " << def->getName() << ")";
+            llvm::errs() << "\n";
             signalPassFailure();
           }
           break;
@@ -3778,8 +3784,8 @@ struct AffineToStableHLORaisingPass
                 .failed();
         if (anyFailed) {
           if (err_if_not_fully_raised) {
-            llvm::errs() << "failed to raise operation: " << *&it << "\n"
-                         << " within " << g << "\n";
+            llvm::errs() << "failed to raise operation " << it.getName()
+                         << " at " << it.getLoc() << " within GPU wrapper\n";
             signalPassFailure();
           }
           break;
