@@ -4250,6 +4250,78 @@ struct ConvertConvertInt final
   }
 };
 
+// reduce_add(multiply(broadcast_in_dim(v), A), dims)
+//   -> multiply(broadcast_in_dim(v)', reduce_add(A, dims))
+//
+// Valid when the broadcast is constant along every reduced dimension, i.e. none
+// of the reduced dimensions is one of the broadcast's mapped dimensions. This
+// removes a multiply at the pre-reduction shape and leaves the scaling to be
+// applied at the (much smaller) reduced shape. Only fires when the multiply is
+// single-use, so it is erased rather than duplicated.
+struct ReduceMulBroadcast final
+    : CheckedOpRewritePattern<stablehlo::ReduceOp, ReduceMulBroadcast> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ReduceOp op,
+                                    PatternRewriter &rewriter) const {
+    if (op.getInputs().size() != 1 || op.getInitValues().size() != 1)
+      return failure();
+
+    if (mlir::stablehlo::CheckCommonReduceOp(op).kind !=
+        stablehlo::ReduceOpKind::Add)
+      return failure();
+
+    auto mul = op.getInputs()[0].getDefiningOp<stablehlo::MulOp>();
+    if (!mul || !mul->hasOneUse())
+      return failure();
+
+    auto dims = op.getDimensions();
+
+    // Pick a side whose broadcast does not vary along any reduced dimension.
+    stablehlo::BroadcastInDimOp bcast = nullptr;
+    Value other;
+    for (auto [cand, rest] : {std::make_pair(mul.getLhs(), mul.getRhs()),
+                              std::make_pair(mul.getRhs(), mul.getLhs())}) {
+      auto candidate = cand.getDefiningOp<stablehlo::BroadcastInDimOp>();
+      if (!candidate)
+        continue;
+      if (llvm::any_of(candidate.getBroadcastDimensions(), [&](int64_t bd) {
+            return llvm::is_contained(dims, bd);
+          }))
+        continue;
+      bcast = candidate;
+      other = rest;
+      break;
+    }
+    if (!bcast)
+      return failure();
+
+    // Reduced dimensions disappear from the result shape, so each surviving
+    // broadcast dimension shifts down by the number of reduced dimensions
+    // below it.
+    SmallVector<int64_t> newBroadcastDims;
+    for (int64_t bd : bcast.getBroadcastDimensions())
+      newBroadcastDims.push_back(
+          bd - llvm::count_if(dims, [&](int64_t d) { return d < bd; }));
+
+    auto resultType = op.getResultTypes()[0];
+
+    auto newReduce = stablehlo::ReduceOp::create(
+        rewriter, op.getLoc(), TypeRange(resultType), ValueRange(other),
+        op.getInitValues(), dims);
+    IRMapping map;
+    op.getRegion().cloneInto(&newReduce.getRegion(), map);
+
+    auto newBcast = stablehlo::BroadcastInDimOp::create(
+        rewriter, bcast.getLoc(), resultType, bcast.getOperand(),
+        newBroadcastDims);
+
+    rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, resultType, newBcast,
+                                                  newReduce.getResult(0));
+    return success();
+  }
+};
+
 struct ReduceConcat final
     : CheckedOpRewritePattern<stablehlo::ReduceOp, ReduceConcat> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -36580,6 +36652,7 @@ struct EnzymeHLOOptPass
         ScatterUpdateComputationConstProp,
         ScatterIndicesAreUnique,
         ReduceTransposeSimplify,
+        ReduceMulBroadcast,
         BroadcastIotaSimplify,
         BroadcastIota,
         BroadcastCompare,
