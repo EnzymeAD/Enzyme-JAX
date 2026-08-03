@@ -821,6 +821,69 @@ public:
 
 static OffsetTree accessOffsets(Type accessed) { return OffsetTree(accessed); }
 
+// The pointer a memcpy/memmove reads from; a memset reads from nothing.
+static Value transferSource(Operation *op) {
+  if (auto cpy = dyn_cast<LLVM::MemcpyOp>(op))
+    return cpy.getSrc();
+  if (auto mv = dyn_cast<LLVM::MemmoveOp>(op))
+    return mv.getSrc();
+  return nullptr;
+}
+
+static Value transferDest(Operation *op) {
+  if (auto cpy = dyn_cast<LLVM::MemcpyOp>(op))
+    return cpy.getDst();
+  if (auto mv = dyn_cast<LLVM::MemmoveOp>(op))
+    return mv.getDst();
+  if (auto ms = dyn_cast<LLVM::MemsetOp>(op))
+    return ms.getDst();
+  return nullptr;
+}
+
+// How many bytes a transfer moves, when that is a known constant.
+static std::optional<uint64_t> transferLength(Operation *op) {
+  Value len;
+  if (auto cpy = dyn_cast<LLVM::MemcpyOp>(op))
+    len = cpy.getLen();
+  else if (auto mv = dyn_cast<LLVM::MemmoveOp>(op))
+    len = mv.getLen();
+  else if (auto ms = dyn_cast<LLVM::MemsetOp>(op))
+    len = ms.getLen();
+  else
+    return std::nullopt;
+
+  APInt val;
+  if (!matchPattern(len, m_ConstantInt(&val)))
+    return std::nullopt;
+  return val.getZExtValue();
+}
+
+// What a transfer states about the alignment of the end it is asked about,
+// which is all an access put in its place may assume; absent, it promises
+// nothing beyond a byte. The destination is its first argument, the source its
+// second.
+static unsigned transferAlignment(Operation *op, unsigned arg) {
+  auto argAttrs = op->getAttrOfType<ArrayAttr>("arg_attrs");
+  if (!argAttrs || argAttrs.size() <= arg)
+    return 1;
+  auto dict = dyn_cast<DictionaryAttr>(argAttrs[arg]);
+  if (!dict)
+    return 1;
+  if (auto align =
+          dict.getAs<IntegerAttr>(LLVM::LLVMDialect::getAlignAttrName()))
+    return align.getInt();
+  return 1;
+}
+
+// What a transfer touches is a number of bytes rather than a value of some
+// type, which is the same thing as an access of an integer that wide. Anything
+// larger than a slot could hold is not worth naming.
+static OffsetTree transferAccess(uint64_t bytes, MLIRContext *ctx) {
+  if (!bytes || bytes > 4096)
+    return OffsetTree::unknown();
+  return OffsetTree(IntegerType::get(ctx, bytes * 8));
+}
+
 static OffsetTree accessOffsets(Type accessed, Value memory,
                                 mlir::OperandRange indices,
                                 const DataLayout &dl) {
@@ -1629,7 +1692,8 @@ void removeRedundantBlockArgs(
       if (auto op = dyn_cast<cf::BranchOp>(pred->getTerminator())) {
         pval = op.getOperands()[blockArg.getArgNumber()];
         if (pval.getType() != elType) {
-          pval.getDefiningOp()->getParentRegion()->getParentOp()->dump();
+          if (auto *def = pval.getDefiningOp())
+            def->getParentRegion()->getParentOp()->dump();
           llvm::errs() << pval << " - " << AI << "\n";
         }
         assert(pval.getType() == elType);
@@ -1952,6 +2016,8 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
     DenseMap<Operation *, SmallVector<Operation *>> &capturedAliasing) {
   bool changed = false;
   std::set<mlir::Operation *> loadOps;
+  // Transfers that read exactly one slot, which act as a load of it.
+  std::set<mlir::Operation *> transferLoads;
   mlir::Type subType = nullptr;
   mlir::Location loc = AI.getLoc();
   std::set<mlir::Operation *> allStoreOps;
@@ -2103,24 +2169,49 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
         }
         continue;
       }
-      if (auto op = dyn_cast<mlir::LLVM::MemsetOp>(user)) {
-        if (op.getDst() == val) {
-          LLVM_DEBUG(llvm::dbgs() << "Aliasing Store: " << op << "\n");
-          AliasingStoreOperations.insert(op);
+      if (isa<LLVM::MemsetOp, LLVM::MemmoveOp, LLVM::MemcpyOp>(user)) {
+        auto bytes = transferLength(user);
+        // Without a length there is no telling what it touches, so anything it
+        // writes may be this slot.
+        OffsetTree touched =
+            bytes ? tree.add(transferAccess(*bytes, user->getContext()), dl)
+                  : OffsetTree::unknown();
+
+        if (transferDest(user) == val) {
+          switch (idx.matches(touched, dl)) {
+          case Match::Exact:
+            // Writing exactly this slot writes a value that is known when what
+            // it was written from is: the bytes of a fill, when they are zero,
+            // or whatever the copy read.
+            if (auto ms = dyn_cast<LLVM::MemsetOp>(user)) {
+              APInt byte;
+              if (matchPattern(ms.getVal(), m_ConstantInt(&byte)) &&
+                  byte.isZero()) {
+                LLVM_DEBUG(llvm::dbgs() << "Matching Store: " << *user << "\n");
+                allStoreOps.insert(user);
+                break;
+              }
+            } else {
+              LLVM_DEBUG(llvm::dbgs() << "Matching Store: " << *user << "\n");
+              allStoreOps.insert(user);
+              break;
+            }
+            LLVM_FALLTHROUGH;
+          case Match::Maybe:
+            LLVM_DEBUG(llvm::dbgs() << "Aliasing Store: " << *user << "\n");
+            AliasingStoreOperations.insert(user);
+            break;
+          case Match::None:
+            break;
+          }
         }
-        continue;
-      }
-      if (auto op = dyn_cast<mlir::LLVM::MemmoveOp>(user)) {
-        if (op.getDst() == val) {
-          LLVM_DEBUG(llvm::dbgs() << "Aliasing Store: " << op << "\n");
-          AliasingStoreOperations.insert(op);
-        }
-        continue;
-      }
-      if (auto op = dyn_cast<mlir::LLVM::MemcpyOp>(user)) {
-        if (op.getDst() == val) {
-          LLVM_DEBUG(llvm::dbgs() << "Aliasing Store: " << op << "\n");
-          AliasingStoreOperations.insert(op);
+
+        // Reading exactly this slot is reading the value in it, whatever the
+        // copy then does with it.
+        if (transferSource(user) == val &&
+            idx.matches(touched, dl) == Match::Exact) {
+          LLVM_DEBUG(llvm::dbgs() << "Matching Load: " << *user << "\n");
+          transferLoads.insert(user);
         }
         continue;
       }
@@ -2181,7 +2272,7 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
     }
   }
 
-  if (loadOps.size() == 0) {
+  if (loadOps.size() == 0 && transferLoads.size() == 0) {
     return changed;
   }
 
@@ -2196,6 +2287,9 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
   {
     SmallVector<Region *> todo;
     for (auto *load : loadOps) {
+      todo.push_back(load->getParentRegion());
+    }
+    for (auto *load : transferLoads) {
       todo.push_back(load->getParentRegion());
     }
     while (todo.size()) {
@@ -2290,6 +2384,25 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
     }
   };
 
+  // A transfer reading the whole of a slot consumes the value in it, so once
+  // that value is known the copy is a store of it into the destination. Padding
+  // bytes become undef rather than being copied, the same trade LLVM's SROA
+  // makes when it forwards through a copy.
+  auto replaceTransfer = [&](Operation *op, ValueOrPlaceholder *incoming) {
+    incoming->materialize(/*full*/ false);
+    // Whatever reaches the slot covers exactly the bytes the copy moves, since
+    // that is what naming the same slot means.
+    if (incoming->overwritten || !incoming->val)
+      return;
+    OpBuilder builder(op);
+    LLVM::StoreOp::create(builder, op->getLoc(), incoming->val,
+                          transferDest(op), transferAlignment(op, 0));
+    LLVM_DEBUG(llvm::dbgs() << " replaced " << *op << " with a store of "
+                            << incoming->val << "\n");
+    loadOpsToErase.push_back(op);
+    changed = true;
+  };
+
   // Start by setting valueAtEndOfBlock to the last store directly in that block
   // Note that this may miss a store within a region of an operation in that
   // block
@@ -2345,17 +2458,36 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
           } else if (loadOps.count(a)) {
             Value loadOp = a->getResult(0);
             lastVal = replaceValue(loadOp, lastVal);
-          } else if (auto storeOp = dyn_cast<memref::StoreOp>(a)) {
-            if (allStoreOps.count(storeOp)) {
-              lastVal = metaMap.get(storeOp.getValueToStore());
+          } else if (transferLoads.count(a)) {
+            replaceTransfer(a, lastVal);
+          } else if (isa<LLVM::MemcpyOp, LLVM::MemmoveOp, LLVM::MemsetOp>(a)) {
+            // A transfer writing the slot leaves what it wrote there: a copy
+            // leaves what it read, which a load of that says, and a fill of
+            // zero bytes leaves a zero of whatever the slot holds. Anything
+            // else it wrote is something this cannot name, and stands as an
+            // overwrite.
+            if (allStoreOps.count(a)) {
+              OpBuilder builder(a);
+              // Of what the slot holds, since that is what everything threaded
+              // through it is of; of as many bytes as were moved when nothing
+              // has said yet what those bytes are.
+              Type moved = elType ? elType
+                                  : IntegerType::get(a->getContext(),
+                                                     *transferLength(a) * 8);
+              Value written;
+              if (!LLVM::isCompatibleType(moved)) {
+                // Nothing to name it with.
+              } else if (Value src = transferSource(a)) {
+                written = LLVM::LoadOp::create(builder, a->getLoc(), moved, src,
+                                               transferAlignment(a, 1));
+              } else {
+                written = LLVM::ZeroOp::create(builder, a->getLoc(), moved);
+              }
+              lastVal = written ? metaMap.get(written) : emptyValue;
             }
-          } else if (auto storeOp = dyn_cast<LLVM::StoreOp>(a)) {
+          } else if (auto storeOp = dyn_cast<enzyme::StoreLikeInterface>(a)) {
             if (allStoreOps.count(storeOp)) {
-              lastVal = metaMap.get(storeOp.getValue());
-            }
-          } else if (auto storeOp = dyn_cast<affine::AffineStoreOp>(a)) {
-            if (allStoreOps.count(storeOp)) {
-              lastVal = metaMap.get(storeOp.getValueToStore());
+              lastVal = metaMap.get(storeOp.getStoredValue());
             }
           } else {
             // since not storing operation the value at the start of every block
@@ -2573,8 +2705,14 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
       assert(valueAtEndOfBlock.find(pred)->second);
       mlir::Value pval =
           valueAtEndOfBlock.find(pred)->second->materialize(true);
+      // What reaches the end of a predecessor is of the slot's extent but need
+      // not be spelled as the slot is, and what a block argument takes must be.
+      if (pval && pval.getType() != elType)
+        pval = castToType(elType, pval, pred->getTerminator());
       if (!pval || pval.getType() != elType) {
-        AI.getDefiningOp()->getParentOfType<func::FuncOp>().dump();
+        if (auto fn =
+                AI.getDefiningOp()->getParentOfType<FunctionOpInterface>())
+          fn.dump();
         pred->dump();
         llvm::errs() << "pval: " << *valueAtEndOfBlock.find(pred)->second
                      << " AI: " << AI << "\n";
@@ -2651,15 +2789,6 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
     }
   }
   return changed;
-}
-
-// The pointer a memcpy/memmove reads from; memset has no source.
-static Value transferSource(Operation *op) {
-  if (auto cpy = dyn_cast<LLVM::MemcpyOp>(op))
-    return cpy.getSrc();
-  if (auto mv = dyn_cast<LLVM::MemmoveOp>(op))
-    return mv.getSrc();
-  return nullptr;
 }
 
 bool isPromotable(mlir::Value AI) {
@@ -2752,6 +2881,11 @@ std::vector<OffsetTree> getLastStored(mlir::Value AI, const DataLayout &dl) {
         lastStored[tree.add(accessOffsets(SO.getValue().getType()), dl)]++;
       } else if (auto LO = dyn_cast<LLVM::LoadOp>(U)) {
         lastStored[tree.add(accessOffsets(LO.getType()), dl)]++;
+      } else if (isa<LLVM::MemcpyOp, LLVM::MemmoveOp, LLVM::MemsetOp>(U)) {
+        // What a transfer reads or fills is a slot like any other, and the
+        // forwarding can only be asked about slots it is told of.
+        if (auto bytes = transferLength(U))
+          lastStored[tree.add(transferAccess(*bytes, U->getContext()), dl)]++;
       } else if (auto GO = dyn_cast<LLVM::GEPOp>(U)) {
         list.emplace_back(GO, tree.add(gepOffsets(GO, dl), dl));
       } else if (isa<memref::CastOp, Memref2PointerOp, Pointer2MemrefOp,
