@@ -617,9 +617,11 @@ public:
       if (!oSize)
         return false;
       // Unless it goes nowhere, in which case it counts in no units at all and
-      // what it reaches has to be said in whatever this one counts in: a
-      // single element when that is dimensions, its own extent otherwise.
-      bound += o.units.empty() && hasDim() ? 1 : (int64_t)*oSize;
+      // what it reaches has to be said in whatever this one counts in: a single
+      // element when that is dimensions of what it reads, its own extent
+      // otherwise -- which is what the step has been put into above when the
+      // two read different amounts.
+      bound += o.units.empty() && hasDim() && sameExtent ? 1 : (int64_t)*oSize;
     }
 
     uint64_t idx = offsets[at].idx;
@@ -2329,6 +2331,19 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
             LLVM_FALLTHROUGH;
           case Match::Contains:
           case Match::Maybe:
+            // A fill reaching over the whole slot writes all of it whatever
+            // else it reaches besides, and zero bytes are a zero of whatever
+            // the slot holds however far they run past it.
+            if (auto ms = dyn_cast<LLVM::MemsetOp>(user)) {
+              APInt byte;
+              if (touched.containsAt(idx, dl) &&
+                  matchPattern(ms.getVal(), m_ConstantInt(&byte)) &&
+                  byte.isZero()) {
+                LLVM_DEBUG(llvm::dbgs() << "Matching Store: " << *user << "\n");
+                allStoreOps.insert(user);
+                break;
+              }
+            }
             LLVM_DEBUG(llvm::dbgs() << "Aliasing Store: " << *user << "\n");
             AliasingStoreOperations.insert(user);
             break;
@@ -3065,13 +3080,16 @@ std::vector<OffsetTree> getLastStored(mlir::Value AI, const DataLayout &dl) {
 
   // A slot is worth trying when more than one access names it -- and an access
   // of a piece of a slot is an access of that slot too, since the piece can be
-  // taken out of what is in it.
+  // taken out of what is in it. It counts the other way round as well, since
+  // an access reaching over the whole of a slot may be all that is ever said
+  // about what is in it.
   std::vector<OffsetTree> todo;
   for (auto &pair : lastStored) {
     unsigned count = pair.second;
     for (auto &other : lastStored)
       if (&other != &pair &&
-          pair.first.second.containsAt(other.first.second, dl))
+          (pair.first.second.containsAt(other.first.second, dl) ||
+           other.first.second.containsAt(pair.first.second, dl)))
         count += other.second;
     if (count > 1)
       todo.push_back(pair.first.second);
