@@ -148,8 +148,6 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       if (options->markReadonly)
         pass_pipeline += "markReadonly";
       pass_pipeline += "},"
-        "inline{default-pipeline=canonicalize max-iterations=4},"
-        "polygeist-mem2reg,canonicalize,symbol-dce,"
         "lower-llvm-ext,canonicalize,";
       if (options->splitMultiResults)
         pass_pipeline += "split-multi-results,";
@@ -158,6 +156,8 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
         // no lowering of its own further down, so expand it here.
         "flatten-enzyme-caches,lower-enzyme-binomial-progress,"
         "enzyme-simplify-math,"
+        "inline{default-pipeline=canonicalize max-iterations=4},"
+        "polygeist-mem2reg,canonicalize,symbol-dce,"
         // canonicalize here folds away memref.subview ops before gpu-kernel-outlining
         "canonicalize,cse";
       if (options->removeAtomics)
