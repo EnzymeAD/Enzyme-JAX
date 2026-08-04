@@ -616,7 +616,10 @@ public:
     if (!o.hasDim()) {
       if (!oSize)
         return false;
-      bound += (int64_t)*oSize;
+      // Unless it goes nowhere, in which case it counts in no units at all and
+      // what it reaches has to be said in whatever this one counts in: a
+      // single element when that is dimensions, its own extent otherwise.
+      bound += o.units.empty() && hasDim() ? 1 : (int64_t)*oSize;
     }
 
     uint64_t idx = offsets[at].idx;
