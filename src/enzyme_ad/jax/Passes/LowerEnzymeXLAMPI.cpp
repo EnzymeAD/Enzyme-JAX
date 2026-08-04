@@ -1915,6 +1915,12 @@ struct LowerEnzymeXLAMPIPass
 
     auto context = module->getContext();
 
+    if (backend != "cpu" && backend != "cuda") {
+      module.emitError() << "Backend not supported: " << backend;
+      signalPassFailure();
+      return;
+    }
+
     if (backend == "cuda" && !ncclCommPtr) {
       bool hasLowerableMPIOp = false;
       module.walk([&](Operation *op) {
@@ -1935,6 +1941,22 @@ struct LowerEnzymeXLAMPIPass
     }
 
     if (backend == "cuda") {
+      bool hasUnsupportedMPIOp = false;
+      module.walk([&](Operation *op) {
+        if (isa<enzymexla::MPICommRankOp, enzymexla::MPICommSizeOp,
+                enzymexla::MPIBarrierOp, enzymexla::MPISendOp,
+                enzymexla::MPIRecvOp, enzymexla::MPIIsendOp,
+                enzymexla::MPIIrecvOp, enzymexla::MPIWaitOp,
+                enzymexla::MPIWaitallOp, enzymexla::MPIBcastOp>(op)) {
+          op->emitError() << "MPI operation not supported by backend cuda";
+          hasUnsupportedMPIOp = true;
+        }
+      });
+      if (hasUnsupportedMPIOp) {
+        signalPassFailure();
+        return;
+      }
+
       bool hasUnsupportedAllreduce = false;
       module.walk([&](enzymexla::MPIAllreduceOp op) {
         auto sendbufType =
