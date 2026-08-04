@@ -3448,9 +3448,15 @@ struct ForLoopApplyEnzymeAttributes
       return success();
     }
 
+    // The calls whose attribute has been read out and put on the loop, which
+    // are the ones there is no longer anything to say through.
+    SmallVector<Operation *> read;
+    unsigned called = 0;
+
     for (auto use : *uses) {
       auto user = use.getUser();
       assert(isa<LLVM::CallOp>(user));
+      called++;
 
       APInt ckptType;
       if (!matchPattern(user->getOperand(0), m_ConstantInt(&ckptType))) {
@@ -3475,29 +3481,36 @@ struct ForLoopApplyEnzymeAttributes
         if (isMincutAttr) {
           if (!enable)
             loop->setAttr("enzyme.disable_mincut", rewriter.getUnitAttr());
+        } else {
+          assert(isCheckpointingAttr);
+          loop->setAttr("enzyme.enable_checkpointing",
+                        rewriter.getBoolAttr(enable));
 
-          continue;
-        }
-
-        assert(isCheckpointingAttr);
-        loop->setAttr("enzyme.enable_checkpointing",
-                      rewriter.getBoolAttr(enable));
-
-        if (enableBinomial) {
-          loop->setAttr("enzyme.binomial_checkpointing",
-                        rewriter.getUnitAttr());
-        }
-        if (hasPeriod && !checkpointingPeriod.isAllOnes()) {
-          loop->setAttr("enzyme.checkpoint_period",
-                        rewriter.getIntegerAttr(rewriter.getI64Type(),
-                                                checkpointingPeriod));
+          if (enableBinomial) {
+            loop->setAttr("enzyme.binomial_checkpointing",
+                          rewriter.getUnitAttr());
+          }
+          if (hasPeriod && !checkpointingPeriod.isAllOnes()) {
+            loop->setAttr("enzyme.checkpoint_period",
+                          rewriter.getIntegerAttr(rewriter.getI64Type(),
+                                                  checkpointingPeriod));
+          }
         }
       }
 
-      rewriter.eraseOp(user);
+      read.push_back(user);
     }
 
-    rewriter.eraseOp(func);
+    if (read.empty())
+      return failure();
+
+    for (auto *user : read)
+      rewriter.eraseOp(user);
+
+    // A call the attribute could not be read out of is still a call, and what
+    // it names has to stay for it to name anything.
+    if (read.size() == called)
+      rewriter.eraseOp(func);
 
     return success();
   }
