@@ -154,7 +154,10 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       pass_pipeline += "remove-unnecessary-enzyme-ops,"
         // binomial checkpointing leaves enzyme.binomial_progress behind; it has
         // no lowering of its own further down, so expand it here.
-        "flatten-enzyme-caches,lower-enzyme-binomial-progress,"
+        "flatten-enzyme-caches,lower-enzyme-binomial-progress,";
+      if (options->hoistLoopAllocations)
+        pass_pipeline += "hoist-loop-allocations,";
+      pass_pipeline +=
         "enzyme-simplify-math,"
         "inline{default-pipeline=canonicalize max-iterations=4},"
         "polygeist-mem2reg,canonicalize,symbol-dce,"
