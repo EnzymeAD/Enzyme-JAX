@@ -20,8 +20,12 @@
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/PassManager.h"
 #include "llvm/IRReader/IRReader.h"
+#include "llvm/Passes/PassBuilder.h"
 #include "llvm/Support/SourceMgr.h"
+#include "llvm/Transforms/Scalar/SimplifyCFG.h"
+#include "llvm/Transforms/Utils/LowerInvoke.h"
 
 #include "src/enzyme_ad/jax/RegistryUtils.h"
 #include "llvm/Support/TargetSelect.h"
@@ -47,6 +51,32 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
     err_stream.flush();
     exit(1);
   }
+  // Raising has no way to read an unwind edge, so a call that may throw stops
+  // it here rather than further along: an invoke left standing is not a module
+  // that gets compiled at all.
+  {
+    llvm::PassBuilder PB;
+    llvm::LoopAnalysisManager LAM;
+    llvm::FunctionAnalysisManager FAM;
+    llvm::CGSCCAnalysisManager CGAM;
+    llvm::ModuleAnalysisManager MAM;
+    PB.registerModuleAnalyses(MAM);
+    PB.registerCGSCCAnalyses(CGAM);
+    PB.registerFunctionAnalyses(FAM);
+    PB.registerLoopAnalyses(LAM);
+    PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
+
+    llvm::FunctionPassManager FPM;
+    FPM.addPass(llvm::LowerInvokePass());
+    // The landing pads the lowering leaves behind are unreachable, and what
+    // reads the module next has no more use for them than it had for the edge.
+    FPM.addPass(llvm::SimplifyCFGPass());
+
+    llvm::ModulePassManager MPM;
+    MPM.addPass(llvm::createModuleToFunctionPassAdaptor(std::move(FPM)));
+    MPM.run(*llvmModule, MAM);
+  }
+
   llvm::InitializeNativeTarget();
   llvm::InitializeNativeTargetAsmPrinter();
 
