@@ -2310,6 +2310,7 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
         if (transferDest(user) == val) {
           switch (idx.matches(touched, dl)) {
           case Match::Exact:
+          case Match::Contains:
             // Writing exactly this slot writes a value that is known when what
             // it was written from is: the bytes of a fill, when they are zero,
             // or whatever the copy read.
@@ -2327,7 +2328,6 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
               break;
             }
             LLVM_FALLTHROUGH;
-          case Match::Contains:
           case Match::Maybe:
             LLVM_DEBUG(llvm::dbgs() << "Aliasing Store: " << *user << "\n");
             AliasingStoreOperations.insert(user);
