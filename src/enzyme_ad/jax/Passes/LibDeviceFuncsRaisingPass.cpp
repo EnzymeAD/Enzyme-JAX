@@ -54,6 +54,14 @@ public:
     if (isa<LLVM::LLVMArrayType, mlir::VectorType>(llvmNDVectorTy)) {
       return failure();
     }
+    // What comes out counts elements as much as what goes in, and an op free to
+    // change one without the other -- a bitcast of an integer to a vector of
+    // floats -- cannot be said with one that holds its shape.
+    if (llvm::any_of(op->getResultTypes(), [](Type type) {
+          return isa<LLVM::LLVMArrayType, mlir::VectorType>(type);
+        })) {
+      return failure();
+    }
 
     Operation *newOp = rewriter.create(
         op->getLoc(), rewriter.getStringAttr(TargetOp::getOperationName()),
