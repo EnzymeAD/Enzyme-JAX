@@ -2111,7 +2111,6 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
   std::set<mlir::Operation *> transferLoads;
   // Loads of a piece of the slot, and how far into it that piece lies.
   DenseMap<mlir::Operation *, uint64_t> containedLoads;
-  mlir::Type subType = nullptr;
   mlir::Location loc = AI.getLoc();
   std::set<mlir::Operation *> allStoreOps;
 
@@ -2187,7 +2186,6 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
           // forwarded out of it takes.
           if (elType && read != elType)
             return;
-          subType = read;
           elType = read;
           break;
         case Match::Contains: {
@@ -2383,11 +2381,6 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
       AliasingStoreOperations.insert(op);
     }
   }
-
-  // Only a load that names the whole slot says how it is spelled; when every
-  // load names a piece of it, what it holds is what it was keyed on.
-  if (!elType)
-    elType = subType = idx.getBase();
 
   if (loadOps.size() == 0 && transferLoads.size() == 0) {
     return changed;
@@ -2804,7 +2797,7 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
     (void)startFound;
     assert(startFound != valueAtStartOfBlock.end());
     assert(startFound->second->valueAtStart == block);
-    auto arg = block->addArgument(subType, loc);
+    auto arg = block->addArgument(elType, loc);
     auto *argVal = metaMap.get(arg);
     valueAtStartOfBlock[block] = argVal;
     blocksWithAddedArgs[block] = arg;
