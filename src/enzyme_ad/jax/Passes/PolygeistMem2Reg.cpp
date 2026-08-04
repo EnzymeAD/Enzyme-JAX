@@ -344,6 +344,11 @@ public:
       return unit.kind == OffsetType::Kind::Dim;
     });
   }
+  // An offset that goes nowhere counts in no units, so it sits happily beside
+  // one counted in dimensions: both name a place, and neither disagrees with
+  // the other about how to get there.
+  bool hasDimOrZero() const { return hasDim() || isZero(); }
+
   // A byte offset of no bytes is the placeholder for not moving at all, which
   // is not a way of counting anything.
   bool hasByte() const {
@@ -757,9 +762,22 @@ public:
         return Match::Contains;
       }
 
+    // Two offsets that both go nowhere name the same place, so what is left is
+    // how far each reaches from it: the same extent is the same access, and a
+    // smaller one lies inside the larger.
+    if (isZero() && o.isZero()) {
+      if (sameExtent)
+        return Match::Exact;
+      if (containedAt && size && osize && *osize <= *size) {
+        *containedAt = 0;
+        return Match::Contains;
+      }
+      return Match::Maybe;
+    }
+
     bool isDim = true;
 
-    if (hasDim() && o.hasDim()) {
+    if (hasDimOrZero() && o.hasDimOrZero()) {
       isDim = true;
     } else if (!hasDim() && !o.hasDim()) {
       isDim = false;
