@@ -28,6 +28,7 @@
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "src/enzyme_ad/jax/Utils.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include <algorithm>
@@ -2139,6 +2140,18 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
   DenseMap<mlir::Operation *, uint64_t> containedLoads;
   mlir::Location loc = AI.getLoc();
   std::set<mlir::Operation *> allStoreOps;
+  // Reads standing for what a transfer moved. One is worth the load it costs
+  // only where something went on to ask for it: left behind unasked for, it is
+  // a read of the other side of the transfer, which promoting that side sees,
+  // sweeps, and counts as progress -- and promoting this side writes again the
+  // round after, so neither side ever settles. There are several ways out of
+  // this function and the reads have to go on all of them.
+  SmallVector<Operation *> transferReads;
+  auto dropUnaskedReads = llvm::make_scope_exit([&transferReads]() {
+    for (auto *read : llvm::reverse(transferReads))
+      if (read->getResult(0).use_empty())
+        read->erase();
+  });
 
   if (idx.isUnknown())
     return changed;
@@ -2655,6 +2668,7 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
               } else if (Value src = transferSource(a)) {
                 written = LLVM::LoadOp::create(builder, a->getLoc(), moved, src,
                                                transferAlignment(a, 1));
+                transferReads.push_back(written.getDefiningOp());
               } else {
                 written = LLVM::ZeroOp::create(builder, a->getLoc(), moved);
               }
