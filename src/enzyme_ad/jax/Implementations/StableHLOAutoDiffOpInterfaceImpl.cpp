@@ -1044,24 +1044,25 @@ public:
       sched.nInner = *period;
       return sched;
     }
-    sched.nInner = (period && *period > 0) ? *period : (int64_t)std::sqrt(*numIters);
+    sched.nInner =
+        (period && *period > 0) ? *period : (int64_t)std::sqrt(*numIters);
     sched.nOuter = *numIters / sched.nInner;
     sched.trailingIters = *numIters % sched.nInner;
     return sched;
   }
 
   // Both outer loops count segments, one forward and one back.
-  static stablehlo::WhileOp createForwardOuterLoop(
-      OpBuilder &builder, Location loc, const PeriodicSchedule &sched,
-      ValueRange inits) {
+  static stablehlo::WhileOp
+  createForwardOuterLoop(OpBuilder &builder, Location loc,
+                         const PeriodicSchedule &sched, ValueRange inits) {
     if (!sched.isDynamic())
       return makeForLoop(builder, loc, 0, sched.numSegments(), 1, inits);
     return makeForLoop(builder, loc, 0, sched.nOuterV, 1, inits);
   }
 
-  static stablehlo::WhileOp createReverseOuterLoop(
-      OpBuilder &builder, Location loc, const PeriodicSchedule &sched,
-      ValueRange inits) {
+  static stablehlo::WhileOp
+  createReverseOuterLoop(OpBuilder &builder, Location loc,
+                         const PeriodicSchedule &sched, ValueRange inits) {
     return createForwardOuterLoop(builder, loc, sched, inits);
   }
 
@@ -1081,8 +1082,7 @@ public:
   // multiple of the period and every segment is provably full: a static length
   // is what lets the tensors downstream of it keep a static shape.
   static Value computeSegmentLength(OpBuilder &builder, Location loc,
-                                    Value base,
-                                    const PeriodicSchedule &sched) {
+                                    Value base, const PeriodicSchedule &sched) {
     Value nInner = makeI64Constant(loc, builder, sched.nInner);
     if (!sched.isDynamic() && !sched.hasTrailing())
       return nInner;
@@ -1130,11 +1130,11 @@ public:
   static SmallVector<Value>
   computeReverseSegmentHint(OpBuilder &builder, Location loc, Value outerIV,
                             const PeriodicSchedule &sched) {
-    Value last = sched.isDynamic()
-                     ? stablehlo::SubtractOp::create(
-                           builder, loc, sched.nOuterV,
-                           makeI64Constant(loc, builder, 1))
-                     : makeI64Constant(loc, builder, sched.numSegments() - 1);
+    Value last =
+        sched.isDynamic()
+            ? stablehlo::SubtractOp::create(builder, loc, sched.nOuterV,
+                                            makeI64Constant(loc, builder, 1))
+            : makeI64Constant(loc, builder, sched.numSegments() - 1);
     Value segment = stablehlo::SubtractOp::create(builder, loc, last, outerIV);
     Value base = stablehlo::MulOp::create(
         builder, loc, makeI64Constant(loc, builder, sched.nInner), segment);
@@ -1170,11 +1170,11 @@ public:
                                  const PeriodicSchedule &sched) {
     if (!sched.isDynamic()) {
       int64_t start = getConstantStart(op), step = getConstantStep(op);
-      Value scaled =
-          step == 1 ? stepIndex
-                    : stablehlo::MulOp::create(
-                          builder, loc, makeI64Constant(loc, builder, step),
-                          stepIndex);
+      Value scaled = step == 1
+                         ? stepIndex
+                         : stablehlo::MulOp::create(
+                               builder, loc,
+                               makeI64Constant(loc, builder, step), stepIndex);
       if (start == 0)
         return scaled;
       return stablehlo::AddOp::create(
@@ -1191,7 +1191,8 @@ public:
     // The template is one of our own scaffold loops, so its trip count is the
     // limit its condition compares against.
     auto cmp = cast<stablehlo::CompareOp>(
-        cast<stablehlo::ReturnOp>(templateLoop.getCond().front().getTerminator())
+        cast<stablehlo::ReturnOp>(
+            templateLoop.getCond().front().getTerminator())
             ->getOperand(0)
             .getDefiningOp());
     return makeForLoop(builder, loc, makeI64Constant(loc, builder, 0),
@@ -1227,7 +1228,8 @@ public:
       // variable, which -- being an integer counter -- is never active.
       assert(!operandsActive[0] &&
              "the induction variable of a checkpointed loop cannot be active");
-      ArrayRef<bool> carriedActive = ArrayRef<bool>(operandsActive).drop_front();
+      ArrayRef<bool> carriedActive =
+          ArrayRef<bool>(operandsActive).drop_front();
 
       SmallVector<Value> incomingGradients;
       for (auto &&[active, res] :
@@ -1430,7 +1432,8 @@ public:
         auto whileOp = cast<stablehlo::WhileOp>(orig);
         warnUnsupportedCheckpointing(whileOp);
 
-        if (needsCheckpointing(whileOp) || needsBinomialCheckpointing(whileOp)) {
+        if (needsCheckpointing(whileOp) ||
+            needsBinomialCheckpointing(whileOp)) {
           if (auto caches = tryCacheValues(whileOp, orig, gutils))
             return *caches;
         }
