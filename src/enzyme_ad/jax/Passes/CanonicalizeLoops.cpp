@@ -351,6 +351,16 @@ LogicalResult AffineIntegerRangeAnalysis::visitOperation(
 
 namespace {
 
+// These rewrites read an op on integers one of whose operands came from an
+// index, and say the op again in index. The width they check is the width of
+// the integer the index was cast to; index itself has no width to ask for, and
+// an op already in index has the cast the other way round, so rewriting it
+// would put an integer where an index belongs. Neither is a rewrite to make.
+static bool tooNarrowFor(mlir::Type ty, int64_t max) {
+  auto intTy = dyn_cast<mlir::IntegerType>(ty);
+  return !intTy || APInt::getMaxValue(intTy.getWidth()).ult(max);
+}
+
 std::optional<int64_t> maxSize(mlir::Value v) {
   if (auto ba = dyn_cast<BlockArgument>(v)) {
     if (auto par =
@@ -457,8 +467,7 @@ public:
     auto maxSizeOpt = maxSize(operand.getOperand());
     if (!maxSizeOpt)
       return failure();
-    if (APInt::getMaxValue(operand.getType().getIntOrFloatBitWidth())
-            .ult(*maxSizeOpt))
+    if (tooNarrowFor(operand.getType(), *maxSizeOpt))
       return failure();
 
     rewriter.replaceOpWithNewOp<arith::IndexCastUIOp>(ext, ext.getType(),
@@ -479,8 +488,7 @@ public:
     auto maxSizeOpt = maxSize(operand.getOperand());
     if (!maxSizeOpt)
       return failure();
-    if (APInt::getMaxValue(ext.getType().getIntOrFloatBitWidth())
-            .ult(*maxSizeOpt))
+    if (tooNarrowFor(ext.getType(), *maxSizeOpt))
       return failure();
 
     rewriter.replaceOpWithNewOp<arith::IndexCastUIOp>(ext, ext.getType(),
@@ -501,8 +509,7 @@ public:
     auto maxSizeOpt = maxSize(operand.getOperand());
     if (!maxSizeOpt)
       return failure();
-    if (APInt::getMaxValue(operand.getType().getIntOrFloatBitWidth())
-            .ult(*maxSizeOpt))
+    if (tooNarrowFor(operand.getType(), *maxSizeOpt))
       return failure();
 
     IntegerAttr constValue;
@@ -531,8 +538,7 @@ public:
     auto maxSizeOpt = maxSize(operand.getOperand());
     if (!maxSizeOpt)
       return failure();
-    if (APInt::getMaxValue(operand.getType().getIntOrFloatBitWidth())
-            .ult(*maxSizeOpt))
+    if (tooNarrowFor(operand.getType(), *maxSizeOpt))
       return failure();
 
     IntegerAttr constValue;
@@ -565,8 +571,7 @@ public:
     if (!maxSizeOpt)
       return failure();
     if (!operand.getType().isIndex())
-      if (APInt::getMaxValue(operand.getType().getIntOrFloatBitWidth())
-              .ult(*maxSizeOpt))
+      if (tooNarrowFor(operand.getType(), *maxSizeOpt))
         return failure();
     if (operand.getRhs() != ext.getRhs())
       return failure();
@@ -588,8 +593,7 @@ public:
     auto maxSizeOpt = maxSize(operandOp->getOperand(0));
     if (!maxSizeOpt)
       return failure();
-    if (APInt::getMaxValue(operand.getType().getIntOrFloatBitWidth())
-            .ult(*maxSizeOpt))
+    if (tooNarrowFor(operand.getType(), *maxSizeOpt))
       return failure();
 
     IntegerAttr constValue;
@@ -638,8 +642,7 @@ public:
     auto maxSizeOpt = maxSize(operand.getOperand());
     if (!maxSizeOpt)
       return failure();
-    if (APInt::getMaxValue(operand.getType().getIntOrFloatBitWidth())
-            .ult(*maxSizeOpt))
+    if (tooNarrowFor(operand.getType(), *maxSizeOpt))
       return failure();
 
     APInt constValue;
@@ -670,9 +673,7 @@ public:
     auto maxSizeOpt = maxSize(operand->getOperand(0));
     if (!maxSizeOpt)
       return failure();
-    if (APInt::getMaxValue(
-            operand->getResult(0).getType().getIntOrFloatBitWidth())
-            .ult(*maxSizeOpt))
+    if (tooNarrowFor(operand->getResult(0).getType(), *maxSizeOpt))
       return failure();
 
     IntegerAttr constValue;
@@ -708,8 +709,7 @@ public:
     auto maxSizeOpt = maxSize(operand.getOperand());
     if (!maxSizeOpt)
       return failure();
-    if (APInt::getMaxValue(operand.getType().getIntOrFloatBitWidth())
-            .ult(*maxSizeOpt))
+    if (tooNarrowFor(operand.getType(), *maxSizeOpt))
       return failure();
 
     IntegerAttr constValue;
