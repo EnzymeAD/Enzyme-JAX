@@ -1142,7 +1142,8 @@ struct PolygeistMem2Reg
   bool forwardStoreToLoad(
       mlir::Value AI, OffsetTree idx,
       SmallVectorImpl<Operation *> &loadOpsToErase,
-      DenseMap<Operation *, SmallVector<Operation *>> &capturedAliasing);
+      DenseMap<Operation *, SmallVector<Operation *>> &capturedAliasing,
+      SymbolTableCollection &symbolTables);
 };
 
 } // end anonymous namespace
@@ -2055,10 +2056,11 @@ Value castToType(Type elType, Value val, Operation *op) {
 
 // Check if call captures alloca instance by checking for llvm.nocapture
 // attribute
-bool isCallNonCapturing(CallOpInterface callOp, Value val) {
+bool isCallNonCapturing(CallOpInterface callOp, Value val,
+                        SymbolTableCollection &symbolTables) {
   auto calleeAttr = dyn_cast<SymbolRefAttr>(callOp.getCallableForCallee());
   if (calleeAttr) {
-    auto callee = SymbolTable::lookupSymbolIn(
+    auto callee = symbolTables.lookupSymbolIn(
         callOp->getParentOfType<ModuleOp>(), calleeAttr);
     auto fn = dyn_cast_or_null<FunctionOpInterface>(callee);
     if (!fn)
@@ -2127,7 +2129,8 @@ static bool extractPath(Type from, uint64_t at, Type want, const DataLayout &dl,
 bool PolygeistMem2Reg::forwardStoreToLoad(
     mlir::Value AI, OffsetTree idx,
     SmallVectorImpl<Operation *> &loadOpsToErase,
-    DenseMap<Operation *, SmallVector<Operation *>> &capturedAliasing) {
+    DenseMap<Operation *, SmallVector<Operation *>> &capturedAliasing,
+    SymbolTableCollection &symbolTables) {
   bool changed = false;
   std::set<mlir::Operation *> loadOps;
   // Transfers that read exactly one slot, which act as a load of it.
@@ -2291,7 +2294,7 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
       if (auto callOp = dyn_cast<CallOpInterface>(user)) {
         auto callee = dyn_cast<SymbolRefAttr>(callOp.getCallableForCallee());
         if (!callee || callee.getLeafReference() != "free") {
-          if (!isCallNonCapturing(callOp, val)) {
+          if (!isCallNonCapturing(callOp, val, symbolTables)) {
             LLVM_DEBUG(llvm::dbgs() << "Aliasing Store: " << callOp << "\n");
             AliasingStoreOperations.insert(callOp.getOperation());
             if (!callee || !getNonCapturingFunctions().count(
@@ -2964,7 +2967,7 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
   return changed;
 }
 
-bool isPromotable(mlir::Value AI) {
+bool isPromotable(mlir::Value AI, SymbolTableCollection &symbolTables) {
   std::deque<mlir::Value> list = {AI};
 
   while (list.size()) {
@@ -2998,7 +3001,7 @@ bool isPromotable(mlir::Value AI) {
       } else if (auto callOp = dyn_cast<CallOpInterface>(U)) {
         if (auto sym = dyn_cast<SymbolRefAttr>(callOp.getCallableForCallee())) {
           if (StringAttr callee = sym.getLeafReference())
-            if (isCallNonCapturing(callOp, val) ||
+            if (isCallNonCapturing(callOp, val, symbolTables) ||
                 getNonCapturingFunctions().count(callee.str()))
               continue;
         }
@@ -3100,6 +3103,11 @@ std::vector<OffsetTree> getLastStored(mlir::Value AI, const DataLayout &dl) {
 void PolygeistMem2Reg::runOnOperation() {
   auto *f = getOperation();
 
+  // Resolving a callee by name walks every symbol the module has, and there is
+  // a callee to resolve for each call each allocation reaches. Nothing here
+  // adds or removes a symbol, so one collection serves the whole run.
+  SymbolTableCollection symbolTables;
+
   // Variable indicating that a memref has had a load removed
   // and or been deleted. Because there can be memrefs of
   // memrefs etc, we may need to do multiple passes (first
@@ -3117,22 +3125,22 @@ void PolygeistMem2Reg::runOnOperation() {
     // Walk all load's and perform store to load forwarding.
     SmallVector<mlir::Value, 4> toPromote;
     f->walk([&](mlir::memref::AllocaOp AI) {
-      if (isPromotable(AI)) {
+      if (isPromotable(AI, symbolTables)) {
         toPromote.push_back(AI);
       }
     });
     f->walk([&](mlir::memref::AllocOp AI) {
-      if (isPromotable(AI)) {
+      if (isPromotable(AI, symbolTables)) {
         toPromote.push_back(AI);
       }
     });
     f->walk([&](LLVM::AllocaOp AI) {
-      if (isPromotable(AI)) {
+      if (isPromotable(AI, symbolTables)) {
         toPromote.push_back(AI);
       }
     });
     f->walk([&](memref::GetGlobalOp AI) {
-      if (isPromotable(AI)) {
+      if (isPromotable(AI, symbolTables)) {
         toPromote.push_back(AI);
       }
     });
@@ -3148,8 +3156,8 @@ void PolygeistMem2Reg::runOnOperation() {
                                 << "} of " << AI << "\n");
         // llvm::errs() << " PRE " << AI << "\n";
         // f.dump();
-        changed |=
-            forwardStoreToLoad(AI, vec, loadOpsToErase, capturedAliasing);
+        changed |= forwardStoreToLoad(AI, vec, loadOpsToErase, capturedAliasing,
+                                      symbolTables);
         // llvm::errs() << " POST " << AI << "\n";
         // f.dump();
       }
