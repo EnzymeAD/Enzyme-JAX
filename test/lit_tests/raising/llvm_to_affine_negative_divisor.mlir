@@ -65,3 +65,45 @@ llvm.func @dim_times_dim(%p: !llvm.ptr) {
 // CHECK:         %[[M:.+]] = arith.muli
 // CHECK:         llvm.getelementptr inbounds %arg0[%[[M]]]
 // CHECK:         memref.store
+
+// -----
+
+// The power of two a shift stands for is worked out at the width the expression
+// holds. Taken as an int, `1 << 31` is the largest negative number there is,
+// and a shift by 31 is how a sign bit is read.
+
+llvm.func @shr_31(%p: !llvm.ptr, %n: i64) {
+  %c31 = arith.constant 31 : i64
+  %cst = arith.constant 0.000000e+00 : f64
+  affine.for %i = 0 to 16 {
+    %iv = arith.index_cast %i : index to i64
+    %d = arith.shrui %iv, %c31 : i64
+    %g = llvm.getelementptr inbounds %p[%d] : (!llvm.ptr, i64) -> !llvm.ptr, f64
+    llvm.store %cst, %g : f64, !llvm.ptr
+  }
+  llvm.return
+}
+
+// CHECK-LABEL: llvm.func @shr_31
+// CHECK:         affine.store %{{.*}}[%{{.*}} floordiv 2147483648]
+
+// -----
+
+// Past 62 there is no power of two a signed affine constant can hold.
+
+llvm.func @shr_63(%p: !llvm.ptr) {
+  %c63 = arith.constant 63 : i64
+  %cst = arith.constant 0.000000e+00 : f64
+  affine.for %i = 0 to 16 {
+    %iv = arith.index_cast %i : index to i64
+    %d = arith.shrui %iv, %c63 : i64
+    %g = llvm.getelementptr inbounds %p[%d] : (!llvm.ptr, i64) -> !llvm.ptr, f64
+    llvm.store %cst, %g : f64, !llvm.ptr
+  }
+  llvm.return
+}
+
+// CHECK-LABEL: llvm.func @shr_63
+// CHECK:         %[[S:.+]] = arith.shrui
+// CHECK:         llvm.getelementptr inbounds %arg0[%[[S]]]
+// CHECK:         memref.store
