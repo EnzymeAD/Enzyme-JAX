@@ -994,13 +994,27 @@ struct AffineExprBuilder {
           return (*lhs) + (*rhs);
         else if (isa<LLVM::SubOp, arith::SubIOp>(op))
           return (*lhs) - (*rhs);
-        else if (isa<LLVM::MulOp, arith::MulIOp>(op))
+        else if (isa<LLVM::MulOp, arith::MulIOp>(op)) {
+          // A product is affine only where one side is free of dims.
+          if (!lhs->isSymbolicOrConstant() && !rhs->isSymbolicOrConstant())
+            return failure();
           return (*lhs) * (*rhs);
-        else if (isa<LLVM::UDivOp, LLVM::SDivOp, arith::DivUIOp,
-                     arith::DivSIOp>(op))
+        } else if (isa<LLVM::UDivOp, LLVM::SDivOp, arith::DivUIOp,
+                       arith::DivSIOp>(op)) {
+          // An affine floordiv divides by a positive value: it is the only
+          // divisor its lowering, and the flattening the maps go through,
+          // are written for.  A negative one does reach here -- `-x / c` is
+          // `x / -c` to instcombine -- and is the same division with the
+          // sign taken out, which the expression can say instead.
+          if (auto cexpr = dyn_cast<AffineConstantExpr>(*rhs)) {
+            if (cexpr.getValue() == 0)
+              return failure();
+            if (cexpr.getValue() < 0)
+              return -((*lhs).floorDiv(-cexpr.getValue()));
+          }
           return (*lhs).floorDiv(*rhs);
-        else if (isa<arith::ShRUIOp, arith::ShRSIOp, LLVM::LShrOp,
-                     LLVM::AShrOp>(op)) {
+        } else if (isa<arith::ShRUIOp, arith::ShRSIOp, LLVM::LShrOp,
+                       LLVM::AShrOp>(op)) {
           auto cexpr = dyn_cast<AffineConstantExpr>(*rhs);
           if (!cexpr)
             return failure();
@@ -1016,6 +1030,14 @@ struct AffineExprBuilder {
           }
         } else if (isa<LLVM::URemOp, arith::RemSIOp, LLVM::SRemOp,
                        arith::RemUIOp>(op)) {
+          // As with floordiv above: a remainder is taken against a positive
+          // value, and against a negative one it is the same remainder.
+          if (auto cexpr = dyn_cast<AffineConstantExpr>(*rhs)) {
+            if (cexpr.getValue() == 0)
+              return failure();
+            if (cexpr.getValue() < 0)
+              return (*lhs) % (-cexpr.getValue());
+          }
           return (*lhs) % (*rhs);
         } else if (isa<arith::OrIOp>(op)) {
           auto cexpr = dyn_cast<AffineConstantExpr>(*rhs);
