@@ -37,6 +37,30 @@ LogicalResult RemoveIVs::matchAndRewrite(scf::ForOp forOp,
   llvm::SetVector<unsigned> removed;
   llvm::MapVector<unsigned, Value> steps;
   auto yield = cast<scf::YieldOp>(forOp.getBody()->getTerminator());
+
+  // The iteration count comes out in the induction variable's type and is
+  // multiplied by a step in the iter arg's, which need not be the same type.
+  // Narrowing the count loses nothing that was ever read: the arg's arithmetic
+  // wraps, so only the low bits of the count reach the result either way.
+  // Widening it loses nothing either -- a count is not negative and it fit in
+  // the narrower type it was counted in.
+  auto castToType = [&](Value v, Type ty) -> Value {
+    if (v.getType() == ty)
+      return v;
+    if (isa<IndexType>(v.getType()) || isa<IndexType>(ty)) {
+      Value cast = arith::IndexCastOp::create(rewriter, loc, ty, v);
+      return cast;
+    }
+    unsigned from = cast<IntegerType>(v.getType()).getWidth();
+    unsigned to = cast<IntegerType>(ty).getWidth();
+    if (from > to) {
+      Value trunc = arith::TruncIOp::create(rewriter, loc, ty, v);
+      return trunc;
+    }
+    Value ext = arith::ExtSIOp::create(rewriter, loc, ty, v);
+    return ext;
+  };
+
   for (unsigned i = 0; i < numIterArgs; i++) {
     auto ba = forOp.getRegionIterArgs()[i];
     auto init = forOp.getInits()[i];
@@ -63,6 +87,7 @@ LogicalResult RemoveIVs::matchAndRewrite(scf::ForOp forOp,
     Value iterNum = arith::SubIOp::create(
         rewriter, loc, forOp.getInductionVar(), forOp.getLowerBound());
     iterNum = arith::DivSIOp::create(rewriter, loc, iterNum, forOp.getStep());
+    iterNum = castToType(iterNum, step.getType());
 
     Value replacementIV = arith::MulIOp::create(rewriter, loc, iterNum, step);
     replacementIV = arith::AddIOp::create(rewriter, loc, replacementIV, init);
@@ -118,6 +143,7 @@ LogicalResult RemoveIVs::matchAndRewrite(scf::ForOp forOp,
       Value iterNum = arith::SubIOp::create(
           rewriter, loc, forOp.getUpperBound(), forOp.getLowerBound());
       iterNum = arith::DivSIOp::create(rewriter, loc, iterNum, forOp.getStep());
+      iterNum = castToType(iterNum, steps[i].getType());
 
       Value afterLoop = arith::MulIOp::create(rewriter, loc, iterNum, steps[i]);
       afterLoop =
