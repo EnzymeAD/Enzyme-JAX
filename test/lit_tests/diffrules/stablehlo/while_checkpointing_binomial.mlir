@@ -86,161 +86,163 @@ module @reactant_df attributes {mhlo.num_partitions = 1 : i64, mhlo.num_replicas
 // CHECK-NEXT:    %cst_0 = stablehlo.constant dense<[1.000000e+00, -0.87094897, 7.593600e-01]> : tensor<3xf32>
 // CHECK-NEXT:    %cst_1 = stablehlo.constant dense<1.000000e+00> : tensor<3xf32>
 // CHECK-NEXT:    %cst_2 = stablehlo.constant dense<[0.000000e+00, 0.785398185, 0.392699093]> : tensor<3xf32>
-// CHECK-NEXT:    %c_3 = stablehlo.constant dense<2> : tensor<i64>
-// CHECK-NEXT:    %c_4 = stablehlo.constant dense<0> : tensor<2xi64>
-// CHECK-NEXT:    %cst_5 = stablehlo.constant dense<0.000000e+00> : tensor<2x3xf32>
+// CHECK-NEXT:    %c_3 = stablehlo.constant dense<0> : tensor<2xi64>
+// CHECK-NEXT:    %cst_4 = stablehlo.constant dense<0.000000e+00> : tensor<2x3xf32>
+// CHECK-NEXT:    %c_5 = stablehlo.constant dense<2> : tensor<i64>
 // CHECK-NEXT:    %c_6 = stablehlo.constant dense<1> : tensor<i64>
 // CHECK-NEXT:    %c_7 = stablehlo.constant dense<5> : tensor<i64>
 // CHECK-NEXT:    %c_8 = stablehlo.constant dense<0> : tensor<i64>
 // CHECK-NEXT:    %cst_9 = stablehlo.constant dense<6.28318548> : tensor<3xf32>
-// CHECK-NEXT:    %0:5 = stablehlo.while(%iterArg = %c_8, %iterArg_10 = %cst_2, %iterArg_11 = %cst_5, %iterArg_12 = %c_8, %iterArg_13 = %c_4) : tensor<i64>, tensor<3xf32>, tensor<2x3xf32>, tensor<i64>, tensor<2xi64>
+// CHECK-NEXT:    %0:5 = stablehlo.while(%iterArg = %c_8, %iterArg_10 = %c_8, %iterArg_11 = %cst_2, %iterArg_12 = %cst_4, %iterArg_13 = %c_3) : tensor<i64>, tensor<i64>, tensor<3xf32>, tensor<2x3xf32>, tensor<2xi64> attributes {enzyme.disable_mincut}
 // CHECK-NEXT:    cond {
-// CHECK-NEXT:      %2 = stablehlo.compare LT, %iterArg, %c_3 : (tensor<i64>, tensor<i64>) -> tensor<i1>
+// CHECK-NEXT:      %2 = stablehlo.compare LT, %iterArg, %c_5 : (tensor<i64>, tensor<i64>) -> tensor<i1>
 // CHECK-NEXT:      stablehlo.return %2 : tensor<i1>
 // CHECK-NEXT:    } do {
-// CHECK-NEXT:      %2 = stablehlo.reshape %iterArg_10 : (tensor<3xf32>) -> tensor<1x3xf32>
-// CHECK-NEXT:      %3 = stablehlo.dynamic_update_slice %iterArg_11, %2, %iterArg, %c_8 : (tensor<2x3xf32>, tensor<1x3xf32>, tensor<i64>, tensor<i64>) -> tensor<2x3xf32>
-// CHECK-NEXT:      %4 = stablehlo.subtract %c_7, %iterArg_12 : tensor<i64>
-// CHECK-NEXT:      %5 = stablehlo.subtract %c_3, %iterArg : tensor<i64>
-// CHECK-DAG:      %[[b1:.+]] = stablehlo.compare GE, %iterArg, %c_6 : (tensor<i64>, tensor<i64>) -> tensor<i1>
-// CHECK-DAG:      %[[ns1:.+]] = stablehlo.compare GE, %iterArg_12, %c : (tensor<i64>, tensor<i64>) -> tensor<i1>
-// CHECK-NEXT:      %[[or1:.+]] = stablehlo.or %[[ns1]], %[[b1]] : tensor<i1>
-// CHECK-NEXT:      %9 = "stablehlo.if"(%[[or1]]) ({
-// CHECK-NEXT:        stablehlo.return %4 : tensor<i64>
+// CHECK-NEXT:      %2 = stablehlo.reshape %iterArg_11 : (tensor<3xf32>) -> tensor<1x3xf32>
+// CHECK-NEXT:      %3 = stablehlo.dynamic_update_slice %iterArg_12, %2, %iterArg, %c_8 : (tensor<2x3xf32>, tensor<1x3xf32>, tensor<i64>, tensor<i64>) -> tensor<2x3xf32>
+// CHECK-NEXT:      %4 = stablehlo.reshape %iterArg_10 : (tensor<i64>) -> tensor<1xi64>
+// CHECK-NEXT:      %5 = stablehlo.dynamic_update_slice %iterArg_13, %4, %iterArg : (tensor<2xi64>, tensor<1xi64>, tensor<i64>) -> tensor<2xi64>
+// CHECK-NEXT:      %6 = stablehlo.subtract %c_7, %iterArg_10 : tensor<i64>
+// CHECK-NEXT:      %7 = stablehlo.subtract %c_5, %iterArg : tensor<i64>
+// CHECK-NEXT:      %8 = stablehlo.minimum %7, %6 : tensor<i64>
+// CHECK-NEXT:      %9 = stablehlo.compare GE, %iterArg_10, %c : (tensor<i64>, tensor<i64>) -> tensor<i1>
+// CHECK-NEXT:      %10 = stablehlo.compare LE, %8, %c_6 : (tensor<i64>, tensor<i64>) -> tensor<i1>
+// CHECK-NEXT:      %11 = stablehlo.or %9, %10 : tensor<i1>
+// CHECK-NEXT:      %12 = "stablehlo.if"(%11) ({
+// CHECK-NEXT:        stablehlo.return %6 : tensor<i64>
 // CHECK-NEXT:      }, {
-// CHECK-NEXT:        %15:2 = stablehlo.while(%iterArg_14 = %c_8, %iterArg_15 = %c_6) : tensor<i64>, tensor<i64>
+// CHECK-NEXT:        %16:2 = stablehlo.while(%iterArg_14 = %c_8, %iterArg_15 = %c_6) : tensor<i64>, tensor<i64>
 // CHECK-NEXT:        cond {
-// CHECK-NEXT:          %31 = stablehlo.compare LT, %iterArg_15, %4 : (tensor<i64>, tensor<i64>) -> tensor<i1>
-// CHECK-NEXT:          stablehlo.return %31 : tensor<i1>
+// CHECK-NEXT:          %32 = stablehlo.compare LT, %iterArg_15, %6 : (tensor<i64>, tensor<i64>) -> tensor<i1>
+// CHECK-NEXT:          stablehlo.return %32 : tensor<i1>
 // CHECK-NEXT:        } do {
-// CHECK-NEXT:          %31 = stablehlo.add %iterArg_14, %c_6 : tensor<i64>
-// CHECK-NEXT:          %32 = stablehlo.add %5, %31 : tensor<i64>
-// CHECK-NEXT:          %33 = stablehlo.multiply %iterArg_15, %32 : tensor<i64>
-// CHECK-NEXT:          %34 = stablehlo.divide %33, %31 : tensor<i64>
-// CHECK-NEXT:          stablehlo.return %31, %34 : tensor<i64>, tensor<i64>
+// CHECK-NEXT:          %32 = stablehlo.add %iterArg_14, %c_6 : tensor<i64>
+// CHECK-NEXT:          %33 = stablehlo.add %8, %32 : tensor<i64>
+// CHECK-NEXT:          %34 = stablehlo.multiply %iterArg_15, %33 : tensor<i64>
+// CHECK-NEXT:          %35 = stablehlo.divide %34, %32 : tensor<i64>
+// CHECK-NEXT:          stablehlo.return %32, %35 : tensor<i64>, tensor<i64>
 // CHECK-NEXT:        }
-// CHECK-NEXT:        %16 = stablehlo.add %5, %15#0 : tensor<i64>
-// CHECK-NEXT:        %17 = stablehlo.multiply %15#1, %5 : tensor<i64>
-// CHECK-NEXT:        %18 = stablehlo.divide %17, %16 : tensor<i64>
-// CHECK-NEXT:        %19 = stablehlo.subtract %4, %18 : tensor<i64>
-// CHECK-NEXT:        %20 = stablehlo.multiply %15#1, %15#0 : tensor<i64>
-// CHECK-NEXT:        %21 = stablehlo.divide %20, %16 : tensor<i64>
-// CHECK-NEXT:        %22 = stablehlo.maximum %19, %c_6 : tensor<i64>
-// CHECK-NEXT:        %23 = stablehlo.subtract %4, %c_6 : tensor<i64>
-// CHECK-NEXT:        %24 = stablehlo.minimum %21, %23 : tensor<i64>
-// CHECK-NEXT:        %25 = stablehlo.add %22, %24 : tensor<i64>
-// CHECK-NEXT:        %26 = stablehlo.divide %25, %c_3 : tensor<i64>
-// CHECK-NEXT:        %27 = stablehlo.subtract %5, %c_6 : tensor<i64>
-// CHECK-NEXT:        %28 = stablehlo.subtract %4, %27 : tensor<i64>
-// CHECK-NEXT:        %29 = stablehlo.minimum %26, %28 : tensor<i64>
-// CHECK-NEXT:        %30 = stablehlo.maximum %29, %c_6 : tensor<i64>
-// CHECK-NEXT:        stablehlo.return %30 : tensor<i64>
+// CHECK-NEXT:        %17 = stablehlo.add %8, %16#0 : tensor<i64>
+// CHECK-NEXT:        %18 = stablehlo.multiply %16#1, %8 : tensor<i64>
+// CHECK-NEXT:        %19 = stablehlo.divide %18, %17 : tensor<i64>
+// CHECK-NEXT:        %20 = stablehlo.subtract %6, %19 : tensor<i64>
+// CHECK-NEXT:        %21 = stablehlo.multiply %16#1, %16#0 : tensor<i64>
+// CHECK-NEXT:        %22 = stablehlo.divide %21, %17 : tensor<i64>
+// CHECK-NEXT:        %23 = stablehlo.maximum %20, %c_6 : tensor<i64>
+// CHECK-NEXT:        %24 = stablehlo.subtract %6, %c_6 : tensor<i64>
+// CHECK-NEXT:        %25 = stablehlo.minimum %22, %24 : tensor<i64>
+// CHECK-NEXT:        %26 = stablehlo.add %23, %25 : tensor<i64>
+// CHECK-NEXT:        %27 = stablehlo.divide %26, %c_5 : tensor<i64>
+// CHECK-NEXT:        %28 = stablehlo.subtract %8, %c_6 : tensor<i64>
+// CHECK-NEXT:        %29 = stablehlo.subtract %6, %28 : tensor<i64>
+// CHECK-NEXT:        %30 = stablehlo.minimum %27, %29 : tensor<i64>
+// CHECK-NEXT:        %31 = stablehlo.maximum %30, %c_6 : tensor<i64>
+// CHECK-NEXT:        stablehlo.return %31 : tensor<i64>
 // CHECK-NEXT:      }) : (tensor<i1>) -> tensor<i64>
-// CHECK-NEXT:      %10 = stablehlo.add %iterArg_12, %9 : tensor<i64>
-// CHECK-NEXT:      %11 = stablehlo.reshape %iterArg_12 : (tensor<i64>) -> tensor<1xi64>
-// CHECK-NEXT:      %12 = stablehlo.dynamic_update_slice %iterArg_13, %11, %iterArg : (tensor<2xi64>, tensor<1xi64>, tensor<i64>) -> tensor<2xi64>
-// CHECK-NEXT:      %13:2 = stablehlo.while(%iterArg_14 = %c_8, %iterArg_15 = %iterArg_10) : tensor<i64>, tensor<3xf32> attributes {enzyme.disable_mincut}
+// CHECK-NEXT:      %13:2 = stablehlo.while(%iterArg_14 = %c_8, %iterArg_15 = %iterArg_11) : tensor<i64>, tensor<3xf32> attributes {enzyme.disable_mincut}
 // CHECK-NEXT:      cond {
-// CHECK-NEXT:        %15 = stablehlo.compare LT, %iterArg_14, %9 : (tensor<i64>, tensor<i64>) -> tensor<i1>
-// CHECK-NEXT:        stablehlo.return %15 : tensor<i1>
+// CHECK-NEXT:        %16 = stablehlo.compare LT, %iterArg_14, %12 : (tensor<i64>, tensor<i64>) -> tensor<i1>
+// CHECK-NEXT:        stablehlo.return %16 : tensor<i1>
 // CHECK-NEXT:      } do {
-// CHECK-NEXT:        %15 = stablehlo.multiply %cst_9, %iterArg_15 : tensor<3xf32>
-// CHECK-NEXT:        %16 = stablehlo.cosine %15 : tensor<3xf32>
-// CHECK-NEXT:        %17 = stablehlo.multiply %iterArg_15, %16 : tensor<3xf32>
-// CHECK-NEXT:        %18 = stablehlo.add %iterArg_14, %c_6 : tensor<i64>
-// CHECK-NEXT:        stablehlo.return %18, %17 : tensor<i64>, tensor<3xf32>
+// CHECK-NEXT:        %16 = stablehlo.multiply %cst_9, %iterArg_15 : tensor<3xf32>
+// CHECK-NEXT:        %17 = stablehlo.cosine %16 : tensor<3xf32>
+// CHECK-NEXT:        %18 = stablehlo.multiply %iterArg_15, %17 : tensor<3xf32>
+// CHECK-NEXT:        %19 = stablehlo.add %iterArg_14, %c_6 : tensor<i64>
+// CHECK-NEXT:        stablehlo.return %19, %18 : tensor<i64>, tensor<3xf32>
 // CHECK-NEXT:      }
-// CHECK-NEXT:      %14 = stablehlo.add %iterArg, %c_6 : tensor<i64>
-// CHECK-NEXT:      stablehlo.return %14, %13#1, %3, %10, %12 : tensor<i64>, tensor<3xf32>, tensor<2x3xf32>, tensor<i64>, tensor<2xi64>
+// CHECK-NEXT:      %14 = stablehlo.add %iterArg_10, %12 : tensor<i64>
+// CHECK-NEXT:      %15 = stablehlo.add %iterArg, %c_6 : tensor<i64>
+// CHECK-NEXT:      stablehlo.return %15, %14, %13#1, %3, %5 : tensor<i64>, tensor<i64>, tensor<3xf32>, tensor<2x3xf32>, tensor<2xi64>
 // CHECK-NEXT:    }
-// CHECK-NEXT:    %1:5 = stablehlo.while(%iterArg = %c_8, %iterArg_10 = %c_3, %iterArg_11 = %0#4, %iterArg_12 = %0#2, %iterArg_13 = %cst_1) : tensor<i64>, tensor<i64>, tensor<2xi64>, tensor<2x3xf32>, tensor<3xf32>
+// CHECK-NEXT:    %1:5 = stablehlo.while(%iterArg = %c_8, %iterArg_10 = %c_5, %iterArg_11 = %cst_1, %iterArg_12 = %0#3, %iterArg_13 = %0#4) : tensor<i64>, tensor<i64>, tensor<3xf32>, tensor<2x3xf32>, tensor<2xi64> attributes {enzyme.disable_mincut}
 // CHECK-NEXT:    cond {
 // CHECK-NEXT:      %2 = stablehlo.compare LT, %iterArg, %c_7 : (tensor<i64>, tensor<i64>) -> tensor<i1>
 // CHECK-NEXT:      stablehlo.return %2 : tensor<i1>
 // CHECK-NEXT:    } do {
-// CHECK-NEXT:      %2 = stablehlo.add %iterArg, %c_6 : tensor<i64>
-// CHECK-NEXT:      %3 = stablehlo.subtract %iterArg_10, %c_6 : tensor<i64>
-// CHECK-NEXT:      %4 = stablehlo.dynamic_slice %iterArg_12, %3, %c_8, sizes = [1, 3] : (tensor<2x3xf32>, tensor<i64>, tensor<i64>) -> tensor<1x3xf32>
+// CHECK-NEXT:      %2 = stablehlo.subtract %iterArg_10, %c_6 : tensor<i64>
+// CHECK-NEXT:      %3 = stablehlo.subtract %c_7, %iterArg : tensor<i64>
+// CHECK-NEXT:      %4 = stablehlo.dynamic_slice %iterArg_12, %2, %c_8, sizes = [1, 3] : (tensor<2x3xf32>, tensor<i64>, tensor<i64>) -> tensor<1x3xf32>
 // CHECK-NEXT:      %5 = stablehlo.reshape %4 : (tensor<1x3xf32>) -> tensor<3xf32>
-// CHECK-NEXT:      %6 = stablehlo.dynamic_slice %iterArg_11, %3, sizes = [1] : (tensor<2xi64>, tensor<i64>) -> tensor<1xi64>
+// CHECK-NEXT:      %6 = stablehlo.dynamic_slice %iterArg_13, %2, sizes = [1] : (tensor<2xi64>, tensor<i64>) -> tensor<1xi64>
 // CHECK-NEXT:      %7 = stablehlo.reshape %6 : (tensor<1xi64>) -> tensor<i64>
-// CHECK-NEXT:      %8 = stablehlo.subtract %c_7, %iterArg : tensor<i64>
-// CHECK-NEXT:      %9:5 = stablehlo.while(%iterArg_14 = %7, %iterArg_15 = %3, %iterArg_16 = %iterArg_11, %iterArg_17 = %5, %iterArg_18 = %iterArg_12) : tensor<i64>, tensor<i64>, tensor<2xi64>, tensor<3xf32>, tensor<2x3xf32>
+// CHECK-NEXT:      %8:5 = stablehlo.while(%iterArg_14 = %7, %iterArg_15 = %2, %iterArg_16 = %5, %iterArg_17 = %iterArg_12, %iterArg_18 = %iterArg_13) : tensor<i64>, tensor<i64>, tensor<3xf32>, tensor<2x3xf32>, tensor<2xi64>
 // CHECK-NEXT:      cond {
 // CHECK-NEXT:        %19 = stablehlo.add %iterArg_14, %c_6 : tensor<i64>
-// CHECK-NEXT:        %20 = stablehlo.compare LT, %19, %8 : (tensor<i64>, tensor<i64>) -> tensor<i1>
+// CHECK-NEXT:        %20 = stablehlo.compare LT, %19, %3 : (tensor<i64>, tensor<i64>) -> tensor<i1>
 // CHECK-NEXT:        stablehlo.return %20 : tensor<i1>
 // CHECK-NEXT:      } do {
-// CHECK-NEXT:        %19 = stablehlo.subtract %8, %iterArg_14 : tensor<i64>
-// CHECK-NEXT:        %20 = stablehlo.subtract %c_3, %iterArg_15 : tensor<i64>
-// CHECK-DAG:        %[[b1:.+]] = stablehlo.compare GE, %iterArg_15, %c_6 : (tensor<i64>, tensor<i64>) -> tensor<i1>
-// CHECK-DAG:        %[[ns1:.+]] = stablehlo.compare LE, %19, %c_6 : (tensor<i64>, tensor<i64>) -> tensor<i1>
-// CHECK-NEXT:        %[[or1:.+]] = stablehlo.or %[[ns1]], %[[b1]] : tensor<i1>
-// CHECK-NEXT:        %24 = "stablehlo.if"(%[[or1]]) ({
+// CHECK-NEXT:        %19 = stablehlo.subtract %3, %iterArg_14 : tensor<i64>
+// CHECK-NEXT:        %20 = stablehlo.subtract %c_5, %iterArg_15 : tensor<i64>
+// CHECK-NEXT:        %21 = stablehlo.minimum %20, %19 : tensor<i64>
+// CHECK-NEXT:        %22 = stablehlo.compare LE, %19, %c_6 : (tensor<i64>, tensor<i64>) -> tensor<i1>
+// CHECK-NEXT:        %23 = stablehlo.compare LE, %21, %c_6 : (tensor<i64>, tensor<i64>) -> tensor<i1>
+// CHECK-NEXT:        %24 = stablehlo.or %22, %23 : tensor<i1>
+// CHECK-NEXT:        %25 = "stablehlo.if"(%24) ({
 // CHECK-NEXT:          stablehlo.return %19 : tensor<i64>
 // CHECK-NEXT:        }, {
-// CHECK-NEXT:          %35:2 = stablehlo.while(%iterArg_19 = %c_8, %iterArg_20 = %c_6) : tensor<i64>, tensor<i64>
+// CHECK-NEXT:          %36:2 = stablehlo.while(%iterArg_19 = %c_8, %iterArg_20 = %c_6) : tensor<i64>, tensor<i64>
 // CHECK-NEXT:          cond {
-// CHECK-NEXT:            %51 = stablehlo.compare LT, %iterArg_20, %19 : (tensor<i64>, tensor<i64>) -> tensor<i1>
-// CHECK-NEXT:            stablehlo.return %51 : tensor<i1>
+// CHECK-NEXT:            %52 = stablehlo.compare LT, %iterArg_20, %19 : (tensor<i64>, tensor<i64>) -> tensor<i1>
+// CHECK-NEXT:            stablehlo.return %52 : tensor<i1>
 // CHECK-NEXT:          } do {
-// CHECK-NEXT:            %51 = stablehlo.add %iterArg_19, %c_6 : tensor<i64>
-// CHECK-NEXT:            %52 = stablehlo.add %20, %51 : tensor<i64>
-// CHECK-NEXT:            %53 = stablehlo.multiply %iterArg_20, %52 : tensor<i64>
-// CHECK-NEXT:            %54 = stablehlo.divide %53, %51 : tensor<i64>
-// CHECK-NEXT:            stablehlo.return %51, %54 : tensor<i64>, tensor<i64>
+// CHECK-NEXT:            %52 = stablehlo.add %iterArg_19, %c_6 : tensor<i64>
+// CHECK-NEXT:            %53 = stablehlo.add %21, %52 : tensor<i64>
+// CHECK-NEXT:            %54 = stablehlo.multiply %iterArg_20, %53 : tensor<i64>
+// CHECK-NEXT:            %55 = stablehlo.divide %54, %52 : tensor<i64>
+// CHECK-NEXT:            stablehlo.return %52, %55 : tensor<i64>, tensor<i64>
 // CHECK-NEXT:          }
-// CHECK-NEXT:          %36 = stablehlo.add %20, %35#0 : tensor<i64>
-// CHECK-NEXT:          %37 = stablehlo.multiply %35#1, %20 : tensor<i64>
-// CHECK-NEXT:          %38 = stablehlo.divide %37, %36 : tensor<i64>
-// CHECK-NEXT:          %39 = stablehlo.subtract %19, %38 : tensor<i64>
-// CHECK-NEXT:          %40 = stablehlo.multiply %35#1, %35#0 : tensor<i64>
-// CHECK-NEXT:          %41 = stablehlo.divide %40, %36 : tensor<i64>
-// CHECK-NEXT:          %42 = stablehlo.maximum %39, %c_6 : tensor<i64>
-// CHECK-NEXT:          %43 = stablehlo.subtract %19, %c_6 : tensor<i64>
-// CHECK-NEXT:          %44 = stablehlo.minimum %41, %43 : tensor<i64>
-// CHECK-NEXT:          %45 = stablehlo.add %42, %44 : tensor<i64>
-// CHECK-NEXT:          %46 = stablehlo.divide %45, %c_3 : tensor<i64>
-// CHECK-NEXT:          %47 = stablehlo.subtract %20, %c_6 : tensor<i64>
-// CHECK-NEXT:          %48 = stablehlo.subtract %19, %47 : tensor<i64>
-// CHECK-NEXT:          %49 = stablehlo.minimum %46, %48 : tensor<i64>
-// CHECK-NEXT:          %50 = stablehlo.maximum %49, %c_6 : tensor<i64>
-// CHECK-NEXT:          stablehlo.return %50 : tensor<i64>
+// CHECK-NEXT:          %37 = stablehlo.add %21, %36#0 : tensor<i64>
+// CHECK-NEXT:          %38 = stablehlo.multiply %36#1, %21 : tensor<i64>
+// CHECK-NEXT:          %39 = stablehlo.divide %38, %37 : tensor<i64>
+// CHECK-NEXT:          %40 = stablehlo.subtract %19, %39 : tensor<i64>
+// CHECK-NEXT:          %41 = stablehlo.multiply %36#1, %36#0 : tensor<i64>
+// CHECK-NEXT:          %42 = stablehlo.divide %41, %37 : tensor<i64>
+// CHECK-NEXT:          %43 = stablehlo.maximum %40, %c_6 : tensor<i64>
+// CHECK-NEXT:          %44 = stablehlo.subtract %19, %c_6 : tensor<i64>
+// CHECK-NEXT:          %45 = stablehlo.minimum %42, %44 : tensor<i64>
+// CHECK-NEXT:          %46 = stablehlo.add %43, %45 : tensor<i64>
+// CHECK-NEXT:          %47 = stablehlo.divide %46, %c_5 : tensor<i64>
+// CHECK-NEXT:          %48 = stablehlo.subtract %21, %c_6 : tensor<i64>
+// CHECK-NEXT:          %49 = stablehlo.subtract %19, %48 : tensor<i64>
+// CHECK-NEXT:          %50 = stablehlo.minimum %47, %49 : tensor<i64>
+// CHECK-NEXT:          %51 = stablehlo.maximum %50, %c_6 : tensor<i64>
+// CHECK-NEXT:          stablehlo.return %51 : tensor<i64>
 // CHECK-NEXT:        }) : (tensor<i1>) -> tensor<i64>
-// CHECK-NEXT:        %25 = stablehlo.reshape %iterArg_17 : (tensor<3xf32>) -> tensor<1x3xf32>
-// CHECK-NEXT:        %26 = stablehlo.dynamic_update_slice %iterArg_18, %25, %iterArg_15, %c_8 : (tensor<2x3xf32>, tensor<1x3xf32>, tensor<i64>, tensor<i64>) -> tensor<2x3xf32>
-// CHECK-NEXT:        %27 = stablehlo.reshape %iterArg_14 : (tensor<i64>) -> tensor<1xi64>
-// CHECK-NEXT:        %28 = stablehlo.dynamic_update_slice %iterArg_16, %27, %iterArg_15 : (tensor<2xi64>, tensor<1xi64>, tensor<i64>) -> tensor<2xi64>
-// CHECK-NEXT:        %29 = stablehlo.add %iterArg_14, %24 : tensor<i64>
-// CHECK-NEXT:        %30 = stablehlo.compare EQ, %29, %8 : (tensor<i64>, tensor<i64>) -> tensor<i1>
-// CHECK-NEXT:        %31 = stablehlo.convert %30 : (tensor<i1>) -> tensor<i64>
-// CHECK-NEXT:        %32 = stablehlo.subtract %29, %31 : tensor<i64>
-// CHECK-NEXT:        %33:2 = stablehlo.while(%iterArg_19 = %iterArg_14, %iterArg_20 = %iterArg_17) : tensor<i64>, tensor<3xf32> attributes {enzyme.disable_mincut}
+// CHECK-NEXT:        %26 = stablehlo.reshape %iterArg_16 : (tensor<3xf32>) -> tensor<1x3xf32>
+// CHECK-NEXT:        %27 = stablehlo.dynamic_update_slice %iterArg_17, %26, %iterArg_15, %c_8 : (tensor<2x3xf32>, tensor<1x3xf32>, tensor<i64>, tensor<i64>) -> tensor<2x3xf32>
+// CHECK-NEXT:        %28 = stablehlo.reshape %iterArg_14 : (tensor<i64>) -> tensor<1xi64>
+// CHECK-NEXT:        %29 = stablehlo.dynamic_update_slice %iterArg_18, %28, %iterArg_15 : (tensor<2xi64>, tensor<1xi64>, tensor<i64>) -> tensor<2xi64>
+// CHECK-NEXT:        %30 = stablehlo.add %iterArg_14, %25 : tensor<i64>
+// CHECK-NEXT:        %31 = stablehlo.compare EQ, %30, %3 : (tensor<i64>, tensor<i64>) -> tensor<i1>
+// CHECK-NEXT:        %32 = stablehlo.subtract %30, %c_6 : tensor<i64>
+// CHECK-NEXT:        %33 = stablehlo.select %31, %32, %30 : tensor<i1>, tensor<i64>
+// CHECK-NEXT:        %34:2 = stablehlo.while(%iterArg_19 = %iterArg_14, %iterArg_20 = %iterArg_16) : tensor<i64>, tensor<3xf32> attributes {enzyme.disable_mincut}
 // CHECK-NEXT:        cond {
-// CHECK-NEXT:          %35 = stablehlo.compare LT, %iterArg_19, %32 : (tensor<i64>, tensor<i64>) -> tensor<i1>
-// CHECK-NEXT:          stablehlo.return %35 : tensor<i1>
+// CHECK-NEXT:          %36 = stablehlo.compare LT, %iterArg_19, %33 : (tensor<i64>, tensor<i64>) -> tensor<i1>
+// CHECK-NEXT:          stablehlo.return %36 : tensor<i1>
 // CHECK-NEXT:        } do {
-// CHECK-NEXT:          %35 = stablehlo.multiply %cst_9, %iterArg_20 : tensor<3xf32>
-// CHECK-NEXT:          %36 = stablehlo.cosine %35 : tensor<3xf32>
-// CHECK-NEXT:          %37 = stablehlo.multiply %iterArg_20, %36 : tensor<3xf32>
-// CHECK-NEXT:          %38 = stablehlo.add %iterArg_19, %c_6 : tensor<i64>
-// CHECK-NEXT:          stablehlo.return %38, %37 : tensor<i64>, tensor<3xf32>
+// CHECK-NEXT:          %36 = stablehlo.multiply %cst_9, %iterArg_20 : tensor<3xf32>
+// CHECK-NEXT:          %37 = stablehlo.cosine %36 : tensor<3xf32>
+// CHECK-NEXT:          %38 = stablehlo.multiply %iterArg_20, %37 : tensor<3xf32>
+// CHECK-NEXT:          %39 = stablehlo.add %iterArg_19, %c_6 : tensor<i64>
+// CHECK-NEXT:          stablehlo.return %39, %38 : tensor<i64>, tensor<3xf32>
 // CHECK-NEXT:        }
-// CHECK-NEXT:        %34 = stablehlo.add %iterArg_15, %c_6 : tensor<i64>
-// CHECK-NEXT:        stablehlo.return %29, %34, %28, %33#1, %26 : tensor<i64>, tensor<i64>, tensor<2xi64>, tensor<3xf32>, tensor<2x3xf32>
+// CHECK-NEXT:        %35 = stablehlo.add %iterArg_15, %c_6 : tensor<i64>
+// CHECK-NEXT:        stablehlo.return %30, %35, %34#1, %27, %29 : tensor<i64>, tensor<i64>, tensor<3xf32>, tensor<2x3xf32>, tensor<2xi64>
 // CHECK-NEXT:      }
-// CHECK-NEXT:      %10 = stablehlo.multiply %cst_9, %9#3 : tensor<3xf32>
-// CHECK-NEXT:      %11 = stablehlo.cosine %10 : tensor<3xf32>
-// CHECK-NEXT:      %12 = stablehlo.multiply %iterArg_13, %11 : tensor<3xf32>
-// CHECK-NEXT:      %13 = stablehlo.multiply %iterArg_13, %9#3 : tensor<3xf32>
-// CHECK-NEXT:      %14 = stablehlo.sine %10 : tensor<3xf32>
-// CHECK-NEXT:      %15 = stablehlo.negate %14 : tensor<3xf32>
-// CHECK-NEXT:      %16 = stablehlo.multiply %13, %15 : tensor<3xf32>
-// CHECK-NEXT:      %17 = stablehlo.multiply %16, %cst_9 : tensor<3xf32>
-// CHECK-NEXT:      %18 = stablehlo.add %12, %17 : tensor<3xf32>
-// CHECK-NEXT:      stablehlo.return %2, %9#1, %9#2, %9#4, %18 : tensor<i64>, tensor<i64>, tensor<2xi64>, tensor<2x3xf32>, tensor<3xf32>
+// CHECK-NEXT:      %9 = stablehlo.multiply %cst_9, %8#2 : tensor<3xf32>
+// CHECK-NEXT:      %10 = stablehlo.cosine %9 : tensor<3xf32>
+// CHECK-NEXT:      %11 = stablehlo.multiply %iterArg_11, %10 : tensor<3xf32>
+// CHECK-NEXT:      %12 = stablehlo.multiply %iterArg_11, %8#2 : tensor<3xf32>
+// CHECK-NEXT:      %13 = stablehlo.sine %9 : tensor<3xf32>
+// CHECK-NEXT:      %14 = stablehlo.negate %13 : tensor<3xf32>
+// CHECK-NEXT:      %15 = stablehlo.multiply %12, %14 : tensor<3xf32>
+// CHECK-NEXT:      %16 = stablehlo.multiply %15, %cst_9 : tensor<3xf32>
+// CHECK-NEXT:      %17 = stablehlo.add %11, %16 : tensor<3xf32>
+// CHECK-NEXT:      %18 = stablehlo.add %iterArg, %c_6 : tensor<i64>
+// CHECK-NEXT:      stablehlo.return %18, %8#1, %17, %8#3, %8#4 : tensor<i64>, tensor<i64>, tensor<3xf32>, tensor<2x3xf32>, tensor<2xi64>
 // CHECK-NEXT:    }
-// CHECK-NEXT:    check.expect_close %0#1, %cst, max_ulp_difference = 10 : tensor<3xf32>, tensor<3xf32>
-// CHECK-NEXT:    check.expect_close %1#4, %cst_0, max_ulp_difference = 10 : tensor<3xf32>, tensor<3xf32>
+// CHECK-NEXT:    check.expect_close %0#2, %cst, max_ulp_difference = 10 : tensor<3xf32>, tensor<3xf32>
+// CHECK-NEXT:    check.expect_close %1#2, %cst_0, max_ulp_difference = 10 : tensor<3xf32>, tensor<3xf32>
 // CHECK-NEXT:    return
 // CHECK-NEXT:  }
