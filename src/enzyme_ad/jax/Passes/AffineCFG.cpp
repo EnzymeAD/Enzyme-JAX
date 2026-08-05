@@ -182,6 +182,29 @@ private:
   AffineMap affineMap;
 };
 
+// A shift by k stands for a multiply or divide by 2^k, which has to be worked
+// out at the width the affine expression holds. Taken as an int, `1 << 31` is
+// the largest negative number there is, and a shift by 31 is how a sign bit is
+// read; past 62 there is no power of two a signed affine constant can hold.
+static bool shiftScale(Value amount, int64_t &scale) {
+  APInt amt;
+  if (!matchPattern(amount, m_ConstantInt(&amt)))
+    return false;
+  if (amt.uge(63))
+    return false;
+  scale = int64_t(1) << amt.getZExtValue();
+  return true;
+}
+
+// Whether `op` is a shift this can say as a power of two. Anything else is not
+// a shift and has nothing to answer for.
+static bool shiftScaleOK(Operation *op) {
+  if (!isa<ShRUIOp, ShLIOp>(op))
+    return true;
+  int64_t scale;
+  return shiftScale(op->getOperand(1), scale);
+}
+
 static bool isAffineForArg(Value val) {
   if (!isa<BlockArgument>(val))
     return false;
@@ -635,7 +658,8 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
                .getDefiningOp<ConstantIntOp>() ||
            decast.getDefiningOp()
                ->getOperand(1)
-               .getDefiningOp<ConstantIndexOp>())))) {
+               .getDefiningOp<ConstantIndexOp>()) &&
+          shiftScaleOK(decast.getDefiningOp())))) {
       t = decast;
       LLVM_DEBUG(llvm::dbgs() << " Replacing: " << t << "\n");
 
@@ -757,27 +781,23 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
         }
       } else if (auto op = t.getDefiningOp<ShRUIOp>()) {
 
-        APInt iattr;
-        if (!matchPattern(op.getRhs(), m_ConstantInt(&iattr))) {
-          llvm_unreachable("shr rhs needed to be constant int");
+        int64_t scale;
+        if (!shiftScale(op.getRhs(), scale)) {
+          llvm_unreachable("shr rhs needed to be a constant int that fits");
         }
 
-        affineApplyMap =
-            AffineMap::get(0, 1,
-                           getAffineSymbolExpr(0, op.getContext())
-                               .floorDiv(1 << iattr.getZExtValue()));
+        affineApplyMap = AffineMap::get(
+            0, 1, getAffineSymbolExpr(0, op.getContext()).floorDiv(scale));
         affineApplyOperands.push_back(op.getLhs());
       } else if (auto op = t.getDefiningOp<ShLIOp>()) {
 
-        APInt iattr;
-        if (!matchPattern(op.getRhs(), m_ConstantInt(&iattr))) {
-          llvm_unreachable("shl rhs needed to be constant int");
+        int64_t scale;
+        if (!shiftScale(op.getRhs(), scale)) {
+          llvm_unreachable("shl rhs needed to be a constant int that fits");
         }
 
-        affineApplyMap =
-            AffineMap::get(0, 1,
-                           getAffineSymbolExpr(0, op.getContext()) *
-                               (1 << iattr.getZExtValue()));
+        affineApplyMap = AffineMap::get(
+            0, 1, getAffineSymbolExpr(0, op.getContext()) * scale);
         affineApplyOperands.push_back(op.getLhs());
       } else if (auto op = t.getDefiningOp<ConstantIntOp>()) {
         affineApplyMap = AffineMap::get(
