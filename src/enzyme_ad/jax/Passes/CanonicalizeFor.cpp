@@ -1155,6 +1155,13 @@ struct WhileToForHelper {
   }
 
   void initVariables() {
+    // One helper is asked about several comparisons in turn.  The induction
+    // variable and its increment are found together and are worth nothing
+    // apart: left behind from a comparison that was turned down, the variable
+    // reads as a detection that succeeded while the step it was found with is
+    // gone, and everything below reads the step.
+    indVar = nullptr;
+    addIOp = nullptr;
     step = nullptr;
     lb = nullptr;
     lb_addOne = false;
