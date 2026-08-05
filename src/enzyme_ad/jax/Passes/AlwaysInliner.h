@@ -48,6 +48,12 @@ struct AlwaysInlinerInterface : public mlir::InlinerInterface {
     return true;
   }
 
+  bool allowSingleBlockOptimization(
+      iterator_range<Region::iterator> inlinedBlocks) const final {
+    return !(!inlinedBlocks.empty() &&
+             isa<LLVM::UnreachableOp>(inlinedBlocks.begin()->getTerminator()));
+  }
+
   //===--------------------------------------------------------------------===//
   // Transformation Hooks
   //===--------------------------------------------------------------------===//
