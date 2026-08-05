@@ -16,4 +16,6 @@ class HLORegionTerminatorOp<string m> : RegionTerminatorOp<"mhlo", m>;
 
 class HLOInactiveOp<string m> : InactiveOp<"mhlo", m>;
 
+def DotAlgorithmAttr : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{mhlo::DotAlgorithmAttr();}]>;
+
 include "HLODerivatives.td"
