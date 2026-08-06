@@ -98,16 +98,18 @@ bool isValidSymbolInt(Operation *defOp, bool recur, Region *scope) {
           matchPattern(shiftOp.getRhs(), m_ConstantInt(&intValue)))
         return true;
     }
+    // A conditional whose regions yield valid symbols produces one: the value
+    // is select(cond, thenYield, elseYield) regardless of what else the regions
+    // do.  Materializing that is AffineApplyNormalizer::fix's job -- see the
+    // scf.if case there -- so a side-effecting body is no obstacle here.
     if (auto ifOp = dyn_cast<scf::IfOp>(defOp)) {
       if (isValidSymbolInt(ifOp.getCondition(), recur, scope)) {
-        if (llvm::all_of(ifOp.thenBlock()->without_terminator(),
-                         [&](Operation &o) {
-                           return isValidSymbolInt(&o, recur, scope);
-                         }) &&
-            llvm::all_of(ifOp.elseBlock()->without_terminator(),
-                         [&](Operation &o) {
-                           return isValidSymbolInt(&o, recur, scope);
-                         }))
+        if (llvm::all_of(
+                ifOp.thenBlock()->getTerminator()->getOperands(),
+                [&](Value v) { return isValidSymbolInt(v, recur, scope); }) &&
+            llvm::all_of(
+                ifOp.elseBlock()->getTerminator()->getOperands(),
+                [&](Value v) { return isValidSymbolInt(v, recur, scope); }))
           return true;
       }
     }
@@ -115,14 +117,12 @@ bool isValidSymbolInt(Operation *defOp, bool recur, Region *scope) {
       if (llvm::all_of(ifOp.getOperands(), [&](Value o) {
             return isValidSymbolInt(o, recur, scope);
           }))
-        if (llvm::all_of(ifOp.getThenBlock()->without_terminator(),
-                         [&](Operation &o) {
-                           return isValidSymbolInt(&o, recur, scope);
-                         }) &&
-            llvm::all_of(ifOp.getElseBlock()->without_terminator(),
-                         [&](Operation &o) {
-                           return isValidSymbolInt(&o, recur, scope);
-                         }))
+        if (llvm::all_of(
+                ifOp.getThenBlock()->getTerminator()->getOperands(),
+                [&](Value v) { return isValidSymbolInt(v, recur, scope); }) &&
+            llvm::all_of(
+                ifOp.getElseBlock()->getTerminator()->getOperands(),
+                [&](Value v) { return isValidSymbolInt(v, recur, scope); }))
           return true;
     }
   }
@@ -181,6 +181,29 @@ private:
 
   AffineMap affineMap;
 };
+
+// A shift by k stands for a multiply or divide by 2^k, which has to be worked
+// out at the width the affine expression holds. Taken as an int, `1 << 31` is
+// the largest negative number there is, and a shift by 31 is how a sign bit is
+// read; past 62 there is no power of two a signed affine constant can hold.
+static bool shiftScale(Value amount, int64_t &scale) {
+  APInt amt;
+  if (!matchPattern(amount, m_ConstantInt(&amt)))
+    return false;
+  if (amt.uge(63))
+    return false;
+  scale = int64_t(1) << amt.getZExtValue();
+  return true;
+}
+
+// Whether `op` is a shift this can say as a power of two. Anything else is not
+// a shift and has nothing to answer for.
+static bool shiftScaleOK(Operation *op) {
+  if (!isa<ShRUIOp, ShLIOp>(op))
+    return true;
+  int64_t scale;
+  return shiftScale(op->getOperand(1), scale);
+}
 
 static bool isAffineForArg(Value val) {
   if (!isa<BlockArgument>(val))
@@ -310,6 +333,23 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
             op = newV;
   };
 
+  // Whether `v` can be computed outside the conditional `guard` that currently
+  // guards it.  Values already defined outside are free; anything still inside
+  // has to be speculatable, since hoisting it means evaluating it on paths that
+  // previously skipped it.
+  std::function<bool(Value, Operation *)> speculatableOutOf =
+      [&](Value v, Operation *guard) -> bool {
+    if (llvm::none_of(guard->getRegions(), [&](Region &r) {
+          return r.isAncestor(v.getParentRegion());
+        }))
+      return true;
+    auto *defOp = v.getDefiningOp();
+    if (!defOp || !isSpeculatable(defOp))
+      return false;
+    return llvm::all_of(defOp->getOperands(),
+                        [&](Value o) { return speculatableOutOf(o, guard); });
+  };
+
   SmallVector<Operation **> operationContext;
   std::function<Value(Value, bool)> fix = [&](Value v,
                                               bool index) -> Value /*legal*/ {
@@ -326,8 +366,38 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
     if (!op)
       llvm::errs() << v << "\n";
     assert(op);
+    // A conditional cannot be cloned out of the control flow that guards it
+    // once its regions have side effects, but the value it produces is still
+    // the then/else pair selected by the condition -- which is what
+    // isValidSymbolInt accepted it on.  Rewrite to just that, leaving the side
+    // effects where they are: an arith.select for scf.if, and a bodiless
+    // affine.if over the same integer set for affine.if, whose condition is a
+    // set rather than an i1 value.  Evaluating both arms unconditionally means
+    // everything hoisted out of a region has to be speculatable.
+    Operation *condIf = nullptr;
+    Value selTrue, selFalse;
+    // Leading entries of `ops` holding the condition: one i1 for scf.if, the
+    // integer set's dim and symbol operands for affine.if.
+    unsigned numCondOperands = 0;
     if (!isReadOnly(op)) {
-      return nullptr;
+      unsigned idx = cast<OpResult>(v).getResultNumber();
+      if (auto ifOp = dyn_cast<scf::IfOp>(op)) {
+        if (ifOp.getElseRegion().empty())
+          return nullptr;
+        selTrue = ifOp.thenYield().getOperand(idx);
+        selFalse = ifOp.elseYield().getOperand(idx);
+        numCondOperands = 1;
+      } else if (auto ifOp = dyn_cast<affine::AffineIfOp>(op)) {
+        if (!ifOp.hasElse())
+          return nullptr;
+        selTrue = ifOp.getThenBlock()->getTerminator()->getOperand(idx);
+        selFalse = ifOp.getElseBlock()->getTerminator()->getOperand(idx);
+        numCondOperands = ifOp.getNumOperands();
+      } else
+        return nullptr;
+      condIf = op;
+      if (!speculatableOutOf(selTrue, op) || !speculatableOutOf(selFalse, op))
+        return nullptr;
     }
     Operation *front = nullptr;
     operationContext.push_back(&front);
@@ -345,14 +415,24 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
       }
       for (auto &r : todo->getRegions()) {
         for (auto &b : r.getBlocks())
-          for (auto &o2 : b.without_terminator())
+          for (auto &o2 : b)
             getAllOps(&o2);
       }
     };
 
     if (front)
       assert(front->getBlock());
-    getAllOps(op);
+    if (condIf) {
+      // Only the condition and the two arms have to be legalized; the rest of
+      // the conditional stays put.
+      if (auto ifOp = dyn_cast<scf::IfOp>(condIf))
+        ops.push_back(ifOp.getCondition());
+      else
+        llvm::append_range(ops, condIf->getOperands());
+      ops.push_back(selTrue);
+      ops.push_back(selFalse);
+    } else
+      getAllOps(op);
 
     if (front)
       assert(front->getBlock());
@@ -408,6 +488,53 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
     if (!front)
       op->dump();
     assert(front);
+    if (condIf) {
+      // ops now holds the legalized condition and arms: replaceOp rewrote the
+      // entries as their defining ops were hoisted.
+      if (!rewriter) {
+        operationContext.pop_back();
+        return v;
+      }
+      Value selTrueFixed = ops[numCondOperands];
+      Value selFalseFixed = ops[numCondOperands + 1];
+      Value sel;
+      {
+        PatternRewriter::InsertionGuard B(*rewriter);
+        rewriter->setInsertionPoint(front);
+        if (auto ifOp = dyn_cast<scf::IfOp>(condIf)) {
+          sel = arith::SelectOp::create(*rewriter, ifOp.getLoc(), ops[0],
+                                        selTrueFixed, selFalseFixed);
+        } else {
+          auto affIfOp = cast<affine::AffineIfOp>(condIf);
+          // isValidDim accepts valid symbols, so the legalized operands remain
+          // legal in the set wherever this lands.
+          SmallVector<Value> setOperands(ops.begin(),
+                                         ops.begin() + numCondOperands);
+          auto newIf = affine::AffineIfOp::create(
+              *rewriter, affIfOp.getLoc(), TypeRange{v.getType()},
+              affIfOp.getIntegerSet(), setOperands, /*withElseRegion=*/true);
+          PatternRewriter::InsertionGuard B2(*rewriter);
+          rewriter->setInsertionPointToStart(newIf.getThenBlock());
+          affine::AffineYieldOp::create(*rewriter, affIfOp.getLoc(),
+                                        ValueRange{selTrueFixed});
+          rewriter->setInsertionPointToStart(newIf.getElseBlock());
+          affine::AffineYieldOp::create(*rewriter, affIfOp.getLoc(),
+                                        ValueRange{selFalseFixed});
+          sel = newIf.getResult(0);
+        }
+      }
+      // Point existing uses at the hoisted value, the way the clone path below
+      // does with replaceOp: an op cloned above this conditional must not keep
+      // referring to a result defined inside it.
+      rewriter->replaceAllUsesWith(v, sel);
+      for (auto todo : opsTodos)
+        for (auto &o : *todo)
+          if (o == v)
+            o = sel;
+      operationContext.pop_back();
+      assert(isValidSymbolInt(sel, /*recur*/ false, scope));
+      return sel;
+    }
     if (!rewriter) {
       operationContext.pop_back();
       assert(isValidSymbolInt(op->getResult(0), /*recur*/ false, scope));
@@ -531,7 +658,8 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
                .getDefiningOp<ConstantIntOp>() ||
            decast.getDefiningOp()
                ->getOperand(1)
-               .getDefiningOp<ConstantIndexOp>())))) {
+               .getDefiningOp<ConstantIndexOp>()) &&
+          shiftScaleOK(decast.getDefiningOp())))) {
       t = decast;
       LLVM_DEBUG(llvm::dbgs() << " Replacing: " << t << "\n");
 
@@ -653,27 +781,23 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
         }
       } else if (auto op = t.getDefiningOp<ShRUIOp>()) {
 
-        APInt iattr;
-        if (!matchPattern(op.getRhs(), m_ConstantInt(&iattr))) {
-          llvm_unreachable("shr rhs needed to be constant int");
+        int64_t scale;
+        if (!shiftScale(op.getRhs(), scale)) {
+          llvm_unreachable("shr rhs needed to be a constant int that fits");
         }
 
-        affineApplyMap =
-            AffineMap::get(0, 1,
-                           getAffineSymbolExpr(0, op.getContext())
-                               .floorDiv(1 << iattr.getZExtValue()));
+        affineApplyMap = AffineMap::get(
+            0, 1, getAffineSymbolExpr(0, op.getContext()).floorDiv(scale));
         affineApplyOperands.push_back(op.getLhs());
       } else if (auto op = t.getDefiningOp<ShLIOp>()) {
 
-        APInt iattr;
-        if (!matchPattern(op.getRhs(), m_ConstantInt(&iattr))) {
-          llvm_unreachable("shl rhs needed to be constant int");
+        int64_t scale;
+        if (!shiftScale(op.getRhs(), scale)) {
+          llvm_unreachable("shl rhs needed to be a constant int that fits");
         }
 
-        affineApplyMap =
-            AffineMap::get(0, 1,
-                           getAffineSymbolExpr(0, op.getContext()) *
-                               (1 << iattr.getZExtValue()));
+        affineApplyMap = AffineMap::get(
+            0, 1, getAffineSymbolExpr(0, op.getContext()) * scale);
         affineApplyOperands.push_back(op.getLhs());
       } else if (auto op = t.getDefiningOp<ConstantIntOp>()) {
         affineApplyMap = AffineMap::get(
@@ -741,6 +865,7 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
         dimReplacements.push_back(affineApplyMap.getResult(0));
     } else {
       if (!isValidSymbolInt(t, /*recur*/ false, scope)) {
+        Value orig = t;
         if (t.getDefiningOp()) {
           if ((t = fix(t, false))) {
             if (!isValidSymbolInt(t, /*recur*/ false, scope)) {
@@ -752,8 +877,22 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
                            << " to become valid symbol\n";
               llvm_unreachable("cannot move");
             }
-          } else
-            llvm_unreachable("cannot move");
+          } else {
+            // Reaching here means a pattern committed to a rewrite whose
+            // operand cannot be made a valid affine symbol.  llvm_unreachable
+            // is UB in a release build and lets execution fall through into
+            // renumberOne{Dim,Symbol} with a null Value, which segfaults far
+            // from the actual mistake; fail loudly instead.
+            llvm::errs() << " operand " << i << " of " << e
+                         << " could not be moved to become a valid symbol: "
+                         << orig << "\n";
+            if (auto *dop = orig.getDefiningOp())
+              if (auto fop = dop->getParentOfType<FunctionOpInterface>())
+                llvm::errs() << " in function: " << fop.getName() << "\n";
+            llvm::report_fatal_error(
+                "AffineApplyNormalizer: cannot move operand to become a valid "
+                "affine symbol");
+          }
         } else
           llvm_unreachable("cannot move2");
       }
@@ -1358,11 +1497,27 @@ bool handle(PatternRewriter &b, AffineIfOp ifOp, size_t idx,
   auto tval =
       cast<AffineYieldOp>(ifOp.getThenBlock()->getTerminator()).getOperand(idx);
   auto fval =
-      cast<AffineYieldOp>(ifOp.getThenBlock()->getTerminator()).getOperand(idx);
+      cast<AffineYieldOp>(ifOp.getElseBlock()->getTerminator()).getOperand(idx);
   if (!negated && matchPattern(tval, m_One()) && matchPattern(fval, m_Zero())) {
     auto iset = ifOp.getCondition();
+
+    // The system being built here is symbol-only: symbol i denotes applies[i].
+    // The if's set has its own dim/symbol numbering, and its operands are its
+    // dim operands followed by its symbol operands, so rebase both onto the
+    // symbols appended here. Operands which are not valid symbols (an enclosing
+    // induction variable, say) are fine: canonicalization later promotes them
+    // back to dims of the composed set.
+    unsigned base = applies.size();
+    unsigned numDims = iset.getNumDims();
+    SmallVector<AffineExpr> dimReplacements, symReplacements;
+    for (unsigned i = 0; i < numDims; i++)
+      dimReplacements.push_back(b.getAffineSymbolExpr(base + i));
+    for (unsigned i = 0, e = iset.getNumSymbols(); i < e; i++)
+      symReplacements.push_back(b.getAffineSymbolExpr(base + numDims + i));
+
     for (auto expr : iset.getConstraints()) {
-      exprs.push_back(expr.shiftSymbols(iset.getNumSymbols(), applies.size()));
+      exprs.push_back(
+          expr.replaceDimsAndSymbols(dimReplacements, symReplacements));
     }
     for (auto eq : iset.getEqFlags()) {
       eqflags.push_back(eq);
@@ -1444,10 +1599,11 @@ bool handle(PatternRewriter &b, CmpIOp cmpi, SmallVectorImpl<AffineExpr> &exprs,
       return false;
     eqflags.push_back(true);
 
+    unsigned base = applies.size();
     applies.push_back(lhs[0]);
     applies.push_back(rhs[0]);
-    AffineExpr dims[2] = {b.getAffineSymbolExpr(2 * exprs.size() + 0),
-                          b.getAffineSymbolExpr(2 * exprs.size() + 1)};
+    AffineExpr dims[2] = {b.getAffineSymbolExpr(base + 0),
+                          b.getAffineSymbolExpr(base + 1)};
     exprs.push_back(dims[0] - dims[1]);
   } break;
 
@@ -1510,10 +1666,11 @@ bool handle(PatternRewriter &b, CmpIOp cmpi, SmallVectorImpl<AffineExpr> &exprs,
     for (auto lhspack : lhs)
       for (auto rhspack : rhs) {
         eqflags.push_back(false);
+        unsigned base = applies.size();
         applies.push_back(lhspack);
         applies.push_back(rhspack);
-        AffineExpr dims[2] = {b.getAffineSymbolExpr(2 * exprs.size() + 0),
-                              b.getAffineSymbolExpr(2 * exprs.size() + 1)};
+        AffineExpr dims[2] = {b.getAffineSymbolExpr(base + 0),
+                              b.getAffineSymbolExpr(base + 1)};
         auto expr = dims[0] - dims[1];
         if (pred == CmpIPredicate::sgt || pred == CmpIPredicate::ugt)
           expr = expr - 1;
@@ -1529,9 +1686,10 @@ bool handle(PatternRewriter &b, CmpIOp cmpi, SmallVectorImpl<AffineExpr> &exprs,
         // positive, we can add this as an additional check, that lhs >= 0.
         // Therefore lhs unsigned< rhs -> lhs signed< rhs && lhs >= 0
         eqflags.push_back(false);
+        unsigned base = applies.size();
         applies.push_back(lhspack);
         applies.push_back(lhspack);
-        AffineExpr expr = b.getAffineSymbolExpr(2 * exprs.size() + 0);
+        AffineExpr expr = b.getAffineSymbolExpr(base + 0);
         exprs.push_back(expr);
       }
     }
@@ -1554,10 +1712,11 @@ bool handle(PatternRewriter &b, CmpIOp cmpi, SmallVectorImpl<AffineExpr> &exprs,
     for (auto lhspack : lhs)
       for (auto rhspack : rhs) {
         eqflags.push_back(false);
+        unsigned base = applies.size();
         applies.push_back(lhspack);
         applies.push_back(rhspack);
-        AffineExpr dims[2] = {b.getAffineSymbolExpr(2 * exprs.size() + 0),
-                              b.getAffineSymbolExpr(2 * exprs.size() + 1)};
+        AffineExpr dims[2] = {b.getAffineSymbolExpr(base + 0),
+                              b.getAffineSymbolExpr(base + 1)};
         auto expr = dims[1] - dims[0];
         if (pred == CmpIPredicate::slt || pred == CmpIPredicate::ult)
           expr = expr - 1;
@@ -1600,9 +1759,10 @@ bool handle(PatternRewriter &b, CmpIOp cmpi, SmallVectorImpl<AffineExpr> &exprs,
           break;
         }
         eqflags.push_back(false);
+        unsigned base = applies.size();
         applies.push_back(lhspack);
         applies.push_back(lhspack);
-        AffineExpr expr = b.getAffineSymbolExpr(2 * exprs.size() + 0);
+        AffineExpr expr = b.getAffineSymbolExpr(base + 0);
         exprs.push_back(expr - 1);
       }
       if (legal)
@@ -1649,52 +1809,65 @@ static void replaceLoad(memref::LoadOp load,
 }
 */
 
+template <typename Op>
+LogicalResult raiseAtomicRMW(Op rmw, PatternRewriter &rewriter) {
+  auto scope = getLocalAffineScope(rmw);
+  for (auto idx : rmw.getIndices()) {
+    if (!isValidIndex(idx, scope)) {
+      return failure();
+    }
+  }
+
+  auto memrefType = cast<MemRefType>(rmw.getMemref().getType());
+  int64_t rank = memrefType.getRank();
+
+  // Create identity map for memrefs with at least one dimension or () -> ()
+  // for zero-dimensional memrefs.
+  SmallVector<AffineExpr, 4> dimExprs;
+  dimExprs.reserve(rank);
+  for (unsigned i = 0; i < rank; ++i)
+    dimExprs.push_back(rewriter.getAffineSymbolExpr(i));
+  auto map = AffineMap::get(/*dimCount=*/0, /*symbolCount=*/rank, dimExprs,
+                            rewriter.getContext());
+
+  SmallVector<Value, 4> operands = rmw.getIndices();
+
+  if (map.getNumInputs() != operands.size()) {
+    // load->getParentOfType<FuncOp>().dump();
+    llvm::errs() << " load: " << rmw << "\n";
+  }
+  auto *parentScope = scope->getParentOp();
+  DominanceInfo DI(parentScope);
+  assert(map.getNumInputs() == operands.size());
+  fully2ComposeAffineMapAndOperands(rewriter, &map, &operands, DI, scope);
+  assert(map.getNumInputs() == operands.size());
+  affine::canonicalizeMapAndOperands(&map, &operands);
+  map = recreateExpr(map);
+  assert(map.getNumInputs() == operands.size());
+  auto alignment = rmw->template getAttrOfType<IntegerAttr>(
+      memref::AllocOp::getAlignmentAttrStrName());
+  auto affineLoad = enzyme::AffineAtomicRMWOp::create(
+      rewriter, rmw.getLoc(), rmw.getValue().getType(), rmw.getKind(),
+      rmw.getValue(), rmw.getMemref(), operands, map, alignment);
+  rmw.getResult().replaceAllUsesWith(affineLoad.getResult());
+  rewriter.eraseOp(rmw);
+  return success();
+}
+
+struct MoveEnzymeRMWToAffine : public OpRewritePattern<enzyme::AtomicRMWOp> {
+  using OpRewritePattern<enzyme::AtomicRMWOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(enzyme::AtomicRMWOp rmw,
+                                PatternRewriter &rewriter) const override {
+    return raiseAtomicRMW(rmw, rewriter);
+  }
+};
+
 struct MoveRMWToAffine : public OpRewritePattern<memref::AtomicRMWOp> {
   using OpRewritePattern<memref::AtomicRMWOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(memref::AtomicRMWOp rmw,
                                 PatternRewriter &rewriter) const override {
-    auto scope = getLocalAffineScope(rmw);
-    for (auto idx : rmw.getIndices()) {
-      if (!isValidIndex(idx, scope)) {
-        return failure();
-      }
-    }
-
-    auto memrefType = cast<MemRefType>(rmw.getMemref().getType());
-    int64_t rank = memrefType.getRank();
-
-    // Create identity map for memrefs with at least one dimension or () -> ()
-    // for zero-dimensional memrefs.
-    SmallVector<AffineExpr, 4> dimExprs;
-    dimExprs.reserve(rank);
-    for (unsigned i = 0; i < rank; ++i)
-      dimExprs.push_back(rewriter.getAffineSymbolExpr(i));
-    auto map = AffineMap::get(/*dimCount=*/0, /*symbolCount=*/rank, dimExprs,
-                              rewriter.getContext());
-
-    SmallVector<Value, 4> operands = rmw.getIndices();
-
-    if (map.getNumInputs() != operands.size()) {
-      // load->getParentOfType<FuncOp>().dump();
-      llvm::errs() << " load: " << rmw << "\n";
-    }
-    auto *parentScope = scope->getParentOp();
-    DominanceInfo DI(parentScope);
-    assert(map.getNumInputs() == operands.size());
-    fully2ComposeAffineMapAndOperands(rewriter, &map, &operands, DI, scope);
-    assert(map.getNumInputs() == operands.size());
-    affine::canonicalizeMapAndOperands(&map, &operands);
-    map = recreateExpr(map);
-    assert(map.getNumInputs() == operands.size());
-    auto alignment = rmw->getAttrOfType<IntegerAttr>(
-        memref::AllocOp::getAlignmentAttrStrName());
-    auto affineLoad = enzyme::AffineAtomicRMWOp::create(
-        rewriter, rmw.getLoc(), rmw.getValue().getType(), rmw.getKind(),
-        rmw.getValue(), rmw.getMemref(), operands, map, alignment);
-    rmw.getResult().replaceAllUsesWith(affineLoad.getResult());
-    rewriter.eraseOp(rmw);
-    return success();
+    return raiseAtomicRMW(rmw, rewriter);
   }
 };
 
@@ -2061,8 +2234,8 @@ struct MoveIfToAffine : public OpRewritePattern<scf::IfOp> {
       auto *parentScope = scope->getParentOp();
       DominanceInfo DI(parentScope);
 
-      auto iset = IntegerSet::get(/*dim*/ 0, /*symbol*/ 2 * exprs.size(), exprs,
-                                  eqflags);
+      auto iset =
+          IntegerSet::get(/*dim*/ 0, /*symbol*/ applies.size(), exprs, eqflags);
       fully2ComposeIntegerSetAndOperands(rewriter, &iset, &operands, DI, scope);
       affine::canonicalizeSetAndOperands(&iset, &operands);
       affine::AffineIfOp affineIfOp = affine::AffineIfOp::create(
@@ -2199,8 +2372,8 @@ struct MoveExtToAffine : public OpRewritePattern<arith::ExtUIOp> {
       auto *parentScope = scope->getParentOp();
       DominanceInfo DI(parentScope);
 
-      auto iset = IntegerSet::get(/*dim*/ 0, /*symbol*/ 2 * exprs.size(), exprs,
-                                  eqflags);
+      auto iset =
+          IntegerSet::get(/*dim*/ 0, /*symbol*/ applies.size(), exprs, eqflags);
       fully2ComposeIntegerSetAndOperands(rewriter, &iset, &operands, DI, scope);
       affine::canonicalizeSetAndOperands(&iset, &operands);
       Value tval[1] = {arith::ConstantIntOp::create(rewriter, ifOp.getLoc(),
@@ -2399,8 +2572,8 @@ struct MoveSelectToAffine : public OpRewritePattern<arith::SelectOp> {
       auto *parentScope = scope->getParentOp();
       DominanceInfo DI(parentScope);
 
-      auto iset = IntegerSet::get(/*dim*/ 0, /*symbol*/ 2 * exprs.size(), exprs,
-                                  eqflags);
+      auto iset =
+          IntegerSet::get(/*dim*/ 0, /*symbol*/ applies.size(), exprs, eqflags);
       fully2ComposeIntegerSetAndOperands(rewriter, &iset, &operands, DI, scope);
       affine::canonicalizeSetAndOperands(&iset, &operands);
       affine::AffineIfOp affineIfOp = affine::AffineIfOp::create(
@@ -2438,7 +2611,7 @@ struct MoveSelectToAffine : public OpRewritePattern<arith::SelectOp> {
           auto idx = cast<OpResult>(opv.get()).getResultNumber();
           auto tval = cast<AffineYieldOp>(midIf.getThenBlock()->getTerminator())
                           .getOperand(idx);
-          auto fval = cast<AffineYieldOp>(midIf.getThenBlock()->getTerminator())
+          auto fval = cast<AffineYieldOp>(midIf.getElseBlock()->getTerminator())
                           .getOperand(idx);
           if (matchPattern(tval, m_One()) && matchPattern(fval, m_Zero()))
             continue;
@@ -2519,7 +2692,7 @@ struct MoveSelectToAffine : public OpRewritePattern<arith::SelectOp> {
 
           std::vector<mlir::Type> types = {ifOp.getCondition().getType()};
 
-          auto iset = IntegerSet::get(/*dim*/ 0, /*symbol*/ 2 * exprs.size(),
+          auto iset = IntegerSet::get(/*dim*/ 0, /*symbol*/ applies.size(),
                                       exprs, eqflags);
           fully2ComposeIntegerSetAndOperands(rewriter, &iset, &operands, DI,
                                              scope);
@@ -2556,6 +2729,26 @@ struct MoveSelectToAffine : public OpRewritePattern<arith::SelectOp> {
 struct ForOpRaising : public OpRewritePattern<scf::ForOp> {
   using OpRewritePattern<scf::ForOp>::OpRewritePattern;
 
+  // Enzyme's checkpointing/mincut reverse-mode support (see
+  // SCFAutoDiffOpInterfaceImpl.cpp) is only implemented for scf::ForOp, not
+  // affine::AffineForOp. Raising a loop that requests checkpointing to
+  // affine.for would silently drop that support (the attribute, if already
+  // attached, is preserved on the affine.for but never consulted; if not yet
+  // attached, the enclosing-loop walk in ForLoopApplyEnzymeAttributes would
+  // no longer find an scf::ForOp/scf::WhileOp ancestor). So leave such loops
+  // as scf.for regardless of whether they are otherwise affine-representable.
+  bool hasEnzymeCheckpointingRequest(scf::ForOp loop) const {
+    if (loop->hasAttr("enzyme.enable_checkpointing"))
+      return true;
+    bool found = false;
+    loop.getBody()->walk([&](LLVM::CallOp call) {
+      if (auto callee = call.getCallee())
+        if (callee->contains("__enzyme_set_checkpointing"))
+          found = true;
+    });
+    return found;
+  }
+
   // TODO: remove me or rename me.
   bool isAffine(scf::ForOp loop) const {
     // return true;
@@ -2583,6 +2776,8 @@ struct ForOpRaising : public OpRewritePattern<scf::ForOp> {
   }
   LogicalResult matchAndRewrite(scf::ForOp loop,
                                 PatternRewriter &rewriter) const final {
+    if (hasEnzymeCheckpointingRequest(loop))
+      return failure();
     if (isAffine(loop)) {
       auto scope = getLocalAffineScope(loop);
       OpBuilder builder(loop);
@@ -2641,20 +2836,20 @@ struct ForOpRaising : public OpRewritePattern<scf::ForOp> {
       if (!loop.getStep().getDefiningOp<ConstantIndexOp>()) {
         if (ubs.size() != 1 || lbs.size() != 1)
           return failure();
-        ubs[0] = DivUIOp::create(
-            rewriter, loop.getLoc(),
-            AddIOp::create(
-                rewriter, loop.getLoc(),
-                SubIOp::create(
-                    rewriter, loop.getLoc(), loop.getStep(),
-                    isa<IndexType>(loop.getStep().getType())
+        Value one = isa<IndexType>(loop.getStep().getType())
                         ? ConstantIndexOp::create(rewriter, loop.getLoc(), 1)
                               .getResult()
                         : ConstantIntOp::create(rewriter, loop.getLoc(),
-                                                loop.getStep().getType(), 1))
-                    .getResult(),
-                SubIOp::create(rewriter, loop.getLoc(), loop.getUpperBound(),
-                               loop.getLowerBound())),
+                                                loop.getStep().getType(), 1);
+        Value stepMinusOne =
+            SubIOp::create(rewriter, loop.getLoc(), loop.getStep(), one)
+                .getResult();
+        Value range =
+            SubIOp::create(rewriter, loop.getLoc(), loop.getUpperBound(),
+                           loop.getLowerBound());
+        ubs[0] = DivUIOp::create(
+            rewriter, loop.getLoc(),
+            AddIOp::create(rewriter, loop.getLoc(), stepMinusOne, range),
             loop.getStep());
         lbs[0] = ConstantIndexOp::create(rewriter, loop.getLoc(), 0);
         rewrittenStep = true;
@@ -6191,8 +6386,9 @@ void mlir::enzyme::populateAffineCFGPatterns(RewritePatternSet &rpl) {
           CanonicalizeIndexCast<IndexCastUIOp>, AffineIfYieldMovementPattern,
           /* IndexCastMovement,*/ AffineFixup<affine::AffineLoadOp>,
           AffineFixup<affine::AffineStoreOp>, CanonicalizIfBounds,
-          MoveStoreToAffine, MoveIfToAffine, MoveRMWToAffine, MoveLoadToAffine,
-          MoveExtToAffine, MoveSIToFPToAffine, CmpExt, MoveSelectToAffine,
+          MoveStoreToAffine, MoveIfToAffine, MoveEnzymeRMWToAffine,
+          MoveRMWToAffine, MoveLoadToAffine, MoveExtToAffine,
+          MoveSIToFPToAffine, CmpExt, MoveSelectToAffine,
           AffineIfSimplification, AffineIfSimplificationIsl, CombineAffineIfs,
           MergeNestedAffineParallelLoops, PrepMergeNestedAffineParallelLoops,
           MergeNestedAffineParallelIf, MergeParallelInductions, OptimizeRem,

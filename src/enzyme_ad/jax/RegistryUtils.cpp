@@ -7,6 +7,7 @@
 #include "src/enzyme_ad/jax/Implementations/XLADerivatives.h"
 
 #include "Dialect/Dialect.h"
+#include "Dialect/LLVMExt/LLVMExt.h"
 #include "Enzyme/MLIR/Dialect/Dialect.h"
 #include "Enzyme/MLIR/Dialect/Impulse/Impulse.h"
 #include "Enzyme/MLIR/Dialect/Ops.h"
@@ -240,6 +241,7 @@ void registerDialects(mlir::DialectRegistry &registry) {
   registry.insert<mlir::sparse_tensor::SparseTensorDialect>();
   registry.insert<mlir::enzyme::EnzymeDialect>();
   registry.insert<mlir::impulse::ImpulseDialect>();
+  registry.insert<mlir::enzyme::llvm_ext::LLVMExtDialect>();
   registry.insert<mlir::enzymexla::EnzymeXLADialect>();
   registry.insert<mlir::enzymexla::comm::CommDialect>();
   registry.insert<mlir::enzyme::distributed::DistributedDialect>();
@@ -285,6 +287,7 @@ void loadAllRegisteredDialects(mlir::MLIRContext &context) {
   context.loadDialect<mlir::sparse_tensor::SparseTensorDialect>();
   context.loadDialect<mlir::enzyme::EnzymeDialect>();
   context.loadDialect<mlir::impulse::ImpulseDialect>();
+  context.loadDialect<mlir::enzyme::llvm_ext::LLVMExtDialect>();
   context.loadDialect<mlir::enzymexla::EnzymeXLADialect>();
   context.loadDialect<mlir::enzymexla::comm::CommDialect>();
   context.loadDialect<mlir::enzymexla::triton_ext::TritonExtDialect>();

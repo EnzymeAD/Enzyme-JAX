@@ -1,0 +1,30 @@
+name: Lint
+
+on:
+  push:
+    paths:
+      - '.github/workflows/lint.yml'
+      - 'scripts/check_emission_order.py'
+      - 'src/**/*.cc'
+      - 'src/**/*.cpp'
+      - 'src/**/*.h'
+      - '!src/external'
+  pull_request:
+    paths:
+      - '.github/workflows/lint.yml'
+      - 'scripts/check_emission_order.py'
+      - 'src/**/*.cc'
+      - 'src/**/*.cpp'
+      - 'src/**/*.h'
+      - '!src/external'
+  merge_group:
+
+jobs:
+  emission-order:
+    name: Deterministic IR emission order
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v7
+    - name: Check for order-dependent IR emission
+      run: python3 scripts/check_emission_order.py --github src

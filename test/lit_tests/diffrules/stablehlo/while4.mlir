@@ -115,7 +115,7 @@ module {
 
 // CHECK:    func.func private @"diffeConst{typeof(sumabs2)}(Main.sumabs2)_autodiff"(%arg0: tensor<6x2x3xf32>, %arg1: tensor<3x3xf32>, %arg2: tensor<3x3xf32>, %arg3: tensor<3xf32>, %arg4: tensor<3xf32>, %arg5: tensor<2xui64>, %arg6: tensor<f32>, %arg7: tensor<2xui64>, %arg8: tensor<3x3xf32>, %arg9: tensor<3x3xf32>, %arg10: tensor<3xf32>, %arg11: tensor<3xf32>) -> (tensor<6x2x3xf32>, tensor<3x3xf32>, tensor<3x3xf32>, tensor<3xf32>, tensor<3xf32>, tensor<2xui64>, tensor<3x3xf32>, tensor<3x3xf32>, tensor<3xf32>, tensor<3xf32>) {
 // CHECK-NEXT:    %c = stablehlo.constant dense<4> : tensor<i64>
-// CHECK-NEXT:    %cst = stablehlo.constant dense<0.000000e+00> : tensor<5x3x2x1xf32>
+// CHECK-NEXT:    %cst = stablehlo.constant dense<0.000000e+00> : tensor<5x2x3xf32>
 // CHECK-NEXT:    %cst_0 = stablehlo.constant dense<0.000000e+00> : tensor<5x3x2xf32>
 // CHECK-NEXT:    %cst_1 = stablehlo.constant dense<0.000000e+00> : tensor<5x3x3xf32>
 // CHECK-NEXT:    %c_2 = stablehlo.constant dense<5> : tensor<i64>
@@ -136,9 +136,9 @@ module {
 // CHECK-NEXT:    %8 = stablehlo.add %6, %7 : tensor<3x2xf32>
 // CHECK-NEXT:    %9 = stablehlo.add %5, %8 : tensor<3x2xf32>
 // CHECK-NEXT:    %10 = stablehlo.tanh %9 : tensor<3x2xf32>
-// CHECK-NEXT:    %11:9 = stablehlo.while(%iterArg = %c_4, %iterArg_9 = %1, %iterArg_10 = %2, %iterArg_11 = %10, %iterArg_12 = %0, %iterArg_13 = %cst_1, %iterArg_14 = %cst_0, %iterArg_15 = %cst_0, %iterArg_16 = %cst) : tensor<i64>, tensor<3x3xf32>, tensor<3x3xf32>, tensor<3x2xf32>, tensor<3x2x6xf32>, tensor<5x3x3xf32>, tensor<5x3x2xf32>, tensor<5x3x2xf32>, tensor<5x3x2x1xf32>
+// CHECK-NEXT:    %11:9 = stablehlo.while(%iterArg = %c_4, %iterArg_9 = %1, %iterArg_10 = %2, %iterArg_11 = %10, %iterArg_12 = %0, %iterArg_13 = %cst_1, %iterArg_14 = %cst_0, %iterArg_15 = %cst_0, %iterArg_16 = %cst) : tensor<i64>, tensor<3x3xf32>, tensor<3x3xf32>, tensor<3x2xf32>, tensor<3x2x6xf32>, tensor<5x3x3xf32>, tensor<5x3x2xf32>, tensor<5x3x2xf32>, tensor<5x2x3xf32>
 // CHECK-NEXT:    cond {
-// CHECK-NEXT:      %36 = stablehlo.compare  LT, %iterArg, %c_2 : (tensor<i64>, tensor<i64>) -> tensor<i1>
+// CHECK-NEXT:      %36 = stablehlo.compare LT, %iterArg, %c_2 : (tensor<i64>, tensor<i64>) -> tensor<i1>
 // CHECK-NEXT:      stablehlo.return %36 : tensor<i1>
 // CHECK-NEXT:    } do {
 // CHECK-NEXT:      %36 = stablehlo.reshape %iterArg_11 : (tensor<3x2xf32>) -> tensor<1x3x2xf32>
@@ -149,21 +149,21 @@ module {
 // CHECK-NEXT:      %41 = stablehlo.add %c_5, %iterArg {enzymexla.bounds = {{.*}}} : tensor<i64>
 // CHECK-NEXT:      %42 = stablehlo.subtract %41, %c_6 {enzymexla.bounds = {{.*}}} : tensor<i64>
 // CHECK-NEXT:      %43 = stablehlo.dynamic_slice %iterArg_12, %c_4, %c_4, %42, sizes = [3, 2, 1] : (tensor<3x2x6xf32>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<3x2x1xf32>
-// CHECK-NEXT:      %44 = stablehlo.reshape %43 : (tensor<3x2x1xf32>) -> tensor<1x3x2x1xf32>
-// CHECK-NEXT:      %45 = stablehlo.dynamic_update_slice %iterArg_16, %44, %iterArg, %c_4, %c_4, %c_4 : (tensor<5x3x2x1xf32>, tensor<1x3x2x1xf32>, tensor<i64>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<5x3x2x1xf32>
-// CHECK-NEXT:      %46 = stablehlo.transpose %43, dims = [2, 1, 0] : (tensor<3x2x1xf32>) -> tensor<1x2x3xf32>
-// CHECK-NEXT:      %47 = stablehlo.reshape %46 : (tensor<1x2x3xf32>) -> tensor<2x3xf32>
+// CHECK-NEXT:      %44 = stablehlo.transpose %43, dims = [2, 1, 0] : (tensor<3x2x1xf32>) -> tensor<1x2x3xf32>
+// CHECK-NEXT:      %45 = stablehlo.reshape %44 : (tensor<1x2x3xf32>) -> tensor<2x3xf32>
+// CHECK-NEXT:      %46 = stablehlo.reshape %45 : (tensor<2x3xf32>) -> tensor<1x2x3xf32>
+// CHECK-NEXT:      %47 = stablehlo.dynamic_update_slice %iterArg_16, %46, %iterArg, %c_4, %c_4 : (tensor<5x2x3xf32>, tensor<1x2x3xf32>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<5x2x3xf32>
 // CHECK-NEXT:      %48 = stablehlo.dot_general %iterArg_10, %iterArg_11, contracting_dims = [1] x [0] : (tensor<3x3xf32>, tensor<3x2xf32>) -> tensor<3x2xf32>
 // CHECK-NEXT:      %49 = stablehlo.broadcast_in_dim %arg4, dims = [0] : (tensor<3xf32>) -> tensor<3x2xf32>
 // CHECK-NEXT:      %50 = stablehlo.add %48, %49 : tensor<3x2xf32>
-// CHECK-NEXT:      %51 = stablehlo.dot_general %iterArg_9, %47, contracting_dims = [1] x [1] : (tensor<3x3xf32>, tensor<2x3xf32>) -> tensor<3x2xf32>
+// CHECK-NEXT:      %51 = stablehlo.dot_general %iterArg_9, %45, contracting_dims = [1] x [1] : (tensor<3x3xf32>, tensor<2x3xf32>) -> tensor<3x2xf32>
 // CHECK-NEXT:      %52 = stablehlo.broadcast_in_dim %arg3, dims = [0] : (tensor<3xf32>) -> tensor<3x2xf32>
 // CHECK-NEXT:      %53 = stablehlo.add %51, %52 : tensor<3x2xf32>
 // CHECK-NEXT:      %54 = stablehlo.add %50, %53 : tensor<3x2xf32>
 // CHECK-NEXT:      %55 = stablehlo.reshape %54 : (tensor<3x2xf32>) -> tensor<1x3x2xf32>
 // CHECK-NEXT:      %56 = stablehlo.dynamic_update_slice %iterArg_15, %55, %iterArg, %c_4, %c_4 : (tensor<5x3x2xf32>, tensor<1x3x2xf32>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<5x3x2xf32>
 // CHECK-NEXT:      %57 = stablehlo.tanh %54 : tensor<3x2xf32>
-// CHECK-NEXT:      stablehlo.return %40, %iterArg_9, %iterArg_10, %57, %iterArg_12, %39, %37, %56, %45 : tensor<i64>, tensor<3x3xf32>, tensor<3x3xf32>, tensor<3x2xf32>, tensor<3x2x6xf32>, tensor<5x3x3xf32>, tensor<5x3x2xf32>, tensor<5x3x2xf32>, tensor<5x3x2x1xf32>
+// CHECK-NEXT:      stablehlo.return %40, %iterArg_9, %iterArg_10, %57, %iterArg_12, %39, %37, %56, %47 : tensor<i64>, tensor<3x3xf32>, tensor<3x3xf32>, tensor<3x2xf32>, tensor<3x2x6xf32>, tensor<5x3x3xf32>, tensor<5x3x2xf32>, tensor<5x3x2xf32>, tensor<5x2x3xf32>
 // CHECK-NEXT:    }
 // CHECK-NEXT:    %12 = stablehlo.abs %11#3 : tensor<3x2xf32>
 // CHECK-NEXT:    %13 = stablehlo.transpose %11#4, dims = [2, 1, 0] : (tensor<3x2x6xf32>) -> tensor<6x2x3xf32>
@@ -174,12 +174,12 @@ module {
 // CHECK-NEXT:    %18 = stablehlo.broadcast_in_dim %arg6, dims = [] : (tensor<f32>) -> tensor<3x2xf32>
 // CHECK-NEXT:    %19 = stablehlo.multiply %18, %12 : tensor<3x2xf32>
 // CHECK-NEXT:    %20 = stablehlo.add %19, %19 : tensor<3x2xf32>
-// CHECK-NEXT:    %21 = stablehlo.compare  GE, %11#3, %cst_8 : (tensor<3x2xf32>, tensor<3x2xf32>) -> tensor<3x2xi1>
+// CHECK-NEXT:    %21 = stablehlo.compare GE, %11#3, %cst_8 : (tensor<3x2xf32>, tensor<3x2xf32>) -> tensor<3x2xi1>
 // CHECK-NEXT:    %22 = stablehlo.negate %20 : tensor<3x2xf32>
 // CHECK-NEXT:    %23 = stablehlo.select %21, %20, %22 : tensor<3x2xi1>, tensor<3x2xf32>
 // CHECK-NEXT:    %24:7 = stablehlo.while(%iterArg = %c_4, %iterArg_9 = %17, %iterArg_10 = %16, %iterArg_11 = %arg10, %iterArg_12 = %arg11, %iterArg_13 = %23, %iterArg_14 = %c) : tensor<i64>, tensor<3x3xf32>, tensor<3x3xf32>, tensor<3xf32>, tensor<3xf32>, tensor<3x2xf32>, tensor<i64>
 // CHECK-NEXT:    cond {
-// CHECK-NEXT:      %36 = stablehlo.compare  LT, %iterArg, %c_2 : (tensor<i64>, tensor<i64>) -> tensor<i1>
+// CHECK-NEXT:      %36 = stablehlo.compare LT, %iterArg, %c_2 : (tensor<i64>, tensor<i64>) -> tensor<i1>
 // CHECK-NEXT:      stablehlo.return %36 : tensor<i1>
 // CHECK-NEXT:    } do {
 // CHECK-NEXT:      %36 = stablehlo.dynamic_slice %11#5, %iterArg_14, %c_4, %c_4, sizes = [1, 3, 3] : (tensor<5x3x3xf32>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<1x3x3xf32>
@@ -188,25 +188,23 @@ module {
 // CHECK-NEXT:      %39 = stablehlo.reshape %38 : (tensor<1x3x2xf32>) -> tensor<3x2xf32>
 // CHECK-NEXT:      %40 = stablehlo.dynamic_slice %11#7, %iterArg_14, %c_4, %c_4, sizes = [1, 3, 2] : (tensor<5x3x2xf32>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<1x3x2xf32>
 // CHECK-NEXT:      %41 = stablehlo.reshape %40 : (tensor<1x3x2xf32>) -> tensor<3x2xf32>
-// CHECK-NEXT:      %42 = stablehlo.dynamic_slice %11#8, %iterArg_14, %c_4, %c_4, %c_4, sizes = [1, 3, 2, 1] : (tensor<5x3x2x1xf32>, tensor<i64>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<1x3x2x1xf32>
-// CHECK-NEXT:      %43 = stablehlo.reshape %42 : (tensor<1x3x2x1xf32>) -> tensor<3x2x1xf32>
-// CHECK-NEXT:      %44 = stablehlo.transpose %43, dims = [2, 1, 0] : (tensor<3x2x1xf32>) -> tensor<1x2x3xf32>
-// CHECK-NEXT:      %45 = stablehlo.reshape %44 : (tensor<1x2x3xf32>) -> tensor<2x3xf32>
-// CHECK-NEXT:      %46 = stablehlo.add %iterArg, %c_6 {enzymexla.bounds = {{.*}}} : tensor<i64>
-// CHECK-NEXT:      %47 = stablehlo.tanh %41 : tensor<3x2xf32>
-// CHECK-NEXT:      %48 = stablehlo.multiply %47, %47 : tensor<3x2xf32>
-// CHECK-NEXT:      %49 = stablehlo.subtract %cst_3, %48 : tensor<3x2xf32>
-// CHECK-NEXT:      %50 = stablehlo.multiply %iterArg_13, %49 : tensor<3x2xf32>
-// CHECK-NEXT:      %51 = stablehlo.reduce(%50 init: %cst_7) applies stablehlo.add across dimensions = [1] : (tensor<3x2xf32>, tensor<f32>) -> tensor<3xf32>
-// CHECK-NEXT:      %52 = stablehlo.add %iterArg_11, %51 : tensor<3xf32>
-// CHECK-NEXT:      %53 = stablehlo.dot_general %50, %45, contracting_dims = [1] x [0] : (tensor<3x2xf32>, tensor<2x3xf32>) -> tensor<3x3xf32>
-// CHECK-NEXT:      %54 = stablehlo.add %iterArg_9, %53 : tensor<3x3xf32>
-// CHECK-NEXT:      %55 = stablehlo.add %iterArg_12, %51 : tensor<3xf32>
-// CHECK-NEXT:      %56 = stablehlo.dot_general %50, %39, contracting_dims = [1] x [1] : (tensor<3x2xf32>, tensor<3x2xf32>) -> tensor<3x3xf32>
-// CHECK-NEXT:      %57 = stablehlo.add %iterArg_10, %56 : tensor<3x3xf32>
-// CHECK-NEXT:      %58 = stablehlo.dot_general %37, %50, contracting_dims = [0] x [0] : (tensor<3x3xf32>, tensor<3x2xf32>) -> tensor<3x2xf32>
-// CHECK-NEXT:      %59 = stablehlo.subtract %iterArg_14, %c_6 : tensor<i64>
-// CHECK-NEXT:      stablehlo.return %46, %54, %57, %52, %55, %58, %59 : tensor<i64>, tensor<3x3xf32>, tensor<3x3xf32>, tensor<3xf32>, tensor<3xf32>, tensor<3x2xf32>, tensor<i64>
+// CHECK-NEXT:      %42 = stablehlo.dynamic_slice %11#8, %iterArg_14, %c_4, %c_4, sizes = [1, 2, 3] : (tensor<5x2x3xf32>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<1x2x3xf32>
+// CHECK-NEXT:      %43 = stablehlo.reshape %42 : (tensor<1x2x3xf32>) -> tensor<2x3xf32>
+// CHECK-NEXT:      %44 = stablehlo.add %iterArg, %c_6 {enzymexla.bounds = {{.*}}} : tensor<i64>
+// CHECK-NEXT:      %45 = stablehlo.tanh %41 : tensor<3x2xf32>
+// CHECK-NEXT:      %46 = stablehlo.multiply %45, %45 : tensor<3x2xf32>
+// CHECK-NEXT:      %47 = stablehlo.subtract %cst_3, %46 : tensor<3x2xf32>
+// CHECK-NEXT:      %48 = stablehlo.multiply %iterArg_13, %47 : tensor<3x2xf32>
+// CHECK-NEXT:      %49 = stablehlo.reduce(%48 init: %cst_7) applies stablehlo.add across dimensions = [1] : (tensor<3x2xf32>, tensor<f32>) -> tensor<3xf32>
+// CHECK-NEXT:      %50 = stablehlo.add %iterArg_11, %49 : tensor<3xf32>
+// CHECK-NEXT:      %51 = stablehlo.dot_general %48, %43, contracting_dims = [1] x [0] : (tensor<3x2xf32>, tensor<2x3xf32>) -> tensor<3x3xf32>
+// CHECK-NEXT:      %52 = stablehlo.add %iterArg_9, %51 : tensor<3x3xf32>
+// CHECK-NEXT:      %53 = stablehlo.add %iterArg_12, %49 : tensor<3xf32>
+// CHECK-NEXT:      %54 = stablehlo.dot_general %48, %39, contracting_dims = [1] x [1] : (tensor<3x2xf32>, tensor<3x2xf32>) -> tensor<3x3xf32>
+// CHECK-NEXT:      %55 = stablehlo.add %iterArg_10, %54 : tensor<3x3xf32>
+// CHECK-NEXT:      %56 = stablehlo.dot_general %37, %48, contracting_dims = [0] x [0] : (tensor<3x3xf32>, tensor<3x2xf32>) -> tensor<3x2xf32>
+// CHECK-NEXT:      %57 = stablehlo.subtract %iterArg_14, %c_6 : tensor<i64>
+// CHECK-NEXT:      stablehlo.return %44, %52, %55, %50, %53, %56, %57 : tensor<i64>, tensor<3x3xf32>, tensor<3x3xf32>, tensor<3xf32>, tensor<3xf32>, tensor<3x2xf32>, tensor<i64>
 // CHECK-NEXT:    }
 // CHECK-NEXT:    %25 = stablehlo.multiply %10, %10 : tensor<3x2xf32>
 // CHECK-NEXT:    %26 = stablehlo.subtract %cst_3, %25 : tensor<3x2xf32>

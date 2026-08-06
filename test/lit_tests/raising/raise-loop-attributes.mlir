@@ -43,11 +43,14 @@ module {
   llvm.func local_unnamed_addr @_ZL4kernPfS_(!llvm.ptr {llvm.noundef}, !llvm.ptr {llvm.noundef}) attributes {approx_func_fp_math = true, frame_pointer = #llvm.framePointerKind<all>, no_infs_fp_math = true, no_nans_fp_math = true, no_signed_zeros_fp_math = true, passthrough = [["no-trapping-math", "true"], ["stack-protector-buffer-size", "8"], ["target-cpu", "x86-64"]], target_cpu = "x86-64", target_features = #llvm.target_features<["+cmov", "+cx8", "+fxsr", "+mmx", "+sse", "+sse2", "+x87"]>, tune_cpu = "generic", unsafe_fp_math = true}
 }
 
+// A loop requesting checkpointing is deliberately left as an scf.for (Enzyme's
+// checkpointing support is only implemented for scf::ForOp, not affine::AffineForOp).
 // CHECK:  llvm.func local_unnamed_addr @_Z26CUDA_LBM_kernel_loop_inneriPfS_(%[[UB:.+]]: i32 {llvm.noundef}, %[[ARG:.+]]: !llvm.ptr {llvm.noundef}, %[[ARG1:.+]]: !llvm.ptr {llvm.noundef}) {
+// CHECK-NEXT:    %[[CST1:.+]] = arith.constant 1 : i32
+// CHECK-NEXT:    %[[CST0:.+]] = arith.constant 0 : i32
 // CHECK-NEXT:    %[[CST2:.+]] = arith.constant 2 : i32
 // CHECK-NEXT:    %[[UB1:.+]] = arith.divsi %[[UB]], %[[CST2]] : i32
-// CHECK-NEXT:    %[[UB2:.+]] = arith.index_cast %[[UB1]] : i32 to index
-// CHECK-NEXT:    affine.for %[[IT:.+]] = 0 to %[[UB2:.+]] {
+// CHECK-NEXT:    scf.for %[[IT:.+]] = %[[CST0]] to %[[UB1]] step %[[CST1]] : i32 {
 // CHECK-NEXT:      llvm.call fastcc @_ZL4kernPfS_(%[[ARG]], %[[ARG1]]) : (!llvm.ptr {llvm.noundef}, !llvm.ptr {llvm.noundef}) -> ()
 // CHECK-NEXT:      llvm.call fastcc @_ZL4kernPfS_(%[[ARG1]], %[[ARG]]) : (!llvm.ptr {llvm.noundef}, !llvm.ptr {llvm.noundef}) -> ()
 // CHECK-NEXT:    } {enzyme.checkpoint_period = 42 : i64, enzyme.enable_checkpointing = true}

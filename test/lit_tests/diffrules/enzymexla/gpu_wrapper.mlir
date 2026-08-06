@@ -54,11 +54,11 @@ func.func @dgpu_wrapper() {
 // CHECK:               %[[LOAD_2:.*]] = memref.load %[[VAL_0]]{{\[}}%[[APPLY_0]]] : memref<?xf32>
 // CHECK:               %[[APPLY_1:.*]] = affine.apply #[[$ATTR_0]](%[[VAL_6]], %[[VAL_7]])
 // CHECK:               memref.store %[[CONSTANT_2]], %[[VAL_0]]{{\[}}%[[APPLY_1]]] : memref<?xf32>
-// CHECK:               %[[MULF_1:.*]] = arith.mulf %[[LOAD_2]], %[[LOAD_1]] : f32
-// CHECK:               %[[MULF_2:.*]] = arith.mulf %[[LOAD_2]], %[[LOAD_1]] : f32
-// CHECK:               %[[ADDF_0:.*]] = arith.addf %[[MULF_1]], %[[MULF_2]] : f32
+// CHECK:               %[[MULF_1:.*]] = arith.mulf %[[LOAD_2]], %[[LOAD_1]] fastmath<fast> : f32
+// CHECK:               %[[MULF_2:.*]] = arith.mulf %[[LOAD_2]], %[[LOAD_1]] fastmath<fast> : f32
+// CHECK:               %[[ADDF_0:.*]] = arith.addf %[[MULF_1]], %[[MULF_2]] fastmath<fast> : f32
 // CHECK:               %[[APPLY_2:.*]] = affine.apply #[[$ATTR_0]](%[[VAL_6]], %[[VAL_7]])
-// CHECK:               %[[ATOMIC_RMW_0:.*]] = enzyme.atomic_rmw addf %[[ADDF_0]], %[[VAL_0]]{{\[}}%[[APPLY_2]]] monotonic : (f32, memref<?xf32>) -> f32
+// CHECK:               %[[ATOMIC_RMW_0:.*]] = enzyme.atomic_rmw addf %[[ADDF_0]], %[[VAL_0]]{{\[}}%[[APPLY_2]]] monotonic fastmath<fast> : (f32, memref<?xf32>) -> f32
 // CHECK:             }
 // CHECK:             "enzymexla.polygeist_yield"() : () -> ()
 // CHECK:           }) : (index, index, index, index, index, index) -> index
@@ -92,11 +92,11 @@ func.func @dgpu_wrapper() {
 // DF:               %[[LOAD_2:.*]] = memref.load %[[VAL_0]]{{\[}}%[[APPLY_0]]] : memref<?xf32>
 // DF:               %[[APPLY_1:.*]] = affine.apply #[[$ATTR_0]](%[[VAL_6]], %[[VAL_7]])
 // DF:               memref.store %[[CONSTANT_2]], %[[VAL_0]]{{\[}}%[[APPLY_1]]] : memref<?xf32>
-// DF:               %[[MULF_1:.*]] = arith.mulf %[[LOAD_2]], %[[LOAD_1]] : f32
-// DF:               %[[MULF_2:.*]] = arith.mulf %[[LOAD_2]], %[[LOAD_1]] : f32
-// DF:               %[[ADDF_0:.*]] = arith.addf %[[MULF_1]], %[[MULF_2]] : f32
+// DF:               %[[MULF_1:.*]] = arith.mulf %[[LOAD_2]], %[[LOAD_1]] fastmath<fast> : f32
+// DF:               %[[MULF_2:.*]] = arith.mulf %[[LOAD_2]], %[[LOAD_1]] fastmath<fast> : f32
+// DF:               %[[ADDF_0:.*]] = arith.addf %[[MULF_1]], %[[MULF_2]] fastmath<fast> : f32
 // DF:               %[[APPLY_2:.*]] = affine.apply #[[$ATTR_0]](%[[VAL_6]], %[[VAL_7]])
-// DF:               %[[ATOMIC_RMW_0:.*]] = enzyme.atomic_rmw addf %[[ADDF_0]], %[[VAL_0]]{{\[}}%[[APPLY_2]]] monotonic : (f32, memref<?xf32>) -> f32
+// DF:               %[[ATOMIC_RMW_0:.*]] = enzyme.atomic_rmw addf %[[ADDF_0]], %[[VAL_0]]{{\[}}%[[APPLY_2]]] monotonic fastmath<fast> : (f32, memref<?xf32>) -> f32
 // DF:             }
 // DF:             "enzymexla.polygeist_yield"() : () -> ()
 // DF:           }) : (index, index, index, index, index, index) -> index
@@ -153,8 +153,8 @@ func.func @dgpu_wrapper_part_inactive() {
 // CHECK:             affine.parallel (%[[VAL_4:.*]], %[[VAL_5:.*]]) = (0, 0) to (120, 120) {
 // CHECK:               %[[LOAD_0:.*]] = affine.load %[[VAL_2]]{{\[}}%[[VAL_4]] * 120 + %[[VAL_5]]] : memref<?xf32>
 // CHECK:               %[[LOAD_1:.*]] = affine.load %[[VAL_3]]{{\[}}%[[VAL_4]] * 120 + %[[VAL_5]]] : memref<?xf32>
-// CHECK:               memref.store %[[LOAD_1]], %[[ALLOC_0]]{{\[}}%[[VAL_4]], %[[VAL_5]]] : memref<120x120xf32, 1>
 // CHECK:               %[[SIN_0:.*]] = math.sin %[[LOAD_1]] : f32
+// CHECK:               memref.store %[[SIN_0]], %[[ALLOC_0]]{{\[}}%[[VAL_4]], %[[VAL_5]]] : memref<120x120xf32, 1>
 // CHECK:               %[[MULF_0:.*]] = arith.mulf %[[LOAD_0]], %[[SIN_0]] : f32
 // CHECK:               affine.store %[[MULF_0]], %[[VAL_2]]{{\[}}%[[VAL_4]] * 120 + %[[VAL_5]]] : memref<?xf32>
 // CHECK:             }
@@ -163,14 +163,13 @@ func.func @dgpu_wrapper_part_inactive() {
 // CHECK:           %[[VAL_6:.*]] = "enzymexla.gpu_wrapper"(%[[CONSTANT_1]], %[[CONSTANT_1]], %[[CONSTANT_1]], %[[CONSTANT_0]], %[[CONSTANT_0]], %[[CONSTANT_1]]) ({
 // CHECK:             affine.parallel (%[[VAL_7:.*]], %[[VAL_8:.*]]) = (0, 0) to (120, 120) {
 // CHECK:               %[[LOAD_2:.*]] = memref.load %[[ALLOC_0]]{{\[}}%[[VAL_7]], %[[VAL_8]]] : memref<120x120xf32, 1>
-// CHECK:               %[[SIN_1:.*]] = math.sin %[[LOAD_2]] : f32
 // CHECK:               %[[APPLY_0:.*]] = affine.apply #[[$ATTR_0]](%[[VAL_7]], %[[VAL_8]])
 // CHECK:               %[[LOAD_3:.*]] = memref.load %[[VAL_0]]{{\[}}%[[APPLY_0]]] : memref<?xf32>
 // CHECK:               %[[APPLY_1:.*]] = affine.apply #[[$ATTR_0]](%[[VAL_7]], %[[VAL_8]])
 // CHECK:               memref.store %[[CONSTANT_2]], %[[VAL_0]]{{\[}}%[[APPLY_1]]] : memref<?xf32>
-// CHECK:               %[[MULF_1:.*]] = arith.mulf %[[LOAD_3]], %[[SIN_1]] : f32
+// CHECK:               %[[MULF_1:.*]] = arith.mulf %[[LOAD_3]], %[[LOAD_2]] fastmath<fast> : f32
 // CHECK:               %[[APPLY_2:.*]] = affine.apply #[[$ATTR_0]](%[[VAL_7]], %[[VAL_8]])
-// CHECK:               %[[ATOMIC_RMW_0:.*]] = enzyme.atomic_rmw addf %[[MULF_1]], %[[VAL_0]]{{\[}}%[[APPLY_2]]] monotonic : (f32, memref<?xf32>) -> f32
+// CHECK:               %[[ATOMIC_RMW_0:.*]] = enzyme.atomic_rmw addf %[[MULF_1]], %[[VAL_0]]{{\[}}%[[APPLY_2]]] monotonic fastmath<fast> : (f32, memref<?xf32>) -> f32
 // CHECK:             }
 // CHECK:             "enzymexla.polygeist_yield"() : () -> ()
 // CHECK:           }) : (index, index, index, index, index, index) -> index
@@ -192,8 +191,8 @@ func.func @dgpu_wrapper_part_inactive() {
 // DF:             affine.parallel (%[[VAL_4:.*]], %[[VAL_5:.*]]) = (0, 0) to (120, 120) {
 // DF:               %[[LOAD_0:.*]] = affine.load %[[VAL_2]]{{\[}}%[[VAL_4]] * 120 + %[[VAL_5]]] : memref<?xf32>
 // DF:               %[[LOAD_1:.*]] = affine.load %[[VAL_3]]{{\[}}%[[VAL_4]] * 120 + %[[VAL_5]]] : memref<?xf32>
-// DF:               memref.store %[[LOAD_1]], %[[ALLOC_0]]{{\[}}%[[VAL_4]], %[[VAL_5]]] : memref<120x120xf32, 1>
 // DF:               %[[SIN_0:.*]] = math.sin %[[LOAD_1]] : f32
+// DF:               memref.store %[[SIN_0]], %[[ALLOC_0]]{{\[}}%[[VAL_4]], %[[VAL_5]]] : memref<120x120xf32, 1>
 // DF:               %[[MULF_0:.*]] = arith.mulf %[[LOAD_0]], %[[SIN_0]] : f32
 // DF:               affine.store %[[MULF_0]], %[[VAL_2]]{{\[}}%[[VAL_4]] * 120 + %[[VAL_5]]] : memref<?xf32>
 // DF:             }
@@ -202,14 +201,13 @@ func.func @dgpu_wrapper_part_inactive() {
 // DF:           %[[VAL_6:.*]] = "enzymexla.gpu_wrapper"(%[[CONSTANT_1]], %[[CONSTANT_1]], %[[CONSTANT_1]], %[[CONSTANT_0]], %[[CONSTANT_0]], %[[CONSTANT_1]]) ({
 // DF:             affine.parallel (%[[VAL_7:.*]], %[[VAL_8:.*]]) = (0, 0) to (120, 120) {
 // DF:               %[[LOAD_2:.*]] = memref.load %[[ALLOC_0]]{{\[}}%[[VAL_7]], %[[VAL_8]]] : memref<120x120xf32, 1>
-// DF:               %[[SIN_1:.*]] = math.sin %[[LOAD_2]] : f32
 // DF:               %[[APPLY_0:.*]] = affine.apply #[[$ATTR_0]](%[[VAL_7]], %[[VAL_8]])
 // DF:               %[[LOAD_3:.*]] = memref.load %[[VAL_0]]{{\[}}%[[APPLY_0]]] : memref<?xf32>
 // DF:               %[[APPLY_1:.*]] = affine.apply #[[$ATTR_0]](%[[VAL_7]], %[[VAL_8]])
 // DF:               memref.store %[[CONSTANT_2]], %[[VAL_0]]{{\[}}%[[APPLY_1]]] : memref<?xf32>
-// DF:               %[[MULF_1:.*]] = arith.mulf %[[LOAD_3]], %[[SIN_1]] : f32
+// DF:               %[[MULF_1:.*]] = arith.mulf %[[LOAD_3]], %[[LOAD_2]] fastmath<fast> : f32
 // DF:               %[[APPLY_2:.*]] = affine.apply #[[$ATTR_0]](%[[VAL_7]], %[[VAL_8]])
-// DF:               %[[ATOMIC_RMW_0:.*]] = enzyme.atomic_rmw addf %[[MULF_1]], %[[VAL_0]]{{\[}}%[[APPLY_2]]] monotonic : (f32, memref<?xf32>) -> f32
+// DF:               %[[ATOMIC_RMW_0:.*]] = enzyme.atomic_rmw addf %[[MULF_1]], %[[VAL_0]]{{\[}}%[[APPLY_2]]] monotonic fastmath<fast> : (f32, memref<?xf32>) -> f32
 // DF:             }
 // DF:             "enzymexla.polygeist_yield"() : () -> ()
 // DF:           }) : (index, index, index, index, index, index) -> index

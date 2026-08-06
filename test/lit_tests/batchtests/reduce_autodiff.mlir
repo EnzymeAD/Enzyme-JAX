@@ -31,7 +31,7 @@ func.func @main(%arg0: tensor<2xf64>, %arg1: tensor<2xf64>, %arg2: tensor<2xf64>
 // CHECK-NEXT:    %1 = stablehlo.multiply %arg1, %0 : tensor<2x2xf64>
 // CHECK-NEXT:    %2 = "enzyme.broadcast"(%arg0) <{shape = array<i64: 2>}> : (tensor<2xf64>) -> tensor<2x2xf64>
 // CHECK-NEXT:    %3 = stablehlo.multiply %arg1, %2 : tensor<2x2xf64>
-// CHECK-NEXT:    %4 = arith.addf %1, %3 : tensor<2x2xf64>
+// CHECK-NEXT:    %4 = arith.addf %1, %3 fastmath<fast> : tensor<2x2xf64>
 // CHECK-NEXT:    %5 = stablehlo.reduce(%4 init: %cst) applies stablehlo.add across dimensions = [1] : (tensor<2x2xf64>, tensor<f64>) -> tensor<2xf64>
 // CHECK-NEXT:    return %5, %arg0, %arg1 : tensor<2xf64>, tensor<2xf64>, tensor<2x2xf64>
 // CHECK-NEXT:  }

@@ -20,8 +20,8 @@ module {
 // REVERSE:  func.func @main(%arg0: tensor<2x3xf32>, %arg1: tensor<18x27xf32>) -> tensor<2x3xf32> {
 // REVERSE-NEXT:    %[[icst:.+]] = arith.constant dense<0.000000e+00> : tensor<18x27xf32>
 // REVERSE-NEXT:    %[[icst0:.+]] = arith.constant dense<0.000000e+00> : tensor<2x3xf32>
-// REVERSE-NEXT:    %[[i0:.+]] = arith.addf %arg1, %[[icst]] : tensor<18x27xf32>
+// REVERSE-NEXT:    %[[i0:.+]] = arith.addf %arg1, %[[icst]] fastmath<fast> : tensor<18x27xf32>
 // REVERSE-NEXT:    %[[i1:.+]] = stablehlo.slice %[[i0]] [5:7, 7:14:3] : (tensor<18x27xf32>) -> tensor<2x3xf32>
-// REVERSE-NEXT:    %[[i2:.+]] = arith.addf %[[i1]], %[[icst0]] : tensor<2x3xf32>
+// REVERSE-NEXT:    %[[i2:.+]] = arith.addf %[[i1]], %[[icst0]] fastmath<fast> : tensor<2x3xf32>
 // REVERSE-NEXT:    return %[[i2]] : tensor<2x3xf32>
 // REVERSE-NEXT:  }

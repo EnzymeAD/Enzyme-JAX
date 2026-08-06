@@ -31,7 +31,9 @@ module {
 // CHECK-DAG:   %[[CM2560:.*]] = arith.constant -2560 : i32
 // CHECK:       %[[BOUND0:.*]] = arith.addi %arg0, %[[CM2560]] : i32
 // CHECK:       %[[BOUND:.*]] = arith.addi %[[BOUND0]], %[[C1]] : i32
-// CHECK:       %[[FOR:.*]]:5 = scf.for %[[IV:.*]] = %[[C2560]] to %[[BOUND]] step %[[C2560]]
+// CHECK:       %[[MAX:.*]] = arith.maxsi %[[BOUND]], %[[C2560]] : i32
+// CHECK:       %[[TRIP:.*]] = arith.addi %[[MAX]], %[[C2560]] : i32
+// CHECK:       %[[FOR:.*]]:5 = scf.for %[[IV:.*]] = %[[C2560]] to %[[TRIP]] step %[[C2560]]
 // CHECK-SAME:    iter_args(%[[A0:.*]] = %[[C2560]], %[[A1:.*]] = %arg1, %[[A2:.*]] = %[[POISON_I32]], %[[A3:.*]] = %arg1, %[[A4:.*]] = %[[TRUE]])
 // CHECK-SAME:    -> (i32, i64, i32, i64, i1)  : i32 {
 // CHECK:         %[[IF1:.*]]:3 = scf.if %[[A4]] -> (i32, i64, i1) {

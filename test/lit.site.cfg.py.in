@@ -3,7 +3,7 @@
 import os
 config.llvm_tools_dir = "@LLVM_TOOLS_BINARY_DIR@"
 
-if len("@ENZYME_BINARY_DIR@") == 0:
+if len("@ENZYME_BINARY_DIR@") == 0 and not os.path.isabs(config.llvm_tools_dir):
   config.llvm_tools_dir = os.getcwd() + "/" + config.llvm_tools_dir
 
 config.enzymexla_tools_dir = "@ENZYMEXLA_BINARY_DIR@"

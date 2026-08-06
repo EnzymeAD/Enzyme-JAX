@@ -1340,20 +1340,6 @@ def SoftplusOp: EnzymeXLA_Op<"math.softplus", [Pure, SameOperandsAndResultType, 
   }];
 }
 
-def BinomialProgressOp : EnzymeXLA_Op<"math.binomial_progress", [Pure, SameOperandsAndResultType]> {
-  let summary = "Computes the number of steps to progress from in a binomial checkpointing scheme";
-
-  let arguments = (ins
-    TensorI64:$num_steps,
-    TensorI64:$budget,
-    OptionalAttr<I64Attr>:$max_iters
-  );
-
-  let results = (outs TensorI64:$result);
-
-  let assemblyFormat = "`(` operands `)` attr-dict `:` functional-type(operands, results)";
-}
-
 def HypotOp: EnzymeXLA_Op<"math.hypot", [Pure, SameOperandsAndResultType, Elementwise]> {
   let summary = "Computes the hypot function (sqrt(x^2 + y^2))";
 

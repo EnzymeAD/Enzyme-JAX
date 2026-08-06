@@ -20,67 +20,56 @@ func.func @main(%arg0: tensor<12x16x4xf32>) -> (tensor<12x4xf32>) {
   return %8#1 : tensor<12x4xf32>
 }
 
-// FORWARD:  func.func @main(%arg0: tensor<12x16x4xf32>, %arg1: tensor<12x16x4xf32>) -> (tensor<12x4xf32>, tensor<12x4xf32>) {
-// FORWARD-NEXT:    %c = stablehlo.constant dense<0> : tensor<i32>
-// FORWARD-NEXT:    %c_0 = stablehlo.constant dense<15> : tensor<i32>
-// FORWARD-NEXT:    %c_1 = stablehlo.constant dense<1> : tensor<i32>
-// FORWARD-NEXT:    %0 = stablehlo.slice %arg1 [0:12, 0:1, 0:4] : (tensor<12x16x4xf32>) -> tensor<12x1x4xf32>
-// FORWARD-NEXT:    %1 = stablehlo.slice %arg0 [0:12, 0:1, 0:4] : (tensor<12x16x4xf32>) -> tensor<12x1x4xf32>
-// FORWARD-NEXT:    %2 = stablehlo.reshape %0 : (tensor<12x1x4xf32>) -> tensor<12x4xf32>
-// FORWARD-NEXT:    %3 = stablehlo.reshape %1 : (tensor<12x1x4xf32>) -> tensor<12x4xf32>
-// FORWARD-NEXT:    %4:3 = stablehlo.while(%iterArg = %c, %iterArg_2 = %3, %iterArg_3 = %2) : tensor<i32>, tensor<12x4xf32>, tensor<12x4xf32>
+// FORWARD: module {
+// FORWARD-NEXT:   func.func @main(%arg0: tensor<12x16x4xf32>, %arg1: tensor<12x16x4xf32>) -> (tensor<12x4xf32>, tensor<12x4xf32>) {
+// FORWARD-NEXT:     %c = stablehlo.constant dense<0> : tensor<i32>
+// FORWARD-NEXT:     %c_0 = stablehlo.constant dense<15> : tensor<i32>
+// FORWARD-NEXT:     %c_1 = stablehlo.constant dense<1> : tensor<i32>
+// FORWARD-NEXT:     %0 = stablehlo.slice %arg1 [0:12, 0:1, 0:4] : (tensor<12x16x4xf32>) -> tensor<12x1x4xf32>
+// FORWARD-NEXT:     %1 = stablehlo.slice %arg0 [0:12, 0:1, 0:4] : (tensor<12x16x4xf32>) -> tensor<12x1x4xf32>
+// FORWARD-NEXT:     %2 = stablehlo.reshape %0 : (tensor<12x1x4xf32>) -> tensor<12x4xf32>
+// FORWARD-NEXT:     %3 = stablehlo.reshape %1 : (tensor<12x1x4xf32>) -> tensor<12x4xf32>
+// FORWARD-NEXT:     %4:3 = stablehlo.while(%iterArg = %c, %iterArg_2 = %3, %iterArg_3 = %2) : tensor<i32>, tensor<12x4xf32>, tensor<12x4xf32>
 // FORWARD-NEXT:     cond {
-// FORWARD-NEXT:      %5 = stablehlo.compare  LT, %iterArg, %c_0 : (tensor<i32>, tensor<i32>) -> tensor<i1>
-// FORWARD-NEXT:      stablehlo.return %5 : tensor<i1>
-// FORWARD-NEXT:    } do {
-// FORWARD-NEXT:      %5 = stablehlo.add %c_1, %iterArg {enzymexla.bounds = {{.*}}} : tensor<i32>
-// FORWARD-NEXT:      %6 = stablehlo.dynamic_slice %arg1, %c, %5, %c, sizes = [12, 1, 4] : (tensor<12x16x4xf32>, tensor<i32>, tensor<i32>, tensor<i32>) -> tensor<12x1x4xf32>
-// FORWARD-NEXT:      %7 = stablehlo.dynamic_slice %arg0, %c, %5, %c, sizes = [12, 1, 4] : (tensor<12x16x4xf32>, tensor<i32>, tensor<i32>, tensor<i32>) -> tensor<12x1x4xf32>
-// FORWARD-NEXT:      %8 = stablehlo.reshape %6 : (tensor<12x1x4xf32>) -> tensor<12x4xf32>
-// FORWARD-NEXT:      %9 = stablehlo.reshape %7 : (tensor<12x1x4xf32>) -> tensor<12x4xf32>
-// FORWARD-NEXT:      stablehlo.return %5, %9, %8 : tensor<i32>, tensor<12x4xf32>, tensor<12x4xf32>
-// FORWARD-NEXT:    }
-// FORWARD-NEXT:    return %4#1, %4#2 : tensor<12x4xf32>, tensor<12x4xf32>
-// FORWARD-NEXT:  }
+// FORWARD-NEXT:       %5 = stablehlo.compare LT, %iterArg, %c_0 : (tensor<i32>, tensor<i32>) -> tensor<i1>
+// FORWARD-NEXT:       stablehlo.return %5 : tensor<i1>
+// FORWARD-NEXT:     } do {
+// FORWARD-NEXT:       %5 = stablehlo.add %c_1, %iterArg {enzymexla.bounds = {{\[\[}}1 : i32, 15 : i32]]} : tensor<i32>
+// FORWARD-NEXT:       %6 = stablehlo.dynamic_slice %arg1, %c, %5, %c, sizes = [12, 1, 4] : (tensor<12x16x4xf32>, tensor<i32>, tensor<i32>, tensor<i32>) -> tensor<12x1x4xf32>
+// FORWARD-NEXT:       %7 = stablehlo.dynamic_slice %arg0, %c, %5, %c, sizes = [12, 1, 4] : (tensor<12x16x4xf32>, tensor<i32>, tensor<i32>, tensor<i32>) -> tensor<12x1x4xf32>
+// FORWARD-NEXT:       %8 = stablehlo.reshape %6 : (tensor<12x1x4xf32>) -> tensor<12x4xf32>
+// FORWARD-NEXT:       %9 = stablehlo.reshape %7 : (tensor<12x1x4xf32>) -> tensor<12x4xf32>
+// FORWARD-NEXT:       stablehlo.return %5, %9, %8 : tensor<i32>, tensor<12x4xf32>, tensor<12x4xf32>
+// FORWARD-NEXT:     }
+// FORWARD-NEXT:     return %4#1, %4#2 : tensor<12x4xf32>, tensor<12x4xf32>
+// FORWARD-NEXT:   }
+// FORWARD-NEXT: }
 
-// REVERSE: func.func @main(%arg0: tensor<12x16x4xf32>, %arg1: tensor<12x4xf32>) -> tensor<12x16x4xf32> {
-// REVERSE-DAG:     %[[C14:.+]] = stablehlo.constant dense<14> : tensor<i64>
-// REVERSE-DAG:     %[[ZERO:.+]] = stablehlo.constant dense<0> : tensor<15xi32>
-// REVERSE-DAG:     %[[C15:.+]] = stablehlo.constant dense<15> : tensor<i64>
-// REVERSE-DAG:     %[[cst_1:.+]] = stablehlo.constant dense<0.000000e+00> : tensor<12x16x4xf32>
-// REVERSE-DAG:     %[[c_2:.+]] = stablehlo.constant dense<1> : tensor<i64>
-// REVERSE-DAG:     %[[c_3:.+]] = stablehlo.constant dense<0> : tensor<i64>
-// REVERSE-DAG:     %[[c_4:.+]] = stablehlo.constant dense<1> : tensor<i32>
-// REVERSE-DAG:     %[[C15_I32:.+]] = stablehlo.constant dense<15> : tensor<i32>
-// REVERSE-DAG:     %[[c_6:.+]] = stablehlo.constant dense<0> : tensor<i32>
-// REVERSE-DAG:     %[[cst_7:.+]] = stablehlo.constant dense<0.000000e+00> : tensor<12x4xf32>
-// REVERSE-NEXT:     %[[a0:.+]]:2 = stablehlo.while(%iterArg = %[[c_6]], %iterArg_8 = %[[ZERO]]) : tensor<i32>, tensor<15xi32>
-// REVERSE-NEXT:      cond {
-// REVERSE-NEXT:       %[[a7:.+]] = stablehlo.compare  LT, %iterArg, %[[C15_I32]] : (tensor<i32>, tensor<i32>) -> tensor<i1>
-// REVERSE-NEXT:       stablehlo.return %[[a7]] : tensor<i1>
+// REVERSE: module {
+// REVERSE-NEXT:   func.func @main(%arg0: tensor<12x16x4xf32>, %arg1: tensor<12x4xf32>) -> tensor<12x16x4xf32> {
+// REVERSE-NEXT:     %c = stablehlo.constant dense<14> : tensor<i64>
+// REVERSE-NEXT:     %cst = stablehlo.constant dense<0.000000e+00> : tensor<12x16x4xf32>
+// REVERSE-NEXT:     %c_0 = stablehlo.constant dense<1> : tensor<i64>
+// REVERSE-NEXT:     %c_1 = stablehlo.constant dense<15> : tensor<i64>
+// REVERSE-NEXT:     %c_2 = stablehlo.constant dense<0> : tensor<i64>
+// REVERSE-NEXT:     %c_3 = stablehlo.constant dense<1> : tensor<i32>
+// REVERSE-NEXT:     %c_4 = stablehlo.constant dense<0> : tensor<i32>
+// REVERSE-NEXT:     %cst_5 = stablehlo.constant dense<0.000000e+00> : tensor<12x4xf32>
+// REVERSE-NEXT:     %0:2 = stablehlo.while(%iterArg = %c_2, %iterArg_6 = %cst) : tensor<i64>, tensor<12x16x4xf32>
+// REVERSE-NEXT:     cond {
+// REVERSE-NEXT:       %1 = stablehlo.compare LT, %iterArg, %c_1 : (tensor<i64>, tensor<i64>) -> tensor<i1>
+// REVERSE-NEXT:       stablehlo.return %1 : tensor<i1>
 // REVERSE-NEXT:     } do {
-// REVERSE-NEXT:       %[[a8:.+]] = stablehlo.reshape %iterArg : (tensor<i32>) -> tensor<1xi32>
-// REVERSE-NEXT:       %[[a9:.+]] = stablehlo.dynamic_update_slice %iterArg_8, %[[a8]], %iterArg : (tensor<15xi32>, tensor<1xi32>, tensor<i32>) -> tensor<15xi32>
-// REVERSE-NEXT:       %[[a7:.+]] = stablehlo.add %[[c_4]], %iterArg {enzymexla.bounds = {{.*}}} : tensor<i32>
-// REVERSE-NEXT:       stablehlo.return %[[a7]], %[[a9]] : tensor<i32>, tensor<15xi32>
+// REVERSE-NEXT:       %1 = stablehlo.compare EQ, %iterArg, %c_2 : (tensor<i64>, tensor<i64>) -> tensor<i1>
+// REVERSE-NEXT:       %2 = stablehlo.select %1, %arg1, %cst_5 : tensor<i1>, tensor<12x4xf32>
+// REVERSE-NEXT:       %3 = stablehlo.subtract %c, %iterArg {enzymexla.bounds = {{\[\[}}0, 14]]} : tensor<i64>
+// REVERSE-NEXT:       %4 = stablehlo.convert %3 {enzymexla.bounds = {{\[\[}}0, 14]]} : (tensor<i64>) -> tensor<i32>
+// REVERSE-NEXT:       %5 = stablehlo.add %c_3, %4 {enzymexla.bounds = {{\[\[}}1, 15]]} : tensor<i32>
+// REVERSE-NEXT:       %6 = stablehlo.add %iterArg, %c_0 {enzymexla.bounds = {{\[\[}}1, 15]]} : tensor<i64>
+// REVERSE-NEXT:       %7 = stablehlo.reshape %2 : (tensor<12x4xf32>) -> tensor<12x1x4xf32>
+// REVERSE-NEXT:       %8 = stablehlo.dynamic_update_slice %iterArg_6, %7, %c_4, %5, %c_4 : (tensor<12x16x4xf32>, tensor<12x1x4xf32>, tensor<i32>, tensor<i32>, tensor<i32>) -> tensor<12x16x4xf32>
+// REVERSE-NEXT:       stablehlo.return %6, %8 : tensor<i64>, tensor<12x16x4xf32>
 // REVERSE-NEXT:     }
-// REVERSE-NEXT:     %[[a1:.+]]:3 = stablehlo.while(%iterArg = %[[c_3]], %[[iterArg9:.+]] = %[[cst_1]], %[[iterArg8:.+]] = %[[C14]]) : tensor<i64>, tensor<12x16x4xf32>, tensor<i64>
-// REVERSE-NEXT:      cond {
-// REVERSE-NEXT:       %[[a7:.+]] = stablehlo.compare  LT, %iterArg, %[[C15]] : (tensor<i64>, tensor<i64>) -> tensor<i1>
-// REVERSE-NEXT:       stablehlo.return %[[a7]] : tensor<i1>
-// REVERSE-NEXT:     } do {
-// REVERSE-NEXT:       %[[a7:.+]] = stablehlo.compare  EQ, %iterArg, %[[c_3]] : (tensor<i64>, tensor<i64>) -> tensor<i1>
-// REVERSE-NEXT:       %[[a8:.+]] = stablehlo.select %[[a7]], %arg1, %[[cst_7]] : tensor<i1>, tensor<12x4xf32>
-// REVERSE-NEXT:       %[[a11:.+]] = stablehlo.dynamic_slice %[[a0]]#1, %[[iterArg8]], sizes = [1] : (tensor<15xi32>, tensor<i64>) -> tensor<1xi32>
-// REVERSE-NEXT:       %[[a12:.+]] = stablehlo.reshape %[[a11]] : (tensor<1xi32>) -> tensor<i32>
-// REVERSE-NEXT:       %[[b12:.+]] = stablehlo.add %[[c_4]], %[[a12]]
-// REVERSE-NEXT:       %[[a9:.+]] = stablehlo.add %iterArg, %[[c_2]] {enzymexla.bounds = {{.*}}} : tensor<i64>
-// REVERSE-NEXT:       %[[a10:.+]] = stablehlo.reshape %[[a8]] : (tensor<12x4xf32>) -> tensor<12x1x4xf32>
-// REVERSE-NEXT:       %[[a13:.+]] = stablehlo.dynamic_update_slice %[[cst_1]], %[[a10]], %[[c_6]], %[[b12]], %[[c_6]] : (tensor<12x16x4xf32>, tensor<12x1x4xf32>, tensor<i32>, tensor<i32>, tensor<i32>) -> tensor<12x16x4xf32>
-// REVERSE-NEXT:       %[[a14:.+]] = stablehlo.add %[[iterArg9]], %[[a13]] : tensor<12x16x4xf32>
-// REVERSE-NEXT:       %[[a15:.+]] = stablehlo.subtract %[[iterArg8]], %[[c_2]] : tensor<i64>
-// REVERSE-NEXT:       stablehlo.return %[[a9]], %[[a14]], %[[a15]] : tensor<i64>, tensor<12x16x4xf32>, tensor<i64>
-// REVERSE-NEXT:     }
-// REVERSE-NEXT:     return %[[a1]]#1 : tensor<12x16x4xf32>
+// REVERSE-NEXT:     return %0#1 : tensor<12x16x4xf32>
 // REVERSE-NEXT:   }
-
+// REVERSE-NEXT: }

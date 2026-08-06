@@ -2300,7 +2300,6 @@ ConvertGPUModuleOp::matchAndRewrite(gpu::GPUModuleOp kernelModule,
         fatMagic = HIPFatMagic;
       }
 
-      (void)fatbinConstantName;
       (void)moduleIDSectionName;
 
       // Register modules and functions like clang
@@ -2343,12 +2342,18 @@ ConvertGPUModuleOp::matchAndRewrite(gpu::GPUModuleOp kernelModule,
         constructedStruct = LLVM::InsertValueOp::create(
             globalBuilder, loc, fatBinWrapperType, constructedStruct,
             fatbinVersionVal, globalBuilder.getDenseI64ArrayAttr(i++));
-        // TODO do we need to specify the section name here...?
-        // data.setSectionAttr(moduleBuilder.getStringAttr(fatbinSectionName));
         Value data = LLVM::createGlobalString(
             loc, globalBuilder, nameBuffer.str(), "binaryAttr",
             // loc, globalBuilder, nameBuffer.str(), binaryAttr.getValue(),
             LLVM::Linkage::Internal);
+        // cuobjdump scans this section as a linear run of back-to-back
+        // fatbins, so the payloads must live in it and stay adjacent -- the
+        // alignment may not exceed the fatbin size padding.
+        auto dataGlobal =
+            moduleOp.lookupSymbol<LLVM::GlobalOp>(nameBuffer.str());
+        assert(dataGlobal);
+        dataGlobal.setSectionAttr(rewriter.getStringAttr(fatbinConstantName));
+        dataGlobal.setAlignment(8);
         constructedStruct = LLVM::InsertValueOp::create(
             globalBuilder, loc, fatBinWrapperType, constructedStruct, data,
             globalBuilder.getDenseI64ArrayAttr(i++));
