@@ -2571,11 +2571,82 @@ struct AlwaysAllocaScopeHoister : public OpRewritePattern<T> {
   }
 };
 
+/// Like isGuaranteedAutomaticAllocation, but conservative: an op that does not
+/// implement MemoryEffectOpInterface is treated as a potential allocation.
+static bool isPotentialAutomaticAllocation(Operation *op) {
+  // Ops with recursive effects hold their allocations in nested regions; those
+  // are visited separately by the recursive walk.
+  if (op->hasTrait<OpTrait::HasRecursiveMemoryEffects>())
+    return false;
+  MemoryEffectOpInterface interface = dyn_cast<MemoryEffectOpInterface>(op);
+  if (!interface)
+    return true;
+  for (auto res : op->getResults()) {
+    if (auto effect =
+            interface.getEffectOnValue<MemoryEffects::Allocate>(res)) {
+      if (isa<SideEffects::AutomaticAllocationScopeResource>(
+              effect->getResource()))
+        return true;
+    }
+  }
+  return false;
+}
+
+/// Inline a `memref.alloca_scope` by splicing its body into the parent block
+/// and dropping the region. Adapted from upstream MLIR `AllocaScopeInliner`
+/// and Polygeist's `AggressiveAllocaScopeInliner`. Removing the scope lets a
+/// child `scf.parallel` that was walled off by it become a direct nest again;
+/// otherwise ConvertParallelToGPU1's normalization patterns cannot make
+/// progress across the region boundary and the greedy driver fails to converge.
+struct AggressiveAllocaScopeInliner
+    : public OpRewritePattern<memref::AllocaScopeOp> {
+  using OpRewritePattern<memref::AllocaScopeOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(memref::AllocaScopeOp op,
+                                PatternRewriter &rewriter) const override {
+    auto hasPotentialAlloca = [&]() {
+      return op
+          ->walk<WalkOrder::PreOrder>([&](Operation *alloc) {
+            // Calls and barriers do not themselves allocate automatic storage.
+            if (alloc == op || isa<LLVM::CallOp>(alloc) ||
+                isa<func::CallOp>(alloc) || isa<BarrierOp>(alloc))
+              return WalkResult::advance();
+            if (isPotentialAutomaticAllocation(alloc))
+              return WalkResult::interrupt();
+            if (alloc->hasTrait<OpTrait::AutomaticAllocationScope>())
+              return WalkResult::skip();
+            return WalkResult::advance();
+          })
+          .wasInterrupted();
+    };
+
+    // If the scope is the last op before the block terminator, inlining never
+    // extends an allocation's lifetime, so it is always legal. Otherwise only
+    // bail when there is a real allocation and we are not already inside an
+    // allocation scope (which already bounds the lifetime).
+    if (op->getNextNode() != op->getBlock()->getTerminator()) {
+      if (hasPotentialAlloca()) {
+        if (!op->getParentOp()->hasTrait<OpTrait::AutomaticAllocationScope>())
+          return failure();
+      }
+    }
+
+    Block *block = &op.getRegion().front();
+    Operation *terminator = block->getTerminator();
+    ValueRange results = terminator->getOperands();
+    rewriter.inlineBlockBefore(block, op);
+    rewriter.replaceOp(op, results);
+    rewriter.eraseOp(terminator);
+    return success();
+  }
+};
+
 void TypeAlignOp::getCanonicalizationPatterns(RewritePatternSet &results,
                                               MLIRContext *context) {
   results.insert<AlwaysAllocaScopeHoister<memref::AllocaScopeOp>,
                  AlwaysAllocaScopeHoister<scf::ForOp>,
-                 AlwaysAllocaScopeHoister<affine::AffineForOp>>(context);
+                 AlwaysAllocaScopeHoister<affine::AffineForOp>,
+                 AggressiveAllocaScopeInliner>(context);
 }
 
 /// Simplify select subindex(x), subindex(y) to subindex(select x, y)
