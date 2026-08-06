@@ -1195,9 +1195,9 @@ public:
             templateLoop.getCond().front().getTerminator())
             ->getOperand(0)
             .getDefiningOp());
-    return makeForLoop(builder, loc, makeI64Constant(loc, builder, 0),
-                       cmp.getOperand(1), makeI64Constant(loc, builder, 1),
-                       inits);
+    Value zero = makeI64Constant(loc, builder, 0);
+    Value one = makeI64Constant(loc, builder, 1);
+    return makeForLoop(builder, loc, zero, cmp.getOperand(1), one, inits);
   }
 
 private:
