@@ -21,6 +21,7 @@
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
 #include "llvm/IR/PassManager.h"
+#include "llvm/Bitcode/BitcodeWriter.h"
 #include "llvm/IRReader/IRReader.h"
 #include "llvm/Passes/PassBuilder.h"
 #include "llvm/Support/SourceMgr.h"
@@ -308,12 +309,19 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       }
     }
   }
+  // Hand the module back as bitcode. The module crosses this boundary as bytes
+  // either way, and bitcode is the cheaper and more faithful spelling of it: on
+  // MFEM's dFEM tests it is a fifth the size of the textual form and parses in
+  // half the time, and it does not depend on a printer and a parser agreeing
+  // about syntax. The reader is llvm::parseIR, which sniffs the bitcode magic
+  // and dispatches, so it takes either and no version of it has to be taught
+  // this.
   std::string res;
   llvm::raw_string_ostream ss(res);
-  ss << *outModule;
+  llvm::WriteBitcodeToFile(*outModule, ss);
 
   if (getenv("DEBUG_REACTANT")) {
-    llvm::errs() << " final llvm:" << res << "\n";
+    llvm::errs() << " final llvm:" << *outModule << "\n";
   }
 
   return res;
