@@ -1018,13 +1018,20 @@ struct AffineExprBuilder {
           auto cexpr = dyn_cast<AffineConstantExpr>(*rhs);
           if (!cexpr)
             return failure();
+          // The power of two the shift stands for has to be worked out at the
+          // width the expression holds. Taken as an int, `1 << 31` is the
+          // largest negative number there is, and a shift by 31 is how a sign
+          // bit is read -- MFEM does it and got `floordiv -2147483648`.
+          int64_t shift = cexpr.getValue();
+          if (shift < 0 || shift >= 63)
+            return failure();
+          int64_t scale = int64_t(1) << shift;
           if (isa<arith::ShLIOp, LLVM::ShlOp>(op)) {
-            return (*lhs) * getAffineConstantExpr(1 << cexpr.getValue(),
-                                                  op->getContext());
+            return (*lhs) * getAffineConstantExpr(scale, op->getContext());
           } else if (isa<arith::ShRUIOp, arith::ShRSIOp, LLVM::LShrOp,
                          LLVM::AShrOp>(op)) {
             return (*lhs).floorDiv(
-                getAffineConstantExpr(1 << cexpr.getValue(), op->getContext()));
+                getAffineConstantExpr(scale, op->getContext()));
           } else {
             llvm_unreachable("unknown operation");
           }
