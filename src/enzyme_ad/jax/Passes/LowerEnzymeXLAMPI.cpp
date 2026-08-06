@@ -1915,12 +1915,6 @@ struct LowerEnzymeXLAMPIPass
 
     auto context = module->getContext();
 
-    if (backend != "cpu" && backend != "cuda") {
-      module.emitError() << "Backend not supported: " << backend;
-      signalPassFailure();
-      return;
-    }
-
     if (backend == "cuda" && !ncclCommPtr) {
       bool hasLowerableMPIOp = false;
       module.walk([&](Operation *op) {
