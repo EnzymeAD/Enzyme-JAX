@@ -337,6 +337,28 @@ def SortMemory : Pass<"sort-memory"> {
   let summary = "Sort memory accesses";
 }
 
+def LowerAlignedAffineAccessesPass
+    : Pass<"lower-aligned-affine-accesses"> {
+  let summary = "Lower affine accesses that carry an alignment attribute to "
+                "memref accesses that keep it";
+  let description = [{
+    llvm-to-affine-access records the alignment of the access it raised as an
+    attribute on the affine.load/affine.store it made. Upstream lower-affine
+    rebuilds those as memref accesses without carrying attributes over, so the
+    recorded alignment is lost and the final llvm access is emitted at the
+    element type's ABI alignment -- which may promise more than the pointer
+    holds (a 16-byte member swap clang emits as `load i128, align 8`).
+
+    Run before lower-affine, this lowers exactly the accesses that carry an
+    alignment attribute, keeping their attributes; lower-affine handles the
+    affine.apply this leaves behind, and everything else, as before.
+  }];
+  let dependentDialects = [
+    "affine::AffineDialect",
+    "memref::MemRefDialect",
+  ];
+}
+
 def HoistAllocasPass : Pass<"hoist-allocas"> {
   let summary = "Move stack allocations to the start of the region that frees "
                 "them";

@@ -151,7 +151,7 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       if (outfile.size() && getenv("EXPORT_REACTANT")) {
         pass_pipeline += ",print{filename="+outfile+".mlir}";
       }
-      pass_pipeline += ",lower-affine";
+      pass_pipeline += ",lower-aligned-affine-accesses,lower-affine";
       if (getenv("REACTANT_OMP")) {
         pass_pipeline += ",convert-scf-to-openmp,";
       } else {
@@ -166,7 +166,7 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       }
       pass_pipeline += "symbol-dce,raise-llvm-ext,outline-enzyme-regions,";
       if (options->preADLowerAffine)
-        pass_pipeline += "lower-affine,";
+        pass_pipeline += "lower-aligned-affine-accesses,lower-affine,";
 
       // A checkpointed loop must not capture both a value and a view of it:
       // it would snapshot the same buffer twice. Has to precede `enzyme`,
@@ -198,7 +198,7 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
         pass_pipeline += ",affine-cfg,remove-atomics";
       if (options->sortBlockMemory)
         pass_pipeline += ",sort-block-memory";
-      pass_pipeline += ",lower-affine";
+      pass_pipeline += ",lower-aligned-affine-accesses,lower-affine";
       if (backend == "rocm")
         pass_pipeline += ",convert-cudart-to-hiprt";
       if (backend != "cpu") {
@@ -206,7 +206,7 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
         pass_pipeline += "convert-parallel-to-gpu2{backend=";
         pass_pipeline += backend;
         pass_pipeline += "}";
-        pass_pipeline += ",lower-affine";
+        pass_pipeline += ",lower-aligned-affine-accesses,lower-affine";
       }
       if (getenv("REACTANT_OMP")) {
         pass_pipeline += ",convert-scf-to-openmp,";

@@ -824,10 +824,14 @@ public:
     if (!address)
       return failure();
 
+    // The access carries the alignment the original llvm access promised;
+    // without it the load is emitted at the element type's ABI alignment,
+    // which may promise more than the pointer holds.
+    unsigned alignment = loadOp.getAlignment().value_or(0);
     rewriter.replaceOpWithNewOp<LLVM::LoadOp>(
         loadOp,
         typeConverter->convertType(loadOp.getMemRefType().getElementType()),
-        address);
+        address, alignment);
     return success();
   }
 };
@@ -937,8 +941,10 @@ public:
     if (!address)
       return failure();
 
+    // See CLoadOpLowering: keep the alignment the original access promised.
+    unsigned alignment = storeOp.getAlignment().value_or(0);
     rewriter.replaceOpWithNewOp<LLVM::StoreOp>(storeOp, adaptor.getValue(),
-                                               address);
+                                               address, alignment);
     return success();
   }
 };
