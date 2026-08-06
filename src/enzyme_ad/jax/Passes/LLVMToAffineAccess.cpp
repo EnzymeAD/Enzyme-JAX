@@ -1835,6 +1835,7 @@ convertLLVMToAffineAccess(Operation *op,
     };
 
     auto dl = dataLayoutAnalysis.getAtOrAbove(aab.user);
+
     if (auto load = dyn_cast<LLVM::LoadOp>(aab.user)) {
       IRRewriter rewriter(load);
 
@@ -1905,7 +1906,13 @@ convertLLVMToAffineAccess(Operation *op,
       ic.replace(load, newLoad);
       rewriter.replaceOp(load, newLoad);
       for (auto attr : attrs) {
-        newLoad->setAttr(attr.getName(), attr.getValue());
+        // memref.load owns an alignment attribute, and only the owned one is
+        // what its lowering reads; a discardable one of the same name is shown
+        // by the printer and seen by nothing.
+        if (attr.getName() == "alignment")
+          newLoad.setAlignmentAttr(cast<IntegerAttr>(attr.getValue()));
+        else
+          newLoad->setAttr(attr.getName(), attr.getValue());
       }
 
     } else if (auto store = dyn_cast<LLVM::StoreOp>(aab.user)) {
@@ -1966,7 +1973,11 @@ convertLLVMToAffineAccess(Operation *op,
               store.getAddr()),
           idxs);
       for (auto attr : attrs) {
-        newStore->setAttr(attr.getName(), attr.getValue());
+        // See the load path above.
+        if (attr.getName() == "alignment")
+          newStore.setAlignmentAttr(cast<IntegerAttr>(attr.getValue()));
+        else
+          newStore->setAttr(attr.getName(), attr.getValue());
       }
     } else {
       llvm_unreachable("Unknown operation to raise");

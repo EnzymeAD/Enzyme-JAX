@@ -1871,6 +1871,24 @@ struct MoveRMWToAffine : public OpRewritePattern<memref::AtomicRMWOp> {
   }
 };
 
+// A rebuilt access keeps everything the old one said about itself. All the
+// discardable attributes ride over as they are. Alignment needs the extra
+// clause only because on memref.load/store it is an inherent attribute, held
+// in properties where getDiscardableAttrs does not see it; going to an affine
+// op, which has no inherent slot for it, it is lifted into the discardable
+// dictionary, where lower-aligned-affine-accesses knows to find it.
+static void copyAccessAttrs(Operation *from, Operation *to) {
+  for (NamedAttribute attr : from->getDiscardableAttrs())
+    to->setAttr(attr.getName(), attr.getValue());
+  if (auto load = dyn_cast<memref::LoadOp>(from)) {
+    if (auto align = load.getAlignmentAttr())
+      to->setAttr("alignment", align);
+  } else if (auto store = dyn_cast<memref::StoreOp>(from)) {
+    if (auto align = store.getAlignmentAttr())
+      to->setAttr("alignment", align);
+  }
+}
+
 struct MoveLoadToAffine : public OpRewritePattern<memref::LoadOp> {
   using OpRewritePattern<memref::LoadOp>::OpRewritePattern;
 
@@ -1912,6 +1930,7 @@ struct MoveLoadToAffine : public OpRewritePattern<memref::LoadOp> {
 
     affine::AffineLoadOp affineLoad = affine::AffineLoadOp::create(
         rewriter, load.getLoc(), load.getMemRef(), map, operands);
+    copyAccessAttrs(load, affineLoad);
     load.getResult().replaceAllUsesWith(affineLoad.getResult());
     rewriter.eraseOp(load);
     return success();
@@ -1951,9 +1970,10 @@ struct MoveStoreToAffine : public OpRewritePattern<memref::StoreOp> {
     affine::canonicalizeMapAndOperands(&map, &operands);
     map = recreateExpr(map);
 
-    affine::AffineStoreOp::create(rewriter, store.getLoc(),
-                                  store.getValueToStore(), store.getMemRef(),
-                                  map, operands);
+    auto affineStore = affine::AffineStoreOp::create(
+        rewriter, store.getLoc(), store.getValueToStore(), store.getMemRef(),
+        map, operands);
+    copyAccessAttrs(store, affineStore);
     rewriter.eraseOp(store);
     return success();
   }
@@ -2011,8 +2031,11 @@ template <>
 void AffineFixup<affine::AffineLoadOp>::replaceAffineOp(
     PatternRewriter &rewriter, affine::AffineLoadOp load, AffineMap map,
     ArrayRef<Value> mapOperands) const {
-  rewriter.replaceOpWithNewOp<affine::AffineLoadOp>(load, load.getMemRef(), map,
-                                                    mapOperands);
+  auto attrs = load->getDiscardableAttrDictionary();
+  auto newLoad = rewriter.replaceOpWithNewOp<affine::AffineLoadOp>(
+      load, load.getMemRef(), map, mapOperands);
+  for (NamedAttribute attr : attrs)
+    newLoad->setAttr(attr.getName(), attr.getValue());
 }
 template <>
 void AffineFixup<affine::AffinePrefetchOp>::replaceAffineOp(
@@ -2027,8 +2050,11 @@ template <>
 void AffineFixup<affine::AffineStoreOp>::replaceAffineOp(
     PatternRewriter &rewriter, affine::AffineStoreOp store, AffineMap map,
     ArrayRef<Value> mapOperands) const {
-  rewriter.replaceOpWithNewOp<affine::AffineStoreOp>(
+  auto attrs = store->getDiscardableAttrDictionary();
+  auto newStore = rewriter.replaceOpWithNewOp<affine::AffineStoreOp>(
       store, store.getValueToStore(), store.getMemRef(), map, mapOperands);
+  for (NamedAttribute attr : attrs)
+    newStore->setAttr(attr.getName(), attr.getValue());
 }
 template <>
 void AffineFixup<affine::AffineVectorLoadOp>::replaceAffineOp(
@@ -6011,8 +6037,14 @@ struct FoldAppliesIntoLoad : public OpRewritePattern<memref::LoadOp> {
     AffineMap combinedMap =
         AffineMap::inferFromExprList({exprs}, getContext())[0];
     llvm::append_range(loadDimOperands, loadSymOperands);
-    rewriter.replaceOpWithNewOp<affine::AffineLoadOp>(
+    auto attrs = loadOp->getDiscardableAttrDictionary();
+    auto alignAttr = loadOp.getAlignmentAttr();
+    auto newLoad = rewriter.replaceOpWithNewOp<affine::AffineLoadOp>(
         loadOp, loadOp.getMemRef(), combinedMap, loadDimOperands);
+    for (NamedAttribute attr : attrs)
+      newLoad->setAttr(attr.getName(), attr.getValue());
+    if (alignAttr)
+      newLoad->setAttr("alignment", alignAttr);
     return success();
   }
 };
