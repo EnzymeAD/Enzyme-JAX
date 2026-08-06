@@ -2254,10 +2254,17 @@ struct WhileLogicalNegation : public OpRewritePattern<WhileOp> {
          llvm::zip(op.getResults(), term.getArgs(), op.getAfterArguments())) {
       auto termArg = std::get<1>(pair);
       bool afterValue;
+      // Entering the after region means the whole conjunction held, so there
+      // every conjunct is true. Exiting only means the conjunction failed --
+      // at least one conjunct is false, with no say in which -- so a result
+      // is only known when its arg is the root condition itself.
+      bool resultKnown;
       if (condOps.count(termArg)) {
         afterValue = true;
+        resultKnown = termArg == term.getCondition();
       } else {
         bool found = false;
+        resultKnown = false;
         if (auto termCmp = termArg.getDefiningOp<arith::CmpIOp>()) {
           for (auto cond : condOps) {
             if (auto condCmp = cond.getDefiningOp<CmpIOp>()) {
@@ -2268,6 +2275,7 @@ struct WhileLogicalNegation : public OpRewritePattern<WhileOp> {
                     termCmp.getPredicate() == CmpIPredicate::sge) {
                   found = true;
                   afterValue = false;
+                  resultKnown = cond == term.getCondition();
                   break;
                 }
               }
@@ -2278,7 +2286,7 @@ struct WhileLogicalNegation : public OpRewritePattern<WhileOp> {
           continue;
       }
 
-      if (!std::get<0>(pair).use_empty()) {
+      if (resultKnown && !std::get<0>(pair).use_empty()) {
         rewriter.modifyOpInPlace(op, [&] {
           rewriter.setInsertionPoint(op);
           auto truev =
