@@ -1,6 +1,6 @@
 // RUN: enzymexlamlir-opt %s -polygeist-mem2reg -split-input-file | FileCheck %s
 
-llvm.func @llvm_foo_nocapture(%arg0: !llvm.ptr {llvm.nocapture}) {
+llvm.func @llvm_foo_nocapture(%arg0: !llvm.ptr {llvm.nocapture, llvm.readonly}) {
   llvm.return
 }
 llvm.func @llvm_store_to_load_forwarded() -> i32 {
@@ -20,6 +20,35 @@ llvm.func @llvm_store_to_load_forwarded() -> i32 {
 // CHECK-NEXT: llvm.store %[[C2]], %[[AL]] : i32, !llvm.ptr
 // CHECK-NEXT: llvm.call @llvm_foo_nocapture(%[[AL]]) : (!llvm.ptr) -> ()
 // CHECK-NEXT: llvm.return %[[C2]] : i32
+// CHECK-NEXT: }
+
+// -----
+
+// nocapture only says the callee does not hold on to the pointer; an out
+// parameter is nocapture and written through before the call returns, so the
+// store cannot be forwarded past it. ParMesh::ParMesh passed a Table* slot to
+// BuildLocalBoundary(..., Table *&) this way; forwarded, the constructor read
+// the stale initial pointer instead of the Table the callee built, and MFEM's
+// AMGF solver test died dereferencing it.
+llvm.func @llvm_out_param(%arg0: !llvm.ptr {llvm.nocapture})
+llvm.func @llvm_store_not_forwarded_past_out_param() -> i32 {
+  %c1 = llvm.mlir.constant(1 : i32) : i32
+  %mem = llvm.alloca %c1 x i32 : (i32) -> !llvm.ptr
+  %val = llvm.mlir.constant(42 : i32) : i32
+  llvm.store %val, %mem : i32, !llvm.ptr
+  llvm.call @llvm_out_param(%mem) : (!llvm.ptr) -> ()
+  %loaded = llvm.load %mem : !llvm.ptr -> i32
+  llvm.return %loaded : i32
+}
+
+// CHECK: llvm.func @llvm_store_not_forwarded_past_out_param() -> i32 {
+// CHECK-NEXT: %[[C1:.*]] = llvm.mlir.constant(1 : i32) : i32
+// CHECK-NEXT: %[[AL:.*]] = llvm.alloca %[[C1]] x i32 : (i32) -> !llvm.ptr
+// CHECK-NEXT: %[[C2:.*]] = llvm.mlir.constant(42 : i32) : i32
+// CHECK-NEXT: llvm.store %[[C2]], %[[AL]] : i32, !llvm.ptr
+// CHECK-NEXT: llvm.call @llvm_out_param(%[[AL]]) : (!llvm.ptr) -> ()
+// CHECK-NEXT: %[[LOADED:.*]] = llvm.load %[[AL]] : !llvm.ptr -> i32
+// CHECK-NEXT: llvm.return %[[LOADED]] : i32
 // CHECK-NEXT: }
 
 // -----
@@ -71,7 +100,7 @@ llvm.func @llvm_indirect_call_not_promoted(%fnptr: !llvm.ptr) -> i32 {
 
 // -----
 
-func.func @func_foo_nocapture(%arg0: !llvm.ptr {llvm.nocapture}) {
+func.func @func_foo_nocapture(%arg0: !llvm.ptr {llvm.nocapture, llvm.readonly}) {
   func.return
 }
 func.func @func_store_to_load_forwarded() -> i32 {
@@ -120,7 +149,7 @@ func.func @func_store_to_load_not_forwarded() -> i32 {
 
 // -----
 
-tessera.define @tessera_foo_nocapture(%arg0: !llvm.ptr {llvm.nocapture}) attributes {byRefTypes = [!llvm.struct<(i32, i32)>], pure = false} {
+tessera.define @tessera_foo_nocapture(%arg0: !llvm.ptr {llvm.nocapture, llvm.readonly}) attributes {byRefTypes = [!llvm.struct<(i32, i32)>], pure = false} {
   tessera.return
 }
 tessera.define @tessera_store_to_load_forwarded() -> i32 attributes {byRefTypes = [], pure = false} {
