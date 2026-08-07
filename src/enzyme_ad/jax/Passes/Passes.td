@@ -1529,4 +1529,12 @@ def GpuModuleToBinarySink : Pass<"enzymexla-gpu-module-to-binary", ""> {
   let dependentDialects = ["gpu::GPUDialect", "LLVM::LLVMDialect", ];
 }
 
+def LowerCommPass : Pass<"lower-comm"> {
+  let summary = "Lower Comm ops to `stablehlo.custom_call`";
+  let dependentDialects = [
+    "comm::CommDialect",
+    "stablehlo::StablehloDialect",
+  ];
+}
+
 #endif
