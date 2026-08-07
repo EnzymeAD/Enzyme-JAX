@@ -46,10 +46,13 @@ LogicalResult RemoveIVs::matchAndRewrite(scf::ForOp forOp,
     if (!increment)
       continue;
 
+    // Only ba + step is an induction. An addi of two unrelated values (say,
+    // an outer accumulator plus this loop's IV) also has a final value, but
+    // it is not init + count * step.
     Value step = nullptr;
     if (increment.getLhs() == ba) {
       step = increment.getRhs();
-    } else {
+    } else if (increment.getRhs() == ba) {
       step = increment.getLhs();
     }
     if (!step)
