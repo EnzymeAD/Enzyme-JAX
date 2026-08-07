@@ -695,6 +695,8 @@ public:
     if (lhsStep != ShapedType::kDynamic && lhsStep == rhsStep &&
         (sameExtent || !isDim)) {
       int64_t difference = INT64_MAX;
+      if (lhs.type != rhs.type)
+        return Match::Maybe;
       switch (lhs.type) {
       case Offset::Type::Affine:
         if (lhs.dim == rhs.dim && lhs.sym == rhs.sym) {
