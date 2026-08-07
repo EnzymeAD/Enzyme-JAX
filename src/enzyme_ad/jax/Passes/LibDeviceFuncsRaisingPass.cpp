@@ -263,6 +263,31 @@ ArrayAttr getActivityArrayAttr(MLIRContext *ctx,
   return ArrayAttr::get(ctx, attrs);
 }
 
+// The enzyme entry points are compiler markers, not functions that unwind:
+// raised, they become an op with no unwind edge to keep. An invoke of one
+// becomes the call and the branch it meant, and the block's other exception
+// handling stays as it was.
+class EnzymeInvokeToCall : public OpRewritePattern<LLVM::InvokeOp> {
+public:
+  using OpRewritePattern<LLVM::InvokeOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(LLVM::InvokeOp op,
+                                PatternRewriter &rewriter) const override {
+    auto callee = dyn_cast<SymbolRefAttr>(op.getCallableForCallee());
+    if (!callee)
+      return failure();
+    if (!callee.getLeafReference().strref().contains("__enzyme_"))
+      return failure();
+    auto call =
+        LLVM::CallOp::create(rewriter, op.getLoc(), op.getResultTypes(),
+                             callee.getLeafReference(), op.getCalleeOperands());
+    LLVM::BrOp::create(rewriter, op.getLoc(), op.getNormalDestOperands(),
+                       op.getNormalDest());
+    rewriter.replaceOp(op, call->getResults());
+    return success();
+  }
+};
+
 class EnzymeAutodiffOpRaising : public OpRewritePattern<LLVM::CallOp> {
 public:
   using OpRewritePattern<LLVM::CallOp>::OpRewritePattern;
@@ -1246,7 +1271,8 @@ struct LibDeviceFuncsRaisingPass
     populateLibDeviceFuncsToOpsPatterns(getOperation()->getContext(), patterns);
     if (remove_freeze)
       patterns.add<RemoveFreeze>(getOperation()->getContext());
-    patterns.add<EnzymeAutodiffOpRaising>(getOperation()->getContext());
+    patterns.add<EnzymeInvokeToCall, EnzymeAutodiffOpRaising>(
+        getOperation()->getContext());
     GreedyRewriteConfig config;
     // We disable region simplification to avoid inadvertently merging
     // llvm.cond_br now that there is an index type.

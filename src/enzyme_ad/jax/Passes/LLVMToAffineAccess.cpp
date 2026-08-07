@@ -484,14 +484,49 @@ template <typename T> struct SimplifyInPlaceAlloc : public OpRewritePattern<T> {
   }
 };
 
+// Where something computed from a value can be materialized: after its
+// defining op -- except that an invoke is a terminator, and its result only
+// exists on the normal edge, so the successor is where the value lives.
+// A landingpad has to stay the first operation of its block, so the start of
+// a block is after it when it has one.
+static void setInsertionPointToStartSkippingLandingpad(OpBuilder &builder,
+                                                       Block *block) {
+  if (!block->empty() && isa<LLVM::LandingpadOp>(&block->front()))
+    builder.setInsertionPointAfter(&block->front());
+  else
+    builder.setInsertionPointToStart(block);
+}
+
+static void setInsertionPointAfterValue(OpBuilder &builder, Value v) {
+  if (auto ba = dyn_cast<BlockArgument>(v)) {
+    setInsertionPointToStartSkippingLandingpad(builder, ba.getOwner());
+    return;
+  }
+  Operation *def = v.getDefiningOp();
+  if (auto inv = dyn_cast<LLVM::InvokeOp>(def)) {
+    setInsertionPointToStartSkippingLandingpad(builder, inv.getNormalDest());
+    return;
+  }
+  builder.setInsertionPointAfter(def);
+}
+
+// A shared conversion of a value is materialized right after its definition;
+// for an invoke that place is the start of the normal successor, which only
+// exists as a place when that edge is the block's only way in.
+static bool canMaterializeAfterValue(Value v) {
+  Operation *def = v.getDefiningOp();
+  if (!def)
+    return true;
+  if (auto inv = dyn_cast<LLVM::InvokeOp>(def))
+    return inv.getNormalDest()->getSinglePredecessor() == inv->getBlock();
+  return !def->hasTrait<OpTrait::IsTerminator>();
+}
+
 static Value convertToIndex(Value v) {
   OpBuilder builder(v.getContext());
   if (v.getType() == builder.getIndexType())
     return v;
-  if (auto ba = dyn_cast<BlockArgument>(v))
-    builder.setInsertionPointToStart(ba.getOwner());
-  else
-    builder.setInsertionPointAfter(v.getDefiningOp());
+  setInsertionPointAfterValue(builder, v);
   return arith::IndexCastOp::create(builder, v.getLoc(), builder.getIndexType(),
                                     v)
       .getResult();
@@ -776,10 +811,7 @@ struct LoadSelect : public OpRewritePattern<affine::AffineLoadOp> {
 
 static MemRefVal convertToMemref(PtrVal addr) {
   OpBuilder builder(addr.getContext());
-  if (auto ba = dyn_cast<BlockArgument>(addr))
-    builder.setInsertionPointToStart(ba.getOwner());
-  else
-    builder.setInsertionPointAfter(addr.getDefiningOp());
+  setInsertionPointAfterValue(builder, addr);
   Attribute addrSpace;
   if (addr.getType().getAddressSpace() == 0)
     addrSpace = nullptr;
@@ -1697,18 +1729,21 @@ template <typename T> struct SimpleMem2Reg : public OpRewritePattern<T> {
   LogicalResult matchAndRewrite(T alloc,
                                 PatternRewriter &rewriter) const override {
     SmallVector<Value> stored;
+    SmallVector<Operation *> storeOps;
     SmallVector<Operation *> loads;
     for (auto op : alloc->getUsers()) {
       if (auto storeOp = dyn_cast<memref::StoreOp>(op)) {
         if (storeOp.getValue() == alloc)
           return failure();
         stored.push_back(storeOp.getValue());
+        storeOps.push_back(storeOp);
         continue;
       }
       if (auto storeOp = dyn_cast<affine::AffineStoreOp>(op)) {
         if (storeOp.getValue() == alloc)
           return failure();
         stored.push_back(storeOp.getValue());
+        storeOps.push_back(storeOp);
         continue;
       }
 
@@ -1736,11 +1771,16 @@ template <typename T> struct SimpleMem2Reg : public OpRewritePattern<T> {
     if (loads.size() != 1 || stored.size() != 1)
       return failure();
 
+    // The load reads what the single store wrote only where the store itself
+    // has always run first. That the stored value is available -- defined
+    // outside the region, or dominating the load -- says nothing of the
+    // kind: with two loop nests side by side, a value from the first nest's
+    // body is visible in the second without ever having been stored on the
+    // path that skipped the first.
     DominanceInfo DI(alloc->getParentOp());
     bool changed = false;
     for (auto load : loads) {
-      if (definedOutsideOrAt(stored[0], alloc->getParentOp()) ||
-          DI.dominates(stored[0], load)) {
+      if (DI.properlyDominates(storeOps[0], load)) {
         rewriter.replaceOp(load, stored);
         changed = true;
         continue;
@@ -1812,6 +1852,14 @@ convertLLVMToAffineAccess(Operation *op,
 
     // TODO this looks terribly slow
     for (Block *b : innermostBlocks) {
+      // A function that kept its cf blocks -- one that throws or catches
+      // stays unraised -- cannot have one of them wrapped in a scope: the
+      // wrapping rebuilds the block around its terminator, and here the
+      // terminator is a branch or an invoke whose edges the scope has no
+      // reading of. The accesses that wanted the scope stay illegal and
+      // lower as plain memref accesses instead.
+      if (!llvm::hasSingleElement(*b->getParent()))
+        continue;
       SmallPtrSet<Value, 6> symbols;
       for (auto &aabp : accessBuilders)
         aabp->collectSymbolsForScope(b->getParent(), symbols);
@@ -1841,7 +1889,9 @@ convertLLVMToAffineAccess(Operation *op,
 
       Type ty = load.getType();
       auto tySize = dl.getTypeSize(ty);
-      if (MemRefType::isValidElementType(ty) && aab.isLegal() && aab.base) {
+      if (MemRefType::isValidElementType(ty) && aab.isLegal() && aab.base &&
+          canMaterializeAfterValue(aab.base) &&
+          llvm::all_of(aab.getMap().operands, canMaterializeAfterValue)) {
         auto memref0 = mc(aab.base);
         Value memref = memref0;
         auto memrefTy = memref0.getType();
@@ -1919,7 +1969,9 @@ convertLLVMToAffineAccess(Operation *op,
       Type ty = store.getValue().getType();
       IRRewriter rewriter(store);
       auto tySize = dl.getTypeSize(ty);
-      if (MemRefType::isValidElementType(ty) && aab.isLegal() && aab.base) {
+      if (MemRefType::isValidElementType(ty) && aab.isLegal() && aab.base &&
+          canMaterializeAfterValue(aab.base) &&
+          llvm::all_of(aab.getMap().operands, canMaterializeAfterValue)) {
         auto memref0 = mc(aab.base);
         Value memref = memref0;
         auto memrefTy = memref0.getType();

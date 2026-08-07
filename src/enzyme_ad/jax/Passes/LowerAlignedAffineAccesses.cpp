@@ -106,7 +106,13 @@ struct LowerAlignedAffineAccessesPass
     RewritePatternSet patterns(&getContext());
     patterns.insert<LowerAlignedAffineLoad, LowerAlignedAffineStore>(
         &getContext());
-    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns))))
+    GreedyRewriteConfig config;
+    // Merging identical blocks threads the differing values through new
+    // block arguments on every predecessor's terminator; an llvm.invoke only
+    // takes LLVM types there. Nothing here needs the merge.
+    config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);
+    if (failed(
+            applyPatternsGreedily(getOperation(), std::move(patterns), config)))
       signalPassFailure();
   }
 };
