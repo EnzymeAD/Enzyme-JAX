@@ -681,7 +681,7 @@ struct SelectCSE : public OpRewritePattern<arith::SelectOp> {
                                 lhs->getOperand(0), rhs->getOperand(0));
     auto op1 =
         arith::SelectOp::create(rewriter, rhs->getLoc(), sel.getCondition(),
-                                rhs->getOperand(1), rhs->getOperand(1));
+                                lhs->getOperand(1), rhs->getOperand(1));
     if (isa<arith::AddIOp>(lhs)) {
       rewriter.replaceOpWithNewOp<arith::AddIOp>(sel, op0, op1);
     } else {
@@ -1001,6 +1001,13 @@ struct AffineExprBuilder {
           return (*lhs) * (*rhs);
         } else if (isa<LLVM::UDivOp, LLVM::SDivOp, arith::DivUIOp,
                        arith::DivSIOp>(op)) {
+          // An affine floordiv agrees with sdiv only for a non-negative
+          // numerator -- sdiv rounds toward zero -- and with udiv only
+          // when the number is not a negative one read as enormous.
+          // MFEM's Hilbert-curve ordering divides direction deltas that
+          // go negative on every odd-sized grid.
+          if (!valueCmp(Cmp::GE, op->getOperand(0), 0))
+            return failure();
           // An affine floordiv divides by a positive value: it is the only
           // divisor its lowering, and the flattening the maps go through,
           // are written for.  A negative one does reach here -- `-x / c` is
@@ -1030,6 +1037,12 @@ struct AffineExprBuilder {
             return (*lhs) * getAffineConstantExpr(scale, op->getContext());
           } else if (isa<arith::ShRUIOp, arith::ShRSIOp, LLVM::LShrOp,
                          LLVM::AShrOp>(op)) {
+            // An arithmetic shift right is a floor division whatever the
+            // sign; a logical one reads a negative number as enormous and
+            // is one only for non-negative values.
+            if (isa<arith::ShRUIOp, LLVM::LShrOp>(op) &&
+                !valueCmp(Cmp::GE, op->getOperand(0), 0))
+              return failure();
             return (*lhs).floorDiv(
                 getAffineConstantExpr(scale, op->getContext()));
           } else {
@@ -1037,6 +1050,11 @@ struct AffineExprBuilder {
           }
         } else if (isa<LLVM::URemOp, arith::RemSIOp, LLVM::SRemOp,
                        arith::RemUIOp>(op)) {
+          // An affine mod is never negative; srem takes the numerator's
+          // sign and the unsigned forms read a negative number as
+          // enormous. They agree only for a non-negative numerator.
+          if (!valueCmp(Cmp::GE, op->getOperand(0), 0))
+            return failure();
           // As with floordiv above: a remainder is taken against a positive
           // value, and against a negative one it is the same remainder.
           if (auto cexpr = dyn_cast<AffineConstantExpr>(*rhs)) {
