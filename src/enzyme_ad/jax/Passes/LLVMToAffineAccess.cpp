@@ -994,28 +994,57 @@ struct AffineExprBuilder {
           return (*lhs) + (*rhs);
         else if (isa<LLVM::SubOp, arith::SubIOp>(op))
           return (*lhs) - (*rhs);
-        else if (isa<LLVM::MulOp, arith::MulIOp>(op))
+        else if (isa<LLVM::MulOp, arith::MulIOp>(op)) {
+          // A product is affine only where one side is free of dims.
+          if (!lhs->isSymbolicOrConstant() && !rhs->isSymbolicOrConstant())
+            return failure();
           return (*lhs) * (*rhs);
-        else if (isa<LLVM::UDivOp, LLVM::SDivOp, arith::DivUIOp,
-                     arith::DivSIOp>(op))
+        } else if (isa<LLVM::UDivOp, LLVM::SDivOp, arith::DivUIOp,
+                       arith::DivSIOp>(op)) {
+          // An affine floordiv divides by a positive value: it is the only
+          // divisor its lowering, and the flattening the maps go through,
+          // are written for.  A negative one does reach here -- `-x / c` is
+          // `x / -c` to instcombine -- and is the same division with the
+          // sign taken out, which the expression can say instead.
+          if (auto cexpr = dyn_cast<AffineConstantExpr>(*rhs)) {
+            if (cexpr.getValue() == 0)
+              return failure();
+            if (cexpr.getValue() < 0)
+              return -((*lhs).floorDiv(-cexpr.getValue()));
+          }
           return (*lhs).floorDiv(*rhs);
-        else if (isa<arith::ShRUIOp, arith::ShRSIOp, LLVM::LShrOp,
-                     LLVM::AShrOp>(op)) {
+        } else if (isa<arith::ShRUIOp, arith::ShRSIOp, LLVM::LShrOp,
+                       LLVM::AShrOp>(op)) {
           auto cexpr = dyn_cast<AffineConstantExpr>(*rhs);
           if (!cexpr)
             return failure();
+          // The power of two the shift stands for has to be worked out at the
+          // width the expression holds. Taken as an int, `1 << 31` is the
+          // largest negative number there is, and a shift by 31 is how a sign
+          // bit is read -- MFEM does it and got `floordiv -2147483648`.
+          int64_t shift = cexpr.getValue();
+          if (shift < 0 || shift >= 63)
+            return failure();
+          int64_t scale = int64_t(1) << shift;
           if (isa<arith::ShLIOp, LLVM::ShlOp>(op)) {
-            return (*lhs) * getAffineConstantExpr(1 << cexpr.getValue(),
-                                                  op->getContext());
+            return (*lhs) * getAffineConstantExpr(scale, op->getContext());
           } else if (isa<arith::ShRUIOp, arith::ShRSIOp, LLVM::LShrOp,
                          LLVM::AShrOp>(op)) {
             return (*lhs).floorDiv(
-                getAffineConstantExpr(1 << cexpr.getValue(), op->getContext()));
+                getAffineConstantExpr(scale, op->getContext()));
           } else {
             llvm_unreachable("unknown operation");
           }
         } else if (isa<LLVM::URemOp, arith::RemSIOp, LLVM::SRemOp,
                        arith::RemUIOp>(op)) {
+          // As with floordiv above: a remainder is taken against a positive
+          // value, and against a negative one it is the same remainder.
+          if (auto cexpr = dyn_cast<AffineConstantExpr>(*rhs)) {
+            if (cexpr.getValue() == 0)
+              return failure();
+            if (cexpr.getValue() < 0)
+              return (*lhs) % (-cexpr.getValue());
+          }
           return (*lhs) % (*rhs);
         } else if (isa<arith::OrIOp>(op)) {
           auto cexpr = dyn_cast<AffineConstantExpr>(*rhs);
@@ -1806,6 +1835,7 @@ convertLLVMToAffineAccess(Operation *op,
     };
 
     auto dl = dataLayoutAnalysis.getAtOrAbove(aab.user);
+
     if (auto load = dyn_cast<LLVM::LoadOp>(aab.user)) {
       IRRewriter rewriter(load);
 
@@ -1876,7 +1906,13 @@ convertLLVMToAffineAccess(Operation *op,
       ic.replace(load, newLoad);
       rewriter.replaceOp(load, newLoad);
       for (auto attr : attrs) {
-        newLoad->setAttr(attr.getName(), attr.getValue());
+        // memref.load owns an alignment attribute, and only the owned one is
+        // what its lowering reads; a discardable one of the same name is shown
+        // by the printer and seen by nothing.
+        if (attr.getName() == "alignment")
+          newLoad.setAlignmentAttr(cast<IntegerAttr>(attr.getValue()));
+        else
+          newLoad->setAttr(attr.getName(), attr.getValue());
       }
 
     } else if (auto store = dyn_cast<LLVM::StoreOp>(aab.user)) {
@@ -1937,7 +1973,11 @@ convertLLVMToAffineAccess(Operation *op,
               store.getAddr()),
           idxs);
       for (auto attr : attrs) {
-        newStore->setAttr(attr.getName(), attr.getValue());
+        // See the load path above.
+        if (attr.getName() == "alignment")
+          newStore.setAlignmentAttr(cast<IntegerAttr>(attr.getValue()));
+        else
+          newStore->setAttr(attr.getName(), attr.getValue());
       }
     } else {
       llvm_unreachable("Unknown operation to raise");

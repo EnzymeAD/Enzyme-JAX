@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 #pragma once
 
+#include "mlir/IR/IRMapping.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/MapVector.h"
 
@@ -51,7 +52,7 @@ struct WhileLoopInfo {
 
   mlir::Value getLimit() { return limit; }
 
-  mlir::Value getStep(OpBuilder &builder);
+  mlir::Value getStep(OpBuilder &builder, const IRMapping &mapping = {});
 
   // returns the arg number of the iv. assumes computeInfo() has been called and
   // was successful
@@ -78,7 +79,7 @@ struct WhileLoopInfo {
   }
 
   int64_t getConstantNumIters();
-  Value getNumIters(OpBuilder &builder);
+  Value getNumIters(OpBuilder &builder, const IRMapping &mapping = {});
 
   void propagateAffineIndexInfo();
   void propagateAffineIndexInfo(Value v, AffineIndexInfo curInfo,
@@ -94,7 +95,7 @@ struct WhileLoopInfo {
     return affineIndexInfo;
   }
 
-  llvm::DenseMap<Value, Bounds> &getBoundsMap() { return boundsMap; }
+  llvm::MapVector<Value, Bounds> &getBoundsMap() { return boundsMap; }
 
   unsigned getBoundsBitWidth() const { return boundsBitWidth; }
 
@@ -140,7 +141,7 @@ private:
   llvm::MapVector<Value, AffineIndexInfo> affineIndexInfo;
   DenseSet<Value> affineIndexPropagationVisited;
 
-  llvm::DenseMap<Value, Bounds> boundsMap;
+  llvm::MapVector<Value, Bounds> boundsMap;
   unsigned int boundsBitWidth;
 
   std::optional<Bounds> computeBounds(Operation *op);

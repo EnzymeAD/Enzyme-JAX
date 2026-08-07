@@ -90,6 +90,7 @@ llvm.func @forward_int_to_float(%val: i32) -> f32 {
 
 // -----
 
+
 // Scalar (i32) stored, single-field struct { i32 } loaded
 
 llvm.func @forward_scalar_to_single_field_struct(%val: i32) -> !llvm.struct<(i32)> {
@@ -208,4 +209,74 @@ llvm.func @forward_vector_to_int_bitcast(%val: vector<4xi8>) -> i32 {
 // CHECK-NEXT: %[[C1:.*]] = llvm.mlir.constant(1 : i32) : i32
 // CHECK-NEXT: %[[BC:.*]] = llvm.bitcast %[[VAL]] : vector<4xi8> to i32
 // CHECK-NEXT: llvm.return %[[BC]] : i32
+// CHECK-NEXT: }
+
+// -----
+
+// Nested struct/array stored, IntegerType (i128, 16 bytes) loaded
+
+llvm.func @forward_nested_aggregate_to_integer(%val: !llvm.struct<(array<2 x array<2 x f32>>)>) -> i128 {
+  %c1 = llvm.mlir.constant(1 : i32) : i32
+  %al = llvm.alloca %c1 x !llvm.struct<(array<2 x array<2 x f32>>)> : (i32) -> !llvm.ptr
+  llvm.store %val, %al : !llvm.struct<(array<2 x array<2 x f32>>)>, !llvm.ptr
+  %0 = llvm.load %al : !llvm.ptr -> i128
+  llvm.return %0 : i128
+}
+
+// CHECK: llvm.func @forward_nested_aggregate_to_integer(%[[VAL:.*]]: !llvm.struct<(array<2 x array<2 x f32>>)>) -> i128 {
+// CHECK-NEXT: %[[C:.*]] = llvm.mlir.constant(1 : i32) : i32
+// CHECK-NEXT: %[[EX0:.*]] = llvm.extractvalue %[[VAL]][0] : !llvm.struct<(array<2 x array<2 x f32>>)>
+// CHECK-NEXT: %[[EX1:.*]] = llvm.extractvalue %[[EX0]][0] : !llvm.array<2 x array<2 x f32>>
+// CHECK-NEXT: %[[EX2:.*]] = llvm.extractvalue %[[EX1]][0] : !llvm.array<2 x f32>
+// CHECK-NEXT: %[[EX3:.*]] = llvm.extractvalue %[[EX1]][1] : !llvm.array<2 x f32>
+// CHECK-NEXT: %[[EX4:.*]] = llvm.extractvalue %[[EX0]][1] : !llvm.array<2 x array<2 x f32>>
+// CHECK-NEXT: %[[EX5:.*]] = llvm.extractvalue %[[EX4]][0] : !llvm.array<2 x f32>
+// CHECK-NEXT: %[[EX6:.*]] = llvm.extractvalue %[[EX4]][1] : !llvm.array<2 x f32>
+// CHECK-NEXT: %[[PSN:.*]] = llvm.mlir.poison : vector<4xf32>
+// CHECK-NEXT: %[[C0:.*]] = llvm.mlir.constant(0 : i32) : i32
+// CHECK-NEXT: %[[V0:.*]] = llvm.insertelement %[[EX2]], %[[PSN]][%[[C0]] : i32] : vector<4xf32>
+// CHECK-NEXT: %[[C1:.*]] = llvm.mlir.constant(1 : i32) : i32
+// CHECK-NEXT: %[[V1:.*]] = llvm.insertelement %[[EX3]], %[[V0]][%[[C1]] : i32] : vector<4xf32>
+// CHECK-NEXT: %[[C2:.*]] = llvm.mlir.constant(2 : i32) : i32
+// CHECK-NEXT: %[[V2:.*]] = llvm.insertelement %[[EX5]], %[[V1]][%[[C2]] : i32] : vector<4xf32>
+// CHECK-NEXT: %[[C3:.*]] = llvm.mlir.constant(3 : i32) : i32
+// CHECK-NEXT: %[[V3:.*]] = llvm.insertelement %[[EX6]], %[[V2]][%[[C3]] : i32] : vector<4xf32>
+// CHECK-NEXT: %[[BC:.*]] = llvm.bitcast %[[V3]] : vector<4xf32> to i128
+// CHECK-NEXT: llvm.return %[[BC]] : i128
+// CHECK-NEXT: }
+
+// -----
+
+// Nested struct A{B} stored, inner struct B loaded
+
+llvm.func @forward_outer_to_inner_struct(%val: !llvm.struct<(struct<(array<100000000 x i8>)>)>) -> !llvm.struct<(array<100000000 x i8>)> {
+  %c1 = llvm.mlir.constant(1 : i32) : i32
+  %al = llvm.alloca %c1 x !llvm.struct<(struct<(array<100000000 x i8>)>)> : (i32) -> !llvm.ptr
+  llvm.store %val, %al : !llvm.struct<(struct<(array<100000000 x i8>)>)>, !llvm.ptr
+  %0 = llvm.load %al : !llvm.ptr -> !llvm.struct<(array<100000000 x i8>)>
+  llvm.return %0 : !llvm.struct<(array<100000000 x i8>)>
+}
+
+// CHECK: llvm.func @forward_outer_to_inner_struct(%[[VAL:.*]]: !llvm.struct<(struct<(array<100000000 x i8>)>)>) -> !llvm.struct<(array<100000000 x i8>)> {
+// CHECK-NEXT: %[[C1:.*]] = llvm.mlir.constant(1 : i32) : i32
+// CHECK-NEXT: %[[EV:.*]] = llvm.extractvalue %[[VAL]][0] : !llvm.struct<(struct<(array<100000000 x i8>)>)>
+// CHECK-NEXT: llvm.return %[[EV]] : !llvm.struct<(array<100000000 x i8>)>
+// CHECK-NEXT: }
+
+// -----
+
+// Nested array stored, inner array loaded
+
+llvm.func @forward_outer_to_inner_array(%val: !llvm.array<1 x array<100000000 x i8>>) -> !llvm.array<100000000 x i8> {
+  %c1 = llvm.mlir.constant(1 : i32) : i32
+  %al = llvm.alloca %c1 x !llvm.array<1 x array<100000000 x i8>> : (i32) -> !llvm.ptr
+  llvm.store %val, %al : !llvm.array<1 x array<100000000 x i8>>, !llvm.ptr
+  %0 = llvm.load %al : !llvm.ptr -> !llvm.array<100000000 x i8>
+  llvm.return %0 : !llvm.array<100000000 x i8>
+}
+
+// CHECK: llvm.func @forward_outer_to_inner_array(%arg0: !llvm.array<1 x array<100000000 x i8>>) -> !llvm.array<100000000 x i8> {
+// CHECK-NEXT: %[[C1:.*]] = llvm.mlir.constant(1 : i32) : i32
+// CHECK-NEXT: %[[EV:.*]] = llvm.extractvalue %arg0[0] : !llvm.array<1 x array<100000000 x i8>>
+// CHECK-NEXT: llvm.return %[[EV]] : !llvm.array<100000000 x i8>
 // CHECK-NEXT: }

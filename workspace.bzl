@@ -1,7 +1,7 @@
-JAX_COMMIT = "d72694890a8dd1911435edc8f5732af0c58054f5"
+JAX_COMMIT = "269d3f7bebc76fc8be53975eaf11cef6cd7caf35"
 JAX_SHA256 = ""
 
-ENZYME_COMMIT = "c47a056a427fdc2b9994cfaed1aaf9943fc0431f"
+ENZYME_COMMIT = "1361deeecd9fce13f63b5745f587dc22833714b8"
 ENZYME_SHA256 = ""
 
 ML_TOOLCHAIN_COMMIT = "30ef4a9096f9490e8f198faa5ce5bbddd1b72fdb"
@@ -11,10 +11,15 @@ ML_TOOLCHAIN_SHA256 = ""
 # otherwise this should be a path to the folder containing the BUILD file for enzyme
 OVERRIDE_ENZYME_PATH = ""
 
-HEDRON_COMPILE_COMMANDS_COMMIT = "84c8aadfeee9a09105ec22cc85d0f478c90a788a"
-HEDRON_COMPILE_COMMANDS_SHA256 = ""
-
 XLA_PATCHES = [
+    """
+    # Use clang not msvc
+    sed -i.bak0 "s|/std:c++17|-std=c++17|g" third_party/mkl_dnn/mkldnn_v1.BUILD
+    """,
+    """
+    # Fix support for rocm ygg build
+    sed -i.bak0 "s|clang/18/include|clang/22/include|g" third_party/gpus/rocm_configure.bzl
+    """,
     """
     # Fix support for musl stacktrace issue where execinfo.h is otherwise included
     sed -i.bak0 "s/defined(__clang__) || defined(__GNUC__)/defined(__GLIBC__)/g" xla/tsl/platform/default/stacktrace.h
@@ -26,7 +31,6 @@ XLA_PATCHES = [
     sed -i.bak0 "s/return TryDlopenCUDALibraries()/LOG(INFO) << \\"GPU libraries are statically linked, skip dlopen check.\\";\\nreturn absl::OkStatus();/g" xla/tsl/platform/default/dlopen_checker.cc
 """,
     """
-    sed -i.bak0 "s/return TryDlopenCUDALibraries()/LOG(INFO) << \\"GPU libraries are statically linked, skip dlopen check.\\";\\nreturn absl::OkStatus();/g" n
     sed -i.bak0 "s/namespace/THIS_SHOULD_NEVER_BE_COMPILED/g" xla/tsl/cuda/{cublas,cublasLt,cufft,cusolver,cusparse,cudnn,cudart}_stub.cc
 """,
     """
@@ -43,10 +47,45 @@ XLA_PATCHES = [
     sed -i.bak0 "s,third_party/llvm/llvm-project/mlir/include/,,g" third_party/stablehlo/temporary.patch
     """,
     """
+    # Required for windows due to mingw std::call_once issue in ygg
+
+echo "" >> third_party/stablehlo/temporary.patch
+echo "diff --git a/stablehlo/reference/InterpreterOps.cpp b/stablehlo/reference/InterpreterOps.cpp" >> third_party/stablehlo/temporary.patch
+echo "--- a/stablehlo/reference/InterpreterOps.cpp" >> third_party/stablehlo/temporary.patch
+echo "+++ b/stablehlo/reference/InterpreterOps.cpp" >> third_party/stablehlo/temporary.patch
+echo "@@ -172,6 +172,10 @@" >> third_party/stablehlo/temporary.patch
+echo " SmallVector<InterpreterValue> evalRunParallelOp(" >> third_party/stablehlo/temporary.patch
+echo "     ArrayRef<InterpreterValue> inputs, std::queue<StringAttr>& infeed," >> third_party/stablehlo/temporary.patch
+echo "     SmallVector<SmallVector<StringAttr>> programs, SymbolTable& symbolTable," >> third_party/stablehlo/temporary.patch
+echo "     InterpreterFallback* fallback) {" >> third_party/stablehlo/temporary.patch
+echo "+#if (defined(_WIN32) || defined(__CYGWIN__))" >> third_party/stablehlo/temporary.patch
+echo "+  llvm::report_fatal_error(\\"Op not supported on windows due to std::future\\");" >> third_party/stablehlo/temporary.patch
+echo "+#else" >> third_party/stablehlo/temporary.patch
+echo "   llvm::DefaultThreadPool threadPool;" >> third_party/stablehlo/temporary.patch
+echo "   SmallVector<std::shared_future<SmallVector<InterpreterValue>>> futures;" >> third_party/stablehlo/temporary.patch
+echo "@@ -207,6 +211,7 @@" >> third_party/stablehlo/temporary.patch
+echo "   for (auto& future : futures) results.append(future.get());" >> third_party/stablehlo/temporary.patch
+echo "   // TODO(#1725): Figure out how to test the outfeed queue." >> third_party/stablehlo/temporary.patch
+echo "   return results;" >> third_party/stablehlo/temporary.patch
+echo "+#endif" >> third_party/stablehlo/temporary.patch
+echo " }" >> third_party/stablehlo/temporary.patch
+echo " " >> third_party/stablehlo/temporary.patch
+echo " llvm::Error evalPrintOp(PrintOp& op, InterpreterValue operand) {" >> third_party/stablehlo/temporary.patch
+    """,
+    """
     sed -i.bak0 "s/\\/\\/third_party:repo.bzl/@bazel_tools\\/\\/tools\\/build_defs\\/repo:http.bzl/g" third_party/llvm/workspace.bzl
     """,
     """
     sed -i.bak0 "s/patch_file/patch_args = [\\\"-p1\\\"],patches/g" third_party/llvm/workspace.bzl
+    """,
+    """
+    # Apply our own patches on top of the LLVM pinned by XLA. This lets us use
+    # upstream APIs which have not yet made it into the pinned commit. Drop the
+    # corresponding hunks from patches/llvm.patch once XLA moves to an LLVM
+    # which already contains them. The label is written in escaped form so that
+    # downstream users of this file (e.g. Reactant.jl) can rewrite it to
+    # @enzyme_ad//:patches when this repo is not the main one.
+    sed -i.bak0 "s/patches = \\[/patches = [\\\"\\/\\/:patches\\/llvm.patch\\\",/g" third_party/llvm/workspace.bzl
     """,
     """
     sed -i.bak0 "s/Node::Leaf(std::forward<decltype(value)>/Node::Leaf(std::forward<T>/g" xla/tuple_tree.h
@@ -73,7 +112,11 @@ XLA_PATCHES = [
     sed -i.bak0 "s/strip_prefix/patch_cmds = [\\\"sed -i.bak0 's\\/_MSC_VER\\/_WIN32\\/g' src\\/pthreads.c\\\"], strip_prefix/g" third_party/pthreadpool/workspace.bzl
     """,
     """
-    sed -i.bak0 "s/strip_prefix/patch_cmds = [\\\"find . -type f -name config.bzl -exec sed -i.bak0 's\\/HAVE_BACKTRACE=1\\/NO_HAVE_BACKTRACE=0\\/g' {} +\\\"], strip_prefix/g" third_party/llvm/workspace.bzl
+    # The second command disables llvm's use of __builtin_cpu_supports on apple
+    # platforms (e.g. clang's SSE4.2 identifier lexer fast path).  The darwin
+    # compiler-rt shipped by the cross toolchain does not provide __cpu_model,
+    # so leaving it enabled breaks linking libReactantExtra on x86_64-apple-darwin.
+    sed -i.bak0 "s/strip_prefix/patch_cmds = [\\\"find . -type f -name config.bzl -exec sed -i.bak0 's\\/HAVE_BACKTRACE=1\\/NO_HAVE_BACKTRACE=0\\/g' {} +\\\", \\\"sed -i.bak0 's\\/ || defined(__APPLE__))\\/)\\/' llvm\\/include\\/llvm\\/Support\\/Compiler.h\\\"], strip_prefix/g" third_party/llvm/workspace.bzl
     """,
     "find . -type f -name BUILD -exec sed -i.bak1 's/\\/\\/third_party\\/py\\/enzyme_ad\\/\\.\\.\\./public/g' {} +",
     "find . -type f -name BUILD -exec sed -i.bak2 's/\\/\\/xla\\/mlir\\/memref:friends/\\/\\/visibility:public/g' {} +",
@@ -186,11 +229,10 @@ sed -i.bak0 "s/patch_cmds = \\[/patch_cmds = \\[\\\"find . -type f -name config.
     sed -i.bak0 "s/urls = /patch_cmds = \\[\\\"sed -i.bak -e 's\\/return PACKET_TYPE(0) == PACKET_TYPE(0);\\/return (PACKET_TYPE)(PACKET_TYPE(0) == PACKET_TYPE(0));\\/g' -e 's\\/return CAST_FROM_INT(CAST_TO_INT(a) == CAST_TO_INT(a));\\/return CAST_FROM_INT((decltype(CAST_TO_INT(a)))(CAST_TO_INT(a) == CAST_TO_INT(a)));\\/' Eigen\\/src\\/Core\\/arch\\/clang\\/PacketMath.h\\\"\\],urls = /g" third_party/eigen3/workspace.bzl
     """,
     """
-    sed -i.bak0 's/name = "zstd_compressor",*/name = "zstd_compressor",\\n    linkopts = ["-lm"],/g' xla/tools/BUILD
-    """,
-    """
+    echo '#ifdef REACTANT_TOOLCHAIN_IS_BB' >> xla/tsl/util/filewrapper.cc
     echo '#include <cstdio>' >> xla/tsl/util/filewrapper.cc
     echo 'namespace std { __attribute__((weak)) void __throw_bad_array_new_length() { fprintf(stderr, "erring in throw_bad_array_new_length\\n"); __builtin_trap(); } }' >> xla/tsl/util/filewrapper.cc
+    echo '#endif' >> xla/tsl/util/filewrapper.cc
     """,
 ]
 

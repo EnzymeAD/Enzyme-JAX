@@ -19,7 +19,7 @@ config.name = "Enzyme-JaX"
 # For now we require '&&' between commands, until they get globally killed and
 # the test runner updated.
 execute_external = platform.system() != "Windows"
-config.test_format = lit.formats.ShTest(execute_external)
+config.test_format = lit.formats.ShTest(execute_external, force_execute_external=True)
 
 # suffixes: A list of file extensions to treat as test files.
 config.suffixes = [".pyt", ".mlir"]
@@ -42,6 +42,9 @@ base_paths = [
 path = os.path.pathsep.join(base_paths)  # + config.extra_paths)
 config.environment["PATH"] = path
 config.environment["ENZYME_TEST_NOWHEEL"] = "1"
+if getattr(config, "enable_triton", True):
+    config.available_features.add("triton")
+
 if "PYTHONPATH" in os.environ:
     config.environment["PYTHONPATH"] = os.environ["PYTHONPATH"]
 config.substitutions.append(("python", sys.executable))

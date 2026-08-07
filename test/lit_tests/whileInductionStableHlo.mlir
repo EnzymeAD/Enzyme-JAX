@@ -34,11 +34,12 @@ func.func @test_while_induction_2(%other_value: tensor<i32>, %dynamic_limit: ten
 
 // CHECK-LABEL: func.func @test_while_induction_2(
 // CHECK-SAME: %[[ARG0:.*]]: tensor<i32>, %[[ARG1:.*]]: tensor<i32>) -> tensor<i32>
+// CHECK-DAG: %[[C8:.*]] = stablehlo.constant dense<8> : tensor<i32>
 // CHECK-DAG: %[[C7:.*]] = stablehlo.constant dense<7> : tensor<i32>
 // CHECK-DAG: %[[C3:.*]] = stablehlo.constant dense<3> : tensor<i32>
 // CHECK-DAG: %[[C2:.*]] = stablehlo.constant dense<2> : tensor<i32>
-// CHECK-DAG: %[[C8:.*]] = stablehlo.constant dense<8> : tensor<i32>
-// CHECK-NEXT: %[[CUSTOM_INIT:.*]] = "test.unknown_state"() : () -> tensor<i32>
+// CHECK-DAG: %[[C5:.*]] = stablehlo.constant dense<5> : tensor<i32>
+// CHECK: %[[CUSTOM_INIT:.*]] = "test.unknown_state"() : () -> tensor<i32>
 
 // CHECK: %[[WHILE:.*]]:2 = stablehlo.while(%[[ITER_CTR:.*]] = %[[C7]], %[[ITER_CUSTOM:.*]] = %[[CUSTOM_INIT]])
 // CHECK: cond {
@@ -46,17 +47,19 @@ func.func @test_while_induction_2(%other_value: tensor<i32>, %dynamic_limit: ten
 // CHECK:   stablehlo.return %[[CMP]] : tensor<i1>
 // CHECK: } do {
 // CHECK:   %[[OFFSET:.*]] = stablehlo.subtract %[[ITER_CTR]], %[[C7]]
-// CHECK:   %[[SCALED:.*]] = stablehlo.multiply %[[OFFSET]], %[[C2]]
+// CHECK:   %[[SCALED:.*]] = stablehlo.multiply %[[OFFSET]], %[[C5]]
+// CHECK:   %[[DIV:.*]] = stablehlo.divide %[[SCALED]], %[[C2]]
 // CHECK:   %[[NEW_CTR:.*]] = stablehlo.add %[[ITER_CTR]], %[[C2]]
-// CHECK:   %[[CALCULATED_SUM:.*]] = stablehlo.add %[[SCALED]], %[[C8]]
+// CHECK:   %[[CALCULATED_SUM:.*]] = stablehlo.add %[[DIV]], %[[C8]]
 // CHECK:   %[[UPDATE1:.*]] = "test.unknown_update"(%[[ITER_CUSTOM]], %[[ITER_CTR]])
 // CHECK:   %[[UPDATE2:.*]] = "test.unknown_update"(%[[UPDATE1]], %[[CALCULATED_SUM]])
 // CHECK:   stablehlo.return %[[NEW_CTR]], %[[UPDATE2]]
 // CHECK: }
 
 // CHECK: %[[TOTAL_ITER:.*]] = stablehlo.subtract %[[ARG1]], %[[C7]]
-// CHECK: %[[TOTAL_SCALED:.*]] = stablehlo.multiply %[[TOTAL_ITER]], %[[C2]]
-// CHECK: %[[FINAL_SUM:.*]] = stablehlo.add %[[C3]], %[[TOTAL_SCALED]]
+// CHECK: %[[TOTAL_SCALED:.*]] = stablehlo.multiply %[[TOTAL_ITER]], %[[C5]]
+// CHECK: %[[TOTAL_DIV:.*]] = stablehlo.divide %[[TOTAL_SCALED]], %[[C2]]
+// CHECK: %[[FINAL_SUM:.*]] = stablehlo.add %[[C3]], %[[TOTAL_DIV]]
 // CHECK: %[[COMBINED:.*]] = stablehlo.add %[[FINAL_SUM]], %[[WHILE]]#1
 // CHECK: %[[RESULT:.*]] = stablehlo.add %[[COMBINED]], %[[ARG0]]
 // CHECK: return %[[RESULT]]

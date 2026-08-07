@@ -92,16 +92,23 @@ static LogicalResult addAffineIfOpDomain(AffineIfOp ifOp, bool isElse,
   SmallVector<Value> operands(ifOp.getOperands());
   canonicalizeSetAndOperands(&set, &operands);
 
-  // Create the base constraints from the integer set attached to ifOp.
-  FlatAffineValueConstraints cst(set, operands);
+  // Create the base constraints from the integer set attached to ifOp. This
+  // fails for semi-affine sets, which cannot be flattened.
+  FailureOr<FlatAffineValueConstraints> cst =
+      FlatAffineValueConstraints::create(set, operands);
+  if (failed(cst)) {
+    LLVM_DEBUG(llvm::dbgs()
+               << "semi-affine integer sets in 'affine.if' not supported\n");
+    return failure();
+  }
 
   if (!isElse) {
-    domain->mergeAndAlignVarsWithOther(0, &cst);
-    domain->append(cst);
+    domain->mergeAndAlignVarsWithOther(0, &*cst);
+    domain->append(*cst);
     return success();
   }
 
-  presburger::PresburgerRelation pr(cst);
+  presburger::PresburgerRelation pr(*cst);
   pr = pr.complement();
   if (pr.getNumDisjuncts() > 1) {
     // TODO: we can turn the domain into a PresburgerSet that supports
@@ -112,7 +119,7 @@ static LogicalResult addAffineIfOpDomain(AffineIfOp ifOp, bool isElse,
   }
 
   FlatLinearValueConstraints flvc(
-      presburger::IntegerPolyhedron(pr.getDisjunct(0)), cst.getMaybeValues());
+      presburger::IntegerPolyhedron(pr.getDisjunct(0)), cst->getMaybeValues());
 
   domain->mergeAndAlignVarsWithOther(0, &flvc);
   domain->append(flvc);
@@ -272,8 +279,41 @@ struct AffineExprToIslAffConverter {
 
 AffineExpr internalAdd(AffineExpr LHS, AffineExpr RHS, bool allownegate = true);
 
+// Decompose `term` into (body, coeff) such that term == body * coeff.
+static std::pair<AffineExpr, int64_t> decomposeMulByConst(AffineExpr term) {
+  if (auto bin = dyn_cast<AffineBinaryOpExpr>(term))
+    if (bin.getKind() == AffineExprKind::Mul)
+      if (auto cst = dyn_cast<AffineConstantExpr>(bin.getRHS()))
+        return {bin.getLHS(), cst.getValue()};
+  return {term, 1};
+}
+
+// Fold the implicit remainder c*e + (-c*k)*(e floordiv k) to (e mod k) * c.
+// This is a pure integer identity, valid for any e and constants c, k > 1.
+static std::optional<AffineExpr> tryFoldImplicitMod(AffineExpr A,
+                                                    AffineExpr B) {
+  for (int i = 0; i < 2; i++) {
+    auto [e, c] = decomposeMulByConst(i == 0 ? A : B);
+    auto [divBody, divCoeff] = decomposeMulByConst(i == 0 ? B : A);
+    auto div = dyn_cast<AffineBinaryOpExpr>(divBody);
+    if (!div || div.getKind() != AffineExprKind::FloorDiv)
+      continue;
+    auto kCst = dyn_cast<AffineConstantExpr>(div.getRHS());
+    if (!kCst || kCst.getValue() < 2)
+      continue;
+    if (div.getLHS() != e)
+      continue;
+    if (divCoeff != -c * kCst.getValue())
+      continue;
+    return (e % kCst.getValue()) * c;
+  }
+  return std::nullopt;
+}
+
 AffineExpr commonAddWithMul(AffineExpr LHS, AffineExpr RHS,
                             bool allownegate = true) {
+  if (auto folded = tryFoldImplicitMod(LHS, RHS))
+    return *folded;
   auto lhsD = llvm::DynamicAPInt(LHS.getLargestKnownDivisor());
   auto rhsD = llvm::DynamicAPInt(RHS.getLargestKnownDivisor());
   auto gcd = llvm::int64fromDynamicAPInt(llvm::gcd(abs(lhsD), abs(rhsD)));
@@ -855,6 +895,11 @@ isl_set *IslAnalysis::getDomain(Operation *op) {
   auto [domain, cst] = ::getDomain(ctx, op);
 
   return domain;
+}
+
+std::tuple<isl_set *, FlatAffineValueConstraints>
+IslAnalysis::getDomainAndValueConstraints(Operation *op) {
+  return ::getDomain(ctx, op);
 }
 
 std::optional<SmallVector<isl_aff *>> IslAnalysis::getAffExprs(Operation *op) {

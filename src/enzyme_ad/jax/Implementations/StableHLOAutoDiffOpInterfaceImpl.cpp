@@ -81,6 +81,14 @@ static Value makeI32Constant(Location loc, OpBuilder &builder, int32_t val) {
   return makeIntegerConstant(loc, builder, builder.getI32Type(), val);
 }
 
+static Value makeZero(OpBuilder &builder, Location loc, Type T) {
+  auto TT = dyn_cast<mlir::ShapedType>(T);
+  return TT && TT.getElementType().isIntOrIndexOrFloat()
+             ? stablehlo::ConstantOp::create(builder, loc, T,
+                                             cast<ElementsAttr>(makeAttr(T, 0)))
+             : cast<AutoDiffTypeInterface>(T).createNullValue(builder, loc);
+}
+
 static inline Operation *createAddRegion(Operation *op) {
   mlir::OpBuilder builder(op->getContext());
   mlir::Block *block = new Block();
@@ -508,17 +516,20 @@ class AutoDiffWhileRev
     if (!revInfo.info.computeInfo().succeeded() || !revInfo.info.isValid())
       return revInfo;
 
+    const char *checkpointAttrName = "enzymexla.enable_checkpointing";
+    const char *periodicCheckpointAttrName = "enzymexla.checkpoint_period";
+
+    auto enableCheckpointingAttr =
+        orig->getAttrOfType<BoolAttr>(checkpointAttrName);
+    bool enableCheckpointing =
+        enableCheckpointingAttr && enableCheckpointingAttr.getValue();
     if (revInfo.info.isConstant()) {
-      const char *checkpointAttrName = "enzymexla.enable_checkpointing";
-      auto enableCheckpointing =
-          orig->getAttrOfType<BoolAttr>(checkpointAttrName);
-      const char *periodicCheckpointAttrName = "enzymexla.checkpoint_period";
       auto checkpointPeriod =
           orig->getAttrOfType<IntegerAttr>(periodicCheckpointAttrName);
-      auto enableBinomialCheckpointing =
+      bool enableBinomialCheckpointing =
           orig->hasAttr("enzymexla.binomial_checkpointing");
 
-      if (enableCheckpointing && enableCheckpointing.getValue()) {
+      if (enableCheckpointing) {
         // CONSTANT_CHECKPOINTING: use provided period or default to sqrt(N).
         revInfo.mode = enableBinomialCheckpointing ? CONSTANT_BINOMIAL
                                                    : CONSTANT_CHECKPOINTING;
@@ -531,7 +542,8 @@ class AutoDiffWhileRev
           int64_t numIters = revInfo.info.getConstantNumIters();
           revInfo.checkpointPeriod = std::sqrt(numIters);
         }
-      } else if (checkpointPeriod && checkpointPeriod.getInt() > 0) {
+      } else if (enableCheckpointing && checkpointPeriod &&
+                 checkpointPeriod.getInt() > 0) {
         // Explicit period specified without enable_checkpointing
         revInfo.mode = CONSTANT_CHECKPOINTING;
         revInfo.checkpointPeriod = checkpointPeriod.getInt();
@@ -539,9 +551,7 @@ class AutoDiffWhileRev
         revInfo.mode = CONSTANT;
       }
     } else if (orig->hasAttr("enzymexla.binomial_checkpointing")) {
-      auto enableCheckpointing =
-          orig->getAttrOfType<BoolAttr>("enzymexla.enable_checkpointing");
-      if (enableCheckpointing && enableCheckpointing.getValue()) {
+      if (enableCheckpointing) {
         revInfo.mode = CONSTANT_BINOMIAL;
         auto checkpointPeriod =
             orig->getAttrOfType<IntegerAttr>("enzymexla.checkpoint_period");
@@ -550,9 +560,65 @@ class AutoDiffWhileRev
                 ? checkpointPeriod.getInt()
                 : BINOMIAL_SENTINEL_BUDGET;
       }
+    } else if (enableCheckpointing) {
+      orig->emitWarning("requested periodic checkpointing on a loop that does "
+                        "not have constant iteration bounds. this is currently "
+                        "not supported");
     }
 
     return revInfo;
+  }
+
+  // Drop the entries `mapping` holds for the block arguments inside `op`'s
+  // regions, so the clone gets its own. Region::cloneInto reuses an existing
+  // entry rather than materializing a fresh argument (`!mapper.contains(arg)`),
+  // so a leftover entry -- from an earlier clone of the same body, or inherited
+  // from the whole-function primal clone -- would leave the cloned regions
+  // argument-less and silently wire their bodies back to that other copy. Block
+  // arguments are the only entities that need this: the cloner maps blocks and
+  // nested op results unconditionally as it goes.
+  static void forgetNestedBlockArgs(Operation *op, IRMapping &mapping) {
+    for (Region &region : op->getRegions())
+      for (Block &block : region) {
+        for (BlockArgument arg : block.getArguments())
+          mapping.erase(Value(arg));
+        for (Operation &nested : block)
+          forgetNestedBlockArgs(&nested, mapping);
+      }
+  }
+
+  // Clone one op of a checkpointed loop body and hand the whole clone -- the op
+  // and everything nested inside it -- to gutils as the new counterpart of the
+  // original. Publishing only the top level is not enough: a nested op's
+  // reverse rule looking up e.g. the inner loop's carried argument would get
+  // the stale entry pointing at the primal clone this rewrite replaced.
+  static Operation *cloneAndPublish(OpBuilder &builder, Operation &op,
+                                    IRMapping &mapping,
+                                    MGradientUtilsReverse *gutils) {
+    forgetNestedBlockArgs(&op, mapping);
+
+    Operation *newOp = builder.clone(op, mapping);
+
+    // The cloner filled `mapping` in as it went, so it already knows the new
+    // counterpart of every op and value inside the clone -- no need to walk the
+    // copy again. originalToNewFnOps is a plain std::map the cloner has never
+    // heard of, so it takes the operation map wholesale.
+    for (auto &&[oldNested, newNested] : mapping.getOperationMap())
+      gutils->originalToNewFnOps[oldNested] = newNested;
+
+    // The value map also holds the caller's seeds -- the values the body reads
+    // from above, mapped to popped caches. Those must stay private to this
+    // clone, so publish only what `op` itself defines: its own results, and the
+    // results and block arguments nested inside it.
+    for (auto &&[oldVal, newVal] : mapping.getValueMap()) {
+      Operation *owner = oldVal.getDefiningOp();
+      if (!owner)
+        owner = cast<BlockArgument>(oldVal).getOwner()->getParentOp();
+      if (owner && op.isAncestor(owner))
+        gutils->originalToNewFn.map(oldVal, newVal);
+    }
+
+    return newOp;
   }
 
   // arr[index:index+1, :, :, :] = val
@@ -575,16 +641,50 @@ class AutoDiffWhileRev
   static stablehlo::WhileOp makeForLoop(OpBuilder &builder, Location loc,
                                         int64_t start, int64_t limit,
                                         int64_t step, ValueRange operands) {
-    return makeForLoop(builder, loc, makeI64Constant(loc, builder, start),
-                       makeI64Constant(loc, builder, limit),
-                       makeI64Constant(loc, builder, step), operands);
+    Value startVal = makeI64Constant(loc, builder, start);
+    Value limitVal = makeI64Constant(loc, builder, limit);
+    Value stepVal = makeI64Constant(loc, builder, step);
+    return makeForLoop(builder, loc, startVal, limitVal, stepVal, operands);
   }
 
   static stablehlo::WhileOp makeForLoop(OpBuilder &builder, Location loc,
                                         int64_t start, Value limit,
                                         int64_t step, ValueRange operands) {
-    return makeForLoop(builder, loc, makeI64Constant(loc, builder, start),
-                       limit, makeI64Constant(loc, builder, step), operands);
+    Value startVal = makeI64Constant(loc, builder, start);
+    Value stepVal = makeI64Constant(loc, builder, step);
+    return makeForLoop(builder, loc, startVal, limit, stepVal, operands);
+  }
+
+  // Checkpointing and the loop-splitting rewrites replace one loop with
+  // several, and each of those is still doing the original loop's work, so they
+  // inherit its attributes. Without this, a directive such as
+  // enzyme.disable_mincut applies only to the loop the user wrote and is
+  // silently dropped for every loop derived from it.
+  //
+  // Two kinds of attribute must not come along:
+  //
+  //  - the checkpointing directives, since the split has already happened and
+  //    re-reading them would checkpoint the derived loops again;
+  //  - the memoized analysis results, which are ArrayAttrs indexed by result
+  //    number. A derived loop carries gradients and caches, so its results do
+  //    not correspond to the original's. Readers do check the array length
+  //    against getNumResults(), so a mismatch is merely ignored, but when the
+  //    arities happen to coincide the original's per-result facts would be
+  //    applied to entirely different results.
+  static void inheritAttrs(Operation *orig, Operation *derived) {
+    derived->setAttrs(orig->getAttrs());
+
+    for (StringRef attr :
+         {"enzymexla.enable_checkpointing", "enzymexla.checkpoint_period",
+          "enzymexla.binomial_checkpointing"})
+      derived->removeAttr(attr);
+
+    for (StringRef attr :
+         {"enzymexla.symmetric_matrix", "enzymexla.non_negative",
+          "enzymexla.finite", "enzymexla.bounds", "enzymexla.no_nan",
+          "enzymexla.complex_is_purely_real",
+          "enzymexla.complex_is_purely_imaginary"})
+      derived->removeAttr(attr);
   }
 
   static stablehlo::WhileOp makeForLoop(OpBuilder &builder, Location loc,
@@ -706,6 +806,7 @@ class AutoDiffWhileRev
 
     stablehlo::WhileOp revOuter =
         makeForLoop(builder, orig->getLoc(), 0, numItersRev, 1, operands);
+    inheritAttrs(orig, revOuter);
 
     Block *outerBody = &revOuter.getBody().front();
     Value newOuterIV = outerBody->getTerminator()->getOperand(0);
@@ -798,8 +899,8 @@ class AutoDiffWhileRev
         builder, orig->getLoc(),
         makeI64Constant(orig->getLoc(), builder, revInfo.checkpointPeriod),
         capo);
-    Value split = enzymexla::BinomialProgressOp::create(
-        builder, orig->getLoc(), remaining, budget, nullptr);
+    Value split = enzyme::BinomialProgressOp::create(
+        builder, orig->getLoc(), remaining.getType(), remaining, budget);
 
     SmallVector<Value> innerBodyCaches;
 
@@ -841,10 +942,7 @@ class AutoDiffWhileRev
         makeI64Constant(orig->getLoc(), builder, 1), innerRematOperands);
     Block *innerRematBody = &innerRemat.getBody().front();
 
-    innerRemat->setAttrs(orig->getAttrs());
-    innerRemat->removeAttr("enzymexla.enable_checkpointing");
-    innerRemat->removeAttr("enzymexla.checkpoint_period");
-    innerRemat->removeAttr("enzymexla.binomial_checkpointing");
+    inheritAttrs(orig, innerRemat);
 
     builder.setInsertionPointToStart(innerRematBody);
 
@@ -958,22 +1056,27 @@ class AutoDiffWhileRev
       gutils->originalToNewFn.map(origArg, newArg);
     }
 
-    for (Operation &op : origBody->without_terminator()) {
-      Operation *newOp = builder.clone(op, mapping);
-      gutils->originalToNewFnOps[&op] = newOp;
-      for (auto &&[oldv, newv] :
-           llvm::zip_equal(op.getResults(), newOp->getResults())) {
-        gutils->originalToNewFn.map(oldv, newv);
-      }
-    }
+    for (Operation &op : origBody->without_terminator())
+      cloneAndPublish(builder, op, mapping, gutils);
 
     bool anyFailed = false;
 
-    auto rstart = origBody->rbegin(), rend = origBody->rend();
-    rstart++;
-    for (auto it = rstart; it != rend; it++) {
-      Operation *op = &*it;
-      anyFailed |= gutils->Logic.visitChild(op, builder, gutils).failed();
+    {
+      OpBuilder cacheBuilder(innerWhile);
+      auto loc = orig->getLoc();
+      auto cacheCreator = [&](Type t) {
+        Value cache = enzyme::InitOp::create(cacheBuilder, loc, t);
+        return std::make_pair(cache, cache);
+      };
+      gutils->registerCacheCreatorHook(cacheCreator);
+
+      auto rstart = origBody->rbegin(), rend = origBody->rend();
+      rstart++;
+      for (auto it = rstart; it != rend; it++) {
+        Operation *op = &*it;
+        anyFailed |= gutils->Logic.visitChild(op, builder, gutils).failed();
+      }
+      gutils->deregisterCacheCreatorHook(cacheCreator);
     }
 
     SmallVector<Value> outerBodyResults;
@@ -1055,6 +1158,7 @@ class AutoDiffWhileRev
 
     stablehlo::WhileOp revOuter =
         makeForLoop(builder, orig.getLoc(), 0, nOuter, 1, operands);
+    inheritAttrs(orig, revOuter);
 
     Block *revOuterBody = &revOuter.getBody().front();
     builder.setInsertionPointToStart(revOuterBody);
@@ -1134,36 +1238,28 @@ class AutoDiffWhileRev
         makeForLoop(builder, orig.getLoc(), 0, actualInner, 1, carried);
     Block *revInnerBody = &revInner.getBody().front();
 
-    revInner->setAttrs(orig->getAttrs());
-    revInner->removeAttr("enzymexla.enable_checkpointing");
-    revInner->removeAttr("enzymexla.checkpoint_period");
+    inheritAttrs(orig, revInner);
 
     // Reverse pass within this block
     auto revLoop = makeForLoop(builder, orig.getLoc(), 0, actualInner, 1,
                                revOuterBody->getArguments().drop_front());
+    inheritAttrs(orig, revLoop);
     Block *revLoopBody = &revLoop.getBody().front();
 
     builder.setInsertionPointToStart(revInnerBody);
 
-    // innerIV iterates in reverse: actualInner - 1 - idx
-    Value innerIV = stablehlo::SubtractOp::create(
-        builder, orig.getLoc(),
-        stablehlo::SubtractOp::create(
-            builder, orig.getLoc(), actualInner,
-            makeI64Constant(orig.getLoc(), builder, 1)),
-        revInnerBody->getArgument(0));
+    Value innerIV = revInnerBody->getArgument(0);
 
     Value currentStep =
         stablehlo::AddOp::create(builder, orig.getLoc(), outerStart, innerIV);
+    Value constantStart = makeI64Constant(
+        orig.getLoc(), builder, revInfo.info.getConstantStart().value());
+    Value constantStep = makeI64Constant(
+        orig.getLoc(), builder, revInfo.info.getConstantStep().value());
     Value currentIV = stablehlo::AddOp::create(
-        builder, orig.getLoc(),
-        makeI64Constant(orig.getLoc(), builder,
-                        revInfo.info.getConstantStart().value()),
-        stablehlo::MulOp::create(
-            builder, orig.getLoc(),
-            makeI64Constant(orig.getLoc(), builder,
-                            revInfo.info.getConstantStep().value()),
-            currentStep));
+        builder, orig.getLoc(), constantStart,
+        stablehlo::MulOp::create(builder, orig.getLoc(), constantStep,
+                                 currentStep));
 
     Block *origBody = &orig.getBody().front();
     for (auto &&[origarg, revinnerarg] : llvm::zip_equal(
@@ -1174,14 +1270,9 @@ class AutoDiffWhileRev
     mapping.map(origBody->getArgument(0), currentIV);
     gutils->originalToNewFn.map(origBody->getArgument(0), currentIV);
 
-    for (Operation &op : origBody->without_terminator()) {
-      auto newOp = builder.clone(op, mapping);
-      gutils->originalToNewFnOps[&op] = newOp;
-      for (auto &&[oldv, newv] :
-           llvm::zip(op.getResults(), newOp->getResults())) {
-        gutils->originalToNewFn.map(oldv, newv);
-      }
-    }
+    for (Operation &op : origBody->without_terminator())
+      cloneAndPublish(builder, op, mapping, gutils);
+
     {
       auto oldTerm = cast<stablehlo::ReturnOp>(origBody->getTerminator());
       auto newTerm = cast<stablehlo::ReturnOp>(revInnerBody->getTerminator());
@@ -1460,7 +1551,7 @@ public:
 
     Value numIters;
 
-    WhileLoopInfo info(newWhile);
+    WhileLoopInfo info(cast<WhileOp>(orig));
     if (info.computeInfo().succeeded()) {
       // no need to cache number of iterations if it is a known constant.
       if (info.isValid()) {
@@ -1498,6 +1589,7 @@ public:
           auto outer = makeForLoop(
               builder, orig->getLoc(), 0, nOuter, 1,
               newWhile->getOperands().slice(1, newWhile->getNumOperands() - 1));
+          inheritAttrs(orig, outer);
 
           Block *outerBody = &outer.getBody().front();
           builder.setInsertionPointToStart(outerBody);
@@ -1545,6 +1637,7 @@ public:
 
           auto inner =
               makeForLoop(builder, orig->getLoc(), 0, innerLimit, 1, operands);
+          inheritAttrs(orig, inner);
 
           outerBody->getTerminator()->setOperands(
               1, inner.getNumResults() - 1,
@@ -1604,16 +1697,15 @@ public:
           SmallVector<Value> outerOperands(
               newWhile.getOperands().slice(1, newWhile.getNumOperands() - 1));
 
-          for (auto operand : outerOperands) {
+          for (int i = 0, e = outerOperands.size(); i < e; i++) {
+            Value operand = outerOperands[i];
             auto operandType = cast<ShapedType>(operand.getType());
             SmallVector<int64_t> cacheShape;
             cacheShape.push_back(revModeInfo.checkpointPeriod);
             cacheShape.append(operandType.getShape().begin(),
                               operandType.getShape().end());
             auto cacheType = operandType.clone(cacheShape);
-            auto zeroCache =
-                cast<AutoDiffTypeInterface>(cacheType).createNullValue(
-                    builder, operand.getLoc());
+            auto zeroCache = makeZero(builder, operand.getLoc(), cacheType);
             outerOperands.push_back(zeroCache);
           }
 
@@ -1634,6 +1726,7 @@ public:
           stablehlo::WhileOp outer =
               makeForLoop(builder, orig->getLoc(), 0,
                           revModeInfo.checkpointPeriod, 1, outerOperands);
+          inheritAttrs(orig, outer);
 
           Block *outerBody = &outer.getBody().front();
 
@@ -1654,7 +1747,8 @@ public:
           // constants. These are inserted before `outer` (loop-invariant).
           if (isDynamic) {
             builder.setInsertionPoint(outer);
-            Value numItersVal = info.getNumIters(builder);
+            Value numItersVal = gutils->originalToNewFn.lookupOrDefault(
+                info.getNumIters(builder, gutils->originalToNewFn));
             if (!numItersVal) {
               orig->emitError(
                   "binomial checkpointing: cannot compute numIters outside the "
@@ -1662,10 +1756,11 @@ public:
               return {};
             }
             caches.push_back(gutils->initAndPushCache(numItersVal, builder));
-            caches.push_back(
-                gutils->initAndPushCache(info.getStart(), builder));
-            caches.push_back(
-                gutils->initAndPushCache(info.getStep(builder), builder));
+            caches.push_back(gutils->initAndPushCache(
+                gutils->originalToNewFn.lookupOrDefault(info.getStart()),
+                builder));
+            caches.push_back(gutils->initAndPushCache(
+                info.getStep(builder, gutils->originalToNewFn), builder));
             builder.setInsertionPointAfter(outer);
           }
 
@@ -1720,10 +1815,11 @@ public:
                                           .slice(1, orig->getNumOperands() - 1)
                                           .end());
 
-          Value limitVal = info.isConstantLimit()
-                               ? makeI64Constant(orig->getLoc(), builder,
-                                                 *info.getConstantLimit())
-                               : info.getLimit();
+          Value limitVal =
+              info.isConstantLimit()
+                  ? makeI64Constant(orig->getLoc(), builder,
+                                    *info.getConstantLimit())
+                  : gutils->originalToNewFn.lookupOrDefault(info.getLimit());
           Value numSteps = stablehlo::SubtractOp::create(
               builder, orig->getLoc(), limitVal, stepInOuter);
 
@@ -1732,8 +1828,8 @@ public:
               makeI64Constant(orig->getLoc(), builder,
                               revModeInfo.checkpointPeriod),
               outerBody->getArgument(0));
-          Value innerLimit = enzymexla::BinomialProgressOp::create(
-              builder, orig->getLoc(), numSteps, budget, nullptr);
+          Value innerLimit = enzyme::BinomialProgressOp::create(
+              builder, orig->getLoc(), numSteps.getType(), numSteps, budget);
 
           outerTerm->setOperand(
               outerTerm->getNumOperands() - 2,
@@ -1750,11 +1846,7 @@ public:
 
           auto inner =
               makeForLoop(builder, orig->getLoc(), 0, innerLimit, 1, operands);
-
-          inner->setAttrs(orig->getAttrs());
-          inner->removeAttr("enzymexla.enable_checkpointing");
-          inner->removeAttr("enzymexla.checkpoint_period");
-          inner->removeAttr("enzymexla.binomial_checkpointing");
+          inheritAttrs(orig, inner);
 
           outerTerm->setOperands(
               1, inner.getNumResults() - 1,
@@ -1773,9 +1865,12 @@ public:
 
           Value oldIV = oldInnerBody->getArgument(0);
           Value newIV = stablehlo::AddOp::create(
-              builder, orig->getLoc(), info.getStart(),
+              builder, orig->getLoc(),
+              gutils->originalToNewFn.lookupOrDefault(info.getStart()),
               stablehlo::MulOp::create(
-                  builder, orig->getLoc(), info.getStep(builder),
+                  builder, orig->getLoc(),
+                  gutils->originalToNewFn.lookupOrDefault(
+                      info.getStep(builder)),
                   stablehlo::AddOp::create(builder, orig->getLoc(), stepInOuter,
                                            innerBody->getArgument(0))));
 
@@ -1794,10 +1889,11 @@ public:
           term->setOperands(1, term->getNumOperands() - 1, newReturns);
 
           builder.setInsertionPointAfter(outer);
-          Value limitForResult = info.isConstantLimit()
-                                     ? makeI64Constant(oldIV.getLoc(), builder,
-                                                       *info.getConstantLimit())
-                                     : info.getLimit();
+          Value limitForResult =
+              info.isConstantLimit()
+                  ? makeI64Constant(oldIV.getLoc(), builder,
+                                    *info.getConstantLimit())
+                  : gutils->originalToNewFn.lookupOrDefault(info.getLimit());
           SmallVector<Value> newResults{limitForResult};
 
           newResults.append(
@@ -1817,7 +1913,8 @@ public:
         // Non-constant, non-binomial: fall through to numIters caching below.
       }
 
-      numIters = info.getNumIters(revBuilder);
+      numIters = gutils->originalToNewFn.lookupOrDefault(
+          info.getNumIters(revBuilder, gutils->originalToNewFn));
     }
 
     if (!numIters) {
@@ -2492,44 +2589,6 @@ public:
 
   void createShadowValues(Operation *op, OpBuilder &builder,
                           MGradientUtilsReverse *gutils) const {}
-};
-
-struct SHLOConstantOpBatchInterface
-    : public BatchOpInterface::ExternalModel<SHLOConstantOpBatchInterface,
-                                             ConstantOp> {
-
-  mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
-                                  IRMapping &mapper,
-                                  ArrayRef<int64_t> batchSizes) const {
-    auto constOp = cast<ConstantOp>(src);
-
-    auto T = cast<TensorType>(constOp.getType());
-    SmallVector<int64_t> shape(batchSizes.begin(), batchSizes.end());
-    shape.append(T.getShape().begin(), T.getShape().end());
-    auto Ty = T.clone(shape);
-
-    // If splatted attr then we can easily batch it
-    auto eattr = cast<DenseElementsAttr>(constOp.getValue());
-    if (eattr.isSplat()) {
-      auto splatAttr = cast<SplatElementsAttr>(constOp.getValue());
-      auto newSplattedConstOp = ConstantOp::create(
-          builder, constOp->getLoc(), Ty,
-          cast<ElementsAttr>(splatAttr.resizeSplat(cast<ShapedType>(Ty))));
-      mapper.map(src->getResult(0), newSplattedConstOp->getResult(0));
-      return success();
-    }
-
-    // otherwise do a broadcast in dim
-    SmallVector<int64_t> mapping(T.getShape().size());
-    std::iota(mapping.begin(), mapping.end(), batchSizes.size());
-
-    auto constOpCloned = builder.clone(*constOp);
-    auto bcastOp = BroadcastInDimOp::create(
-        builder, src->getLoc(), Ty, constOpCloned->getResult(0),
-        builder.getDenseI64ArrayAttr(mapping));
-    mapper.map(src->getResult(0), bcastOp->getResult(0));
-    return success();
-  }
 };
 
 struct SHLOGetDimensionSizeOpBatchInterface
@@ -3798,6 +3857,23 @@ public:
 
     auto zero = makeI64Constant(whileOp->getLoc(), rewriter, 0);
 
+    // Stand-in for the reverse loop's counter while the min cut runs. The
+    // counter itself can only be built in step 4 (the loop is rebuilt there),
+    // but the min cut needs to know *now* that the forward induction variable
+    // is available in reverse.
+    //
+    // Without this the induction variable is a block argument with no defining
+    // op, so `minCutValues` makes it a flow source that some cut must separate
+    // from the required ops. That is not merely an identity tape `tape[i] = i`:
+    // the solver is handed an extra source, so the cut it returns is optimal
+    // for the wrong graph, and values recomputable from the counter (indexed
+    // reads, affine index arithmetic) look cuttable rather than free.
+    //
+    // enzyme.placeholder rather than a constant: it is Pure but opaque, so
+    // nothing folds, CSEs or constant-propagates through it while the min cut
+    // and its cloning run.
+    enzyme::PlaceholderOp reverseIVPlaceholder = nullptr;
+
     // Run min cut partitioning to limit the amount of values to be cached.
     if (hasMinCut(whileOp) && caches.size()) {
       Block *forward = &whileOp.getBody().front();
@@ -3806,6 +3882,11 @@ public:
       IRMapping fwdrevmap;
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(reverse);
+      if (inductionVariable) {
+        reverseIVPlaceholder = enzyme::PlaceholderOp::create(
+            rewriter, whileOp->getLoc(), inductionVariable.getType());
+        fwdrevmap.map(inductionVariable, reverseIVPlaceholder.getResult());
+      }
       mlir::enzyme::minCutCache(forward, reverse, caches, rewriter, fwdrevmap,
                                 lastFwd);
     }
@@ -3861,8 +3942,7 @@ public:
       // `tensor.empty + dynamic_pad` when the shape genuinely has dynamic
       // dims — XLA cannot translate `dynamic_pad`.
       if (numIters != ShapedType::kDynamic) {
-        initValue = cast<AutoDiffTypeInterface>(newType).createNullValue(
-            rewriter, cinfo.initOp->getLoc());
+        initValue = makeZero(rewriter, cinfo.initOp->getLoc(), newType);
       } else {
         if (!itersV)
           itersV = info.getNumIters(rewriter);
@@ -3871,14 +3951,13 @@ public:
           if (v == ShapedType::kDynamic)
             v = 0;
         }
-        auto op = cast<AutoDiffTypeInterface>(
-                      RankedTensorType::get(zeros, newType.getElementType()))
-                      .createNullValue(rewriter, cinfo.initOp->getLoc());
+        auto op =
+            makeZero(rewriter, cinfo.initOp->getLoc(),
+                     RankedTensorType::get(zeros, newType.getElementType()));
 
-        auto zeroOp = cast<AutoDiffTypeInterface>(
-                          RankedTensorType::get(ArrayRef<int64_t>(),
-                                                newType.getElementType()))
-                          .createNullValue(rewriter, cinfo.initOp->getLoc());
+        auto zeroOp = makeZero(rewriter, cinfo.initOp->getLoc(),
+                               RankedTensorType::get(ArrayRef<int64_t>(),
+                                                     newType.getElementType()));
 
         auto zeroInt = stablehlo::ConstantOp::create(
             rewriter, cinfo.initOp->getLoc(), itersV.getType(),
@@ -3969,7 +4048,14 @@ public:
     // 4. On the other while op (the one containing the pops), we add an
     // induction variable and replace pops with slice from the tensor version
     // of the cache.
-    if (inductionVariable && caches.size() != 0) {
+    // The counter is needed either to index the caches, or because the min cut
+    // recomputed something from the induction variable and left uses of the
+    // placeholder behind. `minCutCache` clears `caches` when every push was
+    // hoisted out of the loop, so the second condition is not implied by the
+    // first.
+    if (inductionVariable &&
+        (caches.size() != 0 ||
+         (reverseIVPlaceholder && !reverseIVPlaceholder->use_empty()))) {
       if (isa<BlockArgument>(inductionVariable) &&
           cast<BlockArgument>(inductionVariable).getArgNumber() != 0)
         resultIdx++;
@@ -4000,6 +4086,20 @@ public:
                              otherWhileOp->getLoc());
       auto otherTerm = otherBody->getTerminator();
 
+      // Now that the real counter exists, retire the placeholder the min cut
+      // was seeded with.
+      if (reverseIVPlaceholder) {
+        OpBuilder::InsertionGuard g(rewriter);
+        rewriter.setInsertionPointToStart(otherBody);
+        Value real = otherInductionVariable;
+        if (real.getType() != reverseIVPlaceholder.getType())
+          real = stablehlo::ConvertOp::create(rewriter, otherWhileOp->getLoc(),
+                                              reverseIVPlaceholder.getType(),
+                                              real);
+        rewriter.replaceOp(reverseIVPlaceholder, real);
+        reverseIVPlaceholder = nullptr;
+      }
+
       rewriter.setInsertionPoint(otherTerm);
 
       otherInductionVariable =
@@ -4027,6 +4127,13 @@ public:
 
       rewriter.eraseOp(otherWhileOp);
       otherWhileOp = newOtherWhileOp;
+    } else if (reverseIVPlaceholder) {
+      // No counter was built, so nothing may still refer to the stand-in.
+      assert(reverseIVPlaceholder->use_empty() &&
+             "reverse induction placeholder outlived the counter that would "
+             "have replaced it");
+      rewriter.eraseOp(reverseIVPlaceholder);
+      reverseIVPlaceholder = nullptr;
     }
 
     // 5. Finally, replace pops with slices.
@@ -4189,8 +4296,8 @@ struct IfOpEnzymeOpsRemover
     }
 
     for (auto &[pushedValue, info] : pushedCaches) {
-      Value dummy = cast<AutoDiffTypeInterface>(pushedValue.getType())
-                        .createNullValue(rewriter, pushedValue.getLoc());
+      Value dummy =
+          makeZero(rewriter, pushedValue.getLoc(), pushedValue.getType());
 
       Value trueValue =
           pushedValue.getParentBlock() == trueBlock ? pushedValue : dummy;
@@ -4711,6 +4818,65 @@ struct SHLODynamicUpdateSliceOpBatchInterface
   }
 };
 
+struct SHLORngBitGeneratorOpBatchInterface
+    : public BatchOpInterface::ExternalModel<
+          SHLORngBitGeneratorOpBatchInterface, RngBitGeneratorOp> {
+  mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
+                                  IRMapping &mapper,
+                                  ArrayRef<int64_t> batchSizes) const {
+    auto op = cast<RngBitGeneratorOp>(src);
+
+    auto batchedSeed = mapper.lookup(op.getInitialState());
+    auto batchedSeedType = cast<RankedTensorType>(batchedSeed.getType());
+
+    // Slice the first element along the batch dimensions.
+    // E.g., if batchSizes is [10], shape is [10, 2].
+    // We slice from [0, 0] to [1, 2].
+    SmallVector<int64_t> startIndices(batchSizes.size() + 1, 0);
+    SmallVector<int64_t> limitIndices(batchSizes.begin(), batchSizes.end());
+    for (size_t i = 0; i < batchSizes.size(); ++i) {
+      limitIndices[i] = 1;
+    }
+    limitIndices.push_back(batchedSeedType.getShape().back());
+    SmallVector<int64_t> strides(batchSizes.size() + 1, 1);
+
+    auto slicedSeedType =
+        RankedTensorType::get(limitIndices, batchedSeedType.getElementType());
+    auto slicedSeed =
+        builder.create<SliceOp>(op.getLoc(), slicedSeedType, batchedSeed,
+                                builder.getDenseI64ArrayAttr(startIndices),
+                                builder.getDenseI64ArrayAttr(limitIndices),
+                                builder.getDenseI64ArrayAttr(strides));
+
+    auto unbatchedSeedType =
+        cast<RankedTensorType>(op.getInitialState().getType());
+    auto seed =
+        builder.create<ReshapeOp>(op.getLoc(), unbatchedSeedType, slicedSeed);
+
+    auto origOutputType = cast<RankedTensorType>(op.getOutput().getType());
+    SmallVector<int64_t> batchedOutputShape(batchSizes.begin(),
+                                            batchSizes.end());
+    batchedOutputShape.append(origOutputType.getShape().begin(),
+                              origOutputType.getShape().end());
+    auto batchedOutputType = RankedTensorType::get(
+        batchedOutputShape, origOutputType.getElementType());
+
+    auto newRngOp = builder.create<RngBitGeneratorOp>(
+        op.getLoc(), unbatchedSeedType, batchedOutputType, op.getRngAlgorithm(),
+        seed);
+
+    SmallVector<int64_t> broadcastDims = {
+        static_cast<int64_t>(batchSizes.size())};
+    auto broadcastedState = builder.create<BroadcastInDimOp>(
+        op.getLoc(), batchedSeedType, newRngOp.getOutputState(),
+        builder.getDenseI64ArrayAttr(broadcastDims));
+
+    mapper.map(op.getOutputState(), broadcastedState);
+    mapper.map(op.getOutput(), newRngOp.getOutput());
+    return success();
+  }
+};
+
 struct SHLOIotaOpBatchInterface
     : public BatchOpInterface::ExternalModel<SHLOIotaOpBatchInterface,
                                              stablehlo::IotaOp> {
@@ -5089,7 +5255,8 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     BatchNormTrainingOp::attachInterface<AutoDiffBatchNormTrainingRev>(
         *context);
 
-    ConstantOp::attachInterface<SHLOConstantOpBatchInterface>(*context);
+    ConstantOp::attachInterface<
+        HLOConstantOpBatchInterface<stablehlo::ConstantOp>>(*context);
     TransposeOp::attachInterface<SHLOTransposeOpBatchInterface>(*context);
     stablehlo::IfOp::attachInterface<
         SHLOGenericBatchOpInterface<stablehlo::IfOp>>(*context);
@@ -5107,6 +5274,8 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
     stablehlo::DynamicUpdateSliceOp::attachInterface<
         SHLODynamicUpdateSliceOpBatchInterface>(*context);
     CustomCallOp::attachInterface<SHLOGenericBatchOpInterface<CustomCallOp>>(
+        *context);
+    RngBitGeneratorOp::attachInterface<SHLORngBitGeneratorOpBatchInterface>(
         *context);
     IotaOp::attachInterface<SHLOIotaOpBatchInterface>(*context);
     stablehlo::SelectOp::attachInterface<SHLOSelectOpBatchInterface>(*context);

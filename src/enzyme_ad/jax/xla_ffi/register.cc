@@ -1,6 +1,5 @@
-#include <mutex>
-
 #include "cuda/register.h"
+#include "absl/base/call_once.h"
 #include "host/register.h"
 
 #if (defined(_WIN32) || defined(__CYGWIN__)) &&                                \
@@ -20,8 +19,8 @@
 #endif
 
 extern "C" MLIR_CAPI_EXPORTED void registerEnzymeJaXXLAFFI() {
-  static std::once_flag once;
-  std::call_once(once, []() {
+  static absl::once_flag once;
+  absl::call_once(once, []() {
     enzymexla::ffi_internal::registerEnzymeJaXXLAHostFFI();
     enzymexla::ffi_internal::registerEnzymeJaXXLACudaFFI();
   });

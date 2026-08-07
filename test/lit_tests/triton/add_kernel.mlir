@@ -1,3 +1,4 @@
+// REQUIRES: triton
 // RUN: enzymexlamlir-opt %s -canonicalize | FileCheck %s
 // RUN: enzymexlamlir-opt %s -lower-triton -canonicalize | FileCheck %s --check-prefix=LOWER
 

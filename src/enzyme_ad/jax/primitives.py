@@ -3,6 +3,7 @@
 from functools import partial
 from collections.abc import Callable, Sequence
 from typing import Any
+import inspect
 import itertools
 import os
 import tempfile
@@ -37,6 +38,19 @@ except AttributeError:
 
 if hasattr(enzyme_call, "register_enzymexla_xla_ffi"):
     enzyme_call.register_enzymexla_xla_ffi()
+
+
+_aval_to_ir_types_impl: Any = jax_mlir.aval_to_ir_types
+_aval_to_ir_types_takes_module_context = (
+    len(inspect.signature(_aval_to_ir_types_impl).parameters) > 1
+)
+
+
+def _aval_to_ir_types(ctx: jax_mlir.LoweringRuleContext, aval):
+    """Call aval_to_ir_types with its JAX-version-dependent signature."""
+    if _aval_to_ir_types_takes_module_context:
+        return _aval_to_ir_types_impl(ctx.module_context, aval)
+    return _aval_to_ir_types_impl(aval)
 
 
 class PipelineConfig:
@@ -110,6 +124,8 @@ def optimization_passes(
     reshape_propagate: str = "up",
     max_constant_threshold: int = 1024,
     enable_licm_optimization_passes: bool = True,
+    loop_unswitch_threshold: int = 10,
+    excluded_passes: list = [],
     enable_scatter_gather_optimization_passes: bool = True,
     enable_pad_optimization_passes: bool = True,
     enable_self_to_convolution_like_passes: bool = False,
@@ -153,8 +169,10 @@ def optimization_passes(
         enable_concat_to_batch_passes,  # enable_concat_to_batch_passes
         enable_loop_raising_passes,  # enable_loop_raising_passes
         enable_licm_optimization_passes,  # enable_licm_optimization_passes
+        loop_unswitch_threshold,  # loop_unswitch_threshold
         enable_pad_optimization_passes,  # enable_pad_optimization_passes
         enable_self_to_convolution_like_passes,  # enable_self_to_convolution_like_passes
+        excluded_passes,  # excluded_passes
     )
 
     transform_passes = ",".join(
@@ -527,7 +545,9 @@ def _enzyme_primal_lowering(
 ) -> Sequence[ir.Value]:
     del out_shapes
 
-    out_types = tuple(itertools.chain(*map(jax_mlir.aval_to_ir_types, ctx.avals_out)))
+    out_types = tuple(
+        itertools.chain(*map(lambda x: _aval_to_ir_types(ctx, x), ctx.avals_out))
+    )
 
     out_shapes = list(map(maketup, out_types))
     in_shapes = list(map(lambda x: maketup(x.type), args_flat))
@@ -604,8 +624,7 @@ def _enzyme_primal_lowering(
             if i not in in_idx_map or in_idx_map[i] in kept
         ]
         if pipeline_options.stablehlo_inject():
-            ins = ir.InsertionPoint.current
-            mod = ins.block.region.owner.parent
+            mod = ctx.module_context.module.operation
             fns = []
             for f in mod.regions[0].blocks[0]:
                 fns.append(f.sym_name.value)
@@ -776,7 +795,9 @@ def _enzyme_fwd_lowering(
 ) -> Sequence[ir.Value]:
     del out_shapes
 
-    out_types = tuple(itertools.chain(*map(jax_mlir.aval_to_ir_types, ctx.avals_out)))
+    out_types = tuple(
+        itertools.chain(*map(lambda x: _aval_to_ir_types(ctx, x), ctx.avals_out))
+    )
 
     out_shapes = list(map(maketup, out_types[::2]))
 
@@ -848,7 +869,9 @@ def _enzyme_aug_lowering(
 ) -> Sequence[ir.Value]:
     del out_shapes
 
-    out_types = tuple(itertools.chain(*map(jax_mlir.aval_to_ir_types, ctx.avals_out)))
+    out_types = tuple(
+        itertools.chain(*map(lambda x: _aval_to_ir_types(ctx, x), ctx.avals_out))
+    )
 
     out_shapes = list(map(maketup, out_types[: len(out_types) - 1]))
 
@@ -920,7 +943,7 @@ def _enzyme_rev_lowering(
     del in_shapes
 
     pre_in_types = tuple(
-        itertools.chain(*map(jax_mlir.aval_to_ir_types, ctx.avals_out))
+        itertools.chain(*map(lambda x: _aval_to_ir_types(ctx, x), ctx.avals_out))
     )
 
     in_shapes = list(map(maketup, pre_in_types))
@@ -1124,7 +1147,7 @@ register_custom_call_target("jaxzyme.fwd", enzyme_call.get_callback())
 def enzyme_jvp(arg_primals, arg_tangents, **kwargs):
     # TODO propagate activity info rather than make_zero
     def make_zero(tan, prim):
-        return lax.zeros_like_array(prim) if type(tan) is ad.Zero else tan
+        return lax.full_like(prim, 0) if type(tan) is ad.Zero else tan
 
     pipeline_options = kwargs["pipeline_options"]
 

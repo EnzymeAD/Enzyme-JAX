@@ -21,6 +21,7 @@
 #include "Dialect/Ops.h"
 #include "mlir/IR/TypeSupport.h"
 
+#include "src/enzyme_ad/jax/Implementations/SHLOGenericBatchOpInterface.h"
 #include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
 
@@ -47,6 +48,8 @@ void mlir::enzyme::registerCHLODialectAutoDiffInterface(
     DialectRegistry &registry) {
   registry.addExtension(+[](MLIRContext *context, chlo::ChloDialect *) {
     registerInterfaces(context);
+    chlo::ConstantOp::attachInterface<
+        HLOConstantOpBatchInterface<chlo::ConstantOp>>(*context);
     context->loadDialect<stablehlo::StablehloDialect>();
   });
 }

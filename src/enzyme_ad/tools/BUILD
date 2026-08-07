@@ -1,4 +1,7 @@
-exports_files(["enzymexlamlir-tblgen.cpp"])
+exports_files([
+    "EnzymeXLALspServerMain.cpp",
+    "enzymexlamlir-tblgen.cpp",
+])
 
 licenses(["notice"])
 

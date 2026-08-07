@@ -1155,6 +1155,13 @@ struct WhileToForHelper {
   }
 
   void initVariables() {
+    // One helper is asked about several comparisons in turn.  The induction
+    // variable and its increment are found together and are worth nothing
+    // apart: left behind from a comparison that was turned down, the variable
+    // reads as a detection that succeeded while the step it was found with is
+    // gone, and everything below reads the step.
+    indVar = nullptr;
+    addIOp = nullptr;
     step = nullptr;
     lb = nullptr;
     lb_addOne = false;
@@ -1480,6 +1487,40 @@ struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
         return rewriter.notifyMatchFailure(loop,
                                            "No legal and comparison found");
       }
+    } else if (auto ifOp = condOp.getCondition().getDefiningOp<scf::IfOp>()) {
+      // A condition of the form
+      //   %r:N = scf.if %c { yield .., %false, .. } else { yield .., %x, .. }
+      // is logically `!%c && %x`, and symmetrically `%c && %x` when it is the
+      // else branch which yields a constant false. Handle it like the `andi`
+      // case above, using the if's result itself as the extra condition. This
+      // is redundant with (but implied by) the comparison, and unlike %x it is
+      // available at the end of the before region.
+      if (ifOp.getElseRegion().empty()) {
+        return rewriter.notifyMatchFailure(loop, "If condition has no else");
+      }
+      unsigned idx = cast<OpResult>(condOp.getCondition()).getResultNumber();
+      bool thenFalse = matchPattern(ifOp.thenYield().getOperand(idx), m_Zero());
+      if (!thenFalse &&
+          !matchPattern(ifOp.elseYield().getOperand(idx), m_Zero())) {
+        return rewriter.notifyMatchFailure(
+            loop, "If condition does not short circuit to false");
+      }
+      helper.cmpIOp = ifOp.getCondition().getDefiningOp<CmpIOp>();
+      if (!helper.cmpIOp) {
+        return rewriter.notifyMatchFailure(loop, "No comparison found");
+      }
+      // If the then branch is the constant false one, the loop only continues
+      // when the if condition does not hold.
+      helper.cmpNegated = thenFalse;
+      lookThrough = condOp.getCondition();
+
+      if (!helper.computeLegality(rewriter, /*sizeCheck*/ true, lookThrough,
+                                  /*doWhile*/ true)) {
+        return rewriter.notifyMatchFailure(loop,
+                                           "No legal if comparison found");
+      }
+      assert(helper.lb);
+      assert(helper.ub);
     } else {
       return rewriter.notifyMatchFailure(loop, "No comparison found");
     }
@@ -1527,6 +1568,17 @@ struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
         }
       }
     }
+
+    // With an extra condition the loop may also exit by exhausting the trip
+    // count. In that case the while still evaluates the before region one final
+    // time -- the evaluation whose comparison fails -- and it is that
+    // evaluation's condition args which become the loop results. That final
+    // evaluation is only observable through its side effects, which already
+    // force the extra iteration above, and through the loop results, so it is
+    // only needed here if the results are actually used. The after region stays
+    // guarded by the original bound, so it does not run an extra time.
+    if (lookThrough && !loop->use_empty())
+      doWhile = true;
 
     bool mutableAfter = false;
     if (doWhile) {
@@ -3403,11 +3455,29 @@ struct ForLoopApplyEnzymeAttributes
       return success();
     }
 
+    // The calls whose attribute has been read out and put on the loop, which
+    // are the ones there is no longer anything to say through.
+    SmallVector<Operation *> read;
+    unsigned called = 0;
+
     for (auto use : *uses) {
       auto user = use.getUser();
       assert(isa<LLVM::CallOp>(user));
+      called++;
 
-      bool enable = matchPattern(user->getOperand(0), m_One());
+      APInt ckptType;
+      if (!matchPattern(user->getOperand(0), m_ConstantInt(&ckptType))) {
+        user->emitWarning() << "dynamic checkpointing type is not supported";
+        continue;
+      }
+
+      bool enable = ckptType.getSExtValue() >= 1,
+           enableBinomial = ckptType.getSExtValue() == 2, hasPeriod = false;
+
+      APInt checkpointingPeriod;
+      if (user->getNumOperands() >= 2)
+        hasPeriod = matchPattern(user->getOperand(1),
+                                 m_ConstantInt(&checkpointingPeriod));
 
       Operation *loop = user->getParentOp();
       while (loop && !isa<scf::ForOp, scf::WhileOp>(loop)) {
@@ -3415,15 +3485,39 @@ struct ForLoopApplyEnzymeAttributes
       }
 
       if (loop && isa<scf::ForOp, scf::WhileOp>(loop)) {
-        loop->setAttr(isCheckpointingAttr ? "enzyme_enable_checkpointing"
-                                          : "enzyme_enable_mincut",
-                      rewriter.getBoolAttr(enable));
+        if (isMincutAttr) {
+          if (!enable)
+            loop->setAttr("enzyme.disable_mincut", rewriter.getUnitAttr());
+        } else {
+          assert(isCheckpointingAttr);
+          loop->setAttr("enzyme.enable_checkpointing",
+                        rewriter.getBoolAttr(enable));
+
+          if (enableBinomial) {
+            loop->setAttr("enzyme.binomial_checkpointing",
+                          rewriter.getUnitAttr());
+          }
+          if (hasPeriod && !checkpointingPeriod.isAllOnes()) {
+            loop->setAttr("enzyme.checkpoint_period",
+                          rewriter.getIntegerAttr(rewriter.getI64Type(),
+                                                  checkpointingPeriod));
+          }
+        }
       }
 
-      rewriter.eraseOp(user);
+      read.push_back(user);
     }
 
-    rewriter.eraseOp(func);
+    if (read.empty())
+      return failure();
+
+    for (auto *user : read)
+      rewriter.eraseOp(user);
+
+    // A call the attribute could not be read out of is still a call, and what
+    // it names has to stay for it to name anything.
+    if (read.size() == called)
+      rewriter.eraseOp(func);
 
     return success();
   }

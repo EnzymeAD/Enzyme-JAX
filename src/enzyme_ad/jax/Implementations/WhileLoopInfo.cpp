@@ -36,9 +36,9 @@ void WhileLoopInfo::computeConstantValues() {
   constStart = getConstantStartCalculate();
 }
 
-Value WhileLoopInfo::getStep(OpBuilder &builder) {
+Value WhileLoopInfo::getStep(OpBuilder &builder, const IRMapping &mapping) {
   if (step)
-    return step;
+    return mapping.lookupOrDefault(step);
 
   auto Ty =
       RankedTensorType::get({}, builder.getIntegerType(stepInt.getBitWidth()));
@@ -49,22 +49,28 @@ Value WhileLoopInfo::getStep(OpBuilder &builder) {
 
 LogicalResult WhileLoopInfo::computeInfo() {
   auto &condBlk = op.getCond().front();
-  if (condBlk.getOperations().size() != 2)
+  auto condTerm =
+      dyn_cast_or_null<stablehlo::ReturnOp>(condBlk.getTerminator());
+  if (!condTerm || condTerm->getNumOperands() != 1) {
     return failure();
-  auto condTerm = cast<stablehlo::ReturnOp>(condBlk.getTerminator());
+  }
   auto condV = condTerm->getOperand(0);
   auto cond = condV.getDefiningOp<stablehlo::CompareOp>();
-  if (!cond)
+  if (!cond) {
     return failure();
+  }
 
   auto induct = dyn_cast<BlockArgument>(cond.getOperand(0));
-  if (!induct)
+  if (!induct) {
     return failure();
-  if (induct.getOwner() != &condBlk)
+  }
+  if (induct.getOwner() != &condBlk) {
     return failure();
+  }
 
-  if (cond.getComparisonDirection() != stablehlo::ComparisonDirection::LT)
+  if (cond.getComparisonDirection() != stablehlo::ComparisonDirection::LT) {
     return failure();
+  }
 
   start = op->getOperand(induct.getArgNumber());
   limit = cond.getOperand(1);
@@ -110,8 +116,9 @@ LogicalResult WhileLoopInfo::computeInfo() {
 
   // simpler check
   auto inc = incV.getDefiningOp<stablehlo::AddOp>();
-  if (!inc)
+  if (!inc) {
     return failure();
+  }
 
   auto loopBodyBlock = &op.getBody().front();
 
@@ -132,8 +139,9 @@ LogicalResult WhileLoopInfo::computeInfo() {
     foundStep = true;
   }
 
-  if (!foundStep)
+  if (!foundStep) {
     return failure();
+  }
 
   computeConstantValues();
   return success();
@@ -181,7 +189,8 @@ int64_t WhileLoopInfo::getConstantNumIters() {
   return (limit - start + step - 1) / step; // ceil division
 }
 
-Value WhileLoopInfo::getNumIters(mlir::OpBuilder &builder) {
+Value WhileLoopInfo::getNumIters(mlir::OpBuilder &builder,
+                                 const IRMapping &mapping) {
   auto opReg = op->getParentRegion();
   if (!opReg->isAncestor(limit.getParentRegion()) ||
       (step && !opReg->isAncestor(step.getParentRegion()))) {
@@ -196,18 +205,12 @@ Value WhileLoopInfo::getNumIters(mlir::OpBuilder &builder) {
         cast<ElementsAttr>(makeAttr(start.getType(), getConstantNumIters())));
   } else {
     // numIters = (limit - start) / step;
-    Value stepVal;
-    if (step) {
-      stepVal = step;
-    } else {
-      stepVal = stablehlo::ConstantOp::create(
-          builder, op->getLoc(), start.getType(),
-          cast<ElementsAttr>(
-              makeAttr(start.getType(), stepInt.getSExtValue())));
-    }
+    Value stepVal = getStep(builder, mapping);
     numIters = stablehlo::DivOp::create(
         builder, op->getLoc(),
-        stablehlo::SubtractOp::create(builder, op->getLoc(), limit, start),
+        stablehlo::SubtractOp::create(builder, op->getLoc(),
+                                      mapping.lookupOrDefault(limit),
+                                      mapping.lookupOrDefault(start)),
         stepVal);
   }
 
@@ -236,14 +239,16 @@ bool WhileLoopInfo::isStepOne() {
 }
 
 bool WhileLoopInfo::isConstantValue(Value v, llvm::APInt &constVal) {
-  if (matchPattern(v, m_ConstantInt(&constVal)))
+  if (matchPattern(v, m_ConstantInt(&constVal))) {
     return true;
+  }
 
   Value outerValue;
   SmallVector<Operation *> canBeHoisted;
   if (isConstantAcrossIterations(v, outerValue, canBeHoisted, false) &&
-      matchPattern(outerValue, m_ConstantInt(&constVal)))
+      matchPattern(outerValue, m_ConstantInt(&constVal))) {
     return true;
+  }
   return false;
 }
 
@@ -901,7 +906,7 @@ void WhileLoopInfo::propagateBounds(Value v, Bounds curBounds,
 }
 
 std::optional<WhileLoopInfo::Bounds> WhileLoopInfo::getBounds(Value value) {
-  if (boundsMap.contains(value)) {
+  if (boundsMap.count(value)) {
     return boundsMap.lookup(value);
   }
 

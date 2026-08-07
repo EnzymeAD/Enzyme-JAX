@@ -31,17 +31,27 @@ struct GPULaunchRecognitionPass
     : public enzyme::impl::GPULaunchRecognitionBase<GPULaunchRecognitionPass> {
   using GPULaunchRecognitionBase::GPULaunchRecognitionBase;
 
-  void initGPUModule(gpu::GPUModuleOp &gpuModule, LLVM::LLVMFuncOp func) {
-    if (gpuModule)
-      return;
-    auto ctx = getOperation()->getContext();
-    auto moduleBuilder =
-        OpBuilder::atBlockBegin(cast<ModuleOp>(getOperation()).getBody());
-    gpuModule = gpu::GPUModuleOp::create(
-        moduleBuilder, getOperation()->getLoc(), gpuModuleName);
+  // The kernel function is inlined and erased before the launch is lowered, so
+  // the target it was compiled for has to travel on the launch itself.
+  static void copyGPUTargetAttrs(LLVM::LLVMFuncOp from, Operation *to) {
+    if (auto passthrough = from.getPassthrough())
+      to->setAttr("passthrough", *passthrough);
+    if (auto features = from.getTargetFeatures())
+      to->setAttr("target_features", *features);
+    if (auto cpu = from.getTargetCpuAttr())
+      to->setAttr("target_cpu", cpu);
+  }
 
+  // Reads the device architecture off a kernel function.
+  std::pair<std::string, std::string> getGPUTarget(LLVM::LLVMFuncOp func) {
     std::string sm; // NVIDIA Streaming Multiprocessor (sm_80)
-    if (auto attr = dyn_cast_or_null<ArrayAttr>(func.getPassthroughAttr())) {
+    // The importer lifts `target-cpu` out of the function's attribute bag into
+    // a first-class attribute, so that is where the device IR's architecture
+    // actually lands; only fall back to scanning `passthrough`.
+    if (auto cpu = func.getTargetCpuAttr()) {
+      sm = cpu.getValue().str();
+    } else if (auto attr =
+                   dyn_cast_or_null<ArrayAttr>(func.getPassthroughAttr())) {
       for (auto a : attr) {
         if (auto ar = dyn_cast<ArrayAttr>(a)) {
           if (ar.size() != 2)
@@ -61,6 +71,20 @@ struct GPULaunchRecognitionPass
             func.getTargetFeaturesAttr())) {
       feat = attr.getFeaturesString();
     }
+
+    return {sm, feat};
+  }
+
+  void initGPUModule(gpu::GPUModuleOp &gpuModule, LLVM::LLVMFuncOp func) {
+    if (gpuModule)
+      return;
+    auto ctx = getOperation()->getContext();
+    auto moduleBuilder =
+        OpBuilder::atBlockBegin(cast<ModuleOp>(getOperation()).getBody());
+    gpuModule = gpu::GPUModuleOp::create(
+        moduleBuilder, getOperation()->getLoc(), gpuModuleName);
+
+    auto [sm, feat] = getGPUTarget(func);
 
     Attribute target;
     if (backend == "rocm") {
@@ -497,7 +521,7 @@ enum __device_builtin__ cudaMemcpyKind
           }
         }
 
-        gpufunc->setAttr("gpu.kernel", builder.getUnitAttr());
+        gpufunc.setKernelAttr(builder.getUnitAttr());
 
         gpufunc->walk([](LLVM::ReturnOp op) {
           OpBuilder rewriter(op);
@@ -630,6 +654,7 @@ enum __device_builtin__ cudaMemcpyKind
             auto op = mlir::gpu::LaunchOp::create(
                 builder, launch.first->getLoc(), grid[0], grid[1], grid[2],
                 block[0], block[1], block[2], shMemSize, nullptr, ValueRange());
+            copyGPUTargetAttrs(cur, op);
             builder.setInsertionPointToStart(&op.getRegion().front());
             LLVM::CallOp::create(builder, loc, cur, args);
             gpu::TerminatorOp::create(builder, loc);
@@ -652,6 +677,7 @@ enum __device_builtin__ cudaMemcpyKind
                 builder, launch.first->getLoc(), grid[0], grid[1], grid[2],
                 block[0], block[1], block[2], shMemSize, stream.getType(),
                 ValueRange(stream));
+            copyGPUTargetAttrs(cur, op);
             builder.setInsertionPointToStart(&op.getRegion().front());
             LLVM::CallOp::create(builder, loc, cur, args);
             gpu::TerminatorOp::create(builder, loc);
