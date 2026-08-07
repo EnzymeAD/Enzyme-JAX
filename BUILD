@@ -35,7 +35,6 @@ py_package(
 cc_binary(
     name = "enzymexlamlir-opt",
     srcs = [
-        "//src/enzyme_ad/jax:RegistryUtils.cpp",
         "//src/enzyme_ad/jax:enzymexlamlir-opt.cpp",
     ],
     copts = [
@@ -72,10 +71,31 @@ cc_binary(
     ]),
 )
 
+alias(
+    name = "enzymexla-registry",
+    actual = "//src/enzyme_ad/jax:RegistryUtils",
+    visibility = ["//visibility:public"],
+)
+
+cc_binary(
+    name = "enzymexla-lsp-server",
+    srcs = ["//src/enzyme_ad/tools:EnzymeXLALspServerMain.cpp"],
+    copts = [
+        "-Wno-unused-variable",
+        "-Wno-return-type",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/enzyme_ad/jax:RegistryUtils",
+        "@llvm-project//mlir:MlirLspServerLib",
+        "@stablehlo//:interpreter_ops",
+        "@stablehlo//stablehlo/tests:check_ops",
+    ],
+)
+
 cc_library(
     name = "RaiseLib",
     srcs = [
-        "//src/enzyme_ad/jax:RegistryUtils.cpp",
         "//src/enzyme_ad/jax:raise.cpp",
     ],
     hdrs = [

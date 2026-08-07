@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(func.func(canonicalize-loops))" %s | FileCheck %s
+// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(func.func(canonicalize-loops{speculate_partial_if}))" %s | FileCheck %s
 
 // CHECK-NOT: = scf.yield{{.*}}false
 

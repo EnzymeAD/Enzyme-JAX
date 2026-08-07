@@ -1223,6 +1223,7 @@ struct HandleWrapperRootOps : public OpRewritePattern<enzymexla::GPUWrapperOp> {
     rewriter.setInsertionPoint(wrapper);
     auto newWrapper =
         enzymexla::GPUWrapperOp::create(rewriter, loc, wrapper.getOperands());
+    newWrapper->setDiscardableAttrs(wrapper->getDiscardableAttrDictionary());
     IRMapping hoistMapping;
     IRMapping splitMapping;
     IRMapping parallelizedMapping;
@@ -1603,6 +1604,7 @@ struct SplitOffParallel : public OpRewritePattern<enzymexla::GPUWrapperOp> {
     rewriter.setInsertionPoint(wrapper);
     auto newWrapper =
         enzymexla::GPUWrapperOp::create(rewriter, loc, wrapper.getOperands());
+    newWrapper->setDiscardableAttrs(wrapper->getDiscardableAttrDictionary());
     rewriter.setInsertionPointToStart(newWrapper.getBody());
     rewriter.clone(*pop.getOperation());
     rewriter.eraseOp(pop);
@@ -1650,7 +1652,7 @@ struct ParallelToGPULaunch : public OpRewritePattern<enzymexla::GPUWrapperOp> {
     rewriter.setInsertionPoint(wrapper);
     auto errOp = enzymexla::GPUErrorOp::create(rewriter, loc);
 
-    for (auto atname : {"passthrough", "target_features"})
+    for (auto atname : {"passthrough", "target_features", "target_cpu"})
       if (auto attr = wrapper->getAttr(atname)) {
         errOp->setAttr(atname, attr);
       }
@@ -2479,6 +2481,7 @@ struct ConvertParallelToGPU1Pass
         return;
 
       OpBuilder builder(launchOpBody);
+      builder.setInsertionPointToStart(&launchOpBody.front());
       for (Operation *op : toBeSunk) {
         Operation *clonedOp = builder.clone(*op);
         // Only replace uses within the launch op.
@@ -2565,6 +2568,11 @@ gdgo->erase();
               err->getAttr("target_features"))) {
         feat = attr.getFeaturesString();
       }
+
+      if (sm.empty())
+        if (auto arch =
+                dyn_cast_or_null<StringAttr>(err->getAttr("target_cpu")))
+          sm = arch.getValue().str();
 
       err->walk([&](gpu::LaunchFuncOp launch) {
         auto gfunc = dyn_cast_or_null<gpu::GPUFuncOp>(

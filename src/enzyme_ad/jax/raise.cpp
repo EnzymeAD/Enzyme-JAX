@@ -11,16 +11,22 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "src/enzyme_ad/jax/raise.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Pass/PassRegistry.h"
 #include "mlir/Target/LLVMIR/Export.h"
 #include "mlir/Target/LLVMIR/Import.h"
+#include "llvm/Bitcode/BitcodeWriter.h"
 #include "llvm/IR/Instructions.h"
 #include "llvm/IR/LLVMContext.h"
 #include "llvm/IR/Module.h"
+#include "llvm/IR/PassManager.h"
 #include "llvm/IRReader/IRReader.h"
+#include "llvm/Passes/PassBuilder.h"
 #include "llvm/Support/SourceMgr.h"
+#include "llvm/Transforms/Scalar/SimplifyCFG.h"
+#include "llvm/Transforms/Utils/LowerInvoke.h"
 
 #include "src/enzyme_ad/jax/RegistryUtils.h"
 #include "llvm/Support/TargetSelect.h"
@@ -32,7 +38,8 @@
 extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
                                               std::string outfile,
                                               std::string backend,
-                                              std::string library) {
+                                              std::string library,
+                                              MLIRRoundTripOptions *options) {
   llvm::LLVMContext Context;
   Context.setDiscardValueNames(false);
   llvm::SMDiagnostic Err;
@@ -45,6 +52,32 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
     err_stream.flush();
     exit(1);
   }
+  // Raising has no way to read an unwind edge, so a call that may throw stops
+  // it here rather than further along: an invoke left standing is not a module
+  // that gets compiled at all.
+  {
+    llvm::PassBuilder PB;
+    llvm::LoopAnalysisManager LAM;
+    llvm::FunctionAnalysisManager FAM;
+    llvm::CGSCCAnalysisManager CGAM;
+    llvm::ModuleAnalysisManager MAM;
+    PB.registerModuleAnalyses(MAM);
+    PB.registerCGSCCAnalyses(CGAM);
+    PB.registerFunctionAnalyses(FAM);
+    PB.registerLoopAnalyses(LAM);
+    PB.crossRegisterProxies(LAM, FAM, CGAM, MAM);
+
+    llvm::FunctionPassManager FPM;
+    FPM.addPass(llvm::LowerInvokePass());
+    // The landing pads the lowering leaves behind are unreachable, and what
+    // reads the module next has no more use for them than it had for the edge.
+    FPM.addPass(llvm::SimplifyCFGPass());
+
+    llvm::ModulePassManager MPM;
+    MPM.addPass(llvm::createModuleToFunctionPassAdaptor(std::move(FPM)));
+    MPM.run(*llvmModule, MAM);
+  }
+
   llvm::InitializeNativeTarget();
   llvm::InitializeNativeTargetAsmPrinter();
 
@@ -90,7 +123,7 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
   pass_pipeline += backend;
   pass_pipeline += "}";
   pass_pipeline += ","
-      "canonicalize,libdevice-funcs-raise,canonicalize,symbol-dce,";
+      "canonicalize,libdevice-funcs-raise,canonicalize,inline-enzyme-regions,symbol-dce,";
   
   if (backend == "cpu")
     pass_pipeline += "parallel-lower{wrapParallelOps=false},";
@@ -118,34 +151,69 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       if (outfile.size() && getenv("EXPORT_REACTANT")) {
         pass_pipeline += ",print{filename="+outfile+".mlir}";
       }
-      pass_pipeline += ",lower-affine";
+      pass_pipeline += ",lower-aligned-affine-accesses,lower-affine";
       if (getenv("REACTANT_OMP")) {
         pass_pipeline += ",convert-scf-to-openmp,";
       } else {
         pass_pipeline += ",parallel-serialization,";
       }
-      pass_pipeline += "canonicalize,convert-polygeist-to-llvm{backend=";
+      pass_pipeline += "canonicalize,hoist-allocas,convert-polygeist-to-llvm{backend=";
       pass_pipeline += backend;
       pass_pipeline += "}";
   } else {
       if (outfile.size() && getenv("EXPORT_REACTANT")) {
         pass_pipeline += "print{filename="+outfile+".mlir},";
       }
-      pass_pipeline += "symbol-dce,outline-enzyme-regions,enzyme,remove-unnecessary-enzyme-ops,lower-affine";
+      pass_pipeline += "symbol-dce,raise-llvm-ext,outline-enzyme-regions,";
+      if (options->preADLowerAffine)
+        pass_pipeline += "lower-aligned-affine-accesses,lower-affine,";
+
+      // A checkpointed loop must not capture both a value and a view of it:
+      // it would snapshot the same buffer twice. Has to precede `enzyme`,
+      // which is what reads the captures.
+      pass_pipeline += "sink-checkpoint-views,";
+
+      pass_pipeline += "enzyme{";
+      if (options->dataflow)
+        pass_pipeline += "dataflow ";
+      if (options->markReadonly)
+        pass_pipeline += "markReadonly";
+      pass_pipeline += "},"
+        "lower-llvm-ext,canonicalize,";
+      if (options->splitMultiResults)
+        pass_pipeline += "split-multi-results,";
+      pass_pipeline += "remove-unnecessary-enzyme-ops,"
+        // binomial checkpointing leaves enzyme.binomial_progress behind; it has
+        // no lowering of its own further down, so expand it here.
+        "flatten-enzyme-caches,lower-enzyme-binomial-progress,";
+      if (options->hoistLoopAllocations)
+        pass_pipeline += "hoist-loop-allocations,";
+      pass_pipeline +=
+        "enzyme-simplify-math,"
+        "inline{default-pipeline=canonicalize max-iterations=4},"
+        "polygeist-mem2reg,canonicalize,symbol-dce,"
+        // canonicalize here folds away memref.subview ops before gpu-kernel-outlining
+        "canonicalize,cse";
+      if (options->removeAtomics)
+        pass_pipeline += ",affine-cfg,remove-atomics";
+      if (options->sortBlockMemory)
+        pass_pipeline += ",sort-block-memory";
+      pass_pipeline += ",lower-aligned-affine-accesses,lower-affine";
       if (backend == "rocm")
         pass_pipeline += ",convert-cudart-to-hiprt";
       if (backend != "cpu") {
-        pass_pipeline += ",convert-parallel-to-gpu1,gpu-kernel-outlining,canonicalize,convert-parallel-to-gpu2{backend=";
+        pass_pipeline += ",convert-parallel-to-gpu1,symbol-dce,gpu-kernel-outlining,canonicalize,symbol-dce,";
+        pass_pipeline += "convert-parallel-to-gpu2{backend=";
         pass_pipeline += backend;
         pass_pipeline += "}";
-        pass_pipeline += ",lower-affine";
+        pass_pipeline += ",lower-aligned-affine-accesses,lower-affine";
       }
       if (getenv("REACTANT_OMP")) {
         pass_pipeline += ",convert-scf-to-openmp,";
       } else {
 	      pass_pipeline += ",parallel-serialization,";
       }
-      pass_pipeline += "canonicalize,convert-polygeist-to-llvm{backend=";
+      pass_pipeline += "canonicalize,hoist-allocas,convert-polygeist-to-llvm{backend=";
       pass_pipeline += backend;
       pass_pipeline += "},strip-"
       "gpu-info,gpu-"
@@ -179,6 +247,8 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
   DiagnosticEngine::HandlerID id =
       engine.registerHandler([&](Diagnostic &diag) -> LogicalResult {
         error_stream << diag << "\n";
+        for (auto &note : diag.getNotes())
+          error_stream << "  note: " << note << "\n";
         return failure();
       });
   if (!mlir::succeeded(pm.run(cast<mlir::ModuleOp>(*mod)))) {
@@ -230,18 +300,28 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
           }
           auto oldG = outModule->getGlobalVariable(oldName, true);
           assert(oldG);
+          if (oldG->hasSection())
+            glob->setSection(oldG->getSection());
+          glob->setAlignment(oldG->getAlign());
           oldG->replaceAllUsesWith(glob);
           oldG->eraseFromParent();
         }
       }
     }
   }
+  // Hand the module back as bitcode. The module crosses this boundary as bytes
+  // either way, and bitcode is the cheaper and more faithful spelling of it: on
+  // MFEM's dFEM tests it is a fifth the size of the textual form and parses in
+  // half the time, and it does not depend on a printer and a parser agreeing
+  // about syntax. The reader is llvm::parseIR, which sniffs the bitcode magic
+  // and dispatches, so it takes either and no version of it has to be taught
+  // this.
   std::string res;
   llvm::raw_string_ostream ss(res);
-  ss << *outModule;
+  llvm::WriteBitcodeToFile(*outModule, ss);
 
   if (getenv("DEBUG_REACTANT")) {
-    llvm::errs() << " final llvm:" << res << "\n";
+    llvm::errs() << " final llvm:" << *outModule << "\n";
   }
 
   return res;

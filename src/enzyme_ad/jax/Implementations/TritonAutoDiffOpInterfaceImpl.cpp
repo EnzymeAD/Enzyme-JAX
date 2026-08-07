@@ -11,6 +11,12 @@
 //
 //===----------------------------------------------------------------------===//
 
+#ifndef ENZYME_JAX_ENABLE_TRITON
+#define ENZYME_JAX_ENABLE_TRITON 1
+#endif
+
+#if ENZYME_JAX_ENABLE_TRITON
+
 #include "Enzyme/MLIR/Implementations/CoreDialectsAutoDiffImplementations.h"
 #include "Enzyme/MLIR/Interfaces/AutoDiffOpInterface.h"
 #include "Enzyme/MLIR/Interfaces/GradientUtils.h"
@@ -97,3 +103,15 @@ void mlir::enzyme::registerTritonDialectAutoDiffInterface(
     triton::PointerType::attachInterface<TritonPointerTypeInterface>(*context);
   });
 }
+
+#else
+
+#include "mlir/IR/DialectRegistry.h"
+
+namespace mlir {
+namespace enzyme {
+void registerTritonDialectAutoDiffInterface(DialectRegistry &registry) {}
+} // namespace enzyme
+} // namespace mlir
+
+#endif

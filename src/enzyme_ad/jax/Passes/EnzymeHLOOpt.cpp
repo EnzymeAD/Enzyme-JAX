@@ -6426,29 +6426,60 @@ struct LGammaConstProp final
 };
 
 struct BinomialProgressConstProp final
-    : CheckedOpRewritePattern<enzymexla::BinomialProgressOp,
+    : CheckedOpRewritePattern<enzyme::BinomialProgressOp,
                               BinomialProgressConstProp> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
+  // The Revolve advance *distance*: with beta(s, t) = C(s + t, t) and t minimal
+  // such that beta(s, t) >= n, every advance in
+  // [n - beta(s-1, t), beta(s, t-1)] attains that optimal t. Clamp that window
+  // to [1, n-1] and take its midpoint. Must stay in sync with
+  // enzyme/Enzyme/MLIR/Dialect/Ops.cpp's binomialProgress and with
+  // LowerBinomialProgressOpToStableHLO.
+  //
+  // With a single checkpoint left there is nothing better than replaying the
+  // whole remaining stretch from it, so advance all of it. Together with every
+  // other advance landing in [1, n-1], that is what makes the per-slot advances
+  // sum to exactly `n` across `budget` slots -- which is what the callers'
+  // outer loop relies on to reach the end of the primal.
   static int64_t binomialProgress(int64_t n, int64_t s) {
-    assert(s > 0 && "no checkpoints available");
-    if (s == 1 || n == 1)
+    if (n <= 0)
+      return 0;
+    if (n == 1)
       return 1;
+    if (s <= 1)
+      return n;
 
-    int64_t j = 1;
-    int64_t binom = s; // C(s, s-1) = s
-
-    while (binom < n) {
-      ++j;
-      binom = binom * (j + s - 1) / j;
+    int64_t t = 0, beta = 1; // beta == C(s + t, t)
+    while (beta < n) {
+      ++t;
+      beta = beta * (s + t) / t; // C(s+t,t) from C(s+t-1,t-1); exact
     }
 
-    return binom == n ? j : j - 1;
+    // beta(s-1, t) == beta * s / (s + t) and beta(s, t-1) == beta * t / (s +
+    // t), both exact in integers.
+    int64_t lo = std::max<int64_t>(n - beta * s / (s + t), 1);
+    int64_t hi = std::min<int64_t>(beta * t / (s + t), n - 1);
+    int64_t m = (lo + hi) / 2; // lo <= hi, so this is already in [1, n-1]
+
+    // Leave at least one step for each of the s-1 checkpoints still to be
+    // placed. Without this the advances can exhaust the interval before the
+    // slots run out, and a caller that walks one slot per iteration then
+    // records slots at a step past the end -- holding the final state rather
+    // than a checkpoint.
+    m = std::min<int64_t>(m, n - (s - 1));
+    return std::max<int64_t>(m, 1);
   }
 
-  LogicalResult matchAndRewriteImpl(enzymexla::BinomialProgressOp op,
+  LogicalResult matchAndRewriteImpl(enzyme::BinomialProgressOp op,
                                     PatternRewriter &rewriter) const {
     APInt numSteps, budget;
+
+    // The op is also used on plain scalars by the scf path, where a
+    // stablehlo.constant replacement would be ill-typed; Enzyme's own folder
+    // handles those.
+    if (!isa<TensorType>(op.getType()))
+      return failure();
 
     if (!matchPattern(op.getNumSteps(), m_ConstantInt(&numSteps)) ||
         !matchPattern(op.getBudget(), m_ConstantInt(&budget)))
@@ -6461,9 +6492,7 @@ struct BinomialProgressConstProp final
         binomialProgress(numSteps.getSExtValue(), budget.getSExtValue());
 
     rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
-        op,
-        DenseElementsAttr::get(op.getResult().getType(),
-                               makeAttr(op.getResult().getType(), progress)));
+        op, cast<ElementsAttr>(makeAttr(op.getResult().getType(), progress)));
 
     return success();
   }
@@ -8150,23 +8179,23 @@ struct NoNanZeroBasePowSimplify final
       // 0 ^ x => x == 0 ? 1 : (x > 0 ? 0 : Inf)
       auto zero = stablehlo::ConstantOp::create(
           rewriter, op.getLoc(), rewriter.getZeroAttr(op.getType()));
-      auto nonZeroCase = stablehlo::SelectOp::create(
-          rewriter, op.getLoc(),
+      auto rhsPositive =
           stablehlo::CompareOp::create(rewriter, op.getLoc(), op.getRhs(), zero,
-                                       stablehlo::ComparisonDirection::GT),
-          zero,
-          stablehlo::ConstantOp::create(
-              rewriter, op.getLoc(), op.getType(),
-              cast<ElementsAttr>(makeAttr(
-                  op.getType(), std::numeric_limits<float>::infinity()))));
-      rewriter.replaceOpWithNewOp<stablehlo::SelectOp>(
-          op,
+                                       stablehlo::ComparisonDirection::GT);
+      auto inf = stablehlo::ConstantOp::create(
+          rewriter, op.getLoc(), op.getType(),
+          cast<ElementsAttr>(
+              makeAttr(op.getType(), std::numeric_limits<float>::infinity())));
+      auto nonZeroCase = stablehlo::SelectOp::create(rewriter, op.getLoc(),
+                                                     rhsPositive, zero, inf);
+      auto rhsIsZero =
           stablehlo::CompareOp::create(rewriter, op.getLoc(), op.getRhs(), zero,
-                                       stablehlo::ComparisonDirection::EQ),
-          stablehlo::ConstantOp::create(
-              rewriter, op.getLoc(), op.getType(),
-              cast<ElementsAttr>(makeAttr(op.getType(), 1))),
-          nonZeroCase);
+                                       stablehlo::ComparisonDirection::EQ);
+      auto one = stablehlo::ConstantOp::create(
+          rewriter, op.getLoc(), op.getType(),
+          cast<ElementsAttr>(makeAttr(op.getType(), 1)));
+      rewriter.replaceOpWithNewOp<stablehlo::SelectOp>(op, rhsIsZero, one,
+                                                       nonZeroCase);
       return success();
     }
 
@@ -13461,14 +13490,14 @@ struct DivideDivideSimplify
           return failure();
 
         // Case III.
-        rewriter.replaceOpWithNewOp<stablehlo::DivOp>(
-            op,
-            stablehlo::MulOp::create(rewriter, op.getLoc(),
-                                     lhsDivOp->getOperand(0),
-                                     rhsDivOp->getOperand(1)),
-            stablehlo::MulOp::create(rewriter, op.getLoc(),
-                                     lhsDivOp->getOperand(1),
-                                     rhsDivOp->getOperand(0)));
+        auto numerator = stablehlo::MulOp::create(rewriter, op.getLoc(),
+                                                  lhsDivOp->getOperand(0),
+                                                  rhsDivOp->getOperand(1));
+        auto denominator = stablehlo::MulOp::create(rewriter, op.getLoc(),
+                                                    lhsDivOp->getOperand(1),
+                                                    rhsDivOp->getOperand(0));
+        rewriter.replaceOpWithNewOp<stablehlo::DivOp>(op, numerator,
+                                                      denominator);
         return success();
       } else {
         // Case II.
@@ -16084,23 +16113,34 @@ struct WhileOpInductionReplacement
       Value yieldedValue = returnOp.getOperand(i);
       Value result = whileOp.getResult(i);
 
-      // Look for a simple addition pattern: either iter_arg + step or step +
-      // iter_arg
-      auto addOp = yieldedValue.getDefiningOp<stablehlo::AddOp>();
-      if (!addOp)
+      // Look for a simple step pattern: iter_arg + step, step + iter_arg, or
+      // iter_arg - step. A counter that walks backwards is exactly as redundant
+      // as one that walks forwards; reverse-mode AD emits the backwards form,
+      // indexing rows from the end while the loop counter runs from the start.
+      Operation *stepOp = yieldedValue.getDefiningOp();
+      if (!isa_and_nonnull<stablehlo::AddOp, stablehlo::SubtractOp>(stepOp))
         continue;
 
-      if (!addOp.getType().getElementType().isInteger())
+      if (!cast<RankedTensorType>(stepOp->getResult(0).getType())
+               .getElementType()
+               .isInteger())
         continue;
 
       // Check which operand is the iteration argument and which is the step
       Value stepValue;
-      if (addOp.getLhs() == iterArg) {
+      bool negateStep = false;
+      if (isa<stablehlo::SubtractOp>(stepOp)) {
+        // Pattern: iter_arg - step. (step - iter_arg is not a counter.)
+        if (stepOp->getOperand(0) != iterArg)
+          continue;
+        stepValue = stepOp->getOperand(1);
+        negateStep = true;
+      } else if (stepOp->getOperand(0) == iterArg) {
         // Pattern: iter_arg + step
-        stepValue = addOp.getRhs();
-      } else if (addOp.getRhs() == iterArg) {
+        stepValue = stepOp->getOperand(1);
+      } else if (stepOp->getOperand(1) == iterArg) {
         // Pattern: step + iter_arg
-        stepValue = addOp.getLhs();
+        stepValue = stepOp->getOperand(0);
       } else {
         // Neither operand is the iteration argument
         continue;
@@ -16110,6 +16150,24 @@ struct WhileOpInductionReplacement
       auto constOp = stepValue.getDefiningOp<stablehlo::ConstantOp>();
       if (!constOp)
         continue;
+
+      // Fold the sign into the constant rather than emitting a negate, so the
+      // rewritten index stays a plain affine expression of the counter.
+      if (negateStep) {
+        DenseIntElementsAttr stepAttr;
+        if (!matchPattern(constOp.getResult(), m_Constant(&stepAttr)))
+          continue;
+        SmallVector<APInt> negated;
+        for (auto v : stepAttr.getValues<APInt>())
+          negated.push_back(-v);
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPoint(whileOp);
+        constOp = stablehlo::ConstantOp::create(
+            rewriter, constOp.getLoc(),
+            DenseIntElementsAttr::get(cast<ShapedType>(constOp.getType()),
+                                      negated));
+        stepValue = constOp.getResult();
+      }
 
       // Similarly replace uses of the result outside the loop
       // with a calculation based on the final counter value
@@ -20522,6 +20580,116 @@ struct WhileWrap
     // Finally, replace all uses of the old while op with the new one
     rewriter.replaceOp(whileOp, results);
 
+    return success();
+  }
+};
+
+// A while-carried accumulator of the form
+//
+//   init      = <zero splat>
+//   yield[k]  = add(bodyArg[k], dynamic_update_slice(<zero>, row, i))
+//
+// only ever adds into rows that are still zero, provided the scatter index i is
+// distinct on every iteration and never clamped. The add is then a no-op
+// everywhere except the written row, where it adds to zero, so the whole thing
+// collapses to a read-modify-write of that row:
+//
+//   yield[k] = dynamic_update_slice(bodyArg[k], row, i)
+//
+// That turns a full-tensor materialise-and-add -- roughly 4 x S0 x M of traffic
+// per iteration -- into a single row write, which XLA can perform in place
+// since the accumulator is a loop carry with no other reader.
+//
+// This needs only injectivity, not full coverage of [0, S0): rows that are
+// never written keep the zero they started with under either form.
+struct WhileScatterAccumulatorNoAdd final
+    : CheckedOpRewritePattern<stablehlo::AddOp, WhileScatterAccumulatorNoAdd> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::AddOp addOp,
+                                    PatternRewriter &rewriter) const {
+    auto whileOp = dyn_cast<stablehlo::WhileOp>(addOp->getParentOp());
+    if (!whileOp || addOp->getBlock() != &whileOp.getBody().front())
+      return failure();
+
+    // The accumulator must be yielded straight back, and read by nothing else.
+    if (!addOp->hasOneUse())
+      return failure();
+    auto yieldOp = dyn_cast<stablehlo::ReturnOp>(*addOp->getUsers().begin());
+    if (!yieldOp)
+      return failure();
+
+    BlockArgument bodyArg;
+    Value dusSide;
+    for (auto [a, b] : {std::make_pair(addOp.getLhs(), addOp.getRhs()),
+                        std::make_pair(addOp.getRhs(), addOp.getLhs())}) {
+      if (auto arg = dyn_cast<BlockArgument>(a)) {
+        if (arg.getOwner() == &whileOp.getBody().front()) {
+          bodyArg = arg;
+          dusSide = b;
+          break;
+        }
+      }
+    }
+    if (!bodyArg || !bodyArg.hasOneUse())
+      return failure();
+
+    unsigned idx = bodyArg.getArgNumber();
+    if (yieldOp.getOperand(idx) != addOp.getResult())
+      return failure();
+    if (!enzyme::isZero(whileOp.getOperands()[idx]))
+      return failure();
+
+    auto dus = dusSide.getDefiningOp<stablehlo::DynamicUpdateSliceOp>();
+    if (!dus || !dus->hasOneUse() || !enzyme::isZero(dus.getOperand()))
+      return failure();
+
+    auto accTy = cast<RankedTensorType>(dus.getType());
+    auto updateTy = cast<RankedTensorType>(dus.getUpdate().getType());
+    if (updateTy.getRank() != accTy.getRank())
+      return failure();
+
+    // Exactly one dimension may be scattered; the rest must be written whole,
+    // at offset zero, so that "the written row" is well defined.
+    int64_t scatterDim = -1;
+    auto starts = dus.getStartIndices();
+    for (int64_t d = 0; d < accTy.getRank(); ++d) {
+      if (updateTy.getDimSize(d) == accTy.getDimSize(d)) {
+        if (!enzyme::isZero(starts[d]))
+          return failure();
+        continue;
+      }
+      if (updateTy.getDimSize(d) != 1 || scatterDim != -1)
+        return failure();
+      scatterDim = d;
+    }
+    if (scatterDim == -1)
+      return failure();
+
+    enzyme::WhileLoopInfo info(whileOp);
+    if (failed(info.computeInfo()) || !info.isValid() || !info.isConstant())
+      return failure();
+    info.propagateAffineIndexInfo();
+    info.propagateBounds();
+
+    Value index = starts[scatterDim];
+
+    // Distinct on every iteration: the index must actually vary with the
+    // induction variable.
+    auto affine = info.getAffineIndexInfo();
+    auto affineIt = affine.find(index);
+    if (affineIt == affine.end() || affineIt->second.scale.isZero())
+      return failure();
+
+    // Never clamped: dynamic_update_slice would otherwise fold out-of-range
+    // iterations onto the boundary row and genuinely accumulate there.
+    auto bounds = info.getBounds(index);
+    if (!bounds || bounds->min.isNegative() ||
+        bounds->max.getSExtValue() > accTy.getDimSize(scatterDim) - 1)
+      return failure();
+
+    rewriter.replaceOpWithNewOp<stablehlo::DynamicUpdateSliceOp>(
+        addOp, bodyArg, dus.getUpdate(), starts);
     return success();
   }
 };
@@ -27748,6 +27916,23 @@ struct LogSimplify final
   using CheckedOpRewritePattern<stablehlo::LogOp,
                                 LogSimplify>::CheckedOpRewritePattern;
 
+  // True iff `value` is a finite float constant whose every element is
+  // non-negative (and, unless allowZero, strictly positive). Excludes NaN,
+  // negatives, and infinities, which would let the log-splits below narrow the
+  // domain. See #2570.
+  static bool isPositiveFiniteConstant(Value value, bool allowZero) {
+    DenseElementsAttr attr;
+    if (!matchPattern(value, m_Constant(&attr)) ||
+        !isa<FloatType>(attr.getElementType()))
+      return false;
+
+    return llvm::all_of(attr.getValues<APFloat>(),
+                        [allowZero](const APFloat &element) {
+                          return element.isFinite() && !element.isNegative() &&
+                                 (allowZero || !element.isZero());
+                        });
+  }
+
   LogicalResult matchAndRewriteImpl(stablehlo::LogOp op,
                                     PatternRewriter &rewriter) const {
     { // log(exp(x)) -> x
@@ -27758,38 +27943,36 @@ struct LogSimplify final
       }
     }
 
-    { // log(pow(x, y)) -> y * log(x)
-      auto defOp = op.getOperand().getDefiningOp<stablehlo::PowOp>();
-      if (defOp) {
-        rewriter.replaceOpWithNewOp<stablehlo::MulOp>(
-            op, defOp.getRhs(),
-            stablehlo::LogOp::create(rewriter, op.getLoc(), defOp.getLhs()));
-        return success();
-      }
-    }
-
     {
       auto defOp = op.getOperand().getDefiningOp<stablehlo::MulOp>();
       if (defOp) {
         auto lhs = defOp.getLhs();
         auto rhs = defOp.getRhs();
-        if (lhs == rhs) { // log(mul(a, a)) -> 2 * log(a)
-          rewriter.replaceOpWithNewOp<stablehlo::MulOp>(
-              op,
-              stablehlo::ConstantOp::create(
-                  rewriter, op.getLoc(), lhs.getType(),
-                  cast<ElementsAttr>(makeAttr(lhs.getType(), 2))),
-              stablehlo::LogOp::create(rewriter, op.getLoc(), lhs));
+        // log(mul(a, a)) -> 2 * log(a). Only when a >= 0: for a < 0, 2*log(a)
+        // is NaN while log(a*a) is finite. Gating on the analysis avoids an abs
+        // (possibly slower than the mul). See #2570.
+        if (lhs == rhs && guaranteedNonNegativeResult(lhs, rewriter)) {
+          auto two = stablehlo::ConstantOp::create(
+              rewriter, op.getLoc(), lhs.getType(),
+              cast<ElementsAttr>(makeAttr(lhs.getType(), 2)));
+          auto logLhs = stablehlo::LogOp::create(rewriter, op.getLoc(), lhs);
+          rewriter.replaceOpWithNewOp<stablehlo::MulOp>(op, two, logLhs);
           return success();
         }
 
         if (anyOperandIsConstant(defOp) &&
             !allOperandsAreConstant(defOp)) { // log(mul(a, b)) -> log(a) +
                                               // log(b) if a or b is constant
-          rewriter.replaceOpWithNewOp<stablehlo::AddOp>(
-              op, stablehlo::LogOp::create(rewriter, op.getLoc(), lhs),
-              stablehlo::LogOp::create(rewriter, op.getLoc(), rhs));
-          return success();
+          // Split only for a strictly positive constant; negative/zero narrows
+          // the domain, and the split isn't bit-exact under FP rounding. See
+          // #2570.
+          Value cst = matchPattern(lhs, m_Constant()) ? lhs : rhs;
+          if (isPositiveFiniteConstant(cst, /*allowZero=*/false)) {
+            auto logLhs = stablehlo::LogOp::create(rewriter, op.getLoc(), lhs);
+            auto logRhs = stablehlo::LogOp::create(rewriter, op.getLoc(), rhs);
+            rewriter.replaceOpWithNewOp<stablehlo::AddOp>(op, logLhs, logRhs);
+            return success();
+          }
         }
       }
     }
@@ -27800,14 +27983,13 @@ struct LogSimplify final
         auto lhs = defOp.getLhs();
         auto rhs = defOp.getRhs();
         if (lhs == rhs) { // log(add(a, a)) -> log(2) + log(a)
-          rewriter.replaceOpWithNewOp<stablehlo::AddOp>(
-              op,
-              stablehlo::LogOp::create(
-                  rewriter, op.getLoc(),
-                  stablehlo::ConstantOp::create(
-                      rewriter, op.getLoc(), lhs.getType(),
-                      cast<ElementsAttr>(makeAttr(lhs.getType(), 2)))),
-              stablehlo::LogOp::create(rewriter, op.getLoc(), lhs));
+          auto logTwo = stablehlo::LogOp::create(
+              rewriter, op.getLoc(),
+              stablehlo::ConstantOp::create(
+                  rewriter, op.getLoc(), lhs.getType(),
+                  cast<ElementsAttr>(makeAttr(lhs.getType(), 2))));
+          auto logLhs = stablehlo::LogOp::create(rewriter, op.getLoc(), lhs);
+          rewriter.replaceOpWithNewOp<stablehlo::AddOp>(op, logTwo, logLhs);
           return success();
         }
 
@@ -27839,10 +28021,18 @@ struct LogSimplify final
         if (anyOperandIsConstant(defOp) &&
             !allOperandsAreConstant(defOp)) { // log(div(a, b)) -> log(a) -
                                               // log(b) if a or b is constant
-          rewriter.replaceOpWithNewOp<stablehlo::SubtractOp>(
-              op, stablehlo::LogOp::create(rewriter, op.getLoc(), lhs),
-              stablehlo::LogOp::create(rewriter, op.getLoc(), rhs));
-          return success();
+          // Constant numerator must be strictly positive: a zero numerator
+          // turns a finite log(-0) into NaN after splitting. A zero denominator
+          // is safe, so it only needs to be non-negative. See #2570.
+          bool constantIsLhs = matchPattern(lhs, m_Constant());
+          Value cst = constantIsLhs ? lhs : rhs;
+          if (isPositiveFiniteConstant(cst, /*allowZero=*/!constantIsLhs)) {
+            auto logLhs = stablehlo::LogOp::create(rewriter, op.getLoc(), lhs);
+            auto logRhs = stablehlo::LogOp::create(rewriter, op.getLoc(), rhs);
+            rewriter.replaceOpWithNewOp<stablehlo::SubtractOp>(op, logLhs,
+                                                               logRhs);
+            return success();
+          }
         }
       }
     }
@@ -27851,12 +28041,12 @@ struct LogSimplify final
       auto defOp = op.getOperand().getDefiningOp<stablehlo::SqrtOp>();
       if (defOp &&
           isOnlyUsedInOperation(defOp, op)) { // log(sqrt(x)) -> log(x) / 2
-        rewriter.replaceOpWithNewOp<stablehlo::DivOp>(
-            op,
-            stablehlo::LogOp::create(rewriter, op.getLoc(), defOp.getOperand()),
-            stablehlo::ConstantOp::create(
-                rewriter, op.getLoc(), defOp.getType(),
-                cast<ElementsAttr>(makeAttr(defOp.getType(), 2))));
+        auto logOperand =
+            stablehlo::LogOp::create(rewriter, op.getLoc(), defOp.getOperand());
+        auto two = stablehlo::ConstantOp::create(
+            rewriter, op.getLoc(), defOp.getType(),
+            cast<ElementsAttr>(makeAttr(defOp.getType(), 2)));
+        rewriter.replaceOpWithNewOp<stablehlo::DivOp>(op, logOperand, two);
         return success();
       }
     }
@@ -27865,12 +28055,12 @@ struct LogSimplify final
       auto defOp = op.getOperand().getDefiningOp<stablehlo::CbrtOp>();
       if (defOp &&
           isOnlyUsedInOperation(defOp, op)) { // log(cbrt(x)) -> log(x) / 3
-        rewriter.replaceOpWithNewOp<stablehlo::DivOp>(
-            op,
-            stablehlo::LogOp::create(rewriter, op.getLoc(), defOp.getOperand()),
-            stablehlo::ConstantOp::create(
-                rewriter, op.getLoc(), defOp.getType(),
-                cast<ElementsAttr>(makeAttr(defOp.getType(), 3))));
+        auto logOperand =
+            stablehlo::LogOp::create(rewriter, op.getLoc(), defOp.getOperand());
+        auto three = stablehlo::ConstantOp::create(
+            rewriter, op.getLoc(), defOp.getType(),
+            cast<ElementsAttr>(makeAttr(defOp.getType(), 3)));
+        rewriter.replaceOpWithNewOp<stablehlo::DivOp>(op, logOperand, three);
         return success();
       }
     }
@@ -27879,12 +28069,12 @@ struct LogSimplify final
       auto defOp = op.getOperand().getDefiningOp<stablehlo::RsqrtOp>();
       if (defOp &&
           isOnlyUsedInOperation(defOp, op)) { // log(rsqrt(x)) -> -log(x) / 2
-        rewriter.replaceOpWithNewOp<stablehlo::DivOp>(
-            op,
-            stablehlo::LogOp::create(rewriter, op.getLoc(), defOp.getOperand()),
-            stablehlo::ConstantOp::create(
-                rewriter, op.getLoc(), defOp.getType(),
-                cast<ElementsAttr>(makeAttr(defOp.getType(), -2))));
+        auto logOperand =
+            stablehlo::LogOp::create(rewriter, op.getLoc(), defOp.getOperand());
+        auto negTwo = stablehlo::ConstantOp::create(
+            rewriter, op.getLoc(), defOp.getType(),
+            cast<ElementsAttr>(makeAttr(defOp.getType(), -2)));
+        rewriter.replaceOpWithNewOp<stablehlo::DivOp>(op, logOperand, negTwo);
         return success();
       }
     }
@@ -30107,6 +30297,9 @@ private:
 
   std::tuple<bool, SliceInfo>
   matchReduceSlice(stablehlo::ReduceOp reduceOp) const {
+    if (reduceOp.getDimensions().size() == 0)
+      return {false, SliceInfo()};
+
     if (reduceOp.getInputs().size() != 1 ||
         reduceOp.getDimensions().size() != 1 ||
         !((Child *)this)->isCompatibleReduction(reduceOp)) {
@@ -30130,7 +30323,7 @@ private:
   matchReshapeReduceSlice(stablehlo::ReshapeOp reshapeOp) const {
     auto reduce =
         reshapeOp.getOperand().template getDefiningOp<stablehlo::ReduceOp>();
-    if (!reduce) {
+    if (!reduce || reduce.getDimensions().empty()) {
       return {false, SliceInfo()};
     }
 
@@ -30445,15 +30638,14 @@ struct DUSToDynamicPad
     for (auto [i, index] : llvm::enumerate(indices)) {
       auto cType = RankedTensorType::get(
           {}, cast<RankedTensorType>(index.getType()).getElementType());
+      auto lowerBound = stablehlo::ConstantOp::create(
+          rewriter, op.getLoc(), cType, cast<ElementsAttr>(makeAttr(cType, 0)));
+      auto upperBound = stablehlo::ConstantOp::create(
+          rewriter, op.getLoc(), cType,
+          cast<ElementsAttr>(
+              makeAttr(cType, operandShape[i] - updateShape[i])));
       auto clampedIndex = stablehlo::ClampOp::create(
-          rewriter, op.getLoc(),
-          stablehlo::ConstantOp::create(rewriter, op.getLoc(), cType,
-                                        cast<ElementsAttr>(makeAttr(cType, 0))),
-          index,
-          stablehlo::ConstantOp::create(
-              rewriter, op.getLoc(), cType,
-              cast<ElementsAttr>(
-                  makeAttr(cType, operandShape[i] - updateShape[i]))));
+          rewriter, op.getLoc(), lowerBound, index, upperBound);
 
       auto reshapedIndex = stablehlo::ReshapeOpCreate(
           rewriter, op.getLoc(), clampedIndex, ArrayRef<int64_t>{1});
@@ -31163,8 +31355,9 @@ struct BinaryNegatedOperandsSimplify
     if (lhsInfo.kind == NegKind::SUB && rhsInfo.kind == NegKind::SUB)
       return failure();
 
-    rewriter.replaceOpWithNewOp<OpTy>(op, negateOperand(lhsInfo, rewriter),
-                                      negateOperand(rhsInfo, rewriter));
+    Value negatedLhs = negateOperand(lhsInfo, rewriter);
+    Value negatedRhs = negateOperand(rhsInfo, rewriter);
+    rewriter.replaceOpWithNewOp<OpTy>(op, negatedLhs, negatedRhs);
     return success();
   }
 
@@ -31478,17 +31671,18 @@ struct DotGeneralToSyrk
         cast<RankedTensorType>(syrkInput.getType()).getElementType();
     auto alphaType = RankedTensorType::get({}, elemType);
 
+    auto cMatrix = stablehlo::ConstantOp::create(
+        rewriter, op.getLoc(), op.getType(),
+        cast<ElementsAttr>(makeAttr(op.getType(), 0)));
+    auto alpha = stablehlo::ConstantOp::create(
+        rewriter, op.getLoc(), alphaType,
+        cast<ElementsAttr>(makeAttr(alphaType, 1)));
+    auto beta = stablehlo::ConstantOp::create(
+        rewriter, op.getLoc(), alphaType,
+        cast<ElementsAttr>(makeAttr(alphaType, 0)));
     auto syrkOp = enzymexla::SyrkOp::create(
-        rewriter, op.getLoc(), op.getResult().getType(), syrkInput,
-        stablehlo::ConstantOp::create(
-            rewriter, op.getLoc(), op.getType(),
-            cast<ElementsAttr>(makeAttr(op.getType(), 0))),
-        stablehlo::ConstantOp::create(
-            rewriter, op.getLoc(), alphaType,
-            cast<ElementsAttr>(makeAttr(alphaType, 1))),
-        stablehlo::ConstantOp::create(
-            rewriter, op.getLoc(), alphaType,
-            cast<ElementsAttr>(makeAttr(alphaType, 0))),
+        rewriter, op.getLoc(), op.getResult().getType(), syrkInput, cMatrix,
+        alpha, beta,
         enzymexla::LapackUploAttr::get(op.getContext(),
                                        enzymexla::LapackUplo::F),
         enzymexla::LapackUploAttr::get(op.getContext(),
@@ -31565,19 +31759,20 @@ struct DotGeneralToSymm
     auto elemType = cast<RankedTensorType>(lhs.getType()).getElementType();
     auto alphaType = RankedTensorType::get({}, elemType);
 
+    auto cMatrix = stablehlo::ConstantOp::create(
+        rewriter, op.getLoc(), op.getType(),
+        cast<ElementsAttr>(makeAttr(op.getType(), 0)));
+    auto alpha = stablehlo::ConstantOp::create(
+        rewriter, op.getLoc(), alphaType,
+        cast<ElementsAttr>(makeAttr(alphaType, 1)));
+    auto beta = stablehlo::ConstantOp::create(
+        rewriter, op.getLoc(), alphaType,
+        cast<ElementsAttr>(makeAttr(alphaType, 0)));
     auto symmOp = enzymexla::SymmOp::create(
         rewriter, op.getLoc(), op.getResult().getType(),
         symmMatrix, // A (symmetric)
         genMatrix,  // B (general)
-        stablehlo::ConstantOp::create(
-            rewriter, op.getLoc(), op.getType(),
-            cast<ElementsAttr>(makeAttr(op.getType(), 0))), // C
-        stablehlo::ConstantOp::create(
-            rewriter, op.getLoc(), alphaType,
-            cast<ElementsAttr>(makeAttr(alphaType, 1))), // alpha
-        stablehlo::ConstantOp::create(
-            rewriter, op.getLoc(), alphaType,
-            cast<ElementsAttr>(makeAttr(alphaType, 0))), // beta
+        cMatrix, alpha, beta,
         enzymexla::LapackSideAttr::get(op.getContext(), side),
         enzymexla::LapackUploAttr::get(op.getContext(),
                                        enzymexla::LapackUplo::F));
@@ -36319,20 +36514,34 @@ struct EnzymeHLOOptPass
       patterns.add<ReshapePad>(context);
 
     if (cse) {
-      patterns.add<CSE<stablehlo::BroadcastInDimOp>, CSE<stablehlo::SliceOp>,
-                   CSE<stablehlo::TransposeOp>, CSE<stablehlo::ConvertOp>,
-                   CSE<stablehlo::PadOp>, CSE<stablehlo::DotGeneralOp>,
-                   CSE<stablehlo::ReshapeOp>, CSE<stablehlo::MulOp>,
-                   CSE<stablehlo::DivOp>, CSE<stablehlo::AddOp>,
-                   CSE<stablehlo::SubtractOp>, CSE<stablehlo::PowOp>,
-                   CSE<stablehlo::MinOp>, CSE<stablehlo::ConcatenateOp>,
-                   CSE<stablehlo::MaxOp>, CSE<stablehlo::NegOp>,
-                   CSE<stablehlo::AbsOp>, CSE<enzymexla::RotateOp>,
-                   CSE<enzymexla::WrapOp>, CSE<enzymexla::ExtendOp>, CSEIota,
-                   CSE<stablehlo::CompareOp>, CSE<stablehlo::GatherOp>,
-                   CSE<stablehlo::ScatterOp>, CSE<stablehlo::SelectOp>,
-                   CSE<stablehlo::RealOp>, CSE<chlo::ConjOp>,
-                   CSE<stablehlo::ImagOp>>(context, PatternBenefit(65000));
+      patterns.add<
+          CSE<stablehlo::BroadcastInDimOp>, CSE<stablehlo::SliceOp>,
+          CSE<stablehlo::TransposeOp>, CSE<stablehlo::ConvertOp>,
+          CSE<stablehlo::PadOp>, CSE<stablehlo::DotGeneralOp>,
+          CSE<stablehlo::ReshapeOp>, CSE<stablehlo::MulOp>,
+          CSE<stablehlo::DivOp>, CSE<stablehlo::AddOp>,
+          CSE<stablehlo::SubtractOp>, CSE<stablehlo::PowOp>,
+          CSE<stablehlo::MinOp>, CSE<stablehlo::ConcatenateOp>,
+          CSE<stablehlo::MaxOp>, CSE<stablehlo::NegOp>, CSE<stablehlo::AbsOp>,
+          CSE<enzymexla::RotateOp>, CSE<enzymexla::WrapOp>,
+          CSE<enzymexla::ExtendOp>, CSEIota, CSE<stablehlo::CompareOp>,
+          CSE<stablehlo::GatherOp>, CSE<stablehlo::ScatterOp>,
+          CSE<stablehlo::SelectOp>, CSE<stablehlo::RealOp>, CSE<chlo::ConjOp>,
+          CSE<stablehlo::ImagOp>, CSE<stablehlo::BatchNormTrainingOp>,
+          CSE<stablehlo::BatchNormInferenceOp>, CSE<stablehlo::BatchNormGradOp>,
+          CSE<stablehlo::ExpOp>, CSE<stablehlo::Expm1Op>, CSE<stablehlo::LogOp>,
+          CSE<stablehlo::Log1pOp>, CSE<stablehlo::TanhOp>,
+          CSE<stablehlo::LogisticOp>, CSE<stablehlo::SqrtOp>,
+          CSE<stablehlo::RsqrtOp>, CSE<stablehlo::CbrtOp>,
+          CSE<stablehlo::SineOp>, CSE<stablehlo::CosineOp>,
+          CSE<stablehlo::Atan2Op>, CSE<stablehlo::FloorOp>,
+          CSE<stablehlo::CeilOp>, CSE<stablehlo::RoundOp>,
+          CSE<stablehlo::SignOp>, CSE<stablehlo::IsFiniteOp>,
+          CSE<stablehlo::ClampOp>, CSE<stablehlo::RemOp>, CSE<stablehlo::AndOp>,
+          CSE<stablehlo::OrOp>, CSE<stablehlo::XorOp>,
+          CSE<stablehlo::ConvolutionOp>, CSE<stablehlo::FftOp>,
+          CSE<stablehlo::DynamicSliceOp>, CSE<stablehlo::DynamicUpdateSliceOp>,
+          CSE<stablehlo::ReverseOp>>(context, PatternBenefit(65000));
     }
 
     if (passses & 256)
@@ -36510,6 +36719,7 @@ struct EnzymeHLOOptPass
         ScatterUpdateComputationConstProp,
         ScatterIndicesAreUnique,
         ReduceTransposeSimplify,
+        WhileScatterAccumulatorNoAdd,
         BroadcastIotaSimplify,
         BroadcastIota,
         BroadcastCompare,

@@ -4,7 +4,13 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Pass/PassManager.h"
 
+#ifndef ENZYME_JAX_ENABLE_TRITON
+#define ENZYME_JAX_ENABLE_TRITON 1
+#endif
+
+#if ENZYME_JAX_ENABLE_TRITON
 #include "triton/Conversion/TritonToTritonGPU/Passes.h"
+#endif
 
 #define DEBUG_TYPE "convert-triton-to-triton-gpu-preserving-module-attributes"
 
@@ -25,6 +31,7 @@ struct ConvertTritonToTritonGPUPreservingModuleAttributesPass
   using Base::Base;
 
   void runOnOperation() override {
+#if ENZYME_JAX_ENABLE_TRITON
     ModuleOp mod = getOperation();
 
     int32_t numWarps = 4, threadsPerWarp = 32, numCtas = 1;
@@ -60,5 +67,10 @@ struct ConvertTritonToTritonGPUPreservingModuleAttributesPass
     }
 
     return;
+#else
+    getOperation()->emitError() << "Triton is disabled in this build";
+    signalPassFailure();
+    return;
+#endif
   }
 };
