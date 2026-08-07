@@ -1006,11 +1006,28 @@ void fully2ComposeAffineMapAndOperands(
     for (auto &op : *operands) {
       if (!op.getType().isIndex()) {
         Operation *toInsert;
-        if (auto *o = op.getDefiningOp())
-          toInsert = o->getNextNode();
-        else {
+        if (auto *o = op.getDefiningOp()) {
+          if (auto inv = dyn_cast<LLVM::InvokeOp>(o)) {
+            // An invoke is a terminator: there is no next node, and its
+            // result only exists on the normal edge. The cast goes at the
+            // top of that block -- when that edge is its only way in, and
+            // after the landingpad when the block starts with one.
+            Block *dest = inv.getNormalDest();
+            if (dest->getSinglePredecessor() != inv->getBlock())
+              return false;
+            toInsert = &dest->front();
+            if (isa<LLVM::LandingpadOp>(toInsert))
+              toInsert = toInsert->getNextNode();
+          } else if (o->hasTrait<OpTrait::IsTerminator>()) {
+            return false;
+          } else {
+            toInsert = o->getNextNode();
+          }
+        } else {
           auto BA = cast<BlockArgument>(op);
           toInsert = &BA.getOwner()->front();
+          if (isa<LLVM::LandingpadOp>(toInsert))
+            toInsert = toInsert->getNextNode();
         }
 
         if (auto v = indexMap.lookupOrNull(op))
