@@ -2858,8 +2858,11 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
         SplatElementsAttr::get(
             unrankedTensorType,
             ArrayRef<Attribute>(
-                ET.isInteger() ? (Attribute)IntegerAttr::get(ET, 0)
-                               : (Attribute)FloatAttr::get(ET, APFloat(0.0)))));
+                ET.isInteger()
+                    ? (Attribute)IntegerAttr::get(ET, 0)
+                    : (Attribute)FloatAttr::get(
+                          ET, APFloat::getZero(
+                                  cast<FloatType>(ET).getFloatSemantics())))));
 
     auto newVal = newConst.getResult();
     mapping.map(op->getResult(0), newVal);
