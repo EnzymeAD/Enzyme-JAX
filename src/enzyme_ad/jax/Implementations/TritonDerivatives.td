@@ -21,10 +21,14 @@ def MakeRange : TritonInst<"MakeRangeOp">;
 def : TritonReturnOp<"ReturnOp">;
 
 def : TritonInactiveOp<"AssertOp">;
+def : TritonInactiveOp<"GetProgramIdOp">;
 def : TritonInactiveOp<"MakeRangeOp">;
 def : TritonInactiveOp<"PrintOp">;
 
 def : ReadOnlyIdentityOp<"triton", "AddPtrOp", [0]>;
+def : ReadOnlyIdentityOp<"triton", "AdvanceOp", [0]>;
+def : ReadOnlyIdentityOp<"triton", "BroadcastOp", [0]>;
+def : ReadOnlyIdentityOp<"triton", "ExpandDimsOp", [0]>;
 def : ReadOnlyIdentityOp<"triton", "LoadOp", [0]>;
 def : ReadOnlyIdentityOp<"triton", "SplatOp", [0]>;
 def : MemoryIdentityOp<"triton", "StoreOp", [1], [0]>;
@@ -38,3 +42,9 @@ def : TritonDerivative<"FpToFpOp", (Op $x),
                          (FpToFp (TypeOf $x), (DiffeRet), (FpToFpRoundingMode))
                        ]
                      >;
+
+// Note: ReduceOp is handled via custom C++ AutoDiffOpInterface in
+// TritonAutoDiffOpInterfaceImpl.cpp because Triton's ReduceOp doesn't
+// implement RegionBranchOpInterface required by ControlFlowOp.
+
+def : RegionTerminatorOp<"triton", "ReduceReturnOp">;
