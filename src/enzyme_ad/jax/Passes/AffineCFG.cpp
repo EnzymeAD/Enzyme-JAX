@@ -6472,6 +6472,10 @@ bool valueCmp(Cmp cmp, Value bval, ValueOrInt val) {
   }
 
   if (cmp == Cmp::GE && !val.isValue && val.i_val == 0) {
+    // A zero extension leaves the sign bit clear whatever it widened.
+    if (bval.getDefiningOp<arith::ExtUIOp>() ||
+        bval.getDefiningOp<LLVM::ZExtOp>())
+      return true;
     if (auto baval = bval.getDefiningOp<arith::AddIOp>()) {
       return valueCmp(cmp, baval.getLhs(), val) &&
              valueCmp(cmp, baval.getRhs(), val);
