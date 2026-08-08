@@ -596,6 +596,7 @@ def LowerEnzymeXLAMPIPass : Pass<"lower-enzymexla-mpi"> {
   let summary = "Lower MPI Ops to LLVM";
   let dependentDialects = [
     "enzymexla::EnzymeXLADialect",
+    "gpu::GPUDialect", 
     "LLVM::LLVMDialect",
   ];
   let options = [
@@ -605,6 +606,12 @@ def LowerEnzymeXLAMPIPass : Pass<"lower-enzymexla-mpi"> {
         /*type=*/"std::string",
         /*default=*/"\"cpu\"",
         /*description=*/"HW backend">,
+    Option<
+        /*C++ variable name=*/"ncclCommPtr",
+        /*CLI argument=*/"ncclCommPtr",
+        /*type=*/"size_t",
+        /*default=*/"0",
+        /*description=*/"Pointer to nccl communicator instance">,
   ];
 }
 
