@@ -185,19 +185,19 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       pass_pipeline += "postpasses=\"lower-llvm-ext,canonicalize,";
       if (options->splitMultiResults)
         pass_pipeline += "split-multi-results,";
-      pass_pipeline += "remove-unnecessary-enzyme-ops\"";
-      pass_pipeline += "},"
-        "lower-llvm-ext,canonicalize,";
-      if (options->splitMultiResults)
-        pass_pipeline += "split-multi-results,";
       pass_pipeline += "remove-unnecessary-enzyme-ops,"
         // binomial checkpointing leaves enzyme.binomial_progress behind; it has
         // no lowering of its own further down, so expand it here.
         "flatten-enzyme-caches,lower-enzyme-binomial-progress,";
       if (options->hoistLoopAllocations)
         pass_pipeline += "hoist-loop-allocations,";
-      pass_pipeline +=
-        "enzyme-simplify-math,"
+      pass_pipeline += "enzyme-simplify-math\"";
+      pass_pipeline += "},"
+        // The one module-level survivor: llvm_ext ops also live outside the
+        // generated functions the postpasses clean -- a ptr_size_hint sits in
+        // the primal that carries the user's marker -- and any left behind
+        // fail translation to LLVM IR.
+        "lower-llvm-ext,"
         "inline{default-pipeline=canonicalize max-iterations=4},"
         "polygeist-mem2reg,canonicalize,symbol-dce,"
         // canonicalize here folds away memref.subview ops before gpu-kernel-outlining
