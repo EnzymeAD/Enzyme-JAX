@@ -177,9 +177,12 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       if (options->dataflow)
         pass_pipeline += "dataflow ";
       if (options->markReadonly)
-        pass_pipeline += "markReadonly";
-      pass_pipeline += "},"
-        "lower-llvm-ext,canonicalize,";
+        pass_pipeline += "markReadonly ";
+      // Each generated derivative function is cleaned of enzyme cache ops
+      // the moment it is created: nested differentiation hands the outer AD
+      // the inner function as input, and enzyme.push/pop have no derivative
+      // of their own.
+      pass_pipeline += "postpasses=\"canonicalize,";
       if (options->splitMultiResults)
         pass_pipeline += "split-multi-results,";
       pass_pipeline += "remove-unnecessary-enzyme-ops,"
@@ -188,8 +191,13 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
         "flatten-enzyme-caches,lower-enzyme-binomial-progress,";
       if (options->hoistLoopAllocations)
         pass_pipeline += "hoist-loop-allocations,";
-      pass_pipeline +=
-        "enzyme-simplify-math,"
+      pass_pipeline += "enzyme-simplify-math\"";
+      pass_pipeline += "},"
+        // The one module-level survivor: llvm_ext ops also live outside the
+        // generated functions the postpasses clean -- a ptr_size_hint sits in
+        // the primal that carries the user's marker -- and any left behind
+        // fail translation to LLVM IR.
+        "lower-llvm-ext,"
         "inline{default-pipeline=canonicalize max-iterations=4},"
         "polygeist-mem2reg,canonicalize,symbol-dce,"
         // canonicalize here folds away memref.subview ops before gpu-kernel-outlining
