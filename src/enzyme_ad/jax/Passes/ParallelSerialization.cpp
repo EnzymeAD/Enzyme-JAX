@@ -120,6 +120,12 @@ struct SCFParallelSerializationPass
     patterns.insert<ParallelSerialization>(&getContext());
     GreedyRewriteConfig config;
     config.enableFolding();
+    // Merging identical blocks threads the differing values through new
+    // block arguments on every predecessor's terminator. An llvm.invoke is
+    // such a terminator, and its successor operands only take LLVM types --
+    // handing it a memref or an index is not a merge but a verifier error.
+    // Nothing here needs the merge.
+    config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);
     if (failed(applyPatternsGreedily(m, std::move(patterns), config))) {
       signalPassFailure();
       return;
