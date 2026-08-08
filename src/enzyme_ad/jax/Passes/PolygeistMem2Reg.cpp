@@ -2057,30 +2057,78 @@ Value castToType(Type elType, Value val, Operation *op) {
   llvm_unreachable("mismatched type");
 }
 
+// Whether every position the value is passed at carries the given attribute
+// on the callee. One position without it is enough for the call to do
+// whatever the attribute rules out.
+static bool callArgsAllHaveAttr(CallOpInterface callOp, Value val,
+                                SymbolTableCollection &symbolTables,
+                                StringRef attr) {
+  auto calleeAttr = dyn_cast<SymbolRefAttr>(callOp.getCallableForCallee());
+  if (!calleeAttr)
+    return false;
+  auto callee = symbolTables.lookupSymbolIn(callOp->getParentOfType<ModuleOp>(),
+                                            calleeAttr);
+  auto fn = dyn_cast_or_null<FunctionOpInterface>(callee);
+  if (!fn)
+    return false;
+
+  auto operands = callOp.getArgOperands();
+  bool seen = false;
+  for (int i = 0; i < operands.size(); i++) {
+    if (operands[i] == val) {
+      seen = true;
+      if (i >= fn.getNumArguments() || !fn.getArgAttr(i, attr))
+        return false;
+    }
+  }
+  return seen;
+}
+
 // Check if call captures alloca instance by checking for llvm.nocapture
 // attribute
 bool isCallNonCapturing(CallOpInterface callOp, Value val,
                         SymbolTableCollection &symbolTables) {
-  auto calleeAttr = dyn_cast<SymbolRefAttr>(callOp.getCallableForCallee());
-  if (calleeAttr) {
-    auto callee = symbolTables.lookupSymbolIn(
-        callOp->getParentOfType<ModuleOp>(), calleeAttr);
-    auto fn = dyn_cast_or_null<FunctionOpInterface>(callee);
-    if (!fn)
-      return false;
+  return callArgsAllHaveAttr(callOp, val, symbolTables,
+                             LLVM::LLVMDialect::getNoCaptureAttrName());
+}
 
-    // Find operand that matches value of alloca we are trying to promote and
-    // check for attributes
-    auto operands = callOp.getArgOperands();
-    for (int i = 0; i < operands.size(); i++) {
-      if (operands[i] == val) {
-        if (i < fn.getNumArguments() &&
-            fn.getArgAttr(i, LLVM::LLVMDialect::getNoCaptureAttrName()))
-          return true;
-      }
+// Whether a memory-effects attribute rules out writes through pointer
+// arguments. Later LLVM spells whole-function readonly/readnone this way,
+// and per-location effects can say argument memory is only read even when
+// the function writes elsewhere.
+static bool argMemOnlyRead(LLVM::MemoryEffectsAttr me) {
+  return me && (me.getArgMem() == LLVM::ModRefInfo::NoModRef ||
+                me.getArgMem() == LLVM::ModRefInfo::Ref);
+}
+
+// nocapture only says the callee does not hold on to the pointer; an out
+// parameter is nocapture and written through. Only readonly (or readnone)
+// says the call leaves the slot's contents alone -- carried per argument,
+// as a memory-effects attribute on the call or the callee, or as the older
+// readonly/readnone function attribute spelled through passthrough.
+bool isCallArgOnlyRead(CallOpInterface callOp, Value val,
+                       SymbolTableCollection &symbolTables) {
+  if (auto call = dyn_cast<LLVM::CallOp>(callOp.getOperation()))
+    if (argMemOnlyRead(call.getMemoryEffectsAttr()))
+      return true;
+  if (auto calleeAttr =
+          dyn_cast<SymbolRefAttr>(callOp.getCallableForCallee())) {
+    if (auto fn =
+            dyn_cast_or_null<LLVM::LLVMFuncOp>(symbolTables.lookupSymbolIn(
+                callOp->getParentOfType<ModuleOp>(), calleeAttr))) {
+      if (argMemOnlyRead(fn.getMemoryEffectsAttr()))
+        return true;
+      if (auto pass = fn->getAttrOfType<ArrayAttr>("passthrough"))
+        for (Attribute a : pass)
+          if (auto s = dyn_cast<StringAttr>(a))
+            if (s.getValue() == "readonly" || s.getValue() == "readnone")
+              return true;
     }
   }
-  return false;
+  return callArgsAllHaveAttr(callOp, val, symbolTables,
+                             LLVM::LLVMDialect::getReadonlyAttrName()) ||
+         callArgsAllHaveAttr(callOp, val, symbolTables,
+                             LLVM::LLVMDialect::getReadnoneAttrName());
 }
 
 // fopen, fclose
@@ -2315,6 +2363,12 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
             if (!callee || !getNonCapturingFunctions().count(
                                callee.getLeafReference().str()))
               captured = true;
+          } else if (!isCallArgOnlyRead(callOp, val, symbolTables)) {
+            // The callee cannot hold on to the pointer, but nothing says it
+            // does not write through it before returning -- an out parameter
+            // is exactly this. The slot's value is unknown after the call.
+            LLVM_DEBUG(llvm::dbgs() << "Aliasing Store: " << callOp << "\n");
+            AliasingStoreOperations.insert(callOp.getOperation());
           }
         }
         continue;
