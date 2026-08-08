@@ -123,7 +123,8 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
   pass_pipeline += backend;
   pass_pipeline += "}";
   pass_pipeline += ","
-      "canonicalize,libdevice-funcs-raise,canonicalize,inline-enzyme-regions,symbol-dce,";
+      "canonicalize,libdevice-funcs-raise,restore-preserve-nvvm,canonicalize,"
+      "inline-enzyme-regions,symbol-dce,";
   
   if (backend == "cpu")
     pass_pipeline += "parallel-lower{wrapParallelOps=false},";
