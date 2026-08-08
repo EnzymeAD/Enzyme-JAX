@@ -368,6 +368,14 @@ def HoistAllocasPass : Pass<"hoist-allocas"> {
   ];
 }
 
+def RestorePreserveNVVMPass : Pass<"restore-preserve-nvvm"> {
+  let summary = "Undo PreserveNVVM(Begin)'s linkage and inlining fixups once "
+                "the raising has consumed the calls they protected";
+  let dependentDialects = [
+    "LLVM::LLVMDialect",
+  ];
+}
+
 def SortBlockMemoryPass : Pass<"sort-block-memory"> {
   let summary = "Hoist non-overlapping loads to the start of their block and "
                 "sink stores to the end";

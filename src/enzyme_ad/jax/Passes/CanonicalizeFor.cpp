@@ -1693,11 +1693,15 @@ struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
       SmallVector<Type> initTypes;
       for (auto T : loop.getInits())
         initTypes.push_back(T.getType());
-      Value cond =
-          arith::CmpIOp::create(rewriter, forloop.getLoc(),
-                                helper.negativeStep ? arith::CmpIPredicate::sgt
-                                                    : arith::CmpIPredicate::slt,
-                                forloop.getInductionVar(), helper.ub);
+      // The after region runs on every iteration but the extra one appended
+      // for the do-while. prepareFor negated a negative step, so the for
+      // always ascends and the extra iteration is always the one at the top:
+      // the original counter rides along as an iter arg either way. (sgt
+      // against the ub held for no iteration at all, so a descending
+      // do-while ran nothing but its before region.)
+      Value cond = arith::CmpIOp::create(rewriter, forloop.getLoc(),
+                                         arith::CmpIPredicate::slt,
+                                         forloop.getInductionVar(), helper.ub);
       if (lookThrough) {
         cond = AndIOp::create(rewriter, loop.getLoc(), cond, nextLookThrough);
       }
@@ -2278,7 +2282,12 @@ struct WhileLogicalNegation : public OpRewritePattern<WhileOp> {
           continue;
       }
 
-      if (!std::get<0>(pair).use_empty()) {
+      // Entering the after region means the whole conjunction held, so there
+      // every conjunct is true. Exiting only means the conjunction failed --
+      // at least one conjunct is false, with no say in which -- so the value
+      // a result leaves with is only known when the condition is a single
+      // conjunct.
+      if (condOps.size() == 1 && !std::get<0>(pair).use_empty()) {
         rewriter.modifyOpInPlace(op, [&] {
           rewriter.setInsertionPoint(op);
           auto truev =

@@ -52,10 +52,7 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
     err_stream.flush();
     exit(1);
   }
-  // Raising has no way to read an unwind edge, so a call that may throw stops
-  // it here rather than further along: an invoke left standing is not a module
-  // that gets compiled at all.
-  {
+  if (options->lowerInvoke) {
     llvm::PassBuilder PB;
     llvm::LoopAnalysisManager LAM;
     llvm::FunctionAnalysisManager FAM;
@@ -123,7 +120,8 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
   pass_pipeline += backend;
   pass_pipeline += "}";
   pass_pipeline += ","
-      "canonicalize,libdevice-funcs-raise,canonicalize,inline-enzyme-regions,symbol-dce,";
+      "canonicalize,libdevice-funcs-raise,restore-preserve-nvvm,canonicalize,"
+      "inline-enzyme-regions,symbol-dce,";
   
   if (backend == "cpu")
     pass_pipeline += "parallel-lower{wrapParallelOps=false},";
