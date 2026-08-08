@@ -220,3 +220,62 @@ llvm.func @variadic_call_more_args_than_params() -> i32 {
 // CHECK-NEXT: %[[LOADED:.*]] = llvm.load %[[AL]] : !llvm.ptr -> i32
 // CHECK-NEXT: llvm.return %[[LOADED]] : i32
 // CHECK-NEXT: }
+
+// -----
+
+// A memory-effects attribute on the callee that leaves argument memory
+// read-only clears the call even when the function writes elsewhere and no
+// argument attribute says anything.
+llvm.func @argmem_reader(!llvm.ptr {llvm.nocapture}) attributes {memory_effects = #llvm.memory_effects<other = readwrite, argMem = read, inaccessibleMem = readwrite, errnoMem = readwrite, targetMem0 = readwrite, targetMem1 = readwrite>}
+llvm.func @forward_across_argmem_read() -> i32 {
+  %c1 = llvm.mlir.constant(1 : i32) : i32
+  %mem = llvm.alloca %c1 x i32 : (i32) -> !llvm.ptr
+  %val = llvm.mlir.constant(42 : i32) : i32
+  llvm.store %val, %mem : i32, !llvm.ptr
+  llvm.call @argmem_reader(%mem) : (!llvm.ptr) -> ()
+  %loaded = llvm.load %mem : !llvm.ptr -> i32
+  llvm.return %loaded : i32
+}
+
+// CHECK: llvm.func @forward_across_argmem_read() -> i32 {
+// CHECK: %[[V:.*]] = llvm.mlir.constant(42 : i32) : i32
+// CHECK: llvm.call @argmem_reader
+// CHECK: llvm.return %[[V]] : i32
+
+// -----
+
+// Writable argument memory keeps the load.
+llvm.func @argmem_writer(!llvm.ptr {llvm.nocapture}) attributes {memory_effects = #llvm.memory_effects<other = none, argMem = readwrite, inaccessibleMem = none, errnoMem = none, targetMem0 = none, targetMem1 = none>}
+llvm.func @no_forward_across_argmem_write() -> i32 {
+  %c1 = llvm.mlir.constant(1 : i32) : i32
+  %mem = llvm.alloca %c1 x i32 : (i32) -> !llvm.ptr
+  %val = llvm.mlir.constant(42 : i32) : i32
+  llvm.store %val, %mem : i32, !llvm.ptr
+  llvm.call @argmem_writer(%mem) : (!llvm.ptr) -> ()
+  %loaded = llvm.load %mem : !llvm.ptr -> i32
+  llvm.return %loaded : i32
+}
+
+// CHECK: llvm.func @no_forward_across_argmem_write() -> i32 {
+// CHECK: llvm.call @argmem_writer
+// CHECK: %[[L:.*]] = llvm.load
+// CHECK: llvm.return %[[L]] : i32
+
+// -----
+
+// The older spelling: a whole-function readonly riding in passthrough.
+llvm.func @passthrough_reader(!llvm.ptr {llvm.nocapture}) attributes {passthrough = ["readonly"]}
+llvm.func @forward_across_passthrough_readonly() -> i32 {
+  %c1 = llvm.mlir.constant(1 : i32) : i32
+  %mem = llvm.alloca %c1 x i32 : (i32) -> !llvm.ptr
+  %val = llvm.mlir.constant(42 : i32) : i32
+  llvm.store %val, %mem : i32, !llvm.ptr
+  llvm.call @passthrough_reader(%mem) : (!llvm.ptr) -> ()
+  %loaded = llvm.load %mem : !llvm.ptr -> i32
+  llvm.return %loaded : i32
+}
+
+// CHECK: llvm.func @forward_across_passthrough_readonly() -> i32 {
+// CHECK: %[[V:.*]] = llvm.mlir.constant(42 : i32) : i32
+// CHECK: llvm.call @passthrough_reader
+// CHECK: llvm.return %[[V]] : i32

@@ -2090,11 +2090,38 @@ bool isCallNonCapturing(CallOpInterface callOp, Value val,
                              LLVM::LLVMDialect::getNoCaptureAttrName());
 }
 
+// Whether a memory-effects attribute rules out writes through pointer
+// arguments. Later LLVM spells whole-function readonly/readnone this way,
+// and per-location effects can say argument memory is only read even when
+// the function writes elsewhere.
+static bool argMemOnlyRead(LLVM::MemoryEffectsAttr me) {
+  return me && (me.getArgMem() == LLVM::ModRefInfo::NoModRef ||
+                me.getArgMem() == LLVM::ModRefInfo::Ref);
+}
+
 // nocapture only says the callee does not hold on to the pointer; an out
 // parameter is nocapture and written through. Only readonly (or readnone)
-// says the call leaves the slot's contents alone.
+// says the call leaves the slot's contents alone -- carried per argument,
+// as a memory-effects attribute on the call or the callee, or as the older
+// readonly/readnone function attribute spelled through passthrough.
 bool isCallArgOnlyRead(CallOpInterface callOp, Value val,
                        SymbolTableCollection &symbolTables) {
+  if (auto call = dyn_cast<LLVM::CallOp>(callOp.getOperation()))
+    if (argMemOnlyRead(call.getMemoryEffectsAttr()))
+      return true;
+  if (auto calleeAttr =
+          dyn_cast<SymbolRefAttr>(callOp.getCallableForCallee())) {
+    if (auto fn = dyn_cast_or_null<LLVM::LLVMFuncOp>(symbolTables.lookupSymbolIn(
+            callOp->getParentOfType<ModuleOp>(), calleeAttr))) {
+      if (argMemOnlyRead(fn.getMemoryEffectsAttr()))
+        return true;
+      if (auto pass = fn->getAttrOfType<ArrayAttr>("passthrough"))
+        for (Attribute a : pass)
+          if (auto s = dyn_cast<StringAttr>(a))
+            if (s.getValue() == "readonly" || s.getValue() == "readnone")
+              return true;
+    }
+  }
   return callArgsAllHaveAttr(callOp, val, symbolTables,
                              LLVM::LLVMDialect::getReadonlyAttrName()) ||
          callArgsAllHaveAttr(callOp, val, symbolTables,
