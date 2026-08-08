@@ -15356,20 +15356,79 @@ struct GatherOpCanon final
     }
 
     DenseElementsAttr constAttr;
-    if (matchPattern(val, m_Constant(&constAttr)) && constAttr.isSplat()) {
-      auto elemType = constAttr.getType().getElementType();
-      TypedAttr zeroScale;
-      if (isa<IntegerType>(elemType)) {
-        zeroScale = IntegerAttr::get(elemType, 0);
-      } else {
+    if (matchPattern(val, m_Constant(&constAttr))) {
+      auto tensorType = cast<RankedTensorType>(constAttr.getType());
+      auto elemType = tensorType.getElementType();
+      if (!isa<IntegerType>(elemType)) {
         return false;
       }
-      IotaLikeTensor constIota;
-      constIota.dimension = 0;
-      constIota.scale = zeroScale;
-      constIota.start = constAttr.getSplatValue<TypedAttr>();
-      constIota.tensorType = cast<RankedTensorType>(constAttr.getType());
-      result.push_back(constIota);
+      if (constAttr.isSplat()) {
+        TypedAttr zeroScale = IntegerAttr::get(elemType, 0);
+        IotaLikeTensor constIota;
+        constIota.dimension = 0;
+        constIota.scale = zeroScale;
+        constIota.start = constAttr.getSplatValue<TypedAttr>();
+        constIota.tensorType = tensorType;
+        result.push_back(constIota);
+        return true;
+      }
+
+      int64_t rank = tensorType.getRank();
+      auto shape = tensorType.getShape();
+      auto strides = computeStrides(shape);
+      int64_t numElements = tensorType.getNumElements();
+
+      auto values = constAttr.getValues<APInt>();
+
+      // 1. Find offset (value at index 0,0,...,0)
+      APInt offset = values[0];
+
+      // 2. Find scales for each dimension
+      SmallVector<APInt> scales;
+      scales.reserve(rank);
+      for (int64_t d = 0; d < rank; d++) {
+        if (shape[d] > 1) {
+          int64_t linearIdx = strides[d];
+          scales.push_back(values[linearIdx] - offset);
+        } else {
+          scales.push_back(APInt(elemType.getIntOrFloatBitWidth(), 0));
+        }
+      }
+
+      // 3. Verify that the linear relationship holds for all elements
+      SmallVector<int64_t> multiIndex;
+      for (int64_t idx = 0; idx < numElements; idx++) {
+        linearToMultiIndex(idx, strides, multiIndex);
+        APInt expected = offset;
+        for (int64_t d = 0; d < rank; d++) {
+          if (multiIndex[d] != 0 && !scales[d].isZero()) {
+            expected +=
+                scales[d] * APInt(scales[d].getBitWidth(), multiIndex[d]);
+          }
+        }
+        if (values[idx] != expected) {
+          return false;
+        }
+      }
+
+      // 4. If verified, create IotaLikeTensors for offset and each non-zero
+      // scale
+      for (int64_t d = 0; d < rank; d++) {
+        if (!scales[d].isZero()) {
+          IotaLikeTensor iota;
+          iota.dimension = d;
+          iota.scale = IntegerAttr::get(elemType, scales[d]);
+          iota.start = IntegerAttr::get(elemType, 0);
+          iota.tensorType = tensorType;
+          result.push_back(iota);
+        }
+      }
+      IotaLikeTensor offsetIota;
+      offsetIota.dimension = 0;
+      offsetIota.scale = IntegerAttr::get(elemType, 0);
+      offsetIota.start = IntegerAttr::get(elemType, offset);
+      offsetIota.tensorType = tensorType;
+      result.push_back(offsetIota);
       return true;
     }
 
@@ -15520,7 +15579,7 @@ struct GatherOpCanon final
     if (minTotalOffset < 0)
       return failure();
 
-    SmallVector<int64_t> sliceSizes(mappings.size(), 1);
+    SmallVector<int64_t> sliceSizes(opRank, 1);
     for (size_t m = 0; m < mappings.size(); ++m) {
       int64_t gridDim = mappings[m].gridDim;
       sliceSizes[m] = gridTy.getDimSize(gridDim);
