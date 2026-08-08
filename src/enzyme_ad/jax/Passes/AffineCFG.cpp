@@ -152,9 +152,14 @@ bool isValidSymbolInt(Value value, bool recur, Region *scope) {
 }
 
 struct AffineApplyNormalizer {
-  AffineApplyNormalizer(AffineMap map, ArrayRef<Value> operands,
-                        PatternRewriter *rewriter, DominanceInfo *DI,
-                        Region *scope);
+  /// Builds a normalizer for `map` over `operands`, or std::nullopt where
+  /// none exists.  Making an operand a valid affine dim or symbol can mean
+  /// hoisting the op that defines it, which needs a rewriter; asked without
+  /// one, a map whose operand would have had to move has no normalization,
+  /// and returning std::nullopt makes that impossible to overlook.
+  static std::optional<AffineApplyNormalizer>
+  Create(AffineMap map, ArrayRef<Value> operands, PatternRewriter *rewriter,
+         DominanceInfo *DI, Region *scope);
 
   /// Returns the AffineMap resulting from normalization.
   AffineMap getAffineMap() { return affineMap; }
@@ -166,6 +171,10 @@ struct AffineApplyNormalizer {
   }
 
 private:
+  AffineApplyNormalizer(AffineMap map, ArrayRef<Value> operands,
+                        PatternRewriter *rewriter, DominanceInfo *DI,
+                        Region *scope);
+
   /// Helper function to insert `v` into the coordinate system of the current
   /// AffineApplyNormalizer. Returns the AffineDimExpr with the corresponding
   /// renumbered position.
@@ -180,6 +189,8 @@ private:
   SmallVector<Value, 8> concatenatedSymbols;
 
   AffineMap affineMap;
+
+  bool legalized = true;
 };
 
 // A shift by k stands for a multiply or divide by 2^k, which has to be worked
@@ -492,8 +503,10 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
       // ops now holds the legalized condition and arms: replaceOp rewrote the
       // entries as their defining ops were hoisted.
       if (!rewriter) {
+        // The select standing for the conditional is the whole of what makes
+        // this value a symbol, and there is no rewriter to write it with.
         operationContext.pop_back();
-        return v;
+        return isValidSymbolInt(v, /*recur*/ false, scope) ? v : Value();
       }
       Value selTrueFixed = ops[numCondOperands];
       Value selFalseFixed = ops[numCondOperands + 1];
@@ -536,9 +549,11 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
       return sel;
     }
     if (!rewriter) {
+      // Everything below this point moves the op; without a rewriter it stays
+      // where it is, and so is a symbol only where it already was one.
       operationContext.pop_back();
-      assert(isValidSymbolInt(op->getResult(0), /*recur*/ false, scope));
-      return op->getResult(0);
+      Value res = op->getResult(0);
+      return isValidSymbolInt(res, /*recur*/ false, scope) ? res : Value();
     } else {
       PatternRewriter::InsertionGuard B(*rewriter);
       rewriter->setInsertionPoint(front);
@@ -877,6 +892,13 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
                            << " to become valid symbol\n";
               llvm_unreachable("cannot move");
             }
+          } else if (!rewriter) {
+            // Asked without a rewriter this is a question, not a rewrite:
+            // nothing may be moved, so an operand that would have had to move
+            // simply has no answer.  Keep the original in the map so it stays
+            // well formed and let the caller read `legalized` and give up.
+            t = orig;
+            legalized = false;
           } else {
             // Reaching here means a pattern committed to a rewrite whose
             // operand cannot be made a valid affine symbol.  llvm_unreachable
@@ -893,7 +915,9 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
                 "AffineApplyNormalizer: cannot move operand to become a valid "
                 "affine symbol");
           }
-        } else
+        } else if (!rewriter)
+          legalized = false;
+        else
           llvm_unreachable("cannot move2");
       }
       if (i < numDims) {
@@ -927,6 +951,16 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
   LLVM_DEBUG(llvm::dbgs() << "\n");
 }
 
+std::optional<AffineApplyNormalizer>
+AffineApplyNormalizer::Create(AffineMap map, ArrayRef<Value> operands,
+                              PatternRewriter *rewriter, DominanceInfo *DI,
+                              Region *scope) {
+  AffineApplyNormalizer normalizer(map, operands, rewriter, DI, scope);
+  if (!normalizer.legalized)
+    return std::nullopt;
+  return normalizer;
+}
+
 AffineDimExpr AffineApplyNormalizer::renumberOneDim(Value v) {
   DenseMap<Value, unsigned>::iterator iterPos;
   bool inserted = false;
@@ -938,18 +972,25 @@ AffineDimExpr AffineApplyNormalizer::renumberOneDim(Value v) {
   return cast<AffineDimExpr>(getAffineDimExpr(iterPos->second, v.getContext()));
 }
 
-static void composeAffineMapAndOperands(AffineMap *map,
-                                        SmallVectorImpl<Value> *operands,
-                                        PatternRewriter *rewriter,
-                                        DominanceInfo *DI, Region *scope) {
-  AffineApplyNormalizer normalizer(*map, *operands, rewriter, DI, scope);
-  auto normalizedMap = normalizer.getAffineMap();
-  auto normalizedOperands = normalizer.getOperands();
+// Returns whether every operand came out a valid affine dim or symbol.  On
+// false the map and operands are left as they came in: a normalizer that could
+// not legalize an operand has composed nothing worth keeping.
+[[nodiscard]] static bool
+composeAffineMapAndOperands(AffineMap *map, SmallVectorImpl<Value> *operands,
+                            PatternRewriter *rewriter, DominanceInfo *DI,
+                            Region *scope) {
+  auto normalizer =
+      AffineApplyNormalizer::Create(*map, *operands, rewriter, DI, scope);
+  if (!normalizer)
+    return false;
+  auto normalizedMap = normalizer->getAffineMap();
+  auto normalizedOperands = normalizer->getOperands();
   affine::canonicalizeMapAndOperands(&normalizedMap, &normalizedOperands);
   normalizedMap = recreateExpr(normalizedMap);
   *map = normalizedMap;
   *operands = normalizedOperands;
   assert(*map);
+  return true;
 }
 
 bool need(AffineMap *map, SmallVectorImpl<Value> *operands, Region *scope) {
@@ -970,7 +1011,11 @@ bool need(IntegerSet *map, SmallVectorImpl<Value> *operands, Region *scope) {
   return false;
 }
 
-void fully2ComposeAffineMapAndOperands(
+// Returns whether composition ran to completion; see
+// composeAffineMapAndOperands.  A caller passing no builder is asking a
+// question, since without one the normalizer cannot move an operand to make
+// it legal -- and the attribute keeps the answer from being dropped.
+[[nodiscard]] static bool fully2ComposeAffineMapAndOperands(
     PatternRewriter *builder, AffineMap *map, SmallVectorImpl<Value> *operands,
     DominanceInfo *DI, Region *scope,
     SmallVectorImpl<Operation *> *insertedOps = nullptr) {
@@ -998,7 +1043,8 @@ void fully2ComposeAffineMapAndOperands(
     }
   assert(map->getNumInputs() == operands->size());
   while (need(map, operands, scope)) {
-    composeAffineMapAndOperands(map, operands, builder, DI, scope);
+    if (!composeAffineMapAndOperands(map, operands, builder, DI, scope))
+      return false;
     assert(map->getNumInputs() == operands->size());
   }
   *map = simplifyAffineMap(*map);
@@ -1032,14 +1078,17 @@ void fully2ComposeAffineMapAndOperands(
         }
       }
     }
+  return true;
 }
 
 void fully2ComposeAffineMapAndOperands(
     PatternRewriter &builder, AffineMap *map, SmallVectorImpl<Value> *operands,
     DominanceInfo &DI, Region *scope,
     SmallVectorImpl<Operation *> *insertedOps) {
-  fully2ComposeAffineMapAndOperands(&builder, map, operands, &DI, scope,
-                                    insertedOps);
+  bool composed = fully2ComposeAffineMapAndOperands(&builder, map, operands,
+                                                    &DI, scope, insertedOps);
+  (void)composed;
+  assert(composed && "a rewriter can always move an operand into legality");
 }
 
 void fully2ComposeIntegerSetAndOperands(
@@ -1070,7 +1119,10 @@ void fully2ComposeIntegerSetAndOperands(
   auto map = AffineMap::get(set->getNumDims(), set->getNumSymbols(),
                             set->getConstraints(), set->getContext());
   while (need(&map, operands, scope)) {
-    composeAffineMapAndOperands(&map, operands, &builder, &DI, scope);
+    bool composed =
+        composeAffineMapAndOperands(&map, operands, &builder, &DI, scope);
+    (void)composed;
+    assert(composed && "a rewriter can always move an operand into legality");
   }
   map = simplifyAffineMap(map);
   *set = IntegerSet::get(map.getNumDims(), map.getNumSymbols(),
@@ -1737,11 +1789,11 @@ bool handle(PatternRewriter &b, CmpIOp cmpi, SmallVectorImpl<AffineExpr> &exprs,
                                        exprTmp, b.getContext());
           SmallVector<Value> tmp = {lhspack.v_val};
 
-          fully2ComposeAffineMapAndOperands(nullptr, &mapTmp, &tmp, nullptr,
-                                            scope);
+          bool composed = fully2ComposeAffineMapAndOperands(
+              nullptr, &mapTmp, &tmp, nullptr, scope);
           mapTmp = recreateExpr(mapTmp);
-          if (valueCmp(Cmp::GE, mapTmp.getResult(0), mapTmp.getNumDims(), tmp,
-                       0)) {
+          if (composed && valueCmp(Cmp::GE, mapTmp.getResult(0),
+                                   mapTmp.getNumDims(), tmp, 0)) {
             atLeastZero = true;
           } else {
             LLVM_DEBUG(llvm::dbgs()
