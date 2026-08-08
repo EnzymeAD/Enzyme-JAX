@@ -37,36 +37,6 @@ using namespace mlir;
 
 namespace {
 
-// llvm::GlobalValue::LinkageTypes, as PreserveNVVM(Begin) recorded it.
-static std::optional<LLVM::Linkage> linkageFromLLVMOrdinal(int64_t v) {
-  switch (v) {
-  case 0:
-    return LLVM::Linkage::External;
-  case 1:
-    return LLVM::Linkage::AvailableExternally;
-  case 2:
-    return LLVM::Linkage::Linkonce;
-  case 3:
-    return LLVM::Linkage::LinkonceODR;
-  case 4:
-    return LLVM::Linkage::Weak;
-  case 5:
-    return LLVM::Linkage::WeakODR;
-  case 6:
-    return LLVM::Linkage::Appending;
-  case 7:
-    return LLVM::Linkage::Internal;
-  case 8:
-    return LLVM::Linkage::Private;
-  case 9:
-    return LLVM::Linkage::ExternWeak;
-  case 10:
-    return LLVM::Linkage::Common;
-  default:
-    return std::nullopt;
-  }
-}
-
 static bool isPrevEntry(Attribute a, StringRef &linkageValue, bool &fixup,
                         bool &alwaysInline, bool &noInline) {
   if (auto s = dyn_cast<StringAttr>(a)) {
@@ -118,9 +88,12 @@ struct RestorePreserveNVVMPass
         return;
 
       if (!linkageValue.empty()) {
-        int64_t v;
+        // prev_linkage holds the llvm::GlobalValue::LinkageTypes ordinal;
+        // the MLIR enum is defined with those same values, and the generated
+        // symbolizer validates them.
+        uint64_t v;
         if (!linkageValue.getAsInteger(10, v))
-          if (auto linkage = linkageFromLLVMOrdinal(v))
+          if (auto linkage = LLVM::linkage::symbolizeLinkage(v))
             fn.setLinkage(*linkage);
       }
 
