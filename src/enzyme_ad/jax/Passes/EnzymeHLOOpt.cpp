@@ -14333,6 +14333,79 @@ struct SelectSelectNegCond final
   }
 };
 
+// A select whose operands are themselves i1 and whose true-or-false branch is
+// an all-true/all-false constant is pure boolean logic. Rewriting it as such
+// replaces a select with an and/or, which -- unlike the select -- is
+// associative and commutative, so the downstream reassociation, CSE and
+// pad-pushing patterns (reshuffle_ands_compares, and_simplify, cse_compare,
+// and_pad_pad) can all get at it.
+//
+//   select(p, x, false) -> and(p, x)
+//   select(p, true,  x) -> or(p, x)
+//   select(p, false, x) -> and(not(p), x)
+//   select(p, x,  true) -> or(not(p), x)
+//
+// The first two forms are strictly op-count non-increasing. The latter two
+// introduce a not, which is normally absorbed straight back into whatever
+// produced the predicate (not_compare folds not(compare) into the flipped
+// compare, involution_not_simplify cancels a double negation).
+struct SelectToLogical final
+    : CheckedOpRewritePattern<stablehlo::SelectOp, SelectToLogical> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  // Matches an all-true or all-false constant.
+  static bool matchBoolSplat(Value v, bool &out) {
+    DenseIntElementsAttr c;
+    if (!matchPattern(v, m_Constant(&c)) || !c.isSplat())
+      return false;
+    if (!c.getElementType().isInteger(1))
+      return false;
+    out = c.getSplatValue<bool>();
+    return true;
+  }
+
+  LogicalResult matchAndRewriteImpl(stablehlo::SelectOp op,
+                                    PatternRewriter &rewriter) const {
+    auto resTy = dyn_cast<RankedTensorType>(op.getType());
+    if (!resTy || !resTy.getElementType().isInteger(1))
+      return failure();
+
+    // stablehlo::SelectOp permits a rank-0 predicate against ranked operands;
+    // and/or have no such broadcasting, so the predicate has to already be
+    // shaped like the result for the rewrite to be type-correct.
+    Value pred = op.getPred();
+    if (pred.getType() != op.getType())
+      return failure();
+
+    Value onTrue = op.getOnTrue(), onFalse = op.getOnFalse();
+    bool cv;
+
+    if (matchBoolSplat(onFalse, cv)) {
+      if (!cv) { // select(p, x, false) -> and(p, x)
+        rewriter.replaceOpWithNewOp<stablehlo::AndOp>(op, pred, onTrue);
+        return success();
+      }
+      // select(p, x, true) -> or(not(p), x)
+      auto notPred = stablehlo::NotOp::create(rewriter, op.getLoc(), pred);
+      rewriter.replaceOpWithNewOp<stablehlo::OrOp>(op, notPred, onTrue);
+      return success();
+    }
+
+    if (matchBoolSplat(onTrue, cv)) {
+      if (cv) { // select(p, true, x) -> or(p, x)
+        rewriter.replaceOpWithNewOp<stablehlo::OrOp>(op, pred, onFalse);
+        return success();
+      }
+      // select(p, false, x) -> and(not(p), x)
+      auto notPred = stablehlo::NotOp::create(rewriter, op.getLoc(), pred);
+      rewriter.replaceOpWithNewOp<stablehlo::AndOp>(op, notPred, onFalse);
+      return success();
+    }
+
+    return failure();
+  }
+};
+
 struct AndPadPad final : CheckedOpRewritePattern<stablehlo::AndOp, AndPadPad> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
@@ -36763,6 +36836,7 @@ struct EnzymeHLOOptPass
         SelectPadToDUS,
         SelectSelectSameCond,
         SelectSelectNegCond,
+        SelectToLogical,
         AndPadPad,
         SelectOpUsedWithinIf,
         TransposeBroadcastInDimToBroadcastInDim,
