@@ -450,6 +450,7 @@ def LibDeviceFuncsRaisingPass : Pass<"libdevice-funcs-raise"> {
   let dependentDialects = [
     "arith::ArithDialect",
     "enzyme::EnzymeDialect",
+    "enzymexla::EnzymeXLADialect",
     "math::MathDialect",
     "gpu::GPUDialect",
   ];
@@ -1251,6 +1252,34 @@ def AffineToStableHLORaising : Pass<"raise-affine-to-stablehlo"> {
            /*default=*/"true",
            /*description=*/
            "Whether to prefer raising to while instead of unrolling">,
+  ];
+}
+
+def XLAMegakernelizePass : Pass<"xla-megakernelize", "ModuleOp"> {
+  let summary = "Fuse XLA wrappers and lift wrapper loops into megakernels";
+  let description = [{
+    Fuse compatible sequential enzymexla.xla_wrapper operations which are
+    proven to operate on the same set of non-aliasing buffers. The raised
+    StableHLO function bodies are cloned into a new function and their tensor
+    results are threaded according to the wrapper buffer identities. If alias
+    analysis cannot prove the required MustAlias and NoAlias relationships,
+    the wrappers are left unchanged.
+
+    A side-effect-free scf.for containing one wrapper can also be moved into a
+    raised function as a stablehlo.while. This is restricted to loops whose
+    induction variable is unused and whose wrapper buffers are proven pairwise
+    non-aliasing. Dynamic loop bounds are copied to temporary device
+    allocations before the wrapper call; constant bounds are embedded directly
+    in the raised StableHLO function.
+  }];
+  let dependentDialects = [
+    "arith::ArithDialect",
+    "enzymexla::EnzymeXLADialect",
+    "func::FuncDialect",
+    "gpu::GPUDialect",
+    "memref::MemRefDialect",
+    "scf::SCFDialect",
+    "stablehlo::StablehloDialect",
   ];
 }
 

@@ -367,6 +367,36 @@ def Pointer2MemrefOp : EnzymeXLA_Op<"pointer2memref", [
   }];
 }
 
+def DeviceMirrorOp : EnzymeXLA_Op<"device_mirror", [
+  Pure, AllTypesMatch<["host", "result"]>
+]> {
+  let summary = "Associate a host value with an existing device mirror";
+
+  let description = [{
+    `device_mirror` is a compiler annotation asserting that `device` contains
+    the device-resident representation of `host`.  It performs no allocation
+    or copy, and its result is equal to `host`.
+
+    The annotation remains valid for uses of the returned SSA value.  The
+    producer is responsible for keeping the device storage alive and in sync,
+    just as it is responsible for satisfying a source-level `restrict`
+    promise.  Consumers must still prove any aliasing conditions required by
+    their transformation.
+
+    The device operand may be an LLVM pointer or a memref.  Individual
+    consumers can impose tighter shape and element-type requirements.
+  }];
+
+  let arguments = (ins AnyType:$host, AnyType:$device);
+  let results = (outs AnyType:$result);
+
+  let assemblyFormat = [{
+    $host `,` $device attr-dict `:` functional-type(operands, results)
+  }];
+
+  let hasVerifier = 1;
+}
+
 def AlternativesOp : EnzymeXLA_Op<"alternatives", [
   RecursiveMemoryEffects]> {
   let summary = "Provides several alternatives kernels for gpu code";
