@@ -1715,18 +1715,21 @@ template <typename T> struct SimpleMem2Reg : public OpRewritePattern<T> {
   LogicalResult matchAndRewrite(T alloc,
                                 PatternRewriter &rewriter) const override {
     SmallVector<Value> stored;
+    SmallVector<Operation *> storeOps;
     SmallVector<Operation *> loads;
     for (auto op : alloc->getUsers()) {
       if (auto storeOp = dyn_cast<memref::StoreOp>(op)) {
         if (storeOp.getValue() == alloc)
           return failure();
         stored.push_back(storeOp.getValue());
+        storeOps.push_back(storeOp);
         continue;
       }
       if (auto storeOp = dyn_cast<affine::AffineStoreOp>(op)) {
         if (storeOp.getValue() == alloc)
           return failure();
         stored.push_back(storeOp.getValue());
+        storeOps.push_back(storeOp);
         continue;
       }
 
@@ -1754,11 +1757,28 @@ template <typename T> struct SimpleMem2Reg : public OpRewritePattern<T> {
     if (loads.size() != 1 || stored.size() != 1)
       return failure();
 
+    // The load reads what the single store wrote only where the store has
+    // always run first -- availability of the stored value proves nothing --
+    // and only where both address the same slot: a store to a[i] says
+    // nothing about a load of a[j]. Identical maps over identical operands
+    // is the one case where sameness is a fact rather than an analysis.
+    auto sameSlot = [](Operation *st, Operation *ld) {
+      if (auto as = dyn_cast<affine::AffineStoreOp>(st)) {
+        auto al = dyn_cast<affine::AffineLoadOp>(ld);
+        return al && as.getAffineMap() == al.getAffineMap() &&
+               llvm::equal(as.getMapOperands(), al.getMapOperands());
+      }
+      if (auto ms = dyn_cast<memref::StoreOp>(st)) {
+        auto ml = dyn_cast<memref::LoadOp>(ld);
+        return ml && llvm::equal(ms.getIndices(), ml.getIndices());
+      }
+      return false;
+    };
     DominanceInfo DI(alloc->getParentOp());
     bool changed = false;
     for (auto load : loads) {
-      if (definedOutsideOrAt(stored[0], alloc->getParentOp()) ||
-          DI.dominates(stored[0], load)) {
+      if (sameSlot(storeOps[0], load) &&
+          DI.properlyDominates(storeOps[0], load)) {
         rewriter.replaceOp(load, stored);
         changed = true;
         continue;
