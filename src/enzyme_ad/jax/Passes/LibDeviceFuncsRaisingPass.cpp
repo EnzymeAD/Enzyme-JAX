@@ -215,15 +215,15 @@ std::optional<StringRef> getEnzymeMarker(Value v) {
 }
 
 // The activity the shared grammar names, said the way the MLIR ops say it.
-enzyme::Activity toMLIRActivity(enzyme_markers::MarkerActivity activity) {
+enzyme::Activity toMLIRActivity(DIFFE_TYPE activity) {
   switch (activity) {
-  case enzyme_markers::MarkerActivity::Const:
+  case DIFFE_TYPE::CONSTANT:
     return enzyme::Activity::enzyme_const;
-  case enzyme_markers::MarkerActivity::Dup:
+  case DIFFE_TYPE::DUP_ARG:
     return enzyme::Activity::enzyme_dup;
-  case enzyme_markers::MarkerActivity::DupNoNeed:
+  case DIFFE_TYPE::DUP_NONEED:
     return enzyme::Activity::enzyme_dupnoneed;
-  case enzyme_markers::MarkerActivity::Out:
+  case DIFFE_TYPE::OUT_DIFF:
     return enzyme::Activity::enzyme_active;
   }
   llvm_unreachable("unknown marker activity");
