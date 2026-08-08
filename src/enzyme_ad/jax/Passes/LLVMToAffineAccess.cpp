@@ -1879,6 +1879,17 @@ convertLLVMToAffineAccess(Operation *op,
 
       Type ty = load.getType();
       auto tySize = dl.getTypeSize(ty);
+      // Memref indexing strides by the element's allocation size, and every
+      // downstream form -- the affine map division here, and the
+      // canonicalizations that fold byte GEPs into element GEPs -- assumes
+      // that stride equals the store size. A type that stores fewer bytes
+      // than its stride (i480 stores 60 but strides 64) breaks that
+      // assumption at every element but the first, and its memref form also
+      // loses the op's explicit sub-ABI alignment. Leave such accesses in
+      // llvm dialect form.
+      if (llvm::alignTo(static_cast<uint64_t>(tySize),
+                        dl.getTypeABIAlignment(ty)) != tySize)
+        continue;
       if (MemRefType::isValidElementType(ty) && aab.isLegal() && aab.base) {
         auto memref0 = mc(aab.base);
         Value memref = memref0;
@@ -1957,6 +1968,17 @@ convertLLVMToAffineAccess(Operation *op,
       Type ty = store.getValue().getType();
       IRRewriter rewriter(store);
       auto tySize = dl.getTypeSize(ty);
+      // Memref indexing strides by the element's allocation size, and every
+      // downstream form -- the affine map division here, and the
+      // canonicalizations that fold byte GEPs into element GEPs -- assumes
+      // that stride equals the store size. A type that stores fewer bytes
+      // than its stride (i480 stores 60 but strides 64) breaks that
+      // assumption at every element but the first, and its memref form also
+      // loses the op's explicit sub-ABI alignment. Leave such accesses in
+      // llvm dialect form.
+      if (llvm::alignTo(static_cast<uint64_t>(tySize),
+                        dl.getTypeABIAlignment(ty)) != tySize)
+        continue;
       if (MemRefType::isValidElementType(ty) && aab.isLegal() && aab.base) {
         auto memref0 = mc(aab.base);
         Value memref = memref0;
