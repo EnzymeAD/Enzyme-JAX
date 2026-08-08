@@ -177,7 +177,15 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       if (options->dataflow)
         pass_pipeline += "dataflow ";
       if (options->markReadonly)
-        pass_pipeline += "markReadonly";
+        pass_pipeline += "markReadonly ";
+      // Each generated derivative function is cleaned of enzyme cache ops
+      // the moment it is created: nested differentiation hands the outer AD
+      // the inner function as input, and enzyme.push/pop have no derivative
+      // of their own.
+      pass_pipeline += "postpasses=\"lower-llvm-ext,canonicalize,";
+      if (options->splitMultiResults)
+        pass_pipeline += "split-multi-results,";
+      pass_pipeline += "remove-unnecessary-enzyme-ops\"";
       pass_pipeline += "},"
         "lower-llvm-ext,canonicalize,";
       if (options->splitMultiResults)
