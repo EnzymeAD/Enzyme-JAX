@@ -1074,71 +1074,76 @@ void mlir::enzyme::populateLibDeviceFuncsToOpsPatterns(
   patterns.add<CallToOpIntAdaptRaising<math::CtPopOp>>(context, "__nv_popcll");
 
   populateOpPatterns<arith::RemFOp>(converter, patterns, "__nv_fmodf",
-                                    "__nv_fmod");
+                                    "__nv_fmod", "fmodf", "fmod");
   populateOpPatterns<math::AbsFOp>(converter, patterns, "__nv_fabsf",
-                                   "__nv_fabs");
+                                   "__nv_fabs", "fabsf", "fabs");
   populateOpPatterns<math::AcosOp>(converter, patterns, "__nv_acosf",
-                                   "__nv_acos");
+                                   "__nv_acos", "acosf", "acos");
   populateOpPatterns<math::AcoshOp>(converter, patterns, "__nv_acoshf",
-                                    "__nv_acosh");
+                                    "__nv_acosh", "acoshf", "acosh");
   populateOpPatterns<math::AsinOp>(converter, patterns, "__nv_asinf",
-                                   "__nv_asin");
+                                   "__nv_asin", "asinf", "asin");
   populateOpPatterns<math::AsinhOp>(converter, patterns, "__nv_asinhf",
-                                    "__nv_asinh");
+                                    "__nv_asinh", "asinhf", "asinh");
   populateOpPatterns<math::AtanOp>(converter, patterns, "__nv_atanf",
-                                   "__nv_atan");
+                                   "__nv_atan", "atanf", "atan");
   populateOpPatterns<math::Atan2Op>(converter, patterns, "__nv_atan2f",
-                                    "__nv_atan2");
+                                    "__nv_atan2", "atan2f", "atan2");
   populateOpPatterns<math::AtanhOp>(converter, patterns, "__nv_atanhf",
-                                    "__nv_atanh");
+                                    "__nv_atanh", "atanhf", "atanh");
   populateOpPatterns<math::CbrtOp>(converter, patterns, "__nv_cbrtf",
-                                   "__nv_cbrt");
+                                   "__nv_cbrt", "cbrtf", "cbrt");
   populateOpPatterns<math::CeilOp>(converter, patterns, "__nv_ceilf",
-                                   "__nv_ceil");
+                                   "__nv_ceil", "ceilf", "ceil");
   populateOpPatterns<math::CopySignOp>(converter, patterns, "__nv_copysignf",
-                                       "__nv_copysign");
+                                       "__nv_copysign", "copysignf",
+                                       "copysign");
   populateOpPatterns<math::CosOp>(converter, patterns, "__nv_cosf", "__nv_cos",
-                                  "__nv_fast_cosf");
+                                  "__nv_fast_cosf", "cosf", "cos");
   populateOpPatterns<math::CoshOp>(converter, patterns, "__nv_coshf",
-                                   "__nv_cosh");
-  populateOpPatterns<math::ErfOp>(converter, patterns, "__nv_erff", "__nv_erf");
+                                   "__nv_cosh", "coshf", "cosh");
+  populateOpPatterns<math::ErfOp>(converter, patterns, "__nv_erff", "__nv_erf",
+                                  "erff", "erf");
   populateOpPatterns<math::ExpOp>(converter, patterns, "__nv_expf", "__nv_exp",
-                                  "__nv_fast_expf");
+                                  "__nv_fast_expf", "expf", "exp");
   populateOpPatterns<math::Exp2Op>(converter, patterns, "__nv_exp2f",
-                                   "__nv_exp2");
+                                   "__nv_exp2", "exp2f", "exp2");
   populateOpPatterns<math::ExpM1Op>(converter, patterns, "__nv_expm1f",
-                                    "__nv_expm1");
+                                    "__nv_expm1", "expm1f", "expm1");
   populateOpPatterns<math::FloorOp>(converter, patterns, "__nv_floorf",
-                                    "__nv_floor");
-  populateOpPatterns<math::FmaOp>(converter, patterns, "__nv_fmaf", "__nv_fma");
+                                    "__nv_floor", "floorf", "floor");
+  populateOpPatterns<math::FmaOp>(converter, patterns, "__nv_fmaf", "__nv_fma",
+                                  "fmaf", "fma");
   populateOpPatterns<math::LogOp>(converter, patterns, "__nv_logf", "__nv_log",
-                                  "__nv_fast_logf");
+                                  "__nv_fast_logf", "logf", "log");
   populateOpPatterns<math::Log10Op>(converter, patterns, "__nv_log10f",
-                                    "__nv_log10", "__nv_fast_log10f");
+                                    "__nv_log10", "__nv_fast_log10f", "log10f",
+                                    "log10");
   populateOpPatterns<math::Log1pOp>(converter, patterns, "__nv_log1pf",
-                                    "__nv_log1p");
+                                    "__nv_log1p", "log1pf", "log1p");
   populateOpPatterns<math::Log2Op>(converter, patterns, "__nv_log2f",
-                                   "__nv_log2", "__nv_fast_log2f");
+                                   "__nv_log2", "__nv_fast_log2f", "log2f",
+                                   "log2");
   populateOpPatterns<math::PowFOp>(converter, patterns, "__nv_powf", "__nv_pow",
-                                   "__nv_fast_powf");
+                                   "__nv_fast_powf", "powf", "pow");
   populateOpPatterns<arith::DivFOp>(converter, patterns, "__nv_fdividef",
                                     "__nv_fdivide", "__nv_fast_fdividef");
   populateOpPatterns<math::RoundOp>(converter, patterns, "__nv_roundf",
-                                    "__nv_round");
+                                    "__nv_round", "roundf", "round");
   populateOpPatterns<math::RoundEvenOp>(converter, patterns, "__nv_rintf",
-                                        "__nv_rint");
+                                        "__nv_rint", "rintf", "rint");
   populateOpPatterns<math::RsqrtOp>(converter, patterns, "__nv_rsqrtf",
                                     "__nv_rsqrt");
   populateOpPatterns<math::SinOp>(converter, patterns, "__nv_sinf", "__nv_sin",
-                                  "__nv_fast_sinf");
+                                  "__nv_fast_sinf", "sinf", "sin");
   populateOpPatterns<math::SinhOp>(converter, patterns, "__nv_sinhf",
-                                   "__nv_sinh");
+                                   "__nv_sinh", "sinhf", "sinh");
   populateOpPatterns<math::SqrtOp>(converter, patterns, "__nv_sqrtf",
-                                   "__nv_sqrt");
+                                   "__nv_sqrt", "sqrtf", "sqrt");
   populateOpPatterns<math::TanOp>(converter, patterns, "__nv_tanf", "__nv_tan",
-                                  "__nv_fast_tanf");
+                                  "__nv_fast_tanf", "tanf", "tan");
   populateOpPatterns<math::TanhOp>(converter, patterns, "__nv_tanhf",
-                                   "__nv_tanh");
+                                   "__nv_tanh", "tanhf", "tanh");
   populateOpPatterns<math::FPowIOp>(converter, patterns, "__nv_powif",
                                     "__nv_powi");
   populateOpPatterns<math::AbsIOp>(converter, patterns, "__nv_abs",
