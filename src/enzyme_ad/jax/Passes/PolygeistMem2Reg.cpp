@@ -2111,8 +2111,9 @@ bool isCallArgOnlyRead(CallOpInterface callOp, Value val,
       return true;
   if (auto calleeAttr =
           dyn_cast<SymbolRefAttr>(callOp.getCallableForCallee())) {
-    if (auto fn = dyn_cast_or_null<LLVM::LLVMFuncOp>(symbolTables.lookupSymbolIn(
-            callOp->getParentOfType<ModuleOp>(), calleeAttr))) {
+    if (auto fn =
+            dyn_cast_or_null<LLVM::LLVMFuncOp>(symbolTables.lookupSymbolIn(
+                callOp->getParentOfType<ModuleOp>(), calleeAttr))) {
       if (argMemOnlyRead(fn.getMemoryEffectsAttr()))
         return true;
       if (auto pass = fn->getAttrOfType<ArrayAttr>("passthrough"))
