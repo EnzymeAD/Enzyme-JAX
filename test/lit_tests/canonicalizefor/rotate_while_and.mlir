@@ -123,7 +123,7 @@ func.func @"negative_step"() {
 // CHECK:           } else {
 // CHECK:             scf.yield %[[ARG2]], %[[ARG3]], %[[FALSE]]
 // CHECK:           }
-// CHECK:           %[[BOUND_CHECK:.+]] = arith.cmpi sgt, %[[I]], %[[C29]]
+// CHECK:           %[[BOUND_CHECK:.+]] = arith.cmpi slt, %[[I]], %[[C29]]
 // CHECK:           %[[BREAK_COND:.+]] = arith.andi %[[BOUND_CHECK]], %[[IF1]]#2
 // CHECK:           %[[IF2:.+]] = scf.if %[[BREAK_COND]] -> (i64) {
 // CHECK:             scf.yield %[[IF1]]#0
