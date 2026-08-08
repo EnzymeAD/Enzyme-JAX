@@ -43,9 +43,9 @@ func.func @popcount_range(%lo: i32, %hi: i32, %bits: i32) -> i32 {
 // are pure passthroughs -- but the loop permutes two slots each iteration, so
 // which evaluation the results come from still matters: for %n = 1 the answer
 // is (%x, %y), taken at the failing evaluation after one swap-back. Only a
-// slot that refills with itself, or advances by a loop-invariant step (whose
-// result ForOpInductionReplacement rewrites in closed form), can do without
-// the extra iteration.
+// value from outside the loop, or a slot that refills with itself, can do
+// without the extra iteration -- even a slot advanced by a loop-invariant
+// step observes the final evaluation, one step past the last the body saw.
 
 func.func @swap(%n: i32, %x: i32, %y: i32) -> (i32, i32) {
   %c0 = arith.constant 0 : i32
@@ -65,3 +65,33 @@ func.func @swap(%n: i32, %x: i32, %y: i32) -> (i32, i32) {
 // CHECK:         %[[MAX:.+]] = arith.maxsi %arg0, %{{.+}} : i32
 // CHECK:         %[[UB:.+]] = arith.addi %[[MAX]], %{{.+}} : i32
 // CHECK:         scf.for %{{.+}} to %[[UB]]
+
+// -----
+
+// The plainest shape of all: the condition forwards the slot itself and the
+// body advances it by one. The result is the failing evaluation's value --
+// count to 3 and the answer is 3, the value the comparison rejected, not 2,
+// the last the body saw. An advancing slot is not exempt: the conversion
+// yields the induction variable, so the result would come out one step short
+// without the widened bound.
+
+func.func @count(%n: i32) -> i32 {
+  %c0 = arith.constant 0 : i32
+  %c1 = arith.constant 1 : i32
+  %r = scf.while (%i = %c0) : (i32) -> i32 {
+    %cont = arith.cmpi slt, %i, %n : i32
+    scf.condition(%cont) %i : i32
+  } do {
+  ^bb0(%i0: i32):
+    %i2 = arith.addi %i0, %c1 : i32
+    scf.yield %i2 : i32
+  }
+  return %r : i32
+}
+
+// CHECK-LABEL: func.func @count
+// CHECK:         %[[CLAMP:.+]] = arith.maxsi %arg0, %c0_i32 : i32
+// CHECK:         %[[PAST:.+]] = arith.addi %[[CLAMP]], %c1_i32 : i32
+// CHECK:         %[[FOR:.+]] = scf.for %[[IV:.+]] = %c0_i32 to %[[PAST]] step %c1_i32
+// CHECK:           scf.yield %[[IV]] : i32
+// CHECK:         return %[[FOR]] : i32

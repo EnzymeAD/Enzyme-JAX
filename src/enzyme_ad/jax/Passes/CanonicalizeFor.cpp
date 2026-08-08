@@ -1585,12 +1585,15 @@ struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
     // fails -- while the converted loop's results are snapshots from the last
     // evaluation it runs. A used result is the same value either way only if
     // its condition arg cannot change between one evaluation and the next: a
-    // value from outside the loop, a passthrough of a slot the loop refills
-    // with itself, or a slot advanced by a loop-invariant step, whose result
-    // ForOpInductionReplacement rewrites in closed form afterwards. Anything
-    // else -- a value the before region computes, a permuted slot, an
-    // accumulator -- observes the final evaluation and needs the extra
-    // iteration, pure or not.
+    // value from outside the loop, or a passthrough of a slot the loop
+    // refills with itself. Anything else -- a value the before region
+    // computes, a permuted slot, an accumulator, even a slot advanced by a
+    // loop-invariant step -- observes the final evaluation and needs the
+    // extra iteration, pure or not. (An advancing slot looks recoverable in
+    // closed form, but nothing downstream is obliged to do so:
+    // ForOpInductionReplacement only rewrites a result whose post-conversion
+    // yield is addi(iterarg, step), and the conversion does not produce that
+    // shape -- counting on it returned one step short.)
     if (!doWhile) {
       auto afterYield =
           cast<scf::YieldOp>(loop.getAfter().front().getTerminator());
@@ -1617,15 +1620,6 @@ struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
             Value next = afterYield.getOperand(ba.getArgNumber());
             if (carriesSlot(next, ba))
               continue;
-            if (auto add = next.getDefiningOp<AddIOp>()) {
-              bool induction = false;
-              for (int k = 0; k < 2; k++)
-                if (carriesSlot(add->getOperand(k), ba) &&
-                    definedOutside(add->getOperand(1 - k)))
-                  induction = true;
-              if (induction)
-                continue;
-            }
           }
         }
         doWhile = true;

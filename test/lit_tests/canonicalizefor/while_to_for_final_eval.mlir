@@ -62,9 +62,12 @@ func.func @trip_count_exit(%p: i1) -> i64 {
 
 // -----
 
-// Without an extra condition the loop can only exit by trip count, the before
-// region is just the comparison, and the results are plain block arguments, so
-// no extra iteration is needed.
+// Without an extra condition the loop can only exit by trip count, but the
+// result is still the failing evaluation's view: counting 0, 1, 2 against a
+// bound of 3 hands out 3, the value the comparison rejected, not 2, the last
+// the body saw. The before region being just the comparison, the extra
+// iteration costs no more than a bound one past the comparison's, clamped so
+// the zero-trip loop still returns its init.
 
 func.func @no_extra_condition(%ub: i64) -> i64 {
   %c0 = arith.constant 0 : i64
@@ -84,7 +87,9 @@ func.func @no_extra_condition(%ub: i64) -> i64 {
 // CHECK-SAME:                                  %[[UB:.*]]: i64) -> i64 {
 // CHECK-NEXT:      %[[LB:.*]] = arith.constant 0 : i64
 // CHECK-NEXT:      %[[STEP:.*]] = arith.constant 1 : i64
-// CHECK-NEXT:      %[[LOOP:.*]] = scf.for %[[I:.*]] = %[[LB]] to %[[UB]] step %[[STEP]] iter_args(%[[ITER:.*]] = %[[LB]]) -> (i64)  : i64 {
+// CHECK-NEXT:      %[[CLAMP:.*]] = arith.maxsi %[[UB]], %[[LB]] : i64
+// CHECK-NEXT:      %[[PAST:.*]] = arith.addi %[[CLAMP]], %[[STEP]] : i64
+// CHECK-NEXT:      %[[LOOP:.*]] = scf.for %[[I:.*]] = %[[LB]] to %[[PAST]] step %[[STEP]] iter_args(%[[ITER:.*]] = %[[LB]]) -> (i64)  : i64 {
 // CHECK-NEXT:        scf.yield %[[I]] : i64
 // CHECK-NEXT:      }
 // CHECK-NEXT:      return %[[LOOP]] : i64
