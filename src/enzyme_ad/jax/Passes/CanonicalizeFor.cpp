@@ -2250,13 +2250,6 @@ struct WhileLogicalNegation : public OpRewritePattern<WhileOp> {
       }
     }
 
-    // Entering the after region means the whole conjunction held, so there
-    // every conjunct is true. Exiting only means the conjunction failed --
-    // at least one conjunct is false, with no say in which -- so the value a
-    // result leaves with is only known when the condition is a single
-    // conjunct.
-    bool exitKnown = condOps.size() == 1;
-
     for (auto pair :
          llvm::zip(op.getResults(), term.getArgs(), op.getAfterArguments())) {
       auto termArg = std::get<1>(pair);
@@ -2285,7 +2278,12 @@ struct WhileLogicalNegation : public OpRewritePattern<WhileOp> {
           continue;
       }
 
-      if (exitKnown && !std::get<0>(pair).use_empty()) {
+      // Entering the after region means the whole conjunction held, so there
+      // every conjunct is true. Exiting only means the conjunction failed --
+      // at least one conjunct is false, with no say in which -- so the value
+      // a result leaves with is only known when the condition is a single
+      // conjunct.
+      if (condOps.size() == 1 && !std::get<0>(pair).use_empty()) {
         rewriter.modifyOpInPlace(op, [&] {
           rewriter.setInsertionPoint(op);
           auto truev =
