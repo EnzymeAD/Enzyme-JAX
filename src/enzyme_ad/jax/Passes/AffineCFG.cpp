@@ -4053,11 +4053,31 @@ struct OptimizeRem : public OpRewritePattern<arith::RemUIOp> {
     AddIOp sum = op.getLhs().getDefiningOp<arith::AddIOp>();
     if (!sum)
       return failure();
+    // (a * d + b) urem d == b urem d needs the sum's low bits to be exactly
+    // b's. For d a power of two that holds however anything wraps: a * d
+    // leaves the low log2(d) bits untouched. For any other d a wrap shifts
+    // the residue by 2^bitwidth mod d, which is nonzero, so the multiply
+    // must be nuw and the add must not wrap unsigned either -- carrying the
+    // flag, or adding two provably nonnegative values, whose sum stays
+    // below 2^bitwidth.
+    APInt divisor;
+    bool powerOfTwoDivisor =
+        matchPattern(op.getRhs(), m_ConstantInt(&divisor)) &&
+        divisor.isPowerOf2();
+    bool sumNoUnsignedWrap =
+        bitEnumContainsAll(sum.getOverflowFlags(), IntegerOverflowFlags::nuw) ||
+        (valueCmp(Cmp::GE, sum.getLhs(), 0) &&
+         valueCmp(Cmp::GE, sum.getRhs(), 0));
+    if (!powerOfTwoDivisor && !sumNoUnsignedWrap)
+      return failure();
     for (int i = 0; i < 2; i++) {
       auto val = sum->getOperand(i).getDefiningOp<arith::MulIOp>();
       if (!val)
         continue;
       if (val.getRhs() != op.getRhs())
+        continue;
+      if (!powerOfTwoDivisor && !bitEnumContainsAll(val.getOverflowFlags(),
+                                                    IntegerOverflowFlags::nuw))
         continue;
       rewriter.replaceOpWithNewOp<arith::RemUIOp>(op, sum->getOperand(1 - i),
                                                   op.getRhs());
