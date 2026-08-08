@@ -2090,13 +2090,18 @@ bool isCallNonCapturing(CallOpInterface callOp, Value val,
                              LLVM::LLVMDialect::getNoCaptureAttrName());
 }
 
-// Whether a memory-effects attribute rules out writes through pointer
-// arguments. Later LLVM spells whole-function readonly/readnone this way,
-// and per-location effects can say argument memory is only read even when
-// the function writes elsewhere.
+// Whether a memory-effects attribute rules out writes that could reach a
+// pointer argument's bytes. Later LLVM spells whole-function
+// readonly/readnone this way. argMem covers accesses through the argument
+// pointers themselves; the same bytes can also be written through an access
+// classified as other -- a captured pointer, a global alias -- so both must
+// be write-free. Inaccessible memory cannot alias an argument, so it alone
+// may be written.
+static bool noWrite(LLVM::ModRefInfo mr) {
+  return mr == LLVM::ModRefInfo::NoModRef || mr == LLVM::ModRefInfo::Ref;
+}
 static bool argMemOnlyRead(LLVM::MemoryEffectsAttr me) {
-  return me && (me.getArgMem() == LLVM::ModRefInfo::NoModRef ||
-                me.getArgMem() == LLVM::ModRefInfo::Ref);
+  return me && noWrite(me.getArgMem()) && noWrite(me.getOther());
 }
 
 // nocapture only says the callee does not hold on to the pointer; an out

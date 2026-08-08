@@ -223,10 +223,11 @@ llvm.func @variadic_call_more_args_than_params() -> i32 {
 
 // -----
 
-// A memory-effects attribute on the callee that leaves argument memory
-// read-only clears the call even when the function writes elsewhere and no
-// argument attribute says anything.
-llvm.func @argmem_reader(!llvm.ptr {llvm.nocapture}) attributes {memory_effects = #llvm.memory_effects<other = readwrite, argMem = read, inaccessibleMem = readwrite, errnoMem = readwrite, targetMem0 = readwrite, targetMem1 = readwrite>}
+// A memory-effects attribute on the callee that leaves argument memory and
+// other aliasable memory read-only clears the call, and writable
+// inaccessible memory does not spoil it: nothing reachable from outside the
+// callee can alias the slot through it.
+llvm.func @argmem_reader(!llvm.ptr {llvm.nocapture}) attributes {memory_effects = #llvm.memory_effects<other = read, argMem = read, inaccessibleMem = readwrite, errnoMem = readwrite, targetMem0 = readwrite, targetMem1 = readwrite>}
 llvm.func @forward_across_argmem_read() -> i32 {
   %c1 = llvm.mlir.constant(1 : i32) : i32
   %mem = llvm.alloca %c1 x i32 : (i32) -> !llvm.ptr
@@ -260,6 +261,26 @@ llvm.func @no_forward_across_argmem_write() -> i32 {
 // CHECK: llvm.call @argmem_writer
 // CHECK: %[[L:.*]] = llvm.load
 // CHECK: llvm.return %[[L]] : i32
+
+// -----
+
+// argmem: read is not enough on its own -- a write classified as other can
+// still reach the slot through an alias, so the load stays.
+llvm.func @other_writer(!llvm.ptr {llvm.nocapture}) attributes {memory_effects = #llvm.memory_effects<other = readwrite, argMem = read, inaccessibleMem = none, errnoMem = none, targetMem0 = none, targetMem1 = none>}
+llvm.func @no_forward_across_other_write() -> i32 {
+  %c1 = llvm.mlir.constant(1 : i32) : i32
+  %mem = llvm.alloca %c1 x i32 : (i32) -> !llvm.ptr
+  %val = llvm.mlir.constant(42 : i32) : i32
+  llvm.store %val, %mem : i32, !llvm.ptr
+  llvm.call @other_writer(%mem) : (!llvm.ptr) -> ()
+  %loaded = llvm.load %mem : !llvm.ptr -> i32
+  llvm.return %loaded : i32
+}
+
+// CHECK: llvm.func @no_forward_across_other_write() -> i32 {
+// CHECK: llvm.call @other_writer
+// CHECK: %[[L2:.*]] = llvm.load
+// CHECK: llvm.return %[[L2]] : i32
 
 // -----
 
