@@ -1580,6 +1580,53 @@ struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
     if (lookThrough && !loop->use_empty())
       doWhile = true;
 
+    // The same holds without an extra condition. A do-while's results are the
+    // condition args of that final evaluation -- the one whose comparison
+    // fails -- while the converted loop's results are snapshots from the last
+    // evaluation it runs. A used result is the same value either way only if
+    // its condition arg cannot change between one evaluation and the next: a
+    // value from outside the loop, or a passthrough of a slot the loop
+    // refills with itself. Anything else -- a value the before region
+    // computes, a permuted slot, an accumulator, even a slot advanced by a
+    // loop-invariant step -- observes the final evaluation and needs the
+    // extra iteration, pure or not. (An advancing slot looks recoverable in
+    // closed form, but nothing downstream is obliged to do so:
+    // ForOpInductionReplacement only rewrites a result whose post-conversion
+    // yield is addi(iterarg, step), and the conversion does not produce that
+    // shape -- counting on it returned one step short.)
+    if (!doWhile) {
+      auto afterYield =
+          cast<scf::YieldOp>(loop.getAfter().front().getTerminator());
+      auto definedOutside = [&](Value v) {
+        if (auto ba = dyn_cast<BlockArgument>(v))
+          return !loop->isAncestor(ba.getOwner()->getParentOp());
+        Operation *def = v.getDefiningOp();
+        return def && !loop->isAncestor(def);
+      };
+      // The after-region arg at position p carries before-arg `ba` iff the
+      // condition forwards `ba` in position p.
+      auto carriesSlot = [&](Value v, BlockArgument ba) {
+        auto aa = dyn_cast<BlockArgument>(v);
+        return aa && aa.getOwner() == &loop.getAfter().front() &&
+               condOp.getArgs()[aa.getArgNumber()] == ba;
+      };
+      for (auto [res, arg] : llvm::zip(loop.getResults(), condOp.getArgs())) {
+        if (res.use_empty())
+          continue;
+        if (definedOutside(arg))
+          continue;
+        if (auto ba = dyn_cast<BlockArgument>(arg)) {
+          if (ba.getOwner() == &loop.getBefore().front()) {
+            Value next = afterYield.getOperand(ba.getArgNumber());
+            if (carriesSlot(next, ba))
+              continue;
+          }
+        }
+        doWhile = true;
+        break;
+      }
+    }
+
     bool mutableAfter = false;
     if (doWhile) {
       for (auto &blk : loop.getAfter()) {
