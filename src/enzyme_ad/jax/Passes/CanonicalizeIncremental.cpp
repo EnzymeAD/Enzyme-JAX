@@ -74,6 +74,10 @@ struct CanonicalizeIncrementalPass
     GreedyRewriteConfig config;
     config.enableFolding();
     config.enableConstantCSE();
+    // The canonicalizer's default: no identical-block merging. Merging adds
+    // successor operands for the values the blocks differed in, and e.g.
+    // llvm.invoke cannot carry an index-typed successor operand.
+    config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);
 
     parallelForEach(ctx, targets, [&](Operation *fn) {
       OperationFingerPrint pre(fn);
