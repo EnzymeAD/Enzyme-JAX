@@ -856,6 +856,8 @@ void ParallelLower::runOnOperation() {
               MemRefType::get(alop.getType().getShape(),
                               alop.getType().getElementType(),
                               alop.getType().getLayout(), Attribute()));
+          if (auto align = alop.getAlignment())
+            newAlloca.setAlignment(*align);
           builder.replaceOpWithNewOp<memref::CastOp>(alop, alop.getType(),
                                                      newAlloca);
         }
@@ -869,6 +871,8 @@ void ParallelLower::runOnOperation() {
             builder, alop.getLoc(),
             LLVM::LLVMPointerType::get(alop.getContext(), 0),
             alop.getArraySize());
+        if (auto align = alop.getAlignment())
+          newAlloca.setAlignment(*align);
         builder.replaceOpWithNewOp<LLVM::AddrSpaceCastOp>(alop, PT, newAlloca);
       }
     });
@@ -890,6 +894,8 @@ void ParallelLower::runOnOperation() {
           }
           auto newAlloca = memref::AllocaOp::create(
               builder, alop.getLoc(), MemRefType::get(size, elType));
+          if (auto align = glob.getAlignment())
+            newAlloca.setAlignment(*align);
           sharedmems[glob.getName()] = newAlloca;
         }
         builder.replaceOpWithNewOp<enzymexla::Memref2PointerOp>(
