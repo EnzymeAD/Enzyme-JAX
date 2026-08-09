@@ -114,10 +114,10 @@ cc_library(
     deps = [
         "@com_google_absl//absl/base",
         "@com_google_absl//absl/strings:str_format",
+        "@mpitrampoline",
         "@xla//xla/ffi:ffi_api",
         "@xla//xla/ffi/api:c_api",
         "@xla//xla/ffi/api:ffi",
-        "@mpitrampoline",
     ] + select({
         "@local_config_cuda//:is_cuda_enabled": [
             "@jax//jaxlib:ffi_helpers",
