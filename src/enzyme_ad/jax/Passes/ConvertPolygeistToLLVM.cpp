@@ -2852,7 +2852,8 @@ LogicalResult LegalizeLaunchFuncOpPattern::matchAndRewrite(
                       adaptor.getBlockSizeZ()},
       adaptor.getDynamicSharedMemorySize(),
       llvmArgumentsWithSizes.empty() ? llvmArguments : llvmArgumentsWithSizes,
-      stream, clusterSize);
+      /*asyncTokenType=*/nullptr, /*asyncDependencies=*/{},
+      /*asyncObject=*/stream, clusterSize);
   if (launchOp.getAsyncToken())
     rewriter.replaceOp(launchOp, {stream});
   else
