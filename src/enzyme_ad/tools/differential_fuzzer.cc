@@ -8,16 +8,20 @@
 #include "mlir/Pass/PassRegistry.h"
 #include "mlir/Support/FileUtilities.h"
 
+#include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/reference/Api.h"
 #include "stablehlo/reference/Tensor.h"
 #include "stablehlo/reference/Types.h"
 #include "stablehlo/reference/Value.h"
+#include "stablehlo/transforms/Passes.h"
 
+#include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/CommandLine.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/SourceMgr.h"
+#include "llvm/Support/StringSaver.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include "src/enzyme_ad/jax/Passes/Passes.h"
@@ -227,61 +231,73 @@ using AnyVector = std::variant<std::vector<float>,    // f32, f16, bf16
 // we want to extract the passes so we can run them on the unoptimized mlir
 // function and get the optimized function to compare them
 // clang-format on
-std::string findPassesFromMLIRFile(llvm::StringRef filePath) {
+// Returns a tuple: { passPipeline, allowUnregisteredDialect, splitInputFile }
+std::tuple<std::string, bool, bool> parseRunLine(llvm::StringRef filePath) {
   auto bufferOrError = llvm::MemoryBuffer::getFile(filePath);
-  if (!bufferOrError) {
-    llvm::errs() << "Could not open file: " << filePath << "\n";
-    return "";
-  }
+  if (!bufferOrError)
+    return {"", false, false};
 
   llvm::StringRef content = bufferOrError.get()->getBuffer();
+  llvm::StringRef runLine;
 
+  // 1. Find the RUN line
   while (!content.empty()) {
     llvm::StringRef line;
     std::tie(line, content) = content.split('\n');
     line = line.trim();
-
     if (line.consume_front("// RUN:")) {
-      size_t optIdx = line.find("enzymexlamlir-opt");
-      size_t pipeIdx = line.find("|");
+      runLine = line;
+      break;
+    }
+  }
 
-      if (optIdx != llvm::StringRef::npos) {
-        size_t argsStart = optIdx + 17;
-        size_t argsEnd =
-            (pipeIdx != llvm::StringRef::npos) ? pipeIdx : line.size();
+  if (runLine.empty())
+    return {"", false, false};
 
-        // Slice out just the arguments (e.g., " --enzyme-hlo-opt %s ")
-        llvm::StringRef args = line.slice(argsStart, argsEnd).trim();
+  llvm::BumpPtrAllocator allocator;
+  llvm::StringSaver saver(allocator);
+  llvm::SmallVector<const char *, 20> args;
+  llvm::cl::TokenizeGNUCommandLine(runLine, saver, args);
 
-        std::string passStr = args.str();
-        size_t fileArg = passStr.find("%s");
-        if (fileArg != std::string::npos) {
-          passStr.erase(fileArg, 2);
-        }
+  llvm::SmallVector<std::string, 4> passes;
+  bool allowUnreg = false;
+  bool split = false;
+  bool afterPipe = false;
 
-        return passStr;
+  // 3. Process the safe tokens
+  for (const char *argChar : args) {
+    llvm::StringRef token(argChar);
+
+    if (token == "|") {
+      afterPipe = true;
+      continue;
+    }
+    if (afterPipe || token == "enzymexlamlir-opt" || token == "%s")
+      continue;
+
+    // Extract environment flags
+    if (token == "-allow-unregistered-dialect") {
+      allowUnreg = true;
+      continue;
+    }
+    if (token == "-split-input-file" || token == "--split-input-file") {
+      split = true;
+      continue;
+    }
+
+    // Format passes for the PassManager
+    if (token.consume_front("--") || token.consume_front("-")) {
+      auto [passName, passOpts] = token.split('=');
+      if (!passOpts.empty()) {
+        passes.push_back((passName + "{" + passOpts + "}").str());
+      } else {
+        passes.push_back(passName.str());
       }
     }
   }
 
-  return "";
-}
-
-bool buildPassPipeline(MLIRContext &context, mlir::PassManager &pm,
-                       llvm::StringRef filePath) {
-  std::string passStr = findPassesFromMLIRFile(filePath);
-  if (passStr.empty()) {
-    llvm::errs() << "No RUN line found in file!\n";
-    return false;
-  }
-  if (passStr.rfind("--", 0) == 0)
-    passStr.erase(0, 2);
-
-  if (mlir::failed(mlir::parsePassPipeline(passStr, pm, llvm::errs()))) {
-    llvm::errs() << "Failed to parse the pass pipeline: " << passStr << "\n";
-    return false;
-  }
-  return true;
+  // llvm::join merges the passes with commas automatically
+  return {llvm::join(passes, ","), allowUnreg, split};
 }
 
 AnyVector CreateCursedVector(mlir::Type elementType) {
@@ -399,6 +415,35 @@ std::optional<mlir::DenseElementsAttr> generateCursedTensor(mlir::Type argType,
   return attr;
 }
 
+bool isClose(double unopt, double opt, double rtol = 1e-5, double atol = 1e-8) {
+  // 1. Both are NaN? Match.
+  if (std::isnan(unopt) && std::isnan(opt))
+    return true;
+
+  // 2. Both are Inf? Match ONLY if signs are identical.
+  if (std::isinf(unopt) && std::isinf(opt))
+    return unopt == opt;
+
+  // 3. Fast-math overflow allowance:
+  // If one is Inf and the other is at the absolute float boundary of the same
+  // sign, allow it.
+  double max_val = std::numeric_limits<double>::max();
+  if (std::isinf(opt) && std::abs(unopt) >= max_val * 0.99 &&
+      (opt > 0) == (unopt > 0))
+    return true;
+  if (std::isinf(unopt) && std::abs(opt) >= max_val * 0.99 &&
+      (unopt > 0) == (opt > 0))
+    return true;
+
+  // 4. Any other mix of Inf/NaN vs finite numbers? Bug.
+  if (std::isnan(unopt) || std::isnan(opt) || std::isinf(unopt) ||
+      std::isinf(opt))
+    return false;
+
+  // 5. Standard tolerance check
+  return std::abs(unopt - opt) <= (atol + rtol * std::abs(opt));
+}
+
 int main(int argc, char **argv) {
   llvm::cl::ParseCommandLineOptions(argc, argv,
                                     "StableHLO Differential Fuzzer\n");
@@ -412,31 +457,60 @@ int main(int argc, char **argv) {
     llvm::outs() << "[*] Running with manual seed: " << seed << "\n";
   }
 
+  auto [passPipeline, allowUnreg, split] = parseRunLine(inputFilename);
+  if (passPipeline.empty()) {
+    llvm::errs() << "No RUN line found in file!\n";
+    return 1;
+  }
+
+  if (split) {
+    llvm::outs() << "[!] Skipping test: Fuzzer does not yet support "
+                    "--split-input-file.\n";
+    return 0;
+  }
+
   std::mt19937 gen(seed);
 
   MLIRContext context;
   context.loadDialect<mlir::stablehlo::StablehloDialect>();
   context.loadDialect<mlir::func::FuncDialect>();
   context.loadDialect<mlir::transform::TransformDialect>();
+  context.loadDialect<mlir::chlo::ChloDialect>();
+
   mlir::enzyme::registerenzymexlaPasses();
   mlir::transform::registerTransformPasses();
+
+  // Apply environment flags
+  if (allowUnreg) {
+    context.allowUnregisteredDialects(true);
+  }
 
   OwningOpRef<ModuleOp> module = loadMLIRModule(context, inputFilename);
   if (!module)
     return 1;
 
-  mlir::PassManager pm(&context);
-  if (!buildPassPipeline(context, pm, inputFilename))
-    return 1;
+  mlir::PassManager legalizationPM(&context);
+  // Make it possible to run the chlo tests
+  legalizationPM.addPass(mlir::stablehlo::createChloLegalizeToStablehloPass());
 
-  llvm::outs() << "Successfully parsed module and configured passes!\n";
+  // Lower EnzymeXLA custom operations to StableHLO
+  legalizationPM.addPass(mlir::enzyme::createLowerEnzymeXLAMathPass());
+  legalizationPM.addPass(mlir::enzyme::createLowerEnzymeXLABLASPass());
+  legalizationPM.addPass(mlir::enzyme::createLowerEnzymeXLALapackPass());
+  legalizationPM.addPass(mlir::enzyme::createEnzymeBatchToStableHLOPass());
+
+  mlir::PassManager pm(&context);
+  if (mlir::failed(mlir::parsePassPipeline(passPipeline, pm, llvm::errs()))) {
+    llvm::errs() << "Failed to parse the pass pipeline: " << passPipeline
+                 << "\n";
+    return 1;
+  }
 
   OwningOpRef<ModuleOp> optimizedModule = module->clone();
   if (mlir::failed(pm.run(*optimizedModule))) {
     llvm::errs() << "Pass pipeline failed to run on module!\n";
     return 1;
   }
-
   module->walk([&](mlir::func::FuncOp unoptFunc) {
     llvm::StringRef funcName = unoptFunc.getName();
 
@@ -469,20 +543,35 @@ int main(int argc, char **argv) {
       evalArgs.push_back(*attrOpt);
     }
     stablehlo::InterpreterConfiguration config;
+    // Get EnzymeXLA and CHLO into stableHLO
     OwningOpRef<ModuleOp> tempUnoptMod = ModuleOp::create(unoptFunc.getLoc());
     func::FuncOp clonedUnopt = unoptFunc.clone();
     clonedUnopt.setName("main");
     tempUnoptMod->push_back(clonedUnopt);
+
+    if (mlir::failed(legalizationPM.run(*tempUnoptMod))) {
+      llvm::outs()
+          << "  [!] Legalization failed on unoptimized IR. Skipping.\n";
+      return;
+    }
+
     auto unoptResults =
         stablehlo::evalModule(tempUnoptMod.get(), evalArgs, config);
     if (mlir::failed(unoptResults)) {
       llvm::outs() << "  [!] Unoptimized evaluation failed.\n";
       return;
     }
+
     OwningOpRef<ModuleOp> tempOptMod = ModuleOp::create(optFunc.getLoc());
     func::FuncOp clonedOpt = optFunc.clone();
     clonedOpt.setName("main");
-    tempOptMod->push_back(clonedOpt);
+    tempOptMod->push_back(clonedOpt); // Push BEFORE running pass
+
+    if (mlir::failed(legalizationPM.run(*tempOptMod))) {
+      llvm::outs() << "  [!] Legalization failed on optimized IR. Skipping.\n";
+      return;
+    }
+
     auto optResults = stablehlo::evalModule(tempOptMod.get(), evalArgs, config);
     if (mlir::failed(optResults)) {
       llvm::outs() << "   Optimized evaluation failed.\n";
@@ -498,8 +587,33 @@ int main(int argc, char **argv) {
     }
     bool mismatch = false;
     for (size_t i = 0; i < unoptVals.size(); ++i) {
-      if (unoptVals[i] != optVals[i]) {
-        llvm::outs() << " MISMATCH on return value " << i << "!\n";
+      if (unoptVals[i] == optVals[i])
+        continue; // Fast path: strict bitwise match
+
+      // If strict match fails, check if it's a floating point deviation
+      auto unoptAttr = llvm::dyn_cast<mlir::DenseElementsAttr>(unoptVals[i]);
+      auto optAttr = llvm::dyn_cast<mlir::DenseElementsAttr>(optVals[i]);
+
+      if (unoptAttr && optAttr &&
+          llvm::isa<mlir::FloatType>(unoptAttr.getElementType())) {
+        auto uIt = unoptAttr.getValues<llvm::APFloat>().begin();
+        auto oIt = optAttr.getValues<llvm::APFloat>().begin();
+        auto uEnd = unoptAttr.getValues<llvm::APFloat>().end();
+
+        for (; uIt != uEnd; ++uIt, ++oIt) {
+          double uVal = (*uIt).convertToDouble();
+          double oVal = (*oIt).convertToDouble();
+          if (!isClose(uVal, oVal)) {
+            llvm::outs() << "  [!] FLOAT MISMATCH: Expected " << uVal
+                         << " but got " << oVal << "\n";
+            mismatch = true;
+            break;
+          }
+        }
+      } else {
+        // If it's an integer/bool type and failed strict equality, it's a
+        // definitive bug.
+        llvm::outs() << "  [!] MISMATCH on return value " << i << "!\n";
         mismatch = true;
       }
     }
