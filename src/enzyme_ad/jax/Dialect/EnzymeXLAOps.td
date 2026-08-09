@@ -1298,6 +1298,31 @@ def ReluOp: EnzymeXLA_Op<"math.relu", [Pure, SameOperandsAndResultType, Elementw
   }];
 }
 
+def FMulAddOp: EnzymeXLA_Op<"math.fmuladd", [Pure, SameOperandsAndResultType, Elementwise]> {
+  let summary = "Multiply-add that may, but need not, be fused";
+
+  let description = [{
+    Carries the semantics of the `llvm.fmuladd` intrinsic through the round
+    trip: compute `a * b + c`, fused into a single rounding only when the
+    target can do so profitably, otherwise as an ordinary multiply and add.
+    This is a *permission* to fuse, unlike `math.fma`, whose single rounding
+    is required and whose honest lowering on a target without FMA units is a
+    libm call. Raised from `llvm.intr.fmuladd`; lowered back to the same.
+  }];
+
+  let arguments = (ins
+    FloatLike:$a,
+    FloatLike:$b,
+    FloatLike:$c
+  );
+
+  let results = (outs FloatLike:$result);
+
+  let assemblyFormat = [{
+    $a `,` $b `,` $c attr-dict `:` type($result)
+  }];
+}
+
 def TGammaOp: EnzymeXLA_Op<"math.tgamma", [Pure, SameOperandsAndResultType, Elementwise]> {
   let summary = "Computes the true gamma function";
 

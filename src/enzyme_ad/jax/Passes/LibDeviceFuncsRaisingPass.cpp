@@ -13,6 +13,7 @@
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "src/enzyme_ad/jax/Passes/SelectPatterns.h"
@@ -1254,8 +1255,11 @@ public:
     Value b = op->getOperand(1);
     Value c = op->getOperand(2);
 
-    rewriter.replaceOpWithNewOp<math::FmaOp>(op, op->getResultTypes()[0], a, b,
-                                             c);
+    // Not math.fma: fmuladd only permits fusing, while math.fma requires the
+    // single rounding, which a target without FMA units honors with a libm
+    // call. The strict form still comes from llvm.intr.fma / libm fma().
+    rewriter.replaceOpWithNewOp<enzymexla::FMulAddOp>(
+        op, op->getResultTypes()[0], a, b, c);
     return success();
   }
 };
