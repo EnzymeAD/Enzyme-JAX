@@ -13,6 +13,7 @@
 
 #include "src/enzyme_ad/jax/raise.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Verifier.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Pass/PassRegistry.h"
 #include "mlir/Target/LLVMIR/Export.h"
@@ -239,6 +240,14 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
     llvm::errs() << " passes to run: " << pass_pipeline << "\n";
   }
   mlir::PassManager pm(mod->getContext());
+  // The pass manager verifies the whole module -- a symbol-table walk and
+  // dominance check over every operation -- after every pass. Over this
+  // pipeline's ~65 passes on a large TU that is a third of the pipeline's
+  // wall time, re-proving unchanged exception-handling functions well-formed.
+  // Verify once at the end instead (below); DEBUG_REACTANT keeps the
+  // per-pass verification for debugging miscompiles to a pass.
+  if (!getenv("DEBUG_REACTANT"))
+    pm.enableVerifier(false);
   std::string error_message;
   llvm::raw_string_ostream error_stream(error_message);
   mlir::LogicalResult result =
@@ -258,6 +267,13 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
         return failure();
       });
   if (!mlir::succeeded(pm.run(cast<mlir::ModuleOp>(*mod)))) {
+    llvm::errs() << error_stream.str() << "\n";
+    return "";
+  }
+
+  // The one verification that still stands guard: malformed IR fails here,
+  // with diagnostics, rather than inside the LLVM translator.
+  if (!getenv("DEBUG_REACTANT") && mlir::failed(mlir::verify(*mod))) {
     llvm::errs() << error_stream.str() << "\n";
     return "";
   }
