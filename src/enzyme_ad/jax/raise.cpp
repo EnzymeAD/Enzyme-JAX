@@ -244,9 +244,9 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
   // dominance check over every operation -- after every pass. Over this
   // pipeline's ~65 passes on a large TU that is a third of the pipeline's
   // wall time, re-proving unchanged exception-handling functions well-formed.
-  // Verify once at the end instead (below); DEBUG_REACTANT keeps the
-  // per-pass verification for debugging miscompiles to a pass.
-  if (!getenv("DEBUG_REACTANT"))
+  // Verify once at the end instead (below); options->verifyEach restores the
+  // per-pass verification for debugging a miscompile to a pass.
+  if (!options->verifyEach)
     pm.enableVerifier(false);
   std::string error_message;
   llvm::raw_string_ostream error_stream(error_message);
@@ -273,7 +273,7 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
 
   // The one verification that still stands guard: malformed IR fails here,
   // with diagnostics, rather than inside the LLVM translator.
-  if (!getenv("DEBUG_REACTANT") && mlir::failed(mlir::verify(*mod))) {
+  if (!options->verifyEach && mlir::failed(mlir::verify(*mod))) {
     llvm::errs() << error_stream.str() << "\n";
     return "";
   }
