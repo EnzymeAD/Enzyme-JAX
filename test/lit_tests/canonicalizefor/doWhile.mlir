@@ -18,6 +18,18 @@ module @simple{
     return %result : index
   }
 }
+// CHECK-LABEL: module @simple {
+// CHECK-NEXT:   func.func @do_while() -> index {
+// CHECK-NEXT:     %c1 = arith.constant 1 : index
+// CHECK-NEXT:     %c6 = arith.constant 6 : index
+// CHECK-NEXT:     %c5 = arith.constant 5 : index
+// CHECK-NEXT:     scf.for %arg0 = %c1 to %c6 step %c1 {
+// CHECK-NEXT:       %0 = arith.subi %arg0, %c1 : index
+// CHECK-NEXT:       "before.keepalive"(%0) : (index) -> ()
+// CHECK-NEXT:     }
+// CHECK-NEXT:     return %c5 : index
+// CHECK-NEXT:   }
+// CHECK-NEXT: }
 
 //----
 
@@ -41,6 +53,18 @@ module @multiple_iter_args{
   }
 }
 
+// CHECK-LABEL: module @multiple_iter_args {
+// CHECK-NEXT:   func.func @do_while() -> i32 {
+// CHECK-NEXT:     %c-1_i32 = arith.constant -1 : i32
+// CHECK-NEXT:     %c1_i32 = arith.constant 1 : i32
+// CHECK-NEXT:     %c11_i32 = arith.constant 11 : i32
+// CHECK-NEXT:     scf.for %arg0 = %c1_i32 to %c11_i32 step %c1_i32  : i32 {
+// CHECK-NEXT:       %0 = arith.addi %arg0, %c-1_i32 : i32
+// CHECK-NEXT:       "before.keepalive"(%0, %c1_i32) : (i32, i32) -> ()
+// CHECK-NEXT:     }
+// CHECK-NEXT:     return %c1_i32 : i32
+// CHECK-NEXT:   }
+// CHECK-NEXT: }
 
 //----
 
@@ -65,6 +89,23 @@ module @negative_step{
   }
 }
 
+// CHECK-LABEL: module @negative_step {
+// CHECK-NEXT:   func.func @do_while() -> i32 {
+// CHECK-NEXT:     %c4_i32 = arith.constant 4 : i32
+// CHECK-NEXT:     %c-1_i32 = arith.constant -1 : i32
+// CHECK-NEXT:     %c-4_i32 = arith.constant -4 : i32
+// CHECK-NEXT:     %c1_i32 = arith.constant 1 : i32
+// CHECK-NEXT:     %0 = ub.poison : i32
+// CHECK-NEXT:     %1 = scf.for %arg0 = %c-4_i32 to %c1_i32 step %c1_i32 iter_args(%arg1 = %0) -> (i32)  : i32 {
+// CHECK-NEXT:       %2 = arith.addi %arg0, %c4_i32 : i32
+// CHECK-NEXT:       %3 = arith.muli %2, %c-1_i32 : i32
+// CHECK-NEXT:       "before.keepalive"(%3) : (i32) -> ()
+// CHECK-NEXT:       %4 = arith.addi %3, %c-1_i32 : i32
+// CHECK-NEXT:       scf.yield %4 : i32
+// CHECK-NEXT:     }
+// CHECK-NEXT:     return %1 : i32
+// CHECK-NEXT:   }
+// CHECK-NEXT: }
 
 //----
 
@@ -89,6 +130,17 @@ module @execute_once{
   }
 }
 
+// CHECK-LABEL: module @execute_once {
+// CHECK-NEXT:   func.func @do_while() -> index {
+// CHECK-NEXT:     %c1 = arith.constant 1 : index
+// CHECK-NEXT:     %c2 = arith.constant 2 : index
+// CHECK-NEXT:     scf.for %arg0 = %c1 to %c2 step %c1 {
+// CHECK-NEXT:       %0 = arith.subi %arg0, %c1 : index
+// CHECK-NEXT:       "before.keepalive"(%0) : (index) -> ()
+// CHECK-NEXT:     }
+// CHECK-NEXT:     return %c1 : index
+// CHECK-NEXT:   }
+// CHECK-NEXT: }
 
 // ----
 
@@ -112,6 +164,21 @@ module @execute_once{
    }
  }
 
+// CHECK-LABEL: module @multiple_iter_args_2 {
+// CHECK-NEXT:   func.func @do_while() -> i32 {
+// CHECK-NEXT:     %c-1_i32 = arith.constant -1 : i32
+// CHECK-NEXT:     %c1_i32 = arith.constant 1 : i32
+// CHECK-NEXT:     %0 = ub.poison : i32
+// CHECK-NEXT:     %c11_i32 = arith.constant 11 : i32
+// CHECK-NEXT:     %1:2 = scf.for %arg0 = %c1_i32 to %c11_i32 step %c1_i32 iter_args(%arg1 = %c1_i32, %arg2 = %0) -> (i32, i32)  : i32 {
+// CHECK-NEXT:       %2 = arith.addi %arg0, %c-1_i32 : i32
+// CHECK-NEXT:       %3 = "before.keepalive"(%arg1, %2) : (i32, i32) -> i32
+// CHECK-NEXT:       %4 = arith.addi %2, %c1_i32 : i32
+// CHECK-NEXT:       scf.yield %3, %4 : i32, i32
+// CHECK-NEXT:     }
+// CHECK-NEXT:     return %1#1 : i32
+// CHECK-NEXT:   }
+// CHECK-NEXT: }
 
 //----
 
@@ -134,6 +201,18 @@ module @cmpi_ne{
     return %result : index
   }
 }
+// CHECK-LABEL: module @cmpi_ne {
+// CHECK-NEXT:   func.func @do_while() -> index {
+// CHECK-NEXT:     %c1 = arith.constant 1 : index
+// CHECK-NEXT:     %c6 = arith.constant 6 : index
+// CHECK-NEXT:     %c5 = arith.constant 5 : index
+// CHECK-NEXT:     scf.for %arg0 = %c1 to %c6 step %c1 {
+// CHECK-NEXT:       %0 = arith.subi %arg0, %c1 : index
+// CHECK-NEXT:       "before.keepalive"(%0) : (index) -> ()
+// CHECK-NEXT:     }
+// CHECK-NEXT:     return %c5 : index
+// CHECK-NEXT:   }
+// CHECK-NEXT: }
 
 //----
 
@@ -157,6 +236,23 @@ module @cmpi_ne_neg{
   }
 }
 
+// CHECK-LABEL: module @cmpi_ne_neg {
+// CHECK-NEXT:   func.func @do_while2() -> i32 {
+// CHECK-NEXT:     %c4_i32 = arith.constant 4 : i32
+// CHECK-NEXT:     %c-1_i32 = arith.constant -1 : i32
+// CHECK-NEXT:     %c-4_i32 = arith.constant -4 : i32
+// CHECK-NEXT:     %c1_i32 = arith.constant 1 : i32
+// CHECK-NEXT:     %0 = ub.poison : i32
+// CHECK-NEXT:     %1 = scf.for %arg0 = %c-4_i32 to %c1_i32 step %c1_i32 iter_args(%arg1 = %0) -> (i32)  : i32 {
+// CHECK-NEXT:       %2 = arith.addi %arg0, %c4_i32 : i32
+// CHECK-NEXT:       %3 = arith.muli %2, %c-1_i32 : i32
+// CHECK-NEXT:       "before.keepalive"(%3) : (i32) -> ()
+// CHECK-NEXT:       %4 = arith.addi %3, %c-1_i32 : i32
+// CHECK-NEXT:       scf.yield %4 : i32
+// CHECK-NEXT:     }
+// CHECK-NEXT:     return %1 : i32
+// CHECK-NEXT:   }
+// CHECK-NEXT: }
 
 //----
 
@@ -180,6 +276,24 @@ module @cmpi_ne_neg_step{
   }
 }
 
+// CHECK-LABEL: module @cmpi_ne_neg_step {
+// CHECK-NEXT:   func.func @do_while2() -> i32 {
+// CHECK-NEXT:     %c49_i32 = arith.constant 49 : i32
+// CHECK-NEXT:     %c-1_i32 = arith.constant -1 : i32
+// CHECK-NEXT:     %c1_i32 = arith.constant 1 : i32
+// CHECK-NEXT:     %0 = ub.poison : i32
+// CHECK-NEXT:     %c50_i32 = arith.constant 50 : i32
+// CHECK-NEXT:     %1 = scf.for %arg0 = %c1_i32 to %c50_i32 step %c1_i32 iter_args(%arg1 = %0) -> (i32)  : i32 {
+// CHECK-NEXT:       %2 = arith.addi %arg0, %c-1_i32 : i32
+// CHECK-NEXT:       %3 = arith.muli %2, %c-1_i32 : i32
+// CHECK-NEXT:       %4 = arith.addi %3, %c49_i32 : i32
+// CHECK-NEXT:       "before.keepalive"(%4) : (i32) -> ()
+// CHECK-NEXT:       %5 = arith.addi %4, %c-1_i32 : i32
+// CHECK-NEXT:       scf.yield %5 : i32
+// CHECK-NEXT:     }
+// CHECK-NEXT:     return %1 : i32
+// CHECK-NEXT:   }
+// CHECK-NEXT: }
 
 //----
 
@@ -203,6 +317,16 @@ module @cmpi_ne_i{
   }
 }
 
+// CHECK-LABEL: module @cmpi_ne_i {
+// CHECK-NEXT:   func.func @do_while2() -> i32 {
+// CHECK-NEXT:     %c1_i32 = arith.constant 1 : i32
+// CHECK-NEXT:     %c50_i32 = arith.constant 50 : i32
+// CHECK-NEXT:     scf.for %arg0 = %c1_i32 to %c50_i32 step %c1_i32  : i32 {
+// CHECK-NEXT:       "before.keepalive"(%arg0) : (i32) -> ()
+// CHECK-NEXT:     }
+// CHECK-NEXT:     return %c50_i32 : i32
+// CHECK-NEXT:   }
+// CHECK-NEXT: }
 
 //----
 
@@ -225,6 +349,18 @@ module @test_dynamic_ub {
   }
 }
 
+// CHECK-LABEL: module @test_dynamic_ub {
+// CHECK-NEXT:   func.func @do_while(%arg0: index) -> index {
+// CHECK-NEXT:     %c1 = arith.constant 1 : index
+// CHECK-NEXT:     %0 = arith.maxsi %arg0, %c1 : index
+// CHECK-NEXT:     %1 = arith.addi %0, %c1 : index
+// CHECK-NEXT:     scf.for %arg1 = %c1 to %1 step %c1 {
+// CHECK-NEXT:       %2 = arith.subi %arg1, %c1 : index
+// CHECK-NEXT:       "before.keepalive"(%2) : (index) -> ()
+// CHECK-NEXT:     }
+// CHECK-NEXT:     return %0 : index
+// CHECK-NEXT:   }
+// CHECK-NEXT: }
 
 //----
 
@@ -246,8 +382,23 @@ module @test_fully_dynamic {
   }
 }
 
-
-
+// CHECK-LABEL: module @test_fully_dynamic {
+// CHECK-NEXT:   func.func @do_while(%arg0: index, %arg1: index) -> index {
+// CHECK-NEXT:     %0 = ub.poison : index
+// CHECK-NEXT:     %c1 = arith.constant 1 : index
+// CHECK-NEXT:     %1 = arith.addi %arg0, %c1 : index
+// CHECK-NEXT:     %2 = arith.maxsi %arg1, %1 : index
+// CHECK-NEXT:     %3 = arith.addi %2, %c1 : index
+// CHECK-NEXT:     %4 = scf.for %arg2 = %1 to %3 step %c1 iter_args(%arg3 = %0) -> (index) {
+// CHECK-NEXT:       %5 = arith.subi %arg2, %1 : index
+// CHECK-NEXT:       %6 = arith.addi %arg0, %5 : index
+// CHECK-NEXT:       "before.keepalive"(%6) : (index) -> ()
+// CHECK-NEXT:       %7 = arith.addi %6, %c1 : index
+// CHECK-NEXT:       scf.yield %7 : index
+// CHECK-NEXT:     }
+// CHECK-NEXT:     return %4 : index
+// CHECK-NEXT:   }
+// CHECK-NEXT: }
 
 //----
 
@@ -270,8 +421,26 @@ module @test_negative_step_dynamic_ub {
   }
 }
 
-
-
+// CHECK-LABEL: module @test_negative_step_dynamic_ub {
+// CHECK-NEXT:   func.func @do_while(%arg0: i32) -> i32 {
+// CHECK-NEXT:     %0 = ub.poison : i32
+// CHECK-NEXT:     %c10_i32 = arith.constant 10 : i32
+// CHECK-NEXT:     %c-1_i32 = arith.constant -1 : i32
+// CHECK-NEXT:     %c1_i32 = arith.constant 1 : i32
+// CHECK-NEXT:     %1 = arith.addi %arg0, %c1_i32 : i32
+// CHECK-NEXT:     %2 = arith.maxsi %1, %c10_i32 : i32
+// CHECK-NEXT:     %3 = arith.addi %2, %c1_i32 : i32
+// CHECK-NEXT:     %4 = scf.for %arg1 = %1 to %3 step %c1_i32 iter_args(%arg2 = %0) -> (i32)  : i32 {
+// CHECK-NEXT:       %5 = arith.subi %arg1, %1 : i32
+// CHECK-NEXT:       %6 = arith.muli %5, %c-1_i32 : i32
+// CHECK-NEXT:       %7 = arith.addi %6, %c10_i32 : i32
+// CHECK-NEXT:       "before.keepalive"(%7) : (i32) -> ()
+// CHECK-NEXT:       %8 = arith.addi %7, %c-1_i32 : i32
+// CHECK-NEXT:       scf.yield %8 : i32
+// CHECK-NEXT:     }
+// CHECK-NEXT:     return %4 : i32
+// CHECK-NEXT:   }
+// CHECK-NEXT: }
 
 //----
 
@@ -296,6 +465,24 @@ module @test_multiple_args_dynamic {
   }
 }
 
+// CHECK-LABEL: module @test_multiple_args_dynamic {
+// CHECK-NEXT:   func.func @do_while(%arg0: index) -> (index, index) {
+// CHECK-NEXT:     %c1 = arith.constant 1 : index
+// CHECK-NEXT:     %c2 = arith.constant 2 : index
+// CHECK-NEXT:     %0 = ub.poison : index
+// CHECK-NEXT:     %1 = arith.maxsi %arg0, %c1 : index
+// CHECK-NEXT:     %2 = arith.addi %1, %c1 : index
+// CHECK-NEXT:     %3 = scf.for %arg1 = %c1 to %2 step %c1 iter_args(%arg2 = %0) -> (index) {
+// CHECK-NEXT:       %4 = arith.subi %arg1, %c1 : index
+// CHECK-NEXT:       %5 = arith.muli %4, %c2 : index
+// CHECK-NEXT:       %6 = arith.subi %arg1, %c1 : index
+// CHECK-NEXT:       "before.keepalive"(%6, %5) : (index, index) -> ()
+// CHECK-NEXT:       %7 = arith.addi %5, %c2 : index
+// CHECK-NEXT:       scf.yield %7 : index
+// CHECK-NEXT:     }
+// CHECK-NEXT:     return %1, %3 : index, index
+// CHECK-NEXT:   }
+// CHECK-NEXT: }
 
 //----
 
@@ -322,230 +509,37 @@ module @test_and_condition {
   }
 }
 
-// CHECK: module {
-// CHECK-LABEL: module @simple {
-// CHECK-NEXT:     func.func @do_while() -> index {
-// CHECK-NEXT:       %c1 = arith.constant 1 : index
-// CHECK-NEXT:       %c6 = arith.constant 6 : index
-// CHECK-NEXT:       %c5 = arith.constant 5 : index
-// CHECK-NEXT:       scf.for %arg0 = %c1 to %c6 step %c1 {
-// CHECK-NEXT:         %0 = arith.subi %arg0, %c1 : index
-// CHECK-NEXT:         "before.keepalive"(%0) : (index) -> ()
-// CHECK-NEXT:       }
-// CHECK-NEXT:       return %c5 : index
-// CHECK-NEXT:     }
-// CHECK-NEXT:   }
-// CHECK-LABEL: module @multiple_iter_args {
-// CHECK-NEXT:     func.func @do_while() -> i32 {
-// CHECK-NEXT:       %c-1_i32 = arith.constant -1 : i32
-// CHECK-NEXT:       %c1_i32 = arith.constant 1 : i32
-// CHECK-NEXT:       %c11_i32 = arith.constant 11 : i32
-// CHECK-NEXT:       scf.for %arg0 = %c1_i32 to %c11_i32 step %c1_i32  : i32 {
-// CHECK-NEXT:         %0 = arith.addi %arg0, %c-1_i32 : i32
-// CHECK-NEXT:         "before.keepalive"(%0, %c1_i32) : (i32, i32) -> ()
-// CHECK-NEXT:       }
-// CHECK-NEXT:       return %c1_i32 : i32
-// CHECK-NEXT:     }
-// CHECK-NEXT:   }
-// CHECK-LABEL: module @negative_step {
-// CHECK-NEXT:     func.func @do_while() -> i32 {
-// CHECK-NEXT:       %c4_i32 = arith.constant 4 : i32
-// CHECK-NEXT:       %c-1_i32 = arith.constant -1 : i32
-// CHECK-NEXT:       %c-4_i32 = arith.constant -4 : i32
-// CHECK-NEXT:       %c1_i32 = arith.constant 1 : i32
-// CHECK-NEXT:       %0 = ub.poison : i32
-// CHECK-NEXT:       %1 = scf.for %arg0 = %c-4_i32 to %c1_i32 step %c1_i32 iter_args(%arg1 = %0) -> (i32)  : i32 {
-// CHECK-NEXT:         %2 = arith.addi %arg0, %c4_i32 : i32
-// CHECK-NEXT:         %3 = arith.muli %2, %c-1_i32 : i32
-// CHECK-NEXT:         "before.keepalive"(%3) : (i32) -> ()
-// CHECK-NEXT:         %4 = arith.addi %3, %c-1_i32 : i32
-// CHECK-NEXT:         scf.yield %4 : i32
-// CHECK-NEXT:       }
-// CHECK-NEXT:       return %1 : i32
-// CHECK-NEXT:     }
-// CHECK-NEXT:   }
-// CHECK-LABEL: module @execute_once {
-// CHECK-NEXT:     func.func @do_while() -> index {
-// CHECK-NEXT:       %c1 = arith.constant 1 : index
-// CHECK-NEXT:       %c2 = arith.constant 2 : index
-// CHECK-NEXT:       scf.for %arg0 = %c1 to %c2 step %c1 {
-// CHECK-NEXT:         %0 = arith.subi %arg0, %c1 : index
-// CHECK-NEXT:         "before.keepalive"(%0) : (index) -> ()
-// CHECK-NEXT:       }
-// CHECK-NEXT:       return %c1 : index
-// CHECK-NEXT:     }
-// CHECK-NEXT:   }
-// CHECK-LABEL: module @multiple_iter_args_2 {
-// CHECK-NEXT:     func.func @do_while() -> i32 {
-// CHECK-NEXT:       %c-1_i32 = arith.constant -1 : i32
-// CHECK-NEXT:       %c1_i32 = arith.constant 1 : i32
-// CHECK-NEXT:       %0 = ub.poison : i32
-// CHECK-NEXT:       %c11_i32 = arith.constant 11 : i32
-// CHECK-NEXT:       %1:2 = scf.for %arg0 = %c1_i32 to %c11_i32 step %c1_i32 iter_args(%arg1 = %c1_i32, %arg2 = %0) -> (i32, i32)  : i32 {
-// CHECK-NEXT:         %2 = arith.addi %arg0, %c-1_i32 : i32
-// CHECK-NEXT:         %3 = "before.keepalive"(%arg1, %2) : (i32, i32) -> i32
-// CHECK-NEXT:         %4 = arith.addi %2, %c1_i32 : i32
-// CHECK-NEXT:         scf.yield %3, %4 : i32, i32
-// CHECK-NEXT:       }
-// CHECK-NEXT:       return %1#1 : i32
-// CHECK-NEXT:     }
-// CHECK-NEXT:   }
-// CHECK-LABEL: module @cmpi_ne {
-// CHECK-NEXT:     func.func @do_while() -> index {
-// CHECK-NEXT:       %c1 = arith.constant 1 : index
-// CHECK-NEXT:       %c6 = arith.constant 6 : index
-// CHECK-NEXT:       %c5 = arith.constant 5 : index
-// CHECK-NEXT:       scf.for %arg0 = %c1 to %c6 step %c1 {
-// CHECK-NEXT:         %0 = arith.subi %arg0, %c1 : index
-// CHECK-NEXT:         "before.keepalive"(%0) : (index) -> ()
-// CHECK-NEXT:       }
-// CHECK-NEXT:       return %c5 : index
-// CHECK-NEXT:     }
-// CHECK-NEXT:   }
-// CHECK-LABEL: module @cmpi_ne_neg {
-// CHECK-NEXT:     func.func @do_while2() -> i32 {
-// CHECK-NEXT:       %c4_i32 = arith.constant 4 : i32
-// CHECK-NEXT:       %c-1_i32 = arith.constant -1 : i32
-// CHECK-NEXT:       %c-4_i32 = arith.constant -4 : i32
-// CHECK-NEXT:       %c1_i32 = arith.constant 1 : i32
-// CHECK-NEXT:       %0 = ub.poison : i32
-// CHECK-NEXT:       %1 = scf.for %arg0 = %c-4_i32 to %c1_i32 step %c1_i32 iter_args(%arg1 = %0) -> (i32)  : i32 {
-// CHECK-NEXT:         %2 = arith.addi %arg0, %c4_i32 : i32
-// CHECK-NEXT:         %3 = arith.muli %2, %c-1_i32 : i32
-// CHECK-NEXT:         "before.keepalive"(%3) : (i32) -> ()
-// CHECK-NEXT:         %4 = arith.addi %3, %c-1_i32 : i32
-// CHECK-NEXT:         scf.yield %4 : i32
-// CHECK-NEXT:       }
-// CHECK-NEXT:       return %1 : i32
-// CHECK-NEXT:     }
-// CHECK-NEXT:   }
-// CHECK-LABEL: module @cmpi_ne_neg_step {
-// CHECK-NEXT:     func.func @do_while2() -> i32 {
-// CHECK-NEXT:       %c49_i32 = arith.constant 49 : i32
-// CHECK-NEXT:       %c-1_i32 = arith.constant -1 : i32
-// CHECK-NEXT:       %c1_i32 = arith.constant 1 : i32
-// CHECK-NEXT:       %0 = ub.poison : i32
-// CHECK-NEXT:       %c50_i32 = arith.constant 50 : i32
-// CHECK-NEXT:       %1 = scf.for %arg0 = %c1_i32 to %c50_i32 step %c1_i32 iter_args(%arg1 = %0) -> (i32)  : i32 {
-// CHECK-NEXT:         %2 = arith.addi %arg0, %c-1_i32 : i32
-// CHECK-NEXT:         %3 = arith.muli %2, %c-1_i32 : i32
-// CHECK-NEXT:         %4 = arith.addi %3, %c49_i32 : i32
-// CHECK-NEXT:         "before.keepalive"(%4) : (i32) -> ()
-// CHECK-NEXT:         %5 = arith.addi %4, %c-1_i32 : i32
-// CHECK-NEXT:         scf.yield %5 : i32
-// CHECK-NEXT:       }
-// CHECK-NEXT:       return %1 : i32
-// CHECK-NEXT:     }
-// CHECK-NEXT:   }
-// CHECK-LABEL: module @cmpi_ne_i {
-// CHECK-NEXT:     func.func @do_while2() -> i32 {
-// CHECK-NEXT:       %c1_i32 = arith.constant 1 : i32
-// CHECK-NEXT:       %c50_i32 = arith.constant 50 : i32
-// CHECK-NEXT:       scf.for %arg0 = %c1_i32 to %c50_i32 step %c1_i32  : i32 {
-// CHECK-NEXT:         "before.keepalive"(%arg0) : (i32) -> ()
-// CHECK-NEXT:       }
-// CHECK-NEXT:       return %c50_i32 : i32
-// CHECK-NEXT:     }
-// CHECK-NEXT:   }
-// CHECK-LABEL: module @test_dynamic_ub {
-// CHECK-NEXT:     func.func @do_while(%arg0: index) -> index {
-// CHECK-NEXT:       %c1 = arith.constant 1 : index
-// CHECK-NEXT:       %0 = arith.maxsi %arg0, %c1 : index
-// CHECK-NEXT:       %1 = arith.addi %0, %c1 : index
-// CHECK-NEXT:       scf.for %arg1 = %c1 to %1 step %c1 {
-// CHECK-NEXT:         %2 = arith.subi %arg1, %c1 : index
-// CHECK-NEXT:         "before.keepalive"(%2) : (index) -> ()
-// CHECK-NEXT:       }
-// CHECK-NEXT:       return %0 : index
-// CHECK-NEXT:     }
-// CHECK-NEXT:   }
-// CHECK-LABEL: module @test_fully_dynamic {
-// CHECK-NEXT:     func.func @do_while(%arg0: index, %arg1: index) -> index {
-// CHECK-NEXT:       %0 = ub.poison : index
-// CHECK-NEXT:       %c1 = arith.constant 1 : index
-// CHECK-NEXT:       %1 = arith.addi %arg0, %c1 : index
-// CHECK-NEXT:       %2 = arith.maxsi %arg1, %1 : index
-// CHECK-NEXT:       %3 = arith.addi %2, %c1 : index
-// CHECK-NEXT:       %4 = scf.for %arg2 = %1 to %3 step %c1 iter_args(%arg3 = %0) -> (index) {
-// CHECK-NEXT:         %5 = arith.subi %arg2, %1 : index
-// CHECK-NEXT:         %6 = arith.addi %arg0, %5 : index
-// CHECK-NEXT:         "before.keepalive"(%6) : (index) -> ()
-// CHECK-NEXT:         %7 = arith.addi %6, %c1 : index
-// CHECK-NEXT:         scf.yield %7 : index
-// CHECK-NEXT:       }
-// CHECK-NEXT:       return %4 : index
-// CHECK-NEXT:     }
-// CHECK-NEXT:   }
-// CHECK-LABEL: module @test_negative_step_dynamic_ub {
-// CHECK-NEXT:     func.func @do_while(%arg0: i32) -> i32 {
-// CHECK-NEXT:       %0 = ub.poison : i32
-// CHECK-NEXT:       %c10_i32 = arith.constant 10 : i32
-// CHECK-NEXT:       %c-1_i32 = arith.constant -1 : i32
-// CHECK-NEXT:       %c1_i32 = arith.constant 1 : i32
-// CHECK-NEXT:       %1 = arith.addi %arg0, %c1_i32 : i32
-// CHECK-NEXT:       %2 = arith.maxsi %1, %c10_i32 : i32
-// CHECK-NEXT:       %3 = arith.addi %2, %c1_i32 : i32
-// CHECK-NEXT:       %4 = scf.for %arg1 = %1 to %3 step %c1_i32 iter_args(%arg2 = %0) -> (i32)  : i32 {
-// CHECK-NEXT:         %5 = arith.subi %arg1, %1 : i32
-// CHECK-NEXT:         %6 = arith.muli %5, %c-1_i32 : i32
-// CHECK-NEXT:         %7 = arith.addi %6, %c10_i32 : i32
-// CHECK-NEXT:         "before.keepalive"(%7) : (i32) -> ()
-// CHECK-NEXT:         %8 = arith.addi %7, %c-1_i32 : i32
-// CHECK-NEXT:         scf.yield %8 : i32
-// CHECK-NEXT:       }
-// CHECK-NEXT:       return %4 : i32
-// CHECK-NEXT:     }
-// CHECK-NEXT:   }
-// CHECK-LABEL: module @test_multiple_args_dynamic {
-// CHECK-NEXT:     func.func @do_while(%arg0: index) -> (index, index) {
-// CHECK-NEXT:       %c1 = arith.constant 1 : index
-// CHECK-NEXT:       %c2 = arith.constant 2 : index
-// CHECK-NEXT:       %0 = ub.poison : index
-// CHECK-NEXT:       %1 = arith.maxsi %arg0, %c1 : index
-// CHECK-NEXT:       %2 = arith.addi %1, %c1 : index
-// CHECK-NEXT:       %3 = scf.for %arg1 = %c1 to %2 step %c1 iter_args(%arg2 = %0) -> (index) {
-// CHECK-NEXT:         %4 = arith.subi %arg1, %c1 : index
-// CHECK-NEXT:         %5 = arith.muli %4, %c2 : index
-// CHECK-NEXT:         %6 = arith.subi %arg1, %c1 : index
-// CHECK-NEXT:         "before.keepalive"(%6, %5) : (index, index) -> ()
-// CHECK-NEXT:         %7 = arith.addi %5, %c2 : index
-// CHECK-NEXT:         scf.yield %7 : index
-// CHECK-NEXT:       }
-// CHECK-NEXT:       return %1, %3 : index, index
-// CHECK-NEXT:     }
-// CHECK-NEXT:   }
 // CHECK-LABEL: module @test_and_condition {
-// CHECK-NEXT:     func.func @do_while(%arg0: i32) -> (i32, f32) {
-// CHECK-NEXT:       %false = arith.constant false
-// CHECK-NEXT:       %cst = arith.constant 0.000000e+00 : f32
-// CHECK-NEXT:       %cst_0 = arith.constant 1.000000e+00 : f32
-// CHECK-NEXT:       %c0_i32 = arith.constant 0 : i32
-// CHECK-NEXT:       %c1_i32 = arith.constant 1 : i32
-// CHECK-NEXT:       %true = arith.constant true
-// CHECK-NEXT:       %0 = ub.poison : i32
-// CHECK-NEXT:       %1 = ub.poison : f32
-// CHECK-NEXT:       %2 = ub.poison : i1
-// CHECK-NEXT:       %3 = arith.maxsi %arg0, %c0_i32 : i32
-// CHECK-NEXT:       %4 = arith.addi %3, %c1_i32 : i32
-// CHECK-NEXT:       %5:7 = scf.for %arg1 = %c0_i32 to %4 step %c1_i32 iter_args(%arg2 = %c0_i32, %arg3 = %cst, %arg4 = %true, %arg5 = %0, %arg6 = %1, %arg7 = %2, %arg8 = %true) -> (i32, f32, i1, i32, f32, i1, i1)  : i32 {
-// CHECK-NEXT:         %6:4 = scf.if %arg8 -> (i32, f32, i1, i1) {
-// CHECK-NEXT:           %10 = arith.addi %arg2, %c1_i32 : i32
-// CHECK-NEXT:           %11 = "test.something"() : () -> i1
-// CHECK-NEXT:           %12 = arith.addf %arg3, %cst_0 : f32
-// CHECK-NEXT:           scf.yield %10, %12, %11, %arg4 : i32, f32, i1, i1
-// CHECK-NEXT:         } else {
-// CHECK-NEXT:           scf.yield %arg5, %arg6, %arg7, %false : i32, f32, i1, i1
-// CHECK-NEXT:         }
-// CHECK-NEXT:         %7 = arith.cmpi slt, %arg1, %arg0 : i32
-// CHECK-NEXT:         %8 = arith.andi %7, %6#3 : i1
-// CHECK-NEXT:         %9:3 = scf.if %8 -> (i32, f32, i1) {
-// CHECK-NEXT:           scf.yield %6#0, %6#1, %6#2 : i32, f32, i1
-// CHECK-NEXT:         } else {
-// CHECK-NEXT:           scf.yield %0, %1, %2 : i32, f32, i1
-// CHECK-NEXT:         }
-// CHECK-NEXT:         scf.yield %9#0, %9#1, %9#2, %6#0, %6#1, %6#2, %6#3 : i32, f32, i1, i32, f32, i1, i1
+// CHECK-NEXT:   func.func @do_while(%arg0: i32) -> (i32, f32) {
+// CHECK-NEXT:     %false = arith.constant false
+// CHECK-NEXT:     %cst = arith.constant 0.000000e+00 : f32
+// CHECK-NEXT:     %cst_0 = arith.constant 1.000000e+00 : f32
+// CHECK-NEXT:     %c0_i32 = arith.constant 0 : i32
+// CHECK-NEXT:     %c1_i32 = arith.constant 1 : i32
+// CHECK-NEXT:     %true = arith.constant true
+// CHECK-NEXT:     %0 = ub.poison : i32
+// CHECK-NEXT:     %1 = ub.poison : f32
+// CHECK-NEXT:     %2 = ub.poison : i1
+// CHECK-NEXT:     %3 = arith.maxsi %arg0, %c0_i32 : i32
+// CHECK-NEXT:     %4 = arith.addi %3, %c1_i32 : i32
+// CHECK-NEXT:     %5:7 = scf.for %arg1 = %c0_i32 to %4 step %c1_i32 iter_args(%arg2 = %c0_i32, %arg3 = %cst, %arg4 = %true, %arg5 = %0, %arg6 = %1, %arg7 = %2, %arg8 = %true) -> (i32, f32, i1, i32, f32, i1, i1)  : i32 {
+// CHECK-NEXT:       %6:4 = scf.if %arg8 -> (i32, f32, i1, i1) {
+// CHECK-NEXT:         %10 = arith.addi %arg2, %c1_i32 : i32
+// CHECK-NEXT:         %11 = "test.something"() : () -> i1
+// CHECK-NEXT:         %12 = arith.addf %arg3, %cst_0 : f32
+// CHECK-NEXT:         scf.yield %10, %12, %11, %arg4 : i32, f32, i1, i1
+// CHECK-NEXT:       } else {
+// CHECK-NEXT:         scf.yield %arg5, %arg6, %arg7, %false : i32, f32, i1, i1
 // CHECK-NEXT:       }
-// CHECK-NEXT:       return %5#3, %5#4 : i32, f32
+// CHECK-NEXT:       %7 = arith.cmpi slt, %arg1, %arg0 : i32
+// CHECK-NEXT:       %8 = arith.andi %7, %6#3 : i1
+// CHECK-NEXT:       %9:3 = scf.if %8 -> (i32, f32, i1) {
+// CHECK-NEXT:         scf.yield %6#0, %6#1, %6#2 : i32, f32, i1
+// CHECK-NEXT:       } else {
+// CHECK-NEXT:         scf.yield %0, %1, %2 : i32, f32, i1
+// CHECK-NEXT:       }
+// CHECK-NEXT:       scf.yield %9#0, %9#1, %9#2, %6#0, %6#1, %6#2, %6#3 : i32, f32, i1, i32, f32, i1, i1
 // CHECK-NEXT:     }
+// CHECK-NEXT:     return %5#3, %5#4 : i32, f32
 // CHECK-NEXT:   }
 // CHECK-NEXT: }
