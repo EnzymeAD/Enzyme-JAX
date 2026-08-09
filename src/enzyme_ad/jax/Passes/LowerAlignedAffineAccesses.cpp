@@ -109,8 +109,8 @@ struct LowerAlignedAffineAccessesPass
     GreedyRewriteConfig config;
     // Merging identical blocks threads the differing values through new
     // block arguments on every predecessor's terminator; an llvm.invoke only
-    // takes LLVM types there. Nothing here needs the merge. TODO: aggressive
-    // is fine once block merging asks the terminator
+    // takes LLVM types there. Nothing here needs the merge. TODO(#2815):
+    // aggressive is fine once block merging asks the terminator
     // (llvm/llvm-project#215036).
     config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);
     if (failed(
