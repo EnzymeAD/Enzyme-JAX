@@ -272,9 +272,18 @@ convertLLVMAllocaToMemrefAlloca(FromAlloc alloc, RewriterBase &rewriter,
         MemRefLayoutAttrInterface{}, alloc.getType().getMemorySpace());
   }
   Value newAlloc;
-  if constexpr (!inPlace)
-    newAlloc = memref::AllocaOp::create(rewriter, alloc->getLoc(), memrefType);
-  else {
+  if constexpr (!inPlace) {
+    // Carry the allocation's alignment onto the memref: an llvm.alloca is
+    // often over-aligned past its element type (a stack array gets 16 for
+    // vectorization), and a memref.alloca without it falls back to the
+    // element's natural alignment. Lowered back, the under-aligned slot shifts
+    // the frame and leaves an adjacent aligned alloca on a misaligned address.
+    IntegerAttr alignAttr;
+    if (auto al = alloc.getAlignment())
+      alignAttr = rewriter.getI64IntegerAttr(*al);
+    newAlloc = memref::AllocaOp::create(rewriter, alloc->getLoc(), memrefType,
+                                        ValueRange{}, alignAttr);
+  } else {
 
     auto tys = llvm::to_vector(alloc->getResultTypes());
     tys[0] = memrefType;
