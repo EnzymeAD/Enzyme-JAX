@@ -453,6 +453,10 @@ def SROAWrappersPass : Pass<"sroa-wrappers", "mlir::ModuleOp"> {
   ];
 }
 
+def CanonicalizeIncrementalPass : Pass<"canonicalize-incremental"> {
+  let summary = "Canonicalize top-level ops, skipping ones unchanged since their last canonicalization";
+}
+
 def LibDeviceFuncsRaisingPass : Pass<"libdevice-funcs-raise"> {
   let summary = "Raise libdevice function calls to arith/math operations";
   let dependentDialects = [
