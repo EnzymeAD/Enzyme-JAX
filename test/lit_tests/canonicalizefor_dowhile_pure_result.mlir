@@ -71,9 +71,11 @@ func.func @swap(%n: i32, %x: i32, %y: i32) -> (i32, i32) {
 // The plainest shape of all: the condition forwards the slot itself and the
 // body advances it by one. The result is the failing evaluation's value --
 // count to 3 and the answer is 3, the value the comparison rejected, not 2,
-// the last the body saw. An advancing slot is not exempt: the conversion
-// yields the induction variable, so the result would come out one step short
-// without the widened bound.
+// the last the body saw. An advancing slot is not exempt from the widened
+// bound, and with nothing else observable the loop then folds away entirely:
+// the result of a for that yields its own induction variable is the last
+// executed IV, max(ub - step, lb) here, leaving max(n, 0) -- n counted to,
+// or the init the comparison rejected immediately.
 
 func.func @count(%n: i32) -> i32 {
   %c0 = arith.constant 0 : i32
@@ -90,8 +92,7 @@ func.func @count(%n: i32) -> i32 {
 }
 
 // CHECK-LABEL: func.func @count
+// CHECK-NOT:     scf.for
 // CHECK:         %[[CLAMP:.+]] = arith.maxsi %arg0, %c0_i32 : i32
-// CHECK:         %[[PAST:.+]] = arith.addi %[[CLAMP]], %c1_i32 : i32
-// CHECK:         %[[FOR:.+]] = scf.for %[[IV:.+]] = %c0_i32 to %[[PAST]] step %c1_i32
-// CHECK:           scf.yield %[[IV]] : i32
-// CHECK:         return %[[FOR]] : i32
+// CHECK-NEXT:    %[[LAST:.+]] = arith.maxsi %[[CLAMP]], %c0_i32 : i32
+// CHECK-NEXT:    return %[[LAST]] : i32

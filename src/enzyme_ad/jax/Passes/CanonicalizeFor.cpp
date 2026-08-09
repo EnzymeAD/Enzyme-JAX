@@ -312,6 +312,68 @@ struct ForOpInductionReplacement : public OpRewritePattern<scf::ForOp> {
                    yieldOp.getOperands()      // iter yield
                    )) {
 
+      // A result that hands out the induction variable itself is the last
+      // executed IV -- or the init when the loop ran zero times. With a unit
+      // step and the iter arg starting at the lower bound (the shape a
+      // converted while has), the two cases meet in max(ub - step, lb) with
+      // no guard; otherwise the last IV is lb + ((ub-lb-1) / step) * step,
+      // selected against the init on whether the loop ran. The division is
+      // unsigned and its operands poison-free, so computing it speculatively
+      // on the zero-trip path is meaningless but harmless.
+      if (yld == forOp.getInductionVar()) {
+        Location loc = forOp.getLoc();
+        Value lb = forOp.getLowerBound(), ub = forOp.getUpperBound(),
+              step = forOp.getStep();
+
+        // Inside the body the iter arg is the previous iteration's IV -- or
+        // the init on the first one. When the init is the lower bound the
+        // two meet in max(iv - step, lb) with no first-iteration test.
+        if (!iterarg.use_empty()) {
+          rewriter.setInsertionPointToStart(&forOp.getRegion().front());
+          Value iv = forOp.getInductionVar();
+          Value prev = SubIOp::create(rewriter, loc, iv, step);
+          Value replacement;
+          if (outiter == lb) {
+            replacement = MaxSIOp::create(rewriter, loc, prev, lb);
+          } else {
+            Value first =
+                CmpIOp::create(rewriter, loc, CmpIPredicate::eq, iv, lb);
+            Value init = castValue(rewriter, outiter, yld, loc);
+            replacement = SelectOp::create(rewriter, loc, first, init, prev);
+          }
+          Value iterargCopy = iterarg;
+          rewriter.modifyOpInPlace(
+              forOp, [&] { iterargCopy.replaceAllUsesWith(replacement); });
+          canonicalize = true;
+        }
+
+        if (!res.use_empty()) {
+          rewriter.setInsertionPoint(forOp);
+          Value replacement;
+          if (matchPattern(step, m_One()) && outiter == lb) {
+            Value last = SubIOp::create(rewriter, loc, ub, step);
+            replacement = MaxSIOp::create(rewriter, loc, last, lb);
+          } else {
+            Value one = arith::ConstantOp::create(
+                rewriter, loc, rewriter.getIntegerAttr(ub.getType(), 1));
+            Value span = SubIOp::create(rewriter, loc, ub, lb);
+            Value m1 = SubIOp::create(rewriter, loc, span, one);
+            Value q = DivUIOp::create(rewriter, loc, m1, step);
+            Value off = MulIOp::create(rewriter, loc, q, step);
+            Value last = AddIOp::create(rewriter, loc, lb, off);
+            Value ran =
+                CmpIOp::create(rewriter, loc, CmpIPredicate::sgt, ub, lb);
+            Value init = castValue(rewriter, outiter, yld, loc);
+            replacement = SelectOp::create(rewriter, loc, ran, last, init);
+          }
+          Value resCopy = res;
+          rewriter.modifyOpInPlace(
+              forOp, [&] { resCopy.replaceAllUsesWith(replacement); });
+          canonicalize = true;
+        }
+        continue;
+      }
+
       AddIOp addOp = yld.getDefiningOp<AddIOp>();
       if (!addOp)
         continue;

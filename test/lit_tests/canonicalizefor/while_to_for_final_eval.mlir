@@ -65,9 +65,10 @@ func.func @trip_count_exit(%p: i1) -> i64 {
 // Without an extra condition the loop can only exit by trip count, but the
 // result is still the failing evaluation's view: counting 0, 1, 2 against a
 // bound of 3 hands out 3, the value the comparison rejected, not 2, the last
-// the body saw. The before region being just the comparison, the extra
-// iteration costs no more than a bound one past the comparison's, clamped so
-// the zero-trip loop still returns its init.
+// the body saw. The extra iteration is a bound one past the comparison's,
+// clamped for the zero-trip case -- and with nothing else observable the
+// loop then folds away: the result of a for yielding its own induction
+// variable is the last executed IV in closed form, max(ub, 0) here.
 
 func.func @no_extra_condition(%ub: i64) -> i64 {
   %c0 = arith.constant 0 : i64
@@ -86,13 +87,9 @@ func.func @no_extra_condition(%ub: i64) -> i64 {
 // CHECK-LABEL:   func.func @no_extra_condition(
 // CHECK-SAME:                                  %[[UB:.*]]: i64) -> i64 {
 // CHECK-NEXT:      %[[LB:.*]] = arith.constant 0 : i64
-// CHECK-NEXT:      %[[STEP:.*]] = arith.constant 1 : i64
 // CHECK-NEXT:      %[[CLAMP:.*]] = arith.maxsi %[[UB]], %[[LB]] : i64
-// CHECK-NEXT:      %[[PAST:.*]] = arith.addi %[[CLAMP]], %[[STEP]] : i64
-// CHECK-NEXT:      %[[LOOP:.*]] = scf.for %[[I:.*]] = %[[LB]] to %[[PAST]] step %[[STEP]] iter_args(%[[ITER:.*]] = %[[LB]]) -> (i64)  : i64 {
-// CHECK-NEXT:        scf.yield %[[I]] : i64
-// CHECK-NEXT:      }
-// CHECK-NEXT:      return %[[LOOP]] : i64
+// CHECK-NEXT:      %[[LAST:.*]] = arith.maxsi %[[CLAMP]], %[[LB]] : i64
+// CHECK-NEXT:      return %[[LAST]] : i64
 // CHECK-NEXT:    }
 
 // -----
