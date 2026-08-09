@@ -7,11 +7,59 @@
 
 #include "mpi.h"
 
-#ifndef MPITRAMPOLINE_MPI_H
-#error "MPI FFI handlers must be compiled with MPItrampoline."
-#endif
-
 #include "mpi_ffi.h"
+
+// MPI function pointers are initialized to the MPItrampoline implementations by
+// default, but can be overridden by the user
+decltype(MPI_Comm_rank) *EXLA_MPI_Comm_rank = &MPI_Comm_rank;
+decltype(MPI_Comm_size) *EXLA_MPI_Comm_size = &MPI_Comm_size;
+decltype(MPI_Comm_split) *EXLA_MPI_Comm_split = &MPI_Comm_split;
+decltype(MPI_Barrier) *EXLA_MPI_Barrier = &MPI_Barrier;
+decltype(MPI_Send) *EXLA_MPI_Send = &MPI_Send;
+decltype(MPI_Isend) *EXLA_MPI_Isend = &MPI_Isend;
+decltype(MPI_Recv) *EXLA_MPI_Recv = &MPI_Recv;
+decltype(MPI_Irecv) *EXLA_MPI_Irecv = &MPI_Irecv;
+decltype(MPI_Wait) *EXLA_MPI_Wait = &MPI_Wait;
+decltype(MPI_Waitall) *EXLA_MPI_Waitall = &MPI_Waitall;
+decltype(MPI_Allreduce) *EXLA_MPI_Allreduce = &MPI_Allreduce;
+decltype(MPI_Bcast) *EXLA_MPI_Bcast = &MPI_Bcast;
+
+void enzymexla_set_mpi_comm_rank(void *ptr) {
+  EXLA_MPI_Comm_rank = reinterpret_cast<decltype(MPI_Comm_rank) *>(ptr);
+}
+void enzymexla_set_mpi_comm_size(void *ptr) {
+  EXLA_MPI_Comm_size = reinterpret_cast<decltype(MPI_Comm_size) *>(ptr);
+}
+void enzymexla_set_mpi_comm_split(void *ptr) {
+  EXLA_MPI_Comm_split = reinterpret_cast<decltype(MPI_Comm_split) *>(ptr);
+}
+void enzymexla_set_mpi_barrier(void *ptr) {
+  EXLA_MPI_Barrier = reinterpret_cast<decltype(MPI_Barrier) *>(ptr);
+}
+void enzymexla_set_mpi_send(void *ptr) {
+  EXLA_MPI_Send = reinterpret_cast<decltype(MPI_Send) *>(ptr);
+}
+void enzymexla_set_mpi_isend(void *ptr) {
+  EXLA_MPI_Isend = reinterpret_cast<decltype(MPI_Isend) *>(ptr);
+}
+void enzymexla_set_mpi_recv(void *ptr) {
+  EXLA_MPI_Recv = reinterpret_cast<decltype(MPI_Recv) *>(ptr);
+}
+void enzymexla_set_mpi_irecv(void *ptr) {
+  EXLA_MPI_Irecv = reinterpret_cast<decltype(MPI_Irecv) *>(ptr);
+}
+void enzymexla_set_mpi_wait(void *ptr) {
+  EXLA_MPI_Wait = reinterpret_cast<decltype(MPI_Wait) *>(ptr);
+}
+void enzymexla_set_mpi_waitall(void *ptr) {
+  EXLA_MPI_Waitall = reinterpret_cast<decltype(MPI_Waitall) *>(ptr);
+}
+void enzymexla_set_mpi_allreduce(void *ptr) {
+  EXLA_MPI_Allreduce = reinterpret_cast<decltype(MPI_Allreduce) *>(ptr);
+}
+void enzymexla_set_mpi_bcast(void *ptr) {
+  EXLA_MPI_Bcast = reinterpret_cast<decltype(MPI_Bcast) *>(ptr);
+}
 
 namespace enzymexla::ffi_internal {
 namespace ffi = xla::ffi;
@@ -42,7 +90,7 @@ ffi::Error checkMpiStatusSize(const MpiStatusBuffer &buf) {
 
 ffi::Error MpiCommRankImpl(MpiCommBuffer comm_ptr, Result<IntBuffer> rank_ptr) {
   MPI_Comm comm = *reinterpret_cast<MPI_Comm *>(comm_ptr.typed_data());
-  int err = MPI_Comm_rank(comm, rank_ptr->typed_data());
+  int err = EXLA_MPI_Comm_rank(comm, rank_ptr->typed_data());
   if (err != MPI_SUCCESS) {
     return ffi::Error::InvalidArgument(
         absl::StrFormat("MPI_Comm_rank failed with error code %d", err));
@@ -60,7 +108,7 @@ XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(),
 
 ffi::Error MpiCommSizeImpl(MpiCommBuffer comm_ptr, Result<IntBuffer> size_ptr) {
   MPI_Comm comm = *reinterpret_cast<MPI_Comm *>(comm_ptr.typed_data());
-  int err = MPI_Comm_size(comm, size_ptr->typed_data());
+  int err = EXLA_MPI_Comm_size(comm, size_ptr->typed_data());
   if (err != MPI_SUCCESS) {
     return ffi::Error::InvalidArgument(
         absl::StrFormat("MPI_Comm_size failed with error code %d", err));
@@ -83,7 +131,7 @@ ffi::Error MpiCommSplitImpl(MpiCommBuffer comm_ptr, IntBuffer color_ptr,
   int color = *color_ptr.typed_data();
   int key = *key_ptr.typed_data();
   MPI_Comm *newcomm = reinterpret_cast<MPI_Comm *>(newcomm_ptr->typed_data());
-  int err = MPI_Comm_split(comm, color, key, newcomm);
+  int err = EXLA_MPI_Comm_split(comm, color, key, newcomm);
   if (err != MPI_SUCCESS) {
     return ffi::Error::InvalidArgument(
         absl::StrFormat("MPI_Comm_split failed with error code %d", err));
@@ -104,7 +152,7 @@ XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(),
 
 ffi::Error MpiBarrierImpl(MpiCommBuffer comm_ptr) {
   MPI_Comm comm = *reinterpret_cast<MPI_Comm *>(comm_ptr.typed_data());
-  int err = MPI_Barrier(comm);
+  int err = EXLA_MPI_Barrier(comm);
   if (err != MPI_SUCCESS) {
     return ffi::Error::InvalidArgument(
         absl::StrFormat("MPI_Barrier failed with error code %d", err));
@@ -126,7 +174,7 @@ ffi::Error MpiSendImpl(ffi::AnyBuffer buf, MpiDatatypeBuffer datatype_ptr,
   int count = buf.element_count();
   MPI_Datatype datatype =
       *reinterpret_cast<MPI_Datatype *>(datatype_ptr.typed_data());
-  int err = MPI_Send(buf.untyped_data(), count, datatype, dest, tag, comm);
+  int err = EXLA_MPI_Send(buf.untyped_data(), count, datatype, dest, tag, comm);
   if (err != MPI_SUCCESS) {
     return ffi::Error::InvalidArgument(
         absl::StrFormat("MPI_Send failed with error code %d", err));
@@ -157,8 +205,8 @@ ffi::Error MpiIsendImpl(ffi::AnyBuffer buf, MpiDatatypeBuffer datatype_ptr,
   int count = buf.element_count();
   MPI_Request *request =
       reinterpret_cast<MPI_Request *>(request_ptr->typed_data());
-  int err =
-      MPI_Isend(buf.untyped_data(), count, datatype, dest, tag, comm, request);
+  int err = EXLA_MPI_Isend(buf.untyped_data(), count, datatype, dest, tag, comm,
+                           request);
   if (err != MPI_SUCCESS) {
     return ffi::Error::InvalidArgument(
         absl::StrFormat("MPI_Isend failed with error code %d", err));
@@ -192,8 +240,8 @@ ffi::Error MpiRecvImpl(MpiDatatypeBuffer datatype_ptr, IntBuffer source_ptr,
   int tag = *tag_ptr.typed_data();
   int count = buf->element_count();
   MPI_Status *status = reinterpret_cast<MPI_Status *>(status_ptr->typed_data());
-  int err =
-      MPI_Recv(buf->untyped_data(), count, datatype, source, tag, comm, status);
+  int err = EXLA_MPI_Recv(buf->untyped_data(), count, datatype, source, tag,
+                          comm, status);
   if (err != MPI_SUCCESS) {
     return ffi::Error::InvalidArgument(
         absl::StrFormat("MPI_Recv failed with error code %d", err));
@@ -225,8 +273,8 @@ ffi::Error MpiIrecvImpl(MpiDatatypeBuffer datatype_ptr, IntBuffer source_ptr,
   int count = buf->element_count();
   MPI_Request *request =
       reinterpret_cast<MPI_Request *>(request_ptr->typed_data());
-  int err = MPI_Irecv(buf->untyped_data(), count, datatype, source, tag, comm,
-                      request);
+  int err = EXLA_MPI_Irecv(buf->untyped_data(), count, datatype, source, tag,
+                           comm, request);
   if (err != MPI_SUCCESS) {
     return ffi::Error::InvalidArgument(
         absl::StrFormat("MPI_Irecv failed with error code %d", err));
@@ -254,7 +302,7 @@ ffi::Error MpiWaitImpl(MpiRequestBuffer request_ptr,
   MPI_Request *request =
       reinterpret_cast<MPI_Request *>(request_ptr.typed_data());
   MPI_Status *status = reinterpret_cast<MPI_Status *>(status_ptr->typed_data());
-  int err = MPI_Wait(request, status);
+  int err = EXLA_MPI_Wait(request, status);
   if (err != MPI_SUCCESS) {
     return ffi::Error::InvalidArgument(
         absl::StrFormat("MPI_Wait failed with error code %d", err));
@@ -293,7 +341,8 @@ ffi::Error MpiWaitallImpl(ffi::RemainingArgs requests,
   }
 
   std::vector<MPI_Status> status_vector(count);
-  int err = MPI_Waitall(count, request_vector.data(), status_vector.data());
+  int err =
+      EXLA_MPI_Waitall(count, request_vector.data(), status_vector.data());
   if (err != MPI_SUCCESS) {
     return ffi::Error::InvalidArgument(
         absl::StrFormat("MPI_Waitall failed with error code %d", err));
@@ -339,8 +388,8 @@ ffi::Error MpiAllreduceImpl(ffi::AnyBuffer sendbuf,
         recvbuf->element_count(), sendbuf.element_count()));
   }
   int count = sendbuf.element_count();
-  int err = MPI_Allreduce(sendbuf.untyped_data(), recvbuf->untyped_data(),
-                          count, datatype, op, comm);
+  int err = EXLA_MPI_Allreduce(sendbuf.untyped_data(), recvbuf->untyped_data(),
+                               count, datatype, op, comm);
   if (err != MPI_SUCCESS) {
     return ffi::Error::InvalidArgument(
         absl::StrFormat("MPI_Allreduce failed with error code %d", err));
@@ -367,7 +416,7 @@ ffi::Error MpiBcastImpl(ffi::AnyBuffer buf, MpiDatatypeBuffer datatype_ptr,
       *reinterpret_cast<MPI_Datatype *>(datatype_ptr.typed_data());
   int root = *root_ptr.typed_data();
   int count = buf.element_count();
-  int err = MPI_Bcast(buf.untyped_data(), count, datatype, root, comm);
+  int err = EXLA_MPI_Bcast(buf.untyped_data(), count, datatype, root, comm);
   if (err != MPI_SUCCESS) {
     return ffi::Error::InvalidArgument(
         absl::StrFormat("MPI_Bcast failed with error code %d", err));
