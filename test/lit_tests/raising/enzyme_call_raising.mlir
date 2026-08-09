@@ -4,7 +4,11 @@
 // operand for each. __enzyme_autodiff does not name them -- the C interface
 // seeds every active return with one, which is what makes its result the
 // gradient rather than a directional derivative -- so the raising has to say
-// the one itself.
+// the one itself. The call also returns the gradient and nothing else, so the
+// return is enzyme_activenoneed: an enzyme_active return would claim a primal
+// among the op's results that the call's result types do not carry, and
+// everything downstream that walks outputs by activity would read past the
+// end.
 
 module {
   llvm.mlir.global external constant @enzyme_const() : i8
@@ -27,7 +31,7 @@ module {
 // CHECK:         %[[one:.+]] = arith.constant 1.000000e+00 : f64
 // CHECK:         enzyme.autodiff @sq(%arg0, %[[one]])
 // CHECK-SAME:      activity = [#enzyme<activity enzyme_active>]
-// CHECK-SAME:      ret_activity = [#enzyme<activity enzyme_active>]
+// CHECK-SAME:      ret_activity = [#enzyme<activity enzyme_activenoneed>]
 
 // -----
 

@@ -435,6 +435,16 @@ public:
     parseEnzymeCall(funcToDiff, operands, arguments, argActivities,
                     retActivities, flags);
 
+    // The call returns the gradients and nothing else: __enzyme_autodiff
+    // never hands back the primal value. An enzyme_active return would claim
+    // a primal among the op's results that the call's result types do not
+    // carry -- everything downstream that walks outputs by activity would
+    // read past the end. The seeded-but-not-returned spelling is
+    // enzyme_activenoneed.
+    for (enzyme::Activity &activity : retActivities)
+      if (activity == enzyme::Activity::enzyme_active)
+        activity = enzyme::Activity::enzyme_activenoneed;
+
     // An active return is differentiated from a seed, and enzyme.autodiff
     // takes one operand for each. __enzyme_autodiff does not name them: the C
     // interface seeds every active return with one, which is what makes its
