@@ -295,6 +295,21 @@ struct Memref2PointerOpLowering
   }
 };
 
+// Back to the intrinsic it was raised from. Not llvm.intr.fma: fmuladd only
+// permits fusing, while fma requires the single rounding, which a target
+// without FMA units honors with a libm call per multiply-add.
+struct FMulAddOpLowering : public ConvertOpToLLVMPattern<enzymexla::FMulAddOp> {
+  using ConvertOpToLLVMPattern<enzymexla::FMulAddOp>::ConvertOpToLLVMPattern;
+
+  LogicalResult
+  matchAndRewrite(enzymexla::FMulAddOp op, OpAdaptor transformed,
+                  ConversionPatternRewriter &rewriter) const override {
+    rewriter.replaceOpWithNewOp<LLVM::FMulAddOp>(
+        op, transformed.getA(), transformed.getB(), transformed.getC());
+    return success();
+  }
+};
+
 struct Pointer2MemrefOpLowering
     : public ConvertOpToLLVMPattern<Pointer2MemrefOp> {
   using ConvertOpToLLVMPattern<Pointer2MemrefOp>::ConvertOpToLLVMPattern;
@@ -368,6 +383,7 @@ void populatePolygeistToLLVMConversionPatterns(LLVMTypeConverter &converter,
   patterns.add<Stream2TokenOpLowering>(converter);
   patterns.add<Memref2PointerOpLowering>(converter);
   patterns.add<Pointer2MemrefOpLowering>(converter);
+  patterns.add<FMulAddOpLowering>(converter);
   // clang-format on
 }
 

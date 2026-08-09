@@ -229,6 +229,16 @@ def : EnzymeXLADerivative<"SincOp", (Op $x),
   (Sinc (Shadow $x))
 >;
 
+// Scalar op from the raised-LLVM path (FloatLike, not tensors), so its
+// adjoints are arith ops -- the same rule as math.fma, whose value it shares.
+def : EnzymeXLADerivative<"FMulAddOp", (Op $x, $y, $z),
+  [
+    (CheckedMulF (DiffeRet), $y),
+    (CheckedMulF (DiffeRet), $x),
+    (DiffeRet)
+  ]
+>;
+
 def CoscDerivTerm : SubRoutine<(Op $diffret, $x),
   (
     Select 
