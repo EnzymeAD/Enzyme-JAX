@@ -695,6 +695,9 @@ public:
     if (lhsStep != ShapedType::kDynamic && lhsStep == rhsStep &&
         (sameExtent || !isDim)) {
       int64_t difference = INT64_MAX;
+      // Which access starts first, so the direct overlap can be judged by the
+      // earlier one's width alone rather than conservatively by both.
+      bool lhsFirst = false;
       if (lhs.type != rhs.type)
         return Match::Maybe;
       switch (lhs.type) {
@@ -705,6 +708,7 @@ public:
           }
           if (auto cst = dyn_cast<AffineConstantExpr>(rhs.aff - lhs.aff)) {
             difference = std::abs(cst.getValue());
+            lhsFirst = cst.getValue() > 0;
           }
         }
         break;
@@ -716,17 +720,23 @@ public:
         if (lhs.idx == rhs.idx) {
           return Match::Exact;
         }
-        difference =
-            (lhs.idx < rhs.idx ? rhs.idx - lhs.idx : lhs.idx - rhs.idx);
+        lhsFirst = lhs.idx < rhs.idx;
+        difference = lhsFirst ? rhs.idx - lhs.idx : lhs.idx - rhs.idx;
         break;
       }
 
       if (difference == INT64_MAX)
         return Match::Maybe;
 
+      // Two accesses conflict if they overlap in any period: across a stride,
+      // into the next period's copy, or directly at the same one. The stride
+      // comparison rules out the former; whether it holds is saved rather than
+      // returned so the direct overlap can be required alongside it.
+      const int64_t origDifference = difference;
+      bool wouldOverflowFromStride = true;
       if (isDim) {
         if (difference < lhsSmallestStride && difference < rhsSmallestStride) {
-          return Match::None;
+          wouldOverflowFromStride = false;
         }
       } else {
         if (sameExtent || (lhsSize && rhsSize)) {
@@ -736,9 +746,30 @@ public:
           }
           if (difference < lhsSmallestStride &&
               difference < rhsSmallestStride) {
-            return Match::None;
+            wouldOverflowFromStride = false;
           }
         }
+      }
+
+      if (!wouldOverflowFromStride) {
+        // No spill across a stride, but the direct overlap at the same period
+        // is still open.
+        bool wouldOverflowNoStride;
+        if (isDim) {
+          // A dimensional difference is already counted in elements, so the
+          // two land on the same one -- and directly overlap -- only when it
+          // is zero.
+          wouldOverflowNoStride = origDifference == 0;
+        } else {
+          // A byte gap has to clear the earlier range's width for it to end
+          // before the later begins; without the widths there is nothing more
+          // to ask and the stride verdict stands.
+          wouldOverflowNoStride =
+              lhsSize && rhsSize &&
+              origDifference < (int64_t)(lhsFirst ? *lhsSize : *rhsSize);
+        }
+        if (!wouldOverflowNoStride)
+          return Match::None;
       }
     }
 
@@ -763,11 +794,18 @@ public:
       return Match::Maybe;
 
     // Lying wholly within is a question of where each lands and how far it
-    // reaches, which needs nothing of how either counts its way there.
-    if (!sameExtent && containedAt)
+    // reaches, which needs nothing of how either counts its way there. It is
+    // a real relationship whether or not the caller wants the offset: hand
+    // that back only when asked, and otherwise report the overlap as Maybe
+    // rather than leaving it to the stride comparison below, which does not
+    // reason about one extent lying inside another.
+    if (!sameExtent)
       if (auto at = containsAt(o, dl)) {
-        *containedAt = *at;
-        return Match::Contains;
+        if (containedAt) {
+          *containedAt = *at;
+          return Match::Contains;
+        }
+        return Match::Maybe;
       }
 
     // Two offsets that both go nowhere name the same place, so what is left is
