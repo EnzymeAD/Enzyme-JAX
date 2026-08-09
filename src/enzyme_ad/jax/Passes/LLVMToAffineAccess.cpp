@@ -1930,7 +1930,9 @@ convertLLVMToAffineAccess(Operation *op,
       if (llvm::alignTo(static_cast<uint64_t>(tySize),
                         dl.getTypeABIAlignment(ty)) != tySize)
         continue;
-      if (MemRefType::isValidElementType(ty) && aab.isLegal() && aab.base) {
+      if (MemRefType::isValidElementType(ty) && aab.isLegal() && aab.base &&
+          canMaterializeAfterValue(aab.base) &&
+          llvm::all_of(aab.getMap().operands, canMaterializeAfterValue)) {
         auto memref0 = mc(aab.base);
         Value memref = memref0;
         auto memrefTy = memref0.getType();
@@ -2019,7 +2021,9 @@ convertLLVMToAffineAccess(Operation *op,
       if (llvm::alignTo(static_cast<uint64_t>(tySize),
                         dl.getTypeABIAlignment(ty)) != tySize)
         continue;
-      if (MemRefType::isValidElementType(ty) && aab.isLegal() && aab.base) {
+      if (MemRefType::isValidElementType(ty) && aab.isLegal() && aab.base &&
+          canMaterializeAfterValue(aab.base) &&
+          llvm::all_of(aab.getMap().operands, canMaterializeAfterValue)) {
         auto memref0 = mc(aab.base);
         Value memref = memref0;
         auto memrefTy = memref0.getType();
