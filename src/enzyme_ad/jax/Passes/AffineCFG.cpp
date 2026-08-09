@@ -1942,19 +1942,18 @@ struct MoveRMWToAffine : public OpRewritePattern<memref::AtomicRMWOp> {
 
 // A rebuilt access keeps everything the old one said about itself. All the
 // discardable attributes ride over as they are. Alignment needs the extra
-// clause only because on memref.load/store it is an inherent attribute, held
-// in properties where getDiscardableAttrs does not see it; going to an affine
-// op, which has no inherent slot for it, it is lifted into the discardable
-// dictionary, where lower-aligned-affine-accesses knows to find it.
+// clause only because it is an inherent attribute held in properties, where
+// getDiscardableAttrs does not see it: it is read off the memref op and set on
+// the affine op's own alignment slot (callers pair load->load, store->store).
 static void copyAccessAttrs(Operation *from, Operation *to) {
   for (NamedAttribute attr : from->getDiscardableAttrs())
     to->setAttr(attr.getName(), attr.getValue());
   if (auto load = dyn_cast<memref::LoadOp>(from)) {
     if (auto align = load.getAlignmentAttr())
-      to->setAttr("alignment", align);
+      cast<affine::AffineLoadOp>(to).setAlignmentAttr(align);
   } else if (auto store = dyn_cast<memref::StoreOp>(from)) {
     if (auto align = store.getAlignmentAttr())
-      to->setAttr("alignment", align);
+      cast<affine::AffineStoreOp>(to).setAlignmentAttr(align);
   }
 }
 
@@ -6133,7 +6132,7 @@ struct FoldAppliesIntoLoad : public OpRewritePattern<memref::LoadOp> {
     for (NamedAttribute attr : attrs)
       newLoad->setAttr(attr.getName(), attr.getValue());
     if (alignAttr)
-      newLoad->setAttr("alignment", alignAttr);
+      newLoad.setAlignmentAttr(alignAttr);
     return success();
   }
 };
