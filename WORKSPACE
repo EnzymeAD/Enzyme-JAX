@@ -218,9 +218,9 @@ jax_python_wheel_repository(
     version_source = "@jax//jax:version.py",
 )
 
+load("@jax//third_party/rocm_wheels:workspace.bzl", "rocm_wheels_repository")
 load("@jax_wheel//:wheel.bzl", "WHEEL_VERSION")
 load("@python_version_repo//:py_version.bzl", "HERMETIC_PYTHON_VERSION")
-load("@jax//third_party/rocm_wheels:workspace.bzl", "rocm_wheels_repository")
 
 # Pre-built ROCm wheels from a GitHub release (ROCm/rocm-jax).
 rocm_wheels_repository(
@@ -238,8 +238,6 @@ external_deps_repository(
         "@rocm_wheels//:rocm_plugin_py_import",
     ],
 )
-
-load("@jax//jaxlib:jax_python_wheel.bzl", "jax_python_wheel_repository")
 
 jax_python_wheel_repository(
     name = "jax_wheel",
@@ -345,6 +343,13 @@ cuda_tile_workspace()
 load("@xla//third_party/mpitrampoline:workspace.bzl", mpitrampoline_workspace = "repo")
 
 mpitrampoline_workspace()
+
+load("@rules_foreign_cc//foreign_cc:repositories.bzl", "rules_foreign_cc_dependencies")
+load("//third_party/rules_foreign_cc:workspace.bzl", rules_foreign_cc_workspace = "repo")
+
+rules_foreign_cc_workspace()
+
+rules_foreign_cc_dependencies()
 
 # add support for generating compile_commands
 load(
