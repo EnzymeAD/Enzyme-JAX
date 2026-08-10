@@ -9,6 +9,9 @@ PATCHES = [
     """
     sed -i.bak0 "s/\\$(LBT_ROOT)\\/src\\//\\$(LBT_ROOT)\\/libblastrampoline.build_tmpdir\\//g" src/Makefile
     """,
+    """
+    sed -i.bak0 "s/prefix/PREFIX/g" src/Make.inc
+    """,
 ]
 
 def repo(repo_name = ""):
