@@ -13,13 +13,6 @@ OVERRIDE_ENZYME_PATH = ""
 
 XLA_PATCHES = [
     """
-    # The hipcc toolchain feature writes hipcc_config().hipcc_env into an
-    # env_entry unconditionally, and env_entry requires a nonempty string;
-    # with none of the HIPCC environment variables set at configure time the
-    # value is empty and toolchain analysis fails. A single space is inert.
-    sed -i.bak1 "s|value = _hipcc_config.hipcc_env,|value = _hipcc_config.hipcc_env if _hipcc_config.hipcc_env else \" \",|g" third_party/gpus/crosstool/hipcc_cc_toolchain_config.bzl.tpl
-    """,
-    """
     # Use clang not msvc
     sed -i.bak0 "s|/std:c++17|-std=c++17|g" third_party/mkl_dnn/mkldnn_v1.BUILD
     """,
