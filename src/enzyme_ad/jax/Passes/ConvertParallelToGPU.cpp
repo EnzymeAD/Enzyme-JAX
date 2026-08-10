@@ -547,8 +547,9 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
       curRegion++;
     };
 
+    enzymexla::AlternativesOp alternativesOp = nullptr;
     if (char *blockSizeStr = getenv("POLYGEIST_GPU_KERNEL_BLOCK_SIZE")) {
-      auto alternativesOp = enzymexla::AlternativesOp::create(rewriter, loc, 1);
+      alternativesOp = enzymexla::AlternativesOp::create(rewriter, loc, 1);
       alternativesOp->setAttr("alternatives.type",
                               rewriter.getStringAttr("gpu_kernel"));
       llvm::errs() << "Emitting kernel with " << atoi(blockSizeStr)
@@ -556,15 +557,28 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
       emitAlternative(atoi(blockSizeStr), alternativesOp);
       if (curRegion == 0) {
         llvm::errs() << " Failed to make kernel with exact dimension\n";
-        assert(wrapper.getOperands().size() == 6);
-        assert(pop.getUpperBound().size() == 6 &&
-               pop.getUpperBound() == wrapper.getOperands());
-        exactMatch(alternativesOp);
+        if (pop.getUpperBound().size() == 6 &&
+            pop.getUpperBound() == wrapper.getOperands()) {
+          exactMatch(alternativesOp);
+        } else if (pop->hasAttr("enzymexla.kernel_thread_indices")) {
+          // The exact-shape fallback needs the six grid and block bounds;
+          // a collapsed parallel op does not have them, so reproduce the
+          // recorded original block shape instead.
+          emitAlternative(-1, alternativesOp);
+        } else {
+          // No exact shape and no recorded shape: try the alternative
+          // block sizes until one splits.
+          for (unsigned blockSize : ALTERNATIVE_KERNEL_BLOCK_SIZES) {
+            emitAlternative(blockSize, alternativesOp);
+            if (curRegion != 0)
+              break;
+          }
+        }
       }
       alternativesOp->setAttr("alternatives.descs",
                               rewriter.getArrayAttr(descs));
     } else if (shouldEmitAlternatives(pop)) {
-      auto alternativesOp = enzymexla::AlternativesOp::create(
+      alternativesOp = enzymexla::AlternativesOp::create(
           rewriter, loc,
           ALTERNATIVE_KERNEL_BLOCK_SIZES.size() +
               (pop.getUpperBound().size() == 6 &&
@@ -581,14 +595,27 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
       }
       alternativesOp->setAttr("alternatives.descs",
                               rewriter.getArrayAttr(descs));
-      shrinkAlternativesOp(alternativesOp, curRegion, rewriter);
+      if (curRegion != 0)
+        shrinkAlternativesOp(alternativesOp, curRegion, rewriter);
     } else {
-      auto alternativesOp = enzymexla::AlternativesOp::create(rewriter, loc, 1);
+      alternativesOp = enzymexla::AlternativesOp::create(rewriter, loc, 1);
       alternativesOp->setAttr("alternatives.type",
                               rewriter.getStringAttr("gpu_kernel"));
       emitAlternative(-1, alternativesOp);
       alternativesOp->setAttr("alternatives.descs",
                               rewriter.getArrayAttr(descs));
+    }
+
+    if (curRegion == 0) {
+      // Nothing split: every candidate block size failed. The regions hold
+      // only the corpses of the failed attempts; drop them and leave the
+      // launch-out-of-resources error the failed splits already stand for.
+      rewriter.eraseOp(alternativesOp);
+      rewriter.setInsertionPoint(wrapper);
+      auto err = arith::ConstantIndexOp::create(
+          rewriter, loc, CUDA_ERROR_LAUNCH_OUT_OF_RESOURCES);
+      rewriter.replaceOp(wrapper, err->getResults());
+      return success();
     }
 
     rewriter.eraseOp(wrapper);
@@ -667,7 +694,10 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
       if (maxThreads == -1) {
         auto dea = pop->getAttrOfType<DenseElementsAttr>(
             "enzymexla.kernel_thread_indices");
-        assert(dea);
+        // Without the recorded thread indices there is no original block
+        // shape to reproduce; the caller falls back to a chosen size.
+        if (!dea)
+          return tmp;
         for (auto index_ : dea.getValues<IntegerAttr>()) {
           auto index = index_.getValue().getLimitedValue();
           tmp.push_back(index);
@@ -1740,9 +1770,12 @@ struct ParallelToGPULaunch : public OpRewritePattern<enzymexla::GPUWrapperOp> {
             memref::AllocaOp::create(rewriter, alloca.getLoc(), type);
         if (auto align = alloca.getAlignment())
           newAlloca.setAlignment(*align);
-        auto cast = memref::CastOp::create(rewriter, alloca.getLoc(),
-                                           alloca.getType(), newAlloca);
-        it->replaceAllUsesWith(cast);
+        // memref.cast cannot change the memory space; that is what
+        // memref.memory_space_cast is for, and with C-style memrefs it
+        // lowers to an addrspacecast.
+        auto cast = memref::MemorySpaceCastOp::create(
+            rewriter, alloca.getLoc(), alloca.getType(), newAlloca);
+        it->replaceAllUsesWith(cast.getOperation());
       } else {
         assert(0);
       }
@@ -1833,18 +1866,33 @@ struct AsyncGPULaunch : public OpRewritePattern<async::ExecuteOp> {
             .wasInterrupted())
       return failure();
 
-    SmallVector<Value> gpudeps;
-    for (auto dep : async.getDependencies()) {
-      gpudeps.push_back(enzymexla::StreamToTokenOp::create(
-          rewriter, dep.getLoc(), rewriter.getType<gpu::AsyncTokenType>(),
-          dep.getDefiningOp<enzymexla::StreamToTokenOp>().getOperand()));
-    }
+    SmallVector<Value> streams;
+    for (auto dep : async.getDependencies())
+      streams.push_back(
+          dep.getDefiningOp<enzymexla::StreamToTokenOp>().getOperand());
+
+    // gpu.launch_func carries the stream on its asyncObject operand: a
+    // dependency operand without a result token no longer verifies. The
+    // operand is a single value, so more than one stream cannot be said.
+    if (!launches.empty() &&
+        (streams.size() != 1 ||
+         llvm::any_of(launches, [](gpu::LaunchFuncOp launch) {
+           return launch.getAsyncObject() != nullptr;
+         })))
+      return failure();
 
     for (auto launch : launches) {
-      rewriter.modifyOpInPlace(launch, [&]() {
-        launch.getAsyncDependenciesMutable().append(gpudeps);
-      });
+      rewriter.modifyOpInPlace(
+          launch, [&]() { launch.getAsyncObjectMutable().assign(streams[0]); });
     }
+
+    SmallVector<Value> gpudeps;
+    if (!launches2.empty())
+      for (auto [dep, stream] :
+           llvm::zip_equal(async.getDependencies(), streams))
+        gpudeps.push_back(enzymexla::StreamToTokenOp::create(
+            rewriter, dep.getLoc(), rewriter.getType<gpu::AsyncTokenType>(),
+            stream));
 
     for (auto launch : launches2) {
       rewriter.modifyOpInPlace(launch, [&]() {
@@ -1982,6 +2030,13 @@ struct ConvertParallelToGPU1Pass
       patterns.insert<InnerParallelSerialization>(&getContext());
       GreedyRewriteConfig config;
       config.enableFolding();
+      // Aggressive region simplification (the greedy default) merges
+      // identical blocks by adding their differing values as block arguments
+      // and appending them to every predecessor's successor operands --
+      // including llvm.invoke's, which cannot carry index- or memref-typed
+      // successor operands. These functions still hold raised llvm CFGs;
+      // keep block merging off.
+      config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);
       if (failed(applyPatternsGreedily(m, std::move(patterns), config))) {
         signalPassFailure();
         return;
@@ -2001,6 +2056,13 @@ struct ConvertParallelToGPU1Pass
       // clang-format on
       GreedyRewriteConfig config;
       config.enableFolding();
+      // Aggressive region simplification (the greedy default) merges
+      // identical blocks by adding their differing values as block arguments
+      // and appending them to every predecessor's successor operands --
+      // including llvm.invoke's, which cannot carry index- or memref-typed
+      // successor operands. These functions still hold raised llvm CFGs;
+      // keep block merging off.
+      config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);
       if (failed(applyPatternsGreedily(m, std::move(patterns), config))) {
         signalPassFailure();
         return;
@@ -2026,6 +2088,13 @@ struct ConvertParallelToGPU1Pass
       populateNormalizationPatterns(patterns);
       GreedyRewriteConfig config;
       config.enableFolding();
+      // Aggressive region simplification (the greedy default) merges
+      // identical blocks by adding their differing values as block arguments
+      // and appending them to every predecessor's successor operands --
+      // including llvm.invoke's, which cannot carry index- or memref-typed
+      // successor operands. These functions still hold raised llvm CFGs;
+      // keep block merging off.
+      config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);
       if (failed(applyPatternsGreedily(m, std::move(patterns), config))) {
         signalPassFailure();
         return;
@@ -2446,6 +2515,13 @@ struct ConvertParallelToGPU1Pass
       // clang-format on
       GreedyRewriteConfig config;
       config.enableFolding();
+      // Aggressive region simplification (the greedy default) merges
+      // identical blocks by adding their differing values as block arguments
+      // and appending them to every predecessor's successor operands --
+      // including llvm.invoke's, which cannot carry index- or memref-typed
+      // successor operands. These functions still hold raised llvm CFGs;
+      // keep block merging off.
+      config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);
       if (failed(applyPatternsGreedily(m, std::move(patterns), config))) {
         signalPassFailure();
         return;
@@ -2460,6 +2536,13 @@ struct ConvertParallelToGPU1Pass
       // clang-format on
       GreedyRewriteConfig config;
       config.enableFolding();
+      // Aggressive region simplification (the greedy default) merges
+      // identical blocks by adding their differing values as block arguments
+      // and appending them to every predecessor's successor operands --
+      // including llvm.invoke's, which cannot carry index- or memref-typed
+      // successor operands. These functions still hold raised llvm CFGs;
+      // keep block merging off.
+      config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);
       if (failed(applyPatternsGreedily(m, std::move(patterns), config))) {
         signalPassFailure();
         return;
@@ -2534,6 +2617,7 @@ gdgo->erase();
             &getContext());
     GreedyRewriteConfig config;
     config.enableFolding();
+    config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);
     if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
                                      config))) {
       signalPassFailure();

@@ -23,6 +23,7 @@
 #include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/Dominance.h"
 #include "mlir/IR/OpDefinition.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -59,6 +60,37 @@ namespace enzyme {
 #include "RuntimeWrapperUtils.h"
 
 #define DEBUG_TYPE "parallel-lower-opt"
+
+// A call wrapped in an execute_region yields the call's results, but when
+// the inlined callee never returns -- an assert or error path ending in a
+// trap -- the yield is left with nothing to forward. Control cannot reach
+// such a yield; say its operands as poison so the op stays consistent.
+// Inlining a callee with no returning path leaves the call's results with
+// nothing to replace them; the yield built to forward them would be erased
+// out from under. Control cannot reach those uses; say them as poison.
+static void poisonRemainingUses(mlir::CallOpInterface caller) {
+  if (caller->use_empty())
+    return;
+  mlir::OpBuilder b(caller);
+  llvm::SmallVector<mlir::Value> vals;
+  for (mlir::Value r : caller->getResults())
+    vals.push_back(
+        mlir::ub::PoisonOp::create(b, caller->getLoc(), r.getType()));
+  caller->replaceAllUsesWith(vals);
+}
+
+static void repairNonReturningYields(mlir::scf::ExecuteRegionOp exOp) {
+  for (mlir::Block &blk : exOp.getRegion()) {
+    auto yield = llvm::dyn_cast<mlir::scf::YieldOp>(blk.getTerminator());
+    if (!yield || yield.getNumOperands() == exOp.getNumResults())
+      continue;
+    mlir::OpBuilder yb(yield);
+    llvm::SmallVector<mlir::Value> vals;
+    for (mlir::Type t : exOp.getResultTypes())
+      vals.push_back(mlir::ub::PoisonOp::create(yb, yield.getLoc(), t));
+    yield->setOperands(vals);
+  }
+}
 
 using namespace mlir;
 using namespace mlir::arith;
@@ -385,9 +417,11 @@ void ParallelLower::runOnOperation() {
     if (inlineCall(interface, cloneCallback, caller, callableOp, targetRegion,
                    /*shouldCloneInlinedRegion=*/true)
             .succeeded()) {
+      poisonRemainingUses(caller);
       caller.erase();
       replacedCallables.insert(callableOp);
     }
+    repairNonReturningYields(exOp);
     b.setInsertionPointToEnd(&allocScope.getRegion().front());
     memref::AllocaScopeReturnOp::create(b, allocScope.getLoc(),
                                         exOp.getResults());
@@ -447,10 +481,12 @@ void ParallelLower::runOnOperation() {
       if (inlineCall(interface, cloneCallback, caller, callableOp, targetRegion,
                      /*shouldCloneInlinedRegion=*/true)
               .succeeded()) {
+        poisonRemainingUses(caller);
         caller.erase();
         replacedCallables.insert(callableOp);
       }
     }
+    repairNonReturningYields(exOp);
     b.setInsertionPointToEnd(&allocScope.getRegion().front());
     memref::AllocaScopeReturnOp::create(b, allocScope.getLoc(),
                                         exOp.getResults());
@@ -488,6 +524,7 @@ void ParallelLower::runOnOperation() {
     ret.erase();
     b.setInsertionPointToEnd(&exOp.getRegion().back());
     scf::YieldOp::create(b, callerLoc, retVals);
+    repairNonReturningYields(exOp);
     b.setInsertionPointToEnd(&allocScope.getRegion().front());
     memref::AllocaScopeReturnOp::create(b, allocScope.getLoc(),
                                         exOp.getResults());
@@ -668,6 +705,7 @@ void ParallelLower::runOnOperation() {
         launchOp.getBlockSizeZ(), launchOp.getDynamicSharedMemorySize(),
         launchOp.getNumResults() ? launchOp.getResultTypes()[0] : nullptr,
         launchOp.getAsyncDependencies(),
+        /*asyncObject=*/nullptr,
         /*workgroup*/ TypeRange(),
         /*private*/ TypeRange(), launchOp.getClusterSizeX(),
         launchOp.getClusterSizeY(), launchOp.getClusterSizeZ());
@@ -1110,6 +1148,7 @@ void FixGPUFunc::runOnOperation() {
     if (inlineCall(interface, cloneCallback, caller, callableOp, targetRegion,
                    /*shouldCloneInlinedRegion=*/true)
             .succeeded()) {
+      poisonRemainingUses(caller);
       caller.erase();
     }
   };
@@ -1326,6 +1365,49 @@ void StripGPUInfo::runOnOperation() {
       }
     });
   });
+
+  // Extracting device code into gpu modules can leave renamed host-side
+  // residue behind: internal-linkage clones of device functions, held only
+  // by equally dead device vtable globals. LLVM internal linkage is not
+  // MLIR private visibility, so symbol-dce keeps them, and the host backend
+  // then fatals on their sm_* subtargets. Erase the residue: any host-level
+  // function whose target cpu names a device, together with the internal
+  // globals whose initializers are the only things holding its address.
+  auto m = dyn_cast<ModuleOp>(getOperation());
+  if (!m)
+    return;
+  SmallVector<LLVM::LLVMFuncOp> residue;
+  for (auto fn : m.getBody()->getOps<LLVM::LLVMFuncOp>()) {
+    auto cpu = fn->getAttrOfType<StringAttr>("target_cpu");
+    if (cpu && (cpu.getValue().starts_with("sm_") ||
+                cpu.getValue().starts_with("gfx")))
+      residue.push_back(fn);
+  }
+  if (residue.empty())
+    return;
+  DenseSet<Operation *> residueSyms;
+  for (auto fn : residue)
+    residueSyms.insert(fn);
+  SmallVector<LLVM::GlobalOp> deadGlobals;
+  for (auto glob : m.getBody()->getOps<LLVM::GlobalOp>()) {
+    if (glob.getLinkage() != LLVM::Linkage::Internal &&
+        glob.getLinkage() != LLVM::Linkage::Private)
+      continue;
+    bool holdsResidue = false;
+    glob.walk([&](LLVM::AddressOfOp addr) {
+      if (auto *sym = SymbolTable::lookupNearestSymbolFrom(
+              addr, addr.getGlobalNameAttr()))
+        if (residueSyms.count(sym))
+          holdsResidue = true;
+    });
+    if (holdsResidue && SymbolTable::symbolKnownUseEmpty(glob, m))
+      deadGlobals.push_back(glob);
+  }
+  for (auto glob : deadGlobals)
+    glob.erase();
+  for (auto fn : residue)
+    if (SymbolTable::symbolKnownUseEmpty(fn, m))
+      fn.erase();
 }
 
 // Returns a list of all symbols provided by cudart (obtained from

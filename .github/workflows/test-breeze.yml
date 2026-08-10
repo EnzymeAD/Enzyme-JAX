@@ -87,7 +87,7 @@ jobs:
           repository-cache: false
           bazelisk-version: 1.x
       - name: Checkout Reactant.jl
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: 'EnzymeAD/Reactant.jl'
           ref: ${{ matrix.reactant_commit }}
@@ -145,7 +145,7 @@ jobs:
           fi
         working-directory: ${{ env.REACTANT_DIR }}/deps/ReactantExtra
       - name: Checkout Breeze
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: 'NumericalEarth/Breeze.jl'
           ref: ${{ matrix.breeze_commit }}
