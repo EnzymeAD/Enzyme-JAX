@@ -547,8 +547,9 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
       curRegion++;
     };
 
+    enzymexla::AlternativesOp alternativesOp = nullptr;
     if (char *blockSizeStr = getenv("POLYGEIST_GPU_KERNEL_BLOCK_SIZE")) {
-      auto alternativesOp = enzymexla::AlternativesOp::create(rewriter, loc, 1);
+      alternativesOp = enzymexla::AlternativesOp::create(rewriter, loc, 1);
       alternativesOp->setAttr("alternatives.type",
                               rewriter.getStringAttr("gpu_kernel"));
       llvm::errs() << "Emitting kernel with " << atoi(blockSizeStr)
@@ -556,15 +557,28 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
       emitAlternative(atoi(blockSizeStr), alternativesOp);
       if (curRegion == 0) {
         llvm::errs() << " Failed to make kernel with exact dimension\n";
-        assert(wrapper.getOperands().size() == 6);
-        assert(pop.getUpperBound().size() == 6 &&
-               pop.getUpperBound() == wrapper.getOperands());
-        exactMatch(alternativesOp);
+        if (pop.getUpperBound().size() == 6 &&
+            pop.getUpperBound() == wrapper.getOperands()) {
+          exactMatch(alternativesOp);
+        } else if (pop->hasAttr("enzymexla.kernel_thread_indices")) {
+          // The exact-shape fallback needs the six grid and block bounds;
+          // a collapsed parallel op does not have them, so reproduce the
+          // recorded original block shape instead.
+          emitAlternative(-1, alternativesOp);
+        } else {
+          // No exact shape and no recorded shape: try the alternative
+          // block sizes until one splits.
+          for (unsigned blockSize : ALTERNATIVE_KERNEL_BLOCK_SIZES) {
+            emitAlternative(blockSize, alternativesOp);
+            if (curRegion != 0)
+              break;
+          }
+        }
       }
       alternativesOp->setAttr("alternatives.descs",
                               rewriter.getArrayAttr(descs));
     } else if (shouldEmitAlternatives(pop)) {
-      auto alternativesOp = enzymexla::AlternativesOp::create(
+      alternativesOp = enzymexla::AlternativesOp::create(
           rewriter, loc,
           ALTERNATIVE_KERNEL_BLOCK_SIZES.size() +
               (pop.getUpperBound().size() == 6 &&
@@ -581,14 +595,27 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
       }
       alternativesOp->setAttr("alternatives.descs",
                               rewriter.getArrayAttr(descs));
-      shrinkAlternativesOp(alternativesOp, curRegion, rewriter);
+      if (curRegion != 0)
+        shrinkAlternativesOp(alternativesOp, curRegion, rewriter);
     } else {
-      auto alternativesOp = enzymexla::AlternativesOp::create(rewriter, loc, 1);
+      alternativesOp = enzymexla::AlternativesOp::create(rewriter, loc, 1);
       alternativesOp->setAttr("alternatives.type",
                               rewriter.getStringAttr("gpu_kernel"));
       emitAlternative(-1, alternativesOp);
       alternativesOp->setAttr("alternatives.descs",
                               rewriter.getArrayAttr(descs));
+    }
+
+    if (curRegion == 0) {
+      // Nothing split: every candidate block size failed. The regions hold
+      // only the corpses of the failed attempts; drop them and leave the
+      // launch-out-of-resources error the failed splits already stand for.
+      rewriter.eraseOp(alternativesOp);
+      rewriter.setInsertionPoint(wrapper);
+      auto err = arith::ConstantIndexOp::create(
+          rewriter, loc, CUDA_ERROR_LAUNCH_OUT_OF_RESOURCES);
+      rewriter.replaceOp(wrapper, err->getResults());
+      return success();
     }
 
     rewriter.eraseOp(wrapper);
@@ -667,7 +694,10 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
       if (maxThreads == -1) {
         auto dea = pop->getAttrOfType<DenseElementsAttr>(
             "enzymexla.kernel_thread_indices");
-        assert(dea);
+        // Without the recorded thread indices there is no original block
+        // shape to reproduce; the caller falls back to a chosen size.
+        if (!dea)
+          return tmp;
         for (auto index_ : dea.getValues<IntegerAttr>()) {
           auto index = index_.getValue().getLimitedValue();
           tmp.push_back(index);
