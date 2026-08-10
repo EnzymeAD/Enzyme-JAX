@@ -471,7 +471,9 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
 
   LogicalResult matchAndRewrite(enzymexla::GPUWrapperOp wrapper,
                                 PatternRewriter &rewriter) const override {
-    scf::ParallelOp pop = getDirectlyNestedSingleParallel(wrapper.getBody());
+    scf::ParallelOp pop = getDirectlyNestedSingleParallel(
+        wrapper.getBody(), /*allowAllocas*/ false,
+        /*allowIndexComputation*/ true);
     if (!pop)
       return failure();
     bool child = false;
@@ -646,7 +648,9 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
                     PatternRewriter &rewriter) const {
     mlir::OpBuilder::InsertionGuard guard(rewriter);
 
-    scf::ParallelOp pop = getDirectlyNestedSingleParallel(wrapper.getBody());
+    scf::ParallelOp pop = getDirectlyNestedSingleParallel(
+        wrapper.getBody(), /*allowAllocas*/ false,
+        /*allowIndexComputation*/ true);
 
     auto loc = pop->getLoc();
 
@@ -979,9 +983,56 @@ struct ParallelizeBlockOps : public OpRewritePattern<scf::ParallelOp> {
     Block *outerBlock = pop->getBlock();
     Block *innerBlock = pop.getBody();
 
-    if (getDirectlyNestedSingleParallel(outerBlock, /* allowAllocas */ true)) {
+    if (getDirectlyNestedSingleParallel(outerBlock, /* allowAllocas */ true,
+                                        /* allowIndexComputation */ true)) {
       LLVM_DEBUG(DBGS() << "no ops to parallelize\n");
       return failure();
+    }
+
+    // A value defined here but read by the parallel itself (its bounds),
+    // by the terminator, or by anything else the walk below cannot reach
+    // cannot be moved into the parallel body: its op is pinned, together
+    // with everything a pinned op reads (they stay in dependency order).
+    // Pure pinned computation that does not touch this block's values is
+    // hoisted above the block instead, where HandleWrapperRootOps knows how
+    // to place it; anything else pinned means this shape cannot be
+    // normalized, and saying so beats erasing values out from under it.
+    DenseSet<Operation *> pinned;
+    {
+      SmallVector<Operation *> handled;
+      for (Operation &op : *outerBlock) {
+        if (&op == pop.getOperation() || &op == outerBlock->getTerminator())
+          continue;
+        if (!isa<memref::AllocaOp, LLVM::AllocaOp>(&op))
+          handled.push_back(&op);
+      }
+      DenseSet<Operation *> handledSet(handled.begin(), handled.end());
+      for (Operation *op : llvm::reverse(handled)) {
+        for (Operation *user : op->getUsers()) {
+          Operation *top = user;
+          while (top->getBlock() != outerBlock && top->getParentOp())
+            top = top->getParentOp();
+          bool reachable = false;
+          if (pop->isProperAncestor(user)) {
+            reachable = true; // replaced with the in-body clone's results
+          } else if (handledSet.count(top) && !pinned.count(top)) {
+            reachable = true; // erased alongside this op
+          }
+          if (!reachable) {
+            pinned.insert(op);
+            break;
+          }
+        }
+      }
+      // Pinned ops simply stay where they are: leaving an op in place is
+      // always sound, and the shapes this leaves behind -- index
+      // computation feeding the inner parallel's bounds -- are what the
+      // patterns downstream are prepared to see. It is the erase that was
+      // never sound.
+      if (llvm::all_of(handled,
+                       [&](Operation *op) { return pinned.count(op); }))
+        return rewriter.notifyMatchFailure(
+            pop, "every op beside the parallel has to stay where it is");
     }
 
     // Handle ops before the parallel
@@ -1015,7 +1066,9 @@ struct ParallelizeBlockOps : public OpRewritePattern<scf::ParallelOp> {
     for (; &*it != pop.getOperation(); ++it) {
       Operation &op = *it;
       Operation *newOp;
-      if (isa<scf::ParallelOp>(&op)) {
+      if (pinned.count(&op)) {
+        continue;
+      } else if (isa<scf::ParallelOp>(&op)) {
         llvm_unreachable("Unhandled case");
         break;
       } else if (it == end) {
@@ -1054,7 +1107,11 @@ struct ParallelizeBlockOps : public OpRewritePattern<scf::ParallelOp> {
     it++;
 
     // Handle ops after the parallel
-    {
+    bool tailWork = false;
+    for (auto tailIt = it; tailIt != end; ++tailIt)
+      if (!pinned.count(&*tailIt))
+        tailWork = true;
+    if (tailWork) {
       auto zeroindex = arith::ConstantIndexOp::create(rewriter, loc, 0);
       rewriter.setInsertionPoint(innerBlock->getTerminator());
       auto cmpOp =
@@ -1072,7 +1129,9 @@ struct ParallelizeBlockOps : public OpRewritePattern<scf::ParallelOp> {
       rewriter.setInsertionPointToStart(ifOp.thenBlock());
       for (; it != end; ++it) {
         Operation &op = *it;
-        if (isa<scf::ParallelOp>(&op)) {
+        if (pinned.count(&op)) {
+          continue;
+        } else if (isa<scf::ParallelOp>(&op)) {
           llvm_unreachable("Unhandled case");
           break;
         } else if (auto alloca = dyn_cast<memref::AllocaOp>(&op)) {
@@ -1088,8 +1147,15 @@ struct ParallelizeBlockOps : public OpRewritePattern<scf::ParallelOp> {
       }
     }
 
-    for (Operation *op : llvm::reverse(toErase))
+    // Uses were only replaced within the parallel body; anything else --
+    // the parallel's own bounds, the terminator, an op past the handled
+    // range -- still reads the original. The original still executes here
+    // once per grid point exactly as before, so keeping it is sound;
+    // erasing it out from under its uses is not.
+    for (Operation *op : llvm::reverse(toErase)) {
+      assert(op->use_empty());
       rewriter.eraseOp(op);
+    }
 
     return success();
   }
@@ -1214,6 +1280,11 @@ struct HandleWrapperRootOps : public OpRewritePattern<enzymexla::GPUWrapperOp> {
         firstGridOp = &*pop->getRegion(0).begin()->begin();
         break;
       }
+      // Index computation the parallel's bounds read stays put: it has to
+      // live above the parallel, everything downstream tolerates it there,
+      // and handling it here would rebuild the same wrapper shape forever.
+      if (isa<arith::ArithDialect>(it->getDialect()))
+        continue;
       toHandle.push_back(&*it);
     }
     if (toHandle.size() == 0) {
@@ -1633,21 +1704,25 @@ struct ParallelToGPULaunch : public OpRewritePattern<enzymexla::GPUWrapperOp> {
       LLVM_DEBUG(DBGS() << "[pop-to-launch] ignoring nested parallel op\n");
       return failure();
     }
-    rewriter.setInsertionPoint(wrapper);
-    auto oneindex = arith::ConstantIndexOp::create(rewriter, loc, 1);
-
     // TODO we currently assume that all parallel ops we encouter are already
     // prepared for conversion to gpu.launch, i.e. two nested parallel loops
     // with lower bounds zero and constant upper bounds for the inner parallel,
     // the memory they use is on the gpu, are there more conditions?
-    scf::ParallelOp gridPop =
-        getDirectlyNestedSingleParallel(wrapper.getBody());
+    scf::ParallelOp gridPop = getDirectlyNestedSingleParallel(
+        wrapper.getBody(), /*allowAllocas*/ false,
+        /*allowIndexComputation*/ true);
     if (!gridPop)
       return failure();
     scf::ParallelOp blockPop = getDirectlyNestedSingleParallel(
         gridPop.getBody(), /* allowAllocas */ true);
     if (!blockPop)
       return failure();
+
+    // Only mutate once the match is certain: an op created before a bail
+    // marks the IR changed on every scan, and a wrapper this pattern can
+    // never convert then keeps the driver from converging.
+    rewriter.setInsertionPoint(wrapper);
+    auto oneindex = arith::ConstantIndexOp::create(rewriter, loc, 1);
 
     rewriter.setInsertionPoint(wrapper);
     auto errOp = enzymexla::GPUErrorOp::create(rewriter, loc);
@@ -2117,8 +2192,9 @@ struct ConvertParallelToGPU1Pass
         });
         for (enzymexla::GPUWrapperOp wrapper : toHandle) {
           const char *PATTERN = "coarsen-threads";
-          scf::ParallelOp gridPop =
-              getDirectlyNestedSingleParallel(wrapper.getBody());
+          scf::ParallelOp gridPop = getDirectlyNestedSingleParallel(
+              wrapper.getBody(), /*allowAllocas*/ false,
+              /*allowIndexComputation*/ true);
           assert(gridPop);
           scf::ParallelOp blockPop = getDirectlyNestedSingleParallel(
               gridPop.getBody(), /* allowAllocas */ true);
@@ -2206,8 +2282,9 @@ struct ConvertParallelToGPU1Pass
           // clang-format on
 
           const char *PATTERN = "coarsen-threads";
-          scf::ParallelOp gridPop =
-              getDirectlyNestedSingleParallel(wrapper.getBody());
+          scf::ParallelOp gridPop = getDirectlyNestedSingleParallel(
+              wrapper.getBody(), /*allowAllocas*/ false,
+              /*allowIndexComputation*/ true);
           assert(gridPop);
           scf::ParallelOp blockPop = getDirectlyNestedSingleParallel(
               gridPop.getBody(), /* allowAllocas */ true);

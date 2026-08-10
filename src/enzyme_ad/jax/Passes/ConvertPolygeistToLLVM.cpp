@@ -4915,7 +4915,12 @@ struct ConvertPolygeistToLLVMPass
     }
 
     if (m->walk([](UnrealizedConversionCastOp op) {
-           op->emitError() << "Unhandled unrealized conversion cast\n";
+           InFlightDiagnostic diag =
+               op->emitError() << "Unhandled unrealized conversion cast " << op;
+           if (auto fn = op->getParentOfType<FunctionOpInterface>())
+             diag.attachNote(fn->getLoc()) << "in " << fn.getName();
+           for (Operation *user : op->getUsers())
+             diag.attachNote(user->getLoc()) << "used by " << *user;
            return WalkResult::interrupt();
          }).wasInterrupted()) {
       signalPassFailure();
