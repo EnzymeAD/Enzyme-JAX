@@ -2638,8 +2638,9 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
 
   Value zero = LLVM::ConstantOp::create(rewriter, loc, llvmInt32Type, 0);
   auto nullpointer = LLVM::ZeroOp::create(rewriter, loc, llvmPointerType);
-  Value stream = adaptor.getAsyncDependencies().empty()
-                     ? nullpointer
+  Value stream = adaptor.getAsyncObject() ? adaptor.getAsyncObject()
+                 : adaptor.getAsyncDependencies().empty()
+                     ? (Value)nullpointer
                      : adaptor.getAsyncDependencies().front();
 
   // Create array of pointers to kernel arguments.
@@ -2776,7 +2777,9 @@ LogicalResult LegalizeLaunchFuncOpPattern::matchAndRewrite(
   Location loc = launchOp.getLoc();
 
   Value stream = Value();
-  if (!adaptor.getAsyncDependencies().empty())
+  if (adaptor.getAsyncObject())
+    stream = adaptor.getAsyncObject();
+  else if (!adaptor.getAsyncDependencies().empty())
     stream = adaptor.getAsyncDependencies().front();
   // If the async keyword is present and there are no dependencies, then a
   // stream must be created to pass to subsequent operations.
@@ -2852,7 +2855,8 @@ LogicalResult LegalizeLaunchFuncOpPattern::matchAndRewrite(
                       adaptor.getBlockSizeZ()},
       adaptor.getDynamicSharedMemorySize(),
       llvmArgumentsWithSizes.empty() ? llvmArguments : llvmArgumentsWithSizes,
-      stream, clusterSize);
+      /*asyncTokenType=*/nullptr, /*asyncDependencies=*/{},
+      /*asyncObject=*/stream, clusterSize);
   if (launchOp.getAsyncToken())
     rewriter.replaceOp(launchOp, {stream});
   else

@@ -244,7 +244,7 @@ bool CompileGPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
     gpu::LaunchFuncOp::create(builder, loc, gpufunc, gridSize, blockSize,
                               dynshmem, entryBlock.getArguments(),
                               stream.getType(), ValueRange(stream),
-                              clusterSize);
+                              /*asyncObject=*/nullptr, clusterSize);
   } else {
     gpu::LaunchFuncOp::create(builder, loc, gpufunc, gridSize, blockSize,
                               dynshmem, entryBlock.getArguments(),

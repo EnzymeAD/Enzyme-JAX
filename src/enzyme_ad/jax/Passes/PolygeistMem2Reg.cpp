@@ -2240,7 +2240,7 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
   // round after, so neither side ever settles. There are several ways out of
   // this function and the reads have to go on all of them.
   SmallVector<Operation *> transferReads;
-  auto dropUnaskedReads = llvm::make_scope_exit([&transferReads]() {
+  auto dropUnaskedReads = llvm::scope_exit([&transferReads]() {
     for (auto *read : llvm::reverse(transferReads))
       if (read->getResult(0).use_empty())
         read->erase();

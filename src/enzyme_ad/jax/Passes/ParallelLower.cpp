@@ -668,6 +668,7 @@ void ParallelLower::runOnOperation() {
         launchOp.getBlockSizeZ(), launchOp.getDynamicSharedMemorySize(),
         launchOp.getNumResults() ? launchOp.getResultTypes()[0] : nullptr,
         launchOp.getAsyncDependencies(),
+        /*asyncObject=*/nullptr,
         /*workgroup*/ TypeRange(),
         /*private*/ TypeRange(), launchOp.getClusterSizeX(),
         launchOp.getClusterSizeY(), launchOp.getClusterSizeZ());

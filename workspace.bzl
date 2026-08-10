@@ -1,7 +1,7 @@
-JAX_COMMIT = "269d3f7bebc76fc8be53975eaf11cef6cd7caf35"
+JAX_COMMIT = "cec06d116c05f0d52adfceee3d3b730fdbcb0ce5"
 JAX_SHA256 = ""
 
-ENZYME_COMMIT = "1b8c5bfa9a8396aeebf61b7b887180c1a392b25e"
+ENZYME_COMMIT = "54e6d5c5d00843b4fe322df95dd0d20873c9a820"
 ENZYME_SHA256 = ""
 
 ML_TOOLCHAIN_COMMIT = "30ef4a9096f9490e8f198faa5ce5bbddd1b72fdb"
@@ -19,6 +19,16 @@ XLA_PATCHES = [
     """
     # Fix support for rocm ygg build
     sed -i.bak0 "s|clang/18/include|clang/22/include|g" third_party/gpus/rocm_configure.bzl
+    """,
+    """
+    # The hermetic rocm toolchain compiles through the repository's own
+    # rocm_dist copy of hipcc, whose resource headers the crosstool never
+    # declared: the absolute-path inclusion check then rejects every
+    # device compile. Declare that resource directory both by package
+    # token and by its resolved path, since the dependency file can
+    # spell it either way depending on how the distribution was reached.
+    sed -i.bak1 "s|cxx_builtin_include_directories = _LOCAL_CLANG.include_directories,|cxx_builtin_include_directories = _LOCAL_CLANG.include_directories + [\\\"%package(@local_config_rocm//rocm)%/rocm_dist/lib/llvm/lib/clang/22/include\\\", \\\"%{hipcc_resource_dir}\\\", \\\"%{hipcc_resource_dir_realpath}\\\"],|" third_party/gpus/crosstool/BUILD.rocm.tpl
+    perl -0777 -pi -e 's|(tpl_paths\\["crosstool:BUILD.rocm"\\],)|$1\\n        {"%{hipcc_resource_dir}": str(repository_ctx.path("rocm/rocm_dist/lib/llvm/lib/clang/22/include")), "%{hipcc_resource_dir_realpath}": str(repository_ctx.path("rocm/rocm_dist/lib/llvm/lib/clang/22/include").realpath)},|' third_party/gpus/rocm_configure.bzl
     """,
     """
     # Fix support for musl stacktrace issue where execinfo.h is otherwise included
@@ -77,15 +87,6 @@ echo " llvm::Error evalPrintOp(PrintOp& op, InterpreterValue operand) {" >> thir
     """,
     """
     sed -i.bak0 "s/patch_file/patch_args = [\\\"-p1\\\"],patches/g" third_party/llvm/workspace.bzl
-    """,
-    """
-    # Apply our own patches on top of the LLVM pinned by XLA. This lets us use
-    # upstream APIs which have not yet made it into the pinned commit. Drop the
-    # corresponding hunks from patches/llvm.patch once XLA moves to an LLVM
-    # which already contains them. The label is written in escaped form so that
-    # downstream users of this file (e.g. Reactant.jl) can rewrite it to
-    # @enzyme_ad//:patches when this repo is not the main one.
-    sed -i.bak0 "s/patches = \\[/patches = [\\\"\\/\\/:patches\\/llvm.patch\\\",/g" third_party/llvm/workspace.bzl
     """,
     """
     sed -i.bak0 "s/Node::Leaf(std::forward<decltype(value)>/Node::Leaf(std::forward<T>/g" xla/tuple_tree.h
