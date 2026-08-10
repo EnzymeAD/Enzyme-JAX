@@ -24,10 +24,11 @@ XLA_PATCHES = [
     # The hermetic rocm toolchain compiles through the repository's own
     # rocm_dist copy of hipcc, whose resource headers the crosstool never
     # declared: the absolute-path inclusion check then rejects every device
-    # compile. The local host-clang directories stay; the hipcc resource
-    # directory is added by package token so it resolves wherever the
-    # repository lands.
-    sed -i.bak1 "s|cxx_builtin_include_directories = _LOCAL_CLANG.include_directories,|cxx_builtin_include_directories = _LOCAL_CLANG.include_directories + [\\\"%package(@local_config_rocm//rocm)%/rocm_dist/lib/llvm/lib/clang/22/include\\\"],|" third_party/gpus/crosstool/BUILD.rocm.tpl
+    # compile. Declare that resource directory both by package token and
+    # by its resolved path, since the dependency file can spell it either
+    # way depending on how the distribution directory was reached.
+    sed -i.bak1 "s|cxx_builtin_include_directories = _LOCAL_CLANG.include_directories,|cxx_builtin_include_directories = _LOCAL_CLANG.include_directories + [\\\"%package(@local_config_rocm//rocm)%/rocm_dist/lib/llvm/lib/clang/22/include\\\", \\\"%{hipcc_resource_dir_realpath}\\\"],|" third_party/gpus/crosstool/BUILD.rocm.tpl
+    sed -i.bak2 '/tpl_paths\\["crosstool:BUILD.rocm"\\],/a\\        {"%{hipcc_resource_dir_realpath}": str(repository_ctx.path("rocm/rocm_dist/lib/llvm/lib/clang/22/include").realpath)},' third_party/gpus/rocm_configure.bzl
     """,
     """
     # Fix support for musl stacktrace issue where execinfo.h is otherwise included
