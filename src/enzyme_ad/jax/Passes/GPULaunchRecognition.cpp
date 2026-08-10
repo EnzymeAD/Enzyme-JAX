@@ -97,9 +97,10 @@ struct GPULaunchRecognitionPass
           /*flags=*/nullptr,
           /*linkLibs=*/nullptr);
     } else {
-      // Default to CUDA/NVVM
+      // Default to CUDA/NVVM. A host function's target-cpu can leak in
+      // here through an unresolved stub; never let a non-GPU chip through.
       auto chip = sm;
-      if (chip.size() == 0)
+      if (!StringRef(chip).starts_with("sm_"))
         chip = "sm_80";
       auto features = feat;
       if (features.size() == 0)

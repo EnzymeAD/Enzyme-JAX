@@ -38,6 +38,11 @@ struct MLIRRoundTripOptions {
   bool removeAtomics;
   bool sortBlockMemory;
   bool hoistLoopAllocations;
+  bool lowerInvoke;
+  // Verify the module after every pass rather than once after the pipeline.
+  // The per-pass verification re-walks the whole module's symbol table and
+  // dominance ~65 times; on large TUs that is a third of the pipeline.
+  bool verifyEach;
 };
 
 extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,

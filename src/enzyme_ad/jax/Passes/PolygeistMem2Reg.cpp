@@ -695,6 +695,11 @@ public:
     if (lhsStep != ShapedType::kDynamic && lhsStep == rhsStep &&
         (sameExtent || !isDim)) {
       int64_t difference = INT64_MAX;
+      // Which access starts first, so the direct overlap can be judged by the
+      // earlier one's width alone rather than conservatively by both.
+      bool lhsFirst = false;
+      if (lhs.type != rhs.type)
+        return Match::Maybe;
       switch (lhs.type) {
       case Offset::Type::Affine:
         if (lhs.dim == rhs.dim && lhs.sym == rhs.sym) {
@@ -703,6 +708,7 @@ public:
           }
           if (auto cst = dyn_cast<AffineConstantExpr>(rhs.aff - lhs.aff)) {
             difference = std::abs(cst.getValue());
+            lhsFirst = cst.getValue() > 0;
           }
         }
         break;
@@ -714,17 +720,23 @@ public:
         if (lhs.idx == rhs.idx) {
           return Match::Exact;
         }
-        difference =
-            (lhs.idx < rhs.idx ? rhs.idx - lhs.idx : lhs.idx - rhs.idx);
+        lhsFirst = lhs.idx < rhs.idx;
+        difference = lhsFirst ? rhs.idx - lhs.idx : lhs.idx - rhs.idx;
         break;
       }
 
       if (difference == INT64_MAX)
         return Match::Maybe;
 
+      // Two accesses conflict if they overlap in any period: across a stride,
+      // into the next period's copy, or directly at the same one. The stride
+      // comparison rules out the former; whether it holds is saved rather than
+      // returned so the direct overlap can be required alongside it.
+      const int64_t origDifference = difference;
+      bool wouldOverflowFromStride = true;
       if (isDim) {
         if (difference < lhsSmallestStride && difference < rhsSmallestStride) {
-          return Match::None;
+          wouldOverflowFromStride = false;
         }
       } else {
         if (sameExtent || (lhsSize && rhsSize)) {
@@ -734,9 +746,30 @@ public:
           }
           if (difference < lhsSmallestStride &&
               difference < rhsSmallestStride) {
-            return Match::None;
+            wouldOverflowFromStride = false;
           }
         }
+      }
+
+      if (!wouldOverflowFromStride) {
+        // No spill across a stride, but the direct overlap at the same period
+        // is still open.
+        bool wouldOverflowNoStride;
+        if (isDim) {
+          // A dimensional difference is already counted in elements, so the
+          // two land on the same one -- and directly overlap -- only when it
+          // is zero.
+          wouldOverflowNoStride = origDifference == 0;
+        } else {
+          // A byte gap has to clear the earlier range's width for it to end
+          // before the later begins; without the widths there is nothing more
+          // to ask and the stride verdict stands.
+          wouldOverflowNoStride =
+              lhsSize && rhsSize &&
+              origDifference < (int64_t)(lhsFirst ? *lhsSize : *rhsSize);
+        }
+        if (!wouldOverflowNoStride)
+          return Match::None;
       }
     }
 
@@ -761,11 +794,18 @@ public:
       return Match::Maybe;
 
     // Lying wholly within is a question of where each lands and how far it
-    // reaches, which needs nothing of how either counts its way there.
-    if (!sameExtent && containedAt)
+    // reaches, which needs nothing of how either counts its way there. It is
+    // a real relationship whether or not the caller wants the offset: hand
+    // that back only when asked, and otherwise report the overlap as Maybe
+    // rather than leaving it to the stride comparison below, which does not
+    // reason about one extent lying inside another.
+    if (!sameExtent)
       if (auto at = containsAt(o, dl)) {
-        *containedAt = *at;
-        return Match::Contains;
+        if (containedAt) {
+          *containedAt = *at;
+          return Match::Contains;
+        }
+        return Match::Maybe;
       }
 
     // Two offsets that both go nowhere name the same place, so what is left is
@@ -2055,30 +2095,83 @@ Value castToType(Type elType, Value val, Operation *op) {
   llvm_unreachable("mismatched type");
 }
 
+// Whether every position the value is passed at carries the given attribute
+// on the callee. One position without it is enough for the call to do
+// whatever the attribute rules out.
+static bool callArgsAllHaveAttr(CallOpInterface callOp, Value val,
+                                SymbolTableCollection &symbolTables,
+                                StringRef attr) {
+  auto calleeAttr = dyn_cast<SymbolRefAttr>(callOp.getCallableForCallee());
+  if (!calleeAttr)
+    return false;
+  auto callee = symbolTables.lookupSymbolIn(callOp->getParentOfType<ModuleOp>(),
+                                            calleeAttr);
+  auto fn = dyn_cast_or_null<FunctionOpInterface>(callee);
+  if (!fn)
+    return false;
+
+  auto operands = callOp.getArgOperands();
+  bool seen = false;
+  for (int i = 0; i < operands.size(); i++) {
+    if (operands[i] == val) {
+      seen = true;
+      if (i >= fn.getNumArguments() || !fn.getArgAttr(i, attr))
+        return false;
+    }
+  }
+  return seen;
+}
+
 // Check if call captures alloca instance by checking for llvm.nocapture
 // attribute
 bool isCallNonCapturing(CallOpInterface callOp, Value val,
                         SymbolTableCollection &symbolTables) {
-  auto calleeAttr = dyn_cast<SymbolRefAttr>(callOp.getCallableForCallee());
-  if (calleeAttr) {
-    auto callee = symbolTables.lookupSymbolIn(
-        callOp->getParentOfType<ModuleOp>(), calleeAttr);
-    auto fn = dyn_cast_or_null<FunctionOpInterface>(callee);
-    if (!fn)
-      return false;
+  return callArgsAllHaveAttr(callOp, val, symbolTables,
+                             LLVM::LLVMDialect::getNoCaptureAttrName());
+}
 
-    // Find operand that matches value of alloca we are trying to promote and
-    // check for attributes
-    auto operands = callOp.getArgOperands();
-    for (int i = 0; i < operands.size(); i++) {
-      if (operands[i] == val) {
-        if (i < fn.getNumArguments() &&
-            fn.getArgAttr(i, LLVM::LLVMDialect::getNoCaptureAttrName()))
-          return true;
-      }
+// Whether a memory-effects attribute rules out writes that could reach a
+// pointer argument's bytes. Later LLVM spells whole-function
+// readonly/readnone this way. argMem covers accesses through the argument
+// pointers themselves; the same bytes can also be written through an access
+// classified as other -- a captured pointer, a global alias -- so both must
+// be write-free. Inaccessible memory cannot alias an argument, so it alone
+// may be written.
+static bool noWrite(LLVM::ModRefInfo mr) {
+  return mr == LLVM::ModRefInfo::NoModRef || mr == LLVM::ModRefInfo::Ref;
+}
+static bool argMemOnlyRead(LLVM::MemoryEffectsAttr me) {
+  return me && noWrite(me.getArgMem()) && noWrite(me.getOther());
+}
+
+// nocapture only says the callee does not hold on to the pointer; an out
+// parameter is nocapture and written through. Only readonly (or readnone)
+// says the call leaves the slot's contents alone -- carried per argument,
+// as a memory-effects attribute on the call or the callee, or as the older
+// readonly/readnone function attribute spelled through passthrough.
+bool isCallArgOnlyRead(CallOpInterface callOp, Value val,
+                       SymbolTableCollection &symbolTables) {
+  if (auto call = dyn_cast<LLVM::CallOp>(callOp.getOperation()))
+    if (argMemOnlyRead(call.getMemoryEffectsAttr()))
+      return true;
+  if (auto calleeAttr =
+          dyn_cast<SymbolRefAttr>(callOp.getCallableForCallee())) {
+    if (auto fn =
+            dyn_cast_or_null<LLVM::LLVMFuncOp>(symbolTables.lookupSymbolIn(
+                callOp->getParentOfType<ModuleOp>(), calleeAttr))) {
+      if (argMemOnlyRead(fn.getMemoryEffectsAttr()))
+        return true;
+      if (auto pass = fn->getAttrOfType<ArrayAttr>("passthrough"))
+        for (Attribute a : pass)
+          if (auto s = dyn_cast<StringAttr>(a))
+            if (s.getValue() == "readonly" || s.getValue() == "readnone")
+              return true;
     }
   }
-  return false;
+  return callArgsAllHaveAttr(callOp, val, symbolTables,
+                             LLVM::LLVMDialect::getReadonlyAttrName()) ||
+         callArgsAllHaveAttr(callOp, val, symbolTables,
+                             LLVM::LLVMDialect::getReadnoneAttrName());
 }
 
 // fopen, fclose
@@ -2313,6 +2406,12 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
             if (!callee || !getNonCapturingFunctions().count(
                                callee.getLeafReference().str()))
               captured = true;
+          } else if (!isCallArgOnlyRead(callOp, val, symbolTables)) {
+            // The callee cannot hold on to the pointer, but nothing says it
+            // does not write through it before returning -- an out parameter
+            // is exactly this. The slot's value is unknown after the call.
+            LLVM_DEBUG(llvm::dbgs() << "Aliasing Store: " << callOp << "\n");
+            AliasingStoreOperations.insert(callOp.getOperation());
           }
         }
         continue;

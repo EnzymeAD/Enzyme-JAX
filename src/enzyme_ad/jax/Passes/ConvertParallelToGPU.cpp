@@ -1738,6 +1738,8 @@ struct ParallelToGPULaunch : public OpRewritePattern<enzymexla::GPUWrapperOp> {
                                     /* memspace */ 5);
         auto newAlloca =
             memref::AllocaOp::create(rewriter, alloca.getLoc(), type);
+        if (auto align = alloca.getAlignment())
+          newAlloca.setAlignment(*align);
         auto cast = memref::CastOp::create(rewriter, alloca.getLoc(),
                                            alloca.getType(), newAlloca);
         it->replaceAllUsesWith(cast);

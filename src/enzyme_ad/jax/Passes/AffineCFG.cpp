@@ -152,9 +152,14 @@ bool isValidSymbolInt(Value value, bool recur, Region *scope) {
 }
 
 struct AffineApplyNormalizer {
-  AffineApplyNormalizer(AffineMap map, ArrayRef<Value> operands,
-                        PatternRewriter *rewriter, DominanceInfo *DI,
-                        Region *scope);
+  /// Builds a normalizer for `map` over `operands`, or std::nullopt where
+  /// none exists.  Making an operand a valid affine dim or symbol can mean
+  /// hoisting the op that defines it, which needs a rewriter; asked without
+  /// one, a map whose operand would have had to move has no normalization,
+  /// and returning std::nullopt makes that impossible to overlook.
+  static std::optional<AffineApplyNormalizer>
+  Create(AffineMap map, ArrayRef<Value> operands, PatternRewriter *rewriter,
+         DominanceInfo *DI, Region *scope);
 
   /// Returns the AffineMap resulting from normalization.
   AffineMap getAffineMap() { return affineMap; }
@@ -166,6 +171,10 @@ struct AffineApplyNormalizer {
   }
 
 private:
+  AffineApplyNormalizer(AffineMap map, ArrayRef<Value> operands,
+                        PatternRewriter *rewriter, DominanceInfo *DI,
+                        Region *scope);
+
   /// Helper function to insert `v` into the coordinate system of the current
   /// AffineApplyNormalizer. Returns the AffineDimExpr with the corresponding
   /// renumbered position.
@@ -180,7 +189,32 @@ private:
   SmallVector<Value, 8> concatenatedSymbols;
 
   AffineMap affineMap;
+
+  bool legalized = true;
 };
+
+// A shift by k stands for a multiply or divide by 2^k, which has to be worked
+// out at the width the affine expression holds. Taken as an int, `1 << 31` is
+// the largest negative number there is, and a shift by 31 is how a sign bit is
+// read; past 62 there is no power of two a signed affine constant can hold.
+static bool shiftScale(Value amount, int64_t &scale) {
+  APInt amt;
+  if (!matchPattern(amount, m_ConstantInt(&amt)))
+    return false;
+  if (amt.uge(63))
+    return false;
+  scale = int64_t(1) << amt.getZExtValue();
+  return true;
+}
+
+// Whether `op` is a shift this can say as a power of two. Anything else is not
+// a shift and has nothing to answer for.
+static bool shiftScaleOK(Operation *op) {
+  if (!isa<ShRUIOp, ShLIOp>(op))
+    return true;
+  int64_t scale;
+  return shiftScale(op->getOperand(1), scale);
+}
 
 static bool isAffineForArg(Value val) {
   if (!isa<BlockArgument>(val))
@@ -469,8 +503,10 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
       // ops now holds the legalized condition and arms: replaceOp rewrote the
       // entries as their defining ops were hoisted.
       if (!rewriter) {
+        // The select standing for the conditional is the whole of what makes
+        // this value a symbol, and there is no rewriter to write it with.
         operationContext.pop_back();
-        return v;
+        return isValidSymbolInt(v, /*recur*/ false, scope) ? v : Value();
       }
       Value selTrueFixed = ops[numCondOperands];
       Value selFalseFixed = ops[numCondOperands + 1];
@@ -513,9 +549,11 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
       return sel;
     }
     if (!rewriter) {
+      // Everything below this point moves the op; without a rewriter it stays
+      // where it is, and so is a symbol only where it already was one.
       operationContext.pop_back();
-      assert(isValidSymbolInt(op->getResult(0), /*recur*/ false, scope));
-      return op->getResult(0);
+      Value res = op->getResult(0);
+      return isValidSymbolInt(res, /*recur*/ false, scope) ? res : Value();
     } else {
       PatternRewriter::InsertionGuard B(*rewriter);
       rewriter->setInsertionPoint(front);
@@ -635,7 +673,8 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
                .getDefiningOp<ConstantIntOp>() ||
            decast.getDefiningOp()
                ->getOperand(1)
-               .getDefiningOp<ConstantIndexOp>())))) {
+               .getDefiningOp<ConstantIndexOp>()) &&
+          shiftScaleOK(decast.getDefiningOp())))) {
       t = decast;
       LLVM_DEBUG(llvm::dbgs() << " Replacing: " << t << "\n");
 
@@ -757,27 +796,23 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
         }
       } else if (auto op = t.getDefiningOp<ShRUIOp>()) {
 
-        APInt iattr;
-        if (!matchPattern(op.getRhs(), m_ConstantInt(&iattr))) {
-          llvm_unreachable("shr rhs needed to be constant int");
+        int64_t scale;
+        if (!shiftScale(op.getRhs(), scale)) {
+          llvm_unreachable("shr rhs needed to be a constant int that fits");
         }
 
-        affineApplyMap =
-            AffineMap::get(0, 1,
-                           getAffineSymbolExpr(0, op.getContext())
-                               .floorDiv(1 << iattr.getZExtValue()));
+        affineApplyMap = AffineMap::get(
+            0, 1, getAffineSymbolExpr(0, op.getContext()).floorDiv(scale));
         affineApplyOperands.push_back(op.getLhs());
       } else if (auto op = t.getDefiningOp<ShLIOp>()) {
 
-        APInt iattr;
-        if (!matchPattern(op.getRhs(), m_ConstantInt(&iattr))) {
-          llvm_unreachable("shl rhs needed to be constant int");
+        int64_t scale;
+        if (!shiftScale(op.getRhs(), scale)) {
+          llvm_unreachable("shl rhs needed to be a constant int that fits");
         }
 
-        affineApplyMap =
-            AffineMap::get(0, 1,
-                           getAffineSymbolExpr(0, op.getContext()) *
-                               (1 << iattr.getZExtValue()));
+        affineApplyMap = AffineMap::get(
+            0, 1, getAffineSymbolExpr(0, op.getContext()) * scale);
         affineApplyOperands.push_back(op.getLhs());
       } else if (auto op = t.getDefiningOp<ConstantIntOp>()) {
         affineApplyMap = AffineMap::get(
@@ -857,6 +892,13 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
                            << " to become valid symbol\n";
               llvm_unreachable("cannot move");
             }
+          } else if (!rewriter) {
+            // Asked without a rewriter this is a question, not a rewrite:
+            // nothing may be moved, so an operand that would have had to move
+            // simply has no answer.  Keep the original in the map so it stays
+            // well formed and let the caller read `legalized` and give up.
+            t = orig;
+            legalized = false;
           } else {
             // Reaching here means a pattern committed to a rewrite whose
             // operand cannot be made a valid affine symbol.  llvm_unreachable
@@ -873,7 +915,9 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
                 "AffineApplyNormalizer: cannot move operand to become a valid "
                 "affine symbol");
           }
-        } else
+        } else if (!rewriter)
+          legalized = false;
+        else
           llvm_unreachable("cannot move2");
       }
       if (i < numDims) {
@@ -907,6 +951,16 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
   LLVM_DEBUG(llvm::dbgs() << "\n");
 }
 
+std::optional<AffineApplyNormalizer>
+AffineApplyNormalizer::Create(AffineMap map, ArrayRef<Value> operands,
+                              PatternRewriter *rewriter, DominanceInfo *DI,
+                              Region *scope) {
+  AffineApplyNormalizer normalizer(map, operands, rewriter, DI, scope);
+  if (!normalizer.legalized)
+    return std::nullopt;
+  return normalizer;
+}
+
 AffineDimExpr AffineApplyNormalizer::renumberOneDim(Value v) {
   DenseMap<Value, unsigned>::iterator iterPos;
   bool inserted = false;
@@ -918,18 +972,25 @@ AffineDimExpr AffineApplyNormalizer::renumberOneDim(Value v) {
   return cast<AffineDimExpr>(getAffineDimExpr(iterPos->second, v.getContext()));
 }
 
-static void composeAffineMapAndOperands(AffineMap *map,
-                                        SmallVectorImpl<Value> *operands,
-                                        PatternRewriter *rewriter,
-                                        DominanceInfo *DI, Region *scope) {
-  AffineApplyNormalizer normalizer(*map, *operands, rewriter, DI, scope);
-  auto normalizedMap = normalizer.getAffineMap();
-  auto normalizedOperands = normalizer.getOperands();
+// Returns whether every operand came out a valid affine dim or symbol.  On
+// false the map and operands are left as they came in: a normalizer that could
+// not legalize an operand has composed nothing worth keeping.
+[[nodiscard]] static bool
+composeAffineMapAndOperands(AffineMap *map, SmallVectorImpl<Value> *operands,
+                            PatternRewriter *rewriter, DominanceInfo *DI,
+                            Region *scope) {
+  auto normalizer =
+      AffineApplyNormalizer::Create(*map, *operands, rewriter, DI, scope);
+  if (!normalizer)
+    return false;
+  auto normalizedMap = normalizer->getAffineMap();
+  auto normalizedOperands = normalizer->getOperands();
   affine::canonicalizeMapAndOperands(&normalizedMap, &normalizedOperands);
   normalizedMap = recreateExpr(normalizedMap);
   *map = normalizedMap;
   *operands = normalizedOperands;
   assert(*map);
+  return true;
 }
 
 bool need(AffineMap *map, SmallVectorImpl<Value> *operands, Region *scope) {
@@ -950,7 +1011,11 @@ bool need(IntegerSet *map, SmallVectorImpl<Value> *operands, Region *scope) {
   return false;
 }
 
-void fully2ComposeAffineMapAndOperands(
+// Returns whether composition ran to completion; see
+// composeAffineMapAndOperands.  A caller passing no builder is asking a
+// question, since without one the normalizer cannot move an operand to make
+// it legal -- and the attribute keeps the answer from being dropped.
+[[nodiscard]] static bool fully2ComposeAffineMapAndOperands(
     PatternRewriter *builder, AffineMap *map, SmallVectorImpl<Value> *operands,
     DominanceInfo *DI, Region *scope,
     SmallVectorImpl<Operation *> *insertedOps = nullptr) {
@@ -978,7 +1043,8 @@ void fully2ComposeAffineMapAndOperands(
     }
   assert(map->getNumInputs() == operands->size());
   while (need(map, operands, scope)) {
-    composeAffineMapAndOperands(map, operands, builder, DI, scope);
+    if (!composeAffineMapAndOperands(map, operands, builder, DI, scope))
+      return false;
     assert(map->getNumInputs() == operands->size());
   }
   *map = simplifyAffineMap(*map);
@@ -986,11 +1052,28 @@ void fully2ComposeAffineMapAndOperands(
     for (auto &op : *operands) {
       if (!op.getType().isIndex()) {
         Operation *toInsert;
-        if (auto *o = op.getDefiningOp())
-          toInsert = o->getNextNode();
-        else {
+        if (auto *o = op.getDefiningOp()) {
+          if (auto inv = dyn_cast<LLVM::InvokeOp>(o)) {
+            // An invoke is a terminator: there is no next node, and its
+            // result only exists on the normal edge. The cast goes at the
+            // top of that block -- when that edge is its only way in, and
+            // after the landingpad when the block starts with one.
+            Block *dest = inv.getNormalDest();
+            if (dest->getSinglePredecessor() != inv->getBlock())
+              return false;
+            toInsert = &dest->front();
+            if (isa<LLVM::LandingpadOp>(toInsert))
+              toInsert = toInsert->getNextNode();
+          } else if (o->hasTrait<OpTrait::IsTerminator>()) {
+            return false;
+          } else {
+            toInsert = o->getNextNode();
+          }
+        } else {
           auto BA = cast<BlockArgument>(op);
           toInsert = &BA.getOwner()->front();
+          if (isa<LLVM::LandingpadOp>(toInsert))
+            toInsert = toInsert->getNextNode();
         }
 
         if (auto v = indexMap.lookupOrNull(op))
@@ -1012,14 +1095,17 @@ void fully2ComposeAffineMapAndOperands(
         }
       }
     }
+  return true;
 }
 
 void fully2ComposeAffineMapAndOperands(
     PatternRewriter &builder, AffineMap *map, SmallVectorImpl<Value> *operands,
     DominanceInfo &DI, Region *scope,
     SmallVectorImpl<Operation *> *insertedOps) {
-  fully2ComposeAffineMapAndOperands(&builder, map, operands, &DI, scope,
-                                    insertedOps);
+  bool composed = fully2ComposeAffineMapAndOperands(&builder, map, operands,
+                                                    &DI, scope, insertedOps);
+  (void)composed;
+  assert(composed && "a rewriter can always move an operand into legality");
 }
 
 void fully2ComposeIntegerSetAndOperands(
@@ -1050,7 +1136,10 @@ void fully2ComposeIntegerSetAndOperands(
   auto map = AffineMap::get(set->getNumDims(), set->getNumSymbols(),
                             set->getConstraints(), set->getContext());
   while (need(&map, operands, scope)) {
-    composeAffineMapAndOperands(&map, operands, &builder, &DI, scope);
+    bool composed =
+        composeAffineMapAndOperands(&map, operands, &builder, &DI, scope);
+    (void)composed;
+    assert(composed && "a rewriter can always move an operand into legality");
   }
   map = simplifyAffineMap(map);
   *set = IntegerSet::get(map.getNumDims(), map.getNumSymbols(),
@@ -1717,11 +1806,11 @@ bool handle(PatternRewriter &b, CmpIOp cmpi, SmallVectorImpl<AffineExpr> &exprs,
                                        exprTmp, b.getContext());
           SmallVector<Value> tmp = {lhspack.v_val};
 
-          fully2ComposeAffineMapAndOperands(nullptr, &mapTmp, &tmp, nullptr,
-                                            scope);
+          bool composed = fully2ComposeAffineMapAndOperands(
+              nullptr, &mapTmp, &tmp, nullptr, scope);
           mapTmp = recreateExpr(mapTmp);
-          if (valueCmp(Cmp::GE, mapTmp.getResult(0), mapTmp.getNumDims(), tmp,
-                       0)) {
+          if (composed && valueCmp(Cmp::GE, mapTmp.getResult(0),
+                                   mapTmp.getNumDims(), tmp, 0)) {
             atLeastZero = true;
           } else {
             LLVM_DEBUG(llvm::dbgs()
@@ -1851,6 +1940,24 @@ struct MoveRMWToAffine : public OpRewritePattern<memref::AtomicRMWOp> {
   }
 };
 
+// A rebuilt access keeps everything the old one said about itself. All the
+// discardable attributes ride over as they are. Alignment needs the extra
+// clause only because on memref.load/store it is an inherent attribute, held
+// in properties where getDiscardableAttrs does not see it; going to an affine
+// op, which has no inherent slot for it, it is lifted into the discardable
+// dictionary, where lower-aligned-affine-accesses knows to find it.
+static void copyAccessAttrs(Operation *from, Operation *to) {
+  for (NamedAttribute attr : from->getDiscardableAttrs())
+    to->setAttr(attr.getName(), attr.getValue());
+  if (auto load = dyn_cast<memref::LoadOp>(from)) {
+    if (auto align = load.getAlignmentAttr())
+      to->setAttr("alignment", align);
+  } else if (auto store = dyn_cast<memref::StoreOp>(from)) {
+    if (auto align = store.getAlignmentAttr())
+      to->setAttr("alignment", align);
+  }
+}
+
 struct MoveLoadToAffine : public OpRewritePattern<memref::LoadOp> {
   using OpRewritePattern<memref::LoadOp>::OpRewritePattern;
 
@@ -1892,6 +1999,7 @@ struct MoveLoadToAffine : public OpRewritePattern<memref::LoadOp> {
 
     affine::AffineLoadOp affineLoad = affine::AffineLoadOp::create(
         rewriter, load.getLoc(), load.getMemRef(), map, operands);
+    copyAccessAttrs(load, affineLoad);
     load.getResult().replaceAllUsesWith(affineLoad.getResult());
     rewriter.eraseOp(load);
     return success();
@@ -1931,9 +2039,10 @@ struct MoveStoreToAffine : public OpRewritePattern<memref::StoreOp> {
     affine::canonicalizeMapAndOperands(&map, &operands);
     map = recreateExpr(map);
 
-    affine::AffineStoreOp::create(rewriter, store.getLoc(),
-                                  store.getValueToStore(), store.getMemRef(),
-                                  map, operands);
+    auto affineStore = affine::AffineStoreOp::create(
+        rewriter, store.getLoc(), store.getValueToStore(), store.getMemRef(),
+        map, operands);
+    copyAccessAttrs(store, affineStore);
     rewriter.eraseOp(store);
     return success();
   }
@@ -1991,8 +2100,11 @@ template <>
 void AffineFixup<affine::AffineLoadOp>::replaceAffineOp(
     PatternRewriter &rewriter, affine::AffineLoadOp load, AffineMap map,
     ArrayRef<Value> mapOperands) const {
-  rewriter.replaceOpWithNewOp<affine::AffineLoadOp>(load, load.getMemRef(), map,
-                                                    mapOperands);
+  auto attrs = load->getDiscardableAttrDictionary();
+  auto newLoad = rewriter.replaceOpWithNewOp<affine::AffineLoadOp>(
+      load, load.getMemRef(), map, mapOperands);
+  for (NamedAttribute attr : attrs)
+    newLoad->setAttr(attr.getName(), attr.getValue());
 }
 template <>
 void AffineFixup<affine::AffinePrefetchOp>::replaceAffineOp(
@@ -2007,8 +2119,11 @@ template <>
 void AffineFixup<affine::AffineStoreOp>::replaceAffineOp(
     PatternRewriter &rewriter, affine::AffineStoreOp store, AffineMap map,
     ArrayRef<Value> mapOperands) const {
-  rewriter.replaceOpWithNewOp<affine::AffineStoreOp>(
+  auto attrs = store->getDiscardableAttrDictionary();
+  auto newStore = rewriter.replaceOpWithNewOp<affine::AffineStoreOp>(
       store, store.getValueToStore(), store.getMemRef(), map, mapOperands);
+  for (NamedAttribute attr : attrs)
+    newStore->setAttr(attr.getName(), attr.getValue());
 }
 template <>
 void AffineFixup<affine::AffineVectorLoadOp>::replaceAffineOp(
@@ -4007,11 +4122,31 @@ struct OptimizeRem : public OpRewritePattern<arith::RemUIOp> {
     AddIOp sum = op.getLhs().getDefiningOp<arith::AddIOp>();
     if (!sum)
       return failure();
+    // (a * d + b) urem d == b urem d needs the sum's low bits to be exactly
+    // b's. For d a power of two that holds however anything wraps: a * d
+    // leaves the low log2(d) bits untouched. For any other d a wrap shifts
+    // the residue by 2^bitwidth mod d, which is nonzero, so the multiply
+    // must be nuw and the add must not wrap unsigned either -- carrying the
+    // flag, or adding two provably nonnegative values, whose sum stays
+    // below 2^bitwidth.
+    APInt divisor;
+    bool powerOfTwoDivisor =
+        matchPattern(op.getRhs(), m_ConstantInt(&divisor)) &&
+        divisor.isPowerOf2();
+    bool sumNoUnsignedWrap =
+        bitEnumContainsAll(sum.getOverflowFlags(), IntegerOverflowFlags::nuw) ||
+        (valueCmp(Cmp::GE, sum.getLhs(), 0) &&
+         valueCmp(Cmp::GE, sum.getRhs(), 0));
+    if (!powerOfTwoDivisor && !sumNoUnsignedWrap)
+      return failure();
     for (int i = 0; i < 2; i++) {
       auto val = sum->getOperand(i).getDefiningOp<arith::MulIOp>();
       if (!val)
         continue;
       if (val.getRhs() != op.getRhs())
+        continue;
+      if (!powerOfTwoDivisor && !bitEnumContainsAll(val.getOverflowFlags(),
+                                                    IntegerOverflowFlags::nuw))
         continue;
       rewriter.replaceOpWithNewOp<arith::RemUIOp>(op, sum->getOperand(1 - i),
                                                   op.getRhs());
@@ -5991,8 +6126,14 @@ struct FoldAppliesIntoLoad : public OpRewritePattern<memref::LoadOp> {
     AffineMap combinedMap =
         AffineMap::inferFromExprList({exprs}, getContext())[0];
     llvm::append_range(loadDimOperands, loadSymOperands);
-    rewriter.replaceOpWithNewOp<affine::AffineLoadOp>(
+    auto attrs = loadOp->getDiscardableAttrDictionary();
+    auto alignAttr = loadOp.getAlignmentAttr();
+    auto newLoad = rewriter.replaceOpWithNewOp<affine::AffineLoadOp>(
         loadOp, loadOp.getMemRef(), combinedMap, loadDimOperands);
+    for (NamedAttribute attr : attrs)
+      newLoad->setAttr(attr.getName(), attr.getValue());
+    if (alignAttr)
+      newLoad->setAttr("alignment", alignAttr);
     return success();
   }
 };
@@ -6420,6 +6561,10 @@ bool valueCmp(Cmp cmp, Value bval, ValueOrInt val) {
   }
 
   if (cmp == Cmp::GE && !val.isValue && val.i_val == 0) {
+    // A zero extension leaves the sign bit clear whatever it widened.
+    if (bval.getDefiningOp<arith::ExtUIOp>() ||
+        bval.getDefiningOp<LLVM::ZExtOp>())
+      return true;
     if (auto baval = bval.getDefiningOp<arith::AddIOp>()) {
       return valueCmp(cmp, baval.getLhs(), val) &&
              valueCmp(cmp, baval.getRhs(), val);

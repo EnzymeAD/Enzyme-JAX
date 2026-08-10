@@ -295,6 +295,21 @@ struct Memref2PointerOpLowering
   }
 };
 
+// Back to the intrinsic it was raised from. Not llvm.intr.fma: fmuladd only
+// permits fusing, while fma requires the single rounding, which a target
+// without FMA units honors with a libm call per multiply-add.
+struct FMulAddOpLowering : public ConvertOpToLLVMPattern<enzymexla::FMulAddOp> {
+  using ConvertOpToLLVMPattern<enzymexla::FMulAddOp>::ConvertOpToLLVMPattern;
+
+  LogicalResult
+  matchAndRewrite(enzymexla::FMulAddOp op, OpAdaptor transformed,
+                  ConversionPatternRewriter &rewriter) const override {
+    rewriter.replaceOpWithNewOp<LLVM::FMulAddOp>(
+        op, transformed.getA(), transformed.getB(), transformed.getC());
+    return success();
+  }
+};
+
 struct Pointer2MemrefOpLowering
     : public ConvertOpToLLVMPattern<Pointer2MemrefOp> {
   using ConvertOpToLLVMPattern<Pointer2MemrefOp>::ConvertOpToLLVMPattern;
@@ -368,6 +383,7 @@ void populatePolygeistToLLVMConversionPatterns(LLVMTypeConverter &converter,
   patterns.add<Stream2TokenOpLowering>(converter);
   patterns.add<Memref2PointerOpLowering>(converter);
   patterns.add<Pointer2MemrefOpLowering>(converter);
+  patterns.add<FMulAddOpLowering>(converter);
   // clang-format on
 }
 
@@ -824,10 +840,14 @@ public:
     if (!address)
       return failure();
 
+    // The access carries the alignment the original llvm access promised;
+    // without it the load is emitted at the element type's ABI alignment,
+    // which may promise more than the pointer holds.
+    unsigned alignment = loadOp.getAlignment().value_or(0);
     rewriter.replaceOpWithNewOp<LLVM::LoadOp>(
         loadOp,
         typeConverter->convertType(loadOp.getMemRefType().getElementType()),
-        address);
+        address, alignment);
     return success();
   }
 };
@@ -937,8 +957,10 @@ public:
     if (!address)
       return failure();
 
+    // See CLoadOpLowering: keep the alignment the original access promised.
+    unsigned alignment = storeOp.getAlignment().value_or(0);
     rewriter.replaceOpWithNewOp<LLVM::StoreOp>(storeOp, adaptor.getValue(),
-                                               address);
+                                               address, alignment);
     return success();
   }
 };

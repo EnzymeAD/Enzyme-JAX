@@ -1079,7 +1079,9 @@ module {
   gpu.module @test_module_fmuladd {
     // CHECK-LABEL: @llvm_fmuladd
     llvm.func @llvm_fmuladd(%arg0: f32, %arg1: f32, %arg2: f32) -> f32 {
-      // CHECK: math.fma
+      // fmuladd only permits fusing; it must not become the strict math.fma.
+      // CHECK: enzymexla.math.fmuladd
+      // CHECK-NOT: math.fma
       %0 = "llvm.intr.fmuladd"(%arg0, %arg1, %arg2) : (f32, f32, f32) -> f32
       llvm.return %0 : f32
     }

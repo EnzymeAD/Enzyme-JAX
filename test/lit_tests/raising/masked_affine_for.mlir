@@ -88,7 +88,7 @@ module {
 // CHECK-NEXT:      %10 = arith.divui %8, %c2 : index
 // CHECK-NEXT:      %11 = arith.remui %10, %c2 : index
 // CHECK-NEXT:      %12 = arith.divui %10, %c2 : index
-// CHECK-NEXT:      %13 = memref.load %arg1[%12, %11, %9] : memref<2x2x2xf64, 1>
+// CHECK-NEXT:      %13 = memref.load %arg1[%12, %11, %9] {alignment = 8 : i64} : memref<2x2x2xf64, 1>
 // CHECK-NEXT:      %14 = arith.select %2, %cst, %13 {fastmathFlags = #llvm.fastmath<none>} : f64
 // CHECK-NEXT:      %15 = affine.load %arg0[%arg3, %arg4, %arg5] : memref<3x2x2xf64, 1>
 // CHECK-NEXT:      %16 = arith.addf %15, %14 {fastmathFlags = #llvm.fastmath<none>} : f64
