@@ -18,6 +18,7 @@
 
 #include "mlir/IR/OperationSupport.h"
 #include "mlir/IR/Threading.h"
+#include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
@@ -36,25 +37,20 @@ using namespace mlir;
 namespace {
 
 // A content stamp in the spirit of OperationFingerPrint (which offers no way
-// to read its bytes back, and so cannot be stored in an attribute): pointers
-// of everything uniqued -- attribute dictionaries, types, values, blocks --
-// plus the properties hash, over the whole nested walk. Pointer identity is
+// to read its bytes back, and so cannot be stored in an attribute): a 64-bit
+// hash of the pointers of everything uniqued -- attribute dictionaries,
+// types, values, blocks -- plus the properties hash, over the whole nested
+// walk. Hashing has to be several times cheaper than the failed-match sweep
+// it replaces, or skipping saves nothing. Pointer identity is
 // what makes the stamp cheap, and it errs only toward re-canonicalizing:
 // an unchanged op keeps every internal pointer alive and unchanged, while a
 // recreated op computes a fresh stamp against an attribute it was not born
 // with. The root's own discardable dictionary is hashed entry-by-entry so
 // the stamp attribute itself stays out of the stamp.
 static StringAttr fingerprint(Operation *root, StringAttr skip) {
-  llvm::SHA1 hasher;
-  auto addPtr = [&](const void *p) {
-    hasher.update(
-        ArrayRef<uint8_t>(reinterpret_cast<const uint8_t *>(&p), sizeof(p)));
-  };
-  auto addHash = [&](llvm::hash_code h) {
-    size_t v = h;
-    hasher.update(
-        ArrayRef<uint8_t>(reinterpret_cast<const uint8_t *>(&v), sizeof(v)));
-  };
+  llvm::hash_code hash = llvm::hash_value(root);
+  auto addPtr = [&](const void *p) { hash = llvm::hash_combine(hash, p); };
+  auto addHash = [&](llvm::hash_code h) { hash = llvm::hash_combine(hash, h); };
   root->walk([&](Operation *op) {
     addPtr(op);
     addPtr(op->getName().getAsOpaquePointer());
@@ -83,10 +79,10 @@ static StringAttr fingerprint(Operation *root, StringAttr skip) {
           addPtr(arg.getAsOpaquePointer());
       }
   });
-  auto digest = hasher.final();
+  uint64_t digest = hash;
   return StringAttr::get(
       root->getContext(),
-      StringRef(reinterpret_cast<const char *>(digest.data()), digest.size()));
+      StringRef(reinterpret_cast<const char *>(&digest), sizeof(digest)));
 }
 
 struct CanonicalizeIncrementalPass
@@ -100,7 +96,7 @@ struct CanonicalizeIncrementalPass
                              "Ops canonicalized and freshly stamped"};
 
   void runOnOperation() override {
-    Operation *module = getOperation();
+    Operation *root = getOperation();
     MLIRContext *ctx = &getContext();
 
     // The same pattern collection the canonicalizer performs.
@@ -111,12 +107,6 @@ struct CanonicalizeIncrementalPass
       op.getCanonicalizationPatterns(owningPatterns, ctx);
     FrozenRewritePatternSet patterns(std::move(owningPatterns));
 
-    SmallVector<Operation *> targets;
-    for (Operation &op : module->getRegion(0).front())
-      if (op.getNumRegions() != 0 &&
-          llvm::any_of(op.getRegions(), [](Region &r) { return !r.empty(); }))
-        targets.push_back(&op);
-
     StringAttr stampName = StringAttr::get(ctx, "enzymexla.canonical_fp");
     GreedyRewriteConfig config;
     config.enableFolding();
@@ -126,7 +116,7 @@ struct CanonicalizeIncrementalPass
     // llvm.invoke cannot carry an index-typed successor operand.
     config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);
 
-    parallelForEach(ctx, targets, [&](Operation *fn) {
+    auto processOne = [&](Operation *fn) {
       auto previous = fn->getAttrOfType<StringAttr>(stampName);
       if (previous && previous == fingerprint(fn, stampName)) {
         ++numSkipped;
@@ -137,7 +127,42 @@ struct CanonicalizeIncrementalPass
       (void)applyPatternsGreedily(fn, patterns, config);
       fn->setAttr(stampName, fingerprint(fn, stampName));
       ++numCanonicalized;
-    });
+    };
+
+    // Anchored on a function (the Enzyme postpasses run this over a single
+    // freshly differentiated function), the anchor itself is the unit.
+    if (isa<FunctionOpInterface>(root)) {
+      processOne(root);
+      return;
+    }
+
+    // Anchored on a symbol table (the module), each region-holding child is
+    // its own unit of skipping, and the regionless children -- globals and
+    // declarations -- are canonicalized together as one cheap batch.
+    if (!root->hasTrait<OpTrait::SymbolTable>() || !root->getNumRegions() ||
+        !root->getRegion(0).hasOneBlock()) {
+      processOne(root);
+      return;
+    }
+
+    SmallVector<Operation *> targets;
+    SmallVector<Operation *> loose;
+    for (Operation &op : root->getRegion(0).front()) {
+      if (op.getNumRegions() != 0 &&
+          llvm::any_of(op.getRegions(), [](Region &r) { return !r.empty(); }))
+        targets.push_back(&op);
+      else
+        loose.push_back(&op);
+    }
+
+    if (!loose.empty()) {
+      GreedyRewriteConfig looseConfig = config;
+      looseConfig.setStrictness(GreedyRewriteStrictness::ExistingAndNewOps);
+      // Best-effort, like everything the greedy driver leaves behind.
+      (void)applyOpPatternsGreedily(loose, patterns, looseConfig);
+    }
+
+    parallelForEach(ctx, targets, processOne);
   }
 };
 
