@@ -1365,6 +1365,49 @@ void StripGPUInfo::runOnOperation() {
       }
     });
   });
+
+  // Extracting device code into gpu modules can leave renamed host-side
+  // residue behind: internal-linkage clones of device functions, held only
+  // by equally dead device vtable globals. LLVM internal linkage is not
+  // MLIR private visibility, so symbol-dce keeps them, and the host backend
+  // then fatals on their sm_* subtargets. Erase the residue: any host-level
+  // function whose target cpu names a device, together with the internal
+  // globals whose initializers are the only things holding its address.
+  auto m = dyn_cast<ModuleOp>(getOperation());
+  if (!m)
+    return;
+  SmallVector<LLVM::LLVMFuncOp> residue;
+  for (auto fn : m.getBody()->getOps<LLVM::LLVMFuncOp>()) {
+    auto cpu = fn->getAttrOfType<StringAttr>("target_cpu");
+    if (cpu && (cpu.getValue().starts_with("sm_") ||
+                cpu.getValue().starts_with("gfx")))
+      residue.push_back(fn);
+  }
+  if (residue.empty())
+    return;
+  DenseSet<Operation *> residueSyms;
+  for (auto fn : residue)
+    residueSyms.insert(fn);
+  SmallVector<LLVM::GlobalOp> deadGlobals;
+  for (auto glob : m.getBody()->getOps<LLVM::GlobalOp>()) {
+    if (glob.getLinkage() != LLVM::Linkage::Internal &&
+        glob.getLinkage() != LLVM::Linkage::Private)
+      continue;
+    bool holdsResidue = false;
+    glob.walk([&](LLVM::AddressOfOp addr) {
+      if (auto *sym = SymbolTable::lookupNearestSymbolFrom(
+              addr, addr.getGlobalNameAttr()))
+        if (residueSyms.count(sym))
+          holdsResidue = true;
+    });
+    if (holdsResidue && SymbolTable::symbolKnownUseEmpty(glob, m))
+      deadGlobals.push_back(glob);
+  }
+  for (auto glob : deadGlobals)
+    glob.erase();
+  for (auto fn : residue)
+    if (SymbolTable::symbolKnownUseEmpty(fn, m))
+      fn.erase();
 }
 
 // Returns a list of all symbols provided by cudart (obtained from
