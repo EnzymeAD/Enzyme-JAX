@@ -26,7 +26,7 @@ XLA_PATCHES = [
     # external/local_config_rocm -- declare that resource directory a
     # builtin too, or the absolute-path inclusion check rejects every
     # device compile.
-    sed -i.bak1 '/lib\/llvm\/lib\/clang\/22\/include")$/a\    inc_dirs.append(str(repository_ctx.path("rocm/rocm_dist/lib/llvm/lib/clang/22/include")))' third_party/gpus/rocm_configure.bzl
+    sed -i.bak1 's|inc_dirs.append(str(repository_ctx.path(rocm_config.rocm_toolkit_path)) + "/lib/llvm/lib/clang/22/include")|&\\n    inc_dirs.append(str(repository_ctx.path("rocm/rocm_dist/lib/llvm/lib/clang/22/include")))|' third_party/gpus/rocm_configure.bzl
     """,
     """
     # Fix support for musl stacktrace issue where execinfo.h is otherwise included
