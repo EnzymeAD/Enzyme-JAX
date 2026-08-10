@@ -1146,26 +1146,34 @@ void fully2ComposeIntegerSetAndOperands(
                          map.getResults(), set->getEqFlags());
   for (auto &op : *operands) {
     if (!op.getType().isIndex()) {
-      Operation *toInsert;
-      if (auto *o = op.getDefiningOp())
-        toInsert = o->getNextNode();
-      else {
-        auto BA = cast<BlockArgument>(op);
-        toInsert = &BA.getOwner()->front();
-      }
+      // Insert right after the defining op -- which may be the last in its
+      // block, where getNextNode is null -- or at the top of the block for
+      // an argument. A value defined by a terminator (e.g. llvm.invoke) is
+      // only usable in its successors; inserting after it would place an op
+      // past the terminator and hide its successors from CFG walks.
+      auto setPoint = [&](OpBuilder &b) {
+        if (auto *o = op.getDefiningOp()) {
+          if (o->getNumSuccessors() > 0)
+            b.setInsertionPointToStart(o->getSuccessor(0));
+          else
+            b.setInsertionPointAfter(o);
+        } else
+          b.setInsertionPointToStart(cast<BlockArgument>(op).getOwner());
+      };
 
       if (auto v = indexMap.lookupOrNull(op))
         op = v;
       else {
         if (insertedOps) {
-          OpBuilder builder(toInsert);
+          OpBuilder builder(op.getContext());
+          setPoint(builder);
           auto inserted = IndexCastOp::create(builder, op.getLoc(),
                                               builder.getIndexType(), op);
           op = inserted->getResult(0);
           insertedOps->push_back(inserted);
         } else {
           PatternRewriter::InsertionGuard B(builder);
-          builder.setInsertionPoint(toInsert);
+          setPoint(builder);
           auto inserted = IndexCastOp::create(builder, op.getLoc(),
                                               builder.getIndexType(), op);
           op = inserted->getResult(0);
