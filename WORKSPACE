@@ -342,6 +342,13 @@ enzyme_workspace()
 
 cuda_tile_workspace()
 
+load("@rules_foreign_cc//foreign_cc:repositories.bzl", "rules_foreign_cc_dependencies")
+load("//third_party/rules_foreign_cc:workspace.bzl", rules_foreign_cc_workspace = "repo")
+
+rules_foreign_cc_workspace()
+
+rules_foreign_cc_dependencies()
+
 # add support for generating compile_commands
 load(
     "@enzyme//third_party/hedron_compile_commands:workspace.bzl",
