@@ -234,15 +234,6 @@ sed -i.bak0 "s/patch_cmds = \\[/patch_cmds = \\[\\\"find . -type f -name config.
     echo 'namespace std { __attribute__((weak)) void __throw_bad_array_new_length() { fprintf(stderr, "erring in throw_bad_array_new_length\\n"); __builtin_trap(); } }' >> xla/tsl/util/filewrapper.cc
     echo '#endif' >> xla/tsl/util/filewrapper.cc
     """,
-    """
-    # scf.execute_region's inlining canonicalization hands every result that
-    # is not a successor input to mlir::detail::defaultReplBuilderFn, whose
-    # body is llvm_unreachable -- release builds skip the operand-count
-    # assert and real IR reaches it. The value is unproduced on the taken
-    # path, which is exactly what ub.poison says. The builder is taken by
-    # value only to keep this sed free of ampersands.
-    sed -i.bak9 "s@patch_cmds = \\[@patch_cmds = \\[\\"sed -i.bak7 's|mlir::detail::defaultReplBuilderFn|[](OpBuilder b, Location l, Value v) -> Value { return mlir::ub::PoisonOp::create(b, l, v.getType()); }|g' mlir/lib/Dialect/SCF/IR/SCF.cpp\\",@" third_party/llvm/workspace.bzl
-    """,
 ]
 
 LLVM_TARGETS = ["X86", "AArch64", "AMDGPU", "NVPTX"]
