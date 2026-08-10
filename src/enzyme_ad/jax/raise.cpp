@@ -267,6 +267,13 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
           error_stream << "  note: " << note << "\n";
         return failure();
       });
+  if (const char *dump = getenv("REACTANT_DUMP_IMPORTED")) {
+    std::error_code ec;
+    llvm::raw_fd_ostream os(dump, ec);
+    if (!ec)
+      mod->print(os, flags);
+  }
+
   if (!mlir::succeeded(pm.run(cast<mlir::ModuleOp>(*mod)))) {
     llvm::errs() << error_stream.str() << "\n";
     return "";
