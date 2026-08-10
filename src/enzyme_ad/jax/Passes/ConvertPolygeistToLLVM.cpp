@@ -4816,27 +4816,6 @@ struct ConvertPolygeistToLLVMPass
     op->getResult(0).getType(); });
         */
 
-    // A kernel the raising could not resolve leaves behind a gpu.module
-    // whose body is a wrapper around an external `reactant$` declaration:
-    // there is no device code in it to register or serialize -- the
-    // original clang fatbin still carries that kernel -- and its target
-    // attribute is whatever the host stub wore. Drop such modules whole
-    // before they grow a bogus registration or reach gpu-module-to-binary.
-    {
-      SmallVector<gpu::GPUModuleOp> unresolved;
-      for (auto gm : m.getOps<gpu::GPUModuleOp>()) {
-        bool hasReactantDecl = false;
-        for (auto fn : gm.getOps<LLVM::LLVMFuncOp>())
-          if (fn.getFunctionBody().empty() &&
-              fn.getName().starts_with("reactant$"))
-            hasReactantDecl = true;
-        if (hasReactantDecl)
-          unresolved.push_back(gm);
-      }
-      for (auto gm : unresolved)
-        gm.erase();
-    }
-
     // target.addIllegalOp<UnrealizedConversionCastOp>();
     if (failed(applyPartialConversion(m, target, std::move(patterns)))) {
       llvm::errs() << " failed to apply conversion\n";
