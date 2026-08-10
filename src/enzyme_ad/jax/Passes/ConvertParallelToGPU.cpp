@@ -1982,6 +1982,13 @@ struct ConvertParallelToGPU1Pass
       patterns.insert<InnerParallelSerialization>(&getContext());
       GreedyRewriteConfig config;
       config.enableFolding();
+      // Aggressive region simplification (the greedy default) merges
+      // identical blocks by adding their differing values as block arguments
+      // and appending them to every predecessor's successor operands --
+      // including llvm.invoke's, which cannot carry index- or memref-typed
+      // successor operands. These functions still hold raised llvm CFGs;
+      // keep block merging off.
+      config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);
       if (failed(applyPatternsGreedily(m, std::move(patterns), config))) {
         signalPassFailure();
         return;
@@ -2001,6 +2008,13 @@ struct ConvertParallelToGPU1Pass
       // clang-format on
       GreedyRewriteConfig config;
       config.enableFolding();
+      // Aggressive region simplification (the greedy default) merges
+      // identical blocks by adding their differing values as block arguments
+      // and appending them to every predecessor's successor operands --
+      // including llvm.invoke's, which cannot carry index- or memref-typed
+      // successor operands. These functions still hold raised llvm CFGs;
+      // keep block merging off.
+      config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);
       if (failed(applyPatternsGreedily(m, std::move(patterns), config))) {
         signalPassFailure();
         return;
@@ -2026,6 +2040,13 @@ struct ConvertParallelToGPU1Pass
       populateNormalizationPatterns(patterns);
       GreedyRewriteConfig config;
       config.enableFolding();
+      // Aggressive region simplification (the greedy default) merges
+      // identical blocks by adding their differing values as block arguments
+      // and appending them to every predecessor's successor operands --
+      // including llvm.invoke's, which cannot carry index- or memref-typed
+      // successor operands. These functions still hold raised llvm CFGs;
+      // keep block merging off.
+      config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);
       if (failed(applyPatternsGreedily(m, std::move(patterns), config))) {
         signalPassFailure();
         return;
@@ -2446,6 +2467,13 @@ struct ConvertParallelToGPU1Pass
       // clang-format on
       GreedyRewriteConfig config;
       config.enableFolding();
+      // Aggressive region simplification (the greedy default) merges
+      // identical blocks by adding their differing values as block arguments
+      // and appending them to every predecessor's successor operands --
+      // including llvm.invoke's, which cannot carry index- or memref-typed
+      // successor operands. These functions still hold raised llvm CFGs;
+      // keep block merging off.
+      config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);
       if (failed(applyPatternsGreedily(m, std::move(patterns), config))) {
         signalPassFailure();
         return;
@@ -2460,6 +2488,13 @@ struct ConvertParallelToGPU1Pass
       // clang-format on
       GreedyRewriteConfig config;
       config.enableFolding();
+      // Aggressive region simplification (the greedy default) merges
+      // identical blocks by adding their differing values as block arguments
+      // and appending them to every predecessor's successor operands --
+      // including llvm.invoke's, which cannot carry index- or memref-typed
+      // successor operands. These functions still hold raised llvm CFGs;
+      // keep block merging off.
+      config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);
       if (failed(applyPatternsGreedily(m, std::move(patterns), config))) {
         signalPassFailure();
         return;
@@ -2534,6 +2569,7 @@ gdgo->erase();
             &getContext());
     GreedyRewriteConfig config;
     config.enableFolding();
+    config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);
     if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
                                      config))) {
       signalPassFailure();
