@@ -1849,14 +1849,14 @@ struct AsyncGPULaunch : public OpRewritePattern<async::ExecuteOp> {
       return failure();
 
     for (auto launch : launches) {
-      rewriter.modifyOpInPlace(launch, [&]() {
-        launch.getAsyncObjectMutable().assign(streams[0]);
-      });
+      rewriter.modifyOpInPlace(
+          launch, [&]() { launch.getAsyncObjectMutable().assign(streams[0]); });
     }
 
     SmallVector<Value> gpudeps;
     if (!launches2.empty())
-      for (auto [dep, stream] : llvm::zip_equal(async.getDependencies(), streams))
+      for (auto [dep, stream] :
+           llvm::zip_equal(async.getDependencies(), streams))
         gpudeps.push_back(enzymexla::StreamToTokenOp::create(
             rewriter, dep.getLoc(), rewriter.getType<gpu::AsyncTokenType>(),
             stream));

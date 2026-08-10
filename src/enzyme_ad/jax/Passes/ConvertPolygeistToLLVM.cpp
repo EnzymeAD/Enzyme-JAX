@@ -2638,8 +2638,7 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
 
   Value zero = LLVM::ConstantOp::create(rewriter, loc, llvmInt32Type, 0);
   auto nullpointer = LLVM::ZeroOp::create(rewriter, loc, llvmPointerType);
-  Value stream = adaptor.getAsyncObject()
-                     ? adaptor.getAsyncObject()
+  Value stream = adaptor.getAsyncObject() ? adaptor.getAsyncObject()
                  : adaptor.getAsyncDependencies().empty()
                      ? (Value)nullpointer
                      : adaptor.getAsyncDependencies().front();
