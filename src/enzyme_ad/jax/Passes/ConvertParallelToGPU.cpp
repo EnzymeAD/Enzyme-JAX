@@ -1833,18 +1833,33 @@ struct AsyncGPULaunch : public OpRewritePattern<async::ExecuteOp> {
             .wasInterrupted())
       return failure();
 
-    SmallVector<Value> gpudeps;
-    for (auto dep : async.getDependencies()) {
-      gpudeps.push_back(enzymexla::StreamToTokenOp::create(
-          rewriter, dep.getLoc(), rewriter.getType<gpu::AsyncTokenType>(),
-          dep.getDefiningOp<enzymexla::StreamToTokenOp>().getOperand()));
-    }
+    SmallVector<Value> streams;
+    for (auto dep : async.getDependencies())
+      streams.push_back(
+          dep.getDefiningOp<enzymexla::StreamToTokenOp>().getOperand());
+
+    // gpu.launch_func carries the stream on its asyncObject operand: a
+    // dependency operand without a result token no longer verifies. The
+    // operand is a single value, so more than one stream cannot be said.
+    if (!launches.empty() &&
+        (streams.size() != 1 ||
+         llvm::any_of(launches, [](gpu::LaunchFuncOp launch) {
+           return launch.getAsyncObject() != nullptr;
+         })))
+      return failure();
 
     for (auto launch : launches) {
       rewriter.modifyOpInPlace(launch, [&]() {
-        launch.getAsyncDependenciesMutable().append(gpudeps);
+        launch.getAsyncObjectMutable().assign(streams[0]);
       });
     }
+
+    SmallVector<Value> gpudeps;
+    if (!launches2.empty())
+      for (auto [dep, stream] : llvm::zip_equal(async.getDependencies(), streams))
+        gpudeps.push_back(enzymexla::StreamToTokenOp::create(
+            rewriter, dep.getLoc(), rewriter.getType<gpu::AsyncTokenType>(),
+            stream));
 
     for (auto launch : launches2) {
       rewriter.modifyOpInPlace(launch, [&]() {
