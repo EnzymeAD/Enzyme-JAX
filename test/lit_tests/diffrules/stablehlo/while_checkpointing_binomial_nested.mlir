@@ -56,7 +56,7 @@ module @reactant_gradmyfunc attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
 // CHECK-NEXT:        %7 = stablehlo.compare LT, %iterArg_7, %4 : (tensor<i64>, tensor<i64>) -> tensor<i1>
 // CHECK-NEXT:        stablehlo.return %7 : tensor<i1>
 // CHECK-NEXT:      } do {
-// CHECK-NEXT:        %7:2 = stablehlo.while(%iterArg_9 = %c_4, %iterArg_10 = %iterArg_8) : tensor<i64>, tensor<3xf64> attributes {enzyme.disable_mincut, enzyme.checkpoint_period = 3 : i64, enzyme.enable_checkpointing = true}
+// CHECK-NEXT:        %7:2 = stablehlo.while(%iterArg_9 = %c_4, %iterArg_10 = %iterArg_8) : tensor<i64>, tensor<3xf64> attributes {enzyme.checkpoint_period = 3 : i64, enzyme.disable_mincut, enzyme.enable_checkpointing = true}
 // CHECK-NEXT:        cond {
 // CHECK-NEXT:          %9 = stablehlo.compare LT, %iterArg_9, %c_3 : (tensor<i64>, tensor<i64>) -> tensor<i1>
 // CHECK-NEXT:          stablehlo.return %9 : tensor<i1>
