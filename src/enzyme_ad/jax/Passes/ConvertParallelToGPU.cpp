@@ -1037,6 +1037,43 @@ struct ParallelizeBlockOps : public OpRewritePattern<scf::ParallelOp> {
       }
     };
 
+    // Two things read values of this block from outside the inner parallel's
+    // body, where moving their computation inside cannot rewrite them: the
+    // parallel's own bounds, and the block's terminator -- which, when the
+    // parallel sits in a loop body rather than directly in the grid parallel,
+    // is an scf.condition or scf.yield reading values computed beside it.
+    // Only the uses within the body are replaced, so erasing what those read
+    // leaves them pointing at a corpse. They, and everything they are in turn
+    // computed from in this block, have to stay where they are.
+    DenseSet<Operation *> pinned;
+    {
+      SmallVector<Value> todo(pop->getOperands().begin(),
+                              pop->getOperands().end());
+      llvm::append_range(todo, outerBlock->getTerminator()->getOperands());
+      while (!todo.empty()) {
+        Value cur = todo.pop_back_val();
+        Operation *def = cur.getDefiningOp();
+        if (!def || def->getParentRegion() != outerBlock->getParent())
+          continue;
+        assert(def->getNumRegions() == 0 &&
+               "bounds computed by an op with regions");
+        if (!pinned.insert(def).second)
+          continue;
+        llvm::append_range(todo, def->getOperands());
+      }
+      // Leaving an op in place is always sound, but reporting a change while
+      // leaving everything in place is not: the greedy driver would rescan
+      // for ever.
+      bool anyWork = false;
+      for (Operation &op : *outerBlock)
+        if (&op != pop.getOperation() && &op != outerBlock->getTerminator() &&
+            !isa<memref::AllocaOp, LLVM::AllocaOp>(&op) && !pinned.count(&op))
+          anyWork = true;
+      if (!anyWork)
+        return rewriter.notifyMatchFailure(
+            pop, "every op beside the parallel computes its bounds");
+    }
+
     rewriter.setInsertionPointToStart(innerBlock);
     auto it = outerBlock->begin();
     auto end = outerBlock->getTerminator()->getIterator();
@@ -1045,7 +1082,9 @@ struct ParallelizeBlockOps : public OpRewritePattern<scf::ParallelOp> {
     for (; &*it != pop.getOperation(); ++it) {
       Operation &op = *it;
       Operation *newOp;
-      if (isa<scf::ParallelOp>(&op)) {
+      if (pinned.count(&op)) {
+        continue;
+      } else if (isa<scf::ParallelOp>(&op)) {
         llvm_unreachable("Unhandled case");
         break;
       } else if (it == end) {
@@ -1102,7 +1141,9 @@ struct ParallelizeBlockOps : public OpRewritePattern<scf::ParallelOp> {
       rewriter.setInsertionPointToStart(ifOp.thenBlock());
       for (; it != end; ++it) {
         Operation &op = *it;
-        if (isa<scf::ParallelOp>(&op)) {
+        if (pinned.count(&op)) {
+          continue;
+        } else if (isa<scf::ParallelOp>(&op)) {
           llvm_unreachable("Unhandled case");
           break;
         } else if (auto alloca = dyn_cast<memref::AllocaOp>(&op)) {
@@ -1663,9 +1704,6 @@ struct ParallelToGPULaunch : public OpRewritePattern<enzymexla::GPUWrapperOp> {
       LLVM_DEBUG(DBGS() << "[pop-to-launch] ignoring nested parallel op\n");
       return failure();
     }
-    rewriter.setInsertionPoint(wrapper);
-    auto oneindex = arith::ConstantIndexOp::create(rewriter, loc, 1);
-
     // TODO we currently assume that all parallel ops we encouter are already
     // prepared for conversion to gpu.launch, i.e. two nested parallel loops
     // with lower bounds zero and constant upper bounds for the inner parallel,
@@ -1678,6 +1716,14 @@ struct ParallelToGPULaunch : public OpRewritePattern<enzymexla::GPUWrapperOp> {
         gridPop.getBody(), /* allowAllocas */ true);
     if (!blockPop)
       return failure();
+
+    // Only mutate once the match is certain: an op created before a bail
+    // marks the IR changed on every scan, so a wrapper this pattern cannot
+    // convert -- such as one whose bounds have to stay beside the parallel,
+    // below -- keeps the greedy driver from ever converging, and it reports
+    // failure with no diagnostic when it gives up.
+    rewriter.setInsertionPoint(wrapper);
+    auto oneindex = arith::ConstantIndexOp::create(rewriter, loc, 1);
 
     rewriter.setInsertionPoint(wrapper);
     auto errOp = enzymexla::GPUErrorOp::create(rewriter, loc);
