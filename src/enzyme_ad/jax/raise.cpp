@@ -120,7 +120,7 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
   pass_pipeline += backend;
   pass_pipeline += "}";
   pass_pipeline += ","
-      "canonicalize-incremental,libdevice-funcs-raise,restore-preserve-nvvm,canonicalize-incremental,"
+      "canonicalize-parallel,libdevice-funcs-raise,restore-preserve-nvvm,canonicalize-parallel,"
       "inline-enzyme-regions,symbol-dce,";
   
   if (backend == "cpu")
@@ -128,23 +128,23 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
   else
     pass_pipeline += "parallel-lower{wrapParallelOps=true},";
   pass_pipeline += "llvm-to-"
-      "memref-access,polygeist-mem2reg,canonicalize-incremental,convert-llvm-to-cf,"
-      "canonicalize-incremental,polygeist-mem2reg,canonicalize-incremental,enzyme-lift-cf-to-scf,"
-      "canonicalize-incremental,"
+      "memref-access,polygeist-mem2reg,canonicalize-parallel,convert-llvm-to-cf,"
+      "canonicalize-parallel,polygeist-mem2reg,canonicalize-parallel,enzyme-lift-cf-to-scf,"
+      "canonicalize-parallel,"
       "func.func(canonicalize-loops),"
       "llvm.func(canonicalize-loops),"
       "canonicalize-scf-for,"
-      "canonicalize-incremental,affine-cfg,canonicalize-incremental,"
+      "canonicalize-parallel,affine-cfg,canonicalize-parallel,"
       "func.func(canonicalize-loops),"
       "llvm.func(canonicalize-loops),"
-      "canonicalize-incremental,llvm-to-affine-access,"
-      "canonicalize-incremental,delinearize-indexing,canonicalize-incremental,simplify-affine-exprs,"
-      "affine-cfg,canonicalize-incremental,llvm-to-affine-access,canonicalize-incremental,"
+      "canonicalize-parallel,llvm-to-affine-access,"
+      "canonicalize-parallel,delinearize-indexing,canonicalize-parallel,simplify-affine-exprs,"
+      "affine-cfg,canonicalize-parallel,llvm-to-affine-access,canonicalize-parallel,"
       "func.func(affine-loop-invariant-code-motion),"
-      "canonicalize-incremental,sort-memory,llvm-to-tessera,tessera-apply-pdl,tessera-to-llvm,";
+      "canonicalize-parallel,sort-memory,llvm-to-tessera,tessera-apply-pdl,tessera-to-llvm,";
   if (StringRef(backend).starts_with("xla")) {
       pass_pipeline += "func.func(kernelcast),raise-affine-to-stablehlo{prefer_while_raising=false "
-      "dump_failed_lockstep=true},canonicalize-incremental,arith-raise{stablehlo=true},"
+      "dump_failed_lockstep=true},canonicalize-parallel,arith-raise{stablehlo=true},"
       "symbol-dce";
       if (outfile.size() && getenv("EXPORT_REACTANT")) {
         pass_pipeline += ",print{filename="+outfile+".mlir}";
@@ -155,7 +155,7 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       } else {
         pass_pipeline += ",parallel-serialization,";
       }
-      pass_pipeline += "canonicalize-incremental,hoist-allocas,convert-polygeist-to-llvm{backend=";
+      pass_pipeline += "canonicalize-parallel,hoist-allocas,convert-polygeist-to-llvm{backend=";
       pass_pipeline += backend;
       pass_pipeline += "}";
   } else {
@@ -197,9 +197,9 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
         // fail translation to LLVM IR.
         "lower-llvm-ext,"
         "inline{default-pipeline=canonicalize max-iterations=4},"
-        "polygeist-mem2reg,canonicalize-incremental,symbol-dce,"
-        // canonicalize-incremental here folds away memref.subview ops before gpu-kernel-outlining
-        "canonicalize-incremental,cse";
+        "polygeist-mem2reg,canonicalize-parallel,symbol-dce,"
+        // canonicalize-parallel here folds away memref.subview ops before gpu-kernel-outlining
+        "canonicalize-parallel,cse";
       if (options->removeAtomics)
         pass_pipeline += ",affine-cfg,remove-atomics";
       if (options->sortBlockMemory)
@@ -208,7 +208,7 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       if (backend == "rocm")
         pass_pipeline += ",convert-cudart-to-hiprt";
       if (backend != "cpu") {
-        pass_pipeline += ",convert-parallel-to-gpu1,symbol-dce,gpu-kernel-outlining,canonicalize-incremental,symbol-dce,";
+        pass_pipeline += ",convert-parallel-to-gpu1,symbol-dce,gpu-kernel-outlining,canonicalize-parallel,symbol-dce,";
         pass_pipeline += "convert-parallel-to-gpu2{backend=";
         pass_pipeline += backend;
         pass_pipeline += "}";
@@ -219,7 +219,7 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       } else {
 	      pass_pipeline += ",parallel-serialization,";
       }
-      pass_pipeline += "canonicalize-incremental,hoist-allocas,convert-polygeist-to-llvm{backend=";
+      pass_pipeline += "canonicalize-parallel,hoist-allocas,convert-polygeist-to-llvm{backend=";
       pass_pipeline += backend;
       pass_pipeline += "},strip-"
       "gpu-info,gpu-"
@@ -267,11 +267,6 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
     mod->print(llvm::errs(), flags);
     llvm::errs() << "\n";
   }
-
-  // The incremental canonicalizer's content stamps have served their purpose
-  // once the pipeline is done; the LLVM translation should not see them.
-  for (mlir::Operation &op : mod->getBody()->getOperations())
-    op.removeAttr("enzymexla.canonical_fp");
 
   llvm::LLVMContext llvmContext;
   llvmContext.setDiscardValueNames(false);

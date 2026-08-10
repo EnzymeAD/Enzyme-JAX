@@ -453,8 +453,8 @@ def SROAWrappersPass : Pass<"sroa-wrappers", "mlir::ModuleOp"> {
   ];
 }
 
-def CanonicalizeIncrementalPass : Pass<"canonicalize-incremental"> {
-  let summary = "Canonicalize top-level ops, skipping ones unchanged since their last canonicalization";
+def CanonicalizeParallelPass : Pass<"canonicalize-parallel"> {
+  let summary = "Canonicalize top-level ops in parallel, confining region simplification to each";
 }
 
 def LibDeviceFuncsRaisingPass : Pass<"libdevice-funcs-raise"> {
