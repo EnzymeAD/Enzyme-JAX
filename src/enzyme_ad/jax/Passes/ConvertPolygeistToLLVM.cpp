@@ -3927,6 +3927,28 @@ struct AllocaScopeOpLowering
 /// Appends the patterns lowering operations from the Memref dialect to the LLVM
 /// dialect using the C-style type conversion, i.e. converting memrefs to
 /// pointer to arrays of arrays.
+// With C-style memrefs a memref is a bare pointer in its memory space, so a
+// memory space cast is exactly the LLVM addrspacecast.
+struct CMemorySpaceCastOpLowering
+    : public ConvertOpToLLVMPattern<memref::MemorySpaceCastOp> {
+  using ConvertOpToLLVMPattern<
+      memref::MemorySpaceCastOp>::ConvertOpToLLVMPattern;
+
+  LogicalResult
+  matchAndRewrite(memref::MemorySpaceCastOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto resTy = getTypeConverter()->convertType(op.getDest().getType());
+    if (!resTy)
+      return failure();
+    if (resTy == adaptor.getSource().getType())
+      rewriter.replaceOp(op, adaptor.getSource());
+    else
+      rewriter.replaceOpWithNewOp<LLVM::AddrSpaceCastOp>(op, resTy,
+                                                         adaptor.getSource());
+    return success();
+  }
+};
+
 static void
 populateCStyleMemRefLoweringPatterns(RewritePatternSet &patterns,
                                      LLVMTypeConverter &typeConverter,
@@ -3934,7 +3956,8 @@ populateCStyleMemRefLoweringPatterns(RewritePatternSet &patterns,
   patterns.add<CAllocaOpLowering, CAllocOpLowering, CDeallocOpLowering,
                GetGlobalOpLowering, GlobalOpLowering, CLoadOpLowering,
                CStoreOpLowering, AllocaScopeOpLowering, CAtomicRMWOpLowering,
-               CEnzymeAtomicRMWOpLowering>(typeConverter);
+               CEnzymeAtomicRMWOpLowering, CMemorySpaceCastOpLowering>(
+      typeConverter);
   patterns.add<FillZeroOpLowering>(typeConverter);
   patterns.add<CMemcpyOpLowering>(typeConverter, backend);
   patterns.add<CMemsetOpLowering>(typeConverter, backend);

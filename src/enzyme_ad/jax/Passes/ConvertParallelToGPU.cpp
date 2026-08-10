@@ -1770,9 +1770,12 @@ struct ParallelToGPULaunch : public OpRewritePattern<enzymexla::GPUWrapperOp> {
             memref::AllocaOp::create(rewriter, alloca.getLoc(), type);
         if (auto align = alloca.getAlignment())
           newAlloca.setAlignment(*align);
-        auto cast = memref::CastOp::create(rewriter, alloca.getLoc(),
-                                           alloca.getType(), newAlloca);
-        it->replaceAllUsesWith(cast);
+        // memref.cast cannot change the memory space; that is what
+        // memref.memory_space_cast is for, and with C-style memrefs it
+        // lowers to an addrspacecast.
+        auto cast = memref::MemorySpaceCastOp::create(
+            rewriter, alloca.getLoc(), alloca.getType(), newAlloca);
+        it->replaceAllUsesWith(cast.getOperation());
       } else {
         assert(0);
       }
