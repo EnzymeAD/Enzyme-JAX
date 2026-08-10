@@ -21,12 +21,13 @@ XLA_PATCHES = [
     sed -i.bak0 "s|clang/18/include|clang/22/include|g" third_party/gpus/rocm_configure.bzl
     """,
     """
-    # The hermetic rocm toolchain runs hipcc out of the repository's own
-    # rocm_dist copy, so the resource headers it pulls in resolve under
-    # external/local_config_rocm -- declare that resource directory a
-    # builtin too, or the absolute-path inclusion check rejects every
-    # device compile.
-    sed -i.bak1 's|inc_dirs.append(str(repository_ctx.path(rocm_config.rocm_toolkit_path)) + "/lib/llvm/lib/clang/22/include")|&\\n    inc_dirs.append(str(repository_ctx.path("rocm/rocm_dist/lib/llvm/lib/clang/22/include")))|' third_party/gpus/rocm_configure.bzl
+    # The hermetic rocm toolchain compiles through the repository's own
+    # rocm_dist copy of hipcc, whose resource headers the crosstool never
+    # declared: the absolute-path inclusion check then rejects every device
+    # compile. The local host-clang directories stay; the hipcc resource
+    # directory is added by package token so it resolves wherever the
+    # repository lands.
+    sed -i.bak1 "s|cxx_builtin_include_directories = _LOCAL_CLANG.include_directories,|cxx_builtin_include_directories = _LOCAL_CLANG.include_directories + [\\\"%package(@local_config_rocm//rocm)%/rocm_dist/lib/llvm/lib/clang/22/include\\\"],|" third_party/gpus/crosstool/BUILD.rocm.tpl
     """,
     """
     # Fix support for musl stacktrace issue where execinfo.h is otherwise included
