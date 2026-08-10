@@ -349,6 +349,10 @@ rules_foreign_cc_workspace()
 
 rules_foreign_cc_dependencies()
 
+load("//third_party/libblastrampoline:workspace.bzl", libblastrampoline_workspace = "repo")
+
+libblastrampoline_workspace()
+
 # add support for generating compile_commands
 load(
     "@enzyme//third_party/hedron_compile_commands:workspace.bzl",
