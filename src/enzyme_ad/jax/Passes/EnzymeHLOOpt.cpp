@@ -30520,12 +30520,31 @@ private:
       visited.insert(current);
 
       if (auto binaryOp = current.template getDefiningOp<BinaryOpType>()) {
+        // Only fuse through an intermediate that feeds this chain and nothing
+        // else. If it has another user the chain stays live, so the fused
+        // reduce recomputes everything below it rather than reusing it, once
+        // per user. For an accumulator such as
+        //   state_i = state_{i-1} + x[i]; loss += state_i * state_i
+        // every state_i is read by its own multiply, so fusing rewrites each
+        // one into a reduce over a growing prefix and turns O(N) work into
+        // O(N^2). Treat such a value as an opaque leaf instead.
+        if (current != startOp.getResult() && !current.hasOneUse()) {
+          extraValues.push_back(current);
+          continue;
+        }
         worklist.push_back(binaryOp.getLhs());
         worklist.push_back(binaryOp.getRhs());
       } else if (auto reshape =
                      current.template getDefiningOp<stablehlo::ReshapeOp>()) {
         // slice -> reduce -> single insert dim along reduction dim -> ...
         auto [isMatchRRS, infoRRS] = matchReshapeReduceSlice(reshape);
+        // Absorbing a reduce that something else also reads recomputes it, so
+        // only do so when this chain is its sole consumer (see the binary-op
+        // case above).
+        if (isMatchRRS && !current.hasOneUse()) {
+          extraValues.push_back(current);
+          continue;
+        }
         if (isMatchRRS && matchingSourceOperand(slices, infoRRS.sliceOp)) {
           slices.push_back(infoRRS);
         } else {
@@ -30554,6 +30573,14 @@ private:
         }
       } else if (auto reduce =
                      current.template getDefiningOp<stablehlo::ReduceOp>()) {
+        // Same reasoning as above: rolling an existing reduce into a wider one
+        // duplicates its work unless this chain is its only user. This is the
+        // shape a running accumulator takes once earlier iterations have
+        // already been fused.
+        if (!current.hasOneUse()) {
+          extraValues.push_back(current);
+          continue;
+        }
         auto [isMatchRR, infoRR] = matchReduceSlice(reduce);
         if (isMatchRR && matchingSourceOperand(slices, infoRR.sliceOp)) {
           slices.push_back(infoRR);
