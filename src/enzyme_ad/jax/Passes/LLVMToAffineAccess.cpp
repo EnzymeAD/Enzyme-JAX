@@ -318,6 +318,16 @@ convertLLVMAllocaToMemrefAlloca(FromAlloc alloc, RewriterBase &rewriter,
 
   for (auto p2m : p2ms) {
     Value replacement = newAlloc;
+    // memref.cast can reshape but not change the memory space; say the
+    // space change as the memory_space_cast it is.
+    if (memrefType.getMemorySpace() != p2m.getType().getMemorySpace() &&
+        memrefType.getElementType() == p2m.getType().getElementType()) {
+      auto spaceType = MemRefType::get(
+          memrefType.getShape(), memrefType.getElementType(),
+          memrefType.getLayout(), p2m.getType().getMemorySpace());
+      replacement = memref::MemorySpaceCastOp::create(rewriter, p2m.getLoc(),
+                                                      spaceType, replacement);
+    }
     if (memrefType.getElementType() != p2m.getType().getElementType()) {
       replacement = enzymexla::Memref2PointerOp::create(
           rewriter, alloc->getLoc(), p2m.getOperand().getType(), replacement);
