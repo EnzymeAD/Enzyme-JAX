@@ -268,6 +268,11 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
     llvm::errs() << "\n";
   }
 
+  // The incremental canonicalizer's content stamps have served their purpose
+  // once the pipeline is done; the LLVM translation should not see them.
+  for (mlir::Operation &op : mod->getBody()->getOperations())
+    op.removeAttr("enzymexla.canonical_fp");
+
   llvm::LLVMContext llvmContext;
   llvmContext.setDiscardValueNames(false);
   auto outModule = translateModuleToLLVMIR(*mod, llvmContext);
