@@ -23,6 +23,7 @@
 #include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/Dominance.h"
 #include "mlir/IR/OpDefinition.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -59,6 +60,23 @@ namespace enzyme {
 #include "RuntimeWrapperUtils.h"
 
 #define DEBUG_TYPE "parallel-lower-opt"
+
+// A call wrapped in an execute_region yields the call's results, but when
+// the inlined callee never returns -- an assert or error path ending in a
+// trap -- the yield is left with nothing to forward. Control cannot reach
+// such a yield; say its operands as poison so the op stays consistent.
+static void repairNonReturningYields(mlir::scf::ExecuteRegionOp exOp) {
+  for (mlir::Block &blk : exOp.getRegion()) {
+    auto yield = llvm::dyn_cast<mlir::scf::YieldOp>(blk.getTerminator());
+    if (!yield || yield.getNumOperands() == exOp.getNumResults())
+      continue;
+    mlir::OpBuilder yb(yield);
+    llvm::SmallVector<mlir::Value> vals;
+    for (mlir::Type t : exOp.getResultTypes())
+      vals.push_back(mlir::ub::PoisonOp::create(yb, yield.getLoc(), t));
+    yield->setOperands(vals);
+  }
+}
 
 using namespace mlir;
 using namespace mlir::arith;
@@ -388,6 +406,7 @@ void ParallelLower::runOnOperation() {
       caller.erase();
       replacedCallables.insert(callableOp);
     }
+    repairNonReturningYields(exOp);
     b.setInsertionPointToEnd(&allocScope.getRegion().front());
     memref::AllocaScopeReturnOp::create(b, allocScope.getLoc(),
                                         exOp.getResults());
@@ -451,6 +470,7 @@ void ParallelLower::runOnOperation() {
         replacedCallables.insert(callableOp);
       }
     }
+    repairNonReturningYields(exOp);
     b.setInsertionPointToEnd(&allocScope.getRegion().front());
     memref::AllocaScopeReturnOp::create(b, allocScope.getLoc(),
                                         exOp.getResults());
@@ -488,6 +508,7 @@ void ParallelLower::runOnOperation() {
     ret.erase();
     b.setInsertionPointToEnd(&exOp.getRegion().back());
     scf::YieldOp::create(b, callerLoc, retVals);
+    repairNonReturningYields(exOp);
     b.setInsertionPointToEnd(&allocScope.getRegion().front());
     memref::AllocaScopeReturnOp::create(b, allocScope.getLoc(),
                                         exOp.getResults());
