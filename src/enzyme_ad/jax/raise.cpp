@@ -205,9 +205,6 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
         pass_pipeline += ",affine-cfg,remove-atomics";
       if (options->sortBlockMemory)
         pass_pipeline += ",sort-block-memory";
-      // The adjoint of a store into shared memory is an atomic accumulate,
-      // said as enzyme.affine_atomic_rmw; nothing further down knows the op,
-      // so lower it to memref.atomic_rmw alongside the rest of affine.
       pass_pipeline += ",lower-aligned-affine-accesses,lower-affine,"
                        "lower-affine-atomic-rmw";
       if (backend == "rocm")
