@@ -9,7 +9,7 @@ module {
     %c_102 = stablehlo.constant dense<0> : tensor<i64>
     %c_103 = stablehlo.constant dense<1> : tensor<i64>
 
-    %7697:3 = stablehlo.while(%iterArg = %c_102, %iterArg_202 = %cst_121, %iterArg_203 = %arg0) : tensor<i64>, tensor<15xf64>, tensor<31xf64> attributes {enzyme.disable_mincut, enzymexla.enable_checkpointing = true}
+    %7697:3 = stablehlo.while(%iterArg = %c_102, %iterArg_202 = %cst_121, %iterArg_203 = %arg0) : tensor<i64>, tensor<15xf64>, tensor<31xf64> attributes {enzyme.disable_mincut, enzyme.enable_checkpointing = true}
      cond {
       %23100 = stablehlo.compare  LT, %iterArg, %c_101 : (tensor<i64>, tensor<i64>) -> tensor<i1>
       stablehlo.return %23100 : tensor<i1>
@@ -35,7 +35,7 @@ module {
 // CHECK-NEXT:     %c = stablehlo.constant dense<16> : tensor<i64>
 // CHECK-NEXT:     %c_0 = stablehlo.constant dense<0> : tensor<i64>
 // CHECK-NEXT:     %c_1 = stablehlo.constant dense<1> : tensor<i64>
-// CHECK-NEXT:     %0:3 = stablehlo.while(%iterArg = %c_0, %iterArg_2 = %cst, %iterArg_3 = %arg0) : tensor<i64>, tensor<15xf64>, tensor<31xf64> attributes {enzyme.disable_mincut, enzymexla.enable_checkpointing = true}
+// CHECK-NEXT:     %0:3 = stablehlo.while(%iterArg = %c_0, %iterArg_2 = %cst, %iterArg_3 = %arg0) : tensor<i64>, tensor<15xf64>, tensor<31xf64> attributes {enzyme.disable_mincut, enzyme.enable_checkpointing = true}
 // CHECK-NEXT:     cond {
 // CHECK-NEXT:       %3 = stablehlo.compare LT, %iterArg, %c : (tensor<i64>, tensor<i64>) -> tensor<i1>
 // CHECK-NEXT:       stablehlo.return %3 : tensor<i1>

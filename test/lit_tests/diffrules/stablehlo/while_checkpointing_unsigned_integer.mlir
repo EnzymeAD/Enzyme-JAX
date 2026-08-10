@@ -29,7 +29,7 @@ module @reactant_gradient attributes {mhlo.num_partitions = 1 : i64, mhlo.num_re
     %4 = stablehlo.divide %3, %c_3 : tensor<i64>
     %c_5 = stablehlo.constant dense<1> : tensor<i64>
     %5 = stablehlo.add %4, %c_5 : tensor<i64>
-    %6:7 = stablehlo.while(%iterArg = %c_4, %iterArg_9 = %5, %iterArg_10 = %2, %iterArg_11 = %c, %iterArg_12 = %1, %iterArg_13 = %c_3, %iterArg_14 = %0) : tensor<i64>, tensor<i64>, tensor<1xf64>, tensor<i64>, tensor<2xui64>, tensor<i64>, tensor<1xf64> attributes {enzyme.disable_mincut, enzymexla.checkpoint_period = 2 : i64, enzymexla.enable_checkpointing = true}
+    %6:7 = stablehlo.while(%iterArg = %c_4, %iterArg_9 = %5, %iterArg_10 = %2, %iterArg_11 = %c, %iterArg_12 = %1, %iterArg_13 = %c_3, %iterArg_14 = %0) : tensor<i64>, tensor<i64>, tensor<1xf64>, tensor<i64>, tensor<2xui64>, tensor<i64>, tensor<1xf64> attributes {enzyme.disable_mincut, enzyme.checkpoint_period = 2 : i64, enzyme.enable_checkpointing = true}
     cond {
       %11 = stablehlo.compare LT, %iterArg, %iterArg_9 : (tensor<i64>, tensor<i64>) -> tensor<i1>
       stablehlo.return %11 : tensor<i1>

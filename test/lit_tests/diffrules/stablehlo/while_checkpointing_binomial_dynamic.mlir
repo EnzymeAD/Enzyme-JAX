@@ -23,7 +23,7 @@ module @reactant_df attributes {mhlo.num_partitions = 1 : i64, mhlo.num_replicas
     %2 = stablehlo.divide %1, %arg3 : tensor<i64>
     %c_0 = stablehlo.constant dense<1> : tensor<i64>
     %3 = stablehlo.add %2, %c_0 : tensor<i64>
-    %4:6 = stablehlo.while(%iterArg = %c, %iterArg_1 = %3, %iterArg_2 = %arg3, %iterArg_3 = %0, %iterArg_4 = %cst, %iterArg_5 = %arg1) : tensor<i64>, tensor<i64>, tensor<i64>, tensor<3xf32>, tensor<f32>, tensor<i64> attributes {enzyme.disable_mincut, enzymexla.binomial_checkpointing, enzymexla.checkpoint_period = 3 : i64, enzymexla.enable_checkpointing = true}
+    %4:6 = stablehlo.while(%iterArg = %c, %iterArg_1 = %3, %iterArg_2 = %arg3, %iterArg_3 = %0, %iterArg_4 = %cst, %iterArg_5 = %arg1) : tensor<i64>, tensor<i64>, tensor<i64>, tensor<3xf32>, tensor<f32>, tensor<i64> attributes {enzyme.disable_mincut, enzyme.binomial_checkpointing, enzyme.checkpoint_period = 3 : i64, enzyme.enable_checkpointing = true}
     cond {
       %6 = stablehlo.compare LT, %iterArg, %iterArg_1 : (tensor<i64>, tensor<i64>) -> tensor<i1>
       stablehlo.return %6 : tensor<i1>

@@ -21,7 +21,7 @@ module @reactant_df attributes {mhlo.num_partitions = 1 : i64, mhlo.num_replicas
     %c_0 = stablehlo.constant dense<5> : tensor<i64>
     %c_1 = stablehlo.constant dense<1> : tensor<i64>
     %c_2 = stablehlo.constant dense<0> : tensor<i64>
-    %1:6 = stablehlo.while(%iterArg = %c_2, %iterArg_3 = %c, %iterArg_4 = %c_1, %iterArg_5 = %c_0, %iterArg_6 = %cst, %iterArg_7 = %0) : tensor<i64>, tensor<i64>, tensor<i64>, tensor<i64>, tensor<f32>, tensor<3xf32> attributes {enzyme.disable_mincut, enzymexla.binomial_checkpointing, enzymexla.checkpoint_period = 2 : i64, enzymexla.enable_checkpointing = true}
+    %1:6 = stablehlo.while(%iterArg = %c_2, %iterArg_3 = %c, %iterArg_4 = %c_1, %iterArg_5 = %c_0, %iterArg_6 = %cst, %iterArg_7 = %0) : tensor<i64>, tensor<i64>, tensor<i64>, tensor<i64>, tensor<f32>, tensor<3xf32> attributes {enzyme.disable_mincut, enzyme.binomial_checkpointing, enzyme.checkpoint_period = 2 : i64, enzyme.enable_checkpointing = true}
     cond {
       %3 = stablehlo.subtract %iterArg_5, %iterArg_3 : tensor<i64>
       %4 = stablehlo.divide %3, %iterArg_4 : tensor<i64>

@@ -42,7 +42,7 @@ module {
     %zeroi = stablehlo.constant dense<0> : tensor<i64>
     %one = stablehlo.constant dense<1.000000e+00> : tensor<f64>
     %zero = stablehlo.constant dense<0.000000e+00> : tensor<f64>
-    %0:5 = stablehlo.while(%iterArg = %zeroi, %arg_a = %a, %arg_c = %c, %arg_y = %one, %arg_acc = %zero) : tensor<i64>, tensor<f64>, tensor<12xf64>, tensor<f64>, tensor<f64> attributes {enzyme.disable_mincut, enzymexla.enable_checkpointing = true, enzymexla.checkpoint_period = 4 : i64}
+    %0:5 = stablehlo.while(%iterArg = %zeroi, %arg_a = %a, %arg_c = %c, %arg_y = %one, %arg_acc = %zero) : tensor<i64>, tensor<f64>, tensor<12xf64>, tensor<f64>, tensor<f64> attributes {enzyme.disable_mincut, enzyme.enable_checkpointing = true, enzyme.checkpoint_period = 4 : i64}
      cond {
       %1 = stablehlo.compare  LT, %iterArg, %n : (tensor<i64>, tensor<i64>) -> tensor<i1>
       stablehlo.return %1 : tensor<i1>

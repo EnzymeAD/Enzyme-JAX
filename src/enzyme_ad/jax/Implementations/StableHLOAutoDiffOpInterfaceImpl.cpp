@@ -571,38 +571,6 @@ class AutoDiffWhileRev
     return makeForLoop(builder, loc, startVal, limit, stepVal, operands);
   }
 
-  // Checkpointing and the loop-splitting rewrites replace one loop with
-  // several, and each of those is still doing the original loop's work, so they
-  // inherit its attributes. Without this, a directive such as
-  // enzyme.disable_mincut applies only to the loop the user wrote and is
-  // silently dropped for every loop derived from it.
-  //
-  // Two kinds of attribute must not come along:
-  //
-  //  - the checkpointing directives, since the split has already happened and
-  //    re-reading them would checkpoint the derived loops again;
-  //  - the memoized analysis results, which are ArrayAttrs indexed by result
-  //    number. A derived loop carries gradients and caches, so its results do
-  //    not correspond to the original's. Readers do check the array length
-  //    against getNumResults(), so a mismatch is merely ignored, but when the
-  //    arities happen to coincide the original's per-result facts would be
-  //    applied to entirely different results.
-  static void inheritAttrs(Operation *orig, Operation *derived) {
-    derived->setAttrs(orig->getAttrs());
-
-    for (StringRef attr :
-         {"enzymexla.enable_checkpointing", "enzymexla.checkpoint_period",
-          "enzymexla.binomial_checkpointing"})
-      derived->removeAttr(attr);
-
-    for (StringRef attr :
-         {"enzymexla.symmetric_matrix", "enzymexla.non_negative",
-          "enzymexla.finite", "enzymexla.bounds", "enzymexla.no_nan",
-          "enzymexla.complex_is_purely_real",
-          "enzymexla.complex_is_purely_imaginary"})
-      derived->removeAttr(attr);
-  }
-
   static stablehlo::WhileOp makeForLoop(OpBuilder &builder, Location loc,
                                         Value start, Value limit, Value step,
                                         ValueRange operands) {
@@ -655,23 +623,6 @@ public:
   //    snapshotting for a replay and nothing may be rebound behind the
   //    caller's back.
   //===--------------------------------------------------------------------===//
-
-  static StringRef enableCheckpointingAttrName() {
-    return "enzymexla.enable_checkpointing";
-  }
-
-  static StringRef binomialCheckpointingAttrName() {
-    return "enzymexla.binomial_checkpointing";
-  }
-
-  static StringRef checkpointPeriodAttrName() {
-    return "enzymexla.checkpoint_period";
-  }
-
-  static void preserveAttributesButCheckpointing(Operation *newOp,
-                                                 Operation *oldOp) {
-    inheritAttrs(oldOp, newOp);
-  }
 
   // Analyzed loop bounds. Recomputed at each use rather than threaded through:
   // computeInfo() is a local walk of the cond region and the terminator, and
