@@ -2181,6 +2181,49 @@ std::set<std::string> NoWriteFunctions = {"exit", "__errno_location"};
 // The way into `from` that reaches what lies at `at` bytes into it and is of
 // the size of `want`, as the indices an extractvalue takes. Aggregates are
 // walked into; anything else is only reachable when it is the whole of it.
+// The byte at which the field named by `pos` sits inside `from`, and its type.
+// The mirror of extractPath, which goes the other way: from a byte offset to
+// the indices that reach it.
+static std::optional<std::pair<uint64_t, Type>>
+aggregateFieldOffset(Type from, ArrayRef<int64_t> pos, const DataLayout &dl) {
+  uint64_t at = 0;
+  Type cur = from;
+  for (int64_t want : pos) {
+    if (want < 0)
+      return std::nullopt;
+    if (auto ST = dyn_cast<LLVM::LLVMStructType>(cur)) {
+      if ((size_t)want >= ST.getBody().size())
+        return std::nullopt;
+      uint64_t byte = 0;
+      for (auto &&[i, member] : llvm::enumerate(ST.getBody())) {
+        auto size = typeSize(member, dl);
+        if (!size)
+          return std::nullopt;
+        if (!ST.isPacked())
+          byte = llvm::alignTo(byte, dl.getTypeABIAlignment(member));
+        if ((int64_t)i == want)
+          break;
+        byte += *size;
+      }
+      at += byte;
+      cur = ST.getBody()[want];
+      continue;
+    }
+    if (auto AT = dyn_cast<LLVM::LLVMArrayType>(cur)) {
+      if ((uint64_t)want >= AT.getNumElements())
+        return std::nullopt;
+      auto size = typeSize(AT.getElementType(), dl);
+      if (!size)
+        return std::nullopt;
+      at += (uint64_t)want * *size;
+      cur = AT.getElementType();
+      continue;
+    }
+    return std::nullopt;
+  }
+  return std::make_pair(at, cur);
+}
+
 static bool extractPath(Type from, uint64_t at, Type want, const DataLayout &dl,
                         SmallVectorImpl<int64_t> &path) {
   auto wantSize = typeSize(want, dl), fromSize = typeSize(from, dl);
@@ -2330,8 +2373,43 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
           containedLoads[loadOp] = at;
           break;
         }
-        default:
+        default: {
+          // A read this slot has no whole value for still answers the
+          // fields taken out of it: each extract lands at a byte of its own,
+          // and where that byte is inside the slot it is a read of a piece of
+          // the slot like any other. This is how a by-value capture is read --
+          // built one field at a time and loaded whole, so the read spans
+          // every slot and matches none.
+          //
+          // A read that was itself forwarded, on the round some other slot
+          // matched it, already stands for its fields; answering them here
+          // as well would answer them twice.
+          if (llvm::is_contained(loadOpsToErase, loadOp))
+            return;
+          auto slotAt = tree.add(accessed, dl).containsAt(idx, dl);
+          if (!slotAt)
+            return;
+          Type held = elType ? elType : idx.getBase();
+          if (!held)
+            return;
+          for (Operation *user : loadOp->getResult(0).getUsers()) {
+            auto ev = dyn_cast<LLVM::ExtractValueOp>(user);
+            if (!ev)
+              continue;
+            auto field = aggregateFieldOffset(read, ev.getPosition(), dl);
+            if (!field || field->first < *slotAt)
+              continue;
+            uint64_t at = field->first - *slotAt;
+            SmallVector<int64_t> path;
+            if (!extractPath(held, at, field->second, dl, path))
+              continue;
+            containedLoads[ev] = at;
+            loadOps.insert(ev);
+            LLVM_DEBUG(llvm::dbgs() << "Matching Extract: " << *ev << " of "
+                                    << *loadOp << "\n");
+          }
           return;
+        }
         }
         loadOps.insert(loadOp);
         LLVM_DEBUG(llvm::dbgs() << "Matching Load: " << *loadOp << "\n");
