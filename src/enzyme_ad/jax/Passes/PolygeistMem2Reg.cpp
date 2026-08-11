@@ -2089,6 +2089,14 @@ Value castToType(Type elType, Value val, Operation *op) {
       return LLVM::InsertValueOp::create(b, val.getLoc(), ud, c0,
                                          b.getDenseI64ArrayAttr({0}));
     }
+  } else if (auto AT = dyn_cast<LLVM::LLVMArrayType>(elType)) {
+    if (AT.getNumElements() == 1) {
+      auto ud = LLVM::UndefOp::create(b, val.getLoc(), elType);
+      auto c0 = castToType(AT.getElementType(), val, op);
+      b.setInsertionPoint(op);
+      return LLVM::InsertValueOp::create(b, val.getLoc(), ud, c0,
+                                         b.getDenseI64ArrayAttr({0}));
+    }
   }
   llvm::errs() << " mismatched load type, needed: " << elType << " found "
                << val << "\n";
