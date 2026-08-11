@@ -1917,34 +1917,28 @@ struct AsyncGPULaunch : public OpRewritePattern<async::ExecuteOp> {
       streams.push_back(
           dep.getDefiningOp<enzymexla::StreamToTokenOp>().getOperand());
 
-    // gpu.launch_func carries the stream on its asyncObject operand: a
-    // dependency operand without a result token no longer verifies. The
-    // operand is a single value, so more than one stream cannot be said.
-    if (!launches.empty() &&
+    // Both launch ops carry the stream on their asyncObject operand: a
+    // dependency operand without a result token no longer verifies, and
+    // neither launch built here returns one. The operand is a single value,
+    // so more than one stream cannot be said.
+    if ((!launches.empty() || !launches2.empty()) &&
         (streams.size() != 1 ||
-         llvm::any_of(launches, [](gpu::LaunchFuncOp launch) {
+         llvm::any_of(launches,
+                      [](gpu::LaunchFuncOp launch) {
+                        return launch.getAsyncObject() != nullptr;
+                      }) ||
+         llvm::any_of(launches2, [](gpu::LaunchOp launch) {
            return launch.getAsyncObject() != nullptr;
          })))
       return failure();
 
-    for (auto launch : launches) {
+    for (auto launch : launches)
       rewriter.modifyOpInPlace(
           launch, [&]() { launch.getAsyncObjectMutable().assign(streams[0]); });
-    }
 
-    SmallVector<Value> gpudeps;
-    if (!launches2.empty())
-      for (auto [dep, stream] :
-           llvm::zip_equal(async.getDependencies(), streams))
-        gpudeps.push_back(enzymexla::StreamToTokenOp::create(
-            rewriter, dep.getLoc(), rewriter.getType<gpu::AsyncTokenType>(),
-            stream));
-
-    for (auto launch : launches2) {
-      rewriter.modifyOpInPlace(launch, [&]() {
-        launch.getAsyncDependenciesMutable().append(gpudeps);
-      });
-    }
+    for (auto launch : launches2)
+      rewriter.modifyOpInPlace(
+          launch, [&]() { launch.getAsyncObjectMutable().assign(streams[0]); });
 
     rewriter.eraseOp(async.getBody()->getTerminator());
     rewriter.inlineBlockBefore(async.getBody(), async);
