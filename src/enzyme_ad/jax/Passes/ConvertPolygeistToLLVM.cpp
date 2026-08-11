@@ -2428,14 +2428,6 @@ ConvertGPUModuleOp::matchAndRewrite(gpu::GPUModuleOp kernelModule,
 
           auto nullPtr =
               LLVM::ZeroOp::create(ctorBuilder, ctorloc, llvmPointerType);
-          // TODO second param should be ptr to the the original function stub
-          // here like clang does it: e.g. kernel_name_device_stub
-          //
-          // TODO We should probably always generate the original kernel as
-          // well and register it too (in addition to the lowered to parallel
-          // and re-outlined version that we generate) in case the pointer to
-          // the stub is captured somewhere and it is called through
-          // cudaLaunchKernel
           LLVM::LLVMFuncOp stub;
           {
             PatternRewriter::InsertionGuard B(rewriter);
@@ -2450,10 +2442,6 @@ ConvertGPUModuleOp::matchAndRewrite(gpu::GPUModuleOp kernelModule,
             rewriter.setInsertionPointToEnd(stub.addEntryBlock(rewriter));
             LLVM::ReturnOp::create(rewriter, ctorloc, ValueRange());
           }
-          auto aoo = LLVM::AddressOfOp::create(ctorBuilder, ctorloc, stub);
-          auto bitcast = LLVM::AddrSpaceCastOp::create(ctorBuilder, ctorloc,
-                                                       llvmPointerType, aoo);
-
           Type tys[] = {llvmPointerType, llvmPointerType, llvmPointerType,
                         llvmPointerType, llvmInt32Type,   llvmPointerType,
                         llvmPointerType, llvmPointerType, llvmPointerType,
@@ -2467,19 +2455,42 @@ ConvertGPUModuleOp::matchAndRewrite(gpu::GPUModuleOp kernelModule,
             return failure();
           }
 
-          Value args[] = {
-              module.getResult(),
-              bitcast,
-              kernelName,
-              kernelName,
-              LLVM::ConstantOp::create(ctorBuilder, ctorloc, llvmInt32Type, -1),
-              nullPtr,
-              nullPtr,
-              nullPtr,
-              nullPtr,
-              nullPtr};
+          auto registerHostStub = [&](LLVM::LLVMFuncOp hostStub) {
+            auto aoo =
+                LLVM::AddressOfOp::create(ctorBuilder, ctorloc, hostStub);
+            auto bitcast = LLVM::AddrSpaceCastOp::create(ctorBuilder, ctorloc,
+                                                         llvmPointerType, aoo);
+            Value args[] = {module.getResult(),
+                            bitcast,
+                            kernelName,
+                            kernelName,
+                            LLVM::ConstantOp::create(ctorBuilder, ctorloc,
+                                                     llvmInt32Type, -1),
+                            nullPtr,
+                            nullPtr,
+                            nullPtr,
+                            nullPtr,
+                            nullPtr};
+            LLVM::CallOp::create(rewriter, ctorloc, cudaRegisterFn.value(),
+                                 args);
+          };
 
-          LLVM::CallOp::create(rewriter, ctorloc, cudaRegisterFn.value(), args);
+          registerHostStub(stub);
+
+          // Uses of the kernel address that we could not rewrite statically
+          // reach the runtime as the original, un-prefixed host stub, so
+          // register that symbol against the same device function too.
+          // Only the host-side device stubs clang emits are addresses that
+          // user code can hand to the runtime; an outlined parallel region
+          // such as `main_kernel` must not bind its enclosing function.
+          StringRef origName = f.getName();
+          origName.consume_front("reactant$");
+          origName.consume_back("_kernel");
+          if (origName != f.getName() && origName.contains("__device_stub__")) {
+            if (auto origStub =
+                    moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(origName))
+              registerHostStub(origStub);
+          }
         } else if (LLVM::GlobalOp g = dyn_cast<LLVM::GlobalOp>(op)) {
           int addrSpace = g.getAddrSpace();
           if (addrSpace != 1 /* device */ && addrSpace != 4 /* constant */)
