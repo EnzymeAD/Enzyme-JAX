@@ -24,6 +24,7 @@
 #include "llvm/Support/StringSaver.h"
 #include "llvm/Support/raw_ostream.h"
 
+#include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 
 #include <limits>
@@ -51,7 +52,7 @@ llvm::cl::opt<bool> useCustomPool(
         "Inject a specific custom debug pool instead of the cursed vectors"),
     llvm::cl::init(false));
 
-// --maxElements (do not blow up CI or your machine with as large number)
+// --maxElements (do not blow up CI or your machine with a large number)
 llvm::cl::opt<int64_t> maxElements(
     "max-elements",
     llvm::cl::desc(
@@ -476,14 +477,11 @@ int main(int argc, char **argv) {
   context.loadDialect<mlir::func::FuncDialect>();
   context.loadDialect<mlir::transform::TransformDialect>();
   context.loadDialect<mlir::chlo::ChloDialect>();
+  context.loadDialect<mlir::enzyme::EnzymeDialect>();
+  context.loadDialect<mlir::enzymexla::EnzymeXLADialect>();
 
   mlir::enzyme::registerenzymexlaPasses();
   mlir::transform::registerTransformPasses();
-
-  // Apply environment flags
-  if (allowUnreg) {
-    context.allowUnregisteredDialects(true);
-  }
 
   OwningOpRef<ModuleOp> module = loadMLIRModule(context, inputFilename);
   if (!module)
@@ -491,13 +489,17 @@ int main(int argc, char **argv) {
 
   mlir::PassManager legalizationPM(&context);
   // Make it possible to run the chlo tests
-  legalizationPM.addPass(mlir::stablehlo::createChloLegalizeToStablehloPass());
+  auto &funcPM = legalizationPM.nest<mlir::func::FuncOp>();
+  funcPM.addPass(mlir::stablehlo::createChloLegalizeToStablehloPass());
 
   // Lower EnzymeXLA custom operations to StableHLO
-  legalizationPM.addPass(mlir::enzyme::createLowerEnzymeXLAMathPass());
-  legalizationPM.addPass(mlir::enzyme::createLowerEnzymeXLABLASPass());
-  legalizationPM.addPass(mlir::enzyme::createLowerEnzymeXLALapackPass());
-  legalizationPM.addPass(mlir::enzyme::createEnzymeBatchToStableHLOPass());
+  funcPM.addPass(mlir::enzyme::createLowerEnzymeXLAMathPass());
+  funcPM.addPass(mlir::enzyme::createLowerEnzymeXLABLASPass());
+  funcPM.addPass(mlir::enzyme::createLowerEnzymeXLALapackPass());
+  funcPM.addPass(mlir::enzyme::createEnzymeBatchToStableHLOPass());
+  funcPM.addPass(mlir::enzyme::createLowerEnzymeXLALinalgPass());
+  funcPM.addPass(mlir::enzyme::createLowerEnzymeJacobianStableHLO());
+  funcPM.addPass(mlir::enzyme::createLowerEnzymeXLAMPIPass());
 
   mlir::PassManager pm(&context);
   if (mlir::failed(mlir::parsePassPipeline(passPipeline, pm, llvm::errs()))) {
