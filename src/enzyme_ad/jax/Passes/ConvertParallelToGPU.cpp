@@ -475,10 +475,9 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
     if (!pop)
       return failure();
     bool child = false;
-    pop->walk([&](scf::ParallelOp p) {
-      if (pop != p)
+    for (Operation &op : *pop.getBody())
+      if (isa<scf::ParallelOp>(&op))
         child = true;
-    });
     if (child) {
       LLVM_DEBUG(DBGS() << "only single parallel ops\n");
       return failure();
