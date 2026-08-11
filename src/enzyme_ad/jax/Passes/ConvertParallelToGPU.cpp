@@ -1602,6 +1602,72 @@ struct RemovePolygeistGPUWrapperOp : public OpRewritePattern<OpType> {
   }
 };
 
+/// parallel {
+///   ...
+///   if (c) { parallel { A() } }
+/// }
+/// ->
+/// parallel {
+///   ...
+///   parallel { if (c) { A() } }
+/// }
+///
+/// The launch wants the block parallel directly in the grid parallel's body,
+/// but the guard its bounds need is left wrapped around it. The condition is
+/// computed outside the block parallel, so it is the same for every thread:
+/// running the parallel and having each thread skip the body is what the
+/// guard already means.
+struct InterchangeGuardedParallel : public OpRewritePattern<scf::IfOp> {
+  using OpRewritePattern<scf::IfOp>::OpRewritePattern;
+  const char *PATTERN = "interchange-guarded-parallel";
+  LogicalResult matchAndRewrite(scf::IfOp ifOp,
+                                PatternRewriter &rewriter) const override {
+    if (!ifOp.getElseRegion().empty() || ifOp->getNumResults() != 0)
+      return failure();
+    auto parent = dyn_cast<scf::ParallelOp>(ifOp->getParentOp());
+    if (!parent || !parent->getParentOfType<enzymexla::GPUWrapperOp>())
+      return failure();
+    auto *thenBlock = ifOp.thenBlock();
+    auto pop =
+        dyn_cast<scf::ParallelOp>(thenBlock->getTerminator()->getPrevNode());
+    if (!pop)
+      return failure();
+    // Whatever the guard computes on the way to the parallel comes with it:
+    // that is only sound for ops that do nothing but compute, which can as
+    // well run unguarded.
+    for (Operation &op : *thenBlock) {
+      if (&op == pop.getOperation() || &op == thenBlock->getTerminator())
+        continue;
+      if (!isPure(&op))
+        return failure();
+    }
+    if (Operation *def = ifOp.getCondition().getDefiningOp())
+      if (pop->isProperAncestor(def))
+        return failure();
+
+    rewriter.setInsertionPoint(ifOp);
+    // The pure prologue moves out of the guard, in order, so the parallel is
+    // all the guard holds.
+    for (Operation &op : llvm::make_early_inc_range(*thenBlock)) {
+      if (&op == pop.getOperation() || &op == thenBlock->getTerminator())
+        continue;
+      rewriter.moveOpBefore(&op, ifOp);
+    }
+    auto newPop =
+        scf::ParallelOp::create(rewriter, pop.getLoc(), pop.getLowerBound(),
+                                pop.getUpperBound(), pop.getStep());
+    rewriter.setInsertionPointToStart(newPop.getBody());
+    auto guard =
+        scf::IfOp::create(rewriter, ifOp.getLoc(), ifOp.getCondition());
+    rewriter.eraseOp(pop.getBody()->getTerminator());
+    rewriter.inlineBlockBefore(pop.getBody(),
+                               guard.thenBlock()->getTerminator(),
+                               newPop.getBody()->getArguments());
+    rewriter.eraseOp(ifOp);
+    return success();
+  }
+};
+
 struct InterchangeIfOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
   using OpRewritePattern<enzymexla::GPUWrapperOp>::OpRewritePattern;
   const char *PATTERN = "interchange-if-op";
@@ -1918,9 +1984,8 @@ struct AsyncGPULaunch : public OpRewritePattern<async::ExecuteOp> {
           dep.getDefiningOp<enzymexla::StreamToTokenOp>().getOperand());
 
     // Both launch ops carry the stream on their asyncObject operand: a
-    // dependency operand without a result token no longer verifies, and
-    // neither launch built here returns one. The operand is a single value,
-    // so more than one stream cannot be said.
+    // dependency operand without a result token no longer verifies. The
+    // operand is a single value, so more than one stream cannot be said.
     if ((!launches.empty() || !launches2.empty()) &&
         (streams.size() != 1 ||
          llvm::any_of(launches,
@@ -2113,6 +2178,7 @@ struct ConvertParallelToGPU1Pass
       patterns.insert<
         //BarrierElim</*TopLevelOnly*/ false>,
         InterchangeIfOp,
+        InterchangeGuardedParallel,
         SplitOffParallel,
         HandleWrapperRootAlloca,
         HandleWrapperRootOps,
