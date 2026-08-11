@@ -2190,6 +2190,14 @@ struct CanonicalieForBounds : public OpRewritePattern<affine::AffineForOp> {
     ubMap = removeDuplicateExprs(ubMap);
     ubMap = recreateExpr(ubMap);
 
+    // recreateExpr rebuilds each sum, and the tree it builds need not be the
+    // one the canonicalizer left: `(-d0 + s0) - 1` and `-d0 + (s0 - 1)` are
+    // the same map, print the same, and are not the same object. Comparing
+    // those to decide progress had the two of them handing the loop back and
+    // forth forever. Simplifying settles on one shape.
+    lbMap = simplifyAffineMap(lbMap);
+    ubMap = simplifyAffineMap(ubMap);
+
     // ubMap.dump();
     // forOp.dump();
 
