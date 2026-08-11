@@ -26,6 +26,8 @@ def : EnzymeXLAControlFlowOp<"GPUWrapperOp", [{
   }
 }]>;
 
+def : EnzymeXLARegionTerminatorOp<"PolygeistYieldOp">;
+
 def : EnzymeXLAReadOnlyIdentityOp<"Pointer2MemrefOp", [0]>;
 def : EnzymeXLAReadOnlyIdentityOp<"Memref2PointerOp", [0]>;
 
