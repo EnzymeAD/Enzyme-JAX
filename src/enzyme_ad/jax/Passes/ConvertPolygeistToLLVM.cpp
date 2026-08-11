@@ -1636,6 +1636,25 @@ static std::string getFuncStubName(StringRef moduleName, StringRef name) {
       llvm::formatv("__polygeist_{0}_{1}_device_stub", moduleName, name));
 };
 
+// The host-side pointer a kernel is registered under, and which every symbolic
+// reference to that kernel must lower to. Clang emits a device stub for each
+// __global__ function and that stub is the address user code can take, so bind
+// it when it exists; kernels outlined from parallel regions have no stub of
+// their own and fall back to a synthetic one.
+static std::string getHostStubName(Operation *symbolTableOp,
+                                   StringRef moduleName, StringRef kernelName) {
+  StringRef orig = kernelName;
+  orig.consume_front("reactant$");
+  orig.consume_back("_kernel");
+  if (orig != kernelName && orig.contains("__device_stub__")) {
+    Operation *sym = SymbolTable::lookupSymbolIn(
+        symbolTableOp, StringAttr::get(symbolTableOp->getContext(), orig));
+    if (isa_and_nonnull<FunctionOpInterface>(sym))
+      return orig.str();
+  }
+  return getFuncStubName(moduleName, kernelName);
+}
+
 class ConvertLaunchFuncOpToGpuRuntimeCallPattern
     : public ConvertOpToGpuRuntimeCallPattern<gpu::LaunchFuncOp> {
 public:
@@ -2428,19 +2447,24 @@ ConvertGPUModuleOp::matchAndRewrite(gpu::GPUModuleOp kernelModule,
 
           auto nullPtr =
               LLVM::ZeroOp::create(ctorBuilder, ctorloc, llvmPointerType);
-          LLVM::LLVMFuncOp stub;
-          {
-            PatternRewriter::InsertionGuard B(rewriter);
-            rewriter.setInsertionPointToEnd(moduleOp.getBody());
-            stub = LLVM::LLVMFuncOp::create(
-                rewriter, ctorloc, getFuncStubName(moduleName, f.getName()),
-                LLVM::LLVMFunctionType::get(llvmVoidType, {}),
-                LLVM::Linkage::Internal);
-          }
-          {
-            OpBuilder::InsertionGuard guard(rewriter);
-            rewriter.setInsertionPointToEnd(stub.addEntryBlock(rewriter));
-            LLVM::ReturnOp::create(rewriter, ctorloc, ValueRange());
+          std::string synthStubName = getFuncStubName(moduleName, f.getName());
+          std::string hostStubName =
+              getHostStubName(moduleOp, moduleName, f.getName());
+          if (hostStubName == synthStubName) {
+            LLVM::LLVMFuncOp stub;
+            {
+              PatternRewriter::InsertionGuard B(rewriter);
+              rewriter.setInsertionPointToEnd(moduleOp.getBody());
+              stub = LLVM::LLVMFuncOp::create(
+                  rewriter, ctorloc, synthStubName,
+                  LLVM::LLVMFunctionType::get(llvmVoidType, {}),
+                  LLVM::Linkage::Internal);
+            }
+            {
+              OpBuilder::InsertionGuard guard(rewriter);
+              rewriter.setInsertionPointToEnd(stub.addEntryBlock(rewriter));
+              LLVM::ReturnOp::create(rewriter, ctorloc, ValueRange());
+            }
           }
           Type tys[] = {llvmPointerType, llvmPointerType, llvmPointerType,
                         llvmPointerType, llvmInt32Type,   llvmPointerType,
@@ -2455,42 +2479,24 @@ ConvertGPUModuleOp::matchAndRewrite(gpu::GPUModuleOp kernelModule,
             return failure();
           }
 
-          auto registerHostStub = [&](LLVM::LLVMFuncOp hostStub) {
-            auto aoo =
-                LLVM::AddressOfOp::create(ctorBuilder, ctorloc, hostStub);
-            auto bitcast = LLVM::AddrSpaceCastOp::create(ctorBuilder, ctorloc,
-                                                         llvmPointerType, aoo);
-            Value args[] = {module.getResult(),
-                            bitcast,
-                            kernelName,
-                            kernelName,
-                            LLVM::ConstantOp::create(ctorBuilder, ctorloc,
-                                                     llvmInt32Type, -1),
-                            nullPtr,
-                            nullPtr,
-                            nullPtr,
-                            nullPtr,
-                            nullPtr};
-            LLVM::CallOp::create(rewriter, ctorloc, cudaRegisterFn.value(),
-                                 args);
-          };
+          auto aoo = LLVM::AddressOfOp::create(ctorBuilder, ctorloc,
+                                               llvmPointerType, hostStubName);
+          auto bitcast = LLVM::AddrSpaceCastOp::create(ctorBuilder, ctorloc,
+                                                       llvmPointerType, aoo);
 
-          registerHostStub(stub);
+          Value args[] = {
+              module.getResult(),
+              bitcast,
+              kernelName,
+              kernelName,
+              LLVM::ConstantOp::create(ctorBuilder, ctorloc, llvmInt32Type, -1),
+              nullPtr,
+              nullPtr,
+              nullPtr,
+              nullPtr,
+              nullPtr};
 
-          // Uses of the kernel address that we could not rewrite statically
-          // reach the runtime as the original, un-prefixed host stub, so
-          // register that symbol against the same device function too.
-          // Only the host-side device stubs clang emits are addresses that
-          // user code can hand to the runtime; an outlined parallel region
-          // such as `main_kernel` must not bind its enclosing function.
-          StringRef origName = f.getName();
-          origName.consume_front("reactant$");
-          origName.consume_back("_kernel");
-          if (origName != f.getName() && origName.contains("__device_stub__")) {
-            if (auto origStub =
-                    moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(origName))
-              registerHostStub(origStub);
-          }
+          LLVM::CallOp::create(rewriter, ctorloc, cudaRegisterFn.value(), args);
         } else if (LLVM::GlobalOp g = dyn_cast<LLVM::GlobalOp>(op)) {
           int addrSpace = g.getAddrSpace();
           if (addrSpace != 1 /* device */ && addrSpace != 4 /* constant */)
@@ -2656,7 +2662,8 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
 
   // Build module constructor and destructor
   std::string funcStubName =
-      getFuncStubName(launchOp.getKernelModuleName().getValue(),
+      getHostStubName(launchOp->getParentOfType<ModuleOp>(),
+                      launchOp.getKernelModuleName().getValue(),
                       launchOp.getKernelName().getValue());
 
   auto bitcast =
@@ -3224,7 +3231,8 @@ private:
     }
 
     std::string funcStubName =
-        getFuncStubName(op.getFn().getRootReference().getValue(),
+        getHostStubName(op->getParentOfType<ModuleOp>(),
+                        op.getFn().getRootReference().getValue(),
                         op.getFn().getLeafReference().getValue());
     auto addr = LLVM::AddressOfOp::create(rewriter, loc, ptrty, funcStubName);
     Value args[] = {ptr, addr, adaptor.getBlockSize(),
@@ -3257,7 +3265,8 @@ private:
           op, "KernelAddress lowering only supported for CUDA and ROCM");
 
     std::string funcStubName =
-        getFuncStubName(op.getFn().getRootReference().getValue(),
+        getHostStubName(op->getParentOfType<ModuleOp>(),
+                        op.getFn().getRootReference().getValue(),
                         op.getFn().getLeafReference().getValue());
 
     rewriter.replaceOpWithNewOp<LLVM::AddressOfOp>(op, op.getType(),
