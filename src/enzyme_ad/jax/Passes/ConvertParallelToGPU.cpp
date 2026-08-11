@@ -1602,6 +1602,48 @@ struct RemovePolygeistGPUWrapperOp : public OpRewritePattern<OpType> {
   }
 };
 
+/// A parallel the raising found inside the kernel's own parallel -- what
+/// MFEM_FOREACH_THREAD's 'for (i = threadIdx.x; i < N; i += blockDim.x)'
+/// becomes when it is proven parallel -- is not where the launch gets its
+/// thread shape from: that comes from the launch geometry the wrapper
+/// records. Worse, split-parallel refuses to split a kernel that still
+/// holds one, so proving the inner loop parallel costs the kernel its grid
+/// and block dimensions entirely. Serialize them, which is where a loop
+/// inside a kernel ends up regardless, and let the split proceed.
+///
+/// The parallel a split has just created lives directly in its grid
+/// parallel's body; these sit deeper, under the guards and loops the kernel
+/// was written with. Only the deeper ones are serialized.
+struct SerializeNestedParallel : public OpRewritePattern<scf::ParallelOp> {
+  using OpRewritePattern<scf::ParallelOp>::OpRewritePattern;
+  const char *PATTERN = "serialize-nested-parallel";
+  LogicalResult matchAndRewrite(scf::ParallelOp pop,
+                                PatternRewriter &rewriter) const override {
+    if (pop->getNumResults() != 0 || !pop.getInitVals().empty())
+      return failure();
+    if (!pop->getParentOfType<enzymexla::GPUWrapperOp>())
+      return failure();
+    auto outer = pop->getParentOfType<scf::ParallelOp>();
+    if (!outer || pop->getBlock() == outer.getBody())
+      return failure();
+
+    Location loc = pop.getLoc();
+    rewriter.setInsertionPoint(pop);
+    SmallVector<Value> ivs;
+    for (auto [lb, ub, step] :
+         llvm::zip(pop.getLowerBound(), pop.getUpperBound(), pop.getStep())) {
+      auto forOp = scf::ForOp::create(rewriter, loc, lb, ub, step);
+      ivs.push_back(forOp.getInductionVar());
+      rewriter.setInsertionPointToStart(forOp.getBody());
+    }
+    Block *innermost = rewriter.getInsertionBlock();
+    rewriter.eraseOp(pop.getBody()->getTerminator());
+    rewriter.inlineBlockBefore(pop.getBody(), innermost->getTerminator(), ivs);
+    rewriter.eraseOp(pop);
+    return success();
+  }
+};
+
 struct InterchangeIfOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
   using OpRewritePattern<enzymexla::GPUWrapperOp>::OpRewritePattern;
   const char *PATTERN = "interchange-if-op";
@@ -2113,6 +2155,7 @@ struct ConvertParallelToGPU1Pass
       patterns.insert<
         //BarrierElim</*TopLevelOnly*/ false>,
         InterchangeIfOp,
+        SerializeNestedParallel,
         SplitOffParallel,
         HandleWrapperRootAlloca,
         HandleWrapperRootOps,
