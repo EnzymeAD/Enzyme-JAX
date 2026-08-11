@@ -1712,10 +1712,14 @@ struct ParallelToGPULaunch : public OpRewritePattern<enzymexla::GPUWrapperOp> {
         getDirectlyNestedSingleParallel(wrapper.getBody());
     if (!gridPop)
       return failure();
+    // A kernel whose thread-level work is not a parallel directly under the
+    // grid parallel -- MFEM's CuKernel3D walks its grid-stride loop and does
+    // its work in loops within it -- still has to become a launch. Decide the
+    // launch's shape here and let what is left inside be serialized: leaving
+    // the wrapper unconverted only means it reaches the LLVM lowering, which
+    // has no pattern for it.
     scf::ParallelOp blockPop = getDirectlyNestedSingleParallel(
         gridPop.getBody(), /* allowAllocas */ true);
-    if (!blockPop)
-      return failure();
 
     // Only mutate once the match is certain: an op created before a bail
     // marks the IR changed on every scan, so a wrapper this pattern cannot
@@ -1749,7 +1753,8 @@ struct ParallelToGPULaunch : public OpRewritePattern<enzymexla::GPUWrapperOp> {
         gridBounds[i] = oneindex;
     }
     Value blockBounds[3];
-    auto popBlockBounds = getUpperBounds(blockPop);
+    auto popBlockBounds =
+        blockPop ? getUpperBounds(blockPop) : SmallVector<Value, 3>();
     for (unsigned int i = 0; i < 3; i++) {
       if (i < popBlockBounds.size())
         blockBounds[i] = popBlockBounds[i];
@@ -1799,6 +1804,33 @@ struct ParallelToGPULaunch : public OpRewritePattern<enzymexla::GPUWrapperOp> {
     auto launchBlock = &launchOp.getRegion().front();
     rewriter.setInsertionPointToStart(launchBlock);
     SmallVector<Value, 3> argReplacements;
+    if (!blockPop) {
+      // One thread per block: the work inside stays as it is written and is
+      // serialized later, which is what happens to a loop in a kernel
+      // regardless.
+      SmallVector<Value, 3> gridReplacements;
+      for (auto en : llvm::enumerate(gridPop.getBody()->getArguments())) {
+        gpu::Dimension dim = getDim(en.index());
+        auto gridIdx = gpu::BlockIdOp::create(
+            rewriter, loc, mlir::IndexType::get(rewriter.getContext()), dim);
+        gridReplacements.push_back(gridIdx);
+      }
+      rewriter.mergeBlocks(gridPop.getBody(), launchBlock, gridReplacements);
+      rewriter.setInsertionPointToEnd(launchBlock);
+      gpu::TerminatorOp::create(rewriter, loc);
+      rewriter.eraseOp(gridPop);
+      Operation *reduce = nullptr;
+      for (auto &op : *launchBlock)
+        if (auto r = dyn_cast<scf::ReduceOp>(&op))
+          reduce = r;
+      if (reduce)
+        rewriter.eraseOp(reduce);
+      launchBlock->walk([&](mlir::enzymexla::BarrierOp op) {
+        rewriter.setInsertionPoint(op);
+        rewriter.replaceOpWithNewOp<gpu::BarrierOp>(op);
+      });
+      return success();
+    }
     for (auto en : llvm::enumerate(blockPop.getBody()->getArguments())) {
       gpu::Dimension dim = getDim(en.index());
       auto blockIdx = gpu::ThreadIdOp::create(

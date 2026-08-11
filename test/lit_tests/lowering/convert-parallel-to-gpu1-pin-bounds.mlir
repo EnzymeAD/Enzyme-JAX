@@ -28,12 +28,16 @@ module {
   }
 }
 
-// The bound stays beside the inner parallel, which still reads it; the load,
-// whose only reader is inside the body, moves in as before.
+// The bound stays beside the inner parallel, which still reads it. That
+// parallel cannot give the launch its thread shape -- a trip count computed
+// from the grid index is not a block dimension -- so the launch takes one
+// thread per block and the parallel is left inside it to be serialized, with
+// its bound computation still in front of it.
 
 // CHECK-LABEL: func.func @pin
-// CHECK: scf.parallel (%[[I:.+]]) =
-// CHECK-NEXT: %[[B:.+]] = arith.muli %[[I]], %{{.+}} : index
+// CHECK: gpu.launch blocks(%{{.+}}, %{{.+}}, %{{.+}}) in (%{{.+}} = %{{.+}}, %{{.+}} = %[[ONE:.+]], %{{.+}} = %[[ONE]]) threads(%{{.+}}, %{{.+}}, %{{.+}}) in (%{{.+}} = %[[ONE]], %{{.+}} = %[[ONE]], %{{.+}} = %[[ONE]])
+// CHECK: %[[BID:.+]] = gpu.block_id x
+// CHECK-NEXT: %[[B:.+]] = arith.muli %[[BID]], %{{.+}} : index
 // CHECK-NEXT: scf.parallel (%{{.+}}) = (%{{.+}}) to (%[[B]])
 // CHECK-NEXT: %[[R:.+]] = memref.load
 // CHECK-NEXT: memref.store %[[R]]
