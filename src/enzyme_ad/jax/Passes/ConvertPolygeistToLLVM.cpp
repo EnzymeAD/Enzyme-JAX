@@ -2508,21 +2508,34 @@ ConvertGPUModuleOp::matchAndRewrite(gpu::GPUModuleOp kernelModule,
           // to pass the GPU DL in here
           DataLayout DLI(moduleOp);
           auto size = DLI.getTypeSize(globalTy);
-          rtRegisterVarCallBuilder.create(
-              ctorloc, ctorBuilder,
-              {module.getResult(), bitcast, symbolName, symbolName,
-               /*isExtern*/
-               LLVM::ConstantOp::create(ctorBuilder, ctorloc, llvmInt32Type,
-                                        /* TODO */ 0),
-               /*varSize*/
-               LLVM::ConstantOp::create(ctorBuilder, ctorloc, llvmIntPtrType,
-                                        size),
-               /*isConstant*/
-               LLVM::ConstantOp::create(ctorBuilder, ctorloc, llvmInt32Type,
-                                        /* TODO */ 0),
-               /* just a 0? */
-               LLVM::ConstantOp::create(ctorBuilder, ctorloc, llvmInt32Type,
-                                        0)});
+          Type varTys[] = {llvmPointerType, llvmPointerType, llvmPointerType,
+                           llvmPointerType, llvmInt32Type,   llvmIntPtrType,
+                           llvmInt32Type,   llvmInt32Type};
+
+          auto cudaRegisterVarFn = LLVM::lookupOrCreateFn(
+              rewriter, moduleOp, registerVarFuncName, varTys, llvmVoidType);
+
+          if (failed(cudaRegisterVarFn)) {
+            llvm::errs() << " " << registerVarFuncName
+                         << " already exists with different types\n";
+            return failure();
+          }
+
+          auto isExtern = LLVM::ConstantOp::create(ctorBuilder, ctorloc,
+                                                   llvmInt32Type, /* TODO */ 0);
+          auto varSize = LLVM::ConstantOp::create(ctorBuilder, ctorloc,
+                                                  llvmIntPtrType, size);
+          auto isConstant = LLVM::ConstantOp::create(
+              ctorBuilder, ctorloc, llvmInt32Type, /* TODO */ 0);
+          auto isGlobal =
+              LLVM::ConstantOp::create(ctorBuilder, ctorloc, llvmInt32Type, 0);
+
+          Value varArgs[] = {module.getResult(), bitcast,  symbolName,
+                             symbolName,         isExtern, varSize,
+                             isConstant,         isGlobal};
+
+          LLVM::CallOp::create(rewriter, ctorloc, cudaRegisterVarFn.value(),
+                               varArgs);
         }
       }
       // TODO this has to happen only for some CUDA versions, hip does not need
