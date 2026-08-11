@@ -1,8 +1,8 @@
 // RUN: enzymexlamlir-opt %s --convert-polygeist-to-llvm -split-input-file | FileCheck %s
 
-// Kernel addresses that could not be rewritten statically reach the runtime as
-// the original, un-prefixed host stub, so it is registered against the same
-// device function alongside the synthetic stub.
+// A kernel lowered from one of clang's device stubs is registered under that
+// stub, which is the address user code can take, rather than under a synthetic
+// one that nothing else refers to.
 module attributes {gpu.container_module} {
   gpu.module @gpum {
     gpu.func @"reactant$_Z16__device_stub__kPi"() kernel {
@@ -14,16 +14,16 @@ module attributes {gpu.container_module} {
   }
 }
 
+// CHECK-NOT: llvm.func internal @__polygeist_gpum_reactant$_Z16__device_stub__kPi_device_stub
 // CHECK-LABEL: llvm.func private @gpum_gpubin_ctor()
-// CHECK-DAG: %[[ORIG:.+]] = llvm.mlir.addressof @_Z16__device_stub__kPi : !llvm.ptr
-// CHECK-DAG: %[[SYNTH:.+]] = llvm.mlir.addressof @__polygeist_gpum_reactant$_Z16__device_stub__kPi_device_stub : !llvm.ptr
-// CHECK: RegisterFunction(%{{.+}}, %[[SYNTH]],
+// CHECK: %[[ORIG:.+]] = llvm.mlir.addressof @_Z16__device_stub__kPi : !llvm.ptr
 // CHECK: RegisterFunction(%{{.+}}, %[[ORIG]],
+// CHECK-NOT: RegisterFunction(%
 
 // -----
 
-// An outlined parallel region is not a device stub and must not bind its
-// enclosing function.
+// A kernel outlined from a parallel region has no device stub of its own, so a
+// synthetic one is registered. It must not bind its enclosing function.
 module attributes {gpu.container_module} {
   gpu.module @gpum {
     gpu.func @main_kernel() kernel {
@@ -37,5 +37,7 @@ module attributes {gpu.container_module} {
 
 // CHECK-LABEL: llvm.func private @gpum_gpubin_ctor()
 // CHECK-NOT: llvm.mlir.addressof @main :
-// CHECK: RegisterFunction
-// CHECK-NOT: RegisterFunction
+// CHECK: %[[SYNTH:.+]] = llvm.mlir.addressof @__polygeist_gpum_main_kernel_device_stub : !llvm.ptr
+// CHECK: RegisterFunction(%{{.+}}, %[[SYNTH]],
+// CHECK-NOT: RegisterFunction(%
+// CHECK: llvm.func internal @__polygeist_gpum_main_kernel_device_stub()
