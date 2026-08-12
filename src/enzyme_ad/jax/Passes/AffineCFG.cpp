@@ -263,6 +263,45 @@ bool truncationIsExact(Value v, Type resTy) {
   return magnitudeFitsIn(v, intTy.getWidth() - 1);
 }
 
+// Whether the arithmetic that produced `v` puts bits above `bits` in it, so
+// that truncating it there is known to be a different number. Conservative the
+// other way from magnitudeFitsIn: a false answer only means the truncation was
+// not shown to lose anything.
+static bool exceedsBits(Value v, unsigned bits, unsigned depth = 0) {
+  if (depth > 8)
+    return false;
+
+  IntegerAttr iattr;
+  if (matchPattern(v, m_Constant(&iattr)))
+    return iattr.getValue().getSignificantBits() > bits;
+
+  Operation *def = v.getDefiningOp();
+  if (!def)
+    return false;
+  if (auto shl = dyn_cast<ShLIOp>(def)) {
+    APInt amount;
+    if (matchPattern(shl.getRhs(), m_ConstantInt(&amount)) && amount.uge(bits))
+      return true;
+    return exceedsBits(shl.getLhs(), bits, depth + 1);
+  }
+  if (isa<OrIOp, XOrIOp, AddIOp, SubIOp, MulIOp>(def))
+    return llvm::any_of(def->getOperands(), [&](Value o) {
+      return exceedsBits(o, bits, depth + 1);
+    });
+  if (isa<IndexCastOp, IndexCastUIOp>(def))
+    return exceedsBits(def->getOperand(0), bits, depth + 1);
+  return false;
+}
+
+// Whether truncating `v` to `resTy` is known to change the number it holds, so
+// that `v` must not stand in for the truncated value.
+static bool truncationDropsSetBits(Value v, Type resTy) {
+  auto intTy = dyn_cast<IntegerType>(resTy);
+  if (!intTy || intTy.getWidth() < 2 || intTy.getWidth() > 64)
+    return false;
+  return exceedsBits(v, intTy.getWidth() - 1);
+}
+
 static bool isAffineForArg(Value val) {
   if (!isa<BlockArgument>(val))
     return false;
@@ -654,10 +693,14 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
       // number wherever the discarded bits were set, so dropping one puts
       // those bits back. CUDA packs a dim3's x and y into a single i64 and
       // truncates to recover x; using the packed value in its place makes
-      // the operand y*2^32 + x.
+      // the operand y*2^32 + x. Where that is what the truncation is doing,
+      // stop and leave the operand as it was -- mid-chain is not a place to
+      // stop, since the value there has the wrong type to stand in for it.
       if (auto idx = decast.getDefiningOp<TruncIOp>()) {
-        if (!truncationIsExact(idx.getIn(), idx.getType()))
+        if (truncationDropsSetBits(idx.getIn(), idx.getType())) {
+          decast = t;
           break;
+        }
         decast = idx.getIn();
         continue;
       }

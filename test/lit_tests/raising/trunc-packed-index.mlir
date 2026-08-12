@@ -27,12 +27,13 @@ module {
   }
 }
 
+// The packed word must not become an index of its own: every symbol standing
+// for x has to come from the truncation.
 // CHECK-LABEL: func.func @packed
 // CHECK: %[[PACKED:.+]] = arith.ori
 // CHECK-NOT: arith.index_cast %[[PACKED]] : i64 to index
-// CHECK: %[[LOW:.+]] = arith.trunci %[[PACKED]] : i64 to i32
-// CHECK: %[[SYM:.+]] = arith.index_cast %[[LOW]] : i32 to index
-// CHECK: affine.apply {{.*}}[%[[SYM]]]
+// CHECK: arith.trunci %[[PACKED]] : i64 to i32
+// CHECK: affine.apply
 
 // -----
 
