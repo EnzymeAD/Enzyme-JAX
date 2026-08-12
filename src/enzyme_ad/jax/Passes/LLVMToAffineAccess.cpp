@@ -669,6 +669,21 @@ struct MemrefLoadAffineApply : public OpRewritePattern<memref::LoadOp> {
       return failure();
     SmallVector<Value> preoperands = operands;
 
+    // Legalizing the operands moves the ops that define them, which erases the
+    // ones it clones, so anything to be read off an operand has to be read
+    // before that and not after: what is left afterwards may be a value whose
+    // op is gone.
+    Attribute preConstant;
+    AffineMap preApplyMap;
+    SmallVector<Value> preApplyOperands;
+    if (preoperands.size() == 1) {
+      matchPattern(preoperands[0], m_Constant(&preConstant));
+      if (auto app = preoperands[0].getDefiningOp<affine::AffineApplyOp>()) {
+        preApplyMap = app.getAffineMap();
+        preApplyOperands = llvm::to_vector(app.getMapOperands());
+      }
+    }
+
     AffineExpr exprs[1] = {expr};
     auto map = AffineMap::get(/*dimCount=*/0, /*symbolCount=*/operands.size(),
                               exprs, rewriter.getContext());
@@ -682,15 +697,13 @@ struct MemrefLoadAffineApply : public OpRewritePattern<memref::LoadOp> {
     map = mlir::enzyme::recreateExpr(map);
 
     if (preoperands.size() == 1) {
-      Attribute attr;
-      if (matchPattern(preoperands[0], m_Constant(&attr)))
+      if (preConstant)
         return failure();
       if (preoperands == operands)
         return failure();
-      if (auto app = preoperands[0].getDefiningOp<affine::AffineApplyOp>()) {
-        if (app.getAffineMap() == map && app.getMapOperands() == operands)
-          return failure();
-      }
+      if (preApplyMap && preApplyMap == map &&
+          ArrayRef<Value>(preApplyOperands) == ArrayRef<Value>(operands))
+        return failure();
     }
 
     Value app;
