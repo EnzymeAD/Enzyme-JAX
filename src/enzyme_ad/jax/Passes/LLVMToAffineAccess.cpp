@@ -1127,9 +1127,8 @@ struct AffineExprBuilder {
         } else {
           llvm_unreachable("unknown operation");
         }
-      } else if (isa<LLVM::ZExtOp, LLVM::SExtOp, LLVM::TruncOp, arith::ExtSIOp,
-                     arith::ExtUIOp, arith::TruncIOp, arith::IndexCastOp,
-                     arith::IndexCastUIOp>(op)) {
+      } else if (isa<LLVM::ZExtOp, LLVM::SExtOp, arith::ExtSIOp, arith::ExtUIOp,
+                     arith::IndexCastOp, arith::IndexCastUIOp>(op)) {
         return getExpr(op->getOperand(0));
       }
     }
