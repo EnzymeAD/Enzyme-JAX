@@ -5905,6 +5905,10 @@ public:
           BlockRange(), regions);
       conditional = conditional2;
     } else {
+      if (loadOp->getBlock() != conditional->getBlock())
+        return rewriter.notifyMatchFailure(
+            loadOp, "load runs under a condition the conditional does not");
+
       for (auto i = 0; i < conditional->getNumResults(); i++)
         resultsNeeded.insert(i);
 
