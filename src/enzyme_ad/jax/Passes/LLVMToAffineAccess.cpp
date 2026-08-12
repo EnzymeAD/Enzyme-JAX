@@ -1138,9 +1138,11 @@ struct AffineExprBuilder {
         // into a single i64 and truncates to recover x; carrying the packed
         // value in its place makes the access index y*2^32 + x. Where the
         // truncation provably changes nothing it is still worth seeing
-        // through; otherwise its result stands as a symbol of its own.
+        // through; where it does not, there is no expression to write, since
+        // what stands here is not an index and cannot be a symbol either.
         if (truncationIsExact(op->getOperand(0), op->getResult(0).getType()))
           return getExpr(op->getOperand(0));
+        return failure();
       }
     }
 
