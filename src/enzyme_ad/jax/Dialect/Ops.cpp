@@ -1534,13 +1534,14 @@ llvm::cl::opt<bool> BarrierOpt("barrier-opt", llvm::cl::init(true),
                                llvm::cl::desc("Optimize barriers"));
 
 // Whether every thread runs `ifOp`'s body, i.e. the condition selects no subset
-// of them. `threadIVs` are the indices the barrier synchronises over, which
-// name the parallel whose iterations are the threads.
+// of them. `threadIVs` are the indices the barrier synchronises over, which name
+// the parallel whose iterations are the threads.
 static bool selectsAllThreads(Operation *ifOp, ValueRange threadIVs) {
+  // Synchronising over no index at all: there is no dimension for the
+  // condition to vary along, so no subset for it to select.
   if (threadIVs.empty())
-    return false;
-  Operation *par =
-      cast<BlockArgument>(threadIVs.front()).getOwner()->getParentOp();
+    return true;
+  Operation *par = cast<BlockArgument>(threadIVs.front()).getOwner()->getParentOp();
 
   SmallVector<Value> worklist;
   if (auto scfIf = dyn_cast<scf::IfOp>(ifOp))
