@@ -94,3 +94,36 @@ module {
 // CHECK: memref.store
 // CHECK-NEXT: "enzymexla.barrier"
 // CHECK-NEXT: }
+
+// -----
+
+// The branch is the last thing in a serial loop body, so what follows it for a
+// thread is the next iteration -- and that reaches the barrier ahead of it.
+module {
+  func.func @loop_wraparound(%n: index, %m: memref<?xf64>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
+    %cst = arith.constant 1.000000e+00 : f64
+    scf.parallel (%i, %j, %k) = (%c0, %c0, %c0) to (%c2, %c2, %c2) step (%c1, %c1, %c1) {
+      scf.for %t = %c0 to %c2 step %c1 {
+        "enzymexla.barrier"(%i, %j, %k) : (index, index, index) -> ()
+        %d = arith.subi %n, %k : index
+        %c = arith.cmpi sge, %d, %c0 : index
+        scf.if %c {
+          memref.store %cst, %m[%i] : memref<?xf64>
+          "enzymexla.barrier"(%i, %j, %k) : (index, index, index) -> ()
+        }
+      }
+      scf.reduce
+    }
+    return
+  }
+}
+
+// CHECK-LABEL: func.func @loop_wraparound
+// CHECK: scf.for
+// CHECK-NEXT: "enzymexla.barrier"
+// CHECK: scf.if
+// CHECK-NEXT: memref.store
+// CHECK-NEXT: "enzymexla.barrier"

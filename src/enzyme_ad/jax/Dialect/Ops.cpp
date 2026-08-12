@@ -1537,14 +1537,10 @@ llvm::cl::opt<bool> BarrierOpt("barrier-opt", llvm::cl::init(true),
 // of them. `threadIVs` are the indices the barrier synchronises over, which
 // name the parallel whose iterations are the threads.
 static bool selectsAllThreads(Operation *ifOp, ValueRange threadIVs) {
-  Operation *par = nullptr;
-  for (Value iv : threadIVs)
-    if (auto ba = dyn_cast<BlockArgument>(iv)) {
-      par = ba.getOwner()->getParentOp();
-      break;
-    }
-  if (!par)
+  if (threadIVs.empty())
     return false;
+  Operation *par =
+      cast<BlockArgument>(threadIVs.front()).getOwner()->getParentOp();
 
   SmallVector<Value> worklist;
   if (auto scfIf = dyn_cast<scf::IfOp>(ifOp))
@@ -1590,15 +1586,30 @@ static bool anyBarrierWithin(Operation *op, BarrierOp except) {
   return found;
 }
 
+static bool containsBarrier(Operation *op) {
+  bool found = false;
+  op->walk([&](BarrierOp) { found = true; });
+  return found;
+}
+
+// Whether a thread can reach a barrier past `op`. Not just the operations
+// beside it: what encloses `op` may end before the thread does, and a region
+// that runs more than once puts its own earlier operations after this one too.
 static bool anyBarrierAfter(Operation *op) {
-  for (Operation *it = op->getNextNode(); it != nullptr;
-       it = it->getNextNode()) {
-    bool found = false;
-    it->walk([&](BarrierOp) { found = true; });
-    if (found)
+  for (Operation *it = op->getNextNode(); it != nullptr; it = it->getNextNode())
+    if (containsBarrier(it))
       return true;
-  }
-  return false;
+
+  Operation *parent = op->getParentOp();
+  if (!parent)
+    return false;
+  // The thread parallel is where one thread's execution ends.
+  if (isa<scf::ParallelOp, affine::AffineParallelOp>(parent))
+    return false;
+  if (!isa<scf::IfOp, affine::AffineIfOp, memref::AllocaScopeOp>(parent) &&
+      containsBarrier(parent))
+    return true;
+  return anyBarrierAfter(parent);
 }
 
 class BarrierHoist final : public OpRewritePattern<BarrierOp> {
