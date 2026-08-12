@@ -102,7 +102,9 @@ cc_library(
             "xla_ffi/cuda/**/*.cc",
         ]),
     hdrs =
-        glob([
+        [
+            "xla_ffi/export_macro.h",
+        ] + glob([
             "xla_ffi/host/**/*.h",
             "xla_ffi/cuda/**/*.h",
         ]),
