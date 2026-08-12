@@ -2160,9 +2160,8 @@ Value ConvertLaunchFuncOpToGpuRuntimeCallPattern::generateParamsArray(
     gpu::LaunchFuncOp launchOp, OpAdaptor adaptor, OpBuilder &builder,
     Block *allocaBlock) const {
   auto loc = launchOp.getLoc();
-  auto numKernelOperands = launchOp.getNumKernelOperands();
   SmallVector<Value, 4> arguments =
-      adaptor.getOperands().take_back(numKernelOperands);
+      llvm::to_vector<4>(adaptor.getKernelOperands());
   auto numArguments = arguments.size();
   SmallVector<Type, 4> argumentTypes;
   argumentTypes.reserve(numArguments);
