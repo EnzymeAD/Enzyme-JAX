@@ -616,6 +616,12 @@ enum __device_builtin__ cudaMemcpyKind
                        arg.getType().getIntOrFloatBitWidth() ==
                            expectedTy.getIntOrFloatBitWidth()) {
               arg = LLVM::BitcastOp::create(builder, loc, expectedTy, arg);
+            } else if (arg.getType().isIntOrIndex() &&
+                       isa<LLVM::LLVMPointerType>(expectedTy)) {
+              arg = LLVM::IntToPtrOp::create(builder, loc, expectedTy, arg);
+            } else if (isa<LLVM::LLVMPointerType>(arg.getType()) &&
+                       expectedTy.isIntOrIndex()) {
+              arg = LLVM::PtrToIntOp::create(builder, loc, expectedTy, arg);
             } else {
               arg = LLVM::BitcastOp::create(builder, loc, expectedTy,
                                             arg); // Fallback
