@@ -815,7 +815,7 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
       // Put a random index, we will override it
       gridArgId.push_back(0);
     } else if (maxThreads != -1 && threadNum <= maxThreads / 2 &&
-               mustBeBlockIVs.empty()) {
+               mustBeBlockIVs.empty() && blockDims.size() < 3) {
       // If we are not getting enough parallelism in the block, use part of the
       // grid dims
 
