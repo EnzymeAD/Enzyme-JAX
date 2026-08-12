@@ -168,10 +168,6 @@ bool valueCmp(Cmp cmp, mlir::Value bval, ValueOrInt val);
 
 bool valueCmp(Cmp cmp, llvm::APInt bval, ValueOrInt val);
 
-// Whether truncating `v` to `resTy` leaves the number it holds alone, so that
-// an expression written for `v` describes the truncated value too.
-bool truncationIsExact(mlir::Value v, mlir::Type resTy);
-
 bool isRotateLike(int dimension, mlir::Value lhs, mlir::Value rhs,
                   mlir::stablehlo::SliceOp *sl0P = nullptr,
                   mlir::stablehlo::SliceOp *sl1P = nullptr);

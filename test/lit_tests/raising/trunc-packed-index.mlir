@@ -37,7 +37,9 @@ module {
 
 // -----
 
-// A truncation the loop bounds show is exact is still worth seeing through.
+// The same refusal with nothing suspicious about the value: a truncation is
+// left where it stands rather than dropped, because nothing here can tell a
+// harmless one from the packed case above.
 module {
   func.func @small(%p: !llvm.ptr) {
     affine.parallel (%i) = (0) to (10) {
@@ -53,5 +55,6 @@ module {
 }
 
 // CHECK-LABEL: func.func @small
-// CHECK: affine.parallel (%[[IV:.+]]) =
-// CHECK: memref.load %{{.+}}[%[[IV]]]
+// CHECK: %[[T:.+]] = arith.trunci %{{.+}} : i64 to i16
+// CHECK: %[[I:.+]] = arith.index_cast %[[T]] : i16 to index
+// CHECK: memref.load %{{.+}}[%[[I]]]

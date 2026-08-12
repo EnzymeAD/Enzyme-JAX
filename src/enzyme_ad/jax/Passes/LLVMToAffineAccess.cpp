@@ -1149,12 +1149,9 @@ struct AffineExprBuilder {
         // number wherever the discarded bits were set, so reading through one
         // puts those bits back into the index. CUDA packs a dim3's x and y
         // into a single i64 and truncates to recover x; carrying the packed
-        // value in its place makes the access index y*2^32 + x. Where the
-        // truncation provably changes nothing it is still worth seeing
-        // through; where it does not, there is no expression to write, since
-        // what stands here is not an index and cannot be a symbol either.
-        if (truncationIsExact(op->getOperand(0), op->getResult(0).getType()))
-          return getExpr(op->getOperand(0));
+        // value in its place makes the access index y*2^32 + x. There is no
+        // expression to write for the truncated value either, since what
+        // stands here is not an index and cannot be a symbol.
         return failure();
       }
     }

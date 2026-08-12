@@ -216,92 +216,6 @@ static bool shiftScaleOK(Operation *op) {
   return shiftScale(op->getOperand(1), scale);
 }
 
-// Whether |v| < 2^bits, walking the arithmetic that produced it. Conservative:
-// a false answer only means the bound could not be shown.
-static bool magnitudeFitsIn(Value v, unsigned bits, unsigned depth = 0) {
-  if (bits == 0 || bits >= 64)
-    return bits >= 64;
-  if (depth > 8)
-    return false;
-
-  IntegerAttr iattr;
-  if (matchPattern(v, m_Constant(&iattr))) {
-    APInt c = iattr.getValue();
-    return c.getSignificantBits() <= bits;
-  }
-
-  if (Operation *def = v.getDefiningOp()) {
-    if (isa<ExtUIOp, LLVM::ZExtOp>(def))
-      if (auto srcTy = dyn_cast<IntegerType>(def->getOperand(0).getType()))
-        return srcTy.getWidth() <= bits;
-    if (isa<ExtSIOp, LLVM::SExtOp>(def))
-      if (auto srcTy = dyn_cast<IntegerType>(def->getOperand(0).getType()))
-        return srcTy.getWidth() - 1 <= bits;
-    if (isa<IndexCastOp, IndexCastUIOp>(def))
-      return magnitudeFitsIn(def->getOperand(0), bits, depth + 1);
-    // A sum of two numbers each a bit smaller than the bound stays under it.
-    if (isa<AddIOp, SubIOp>(def))
-      return magnitudeFitsIn(def->getOperand(0), bits - 1, depth + 1) &&
-             magnitudeFitsIn(def->getOperand(1), bits - 1, depth + 1);
-    if (isa<MulIOp>(def))
-      return magnitudeFitsIn(def->getOperand(0), bits / 2, depth + 1) &&
-             magnitudeFitsIn(def->getOperand(1), bits / 2, depth + 1);
-  }
-
-  // Nothing structural to go on: fall back on what the loop bounds say.
-  return valueCmp(Cmp::GE, v, (int64_t)0) &&
-         valueCmp(Cmp::LT, v, (int64_t)1 << bits);
-}
-
-// Whether truncating `v` to `resTy` leaves the number it holds alone, so that
-// the truncation can be dropped and `v` used in its place. What replaces it is
-// read as signed, so the sign bit has to stay clear too.
-bool truncationIsExact(Value v, Type resTy) {
-  auto intTy = dyn_cast<IntegerType>(resTy);
-  if (!intTy || intTy.getWidth() < 2 || intTy.getWidth() > 64)
-    return false;
-  return magnitudeFitsIn(v, intTy.getWidth() - 1);
-}
-
-// Whether the arithmetic that produced `v` puts bits above `bits` in it, so
-// that truncating it there is known to be a different number. Conservative the
-// other way from magnitudeFitsIn: a false answer only means the truncation was
-// not shown to lose anything.
-static bool exceedsBits(Value v, unsigned bits, unsigned depth = 0) {
-  if (depth > 8)
-    return false;
-
-  IntegerAttr iattr;
-  if (matchPattern(v, m_Constant(&iattr)))
-    return iattr.getValue().getSignificantBits() > bits;
-
-  Operation *def = v.getDefiningOp();
-  if (!def)
-    return false;
-  if (auto shl = dyn_cast<ShLIOp>(def)) {
-    APInt amount;
-    if (matchPattern(shl.getRhs(), m_ConstantInt(&amount)) && amount.uge(bits))
-      return true;
-    return exceedsBits(shl.getLhs(), bits, depth + 1);
-  }
-  if (isa<OrIOp, XOrIOp, AddIOp, SubIOp, MulIOp>(def))
-    return llvm::any_of(def->getOperands(), [&](Value o) {
-      return exceedsBits(o, bits, depth + 1);
-    });
-  if (isa<IndexCastOp, IndexCastUIOp>(def))
-    return exceedsBits(def->getOperand(0), bits, depth + 1);
-  return false;
-}
-
-// Whether truncating `v` to `resTy` is known to change the number it holds, so
-// that `v` must not stand in for the truncated value.
-static bool truncationDropsSetBits(Value v, Type resTy) {
-  auto intTy = dyn_cast<IntegerType>(resTy);
-  if (!intTy || intTy.getWidth() < 2 || intTy.getWidth() > 64)
-    return false;
-  return exceedsBits(v, intTy.getWidth() - 1);
-}
-
 static bool isAffineForArg(Value val) {
   if (!isa<BlockArgument>(val))
     return false;
@@ -693,16 +607,12 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
       // number wherever the discarded bits were set, so dropping one puts
       // those bits back. CUDA packs a dim3's x and y into a single i64 and
       // truncates to recover x; using the packed value in its place makes
-      // the operand y*2^32 + x. Where that is what the truncation is doing,
-      // stop and leave the operand as it was -- mid-chain is not a place to
-      // stop, since the value there has the wrong type to stand in for it.
-      if (auto idx = decast.getDefiningOp<TruncIOp>()) {
-        if (truncationDropsSetBits(idx.getIn(), idx.getType())) {
-          decast = t;
-          break;
-        }
-        decast = idx.getIn();
-        continue;
+      // the operand y*2^32 + x. Nothing here can tell the two apart, so keep
+      // the operand as it stands -- mid-chain is not a place to stop, since
+      // the value there has the wrong type to stand in for it.
+      if (decast.getDefiningOp<TruncIOp>()) {
+        decast = t;
+        break;
       }
       if (auto idx = decast.getDefiningOp<ExtUIOp>()) {
         decast = idx.getIn();
@@ -1541,8 +1451,11 @@ bool isValidIndex(Value val, Region *scope) {
   if (auto cast = val.getDefiningOp<IndexCastUIOp>())
     return isValidIndex(cast.getOperand(), scope);
 
-  if (auto cast = val.getDefiningOp<TruncIOp>())
-    return isValidIndex(cast.getOperand(), scope);
+  // A truncation is not among them. It is a different number wherever the bits
+  // it drops were set, so what makes its operand an index says nothing about
+  // it. This has to agree with the operand legalization, which no longer drops
+  // one either: calling a value an index here is a promise legalization has to
+  // make good on, and it reports a fatal error when it cannot.
 
   if (auto cast = val.getDefiningOp<ExtSIOp>())
     return isValidIndex(cast.getOperand(), scope);
