@@ -603,10 +603,6 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
         decast = idx.getIn();
         continue;
       }
-      if (decast.getDefiningOp<TruncIOp>()) {
-        decast = t;
-        break;
-      }
       if (auto idx = decast.getDefiningOp<ExtUIOp>()) {
         decast = idx.getIn();
         continue;

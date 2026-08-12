@@ -669,17 +669,6 @@ struct MemrefLoadAffineApply : public OpRewritePattern<memref::LoadOp> {
       return failure();
     SmallVector<Value> preoperands = operands;
 
-    Attribute preConstant;
-    AffineMap preApplyMap;
-    SmallVector<Value> preApplyOperands;
-    if (preoperands.size() == 1) {
-      matchPattern(preoperands[0], m_Constant(&preConstant));
-      if (auto app = preoperands[0].getDefiningOp<affine::AffineApplyOp>()) {
-        preApplyMap = app.getAffineMap();
-        preApplyOperands = llvm::to_vector(app.getMapOperands());
-      }
-    }
-
     AffineExpr exprs[1] = {expr};
     auto map = AffineMap::get(/*dimCount=*/0, /*symbolCount=*/operands.size(),
                               exprs, rewriter.getContext());
@@ -693,13 +682,15 @@ struct MemrefLoadAffineApply : public OpRewritePattern<memref::LoadOp> {
     map = mlir::enzyme::recreateExpr(map);
 
     if (preoperands.size() == 1) {
-      if (preConstant)
+      Attribute attr;
+      if (matchPattern(preoperands[0], m_Constant(&attr)))
         return failure();
       if (preoperands == operands)
         return failure();
-      if (preApplyMap && preApplyMap == map &&
-          ArrayRef<Value>(preApplyOperands) == ArrayRef<Value>(operands))
-        return failure();
+      if (auto app = preoperands[0].getDefiningOp<affine::AffineApplyOp>()) {
+        if (app.getAffineMap() == map && app.getMapOperands() == operands)
+          return failure();
+      }
     }
 
     Value app;
@@ -1139,8 +1130,6 @@ struct AffineExprBuilder {
       } else if (isa<LLVM::ZExtOp, LLVM::SExtOp, arith::ExtSIOp, arith::ExtUIOp,
                      arith::IndexCastOp, arith::IndexCastUIOp>(op)) {
         return getExpr(op->getOperand(0));
-      } else if (isa<LLVM::TruncOp, arith::TruncIOp>(op)) {
-        return failure();
       }
     }
 
