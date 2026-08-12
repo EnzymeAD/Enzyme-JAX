@@ -821,6 +821,25 @@ gentbl_cc_library(
 )
 
 gentbl_cc_library(
+    name = "DistributedAttrDefsIncGen",
+    tbl_outs = {
+        "Dialect/Distributed/DistributedAttrDefs.h.inc": [
+            "--gen-attrdef-decls",
+            "--attrdefs-dialect=distributed",
+        ],
+        "Dialect/Distributed/DistributedAttrDefs.cpp.inc": [
+            "--gen-attrdef-defs",
+            "--attrdefs-dialect=distributed",
+        ],
+    },
+    tblgen = "@llvm-project//mlir:mlir-tblgen",
+    td_file = "Dialect/Distributed/Ops.td",
+    deps = [
+        ":DistributedDialectFiles",
+    ],
+)
+
+gentbl_cc_library(
     name = "DistributedTypesIncGen",
     tbl_outs = [
         (
@@ -1474,6 +1493,7 @@ cc_library(
         ":AxisTypeInterfacesIncGen",
         ":AxisTypesIncGen",
         ":CheckedRewrite",
+        ":DistributedAttrDefsIncGen",
         ":DistributedDialectIncGen",
         ":DistributedInterfacesIncGen",
         ":DistributedOpsIncGen",

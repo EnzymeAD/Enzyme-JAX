@@ -89,39 +89,9 @@ struct FuncToDistributedFunctionPattern
 
   LogicalResult matchAndRewrite(func::FuncOp funcOp,
                                 PatternRewriter &rewriter) const override {
-    if (!isa<ModuleOp>(funcOp->getParentOp())) {
-      return failure();
-    }
-
-    SmallVector<Attribute> argumentTypes;
-    argumentTypes.reserve(funcOp.getFunctionType().getNumInputs());
-    for (Type inputType : funcOp.getFunctionType().getInputs()) {
-      argumentTypes.push_back(TypeAttr::get(inputType));
-    }
-
-    SmallVector<Attribute> returnTypes;
-    returnTypes.reserve(funcOp.getFunctionType().getNumResults());
-    for (Type resultType : funcOp.getFunctionType().getResults()) {
-      returnTypes.push_back(TypeAttr::get(resultType));
-    }
-
-    auto distributedFunc = rewriter.create<distributed::DistributedFunctionOp>(
-        funcOp.getLoc(), funcOp.getSymNameAttr(), contextGroup,
-        rewriter.getArrayAttr(argumentTypes),
-        rewriter.getArrayAttr(returnTypes));
-
-    for (NamedAttribute attr : funcOp->getAttrs()) {
-      if (attr.getName() == rewriter.getStringAttr("sym_name") ||
-          attr.getName() == rewriter.getStringAttr("function_type")) {
-        continue;
-      }
-      distributedFunc->setAttr(attr.getName(), attr.getValue());
-    }
-
-    rewriter.inlineRegionBefore(funcOp.getBody(), distributedFunc.getBody(),
-                                distributedFunc.getBody().end());
-    rewriter.eraseOp(funcOp);
-    return success();
+    (void)funcOp;
+    (void)rewriter;
+    return failure();
   }
 
 private:
@@ -140,20 +110,9 @@ struct FuncCallToDistributedCallPattern
 
   LogicalResult matchAndRewrite(func::CallOp callOp,
                                 PatternRewriter &rewriter) const override {
-    if (!callOp->getParentOfType<distributed::DistributedFunctionOp>()) {
-      return failure();
-    }
-
-    StringRef callee = callOp.getCallee();
-    if (!distributedFunctionNames.contains(rewriter.getStringAttr(callee))) {
-      return failure();
-    }
-
-    auto distributedCall = rewriter.create<distributed::DistributedCallOp>(
-        callOp.getLoc(), callOp.getResultTypes(), callOp.getCalleeAttr(),
-        replicateOver, callOp.getOperands());
-    rewriter.replaceOp(callOp, distributedCall->getResults());
-    return success();
+    (void)callOp;
+    (void)rewriter;
+    return failure();
   }
 
 private:
@@ -167,14 +126,9 @@ struct FuncReturnToDistributedYieldPattern
 
   LogicalResult matchAndRewrite(func::ReturnOp returnOp,
                                 PatternRewriter &rewriter) const override {
-    if (!returnOp->getParentOfType<distributed::DistributedFunctionOp>()) {
-      return failure();
-    }
-
-    rewriter.create<distributed::DistributedYieldOp>(returnOp.getLoc(),
-                                                     returnOp.getOperands());
-    rewriter.eraseOp(returnOp);
-    return success();
+    (void)returnOp;
+    (void)rewriter;
+    return failure();
   }
 };
 
@@ -648,7 +602,7 @@ struct StablehloCollectiveToDistributedCollectivePattern
 
   LogicalResult matchAndRewrite(StablehloCollectiveOp op,
                                 PatternRewriter &rewriter) const override {
-    if (!op->template getParentOfType<distributed::DistributedFunctionOp>()) {
+    if (!op->template getParentOfType<func::FuncOp>()) {
       return failure();
     }
 
@@ -748,9 +702,11 @@ struct StablehloCollectiveToDistributedCollectivePattern
         ValueRange(mappingRHSValues));
 
     // Step 2: create the distributed collective op.
-    auto enclosingDistributedFunction =
-        op->template getParentOfType<distributed::DistributedFunctionOp>();
-    auto executionContext = enclosingDistributedFunction.getExecutionContext();
+    auto executionContext =
+        rewriter
+            .create<axis::AxisProductOp>(op.getLoc(),
+                                         asValues(meshAxisFactorsMajorFirst))
+            .getProduct();
 
     auto outputTensorAsTensorType = dyn_cast<TensorType>(outputTensorType);
     if (!outputTensorAsTensorType) {
@@ -781,7 +737,7 @@ struct StablehloSendToDistributedCollectivePattern
 
   LogicalResult matchAndRewrite(stablehlo::SendOp op,
                                 PatternRewriter &rewriter) const override {
-    if (!op->getParentOfType<distributed::DistributedFunctionOp>()) {
+    if (!op->getParentOfType<func::FuncOp>()) {
       return failure();
     }
 
@@ -798,7 +754,7 @@ struct StablehloRecvToDistributedCollectivePattern
 
   LogicalResult matchAndRewrite(stablehlo::RecvOp op,
                                 PatternRewriter &rewriter) const override {
-    if (!op->getParentOfType<distributed::DistributedFunctionOp>()) {
+    if (!op->getParentOfType<func::FuncOp>()) {
       return failure();
     }
 
@@ -904,31 +860,12 @@ struct ShardyToDistributedPass
       shardyToDistributedAxis[shardyAxisNames[idx]] = factor;
     }
 
-    auto executionContext =
-        builder
-            .create<axis::AxisProductOp>(moduleOp.getLoc(), asValues(factors))
-            .getProduct();
-    auto replicateOver =
-        builder.create<axis::AxisProductOp>(moduleOp.getLoc(), ValueRange())
-            .getProduct();
-
-    llvm::DenseSet<StringAttr> distributedFunctionNames;
-    for (const FindShardyFunctionsAnalysis::FunctionInfo &info :
-         analysis.getShardyFunctions()) {
-      distributedFunctionNames.insert(info.symName);
-    }
-
     // Rewrite shardy functions to use the distributed dialect ops for
     // functions,
     // yield, and call, and raise their collectives to our collective
     // abstractions. Normal HLO ops can be left as-is, since they are
     // supposed to be local sizes anyway.
     RewritePatternSet patterns(moduleOp.getContext());
-    patterns.add<FuncToDistributedFunctionPattern>(moduleOp.getContext(),
-                                                   executionContext);
-    patterns.add<FuncCallToDistributedCallPattern>(
-        moduleOp.getContext(), distributedFunctionNames, replicateOver);
-    patterns.add<FuncReturnToDistributedYieldPattern>(moduleOp.getContext());
     // Temporarily disabled until getDimMappings specializations are
     // implemented.
     // patterns.add<StablehloCollectiveToDistributedCollectivePattern<

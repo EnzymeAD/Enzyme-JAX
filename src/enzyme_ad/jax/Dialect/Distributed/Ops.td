@@ -67,28 +67,81 @@ def ReplicationAxisOp : DistributedOp<"ReplicationAxis", [
   let assemblyFormat = "$extent attr-dict `:` type($axis)";
 }
 
-def DistributedFunctionOp : DistributedOp<"Function", [Symbol]> {
-  let description =
-    [{Represents a distributed function. Functions are module-level symbols,
-    with a single function named `main` serving as the distributed entrypoint
-    under the current IR contract. Non-entry floating compute units should use
-    distributed.kernel instead of distributed.Function. Functions have an execution context
-                indicating what subspace of the logical /
-            physical mesh they are executed on,
-        and can only be called from a matching enclosing context.All arguments
-            and return values are local values,
-        rather than global tensors with a sharding annotation.}];
-  let arguments = (ins SymbolNameAttr
-                   : $sym_name, FactorGroupType
-                   : $execution_context, ArrayAttr
-                   : $argument_types, ArrayAttr
-                   : $return_types);
-  let regions = (region SizedRegion<1> : $body);
-  let assemblyFormat =
-      "$sym_name `context` $execution_context `:` type($execution_context) "
-      "`arg_types` $argument_types `ret_types` $return_types $body attr-dict";
+// Per-tensor sharding metadata keyed by partitioning-axis indices.
+// - dim_partitioning_axes: one DenseI64ArrayAttr per tensor dim, where each
+//   entry stores zero or more indices into the owning op's partitioning_axes.
+// - unreduced_axes: tensor-dim indices that remain unreduced.
+def IndexedTensorShardingAttr : AttrDef<DistributedDialect, "IndexedTensorSharding"> {
+  let summary = "Tensor sharding with integer partitioning-axis indices";
+  let cppNamespace = "::mlir::enzyme::distributed";
+  let mnemonic = "indexed_tensor_sharding";
+
+  let parameters = (ins
+    ArrayRefParameter<"DenseI64ArrayAttr">:$dim_partitioning_axes,
+    "DenseI64ArrayAttr":$unreduced_axes
+  );
+
+  let assemblyFormat = [{
+    `<` `dim_partitioning_axes` `=` $dim_partitioning_axes `,`
+    `unreduced_axes` `=` $unreduced_axes `>`
+  }];
+}
+
+// One IndexedTensorShardingAttr per operand/result value.
+def IndexedTensorShardingPerValueAttr : AttrDef<DistributedDialect, "IndexedTensorShardingPerValue"> {
+  let summary = "Indexed tensor sharding for each value";
+  let cppNamespace = "::mlir::enzyme::distributed";
+  let mnemonic = "indexed_tensor_sharding_per_value";
+
+  let parameters = (ins
+    ArrayRefParameter<"IndexedTensorShardingAttr">:$shardings
+  );
+
+  let assemblyFormat = [{
+    `<` $shardings `>`
+  }];
+}
+
+def DistributedFunctionOp : DistributedOp<"DistributedFunction", [
+  Symbol,
+  OpAsmOpInterface,
+  SingleBlock
+]> {
+  let description = [{
+    Function-like distributed region that can capture enclosing module SSA
+    metadata (for example axis declarations). Unlike func.func, this op is not
+    isolated from above. The function carries explicit partitioning axis
+    operands and indexed sharding metadata for its inputs and outputs.
+  }];
+
+  let arguments = (ins
+    SymbolNameAttr:$sym_name,
+    TypeAttrOf<FunctionType>:$function_type,
+    Variadic<FactorGroupType>:$partitioning_axes,
+    IndexedTensorShardingPerValueAttr:$argument_shardings,
+    IndexedTensorShardingPerValueAttr:$output_shardings,
+    OptionalAttr<StrAttr>:$sym_visibility,
+    OptionalAttr<DictArrayAttr>:$arg_attrs,
+    OptionalAttr<DictArrayAttr>:$res_attrs
+  );
+  let regions = (region AnyRegion:$body);
   let hasVerifier = 1;
 }
+
+def DistributedKernelOp : DistributedOp<"DistributedKernel", [SingleBlock, AttrSizedOperandSegments]> {
+  let description = [{Contains a computation subgraph that will never internally 
+    create collectives no matter how the partitioning axes are chosen. The results
+    may require a reduction after, as indicated by the unreduced axes on the 
+    output sharding attributes.}];
+  let arguments = (ins Variadic<AnyType> : $arguments,
+                   Variadic<FactorGroupType> : $partitioning_axes,
+                   IndexedTensorShardingPerValueAttr : $argument_shardings,
+                   IndexedTensorShardingPerValueAttr : $output_shardings);
+  let results = (outs Variadic<AnyType> : $returns);
+  let hasVerifier = 1;
+}
+
+
 
 def DistributedYieldOp : DistributedOp<"DistributedYield", [Terminator]> {
   let description = [{
@@ -110,22 +163,6 @@ def DistributedAwait
   let results = (outs AnyType : $value);
   let assemblyFormat =
       "$async_handle attr-dict `:` type($async_handle) `->` type($value)";
-  let hasVerifier = 1;
-}
-
-def DistributedCallOp : DistributedOp<"DistributedCall", []> {
-  let description =
-      [{Calls a distributed
-            function.The execution context must match the enclosing context.}];
-  let arguments = (ins
-        FlatSymbolRefAttr:$callee,
-        FactorGroupType:$replicate_over,
-        Variadic<AnyType>:$arguments
-    );
-  let results = (outs Variadic<AnyType> : $returns);
-  let assemblyFormat =
-      "$callee `replicate_over` $replicate_over $arguments attr-dict `:` "
-      "type($replicate_over) `,` type($arguments) `->` type($returns)";
   let hasVerifier = 1;
 }
 

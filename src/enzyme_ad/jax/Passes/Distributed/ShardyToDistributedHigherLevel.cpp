@@ -250,7 +250,8 @@ struct ShardyToDistributedHigherLevelPass
         for (OpOperand &use : result.getUses()) {
           auto maybeConsumerSharded = axisAnalysis.getTensorPartitionDims(use);
           if (!maybeConsumerSharded) {
-            use.getOwner()->emitRemark("Found non-sharded use of result number ")
+            use.getOwner()->emitRemark(
+                "Found non-sharded use of result number ")
                 << result.getResultNumber() << " of op " << op;
             continue;
           }
@@ -271,8 +272,9 @@ struct ShardyToDistributedHigherLevelPass
 
   // Materializes collectives for each detected conflict, including local-shape
   // typing and optional reduction setup when reduction axes are present.
-  LogicalResult materializeCollectivesForConflicts(
-      ModuleOp moduleOp, llvm::ArrayRef<ShardConflict> conflicts) {
+  LogicalResult
+  materializeCollectivesForConflicts(ModuleOp moduleOp,
+                                     llvm::ArrayRef<ShardConflict> conflicts) {
     OpBuilder builder(moduleOp.getContext());
 
     // TODO this can be made more intelligent, either by
@@ -300,7 +302,8 @@ struct ShardyToDistributedHigherLevelPass
       auto lhsDims = toLocallyTypedAxisProduct(localType, partitioningAxes);
       auto lhsMesh = getOpMesh(conflict.value.getOwner());
 
-      auto createCollective = [&](TV_FactorGroup rhsMesh, TV_FactorGroup rhsDims,
+      auto createCollective = [&](TV_FactorGroup rhsMesh,
+                                  TV_FactorGroup rhsDims,
                                   Type collectiveOutputType) {
         llvm::SmallVector<Value> reductionGroupValues;
         llvm::SmallVector<Attribute> reductionFunctions;
@@ -326,7 +329,8 @@ struct ShardyToDistributedHigherLevelPass
         return collectiveAndAwait.await.getValue();
       };
       auto rewriteUseWithCollective = [&](OpOperand *use) {
-        auto rhsPartitioningAxes = axisAnalysis.getTensorPartitionDims(*use).value();
+        auto rhsPartitioningAxes =
+            axisAnalysis.getTensorPartitionDims(*use).value();
         auto rhsLocalType = toLocalType(globalType, rhsPartitioningAxes);
         auto rhsDims =
             toLocallyTypedAxisProduct(rhsLocalType, rhsPartitioningAxes);
@@ -334,11 +338,11 @@ struct ShardyToDistributedHigherLevelPass
         Value collective = createCollective(rhsMesh, rhsDims, rhsLocalType);
         Type expectedUseType = use->get().getType();
         if (collective.getType() != expectedUseType) {
-          collective = builder
-                           .create<UnrealizedConversionCastOp>(
-                               conflict.value.getLoc(), expectedUseType,
-                               collective)
-                           .getResult(0);
+          collective =
+              builder
+                  .create<UnrealizedConversionCastOp>(
+                      conflict.value.getLoc(), expectedUseType, collective)
+                  .getResult(0);
         }
         use->set(collective);
       };
@@ -400,9 +404,9 @@ struct ShardyToDistributedHigherLevelPass
       dumpLogicalAxesForMainBlock(mainBlock, axisAnalysis);
     }
 
-    // After partition axis discovery, we have introduced more axes and possibly discovered some
-    // points where we cannot merge axes due to incompatible factorization or
-    // other constraints. Therefore, our next step is to:
+    // After partition axis discovery, we have introduced more axes and possibly
+    // discovered some points where we cannot merge axes due to incompatible
+    // factorization or other constraints. Therefore, our next step is to:
     // - rewrite any reshards into our collectives
     // - find any other SSA reshards with incompatible factorization and/or
     // any reduction axes and insert a collective. Note: collectives currently

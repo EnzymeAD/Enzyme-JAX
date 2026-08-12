@@ -41,6 +41,9 @@ template <typename TypeTy> struct TypedOpResult {
 // Types
 #define GET_TYPEDEF_CLASSES
 #include "src/enzyme_ad/jax/Dialect/Distributed/DistributedTypes.h.inc"
+// Attributes
+#define GET_ATTRDEF_CLASSES
+#include "src/enzyme_ad/jax/Dialect/Distributed/DistributedAttrDefs.h.inc"
 // Interfaces
 #include "src/enzyme_ad/jax/Dialect/Distributed/DistributedInterfaces.h.inc"
 // Operations

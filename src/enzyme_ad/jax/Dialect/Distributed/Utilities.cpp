@@ -51,21 +51,6 @@ FailureOr<PhysicalMeshOp> findUniquePhysicalMesh(ModuleOp moduleOp) {
   return physicalMesh;
 }
 
-FailureOr<TypedValue<FactorGroupType>>
-getEnclosingExecutionContext(Operation *op) {
-  auto parentFunction = op ? op->getParentOfType<DistributedFunctionOp>()
-                           : DistributedFunctionOp();
-  if (!parentFunction) {
-    return failure();
-  }
-  Value context = parentFunction.getExecutionContext();
-  auto typedContext = dyn_cast<TypedValue<FactorGroupType>>(context);
-  if (!typedContext) {
-    return failure();
-  }
-  return typedContext;
-}
-
 ::llvm::SmallVector<TypedValue<::mlir::enzyme::axis::AxisFactorType>>
 filterOutReplicationFactors(
     TypedValueArrayRef<::mlir::enzyme::axis::AxisFactorType> factors) {

@@ -37,11 +37,6 @@ template <typename OpTy>
   return ::mlir::failure();
 }
 
-// Returns the execution-context FactorGroup value from the nearest enclosing
-// distributed.function.
-::mlir::FailureOr<::mlir::TypedValue<::mlir::enzyme::axis::FactorGroupType>>
-getEnclosingExecutionContext(::mlir::Operation *op);
-
 // Creates a new range with all replication axes removed from the input range.
 ::llvm::SmallVector<TypedValue<::mlir::enzyme::axis::AxisFactorType>>
 filterOutReplicationFactors(
@@ -53,11 +48,10 @@ struct CollectiveAndAwait {
 };
 
 CollectiveAndAwait createCollectiveAndAwait(
-    ::mlir::OpBuilder &builder, ::mlir::Location loc,
-    ::mlir::Value inputObject, ::mlir::Value inputMesh,
-    ::mlir::Value outputMesh, ::mlir::ValueRange reductionGroups,
-    ::mlir::ArrayAttr reductionFunctions, ::mlir::Value mapping,
-  ::mlir::Type outputType);
+    ::mlir::OpBuilder &builder, ::mlir::Location loc, ::mlir::Value inputObject,
+    ::mlir::Value inputMesh, ::mlir::Value outputMesh,
+    ::mlir::ValueRange reductionGroups, ::mlir::ArrayAttr reductionFunctions,
+    ::mlir::Value mapping, ::mlir::Type outputType);
 
 } // namespace mlir::enzyme::distributed
 

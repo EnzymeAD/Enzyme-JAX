@@ -272,8 +272,8 @@ static LogicalResult validateAndPrepareCollectiveInputs(
   return success();
 }
 
-// Validates reduction-specific collective inputs: confirms that reductions exist
-// and there is exactly one spatial reduction group.
+// Validates reduction-specific collective inputs: confirms that reductions
+// exist and there is exactly one spatial reduction group.
 static LogicalResult validateReductionCollectiveInputs(
     distributed::DistributedCollectiveOp op,
     const std::function<LogicalResult(StringRef)> &failWithRemark) {
@@ -294,9 +294,8 @@ static LogicalResult validateReductionCollectiveInputs(
 // operation is built by the provided callback, which receives the async tensor
 // operand to build the appropriate collective op.
 static LogicalResult buildAndReplaceAsyncCollective(
-    distributed::DistributedCollectiveOp op,
-    const CollectiveInputs &inputs,
-    const std::function<void(Value, RegionBuilder&)> &buildCollectiveOp,
+    distributed::DistributedCollectiveOp op, const CollectiveInputs &inputs,
+    const std::function<void(Value, RegionBuilder &)> &buildCollectiveOp,
     PatternRewriter &rewriter) {
   auto buildAsyncStartRegion = [&](RegionBuilder &rb) -> void {
     Value asyncTensorOperand =
@@ -330,7 +329,8 @@ struct DistributedCollectiveAllReduceToStablehloPattern
     auto failWithRemark = bindFailWithRemark(op, rewriter, "all-reduce");
 
     CollectiveInputs inputs;
-    if (failed(validateAndPrepareCollectiveInputs(op, failWithRemark, inputs))) {
+    if (failed(
+            validateAndPrepareCollectiveInputs(op, failWithRemark, inputs))) {
       return failure();
     }
 
@@ -444,7 +444,8 @@ struct DistributedCollectiveAllReduceToStablehloPattern
     auto buildComputation = bindBuildReductionComputation(
         reductionFunction, scalarReductionTensorType);
 
-    auto buildCollectiveOp = [&](Value asyncTensorOperand, RegionBuilder &rb) -> void {
+    auto buildCollectiveOp = [&](Value asyncTensorOperand,
+                                 RegionBuilder &rb) -> void {
       SmallVector<MlirOp> reductionOperands =
           wrap(rb, ValueRange{asyncTensorOperand});
       stablehlo::ChannelHandleAttr channelHandle =
@@ -458,7 +459,8 @@ struct DistributedCollectiveAllReduceToStablehloPattern
                                                     hloReduce[0].getValue());
     };
 
-    return buildAndReplaceAsyncCollective(op, inputs, buildCollectiveOp, rewriter);
+    return buildAndReplaceAsyncCollective(op, inputs, buildCollectiveOp,
+                                          rewriter);
   }
 };
 
@@ -472,7 +474,8 @@ struct DistributedCollectiveReduceScatterToStablehloPattern
     auto failWithRemark = bindFailWithRemark(op, rewriter, "Reduce-Scatter");
 
     CollectiveInputs inputs;
-    if (failed(validateAndPrepareCollectiveInputs(op, failWithRemark, inputs))) {
+    if (failed(
+            validateAndPrepareCollectiveInputs(op, failWithRemark, inputs))) {
       return failure();
     }
 
@@ -590,7 +593,6 @@ struct DistributedCollectiveReduceScatterToStablehloPattern
     }
     int scatter_dim = axis::getAxisDimIndex(tensor_axis_typed);
 
-
     RankedTensorType scalarReductionTensorType;
     std::string signatureError;
     FlatSymbolRefAttr reductionFunction =
@@ -604,7 +606,8 @@ struct DistributedCollectiveReduceScatterToStablehloPattern
     auto buildComputation = bindBuildReductionComputation(
         reductionFunction, scalarReductionTensorType);
 
-    auto buildCollectiveOp = [&](Value asyncTensorOperand, RegionBuilder &rb) -> void {
+    auto buildCollectiveOp = [&](Value asyncTensorOperand,
+                                 RegionBuilder &rb) -> void {
       SmallVector<MlirOp> reductionOperands =
           wrap(rb, ValueRange{asyncTensorOperand});
       stablehlo::ChannelHandleAttr channelHandle =
@@ -612,13 +615,15 @@ struct DistributedCollectiveReduceScatterToStablehloPattern
       MlirBuilder scatterBuilder(rb.getOpBuilder(), rb.getLoc());
       MlirOp scatterOperand = reductionOperands[0];
       MlirOp hloReduce = stablehlo::ReduceScatter(
-          inputs.outputTensorType, scatterOperand, buildComputation, scatter_dim,
-          *replicaGroups, channelHandle, /*use_global_device_ids=*/true);
+          inputs.outputTensorType, scatterOperand, buildComputation,
+          scatter_dim, *replicaGroups, channelHandle,
+          /*use_global_device_ids=*/true);
       rb.getOpBuilder().create<stablehlo::ReturnOp>(rb.getLoc(),
                                                     hloReduce.getValue());
     };
 
-    return buildAndReplaceAsyncCollective(op, inputs, buildCollectiveOp, rewriter);
+    return buildAndReplaceAsyncCollective(op, inputs, buildCollectiveOp,
+                                          rewriter);
   }
 };
 
