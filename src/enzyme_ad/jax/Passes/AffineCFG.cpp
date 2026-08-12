@@ -603,13 +603,6 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
         decast = idx.getIn();
         continue;
       }
-      // A widening leaves the number alone, but a truncation is a different
-      // number wherever the discarded bits were set, so dropping one puts
-      // those bits back. CUDA packs a dim3's x and y into a single i64 and
-      // truncates to recover x; using the packed value in its place makes
-      // the operand y*2^32 + x. Nothing here can tell the two apart, so keep
-      // the operand as it stands -- mid-chain is not a place to stop, since
-      // the value there has the wrong type to stand in for it.
       if (decast.getDefiningOp<TruncIOp>()) {
         decast = t;
         break;
@@ -1450,12 +1443,6 @@ bool isValidIndex(Value val, Region *scope) {
 
   if (auto cast = val.getDefiningOp<IndexCastUIOp>())
     return isValidIndex(cast.getOperand(), scope);
-
-  // A truncation is not among them. It is a different number wherever the bits
-  // it drops were set, so what makes its operand an index says nothing about
-  // it. This has to agree with the operand legalization, which no longer drops
-  // one either: calling a value an index here is a promise legalization has to
-  // make good on, and it reports a fatal error when it cannot.
 
   if (auto cast = val.getDefiningOp<ExtSIOp>())
     return isValidIndex(cast.getOperand(), scope);

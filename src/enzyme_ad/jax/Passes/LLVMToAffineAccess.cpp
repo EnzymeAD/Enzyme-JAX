@@ -669,10 +669,6 @@ struct MemrefLoadAffineApply : public OpRewritePattern<memref::LoadOp> {
       return failure();
     SmallVector<Value> preoperands = operands;
 
-    // Legalizing the operands moves the ops that define them, which erases the
-    // ones it clones, so anything to be read off an operand has to be read
-    // before that and not after: what is left afterwards may be a value whose
-    // op is gone.
     Attribute preConstant;
     AffineMap preApplyMap;
     SmallVector<Value> preApplyOperands;
@@ -1140,18 +1136,10 @@ struct AffineExprBuilder {
         } else {
           llvm_unreachable("unknown operation");
         }
-      } else if (isa<LLVM::ZExtOp, LLVM::SExtOp, arith::ExtSIOp,
-                     arith::ExtUIOp, arith::IndexCastOp,
-                     arith::IndexCastUIOp>(op)) {
+      } else if (isa<LLVM::ZExtOp, LLVM::SExtOp, arith::ExtSIOp, arith::ExtUIOp,
+                     arith::IndexCastOp, arith::IndexCastUIOp>(op)) {
         return getExpr(op->getOperand(0));
       } else if (isa<LLVM::TruncOp, arith::TruncIOp>(op)) {
-        // A widening leaves the number alone, but a truncation is a different
-        // number wherever the discarded bits were set, so reading through one
-        // puts those bits back into the index. CUDA packs a dim3's x and y
-        // into a single i64 and truncates to recover x; carrying the packed
-        // value in its place makes the access index y*2^32 + x. There is no
-        // expression to write for the truncated value either, since what
-        // stands here is not an index and cannot be a symbol.
         return failure();
       }
     }
