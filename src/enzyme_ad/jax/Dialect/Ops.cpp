@@ -1533,6 +1533,35 @@ using namespace mlir::enzyme;
 llvm::cl::opt<bool> BarrierOpt("barrier-opt", llvm::cl::init(true),
                                llvm::cl::desc("Optimize barriers"));
 
+// Whether every thread in the block decides `ifOp`'s condition the same way,
+// i.e. none of `threadIVs` reaches it.
+static bool isBlockUniform(Operation *ifOp, ValueRange threadIVs) {
+  SmallVector<Value> conds;
+  if (auto scfIf = dyn_cast<scf::IfOp>(ifOp))
+    conds.push_back(scfIf.getCondition());
+  else if (auto affIf = dyn_cast<affine::AffineIfOp>(ifOp))
+    conds.append(affIf.getOperands().begin(), affIf.getOperands().end());
+  else
+    return false;
+
+  SmallVector<Value> worklist(conds);
+  DenseSet<Value> seen;
+  while (!worklist.empty()) {
+    Value v = worklist.pop_back_val();
+    if (!seen.insert(v).second)
+      continue;
+    if (llvm::is_contained(threadIVs, v))
+      return false;
+    if (isa<BlockArgument>(v))
+      continue;
+    Operation *def = v.getDefiningOp();
+    if (def->getNumRegions() != 0)
+      return false;
+    worklist.append(def->getOperands().begin(), def->getOperands().end());
+  }
+  return true;
+}
+
 class BarrierHoist final : public OpRewritePattern<BarrierOp> {
 public:
   using OpRewritePattern<BarrierOp>::OpRewritePattern;
@@ -1542,6 +1571,8 @@ public:
     if (!BarrierOpt)
       return failure();
     if (isa<scf::IfOp, affine::AffineIfOp>(barrier->getParentOp())) {
+      if (!isBlockUniform(barrier->getParentOp(), barrier.getOperands()))
+        return failure();
 
       bool below = true;
       for (Operation *it = barrier->getNextNode(); it != nullptr;
