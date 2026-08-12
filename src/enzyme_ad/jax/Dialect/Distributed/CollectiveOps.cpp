@@ -36,11 +36,6 @@ LogicalResult DistributedCollectiveOp::verify() {
            << "requires output_mesh to be produced by axis.product";
   }
 
-  if (!axis::areFactorIndexSpacesEqual(*inputMeshFactors, *outputMeshFactors)) {
-    return emitOpError()
-           << "requires input_mesh and output_mesh to have equal index space";
-  }
-
   ArrayAttr reductionFunctions = getReductionFunctionsAttr();
   if (!reductionFunctions) {
     return emitOpError() << "requires reduction_functions attribute";
@@ -92,20 +87,16 @@ LogicalResult DistributedCollectiveOp::verify() {
   auto expected_input_tensor_axes =
       axis::createAxesForRankedShape(getInputObject().getType(), builder, loc);
   auto expected_output_tensor_axes =
-      axis::createAxesForRankedShape(getOutputTensorType(), builder, loc);
+      axis::createAxesForRankedShape(getOutputType(), builder, loc);
 
   auto expected_input_factors =
       axis::viewAxesAsFactors(expected_input_tensor_axes, builder, loc);
   auto expected_output_factors =
       axis::viewAxesAsFactors(expected_output_tensor_axes, builder, loc);
 
-  /*
-   * Want:
-   * - reduction disjoint with lhs, rhs (rhs and lhs may overlap)
-   * - reduction + lhs_filtered = input_mesh + tensor axes
-   * - rhs_filtered = output_mesh + tensor axes
-   */
-  // llvm::SmallVector<TypedValue<AxisFactorType>> lhs_space;
+  // Validate index-space coverage independently on both sides:
+  // - LHS must cover reduction groups + mapping_lhs == input_mesh + input type.
+  // - RHS must cover mapping_rhs == output_mesh + output_type.
   auto lhs_space =
       concatTypedRanges<AxisFactorType>(reduction_group_factors, lhs_filtered);
   auto expected_input_space = concatTypedRanges<AxisFactorType>(
@@ -171,7 +162,7 @@ LogicalResult DistributedCollectiveOp::inferReturnTypes(
   DistributedCollectiveOpAdaptor adaptor(operands, attributes, properties,
                                          regions);
   inferredReturnTypes.push_back(
-      AsynchHandleType::get(context, adaptor.getOutputTensorType()));
+      AsynchHandleType::get(context, adaptor.getOutputType()));
   return success();
 }
 

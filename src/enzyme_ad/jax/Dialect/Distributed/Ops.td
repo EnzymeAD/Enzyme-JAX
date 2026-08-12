@@ -14,11 +14,13 @@ include "Interfaces.td"
 include "src/enzyme_ad/jax/Dialect/Axis/Dialect.td"
 include "src/enzyme_ad/jax/Dialect/Axis/Types.td"
 
-// Marker for distributed metadata ops. Includes builtin Pure.
-def PureDistributedMetadata : TraitList<[MetadataOpTrait]>;
+// Marker for distributed metadata ops that are semantically pure.
+def PureDistributedMetadata : TraitList<[PureMetadataTrait]>;
+// Marker for distributed metadata declarations that must be effectful.
+def DeclarativeDistributedMetadata : TraitList<[DeclarativeMetadataTrait]>;
 
 def PhysicalMeshOp
-    : DistributedOp<"PhysicalMesh", [PureDistributedMetadata, Symbol]> {
+  : DistributedOp<"PhysicalMesh", [DeclarativeDistributedMetadata, Symbol]> {
   let description = [{Declares a mesh of device targets along with their local
                           communication hierarchy.}];
   let arguments = (ins SymbolNameAttr
@@ -44,7 +46,7 @@ def GetPhysicalMeshAxesOp
 }
 
 def LogicalMeshAxesOp : DistributedOp<"LogicalMeshAxes", [
-  PureDistributedMetadata, DeclareOpInterfaceMethods<InferTypeOpInterface>
+  DeclarativeDistributedMetadata, DeclareOpInterfaceMethods<InferTypeOpInterface>
 ]> {
   let description = [{Declares a new logical mesh of axes,
                       which may or may not correspond to a physical mesh.}];
@@ -149,18 +151,20 @@ def DistributedCollectiveOp
         to replicate means that you are asserting each device on that dimension contributes identical values,
         while mapping replicate to an output axis means you are cloning the result over that axis.
 
-        Collectives must be between the same mesh (verified via index space equality).
+        Input and output meshes may differ; the axis.map + reduction groups
+        define the remapping between mesh/tensor index spaces.
 
         Inputs:
         - input_object: a shaped tensor (tensor or memref).
         - input_mesh: the mesh axes (FactorGroup) that the input object is distributed over.
         - output_mesh: the mesh axes (FactorGroup) that the output object is distributed over.
-          Must have equal index space to input_mesh.
         - reduction_groups: a list of FactorGroups to reduce over (pairwise disjoint).
         - reduction_functions: ArrayAttr of FlatSymbolRefAttr naming single-device
           reduction functions. Size must match reduction_groups.
         - mapping: an axis.map value whose lhs/rhs groups encode the
           post-reduction input/output mapping.
+        - output_type: the collective output tensor type in local indexing
+          space. This may differ from the pre-collective producer-local type.
 
         Output:
         - An AsynchHandleType wrapping the output tensor type.
@@ -178,12 +182,12 @@ def DistributedCollectiveOp
         Variadic<FactorGroupType>:$reduction_groups,
         ArrayAttr:$reduction_functions,
         AxisMapType:$mapping,
-        TypeAttrOf<AnyTensor>:$output_tensor_type
+        TypeAttrOf<AnyTensor>:$output_type
     );
   let results = (outs AsynchHandleType : $async_handle);
   let assemblyFormat =
       "$input_object `:` type($input_object) `on` $input_mesh `:` "
-      "type($input_mesh) `to` $output_tensor_type `on` $output_mesh `:` "
+      "type($input_mesh) `to` $output_type `on` $output_mesh `:` "
       "type($output_mesh) `reduces` custom<ReductionGroups>($reduction_groups, "
       "$reduction_functions) `:` type($reduction_groups) `maps` $mapping `:` "
       "type($mapping) attr-dict";

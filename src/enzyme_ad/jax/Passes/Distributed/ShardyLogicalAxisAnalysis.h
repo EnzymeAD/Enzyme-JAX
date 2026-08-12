@@ -109,17 +109,47 @@ private:
 
 class ShardyLogicalAxisAnalysis {
 public:
-  explicit ShardyLogicalAxisAnalysis(func::FuncOp sdy_func);
+  ShardyLogicalAxisAnalysis(func::FuncOp sdy_func);
+  ShardyLogicalAxisAnalysis() = default;
 
   using SymbolsPerPartitioningAxis =
       llvm::SmallVector<llvm::SmallVector<AxisSymbol>>;
+  using TensorAxesToPartitionAxes =
+      llvm::SmallVector<llvm::SmallVector<AxisSymbol>>;
+
+  /**
+   * Returns the set of symbols we have assigned to each
+   * Shardy rewrite partitioning axes. The list is given majormost
+   * first.
+   */
   SymbolsPerPartitioningAxis getPartitioningAxes(Operation *op);
+  /**
+   * Returns the set of dimensions that each tensor axis is
+   * sharded over, from the perspective of the producer.
+   * (This will not match the consumer only in cases needing
+   * a reshard or collective)
+   */
+  std::optional<TensorAxesToPartitionAxes>
+  getTensorPartitionDims(OpResult result);
+  /**
+   * Returns the set of dimensions that each tensor axis is
+   * sharded over, from the perspective of the consumer.
+   * (This will not match the producer only in cases needing
+   * a reshard or collective)
+   */
+  std::optional<TensorAxesToPartitionAxes>
+  getTensorPartitionDims(OpOperand &use);
+  /**
+   * Returns the set of symbols that an op result
+   * needs to be reduced over to produce the correct
+   * global result.
+   */
+  llvm::SmallVector<AxisSymbol> getReductionAxes(OpResult result);
 
 private:
   // two loops: one vector over dimensions, one vector over
   // symbols within those dimensions.
-  using TensorAxesToPartitionAxes =
-      llvm::SmallVector<llvm::SmallVector<AxisSymbol>>;
+
   using DimToSymbol = llvm::SmallVector<AxisSymbol, 4>;
   llvm::DenseMap<Operation *, DimToSymbol> opToPartitioningAxes;
   llvm::DenseMap<Operation *, DimToSymbol> reshardLHSSymbols;
@@ -128,15 +158,17 @@ private:
   func::FuncOp sdy_func;
 
   void buildInitialSymbols();
+  // Internal implementation for either a producer (lhs) or consumer (rhs) of a
+  // tensor. Three versions: one for a generic op, which may or may not
+  // be able to find a sharding rule, and two specializations.
   TensorAxesToPartitionAxes
-  getTensorToPartitionDimMapping(Operation *op,
-                                 mlir::sdy::OpShardingRuleAttr shardingRule,
-                                 bool isLHS, int value_idx);
-  TensorAxesToPartitionAxes
-  getTensorToPartitionDimMapping(mlir::sdy::ReshardOp op, bool isLHS,
-                                 int value_idx);
+  getTensorPartitionDims(Operation *op,
+                         mlir::sdy::OpShardingRuleAttr shardingRule, bool isLHS,
+                         int valueIdx);
+  TensorAxesToPartitionAxes getTensorPartitionDims(mlir::sdy::ReshardOp op,
+                                                   bool isLHS, int valueIdx);
   std::optional<TensorAxesToPartitionAxes>
-  getTensorToPartitionDimMapping(Operation *op, bool isLHS, int value_idx);
+  getTensorPartitionDims(Operation *op, bool isLHS, int valueIdx);
   void buildUnion();
 };
 

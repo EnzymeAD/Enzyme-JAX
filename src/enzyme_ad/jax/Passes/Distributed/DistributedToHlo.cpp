@@ -261,7 +261,7 @@ static LogicalResult validateAndPrepareCollectiveInputs(
     return failWithRemark("input operand must be a tensor type");
   }
 
-  auto outputTensorType = dyn_cast<TensorType>(op.getOutputTensorType());
+  auto outputTensorType = dyn_cast<TensorType>(op.getOutputType());
   if (!outputTensorType) {
     return failWithRemark("output type must be a tensor type");
   }

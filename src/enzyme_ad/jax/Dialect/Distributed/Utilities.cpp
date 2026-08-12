@@ -82,4 +82,18 @@ filterOutReplicationFactors(
   }
   return filteredFactors;
 }
+
+CollectiveAndAwait createCollectiveAndAwait(
+    ::mlir::OpBuilder &builder, ::mlir::Location loc, ::mlir::Value inputObject,
+    ::mlir::Value inputMesh, ::mlir::Value outputMesh,
+    ::mlir::ValueRange reductionGroups, ::mlir::ArrayAttr reductionFunctions,
+    ::mlir::Value mapping, ::mlir::Type outputType) {
+  auto collective = builder.create<DistributedCollectiveOp>(
+      loc, inputObject, inputMesh, outputMesh, reductionGroups,
+      reductionFunctions, mapping, ::mlir::TypeAttr::get(outputType));
+  auto await = builder.create<DistributedAwait>(loc, outputType,
+                                                collective.getAsyncHandle());
+  return {collective, await};
+}
+
 } // namespace mlir::enzyme::distributed

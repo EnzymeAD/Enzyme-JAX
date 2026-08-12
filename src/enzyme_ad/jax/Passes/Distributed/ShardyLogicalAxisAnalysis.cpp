@@ -237,6 +237,53 @@ ShardyLogicalAxisAnalysis::getPartitioningAxes(Operation *op) {
   return result;
 }
 
+llvm::SmallVector<AxisSymbol>
+ShardyLogicalAxisAnalysis::getReductionAxes(OpResult result) {
+  Operation *op = result.getOwner();
+  if (auto reshardOp = toCollective(op)) {
+    return {};
+  }
+
+  OpShardingRuleAttr shardingRule =
+      sdy::getOrCreateShardingRule(op,
+                                   /*conservativePropagation=*/false,
+                                   /*setShardingRuleOnOp=*/false);
+  if (!shardingRule) {
+    return {};
+  }
+
+  assert(!shardingRule.getIsCustomRule() &&
+         "TODO: custom sharding rules need dedicated handling");
+  assert(shardingRule.getNeedReplicationFactors().empty() &&
+         "TODO: need-replication factors need dedicated handling");
+  assert(shardingRule.getPermutationFactors().empty() &&
+         "TODO: permutation factors need dedicated handling");
+
+  llvm::SmallVector<AxisSymbol> reductionSymbols;
+  for (int64_t factorIdx : shardingRule.getReductionFactors()) {
+    assert(factorIdx >= 0 &&
+           factorIdx < static_cast<int64_t>(opToPartitioningAxes[op].size()) &&
+           "reduction factor index must refer to a partitioning symbol");
+    llvm::SmallVector<AxisSymbol> resolvedFactors =
+        symbolFactorMerge.resolve(opToPartitioningAxes[op][factorIdx]);
+    reductionSymbols.append(resolvedFactors.begin(), resolvedFactors.end());
+  }
+
+  return reductionSymbols;
+}
+
+std::optional<ShardyLogicalAxisAnalysis::TensorAxesToPartitionAxes>
+ShardyLogicalAxisAnalysis::getTensorPartitionDims(OpResult result) {
+  return getTensorPartitionDims(result.getOwner(), /*isLHS=*/true,
+                                result.getResultNumber());
+}
+
+std::optional<ShardyLogicalAxisAnalysis::TensorAxesToPartitionAxes>
+ShardyLogicalAxisAnalysis::getTensorPartitionDims(OpOperand &use) {
+  return getTensorPartitionDims(use.getOwner(), /*isLHS=*/false,
+                                use.getOperandNumber());
+}
+
 void ShardyLogicalAxisAnalysis::buildInitialSymbols() {
   // for each operation in the function, if it has a
   // sharding rule, give it a new symbol per
@@ -295,29 +342,22 @@ void ShardyLogicalAxisAnalysis::buildInitialSymbols() {
 // Returns a list partition axis indices to their footprint on the
 // tensor axes.
 ShardyLogicalAxisAnalysis::TensorAxesToPartitionAxes
-ShardyLogicalAxisAnalysis::getTensorToPartitionDimMapping(
-    Operation *op, OpShardingRuleAttr sharding_rule, bool isLHS,
-    int value_idx) {
-  TensorAxesToPartitionAxes result;
-
-  // If LHS, we need to append the tensor axes for each result to the
-  // appropriate partition axes. If RHS, we need to append the tensor
-  // axes of appropriate operands.
-  // TODO docs on the rule attr are a little sparse, so I may be
-  // misunderstanding the semantics of the rule attr here.
+ShardyLogicalAxisAnalysis::getTensorPartitionDims(
+    Operation *op, OpShardingRuleAttr sharding_rule, bool isLHS, int valueIdx) {
+  TensorAxesToPartitionAxes mapping;
   llvm::ArrayRef<TensorMappingAttr> tensor_mappings =
       isLHS ? sharding_rule.getResultMappings()
             : sharding_rule.getOperandMappings();
 
   assert(tensor_mappings.size() ==
              (isLHS ? op->getNumResults() : op->getNumOperands()) &&
-         "Mismatch between number of tensor mappings and number of "
-         "operands/results: double-check rule attr semantics");
-  TensorMappingAttr tensor_mapping = tensor_mappings[value_idx];
+         "Mismatch between number of tensor mappings and operands/results: "
+         "double-check rule attr semantics");
+  TensorMappingAttr tensor_mapping = tensor_mappings[valueIdx];
   for (auto [dim, dim_mapping] :
        llvm::enumerate(tensor_mapping.getDimMappings())) {
-    result.emplace_back();
-    auto &dim_vec = result.back();
+    mapping.emplace_back();
+    auto &dim_vec = mapping.back();
     ArrayRef<int64_t> factorIndices = dim_mapping.getFactorIndices();
     for (int64_t factorIdx : factorIndices) {
       dim_vec.push_back(opToPartitioningAxes[op][factorIdx]);
@@ -325,37 +365,34 @@ ShardyLogicalAxisAnalysis::getTensorToPartitionDimMapping(
     dim_vec = symbolFactorMerge.resolve(dim_vec);
   }
 
-  return result;
+  return mapping;
 }
 
 ShardyLogicalAxisAnalysis::TensorAxesToPartitionAxes
-ShardyLogicalAxisAnalysis::getTensorToPartitionDimMapping(ReshardOp op,
-                                                          bool isLHS,
-                                                          int value_idx) {
-  TensorAxesToPartitionAxes result;
-  // This one is easier:
-  auto symbol_list = isLHS ? reshardLHSSymbols[op] : reshardRHSSymbols[op];
-  result.resize(symbol_list.size());
-  for (auto [dim, sym] : llvm::enumerate(symbol_list)) {
-    result[dim].push_back(sym);
+ShardyLogicalAxisAnalysis::getTensorPartitionDims(ReshardOp op, bool isLHS,
+                                                  int valueIdx) {
+  TensorAxesToPartitionAxes mapping;
+  (void)valueIdx;
+  auto symbolList = isLHS ? reshardRHSSymbols[op] : reshardLHSSymbols[op];
+  mapping.resize(symbolList.size());
+  for (auto [dim, sym] : llvm::enumerate(symbolList)) {
+    mapping[dim].push_back(sym);
   }
-
-  return result;
+  return mapping;
 }
 
 std::optional<ShardyLogicalAxisAnalysis::TensorAxesToPartitionAxes>
-ShardyLogicalAxisAnalysis::getTensorToPartitionDimMapping(Operation *op,
-                                                          bool isLHS,
-                                                          int value_idx) {
+ShardyLogicalAxisAnalysis::getTensorPartitionDims(Operation *op, bool isLHS,
+                                                  int valueIdx) {
   if (auto reshard_op = toCollective(op)) {
-    return getTensorToPartitionDimMapping(reshard_op, isLHS, value_idx);
+    return getTensorPartitionDims(reshard_op, isLHS, valueIdx);
   }
 
   if (OpShardingRuleAttr sharding_rule =
           sdy::getOrCreateShardingRule(op,
                                        /*conservativePropagation=*/false,
                                        /*setShardingRuleOnOp=*/false)) {
-    return getTensorToPartitionDimMapping(op, sharding_rule, isLHS, value_idx);
+    return getTensorPartitionDims(op, sharding_rule, isLHS, valueIdx);
   }
 
   return std::nullopt;
@@ -382,31 +419,26 @@ void ShardyLogicalAxisAnalysis::buildUnion() {
   sdy_func.walk([&](Operation *op) {
     // if we are a sharding op or a reshard op,
     // need to consider merges between producer / consumer
-    for (auto [result_idx, result] : llvm::enumerate(op->getResults())) {
-      auto maybe_producer_mapping =
-          getTensorToPartitionDimMapping(op, true, result_idx);
-      if (!maybe_producer_mapping.has_value()) {
+    for (OpResult result : op->getResults()) {
+      auto maybeProducerMapping = getTensorPartitionDims(result);
+      if (!maybeProducerMapping.has_value()) {
         continue;
       }
-      TensorAxesToPartitionAxes producer_mapping =
-          maybe_producer_mapping.value();
+      TensorAxesToPartitionAxes producerMapping = maybeProducerMapping.value();
 
-      for (const auto &use : result.getUses()) {
-        Operation *user = use.getOwner();
-        int64_t operand_idx = use.getOperandNumber();
-        auto maybe_consumer_mapping =
-            getTensorToPartitionDimMapping(user, false, operand_idx);
-        if (!maybe_consumer_mapping.has_value()) {
+      for (OpOperand &use : result.getUses()) {
+        auto maybeConsumerMapping = getTensorPartitionDims(use);
+        if (!maybeConsumerMapping.has_value()) {
           continue;
         }
-        TensorAxesToPartitionAxes consumer_mapping =
-            maybe_consumer_mapping.value();
-        if (producer_mapping.size() != consumer_mapping.size()) {
+        TensorAxesToPartitionAxes consumerMapping =
+            maybeConsumerMapping.value();
+        if (producerMapping.size() != consumerMapping.size()) {
           continue;
         }
 
         for (auto [prod_dim_factors, cons_dim_factors] :
-             llvm::zip_equal(producer_mapping, consumer_mapping)) {
+             llvm::zip_equal(producerMapping, consumerMapping)) {
           symbolFactorMerge.mergeSymbols(prod_dim_factors, cons_dim_factors);
         }
       }

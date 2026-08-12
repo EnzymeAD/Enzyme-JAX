@@ -757,20 +757,16 @@ struct StablehloCollectiveToDistributedCollectivePattern
       return rewriter.notifyMatchFailure(op, "expected tensor result type");
     }
 
-    auto distributedCollective =
-        rewriter.create<distributed::DistributedCollectiveOp>(
-            op.getLoc(), op->getOperand(0), executionContext, executionContext,
-            ValueRange(reductionGroupValues),
-            rewriter.getArrayAttr(reductionFunctions), axisMap.getMap(),
-            TypeAttr::get(outputTensorAsTensorType));
+    auto collectiveAndAwait = distributed::createCollectiveAndAwait(
+        rewriter, op.getLoc(), op->getOperand(0), executionContext,
+        executionContext, ValueRange(reductionGroupValues),
+        rewriter.getArrayAttr(reductionFunctions), axisMap.getMap(),
+        outputTensorAsTensorType);
 
     // Step 3: get the distributed collective op result handle,
     // and create a distributed await op to replace the original stablehlo
     // collective op.
-    auto distributedAwait = rewriter.create<distributed::DistributedAwait>(
-        op.getLoc(), outputTensorAsTensorType,
-        distributedCollective.getAsyncHandle());
-    rewriter.replaceOp(op, distributedAwait.getValue());
+    rewriter.replaceOp(op, collectiveAndAwait.await.getValue());
     return success();
   }
 

@@ -47,6 +47,18 @@ getEnclosingExecutionContext(::mlir::Operation *op);
 filterOutReplicationFactors(
     TypedValueArrayRef<::mlir::enzyme::axis::AxisFactorType> factors);
 
+struct CollectiveAndAwait {
+  ::mlir::enzyme::distributed::DistributedCollectiveOp collective;
+  ::mlir::enzyme::distributed::DistributedAwait await;
+};
+
+CollectiveAndAwait createCollectiveAndAwait(
+    ::mlir::OpBuilder &builder, ::mlir::Location loc,
+    ::mlir::Value inputObject, ::mlir::Value inputMesh,
+    ::mlir::Value outputMesh, ::mlir::ValueRange reductionGroups,
+    ::mlir::ArrayAttr reductionFunctions, ::mlir::Value mapping,
+  ::mlir::Type outputType);
+
 } // namespace mlir::enzyme::distributed
 
 #endif // ENZYME_AD_JAX_DIALECT_DISTRIBUTED_UTILITIES_H

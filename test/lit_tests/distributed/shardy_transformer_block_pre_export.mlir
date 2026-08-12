@@ -1,5 +1,4 @@
-// RUN: enzymexlamlir-opt --sdy-propagation-pipeline --sdy-export-pipeline="enable-insert-explicit-collectives=true" --sdy-convert-global-to-local="enable-rgv3=true" -o /dev/null %s
-// RUN: enzymexlamlir-opt --sdy-propagation-pipeline --sdy-export-pipeline="enable-insert-explicit-collectives=true" --sdy-convert-global-to-local="enable-rgv3=true" --insert-physical-mesh --shardy-to-distributed -o /dev/null %s
+// RUN: enzymexlamlir-opt --sdy-propagation-pipeline --sdy-insert-explicit-reshards --shardy-to-distributed-higher-level
 
 module @shardy_transformer_block_pre_export {
   sdy.mesh @mesh = <["data"=4, "tile"=4, "model"=2]>

@@ -2,6 +2,15 @@
 #define ENZYME_AD_JAX_DIALECT_AXIS_INTERFACES_TD
 
 include "mlir/IR/OpBase.td"
+include "mlir/Interfaces/SideEffectInterfaces.td"
+
+// Marker trait for static metadata computations. Declared in ODS so every
+// metadata op is also considered Pure by MLIR's side-effect interfaces.
+def MetadataTrait : NativeOpTrait<"enzyme::axis::MetadataTrait">;
+def PureMetadataTrait : TraitList<[Pure, MetadataTrait]>;
+// Ops that are metadata but cannot be CSE'd (number of distinct
+// textual declarations matters, e.g. declaring logical axes)
+def DeclarativeMetadataTrait : TraitList<[MetadataTrait]>;
 
 def AxisTypeInterface : TypeInterface<"AxisTypeInterface"> {
   let cppNamespace = "::mlir::enzyme::axis";
