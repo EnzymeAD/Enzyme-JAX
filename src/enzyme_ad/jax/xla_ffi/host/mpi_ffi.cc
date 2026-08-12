@@ -23,6 +23,8 @@ decltype(MPI_Waitall) *EXLA_MPI_Waitall = &MPI_Waitall;
 decltype(MPI_Allreduce) *EXLA_MPI_Allreduce = &MPI_Allreduce;
 decltype(MPI_Bcast) *EXLA_MPI_Bcast = &MPI_Bcast;
 
+size_t EXLA_MPI_STATUS_SIZE = MPI_STATUS_SIZE;
+
 void enzymexla_set_mpi_comm_rank(void *ptr) {
   EXLA_MPI_Comm_rank = reinterpret_cast<decltype(MPI_Comm_rank) *>(ptr);
 }
@@ -60,6 +62,8 @@ void enzymexla_set_mpi_bcast(void *ptr) {
   EXLA_MPI_Bcast = reinterpret_cast<decltype(MPI_Bcast) *>(ptr);
 }
 
+void enzymexla_set_mpi_status_size(size_t size) { EXLA_MPI_STATUS_SIZE = size; }
+
 namespace enzymexla::ffi_internal {
 namespace ffi = xla::ffi;
 
@@ -79,10 +83,10 @@ using MpiRequestBuffer = Buffer<ffi::U64, 0>;
 using MpiStatusBuffer = Buffer<ffi::U8, 1>;
 
 ffi::Error checkMpiStatusSize(const MpiStatusBuffer &buf) {
-  if (buf.element_count() != MPI_STATUS_SIZE) {
+  if (buf.element_count() != EXLA_MPI_STATUS_SIZE) {
     return ffi::Error::InvalidArgument(
         absl::StrFormat("MPI_Recv: status buffer must have %d elements, got %d",
-                        MPI_STATUS_SIZE, buf.element_count()));
+                        EXLA_MPI_STATUS_SIZE, buf.element_count()));
   }
   return ffi::Error::Success();
 }

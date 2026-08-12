@@ -12,3 +12,5 @@ extern "C" void enzymexla_set_mpi_wait(void *);
 extern "C" void enzymexla_set_mpi_waitall(void *);
 extern "C" void enzymexla_set_mpi_allreduce(void *);
 extern "C" void enzymexla_set_mpi_bcast(void *);
+
+extern "C" size_t enzymexla_set_mpi_status_size();
