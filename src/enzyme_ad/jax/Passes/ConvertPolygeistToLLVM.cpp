@@ -2188,9 +2188,16 @@ Value ConvertLaunchFuncOpToGpuRuntimeCallPattern::generateParamsArray(
   auto argAttrss =
       dyn_cast_or_null<ArrayAttr>(launchOp->getAttr("reactant.arg_attrs"));
   for (const auto &en : llvm::enumerate(arguments)) {
-    bool isByVal =
-        argAttrss && cast<DictionaryAttr>(argAttrss[en.index()])
-                         .getNamed(LLVM::LLVMDialect::getByValAttrName());
+    // A byval argument reaches the kernel argument array as a pointer to the
+    // argument's copy, which is exactly what the array slot must hold. When
+    // the parameter has been scalarised the attribute outlives it and the
+    // argument arrives by value; a value needs the same temporary and store as
+    // any other, since reinterpreting it would hand the launch an address made
+    // out of the argument's own bits.
+    bool isByVal = argAttrss &&
+                   cast<DictionaryAttr>(argAttrss[en.index()])
+                       .getNamed(LLVM::LLVMDialect::getByValAttrName()) &&
+                   isa<LLVM::LLVMPointerType>(en.value().getType());
     Value fieldPtr;
     if (isByVal) {
       fieldPtr = en.value();
