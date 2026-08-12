@@ -3615,8 +3615,15 @@ public:
     // Add a dialect specific kernel attribute in addition to GPU kernel
     // attribute. The former is necessary for further translation while the
     // latter is expected by gpu.launch_func.
-    if (gpuFuncOp.isKernel())
+    if (gpuFuncOp.isKernel()) {
       attributes.emplace_back(kernelAttributeName, rewriter.getUnitAttr());
+      if (kernelAttributeName == NVVM::NVVMDialect::getKernelFuncAttrName())
+        if (auto blockSize = gpuFuncOp.getKnownBlockSizeAttr())
+          attributes.emplace_back(
+              StringAttr::get(rewriter.getContext(),
+                              NVVM::NVVMDialect::getMaxntidAttrName()),
+              blockSize);
+    }
     auto llvmFuncOp = LLVM::LLVMFuncOp::create(
         rewriter, gpuFuncOp.getLoc(), gpuFuncOp.getName(), funcType,
         LLVM::Linkage::External, /*dsoLocal*/ false, /*cconv*/ LLVM::CConv::C,
