@@ -606,9 +606,14 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
     }
 
     if (curRegion == 0) {
-      // Nothing split: every candidate block size failed. The regions hold
-      // only the corpses of the failed attempts; drop them and leave the
-      // launch-out-of-resources error the failed splits already stand for.
+      // Nothing split: every candidate block size failed, and the shape could
+      // not be recovered from the wrapper either. Dropping the kernel here
+      // silently turns the launch into a no-op that leaves its outputs
+      // untouched, so say so rather than miscompiling.
+      wrapper.emitError()
+          << "no block size splits this kernel and its " << pop.getNumLoops()
+          << " parallel dimensions do not match the wrapper's grid and block "
+             "bounds; the kernel would be dropped";
       rewriter.eraseOp(alternativesOp);
       rewriter.setInsertionPoint(wrapper);
       auto err = arith::ConstantIndexOp::create(

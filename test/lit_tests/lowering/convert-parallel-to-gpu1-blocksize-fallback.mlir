@@ -1,4 +1,4 @@
-// RUN: env POLYGEIST_GPU_KERNEL_BLOCK_SIZE=128 enzymexlamlir-opt %s --split-input-file --pass-pipeline="builtin.module(convert-parallel-to-gpu1)" | FileCheck %s
+// RUN: env POLYGEIST_GPU_KERNEL_BLOCK_SIZE=128 enzymexlamlir-opt %s --split-input-file --verify-diagnostics --pass-pipeline="builtin.module(convert-parallel-to-gpu1)" | FileCheck %s
 
 // The requested block size cannot split a parallel op with more than three
 // dynamic dimensions, and this op offers no fallback: its shape is not the
@@ -11,6 +11,7 @@ module {
   func.func @allfail(%n: index, %m: index, %p: index, %q: index, %out: memref<?xf64>, %v: f64) -> index {
     %c1 = arith.constant 1 : index
     %c0 = arith.constant 0 : index
+    // expected-error @+1 {{no block size splits this kernel}}
     %w = "enzymexla.gpu_wrapper"(%n, %m, %c1, %c1, %c1, %c1) ({
       scf.parallel (%i, %j, %k, %l) = (%c0, %c0, %c0, %c0) to (%n, %m, %p, %q) step (%c1, %c1, %c1, %c1) {
         memref.store %v, %out[%i] : memref<?xf64>
