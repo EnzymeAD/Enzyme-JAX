@@ -313,6 +313,7 @@ struct SharedLLVMAllocaToGlobal : public OpRewritePattern<LLVM::AllocaOp> {
         rewriter, loc, ao.getElemType(), /* isConstant */ false,
         LLVM::Linkage::Internal, name, mlir::Attribute(),
         /* alignment */ 0, /* addrSpace */ 3);
+    globalOp.setAlignmentAttr(ao.getAlignmentAttr());
     rewriter.setInsertionPoint(ao);
     auto aoo = LLVM::AddressOfOp::create(rewriter, loc, globalOp);
 
@@ -348,7 +349,7 @@ struct SharedMemrefAllocaToGlobal : public OpRewritePattern<memref::AllocaOp> {
     memref::GlobalOp::create(rewriter, loc, rewriter.getStringAttr(name),
                              /* sym_visibility */ mlir::StringAttr(),
                              mlir::TypeAttr::get(type), initial_value,
-                             mlir::UnitAttr(), /* alignment */ nullptr);
+                             mlir::UnitAttr(), ao.getAlignmentAttr());
     rewriter.setInsertionPoint(ao);
     auto getGlobalOp = memref::GetGlobalOp::create(rewriter, loc, type, name);
 
