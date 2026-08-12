@@ -1127,10 +1127,20 @@ struct AffineExprBuilder {
         } else {
           llvm_unreachable("unknown operation");
         }
-      } else if (isa<LLVM::ZExtOp, LLVM::SExtOp, LLVM::TruncOp, arith::ExtSIOp,
-                     arith::ExtUIOp, arith::TruncIOp, arith::IndexCastOp,
+      } else if (isa<LLVM::ZExtOp, LLVM::SExtOp, arith::ExtSIOp,
+                     arith::ExtUIOp, arith::IndexCastOp,
                      arith::IndexCastUIOp>(op)) {
         return getExpr(op->getOperand(0));
+      } else if (isa<LLVM::TruncOp, arith::TruncIOp>(op)) {
+        // A widening leaves the number alone, but a truncation is a different
+        // number wherever the discarded bits were set, so reading through one
+        // puts those bits back into the index. CUDA packs a dim3's x and y
+        // into a single i64 and truncates to recover x; carrying the packed
+        // value in its place makes the access index y*2^32 + x. Where the
+        // truncation provably changes nothing it is still worth seeing
+        // through; otherwise its result stands as a symbol of its own.
+        if (truncationIsExact(op->getOperand(0), op->getResult(0).getType()))
+          return getExpr(op->getOperand(0));
       }
     }
 

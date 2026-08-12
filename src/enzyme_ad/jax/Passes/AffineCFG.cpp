@@ -216,6 +216,53 @@ static bool shiftScaleOK(Operation *op) {
   return shiftScale(op->getOperand(1), scale);
 }
 
+// Whether |v| < 2^bits, walking the arithmetic that produced it. Conservative:
+// a false answer only means the bound could not be shown.
+static bool magnitudeFitsIn(Value v, unsigned bits, unsigned depth = 0) {
+  if (bits == 0 || bits >= 64)
+    return bits >= 64;
+  if (depth > 8)
+    return false;
+
+  IntegerAttr iattr;
+  if (matchPattern(v, m_Constant(&iattr))) {
+    APInt c = iattr.getValue();
+    return c.getSignificantBits() <= bits;
+  }
+
+  if (Operation *def = v.getDefiningOp()) {
+    if (isa<ExtUIOp, LLVM::ZExtOp>(def))
+      if (auto srcTy = dyn_cast<IntegerType>(def->getOperand(0).getType()))
+        return srcTy.getWidth() <= bits;
+    if (isa<ExtSIOp, LLVM::SExtOp>(def))
+      if (auto srcTy = dyn_cast<IntegerType>(def->getOperand(0).getType()))
+        return srcTy.getWidth() - 1 <= bits;
+    if (isa<IndexCastOp, IndexCastUIOp>(def))
+      return magnitudeFitsIn(def->getOperand(0), bits, depth + 1);
+    // A sum of two numbers each a bit smaller than the bound stays under it.
+    if (isa<AddIOp, SubIOp>(def))
+      return magnitudeFitsIn(def->getOperand(0), bits - 1, depth + 1) &&
+             magnitudeFitsIn(def->getOperand(1), bits - 1, depth + 1);
+    if (isa<MulIOp>(def))
+      return magnitudeFitsIn(def->getOperand(0), bits / 2, depth + 1) &&
+             magnitudeFitsIn(def->getOperand(1), bits / 2, depth + 1);
+  }
+
+  // Nothing structural to go on: fall back on what the loop bounds say.
+  return valueCmp(Cmp::GE, v, (int64_t)0) &&
+         valueCmp(Cmp::LT, v, (int64_t)1 << bits);
+}
+
+// Whether truncating `v` to `resTy` leaves the number it holds alone, so that
+// the truncation can be dropped and `v` used in its place. What replaces it is
+// read as signed, so the sign bit has to stay clear too.
+bool truncationIsExact(Value v, Type resTy) {
+  auto intTy = dyn_cast<IntegerType>(resTy);
+  if (!intTy || intTy.getWidth() < 2 || intTy.getWidth() > 64)
+    return false;
+  return magnitudeFitsIn(v, intTy.getWidth() - 1);
+}
+
 static bool isAffineForArg(Value val) {
   if (!isa<BlockArgument>(val))
     return false;
@@ -603,7 +650,14 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
         decast = idx.getIn();
         continue;
       }
+      // A widening leaves the number alone, but a truncation is a different
+      // number wherever the discarded bits were set, so dropping one puts
+      // those bits back. CUDA packs a dim3's x and y into a single i64 and
+      // truncates to recover x; using the packed value in its place makes
+      // the operand y*2^32 + x.
       if (auto idx = decast.getDefiningOp<TruncIOp>()) {
+        if (!truncationIsExact(idx.getIn(), idx.getType()))
+          break;
         decast = idx.getIn();
         continue;
       }
