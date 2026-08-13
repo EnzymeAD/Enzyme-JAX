@@ -1065,6 +1065,10 @@ struct ParallelizeBlockOps : public OpRewritePattern<scf::ParallelOp> {
       LLVM_DEBUG(DBGS() << "ignoring non nested parallel op\n");
       return failure();
     }
+    if (pop.getNumResults()) {
+      LLVM_DEBUG(DBGS() << "cannot parallelize around a reduction\n");
+      return failure();
+    }
     auto loc = pop->getLoc();
     Block *outerBlock = pop->getBlock();
     Block *innerBlock = pop.getBody();
@@ -2043,8 +2047,13 @@ struct InnerParallelSerialization : public OpRewritePattern<scf::ParallelOp> {
     while ((par = par->getParentOfType<scf::ParallelOp>())) {
       parallelCount++;
     }
-    // is presently one of the three outer parallel loops;
-    if (parallelCount < 2)
+    // is presently one of the three outer parallel loops; a parallel
+    // carrying reductions cannot be one of those -- a launch has no
+    // reduction semantics -- so it is an inner loop wherever it sits,
+    // including directly under the single parallel left when grid and
+    // block were fused
+    if (parallelCount < 2 &&
+        !(parallelCount == 1 && parallelOp.getNumResults()))
       return failure();
 
     // For a parallel loop, we essentially need to create an n-dimensional loop
