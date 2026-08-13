@@ -676,7 +676,9 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
       return success();
     }
 
-    rewriter.eraseOp(wrapper);
+    rewriter.setInsertionPoint(wrapper);
+    auto zero = arith::ConstantIndexOp::create(rewriter, loc, 0);
+    rewriter.replaceOp(wrapper, zero->getResults());
 
     return success();
   }
