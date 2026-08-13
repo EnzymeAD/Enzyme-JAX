@@ -6,7 +6,7 @@
 
 #include "mpi.h"
 
-#include "mpi_ffi.h"
+#include "../export_macro.h"
 
 // MPI function pointers are initialized to the MPItrampoline implementations by
 // default, but can be overridden by the user
