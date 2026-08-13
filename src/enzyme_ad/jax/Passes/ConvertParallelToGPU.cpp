@@ -526,6 +526,24 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
 
     auto loc = pop->getLoc();
 
+    // A wrapper still carrying a host target holds a kernel that was never
+    // resolved to a device body: its content is a call to an external device
+    // stub, and the outlined module would inherit the host chip. No block
+    // size makes that compilable, including an exact shape match.
+    if (auto arch =
+            dyn_cast_or_null<StringAttr>(wrapper->getAttr("target_cpu")))
+      if (!arch.getValue().starts_with("sm_") &&
+          !arch.getValue().starts_with("gfx")) {
+        wrapper.emitError()
+            << "kernel with host target '" << arch.getValue()
+            << "' was not resolved to a device body; the kernel is dropped";
+        rewriter.setInsertionPoint(wrapper);
+        auto err = arith::ConstantIndexOp::create(
+            rewriter, loc, CUDA_ERROR_LAUNCH_OUT_OF_RESOURCES);
+        rewriter.replaceOp(wrapper, err->getResults());
+        return success();
+      }
+
     int curRegion = 0;
     llvm::SmallSet<int, 6> emittedBlockSizes;
     std::vector<Attribute> descs;
