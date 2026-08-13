@@ -76,6 +76,8 @@ namespace mlir::enzyme::distributed {
 
 class SymbolFactorMerge {
 public:
+  using OverlapSet = llvm::DenseSet<AxisSymbol>;
+
   void mergeSymbols(AxisSymbol a, AxisSymbol b) {
     attemptMergeSymbols({a}, {b});
   }
@@ -84,15 +86,23 @@ public:
     attemptMergeSymbols(a, b);
   }
   /**
+   * Marks a set of symbols as "overlapping", which should never
+   * be merged. Symmetric, antireflexive, but not transitive.
+   */
+  void markOverlapping(llvm::ArrayRef<AxisSymbol> overlapping);
+  /**
    * Resolves the root factorization of a symbol or symbol
    * list after traversing unions and merges.
    */
   llvm::SmallVector<AxisSymbol> resolve(AxisSymbol sym);
   llvm::SmallVector<AxisSymbol> resolve(llvm::ArrayRef<AxisSymbol> syms);
+  // Promises to return a set of root symbols
+  OverlapSet getOverlapping(AxisSymbol sym);
 
 private:
   llvm::EquivalenceClasses<AxisSymbol> symbolUnion;
   llvm::DenseMap<AxisSymbol, llvm::SmallVector<AxisSymbol>> factorizations;
+  llvm::DenseMap<AxisSymbol, OverlapSet> overlappingSymbols;
   /**
    * Between two lists of (possibly factored) symbols,
    * performs as much of a merge between factors as possible.
@@ -104,9 +114,37 @@ private:
    */
   void attemptMergeSymbols(llvm::ArrayRef<AxisSymbol> a,
                            llvm::ArrayRef<AxisSymbol> b);
+  void _factorSymbol(AxisSymbol symbol, llvm::ArrayRef<AxisSymbol> factors);
+  void _mergeSymbols(AxisSymbol a, AxisSymbol b);
+  void _appendOverlaps(const OverlapSet &from, AxisSymbol to);
   void _resolve(AxisSymbol sym, llvm::SmallVector<AxisSymbol> &result);
+  OverlapSet _getOverlappingForRoot(AxisSymbol sym);
+  // we never look at the overlapping for non-root,
+  // so whenver we merge or factor we can clear out entry.
+  // Also helps make it more obvious when we look at a non-root.
+  void _clearOverlapping(AxisSymbol sym) { overlappingSymbols.erase(sym); }
 };
 
+/**
+ * Attempts to find a basis of logical axes where no operands / values
+ * use the same logical partitioning axis unless there is a true dependency
+ * between them- either directly (eventual producer sharding --> consumer
+ * sharding) relation or indirectly (i.e. both eventually are consumed by an op
+ * that shards both inputs along an axis). Respects any existing reshardings
+ * rules that "break" a propagation dependency.
+ *
+ * Results in a mapping from the following IR items to logical axes:
+ *  - ops to logical axes: for each op, provides a logical axis for each axis of
+ * its shardy partitioning rule.
+ *  - op result to logical axes: the sharding that the producer op would have,
+ * based on its own sharding. Maps tensor axes to partitioning axes.
+ *  - op use / operand to logical axes: the sharding that the consuming op would
+ * have, based on its own sharding. If this differs from the producer's
+ * sharding, then a resharding is needed.
+ *  - block args to logical axes: this will attempt to unify the logical axes of
+ * the block args to the consumer partitioning. TBD: what happens when more than
+ * one consumer has a different partitioning?
+ */
 class ShardyLogicalAxisAnalysis {
 public:
   ShardyLogicalAxisAnalysis(func::FuncOp sdy_func);
@@ -116,6 +154,8 @@ public:
       llvm::SmallVector<llvm::SmallVector<AxisSymbol>>;
   using TensorAxesToPartitionAxes =
       llvm::SmallVector<llvm::SmallVector<AxisSymbol>>;
+  using BlockArgumentToPartitionAxes =
+      llvm::DenseMap<BlockArgument, TensorAxesToPartitionAxes>;
 
   /**
    * Returns the set of symbols we have assigned to each
@@ -139,6 +179,8 @@ public:
    */
   std::optional<TensorAxesToPartitionAxes>
   getTensorPartitionDims(OpOperand &use);
+  std::optional<TensorAxesToPartitionAxes>
+  getTensorPartitionDims(BlockArgument arg);
   /**
    * Returns the set of symbols that an op result
    * needs to be reduced over to produce the correct
@@ -152,6 +194,7 @@ private:
 
   using DimToSymbol = llvm::SmallVector<AxisSymbol, 4>;
   llvm::DenseMap<Operation *, DimToSymbol> opToPartitioningAxes;
+  BlockArgumentToPartitionAxes argToPartitioningAxes;
   llvm::DenseMap<Operation *, DimToSymbol> reshardLHSSymbols;
   llvm::DenseMap<Operation *, DimToSymbol> reshardRHSSymbols;
   SymbolFactorMerge symbolFactorMerge;

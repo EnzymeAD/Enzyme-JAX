@@ -8,17 +8,13 @@ namespace mlir::enzyme::distributed {
 
 static ParseResult parseReductionGroups(
     OpAsmParser &parser,
-    SmallVectorImpl<OpAsmParser::UnresolvedOperand> &reductionGroups,
-    ArrayAttr &reductionFunctions) {
-  SmallVector<Attribute> parsedReductionFunctions;
+  SmallVectorImpl<OpAsmParser::UnresolvedOperand> &reductionGroups) {
 
-  if (parser.parseLParen()) {
+  if (failed(parser.parseLParen())) {
     return failure();
   }
 
   if (succeeded(parser.parseOptionalRParen())) {
-    reductionFunctions = ArrayAttr::get(parser.getBuilder().getContext(),
-                                        parsedReductionFunctions);
     return success();
   }
 
@@ -29,18 +25,6 @@ static ParseResult parseReductionGroups(
     }
     reductionGroups.push_back(reductionGroup);
 
-    Attribute reductionFunctionAttr;
-    if (parser.parseAttribute(reductionFunctionAttr)) {
-      return failure();
-    }
-    auto reductionFunction =
-        dyn_cast_or_null<FlatSymbolRefAttr>(reductionFunctionAttr);
-    if (!reductionFunction) {
-      return parser.emitError(parser.getCurrentLocation())
-             << "requires reduction function to be a flat symbol reference";
-    }
-    parsedReductionFunctions.push_back(reductionFunction);
-
     if (succeeded(parser.parseOptionalComma())) {
       continue;
     }
@@ -50,20 +34,17 @@ static ParseResult parseReductionGroups(
     break;
   }
 
-  reductionFunctions = ArrayAttr::get(parser.getBuilder().getContext(),
-                                      parsedReductionFunctions);
   return success();
 }
 
 static void printReductionGroups(OpAsmPrinter &printer, Operation *op,
-                                 OperandRange reductionGroups,
-                                 ArrayAttr reductionFunctions) {
+                                 OperandRange reductionGroups) {
   printer << '(';
   for (auto [idx, reductionGroup] : llvm::enumerate(reductionGroups)) {
     if (idx != 0) {
       printer << ", ";
     }
-    printer << reductionGroup << ' ' << reductionFunctions[idx];
+    printer << reductionGroup;
   }
   printer << ')';
 }

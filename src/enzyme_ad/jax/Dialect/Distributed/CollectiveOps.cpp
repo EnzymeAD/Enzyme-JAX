@@ -36,29 +36,18 @@ LogicalResult DistributedCollectiveOp::verify() {
            << "requires output_mesh to be produced by axis.product";
   }
 
-  ArrayAttr reductionFunctions = getReductionFunctionsAttr();
-  if (!reductionFunctions) {
-    return emitOpError() << "requires reduction_functions attribute";
-  }
-  if (reductionFunctions.size() != getReductionGroups().size()) {
-    return emitOpError() << "requires reduction_functions size to match "
+  auto reductionBodies = getReductionBodies();
+  if (reductionBodies.size() != getReductionGroups().size()) {
+    return emitOpError() << "requires reduction body count to match "
                             "reduction_groups size ("
-                         << reductionFunctions.size()
+                         << reductionBodies.size()
                          << " != " << getReductionGroups().size() << ")";
   }
 
-  for (auto [idx, reductionFunctionAttr] :
-       llvm::enumerate(reductionFunctions)) {
-    auto reductionFunction =
-        dyn_cast_or_null<FlatSymbolRefAttr>(reductionFunctionAttr);
-    if (!reductionFunction) {
-      return emitOpError() << "requires reduction_functions[" << idx
-                           << "] to be a FlatSymbolRefAttr";
-    }
-
-    if (!lookupSymbolInEnclosingScopes(*this, reductionFunction)) {
-      return emitOpError() << "references unknown reduction function symbol "
-                           << reductionFunction;
+  for (auto [idx, reductionBody] : llvm::enumerate(reductionBodies)) {
+    if (reductionBody.empty()) {
+      return emitOpError() << "requires reduction body region[" << idx
+                           << "] to be non-empty";
     }
   }
 

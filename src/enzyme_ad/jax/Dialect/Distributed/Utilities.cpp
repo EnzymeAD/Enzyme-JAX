@@ -1,8 +1,49 @@
 #include "Utilities.h"
 
+#include "src/enzyme_ad/jax/Utils.h"
+
+#include "shardy/dialect/sdy/ir/dialect.h"
+#include "shardy/dialect/sdy/ir/utils.h"
+#include "shardy/dialect/sdy/transforms/propagation/op_sharding_rule_builder.h"
+#include "shardy/dialect/sdy/transforms/propagation/op_sharding_rule_registry.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "stablehlo/dialect/StablehloOps.h"
+
 namespace mlir::enzyme::distributed {
 
 using namespace ::mlir::enzyme::axis;
+
+namespace {
+
+::mlir::Region *buildSyntheticReductionBody(
+    ::mlir::stablehlo::ReduceOpKind reductionKind, ::mlir::Type elementType,
+    std::shared_ptr<::mlir::Region> &storage) {
+  if (!elementType || reductionKind == ::mlir::stablehlo::ReduceOpKind::Unknown) {
+    return nullptr;
+  }
+
+  auto context = elementType.getContext();
+  storage = std::make_shared<::mlir::Region>();
+  ::mlir::Block *block = new ::mlir::Block();
+  storage->push_back(block);
+
+  auto scalarTensorType = ::mlir::RankedTensorType::get({}, elementType);
+  auto loc = ::mlir::UnknownLoc::get(context);
+  block->addArgument(scalarTensorType, loc);
+  block->addArgument(scalarTensorType, loc);
+
+  ::mlir::OpBuilder builder(context);
+  builder.setInsertionPointToStart(block);
+  auto lhs = block->getArgument(0);
+  auto rhs = block->getArgument(1);
+  ::mlir::Value result = ::mlir::stablehlo::CreateReductionOpGeneral(
+      builder, loc, reductionKind, lhs, rhs);
+
+  builder.create<::mlir::stablehlo::ReturnOp>(loc, result);
+  return storage.get();
+}
+
+} // namespace
 
 Operation *lookupSymbolInEnclosingScopes(Operation *from,
                                          FlatSymbolRefAttr symRef) {
@@ -68,14 +109,136 @@ filterOutReplicationFactors(
   return filteredFactors;
 }
 
+OpShardingRuleAndReductionKind
+getOrSynthesizeOpShardingRule(::mlir::Operation *op) {
+  if (!op) {
+    return {};
+  }
+
+  // First check the Shardy rule registry
+  if (auto shardingRule = ::mlir::sdy::getOrCreateShardingRule(op)) {
+    return {shardingRule, ::mlir::stablehlo::ReduceOpKind::Add};
+  }
+
+  // Rule registry missing some cases for us, so we construct our own
+  ::mlir::sdy::OpShardingRuleAttr synthesizedRule;
+  ::mlir::stablehlo::ReduceOpKind reductionKind =
+      ::mlir::stablehlo::ReduceOpKind::Add;
+  std::shared_ptr<::mlir::Region> reductionBody;
+  if (auto constantOp = dyn_cast<::mlir::stablehlo::ConstantOp>(op)) {
+    // Constants can be partitioned on any tensor dimension
+    Value result = constantOp.getResult();
+    synthesizedRule = ::mlir::sdy::OpShardingRuleBuilder(op)
+                          .addPointwise(::mlir::sdy::getTensorShape(result))
+                          .build();
+  } else if (auto constantOp = dyn_cast<::mlir::sdy::ConstantOp>(op)) {
+    // SDY constants are also pointwise over their result tensor shape.
+    Value result = constantOp.getResult();
+    synthesizedRule = ::mlir::sdy::OpShardingRuleBuilder(op)
+                          .addPointwise(::mlir::sdy::getTensorShape(result))
+                          .build();
+  } else if (auto reduceOp = dyn_cast<::mlir::stablehlo::ReduceOp>(op)) {
+    // Reductions can be split on any non-reduce dimension and require a
+    // reduction factor on the dimensions being reduced.
+    reductionKind = ::mlir::stablehlo::CheckCommonReduceOp(reduceOp).kind;
+    reductionBody = std::make_shared<::mlir::Region>();
+    ::mlir::IRMapping regionMapper;
+    reduceOp.getRegion().cloneInto(reductionBody.get(), regionMapper);
+    auto inputType = dyn_cast<RankedTensorType>(reduceOp.getOperand(0).getType());
+    auto resultType = dyn_cast<RankedTensorType>(reduceOp.getResult(0).getType());
+    if (!inputType || !resultType) {
+      return {};
+    }
+
+    auto builder = ::mlir::sdy::OpShardingRuleBuilder(op);
+    int64_t resultDimIdx = 0;
+    for (int64_t inputDimIdx = 0; inputDimIdx < inputType.getRank();
+         ++inputDimIdx) {
+      if (inputType.isDynamicDim(inputDimIdx)) {
+        return {};
+      }
+
+      bool isReductionDim = llvm::is_contained(reduceOp.getDimensions(),
+                                               inputDimIdx);
+      int64_t resultDim = ::mlir::sdy::kNullDim;
+      if (!isReductionDim) {
+        if (resultDimIdx >= resultType.getRank() ||
+            resultType.isDynamicDim(resultDimIdx)) {
+          return {};
+        }
+        resultDim = resultDimIdx++;
+      }
+
+      builder.addFactor({inputDimIdx, ::mlir::sdy::kNullDim}, {resultDim},
+                        inputType.getDimSize(inputDimIdx),
+                        isReductionDim
+                            ? ::mlir::sdy::FactorType::kReduction
+                            : ::mlir::sdy::FactorType::kPassThrough);
+    }
+
+    if (resultDimIdx != resultType.getRank()) {
+      return {};
+    }
+
+    synthesizedRule = builder.build();
+  } else if (auto returnOp = dyn_cast<::mlir::func::ReturnOp>(op)) {
+    // Return should not couple partition axes across operands. Give each
+    // tensor axis of each operand its own independent reduction factor.
+    auto builder = ::mlir::sdy::OpShardingRuleBuilder(op);
+    int64_t numOperands = returnOp.getNumOperands();
+    for (int64_t operandIdx = 0; operandIdx < numOperands; ++operandIdx) {
+      auto tensorType =
+          dyn_cast<RankedTensorType>(returnOp.getOperand(operandIdx).getType());
+      if (!tensorType) {
+        continue;
+      }
+      for (int64_t dimIdx = 0; dimIdx < tensorType.getRank(); ++dimIdx) {
+        if (tensorType.isDynamicDim(dimIdx)) {
+          return {};
+        }
+
+        SmallVector<int64_t> lhsDims(numOperands, ::mlir::sdy::kNullDim);
+        lhsDims[operandIdx] = dimIdx;
+        builder.addFactor(lhsDims, {}, tensorType.getDimSize(dimIdx),
+                          ::mlir::sdy::FactorType::kPassThrough);
+      }
+    }
+
+    synthesizedRule = builder.build();
+  }
+
+  if (!synthesizedRule) {
+    return {};
+  }
+  return {synthesizedRule, reductionKind, std::move(reductionBody)};
+}
+
+::mlir::Region *OpShardingRuleAndReductionKind::getReductionBody(
+    ::mlir::Type elementType) const {
+  if (reductionBody) {
+    return reductionBody.get();
+  }
+  return buildSyntheticReductionBody(reductionKind, elementType, reductionBody);
+}
+
 CollectiveAndAwait createCollectiveAndAwait(
     ::mlir::OpBuilder &builder, ::mlir::Location loc, ::mlir::Value inputObject,
     ::mlir::Value inputMesh, ::mlir::Value outputMesh,
-    ::mlir::ValueRange reductionGroups, ::mlir::ArrayAttr reductionFunctions,
-    ::mlir::Value mapping, ::mlir::Type outputType) {
-  auto collective = builder.create<DistributedCollectiveOp>(
-      loc, inputObject, inputMesh, outputMesh, reductionGroups,
-      reductionFunctions, mapping, ::mlir::TypeAttr::get(outputType));
+    ::mlir::ValueRange reductionGroups, ::mlir::Value mapping,
+    ::mlir::Type outputType) {
+  OperationState state(loc, DistributedCollectiveOp::getOperationName());
+  state.addOperands(inputObject);
+  state.addOperands(inputMesh);
+  state.addOperands(outputMesh);
+  state.addOperands(reductionGroups);
+  state.addOperands(mapping);
+  state.addTypes(::mlir::enzyme::distributed::AsynchHandleType::get(
+      builder.getContext(), outputType));
+  state.addAttribute("output_type", ::mlir::TypeAttr::get(outputType));
+  for (size_t i = 0; i < reductionGroups.size(); ++i) {
+    state.addRegion();
+  }
+  auto collective = cast<DistributedCollectiveOp>(builder.create(state));
   auto await = builder.create<DistributedAwait>(loc, outputType,
                                                 collective.getAsyncHandle());
   return {collective, await};

@@ -39,12 +39,13 @@ module {
 
   %mapping = axis.map %lhs_group_0, %lhs_group_1, %lhs_group_2, %lhs_group_3 to %rhs_group_0, %rhs_group_1, %rhs_group_2, %rhs_group_3 : [!axis.factor_group<2>, !axis.factor_group<2>, !axis.factor_group<2>, !axis.factor_group<8>] [!axis.factor_group<2>, !axis.factor_group<2>, !axis.factor_group<2>, !axis.factor_group<8>]
 
-  distributed.Function @collective context %mesh_in : !axis.factor_group<8> arg_types [tensor<8xf32>] ret_types [tensor<8xf32>] {
-  ^bb0(%arg0: tensor<8xf32>):
-    %h = distributed.Collective %arg0 : tensor<8xf32> on %mesh_in : !axis.factor_group<8> to tensor<8xf32> on %mesh_out : !axis.factor_group<8> reduces (%reduction @add) : !axis.factor_group<2> maps %mapping : !axis.map
-    %v = distributed.Await %h : !distributed.asynch_handle<tensor<8xf32>> -> tensor<8xf32>
-    distributed.DistributedYield %v tensor<8xf32>
+  %c = stablehlo.constant dense<0.0> : tensor<8xf32>
+  %h = distributed.Collective %c : tensor<8xf32> on %mesh_in : !axis.factor_group<8> to tensor<8xf32> on %mesh_out : !axis.factor_group<8> reduces (%reduction) : !axis.factor_group<2> maps %mapping : !axis.map {
+  ^bb0(%lhs: tensor<f32>, %rhs: tensor<f32>):
+    %sum = stablehlo.add %lhs, %rhs : tensor<f32>
+    stablehlo.return %sum : tensor<f32>
   }
+  %v = distributed.Await %h : !distributed.asynch_handle<tensor<8xf32>> -> tensor<8xf32>
 }
 
 // CHECK-LABEL: module {

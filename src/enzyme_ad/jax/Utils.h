@@ -1557,6 +1557,29 @@ bool IsTensorFilled(Value input);
 // Enum representing the type of reduce operation
 enum class ReduceOpKind { Unknown, Add, Min, Max, Mul, And, Or, Xor };
 
+inline Value CreateReductionOpGeneral(
+    OpBuilder &builder, Location loc, ReduceOpKind kind, Value lhs, Value rhs,
+    std::optional<sdy::TensorShardingPerValueAttr> sharding = std::nullopt) {
+  switch (kind) {
+  case ReduceOpKind::Add:
+    return AddOpCreate(builder, loc, lhs, rhs, sharding);
+  case ReduceOpKind::Min:
+    return MinOpCreate(builder, loc, lhs, rhs, sharding);
+  case ReduceOpKind::Max:
+    return MaxOpCreate(builder, loc, lhs, rhs, sharding);
+  case ReduceOpKind::Mul:
+    return MulOpCreate(builder, loc, lhs, rhs, sharding);
+  case ReduceOpKind::And:
+    return AndOpCreate(builder, loc, lhs, rhs, sharding);
+  case ReduceOpKind::Or:
+    return OrOpCreate(builder, loc, lhs, rhs, sharding);
+  case ReduceOpKind::Xor:
+    return XorOpCreate(builder, loc, lhs, rhs, sharding);
+  default:
+    llvm_unreachable("Invalid reduce op");
+  }
+}
+
 template <typename OpTy> struct CheckCommonReduceLikeOp {
 public:
   ReduceOpKind kind;
@@ -1593,24 +1616,7 @@ public:
   Value createEquivalentOperation(
       OpBuilder &builder, Location loc, Value lhs, Value rhs,
       std::optional<sdy::TensorShardingPerValueAttr> sharding = std::nullopt) {
-    switch (kind) {
-    case ReduceOpKind::Add:
-      return AddOpCreate(builder, loc, lhs, rhs, sharding);
-    case ReduceOpKind::Min:
-      return MinOpCreate(builder, loc, lhs, rhs, sharding);
-    case ReduceOpKind::Max:
-      return MaxOpCreate(builder, loc, lhs, rhs, sharding);
-    case ReduceOpKind::Mul:
-      return MulOpCreate(builder, loc, lhs, rhs, sharding);
-    case ReduceOpKind::And:
-      return AndOpCreate(builder, loc, lhs, rhs, sharding);
-    case ReduceOpKind::Or:
-      return OrOpCreate(builder, loc, lhs, rhs, sharding);
-    case ReduceOpKind::Xor:
-      return XorOpCreate(builder, loc, lhs, rhs, sharding);
-    default:
-      llvm_unreachable("Invalid reduce op");
-    }
+    return CreateReductionOpGeneral(builder, loc, kind, lhs, rhs, sharding);
   }
 };
 

@@ -178,9 +178,9 @@ def DistributedCollectiveOp
         reduce-transpose-reshape operation. 
 
         Reductions are specified as different groups of axis factors to reduce over.
-        Reductions take custom binary functions as input, which must be associative.
-        Each group of reduction axes may have a different reduction function,
-        but these must be commutative with each other: for now, use two distinct collectives 
+        Reductions take custom binary bodies as inline regions, which must be associative.
+        Each group of reduction axes may have a different reduction body,
+        but these must be commutative with each other: for now, use two distinct collectives
         when reductions cannot be fused.
 
         The transpose/reshape is specified as a mapping between non-reduced input/output axis factors.
@@ -196,8 +196,7 @@ def DistributedCollectiveOp
         - input_mesh: the mesh axes (FactorGroup) that the input object is distributed over.
         - output_mesh: the mesh axes (FactorGroup) that the output object is distributed over.
         - reduction_groups: a list of FactorGroups to reduce over (pairwise disjoint).
-        - reduction_functions: ArrayAttr of FlatSymbolRefAttr naming single-device
-          reduction functions. Size must match reduction_groups.
+        - reduction bodies: one single-block region per reduction group.
         - mapping: an axis.map value whose lhs/rhs groups encode the
           post-reduction input/output mapping.
         - output_type: the collective output tensor type in local indexing
@@ -217,17 +216,16 @@ def DistributedCollectiveOp
         FactorGroupType:$input_mesh,
         FactorGroupType:$output_mesh,
         Variadic<FactorGroupType>:$reduction_groups,
-        ArrayAttr:$reduction_functions,
         AxisMapType:$mapping,
         TypeAttrOf<AnyTensor>:$output_type
     );
   let results = (outs AsynchHandleType : $async_handle);
+  let regions = (region VariadicRegion<SizedRegion<1>>:$reduction_bodies);
   let assemblyFormat =
       "$input_object `:` type($input_object) `on` $input_mesh `:` "
       "type($input_mesh) `to` $output_type `on` $output_mesh `:` "
-      "type($output_mesh) `reduces` custom<ReductionGroups>($reduction_groups, "
-      "$reduction_functions) `:` type($reduction_groups) `maps` $mapping `:` "
-      "type($mapping) attr-dict";
+      "type($output_mesh) `reduces` custom<ReductionGroups>($reduction_groups) `:` type($reduction_groups) `maps` $mapping `:` "
+      "type($mapping) $reduction_bodies attr-dict";
   let hasVerifier = 1;
 }
 #endif // ENZYME_AD_JAX_DIALECT_DISTRIBUTED_OPS_TD

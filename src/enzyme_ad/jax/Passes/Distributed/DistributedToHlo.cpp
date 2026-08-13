@@ -4,6 +4,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "src/enzyme_ad/jax/Dialect/Axis/Utilities.h"
 #include "src/enzyme_ad/jax/Dialect/Distributed/Dialect.h"
@@ -126,63 +127,6 @@ static int64_t getNextStablehloChannelId() {
   return nextChannelId.fetch_add(1, std::memory_order_relaxed);
 }
 
-static LogicalResult validateScalarReductionFunctionSignature(
-    Operation *anchor, FlatSymbolRefAttr reductionFunction,
-    Type expectedElementType, RankedTensorType &outScalarTensorType,
-    std::string &outError) {
-  auto moduleOp = anchor->getParentOfType<ModuleOp>();
-  if (!moduleOp) {
-    outError = "failed to locate parent module for reduction function lookup";
-    return failure();
-  }
-
-  auto reductionFunc = SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
-      anchor, reductionFunction);
-  if (!reductionFunc) {
-    outError = "failed to resolve reduction function symbol";
-    return failure();
-  }
-
-  FunctionType functionType = reductionFunc.getFunctionType();
-  if (functionType.getNumInputs() != 2 || functionType.getNumResults() != 1) {
-    outError =
-        "reduction function must have signature (tensor<elem>, tensor<elem>) "
-        "-> tensor<elem>";
-    return failure();
-  }
-
-  auto lhsType = dyn_cast<RankedTensorType>(functionType.getInput(0));
-  auto rhsType = dyn_cast<RankedTensorType>(functionType.getInput(1));
-  auto resultType = dyn_cast<RankedTensorType>(functionType.getResult(0));
-  if (!lhsType || !rhsType || !resultType) {
-    outError = "reduction function operands/result must be ranked tensors";
-    return failure();
-  }
-
-  if (lhsType.getRank() != 0 || rhsType.getRank() != 0 ||
-      resultType.getRank() != 0) {
-    outError = "reduction function operands/result must be scalar tensors";
-    return failure();
-  }
-
-  if (lhsType != rhsType || lhsType != resultType) {
-    outError =
-        "reduction function scalar tensor operands/result must have identical "
-        "types";
-    return failure();
-  }
-
-  if (lhsType.getElementType() != expectedElementType) {
-    outError =
-        "reduction function scalar element type must match collective tensor "
-        "element type";
-    return failure();
-  }
-
-  outScalarTensorType = lhsType;
-  return success();
-}
-
 static stablehlo::ChannelHandleAttr
 createUniqueStablehloChannelHandle(Operation *op) {
   // StableHLO collectives use channel type 0.
@@ -192,16 +136,26 @@ createUniqueStablehloChannelHandle(Operation *op) {
                                            kCollectiveChannelType);
 }
 
-auto bindBuildReductionComputation(FlatSymbolRefAttr reductionFunc,
+auto bindBuildReductionComputation(Region &reductionBody,
                                    RankedTensorType reductionResultType) {
-  return [reductionFunc, reductionResultType](RegionBuilder &rb) -> void {
+  return [&reductionBody, reductionResultType](RegionBuilder &rb) -> void {
     OpBuilder &builder = rb.getOpBuilder();
     Value lhs = Argument(rb, reductionResultType).getValue();
     Value rhs = Argument(rb, reductionResultType).getValue();
-    auto op = builder.create<func::CallOp>(rb.getLoc(), reductionFunc,
-                                           TypeRange{reductionResultType},
-                                           ValueRange{lhs, rhs});
-    builder.create<stablehlo::ReturnOp>(rb.getLoc(), op.getResults());
+    IRMapping mapper;
+    Block &sourceBlock = reductionBody.front();
+    mapper.map(sourceBlock.getArgument(0), lhs);
+    mapper.map(sourceBlock.getArgument(1), rhs);
+    for (Operation &nestedOp : sourceBlock.without_terminator()) {
+      builder.clone(nestedOp, mapper);
+    }
+    auto returnOp = cast<stablehlo::ReturnOp>(sourceBlock.getTerminator());
+    SmallVector<Value> returnedValues;
+    returnedValues.reserve(returnOp.getNumOperands());
+    for (Value operand : returnOp.getOperands()) {
+      returnedValues.push_back(mapper.lookupOrDefault(operand));
+    }
+    builder.create<stablehlo::ReturnOp>(rb.getLoc(), returnedValues);
   };
 }
 
@@ -422,27 +376,13 @@ struct DistributedCollectiveAllReduceToStablehloPattern
                             "reduction factors (expected physical axes)");
     }
 
-    auto reductionFunctionsAttr = op.getReductionFunctionsAttr();
-    if (!reductionFunctionsAttr || reductionFunctionsAttr.size() != 1) {
-      return failWithRemark("expected exactly one reduction function symbol");
-    }
-    auto reductionFunction =
-        dyn_cast<FlatSymbolRefAttr>(reductionFunctionsAttr[0]);
-    if (!reductionFunction) {
-      return failWithRemark(
-          "reduction function must be a flat symbol reference");
-    }
+    auto &reductionBody = op.getReductionBodies()[0];
 
-    RankedTensorType scalarReductionTensorType;
-    std::string signatureError;
-    if (failed(validateScalarReductionFunctionSignature(
-            op, reductionFunction, inputs.inputTensorType.getElementType(),
-            scalarReductionTensorType, signatureError))) {
-      return failWithRemark(signatureError);
-    }
+    RankedTensorType scalarReductionTensorType = RankedTensorType::get(
+      {}, inputs.inputTensorType.getElementType());
 
-    auto buildComputation = bindBuildReductionComputation(
-        reductionFunction, scalarReductionTensorType);
+    auto buildComputation = bindBuildReductionComputation(reductionBody,
+                                                          scalarReductionTensorType);
 
     auto buildCollectiveOp = [&](Value asyncTensorOperand,
                                  RegionBuilder &rb) -> void {
@@ -593,18 +533,13 @@ struct DistributedCollectiveReduceScatterToStablehloPattern
     }
     int scatter_dim = axis::getAxisDimIndex(tensor_axis_typed);
 
-    RankedTensorType scalarReductionTensorType;
-    std::string signatureError;
-    FlatSymbolRefAttr reductionFunction =
-        cast<FlatSymbolRefAttr>(op.getReductionFunctionsAttr()[0]);
-    if (failed(validateScalarReductionFunctionSignature(
-            op, reductionFunction, inputs.inputTensorType.getElementType(),
-            scalarReductionTensorType, signatureError))) {
-      return failWithRemark(signatureError);
-    }
+    auto &reductionBody = op.getReductionBodies()[0];
 
-    auto buildComputation = bindBuildReductionComputation(
-        reductionFunction, scalarReductionTensorType);
+    RankedTensorType scalarReductionTensorType = RankedTensorType::get(
+        {}, inputs.inputTensorType.getElementType());
+
+    auto buildComputation = bindBuildReductionComputation(reductionBody,
+                                scalarReductionTensorType);
 
     auto buildCollectiveOp = [&](Value asyncTensorOperand,
                                  RegionBuilder &rb) -> void {

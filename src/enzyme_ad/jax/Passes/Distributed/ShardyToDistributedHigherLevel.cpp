@@ -2,6 +2,7 @@
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Operation.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "llvm/Support/Debug.h"
@@ -22,16 +23,6 @@ namespace mlir::enzyme::distributed {
 
 namespace {
 
-template <typename T>
-llvm::SmallVector<T>
-flatten(const llvm::SmallVector<llvm::SmallVector<T>> &nested) {
-  llvm::SmallVector<T> flat;
-  for (const auto &inner : nested) {
-    flat.append(inner.begin(), inner.end());
-  }
-  return flat;
-}
-
 template <typename RangeT>
 static llvm::SmallVector<Value> asValues(const RangeT &groups) {
   llvm::SmallVector<Value> values;
@@ -47,6 +38,20 @@ dumpLogicalAxesForMainBlock(Block *mainBlock,
                             ShardyLogicalAxisAnalysis &axisAnalysis) {
   llvm::errs()
       << "[ShardyToDistributedHigherLevel] logical axes for main block\n";
+  for (BlockArgument arg : mainBlock->getArguments()) {
+    auto partitioningAxes = axisAnalysis.getTensorPartitionDims(arg);
+    llvm::errs() << "  arg: " << arg << "\n";
+    llvm::errs() << "    partitioning axes: ";
+    for (const auto &axis : *partitioningAxes) {
+      llvm::errs() << "[";
+      for (const auto &symbol : axis) {
+        llvm::errs() << "a" << symbol.getId() << ":" << symbol.getExtent()
+                     << " ";
+      }
+      llvm::errs() << "] ";
+    }
+    llvm::errs() << "\n";
+  }
   for (Operation &op : mainBlock->getOperations()) {
     auto partitioningAxes = axisAnalysis.getPartitioningAxes(&op);
 
@@ -75,33 +80,6 @@ static std::string getTypeSuffix(Type type) {
     }
   }
   return suffix;
-}
-
-static FlatSymbolRefAttr
-ensurePlaceholderAllReduceReductionFunction(ModuleOp moduleOp,
-                                            Type elementType) {
-  std::string symbolName =
-      ("_distributed_addscalar_" + getTypeSuffix(elementType));
-
-  if (!moduleOp.lookupSymbol<func::FuncOp>(symbolName)) {
-    OpBuilder builder(moduleOp.getContext());
-    builder.setInsertionPointToStart(moduleOp.getBody());
-
-    auto scalarTensorType = RankedTensorType::get({}, elementType);
-    auto reductionFnType = builder.getFunctionType(
-        {scalarTensorType, scalarTensorType}, {scalarTensorType});
-    auto reductionFn = builder.create<func::FuncOp>(
-        moduleOp.getLoc(), symbolName, reductionFnType);
-    reductionFn.setPrivate();
-
-    Block *entry = reductionFn.addEntryBlock();
-    builder.setInsertionPointToStart(entry);
-    auto add = builder.create<stablehlo::AddOp>(
-        moduleOp.getLoc(), entry->getArgument(0), entry->getArgument(1));
-    builder.create<func::ReturnOp>(moduleOp.getLoc(), add.getResult());
-  }
-
-  return FlatSymbolRefAttr::get(moduleOp.getContext(), symbolName);
 }
 
 mlir::RankedTensorType
@@ -139,9 +117,14 @@ struct ShardyToDistributedHigherLevelPass
 
   struct ShardConflict {
     OpResult value;
+    OpShardingRuleAndReductionKind shardingRule;
+    llvm::SmallVector<llvm::SmallVector<AxisSymbol>> producerPartitioningAxes;
+    RankedTensorType globalType;
     llvm::SmallVector<AxisSymbol> reductionAxes;
     llvm::SmallVector<OpOperand *> conflictingUses;
     llvm::SmallVector<OpOperand *> nonConflictingUses;
+    Value currentValue;
+    RankedTensorType currentValueType;
   };
 
   // optional just so we can have a default constructor. We will set this in
@@ -204,17 +187,17 @@ struct ShardyToDistributedHigherLevelPass
     return factor_group.getProduct();
   }
 
-  TV_FactorGroup getOpMesh(Operation *op) {
-    // the mesh is just the product of all partitioning axes
-    // attatched to the op.
-    auto partitioningAxes = axisAnalysis.getPartitioningAxes(op);
+  TV_FactorGroup getMeshForTensorPartitioning(
+      llvm::ArrayRef<llvm::SmallVector<AxisSymbol>> partitioningAxes) {
+    // The mesh is the product of the logical axis factors used to shard this
+    // specific tensor value.
     llvm::SmallVector<llvm::SmallVector<TV_AxisFactor>> logical_axes;
     logical_axes.reserve(partitioningAxes.size());
     for (const auto &axis : partitioningAxes) {
       logical_axes.push_back(getLogicalAxesForSymbols(axis));
     }
     auto product = axis_builder->create<mlir::enzyme::axis::AxisProductOp>(
-        *axis_loc, asValues(flatten(logical_axes)));
+        *axis_loc, asValues(flattenNested(logical_axes)));
     return product.getProduct();
   }
 
@@ -246,6 +229,10 @@ struct ShardyToDistributedHigherLevelPass
         }
         ShardConflict conflict;
         conflict.value = result;
+        conflict.shardingRule =
+            getOrSynthesizeOpShardingRule(result.getOwner());
+        conflict.producerPartitioningAxes = *maybeProducerSharded;
+        conflict.globalType = dyn_cast<RankedTensorType>(result.getType());
         conflict.reductionAxes = axisAnalysis.getReductionAxes(result);
         for (OpOperand &use : result.getUses()) {
           auto maybeConsumerSharded = axisAnalysis.getTensorPartitionDims(use);
@@ -270,84 +257,178 @@ struct ShardyToDistributedHigherLevelPass
     return conflicts;
   }
 
-  // Materializes collectives for each detected conflict, including local-shape
-  // typing and optional reduction setup when reduction axes are present.
+  // Replaces one operand use and inserts a cast only when the type must match.
+  void rewriteUseWithValue(OpBuilder &builder, Location loc, OpOperand *use,
+                           Value replacement) {
+    Type expectedUseType = use->get().getType();
+    Value valueForUse = replacement;
+    if (valueForUse.getType() != expectedUseType) {
+      builder.setInsertionPoint(use->getOwner());
+      valueForUse = builder
+                        .create<UnrealizedConversionCastOp>(
+                            loc, expectedUseType, valueForUse)
+                        .getResult(0);
+    }
+    use->set(valueForUse);
+  }
+
+  // Builds one collective+await pair and optionally clones a reduction region.
+  Value createCollectiveForConflict(
+      OpBuilder &builder, ShardConflict &conflict, TV_FactorGroup lhsMesh,
+      TV_FactorGroup lhsDims, TV_FactorGroup rhsMesh, TV_FactorGroup rhsDims,
+      Type collectiveOutputType, Value collectiveInput,
+      llvm::ArrayRef<TV_AxisFactor> collectiveReductionDims) {
+    llvm::SmallVector<Value> reductionGroupValues;
+    if (!collectiveReductionDims.empty()) {
+      auto reductionGroup =
+          builder
+              .create<mlir::enzyme::axis::AxisProductOp>(
+                  conflict.value.getLoc(), asValues(collectiveReductionDims))
+              .getProduct();
+      reductionGroupValues.push_back(reductionGroup);
+    }
+
+    auto mapping = builder.create<mlir::enzyme::axis::AxisMapOp>(
+        conflict.value.getLoc(), ValueRange{lhsDims}, ValueRange{rhsDims});
+    auto collectiveAndAwait =
+        mlir::enzyme::distributed::createCollectiveAndAwait(
+            builder, conflict.value.getLoc(), collectiveInput, lhsMesh, rhsMesh,
+            ValueRange(reductionGroupValues), mapping.getMap(),
+            collectiveOutputType);
+
+    if (!collectiveReductionDims.empty()) {
+      if (!conflict.globalType) {
+        conflict.value.getOwner()->emitError()
+            << "expected ranked tensor type when materializing reduction "
+               "collective";
+        return Value();
+      }
+      auto *reductionBody = conflict.shardingRule.getReductionBody(
+          conflict.globalType.getElementType());
+      if (!reductionBody) {
+        conflict.value.getOwner()->emitError()
+            << "expected reduction body metadata when materializing reduction "
+               "collective";
+        return Value();
+      }
+      IRMapping mapper;
+      reductionBody->cloneInto(
+          &collectiveAndAwait.collective.getReductionBodies()[0], mapper);
+    }
+
+    return collectiveAndAwait.await.getValue();
+  }
+
+  // Stage 1: materialize producer-layout reduction collectives and update
+  // state.
   LogicalResult
-  materializeCollectivesForConflicts(ModuleOp moduleOp,
-                                     llvm::ArrayRef<ShardConflict> conflicts) {
+  materializeCollectivesForReductions(ModuleOp moduleOp,
+                                      std::vector<ShardConflict> &conflicts) {
     OpBuilder builder(moduleOp.getContext());
 
-    // TODO this can be made more intelligent, either by
-    // improving collective creation here or optimizing downstream.
-    for (const ShardConflict &conflict : conflicts) {
-      // Need to insert unrealized type conversion for global type to local
-      // type.
-      auto partitioningAxes =
-          axisAnalysis.getTensorPartitionDims(conflict.value).value();
-      auto originalType = conflict.value.getType();
-      RankedTensorType globalType;
-      if (!(globalType = dyn_cast<RankedTensorType>(originalType))) {
-        conflict.value.getOwner()->emitError(
-            "Found non-ranked tensor type for sharded value ")
+    for (ShardConflict &conflict : conflicts) {
+      if (!conflict.globalType) {
+        conflict.value.getOwner()->emitError()
+            << "Found non-ranked tensor type for sharded value "
             << conflict.value;
         return failure();
       }
-      auto localType = toLocalType(globalType, partitioningAxes);
+
+      auto localType =
+          toLocalType(conflict.globalType, conflict.producerPartitioningAxes);
       builder.setInsertionPointAfterValue(conflict.value);
       auto unrealizedCast = builder.create<UnrealizedConversionCastOp>(
           conflict.value.getLoc(), localType, conflict.value);
-      auto localValue = unrealizedCast.getResult(0);
+      conflict.currentValue = unrealizedCast.getResult(0);
+      conflict.currentValueType = localType;
+
+      if (conflict.reductionAxes.empty()) {
+        continue;
+      }
 
       auto reductionDims = getLogicalAxesForSymbols(conflict.reductionAxes);
-      auto lhsDims = toLocallyTypedAxisProduct(localType, partitioningAxes);
-      auto lhsMesh = getOpMesh(conflict.value.getOwner());
+      auto lhsDims = toLocallyTypedAxisProduct(
+          localType, conflict.producerPartitioningAxes);
+            llvm::SmallVector<llvm::SmallVector<AxisSymbol>> lhsPartitioningAxes(
+              conflict.producerPartitioningAxes.begin(),
+              conflict.producerPartitioningAxes.end());
+            lhsPartitioningAxes.push_back(
+              llvm::SmallVector<AxisSymbol>(conflict.reductionAxes.begin(),
+                            conflict.reductionAxes.end()));
+            auto lhsMesh = getMeshForTensorPartitioning(lhsPartitioningAxes);
+          auto rhsMesh =
+            getMeshForTensorPartitioning(conflict.producerPartitioningAxes);
 
-      auto createCollective = [&](TV_FactorGroup rhsMesh,
-                                  TV_FactorGroup rhsDims,
-                                  Type collectiveOutputType) {
-        llvm::SmallVector<Value> reductionGroupValues;
-        llvm::SmallVector<Attribute> reductionFunctions;
-        if (!reductionDims.empty()) {
-          auto reductionGroup =
-              builder
-                  .create<mlir::enzyme::axis::AxisProductOp>(
-                      conflict.value.getLoc(), asValues(reductionDims))
-                  .getProduct();
-          reductionGroupValues.push_back(reductionGroup);
-          reductionFunctions.push_back(
-              ensurePlaceholderAllReduceReductionFunction(
-                  moduleOp, globalType.getElementType()));
-        }
-        auto mapping = builder.create<mlir::enzyme::axis::AxisMapOp>(
-            conflict.value.getLoc(), ValueRange{lhsDims}, ValueRange{rhsDims});
-        auto collectiveAndAwait =
-            mlir::enzyme::distributed::createCollectiveAndAwait(
-                builder, conflict.value.getLoc(), localValue, lhsMesh, rhsMesh,
-                ValueRange(reductionGroupValues),
-                builder.getArrayAttr(reductionFunctions), mapping.getMap(),
-                collectiveOutputType);
-        return collectiveAndAwait.await.getValue();
-      };
-      auto rewriteUseWithCollective = [&](OpOperand *use) {
-        auto rhsPartitioningAxes =
-            axisAnalysis.getTensorPartitionDims(*use).value();
-        auto rhsLocalType = toLocalType(globalType, rhsPartitioningAxes);
-        auto rhsDims =
-            toLocallyTypedAxisProduct(rhsLocalType, rhsPartitioningAxes);
-        auto rhsMesh = getOpMesh(use->getOwner());
-        Value collective = createCollective(rhsMesh, rhsDims, rhsLocalType);
-        Type expectedUseType = use->get().getType();
-        if (collective.getType() != expectedUseType) {
-          collective =
-              builder
-                  .create<UnrealizedConversionCastOp>(
-                      conflict.value.getLoc(), expectedUseType, collective)
-                  .getResult(0);
-        }
-        use->set(collective);
-      };
+      conflict.value.getOwner()->emitRemark("Found reduction axes for value ")
+          << conflict.value << " of op " << conflict.value.getOwner()
+          << ", inserting collective";
+
+        Value reducedValue = createCollectiveForConflict(
+          builder, conflict, lhsMesh, lhsDims, rhsMesh, lhsDims, localType,
+          conflict.currentValue, reductionDims);
+      if (!reducedValue) {
+        return failure();
+      }
+
+      conflict.currentValue = reducedValue;
+      conflict.reductionAxes.clear();
+      for (OpOperand *use : conflict.nonConflictingUses) {
+        rewriteUseWithValue(builder, conflict.value.getLoc(), use,
+                            conflict.currentValue);
+      }
+      // conflicting will be added in materializeCollectivesForConflicts
+      // when they look at the currentValue to find the already reduced ones.
+    }
+
+    return success();
+  }
+
+  // Stage 2: materialize layout collectives for uses that still conflict.
+  LogicalResult
+  materializeCollectivesForConflicts(ModuleOp moduleOp,
+                                     std::vector<ShardConflict> &conflicts) {
+    OpBuilder builder(moduleOp.getContext());
+
+    for (ShardConflict &conflict : conflicts) {
+      if (!conflict.currentValue || !conflict.globalType ||
+          !conflict.currentValueType) {
+        conflict.value.getOwner()->emitError()
+            << "missing conflict state before layout collective "
+               "materialization";
+        return failure();
+      }
+
+        auto lhsMesh =
+          getMeshForTensorPartitioning(conflict.producerPartitioningAxes);
+      auto lhsDims = toLocallyTypedAxisProduct(
+          conflict.currentValueType, conflict.producerPartitioningAxes);
+
+      for (OpOperand *use : conflict.nonConflictingUses) {
+        rewriteUseWithValue(builder, conflict.value.getLoc(), use,
+                            conflict.currentValue);
+      }
+
       for (OpOperand *use : conflict.conflictingUses) {
-        rewriteUseWithCollective(use);
+        builder.setInsertionPoint(use->getOwner());
+        auto rhsPartitioningAxes = axisAnalysis.getTensorPartitionDims(*use);
+        if (!rhsPartitioningAxes) {
+          use->getOwner()->emitError()
+              << "missing partitioning axes for conflicting use";
+          return failure();
+        }
+
+        auto rhsLocalType =
+            toLocalType(conflict.globalType, *rhsPartitioningAxes);
+        auto rhsDims =
+            toLocallyTypedAxisProduct(rhsLocalType, *rhsPartitioningAxes);
+        auto rhsMesh = getMeshForTensorPartitioning(*rhsPartitioningAxes);
+        Value collective = createCollectiveForConflict(
+            builder, conflict, lhsMesh, lhsDims, rhsMesh, rhsDims, rhsLocalType,
+            conflict.currentValue, {});
+        if (!collective) {
+          return failure();
+        }
+        rewriteUseWithValue(builder, conflict.value.getLoc(), use, collective);
       }
     }
 
@@ -395,7 +476,7 @@ struct ShardyToDistributedHigherLevelPass
 
     // prep for building axes
     axis_builder = OpBuilder(module_op.getContext());
-    axis_builder->setInsertionPointToStart(&module_op.getBodyRegion().front());
+    axis_builder->setInsertionPointToStart(mainBlock);
     axis_loc = mainFunc.getLoc();
 
     axisAnalysis = ShardyLogicalAxisAnalysis(mainFunc);
@@ -428,7 +509,13 @@ struct ShardyToDistributedHigherLevelPass
     // Step 2: collect all use-site sharding conflicts and reduction needs.
     std::vector<ShardConflict> conflicts = collectShardConflicts(mainBlock);
 
-    // Step 3: materialize collectives for each conflict.
+    // Step 3: materialize reduction collectives in producer layout.
+    if (failed(materializeCollectivesForReductions(module_op, conflicts))) {
+      signalPassFailure();
+      return;
+    }
+
+    // Step 4: materialize layout collectives for remaining conflicts.
     if (failed(materializeCollectivesForConflicts(module_op, conflicts))) {
       signalPassFailure();
       return;
