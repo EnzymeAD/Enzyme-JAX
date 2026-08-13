@@ -25,44 +25,46 @@ decltype(MPI_Bcast) *EXLA_MPI_Bcast = &MPI_Bcast;
 
 size_t EXLA_MPI_STATUS_SIZE = MPI_STATUS_SIZE;
 
-void enzymexla_set_mpi_comm_rank(void *ptr) {
+extern "C" MLIR_CAPI_EXPORTED void enzymexla_set_mpi_comm_rank(void *ptr) {
   EXLA_MPI_Comm_rank = reinterpret_cast<decltype(MPI_Comm_rank) *>(ptr);
 }
-void enzymexla_set_mpi_comm_size(void *ptr) {
+extern "C" MLIR_CAPI_EXPORTED void enzymexla_set_mpi_comm_size(void *ptr) {
   EXLA_MPI_Comm_size = reinterpret_cast<decltype(MPI_Comm_size) *>(ptr);
 }
-void enzymexla_set_mpi_comm_split(void *ptr) {
+extern "C" MLIR_CAPI_EXPORTED void enzymexla_set_mpi_comm_split(void *ptr) {
   EXLA_MPI_Comm_split = reinterpret_cast<decltype(MPI_Comm_split) *>(ptr);
 }
-void enzymexla_set_mpi_barrier(void *ptr) {
+extern "C" MLIR_CAPI_EXPORTED void enzymexla_set_mpi_barrier(void *ptr) {
   EXLA_MPI_Barrier = reinterpret_cast<decltype(MPI_Barrier) *>(ptr);
 }
-void enzymexla_set_mpi_send(void *ptr) {
+extern "C" MLIR_CAPI_EXPORTED void enzymexla_set_mpi_send(void *ptr) {
   EXLA_MPI_Send = reinterpret_cast<decltype(MPI_Send) *>(ptr);
 }
-void enzymexla_set_mpi_isend(void *ptr) {
+extern "C" MLIR_CAPI_EXPORTED void enzymexla_set_mpi_isend(void *ptr) {
   EXLA_MPI_Isend = reinterpret_cast<decltype(MPI_Isend) *>(ptr);
 }
-void enzymexla_set_mpi_recv(void *ptr) {
+extern "C" MLIR_CAPI_EXPORTED void enzymexla_set_mpi_recv(void *ptr) {
   EXLA_MPI_Recv = reinterpret_cast<decltype(MPI_Recv) *>(ptr);
 }
-void enzymexla_set_mpi_irecv(void *ptr) {
+extern "C" MLIR_CAPI_EXPORTED void enzymexla_set_mpi_irecv(void *ptr) {
   EXLA_MPI_Irecv = reinterpret_cast<decltype(MPI_Irecv) *>(ptr);
 }
-void enzymexla_set_mpi_wait(void *ptr) {
+extern "C" MLIR_CAPI_EXPORTED void enzymexla_set_mpi_wait(void *ptr) {
   EXLA_MPI_Wait = reinterpret_cast<decltype(MPI_Wait) *>(ptr);
 }
-void enzymexla_set_mpi_waitall(void *ptr) {
+extern "C" MLIR_CAPI_EXPORTED void enzymexla_set_mpi_waitall(void *ptr) {
   EXLA_MPI_Waitall = reinterpret_cast<decltype(MPI_Waitall) *>(ptr);
 }
-void enzymexla_set_mpi_allreduce(void *ptr) {
+extern "C" MLIR_CAPI_EXPORTED void enzymexla_set_mpi_allreduce(void *ptr) {
   EXLA_MPI_Allreduce = reinterpret_cast<decltype(MPI_Allreduce) *>(ptr);
 }
-void enzymexla_set_mpi_bcast(void *ptr) {
+extern "C" MLIR_CAPI_EXPORTED void enzymexla_set_mpi_bcast(void *ptr) {
   EXLA_MPI_Bcast = reinterpret_cast<decltype(MPI_Bcast) *>(ptr);
 }
 
-void enzymexla_set_mpi_status_size(size_t size) { EXLA_MPI_STATUS_SIZE = size; }
+extern "C" MLIR_CAPI_EXPORTED void enzymexla_set_mpi_status_size(size_t size) {
+  EXLA_MPI_STATUS_SIZE = size;
+}
 
 namespace enzymexla::ffi_internal {
 namespace ffi = xla::ffi;
