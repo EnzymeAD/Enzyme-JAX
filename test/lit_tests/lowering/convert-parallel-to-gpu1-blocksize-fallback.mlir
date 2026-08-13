@@ -115,3 +115,59 @@ module {
 // CHECK: gpu.thread_id y
 // CHECK: gpu.thread_id z
 // CHECK-NOT: gpu.thread_id
+
+// -----
+
+// The grid and block parallels of a barrier-free kernel are fused into one op,
+// and dimensions of extent one are dropped: five bounds carrying the wrapper's
+// six. The exact-shape split still applies, reinstating the dropped grid.z.
+
+module {
+  func.func @fused_unit_dim(%gx: index, %gy: index, %bx: index, %by: index, %bz: index, %out: memref<?xf64>, %v: f64) {
+    %c1 = arith.constant 1 : index
+    %c0 = arith.constant 0 : index
+    %w = "enzymexla.gpu_wrapper"(%gx, %gy, %c1, %bx, %by, %bz) ({
+      scf.parallel (%i0, %i1, %i2, %i3, %i4) = (%c0, %c0, %c0, %c0, %c0) to (%gx, %gy, %bx, %by, %bz) step (%c1, %c1, %c1, %c1, %c1) {
+        memref.store %v, %out[%i0] : memref<?xf64>
+        scf.reduce
+      }
+      "enzymexla.polygeist_yield"() : () -> ()
+    }) : (index, index, index, index, index, index) -> index
+    return
+  }
+}
+
+// CHECK-LABEL: func.func @fused_unit_dim(
+// CHECK-SAME: %[[GX:[^ :]+]]: index, %[[GY:[^ :]+]]: index, %[[BX:[^ :]+]]: index, %[[BY:[^ :]+]]: index, %[[BZ:[^ :]+]]: index
+// CHECK: enzymexla.alternatives
+// CHECK: gpu.launch blocks(%{{.+}}, %{{.+}}, %{{.+}}) in (%{{.+}} = %[[GX]], %{{.+}} = %[[GY]], %{{.+}} = %{{.+}}) threads(%{{.+}}, %{{.+}}, %{{.+}}) in (%{{.+}} = %[[BX]], %{{.+}} = %[[BY]], %{{.+}} = %[[BZ]])
+// CHECK: alternatives.descs = ["block_size=-1,"]
+
+// -----
+
+// Folding the `k >= N` guard into the loop narrows a bound to a min against the
+// kernel's own trip count. That is still the wrapper's dimension, and the
+// narrowed bound is the one the launch is built from.
+
+module {
+  func.func @min_narrowed_bound(%gx: index, %gy: index, %bx: index, %by: index, %n: index, %out: memref<?xf64>, %v: f64) {
+    %c1 = arith.constant 1 : index
+    %c0 = arith.constant 0 : index
+    %t = arith.minsi %n, %gx : index
+    %w = "enzymexla.gpu_wrapper"(%gx, %gy, %c1, %bx, %by, %c1) ({
+      scf.parallel (%i0, %i1, %i2, %i3) = (%c0, %c0, %c0, %c0) to (%t, %gy, %bx, %by) step (%c1, %c1, %c1, %c1) {
+        memref.store %v, %out[%i0] : memref<?xf64>
+        scf.reduce
+      }
+      "enzymexla.polygeist_yield"() : () -> ()
+    }) : (index, index, index, index, index, index) -> index
+    return
+  }
+}
+
+// CHECK-LABEL: func.func @min_narrowed_bound(
+// CHECK-SAME: %[[GX:[^ :]+]]: index, %[[GY:[^ :]+]]: index, %[[BX:[^ :]+]]: index, %[[BY:[^ :]+]]: index
+// CHECK: %[[T:.+]] = arith.minsi
+// CHECK: enzymexla.alternatives
+// CHECK: gpu.launch blocks(%{{.+}}, %{{.+}}, %{{.+}}) in (%{{.+}} = %[[T]], %{{.+}} = %[[GY]], %{{.+}} = %{{.+}}) threads(%{{.+}}, %{{.+}}, %{{.+}}) in (%{{.+}} = %[[BX]], %{{.+}} = %[[BY]], %{{.+}} = %{{.+}})
+// CHECK: alternatives.descs = ["block_size=-1,"]

@@ -172,6 +172,46 @@ template <int S = 3> SmallVector<Value, S> getUpperBounds(scf::ParallelOp pop) {
   return bounds;
 }
 
+/// Whether `ub` is the launch bound `bound`, possibly narrowed by a min against
+/// the kernel's own trip count -- folding the `k >= N` guard into the loop
+/// makes the bound `min(N, bound)`. The narrowed bound is the real iteration
+/// space, so the launch is built from it, not from `bound`.
+bool boundMatchesLaunch(Value ub, Value bound) {
+  if (ub == bound)
+    return true;
+  if (auto mn = ub.getDefiningOp<arith::MinSIOp>())
+    return mn.getLhs() == bound || mn.getRhs() == bound;
+  if (auto mn = ub.getDefiningOp<arith::MinUIOp>())
+    return mn.getLhs() == bound || mn.getRhs() == bound;
+  return false;
+}
+
+/// Match the dimensions of `pop` against the six grid and block bounds of
+/// `wrapper`, filling `dimOf` with the dimension of `pop` that carries each
+/// bound, or -1 for a bound of extent one that `pop` does not carry. Passes
+/// that fuse the grid and block parallels drop such trivial dimensions, so an
+/// exact-shape match must tolerate their absence.
+bool matchWrapperShape(scf::ParallelOp pop, enzymexla::GPUWrapperOp wrapper,
+                       SmallVectorImpl<int> &dimOf) {
+  auto bounds = wrapper.getOperands();
+  if (bounds.size() != 6)
+    return false;
+  auto ubs = pop.getUpperBound();
+  unsigned next = 0;
+  for (Value bound : bounds) {
+    if (next < ubs.size() && boundMatchesLaunch(ubs[next], bound)) {
+      dimOf.push_back(next++);
+      continue;
+    }
+    if (matchPattern(bound, m_One())) {
+      dimOf.push_back(-1);
+      continue;
+    }
+    return false;
+  }
+  return next == ubs.size();
+}
+
 void insertReturn(PatternRewriter &rewriter, func::FuncOp f) {
   func::ReturnOp::create(rewriter, rewriter.getUnknownLoc());
 }
@@ -505,7 +545,8 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
         curRegion++;
       }
     };
-    auto exactMatch = [&](enzymexla::AlternativesOp alternativesOp) {
+    auto exactMatch = [&](enzymexla::AlternativesOp alternativesOp,
+                          ArrayRef<int> dimOf) {
       auto block = &*alternativesOp->getRegion(curRegion).begin();
       rewriter.setInsertionPointToStart(block);
       // TODO not very efficient...
@@ -515,26 +556,40 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
           getDirectlyNestedSingleParallel(newWrapper.getBody());
       auto loc = pop->getLoc();
 
-      auto upperBounds = getUpperBounds<6>(pop);
-
       mlir::OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPoint(pop);
-      auto gridPop = scf::ParallelOp::create(
-          rewriter, loc, pop.getLowerBound().slice(0, 3),
-          pop.getUpperBound().slice(0, 3), pop.getStep().slice(0, 3));
+      Value zero = arith::ConstantIndexOp::create(rewriter, loc, 0);
+      Value one = arith::ConstantIndexOp::create(rewriter, loc, 1);
+
+      SmallVector<Value, 3> lbs[2], ubs[2], steps[2];
+      for (unsigned i = 0; i < 6; i++) {
+        unsigned half = i / 3;
+        if (dimOf[i] < 0) {
+          lbs[half].push_back(zero);
+          ubs[half].push_back(one);
+          steps[half].push_back(one);
+        } else {
+          lbs[half].push_back(pop.getLowerBound()[dimOf[i]]);
+          ubs[half].push_back(pop.getUpperBound()[dimOf[i]]);
+          steps[half].push_back(pop.getStep()[dimOf[i]]);
+        }
+      }
+
+      auto gridPop =
+          scf::ParallelOp::create(rewriter, loc, lbs[0], ubs[0], steps[0]);
       rewriter.setInsertionPointToStart(gridPop.getBody());
-      auto blockPop = scf::ParallelOp::create(
-          rewriter, loc, pop.getLowerBound().slice(3, 3),
-          pop.getUpperBound().slice(3, 3), pop.getStep().slice(3, 3));
+      auto blockPop =
+          scf::ParallelOp::create(rewriter, loc, lbs[1], ubs[1], steps[1]);
       rewriter.setInsertionPointToStart(blockPop.getBody());
 
       IRMapping mapping;
-      for (unsigned i = 0; i < 3; i++)
-        mapping.map(pop.getBody()->getArgument(i),
-                    gridPop.getBody()->getArgument(i));
-      for (unsigned i = 0; i < 3; i++)
-        mapping.map(pop.getBody()->getArgument(i + 3),
-                    blockPop.getBody()->getArgument(i));
+      for (unsigned i = 0; i < 6; i++) {
+        if (dimOf[i] < 0)
+          continue;
+        auto newPop = i < 3 ? gridPop : blockPop;
+        mapping.map(pop.getBody()->getArgument(dimOf[i]),
+                    newPop.getBody()->getArgument(i % 3));
+      }
 
       rewriter.eraseOp(pop.getBody()->getTerminator());
       for (auto &op : *pop.getBody())
@@ -546,6 +601,9 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
       curRegion++;
     };
 
+    SmallVector<int, 6> exactDims;
+    bool hasExactMatch = matchWrapperShape(pop, wrapper, exactDims);
+
     enzymexla::AlternativesOp alternativesOp = nullptr;
     if (char *blockSizeStr = getenv("POLYGEIST_GPU_KERNEL_BLOCK_SIZE")) {
       alternativesOp = enzymexla::AlternativesOp::create(rewriter, loc, 1);
@@ -556,9 +614,8 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
       emitAlternative(atoi(blockSizeStr), alternativesOp);
       if (curRegion == 0) {
         llvm::errs() << " Failed to make kernel with exact dimension\n";
-        if (pop.getUpperBound().size() == 6 &&
-            pop.getUpperBound() == wrapper.getOperands()) {
-          exactMatch(alternativesOp);
+        if (hasExactMatch) {
+          exactMatch(alternativesOp, exactDims);
         } else if (pop->hasAttr("enzymexla.kernel_thread_indices")) {
           // The exact-shape fallback needs the six grid and block bounds;
           // a collapsed parallel op does not have them, so reproduce the
@@ -578,19 +635,15 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
                               rewriter.getArrayAttr(descs));
     } else if (shouldEmitAlternatives(pop)) {
       alternativesOp = enzymexla::AlternativesOp::create(
-          rewriter, loc,
-          ALTERNATIVE_KERNEL_BLOCK_SIZES.size() +
-              (pop.getUpperBound().size() == 6 &&
-               pop.getUpperBound() == wrapper.getOperands()));
+          rewriter, loc, ALTERNATIVE_KERNEL_BLOCK_SIZES.size() + hasExactMatch);
       alternativesOp->setAttr("alternatives.type",
                               rewriter.getStringAttr("gpu_kernel"));
       for (unsigned blockSize : ALTERNATIVE_KERNEL_BLOCK_SIZES) {
         emitAlternative(blockSize, alternativesOp);
       }
       assert(wrapper.getOperands().size() == 6);
-      if (pop.getUpperBound().size() == 6 &&
-          pop.getUpperBound() == wrapper.getOperands()) {
-        exactMatch(alternativesOp);
+      if (hasExactMatch) {
+        exactMatch(alternativesOp, exactDims);
       }
       alternativesOp->setAttr("alternatives.descs",
                               rewriter.getArrayAttr(descs));
