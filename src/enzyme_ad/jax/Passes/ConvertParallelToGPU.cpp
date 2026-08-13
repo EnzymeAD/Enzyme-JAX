@@ -1914,7 +1914,15 @@ struct ParallelToGPULaunch : public OpRewritePattern<enzymexla::GPUWrapperOp> {
     }
     rewriter.eraseOp(yieldOp);
 
+    // A barrier nested in a parallel op that remains after mapping
+    // synchronizes that parallel's iterations, not the launch's threads; it
+    // is serialized together with its parallel by distributing the loop at
+    // the barrier, which needs the enzymexla barrier and its operands.
     launchBlock->walk([&](mlir::enzymexla::BarrierOp op) {
+      for (Operation *parent = op->getParentOp(); parent != launchOp;
+           parent = parent->getParentOp())
+        if (isa<scf::ParallelOp>(parent))
+          return;
       rewriter.setInsertionPoint(op);
       rewriter.replaceOpWithNewOp<gpu::BarrierOp>(op);
     });

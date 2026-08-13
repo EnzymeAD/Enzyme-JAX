@@ -154,7 +154,9 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       if (getenv("REACTANT_OMP")) {
         pass_pipeline += ",convert-scf-to-openmp,";
       } else {
-        pass_pipeline += ",parallel-serialization,";
+        // Serializing a parallel that contains barriers is only correct
+        // once the loop is distributed at each barrier.
+        pass_pipeline += ",cpuify{method=distribute},parallel-serialization,";
       }
       pass_pipeline += "canonicalize-parallel,hoist-allocas,convert-polygeist-to-llvm{backend=";
       pass_pipeline += backend;
@@ -219,7 +221,9 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       if (getenv("REACTANT_OMP")) {
         pass_pipeline += ",convert-scf-to-openmp,";
       } else {
-	      pass_pipeline += ",parallel-serialization,";
+        // Serializing a parallel that contains barriers is only correct
+        // once the loop is distributed at each barrier.
+        pass_pipeline += ",cpuify{method=distribute},parallel-serialization,";
       }
       pass_pipeline += "canonicalize-parallel,hoist-allocas,convert-polygeist-to-llvm{backend=";
       pass_pipeline += backend;
