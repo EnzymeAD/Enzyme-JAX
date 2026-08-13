@@ -1187,9 +1187,15 @@ struct ParallelizeBlockOps : public OpRewritePattern<scf::ParallelOp> {
     it++;
 
     // Handle ops after the parallel
-    {
-      auto zeroindex = arith::ConstantIndexOp::create(rewriter, loc, 0);
+    bool anyAfter = false;
+    for (auto probe = it; probe != end; ++probe)
+      if (!pinned.count(&*probe))
+        anyAfter = true;
+    if (anyAfter) {
       rewriter.setInsertionPoint(innerBlock->getTerminator());
+      mlir::enzymexla::BarrierOp::create(rewriter, loc,
+                                         innerBlock->getArguments());
+      auto zeroindex = arith::ConstantIndexOp::create(rewriter, loc, 0);
       auto cmpOp =
           arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::eq,
                                 zeroindex, innerBlock->getArgument(0));
