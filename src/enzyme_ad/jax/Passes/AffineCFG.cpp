@@ -7,12 +7,14 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Utils/StaticValueUtils.h"
 #include "mlir/IR/Dominance.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/IntegerSet.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
+#include "mlir/Interfaces/LoopLikeInterface.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "src/enzyme_ad/jax/Passes/AffineUtils.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
@@ -5799,6 +5801,25 @@ static bool definedOutside(Value v, Operation *op) {
 /// proceeds by moving the operations in the backward slide of a `load` that
 /// are dominated by the `if` into both the "then" and the "else" branch, as
 /// long as all operations are pure.
+static bool guaranteedAtLeastOneIteration(Operation *op) {
+  auto loop = dyn_cast<LoopLikeOpInterface>(op);
+  if (!loop)
+    return false;
+  auto lbs = loop.getLoopLowerBounds();
+  auto ubs = loop.getLoopUpperBounds();
+  auto steps = loop.getLoopSteps();
+  if (!lbs || !ubs || !steps)
+    return false;
+  for (auto [lb, ub, step] : llvm::zip_equal(*lbs, *ubs, *steps)) {
+    auto lbc = getConstantIntValue(lb);
+    auto ubc = getConstantIntValue(ub);
+    auto stepc = getConstantIntValue(step);
+    if (!lbc || !ubc || !stepc || *stepc <= 0 || *lbc >= *ubc)
+      return false;
+  }
+  return true;
+}
+
 class LiftMemrefRead : public OpRewritePattern<memref::LoadOp> {
 public:
   using OpRewritePattern<memref::LoadOp>::OpRewritePattern;
@@ -5820,6 +5841,14 @@ public:
         conditional->getNumResults() == 0)
       return rewriter.notifyMatchFailure(
           loadOp, "not dependent on a conditional result");
+
+    Operation *outer = loadOp->getParentOp();
+    while (outer->getNumRegions() == 1 && outer->getRegion(0).hasOneBlock() &&
+           guaranteedAtLeastOneIteration(outer))
+      outer = outer->getParentOp();
+    if (outer->getNumRegions() != 1 || !outer->getRegion(0).hasOneBlock())
+      return rewriter.notifyMatchFailure(
+          loadOp, "load's parent may not execute it unconditionally");
 
     auto toLift = llvm::filter_to_vector(backwardSlice, [&](Operation *op) {
       return dominance.properlyDominates(conditional, op);
@@ -5853,6 +5882,12 @@ public:
         }
       }
       assert(postOp);
+      if (!outer->isAncestor(postOp))
+        return rewriter.notifyMatchFailure(
+            loadOp,
+            "load's parent does not enclose the position the load moves to, "
+            "so the load may be guarded by control flow that position is "
+            "not");
       toLift = llvm::filter_to_vector(backwardSlice, [&](Operation *op) {
         return dominance.dominates(postOp, op);
       });
@@ -5905,6 +5940,11 @@ public:
           BlockRange(), regions);
       conditional = conditional2;
     } else {
+      if (!outer->isAncestor(conditional))
+        return rewriter.notifyMatchFailure(
+            loadOp,
+            "load's parent does not enclose the conditional, so the load may "
+            "be guarded by control flow the conditional is not");
       for (auto i = 0; i < conditional->getNumResults(); i++)
         resultsNeeded.insert(i);
 
