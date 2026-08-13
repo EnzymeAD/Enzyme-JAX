@@ -4,6 +4,7 @@
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Operation.h"
+#include "mlir/IR/OperationSupport.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
@@ -14,6 +15,7 @@
 #include "src/enzyme_ad/jax/Passes/Distributed/ShardyLogicalAxisAnalysis.h"
 
 #include <cctype>
+#include <optional>
 #include <string>
 
 namespace mlir::enzyme::distributed {
@@ -201,12 +203,149 @@ struct ShardyToDistributedHigherLevelPass
     return product.getProduct();
   }
 
+  // Normalizes one logical symbol into a single-factor group for
+  // distributed.function partitioning_axes metadata.
+  TV_FactorGroup getOrCreatePartitioningAxisGroup(AxisSymbol symbol) {
+    auto factor = getOrCreateLogicalAxisForSymbol(symbol);
+    return axis::viewFactorsAsProduct(ValueRange{factor}, *axis_builder,
+                                      *axis_loc);
+  }
+
+  IndexedTensorShardingAttr buildIndexedShardingAttr(
+      RankedTensorType tensorType,
+      const ShardyLogicalAxisAnalysis::TensorAxesToPartitionAxes
+          &partitioningDims,
+      llvm::DenseMap<AxisSymbol, int64_t> &symbolToPartitioningAxisIdx) {
+    auto *ctx = &getContext();
+    SmallVector<DenseI64ArrayAttr> dimPartitioningAxes;
+    dimPartitioningAxes.reserve(tensorType.getRank());
+
+    for (int64_t dimIdx = 0; dimIdx < tensorType.getRank(); ++dimIdx) {
+      SmallVector<int64_t> partitioningAxisIndices;
+      if (dimIdx < static_cast<int64_t>(partitioningDims.size())) {
+        for (AxisSymbol symbol : partitioningDims[dimIdx]) {
+          auto [it, inserted] = symbolToPartitioningAxisIdx.try_emplace(
+              symbol, symbolToPartitioningAxisIdx.size());
+          (void)inserted;
+          partitioningAxisIndices.push_back(it->second);
+        }
+      }
+      dimPartitioningAxes.push_back(
+          DenseI64ArrayAttr::get(ctx, partitioningAxisIndices));
+    }
+
+    return IndexedTensorShardingAttr::get(
+        ctx, dimPartitioningAxes,
+        DenseI64ArrayAttr::get(ctx, llvm::ArrayRef<int64_t>{}));
+  }
+
+  LogicalResult convertMainToDistributedFunction(ModuleOp moduleOp,
+                                                 func::FuncOp mainFunc,
+                                                 Block *&mainBlock,
+                                                 Operation *&mainScopeOp) {
+    auto *ctx = &getContext();
+    auto returnOp = dyn_cast<func::ReturnOp>(mainBlock->getTerminator());
+    if (!returnOp) {
+      mainFunc.emitError() << "expected main terminator to be func.return";
+      return failure();
+    }
+
+    llvm::DenseMap<AxisSymbol, int64_t> symbolToPartitioningAxisIdx;
+
+    SmallVector<IndexedTensorShardingAttr> argumentShardings;
+    argumentShardings.reserve(mainBlock->getNumArguments());
+    for (BlockArgument arg : mainBlock->getArguments()) {
+      auto tensorType = dyn_cast<RankedTensorType>(arg.getType());
+      if (!tensorType) {
+        argumentShardings.push_back(IndexedTensorShardingAttr::get(
+            ctx, SmallVector<DenseI64ArrayAttr>{},
+            DenseI64ArrayAttr::get(ctx, llvm::ArrayRef<int64_t>{})));
+        continue;
+      }
+
+      auto maybePartitioning = axisAnalysis.getTensorPartitionDims(arg);
+      if (!maybePartitioning) {
+        mainFunc.emitError()
+            << "missing partitioning mapping for block argument "
+            << arg.getArgNumber();
+        return failure();
+      }
+
+      argumentShardings.push_back(buildIndexedShardingAttr(
+          tensorType, *maybePartitioning, symbolToPartitioningAxisIdx));
+    }
+
+    SmallVector<IndexedTensorShardingAttr> outputShardings;
+    outputShardings.reserve(returnOp.getNumOperands());
+    for (OpOperand &operand : returnOp->getOpOperands()) {
+      auto tensorType = dyn_cast<RankedTensorType>(operand.get().getType());
+      if (!tensorType) {
+        outputShardings.push_back(IndexedTensorShardingAttr::get(
+            ctx, SmallVector<DenseI64ArrayAttr>{},
+            DenseI64ArrayAttr::get(ctx, llvm::ArrayRef<int64_t>{})));
+        continue;
+      }
+
+      auto maybePartitioning = axisAnalysis.getTensorPartitionDims(operand);
+      if (!maybePartitioning) {
+        mainFunc.emitError() << "missing partitioning mapping for return "
+                                "operand "
+                             << operand.getOperandNumber();
+        return failure();
+      }
+
+      outputShardings.push_back(buildIndexedShardingAttr(
+          tensorType, *maybePartitioning, symbolToPartitioningAxisIdx));
+    }
+
+    // Rebuild the partitioning axes in index order.
+    SmallVector<Value> orderedPartitioningAxes(
+        symbolToPartitioningAxisIdx.size());
+    for (const auto &[symbol, idx] : symbolToPartitioningAxisIdx) {
+      orderedPartitioningAxes[idx] = getOrCreatePartitioningAxisGroup(symbol);
+    }
+
+    auto argShardingsAttr = IndexedTensorShardingPerValueAttr::get(
+        ctx, argumentShardings);
+    auto outputShardingsAttr =
+        IndexedTensorShardingPerValueAttr::get(ctx, outputShardings);
+
+    OpBuilder builder(moduleOp.getContext());
+    builder.setInsertionPoint(mainFunc);
+
+    auto distributedFunction = builder.create<DistributedFunctionOp>(
+        mainFunc.getLoc(), mainFunc.getSymNameAttr(),
+        TypeAttr::get(mainFunc.getFunctionType()),
+        ValueRange(orderedPartitioningAxes), argShardingsAttr,
+        outputShardingsAttr, mainFunc.getSymVisibilityAttr(),
+        mainFunc.getArgAttrsAttr(), mainFunc.getResAttrsAttr());
+    distributedFunction.getBody().takeBody(mainFunc.getBody());
+    mainBlock = &distributedFunction.getBody().front();
+
+    auto movedReturnOp = dyn_cast<func::ReturnOp>(mainBlock->getTerminator());
+    if (!movedReturnOp) {
+      distributedFunction.emitError()
+          << "expected moved main block to end with func.return";
+      return failure();
+    }
+
+    builder.setInsertionPoint(movedReturnOp);
+    auto yieldOp = builder.create<DistributedYieldOp>(movedReturnOp.getLoc(),
+                                                      movedReturnOp.getOperands());
+    axisAnalysis.markRewrite(movedReturnOp, yieldOp);
+    movedReturnOp.erase();
+
+    mainScopeOp = distributedFunction;
+    mainFunc.erase();
+    return success();
+  }
+
   // Removes existing `sdy.reshard` ops and forwards their input values.
   // We rebuild reshards as explicit collectives later once all conflicts are
   // known.
-  void removeExistingReshards(func::FuncOp mainFunc) {
+  void removeExistingReshards(Operation *scopeOp) {
     std::vector<sdy::ReshardOp> toRemove;
-    mainFunc.walk([&](sdy::ReshardOp reshardOp) {
+    scopeOp->walk([&](sdy::ReshardOp reshardOp) {
       toRemove.push_back(reshardOp);
       reshardOp.getResult().replaceAllUsesWith(reshardOp.getInput());
     });
@@ -349,21 +488,20 @@ struct ShardyToDistributedHigherLevelPass
       auto reductionDims = getLogicalAxesForSymbols(conflict.reductionAxes);
       auto lhsDims = toLocallyTypedAxisProduct(
           localType, conflict.producerPartitioningAxes);
-            llvm::SmallVector<llvm::SmallVector<AxisSymbol>> lhsPartitioningAxes(
-              conflict.producerPartitioningAxes.begin(),
-              conflict.producerPartitioningAxes.end());
-            lhsPartitioningAxes.push_back(
-              llvm::SmallVector<AxisSymbol>(conflict.reductionAxes.begin(),
-                            conflict.reductionAxes.end()));
-            auto lhsMesh = getMeshForTensorPartitioning(lhsPartitioningAxes);
-          auto rhsMesh =
-            getMeshForTensorPartitioning(conflict.producerPartitioningAxes);
+      llvm::SmallVector<llvm::SmallVector<AxisSymbol>> lhsPartitioningAxes(
+          conflict.producerPartitioningAxes.begin(),
+          conflict.producerPartitioningAxes.end());
+      lhsPartitioningAxes.push_back(llvm::SmallVector<AxisSymbol>(
+          conflict.reductionAxes.begin(), conflict.reductionAxes.end()));
+      auto lhsMesh = getMeshForTensorPartitioning(lhsPartitioningAxes);
+      auto rhsMesh =
+          getMeshForTensorPartitioning(conflict.producerPartitioningAxes);
 
       conflict.value.getOwner()->emitRemark("Found reduction axes for value ")
           << conflict.value << " of op " << conflict.value.getOwner()
           << ", inserting collective";
 
-        Value reducedValue = createCollectiveForConflict(
+      Value reducedValue = createCollectiveForConflict(
           builder, conflict, lhsMesh, lhsDims, rhsMesh, lhsDims, localType,
           conflict.currentValue, reductionDims);
       if (!reducedValue) {
@@ -398,7 +536,7 @@ struct ShardyToDistributedHigherLevelPass
         return failure();
       }
 
-        auto lhsMesh =
+      auto lhsMesh =
           getMeshForTensorPartitioning(conflict.producerPartitioningAxes);
       auto lhsDims = toLocallyTypedAxisProduct(
           conflict.currentValueType, conflict.producerPartitioningAxes);
@@ -476,7 +614,7 @@ struct ShardyToDistributedHigherLevelPass
 
     // prep for building axes
     axis_builder = OpBuilder(module_op.getContext());
-    axis_builder->setInsertionPointToStart(mainBlock);
+    axis_builder->setInsertionPointToStart(&module_op.getBodyRegion().front());
     axis_loc = mainFunc.getLoc();
 
     axisAnalysis = ShardyLogicalAxisAnalysis(mainFunc);
@@ -485,41 +623,33 @@ struct ShardyToDistributedHigherLevelPass
       dumpLogicalAxesForMainBlock(mainBlock, axisAnalysis);
     }
 
-    // After partition axis discovery, we have introduced more axes and possibly
-    // discovered some points where we cannot merge axes due to incompatible
-    // factorization or other constraints. Therefore, our next step is to:
-    // - rewrite any reshards into our collectives
-    // - find any other SSA reshards with incompatible factorization and/or
-    // any reduction axes and insert a collective. Note: collectives currently
-    // work on local tensor shapes, so we will have to insert unrealized type
-    // conversions with maximal sharding size. For instance, if global [16 x
-    // 4] tensor is sharded over [a(16), --], then the resulting local tensor
-    // size is [1 x 4]. Luckily, we can just build the reshards as a single
-    // flat map and let canonicalization figure out the separable factors. The
-    // LHS and RHS mesh are likely on different axes, so we will need to
-    // remember to set hte input/output meshes separately. (Of course, we
-    // first need to convert symbols --> logical axes). Then, we can run the
-    // clustering pass much easier: we break on unrealized type conversions //
-    // reshards, and topology issues.
-    // TODO: reduces and reshards at same time or different?
+    // Step 1: convert main to a distributed.function with indexed shardings.
+    Operation *mainScopeOp = mainFunc;
+    if (failed(convertMainToDistributedFunction(module_op, mainFunc, mainBlock,
+                                                mainScopeOp))) {
+      signalPassFailure();
+      return;
+    }
 
-    // Step 1: remove existing reshards so we can rebuild them uniformly.
-    removeExistingReshards(mainFunc);
+    // Step 2: remove existing reshards so we can rebuild them uniformly.
+    removeExistingReshards(mainScopeOp);
 
-    // Step 2: collect all use-site sharding conflicts and reduction needs.
+    // Step 3: collect all use-site sharding conflicts and reduction needs.
     std::vector<ShardConflict> conflicts = collectShardConflicts(mainBlock);
 
-    // Step 3: materialize reduction collectives in producer layout.
+    // Step 4: materialize reduction collectives in producer layout.
     if (failed(materializeCollectivesForReductions(module_op, conflicts))) {
       signalPassFailure();
       return;
     }
 
-    // Step 4: materialize layout collectives for remaining conflicts.
+    // Step 5: materialize layout collectives for remaining conflicts.
     if (failed(materializeCollectivesForConflicts(module_op, conflicts))) {
       signalPassFailure();
       return;
     }
+
+    // Step 6: run clustering to group ops into kernels
   }
 };
 

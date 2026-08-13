@@ -10,6 +10,7 @@ def DistributedDialect : Dialect {
   let name = "distributed";
   let description = [{}];
   let cppNamespace = "::mlir::enzyme::distributed";
+  let useDefaultAttributePrinterParser = 1;
   let useDefaultTypePrinterParser = 1;
 }
 

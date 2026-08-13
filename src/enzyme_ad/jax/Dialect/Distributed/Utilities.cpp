@@ -125,15 +125,9 @@ getOrSynthesizeOpShardingRule(::mlir::Operation *op) {
   ::mlir::stablehlo::ReduceOpKind reductionKind =
       ::mlir::stablehlo::ReduceOpKind::Add;
   std::shared_ptr<::mlir::Region> reductionBody;
-  if (auto constantOp = dyn_cast<::mlir::stablehlo::ConstantOp>(op)) {
-    // Constants can be partitioned on any tensor dimension
-    Value result = constantOp.getResult();
-    synthesizedRule = ::mlir::sdy::OpShardingRuleBuilder(op)
-                          .addPointwise(::mlir::sdy::getTensorShape(result))
-                          .build();
-  } else if (auto constantOp = dyn_cast<::mlir::sdy::ConstantOp>(op)) {
-    // SDY constants are also pointwise over their result tensor shape.
-    Value result = constantOp.getResult();
+  if (isa<::mlir::stablehlo::ConstantOp, ::mlir::sdy::ConstantOp>(op)) {
+    // Constants are pointwise over their single result tensor shape.
+    Value result = op->getResult(0);
     synthesizedRule = ::mlir::sdy::OpShardingRuleBuilder(op)
                           .addPointwise(::mlir::sdy::getTensorShape(result))
                           .build();
@@ -181,14 +175,16 @@ getOrSynthesizeOpShardingRule(::mlir::Operation *op) {
     }
 
     synthesizedRule = builder.build();
-  } else if (auto returnOp = dyn_cast<::mlir::func::ReturnOp>(op)) {
-    // Return should not couple partition axes across operands. Give each
-    // tensor axis of each operand its own independent reduction factor.
+  } else if (isa<::mlir::func::ReturnOp,
+                 ::mlir::enzyme::distributed::DistributedYieldOp>(op)) {
+    // Return-like terminators should not couple partition axes across
+    // operands. Give each tensor axis of each operand its own independent
+    // pass-through factor.
     auto builder = ::mlir::sdy::OpShardingRuleBuilder(op);
-    int64_t numOperands = returnOp.getNumOperands();
+    int64_t numOperands = op->getNumOperands();
     for (int64_t operandIdx = 0; operandIdx < numOperands; ++operandIdx) {
       auto tensorType =
-          dyn_cast<RankedTensorType>(returnOp.getOperand(operandIdx).getType());
+          dyn_cast<RankedTensorType>(op->getOperand(operandIdx).getType());
       if (!tensorType) {
         continue;
       }

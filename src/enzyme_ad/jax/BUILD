@@ -755,6 +755,7 @@ gentbl_cc_library(
 td_library(
     name = "DistributedDialectFiles",
     srcs = [
+        "Dialect/Distributed/Attributes.td",
         "Dialect/Distributed/Dialect.td",
         "Dialect/Distributed/Interfaces.td",
         "Dialect/Distributed/Ops.td",
@@ -833,7 +834,7 @@ gentbl_cc_library(
         ],
     },
     tblgen = "@llvm-project//mlir:mlir-tblgen",
-    td_file = "Dialect/Distributed/Ops.td",
+    td_file = "Dialect/Distributed/Attributes.td",
     deps = [
         ":DistributedDialectFiles",
     ],

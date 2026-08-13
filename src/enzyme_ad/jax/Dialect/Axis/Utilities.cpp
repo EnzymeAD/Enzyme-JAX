@@ -461,6 +461,27 @@ viewAxesAsFactors(TypedValueArrayRef<AxisTypeInterface> axes,
   return factors;
 }
 
+::mlir::TypedValue<FactorGroupType>
+viewFactorsAsProduct(::mlir::ValueRange factors, ::mlir::OpBuilder &builder,
+                     ::mlir::Location loc) {
+  auto typedFactors =
+      castTypedValueList<AxisFactorType>(factors, "AxisFactorType");
+  return viewFactorsAsProduct(TypedValueArrayRef<AxisFactorType>(typedFactors),
+                              builder, loc);
+}
+
+::mlir::TypedValue<FactorGroupType>
+viewFactorsAsProduct(TypedValueArrayRef<AxisFactorType> factors,
+                     ::mlir::OpBuilder &builder, ::mlir::Location loc) {
+  SmallVector<Value> factorValues;
+  factorValues.reserve(factors.size());
+  for (TypedValue<AxisFactorType> factor : factors) {
+    factorValues.push_back(factor);
+  }
+  auto product = builder.create<AxisProductOp>(loc, ValueRange(factorValues));
+  return product.getProduct();
+}
+
 llvm::SmallVector<::mlir::TypedValue<AxisFactorType>>
 factorAxisByExtents(::mlir::Value axis, llvm::ArrayRef<int32_t> extents,
                     ::mlir::OpBuilder &builder, ::mlir::Location loc) {

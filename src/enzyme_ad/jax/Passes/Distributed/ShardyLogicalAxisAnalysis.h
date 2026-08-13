@@ -181,6 +181,8 @@ public:
   getTensorPartitionDims(OpOperand &use);
   std::optional<TensorAxesToPartitionAxes>
   getTensorPartitionDims(BlockArgument arg);
+  // Redirects analysis bookkeeping from one op to another after a rewrite.
+  void markRewrite(Operation *from, Operation *to);
   /**
    * Returns the set of symbols that an op result
    * needs to be reduced over to produce the correct

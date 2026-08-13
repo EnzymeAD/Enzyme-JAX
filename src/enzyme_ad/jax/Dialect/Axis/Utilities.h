@@ -130,6 +130,13 @@ viewAxesAsFactors(::mlir::ValueRange axes, ::mlir::OpBuilder &builder,
 llvm::SmallVector<::mlir::TypedValue<AxisFactorType>>
 viewAxesAsFactors(TypedValueArrayRef<AxisTypeInterface> axes,
                   ::mlir::OpBuilder &builder, ::mlir::Location loc);
+// Creates one factor-group product from an existing list of factors.
+::mlir::TypedValue<FactorGroupType>
+viewFactorsAsProduct(::mlir::ValueRange factors, ::mlir::OpBuilder &builder,
+                     ::mlir::Location loc);
+::mlir::TypedValue<FactorGroupType>
+viewFactorsAsProduct(TypedValueArrayRef<AxisFactorType> factors,
+                     ::mlir::OpBuilder &builder, ::mlir::Location loc);
 
 // Creates a full major-first factorization for one axis from major-first
 // extents. Strides are inferred

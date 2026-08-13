@@ -11,6 +11,7 @@ include "shardy/dialect/sdy/ir/attrs.td"
 include "Dialect.td"
 include "Types.td"
 include "Interfaces.td"
+include "Attributes.td"
 include "src/enzyme_ad/jax/Dialect/Axis/Dialect.td"
 include "src/enzyme_ad/jax/Dialect/Axis/Types.td"
 
@@ -65,41 +66,6 @@ def ReplicationAxisOp : DistributedOp<"ReplicationAxis", [
   let arguments = (ins I32Attr : $extent);
   let results = (outs ReplicationAxisType : $axis);
   let assemblyFormat = "$extent attr-dict `:` type($axis)";
-}
-
-// Per-tensor sharding metadata keyed by partitioning-axis indices.
-// - dim_partitioning_axes: one DenseI64ArrayAttr per tensor dim, where each
-//   entry stores zero or more indices into the owning op's partitioning_axes.
-// - unreduced_axes: tensor-dim indices that remain unreduced.
-def IndexedTensorShardingAttr : AttrDef<DistributedDialect, "IndexedTensorSharding"> {
-  let summary = "Tensor sharding with integer partitioning-axis indices";
-  let cppNamespace = "::mlir::enzyme::distributed";
-  let mnemonic = "indexed_tensor_sharding";
-
-  let parameters = (ins
-    ArrayRefParameter<"DenseI64ArrayAttr">:$dim_partitioning_axes,
-    "DenseI64ArrayAttr":$unreduced_axes
-  );
-
-  let assemblyFormat = [{
-    `<` `dim_partitioning_axes` `=` $dim_partitioning_axes `,`
-    `unreduced_axes` `=` $unreduced_axes `>`
-  }];
-}
-
-// One IndexedTensorShardingAttr per operand/result value.
-def IndexedTensorShardingPerValueAttr : AttrDef<DistributedDialect, "IndexedTensorShardingPerValue"> {
-  let summary = "Indexed tensor sharding for each value";
-  let cppNamespace = "::mlir::enzyme::distributed";
-  let mnemonic = "indexed_tensor_sharding_per_value";
-
-  let parameters = (ins
-    ArrayRefParameter<"IndexedTensorShardingAttr">:$shardings
-  );
-
-  let assemblyFormat = [{
-    `<` $shardings `>`
-  }];
 }
 
 def DistributedFunctionOp : DistributedOp<"DistributedFunction", [

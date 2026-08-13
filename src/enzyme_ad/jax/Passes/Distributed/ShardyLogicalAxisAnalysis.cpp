@@ -333,9 +333,8 @@ ShardyLogicalAxisAnalysis::ShardyLogicalAxisAnalysis(func::FuncOp sdy_func)
 
 ShardyLogicalAxisAnalysis::SymbolsPerPartitioningAxis
 ShardyLogicalAxisAnalysis::getPartitioningAxes(Operation *op) {
-  // op should be a child of the function
-  assert(op->getParentOfType<func::FuncOp>() == sdy_func &&
-         "Operation is not a child of the function");
+  // Ops may be moved after analysis construction (e.g. into
+  // distributed.function). We key by operation identity, not parent op type.
   auto pre_factoring = opToPartitioningAxes.lookup(op);
   SymbolsPerPartitioningAxis result;
   result.reserve(pre_factoring.size());
@@ -343,6 +342,30 @@ ShardyLogicalAxisAnalysis::getPartitioningAxes(Operation *op) {
     result.push_back(symbolFactorMerge.resolve(dim_factors));
   }
   return result;
+}
+
+void ShardyLogicalAxisAnalysis::markRewrite(Operation *from, Operation *to) {
+  if (!from || !to || from == to) {
+    return;
+  }
+
+  if (auto opIt = opToPartitioningAxes.find(from);
+      opIt != opToPartitioningAxes.end()) {
+    opToPartitioningAxes[to] = std::move(opIt->second);
+    opToPartitioningAxes.erase(opIt);
+  }
+
+  if (auto lhsIt = reshardLHSSymbols.find(from);
+      lhsIt != reshardLHSSymbols.end()) {
+    reshardLHSSymbols[to] = std::move(lhsIt->second);
+    reshardLHSSymbols.erase(lhsIt);
+  }
+
+  if (auto rhsIt = reshardRHSSymbols.find(from);
+      rhsIt != reshardRHSSymbols.end()) {
+    reshardRHSSymbols[to] = std::move(rhsIt->second);
+    reshardRHSSymbols.erase(rhsIt);
+  }
 }
 
 llvm::SmallVector<AxisSymbol>
