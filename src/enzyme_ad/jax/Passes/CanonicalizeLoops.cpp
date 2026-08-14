@@ -526,6 +526,45 @@ public:
   }
 };
 
+// The high half of a packed pair of launch dimensions is a constant: the
+// import spells dim3(x, 1) as ori(extui(x : i32 to i64), 1 << 32) and reads
+// the second field back as shrui(packed, 32). Every bit the shift keeps
+// comes from the constant, so the read is that constant, but no upstream
+// fold sees through the pack. Leaving it opaque makes the launch bound look
+// like a runtime value.
+class ShrUIOfPackedHigh final : public OpRewritePattern<arith::ShRUIOp> {
+public:
+  using OpRewritePattern<arith::ShRUIOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::ShRUIOp op,
+                                PatternRewriter &rewriter) const override {
+    IntegerAttr shiftAttr;
+    if (!matchPattern(op.getRhs(), m_Constant(&shiftAttr)))
+      return failure();
+    auto ori = op.getLhs().getDefiningOp<arith::OrIOp>();
+    if (!ori)
+      return failure();
+    Value other;
+    IntegerAttr cst;
+    if (matchPattern(ori.getRhs(), m_Constant(&cst)))
+      other = ori.getLhs();
+    else if (matchPattern(ori.getLhs(), m_Constant(&cst)))
+      other = ori.getRhs();
+    else
+      return failure();
+    auto ext = other.getDefiningOp<arith::ExtUIOp>();
+    if (!ext)
+      return failure();
+    unsigned srcWidth = ext.getIn().getType().getIntOrFloatBitWidth();
+    const APInt &shift = shiftAttr.getValue();
+    if (shift.ult(srcWidth) || shift.uge(cst.getValue().getBitWidth()))
+      return failure();
+    rewriter.replaceOpWithNewOp<arith::ConstantOp>(
+        op, rewriter.getIntegerAttr(op.getType(), cst.getValue().lshr(shift)));
+    return success();
+  }
+};
+
 class DivUIOfIndexUI final : public OpRewritePattern<arith::DivUIOp> {
 public:
   using OpRewritePattern<arith::DivUIOp>::OpRewritePattern;
@@ -1346,8 +1385,8 @@ struct CanonicalizeLoopsPass
 
 void mlir::enzyme::addSingleIter(RewritePatternSet &patterns,
                                  MLIRContext *ctx) {
-  patterns
-      .add<RemoveAffineParallelSingleIter, ExtUIOfIndexUI, TruncIOfIndexUI,
-           ShrUIOfIndexUI, DivUIOfIndexUI, DivMul, AddIOfIndexUI, SubIOfIndexUI,
-           MulIOfIndexUI, ShLIOfIndexUI, AddIOfDoubleIndex, ToRem>(ctx);
+  patterns.add<RemoveAffineParallelSingleIter, ExtUIOfIndexUI, TruncIOfIndexUI,
+               ShrUIOfIndexUI, ShrUIOfPackedHigh, DivUIOfIndexUI, DivMul,
+               AddIOfIndexUI, SubIOfIndexUI, MulIOfIndexUI, ShLIOfIndexUI,
+               AddIOfDoubleIndex, ToRem>(ctx);
 }
