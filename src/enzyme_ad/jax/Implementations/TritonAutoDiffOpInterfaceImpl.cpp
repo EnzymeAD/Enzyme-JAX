@@ -217,65 +217,6 @@ public:
   }
 };
 
-/// Forward mode autodiff for Triton DotOp.
-///
-/// tt.dot computes: result = a @ b + c
-/// Forward mode:    d(result) = da @ b + a @ db + dc
-///
-/// We chain dot operations using the accumulator:
-///   shadow = dc (or zero if c is constant)
-///   if a is active: shadow = dot(da, b, shadow)
-///   if b is active: shadow = dot(a, db, shadow)
-class AutoDiffTritonDotFwd
-    : public AutoDiffOpInterface::ExternalModel<AutoDiffTritonDotFwd,
-                                                triton::DotOp> {
-public:
-  LogicalResult createForwardModeTangent(Operation *orig, OpBuilder &builder,
-                                         MGradientUtils *gutils) const {
-    auto dot = cast<triton::DotOp>(orig);
-    Value a = dot.getA();
-    Value b = dot.getB();
-    Value c = dot.getC();
-
-    Value newA = gutils->getNewFromOriginal(a);
-    Value newB = gutils->getNewFromOriginal(b);
-
-    Value shadow;
-    if (!gutils->isConstantValue(c)) {
-      shadow = gutils->invertPointerM(c, builder);
-    } else {
-      auto iface = cast<AutoDiffTypeInterface>(orig->getResult(0).getType());
-      shadow = iface.createNullValue(builder, orig->getLoc());
-    }
-
-    if (!gutils->isConstantValue(a)) {
-      Value shadowA = gutils->invertPointerM(a, builder);
-      IRMapping map;
-      map.map(a, shadowA);
-      map.map(b, newB);
-      map.map(c, shadow);
-      shadow = builder.clone(*orig, map)->getResult(0);
-    }
-
-    if (!gutils->isConstantValue(b)) {
-      Value shadowB = gutils->invertPointerM(b, builder);
-      IRMapping map;
-      map.map(a, newA);
-      map.map(b, shadowB);
-      map.map(c, shadow);
-      shadow = builder.clone(*orig, map)->getResult(0);
-    }
-
-    Value origResult = orig->getResult(0);
-    if (!gutils->isConstantValue(origResult)) {
-      gutils->setDiffe(origResult, shadow, builder);
-    }
-
-    gutils->eraseIfUnused(orig);
-    return success();
-  }
-};
-
 /// Control flow interface for Triton ReduceOp (needed for max/min)
 class AutoDiffTritonReduceCF
     : public ControlFlowAutoDiffOpInterface::ExternalModel<
@@ -303,7 +244,6 @@ void mlir::enzyme::registerTritonDialectAutoDiffInterface(
     triton::FuncOp::attachInterface<AutoDiffTritonFuncFunctionInterface>(
         *context);
     triton::PointerType::attachInterface<TritonPointerTypeInterface>(*context);
-    triton::DotOp::attachInterface<AutoDiffTritonDotFwd>(*context);
     triton::ReduceOp::attachInterface<AutoDiffTritonReduceFwd>(*context);
     triton::ReduceOp::attachInterface<AutoDiffTritonReduceCF>(*context);
   });

@@ -1,8 +1,20 @@
 // RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=matmul_kernel outfn= argTys=enzyme_dup,enzyme_dup,enzyme_dup,enzyme_const,enzyme_const,enzyme_const,enzyme_const,enzyme_const,enzyme_const retTys= mode=ForwardMode" --canonicalize | FileCheck %s
 
+// CHECK-LABEL: tt.func @matmul_kernel(
+// CHECK:       %{{[0-9]+}}:6 = scf.for {{.*}} iter_args(%[[PRIMAL_ACC:arg[0-9]+]] = %{{[^,]+}}, %[[TANGENT_ACC:arg[0-9]+]] = %{{[^,]+}},
+// CHECK:         %[[DOT_DA:[0-9]+]] = tt.dot %[[DA:[0-9]+]], %[[B:[0-9]+]], %[[TANGENT_ACC]], inputPrecision = tf32
+// CHECK-NEXT:    %[[DOT_DB:[0-9]+]] = tt.dot %[[A:[0-9]+]], %[[DB:[0-9]+]], %[[DOT_DA]], inputPrecision = tf32
+// CHECK-NEXT:    %[[DOT_PRIMAL:[0-9]+]] = tt.dot %[[A]], %[[B]], %[[PRIMAL_ACC]], inputPrecision = tf32
+// CHECK:         scf.yield %[[DOT_PRIMAL]], %[[DOT_DB]],
+// CHECK:       %[[SHADOW_OUT:[0-9]+]] = arith.truncf %{{[^ ]+}}#1
+// CHECK-NEXT:  %[[PRIMAL_OUT:[0-9]+]] = arith.truncf %{{[^ ]+}}#0
+// CHECK:       tt.store %{{[^,]+}}, %[[SHADOW_OUT]], %[[MASK:[0-9]+]]
+// CHECK-NEXT:  tt.store %{{[^,]+}}, %[[PRIMAL_OUT]], %[[MASK]]
+// CHECK:       tt.return
+
 module {
-  tt.func public @matmul_kernel(%arg0: !tt.ptr<f32> {tt.divisibility = 16 : i32}, %arg1: !tt.ptr<f32> {tt.divisibility = 16 : i32}, 
-                                %arg2: !tt.ptr<f16> {tt.divisibility = 16 : i32}, %arg3: i32, %arg4: i32, 
+  tt.func public @matmul_kernel(%arg0: !tt.ptr<f32> {tt.divisibility = 16 : i32}, %arg1: !tt.ptr<f32> {tt.divisibility = 16 : i32},
+                                %arg2: !tt.ptr<f16> {tt.divisibility = 16 : i32}, %arg3: i32, %arg4: i32,
                                 %arg5: i32, %arg6: i32, %arg7: i32, %arg8: i32) attributes {noinline = false} {
     %c31_i32 = arith.constant 31 : i32
     %c63_i32 = arith.constant 63 : i32

@@ -1,4 +1,7 @@
 // RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=test_triton_ops outfn= argTys=enzyme_dup,enzyme_dup,enzyme_dup retTys=enzyme_dup,enzyme_dup mode=ForwardMode" --canonicalize | FileCheck %s
+// RUN: not enzymexlamlir-opt %s --enzyme-wrap="infn=test_triton_ops outfn= argTys=enzyme_const,enzyme_const,enzyme_active retTys=enzyme_active,enzyme_const mode=ReverseModeCombined" 2>&1 | FileCheck %s --check-prefix=REVERSE-ERROR
+
+// REVERSE-ERROR: error: reverse-mode derivatives of tt.dot matrix operands are not implemented
 
 module {
   tt.func @test_triton_ops(%ptr_in: !tt.ptr<f32>, %ptr_out: !tt.ptr<f32>, %vec: tensor<64xf32>) -> (tensor<64x32xf32>, f32) {

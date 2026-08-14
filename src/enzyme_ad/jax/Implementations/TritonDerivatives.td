@@ -17,6 +17,7 @@ class TritonReturnOp<string m> : ReturnOp<"triton", m>;
 def FpToFp : TritonInst<"FpToFpOp">;
 def PreciseDivF : TritonInst<"PreciseDivFOp">;
 def MakeRange : TritonInst<"MakeRangeOp">;
+def Dot : TritonInst<"DotOp", "->getResult(0)">;
 
 def : TritonReturnOp<"ReturnOp">;
 
@@ -26,21 +27,72 @@ def : TritonInactiveOp<"MakeRangeOp">;
 def : TritonInactiveOp<"PrintOp">;
 
 def : ReadOnlyIdentityOp<"triton", "AddPtrOp", [0]>;
-def : ReadOnlyIdentityOp<"triton", "AdvanceOp", [0]>;
 def : ReadOnlyIdentityOp<"triton", "BroadcastOp", [0]>;
 def : ReadOnlyIdentityOp<"triton", "ExpandDimsOp", [0]>;
 def : ReadOnlyIdentityOp<"triton", "LoadOp", [0]>;
 def : ReadOnlyIdentityOp<"triton", "SplatOp", [0]>;
-def : MemoryIdentityOp<"triton", "StoreOp", [1], [0]>;
+def : MemoryIdentityOp<"triton", "StoreOp", [0], [1]>;
 
 def FpToFpRoundingMode : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   op.getRoundingAttr();
+}]>;
+
+def DotInputPrecision : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  op.getInputPrecisionAttr();
+}]>;
+
+def DotMaxNumImpreciseAcc : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  op.getMaxNumImpreciseAccAttr();
+}]>;
+
+// AssertingInactiveArg would also suppress forward activity for these operands,
+// so report unsupported derivatives only when reverse mode reaches this rule.
+def UnimplementedDotOperandReverse
+    : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  op.emitError() << "reverse-mode derivatives of tt.dot matrix operands are "
+                    "not implemented";
+  return failure();
+  mlir::Value{};
 }]>;
 
 def : TritonDerivative<"FpToFpOp", (Op $x),
                        [
                          (FpToFp (TypeOf $x), (DiffeRet), (FpToFpRoundingMode))
                        ]
+                     >;
+
+// tt.dot computes a @ b + c, so its tangent is da @ b + a @ db + dc.
+// Chain both products through the accumulator to avoid a separate add.
+def : TritonDerivative<"DotOp", (Op $a, $b, $c),
+                       [
+                         (UnimplementedDotOperandReverse),
+                         (UnimplementedDotOperandReverse),
+                         (DiffeRet)
+                       ],
+                       (SelectIfActive $b,
+                         (Dot $a, (Shadow $b),
+                           (SelectIfActive $a,
+                             (Dot (Shadow $a), $b,
+                               (SelectIfActive $c,
+                                 (Shadow $c),
+                                 (ArithConstantFP<"0"> $c)),
+                               (DotInputPrecision),
+                               (DotMaxNumImpreciseAcc)),
+                             (SelectIfActive $c,
+                               (Shadow $c),
+                               (ArithConstantFP<"0"> $c))),
+                           (DotInputPrecision),
+                           (DotMaxNumImpreciseAcc)),
+                         (SelectIfActive $a,
+                           (Dot (Shadow $a), $b,
+                             (SelectIfActive $c,
+                               (Shadow $c),
+                               (ArithConstantFP<"0"> $c)),
+                             (DotInputPrecision),
+                             (DotMaxNumImpreciseAcc)),
+                           (SelectIfActive $c,
+                             (Shadow $c),
+                             (ArithConstantFP<"0"> $c))))
                      >;
 
 // Note: ReduceOp is handled via custom C++ AutoDiffOpInterface in
