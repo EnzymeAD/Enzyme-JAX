@@ -128,14 +128,15 @@ module @test_single_kernel {
   }
 }
 
-// CHAIN-LABEL: module @elementwise_chain_then_reduce_single_kernel {
-// CHAIN: %[[KERNEL:.*]]:2 = "distributed.DistributedKernel"
+// CHAIN-LABEL: module @test_single_kernel {
+// CHAIN: %[[KERNEL:.*]]:2 = distributed.DistributedKernel
 // CHAIN: stablehlo.add
 // CHAIN: stablehlo.add
 // CHAIN: stablehlo.multiply
 // CHAIN: stablehlo.reduce
 // CHAIN: distributed.DistributedYield
-// CHAIN: "distributed.Collective"(%[[KERNEL]]#0
+// CHAIN: %[[COLL:.*]] = distributed.Collective
 // CHAIN-SAME: reduces (%{{.*}})
-// CHAIN: %[[RED_AWAIT:.*]] = distributed.Await
-// CHAIN: distributed.DistributedYield %[[RED_AWAIT]], %[[KERNEL]]#1
+// CHAIN: %[[RED_AWAIT:.*]] = distributed.Await %[[COLL]]
+// CHAIN: builtin.unrealized_conversion_cast %[[RED_AWAIT]]
+// CHAIN: distributed.DistributedYield %{{.*}}, %{{.*}}

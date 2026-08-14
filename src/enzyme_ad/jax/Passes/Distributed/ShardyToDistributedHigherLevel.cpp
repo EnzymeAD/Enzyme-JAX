@@ -7,6 +7,8 @@
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/OperationSupport.h"
 #include "stablehlo/dialect/StablehloOps.h"
+#include "llvm/ADT/SmallSet.h"
+#include "llvm/ADT/StringMap.h"
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -16,6 +18,7 @@
 #include "src/enzyme_ad/jax/Passes/Distributed/PartialOrder.h"
 #include "src/enzyme_ad/jax/Passes/Distributed/ShardyLogicalAxisAnalysis.h"
 
+#include <algorithm>
 #include <cctype>
 #include <optional>
 #include <string>
@@ -72,19 +75,6 @@ dumpLogicalAxesForMainBlock(Block *mainBlock,
     }
     llvm::errs() << "\n";
   }
-}
-
-static std::string getTypeSuffix(Type type) {
-  std::string suffix;
-  llvm::raw_string_ostream os(suffix);
-  type.print(os);
-  os.flush();
-  for (char &c : suffix) {
-    if (!std::isalnum(static_cast<unsigned char>(c))) {
-      c = '_';
-    }
-  }
-  return suffix;
 }
 
 mlir::RankedTensorType
@@ -706,82 +696,42 @@ struct ShardyToDistributedHigherLevelPass
   LogicalResult clusterOpsIntoKernels(Block *mainBlock,
                                       PartialOrder<Operation *> &order,
                                       ShardyLogicalAxisAnalysis &axisAnalysis) {
-    // Want to cluster ops into communication-free distributed.kernels.
-    // Need to color the ops so that:
-    // 1. No two ops in the same color have a dependency between them
-    // outside the color
-    // 2. No two ops in the same color have different partitioning axes
-    // 3. No communication is created within a kernel regardless of axis
-    // assignments.
+    // Partition compute operations into groups that can be outlined into
+    // distributed.kernel regions without changing dataflow ordering.
+    //
     // Preconditions:
-    // - All collectives have been materialized on local types
-    // - may or may not have unrealized type casts between operations
-    //   on global values and collectives on local values.
-    // Algorithm:
-    // - Iterate ops in-order
-    // - For each op, if it is not colored, create a new color.
-    // - For the new color maintain a set of external input producer ops
-    //   and external output consumer ops.
-    // - When we add a new op to a color, enque all of its producers / consumers
-    //   to see if they are compatible. When dequing, a producer is compatible
-    //   if:
-    //    - it is not already colored.
-    //    - it has the same partitioning axes as the color.
-    //    - it is not topologically before any external producer of the color or
-    //      topologically after any external consumer of the color.
-    // - When the queue runs out, close the color.
-    // - When all ops are colored (reach the end of our iteration), for each
-    //   color (in order of creation, which we should be able to prove is a
-    //   valid topological order), create a distributed.kernel op and move the
-    //   ops into it. The input and return types of the kernel should be the
-    //   local types, allowing us to get rid of the unrealized casts, while the
-    //   block args and returned values should be the global pre-sharded types
-    //   from cloning the original global ops.
+    // - Layout/reduction collectives have already been materialized.
+    // - IR may still contain unrealized conversion casts between global and
+    //   local tensor views.
+    //
+    // Clustering model:
+    // - Only clusterable compute ops participate. Communication/control/meta
+    //   ops stay outside kernels and act as boundaries.
+    // - Candidate ops are first bucketed by partitioning-axis basis
+    //   (flattened, sorted unique AxisSymbol set).
+    // - Each bucket is processed in block order. A color starts from the first
+    //   uncolored op, then repeatedly sweeps remaining bucket members.
+    // - A candidate is accepted if it does not violate topology boundaries of
+    //   the color: it must not be before any external producer boundary and
+    //   must not be after any external consumer boundary.
+    // - After each accepted op, producer/consumer boundaries are recomputed
+    //   from direct SSA use/def edges. Sweeps continue until a fixed point
+    //   is reached.
+    //
+    // After colors are finalized, one distributed.kernel is materialized per
+    // color and the block is topologically reordered.
     using PartitioningAxes =
         ShardyLogicalAxisAnalysis::SymbolsPerPartitioningAxis;
-    const bool debugCluster = dumpLogicalAxes;
 
     struct ColorState {
       int64_t id;
-      PartitioningAxes partitioningAxes;
       llvm::SmallVector<Operation *> members;
       llvm::DenseSet<Operation *> externalProducers;
       llvm::DenseSet<Operation *> externalConsumers;
     };
 
-    auto samePartitioningAxes = [](const PartitioningAxes &lhs,
-                                   const PartitioningAxes &rhs) {
-      return lhs == rhs;
-    };
-
-    auto logAxes = [&](llvm::raw_ostream &os, const PartitioningAxes &axes) {
-      os << "[";
-      for (const auto &[axisIdx, axis] : llvm::enumerate(axes)) {
-        if (axisIdx != 0) {
-          os << ", ";
-        }
-        os << "{";
-        for (const auto &[symIdx, symbol] : llvm::enumerate(axis)) {
-          if (symIdx != 0) {
-            os << " ";
-          }
-          os << "a" << symbol.getId() << ":" << symbol.getExtent();
-        }
-        os << "}";
-      }
-      os << "]";
-    };
-
-    auto logOp = [&](StringRef tag, Operation *op) {
-      if (!debugCluster) {
-        return;
-      }
-      llvm::errs() << "[cluster] " << tag << ": ";
-      if (!op) {
-        llvm::errs() << "<null>\n";
-        return;
-      }
-      llvm::errs() << op->getName() << " @" << op << "\n";
+    struct BucketState {
+      llvm::SmallVector<Operation *> pending;
     };
 
     auto isClusterableOp = [](Operation *op) {
@@ -799,11 +749,24 @@ struct ShardyToDistributedHigherLevelPass
       return true;
     };
 
-    auto enqueueNeighbor = [](llvm::SmallVector<Operation *> &queue,
-                              Operation *op) {
-      if (op) {
-        queue.push_back(op);
+    // build the string key for the map
+    auto canonicalBasisKey = [&](const PartitioningAxes &axes) {
+      llvm::SmallVector<std::pair<uint64_t, uint64_t>> symbols;
+      for (const auto &axis : axes) {
+        for (const AxisSymbol &symbol : axis) {
+          symbols.emplace_back(symbol.getId(), symbol.getExtent());
+        }
       }
+      std::sort(symbols.begin(), symbols.end());
+      symbols.erase(std::unique(symbols.begin(), symbols.end()), symbols.end());
+
+      std::string key;
+      llvm::raw_string_ostream os(key);
+      for (auto [id, extent] : symbols) {
+        os << id << ":" << extent << "|";
+      }
+      os.flush();
+      return key;
     };
 
     auto tryAcceptCandidate =
@@ -811,168 +774,147 @@ struct ShardyToDistributedHigherLevelPass
             llvm::DenseMap<Operation *, int64_t> &opToColor) {
           if (!candidate || !isClusterableOp(candidate) ||
               opToColor.contains(candidate)) {
-            if (debugCluster) {
-              llvm::errs() << "[cluster] reject early in color " << color.id
-                           << " candidate=";
-              if (candidate) {
-                llvm::errs() << candidate->getName();
-              } else {
-                llvm::errs() << "<null>";
-              }
-              llvm::errs() << "\n";
-            }
-            return false;
-          }
-
-          PartitioningAxes candidateAxes =
-              axisAnalysis.getPartitioningAxes(candidate);
-          if (!samePartitioningAxes(candidateAxes, color.partitioningAxes)) {
-            if (debugCluster) {
-              llvm::errs() << "[cluster] reject axis mismatch in color "
-                           << color.id << " candidate=" << candidate->getName()
-                           << " axes=";
-              logAxes(llvm::errs(), candidateAxes);
-              llvm::errs() << " expected=";
-              logAxes(llvm::errs(), color.partitioningAxes);
-              llvm::errs() << "\n";
-            }
             return false;
           }
 
           // Respect color boundary topology constraints.
           for (Operation *externalProducer : color.externalProducers) {
             if (order.compare(candidate, externalProducer) == Order::LessThan) {
-              if (debugCluster) {
-                llvm::errs()
-                    << "[cluster] reject producer boundary in color "
-                    << color.id << " candidate=" << candidate->getName()
-                    << " producer=" << externalProducer->getName() << "\n";
-              }
               return false;
             }
           }
           for (Operation *externalConsumer : color.externalConsumers) {
             if (order.compare(candidate, externalConsumer) ==
                 Order::GreaterThan) {
-              if (debugCluster) {
-                llvm::errs()
-                    << "[cluster] reject consumer boundary in color "
-                    << color.id << " candidate=" << candidate->getName()
-                    << " consumer=" << externalConsumer->getName() << "\n";
-              }
               return false;
             }
           }
 
           opToColor[candidate] = color.id;
           color.members.push_back(candidate);
-          logOp(("accept color " + llvm::Twine(color.id)).str(), candidate);
+          color.externalProducers.erase(candidate);
+          color.externalConsumers.erase(candidate);
           return true;
         };
 
-    auto updateBoundaryAndQueue =
-        [&](Operation *accepted, ColorState &color,
-            llvm::DenseMap<Operation *, int64_t> &opToColor,
-            llvm::SmallVector<Operation *> &queue) {
-          for (OpOperand &operand : accepted->getOpOperands()) {
-            // don't need to color block args but need to consider
-            // dependencies through them
-            if (auto blockArg = dyn_cast<BlockArgument>(operand.get());
-                blockArg && blockArg.getParentBlock() == mainBlock) {
-              for (OpOperand &otherUse : blockArg.getUses()) {
-                Operation *otherUser = otherUse.getOwner();
-                if (!otherUser || otherUser->getBlock() != mainBlock ||
-                    opToColor.contains(otherUser)) {
-                  continue;
-                }
-                enqueueNeighbor(queue, otherUser);
-              }
-            }
+    auto updateBoundary = [&](Operation *accepted, ColorState &color,
+                              llvm::DenseMap<Operation *, int64_t> &opToColor) {
+      for (OpOperand &operand : accepted->getOpOperands()) {
+        Operation *producer = operand.get().getDefiningOp();
+        if (!producer || producer->getBlock() != mainBlock) {
+          continue;
+        }
+        auto producerColor = opToColor.find(producer);
+        if (producerColor == opToColor.end() ||
+            producerColor->second != color.id) {
+          color.externalProducers.insert(producer);
+        }
+      }
 
-            Operation *producer = operand.get().getDefiningOp();
-            if (!producer || producer->getBlock() != mainBlock) {
-              continue;
-            }
-            if (!opToColor.contains(producer)) {
-              color.externalProducers.insert(producer);
-              logOp(("boundary producer color " + llvm::Twine(color.id)).str(),
-                    producer);
-              enqueueNeighbor(queue, producer);
-            }
+      for (Value result : accepted->getResults()) {
+        for (OpOperand &use : result.getUses()) {
+          Operation *consumer = use.getOwner();
+          if (!consumer || consumer->getBlock() != mainBlock) {
+            continue;
           }
-
-          for (Value result : accepted->getResults()) {
-            for (OpOperand &use : result.getUses()) {
-              Operation *consumer = use.getOwner();
-              if (!consumer || consumer->getBlock() != mainBlock) {
-                continue;
-              }
-              if (!opToColor.contains(consumer)) {
-                color.externalConsumers.insert(consumer);
-                logOp(
-                    ("boundary consumer color " + llvm::Twine(color.id)).str(),
-                    consumer);
-                enqueueNeighbor(queue, consumer);
-              }
-            }
+          auto consumerColor = opToColor.find(consumer);
+          if (consumerColor == opToColor.end() ||
+              consumerColor->second != color.id) {
+            color.externalConsumers.insert(consumer);
           }
-        };
+        }
+      }
+    };
 
     llvm::DenseMap<Operation *, int64_t> opToColor;
     llvm::SmallVector<ColorState> colors;
+    // Use a canonical string key to keep bucket lookup simple with
+    // llvm::StringMap and avoid custom DenseMap hashing for vector keys.
+    llvm::StringMap<int64_t> keyToBucket;
+    llvm::SmallVector<BucketState> buckets;
     int64_t nextColorId = 0;
 
+    // Phase 1: collect clusterable ops into basis buckets in block order.
+    // Only valid, clusterable ops are inserted, so sweep logic can operate
+    // directly on the remaining bucket list without extra candidate cleanup.
     for (Operation &opRef : mainBlock->getOperations()) {
-      Operation *seed = &opRef;
-      if (!isClusterableOp(seed) || opToColor.contains(seed)) {
+      Operation *op = &opRef;
+      if (!isClusterableOp(op)) {
         continue;
       }
+      PartitioningAxes axes = axisAnalysis.getPartitioningAxes(op);
+      std::string key = canonicalBasisKey(axes);
 
-      logOp("seed", seed);
-
-      PartitioningAxes seedAxes = axisAnalysis.getPartitioningAxes(seed);
-      ColorState color{nextColorId++, std::move(seedAxes), {}, {}, {}};
-      if (debugCluster) {
-        llvm::errs() << "[cluster] create color " << color.id << " axes=";
-        logAxes(llvm::errs(), color.partitioningAxes);
-        llvm::errs() << "\n";
+      auto it = keyToBucket.find(key);
+      if (it == keyToBucket.end()) {
+        int64_t bucketIdx = static_cast<int64_t>(buckets.size());
+        keyToBucket[key] = bucketIdx;
+        buckets.push_back(BucketState{{}});
+        it = keyToBucket.find(key);
       }
-
-      // Seed the color and then grow by producer/consumer exploration.
-      (void)tryAcceptCandidate(seed, color, opToColor);
-      llvm::SmallVector<Operation *> queue;
-      updateBoundaryAndQueue(seed, color, opToColor, queue);
-
-      for (size_t queueIdx = 0; queueIdx < queue.size(); ++queueIdx) {
-        Operation *candidate = queue[queueIdx];
-        logOp(("dequeue color " + llvm::Twine(color.id)).str(), candidate);
-        if (!tryAcceptCandidate(candidate, color, opToColor)) {
-          continue;
-        }
-        updateBoundaryAndQueue(candidate, color, opToColor, queue);
-      }
-
-      if (debugCluster) {
-        llvm::errs() << "[cluster] close color " << color.id
-                     << " members=" << color.members.size()
-                     << " ext_prod=" << color.externalProducers.size()
-                     << " ext_cons=" << color.externalConsumers.size() << "\n";
-      }
-
-      colors.push_back(std::move(color));
+      buckets[it->second].pending.push_back(op);
     }
 
-    if (debugCluster) {
-      llvm::errs() << "[cluster] total colors: " << colors.size() << "\n";
+    // Phase 2: form colors with fixed-point sweeps inside each bucket.
+    for (BucketState &bucket : buckets) {
+
+      while (!bucket.pending.empty()) {
+        ColorState color{nextColorId++, {}, {}, {}};
+        size_t pendingSizeBeforeColor = bucket.pending.size();
+
+        // Repeatedly sweep remaining bucket members until no further
+        // candidates can be accepted into this color.
+        bool changed = true;
+        while (changed) {
+          changed = false;
+
+          for (size_t i = 0; i < bucket.pending.size();) {
+            Operation *candidate = bucket.pending[i];
+            if (!tryAcceptCandidate(candidate, color, opToColor)) {
+              ++i;
+              continue;
+            }
+
+            updateBoundary(candidate, color, opToColor);
+            bucket.pending.erase(bucket.pending.begin() + i);
+            changed = true;
+          }
+        }
+
+        if (bucket.pending.size() >= pendingSizeBeforeColor) {
+          mainBlock->getParentOp()->emitError()
+              << "bucket sweep made no progress while pending ops remain";
+          return failure();
+        }
+        assert(!color.members.empty() &&
+               "color formation must accept at least one pending op");
+        assert(bucket.pending.size() < pendingSizeBeforeColor &&
+               "bucket pending list must shrink after each color");
+
+        colors.push_back(std::move(color));
+      }
+    }
+
+    // Phase 3: assert every clusterable op was assigned to some color.
+    for (Operation &opRef : mainBlock->getOperations()) {
+      Operation *op = &opRef;
+      if (!isClusterableOp(op)) {
+        continue;
+      }
+      if (!opToColor.contains(op)) {
+        op->emitError() << "clusterable op was not assigned a kernel color";
+        return failure();
+      }
     }
 
     auto *ctx = &getContext();
 
     // NOTE: Kernel boundary values that are ranked tensors are expected to
     // carry sharding information. We recover this from direct analysis,
-    // representative use-sites, and nearby unrealized casts; if still missing,
-    // treat it as an invariant violation for compute values. We only allow
-    // default-empty sharding for non-ranked values.
+    // representative use-sites, and nearby unrealized casts; if still
+    // missing, treat it as an invariant violation for compute values. We only
+    // allow default-empty sharding for non-ranked values.
+    // Phase 4: materialize one distributed.kernel for each color.
     OpBuilder builder(ctx);
     for (size_t colorIdx = 0; colorIdx < colors.size(); ++colorIdx) {
       const ColorState &color = colors[colorIdx];
@@ -997,8 +939,8 @@ struct ShardyToDistributedHigherLevelPass
       llvm::DenseMap<Value, int64_t> inputIndices;
       llvm::SmallVector<Value> kernelInputs;
       // with casts and collectives inserted the producer may not be known to
-      // the logical axis analysis for a value, but the use should be, allowing
-      // us to look up partitioning axes.
+      // the logical axis analysis for a value, but the use should be,
+      // allowing us to look up partitioning axes.
       llvm::DenseMap<Value, OpOperand *> representativeInputUse;
       llvm::DenseMap<Value, int64_t> outputIndices;
       llvm::SmallVector<Value> kernelOutputs;
@@ -1188,15 +1130,9 @@ struct ShardyToDistributedHigherLevelPass
            ++it) {
         (*it)->erase();
       }
-
-      if (debugCluster) {
-        llvm::errs() << "[cluster] materialized kernel color=" << color.id
-                     << " members=" << orderedMembers.size()
-                     << " inputs=" << kernelInputs.size()
-                     << " outputs=" << kernelOutputs.size() << "\n";
-      }
     }
 
+    // Phase 5: normalize final block order after outlining.
     if (!mlir::sortTopologically(mainBlock)) {
       mainBlock->getParentOp()->emitError()
           << "failed to reorder block operations topologically";
