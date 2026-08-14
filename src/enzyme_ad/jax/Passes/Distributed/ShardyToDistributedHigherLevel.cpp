@@ -1110,10 +1110,11 @@ struct ShardyToDistributedHigherLevelPass
               << "missing sharding for ranked kernel output value " << output;
           return failure();
         }
-        // Kernel returns remain in global types; sharding metadata carries
-        // the local interpretation.
+        // Kernel returns are in local type, global type recoverable
+        // from yield or from multiplying the local type by the sharding.
         Type globalOutputType = output.getType();
-        kernelResultTypes.push_back(globalOutputType);
+        Type localOutputType = getLocalTypeForValue(output, *maybePartitioning);
+        kernelResultTypes.push_back(localOutputType);
 
         if (auto rankedType = dyn_cast<RankedTensorType>(globalOutputType);
             rankedType && maybePartitioning) {
