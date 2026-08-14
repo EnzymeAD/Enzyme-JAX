@@ -4,6 +4,7 @@
 #include "src/enzyme_ad/jax/Dialect/Distributed/Utilities.h"
 
 #include "mlir/IR/Attributes.h"
+#include "mlir/Pass/AnalysisManager.h"
 #include "shardy/dialect/sdy/ir/dialect.h"
 #include "shardy/dialect/sdy/ir/utils.h"
 #include "shardy/dialect/sdy/transforms/propagation/op_sharding_rule_registry.h"
@@ -331,6 +332,30 @@ ShardyLogicalAxisAnalysis::ShardyLogicalAxisAnalysis(func::FuncOp sdy_func)
   buildUnion();
 }
 
+MainFunctionShardyLogicalAxisAnalysis::MainFunctionShardyLogicalAxisAnalysis(
+    ModuleOp module, AnalysisManager &analysisManager) {
+  const auto &mainFunctionAnalysis =
+      analysisManager.getAnalysis<FindMainFunctionAnalysis, ModuleOp>();
+  if (!mainFunctionAnalysis.isValid()) {
+    valid = false;
+    return;
+  }
+
+  func::FuncOp mainFunc = mainFunctionAnalysis.getMainFuncOp();
+  if (!mainFunc) {
+    valid = false;
+    return;
+  }
+  if (!mainFunc.getBody().hasOneBlock()) {
+    valid = false;
+    return;
+  }
+
+  analysis =
+      &analysisManager
+           .getChildAnalysis<ShardyLogicalAxisAnalysis, func::FuncOp>(mainFunc);
+}
+
 ShardyLogicalAxisAnalysis::SymbolsPerPartitioningAxis
 ShardyLogicalAxisAnalysis::getPartitioningAxes(Operation *op) {
   // Ops may be moved after analysis construction (e.g. into
@@ -417,6 +442,9 @@ ShardyLogicalAxisAnalysis::getTensorPartitionDims(BlockArgument arg) {
   auto it = argToPartitioningAxes.find(arg);
   if (it == argToPartitioningAxes.end()) {
     return std::nullopt;
+  }
+  for (int i = 0; i < it->second.size(); ++i) {
+    it->second[i] = symbolFactorMerge.resolve(it->second[i]);
   }
   return it->second;
 }

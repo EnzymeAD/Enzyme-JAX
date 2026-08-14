@@ -7,6 +7,8 @@
 
 #include "mlir/IR/Block.h"
 #include "mlir/IR/Operation.h"
+#include "mlir/Pass/AnalysisManager.h"
+#include "src/enzyme_ad/jax/Passes/Distributed/MainFunctionAnalysis.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
 
@@ -101,16 +103,64 @@ template <typename KeyType> void PartialOrder<KeyType>::close() {
 class SSABlockPartialOrderAnalysis {
 public:
   SSABlockPartialOrderAnalysis(mlir::Block *block) : block(block) {
+    if (!block) {
+      valid = false;
+      return;
+    }
+    buildPartialOrder();
+  }
+  SSABlockPartialOrderAnalysis(Operation *op) {
+    if (!op || op->getNumRegions() == 0 || !op->getRegion(0).hasOneBlock()) {
+      valid = false;
+      return;
+    }
+    block = &op->getRegion(0).front();
     buildPartialOrder();
   }
 
+  bool isValid() const { return valid; }
+
   PartialOrder<mlir::Operation *> &getPartialOrder() { return partial_order; }
+  const PartialOrder<mlir::Operation *> &getPartialOrder() const {
+    return partial_order;
+  }
 
 private:
+  bool valid = true;
   mlir::Block *block;
   void buildPartialOrder();
 
   PartialOrder<mlir::Operation *> partial_order;
+};
+
+// Module-scoped wrapper that computes SSA block partial order for @main
+// entry block when available.
+class MainFunctionSSABlockPartialOrderAnalysis {
+public:
+  MainFunctionSSABlockPartialOrderAnalysis(ModuleOp module,
+                                           AnalysisManager &analysisManager);
+
+  bool isValid() const { return valid; }
+
+  SSABlockPartialOrderAnalysis &getAnalysis() {
+    assert(valid && analysis && "main block partial order unavailable");
+    return *analysis;
+  }
+  const SSABlockPartialOrderAnalysis &getAnalysis() const {
+    assert(valid && analysis && "main block partial order unavailable");
+    return *analysis;
+  }
+
+  PartialOrder<mlir::Operation *> &getPartialOrder() {
+    return getAnalysis().getPartialOrder();
+  }
+  const PartialOrder<mlir::Operation *> &getPartialOrder() const {
+    return getAnalysis().getPartialOrder();
+  }
+
+private:
+  bool valid = true;
+  SSABlockPartialOrderAnalysis *analysis = nullptr;
 };
 } // namespace mlir::enzyme::distributed
 

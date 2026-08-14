@@ -1,5 +1,6 @@
 #include "src/enzyme_ad/jax/Passes/Distributed/Passes.h"
 
+#include "mlir/Analysis/TopologicalSortUtils.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/IRMapping.h"
@@ -11,12 +12,14 @@
 
 #include "src/enzyme_ad/jax/Dialect/Axis/Utilities.h"
 #include "src/enzyme_ad/jax/Dialect/Distributed/Utilities.h"
+#include "src/enzyme_ad/jax/Passes/Distributed/MainFunctionAnalysis.h"
 #include "src/enzyme_ad/jax/Passes/Distributed/PartialOrder.h"
 #include "src/enzyme_ad/jax/Passes/Distributed/ShardyLogicalAxisAnalysis.h"
 
 #include <cctype>
 #include <optional>
 #include <string>
+#include <utility>
 
 namespace mlir::enzyme::distributed {
 
@@ -103,6 +106,128 @@ toLocalType(mlir::RankedTensorType globalType,
     localShape.push_back(globalDim / extent);
   }
   return mlir::RankedTensorType::get(localShape, globalType.getElementType());
+}
+
+using TensorPartitioningAxes =
+    ShardyLogicalAxisAnalysis::SymbolsPerPartitioningAxis;
+
+static Type getLocalTypeForValue(
+    Value value,
+    llvm::ArrayRef<llvm::SmallVector<AxisSymbol>> partitioningAxes) {
+  auto rankedType = dyn_cast<RankedTensorType>(value.getType());
+  if (!rankedType) {
+    return value.getType();
+  }
+  return toLocalType(rankedType, partitioningAxes);
+}
+
+static std::optional<TensorPartitioningAxes>
+getPartitioningForValue(Value value, ShardyLogicalAxisAnalysis &axisAnalysis) {
+  if (auto result = dyn_cast<OpResult>(value)) {
+    return axisAnalysis.getTensorPartitionDims(result);
+  }
+  if (auto arg = dyn_cast<BlockArgument>(value)) {
+    return axisAnalysis.getTensorPartitionDims(arg);
+  }
+  return std::nullopt;
+}
+
+static std::optional<TensorPartitioningAxes>
+getPartitioningForValueOrCastNeighborhood(
+    Value value, ShardyLogicalAxisAnalysis &axisAnalysis) {
+  if (auto partitioning = getPartitioningForValue(value, axisAnalysis)) {
+    return partitioning;
+  }
+
+  if (auto castOp = value.getDefiningOp<UnrealizedConversionCastOp>();
+      castOp && castOp.getNumOperands() == 1 && castOp.getNumResults() == 1) {
+    if (auto partitioning =
+            getPartitioningForValue(castOp.getOperand(0), axisAnalysis)) {
+      return partitioning;
+    }
+  }
+
+  for (OpOperand &use : value.getUses()) {
+    auto castUser = dyn_cast<UnrealizedConversionCastOp>(use.getOwner());
+    if (!castUser || castUser.getNumOperands() != 1 ||
+        castUser.getNumResults() != 1) {
+      continue;
+    }
+    if (auto partitioning =
+            getPartitioningForValue(castUser.getResult(0), axisAnalysis)) {
+      return partitioning;
+    }
+  }
+
+  return std::nullopt;
+}
+
+static Value
+chooseKernelInputOperandValue(Value input,
+                              ShardyLogicalAxisAnalysis &axisAnalysis) {
+  Value current = input;
+  for (int step = 0; step < 8; ++step) {
+    auto castOp = current.getDefiningOp<UnrealizedConversionCastOp>();
+    if (!castOp || castOp.getNumOperands() != 1 ||
+        castOp.getNumResults() != 1) {
+      break;
+    }
+
+    Value source = castOp.getOperand(0);
+    auto currentPartitioning = getPartitioningForValue(current, axisAnalysis);
+    auto sourcePartitioning = getPartitioningForValue(source, axisAnalysis);
+
+    if (sourcePartitioning && !currentPartitioning) {
+      current = source;
+      continue;
+    }
+
+    auto currentType = dyn_cast<RankedTensorType>(current.getType());
+    auto sourceType = dyn_cast<RankedTensorType>(source.getType());
+    if (!currentType || !sourceType ||
+        currentType.getRank() != sourceType.getRank()) {
+      break;
+    }
+
+    bool sourceLooksMoreLocal = false;
+    bool comparableShape = true;
+    for (int64_t dim = 0; dim < currentType.getRank(); ++dim) {
+      if (currentType.isDynamicDim(dim) || sourceType.isDynamicDim(dim)) {
+        comparableShape = false;
+        break;
+      }
+      int64_t currentSize = currentType.getDimSize(dim);
+      int64_t sourceSize = sourceType.getDimSize(dim);
+      if (sourceSize > currentSize) {
+        comparableShape = false;
+        break;
+      }
+      if (sourceSize < currentSize) {
+        sourceLooksMoreLocal = true;
+      }
+    }
+
+    if (!comparableShape || !sourceLooksMoreLocal) {
+      break;
+    }
+
+    current = source;
+  }
+
+  return current;
+}
+
+static IndexedTensorShardingAttr buildDefaultShardingForType(MLIRContext *ctx,
+                                                             Type type) {
+  auto emptyAxes = DenseI64ArrayAttr::get(ctx, llvm::ArrayRef<int64_t>{});
+  SmallVector<DenseI64ArrayAttr> dimPartitioningAxes;
+  if (auto rankedType = dyn_cast<RankedTensorType>(type)) {
+    dimPartitioningAxes.reserve(rankedType.getRank());
+    for (int64_t i = 0; i < rankedType.getRank(); ++i) {
+      dimPartitioningAxes.push_back(emptyAxes);
+    }
+  }
+  return IndexedTensorShardingAttr::get(ctx, dimPartitioningAxes, emptyAxes);
 }
 
 struct ShardyToDistributedHigherLevelPass
@@ -286,11 +411,18 @@ struct ShardyToDistributedHigherLevelPass
         continue;
       }
 
-      auto maybePartitioning = axisAnalysis.getTensorPartitionDims(operand);
+      // The return doesn't have its own partitioning mapping,
+      // so we look at the producer value.
+      std::optional<TensorPartitioningAxes> maybePartitioning = std::nullopt;
+      if (OpResult result = dyn_cast<OpResult>(operand.get())) {
+        maybePartitioning = axisAnalysis.getTensorPartitionDims(result);
+      } else if (BlockArgument arg = dyn_cast<BlockArgument>(operand.get())) {
+        maybePartitioning = axisAnalysis.getTensorPartitionDims(arg);
+      }
       if (!maybePartitioning) {
-        mainFunc.emitError() << "missing partitioning mapping for return "
-                                "operand "
-                             << operand.getOperandNumber();
+        mainFunc.emitError()
+            << "missing partitioning mapping for return operand "
+            << operand.getOperandNumber();
         return failure();
       }
 
@@ -305,8 +437,8 @@ struct ShardyToDistributedHigherLevelPass
       orderedPartitioningAxes[idx] = getOrCreatePartitioningAxisGroup(symbol);
     }
 
-    auto argShardingsAttr = IndexedTensorShardingPerValueAttr::get(
-        ctx, argumentShardings);
+    auto argShardingsAttr =
+        IndexedTensorShardingPerValueAttr::get(ctx, argumentShardings);
     auto outputShardingsAttr =
         IndexedTensorShardingPerValueAttr::get(ctx, outputShardings);
 
@@ -330,8 +462,8 @@ struct ShardyToDistributedHigherLevelPass
     }
 
     builder.setInsertionPoint(movedReturnOp);
-    auto yieldOp = builder.create<DistributedYieldOp>(movedReturnOp.getLoc(),
-                                                      movedReturnOp.getOperands());
+    auto yieldOp = builder.create<DistributedYieldOp>(
+        movedReturnOp.getLoc(), movedReturnOp.getOperands());
     axisAnalysis.markRewrite(movedReturnOp, yieldOp);
     movedReturnOp.erase();
 
@@ -375,13 +507,15 @@ struct ShardyToDistributedHigherLevelPass
         conflict.reductionAxes = axisAnalysis.getReductionAxes(result);
         for (OpOperand &use : result.getUses()) {
           auto maybeConsumerSharded = axisAnalysis.getTensorPartitionDims(use);
-          if (!maybeConsumerSharded) {
+          auto is_return = isa<func::ReturnOp, distributed::DistributedYieldOp>(
+              use.getOwner());
+          if (!maybeConsumerSharded && !is_return) {
             use.getOwner()->emitRemark(
                 "Found non-sharded use of result number ")
                 << result.getResultNumber() << " of op " << op;
             continue;
           }
-          if (maybeProducerSharded != maybeConsumerSharded) {
+          if (!is_return && maybeProducerSharded != maybeConsumerSharded) {
             conflict.conflictingUses.push_back(&use);
           } else {
             conflict.nonConflictingUses.push_back(&use);
@@ -497,10 +631,6 @@ struct ShardyToDistributedHigherLevelPass
       auto rhsMesh =
           getMeshForTensorPartitioning(conflict.producerPartitioningAxes);
 
-      conflict.value.getOwner()->emitRemark("Found reduction axes for value ")
-          << conflict.value << " of op " << conflict.value.getOwner()
-          << ", inserting collective";
-
       Value reducedValue = createCollectiveForConflict(
           builder, conflict, lhsMesh, lhsDims, rhsMesh, lhsDims, localType,
           conflict.currentValue, reductionDims);
@@ -573,41 +703,535 @@ struct ShardyToDistributedHigherLevelPass
     return success();
   }
 
-  void runOnOperation() override {
-    ModuleOp module_op = getOperation();
+  LogicalResult clusterOpsIntoKernels(Block *mainBlock,
+                                      PartialOrder<Operation *> &order,
+                                      ShardyLogicalAxisAnalysis &axisAnalysis) {
+    // Want to cluster ops into communication-free distributed.kernels.
+    // Need to color the ops so that:
+    // 1. No two ops in the same color have a dependency between them
+    // outside the color
+    // 2. No two ops in the same color have different partitioning axes
+    // 3. No communication is created within a kernel regardless of axis
+    // assignments.
+    // Preconditions:
+    // - All collectives have been materialized on local types
+    // - may or may not have unrealized type casts between operations
+    //   on global values and collectives on local values.
+    // Algorithm:
+    // - Iterate ops in-order
+    // - For each op, if it is not colored, create a new color.
+    // - For the new color maintain a set of external input producer ops
+    //   and external output consumer ops.
+    // - When we add a new op to a color, enque all of its producers / consumers
+    //   to see if they are compatible. When dequing, a producer is compatible
+    //   if:
+    //    - it is not already colored.
+    //    - it has the same partitioning axes as the color.
+    //    - it is not topologically before any external producer of the color or
+    //      topologically after any external consumer of the color.
+    // - When the queue runs out, close the color.
+    // - When all ops are colored (reach the end of our iteration), for each
+    //   color (in order of creation, which we should be able to prove is a
+    //   valid topological order), create a distributed.kernel op and move the
+    //   ops into it. The input and return types of the kernel should be the
+    //   local types, allowing us to get rid of the unrealized casts, while the
+    //   block args and returned values should be the global pre-sharded types
+    //   from cloning the original global ops.
+    using PartitioningAxes =
+        ShardyLogicalAxisAnalysis::SymbolsPerPartitioningAxis;
+    const bool debugCluster = dumpLogicalAxes;
 
-    func::FuncOp mainFunc;
-    for (func::FuncOp func : module_op.getOps<func::FuncOp>()) {
-      if (func.getName() == "main") {
-        mainFunc = func;
-        break;
+    struct ColorState {
+      int64_t id;
+      PartitioningAxes partitioningAxes;
+      llvm::SmallVector<Operation *> members;
+      llvm::DenseSet<Operation *> externalProducers;
+      llvm::DenseSet<Operation *> externalConsumers;
+    };
+
+    auto samePartitioningAxes = [](const PartitioningAxes &lhs,
+                                   const PartitioningAxes &rhs) {
+      return lhs == rhs;
+    };
+
+    auto logAxes = [&](llvm::raw_ostream &os, const PartitioningAxes &axes) {
+      os << "[";
+      for (const auto &[axisIdx, axis] : llvm::enumerate(axes)) {
+        if (axisIdx != 0) {
+          os << ", ";
+        }
+        os << "{";
+        for (const auto &[symIdx, symbol] : llvm::enumerate(axis)) {
+          if (symIdx != 0) {
+            os << " ";
+          }
+          os << "a" << symbol.getId() << ":" << symbol.getExtent();
+        }
+        os << "}";
+      }
+      os << "]";
+    };
+
+    auto logOp = [&](StringRef tag, Operation *op) {
+      if (!debugCluster) {
+        return;
+      }
+      llvm::errs() << "[cluster] " << tag << ": ";
+      if (!op) {
+        llvm::errs() << "<null>\n";
+        return;
+      }
+      llvm::errs() << op->getName() << " @" << op << "\n";
+    };
+
+    auto isClusterableOp = [](Operation *op) {
+      // Keep communication and control/meta ops outside kernels.
+      if (isa<DistributedCollectiveOp, DistributedAwait, DistributedYieldOp,
+              DistributedKernelOp, UnrealizedConversionCastOp>(op)) {
+        return false;
+      }
+
+      // Axis dialect ops are sharding metadata plumbing, not computation.
+      if (op->getName().getDialectNamespace() == "axis") {
+        return false;
+      }
+
+      return true;
+    };
+
+    auto enqueueNeighbor = [](llvm::SmallVector<Operation *> &queue,
+                              Operation *op) {
+      if (op) {
+        queue.push_back(op);
+      }
+    };
+
+    auto tryAcceptCandidate =
+        [&](Operation *candidate, ColorState &color,
+            llvm::DenseMap<Operation *, int64_t> &opToColor) {
+          if (!candidate || !isClusterableOp(candidate) ||
+              opToColor.contains(candidate)) {
+            if (debugCluster) {
+              llvm::errs() << "[cluster] reject early in color " << color.id
+                           << " candidate=";
+              if (candidate) {
+                llvm::errs() << candidate->getName();
+              } else {
+                llvm::errs() << "<null>";
+              }
+              llvm::errs() << "\n";
+            }
+            return false;
+          }
+
+          PartitioningAxes candidateAxes =
+              axisAnalysis.getPartitioningAxes(candidate);
+          if (!samePartitioningAxes(candidateAxes, color.partitioningAxes)) {
+            if (debugCluster) {
+              llvm::errs() << "[cluster] reject axis mismatch in color "
+                           << color.id << " candidate=" << candidate->getName()
+                           << " axes=";
+              logAxes(llvm::errs(), candidateAxes);
+              llvm::errs() << " expected=";
+              logAxes(llvm::errs(), color.partitioningAxes);
+              llvm::errs() << "\n";
+            }
+            return false;
+          }
+
+          // Respect color boundary topology constraints.
+          for (Operation *externalProducer : color.externalProducers) {
+            if (order.compare(candidate, externalProducer) == Order::LessThan) {
+              if (debugCluster) {
+                llvm::errs()
+                    << "[cluster] reject producer boundary in color "
+                    << color.id << " candidate=" << candidate->getName()
+                    << " producer=" << externalProducer->getName() << "\n";
+              }
+              return false;
+            }
+          }
+          for (Operation *externalConsumer : color.externalConsumers) {
+            if (order.compare(candidate, externalConsumer) ==
+                Order::GreaterThan) {
+              if (debugCluster) {
+                llvm::errs()
+                    << "[cluster] reject consumer boundary in color "
+                    << color.id << " candidate=" << candidate->getName()
+                    << " consumer=" << externalConsumer->getName() << "\n";
+              }
+              return false;
+            }
+          }
+
+          opToColor[candidate] = color.id;
+          color.members.push_back(candidate);
+          logOp(("accept color " + llvm::Twine(color.id)).str(), candidate);
+          return true;
+        };
+
+    auto updateBoundaryAndQueue =
+        [&](Operation *accepted, ColorState &color,
+            llvm::DenseMap<Operation *, int64_t> &opToColor,
+            llvm::SmallVector<Operation *> &queue) {
+          for (OpOperand &operand : accepted->getOpOperands()) {
+            // don't need to color block args but need to consider
+            // dependencies through them
+            if (auto blockArg = dyn_cast<BlockArgument>(operand.get());
+                blockArg && blockArg.getParentBlock() == mainBlock) {
+              for (OpOperand &otherUse : blockArg.getUses()) {
+                Operation *otherUser = otherUse.getOwner();
+                if (!otherUser || otherUser->getBlock() != mainBlock ||
+                    opToColor.contains(otherUser)) {
+                  continue;
+                }
+                enqueueNeighbor(queue, otherUser);
+              }
+            }
+
+            Operation *producer = operand.get().getDefiningOp();
+            if (!producer || producer->getBlock() != mainBlock) {
+              continue;
+            }
+            if (!opToColor.contains(producer)) {
+              color.externalProducers.insert(producer);
+              logOp(("boundary producer color " + llvm::Twine(color.id)).str(),
+                    producer);
+              enqueueNeighbor(queue, producer);
+            }
+          }
+
+          for (Value result : accepted->getResults()) {
+            for (OpOperand &use : result.getUses()) {
+              Operation *consumer = use.getOwner();
+              if (!consumer || consumer->getBlock() != mainBlock) {
+                continue;
+              }
+              if (!opToColor.contains(consumer)) {
+                color.externalConsumers.insert(consumer);
+                logOp(
+                    ("boundary consumer color " + llvm::Twine(color.id)).str(),
+                    consumer);
+                enqueueNeighbor(queue, consumer);
+              }
+            }
+          }
+        };
+
+    llvm::DenseMap<Operation *, int64_t> opToColor;
+    llvm::SmallVector<ColorState> colors;
+    int64_t nextColorId = 0;
+
+    for (Operation &opRef : mainBlock->getOperations()) {
+      Operation *seed = &opRef;
+      if (!isClusterableOp(seed) || opToColor.contains(seed)) {
+        continue;
+      }
+
+      logOp("seed", seed);
+
+      PartitioningAxes seedAxes = axisAnalysis.getPartitioningAxes(seed);
+      ColorState color{nextColorId++, std::move(seedAxes), {}, {}, {}};
+      if (debugCluster) {
+        llvm::errs() << "[cluster] create color " << color.id << " axes=";
+        logAxes(llvm::errs(), color.partitioningAxes);
+        llvm::errs() << "\n";
+      }
+
+      // Seed the color and then grow by producer/consumer exploration.
+      (void)tryAcceptCandidate(seed, color, opToColor);
+      llvm::SmallVector<Operation *> queue;
+      updateBoundaryAndQueue(seed, color, opToColor, queue);
+
+      for (size_t queueIdx = 0; queueIdx < queue.size(); ++queueIdx) {
+        Operation *candidate = queue[queueIdx];
+        logOp(("dequeue color " + llvm::Twine(color.id)).str(), candidate);
+        if (!tryAcceptCandidate(candidate, color, opToColor)) {
+          continue;
+        }
+        updateBoundaryAndQueue(candidate, color, opToColor, queue);
+      }
+
+      if (debugCluster) {
+        llvm::errs() << "[cluster] close color " << color.id
+                     << " members=" << color.members.size()
+                     << " ext_prod=" << color.externalProducers.size()
+                     << " ext_cons=" << color.externalConsumers.size() << "\n";
+      }
+
+      colors.push_back(std::move(color));
+    }
+
+    if (debugCluster) {
+      llvm::errs() << "[cluster] total colors: " << colors.size() << "\n";
+    }
+
+    auto *ctx = &getContext();
+
+    // NOTE: Kernel boundary values that are ranked tensors are expected to
+    // carry sharding information. We recover this from direct analysis,
+    // representative use-sites, and nearby unrealized casts; if still missing,
+    // treat it as an invariant violation for compute values. We only allow
+    // default-empty sharding for non-ranked values.
+    OpBuilder builder(ctx);
+    for (size_t colorIdx = 0; colorIdx < colors.size(); ++colorIdx) {
+      const ColorState &color = colors[colorIdx];
+      if (color.members.empty()) {
+        continue;
+      }
+
+      llvm::DenseSet<Operation *> memberSet(color.members.begin(),
+                                            color.members.end());
+
+      llvm::SmallVector<Operation *> orderedMembers;
+      orderedMembers.reserve(color.members.size());
+      for (Operation &op : mainBlock->getOperations()) {
+        if (memberSet.contains(&op)) {
+          orderedMembers.push_back(&op);
+        }
+      }
+      if (orderedMembers.empty()) {
+        continue;
+      }
+
+      llvm::DenseMap<Value, int64_t> inputIndices;
+      llvm::SmallVector<Value> kernelInputs;
+      // with casts and collectives inserted the producer may not be known to
+      // the logical axis analysis for a value, but the use should be, allowing
+      // us to look up partitioning axes.
+      llvm::DenseMap<Value, OpOperand *> representativeInputUse;
+      llvm::DenseMap<Value, int64_t> outputIndices;
+      llvm::SmallVector<Value> kernelOutputs;
+
+      for (Operation *member : orderedMembers) {
+        for (OpOperand &operand : member->getOpOperands()) {
+          Value input = operand.get();
+          Operation *producer = input.getDefiningOp();
+          bool producedInsideColor = producer &&
+                                     producer->getBlock() == mainBlock &&
+                                     memberSet.contains(producer);
+          if (producedInsideColor) {
+            continue;
+          }
+          if (!inputIndices.contains(input)) {
+            inputIndices[input] = static_cast<int64_t>(kernelInputs.size());
+            kernelInputs.push_back(input);
+            representativeInputUse[input] = &operand;
+          }
+        }
+      }
+
+      for (Operation *member : orderedMembers) {
+        for (Value result : member->getResults()) {
+          bool escapesColor = false;
+          for (OpOperand &use : result.getUses()) {
+            Operation *consumer = use.getOwner();
+            bool consumedInsideColor = consumer &&
+                                       consumer->getBlock() == mainBlock &&
+                                       memberSet.contains(consumer);
+            if (!consumedInsideColor) {
+              escapesColor = true;
+              break;
+            }
+          }
+          if (!escapesColor) {
+            continue;
+          }
+          if (!outputIndices.contains(result)) {
+            outputIndices[result] = static_cast<int64_t>(kernelOutputs.size());
+            kernelOutputs.push_back(result);
+          }
+        }
+      }
+
+      SmallVector<Value> kernelInputOperands;
+      kernelInputOperands.reserve(kernelInputs.size());
+      SmallVector<Type> kernelBlockArgTypes;
+      kernelBlockArgTypes.reserve(kernelInputs.size());
+
+      llvm::DenseMap<AxisSymbol, int64_t> symbolToPartitioningAxisIdx;
+      SmallVector<IndexedTensorShardingAttr> inputShardings;
+      inputShardings.reserve(kernelInputs.size());
+
+      Operation *insertBefore = mainBlock->getTerminator();
+      builder.setInsertionPoint(insertBefore);
+
+      for (Value input : kernelInputs) {
+        kernelBlockArgTypes.push_back(input.getType());
+
+        auto maybePartitioning =
+            axisAnalysis.getTensorPartitionDims(*representativeInputUse[input]);
+        if (!maybePartitioning) {
+          maybePartitioning =
+              getPartitioningForValueOrCastNeighborhood(input, axisAnalysis);
+        }
+
+        if (!maybePartitioning && isa<RankedTensorType>(input.getType())) {
+          insertBefore->emitError()
+              << "missing sharding for ranked kernel input value " << input;
+          return failure();
+        }
+
+        Type localInputType = input.getType();
+        if (maybePartitioning) {
+          localInputType = getLocalTypeForValue(input, *maybePartitioning);
+        }
+
+        Value localInputValue =
+            chooseKernelInputOperandValue(input, axisAnalysis);
+        if (localInputValue.getType() != localInputType) {
+          localInputValue =
+              builder
+                  .create<UnrealizedConversionCastOp>(
+                      insertBefore->getLoc(), localInputType, localInputValue)
+                  .getResult(0);
+        }
+        kernelInputOperands.push_back(localInputValue);
+
+        if (auto rankedType = dyn_cast<RankedTensorType>(localInputType);
+            rankedType && maybePartitioning) {
+          inputShardings.push_back(buildIndexedShardingAttr(
+              rankedType, *maybePartitioning, symbolToPartitioningAxisIdx));
+        } else {
+          inputShardings.push_back(
+              buildDefaultShardingForType(ctx, localInputType));
+        }
+      }
+
+      SmallVector<IndexedTensorShardingAttr> outputShardings;
+      outputShardings.reserve(kernelOutputs.size());
+      SmallVector<Type> kernelResultTypes;
+      kernelResultTypes.reserve(kernelOutputs.size());
+      for (Value output : kernelOutputs) {
+        auto maybePartitioning =
+            getPartitioningForValueOrCastNeighborhood(output, axisAnalysis);
+        if (!maybePartitioning && isa<RankedTensorType>(output.getType())) {
+          insertBefore->emitError()
+              << "missing sharding for ranked kernel output value " << output;
+          return failure();
+        }
+        // Kernel returns remain in global types; sharding metadata carries
+        // the local interpretation.
+        Type globalOutputType = output.getType();
+        kernelResultTypes.push_back(globalOutputType);
+
+        if (auto rankedType = dyn_cast<RankedTensorType>(globalOutputType);
+            rankedType && maybePartitioning) {
+          outputShardings.push_back(buildIndexedShardingAttr(
+              rankedType, *maybePartitioning, symbolToPartitioningAxisIdx));
+        } else {
+          outputShardings.push_back(
+              buildDefaultShardingForType(ctx, globalOutputType));
+        }
+      }
+
+      SmallVector<Value> kernelPartitioningAxes(
+          symbolToPartitioningAxisIdx.size());
+      for (const auto &[symbol, idx] : symbolToPartitioningAxisIdx) {
+        kernelPartitioningAxes[idx] = getOrCreatePartitioningAxisGroup(symbol);
+      }
+
+      auto inputShardingsAttr =
+          IndexedTensorShardingPerValueAttr::get(ctx, inputShardings);
+      auto outputShardingsAttr =
+          IndexedTensorShardingPerValueAttr::get(ctx, outputShardings);
+
+      auto kernel = builder.create<DistributedKernelOp>(
+          insertBefore->getLoc(), TypeRange(kernelResultTypes),
+          ValueRange(kernelInputOperands), ValueRange(kernelPartitioningAxes),
+          inputShardingsAttr, outputShardingsAttr);
+
+      Region &kernelBody = kernel->getRegion(0);
+      if (kernelBody.empty()) {
+        kernelBody.push_back(new Block());
+      }
+      Block &kernelBlock = kernelBody.front();
+      for (Type argType : kernelBlockArgTypes) {
+        kernelBlock.addArgument(argType, insertBefore->getLoc());
+      }
+
+      IRMapping mapping;
+      for (auto [idx, input] : llvm::enumerate(kernelInputs)) {
+        mapping.map(input, kernelBlock.getArgument(idx));
+      }
+
+      OpBuilder bodyBuilder = OpBuilder::atBlockBegin(&kernelBlock);
+      for (Operation *member : orderedMembers) {
+        bodyBuilder.clone(*member, mapping);
+      }
+
+      SmallVector<Value> yieldedValues;
+      yieldedValues.reserve(kernelOutputs.size());
+      for (Value output : kernelOutputs) {
+        yieldedValues.push_back(mapping.lookup(output));
+      }
+      bodyBuilder.setInsertionPointToEnd(&kernelBlock);
+      bodyBuilder.create<DistributedYieldOp>(insertBefore->getLoc(),
+                                             yieldedValues);
+
+      for (auto [resultIdx, oldValue] : llvm::enumerate(kernelOutputs)) {
+        Value newValue = kernel.getResult(resultIdx);
+        for (OpOperand &use : llvm::make_early_inc_range(oldValue.getUses())) {
+          Operation *consumer = use.getOwner();
+          bool consumedInsideColor = consumer &&
+                                     consumer->getBlock() == mainBlock &&
+                                     memberSet.contains(consumer);
+          if (!consumedInsideColor) {
+            rewriteUseWithValue(builder, insertBefore->getLoc(), &use,
+                                newValue);
+          }
+        }
+      }
+
+      for (auto it = orderedMembers.rbegin(); it != orderedMembers.rend();
+           ++it) {
+        (*it)->erase();
+      }
+
+      if (debugCluster) {
+        llvm::errs() << "[cluster] materialized kernel color=" << color.id
+                     << " members=" << orderedMembers.size()
+                     << " inputs=" << kernelInputs.size()
+                     << " outputs=" << kernelOutputs.size() << "\n";
       }
     }
 
+    if (!mlir::sortTopologically(mainBlock)) {
+      mainBlock->getParentOp()->emitError()
+          << "failed to reorder block operations topologically";
+      return failure();
+    }
+
+    return success();
+  }
+
+  void runOnOperation() override {
+    ModuleOp module_op = getOperation();
+
+    const auto &mainFunctionAnalysis = getAnalysis<FindMainFunctionAnalysis>();
+    if (!mainFunctionAnalysis.isValid()) {
+      if (!mainFunctionAnalysis.hasMainFunction()) {
+        emitWarning(module_op.getLoc())
+            << "no main function found; skipping pass";
+        return;
+      }
+      emitError(module_op.getLoc())
+          << "multiple symbols named 'main' found across func.func and "
+             "distributed.DistributedFunction";
+      signalPassFailure();
+      return;
+    }
+
+    func::FuncOp mainFunc = mainFunctionAnalysis.getMainFuncOp();
     if (!mainFunc) {
       emitWarning(module_op.getLoc())
-          << "no main function found; skipping pass";
+          << "main is not a func.func; skipping pass";
       return;
     }
 
-    Region &body = mainFunc.getBody();
-    if (body.empty()) {
-      emitError(mainFunc.getLoc()) << "main function has no body";
-      signalPassFailure();
-      return;
-    }
-
-    Block *mainBlock = nullptr;
-    if (body.getBlocks().size() != 1) {
-      emitError(mainFunc.getLoc())
-          << "main function must have exactly one block";
-      signalPassFailure();
-      return;
-    }
-
-    mainBlock = &body.front();
+    Block *mainBlock = mainFunctionAnalysis.getMainBlock();
     if (!mainBlock) {
-      emitError(mainFunc.getLoc()) << "main function has no entry block";
+      emitError(mainFunc.getLoc()) << "main function has no body";
       signalPassFailure();
       return;
     }
@@ -617,7 +1241,15 @@ struct ShardyToDistributedHigherLevelPass
     axis_builder->setInsertionPointToStart(&module_op.getBodyRegion().front());
     axis_loc = mainFunc.getLoc();
 
-    axisAnalysis = ShardyLogicalAxisAnalysis(mainFunc);
+    const auto &mainAxisAnalysis =
+        getAnalysis<MainFunctionShardyLogicalAxisAnalysis>();
+    if (!mainAxisAnalysis.isValid()) {
+      emitError(mainFunc.getLoc())
+          << "failed to build module-scoped main logical axis analysis";
+      signalPassFailure();
+      return;
+    }
+    axisAnalysis = mainAxisAnalysis.getAnalysis();
 
     if (dumpLogicalAxes) {
       dumpLogicalAxesForMainBlock(mainBlock, axisAnalysis);
@@ -650,6 +1282,19 @@ struct ShardyToDistributedHigherLevelPass
     }
 
     // Step 6: run clustering to group ops into kernels
+    auto &order_analysis =
+        getAnalysis<MainFunctionSSABlockPartialOrderAnalysis>();
+    if (!order_analysis.isValid()) {
+      emitError(module_op.getLoc())
+          << "failed to build module-scoped main SSA partial order analysis";
+      signalPassFailure();
+      return;
+    }
+    auto &order = order_analysis.getPartialOrder();
+    if (failed(clusterOpsIntoKernels(mainBlock, order, axisAnalysis))) {
+      signalPassFailure();
+      return;
+    }
   }
 };
 

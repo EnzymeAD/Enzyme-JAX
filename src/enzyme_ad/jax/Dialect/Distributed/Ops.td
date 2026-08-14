@@ -104,7 +104,9 @@ def DistributedKernelOp : DistributedOp<"DistributedKernel", [SingleBlock, AttrS
                    IndexedTensorShardingPerValueAttr : $argument_shardings,
                    IndexedTensorShardingPerValueAttr : $output_shardings);
   let results = (outs Variadic<AnyType> : $returns);
+  let regions = (region AnyRegion:$body);
   let hasVerifier = 1;
+  let assemblyFormat = [{$arguments `:` type($arguments) $argument_shardings `\n` ` ` ` ` `->` type($returns) $output_shardings `\n` ` ` ` ` `axes` $partitioning_axes `:` type($partitioning_axes) $body attr-dict}];
 }
 
 

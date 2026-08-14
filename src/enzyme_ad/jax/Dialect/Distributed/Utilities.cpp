@@ -2,11 +2,11 @@
 
 #include "src/enzyme_ad/jax/Utils.h"
 
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "shardy/dialect/sdy/ir/dialect.h"
 #include "shardy/dialect/sdy/ir/utils.h"
 #include "shardy/dialect/sdy/transforms/propagation/op_sharding_rule_builder.h"
 #include "shardy/dialect/sdy/transforms/propagation/op_sharding_rule_registry.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
 
 namespace mlir::enzyme::distributed {
@@ -15,10 +15,12 @@ using namespace ::mlir::enzyme::axis;
 
 namespace {
 
-::mlir::Region *buildSyntheticReductionBody(
-    ::mlir::stablehlo::ReduceOpKind reductionKind, ::mlir::Type elementType,
-    std::shared_ptr<::mlir::Region> &storage) {
-  if (!elementType || reductionKind == ::mlir::stablehlo::ReduceOpKind::Unknown) {
+::mlir::Region *
+buildSyntheticReductionBody(::mlir::stablehlo::ReduceOpKind reductionKind,
+                            ::mlir::Type elementType,
+                            std::shared_ptr<::mlir::Region> &storage) {
+  if (!elementType ||
+      reductionKind == ::mlir::stablehlo::ReduceOpKind::Unknown) {
     return nullptr;
   }
 
@@ -138,8 +140,10 @@ getOrSynthesizeOpShardingRule(::mlir::Operation *op) {
     reductionBody = std::make_shared<::mlir::Region>();
     ::mlir::IRMapping regionMapper;
     reduceOp.getRegion().cloneInto(reductionBody.get(), regionMapper);
-    auto inputType = dyn_cast<RankedTensorType>(reduceOp.getOperand(0).getType());
-    auto resultType = dyn_cast<RankedTensorType>(reduceOp.getResult(0).getType());
+    auto inputType =
+        dyn_cast<RankedTensorType>(reduceOp.getOperand(0).getType());
+    auto resultType =
+        dyn_cast<RankedTensorType>(reduceOp.getResult(0).getType());
     if (!inputType || !resultType) {
       return {};
     }
@@ -152,8 +156,8 @@ getOrSynthesizeOpShardingRule(::mlir::Operation *op) {
         return {};
       }
 
-      bool isReductionDim = llvm::is_contained(reduceOp.getDimensions(),
-                                               inputDimIdx);
+      bool isReductionDim =
+          llvm::is_contained(reduceOp.getDimensions(), inputDimIdx);
       int64_t resultDim = ::mlir::sdy::kNullDim;
       if (!isReductionDim) {
         if (resultDimIdx >= resultType.getRank() ||
@@ -165,9 +169,8 @@ getOrSynthesizeOpShardingRule(::mlir::Operation *op) {
 
       builder.addFactor({inputDimIdx, ::mlir::sdy::kNullDim}, {resultDim},
                         inputType.getDimSize(inputDimIdx),
-                        isReductionDim
-                            ? ::mlir::sdy::FactorType::kReduction
-                            : ::mlir::sdy::FactorType::kPassThrough);
+                        isReductionDim ? ::mlir::sdy::FactorType::kReduction
+                                       : ::mlir::sdy::FactorType::kPassThrough);
     }
 
     if (resultDimIdx != resultType.getRank()) {
@@ -175,34 +178,7 @@ getOrSynthesizeOpShardingRule(::mlir::Operation *op) {
     }
 
     synthesizedRule = builder.build();
-  } else if (isa<::mlir::func::ReturnOp,
-                 ::mlir::enzyme::distributed::DistributedYieldOp>(op)) {
-    // Return-like terminators should not couple partition axes across
-    // operands. Give each tensor axis of each operand its own independent
-    // pass-through factor.
-    auto builder = ::mlir::sdy::OpShardingRuleBuilder(op);
-    int64_t numOperands = op->getNumOperands();
-    for (int64_t operandIdx = 0; operandIdx < numOperands; ++operandIdx) {
-      auto tensorType =
-          dyn_cast<RankedTensorType>(op->getOperand(operandIdx).getType());
-      if (!tensorType) {
-        continue;
-      }
-      for (int64_t dimIdx = 0; dimIdx < tensorType.getRank(); ++dimIdx) {
-        if (tensorType.isDynamicDim(dimIdx)) {
-          return {};
-        }
-
-        SmallVector<int64_t> lhsDims(numOperands, ::mlir::sdy::kNullDim);
-        lhsDims[operandIdx] = dimIdx;
-        builder.addFactor(lhsDims, {}, tensorType.getDimSize(dimIdx),
-                          ::mlir::sdy::FactorType::kPassThrough);
-      }
-    }
-
-    synthesizedRule = builder.build();
   }
-
   if (!synthesizedRule) {
     return {};
   }
@@ -217,11 +193,12 @@ getOrSynthesizeOpShardingRule(::mlir::Operation *op) {
   return buildSyntheticReductionBody(reductionKind, elementType, reductionBody);
 }
 
-CollectiveAndAwait createCollectiveAndAwait(
-    ::mlir::OpBuilder &builder, ::mlir::Location loc, ::mlir::Value inputObject,
-    ::mlir::Value inputMesh, ::mlir::Value outputMesh,
-    ::mlir::ValueRange reductionGroups, ::mlir::Value mapping,
-    ::mlir::Type outputType) {
+CollectiveAndAwait
+createCollectiveAndAwait(::mlir::OpBuilder &builder, ::mlir::Location loc,
+                         ::mlir::Value inputObject, ::mlir::Value inputMesh,
+                         ::mlir::Value outputMesh,
+                         ::mlir::ValueRange reductionGroups,
+                         ::mlir::Value mapping, ::mlir::Type outputType) {
   OperationState state(loc, DistributedCollectiveOp::getOperationName());
   state.addOperands(inputObject);
   state.addOperands(inputMesh);

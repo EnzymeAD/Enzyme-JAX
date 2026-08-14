@@ -4,11 +4,14 @@
 #include <atomic>
 #include <cassert>
 #include <cstdint>
+#include <optional>
 
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/Pass/AnalysisManager.h"
 #include "shardy/dialect/sdy/ir/dialect.h"
+#include "src/enzyme_ad/jax/Passes/Distributed/MainFunctionAnalysis.h"
 #include "llvm/ADT/ArrayRef.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/DenseSet.h"
@@ -215,6 +218,30 @@ private:
   std::optional<TensorAxesToPartitionAxes>
   getTensorPartitionDims(Operation *op, bool isLHS, int valueIdx);
   void buildUnion();
+};
+
+// Module-scoped wrapper that materializes ShardyLogicalAxisAnalysis for
+// func.func @main when available. Essentially a wrapper allowing
+// for getAnalysis<>() to be called on a module.
+class MainFunctionShardyLogicalAxisAnalysis {
+public:
+  MainFunctionShardyLogicalAxisAnalysis(ModuleOp module,
+                                        AnalysisManager &analysisManager);
+
+  bool isValid() const { return valid; }
+
+  ShardyLogicalAxisAnalysis &getAnalysis() {
+    assert(isValid() && "main function axis analysis unavailable");
+    return *analysis;
+  }
+  const ShardyLogicalAxisAnalysis &getAnalysis() const {
+    assert(isValid() && "main function axis analysis unavailable");
+    return *analysis;
+  }
+
+private:
+  bool valid = true;
+  ShardyLogicalAxisAnalysis *analysis = nullptr;
 };
 
 } // namespace mlir::enzyme::distributed

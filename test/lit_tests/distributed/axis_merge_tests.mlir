@@ -104,3 +104,38 @@ module @reduce_then_conflict_chain {
 // CHAIN: distributed.Collective
 // CHAIN-SAME: reduces ()
 // CHAIN-SAME: maps %{{.*}} : !axis.map
+
+// -----
+
+// Elementwise chain from X merged with Y, ending in a reduce, plus an
+// independent elementwise on Y that is also returned. This checks that
+// clustering can walk backwards to include Y via X+Y and then forwards to
+// include Y-only consumers, yielding multiple outputs from one kernel.
+module @test_single_kernel {
+  sdy.mesh @mesh = <["x"=2, "y"=2]>
+
+  func.func @main(
+      %x: tensor<8x8x4xf32> {sdy.sharding = #sdy.sharding<@mesh, [{"y"}, {}, {"x"}]>},
+      %y: tensor<8x8x4xf32> {sdy.sharding = #sdy.sharding<@mesh, [{"y"}, {}, {"x"}]>})
+      -> (tensor<8x8xf32>, tensor<8x8x4xf32>) {
+    %one = stablehlo.constant dense<1.0> : tensor<8x8x4xf32>
+    %x_bias = stablehlo.add %x, %one : tensor<8x8x4xf32>
+    %xy = stablehlo.add %x_bias, %y : tensor<8x8x4xf32>
+    %y_elem = stablehlo.multiply %y, %one : tensor<8x8x4xf32>
+    %zero = stablehlo.constant dense<0.0> : tensor<f32>
+    %red = stablehlo.reduce(%xy init: %zero) applies stablehlo.add across dimensions = [2] : (tensor<8x8x4xf32>, tensor<f32>) -> tensor<8x8xf32>
+    return %red, %y_elem : tensor<8x8xf32>, tensor<8x8x4xf32>
+  }
+}
+
+// CHAIN-LABEL: module @elementwise_chain_then_reduce_single_kernel {
+// CHAIN: %[[KERNEL:.*]]:2 = "distributed.DistributedKernel"
+// CHAIN: stablehlo.add
+// CHAIN: stablehlo.add
+// CHAIN: stablehlo.multiply
+// CHAIN: stablehlo.reduce
+// CHAIN: distributed.DistributedYield
+// CHAIN: "distributed.Collective"(%[[KERNEL]]#0
+// CHAIN-SAME: reduces (%{{.*}})
+// CHAIN: %[[RED_AWAIT:.*]] = distributed.Await
+// CHAIN: distributed.DistributedYield %[[RED_AWAIT]], %[[KERNEL]]#1
