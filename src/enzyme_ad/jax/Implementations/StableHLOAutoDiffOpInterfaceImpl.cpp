@@ -1031,8 +1031,8 @@ public:
     if (!sched.hasTrailing())
       return sched.nInnerV;
 
-    Value numIters = makeI64Constant(loc, builder, sched.nInner * sched.nOuter +
-                                                       sched.trailingIters);
+    Value numIters = makeI64Constant(
+        loc, builder, sched.nInner * sched.nOuter + sched.trailingIters);
     Value remaining =
         stablehlo::SubtractOp::create(builder, loc, numIters, base);
     Value length =
@@ -1074,8 +1074,7 @@ public:
                             const PeriodicSchedule &sched) {
     Value last = makeI64Constant(loc, builder, sched.numSegments() - 1);
     Value segment = stablehlo::SubtractOp::create(builder, loc, last, outerIV);
-    Value base =
-        stablehlo::MulOp::create(builder, loc, sched.nInnerV, segment);
+    Value base = stablehlo::MulOp::create(builder, loc, sched.nInnerV, segment);
     return {base, computeSegmentLength(builder, loc, base, sched)};
   }
 
@@ -1109,10 +1108,10 @@ public:
     assert(!sched.isDynamic() && "see supportsDynamicPeriodic");
     int64_t start = getConstantStart(op), step = getConstantStep(op);
     Value scaled =
-        step == 1 ? stepIndex
-                  : stablehlo::MulOp::create(
-                        builder, loc, makeI64Constant(loc, builder, step),
-                        stepIndex);
+        step == 1
+            ? stepIndex
+            : stablehlo::MulOp::create(
+                  builder, loc, makeI64Constant(loc, builder, step), stepIndex);
     if (start == 0)
       return scaled;
     return stablehlo::AddOp::create(
