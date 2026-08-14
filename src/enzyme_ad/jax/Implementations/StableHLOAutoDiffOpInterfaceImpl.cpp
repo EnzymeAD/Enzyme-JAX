@@ -650,16 +650,21 @@ public:
     return info.getConstantNumIters();
   }
 
+  // The shared condition, plus this dialect's own requirement that the loop be
+  // a canonical counted one before anything can be read as a trip count.
   static bool needsCheckpointing(stablehlo::WhileOp op) {
     if (!checkpointingEnabled(op) || hasBinomialAttr(op))
       return false;
     if (!isCanonicalForLoop(op))
       return false;
-    // A dynamic trip count has no compile-time N to take the square root of,
-    // so the period cannot be defaulted: it has to be stated. Diagnosing that
-    // is left to warnUnsupportedCheckpointing(), which runs once.
-    return getConstantNumberOfIterations(op).has_value() ||
-           getCheckpointBudget(op).has_value();
+    if (getConstantNumberOfIterations(op).has_value())
+      return true;
+    // A dynamic trip count would need the period stated, having no compile-time
+    // N to take the square root of -- but this dialect does not take that path
+    // at all (see supportsDynamicPeriodic), so the request is declined here and
+    // diagnosed by warnUnsupportedCheckpointing(), which runs once.
+    auto period = getCheckpointBudget(op);
+    return supportsDynamicPeriodic() && period.has_value() && *period > 0;
   }
 
   static bool needsBinomialCheckpointing(stablehlo::WhileOp op) {
@@ -978,39 +983,22 @@ public:
 
   //---- periodic scaffold ----
 
-  static bool supportsDynamicPeriodic() { return true; }
+  // A dynamic trip count falls back to the plain reverse path, as it does for
+  // affine.for. Budgeting the segment count keeps the checkpoint buffers
+  // statically shaped, but it moves the runtime quantity into the segment
+  // length -- ceil(numIters / nOuter), which has no compile-time upper bound --
+  // and the per-segment replay tape is sized by that. A dynamically shaped
+  // tensor is not something XLA can translate, so what this path would emit
+  // does not compile; the plain path caches the same values against the trip
+  // count itself, which bounds analysis can often still pin down.
+  static bool supportsDynamicPeriodic() { return false; }
 
-  // Same decomposition as the shared default for an explicit period, but the
-  // sqrt default is normalized the same way: floor(N/nInner) full segments plus
-  // a remainder shorter than the period.
-  //
-  // The shared default instead keeps nOuter == nInner == sqrt(N) and lets the
-  // remainder be as long as it likes -- N=15 becomes 3 segments of 3 plus a
-  // trailing 6 -- which the loops here cannot express: every segment's length
-  // is min(period, remaining), so a trailing segment longer than the period
-  // would be silently truncated and the tail of the loop never replayed.
-  static PeriodicSchedule getStaticPeriodicSchedule(stablehlo::WhileOp op) {
-    PeriodicSchedule sched;
-    auto period = getCheckpointBudget(op);
-    auto numIters = getConstantNumberOfIterations(op);
-    if (!numIters) {
-      sched.nInner = *period;
-      return sched;
-    }
-    sched.nInner =
-        (period && *period > 0) ? *period : (int64_t)std::sqrt(*numIters);
-    sched.nOuter = *numIters / sched.nInner;
-    sched.trailingIters = *numIters % sched.nInner;
-    return sched;
-  }
-
-  // Both outer loops count segments, one forward and one back.
+  // Both outer loops count segments, one forward and one back: one iteration
+  // per checkpoint, so the trip count is the stated period.
   static stablehlo::WhileOp
   createForwardOuterLoop(OpBuilder &builder, Location loc,
                          const PeriodicSchedule &sched, ValueRange inits) {
-    if (!sched.isDynamic())
-      return makeForLoop(builder, loc, 0, sched.numSegments(), 1, inits);
-    return makeForLoop(builder, loc, 0, sched.nOuterV, 1, inits);
+    return makeForLoop(builder, loc, 0, sched.numSegments(), 1, inits);
   }
 
   static stablehlo::WhileOp
@@ -1026,28 +1014,29 @@ public:
   static SmallVector<Value>
   computeForwardSegmentHint(OpBuilder &builder, Location loc, Value outerIV,
                             const PeriodicSchedule &sched) {
-    Value nInner = makeI64Constant(loc, builder, sched.nInner);
-    Value base = stablehlo::MulOp::create(builder, loc, outerIV, nInner);
+    Value base = stablehlo::MulOp::create(builder, loc, outerIV, sched.nInnerV);
     return {base, computeSegmentLength(builder, loc, base, sched)};
   }
 
-  // min(period, numIters - base), except where the trip count is a whole
-  // multiple of the period and every segment is provably full: a static length
-  // is what lets the tensors downstream of it keep a static shape.
+  // min(nInner, numIters - base), except where the trip count is a whole
+  // multiple of nInner and every segment is provably full: a static length is
+  // what lets the tensors downstream of it keep a static shape.
+  //
+  // Not the shared segmentLength(): a `select` against the trailing segment
+  // would compute the same thing, but the bound annotated below is what lets
+  // the cache buffers downstream keep a static shape, and it is read off a min.
   static Value computeSegmentLength(OpBuilder &builder, Location loc,
                                     Value base, const PeriodicSchedule &sched) {
-    Value nInner = makeI64Constant(loc, builder, sched.nInner);
-    if (!sched.isDynamic() && !sched.hasTrailing())
-      return nInner;
+    assert(!sched.isDynamic() && "see supportsDynamicPeriodic");
+    if (!sched.hasTrailing())
+      return sched.nInnerV;
 
-    Value numIters = sched.isDynamic()
-                         ? sched.numItersV
-                         : makeI64Constant(loc, builder,
-                                           sched.nInner * sched.nOuter +
-                                               sched.trailingIters);
+    Value numIters = makeI64Constant(loc, builder, sched.nInner * sched.nOuter +
+                                                       sched.trailingIters);
     Value remaining =
         stablehlo::SubtractOp::create(builder, loc, numIters, base);
-    Value length = stablehlo::MinOp::create(builder, loc, nInner, remaining);
+    Value length =
+        stablehlo::MinOp::create(builder, loc, sched.nInnerV, remaining);
     // Annotate the upper bound on the runtime min so that downstream passes
     // (cache buffer sizing in the reverse-mode while rewrite) can still pick a
     // static shape instead of falling back to a dynamic one. Read by
@@ -1083,14 +1072,10 @@ public:
   static SmallVector<Value>
   computeReverseSegmentHint(OpBuilder &builder, Location loc, Value outerIV,
                             const PeriodicSchedule &sched) {
-    Value last =
-        sched.isDynamic()
-            ? stablehlo::SubtractOp::create(builder, loc, sched.nOuterV,
-                                            makeI64Constant(loc, builder, 1))
-            : makeI64Constant(loc, builder, sched.numSegments() - 1);
+    Value last = makeI64Constant(loc, builder, sched.numSegments() - 1);
     Value segment = stablehlo::SubtractOp::create(builder, loc, last, outerIV);
-    Value base = stablehlo::MulOp::create(
-        builder, loc, makeI64Constant(loc, builder, sched.nInner), segment);
+    Value base =
+        stablehlo::MulOp::create(builder, loc, sched.nInnerV, segment);
     return {base, computeSegmentLength(builder, loc, base, sched)};
   }
 
@@ -1121,21 +1106,17 @@ public:
   static Value computeIVFromStep(OpBuilder &builder, Location loc,
                                  stablehlo::WhileOp op, Value stepIndex,
                                  const PeriodicSchedule &sched) {
-    if (!sched.isDynamic()) {
-      int64_t start = getConstantStart(op), step = getConstantStep(op);
-      Value scaled = step == 1
-                         ? stepIndex
-                         : stablehlo::MulOp::create(
-                               builder, loc,
-                               makeI64Constant(loc, builder, step), stepIndex);
-      if (start == 0)
-        return scaled;
-      return stablehlo::AddOp::create(
-          builder, loc, makeI64Constant(loc, builder, start), scaled);
-    }
+    assert(!sched.isDynamic() && "see supportsDynamicPeriodic");
+    int64_t start = getConstantStart(op), step = getConstantStep(op);
+    Value scaled =
+        step == 1 ? stepIndex
+                  : stablehlo::MulOp::create(
+                        builder, loc, makeI64Constant(loc, builder, step),
+                        stepIndex);
+    if (start == 0)
+      return scaled;
     return stablehlo::AddOp::create(
-        builder, loc, sched.startV,
-        stablehlo::MulOp::create(builder, loc, sched.stepV, stepIndex));
+        builder, loc, makeI64Constant(loc, builder, start), scaled);
   }
 
   static stablehlo::WhileOp
