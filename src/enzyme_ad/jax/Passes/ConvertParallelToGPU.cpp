@@ -1075,6 +1075,11 @@ struct ParallelizeBlockOps : public OpRewritePattern<scf::ParallelOp> {
       LLVM_DEBUG(DBGS() << "cannot parallelize around a reduction\n");
       return failure();
     }
+    auto parentPar = dyn_cast<scf::ParallelOp>(pop->getParentOp());
+    if (!parentPar || !isa<enzymexla::GPUWrapperOp>(parentPar->getParentOp())) {
+      LLVM_DEBUG(DBGS() << "parallel is serialized in a thread\n");
+      return failure();
+    }
     auto loc = pop->getLoc();
     Block *outerBlock = pop->getBlock();
     Block *innerBlock = pop.getBody();
