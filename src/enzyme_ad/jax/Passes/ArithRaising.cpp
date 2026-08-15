@@ -346,6 +346,29 @@ struct ArithRaisingPass
       copySignOp.erase();
     });
 
+    op->walk([=](math::TruncOp truncOp) {
+      // trunc(x) rounds towards zero: select(x >= 0, floor(x), ceil(x)).
+      auto ty = dyn_cast<RankedTensorType>(truncOp.getResult().getType());
+      if (!use_stablehlo || !ty)
+        return;
+
+      OpBuilder builder(truncOp);
+      auto loc = truncOp.getLoc();
+      Value val = truncOp.getOperand();
+      Attribute constAttr = FloatAttr::get(ty.getElementType(), 0);
+      Value zero = stablehlo::ConstantOp::create(
+          builder, loc, ty, SplatElementsAttr::get(ty, constAttr));
+      Value isNonNegative = stablehlo::CompareOp::create(
+          builder, loc, val, zero, stablehlo::ComparisonDirection::GE);
+      Value flr = stablehlo::FloorOp::create(builder, loc, val);
+      Value cl = stablehlo::CeilOp::create(builder, loc, val);
+      Value res =
+          stablehlo::SelectOp::create(builder, loc, isNonNegative, flr, cl);
+
+      truncOp.replaceAllUsesWith(res);
+      truncOp.erase();
+    });
+
     op->walk([=](math::AtanOp atanOp) {
       // atan %a -> atan2(%a, 1.0)
       auto ty = dyn_cast<RankedTensorType>(atanOp.getResult().getType());
