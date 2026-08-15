@@ -267,21 +267,36 @@ struct AddLaunchBounds : public OpRewritePattern<gpu::LaunchFuncOp> {
     auto bx = getConstantInteger(blockDims.x);
     auto by = getConstantInteger(blockDims.y);
     auto bz = getConstantInteger(blockDims.z);
-    if (!bx || !by || !bz)
-      return failure();
+    if (!bx || !by || !bz) {
+      // The kernel must stay launchable at every legal block size; without
+      // a bound ptxas may allocate registers for a small block and larger
+      // launches fail with too-many-resources.
+      llvm::StringRef attrName = "nvvm.maxntid";
+      if (gpuFuncOp->hasAttr(attrName))
+        return failure();
+      gpuFuncOp->setAttr(attrName, rewriter.getDenseI32ArrayAttr({1024, 1, 1}));
+      gpuFuncOp->setAttr(
+          "rocdl.max_flat_work_group_size",
+          rewriter.getIntegerAttr(rewriter.getIndexType(), 1024));
+      return success();
+    }
     // TODO should we only set idx or separately set idx, idy, idz? clang seems
     // to only set idx to the total num
     // TODO grab the attr name from the NVVM dialect after bumping llvm
     bool succeeded = false;
     int blockSize = *bx * *by * *bz;
-    llvm::StringRef attrName = "nvvm.maxntidx";
+    // A kernel with a known block size already gets its bound from that
+    // attribute during lowering; adding it here would duplicate it.
+    if (gpuFuncOp->hasAttr("known_block_size"))
+      return failure();
+    llvm::StringRef attrName = "nvvm.maxntid";
+    auto ntid = rewriter.getDenseI32ArrayAttr(
+        {(int32_t)*bx, (int32_t)*by, (int32_t)*bz});
     if (!gpuFuncOp->hasAttr(attrName)) {
-      gpuFuncOp->setAttr(attrName, rewriter.getIntegerAttr(
-                                       rewriter.getIndexType(), blockSize));
+      gpuFuncOp->setAttr(attrName, ntid);
       succeeded = true;
     } else {
-      assert(blockSize ==
-             dyn_cast<IntegerAttr>(gpuFuncOp->getAttr(attrName)).getInt());
+      assert(ntid == gpuFuncOp->getAttr(attrName));
       succeeded = false;
     }
     attrName = "rocdl.max_flat_work_group_size";
