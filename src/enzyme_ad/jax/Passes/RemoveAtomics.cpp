@@ -508,6 +508,8 @@ void convertRmw(enzyme::AffineAtomicRMWOp rmw) {
   OpBuilder b(rmw);
   auto read = affine::AffineLoadOp::create(b, rmw.getLoc(), rmw.getMemref(),
                                            rmw.getMap(), rmw.getIndices());
+  if (auto align = rmw.getAlignment())
+    read.setAlignment(*align);
 
   mlir::Value modify;
   switch (rmw.getKind()) {
@@ -571,8 +573,10 @@ void convertRmw(enzyme::AffineAtomicRMWOp rmw) {
           iface.getFastMathAttrName(),
           arith::FastMathFlagsAttr::get(rmw.getContext(), rmw.getFastmath()));
 
-  affine::AffineStoreOp::create(b, rmw.getLoc(), modify, rmw.getMemref(),
-                                rmw.getMap(), rmw.getIndices());
+  auto write = affine::AffineStoreOp::create(
+      b, rmw.getLoc(), modify, rmw.getMemref(), rmw.getMap(), rmw.getIndices());
+  if (auto align = rmw.getAlignment())
+    write.setAlignment(*align);
   rmw.getResult().replaceAllUsesWith(read);
   rmw.erase();
 }
