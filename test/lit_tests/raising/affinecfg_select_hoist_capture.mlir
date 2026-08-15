@@ -68,7 +68,7 @@ module attributes {gpu.container_module} {
 // CHECK-NEXT:      } else {
 // CHECK-NEXT:        scf.yield %[[V]], %[[V]], %[[C0_I32]] : i32, i32, i32
 // CHECK-NEXT:      }
-// CHECK-NEXT:      %[[IF2IDX:.+]] = arith.index_cast %[[IF2]]#0 : i32 to index
+// CHECK-NEXT:      %[[IF2IDX:.+]] = arith.index_cast %[[IF2]]#2 : i32 to index
 // CHECK-NEXT:      affine.parallel (%[[TID:.+]]) = (0) to (256) {
 // CHECK-NEXT:        %[[PI:.+]] = llvm.ptrtoint %[[PTR]] : !llvm.ptr to i64
 // CHECK-NEXT:        %[[PZ:.+]] = arith.cmpi eq, %[[PI]], %[[C0_I64]] : i64

@@ -550,11 +550,12 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
       assert(isValidSymbolInt(sel, /*recur*/ false, scope));
       return sel;
     }
+    unsigned resultIdx = cast<OpResult>(v).getResultNumber();
     if (!rewriter) {
       // Everything below this point moves the op; without a rewriter it stays
       // where it is, and so is a symbol only where it already was one.
       operationContext.pop_back();
-      Value res = op->getResult(0);
+      Value res = op->getResult(resultIdx);
       return isValidSymbolInt(res, /*recur*/ false, scope) ? res : Value();
     } else {
       PatternRewriter::InsertionGuard B(*rewriter);
@@ -573,13 +574,14 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
       rewriter->replaceOp(op, cloned->getResults());
 
       operationContext.pop_back();
-      if (!isValidSymbolInt(cloned->getResult(0), /*recur*/ false, scope)) {
+      if (!isValidSymbolInt(cloned->getResult(resultIdx), /*recur*/ false,
+                            scope)) {
         llvm::errs() << " clonedParent: "
                      << *cloned->getParentOfType<FunctionOpInterface>() << "\n";
         llvm::errs() << " cloned: " << *cloned << "\n";
         llvm_unreachable("busted");
       }
-      return cloned->getResult(0);
+      return cloned->getResult(resultIdx);
     }
   };
   auto renumberOneSymbol = [&](Value v) {
