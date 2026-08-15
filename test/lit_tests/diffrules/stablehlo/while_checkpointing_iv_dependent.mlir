@@ -83,9 +83,11 @@ module {
 
 // CHECK-LABEL: func.func private @diffewith_checkpointing
 // The reverse sweep visits checkpoint blocks back to front, so the block's
-// first iteration is outerStart = nInner * (nOuter - 1 - iterArg).
-// CHECK:        %[[outerStep:.+]] = stablehlo.subtract %c, %iterArg : tensor<i64>
-// CHECK-NEXT:   %[[outerStart:.+]] = stablehlo.multiply %c_2, %[[outerStep]] : tensor<i64>
+// first iteration is outerStart = nInner * (nOuter - 1 - iterArg). The period
+// budgets the number of *blocks*, so 12 iterations with a period of 4 come out
+// as 4 blocks of 3, not 3 blocks of 4.
+// CHECK:        %[[outerStep:.+]] = stablehlo.subtract %{{.+}}, %iterArg : tensor<i64>
+// CHECK-NEXT:   %[[outerStart:.+]] = stablehlo.multiply %{{.+}}, %[[outerStep]] : tensor<i64>
 // Within the block, the recompute sweep must count forward from outerStart.
 // CHECK:        } do {
 // CHECK-NEXT:     %[[iv:.+]] = stablehlo.add %[[outerStart]], %iterArg_18 : tensor<i64>

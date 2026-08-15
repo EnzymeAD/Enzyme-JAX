@@ -1055,6 +1055,12 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
 ///     C'()
 ///   }
 /// }
+static Operation *ancestorOpInBlock(Operation *op, Block *block) {
+  while (op && op->getBlock() != block)
+    op = op->getParentOp();
+  return op;
+}
+
 struct ParallelizeBlockOps : public OpRewritePattern<scf::ParallelOp> {
   using OpRewritePattern<scf::ParallelOp>::OpRewritePattern;
 
@@ -1069,6 +1075,11 @@ struct ParallelizeBlockOps : public OpRewritePattern<scf::ParallelOp> {
       LLVM_DEBUG(DBGS() << "cannot parallelize around a reduction\n");
       return failure();
     }
+    auto parentPar = dyn_cast<scf::ParallelOp>(pop->getParentOp());
+    if (!parentPar || !isa<enzymexla::GPUWrapperOp>(parentPar->getParentOp())) {
+      LLVM_DEBUG(DBGS() << "parallel is serialized in a thread\n");
+      return failure();
+    }
     auto loc = pop->getLoc();
     Block *outerBlock = pop->getBlock();
     Block *innerBlock = pop.getBody();
@@ -1078,29 +1089,6 @@ struct ParallelizeBlockOps : public OpRewritePattern<scf::ParallelOp> {
       return failure();
     }
 
-    // Handle ops before the parallel
-    scf::IfOp ifOp = nullptr;
-    auto getIf = [&]() {
-      if (!ifOp) {
-        auto zero = arith::ConstantIndexOp::create(rewriter, loc, 0);
-        Value cond;
-        for (unsigned i = 0; i < innerBlock->getNumArguments(); i++) {
-          auto threadId = innerBlock->getArgument(i);
-          auto threadCond = arith::CmpIOp::create(
-              rewriter, loc, arith::CmpIPredicate::eq, threadId, zero);
-          if (i == 0)
-            cond = threadCond.getResult();
-          else
-            cond = arith::AndIOp::create(rewriter, loc, threadCond, cond)
-                       .getResult();
-        }
-        ifOp = scf::IfOp::create(rewriter, loc, cond);
-        mlir::enzymexla::BarrierOp::create(rewriter, loc,
-                                           innerBlock->getArguments());
-        rewriter.setInsertionPoint(ifOp);
-      }
-    };
-
     // Two things read values of this block from outside the inner parallel's
     // body, where moving their computation inside cannot rewrite them: the
     // parallel's own bounds, and the block's terminator -- which, when the
@@ -1109,6 +1097,26 @@ struct ParallelizeBlockOps : public OpRewritePattern<scf::ParallelOp> {
     // Only the uses within the body are replaced, so erasing what those read
     // leaves them pointing at a corpse. They, and everything they are in turn
     // computed from in this block, have to stay where they are.
+    // This application owns the ops between the previous sibling parallel
+    // and pop, and between pop and the next sibling parallel: everything
+    // before that sibling precedes it in program order, so it is that
+    // parallel's application that may move it, and likewise after.
+    auto end = outerBlock->getTerminator()->getIterator();
+    auto walkBegin = outerBlock->begin();
+    for (auto it = pop->getIterator(); it != outerBlock->begin();) {
+      --it;
+      if (isa<scf::ParallelOp>(&*it)) {
+        walkBegin = std::next(it);
+        break;
+      }
+    }
+    auto walkEnd = end;
+    for (auto it = std::next(pop->getIterator()); it != end; ++it)
+      if (isa<scf::ParallelOp>(&*it)) {
+        walkEnd = it;
+        break;
+      }
+
     DenseSet<Operation *> pinned;
     {
       SmallVector<Value> todo(pop->getOperands().begin(),
@@ -1129,67 +1137,149 @@ struct ParallelizeBlockOps : public OpRewritePattern<scf::ParallelOp> {
       // leaving everything in place is not: the greedy driver would rescan
       // for ever.
       bool anyWork = false;
-      for (Operation &op : *outerBlock)
-        if (&op != pop.getOperation() && &op != outerBlock->getTerminator() &&
-            !isa<memref::AllocaOp, LLVM::AllocaOp>(&op) && !pinned.count(&op))
+      for (auto it = walkBegin; &*it != pop.getOperation(); ++it)
+        if (!isa<memref::AllocaOp, LLVM::AllocaOp>(&*it) && !pinned.count(&*it))
+          anyWork = true;
+      for (auto it = std::next(pop->getIterator()); it != walkEnd; ++it)
+        if (!isa<memref::AllocaOp, LLVM::AllocaOp>(&*it) && !pinned.count(&*it))
           anyWork = true;
       if (!anyWork)
         return rewriter.notifyMatchFailure(
             pop, "every op beside the parallel computes its bounds");
     }
 
+    // Handle ops before the parallel, in three traversals. First, in block
+    // order: the ops with write effects must run once, in a thread-zero if.
+    llvm::SetVector<Operation *> needsIf;
+    for (auto it = walkBegin; &*it != pop.getOperation(); ++it) {
+      Operation &op = *it;
+      if (pinned.count(&op))
+        continue;
+      if (it == end)
+        llvm_unreachable("Impossible");
+      if (isa<memref::AllocaOp, LLVM::AllocaOp>(&op))
+        continue;
+      SmallVector<MemoryEffects::EffectInstance> effects;
+      collectEffects(&op, effects, /*ignoreBarriers*/ false);
+      if (hasEffect<MemoryEffects::Allocate>(effects))
+        llvm_unreachable("??");
+      if (hasEffect<MemoryEffects::Free>(effects))
+        llvm_unreachable("??");
+      if (hasEffect<MemoryEffects::Write>(effects))
+        needsIf.insert(&op);
+    }
+
+    // Second, in reverse order from the parallel: an op whose value feeds
+    // the if runs in it too, so the guarded ops read what they read at their
+    // original position.
+    llvm::SetVector<Operation *> feedsIf;
+    for (auto it = pop->getIterator(); it != walkBegin;) {
+      --it;
+      Operation &op = *it;
+      if (pinned.count(&op) || isa<memref::AllocaOp, LLVM::AllocaOp>(&op) ||
+          needsIf.contains(&op))
+        continue;
+      for (Value res : op.getResults())
+        for (Operation *user : res.getUsers()) {
+          Operation *anc = ancestorOpInBlock(user, outerBlock);
+          if (anc && (needsIf.contains(anc) || feedsIf.contains(anc))) {
+            feedsIf.insert(&op);
+            break;
+          }
+        }
+    }
+
+    // A moved value used outside the if is recomputed after it, and so is
+    // every moved value such a recomputation reads in turn.
+    llvm::DenseSet<Operation *> needClone;
+    for (auto it = pop->getIterator(); it != walkBegin;) {
+      --it;
+      Operation &op = *it;
+      if (!feedsIf.contains(&op))
+        continue;
+      for (Operation *user : op.getUsers()) {
+        Operation *anc = ancestorOpInBlock(user, outerBlock);
+        if (!anc || (!needsIf.contains(anc) && !feedsIf.contains(anc)) ||
+            needClone.count(anc)) {
+          needClone.insert(&op);
+          break;
+        }
+      }
+    }
+
+    // Third: recompute and forward what the parallel's body reads, then
+    // move the guarded slice into the if, in original order.
     rewriter.setInsertionPointToStart(innerBlock);
-    auto it = outerBlock->begin();
-    auto end = outerBlock->getTerminator()->getIterator();
+    scf::IfOp ifOp = nullptr;
+    if (!needsIf.empty()) {
+      Value cond;
+      for (unsigned i = 0; i < innerBlock->getNumArguments(); i++) {
+        auto threadId = innerBlock->getArgument(i);
+        auto threadCond =
+            arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::eq,
+                                  threadId, pop.getLowerBound()[i]);
+        if (i == 0)
+          cond = threadCond.getResult();
+        else
+          cond = arith::AndIOp::create(rewriter, loc, threadCond, cond)
+                     .getResult();
+      }
+      ifOp = scf::IfOp::create(rewriter, loc, cond);
+      mlir::enzymexla::BarrierOp::create(rewriter, loc,
+                                         innerBlock->getArguments());
+    }
     SmallVector<Operation *> toErase;
     IRMapping mapping;
-    for (; &*it != pop.getOperation(); ++it) {
+    for (auto it = walkBegin; &*it != pop.getOperation(); ++it) {
       Operation &op = *it;
-      Operation *newOp;
-      if (pinned.count(&op)) {
+      if (pinned.count(&op) || isa<memref::AllocaOp, LLVM::AllocaOp>(&op))
         continue;
-      } else if (isa<scf::ParallelOp>(&op)) {
-        llvm_unreachable("Unhandled case");
-        break;
-      } else if (it == end) {
-        llvm_unreachable("Impossible");
-        continue;
-      } else if (auto alloca = dyn_cast<memref::AllocaOp>(&op)) {
-        continue;
-      } else if (auto alloca = dyn_cast<LLVM::AllocaOp>(&op)) {
-        continue;
-      } else {
-        mlir::OpBuilder::InsertionGuard guard(rewriter);
-        SmallVector<MemoryEffects::EffectInstance> effects;
-        collectEffects(&op, effects, /*ignoreBarriers*/ false);
-        if (effects.empty()) {
-        } else if (hasEffect<MemoryEffects::Allocate>(effects)) {
-          llvm_unreachable("??");
-        } else if (hasEffect<MemoryEffects::Free>(effects)) {
-          llvm_unreachable("??");
-        } else if (hasEffect<MemoryEffects::Write>(effects)) {
-          getIf();
-          assert(ifOp);
-          rewriter.setInsertionPoint(ifOp.thenBlock()->getTerminator());
-          // TODO currently we assume that ops with write effects will have no
-          // uses - we have to introduce shared mem otherwise
-          if (!op.use_empty()) {
+      if (needsIf.contains(&op)) {
+        // TODO currently we assume that ops with write effects will have no
+        // uses outside the if - we have to introduce shared mem otherwise
+        for (Operation *user : op.getUsers()) {
+          Operation *anc = ancestorOpInBlock(user, outerBlock);
+          if (!anc || (!needsIf.contains(anc) && !feedsIf.contains(anc)) ||
+              needClone.count(anc))
             llvm_unreachable("could not fix parallel fusion");
-          }
-        } else if (hasEffect<MemoryEffects::Read>(effects)) {
-          // Reads-only ops are legal to parallelize
         }
-        newOp = rewriter.clone(op, mapping);
+        continue;
       }
+      if (feedsIf.contains(&op)) {
+        if (!needClone.count(&op))
+          continue;
+        Operation *newOp = rewriter.clone(op, mapping);
+        for (auto [oldRes, newRes] :
+             llvm::zip(op.getResults(), newOp->getResults()))
+          rewriter.replaceUsesWithIf(oldRes, newRes, [&](OpOperand &use) {
+            Operation *anc = ancestorOpInBlock(use.getOwner(), outerBlock);
+            return !anc || (!needsIf.contains(anc) && !feedsIf.contains(anc));
+          });
+        continue;
+      }
+      Operation *newOp = rewriter.clone(op, mapping);
       rewriter.replaceOpUsesWithinBlock(&op, newOp->getResults(), innerBlock);
       toErase.push_back(&op);
     }
-    it++;
+    if (ifOp)
+      for (auto it = walkBegin; &*it != pop.getOperation();) {
+        Operation &op = *it;
+        ++it;
+        if (needsIf.contains(&op) || feedsIf.contains(&op))
+          rewriter.moveOpBefore(&op, ifOp.thenBlock()->getTerminator());
+      }
+    auto it = std::next(pop->getIterator());
 
     // Handle ops after the parallel
-    {
-      auto zeroindex = arith::ConstantIndexOp::create(rewriter, loc, 0);
+    bool anyAfter = false;
+    for (auto probe = it; probe != walkEnd; ++probe)
+      if (!pinned.count(&*probe))
+        anyAfter = true;
+    if (anyAfter) {
       rewriter.setInsertionPoint(innerBlock->getTerminator());
+      mlir::enzymexla::BarrierOp::create(rewriter, loc,
+                                         innerBlock->getArguments());
+      auto zeroindex = arith::ConstantIndexOp::create(rewriter, loc, 0);
       auto cmpOp =
           arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::eq,
                                 zeroindex, innerBlock->getArgument(0));
@@ -1203,7 +1293,7 @@ struct ParallelizeBlockOps : public OpRewritePattern<scf::ParallelOp> {
       }
       auto ifOp = scf::IfOp::create(rewriter, loc, condition);
       rewriter.setInsertionPointToStart(ifOp.thenBlock());
-      for (; it != end; ++it) {
+      for (; it != walkEnd; ++it) {
         Operation &op = *it;
         if (pinned.count(&op)) {
           continue;
