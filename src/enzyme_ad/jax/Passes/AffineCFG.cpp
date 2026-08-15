@@ -261,9 +261,11 @@ static bool legalCondition(Value en, bool dim, Region *scope) {
   //}
   if (!dim)
     if (auto BA = dyn_cast<BlockArgument>(en)) {
-      if (isa<affine::AffineForOp, affine::AffineParallelOp>(
-              BA.getOwner()->getParentOp()))
-        return true;
+      Operation *parent = BA.getOwner()->getParentOp();
+      if (isa<affine::AffineForOp>(parent))
+        return BA.getArgNumber() == 0;
+      if (auto par = dyn_cast<affine::AffineParallelOp>(parent))
+        return BA.getArgNumber() < par.getNumDims();
     }
   return false;
 }
