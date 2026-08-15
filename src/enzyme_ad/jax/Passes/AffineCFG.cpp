@@ -3218,10 +3218,16 @@ struct AffineIfSimplification : public OpRewritePattern<affine::AffineIfOp> {
         bool canRemove = false;
         for (auto paren = op->getParentOfType<affine::AffineIfOp>(); paren;
              paren = paren->getParentOfType<affine::AffineIfOp>()) {
-          for (auto cst2 : paren.getIntegerSet().getConstraints()) {
+          for (auto cst2 :
+               llvm::enumerate(paren.getIntegerSet().getConstraints())) {
             if (paren.getElseRegion().isAncestor(op->getParentRegion()))
               continue;
-            if (cst2 == cst.value() &&
+            // The parent constraint only subsumes this one if it implies it:
+            // an equality implies both forms, an inequality only implies the
+            // same inequality.
+            if (cst2.value() == cst.value() &&
+                (paren.getIntegerSet().isEq(cst2.index()) ||
+                 !op.getIntegerSet().isEq(cst.index())) &&
                 paren.getIntegerSet().getNumDims() ==
                     op.getIntegerSet().getNumDims() &&
                 paren.getIntegerSet().getNumSymbols() ==
