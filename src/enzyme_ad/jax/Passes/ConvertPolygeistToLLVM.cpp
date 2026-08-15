@@ -2450,6 +2450,20 @@ ConvertGPUModuleOp::matchAndRewrite(gpu::GPUModuleOp kernelModule,
             rewriter.setInsertionPointToEnd(stub.addEntryBlock(rewriter));
             LLVM::ReturnOp::create(rewriter, ctorloc, ValueRange());
           }
+          // Remember which host function this kernel was raised from, so
+          // that a kernel pointer flowing into a cuda runtime query can be
+          // translated to this registered stub.
+          {
+            StringRef origName = f.getName();
+            if (origName.starts_with("reactant$"))
+              origName = origName.drop_front(strlen("reactant$"));
+            else if (origName.ends_with("_kernel"))
+              origName = origName.drop_back(strlen("_kernel"));
+            if (moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(origName))
+              stub->setAttr(
+                  "polygeist.host_origin",
+                  FlatSymbolRefAttr::get(rewriter.getContext(), origName));
+          }
           auto aoo = LLVM::AddressOfOp::create(ctorBuilder, ctorloc, stub);
           auto bitcast = LLVM::AddrSpaceCastOp::create(ctorBuilder, ctorloc,
                                                        llvmPointerType, aoo);
@@ -4986,10 +5000,43 @@ struct ConvertPolygeistToLLVMPass
         if (callee.getLeafReference() == GetDeviceFromHostFuncName)
           toHandle.push_back(call);
       });
-      for (auto call : toHandle) {
-        assert(call->getNumResults() == 1 && call.getNumOperands() == 1);
-        call.getResult().replaceAllUsesWith(call.getArgOperands()[0]);
-        call->erase();
+      SmallVector<std::pair<FlatSymbolRefAttr, LLVM::LLVMFuncOp>> hostToStub;
+      m->walk([&](LLVM::LLVMFuncOp f) {
+        if (auto orig =
+                f->getAttrOfType<FlatSymbolRefAttr>("polygeist.host_origin")) {
+          f->removeAttr("polygeist.host_origin");
+          hostToStub.emplace_back(orig, f);
+        }
+      });
+      auto decl = m.lookupSymbol<LLVM::LLVMFuncOp>(GetDeviceFromHostFuncName);
+      if (!toHandle.empty() && !hostToStub.empty() && decl &&
+          decl.getBody().empty()) {
+        // A kernel pointer that reaches a cuda runtime query has to name a
+        // function registered with the runtime. The original registration is
+        // gone; translate each raised kernel's host function to the stub
+        // registered for it, and leave unknown pointers unchanged.
+        OpBuilder b(decl);
+        Block *entry = decl.addEntryBlock(b);
+        b.setInsertionPointToStart(entry);
+        auto loc = decl.getLoc();
+        auto ptrTy = LLVM::LLVMPointerType::get(b.getContext());
+        Value p = entry->getArgument(0);
+        Value res = p;
+        for (auto &[orig, stub] : hostToStub) {
+          Value origAddr = LLVM::AddressOfOp::create(b, loc, ptrTy, orig);
+          Value stubAddr = LLVM::AddressOfOp::create(b, loc, stub);
+          Value eq = LLVM::ICmpOp::create(b, loc, LLVM::ICmpPredicate::eq, p,
+                                          origAddr);
+          res = LLVM::SelectOp::create(b, loc, eq, stubAddr, res);
+        }
+        LLVM::ReturnOp::create(b, loc, res);
+        decl.setLinkage(LLVM::Linkage::Internal);
+      } else {
+        for (auto call : toHandle) {
+          assert(call->getNumResults() == 1 && call.getNumOperands() == 1);
+          call.getResult().replaceAllUsesWith(call.getArgOperands()[0]);
+          call->erase();
+        }
       }
     }
   }
