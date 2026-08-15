@@ -1013,6 +1013,14 @@ bool need(IntegerSet *map, SmallVectorImpl<Value> *operands, Region *scope) {
 // composeAffineMapAndOperands.  A caller passing no builder is asking a
 // question, since without one the normalizer cannot move an operand to make
 // it legal -- and the attribute keeps the answer from being dropped.
+// A boolean is the unsigned value 0 or 1; the signed cast would send true to
+// -1.
+static Value castToIndex(OpBuilder &b, Location loc, Value v) {
+  if (v.getType().isInteger(1))
+    return arith::IndexCastUIOp::create(b, loc, b.getIndexType(), v);
+  return arith::IndexCastOp::create(b, loc, b.getIndexType(), v);
+}
+
 [[nodiscard]] static bool fully2ComposeAffineMapAndOperands(
     PatternRewriter *builder, AffineMap *map, SmallVectorImpl<Value> *operands,
     DominanceInfo *DI, Region *scope,
@@ -1079,16 +1087,13 @@ bool need(IntegerSet *map, SmallVectorImpl<Value> *operands, Region *scope) {
         else {
           if (insertedOps) {
             OpBuilder builder(toInsert);
-            auto inserted = IndexCastOp::create(builder, op.getLoc(),
-                                                builder.getIndexType(), op);
-            op = inserted->getResult(0);
-            insertedOps->push_back(inserted);
+            Value inserted = castToIndex(builder, op.getLoc(), op);
+            op = inserted;
+            insertedOps->push_back(inserted.getDefiningOp());
           } else {
             PatternRewriter::InsertionGuard B(*builder);
             builder->setInsertionPoint(toInsert);
-            auto inserted = IndexCastOp::create(*builder, op.getLoc(),
-                                                builder->getIndexType(), op);
-            op = inserted->getResult(0);
+            op = castToIndex(*builder, op.getLoc(), op);
           }
         }
       }
@@ -1165,16 +1170,13 @@ void fully2ComposeIntegerSetAndOperands(
         if (insertedOps) {
           OpBuilder builder(op.getContext());
           setPoint(builder);
-          auto inserted = IndexCastOp::create(builder, op.getLoc(),
-                                              builder.getIndexType(), op);
-          op = inserted->getResult(0);
-          insertedOps->push_back(inserted);
+          Value inserted = castToIndex(builder, op.getLoc(), op);
+          op = inserted;
+          insertedOps->push_back(inserted.getDefiningOp());
         } else {
           PatternRewriter::InsertionGuard B(builder);
           setPoint(builder);
-          auto inserted = IndexCastOp::create(builder, op.getLoc(),
-                                              builder.getIndexType(), op);
-          op = inserted->getResult(0);
+          op = castToIndex(builder, op.getLoc(), op);
         }
       }
     }
@@ -2323,7 +2325,6 @@ struct MoveIfToAffine : public OpRewritePattern<scf::IfOp> {
         continue;
 
       SmallVector<Value> operands;
-      auto ity = IndexType::get(ifOp.getContext());
       for (auto vori : applies) {
         Value operand = vori.v_val;
         if (!vori.isValue) {
@@ -2331,8 +2332,7 @@ struct MoveIfToAffine : public OpRewritePattern<scf::IfOp> {
                                                    vori.i_val.getSExtValue());
         }
         if (!isa<IndexType>(operand.getType())) {
-          operand =
-              arith::IndexCastOp::create(rewriter, ifOp.getLoc(), ity, operand);
+          operand = castToIndex(rewriter, ifOp.getLoc(), operand);
         }
         operands.push_back(operand);
       }
@@ -2461,7 +2461,6 @@ struct MoveExtToAffine : public OpRewritePattern<arith::ExtUIOp> {
         continue;
 
       SmallVector<Value> operands;
-      auto ity = IndexType::get(ifOp.getContext());
       for (auto vori : applies) {
         Value operand = vori.v_val;
         if (!vori.isValue) {
@@ -2469,8 +2468,7 @@ struct MoveExtToAffine : public OpRewritePattern<arith::ExtUIOp> {
                                                    vori.i_val.getSExtValue());
         }
         if (!isa<IndexType>(operand.getType())) {
-          operand =
-              arith::IndexCastOp::create(rewriter, ifOp.getLoc(), ity, operand);
+          operand = castToIndex(rewriter, ifOp.getLoc(), operand);
         }
         operands.push_back(operand);
       }
@@ -2661,7 +2659,6 @@ struct MoveSelectToAffine : public OpRewritePattern<arith::SelectOp> {
         continue;
 
       SmallVector<Value> operands;
-      auto ity = IndexType::get(ifOp.getContext());
       for (auto vori : applies) {
         Value operand = vori.v_val;
         if (!vori.isValue) {
@@ -2669,8 +2666,7 @@ struct MoveSelectToAffine : public OpRewritePattern<arith::SelectOp> {
                                                    vori.i_val.getSExtValue());
         }
         if (!isa<IndexType>(operand.getType())) {
-          operand =
-              arith::IndexCastOp::create(rewriter, ifOp.getLoc(), ity, operand);
+          operand = castToIndex(rewriter, ifOp.getLoc(), operand);
         }
         operands.push_back(operand);
       }
@@ -2779,7 +2775,6 @@ struct MoveSelectToAffine : public OpRewritePattern<arith::SelectOp> {
             continue;
 
           SmallVector<Value> operands;
-          auto ity = IndexType::get(ifOp.getContext());
           for (auto vori : applies) {
             Value operand = vori.v_val;
             if (!vori.isValue) {
@@ -2787,8 +2782,7 @@ struct MoveSelectToAffine : public OpRewritePattern<arith::SelectOp> {
                   rewriter, ifOp.getLoc(), vori.i_val.getSExtValue());
             }
             if (!isa<IndexType>(operand.getType())) {
-              operand = arith::IndexCastOp::create(rewriter, ifOp.getLoc(), ity,
-                                                   operand);
+              operand = castToIndex(rewriter, ifOp.getLoc(), operand);
             }
             operands.push_back(operand);
           }
