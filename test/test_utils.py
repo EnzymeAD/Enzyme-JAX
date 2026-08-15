@@ -411,7 +411,18 @@ broadcast_reduce<1>;
 def get_pipeline(name: str):
     from enzyme_ad.jax import (
         JaXPipeline,
+        optimization_passes,
         full_optimization_pass_pipeline,
+        enzyme_pass
+    )
+
+    opt_passes_pre = optimization_passes(
+        inline=not name.endswith("NoInline"),
+        hlo_opts = name == "ReactantBeforeEnzyme" or name.startswith("ReactantAll")
+    )
+    opt_passes_post = optimization_passes(
+        inline=not name.endswith("NoInline"),
+        hlo_opts = name == "ReactantAfterEnzyme" or name.startswith("ReactantAll")
     )
 
     if name == "JaxPipe":
@@ -446,19 +457,42 @@ def get_pipeline(name: str):
         )
     elif name == "IDefOpt":
         return ("IDefOpt", JaXPipeline(full_optimization_pass_pipeline()), CurBackends)
+    elif name in ("ReactantNoOpt", "ReactantBeforeEnzyme", "ReactantAfterEnzyme", "ReactantAllNoInline", "ReactantAllInline"):
+        return (
+            name,
+            JaXPipeline(",".join([
+                "mark-func-memory-effects",
+                opt_passes_pre,
+                "enzyme-batch",
+                opt_passes_pre,
+                "enzyme-batch",
+                enzyme_pass,
+                opt_passes_post,
+                "canonicalize",
+                "remove-unnecessary-enzyme-ops",
+                "enzyme-simplify-math",
+                opt_passes_post,
+            ])),
+            CurBackends,
+        )
 
 
 def pipelines():
     setup_backends()
 
     return [
-        get_pipeline("JaxPipe"),
+        # get_pipeline("JaxPipe"),
         get_pipeline("Jax"),
-        get_pipeline("HLOOpt"),
-        get_pipeline("PartOpt"),
-        get_pipeline("IPartOpt"),
-        get_pipeline("DefOpt"),
-        get_pipeline("IDefOpt"),
+        # get_pipeline("HLOOpt"),
+        # get_pipeline("PartOpt"),
+        # get_pipeline("IPartOpt"),
+        # get_pipeline("DefOpt"),
+        # get_pipeline("IDefOpt"),
+        get_pipeline("ReactantNoOpt"),
+        get_pipeline("ReactantAfterEnzyme"),
+        get_pipeline("ReactantBeforeEnzyme"),
+        get_pipeline("ReactantAllNoInline"),
+        get_pipeline("ReactantAllInline"),
     ]
 
 
@@ -739,56 +773,10 @@ class EnzymeJaxTest(absltest.TestCase):
             revres = None
 
             for pname, pipeline, pbackends in self.revfilter(self.AllPipelines):
-                if backend in pbackends:
+                if backend in pbackends and self.mlirad_rev:
                     adout = douts_backend
-                    if pipeline is not None:
+                    if pipeline is None or pipeline.mlir_ad():
                         all_ins = [adout] + ins_backend
-                        if self.mlirad_rev or pipeline is None:
-                            rfn_enzyme = (
-                                in_fn
-                                if pipeline is None
-                                else enzyme_jax_ir(
-                                    pipeline_options=pipeline,
-                                    argv=argv,
-                                    inner_jit=False,
-                                )(in_fn)
-                            )
-                            rev_enzyme = (
-                                jax.jit(revtransform(rfn_enzyme))
-                                .trace(*all_ins)
-                                .lower()
-                            )
-
-                            _dump_mlir_to_file(
-                                rev_enzyme,
-                                pname + "_" + backend + "_prerev",
-                                dump_mlir_dir,
-                            )
-
-                            rev_enzyme = rev_enzyme.compile()
-                            if self.revprimal:
-                                primals, grads = rev_enzyme(*all_ins)
-                            else:
-                                grads = rev_enzyme(*all_ins)
-                                assert grads is not None
-
-                            if self.revprimal and primres is not None:
-                                recursive_check(
-                                    self, primals, primres, "Primal " + pname
-                                )
-
-                            if revres is None:
-                                revres = grads
-                            else:
-                                recursive_check(self, grads, revres, "Reverse " + pname)
-
-                            runtime = profile_compiled_function(
-                                rev_enzyme, all_ins, nrepeat=self.repeat
-                            )["avg_time_s"]
-                            self.pretty_print_table(
-                                name, pname, backend, "PreRev", runtime
-                            )
-
                         rfn_enzyme = in_fn
                         rev_enzyme = (
                             jax.jit(
@@ -808,7 +796,7 @@ class EnzymeJaxTest(absltest.TestCase):
 
                         _dump_mlir_to_file(
                             rev_enzyme,
-                            pname + "_" + backend + "_postrev",
+                            pname + "_" + backend + "_reverse",
                             dump_mlir_dir,
                         )
 
@@ -831,59 +819,7 @@ class EnzymeJaxTest(absltest.TestCase):
                             rev_enzyme, all_ins, nrepeat=self.repeat
                         )["avg_time_s"]
                         self.pretty_print_table(
-                            name, pname, backend, "PostRev", runtime
-                        )
-
-                    if pipeline is None or (pipeline.mlir_ad() and self.mlirad_rev):
-                        rfn_enzyme = (
-                            in_fn
-                            if pipeline is None
-                            else enzyme_jax_ir(
-                                pipeline_options=pipeline, argv=argv, inner_jit=False
-                            )(in_fn)
-                        )
-                        rev_enzyme = (
-                            jax.jit(
-                                (
-                                    revtransform(rfn_enzyme)
-                                    if pipeline is None
-                                    else enzyme_jax_ir(
-                                        pipeline_options=pipeline,
-                                        argv=argv,
-                                        inner_jit=False,
-                                    )(revtransform(rfn_enzyme))
-                                )
-                            )
-                            .trace(*all_ins)
-                            .lower()
-                        )
-
-                        _dump_mlir_to_file(
-                            rev_enzyme,
-                            pname + "_" + backend + "_bothrev",
-                            dump_mlir_dir,
-                        )
-
-                        rev_enzyme = rev_enzyme.compile()
-                        if self.revprimal:
-                            primals, grads = rev_enzyme(*all_ins)
-                        else:
-                            grads = rev_enzyme(*all_ins)
-                            assert grads is not None
-
-                        if self.revprimal and primres is not None:
-                            recursive_check(self, primals, primres)
-
-                        if revres is None:
-                            revres = grads
-                        else:
-                            recursive_check(self, grads, revres)
-
-                        runtime = profile_compiled_function(
-                            rev_enzyme, all_ins, nrepeat=self.repeat
-                        )["avg_time_s"]
-                        self.pretty_print_table(
-                            name, pname, backend, "BothRev", runtime
+                            name, pname, backend, "Reverse", runtime
                         )
 
 
