@@ -3215,6 +3215,24 @@ struct AffineIfSimplification : public OpRewritePattern<affine::AffineIfOp> {
           }
         }
 
+        // Within this set an inequality is subsumed by the same expression
+        // appearing as an equality: a >= 0 && a == 0 is a == 0.
+        if (!op.getIntegerSet().isEq(cst.index())) {
+          bool subsumedByEq = false;
+          for (auto cst2 :
+               llvm::enumerate(op.getIntegerSet().getConstraints())) {
+            if (cst2.index() != cst.index() && cst2.value() == cst.value() &&
+                op.getIntegerSet().isEq(cst2.index())) {
+              subsumedByEq = true;
+              break;
+            }
+          }
+          if (subsumedByEq) {
+            removed = true;
+            continue;
+          }
+        }
+
         bool canRemove = false;
         for (auto paren = op->getParentOfType<affine::AffineIfOp>(); paren;
              paren = paren->getParentOfType<affine::AffineIfOp>()) {
