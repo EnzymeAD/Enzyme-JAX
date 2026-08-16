@@ -227,11 +227,22 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       pass_pipeline += "" + canonicalize + ",hoist-allocas,convert-polygeist-to-llvm{backend=";
       pass_pipeline += backend;
       pass_pipeline += "},strip-"
-      "gpu-info,gpu-"
+      "gpu-info,enzymexla-gpu-"
       "module-to-binary";
+      std::string binOpts;
+      if (const char *sm = getenv("REACTANT_LATE_SINK")) {
+        binOpts += "sink=";
+        binOpts += sm;
+      }
       if (!library.empty()) {
-        pass_pipeline += "{l=";
-        pass_pipeline += library;
+        if (!binOpts.empty())
+          binOpts += " ";
+        binOpts += "l=";
+        binOpts += library;
+      }
+      if (!binOpts.empty()) {
+        pass_pipeline += "{";
+        pass_pipeline += binOpts;
         pass_pipeline += "}";
       }
   }
