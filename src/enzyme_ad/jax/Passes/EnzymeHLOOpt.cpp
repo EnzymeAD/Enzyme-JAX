@@ -9039,9 +9039,9 @@ struct CompareIotaConstSimplify
 };
 
 struct CompareAbs
-    : public CheckedOpRewritePattern<stablehlo::CompareOp, CompareAbs> {
-  using CheckedOpRewritePattern<stablehlo::CompareOp,
-                                CompareAbs>::CheckedOpRewritePattern;
+    : public NoNanCheckedOpRewritePattern<stablehlo::CompareOp, CompareAbs> {
+  using NoNanCheckedOpRewritePattern<stablehlo::CompareOp,
+                                     CompareAbs>::NoNanCheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::CompareOp cmpOp,
                                     PatternRewriter &rewriter) const {
@@ -9059,6 +9059,20 @@ struct CompareAbs
       }
       // now its always abs ?= 0
 
+      // Every comparison against a NaN is false, except NE which is true. Most
+      // of the folds below agree with that on a NaN input and stay valid, but
+      // GE and GT do not: abs(NaN) >= 0 is false where the fold says true, and
+      // abs(NaN) > 0 is false where the fold's x != 0 says true. Those two are
+      // only correct when the compared value cannot be a NaN. Ask about the
+      // operand of the abs rather than cmpOp.getType(): a compare always
+      // produces i1, and canApplyNoNanPattern accepts any integer type
+      // unconditionally, which would make the check vacuous.
+      auto knownNoNan = [&]() {
+        return canApplyNoNanPattern(allowOnFloatingPointMath,
+                                    abs.getOperand().getType(), cmpOp,
+                                    rewriter);
+      };
+
       // abs(x) < 0 -> false
       if (dir == stablehlo::ComparisonDirection::LT) {
         rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
@@ -9074,16 +9088,20 @@ struct CompareAbs
             stablehlo::ComparisonDirection::EQ);
         return success();
       }
-      // abs(x) >= 0 -> true
+      // abs(x) >= 0 -> true (false for a NaN x)
       if (dir == stablehlo::ComparisonDirection::GE) {
+        if (!knownNoNan())
+          return failure();
         rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
             cmpOp, cmpOp.getType(),
             SplatElementsAttr::get(cmpOp.getType(),
                                    rewriter.getBoolAttr(true)));
         return success();
       }
-      // abs(x) > 0 -> x != 0
+      // abs(x) > 0 -> x != 0 (false for a NaN x, where x != 0 is true)
       if (dir == stablehlo::ComparisonDirection::GT) {
+        if (!knownNoNan())
+          return failure();
         rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(
             cmpOp, abs.getOperand(), cmpOp->getOperand(1 - i),
             stablehlo::ComparisonDirection::NE);
@@ -36330,6 +36348,13 @@ void mlir::transform::addNoNanCompareSimplify(RewritePatternSet &patterns,
                                         benefit);
 }
 
+void mlir::transform::addCompareAbs(RewritePatternSet &patterns,
+                                    bool allowOnFloatingPointMath,
+                                    MLIRContext &context,
+                                    PatternBenefit benefit) {
+  patterns.insert<CompareAbs>(allowOnFloatingPointMath, &context, benefit);
+}
+
 void mlir::transform::addNoNanSelfSubSimplify(RewritePatternSet &patterns,
                                               bool allowOnFloatingPointMath,
                                               MLIRContext &context,
@@ -36508,12 +36533,11 @@ struct EnzymeHLOOptPass
         ReshapeInsertionsBroadcastInDimSimplify, CompareIotaConstSimplify,
         ConvertIotaSimplify, MinMaxIotaConstSimplify<stablehlo::MaxOp>,
         MinMaxIotaConstSimplify<stablehlo::MinOp>, ClampIotaConstSimplify,
-        CompareAbs, CompareMul, CompareConvert, AddSelects,
-        CompareNegateConstSimplify, CompareSubtractConstSimplify,
-        SelectSimplify, DynamicSliceReshapeDynamicSlice,
-        DynamicSliceReshapeSlice, SliceReshapeDynamicSlice, SliceReshapeSlice,
-        ExponentialMinusOneFuse, ExponentialMinusOneAddFuse>(
-        context, PatternBenefit(65000));
+        CompareMul, CompareConvert, AddSelects, CompareNegateConstSimplify,
+        CompareSubtractConstSimplify, SelectSimplify,
+        DynamicSliceReshapeDynamicSlice, DynamicSliceReshapeSlice,
+        SliceReshapeDynamicSlice, SliceReshapeSlice, ExponentialMinusOneFuse,
+        ExponentialMinusOneAddFuse>(context, PatternBenefit(65000));
 
     patterns.add<IotaSimplify, BroadcastInDimSimplify, ConcatConstProp,
                  DynamicUpdateSliceConstProp, PadSimplify, ScatterConstFold,
@@ -36772,9 +36796,10 @@ struct EnzymeHLOOptPass
       patterns.add<AllFiniteIsFinite, AllFiniteIsInf, AllFiniteIsPosInf,
                    AllFiniteIsNegInf>(context);
 
-    patterns.add<NoNanCompareSimplify, NoNanSelfSubSimplify,
-                 NoNanAddSubSimplify, NoNanMulSimplify, NoNanDivSimplify>(
-        (no_nan || all_finite), context);
+    patterns
+        .add<NoNanCompareSimplify, NoNanSelfSubSimplify, NoNanAddSubSimplify,
+             NoNanMulSimplify, NoNanDivSimplify, CompareAbs>(
+            (no_nan || all_finite), context);
 
     patterns.add<TransposeSymmetricSimplify, TransposePartialSymmetrySimplify>(
         context);

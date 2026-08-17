@@ -1100,9 +1100,19 @@ def ApplyCSEConjPatterns : EnzymeHLOPatternOp<
   let patterns = ["CSE<chlo::ConjOp>"];
 }
 
-def CompareAbs : EnzymeHLOPatternOp<
+def ApplyCompareAbs : EnzymeHLOParameterizedPatternOp<
     "compare_abs"> {
-  let patterns = ["CompareAbs"];
+  let arguments = (ins OptionalAttr<I64Attr>:$benefit, BoolAttr:$parameter);
+  let assemblyFormat = "attr-dict";
+  // TODO: this should be made better searchable.
+  let extraClassDeclaration = [{
+    ::llvm::SmallVector<::mlir::DictionaryAttr>
+    static getPossibleAttrCombinations(::mlir::Builder &builder) {
+      return {builder.getDictionaryAttr(
+                  builder.getNamedAttr("parameter",
+                                       builder.getBoolAttr(true)))};
+    }
+  }];
 }
 
 def CompareMul : EnzymeHLOPatternOp<
