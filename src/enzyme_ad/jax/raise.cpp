@@ -114,6 +114,7 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
   using namespace mlir;
   // clang-format off
   std::string pass_pipeline =
+      "print{filename=start.mlir},"
       "inline{default-pipeline=canonicalize "
       "max-iterations=4},sroa-wrappers{set_private=false attributor=false},"
       "lift-tessera-annotations,parse-optimization-rules,"
@@ -171,6 +172,7 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       // it would snapshot the same buffer twice. Has to precede `enzyme`,
       // which is what reads the captures.
       pass_pipeline += "sink-checkpoint-views,";
+      pass_pipeline += "print{filename=before-ad.mlir},";
 
       pass_pipeline += "enzyme{";
       if (options->dataflow)
@@ -192,12 +194,16 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
         pass_pipeline += "hoist-loop-allocations,";
       pass_pipeline += "enzyme-simplify-math\"";
       pass_pipeline += "},"
+        "print{filename=after-ad.mlir},"
         // The one module-level survivor: llvm_ext ops also live outside the
         // generated functions the postpasses clean -- a ptr_size_hint sits in
         // the primal that carries the user's marker -- and any left behind
         // fail translation to LLVM IR.
         "lower-llvm-ext,"
         "inline{default-pipeline=canonicalize max-iterations=4},"
+        // "print{filename=before-hoist.mlir},"
+        // "enzyme-hoist-gpu-allocs,flatten-enzyme-caches,"
+        // "print{filename=after-hoist.mlir},"
         "polygeist-mem2reg,canonicalize-parallel,symbol-dce,"
         // canonicalize-parallel here folds away memref.subview ops before gpu-kernel-outlining
         "canonicalize-parallel,cse";
@@ -221,7 +227,7 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       } else {
 	      pass_pipeline += ",parallel-serialization,";
       }
-      pass_pipeline += "canonicalize-parallel,hoist-allocas,convert-polygeist-to-llvm{backend=";
+      pass_pipeline += "canonicalize-parallel,hoist-allocas,print{filename=before-llvm.mlir},convert-polygeist-to-llvm{backend=";
       pass_pipeline += backend;
       pass_pipeline += "},strip-"
       "gpu-info,gpu-"

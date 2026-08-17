@@ -1495,4 +1495,12 @@ def RemoveAtomicsPass : Pass<"remove-atomics"> {
   ];
 }
 
+def HoistGPUAllocsPass : Pass<"enzyme-hoist-gpu-allocs"> {
+  let summary = "Hoist allocations within gpu_wrappers to the host";
+  let dependentDialects = [
+    "enzymexla::EnzymeXLADialect",
+    "memref::MemRefDialect",
+  ];
+}
+
 #endif

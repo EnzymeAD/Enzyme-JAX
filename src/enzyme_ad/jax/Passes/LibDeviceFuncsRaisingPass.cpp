@@ -11,6 +11,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
 #include "mlir/Dialect/Math/IR/Math.h"
+#include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
@@ -528,6 +529,91 @@ public:
         getActivityArrayAttr(ctx, argActivities),
         getActivityArrayAttr(ctx, retActivities),
         /*width=*/1, flags.strongZero);
+    return success();
+  }
+};
+
+class CallToAllocRaising : public OpRewritePattern<LLVM::CallOp> {
+public:
+  using OpRewritePattern<LLVM::CallOp>::OpRewritePattern;
+
+  FailureOr<Type> inferAllocationType(LLVM::CallOp op) const {
+    // Try to determine the type of the allocation from its users
+    SmallVector<Value> worklist{op.getResult()};
+    DenseSet<Value> visited;
+    while (!worklist.empty()) {
+      Value curr = worklist.pop_back_val();
+      if (visited.insert(curr).second) {
+        for (Operation *user : curr.getUsers()) {
+          if (auto gepOp = dyn_cast<LLVM::GEPOp>(user)) {
+            worklist.push_back(gepOp.getResult());
+          } else if (auto storeOp = dyn_cast<LLVM::StoreOp>(user)) {
+            return storeOp.getValue().getType();
+          }
+        }
+      }
+    }
+    return failure();
+  }
+
+  LogicalResult matchAndRewrite(LLVM::CallOp op,
+                                PatternRewriter &rewriter) const override {
+    CallInterfaceCallable callable = op.getCallableForCallee();
+    auto callee = dyn_cast<SymbolRefAttr>(callable);
+    if (!callee)
+      return failure();
+    if (callee.getLeafReference().strref() != "malloc")
+      return failure();
+
+    auto inferredType = inferAllocationType(op);
+    if (failed(inferredType)) {
+      return failure();
+    }
+    auto floatType = dyn_cast<FloatType>(*inferredType);
+    if (!floatType) {
+      return failure();
+    }
+    Value allocSize = op.getArgOperands().front();
+    Value byteSize = arith::ConstantOp::create(
+        rewriter, op.getLoc(),
+        rewriter.getIntegerAttr(allocSize.getType(), floatType.getWidth() / 8));
+    Value numElements =
+        arith::DivSIOp::create(rewriter, op.getLoc(), allocSize, byteSize);
+    numElements = arith::IndexCastOp::create(
+        rewriter, op.getLoc(), rewriter.getIndexType(), numElements);
+    auto allocOp = memref::AllocOp::create(
+        rewriter, op.getLoc(),
+        MemRefType::get({ShapedType::kDynamic}, floatType), numElements);
+    Value casted = enzymexla::Memref2PointerOp::create(
+        rewriter, op.getLoc(), op.getResult().getType(), allocOp);
+    rewriter.replaceOp(op, casted);
+
+    return failure();
+  }
+};
+
+class CallToFreeRaising : public OpRewritePattern<LLVM::CallOp> {
+public:
+  using OpRewritePattern<LLVM::CallOp>::OpRewritePattern;
+  LogicalResult matchAndRewrite(LLVM::CallOp op,
+                                PatternRewriter &rewriter) const override {
+    CallInterfaceCallable callable = op.getCallableForCallee();
+    auto callee = dyn_cast<SymbolRefAttr>(callable);
+    if (!callee)
+      return failure();
+    if (callee.getLeafReference().strref() != "free")
+      return failure();
+
+    Value ptr = op.getArgOperands().front();
+    auto memref2pointer =
+        dyn_cast_if_present<enzymexla::Memref2PointerOp>(ptr.getDefiningOp());
+    if (!memref2pointer)
+      return failure();
+
+    Value casted = enzymexla::Pointer2MemrefOp::create(
+        rewriter, op.getLoc(), memref2pointer.getSource().getType(), ptr);
+    memref::DeallocOp::create(rewriter, op.getLoc(), casted);
+    rewriter.eraseOp(op);
     return success();
   }
 };
@@ -1476,6 +1562,8 @@ struct LibDeviceFuncsRaisingPass
       patterns.add<RemoveFreeze>(getOperation()->getContext());
     patterns.add<EnzymeInvokeToCall, EnzymeAutodiffOpRaising,
                  EnzymeFwddiffOpRaising>(getOperation()->getContext());
+    patterns.add<CallToAllocRaising, CallToFreeRaising>(
+        getOperation()->getContext());
     GreedyRewriteConfig config;
     // We disable region simplification to avoid inadvertently merging
     // llvm.cond_br now that there is an index type.
