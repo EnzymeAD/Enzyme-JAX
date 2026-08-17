@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt  --enzyme-hlo-generate-td="patterns=zero_product_reshape_pad<1>;mul_zero_pad<1>;div_zero_pad<1>;" --transform-interpreter --enzyme-hlo-remove-transform %s | FileCheck %s
+// RUN: enzymexlamlir-opt  --enzyme-hlo-generate-td="patterns=zero_product_reshape_pad<1>;mul_zero_pad<1>(1);div_zero_pad<1>(1);" --transform-interpreter --enzyme-hlo-remove-transform %s | FileCheck %s
 
 func.func @pad_multiply(%898: tensor<1x1x4x2048x2048xf32>, %696: tensor<1x4x1x2048x10240xf32>, %901: tensor<1x4x1x2048x10240xf32>) -> (tensor<1x4x1x2048x10240xf32>, tensor<1x4x1x2048x10240xf32>) {
     %cst_192 = stablehlo.constant dense<0.000000e+00> : tensor<f32> 
