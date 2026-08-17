@@ -15,12 +15,12 @@
 #include "llvm/Support/Debug.h"
 #include "llvm/Support/raw_ostream.h"
 
-#define DEBUG_TYPE "fuse-jit-calls"
+#define DEBUG_TYPE "fuse-jit"
 
 namespace mlir {
 namespace enzyme {
 
-#define GEN_PASS_DEF_FUSEJITCALLSPASS
+#define GEN_PASS_DEF_FUSEJITPASS
 #include "src/enzyme_ad/jax/Passes/Passes.h.inc"
 
 namespace {
@@ -32,7 +32,7 @@ struct JITFusionInfo {
   SmallVector<Value> fusedReturns;
 };
 
-static constexpr llvm::StringLiteral FusedNamePrefix = "__enzyme_fused_";
+static constexpr llvm::StringLiteral FusedNamePrefix = "fused__";
 
 static bool isGeneratedFusedCall(enzymexla::JITCallOp call) {
   // Prevent the greedy driver from folding a generated call again.
@@ -394,7 +394,7 @@ getFusedSideEffectFreeAttr(ArrayRef<enzymexla::JITCallOp> fusionCalls) {
   return UnitAttr();
 }
 
-struct FuseJITCallsPattern : public OpRewritePattern<enzymexla::JITCallOp> {
+struct FuseJITPattern : public OpRewritePattern<enzymexla::JITCallOp> {
   using OpRewritePattern<enzymexla::JITCallOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(enzymexla::JITCallOp jitCallOp,
@@ -534,13 +534,13 @@ struct FuseJITCallsPattern : public OpRewritePattern<enzymexla::JITCallOp> {
   }
 };
 
-struct FuseJITCallsPass : public impl::FuseJITCallsPassBase<FuseJITCallsPass> {
+struct FuseJITPass : public impl::FuseJITPassBase<FuseJITPass> {
   void runOnOperation() override {
     ModuleOp module = getOperation();
     MLIRContext *context = &getContext();
     RewritePatternSet patterns(context);
 
-    patterns.add<FuseJITCallsPattern>(context);
+    patterns.add<FuseJITPattern>(context);
 
     if (failed(applyPatternsGreedily(module, std::move(patterns)))) {
       signalPassFailure();
