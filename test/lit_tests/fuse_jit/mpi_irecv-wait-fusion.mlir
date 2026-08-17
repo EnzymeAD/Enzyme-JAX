@@ -1,8 +1,6 @@
+// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(lower-enzymexla-mpi{backend=cpu},fuse-jit)" %s | FileCheck %s
 
-// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(lower-enzymexla-mpi{backend=cpu},fuse-jit-calls)" %s | FileCheck %s --check-prefix=CPU
-
-// It's the same code of /irecv-wait.mlir,
-// just changed the CPU-LABEL to match the fuse pass
+// This starts with MPI lowering, but tests the generic JIT fusion pass.
 
 module {
   func.func @main(%arg0: tensor<5xf64> {enzymexla.memory_effects = ["read", "write", "allocate", "free"], tf.aliasing_output = 0 : i32}) -> tensor<5xf64> attributes {enzymexla.memory_effects = ["read", "write", "allocate", "free"]} {
@@ -18,16 +16,16 @@ module {
   }
 }
 
-// CPU-LABEL: llvm.func @__enzyme_fused_enzymexla_wrapper_MPI_Irecv_MPI_INT_enzymexla_wrapper_MPI_Wait
-// CPU-SAME: %[[REQ:[^ ,)]+]]: !llvm.ptr)
-// CPU: llvm.call @MPI_Irecv({{.*}}, %[[REQ]])
-// CPU: %[[STATUS:.*]] = llvm.alloca
-// CPU: llvm.call @MPI_Wait(%[[REQ]], %[[STATUS]])
-// CPU: llvm.return
+// CHECK-LABEL: llvm.func @fused__enzymexla_wrapper_MPI_Irecv_MPI_INT_enzymexla_wrapper_MPI_Wait
+// CHECK-SAME: %[[REQ:[^ ,)]+]]: !llvm.ptr)
+// CHECK: llvm.call @MPI_Irecv({{.*}}, %[[REQ]])
+// CHECK: %[[STATUS:.*]] = llvm.alloca
+// CHECK: llvm.call @MPI_Wait(%[[REQ]], %[[STATUS]])
+// CHECK: llvm.return
 
-// CPU-LABEL: func.func @main
-// CPU: %[[FUSED:.*]] = enzymexla.jit_call @__enzyme_fused_enzymexla_wrapper_MPI_Irecv_MPI_INT_enzymexla_wrapper_MPI_Wait
-// CPU-NOT: enzymexla.jit_call @enzymexla_wrapper_MPI_Irecv_MPI_INT
-// CPU-NOT: enzymexla.jit_call @enzymexla_wrapper_MPI_Wait
-// CPU: %[[OUT:.*]] = stablehlo.transpose %[[FUSED]]
-// CPU: return %[[OUT]]
+// CHECK-LABEL: func.func @main
+// CHECK: %[[FUSED:.*]] = enzymexla.jit_call @fused__enzymexla_wrapper_MPI_Irecv_MPI_INT_enzymexla_wrapper_MPI_Wait
+// CHECK-NOT: enzymexla.jit_call @enzymexla_wrapper_MPI_Irecv_MPI_INT
+// CHECK-NOT: enzymexla.jit_call @enzymexla_wrapper_MPI_Wait
+// CHECK: %[[OUT:.*]] = stablehlo.transpose %[[FUSED]]
+// CHECK: return %[[OUT]]
