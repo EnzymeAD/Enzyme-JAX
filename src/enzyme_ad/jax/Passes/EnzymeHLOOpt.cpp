@@ -11216,9 +11216,9 @@ struct BinopBinopPadConst
 };
 
 struct MulZeroPad
-    : public CheckedOpRewritePattern<stablehlo::MulOp, MulZeroPad> {
-  using CheckedOpRewritePattern<stablehlo::MulOp,
-                                MulZeroPad>::CheckedOpRewritePattern;
+    : public NoNanCheckedOpRewritePattern<stablehlo::MulOp, MulZeroPad> {
+  using NoNanCheckedOpRewritePattern<stablehlo::MulOp,
+                                     MulZeroPad>::NoNanCheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::MulOp op,
                                     PatternRewriter &rewriter) const {
@@ -11228,6 +11228,14 @@ struct MulZeroPad
     if (failed(getDefiningZeroPadding(op, rewriter, pad, otherArg, otherIsLHS)))
       return failure();
     if (anyPadSizesNegative(pad))
+      return failure();
+
+    // Folding pad(inner, 0) * otherArg into pad(inner * slice(otherArg), 0)
+    // forces the newly-padded region to 0, discarding whatever
+    // 0 * otherArg would actually evaluate to there. That is only sound if
+    // otherArg can't be NaN or +-Inf (0 * NaN and 0 * Inf are NaN, not 0).
+    if (!canApplyNoNanPattern(allowOnFloatingPointMath, op.getType(), op,
+                              rewriter))
       return failure();
 
     auto otherArgType = cast<TensorType>(otherArg.getType());
@@ -11259,9 +11267,9 @@ struct MulZeroPad
 };
 
 struct DivZeroPad
-    : public CheckedOpRewritePattern<stablehlo::DivOp, DivZeroPad> {
-  using CheckedOpRewritePattern<stablehlo::DivOp,
-                                DivZeroPad>::CheckedOpRewritePattern;
+    : public NoNanCheckedOpRewritePattern<stablehlo::DivOp, DivZeroPad> {
+  using NoNanCheckedOpRewritePattern<stablehlo::DivOp,
+                                     DivZeroPad>::NoNanCheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::DivOp op,
                                     PatternRewriter &rewriter) const {
@@ -11274,6 +11282,14 @@ struct DivZeroPad
       return failure();
 
     if (otherIsLHS)
+      return failure();
+
+    // Folding pad(inner, 0) / otherArg into pad(inner / slice(otherArg), 0)
+    // forces the newly-padded region to 0, discarding whatever
+    // 0 / otherArg would actually evaluate to there. That is only sound if
+    // otherArg can't be zero or NaN there (0 / 0 and 0 / NaN are NaN, not 0).
+    if (!canApplyNoNanPattern(allowOnFloatingPointMath, op.getType(), op,
+                              rewriter))
       return failure();
 
     auto otherArgType = cast<TensorType>(otherArg.getType());
@@ -36362,6 +36378,20 @@ void mlir::transform::addNoNanZeroBasePowSimplify(RewritePatternSet &patterns,
                                             benefit);
 }
 
+void mlir::transform::addMulZeroPad(RewritePatternSet &patterns,
+                                    bool allowOnFloatingPointMath,
+                                    MLIRContext &context,
+                                    PatternBenefit benefit) {
+  patterns.insert<MulZeroPad>(allowOnFloatingPointMath, &context, benefit);
+}
+
+void mlir::transform::addDivZeroPad(RewritePatternSet &patterns,
+                                    bool allowOnFloatingPointMath,
+                                    MLIRContext &context,
+                                    PatternBenefit benefit) {
+  patterns.insert<DivZeroPad>(allowOnFloatingPointMath, &context, benefit);
+}
+
 void mlir::transform::addSelfSubtractToConvolutionLike(
     RewritePatternSet &patterns, bool allowEmitConvolution,
     MLIRContext &context, PatternBenefit benefit) {
@@ -36617,8 +36647,10 @@ struct EnzymeHLOOptPass
 
     if (passses & 2)
       patterns.add<ReducePad, BroadcastPad>(context);
-    if (passses & 4)
-      patterns.add<MulZeroPad, DivZeroPad, ZeroProductReshapePad>(context);
+    if (passses & 4) {
+      patterns.add<MulZeroPad, DivZeroPad>((no_nan || all_finite), context);
+      patterns.add<ZeroProductReshapePad>(context);
+    }
     if (passses & 8)
       patterns.add<BinopConstReshapePad, BinopConstPad<stablehlo::AddOp>,
                    BinopConstPad<stablehlo::SubtractOp>,
