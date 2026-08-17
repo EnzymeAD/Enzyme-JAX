@@ -2859,6 +2859,15 @@ gdgo->erase();
                 dyn_cast_or_null<StringAttr>(err->getAttr("target_cpu")))
           sm = arch.getValue().str();
 
+      // A launch that was recognized through an unresolved host stub carries
+      // the host's target-cpu (e.g. x86-64) and features; a target attribute
+      // built from those makes serialization invoke ptxas with a host
+      // architecture. Fall back to the defaults instead.
+      if (backend != "rocm" && !StringRef(sm).starts_with("sm_")) {
+        sm.clear();
+        feat.clear();
+      }
+
       err->walk([&](gpu::LaunchFuncOp launch) {
         auto gfunc = dyn_cast_or_null<gpu::GPUFuncOp>(
             symbolTable.lookupNearestSymbolFrom(launch, launch.getKernel()));
