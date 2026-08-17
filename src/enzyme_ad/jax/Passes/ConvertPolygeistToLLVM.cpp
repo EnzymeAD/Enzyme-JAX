@@ -295,6 +295,21 @@ struct Memref2PointerOpLowering
   }
 };
 
+// Back to the intrinsic it was raised from. Not llvm.intr.fma: fmuladd only
+// permits fusing, while fma requires the single rounding, which a target
+// without FMA units honors with a libm call per multiply-add.
+struct FMulAddOpLowering : public ConvertOpToLLVMPattern<enzymexla::FMulAddOp> {
+  using ConvertOpToLLVMPattern<enzymexla::FMulAddOp>::ConvertOpToLLVMPattern;
+
+  LogicalResult
+  matchAndRewrite(enzymexla::FMulAddOp op, OpAdaptor transformed,
+                  ConversionPatternRewriter &rewriter) const override {
+    rewriter.replaceOpWithNewOp<LLVM::FMulAddOp>(
+        op, transformed.getA(), transformed.getB(), transformed.getC());
+    return success();
+  }
+};
+
 struct Pointer2MemrefOpLowering
     : public ConvertOpToLLVMPattern<Pointer2MemrefOp> {
   using ConvertOpToLLVMPattern<Pointer2MemrefOp>::ConvertOpToLLVMPattern;
@@ -368,6 +383,7 @@ void populatePolygeistToLLVMConversionPatterns(LLVMTypeConverter &converter,
   patterns.add<Stream2TokenOpLowering>(converter);
   patterns.add<Memref2PointerOpLowering>(converter);
   patterns.add<Pointer2MemrefOpLowering>(converter);
+  patterns.add<FMulAddOpLowering>(converter);
   // clang-format on
 }
 
@@ -824,10 +840,14 @@ public:
     if (!address)
       return failure();
 
+    // The access carries the alignment the original llvm access promised;
+    // without it the load is emitted at the element type's ABI alignment,
+    // which may promise more than the pointer holds.
+    unsigned alignment = loadOp.getAlignment().value_or(0);
     rewriter.replaceOpWithNewOp<LLVM::LoadOp>(
         loadOp,
         typeConverter->convertType(loadOp.getMemRefType().getElementType()),
-        address);
+        address, alignment);
     return success();
   }
 };
@@ -937,8 +957,10 @@ public:
     if (!address)
       return failure();
 
+    // See CLoadOpLowering: keep the alignment the original access promised.
+    unsigned alignment = storeOp.getAlignment().value_or(0);
     rewriter.replaceOpWithNewOp<LLVM::StoreOp>(storeOp, adaptor.getValue(),
-                                               address);
+                                               address, alignment);
     return success();
   }
 };
@@ -2138,9 +2160,11 @@ Value ConvertLaunchFuncOpToGpuRuntimeCallPattern::generateParamsArray(
     gpu::LaunchFuncOp launchOp, OpAdaptor adaptor, OpBuilder &builder,
     Block *allocaBlock) const {
   auto loc = launchOp.getLoc();
-  auto numKernelOperands = launchOp.getNumKernelOperands();
-  SmallVector<Value, 4> arguments =
-      adaptor.getOperands().take_back(numKernelOperands);
+  // The kernel operands are not the trailing operands: an async launch carries
+  // its stream after them, so taking from the back picks the stream up as an
+  // argument and drops the first real one, shifting every argument by one.
+  SmallVector<Value, 4> arguments(adaptor.getKernelOperands().begin(),
+                                  adaptor.getKernelOperands().end());
   auto numArguments = arguments.size();
   SmallVector<Type, 4> argumentTypes;
   argumentTypes.reserve(numArguments);
@@ -2486,21 +2510,34 @@ ConvertGPUModuleOp::matchAndRewrite(gpu::GPUModuleOp kernelModule,
           // to pass the GPU DL in here
           DataLayout DLI(moduleOp);
           auto size = DLI.getTypeSize(globalTy);
-          rtRegisterVarCallBuilder.create(
-              ctorloc, ctorBuilder,
-              {module.getResult(), bitcast, symbolName, symbolName,
-               /*isExtern*/
-               LLVM::ConstantOp::create(ctorBuilder, ctorloc, llvmInt32Type,
-                                        /* TODO */ 0),
-               /*varSize*/
-               LLVM::ConstantOp::create(ctorBuilder, ctorloc, llvmIntPtrType,
-                                        size),
-               /*isConstant*/
-               LLVM::ConstantOp::create(ctorBuilder, ctorloc, llvmInt32Type,
-                                        /* TODO */ 0),
-               /* just a 0? */
-               LLVM::ConstantOp::create(ctorBuilder, ctorloc, llvmInt32Type,
-                                        0)});
+          Type varTys[] = {llvmPointerType, llvmPointerType, llvmPointerType,
+                           llvmPointerType, llvmInt32Type,   llvmIntPtrType,
+                           llvmInt32Type,   llvmInt32Type};
+
+          auto cudaRegisterVarFn = LLVM::lookupOrCreateFn(
+              rewriter, moduleOp, registerVarFuncName, varTys, llvmVoidType);
+
+          if (failed(cudaRegisterVarFn)) {
+            llvm::errs() << " " << registerVarFuncName
+                         << " already exists with different types\n";
+            return failure();
+          }
+
+          auto isExtern = LLVM::ConstantOp::create(ctorBuilder, ctorloc,
+                                                   llvmInt32Type, /* TODO */ 0);
+          auto varSize = LLVM::ConstantOp::create(ctorBuilder, ctorloc,
+                                                  llvmIntPtrType, size);
+          auto isConstant = LLVM::ConstantOp::create(
+              ctorBuilder, ctorloc, llvmInt32Type, /* TODO */ 0);
+          auto isGlobal =
+              LLVM::ConstantOp::create(ctorBuilder, ctorloc, llvmInt32Type, 0);
+
+          Value varArgs[] = {module.getResult(), bitcast,  symbolName,
+                             symbolName,         isExtern, varSize,
+                             isConstant,         isGlobal};
+
+          LLVM::CallOp::create(rewriter, ctorloc, cudaRegisterVarFn.value(),
+                               varArgs);
         }
       }
       // TODO this has to happen only for some CUDA versions, hip does not need
@@ -2616,8 +2653,9 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
 
   Value zero = LLVM::ConstantOp::create(rewriter, loc, llvmInt32Type, 0);
   auto nullpointer = LLVM::ZeroOp::create(rewriter, loc, llvmPointerType);
-  Value stream = adaptor.getAsyncDependencies().empty()
-                     ? nullpointer
+  Value stream = adaptor.getAsyncObject() ? adaptor.getAsyncObject()
+                 : adaptor.getAsyncDependencies().empty()
+                     ? (Value)nullpointer
                      : adaptor.getAsyncDependencies().front();
 
   // Create array of pointers to kernel arguments.
@@ -2754,7 +2792,9 @@ LogicalResult LegalizeLaunchFuncOpPattern::matchAndRewrite(
   Location loc = launchOp.getLoc();
 
   Value stream = Value();
-  if (!adaptor.getAsyncDependencies().empty())
+  if (adaptor.getAsyncObject())
+    stream = adaptor.getAsyncObject();
+  else if (!adaptor.getAsyncDependencies().empty())
     stream = adaptor.getAsyncDependencies().front();
   // If the async keyword is present and there are no dependencies, then a
   // stream must be created to pass to subsequent operations.
@@ -2830,7 +2870,8 @@ LogicalResult LegalizeLaunchFuncOpPattern::matchAndRewrite(
                       adaptor.getBlockSizeZ()},
       adaptor.getDynamicSharedMemorySize(),
       llvmArgumentsWithSizes.empty() ? llvmArguments : llvmArgumentsWithSizes,
-      stream, clusterSize);
+      /*asyncTokenType=*/nullptr, /*asyncDependencies=*/{},
+      /*asyncObject=*/stream, clusterSize);
   if (launchOp.getAsyncToken())
     rewriter.replaceOp(launchOp, {stream});
   else
@@ -3574,8 +3615,15 @@ public:
     // Add a dialect specific kernel attribute in addition to GPU kernel
     // attribute. The former is necessary for further translation while the
     // latter is expected by gpu.launch_func.
-    if (gpuFuncOp.isKernel())
+    if (gpuFuncOp.isKernel()) {
       attributes.emplace_back(kernelAttributeName, rewriter.getUnitAttr());
+      if (kernelAttributeName == NVVM::NVVMDialect::getKernelFuncAttrName())
+        if (auto blockSize = gpuFuncOp.getKnownBlockSizeAttr())
+          attributes.emplace_back(
+              StringAttr::get(rewriter.getContext(),
+                              NVVM::NVVMDialect::getMaxntidAttrName()),
+              blockSize);
+    }
     auto llvmFuncOp = LLVM::LLVMFuncOp::create(
         rewriter, gpuFuncOp.getLoc(), gpuFuncOp.getName(), funcType,
         LLVM::Linkage::External, /*dsoLocal*/ false, /*cconv*/ LLVM::CConv::C,
@@ -3901,6 +3949,28 @@ struct AllocaScopeOpLowering
 /// Appends the patterns lowering operations from the Memref dialect to the LLVM
 /// dialect using the C-style type conversion, i.e. converting memrefs to
 /// pointer to arrays of arrays.
+// With C-style memrefs a memref is a bare pointer in its memory space, so a
+// memory space cast is exactly the LLVM addrspacecast.
+struct CMemorySpaceCastOpLowering
+    : public ConvertOpToLLVMPattern<memref::MemorySpaceCastOp> {
+  using ConvertOpToLLVMPattern<
+      memref::MemorySpaceCastOp>::ConvertOpToLLVMPattern;
+
+  LogicalResult
+  matchAndRewrite(memref::MemorySpaceCastOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto resTy = getTypeConverter()->convertType(op.getDest().getType());
+    if (!resTy)
+      return failure();
+    if (resTy == adaptor.getSource().getType())
+      rewriter.replaceOp(op, adaptor.getSource());
+    else
+      rewriter.replaceOpWithNewOp<LLVM::AddrSpaceCastOp>(op, resTy,
+                                                         adaptor.getSource());
+    return success();
+  }
+};
+
 static void
 populateCStyleMemRefLoweringPatterns(RewritePatternSet &patterns,
                                      LLVMTypeConverter &typeConverter,
@@ -3908,7 +3978,8 @@ populateCStyleMemRefLoweringPatterns(RewritePatternSet &patterns,
   patterns.add<CAllocaOpLowering, CAllocOpLowering, CDeallocOpLowering,
                GetGlobalOpLowering, GlobalOpLowering, CLoadOpLowering,
                CStoreOpLowering, AllocaScopeOpLowering, CAtomicRMWOpLowering,
-               CEnzymeAtomicRMWOpLowering>(typeConverter);
+               CEnzymeAtomicRMWOpLowering, CMemorySpaceCastOpLowering>(
+      typeConverter);
   patterns.add<FillZeroOpLowering>(typeConverter);
   patterns.add<CMemcpyOpLowering>(typeConverter, backend);
   patterns.add<CMemsetOpLowering>(typeConverter, backend);
@@ -4893,7 +4964,12 @@ struct ConvertPolygeistToLLVMPass
     }
 
     if (m->walk([](UnrealizedConversionCastOp op) {
-           op->emitError() << "Unhandled unrealized conversion cast\n";
+           InFlightDiagnostic diag =
+               op->emitError() << "Unhandled unrealized conversion cast " << op;
+           if (auto fn = op->getParentOfType<FunctionOpInterface>())
+             diag.attachNote(fn->getLoc()) << "in " << fn.getName();
+           for (Operation *user : op->getUsers())
+             diag.attachNote(user->getLoc()) << "used by " << user->getName();
            return WalkResult::interrupt();
          }).wasInterrupted()) {
       signalPassFailure();

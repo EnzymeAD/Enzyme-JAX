@@ -27,7 +27,7 @@ module {
     %c = stablehlo.constant dense<1> : tensor<i64>
     %c_0 = stablehlo.constant dense<16> : tensor<i64>
     %c_1 = stablehlo.constant dense<0> : tensor<i64>
-    %0:2 = stablehlo.while(%iterArg = %c_1, %iterArg_2 = %arg0) : tensor<i64>, tensor<f64> attributes {enzyme.disable_mincut, enzymexla.enable_checkpointing = true}
+    %0:2 = stablehlo.while(%iterArg = %c_1, %iterArg_2 = %arg0) : tensor<i64>, tensor<f64> attributes {enzyme.disable_mincut, enzyme.enable_checkpointing = true}
      cond {
       %1 = stablehlo.compare  LT, %iterArg, %c_0 : (tensor<i64>, tensor<i64>) -> tensor<i1>
       stablehlo.return %1 : tensor<i1>
@@ -44,7 +44,7 @@ module {
     %c = stablehlo.constant dense<1> : tensor<i64>
     %c_0 = stablehlo.constant dense<16> : tensor<i64>
     %c_1 = stablehlo.constant dense<0> : tensor<i64>
-    %0:2 = stablehlo.while(%iterArg = %c_1, %iterArg_2 = %arg0) : tensor<i64>, tensor<f64> attributes {enzyme.disable_mincut, enzymexla.checkpoint_period = 4 : i64}
+    %0:2 = stablehlo.while(%iterArg = %c_1, %iterArg_2 = %arg0) : tensor<i64>, tensor<f64> attributes {enzyme.disable_mincut, enzyme.checkpoint_period = 4 : i64}
      cond {
       %1 = stablehlo.compare  LT, %iterArg, %c_0 : (tensor<i64>, tensor<i64>) -> tensor<i1>
       stablehlo.return %1 : tensor<i1>

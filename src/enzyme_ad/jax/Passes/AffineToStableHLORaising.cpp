@@ -325,28 +325,52 @@ struct ParallelContext {
     if (!CTT)
       return std::nullopt;
     auto TT = getTensorType(CTT.getElementType());
-    assert(CTT.getElementType() == TT.getElementType());
-    if (CTT.getShape() == TT.getShape())
-      return Broadcast{v, avm};
-    if (llvm::any_of(llvm::zip(CTT.getShape(), TT.getShape()),
-                     [](auto p) { return std::get<0>(p) != std::get<1>(p); }))
-      return std::nullopt;
+    assert(TT.getElementType() == CTT.getElementType());
     if (CTT.getRank() > TT.getRank())
       return std::nullopt;
 
-    // TODO I haven't thought through how to broadcast non-scalars to the
-    // shape we need.
-    if (CTT.getRank() != 0)
-      return std::nullopt;
-    SmallVector<int64_t> dimsToBroadcast;
-    auto bc = stablehlo::BroadcastInDimOp::create(
-        b, rewriteLocation(v.getLoc(), options.strip_llvm_debuginfo), TT, v,
-        dimsToBroadcast);
+    SmallVector<int64_t> broadcastDims(CTT.getRank(), -1);
 
-    AffineMap newMap = AffineMap::getMultiDimIdentityMap(
-        TT.getRank() - CTT.getRank(), b.getContext());
+    for (auto [i, E] : llvm::enumerate(avm.getAffineMap().getResults())) {
+      if (E.isSymbolicOrConstant())
+        return std::nullopt;
 
-    return Broadcast{bc, affine::AffineValueMap(newMap, ivs)};
+      Value iv = nullptr;
+      for (auto [j, I] : llvm::enumerate(avm.getOperands())) {
+        if (E.isFunctionOfDim(j)) {
+          if (!iv)
+            iv = I;
+          else
+            return std::nullopt;
+        }
+      }
+
+      int64_t pos = 0;
+
+      for (auto I : ivs) {
+        if (iv == I) {
+          broadcastDims[i] = pos;
+          break;
+        }
+        pos++;
+      }
+
+      if (pos == ivs.size())
+        return std::nullopt;
+
+      broadcastDims[i] = pos;
+    }
+
+    for (auto bdim : broadcastDims)
+      if (bdim == -1)
+        return std::nullopt;
+
+    Value br = stablehlo::BroadcastInDimOp::create(b, v.getLoc(), TT, v,
+                                                   broadcastDims);
+
+    affine::AffineValueMap TMap(
+        AffineMap::getMultiDimIdentityMap(TT.getRank(), b.getContext()), ivs);
+    return Broadcast{.v = br, .avm = TMap};
   }
 
   std::optional<ParallelContext> add(affine::AffineForOp forOp) {
@@ -1192,26 +1216,55 @@ static LogicalResult tryRaisingForOpToStableHLOUnroll(
 //  - they have the same number of results
 //  - each result depending on the same induction variable as the corresponding
 //    result in the other map (up to a constant offset).
+//  - up to a permutation can be applied.
 //
-static bool equivalentUnderAlignMemory(const affine::AffineValueMap &a,
-                                       const affine::AffineValueMap &b) {
-  if (a.getOperands() != b.getOperands())
-    return false;
+//  it returns the permutation to apply to a in order to align to b.
+//
+static std::optional<SmallVector<int64_t>>
+memoryEquivalentPermutation(const affine::AffineValueMap &a,
+                            const affine::AffineValueMap &b) {
+  SmallVector<int64_t> perm(a.getNumResults(), -1);
 
   auto amap = a.getAffineMap(), bmap = b.getAffineMap();
 
   if (amap.getNumDims() != bmap.getNumDims() ||
       amap.getNumSymbols() != bmap.getNumSymbols() ||
       amap.getNumResults() != bmap.getNumResults())
-    return false;
+    return std::nullopt;
 
-  for (auto [EA, EB] : llvm::zip_equal(amap.getResults(), bmap.getResults())) {
+  for (auto EA : amap.getResults()) {
+    if (EA.isSymbolicOrConstant())
+      return std::nullopt;
+
+    auto apos = getIVPos(a, EA);
+    auto aiv = a.getOperand(apos);
+
+    AffineExpr EB = nullptr;
+    unsigned bpos;
+    for (auto EBB : bmap.getResults()) {
+      bpos = getIVPos(b, EBB);
+
+      if (b.getOperand(bpos) == aiv) {
+        EB = EBB;
+        break;
+      }
+    }
+
+    if (!EB)
+      return std::nullopt;
+
+    perm[bpos] = apos;
+    EB = EB.replace(mlir::getAffineDimExpr(bpos, aiv.getContext()),
+                    mlir::getAffineDimExpr(apos, aiv.getContext()));
     AffineExpr E = EA - EB;
     if (!E.isSymbolicOrConstant())
-      return false;
+      return std::nullopt;
   }
 
-  return true;
+  if (!perm.empty() && llvm::any_of(perm, [](int64_t d) { return d == -1; }))
+    return std::nullopt;
+
+  return {perm};
 }
 
 static LogicalResult tryRaisingForOpToStableHLOWhile(
@@ -1337,14 +1390,25 @@ static LogicalResult tryRaisingForOpToStableHLOWhile(
     for (auto [iterArg, yieldedIterArgs] :
          llvm::zip(forOp.getRegionIterArgs(),
                    forOp.getBody()->getTerminator()->getOperands())) {
-      if (!equivalentUnderAlignMemory(
-              maps.lookup(mapping.lookup(iterArg)),
-              maps.lookup(mapping.lookup(yieldedIterArgs)))) {
+
+      Value raisedYieldedIterArg = mapping.lookup(yieldedIterArgs);
+      Value raisedIterArg = mapping.lookup(iterArg);
+
+      auto perm = memoryEquivalentPermutation(maps.lookup(raisedYieldedIterArg),
+                                              maps.lookup(raisedIterArg));
+
+      if (!perm.has_value()) {
         auto err = forOp.emitError("invalid init for iterArg: ") << iterArg;
         whileOp->erase();
         return err;
       }
-      loopCarried.push_back(mapping.lookup(yieldedIterArgs));
+
+      if (!std::is_sorted(perm->begin(), perm->end()))
+        raisedYieldedIterArg = stablehlo::TransposeOp::create(
+            builder, raisedYieldedIterArg.getLoc(), raisedYieldedIterArg,
+            *perm);
+
+      loopCarried.push_back(raisedYieldedIterArg);
     }
 
     for (auto memref : entryBlock->getArguments())
@@ -2858,8 +2922,11 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
         SplatElementsAttr::get(
             unrankedTensorType,
             ArrayRef<Attribute>(
-                ET.isInteger() ? (Attribute)IntegerAttr::get(ET, 0)
-                               : (Attribute)FloatAttr::get(ET, APFloat(0.0)))));
+                ET.isInteger()
+                    ? (Attribute)IntegerAttr::get(ET, 0)
+                    : (Attribute)FloatAttr::get(
+                          ET, APFloat::getZero(
+                                  cast<FloatType>(ET).getFloatSemantics())))));
 
     auto newVal = newConst.getResult();
     mapping.map(op->getResult(0), newVal);
@@ -3100,7 +3167,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
   }
 
   // ternary ops
-  if (isa<arith::SelectOp, math::FmaOp>(op)) {
+  if (isa<arith::SelectOp, math::FmaOp, enzymexla::FMulAddOp>(op)) {
     assert(op->getNumOperands() == 3 && op->getNumResults() == 1);
 
     Value a = mapping.lookup(op->getOperand(0)),

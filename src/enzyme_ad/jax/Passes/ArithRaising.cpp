@@ -19,6 +19,7 @@
 #include "mlir/IR/IRMapping.h"
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
+#include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "src/enzyme_ad/jax/Utils.h"
 #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
@@ -287,6 +288,23 @@ struct ArithRaisingPass
       truncOp.erase();
     });
     op->walk([=](math::FmaOp fma) {
+      auto ty = dyn_cast<RankedTensorType>(fma.getResult().getType());
+      if (!use_stablehlo || !ty)
+        return;
+
+      OpBuilder builder(fma);
+      auto res = stablehlo::MulOp::create(builder, fma.getLoc(),
+                                          fma.getOperand(0), fma.getOperand(1));
+      auto res2 = stablehlo::AddOp::create(builder, fma.getLoc(), res,
+                                           fma.getOperand(2));
+      fma.replaceAllUsesWith(res2.getResult());
+      fma.erase();
+    });
+
+    // Same shape as math.fma above. stablehlo has no fused form, so the
+    // separate mul+add is the required lowering for strict fma and the
+    // permitted one for fmuladd alike.
+    op->walk([=](enzymexla::FMulAddOp fma) {
       auto ty = dyn_cast<RankedTensorType>(fma.getResult().getType());
       if (!use_stablehlo || !ty)
         return;

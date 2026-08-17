@@ -31,8 +31,8 @@ module {
 // CHECK-NEXT:    %7 = stablehlo.broadcast_in_dim %6, dims = [0] : (tensor<10xi64>) -> tensor<10x10x1xi64>
 // CHECK-NEXT:    %8 = stablehlo.iota dim = 1 : tensor<10x10x1xi64>
 // CHECK-NEXT:    %9 = stablehlo.add %7, %8 : tensor<10x10x1xi64>
-// CHECK-NEXT:    %10 = "stablehlo.gather"(%arg1, %9) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 2>, indices_are_sorted = false, slice_sizes = array<i64: 1>}> : (tensor<100xf32>, tensor<10x10x1xi64>) -> tensor<10x10xf32>
-// CHECK-NEXT:    %11 = "stablehlo.gather"(%arg0, %9) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 2>, indices_are_sorted = false, slice_sizes = array<i64: 1>}> : (tensor<100xf32>, tensor<10x10x1xi64>) -> tensor<10x10xf32>
+// CHECK-NEXT:    %10 = stablehlo.reshape %arg1 : (tensor<100xf32>) -> tensor<10x10xf32>
+// CHECK-NEXT:    %11 = stablehlo.reshape %arg0 : (tensor<100xf32>) -> tensor<10x10xf32>
 // CHECK-NEXT:    %12 = stablehlo.select %5, %10, %11 : tensor<10x10xi1>, tensor<10x10xf32>
 // CHECK-NEXT:    %13 = "stablehlo.scatter"(%arg0, %9, %12) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0], scatter_dims_to_operand_dims = [0], index_vector_dim = 2>, unique_indices = false}> ({
 // CHECK-NEXT:    ^bb0(%arg2: tensor<f32>, %arg3: tensor<f32>):

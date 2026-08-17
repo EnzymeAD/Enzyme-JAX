@@ -97,9 +97,10 @@ struct GPULaunchRecognitionPass
           /*flags=*/nullptr,
           /*linkLibs=*/nullptr);
     } else {
-      // Default to CUDA/NVVM
+      // Default to CUDA/NVVM. A host function's target-cpu can leak in
+      // here through an unresolved stub; never let a non-GPU chip through.
       auto chip = sm;
-      if (chip.size() == 0)
+      if (!StringRef(chip).starts_with("sm_"))
         chip = "sm_80";
       auto features = feat;
       if (features.size() == 0)
@@ -615,6 +616,12 @@ enum __device_builtin__ cudaMemcpyKind
                        arg.getType().getIntOrFloatBitWidth() ==
                            expectedTy.getIntOrFloatBitWidth()) {
               arg = LLVM::BitcastOp::create(builder, loc, expectedTy, arg);
+            } else if (arg.getType().isIntOrIndex() &&
+                       isa<LLVM::LLVMPointerType>(expectedTy)) {
+              arg = LLVM::IntToPtrOp::create(builder, loc, expectedTy, arg);
+            } else if (isa<LLVM::LLVMPointerType>(arg.getType()) &&
+                       expectedTy.isIntOrIndex()) {
+              arg = LLVM::PtrToIntOp::create(builder, loc, expectedTy, arg);
             } else {
               arg = LLVM::BitcastOp::create(builder, loc, expectedTy,
                                             arg); // Fallback
@@ -662,13 +669,15 @@ enum __device_builtin__ cudaMemcpyKind
         } else {
           if (local_use_launch_func) {
             assert(isa<LLVM::LLVMPointerType>(stream.getType()));
-            stream = enzymexla::StreamToTokenOp::create(
-                builder, loc, gpu::AsyncTokenType::get(ctx), stream);
+            // The stream-based async form: dependency operands without a
+            // result token no longer verify, the stream rides the
+            // asyncObject operand instead.
             launchFuncOp = gpu::LaunchFuncOp::create(
                 builder, loc, gpufunc,
                 gpu::KernelDim3{grid[0], grid[1], grid[2]},
                 gpu::KernelDim3{block[0], block[1], block[2]}, shMemSize,
-                ValueRange(args), stream.getType(), ValueRange(stream));
+                ValueRange(args), /*asyncTokenType=*/nullptr,
+                /*asyncDependencies=*/ValueRange(), /*asyncObject=*/stream);
           } else {
             assert(isa<LLVM::LLVMPointerType>(stream.getType()));
             stream = enzymexla::StreamToTokenOp::create(
@@ -685,8 +694,12 @@ enum __device_builtin__ cudaMemcpyKind
         }
         if (launchFuncOp) {
 
+          // A kernel with no argument attributes has no attribute list at
+          // all, and the optional is empty rather than holding an empty array.
           SmallVector<Attribute> newArgAttrs;
-          for (auto [i, argAttrs] : llvm::enumerate(*cur.getArgAttrs())) {
+          ArrayAttr curArgAttrs =
+              cur.getArgAttrs().value_or(ArrayAttr::get(cur->getContext(), {}));
+          for (auto [i, argAttrs] : llvm::enumerate(curArgAttrs)) {
             if (std::optional<NamedAttribute> attr =
                     cast<DictionaryAttr>(argAttrs).getNamed(
                         LLVM::LLVMDialect::getByValAttrName())) {
