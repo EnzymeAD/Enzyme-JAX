@@ -78,8 +78,8 @@ public:
 };
 
 class TritonTensorDescTypeInterface
-    : public AutoDiffTypeInterface::ExternalModel<
-          TritonTensorDescTypeInterface, triton::TensorDescType> {
+    : public AutoDiffTypeInterface::ExternalModel<TritonTensorDescTypeInterface,
+                                                  triton::TensorDescType> {
 public:
   mlir::Attribute createNullAttr(mlir::Type self) const {
     llvm_unreachable("TODO");
