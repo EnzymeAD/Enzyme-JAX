@@ -7,7 +7,7 @@
 // CHECK-NOT: sparse_tensor
 // CHECK: %[[Y:.+]] = stablehlo.custom_call @reactant_csr_matmul(%arg0, %arg1, %arg2, %arg3)
 // CHECK-SAME: api_version = 4 : i32
-// CHECK-SAME: backend_config = {index_base = 0 : i64, m = 10 : i64, n = 8 : i64, transpose = 0 : i64}
+// CHECK-SAME: backend_config = {alpha = 1.000000e+00 : f64, index_base = 0 : i64, m = 10 : i64, n = 8 : i64, transpose = 0 : i64}
 // CHECK-SAME: (tensor<11xi64>, tensor<20xi64>, tensor<20xf64>, tensor<8xf64>) -> tensor<10xf64>
 // CHECK-NOT: sparse_tensor
 // CHECK: return %[[Y]]
@@ -20,7 +20,7 @@ func.func @spmv(%rowptr: tensor<11xi64>, %colind: tensor<20xi64>, %nzval: tensor
 // CHECK-LABEL: func.func @spmm
 // CHECK-NOT: sparse_tensor
 // CHECK: %[[Y:.+]] = stablehlo.custom_call @reactant_csr_matmul(%arg0, %arg1, %arg2, %arg3)
-// CHECK-SAME: backend_config = {index_base = 0 : i64, m = 10 : i64, n = 8 : i64, transpose = 0 : i64}
+// CHECK-SAME: backend_config = {alpha = 1.000000e+00 : f64, index_base = 0 : i64, m = 10 : i64, n = 8 : i64, transpose = 0 : i64}
 // CHECK-SAME: operand_layouts = [dense<0> : tensor<1xindex>, dense<0> : tensor<1xindex>, dense<0> : tensor<1xindex>, dense<[0, 1]> : tensor<2xindex>]
 // CHECK-SAME: result_layouts = [dense<[0, 1]> : tensor<2xindex>]
 // CHECK-SAME: (tensor<11xi64>, tensor<20xi64>, tensor<20xf64>, tensor<8x3xf64>) -> tensor<10x3xf64>

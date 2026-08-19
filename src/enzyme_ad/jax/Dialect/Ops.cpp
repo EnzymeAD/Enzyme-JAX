@@ -1260,6 +1260,64 @@ void GemmOp::build(OpBuilder &builder, OperationState &result, Value A, Value B,
                                     builder.getContext(), transb));
 }
 
+LogicalResult enzymexla::SparseSpMMOp::verify() {
+  auto typeA = cast<RankedTensorType>(getA().getType());
+  auto typeB = cast<RankedTensorType>(getB().getType());
+  auto typeC = cast<RankedTensorType>(getC().getType());
+
+  if (typeA.getRank() != 2) {
+    return emitOpError("A must be a 2-d tensor");
+  }
+  if (typeB.getRank() != 1 && typeB.getRank() != 2) {
+    return emitOpError("B must be a vector or a matrix");
+  }
+  if (typeC.getRank() != typeB.getRank()) {
+    return emitOpError("Ranks of B and C must match");
+  }
+  if (typeA.getShape()[1] != typeB.getShape()[0]) {
+    return emitOpError("Inner dimensions of A and B must match");
+  }
+  if (typeC.getShape()[0] != typeA.getShape()[0]) {
+    return emitOpError("First dimensions of A and C must match");
+  }
+  if (typeB.getRank() == 2 && typeB.getShape()[1] != typeC.getShape()[1]) {
+    return emitOpError("Second dimensions of B and C must match");
+  }
+  if (getResult().getType() != typeC) {
+    return emitOpError("Result type must match C's type");
+  }
+
+  return success();
+}
+
+void SparseSpMMOp::build(OpBuilder &builder, OperationState &result, Value A,
+                         Value B) {
+  auto typeA = cast<RankedTensorType>(A.getType());
+  auto typeB = cast<RankedTensorType>(B.getType());
+  auto elementType = typeA.getElementType();
+
+  SmallVector<int64_t> shapeC{typeA.getShape()[0]};
+  if (typeB.getRank() == 2) {
+    shapeC.push_back(typeB.getShape()[1]);
+  }
+
+  auto typeScalar = RankedTensorType::get({}, elementType);
+  auto alpha = stablehlo::ConstantOp::create(
+      builder, result.location, typeScalar,
+      cast<ElementsAttr>(makeAttr(typeScalar, 1)));
+  auto beta = stablehlo::ConstantOp::create(
+      builder, result.location, typeScalar,
+      cast<ElementsAttr>(makeAttr(typeScalar, 0)));
+
+  auto typeC = RankedTensorType::get(shapeC, elementType);
+  auto C =
+      stablehlo::ConstantOp::create(builder, result.location, typeC,
+                                    cast<ElementsAttr>(makeAttr(typeC, 0)));
+
+  result.addTypes(typeC);
+  result.addOperands({alpha, A, B, beta, C});
+}
+
 LogicalResult enzymexla::SyrkOp::verify() {
   auto CType = cast<RankedTensorType>(getC().getType());
   bool isComplex = false;
