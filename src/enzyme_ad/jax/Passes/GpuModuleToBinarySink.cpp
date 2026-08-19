@@ -100,12 +100,12 @@ bool sinkCheapOpsInFunction(llvm::Function &F, int sinkMode) {
   return anyChange;
 }
 
-void sinkCheapOpsLate(llvm::Module &M, int sinkMode) {
+void sinkCheapOpsLate(llvm::Module &M, int sinkMode, bool dumpIR) {
   for (llvm::Function &F : M)
     if (sinkMode > 0 && !F.isDeclaration())
       sinkCheapOpsInFunction(F, sinkMode);
-  // Dump the IR as handed to instruction selection; lit tests key off this.
-  if (getenv("REACTANT_SINK_DEBUG"))
+  // The IR as handed to instruction selection; lit tests key off this.
+  if (dumpIR)
     M.print(llvm::errs(), nullptr);
 }
 
@@ -143,7 +143,10 @@ public:
       librariesToLink.push_back(StringAttr::get(&getContext(), path));
 
     int mode = sinkMode;
-    auto sinkCallback = [mode](llvm::Module &M) { sinkCheapOpsLate(M, mode); };
+    bool dump = dumpIR;
+    auto sinkCallback = [mode, dump](llvm::Module &M) {
+      sinkCheapOpsLate(M, mode, dump);
+    };
     gpu::TargetOptions targetOptions(
         toolkitPath, librariesToLink, cmdOptions, elfSection, *targetFormat,
         lazyTableBuilder, /*initialLlvmIRCallback=*/{},

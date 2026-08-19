@@ -1,12 +1,12 @@
-// RUN: env REACTANT_SINK_DEBUG=1 enzymexlamlir-opt %s --pass-pipeline="builtin.module(enzymexla-gpu-module-to-binary{format=isa sink=2})" -o /dev/null 2>&1 | FileCheck %s
-// RUN: env REACTANT_SINK_DEBUG=1 enzymexlamlir-opt %s --pass-pipeline="builtin.module(enzymexla-gpu-module-to-binary{format=isa sink=0})" -o /dev/null 2>&1 | FileCheck %s --check-prefix=NOSINK
+// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(enzymexla-gpu-module-to-binary{format=isa sink=2 dump=true})" -o /dev/null 2>&1 | FileCheck %s
+// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(enzymexla-gpu-module-to-binary{format=isa sink=0 dump=true})" -o /dev/null 2>&1 | FileCheck %s --check-prefix=NOSINK
 
 // The base offset %e * 522 feeds stores on both sides of the branch, so the
 // target's LLVM optimization pipeline keeps a single multiply (folded with the
 // f64 element size into * 4176) live across the branch in the entry block.
 // The late sink runs after that pipeline and rematerializes the multiply and
 // the base getelementptr in each using block, where no further IR-level
-// CSE/GVN can re-hoist them; REACTANT_SINK_DEBUG dumps the IR exactly as it
+// CSE/GVN can re-hoist them; the dump option prints the IR exactly as it
 // is handed to instruction selection.
 
 module attributes {gpu.container_module} {

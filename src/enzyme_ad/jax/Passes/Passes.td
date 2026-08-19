@@ -1522,7 +1522,10 @@ def GpuModuleToBinarySink : Pass<"enzymexla-gpu-module-to-binary", ""> {
               "ELF section where binary is to be located.">,
        Option<"sinkMode", "sink", "int", "2",
               "0: no sinking; 1: sink only within the defining loop; "
-              "2: also sink into deeper loops">];
+              "2: also sink into deeper loops">,
+       Option<"dumpIR", "dump", "bool", "false",
+              "Print each serialized module's LLVM IR as handed to "
+              "instruction selection, after any sinking">];
   let dependentDialects = ["gpu::GPUDialect", "LLVM::LLVMDialect", ];
 }
 
