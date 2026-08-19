@@ -112,15 +112,6 @@ jobs:
         uses: julia-actions/cache@v3.2.0
         with:
           gcp-bucket: ${{ (contains(matrix.os, 'linux') && 'enzyme-ci-transient' ) || '' }}
-          # NOTE: bump this prefix to bust the Julia depot cache.  The previous
-          # `enzymejax-gb25/` caches contain a truncated
-          # ~/.julia/artifacts/3cd7a8e8fe264178b19b591f55b041d2018717a7 (the
-          # CUDA_Compiler_jll cuda+13 artifact) which is missing
-          # nvvm/lib64/libnvvm.so.  Julia's `_artifact_str` short-circuits on
-          # `isdir()`, so a partial artifact directory is never re-downloaded and
-          # `CUDA_Compiler_jll.__init__` fails to dlopen it forever, breaking
-          # precompilation of CUDA.jl and everything downstream.
-          # See https://github.com/JuliaGPU/CUDA.jl/issues/3242
           key-prefix: enzymejax-gb25-v2/
 
       - name: Modify Enzyme-JAX commit
