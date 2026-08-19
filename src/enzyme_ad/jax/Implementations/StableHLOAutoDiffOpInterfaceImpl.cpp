@@ -4296,9 +4296,8 @@ buildBatchedStartIndexTensor(Operation *op, OpBuilder &builder,
 
       Value lowerBound = makeIntegerConstant(loc, builder, elemTy, 0);
       Value upperBound = makeIntegerConstant(loc, builder, elemTy, limit);
-      column =
-          stablehlo::ClampOp::create(builder, loc, lowerBound, column,
-                                      upperBound);
+      column = stablehlo::ClampOp::create(builder, loc, lowerBound, column,
+                                          upperBound);
     }
 
     columns.push_back(
