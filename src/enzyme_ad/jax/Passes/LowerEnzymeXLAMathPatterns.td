@@ -33,8 +33,19 @@ def GeluApproximationNONE : ConstantAttr<EnzymeXLA_GeluApproximationAttr, "::mli
 def GeluApproximationTANH : ConstantAttr<EnzymeXLA_GeluApproximationAttr, "::mlir::enzymexla::GeluApproximation::TANH">;
 def GeluApproximationSIGMOID : ConstantAttr<EnzymeXLA_GeluApproximationAttr, "::mlir::enzymexla::GeluApproximation::SIGMOID">;
 
+def AllOperandsAreTensors : Constraint<
+    CPred<"llvm::all_of($0.getOperandTypes(), [](Type ty) { "
+          "return llvm::isa<mlir::TensorType>(ty); })">,
+    "all operands are of type Tensor">;
+
+def AllResultsAreTensors : Constraint<
+    CPred<"llvm::all_of($0.getResultTypes(), [](Type ty) { "
+          "return llvm::isa<mlir::TensorType>(ty); })">,
+    "all operands are of type Tensor">;
+
 def : Pat<(ReluOp:$op $input),
-          (StableHLO_MaxOp $input, (CreateConstOp0 $input))>;
+          (StableHLO_MaxOp $input, (CreateConstOp0 $input)),
+          [(AllOperandsAreTensors $op), (AllResultsAreTensors $op)]>;
 
 // Gelu Approximation: NONE
 def : Pat<(GeluOp:$op $x, GeluApproximationNONE),
@@ -46,7 +57,8 @@ def : Pat<(GeluOp:$op $x, GeluApproximationNONE),
         (CHLO_ErfOp (StableHLO_MulOp $x, (CreateInvSqrt2Op $op)))
       )
     )
-  )
+  ),
+  [(AllOperandsAreTensors $op), (AllResultsAreTensors $op)]
 >;
 
 // Gelu Approximation: TANH
@@ -71,7 +83,8 @@ def : Pat<(GeluOp:$op $x, GeluApproximationTANH),
         )
       )
     )
-  )
+  ),
+  [(AllOperandsAreTensors $op), (AllResultsAreTensors $op)]
 >;
 
 // Gelu Approximation: SIGMOID
@@ -93,7 +106,8 @@ def : Pat<(GeluOp:$op $x, GeluApproximationSIGMOID),
       ),
       ConstDefaultResultAccuracyAttr
     )
-  )
+  ),
+  [(AllOperandsAreTensors $op), (AllResultsAreTensors $op)]
 >;
 
 // Softplus
@@ -112,10 +126,12 @@ def : Pat<(SoftplusOp:$op $x),
         ConstDefaultResultAccuracyAttr
       )
     )
-  )
+  ),
+  [(AllOperandsAreTensors $op), (AllResultsAreTensors $op)]
 >;
 
-def : Pat<(LGammaOp $x), (CHLO_LgammaOp $x)>;
+def : Pat<(LGammaOp $x), (CHLO_LgammaOp $x),
+          [(AllOperandsAreTensors $op), (AllResultsAreTensors $op)]>;
 
 def : Pat<(TGammaOp:$op $x),
   (StableHLO_SelectOp
@@ -127,8 +143,13 @@ def : Pat<(TGammaOp:$op $x),
     ),
     (CreateNanOp $op),
     (StableHLO_ExpOp (CHLO_LgammaOp $x), ConstDefaultResultAccuracyAttr)
-  )
+  ),
+  [(AllOperandsAreTensors $op), (AllResultsAreTensors $op)]
 >;
+
+def : Pat<(FMulAddOp:$op $a, $b, $c),
+          (StableHLO_AddOp (StableHLO_MulOp $a, $b), $c),
+          [(AllOperandsAreTensors $op), (AllResultsAreTensors $op)]>;
 
 // Hypot
 def : Pat<(HypotOp:$op $x, $y),
