@@ -4,6 +4,7 @@
 #include "xla/ffi/api/ffi.h"
 #include "xla/ffi/ffi_api.h"
 
+#include "mpi_ffi.h"
 #include "mpi.h"
 
 #include "../export_macro.h"
