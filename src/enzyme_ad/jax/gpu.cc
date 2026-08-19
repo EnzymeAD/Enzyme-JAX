@@ -170,4 +170,14 @@ extern "C" MLIR_CAPI_EXPORTED void RegisterEnzymeXLAGPUHandler() {
   xla::ffi::Ffi::RegisterStaticHandler(
       xla::ffi::GetXlaFfiApi(), "enzymexla_compile_gpu_with_error", "CUDA",
       bundle_with_error, /*XLA_FFI_Handler_Traits traits = */ 0);
+
+  // The handler is platform-agnostic (the stream and function handles are
+  // opaque pointers), so the same bundles serve ROCm.
+  xla::ffi::Ffi::RegisterStaticHandler(xla::ffi::GetXlaFfiApi(),
+                                       "enzymexla_compile_gpu", "ROCM", bundle,
+                                       /*XLA_FFI_Handler_Traits traits = */ 0);
+
+  xla::ffi::Ffi::RegisterStaticHandler(
+      xla::ffi::GetXlaFfiApi(), "enzymexla_compile_gpu_with_error", "ROCM",
+      bundle_with_error, /*XLA_FFI_Handler_Traits traits = */ 0);
 }
