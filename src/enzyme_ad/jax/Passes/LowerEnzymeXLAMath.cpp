@@ -217,10 +217,10 @@ void lowerEnzymeXLAMath(Operation *op,
     }
     if (local_op->getName().getStringRef().starts_with("enzymexla.math.") &&
         (local_op->getNumResults() > 0 &&
-         llvm::all_of(local_op->getResultTypes(),
+         llvm::any_of(local_op->getResultTypes(),
                       [](Type ty) { return isa<TensorType>(ty); })) &&
         (local_op->getNumOperands() > 0 &&
-         llvm::all_of(local_op->getOperandTypes(),
+         llvm::any_of(local_op->getOperandTypes(),
                       [](Type ty) { return isa<TensorType>(ty); }))) {
       local_op->emitError("Failed to lower enzymexla math operation");
       return WalkResult::interrupt();
