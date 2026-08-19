@@ -191,7 +191,6 @@ void buildLowerToNVVMPassPipeline(
 
   // Moved here to address https://github.com/EnzymeAD/Enzyme-JAX/issues/482
   pm.addPass(createArithToLLVMConversionPass());
-  pm.addPass(createConvertPolygeistToLLVM());
 
   // Host post-GPUModule-specific stuff
   buildHostPostPipeline(pm, options, toolkitPath, linkFiles);
