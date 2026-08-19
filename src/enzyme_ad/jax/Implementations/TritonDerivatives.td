@@ -29,6 +29,7 @@ def FpToFp : TritonInst<"FpToFpOp">;
 def PreciseDivF : TritonInst<"PreciseDivFOp">;
 def MakeRange : TritonInst<"MakeRangeOp">;
 def Dot : TritonInst<"DotOp", "->getResult(0)">;
+def Trans : TritonInst<"TransOp", "->getResult(0)">;
 
 def : TritonReturnOp<"ReturnOp">;
 
@@ -40,10 +41,13 @@ def : TritonInactiveOp<"PrintOp">;
 def : ReadOnlyIdentityOp<"triton", "AddPtrOp", [0]>;
 def : ReadOnlyIdentityOp<"triton", "BroadcastOp", [0]>;
 def : ReadOnlyIdentityOp<"triton", "ExpandDimsOp", [0]>;
+def : MemoryIdentityOp<"triton", "JoinOp", [0, 1], [0, 1]>;
 def : MemoryIdentityOp<"triton", "LoadOp", [0], [2]>;
 def : ReadOnlyIdentityOp<"triton", "MakeTensorDescOp", [0]>;
 def : ReadOnlyIdentityOp<"triton", "DescriptorLoadOp", [0]>;
+def : ReadOnlyIdentityOp<"triton", "ReshapeOp", [0]>;
 def : ReadOnlyIdentityOp<"triton", "SplatOp", [0]>;
+def : ReadOnlyIdentityOp<"triton", "SplitOp", [0]>;
 def : ReadOnlyIdentityOp<"triton", "TransOp", [0]>;
 def : MemoryIdentityOp<"triton", "StoreOp", [0], [1]>;
 def : MemoryIdentityOp<"triton", "DescriptorStoreOp", [0], [1]>;
@@ -57,17 +61,11 @@ def DotInputPrecision : GlobalExpr</*needsprimal*/ 0, /*needsshadow*/ 0,
 def DotMaxNumImpreciseAcc : GlobalExpr</*needsprimal*/ 0, /*needsshadow*/ 0,
                                        [{ op.getMaxNumImpreciseAccAttr(); }]>;
 
-// AssertingInactiveArg would also suppress forward activity for these operands,
-// so report unsupported derivatives only when reverse mode reaches this rule.
-def UnimplementedDotOperandReverse
-    : GlobalExpr<
-          /*needsprimal*/ 0, /*needsshadow*/ 0, [{
-            op.emitError()
-                << "reverse-mode derivatives of tt.dot matrix operands are "
-                   "not implemented";
-            return failure();
-            mlir::Value{};
-          }]>;
+def DotTransposeOrder
+    : GlobalExpr</*needsprimal*/ 0, /*needsshadow*/ 0, [{
+                   gutils->width == 1 ? builder.getDenseI32ArrayAttr({1, 0})
+                                      : builder.getDenseI32ArrayAttr({0, 2, 1});
+                 }]>;
 
 def : TritonDerivative<"FpToFpOp", (Op $x),
                        [(FpToFp(TypeOf $x), (DiffeRet), (FpToFpRoundingMode))]>;
@@ -77,7 +75,12 @@ def : TritonDerivative<"FpToFpOp", (Op $x),
 def : TritonDerivative<
           "DotOp", (Op $a, $b, $c),
           [
-            (UnimplementedDotOperandReverse), (UnimplementedDotOperandReverse),
+            (Dot(DiffeRet), (Trans $b, (DotTransposeOrder)),
+             (ArithConstantFP<"0"> $a), (DotInputPrecision),
+             (DotMaxNumImpreciseAcc)),
+            (Dot(Trans $a, (DotTransposeOrder)), (DiffeRet),
+             (ArithConstantFP<"0"> $b), (DotInputPrecision),
+             (DotMaxNumImpreciseAcc)),
             (DiffeRet)
           ],
           (SelectIfActive $b,
