@@ -954,6 +954,7 @@ CallInfo CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
         auto newOp = LLVM::FMulAddOp::create(builder, op->getLoc(), op.getA(),
                                              op.getB(), op.getC());
         op.getResult().replaceAllUsesWith(newOp.getResult());
+        op->erase();
       });
 
       std::string legalName;
