@@ -1,7 +1,11 @@
 // RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=main outfn= argTys=enzyme_dup,enzyme_dup,enzyme_const,enzyme_const,enzyme_const,enzyme_const retTys=enzyme_dup,enzyme_dup mode=ForwardMode" --canonicalize | FileCheck %s
 
 // CHECK-LABEL: tt.func @fwddiffesoftmax_kernel(
-// CHECK:       %[[MAX:[0-9]+]]:2 = "tt.reduce"(%[[PRIMAL_INPUT:[0-9]+]], %[[TANGENT_INPUT:[0-9]+]])
+// CHECK:       %[[ZERO_OTHER:.+]] = arith.constant dense<0.000000e+00>
+// CHECK:       %[[PRIMAL_OTHER:.+]] = arith.constant dense<0xFF800000>
+// CHECK:       %[[TANGENT_INPUT:[0-9]+]] = tt.load %{{[^,]+}}, %[[MASK:[0-9]+]], %[[ZERO_OTHER]]
+// CHECK-NEXT:  %[[PRIMAL_INPUT:[0-9]+]] = tt.load %{{[^,]+}}, %[[MASK]], %[[PRIMAL_OTHER]]
+// CHECK:       %[[MAX:[0-9]+]]:2 = "tt.reduce"(%[[PRIMAL_INPUT]], %[[TANGENT_INPUT]])
 // CHECK:         %[[MAX_VALUE:[0-9]+]] = arith.maxnumf
 // CHECK:         tt.reduce.return %[[MAX_VALUE]], %[[MAX_TANGENT:[0-9]+]] : f32, f32
 // CHECK:       %[[TANGENT_MAX:[0-9]+]] = tt.splat %[[MAX]]#1
@@ -10,7 +14,7 @@
 // CHECK:       %[[PRIMAL_SUM:[0-9]+]] = "tt.reduce"(%[[PRIMAL_EXP:[0-9]+]])
 // CHECK:       %[[TANGENT_SOFTMAX:[0-9]+]] = arith.divf
 // CHECK-NEXT:  %[[PRIMAL_SOFTMAX:[0-9]+]] = arith.divf
-// CHECK:       tt.store %{{[^,]+}}, %[[TANGENT_SOFTMAX]], %[[MASK:[0-9]+]]
+// CHECK:       tt.store %{{[^,]+}}, %[[TANGENT_SOFTMAX]], %[[MASK]]
 // CHECK-NEXT:  tt.store %{{[^,]+}}, %[[PRIMAL_SOFTMAX]], %[[MASK]]
 // CHECK:       tt.return
 // CHECK-LABEL: func.func @main(

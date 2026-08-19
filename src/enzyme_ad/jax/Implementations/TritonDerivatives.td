@@ -29,9 +29,13 @@ def : TritonInactiveOp<"PrintOp">;
 def : ReadOnlyIdentityOp<"triton", "AddPtrOp", [0]>;
 def : ReadOnlyIdentityOp<"triton", "BroadcastOp", [0]>;
 def : ReadOnlyIdentityOp<"triton", "ExpandDimsOp", [0]>;
-def : ReadOnlyIdentityOp<"triton", "LoadOp", [0]>;
+def : MemoryIdentityOp<"triton", "LoadOp", [0], [2]>;
+def : ReadOnlyIdentityOp<"triton", "MakeTensorDescOp", [0]>;
+def : ReadOnlyIdentityOp<"triton", "DescriptorLoadOp", [0]>;
 def : ReadOnlyIdentityOp<"triton", "SplatOp", [0]>;
+def : ReadOnlyIdentityOp<"triton", "TransOp", [0]>;
 def : MemoryIdentityOp<"triton", "StoreOp", [0], [1]>;
+def : MemoryIdentityOp<"triton", "DescriptorStoreOp", [0], [1]>;
 
 def FpToFpRoundingMode : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   op.getRoundingAttr();

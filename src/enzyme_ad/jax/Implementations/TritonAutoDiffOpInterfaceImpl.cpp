@@ -77,6 +77,44 @@ public:
   bool isZeroAttr(Type self, Attribute attr) const { return false; }
 };
 
+class TritonTensorDescTypeInterface
+    : public AutoDiffTypeInterface::ExternalModel<
+          TritonTensorDescTypeInterface, triton::TensorDescType> {
+public:
+  mlir::Attribute createNullAttr(mlir::Type self) const {
+    llvm_unreachable("TODO");
+  }
+  mlir::Value createNullValue(mlir::Type self, OpBuilder &builder,
+                              Location loc) const {
+    llvm_unreachable("TODO");
+  }
+
+  Value createAddOp(Type self, OpBuilder &builder, Location loc, Value a,
+                    Value b) const {
+    llvm_unreachable("TODO");
+  }
+
+  Value createConjOp(Type self, OpBuilder &builder, Location loc,
+                     Value a) const {
+    llvm_unreachable("TODO");
+  }
+
+  Type getShadowType(Type self, unsigned width) const {
+    assert(width == 1 && "unsupported width != 1");
+    return self;
+  }
+
+  bool isMutable(Type self) const { return true; }
+
+  LogicalResult zeroInPlace(Type self, OpBuilder &builder, Location loc,
+                            Value val) const {
+    return failure();
+  }
+
+  bool isZero(Type self, Value val) const { return false; }
+  bool isZeroAttr(Type self, Attribute attr) const { return false; }
+};
+
 class AutoDiffTritonFuncFunctionInterface
     : public AutoDiffFunctionInterface::ExternalModel<
           AutoDiffTritonFuncFunctionInterface, triton::FuncOp> {
@@ -244,6 +282,8 @@ void mlir::enzyme::registerTritonDialectAutoDiffInterface(
     triton::FuncOp::attachInterface<AutoDiffTritonFuncFunctionInterface>(
         *context);
     triton::PointerType::attachInterface<TritonPointerTypeInterface>(*context);
+    triton::TensorDescType::attachInterface<TritonTensorDescTypeInterface>(
+        *context);
     triton::ReduceOp::attachInterface<AutoDiffTritonReduceFwd>(*context);
     triton::ReduceOp::attachInterface<AutoDiffTritonReduceCF>(*context);
   });
