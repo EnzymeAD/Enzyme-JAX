@@ -1,6 +1,6 @@
 #include "register.h"
 #include "throw_error.h"
-#include "mpi.h"
+#include "mpi_ffi.h"
 
 namespace enzymexla {
 namespace ffi_internal {
