@@ -4294,9 +4294,11 @@ buildBatchedStartIndexTensor(Operation *op, OpBuilder &builder,
               : APInt::getSignedMaxValue(intTy.getWidth()).getSExtValue();
       limit = std::min(limit, typeMax);
 
-      column = stablehlo::ClampOp::create(
-          builder, loc, makeIntegerConstant(loc, builder, elemTy, 0), column,
-          makeIntegerConstant(loc, builder, elemTy, limit));
+      Value lowerBound = makeIntegerConstant(loc, builder, elemTy, 0);
+      Value upperBound = makeIntegerConstant(loc, builder, elemTy, limit);
+      column =
+          stablehlo::ClampOp::create(builder, loc, lowerBound, column,
+                                      upperBound);
     }
 
     columns.push_back(
