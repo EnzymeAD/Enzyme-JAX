@@ -87,9 +87,14 @@ struct CanonicalizeParallelPass
       (void)applyOpPatternsGreedily(loose, patterns, looseConfig);
     }
 
-    parallelForEach(ctx, targets, [&](Operation *op) {
-      (void)applyPatternsGreedily(op, patterns, config);
-    });
+    if (parallel) {
+      parallelForEach(ctx, targets, [&](Operation *op) {
+        (void)applyPatternsGreedily(op, patterns, config);
+      });
+    } else {
+      for (Operation *op : targets)
+        (void)applyPatternsGreedily(op, patterns, config);
+    }
   }
 };
 
