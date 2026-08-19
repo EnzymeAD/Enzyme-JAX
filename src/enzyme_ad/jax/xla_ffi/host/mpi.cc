@@ -108,8 +108,6 @@ XLA_FFI_DEFINE_HANDLER(MpiCommRankFfi, MpiCommRankImpl,
                            .Arg<MpiCommBuffer>() // comm
                            .Ret<IntBuffer>()     // rank
 );
-XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(),
-                         "enzymexla_ffi_mpi_comm_rank", "Host", MpiCommRankFfi);
 
 ffi::Error MpiCommSizeImpl(MpiCommBuffer comm_ptr, Result<IntBuffer> size_ptr) {
   MPI_Comm comm = *reinterpret_cast<MPI_Comm *>(comm_ptr.typed_data());
@@ -126,8 +124,6 @@ XLA_FFI_DEFINE_HANDLER(MpiCommSizeFfi, MpiCommSizeImpl,
                            .Arg<MpiCommBuffer>() // comm
                            .Ret<IntBuffer>()     // size
 );
-XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(),
-                         "enzymexla_ffi_mpi_comm_size", "Host", MpiCommSizeFfi);
 
 ffi::Error MpiCommSplitImpl(MpiCommBuffer comm_ptr, IntBuffer color_ptr,
                             IntBuffer key_ptr,
@@ -151,9 +147,6 @@ XLA_FFI_DEFINE_HANDLER(MpiCommSplitFfi, MpiCommSplitImpl,
                            .Arg<IntBuffer>()     // key
                            .Ret<MpiCommBuffer>() // newcomm
 );
-XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(),
-                         "enzymexla_ffi_mpi_comm_split", "Host",
-                         MpiCommSplitFfi);
 
 ffi::Error MpiBarrierImpl(MpiCommBuffer comm_ptr) {
   MPI_Comm comm = *reinterpret_cast<MPI_Comm *>(comm_ptr.typed_data());
@@ -167,8 +160,6 @@ ffi::Error MpiBarrierImpl(MpiCommBuffer comm_ptr) {
 
 XLA_FFI_DEFINE_HANDLER(MpiBarrierFfi, MpiBarrierImpl,
                        xla::ffi::Ffi::Bind().Arg<MpiCommBuffer>());
-XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(), "enzymexla_ffi_mpi_barrier",
-                         "Host", MpiBarrierFfi);
 
 ffi::Error MpiSendImpl(ffi::AnyBuffer buf, MpiDatatypeBuffer datatype_ptr,
                        IntBuffer dest_ptr, IntBuffer tag_ptr,
@@ -195,8 +186,6 @@ XLA_FFI_DEFINE_HANDLER(MpiSendFfi, MpiSendImpl,
                            .Arg<IntBuffer>()         // tag
                            .Arg<MpiCommBuffer>()     // comm
 );
-XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(), "enzymexla_ffi_mpi_send",
-                         "Host", MpiSendFfi);
 
 ffi::Error MpiIsendImpl(ffi::AnyBuffer buf, MpiDatatypeBuffer datatype_ptr,
                         IntBuffer dest_ptr, IntBuffer tag_ptr,
@@ -228,8 +217,6 @@ XLA_FFI_DEFINE_HANDLER(MpiIsendFfi, MpiIsendImpl,
                            .Arg<MpiCommBuffer>()     // comm
                            .Ret<MpiRequestBuffer>()  // request
 );
-XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(), "enzymexla_ffi_mpi_isend",
-                         "Host", MpiIsendFfi);
 
 ffi::Error MpiRecvImpl(MpiDatatypeBuffer datatype_ptr, IntBuffer source_ptr,
                        IntBuffer tag_ptr, MpiCommBuffer comm_ptr,
@@ -263,8 +250,6 @@ XLA_FFI_DEFINE_HANDLER(MpiRecvFfi, MpiRecvImpl,
                            .Ret<ffi::AnyBuffer>()    // buf
                            .Ret<MpiStatusBuffer>()   // status
 );
-XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(), "enzymexla_ffi_mpi_recv",
-                         "Host", MpiRecvFfi);
 
 ffi::Error MpiIrecvImpl(MpiDatatypeBuffer datatype_ptr, IntBuffer source_ptr,
                         IntBuffer tag_ptr, MpiCommBuffer comm_ptr,
@@ -296,8 +281,6 @@ XLA_FFI_DEFINE_HANDLER(MpiIrecvFfi, MpiIrecvImpl,
                            .Ret<ffi::AnyBuffer>()    // buf
                            .Ret<MpiRequestBuffer>()  // request
 );
-XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(), "enzymexla_ffi_mpi_irecv",
-                         "Host", MpiIrecvFfi);
 
 ffi::Error MpiWaitImpl(MpiRequestBuffer request_ptr,
                        Result<MpiStatusBuffer> status_ptr) {
@@ -320,8 +303,6 @@ XLA_FFI_DEFINE_HANDLER(MpiWaitFfi, MpiWaitImpl,
                            .Arg<MpiRequestBuffer>() // request
                            .Ret<MpiStatusBuffer>()  // status
 );
-XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(), "enzymexla_ffi_mpi_wait",
-                         "Host", MpiWaitFfi);
 
 ffi::Error MpiWaitallImpl(ffi::RemainingArgs requests,
                           ffi::RemainingRets statuses) {
@@ -376,9 +357,6 @@ XLA_FFI_DEFINE_HANDLER(MpiWaitallFfi, MpiWaitallImpl,
                            .RemainingArgs() // requests
                            .RemainingRets() // statuses
 );
-XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(), "enzymexla_ffi_mpi_waitall",
-                         "Host", MpiWaitallFfi);
-
 ffi::Error MpiAllreduceImpl(ffi::AnyBuffer sendbuf,
                             MpiDatatypeBuffer datatype_ptr, MpiOpBuffer op_ptr,
                             MpiCommBuffer comm_ptr,
@@ -410,9 +388,6 @@ XLA_FFI_DEFINE_HANDLER(MpiAllreduceFfi, MpiAllreduceImpl,
                            .Arg<MpiCommBuffer>()     // comm
                            .Ret<ffi::AnyBuffer>()    // recvbuf
 );
-XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(),
-                         "enzymexla_ffi_mpi_allreduce", "Host",
-                         MpiAllreduceFfi);
 
 ffi::Error MpiBcastImpl(ffi::AnyBuffer buf, MpiDatatypeBuffer datatype_ptr,
                         IntBuffer root_ptr, MpiCommBuffer comm_ptr) {
@@ -436,7 +411,34 @@ XLA_FFI_DEFINE_HANDLER(MpiBcastFfi, MpiBcastImpl,
                            .Arg<IntBuffer>()         // root
                            .Arg<MpiCommBuffer>()     // comm
 );
-XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(), "enzymexla_ffi_mpi_bcast",
+
+void registerEnzymeJaXXLAHostMPIFFI() {
+  XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(),
+                         "enzymexla_ffi_mpi_comm_rank", "Host", MpiCommRankFfi);
+  XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(),
+                         "enzymexla_ffi_mpi_comm_size", "Host", MpiCommSizeFfi);
+  XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(),
+                         "enzymexla_ffi_mpi_comm_split", "Host",
+                         MpiCommSplitFfi);
+  XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(), "enzymexla_ffi_mpi_barrier",
+                         "Host", MpiBarrierFfi);
+  XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(), "enzymexla_ffi_mpi_send",
+                         "Host", MpiSendFfi);
+  XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(), "enzymexla_ffi_mpi_isend",
+                         "Host", MpiIsendFfi);
+  XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(), "enzymexla_ffi_mpi_recv",
+                         "Host", MpiRecvFfi);
+  XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(), "enzymexla_ffi_mpi_irecv",
+                         "Host", MpiIrecvFfi);
+  XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(), "enzymexla_ffi_mpi_wait",
+                         "Host", MpiWaitFfi);
+  XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(), "enzymexla_ffi_mpi_waitall",
+                         "Host", MpiWaitallFfi);
+  XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(),
+                         "enzymexla_ffi_mpi_allreduce", "Host",
+                         MpiAllreduceFfi);
+  XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(), "enzymexla_ffi_mpi_bcast",
                          "Host", MpiBcastFfi);
+}
 
 } // namespace enzymexla::ffi_internal

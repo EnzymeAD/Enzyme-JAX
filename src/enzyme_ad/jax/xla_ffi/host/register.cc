@@ -4,7 +4,10 @@
 namespace enzymexla {
 namespace ffi_internal {
 
-void registerEnzymeJaXXLAHostFFI() { registerEnzymeJaXXLAHostThrowErrorFFI(); }
+void registerEnzymeJaXXLAHostFFI() {
+    registerEnzymeJaXXLAHostThrowErrorFFI();
+    registerEnzymeJaXXLAHostMPIFFI();
+}
 
 } // namespace ffi_internal
 } // namespace enzymexla
