@@ -228,23 +228,13 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       pass_pipeline += backend;
       pass_pipeline += "},strip-"
       "gpu-info,enzymexla-gpu-"
-      "module-to-binary";
-      std::string binOpts;
-      if (const char *sm = getenv("REACTANT_LATE_SINK")) {
-        binOpts += "sink=";
-        binOpts += sm;
-      }
+      "module-to-binary{sink=";
+      pass_pipeline += std::to_string(options->lateSink);
       if (!library.empty()) {
-        if (!binOpts.empty())
-          binOpts += " ";
-        binOpts += "l=";
-        binOpts += library;
+        pass_pipeline += " l=";
+        pass_pipeline += library;
       }
-      if (!binOpts.empty()) {
-        pass_pipeline += "{";
-        pass_pipeline += binOpts;
-        pass_pipeline += "}";
-      }
+      pass_pipeline += "}";
   }
 
   // clang-format on

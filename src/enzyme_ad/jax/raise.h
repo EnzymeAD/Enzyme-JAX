@@ -47,6 +47,9 @@ struct MLIRRoundTripOptions {
   // every clang process would otherwise spin up a hardware-concurrency pool,
   // oversubscribing the machine under a parallel build.
   bool parallelCanonicalize;
+  // Mode for the GPU serializer's late sink: 0 disables it, 1 sinks only
+  // within the defining loop, 2 also rematerializes into deeper loops.
+  int lateSink;
 };
 
 extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
