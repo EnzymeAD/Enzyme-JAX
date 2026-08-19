@@ -263,56 +263,95 @@ struct AddLaunchBounds : public OpRewritePattern<gpu::LaunchFuncOp> {
     // gpu::LaunchFuncOp's)
     auto gpuFuncOp = launchOp->getParentOfType<ModuleOp>().lookupSymbol(
         launchOp.getKernel());
+
+    // Launch bounds the kernel was compiled with: clang encodes
+    // __launch_bounds__(maxThreads, minBlocks) as nvvm annotations, which the
+    // importer carries in the device function's passthrough and launch
+    // recognition copies onto the error op.
+    int32_t srcMaxntid = 0, srcMinctasm = 0;
+    if (auto err = launchOp->getParentOfType<enzymexla::GPUErrorOp>()) {
+      if (auto attr =
+              dyn_cast_or_null<ArrayAttr>(err->getAttr("passthrough"))) {
+        for (auto a : attr) {
+          auto ar = dyn_cast<ArrayAttr>(a);
+          if (!ar || ar.size() != 2)
+            continue;
+          auto s0 = dyn_cast<StringAttr>(ar[0]);
+          auto s1 = dyn_cast<StringAttr>(ar[1]);
+          if (!s0 || !s1)
+            continue;
+          if (s0.getValue() == "nvvm.maxntid")
+            s1.getValue().getAsInteger(10, srcMaxntid);
+          if (s0.getValue() == "nvvm.minctasm")
+            s1.getValue().getAsInteger(10, srcMinctasm);
+        }
+      }
+    }
+
     auto blockDims = launchOp.getBlockSizeOperandValues();
     auto bx = getConstantInteger(blockDims.x);
     auto by = getConstantInteger(blockDims.y);
     auto bz = getConstantInteger(blockDims.z);
-    if (!bx || !by || !bz) {
-      // The kernel must stay launchable at every legal block size; without
-      // a bound ptxas may allocate registers for a small block and larger
-      // launches fail with too-many-resources.
-      llvm::StringRef attrName = "nvvm.maxntid";
-      if (gpuFuncOp->hasAttr(attrName))
-        return failure();
-      gpuFuncOp->setAttr(attrName, rewriter.getDenseI32ArrayAttr({1024, 1, 1}));
+
+    // The preserved bounds promise the block shape the kernel was compiled
+    // with. Runtime dimensions are the original launch's own values; a
+    // constant block size only matches when it reproduces the recorded
+    // original, not when the kernel was re-blocked.
+    bool shapeMatches = !bx || !by || !bz;
+    if (!shapeMatches)
+      if (auto err = launchOp->getParentOfType<enzymexla::GPUErrorOp>())
+        if (auto orig =
+                err->getAttrOfType<IntegerAttr>("reactant.launch_block_size"))
+          shapeMatches = orig.getInt() == (*bx) * (*by) * (*bz);
+
+    bool changed = false;
+    if (srcMinctasm > 0 && shapeMatches &&
+        !gpuFuncOp->hasAttr("nvvm.minctasm")) {
       gpuFuncOp->setAttr(
-          "rocdl.max_flat_work_group_size",
-          rewriter.getIntegerAttr(rewriter.getIndexType(), 1024));
-      return success();
+          "nvvm.minctasm",
+          rewriter.getIntegerAttr(rewriter.getI32Type(), srcMinctasm));
+      changed = true;
     }
-    // TODO should we only set idx or separately set idx, idy, idz? clang seems
-    // to only set idx to the total num
-    // TODO grab the attr name from the NVVM dialect after bumping llvm
-    bool succeeded = false;
-    int blockSize = *bx * *by * *bz;
-    // A kernel with a known block size already gets its bound from that
-    // attribute during lowering; adding it here would duplicate it.
+    if (!bx || !by || !bz) {
+      // The kernel must stay launchable at every block size its callers may
+      // use: the bound it was compiled with when there is one, the
+      // architecture maximum otherwise; without any bound ptxas may allocate
+      // registers for a small block and larger launches fail with
+      // too-many-resources. maxntid is enforced as a total across dimensions
+      // (the driver checks the derived maxThreadsPerBlock, and ptxas budgets
+      // by the product), so {N, 1, 1} admits any legal block shape of up to
+      // N threads, including multidimensional ones.
+      if (!gpuFuncOp->hasAttr("nvvm.maxntid")) {
+        int32_t cap = srcMaxntid > 0 ? srcMaxntid : 1024;
+        gpuFuncOp->setAttr("nvvm.maxntid",
+                           rewriter.getDenseI32ArrayAttr({cap, 1, 1}));
+        gpuFuncOp->setAttr(
+            "rocdl.max_flat_work_group_size",
+            rewriter.getIntegerAttr(rewriter.getIndexType(), cap));
+        changed = true;
+      }
+      return success(changed);
+    }
+    // A statically known block size is the exact bound: it wins over any
+    // looser bound the source declared. A kernel with known_block_size gets
+    // it from that attribute during lowering; adding it here would duplicate
+    // it.
     if (gpuFuncOp->hasAttr("known_block_size"))
-      return failure();
-    llvm::StringRef attrName = "nvvm.maxntid";
+      return success(changed);
+    // TODO grab the attr name from the NVVM dialect after bumping llvm
     auto ntid = rewriter.getDenseI32ArrayAttr(
         {(int32_t)*bx, (int32_t)*by, (int32_t)*bz});
-    if (!gpuFuncOp->hasAttr(attrName)) {
-      gpuFuncOp->setAttr(attrName, ntid);
-      succeeded = true;
-    } else {
-      assert(ntid == gpuFuncOp->getAttr(attrName));
-      succeeded = false;
+    if (gpuFuncOp->getAttr("nvvm.maxntid") != ntid) {
+      gpuFuncOp->setAttr("nvvm.maxntid", ntid);
+      changed = true;
     }
-    attrName = "rocdl.max_flat_work_group_size";
-    if (!gpuFuncOp->hasAttr(attrName)) {
-      gpuFuncOp->setAttr(attrName, rewriter.getIntegerAttr(
-                                       rewriter.getIndexType(), blockSize));
-      assert(succeeded);
-      (void)succeeded;
-      return success();
-    } else {
-      assert(blockSize ==
-             dyn_cast<IntegerAttr>(gpuFuncOp->getAttr(attrName)).getInt());
-      assert(!succeeded);
-      (void)succeeded;
-      return failure();
+    int blockSize = *bx * *by * *bz;
+    auto flat = rewriter.getIntegerAttr(rewriter.getIndexType(), blockSize);
+    if (gpuFuncOp->getAttr("rocdl.max_flat_work_group_size") != flat) {
+      gpuFuncOp->setAttr("rocdl.max_flat_work_group_size", flat);
+      changed = true;
     }
+    return success(changed);
   }
 };
 
@@ -1901,6 +1940,22 @@ struct ParallelToGPULaunch : public OpRewritePattern<enzymexla::GPUWrapperOp> {
       if (auto attr = wrapper->getAttr(atname)) {
         errOp->setAttr(atname, attr);
       }
+    // The launch bounds riding the passthrough promise a specific block
+    // shape: record the original block size so their consumer can tell a
+    // reproduced shape from a re-blocked one.
+    {
+      int64_t orig = 1;
+      bool known = true;
+      for (unsigned i = 3; i < 6 && known; i++) {
+        if (auto c = getConstantInteger(wrapper.getOperand(i)))
+          orig *= *c;
+        else
+          known = false;
+      }
+      if (known)
+        errOp->setAttr("reactant.launch_block_size",
+                       rewriter.getI64IntegerAttr(orig));
+    }
     rewriter.setInsertionPointToStart(errOp.getBody());
     rewriter.eraseOp(wrapper.getBody()->getTerminator());
     rewriter.inlineBlockBefore(wrapper.getBody(),
