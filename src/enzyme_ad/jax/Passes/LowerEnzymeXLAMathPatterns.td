@@ -34,14 +34,14 @@ def GeluApproximationTANH : ConstantAttr<EnzymeXLA_GeluApproximationAttr, "::mli
 def GeluApproximationSIGMOID : ConstantAttr<EnzymeXLA_GeluApproximationAttr, "::mlir::enzymexla::GeluApproximation::SIGMOID">;
 
 def AllOperandsAreTensors : Constraint<
-    CPred<"llvm::all_of($0.getOperandTypes(), [](Type ty) { "
+    CPred<"llvm::all_of($0.getDefiningOp()->getOperandTypes(), [](Type ty) { "
           "return llvm::isa<mlir::TensorType>(ty); })">,
     "all operands are of type Tensor">;
 
 def AllResultsAreTensors : Constraint<
-    CPred<"llvm::all_of($0.getResultTypes(), [](Type ty) { "
+    CPred<"llvm::all_of($0.getDefiningOp()->getResultTypes(), [](Type ty) { "
           "return llvm::isa<mlir::TensorType>(ty); })">,
-    "all operands are of type Tensor">;
+    "all results are of type Tensor">;
 
 def : Pat<(ReluOp:$op $input),
           (StableHLO_MaxOp $input, (CreateConstOp0 $input)),
@@ -130,7 +130,7 @@ def : Pat<(SoftplusOp:$op $x),
   [(AllOperandsAreTensors $op), (AllResultsAreTensors $op)]
 >;
 
-def : Pat<(LGammaOp $x), (CHLO_LgammaOp $x),
+def : Pat<(LGammaOp:$op $x), (CHLO_LgammaOp $x),
           [(AllOperandsAreTensors $op), (AllResultsAreTensors $op)]>;
 
 def : Pat<(TGammaOp:$op $x),

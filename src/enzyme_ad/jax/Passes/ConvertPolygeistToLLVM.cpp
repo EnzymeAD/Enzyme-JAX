@@ -372,11 +372,11 @@ struct Pointer2MemrefOpLowering
   }
 };
 
-void populateEnzymeXLAMathToLLVMConversionPatterns(
+void mlir::enzyme::populateEnzymeXLAMathToLLVMConversionPatterns(
     RewritePatternSet &patterns) {
 
   // clang-format off
-  patterns.add<FMulAddOpLowering>();
+  patterns.add<FMulAddOpLowering>(patterns.getContext());
   // clang-format on
 }
 
@@ -390,7 +390,7 @@ void populatePolygeistToLLVMConversionPatterns(LLVMTypeConverter &converter,
   patterns.add<Stream2TokenOpLowering>(converter);
   patterns.add<Memref2PointerOpLowering>(converter);
   patterns.add<Pointer2MemrefOpLowering>(converter);
-  populateEnzymeXLAMathToLLVMConversionPatterns(patterns);
+  enzyme::populateEnzymeXLAMathToLLVMConversionPatterns(patterns);
   // clang-format on
 }
 
