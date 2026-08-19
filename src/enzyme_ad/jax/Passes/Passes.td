@@ -455,6 +455,11 @@ def SROAWrappersPass : Pass<"sroa-wrappers", "mlir::ModuleOp"> {
 
 def CanonicalizeParallelPass : Pass<"canonicalize-parallel"> {
   let summary = "Canonicalize top-level ops in parallel, confining region simplification to each";
+  let options = [Option<
+      "parallel", "parallel", "bool", "false",
+      "Rewrite top-level ops on the context's thread pool; without it "
+      "they are processed serially, still confining region "
+      "simplification to each op">];
 }
 
 def LibDeviceFuncsRaisingPass : Pass<"libdevice-funcs-raise"> {
