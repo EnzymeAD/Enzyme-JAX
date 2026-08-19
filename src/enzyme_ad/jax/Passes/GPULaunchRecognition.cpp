@@ -478,6 +478,8 @@ enum __device_builtin__ cudaMemcpyKind
         }
       }
       auto cur = launch.first;
+      if (cur.isExternal())
+        continue;
       gpu::GPUFuncOp gpufunc = nullptr;
       bool local_use_launch_func = use_launch_func || captured;
       if (local_use_launch_func) {
