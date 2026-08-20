@@ -7,76 +7,41 @@
 #include "mpi_ffi.h"
 #include "mpi.h"
 
-#ifndef MPI_VERSION
-#error "Require MPI_VERSION to be defined to check version"
-#else
-#if MPI_VERSION < 5
-#error "Require MPI_VERSION > 5 for ABI-stability"
-#endif
-
-// MPItrampoline defines it as 0xdeadbeef
-#undef MPI_SUCCESS
-#define MPI_SUCCESS 0
-
 #include "../export_macro.h"
 
-// MPI function pointers are initialized to the MPItrampoline implementations by
-// default, but can be overridden by the user
-decltype(MPI_Comm_rank) *EXLA_MPI_Comm_rank = &MPI_Comm_rank;
-decltype(MPI_Comm_size) *EXLA_MPI_Comm_size = &MPI_Comm_size;
-decltype(MPI_Comm_split) *EXLA_MPI_Comm_split = &MPI_Comm_split;
-decltype(MPI_Barrier) *EXLA_MPI_Barrier = &MPI_Barrier;
-decltype(MPI_Send) *EXLA_MPI_Send = &MPI_Send;
-decltype(MPI_Isend) *EXLA_MPI_Isend = &MPI_Isend;
-decltype(MPI_Recv) *EXLA_MPI_Recv = &MPI_Recv;
-decltype(MPI_Irecv) *EXLA_MPI_Irecv = &MPI_Irecv;
-decltype(MPI_Wait) *EXLA_MPI_Wait = &MPI_Wait;
-decltype(MPI_Waitall) *EXLA_MPI_Waitall = &MPI_Waitall;
-decltype(MPI_Allreduce) *EXLA_MPI_Allreduce = &MPI_Allreduce;
-decltype(MPI_Bcast) *EXLA_MPI_Bcast = &MPI_Bcast;
+int mpi_unimplemented_stub(...) { abort(); return -1; }
 
-size_t EXLA_MPI_STATUS_SIZE = MPI_STATUS_SIZE;
+// generates a function pointer for `FNAME` that points to `mpi_unimplemented_stub` by default and a exported C function
+// for setting the value dynamically
+// TODO replace with call to libdl like libblastrampoline does
+#define EXLA_FFI_MPI_FUNCTION_BINDING(FNAME, CNAME) \
+  decltype(FNAME) *EXLA_##FNAME = reinterpret_cast<decltype(FNAME) *>(&mpi_unimplemented_stub); \
+  extern "C" MLIR_CAPI_EXPORTED void CNAME(void *ptr) { EXLA_##FNAME = reinterpret_cast<decltype(FNAME) *>(ptr); }
 
-extern "C" MLIR_CAPI_EXPORTED void enzymexla_set_mpi_comm_rank(void *ptr) {
-  EXLA_MPI_Comm_rank = reinterpret_cast<decltype(MPI_Comm_rank) *>(ptr);
-}
-extern "C" MLIR_CAPI_EXPORTED void enzymexla_set_mpi_comm_size(void *ptr) {
-  EXLA_MPI_Comm_size = reinterpret_cast<decltype(MPI_Comm_size) *>(ptr);
-}
-extern "C" MLIR_CAPI_EXPORTED void enzymexla_set_mpi_comm_split(void *ptr) {
-  EXLA_MPI_Comm_split = reinterpret_cast<decltype(MPI_Comm_split) *>(ptr);
-}
-extern "C" MLIR_CAPI_EXPORTED void enzymexla_set_mpi_barrier(void *ptr) {
-  EXLA_MPI_Barrier = reinterpret_cast<decltype(MPI_Barrier) *>(ptr);
-}
-extern "C" MLIR_CAPI_EXPORTED void enzymexla_set_mpi_send(void *ptr) {
-  EXLA_MPI_Send = reinterpret_cast<decltype(MPI_Send) *>(ptr);
-}
-extern "C" MLIR_CAPI_EXPORTED void enzymexla_set_mpi_isend(void *ptr) {
-  EXLA_MPI_Isend = reinterpret_cast<decltype(MPI_Isend) *>(ptr);
-}
-extern "C" MLIR_CAPI_EXPORTED void enzymexla_set_mpi_recv(void *ptr) {
-  EXLA_MPI_Recv = reinterpret_cast<decltype(MPI_Recv) *>(ptr);
-}
-extern "C" MLIR_CAPI_EXPORTED void enzymexla_set_mpi_irecv(void *ptr) {
-  EXLA_MPI_Irecv = reinterpret_cast<decltype(MPI_Irecv) *>(ptr);
-}
-extern "C" MLIR_CAPI_EXPORTED void enzymexla_set_mpi_wait(void *ptr) {
-  EXLA_MPI_Wait = reinterpret_cast<decltype(MPI_Wait) *>(ptr);
-}
-extern "C" MLIR_CAPI_EXPORTED void enzymexla_set_mpi_waitall(void *ptr) {
-  EXLA_MPI_Waitall = reinterpret_cast<decltype(MPI_Waitall) *>(ptr);
-}
-extern "C" MLIR_CAPI_EXPORTED void enzymexla_set_mpi_allreduce(void *ptr) {
-  EXLA_MPI_Allreduce = reinterpret_cast<decltype(MPI_Allreduce) *>(ptr);
-}
-extern "C" MLIR_CAPI_EXPORTED void enzymexla_set_mpi_bcast(void *ptr) {
-  EXLA_MPI_Bcast = reinterpret_cast<decltype(MPI_Bcast) *>(ptr);
-}
+// generates a global variable for `FNAME` that defaults to the value by MPItrampoline by default and a exported C
+// function for setting the value dynamically
+// NOTE this should not be required once MPI v5 ABI is used as minimum version
+#define EXLA_FFI_MPI_CONSTANT_BINDING(FNAME, CNAME) \
+  int EXLA_##FNAME = FNAME; \
+  extern "C" MLIR_CAPI_EXPORTED void CNAME(int val) { EXLA_##FNAME = val; }
 
-extern "C" MLIR_CAPI_EXPORTED void enzymexla_set_mpi_status_size(size_t size) {
-  EXLA_MPI_STATUS_SIZE = size;
-}
+EXLA_FFI_MPI_FUNCTION_BINDING(MPI_Comm_rank, enzymexla_ffi_set_mpi_comm_rank)
+EXLA_FFI_MPI_FUNCTION_BINDING(MPI_Comm_size, enzymexla_ffi_set_mpi_comm_size)
+EXLA_FFI_MPI_FUNCTION_BINDING(MPI_Comm_split, enzymexla_ffi_set_mpi_comm_split)
+EXLA_FFI_MPI_FUNCTION_BINDING(MPI_Barrier, enzymexla_ffi_set_mpi_barrier)
+EXLA_FFI_MPI_FUNCTION_BINDING(MPI_Send, enzymexla_ffi_set_mpi_send)
+EXLA_FFI_MPI_FUNCTION_BINDING(MPI_Isend, enzymexla_ffi_set_mpi_isend)
+EXLA_FFI_MPI_FUNCTION_BINDING(MPI_Recv, enzymexla_ffi_set_mpi_recv)
+EXLA_FFI_MPI_FUNCTION_BINDING(MPI_Irecv, enzymexla_ffi_set_mpi_irecv)
+EXLA_FFI_MPI_FUNCTION_BINDING(MPI_Wait, enzymexla_ffi_set_mpi_wait)
+EXLA_FFI_MPI_FUNCTION_BINDING(MPI_Waitall, enzymexla_ffi_set_mpi_waitall)
+EXLA_FFI_MPI_FUNCTION_BINDING(MPI_Allreduce, enzymexla_ffi_set_mpi_allreduce)
+EXLA_FFI_MPI_FUNCTION_BINDING(MPI_Bcast, enzymexla_ffi_set_mpi_bcast)
+EXLA_FFI_MPI_FUNCTION_BINDING(MPI_Error_string, enzymexla_ffi_set_mpi_error_string)
+
+EXLA_FFI_MPI_CONSTANT_BINDING(MPI_STATUS_SIZE, enzymexla_ffi_set_mpi_status_size)
+EXLA_FFI_MPI_CONSTANT_BINDING(MPI_SUCCESS, enzymexla_ffi_set_mpi_success)
+EXLA_FFI_MPI_CONSTANT_BINDING(MPI_MAX_ERROR_STRING, enzymexla_ffi_set_mpi_max_error_string)
 
 namespace enzymexla::ffi_internal {
 namespace ffi = xla::ffi;
@@ -85,34 +50,42 @@ using ffi::Buffer, ffi::AnyBuffer;
 using ffi::Result, ffi::RemainingArgs, ffi::RemainingRets;
 
 using IntBuffer = Buffer<ffi::S32, 0>;
+using PtrBuffer = Buffer<ffi::U64, 0>; // pointers, so use U64
 
-// pointers, so use U64
-using MpiCommBuffer = Buffer<ffi::U64, 0>;
-using MpiDatatypeBuffer = Buffer<ffi::U64, 0>;
-using MpiOpBuffer = Buffer<ffi::U64, 0>;
-using MpiRequestBuffer = Buffer<ffi::U64, 0>;
+using MpiCommBuffer = PtrBuffer;
+using MpiDatatypeBuffer = PtrBuffer;
+using MpiOpBuffer = PtrBuffer;
+using MpiRequestBuffer = PtrBuffer;
 
 // MPI_Status is a non-ABI-stable struct, so use U8 x N buffer to hold it
 // its size is platform-dependent and given by MPI_STATUS_SIZE
+// NOTE its size stabilizes in MPI v5 ABI, but meanwhile we need to support variable size
 using MpiStatusBuffer = Buffer<ffi::U8, 1>;
 
 ffi::Error checkMpiStatusSize(const MpiStatusBuffer &buf) {
   if (buf.element_count() != EXLA_MPI_STATUS_SIZE) {
     return ffi::Error::InvalidArgument(
-        absl::StrFormat("MPI_Recv: status buffer must have %d elements, got %d",
+        absl::StrFormat("MPI_Status buffer must have %d elements, got %d",
                         EXLA_MPI_STATUS_SIZE, buf.element_count()));
   }
   return ffi::Error::Success();
 }
 
+ffi::Error checkMpiError(const char* fname, const int err) {
+  if (err == EXLA_MPI_SUCCESS) return ffi::Error::Success();
+  std::vector<char> cstr(EXLA_MPI_MAX_ERROR_STRING);
+  int len;
+  EXLA_MPI_Error_string(err, cstr.data(), &len);
+  std::string str(cstr.data(), len);
+  return ffi::Error::InvalidArgument(
+    absl::StrFormat("%s failed with error code %d: %s", fname, err, str)
+  );
+}
+
 ffi::Error MpiCommRankImpl(MpiCommBuffer comm_ptr, Result<IntBuffer> rank_ptr) {
   MPI_Comm comm = *reinterpret_cast<MPI_Comm *>(comm_ptr.typed_data());
   int err = EXLA_MPI_Comm_rank(comm, rank_ptr->typed_data());
-  if (err != MPI_SUCCESS) {
-    return ffi::Error::InvalidArgument(
-        absl::StrFormat("MPI_Comm_rank failed with error code %d", err));
-  }
-  return ffi::Error::Success();
+  return checkMpiError("MPI_Comm_rank", err);
 }
 
 XLA_FFI_DEFINE_HANDLER(MpiCommRankFfi, MpiCommRankImpl,
@@ -124,11 +97,7 @@ XLA_FFI_DEFINE_HANDLER(MpiCommRankFfi, MpiCommRankImpl,
 ffi::Error MpiCommSizeImpl(MpiCommBuffer comm_ptr, Result<IntBuffer> size_ptr) {
   MPI_Comm comm = *reinterpret_cast<MPI_Comm *>(comm_ptr.typed_data());
   int err = EXLA_MPI_Comm_size(comm, size_ptr->typed_data());
-  if (err != MPI_SUCCESS) {
-    return ffi::Error::InvalidArgument(
-        absl::StrFormat("MPI_Comm_size failed with error code %d", err));
-  }
-  return ffi::Error::Success();
+  return checkMpiError("MPI_Comm_size", err);
 }
 
 XLA_FFI_DEFINE_HANDLER(MpiCommSizeFfi, MpiCommSizeImpl,
@@ -145,11 +114,7 @@ ffi::Error MpiCommSplitImpl(MpiCommBuffer comm_ptr, IntBuffer color_ptr,
   int key = *key_ptr.typed_data();
   MPI_Comm *newcomm = reinterpret_cast<MPI_Comm *>(newcomm_ptr->typed_data());
   int err = EXLA_MPI_Comm_split(comm, color, key, newcomm);
-  if (err != MPI_SUCCESS) {
-    return ffi::Error::InvalidArgument(
-        absl::StrFormat("MPI_Comm_split failed with error code %d", err));
-  }
-  return ffi::Error::Success();
+  return checkMpiError("MPI_Comm_split", err);
 }
 
 XLA_FFI_DEFINE_HANDLER(MpiCommSplitFfi, MpiCommSplitImpl,
@@ -163,11 +128,7 @@ XLA_FFI_DEFINE_HANDLER(MpiCommSplitFfi, MpiCommSplitImpl,
 ffi::Error MpiBarrierImpl(MpiCommBuffer comm_ptr) {
   MPI_Comm comm = *reinterpret_cast<MPI_Comm *>(comm_ptr.typed_data());
   int err = EXLA_MPI_Barrier(comm);
-  if (err != MPI_SUCCESS) {
-    return ffi::Error::InvalidArgument(
-        absl::StrFormat("MPI_Barrier failed with error code %d", err));
-  }
-  return ffi::Error::Success();
+  return checkMpiError("MPI_Barrier", err);
 }
 
 XLA_FFI_DEFINE_HANDLER(MpiBarrierFfi, MpiBarrierImpl,
@@ -183,11 +144,7 @@ ffi::Error MpiSendImpl(ffi::AnyBuffer buf, MpiDatatypeBuffer datatype_ptr,
   MPI_Datatype datatype =
       *reinterpret_cast<MPI_Datatype *>(datatype_ptr.typed_data());
   int err = EXLA_MPI_Send(buf.untyped_data(), count, datatype, dest, tag, comm);
-  if (err != MPI_SUCCESS) {
-    return ffi::Error::InvalidArgument(
-        absl::StrFormat("MPI_Send failed with error code %d", err));
-  }
-  return ffi::Error::Success();
+  return checkMpiError("MPI_Send", err);
 }
 
 XLA_FFI_DEFINE_HANDLER(MpiSendFfi, MpiSendImpl,
@@ -213,11 +170,7 @@ ffi::Error MpiIsendImpl(ffi::AnyBuffer buf, MpiDatatypeBuffer datatype_ptr,
       reinterpret_cast<MPI_Request *>(request_ptr->typed_data());
   int err = EXLA_MPI_Isend(buf.untyped_data(), count, datatype, dest, tag, comm,
                            request);
-  if (err != MPI_SUCCESS) {
-    return ffi::Error::InvalidArgument(
-        absl::StrFormat("MPI_Isend failed with error code %d", err));
-  }
-  return ffi::Error::Success();
+  return checkMpiError("MPI_Isend", err);
 }
 
 XLA_FFI_DEFINE_HANDLER(MpiIsendFfi, MpiIsendImpl,
@@ -246,11 +199,7 @@ ffi::Error MpiRecvImpl(MpiDatatypeBuffer datatype_ptr, IntBuffer source_ptr,
   MPI_Status *status = reinterpret_cast<MPI_Status *>(status_ptr->typed_data());
   int err = EXLA_MPI_Recv(buf->untyped_data(), count, datatype, source, tag,
                           comm, status);
-  if (err != MPI_SUCCESS) {
-    return ffi::Error::InvalidArgument(
-        absl::StrFormat("MPI_Recv failed with error code %d", err));
-  }
-  return ffi::Error::Success();
+  return checkMpiError("MPI_Recv", err);
 }
 
 XLA_FFI_DEFINE_HANDLER(MpiRecvFfi, MpiRecvImpl,
@@ -277,11 +226,7 @@ ffi::Error MpiIrecvImpl(MpiDatatypeBuffer datatype_ptr, IntBuffer source_ptr,
       reinterpret_cast<MPI_Request *>(request_ptr->typed_data());
   int err = EXLA_MPI_Irecv(buf->untyped_data(), count, datatype, source, tag,
                            comm, request);
-  if (err != MPI_SUCCESS) {
-    return ffi::Error::InvalidArgument(
-        absl::StrFormat("MPI_Irecv failed with error code %d", err));
-  }
-  return ffi::Error::Success();
+  return checkMpiError("MPI_Irecv", err);
 }
 
 XLA_FFI_DEFINE_HANDLER(MpiIrecvFfi, MpiIrecvImpl,
@@ -303,11 +248,7 @@ ffi::Error MpiWaitImpl(MpiRequestBuffer request_ptr,
       reinterpret_cast<MPI_Request *>(request_ptr.typed_data());
   MPI_Status *status = reinterpret_cast<MPI_Status *>(status_ptr->typed_data());
   int err = EXLA_MPI_Wait(request, status);
-  if (err != MPI_SUCCESS) {
-    return ffi::Error::InvalidArgument(
-        absl::StrFormat("MPI_Wait failed with error code %d", err));
-  }
-  return ffi::Error::Success();
+  return checkMpiError("MPI_Wait", err);
 }
 
 XLA_FFI_DEFINE_HANDLER(MpiWaitFfi, MpiWaitImpl,
@@ -341,10 +282,7 @@ ffi::Error MpiWaitallImpl(ffi::RemainingArgs requests,
   std::vector<MPI_Status> status_vector(count);
   int err =
       EXLA_MPI_Waitall(count, request_vector.data(), status_vector.data());
-  if (err != MPI_SUCCESS) {
-    return ffi::Error::InvalidArgument(
-        absl::StrFormat("MPI_Waitall failed with error code %d", err));
-  }
+  return checkMpiError("MPI_Waitall", err);
 
   // copy statuses back to the output buffers
   for (int i = 0; i < count; ++i) {
@@ -385,11 +323,7 @@ ffi::Error MpiAllreduceImpl(ffi::AnyBuffer sendbuf,
   int count = sendbuf.element_count();
   int err = EXLA_MPI_Allreduce(sendbuf.untyped_data(), recvbuf->untyped_data(),
                                count, datatype, op, comm);
-  if (err != MPI_SUCCESS) {
-    return ffi::Error::InvalidArgument(
-        absl::StrFormat("MPI_Allreduce failed with error code %d", err));
-  }
-  return ffi::Error::Success();
+  return checkMpiError("MPI_Allreduce", err);
 }
 
 XLA_FFI_DEFINE_HANDLER(MpiAllreduceFfi, MpiAllreduceImpl,
@@ -409,11 +343,7 @@ ffi::Error MpiBcastImpl(ffi::AnyBuffer buf, MpiDatatypeBuffer datatype_ptr,
   int root = *root_ptr.typed_data();
   int count = buf.element_count();
   int err = EXLA_MPI_Bcast(buf.untyped_data(), count, datatype, root, comm);
-  if (err != MPI_SUCCESS) {
-    return ffi::Error::InvalidArgument(
-        absl::StrFormat("MPI_Bcast failed with error code %d", err));
-  }
-  return ffi::Error::Success();
+  return checkMpiError("MPI_Bcast", err);
 }
 
 XLA_FFI_DEFINE_HANDLER(MpiBcastFfi, MpiBcastImpl,
