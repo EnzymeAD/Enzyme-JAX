@@ -428,14 +428,13 @@ public:
     Value c0 = arith::ConstantIndexOp::create(rewriter, op.getLoc(), 0);
     Value c1 = arith::ConstantIndexOp::create(rewriter, op.getLoc(), 1);
     SmallVector<Value> idxs;
+    Value lenIdx = arith::IndexCastOp::create(
+        rewriter, op.getLoc(), rewriter.getIndexType(), op.getLen());
+    Value widthCst =
+        arith::ConstantIndexOp::create(rewriter, op.getLoc(), width);
     auto forOp = scf::ForOp::create(
         rewriter, op.getLoc(), c0,
-        arith::DivUIOp::create(
-            rewriter, op.getLoc(),
-            arith::IndexCastOp::create(rewriter, op.getLoc(),
-                                       rewriter.getIndexType(), op.getLen()),
-            arith::ConstantIndexOp::create(rewriter, op.getLoc(), width)),
-        c1);
+        arith::DivUIOp::create(rewriter, op.getLoc(), lenIdx, widthCst), c1);
 
     rewriter.setInsertionPointToStart(&forOp.getRegion().getBlocks().front());
     idxs.push_back(forOp.getInductionVar());
@@ -532,14 +531,13 @@ public:
     Value val = cast<mlir::enzyme::AutoDiffTypeInterface>(elTy).createNullValue(
         rewriter, op.getLoc());
 
+    Value lenIdx = arith::IndexCastOp::create(
+        rewriter, op.getLoc(), rewriter.getIndexType(), op.getLen());
+    Value widthCst =
+        arith::ConstantIndexOp::create(rewriter, op.getLoc(), width);
     auto forOp = scf::ForOp::create(
         rewriter, op.getLoc(), c0,
-        arith::DivUIOp::create(
-            rewriter, op.getLoc(),
-            arith::IndexCastOp::create(rewriter, op.getLoc(),
-                                       rewriter.getIndexType(), op.getLen()),
-            arith::ConstantIndexOp::create(rewriter, op.getLoc(), width)),
-        c1);
+        arith::DivUIOp::create(rewriter, op.getLoc(), lenIdx, widthCst), c1);
 
     rewriter.setInsertionPointToStart(&forOp.getRegion().getBlocks().front());
     idxs.push_back(forOp.getInductionVar());
@@ -1535,6 +1533,87 @@ using namespace mlir::enzyme;
 llvm::cl::opt<bool> BarrierOpt("barrier-opt", llvm::cl::init(true),
                                llvm::cl::desc("Optimize barriers"));
 
+// Whether every thread runs `ifOp`'s body, i.e. the condition selects no subset
+// of them. `threadIVs` are the indices the barrier synchronises over, which
+// name the parallel whose iterations are the threads.
+static bool selectsAllThreads(Operation *ifOp, ValueRange threadIVs) {
+  // Synchronising over no index at all: there is no dimension for the
+  // condition to vary along, so no subset for it to select.
+  if (threadIVs.empty())
+    return true;
+  Operation *par =
+      cast<BlockArgument>(threadIVs.front()).getOwner()->getParentOp();
+
+  SmallVector<Value> worklist;
+  if (auto scfIf = dyn_cast<scf::IfOp>(ifOp))
+    worklist.push_back(scfIf.getCondition());
+  else if (auto affIf = dyn_cast<affine::AffineIfOp>(ifOp))
+    worklist.append(affIf.getOperands().begin(), affIf.getOperands().end());
+  else
+    return false;
+
+  DenseSet<Value> seen;
+  while (!worklist.empty()) {
+    Value v = worklist.pop_back_val();
+    if (!seen.insert(v).second)
+      continue;
+    if (llvm::is_contained(threadIVs, v))
+      return false;
+
+    Operation *owner = isa<BlockArgument>(v)
+                           ? cast<BlockArgument>(v).getOwner()->getParentOp()
+                           : v.getDefiningOp();
+    // Anything from outside the thread parallel holds the same value in every
+    // thread, whatever computed it.
+    if (!owner || !par->isAncestor(owner))
+      continue;
+    // Inside it, a block argument is something like a serial loop's index,
+    // whose value can differ per thread however its bounds were written.
+    if (isa<BlockArgument>(v))
+      return false;
+    Operation *def = v.getDefiningOp();
+    if (def->getNumRegions() != 0)
+      return false;
+    worklist.append(def->getOperands().begin(), def->getOperands().end());
+  }
+  return true;
+}
+
+static bool anyBarrierWithin(Operation *op, BarrierOp except) {
+  bool found = false;
+  op->walk([&](BarrierOp other) {
+    if (other != except)
+      found = true;
+  });
+  return found;
+}
+
+static bool containsBarrier(Operation *op) {
+  bool found = false;
+  op->walk([&](BarrierOp) { found = true; });
+  return found;
+}
+
+// Whether a thread can reach a barrier past `op`. Not just the operations
+// beside it: what encloses `op` may end before the thread does, and a region
+// that runs more than once puts its own earlier operations after this one too.
+static bool anyBarrierAfter(Operation *op) {
+  for (Operation *it = op->getNextNode(); it != nullptr; it = it->getNextNode())
+    if (containsBarrier(it))
+      return true;
+
+  Operation *parent = op->getParentOp();
+  if (!parent)
+    return false;
+  // The thread parallel is where one thread's execution ends.
+  if (isa<scf::ParallelOp, affine::AffineParallelOp>(parent))
+    return false;
+  if (!isa<scf::IfOp, affine::AffineIfOp, memref::AllocaScopeOp>(parent) &&
+      containsBarrier(parent))
+    return true;
+  return anyBarrierAfter(parent);
+}
+
 class BarrierHoist final : public OpRewritePattern<BarrierOp> {
 public:
   using OpRewritePattern<BarrierOp>::OpRewritePattern;
@@ -1544,6 +1623,19 @@ public:
     if (!BarrierOpt)
       return failure();
     if (isa<scf::IfOp, affine::AffineIfOp>(barrier->getParentOp())) {
+      // Moving a barrier across a conditional changes who runs it: inside only
+      // the threads taking the branch do, outside every thread does. That is a
+      // rewrite only where the branch is taken uniformly across the block, and
+      // a condition any thread index reaches is not. CUDA's `if (k >= N)
+      // return;` reads a thread index, and lifting one of the body's barriers
+      // out of it leaves the threads that skipped the body waiting at a barrier
+      // their block-mates never arrive at.
+      Operation *ifOp = barrier->getParentOp();
+      // Lifting a barrier out of a branch only some threads take makes every
+      // thread run it. That is a rewrite where the branch selects no subset of
+      // the threads, or -- moving it past the branch -- where nothing beyond
+      // holds a barrier for the threads that skipped to run instead.
+      bool allThreads = selectsAllThreads(ifOp, barrier.getOperands());
 
       bool below = true;
       for (Operation *it = barrier->getNextNode(); it != nullptr;
@@ -1553,7 +1645,11 @@ public:
           break;
         }
       }
-      if (below) {
+      // A barrier left behind in the branch is the other half of the same
+      // split: the threads that skipped it wait out here, the ones that took
+      // it wait in there.
+      if (below && (allThreads || (!anyBarrierAfter(ifOp) &&
+                                   !anyBarrierWithin(ifOp, barrier)))) {
         rewriter.setInsertionPoint(barrier->getParentOp()->getNextNode());
         BarrierOp::create(rewriter, barrier.getLoc(), barrier.getOperands());
         rewriter.eraseOp(barrier);
@@ -1567,7 +1663,7 @@ public:
           break;
         }
       }
-      if (above) {
+      if (above && allThreads) {
         rewriter.setInsertionPoint(barrier->getParentOp());
         BarrierOp::create(rewriter, barrier.getLoc(), barrier.getOperands());
         rewriter.eraseOp(barrier);
@@ -1643,6 +1739,22 @@ void GPUWrapperOp::build(OpBuilder &builder, OperationState &result) {
   Region *bodyRegion = result.addRegion();
   builder.createBlock(bodyRegion);
   GPUWrapperOp::ensureTerminator(*bodyRegion, builder, result.location);
+}
+
+void GPUWrapperOp::getSuccessorRegions(
+    RegionBranchPoint point, SmallVectorImpl<RegionSuccessor> &regions) {
+  // If the predecessor is the GPUWrapperOp, branch into the body.
+  if (point.isParent()) {
+    regions.push_back(RegionSuccessor(&getRegion()));
+    return;
+  }
+
+  // Otherwise, the region branches back to the parent operation.
+  regions.push_back(RegionSuccessor(getOperation()));
+}
+
+ValueRange GPUWrapperOp::getSuccessorInputs(RegionSuccessor successor) {
+  return ValueRange();
 }
 
 LogicalResult fixupGetFunc(LLVM::CallOp op, OpBuilder &rewriter,

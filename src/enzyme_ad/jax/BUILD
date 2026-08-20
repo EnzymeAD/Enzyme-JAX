@@ -1,6 +1,7 @@
 load("@jax//jaxlib:symlink_files.bzl", "symlink_inputs")
 load("@llvm-project//mlir:tblgen.bzl", "gentbl_cc_library", "td_library")
 load("@rules_cc//cc:cc_library.bzl", "cc_library")
+load("@rules_cc//cc:cc_test.bzl", "cc_test")
 load("@rules_python//python:py_library.bzl", "py_library")
 load("@xla//xla/tsl:tsl.bzl", pybind_extension = "tsl_pybind_extension_opensource")
 
@@ -19,6 +20,55 @@ exports_files([
 ]))
 
 licenses(["notice"])
+
+config_setting(
+    name = "disable_triton_config",
+    define_values = {"enable_triton": "false"},
+)
+
+triton_copts = select({
+    ":disable_triton_config": ["-DENZYME_JAX_ENABLE_TRITON=0"],
+    "//conditions:default": ["-DENZYME_JAX_ENABLE_TRITON=1"],
+})
+
+if_triton = select({
+    ":disable_triton_config": [],
+    "//conditions:default": [
+        "@triton//:TritonDialects",
+        "@triton//:TritonGPUToLLVM",
+        "@triton//:TritonGPUTransforms",
+        "@triton//:TritonLLVMIR",
+        "@triton//:TritonNvidiaGPUTransforms",
+        "@triton//:TritonToTritonGPU",
+        "@triton//:TritonToTritonGPUPasses",
+        "@triton//:TritonTransforms",
+        "@triton//:WarpSpecialization",
+        "@triton//:triton_conversion_triton_to_triton_gpu_passes_inc_gen",
+        "@triton//:triton_nvidia_gpu_transforms_inc_gen",
+        "@triton//third_party/amd:TritonAMDGPU",
+        "@triton//third_party/amd:TritonAMDGPUToLLVM",
+        "@triton//third_party/amd:TritonAMDGPUTransforms",
+        "@triton//third_party/nvidia:NVGPUDialect",
+        "@triton//third_party/nvidia:NVGPUToLLVM",
+        "@triton//third_party/nvidia:NVHopperTransforms",
+        "@triton//third_party/nvidia:NVWSDialect",
+        "@triton//third_party/nvidia:NVWSTransforms",
+        "@triton//third_party/nvidia:TritonNVIDIAGPUToLLVM",
+    ],
+})
+
+if_triton_dialects = select({
+    ":disable_triton_config": [],
+    "//conditions:default": ["@triton//:TritonDialects"],
+})
+
+if_triton_passes = select({
+    ":disable_triton_config": [],
+    "//conditions:default": [
+        "@triton//:TritonDialects",
+        "@triton//:TritonToTritonGPUPasses",
+    ],
+})
 
 cc_library(
     name = "gpu",
@@ -62,6 +112,7 @@ cc_library(
     }),
     visibility = ["//visibility:public"],
     deps = [
+        "@com_google_absl//absl/base",
         "@com_google_absl//absl/strings:str_format",
         "@xla//xla/ffi:ffi_api",
         "@xla//xla/ffi/api:c_api",
@@ -1000,6 +1051,31 @@ cc_library(
     alwayslink = True,
 )
 
+cc_library(
+    name = "triton_dialect_capi_objects",
+    srcs = ["Integrations/c/triton_dialect_capi.cpp"],
+    hdrs = ["Integrations/c/triton_dialect_capi.h"],
+    copts = triton_copts,
+    visibility = ["//visibility:public"],
+    deps = [
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:CAPIIRObjects",
+        "@llvm-project//mlir:IR",
+    ] + if_triton_dialects,
+    alwayslink = True,
+)
+
+cc_test(
+    name = "triton_dialect_capi_test",
+    srcs = ["Integrations/c/triton_dialect_capi_test.cpp"],
+    deps = [
+        ":triton_dialect_capi_objects",
+        "@com_google_googletest//:gtest_main",
+        "@llvm-project//mlir:CAPIIR",
+        "@llvm-project//mlir:IR",
+    ],
+)
+
 td_library(
     name = "TritonExtDialectTdFiles",
     srcs = [
@@ -1305,7 +1381,7 @@ cc_library(
         "-Werror=unused-but-set-variable",
         "-Werror=return-type",
         "-Werror=unused-result",
-    ],
+    ] + triton_copts,
     visibility = ["//visibility:public"],
     deps = [
         ":CheckedRewrite",
@@ -1341,6 +1417,7 @@ cc_library(
         "@com_google_absl//absl/status:statusor",
         "@enzyme//:EnzymeMLIR",
         "@jax//jaxlib/gpu:triton_cc_proto",
+        "@llvm-project//llvm:Analysis",
         "@llvm-project//llvm:Core",
         "@llvm-project//llvm:ExecutionEngine",
         "@llvm-project//llvm:IPO",
@@ -1374,6 +1451,7 @@ cc_library(
         "@llvm-project//mlir:ControlFlowToLLVM",
         "@llvm-project//mlir:ControlFlowToSCF",
         "@llvm-project//mlir:DLTIDialect",
+        "@llvm-project//mlir:DialectUtils",
         "@llvm-project//mlir:FromLLVMIRTranslation",
         "@llvm-project//mlir:FromLLVMIRTranslationRegistration",
         "@llvm-project//mlir:FuncDialect",
@@ -1393,6 +1471,7 @@ cc_library(
         "@llvm-project//mlir:InliningUtils",
         "@llvm-project//mlir:LLVMCommonConversion",
         "@llvm-project//mlir:LLVMDialect",
+        "@llvm-project//mlir:LoopLikeInterface",
         "@llvm-project//mlir:LinalgTransforms",
         "@llvm-project//mlir:MathDialect",
         "@llvm-project//mlir:MathToLLVM",
@@ -1449,8 +1528,7 @@ cc_library(
         "@stablehlo//:stablehlo_ops",
         "@stablehlo//:stablehlo_passes",
         "@stablehlo//:stablehlo_type_inference",
-        "@triton//:TritonDialects",
-        "@triton//:TritonToTritonGPUPasses",
+    ] + if_triton_passes + [
         "@xla//xla/mlir/utils:type_util",
         "@xla//xla/mlir_hlo",
         "@zlib",
@@ -1466,6 +1544,7 @@ cc_library(
     ]) + [
         "RegistryUtils.h",
     ],
+    copts = triton_copts,
     deps = [
         ":TransformOps",
         ":XLADerivatives",
@@ -1475,10 +1554,6 @@ cc_library(
         "@com_google_protobuf//:protobuf",
         "@tsl//tsl/platform:env",
         "@tsl//tsl/platform:env_impl",
-        "@xla//xla/tsl/protobuf:dnn_proto_cc_impl",
-        "@xla//xla/tsl/protobuf:histogram_proto_cc",
-        "@xla//xla/tsl/protobuf:histogram_proto_cc_impl",
-        "@xla//xla/tsl/protobuf:protos_all_cc_impl",
         "@xla//xla:xla_data_proto_cc_impl",
         "@xla//xla:xla_proto_cc_impl",
         "@xla//xla/tsl/platform:env",
@@ -1554,29 +1629,7 @@ cc_library(
         "@llvm-project//mlir:LLVMCommonConversion",
         "@llvm-project//mlir:Transforms",
         "@llvm-project//mlir:PDLDialect",
-
-        # Triton
-        "@triton//:TritonDialects",
-        "@triton//:TritonGPUToLLVM",
-        "@triton//:TritonGPUTransforms",
-        "@triton//:TritonLLVMIR",
-        "@triton//:TritonNvidiaGPUTransforms",
-        "@triton//:TritonToTritonGPU",
-        "@triton//:TritonToTritonGPUPasses",
-        "@triton//:TritonTransforms",
-        "@triton//:WarpSpecialization",
-        "@triton//:triton_conversion_triton_to_triton_gpu_passes_inc_gen",
-        "@triton//:triton_nvidia_gpu_transforms_inc_gen",
-        "@triton//third_party/amd:TritonAMDGPU",
-        "@triton//third_party/amd:TritonAMDGPUToLLVM",
-        "@triton//third_party/amd:TritonAMDGPUTransforms",
-        "@triton//third_party/nvidia:NVGPUDialect",
-        "@triton//third_party/nvidia:NVGPUToLLVM",
-        "@triton//third_party/nvidia:NVHopperTransforms",
-        "@triton//third_party/nvidia:NVWSDialect",
-        "@triton//third_party/nvidia:NVWSTransforms",
-        "@triton//third_party/nvidia:TritonNVIDIAGPUToLLVM",
-
+    ] + if_triton + [
         # Shardy stuff
         "@shardy//shardy/dialect/sdy/ir:dialect",
         "@shardy//shardy/dialect/sdy/transforms/propagation:op_sharding_rule_builder",
@@ -1587,6 +1640,7 @@ cc_library(
 
         # EnzymeMLIR
         "@enzyme//:EnzymeMLIR",
+        "@enzyme//:LLVMExtDialect",
 
         # Mosaic
         # "@jax//jaxlib/mosaic:tpu_dialect",
@@ -1637,35 +1691,17 @@ cc_library(
         "@com_google_protobuf//:protobuf",
         "@tsl//tsl/platform:env",
         "@tsl//tsl/platform:env_impl",
-        "@tsl//tsl/platform:tensor_float_32_utils",
-        "@xla//xla/tsl/profiler/backends/cpu:traceme_recorder_impl",
-        "@xla//xla/tsl/profiler/utils:time_utils_impl",
-        "@xla//xla/tsl/protobuf:dnn_proto_cc_impl",
-        "@xla//xla/tsl/protobuf:histogram_proto_cc",
-        "@xla//xla/tsl/protobuf:histogram_proto_cc_impl",
-        "@xla//xla/tsl/protobuf:protos_all_cc_impl",
-        "@xla//xla/client",
         "@xla//xla/client:client_library",
-        "@xla//xla/client:executable_build_options",
         "@xla//xla/client:local_client",
-        "@xla//xla/hlo/builder:xla_computation",
         "@xla//xla/service",
-        "@xla//xla/service:metrics_proto_cc",
-        "@xla//xla/service:metrics_proto_cc_impl",
+        "@xla//xla/service:executable",
         "@xla//xla/service:local_service",
         "@xla//xla/service:local_service_utils",
         "@xla//xla/service/cpu:cpu_executable",
         "@xla//xla/service/cpu:backend_config_proto_cc",
-        "@xla//xla/service/gpu:backend_configs_cc",
-        "@xla//xla/service/gpu:backend_configs_cc_impl",
         "@xla//xla/service:hlo_proto_cc",
         "@xla//xla/service:hlo_proto_cc_impl",
-        "@xla//xla/service/memory_space_assignment:memory_space_assignment_proto_cc_impl",
         "@xla//xla/hlo/translate/mhlo_to_hlo:type_to_shape",
-        "@xla//xla:autotune_results_proto_cc",
-        "@xla//xla:autotune_results_proto_cc_impl",
-        "@xla//xla:autotuning_proto_cc",
-        "@xla//xla:autotuning_proto_cc_impl",
         "@xla//xla:xla_data_proto_cc",
         "@xla//xla:xla_data_proto_cc_impl",
         "@xla//xla:xla_proto_cc",

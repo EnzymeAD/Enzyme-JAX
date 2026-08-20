@@ -338,12 +338,15 @@ nvshmem_redist_init_repository(
 load("//third_party/cuda_tile:workspace.bzl", cuda_tile_workspace = "repo")
 load("//third_party/enzyme:workspace.bzl", enzyme_workspace = "repo")
 
-# add support for generating compile_commands
-load("//third_party/hedron_compile_commands:workspace.bzl", hedron_compile_commands_workspace = "repo")
-
 enzyme_workspace()
 
 cuda_tile_workspace()
+
+# add support for generating compile_commands
+load(
+    "@enzyme//third_party/hedron_compile_commands:workspace.bzl",
+    hedron_compile_commands_workspace = "repo",
+)
 
 hedron_compile_commands_workspace()
 

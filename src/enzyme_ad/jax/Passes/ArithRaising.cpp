@@ -19,6 +19,7 @@
 #include "mlir/IR/IRMapping.h"
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
+#include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "src/enzyme_ad/jax/Utils.h"
 #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
@@ -93,6 +94,7 @@ struct ArithRaisingPass
     RAISE_BINARY(arith::RemFOp, stablehlo::RemOp, mhlo::RemOp);
     RAISE_BINARY(arith::RemSIOp, stablehlo::RemOp, mhlo::RemOp);
     RAISE_BINARY(arith::RemUIOp, stablehlo::RemOp, mhlo::RemOp);
+    RAISE_BINARY(math::Atan2Op, stablehlo::Atan2Op, mhlo::Atan2Op);
 
 #undef RAISE_BINARY
 
@@ -299,6 +301,23 @@ struct ArithRaisingPass
       fma.erase();
     });
 
+    // Same shape as math.fma above. stablehlo has no fused form, so the
+    // separate mul+add is the required lowering for strict fma and the
+    // permitted one for fmuladd alike.
+    op->walk([=](enzymexla::FMulAddOp fma) {
+      auto ty = dyn_cast<RankedTensorType>(fma.getResult().getType());
+      if (!use_stablehlo || !ty)
+        return;
+
+      OpBuilder builder(fma);
+      auto res = stablehlo::MulOp::create(builder, fma.getLoc(),
+                                          fma.getOperand(0), fma.getOperand(1));
+      auto res2 = stablehlo::AddOp::create(builder, fma.getLoc(), res,
+                                           fma.getOperand(2));
+      fma.replaceAllUsesWith(res2.getResult());
+      fma.erase();
+    });
+
     op->walk([=](math::CopySignOp copySignOp) {
       auto ty = dyn_cast<RankedTensorType>(copySignOp.getResult().getType());
       if (!use_stablehlo || !ty)
@@ -325,6 +344,29 @@ struct ArithRaisingPass
 
       copySignOp.replaceAllUsesWith(res);
       copySignOp.erase();
+    });
+
+    op->walk([=](math::TruncOp truncOp) {
+      // trunc(x) rounds towards zero: select(x >= 0, floor(x), ceil(x)).
+      auto ty = dyn_cast<RankedTensorType>(truncOp.getResult().getType());
+      if (!use_stablehlo || !ty)
+        return;
+
+      OpBuilder builder(truncOp);
+      auto loc = truncOp.getLoc();
+      Value val = truncOp.getOperand();
+      Attribute constAttr = FloatAttr::get(ty.getElementType(), 0);
+      Value zero = stablehlo::ConstantOp::create(
+          builder, loc, ty, SplatElementsAttr::get(ty, constAttr));
+      Value isNonNegative = stablehlo::CompareOp::create(
+          builder, loc, val, zero, stablehlo::ComparisonDirection::GE);
+      Value flr = stablehlo::FloorOp::create(builder, loc, val);
+      Value cl = stablehlo::CeilOp::create(builder, loc, val);
+      Value res =
+          stablehlo::SelectOp::create(builder, loc, isNonNegative, flr, cl);
+
+      truncOp.replaceAllUsesWith(res);
+      truncOp.erase();
     });
 
     op->walk([=](math::AtanOp atanOp) {
