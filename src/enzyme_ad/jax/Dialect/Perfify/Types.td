@@ -7,7 +7,10 @@ include "mlir/IR/AttrTypeBase.td"
 
 def PolyConstantCostTypeInterface : TypeInterface<"PolyConstantCostTypeInterface"> {
   let cppNamespace = "::mlir::enzyme::perfify";
-  let methods = [];
+  let methods = [
+    InterfaceMethod<"Returns true if this type represents a polynomial (non-constant) cost",
+      "bool", "isPolynomial">,
+  ];
 }
 
 class PerfifyType<string name, string type_mnemonic, list<Trait> traits = []> : TypeDef<PerfifyDialect, name, traits>{
