@@ -20,6 +20,8 @@
 #include "src/enzyme_ad/jax/Implementations/SHLOGenericBatchOpInterface.h"
 
 #include "mlir/Analysis/TopologicalSortUtils.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Support/DebugStringHelper.h"
 
 #include "llvm/ADT/PointerUnion.h"
 
@@ -37,6 +39,7 @@
 #include "src/enzyme_ad/jax/Implementations/XLADerivatives.h"
 #include "src/enzyme_ad/jax/Utils.h"
 #include <cstdint>
+#include <optional>
 
 using namespace mlir;
 using namespace mlir::enzyme;
@@ -1622,6 +1625,327 @@ public:
   SmallVector<Value> cacheValues(Operation *orig,
                                  MGradientUtilsReverse *gutils) const {
     return {};
+  }
+
+  LogicalResult createShadowValues(Operation *op, OpBuilder &builder,
+                                   MGradientUtilsReverse *gutils) const {
+    return success();
+  }
+};
+
+//===----------------------------------------------------------------------===//
+// stablehlo.custom_call
+//
+// A custom call is opaque, so its adjoint has to come from whoever built the
+// call. The rule lives on the call site rather than in a registry keyed on
+// call_target_name: one target name routinely dispatches many different
+// kernels through its backend_config, so the target name is the wrong
+// granularity to key an adjoint on.
+//
+//   %o, %lse = stablehlo.custom_call @foo(%q, %k, %v, %mask) {
+//       enzyme.reverse         = @foo_reverse,
+//       enzyme.active_operands = array<i64: 0, 1, 2>
+//   } : (tensor<...>, tensor<...>, tensor<...>, tensor<...xi1>)
+//    -> (tensor<...>, tensor<...>)
+//
+//   func.func @foo_reverse(%q, %k, %v, %mask,      // primal operands
+//                          %o, %lse,               // primal results
+//                          %do, %dlse)             // result cotangents
+//       -> (tensor<...>, tensor<...>, tensor<...>) // one per active operand
+//
+// * `enzyme.reverse` is a symbol reference to a func.func implementing the
+//   VJP, taking every primal operand, then every primal result, then the
+//   cotangent of every result, and returning one cotangent per entry of
+//   `enzyme.active_operands`, in that order. The signature is checked here:
+//   getting the convention wrong otherwise yields a silently wrong gradient.
+// * `enzyme.active_operands` lists the operand indices that can carry a
+//   gradient; operands left out are treated as constants, which is what an
+//   i1 mask operand needs. When absent it defaults to every float- or
+//   complex-typed operand.
+// * `enzyme.nondiff` marks the call as a gradient stop.
+// * Without any of these attributes the call is refused with the same error
+//   as before this rule existed, rather than silently producing zeros.
+//
+// The rule caches every primal operand and result, because the convention
+// hands all of them to the reverse function. `has_side_effect` is fine: the
+// primal is cloned as-is and the cached values are pushed around it.
+// `output_operand_aliasing` is refused, since a result that aliases an
+// operand may have been overwritten by the time the cotangent runs, making
+// the cached primal result meaningless.
+//===----------------------------------------------------------------------===//
+
+constexpr llvm::StringLiteral kCustomCallReverseAttr = "enzyme.reverse";
+constexpr llvm::StringLiteral kCustomCallActiveOperandsAttr =
+    "enzyme.active_operands";
+constexpr llvm::StringLiteral kCustomCallNonDiffAttr = "enzyme.nondiff";
+
+static bool isDifferentiableTensorType(Type ty) {
+  auto tensorTy = dyn_cast<TensorType>(ty);
+  if (!tensorTy)
+    return false;
+  Type elemTy = tensorTy.getElementType();
+  return isa<FloatType>(elemTy) || isa<ComplexType>(elemTy);
+}
+
+/// Everything the custom call's reverse rule needs, derived once so that
+/// cacheValues and createReverseModeAdjoint cannot disagree about whether the
+/// rule applies.
+struct CustomCallReverseRule {
+  func::FuncOp reverseFn;
+  SmallVector<int64_t> activeOperands;
+};
+
+/// Matches the reverse rule attached to `op`. `emitErrors` is off while
+/// caching so that a call this rule cannot handle is diagnosed exactly once,
+/// from the adjoint.
+static std::optional<CustomCallReverseRule>
+matchCustomCallReverseRule(CustomCallOp op, MGradientUtilsReverse *gutils,
+                           bool emitErrors) {
+  auto diag =
+      [&](const llvm::Twine &msg) -> std::optional<CustomCallReverseRule> {
+    if (emitErrors)
+      op->emitError() << msg;
+    return std::nullopt;
+  };
+
+  auto symbol = op->getAttrOfType<FlatSymbolRefAttr>(kCustomCallReverseAttr);
+  if (!symbol) {
+    if (op->hasAttr(kCustomCallReverseAttr))
+      return diag("'" + kCustomCallReverseAttr +
+                  "' must be a symbol reference to a func.func");
+    // No rule attached: refuse the same way an op with no reverse rule at all
+    // is refused.
+    if (emitErrors)
+      op->emitError() << "could not compute the adjoint for this operation "
+                      << *op;
+    return std::nullopt;
+  }
+
+  if (auto aliases = op.getOutputOperandAliases())
+    if (!aliases.empty())
+      return diag("cannot differentiate a custom call with "
+                  "output_operand_aliasing: an aliased result may no longer "
+                  "hold the value its cotangent is computed from");
+
+  if (gutils->width != 1)
+    return diag("cannot apply '" + kCustomCallReverseAttr +
+                "' in vector reverse mode (width " +
+                llvm::Twine(gutils->width) +
+                "): the rule's signature is "
+                "defined for a single cotangent "
+                "per result");
+
+  auto reverseFn = SymbolTable::lookupNearestSymbolFrom<func::FuncOp>(
+      gutils->newFunc.getOperation(), symbol.getAttr());
+  if (!reverseFn)
+    return diag("'" + kCustomCallReverseAttr + "' refers to '" +
+                symbol.getValue() +
+                "', which is not a func.func in this module");
+
+  SmallVector<int64_t> activeOperands;
+  size_t numOperands = op->getNumOperands();
+  if (auto activeAttr =
+          op->getAttrOfType<DenseI64ArrayAttr>(kCustomCallActiveOperandsAttr)) {
+    for (int64_t idx : activeAttr.asArrayRef()) {
+      if (idx < 0 || (size_t)idx >= numOperands)
+        return diag("'" + kCustomCallActiveOperandsAttr + "' index " +
+                    llvm::Twine(idx) +
+                    " is out of range for a custom call with " +
+                    llvm::Twine(numOperands) + " operands");
+      if (llvm::is_contained(activeOperands, idx))
+        return diag("'" + kCustomCallActiveOperandsAttr + "' lists operand " +
+                    llvm::Twine(idx) + " more than once");
+      // An integer operand would accumulate through arith.addi rather than
+      // fail, so an i1 mask listed here by mistake would quietly produce
+      // integer arithmetic in place of a gradient. Refuse instead.
+      if (!isDifferentiableTensorType(op->getOperand(idx).getType()))
+        return diag("'" + kCustomCallActiveOperandsAttr + "' lists operand " +
+                    llvm::Twine(idx) + " of type " +
+                    debugString(op->getOperand(idx).getType()) +
+                    ", which cannot carry a cotangent; only float- and "
+                    "complex-typed operands may be active");
+      activeOperands.push_back(idx);
+    }
+  } else if (op->hasAttr(kCustomCallActiveOperandsAttr)) {
+    return diag("'" + kCustomCallActiveOperandsAttr +
+                "' must be a dense i64 array attribute, e.g. array<i64: 0, 1>");
+  } else {
+    for (auto &&[idx, operand] : llvm::enumerate(op->getOperands()))
+      if (isDifferentiableTensorType(operand.getType()))
+        activeOperands.push_back(idx);
+  }
+
+  // Check the signature: a mismatch here is the difference between a correct
+  // gradient and a plausible-looking wrong one.
+  size_t numResults = op->getNumResults();
+  auto fnTy = reverseFn.getFunctionType();
+  auto describeConvention = [&]() -> std::string {
+    return (llvm::Twine(" ('") + kCustomCallReverseAttr + "' takes the " +
+            llvm::Twine(numOperands) + " primal operand(s), then the " +
+            llvm::Twine(numResults) + " primal result(s), then the " +
+            llvm::Twine(numResults) +
+            " result cotangent(s), and returns one cotangent per entry of '" +
+            kCustomCallActiveOperandsAttr + "')")
+        .str();
+  };
+
+  if (fnTy.getNumInputs() != numOperands + 2 * numResults)
+    return diag("'" + symbol.getValue() + "' takes " +
+                llvm::Twine(fnTy.getNumInputs()) + " argument(s), expected " +
+                llvm::Twine(numOperands + 2 * numResults) +
+                describeConvention());
+
+  for (auto &&[idx, operand] : llvm::enumerate(op->getOperands()))
+    if (fnTy.getInput(idx) != operand.getType())
+      return diag("'" + symbol.getValue() + "' argument " + llvm::Twine(idx) +
+                  " has type " + llvm::Twine(debugString(fnTy.getInput(idx))) +
+                  ", expected the primal operand type " +
+                  debugString(operand.getType()) + describeConvention());
+
+  for (auto &&[idx, result] : llvm::enumerate(op->getResults())) {
+    Type primalTy = result.getType();
+    Type shadowTy = gutils->getShadowType(primalTy);
+    if (fnTy.getInput(numOperands + idx) != primalTy)
+      return diag("'" + symbol.getValue() + "' argument " +
+                  llvm::Twine(numOperands + idx) + " has type " +
+                  debugString(fnTy.getInput(numOperands + idx)) +
+                  ", expected the primal result type " + debugString(primalTy) +
+                  describeConvention());
+    if (fnTy.getInput(numOperands + numResults + idx) != shadowTy)
+      return diag("'" + symbol.getValue() + "' argument " +
+                  llvm::Twine(numOperands + numResults + idx) + " has type " +
+                  debugString(fnTy.getInput(numOperands + numResults + idx)) +
+                  ", expected the cotangent type " + debugString(shadowTy) +
+                  describeConvention());
+  }
+
+  if (fnTy.getNumResults() != activeOperands.size())
+    return diag("'" + symbol.getValue() + "' returns " +
+                llvm::Twine(fnTy.getNumResults()) +
+                " value(s), expected one cotangent per active operand, i.e. " +
+                llvm::Twine(activeOperands.size()) + describeConvention());
+
+  for (auto &&[idx, operandIdx] : llvm::enumerate(activeOperands)) {
+    Type shadowTy = gutils->getShadowType(op->getOperand(operandIdx).getType());
+    if (fnTy.getResult(idx) != shadowTy)
+      return diag("'" + symbol.getValue() + "' result " + llvm::Twine(idx) +
+                  " has type " + debugString(fnTy.getResult(idx)) +
+                  ", expected the cotangent type " + debugString(shadowTy) +
+                  " of operand " + llvm::Twine(operandIdx) +
+                  describeConvention());
+  }
+
+  return CustomCallReverseRule{reverseFn, std::move(activeOperands)};
+}
+
+/// Whether calling the reverse function can contribute anything: Enzyme may
+/// already know every operand the rule covers is inactive.
+static bool customCallNeedsAdjoint(CustomCallOp op,
+                                   MGradientUtilsReverse *gutils,
+                                   ArrayRef<int64_t> activeOperands) {
+  return llvm::any_of(activeOperands, [&](int64_t idx) {
+    return !gutils->isConstantValue(op->getOperand(idx));
+  });
+}
+
+/// Clears the incoming cotangents of the call's results, so that a later
+/// iteration of an enclosing loop does not read a stale value back.
+static void zeroCustomCallResultDiffes(CustomCallOp op, OpBuilder &builder,
+                                       MGradientUtilsReverse *gutils) {
+  for (auto res : op->getResults())
+    if (!gutils->isConstantValue(res))
+      gutils->zeroDiffe(res, builder);
+}
+
+class AutoDiffCustomCallRev
+    : public ReverseAutoDiffOpInterface::ExternalModel<AutoDiffCustomCallRev,
+                                                       CustomCallOp> {
+public:
+  LogicalResult createReverseModeAdjoint(Operation *orig, OpBuilder &builder,
+                                         MGradientUtilsReverse *gutils,
+                                         SmallVector<Value> caches) const {
+    auto op = cast<CustomCallOp>(orig);
+
+    if (op->hasAttr(kCustomCallNonDiffAttr)) {
+      zeroCustomCallResultDiffes(op, builder, gutils);
+      return success();
+    }
+
+    auto rule = matchCustomCallReverseRule(op, gutils, /*emitErrors=*/true);
+    if (!rule)
+      return failure();
+
+    if (!customCallNeedsAdjoint(op, gutils, rule->activeOperands)) {
+      zeroCustomCallResultDiffes(op, builder, gutils);
+      return success();
+    }
+
+    size_t numOperands = op->getNumOperands(), numResults = op->getNumResults();
+    if (caches.size() != numOperands + numResults) {
+      orig->emitError() << "expected " << (numOperands + numResults)
+                        << " cached values for the reverse of this custom "
+                           "call, got "
+                        << caches.size();
+      return failure();
+    }
+
+    SmallVector<Value> args;
+    args.reserve(caches.size() + numResults);
+    for (Value cache : caches)
+      args.push_back(gutils->popCache(cache, builder));
+
+    for (auto res : op->getResults()) {
+      // A result may be a residual whose cotangent is genuinely zero (an lse
+      // returned alongside an attention output, say). The reverse function
+      // still takes it, so materialize a zero rather than dropping it.
+      if (gutils->isConstantValue(res)) {
+        args.push_back(
+            cast<AutoDiffTypeInterface>(gutils->getShadowType(res.getType()))
+                .createNullValue(builder, op.getLoc()));
+        continue;
+      }
+      args.push_back(gutils->diffe(res, builder));
+      gutils->zeroDiffe(res, builder);
+    }
+
+    auto call =
+        func::CallOp::create(builder, op.getLoc(), rule->reverseFn, args);
+
+    for (auto &&[idx, operandIdx] : llvm::enumerate(rule->activeOperands)) {
+      Value operand = op->getOperand(operandIdx);
+      if (gutils->isConstantValue(operand))
+        continue;
+      gutils->addToDiffe(operand, call.getResult(idx), builder);
+    }
+
+    return success();
+  }
+
+  SmallVector<Value> cacheValues(Operation *orig,
+                                 MGradientUtilsReverse *gutils) const {
+    auto op = cast<CustomCallOp>(orig);
+    if (op->hasAttr(kCustomCallNonDiffAttr))
+      return {};
+
+    auto rule = matchCustomCallReverseRule(op, gutils, /*emitErrors=*/false);
+    if (!rule || !customCallNeedsAdjoint(op, gutils, rule->activeOperands))
+      return {};
+
+    Operation *newOp = gutils->getNewFromOriginal(orig);
+    OpBuilder cacheBuilder(newOp);
+
+    SmallVector<Value> caches;
+    caches.reserve(op->getNumOperands() + op->getNumResults());
+    for (auto operand : op->getOperands())
+      caches.push_back(gutils->initAndPushCache(
+          gutils->getNewFromOriginal(operand), cacheBuilder));
+
+    cacheBuilder.setInsertionPointAfter(newOp);
+    for (auto res : op->getResults())
+      caches.push_back(gutils->initAndPushCache(gutils->getNewFromOriginal(res),
+                                                cacheBuilder));
+
+    return caches;
   }
 
   LogicalResult createShadowValues(Operation *op, OpBuilder &builder,
@@ -4971,6 +5295,7 @@ void mlir::enzyme::registerStableHLODialectAutoDiffInterface(
         SHLODynamicUpdateSliceOpBatchInterface>(*context);
     CustomCallOp::attachInterface<SHLOGenericBatchOpInterface<CustomCallOp>>(
         *context);
+    CustomCallOp::attachInterface<AutoDiffCustomCallRev>(*context);
     RngBitGeneratorOp::attachInterface<SHLORngBitGeneratorOpBatchInterface>(
         *context);
     IotaOp::attachInterface<SHLOIotaOpBatchInterface>(*context);
