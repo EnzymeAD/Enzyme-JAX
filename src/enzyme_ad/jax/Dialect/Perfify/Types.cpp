@@ -8,10 +8,6 @@
 
 using namespace mlir;
 
-bool enzyme::perfify::ConstantCostType::isPolynomial() const {
-    return false;
-}
+bool enzyme::perfify::ConstantCostType::isPolynomial() const { return false; }
 
-bool enzyme::perfify::PolyCostType::isPolynomial() const {
-    return true;
-}
+bool enzyme::perfify::PolyCostType::isPolynomial() const { return true; }

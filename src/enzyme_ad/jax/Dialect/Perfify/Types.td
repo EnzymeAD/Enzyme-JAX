@@ -5,18 +5,25 @@ include "Dialect.td"
 include "mlir/IR/OpBase.td"
 include "mlir/IR/AttrTypeBase.td"
 
-def PolyConstantCostTypeInterface : TypeInterface<"PolyConstantCostTypeInterface"> {
+def PolyConstantCostTypeInterface
+    : TypeInterface<"PolyConstantCostTypeInterface"> {
   let cppNamespace = "::mlir::enzyme::perfify";
   let methods = [
-    InterfaceMethod<"Returns true if this type represents a polynomial (non-constant) cost",
-      "bool", "isPolynomial">,
+    InterfaceMethod<
+        "Returns true if this type represents a polynomial (non-constant) cost",
+        "bool", "isPolynomial">,
   ];
 }
 
-class PerfifyType<string name, string type_mnemonic, list<Trait> traits = []> : TypeDef<PerfifyDialect, name, traits>{
-    let mnemonic = type_mnemonic;
+class PerfifyType<string name, string type_mnemonic, list<Trait> traits = []>
+    : TypeDef<PerfifyDialect, name, traits> {
+  let mnemonic = type_mnemonic;
 }
 
-def ConstantCostType : PerfifyType<"ConstantCost", "ccost", [DeclareTypeInterfaceMethods<PolyConstantCostTypeInterface>]>;
-def PolyCostType : PerfifyType<"PolyCost", "pcost", [DeclareTypeInterfaceMethods<PolyConstantCostTypeInterface>]>;
+def ConstantCostType
+    : PerfifyType<"ConstantCost", "ccost",
+                  [DeclareTypeInterfaceMethods<PolyConstantCostTypeInterface>]>;
+def PolyCostType
+    : PerfifyType<"PolyCost", "pcost",
+                  [DeclareTypeInterfaceMethods<PolyConstantCostTypeInterface>]>;
 #endif // ENZYME_PERFIFY_DIALECT_TYPES_H
