@@ -38,8 +38,7 @@ void populateAffineCFGPatterns(RewritePatternSet &rpl);
 #define GEN_PASS_REGISTRATION
 #include "src/enzyme_ad/jax/Passes/Passes.h.inc"
 
-void populateEnzymeXLAMathToLLVMConversionPatterns(
-    RewritePatternSet &patterns);
+void populateEnzymeXLAMathToLLVMConversionPatterns(RewritePatternSet &patterns);
 void populateLibDeviceFuncsToOpsPatterns(MLIRContext *context,
                                          RewritePatternSet &patterns);
 
