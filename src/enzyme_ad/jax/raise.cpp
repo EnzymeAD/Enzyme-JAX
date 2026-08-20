@@ -214,7 +214,8 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
         pass_pipeline += ",convert-cudart-to-hiprt";
       if (backend != "cpu") {
         pass_pipeline += ",convert-parallel-to-gpu1,symbol-dce,gpu-kernel-outlining," + canonicalize + ",symbol-dce,";
-        pass_pipeline += "convert-parallel-to-gpu2{backend=";
+        pass_pipeline +=
+            "convert-parallel-to-gpu2{emitGPUKernelLaunchBounds=true backend=";
         pass_pipeline += backend;
         pass_pipeline += "}";
         pass_pipeline += ",lower-aligned-affine-accesses,lower-affine";
