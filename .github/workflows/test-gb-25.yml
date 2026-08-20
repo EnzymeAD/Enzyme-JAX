@@ -112,7 +112,7 @@ jobs:
         uses: julia-actions/cache@v3.2.0
         with:
           gcp-bucket: ${{ (contains(matrix.os, 'linux') && 'enzyme-ci-transient' ) || '' }}
-          key-prefix: enzymejax-gb25/
+          key-prefix: enzymejax-gb25-v2/
 
       - name: Modify Enzyme-JAX commit
         timeout-minutes: 1
