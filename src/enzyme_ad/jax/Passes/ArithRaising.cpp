@@ -199,8 +199,7 @@ struct RaiseBitcast : public OpRewritePattern<arith::BitcastOp> {
 
 // stablehlo has no fused multiply-add, so the separate mul+add is the required
 // lowering for strict fma and the permitted one for fmuladd alike.
-template <typename SrcOp>
-struct RaiseMulAdd : public OpRewritePattern<SrcOp> {
+template <typename SrcOp> struct RaiseMulAdd : public OpRewritePattern<SrcOp> {
   using OpRewritePattern<SrcOp>::OpRewritePattern;
 
   LogicalResult matchAndRewrite(SrcOp fma,
@@ -266,8 +265,8 @@ struct RaiseTruncOp : public OpRewritePattern<math::TruncOp> {
     Value flr = stablehlo::FloorOp::create(rewriter, loc, val);
     Value cl = stablehlo::CeilOp::create(rewriter, loc, val);
 
-    rewriter.replaceOpWithNewOp<stablehlo::SelectOp>(truncOp, isNonNegative, flr,
-                                                     cl);
+    rewriter.replaceOpWithNewOp<stablehlo::SelectOp>(truncOp, isNonNegative,
+                                                     flr, cl);
     return success();
   }
 };
@@ -487,11 +486,15 @@ struct RaiseCmpI : public OpRewritePattern<arith::CmpIOp> {
     if (!isa<TensorType>(cmpOp.getType()))
       return failure();
 
+    auto operandType =
+        dyn_cast<RankedTensorType>(cmpOp.getOperand(0).getType());
+    if (!operandType)
+      return failure();
+
     auto predicate = cmpOp.getPredicate();
     // Booleans (i1) and unsigned integers lower to PRED/unsigned HLO types,
     // which require an UNSIGNED comparison type regardless of the predicate.
-    auto elemType =
-        cast<RankedTensorType>(cmpOp.getOperand(0).getType()).getElementType();
+    auto elemType = operandType.getElementType();
     bool unsignedPredicate = predicate == arith::CmpIPredicate::ugt ||
                              predicate == arith::CmpIPredicate::uge ||
                              predicate == arith::CmpIPredicate::ult ||
@@ -532,21 +535,17 @@ struct RaiseCmpI : public OpRewritePattern<arith::CmpIOp> {
 
     Value lhs = cmpOp.getOperand(0);
     Value rhs = cmpOp.getOperand(1);
-    if (unsignedPredicate) {
-      auto lhsType = dyn_cast<RankedTensorType>(lhs.getType());
-      if (lhsType) {
-        if (elemType.isSignlessInteger() || elemType.isSignedInteger()) {
-          auto unsignedElemType = IntegerType::get(
-              rewriter.getContext(), elemType.getIntOrFloatBitWidth(),
-              IntegerType::Unsigned);
-          auto unsignedType =
-              RankedTensorType::get(lhsType.getShape(), unsignedElemType);
-          lhs = stablehlo::ConvertOp::create(rewriter, cmpOp.getLoc(),
-                                             unsignedType, lhs);
-          rhs = stablehlo::ConvertOp::create(rewriter, cmpOp.getLoc(),
-                                             unsignedType, rhs);
-        }
-      }
+    if (unsignedPredicate &&
+        (elemType.isSignlessInteger() || elemType.isSignedInteger())) {
+      auto unsignedElemType = IntegerType::get(rewriter.getContext(),
+                                               elemType.getIntOrFloatBitWidth(),
+                                               IntegerType::Unsigned);
+      auto unsignedType =
+          RankedTensorType::get(operandType.getShape(), unsignedElemType);
+      lhs = stablehlo::ConvertOp::create(rewriter, cmpOp.getLoc(), unsignedType,
+                                         lhs);
+      rhs = stablehlo::ConvertOp::create(rewriter, cmpOp.getLoc(), unsignedType,
+                                         rhs);
     }
     rewriter.replaceOpWithNewOp<stablehlo::CompareOp>(cmpOp, lhs, rhs,
                                                       direction, compType);
@@ -707,10 +706,10 @@ struct ArithRaisingPass
                // TODO: either SI or UI is wrong
                RaiseToConvert<arith::ExtUIOp>, RaiseToConvert<arith::ExtSIOp>,
                RaiseToConvert<arith::TruncIOp>, RaiseMulAdd<math::FmaOp>,
-               RaiseMulAdd<enzymexla::FMulAddOp>, RaiseCopySign,
-               RaiseTruncOp, RaiseAtan, RaiseMaxNumF, RaiseMinNumF, RaiseIsNaN,
-               RaiseConstant, RaiseFPToSI, RaiseSIToFP, RaiseUIToFP,
-               RaiseSelect, RaiseCmpI>(context);
+               RaiseMulAdd<enzymexla::FMulAddOp>, RaiseCopySign, RaiseTruncOp,
+               RaiseAtan, RaiseMaxNumF, RaiseMinNumF, RaiseIsNaN, RaiseConstant,
+               RaiseFPToSI, RaiseSIToFP, RaiseUIToFP, RaiseSelect, RaiseCmpI>(
+              context);
 
     walkAndApplyPatterns(getOperation(), std::move(patterns));
   }
