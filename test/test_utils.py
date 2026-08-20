@@ -885,3 +885,7 @@ class EnzymeJaxTest(absltest.TestCase):
                         self.pretty_print_table(
                             name, pname, backend, "BothRev", runtime
                         )
+
+
+class EnzymeJaxBenchmark(EnzymeJaxTest):
+    """Benchmark case that checks and times primal, JVP, and VJP execution."""

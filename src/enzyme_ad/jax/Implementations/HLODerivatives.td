@@ -1078,8 +1078,12 @@ def : HLODerivative<"ClampOp", (Op $min, $operand, $max), [
         (SelectIfActive $operand, (Shadow $operand), (HLOConstantFP<"0"> $operand)))
 )>;
 
+// d/dx cbrt(x) = 1 / (3 * cbrt(x)^2). Computed from the real primal cbrt(x),
+// which is defined and smooth for x < 0, rather than through pow(x, -2/3),
+// which is NaN on negative bases (StableHLO power spec: power([-36],[1.1]) = -nan).
+// Mirrors jax.lax.cbrt's JVP (g * (1/3) * integer_pow(ans, -2)). See issue #2571.
 def : HLODerivative<"CbrtOp", (Op $x), [
-  (CheckedMul (DiffeRet), (Div (Pow $x, (Div (HLOConstantFP<"-2">), (HLOConstantFP<"3">))), (HLOConstantFP<"3">))),
+  (CheckedDiv (DiffeRet), (Mul (HLOConstantFP<"3">), (Mul (Cbrt $x), (Cbrt $x)))),
 ]>;
 
 def : HLOInactiveOp<"CompareOp">;

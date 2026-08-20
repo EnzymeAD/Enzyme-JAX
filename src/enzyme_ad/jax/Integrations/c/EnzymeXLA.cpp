@@ -1,8 +1,10 @@
 #include "EnzymeXLA.h"
 
+#include <algorithm>
 #include <cstdlib>
 #include <cstring>
 #include <string>
+#include <unordered_set>
 #include <vector>
 
 #include "mlir/CAPI/IR.h"
@@ -338,6 +340,36 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("cse_max<16>");
   list.push_back("cse_neg<16>");
   list.push_back("cse_abs<16>");
+  list.push_back("cse_batch_norm_training<16>");
+  list.push_back("cse_batch_norm_inference<16>");
+  list.push_back("cse_batch_norm_grad<16>");
+  list.push_back("cse_exp<16>");
+  list.push_back("cse_expm1<16>");
+  list.push_back("cse_log<16>");
+  list.push_back("cse_log1p<16>");
+  list.push_back("cse_tanh<16>");
+  list.push_back("cse_logistic<16>");
+  list.push_back("cse_sqrt<16>");
+  list.push_back("cse_rsqrt<16>");
+  list.push_back("cse_cbrt<16>");
+  list.push_back("cse_sine<16>");
+  list.push_back("cse_cosine<16>");
+  list.push_back("cse_atan2<16>");
+  list.push_back("cse_floor<16>");
+  list.push_back("cse_ceil<16>");
+  list.push_back("cse_round<16>");
+  list.push_back("cse_sign<16>");
+  list.push_back("cse_is_finite<16>");
+  list.push_back("cse_clamp<16>");
+  list.push_back("cse_remainder<16>");
+  list.push_back("cse_and<16>");
+  list.push_back("cse_or<16>");
+  list.push_back("cse_xor<16>");
+  list.push_back("cse_convolution<16>");
+  list.push_back("cse_fft<16>");
+  list.push_back("cse_dynamic_slice<16>");
+  list.push_back("cse_dynamic_update_slice<16>");
+  list.push_back("cse_reverse<16>");
   list.push_back("cse_concatenate<16>");
   list.push_back("cse_compare<16>");
   list.push_back("cse_select<16>");
@@ -388,6 +420,7 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("slice_elementwise<1>");
   list.push_back("dot_reshape_dot<1>");
   list.push_back("concat_fuse<1>");
+  list.push_back("concat_slices_to_reverse<1>");
   list.push_back("concat_push_binop_add<1>");
   list.push_back("concat_push_binop_mul<1>");
   list.push_back("reduce_concat<1>");
@@ -442,6 +475,7 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("while_dus");
   list.push_back("while_updatewithoutcorners");
   list.push_back("while_op_induction_replacement");
+  list.push_back("while_scatter_accumulator_no_add");
   list.push_back("dus_concat");
   list.push_back("dusdus_to_duspad");
   list.push_back("slice_dus_to_concat");
@@ -514,6 +548,7 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("select_simplify");
   list.push_back("select_select_same_cond");
   list.push_back("select_select_neg_cond");
+  list.push_back("select_to_logical");
   list.push_back("concatenate_subtract_to_subtract_pad");
   list.push_back("concatenate_add_to_add_pad");
   list.push_back("concatenate_broadcast_in_dim");
@@ -646,7 +681,8 @@ static void addLoopRaisingPasses(std::vector<std::string> &list) {
   list.push_back("remove_loop_carried_dependencies_from_while_load_operations");
 }
 
-static void addLICMPasses(std::vector<std::string> &list) {
+static void addLICMPasses(std::vector<std::string> &list,
+                          int64_t loopUnswitchThreshold) {
   list.push_back("dus_licm(0)");
   list.push_back("slice_licm(0)");
   list.push_back("elementwise_licm(0)");
@@ -667,6 +703,9 @@ static void addLICMPasses(std::vector<std::string> &list) {
   list.push_back("rotate_licm(0)");
   list.push_back("wrap_licm(0)");
   list.push_back("extend_licm(0)");
+  if (loopUnswitchThreshold >= 0) {
+    list.push_back(passWithArg("loop_unswitch", loopUnswitchThreshold));
+  }
 }
 
 static void addPadPasses(std::vector<std::string> &list,
@@ -969,7 +1008,7 @@ void enzymexlaGetTransformPassesList(
 
   // LICM
   if (options->enable_licm_optimization_passes) {
-    addLICMPasses(list);
+    addLICMPasses(list, options->loop_unswitch_threshold);
   }
 
   // Pad passes
@@ -1035,6 +1074,25 @@ void enzymexlaGetTransformPassesList(
   // Lower comms (added to lower list only)
   if (options->lower_comms) {
     addLowerCommsPasses(lowerList);
+  }
+
+  // Exclude passes by base name (everything before the first '(' or '<').
+  if (options->num_excluded_passes > 0) {
+    std::unordered_set<std::string> excluded(options->excluded_passes,
+                                             options->excluded_passes +
+                                                 options->num_excluded_passes);
+    auto baseName = [](const std::string &pass) -> std::string {
+      auto end = pass.find_first_of("(<");
+      return end == std::string::npos ? pass : pass.substr(0, end);
+    };
+    auto shouldExclude = [&](const std::string &p) {
+      return excluded.count(baseName(p)) > 0;
+    };
+    list.erase(std::remove_if(list.begin(), list.end(), shouldExclude),
+               list.end());
+    lowerList.erase(
+        std::remove_if(lowerList.begin(), lowerList.end(), shouldExclude),
+        lowerList.end());
   }
 
   // Output

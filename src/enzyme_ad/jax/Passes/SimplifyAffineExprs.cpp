@@ -92,16 +92,23 @@ static LogicalResult addAffineIfOpDomain(AffineIfOp ifOp, bool isElse,
   SmallVector<Value> operands(ifOp.getOperands());
   canonicalizeSetAndOperands(&set, &operands);
 
-  // Create the base constraints from the integer set attached to ifOp.
-  FlatAffineValueConstraints cst(set, operands);
+  // Create the base constraints from the integer set attached to ifOp. This
+  // fails for semi-affine sets, which cannot be flattened.
+  FailureOr<FlatAffineValueConstraints> cst =
+      FlatAffineValueConstraints::create(set, operands);
+  if (failed(cst)) {
+    LLVM_DEBUG(llvm::dbgs()
+               << "semi-affine integer sets in 'affine.if' not supported\n");
+    return failure();
+  }
 
   if (!isElse) {
-    domain->mergeAndAlignVarsWithOther(0, &cst);
-    domain->append(cst);
+    domain->mergeAndAlignVarsWithOther(0, &*cst);
+    domain->append(*cst);
     return success();
   }
 
-  presburger::PresburgerRelation pr(cst);
+  presburger::PresburgerRelation pr(*cst);
   pr = pr.complement();
   if (pr.getNumDisjuncts() > 1) {
     // TODO: we can turn the domain into a PresburgerSet that supports
@@ -112,7 +119,7 @@ static LogicalResult addAffineIfOpDomain(AffineIfOp ifOp, bool isElse,
   }
 
   FlatLinearValueConstraints flvc(
-      presburger::IntegerPolyhedron(pr.getDisjunct(0)), cst.getMaybeValues());
+      presburger::IntegerPolyhedron(pr.getDisjunct(0)), cst->getMaybeValues());
 
   domain->mergeAndAlignVarsWithOther(0, &flvc);
   domain->append(flvc);
@@ -888,6 +895,11 @@ isl_set *IslAnalysis::getDomain(Operation *op) {
   auto [domain, cst] = ::getDomain(ctx, op);
 
   return domain;
+}
+
+std::tuple<isl_set *, FlatAffineValueConstraints>
+IslAnalysis::getDomainAndValueConstraints(Operation *op) {
+  return ::getDomain(ctx, op);
 }
 
 std::optional<SmallVector<isl_aff *>> IslAnalysis::getAffExprs(Operation *op) {

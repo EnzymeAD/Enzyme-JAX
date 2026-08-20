@@ -52,7 +52,7 @@ jobs:
 
         reactant_commit:
           - 'main'
-          - 'multipad'
+          # - 'multipad'
         grid:
           - '--float-type=Float64'
           - '--float-type=Float32'
@@ -90,7 +90,7 @@ jobs:
           repository-cache: false
           bazelisk-version: 1.x
       - name: Checkout Reactant.jl
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: 'EnzymeAD/Reactant.jl'
           ref: ${{ matrix.reactant_commit }}
@@ -107,10 +107,13 @@ jobs:
       - uses: julia-actions/setup-julia@v3
         with:
           version: ${{ matrix.julia_version }}
+
       - name: Load Julia packages from cache
-        uses: julia-actions/cache@a45e8fa8be21c18a06b7177052533149e61e9b38 # v3.1.0
+        uses: julia-actions/cache@v3.2.0
         with:
-          gcp-bucket: enzyme-ci-transient
+          gcp-bucket: ${{ (contains(matrix.os, 'linux') && 'enzyme-ci-transient' ) || '' }}
+          key-prefix: enzymejax-gb25-v2/
+
       - name: Modify Enzyme-JAX commit
         timeout-minutes: 1
         run: |
@@ -147,7 +150,7 @@ jobs:
           fi
         working-directory: ${{ env.REACTANT_DIR }}/deps/ReactantExtra
       - name: Checkout GB-25
-        uses: actions/checkout@v6
+        uses: actions/checkout@v7
         with:
           repository: 'PRONTOLab/GB-25'
           ref: ${{ matrix.gb25_commit }}

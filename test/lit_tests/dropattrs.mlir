@@ -1,3 +1,4 @@
+// REQUIRES: triton
 // RUN: enzymexlamlir-opt --drop-unsupported-attributes %s | FileCheck %s
 
 module @reactant_JITFunc... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_replicas = 1 : i64} {

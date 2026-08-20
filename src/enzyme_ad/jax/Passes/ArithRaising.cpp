@@ -18,8 +18,9 @@
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/PatternMatch.h"
-#include "mlir/Interfaces/ControlFlowInterfaces.h"
+#include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Transforms/WalkPatternRewriteDriver.h"
+#include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "src/enzyme_ad/jax/Utils.h"
 #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
@@ -196,10 +197,13 @@ struct RaiseBitcast : public OpRewritePattern<arith::BitcastOp> {
   }
 };
 
-struct RaiseFma : public OpRewritePattern<math::FmaOp> {
-  using OpRewritePattern<math::FmaOp>::OpRewritePattern;
+// stablehlo has no fused multiply-add, so the separate mul+add is the required
+// lowering for strict fma and the permitted one for fmuladd alike.
+template <typename SrcOp>
+struct RaiseMulAdd : public OpRewritePattern<SrcOp> {
+  using OpRewritePattern<SrcOp>::OpRewritePattern;
 
-  LogicalResult matchAndRewrite(math::FmaOp fma,
+  LogicalResult matchAndRewrite(SrcOp fma,
                                 PatternRewriter &rewriter) const override {
     if (!isa<RankedTensorType>(fma.getResult().getType()))
       return failure();
@@ -238,6 +242,32 @@ struct RaiseCopySign : public OpRewritePattern<math::CopySignOp> {
 
     rewriter.replaceOpWithNewOp<stablehlo::SelectOp>(copySignOp, notSameSign,
                                                      negVal, val);
+    return success();
+  }
+};
+
+struct RaiseTruncOp : public OpRewritePattern<math::TruncOp> {
+  using OpRewritePattern<math::TruncOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(math::TruncOp truncOp,
+                                PatternRewriter &rewriter) const override {
+    // trunc(x) rounds towards zero: select(x >= 0, floor(x), ceil(x)).
+    auto ty = dyn_cast<RankedTensorType>(truncOp.getResult().getType());
+    if (!ty)
+      return failure();
+
+    auto loc = truncOp.getLoc();
+    Value val = truncOp.getOperand();
+    Attribute constAttr = FloatAttr::get(ty.getElementType(), 0);
+    Value zero = stablehlo::ConstantOp::create(
+        rewriter, loc, ty, SplatElementsAttr::get(ty, constAttr));
+    Value isNonNegative = stablehlo::CompareOp::create(
+        rewriter, loc, val, zero, stablehlo::ComparisonDirection::GE);
+    Value flr = stablehlo::FloorOp::create(rewriter, loc, val);
+    Value cl = stablehlo::CeilOp::create(rewriter, loc, val);
+
+    rewriter.replaceOpWithNewOp<stablehlo::SelectOp>(truncOp, isNonNegative, flr,
+                                                     cl);
     return success();
   }
 };
@@ -457,13 +487,20 @@ struct RaiseCmpI : public OpRewritePattern<arith::CmpIOp> {
     if (!isa<TensorType>(cmpOp.getType()))
       return failure();
 
-    stablehlo::ComparisonType compType = stablehlo::ComparisonType::SIGNED;
     auto predicate = cmpOp.getPredicate();
-    if (predicate == arith::CmpIPredicate::ugt ||
-        predicate == arith::CmpIPredicate::uge ||
-        predicate == arith::CmpIPredicate::ult ||
-        predicate == arith::CmpIPredicate::ule)
-      compType = stablehlo::ComparisonType::UNSIGNED;
+    // Booleans (i1) and unsigned integers lower to PRED/unsigned HLO types,
+    // which require an UNSIGNED comparison type regardless of the predicate.
+    auto elemType =
+        cast<RankedTensorType>(cmpOp.getOperand(0).getType()).getElementType();
+    bool unsignedPredicate = predicate == arith::CmpIPredicate::ugt ||
+                             predicate == arith::CmpIPredicate::uge ||
+                             predicate == arith::CmpIPredicate::ult ||
+                             predicate == arith::CmpIPredicate::ule;
+    stablehlo::ComparisonType compType =
+        (unsignedPredicate || elemType.isUnsignedInteger() ||
+         elemType.isInteger(1))
+            ? stablehlo::ComparisonType::UNSIGNED
+            : stablehlo::ComparisonType::SIGNED;
 
     stablehlo::ComparisonDirection direction;
     switch (predicate) {
@@ -495,10 +532,9 @@ struct RaiseCmpI : public OpRewritePattern<arith::CmpIOp> {
 
     Value lhs = cmpOp.getOperand(0);
     Value rhs = cmpOp.getOperand(1);
-    if (compType == stablehlo::ComparisonType::UNSIGNED) {
+    if (unsignedPredicate) {
       auto lhsType = dyn_cast<RankedTensorType>(lhs.getType());
       if (lhsType) {
-        auto elemType = lhsType.getElementType();
         if (elemType.isSignlessInteger() || elemType.isSignedInteger()) {
           auto unsignedElemType = IntegerType::get(
               rewriter.getContext(), elemType.getIntOrFloatBitWidth(),
@@ -632,6 +668,7 @@ struct ArithRaisingPass
         RaiseBinary<arith::ShLIOp,     stablehlo::ShiftLeftOp, mhlo::ShiftLeftOp>,
         RaiseBinary<arith::ShRSIOp,    stablehlo::ShiftRightArithmeticOp, mhlo::ShiftRightArithmeticOp>,
         RaiseBinary<arith::ShRUIOp,    stablehlo::ShiftRightLogicalOp, mhlo::ShiftRightLogicalOp>,
+        RaiseBinary<math::Atan2Op,     stablehlo::Atan2Op,     mhlo::Atan2Op>,
 
         RaiseUnary<math::SinOp,         stablehlo::SineOp,     mhlo::SineOp>,
         RaiseUnary<math::CosOp,         stablehlo::CosineOp,   mhlo::CosineOp>,
@@ -643,10 +680,14 @@ struct ArithRaisingPass
         RaiseUnary<math::SqrtOp,        stablehlo::SqrtOp,     mhlo::SqrtOp>,
         RaiseUnary<math::RsqrtOp,       stablehlo::RsqrtOp,    mhlo::RsqrtOp>,
         RaiseUnary<math::CbrtOp,        stablehlo::CbrtOp,     mhlo::CbrtOp>,
+        RaiseUnary<math::CountLeadingZerosOp, stablehlo::ClzOp, mhlo::ClzOp>,
+        RaiseUnary<math::CtPopOp,       stablehlo::PopulationCountOp, mhlo::PopulationCountOp>,
         RaiseUnary<math::AbsFOp,        stablehlo::AbsOp,      mhlo::AbsOp>,
         RaiseUnary<math::IsFiniteOp,    stablehlo::IsFiniteOp, mhlo::IsFiniteOp>,
         RaiseUnary<math::CeilOp,        stablehlo::CeilOp,     mhlo::CeilOp>,
         RaiseUnary<math::FloorOp,       stablehlo::FloorOp,    mhlo::FloorOp>,
+        RaiseUnary<math::RoundEvenOp,   stablehlo::RoundNearestEvenOp, mhlo::RoundNearestEvenOp>,
+        RaiseUnary<math::RoundOp,       stablehlo::RoundOp,    mhlo::RoundOp>,
         RaiseUnary<math::ErfOp,         chlo::ErfOp,           chlo::ErfOp>,
         RaiseUnary<arith::NegFOp,       stablehlo::NegOp,      mhlo::NegOp>,
         RaiseUnary<enzymexla::LGammaOp, chlo::LgammaOp,        chlo::LgammaOp>,
@@ -665,10 +706,11 @@ struct ArithRaisingPass
                RaiseToConvert<arith::TruncFOp>, RaiseToConvert<arith::ExtFOp>,
                // TODO: either SI or UI is wrong
                RaiseToConvert<arith::ExtUIOp>, RaiseToConvert<arith::ExtSIOp>,
-               RaiseToConvert<arith::TruncIOp>, RaiseFma, RaiseCopySign,
-               RaiseAtan, RaiseMaxNumF, RaiseMinNumF, RaiseIsNaN, RaiseConstant,
-               RaiseFPToSI, RaiseSIToFP, RaiseUIToFP, RaiseSelect, RaiseCmpI>(
-              context);
+               RaiseToConvert<arith::TruncIOp>, RaiseMulAdd<math::FmaOp>,
+               RaiseMulAdd<enzymexla::FMulAddOp>, RaiseCopySign,
+               RaiseTruncOp, RaiseAtan, RaiseMaxNumF, RaiseMinNumF, RaiseIsNaN,
+               RaiseConstant, RaiseFPToSI, RaiseSIToFP, RaiseUIToFP,
+               RaiseSelect, RaiseCmpI>(context);
 
     walkAndApplyPatterns(getOperation(), std::move(patterns));
   }

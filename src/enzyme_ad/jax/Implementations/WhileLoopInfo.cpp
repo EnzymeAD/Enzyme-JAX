@@ -36,9 +36,9 @@ void WhileLoopInfo::computeConstantValues() {
   constStart = getConstantStartCalculate();
 }
 
-Value WhileLoopInfo::getStep(OpBuilder &builder) {
+Value WhileLoopInfo::getStep(OpBuilder &builder, const IRMapping &mapping) {
   if (step)
-    return step;
+    return mapping.lookupOrDefault(step);
 
   auto Ty =
       RankedTensorType::get({}, builder.getIntegerType(stepInt.getBitWidth()));
@@ -189,35 +189,31 @@ int64_t WhileLoopInfo::getConstantNumIters() {
   return (limit - start + step - 1) / step; // ceil division
 }
 
-Value WhileLoopInfo::getNumIters(mlir::OpBuilder &builder) {
+Value WhileLoopInfo::getNumIters(mlir::OpBuilder &builder,
+                                 const IRMapping &mapping) {
+  if (isConstant()) {
+    return stablehlo::ConstantOp::create(
+        builder, op->getLoc(), start.getType(),
+        cast<ElementsAttr>(makeAttr(start.getType(), getConstantNumIters())));
+  }
+
   auto opReg = op->getParentRegion();
-  if (!opReg->isAncestor(limit.getParentRegion()) ||
-      (step && !opReg->isAncestor(step.getParentRegion()))) {
-    // Limit or Step are defined in the Condition/Block regions (respectively).
+  // Limit and Step are only usable here if they are defined in a region that
+  // encloses the while op -- a region of our own is not enough, that is the
+  // Condition/Block case.
+  if (!limit.getParentRegion()->isAncestor(opReg) ||
+      (step && !step.getParentRegion()->isAncestor(opReg))) {
     return {};
   }
 
-  Value numIters;
-  if (isConstant()) {
-    numIters = stablehlo::ConstantOp::create(
-        builder, op->getLoc(), start.getType(),
-        cast<ElementsAttr>(makeAttr(start.getType(), getConstantNumIters())));
-  } else {
-    // numIters = (limit - start) / step;
-    Value stepVal;
-    if (step) {
-      stepVal = step;
-    } else {
-      stepVal = stablehlo::ConstantOp::create(
-          builder, op->getLoc(), start.getType(),
-          cast<ElementsAttr>(
-              makeAttr(start.getType(), stepInt.getSExtValue())));
-    }
-    numIters = stablehlo::DivOp::create(
-        builder, op->getLoc(),
-        stablehlo::SubtractOp::create(builder, op->getLoc(), limit, start),
-        stepVal);
-  }
+  // numIters = (limit - start) / step;
+  Value stepVal = getStep(builder, mapping);
+  Value numIters = stablehlo::DivOp::create(
+      builder, op->getLoc(),
+      stablehlo::SubtractOp::create(builder, op->getLoc(),
+                                    mapping.lookupOrDefault(limit),
+                                    mapping.lookupOrDefault(start)),
+      stepVal);
 
   return numIters;
 }

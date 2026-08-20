@@ -245,7 +245,8 @@ struct GeqrfOpLowering : public OpRewritePattern<enzymexla::GeqrfOp> {
         /*result_layouts*/
         getSHLOLayout(rewriter, ranks_results, isColMajorArrOutputs,
                       rank_input),
-        /*output_operand_aliases*/ rewriter.getArrayAttr(aliases));
+        /*output_operand_aliases*/ rewriter.getArrayAttr(aliases),
+        /*result_tilings*/ nullptr);
 
     rewriter.replaceAllUsesWith(op.getResult(0), cusolver_call_op.getResult(0));
     rewriter.replaceAllUsesWith(op.getResult(1), cusolver_call_op.getResult(1));
@@ -284,7 +285,8 @@ struct GeqrfOpLowering : public OpRewritePattern<enzymexla::GeqrfOp> {
         /*calledcomputations*/ nullptr,
         /*operand_layouts*/ nullptr,
         /*result_layouts*/ nullptr,
-        /*output_operand_aliases*/ nullptr);
+        /*output_operand_aliases*/ nullptr,
+        /*result_tilings*/ nullptr);
 
     rewriter.replaceAllUsesWith(op.getResult(0), customCall.getResult(0));
     rewriter.replaceAllUsesWith(op.getResult(1), customCall.getResult(1));
@@ -716,7 +718,8 @@ struct OrgqrOpLowering : public OpRewritePattern<enzymexla::OrgqrOp> {
         /*result_layouts*/
         getSHLOLayout(rewriter, ranks_results, isColMajorArrOutputs,
                       rank_input),
-        /*output_operand_aliases*/ rewriter.getArrayAttr(aliases));
+        /*output_operand_aliases*/ rewriter.getArrayAttr(aliases),
+        /*result_tilings*/ nullptr);
 
     rewriter.replaceAllUsesWith(op.getResult(), cusolver_call_op.getResult(0));
     rewriter.eraseOp(op);
@@ -742,7 +745,8 @@ struct OrgqrOpLowering : public OpRewritePattern<enzymexla::OrgqrOp> {
         /*calledcomputations*/ nullptr,
         /*operand_layouts*/ nullptr,
         /*result_layouts*/ nullptr,
-        /*output_operand_aliases*/ nullptr);
+        /*output_operand_aliases*/ nullptr,
+        /*result_tilings*/ nullptr);
 
     rewriter.replaceAllUsesWith(op.getResult(), customCall.getResult(0));
 
@@ -1290,12 +1294,12 @@ struct GemqrtOpLowering : public OpRewritePattern<enzymexla::GemqrtOp> {
 
 Value anyNonFiniteValue(PatternRewriter &rewriter, Location loc, Type outType,
                         Value input, int64_t inputRank) {
-  auto areFinite = stablehlo::AndOp::create(
-      rewriter, loc,
-      stablehlo::IsFiniteOp::create(
-          rewriter, loc, stablehlo::RealOp::create(rewriter, loc, input)),
-      stablehlo::IsFiniteOp::create(
-          rewriter, loc, stablehlo::ImagOp::create(rewriter, loc, input)));
+  auto realFinite = stablehlo::IsFiniteOp::create(
+      rewriter, loc, stablehlo::RealOp::create(rewriter, loc, input));
+  auto imagFinite = stablehlo::IsFiniteOp::create(
+      rewriter, loc, stablehlo::ImagOp::create(rewriter, loc, input));
+  auto areFinite =
+      stablehlo::AndOp::create(rewriter, loc, realFinite, imagFinite);
 
   SmallVector<int64_t> reductionDims;
   for (int i = inputRank - 2; i < inputRank; i++)
@@ -1804,7 +1808,8 @@ private:
         /*output_operand_aliases*/
         rewriter.getArrayAttr({stablehlo::OutputOperandAliasAttr::get(
             op.getContext(), std::vector<int64_t>{0}, 0,
-            std::vector<int64_t>{})}));
+            std::vector<int64_t>{})}),
+        /*result_tilings*/ nullptr);
 
     // unused custom call not getting optimized away. so adding a manual
     // check
@@ -1836,7 +1841,8 @@ private:
           /*result_layouts*/
           getSHLOLayout(rewriter, {pivotRank}, SmallVector<bool>{true},
                         inputRank),
-          /*output_operand_aliases*/ nullptr);
+          /*output_operand_aliases*/ nullptr,
+          /*result_tilings*/ nullptr);
       auto permutation1Indexed = stablehlo::AddOp::create(
           rewriter, op.getLoc(), permutation.getResult(0), pivotOnes);
       rewriter.replaceAllUsesWith(op.getResult(2), permutation1Indexed);
@@ -1890,25 +1896,26 @@ private:
         /*calledcomputations*/ nullptr,
         /*operand_layouts*/ nullptr,
         /*result_layouts*/ nullptr,
-        /*output_operand_aliases*/ nullptr);
+        /*output_operand_aliases*/ nullptr,
+        /*result_tilings*/ nullptr);
 
     // LAPACK returns 1-indexed pivots, while XLA returns 0-indexed pivots.
     // We make it consistent with LAPACK by adding 1 to the pivots.
-    auto pivots1Indexed = stablehlo::AddOp::create(
-        rewriter, op.getLoc(),
-        stablehlo::ConstantOp::create(
-            rewriter, op.getLoc(), pivotType,
-            cast<ElementsAttr>(makeAttr(pivotType, 1))),
-        stablehlo::ConvertOp::create(rewriter, op.getLoc(), pivotType,
-                                     customCall.getResult(1)));
+    auto pivotOne = stablehlo::ConstantOp::create(
+        rewriter, op.getLoc(), pivotType,
+        cast<ElementsAttr>(makeAttr(pivotType, 1)));
+    auto pivots = stablehlo::ConvertOp::create(rewriter, op.getLoc(), pivotType,
+                                               customCall.getResult(1));
+    auto pivots1Indexed =
+        stablehlo::AddOp::create(rewriter, op.getLoc(), pivotOne, pivots);
 
+    auto permutationOne = stablehlo::ConstantOp::create(
+        rewriter, op.getLoc(), permutationType,
+        cast<ElementsAttr>(makeAttr(permutationType, 1)));
+    auto permutation = stablehlo::ConvertOp::create(
+        rewriter, op.getLoc(), permutationType, customCall.getResult(2));
     auto permutation1Indexed = stablehlo::AddOp::create(
-        rewriter, op.getLoc(),
-        stablehlo::ConstantOp::create(
-            rewriter, op.getLoc(), permutationType,
-            cast<ElementsAttr>(makeAttr(permutationType, 1))),
-        stablehlo::ConvertOp::create(rewriter, op.getLoc(), permutationType,
-                                     customCall.getResult(2)));
+        rewriter, op.getLoc(), permutationOne, permutation);
 
     auto info = anyNonFiniteValue(rewriter, op.getLoc(), infoType,
                                   customCall.getResult(0), inputRank);
@@ -2209,12 +2216,12 @@ LogicalResult lowerSVDAlgorithmCPU(OpTy op, PatternRewriter &rewriter,
         auto NVal = LLVM::LoadOp::create(
             rewriter, op.getLoc(), type_llvm_lapack_int, funcOp.getArgument(1));
 
-        auto const5minMN = LLVM::MulOp::create(
-            rewriter, op.getLoc(),
-            LLVM::ConstantOp::create(
-                rewriter, op.getLoc(), type_llvm_lapack_int,
-                rewriter.getIntegerAttr(type_llvm_lapack_int, 5)),
-            arith::MinSIOp::create(rewriter, op.getLoc(), MVal, NVal));
+        auto const5 = LLVM::ConstantOp::create(
+            rewriter, op.getLoc(), type_llvm_lapack_int,
+            rewriter.getIntegerAttr(type_llvm_lapack_int, 5));
+        auto minMN = arith::MinSIOp::create(rewriter, op.getLoc(), MVal, NVal);
+        auto const5minMN =
+            LLVM::MulOp::create(rewriter, op.getLoc(), const5, minMN);
 
         auto rworkptr =
             LLVM::AllocaOp::create(rewriter, op.getLoc(), type_llvm_ptr,
@@ -2524,7 +2531,8 @@ LogicalResult lowerSVDAlgorithmGPU(OpTy op, PatternRewriter &rewriter,
                     rank_input),
       /*result_layouts*/
       getSHLOLayout(rewriter, ranks_results, isColMajorArrOutputs, rank_input),
-      /*output_operand_aliases*/ rewriter.getArrayAttr(aliases));
+      /*output_operand_aliases*/ rewriter.getArrayAttr(aliases),
+      /*result_tilings*/ nullptr);
 
   auto info = stablehlo::ConvertOp::create(rewriter, op.getLoc(),
                                            op.getResult(3).getType(),
@@ -2683,7 +2691,8 @@ struct GesvjOpLowering : public OpRewritePattern<enzymexla::GesvjOp> {
         /*calledcomputations*/ nullptr,
         /*operand_layouts*/ nullptr,
         /*result_layouts*/ nullptr,
-        /*output_operand_aliases*/ nullptr);
+        /*output_operand_aliases*/ nullptr,
+        /*result_tilings*/ nullptr);
 
     rewriter.replaceAllUsesWith(op.getResult(0), customCall.getResult(0));
     rewriter.replaceAllUsesWith(op.getResult(1), customCall.getResult(1));
