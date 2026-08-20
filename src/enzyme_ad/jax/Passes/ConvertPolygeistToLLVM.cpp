@@ -295,6 +295,32 @@ struct Memref2PointerOpLowering
   }
 };
 
+struct TGammaOpLowering : public OpRewritePattern<enzymexla::TGammaOp> {
+  using OpRewritePattern<enzymexla::TGammaOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::TGammaOp op,
+                                PatternRewriter &rewriter) const override {
+
+    Type ty = op.getResult().getType();
+    if (!ty.isF32() && !ty.isF64())
+      return failure();
+
+    bool onGPU = op->getParentOfType<gpu::GPUFuncOp>() != nullptr;
+
+    StringRef fnname = ty.isF32() ? onGPU ? "__nv_tgammaf" : "tgammaf"
+                       : onGPU    ? "__nv_tgamma"
+                                  : "tgamma";
+
+    auto moduleOp = SymbolTable::getNearestSymbolTable(op);
+    auto fn = LLVM::lookupOrCreateFn(rewriter, moduleOp, fnname, {ty}, ty);
+    if (failed(fn))
+      return failure();
+
+    rewriter.replaceOpWithNewOp<LLVM::CallOp>(op, *fn, op->getOperands());
+    return success();
+  }
+};
+
 // Back to the intrinsic it was raised from. Not llvm.intr.fma: fmuladd only
 // permits fusing, while fma requires the single rounding, which a target
 // without FMA units honors with a libm call per multiply-add.
@@ -377,6 +403,7 @@ void mlir::enzyme::populateEnzymeXLAMathToLLVMConversionPatterns(
 
   // clang-format off
   patterns.add<FMulAddOpLowering>(patterns.getContext());
+  patterns.add<TGammaOpLowering>(patterns.getContext());
   // clang-format on
 }
 
