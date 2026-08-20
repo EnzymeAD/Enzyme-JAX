@@ -1310,9 +1310,8 @@ void SparseSpMMOp::build(OpBuilder &builder, OperationState &result, Value A,
       cast<ElementsAttr>(makeAttr(typeScalar, 0)));
 
   auto typeC = RankedTensorType::get(shapeC, elementType);
-  auto C =
-      stablehlo::ConstantOp::create(builder, result.location, typeC,
-                                    cast<ElementsAttr>(makeAttr(typeC, 0)));
+  auto C = stablehlo::ConstantOp::create(
+      builder, result.location, typeC, cast<ElementsAttr>(makeAttr(typeC, 0)));
 
   result.addTypes(typeC);
   result.addOperands({alpha, A, B, beta, C});

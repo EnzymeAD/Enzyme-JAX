@@ -174,7 +174,8 @@ struct LowerSparseSpMM : public OpRewritePattern<enzymexla::SparseSpMMOp> {
           getSHLOLayout(rewriter, {1, 1, 1, rhsRank, resTy.getRank()},
                         {true, true, true, true, true}, 2),
           /*result_layouts*/
-          getSHLOLayout(rewriter, {resTy.getRank()}, SmallVector<bool>{true}, 2),
+          getSHLOLayout(rewriter, {resTy.getRank()}, SmallVector<bool>{true},
+                        2),
           /*output_operand_aliases*/
           rewriter.getArrayAttr({stablehlo::OutputOperandAliasAttr::get(
               op.getContext(), {}, 4, {})}),
@@ -217,8 +218,7 @@ struct LowerSparseSpMM : public OpRewritePattern<enzymexla::SparseSpMMOp> {
                                      broadcastScalar(op.getAlpha()));
     }
     if (!betaIsZero) {
-      Value scaledC = stablehlo::MulOp::create(rewriter, op.getLoc(),
-                                               op.getC(),
+      Value scaledC = stablehlo::MulOp::create(rewriter, op.getLoc(), op.getC(),
                                                broadcastScalar(op.getBeta()));
       out = stablehlo::AddOp::create(rewriter, op.getLoc(), out, scaledC);
     }
