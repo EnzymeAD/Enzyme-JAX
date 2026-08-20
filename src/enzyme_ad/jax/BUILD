@@ -863,12 +863,12 @@ gentbl_cc_library(
             "Dialect/Perfify/PerfifyTypes.cpp.inc",
         ),
         (
-            ["--gen-type-interface-decls"], 
-            "Dialect/Perfify/PerfifyTypeInterfaces.h.inc"
+            ["--gen-type-interface-decls"],
+            "Dialect/Perfify/PerfifyTypeInterfaces.h.inc",
         ),
         (
-            ["--gen-type-interface-defs"], 
-            "Dialect/Perfify/PerfifyTypeInterfaces.cpp.inc"
+            ["--gen-type-interface-defs"],
+            "Dialect/Perfify/PerfifyTypeInterfaces.cpp.inc",
         ),
     ],
     tblgen = "@llvm-project//mlir:mlir-tblgen",
