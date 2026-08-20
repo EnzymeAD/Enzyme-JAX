@@ -295,6 +295,33 @@ struct Memref2PointerOpLowering
   }
 };
 
+
+struct LGammaOpLowering : public OpRewritePattern<enzymexla::LGammaOp> {
+  using OpRewritePattern<enzymexla::LGammaOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::LGammaOp op,
+                                PatternRewriter &rewriter) const override {
+
+    Type ty = op.getResult().getType();
+    if (!ty.isF32() && !ty.isF64())
+      return failure();
+
+    bool onGPU = op->getParentOfType<gpu::GPUFuncOp>() != nullptr;
+
+    StringRef fnname = ty.isF32() ? onGPU ? "__nv_lgammaf" : "lgammaf"
+                       : onGPU    ? "__nv_lgamma"
+                                  : "lgamma";
+
+    auto moduleOp = SymbolTable::getNearestSymbolTable(op);
+    auto fn = LLVM::lookupOrCreateFn(rewriter, moduleOp, fnname, {ty}, ty);
+    if (failed(fn))
+      return failure();
+
+    rewriter.replaceOpWithNewOp<LLVM::CallOp>(op, *fn, op->getOperands());
+    return success();
+  }
+};
+
 struct TGammaOpLowering : public OpRewritePattern<enzymexla::TGammaOp> {
   using OpRewritePattern<enzymexla::TGammaOp>::OpRewritePattern;
 
@@ -404,6 +431,7 @@ void mlir::enzyme::populateEnzymeXLAMathToLLVMConversionPatterns(
   // clang-format off
   patterns.add<FMulAddOpLowering>(patterns.getContext());
   patterns.add<TGammaOpLowering>(patterns.getContext());
+  patterns.add<LGammaOpLowering>(patterns.getContext());
   // clang-format on
 }
 
