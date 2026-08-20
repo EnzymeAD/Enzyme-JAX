@@ -1925,6 +1925,11 @@ struct ParallelToGPULaunch : public OpRewritePattern<enzymexla::GPUWrapperOp> {
     if (!blockPop)
       return failure();
 
+    SmallVector<Value, 2> cappedByOriginalLaunch;
+    if (wrapper->getNumOperands() == 6)
+      cappedByOriginalLaunch.append(
+          {wrapper->getOperand(1), wrapper->getOperand(2)});
+
     // Only mutate once the match is certain: an op created before a bail
     // marks the IR changed on every scan, so a wrapper this pattern cannot
     // convert -- such as one whose bounds have to stay beside the parallel,
@@ -1964,11 +1969,42 @@ struct ParallelToGPULaunch : public OpRewritePattern<enzymexla::GPUWrapperOp> {
 
     // TODO make sure we start at zero or else convert the parallel ops to start
     // at 0
-    Value gridBounds[3];
     auto popGridBounds = getUpperBounds(gridPop);
+
+    constexpr uint64_t MAX_GRID_DIM_Y_Z = 65535;
+    auto fitsOutsideGridX = [&](Value bound) {
+      APInt cst;
+      if (matchPattern(bound, m_ConstantInt(&cst)))
+        return cst.ule(MAX_GRID_DIM_Y_Z);
+      return llvm::is_contained(cappedByOriginalLaunch, bound);
+    };
+
+    SmallVector<unsigned, 3> gridOrder;
+    for (unsigned i = 0; i < popGridBounds.size(); i++)
+      if (!fitsOutsideGridX(popGridBounds[i]))
+        gridOrder.push_back(i);
+    unsigned unprovable = gridOrder.size();
+    for (unsigned i = 0; i < popGridBounds.size(); i++)
+      if (fitsOutsideGridX(popGridBounds[i]))
+        gridOrder.push_back(i);
+
+    SmallVector<unsigned, 3> gridDimOfArg(popGridBounds.size());
+    for (unsigned i = 0; i < gridOrder.size(); i++)
+      gridDimOfArg[gridOrder[i]] = i;
+
+    if (unprovable > 1)
+      gridPop->emitWarning()
+          << "grid has " << unprovable
+          << " dimensions whose size is not known here; only gridDim.x holds "
+             "more than "
+          << MAX_GRID_DIM_Y_Z
+          << " blocks, so this kernel does not launch if more than one of them "
+             "exceeds that";
+
+    Value gridBounds[3];
     for (unsigned int i = 0; i < 3; i++) {
       if (i < popGridBounds.size())
-        gridBounds[i] = popGridBounds[i];
+        gridBounds[i] = popGridBounds[gridOrder[i]];
       else
         gridBounds[i] = oneindex;
     }
@@ -2053,7 +2089,7 @@ struct ParallelToGPULaunch : public OpRewritePattern<enzymexla::GPUWrapperOp> {
     rewriter.setInsertionPointToStart(launchBlock);
 
     for (auto en : llvm::enumerate(gridPop.getBody()->getArguments())) {
-      gpu::Dimension dim = getDim(en.index());
+      gpu::Dimension dim = getDim(gridDimOfArg[en.index()]);
       auto gridIdx = gpu::BlockIdOp::create(
           rewriter, loc, mlir::IndexType::get(rewriter.getContext()), dim);
       en.value().replaceAllUsesWith(gridIdx);
