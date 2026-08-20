@@ -4220,6 +4220,205 @@ struct SHLOSliceOpBatchInterface
   }
 };
 
+// Returns true if `batched` provably holds the same value in every batch
+// element, i.e. it was produced by broadcasting an unbatched value along the
+// batch dimensions (which is what the batching machinery emits for operands
+// that are invariant across the batch), or it is a splat constant.
+//
+// When every start index of a dynamic_slice/dynamic_update_slice is batch
+// invariant we can keep using a single dynamic_slice/dynamic_update_slice on
+// the batched operand. Otherwise the op has to be lowered to a gather/scatter,
+// since one (update-)slice cannot express a different offset per batch element.
+static bool isBatchInvariant(Value batched, ArrayRef<int64_t> batchSizes) {
+  SplatElementsAttr splat;
+  if (matchPattern(batched, m_Constant(&splat)))
+    return true;
+
+  auto bcast = batched.getDefiningOp<stablehlo::BroadcastInDimOp>();
+  if (!bcast)
+    return false;
+
+  // `broadcast_dimensions` maps operand dimensions onto result dimensions. If
+  // no batch dimension is mapped onto, every batch dimension is an expanded
+  // (broadcast) dimension and the value does not vary across the batch.
+  for (int64_t dim : bcast.getBroadcastDimensions())
+    if (dim < (int64_t)batchSizes.size())
+      return false;
+  return true;
+}
+
+static bool allStartIndicesBatchInvariant(Operation::operand_range startIndices,
+                                          IRMapping &mapper,
+                                          ArrayRef<int64_t> batchSizes) {
+  return llvm::all_of(startIndices, [&](Value sIndex) {
+    return isBatchInvariant(mapper.lookup(sIndex), batchSizes);
+  });
+}
+
+// Assembles the index tensor shared by the gather/scatter lowerings of a
+// batched dynamic_slice/dynamic_update_slice: the batched (scalar) start index
+// of each original dimension becomes one column of a
+// [batchSizes..., numOrigDims] tensor whose trailing dimension is the index
+// vector dimension.
+//
+// `clampLimits`, when provided, holds the largest in-bounds start index per
+// original dimension. dynamic_slice/dynamic_update_slice clamp out-of-bounds
+// start indices, and gather clamps too, but scatter instead silently drops
+// out-of-bounds updates - so the clamp must be materialized for the scatter
+// lowering.
+static Value
+buildBatchedStartIndexTensor(Operation *op, OpBuilder &builder,
+                             Operation::operand_range startIndices,
+                             IRMapping &mapper, ArrayRef<int64_t> batchSizes,
+                             std::optional<ArrayRef<int64_t>> clampLimits) {
+  Location loc = op->getLoc();
+  auto elemTy =
+      cast<RankedTensorType>(startIndices[0].getType()).getElementType();
+  auto intTy = cast<IntegerType>(elemTy);
+
+  SmallVector<int64_t> columnShape(batchSizes.begin(), batchSizes.end());
+  columnShape.push_back(1);
+  auto columnTy = RankedTensorType::get(columnShape, elemTy);
+
+  SmallVector<Value> columns;
+  for (auto [i, sIndex] : llvm::enumerate(startIndices)) {
+    Value column = mapper.lookup(sIndex);
+
+    if (clampLimits) {
+      // An index type too narrow to hold the limit cannot represent an
+      // out-of-bounds-above index either, so the upper clamp is a no-op there.
+      int64_t limit = (*clampLimits)[i];
+      int64_t typeMax =
+          intTy.isUnsigned()
+              ? (int64_t)APInt::getMaxValue(intTy.getWidth()).getZExtValue()
+              : APInt::getSignedMaxValue(intTy.getWidth()).getSExtValue();
+      limit = std::min(limit, typeMax);
+
+      Value lowerBound = makeIntegerConstant(loc, builder, elemTy, 0);
+      Value upperBound = makeIntegerConstant(loc, builder, elemTy, limit);
+      column = stablehlo::ClampOp::create(builder, loc, lowerBound, column,
+                                          upperBound);
+    }
+
+    columns.push_back(
+        stablehlo::ReshapeOp::create(builder, loc, columnTy, column)
+            .getResult());
+  }
+
+  if (columns.size() == 1)
+    return columns.front();
+
+  SmallVector<int64_t> indicesShape(batchSizes.begin(), batchSizes.end());
+  indicesShape.push_back(columns.size());
+  return stablehlo::ConcatenateOp::create(
+             builder, loc, RankedTensorType::get(indicesShape, elemTy), columns,
+             /*dimension=*/batchSizes.size())
+      .getResult();
+}
+
+// Lowers a batched dynamic_slice whose start indices vary across the batch to
+// a gather, which can apply a distinct offset per batch element.
+static LogicalResult batchDynamicSliceAsGather(stablehlo::DynamicSliceOp op,
+                                               OpBuilder &builder,
+                                               IRMapping &mapper,
+                                               ArrayRef<int64_t> batchSizes) {
+  Location loc = op.getLoc();
+  int64_t numBatchDims = batchSizes.size();
+
+  Value operand = mapper.lookup(op.getOperand());
+  auto operandTy = cast<RankedTensorType>(operand.getType());
+  int64_t origRank = operandTy.getRank() - numBatchDims;
+
+  // gather clamps its start indices exactly like dynamic_slice does, so no
+  // explicit clamp is needed here.
+  Value startIndices = buildBatchedStartIndexTensor(
+      op, builder, op.getStartIndices(), mapper, batchSizes, std::nullopt);
+
+  SmallVector<int64_t> batchDims(numBatchDims);
+  std::iota(batchDims.begin(), batchDims.end(), 0);
+
+  SmallVector<int64_t> offsetDims(origRank);
+  std::iota(offsetDims.begin(), offsetDims.end(), numBatchDims);
+
+  SmallVector<int64_t> startIndexMap(origRank);
+  std::iota(startIndexMap.begin(), startIndexMap.end(), numBatchDims);
+
+  SmallVector<int64_t> sliceSizes(numBatchDims, 1);
+  llvm::append_range(sliceSizes, op.getSliceSizes());
+
+  auto gatherOp = stablehlo::GatherOp::create(
+      builder, loc, operand, startIndices,
+      stablehlo::GatherDimensionNumbersAttr::get(
+          op.getContext(), offsetDims, /*collapsedSliceDims=*/{},
+          /*operandBatchingDims=*/batchDims,
+          /*startIndicesBatchingDims=*/batchDims, startIndexMap,
+          /*indexVectorDim=*/numBatchDims),
+      sliceSizes, /*indicesAreSorted=*/false);
+
+  mapper.map(op.getResult(), gatherOp.getResult());
+  return success();
+}
+
+// Lowers a batched dynamic_update_slice whose start indices vary across the
+// batch to a scatter, which can apply a distinct offset per batch element.
+static LogicalResult
+batchDynamicUpdateSliceAsScatter(stablehlo::DynamicUpdateSliceOp op,
+                                 OpBuilder &builder, IRMapping &mapper,
+                                 ArrayRef<int64_t> batchSizes) {
+  Location loc = op.getLoc();
+  int64_t numBatchDims = batchSizes.size();
+
+  Value operand = mapper.lookup(op.getOperand());
+  Value update = mapper.lookup(op.getUpdate());
+  auto operandTy = cast<RankedTensorType>(operand.getType());
+  auto updateTy = cast<RankedTensorType>(update.getType());
+  int64_t origRank = operandTy.getRank() - numBatchDims;
+
+  // Largest in-bounds start index for each original dimension.
+  SmallVector<int64_t> clampLimits;
+  for (int64_t i = 0; i < origRank; i++)
+    clampLimits.push_back(operandTy.getShape()[numBatchDims + i] -
+                          updateTy.getShape()[numBatchDims + i]);
+
+  Value scatterIndices =
+      buildBatchedStartIndexTensor(op, builder, op.getStartIndices(), mapper,
+                                   batchSizes, ArrayRef<int64_t>(clampLimits));
+
+  SmallVector<int64_t> batchDims(numBatchDims);
+  std::iota(batchDims.begin(), batchDims.end(), 0);
+
+  // The update window covers the original (non-batch) dimensions.
+  SmallVector<int64_t> updateWindowDims(origRank);
+  std::iota(updateWindowDims.begin(), updateWindowDims.end(), numBatchDims);
+
+  SmallVector<int64_t> scatterDimsToOperandDims(origRank);
+  std::iota(scatterDimsToOperandDims.begin(), scatterDimsToOperandDims.end(),
+            numBatchDims);
+
+  auto scatterOp = stablehlo::ScatterOp::create(
+      builder, loc, ValueRange{operand}, scatterIndices, ValueRange{update},
+      stablehlo::ScatterDimensionNumbersAttr::get(
+          op.getContext(), updateWindowDims,
+          /*insertedWindowDims=*/{}, /*inputBatchingDims=*/batchDims,
+          /*scatterIndicesBatchingDims=*/batchDims, scatterDimsToOperandDims,
+          /*indexVectorDim=*/numBatchDims),
+      /*indicesAreSorted=*/false, /*uniqueIndices=*/true);
+
+  {
+    Block *updateBody = new Block();
+    scatterOp.getUpdateComputation().push_back(updateBody);
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointToStart(updateBody);
+    auto scalarTy = RankedTensorType::get({}, operandTy.getElementType());
+    updateBody->addArgument(scalarTy, loc);
+    Value newValue = updateBody->addArgument(scalarTy, loc);
+    stablehlo::ReturnOp::create(builder, loc, newValue);
+  }
+
+  mapper.map(op.getResult(), scatterOp.getResult(0));
+  return success();
+}
+
 SmallVector<Value> computeBatchedStartIndices(Operation *op, OpBuilder &builder,
                                               SmallVector<Value> startIndices,
                                               IRMapping &mapper,
@@ -4263,6 +4462,12 @@ struct SHLODynamicSliceOpBatchInterface
                                   ArrayRef<int64_t> batchSizes) const {
     auto op = cast<stablehlo::DynamicSliceOp>(src);
 
+    // A single dynamic_slice has one start index per dimension, so it can only
+    // represent the batched op when the indices do not vary across the batch.
+    if (!allStartIndicesBatchInvariant(op.getStartIndices(), mapper,
+                                       batchSizes))
+      return batchDynamicSliceAsGather(op, builder, mapper, batchSizes);
+
     SmallVector<Value> startIndices = computeBatchedStartIndices(
         op, builder, op.getStartIndices(), mapper, batchSizes);
 
@@ -4289,6 +4494,13 @@ struct SHLODynamicUpdateSliceOpBatchInterface
                                   IRMapping &mapper,
                                   ArrayRef<int64_t> batchSizes) const {
     auto op = cast<stablehlo::DynamicUpdateSliceOp>(src);
+
+    // A single dynamic_update_slice has one start index per dimension, so it
+    // can only represent the batched op when the indices do not vary across
+    // the batch.
+    if (!allStartIndicesBatchInvariant(op.getStartIndices(), mapper,
+                                       batchSizes))
+      return batchDynamicUpdateSliceAsScatter(op, builder, mapper, batchSizes);
 
     SmallVector<Value> startIndices = computeBatchedStartIndices(
         op, builder, op.getStartIndices(), mapper, batchSizes);
