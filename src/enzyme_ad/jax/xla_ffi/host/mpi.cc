@@ -7,6 +7,17 @@
 #include "mpi_ffi.h"
 #include "mpi.h"
 
+#ifndef MPI_VERSION
+#error "Require MPI_VERSION to be defined to check version"
+#else
+#if MPI_VERSION < 5
+#error "Require MPI_VERSION > 5 for ABI-stability"
+#endif
+
+// MPItrampoline defines it as 0xdeadbeef
+#undef MPI_SUCCESS
+#define MPI_SUCCESS 0
+
 #include "../export_macro.h"
 
 // MPI function pointers are initialized to the MPItrampoline implementations by
