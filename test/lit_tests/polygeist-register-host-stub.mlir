@@ -41,3 +41,23 @@ module attributes {gpu.container_module} {
 // CHECK: RegisterFunction(%{{.+}}, %[[SYNTH]],
 // CHECK-NOT: RegisterFunction(%
 // CHECK: llvm.func internal @__polygeist_gpum_main_kernel_device_stub()
+
+// -----
+
+// The recorded host symbol is authoritative even when the kernel's name does
+// not follow the stub naming convention.
+module attributes {gpu.container_module} {
+  gpu.module @gpum {
+    gpu.func @renamed_kernel() kernel attributes {"polygeist.host_symbol" = "_Z4funv"} {
+      gpu.return
+    }
+  }
+  llvm.func @_Z4funv() {
+    llvm.return
+  }
+}
+
+// CHECK-LABEL: llvm.func private @gpum_gpubin_ctor()
+// CHECK: %[[ORIG:.+]] = llvm.mlir.addressof @_Z4funv : !llvm.ptr
+// CHECK: RegisterFunction(%{{.+}}, %[[ORIG]],
+// CHECK-NOT: RegisterFunction(%

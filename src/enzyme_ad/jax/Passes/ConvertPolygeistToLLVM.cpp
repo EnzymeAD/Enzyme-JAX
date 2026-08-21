@@ -1655,6 +1655,18 @@ static std::string getHostStubName(Operation *symbolTableOp,
   return getFuncStubName(moduleName, kernelName);
 }
 
+// The recorded host symbol is authoritative when present; fall back to
+// deriving it from the kernel name.
+static std::string getHostStubName(Operation *symbolTableOp,
+                                   StringRef moduleName, gpu::GPUFuncOp f) {
+  if (auto hs = f->getAttrOfType<StringAttr>("polygeist.host_symbol")) {
+    Operation *sym = SymbolTable::lookupSymbolIn(symbolTableOp, hs);
+    if (isa_and_nonnull<FunctionOpInterface>(sym))
+      return hs.getValue().str();
+  }
+  return getHostStubName(symbolTableOp, moduleName, f.getName());
+}
+
 class ConvertLaunchFuncOpToGpuRuntimeCallPattern
     : public ConvertOpToGpuRuntimeCallPattern<gpu::LaunchFuncOp> {
 public:
@@ -2448,8 +2460,7 @@ ConvertGPUModuleOp::matchAndRewrite(gpu::GPUModuleOp kernelModule,
           auto nullPtr =
               LLVM::ZeroOp::create(ctorBuilder, ctorloc, llvmPointerType);
           std::string synthStubName = getFuncStubName(moduleName, f.getName());
-          std::string hostStubName =
-              getHostStubName(moduleOp, moduleName, f.getName());
+          std::string hostStubName = getHostStubName(moduleOp, moduleName, f);
           if (hostStubName == synthStubName) {
             LLVM::LLVMFuncOp stub;
             {
@@ -2661,10 +2672,19 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
   // };
 
   // Build module constructor and destructor
-  std::string funcStubName =
-      getHostStubName(launchOp->getParentOfType<ModuleOp>(),
-                      launchOp.getKernelModuleName().getValue(),
-                      launchOp.getKernelName().getValue());
+  std::string funcStubName;
+  {
+    auto moduleOp = launchOp->getParentOfType<ModuleOp>();
+    if (auto gfunc =
+            dyn_cast_or_null<gpu::GPUFuncOp>(SymbolTable::lookupSymbolIn(
+                kernelModule, launchOp.getKernelName())))
+      funcStubName = getHostStubName(
+          moduleOp, launchOp.getKernelModuleName().getValue(), gfunc);
+    else
+      funcStubName =
+          getHostStubName(moduleOp, launchOp.getKernelModuleName().getValue(),
+                          launchOp.getKernelName().getValue());
+  }
 
   auto bitcast =
       LLVM::AddressOfOp::create(rewriter, loc, llvmPointerType, funcStubName);
