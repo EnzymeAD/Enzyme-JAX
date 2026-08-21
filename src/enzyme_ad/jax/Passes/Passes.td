@@ -674,6 +674,27 @@ def LowerEnzymeXLABLASPass : Pass<"lower-enzymexla-blas"> {
   ];
 }
 
+def LowerEnzymeXLASparsePass : Pass<"lower-enzymexla-sparse"> {
+  let summary = "Lower enzymexla.sparse ops to stablehlo custom calls";
+  let description = [{
+    Raises `stablehlo.dot_general` ops whose lhs is a CSR-encoded
+    `sparse_tensor.assemble` result to `enzymexla.sparse.spmm`, and lowers
+    `enzymexla.sparse.spmm` ops into `stablehlo.custom_call
+    @reactant_csr_matmul` / `@reactant_csr_matmul_acc` operating directly on
+    the raw CSR buffers (positions, coordinates, values), so that only dense
+    tensor types remain. Constant `alpha`/`beta` are fused into a single
+    library call (with `C` aliased to the output); runtime scalars are
+    emitted as explicit stablehlo scaling around the plain product. The
+    custom calls are implemented via cuSPARSE/hipSPARSE. Any sparse op that
+    survives the rewrite is reported as an error.
+  }];
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "sparse_tensor::SparseTensorDialect",
+    "enzymexla::EnzymeXLADialect",
+  ];
+}
+
 def LowerImpulseToStableHLOPass : Pass<"lower-impulse-to-stablehlo"> {
   let summary = "Lower Impulse dialect ops to StableHLO";
   let description = [{
