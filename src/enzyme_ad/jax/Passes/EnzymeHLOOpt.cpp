@@ -19465,6 +19465,7 @@ struct SinkDUS : public CheckedOpRewritePattern<stablehlo::WhileOp, SinkDUS> {
       for (auto s : DUS.getStartIndices()) {
         if (!definedOutside(s, whileOp)) {
           legal = false;
+          break;
         }
       }
       if (!legal)
@@ -19498,7 +19499,10 @@ struct SinkDUS : public CheckedOpRewritePattern<stablehlo::WhileOp, SinkDUS> {
             Value v = DUS.getOperand();
             while (v != argOperand && v != condOperand) {
               auto DUS2 = v.getDefiningOp<stablehlo::DynamicUpdateSliceOp>();
-              assert(DUS2);
+              if (!DUS2) {
+                legal = false;
+                break;
+              }
               if (mayReadMemoryWrittenTo(use, DUS2)) {
                 mayReadOther = true;
                 break;
@@ -19510,6 +19514,8 @@ struct SinkDUS : public CheckedOpRewritePattern<stablehlo::WhileOp, SinkDUS> {
                 mayReadOther = true;
               }
             }
+            if (!legal)
+              break;
             if (!mayReadOther) {
               if (mustReadMemoryWrittenTo(use, DUS)) {
                 mustReaders.push_back(use);
