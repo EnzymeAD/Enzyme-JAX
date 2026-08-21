@@ -446,6 +446,7 @@ bool isClose(double unopt, double opt, double rtol = 1e-5, double atol = 1e-8) {
 }
 
 int main(int argc, char **argv) {
+  bool anyMismatch = false;
   llvm::cl::ParseCommandLineOptions(argc, argv,
                                     "StableHLO Differential Fuzzer\n");
 
@@ -609,6 +610,7 @@ int main(int argc, char **argv) {
             llvm::outs() << "  [!] FLOAT MISMATCH: Expected " << uVal
                          << " but got " << oVal << "\n";
             mismatch = true;
+            anyMismatch = true;
             break;
           }
         }
@@ -617,10 +619,12 @@ int main(int argc, char **argv) {
         // definitive bug.
         llvm::outs() << "  [!] MISMATCH on return value " << i << "!\n";
         mismatch = true;
+        anyMismatch = false;
       }
     }
     if (!mismatch) {
       llvm::outs() << "  PASS: Outputs match exactly.\n";
     }
   });
+  return anyMismatch ? 1 : 0;
 }
