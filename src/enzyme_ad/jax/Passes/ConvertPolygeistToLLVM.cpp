@@ -295,7 +295,6 @@ struct Memref2PointerOpLowering
   }
 };
 
-
 struct LGammaOpLowering : public OpRewritePattern<enzymexla::LGammaOp> {
   using OpRewritePattern<enzymexla::LGammaOp>::OpRewritePattern;
 
