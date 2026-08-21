@@ -1916,17 +1916,18 @@ struct LowerEnzymeXLAMPIPass
     auto context = module->getContext();
 
     if (backend == "cuda" && !ncclCommPtr) {
-      bool hasLowerableMPIOp = false;
-      module.walk([&](Operation *op) {
-        if (isa<enzymexla::MPIBarrierOp, enzymexla::MPISendOp,
-                enzymexla::MPIRecvOp, enzymexla::MPIIsendOp,
-                enzymexla::MPIIrecvOp, enzymexla::MPIWaitOp,
-                enzymexla::MPIWaitallOp, enzymexla::MPIAllreduceOp,
-                enzymexla::MPIBcastOp>(op)) {
-          hasLowerableMPIOp = true;
-        }
-      });
-      if (hasLowerableMPIOp) {
+      if (module
+              .walk([&](Operation *op) -> WalkResult {
+                if (isa<enzymexla::MPIBarrierOp, enzymexla::MPISendOp,
+                        enzymexla::MPIRecvOp, enzymexla::MPIIsendOp,
+                        enzymexla::MPIIrecvOp, enzymexla::MPIWaitOp,
+                        enzymexla::MPIWaitallOp, enzymexla::MPIAllreduceOp,
+                        enzymexla::MPIBcastOp>(op)) {
+                  return WalkResult::interrupt();
+                }
+                return WalkResult::advance();
+              })
+              .wasInterrupted()) {
         module.emitError() << "lower-enzymexla-mpi with backend=cuda requires "
                               "a valid NCCL communicator pointer";
         signalPassFailure();
