@@ -1140,12 +1140,14 @@ struct LowerJITPass
         hasReturn = !fnty.getResults().empty();
       }
 
+      auto deviceABI = fn->getAttrOfType<StringAttr>("enzymexla.device_abi");
+
       CallInfo cdata = CompileCall(
           symbolTable, op.getLoc(), fn, jit, op, openmp, cuResultHandlerPtr,
           cuStreamSynchronizePtr, indexBitWidth, cubinTriple, cubinChip,
           cubinFeatures, cubinFormat, cuOptLevel, toolkitPath, linkFilesArray,
           debug, hasReturn, dump_final_module,
-          fn->hasAttr("enzymexla.requires_cuda_abi"));
+          deviceABI && deviceABI.getValue() == "cuda");
 
       std::string backendinfo((char *)&cdata, sizeof(CallInfo));
       if (jit) {
