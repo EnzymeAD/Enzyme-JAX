@@ -10203,7 +10203,9 @@ struct TransposeReduce
     unsigned resultNum = std::distance(
         reduce.getResults().begin(), llvm::find(reduce.getResults(), operand));
 
-    auto reduceDims = reduce.getDimensions();
+    SmallVector<int64_t> reduceDims = llvm::to_vector(reduce.getDimensions());
+    std::sort(reduceDims.begin(), reduceDims.end());
+
     auto reduceInput = reduce.getInputs()[resultNum];
     auto reduceInputType = dyn_cast<RankedTensorType>(reduceInput.getType());
     if (!reduceInputType)
@@ -10664,7 +10666,11 @@ struct BroadcastReduce
     SmallVector<int64_t> broadcastFromNothingDims, broadcastFromOneDims;
     auto broadcastSourceType =
         cast<TensorType>(broadcast.getOperand().getType());
-    for (int64_t reductionDim : op.getDimensions()) {
+
+    SmallVector<int64_t> reduceDims = llvm::to_vector(op.getDimensions());
+    std::sort(reduceDims.begin(), reduceDims.end());
+
+    for (int64_t reductionDim : reduceDims) {
       if (inputType.isDynamicDim(reductionDim))
         continue;
       auto it = llvm::find(broadcastDims, reductionDim);
@@ -10692,7 +10698,7 @@ struct BroadcastReduce
     int64_t numRemoved = 0;
     SmallVector<int64_t> newReduceDimensions;
     llvm::sort(broadcastFromNothingDims);
-    for (int64_t reductionDim : op.getDimensions()) {
+    for (int64_t reductionDim : reduceDims) {
       if (llvm::is_contained(broadcastFromNothingDims, reductionDim)) {
         numRemoved++;
         continue;
