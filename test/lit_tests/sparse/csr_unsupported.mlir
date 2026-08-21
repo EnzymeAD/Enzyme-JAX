@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --lower-sparse-csr --verify-diagnostics %s
+// RUN: enzymexlamlir-opt --lower-enzymexla-sparse --verify-diagnostics %s
 
 #csr = #sparse_tensor.encoding<{ map = (d0, d1) -> (d0 : dense, d1 : compressed), posWidth = 64, crdWidth = 64 }>
 
