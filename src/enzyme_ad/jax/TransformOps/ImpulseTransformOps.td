@@ -89,6 +89,17 @@ def SicmDivideScalePatterns : ImpulsePatternOp<
     "sicm_divide_scale"> {
   let patterns = ["DivideScaleFactorizationHLO"];
 }
+// The Gram variant below is opt-in and deliberately left out of `sicm`.
+def SicmGaussianSufficientStatsPatterns : ImpulsePatternOp<
+    "sicm_gaussian_sufficient_stats"> {
+  let patterns = ["GaussianSufficientStatsHLO",
+                  "GaussianSufficientStatsReduceHLO"];
+}
+def SicmGaussianSufficientStatsGramPatterns : ImpulsePatternOp<
+    "sicm_gaussian_sufficient_stats_gram"> {
+  let patterns = ["GaussianSufficientStatsGramHLO",
+                  "GaussianSufficientStatsGramReduceHLO"];
+}
 
 def SicmPatterns : ImpulsePatternOp<"sicm"> {
   let patterns = [
@@ -109,5 +120,7 @@ def SicmPatterns : ImpulsePatternOp<"sicm"> {
     "NegateDistributionHLO",
     "ExpAddFactorizationHLO",
     "DivideScaleFactorizationHLO",
+    "GaussianSufficientStatsHLO",
+    "GaussianSufficientStatsReduceHLO",
   ];
 }

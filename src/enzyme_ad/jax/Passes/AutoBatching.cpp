@@ -2769,19 +2769,21 @@ WhileIsCopySimplify::matchAndRewriteImpl(stablehlo::WhileOp whileOp,
       continue;
     }
 
+    // The hoist writes one element per iteration along each induction dim; a
+    // wider update window would lose all but its first element.
+    auto dusUpdateTy = cast<RankedTensorType>(dusOp.getUpdate().getType());
+    if (llvm::any_of(dusInductionVarDims, [&](int64_t i) {
+          return dusUpdateTy.getDimSize(i) != 1;
+        })) {
+      continue;
+    }
+
     Value newDUSUpdate;
     SmallVector<Operation *> canBeHoisted;
     Value outerValue;
     auto origUpdate = dusOp.getUpdate();
     if (info.isConstantAcrossIterations(origUpdate, outerValue, canBeHoisted,
                                         true)) {
-      RankedTensorType origUpdateTy = origUpdate.getType();
-      if (llvm::any_of(dusInductionVarDims, [&](auto i) {
-            return origUpdateTy.getDimSize(i) != 1;
-          })) {
-        continue;
-      }
-
       anyOpRewritten = true;
       if (outerValue) {
         newDUSUpdate = outerValue;

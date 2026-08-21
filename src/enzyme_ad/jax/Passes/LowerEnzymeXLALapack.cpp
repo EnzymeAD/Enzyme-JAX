@@ -87,33 +87,23 @@ struct GeqrfOpLowering : public OpRewritePattern<enzymexla::GeqrfOp> {
       return rewriter.notifyMatchFailure(op, "unsupported element type");
     }
 
-    std::string bind_fn = "enzymexla_lapacke_" + fn;
-    std::string wrapper_fn = "enzymexla_wrapper_lapacke_" + fn;
+    // Fortran LAPACK, not LAPACKE: libblastrampoline does not back LAPACKE.
+    std::string bind_fn = "enzymexla_lapack_" + fn;
+    std::string wrapper_fn = "enzymexla_wrapper_lapack_" + fn;
 
-    // declare LAPACKE function declarations if not present
+    // dgeqrf_(M, N, A, LDA, TAU, WORK, LWORK, INFO), all by pointer.
     auto moduleOp = op->getParentOfType<ModuleOp>();
 
     if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(bind_fn)) {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(moduleOp.getBody());
+      SmallVector<Type> argTypes(8, type_llvm_ptr);
       auto func_type =
-          LLVM::LLVMFunctionType::get(type_llvm_lapack_int,
-                                      {
-                                          type_llvm_lapack_int, // matrix_layout
-                                          type_llvm_lapack_int, // m
-                                          type_llvm_lapack_int, // n
-                                          type_llvm_ptr,        // A
-                                          type_llvm_lapack_int, // lda
-                                          type_llvm_ptr         // tau
-                                      },
-                                      false);
+          LLVM::LLVMFunctionType::get(type_llvm_void, argTypes, false);
       LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), bind_fn, func_type,
                                LLVM::Linkage::External);
     }
 
-    // WARN probably will need another function name encoding if we call to
-    // `geqrf`, `orgqr` or `ungqr` in other op insert wrapper function for
-    // `geqrf`
     static int64_t fn_counter = 0;
     fn_counter++;
 
@@ -134,34 +124,43 @@ struct GeqrfOpLowering : public OpRewritePattern<enzymexla::GeqrfOp> {
                                            func_type);
       rewriter.setInsertionPointToStart(func.addEntryBlock(rewriter));
 
-      // `101` for row-major, `102` for col-major
-      auto layout = LLVM::ConstantOp::create(
-          rewriter, op.getLoc(), type_llvm_lapack_int,
-          rewriter.getIntegerAttr(type_lapack_int, 102));
-      auto m = LLVM::ConstantOp::create(
-          rewriter, op.getLoc(), type_llvm_lapack_int,
+      auto loc = op.getLoc();
+      auto a_ptr = func.getArgument(0);
+      auto tau_ptr = func.getArgument(1);
+      auto info_ptr = func.getArgument(2);
+
+      auto const1 =
+          LLVM::ConstantOp::create(rewriter, loc, type_llvm_lapack_int,
+                                   rewriter.getIntegerAttr(type_lapack_int, 1));
+      auto mVal = LLVM::ConstantOp::create(
+          rewriter, loc, type_llvm_lapack_int,
           rewriter.getIntegerAttr(type_lapack_int, inputShape[0]));
-      auto n = LLVM::ConstantOp::create(
-          rewriter, op.getLoc(), type_llvm_lapack_int,
+      auto nVal = LLVM::ConstantOp::create(
+          rewriter, loc, type_llvm_lapack_int,
           rewriter.getIntegerAttr(type_lapack_int, inputShape[1]));
-      auto lda = m;
 
-      // call to `lapacke_*geqrf*`
-      auto res = LLVM::CallOp::create(rewriter, op.getLoc(),
-                                      TypeRange{type_llvm_lapack_int},
-                                      SymbolRefAttr::get(ctx, bind_fn),
-                                      ValueRange{
-                                          layout.getResult(),
-                                          m.getResult(),
-                                          n.getResult(),
-                                          func.getArgument(0),
-                                          lda.getResult(),
-                                          func.getArgument(1),
-                                      });
+      auto m_ptr = LLVM::AllocaOp::create(rewriter, loc, type_llvm_ptr,
+                                          type_lapack_int, const1);
+      LLVM::StoreOp::create(rewriter, loc, mVal, m_ptr);
+      auto n_ptr = LLVM::AllocaOp::create(rewriter, loc, type_llvm_ptr,
+                                          type_lapack_int, const1);
+      LLVM::StoreOp::create(rewriter, loc, nVal, n_ptr);
+      auto lda_ptr = LLVM::AllocaOp::create(rewriter, loc, type_llvm_ptr,
+                                            type_lapack_int, const1);
+      LLVM::StoreOp::create(rewriter, loc, mVal, lda_ptr);
+      // LWORK = N, the unblocked minimum.
+      auto lwork_ptr = LLVM::AllocaOp::create(rewriter, loc, type_llvm_ptr,
+                                              type_lapack_int, const1);
+      LLVM::StoreOp::create(rewriter, loc, nVal, lwork_ptr);
+      auto work_ptr = LLVM::AllocaOp::create(rewriter, loc, type_llvm_ptr,
+                                             inputElementType, nVal);
 
-      LLVM::StoreOp::create(rewriter, op.getLoc(), res.getResult(),
-                            func.getArgument(2));
-      LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
+      LLVM::CallOp::create(rewriter, loc, TypeRange{},
+                           SymbolRefAttr::get(ctx, bind_fn),
+                           ValueRange{m_ptr, n_ptr, a_ptr, lda_ptr, tau_ptr,
+                                      work_ptr, lwork_ptr, info_ptr});
+
+      LLVM::ReturnOp::create(rewriter, loc, ValueRange{});
     }
 
     // emit the `enzymexla.jit_call` op to `geqrf` wrapper
@@ -565,34 +564,22 @@ struct OrgqrOpLowering : public OpRewritePattern<enzymexla::OrgqrOp> {
       return rewriter.notifyMatchFailure(op, "unsupported element type");
     }
 
-    std::string bind_fn = "enzymexla_lapacke_" + fn;
-    std::string wrapper_fn = "enzymexla_wrapper_lapacke_" + fn;
+    std::string bind_fn = "enzymexla_lapack_" + fn;
+    std::string wrapper_fn = "enzymexla_wrapper_lapack_" + fn;
 
-    // declare LAPACKE function declarations if not present
+    // dorgqr_(M, N, K, A, LDA, TAU, WORK, LWORK, INFO), all by pointer.
     auto moduleOp = op->getParentOfType<ModuleOp>();
 
     if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(bind_fn)) {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(moduleOp.getBody());
+      SmallVector<Type> argTypes(9, type_llvm_ptr);
       auto func_type =
-          LLVM::LLVMFunctionType::get(type_llvm_lapack_int,
-                                      {
-                                          type_llvm_lapack_int, // matrix_layout
-                                          type_llvm_lapack_int, // m
-                                          type_llvm_lapack_int, // n
-                                          type_llvm_lapack_int, // k
-                                          type_llvm_ptr,        // A
-                                          type_llvm_lapack_int, // lda
-                                          type_llvm_ptr         // tau
-                                      },
-                                      false);
+          LLVM::LLVMFunctionType::get(type_llvm_void, argTypes, false);
       LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), bind_fn, func_type,
                                LLVM::Linkage::External);
     }
 
-    // WARN probably will need another function name encoding if we call to
-    // `geqrf`, `orgqr` or `ungqr` in other op insert wrapper function for
-    // `geqrf`
     static int64_t fn_counter = 0;
     fn_counter++;
 
@@ -612,39 +599,49 @@ struct OrgqrOpLowering : public OpRewritePattern<enzymexla::OrgqrOp> {
                                            func_type);
       rewriter.setInsertionPointToStart(func.addEntryBlock(rewriter));
 
-      // `101` for row-major, `102` for col-major
-      auto layout = LLVM::ConstantOp::create(
-          rewriter, op.getLoc(), type_llvm_lapack_int,
-          rewriter.getIntegerAttr(type_lapack_int, 102));
-      auto mC = inputShape[0];
-      auto m = LLVM::ConstantOp::create(
-          rewriter, op.getLoc(), type_llvm_lapack_int,
-          rewriter.getIntegerAttr(type_lapack_int, mC));
-      auto nC = inputShape[1];
-      auto n = LLVM::ConstantOp::create(
-          rewriter, op.getLoc(), type_llvm_lapack_int,
-          rewriter.getIntegerAttr(type_lapack_int, nC));
-      auto k_value = nC;
-      auto k = LLVM::ConstantOp::create(
-          rewriter, op.getLoc(), type_llvm_lapack_int,
-          rewriter.getIntegerAttr(type_lapack_int, k_value));
-      auto lda = m;
+      auto loc = op.getLoc();
+      auto a_ptr = func.getArgument(0);
+      auto tau_ptr = func.getArgument(1);
 
-      // call to `lapacke_*(or|un)gqr*`
-      LLVM::CallOp::create(rewriter, op.getLoc(),
-                           TypeRange{type_llvm_lapack_int},
+      auto const1 =
+          LLVM::ConstantOp::create(rewriter, loc, type_llvm_lapack_int,
+                                   rewriter.getIntegerAttr(type_lapack_int, 1));
+      auto mVal = LLVM::ConstantOp::create(
+          rewriter, loc, type_llvm_lapack_int,
+          rewriter.getIntegerAttr(type_lapack_int, inputShape[0]));
+      auto nVal = LLVM::ConstantOp::create(
+          rewriter, loc, type_llvm_lapack_int,
+          rewriter.getIntegerAttr(type_lapack_int, inputShape[1]));
+      // K = N reflectors (thin Q).
+      auto kVal = nVal;
+
+      auto m_ptr = LLVM::AllocaOp::create(rewriter, loc, type_llvm_ptr,
+                                          type_lapack_int, const1);
+      LLVM::StoreOp::create(rewriter, loc, mVal, m_ptr);
+      auto n_ptr = LLVM::AllocaOp::create(rewriter, loc, type_llvm_ptr,
+                                          type_lapack_int, const1);
+      LLVM::StoreOp::create(rewriter, loc, nVal, n_ptr);
+      auto k_ptr = LLVM::AllocaOp::create(rewriter, loc, type_llvm_ptr,
+                                          type_lapack_int, const1);
+      LLVM::StoreOp::create(rewriter, loc, kVal, k_ptr);
+      auto lda_ptr = LLVM::AllocaOp::create(rewriter, loc, type_llvm_ptr,
+                                            type_lapack_int, const1);
+      LLVM::StoreOp::create(rewriter, loc, mVal, lda_ptr);
+      // LWORK = N, the unblocked minimum.
+      auto lwork_ptr = LLVM::AllocaOp::create(rewriter, loc, type_llvm_ptr,
+                                              type_lapack_int, const1);
+      LLVM::StoreOp::create(rewriter, loc, nVal, lwork_ptr);
+      auto work_ptr = LLVM::AllocaOp::create(rewriter, loc, type_llvm_ptr,
+                                             inputElementType, nVal);
+      auto info_ptr = LLVM::AllocaOp::create(rewriter, loc, type_llvm_ptr,
+                                             type_lapack_int, const1);
+
+      LLVM::CallOp::create(rewriter, loc, TypeRange{},
                            SymbolRefAttr::get(ctx, bind_fn),
-                           ValueRange{
-                               layout.getResult(),
-                               m.getResult(),
-                               n.getResult(),
-                               k.getResult(),
-                               func.getArgument(0),
-                               lda.getResult(),
-                               func.getArgument(1),
-                           });
+                           ValueRange{m_ptr, n_ptr, k_ptr, a_ptr, lda_ptr,
+                                      tau_ptr, work_ptr, lwork_ptr, info_ptr});
 
-      LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
+      LLVM::ReturnOp::create(rewriter, loc, ValueRange{});
     }
 
     // emit the `enzymexla.jit_call` op to `(or|un)gqr` wrapper

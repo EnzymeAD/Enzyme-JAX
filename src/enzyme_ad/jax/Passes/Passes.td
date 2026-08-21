@@ -826,6 +826,12 @@ def SICMPass : Pass<"sicm"> {
   let options = [
     Option<"maxIterations", "max-iterations", "int64_t", "10",
            "Maximum rewrite+hoist iterations per region">,
+    Option<"gramFormSufficientStats", "gram-form-sufficient-stats", "bool",
+           "false",
+           "Use the Gram (normal-equations) form of the Gaussian "
+           "sufficient-statistics rewrite instead of the default QR form. "
+           "Portability fallback (dot_general only, no LAPACK); "
+           "accuracy-changing (Section 3.5 of GRAM_RULE_DESIGN.md), f64 only.">,
   ];
 }
 

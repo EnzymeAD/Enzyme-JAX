@@ -788,6 +788,7 @@ static void addLICMPasses(std::vector<std::string> &list,
   list.push_back("broadcastindim_licm(0)");
   list.push_back("reshape_licm(0)");
   list.push_back("dot_general_licm(0)");
+  list.push_back("cholesky_licm(0)");
   list.push_back("reduce_licm(0)");
   list.push_back("reduce_window_licm(0)");
   list.push_back("reverse_licm(0)");

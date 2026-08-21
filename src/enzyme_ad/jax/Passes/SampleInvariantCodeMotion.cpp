@@ -2148,6 +2148,569 @@ struct CholeskyEigenLiftHLO : public OpRewritePattern<stablehlo::CholeskyOp> {
   }
 };
 
+// sum by an equal scalar computed from the hoistable statistics Q1, R, c, rem,
+// dropping the per-gradient residual cost from O(N D) to O(D^2). The QR
+// emission carries no large-magnitude cancellation and ships in the aggregate
+// pattern set; the Gram emission (yty - 2 beta'Xty + beta'G beta) is the
+// portability fallback behind an opt-in flag (Section 3.5/3.7 of
+// GRAM_RULE_DESIGN.md).
+enum class SicmAffineKind { Mul, Div, Add, SubRhs, SubLhs };
+struct SicmAffineStep {
+  SicmAffineKind kind;
+  Value scalar;
+};
+
+struct GaussianStatsMatch {
+  Value X, y, beta;
+  int64_t N = 0, D = 0;
+  int64_t xContractDim = 1;
+  SmallVector<SicmAffineStep> affine; // outer-first
+  bool hasFactor = false;
+  Value factorScalar;
+  bool factorIsDivide = false;
+};
+
+static bool isScalarShapedValue(Value v) {
+  if (auto bc = v.getDefiningOp<stablehlo::BroadcastInDimOp>())
+    return isEffectivelyScalar(bc.getOperand());
+  DenseFPElementsAttr attr;
+  if (matchPattern(v, m_Constant(&attr)) && attr.isSplat())
+    return true;
+  return isEffectivelyScalar(v);
+}
+
+static Value shapedToScalar(OpBuilder &b, Location loc, Value v,
+                            Type elemType) {
+  if (auto bc = v.getDefiningOp<stablehlo::BroadcastInDimOp>())
+    return reshapeToScalar(b, loc, bc.getOperand());
+  DenseFPElementsAttr attr;
+  if (matchPattern(v, m_Constant(&attr)) && attr.isSplat()) {
+    auto st = RankedTensorType::get({}, elemType);
+    return stablehlo::ConstantOp::create(
+        b, loc, st, DenseElementsAttr::get(st, attr.getSplatValue<APFloat>()));
+  }
+  return reshapeToScalar(b, loc, v);
+}
+
+static Value sicmScalarConst(OpBuilder &b, Location loc, Type elemType,
+                             double v) {
+  auto st = RankedTensorType::get({}, elemType);
+  return stablehlo::ConstantOp::create(
+      b, loc, st, DenseElementsAttr::get(st, b.getFloatAttr(elemType, v)));
+}
+
+static Value emitContractDot(OpBuilder &b, Location loc, RankedTensorType resTy,
+                             Value lhs, Value rhs, ArrayRef<int64_t> lhsC,
+                             ArrayRef<int64_t> rhsC) {
+  auto dims = stablehlo::DotDimensionNumbersAttr::get(
+      b.getContext(), /*lhsBatch=*/{}, /*rhsBatch=*/{}, lhsC, rhsC);
+  return stablehlo::DotGeneralOp::create(b, loc, resTy, lhs, rhs, dims,
+                                         /*precision_config=*/nullptr,
+                                         /*algorithm=*/nullptr);
+}
+
+static bool isSplatFloat(Value v, double val) {
+  DenseFPElementsAttr attr;
+  if (!matchPattern(v, m_Constant(&attr)) || !attr.isSplat())
+    return false;
+  APFloat sp = attr.getSplatValue<APFloat>();
+  bool losesInfo = false;
+  sp.convert(APFloat::IEEEdouble(), APFloat::rmNearestTiesToEven, &losesInfo);
+  return sp.convertToDouble() == val;
+}
+
+struct SicmEventSum {
+  Value K;
+  int64_t N;
+};
+
+static bool isAddReduce(stablehlo::ReduceOp op) {
+  Region &body = op.getBody();
+  if (!body.hasOneBlock())
+    return false;
+  Block &blk = body.front();
+  if (blk.getNumArguments() != 2)
+    return false;
+  auto ret = dyn_cast<stablehlo::ReturnOp>(blk.getTerminator());
+  if (!ret || ret.getNumOperands() != 1)
+    return false;
+  auto add = ret.getOperand(0).getDefiningOp<stablehlo::AddOp>();
+  if (!add)
+    return false;
+  Value a = blk.getArgument(0), b = blk.getArgument(1);
+  return (add.getLhs() == a && add.getRhs() == b) ||
+         (add.getLhs() == b && add.getRhs() == a);
+}
+
+static FailureOr<SicmEventSum> matchEventSumReduce(stablehlo::ReduceOp op) {
+  if (op.getInputs().size() != 1 || op.getNumResults() != 1)
+    return failure();
+  auto resT = dyn_cast<RankedTensorType>(op.getResult(0).getType());
+  if (!resT || resT.getRank() != 0)
+    return failure();
+  Value in = op.getInputs()[0];
+  auto inT = dyn_cast<RankedTensorType>(in.getType());
+  if (!inT || inT.getRank() != 1 || inT.isDynamicDim(0))
+    return failure();
+  auto dims = op.getDimensions();
+  if (dims.size() != 1 || dims[0] != 0)
+    return failure();
+  if (!isAddReduce(op))
+    return failure();
+  if (!isSplatFloat(op.getInitValues()[0], 0.0))
+    return failure();
+  return SicmEventSum{in, inT.getDimSize(0)};
+}
+
+static FailureOr<SicmEventSum> matchEventSumDot(stablehlo::DotGeneralOp op) {
+  auto resT = dyn_cast<RankedTensorType>(op.getType());
+  if (!resT || resT.getRank() != 0)
+    return failure();
+  auto dn = op.getDotDimensionNumbersAttr();
+  if (!dn.getLhsBatchingDimensions().empty() ||
+      !dn.getRhsBatchingDimensions().empty())
+    return failure();
+  if (dn.getLhsContractingDimensions().size() != 1 ||
+      dn.getRhsContractingDimensions().size() != 1)
+    return failure();
+  if (dn.getLhsContractingDimensions()[0] != 0 ||
+      dn.getRhsContractingDimensions()[0] != 0)
+    return failure();
+  Value lhs = op.getLhs(), rhs = op.getRhs();
+  auto lt = dyn_cast<RankedTensorType>(lhs.getType());
+  auto rt = dyn_cast<RankedTensorType>(rhs.getType());
+  if (!lt || !rt || lt.getRank() != 1 || rt.getRank() != 1)
+    return failure();
+  if (isSplatFloat(rhs, 1.0) && !isSplatFloat(lhs, 1.0) && !lt.isDynamicDim(0))
+    return SicmEventSum{lhs, lt.getDimSize(0)};
+  if (isSplatFloat(lhs, 1.0) && !isSplatFloat(rhs, 1.0) && !rt.isDynamicDim(0))
+    return SicmEventSum{rhs, rt.getDimSize(0)};
+  return failure();
+}
+
+static Value stripAffineScalarWrappers(Value K,
+                                       SmallVectorImpl<SicmAffineStep> &steps) {
+  Value cur = K;
+  while (Operation *def = cur.getDefiningOp()) {
+    if (auto mul = dyn_cast<stablehlo::MulOp>(def)) {
+      Value a = mul.getLhs(), b = mul.getRhs();
+      if (isScalarShapedValue(b) && !isScalarShapedValue(a)) {
+        steps.push_back({SicmAffineKind::Mul, b});
+        cur = a;
+        continue;
+      }
+      if (isScalarShapedValue(a) && !isScalarShapedValue(b)) {
+        steps.push_back({SicmAffineKind::Mul, a});
+        cur = b;
+        continue;
+      }
+      break;
+    }
+    if (auto add = dyn_cast<stablehlo::AddOp>(def)) {
+      Value a = add.getLhs(), b = add.getRhs();
+      if (isScalarShapedValue(b) && !isScalarShapedValue(a)) {
+        steps.push_back({SicmAffineKind::Add, b});
+        cur = a;
+        continue;
+      }
+      if (isScalarShapedValue(a) && !isScalarShapedValue(b)) {
+        steps.push_back({SicmAffineKind::Add, a});
+        cur = b;
+        continue;
+      }
+      break;
+    }
+    if (auto sub = dyn_cast<stablehlo::SubtractOp>(def)) {
+      Value a = sub.getLhs(), b = sub.getRhs();
+      if (isScalarShapedValue(b) && !isScalarShapedValue(a)) {
+        steps.push_back({SicmAffineKind::SubRhs, b});
+        cur = a;
+        continue;
+      }
+      if (isScalarShapedValue(a) && !isScalarShapedValue(b)) {
+        steps.push_back({SicmAffineKind::SubLhs, a});
+        cur = b;
+        continue;
+      }
+      break;
+    }
+    if (auto div = dyn_cast<stablehlo::DivOp>(def)) {
+      Value a = div.getLhs(), b = div.getRhs();
+      if (isScalarShapedValue(b) && !isScalarShapedValue(a)) {
+        steps.push_back({SicmAffineKind::Div, b});
+        cur = a;
+        continue;
+      }
+      break;
+    }
+    break;
+  }
+  return cur;
+}
+
+static Value matchSquare(Value SQ) {
+  if (auto mul = SQ.getDefiningOp<stablehlo::MulOp>())
+    if (mul.getLhs() == mul.getRhs())
+      return mul.getLhs();
+  if (auto pw = SQ.getDefiningOp<stablehlo::PowOp>())
+    if (isSplatFloat(pw.getRhs(), 2.0))
+      return pw.getLhs();
+  return nullptr;
+}
+
+static bool peelScalarFactor(Value W, Value &R, Value &factorScalar,
+                             bool &isDivide) {
+  if (auto div = W.getDefiningOp<stablehlo::DivOp>()) {
+    if (isScalarShapedValue(div.getRhs()) &&
+        !isScalarShapedValue(div.getLhs())) {
+      R = div.getLhs();
+      factorScalar = div.getRhs();
+      isDivide = true;
+      return true;
+    }
+  }
+  if (auto mul = W.getDefiningOp<stablehlo::MulOp>()) {
+    Value a = mul.getLhs(), b = mul.getRhs();
+    if (isScalarShapedValue(b) && !isScalarShapedValue(a)) {
+      R = a;
+      factorScalar = b;
+      isDivide = false;
+      return true;
+    }
+    if (isScalarShapedValue(a) && !isScalarShapedValue(b)) {
+      R = b;
+      factorScalar = a;
+      isDivide = false;
+      return true;
+    }
+  }
+  R = W;
+  return false;
+}
+
+struct GaussianResidualMatch {
+  Value X, y, beta;
+  int64_t N, D;
+  int64_t xContractDim;
+};
+
+/// Either subtract order: the residual is squared.
+static FailureOr<GaussianResidualMatch>
+matchGaussianResidual(Value R, SampleDependenceAnalysis &analysis) {
+  auto sub = R.getDefiningOp<stablehlo::SubtractOp>();
+  if (!sub)
+    return failure();
+  for (auto [maybeMean, maybeY] : {std::pair{sub.getLhs(), sub.getRhs()},
+                                   std::pair{sub.getRhs(), sub.getLhs()}}) {
+    auto dot = maybeMean.getDefiningOp<stablehlo::DotGeneralOp>();
+    if (!dot)
+      continue;
+    if (analysis.isSampleDependent(maybeY))
+      continue;
+    auto yt = dyn_cast<RankedTensorType>(maybeY.getType());
+    if (!yt || yt.getRank() != 1 || yt.isDynamicDim(0))
+      continue;
+    auto dn = dot.getDotDimensionNumbersAttr();
+    if (!dn.getLhsBatchingDimensions().empty() ||
+        !dn.getRhsBatchingDimensions().empty())
+      continue;
+    if (dn.getLhsContractingDimensions().size() != 1 ||
+        dn.getRhsContractingDimensions().size() != 1)
+      continue;
+    Value l = dot.getLhs(), r = dot.getRhs();
+    auto lt = dyn_cast<RankedTensorType>(l.getType());
+    auto rt = dyn_cast<RankedTensorType>(r.getType());
+    if (!lt || !rt)
+      continue;
+
+    Value X, beta;
+    int64_t cd;
+    if (lt.getRank() == 2 && rt.getRank() == 1 &&
+        !analysis.isSampleDependent(l) && analysis.isSampleDependent(r)) {
+      X = l;
+      beta = r;
+      cd = dn.getLhsContractingDimensions()[0];
+    } else if (rt.getRank() == 2 && lt.getRank() == 1 &&
+               !analysis.isSampleDependent(r) &&
+               analysis.isSampleDependent(l)) {
+      X = r;
+      beta = l;
+      cd = dn.getRhsContractingDimensions()[0];
+    } else {
+      continue;
+    }
+    auto xt = cast<RankedTensorType>(X.getType());
+    int64_t nAxis = 1 - cd;
+    if (xt.isDynamicDim(cd) || xt.isDynamicDim(nAxis))
+      continue;
+    int64_t N = xt.getDimSize(nAxis);
+    int64_t D = xt.getDimSize(cd);
+    if (N != yt.getDimSize(0))
+      continue;
+    return GaussianResidualMatch{X, maybeY, beta, N, D, cd};
+  }
+  return failure();
+}
+
+static FailureOr<GaussianStatsMatch>
+matchGaussianSufficientStats(const SicmEventSum &es,
+                             SampleDependenceAnalysis &analysis, int64_t cThr) {
+  GaussianStatsMatch m;
+  Value SQ = stripAffineScalarWrappers(es.K, m.affine);
+  Value W = matchSquare(SQ);
+  if (!W)
+    return failure();
+  Value R;
+  m.hasFactor = peelScalarFactor(W, R, m.factorScalar, m.factorIsDivide);
+  auto rm = matchGaussianResidual(R, analysis);
+  if (failed(rm))
+    return failure();
+  if (rm->N != es.N)
+    return failure();
+  if (rm->D <= 0 || rm->N < cThr * rm->D)
+    return failure();
+  m.X = rm->X;
+  m.y = rm->y;
+  m.beta = rm->beta;
+  m.N = rm->N;
+  m.D = rm->D;
+  m.xContractDim = rm->xContractDim;
+  return m;
+}
+
+static Value getDesignND(OpBuilder &b, Location loc,
+                         const GaussianStatsMatch &m) {
+  if (m.xContractDim == 1)
+    return m.X;
+  auto xt = cast<RankedTensorType>(m.X.getType());
+  auto ndTy = RankedTensorType::get({m.N, m.D}, xt.getElementType());
+  return stablehlo::TransposeOp::create(b, loc, ndTy, m.X,
+                                        b.getDenseI64ArrayAttr({1, 0}));
+}
+
+static std::pair<Value, Value> composeAffine(OpBuilder &b, Location loc,
+                                             Type elemType,
+                                             ArrayRef<SicmAffineStep> steps) {
+  Value A = sicmScalarConst(b, loc, elemType, 1.0);
+  Value B = sicmScalarConst(b, loc, elemType, 0.0);
+  Value one = sicmScalarConst(b, loc, elemType, 1.0);
+  Value zero = sicmScalarConst(b, loc, elemType, 0.0);
+  for (const SicmAffineStep &st : llvm::reverse(steps)) {
+    Value s = shapedToScalar(b, loc, st.scalar, elemType);
+    Value alpha, beta;
+    switch (st.kind) {
+    case SicmAffineKind::Mul:
+      alpha = s;
+      beta = zero;
+      break;
+    case SicmAffineKind::Div:
+      alpha = stablehlo::DivOp::create(b, loc, one, s);
+      beta = zero;
+      break;
+    case SicmAffineKind::Add:
+      alpha = one;
+      beta = s;
+      break;
+    case SicmAffineKind::SubRhs: // current = inner - s
+      alpha = one;
+      beta = stablehlo::SubtractOp::create(b, loc, zero, s);
+      break;
+    case SicmAffineKind::SubLhs: // current = s - inner
+      alpha = stablehlo::SubtractOp::create(b, loc, zero, one);
+      beta = s;
+      break;
+    }
+    Value newA = stablehlo::MulOp::create(b, loc, alpha, A);
+    Value newB = stablehlo::AddOp::create(
+        b, loc, stablehlo::MulOp::create(b, loc, alpha, B), beta);
+    A = newA;
+    B = newB;
+  }
+  return {A, B};
+}
+
+static Value finishGaussianScalar(OpBuilder &b, Location loc, Value q,
+                                  const GaussianStatsMatch &m, Type elemType) {
+  Value sumSQ = q;
+  if (m.hasFactor) {
+    Value s = shapedToScalar(b, loc, m.factorScalar, elemType);
+    Value ssq = stablehlo::MulOp::create(b, loc, s, s);
+    sumSQ = m.factorIsDivide
+                ? stablehlo::DivOp::create(b, loc, q, ssq).getResult()
+                : stablehlo::MulOp::create(b, loc, q, ssq).getResult();
+  }
+  auto [A, B] = composeAffine(b, loc, elemType, m.affine);
+  Value Aterm = stablehlo::MulOp::create(b, loc, A, sumSQ);
+  Value Nc = sicmScalarConst(b, loc, elemType, (double)m.N);
+  Value NB = stablehlo::MulOp::create(b, loc, Nc, B);
+  return stablehlo::AddOp::create(b, loc, Aterm, NB);
+}
+
+static RankedTensorType qrInfoType(OpBuilder &b) {
+  return RankedTensorType::get({}, b.getIntegerType(32));
+}
+
+/// GaussianSufficientStats, QR form (default). Emits `enzymexla.linalg.qr X`
+/// (the invariant Q1/R statistics hoist), computes c = Q1'y and the stable
+/// remainder ||y - Q1 c||^2, and rewrites the in-loop residual as the D-vector
+/// `c - R beta`. No cancellation, no numeric gate; registered in the aggregate
+/// SicmPatterns set (Section 3.6/3.7).
+static Value emitGaussianStatsQR(PatternRewriter &rewriter, Location loc,
+                                 const GaussianStatsMatch &m) {
+  Type elem = cast<RankedTensorType>(m.X.getType()).getElementType();
+  Value X = getDesignND(rewriter, loc, m);
+
+  auto qTy = RankedTensorType::get({m.N, m.D}, elem);
+  auto rPackedTy = RankedTensorType::get({m.N, m.D}, elem);
+  auto qr = enzymexla::QRFactorizationOp::create(
+      rewriter, loc, TypeRange{qTy, rPackedTy, qrInfoType(rewriter)}, X);
+  Value Q1 = qr.getQ(); // (N, D), orthonormal columns
+
+  auto ddTy = RankedTensorType::get({m.D, m.D}, elem);
+  auto dTy = RankedTensorType::get({m.D}, elem);
+  auto nTy = RankedTensorType::get({m.N}, elem);
+  auto scalarTy = RankedTensorType::get({}, elem);
+
+  // Invariant statistics (hoisted by the fixpoint): R = Q1'X, c = Q1'y, and the
+  // stable remainder rem = ||y - Q1 c||^2.
+  Value R = emitContractDot(rewriter, loc, ddTy, Q1, X, {0}, {0});
+  Value c = emitContractDot(rewriter, loc, dTy, Q1, m.y, {0}, {0});
+  Value Q1c = emitContractDot(rewriter, loc, nTy, Q1, c, {1}, {0});
+  Value resid = stablehlo::SubtractOp::create(rewriter, loc, m.y, Q1c);
+  Value rem = emitContractDot(rewriter, loc, scalarTy, resid, resid, {0}, {0});
+
+  Value Rb = emitContractDot(rewriter, loc, dTy, R, m.beta, {1}, {0});
+  Value d = stablehlo::SubtractOp::create(rewriter, loc, c, Rb);
+  Value dd = emitContractDot(rewriter, loc, scalarTy, d, d, {0}, {0});
+  Value q = stablehlo::AddOp::create(rewriter, loc, dd, rem);
+  return finishGaussianScalar(rewriter, loc, q, m, elem);
+}
+
+struct GaussianSufficientStatsHLO
+    : public OpRewritePattern<stablehlo::DotGeneralOp> {
+  GaussianSufficientStatsHLO(MLIRContext *context, PatternBenefit benefit = 1)
+      : OpRewritePattern(context, benefit) {}
+
+  LogicalResult matchAndRewrite(stablehlo::DotGeneralOp sumOp,
+                                PatternRewriter &rewriter) const override {
+    auto analysis = analyzeEnclosingRegion(sumOp);
+    if (!analysis)
+      return failure();
+    auto es = matchEventSumDot(sumOp);
+    if (failed(es))
+      return failure();
+    auto match = matchGaussianSufficientStats(*es, *analysis, /*cThr=*/2);
+    if (failed(match))
+      return failure();
+    rewriter.replaceOp(sumOp,
+                       emitGaussianStatsQR(rewriter, sumOp.getLoc(), *match));
+    LLVM_DEBUG(llvm::dbgs() << "SICM: GaussianSufficientStats (QR) fired\n");
+    return success();
+  }
+};
+
+struct GaussianSufficientStatsReduceHLO
+    : public OpRewritePattern<stablehlo::ReduceOp> {
+  GaussianSufficientStatsReduceHLO(MLIRContext *context,
+                                   PatternBenefit benefit = 1)
+      : OpRewritePattern(context, benefit) {}
+
+  LogicalResult matchAndRewrite(stablehlo::ReduceOp sumOp,
+                                PatternRewriter &rewriter) const override {
+    auto analysis = analyzeEnclosingRegion(sumOp);
+    if (!analysis)
+      return failure();
+    auto es = matchEventSumReduce(sumOp);
+    if (failed(es))
+      return failure();
+    auto match = matchGaussianSufficientStats(*es, *analysis, /*cThr=*/2);
+    if (failed(match))
+      return failure();
+    rewriter.replaceOp(sumOp,
+                       emitGaussianStatsQR(rewriter, sumOp.getLoc(), *match));
+    LLVM_DEBUG(llvm::dbgs()
+               << "SICM: GaussianSufficientStats (QR, reduce) fired\n");
+    return success();
+  }
+};
+
+static Value emitGaussianStatsGram(PatternRewriter &rewriter, Location loc,
+                                   const GaussianStatsMatch &m) {
+  Type elem = cast<RankedTensorType>(m.X.getType()).getElementType();
+  Value X = getDesignND(rewriter, loc, m);
+
+  auto ddTy = RankedTensorType::get({m.D, m.D}, elem);
+  auto dTy = RankedTensorType::get({m.D}, elem);
+  auto scalarTy = RankedTensorType::get({}, elem);
+
+  Value G = emitContractDot(rewriter, loc, ddTy, X, X, {0}, {0});
+  Value Xty = emitContractDot(rewriter, loc, dTy, X, m.y, {0}, {0});
+  Value yty = emitContractDot(rewriter, loc, scalarTy, m.y, m.y, {0}, {0});
+
+  Value Gb = emitContractDot(rewriter, loc, dTy, G, m.beta, {1}, {0});
+  Value bGb = emitContractDot(rewriter, loc, scalarTy, m.beta, Gb, {0}, {0});
+  Value bXty = emitContractDot(rewriter, loc, scalarTy, m.beta, Xty, {0}, {0});
+  Value two = sicmScalarConst(rewriter, loc, elem, 2.0);
+  Value twobXty = stablehlo::MulOp::create(rewriter, loc, two, bXty);
+  Value diff = stablehlo::SubtractOp::create(rewriter, loc, yty, twobXty);
+  Value q = stablehlo::AddOp::create(rewriter, loc, diff, bGb);
+  return finishGaussianScalar(rewriter, loc, q, m, elem);
+}
+
+/// The normal equations cancel badly at high R^2, worse in f32.
+static bool gramElemTypeOk(const GaussianStatsMatch &m) {
+  return cast<RankedTensorType>(m.X.getType()).getElementType().isF64();
+}
+
+struct GaussianSufficientStatsGramHLO
+    : public OpRewritePattern<stablehlo::DotGeneralOp> {
+  GaussianSufficientStatsGramHLO(MLIRContext *context,
+                                 PatternBenefit benefit = 1)
+      : OpRewritePattern(context, benefit) {}
+
+  LogicalResult matchAndRewrite(stablehlo::DotGeneralOp sumOp,
+                                PatternRewriter &rewriter) const override {
+    auto analysis = analyzeEnclosingRegion(sumOp);
+    if (!analysis)
+      return failure();
+    auto es = matchEventSumDot(sumOp);
+    if (failed(es))
+      return failure();
+    auto match = matchGaussianSufficientStats(*es, *analysis, /*cThr=*/2);
+    if (failed(match) || !gramElemTypeOk(*match))
+      return failure();
+    rewriter.replaceOp(sumOp,
+                       emitGaussianStatsGram(rewriter, sumOp.getLoc(), *match));
+    LLVM_DEBUG(llvm::dbgs() << "SICM: GaussianSufficientStats (Gram) fired\n");
+    return success();
+  }
+};
+
+struct GaussianSufficientStatsGramReduceHLO
+    : public OpRewritePattern<stablehlo::ReduceOp> {
+  GaussianSufficientStatsGramReduceHLO(MLIRContext *context,
+                                       PatternBenefit benefit = 1)
+      : OpRewritePattern(context, benefit) {}
+
+  LogicalResult matchAndRewrite(stablehlo::ReduceOp sumOp,
+                                PatternRewriter &rewriter) const override {
+    auto analysis = analyzeEnclosingRegion(sumOp);
+    if (!analysis)
+      return failure();
+    auto es = matchEventSumReduce(sumOp);
+    if (failed(es))
+      return failure();
+    auto match = matchGaussianSufficientStats(*es, *analysis, /*cThr=*/2);
+    if (failed(match) || !gramElemTypeOk(*match))
+      return failure();
+    rewriter.replaceOp(sumOp,
+                       emitGaussianStatsGram(rewriter, sumOp.getLoc(), *match));
+    LLVM_DEBUG(llvm::dbgs()
+               << "SICM: GaussianSufficientStats (Gram, reduce) fired\n");
+    return success();
+  }
+};
+
 struct SICMPass : public enzyme::impl::SICMPassBase<SICMPass> {
   using SICMPassBase::SICMPassBase;
 
@@ -2159,6 +2722,11 @@ struct SICMPass : public enzyme::impl::SICMPassBase<SICMPass> {
       RewritePatternSet patterns(getOperation()->getContext());
       mlir::transform::populateSicmPatterns(
           patterns, *getOperation()->getContext(), PatternBenefit(1));
+      // Benefit 2 so the Gram form pre-empts the QR form on the same match.
+      if (gramFormSufficientStats)
+        patterns.add<GaussianSufficientStatsGramHLO,
+                     GaussianSufficientStatsGramReduceHLO>(
+            getOperation()->getContext(), PatternBenefit(2));
       GreedyRewriteConfig config;
       bool patternChanged = false;
       (void)applyPatternsGreedily(getOperation(), std::move(patterns), config,

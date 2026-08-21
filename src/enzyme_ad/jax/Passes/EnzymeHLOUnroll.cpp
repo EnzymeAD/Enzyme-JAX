@@ -62,6 +62,17 @@ LogicalResult unrollWhileOp(mlir::stablehlo::WhileOp op, RewriterBase &rewriter,
   if (info.computeInfo().failed() || !info.isValid())
     return failure();
 
+  // Unrolling before expand-impulse clones a sample site, and every clone
+  // would score the same trace offsets.
+  bool hasImpulseOp = false;
+  op->walk([&](Operation *inner) {
+    if (inner->getDialect() && inner->getDialect()->getNamespace() == "impulse")
+      hasImpulseOp = true;
+  });
+  if (hasImpulseOp)
+    return rewriter.notifyMatchFailure(
+        op, "impulse ops must be expanded before unrolling");
+
   auto bodyTerm = cast<stablehlo::ReturnOp>(&op.getBody().front().back());
   auto loopBodyBlock = &op.getBody().front();
 
