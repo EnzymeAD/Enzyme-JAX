@@ -240,14 +240,6 @@ struct CallInfo {
   void *(*init)();
 };
 
-struct CuFuncWrapper {
-  void *func;
-};
-
-extern "C" MLIR_CAPI_EXPORTED void *EnzymeJaXEmptyGPUInit() {
-  return new CuFuncWrapper{nullptr};
-}
-
 llvm::StringMap<CallInfo> jitkernels;
 llvm::sys::SmartRWMutex<true> jit_kernel_mutex;
 std::unique_ptr<llvm::orc::LLJIT> JIT = nullptr;
@@ -338,11 +330,6 @@ bool initJIT() {
     JIT = std::move(tJIT.get());
     assert(JIT);
     auto GlobalPrefix = JIT->getDataLayout().getGlobalPrefix();
-
-    MappedSymbols[JIT->mangleAndIntern("EnzymeJaXEmptyGPUInit")] =
-        llvm::orc::ExecutorSymbolDef(
-            llvm::orc::ExecutorAddr::fromPtr((void *)&EnzymeJaXEmptyGPUInit),
-            llvm::JITSymbolFlags());
 
     llvm::orc::DynamicLibrarySearchGenerator::SymbolPredicate Pred;
 
@@ -466,17 +453,14 @@ static void insertEmptyGPUInit(mlir::ModuleOp &submod, mlir::Location loc) {
 
   auto ptrty = LLVM::LLVMPointerType::get(builder.getContext());
   auto initTy = LLVM::LLVMFunctionType::get(ptrty, {}, false);
-  auto helper = LLVM::LLVMFuncOp::create(builder, loc, "EnzymeJaXEmptyGPUInit",
-                                         initTy, LLVM::Linkage::External);
   auto initfn = LLVM::LLVMFuncOp::create(builder, loc, "nv_func_init", initTy,
                                          LLVM::Linkage::External);
 
   auto blk = new Block();
   initfn.getRegion().push_back(blk);
   builder.setInsertionPointToEnd(blk);
-  SmallVector<mlir::Value> args;
-  auto cufunc = LLVM::CallOp::create(builder, loc, helper, args)->getResult(0);
-  LLVM::ReturnOp::create(builder, loc, ValueRange(cufunc));
+  auto null = LLVM::ZeroOp::create(builder, loc, ptrty);
+  LLVM::ReturnOp::create(builder, loc, ValueRange(null));
 }
 
 void rewriteKernelCallABI(
