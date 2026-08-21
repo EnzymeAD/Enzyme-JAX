@@ -301,7 +301,7 @@ std::tuple<std::string, bool, bool> parseRunLine(llvm::StringRef filePath) {
   return {llvm::join(passes, ","), allowUnreg, split};
 }
 
-AnyVector CreateCursedVector(mlir::Type elementType) {
+std::optional<AnyVector> CreateCursedVector(mlir::Type elementType) {
   int64_t bitWidth = stablehlo::numBits(elementType);
   if (stablehlo::isSupportedFloatType(elementType)) {
     if (bitWidth == 16) {
@@ -371,6 +371,8 @@ AnyVector CreateCursedVector(mlir::Type elementType) {
   else {
     llvm::outs() << "Warning: Unsupported element type entirely. Skipping.\n";
   }
+
+  return std::nullopt;
 }
 
 std::optional<mlir::DenseElementsAttr> generateCursedTensor(mlir::Type argType,
@@ -382,7 +384,9 @@ std::optional<mlir::DenseElementsAttr> generateCursedTensor(mlir::Type argType,
 
   Type elementType = tensorType.getElementType();
   int64_t numElements = tensorType.getNumElements();
-  AnyVector cursedNumberVector = CreateCursedVector(elementType);
+  auto cursedNumberVector = CreateCursedVector(elementType);
+  if (!cursedNumberVector)
+    return std::nullopt;
   mlir::DenseElementsAttr attr;
 
   std::visit(
@@ -411,8 +415,9 @@ std::optional<mlir::DenseElementsAttr> generateCursedTensor(mlir::Type argType,
               mlir::DenseElementsAttr::get(tensorType, llvm::ArrayRef<T>(data));
         }
       },
-      cursedNumberVector);
-
+      *cursedNumberVector);
+  if (!attr)
+    return std::nullopt;
   return attr;
 }
 
