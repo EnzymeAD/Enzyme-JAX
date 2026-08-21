@@ -1,4 +1,4 @@
-//===- LowerSparseCSR.cpp - Lower CSR sparse products to custom calls -----===//
+//===- LowerEnzymeXLASparse.cpp - Lower enzymexla.sparse to custom calls --===//
 //
 // Lowers CSR sparse matrix products to library custom calls in two steps:
 //
@@ -25,11 +25,11 @@
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "stablehlo/dialect/StablehloOps.h"
 
-#define DEBUG_TYPE "lower-sparse-csr"
+#define DEBUG_TYPE "lower-enzymexla-sparse"
 
 namespace mlir {
 namespace enzyme {
-#define GEN_PASS_DEF_LOWERSPARSECSRPASS
+#define GEN_PASS_DEF_LOWERENZYMEXLASPARSEPASS
 #include "src/enzyme_ad/jax/Passes/Passes.h.inc"
 } // namespace enzyme
 } // namespace mlir
@@ -228,8 +228,9 @@ struct LowerSparseSpMM : public OpRewritePattern<enzymexla::SparseSpMMOp> {
   }
 };
 
-struct LowerSparseCSRPass
-    : public enzyme::impl::LowerSparseCSRPassBase<LowerSparseCSRPass> {
+struct LowerEnzymeXLASparsePass
+    : public enzyme::impl::LowerEnzymeXLASparsePassBase<
+          LowerEnzymeXLASparsePass> {
   void runOnOperation() override {
     auto *context = &getContext();
     RewritePatternSet patterns(context);

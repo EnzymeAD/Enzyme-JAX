@@ -674,8 +674,8 @@ def LowerEnzymeXLABLASPass : Pass<"lower-enzymexla-blas"> {
   ];
 }
 
-def LowerSparseCSRPass : Pass<"lower-sparse-csr"> {
-  let summary = "Lower CSR sparse matrix products to custom calls";
+def LowerEnzymeXLASparsePass : Pass<"lower-enzymexla-sparse"> {
+  let summary = "Lower enzymexla.sparse ops to stablehlo custom calls";
   let description = [{
     Raises `stablehlo.dot_general` ops whose lhs is a CSR-encoded
     `sparse_tensor.assemble` result to `enzymexla.sparse.spmm`, and lowers
