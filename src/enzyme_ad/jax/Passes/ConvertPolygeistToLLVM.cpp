@@ -14,6 +14,7 @@
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
+#include "llvm/ADT/StringSet.h"
 
 #include "mlir/Analysis/DataLayoutAnalysis.h"
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
@@ -1651,17 +1652,44 @@ static std::string getHostStubName(Operation *symbolTableOp,
   return getFuncStubName(moduleName, f.getName());
 }
 
-// Resolve the kernel a symbol reference names and bind its recorded host
-// symbol; a reference that does not resolve gets the synthetic stub.
-static std::string getHostStubName(Operation *symbolTableOp, SymbolRefAttr fn) {
-  if (auto mod = dyn_cast_or_null<gpu::GPUModuleOp>(
-          SymbolTable::lookupSymbolIn(symbolTableOp, fn.getRootReference())))
-    if (auto gfunc = dyn_cast_or_null<gpu::GPUFuncOp>(
-            SymbolTable::lookupSymbolIn(mod, fn.getLeafReference())))
-      return getHostStubName(symbolTableOp, fn.getRootReference().getValue(),
-                             gfunc);
-  return getFuncStubName(fn.getRootReference().getValue(),
-                         fn.getLeafReference().getValue());
+// Conversion moves kernels out of their modules as it runs, so the stub each
+// kernel registers under is decided once, before conversion starts, and every
+// consumer reads the same answer regardless of pattern order.
+using HostStubNames = std::shared_ptr<llvm::StringMap<std::string>>;
+
+static std::string hostStubKey(StringRef moduleName, StringRef kernelName) {
+  return (moduleName + "::" + kernelName).str();
+}
+
+static std::string lookupHostStubName(const HostStubNames &names,
+                                      StringRef moduleName,
+                                      StringRef kernelName) {
+  if (names) {
+    auto it = names->find(hostStubKey(moduleName, kernelName));
+    if (it != names->end())
+      return it->second;
+  }
+  return getFuncStubName(moduleName, kernelName);
+}
+
+static HostStubNames computeHostStubNames(ModuleOp moduleOp) {
+  auto names = std::make_shared<llvm::StringMap<std::string>>();
+  // A host symbol names one runtime handle, and several kernels can stand
+  // for it when the same source kernel was outlined at several call sites:
+  // only the first claimant binds it, the rest keep synthetic stubs.
+  llvm::StringSet<> claimed;
+  moduleOp->walk([&](gpu::GPUModuleOp gm) {
+    for (Operation &op : gm->getRegion(0).front())
+      if (auto f = dyn_cast<gpu::GPUFuncOp>(op))
+        if (f.isKernel()) {
+          std::string stub = getHostStubName(moduleOp, gm.getName(), f);
+          if (stub != getFuncStubName(gm.getName(), f.getName()) &&
+              !claimed.insert(stub).second)
+            stub = getFuncStubName(gm.getName(), f.getName());
+          (*names)[hostStubKey(gm.getName(), f.getName())] = stub;
+        }
+  });
+  return names;
 }
 
 class ConvertLaunchFuncOpToGpuRuntimeCallPattern
@@ -1669,9 +1697,11 @@ class ConvertLaunchFuncOpToGpuRuntimeCallPattern
 public:
   ConvertLaunchFuncOpToGpuRuntimeCallPattern(LLVMTypeConverter &typeConverter,
                                              StringRef gpuBinaryAnnotation,
-                                             std::string gpuTarget)
+                                             std::string gpuTarget,
+                                             HostStubNames hostStubNames)
       : ConvertOpToGpuRuntimeCallPattern<gpu::LaunchFuncOp>(typeConverter),
-        gpuBinaryAnnotation(gpuBinaryAnnotation), gpuTarget(gpuTarget) {}
+        gpuBinaryAnnotation(gpuBinaryAnnotation), gpuTarget(gpuTarget),
+        hostStubNames(std::move(hostStubNames)) {}
 
 private:
   Value generateParamsArray(gpu::LaunchFuncOp launchOp, OpAdaptor adaptor,
@@ -1683,15 +1713,18 @@ private:
 
   llvm::SmallString<32> gpuBinaryAnnotation;
   std::string gpuTarget;
+  HostStubNames hostStubNames;
 };
 
 class ConvertGPUModuleOp
     : public ConvertOpToGpuRuntimeCallPattern<gpu::GPUModuleOp> {
 public:
   ConvertGPUModuleOp(LLVMTypeConverter &typeConverter,
-                     StringRef gpuBinaryAnnotation, std::string gpuTarget)
+                     StringRef gpuBinaryAnnotation, std::string gpuTarget,
+                     HostStubNames hostStubNames)
       : ConvertOpToGpuRuntimeCallPattern<gpu::GPUModuleOp>(typeConverter),
-        gpuBinaryAnnotation(gpuBinaryAnnotation), gpuTarget(gpuTarget) {}
+        gpuBinaryAnnotation(gpuBinaryAnnotation), gpuTarget(gpuTarget),
+        hostStubNames(std::move(hostStubNames)) {}
 
 private:
   LogicalResult
@@ -1700,6 +1733,7 @@ private:
 
   llvm::SmallString<32> gpuBinaryAnnotation;
   std::string gpuTarget;
+  HostStubNames hostStubNames;
 };
 
 // tuple helpers
@@ -2457,7 +2491,8 @@ ConvertGPUModuleOp::matchAndRewrite(gpu::GPUModuleOp kernelModule,
           auto nullPtr =
               LLVM::ZeroOp::create(ctorBuilder, ctorloc, llvmPointerType);
           std::string synthStubName = getFuncStubName(moduleName, f.getName());
-          std::string hostStubName = getHostStubName(moduleOp, moduleName, f);
+          std::string hostStubName =
+              lookupHostStubName(hostStubNames, moduleName, f.getName());
           if (hostStubName == synthStubName) {
             LLVM::LLVMFuncOp stub;
             {
@@ -2669,18 +2704,9 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
   // };
 
   // Build module constructor and destructor
-  std::string funcStubName;
-  {
-    auto moduleOp = launchOp->getParentOfType<ModuleOp>();
-    if (auto gfunc =
-            dyn_cast_or_null<gpu::GPUFuncOp>(SymbolTable::lookupSymbolIn(
-                kernelModule, launchOp.getKernelName())))
-      funcStubName = getHostStubName(
-          moduleOp, launchOp.getKernelModuleName().getValue(), gfunc);
-    else
-      funcStubName = getFuncStubName(launchOp.getKernelModuleName().getValue(),
-                                     launchOp.getKernelName().getValue());
-  }
+  std::string funcStubName = lookupHostStubName(
+      hostStubNames, launchOp.getKernelModuleName().getValue(),
+      launchOp.getKernelName().getValue());
 
   auto bitcast =
       LLVM::AddressOfOp::create(rewriter, loc, llvmPointerType, funcStubName);
@@ -3187,11 +3213,13 @@ class ConvertOccupancyOp
 public:
   /// The attribute name to use instead of `gpu.kernel`.
   StringRef backend;
+  HostStubNames hostStubNames;
 
-  ConvertOccupancyOp(LLVMTypeConverter &typeConverter, StringRef backend)
+  ConvertOccupancyOp(LLVMTypeConverter &typeConverter, StringRef backend,
+                     HostStubNames hostStubNames)
       : ConvertOpToGpuRuntimeCallPattern<enzymexla::GPUOccupancyOp>(
             typeConverter),
-        backend(backend) {}
+        backend(backend), hostStubNames(std::move(hostStubNames)) {}
 
 private:
   LogicalResult
@@ -3246,8 +3274,9 @@ private:
       ptr = LLVM::AllocaOp::create(rewriter, loc, ptrty, intty, one_entry);
     }
 
-    std::string funcStubName =
-        getHostStubName(op->getParentOfType<ModuleOp>(), op.getFn());
+    std::string funcStubName = lookupHostStubName(
+        hostStubNames, op.getFn().getRootReference().getValue(),
+        op.getFn().getLeafReference().getValue());
     auto addr = LLVM::AddressOfOp::create(rewriter, loc, ptrty, funcStubName);
     Value args[] = {ptr, addr, adaptor.getBlockSize(),
                     adaptor.getDynamicSMemSize(), adaptor.getFlags()};
@@ -3263,11 +3292,13 @@ class ConvertGPUKernelAddressOp
 public:
   /// The attribute name to use instead of `gpu.kernel`.
   StringRef backend;
+  HostStubNames hostStubNames;
 
-  ConvertGPUKernelAddressOp(LLVMTypeConverter &typeConverter, StringRef backend)
+  ConvertGPUKernelAddressOp(LLVMTypeConverter &typeConverter, StringRef backend,
+                            HostStubNames hostStubNames)
       : ConvertOpToGpuRuntimeCallPattern<enzymexla::GPUKernelAddressOp>(
             typeConverter),
-        backend(backend) {}
+        backend(backend), hostStubNames(std::move(hostStubNames)) {}
 
 private:
   LogicalResult
@@ -3278,8 +3309,9 @@ private:
       return rewriter.notifyMatchFailure(
           op, "KernelAddress lowering only supported for CUDA and ROCM");
 
-    std::string funcStubName =
-        getHostStubName(op->getParentOfType<ModuleOp>(), op.getFn());
+    std::string funcStubName = lookupHostStubName(
+        hostStubNames, op.getFn().getRootReference().getValue(),
+        op.getFn().getLeafReference().getValue());
 
     rewriter.replaceOpWithNewOp<LLVM::AddressOfOp>(op, op.getType(),
                                                    funcStubName);
@@ -4810,18 +4842,21 @@ struct ConvertPolygeistToLLVMPass
     }
     // Our custom versions of the gpu patterns
     if (useCStyleMemRef) {
+      auto hostStubNames = computeHostStubNames(m);
       patterns.add<ConvertLaunchFuncOpToGpuRuntimeCallPattern>(
-          converter, "gpu.binary", gpuTarget);
+          converter, "gpu.binary", gpuTarget, hostStubNames);
 
-      patterns.add<ConvertGPUModuleOp>(converter, "gpu.binary", gpuTarget);
+      patterns.add<ConvertGPUModuleOp>(converter, "gpu.binary", gpuTarget,
+                                       hostStubNames);
       // patterns.add<LegalizeLaunchFuncOpPattern>(
       //     converter, /*kernelBarePtrCallConv*/ true,
       //     /*kernelIntersperseSizeCallConv*/ false);
       patterns.add<ConvertAllocOpToGpuRuntimeCallPattern<true>>(converter,
                                                                 gpuTarget);
-      patterns.add<ConvertOccupancyOp>(converter, gpuTarget);
+      patterns.add<ConvertOccupancyOp>(converter, gpuTarget, hostStubNames);
 
-      patterns.add<ConvertGPUKernelAddressOp>(converter, gpuTarget);
+      patterns.add<ConvertGPUKernelAddressOp>(converter, gpuTarget,
+                                              hostStubNames);
 
       patterns.add<ConvertDeallocOpToGpuRuntimeCallPattern<true>>(converter,
                                                                   gpuTarget);
