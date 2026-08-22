@@ -697,6 +697,15 @@ void ParallelLower::runOnOperation() {
     if (captured)
       return;
 
+    // A kernel lives in a gpu.module, so the launch names it with a nested
+    // symbol reference. func.call takes a flat callee, and building one from a
+    // nested reference yields an op carrying no callee at all, which faults
+    // when symbol resolution later reads it. Lowering the launch to a call is
+    // not expressible here; leave it for the passes that lower
+    // gpu.launch_func directly.
+    if (!isa<FlatSymbolRefAttr>(launchOp.getKernel()))
+      return;
+
     OpBuilder builder(launchOp);
     auto op = mlir::gpu::LaunchOp::create(
         builder, launchOp.getLoc(), launchOp.getGridSizeX(),
