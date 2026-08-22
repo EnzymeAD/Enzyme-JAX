@@ -952,8 +952,15 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
 
   // integer ops
   if (isa<stablehlo::AbsOp, stablehlo::SqrtOp, stablehlo::ExpOp,
-          stablehlo::IotaOp, stablehlo::AndOp, stablehlo::OrOp,
-          stablehlo::XorOp, stablehlo::NotOp>(op)) {
+          stablehlo::IotaOp>(op)) {
+    return State::GUARANTEED;
+  }
+
+  // Bitwise ops are non-negative only for boolean (i1) results: on a signed
+  // integer not(0) == -1, and or/xor/and can set the sign bit.
+  if (isa<stablehlo::AndOp, stablehlo::OrOp, stablehlo::XorOp,
+          stablehlo::NotOp>(op) &&
+      cast<ShapedType>(val.getType()).getElementType().isInteger(1)) {
     return State::GUARANTEED;
   }
 
