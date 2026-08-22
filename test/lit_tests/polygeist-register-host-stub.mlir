@@ -1,11 +1,11 @@
 // RUN: enzymexlamlir-opt %s --convert-polygeist-to-llvm -split-input-file | FileCheck %s
 
-// A kernel lowered from one of clang's device stubs is registered under that
-// stub, which is the address user code can take, rather than under a synthetic
-// one that nothing else refers to.
+// A kernel carrying its recorded host symbol is registered under that
+// symbol, which is the address user code can take, rather than under a
+// synthetic stub that nothing else refers to.
 module attributes {gpu.container_module} {
   gpu.module @gpum {
-    gpu.func @"reactant$_Z16__device_stub__kPi"() kernel {
+    gpu.func @"reactant$_Z16__device_stub__kPi"() kernel attributes {"polygeist.host_symbol" = "_Z16__device_stub__kPi"} {
       gpu.return
     }
   }

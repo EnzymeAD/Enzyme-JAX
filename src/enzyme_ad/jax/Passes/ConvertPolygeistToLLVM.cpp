@@ -1642,29 +1642,26 @@ static std::string getFuncStubName(StringRef moduleName, StringRef name) {
 // it when it exists; kernels outlined from parallel regions have no stub of
 // their own and fall back to a synthetic one.
 static std::string getHostStubName(Operation *symbolTableOp,
-                                   StringRef moduleName, StringRef kernelName) {
-  StringRef orig = kernelName;
-  orig.consume_front("reactant$");
-  orig.consume_back("_kernel");
-  if (orig != kernelName && orig.contains("__device_stub__")) {
-    Operation *sym = SymbolTable::lookupSymbolIn(
-        symbolTableOp, StringAttr::get(symbolTableOp->getContext(), orig));
-    if (isa_and_nonnull<FunctionOpInterface>(sym))
-      return orig.str();
-  }
-  return getFuncStubName(moduleName, kernelName);
-}
-
-// The recorded host symbol is authoritative when present; fall back to
-// deriving it from the kernel name.
-static std::string getHostStubName(Operation *symbolTableOp,
                                    StringRef moduleName, gpu::GPUFuncOp f) {
   if (auto hs = f->getAttrOfType<StringAttr>("polygeist.host_symbol")) {
     Operation *sym = SymbolTable::lookupSymbolIn(symbolTableOp, hs);
     if (isa_and_nonnull<FunctionOpInterface>(sym))
       return hs.getValue().str();
   }
-  return getHostStubName(symbolTableOp, moduleName, f.getName());
+  return getFuncStubName(moduleName, f.getName());
+}
+
+// Resolve the kernel a symbol reference names and bind its recorded host
+// symbol; a reference that does not resolve gets the synthetic stub.
+static std::string getHostStubName(Operation *symbolTableOp, SymbolRefAttr fn) {
+  if (auto mod = dyn_cast_or_null<gpu::GPUModuleOp>(
+          SymbolTable::lookupSymbolIn(symbolTableOp, fn.getRootReference())))
+    if (auto gfunc = dyn_cast_or_null<gpu::GPUFuncOp>(
+            SymbolTable::lookupSymbolIn(mod, fn.getLeafReference())))
+      return getHostStubName(symbolTableOp, fn.getRootReference().getValue(),
+                             gfunc);
+  return getFuncStubName(fn.getRootReference().getValue(),
+                         fn.getLeafReference().getValue());
 }
 
 class ConvertLaunchFuncOpToGpuRuntimeCallPattern
@@ -2681,9 +2678,8 @@ LogicalResult ConvertLaunchFuncOpToGpuRuntimeCallPattern::matchAndRewrite(
       funcStubName = getHostStubName(
           moduleOp, launchOp.getKernelModuleName().getValue(), gfunc);
     else
-      funcStubName =
-          getHostStubName(moduleOp, launchOp.getKernelModuleName().getValue(),
-                          launchOp.getKernelName().getValue());
+      funcStubName = getFuncStubName(launchOp.getKernelModuleName().getValue(),
+                                     launchOp.getKernelName().getValue());
   }
 
   auto bitcast =
@@ -3251,9 +3247,7 @@ private:
     }
 
     std::string funcStubName =
-        getHostStubName(op->getParentOfType<ModuleOp>(),
-                        op.getFn().getRootReference().getValue(),
-                        op.getFn().getLeafReference().getValue());
+        getHostStubName(op->getParentOfType<ModuleOp>(), op.getFn());
     auto addr = LLVM::AddressOfOp::create(rewriter, loc, ptrty, funcStubName);
     Value args[] = {ptr, addr, adaptor.getBlockSize(),
                     adaptor.getDynamicSMemSize(), adaptor.getFlags()};
@@ -3285,9 +3279,7 @@ private:
           op, "KernelAddress lowering only supported for CUDA and ROCM");
 
     std::string funcStubName =
-        getHostStubName(op->getParentOfType<ModuleOp>(),
-                        op.getFn().getRootReference().getValue(),
-                        op.getFn().getLeafReference().getValue());
+        getHostStubName(op->getParentOfType<ModuleOp>(), op.getFn());
 
     rewriter.replaceOpWithNewOp<LLVM::AddressOfOp>(op, op.getType(),
                                                    funcStubName);

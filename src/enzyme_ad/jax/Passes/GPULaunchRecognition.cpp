@@ -525,15 +525,6 @@ enum __device_builtin__ cudaMemcpyKind
             gpufunc->setAttr("polygeist.host_symbol",
                              builder.getStringAttr(host));
         }
-        // The host-side symbol this kernel was raised from: registration
-        // binds the kernel to it so a captured pointer to the original
-        // function stays a valid runtime handle.
-        {
-          StringRef host = cur.getName();
-          if (host.consume_front("reactant$"))
-            gpufunc->setAttr("polygeist.host_symbol",
-                             builder.getStringAttr(host));
-        }
         if (auto attrs = cur.getAllArgAttrs()) {
           gpufunc.setAllArgAttrs(attrs);
         }
