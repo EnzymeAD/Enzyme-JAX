@@ -552,7 +552,6 @@ static void addBaseTransformPasses(std::vector<std::string> &list,
   list.push_back("concatenate_subtract_to_subtract_pad");
   list.push_back("concatenate_add_to_add_pad");
   list.push_back("concatenate_broadcast_in_dim");
-  list.push_back("compare_abs");
   list.push_back("compare_convert");
   list.push_back("add_selects");
   list.push_back("subtract_multiply_const_to_add_mul_const");
@@ -911,6 +910,7 @@ static void addNoNanPasses(std::vector<std::string> &list, bool noNan) {
   list.push_back(passWithArg("no_nan_add_sub_simplify", noNan));
   list.push_back(passWithArg("no_nan_mul_simplify", noNan));
   list.push_back(passWithArg("no_nan_div_simplify", noNan));
+  list.push_back(passWithArg("compare_abs", noNan));
 }
 
 static void addAllFinitePasses(std::vector<std::string> &list) {
