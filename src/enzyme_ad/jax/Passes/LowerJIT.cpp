@@ -14,6 +14,7 @@
 
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 
+#include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -949,13 +950,15 @@ CallInfo CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
         if (str.size() > 200)
           gmod.setName(str.substr(0, 200));
       });
-      submod->walk([](enzymexla::FMulAddOp op) {
-        OpBuilder builder(op);
-        auto newOp = LLVM::FMulAddOp::create(builder, op->getLoc(), op.getA(),
-                                             op.getB(), op.getC());
-        op.getResult().replaceAllUsesWith(newOp.getResult());
-        op->erase();
-      });
+
+      {
+        RewritePatternSet patterns(submod.getContext());
+        populateEnzymeXLAMathToLLVMConversionPatterns(patterns);
+        if (failed(applyPatternsGreedily(submod, std::move(patterns)))) {
+          submod.erase();
+          return {};
+        }
+      }
 
       std::string legalName;
       submod->walk([&](gpu::LaunchFuncOp gmod) {

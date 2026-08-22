@@ -295,17 +295,68 @@ struct Memref2PointerOpLowering
   }
 };
 
+struct LGammaOpLowering : public OpRewritePattern<enzymexla::LGammaOp> {
+  using OpRewritePattern<enzymexla::LGammaOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::LGammaOp op,
+                                PatternRewriter &rewriter) const override {
+
+    Type ty = op.getResult().getType();
+    if (!ty.isF32() && !ty.isF64())
+      return failure();
+
+    bool onGPU = op->getParentOfType<gpu::GPUFuncOp>() != nullptr;
+
+    StringRef fnname = ty.isF32() ? onGPU ? "__nv_lgammaf" : "lgammaf"
+                       : onGPU    ? "__nv_lgamma"
+                                  : "lgamma";
+
+    auto moduleOp = SymbolTable::getNearestSymbolTable(op);
+    auto fn = LLVM::lookupOrCreateFn(rewriter, moduleOp, fnname, {ty}, ty);
+    if (failed(fn))
+      return failure();
+
+    rewriter.replaceOpWithNewOp<LLVM::CallOp>(op, *fn, op->getOperands());
+    return success();
+  }
+};
+
+struct TGammaOpLowering : public OpRewritePattern<enzymexla::TGammaOp> {
+  using OpRewritePattern<enzymexla::TGammaOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::TGammaOp op,
+                                PatternRewriter &rewriter) const override {
+
+    Type ty = op.getResult().getType();
+    if (!ty.isF32() && !ty.isF64())
+      return failure();
+
+    bool onGPU = op->getParentOfType<gpu::GPUFuncOp>() != nullptr;
+
+    StringRef fnname = ty.isF32() ? onGPU ? "__nv_tgammaf" : "tgammaf"
+                       : onGPU    ? "__nv_tgamma"
+                                  : "tgamma";
+
+    auto moduleOp = SymbolTable::getNearestSymbolTable(op);
+    auto fn = LLVM::lookupOrCreateFn(rewriter, moduleOp, fnname, {ty}, ty);
+    if (failed(fn))
+      return failure();
+
+    rewriter.replaceOpWithNewOp<LLVM::CallOp>(op, *fn, op->getOperands());
+    return success();
+  }
+};
+
 // Back to the intrinsic it was raised from. Not llvm.intr.fma: fmuladd only
 // permits fusing, while fma requires the single rounding, which a target
 // without FMA units honors with a libm call per multiply-add.
-struct FMulAddOpLowering : public ConvertOpToLLVMPattern<enzymexla::FMulAddOp> {
-  using ConvertOpToLLVMPattern<enzymexla::FMulAddOp>::ConvertOpToLLVMPattern;
+struct FMulAddOpLowering : public OpRewritePattern<enzymexla::FMulAddOp> {
+  using OpRewritePattern<enzymexla::FMulAddOp>::OpRewritePattern;
 
-  LogicalResult
-  matchAndRewrite(enzymexla::FMulAddOp op, OpAdaptor transformed,
-                  ConversionPatternRewriter &rewriter) const override {
-    rewriter.replaceOpWithNewOp<LLVM::FMulAddOp>(
-        op, transformed.getA(), transformed.getB(), transformed.getC());
+  LogicalResult matchAndRewrite(enzymexla::FMulAddOp op,
+                                PatternRewriter &rewriter) const override {
+    rewriter.replaceOpWithNewOp<LLVM::FMulAddOp>(op, op.getA(), op.getB(),
+                                                 op.getC());
     return success();
   }
 };
@@ -373,6 +424,16 @@ struct Pointer2MemrefOpLowering
   }
 };
 
+void mlir::enzyme::populateEnzymeXLAMathToLLVMConversionPatterns(
+    RewritePatternSet &patterns) {
+
+  // clang-format off
+  patterns.add<FMulAddOpLowering>(patterns.getContext());
+  patterns.add<TGammaOpLowering>(patterns.getContext());
+  patterns.add<LGammaOpLowering>(patterns.getContext());
+  // clang-format on
+}
+
 void populatePolygeistToLLVMConversionPatterns(LLVMTypeConverter &converter,
                                                RewritePatternSet &patterns) {
   // clang-format off
@@ -383,7 +444,7 @@ void populatePolygeistToLLVMConversionPatterns(LLVMTypeConverter &converter,
   patterns.add<Stream2TokenOpLowering>(converter);
   patterns.add<Memref2PointerOpLowering>(converter);
   patterns.add<Pointer2MemrefOpLowering>(converter);
-  patterns.add<FMulAddOpLowering>(converter);
+  enzyme::populateEnzymeXLAMathToLLVMConversionPatterns(patterns);
   // clang-format on
 }
 
