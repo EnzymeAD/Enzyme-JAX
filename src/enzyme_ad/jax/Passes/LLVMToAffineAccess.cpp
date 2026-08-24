@@ -846,6 +846,99 @@ struct AffineIfDeadResults : public OpRewritePattern<affine::AffineIfOp> {
   }
 };
 
+struct Pointer2MemrefIf : public OpRewritePattern<enzymexla::Pointer2MemrefOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::Pointer2MemrefOp p2m,
+                                PatternRewriter &rewriter) const override {
+    auto res = dyn_cast<OpResult>(p2m.getOperand());
+    if (!res)
+      return failure();
+    auto ifOp = dyn_cast<affine::AffineIfOp>(res.getOwner());
+    if (!ifOp)
+      return failure();
+    SmallVector<enzymexla::Pointer2MemrefOp> views;
+    for (Operation *user : res.getUsers()) {
+      auto view = dyn_cast<enzymexla::Pointer2MemrefOp>(user);
+      if (!view || view.getType() != p2m.getType())
+        return failure();
+      views.push_back(view);
+    }
+
+    SmallVector<Type> resultTypes(ifOp.getResultTypes());
+    resultTypes[res.getResultNumber()] = p2m.getType();
+
+    rewriter.setInsertionPoint(ifOp);
+    auto newIf =
+        affine::AffineIfOp::create(rewriter, ifOp.getLoc(), resultTypes,
+                                   ifOp.getIntegerSet(), ifOp.getOperands(),
+                                   /*withElseRegion=*/true);
+    for (unsigned r = 0; r < 2; ++r) {
+      Block *oldBlk = r ? ifOp.getElseBlock() : ifOp.getThenBlock();
+      Block *newBlk = r ? newIf.getElseBlock() : newIf.getThenBlock();
+      if (!newBlk->empty())
+        rewriter.eraseOp(newBlk->getTerminator());
+      rewriter.mergeBlocks(oldBlk, newBlk);
+      auto yield = cast<affine::AffineYieldOp>(newBlk->getTerminator());
+      rewriter.setInsertionPoint(yield);
+      auto cl = enzymexla::Pointer2MemrefOp::create(
+          rewriter, p2m.getLoc(), p2m.getType(),
+          yield.getOperand(res.getResultNumber()));
+      rewriter.modifyOpInPlace(
+          yield, [&]() { yield.setOperand(res.getResultNumber(), cl); });
+    }
+
+    for (auto view : views)
+      rewriter.replaceOp(view, newIf.getResult(res.getResultNumber()));
+    rewriter.replaceOp(ifOp, newIf.getResults());
+    return success();
+  }
+};
+
+struct LoadIf : public OpRewritePattern<affine::AffineLoadOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(affine::AffineLoadOp ld,
+                                PatternRewriter &rewriter) const override {
+    auto res = dyn_cast<OpResult>(ld.getMemRef());
+    if (!res)
+      return failure();
+    auto ifOp = dyn_cast<affine::AffineIfOp>(res.getOwner());
+    if (!ifOp)
+      return failure();
+    // The branch bodies are recomputed at the load, which speculates them.
+    for (Block *blk : {ifOp.getThenBlock(), ifOp.getElseBlock()})
+      for (auto &op : blk->without_terminator())
+        if (!isPure(&op))
+          return failure();
+
+    SmallVector<Type> resultTypes = {ld.getType()};
+    auto newIf =
+        affine::AffineIfOp::create(rewriter, ifOp.getLoc(), resultTypes,
+                                   ifOp.getIntegerSet(), ifOp.getOperands(),
+                                   /*withElseRegion=*/true);
+    for (unsigned r = 0; r < 2; ++r) {
+      Block *oldBlk = r ? ifOp.getElseBlock() : ifOp.getThenBlock();
+      Block *newBlk = r ? newIf.getElseBlock() : newIf.getThenBlock();
+      OpBuilder::InsertionGuard guard(rewriter);
+      if (!newBlk->empty())
+        rewriter.eraseOp(newBlk->getTerminator());
+      rewriter.setInsertionPointToEnd(newBlk);
+      IRMapping map;
+      for (auto &op : oldBlk->without_terminator())
+        rewriter.clone(op, map);
+      Value mref = map.lookupOrDefault(
+          cast<affine::AffineYieldOp>(oldBlk->getTerminator())
+              .getOperand(res.getResultNumber()));
+      auto ld2 = cast<affine::AffineLoadOp>(rewriter.clone(*ld));
+      ld2.getMemrefMutable().set(mref);
+      affine::AffineYieldOp::create(rewriter, ld.getLoc(), ld2->getResults());
+    }
+    rewriter.replaceOp(ld, newIf.getResults());
+    return success();
+  }
+};
+
 struct LoadSelect : public OpRewritePattern<affine::AffineLoadOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -2179,7 +2272,8 @@ convertLLVMToAffineAccess(Operation *op,
         SimplifyDeadAlloc<memref::AllocaOp>, SimplifyDeadAlloc<memref::AllocOp>,
         SimplifyDeadAlloc<LLVM::AllocaOp>,
         SimplifyDeadAlloc<gpu::AllocOp, true>, Pointer2MemrefSelect, LoadSelect,
-        AffineIfDeadResults, SimpleMem2Reg<memref::AllocaOp>>(context);
+        Pointer2MemrefIf, LoadIf, AffineIfDeadResults,
+        SimpleMem2Reg<memref::AllocaOp>>(context);
     GreedyRewriteConfig config;
     config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);
     config.enableFolding();
