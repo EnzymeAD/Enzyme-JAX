@@ -249,8 +249,8 @@ struct ViewCastOpInterfaceReverse
     return {};
   }
 
-  void createShadowValues(Operation *op, OpBuilder &builder,
-                          MGradientUtilsReverse *gutils) const {
+  LogicalResult createShadowValues(Operation *op, OpBuilder &builder,
+                                   MGradientUtilsReverse *gutils) const {
     auto castOp = cast<OpTy>(op);
     auto newCastOp = cast<OpTy>(gutils->getNewFromOriginal(op));
     Value source = castOp.getSource();
@@ -260,6 +260,7 @@ struct ViewCastOpInterfaceReverse
       shadowCast.getSourceMutable().assign(sourceShadow);
       gutils->setInvertedPointer(castOp.getResult(), shadowCast->getResult(0));
     }
+    return success();
   }
 };
 
@@ -324,8 +325,10 @@ struct GPUWrapperOpInterfaceReverse
     return caches;
   }
 
-  void createShadowValues(Operation *op, OpBuilder &builder,
-                          MGradientUtilsReverse *gutils) const {}
+  LogicalResult createShadowValues(Operation *op, OpBuilder &builder,
+                                   MGradientUtilsReverse *gutils) const {
+    return success();
+  }
 };
 
 } // namespace

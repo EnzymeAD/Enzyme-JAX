@@ -368,6 +368,14 @@ def HoistAllocasPass : Pass<"hoist-allocas"> {
   ];
 }
 
+def RestorePreserveNVVMPass : Pass<"restore-preserve-nvvm"> {
+  let summary = "Undo PreserveNVVM(Begin)'s linkage and inlining fixups once "
+                "the raising has consumed the calls they protected";
+  let dependentDialects = [
+    "LLVM::LLVMDialect",
+  ];
+}
+
 def SortBlockMemoryPass : Pass<"sort-block-memory"> {
   let summary = "Hoist non-overlapping loads to the start of their block and "
                 "sink stores to the end";
@@ -445,11 +453,21 @@ def SROAWrappersPass : Pass<"sroa-wrappers", "mlir::ModuleOp"> {
   ];
 }
 
+def CanonicalizeParallelPass : Pass<"canonicalize-parallel"> {
+  let summary = "Canonicalize top-level ops in parallel, confining region simplification to each";
+  let options = [Option<
+      "parallel", "parallel", "bool", "false",
+      "Rewrite top-level ops on the context's thread pool; without it "
+      "they are processed serially, still confining region "
+      "simplification to each op">];
+}
+
 def LibDeviceFuncsRaisingPass : Pass<"libdevice-funcs-raise"> {
   let summary = "Raise libdevice function calls to arith/math operations";
   let dependentDialects = [
     "arith::ArithDialect",
     "enzyme::EnzymeDialect",
+    "enzymexla::EnzymeXLADialect",
     "math::MathDialect",
     "gpu::GPUDialect",
   ];
@@ -1480,6 +1498,35 @@ def RemoveAtomicsPass : Pass<"remove-atomics"> {
     "affine::AffineDialect",
     "enzymexla::EnzymeXLADialect",
   ];
+}
+
+def GpuModuleToBinarySink : Pass<"enzymexla-gpu-module-to-binary", ""> {
+  let summary = "Serialize GPU modules to binaries, sinking cheap address "
+                "arithmetic after the LLVM optimization pipeline";
+  let description = [{
+    Drop-in for the upstream `gpu-module-to-binary` pass that additionally
+    rematerializes cheap integer/address computations next to their uses on
+    the optimized LLVM IR, immediately before ISA generation. Running after
+    the target's optimization pipeline means EarlyCSE/GVN can no longer
+    re-hoist the clones, shortening live ranges that otherwise inflate
+    register pressure in large kernels.
+  }];
+  let options =
+      [Option<"toolkitPath", "toolkit", "std::string", [{""}], "Toolkit path.">,
+       ListOption<"linkFiles", "l", "std::string", "Extra files to link to.">,
+       Option<"cmdOptions", "opts", "std::string", [{""}],
+              "Command line options to pass to the tools.">,
+       Option<"compilationTarget", "format", "std::string", [{"fatbin"}],
+              "The target representation of the compilation process.">,
+       Option<"elfSection", "section", "std::string", [{""}],
+              "ELF section where binary is to be located.">,
+       Option<"sinkMode", "sink", "int", "2",
+              "0: no sinking; 1: sink only within the defining loop; "
+              "2: also sink into deeper loops">,
+       Option<"dumpIR", "dump", "bool", "false",
+              "Print each serialized module's LLVM IR as handed to "
+              "instruction selection, after any sinking">];
+  let dependentDialects = ["gpu::GPUDialect", "LLVM::LLVMDialect", ];
 }
 
 #endif

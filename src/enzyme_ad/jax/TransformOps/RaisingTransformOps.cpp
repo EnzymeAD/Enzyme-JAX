@@ -27,6 +27,24 @@ using namespace mlir;
 namespace mlir {
 namespace transform {
 
+// The iteration count comes out in the induction variable's type and is
+// multiplied by a step in the iter arg's, which need not be the same type.
+// Narrowing the count loses nothing that was ever read: the arg's arithmetic
+// wraps, so only the low bits of the count reach the result either way.
+// Widening it loses nothing either -- a count is not negative and it fit in
+// the narrower type it was counted in.
+static Value castToType(OpBuilder &builder, Location loc, Value v, Type ty) {
+  if (v.getType() == ty)
+    return v;
+  if (isa<IndexType>(v.getType()) || isa<IndexType>(ty))
+    return arith::IndexCastOp::create(builder, loc, ty, v);
+  unsigned from = cast<IntegerType>(v.getType()).getWidth();
+  unsigned to = cast<IntegerType>(ty).getWidth();
+  if (from > to)
+    return arith::TruncIOp::create(builder, loc, ty, v);
+  return arith::ExtSIOp::create(builder, loc, ty, v);
+}
+
 LogicalResult RemoveIVs::matchAndRewrite(scf::ForOp forOp,
                                          PatternRewriter &rewriter) const {
   if (!forOp.getRegion().hasOneBlock())
@@ -37,6 +55,7 @@ LogicalResult RemoveIVs::matchAndRewrite(scf::ForOp forOp,
   llvm::SetVector<unsigned> removed;
   llvm::MapVector<unsigned, Value> steps;
   auto yield = cast<scf::YieldOp>(forOp.getBody()->getTerminator());
+
   for (unsigned i = 0; i < numIterArgs; i++) {
     auto ba = forOp.getRegionIterArgs()[i];
     auto init = forOp.getInits()[i];
@@ -66,6 +85,7 @@ LogicalResult RemoveIVs::matchAndRewrite(scf::ForOp forOp,
     Value iterNum = arith::SubIOp::create(
         rewriter, loc, forOp.getInductionVar(), forOp.getLowerBound());
     iterNum = arith::DivSIOp::create(rewriter, loc, iterNum, forOp.getStep());
+    iterNum = castToType(rewriter, loc, iterNum, step.getType());
 
     Value replacementIV = arith::MulIOp::create(rewriter, loc, iterNum, step);
     replacementIV = arith::AddIOp::create(rewriter, loc, replacementIV, init);
@@ -121,6 +141,7 @@ LogicalResult RemoveIVs::matchAndRewrite(scf::ForOp forOp,
       Value iterNum = arith::SubIOp::create(
           rewriter, loc, forOp.getUpperBound(), forOp.getLowerBound());
       iterNum = arith::DivSIOp::create(rewriter, loc, iterNum, forOp.getStep());
+      iterNum = castToType(rewriter, loc, iterNum, steps[i].getType());
 
       Value afterLoop = arith::MulIOp::create(rewriter, loc, iterNum, steps[i]);
       afterLoop =

@@ -97,9 +97,10 @@ struct GPULaunchRecognitionPass
           /*flags=*/nullptr,
           /*linkLibs=*/nullptr);
     } else {
-      // Default to CUDA/NVVM
+      // Default to CUDA/NVVM. A host function's target-cpu can leak in
+      // here through an unresolved stub; never let a non-GPU chip through.
       auto chip = sm;
-      if (chip.size() == 0)
+      if (!StringRef(chip).starts_with("sm_"))
         chip = "sm_80";
       auto features = feat;
       if (features.size() == 0)
@@ -476,7 +477,42 @@ enum __device_builtin__ cudaMemcpyKind
           }
         }
       }
+      // The scan above only sees uses of the device-side function. An address
+      // user code takes is that of clang's host stub, and when it escapes --
+      // handed to a call rather than straight to a runtime query -- nothing
+      // rewrites it to the device symbol, so the kernel would never reach a
+      // gpu.module and never be registered. An address-taken host stub is a
+      // capture of its kernel.
+      if (!captured) {
+        StringRef hostStubName;
+        if (auto attr = dyn_cast_or_null<ArrayAttr>(
+                launch.first.getPassthroughAttr())) {
+          for (auto a : attr) {
+            auto ar = dyn_cast<ArrayAttr>(a);
+            if (!ar || ar.size() != 2)
+              continue;
+            auto s0 = dyn_cast<StringAttr>(ar[0]);
+            auto s1 = dyn_cast<StringAttr>(ar[1]);
+            if (s0 && s1 && s0.getValue() == "polygeist.host_symbol")
+              hostStubName = s1.getValue();
+          }
+        }
+        if (!hostStubName.empty()) {
+          if (auto hostStub = symbolTable.getSymbolTable(getOperation())
+                                  .lookup<LLVM::LLVMFuncOp>(hostStubName)) {
+            if (auto hostStubUses = hostStub.getSymbolUses(getOperation()))
+              for (auto use : *hostStubUses)
+                if (isa<LLVM::AddressOfOp>(use.getUser())) {
+                  captured = true;
+                  break;
+                }
+          }
+        }
+      }
+
       auto cur = launch.first;
+      if (cur.isExternal())
+        continue;
       gpu::GPUFuncOp gpufunc = nullptr;
       bool local_use_launch_func = use_launch_func || captured;
       if (local_use_launch_func) {
@@ -500,6 +536,28 @@ enum __device_builtin__ cudaMemcpyKind
         builder.setInsertionPointToStart(&gpuModule.getBodyRegion().front());
         gpufunc = gpu::GPUFuncOp::create(builder, cur->getLoc(), cur.getName(),
                                          gpuTy0);
+        {
+          // The plugin records which host symbol each imported kernel was
+          // registered for; carry it so the registration can bind the
+          // address the program actually passes around instead of a
+          // synthetic stub.
+          StringRef host;
+          if (auto attr =
+                  dyn_cast_or_null<ArrayAttr>(cur.getPassthroughAttr())) {
+            for (auto a : attr) {
+              auto ar = dyn_cast<ArrayAttr>(a);
+              if (!ar || ar.size() != 2)
+                continue;
+              auto s0 = dyn_cast<StringAttr>(ar[0]);
+              auto s1 = dyn_cast<StringAttr>(ar[1]);
+              if (s0 && s1 && s0.getValue() == "polygeist.host_symbol")
+                host = s1.getValue();
+            }
+          }
+          if (!host.empty())
+            gpufunc->setAttr("polygeist.host_symbol",
+                             builder.getStringAttr(host));
+        }
         if (auto attrs = cur.getAllArgAttrs()) {
           gpufunc.setAllArgAttrs(attrs);
         }
@@ -615,6 +673,12 @@ enum __device_builtin__ cudaMemcpyKind
                        arg.getType().getIntOrFloatBitWidth() ==
                            expectedTy.getIntOrFloatBitWidth()) {
               arg = LLVM::BitcastOp::create(builder, loc, expectedTy, arg);
+            } else if (arg.getType().isIntOrIndex() &&
+                       isa<LLVM::LLVMPointerType>(expectedTy)) {
+              arg = LLVM::IntToPtrOp::create(builder, loc, expectedTy, arg);
+            } else if (isa<LLVM::LLVMPointerType>(arg.getType()) &&
+                       expectedTy.isIntOrIndex()) {
+              arg = LLVM::PtrToIntOp::create(builder, loc, expectedTy, arg);
             } else {
               arg = LLVM::BitcastOp::create(builder, loc, expectedTy,
                                             arg); // Fallback
@@ -662,13 +726,15 @@ enum __device_builtin__ cudaMemcpyKind
         } else {
           if (local_use_launch_func) {
             assert(isa<LLVM::LLVMPointerType>(stream.getType()));
-            stream = enzymexla::StreamToTokenOp::create(
-                builder, loc, gpu::AsyncTokenType::get(ctx), stream);
+            // The stream-based async form: dependency operands without a
+            // result token no longer verify, the stream rides the
+            // asyncObject operand instead.
             launchFuncOp = gpu::LaunchFuncOp::create(
                 builder, loc, gpufunc,
                 gpu::KernelDim3{grid[0], grid[1], grid[2]},
                 gpu::KernelDim3{block[0], block[1], block[2]}, shMemSize,
-                ValueRange(args), stream.getType(), ValueRange(stream));
+                ValueRange(args), /*asyncTokenType=*/nullptr,
+                /*asyncDependencies=*/ValueRange(), /*asyncObject=*/stream);
           } else {
             assert(isa<LLVM::LLVMPointerType>(stream.getType()));
             stream = enzymexla::StreamToTokenOp::create(
@@ -685,8 +751,12 @@ enum __device_builtin__ cudaMemcpyKind
         }
         if (launchFuncOp) {
 
+          // A kernel with no argument attributes has no attribute list at
+          // all, and the optional is empty rather than holding an empty array.
           SmallVector<Attribute> newArgAttrs;
-          for (auto [i, argAttrs] : llvm::enumerate(*cur.getArgAttrs())) {
+          ArrayAttr curArgAttrs =
+              cur.getArgAttrs().value_or(ArrayAttr::get(cur->getContext(), {}));
+          for (auto [i, argAttrs] : llvm::enumerate(curArgAttrs)) {
             if (std::optional<NamedAttribute> attr =
                     cast<DictionaryAttr>(argAttrs).getNamed(
                         LLVM::LLVMDialect::getByValAttrName())) {

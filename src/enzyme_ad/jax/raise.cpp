@@ -13,6 +13,7 @@
 
 #include "src/enzyme_ad/jax/raise.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/Verifier.h"
 #include "mlir/Pass/PassManager.h"
 #include "mlir/Pass/PassRegistry.h"
 #include "mlir/Target/LLVMIR/Export.h"
@@ -52,10 +53,7 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
     err_stream.flush();
     exit(1);
   }
-  // Raising has no way to read an unwind edge, so a call that may throw stops
-  // it here rather than further along: an invoke left standing is not a module
-  // that gets compiled at all.
-  {
+  if (options->lowerInvoke) {
     llvm::PassBuilder PB;
     llvm::LoopAnalysisManager LAM;
     llvm::FunctionAnalysisManager FAM;
@@ -114,6 +112,9 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
 
   using namespace llvm;
   using namespace mlir;
+  const std::string canonicalize =
+      options->parallelCanonicalize ? "canonicalize-parallel{parallel=true}"
+                                    : "canonicalize-parallel{parallel=false}";
   // clang-format off
   std::string pass_pipeline =
       "inline{default-pipeline=canonicalize "
@@ -123,30 +124,31 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
   pass_pipeline += backend;
   pass_pipeline += "}";
   pass_pipeline += ","
-      "canonicalize,libdevice-funcs-raise,canonicalize,inline-enzyme-regions,symbol-dce,";
+      "" + canonicalize + ",libdevice-funcs-raise,restore-preserve-nvvm," + canonicalize + ","
+      "inline-enzyme-regions,symbol-dce,";
   
   if (backend == "cpu")
     pass_pipeline += "parallel-lower{wrapParallelOps=false},";
   else
     pass_pipeline += "parallel-lower{wrapParallelOps=true},";
   pass_pipeline += "llvm-to-"
-      "memref-access,polygeist-mem2reg,canonicalize,convert-llvm-to-cf,"
-      "canonicalize,polygeist-mem2reg,canonicalize,enzyme-lift-cf-to-scf,"
-      "canonicalize,"
+      "memref-access,polygeist-mem2reg," + canonicalize + ",convert-llvm-to-cf,"
+      "" + canonicalize + ",polygeist-mem2reg," + canonicalize + ",enzyme-lift-cf-to-scf,"
+      "" + canonicalize + ","
       "func.func(canonicalize-loops),"
       "llvm.func(canonicalize-loops),"
       "canonicalize-scf-for,"
-      "canonicalize,affine-cfg,canonicalize,"
+      "" + canonicalize + ",affine-cfg," + canonicalize + ","
       "func.func(canonicalize-loops),"
       "llvm.func(canonicalize-loops),"
-      "canonicalize,llvm-to-affine-access,"
-      "canonicalize,delinearize-indexing,canonicalize,simplify-affine-exprs,"
-      "affine-cfg,canonicalize,llvm-to-affine-access,canonicalize,"
+      "" + canonicalize + ",llvm-to-affine-access,"
+      "" + canonicalize + ",delinearize-indexing," + canonicalize + ",simplify-affine-exprs,"
+      "affine-cfg," + canonicalize + ",llvm-to-affine-access," + canonicalize + ","
       "func.func(affine-loop-invariant-code-motion),"
-      "canonicalize,sort-memory,llvm-to-tessera,tessera-apply-pdl,tessera-to-llvm,";
+      "" + canonicalize + ",sort-memory,llvm-to-tessera,tessera-apply-pdl,tessera-to-llvm,";
   if (StringRef(backend).starts_with("xla")) {
       pass_pipeline += "func.func(kernelcast),raise-affine-to-stablehlo{prefer_while_raising=false "
-      "dump_failed_lockstep=true},canonicalize,arith-raise{stablehlo=true},"
+      "dump_failed_lockstep=true}," + canonicalize + ",arith-raise{stablehlo=true},"
       "symbol-dce";
       if (outfile.size() && getenv("EXPORT_REACTANT")) {
         pass_pipeline += ",print{filename="+outfile+".mlir}";
@@ -157,7 +159,7 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       } else {
         pass_pipeline += ",parallel-serialization,";
       }
-      pass_pipeline += "canonicalize,hoist-allocas,convert-polygeist-to-llvm{backend=";
+      pass_pipeline += "" + canonicalize + ",hoist-allocas,convert-polygeist-to-llvm{backend=";
       pass_pipeline += backend;
       pass_pipeline += "}";
   } else {
@@ -177,9 +179,12 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       if (options->dataflow)
         pass_pipeline += "dataflow ";
       if (options->markReadonly)
-        pass_pipeline += "markReadonly";
-      pass_pipeline += "},"
-        "lower-llvm-ext,canonicalize,";
+        pass_pipeline += "markReadonly ";
+      // Each generated derivative function is cleaned of enzyme cache ops
+      // the moment it is created: nested differentiation hands the outer AD
+      // the inner function as input, and enzyme.push/pop have no derivative
+      // of their own.
+      pass_pipeline += "postpasses=\"canonicalize,";
       if (options->splitMultiResults)
         pass_pipeline += "split-multi-results,";
       pass_pipeline += "remove-unnecessary-enzyme-ops,"
@@ -188,22 +193,29 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
         "flatten-enzyme-caches,lower-enzyme-binomial-progress,";
       if (options->hoistLoopAllocations)
         pass_pipeline += "hoist-loop-allocations,";
-      pass_pipeline +=
-        "enzyme-simplify-math,"
+      pass_pipeline += "enzyme-simplify-math\"";
+      pass_pipeline += "},"
+        // The one module-level survivor: llvm_ext ops also live outside the
+        // generated functions the postpasses clean -- a ptr_size_hint sits in
+        // the primal that carries the user's marker -- and any left behind
+        // fail translation to LLVM IR.
+        "lower-llvm-ext,"
         "inline{default-pipeline=canonicalize max-iterations=4},"
-        "polygeist-mem2reg,canonicalize,symbol-dce,"
-        // canonicalize here folds away memref.subview ops before gpu-kernel-outlining
-        "canonicalize,cse";
+        "polygeist-mem2reg," + canonicalize + ",symbol-dce,"
+        // canonicalize-parallel here folds away memref.subview ops before gpu-kernel-outlining
+        "" + canonicalize + ",cse";
       if (options->removeAtomics)
         pass_pipeline += ",affine-cfg,remove-atomics";
       if (options->sortBlockMemory)
         pass_pipeline += ",sort-block-memory";
-      pass_pipeline += ",lower-aligned-affine-accesses,lower-affine";
+      pass_pipeline += ",lower-aligned-affine-accesses,lower-affine,"
+                       "lower-affine-atomic-rmw";
       if (backend == "rocm")
         pass_pipeline += ",convert-cudart-to-hiprt";
       if (backend != "cpu") {
-        pass_pipeline += ",convert-parallel-to-gpu1,symbol-dce,gpu-kernel-outlining,canonicalize,symbol-dce,";
-        pass_pipeline += "convert-parallel-to-gpu2{backend=";
+        pass_pipeline += ",convert-parallel-to-gpu1,symbol-dce,gpu-kernel-outlining," + canonicalize + ",symbol-dce,";
+        pass_pipeline +=
+            "convert-parallel-to-gpu2{emitGPUKernelLaunchBounds=true backend=";
         pass_pipeline += backend;
         pass_pipeline += "}";
         pass_pipeline += ",lower-aligned-affine-accesses,lower-affine";
@@ -213,16 +225,17 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       } else {
 	      pass_pipeline += ",parallel-serialization,";
       }
-      pass_pipeline += "canonicalize,hoist-allocas,convert-polygeist-to-llvm{backend=";
+      pass_pipeline += "" + canonicalize + ",hoist-allocas,convert-polygeist-to-llvm{backend=";
       pass_pipeline += backend;
       pass_pipeline += "},strip-"
-      "gpu-info,gpu-"
-      "module-to-binary";
+      "gpu-info,enzymexla-gpu-"
+      "module-to-binary{sink=";
+      pass_pipeline += std::to_string(options->lateSink);
       if (!library.empty()) {
-        pass_pipeline += "{l=";
+        pass_pipeline += " l=";
         pass_pipeline += library;
-        pass_pipeline += "}";
       }
+      pass_pipeline += "}";
   }
 
   // clang-format on
@@ -233,6 +246,14 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
     llvm::errs() << " passes to run: " << pass_pipeline << "\n";
   }
   mlir::PassManager pm(mod->getContext());
+  // The pass manager verifies the whole module -- a symbol-table walk and
+  // dominance check over every operation -- after every pass. Over this
+  // pipeline's ~65 passes on a large TU that is a third of the pipeline's
+  // wall time, re-proving unchanged exception-handling functions well-formed.
+  // Verify once at the end instead (below); options->verifyEach restores the
+  // per-pass verification for debugging a miscompile to a pass.
+  if (!options->verifyEach)
+    pm.enableVerifier(false);
   std::string error_message;
   llvm::raw_string_ostream error_stream(error_message);
   mlir::LogicalResult result =
@@ -252,6 +273,13 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
         return failure();
       });
   if (!mlir::succeeded(pm.run(cast<mlir::ModuleOp>(*mod)))) {
+    llvm::errs() << error_stream.str() << "\n";
+    return "";
+  }
+
+  // The one verification that still stands guard: malformed IR fails here,
+  // with diagnostics, rather than inside the LLVM translator.
+  if (!options->verifyEach && mlir::failed(mlir::verify(*mod))) {
     llvm::errs() << error_stream.str() << "\n";
     return "";
   }

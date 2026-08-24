@@ -59,7 +59,7 @@ public:
   void annotate(llvm::Instruction *I);
 
   /// Annotate the loop latch @p B wrt. @p L.
-  void annotateLoopLatch(llvm::BranchInst *B, llvm::Loop *L, bool IsParallel,
+  void annotateLoopLatch(llvm::CondBrInst *B, llvm::Loop *L, bool IsParallel,
                          bool IsLoopVectorizerDisabled) const;
 
   /// Add alternative alias based pointers

@@ -23,7 +23,7 @@ module {
     %c = stablehlo.constant dense<1> : tensor<i64>
     %c_0 = stablehlo.constant dense<9> : tensor<i64>
     %c_1 = stablehlo.constant dense<0> : tensor<i64>
-    %0:2 = stablehlo.while(%iterArg = %c_1, %iterArg_2 = %arg0) : tensor<i64>, tensor<f64> attributes {enzyme.disable_mincut, enzymexla.enable_checkpointing = true }
+    %0:2 = stablehlo.while(%iterArg = %c_1, %iterArg_2 = %arg0) : tensor<i64>, tensor<f64> attributes {enzyme.disable_mincut, enzyme.enable_checkpointing = true }
      cond {
       %1 = stablehlo.compare  LT, %iterArg, %c_0 : (tensor<i64>, tensor<i64>) -> tensor<i1>
       stablehlo.return %1 : tensor<i1>
@@ -94,7 +94,7 @@ module {
 // CHECK-NEXT:     %c = stablehlo.constant dense<1> : tensor<i64>
 // CHECK-NEXT:     %c_0 = stablehlo.constant dense<9> : tensor<i64>
 // CHECK-NEXT:     %c_1 = stablehlo.constant dense<0> : tensor<i64>
-// CHECK-NEXT:     %0:2 = stablehlo.while(%iterArg = %c_1, %iterArg_2 = %arg0) : tensor<i64>, tensor<f64> attributes {enzyme.disable_mincut, enzymexla.enable_checkpointing = true}
+// CHECK-NEXT:     %0:2 = stablehlo.while(%iterArg = %c_1, %iterArg_2 = %arg0) : tensor<i64>, tensor<f64> attributes {enzyme.disable_mincut, enzyme.enable_checkpointing = true}
 // CHECK-NEXT:     cond {
 // CHECK-NEXT:       %1 = stablehlo.compare LT, %iterArg, %c_0 : (tensor<i64>, tensor<i64>) -> tensor<i1>
 // CHECK-NEXT:       stablehlo.return %1 : tensor<i1>
@@ -168,14 +168,13 @@ module {
 // CHECK-NEXT:         stablehlo.return %10 : tensor<i1>
 // CHECK-NEXT:       } do {
 // CHECK-NEXT:         %10 = stablehlo.add %3, %iterArg_8 : tensor<i64>
-// CHECK-NEXT:         %11 = stablehlo.multiply %c_2, %10 : tensor<i64>
-// CHECK-NEXT:         %12 = stablehlo.add %11, %c_2 : tensor<i64>
-// CHECK-NEXT:         %13 = stablehlo.convert %12 : (tensor<i64>) -> tensor<f64>
-// CHECK-NEXT:         %14 = stablehlo.reshape %13 : (tensor<f64>) -> tensor<1xf64>
-// CHECK-NEXT:         %15 = stablehlo.dynamic_update_slice %iterArg_10, %14, %iterArg_8 : (tensor<3xf64>, tensor<1xf64>, tensor<i64>) -> tensor<3xf64>
-// CHECK-NEXT:         %16 = stablehlo.multiply %iterArg_9, %13 : tensor<f64>
-// CHECK-NEXT:         %17 = stablehlo.add %iterArg_8, %c_2 : tensor<i64>
-// CHECK-NEXT:         stablehlo.return %17, %16, %15 : tensor<i64>, tensor<f64>, tensor<3xf64>
+// CHECK-NEXT:         %11 = stablehlo.add %10, %c_2 : tensor<i64>
+// CHECK-NEXT:         %12 = stablehlo.convert %11 : (tensor<i64>) -> tensor<f64>
+// CHECK-NEXT:         %13 = stablehlo.reshape %12 : (tensor<f64>) -> tensor<1xf64>
+// CHECK-NEXT:         %14 = stablehlo.dynamic_update_slice %iterArg_10, %13, %iterArg_8 : (tensor<3xf64>, tensor<1xf64>, tensor<i64>) -> tensor<3xf64>
+// CHECK-NEXT:         %15 = stablehlo.multiply %iterArg_9, %12 : tensor<f64>
+// CHECK-NEXT:         %16 = stablehlo.add %iterArg_8, %c_2 : tensor<i64>
+// CHECK-NEXT:         stablehlo.return %16, %15, %14 : tensor<i64>, tensor<f64>, tensor<3xf64>
 // CHECK-NEXT:       }
 // CHECK-NEXT:       %7:5 = stablehlo.while(%iterArg_8 = %c_1, %iterArg_9 = %iterArg_4, %iterArg_10 = %iterArg_5, %iterArg_11 = %iterArg_6, %iterArg_12 = %c) : tensor<i64>, tensor<f64>, tensor<f64>, tensor<f64>, tensor<i64>
 // CHECK-NEXT:       cond {

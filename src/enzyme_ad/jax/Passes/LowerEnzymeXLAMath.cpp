@@ -215,7 +215,13 @@ void lowerEnzymeXLAMath(Operation *op,
       bp->emitError("Failed to lower enzyme.binomial_progress");
       return WalkResult::interrupt();
     }
-    if (local_op->getName().getStringRef().starts_with("enzymexla.math.")) {
+    if (local_op->getName().getStringRef().starts_with("enzymexla.math.") &&
+        (local_op->getNumResults() > 0 &&
+         llvm::any_of(local_op->getResultTypes(),
+                      [](Type ty) { return isa<TensorType>(ty); })) &&
+        (local_op->getNumOperands() > 0 &&
+         llvm::any_of(local_op->getOperandTypes(),
+                      [](Type ty) { return isa<TensorType>(ty); }))) {
       local_op->emitError("Failed to lower enzymexla math operation");
       return WalkResult::interrupt();
     }

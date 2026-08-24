@@ -1620,6 +1620,11 @@ def SelectPadToDUS : EnzymeHLOPatternOp<
   let patterns = ["SelectPadToDUS"];
 }
 
+def SelectToLogical : EnzymeHLOPatternOp<
+    "select_to_logical"> {
+  let patterns = ["SelectToLogical"];
+}
+
 def SelectSelectSameCond : EnzymeHLOPatternOp<
     "select_select_same_cond"> {
   let patterns = ["SelectSelectSameCond"];

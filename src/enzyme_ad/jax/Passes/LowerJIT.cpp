@@ -949,6 +949,13 @@ CallInfo CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
         if (str.size() > 200)
           gmod.setName(str.substr(0, 200));
       });
+      submod->walk([](enzymexla::FMulAddOp op) {
+        OpBuilder builder(op);
+        auto newOp = LLVM::FMulAddOp::create(builder, op->getLoc(), op.getA(),
+                                             op.getB(), op.getC());
+        op.getResult().replaceAllUsesWith(newOp.getResult());
+        op->erase();
+      });
 
       std::string legalName;
       submod->walk([&](gpu::LaunchFuncOp gmod) {

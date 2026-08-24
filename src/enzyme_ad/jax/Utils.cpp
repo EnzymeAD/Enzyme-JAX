@@ -1835,14 +1835,18 @@ std::optional<IotaLikeTensor> detectIotaLikeTensor(mlir::Value tensor) {
 
     // navigate to the next op. If any unsupported intermediate op is found,
     // then return std::nullopt
-    // TODO: we might want to support broadcast_in_dim / insert_dims / drop_dims
-    // as well
+    // TODO: we might want to support insert_dims / drop_dims as well
     auto nextOp =
         llvm::TypeSwitch<Operation *, Operation *>(currentOp)
             .Case<stablehlo::TransposeOp>([&](auto transposeOp) {
               chain.push_back({currentOp, nullptr, nullptr});
               return transposeOp.getOperand().getDefiningOp();
             })
+            .Case<stablehlo::BroadcastInDimOp>(
+                [&](auto broadcastOp) -> Operation * {
+                  chain.push_back({currentOp, nullptr, nullptr});
+                  return broadcastOp.getOperand().getDefiningOp();
+                })
             .Case<stablehlo::ConvertOp>([&](auto convertOp) -> Operation * {
               auto elemType = cast<TensorType>(convertOp.getOperand().getType())
                                   .getElementType();
@@ -1958,6 +1962,16 @@ std::optional<IotaLikeTensor> detectIotaLikeTensor(mlir::Value tensor) {
                 }
               }
               return true;
+            })
+            .Case<stablehlo::BroadcastInDimOp>([&](auto broadcastOp) {
+              auto broadcastDims = broadcastOp.getBroadcastDimensions();
+              if (result.dimension >= 0 &&
+                  result.dimension <
+                      static_cast<int64_t>(broadcastDims.size())) {
+                result.dimension = broadcastDims[result.dimension];
+                return true;
+              }
+              return false;
             })
             .Case<stablehlo::AddOp>([&](auto) {
               auto startVal = getDoubleFromAttr(result.start);
