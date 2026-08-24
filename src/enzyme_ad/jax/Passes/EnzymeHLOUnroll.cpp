@@ -18,6 +18,7 @@
 
 #include "src/enzyme_ad/jax/CheckedRewrite.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
+#include "src/enzyme_ad/jax/Utils.h"
 #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
 
 #include "stablehlo/dialect/StablehloOps.h"
@@ -48,6 +49,12 @@ LogicalResult unrollWhileOp(mlir::stablehlo::WhileOp op, RewriterBase &rewriter,
                             int64_t maxNumIterations,
                             int64_t maxOperationThreshold,
                             SmallVectorImpl<Value> *replacements) {
+
+  // Unrolling a checkpoint segment loop makes every iteration of the segment
+  // live at once, which is what the checkpointing was paying recompute to
+  // avoid. See markCheckpointSegmentLoop.
+  if (isCheckpointSegmentLoop(op))
+    return failure();
 
   WhileLoopInfo info(op);
   if (info.computeInfo().failed() || !info.isConstant())

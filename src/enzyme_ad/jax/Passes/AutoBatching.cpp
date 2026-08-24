@@ -884,6 +884,17 @@ static bool definedOutside(Value v, Operation *op) {
 
 LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
     stablehlo::WhileOp whileOp, PatternRewriter &rewriter) const {
+  // Never fission a checkpoint segment loop. Batching trades memory for
+  // parallelism by computing every iteration at once; for a loop that
+  // checkpointed reverse-mode AD created specifically to keep only one segment
+  // live, that rebuilds the very tape the recompute was paying to avoid. Such a
+  // loop only becomes eligible in the first place when the segment length
+  // divides the trip count evenly (LoopCheckpointing::segmentLength returns the
+  // constant nInner rather than a select), so without this guard peak memory
+  // silently depends on that divisibility.
+  if (isCheckpointSegmentLoop(whileOp))
+    return rewriter.notifyMatchFailure(whileOp, "checkpoint segment loop");
+
   auto info = WhileLoopInfo(whileOp);
   auto computeInfoSuccess = info.computeInfo();
   if (computeInfoSuccess.failed())
@@ -1794,6 +1805,11 @@ bool liftOperationByBatching(
 
 mlir::LogicalResult WhileElementwiseReductionToReduce::matchAndRewriteImpl(
     stablehlo::WhileOp whileOp, PatternRewriter &rewriter) const {
+  // Same reasoning as GreedyWhileLoopBatchFission: lifting the reduction
+  // materializes every iteration of the segment at once.
+  if (isCheckpointSegmentLoop(whileOp))
+    return rewriter.notifyMatchFailure(whileOp, "checkpoint segment loop");
+
   auto &body = whileOp.getBody().front();
   auto term = body.getTerminator();
   if (!term) {

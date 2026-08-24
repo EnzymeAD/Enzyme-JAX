@@ -416,6 +416,30 @@ T getAttributeFromIR(Value val, StringRef attrName, T unknownValue) {
   return enumAttr.getValue();
 }
 
+/// Marks a `stablehlo.while` that belongs to the scaffold checkpointed
+/// reverse-mode AD builds around one checkpoint segment -- the forward
+/// recompute, the reverse sweep, or the outer walk over segments.
+///
+/// Such a loop exists *in order to* bound peak memory: checkpointing pays
+/// recompute so that only one segment's intermediates are live at a time. Any
+/// rewrite that materializes its iteration space -- batching, fission,
+/// unrolling -- undoes exactly that trade and rebuilds the full tape the loop
+/// was created to avoid. Passes that would do so must skip loops carrying this
+/// attribute; see `isCheckpointSegmentLoop`.
+constexpr llvm::StringLiteral kCheckpointSegmentAttrName =
+    "enzymexla.checkpoint_segment";
+
+inline void markCheckpointSegmentLoop(mlir::Operation *op) {
+  op->setAttr(kCheckpointSegmentAttrName,
+              mlir::UnitAttr::get(op->getContext()));
+}
+
+/// True if `op` is a checkpoint-segment loop whose iteration space must not be
+/// materialized. See `markCheckpointSegmentLoop` for the rationale.
+inline bool isCheckpointSegmentLoop(mlir::Operation *op) {
+  return op->hasAttr(kCheckpointSegmentAttrName);
+}
+
 /// Get bounds attribute from IR. Bounds are stored as ArrayAttr with two
 /// IntegerAttr elements [min, max] under the attribute name "enzymexla.bounds".
 /// Returns nullopt if the attribute is not found or malformed.
