@@ -802,6 +802,50 @@ struct Pointer2MemrefSelect
   }
 };
 
+struct AffineIfDeadResults : public OpRewritePattern<affine::AffineIfOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(affine::AffineIfOp ifOp,
+                                PatternRewriter &rewriter) const override {
+    if (ifOp.getNumResults() == 0)
+      return failure();
+    SmallVector<unsigned> keep;
+    for (OpResult res : ifOp.getResults())
+      if (!res.use_empty())
+        keep.push_back(res.getResultNumber());
+    if (keep.size() == ifOp.getNumResults())
+      return failure();
+
+    SmallVector<Type> newTypes;
+    for (unsigned i : keep)
+      newTypes.push_back(ifOp.getResult(i).getType());
+
+    rewriter.setInsertionPoint(ifOp);
+    auto newIf =
+        affine::AffineIfOp::create(rewriter, ifOp.getLoc(), newTypes,
+                                   ifOp.getIntegerSet(), ifOp.getOperands(),
+                                   /*withElseRegion=*/true);
+    for (unsigned r = 0; r < 2; ++r) {
+      Block *oldBlk = r ? ifOp.getElseBlock() : ifOp.getThenBlock();
+      Block *newBlk = r ? newIf.getElseBlock() : newIf.getThenBlock();
+      if (!newBlk->empty())
+        rewriter.eraseOp(newBlk->getTerminator());
+      rewriter.mergeBlocks(oldBlk, newBlk);
+      auto yield = cast<affine::AffineYieldOp>(newBlk->getTerminator());
+      SmallVector<Value> ops;
+      for (unsigned i : keep)
+        ops.push_back(yield.getOperand(i));
+      rewriter.setInsertionPoint(yield);
+      affine::AffineYieldOp::create(rewriter, yield.getLoc(), ops);
+      rewriter.eraseOp(yield);
+    }
+    for (auto [j, i] : llvm::enumerate(keep))
+      rewriter.replaceAllUsesWith(ifOp.getResult(i), newIf.getResult(j));
+    rewriter.eraseOp(ifOp);
+    return success();
+  }
+};
+
 struct LoadSelect : public OpRewritePattern<affine::AffineLoadOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -2135,7 +2179,8 @@ convertLLVMToAffineAccess(Operation *op,
                     SimplifyDeadAlloc<memref::AllocOp>,
                     SimplifyDeadAlloc<LLVM::AllocaOp>,
                     SimplifyDeadAlloc<gpu::AllocOp, true>, Pointer2MemrefSelect,
-                    LoadSelect, SimpleMem2Reg<memref::AllocaOp>>(context);
+                    LoadSelect, AffineIfDeadResults,
+                    SimpleMem2Reg<memref::AllocaOp>>(context);
     GreedyRewriteConfig config;
     config.enableFolding();
     if (applyPatternsGreedily(op, std::move(patterns), config).failed())
