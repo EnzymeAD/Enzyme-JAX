@@ -477,6 +477,39 @@ enum __device_builtin__ cudaMemcpyKind
           }
         }
       }
+      // The scan above only sees uses of the device-side function. An address
+      // user code takes is that of clang's host stub, and when it escapes --
+      // handed to a call rather than straight to a runtime query -- nothing
+      // rewrites it to the device symbol, so the kernel would never reach a
+      // gpu.module and never be registered. An address-taken host stub is a
+      // capture of its kernel.
+      if (!captured) {
+        StringRef hostStubName;
+        if (auto attr = dyn_cast_or_null<ArrayAttr>(
+                launch.first.getPassthroughAttr())) {
+          for (auto a : attr) {
+            auto ar = dyn_cast<ArrayAttr>(a);
+            if (!ar || ar.size() != 2)
+              continue;
+            auto s0 = dyn_cast<StringAttr>(ar[0]);
+            auto s1 = dyn_cast<StringAttr>(ar[1]);
+            if (s0 && s1 && s0.getValue() == "polygeist.host_symbol")
+              hostStubName = s1.getValue();
+          }
+        }
+        if (!hostStubName.empty()) {
+          if (auto hostStub = symbolTable.getSymbolTable(getOperation())
+                                  .lookup<LLVM::LLVMFuncOp>(hostStubName)) {
+            if (auto hostStubUses = hostStub.getSymbolUses(getOperation()))
+              for (auto use : *hostStubUses)
+                if (isa<LLVM::AddressOfOp>(use.getUser())) {
+                  captured = true;
+                  break;
+                }
+          }
+        }
+      }
+
       auto cur = launch.first;
       if (cur.isExternal())
         continue;
