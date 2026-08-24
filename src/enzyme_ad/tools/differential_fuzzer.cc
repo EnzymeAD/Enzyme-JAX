@@ -11,9 +11,9 @@
 #include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/reference/Api.h"
-#include "stablehlo/reference/Tensor.h"
+// #include "stablehlo/reference/Tensor.h"
 #include "stablehlo/reference/Types.h"
-#include "stablehlo/reference/Value.h"
+// #include "stablehlo/reference/Value.h"
 #include "stablehlo/transforms/Passes.h"
 
 #include "llvm/ADT/StringExtras.h"
