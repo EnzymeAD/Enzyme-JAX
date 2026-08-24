@@ -67,101 +67,81 @@ using namespace mlir;
 // - Signed integers: i4, i8, i16, i32, i64
 // - Boolean: i1
 // - Floating-point: bf16, f16, f32, f64
-// - Complex: complex<f32>, complex<f64>
+// - Complex: complex<f32>, complex<f64> (There is an RFC to extend this to
+// bfloat16 and float16 complex numbers so this might need to be updated at some
+// point)
 
 // Use std::numeric_limits and templates to create most of our cursed values for
 // our types except not supported types in C++ since numeric_limits does not
 // help there
 
-template <typename T> std::vector<T> createCursedFloatVector() {
-  const std::vector<T> cursedValues = {(T)0.0,
-                                       (T)-0.0,
-                                       (T)1.0,
-                                       (T)-1.0,
-                                       (T)2.0,
-                                       (T)-2.0,
-                                       std::numeric_limits<T>::quiet_NaN(),
-                                       std::numeric_limits<T>::infinity(),
-                                       -std::numeric_limits<T>::infinity(),
-                                       std::numeric_limits<T>::denorm_min(),
-                                       std::numeric_limits<T>::max(),
-                                       -std::numeric_limits<T>::max(),
-                                       std::numeric_limits<T>::min(),
-                                       (T)0.9999999,
-                                       (T)1.0000001,
-                                       static_cast<T>(M_PI),
-                                       static_cast<T>(M_PI_2),
-                                       static_cast<T>(M_E)};
-  return cursedValues;
-}
+SmallVector<APFloat> createCursedFloatPool(const llvm::fltSemantics &sem) {
+  auto fromStr = [&](StringRef s) {
+    APFloat v(sem);
+    llvm::cantFail(v.convertFromString(s, APFloat::rmNearestTiesToEven));
+    return v;
+  };
 
-template <typename T> std::vector<T> createCursedSignedIntegerVector() {
-  const std::vector<T> cursedValues = {(T)0,
-                                       (T)1,
-                                       (T)-1,
-                                       (T)2,
-                                       (T)-2,
-                                       std::numeric_limits<T>::max(),
-                                       std::numeric_limits<T>::min(),
-                                       (T)(std::numeric_limits<T>::max() - 1),
-                                       (T)(std::numeric_limits<T>::min() + 1)};
-  return cursedValues;
-}
+  APFloat one(sem, 1), two(sem, 2);
+  APFloat justBelowOne = one;
+  justBelowOne.next(/*nextDown=*/true);
+  APFloat justAboveOne = one;
+  justAboveOne.next(/*nextDown=*/false);
 
-template <typename T> std::vector<T> createCursedUnsignedIntegerVector() {
-  const std::vector<T> cursedValues = {(T)0, (T)1, (T)2,
-                                       std::numeric_limits<T>::max(),
-                                       (T)(std::numeric_limits<T>::max() - 1)};
-  return cursedValues;
-}
-
-template <typename T> std::vector<std::complex<T>> createCursedComplexVector() {
-  const std::vector<std::complex<T>> cursedValues = {
-      {(T)0.0, (T)0.0},
-      {(T)-0.0, (T)0.0},
-      {(T)0.0, (T)-0.0},
-      {(T)-0.0, (T)-0.0},
-
-      {(T)1.0, (T)-1.0},
-      {(T)0.9999999, (T)1.0000001},
-
-      {std::numeric_limits<T>::infinity(), std::numeric_limits<T>::quiet_NaN()},
-      {std::numeric_limits<T>::quiet_NaN(),
-       -std::numeric_limits<T>::infinity()},
-      {std::numeric_limits<T>::infinity(), -std::numeric_limits<T>::infinity()},
-
-      {std::numeric_limits<T>::max(), std::numeric_limits<T>::denorm_min()},
-      {std::numeric_limits<T>::denorm_min(), std::numeric_limits<T>::min()},
-
-      {static_cast<T>(M_PI), static_cast<T>(M_E)}};
-  return cursedValues;
-}
-
-// Packing our bits directly for non C++ types supported in the StableHLO spec
-std::vector<uint16_t> createCursedF16Vector() {
-  // IEEE 754 Half-Precision (1 sign bit, 5 exponent bits, 10 mantissa bits)
   return {
-      0x0000, // 0.0
-      0x8000, // -0.0
-      0x3C00, // 1.0
-      0xBC00, // -1.0
-      0x4000, // 2.0
-      0xC000, // -2.0
-      0x7E00, // quiet_NaN
-      0x7C00, // infinity
-      0xFC00, // -infinity
-      0x0001, // denorm_min
-      0x7BFF, // max
-      0xFBFF, // -max
-      0x0400, // min (smallest normalized)
-      0x3BFF, // 0.999... (largest value < 1.0)
-      0x3C01, // 1.000... (smallest value > 1.0)
-      0x4248, // M_PI (~3.140625)
-      0x3E48, // M_PI_2 (~1.5703125)
-      0x4170  // M_E (~2.71875)
+      APFloat::getZero(sem),
+      APFloat::getZero(sem, /*Negative=*/true),
+      one,
+      -one,
+      two,
+      -two,
+      APFloat::getQNaN(sem),
+      APFloat::getInf(sem),
+      APFloat::getInf(sem, true),
+      APFloat::getSmallest(sem),
+      APFloat::getLargest(sem),
+      APFloat::getLargest(sem, true),
+      APFloat::getSmallestNormalized(sem),
+      justBelowOne,
+      justAboveOne,
+      fromStr("3.14159265358979323846"), // pi
+      fromStr("1.57079632679489661923"), // pi / 2
+      fromStr("2.71828182845904523536"), // e
   };
 }
 
+SmallVector<APInt> createCursedIntPool(int64_t numBits) {
+  return {
+      APInt::getZero(numBits),
+      APInt(numBits, 1),
+      -APInt(numBits, 1),
+      APInt(numBits, 2),
+      -APInt(numBits, 2),
+      APInt::getSignedMaxValue(numBits),
+      APInt::getSignedMinValue(numBits),
+      APInt::getSignedMaxValue(numBits) - 1,
+      APInt::getSignedMinValue(numBits) + 1,
+  };
+}
+
+SmallVector<APInt> createCursedUnsignedIntPool(int64_t numBits) {
+  APInt maxValue = APInt::getMaxValue(numBits);
+  return {APInt::getZero(numBits), APInt(numBits, 1), APInt(numBits, 2),
+          maxValue, maxValue - 1};
+}
+
+SmallVector<mlir::Complex<APFloat>>
+createCursedComplexPool(const llvm::fltSemantics &sem) {
+  auto FloatPool = createCursedFloatPool(sem);
+  SmallVector<mlir::Complex<APFloat>> ComplexPool;
+  ComplexPool.reserve(FloatPool.size() * FloatPool.size());
+  for (const APFloat &re : FloatPool)
+    for (const APFloat &im : FloatPool)
+      ComplexPool.emplace_back(re, im);
+  return ComplexPool;
+}
+
+/*
 std::vector<uint16_t> createCursedBF16Vector() {
   // BFloat16 (1 sign bit, 8 exponent bits, 7 mantissa bits)
   return {
@@ -185,16 +165,7 @@ std::vector<uint16_t> createCursedBF16Vector() {
       0x402E  // M_E (~2.71875)
   };
 }
-
-std::vector<int8_t> createCursedI4Vector() {
-  // 4-bit signed integer boundaries: Max is 7, Min is -8
-  return {0, 1, -1, 2, -2, 7, -8, 6, -7};
-}
-
-std::vector<uint8_t> createCursedUI4Vector() {
-  // 4-bit unsigned integer boundaries: Max is 15, Min is 0
-  return {0, 1, 2, 15, 14};
-}
+*/
 
 OwningOpRef<ModuleOp> loadMLIRModule(MLIRContext &context,
                                      llvm::StringRef filePath) {
@@ -211,20 +182,9 @@ OwningOpRef<ModuleOp> loadMLIRModule(MLIRContext &context,
   return parseSourceFile<ModuleOp>(sourceMgr, &context);
 }
 
-using AnyVector = std::variant<std::vector<float>,    // f32, f16, bf16
-                               std::vector<double>,   // f64
-                               std::vector<int8_t>,   // i8, i4
-                               std::vector<int16_t>,  // i16
-                               std::vector<int32_t>,  // i32
-                               std::vector<int64_t>,  // i64
-                               std::vector<uint8_t>,  // ui8, ui4
-                               std::vector<uint16_t>, // ui16
-                               std::vector<uint32_t>, // ui32
-                               std::vector<uint64_t>, // ui64
-                               std::vector<bool>,     // i1
-                               std::vector<std::complex<float>>, // complex<f32>
-                               std::vector<std::complex<double>> // complex<f64>
-                               >;
+using AnyVector =
+    std::variant<SmallVector<APFloat>, SmallVector<APInt>,
+                 SmallVector<mlir::Complex<APFloat>>, SmallVector<bool>>;
 
 // clang-format off
 // Our .mlir test files contain lines like this at the start
@@ -301,75 +261,35 @@ std::tuple<std::string, bool, bool> parseRunLine(llvm::StringRef filePath) {
   return {llvm::join(passes, ","), allowUnreg, split};
 }
 
-std::optional<AnyVector> CreateCursedVector(mlir::Type elementType) {
-  int64_t bitWidth = stablehlo::numBits(elementType);
+std::optional<AnyVector> CreateCursedPool(mlir::Type elementType) {
   if (stablehlo::isSupportedFloatType(elementType)) {
-    if (bitWidth == 16) {
-      return createCursedF16Vector();
-    } else if (bitWidth == 32) {
-      return createCursedFloatVector<float>();
-    } else if (bitWidth == 64) {
-      return createCursedFloatVector<double>();
-    } else {
-      llvm::outs() << "Warning: Unsupported float bit-width: " << bitWidth
-                   << "\n";
-    }
+    return createCursedFloatPool(
+        cast<FloatType>(elementType).getFloatSemantics());
   }
 
   else if (stablehlo::isSupportedSignedIntegerType(elementType)) {
-    if (bitWidth == 4) {
-      return createCursedI4Vector();
-    } else if (bitWidth == 8) {
-      return createCursedSignedIntegerVector<int8_t>();
-    } else if (bitWidth == 16) {
-      return createCursedSignedIntegerVector<int16_t>();
-    } else if (bitWidth == 32) {
-      return createCursedSignedIntegerVector<int32_t>();
-    } else if (bitWidth == 64) {
-      return createCursedSignedIntegerVector<int64_t>();
-    } else {
-      llvm::outs() << "Warning: Unsupported signed int bit-width: " << bitWidth
-                   << "\n";
-    }
+    return createCursedIntPool(elementType.getIntOrFloatBitWidth());
   }
 
   else if (stablehlo::isSupportedUnsignedIntegerType(elementType)) {
-    if (bitWidth == 4) {
-      return createCursedUI4Vector();
-    } else if (bitWidth == 8) {
-      return createCursedUnsignedIntegerVector<uint8_t>();
-    } else if (bitWidth == 16) {
-      return createCursedUnsignedIntegerVector<uint16_t>();
-    } else if (bitWidth == 32) {
-      return createCursedUnsignedIntegerVector<uint32_t>();
-    } else if (bitWidth == 64) {
-      return createCursedUnsignedIntegerVector<uint64_t>();
-    } else {
-      llvm::outs() << "Warning: Unsupported unsigned int bit-width: "
-                   << bitWidth << "\n";
-    }
+    return createCursedUnsignedIntPool(elementType.getIntOrFloatBitWidth());
   }
 
   else if (stablehlo::isSupportedBooleanType(elementType)) {
-    return std::vector<bool>{true, false};
+    return SmallVector<bool>{true, false};
   }
 
   else if (stablehlo::isSupportedComplexType(elementType)) {
-    int64_t bitWidth = stablehlo::numBits(elementType);
-    // Note: bitWidth for complex is 2x the base type (complex<f32> is 64
-    // bits total) ((I think at least))
-    if (bitWidth == 64) {
-      return createCursedComplexVector<float>();
-    } else if (bitWidth == 128) {
-      return createCursedComplexVector<double>();
-    } else {
-      llvm::outs() << "Warning: Unsupported complex bit-width: " << bitWidth
-                   << "\n";
-    }
+    auto componentTy = cast<ComplexType>(elementType).getElementType();
+    return createCursedComplexPool(
+        cast<FloatType>(componentTy).getFloatSemantics());
   }
 
   else {
-    llvm::outs() << "Warning: Unsupported element type entirely. Skipping.\n";
+    llvm::outs()
+        << "Warning: Unsupported element type or bitwidth. Skipping.\n";
+
+    return std::nullopt;
   }
 
   return std::nullopt;
@@ -384,7 +304,7 @@ std::optional<mlir::DenseElementsAttr> generateCursedTensor(mlir::Type argType,
 
   Type elementType = tensorType.getElementType();
   int64_t numElements = tensorType.getNumElements();
-  auto cursedNumberVector = CreateCursedVector(elementType);
+  auto cursedNumberVector = CreateCursedPool(elementType);
   if (!cursedNumberVector)
     return std::nullopt;
   mlir::DenseElementsAttr attr;
@@ -399,18 +319,17 @@ std::optional<mlir::DenseElementsAttr> generateCursedTensor(mlir::Type argType,
 
         std::uniform_int_distribution<size_t> dist(0, pool.size() - 1);
 
-        if constexpr (std::is_same_v<VectorType, std::vector<bool>>) {
-          std::vector<uint8_t> data(numElements);
-          for (int64_t i = 0; i < numElements; ++i) {
-            data[i] = pool[dist(gen)] ? 1 : 0;
-          }
-          attr = mlir::DenseElementsAttr::get(tensorType,
-                                              llvm::ArrayRef<uint8_t>(data));
+        if constexpr (std::is_same_v<T, bool>) {
+          SmallVector<bool> data;
+          data.reserve(numElements);
+          for (int64_t i = 0; i < numElements; ++i)
+            data.push_back(pool[dist(gen)]);
+          attr = mlir::DenseElementsAttr::get(tensorType, data);
         } else {
-          std::vector<T> data(numElements);
-          for (int64_t i = 0; i < numElements; ++i) {
-            data[i] = pool[dist(gen)];
-          }
+          SmallVector<T> data;
+          data.reserve(numElements);
+          for (int64_t i = 0; i < numElements; ++i)
+            data.push_back(pool[dist(gen)]);
           attr =
               mlir::DenseElementsAttr::get(tensorType, llvm::ArrayRef<T>(data));
         }
@@ -467,13 +386,13 @@ int main(int argc, char **argv) {
   auto [passPipeline, allowUnreg, split] = parseRunLine(inputFilename);
   if (passPipeline.empty()) {
     llvm::errs() << "No RUN line found in file!\n";
-    return 1;
+    return 2;
   }
 
   if (split) {
     llvm::outs() << "[!] Skipping test: Fuzzer does not yet support "
                     "--split-input-file.\n";
-    return 0;
+    return 2;
   }
 
   std::mt19937 gen(seed);
@@ -633,3 +552,5 @@ int main(int argc, char **argv) {
   });
   return anyMismatch ? 1 : 0;
 }
+// TODO: Transform interpreter making it work or at least checking if it exists
+// in a file and just erroring predictably
