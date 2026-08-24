@@ -18,10 +18,14 @@ cc_binary(
         "//src/enzyme_ad/jax:XLADerivatives",
         
         # MLIR parsing and execution
+        "@llvm-project//llvm:Support",
+        "@llvm-project//mlir:Support",
         "@llvm-project//mlir:IR",
         "@llvm-project//mlir:Parser",
         "@llvm-project//mlir:Pass",
         "@llvm-project//mlir:FuncDialect",
+        "@llvm-project//mlir:TransformDialect",
+        "@llvm-project//mlir:TransformDialectTransforms",
 
         "@triton//:TritonToTritonGPU",
         
@@ -31,5 +35,7 @@ cc_binary(
         "@stablehlo//:reference_scope",
         "@stablehlo//:reference_types",
         "@stablehlo//:stablehlo_ops",
+        "@stablehlo//:chlo_ops",
+        "@stablehlo//:stablehlo_passes",
     ],
 )
