@@ -102,7 +102,9 @@ cc_library(
             "xla_ffi/cuda/**/*.cc",
         ]),
     hdrs =
-        glob([
+        [
+            "xla_ffi/export_macro.h",
+        ] + glob([
             "xla_ffi/host/**/*.h",
             "xla_ffi/cuda/**/*.h",
         ]),
@@ -114,6 +116,7 @@ cc_library(
     deps = [
         "@com_google_absl//absl/base",
         "@com_google_absl//absl/strings:str_format",
+        "@mpitrampoline",
         "@xla//xla/ffi:ffi_api",
         "@xla//xla/ffi/api:c_api",
         "@xla//xla/ffi/api:ffi",

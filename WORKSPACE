@@ -342,6 +342,10 @@ enzyme_workspace()
 
 cuda_tile_workspace()
 
+load("@xla//third_party/mpitrampoline:workspace.bzl", mpitrampoline_workspace = "repo")
+
+mpitrampoline_workspace()
+
 # add support for generating compile_commands
 load(
     "@enzyme//third_party/hedron_compile_commands:workspace.bzl",
