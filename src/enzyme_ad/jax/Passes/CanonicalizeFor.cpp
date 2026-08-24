@@ -3668,6 +3668,7 @@ void CanonicalizeFor::runOnOperation() {
           MoveSideEffectFreeWhile>(getOperation()->getContext());
   //    WhileLICM,
   GreedyRewriteConfig config;
+  config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);
   config.enableFolding();
   config.setMaxIterations(247);
   if (failed(applyPatternsGreedily(getOperation(), std::move(rpl), config))) {
