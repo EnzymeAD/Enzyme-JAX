@@ -2201,6 +2201,8 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
   std::set<mlir::Operation *> transferLoads;
   // Loads of a piece of the slot, and how far into it that piece lies.
   DenseMap<mlir::Operation *, uint64_t> containedLoads;
+  // Stores of a piece of the slot, and how far into it that piece lands.
+  DenseMap<mlir::Operation *, uint64_t> containedStores;
   mlir::Location loc = AI.getLoc();
   std::set<mlir::Operation *> allStoreOps;
   // Reads standing for what a transfer moved. One is worth the load it costs
@@ -2214,6 +2216,14 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
     for (auto *read : llvm::reverse(transferReads))
       if (read->getResult(0).use_empty())
         read->erase();
+  });
+  // Values built while folding piece stores into the slot's value, dropped
+  // where nothing came to ask for them.
+  SmallVector<Operation *> synthesized;
+  auto dropUnaskedSynthesized = llvm::scope_exit([&synthesized]() {
+    for (auto *op : llvm::reverse(synthesized))
+      if (op->getResult(0).use_empty())
+        op->erase();
   });
 
   if (idx.isUnknown())
@@ -2342,12 +2352,29 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
         LLVM_DEBUG(llvm::dbgs() << "Matching Load: " << *loadOp << "\n");
       };
       auto matchStore = [&](Operation *storeOp, OffsetTree accessed) {
-        switch (idx.matches(tree.add(accessed, dl), dl)) {
+        uint64_t at = 0;
+        switch (idx.matches(tree.add(accessed, dl), dl, &at)) {
         case Match::Exact:
           LLVM_DEBUG(llvm::dbgs() << "Matching Store: " << *storeOp << "\n");
           allStoreOps.insert(storeOp);
           break;
-        case Match::Contains:
+        case Match::Contains: {
+          // Writing a piece of the slot writes a piece of its value, as long
+          // as there is a way into it that lands that piece.
+          Type held = elType ? elType : idx.getBase();
+          Type written = cast<enzyme::StoreLikeInterface>(storeOp)
+                             .getStoredValue()
+                             .getType();
+          SmallVector<int64_t> path;
+          if (held && extractPath(held, at, written, dl, path)) {
+            LLVM_DEBUG(llvm::dbgs()
+                       << "Matching Piece Store: " << *storeOp << "\n");
+            containedStores[storeOp] = at;
+            allStoreOps.insert(storeOp);
+            break;
+          }
+          LLVM_FALLTHROUGH;
+        }
         case Match::Maybe:
           LLVM_DEBUG(llvm::dbgs()
                      << "Mabye Aliasing Store: " << *storeOp << "\n");
@@ -2707,6 +2734,18 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
                        << "\nstarting block: lastVal=" << *lastVal << "\n";
                    block.print(llvm::dbgs()); llvm::dbgs() << "\n";);
         for (auto *a : ops) {
+          if (a == AI.getDefiningOp() && !containedStores.empty() &&
+              isa<LLVM::AllocaOp, memref::AllocaOp, memref::AllocOp>(a) &&
+              LLVM::isCompatibleType(elType)) {
+            // The slot begins undefined, which gives the first piece store a
+            // value to build on. Later unknown writes still overwrite this,
+            // and after those piece stores have nothing to build on again.
+            OpBuilder builder(a->getBlock(), std::next(a->getIterator()));
+            Value undef = LLVM::UndefOp::create(builder, a->getLoc(), elType);
+            synthesized.push_back(undef.getDefiningOp());
+            lastVal = metaMap.get(undef);
+            continue;
+          }
           if (StoringOperations.count(a)) {
             // erase a, in case overwritten later in metamap replacement/lookup.
             StoringOperations.erase(a);
@@ -2780,7 +2819,32 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
             }
           } else if (auto storeOp = dyn_cast<enzyme::StoreLikeInterface>(a)) {
             if (allStoreOps.count(storeOp)) {
-              lastVal = metaMap.get(storeOp.getStoredValue());
+              auto contained = containedStores.find(a);
+              if (contained == containedStores.end()) {
+                lastVal = metaMap.get(storeOp.getStoredValue());
+              } else if (lastVal->val) {
+                // A store of a piece leaves the rest as it was: fold it into
+                // the value already there.
+                Value base = castToType(elType, lastVal->val, a);
+                Value piece = storeOp.getStoredValue();
+                SmallVector<int64_t> path;
+                bool found = extractPath(elType, contained->second,
+                                         piece.getType(), dl, path);
+                (void)found;
+                assert(found && "a piece that was named cannot be landed");
+                Value built = piece;
+                if (!path.empty()) {
+                  OpBuilder builder(a);
+                  built = LLVM::InsertValueOp::create(builder, a->getLoc(),
+                                                      base, piece, path);
+                  synthesized.push_back(built.getDefiningOp());
+                }
+                lastVal = metaMap.get(built);
+              } else {
+                // No value to build on: past this store the slot holds an
+                // unknown with one piece changed, which is unknown.
+                lastVal = emptyValue;
+              }
             }
           } else {
             // since not storing operation the value at the start of every block
