@@ -4,25 +4,33 @@
 #include "xla/ffi/api/ffi.h"
 #include "xla/ffi/ffi_api.h"
 
-#include "mpi_ffi.h"
 #include "mpi.h"
+#include "mpi_ffi.h"
 
 #include "../export_macro.h"
 
-int mpi_unimplemented_stub(...) { abort(); return -1; }
+int mpi_unimplemented_stub(...) {
+  abort();
+  return -1;
+}
 
-// generates a function pointer for `FNAME` that points to `mpi_unimplemented_stub` by default and a exported C function
-// for setting the value dynamically
+// generates a function pointer for `FNAME` that points to
+// `mpi_unimplemented_stub` by default and a exported C function for setting the
+// value dynamically
 // TODO replace with call to libdl like libblastrampoline does
-#define EXLA_FFI_MPI_FUNCTION_BINDING(FNAME, CNAME) \
-  decltype(FNAME) *EXLA_##FNAME = reinterpret_cast<decltype(FNAME) *>(&mpi_unimplemented_stub); \
-  extern "C" MLIR_CAPI_EXPORTED void CNAME(void *ptr) { EXLA_##FNAME = reinterpret_cast<decltype(FNAME) *>(ptr); }
+#define EXLA_FFI_MPI_FUNCTION_BINDING(FNAME, CNAME)                            \
+  decltype(FNAME) *EXLA_##FNAME =                                              \
+      reinterpret_cast<decltype(FNAME) *>(&mpi_unimplemented_stub);            \
+  extern "C" MLIR_CAPI_EXPORTED void CNAME(void *ptr) {                        \
+    EXLA_##FNAME = reinterpret_cast<decltype(FNAME) *>(ptr);                   \
+  }
 
-// generates a global variable for `FNAME` that defaults to the value by MPItrampoline by default and a exported C
-// function for setting the value dynamically
-// NOTE this should not be required once MPI v5 ABI is used as minimum version
-#define EXLA_FFI_MPI_CONSTANT_BINDING(FNAME, CNAME) \
-  int EXLA_##FNAME = FNAME; \
+// generates a global variable for `FNAME` that defaults to the value by
+// MPItrampoline by default and a exported C function for setting the value
+// dynamically NOTE this should not be required once MPI v5 ABI is used as
+// minimum version
+#define EXLA_FFI_MPI_CONSTANT_BINDING(FNAME, CNAME)                            \
+  int EXLA_##FNAME = FNAME;                                                    \
   extern "C" MLIR_CAPI_EXPORTED void CNAME(int val) { EXLA_##FNAME = val; }
 
 EXLA_FFI_MPI_FUNCTION_BINDING(MPI_Comm_rank, enzymexla_ffi_set_mpi_comm_rank)
@@ -37,11 +45,14 @@ EXLA_FFI_MPI_FUNCTION_BINDING(MPI_Wait, enzymexla_ffi_set_mpi_wait)
 EXLA_FFI_MPI_FUNCTION_BINDING(MPI_Waitall, enzymexla_ffi_set_mpi_waitall)
 EXLA_FFI_MPI_FUNCTION_BINDING(MPI_Allreduce, enzymexla_ffi_set_mpi_allreduce)
 EXLA_FFI_MPI_FUNCTION_BINDING(MPI_Bcast, enzymexla_ffi_set_mpi_bcast)
-EXLA_FFI_MPI_FUNCTION_BINDING(MPI_Error_string, enzymexla_ffi_set_mpi_error_string)
+EXLA_FFI_MPI_FUNCTION_BINDING(MPI_Error_string,
+                              enzymexla_ffi_set_mpi_error_string)
 
-EXLA_FFI_MPI_CONSTANT_BINDING(MPI_STATUS_SIZE, enzymexla_ffi_set_mpi_status_size)
+EXLA_FFI_MPI_CONSTANT_BINDING(MPI_STATUS_SIZE,
+                              enzymexla_ffi_set_mpi_status_size)
 EXLA_FFI_MPI_CONSTANT_BINDING(MPI_SUCCESS, enzymexla_ffi_set_mpi_success)
-EXLA_FFI_MPI_CONSTANT_BINDING(MPI_MAX_ERROR_STRING, enzymexla_ffi_set_mpi_max_error_string)
+EXLA_FFI_MPI_CONSTANT_BINDING(MPI_MAX_ERROR_STRING,
+                              enzymexla_ffi_set_mpi_max_error_string)
 
 namespace enzymexla::ffi_internal {
 namespace ffi = xla::ffi;
@@ -59,7 +70,8 @@ using MpiRequestBuffer = PtrBuffer;
 
 // MPI_Status is a non-ABI-stable struct, so use U8 x N buffer to hold it
 // its size is platform-dependent and given by MPI_STATUS_SIZE
-// NOTE its size stabilizes in MPI v5 ABI, but meanwhile we need to support variable size
+// NOTE its size stabilizes in MPI v5 ABI, but meanwhile we need to support
+// variable size
 using MpiStatusBuffer = Buffer<ffi::U8, 1>;
 
 ffi::Error checkMpiStatusSize(const MpiStatusBuffer &buf) {
@@ -71,15 +83,15 @@ ffi::Error checkMpiStatusSize(const MpiStatusBuffer &buf) {
   return ffi::Error::Success();
 }
 
-ffi::Error checkMpiError(const char* fname, const int err) {
-  if (err == EXLA_MPI_SUCCESS) return ffi::Error::Success();
+ffi::Error checkMpiError(const char *fname, const int err) {
+  if (err == EXLA_MPI_SUCCESS)
+    return ffi::Error::Success();
   std::vector<char> cstr(EXLA_MPI_MAX_ERROR_STRING);
   int len;
   EXLA_MPI_Error_string(err, cstr.data(), &len);
   std::string str(cstr.data(), len);
   return ffi::Error::InvalidArgument(
-    absl::StrFormat("%s failed with error code %d: %s", fname, err, str)
-  );
+      absl::StrFormat("%s failed with error code %d: %s", fname, err, str));
 }
 
 ffi::Error MpiCommRankImpl(MpiCommBuffer comm_ptr, Result<IntBuffer> rank_ptr) {
@@ -356,31 +368,33 @@ XLA_FFI_DEFINE_HANDLER(MpiBcastFfi, MpiBcastImpl,
 
 void registerEnzymeJaXXLAHostMPIFFI() {
   XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(),
-                         "enzymexla_ffi_mpi_comm_rank", "Host", MpiCommRankFfi);
+                           "enzymexla_ffi_mpi_comm_rank", "Host",
+                           MpiCommRankFfi);
   XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(),
-                         "enzymexla_ffi_mpi_comm_size", "Host", MpiCommSizeFfi);
+                           "enzymexla_ffi_mpi_comm_size", "Host",
+                           MpiCommSizeFfi);
   XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(),
-                         "enzymexla_ffi_mpi_comm_split", "Host",
-                         MpiCommSplitFfi);
-  XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(), "enzymexla_ffi_mpi_barrier",
-                         "Host", MpiBarrierFfi);
+                           "enzymexla_ffi_mpi_comm_split", "Host",
+                           MpiCommSplitFfi);
+  XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(),
+                           "enzymexla_ffi_mpi_barrier", "Host", MpiBarrierFfi);
   XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(), "enzymexla_ffi_mpi_send",
-                         "Host", MpiSendFfi);
+                           "Host", MpiSendFfi);
   XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(), "enzymexla_ffi_mpi_isend",
-                         "Host", MpiIsendFfi);
+                           "Host", MpiIsendFfi);
   XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(), "enzymexla_ffi_mpi_recv",
-                         "Host", MpiRecvFfi);
+                           "Host", MpiRecvFfi);
   XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(), "enzymexla_ffi_mpi_irecv",
-                         "Host", MpiIrecvFfi);
+                           "Host", MpiIrecvFfi);
   XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(), "enzymexla_ffi_mpi_wait",
-                         "Host", MpiWaitFfi);
-  XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(), "enzymexla_ffi_mpi_waitall",
-                         "Host", MpiWaitallFfi);
+                           "Host", MpiWaitFfi);
   XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(),
-                         "enzymexla_ffi_mpi_allreduce", "Host",
-                         MpiAllreduceFfi);
+                           "enzymexla_ffi_mpi_waitall", "Host", MpiWaitallFfi);
+  XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(),
+                           "enzymexla_ffi_mpi_allreduce", "Host",
+                           MpiAllreduceFfi);
   XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(), "enzymexla_ffi_mpi_bcast",
-                         "Host", MpiBcastFfi);
+                           "Host", MpiBcastFfi);
 }
 
 } // namespace enzymexla::ffi_internal
