@@ -503,6 +503,28 @@ enum __device_builtin__ cudaMemcpyKind
         builder.setInsertionPointToStart(&gpuModule.getBodyRegion().front());
         gpufunc = gpu::GPUFuncOp::create(builder, cur->getLoc(), cur.getName(),
                                          gpuTy0);
+        {
+          // The plugin records which host symbol each imported kernel was
+          // registered for; carry it so the registration can bind the
+          // address the program actually passes around instead of a
+          // synthetic stub.
+          StringRef host;
+          if (auto attr =
+                  dyn_cast_or_null<ArrayAttr>(cur.getPassthroughAttr())) {
+            for (auto a : attr) {
+              auto ar = dyn_cast<ArrayAttr>(a);
+              if (!ar || ar.size() != 2)
+                continue;
+              auto s0 = dyn_cast<StringAttr>(ar[0]);
+              auto s1 = dyn_cast<StringAttr>(ar[1]);
+              if (s0 && s1 && s0.getValue() == "polygeist.host_symbol")
+                host = s1.getValue();
+            }
+          }
+          if (!host.empty())
+            gpufunc->setAttr("polygeist.host_symbol",
+                             builder.getStringAttr(host));
+        }
         if (auto attrs = cur.getAllArgAttrs()) {
           gpufunc.setAllArgAttrs(attrs);
         }
