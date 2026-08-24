@@ -124,3 +124,31 @@ llvm.func @wide_stores(%pair: i64, %two: i64) {
 // CHECK: %[[THI:.+]] = llvm.trunc %[[SH]] : i64 to i32
 // CHECK: %[[FIN:.+]] = llvm.insertvalue %[[THI]], %{{.+}}[2]
 // CHECK: llvm.call @usew(%[[FIN]])
+
+// -----
+
+// An integer stored over an aggregate member of the same extent -- a dim3
+// pair written as one i64 -- lands as the aggregate, spelled through the
+// matching vector.
+llvm.func @used(!llvm.struct<(i32, ptr, array<2 x i32>)>)
+llvm.func @dims_pair(%v: !llvm.struct<(i32, ptr, array<2 x i32>)>, %pair: i64) {
+  %c1 = llvm.mlir.constant(1 : i32) : i32
+  %p = llvm.alloca %c1 x !llvm.struct<(i32, ptr, array<2 x i32>)> : (i32) -> !llvm.ptr
+  llvm.store %v, %p : !llvm.struct<(i32, ptr, array<2 x i32>)>, !llvm.ptr
+  %g = llvm.getelementptr %p[0, 2] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<(i32, ptr, array<2 x i32>)>
+  llvm.store %pair, %g : i64, !llvm.ptr
+  %w = llvm.load %p : !llvm.ptr -> !llvm.struct<(i32, ptr, array<2 x i32>)>
+  llvm.call @used(%w) : (!llvm.struct<(i32, ptr, array<2 x i32>)>) -> ()
+  llvm.return
+}
+
+// CHECK-LABEL: llvm.func @dims_pair(
+// CHECK-SAME: %[[V:[a-z0-9]+]]: !llvm.struct<(i32, ptr, array<2 x i32>)>, %[[PAIR:[a-z0-9]+]]: i64
+// CHECK-NOT: llvm.alloca
+// CHECK: %[[VEC:.+]] = llvm.bitcast %[[PAIR]] : i64 to vector<2xi32>
+// CHECK: %[[E0:.+]] = llvm.extractelement %[[VEC]]
+// CHECK: llvm.insertvalue %[[E0]], %{{.+}}[0]
+// CHECK: %[[E1:.+]] = llvm.extractelement %[[VEC]]
+// CHECK: %[[ARR:.+]] = llvm.insertvalue %[[E1]], %{{.+}}[1]
+// CHECK: %[[FIN:.+]] = llvm.insertvalue %[[ARR]], %[[V]][2]
+// CHECK: llvm.call @used(%[[FIN]])

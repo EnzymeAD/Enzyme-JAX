@@ -1946,6 +1946,20 @@ static void collectLeaves(OpBuilder &b, Value val,
   }
 }
 
+static void collectLeafTypes(Type t, SmallVectorImpl<Type> &out) {
+  if (auto ST = dyn_cast<LLVM::LLVMStructType>(t)) {
+    for (Type m : ST.getBody())
+      collectLeafTypes(m, out);
+    return;
+  }
+  if (auto AT = dyn_cast<LLVM::LLVMArrayType>(t)) {
+    for (unsigned i = 0; i < AT.getNumElements(); ++i)
+      collectLeafTypes(AT.getElementType(), out);
+    return;
+  }
+  out.push_back(t);
+}
+
 Value castToType(Type elType, Value val, Operation *op) {
   if (val.getType() == elType)
     return val;
@@ -2017,9 +2031,86 @@ Value castToType(Type elType, Value val, Operation *op) {
                                          b.getDenseI64ArrayAttr({0}));
     }
   }
+  if ((isa<IntegerType, FloatType>(val.getType())) &&
+      isa<LLVM::LLVMStructType, LLVM::LLVMArrayType>(elType)) {
+    // A scalar spelling of a small aggregate goes through the matching
+    // vector, the inverse of the leaf collection above and with the same
+    // element correspondence.
+    SmallVector<Type> leafTypes;
+    collectLeafTypes(elType, leafTypes);
+    if (!leafTypes.empty() && isa<IntegerType, FloatType>(leafTypes[0]) &&
+        llvm::all_of(leafTypes, [&](Type t) { return t == leafTypes[0]; })) {
+      auto vecType = VectorType::get(leafTypes.size(), leafTypes[0]);
+      DataLayout dl(op->getParentOfType<ModuleOp>());
+      if (dl.getTypeSize(vecType) == dl.getTypeSize(val.getType())) {
+        Value vec = LLVM::BitcastOp::create(b, val.getLoc(), vecType, val);
+        Value agg = LLVM::UndefOp::create(b, val.getLoc(), elType);
+        unsigned leafIdx = 0;
+        SmallVector<int64_t> path;
+        std::function<Value(Value, Type)> fill = [&](Value agg,
+                                                     Type t) -> Value {
+          if (auto ST = dyn_cast<LLVM::LLVMStructType>(t)) {
+            for (auto &&[i, m] : llvm::enumerate(ST.getBody())) {
+              path.push_back(i);
+              agg = fill(agg, m);
+              path.pop_back();
+            }
+            return agg;
+          }
+          if (auto AT = dyn_cast<LLVM::LLVMArrayType>(t)) {
+            for (unsigned i = 0; i < AT.getNumElements(); ++i) {
+              path.push_back(i);
+              agg = fill(agg, AT.getElementType());
+              path.pop_back();
+            }
+            return agg;
+          }
+          Value idx = LLVM::ConstantOp::create(b, val.getLoc(), b.getI32Type(),
+                                               b.getI32IntegerAttr(leafIdx++));
+          Value elem =
+              LLVM::ExtractElementOp::create(b, val.getLoc(), vec, idx);
+          return LLVM::InsertValueOp::create(b, val.getLoc(), agg, elem, path);
+        };
+        return fill(agg, elType);
+      }
+    }
+  }
   llvm::errs() << " mismatched load type, needed: " << elType << " found "
                << val << "\n";
   llvm_unreachable("mismatched type");
+}
+
+// Whether castToType can spell src as dst. Conservative: a subset of what it
+// handles is enough, since callers fall back to slicing or to leaving the
+// memory operation in place.
+static bool castCompatible(Type dst, Type src) {
+  if (dst == src)
+    return true;
+  auto scalar = [](Type t) {
+    return isa<IntegerType, FloatType, LLVM::LLVMPointerType>(t);
+  };
+  if (scalar(dst) && scalar(src))
+    return true;
+  auto uniformScalar = [&](Type t, Type &leaf) {
+    SmallVector<Type> leaves;
+    collectLeafTypes(t, leaves);
+    if (leaves.empty() || !isa<IntegerType, FloatType>(leaves[0]))
+      return false;
+    if (!llvm::all_of(leaves, [&](Type l) { return l == leaves[0]; }))
+      return false;
+    leaf = leaves[0];
+    return true;
+  };
+  Type leaf;
+  if (isa<IntegerType, FloatType>(src) &&
+      isa<LLVM::LLVMStructType, LLVM::LLVMArrayType>(dst) &&
+      uniformScalar(dst, leaf))
+    return true;
+  if (isa<IntegerType, FloatType>(dst) &&
+      isa<LLVM::LLVMStructType, LLVM::LLVMArrayType>(src) &&
+      uniformScalar(src, leaf))
+    return true;
+  return false;
 }
 
 // Whether every position the value is passed at carries the given attribute
@@ -2428,11 +2519,18 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
                              .getType();
           SmallVector<int64_t> path;
           if (held && extractPath(held, at, written, dl, path)) {
-            LLVM_DEBUG(llvm::dbgs()
-                       << "Matching Piece Store: " << *storeOp << "\n");
-            containedStores[storeOp] = at;
-            allStoreOps.insert(storeOp);
-            break;
+            // The path may land at a spelling of the piece rather than its
+            // type; only claim the store if that spelling is reachable.
+            Type landing = path.empty()
+                               ? held
+                               : aggregateFieldOffset(held, path, dl)->second;
+            if (castCompatible(landing, written)) {
+              LLVM_DEBUG(llvm::dbgs()
+                         << "Matching Piece Store: " << *storeOp << "\n");
+              containedStores[storeOp] = at;
+              allStoreOps.insert(storeOp);
+              break;
+            }
           }
           auto wsize = typeSize(written, dl);
           SmallVector<std::pair<uint64_t, Type>> leaves;
@@ -2928,7 +3026,13 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
                 Value piece = storeOp.getStoredValue();
                 OpBuilder builder(a);
                 SmallVector<int64_t> path;
-                if (extractPath(elType, at, piece.getType(), dl, path)) {
+                Type landing;
+                if (extractPath(elType, at, piece.getType(), dl, path) &&
+                    (landing =
+                         path.empty()
+                             ? elType
+                             : aggregateFieldOffset(elType, path, dl)->second,
+                     castCompatible(landing, piece.getType()))) {
                   Value built;
                   if (path.empty()) {
                     built = castToType(elType, piece, a);
