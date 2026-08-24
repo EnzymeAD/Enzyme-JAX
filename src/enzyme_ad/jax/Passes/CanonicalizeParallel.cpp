@@ -16,6 +16,8 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/IR/Threading.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Pass/Pass.h"
@@ -33,6 +35,37 @@ using namespace mlir;
 
 namespace {
 
+// A truncation that discards every bit an or set sees through the or. This is
+// how a kernel launch reads its dimensions back out of clang's packed dim3:
+// grid.y lands in the high half of an i64 and the launch takes the low half,
+// and the bits in between are what tie the grid to the size it was computed
+// from.
+struct TruncOrConst : public OpRewritePattern<arith::TruncIOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::TruncIOp trunc,
+                                PatternRewriter &rewriter) const override {
+    auto intTy = dyn_cast<IntegerType>(trunc.getType());
+    if (!intTy)
+      return failure();
+    auto ori = trunc.getIn().getDefiningOp<arith::OrIOp>();
+    if (!ori)
+      return failure();
+    APInt cst;
+    Value other;
+    if (matchPattern(ori.getRhs(), m_ConstantInt(&cst)))
+      other = ori.getLhs();
+    else if (matchPattern(ori.getLhs(), m_ConstantInt(&cst)))
+      other = ori.getRhs();
+    else
+      return failure();
+    if (!cst.extractBits(intTy.getWidth(), 0).isZero())
+      return failure();
+    rewriter.replaceOpWithNewOp<arith::TruncIOp>(trunc, intTy, other);
+    return success();
+  }
+};
+
 struct CanonicalizeParallelPass
     : public enzyme::impl::CanonicalizeParallelPassBase<
           CanonicalizeParallelPass> {
@@ -48,6 +81,7 @@ struct CanonicalizeParallelPass
       dialect->getCanonicalizationPatterns(owningPatterns);
     for (RegisteredOperationName op : ctx->getRegisteredOperations())
       op.getCanonicalizationPatterns(owningPatterns, ctx);
+    owningPatterns.add<TruncOrConst>(ctx);
     FrozenRewritePatternSet patterns(std::move(owningPatterns));
 
     GreedyRewriteConfig config;
