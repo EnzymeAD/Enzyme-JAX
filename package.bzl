@@ -6,9 +6,11 @@ def _py_package_impl(ctx):
 
     filtered_files = []
 
+    packages = [package.label for package in ctx.attr.packages]
+
     # TODO: rewrite path
     for input_file in inputs.to_list():
-        if str(input_file.owner) in ctx.attr.packages:
+        if input_file.owner in packages:
             filtered_files.append(input_file)
     filtered_inputs = depset(direct = filtered_files)
 
@@ -22,12 +24,11 @@ py_package_lib = struct(
         "deps": attr.label_list(
             doc = "",
         ),
-        "packages": attr.string_list(
+        "packages": attr.label_list(
             mandatory = False,
             allow_empty = True,
             doc = """\
-List of Python packages to include in the distribution.
-Sub-packages are automatically included.
+List of targets whose files are included in the distribution.
 """,
         ),
     },

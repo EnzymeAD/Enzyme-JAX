@@ -6,7 +6,13 @@ common:jll_cache --remote_cache="https://storage.googleapis.com/jll-gcp-cache/" 
 common:public_cache_push --config=public_cache --remote_upload_local_results=true --google_default_credentials
 common:jll_cache_push --config=jll_cache --remote_upload_local_results=true --google_default_credentials
 
-common --noenable_bzlmod
+# Dependencies are managed with bzlmod (MODULE.bazel); there is no WORKSPACE.
+common --enable_bzlmod --noenable_workspace
+# Canonical repo names use `+` (Bazel 8 default), e.g. bazel-bin/external/xla+/...
+common --incompatible_use_plus_in_repo_names
+# Upstream commits are bumped daily; a lockfile would only churn.
+common --lockfile_mode=off
+common --check_direct_dependencies=warning
 
 # TODO: Migrate for https://github.com/bazelbuild/bazel/issues/7260
 common --noincompatible_enable_cc_toolchain_resolution

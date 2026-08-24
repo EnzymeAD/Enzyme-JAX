@@ -1,4 +1,4 @@
-load("@python_version_repo//:py_version.bzl", "REQUIREMENTS")
+load("@python_version_repo//:py_version.bzl", "HERMETIC_PYTHON_VERSION")
 load("@rules_uv//uv:pip.bzl", "pip_compile")
 
 pip_compile(
@@ -14,5 +14,5 @@ pip_compile(
         "--resolution=highest",
     ],
     requirements_in = "requirements.in",
-    requirements_txt = REQUIREMENTS,
+    requirements_txt = "requirements_lock_{}.txt".format(HERMETIC_PYTHON_VERSION.replace(".", "_")),
 )
