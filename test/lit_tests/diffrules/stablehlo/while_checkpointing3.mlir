@@ -73,7 +73,7 @@ module {
 // CHECK-NEXT:       %4 = stablehlo.compare LT, %iterArg, %c_1 : (tensor<i64>, tensor<i64>) -> tensor<i1>
 // CHECK-NEXT:       stablehlo.return %4 : tensor<i1>
 // CHECK-NEXT:     } do {
-// CHECK-NEXT:       %4:3 = stablehlo.while(%iterArg_11 = %c_3, %iterArg_12 = %iterArg_7, %iterArg_13 = %iterArg_8) : tensor<i64>, tensor<31xi64>, tensor<31xf64> attributes {enzyme.disable_mincut}
+// CHECK-NEXT:       %4:3 = stablehlo.while(%iterArg_11 = %c_3, %iterArg_12 = %iterArg_7, %iterArg_13 = %iterArg_8) : tensor<i64>, tensor<31xi64>, tensor<31xf64> attributes {enzyme.disable_mincut, enzymexla.checkpoint_segment}
 // CHECK-NEXT:       cond {
 // CHECK-NEXT:         %10 = stablehlo.compare LT, %iterArg_11, %c_1 : (tensor<i64>, tensor<i64>) -> tensor<i1>
 // CHECK-NEXT:         stablehlo.return %10 : tensor<i1>

@@ -440,6 +440,30 @@ inline bool isCheckpointSegmentLoop(mlir::Operation *op) {
   return op->hasAttr(kCheckpointSegmentAttrName);
 }
 
+/// True if `op` is a checkpoint-segment loop, or encloses one.
+///
+/// The mark is not guaranteed to survive on every loop of the scaffold. A
+/// rewrite that has to widen a loop -- to carry the checkpoint snapshots out,
+/// say -- cannot mutate results in place, so it builds a fresh op, and a fresh
+/// op does not inherit discardable attributes. An outer scaffold loop can
+/// therefore lose the mark while the segment loop nested inside it keeps it.
+///
+/// Materializing the outer loop rebuilds the same tape as materializing the
+/// inner one, so enclosing a marked loop counts the same as carrying the mark.
+/// This is deliberately conservative: it also covers a user loop that happens
+/// to wrap a checkpointed region, where fission would undo the checkpointing
+/// just as thoroughly.
+inline bool isOrContainsCheckpointSegmentLoop(mlir::Operation *op) {
+  if (isCheckpointSegmentLoop(op))
+    return true;
+  return op
+      ->walk([](mlir::Operation *nested) {
+        return isCheckpointSegmentLoop(nested) ? mlir::WalkResult::interrupt()
+                                               : mlir::WalkResult::advance();
+      })
+      .wasInterrupted();
+}
+
 /// Get bounds attribute from IR. Bounds are stored as ArrayAttr with two
 /// IntegerAttr elements [min, max] under the attribute name "enzymexla.bounds".
 /// Returns nullopt if the attribute is not found or malformed.
