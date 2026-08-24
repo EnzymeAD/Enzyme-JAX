@@ -8,7 +8,7 @@ on:
       - ".github/scripts/process_benchmark_results.py"
       - ".github/workflows/build.yml"
       - "**/BUILD"
-      - "**/WORKSPACE"
+      - "MODULE.bazel"
       - "**/*.bzl"
       - "builddeps/**"
       - "patches/**"
@@ -117,13 +117,13 @@ jobs:
         run: |
           if [[ "${{ matrix.os }}" == *"tpu"* ]]; then
             sed -i.bak0 "s/jax\[cuda12\]/jax[tpu]/g" builddeps/requirements.in
-            sed -i.bak0 "s/pypi_jax_cuda12_plugin/pypi_libtpu/g" test/BUILD
+            sed -i.bak0 "s,@pypi//jax_cuda12_plugin,@pypi//libtpu,g" test/BUILD
           elif [[ "${{ matrix.os }}" == *"a100"* ]]; then
             sed -i.bak0 "s/jax\[cuda12\]/jax[cuda13]/g" builddeps/requirements.in
-            sed -i.bak0 "s/pypi_jax_cuda12_plugin/pypi_jax_cuda13_plugin/g" test/BUILD
+            sed -i.bak0 "s,@pypi//jax_cuda12_plugin,@pypi//jax_cuda13_plugin,g" test/BUILD
           else
             sed -i.bak0 "s/jax\[cuda12\]/jax[cpu]/g" builddeps/requirements.in
-            sed -i.bak0 "/pypi_jax_cuda12_plugin/d" test/BUILD
+            sed -i.bak0 "\,@pypi//jax_cuda12_plugin,d" test/BUILD
           fi
           cat builddeps/requirements.in
           cat test/BUILD
@@ -219,7 +219,8 @@ jobs:
         run: |
           bazel build $BAZEL_FLAGS --color=yes //:enzymexlamlir-opt @xla//xla/hlo/tools:hlo-translate --test_output=errors
           cp bazel-bin/enzymexlamlir-opt enzymexlamlir-opt
-          cp bazel-bin/external/xla/xla/hlo/tools/hlo-translate hlo-translate 
+          # The external directory is named after the canonical repository name, ask Bazel for the path.
+          cp "$(bazel cquery $BAZEL_FLAGS --output=files @xla//xla/hlo/tools:hlo-translate 2>/dev/null)" hlo-translate
       - name: Update Nightly Release
         uses: ncipollo/release-action@v1
         if: ${{ !cancelled() && github.ref == 'refs/heads/main' && matrix.os == 'linux-x86-n2-32' }} 
