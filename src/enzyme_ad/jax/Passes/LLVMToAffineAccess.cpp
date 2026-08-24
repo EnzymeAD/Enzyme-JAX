@@ -846,6 +846,107 @@ struct AffineIfDeadResults : public OpRewritePattern<affine::AffineIfOp> {
   }
 };
 
+static std::optional<std::pair<uint64_t, Type>>
+fieldByteOffset(Type from, ArrayRef<int64_t> path, const DataLayout &dl) {
+  uint64_t off = 0;
+  Type cur = from;
+  for (int64_t want : path) {
+    if (auto ST = dyn_cast<LLVM::LLVMStructType>(cur)) {
+      if (want < 0 || (size_t)want >= ST.getBody().size())
+        return std::nullopt;
+      uint64_t byte = 0;
+      for (auto &&[i, member] : llvm::enumerate(ST.getBody())) {
+        if (!ST.isPacked())
+          byte = llvm::alignTo(byte, dl.getTypeABIAlignment(member));
+        if ((int64_t)i == want) {
+          off += byte;
+          cur = member;
+          break;
+        }
+        byte += dl.getTypeSize(member);
+      }
+      continue;
+    }
+    if (auto AT = dyn_cast<LLVM::LLVMArrayType>(cur)) {
+      if (want < 0 || (uint64_t)want >= AT.getNumElements())
+        return std::nullopt;
+      off += (uint64_t)want * dl.getTypeSize(AT.getElementType());
+      cur = AT.getElementType();
+      continue;
+    }
+    return std::nullopt;
+  }
+  return std::make_pair(off, cur);
+}
+
+// A load of a whole aggregate whose only consumers take fields out of it is
+// read one field at a time instead, which needs no aggregate anywhere.
+struct SplitAggregateLoad : public OpRewritePattern<affine::AffineLoadOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(affine::AffineLoadOp ld,
+                                PatternRewriter &rewriter) const override {
+    auto structTy = dyn_cast<LLVM::LLVMStructType>(ld.getType());
+    if (!structTy)
+      return failure();
+    auto p2m = ld.getMemRef().getDefiningOp<enzymexla::Pointer2MemrefOp>();
+    if (!p2m)
+      return failure();
+    auto MT = cast<MemRefType>(p2m.getType());
+    if (MT.getElementType() != ld.getType())
+      return failure();
+    auto map = ld.getAffineMap();
+    if (map.getNumResults() != 1)
+      return failure();
+
+    DataLayout dl = DataLayout::closest(ld);
+    uint64_t structSize = dl.getTypeSize(structTy);
+
+    struct Plan {
+      LLVM::ExtractValueOp ev;
+      uint64_t off;
+      Type ty;
+    };
+    SmallVector<Plan> plans;
+    for (auto *user : ld->getResult(0).getUsers()) {
+      auto ev = dyn_cast<LLVM::ExtractValueOp>(user);
+      if (!ev)
+        return failure();
+      auto fo = fieldByteOffset(structTy, ev.getPosition(), dl);
+      if (!fo)
+        return failure();
+      auto [off, ty] = *fo;
+      if (isa<LLVM::LLVMStructType, LLVM::LLVMArrayType>(ty))
+        return failure();
+      uint64_t tsize = dl.getTypeSize(ty);
+      if (!tsize || off % tsize || structSize % tsize)
+        return failure();
+      plans.push_back({ev, off, ty});
+    }
+    if (plans.empty())
+      return failure();
+
+    rewriter.setInsertionPoint(ld);
+    for (auto &plan : plans) {
+      uint64_t tsize = dl.getTypeSize(plan.ty);
+      AffineMap newMap =
+          AffineMap::get(map.getNumDims(), map.getNumSymbols(),
+                         map.getResult(0) * (int64_t)(structSize / tsize) +
+                             (int64_t)(plan.off / tsize));
+      auto view = enzymexla::Pointer2MemrefOp::create(
+          rewriter, p2m.getLoc(),
+          MemRefType::get({ShapedType::kDynamic}, plan.ty,
+                          MemRefLayoutAttrInterface{}, MT.getMemorySpace()),
+          p2m.getOperand());
+      auto newLd = affine::AffineLoadOp::create(rewriter, ld.getLoc(), view,
+                                                newMap, ld.getMapOperands());
+      rewriter.replaceOp(plan.ev, newLd.getResult());
+    }
+    rewriter.eraseOp(ld);
+    return success();
+  }
+};
+
 struct LoadSelect : public OpRewritePattern<affine::AffineLoadOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -2179,7 +2280,8 @@ convertLLVMToAffineAccess(Operation *op,
         SimplifyDeadAlloc<memref::AllocaOp>, SimplifyDeadAlloc<memref::AllocOp>,
         SimplifyDeadAlloc<LLVM::AllocaOp>,
         SimplifyDeadAlloc<gpu::AllocOp, true>, Pointer2MemrefSelect, LoadSelect,
-        AffineIfDeadResults, SimpleMem2Reg<memref::AllocaOp>>(context);
+        SplitAggregateLoad, AffineIfDeadResults,
+        SimpleMem2Reg<memref::AllocaOp>>(context);
     GreedyRewriteConfig config;
     config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);
     config.enableFolding();
