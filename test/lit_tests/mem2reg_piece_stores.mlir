@@ -68,3 +68,59 @@ llvm.func @piece_after_unknown(%x: i32) -> !llvm.struct<(i32, i32)> {
 // CHECK: llvm.store
 // CHECK: %[[LD:.+]] = llvm.load
 // CHECK: llvm.return %[[LD]]
+
+// -----
+
+// The fields are written in one block and the whole read in another: the
+// value crosses as a block argument, undef seed and all.
+llvm.func @useB(!llvm.struct<(i32, f64)>)
+llvm.func @across_blocks(%x: i32, %y: f64, %c: i1) {
+  %c1 = llvm.mlir.constant(1 : i32) : i32
+  %p = llvm.alloca %c1 x !llvm.struct<(i32, f64)> : (i32) -> !llvm.ptr
+  cf.cond_br %c, ^bb1, ^bb1
+^bb1:
+  %g0 = llvm.getelementptr %p[0, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<(i32, f64)>
+  llvm.store %x, %g0 : i32, !llvm.ptr
+  %g1 = llvm.getelementptr %p[0, 1] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<(i32, f64)>
+  llvm.store %y, %g1 : f64, !llvm.ptr
+  %v = llvm.load %p : !llvm.ptr -> !llvm.struct<(i32, f64)>
+  llvm.call @useB(%v) : (!llvm.struct<(i32, f64)>) -> ()
+  llvm.return
+}
+
+// CHECK-LABEL: llvm.func @across_blocks(
+// CHECK-SAME: %[[X:[a-z0-9]+]]: i32, %[[Y:[a-z0-9]+]]: f64
+// CHECK-NOT: llvm.alloca
+// CHECK: %[[U:.+]] = llvm.mlir.undef : !llvm.struct<(i32, f64)>
+// CHECK: %[[I0:.+]] = llvm.insertvalue %[[X]], %[[U]][0]
+// CHECK: %[[I1:.+]] = llvm.insertvalue %[[Y]], %[[I0]][1]
+// CHECK: llvm.call @useB(%[[I1]])
+
+// -----
+
+// An integer written over a field and the padding after it lands its slice on
+// the field; one written over two fields lands a slice on each.
+llvm.func @usew(!llvm.struct<(struct<(i32, ptr)>, i32, i32)>)
+llvm.func @wide_stores(%pair: i64, %two: i64) {
+  %c1 = llvm.mlir.constant(1 : i32) : i32
+  %p = llvm.alloca %c1 x !llvm.struct<(struct<(i32, ptr)>, i32, i32)> : (i32) -> !llvm.ptr
+  llvm.store %pair, %p : i64, !llvm.ptr
+  %g = llvm.getelementptr %p[0, 1] : (!llvm.ptr) -> !llvm.ptr, !llvm.struct<(struct<(i32, ptr)>, i32, i32)>
+  llvm.store %two, %g : i64, !llvm.ptr
+  %v = llvm.load %p : !llvm.ptr -> !llvm.struct<(struct<(i32, ptr)>, i32, i32)>
+  llvm.call @usew(%v) : (!llvm.struct<(struct<(i32, ptr)>, i32, i32)>) -> ()
+  llvm.return
+}
+
+// CHECK-LABEL: llvm.func @wide_stores(
+// CHECK-SAME: %[[PAIR:[a-z0-9]+]]: i64, %[[TWO:[a-z0-9]+]]: i64
+// CHECK-NOT: llvm.alloca
+// CHECK-DAG: %[[PLO:.+]] = llvm.trunc %[[PAIR]] : i64 to i32
+// CHECK: llvm.insertvalue %[[PLO]], %{{.+}}[0, 0]
+// CHECK-DAG: %[[TLO:.+]] = llvm.trunc %[[TWO]] : i64 to i32
+// CHECK: llvm.insertvalue %[[TLO]], %{{.+}}[1]
+// CHECK: %[[C32:.+]] = llvm.mlir.constant(32 : i64) : i64
+// CHECK: %[[SH:.+]] = llvm.lshr %[[TWO]], %[[C32]]
+// CHECK: %[[THI:.+]] = llvm.trunc %[[SH]] : i64 to i32
+// CHECK: %[[FIN:.+]] = llvm.insertvalue %[[THI]], %{{.+}}[2]
+// CHECK: llvm.call @usew(%[[FIN]])
