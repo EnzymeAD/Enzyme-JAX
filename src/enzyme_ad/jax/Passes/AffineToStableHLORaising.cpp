@@ -3870,6 +3870,7 @@ struct AffineToStableHLORaisingPass
     ParallelContext::Options options{enable_lockstep_for, dump_failed_lockstep,
                                      prefer_while_raising,
                                      strip_llvm_debuginfo};
+    flattenViewedScratch(getOperation());
     peelDynamicParallelDims(getOperation());
     std::vector<func::FuncOp> funcs;
 

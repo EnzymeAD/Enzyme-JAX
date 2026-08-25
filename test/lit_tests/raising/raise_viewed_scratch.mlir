@@ -45,3 +45,60 @@ func.func @mixed_use(%out: memref<32xf64, 1>) {
 // CHECK: %[[RD:.+]] = stablehlo.reshape %[[ST]] : (tensor<32xf64>) -> tensor<32xf64>
 // CHECK: %[[BC:.+]] = stablehlo.broadcast_in_dim %[[RD]], dims = [0]
 // CHECK: stablehlo.dynamic_update_slice %[[OUT2]], %[[BC]], %{{.+}} : (tensor<32xf64>, tensor<32xf64>, tensor<i64>) -> tensor<32xf64>
+
+// -----
+
+// A block-wide barrier over a batched thread axis is a no-op in raised form
+// (whole-tensor updates are already ordered), and a tid==0 broadcast store
+// or-reduces its mask over the thread axis it does not index.
+func.func @bcast(%out: memref<?xf64, 1>, %in: memref<?xf64, 1>, %nbuf: memref<i64, 1>) {
+  %n = affine.load %nbuf[] : memref<i64, 1>
+  %ni = arith.index_cast %n : i64 to index
+  affine.for %e = 0 to %ni {
+    %scr = memref.alloca() : memref<32xf64>
+    %b = memref.alloca() : memref<1xf64>
+    affine.parallel (%t) = (0) to (32) {
+      %v = affine.load %in[%e * 32 + %t] : memref<?xf64, 1>
+      affine.store %v, %scr[%t] : memref<32xf64>
+      affine.if affine_set<(d0) : (d0 == 0)>(%t) {
+        %s = affine.load %in[%e] : memref<?xf64, 1>
+        affine.store %s, %b[0] : memref<1xf64>
+      }
+      "enzymexla.barrier"(%t) : (index) -> ()
+      %x = affine.load %scr[%t] : memref<32xf64>
+      %y = affine.load %b[0] : memref<1xf64>
+      %m = arith.mulf %x, %y : f64
+      affine.store %m, %out[%e * 32 + %t] : memref<?xf64, 1>
+    }
+  } {enzymexla.parallel}
+  return
+}
+
+// CHECK-LABEL: func.func private @bcast_raised(
+// CHECK: stablehlo.while
+// CHECK-SAME: attributes {enzymexla.parallel}
+// CHECK-NOT: enzymexla.barrier
+// CHECK: %[[RED:.+]] = stablehlo.reduce(%{{.+}} init: %{{.+}}) applies stablehlo.or across dimensions = [0] : (tensor<32xi1>, tensor<i1>) -> tensor<i1>
+// CHECK: stablehlo.select %[[RED]], %{{.+}}, %{{.+}} : tensor<i1>, tensor<f64>
+
+// -----
+
+// A uniform branch choosing between two read-only buffers raises as a select
+// of the whole tensors.
+func.func @bufsel(%a: memref<100xf64, 1>, %b: memref<100xf64, 1>, %out: memref<100xf64, 1>, %flagbuf: memref<i64, 1>) {
+  %f = affine.load %flagbuf[] : memref<i64, 1>
+  %fi = arith.index_cast %f : i64 to index
+  affine.parallel (%i) = (0) to (100) {
+    %buf = affine.if affine_set<()[s0] : (s0 - 1 >= 0)>()[%fi] -> memref<100xf64, 1> {
+      affine.yield %a : memref<100xf64, 1>
+    } else {
+      affine.yield %b : memref<100xf64, 1>
+    }
+    %v = affine.load %buf[%i] : memref<100xf64, 1>
+    affine.store %v, %out[%i] : memref<100xf64, 1>
+  }
+  return
+}
+
+// CHECK-LABEL: func.func private @bufsel_raised(
+// CHECK: stablehlo.select %{{.+}}, %arg0, %arg1 : tensor<i1>, tensor<100xf64>
