@@ -3709,7 +3709,9 @@ struct MergeNestedAffineParallelIf
         innerOp = innerOp2;
         continue;
       }
-      if (!isReadOnly(&op))
+      // A local allocation the guarded body uses is as good as no effect
+      // here: an iteration the tightened bound drops only ever allocated.
+      if (!isReadOnly(&op) && !hasSingleEffect<MemoryEffects::Allocate>(&op))
         return failure();
     }
 
