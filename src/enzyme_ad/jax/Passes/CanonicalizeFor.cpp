@@ -1736,6 +1736,265 @@ struct WhileToForHelper {
   }
 };
 
+// A while MoveWhileToFor converted often carries an i1 "live" flag: true on
+// entry, re-computed each iteration as `live ? (f(counter) < N) : false`,
+// where the counter advances by one per live iteration. Every earlier test
+// held whenever the flag is still true, so with f nondecreasing in the
+// counter the conjunction is just the previous iteration's test: the flag
+// equals `iv == lb || f(cnt0 + (iv - lb) - 1) < N`, a pure function of the
+// induction variable. Rewriting it lets the flag and the counter fold away,
+// leaving a guard later analyses can reason about affinely.
+struct ForLiveFlagToIVPredicate : public OpRewritePattern<ForOp> {
+  using OpRewritePattern<ForOp>::OpRewritePattern;
+
+  static bool isKnownNonNegative(Value v, unsigned depth = 0) {
+    if (depth > 6)
+      return false;
+    APInt cst;
+    if (matchPattern(v, m_ConstantInt(&cst)))
+      return cst.isNonNegative();
+    if (auto op = v.getDefiningOp<arith::IndexCastUIOp>())
+      return true;
+    if (auto op = v.getDefiningOp<ExtUIOp>())
+      return true;
+    if (auto op = v.getDefiningOp<AddIOp>())
+      return isKnownNonNegative(op.getLhs(), depth + 1) &&
+             isKnownNonNegative(op.getRhs(), depth + 1);
+    if (auto op = v.getDefiningOp<MulIOp>())
+      return isKnownNonNegative(op.getLhs(), depth + 1) &&
+             isKnownNonNegative(op.getRhs(), depth + 1);
+    return false;
+  }
+
+  // Whether `v` is `arg` plus/times values defined outside the loop, with
+  // every multiplicative factor along the path to `arg` known non-negative
+  // (so v is nondecreasing in arg and clonable at the loop's entry block).
+  static bool isMonotoneInArg(Value v, BlockArgument arg, ForOp loop,
+                              unsigned depth = 0) {
+    if (depth > 8)
+      return false;
+    if (v == arg)
+      return true;
+    Operation *def = v.getDefiningOp();
+    if (!def)
+      return false;
+    if (auto add = dyn_cast<AddIOp>(def)) {
+      for (int i = 0; i < 2; ++i) {
+        Value side = add->getOperand(i), other = add->getOperand(1 - i);
+        if (usesArg(side, arg, depth) && !usesArg(other, arg, depth))
+          return loop.isDefinedOutsideOfLoop(other) &&
+                 isMonotoneInArg(side, arg, loop, depth + 1);
+      }
+      return false;
+    }
+    if (auto mul = dyn_cast<MulIOp>(def)) {
+      for (int i = 0; i < 2; ++i) {
+        Value side = mul->getOperand(i), other = mul->getOperand(1 - i);
+        if (usesArg(side, arg, depth) && !usesArg(other, arg, depth))
+          return loop.isDefinedOutsideOfLoop(other) &&
+                 isKnownNonNegative(other) &&
+                 isMonotoneInArg(side, arg, loop, depth + 1);
+      }
+      return false;
+    }
+    return false;
+  }
+
+  static bool usesArg(Value v, BlockArgument arg, unsigned depth = 0) {
+    if (depth > 8)
+      return false;
+    if (v == arg)
+      return true;
+    Operation *def = v.getDefiningOp();
+    if (!def || !isa<AddIOp, MulIOp>(def))
+      return false;
+    return usesArg(def->getOperand(0), arg, depth + 1) ||
+           usesArg(def->getOperand(1), arg, depth + 1);
+  }
+
+  LogicalResult matchAndRewrite(ForOp loop,
+                                PatternRewriter &rewriter) const override {
+    // Step must be the constant one the conversion emits.
+    APInt stepCst;
+    if (!matchPattern(loop.getStep(), m_ConstantInt(&stepCst)) ||
+        !stepCst.isOne())
+      return failure();
+    // The trip bound must be maxsi(X, 1) + 1 with the last iteration's
+    // continuation test `iv < X`: only the final iteration can fail it, so a
+    // frozen counter is never read by a live iteration.
+    auto ubAdd = loop.getUpperBound().getDefiningOp<AddIOp>();
+    if (!ubAdd)
+      return failure();
+    Value maxVal = nullptr, boundX = nullptr;
+    for (int i = 0; i < 2; ++i) {
+      APInt one;
+      if (matchPattern(ubAdd->getOperand(1 - i), m_ConstantInt(&one)) &&
+          one.isOne())
+        maxVal = ubAdd->getOperand(i);
+    }
+    if (!maxVal)
+      return failure();
+    if (auto maxOp = maxVal.getDefiningOp<MaxSIOp>()) {
+      for (int i = 0; i < 2; ++i) {
+        APInt one;
+        if (matchPattern(maxOp->getOperand(1 - i), m_ConstantInt(&one)) &&
+            one.isOne())
+          boundX = maxOp->getOperand(i);
+      }
+    }
+    if (!boundX)
+      return failure();
+
+    auto yield = cast<scf::YieldOp>(loop.getBody()->getTerminator());
+
+    for (auto [argIdx, flagArg] : llvm::enumerate(loop.getRegionIterArgs())) {
+      if (!flagArg.getType().isInteger(1))
+        continue;
+      APInt initTrue;
+      if (!matchPattern(loop.getInitArgs()[argIdx], m_ConstantInt(&initTrue)) ||
+          !initTrue.isOne())
+        continue;
+      // The flag's only use is as the condition of the body if.
+      if (!flagArg.hasOneUse())
+        continue;
+      auto ifOp = dyn_cast<scf::IfOp>(flagArg.getUses().begin()->getOwner());
+      if (!ifOp || ifOp.getCondition() != flagArg ||
+          ifOp->getParentOp() != loop)
+        continue;
+      // The flag is re-yielded from the if: then a comparison, else false.
+      auto flagYielded = dyn_cast<OpResult>(yield.getOperand(argIdx));
+      if (!flagYielded || flagYielded.getOwner() != ifOp)
+        continue;
+      unsigned fr = flagYielded.getResultNumber();
+      auto cmp = ifOp.thenYield().getOperand(fr).getDefiningOp<CmpIOp>();
+      APInt elseFalse;
+      if (!cmp ||
+          !matchPattern(ifOp.elseYield().getOperand(fr),
+                        m_ConstantInt(&elseFalse)) ||
+          !elseFalse.isZero())
+        continue;
+      if (cmp->getParentOp() != ifOp)
+        continue;
+      auto pred = cmp.getPredicate();
+      if (pred != CmpIPredicate::slt && pred != CmpIPredicate::ult &&
+          pred != CmpIPredicate::sle && pred != CmpIPredicate::ule)
+        continue;
+      if (!loop.isDefinedOutsideOfLoop(cmp.getRhs()))
+        continue;
+
+      // Find the counter: an iter_arg whose then-branch update is cnt + 1,
+      // forwarded (possibly through a second guard if) to the yield.
+      BlockArgument counter = nullptr;
+      unsigned counterIdx = 0;
+      for (auto [ci, cArg] : llvm::enumerate(loop.getRegionIterArgs())) {
+        if (ci == argIdx || cArg.getType() != cmp.getLhs().getType())
+          continue;
+        // Locate `cnt + 1` in the then region.
+        AddIOp inc = nullptr;
+        for (auto &use : cArg.getUses()) {
+          if (auto add = dyn_cast<AddIOp>(use.getOwner())) {
+            APInt one;
+            if (add->getParentOp() == ifOp &&
+                ifOp.getThenRegion().isAncestor(add->getParentRegion()) &&
+                matchPattern(add->getOperand(1 - use.getOperandNumber()),
+                             m_ConstantInt(&one)) &&
+                one.isOne()) {
+              inc = add;
+              break;
+            }
+          }
+        }
+        if (!inc)
+          continue;
+        // The yield for this slot must trace back to the increment: either
+        // directly the if result whose then-yield is the increment, or that
+        // value routed through one more if whose then-yield forwards it.
+        Value slot = yield.getOperand(ci);
+        SmallVector<Value, 4> worklist{slot};
+        bool reaches = false;
+        for (unsigned steps = 0; !worklist.empty() && steps < 4; ++steps) {
+          Value v = worklist.pop_back_val();
+          if (v == inc.getResult()) {
+            reaches = true;
+            break;
+          }
+          if (auto res = dyn_cast<OpResult>(v))
+            if (auto innerIf = dyn_cast<scf::IfOp>(res.getOwner()))
+              worklist.push_back(
+                  innerIf.thenYield().getOperand(res.getResultNumber()));
+        }
+        if (!reaches)
+          continue;
+        if (!loop.isDefinedOutsideOfLoop(loop.getInitArgs()[ci]))
+          continue;
+        counter = cArg;
+        counterIdx = ci;
+        break;
+      }
+      if (!counter)
+        continue;
+      // The comparison's varying side is nondecreasing in the counter, so the
+      // conjunction of every earlier test is the previous test.
+      if (!isMonotoneInArg(cmp.getLhs(), counter, loop))
+        continue;
+      // The rewrite changes what the dead iterations yield for the counter,
+      // so its loop result must be unused.
+      if (!loop.getResult(counterIdx).use_empty())
+        continue;
+
+      // counter == cnt0 + (iv - lb) on every live iteration.
+      rewriter.setInsertionPointToStart(loop.getBody());
+      Location loc = loop.getLoc();
+      Value iv = loop.getInductionVar();
+      Value ivOff = SubIOp::create(rewriter, loc, iv, loop.getLowerBound());
+      Value cnt0 = loop.getInitArgs()[counterIdx];
+      Value curCnt = AddIOp::create(rewriter, loc, ivOff, cnt0);
+      Value one = ConstantIntOp::create(rewriter, loc, counter.getType(), 1);
+      Value prevCnt = SubIOp::create(rewriter, loc, curCnt, one);
+
+      // Clone the compared expression at the previous counter value; strip
+      // overflow flags since the first iteration evaluates it out of range
+      // (the or with iv == lb ignores the value, but must not see poison).
+      IRMapping map;
+      map.map(Value(counter), prevCnt);
+      SmallVector<Operation *> chain;
+      std::function<Value(Value)> cloneExpr = [&](Value v) -> Value {
+        if (v == counter)
+          return prevCnt;
+        Operation *def = v.getDefiningOp();
+        if (def && isa<AddIOp, MulIOp>(def) && usesArg(v, counter)) {
+          Value l = cloneExpr(def->getOperand(0));
+          Value r = cloneExpr(def->getOperand(1));
+          Operation *cl = rewriter.clone(*def, map);
+          cl->setOperands({l, r});
+          if (auto add = dyn_cast<AddIOp>(cl))
+            add.setOverflowFlags(arith::IntegerOverflowFlags::none);
+          else if (auto mul = dyn_cast<MulIOp>(cl))
+            mul.setOverflowFlags(arith::IntegerOverflowFlags::none);
+          return cl->getResult(0);
+        }
+        return v;
+      };
+      Value prevLhs = cloneExpr(cmp.getLhs());
+      Value prevTest =
+          CmpIOp::create(rewriter, loc, pred, prevLhs, cmp.getRhs());
+      Value first = CmpIOp::create(rewriter, loc, CmpIPredicate::eq, iv,
+                                   loop.getLowerBound());
+      Value live = OrIOp::create(rewriter, loc, first, prevTest);
+
+      rewriter.modifyOpInPlace(
+          ifOp, [&] { ifOp.getConditionMutable().assign(live); });
+      // Replace counter uses inside the loop with its induction-variable
+      // form; the argument then dies together with the flag.
+      rewriter.replaceUsesWithIf(counter, curCnt, [&](OpOperand &use) {
+        return use.getOwner() != curCnt.getDefiningOp();
+      });
+      return success();
+    }
+    return failure();
+  }
+};
+
 struct MoveWhileToFor : public OpRewritePattern<WhileOp> {
   using OpRewritePattern<WhileOp>::OpRewritePattern;
 
@@ -4040,10 +4299,10 @@ void CanonicalizeFor::runOnOperation() {
   populateSelectExtractPatterns(rpl);
   rpl.add<IfYieldMovementPattern, truncProp, ForOpInductionReplacement,
           RemoveUnusedForResults, RemoveUnusedArgs, MoveWhileToFor,
-          RemoveWhileSelect, SelectTruncToTruncSelect, MaxSimplify,
-          ForBoundUnSwitch, SelectI1Simplify, RemoveInductionVarRelated,
-          ForOpFinalValueOfDeadIterArg, RotateWhileAnd, MoveWhileDown,
-          MoveWhileDown2,
+          ForLiveFlagToIVPredicate, RemoveWhileSelect, SelectTruncToTruncSelect,
+          MaxSimplify, ForBoundUnSwitch, SelectI1Simplify,
+          RemoveInductionVarRelated, ForOpFinalValueOfDeadIterArg,
+          RotateWhileAnd, MoveWhileDown, MoveWhileDown2,
 
           ReplaceRedundantArgs,
 
