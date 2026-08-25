@@ -17,11 +17,33 @@ the UENV view + spack package store) that stands in for a normal `ROCM_PATH`, th
 invokes Bazel against it.
 
 Two generated scripts:
-- `build_reactant.sh` — builds the overlay + runs the Bazel build (unquoted
-  heredoc: `${CI_PROJECT_DIR}` etc. expand at *write* time; runtime shell vars use
-  `\$`).
+- `build_reactant.sh` — builds the overlay + runs the Bazel build.
 - `run_julia.sh` — launches Julia with `LD_LIBRARY_PATH` pointed at the curated
-  ROCm libs (quoted heredoc: everything resolves at *run* time inside `srun`).
+  ROCm libs.
+
+### Heredoc levels
+
+Most of the yml's apparent line noise is heredoc escaping. There are three levels,
+and a `$` must be escaped once per level it should *survive*:
+
+| Level | What runs it | Escape to defer past it |
+|---|---|---|
+| 0 — the yml | the runner's shell writes `build_reactant.sh` (unquoted `<< BUILDSCRIPT`) | `\$` |
+| 1 — `build_reactant.sh` | runs inside `srun`, writes the clang wrappers (unquoted `<< WRAPPER`) | `\\\$` |
+| 2 — the clang wrapper | runs per compiler invocation | — |
+
+So `${CI_PROJECT_DIR}` (bare) is baked in when the yml step runs;
+`\${OVERLAY_RESOURCE_DIR}` resolves inside `srun`; and `\\\$@` reaches the wrapper
+as a literal `$@`. `run_julia.sh` uses a **quoted** heredoc (`<< 'RUNSCRIPT'`), so
+nothing expands at write time and every var resolves at run time — that is why its
+body reads like ordinary shell.
+
+### Script shorthands
+
+All `script:` steps share one shell, so `SRUN_UENV` and `JULIA_FLAGS` are defined
+once as plain shell variables near the top and reused unquoted (deliberately — they
+must word-split into separate argv entries). They hold no paths with spaces. This is
+the same mechanism the `export PATH=` step already relies on.
 
 ## Dependency pins
 
@@ -39,6 +61,22 @@ curl -fsSL "https://raw.githubusercontent.com/openxla/xla/$XLA/third_party/trito
 ```
 
 ## Workarounds
+
+### Bazel output root
+
+Bazel and bazelisk default to `~/.cache/`, which on Alps is a small, shared home
+directory — a full XLA build fills it and the failure is confusing. `BAZELISK_HOME`
+and `JULIA_DEPOT_PATH` are redirected under `CI_PROJECT_DIR` by job variables, but
+Bazel's own output base is only settable per-invocation, and Reactant's
+`build_local.jl` calls `bazelisk` **by name** rather than through a configurable
+path. So the job writes `bin/bazelisk` and `bin/bazel` shims that inject
+`--output_user_root="${BAZEL_OUTPUT_ROOT}"` and `exec` the real binary, and prepends
+`bin/` to `PATH`. Both names are shimmed because different call sites use each.
+
+The shims **refuse to run** if `BAZEL_OUTPUT_ROOT` is unset or points outside
+`CI_PROJECT_DIR`, so a mistake fails loudly instead of silently filling `$HOME`. A
+separate step then asserts `command -v bazelisk` resolves to the shim, catching a
+mis-ordered `PATH` before the ~25 min build rather than after.
 
 ### LLVM headers
 
@@ -73,7 +111,8 @@ MIOpen is handled the same way.
 be a real, writable directory so the device-bitcode step can place a `bitcode`
 symlink under it. Symlinking it to the read-only view makes
 `${ROCM_PATH}/amdgcn/bitcode` read-only (`rm: ... Is a directory`). The
-device-bitcode step also defensively replaces a symlinked parent with a real dir.
+device-bitcode step also defensively replaces a symlinked parent with a real dir —
+removing the *link* never touches its target in the read-only view.
 
 ### Device bitcode (two locations)
 
@@ -100,6 +139,74 @@ finds clang via `HIP_CLANG_PATH`; without pointing that at the wrapper dir, hipc
 reaches the view clang directly and leaks the undeclared resource-dir path again.
 Hence `HIP_CLANG_PATH` is exported and passed as an `--action_env`.
 
+### hipcc resource dir
+
+Enzyme-JAX's own `XLA_PATCHES` (in [`workspace.bzl`](../workspace.bzl), added
+2026-08-10) declare the hipcc resource directory to the ROCm crosstool at a
+**hardcoded** path:
+
+```
+${ROCM_PATH}/lib/llvm/lib/clang/22/include
+```
+
+and pass it twice — once as a package token and once as
+`repository_ctx.path(...).realpath`. Because `ROCM_PATH` is set, `rocm_configure`
+symlinks the overlay to `rocm/rocm_dist`, so that resolves into the overlay. The
+`.realpath` call **fails outright if the path does not exist**, and the whole
+`local_config_rocm` fetch dies before a single target is built:
+
+```
+ERROR: ... An error occurred during the fetch of repository 'local_config_rocm':
+Error: ${ROCM_PATH}/lib/llvm/lib (No such file or directory)
+ERROR: no such package '@@local_config_rocm//rocm': ...
+```
+
+The overlay's copied resource dir lives at `${ROCM_PATH}/llvm/lib/clang/<v>` (that
+is what the clang wrapper reports), which is *not* the same path — note the extra
+`lib/`. So the clang-wrapper step also aliases it:
+
+```
+${ROCM_PATH}/lib/llvm/lib/clang/{<v>,22} -> ${ROCM_PATH}/llvm/lib/clang/<v>
+```
+
+Aliasing (rather than a second copy) is deliberate: the declared `realpath` then
+resolves to exactly the dir the wrapper forces with `-resource-dir`, so what the
+crosstool declares and what compiles actually include agree. Both `<v>` and the
+literal `22` are linked so the alias survives a UENV whose clang is not 22 (the
+patch's `22` stays hardcoded either way). `lib/llvm/` already exists as a real dir
+from the device-bitcode step, so only `lib/llvm/lib/clang` is created here.
+
+The overlay check asserts `lib/llvm/lib/clang/22/include/stddef.h`.
+
+### Overlay lib/ layout
+
+`lib/` is the one directory built from **per-file** symlinks rather than a
+whole-directory link. `rocm_configure` references individual libraries as
+`rocm_dist/lib/<name>`, but the UENV splits them across the view's `lib/` and
+`lib64/`, and several ROCm libraries live only in their own spack package. So the
+overlay seeds `lib/` from the view's `lib/` then `lib64/`, then auto-fills anything
+still missing by scanning every spack package's `lib/` and `lib64/`. First writer
+wins (`[[ -e ]] ||`), so the view's copy always takes precedence over a spack one.
+
+`lib64/` and `share/` *are* whole-directory symlinks — nothing needs to write into
+them. `amdgcn/`, `bin/`, and `lib/llvm/` must stay real directories; see *amdgcn
+must stay a real dir* and *clang wrapper + HIP_CLANG_PATH*.
+
+### Bazel extraopts
+
+`build_local.jl --extraopt=...` is how overlay/toolchain settings reach
+`rocm_configure` without editing Reactant's checked-in `.bazelrc`:
+
+- `--repo_env=ROCM_PATH` points the whole ROCm autoconfiguration at the overlay.
+- `--repo_env=TF_ROCM_AMDGPU_TARGETS=gfx942` pins the target arch *and* suppresses
+  `rocm_agent_enumerator`, which would otherwise need a GPU-attached `srun`.
+- `--action_env=PATH=${PATH}` forwards the build shell's `PATH`, which already
+  leads with the wrapper dir (exported a few lines above). Do **not** re-prepend the
+  wrapper dir here — it only duplicates the entry.
+- `--action_env=HIP_CLANG_PATH` / `CLANG_COMPILER_PATH` / `CLANGXX_COMPILER_PATH`
+  route every compiler entry point through the wrappers.
+- `--linkopt`/`--host_linkopt=-fuse-ld=lld` — the UENV has no `ld.gold`.
+
 ### Curated runtime libs
 
 `libReactantExtra.so` dlopens ROCm libs (`librocblas.so.5`, …) at Julia load time.
@@ -107,7 +214,11 @@ Putting the whole overlay `lib/` (or the view lib dir) on `LD_LIBRARY_PATH` also
 exposes the UENV's **old libcurl / libstdc++ / libLLVM**, which shadow Julia's
 bundled copies and break `Pkg` downloads (`curl_easy_setopt: 48`). So the build
 curates `.rocm/reactant_libs`: every overlay ROCm `.so` **except** any soname Julia
-also bundles (matched against Julia's `lib/julia`). Excluded libs that ROCm itself
+also bundles (matched against Julia's `lib/julia`). That match is derived from
+`${JULIA}` via `readlink -f` — `JULIA` may be a *symlink* to the real
+`<prefix>/bin/julia`, and without resolving it the dirname chain walks the wrong
+prefix, the glob matches nothing, and every shadowing lib is curated anyway (the
+failure is silent at build time and only surfaces later as `curl_easy_setopt: 48`). Excluded libs that ROCm itself
 needs still resolve via each ROCm lib's own (spack) RPATH.
 
 ### run_julia.sh
@@ -127,7 +238,9 @@ When `UENV:` (and thus the ROCm/LLVM toolchain) changes, re-verify:
 1. **Overlay check** output (printed each build): headers `OK`, both `amdgcn/bitcode`
    and `lib/llvm/amdgcn/bitcode` `OK`, and `curated N runtime libs` with N > 0.
 2. The **LLVM-header shadow guard** still passes (no `include/{llvm,mlir,clang}`).
-3. `clang -print-resource-dir` version dir still resolves (the wrapper cp's it).
+3. `clang -print-resource-dir` version dir still resolves (the wrapper cp's it),
+   and `lib/llvm/lib/clang/22/include` still aliases onto it — see *hipcc resource
+   dir* if the clang major version moved off 22.
 4. spack package globs still match: `miopen-hip-*`, `rocm-smi-lib-*`,
    `rocm-device-libs-*` / `llvm-amdgpu-*` (bitcode).
 5. `ROCM_PATH` view path (`/user-environment/env/default`) still valid.
