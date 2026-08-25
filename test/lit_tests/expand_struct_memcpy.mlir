@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt %s --llvm-to-affine-access | FileCheck %s
+// RUN: enzymexlamlir-opt %s --llvm-to-affine-access --split-input-file | FileCheck %s
 
 // A small constant-length memcpy/memset of homogeneous-struct data (MFEM's
 // DevicePair reductions writing work[i] = buffer[0]) expands into typed
@@ -30,3 +30,21 @@ func.func @structcopy(%dst: !llvm.ptr, %idx: i64) {
 // CHECK-NEXT: %[[V1:.+]] = llvm.load %[[SF1B]] {alignment = 8 : i64} : !llvm.ptr -> f64
 // CHECK-NEXT: llvm.store %[[V1]], %[[DF1]] {alignment = 8 : i64} : f64, !llvm.ptr
 // CHECK-NEXT: return
+
+// -----
+
+// The zero initializer of a small stack array (real_t du[3] = {0,0,0} in
+// MFEM's quadrature interpolator fallbacks) is a memset whose root is the
+// llvm.alloca itself; it expands the same way, letting the alloca convert.
+func.func @arrayinit() -> f64 {
+  %c1 = llvm.mlir.constant(1 : i32) : i32
+  %c0_i8 = llvm.mlir.constant(0 : i8) : i8
+  %c24 = llvm.mlir.constant(24 : i64) : i64
+  %du = llvm.alloca %c1 x !llvm.array<3 x f64> {alignment = 16 : i64} : (i32) -> !llvm.ptr
+  "llvm.intr.memset"(%du, %c0_i8, %c24) <{arg_attrs = [{llvm.align = 16 : i64}, {}, {}], isVolatile = false}> : (!llvm.ptr, i8, i64) -> ()
+  %v = llvm.load %du : !llvm.ptr -> f64
+  return %v : f64
+}
+
+// CHECK-LABEL: func.func @arrayinit(
+// CHECK-NOT: llvm.intr.memset

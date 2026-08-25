@@ -569,17 +569,28 @@ struct ExpandStructMemcpy : public OpRewritePattern<LLVM::MemcpyOp> {
       return tracedElementType(gep.getBase(), depth + 1);
     if (auto m2p = ptr.getDefiningOp<enzymexla::Memref2PointerOp>()) {
       Type elt = cast<MemRefType>(m2p.getSource().getType()).getElementType();
-      if (auto st = dyn_cast<LLVM::LLVMStructType>(elt)) {
-        ArrayRef<Type> body = st.getBody();
-        if (body.empty() || !llvm::all_equal(body) ||
-            !body.front().isIntOrFloat())
-          return nullptr;
-        return body.front();
-      }
-      if (elt.isIntOrFloat())
-        return elt;
-      return nullptr;
+      return homogeneousScalar(elt);
     }
+    if (auto alloca = ptr.getDefiningOp<LLVM::AllocaOp>())
+      return homogeneousScalar(alloca.getElemType());
+    return nullptr;
+  }
+
+  // The scalar a type is homogeneously made of: itself for a scalar, the
+  // field type for a struct or array of one scalar.
+  static Type homogeneousScalar(Type elt, unsigned depth = 0) {
+    if (depth > 4)
+      return nullptr;
+    if (auto st = dyn_cast<LLVM::LLVMStructType>(elt)) {
+      ArrayRef<Type> body = st.getBody();
+      if (body.empty() || !llvm::all_equal(body))
+        return nullptr;
+      return homogeneousScalar(body.front(), depth + 1);
+    }
+    if (auto at = dyn_cast<LLVM::LLVMArrayType>(elt))
+      return homogeneousScalar(at.getElementType(), depth + 1);
+    if (elt.isIntOrFloat())
+      return elt;
     return nullptr;
   }
 
