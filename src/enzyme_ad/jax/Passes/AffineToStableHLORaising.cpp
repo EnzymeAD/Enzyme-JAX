@@ -3388,6 +3388,13 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     return success();
   }
 
+  // Raised execution is ordered over whole tensors: a store over a batched
+  // thread axis completes for the entire axis before the next op runs, which
+  // is exactly what the barrier guaranteed.
+  if (isa<enzymexla::BarrierOp>(op)) {
+    return success();
+  }
+
   return op->emitError("cannot raise op to stablehlo") << *op;
 }
 
