@@ -83,8 +83,8 @@ func.func @bcast(%out: memref<?xf64, 1>, %in: memref<?xf64, 1>, %nbuf: memref<i6
 
 // -----
 
-// A uniform branch choosing between two read-only buffers raises as a select
-// of the whole tensors.
+// A uniform branch choosing between two buffers expands into a branch per
+// access, raising as a select over the loaded values.
 func.func @bufsel(%a: memref<100xf64, 1>, %b: memref<100xf64, 1>, %out: memref<100xf64, 1>, %flagbuf: memref<i64, 1>) {
   %f = affine.load %flagbuf[] : memref<i64, 1>
   %fi = arith.index_cast %f : i64 to index
@@ -101,7 +101,7 @@ func.func @bufsel(%a: memref<100xf64, 1>, %b: memref<100xf64, 1>, %out: memref<1
 }
 
 // CHECK-LABEL: func.func private @bufsel_raised(
-// CHECK: stablehlo.select %{{.+}}, %arg0, %arg1 : tensor<i1>, tensor<100xf64>
+// CHECK: stablehlo.select %{{.+}}, %{{.+}}, %{{.+}} : tensor<100xi1>, tensor<100xf64>
 
 // -----
 
