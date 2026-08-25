@@ -1413,6 +1413,11 @@ static LogicalResult tryRaisingForOpToStableHLOWhile(
   whileOp->getRegion(0).push_back(cond);
   whileOp->getRegion(1).push_back(body);
 
+  // A loop peeled off a parallel axis stays a parallel axis: iterations are
+  // independent, which downstream passes may use without reanalyzing.
+  if (forOp->hasAttr("enzymexla.parallel"))
+    whileOp->setAttr("enzymexla.parallel", builder.getUnitAttr());
+
   if (createdWhileOp)
     *createdWhileOp = whileOp;
 
@@ -3533,6 +3538,92 @@ struct AffineToStableHLORaisingPass
           AffineToStableHLORaisingPass> {
   using AffineToStableHLORaisingBase::AffineToStableHLORaisingBase;
 
+  // A parallel dimension whose extent is only known at runtime cannot become
+  // a tensor axis, but its iterations are still independent: peel each such
+  // dimension into an affine.for tagged enzymexla.parallel, which the while
+  // raising then iterates, leaving the constant-extent dimensions to raise as
+  // axes. The tag rides onto the stablehlo.while so downstream passes know
+  // the iterations commute.
+  static void peelDynamicParallelDims(Operation *root) {
+    SmallVector<affine::AffineParallelOp> worklist;
+    root->walk([&](affine::AffineParallelOp par) { worklist.push_back(par); });
+    for (auto par : worklist) {
+      if (!par.getReductions().empty())
+        continue;
+      unsigned n = par.getNumDims();
+      SmallVector<unsigned> dyn, stat;
+      for (unsigned i = 0; i < n; ++i) {
+        if (getConstant(par.getLowerBoundMap(i)) &&
+            getConstant(par.getUpperBoundMap(i)))
+          stat.push_back(i);
+        else
+          dyn.push_back(i);
+      }
+      if (dyn.empty())
+        continue;
+
+      OpBuilder b(par);
+      Location loc = par.getLoc();
+      SmallVector<Value> ivRepl(n);
+      for (unsigned idx : dyn) {
+        auto forOp = affine::AffineForOp::create(
+            b, loc, par.getLowerBoundsOperands(), par.getLowerBoundMap(idx),
+            par.getUpperBoundsOperands(), par.getUpperBoundMap(idx),
+            par.getSteps()[idx]);
+        forOp->setAttr("enzymexla.parallel", b.getUnitAttr());
+        ivRepl[idx] = forOp.getInductionVar();
+        b.setInsertionPointToStart(forOp.getBody());
+      }
+
+      Block *target;
+      if (!stat.empty()) {
+        SmallVector<AffineExpr> lbounds, ubounds;
+        SmallVector<int32_t> lboundGroup, uboundGroup;
+        SmallVector<int64_t> steps;
+        for (unsigned idx : stat) {
+          auto lm = par.getLowerBoundMap(idx);
+          auto um = par.getUpperBoundMap(idx);
+          lbounds.append(lm.getResults().begin(), lm.getResults().end());
+          ubounds.append(um.getResults().begin(), um.getResults().end());
+          lboundGroup.push_back(lm.getNumResults());
+          uboundGroup.push_back(um.getNumResults());
+          steps.push_back(par.getSteps()[idx]);
+        }
+        auto inner = affine::AffineParallelOp::create(
+            b, loc, TypeRange(), b.getArrayAttr({}),
+            AffineMapAttr::get(
+                AffineMap::get(par.getLowerBoundsMap().getNumDims(),
+                               par.getLowerBoundsMap().getNumSymbols(), lbounds,
+                               par.getContext())),
+            b.getI32TensorAttr(lboundGroup),
+            AffineMapAttr::get(
+                AffineMap::get(par.getUpperBoundsMap().getNumDims(),
+                               par.getUpperBoundsMap().getNumSymbols(), ubounds,
+                               par.getContext())),
+            b.getI32TensorAttr(uboundGroup), b.getI64ArrayAttr(steps),
+            par.getOperands());
+        Block *blk = new Block();
+        for (auto [j, idx] : llvm::enumerate(stat))
+          ivRepl[idx] = blk->addArgument(b.getIndexType(), loc);
+        inner.getRegion().push_back(blk);
+        b.setInsertionPointToEnd(blk);
+        affine::AffineYieldOp::create(b, loc);
+        target = blk;
+      } else {
+        target = b.getInsertionBlock();
+      }
+
+      Block *oldBody = par.getBody();
+      for (unsigned i = 0; i < n; ++i)
+        oldBody->getArgument(i).replaceAllUsesWith(ivRepl[i]);
+      target->getOperations().splice(std::prev(target->getOperations().end()),
+                                     oldBody->getOperations(),
+                                     oldBody->getOperations().begin(),
+                                     std::prev(oldBody->getOperations().end()));
+      par.erase();
+    }
+  }
+
   void runOnOperation() override {
     ParallelContext::Options options{enable_lockstep_for, dump_failed_lockstep,
                                      prefer_while_raising,
@@ -3567,6 +3658,11 @@ struct AffineToStableHLORaisingPass
       }
     });
 
+    // Peeling rewrites loops, so it stays scoped to the regions this pass
+    // actually raises.
+    for (auto func : funcs)
+      peelDynamicParallelDims(func);
+
     SymbolTableCollection symbolTable;
     SymbolUserMap userMap(symbolTable, op);
 
@@ -3584,6 +3680,8 @@ struct AffineToStableHLORaisingPass
     }
     std::vector<enzymexla::GPUWrapperOp> gwrap;
     op->walk([&](enzymexla::GPUWrapperOp g) { gwrap.push_back(g); });
+    for (auto g : gwrap)
+      peelDynamicParallelDims(g);
     size_t raised_count = 0;
     for (auto g : gwrap) {
       auto modOp = g->getParentOfType<ModuleOp>();
