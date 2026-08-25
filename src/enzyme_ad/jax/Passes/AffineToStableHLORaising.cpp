@@ -1159,18 +1159,47 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
             /*indexVectorDim*/ (int64_t)gridShape.size()),
         sliceSizes);
 
-    // Broadcast the mask from its IV-space to the update's grid shape.
+    // Broadcast the mask from its IV-space to the update's grid shape. A
+    // mask axis over an IV the store does not index or-reduces away first:
+    // the update is already known invariant along it (a variant update
+    // bailed above), so the store happens when any lane's mask is set.
     Value mask = pc.mask;
     affine::AffineValueMap maskMap = maps.lookup(mask);
     SmallVector<int64_t> maskBroadcastDims;
-    for (auto E : maskMap.getAffineMap().getResults()) {
+    SmallVector<int64_t> maskReduceDims;
+    for (auto [mi, E] : llvm::enumerate(maskMap.getAffineMap().getResults())) {
       Value maskIV = getIVForExpr(maskMap, E);
+      bool onGrid = false;
       for (auto [k, iv] : llvm::enumerate(ivs)) {
         if (iv == maskIV) {
           maskBroadcastDims.push_back((int64_t)k);
+          onGrid = true;
           break;
         }
       }
+      if (!onGrid)
+        maskReduceDims.push_back((int64_t)mi);
+    }
+    if (!maskReduceDims.empty()) {
+      auto boolTy = RankedTensorType::get({}, builder.getI1Type());
+      Value initFalse = stablehlo::ConstantOp::create(
+          builder, loc, boolTy,
+          SplatElementsAttr::get(boolTy, builder.getBoolAttr(false)));
+      auto reduce = stablehlo::ReduceOp::create(
+          builder, loc, ValueRange{mask}, ValueRange{initFalse},
+          builder.getDenseI64ArrayAttr(maskReduceDims));
+      Block *body = new Block();
+      reduce.getBody().push_back(body);
+      body->addArgument(boolTy, loc);
+      body->addArgument(boolTy, loc);
+      {
+        OpBuilder::InsertionGuard guard(builder);
+        builder.setInsertionPointToStart(body);
+        Value ored = stablehlo::OrOp::create(builder, loc, body->getArgument(0),
+                                             body->getArgument(1));
+        stablehlo::ReturnOp::create(builder, loc, ored);
+      }
+      mask = reduce.getResult(0);
     }
     auto gridTy = cast<RankedTensorType>(update.getType());
     auto maskGridTy =

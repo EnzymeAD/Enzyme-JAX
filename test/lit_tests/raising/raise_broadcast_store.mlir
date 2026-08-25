@@ -52,3 +52,25 @@ func.func @bcast(%out: memref<?xf64, 1>, %in: memref<?xf64, 1>, %nbuf: memref<i6
 // CHECK-NOT: enzymexla.barrier
 // CHECK: %[[RED:.+]] = stablehlo.reduce(%{{.+}} init: %{{.+}}) applies stablehlo.or across dimensions = [0] : (tensor<32xi1>, tensor<i1>) -> tensor<i1>
 // CHECK: stablehlo.select %[[RED]], %{{.+}}, %{{.+}} : tensor<i1>, tensor<f64>
+
+// -----
+
+// The non-affine store path: a mask axis the scatter grid does not carry
+// (the tid==0 guard) or-reduces instead of producing a rank-mismatched
+// broadcast.
+func.func @bcast_scatter(%out: memref<100xf64, 1>, %in: memref<100xf64, 1>) {
+  affine.parallel (%e, %t) = (0, 0) to (4, 32) {
+    %v = affine.load %in[%e * 25] : memref<100xf64, 1>
+    affine.if affine_set<(d0) : (d0 == 0)>(%t) {
+      %ei = arith.index_castui %e : index to i64
+      %e2 = arith.muli %ei, %ei : i64
+      %idx = arith.index_cast %e2 : i64 to index
+      memref.store %v, %out[%idx] : memref<100xf64, 1>
+    }
+  }
+  return
+}
+
+// CHECK-LABEL: func.func private @bcast_scatter_raised(
+// CHECK: stablehlo.reduce{{.*}}applies stablehlo.or across dimensions
+// CHECK: "stablehlo.scatter"
