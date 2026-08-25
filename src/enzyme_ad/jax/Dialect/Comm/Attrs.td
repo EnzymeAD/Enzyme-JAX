@@ -6,7 +6,7 @@ include "Dialect.td"
 include "mlir/IR/EnumAttr.td"
 
 // MPI
-def MPI_Comms : I32EnumAttr<"MPI_Comms", "Named predefined MPI communicators", [
+def MpiComms : I32EnumAttr<"MpiComms", "Named predefined MPI communicators", [
       I32EnumAttrCase<"MPI_COMM_NULL", 256>,
       I32EnumAttrCase<"MPI_COMM_WORLD", 257>,
       I32EnumAttrCase<"MPI_COMM_SELF", 258>,
@@ -15,11 +15,11 @@ def MPI_Comms : I32EnumAttr<"MPI_Comms", "Named predefined MPI communicators", [
   let cppNamespace = "::mlir::comm";
 }
 
-def MPI_CommsAttr : EnumAttr<Comm_Dialect, MPI_Comms, "mpi.comm"> {
+def MpiCommsAttr : EnumAttr<Comm_Dialect, MpiComms, "mpi.comm"> {
   let assemblyFormat = "`<` $value `>`";
 }
 
-def MPI_Datatypes : I32EnumAttr<"MPI_Datatypes", "Named predefined MPI datatypes", [
+def MpiDatatypes : I32EnumAttr<"MpiDatatypes", "Named predefined MPI datatypes", [
       I32EnumAttrCase<"MPI_DATATYPE_NULL", 512>,
       I32EnumAttrCase<"MPI_AINT", 513>,
       I32EnumAttrCase<"MPI_COUNT", 514>,
@@ -98,11 +98,11 @@ def MPI_Datatypes : I32EnumAttr<"MPI_Datatypes", "Named predefined MPI datatypes
   let cppNamespace = "::mlir::comm";
 }
 
-def MPI_DatatypesAttr : EnumAttr<Comm_Dialect, MPI_Datatypes, "mpi.datatype"> {
+def MpiDatatypesAttr : EnumAttr<Comm_Dialect, MpiDatatypes, "mpi.datatype"> {
   let assemblyFormat = "`<` $value `>`";
 }
 
-def MPI_Ops : I32EnumAttr<"MPI_Ops", "Named predefined MPI operations", [
+def MpiOps : I32EnumAttr<"MpiOps", "Named predefined MPI operations", [
       I32EnumAttrCase<"MPI_OP_NULL", 32>,
       I32EnumAttrCase<"MPI_SUM", 33>,
       I32EnumAttrCase<"MPI_MIN", 34>,
@@ -123,7 +123,7 @@ def MPI_Ops : I32EnumAttr<"MPI_Ops", "Named predefined MPI operations", [
   let cppNamespace = "::mlir::comm";
 }
 
-def MPI_OpsAttr : EnumAttr<Comm_Dialect, MPI_Ops, "mpi.op"> {
+def MpiOpsAttr : EnumAttr<Comm_Dialect, MpiOps, "mpi.op"> {
   let assemblyFormat = "`<` $value `>`";
 }
 
