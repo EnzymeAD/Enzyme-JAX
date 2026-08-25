@@ -3570,11 +3570,11 @@ private:
     // handle, module, nargs, argptr, nconsts, constptr
     Type tys[] = {ptrty, ptrty, i64, ptrty, i64, ptrty};
     auto xlaExecFn = LLVM::lookupOrCreateFn(
-        rewriter, moduleOp, "reactantXLAExecSpec", tys,
+        rewriter, moduleOp, "reactantXLAExec", tys,
         LLVM::LLVMVoidType::get(moduleOp->getContext()), true);
     if (failed(xlaExecFn)) {
       llvm::errs()
-          << " reactantXLAExecSpec already exists with different types\n";
+          << " reactantXLAExec already exists with different types\n";
       return failure();
     }
     Value args[6] = {xdata, stringval, nargs, argsPtr, nconsts, constsPtr};

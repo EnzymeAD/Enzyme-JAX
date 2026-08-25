@@ -17,7 +17,7 @@ module {
 // CHECK-LABEL: @use
 // CHECK-DAG: %[[ARGS:.+]] = llvm.alloca %{{.+}} x !llvm.array<1 x i64>
 // CHECK-DAG: %[[CONSTS:.+]] = llvm.alloca %{{.+}} x !llvm.array<1 x i64>
-// CHECK: llvm.call @reactantXLAExecSpec(%{{.+}}, %{{.+}}, %{{.+}}, %{{.+}}, %{{.+}}, %{{.+}}) : (!llvm.ptr, !llvm.ptr, i64, !llvm.ptr, i64, !llvm.ptr) -> ()
+// CHECK: llvm.call @reactantXLAExec(%{{.+}}, %{{.+}}, %{{.+}}, %{{.+}}, %{{.+}}, %{{.+}}) : (!llvm.ptr, !llvm.ptr, i64, !llvm.ptr, i64, !llvm.ptr) -> ()
 
 // -----
 
@@ -38,4 +38,4 @@ module {
 // CHECK-NOT: llvm.call @reactantXLAExec(
 // CHECK-DAG: %[[NULL:.+]] = llvm.mlir.zero : !llvm.ptr
 // CHECK-DAG: %[[ZERO:.+]] = llvm.mlir.constant(0 : i64) : i64
-// CHECK: llvm.call @reactantXLAExecSpec(%{{.+}}, %{{.+}}, %{{.+}}, %{{.+}}, %[[ZERO]], %[[NULL]])
+// CHECK: llvm.call @reactantXLAExec(%{{.+}}, %{{.+}}, %{{.+}}, %{{.+}}, %[[ZERO]], %[[NULL]])
