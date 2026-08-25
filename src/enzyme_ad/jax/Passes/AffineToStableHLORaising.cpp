@@ -476,10 +476,14 @@ affineMapShape(affine::AffineValueMap accessValueMap, ParallelContext pc) {
     }
 
     Value iv = getIVForExpr(accessValueMap, E);
+    if (!iv)
+      return {};
     if (affine::isAffineForInductionVar(iv) && !pc.isParallelIV(iv)) {
       shape.push_back(1);
       continue;
     }
+    if (!affine::isAffineInductionVar(iv))
+      return {};
 
     auto range = getIVRange(iv);
     if (!range.has_value())
@@ -495,6 +499,14 @@ static affine::AffineValueMap
 alignMemoryAccess(Value &a, affine::AffineValueMap src, Value *bs,
                   ArrayRef<affine::AffineValueMap> dsts, OpBuilder &builder,
                   ParallelContext pc) {
+
+  // A value without a recorded access map cannot be aligned; hand back an
+  // empty map for the caller to reject.
+  if (!src.getAffineMap())
+    return affine::AffineValueMap();
+  for (unsigned qi = 0; qi < dsts.size(); ++qi)
+    if (!dsts[qi].getAffineMap())
+      return affine::AffineValueMap();
   // -> tensor<10x1xf32> loaded from (i) -> (i, 0)
   // -> to tensor<1x10xf32> written as (i) -> (0, i)
 
@@ -541,9 +553,16 @@ alignMemoryAccess(Value &a, affine::AffineValueMap src, Value *bs,
 
     outputShape.push_back(shapeA[i]);
 
-    exprs.push_back(
-        mlir::getAffineDimExpr(mapOperands.size(), ivA.getContext()));
-    mapOperands.push_back(ivA);
+    // A result with no induction variable -- a constant or symbolic access
+    // -- is a unit dimension: nothing iterates it, so nothing maps to it.
+    if (ivA) {
+      exprs.push_back(
+          mlir::getAffineDimExpr(mapOperands.size(), ivA.getContext()));
+      mapOperands.push_back(ivA);
+    } else {
+      exprs.push_back(
+          mlir::getAffineConstantExpr(0, src.getAffineMap().getContext()));
+    }
   }
 
   for (auto &&[dst, broadcastDimensionsB, shapeB] :
@@ -568,9 +587,14 @@ alignMemoryAccess(Value &a, affine::AffineValueMap src, Value *bs,
 
       outputShape.push_back(shapeB[i]);
 
-      exprs.push_back(
-          mlir::getAffineDimExpr(mapOperands.size(), ivB.getContext()));
-      mapOperands.push_back(ivB);
+      if (ivB) {
+        exprs.push_back(
+            mlir::getAffineDimExpr(mapOperands.size(), ivB.getContext()));
+        mapOperands.push_back(ivB);
+      } else {
+        exprs.push_back(
+            mlir::getAffineConstantExpr(0, src.getAffineMap().getContext()));
+      }
     }
   }
 
@@ -607,8 +631,10 @@ alignMemoryAccess(Value &a, affine::AffineValueMap src, Value *bs,
               .getResult();
   }
 
+  // One result per output dimension: an identity dim for each operand, a
+  // constant for each unit dimension nothing iterates.
   affine::AffineValueMap outputMap(
-      AffineMap::getMultiDimIdentityMap(mapOperands.size(), a.getContext()),
+      AffineMap::get(mapOperands.size(), 0, exprs, a.getContext()),
       mapOperands);
 
   return outputMap;
@@ -3844,6 +3870,7 @@ struct AffineToStableHLORaisingPass
     ParallelContext::Options options{enable_lockstep_for, dump_failed_lockstep,
                                      prefer_while_raising,
                                      strip_llvm_debuginfo};
+    peelDynamicParallelDims(getOperation());
     std::vector<func::FuncOp> funcs;
 
     auto context = getOperation()->getContext();
