@@ -3709,9 +3709,11 @@ struct MergeNestedAffineParallelIf
         innerOp = innerOp2;
         continue;
       }
-      // A local allocation the guarded body uses is as good as no effect
+      // A stack allocation the guarded body uses is as good as no effect
       // here: an iteration the tightened bound drops only ever allocated.
-      if (!isReadOnly(&op) && !hasSingleEffect<MemoryEffects::Allocate>(&op))
+      // A generic allocation could escape the loop.
+      if (!isReadOnly(&op) &&
+          !(op.getNumResults() == 1 && isStackAlloca(op.getResult(0))))
         return failure();
     }
 

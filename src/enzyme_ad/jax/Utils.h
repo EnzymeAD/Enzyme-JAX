@@ -331,6 +331,7 @@ bool getEffectsAfter(
 
 bool mayReadFrom(mlir::Operation *, mlir::Value);
 bool mayWriteTo(mlir::Operation *, mlir::Value, bool ignoreBarrier = false);
+bool isStackAlloca(mlir::Value v);
 
 template <typename AttrTy, typename T>
 SmallVector<Attribute> getUpdatedAttrList(Value val, StringRef attrName,

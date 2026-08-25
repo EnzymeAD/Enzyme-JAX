@@ -41,3 +41,25 @@ func.func @store_outside_guard(%grid: index, %n: index, %out: memref<?xf64>) {
 // CHECK-LABEL: func.func @store_outside_guard(
 // CHECK: affine.parallel (%{{.+}}) = (0) to (symbol(%{{.+}}) * 256) {
 // CHECK: affine.if
+
+// -----
+
+#set = affine_set<(d0)[s0] : (-d0 + s0 - 1 >= 0)>
+
+// A generic allocation could escape the loop: the guard must survive.
+func.func @guard_past_gpu_alloc(%grid: index, %n: index, %out: memref<?xf64>) {
+  %cst = arith.constant 1.0 : f64
+  affine.parallel (%i) = (0) to (symbol(%grid) * 256) {
+    %m = gpu.alloc () : memref<196xf64, 1>
+    affine.if #set(%i)[%n] {
+      affine.store %cst, %m[0] : memref<196xf64, 1>
+      %v = affine.load %m[0] : memref<196xf64, 1>
+      affine.store %v, %out[%i] : memref<?xf64>
+    }
+  }
+  return
+}
+
+// CHECK-LABEL: func.func @guard_past_gpu_alloc(
+// CHECK: affine.parallel (%{{.+}}) = (0) to (symbol(%{{.+}}) * 256) {
+// CHECK: affine.if
