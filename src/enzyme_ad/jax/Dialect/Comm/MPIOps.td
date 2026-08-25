@@ -8,6 +8,15 @@ include "mlir/Interfaces/SideEffectInterfaces.td"
 include "Types.td"
 include "Attrs.td"
 
+def TensorI32
+    : Type<CPred<"::llvm::isa<::mlir::TensorType>($_self) && "
+                 "::llvm::cast<::mlir::TensorType>($_self).getShape().size() "
+                 "== 0 && "
+                 "::llvm::cast<::mlir::TensorType>($_self).getElementType()."
+                 "isSignlessInteger(32)">,
+           "tensor<i32>", "::mlir::TensorType">,
+      BuildableType<"RankedTensorType::get({}, $_builder.getIntegerType(32))">;
+
 def MPI_PredefinedCommOp : Comm_Op<"mpi.predefined_comm", [Pure]> {
   let summary = "Get the named predefined MPI communicator";
   let arguments = (ins MPI_CommsAttr : $value);
@@ -33,14 +42,14 @@ def MPI_PredefinedOpOp : Comm_Op<"mpi.predefined_op", [Pure]> {
 def MPI_CommRankOp : Comm_Op<"mpi.comm_rank", [Pure]> {
   let summary = "Equivalent to `MPI_Comm_rank`";
   let arguments = (ins MPI_Comm : $comm);
-  let results = (outs I32 : $rank);
+  let results = (outs TensorI32 : $rank);
   let assemblyFormat = "$comm attr-dict `:` type(results)";
 }
 
 def MPI_CommSizeOp : Comm_Op<"mpi.comm_size", [Pure]> {
   let summary = "Equivalent to `MPI_Comm_size`";
   let arguments = (ins MPI_Comm : $comm);
-  let results = (outs I32 : $size);
+  let results = (outs TensorI32 : $size);
   let assemblyFormat = "$comm attr-dict `:` type(results)";
 }
 
@@ -49,8 +58,8 @@ def MPI_CommSplitOp : Comm_Op<"mpi.comm_split", []> {
 
   let arguments = (ins
     MPI_Comm : $comm,
-    I32 : $color,
-    I32 : $key
+    TensorI32 : $color,
+    TensorI32 : $key
   );
 
   let results = (outs MPI_Comm : $newcomm);
@@ -69,8 +78,8 @@ def MPI_SendOp : Comm_Op<"mpi.send", []> {
   // TODO add optional `count` operand for dynamic-shaped tensors?
   let arguments = (ins
     AnyTensor : $buf,
-    I32 : $tag,
-    I32 : $dest,
+    TensorI32 : $tag,
+    TensorI32 : $dest,
     MPI_Comm : $comm
   );
 
@@ -83,8 +92,8 @@ def MPI_IsendOp : Comm_Op<"mpi.isend", []> {
   // TODO add optional `count` operand for dynamic-shaped tensors?
   let arguments = (ins
     AnyTensor : $buf,
-    I32 : $tag,
-    I32 : $dest,
+    TensorI32 : $tag,
+    TensorI32 : $dest,
     MPI_Comm : $comm
   );
 
@@ -97,8 +106,8 @@ def MPI_RecvOp : Comm_Op<"mpi.recv", []> {
 
   // TODO add optional `count` operand for dynamic-shaped tensors?
   let arguments = (ins
-    I32 : $tag,
-    I32 : $source,
+    TensorI32 : $tag,
+    TensorI32 : $source,
     MPI_Comm : $comm
   );
 
@@ -111,8 +120,8 @@ def MPI_IrecvOp : Comm_Op<"mpi.irecv", []> {
 
   // TODO add optional `count` operand for dynamic-shaped tensors?
   let arguments = (ins
-    I32 : $tag,
-    I32 : $source,
+    TensorI32 : $tag,
+    TensorI32 : $source,
     MPI_Comm : $comm
   );
   let results = (outs
@@ -152,7 +161,7 @@ def MPI_BcastOp : Comm_Op<"mpi.bcast", []> {
 
   let arguments = (ins
     AnyTensor : $inbuf,
-    I32 : $root,
+    TensorI32 : $root,
     MPI_Comm : $comm
   );
 
