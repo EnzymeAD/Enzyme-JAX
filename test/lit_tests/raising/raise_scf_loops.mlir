@@ -91,3 +91,53 @@ func.func @lanefor(%out: memref<8xf64, 1>, %in: memref<?xf64, 1>) {
 // CHECK: } do {
 // CHECK: %[[ACTIVE:.+]] = stablehlo.compare LT, %{{.+}}, %{{.+}} : (tensor<8xi64>, tensor<8xi64>) -> tensor<8xi1>
 // CHECK: stablehlo.select %[[ACTIVE]], %{{.+}}, %{{.+}} : tensor<8xi1>, tensor<8xf64>
+
+// -----
+
+// A rotated do-while raises by peeling one before-region execution and
+// carrying (condition, args, buffers) through a stablehlo.while whose body
+// runs the do region then the before region again.
+func.func @dowhile_loop(%out: memref<100xf64, 1>, %nb: memref<i32, 1>) {
+  %c0 = arith.constant 0 : i32
+  %c1 = arith.constant 1 : i32
+  affine.parallel (%t) = (0) to (100) {
+    %n = affine.load %nb[] : memref<i32, 1>
+    %r = scf.while (%i = %c0) : (i32) -> i32 {
+      %ip = arith.addi %i, %c1 : i32
+      %cond = arith.cmpi slt, %ip, %n : i32
+      scf.condition(%cond) %ip : i32
+    } do {
+    ^bb0(%i2: i32):
+      scf.yield %i2 : i32
+    }
+    %f = arith.sitofp %r : i32 to f64
+    affine.store %f, %out[%t] : memref<100xf64, 1>
+  }
+  return
+}
+
+// CHECK-LABEL: func.func private @dowhile_loop_raised(
+// CHECK: stablehlo.while(%[[C:[a-zA-Z0-9_]+]] = %{{[^,]+}}, %{{.+}}) : tensor<i1>, tensor<i32>, tensor<100xf64>, tensor<i32>
+// CHECK: cond {
+// CHECK: stablehlo.return %[[C]] : tensor<i1>
+
+// -----
+
+// A one-hot-guarded store whose value varies along the guarded axis picks
+// the admitted lane's value with a masked reduction.
+func.func @onehot(%out: memref<8xf64, 1>, %in: memref<?xf64, 1>, %qb: memref<i64, 1>) {
+  %qi = affine.load %qb[] : memref<i64, 1>
+  %q = arith.index_cast %qi : i64 to index
+  affine.parallel (%e, %t) = (0, 0) to (8, 32) {
+    affine.if affine_set<(d0)[s0] : (d0 - s0 == 0)>(%t)[%q] {
+      %v = affine.load %in[%e * 32 + %t] : memref<?xf64, 1>
+      affine.store %v, %out[%e] : memref<8xf64, 1>
+    }
+  }
+  return
+}
+
+// CHECK-LABEL: func.func private @onehot_raised(
+// CHECK: %[[PICK:.+]]:2 = stablehlo.reduce(%{{.+}} init: %{{.+}}), (%{{.+}} init: %{{.+}}) across dimensions = [0] : (tensor<32x8xf64>, tensor<32x8xi1>, tensor<f64>, tensor<i1>) -> (tensor<8xf64>, tensor<8xi1>)
+// CHECK: stablehlo.select %{{.+}}, %{{.+}}, %{{.+}} : tensor<i1>, tensor<f64>
+// CHECK: stablehlo.dynamic_update_slice

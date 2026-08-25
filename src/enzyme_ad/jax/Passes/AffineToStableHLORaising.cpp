@@ -1256,30 +1256,78 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
           limits[ri] = 1;
         newUpdate = stablehlo::SliceOp::create(builder, loc, update, starts,
                                                limits, ones);
+        SmallVector<int64_t> keptShape;
+        SmallVector<AffineExpr> keptExprs;
+        SmallVector<int64_t> keptBroadcastDims;
+        for (auto [updateIdx, dim] : llvm::enumerate(broadcastDims)) {
+          if (llvm::is_contained(raceDims, (int64_t)updateIdx))
+            continue;
+          keptShape.push_back(UTy.getShape()[updateIdx]);
+          keptExprs.push_back(
+              updateValueMap.getAffineMap().getResult(updateIdx));
+          keptBroadcastDims.push_back(dim);
+        }
+        update = stablehlo::ReshapeOp::create(
+            builder, loc,
+            RankedTensorType::get(keptShape, UTy.getElementType()), newUpdate);
+        updateValueMap = affine::AffineValueMap(
+            AffineMap::get(updateValueMap.getAffineMap().getNumDims(),
+                           updateValueMap.getAffineMap().getNumSymbols(),
+                           keptExprs, loc.getContext()),
+            updateValueMap.getOperands());
+        updateValueMap.composeSimplifyAndCanonicalize();
+        broadcastDims.assign(keptBroadcastDims.begin(),
+                             keptBroadcastDims.end());
       } else {
+        // The mask can span axes the update lacks: work in their union.
         Value mAligned = pc.mask;
         Value updAligned = update;
         affine::AffineValueMap mm = maps.lookup(pc.mask);
         bool alignOk = true;
-        (void)alignMemoryAccess(mAligned, mm, updAligned, updateValueMap,
-                                builder, pc, &alignOk);
-        if (!alignOk || updAligned != update ||
-            mAligned.getType() !=
-                RankedTensorType::get(UTy.getShape(), builder.getI1Type()))
+        affine::AffineValueMap unionMap = alignMemoryAccess(
+            mAligned, mm, updAligned, updateValueMap, builder, pc, &alignOk);
+        if (!alignOk)
           return nullptr;
-        auto elemTy = RankedTensorType::get({}, UTy.getElementType());
+        auto AT = cast<RankedTensorType>(updAligned.getType());
+        if (mAligned.getType() !=
+            RankedTensorType::get(AT.getShape(), builder.getI1Type()))
+          return nullptr;
+        // Reduce every union axis the scatter grid does not carry; a unit
+        // axis (no IV) reduces harmlessly too.
+        SmallVector<int64_t> unionRace;
+        SmallVector<int64_t> keptShape;
+        SmallVector<AffineExpr> keptExprs;
+        SmallVector<int64_t> keptBroadcastDims;
+        for (auto [i, E] :
+             llvm::enumerate(unionMap.getAffineMap().getResults())) {
+          Value uiv = getIVForExpr(unionMap, E);
+          int64_t gridAxis = -1;
+          for (auto [k, giv] : llvm::enumerate(ivs))
+            if (giv == uiv)
+              gridAxis = (int64_t)k;
+          if (uiv && gridAxis != -1) {
+            keptShape.push_back(AT.getShape()[i]);
+            keptExprs.push_back(E);
+            keptBroadcastDims.push_back(gridAxis);
+          } else {
+            unionRace.push_back((int64_t)i);
+          }
+        }
+        if (unionRace.empty())
+          return nullptr;
+        auto elemTy = RankedTensorType::get({}, AT.getElementType());
         auto boolTy = RankedTensorType::get({}, builder.getI1Type());
         Value zeroInit = stablehlo::ConstantOp::create(
             builder, loc, elemTy,
             SplatElementsAttr::get(elemTy,
-                                   builder.getZeroAttr(UTy.getElementType())));
+                                   builder.getZeroAttr(AT.getElementType())));
         Value falseInit = stablehlo::ConstantOp::create(
             builder, loc, boolTy,
             SplatElementsAttr::get(boolTy, builder.getBoolAttr(false)));
         auto reduce = stablehlo::ReduceOp::create(
-            builder, loc, ValueRange{update, mAligned},
+            builder, loc, ValueRange{updAligned, mAligned},
             ValueRange{zeroInit, falseInit},
-            builder.getDenseI64ArrayAttr(raceDims));
+            builder.getDenseI64ArrayAttr(unionRace));
         {
           Block *rb = new Block();
           reduce.getBody().push_back(rb);
@@ -1293,37 +1341,20 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
           Value m = stablehlo::OrOp::create(builder, loc, am, bm);
           stablehlo::ReturnOp::create(builder, loc, ValueRange{v, m});
         }
-        SmallVector<int64_t> unitShape(UTy.getShape().begin(),
-                                       UTy.getShape().end());
-        for (int64_t ri : raceDims)
-          unitShape[ri] = 1;
-        newUpdate = stablehlo::ReshapeOp::create(
-            builder, loc,
-            RankedTensorType::get(unitShape, UTy.getElementType()),
+        update = stablehlo::ReshapeOp::create(
+            builder, loc, RankedTensorType::get(keptShape, AT.getElementType()),
             reduce.getResult(0));
+        updateValueMap = affine::AffineValueMap(
+            AffineMap::get(unionMap.getAffineMap().getNumDims(),
+                           unionMap.getAffineMap().getNumSymbols(), keptExprs,
+                           loc.getContext()),
+            unionMap.getOperands());
+        updateValueMap.composeSimplifyAndCanonicalize();
+        broadcastDims.assign(keptBroadcastDims.begin(),
+                             keptBroadcastDims.end());
       }
-      SmallVector<int64_t> keptShape;
-      SmallVector<AffineExpr> keptExprs;
-      SmallVector<int64_t> keptBroadcastDims;
-      for (auto [updateIdx, dim] : llvm::enumerate(broadcastDims)) {
-        if (llvm::is_contained(raceDims, (int64_t)updateIdx))
-          continue;
-        keptShape.push_back(UTy.getShape()[updateIdx]);
-        keptExprs.push_back(updateValueMap.getAffineMap().getResult(updateIdx));
-        keptBroadcastDims.push_back(dim);
-      }
-      update = stablehlo::ReshapeOp::create(
-          builder, loc, RankedTensorType::get(keptShape, UTy.getElementType()),
-          newUpdate);
-      updateValueMap = affine::AffineValueMap(
-          AffineMap::get(updateValueMap.getAffineMap().getNumDims(),
-                         updateValueMap.getAffineMap().getNumSymbols(),
-                         keptExprs, loc.getContext()),
-          updateValueMap.getOperands());
-      updateValueMap.composeSimplifyAndCanonicalize();
       maps[update] = updateValueMap;
       UTy = cast<RankedTensorType>(update.getType());
-      broadcastDims.assign(keptBroadcastDims.begin(), keptBroadcastDims.end());
     }
   }
   if (llvm::any_of(broadcastDims, [](int64_t dim) { return dim == -1; })) {
@@ -2226,6 +2257,138 @@ static LogicalResult tryRaisingAffineForOpToMaskedWhile(
                                 forOp.getInits(), forOp.getRegionIterArgs(), lb,
                                 ub, step, parentMapping, mapping, builder, maps,
                                 pc);
+}
+
+// A general scf.while raises by rotation: its before region runs once
+// (peeled), producing the loop condition and carried values; the
+// stablehlo.while then carries (cond, args, buffers) and its body runs the
+// do region followed by the before region again. Only a uniform (rank-0)
+// condition is supported.
+static LogicalResult tryRaisingSCFWhileOpToStableHLO(
+    scf::WhileOp whileOp, IRMapping &parentMapping, OpBuilder &builder,
+    llvm::DenseMap<Value, affine::AffineValueMap> &maps, ParallelContext pc) {
+  IRMapping mapping = parentMapping;
+  auto wloc =
+      rewriteLocation(whileOp.getLoc(), pc.options.strip_llvm_debuginfo);
+  Block *before = whileOp.getBeforeBody();
+  Block *after = whileOp.getAfterBody();
+  auto condOp = cast<scf::ConditionOp>(before->getTerminator());
+  auto yieldOp = cast<scf::YieldOp>(after->getTerminator());
+
+  for (auto [arg, init] :
+       llvm::zip(before->getArguments(), whileOp.getInits())) {
+    Value m = mapping.lookupOrNull(init);
+    if (!m || !maps.count(m))
+      return failure();
+    mapping.map(arg, m);
+    maps[m] = maps.lookup(m);
+  }
+  for (auto &op : before->without_terminator())
+    if (tryRaisingOpToStableHLO(&op, mapping, builder, maps, pc).failed())
+      return failure();
+  Value cond0 = mapping.lookupOrNull(condOp.getCondition());
+  if (!cond0)
+    return failure();
+  auto condTy = dyn_cast<RankedTensorType>(cond0.getType());
+  if (!condTy || condTy.getRank() != 0)
+    return failure();
+
+  SmallVector<Value> carriedInit{cond0};
+  SmallVector<affine::AffineValueMap> argMaps;
+  for (Value a : condOp.getArgs()) {
+    Value m = mapping.lookupOrNull(a);
+    if (!m || !maps.count(m))
+      return failure();
+    carriedInit.push_back(m);
+    argMaps.push_back(maps.lookup(m));
+  }
+
+  Block *entryBlock = getRaisedEntryBlock(whileOp);
+  SmallVector<Value> buffers(entryBlock->getArguments().begin(),
+                             entryBlock->getArguments().end());
+  {
+    llvm::SmallPtrSet<Value, 8> seen(buffers.begin(), buffers.end());
+    auto collect = [&](Block *b) {
+      b->walk([&](Operation *innerOp) {
+        for (Value v : innerOp->getOperands())
+          if (isa<MemRefType>(v.getType()) && mapping.contains(v) &&
+              !whileOp->isAncestor(v.getParentRegion()->getParentOp()) &&
+              seen.insert(v).second)
+            buffers.push_back(v);
+      });
+    };
+    collect(before);
+    collect(after);
+  }
+  for (auto memref : buffers)
+    carriedInit.push_back(mapping.lookup(memref));
+
+  Block *cond = new Block(), *body = new Block();
+  for (Value v : carriedInit) {
+    cond->addArgument(v.getType(), wloc);
+    body->addArgument(v.getType(), wloc);
+  }
+
+  unsigned nargs = condOp.getArgs().size();
+  for (auto [i, arg] : llvm::enumerate(after->getArguments())) {
+    Value bodyArg = body->getArgument(1 + i);
+    mapping.map(arg, bodyArg);
+    maps[bodyArg] = argMaps[i];
+  }
+  for (auto [i, memref] : llvm::enumerate(buffers))
+    mapping.map(memref, body->getArgument(1 + nargs + i));
+
+  auto newWhile = stablehlo::WhileOp::create(builder, wloc, carriedInit);
+  newWhile->getRegion(0).push_back(cond);
+  newWhile->getRegion(1).push_back(body);
+
+  {
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointToStart(cond);
+    stablehlo::ReturnOp::create(builder, wloc, cond->getArgument(0));
+  }
+  {
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointToStart(body);
+    for (auto &op : after->without_terminator())
+      if (tryRaisingOpToStableHLO(&op, mapping, builder, maps, pc).failed())
+        return failure();
+    // The do region yields the next before-region arguments.
+    for (auto [arg, y] :
+         llvm::zip(before->getArguments(), yieldOp.getOperands())) {
+      Value m = mapping.lookupOrNull(y);
+      if (!m)
+        return failure();
+      mapping.map(arg, m);
+    }
+    for (auto &op : before->without_terminator())
+      if (tryRaisingOpToStableHLO(&op, mapping, builder, maps, pc).failed())
+        return failure();
+    Value nextCond = mapping.lookupOrNull(condOp.getCondition());
+    if (!nextCond || nextCond.getType() != cond0.getType())
+      return failure();
+    SmallVector<Value> carried{nextCond};
+    for (auto [i, a] : llvm::enumerate(condOp.getArgs())) {
+      Value m = mapping.lookupOrNull(a);
+      if (!m || m.getType() != carriedInit[1 + i].getType())
+        return failure();
+      carried.push_back(m);
+    }
+    for (auto memref : buffers)
+      carried.push_back(mapping.lookup(memref));
+    stablehlo::ReturnOp::create(builder, wloc, carried);
+  }
+
+  for (auto [i, res] : llvm::enumerate(whileOp.getResults())) {
+    Value whileRes = newWhile.getResult(1 + i);
+    mapping.map(res, whileRes);
+    maps[whileRes] = argMaps[i];
+  }
+  for (auto [i, memref] : llvm::enumerate(buffers))
+    mapping.map(memref, newWhile.getResult(1 + nargs + i));
+
+  parentMapping = mapping;
+  return success();
 }
 
 template <class T> static SmallVector<BlockArgument, 6> getIVs(T op);
@@ -3465,13 +3628,92 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
         Value updAligned = update;
         affine::AffineValueMap mm = maps.lookup(pc.mask);
         bool alignOk = true;
-        (void)alignMemoryAccess(mAligned, mm, updAligned, updateValueMap,
-                                builder, pc, &alignOk);
-        if (alignOk && updAligned == update &&
+        affine::AffineValueMap unionMap = alignMemoryAccess(
+            mAligned, mm, updAligned, updateValueMap, builder, pc, &alignOk);
+        if (alignOk && updAligned != update &&
             mAligned.getType() ==
                 RankedTensorType::get(
-                    cast<RankedTensorType>(update.getType()).getShape(),
+                    cast<RankedTensorType>(updAligned.getType()).getShape(),
                     builder.getI1Type())) {
+          // The mask spans axes the update lacks: pick in the union space,
+          // keeping the axes the store indexes.
+          auto loc =
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo);
+          auto AT = cast<RankedTensorType>(updAligned.getType());
+          SmallVector<int64_t> unionRace;
+          SmallVector<int64_t> keptShape;
+          SmallVector<AffineExpr> keptExprs;
+          SmallVector<int64_t> keptBroadcastDims;
+          bool ok = true;
+          for (auto [i, E] :
+               llvm::enumerate(unionMap.getAffineMap().getResults())) {
+            Value uiv = getIVForExpr(unionMap, E);
+            int64_t storeDim = -1;
+            if (uiv)
+              for (auto [k, SE] :
+                   llvm::enumerate(storeOp.getMap().getResults())) {
+                if (SE.isSymbolicOrConstant())
+                  continue;
+                if (getIVForExpr(accessValueMap,
+                                 accessValueMap.getAffineMap().getResult(k)) ==
+                    uiv)
+                  storeDim = (int64_t)k;
+              }
+            if (uiv && storeDim != -1) {
+              keptShape.push_back(AT.getShape()[i]);
+              keptExprs.push_back(E);
+              keptBroadcastDims.push_back(storeDim);
+            } else {
+              unionRace.push_back((int64_t)i);
+            }
+          }
+          if (ok && !unionRace.empty()) {
+            auto elemTy = RankedTensorType::get({}, AT.getElementType());
+            auto boolTy = RankedTensorType::get({}, builder.getI1Type());
+            Value zeroInit = stablehlo::ConstantOp::create(
+                builder, loc, elemTy,
+                SplatElementsAttr::get(
+                    elemTy, builder.getZeroAttr(AT.getElementType())));
+            Value falseInit = stablehlo::ConstantOp::create(
+                builder, loc, boolTy,
+                SplatElementsAttr::get(boolTy, builder.getBoolAttr(false)));
+            auto reduce = stablehlo::ReduceOp::create(
+                builder, loc, ValueRange{updAligned, mAligned},
+                ValueRange{zeroInit, falseInit},
+                builder.getDenseI64ArrayAttr(unionRace));
+            {
+              Block *rb = new Block();
+              reduce.getBody().push_back(rb);
+              Value av = rb->addArgument(elemTy, loc);
+              Value am = rb->addArgument(boolTy, loc);
+              Value bv = rb->addArgument(elemTy, loc);
+              Value bm = rb->addArgument(boolTy, loc);
+              OpBuilder::InsertionGuard guard(builder);
+              builder.setInsertionPointToStart(rb);
+              Value v = stablehlo::SelectOp::create(builder, loc, am, av, bv);
+              Value m = stablehlo::OrOp::create(builder, loc, am, bm);
+              stablehlo::ReturnOp::create(builder, loc, ValueRange{v, m});
+            }
+            update = stablehlo::ReshapeOp::create(
+                builder, loc,
+                RankedTensorType::get(keptShape, AT.getElementType()),
+                reduce.getResult(0));
+            updateValueMap = affine::AffineValueMap(
+                AffineMap::get(unionMap.getAffineMap().getNumDims(),
+                               unionMap.getAffineMap().getNumSymbols(),
+                               keptExprs, op->getContext()),
+                unionMap.getOperands());
+            updateValueMap.composeSimplifyAndCanonicalize();
+            maps[update] = updateValueMap;
+            broadcastDims.assign(keptBroadcastDims.begin(),
+                                 keptBroadcastDims.end());
+            raceDims.clear();
+          }
+        } else if (alignOk && updAligned == update &&
+                   mAligned.getType() ==
+                       RankedTensorType::get(
+                           cast<RankedTensorType>(update.getType()).getShape(),
+                           builder.getI1Type())) {
           auto loc =
               rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo);
           auto UT = cast<RankedTensorType>(update.getType());
@@ -4361,6 +4603,12 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
       return success();
   }
 
+  if (auto scfWhile = dyn_cast<scf::WhileOp>(op)) {
+    if (tryRaisingSCFWhileOpToStableHLO(scfWhile, mapping, builder, maps, pc)
+            .succeeded())
+      return success();
+  }
+
   if (auto alloca = dyn_cast<memref::AllocaOp>(op)) {
     // Kernel scratch: a fresh buffer per iteration of whatever loop holds
     // it, which is exactly what materializing its initial value where the
@@ -4936,7 +5184,10 @@ struct AffineToStableHLORaisingPass
             OpBuilder builder(arg.getContext());
             builder.setInsertionPointToEnd(newBlock);
             Value newVal;
-            if (arg.getDefiningOp<ub::PoisonOp>()) {
+            if (arg.getDefiningOp<ub::PoisonOp>() ||
+                arg.getDefiningOp<LLVM::UndefOp>() ||
+                arg.getDefiningOp<LLVM::PoisonOp>() ||
+                arg.getDefiningOp<LLVM::ZeroOp>()) {
               // A poison scalar reads as zero, as a rank-0 tensor like every
               // other raised scalar so loop carrying can broadcast it.
               auto newConst = stablehlo::ConstantOp::create(
