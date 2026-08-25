@@ -176,6 +176,9 @@ install_deps()
 load("@xla//:workspace2.bzl", "xla_workspace2")
 load("@xla//third_party/llvm:workspace.bzl", llvm = "repo")
 load("//:workspace.bzl", "LLVM_TARGETS")
+load("//third_party/grpc:workspace.bzl", grpc_workspace = "repo")
+
+grpc_workspace()
 
 xla_workspace2()
 
