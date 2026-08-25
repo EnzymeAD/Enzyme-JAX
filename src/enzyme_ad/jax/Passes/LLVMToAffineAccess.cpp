@@ -825,19 +825,19 @@ struct AffineIfDeadResults : public OpRewritePattern<affine::AffineIfOp> {
         affine::AffineIfOp::create(rewriter, ifOp.getLoc(), newTypes,
                                    ifOp.getIntegerSet(), ifOp.getOperands(),
                                    /*withElseRegion=*/true);
+    // The new branches take the old regions wholesale, and the existing
+    // yields just drop the dead operands.
     for (unsigned r = 0; r < 2; ++r) {
-      Block *oldBlk = r ? ifOp.getElseBlock() : ifOp.getThenBlock();
-      Block *newBlk = r ? newIf.getElseBlock() : newIf.getThenBlock();
-      if (!newBlk->empty())
-        rewriter.eraseOp(newBlk->getTerminator());
-      rewriter.mergeBlocks(oldBlk, newBlk);
-      auto yield = cast<affine::AffineYieldOp>(newBlk->getTerminator());
+      Region &oldRegion = r ? ifOp.getElseRegion() : ifOp.getThenRegion();
+      Region &newRegion = r ? newIf.getElseRegion() : newIf.getThenRegion();
+      rewriter.inlineRegionBefore(oldRegion, newRegion, newRegion.begin());
+      rewriter.eraseBlock(&newRegion.back());
+      auto yield =
+          cast<affine::AffineYieldOp>(newRegion.front().getTerminator());
       SmallVector<Value> ops;
       for (unsigned i : keep)
         ops.push_back(yield.getOperand(i));
-      rewriter.setInsertionPoint(yield);
-      affine::AffineYieldOp::create(rewriter, yield.getLoc(), ops);
-      rewriter.eraseOp(yield);
+      rewriter.modifyOpInPlace(yield, [&] { yield->setOperands(ops); });
     }
     for (auto [j, i] : llvm::enumerate(keep))
       rewriter.replaceAllUsesWith(ifOp.getResult(i), newIf.getResult(j));
