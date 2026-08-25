@@ -3236,10 +3236,6 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
   if (auto ifOp = dyn_cast<affine::AffineIfOp>(op)) {
 
     auto is = ifOp.getIntegerSet();
-    if (is.getNumSymbols() != 0) {
-      return op->emitError("cannot raise integer set with symbols yet\n")
-             << *op;
-    }
 
     Value cond = nullptr;
     affine::AffineValueMap map(AffineMap::get(ifOp.getContext()), {});
