@@ -2175,12 +2175,11 @@ convertLLVMToAffineAccess(Operation *op,
     patterns.insert<SimplifyAllocConst<memref::AllocOp>,
                     SimplifyAllocConst<memref::AllocaOp>,
                     SimplifyAllocConst<gpu::AllocOp, true>>(context);
-    patterns.insert<SimplifyDeadAlloc<memref::AllocaOp>,
-                    SimplifyDeadAlloc<memref::AllocOp>,
-                    SimplifyDeadAlloc<LLVM::AllocaOp>,
-                    SimplifyDeadAlloc<gpu::AllocOp, true>, Pointer2MemrefSelect,
-                    LoadSelect, AffineIfDeadResults,
-                    SimpleMem2Reg<memref::AllocaOp>>(context);
+    patterns.insert<
+        SimplifyDeadAlloc<memref::AllocaOp>, SimplifyDeadAlloc<memref::AllocOp>,
+        SimplifyDeadAlloc<LLVM::AllocaOp>,
+        SimplifyDeadAlloc<gpu::AllocOp, true>, Pointer2MemrefSelect, LoadSelect,
+        AffineIfDeadResults, SimpleMem2Reg<memref::AllocaOp>>(context);
     GreedyRewriteConfig config;
     config.enableFolding();
     if (applyPatternsGreedily(op, std::move(patterns), config).failed())
