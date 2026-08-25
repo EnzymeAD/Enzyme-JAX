@@ -898,9 +898,36 @@ emitIfAsSelect(Operation *ifOp, Value cond, affine::AffineValueMap map,
          llvm::zip_equal(thenTerm->getOperands(), elseTerm->getOperands(),
                          ifOp->getResults())) {
       Value a = cond;
-      if (isa<MemRefType, LLVM::LLVMPointerType>(res.getType()))
-        return ifOp->emitError(
-            "cannot raise a branch choosing between buffers");
+      if (isa<MemRefType, LLVM::LLVMPointerType>(res.getType())) {
+        // A branch choosing between whole buffers raises as a select of the
+        // whole tensors when the choice is uniform and nothing writes through
+        // it; a write would have to fan back out into both source buffers.
+        Value thenBuf = mapping.lookupOrNull(thenVal);
+        Value elseBuf = mapping.lookupOrNull(elseVal);
+        auto condTy = dyn_cast<RankedTensorType>(cond.getType());
+        // The select captures the buffers as of this point, so nothing may
+        // write to them (through the select or directly) or later reads
+        // through the select would miss the write.
+        auto loadOnly = [&](Value buf) {
+          return llvm::all_of(buf.getUsers(), [&](Operation *user) {
+            return isa<affine::AffineLoadOp, memref::LoadOp,
+                       affine::AffineVectorLoadOp>(user) ||
+                   user == ifOp || user == thenTerm || user == elseTerm;
+          });
+        };
+        bool readOnly = loadOnly(res) && loadOnly(thenVal) && loadOnly(elseVal);
+        if (!thenBuf || !elseBuf || thenBuf.getType() != elseBuf.getType() ||
+            !condTy || condTy.getRank() != 0 || !readOnly)
+          return ifOp->emitError(
+              "cannot raise a branch choosing between buffers");
+        auto sel = stablehlo::SelectOp::create(
+            builder,
+            rewriteLocation(ifOp->getLoc(), pc.options.strip_llvm_debuginfo),
+            cond, thenBuf, elseBuf);
+        mapping.map(res, sel.getResult());
+        maps[sel.getResult()] = maps.lookup(thenBuf);
+        continue;
+      }
       Value b = mapping.lookup(thenVal);
       Value c = mapping.lookup(elseVal);
 
