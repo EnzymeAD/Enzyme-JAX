@@ -812,6 +812,16 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
                         llvm::DenseMap<Value, affine::AffineValueMap> &maps,
                         ParallelContext pc);
 
+// The buffers a loop must carry are the arguments of the block being raised
+// from: the kernel function's entry, or the gpu_wrapper region's block when
+// raising a wrapper in place.
+static Block *getRaisedEntryBlock(Operation *op) {
+  while (op->getParentOp() &&
+         !isa<func::FuncOp, enzymexla::GPUWrapperOp>(op->getParentOp()))
+    op = op->getParentOp();
+  return &op->getParentRegion()->front();
+}
+
 static LogicalResult tryRaisingForOpToStableHLOWhile(
     affine::AffineForOp forOp, IRMapping &parentMapping, OpBuilder &builder,
     llvm::DenseMap<Value, affine::AffineValueMap> &maps, ParallelContext pc,
@@ -888,12 +898,18 @@ emitIfAsSelect(Operation *ifOp, Value cond, affine::AffineValueMap map,
          llvm::zip_equal(thenTerm->getOperands(), elseTerm->getOperands(),
                          ifOp->getResults())) {
       Value a = cond;
+      if (isa<MemRefType, LLVM::LLVMPointerType>(res.getType()))
+        return ifOp->emitError(
+            "cannot raise a branch choosing between buffers");
       Value b = mapping.lookup(thenVal);
       Value c = mapping.lookup(elseVal);
 
       auto mapA = map;
       auto mapB = maps.lookup(b);
       auto mapC = maps.lookup(c);
+      if (!mapA.getAffineMap() || !mapB.getAffineMap() || !mapC.getAffineMap())
+        return ifOp->emitError(
+            "cannot raise branch result without an access map");
 
       Value dsts[] = {b, c};
       affine::AffineValueMap submaps[] = {mapB, mapC};
@@ -1274,35 +1290,60 @@ static LogicalResult tryRaisingForOpToStableHLOWhile(
     stablehlo::WhileOp *createdWhileOp,
     SmallVectorImpl<Value> *carriedBuffers) {
   IRMapping mapping = parentMapping;
-  if (!forOp.hasConstantBounds()) {
-    return forOp.emitError("CPU kernels do not support cluster");
-  }
 
   Value iv = forOp.getInductionVar();
-  InductionVariableRange range{forOp.getConstantLowerBound(),
-                               forOp.getConstantUpperBound(),
-                               forOp.getStepAsInt()};
 
   auto ET = builder.getI64Type();
   auto TT = RankedTensorType::get({}, ET);
+  auto wloc = rewriteLocation(forOp.getLoc(), pc.options.strip_llvm_debuginfo);
 
-  Value lb = stablehlo::ConstantOp::create(
-      builder, rewriteLocation(forOp.getLoc(), pc.options.strip_llvm_debuginfo),
-      TT,
-      SplatElementsAttr::get(
-          TT, ArrayRef<Attribute>(IntegerAttr::get(ET, range.lb))));
-  Value ub = stablehlo::ConstantOp::create(
-      builder, rewriteLocation(forOp.getLoc(), pc.options.strip_llvm_debuginfo),
-      TT,
-      SplatElementsAttr::get(
-          TT, ArrayRef<Attribute>(IntegerAttr::get(ET, range.ub))));
-  Value step = stablehlo::ConstantOp::create(
-      builder, rewriteLocation(forOp.getLoc(), pc.options.strip_llvm_debuginfo),
-      TT,
-      SplatElementsAttr::get(
-          TT, ArrayRef<Attribute>(IntegerAttr::get(ET, range.step))));
+  auto makeConst = [&](int64_t v) -> Value {
+    return stablehlo::ConstantOp::create(
+        builder, wloc, TT,
+        SplatElementsAttr::get(TT,
+                               ArrayRef<Attribute>(IntegerAttr::get(ET, v))));
+  };
 
-  Block *entryBlock = &forOp->getParentOfType<func::FuncOp>().getBody().front();
+  Value lb, ub;
+  if (forOp.hasConstantBounds()) {
+    lb = makeConst(forOp.getConstantLowerBound());
+    ub = makeConst(forOp.getConstantUpperBound());
+  } else {
+    // A while iterates however many times the bounds say at runtime, so the
+    // bounds only need to be evaluated as scalars: a lower bound is the max
+    // of its results, an upper bound the min.
+    auto evalBound = [&](AffineMap map, ValueRange operands,
+                         bool isUpper) -> Value {
+      Value acc;
+      for (AffineExpr expr : map.getResults()) {
+        auto [val, avm] = expandAffineExpr(builder, wloc, expr, operands,
+                                           mapping, map.getNumDims(), pc);
+        if (!val)
+          return nullptr;
+        auto vt = dyn_cast<RankedTensorType>(val.getType());
+        if (!vt || vt.getRank() != 0)
+          return nullptr;
+        if (vt.getElementType() != ET)
+          val = stablehlo::ConvertOp::create(builder, wloc, TT, val);
+        acc = !acc ? val
+                   : (isUpper ? (Value)stablehlo::MinOp::create(builder, wloc,
+                                                                acc, val)
+                              : (Value)stablehlo::MaxOp::create(builder, wloc,
+                                                                acc, val));
+      }
+      return acc;
+    };
+    lb = evalBound(forOp.getLowerBoundMap(), forOp.getLowerBoundOperands(),
+                   /*isUpper=*/false);
+    ub = evalBound(forOp.getUpperBoundMap(), forOp.getUpperBoundOperands(),
+                   /*isUpper=*/true);
+    if (!lb || !ub)
+      return forOp.emitError(
+          "cannot evaluate non-constant loop bounds as scalars");
+  }
+  Value step = makeConst(forOp.getStepAsInt());
+
+  Block *entryBlock = getRaisedEntryBlock(forOp);
 
   Block *cond = new Block(), *body = new Block();
   Value ivInCond = cond->addArgument(
@@ -2407,10 +2448,18 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
         limit = constOp.getValue() + 1;
       } else if (!E.isSymbolicOrConstant()) {
         auto range = computeExprRange(accessValueMap, E);
-        if (!range.has_value())
-          return failure();
-        start = range->step < 0 ? range->ub - range->step : range->lb;
-        limit = range->step < 0 ? range->lb - range->step : range->ub;
+        if (range.has_value()) {
+          start = range->step < 0 ? range->ub - range->step : range->lb;
+          limit = range->step < 0 ? range->lb - range->step : range->ub;
+        } else {
+          // A while-raised loop's IV has no static range, but its store is a
+          // single dynamically-indexed element along this dim: no padding
+          // analysis needed. Only a batched (parallel-IV) dim needs the range.
+          Value iv = getIVForExpr(accessValueMap, E);
+          if (!iv || pc.isParallelIV(iv))
+            return failure();
+          hasRange = false;
+        }
       } else {
         hasRange = false;
       }
@@ -3294,12 +3343,14 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
   // Inner for op
   if (auto forOp = dyn_cast<affine::AffineForOp>(op)) {
-    if (pc.options.enableLockstepFor &&
+    if (pc.options.enableLockstepFor && forOp.hasConstantBounds() &&
         tryRaisingLockStepForOpToStableHLO(forOp, mapping, builder, maps, pc)
             .succeeded()) {
       return success();
     }
-    if (pc.options.preferWhileRaising &&
+    // A loop whose trip count is only known at runtime can still iterate as
+    // a while, whatever the preference says.
+    if ((pc.options.preferWhileRaising || !forOp.hasConstantBounds()) &&
         tryRaisingForOpToStableHLOWhile(forOp, mapping, builder, maps, pc)
             .succeeded()) {
       return success();
