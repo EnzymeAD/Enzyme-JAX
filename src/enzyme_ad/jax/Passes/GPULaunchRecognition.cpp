@@ -137,6 +137,36 @@ struct GPULaunchRecognitionPass
     SymbolTableCollection symbolTable;
     symbolTable.getSymbolTable(getOperation());
     StringSet<> seenErrors;
+    // With exception handling preserved these runtime calls arrive in
+    // invoke form; none of them throw, so turn each into a call plus a
+    // branch to the normal destination so the rewrites below see them.
+    {
+      SmallVector<LLVM::InvokeOp> invokes;
+      getOperation()->walk([&](LLVM::InvokeOp inv) {
+        auto callee = inv.getCallee();
+        if (!callee)
+          return;
+        for (StringRef name :
+             {"cudaMalloc", "cudaFree",
+              "cudaOccupancyMaxActiveBlocksPerMultiprocessorWithFlags",
+              "cudaFuncGetAttributes", "cudaFuncSetCacheConfig", "cudaMemcpy",
+              "cudaMemset", "cudaMemsetAsync", "cudaMemcpy2D"})
+          if (*callee == name) {
+            invokes.push_back(inv);
+            return;
+          }
+      });
+      for (auto inv : invokes) {
+        OpBuilder builder(inv);
+        auto call =
+            LLVM::CallOp::create(builder, inv.getLoc(), inv.getResultTypes(),
+                                 inv.getCalleeAttr(), inv.getCalleeOperands());
+        inv->replaceAllUsesWith(call->getResults());
+        LLVM::BrOp::create(builder, inv.getLoc(), inv.getNormalDestOperands(),
+                           inv.getNormalDest());
+        inv->erase();
+      }
+    }
     getOperation()->walk([&](LLVM::CallOp call) {
       auto callee = call.getCallee();
       OpBuilder builder(call);
