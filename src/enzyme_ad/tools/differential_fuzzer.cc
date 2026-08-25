@@ -52,6 +52,15 @@ llvm::cl::opt<bool> useCustomPool(
         "Inject a specific custom debug pool instead of the cursed vectors"),
     llvm::cl::init(false));
 
+// --max-ulps (how much floating-point drift from reassociation we tolerate)
+llvm::cl::opt<unsigned> maxUlpsOpt(
+    "max-ulps",
+    llvm::cl::desc("Allowed deviation between optimized and unoptimized float "
+                   "results, in units in the last place (default 8). log2(n) "
+                   "bits are allowed to deviate so in the n=8 case the three "
+                   "least signficant mantissa bits are allowed to deviate"),
+    llvm::cl::init(8));
+
 // --maxElements (do not blow up CI or your machine with a large number)
 llvm::cl::opt<int64_t> maxElements(
     "max-elements",
@@ -61,6 +70,16 @@ llvm::cl::opt<int64_t> maxElements(
 } // namespace
 
 using namespace mlir;
+
+struct PrintableComplex {
+  const mlir::Complex<APFloat> v;
+};
+static llvm::raw_ostream &operator<<(llvm::raw_ostream &os,
+                                     PrintableComplex p) {
+  APFloat im = p.v.imag();
+  return os << p.v.real() << (im.isNegative() ? " - " : " + ") << llvm::abs(im)
+            << "i";
+}
 
 // Supported types in the StableHLO specification:
 // - Unsigned integers: ui4, ui8, ui16, ui32, ui64
@@ -340,33 +359,38 @@ std::optional<mlir::DenseElementsAttr> generateCursedTensor(mlir::Type argType,
   return attr;
 }
 
-bool isClose(double unopt, double opt, double rtol = 1e-5, double atol = 1e-8) {
+bool isClose(const APFloat &unopt, const APFloat &opt, unsigned maxUlps,
+             std::optional<double> rtolOverride = std::nullopt,
+             std::optional<double> atolOverride = std::nullopt) {
+  const llvm::fltSemantics &sem = unopt.getSemantics();
   // 1. Both are NaN? Match.
-  if (std::isnan(unopt) && std::isnan(opt))
+  if (unopt.isNaN() && opt.isNaN())
     return true;
-
   // 2. Both are Inf? Match ONLY if signs are identical.
-  if (std::isinf(unopt) && std::isinf(opt))
-    return unopt == opt;
-
+  if (unopt.isInfinity() && opt.isInfinity())
+    return unopt.isNegative() == opt.isNegative();
   // 3. Fast-math overflow allowance:
   // If one is Inf and the other is at the absolute float boundary of the same
   // sign, allow it.
-  double max_val = std::numeric_limits<double>::max();
-  if (std::isinf(opt) && std::abs(unopt) >= max_val * 0.99 &&
-      (opt > 0) == (unopt > 0))
+  APFloat threshold = APFloat::getLargest(sem);
+  threshold.next(/*nextDown=*/true); // one ulp below max
+  auto nearBoundary = [&](const APFloat &v, const APFloat &i) {
+    return llvm::abs(v) >= threshold && v.isNegative() == i.isNegative();
+  };
+  if (opt.isInfinity() && nearBoundary(unopt, opt))
     return true;
-  if (std::isinf(unopt) && std::abs(opt) >= max_val * 0.99 &&
-      (unopt > 0) == (opt > 0))
+  if (unopt.isInfinity() && nearBoundary(opt, unopt))
     return true;
-
   // 4. Any other mix of Inf/NaN vs finite numbers? Bug.
-  if (std::isnan(unopt) || std::isnan(opt) || std::isinf(unopt) ||
-      std::isinf(opt))
+  if (unopt.isNaN() || opt.isNaN() || unopt.isInfinity() || opt.isInfinity())
     return false;
-
   // 5. Standard tolerance check
-  return std::abs(unopt - opt) <= (atol + rtol * std::abs(opt));
+  double relativeUlp = std::ldexp(1.0, 1 - APFloat::semanticsPrecision(sem));
+  double rtol = rtolOverride.value_or(relativeUlp * maxUlps);
+  double atol = atolOverride.value_or(
+      APFloat::getSmallestNormalized(sem).convertToDouble());
+  double u = unopt.convertToDouble(), o = opt.convertToDouble();
+  return std::abs(u - o) <= (atol + rtol * std::abs(o));
 }
 
 int main(int argc, char **argv) {
@@ -523,16 +547,37 @@ int main(int argc, char **argv) {
 
       if (unoptAttr && optAttr &&
           llvm::isa<mlir::FloatType>(unoptAttr.getElementType())) {
-        auto uIt = unoptAttr.getValues<llvm::APFloat>().begin();
-        auto oIt = optAttr.getValues<llvm::APFloat>().begin();
-        auto uEnd = unoptAttr.getValues<llvm::APFloat>().end();
-
+        for (auto [u, o] :
+             llvm::zip_equal(unoptAttr.getValues<llvm::APFloat>(),
+                             optAttr.getValues<llvm::APFloat>())) {
+          if (!isClose(u, o, maxUlpsOpt)) {
+            llvm::outs() << "  [!] FLOAT MISMATCH: Expected " << u
+                         << " but got " << o << "\n";
+            mismatch = true;
+            anyMismatch = true;
+            break;
+          }
+        }
+      } else if (unoptAttr && optAttr &&
+                 llvm::isa<mlir::ComplexType>(unoptAttr.getElementType())) {
+        auto uRange = unoptAttr.getValues<mlir::Complex<APFloat>>();
+        auto oRange = optAttr.getValues<mlir::Complex<APFloat>>();
+        auto uIt = uRange.begin(), uEnd = uRange.end();
+        auto oIt = oRange.begin();
         for (; uIt != uEnd; ++uIt, ++oIt) {
-          double uVal = (*uIt).convertToDouble();
-          double oVal = (*oIt).convertToDouble();
-          if (!isClose(uVal, oVal)) {
-            llvm::outs() << "  [!] FLOAT MISMATCH: Expected " << uVal
-                         << " but got " << oVal << "\n";
+          mlir::Complex<APFloat> u = *uIt, o = *oIt;
+          auto uReal = u.real();
+          auto oReal = o.real();
+          auto uImag = u.imag();
+          auto oImag = o.imag();
+
+          auto uPrint = PrintableComplex{u};
+          auto oPrint = PrintableComplex{o};
+
+          if ((!isClose(uReal, oReal, maxUlpsOpt)) ||
+              !isClose(uImag, oImag, maxUlpsOpt)) {
+            llvm::outs() << "  [!] Complex MISMATCH: Expected " << uPrint
+                         << " but got " << oPrint << "\n";
             mismatch = true;
             anyMismatch = true;
             break;
@@ -543,7 +588,6 @@ int main(int argc, char **argv) {
         // definitive bug.
         llvm::outs() << "  [!] MISMATCH on return value " << i << "!\n";
         mismatch = true;
-        anyMismatch = false;
       }
     }
     if (!mismatch) {
