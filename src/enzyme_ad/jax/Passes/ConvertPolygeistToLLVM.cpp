@@ -3509,13 +3509,17 @@ private:
     auto zero = LLVM::ConstantOp::create(rewriter, loc, i64,
                                          rewriter.getI64IntegerAttr(0));
 
-    auto nargs = LLVM::ConstantOp::create(
-        rewriter, loc, i64,
-        rewriter.getI64IntegerAttr(adaptor.getInputs().size()));
+    size_t numSpec = wrap.getNumSpecialized();
+    assert(numSpec <= adaptor.getInputs().size());
+    size_t numBuf = adaptor.getInputs().size() - numSpec;
 
-    auto AT = LLVM::LLVMArrayType::get(i64, adaptor.getInputs().size());
+    auto nargs = LLVM::ConstantOp::create(rewriter, loc, i64,
+                                          rewriter.getI64IntegerAttr(numBuf));
 
-    Value argsPtr;
+    auto AT = LLVM::LLVMArrayType::get(i64, numBuf);
+    auto CT = LLVM::LLVMArrayType::get(i64, numSpec ? numSpec : 1);
+
+    Value argsPtr, constsPtr = nullptr;
     {
       Block *allocaBlock = getAllocaBlock(wrap);
       assert(allocaBlock &&
@@ -3525,9 +3529,11 @@ private:
       auto one_entry = LLVM::ConstantOp::create(rewriter, loc, i64,
                                                 rewriter.getI64IntegerAttr(1));
       argsPtr = LLVM::AllocaOp::create(rewriter, loc, ptrty, AT, one_entry);
+      if (numSpec)
+        constsPtr = LLVM::AllocaOp::create(rewriter, loc, ptrty, CT, one_entry);
     }
 
-    for (int i = 0; i < adaptor.getInputs().size(); i++) {
+    for (size_t i = 0; i < numBuf; i++) {
       auto idx = LLVM::ConstantOp::create(rewriter, loc, i64,
                                           rewriter.getI64IntegerAttr(i));
       Value idxs[] = {zero, idx};
@@ -3536,11 +3542,33 @@ private:
 
       LLVM::StoreOp::create(rewriter, loc, adaptor.getInputs()[i], gep);
     }
-
-    // handle, module, nargs, argptr
-    Type tys[] = {ptrty, ptrty, i64, ptrty};
+    for (size_t i = 0; i < numSpec; i++) {
+      auto idx = LLVM::ConstantOp::create(rewriter, loc, i64,
+                                          rewriter.getI64IntegerAttr(i));
+      Value idxs[] = {zero, idx};
+      auto gep = LLVM::GEPOp::create(rewriter, loc, ptrty, CT, constsPtr, idxs);
+      Value v = adaptor.getInputs()[numBuf + i];
+      if (v.getType() != i64) {
+        if (isa<IndexType>(v.getType()))
+          v = arith::IndexCastOp::create(rewriter, loc, i64, v);
+        else if (auto it = dyn_cast<IntegerType>(v.getType()))
+          v = it.getWidth() < 64
+                  ? (Value)arith::ExtSIOp::create(rewriter, loc, i64, v)
+                  : (Value)arith::TruncIOp::create(rewriter, loc, i64, v);
+      }
+      LLVM::StoreOp::create(rewriter, loc, v, gep);
+    }
 
     auto moduleOp = wrap->getParentOfType<ModuleOp>();
+    auto xdata = insertXLAInitDeinit(moduleOp, backend, rewriter);
+
+    // Without specialized scalars the constant pointer is simply null.
+    if (!constsPtr)
+      constsPtr = LLVM::ZeroOp::create(rewriter, loc, ptrty);
+    auto nconsts = LLVM::ConstantOp::create(
+        rewriter, loc, i64, rewriter.getI64IntegerAttr(numSpec));
+    // handle, module, nargs, argptr, nconsts, constptr
+    Type tys[] = {ptrty, ptrty, i64, ptrty, i64, ptrty};
     auto xlaExecFn = LLVM::lookupOrCreateFn(
         rewriter, moduleOp, "reactantXLAExec", tys,
         LLVM::LLVMVoidType::get(moduleOp->getContext()), true);
@@ -3548,10 +3576,7 @@ private:
       llvm::errs() << " reactantXLAExec already exists with different types\n";
       return failure();
     }
-
-    auto xdata = insertXLAInitDeinit(moduleOp, backend, rewriter);
-    Value args[4] = {xdata, stringval, nargs, argsPtr};
-
+    Value args[6] = {xdata, stringval, nargs, argsPtr, nconsts, constsPtr};
     LLVM::CallOp::create(rewriter, loc, xlaExecFn.value(), args);
 
     wrap.setFnAttr(
