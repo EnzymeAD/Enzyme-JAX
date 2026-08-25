@@ -5131,6 +5131,20 @@ struct ConvertPolygeistToLLVMPass
 
   void runOnOperation() override {
     ModuleOp m = getOperation();
+    // An xla backend has no raw device memory: buffers live behind the XLA
+    // runtime, so a kernel launch that survived raising would consume
+    // pointers that do not exist on the device. Fail the compile rather
+    // than emit a binary that crashes at runtime.
+    if (StringRef(backend).starts_with("xla")) {
+      bool anyLaunch = false;
+      m->walk([&](gpu::LaunchFuncOp l) {
+        l.emitError("kernel launch survived raising; the ")
+            << backend << " backend cannot execute raw device kernels";
+        anyLaunch = true;
+      });
+      if (anyLaunch)
+        return signalPassFailure();
+    }
     convertModule(m, /* gpuModule */ false);
   }
 };
