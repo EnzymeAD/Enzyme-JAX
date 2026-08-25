@@ -77,13 +77,13 @@ def MpiSendOp : Comm_Op<"mpi.send", []> {
 
   // TODO add optional `count` operand for dynamic-shaped tensors?
   let arguments = (ins
-    AnyTensor : $buf,
-    TensorI32 : $tag,
+    AnyTensor : $buffer,
     TensorI32 : $dest,
+    TensorI32 : $tag,
     MpiComm : $comm
   );
 
-  let assemblyFormat = "operands attr-dict `:` type($buf)";
+  let assemblyFormat = "operands attr-dict `:` type($buffer)";
 }
 
 def MpiIsendOp : Comm_Op<"mpi.isend", []> {
@@ -91,14 +91,14 @@ def MpiIsendOp : Comm_Op<"mpi.isend", []> {
 
   // TODO add optional `count` operand for dynamic-shaped tensors?
   let arguments = (ins
-    AnyTensor : $buf,
-    TensorI32 : $tag,
+    AnyTensor : $buffer,
     TensorI32 : $dest,
+    TensorI32 : $tag,
     MpiComm : $comm
   );
 
   let results = (outs MpiRequest : $request);
-  let assemblyFormat = "operands attr-dict `:` functional-type($buf, results)";
+  let assemblyFormat = "operands attr-dict `:` functional-type($buffer, results)";
 }
 
 def MpiRecvOp : Comm_Op<"mpi.recv", []> {
@@ -106,12 +106,12 @@ def MpiRecvOp : Comm_Op<"mpi.recv", []> {
 
   // TODO add optional `count` operand for dynamic-shaped tensors?
   let arguments = (ins
-    TensorI32 : $tag,
     TensorI32 : $source,
+    TensorI32 : $tag,
     MpiComm : $comm
   );
 
-  let results = (outs AnyTensor : $buf);
+  let results = (outs AnyTensor : $buffer);
   let assemblyFormat = "operands attr-dict `:` type(results)";
 }
 
@@ -120,12 +120,12 @@ def MpiIrecvOp : Comm_Op<"mpi.irecv", []> {
 
   // TODO add optional `count` operand for dynamic-shaped tensors?
   let arguments = (ins
-    TensorI32 : $tag,
     TensorI32 : $source,
+    TensorI32 : $tag,
     MpiComm : $comm
   );
   let results = (outs
-    AnyTensor : $buf,
+    AnyTensor : $buffer,
     MpiRequest : $request
   );
   let assemblyFormat = "operands attr-dict `:` type(results)";
@@ -148,25 +148,25 @@ def MpiAllreduceOp : Comm_Op<"mpi.allreduce", []> {
 
   let arguments = (ins
     AnyTensor : $sendbuf,
-    MpiOpsAttr : $reduceOpAttr,
+    MpiOpsAttr : $reduceOp,
     MpiComm : $comm
   );
 
   let results = (outs AnyTensor : $recvbuf);
-  let assemblyFormat = "$sendbuf `,` $reduceOpAttr `,` $comm attr-dict `:` functional-type($sendbuf, results)";
+  let assemblyFormat = "$sendbuf `,` $reduceOp `,` $comm attr-dict `:` functional-type($sendbuf, results)";
 }
 
 def MpiBcastOp : Comm_Op<"mpi.bcast", []> {
   let summary = "Equivalent to `MPI_Bcast`";
 
   let arguments = (ins
-    AnyTensor : $inbuf,
+    AnyTensor : $inBuffer,
     TensorI32 : $root,
     MpiComm : $comm
   );
 
-  let results = (outs AnyTensor : $outbuf);
-  let assemblyFormat = "operands attr-dict `:` functional-type($inbuf, results)";
+  let results = (outs AnyTensor : $outBuffer);
+  let assemblyFormat = "operands attr-dict `:` functional-type($inBuffer, results)";
 }
 
 #endif // ENZYMEXLA_COMM_DIALECT_MPI_OPS_TD
