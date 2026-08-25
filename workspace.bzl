@@ -11,15 +11,6 @@ ML_TOOLCHAIN_SHA256 = ""
 # otherwise this should be a path to the folder containing the BUILD file for enzyme
 OVERRIDE_ENZYME_PATH = ""
 
-GRPC_PATCHES = [
-    """
-    # Fix missing #include <algorithm> needed for std::any_of in src/core/util/glob.cc
-    # (fixed upstream in grpc >= 1.78, but older vendored copies lack it; this is a
-    # no-op when applied to grpc >= 1.78 which already include it)
-    sed -i.bak0 's|#include "absl/strings/string_view.h"|#include <algorithm>\\n#include "absl/strings/string_view.h"|' src/core/util/glob.cc
-    """,
-]
-
 XLA_PATCHES = [
     """
     # Use clang not msvc
