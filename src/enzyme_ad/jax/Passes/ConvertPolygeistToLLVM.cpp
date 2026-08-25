@@ -4793,7 +4793,11 @@ struct ConvertPolygeistToLLVMPass
         return signalPassFailure();
       }
       if (failed(applyPatternsGreedily(
-              mod, {}, GreedyRewriteConfig().enableFolding()))) {
+              mod, {},
+              GreedyRewriteConfig()
+                  .enableFolding()
+                  .setRegionSimplificationLevel(
+                      GreedySimplifyRegionLevel::Normal)))) {
         mod->emitError() << "failed to apply folding";
         return signalPassFailure();
       }

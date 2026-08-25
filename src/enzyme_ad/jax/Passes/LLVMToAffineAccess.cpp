@@ -2137,6 +2137,7 @@ convertLLVMToAffineAccess(Operation *op,
                     SimplifyDeadAlloc<gpu::AllocOp, true>, Pointer2MemrefSelect,
                     LoadSelect, SimpleMem2Reg<memref::AllocaOp>>(context);
     GreedyRewriteConfig config;
+    config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);
     config.enableFolding();
     if (applyPatternsGreedily(op, std::move(patterns), config).failed())
       return failure();
@@ -2162,6 +2163,7 @@ struct LLVMToAffineAccessPass
     RewritePatternSet patterns(context);
     populateRemoveIVPatterns(patterns);
     GreedyRewriteConfig config;
+    config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);
     config.enableFolding();
     if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
                                      config))) {

@@ -1117,9 +1117,12 @@ struct CanonicalizeLoopsPass
         patterns.add<PartialIfToSelect<false>>(&getContext());
       }
 
-      if (failed(
-              applyPatternsGreedily(getOperation(), std::move(patterns),
-                                    GreedyRewriteConfig().enableFolding()))) {
+      if (failed(applyPatternsGreedily(
+              getOperation(), std::move(patterns),
+              GreedyRewriteConfig()
+                  .enableFolding()
+                  .setRegionSimplificationLevel(
+                      GreedySimplifyRegionLevel::Normal)))) {
         signalPassFailure();
         return;
       }
@@ -1373,6 +1376,7 @@ struct CanonicalizeLoopsPass
       RewritePatternSet patterns(&getContext());
       addSingleIter(patterns, &getContext());
       GreedyRewriteConfig config;
+      config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);
       config.enableFolding();
       if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
                                        config))) {
