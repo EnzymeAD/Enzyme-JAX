@@ -958,6 +958,32 @@ struct NVVMRsqrtApproxRaising : public OpRewritePattern<LLVM::CallIntrinsicOp> {
   }
 };
 
+// The minimumnum/maximumnum intrinsics have no first-class llvm dialect op,
+// so they arrive as llvm.call_intrinsic. Like __nv_fmin/__nv_fmax they treat
+// a NaN operand as missing data, which is arith.minnumf/maxnumf.
+struct MinMaxNumIntrinsicRaising
+    : public OpRewritePattern<LLVM::CallIntrinsicOp> {
+  using OpRewritePattern<LLVM::CallIntrinsicOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(LLVM::CallIntrinsicOp op,
+                                PatternRewriter &rewriter) const override {
+    StringRef intrin = op.getIntrin();
+    bool isMin = intrin.starts_with("llvm.minimumnum.");
+    if (!isMin && !intrin.starts_with("llvm.maximumnum."))
+      return failure();
+    if (op.getArgs().size() != 2 || op->getNumResults() != 1 ||
+        !isa<FloatType>(op->getResult(0).getType()))
+      return failure();
+    if (isMin)
+      rewriter.replaceOpWithNewOp<arith::MinNumFOp>(op, op.getArgs()[0],
+                                                    op.getArgs()[1]);
+    else
+      rewriter.replaceOpWithNewOp<arith::MaxNumFOp>(op, op.getArgs()[0],
+                                                    op.getArgs()[1]);
+    return success();
+  }
+};
+
 struct ReadOnlyAllocaElim : public OpRewritePattern<LLVM::AllocaOp> {
   ReadOnlyAllocaElim(MLIRContext *context)
       : OpRewritePattern<LLVM::AllocaOp>(context, /*benefit=*/1) {}
@@ -1421,6 +1447,7 @@ void populateLLVMToMathPatterns(MLIRContext *context,
 
   patterns.add<BarrierConvert>(converter);
   patterns.add<NVVMRsqrtApproxRaising>(converter);
+  patterns.add<MinMaxNumIntrinsicRaising>(converter);
 
   patterns
       .add<GPUConvert<NVVM::BlockDimXOp, gpu::BlockDimOp, gpu::Dimension::x>>(
