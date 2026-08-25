@@ -3572,6 +3572,25 @@ struct AffineToStableHLORaisingPass
           AffineToStableHLORaisingPass> {
   using AffineToStableHLORaisingBase::AffineToStableHLORaisingBase;
 
+  // An access does not care about the address space of its base, but the
+  // raising identifies buffers by SSA root: a memory_space_cast view would
+  // split one buffer into two roots and lose store propagation. Retarget the
+  // accesses to the source and drop the cast.
+  static void stripAccessMemorySpaceCasts(Operation *root) {
+    SmallVector<memref::MemorySpaceCastOp> casts;
+    root->walk([&](memref::MemorySpaceCastOp c) { casts.push_back(c); });
+    for (auto c : casts) {
+      if (!llvm::all_of(c->getUsers(), [](Operation *u) {
+            return isa<affine::AffineLoadOp, affine::AffineStoreOp,
+                       memref::LoadOp, memref::StoreOp>(u);
+          }))
+        continue;
+      for (Operation *u : llvm::make_early_inc_range(c->getUsers()))
+        u->replaceUsesOfWith(c.getResult(), c.getSource());
+      c.erase();
+    }
+  }
+
   // A parallel dimension whose extent is only known at runtime cannot become
   // a tensor axis, but its iterations are still independent: peel each such
   // dimension into an affine.for tagged enzymexla.parallel, which the while
@@ -3694,8 +3713,10 @@ struct AffineToStableHLORaisingPass
 
     // Peeling rewrites loops, so it stays scoped to the regions this pass
     // actually raises.
-    for (auto func : funcs)
+    for (auto func : funcs) {
+      stripAccessMemorySpaceCasts(func);
       peelDynamicParallelDims(func);
+    }
 
     SymbolTableCollection symbolTable;
     SymbolUserMap userMap(symbolTable, op);
@@ -3714,8 +3735,10 @@ struct AffineToStableHLORaisingPass
     }
     std::vector<enzymexla::GPUWrapperOp> gwrap;
     op->walk([&](enzymexla::GPUWrapperOp g) { gwrap.push_back(g); });
-    for (auto g : gwrap)
+    for (auto g : gwrap) {
+      stripAccessMemorySpaceCasts(g);
       peelDynamicParallelDims(g);
+    }
     size_t raised_count = 0;
     for (auto g : gwrap) {
       auto modOp = g->getParentOfType<ModuleOp>();
