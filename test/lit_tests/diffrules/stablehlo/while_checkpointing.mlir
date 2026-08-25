@@ -136,7 +136,7 @@ module {
 // CHECK-NEXT:       stablehlo.return %2 : tensor<i1>
 // CHECK-NEXT:     } do {
 // CHECK-NEXT:       %2 = stablehlo.multiply %iterArg, %c_0 : tensor<i64>
-// CHECK-NEXT:       %3:2 = stablehlo.while(%iterArg_6 = %c_1, %iterArg_7 = %iterArg_4) : tensor<i64>, tensor<f64> attributes {enzyme.disable_mincut}
+// CHECK-NEXT:       %3:2 = stablehlo.while(%iterArg_6 = %c_1, %iterArg_7 = %iterArg_4) : tensor<i64>, tensor<f64> attributes {enzyme.disable_mincut, enzymexla.checkpoint_segment}
 // CHECK-NEXT:       cond {
 // CHECK-NEXT:         %7 = stablehlo.compare LT, %iterArg_6, %c_0 : (tensor<i64>, tensor<i64>) -> tensor<i1>
 // CHECK-NEXT:         stablehlo.return %7 : tensor<i1>
