@@ -815,7 +815,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 static LogicalResult tryRaisingForOpToStableHLOWhile(
     affine::AffineForOp forOp, IRMapping &parentMapping, OpBuilder &builder,
     llvm::DenseMap<Value, affine::AffineValueMap> &maps, ParallelContext pc,
-    stablehlo::WhileOp *createdWhileOp = nullptr);
+    stablehlo::WhileOp *createdWhileOp = nullptr,
+    SmallVectorImpl<Value> *carriedBuffers = nullptr);
 
 static LogicalResult
 emitIfAsSelect(Operation *ifOp, Value cond, affine::AffineValueMap map,
@@ -1178,8 +1179,9 @@ static LogicalResult tryRaisingForOpToStableHLOUnroll(
     llvm::DenseMap<Value, affine::AffineValueMap> &maps, ParallelContext pc) {
 
   stablehlo::WhileOp whileOp;
+  SmallVector<Value> carriedBuffers;
   if (tryRaisingForOpToStableHLOWhile(forOp, mapping, builder, maps, pc,
-                                      &whileOp)
+                                      &whileOp, &carriedBuffers)
           .failed()) {
     return failure();
   }
@@ -1203,8 +1205,7 @@ static LogicalResult tryRaisingForOpToStableHLOUnroll(
     maps[results[1 + i]] = resMaps[i];
   }
 
-  Block *entryBlock = &forOp->getParentOfType<func::FuncOp>().getBody().front();
-  for (auto [i, memref] : llvm::enumerate(entryBlock->getArguments()))
+  for (auto [i, memref] : llvm::enumerate(carriedBuffers))
     mapping.map(memref, results[1 + numIterArgs + i]);
   return success();
 }
@@ -1270,7 +1271,8 @@ memoryEquivalentPermutation(const affine::AffineValueMap &a,
 static LogicalResult tryRaisingForOpToStableHLOWhile(
     affine::AffineForOp forOp, IRMapping &parentMapping, OpBuilder &builder,
     llvm::DenseMap<Value, affine::AffineValueMap> &maps, ParallelContext pc,
-    stablehlo::WhileOp *createdWhileOp) {
+    stablehlo::WhileOp *createdWhileOp,
+    SmallVectorImpl<Value> *carriedBuffers) {
   IRMapping mapping = parentMapping;
   if (!forOp.hasConstantBounds()) {
     return forOp.emitError("CPU kernels do not support cluster");
@@ -1329,7 +1331,27 @@ static LogicalResult tryRaisingForOpToStableHLOWhile(
     maps[iterArgInBody] = broadcastInit->avm;
   }
 
-  for (auto memref : entryBlock->getArguments()) {
+  // Every buffer written in the body must be loop-carried, or its mapping
+  // after the loop would point into the body. That is the entry block's
+  // arguments plus any other outside-defined buffer the body touches
+  // (e.g. a raised memref.alloca).
+  SmallVector<Value> buffers(entryBlock->getArguments().begin(),
+                             entryBlock->getArguments().end());
+  {
+    llvm::SmallPtrSet<Value, 8> seen(buffers.begin(), buffers.end());
+    forOp.getBody()->walk([&](Operation *innerOp) {
+      for (Value v : innerOp->getOperands())
+        if (isa<MemRefType>(v.getType()) && mapping.contains(v) &&
+            !forOp->isAncestor(v.getParentRegion()->getParentOp()) &&
+            seen.insert(v).second)
+          buffers.push_back(v);
+    });
+  }
+
+  if (carriedBuffers)
+    carriedBuffers->assign(buffers.begin(), buffers.end());
+
+  for (auto memref : buffers) {
     Value mappedMemref = mapping.lookup(memref);
     inits.push_back(mappedMemref);
 
@@ -1411,7 +1433,7 @@ static LogicalResult tryRaisingForOpToStableHLOWhile(
       loopCarried.push_back(raisedYieldedIterArg);
     }
 
-    for (auto memref : entryBlock->getArguments())
+    for (auto memref : buffers)
       loopCarried.push_back(mapping.lookup(memref));
     stablehlo::ReturnOp::create(
         builder,
@@ -1419,7 +1441,7 @@ static LogicalResult tryRaisingForOpToStableHLOWhile(
         loopCarried);
   }
 
-  for (auto [i, memref] : llvm::enumerate(entryBlock->getArguments()))
+  for (auto [i, memref] : llvm::enumerate(buffers))
     mapping.map(memref,
                 whileOp.getResult(i + 1 + forOp.getNumRegionIterArgs()));
   for (auto [forRes, forIterArg, whileRes] :
@@ -3290,6 +3312,24 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
             .succeeded()) {
       return success();
     }
+  }
+
+  if (auto alloca = dyn_cast<memref::AllocaOp>(op)) {
+    // Kernel scratch: a fresh buffer per iteration of whatever loop holds
+    // it, which is exactly what materializing its initial value where the
+    // alloca sits gives. Reads before any write see zeros.
+    auto MT = alloca.getType();
+    if (!MT.hasStaticShape() || !isXLACompatiblePrimitive(MT.getElementType()))
+      return op->emitError("cannot raise dynamic or non-primitive alloca")
+             << *op;
+    auto TT = RankedTensorType::get(MT.getShape(), MT.getElementType());
+    Value zero = stablehlo::ConstantOp::create(
+        builder, rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+        TT,
+        SplatElementsAttr::get(TT, builder.getZeroAttr(MT.getElementType())));
+    mapping.map(alloca.getResult(), zero);
+    maps[zero] = affine::AffineValueMap(AffineMap::get(op->getContext()), {});
+    return success();
   }
 
   if (isa<LLVM::NoAliasScopeDeclOp>(op)) {
