@@ -61,7 +61,8 @@ struct TruncOrConst : public OpRewritePattern<arith::TruncIOp> {
       return failure();
     if (!cst.extractBits(intTy.getWidth(), 0).isZero())
       return failure();
-    rewriter.replaceOpWithNewOp<arith::TruncIOp>(trunc, intTy, other);
+    rewriter.modifyOpInPlace(trunc,
+                             [&] { trunc.getInMutable().assign(other); });
     return success();
   }
 };
