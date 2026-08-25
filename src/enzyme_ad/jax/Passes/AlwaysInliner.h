@@ -70,10 +70,17 @@ struct AlwaysInlinerInterface : public mlir::InlinerInterface {
   /// as necessary.
   void handleTerminator(mlir::Operation *op,
                         mlir::ValueRange valuesToRepl) const final {
-    // Replace the values directly with the return operands.
-    assert(op->getNumOperands() == valuesToRepl.size());
-    for (const auto &it : llvm::enumerate(op->getOperands()))
+    // Replace the values directly with the return operands. A callee that
+    // cannot return ends in a terminator carrying no operands; its call
+    // results are left for the caller-side repair (parallel-lower rebuilds
+    // the yields of an execute_region whose call could not return).
+    assert(op->getNumOperands() == valuesToRepl.size() ||
+           op->getNumOperands() == 0);
+    for (const auto &it : llvm::enumerate(op->getOperands())) {
+      if (it.index() >= valuesToRepl.size())
+        break;
       valuesToRepl[it.index()].replaceAllUsesWith(it.value());
+    }
   }
 };
 
