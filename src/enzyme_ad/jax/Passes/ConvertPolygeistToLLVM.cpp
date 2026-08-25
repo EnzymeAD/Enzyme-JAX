@@ -3562,35 +3562,23 @@ private:
     auto moduleOp = wrap->getParentOfType<ModuleOp>();
     auto xdata = insertXLAInitDeinit(moduleOp, backend, rewriter);
 
-    if (numSpec) {
-      auto nconsts = LLVM::ConstantOp::create(
-          rewriter, loc, i64, rewriter.getI64IntegerAttr(numSpec));
-      // handle, module, nargs, argptr, nconsts, constptr
-      Type tys[] = {ptrty, ptrty, i64, ptrty, i64, ptrty};
-      auto xlaExecFn = LLVM::lookupOrCreateFn(
-          rewriter, moduleOp, "reactantXLAExecSpec", tys,
-          LLVM::LLVMVoidType::get(moduleOp->getContext()), true);
-      if (failed(xlaExecFn)) {
-        llvm::errs()
-            << " reactantXLAExecSpec already exists with different types\n";
-        return failure();
-      }
-      Value args[6] = {xdata, stringval, nargs, argsPtr, nconsts, constsPtr};
-      LLVM::CallOp::create(rewriter, loc, xlaExecFn.value(), args);
-    } else {
-      // handle, module, nargs, argptr
-      Type tys[] = {ptrty, ptrty, i64, ptrty};
-      auto xlaExecFn = LLVM::lookupOrCreateFn(
-          rewriter, moduleOp, "reactantXLAExec", tys,
-          LLVM::LLVMVoidType::get(moduleOp->getContext()), true);
-      if (failed(xlaExecFn)) {
-        llvm::errs()
-            << " reactantXLAExec already exists with different types\n";
-        return failure();
-      }
-      Value args[4] = {xdata, stringval, nargs, argsPtr};
-      LLVM::CallOp::create(rewriter, loc, xlaExecFn.value(), args);
+    // Without specialized scalars the constant pointer is simply null.
+    if (!constsPtr)
+      constsPtr = LLVM::ZeroOp::create(rewriter, loc, ptrty);
+    auto nconsts = LLVM::ConstantOp::create(
+        rewriter, loc, i64, rewriter.getI64IntegerAttr(numSpec));
+    // handle, module, nargs, argptr, nconsts, constptr
+    Type tys[] = {ptrty, ptrty, i64, ptrty, i64, ptrty};
+    auto xlaExecFn = LLVM::lookupOrCreateFn(
+        rewriter, moduleOp, "reactantXLAExecSpec", tys,
+        LLVM::LLVMVoidType::get(moduleOp->getContext()), true);
+    if (failed(xlaExecFn)) {
+      llvm::errs()
+          << " reactantXLAExecSpec already exists with different types\n";
+      return failure();
     }
+    Value args[6] = {xdata, stringval, nargs, argsPtr, nconsts, constsPtr};
+    LLVM::CallOp::create(rewriter, loc, xlaExecFn.value(), args);
 
     wrap.setFnAttr(
         FlatSymbolRefAttr::get(rewriter.getStringAttr("<undefined>")));
