@@ -261,7 +261,10 @@ def XLAWrapperOp : EnzymeXLA_Op<"xla_wrapper", [
     SymbolRefAttr:$fn,
     Variadic<AnyType>:$inputs,
     OptionalAttr<DictArrayAttr>:$arg_attrs,
-    OptionalAttr<DictArrayAttr>:$res_attrs
+    OptionalAttr<DictArrayAttr>:$res_attrs,
+    // How many trailing inputs are scalars the runtime specializes the
+    // executable over, injected as compile-time constants per distinct value.
+    DefaultValuedAttr<I64Attr, "0">:$num_specialized
   );
 
   let assemblyFormat = [{
