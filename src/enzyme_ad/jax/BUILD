@@ -97,10 +97,16 @@ cc_library(
     srcs =
         [
             "xla_ffi/register.cc",
-        ] + glob([
-            "xla_ffi/host/**/*.cc",
-            "xla_ffi/cuda/**/*.cc",
-        ]),
+        ] + glob(
+            [
+                "xla_ffi/host/**/*.cc",
+                "xla_ffi/cuda/**/*.cc",
+            ],
+            exclude = ["xla_ffi/host/mpi.cc"],
+        ) + select({
+            "@xla//xla/tsl:windows": [],
+            "//conditions:default": ["xla_ffi/host/mpi.cc"],
+        }),
     hdrs =
         [
             "xla_ffi/export_macro.h",
@@ -116,11 +122,13 @@ cc_library(
     deps = [
         "@com_google_absl//absl/base",
         "@com_google_absl//absl/strings:str_format",
-        "@mpitrampoline",
         "@xla//xla/ffi:ffi_api",
         "@xla//xla/ffi/api:c_api",
         "@xla//xla/ffi/api:ffi",
     ] + select({
+        "@xla//xla/tsl:windows": [],
+        "//conditions:default": ["@mpitrampoline"],
+    }) + select({
         "@local_config_cuda//:is_cuda_enabled": [
             "@jax//jaxlib:ffi_helpers",
             "@jax//jaxlib/cuda:cuda_blas_handle_pool",
