@@ -3573,8 +3573,7 @@ private:
         rewriter, moduleOp, "reactantXLAExec", tys,
         LLVM::LLVMVoidType::get(moduleOp->getContext()), true);
     if (failed(xlaExecFn)) {
-      llvm::errs()
-          << " reactantXLAExec already exists with different types\n";
+      llvm::errs() << " reactantXLAExec already exists with different types\n";
       return failure();
     }
     Value args[6] = {xdata, stringval, nargs, argsPtr, nconsts, constsPtr};
