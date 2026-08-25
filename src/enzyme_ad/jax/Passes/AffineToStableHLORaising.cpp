@@ -3519,7 +3519,11 @@ struct AffineToStableHLORaisingPass
 
           Attribute attr;
 
-          if (matchPattern(arg, m_Constant(&attr))) {
+          // Only splat what a tensor can hold; a pointer constant (null, a
+          // global's address) falls through to the pointer handling and, if
+          // unhandled there, to the unraised-operand report.
+          if (isa<IntegerType, FloatType, IndexType>(arg.getType()) &&
+              matchPattern(arg, m_Constant(&attr))) {
             affine::AffineValueMap accessMap(AffineMap::get(arg.getContext()),
                                              {});
 
