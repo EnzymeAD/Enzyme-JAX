@@ -3,8 +3,8 @@
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 
 namespace mlir::comm {
-#define GEN_PASS_DEF_LOWERCOMMPASS
-#include "src/enzyme_ad/jax/Passes/Passes.h.inc"
+#define GEN_PASS_DEF_LOWERCOMMTOSTABLEHLOPASS
+#include "src/enzyme_ad/jax/Passes/Comm/Passes.h.inc"
 } // namespace mlir::comm
 
 using namespace mlir;

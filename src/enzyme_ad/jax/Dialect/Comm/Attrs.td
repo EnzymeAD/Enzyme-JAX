@@ -12,7 +12,7 @@ def MPI_Comms : I32EnumAttr<"MPI_Comms", "Named predefined MPI communicators", [
       I32EnumAttrCase<"MPI_COMM_SELF", 258>,
     ]> {
   let genSpecializedAttr = 0;
-  let cppNamespace = "::mlir::enzymexla::comm";
+  let cppNamespace = "::mlir::comm";
 }
 
 def MPI_CommsAttr : EnumAttr<Comm_Dialect, MPI_Comms, "mpi.comm"> {
@@ -95,7 +95,7 @@ def MPI_Datatypes : I32EnumAttr<"MPI_Datatypes", "Named predefined MPI datatypes
       I32EnumAttrCase<"MPI_COMPLEX32", 747>,
     ]> {
   let genSpecializedAttr = 0;
-  let cppNamespace = "::mlir::enzymexla::comm";
+  let cppNamespace = "::mlir::comm";
 }
 
 def MPI_DatatypesAttr : EnumAttr<Comm_Dialect, MPI_Datatypes, "mpi.datatype"> {
@@ -120,7 +120,7 @@ def MPI_Ops : I32EnumAttr<"MPI_Ops", "Named predefined MPI operations", [
       I32EnumAttrCase<"MPI_NO_OP", 61>,
     ]> {
   let genSpecializedAttr = 0;
-  let cppNamespace = "::mlir::enzymexla::comm";
+  let cppNamespace = "::mlir::comm";
 }
 
 def MPI_OpsAttr : EnumAttr<Comm_Dialect, MPI_Ops, "mpi.op"> {
@@ -136,7 +136,7 @@ def NCCL_RedOps : I32EnumAttr<"NCCL_RedOps", "Named predefined NCCL reduction op
       I32EnumAttrCase<"NCCL_AVG", 4>,
     ]> {
   let genSpecializedAttr = 0;
-  let cppNamespace = "::mlir::enzymexla::comm";
+  let cppNamespace = "::mlir::comm";
 }
 
 def NCCL_RedOpAttr : EnumAttr<Comm_Dialect, NCCL_RedOps, "nccl.red_op"> {

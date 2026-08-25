@@ -92,6 +92,7 @@
 #include "mlir/Target/LLVMIR/Dialect/ROCDL/ROCDLToLLVMIRTranslation.h"
 
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
+#include "src/enzyme_ad/jax/Passes/Comm/Passes.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "src/enzyme_ad/jax/Passes/Tessera/Passes.h"
 
@@ -345,6 +346,7 @@ void initializePasses() {
   registerenzymePasses();
   enzyme::registerenzymexlaPasses();
   mlir::enzyme::tessera::registertesseraPasses();
+  mlir::comm::registercommPasses();
 
   // Register the standard passes we want.
   mlir::registerCSEPass();

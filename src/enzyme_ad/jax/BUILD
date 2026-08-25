@@ -1569,6 +1569,7 @@ cc_library(
 
         # Comm dialect
         "//src/enzyme_ad/jax/Dialect/Comm:CommDialect",
+        "//src/enzyme_ad/jax/Passes/Comm:Passes",
     ],
 )
 
