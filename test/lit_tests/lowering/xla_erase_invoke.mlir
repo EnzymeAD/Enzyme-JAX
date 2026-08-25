@@ -6,7 +6,16 @@
 // declaration for the LLVM translator to trip over.
 module {
   llvm.func @cudaGetLastError() -> i32
+  llvm.func @cudaThreadSynchronize() -> i32
   llvm.func @__gxx_personality_v0(...) -> i32
+  llvm.func @sync() attributes {personality = @__gxx_personality_v0} {
+    %e = llvm.invoke @cudaThreadSynchronize() to ^ok unwind ^lp : () -> i32
+  ^ok:
+    llvm.return
+  ^lp:
+    %lp = llvm.landingpad cleanup : !llvm.struct<(ptr, i32)>
+    llvm.return
+  }
   llvm.func @use(%c: i1) -> i32 attributes {personality = @__gxx_personality_v0} {
     %z = llvm.mlir.constant(0 : i32) : i32
     llvm.cond_br %c, ^call, ^done(%z : i32)
@@ -22,6 +31,12 @@ module {
     llvm.return %one : i32
   }
 }
+
+// An invoked cudaThreadSynchronize has no used result: it reduces to a plain
+// branch.
+// CHECK-LABEL: llvm.func @sync(
+// CHECK-NOT: cudaThreadSynchronize
+// CHECK-NOT: llvm.mlir.zero
 
 // CHECK-LABEL: llvm.func @use(
 // CHECK-NOT: cudaGetLastError

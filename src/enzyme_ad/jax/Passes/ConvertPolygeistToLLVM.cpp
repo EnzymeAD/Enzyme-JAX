@@ -4969,18 +4969,13 @@ struct ConvertPolygeistToLLVMPass
         }
       });
       // The invoke form arrives when exception handling is preserved; these
-      // runtime calls cannot throw, so the invoke becomes its result (zero)
-      // and a branch to the normal destination.
+      // cannot throw and their results are unused, so each becomes a branch
+      // to its normal destination.
       m->walk([=](LLVM::InvokeOp inv) {
         if (auto callee = inv.getCallee()) {
           for (auto e : toErase) {
             if (*callee == e) {
               OpBuilder builder(inv);
-              if (inv->getNumResults()) {
-                auto replace = LLVM::ZeroOp::create(
-                    builder, inv.getLoc(), inv->getResult(0).getType());
-                inv->replaceAllUsesWith(ArrayRef<Value>{replace.getResult()});
-              }
               LLVM::BrOp::create(builder, inv.getLoc(),
                                  inv.getNormalDestOperands(),
                                  inv.getNormalDest());
