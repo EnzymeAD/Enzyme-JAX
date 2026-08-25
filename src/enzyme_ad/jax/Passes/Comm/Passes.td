@@ -3,7 +3,7 @@
 
 include "mlir/Pass/PassBase.td"
 
-def LowerCommToStableHLOPass : Pass<"lower-comm-to-stablehlo"> {
+def LowerCommToStablehloPass : Pass<"lower-comm-to-stablehlo"> {
   let summary = "Lower Comm ops to `stablehlo.custom_call`";
   let dependentDialects = [
     "comm::CommDialect",

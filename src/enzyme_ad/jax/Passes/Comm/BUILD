@@ -37,5 +37,6 @@ cc_library(
         ":PassesIncGen",
         "//src/enzyme_ad/jax/Dialect/Comm:CommDialect",
         "@llvm-project//mlir:LLVMCommonConversion",
+        "@stablehlo//:stablehlo_ops",
     ],
 )
