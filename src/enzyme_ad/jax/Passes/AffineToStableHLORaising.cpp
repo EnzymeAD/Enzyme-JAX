@@ -2745,6 +2745,61 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
       Value mask = pc.mask;
       affine::AffineValueMap maskMap = maps.lookup(mask);
 
+      // A mask axis the destination does not index (a single-lane broadcast
+      // store like tid==0) writes one representative value: when the stored
+      // value is invariant along that axis, or-reduce the mask over it and
+      // store under the reduced predicate.
+      {
+        SmallVector<int64_t> reduceDims;
+        bool invariant = true;
+        for (auto [i, E] :
+             llvm::enumerate(maskMap.getAffineMap().getResults())) {
+          Value iv = getIVForExpr(maskMap, E);
+          if (!iv || llvm::is_contained(storeOp.getIndices(), iv))
+            continue;
+          for (auto EE : updateValueMap.getAffineMap().getResults())
+            if (getIVForExpr(updateValueMap, EE) == iv)
+              invariant = false;
+          reduceDims.push_back(i);
+        }
+        if (!reduceDims.empty() && invariant) {
+          auto loc =
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo);
+          auto maskTy = cast<RankedTensorType>(mask.getType());
+          auto boolTy = RankedTensorType::get({}, maskTy.getElementType());
+          Value initFalse = stablehlo::ConstantOp::create(
+              builder, loc, boolTy,
+              SplatElementsAttr::get(boolTy, builder.getBoolAttr(false)));
+          auto reduce = stablehlo::ReduceOp::create(
+              builder, loc, ValueRange{mask}, ValueRange{initFalse},
+              builder.getDenseI64ArrayAttr(reduceDims));
+          {
+            Block *body = new Block();
+            reduce.getBody().push_back(body);
+            body->addArgument(boolTy, loc);
+            body->addArgument(boolTy, loc);
+            OpBuilder::InsertionGuard guard(builder);
+            builder.setInsertionPointToStart(body);
+            Value ored = stablehlo::OrOp::create(
+                builder, loc, body->getArgument(0), body->getArgument(1));
+            stablehlo::ReturnOp::create(builder, loc, ored);
+          }
+          mask = reduce.getResult(0);
+          SmallVector<AffineExpr> keptExprs;
+          for (auto [i, E] :
+               llvm::enumerate(maskMap.getAffineMap().getResults()))
+            if (!llvm::is_contained(reduceDims, (int64_t)i))
+              keptExprs.push_back(E);
+          maskMap = affine::AffineValueMap(
+              AffineMap::get(maskMap.getAffineMap().getNumDims(),
+                             maskMap.getAffineMap().getNumSymbols(), keptExprs,
+                             op->getContext()),
+              maskMap.getOperands());
+          maskMap.composeSimplifyAndCanonicalize();
+          maps[mask] = maskMap;
+        }
+      }
+
       // here this is a bit annoying but alignMemoryAccess expects non constant
       // dims in its value maps. as such, we remove constant dims from the
       // update and subsequent previous value as to use the storeValueMap.
