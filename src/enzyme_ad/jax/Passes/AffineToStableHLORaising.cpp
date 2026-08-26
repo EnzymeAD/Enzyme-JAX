@@ -4881,6 +4881,39 @@ struct AffineToStableHLORaisingPass
   // raising identifies buffers by SSA root: a memory_space_cast view would
   // split one buffer into two roots and lose store propagation. Retarget the
   // accesses to the source and drop the cast.
+  // A pure scalar computed entirely from values defined outside the wrapper
+  // (a null check of an optional buffer, a host-side flag chain) is the
+  // host's to compute: hoist it out, so the kernel captures the resulting
+  // scalar instead of pointers no tensor can stand for.
+  static void hoistWrapperInvariantScalars(Operation *g) {
+    auto definedOutside = [&](Value v) {
+      if (auto ba = dyn_cast<BlockArgument>(v))
+        return !g->isProperAncestor(ba.getOwner()->getParentOp()) &&
+               ba.getOwner()->getParentOp() != g;
+      return !g->isProperAncestor(v.getDefiningOp());
+    };
+    bool changed = true;
+    while (changed) {
+      changed = false;
+      SmallVector<Operation *> toHoist;
+      g->walk([&](Operation *op) {
+        if (op->getNumOperands() == 0 || op->getNumRegions() ||
+            op->hasTrait<OpTrait::IsTerminator>() || !isMemoryEffectFree(op))
+          return;
+        if (!llvm::all_of(op->getResultTypes(),
+                          [](Type t) { return t.isIntOrIndexOrFloat(); }))
+          return;
+        if (!llvm::all_of(op->getOperands(), definedOutside))
+          return;
+        toHoist.push_back(op);
+      });
+      for (Operation *op : toHoist) {
+        op->moveBefore(g);
+        changed = true;
+      }
+    }
+  }
+
   static void stripAccessMemorySpaceCasts(Operation *root) {
     SmallVector<memref::MemorySpaceCastOp> casts;
     root->walk([&](memref::MemorySpaceCastOp c) { casts.push_back(c); });
@@ -5234,6 +5267,7 @@ struct AffineToStableHLORaisingPass
     for (auto g : gwrap) {
       stripAccessMemorySpaceCasts(g);
       flattenViewedScratch(g);
+      hoistWrapperInvariantScalars(g);
       peelDynamicParallelDims(g);
     }
     size_t raised_count = 0;
