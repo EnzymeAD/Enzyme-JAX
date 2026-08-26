@@ -4180,6 +4180,30 @@ struct ConvertConcat final
     if (!concat)
       return failure();
 
+    // Leave `convert(concat(reshape_i(x_i)))` alone when every operand is a
+    // reshape-like op that inserts the concatenation dimension: that is exactly
+    // the form ConcatInsertDimToBatch produces out of
+    // `concat(reshape_i(convert(x_i)))`, so pushing the converts back into the
+    // operands here (after ElementwiseReshapeLike hoists the reshapes back out)
+    // rebuilds that pattern's input and the greedy rewriter cycles forever.
+    // Nothing is gained by the push in this shape anyway.
+    if (llvm::all_of(concat.getOperands(), [&](Value v) {
+          Operation *defOp = v.getDefiningOp();
+          if (auto reshape = dyn_cast_or_null<stablehlo::ReshapeOp>(defOp))
+            return llvm::is_contained(
+                findReshapeInsertionDims(
+                    cast<RankedTensorType>(reshape.getOperand().getType()),
+                    cast<RankedTensorType>(reshape.getType())),
+                (int64_t)concat.getDimension());
+          if (auto bcast = dyn_cast_or_null<stablehlo::BroadcastInDimOp>(defOp))
+            return stablehlo::OpIsReshapeLike(bcast) &&
+                   !llvm::is_contained(bcast.getBroadcastDimensions(),
+                                       (int64_t)concat.getDimension());
+          return false;
+        }))
+      return rewriter.notifyMatchFailure(
+          op, "concat of dimension-inserting reshapes (batchable form)");
+
     SmallVector<Value> newvals;
     for (auto v : concat.getOperands()) {
       newvals.push_back(stablehlo::ConvertOp::create(
