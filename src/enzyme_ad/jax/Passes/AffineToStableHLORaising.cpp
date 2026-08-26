@@ -3910,6 +3910,60 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
         }
       }
 
+      // A lane axis wider than the destination: lanes past the end could
+      // only have stored out of bounds, so their mask is necessarily false
+      // and the excess slices away. Only tiles anchored at the buffer
+      // origin are handled; anything else still reports below.
+      {
+        ShapedType ut = cast<ShapedType>(update.getType());
+        auto operandShape =
+            cast<RankedTensorType>(operand.getType()).getShape();
+        if (ut.getRank() == (int64_t)operandShape.size()) {
+          for (auto [i, E] : llvm::enumerate(storeOp.getMap().getResults())) {
+            int64_t u = ut.getShape()[i], o = operandShape[i];
+            if (u == ShapedType::kDynamic || o == ShapedType::kDynamic ||
+                u <= o)
+              continue;
+            DenseIntElementsAttr startAttr;
+            if (!matchPattern(startIndicesValues[i], m_Constant(&startAttr)) ||
+                !startAttr.getSplatValue<APInt>().isZero())
+              continue;
+            Value iv = getIVForExpr(accessValueMap, E);
+            if (!iv)
+              continue;
+            // The mask must carry the same axis at full extent so the pair
+            // stays aligned after the cut.
+            int64_t maskAxis = -1;
+            auto maskTy = cast<RankedTensorType>(mask.getType());
+            for (auto [j, ME] :
+                 llvm::enumerate(maskMap.getAffineMap().getResults()))
+              if (getIVForExpr(maskMap, ME) == iv) {
+                maskAxis = (int64_t)j;
+                break;
+              }
+            if (maskAxis < 0 || maskTy.getRank() <= maskAxis ||
+                maskTy.getShape()[maskAxis] != u)
+              continue;
+            auto loc =
+                rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo);
+            auto sliceTo = [&](Value v, int64_t axis, int64_t len) {
+              auto vt = cast<RankedTensorType>(v.getType());
+              SmallVector<int64_t> starts(vt.getRank(), 0),
+                  limits(vt.getShape().begin(), vt.getShape().end()),
+                  strides(vt.getRank(), 1);
+              limits[axis] = len;
+              return stablehlo::SliceOp::create(builder, loc, v, starts,
+                                                limits, strides)
+                  .getResult();
+            };
+            update = sliceTo(update, (int64_t)i, o);
+            ut = cast<ShapedType>(update.getType());
+            mask = sliceTo(mask, maskAxis, o);
+            maps[mask] = maskMap;
+          }
+        }
+      }
+
       // here this is a bit annoying but alignMemoryAccess expects non constant
       // dims in its value maps. as such, we remove constant dims from the
       // update and subsequent previous value as to use the storeValueMap.
@@ -3940,10 +3994,16 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
       bool unfit = updateShape.size() != operandShape.size();
       if (!unfit)
         for (auto [u, o] : llvm::zip(updateShape, operandShape))
-          if (u == ShapedType::kDynamic || u > o)
+          if (u == ShapedType::kDynamic ||
+              (o != ShapedType::kDynamic && u > o))
             unfit = true;
-      if (unfit)
-        return op->emitError("masked store update shape does not fit buffer");
+      if (unfit) {
+        auto err =
+            op->emitError("masked store update shape does not fit buffer: ");
+        err << "update " << update.getType() << " mask " << pc.mask.getType()
+            << " buffer " << operand.getType();
+        return err;
+      }
       Value prev = stablehlo::DynamicSliceOp::create(
           builder,
           rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
