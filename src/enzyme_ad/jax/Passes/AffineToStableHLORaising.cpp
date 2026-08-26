@@ -3110,6 +3110,15 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
   if (auto p2m = dyn_cast<enzymexla::Pointer2MemrefOp>(op)) {
     Value operand = op->getOperand(0), result = op->getResult(0);
+    // A view of a buffer that itself is raised gets a value-semantics
+    // snapshot here: a store through it would silently diverge from the
+    // base. Flattening removes the scratch chains; any store-through view
+    // that remains is unsound.
+    if (operand.getDefiningOp<enzymexla::Memref2PointerOp>())
+      for (Operation *user : result.getUsers())
+        if ((isa<affine::AffineStoreOp, memref::StoreOp>(user) &&
+             user->getOperand(1) == result))
+          return op->emitError("cannot raise a store through an aliasing view");
     auto input = mapping.lookup(operand);
     auto MT = p2m.getType();
     if (!isXLACompatiblePrimitive(MT.getElementType())) {
@@ -3696,11 +3705,18 @@ struct AffineToStableHLORaisingPass
       for (Operation *user : alloca->getUsers()) {
         auto m2p = dyn_cast<enzymexla::Memref2PointerOp>(user);
         if (!m2p) {
-          // A direct affine access can move to the flat buffer with its map
+          // A direct access can move to the flat buffer with its indexing
           // linearized; anything else keeps the chain intact.
-          if (isa<affine::AffineLoadOp, affine::AffineStoreOp>(user)) {
+          if (isa<affine::AffineLoadOp, affine::AffineStoreOp, memref::LoadOp>(
+                  user)) {
             directAccesses.push_back(user);
             continue;
+          }
+          if (auto st = dyn_cast<memref::StoreOp>(user)) {
+            if (st.getMemRef() == alloca.getResult()) {
+              directAccesses.push_back(user);
+              continue;
+            }
           }
           viewedOnly = false;
           break;
@@ -3731,7 +3747,38 @@ struct AffineToStableHLORaisingPass
       }
       for (auto m2p : casts)
         m2p.erase();
+      auto linearizeValues = [&](OpBuilder &ab, Location loc,
+                                 ValueRange idxs) -> Value {
+        Value lin = arith::ConstantIndexOp::create(ab, loc, 0);
+        int64_t stride = 1;
+        for (int64_t d = MT.getRank() - 1; d >= 0; --d) {
+          Value term = idxs[d];
+          if (stride != 1) {
+            Value c = arith::ConstantIndexOp::create(ab, loc, stride);
+            term = arith::MulIOp::create(ab, loc, term, c);
+          }
+          lin = arith::AddIOp::create(ab, loc, lin, term);
+          stride *= MT.getShape()[d];
+        }
+        return lin;
+      };
       for (Operation *access : directAccesses) {
+        if (auto mload = dyn_cast<memref::LoadOp>(access)) {
+          OpBuilder ab(mload);
+          Value lin = linearizeValues(ab, mload.getLoc(), mload.getIndices());
+          Value idxs[] = {lin};
+          mload.getMemrefMutable().assign(flat);
+          mload.getIndicesMutable().assign(idxs);
+          continue;
+        }
+        if (auto mstore = dyn_cast<memref::StoreOp>(access)) {
+          OpBuilder ab(mstore);
+          Value lin = linearizeValues(ab, mstore.getLoc(), mstore.getIndices());
+          Value idxs[] = {lin};
+          mstore.getMemrefMutable().assign(flat);
+          mstore.getIndicesMutable().assign(idxs);
+          continue;
+        }
         AffineMap oldMap = isa<affine::AffineLoadOp>(access)
                                ? cast<affine::AffineLoadOp>(access).getMap()
                                : cast<affine::AffineStoreOp>(access).getMap();

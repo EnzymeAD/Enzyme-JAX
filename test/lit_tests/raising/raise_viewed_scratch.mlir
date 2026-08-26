@@ -46,3 +46,24 @@ func.func @mixed_use(%out: memref<32xf64, 1>) {
 // CHECK: %[[BC:.+]] = stablehlo.broadcast_in_dim %[[RD]], dims = [0]
 // CHECK: stablehlo.dynamic_update_slice %[[OUT2]], %[[BC]], %{{.+}} : (tensor<32xf64>, tensor<32xf64>, tensor<i64>) -> tensor<32xf64>
 
+
+// -----
+
+// The scratch reaches one access directly as a plain memref.load next to the
+// viewed accesses: it moves to the flat buffer with its indexing linearized
+// instead of keeping the whole chain opaque.
+func.func @direct_mix(%out: memref<32xf64, 1>) {
+  affine.parallel (%i) = (0) to (32) {
+    %scr = memref.alloca() : memref<32xf64>
+    %p = "enzymexla.memref2pointer"(%scr) : (memref<32xf64>) -> !llvm.ptr<3>
+    %v = "enzymexla.pointer2memref"(%p) : (!llvm.ptr<3>) -> memref<?xf64, 3>
+    %c = arith.constant 3.0 : f64
+    affine.store %c, %v[%i] : memref<?xf64, 3>
+    %idx = arith.constant 0 : index
+    %r = memref.load %scr[%idx] : memref<32xf64>
+    affine.store %r, %out[%i] : memref<32xf64, 1>
+  }
+  return
+}
+
+// CHECK-LABEL: func.func private @direct_mix_raised(
