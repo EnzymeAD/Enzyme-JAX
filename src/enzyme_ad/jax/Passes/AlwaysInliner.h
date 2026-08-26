@@ -76,11 +76,8 @@ struct AlwaysInlinerInterface : public mlir::InlinerInterface {
     // the yields of an execute_region whose call could not return).
     assert(op->getNumOperands() == valuesToRepl.size() ||
            op->getNumOperands() == 0);
-    for (const auto &it : llvm::enumerate(op->getOperands())) {
-      if (it.index() >= valuesToRepl.size())
-        break;
+    for (const auto &it : llvm::enumerate(op->getOperands()))
       valuesToRepl[it.index()].replaceAllUsesWith(it.value());
-    }
   }
 };
 
