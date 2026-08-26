@@ -29,18 +29,24 @@ struct CommMpiCommRankOpLowering
       return failure();
     }
 
-    SmallVector<Type> converted_arg_types;
-    if (failed(converter->convertTypes(op->getOperandTypes(),
-                                       converted_arg_types))) {
-      return failure();
-    }
+    // SmallVector<Type> converted_arg_types;
+    // if (failed(converter->convertTypes(op->getOperandTypes(),
+    //                                    converted_arg_types))) {
+    //   return failure();
+    // }
 
     // Replace the MpiCommRankOp with a stablehlo.custom_call operation
     rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
-        op, converted_res_types,
+        op, converted_res_types, ValueRange{op.getComm()},
         rewriter.getStringAttr("enzymexla_ffi_mpi_comm_rank"),
-        ValueRange{op.getComm()},
-        /*has_side_effect=*/false);
+        /*has_side_effect=*/rewriter.getBoolAttr(false),
+        /*backend_config=*/nullptr,
+        /*api_version=*/nullptr,
+        /*called_computations=*/nullptr,
+        /*operand_layouts=*/nullptr,
+        /*result_layouts=*/nullptr,
+        /*output_operand_aliases=*/nullptr,
+        /*result_tilings*/ nullptr);
 
     return success();
   }
@@ -62,18 +68,24 @@ struct CommMpiCommSizeOpLowering
       return failure();
     }
 
-    SmallVector<Type> converted_arg_types;
-    if (failed(converter->convertTypes(op->getOperandTypes(),
-                                       converted_arg_types))) {
-      return failure();
-    }
+    // SmallVector<Type> converted_arg_types;
+    // if (failed(converter->convertTypes(op->getOperandTypes(),
+    //                                    converted_arg_types))) {
+    //   return failure();
+    // }
 
     // Replace the MpiCommSizeOp with a stablehlo.custom_call operation
     rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
-        op, converted_res_types,
+        op, converted_res_types, ValueRange{op.getComm()},
         rewriter.getStringAttr("enzymexla_ffi_mpi_comm_size"),
-        ValueRange{op.getComm()},
-        /*has_side_effect=*/false);
+        /*has_side_effect=*/rewriter.getBoolAttr(false),
+        /*backend_config=*/nullptr,
+        /*api_version=*/nullptr,
+        /*called_computations=*/nullptr,
+        /*operand_layouts=*/nullptr,
+        /*result_layouts=*/nullptr,
+        /*output_operand_aliases=*/nullptr,
+        /*result_tilings*/ nullptr);
 
     return success();
   }
@@ -95,18 +107,25 @@ struct CommMpiCommSplitOpLowering
       return failure();
     }
 
-    SmallVector<Type> converted_arg_types;
-    if (failed(converter->convertTypes(op->getOperandTypes(),
-                                       converted_arg_types))) {
-      return failure();
-    }
+    // SmallVector<Type> converted_arg_types;
+    // if (failed(converter->convertTypes(op->getOperandTypes(),
+    //                                    converted_arg_types))) {
+    //   return failure();
+    // }
 
     // Replace the MpiCommSplitOp with a stablehlo.custom_call operation
     rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
         op, converted_res_types,
-        rewriter.getStringAttr("enzymexla_ffi_mpi_comm_split"),
         ValueRange{op.getComm(), op.getColor(), op.getKey()},
-        /*has_side_effect=*/true);
+        rewriter.getStringAttr("enzymexla_ffi_mpi_comm_split"),
+        /*has_side_effect=*/rewriter.getBoolAttr(false),
+        /*backend_config=*/nullptr,
+        /*api_version=*/nullptr,
+        /*called_computations=*/nullptr,
+        /*operand_layouts=*/nullptr,
+        /*result_layouts=*/nullptr,
+        /*output_operand_aliases=*/nullptr,
+        /*result_tilings*/ nullptr);
 
     return success();
   }
@@ -123,8 +142,16 @@ struct CommMpiBarrierOpLowering
 
     // Replace the MpiBarrierOp with a stablehlo.custom_call operation
     rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
-        op, TypeRange{}, rewriter.getStringAttr("enzymexla_ffi_mpi_barrier"),
-        ValueRange{op.getComm()}, /*has_side_effect=*/true);
+        op, TypeRange{}, ValueRange{op.getComm()},
+        rewriter.getStringAttr("enzymexla_ffi_mpi_barrier"),
+        /*has_side_effect=*/rewriter.getBoolAttr(true),
+        /*backend_config=*/nullptr,
+        /*api_version=*/nullptr,
+        /*called_computations=*/nullptr,
+        /*operand_layouts=*/nullptr,
+        /*result_layouts=*/nullptr,
+        /*output_operand_aliases=*/nullptr,
+        /*result_tilings*/ nullptr);
 
     return success();
   }
@@ -140,9 +167,17 @@ struct CommMpiSendOpLowering : public OpConversionPattern<comm::MpiSendOp> {
 
     // Replace the MpiSendOp with a stablehlo.custom_call operation
     rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
-        op, TypeRange{}, rewriter.getStringAttr("enzymexla_ffi_mpi_send"),
+        op, TypeRange{},
         ValueRange{op.getBuffer(), op.getDest(), op.getTag(), op.getComm()},
-        /*has_side_effect=*/true);
+        rewriter.getStringAttr("enzymexla_ffi_mpi_send"),
+        /*has_side_effect=*/rewriter.getBoolAttr(true),
+        /*backend_config=*/nullptr,
+        /*api_version=*/nullptr,
+        /*called_computations=*/nullptr,
+        /*operand_layouts=*/nullptr,
+        /*result_layouts=*/nullptr,
+        /*output_operand_aliases=*/nullptr,
+        /*result_tilings*/ nullptr);
 
     return success();
   }
@@ -156,11 +191,25 @@ struct CommMpiIsendOpLowering : public OpConversionPattern<comm::MpiIsendOp> {
                   ConversionPatternRewriter &rewriter) const override {
     auto context = op->getContext();
 
+    SmallVector<Type> converted_res_types;
+    if (failed(getTypeConverter()->convertTypes(op->getResultTypes(),
+                                                converted_res_types))) {
+      return failure();
+    }
+
     // Replace the MpiIsendOp with a stablehlo.custom_call operation
     rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
-        op, TypeRange{}, rewriter.getStringAttr("enzymexla_ffi_mpi_isend"),
+        op, converted_res_types,
         ValueRange{op.getBuffer(), op.getDest(), op.getTag(), op.getComm()},
-        /*has_side_effect=*/true);
+        rewriter.getStringAttr("enzymexla_ffi_mpi_isend"),
+        /*has_side_effect=*/rewriter.getBoolAttr(true),
+        /*backend_config=*/nullptr,
+        /*api_version=*/nullptr,
+        /*called_computations=*/nullptr,
+        /*operand_layouts=*/nullptr,
+        /*result_layouts=*/nullptr,
+        /*output_operand_aliases=*/nullptr,
+        /*result_tilings*/ nullptr);
 
     return success();
   }
@@ -174,11 +223,25 @@ struct CommMpiRecvOpLowering : public OpConversionPattern<comm::MpiRecvOp> {
                   ConversionPatternRewriter &rewriter) const override {
     auto context = op->getContext();
 
+    SmallVector<Type> converted_res_types;
+    if (failed(getTypeConverter()->convertTypes(op->getResultTypes(),
+                                                converted_res_types))) {
+      return failure();
+    }
+
     // Replace the MpiRecvOp with a stablehlo.custom_call operation
     rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
-        op, TypeRange{}, rewriter.getStringAttr("enzymexla_ffi_mpi_recv"),
+        op, converted_res_types,
         ValueRange{op.getBuffer(), op.getSource(), op.getTag(), op.getComm()},
-        /*has_side_effect=*/true);
+        rewriter.getStringAttr("enzymexla_ffi_mpi_recv"),
+        /*has_side_effect=*/rewriter.getBoolAttr(true),
+        /*backend_config=*/nullptr,
+        /*api_version=*/nullptr,
+        /*called_computations=*/nullptr,
+        /*operand_layouts=*/nullptr,
+        /*result_layouts=*/nullptr,
+        /*output_operand_aliases=*/nullptr,
+        /*result_tilings*/ nullptr);
 
     return success();
   }
@@ -192,11 +255,25 @@ struct CommMpiIrecvOpLowering : public OpConversionPattern<comm::MpiIrecvOp> {
                   ConversionPatternRewriter &rewriter) const override {
     auto context = op->getContext();
 
+    SmallVector<Type> converted_res_types;
+    if (failed(getTypeConverter()->convertTypes(op->getResultTypes(),
+                                                converted_res_types))) {
+      return failure();
+    }
+
     // Replace the MpiIrecvOp with a stablehlo.custom_call operation
     rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
-        op, TypeRange{}, rewriter.getStringAttr("enzymexla_ffi_mpi_irecv"),
+        op, converted_res_types,
         ValueRange{op.getBuffer(), op.getSource(), op.getTag(), op.getComm()},
-        /*has_side_effect=*/true);
+        rewriter.getStringAttr("enzymexla_ffi_mpi_irecv"),
+        /*has_side_effect=*/rewriter.getBoolAttr(true),
+        /*backend_config=*/nullptr,
+        /*api_version=*/nullptr,
+        /*called_computations=*/nullptr,
+        /*operand_layouts=*/nullptr,
+        /*result_layouts=*/nullptr,
+        /*output_operand_aliases=*/nullptr,
+        /*result_tilings*/ nullptr);
 
     return success();
   }
@@ -212,8 +289,16 @@ struct CommMpiWaitOpLowering : public OpConversionPattern<comm::MpiWaitOp> {
 
     // Replace the MpiWaitOp with a stablehlo.custom_call operation
     rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
-        op, TypeRange{}, rewriter.getStringAttr("enzymexla_ffi_mpi_wait"),
-        ValueRange{op.getRequest()}, /*has_side_effect=*/true);
+        op, TypeRange{}, ValueRange{op.getRequest()},
+        rewriter.getStringAttr("enzymexla_ffi_mpi_wait"),
+        /*has_side_effect=*/rewriter.getBoolAttr(true),
+        /*backend_config=*/nullptr,
+        /*api_version=*/nullptr,
+        /*called_computations=*/nullptr,
+        /*operand_layouts=*/nullptr,
+        /*result_layouts=*/nullptr,
+        /*output_operand_aliases=*/nullptr,
+        /*result_tilings*/ nullptr);
 
     return success();
   }
@@ -230,33 +315,53 @@ struct CommMpiWaitallOpLowering
 
     // Replace the MpiWaitallOp with a stablehlo.custom_call operation
     rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
-        op, TypeRange{}, rewriter.getStringAttr("enzymexla_ffi_mpi_waitall"),
-        ValueRange{op.getRequests()}, /*has_side_effect=*/true);
+        op, TypeRange{}, ValueRange{op.getRequests()},
+        rewriter.getStringAttr("enzymexla_ffi_mpi_waitall"),
+        /*has_side_effect=*/rewriter.getBoolAttr(true),
+        /*backend_config=*/nullptr,
+        /*api_version=*/nullptr,
+        /*called_computations=*/nullptr,
+        /*operand_layouts=*/nullptr,
+        /*result_layouts=*/nullptr,
+        /*output_operand_aliases=*/nullptr,
+        /*result_tilings*/ nullptr);
 
     return success();
   }
 };
 
-// TODO
-// struct CommMpiAllreduceOpLowering
-//     : public OpConversionPattern<comm::MpiAllreduceOp> {
-//   using OpConversionPattern::OpConversionPattern;
+struct CommMpiAllreduceOpLowering
+    : public OpConversionPattern<comm::MpiAllreduceOp> {
+  using OpConversionPattern::OpConversionPattern;
 
-//   LogicalResult
-//   matchAndRewrite(comm::MpiAllreduceOp op, OpAdaptor adaptor,
-//                   ConversionPatternRewriter &rewriter) const override {
-//     auto context = op->getContext();
+  LogicalResult
+  matchAndRewrite(comm::MpiAllreduceOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto context = op->getContext();
 
-//     // Replace the MpiAllreduceOp with a stablehlo.custom_call operation
-//     rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
-//         op, TypeRange{},
-//         rewriter.getStringAttr("enzymexla_ffi_mpi_allreduce"),
-//         ValueRange{op.getSendbuf(), op.getReduceOp(), op.getComm()},
-//         /*has_side_effect=*/true);
+    SmallVector<Type> converted_res_types;
+    if (failed(getTypeConverter()->convertTypes(op->getResultTypes(),
+                                                converted_res_types))) {
+      return failure();
+    }
 
-//     return success();
-//   }
-// };
+    // TODO pass attributes: reduceOp
+    // Replace the MpiAllreduceOp with a stablehlo.custom_call operation
+    rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
+        op, converted_res_types, ValueRange{op.getSendbuf(), op.getComm()},
+        rewriter.getStringAttr("enzymexla_ffi_mpi_allreduce"),
+        /*has_side_effect=*/rewriter.getBoolAttr(true),
+        /*backend_config=*/nullptr,
+        /*api_version=*/nullptr,
+        /*called_computations=*/nullptr,
+        /*operand_layouts=*/nullptr,
+        /*result_layouts=*/nullptr,
+        /*output_operand_aliases=*/nullptr,
+        /*result_tilings*/ nullptr);
+
+    return success();
+  }
+};
 
 struct CommMpiBcastOpLowering : public OpConversionPattern<comm::MpiBcastOp> {
   using OpConversionPattern::OpConversionPattern;
@@ -266,11 +371,25 @@ struct CommMpiBcastOpLowering : public OpConversionPattern<comm::MpiBcastOp> {
                   ConversionPatternRewriter &rewriter) const override {
     auto context = op->getContext();
 
+    SmallVector<Type> converted_res_types;
+    if (failed(getTypeConverter()->convertTypes(op->getResultTypes(),
+                                                converted_res_types))) {
+      return failure();
+    }
+
     // Replace the MpiBcastOp with a stablehlo.custom_call operation
     rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
-        op, TypeRange{}, rewriter.getStringAttr("enzymexla_ffi_mpi_bcast"),
+        op, converted_res_types,
         ValueRange{op.getInBuffer(), op.getRoot(), op.getComm()},
-        /*has_side_effect=*/true);
+        rewriter.getStringAttr("enzymexla_ffi_mpi_bcast"),
+        /*has_side_effect=*/rewriter.getBoolAttr(true),
+        /*backend_config=*/nullptr,
+        /*api_version=*/nullptr,
+        /*called_computations=*/nullptr,
+        /*operand_layouts=*/nullptr,
+        /*result_layouts=*/nullptr,
+        /*output_operand_aliases=*/nullptr,
+        /*result_tilings*/ nullptr);
 
     return success();
   }
@@ -306,15 +425,17 @@ struct LowerCommToStablehloPass
     // tensor<i64>
     auto ptr_tensor_type =
         RankedTensorType::get({}, IntegerType::get(context, 64));
-    converter.addConversion([](comm::MpiComm type) { return ptr_tensor_type; });
     converter.addConversion(
-        [](comm::MpiRequest type) { return ptr_tensor_type; });
+        [&](comm::MpiCommType type) { return ptr_tensor_type; });
+    converter.addConversion(
+        [&](comm::MpiRequestType type) { return ptr_tensor_type; });
 
-    // !comm.mpi.status is a opaque type, so lower to tensor<MPI_STATUS_SIZExi8>
-    converter.addConversion([](comm::MpiStatus type) {
-      return RankedTensorType::get({MPI_STATUS_SIZE},
-                                   IntegerType::get(type.getContext(), 8));
-    });
+    // TODO !comm.mpi.status is a opaque type, so lower to
+    // tensor<MPI_STATUS_SIZExi8> converter.addConversion([](comm::MpiStatus
+    // type) {
+    //   return RankedTensorType::get({MPI_STATUS_SIZE},
+    //                                IntegerType::get(type.getContext(), 8));
+    // });
 
     // lower comm.mpi ops to stablehlo.custom_call ops
     RewritePatternSet patterns(context);
@@ -323,8 +444,8 @@ struct LowerCommToStablehloPass
                  CommMpiSendOpLowering, CommMpiIsendOpLowering,
                  CommMpiRecvOpLowering, CommMpiIrecvOpLowering,
                  CommMpiWaitOpLowering, CommMpiWaitallOpLowering,
-                 /* CommMpiAllreduceOpLowering, */ CommMpiBcastOpLowering>(
-        converter, context);
+                 CommMpiAllreduceOpLowering, CommMpiBcastOpLowering>(converter,
+                                                                     context);
 
     if (failed(
             applyFullConversion(getOperation(), target, std::move(patterns)))) {
