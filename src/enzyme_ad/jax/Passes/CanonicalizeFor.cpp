@@ -1310,8 +1310,17 @@ struct WhileToForHelper {
             auto beforeYield = cast<scf::ConditionOp>(
                 loop.getBefore().front().getTerminator());
             auto inductValue = beforeYield.getArgs()[ba3.getArgNumber()];
+            // The condition may pass a duplicate of the increment (clang
+            // often emits the addi twice); accept a structurally identical
+            // add of the same operands.
             if (inductValue != steppingVal) {
-              continue;
+              auto inductAdd = inductValue.getDefiningOp<AddIOp>();
+              if (!inductAdd || !((inductAdd.getLhs() == add.getLhs() &&
+                                   inductAdd.getRhs() == add.getRhs()) ||
+                                  (inductAdd.getLhs() == add.getRhs() &&
+                                   inductAdd.getRhs() == add.getLhs()))) {
+                continue;
+              }
             }
             arg = ba2;
           }
