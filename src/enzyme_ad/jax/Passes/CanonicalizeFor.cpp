@@ -3003,12 +3003,14 @@ struct DoWhileShiftToFor : public OpRewritePattern<WhileOp> {
 
   LogicalResult matchAndRewrite(WhileOp loop,
                                 PatternRewriter &rewriter) const override {
-    // The after region must be a pure passthrough.
+    // The after region must be a pure passthrough: every yielded value is an
+    // after block argument, whose position names the condition operand it
+    // forwards. The order need not match the before arguments.
     Block &after = loop.getAfter().front();
     auto afterYield = cast<scf::YieldOp>(after.getTerminator());
-    for (auto [i, o] : llvm::enumerate(afterYield.getOperands())) {
+    for (Value o : afterYield.getOperands()) {
       auto ba = dyn_cast<BlockArgument>(o);
-      if (!ba || ba.getOwner() != &after || ba.getArgNumber() != i)
+      if (!ba || ba.getOwner() != &after)
         return failure();
     }
 
@@ -3026,12 +3028,34 @@ struct DoWhileShiftToFor : public OpRewritePattern<WhileOp> {
     auto iv = dyn_cast<BlockArgument>(shift.getLhs());
     if (!iv || iv.getOwner() != &loop.getBefore().front())
       return failure();
-    unsigned ivIdx = iv.getArgNumber();
-    if (condOp.getArgs()[ivIdx] != shift.getResult())
+    // The induction variable is a before argument, but condition operands
+    // are indexed by the after arguments: the after yield translates between
+    // the two spaces.
+    unsigned beforeIvIdx = iv.getArgNumber();
+    unsigned afterIvIdx =
+        cast<BlockArgument>(afterYield.getOperand(beforeIvIdx)).getArgNumber();
+    if (condOp.getArgs()[afterIvIdx] != shift.getResult())
       return failure();
+    // Every other result must be fed back into some before slot so its final
+    // value survives as a result of the for.
+    SmallVector<int> resultSlot(loop.getNumResults(), -1);
+    {
+      unsigned fi = 0;
+      for (auto [i, o] : llvm::enumerate(afterYield.getOperands())) {
+        if (i == beforeIvIdx)
+          continue;
+        unsigned resIdx = cast<BlockArgument>(o).getArgNumber();
+        if (resultSlot[resIdx] == -1)
+          resultSlot[resIdx] = fi;
+        fi++;
+      }
+    }
+    for (auto [resIdx, slot] : llvm::enumerate(resultSlot))
+      if (slot == -1 && resIdx != afterIvIdx)
+        return failure();
 
     Location loc = loop.getLoc();
-    Value start = loop.getInits()[ivIdx];
+    Value start = loop.getInits()[beforeIvIdx];
     Type ivTy = iv.getType();
     unsigned width = ivTy.getIntOrFloatBitWidth();
 
@@ -3049,12 +3073,14 @@ struct DoWhileShiftToFor : public OpRewritePattern<WhileOp> {
 
     SmallVector<Value> inits;
     for (auto [i, init] : llvm::enumerate(loop.getInits()))
-      if (i != ivIdx)
+      if (i != beforeIvIdx)
         inits.push_back(init);
 
     auto forOp = ForOp::create(rewriter, loc, lb, ub, step, inits);
-    if (auto *autoTerm = forOp.getBody()->getTerminator())
-      rewriter.eraseOp(autoTerm);
+    // The builder only adds an implicit yield when there are no iter args;
+    // drop it so the cloned body can yield the carried values.
+    if (!forOp.getBody()->empty())
+      rewriter.eraseOp(&forOp.getBody()->back());
     rewriter.setInsertionPointToStart(forOp.getBody());
     Value k = arith::IndexCastUIOp::create(rewriter, loc, ivTy,
                                            forOp.getInductionVar());
@@ -3064,7 +3090,7 @@ struct DoWhileShiftToFor : public OpRewritePattern<WhileOp> {
     unsigned fi = 0;
     for (auto [i, arg] :
          llvm::enumerate(loop.getBefore().front().getArguments())) {
-      if (i == ivIdx)
+      if (i == beforeIvIdx)
         map.map(arg, curIv);
       else
         map.map(arg, forOp.getRegionIterArgs()[fi++]);
@@ -3072,19 +3098,20 @@ struct DoWhileShiftToFor : public OpRewritePattern<WhileOp> {
     for (Operation &op : loop.getBefore().front().without_terminator())
       rewriter.clone(op, map);
     SmallVector<Value> yields;
-    for (auto [i, v] : llvm::enumerate(condOp.getArgs()))
-      if (i != ivIdx)
-        yields.push_back(map.lookupOrDefault(v));
+    for (auto [i, o] : llvm::enumerate(afterYield.getOperands()))
+      if (i != beforeIvIdx)
+        yields.push_back(map.lookupOrDefault(
+            condOp.getArgs()[cast<BlockArgument>(o).getArgNumber()]));
     scf::YieldOp::create(rewriter, loc, yields);
 
     // At the exit the forwarded shift result is zero; other results carry.
     rewriter.setInsertionPoint(loop);
     SmallVector<Value> repl;
-    fi = 0;
     for (auto [i, res] : llvm::enumerate(loop.getResults()))
       repl.push_back(
-          i == ivIdx ? ConstantIntOp::create(rewriter, loc, ivTy, 0).getResult()
-                     : forOp.getResult(fi++));
+          i == afterIvIdx
+              ? ConstantIntOp::create(rewriter, loc, ivTy, 0).getResult()
+              : forOp.getResult(resultSlot[i]));
     rewriter.replaceOp(loop, repl);
     return success();
   }

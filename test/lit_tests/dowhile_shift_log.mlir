@@ -58,3 +58,38 @@ func.func @treereduce(%bs: i32, %tid: i32, %buf: memref<?xf64>) {
 // CHECK-NEXT: }
 // CHECK-NEXT: return
 // CHECK-NEXT: }
+
+// The same rotated shape with a carried counter, where the condition forwards
+// its operands in a different order than the before arguments and the after
+// region's yield permutes them back: the shifted variable is condition
+// operand 1 but before argument 0, so the before and after index spaces must
+// be translated through the after yield.
+func.func @treereduce_swap(%bs: i32) -> (i32, i32) {
+  %c0_i32 = arith.constant 0 : i32
+  %c1_i32 = arith.constant 1 : i32
+  %start = arith.shrui %bs, %c1_i32 : i32
+  %r:2 = scf.while (%i = %start, %count = %c0_i32) : (i32, i32) -> (i32, i32) {
+    %c2 = arith.addi %count, %c1_i32 : i32
+    %next = arith.shrui %i, %c1_i32 : i32
+    %nz = arith.cmpi ne, %next, %c0_i32 : i32
+    scf.condition(%nz) %c2, %next : i32, i32
+  } do {
+  ^bb0(%cc: i32, %a: i32):
+    scf.yield %a, %cc : i32, i32
+  }
+  return %r#0, %r#1 : i32, i32
+}
+
+// CHECK-LABEL: func.func @treereduce_swap(
+// CHECK-SAME: %[[SBS:.+]]: i32
+// CHECK-NEXT: %[[S0:.+]] = arith.constant 0 : i32
+// CHECK-NEXT: %[[S32:.+]] = arith.constant 32 : i32
+// CHECK-NEXT: %[[S1:.+]] = arith.constant 1 : i32
+// CHECK-NEXT: %[[SV0:.+]] = arith.shrui %[[SBS]], %[[S1]] : i32
+// CHECK-NEXT: %[[SV1:.+]] = math.ctlz %[[SV0]] : i32
+// CHECK-NEXT: %[[SV2:.+]] = arith.subi %[[S32]], %[[SV1]] : i32
+// CHECK-NEXT: %[[SV3:.+]] = arith.maxui %[[SV2]], %[[S1]] : i32
+// CHECK-NEXT: %[[SV4:.+]] = arith.index_castui %[[SV3]] : i32 to index
+// CHECK-NEXT: %[[SV5:.+]] = arith.index_cast %[[SV4]] : index to i32
+// CHECK-NEXT: return %[[SV5]], %[[S0]] : i32, i32
+// CHECK-NEXT: }
