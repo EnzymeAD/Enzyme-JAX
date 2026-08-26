@@ -33,6 +33,7 @@ cc_library(
     name = "Passes",
     srcs = glob(["*.cpp"]),
     hdrs = glob(["*.h"]),
+    visibility = ["//visibility:public"],
     deps = [
         ":PassesIncGen",
         "//src/enzyme_ad/jax/Dialect/Comm:CommDialect",
