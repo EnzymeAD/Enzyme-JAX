@@ -3419,6 +3419,26 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
   // thread axis completes for the entire axis before the next op runs, which
   // is exactly what the barrier guaranteed.
   if (isa<enzymexla::BarrierOp>(op)) {
+    // Raised execution is ordered over whole tensors, so a barrier over
+    // batched axes is a no-op. That is only sound for the axes the barrier
+    // spans when they are batched: an induction variable of a dynamically
+    // sized loop raises serialized, with no whole-tensor ordering to lean
+    // on, and dropping the barrier would let one lane run ahead of the
+    // others' stores.
+    for (Value iv : op->getOperands()) {
+      auto ba = dyn_cast<BlockArgument>(iv);
+      if (!ba)
+        continue;
+      Operation *owner = ba.getOwner()->getParentOp();
+      if (auto par = dyn_cast<affine::AffineParallelOp>(owner)) {
+        if (!par.getConstantRanges())
+          return op->emitError(
+              "barrier over a dynamically sized parallel axis");
+        continue;
+      }
+      if (isa<affine::AffineForOp, scf::ForOp, scf::WhileOp>(owner))
+        return op->emitError("barrier over a dynamically sized parallel axis");
+    }
     return success();
   }
 
