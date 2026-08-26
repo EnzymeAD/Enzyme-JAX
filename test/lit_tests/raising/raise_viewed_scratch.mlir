@@ -45,4 +45,3 @@ func.func @mixed_use(%out: memref<32xf64, 1>) {
 // CHECK: %[[RD:.+]] = stablehlo.reshape %[[ST]] : (tensor<32xf64>) -> tensor<32xf64>
 // CHECK: %[[BC:.+]] = stablehlo.broadcast_in_dim %[[RD]], dims = [0]
 // CHECK: stablehlo.dynamic_update_slice %[[OUT2]], %[[BC]], %{{.+}} : (tensor<32xf64>, tensor<32xf64>, tensor<i64>) -> tensor<32xf64>
-
