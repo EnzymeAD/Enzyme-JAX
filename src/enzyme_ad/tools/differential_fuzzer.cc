@@ -493,6 +493,11 @@ int main(int argc, char **argv) {
 
     for (BlockArgument arg : unoptFunc.getArguments()) {
       auto tensorType = llvm::dyn_cast<RankedTensorType>(arg.getType());
+      if (!tensorType) {
+        llvm::WithColor::warning(diag())
+            << funcName << ": non-ranked-tensor argument, skipping function\n";
+        return;
+      }
 
       int64_t numElements = tensorType.getNumElements();
       if (numElements > maxElements) {
@@ -509,7 +514,7 @@ int main(int argc, char **argv) {
       if (!attrOpt) {
         llvm::WithColor::warning(diag())
             << "Skipping non-ranked tensor argument.\n";
-        continue;
+        return;
       }
       evalArgs.push_back(*attrOpt);
     }
