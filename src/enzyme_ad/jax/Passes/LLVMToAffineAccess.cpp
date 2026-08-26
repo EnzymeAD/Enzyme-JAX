@@ -1239,6 +1239,99 @@ struct RetypePunnedView : public OpRewritePattern<enzymexla::Pointer2MemrefOp> {
   }
 };
 
+// A whole-aggregate store -- a lambda capture copied into a stack slot after
+// an insertvalue update -- keeps the slot untyped and blocks every access
+// analysis behind it. Expand it into one store per leaf field; the
+// extractvalues fold against the insertvalue chain that built the value.
+struct ExpandAggregateStore : public OpRewritePattern<affine::AffineStoreOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  static void
+  collectLeaves(Type ty, SmallVectorImpl<int64_t> &path,
+                SmallVectorImpl<std::pair<SmallVector<int64_t>, Type>> &out) {
+    if (auto ST = dyn_cast<LLVM::LLVMStructType>(ty)) {
+      for (auto &&[i, member] : llvm::enumerate(ST.getBody())) {
+        path.push_back((int64_t)i);
+        collectLeaves(member, path, out);
+        path.pop_back();
+      }
+      return;
+    }
+    if (auto AT = dyn_cast<LLVM::LLVMArrayType>(ty)) {
+      for (uint64_t i = 0; i < AT.getNumElements(); ++i) {
+        path.push_back((int64_t)i);
+        collectLeaves(AT.getElementType(), path, out);
+        path.pop_back();
+      }
+      return;
+    }
+    out.push_back({SmallVector<int64_t>(path.begin(), path.end()), ty});
+  }
+
+  LogicalResult matchAndRewrite(affine::AffineStoreOp st,
+                                PatternRewriter &rewriter) const override {
+    auto structTy =
+        dyn_cast<LLVM::LLVMStructType>(st.getValueToStore().getType());
+    if (!structTy)
+      return failure();
+    auto p2m = st.getMemRef().getDefiningOp<enzymexla::Pointer2MemrefOp>();
+    if (!p2m)
+      return failure();
+    auto MT = cast<MemRefType>(p2m.getType());
+    if (MT.getElementType() != structTy)
+      return failure();
+    auto map = st.getAffineMap();
+    if (map.getNumResults() != 1)
+      return failure();
+
+    DataLayout dl = DataLayout::closest(st);
+    uint64_t structSize = dl.getTypeSize(structTy);
+
+    SmallVector<std::pair<SmallVector<int64_t>, Type>> leaves;
+    SmallVector<int64_t> path;
+    collectLeaves(structTy, path, leaves);
+    if (leaves.empty())
+      return failure();
+
+    struct Plan {
+      SmallVector<int64_t> path;
+      uint64_t off;
+      Type ty;
+    };
+    SmallVector<Plan> plans;
+    for (auto &[fpath, fty] : leaves) {
+      auto fo = fieldByteOffset(structTy, fpath, dl);
+      if (!fo)
+        return failure();
+      auto [off, ty] = *fo;
+      uint64_t tsize = dl.getTypeSize(ty);
+      if (!tsize || off % tsize || structSize % tsize)
+        return failure();
+      plans.push_back({fpath, off, ty});
+    }
+
+    rewriter.setInsertionPoint(st);
+    for (auto &plan : plans) {
+      uint64_t tsize = dl.getTypeSize(plan.ty);
+      Value v = LLVM::ExtractValueOp::create(rewriter, st.getLoc(),
+                                             st.getValueToStore(), plan.path);
+      AffineMap newMap =
+          AffineMap::get(map.getNumDims(), map.getNumSymbols(),
+                         map.getResult(0) * (int64_t)(structSize / tsize) +
+                             (int64_t)(plan.off / tsize));
+      auto view = enzymexla::Pointer2MemrefOp::create(
+          rewriter, p2m.getLoc(),
+          MemRefType::get({ShapedType::kDynamic}, plan.ty,
+                          MemRefLayoutAttrInterface{}, MT.getMemorySpace()),
+          p2m.getOperand());
+      affine::AffineStoreOp::create(rewriter, st.getLoc(), v, view, newMap,
+                                    st.getMapOperands());
+    }
+    rewriter.eraseOp(st);
+    return success();
+  }
+};
+
 struct LoadSelect : public OpRewritePattern<affine::AffineLoadOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -2573,8 +2666,8 @@ convertLLVMToAffineAccess(Operation *op,
         SimplifyDeadAlloc<memref::AllocaOp>, SimplifyDeadAlloc<memref::AllocOp>,
         SimplifyDeadAlloc<LLVM::AllocaOp>,
         SimplifyDeadAlloc<gpu::AllocOp, true>, Pointer2MemrefSelect, LoadSelect,
-        Pointer2MemrefIf, LoadIf, SplitAggregateLoad, RetypePunnedView,
-        AffineIfDeadResults,
+        Pointer2MemrefIf, LoadIf, SplitAggregateLoad, ExpandAggregateStore,
+        RetypePunnedView, AffineIfDeadResults,
         SimpleMem2Reg<memref::AllocaOp>>(context);
     GreedyRewriteConfig config;
     config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);
