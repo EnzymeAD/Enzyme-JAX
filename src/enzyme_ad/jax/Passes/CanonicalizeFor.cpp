@@ -3001,6 +3001,141 @@ struct SelectTruncToTruncSelect : public OpRewritePattern<TruncIOp> {
   }
 };
 
+// The do-while form of a halving loop: the whole body sits in the before
+// region, and the condition forwards i >> 1, continuing while it is nonzero.
+// The iteration space is logarithmic: k in [0, max(bitwidth - ctlz(start),
+// 1)) with i = start >> k, and the value forwarded out at the exit is always
+// zero. Rewriting to an scf.for gives the loop a linear induction variable
+// downstream analyses can reason about.
+struct DoWhileShiftToFor : public OpRewritePattern<WhileOp> {
+  using OpRewritePattern<WhileOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(WhileOp loop,
+                                PatternRewriter &rewriter) const override {
+    // The after region must be a pure passthrough: every yielded value is an
+    // after block argument, whose position names the condition operand it
+    // forwards. The order need not match the before arguments.
+    Block &after = loop.getAfter().front();
+    auto afterYield = cast<scf::YieldOp>(after.getTerminator());
+    for (Value o : afterYield.getOperands()) {
+      auto ba = dyn_cast<BlockArgument>(o);
+      if (!ba || ba.getOwner() != &after)
+        return failure();
+    }
+
+    auto condOp = loop.getConditionOp();
+    auto cmp = condOp.getCondition().getDefiningOp<CmpIOp>();
+    if (!cmp)
+      return failure();
+    if (!(cmp.getPredicate() == CmpIPredicate::ne ||
+          cmp.getPredicate() == CmpIPredicate::ugt) ||
+        !matchPattern(cmp.getRhs(), m_Zero()))
+      return failure();
+    auto shift = cmp.getLhs().getDefiningOp<ShRUIOp>();
+    if (!shift || !matchPattern(shift.getRhs(), m_One()))
+      return failure();
+    auto iv = dyn_cast<BlockArgument>(shift.getLhs());
+    if (!iv || iv.getOwner() != &loop.getBefore().front())
+      return failure();
+    // The induction variable is a before argument, but condition operands
+    // are indexed by the after arguments: the after yield translates between
+    // the two spaces.
+    unsigned beforeIvIdx = iv.getArgNumber();
+    unsigned afterIvIdx =
+        cast<BlockArgument>(afterYield.getOperand(beforeIvIdx)).getArgNumber();
+    if (condOp.getArgs()[afterIvIdx] != shift.getResult())
+      return failure();
+    // Every other result must be fed back into some before slot so its final
+    // value survives as a result of the for.
+    SmallVector<int> resultSlot(loop.getNumResults(), -1);
+    {
+      unsigned fi = 0;
+      for (auto [i, o] : llvm::enumerate(afterYield.getOperands())) {
+        if (i == beforeIvIdx)
+          continue;
+        unsigned resIdx = cast<BlockArgument>(o).getArgNumber();
+        if (resultSlot[resIdx] == -1)
+          resultSlot[resIdx] = fi;
+        fi++;
+      }
+    }
+    for (auto [resIdx, slot] : llvm::enumerate(resultSlot))
+      if (slot == -1 && resIdx != afterIvIdx)
+        return failure();
+
+    Location loc = loop.getLoc();
+    Value start = loop.getInits()[beforeIvIdx];
+    Type ivTy = iv.getType();
+    // An index variable has no fixed width: count in i64 instead, which the
+    // value-preserving cast zero-extends into, so the bit length comes out
+    // the same for any narrower lowering of index.
+    bool ivIsIndex = isa<IndexType>(ivTy);
+    Type lenTy = ivIsIndex ? (Type)rewriter.getI64Type() : ivTy;
+    unsigned width = lenTy.getIntOrFloatBitWidth();
+
+    // Trips: max(bitwidth - ctlz(start), 1); ctlz(0) is the bitwidth, so a
+    // zero start still runs the body once, matching the do-while.
+    Value cstart = start;
+    if (ivIsIndex)
+      cstart = arith::IndexCastUIOp::create(rewriter, loc, lenTy, start);
+    Value lz = math::CountLeadingZerosOp::create(rewriter, loc, cstart);
+    Value wC = ConstantIntOp::create(rewriter, loc, lenTy, width);
+    Value len = SubIOp::create(rewriter, loc, wC, lz);
+    Value oneC = ConstantIntOp::create(rewriter, loc, lenTy, 1);
+    Value trips = MaxUIOp::create(rewriter, loc, len, oneC);
+    Value ub = arith::IndexCastUIOp::create(rewriter, loc,
+                                            rewriter.getIndexType(), trips);
+    Value lb = ConstantIndexOp::create(rewriter, loc, 0);
+    Value step = ConstantIndexOp::create(rewriter, loc, 1);
+
+    SmallVector<Value> inits;
+    for (auto [i, init] : llvm::enumerate(loop.getInits()))
+      if (i != beforeIvIdx)
+        inits.push_back(init);
+
+    auto forOp = ForOp::create(rewriter, loc, lb, ub, step, inits);
+    // The builder only adds an implicit yield when there are no iter args;
+    // drop it so the cloned body can yield the carried values.
+    if (!forOp.getBody()->empty())
+      rewriter.eraseOp(&forOp.getBody()->back());
+    rewriter.setInsertionPointToStart(forOp.getBody());
+    Value k = forOp.getInductionVar();
+    if (!ivIsIndex)
+      k = arith::IndexCastUIOp::create(rewriter, loc, ivTy, k);
+    Value curIv = ShRUIOp::create(rewriter, loc, start, k);
+
+    IRMapping map;
+    unsigned fi = 0;
+    for (auto [i, arg] :
+         llvm::enumerate(loop.getBefore().front().getArguments())) {
+      if (i == beforeIvIdx)
+        map.map(arg, curIv);
+      else
+        map.map(arg, forOp.getRegionIterArgs()[fi++]);
+    }
+    for (Operation &op : loop.getBefore().front().without_terminator())
+      rewriter.clone(op, map);
+    SmallVector<Value> yields;
+    for (auto [i, o] : llvm::enumerate(afterYield.getOperands()))
+      if (i != beforeIvIdx)
+        yields.push_back(map.lookupOrDefault(
+            condOp.getArgs()[cast<BlockArgument>(o).getArgNumber()]));
+    scf::YieldOp::create(rewriter, loc, yields);
+
+    // At the exit the forwarded shift result is zero; other results carry.
+    rewriter.setInsertionPoint(loop);
+    Value exitZero = ivIsIndex
+                         ? (Value)ConstantIndexOp::create(rewriter, loc, 0)
+                         : (Value)ConstantIntOp::create(rewriter, loc, ivTy, 0);
+    SmallVector<Value> repl;
+    for (auto [i, res] : llvm::enumerate(loop.getResults()))
+      repl.push_back(i == afterIvIdx ? exitZero
+                                     : forOp.getResult(resultSlot[i]));
+    rewriter.replaceOp(loop, repl);
+    return success();
+  }
+};
+
 // If and and with something is preventing creating a for
 // move the and into the after body guarded by an if
 struct WhileShiftToInduction : public OpRewritePattern<WhileOp> {
@@ -3664,7 +3799,7 @@ void CanonicalizeFor::runOnOperation() {
 
           ReplaceRedundantArgs,
 
-          WhileShiftToInduction,
+          WhileShiftToInduction, DoWhileShiftToFor,
 
           ForBreakAddUpgrade, RemoveUnusedResults,
 
