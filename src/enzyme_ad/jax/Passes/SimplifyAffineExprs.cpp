@@ -9,6 +9,7 @@
 #include "mlir/Dialect/Affine/IR/AffineValueMap.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/IntegerSet.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 
@@ -1109,33 +1110,55 @@ static bool isExpandableArith(Operation *def) {
   return false;
 }
 
-static void collectBases(Value v, SetVector<Value> &bases, unsigned depth) {
+static void collectBases(Value v, SetVector<Value> &bases, unsigned depth,
+                         const DenseMap<Value, unsigned> *ivPos = nullptr,
+                         const DenseMap<Value, Value> *subst = nullptr) {
   v = lookThroughCasts(v);
+  if (subst) {
+    auto it = subst->find(v);
+    if (it != subst->end())
+      return collectBases(it->second, bases, depth, ivPos, subst);
+  }
   APInt cst;
   if (matchPattern(v, m_ConstantInt(&cst)))
     return;
+  if (ivPos && ivPos->contains(v))
+    return;
   Operation *def = v.getDefiningOp();
   if (depth && isExpandableArith(def)) {
-    collectBases(def->getOperand(0), bases, depth - 1);
-    collectBases(def->getOperand(1), bases, depth - 1);
+    collectBases(def->getOperand(0), bases, depth - 1, ivPos, subst);
+    collectBases(def->getOperand(1), bases, depth - 1, ivPos, subst);
     return;
   }
   bases.insert(v);
 }
 
 static isl_aff *affForValue(Value v, const DenseMap<Value, unsigned> &basePos,
-                            isl_local_space *ls, isl_ctx *ctx, unsigned depth) {
+                            isl_local_space *ls, isl_ctx *ctx, unsigned depth,
+                            const DenseMap<Value, unsigned> *ivPos = nullptr,
+                            const DenseMap<Value, Value> *subst = nullptr) {
   v = lookThroughCasts(v);
+  if (subst) {
+    auto it = subst->find(v);
+    if (it != subst->end())
+      return affForValue(it->second, basePos, ls, ctx, depth, ivPos, subst);
+  }
   APInt cst;
   if (matchPattern(v, m_ConstantInt(&cst)))
     return isl_aff_val_on_domain(isl_local_space_copy(ls),
                                  isl_val_int_from_si(ctx, cst.getSExtValue()));
+  if (ivPos) {
+    auto it = ivPos->find(v);
+    if (it != ivPos->end())
+      return isl_aff_var_on_domain(isl_local_space_copy(ls), isl_dim_set,
+                                   it->second);
+  }
   Operation *def = v.getDefiningOp();
   if (depth && isExpandableArith(def)) {
-    isl_aff *lhs =
-        affForValue(def->getOperand(0), basePos, ls, ctx, depth - 1);
-    isl_aff *rhs =
-        affForValue(def->getOperand(1), basePos, ls, ctx, depth - 1);
+    isl_aff *lhs = affForValue(def->getOperand(0), basePos, ls, ctx, depth - 1,
+                               ivPos, subst);
+    isl_aff *rhs = affForValue(def->getOperand(1), basePos, ls, ctx, depth - 1,
+                               ivPos, subst);
     if (!lhs || !rhs) {
       isl_aff_free(lhs);
       isl_aff_free(rhs);
@@ -1154,6 +1177,620 @@ static isl_aff *affForValue(Value v, const DenseMap<Value, unsigned> &basePos,
     return nullptr;
   return isl_aff_var_on_domain(isl_local_space_copy(ls), isl_dim_param,
                                found->second);
+}
+
+// The enclosing affine loop nest as an isl domain: one set dimension per
+// parallel/for induction variable, constrained by its (expanded) bounds;
+// every other leaf value becomes an unconstrained parameter. Bounds that do
+// not convert are dropped, over-approximating the domain, which is sound for
+// proving a condition constant in either direction.
+namespace {
+struct AffineDomainCtx {
+  static constexpr unsigned kExpandDepth = 8;
+  isl_ctx *ctx = nullptr;
+  isl_space *space = nullptr;
+  isl_local_space *ls = nullptr;
+  isl_set *domain = nullptr;
+  SmallVector<Value> ivs;
+  DenseMap<Value, unsigned> ivPos;
+  SetVector<Value> bases;
+  DenseMap<Value, unsigned> basePos;
+
+  isl_aff *aff(Value v, const DenseMap<Value, Value> *subst = nullptr) {
+    return affForValue(v, basePos, ls, ctx, kExpandDepth, &ivPos, subst);
+  }
+
+  // Consumes set.
+  bool emptyOnDomain(isl_set *set) {
+    set = isl_set_intersect(isl_set_copy(domain), set);
+    bool empty = isl_set_is_empty(set) == isl_bool_true;
+    isl_set_free(set);
+    return empty;
+  }
+
+  bool nonNegOnDomain(isl_aff *a) {
+    isl_aff *zero =
+        isl_aff_val_on_domain(isl_local_space_copy(ls), isl_val_zero(ctx));
+    return emptyOnDomain(isl_aff_lt_set(isl_aff_copy(a), zero));
+  }
+
+  bool build(IslAnalysis &islAnalysis, Operation *op, ArrayRef<Value> extra,
+             const DenseMap<Value, Value> *subst = nullptr) {
+    ctx = islAnalysis.getCtx();
+    struct BoundRef {
+      AffineMap map;
+      SmallVector<Value> operands;
+      bool isUpper;
+      unsigned ivPos;
+    };
+    SmallVector<BoundRef> boundRefs;
+    for (Operation *parent = op->getParentOp(); parent;
+         parent = parent->getParentOp()) {
+      if (auto par = dyn_cast<affine::AffineParallelOp>(parent)) {
+        for (auto [i, iv] : llvm::enumerate(par.getIVs())) {
+          unsigned pos = ivs.size();
+          ivPos[iv] = pos;
+          ivs.push_back(iv);
+          boundRefs.push_back({par.getLowerBoundMap(i),
+                               SmallVector<Value>(par.getLowerBoundsOperands()),
+                               false, pos});
+          boundRefs.push_back({par.getUpperBoundMap(i),
+                               SmallVector<Value>(par.getUpperBoundsOperands()),
+                               true, pos});
+        }
+      } else if (auto forOp = dyn_cast<affine::AffineForOp>(parent)) {
+        Value iv = forOp.getInductionVar();
+        unsigned pos = ivs.size();
+        ivPos[iv] = pos;
+        ivs.push_back(iv);
+        boundRefs.push_back({forOp.getLowerBoundMap(),
+                             SmallVector<Value>(forOp.getLowerBoundOperands()),
+                             false, pos});
+        boundRefs.push_back({forOp.getUpperBoundMap(),
+                             SmallVector<Value>(forOp.getUpperBoundOperands()),
+                             true, pos});
+      }
+    }
+    if (ivs.empty())
+      return false;
+
+    for (Value v : extra)
+      collectBases(v, bases, kExpandDepth, &ivPos, subst);
+    for (auto &br : boundRefs)
+      for (Value o : br.operands)
+        collectBases(o, bases, kExpandDepth, &ivPos, subst);
+    for (auto [i, v] : llvm::enumerate(bases))
+      basePos[v] = i;
+
+    space = isl_space_set_alloc(ctx, bases.size(), ivs.size());
+    for (unsigned i = 0; i < ivs.size(); i++) {
+      isl_id *id = isl_id_alloc(ctx, "iv", (void *)(size_t)(i + 1));
+      space = isl_space_set_dim_id(space, isl_dim_set, i, id);
+    }
+    for (unsigned i = 0; i < bases.size(); i++) {
+      isl_id *id = isl_id_alloc(ctx, "sym", (void *)(size_t)(i + 1));
+      space = isl_space_set_dim_id(space, isl_dim_param, i, id);
+    }
+    ls = isl_local_space_from_space(isl_space_copy(space));
+
+    std::function<isl_aff *(AffineExpr, ArrayRef<isl_aff *>, unsigned)>
+        exprAff = [&](AffineExpr expr, ArrayRef<isl_aff *> opAffs,
+                      unsigned numDims) -> isl_aff * {
+      if (auto bo = dyn_cast<AffineBinaryOpExpr>(expr)) {
+        isl_aff *lhs = exprAff(bo.getLHS(), opAffs, numDims);
+        isl_aff *rhs = exprAff(bo.getRHS(), opAffs, numDims);
+        if (!lhs || !rhs) {
+          isl_aff_free(lhs);
+          isl_aff_free(rhs);
+          return nullptr;
+        }
+        switch (bo.getKind()) {
+        case AffineExprKind::Add:
+          return isl_aff_add(lhs, rhs);
+        case AffineExprKind::Mul:
+          return isl_aff_mul(lhs, rhs);
+        case AffineExprKind::FloorDiv:
+          return isl_aff_floor(isl_aff_div(lhs, rhs));
+        case AffineExprKind::CeilDiv:
+          return isl_aff_ceil(isl_aff_div(lhs, rhs));
+        case AffineExprKind::Mod:
+          if (isl_aff_is_cst(rhs) == isl_bool_true) {
+            isl_aff *r = isl_aff_mod_val(lhs, isl_aff_get_constant_val(rhs));
+            isl_aff_free(rhs);
+            return r;
+          }
+          LLVM_FALLTHROUGH;
+        default:
+          isl_aff_free(lhs);
+          isl_aff_free(rhs);
+          return nullptr;
+        }
+      }
+      if (auto c = dyn_cast<AffineConstantExpr>(expr))
+        return isl_aff_val_on_domain(isl_local_space_copy(ls),
+                                     isl_val_int_from_si(ctx, c.getValue()));
+      if (auto dim = dyn_cast<AffineDimExpr>(expr)) {
+        isl_aff *a = opAffs[dim.getPosition()];
+        return a ? isl_aff_copy(a) : nullptr;
+      }
+      if (auto sym = dyn_cast<AffineSymbolExpr>(expr)) {
+        isl_aff *a = opAffs[numDims + sym.getPosition()];
+        return a ? isl_aff_copy(a) : nullptr;
+      }
+      return nullptr;
+    };
+
+    domain = isl_set_universe(isl_space_copy(space));
+    for (auto &br : boundRefs) {
+      SmallVector<isl_aff *> opAffs;
+      for (Value o : br.operands)
+        opAffs.push_back(
+            affForValue(o, basePos, ls, ctx, kExpandDepth, &ivPos, subst));
+      for (AffineExpr e : br.map.getResults()) {
+        isl_aff *ea = exprAff(e, opAffs, br.map.getNumDims());
+        if (!ea)
+          continue;
+        isl_aff *ivAff = isl_aff_var_on_domain(isl_local_space_copy(ls),
+                                               isl_dim_set, br.ivPos);
+        domain =
+            isl_set_intersect(domain, br.isUpper ? isl_aff_lt_set(ivAff, ea)
+                                                 : isl_aff_ge_set(ivAff, ea));
+      }
+      for (auto *a : opAffs)
+        isl_aff_free(a);
+    }
+    return true;
+  }
+
+  ~AffineDomainCtx() {
+    isl_set_free(domain);
+    isl_local_space_free(ls);
+    isl_space_free(space);
+  }
+};
+} // namespace
+
+// Collapse a min/max whose order the enclosing loop bounds already decide
+// (maxsi(tid + 2, 2) under tid >= 0), so the bound expressions feeding the
+// loop-trip reasoning below become affine.
+static LogicalResult foldMinMaxUsingLoopBounds(IslAnalysis &islAnalysis,
+                                               Operation *op) {
+  bool isMax = isa<arith::MaxSIOp, arith::MaxUIOp>(op);
+  bool isUnsigned = isa<arith::MaxUIOp, arith::MinUIOp>(op);
+  Value a = op->getOperand(0), b = op->getOperand(1);
+  AffineDomainCtx c;
+  if (!c.build(islAnalysis, op, {a, b}))
+    return failure();
+  isl_aff *aA = c.aff(a), *bA = c.aff(b);
+  if (!aA || !bA) {
+    isl_aff_free(aA);
+    isl_aff_free(bA);
+    return failure();
+  }
+  if (isUnsigned && !(c.nonNegOnDomain(aA) && c.nonNegOnDomain(bA))) {
+    isl_aff_free(aA);
+    isl_aff_free(bA);
+    return failure();
+  }
+  bool aGeB =
+      c.emptyOnDomain(isl_aff_lt_set(isl_aff_copy(aA), isl_aff_copy(bA)));
+  bool bGeA = !aGeB && c.emptyOnDomain(isl_aff_lt_set(bA, aA));
+  if (aGeB) {
+    isl_aff_free(aA);
+    isl_aff_free(bA);
+  } else if (!bGeA) {
+    return failure();
+  }
+  Value chosen = (aGeB == isMax) ? a : b;
+  op->getResult(0).replaceAllUsesWith(chosen);
+  op->erase();
+  return success();
+}
+
+// An scf.for whose bounds prove exactly one trip for every point of the
+// enclosing loop nest inlines its body at the lower bound (a strided-copy
+// remainder loop whose extent the propagated block size made constant);
+// a provably zero-trip loop folds to its inits.
+static LogicalResult unrollDecidedSCFFor(IslAnalysis &islAnalysis,
+                                         scf::ForOp forOp) {
+  Value lb = forOp.getLowerBound(), ub = forOp.getUpperBound(),
+        step = forOp.getStep();
+  AffineDomainCtx c;
+  if (!c.build(islAnalysis, forOp, {lb, ub, step}))
+    return failure();
+  isl_aff *lbA = c.aff(lb), *ubA = c.aff(ub), *stA = c.aff(step);
+  auto freeAll = [&]() {
+    isl_aff_free(lbA);
+    isl_aff_free(ubA);
+    isl_aff_free(stA);
+  };
+  if (!lbA || !ubA || !stA) {
+    freeAll();
+    return failure();
+  }
+  isl_aff *zero =
+      isl_aff_val_on_domain(isl_local_space_copy(c.ls), isl_val_zero(c.ctx));
+  bool stepPos =
+      c.emptyOnDomain(isl_aff_le_set(isl_aff_copy(stA), isl_aff_copy(zero)));
+  isl_aff_free(zero);
+  if (!stepPos) {
+    freeAll();
+    return failure();
+  }
+  bool neverRuns =
+      c.emptyOnDomain(isl_aff_lt_set(isl_aff_copy(lbA), isl_aff_copy(ubA)));
+  if (neverRuns) {
+    freeAll();
+    forOp.replaceAllUsesWith(forOp.getInits());
+    forOp.erase();
+    return success();
+  }
+  bool alwaysRuns =
+      c.emptyOnDomain(isl_aff_ge_set(isl_aff_copy(lbA), isl_aff_copy(ubA)));
+  bool hasSecondTrip = !c.emptyOnDomain(isl_aff_lt_set(
+      isl_aff_add(isl_aff_copy(lbA), isl_aff_copy(stA)), isl_aff_copy(ubA)));
+  freeAll();
+  if (!alwaysRuns || hasSecondTrip)
+    return failure();
+
+  Block *body = forOp.getBody();
+  auto yield = cast<scf::YieldOp>(body->getTerminator());
+  body->getArgument(0).replaceAllUsesWith(lb);
+  for (auto [iterArg, init] :
+       llvm::zip(forOp.getRegionIterArgs(), forOp.getInits()))
+    iterArg.replaceAllUsesWith(init);
+  SmallVector<Value> results(yield.getOperands());
+  yield.erase();
+  forOp->getBlock()->getOperations().splice(forOp->getIterator(),
+                                            body->getOperations());
+  forOp.replaceAllUsesWith(results);
+  forOp.erase();
+  return success();
+}
+
+// An scf.while whose condition is provably false on its first evaluation is
+// exactly one execution of its before region (the do region never runs):
+// inline it. This is how a rotated do-while remainder loop that the
+// propagated block size made single-shot disappears.
+static LogicalResult foldNeverLoopingSCFWhile(IslAnalysis &islAnalysis,
+                                              scf::WhileOp whileOp) {
+  Block *before = whileOp.getBeforeBody();
+  auto condOp = cast<scf::ConditionOp>(before->getTerminator());
+  auto cmp = condOp.getCondition().getDefiningOp<arith::CmpIOp>();
+  if (!cmp)
+    return failure();
+  DenseMap<Value, Value> subst;
+  for (auto [arg, init] : llvm::zip(before->getArguments(), whileOp.getInits()))
+    subst[arg] = init;
+  AffineDomainCtx c;
+  if (!c.build(islAnalysis, whileOp, {cmp.getLhs(), cmp.getRhs()}, &subst))
+    return failure();
+  isl_aff *lhs = c.aff(cmp.getLhs(), &subst);
+  isl_aff *rhs = c.aff(cmp.getRhs(), &subst);
+  if (!lhs || !rhs) {
+    isl_aff_free(lhs);
+    isl_aff_free(rhs);
+    return failure();
+  }
+  using Pred = arith::CmpIPredicate;
+  Pred pred = cmp.getPredicate();
+  bool isUnsigned = pred == Pred::ult || pred == Pred::ule ||
+                    pred == Pred::ugt || pred == Pred::uge;
+  if (isUnsigned && !(c.nonNegOnDomain(lhs) && c.nonNegOnDomain(rhs))) {
+    isl_aff_free(lhs);
+    isl_aff_free(rhs);
+    return failure();
+  }
+  isl_set *holds;
+  switch (pred) {
+  case Pred::eq:
+    holds = isl_aff_eq_set(lhs, rhs);
+    break;
+  case Pred::ne:
+    holds = isl_aff_ne_set(lhs, rhs);
+    break;
+  case Pred::slt:
+  case Pred::ult:
+    holds = isl_aff_lt_set(lhs, rhs);
+    break;
+  case Pred::sle:
+  case Pred::ule:
+    holds = isl_aff_le_set(lhs, rhs);
+    break;
+  case Pred::sgt:
+  case Pred::ugt:
+    holds = isl_aff_gt_set(lhs, rhs);
+    break;
+  case Pred::sge:
+  case Pred::uge:
+    holds = isl_aff_ge_set(lhs, rhs);
+    break;
+  }
+  if (!c.emptyOnDomain(holds))
+    return failure();
+
+  for (auto [arg, init] : llvm::zip(before->getArguments(), whileOp.getInits()))
+    arg.replaceAllUsesWith(init);
+  SmallVector<Value> results(condOp.getArgs());
+  condOp.erase();
+  whileOp->getBlock()->getOperations().splice(whileOp->getIterator(),
+                                              before->getOperations());
+  whileOp.replaceAllUsesWith(results);
+  whileOp.erase();
+  return success();
+}
+
+// Fold an integer comparison to a constant when the enclosing affine loop
+// bounds already decide it — e.g. a peeled grid-stride residual's guard
+// (blockIdx + gridDim compared against an extent sharing gridDim's base) or
+// a thread-id test under a constant-extent axis. As elsewhere in this pass,
+// values are mathematical integers (no wraparound); unsigned predicates are
+// only folded when both sides are provably non-negative on the domain.
+static LogicalResult foldCmpUsingLoopBounds(IslAnalysis &islAnalysis,
+                                            arith::CmpIOp cmp) {
+  isl_ctx *ctx = islAnalysis.getCtx();
+  constexpr unsigned kExpandDepth = 8;
+  using Pred = arith::CmpIPredicate;
+  Pred pred = cmp.getPredicate();
+
+  // (a | b) `ult` 2^k holds exactly when every operand is under 2^k, and
+  // (a | b) `uge` 2^k when any operand is: bitwise-or sets a bit at or above
+  // position k exactly when some operand does, whatever the bit patterns.
+  if (pred == Pred::ult || pred == Pred::uge) {
+    APInt rhsCst;
+    if (matchPattern(cmp.getRhs(), m_ConstantInt(&rhsCst)) &&
+        rhsCst.isPowerOf2() && cmp.getLhs().getDefiningOp<arith::OrIOp>()) {
+      SmallVector<Value> leaves;
+      SmallVector<Value> worklist{cmp.getLhs()};
+      while (!worklist.empty()) {
+        Value v = worklist.pop_back_val();
+        if (auto orOp = v.getDefiningOp<arith::OrIOp>()) {
+          worklist.push_back(orOp.getLhs());
+          worklist.push_back(orOp.getRhs());
+        } else {
+          leaves.push_back(v);
+        }
+      }
+      OpBuilder b(cmp);
+      Value acc;
+      SmallVector<arith::CmpIOp> leafCmps;
+      for (Value leaf : leaves) {
+        auto leafCmp =
+            arith::CmpIOp::create(b, cmp.getLoc(), pred, leaf, cmp.getRhs());
+        leafCmps.push_back(leafCmp);
+        Value bit = leafCmp.getResult();
+        acc =
+            !acc
+                ? bit
+                : (pred == Pred::ult
+                       ? (Value)arith::AndIOp::create(b, cmp.getLoc(), acc, bit)
+                       : (Value)arith::OrIOp::create(b, cmp.getLoc(), acc,
+                                                     bit));
+      }
+      cmp.getResult().replaceAllUsesWith(acc);
+      cmp.erase();
+      for (auto leafCmp : leafCmps)
+        (void)foldCmpUsingLoopBounds(islAnalysis, leafCmp);
+      return success();
+    }
+  }
+
+  // The domain: one set dimension per enclosing affine parallel/for
+  // induction variable, constrained by its bounds. Bounds that fail to
+  // convert are dropped, which over-approximates the domain and stays sound
+  // for both fold directions. Steps are ignored for the same reason.
+  SmallVector<Value> ivs;
+  struct BoundRef {
+    AffineMap map;
+    SmallVector<Value> operands;
+    bool isUpper;
+    unsigned ivPos;
+  };
+  SmallVector<BoundRef> boundRefs;
+  DenseMap<Value, unsigned> ivPos;
+  for (Operation *parent = cmp->getParentOp(); parent;
+       parent = parent->getParentOp()) {
+    if (auto par = dyn_cast<affine::AffineParallelOp>(parent)) {
+      for (auto [i, iv] : llvm::enumerate(par.getIVs())) {
+        unsigned pos = ivs.size();
+        ivPos[iv] = pos;
+        ivs.push_back(iv);
+        boundRefs.push_back({par.getLowerBoundMap(i),
+                             SmallVector<Value>(par.getLowerBoundsOperands()),
+                             false, pos});
+        boundRefs.push_back({par.getUpperBoundMap(i),
+                             SmallVector<Value>(par.getUpperBoundsOperands()),
+                             true, pos});
+      }
+    } else if (auto forOp = dyn_cast<affine::AffineForOp>(parent)) {
+      Value iv = forOp.getInductionVar();
+      unsigned pos = ivs.size();
+      ivPos[iv] = pos;
+      ivs.push_back(iv);
+      boundRefs.push_back({forOp.getLowerBoundMap(),
+                           SmallVector<Value>(forOp.getLowerBoundOperands()),
+                           false, pos});
+      boundRefs.push_back({forOp.getUpperBoundMap(),
+                           SmallVector<Value>(forOp.getUpperBoundOperands()),
+                           true, pos});
+    }
+  }
+  if (ivs.empty())
+    return failure();
+
+  SetVector<Value> bases;
+  collectBases(cmp.getLhs(), bases, kExpandDepth, &ivPos);
+  collectBases(cmp.getRhs(), bases, kExpandDepth, &ivPos);
+  for (auto &br : boundRefs)
+    for (Value o : br.operands)
+      collectBases(o, bases, kExpandDepth, &ivPos);
+  DenseMap<Value, unsigned> basePos;
+  for (auto [i, v] : llvm::enumerate(bases))
+    basePos[v] = i;
+
+  isl_space *space = isl_space_set_alloc(ctx, bases.size(), ivs.size());
+  for (unsigned i = 0; i < ivs.size(); i++) {
+    isl_id *id = isl_id_alloc(ctx, "iv", (void *)(size_t)(i + 1));
+    space = isl_space_set_dim_id(space, isl_dim_set, i, id);
+  }
+  for (unsigned i = 0; i < bases.size(); i++) {
+    isl_id *id = isl_id_alloc(ctx, "sym", (void *)(size_t)(i + 1));
+    space = isl_space_set_dim_id(space, isl_dim_param, i, id);
+  }
+  isl_local_space *ls = isl_local_space_from_space(isl_space_copy(space));
+
+  std::function<isl_aff *(AffineExpr, ArrayRef<isl_aff *>, unsigned)> exprAff =
+      [&](AffineExpr expr, ArrayRef<isl_aff *> opAffs,
+          unsigned numDims) -> isl_aff * {
+    if (auto bo = dyn_cast<AffineBinaryOpExpr>(expr)) {
+      isl_aff *lhs = exprAff(bo.getLHS(), opAffs, numDims);
+      isl_aff *rhs = exprAff(bo.getRHS(), opAffs, numDims);
+      if (!lhs || !rhs) {
+        isl_aff_free(lhs);
+        isl_aff_free(rhs);
+        return nullptr;
+      }
+      switch (bo.getKind()) {
+      case AffineExprKind::Add:
+        return isl_aff_add(lhs, rhs);
+      case AffineExprKind::Mul:
+        return isl_aff_mul(lhs, rhs);
+      case AffineExprKind::FloorDiv:
+        return isl_aff_floor(isl_aff_div(lhs, rhs));
+      case AffineExprKind::CeilDiv:
+        return isl_aff_ceil(isl_aff_div(lhs, rhs));
+      case AffineExprKind::Mod:
+        if (isl_aff_is_cst(rhs) == isl_bool_true) {
+          isl_aff *r = isl_aff_mod_val(lhs, isl_aff_get_constant_val(rhs));
+          isl_aff_free(rhs);
+          return r;
+        }
+        LLVM_FALLTHROUGH;
+      default:
+        isl_aff_free(lhs);
+        isl_aff_free(rhs);
+        return nullptr;
+      }
+    }
+    if (auto c = dyn_cast<AffineConstantExpr>(expr))
+      return isl_aff_val_on_domain(isl_local_space_copy(ls),
+                                   isl_val_int_from_si(ctx, c.getValue()));
+    if (auto dim = dyn_cast<AffineDimExpr>(expr)) {
+      isl_aff *a = opAffs[dim.getPosition()];
+      return a ? isl_aff_copy(a) : nullptr;
+    }
+    if (auto sym = dyn_cast<AffineSymbolExpr>(expr)) {
+      isl_aff *a = opAffs[numDims + sym.getPosition()];
+      return a ? isl_aff_copy(a) : nullptr;
+    }
+    return nullptr;
+  };
+
+  isl_set *domain = isl_set_universe(isl_space_copy(space));
+  for (auto &br : boundRefs) {
+    SmallVector<isl_aff *> opAffs;
+    for (Value o : br.operands)
+      opAffs.push_back(affForValue(o, basePos, ls, ctx, kExpandDepth, &ivPos));
+    for (AffineExpr e : br.map.getResults()) {
+      isl_aff *ea = exprAff(e, opAffs, br.map.getNumDims());
+      if (!ea)
+        continue;
+      isl_aff *ivAff = isl_aff_var_on_domain(isl_local_space_copy(ls),
+                                             isl_dim_set, br.ivPos);
+      domain =
+          isl_set_intersect(domain, br.isUpper ? isl_aff_lt_set(ivAff, ea)
+                                               : isl_aff_ge_set(ivAff, ea));
+    }
+    for (auto *a : opAffs)
+      isl_aff_free(a);
+  }
+
+  isl_aff *lhs =
+      affForValue(cmp.getLhs(), basePos, ls, ctx, kExpandDepth, &ivPos);
+  isl_aff *rhs =
+      affForValue(cmp.getRhs(), basePos, ls, ctx, kExpandDepth, &ivPos);
+  auto cleanup = [&]() {
+    isl_aff_free(lhs);
+    isl_aff_free(rhs);
+    isl_local_space_free(ls);
+    isl_space_free(space);
+    isl_set_free(domain);
+  };
+  if (!lhs || !rhs) {
+    cleanup();
+    return failure();
+  }
+
+  auto emptyOnDomain = [&](isl_set *set) {
+    set = isl_set_intersect(isl_set_copy(domain), set);
+    bool empty = isl_set_is_empty(set) == isl_bool_true;
+    isl_set_free(set);
+    return empty;
+  };
+
+  bool isUnsigned = pred == Pred::ult || pred == Pred::ule ||
+                    pred == Pred::ugt || pred == Pred::uge;
+  if (isUnsigned) {
+    isl_aff *zero =
+        isl_aff_val_on_domain(isl_local_space_copy(ls), isl_val_zero(ctx));
+    bool nonneg =
+        emptyOnDomain(isl_aff_lt_set(isl_aff_copy(lhs), isl_aff_copy(zero))) &&
+        emptyOnDomain(isl_aff_lt_set(isl_aff_copy(rhs), isl_aff_copy(zero)));
+    isl_aff_free(zero);
+    if (!nonneg) {
+      cleanup();
+      return failure();
+    }
+  }
+
+  isl_set *holds, *fails;
+  switch (pred) {
+  case Pred::eq:
+    holds = isl_aff_eq_set(isl_aff_copy(lhs), isl_aff_copy(rhs));
+    fails = isl_aff_ne_set(isl_aff_copy(lhs), isl_aff_copy(rhs));
+    break;
+  case Pred::ne:
+    holds = isl_aff_ne_set(isl_aff_copy(lhs), isl_aff_copy(rhs));
+    fails = isl_aff_eq_set(isl_aff_copy(lhs), isl_aff_copy(rhs));
+    break;
+  case Pred::slt:
+  case Pred::ult:
+    holds = isl_aff_lt_set(isl_aff_copy(lhs), isl_aff_copy(rhs));
+    fails = isl_aff_ge_set(isl_aff_copy(lhs), isl_aff_copy(rhs));
+    break;
+  case Pred::sle:
+  case Pred::ule:
+    holds = isl_aff_le_set(isl_aff_copy(lhs), isl_aff_copy(rhs));
+    fails = isl_aff_gt_set(isl_aff_copy(lhs), isl_aff_copy(rhs));
+    break;
+  case Pred::sgt:
+  case Pred::ugt:
+    holds = isl_aff_gt_set(isl_aff_copy(lhs), isl_aff_copy(rhs));
+    fails = isl_aff_le_set(isl_aff_copy(lhs), isl_aff_copy(rhs));
+    break;
+  case Pred::sge:
+  case Pred::uge:
+    holds = isl_aff_ge_set(isl_aff_copy(lhs), isl_aff_copy(rhs));
+    fails = isl_aff_lt_set(isl_aff_copy(lhs), isl_aff_copy(rhs));
+    break;
+  }
+
+  bool alwaysTrue = emptyOnDomain(fails);
+  bool alwaysFalse = false;
+  if (alwaysTrue)
+    isl_set_free(holds);
+  else
+    alwaysFalse = emptyOnDomain(holds);
+  cleanup();
+  if (!alwaysTrue && !alwaysFalse)
+    return failure();
+
+  OpBuilder b(cmp);
+  auto cst =
+      arith::ConstantOp::create(b, cmp.getLoc(), b.getBoolAttr(alwaysTrue));
+  cmp.getResult().replaceAllUsesWith(cst.getResult());
+  cmp.erase();
+  return success();
 }
 
 LogicalResult pruneParallelBounds(IslAnalysis &islAnalysis,
@@ -1332,6 +1969,39 @@ struct SimplifyAffineExprsPass
       else if (auto cop = dyn_cast<AffineParallelOp>(op))
         (void)pruneParallelBounds(ia, cop);
     });
+
+    SmallVector<arith::CmpIOp> cmps;
+    op->walk([&](arith::CmpIOp cmp) { cmps.push_back(cmp); });
+    for (auto cmp : cmps)
+      (void)foldCmpUsingLoopBounds(ia, cmp);
+
+    SmallVector<Operation *> minMaxes;
+    op->walk([&](Operation *inner) {
+      if (isa<arith::MaxSIOp, arith::MinSIOp, arith::MaxUIOp, arith::MinUIOp>(
+              inner))
+        minMaxes.push_back(inner);
+    });
+    for (Operation *inner : minMaxes)
+      (void)foldMinMaxUsingLoopBounds(ia, inner);
+
+    // Post-order, so a remainder loop nested in another decided loop folds
+    // first; a second comparison sweep picks up conditions the inlined
+    // bodies exposed.
+    SmallVector<Operation *> loops;
+    op->walk([&](Operation *inner) {
+      if (isa<scf::ForOp, scf::WhileOp>(inner))
+        loops.push_back(inner);
+    });
+    for (Operation *inner : loops) {
+      if (auto forOp = dyn_cast<scf::ForOp>(inner))
+        (void)unrollDecidedSCFFor(ia, forOp);
+      else
+        (void)foldNeverLoopingSCFWhile(ia, cast<scf::WhileOp>(inner));
+    }
+    cmps.clear();
+    op->walk([&](arith::CmpIOp cmp) { cmps.push_back(cmp); });
+    for (auto cmp : cmps)
+      (void)foldCmpUsingLoopBounds(ia, cmp);
 
     op->walk([=](AffineIfOp affineOp) {
       auto map = affineOp.getIntegerSet();
