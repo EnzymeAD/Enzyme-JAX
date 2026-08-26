@@ -93,3 +93,45 @@ func.func @treereduce_swap(%bs: i32) -> (i32, i32) {
 // CHECK-NEXT: %[[SV5:.+]] = arith.index_cast %[[SV4]] : index to i32
 // CHECK-NEXT: return %[[SV5]], %[[S0]] : i32, i32
 // CHECK-NEXT: }
+
+// An index-typed halving loop: index has no fixed bit width, so the trip
+// count is computed in i64 (which index_castui zero-extends into, keeping the
+// bit length right for any narrower index lowering), the for's induction
+// variable feeds the shift without a cast, and the exit value is a constant
+// index zero.
+func.func @treereduce_index(%bs: index, %buf: memref<?xf64>) -> index {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %cf = arith.constant 1.000000e+00 : f64
+  %start = arith.shrui %bs, %c1 : index
+  %r = scf.while (%i = %start) : (index) -> index {
+    memref.store %cf, %buf[%i] : memref<?xf64>
+    %next = arith.shrui %i, %c1 : index
+    %nz = arith.cmpi ne, %next, %c0 : index
+    scf.condition(%nz) %next : index
+  } do {
+  ^bb0(%a: index):
+    scf.yield %a : index
+  }
+  return %r : index
+}
+
+// CHECK-LABEL: func.func @treereduce_index(
+// CHECK-SAME: %[[IBS:.+]]: index, %[[IBUF:.+]]: memref<?xf64>
+// CHECK-NEXT: %[[I0:.+]] = arith.constant 0 : index
+// CHECK-NEXT: %[[I1I64:.+]] = arith.constant 1 : i64
+// CHECK-NEXT: %[[I64C:.+]] = arith.constant 64 : i64
+// CHECK-NEXT: %[[I1:.+]] = arith.constant 1 : index
+// CHECK-NEXT: %[[ICF:.+]] = arith.constant 1.000000e+00 : f64
+// CHECK-NEXT: %[[IV0:.+]] = arith.shrui %[[IBS]], %[[I1]] : index
+// CHECK-NEXT: %[[IV1:.+]] = arith.index_castui %[[IV0]] : index to i64
+// CHECK-NEXT: %[[IV2:.+]] = math.ctlz %[[IV1]] : i64
+// CHECK-NEXT: %[[IV3:.+]] = arith.subi %[[I64C]], %[[IV2]] : i64
+// CHECK-NEXT: %[[IV4:.+]] = arith.maxui %[[IV3]], %[[I1I64]] : i64
+// CHECK-NEXT: %[[IV5:.+]] = arith.index_castui %[[IV4]] : i64 to index
+// CHECK-NEXT: scf.for %[[IK:.+]] = %[[I0]] to %[[IV5]] step %[[I1]] {
+// CHECK-NEXT: %[[IV6:.+]] = arith.shrui %[[IV0]], %[[IK]] : index
+// CHECK-NEXT: memref.store %[[ICF]], %[[IBUF]][%[[IV6]]] : memref<?xf64>
+// CHECK-NEXT: }
+// CHECK-NEXT: return %[[I0]] : index
+// CHECK-NEXT: }

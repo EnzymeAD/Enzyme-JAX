@@ -3057,14 +3057,22 @@ struct DoWhileShiftToFor : public OpRewritePattern<WhileOp> {
     Location loc = loop.getLoc();
     Value start = loop.getInits()[beforeIvIdx];
     Type ivTy = iv.getType();
-    unsigned width = ivTy.getIntOrFloatBitWidth();
+    // An index variable has no fixed width: count in i64 instead, which the
+    // value-preserving cast zero-extends into, so the bit length comes out
+    // the same for any narrower lowering of index.
+    bool ivIsIndex = isa<IndexType>(ivTy);
+    Type lenTy = ivIsIndex ? (Type)rewriter.getI64Type() : ivTy;
+    unsigned width = lenTy.getIntOrFloatBitWidth();
 
     // Trips: max(bitwidth - ctlz(start), 1); ctlz(0) is the bitwidth, so a
     // zero start still runs the body once, matching the do-while.
-    Value lz = math::CountLeadingZerosOp::create(rewriter, loc, start);
-    Value wC = ConstantIntOp::create(rewriter, loc, ivTy, width);
+    Value cstart = start;
+    if (ivIsIndex)
+      cstart = arith::IndexCastUIOp::create(rewriter, loc, lenTy, start);
+    Value lz = math::CountLeadingZerosOp::create(rewriter, loc, cstart);
+    Value wC = ConstantIntOp::create(rewriter, loc, lenTy, width);
     Value len = SubIOp::create(rewriter, loc, wC, lz);
-    Value oneC = ConstantIntOp::create(rewriter, loc, ivTy, 1);
+    Value oneC = ConstantIntOp::create(rewriter, loc, lenTy, 1);
     Value trips = MaxUIOp::create(rewriter, loc, len, oneC);
     Value ub = arith::IndexCastUIOp::create(rewriter, loc,
                                             rewriter.getIndexType(), trips);
@@ -3082,8 +3090,9 @@ struct DoWhileShiftToFor : public OpRewritePattern<WhileOp> {
     if (!forOp.getBody()->empty())
       rewriter.eraseOp(&forOp.getBody()->back());
     rewriter.setInsertionPointToStart(forOp.getBody());
-    Value k = arith::IndexCastUIOp::create(rewriter, loc, ivTy,
-                                           forOp.getInductionVar());
+    Value k = forOp.getInductionVar();
+    if (!ivIsIndex)
+      k = arith::IndexCastUIOp::create(rewriter, loc, ivTy, k);
     Value curIv = ShRUIOp::create(rewriter, loc, start, k);
 
     IRMapping map;
@@ -3106,12 +3115,13 @@ struct DoWhileShiftToFor : public OpRewritePattern<WhileOp> {
 
     // At the exit the forwarded shift result is zero; other results carry.
     rewriter.setInsertionPoint(loop);
+    Value exitZero = ivIsIndex
+                         ? (Value)ConstantIndexOp::create(rewriter, loc, 0)
+                         : (Value)ConstantIntOp::create(rewriter, loc, ivTy, 0);
     SmallVector<Value> repl;
     for (auto [i, res] : llvm::enumerate(loop.getResults()))
-      repl.push_back(
-          i == afterIvIdx
-              ? ConstantIntOp::create(rewriter, loc, ivTy, 0).getResult()
-              : forOp.getResult(resultSlot[i]));
+      repl.push_back(i == afterIvIdx ? exitZero
+                                     : forOp.getResult(resultSlot[i]));
     rewriter.replaceOp(loop, repl);
     return success();
   }
