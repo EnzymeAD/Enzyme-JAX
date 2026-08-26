@@ -14,6 +14,7 @@
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/IntegerSet.h"
@@ -23,6 +24,7 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "llvm/Support/Debug.h"
 
+#include <llvm/ADT/STLExtras.h>
 #include <numeric>
 
 #define DEBUG_TYPE "affine-int-range-analysis"
@@ -150,7 +152,9 @@ struct RemoveAffineParallelSingleIter
   }
 };
 
-namespace {
+} // namespace
+
+namespace mlir::enzyme {
 
 /// Integer range analysis determines the integer value range of SSA values
 /// using operations that define `InferIntRangeInterface` and also sets the
@@ -181,10 +185,10 @@ public:
   /// function calls `InferIntRangeInterface` to provide values for block
   /// arguments or tries to reduce the range on loop induction variables with
   /// known bounds.
-  void
-  visitNonControlFlowArguments(Operation *op, const RegionSuccessor &successor,
-                               ArrayRef<IntegerValueRangeLattice *> argLattices,
-                               unsigned firstIndex) override;
+  void visitNonControlFlowArguments(
+      Operation *op, const RegionSuccessor &successor,
+      ValueRange nonSuccessorInputs,
+      ArrayRef<IntegerValueRangeLattice *> nonSuccessorInputLattices) override;
 
   /// Gets the constant lower and upper bounds for a given index of an
   /// AffineParallelOp. The upper bound is adjusted to be inclusive (subtracts 1
@@ -239,7 +243,8 @@ public:
 
 void AffineIntegerRangeAnalysis::visitNonControlFlowArguments(
     Operation *op, const RegionSuccessor &successor,
-    ArrayRef<IntegerValueRangeLattice *> argLattices, unsigned firstIndex) {
+    ValueRange nonSuccessorInputs,
+    ArrayRef<IntegerValueRangeLattice *> nonSuccessorInputLattices) {
   LLVM_DEBUG(llvm::dbgs() << "Inferring ranges for " << op->getName() << "\n");
   if (auto inferrable = dyn_cast<InferIntRangeInterface>(op)) {
     auto argRanges = llvm::map_to_vector(op->getOperands(), [&](Value value) {
@@ -254,7 +259,8 @@ void AffineIntegerRangeAnalysis::visitNonControlFlowArguments(
         return;
 
       LLVM_DEBUG(llvm::dbgs() << "Inferred range " << attrs << "\n");
-      IntegerValueRangeLattice *lattice = argLattices[arg.getArgNumber()];
+      IntegerValueRangeLattice *lattice =
+          nonSuccessorInputLattices[arg.getArgNumber()];
       IntegerValueRange oldRange = lattice->getValue();
 
       ChangeResult changed = lattice->join(attrs);
@@ -292,7 +298,7 @@ void AffineIntegerRangeAnalysis::visitNonControlFlowArguments(
   } // AffineParallelOp
 
   return SparseForwardDataFlowAnalysis::visitNonControlFlowArguments(
-      op, successor, argLattices, firstIndex);
+      op, successor, nonSuccessorInputs, nonSuccessorInputLattices);
 }
 
 LogicalResult AffineIntegerRangeAnalysis::visitOperation(
@@ -340,6 +346,20 @@ LogicalResult AffineIntegerRangeAnalysis::visitOperation(
 
   inferrable.inferResultRangesFromOptional(argRanges, joinCallback);
   return success();
+}
+
+} // namespace mlir::enzyme
+
+namespace {
+
+// These rewrites read an op on integers one of whose operands came from an
+// index, and say the op again in index. The width they check is the width of
+// the integer the index was cast to; index itself has no width to ask for, and
+// an op already in index has the cast the other way round, so rewriting it
+// would put an integer where an index belongs. Neither is a rewrite to make.
+static bool tooNarrowFor(mlir::Type ty, int64_t max) {
+  auto intTy = dyn_cast<mlir::IntegerType>(ty);
+  return !intTy || APInt::getMaxValue(intTy.getWidth()).ult(max);
 }
 
 std::optional<int64_t> maxSize(mlir::Value v) {
@@ -448,8 +468,7 @@ public:
     auto maxSizeOpt = maxSize(operand.getOperand());
     if (!maxSizeOpt)
       return failure();
-    if (APInt::getMaxValue(operand.getType().getIntOrFloatBitWidth())
-            .ult(*maxSizeOpt))
+    if (tooNarrowFor(operand.getType(), *maxSizeOpt))
       return failure();
 
     rewriter.replaceOpWithNewOp<arith::IndexCastUIOp>(ext, ext.getType(),
@@ -470,8 +489,7 @@ public:
     auto maxSizeOpt = maxSize(operand.getOperand());
     if (!maxSizeOpt)
       return failure();
-    if (APInt::getMaxValue(ext.getType().getIntOrFloatBitWidth())
-            .ult(*maxSizeOpt))
+    if (tooNarrowFor(ext.getType(), *maxSizeOpt))
       return failure();
 
     rewriter.replaceOpWithNewOp<arith::IndexCastUIOp>(ext, ext.getType(),
@@ -492,8 +510,7 @@ public:
     auto maxSizeOpt = maxSize(operand.getOperand());
     if (!maxSizeOpt)
       return failure();
-    if (APInt::getMaxValue(operand.getType().getIntOrFloatBitWidth())
-            .ult(*maxSizeOpt))
+    if (tooNarrowFor(operand.getType(), *maxSizeOpt))
       return failure();
 
     IntegerAttr constValue;
@@ -510,6 +527,45 @@ public:
   }
 };
 
+// The high half of a packed pair of launch dimensions is a constant: the
+// import spells dim3(x, 1) as ori(extui(x : i32 to i64), 1 << 32) and reads
+// the second field back as shrui(packed, 32). Every bit the shift keeps
+// comes from the constant, so the read is that constant, but no upstream
+// fold sees through the pack. Leaving it opaque makes the launch bound look
+// like a runtime value.
+class ShrUIOfPackedHigh final : public OpRewritePattern<arith::ShRUIOp> {
+public:
+  using OpRewritePattern<arith::ShRUIOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::ShRUIOp op,
+                                PatternRewriter &rewriter) const override {
+    IntegerAttr shiftAttr;
+    if (!matchPattern(op.getRhs(), m_Constant(&shiftAttr)))
+      return failure();
+    auto ori = op.getLhs().getDefiningOp<arith::OrIOp>();
+    if (!ori)
+      return failure();
+    Value other;
+    IntegerAttr cst;
+    if (matchPattern(ori.getRhs(), m_Constant(&cst)))
+      other = ori.getLhs();
+    else if (matchPattern(ori.getLhs(), m_Constant(&cst)))
+      other = ori.getRhs();
+    else
+      return failure();
+    auto ext = other.getDefiningOp<arith::ExtUIOp>();
+    if (!ext)
+      return failure();
+    unsigned srcWidth = ext.getIn().getType().getIntOrFloatBitWidth();
+    const APInt &shift = shiftAttr.getValue();
+    if (shift.ult(srcWidth) || shift.uge(cst.getValue().getBitWidth()))
+      return failure();
+    rewriter.replaceOpWithNewOp<arith::ConstantOp>(
+        op, rewriter.getIntegerAttr(op.getType(), cst.getValue().lshr(shift)));
+    return success();
+  }
+};
+
 class DivUIOfIndexUI final : public OpRewritePattern<arith::DivUIOp> {
 public:
   using OpRewritePattern<arith::DivUIOp>::OpRewritePattern;
@@ -522,8 +578,7 @@ public:
     auto maxSizeOpt = maxSize(operand.getOperand());
     if (!maxSizeOpt)
       return failure();
-    if (APInt::getMaxValue(operand.getType().getIntOrFloatBitWidth())
-            .ult(*maxSizeOpt))
+    if (tooNarrowFor(operand.getType(), *maxSizeOpt))
       return failure();
 
     IntegerAttr constValue;
@@ -556,8 +611,7 @@ public:
     if (!maxSizeOpt)
       return failure();
     if (!operand.getType().isIndex())
-      if (APInt::getMaxValue(operand.getType().getIntOrFloatBitWidth())
-              .ult(*maxSizeOpt))
+      if (tooNarrowFor(operand.getType(), *maxSizeOpt))
         return failure();
     if (operand.getRhs() != ext.getRhs())
       return failure();
@@ -579,8 +633,7 @@ public:
     auto maxSizeOpt = maxSize(operandOp->getOperand(0));
     if (!maxSizeOpt)
       return failure();
-    if (APInt::getMaxValue(operand.getType().getIntOrFloatBitWidth())
-            .ult(*maxSizeOpt))
+    if (tooNarrowFor(operand.getType(), *maxSizeOpt))
       return failure();
 
     IntegerAttr constValue;
@@ -629,8 +682,7 @@ public:
     auto maxSizeOpt = maxSize(operand.getOperand());
     if (!maxSizeOpt)
       return failure();
-    if (APInt::getMaxValue(operand.getType().getIntOrFloatBitWidth())
-            .ult(*maxSizeOpt))
+    if (tooNarrowFor(operand.getType(), *maxSizeOpt))
       return failure();
 
     APInt constValue;
@@ -661,9 +713,7 @@ public:
     auto maxSizeOpt = maxSize(operand->getOperand(0));
     if (!maxSizeOpt)
       return failure();
-    if (APInt::getMaxValue(
-            operand->getResult(0).getType().getIntOrFloatBitWidth())
-            .ult(*maxSizeOpt))
+    if (tooNarrowFor(operand->getResult(0).getType(), *maxSizeOpt))
       return failure();
 
     IntegerAttr constValue;
@@ -699,8 +749,7 @@ public:
     auto maxSizeOpt = maxSize(operand.getOperand());
     if (!maxSizeOpt)
       return failure();
-    if (APInt::getMaxValue(operand.getType().getIntOrFloatBitWidth())
-            .ult(*maxSizeOpt))
+    if (tooNarrowFor(operand.getType(), *maxSizeOpt))
       return failure();
 
     IntegerAttr constValue;
@@ -880,7 +929,8 @@ public:
   }
 };
 
-class IfToSelect final : public OpRewritePattern<scf::IfOp> {
+template <bool Speculate>
+class PartialIfToSelect final : public OpRewritePattern<scf::IfOp> {
 public:
   using OpRewritePattern<scf::IfOp>::OpRewritePattern;
 
@@ -900,13 +950,106 @@ public:
     auto thenYield = cast<scf::YieldOp>(thenBlock->getTerminator());
     auto elseYield = cast<scf::YieldOp>(elseBlock->getTerminator());
 
+    rewriter.setInsertionPoint(ifOp);
+    bool succeeded = false;
+    for (auto [i, thenYieldVal, elseYieldVal, res] :
+         llvm::enumerate(thenYield.getOperands(), elseYield.getOperands(),
+                         ifOp.getResults())) {
+      // Ignore cases where the result is not used - these will be cleaned up by
+      // a canonicalization
+      if (res.use_empty())
+        continue;
+      SmallVector<Operation *> rOps;
+      IRMapping rVals;
+      std::function<std::optional<Value>(Value)> recomputeOutsideIf =
+          [&](Value v) -> std::optional<Value> {
+        auto rVal = rVals.lookupOrNull(v);
+        if (rVal)
+          return rVal;
+        Operation *op = v.getDefiningOp();
+        if (!op)
+          return v;
+        if (!ifOp->isAncestor(op))
+          return v;
+        // Recomputing an op defined inside the if outside of it speculates it,
+        // so only do so when speculation is enabled. Integer, index, and
+        // pointer values are always safe to speculate, as they aren't
+        // differentiable and thus cannot introduce strong-zero-like numeric
+        // changes during differentiation.
+        if (!Speculate && !v.getType().isIntOrIndex() &&
+            !isa<LLVM::LLVMPointerType>(v.getType()))
+          return std::nullopt;
+        if (op->getNumRegions() > 0)
+          return std::nullopt;
+        if (!isPure(op))
+          return std::nullopt;
+        SmallVector<Value> rOprs;
+        for (auto opr : op->getOperands()) {
+          auto rOpr = recomputeOutsideIf(opr);
+          if (!rOpr)
+            return std::nullopt;
+          rOprs.push_back(*rOpr);
+        }
+        auto rOp = rewriter.clone(*op);
+        rOp->setOperands(rOprs);
+        rVals.map(op->getResults(), rOp->getResults());
+        rOps.push_back(rOp);
+        return rOp->getResult(cast<OpResult>(v).getResultNumber());
+      };
+      auto rThenYieldVal = recomputeOutsideIf(thenYieldVal);
+      auto rElseYieldVal = recomputeOutsideIf(elseYieldVal);
+      if (!rThenYieldVal || !rElseYieldVal) {
+        for (auto rOp : llvm::reverse(rOps))
+          rewriter.eraseOp(rOp);
+        continue;
+      }
+
+      // Create select op with same attributes as original if op
+      auto select = arith::SelectOp::create(rewriter, loc, condition,
+                                            *rThenYieldVal, *rElseYieldVal);
+      rewriter.replaceAllUsesWith(ifOp->getResult(i), select);
+      succeeded = true;
+    }
+
+    return success(succeeded);
+  }
+};
+
+template <bool Speculate>
+class IfToSelect final : public OpRewritePattern<scf::IfOp> {
+public:
+  using OpRewritePattern<scf::IfOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(scf::IfOp ifOp,
+                                PatternRewriter &rewriter) const override {
+
+    // Check if if has both then and else regions
+    bool hasElse = !ifOp.getElseRegion().empty();
+    if (!hasElse)
+      return failure();
+
+    Location loc = ifOp.getLoc();
+    Value condition = ifOp.getCondition();
+
+    // Get the yield ops from both branches
+    Block *thenBlock = ifOp.thenBlock();
+    Block *elseBlock = ifOp.elseBlock();
+    auto thenYield = cast<scf::YieldOp>(thenBlock->getTerminator());
+    auto elseYield = cast<scf::YieldOp>(elseBlock->getTerminator());
+
     // Check if all operations in both blocks are pure
-    if (llvm::any_of(thenBlock->getOperations(),
-                     [](Operation &op) { return !isPure(&op); }))
-      return failure();
-    if (llvm::any_of(elseBlock->getOperations(),
-                     [](Operation &op) { return !isPure(&op); }))
-      return failure();
+    if (Speculate) {
+      if (llvm::any_of(thenBlock->getOperations(),
+                       [](Operation &op) { return !isPure(&op); }))
+        return failure();
+      if (llvm::any_of(elseBlock->getOperations(),
+                       [](Operation &op) { return !isPure(&op); }))
+        return failure();
+    } else {
+      if (thenBlock->getOperations().size() != 1 ||
+          elseBlock->getOperations().size() != 1)
+        return failure();
+    }
 
     // Clone all operations from both branches before their yields
     OpBuilder::InsertionGuard guard(rewriter);
@@ -947,6 +1090,7 @@ public:
     }
 
     rewriter.replaceOp(ifOp, results);
+
     return success();
   }
 };
@@ -955,16 +1099,32 @@ public:
 
 struct CanonicalizeLoopsPass
     : public enzyme::impl::CanonicalizeLoopsPassBase<CanonicalizeLoopsPass> {
+  using CanonicalizeLoopsPassBase::CanonicalizeLoopsPassBase;
   void runOnOperation() override {
 
     // Step 0: Canonicalize loops when possible.
     {
       RewritePatternSet patterns(&getContext());
       patterns.add<RemoveAffineParallelSingleIter, SwitchToIf,
-                   SimplifyIfByRemovingEmptyThen, IfToSelect>(&getContext());
+                   SimplifyIfByRemovingEmptyThen>(&getContext());
 
-      if (failed(applyPatternsAndFoldGreedily(getOperation(),
-                                              std::move(patterns)))) {
+      if (speculate_if) {
+        patterns.add<IfToSelect<true>>(&getContext());
+      } else {
+        patterns.add<IfToSelect<false>>(&getContext());
+      }
+      if (speculate_partial_if) {
+        patterns.add<PartialIfToSelect<true>>(&getContext());
+      } else {
+        patterns.add<PartialIfToSelect<false>>(&getContext());
+      }
+
+      if (failed(applyPatternsGreedily(
+              getOperation(), std::move(patterns),
+              GreedyRewriteConfig()
+                  .enableFolding()
+                  .setRegionSimplificationLevel(
+                      GreedySimplifyRegionLevel::Normal)))) {
         signalPassFailure();
         return;
       }
@@ -1217,20 +1377,22 @@ struct CanonicalizeLoopsPass
     {
       RewritePatternSet patterns(&getContext());
       addSingleIter(patterns, &getContext());
-      if (failed(applyPatternsAndFoldGreedily(getOperation(),
-                                              std::move(patterns)))) {
+      GreedyRewriteConfig config;
+      config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);
+      config.enableFolding();
+      if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
+                                       config))) {
         signalPassFailure();
         return;
       }
     }
   }
 };
-} // namespace
 
 void mlir::enzyme::addSingleIter(RewritePatternSet &patterns,
                                  MLIRContext *ctx) {
-  patterns
-      .add<RemoveAffineParallelSingleIter, ExtUIOfIndexUI, TruncIOfIndexUI,
-           ShrUIOfIndexUI, DivUIOfIndexUI, DivMul, AddIOfIndexUI, SubIOfIndexUI,
-           MulIOfIndexUI, ShLIOfIndexUI, AddIOfDoubleIndex, ToRem>(ctx);
+  patterns.add<RemoveAffineParallelSingleIter, ExtUIOfIndexUI, TruncIOfIndexUI,
+               ShrUIOfIndexUI, ShrUIOfPackedHigh, DivUIOfIndexUI, DivMul,
+               AddIOfIndexUI, SubIOfIndexUI, MulIOfIndexUI, ShLIOfIndexUI,
+               AddIOfDoubleIndex, ToRem>(ctx);
 }

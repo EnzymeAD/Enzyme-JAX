@@ -12,6 +12,7 @@
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
+#include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Dominance.h"
@@ -171,6 +172,46 @@ template <int S = 3> SmallVector<Value, S> getUpperBounds(scf::ParallelOp pop) {
   return bounds;
 }
 
+/// Whether `ub` is the launch bound `bound`, possibly narrowed by a min against
+/// the kernel's own trip count -- folding the `k >= N` guard into the loop
+/// makes the bound `min(N, bound)`. The narrowed bound is the real iteration
+/// space, so the launch is built from it, not from `bound`.
+bool boundMatchesLaunch(Value ub, Value bound) {
+  if (ub == bound)
+    return true;
+  if (auto mn = ub.getDefiningOp<arith::MinSIOp>())
+    return mn.getLhs() == bound || mn.getRhs() == bound;
+  if (auto mn = ub.getDefiningOp<arith::MinUIOp>())
+    return mn.getLhs() == bound || mn.getRhs() == bound;
+  return false;
+}
+
+/// Match the dimensions of `pop` against the six grid and block bounds of
+/// `wrapper`, filling `dimOf` with the dimension of `pop` that carries each
+/// bound, or -1 for a bound of extent one that `pop` does not carry. Passes
+/// that fuse the grid and block parallels drop such trivial dimensions, so an
+/// exact-shape match must tolerate their absence.
+bool matchWrapperShape(scf::ParallelOp pop, enzymexla::GPUWrapperOp wrapper,
+                       SmallVectorImpl<int> &dimOf) {
+  auto bounds = wrapper.getOperands();
+  if (bounds.size() != 6)
+    return false;
+  auto ubs = pop.getUpperBound();
+  unsigned next = 0;
+  for (Value bound : bounds) {
+    if (next < ubs.size() && boundMatchesLaunch(ubs[next], bound)) {
+      dimOf.push_back(next++);
+      continue;
+    }
+    if (matchPattern(bound, m_One())) {
+      dimOf.push_back(-1);
+      continue;
+    }
+    return false;
+  }
+  return next == ubs.size();
+}
+
 void insertReturn(PatternRewriter &rewriter, func::FuncOp f) {
   func::ReturnOp::create(rewriter, rewriter.getUnknownLoc());
 }
@@ -222,39 +263,95 @@ struct AddLaunchBounds : public OpRewritePattern<gpu::LaunchFuncOp> {
     // gpu::LaunchFuncOp's)
     auto gpuFuncOp = launchOp->getParentOfType<ModuleOp>().lookupSymbol(
         launchOp.getKernel());
+
+    // Launch bounds the kernel was compiled with: clang encodes
+    // __launch_bounds__(maxThreads, minBlocks) as nvvm annotations, which the
+    // importer carries in the device function's passthrough and launch
+    // recognition copies onto the error op.
+    int32_t srcMaxntid = 0, srcMinctasm = 0;
+    if (auto err = launchOp->getParentOfType<enzymexla::GPUErrorOp>()) {
+      if (auto attr =
+              dyn_cast_or_null<ArrayAttr>(err->getAttr("passthrough"))) {
+        for (auto a : attr) {
+          auto ar = dyn_cast<ArrayAttr>(a);
+          if (!ar || ar.size() != 2)
+            continue;
+          auto s0 = dyn_cast<StringAttr>(ar[0]);
+          auto s1 = dyn_cast<StringAttr>(ar[1]);
+          if (!s0 || !s1)
+            continue;
+          if (s0.getValue() == "nvvm.maxntid")
+            s1.getValue().getAsInteger(10, srcMaxntid);
+          if (s0.getValue() == "nvvm.minctasm")
+            s1.getValue().getAsInteger(10, srcMinctasm);
+        }
+      }
+    }
+
     auto blockDims = launchOp.getBlockSizeOperandValues();
     auto bx = getConstantInteger(blockDims.x);
     auto by = getConstantInteger(blockDims.y);
     auto bz = getConstantInteger(blockDims.z);
-    if (!bx || !by || !bz)
-      return failure();
-    // TODO should we only set idx or separately set idx, idy, idz? clang seems
-    // to only set idx to the total num
+
+    // The preserved bounds promise the block shape the kernel was compiled
+    // with. Runtime dimensions are the original launch's own values; a
+    // constant block size only matches when it reproduces the recorded
+    // original, not when the kernel was re-blocked.
+    bool shapeMatches = !bx || !by || !bz;
+    if (!shapeMatches)
+      if (auto err = launchOp->getParentOfType<enzymexla::GPUErrorOp>())
+        if (auto orig =
+                err->getAttrOfType<IntegerAttr>("reactant.launch_block_size"))
+          shapeMatches = orig.getInt() == (*bx) * (*by) * (*bz);
+
+    bool changed = false;
+    if (srcMinctasm > 0 && shapeMatches &&
+        !gpuFuncOp->hasAttr("nvvm.minctasm")) {
+      gpuFuncOp->setAttr(
+          "nvvm.minctasm",
+          rewriter.getIntegerAttr(rewriter.getI32Type(), srcMinctasm));
+      changed = true;
+    }
+    if (!bx || !by || !bz) {
+      // The kernel must stay launchable at every block size its callers may
+      // use: the bound it was compiled with when there is one, the
+      // architecture maximum otherwise; without any bound ptxas may allocate
+      // registers for a small block and larger launches fail with
+      // too-many-resources. maxntid is enforced as a total across dimensions
+      // (the driver checks the derived maxThreadsPerBlock, and ptxas budgets
+      // by the product), so {N, 1, 1} admits any legal block shape of up to
+      // N threads, including multidimensional ones.
+      if (!gpuFuncOp->hasAttr("nvvm.maxntid")) {
+        int32_t cap = srcMaxntid > 0 ? srcMaxntid : 1024;
+        gpuFuncOp->setAttr("nvvm.maxntid",
+                           rewriter.getDenseI32ArrayAttr({cap, 1, 1}));
+        gpuFuncOp->setAttr(
+            "rocdl.max_flat_work_group_size",
+            rewriter.getIntegerAttr(rewriter.getIndexType(), cap));
+        changed = true;
+      }
+      return success(changed);
+    }
+    // A statically known block size is the exact bound: it wins over any
+    // looser bound the source declared. A kernel with known_block_size gets
+    // it from that attribute during lowering; adding it here would duplicate
+    // it.
+    if (gpuFuncOp->hasAttr("known_block_size"))
+      return success(changed);
     // TODO grab the attr name from the NVVM dialect after bumping llvm
-    bool succeeded = false;
+    auto ntid = rewriter.getDenseI32ArrayAttr(
+        {(int32_t)*bx, (int32_t)*by, (int32_t)*bz});
+    if (gpuFuncOp->getAttr("nvvm.maxntid") != ntid) {
+      gpuFuncOp->setAttr("nvvm.maxntid", ntid);
+      changed = true;
+    }
     int blockSize = *bx * *by * *bz;
-    llvm::StringRef attrName = "nvvm.maxntidx";
-    if (!gpuFuncOp->hasAttr(attrName)) {
-      gpuFuncOp->setAttr(attrName, rewriter.getIntegerAttr(
-                                       rewriter.getIndexType(), blockSize));
-      succeeded = true;
-    } else {
-      assert(blockSize ==
-             dyn_cast<IntegerAttr>(gpuFuncOp->getAttr(attrName)).getInt());
-      succeeded = false;
+    auto flat = rewriter.getIntegerAttr(rewriter.getIndexType(), blockSize);
+    if (gpuFuncOp->getAttr("rocdl.max_flat_work_group_size") != flat) {
+      gpuFuncOp->setAttr("rocdl.max_flat_work_group_size", flat);
+      changed = true;
     }
-    attrName = "rocdl.max_flat_work_group_size";
-    if (!gpuFuncOp->hasAttr(attrName)) {
-      gpuFuncOp->setAttr(attrName, rewriter.getIntegerAttr(
-                                       rewriter.getIndexType(), blockSize));
-      assert(succeeded);
-      return success();
-    } else {
-      assert(blockSize ==
-             dyn_cast<IntegerAttr>(gpuFuncOp->getAttr(attrName)).getInt());
-      assert(!succeeded);
-      return failure();
-    }
+    return success(changed);
   }
 };
 
@@ -310,6 +407,7 @@ struct SharedLLVMAllocaToGlobal : public OpRewritePattern<LLVM::AllocaOp> {
         rewriter, loc, ao.getElemType(), /* isConstant */ false,
         LLVM::Linkage::Internal, name, mlir::Attribute(),
         /* alignment */ 0, /* addrSpace */ 3);
+    globalOp.setAlignmentAttr(ao.getAlignmentAttr());
     rewriter.setInsertionPoint(ao);
     auto aoo = LLVM::AddressOfOp::create(rewriter, loc, globalOp);
 
@@ -345,7 +443,7 @@ struct SharedMemrefAllocaToGlobal : public OpRewritePattern<memref::AllocaOp> {
     memref::GlobalOp::create(rewriter, loc, rewriter.getStringAttr(name),
                              /* sym_visibility */ mlir::StringAttr(),
                              mlir::TypeAttr::get(type), initial_value,
-                             mlir::UnitAttr(), /* alignment */ nullptr);
+                             mlir::UnitAttr(), ao.getAlignmentAttr());
     rewriter.setInsertionPoint(ao);
     auto getGlobalOp = memref::GetGlobalOp::create(rewriter, loc, type, name);
 
@@ -472,10 +570,9 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
     if (!pop)
       return failure();
     bool child = false;
-    pop->walk([&](scf::ParallelOp p) {
-      if (pop != p)
+    for (Operation &op : *pop.getBody())
+      if (isa<scf::ParallelOp>(&op))
         child = true;
-    });
     if (child) {
       LLVM_DEBUG(DBGS() << "only single parallel ops\n");
       return failure();
@@ -503,7 +600,8 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
         curRegion++;
       }
     };
-    auto exactMatch = [&](enzymexla::AlternativesOp alternativesOp) {
+    auto exactMatch = [&](enzymexla::AlternativesOp alternativesOp,
+                          ArrayRef<int> dimOf) {
       auto block = &*alternativesOp->getRegion(curRegion).begin();
       rewriter.setInsertionPointToStart(block);
       // TODO not very efficient...
@@ -513,27 +611,40 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
           getDirectlyNestedSingleParallel(newWrapper.getBody());
       auto loc = pop->getLoc();
 
-      auto upperBounds = getUpperBounds<6>(pop);
-      int totalDims = upperBounds.size();
-
       mlir::OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPoint(pop);
-      auto gridPop = scf::ParallelOp::create(
-          rewriter, loc, pop.getLowerBound().slice(0, 3),
-          pop.getUpperBound().slice(0, 3), pop.getStep().slice(0, 3));
+      Value zero = arith::ConstantIndexOp::create(rewriter, loc, 0);
+      Value one = arith::ConstantIndexOp::create(rewriter, loc, 1);
+
+      SmallVector<Value, 3> lbs[2], ubs[2], steps[2];
+      for (unsigned i = 0; i < 6; i++) {
+        unsigned half = i / 3;
+        if (dimOf[i] < 0) {
+          lbs[half].push_back(zero);
+          ubs[half].push_back(one);
+          steps[half].push_back(one);
+        } else {
+          lbs[half].push_back(pop.getLowerBound()[dimOf[i]]);
+          ubs[half].push_back(pop.getUpperBound()[dimOf[i]]);
+          steps[half].push_back(pop.getStep()[dimOf[i]]);
+        }
+      }
+
+      auto gridPop =
+          scf::ParallelOp::create(rewriter, loc, lbs[0], ubs[0], steps[0]);
       rewriter.setInsertionPointToStart(gridPop.getBody());
-      auto blockPop = scf::ParallelOp::create(
-          rewriter, loc, pop.getLowerBound().slice(3, 3),
-          pop.getUpperBound().slice(3, 3), pop.getStep().slice(3, 3));
+      auto blockPop =
+          scf::ParallelOp::create(rewriter, loc, lbs[1], ubs[1], steps[1]);
       rewriter.setInsertionPointToStart(blockPop.getBody());
 
       IRMapping mapping;
-      for (unsigned i = 0; i < 3; i++)
-        mapping.map(pop.getBody()->getArgument(i),
-                    gridPop.getBody()->getArgument(i));
-      for (unsigned i = 0; i < 3; i++)
-        mapping.map(pop.getBody()->getArgument(i + 3),
-                    blockPop.getBody()->getArgument(i));
+      for (unsigned i = 0; i < 6; i++) {
+        if (dimOf[i] < 0)
+          continue;
+        auto newPop = i < 3 ? gridPop : blockPop;
+        mapping.map(pop.getBody()->getArgument(dimOf[i]),
+                    newPop.getBody()->getArgument(i % 3));
+      }
 
       rewriter.eraseOp(pop.getBody()->getTerminator());
       for (auto &op : *pop.getBody())
@@ -545,8 +656,12 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
       curRegion++;
     };
 
+    SmallVector<int, 6> exactDims;
+    bool hasExactMatch = matchWrapperShape(pop, wrapper, exactDims);
+
+    enzymexla::AlternativesOp alternativesOp = nullptr;
     if (char *blockSizeStr = getenv("POLYGEIST_GPU_KERNEL_BLOCK_SIZE")) {
-      auto alternativesOp = enzymexla::AlternativesOp::create(rewriter, loc, 1);
+      alternativesOp = enzymexla::AlternativesOp::create(rewriter, loc, 1);
       alternativesOp->setAttr("alternatives.type",
                               rewriter.getStringAttr("gpu_kernel"));
       llvm::errs() << "Emitting kernel with " << atoi(blockSizeStr)
@@ -554,34 +669,43 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
       emitAlternative(atoi(blockSizeStr), alternativesOp);
       if (curRegion == 0) {
         llvm::errs() << " Failed to make kernel with exact dimension\n";
-        assert(wrapper.getOperands().size() == 6);
-        assert(pop.getUpperBound().size() == 6 &&
-               pop.getUpperBound() == wrapper.getOperands());
-        exactMatch(alternativesOp);
+        if (hasExactMatch) {
+          exactMatch(alternativesOp, exactDims);
+        } else if (pop->hasAttr("enzymexla.kernel_thread_indices")) {
+          // The exact-shape fallback needs the six grid and block bounds;
+          // a collapsed parallel op does not have them, so reproduce the
+          // recorded original block shape instead.
+          emitAlternative(-1, alternativesOp);
+        } else {
+          // No exact shape and no recorded shape: try the alternative
+          // block sizes until one splits.
+          for (unsigned blockSize : ALTERNATIVE_KERNEL_BLOCK_SIZES) {
+            emitAlternative(blockSize, alternativesOp);
+            if (curRegion != 0)
+              break;
+          }
+        }
       }
       alternativesOp->setAttr("alternatives.descs",
                               rewriter.getArrayAttr(descs));
     } else if (shouldEmitAlternatives(pop)) {
-      auto alternativesOp = enzymexla::AlternativesOp::create(
-          rewriter, loc,
-          ALTERNATIVE_KERNEL_BLOCK_SIZES.size() +
-              (pop.getUpperBound().size() == 6 &&
-               pop.getUpperBound() == wrapper.getOperands()));
+      alternativesOp = enzymexla::AlternativesOp::create(
+          rewriter, loc, ALTERNATIVE_KERNEL_BLOCK_SIZES.size() + hasExactMatch);
       alternativesOp->setAttr("alternatives.type",
                               rewriter.getStringAttr("gpu_kernel"));
       for (unsigned blockSize : ALTERNATIVE_KERNEL_BLOCK_SIZES) {
         emitAlternative(blockSize, alternativesOp);
       }
       assert(wrapper.getOperands().size() == 6);
-      if (pop.getUpperBound().size() == 6 &&
-          pop.getUpperBound() == wrapper.getOperands()) {
-        exactMatch(alternativesOp);
+      if (hasExactMatch) {
+        exactMatch(alternativesOp, exactDims);
       }
       alternativesOp->setAttr("alternatives.descs",
                               rewriter.getArrayAttr(descs));
-      shrinkAlternativesOp(alternativesOp, curRegion, rewriter);
+      if (curRegion != 0)
+        shrinkAlternativesOp(alternativesOp, curRegion, rewriter);
     } else {
-      auto alternativesOp = enzymexla::AlternativesOp::create(rewriter, loc, 1);
+      alternativesOp = enzymexla::AlternativesOp::create(rewriter, loc, 1);
       alternativesOp->setAttr("alternatives.type",
                               rewriter.getStringAttr("gpu_kernel"));
       emitAlternative(-1, alternativesOp);
@@ -589,7 +713,26 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
                               rewriter.getArrayAttr(descs));
     }
 
-    rewriter.eraseOp(wrapper);
+    if (curRegion == 0) {
+      // Nothing split: every candidate block size failed, and the shape could
+      // not be recovered from the wrapper either. Dropping the kernel here
+      // silently turns the launch into a no-op that leaves its outputs
+      // untouched, so say so rather than miscompiling.
+      wrapper.emitError()
+          << "no block size splits this kernel and its " << pop.getNumLoops()
+          << " parallel dimensions do not match the wrapper's grid and block "
+             "bounds; the kernel would be dropped";
+      rewriter.eraseOp(alternativesOp);
+      rewriter.setInsertionPoint(wrapper);
+      auto err = arith::ConstantIndexOp::create(
+          rewriter, loc, CUDA_ERROR_LAUNCH_OUT_OF_RESOURCES);
+      rewriter.replaceOp(wrapper, err->getResults());
+      return success();
+    }
+
+    rewriter.setInsertionPoint(wrapper);
+    auto zero = arith::ConstantIndexOp::create(rewriter, loc, 0);
+    rewriter.replaceOp(wrapper, zero->getResults());
 
     return success();
   }
@@ -651,6 +794,9 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
     auto upperBounds = getUpperBounds<6>(pop);
     int totalDims = upperBounds.size();
 
+    SmallVector<Value, 6> origLowerBounds(pop.getLowerBound().begin(),
+                                          pop.getLowerBound().end());
+
     SmallVector<Value, 3> blockDims;
     SmallVector<Value, 3> gridDims;
     // Arg ids in the original parallel block
@@ -662,7 +808,10 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
       if (maxThreads == -1) {
         auto dea = pop->getAttrOfType<DenseElementsAttr>(
             "enzymexla.kernel_thread_indices");
-        assert(dea);
+        // Without the recorded thread indices there is no original block
+        // shape to reproduce; the caller falls back to a chosen size.
+        if (!dea)
+          return tmp;
         for (auto index_ : dea.getValues<IntegerAttr>()) {
           auto index = index_.getValue().getLimitedValue();
           tmp.push_back(index);
@@ -758,6 +907,21 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
     rewriter.setInsertionPoint(pop);
     auto zeroindex = arith::ConstantIndexOp::create(rewriter, loc, 0);
     auto oneindex = arith::ConstantIndexOp::create(rewriter, loc, 1);
+
+    SmallVector<Value, 6> tripCounts(totalDims);
+    for (int i = 0; i < totalDims; i++) {
+      if (matchPattern(origLowerBounds[i], m_Zero()))
+        tripCounts[i] = upperBounds[i];
+      else
+        tripCounts[i] = arith::SubIOp::create(rewriter, loc, upperBounds[i],
+                                              origLowerBounds[i]);
+    }
+
+    for (unsigned i = 0; i < gridDims.size(); i++)
+      gridDims[i] = tripCounts[gridArgId[i]];
+    for (unsigned i = 0; i < blockDims.size(); i++)
+      blockDims[i] = tripCounts[blockArgId[i]];
+
     unsigned splitDims = 0;
     SmallVector<int, 3> gi;
     SmallVector<int, 3> bi;
@@ -766,7 +930,7 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
       // Put a random index, we will override it
       gridArgId.push_back(0);
     } else if (maxThreads != -1 && threadNum <= maxThreads / 2 &&
-               mustBeBlockIVs.empty()) {
+               mustBeBlockIVs.empty() && blockDims.size() < 3) {
       // If we are not getting enough parallelism in the block, use part of the
       // grid dims
 
@@ -843,12 +1007,27 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
     rewriter.setInsertionPointToStart(blockPop.getBody());
 
     IRMapping mapping;
-    for (unsigned i = 0; i < gridDims.size(); i++)
-      mapping.map(pop.getBody()->getArgument(gridArgId[i]),
-                  gridPop.getBody()->getArgument(i));
-    for (unsigned i = 0; i < blockDims.size(); i++)
-      mapping.map(pop.getBody()->getArgument(blockArgId[i]),
-                  blockPop.getBody()->getArgument(i));
+    for (unsigned i = 0; i < gridDims.size(); i++) {
+      Value iv;
+      if (matchPattern(origLowerBounds[gridArgId[i]], m_Zero()))
+        iv = gridPop.getBody()->getArgument(i);
+      else
+        iv = arith::AddIOp::create(rewriter, loc,
+                                   gridPop.getBody()->getArgument(i),
+                                   origLowerBounds[gridArgId[i]]);
+      mapping.map(pop.getBody()->getArgument(gridArgId[i]), iv);
+    }
+
+    for (unsigned i = 0; i < blockDims.size(); i++) {
+      Value iv;
+      if (matchPattern(origLowerBounds[blockArgId[i]], m_Zero()))
+        iv = blockPop.getBody()->getArgument(i);
+      else
+        iv = arith::AddIOp::create(rewriter, loc,
+                                   blockPop.getBody()->getArgument(i),
+                                   origLowerBounds[blockArgId[i]]);
+      mapping.map(pop.getBody()->getArgument(blockArgId[i]), iv);
+    }
 
     // For the split dims, calculate the equivalent threadId and map that
     // instead
@@ -869,10 +1048,15 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
         auto threadId = arith::AddIOp::create(
             rewriter, loc, mul, blockPop.getBody()->getArgument(bi[i]));
         assert(blockArgId[bi[i]] == gridArgId[gi[i]]);
-        mapping.map(pop.getBody()->getArgument(gridArgId[gi[i]]), threadId);
+        // Add lower bound offset: mapped IV = threadId + lb
+        auto adjustedThreadId = arith::AddIOp::create(
+            rewriter, loc, threadId, origLowerBounds[gridArgId[gi[i]]]);
+        mapping.map(pop.getBody()->getArgument(gridArgId[gi[i]]),
+                    adjustedThreadId);
+        // Bound check against trip count (ub - lb), not upper bound
         auto threadCond =
             arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::ult,
-                                  threadId, upperBounds[gridArgId[gi[i]]]);
+                                  threadId, tripCounts[gridArgId[gi[i]]]);
         if (i == 0)
           cond = threadCond.getResult();
         else
@@ -925,6 +1109,12 @@ struct SplitParallelOp : public OpRewritePattern<enzymexla::GPUWrapperOp> {
 ///     C'()
 ///   }
 /// }
+static Operation *ancestorOpInBlock(Operation *op, Block *block) {
+  while (op && op->getBlock() != block)
+    op = op->getParentOp();
+  return op;
+}
+
 struct ParallelizeBlockOps : public OpRewritePattern<scf::ParallelOp> {
   using OpRewritePattern<scf::ParallelOp>::OpRewritePattern;
 
@@ -933,6 +1123,15 @@ struct ParallelizeBlockOps : public OpRewritePattern<scf::ParallelOp> {
                                 PatternRewriter &rewriter) const override {
     if (!pop->getParentOfType<scf::ParallelOp>()) {
       LLVM_DEBUG(DBGS() << "ignoring non nested parallel op\n");
+      return failure();
+    }
+    if (pop.getNumResults()) {
+      LLVM_DEBUG(DBGS() << "cannot parallelize around a reduction\n");
+      return failure();
+    }
+    auto parentPar = dyn_cast<scf::ParallelOp>(pop->getParentOp());
+    if (!parentPar || !isa<enzymexla::GPUWrapperOp>(parentPar->getParentOp())) {
+      LLVM_DEBUG(DBGS() << "parallel is serialized in a thread\n");
       return failure();
     }
     auto loc = pop->getLoc();
@@ -944,79 +1143,197 @@ struct ParallelizeBlockOps : public OpRewritePattern<scf::ParallelOp> {
       return failure();
     }
 
-    // Handle ops before the parallel
-    scf::IfOp ifOp = nullptr;
-    auto getIf = [&]() {
-      if (!ifOp) {
-        auto zero = arith::ConstantIndexOp::create(rewriter, loc, 0);
-        Value cond;
-        for (unsigned i = 0; i < innerBlock->getNumArguments(); i++) {
-          auto threadId = innerBlock->getArgument(i);
-          auto threadCond = arith::CmpIOp::create(
-              rewriter, loc, arith::CmpIPredicate::eq, threadId, zero);
-          if (i == 0)
-            cond = threadCond.getResult();
-          else
-            cond = arith::AndIOp::create(rewriter, loc, threadCond, cond)
-                       .getResult();
-        }
-        ifOp = scf::IfOp::create(rewriter, loc, cond);
-        mlir::enzymexla::BarrierOp::create(rewriter, loc,
-                                           innerBlock->getArguments());
-        rewriter.setInsertionPoint(ifOp);
-      }
-    };
-
-    rewriter.setInsertionPointToStart(innerBlock);
-    auto it = outerBlock->begin();
+    // Two things read values of this block from outside the inner parallel's
+    // body, where moving their computation inside cannot rewrite them: the
+    // parallel's own bounds, and the block's terminator -- which, when the
+    // parallel sits in a loop body rather than directly in the grid parallel,
+    // is an scf.condition or scf.yield reading values computed beside it.
+    // Only the uses within the body are replaced, so erasing what those read
+    // leaves them pointing at a corpse. They, and everything they are in turn
+    // computed from in this block, have to stay where they are.
+    // This application owns the ops between the previous sibling parallel
+    // and pop, and between pop and the next sibling parallel: everything
+    // before that sibling precedes it in program order, so it is that
+    // parallel's application that may move it, and likewise after.
     auto end = outerBlock->getTerminator()->getIterator();
+    auto walkBegin = outerBlock->begin();
+    for (auto it = pop->getIterator(); it != outerBlock->begin();) {
+      --it;
+      if (isa<scf::ParallelOp>(&*it)) {
+        walkBegin = std::next(it);
+        break;
+      }
+    }
+    auto walkEnd = end;
+    for (auto it = std::next(pop->getIterator()); it != end; ++it)
+      if (isa<scf::ParallelOp>(&*it)) {
+        walkEnd = it;
+        break;
+      }
+
+    DenseSet<Operation *> pinned;
+    {
+      SmallVector<Value> todo(pop->getOperands().begin(),
+                              pop->getOperands().end());
+      llvm::append_range(todo, outerBlock->getTerminator()->getOperands());
+      while (!todo.empty()) {
+        Value cur = todo.pop_back_val();
+        Operation *def = cur.getDefiningOp();
+        if (!def || def->getParentRegion() != outerBlock->getParent())
+          continue;
+        assert(def->getNumRegions() == 0 &&
+               "bounds computed by an op with regions");
+        if (!pinned.insert(def).second)
+          continue;
+        llvm::append_range(todo, def->getOperands());
+      }
+      // Leaving an op in place is always sound, but reporting a change while
+      // leaving everything in place is not: the greedy driver would rescan
+      // for ever.
+      bool anyWork = false;
+      for (auto it = walkBegin; &*it != pop.getOperation(); ++it)
+        if (!isa<memref::AllocaOp, LLVM::AllocaOp>(&*it) && !pinned.count(&*it))
+          anyWork = true;
+      for (auto it = std::next(pop->getIterator()); it != walkEnd; ++it)
+        if (!isa<memref::AllocaOp, LLVM::AllocaOp>(&*it) && !pinned.count(&*it))
+          anyWork = true;
+      if (!anyWork)
+        return rewriter.notifyMatchFailure(
+            pop, "every op beside the parallel computes its bounds");
+    }
+
+    // Handle ops before the parallel, in three traversals. First, in block
+    // order: the ops with write effects must run once, in a thread-zero if.
+    llvm::SetVector<Operation *> needsIf;
+    for (auto it = walkBegin; &*it != pop.getOperation(); ++it) {
+      Operation &op = *it;
+      if (pinned.count(&op))
+        continue;
+      if (it == end)
+        llvm_unreachable("Impossible");
+      if (isa<memref::AllocaOp, LLVM::AllocaOp>(&op))
+        continue;
+      SmallVector<MemoryEffects::EffectInstance> effects;
+      collectEffects(&op, effects, /*ignoreBarriers*/ false);
+      if (hasEffect<MemoryEffects::Allocate>(effects))
+        llvm_unreachable("??");
+      if (hasEffect<MemoryEffects::Free>(effects))
+        llvm_unreachable("??");
+      if (hasEffect<MemoryEffects::Write>(effects))
+        needsIf.insert(&op);
+    }
+
+    // Second, in reverse order from the parallel: an op whose value feeds
+    // the if runs in it too, so the guarded ops read what they read at their
+    // original position.
+    llvm::SetVector<Operation *> feedsIf;
+    for (auto it = pop->getIterator(); it != walkBegin;) {
+      --it;
+      Operation &op = *it;
+      if (pinned.count(&op) || isa<memref::AllocaOp, LLVM::AllocaOp>(&op) ||
+          needsIf.contains(&op))
+        continue;
+      for (Value res : op.getResults())
+        for (Operation *user : res.getUsers()) {
+          Operation *anc = ancestorOpInBlock(user, outerBlock);
+          if (anc && (needsIf.contains(anc) || feedsIf.contains(anc))) {
+            feedsIf.insert(&op);
+            break;
+          }
+        }
+    }
+
+    // A moved value used outside the if is recomputed after it, and so is
+    // every moved value such a recomputation reads in turn.
+    llvm::DenseSet<Operation *> needClone;
+    for (auto it = pop->getIterator(); it != walkBegin;) {
+      --it;
+      Operation &op = *it;
+      if (!feedsIf.contains(&op))
+        continue;
+      for (Operation *user : op.getUsers()) {
+        Operation *anc = ancestorOpInBlock(user, outerBlock);
+        if (!anc || (!needsIf.contains(anc) && !feedsIf.contains(anc)) ||
+            needClone.count(anc)) {
+          needClone.insert(&op);
+          break;
+        }
+      }
+    }
+
+    // Third: recompute and forward what the parallel's body reads, then
+    // move the guarded slice into the if, in original order.
+    rewriter.setInsertionPointToStart(innerBlock);
+    scf::IfOp ifOp = nullptr;
+    if (!needsIf.empty()) {
+      Value cond;
+      for (unsigned i = 0; i < innerBlock->getNumArguments(); i++) {
+        auto threadId = innerBlock->getArgument(i);
+        auto threadCond =
+            arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::eq,
+                                  threadId, pop.getLowerBound()[i]);
+        if (i == 0)
+          cond = threadCond.getResult();
+        else
+          cond = arith::AndIOp::create(rewriter, loc, threadCond, cond)
+                     .getResult();
+      }
+      ifOp = scf::IfOp::create(rewriter, loc, cond);
+      mlir::enzymexla::BarrierOp::create(rewriter, loc,
+                                         innerBlock->getArguments());
+    }
     SmallVector<Operation *> toErase;
     IRMapping mapping;
-    for (; &*it != pop.getOperation(); ++it) {
+    for (auto it = walkBegin; &*it != pop.getOperation(); ++it) {
       Operation &op = *it;
-      Operation *newOp;
-      if (isa<scf::ParallelOp>(&op)) {
-        llvm_unreachable("Unhandled case");
-        break;
-      } else if (it == end) {
-        llvm_unreachable("Impossible");
+      if (pinned.count(&op) || isa<memref::AllocaOp, LLVM::AllocaOp>(&op))
         continue;
-      } else if (auto alloca = dyn_cast<memref::AllocaOp>(&op)) {
-        continue;
-      } else if (auto alloca = dyn_cast<LLVM::AllocaOp>(&op)) {
-        continue;
-      } else {
-        mlir::OpBuilder::InsertionGuard guard(rewriter);
-        SmallVector<MemoryEffects::EffectInstance> effects;
-        collectEffects(&op, effects, /*ignoreBarriers*/ false);
-        if (effects.empty()) {
-        } else if (hasEffect<MemoryEffects::Allocate>(effects)) {
-          llvm_unreachable("??");
-        } else if (hasEffect<MemoryEffects::Free>(effects)) {
-          llvm_unreachable("??");
-        } else if (hasEffect<MemoryEffects::Write>(effects)) {
-          getIf();
-          assert(ifOp);
-          rewriter.setInsertionPoint(ifOp.thenBlock()->getTerminator());
-          // TODO currently we assume that ops with write effects will have no
-          // uses - we have to introduce shared mem otherwise
-          if (!op.use_empty()) {
+      if (needsIf.contains(&op)) {
+        // TODO currently we assume that ops with write effects will have no
+        // uses outside the if - we have to introduce shared mem otherwise
+        for (Operation *user : op.getUsers()) {
+          Operation *anc = ancestorOpInBlock(user, outerBlock);
+          if (!anc || (!needsIf.contains(anc) && !feedsIf.contains(anc)) ||
+              needClone.count(anc))
             llvm_unreachable("could not fix parallel fusion");
-          }
-        } else if (hasEffect<MemoryEffects::Read>(effects)) {
-          // Reads-only ops are legal to parallelize
         }
-        newOp = rewriter.clone(op, mapping);
+        continue;
       }
+      if (feedsIf.contains(&op)) {
+        if (!needClone.count(&op))
+          continue;
+        Operation *newOp = rewriter.clone(op, mapping);
+        for (auto [oldRes, newRes] :
+             llvm::zip(op.getResults(), newOp->getResults()))
+          rewriter.replaceUsesWithIf(oldRes, newRes, [&](OpOperand &use) {
+            Operation *anc = ancestorOpInBlock(use.getOwner(), outerBlock);
+            return !anc || (!needsIf.contains(anc) && !feedsIf.contains(anc));
+          });
+        continue;
+      }
+      Operation *newOp = rewriter.clone(op, mapping);
       rewriter.replaceOpUsesWithinBlock(&op, newOp->getResults(), innerBlock);
       toErase.push_back(&op);
     }
-    it++;
+    if (ifOp)
+      for (auto it = walkBegin; &*it != pop.getOperation();) {
+        Operation &op = *it;
+        ++it;
+        if (needsIf.contains(&op) || feedsIf.contains(&op))
+          rewriter.moveOpBefore(&op, ifOp.thenBlock()->getTerminator());
+      }
+    auto it = std::next(pop->getIterator());
 
     // Handle ops after the parallel
-    {
-      auto zeroindex = arith::ConstantIndexOp::create(rewriter, loc, 0);
+    bool anyAfter = false;
+    for (auto probe = it; probe != walkEnd; ++probe)
+      if (!pinned.count(&*probe))
+        anyAfter = true;
+    if (anyAfter) {
       rewriter.setInsertionPoint(innerBlock->getTerminator());
+      mlir::enzymexla::BarrierOp::create(rewriter, loc,
+                                         innerBlock->getArguments());
+      auto zeroindex = arith::ConstantIndexOp::create(rewriter, loc, 0);
       auto cmpOp =
           arith::CmpIOp::create(rewriter, loc, arith::CmpIPredicate::eq,
                                 zeroindex, innerBlock->getArgument(0));
@@ -1030,9 +1347,11 @@ struct ParallelizeBlockOps : public OpRewritePattern<scf::ParallelOp> {
       }
       auto ifOp = scf::IfOp::create(rewriter, loc, condition);
       rewriter.setInsertionPointToStart(ifOp.thenBlock());
-      for (; it != end; ++it) {
+      for (; it != walkEnd; ++it) {
         Operation &op = *it;
-        if (isa<scf::ParallelOp>(&op)) {
+        if (pinned.count(&op)) {
+          continue;
+        } else if (isa<scf::ParallelOp>(&op)) {
           llvm_unreachable("Unhandled case");
           break;
         } else if (auto alloca = dyn_cast<memref::AllocaOp>(&op)) {
@@ -1183,6 +1502,7 @@ struct HandleWrapperRootOps : public OpRewritePattern<enzymexla::GPUWrapperOp> {
     rewriter.setInsertionPoint(wrapper);
     auto newWrapper =
         enzymexla::GPUWrapperOp::create(rewriter, loc, wrapper.getOperands());
+    newWrapper->setDiscardableAttrs(wrapper->getDiscardableAttrDictionary());
     IRMapping hoistMapping;
     IRMapping splitMapping;
     IRMapping parallelizedMapping;
@@ -1428,6 +1748,7 @@ struct RemovePolygeistNoopOp : public OpRewritePattern<enzymexla::NoopOp> {
           }
         } else {
           auto cst = getConstantInteger(operand);
+          (void)cst;
           assert(cst && *cst == 0 && "non block arg operands must be const 0");
         }
       }
@@ -1562,6 +1883,7 @@ struct SplitOffParallel : public OpRewritePattern<enzymexla::GPUWrapperOp> {
     rewriter.setInsertionPoint(wrapper);
     auto newWrapper =
         enzymexla::GPUWrapperOp::create(rewriter, loc, wrapper.getOperands());
+    newWrapper->setDiscardableAttrs(wrapper->getDiscardableAttrDictionary());
     rewriter.setInsertionPointToStart(newWrapper.getBody());
     rewriter.clone(*pop.getOperation());
     rewriter.eraseOp(pop);
@@ -1590,9 +1912,6 @@ struct ParallelToGPULaunch : public OpRewritePattern<enzymexla::GPUWrapperOp> {
       LLVM_DEBUG(DBGS() << "[pop-to-launch] ignoring nested parallel op\n");
       return failure();
     }
-    rewriter.setInsertionPoint(wrapper);
-    auto oneindex = arith::ConstantIndexOp::create(rewriter, loc, 1);
-
     // TODO we currently assume that all parallel ops we encouter are already
     // prepared for conversion to gpu.launch, i.e. two nested parallel loops
     // with lower bounds zero and constant upper bounds for the inner parallel,
@@ -1606,13 +1925,37 @@ struct ParallelToGPULaunch : public OpRewritePattern<enzymexla::GPUWrapperOp> {
     if (!blockPop)
       return failure();
 
+    // Only mutate once the match is certain: an op created before a bail
+    // marks the IR changed on every scan, so a wrapper this pattern cannot
+    // convert -- such as one whose bounds have to stay beside the parallel,
+    // below -- keeps the greedy driver from ever converging, and it reports
+    // failure with no diagnostic when it gives up.
+    rewriter.setInsertionPoint(wrapper);
+    auto oneindex = arith::ConstantIndexOp::create(rewriter, loc, 1);
+
     rewriter.setInsertionPoint(wrapper);
     auto errOp = enzymexla::GPUErrorOp::create(rewriter, loc);
 
-    for (auto atname : {"passthrough", "target_features"})
+    for (auto atname : {"passthrough", "target_features", "target_cpu"})
       if (auto attr = wrapper->getAttr(atname)) {
         errOp->setAttr(atname, attr);
       }
+    // The launch bounds riding the passthrough promise a specific block
+    // shape: record the original block size so their consumer can tell a
+    // reproduced shape from a re-blocked one.
+    {
+      int64_t orig = 1;
+      bool known = true;
+      for (unsigned i = 3; i < 6 && known; i++) {
+        if (auto c = getConstantInteger(wrapper.getOperand(i)))
+          orig *= *c;
+        else
+          known = false;
+      }
+      if (known)
+        errOp->setAttr("reactant.launch_block_size",
+                       rewriter.getI64IntegerAttr(orig));
+    }
     rewriter.setInsertionPointToStart(errOp.getBody());
     rewriter.eraseOp(wrapper.getBody()->getTerminator());
     rewriter.inlineBlockBefore(wrapper.getBody(),
@@ -1695,9 +2038,14 @@ struct ParallelToGPULaunch : public OpRewritePattern<enzymexla::GPUWrapperOp> {
                                     /* memspace */ 5);
         auto newAlloca =
             memref::AllocaOp::create(rewriter, alloca.getLoc(), type);
-        auto cast = memref::CastOp::create(rewriter, alloca.getLoc(),
-                                           alloca.getType(), newAlloca);
-        it->replaceAllUsesWith(cast);
+        if (auto align = alloca.getAlignment())
+          newAlloca.setAlignment(*align);
+        // memref.cast cannot change the memory space; that is what
+        // memref.memory_space_cast is for, and with C-style memrefs it
+        // lowers to an addrspacecast.
+        auto cast = memref::MemorySpaceCastOp::create(
+            rewriter, alloca.getLoc(), alloca.getType(), newAlloca);
+        it->replaceAllUsesWith(cast.getOperation());
       } else {
         assert(0);
       }
@@ -1788,24 +2136,33 @@ struct AsyncGPULaunch : public OpRewritePattern<async::ExecuteOp> {
             .wasInterrupted())
       return failure();
 
-    SmallVector<Value> gpudeps;
-    for (auto dep : async.getDependencies()) {
-      gpudeps.push_back(enzymexla::StreamToTokenOp::create(
-          rewriter, dep.getLoc(), rewriter.getType<gpu::AsyncTokenType>(),
-          dep.getDefiningOp<enzymexla::StreamToTokenOp>().getOperand()));
-    }
+    SmallVector<Value> streams;
+    for (auto dep : async.getDependencies())
+      streams.push_back(
+          dep.getDefiningOp<enzymexla::StreamToTokenOp>().getOperand());
 
-    for (auto launch : launches) {
-      rewriter.modifyOpInPlace(launch, [&]() {
-        launch.getAsyncDependenciesMutable().append(gpudeps);
-      });
-    }
+    // Both launch ops carry the stream on their asyncObject operand: a
+    // dependency operand without a result token no longer verifies, and
+    // neither launch built here returns one. The operand is a single value,
+    // so more than one stream cannot be said.
+    if ((!launches.empty() || !launches2.empty()) &&
+        (streams.size() != 1 ||
+         llvm::any_of(launches,
+                      [](gpu::LaunchFuncOp launch) {
+                        return launch.getAsyncObject() != nullptr;
+                      }) ||
+         llvm::any_of(launches2, [](gpu::LaunchOp launch) {
+           return launch.getAsyncObject() != nullptr;
+         })))
+      return failure();
 
-    for (auto launch : launches2) {
-      rewriter.modifyOpInPlace(launch, [&]() {
-        launch.getAsyncDependenciesMutable().append(gpudeps);
-      });
-    }
+    for (auto launch : launches)
+      rewriter.modifyOpInPlace(
+          launch, [&]() { launch.getAsyncObjectMutable().assign(streams[0]); });
+
+    for (auto launch : launches2)
+      rewriter.modifyOpInPlace(
+          launch, [&]() { launch.getAsyncObjectMutable().assign(streams[0]); });
 
     rewriter.eraseOp(async.getBody()->getTerminator());
     rewriter.inlineBlockBefore(async.getBody(), async);
@@ -1850,8 +2207,13 @@ struct InnerParallelSerialization : public OpRewritePattern<scf::ParallelOp> {
     while ((par = par->getParentOfType<scf::ParallelOp>())) {
       parallelCount++;
     }
-    // is presently one of the three outer parallel loops;
-    if (parallelCount < 2)
+    // is presently one of the three outer parallel loops; a parallel
+    // carrying reductions cannot be one of those -- a launch has no
+    // reduction semantics -- so it is an inner loop wherever it sits,
+    // including directly under the single parallel left when grid and
+    // block were fused
+    if (parallelCount < 2 &&
+        !(parallelCount == 1 && parallelOp.getNumResults()))
       return failure();
 
     // For a parallel loop, we essentially need to create an n-dimensional loop
@@ -1936,8 +2298,15 @@ struct ConvertParallelToGPU1Pass
       RewritePatternSet patterns(&getContext());
       patterns.insert<InnerParallelSerialization>(&getContext());
       GreedyRewriteConfig config;
-      if (failed(
-              applyPatternsAndFoldGreedily(m, std::move(patterns), config))) {
+      config.enableFolding();
+      // Aggressive region simplification (the greedy default) merges
+      // identical blocks by adding their differing values as block arguments
+      // and appending them to every predecessor's successor operands --
+      // including llvm.invoke's, which cannot carry index- or memref-typed
+      // successor operands. These functions still hold raised llvm CFGs;
+      // keep block merging off.
+      config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);
+      if (failed(applyPatternsGreedily(m, std::move(patterns), config))) {
         signalPassFailure();
         return;
       }
@@ -1955,8 +2324,15 @@ struct ConvertParallelToGPU1Pass
         >(&getContext());
       // clang-format on
       GreedyRewriteConfig config;
-      if (failed(
-              applyPatternsAndFoldGreedily(m, std::move(patterns), config))) {
+      config.enableFolding();
+      // Aggressive region simplification (the greedy default) merges
+      // identical blocks by adding their differing values as block arguments
+      // and appending them to every predecessor's successor operands --
+      // including llvm.invoke's, which cannot carry index- or memref-typed
+      // successor operands. These functions still hold raised llvm CFGs;
+      // keep block merging off.
+      config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);
+      if (failed(applyPatternsGreedily(m, std::move(patterns), config))) {
         signalPassFailure();
         return;
       }
@@ -1980,8 +2356,15 @@ struct ConvertParallelToGPU1Pass
       RewritePatternSet patterns(&getContext());
       populateNormalizationPatterns(patterns);
       GreedyRewriteConfig config;
-      if (failed(
-              applyPatternsAndFoldGreedily(m, std::move(patterns), config))) {
+      config.enableFolding();
+      // Aggressive region simplification (the greedy default) merges
+      // identical blocks by adding their differing values as block arguments
+      // and appending them to every predecessor's successor operands --
+      // including llvm.invoke's, which cannot carry index- or memref-typed
+      // successor operands. These functions still hold raised llvm CFGs;
+      // keep block merging off.
+      config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);
+      if (failed(applyPatternsGreedily(m, std::move(patterns), config))) {
         signalPassFailure();
         return;
       }
@@ -2345,6 +2728,7 @@ struct ConvertParallelToGPU1Pass
                    iThread < UNROLL_FACTORS[blockDims].size(); iThread++) {
                 auto succeeded =
                     emitAlternative(unrollFactorOne, iThread).succeeded();
+                (void)succeeded;
                 assert(succeeded);
               }
             }
@@ -2399,8 +2783,15 @@ struct ConvertParallelToGPU1Pass
         >(&getContext());
       // clang-format on
       GreedyRewriteConfig config;
-      if (failed(
-              applyPatternsAndFoldGreedily(m, std::move(patterns), config))) {
+      config.enableFolding();
+      // Aggressive region simplification (the greedy default) merges
+      // identical blocks by adding their differing values as block arguments
+      // and appending them to every predecessor's successor operands --
+      // including llvm.invoke's, which cannot carry index- or memref-typed
+      // successor operands. These functions still hold raised llvm CFGs;
+      // keep block merging off.
+      config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);
+      if (failed(applyPatternsGreedily(m, std::move(patterns), config))) {
         signalPassFailure();
         return;
       }
@@ -2413,8 +2804,15 @@ struct ConvertParallelToGPU1Pass
         >(&getContext());
       // clang-format on
       GreedyRewriteConfig config;
-      if (failed(
-              applyPatternsAndFoldGreedily(m, std::move(patterns), config))) {
+      config.enableFolding();
+      // Aggressive region simplification (the greedy default) merges
+      // identical blocks by adding their differing values as block arguments
+      // and appending them to every predecessor's successor operands --
+      // including llvm.invoke's, which cannot carry index- or memref-typed
+      // successor operands. These functions still hold raised llvm CFGs;
+      // keep block merging off.
+      config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);
+      if (failed(applyPatternsGreedily(m, std::move(patterns), config))) {
         signalPassFailure();
         return;
       }
@@ -2437,6 +2835,7 @@ struct ConvertParallelToGPU1Pass
         return;
 
       OpBuilder builder(launchOpBody);
+      builder.setInsertionPointToStart(&launchOpBody.front());
       for (Operation *op : toBeSunk) {
         Operation *clonedOp = builder.clone(*op);
         // Only replace uses within the launch op.
@@ -2486,8 +2885,10 @@ gdgo->erase();
                 RemoveFunction<func::FuncOp>, RemoveFunction<LLVM::LLVMFuncOp>>(
             &getContext());
     GreedyRewriteConfig config;
-    if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),
-                                            config))) {
+    config.enableFolding();
+    config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);
+    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
+                                     config))) {
       signalPassFailure();
       return;
     }
@@ -2495,6 +2896,9 @@ gdgo->erase();
     symbolTable.getSymbolTable(getOperation());
     getOperation()->walk([&](GPUErrorOp err) {
       std::string sm;
+      // The host symbol whose address the program passes around; outlined
+      // kernels reach here without one, and registration binds it.
+      StringRef hostSymbol;
       if (auto attr =
               dyn_cast_or_null<ArrayAttr>(err->getAttr("passthrough"))) {
         for (auto a : attr) {
@@ -2507,6 +2911,15 @@ gdgo->erase();
               continue;
             if (s0.getValue() == "target-cpu")
               sm = s1.getValue();
+            if (s0.getValue() == "polygeist.host_symbol")
+              hostSymbol = s1.getValue();
+            if (backend == "rocm") {
+              if (sm.find("sm_") != std::string::npos) {
+                llvm::errs() << "Error: Found NVIDIA architecture while "
+                                "targeting ROCm.\n";
+                std::abort();
+              }
+            }
           }
         }
       }
@@ -2516,22 +2929,54 @@ gdgo->erase();
         feat = attr.getFeaturesString();
       }
 
+      if (sm.empty())
+        if (auto arch =
+                dyn_cast_or_null<StringAttr>(err->getAttr("target_cpu")))
+          sm = arch.getValue().str();
+
       err->walk([&](gpu::LaunchFuncOp launch) {
         auto gfunc = dyn_cast_or_null<gpu::GPUFuncOp>(
             symbolTable.lookupNearestSymbolFrom(launch, launch.getKernel()));
         if (!gfunc)
           return;
+        if (!hostSymbol.empty() && !gfunc->hasAttr("polygeist.host_symbol"))
+          gfunc->setAttr("polygeist.host_symbol",
+                         StringAttr::get(gfunc->getContext(), hostSymbol));
         auto gmod = cast<gpu::GPUModuleOp>(gfunc->getParentOp());
         if (!gmod.getTargetsAttr()) {
-          auto chip = sm;
-          if (chip.size() == 0)
-            chip = "sm_80";
-          auto features = feat;
-          if (features.size() == 0)
-            features = "+ptx73";
-          auto target = NVVM::NVVMTargetAttr::get(
-              gmod.getContext(), /*optLevel*/ 2,
-              /*triple*/ "nvptx64-nvidia-cuda", chip, features);
+          Attribute target;
+          bool hasFastMath = false;
+          if (auto attr =
+                  gfunc->getAttrOfType<BoolAttr>("no_signed_zeros_fp_math"))
+            hasFastMath = attr.getValue();
+
+          if (backend == "rocm") {
+            auto chip = "gfx900";
+            auto features = "+wavefront64";
+            target = ROCDL::ROCDLTargetAttr::get(
+                gmod.getContext(),
+                /*optLevel=*/3, /*triple=*/"amdgcn-amd-amdhsa", chip, features,
+                /*abiVersion=*/"600");
+          } else {
+            auto chip = sm;
+            if (chip.size() == 0)
+              chip = "sm_80";
+            auto features = feat;
+            if (features.size() == 0)
+              features = "+ptx73";
+
+            auto ctx = gmod.getContext();
+            DictionaryAttr flags;
+            if (hasFastMath) {
+              auto fastAttr = BoolAttr::get(ctx, true);
+              flags = DictionaryAttr::get(ctx, {{"fast", fastAttr}});
+            } else {
+              flags = DictionaryAttr::get(ctx, {});
+            }
+            target = NVVM::NVVMTargetAttr::get(
+                gmod.getContext(), /*optLevel*/ 3,
+                /*triple*/ "nvptx64-nvidia-cuda", chip, features, flags);
+          }
           gmod.setTargetsAttr(ArrayAttr::get(gmod.getContext(), target));
 
           DataLayoutSpecInterface dataLayout = {};

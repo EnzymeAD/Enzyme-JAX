@@ -144,7 +144,7 @@ bool CompileGPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
       }
 
       op.getFunctionBody().cloneInto(&gpufunc.getBody(), map);
-      gpufunc->setAttr("gpu.kernel", builder.getUnitAttr());
+      gpufunc.setKernelAttr(builder.getUnitAttr());
 
       auto second = entry->getNextNode();
       entry->getOperations().splice(entry->getOperations().end(),
@@ -209,6 +209,7 @@ bool CompileGPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
   callid++;
   auto callName = (op.getName() + "$call$" + std::to_string(callid)).str();
   auto func = func::FuncOp::create(builder, loc, callName, gpuTy);
+  func->setDiscardableAttrs(op->getDiscardableAttrDictionary());
   func.setVisibility(SymbolTable::Visibility::Private);
 
   auto &entryBlock = *func.addEntryBlock();
@@ -243,7 +244,7 @@ bool CompileGPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
     gpu::LaunchFuncOp::create(builder, loc, gpufunc, gridSize, blockSize,
                               dynshmem, entryBlock.getArguments(),
                               stream.getType(), ValueRange(stream),
-                              clusterSize);
+                              /*asyncObject=*/nullptr, clusterSize);
   } else {
     gpu::LaunchFuncOp::create(builder, loc, gpufunc, gridSize, blockSize,
                               dynshmem, entryBlock.getArguments(),
@@ -304,6 +305,7 @@ bool CompileCPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
   auto callName = (op.getName() + "$" + "par" + std::to_string(id)).str();
   id++;
   auto func = func::FuncOp::create(builder, loc, callName, gpuTy0);
+  func->setDiscardableAttrs(op->getDiscardableAttrDictionary());
   func.setVisibility(SymbolTable::Visibility::Private);
   auto &entryBlock = *func.addEntryBlock();
   builder.setInsertionPointToStart(&entryBlock);

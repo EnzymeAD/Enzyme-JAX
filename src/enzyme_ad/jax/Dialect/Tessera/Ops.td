@@ -11,7 +11,6 @@ include "mlir/Interfaces/FunctionInterfaces.td"
 include "mlir/Interfaces/InferTypeOpInterface.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 
-
 include "Dialect.td"
 
 //===----------------------------------------------------------------------===//
@@ -30,26 +29,23 @@ def DefineOp : TesseraOp<"define", [
 
   let arguments = (ins SymbolNameAttr:$sym_name,
                        TypeAttrOf<FunctionType>:$function_type,
+	                     ArrayAttr:$byRefTypes,
+                       BoolAttr:$pure,
                        OptionalAttr<StrAttr>:$sym_visibility,
                        OptionalAttr<DictArrayAttr>:$arg_attrs,
                        OptionalAttr<DictArrayAttr>:$res_attrs
-                    );
+                  );
   let regions = (region AnyRegion:$body);
 
   let builders = [OpBuilder<(ins
     "StringRef":$name, "FunctionType":$type,
+    "ArrayAttr":$byRefTypes,
+    "bool":$pure,
+    CArg<"StringAttr", "{}">:$sym_visibility,
     CArg<"ArrayRef<NamedAttribute>", "{}">:$attrs,
     CArg<"ArrayRef<DictionaryAttr>", "{}">:$argAttrs)
   >];
   let extraClassDeclaration = [{
-    static DefineOp create(Location location, StringRef name, FunctionType type,
-                         ArrayRef<NamedAttribute> attrs = {});
-    static DefineOp create(Location location, StringRef name, FunctionType type,
-                         Operation::dialect_attr_range attrs);
-    static DefineOp create(Location location, StringRef name, FunctionType type,
-                         ArrayRef<NamedAttribute> attrs,
-                         ArrayRef<DictionaryAttr> argAttrs);
-
     /// Create a deep copy of this function and all of its blocks, remapping any
     /// operands that use values outside of the function using the map that is
     /// provided (leaving them alone if no entry is present). If the mapper
@@ -66,6 +62,18 @@ def DefineOp : TesseraOp<"define", [
     /// compatible.
     void cloneInto(DefineOp dest, IRMapping &mapper);
 
+    ::mlir::Attribute getSretAttr();
+
+    // Returns the stored byref-type array as an ArrayRef. Index convention: sret-excluded
+    // argument index, since it is based on the argument list in the annotation string,
+    // which does not include the sret argument. Each entry is either a TypeAttr
+    // (arg is byref) or null (arg is not byref).
+    ::mlir::ArrayRef<Attribute> getByRefTypesArray();
+
+    // Returns the byref type for a given argument index, or null if the argument is not byref.
+    ::mlir::Type getByRefType(unsigned argIdx);
+
+
     //===------------------------------------------------------------------===//
     // FunctionOpInterface Methods
     //===------------------------------------------------------------------===//
@@ -81,20 +89,20 @@ def DefineOp : TesseraOp<"define", [
     /// Returns the result types of this function.
     ArrayRef<Type> getResultTypes() { return getFunctionType().getResults(); }
 
-    //===------------------------------------------------------------------===//
-    // OpAsmOpInterface Methods
-    //===------------------------------------------------------------------===//
-
-    /// Allow the dialect prefix to be omitted.
-    static StringRef getDefaultDialect() { return "tessera"; }
+    /// Returns the argument attribute at the given index, accounting for the
+    /// sret argument offset if present.
+    ::mlir::Attribute getArgAttr(unsigned index, mlir::StringAttr name);
+    ::mlir::Attribute getArgAttr(unsigned index, llvm::StringRef name);
 
     //===------------------------------------------------------------------===//
     // SymbolOpInterface Methods
     //===------------------------------------------------------------------===//
 
     bool isDeclaration() { return isExternal(); }
+
   }];
   let hasCustomAssemblyFormat = 1;
+  let hasVerifier = 1;
 }
 
 //===----------------------------------------------------------------------===//
@@ -103,7 +111,8 @@ def DefineOp : TesseraOp<"define", [
 
 def CallOp : TesseraOp<"call",
     [CallOpInterface, MemRefsNormalizable,
-     DeclareOpInterfaceMethods<SymbolUserOpInterface>]> {
+     DeclareOpInterfaceMethods<SymbolUserOpInterface>,
+     DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "call operation";
   let description = [{
     The 'tessera.call' operation represents a call to the custom operation defined by the user.
@@ -118,6 +127,10 @@ def CallOp : TesseraOp<"call",
 
   let results = (outs Variadic<AnyType>);
 
+  let assemblyFormat = [{
+    $callee `(` $operands `)` attr-dict `:` functional-type($operands, results)
+  }];
+  
   let builders = [
     OpBuilder<(ins "DefineOp":$callee, CArg<"ValueRange", "{}">:$operands), [{
       $_state.addOperands(operands);
@@ -138,18 +151,6 @@ def CallOp : TesseraOp<"call",
       CArg<"ValueRange", "{}">:$operands), [{
       build($_builder, $_state, StringAttr::get($_builder.getContext(), callee),
             results, operands);
-    }]>,
-    OpBuilder<(ins "TypeRange":$results, "FlatSymbolRefAttr":$callee,
-      CArg<"ValueRange", "{}">:$operands), [{
-      build($_builder, $_state, callee, results, operands);
-    }]>,
-    OpBuilder<(ins "TypeRange":$results, "StringAttr":$callee,
-      CArg<"ValueRange", "{}">:$operands), [{
-      build($_builder, $_state, callee, results, operands);
-    }]>,
-    OpBuilder<(ins "TypeRange":$results, "StringRef":$callee,
-      CArg<"ValueRange", "{}">:$operands), [{
-      build($_builder, $_state, callee, results, operands);
     }]>];
 
   let extraClassDeclaration = [{
@@ -192,13 +193,54 @@ def ReturnOp : TesseraOp<"return", [Pure, HasParent<"DefineOp">, ReturnLike, Ter
 
   let arguments = (ins Variadic<AnyType>:$operands);
 
-  let builders = [OpBuilder<(ins), [{
-    build($_builder, $_state, {});
-  }]>];
-
   let assemblyFormat = "attr-dict ($operands^ `:` type($operands))?";
   let hasVerifier = 1;
 }
 
+//===----------------------------------------------------------------------===//
+// OptimizationOp
+//===----------------------------------------------------------------------===//
+
+def OptimizationOp : TesseraOp<"optimization", [Pure]> {
+  let summary = "A tessera optimization rule";
+  let description = [{
+    The 'tessera.optimization' operation represents a single optimization rule defined by the user in string form.
+
+    Example: 
+```mlir
+    tessera.optimization "inv(inv(x)) -> x"
+```
+  }];
+
+  let arguments = (ins StrAttr:$rule);
+  let results = (outs);
+
+  let assemblyFormat = "$rule attr-dict";
+}
+
+//===----------------------------------------------------------------------===//
+// OptimizationsOp
+//===----------------------------------------------------------------------===//
+
+def OptimizationsOp : TesseraOp<"optimizations", [Pure, NoTerminator]> {
+  let summary = "A set of tessera optimization rules";
+  let description = [{
+    The 'tessera.optimizations' operation groups multiple optimization rules into a single container.
+
+    Example: 
+```mlir
+    tessera.optimizations {
+      tessera.optimization "inv(inv(x)) -> x"
+      tessera.optimization "mag(-x,y,z) -> mag(x,y,z)"
+    }
+```
+  }];
+
+  let arguments = (ins);
+  let results = (outs);
+  let regions = (region SizedRegion<1>:$body);
+
+  let assemblyFormat = "$body attr-dict";
+}
 
 #endif // ENZYME_AD_JAX_DIALECT_TESSERA_OPS_TD

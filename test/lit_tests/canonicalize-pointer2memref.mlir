@@ -108,3 +108,26 @@ func.func @reject_unaligned_gep_cst_scalar(%load_idx: index) -> f16 {
 
   func.return %val : f16
 }
+
+// -----
+
+// CHECK-LABEL: func @array_load_idx(
+// CHECK-SAME:    %[[IDX:.*]]: i64
+func.func @array_load_idx(%idx: i64) -> f64 {
+  %c0 = arith.constant 0 : index
+  %c16 = llvm.mlir.constant(16: i32) : i32
+
+  %ptr = llvm.alloca %c16 x !llvm.array<8 x i8> {alignment = 8 : i64} : (i32) -> !llvm.ptr
+
+  // CHECK-NOT: llvm.getelementptr
+  %ptr_array = llvm.getelementptr inbounds %ptr[%idx] : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<8 x i8>
+
+  // CHECK: %[[MEMREF:.*]] = "enzymexla.pointer2memref"
+  %memref = "enzymexla.pointer2memref"(%ptr_array) : (!llvm.ptr) -> memref<?xf64>
+
+  // CHECK: %[[IDX_CAST:.*]] = arith.index_cast %[[IDX]]
+  // CHECK: memref.load %[[MEMREF]][%[[IDX_CAST]]] : memref<?xf64>
+  %val = memref.load %memref[%c0] : memref<?xf64>
+
+  func.return %val : f64
+}

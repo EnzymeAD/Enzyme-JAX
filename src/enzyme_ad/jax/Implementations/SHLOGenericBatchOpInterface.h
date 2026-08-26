@@ -79,7 +79,7 @@ inline void batchCloneBlock(Block *srcBlock, Block *destBlock,
 inline LogicalResult tryToBatchInner(Operation *src, OpBuilder &builder,
                                      IRMapping &mapper,
                                      ArrayRef<int64_t> batchSizes) {
-  if (auto ifOp = dyn_cast<IfOp>(src)) {
+  if (auto ifOp = dyn_cast<stablehlo::IfOp>(src)) {
     auto predBroadcast =
         mapper.lookup(ifOp.getPred()).getDefiningOp<BroadcastInDimOp>();
     if (predBroadcast && predBroadcast.isSimpleBroadcast() &&
@@ -91,8 +91,8 @@ inline LogicalResult tryToBatchInner(Operation *src, OpBuilder &builder,
       for (auto resTy : src->getResultTypes()) {
         results.push_back(applyBatchSizes(resTy, batchSizes));
       }
-      auto newIf = IfOp::create(builder, src->getLoc(), results,
-                                predBroadcast.getOperand());
+      auto newIf = stablehlo::IfOp::create(builder, src->getLoc(), results,
+                                           predBroadcast.getOperand());
       newIf.getTrueBranch().push_back(new Block());
       newIf.getFalseBranch().push_back(new Block());
 
@@ -213,12 +213,13 @@ inline LogicalResult genericCreateBatch(Operation *src, OpBuilder &builder,
 
     for (int d = 0; d < ndims; ++d) {
       // auto idx = (i / batchStrides[d]) % batchSizes[d];
-      auto idx = RemOp::create(
-          bodyBuilder, src->getLoc(),
-          DivOp::create(bodyBuilder, src->getLoc(), whileBody->getArgument(0),
-                        details::makeI64Constant(src->getLoc(), bodyBuilder,
-                                                 batchStrides[d])),
-          details::makeI64Constant(src->getLoc(), bodyBuilder, batchSizes[d]));
+      Value stride =
+          details::makeI64Constant(src->getLoc(), bodyBuilder, batchStrides[d]);
+      Value quotient = DivOp::create(bodyBuilder, src->getLoc(),
+                                     whileBody->getArgument(0), stride);
+      Value size =
+          details::makeI64Constant(src->getLoc(), bodyBuilder, batchSizes[d]);
+      auto idx = RemOp::create(bodyBuilder, src->getLoc(), quotient, size);
 
       startIndices.push_back(idx);
     }
@@ -239,11 +240,11 @@ inline LogicalResult genericCreateBatch(Operation *src, OpBuilder &builder,
       for (auto i = 0; i < Ty.getShape().size(); i++)
         operandStartIndices.push_back(zeroIdx);
 
-      auto sliceOp =
-          DynamicSliceOp::create(bodyBuilder, src->getLoc(), sliceTy, batched,
-                                 operandStartIndices, shape);
+      auto sliceOp = stablehlo::DynamicSliceOp::create(
+          bodyBuilder, src->getLoc(), sliceTy, batched, operandStartIndices,
+          shape);
 
-      auto reshapeOp = ReshapeOp::create(
+      auto reshapeOp = stablehlo::ReshapeOp::create(
           bodyBuilder, src->getLoc(), operand.getType(), sliceOp->getResult(0));
 
       origToUnbatch.map(operand, reshapeOp->getResult(0));
@@ -260,15 +261,15 @@ inline LogicalResult genericCreateBatch(Operation *src, OpBuilder &builder,
       shape.append(Ty.getShape().begin(), Ty.getShape().end());
       auto reshapeTy = Ty.clone(shape);
 
-      auto reshapeOp =
-          ReshapeOp::create(bodyBuilder, src->getLoc(), reshapeTy, newRes);
+      auto reshapeOp = stablehlo::ReshapeOp::create(bodyBuilder, src->getLoc(),
+                                                    reshapeTy, newRes);
 
       SmallVector<Value> operandStartIndices;
       operandStartIndices.append(startIndices.begin(), startIndices.end());
       for (int i = 0; i < Ty.getShape().size(); ++i)
         operandStartIndices.push_back(zeroIdx);
 
-      auto update = DynamicUpdateSliceOp::create(
+      auto update = stablehlo::DynamicUpdateSliceOp::create(
           bodyBuilder, src->getLoc(), batched, reshapeOp, operandStartIndices);
 
       whileBodyOutputs.push_back(update);
@@ -292,5 +293,44 @@ struct SHLOGenericBatchOpInterface
                             IRMapping &mapper,
                             ArrayRef<int64_t> batchSizes) const {
     return genericCreateBatch(src, builder, mapper, batchSizes);
+  }
+};
+
+template <typename OpTy>
+struct HLOConstantOpBatchInterface
+    : public BatchOpInterface::ExternalModel<HLOConstantOpBatchInterface<OpTy>,
+                                             OpTy> {
+
+  mlir::LogicalResult createBatch(Operation *src, OpBuilder &builder,
+                                  IRMapping &mapper,
+                                  ArrayRef<int64_t> batchSizes) const {
+    auto constOp = cast<OpTy>(src);
+
+    auto T = cast<TensorType>(constOp.getType());
+    SmallVector<int64_t> shape(batchSizes.begin(), batchSizes.end());
+    shape.append(T.getShape().begin(), T.getShape().end());
+    auto Ty = T.clone(shape);
+
+    // If splatted attr then we can easily batch it
+    auto eattr = cast<DenseElementsAttr>(constOp.getValue());
+    if (eattr.isSplat()) {
+      auto splatAttr = cast<SplatElementsAttr>(constOp.getValue());
+      auto newSplattedConstOp = OpTy::create(
+          builder, constOp->getLoc(), Ty,
+          cast<ElementsAttr>(splatAttr.resizeSplat(cast<ShapedType>(Ty))));
+      mapper.map(src->getResult(0), newSplattedConstOp->getResult(0));
+      return success();
+    }
+
+    // otherwise do a broadcast in dim
+    SmallVector<int64_t> mapping(T.getShape().size());
+    std::iota(mapping.begin(), mapping.end(), batchSizes.size());
+
+    auto constOpCloned = builder.clone(*constOp);
+    auto bcastOp = BroadcastInDimOp::create(
+        builder, src->getLoc(), Ty, constOpCloned->getResult(0),
+        builder.getDenseI64ArrayAttr(mapping));
+    mapper.map(src->getResult(0), bcastOp->getResult(0));
+    return success();
   }
 };

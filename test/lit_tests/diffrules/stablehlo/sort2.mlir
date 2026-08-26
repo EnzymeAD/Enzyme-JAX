@@ -64,7 +64,7 @@ module {
 // CHECK-NEXT:     %6 = stablehlo.compare  LT, %arg1, %arg2 : (tensor<f32>, tensor<f32>) -> tensor<i1>
 // CHECK-NEXT:     stablehlo.return %6 : tensor<i1>
 // CHECK-NEXT:   }) : (tensor<2x3x4x5xf32>, tensor<2x3x4x5xui32>) -> (tensor<2x3x4x5xf32>, tensor<2x3x4x5xui32>)
-// CHECK-NEXT:   %2 = arith.addf %1#0, %1#0 : tensor<2x3x4x5xf32>
+// CHECK-NEXT:   %2 = arith.addf %1#0, %1#0 fastmath<fast> : tensor<2x3x4x5xf32>
 // CHECK-NEXT:   %3 = stablehlo.reshape %1#1 : (tensor<2x3x4x5xui32>) -> tensor<2x3x4x5x1xui32>
 // CHECK-NEXT:   %4 = "stablehlo.scatter"(%cst, %3, %2) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [2], input_batching_dims = [0, 1, 3], scatter_indices_batching_dims = [0, 1, 3], scatter_dims_to_operand_dims = [2], index_vector_dim = 4>, unique_indices = true}> ({
 // CHECK-NEXT:   ^bb0(%arg1: tensor<f32>, %arg2: tensor<f32>):

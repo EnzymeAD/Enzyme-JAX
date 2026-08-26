@@ -57,7 +57,7 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
   llvm.func local_unnamed_addr @cudaFree(!llvm.ptr {llvm.noundef}) -> i32 attributes {passthrough = [["approx-func-fp-math", "true"], ["no-trapping-math", "true"], ["stack-protector-buffer-size", "8"], ["target-cpu", "x86-64"]], sym_visibility = "private", target_cpu = "x86-64", target_features = #llvm.target_features<["+cmov", "+cx8", "+fxsr", "+mmx", "+sse", "+sse2", "+x87"]>}
   llvm.func local_unnamed_addr @cudaMalloc(!llvm.ptr {llvm.noundef}, i64 {llvm.noundef}) -> i32 attributes {passthrough = [["approx-func-fp-math", "true"], ["no-trapping-math", "true"], ["stack-protector-buffer-size", "8"], ["target-cpu", "x86-64"]], sym_visibility = "private", target_cpu = "x86-64", target_features = #llvm.target_features<["+cmov", "+cx8", "+fxsr", "+mmx", "+sse", "+sse2", "+x87"]>}
   llvm.func local_unnamed_addr @cudaOccupancyMaxActiveBlocksPerMultiprocessorWithFlags(!llvm.ptr {llvm.noundef}, !llvm.ptr {llvm.noundef}, i32 {llvm.noundef}, i64 {llvm.noundef}, i32 {llvm.noundef}) -> i32 attributes {passthrough = [["approx-func-fp-math", "true"], ["no-trapping-math", "true"], ["stack-protector-buffer-size", "8"], ["target-cpu", "x86-64"]], sym_visibility = "private", target_cpu = "x86-64", target_features = #llvm.target_features<["+cmov", "+cx8", "+fxsr", "+mmx", "+sse", "+sse2", "+x87"]>}
-  llvm.func internal @reactant$_Z18__device_stub__fooPi(%arg0: !llvm.ptr {llvm.nocapture, llvm.noundef, llvm.writeonly}) comdat(@__llvm_global_comdat::@foo) attributes {dso_local, frame_pointer = #llvm.framePointerKind<all>, memory_effects = #llvm.memory_effects<other = none, argMem = write, inaccessibleMem = none>, no_infs_fp_math = true, no_inline, no_nans_fp_math = true, no_signed_zeros_fp_math = true, no_unwind, passthrough = ["mustprogress", "nofree", "norecurse", "nosync", ["approx-func-fp-math", "true"], ["no-trapping-math", "true"], ["stack-protector-buffer-size", "8"], ["target-cpu", "sm_120"], ["uniform-work-group-size", "true"]], sym_visibility = "private", target_cpu = "sm_120", target_features = #llvm.target_features<["+ptx88", "+sm_120"]>, unsafe_fp_math = true, will_return} {
+  llvm.func internal @reactant$_Z18__device_stub__fooPi(%arg0: !llvm.ptr {llvm.nocapture, llvm.noundef, llvm.writeonly}) comdat(@__llvm_global_comdat::@foo) attributes {dso_local, frame_pointer = #llvm.framePointerKind<all>, no_infs_fp_math = true, no_inline, no_nans_fp_math = true, no_signed_zeros_fp_math = true, no_unwind, passthrough = ["mustprogress", "nofree", "norecurse", "nosync", ["approx-func-fp-math", "true"], ["no-trapping-math", "true"], ["stack-protector-buffer-size", "8"], ["target-cpu", "sm_120"], ["uniform-work-group-size", "true"]], sym_visibility = "private", target_cpu = "sm_120", target_features = #llvm.target_features<["+ptx88", "+sm_120"]>, unsafe_fp_math = true, will_return} {
     %0 = nvvm.read.ptx.sreg.tid.x : i32
     %1 = llvm.zext nneg %0 : i32 to i64
     %2 = llvm.getelementptr inbounds|nuw %arg0[%1] : (!llvm.ptr, i64) -> !llvm.ptr, i32
@@ -109,7 +109,9 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<!llvm.ptr<270> = dense<32> : vec
 // CHECK-NEXT:    enzymexla.memcpy  %24, %25, %26 : memref<?xi8>, memref<?xi8, 1>
 // CHECK-NEXT:    %27 = llvm.mlir.zero : i32
 // CHECK-NEXT:    %28 = llvm.load %10 {alignment = 8 : i64, tbaa = [#tbaa_tag1]} : !llvm.ptr -> !llvm.ptr
-// CHECK-NEXT:    %29 = llvm.call @cudaFree(%28) : (!llvm.ptr {llvm.noundef}) -> i32
+// CHECK-NEXT:    %29 = "enzymexla.pointer2memref"(%28) : (!llvm.ptr) -> memref<?xi8, 1>
+// CHECK-NEXT:    gpu.dealloc  %29 : memref<?xi8, 1>
+// CHECK-NEXT:    %30 = llvm.mlir.zero : i32
 // CHECK-NEXT:    llvm.intr.lifetime.end %12 : !llvm.ptr
 // CHECK-NEXT:    llvm.intr.lifetime.end %11 : !llvm.ptr
 // CHECK-NEXT:    llvm.intr.lifetime.end %10 : !llvm.ptr

@@ -22,6 +22,7 @@ def EnzymeXLA_Dialect : Dialect {
   let cppNamespace = "::mlir::enzymexla";
   let useDefaultAttributePrinterParser = 1;
   // let useDefaultTypePrinterParser = 1;
+  let dependentDialects = ["mlir::gpu::GPUDialect"];
 }
 
 //===----------------------------------------------------------------------===//

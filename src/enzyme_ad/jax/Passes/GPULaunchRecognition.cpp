@@ -6,6 +6,7 @@
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
+#include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/IR/IRMapping.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
@@ -30,17 +31,27 @@ struct GPULaunchRecognitionPass
     : public enzyme::impl::GPULaunchRecognitionBase<GPULaunchRecognitionPass> {
   using GPULaunchRecognitionBase::GPULaunchRecognitionBase;
 
-  void initGPUModule(gpu::GPUModuleOp &gpuModule, LLVM::LLVMFuncOp func) {
-    if (gpuModule)
-      return;
-    auto ctx = getOperation()->getContext();
-    auto moduleBuilder =
-        OpBuilder::atBlockBegin(cast<ModuleOp>(getOperation()).getBody());
-    gpuModule = gpu::GPUModuleOp::create(
-        moduleBuilder, getOperation()->getLoc(), gpuModuleName);
+  // The kernel function is inlined and erased before the launch is lowered, so
+  // the target it was compiled for has to travel on the launch itself.
+  static void copyGPUTargetAttrs(LLVM::LLVMFuncOp from, Operation *to) {
+    if (auto passthrough = from.getPassthrough())
+      to->setAttr("passthrough", *passthrough);
+    if (auto features = from.getTargetFeatures())
+      to->setAttr("target_features", *features);
+    if (auto cpu = from.getTargetCpuAttr())
+      to->setAttr("target_cpu", cpu);
+  }
 
-    std::string sm;
-    if (auto attr = dyn_cast_or_null<ArrayAttr>(func.getPassthroughAttr())) {
+  // Reads the device architecture off a kernel function.
+  std::pair<std::string, std::string> getGPUTarget(LLVM::LLVMFuncOp func) {
+    std::string sm; // NVIDIA Streaming Multiprocessor (sm_80)
+    // The importer lifts `target-cpu` out of the function's attribute bag into
+    // a first-class attribute, so that is where the device IR's architecture
+    // actually lands; only fall back to scanning `passthrough`.
+    if (auto cpu = func.getTargetCpuAttr()) {
+      sm = cpu.getValue().str();
+    } else if (auto attr =
+                   dyn_cast_or_null<ArrayAttr>(func.getPassthroughAttr())) {
       for (auto a : attr) {
         if (auto ar = dyn_cast<ArrayAttr>(a)) {
           if (ar.size() != 2)
@@ -54,24 +65,51 @@ struct GPULaunchRecognitionPass
         }
       }
     }
+
     std::string feat;
     if (auto attr = dyn_cast_or_null<LLVM::TargetFeaturesAttr>(
             func.getTargetFeaturesAttr())) {
       feat = attr.getFeaturesString();
     }
 
-    auto chip = sm;
-    if (chip.size() == 0)
-      chip = "sm_80";
-    auto features = feat;
-    if (features.size() == 0)
-      features = "+ptx73";
+    return {sm, feat};
+  }
 
-    // TODO get these target attrs from somewhere
-    auto target = moduleBuilder.getAttr<NVVM::NVVMTargetAttr>(
-        /*optLevel=*/2, /*triple=*/"nvptx64-nvidia-cuda", chip, features,
-        /*flags=*/nullptr,
-        /*linkLibs=*/nullptr);
+  void initGPUModule(gpu::GPUModuleOp &gpuModule, LLVM::LLVMFuncOp func) {
+    if (gpuModule)
+      return;
+    auto ctx = getOperation()->getContext();
+    auto moduleBuilder =
+        OpBuilder::atBlockBegin(cast<ModuleOp>(getOperation()).getBody());
+    gpuModule = gpu::GPUModuleOp::create(
+        moduleBuilder, getOperation()->getLoc(), gpuModuleName);
+
+    auto [sm, feat] = getGPUTarget(func);
+
+    Attribute target;
+    if (backend == "rocm") {
+      auto chip = "gfx1030";
+      auto features = "+wavefrontsize64";
+
+      target = moduleBuilder.getAttr<ROCDL::ROCDLTargetAttr>(
+          /*optLevel=*/3, /*triple=*/"amdgcn-amd-amdhsa", chip, features,
+          /*abiVersion=*/"600",
+          /*flags=*/nullptr,
+          /*linkLibs=*/nullptr);
+    } else {
+      // Default to CUDA/NVVM. A host function's target-cpu can leak in
+      // here through an unresolved stub; never let a non-GPU chip through.
+      auto chip = sm;
+      if (!StringRef(chip).starts_with("sm_"))
+        chip = "sm_80";
+      auto features = feat;
+      if (features.size() == 0)
+        features = "+ptx73";
+      target = moduleBuilder.getAttr<NVVM::NVVMTargetAttr>(
+          /*optLevel=*/3, /*triple=*/"nvptx64-nvidia-cuda", chip, features,
+          /*flags=*/nullptr,
+          /*linkLibs=*/nullptr);
+    }
     gpuModule.setTargetsAttr(moduleBuilder.getArrayAttr({target}));
 
     DataLayoutSpecInterface dataLayout = {};
@@ -99,6 +137,36 @@ struct GPULaunchRecognitionPass
     SymbolTableCollection symbolTable;
     symbolTable.getSymbolTable(getOperation());
     StringSet<> seenErrors;
+    // With exception handling preserved these runtime calls arrive in
+    // invoke form; none of them throw, so turn each into a call plus a
+    // branch to the normal destination so the rewrites below see them.
+    {
+      SmallVector<LLVM::InvokeOp> invokes;
+      getOperation()->walk([&](LLVM::InvokeOp inv) {
+        auto callee = inv.getCallee();
+        if (!callee)
+          return;
+        for (StringRef name :
+             {"cudaMalloc", "cudaFree",
+              "cudaOccupancyMaxActiveBlocksPerMultiprocessorWithFlags",
+              "cudaFuncGetAttributes", "cudaFuncSetCacheConfig", "cudaMemcpy",
+              "cudaMemset", "cudaMemsetAsync", "cudaMemcpy2D"})
+          if (*callee == name) {
+            invokes.push_back(inv);
+            return;
+          }
+      });
+      for (auto inv : invokes) {
+        OpBuilder builder(inv);
+        auto call =
+            LLVM::CallOp::create(builder, inv.getLoc(), inv.getResultTypes(),
+                                 inv.getCalleeAttr(), inv.getCalleeOperands());
+        inv->replaceAllUsesWith(call->getResults());
+        LLVM::BrOp::create(builder, inv.getLoc(), inv.getNormalDestOperands(),
+                           inv.getNormalDest());
+        inv->erase();
+      }
+    }
     getOperation()->walk([&](LLVM::CallOp call) {
       auto callee = call.getCallee();
       OpBuilder builder(call);
@@ -120,6 +188,23 @@ struct GPULaunchRecognitionPass
             builder, call.getLoc(),
             LLVM::LLVMPointerType::get(call.getContext()), res.getResult(0));
         LLVM::StoreOp::create(builder, call.getLoc(), ptr, call->getOperand(0));
+        auto replace =
+            LLVM::ZeroOp::create(builder, call.getLoc(), call.getType(0));
+        call->replaceAllUsesWith(replace);
+        call->erase();
+        return;
+      }
+
+      if (callee == "cudaFree") {
+        Value arg = call->getOperand(0);
+        auto src = enzymexla::Pointer2MemrefOp::create(
+            builder, call->getLoc(),
+            MemRefType::get({ShapedType::kDynamic}, i8,
+                            MemRefLayoutAttrInterface{},
+                            builder.getI64IntegerAttr(1)),
+            arg);
+        gpu::DeallocOp::create(builder, call.getLoc(), (mlir::Type) nullptr,
+                               ValueRange(), src);
         auto replace =
             LLVM::ZeroOp::create(builder, call.getLoc(), call.getType(0));
         call->replaceAllUsesWith(replace);
@@ -226,6 +311,106 @@ enum __device_builtin__ cudaMemcpyKind
           return;
         }
       }
+
+      if (callee == "cudaMemset" || callee == "cudaMemsetAsync") {
+        Value devPtr = call->getOperand(0);
+        devPtr = enzymexla::Pointer2MemrefOp::create(
+            builder, call->getLoc(),
+            MemRefType::get({ShapedType::kDynamic}, i8,
+                            MemRefLayoutAttrInterface{},
+                            builder.getI64IntegerAttr(1)),
+            devPtr);
+
+        Value value = call->getOperand(1);
+        Value count = call->getOperand(2);
+        if (!isa<IndexType>(count.getType()))
+          count = arith::IndexCastOp::create(builder, call->getLoc(),
+                                             builder.getIndexType(), count);
+
+        SmallVector<Value, 1> asyncDeps;
+        if (callee == "cudaMemsetAsync") {
+          Value stream = call->getOperand(3);
+          if (!stream.getDefiningOp<LLVM::ZeroOp>()) {
+            auto token = enzymexla::StreamToTokenOp::create(
+                builder, call.getLoc(),
+                gpu::AsyncTokenType::get(call.getContext()), stream);
+            asyncDeps.push_back(token.getResult());
+          }
+        }
+
+        enzymexla::MemsetOp::create(builder, call.getLoc(),
+                                    (mlir::Type) nullptr, ValueRange(asyncDeps),
+                                    devPtr, value, count);
+        auto replace =
+            LLVM::ZeroOp::create(builder, call.getLoc(), call.getType(0));
+        call->replaceAllUsesWith(replace);
+        call->erase();
+        return;
+      }
+
+      if (callee == "cudaMemcpy2D") {
+        APInt directionA;
+        if (matchPattern(call->getOperand(6), m_ConstantInt(&directionA))) {
+          auto dst = call->getOperand(0);
+          if (directionA == 0 || directionA == 2)
+            dst = enzymexla::Pointer2MemrefOp::create(
+                builder, call->getLoc(),
+                MemRefType::get({ShapedType::kDynamic}, i8,
+                                MemRefLayoutAttrInterface{}),
+                dst);
+          else
+            dst = enzymexla::Pointer2MemrefOp::create(
+                builder, call->getLoc(),
+                MemRefType::get({ShapedType::kDynamic}, i8,
+                                MemRefLayoutAttrInterface{},
+                                builder.getI64IntegerAttr(1)),
+                dst);
+
+          Value dpitch = call->getOperand(1);
+          if (!isa<IndexType>(dpitch.getType()))
+            dpitch = arith::IndexCastOp::create(builder, call->getLoc(),
+                                                builder.getIndexType(), dpitch);
+
+          auto src = call->getOperand(2);
+          if (directionA == 0 || directionA == 1)
+            src = enzymexla::Pointer2MemrefOp::create(
+                builder, call->getLoc(),
+                MemRefType::get({ShapedType::kDynamic}, i8,
+                                MemRefLayoutAttrInterface{}),
+                src);
+          else
+            src = enzymexla::Pointer2MemrefOp::create(
+                builder, call->getLoc(),
+                MemRefType::get({ShapedType::kDynamic}, i8,
+                                MemRefLayoutAttrInterface{},
+                                builder.getI64IntegerAttr(1)),
+                src);
+
+          Value spitch = call->getOperand(3);
+          if (!isa<IndexType>(spitch.getType()))
+            spitch = arith::IndexCastOp::create(builder, call->getLoc(),
+                                                builder.getIndexType(), spitch);
+
+          Value width = call->getOperand(4);
+          if (!isa<IndexType>(width.getType()))
+            width = arith::IndexCastOp::create(builder, call->getLoc(),
+                                               builder.getIndexType(), width);
+
+          Value height = call->getOperand(5);
+          if (!isa<IndexType>(height.getType()))
+            height = arith::IndexCastOp::create(builder, call->getLoc(),
+                                                builder.getIndexType(), height);
+
+          enzymexla::Memcpy2DOp::create(builder, call.getLoc(),
+                                        (mlir::Type) nullptr, ValueRange(), dst,
+                                        dpitch, src, spitch, width, height);
+          auto replace =
+              LLVM::ZeroOp::create(builder, call.getLoc(), call.getType(0));
+          call->replaceAllUsesWith(replace);
+          call->erase();
+          return;
+        }
+      }
     });
   }
   void runOnOperation() override {
@@ -322,7 +507,42 @@ enum __device_builtin__ cudaMemcpyKind
           }
         }
       }
+      // The scan above only sees uses of the device-side function. An address
+      // user code takes is that of clang's host stub, and when it escapes --
+      // handed to a call rather than straight to a runtime query -- nothing
+      // rewrites it to the device symbol, so the kernel would never reach a
+      // gpu.module and never be registered. An address-taken host stub is a
+      // capture of its kernel.
+      if (!captured) {
+        StringRef hostStubName;
+        if (auto attr = dyn_cast_or_null<ArrayAttr>(
+                launch.first.getPassthroughAttr())) {
+          for (auto a : attr) {
+            auto ar = dyn_cast<ArrayAttr>(a);
+            if (!ar || ar.size() != 2)
+              continue;
+            auto s0 = dyn_cast<StringAttr>(ar[0]);
+            auto s1 = dyn_cast<StringAttr>(ar[1]);
+            if (s0 && s1 && s0.getValue() == "polygeist.host_symbol")
+              hostStubName = s1.getValue();
+          }
+        }
+        if (!hostStubName.empty()) {
+          if (auto hostStub = symbolTable.getSymbolTable(getOperation())
+                                  .lookup<LLVM::LLVMFuncOp>(hostStubName)) {
+            if (auto hostStubUses = hostStub.getSymbolUses(getOperation()))
+              for (auto use : *hostStubUses)
+                if (isa<LLVM::AddressOfOp>(use.getUser())) {
+                  captured = true;
+                  break;
+                }
+          }
+        }
+      }
+
       auto cur = launch.first;
+      if (cur.isExternal())
+        continue;
       gpu::GPUFuncOp gpufunc = nullptr;
       bool local_use_launch_func = use_launch_func || captured;
       if (local_use_launch_func) {
@@ -346,6 +566,28 @@ enum __device_builtin__ cudaMemcpyKind
         builder.setInsertionPointToStart(&gpuModule.getBodyRegion().front());
         gpufunc = gpu::GPUFuncOp::create(builder, cur->getLoc(), cur.getName(),
                                          gpuTy0);
+        {
+          // The plugin records which host symbol each imported kernel was
+          // registered for; carry it so the registration can bind the
+          // address the program actually passes around instead of a
+          // synthetic stub.
+          StringRef host;
+          if (auto attr =
+                  dyn_cast_or_null<ArrayAttr>(cur.getPassthroughAttr())) {
+            for (auto a : attr) {
+              auto ar = dyn_cast<ArrayAttr>(a);
+              if (!ar || ar.size() != 2)
+                continue;
+              auto s0 = dyn_cast<StringAttr>(ar[0]);
+              auto s1 = dyn_cast<StringAttr>(ar[1]);
+              if (s0 && s1 && s0.getValue() == "polygeist.host_symbol")
+                host = s1.getValue();
+            }
+          }
+          if (!host.empty())
+            gpufunc->setAttr("polygeist.host_symbol",
+                             builder.getStringAttr(host));
+        }
         if (auto attrs = cur.getAllArgAttrs()) {
           gpufunc.setAllArgAttrs(attrs);
         }
@@ -367,7 +609,7 @@ enum __device_builtin__ cudaMemcpyKind
           }
         }
 
-        gpufunc->setAttr("gpu.kernel", builder.getUnitAttr());
+        gpufunc.setKernelAttr(builder.getUnitAttr());
 
         gpufunc->walk([](LLVM::ReturnOp op) {
           OpBuilder rewriter(op);
@@ -437,8 +679,43 @@ enum __device_builtin__ cudaMemcpyKind
             builder, loc, builder.getI32Type(), cop.getArgOperands()[7]);
         auto stream = cop.getArgOperands()[8];
         llvm::SmallVector<mlir::Value> args;
-        for (unsigned i = 9; i < cop.getArgOperands().size(); i++)
-          args.push_back(cop.getArgOperands()[i]);
+        for (unsigned i = 9; i < cop.getArgOperands().size(); i++) {
+          mlir::Value arg = cop.getArgOperands()[i];
+          auto gpuTy0 = cur.getFunctionType();
+          mlir::Type expectedTy;
+          if (auto funcTy = dyn_cast<FunctionType>(gpuTy0)) {
+            expectedTy = funcTy.getInput(i - 9);
+          } else if (auto llvmFuncTy =
+                         dyn_cast<LLVM::LLVMFunctionType>(gpuTy0)) {
+            expectedTy = llvmFuncTy.getParamType(i - 9);
+          } else {
+            expectedTy =
+                arg.getType(); // Should not happen given earlier checks
+          }
+
+          if (arg.getType() != expectedTy) {
+            if (isa<LLVM::LLVMPointerType>(arg.getType()) &&
+                isa<LLVM::LLVMPointerType>(expectedTy)) {
+              arg =
+                  LLVM::AddrSpaceCastOp::create(builder, loc, expectedTy, arg);
+            } else if (arg.getType().isIntOrIndexOrFloat() &&
+                       expectedTy.isIntOrIndexOrFloat() &&
+                       arg.getType().getIntOrFloatBitWidth() ==
+                           expectedTy.getIntOrFloatBitWidth()) {
+              arg = LLVM::BitcastOp::create(builder, loc, expectedTy, arg);
+            } else if (arg.getType().isIntOrIndex() &&
+                       isa<LLVM::LLVMPointerType>(expectedTy)) {
+              arg = LLVM::IntToPtrOp::create(builder, loc, expectedTy, arg);
+            } else if (isa<LLVM::LLVMPointerType>(arg.getType()) &&
+                       expectedTy.isIntOrIndex()) {
+              arg = LLVM::PtrToIntOp::create(builder, loc, expectedTy, arg);
+            } else {
+              arg = LLVM::BitcastOp::create(builder, loc, expectedTy,
+                                            arg); // Fallback
+            }
+          }
+          args.push_back(arg);
+        }
 
         Value grid[3];
         for (int i = 0; i < 3; i++) {
@@ -471,6 +748,7 @@ enum __device_builtin__ cudaMemcpyKind
             auto op = mlir::gpu::LaunchOp::create(
                 builder, launch.first->getLoc(), grid[0], grid[1], grid[2],
                 block[0], block[1], block[2], shMemSize, nullptr, ValueRange());
+            copyGPUTargetAttrs(cur, op);
             builder.setInsertionPointToStart(&op.getRegion().front());
             LLVM::CallOp::create(builder, loc, cur, args);
             gpu::TerminatorOp::create(builder, loc);
@@ -478,13 +756,15 @@ enum __device_builtin__ cudaMemcpyKind
         } else {
           if (local_use_launch_func) {
             assert(isa<LLVM::LLVMPointerType>(stream.getType()));
-            stream = enzymexla::StreamToTokenOp::create(
-                builder, loc, gpu::AsyncTokenType::get(ctx), stream);
+            // The stream-based async form: dependency operands without a
+            // result token no longer verify, the stream rides the
+            // asyncObject operand instead.
             launchFuncOp = gpu::LaunchFuncOp::create(
                 builder, loc, gpufunc,
                 gpu::KernelDim3{grid[0], grid[1], grid[2]},
                 gpu::KernelDim3{block[0], block[1], block[2]}, shMemSize,
-                ValueRange(args), stream.getType(), ValueRange(stream));
+                ValueRange(args), /*asyncTokenType=*/nullptr,
+                /*asyncDependencies=*/ValueRange(), /*asyncObject=*/stream);
           } else {
             assert(isa<LLVM::LLVMPointerType>(stream.getType()));
             stream = enzymexla::StreamToTokenOp::create(
@@ -493,6 +773,7 @@ enum __device_builtin__ cudaMemcpyKind
                 builder, launch.first->getLoc(), grid[0], grid[1], grid[2],
                 block[0], block[1], block[2], shMemSize, stream.getType(),
                 ValueRange(stream));
+            copyGPUTargetAttrs(cur, op);
             builder.setInsertionPointToStart(&op.getRegion().front());
             LLVM::CallOp::create(builder, loc, cur, args);
             gpu::TerminatorOp::create(builder, loc);
@@ -500,8 +781,12 @@ enum __device_builtin__ cudaMemcpyKind
         }
         if (launchFuncOp) {
 
+          // A kernel with no argument attributes has no attribute list at
+          // all, and the optional is empty rather than holding an empty array.
           SmallVector<Attribute> newArgAttrs;
-          for (auto [i, argAttrs] : llvm::enumerate(*cur.getArgAttrs())) {
+          ArrayAttr curArgAttrs =
+              cur.getArgAttrs().value_or(ArrayAttr::get(cur->getContext(), {}));
+          for (auto [i, argAttrs] : llvm::enumerate(curArgAttrs)) {
             if (std::optional<NamedAttribute> attr =
                     cast<DictionaryAttr>(argAttrs).getNamed(
                         LLVM::LLVMDialect::getByValAttrName())) {

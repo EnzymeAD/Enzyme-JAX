@@ -1,11 +1,12 @@
 from absl.testing import absltest
 import jax
 import jax.numpy as jnp
-from enzyme_ad.jax import cpp_call, enzyme_jax_ir, optimize_module
+from enzyme_ad.jax import cpp_call, enzyme_jax_ir
+import test_utils
 
-jax.config.update("jax_platform_name", "cpu")
+jax.config.update("jax_platforms", "cpu")
 
-argv = ("-I/usr/include/c++/11", "-I/usr/include/x86_64-linux-gnu/c++/11")
+argv = test_utils.argv
 
 
 class EnzymePipeline(absltest.TestCase):

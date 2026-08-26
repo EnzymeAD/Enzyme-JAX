@@ -4,7 +4,19 @@
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wmissing-braces"
+#else
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-braces"
+#endif
 #include "stablehlo/dialect/StablehloOps.h"
+#ifdef __clang__
+#pragma clang diagnostic pop
+#else
+#pragma GCC diagnostic pop
+#endif
 #include "llvm/ADT/DynamicAPInt.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallVector.h"
@@ -108,7 +120,8 @@ struct DotGeneralElementwiseToCuDNNFusion
         ArrayAttr::get(rewriter.getContext(), {FlatSymbolRefAttr::get(fnSym)}),
         /*operand_layouts=*/nullptr,
         /*result_layouts=*/nullptr,
-        /*output_operand_aliases=*/nullptr);
+        /*output_operand_aliases=*/nullptr,
+        /*result_tilings*/ nullptr);
 
     auto funcTy = rewriter.getFunctionType(
         {dotGeneralLhsTy, dotGeneralRhsTy, elemOtherTy}, {resultTy});
@@ -160,8 +173,9 @@ struct CuDNNHLOOptPass : public enzyme::impl::CuDNNHLOOptBase<CuDNNHLOOptPass> {
         context);
 
     GreedyRewriteConfig config;
-    if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),
-                                            config))) {
+    config.enableFolding();
+    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
+                                     config))) {
       signalPassFailure();
     }
   }

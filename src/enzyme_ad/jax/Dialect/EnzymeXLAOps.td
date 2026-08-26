@@ -14,6 +14,7 @@ include "Enzyme/MLIR/Dialect/Dialect.td"
 include "Dialect.td"
 include "EnzymeXLAAttrs.td"
 
+include "mlir/IR/BuiltinAttributes.td"
 include "mlir/Interfaces/ViewLikeInterface.td"
 include "mlir/IR/SymbolInterfaces.td"
 include "mlir/IR/EnumAttr.td"
@@ -53,6 +54,12 @@ def TensorFloat
                  "ComplexType>(::llvm::cast<::mlir::TensorType>($_self)."
                  "getElementType()).getElementType())))">,
            "tensor<float or complex<float> scalar>", "::mlir::TensorType">;
+
+def TensorFloatAnyRank
+  : Type<CPred<"::llvm::isa<::mlir::TensorType>($_self) && "
+               "::llvm::isa<::mlir::FloatType>(::llvm::cast<::mlir::"
+               "TensorType>($_self).getElementType())">,
+           "tensor with floating-point element type", "::mlir::TensorType">;
 
 def KernelCallOp : EnzymeXLA_Op<"kernel_call", [
   AttrSizedOperandSegments, DeclareOpInterfaceMethods<SymbolUserOpInterface>,
@@ -136,6 +143,44 @@ def MemcpyOp : EnzymeXLA_Op<"memcpy"> {
   let hasCanonicalizer = 1;
 }
 
+def MemsetOp : EnzymeXLA_Op<"memset"> {
+  let summary = "GPU memset operation";
+
+  let description = [{
+    The `enzymexla.memset` operation fills the content of a memref with a value.
+  }];
+
+  let arguments = (ins Variadic<GPU_AsyncToken>:$asyncDependencies,
+      Arg<AnyMemRef, "", [MemWriteAt<0, FullEffect>]>:$target, AnyType:$value,
+      Index:$count);
+  let results = (outs Optional<GPU_AsyncToken>:$asyncToken);
+
+  let assemblyFormat = [{
+    custom<AsyncDependencies>(type($asyncToken), $asyncDependencies)
+    $target`,` $value `,` $count `:` type($target)`,` type($value) attr-dict
+  }];
+}
+
+def Memcpy2DOp : EnzymeXLA_Op<"memcpy2d"> {
+  let summary = "GPU memcpy2D operation";
+
+  let description = [{
+    The `enzymexla.memcpy2d` operation copies a 2D region from one memref to another.
+  }];
+
+  let arguments = (ins Variadic<GPU_AsyncToken>:$asyncDependencies,
+      Arg<AnyMemRef, "", [MemWriteAt<0, FullEffect>]>:$target, Index:$dpitch,
+      Arg<AnyMemRef, "", [MemReadAt<0, FullEffect>]>:$source, Index:$spitch,
+      Index:$width, Index:$height);
+  let results = (outs Optional<GPU_AsyncToken>:$asyncToken);
+
+  let assemblyFormat = [{
+    custom<AsyncDependencies>(type($asyncToken), $asyncDependencies)
+    $target`,` $dpitch `,` $source `,` $spitch `,` $width `,` $height `:` type($target)`,` type($source) attr-dict
+  }];
+  let hasCanonicalizer = 1;
+}
+
 def JITCallOp: EnzymeXLA_Op<"jit_call", [DeclareOpInterfaceMethods<SymbolUserOpInterface>, DeclareOpInterfaceMethods<CallOpInterface>, DeclareOpInterfaceMethods<MemoryEffectsOpInterface>]> {
   let summary = "JIT Call operation";
 
@@ -187,6 +232,7 @@ def GPUKernelAddressOp : EnzymeXLA_Op<"gpu_kernel_address", [Pure, DeclareOpInte
 }
 
 def GPUWrapperOp : EnzymeXLA_Op<"gpu_wrapper", [
+  DeclareOpInterfaceMethods<RegionBranchOpInterface, ["getSuccessorInputs"]>,
   RecursiveMemoryEffects,
   AffineScope,
   AutomaticAllocationScope,
@@ -211,12 +257,12 @@ def XLAWrapperOp : EnzymeXLA_Op<"xla_wrapper", [
 ]> {
   let summary = "XLA Call operation";
 
-  let arguments = (ins
-    SymbolRefAttr:$fn,
-    Variadic<AnyType>:$inputs,
-    OptionalAttr<DictArrayAttr>:$arg_attrs,
-    OptionalAttr<DictArrayAttr>:$res_attrs
-  );
+  let arguments = (ins SymbolRefAttr:$fn, Variadic<AnyType>:$inputs,
+      OptionalAttr<DictArrayAttr>:$arg_attrs,
+      OptionalAttr<DictArrayAttr>:$res_attrs,
+      // How many trailing inputs are scalars the runtime specializes the
+      // executable over, injected as compile-time constants per distinct value.
+      DefaultValuedAttr<I64Attr, "0">:$num_specialized);
 
   let assemblyFormat = [{
     $fn ` ` `(` $inputs `)` attr-dict `:` functional-type($inputs, results)
@@ -299,7 +345,7 @@ def Memref2PointerOp : EnzymeXLA_Op<"memref2pointer", [
 
   let hasFolder = 1;
   let hasCanonicalizer = 1;
-  
+
   let extraClassDeclaration = [{
     ::mlir::Value getViewSource() { return getSource(); }
   }];
@@ -315,7 +361,7 @@ def Pointer2MemrefOp : EnzymeXLA_Op<"pointer2memref", [
 
   let hasFolder = 1;
   let hasCanonicalizer = 1;
-  
+
   let extraClassDeclaration = [{
     ::mlir::Value getViewSource() { return getSource(); }
   }];
@@ -343,12 +389,95 @@ def AffineScopeOp : EnzymeXLA_Op<"scope", [
 
 def RotateOp : EnzymeXLA_Op<"rotate", [Pure, SameOperandsAndResultType]> {
   let summary = "Takes `amount` from the start of the tensor in `dimension` and appends it to the end";
+  let description = [{
+    Performs a left rotation (circular shift) along `dimension` by `amount` elements.
+    Elements are shifted left, with the first `amount` elements wrapping around to the end.
+
+    i.e.:
+    ```
+    rotate([a, b, c, d, e], amount=2, dimension=0) → [c, d, e, a, b]
+    ```
+  }];
   let arguments = (ins
     HLO_Tensor:$operand,
-    SI32Attr:$amount,
-    SI32Attr:$dimension
+    I32Attr:$amount,
+    I32Attr:$dimension
   );
+  let hasFolder = 1;
   let results = (outs HLO_Tensor:$result);
+}
+
+def MultiRotateOp : EnzymeXLA_Op<"multi_rotate", [Pure]> {
+  let summary = "Produces multiple rotated versions of the input tensor";
+  let description = [{
+    MultiRotate operation produces multiple rotated versions of the input tensor.
+    Given left_amount=L and right_amount=R, it produces L+R+1 results:
+    - L results for left rotations (from L to 1)
+    - 1 result for no rotation (amount=0)
+    - R results for right rotations (from 1 to R)
+
+    For example, with left_amount=2 and right_amount=2:
+    results[0] = rotate left by 2
+    results[1] = rotate left by 1
+    results[2] = no rotation (amount=0)
+    results[3] = rotate right by 1
+    results[4] = rotate right by 2
+  }];
+  let arguments = (ins
+    HLO_Tensor:$operand,
+    I32Attr:$dimension,
+    I32Attr:$left_amount,
+    I32Attr:$right_amount
+  );
+  let results = (outs Variadic<HLO_Tensor>:$results);
+  let hasVerifier = 1;
+}
+
+
+def MultiSliceOp : EnzymeXLA_Op<"multi_slice", [Pure]> {
+  let summary = "Produces multiple slice versions of the input tensor";
+  let description = [{
+    MultiSlice operation produces multiple slice versions of the input tensor.
+    Given amount=N, it produces N+1 results:
+    - Result 0 is the slice at the base start/limit indices
+    - Result i is the slice shifted by i along the specified dimension
+
+    The slice parameters (start_indices, limit_indices, strides) define the first slice.
+    Each subsequent result is offset by +1 along the specified dimension.
+
+    To achieve the old left/right semantics: if you previously had left_amount=L and
+    right_amount=R, set amount=L+R and shift start_indices[dim] left by L.
+  }];
+  let arguments = (ins
+    HLO_Tensor:$operand,
+    DenseI64ArrayAttr:$start_indices,
+    DenseI64ArrayAttr:$limit_indices,
+    DenseI64ArrayAttr:$strides,
+    I32Attr:$dimension,
+    I32Attr:$amount
+  );
+  let results = (outs Variadic<HLO_Tensor>:$results);
+  let hasVerifier = 1;
+}
+
+def MultiPadOp : EnzymeXLA_Op<"multi_pad", [Pure]> {
+  let summary = "Produces multiple padded versions of the input tensor with constant total padding";
+  let description = [{
+    MultiPad operation produces multiple padded versions of the input tensor.
+    Given dimension=D and amount=A, it produces A + 1 results.
+    The i-th result corresponds to padding along dimension D by:
+    - Low side: i
+    - High side: A - i
+    Other dimensions are not padded.
+  }];
+  let arguments = (ins
+    HLO_Tensor:$operand,
+    HLO_Tensor:$padding_value,
+    I32Attr:$dimension,
+    I64Attr:$amount
+  );
+  let results = (outs Variadic<HLO_Tensor>:$results);
+  let hasVerifier = 1;
 }
 
 def WrapOp: EnzymeXLA_Op<
@@ -364,6 +493,7 @@ def WrapOp: EnzymeXLA_Op<
     I64Attr:$dimension
   );
 
+  let hasFolder = 1;
   let results = (outs HLO_Tensor:$result);
 }
 
@@ -378,6 +508,48 @@ def ExtendOp: EnzymeXLA_Op<
     I64Attr:$lhs,
     I64Attr:$rhs,
     I64Attr:$dimension
+  );
+
+  let hasFolder = 1;
+  let results = (outs HLO_Tensor:$result);
+}
+
+def UpdateWithoutCornersOp: EnzymeXLA_Op<
+      "update_without_corners",
+      [Pure, SameOperandsAndResultElementType,
+       DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
+  let summary = "Update without corners operation";
+
+  let arguments = (ins
+    HLO_Tensor:$operand,
+    HLO_Tensor:$update,
+    I64Attr:$dimensionX,
+    I64Attr:$x1,
+    I64Attr:$x2,
+    I64Attr:$dimensionY,
+    I64Attr:$y1,
+    I64Attr:$y2
+  );
+
+  let results = (outs HLO_Tensor:$result);
+}
+
+def PiecewiseSelectOp : EnzymeXLA_Op<"piecewise_select", [Pure, SameOperandsAndResultType]> {
+  let summary = "Piecewise selection operation";
+  let description = [{
+    For coordinates that fit inside any of the boxes defined by the attribute,
+    the result contains the element from the first operand, for other coordinates,
+    it contains the element from the second operand.
+  }];
+
+  let arguments = (ins
+    HLO_Tensor:$whenInBox,
+    HLO_Tensor:$whenOutOfBox,
+    // Boxes is an array where each element is itself an array of integers defining one box.
+    // Each box is defined by 2 * rank values: min (inclusive) and max (non-inclusive) for each dimension, e.g,
+    // [2, 8, 4, 12] defines a box in 2D space with min corner at (2, 4) and max corner at (8, 12).
+    // Alternatively, the box spans [2, 8) along x and [4, 12) along y.
+    ArrayAttr:$boxes
   );
 
   let results = (outs HLO_Tensor:$result);
@@ -397,7 +569,41 @@ def CommRegionOp : EnzymeXLA_Op<"comm_region", [
 
 // Linear Algebra Ops
 
-def SymmOp: EnzymeXLA_Op<"lapack.symm", [Pure, SameOperandsAndResultElementType]> {
+def GemmOp : EnzymeXLA_Op<"blas.gemm", [Pure, SameOperandsAndResultElementType]> {
+  let summary = "(Batch) Matrix multiplication with optional transposition of the inputs";
+
+  let description = [{
+    C := alpha*op(A)*op(B) + beta*C"
+  }];
+
+  let arguments = (ins
+    TensorFloat:$alpha,
+    HLO_Tensor:$A,
+    HLO_Tensor:$B,
+    TensorFloat:$beta,
+    HLO_Tensor:$C,
+    DefaultValuedAttr<EnzymeXLA_LapackTransposeAttr, "::mlir::enzymexla::LapackTranspose::none">:$transa,
+    DefaultValuedAttr<EnzymeXLA_LapackTransposeAttr, "::mlir::enzymexla::LapackTranspose::none">:$transb
+  );
+
+  let results = (outs
+    HLO_Tensor: $output
+  );
+
+  let assemblyFormat = [{
+    $alpha `,` $A `,` $B `,` $beta `,` $C attr-dict `:` functional-type(operands, results)
+  }];
+
+  let hasVerifier = 1;
+
+  let builders = [
+    OpBuilder<(ins "Value":$A, "Value":$B,
+      CArg<"enzymexla::LapackTranspose", "enzymexla::LapackTranspose::none">:$transa,
+      CArg<"enzymexla::LapackTranspose", "enzymexla::LapackTranspose::none">:$transb)>
+  ];
+}
+
+def SymmOp : EnzymeXLA_Op<"blas.symm", [Pure, SameOperandsAndResultElementType]> {
   let summary = "Multiplication involving a symmetric matrix";
 
   let description = [{
@@ -420,6 +626,130 @@ def SymmOp: EnzymeXLA_Op<"lapack.symm", [Pure, SameOperandsAndResultElementType]
 
   let assemblyFormat = [{
     $A `,` $B `,` $C `,` $alpha `,` $beta attr-dict `:` functional-type(operands, results)
+  }];
+}
+
+def SyrkOp: EnzymeXLA_Op<"blas.syrk", [Pure, SameOperandsAndResultElementType]> {
+  let summary = "Multiplication involving a symmetric matrix";
+
+  let description = [{
+    C_out := alpha*A*A^T + beta*C, or C_out := alpha*A^T*A + beta*C, where alpha and beta
+    are scalars. C must be a n x n symmetric matrix.
+
+    `output_uplo` determines which part of `C_out` is populated. Accessing the values in
+    the non-`output_uplo` part of the matrix is undefined behavior.
+
+    LAPACK/BLAS routines typically require a single `uplo` attribute and it is implicitly
+    assumed that the output `uplo` corresponds to the input `uplo`. This means the burden
+    lies on the user to manually copy data if they need to access the other half of the
+    matrix. By specifying the `output_uplo` we can perform transformations that analyze the
+    entire dataflow, and avoid computing/copying half of the tensor all together. Generally,
+    it is recommended to set this attribute to `enzymexla::LapackUplo::F`, and our passes
+    will automatically refine this to minimize data copies.
+  }];
+
+  let arguments = (ins
+    HLO_Tensor:$A,
+    HLO_Tensor:$C,
+    TensorFloat:$alpha,
+    TensorFloat:$beta,
+    EnzymeXLA_LapackUploAttr:$uplo,
+    EnzymeXLA_LapackUploAttr:$output_uplo,
+    DefaultValuedAttr<EnzymeXLA_LapackTransposeAttr, "::mlir::enzymexla::LapackTranspose::none">:$transpose
+  );
+
+  let results = (outs
+    HLO_Tensor: $output
+  );
+
+  let assemblyFormat = [{
+    $A `,` $C `,` $alpha `,` $beta attr-dict `:` functional-type(operands, results)
+  }];
+
+  let hasVerifier = 1;
+}
+
+def TrmmOp: EnzymeXLA_Op<"blas.trmm", [Pure, SameOperandsAndResultElementType]> {
+  let summary = "Multiplication involving a triangular matrix";
+
+  let description = [{
+    B := alpha * op(A) x B, or B := alpha * B x op(A), where alpha is a scalar,
+    B is a m x n matrix, A is a unit, or non-unit, upper or lower triangular
+    matrix, and op(A) is one of op(A) = A, or op(A) = A^T or A^H.
+  }];
+
+  let arguments = (ins
+    HLO_Tensor:$A,
+    HLO_Tensor:$B,
+    TensorFloat:$alpha,
+    EnzymeXLA_LapackSideAttr:$side,
+    EnzymeXLA_LapackUploAttr:$uplo,
+    EnzymeXLA_LapackTransposeAttr:$transpose,
+    UnitAttr:$unit_diagonal
+  );
+
+  let results = (outs
+    HLO_Tensor: $output
+  );
+
+  let assemblyFormat = [{
+    $A `,` $B `,` $alpha attr-dict `:` functional-type(operands, results)
+  }];
+}
+
+def TrsmOp : EnzymeXLA_Op<"blas.trsm", [Pure]> {
+  let summary = "Triangular matrix-matrix solve operation";
+  let description = [{
+    Solves op(A) * X = alpha * B, or X * op(A) = alpha * B, where alpha is a scalar,
+    X and B are m x n matrices, A is a unit, or non-unit, upper or lower triangular
+    matrix, and op(A) is one of op(A) = A, or op(A) = A^T or A^H.
+  }];
+
+  let arguments = (ins
+    TensorFloat:$alpha,
+    HLO_Tensor:$A,
+    HLO_Tensor:$B,
+    EnzymeXLA_LapackSideAttr:$side,
+    EnzymeXLA_LapackUploAttr:$uplo,
+    EnzymeXLA_LapackTransposeAttr:$transa,
+    UnitAttr:$unit_diagonal
+  );
+
+  let results = (outs
+    HLO_Tensor:$output
+  );
+
+  let assemblyFormat = [{
+    $alpha `,` $A `,` $B attr-dict `:` functional-type(operands, results)
+  }];
+}
+
+def TridiagonalSolveOp: EnzymeXLA_Op<"linalg.tridiagonal_solve", [Pure]> {
+  let summary = "Computes the solution of a tridiagonal linear system.";
+  let description = [{Computes the solution of a tridiagonal linear system.
+  Parameters:
+  dl: A batch of vectors with shape [..., m]. The lower diagonal of A:
+    dl[i] := A[i, i-1] for i in [0,m). Note that dl[0] = 0.
+  d: A batch of vectors with shape [..., m]. The middle diagonal of A:
+    d[i]  := A[i, i] for i in [0,m).
+  du: A batch of vectors with shape [..., m]. The upper diagonal of A:
+    du[i] := A[i, i+1] for i in [0,m). Note that dl[m-1] = 0.
+  b: Right hand side matrix.
+  }];
+
+  let arguments = (ins
+    HLO_Tensor:$dl,
+    HLO_Tensor:$d,
+    HLO_Tensor:$du,
+    HLO_Tensor:$B
+  );
+
+  let results = (outs
+    HLO_Tensor:$X
+  );
+
+  let assemblyFormat = [{
+    $dl `,` $d `,` $du `,` $B attr-dict `:` functional-type(operands, results)
   }];
 }
 
@@ -446,26 +776,47 @@ def QRFactorizationOp: EnzymeXLA_Op<"linalg.qr", [Pure]> {
   let summary = "QR factorization operation (high-level op)";
 
   let description = [{
-    This operation computes the QR factorization of a matrix using Householder 
-    reflections. Mathematically, it decomposes A into the product of an 
-    orthogonal (unitary if complex) matrix Q and an upper triangular matrix R, 
+    This operation computes the QR factorization of a matrix using Householder
+    reflections. Mathematically, it decomposes A into the product of an
+    orthogonal (unitary if complex) matrix Q and an upper triangular matrix R,
     such that A = QR.
 
     If A has size m x n and m > n, Q is an m x n isometric matrix. If m < n, R
     will be a m x n trapezoidal matrix.
 
-    This operation is modeled after the mathematical formulation of the QR 
+    This operation is modeled after the mathematical formulation of the QR
     factorization, and not after LAPACK's compact formats.
   }];
 
   let arguments = (ins
-    HLO_Tensor:$input,
-    DefaultValuedAttr<EnzymeXLA_QrAlgorithmAttr, "mlir::enzymexla::QrAlgorithm::geqrf">:$algorithm
+    HLO_Tensor:$input
   );
 
   let results = (outs
     HLO_Tensor:$Q,
-    HLO_Tensor:$R
+    HLO_Tensor:$R,
+    HLO_Tensor:$info
+  );
+
+  let assemblyFormat = [{
+    $input attr-dict `:` functional-type($input, results)
+  }];
+}
+
+def SVDFactorizationOp : EnzymeXLA_Op<"linalg.svd", [Pure]> {
+  let summary = "Singular Value Decomposition (SVD) factorization operation.";
+
+  let arguments = (ins
+    HLO_Tensor:$input,
+    DefaultValuedAttr<BoolAttr, "false">:$full,
+    DefaultValuedAttr<EnzymeXLA_SVDAlgorithmAttr, "::mlir::enzymexla::SVDAlgorithm::DEFAULT">:$algorithm
+  );
+
+  let results = (outs
+    HLO_Tensor:$U,
+    HLO_Tensor:$S,
+    HLO_Tensor:$Vt,
+    HLO_Tensor:$info
   );
 
   let assemblyFormat = [{
@@ -477,24 +828,24 @@ def GeqrfOp : EnzymeXLA_Op<"lapack.geqrf", [Pure]> {
   let summary = "QR factorization operation (low-level op)";
 
   let description = [{
-    This operation computes the QR factorization of a matrix using Householder 
-    reflections. Mathematically, it decomposes A into the product of an 
+    This operation computes the QR factorization of a matrix using Householder
+    reflections. Mathematically, it decomposes A into the product of an
     orthogonal matri x Q and an upper triangular matrix R,
-      such that A = QR.
+    such that A = QR.
 
-                    This operation is modeled after
-                        LAPACK's *GEQRF routines, which returns the  result in
-                            the QR packed format.
-}];
+    This operation is modeled after LAPACK's *GEQRF routines, which returns the
+    result in the QR packed format.
+  }];
 
-let arguments = (ins HLO_Tensor : $input);
+  let arguments = (ins HLO_Tensor : $input);
 
-let results = (outs HLO_Tensor
-               : $output, HLO_Tensor
-               : $tau, HLO_Tensor
-               : $info);
+  let results = (outs
+    HLO_Tensor:$output,
+    HLO_Tensor:$tau,
+    HLO_Tensor:$info
+  );
 
-let assemblyFormat = [{
+  let assemblyFormat = [{
     $input attr-dict `:` functional-type($input, results)
   }];
 }
@@ -503,11 +854,11 @@ def GeqrtOp : EnzymeXLA_Op<"lapack.geqrt", [Pure]> {
   let summary = "QR factorization operation (low-level op)";
 
   let description = [{
-    This operation computes the QR factorization of a matrix using Householder 
-    reflections. Mathematically, it decomposes A into the product of an 
+    This operation computes the QR factorization of a matrix using Householder
+    reflections. Mathematically, it decomposes A into the product of an
     orthogonal matrix Q and an upper triangular matrix R, such that A = QR.
 
-    This operation is modeled after LAPACK's *GEQRT routines, which returns the 
+    This operation is modeled after LAPACK's *GEQRT routines, which returns the
     result in the QR CompactWY format.
   }];
 
@@ -605,12 +956,47 @@ def GemqrtOp : EnzymeXLA_Op<"lapack.gemqrt", [Pure]> {
   }];
 }
 
-def SVDFactorizationOp : EnzymeXLA_Op<"linalg.svd", [Pure]> {
+def GetrfOp : EnzymeXLA_Op<"lapack.getrf", [Pure]> {
+  let summary = "LU factorization operation with row-major pivoting.";
+
+  let arguments = (ins HLO_Tensor:$input);
+
+  let results = (outs
+    HLO_Tensor:$output,
+    HLO_Tensor:$pivots,
+    HLO_Tensor:$permutation,
+    HLO_Tensor:$info
+  );
+
+  let assemblyFormat = [{
+    $input attr-dict `:` functional-type($input, results)
+  }];
+}
+
+def GetriOp : EnzymeXLA_Op<"lapack.getri", [Pure]> {
+  let summary = "Computes the inverse of a matrix using the LU factorization.";
+
+  let arguments = (ins
+    HLO_Tensor:$input,
+    HLO_Tensor:$ipiv
+  );
+
+  let results = (outs
+    HLO_Tensor:$output
+  );
+
+  let assemblyFormat = [{
+    $input `,` $ipiv attr-dict `:` functional-type(operands, results)
+  }];
+}
+
+def GesddOp : EnzymeXLA_Op<"lapack.gesdd", [Pure]> {
   let summary = "Singular Value Decomposition (SVD) factorization operation.";
 
   let arguments = (ins
     HLO_Tensor:$input,
-    DefaultValuedAttr<BoolAttr, "false">:$full
+    DefaultValuedAttr<BoolAttr, "false">:$full,
+    DefaultValuedAttr<BoolAttr, "true">:$compute_uv
   );
 
   let results = (outs
@@ -625,9 +1011,265 @@ def SVDFactorizationOp : EnzymeXLA_Op<"linalg.svd", [Pure]> {
   }];
 }
 
-// Machine Learning Ops
+def GesvdOp : EnzymeXLA_Op<"lapack.gesvd", [Pure]> {
+  let summary = "Singular Value Decomposition (SVD) factorization operation.";
 
-def GeluOp: EnzymeXLA_Op<"ml.gelu", [Pure, SameOperandsAndResultType, Elementwise]> {
+  let arguments = (ins
+    HLO_Tensor:$input,
+    DefaultValuedAttr<BoolAttr, "false">:$full,
+    DefaultValuedAttr<BoolAttr, "true">:$compute_uv
+  );
+
+  let results = (outs
+    HLO_Tensor:$U,
+    HLO_Tensor:$S,
+    HLO_Tensor:$Vt,
+    HLO_Tensor:$info
+  );
+
+  let assemblyFormat = [{
+    $input attr-dict `:` functional-type($input, results)
+  }];
+}
+
+def GesvjOp : EnzymeXLA_Op<"lapack.gesvj", [Pure]> {
+  let summary = "Singular Value Decomposition (SVD) factorization operation.";
+
+  let arguments = (ins
+    HLO_Tensor:$input,
+    DefaultValuedAttr<BoolAttr, "false">:$full,
+    DefaultValuedAttr<BoolAttr, "true">:$compute_uv
+  );
+
+  let results = (outs
+    HLO_Tensor:$U,
+    HLO_Tensor:$S,
+    HLO_Tensor:$Vt,
+    HLO_Tensor:$info
+  );
+
+  let assemblyFormat = [{
+    $input attr-dict `:` functional-type($input, results)
+  }];
+}
+
+def PotrfOp : EnzymeXLA_Op<"lapack.potrf", [Pure]> {
+  let summary = "Cholesky factorization of symmetric/Hermitian positive-definite matrix";
+
+  let arguments = (ins
+    HLO_Tensor:$input,
+    EnzymeXLA_LapackUploAttr:$uplo
+  );
+
+  let results = (outs
+    HLO_Tensor:$output,
+    HLO_Tensor:$info
+  );
+
+  let assemblyFormat = [{
+    $input attr-dict `:` functional-type(operands, results)
+  }];
+}
+
+// Special Functions - Bessel Functions
+
+def BesselJ : EnzymeXLA_Op<"special.besselj", [Pure, AllTypesMatch<["z", "res"]>, Elementwise]> {
+  let summary = "Bessel function of the first kind of order nu at z";
+
+  let arguments = (ins
+    HLO_Tensor:$nu,
+    HLO_Tensor:$z
+  );
+
+  let results = (outs
+    HLO_Tensor:$res
+  );
+}
+
+def BesselJX : EnzymeXLA_Op<"special.besseljx", [Pure, AllTypesMatch<["z", "res"]>, Elementwise]> {
+  let summary = "Scaled Bessel function of the first kind of order nu at z";
+
+  let arguments = (ins
+    HLO_Tensor:$nu,
+    HLO_Tensor:$z
+  );
+
+  let results = (outs
+    HLO_Tensor:$res
+  );
+}
+
+def SphericalBesselJ : EnzymeXLA_Op<"special.sphericalbesselj", [Pure, AllTypesMatch<["z", "res"]>, Elementwise]> {
+  let summary = "Spherical Bessel function of the first kind of order nu at z";
+
+  let arguments = (ins
+    HLO_Tensor:$nu,
+    HLO_Tensor:$z
+  );
+
+  let results = (outs
+    HLO_Tensor:$res
+  );
+}
+
+def BesselY : EnzymeXLA_Op<"special.bessely", [Pure, AllTypesMatch<["z", "res"]>, Elementwise]> {
+  let summary = "Bessel function of the second kind of order nu at z";
+
+  let arguments = (ins
+    HLO_Tensor:$nu,
+    HLO_Tensor:$z
+  );
+
+  let results = (outs
+    HLO_Tensor:$res
+  );
+}
+
+def BesselYX : EnzymeXLA_Op<"special.besselyx", [Pure, AllTypesMatch<["z", "res"]>, Elementwise]> {
+  let summary = "Scaled Bessel function of the second kind of order nu at z";
+
+  let arguments = (ins
+    HLO_Tensor:$nu,
+    HLO_Tensor:$z
+  );
+
+  let results = (outs
+    HLO_Tensor:$res
+  );
+}
+
+def SphericalBesselY : EnzymeXLA_Op<"special.sphericalbessely", [Pure, AllTypesMatch<["z", "res"]>, Elementwise]> {
+  let summary = "Spherical Bessel function of the second kind of order nu at z";
+
+  let arguments = (ins
+    HLO_Tensor:$nu,
+    HLO_Tensor:$z
+  );
+
+  let results = (outs
+    HLO_Tensor:$res
+  );
+}
+
+def BesselH : EnzymeXLA_Op<"special.besselh", [Pure, AllTypesMatch<["z", "res"]>, Elementwise]> {
+  let summary = "Bessel function of the third kind (Hankel function) of order nu at z";
+
+  let description = [{
+    Computes the Bessel function of the third kind, also known as the Hankel
+    function. The parameter k must be either 1 or 2, selecting between Hankel
+    functions of the first kind (H1) and second kind (H2).
+  }];
+
+  let arguments = (ins
+    HLO_Tensor:$nu,
+    HLO_Tensor:$k,
+    HLO_Tensor:$z
+  );
+
+  let results = (outs
+    HLO_Tensor:$res
+  );
+}
+
+def HankelH1X : EnzymeXLA_Op<"special.hankelh1x", [Pure, AllTypesMatch<["z", "res"]>, Elementwise]> {
+  let summary = "Scaled Hankel function of the first kind of order nu at z";
+
+  let arguments = (ins
+    HLO_Tensor:$nu,
+    HLO_Tensor:$z
+  );
+
+  let results = (outs
+    HLO_Tensor:$res
+  );
+}
+
+def HankelH2X : EnzymeXLA_Op<"special.hankelh2x", [Pure, AllTypesMatch<["z", "res"]>, Elementwise]> {
+  let summary = "Scaled Hankel function of the second kind of order nu at z";
+
+  let arguments = (ins
+    HLO_Tensor:$nu,
+    HLO_Tensor:$z
+  );
+
+  let results = (outs
+    HLO_Tensor:$res
+  );
+}
+
+def BesselI : EnzymeXLA_Op<"special.besseli", [Pure, AllTypesMatch<["z", "res"]>, Elementwise]> {
+  let summary = "Modified Bessel function of the first kind of order nu at z";
+
+  let arguments = (ins
+    HLO_Tensor:$nu,
+    HLO_Tensor:$z
+  );
+
+  let results = (outs
+    HLO_Tensor:$res
+  );
+}
+
+def BesselIX : EnzymeXLA_Op<"special.besselix", [Pure, AllTypesMatch<["z", "res"]>, Elementwise]> {
+  let summary = "Scaled modified Bessel function of the first kind of order nu at z";
+
+  let arguments = (ins
+    HLO_Tensor:$nu,
+    HLO_Tensor:$z
+  );
+
+  let results = (outs
+    HLO_Tensor:$res
+  );
+}
+
+def BesselK : EnzymeXLA_Op<"special.besselk", [Pure, AllTypesMatch<["z", "res"]>, Elementwise]> {
+  let summary = "Modified Bessel function of the second kind of order nu at z";
+
+  let arguments = (ins
+    HLO_Tensor:$nu,
+    HLO_Tensor:$z
+  );
+
+  let results = (outs
+    HLO_Tensor:$res
+  );
+}
+
+def BesselKX : EnzymeXLA_Op<"special.besselkx", [Pure, AllTypesMatch<["z", "res"]>, Elementwise]> {
+  let summary = "Scaled modified Bessel function of the second kind of order nu at z";
+
+  let arguments = (ins
+    HLO_Tensor:$nu,
+    HLO_Tensor:$z
+  );
+
+  let results = (outs
+    HLO_Tensor:$res
+  );
+}
+
+def Jinc : EnzymeXLA_Op<"special.jinc", [Pure, SameOperandsAndResultType, Elementwise]> {
+  let summary = "Jinc function (sombrero/besinc): scaled Bessel function of the first kind divided by x";
+
+  let description = [{
+    Computes the jinc function, also known as the sombrero or besinc function.
+    It is defined as J1(pi*x) / (2*x) where J1 is the Bessel function of the
+    first kind of order 1. At x=0, the function evaluates to pi/4.
+  }];
+
+  let arguments = (ins
+    HLO_Tensor:$x
+  );
+
+  let results = (outs
+    HLO_Tensor:$res
+  );
+}
+
+// Math Primitive Ops
+
+def GeluOp: EnzymeXLA_Op<"math.gelu", [Pure, SameOperandsAndResultType, Elementwise]> {
   let summary = "Computes the GELU activation function";
 
   let arguments = (ins
@@ -642,7 +1284,7 @@ def GeluOp: EnzymeXLA_Op<"ml.gelu", [Pure, SameOperandsAndResultType, Elementwis
   }];
 }
 
-def ReluOp: EnzymeXLA_Op<"ml.relu", [Pure, SameOperandsAndResultType, Elementwise]> {
+def ReluOp: EnzymeXLA_Op<"math.relu", [Pure, SameOperandsAndResultType, Elementwise]> {
   let summary = "Computes the RELU activation function";
 
   let arguments = (ins
@@ -650,6 +1292,116 @@ def ReluOp: EnzymeXLA_Op<"ml.relu", [Pure, SameOperandsAndResultType, Elementwis
   );
 
   let results = (outs HLO_Tensor:$result);
+
+  let assemblyFormat = [{
+    $input attr-dict `:` functional-type($input, results)
+  }];
+}
+
+def FMulAddOp: EnzymeXLA_Op<"math.fmuladd", [Pure, SameOperandsAndResultType, Elementwise]> {
+  let summary = "Multiply-add that may, but need not, be fused";
+
+  let description = [{
+    Carries the semantics of the `llvm.fmuladd` intrinsic through the round
+    trip: compute `a * b + c`, fused into a single rounding only when the
+    target can do so profitably, otherwise as an ordinary multiply and add.
+    This is a *permission* to fuse, unlike `math.fma`, whose single rounding
+    is required and whose honest lowering on a target without FMA units is a
+    libm call. Raised from `llvm.intr.fmuladd`; lowered back to the same.
+  }];
+
+  let arguments = (ins
+    FloatLike:$a,
+    FloatLike:$b,
+    FloatLike:$c
+  );
+
+  let results = (outs FloatLike:$result);
+
+  let assemblyFormat = [{
+    $a `,` $b `,` $c attr-dict `:` type($result)
+  }];
+}
+
+def TGammaOp: EnzymeXLA_Op<"math.tgamma", [Pure, SameOperandsAndResultType, Elementwise]> {
+  let summary = "Computes the true gamma function";
+
+  let arguments = (ins
+    FloatLike:$input
+  );
+
+  let results = (outs FloatLike:$result);
+
+  let assemblyFormat = [{
+    $input attr-dict `:` functional-type($input, results)
+  }];
+}
+
+def LGammaOp: EnzymeXLA_Op<"math.lgamma", [Pure, SameOperandsAndResultType, Elementwise]> {
+  let summary = "Computes the log-gamma function";
+
+  let arguments = (ins
+    FloatLike:$input
+  );
+
+  let results = (outs FloatLike:$result);
+
+  let assemblyFormat = [{
+    $input attr-dict `:` functional-type($input, results)
+  }];
+}
+
+def SoftplusOp: EnzymeXLA_Op<"math.softplus", [Pure, SameOperandsAndResultType, Elementwise]> {
+  let summary = "Computes the Softplus activation function";
+
+  let arguments = (ins
+    TensorFloatAnyRank:$input
+  );
+
+  let results = (outs TensorFloatAnyRank:$result);
+
+  let assemblyFormat = [{
+    $input attr-dict `:` functional-type($input, results)
+  }];
+}
+
+def HypotOp: EnzymeXLA_Op<"math.hypot", [Pure, SameOperandsAndResultType, Elementwise]> {
+  let summary = "Computes the hypot function (sqrt(x^2 + y^2))";
+
+  let arguments = (ins
+    TensorFloatAnyRank:$lhs,
+    TensorFloatAnyRank:$rhs
+  );
+
+  let results = (outs TensorFloatAnyRank:$result);
+
+  let assemblyFormat = [{
+    $lhs `,` $rhs attr-dict `:` functional-type(operands, results)
+  }];
+}
+
+def SincOp: EnzymeXLA_Op<"math.sinc", [Pure, SameOperandsAndResultType, Elementwise]> {
+  let summary = "Computes the normalized sinc function (sin(pi * x) / (pi * x))";
+
+  let arguments = (ins
+    TensorFloatAnyRank:$input
+  );
+
+  let results = (outs TensorFloatAnyRank:$result);
+
+  let assemblyFormat = [{
+    $input attr-dict `:` functional-type($input, results)
+  }];
+}
+
+def CoscOp: EnzymeXLA_Op<"math.cosc", [Pure, SameOperandsAndResultType, Elementwise]> {
+  let summary = "Computes the normalized cosc function (cos(pi * x) / x - sin(pi * x) / (pi * x^2))";
+
+  let arguments = (ins
+    TensorFloatAnyRank:$input
+  );
+
+  let results = (outs TensorFloatAnyRank:$result);
 
   let assemblyFormat = [{
     $input attr-dict `:` functional-type($input, results)
@@ -695,6 +1447,168 @@ def TypeAlignOp : EnzymeXLA_Op<"typeAlign", [Pure]> {
   let results = (outs AnyType : $result);
   let hasFolder = 1;
   let hasCanonicalizer = 1;
+}
+
+def AffineStoreVar : EnzymeXLA_Op<"store_var", [Pure]> {
+  let arguments = (ins Variadic<AnyType>:$variables,
+                       Builtin_StringAttr:$type);
+  let summary = "Fake store an SSA value for conversion to ISL";
+}
+
+// MPI Ops
+
+def MPICommRankOp : EnzymeXLA_Op<"mpi.comm_rank", [Pure]> {
+  let summary = "Equivalent to " "`MPI_Comm_rank(MPI_COMM_WORLD, &rank)`";
+
+  let results = (
+    outs TensorOf<[I32]> : $rank
+  );
+
+  let assemblyFormat = "attr-dict `:` type(results)";
+}
+
+def MPICommSizeOp : EnzymeXLA_Op<"mpi.comm_size", [Pure]> {
+  let summary = "Equivalent to MPI_Comm_size(MPI_COMM_WORLD, &size)";
+
+  let results = (
+    outs TensorOf<[I32]> : $size
+  );
+
+  let assemblyFormat = "attr-dict `:` type(results)";
+}
+
+def MPIBarrierOp : EnzymeXLA_Op<"mpi.barrier", []> {
+  let summary = "Equivalent to MPI_Barrier(MPI_COMM_WORLD)";
+  let assemblyFormat = "attr-dict";
+}
+
+def MPISendOp : EnzymeXLA_Op<"mpi.send", []> {
+  let summary = "Equivalent to "
+                "`MPI_Send(&buf, count, datatype, dest, tag, comm)`";
+
+  let arguments = (
+    ins AnyTensor : $buf,
+    TensorOf<[I32]> : $count,
+    TensorOf<[I32]> : $dest,
+    TensorOf<[I32]> : $tag,
+    EnzymeXLA_MPIDatatypeAttr:$datatype
+  );
+
+  let assemblyFormat = "`(` operands `)` attr-dict `:` type(operands)";
+}
+
+def MPIRecvOp : EnzymeXLA_Op<"mpi.recv", []> {
+  let summary = "Equivalent to "
+                "`MPI_Recv(&buf, count, datatype, source, tag, MPI_COMM_WORLD, MPI_STATUS_IGNORE)`";
+
+  let arguments = (
+    ins AnyTensor : $inbuf,
+    TensorOf<[I32]> : $count,
+    TensorOf<[I32]> : $source,
+    TensorOf<[I32]> : $tag,
+    EnzymeXLA_MPIDatatypeAttr:$datatype
+  );
+
+  let results = (
+    outs AnyTensor : $outbuf
+  );
+
+  let assemblyFormat = "`(` operands `)` attr-dict `:` functional-type(operands, results)";
+}
+
+def MPIIsendOp : EnzymeXLA_Op<"mpi.isend", []> {
+  let summary = "Equivalent to "
+                "`MPI_Isend(&buf, count, datatype, dest, tag, MPI_COMM_WORLD, &request)`";
+
+  let arguments = (
+    ins AnyTensor : $buf,
+    TensorOf<[I32]> : $count,
+    TensorOf<[I32]> : $dest,
+    TensorOf<[I32]> : $tag,
+    EnzymeXLA_MPIDatatypeAttr:$datatype
+  );
+
+  let results = (
+    outs TensorOf<[I32]> : $request
+  );
+
+  let assemblyFormat = "`(` operands `)` attr-dict `:` functional-type(operands, results)";
+}
+
+def MPIIrecvOp : EnzymeXLA_Op<"mpi.irecv", []> {
+  let summary = "Equivalent to "
+                "`MPI_Irecv(&buf, count, datatype, source, tag, MPI_COMM_WORLD, &request)`";
+
+  let arguments = (
+    ins AnyTensor : $inbuf,
+    TensorOf<[I32]> : $count,
+    TensorOf<[I32]> : $source,
+    TensorOf<[I32]> : $tag,
+    EnzymeXLA_MPIDatatypeAttr:$datatype
+  );
+
+  let results = (
+    outs AnyTensor : $outbuf,
+    TensorOf<[I32]> : $request
+  );
+
+  let assemblyFormat = "`(` operands `)` attr-dict `:` functional-type(operands, results)";
+}
+
+def MPIWaitOp : EnzymeXLA_Op<"mpi.wait", []> {
+  let summary = "Equivalent to "
+                "`MPI_Wait(&request, &status)`";
+  let arguments = (ins TensorOf<[I32]> : $request);
+  let assemblyFormat = "`(` operands `)` attr-dict `:` type(operands)";
+}
+
+def MPIWaitallOp : EnzymeXLA_Op<"mpi.waitall", []> {
+  let summary = "Equivalent to "
+                "`MPI_Waitall(&request, &status)`";
+
+  let arguments = (
+    ins TensorOf<[I32]> : $count,
+    TensorOf<[I32]> : $request
+  );
+
+  let assemblyFormat = "`(` operands `)` attr-dict `:` type(operands)";
+}
+
+def MPIAllreduceOp : EnzymeXLA_Op<"mpi.allreduce", []> {
+  let summary = "Equivalent to "
+                "`MPI_Allreduce(&sendbuf, &recvbuf, count, datatype, op, MPI_COMM_WORLD)`";
+
+  let arguments = (
+    ins AnyTensor : $sendbuf,
+    AnyTensor : $inbuf,
+    TensorOf<[I32]> : $count,
+    EnzymeXLA_MPIDatatypeAttr:$datatype,
+    EnzymeXLA_MPIOpAttr:$op
+  );
+
+  let results = (
+    outs AnyTensor : $outbuf
+  );
+
+  let assemblyFormat = "`(` operands `)` attr-dict `:` functional-type(operands, results)";
+}
+
+def MPIBcastOp : EnzymeXLA_Op<"mpi.bcast", []> {
+  let summary = "Equivalent to "
+                "`MPI_Bcast(&buf, count, datatype, root, MPI_COMM_WORLD)`";
+
+  let arguments = (
+    ins AnyTensor : $inbuf,
+    TensorOf<[I32]> : $count,
+    TensorOf<[I32]> : $root,
+    EnzymeXLA_MPIDatatypeAttr:$datatype
+  );
+
+  let results = (
+    outs AnyTensor : $outbuf
+  );
+
+  let assemblyFormat = "`(` operands `)` attr-dict `:` functional-type(operands, results)";
 }
 
 #endif // ENZYMEXLA_OPS

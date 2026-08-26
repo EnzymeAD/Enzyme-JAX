@@ -1,0 +1,4 @@
+# Override file to resolve circular dependency issues
+# fsspec[gcs] pulls in gcsfs, which pulls in fsspec[gcs] - circular!
+# We override to use plain fsspec and gcsfs separately
+fsspec

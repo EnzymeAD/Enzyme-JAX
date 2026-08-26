@@ -1,18 +1,31 @@
 #include "mhlo/IR/hlo_ops.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#ifdef __clang__
+#pragma clang diagnostic push
+#pragma clang diagnostic ignored "-Wmissing-braces"
+#else
+#pragma GCC diagnostic push
+#pragma GCC diagnostic ignored "-Wmissing-braces"
+#endif
 #include "shardy/dialect/sdy/ir/dialect.h"
+#ifdef __clang__
+#pragma clang diagnostic pop
+#else
+#pragma GCC diagnostic pop
+#endif
 #include "shardy/dialect/sdy/ir/utils.h"
+
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
+#include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "src/enzyme_ad/jax/Utils.h"
+
 #include "stablehlo/dialect/StablehloOps.h"
-#include "llvm/ADT/DynamicAPInt.h"
-#include "llvm/ADT/SetVector.h"
+
+#include "src/enzyme_ad/jax/Utils.h"
 #include "llvm/ADT/SmallVector.h"
-#include "llvm/Support/ErrorHandling.h"
-#include "llvm/Support/LogicalResult.h"
-#include "llvm/Support/MathExtras.h"
+
 #include <algorithm>
 #include <cstdint>
 
@@ -648,31 +661,97 @@ extendCommPatternForEdges(PatternRewriter &rewriter, Operation *op,
   return ifCondInner->getResults();
 }
 
-bool isZero(ElementsAttr v) {
-  if (!v.isSplat())
-    return false;
+Value padWithUndefinedValueInDim(PatternRewriter &rewriter, Location loc,
+                                 Value val,
+                                 mlir::sdy::TensorShardingAttr sharding,
+                                 int64_t dim, int64_t leftPad,
+                                 int64_t rightPad) {
 
-  auto attr = v.getSplatValue<Attribute>();
-  if (auto fp = dyn_cast<FloatAttr>(attr)) {
-    if (fp.getValue().isZero())
-      return true;
-  }
-  if (auto fp = dyn_cast<IntegerAttr>(attr)) {
-    if (fp.getValue().isZero())
-      return true;
-  }
-  return false;
-}
+  if (leftPad == 0 && rightPad == 0)
+    return val;
 
-bool isZero(Value v) {
+  auto RT0 = cast<RankedTensorType>(val.getType());
+  auto ndims = RT0.getShape().size();
+
+  if (auto sl = val.getDefiningOp<stablehlo::SliceOp>()) {
+    auto RTOp = sl.getOperand().getType();
+    if (sl.getStrides()[dim] == 1 && sl.getStartIndices()[dim] <= leftPad &&
+        RTOp.getShape()[dim] - sl.getLimitIndices()[dim] <= rightPad &&
+        (leftPad - sl.getStartIndices()[dim] > 0 ||
+         rightPad - (RTOp.getShape()[dim] - sl.getLimitIndices()[dim]) > 0)) {
+      SmallVector<int64_t> newStart = llvm::to_vector(sl.getStartIndices());
+      SmallVector<int64_t> newLimit = llvm::to_vector(sl.getLimitIndices());
+      SmallVector<int64_t> newStrides = llvm::to_vector(sl.getStrides());
+      newStart[dim] = 0;
+      newLimit[dim] = RTOp.getShape()[dim];
+      bool needsSlice = false;
+      leftPad -= sl.getStartIndices()[dim];
+      rightPad -= RTOp.getShape()[dim] - sl.getLimitIndices()[dim];
+      for (int i = 0; i < newStart.size(); i++) {
+        if (newStart[i] != 0 || newLimit[i] != RTOp.getShape()[i] ||
+            newStrides[i] != 1) {
+          needsSlice = true;
+          break;
+        }
+      }
+      if (needsSlice) {
+        auto newSlice = stablehlo::SliceOp::create(
+            rewriter, loc, sl.getOperand(), newStart, newLimit, newStrides);
+        sdy::setSharding(newSlice, sharding);
+        val = newSlice;
+      } else {
+        val = sl.getOperand();
+      }
+    }
+  }
+
+  if (leftPad == 0 && rightPad == 0)
+    return val;
+
+  RT0 = cast<RankedTensorType>(val.getType());
+  SmallVector<int64_t> newShape = llvm::to_vector(RT0.getShape());
+  newShape[dim] += leftPad + rightPad;
+  auto RT1 = RankedTensorType::get(newShape, RT0.getElementType());
+
   DenseElementsAttr elem;
-  if (matchPattern(v, m_Constant(&elem))) {
-    return isZero(elem);
+  if (matchPattern(val, m_Constant(&elem))) {
+    if (elem.isSplat()) {
+      auto newCst = stablehlo::ConstantOp::create(rewriter, loc, RT1,
+                                                  elem.resizeSplat(RT1));
+      if (sharding)
+        sdy::setSharding(newCst, sharding);
+      return newCst;
+    }
   }
-  if (auto sdyConstant = v.getDefiningOp<sdy::ConstantOp>()) {
-    return isZero(sdyConstant.getValue());
+
+  if (auto sdyConstant = val.getDefiningOp<sdy::ConstantOp>()) {
+    auto elem = sdyConstant.getValue();
+    if (elem.isSplat()) {
+      auto newCst = stablehlo::ConstantOp::create(
+          rewriter, loc, RT1, cast<DenseElementsAttr>(elem).resizeSplat(RT1));
+      if (sharding)
+        sdy::setSharding(newCst, sharding);
+      return newCst;
+    }
   }
-  return false;
+
+  SmallVector<int64_t> padLow(ndims, 0);
+  SmallVector<int64_t> padHigh(ndims, 0);
+  SmallVector<int64_t> padInner(ndims, 0);
+
+  padLow[dim] = leftPad;
+  padHigh[dim] = rightPad;
+
+  auto zero = stablehlo::ConstantOp::create(
+      rewriter, loc,
+      rewriter.getZeroAttr(RankedTensorType::get({}, RT0.getElementType())));
+
+  auto pad = stablehlo::PadOp::create(rewriter, loc, val, zero, padLow, padHigh,
+                                      padInner);
+  if (sharding)
+    sdy::setSharding(pad, sharding);
+  assert(RT1 == pad.getType());
+  return pad;
 }
 
 // TODO: we might need to update this to use the generalized version for the
@@ -900,9 +979,9 @@ struct PeriodicConcatSimplify
     TensorShardingAttr op_shardings[] = {concatSharding};
     TensorShardingAttr op_shardings_in[] = {concatSharding, concatSharding};
     TensorShardingPerValueAttr in_shardings =
-        TensorShardingPerValueAttr::get(concat.getContext(), op_shardings_in);
+        TensorShardingPerValueAttr::get(rewriter.getContext(), op_shardings_in);
     TensorShardingPerValueAttr out_shardings =
-        TensorShardingPerValueAttr::get(concat.getContext(), op_shardings);
+        TensorShardingPerValueAttr::get(rewriter.getContext(), op_shardings);
 
     SmallVector<StringAttr> manualAxes;
     SmallVector<int64_t> localShape =
@@ -1078,9 +1157,9 @@ struct WrapCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
 
     TensorShardingAttr opShardings[] = {wrapSharding};
     TensorShardingPerValueAttr inShardings =
-        TensorShardingPerValueAttr::get(wrap.getContext(), opShardings);
+        TensorShardingPerValueAttr::get(rewriter.getContext(), opShardings);
     TensorShardingPerValueAttr outShardings =
-        TensorShardingPerValueAttr::get(wrap.getContext(), opShardings);
+        TensorShardingPerValueAttr::get(rewriter.getContext(), opShardings);
 
     SmallVector<StringAttr> manualAxes;
     SmallVector<int64_t> localShape = llvm::to_vector(wrapOperandShape);
@@ -1325,6 +1404,130 @@ struct WrapToPadCommOptimize : public OpRewritePattern<enzymexla::WrapOp> {
   }
 };
 
+// Communication optimization pattern to rewrite wrap operations in terms of
+// pad and rotate operations. This can enable better optimization of the
+// resulting operations in distributed/sharded contexts.
+//
+// Pattern: wrap(x, lhs=L, rhs=R) =>
+//   p0 = pad(x, lhs=L, rhs=R)
+//   p1 = rotate(p0, L)
+//   p2 = rotate(p0, -R)
+//   result = select based on iota to choose between p1 (left), p0 (middle), p2
+//   (right)
+//
+// Note: Only applied when no sharding is present, to be conservative.
+// This pattern is intended to work in conjunction with other communication
+// optimization patterns for pad and rotate operations.
+struct WrapToRotateOptimize : public OpRewritePattern<enzymexla::WrapOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::WrapOp wrap,
+                                PatternRewriter &rewriter) const override {
+    // Check if already inside a manual computation
+    if (wrap->getParentOfType<sdy::ManualComputationOp>())
+      return failure();
+
+    auto wrapDimension = wrap.getDimension();
+
+    auto wrapSharding = mlir::sdy::getSharding(wrap);
+    int64_t numDevicesAlongDimension = -1;
+    if (wrapSharding) {
+      auto ndevices = getShardingDevices(wrapSharding, wrapDimension, wrap);
+      numDevicesAlongDimension = ndevices[wrapDimension];
+    }
+
+    if (numDevicesAlongDimension == 1) {
+      return rewriter.notifyMatchFailure(
+          wrap,
+          "numDevicesAlongDimension == 1. Communication is already optimized.");
+    }
+
+    auto lhs = wrap.getLhs();
+    auto rhs = wrap.getRhs();
+    auto wrapShape = wrap.getType().getShape();
+    auto operandShape = wrap.getOperand().getType().getShape();
+
+    auto paddedOp =
+        padWithUndefinedValueInDim(rewriter, wrap.getLoc(), wrap.getOperand(),
+                                   wrapSharding, wrapDimension, lhs, rhs);
+
+    // Create two rotate operations
+    auto rotateRhsPart = enzymexla::RotateOp::create(
+        rewriter, wrap.getLoc(), paddedOp, static_cast<int32_t>(rhs + lhs),
+        static_cast<int32_t>(wrapDimension));
+    if (wrapSharding) {
+      mlir::sdy::setSharding(rotateRhsPart, wrapSharding);
+    }
+
+    auto rotateLhsPart = enzymexla::RotateOp::create(
+        rewriter, wrap.getLoc(), paddedOp,
+        static_cast<int32_t>(wrapShape[wrapDimension] - lhs - rhs),
+        static_cast<int32_t>(wrapDimension));
+    if (wrapSharding) {
+      mlir::sdy::setSharding(rotateLhsPart, wrapSharding);
+    }
+
+    // Create iota along the wrap dimension
+    auto iota = stablehlo::IotaOp::create(
+        rewriter, wrap.getLoc(),
+        RankedTensorType::get(wrapShape, rewriter.getI32Type()), wrapDimension);
+    if (wrapSharding) {
+      mlir::sdy::setSharding(iota, wrapSharding);
+    }
+
+    // Use select to choose between the three parts:
+    // - left part (iota < lhs): use rotateLhsPart
+    // - middle part (lhs <= iota < lhs + operandShape[dim]): use paddedOp
+    // - right part (iota >= lhs + operandShape[dim]): use rotateRhsPart
+    auto lhsCheckConstOp = stablehlo::ConstantOp::create(
+        rewriter, wrap.getLoc(),
+        SplatElementsAttr::get(iota.getType(),
+                               rewriter.getI32IntegerAttr(lhs)));
+    if (wrapSharding) {
+      mlir::sdy::setSharding(lhsCheckConstOp, wrapSharding);
+    }
+
+    auto rhsCheckConstOp = stablehlo::ConstantOp::create(
+        rewriter, wrap.getLoc(),
+        SplatElementsAttr::get(
+            iota.getType(),
+            rewriter.getI32IntegerAttr(lhs + operandShape[wrapDimension])));
+    if (wrapSharding) {
+      mlir::sdy::setSharding(rhsCheckConstOp, wrapSharding);
+    }
+
+    auto lhsCondOp = stablehlo::CompareOp::create(
+        rewriter, wrap.getLoc(), iota, lhsCheckConstOp,
+        stablehlo::ComparisonDirection::LT);
+    if (wrapSharding) {
+      mlir::sdy::setSharding(lhsCondOp, wrapSharding);
+    }
+
+    auto midAndLhsCondOp = stablehlo::CompareOp::create(
+        rewriter, wrap.getLoc(), iota, rhsCheckConstOp,
+        stablehlo::ComparisonDirection::LT);
+    if (wrapSharding) {
+      mlir::sdy::setSharding(midAndLhsCondOp, wrapSharding);
+    }
+
+    auto midAndLhs = stablehlo::SelectOp::create(
+        rewriter, wrap.getLoc(), lhsCondOp, rotateLhsPart, paddedOp);
+    if (wrapSharding) {
+      mlir::sdy::setSharding(midAndLhs, wrapSharding);
+    }
+
+    auto result = stablehlo::SelectOp::create(
+        rewriter, wrap.getLoc(), midAndLhsCondOp, midAndLhs, rotateRhsPart);
+    if (wrapSharding) {
+      mlir::sdy::setSharding(result, wrapSharding);
+    }
+
+    // Replace the wrap with the select
+    rewriter.replaceOp(wrap, result);
+    return success();
+  }
+};
+
 // TODO: check mesh attr and ensure only applied to iota tile
 struct ExtendCommOptimize : public OpRewritePattern<enzymexla::ExtendOp> {
   int &channel_id;
@@ -1349,9 +1552,9 @@ struct ExtendCommOptimize : public OpRewritePattern<enzymexla::ExtendOp> {
 
     TensorShardingAttr opShardings[] = {extendSharding};
     TensorShardingPerValueAttr inShardings =
-        TensorShardingPerValueAttr::get(extend.getContext(), opShardings);
+        TensorShardingPerValueAttr::get(rewriter.getContext(), opShardings);
     TensorShardingPerValueAttr outShardings =
-        TensorShardingPerValueAttr::get(extend.getContext(), opShardings);
+        TensorShardingPerValueAttr::get(rewriter.getContext(), opShardings);
 
     SmallVector<StringAttr> manualAxes;
     SmallVector<int64_t> localShape = llvm::to_vector(extendOperandShape);
@@ -1599,6 +1802,132 @@ struct ExtendToPadCommOptimize : public OpRewritePattern<enzymexla::ExtendOp> {
   }
 };
 
+struct ExtendToPadCommOptimize2 : public OpRewritePattern<enzymexla::ExtendOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::ExtendOp extend,
+                                PatternRewriter &rewriter) const override {
+    if (extend->getParentOfType<sdy::ManualComputationOp>())
+      return failure();
+    auto ndims = extend.getType().getRank();
+    auto extendDimension = extend.getDimension();
+
+    auto extendSharding = mlir::sdy::getSharding(extend);
+    if (!extendSharding)
+      return failure();
+
+    auto operandSharding = mlir::sdy::getSharding(extend.getOperand());
+    if (!operandSharding)
+      return failure();
+
+    if (operandSharding != extendSharding)
+      return failure();
+
+    auto numDevicesAlongDimension =
+        getNumDevicesAlongDimension(extendSharding, extendDimension, extend);
+    if (numDevicesAlongDimension == 1) {
+      return rewriter.notifyMatchFailure(
+          extend,
+          "numDevicesAlongDimension == 1. Communication is already optimized.");
+    }
+
+    SmallVector<int64_t> strides(ndims, 1);
+
+    auto paddedExtendOp = padWithUndefinedValueInDim(
+        rewriter, extend.getLoc(), extend.getOperand(), extendSharding,
+        extendDimension, extend.getLhs(), extend.getRhs());
+    Value current = paddedExtendOp;
+
+    auto iota = stablehlo::IotaOp::create(
+        rewriter, extend.getLoc(),
+        RankedTensorType::get(
+            cast<RankedTensorType>(paddedExtendOp.getType()).getShape(),
+            rewriter.getI32Type()),
+        extendDimension);
+    sdy::setSharding(iota, extendSharding);
+
+    if (extend.getLhs() != 0) {
+      auto paddedLeftSliceOp = padWithUndefinedValueInDim(
+          rewriter, extend.getLoc(), extend.getOperand(), extendSharding,
+          extendDimension, 0, extend.getLhs() + extend.getRhs());
+
+      Value lhsValue = stablehlo::ConstantOp::create(
+          rewriter, extend.getLoc(),
+          SplatElementsAttr::get(iota.getType(),
+                                 rewriter.getI32IntegerAttr(extend.getLhs())));
+
+      auto cond = stablehlo::CompareOp::create(
+          rewriter, extend.getLoc(), iota, lhsValue,
+          stablehlo::ComparisonDirection::LT);
+      sdy::setSharding(cond, extendSharding);
+
+      auto selOp = stablehlo::SelectOp::create(rewriter, extend.getLoc(), cond,
+                                               paddedLeftSliceOp, current);
+      sdy::setSharding(selOp, extendSharding);
+      current = selOp;
+    }
+
+    if (extend.getRhs() != 0) {
+      auto paddedRightSliceOp = padWithUndefinedValueInDim(
+          rewriter, extend.getLoc(), extend.getOperand(), extendSharding,
+          extendDimension, extend.getLhs() + extend.getRhs(), 0);
+
+      Value rhsValue = stablehlo::ConstantOp::create(
+          rewriter, extend.getLoc(),
+          SplatElementsAttr::get(
+              iota.getType(),
+              rewriter.getI32IntegerAttr(
+                  extend.getOperand().getType().getShape()[extendDimension] +
+                  extend.getLhs())));
+
+      auto cond = stablehlo::CompareOp::create(
+          rewriter, extend.getLoc(), iota, rhsValue,
+          stablehlo::ComparisonDirection::LT);
+      sdy::setSharding(cond, extendSharding);
+
+      auto selOp = stablehlo::SelectOp::create(rewriter, extend.getLoc(), cond,
+                                               current, paddedRightSliceOp);
+      sdy::setSharding(selOp, extendSharding);
+      current = selOp;
+    }
+
+    rewriter.replaceOp(extend, current);
+    return success();
+  }
+};
+
+struct UpdateWithoutCornersToSelect
+    : public OpRewritePattern<enzymexla::UpdateWithoutCornersOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::UpdateWithoutCornersOp extend,
+                                PatternRewriter &rewriter) const override {
+    if (extend->getParentOfType<sdy::ManualComputationOp>())
+      return failure();
+
+    auto extendSharding = mlir::sdy::getSharding(extend);
+    if (!extendSharding)
+      return failure();
+
+    auto operandSharding = mlir::sdy::getSharding(extend.getOperand());
+    if (!operandSharding)
+      return failure();
+
+    if (operandSharding != extendSharding)
+      return failure();
+
+    auto updateSharding = mlir::sdy::getSharding(extend.getUpdate());
+    if (!updateSharding)
+      return failure();
+
+    if (updateSharding != extendSharding)
+      return failure();
+
+    mlir::enzyme::commonLowerUpdateWithoutCorners(extend, rewriter);
+    return success();
+  }
+};
+
 // TODO: check mesh attr and ensure only applied to iota tile
 struct RotateCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
 
@@ -1621,9 +1950,9 @@ struct RotateCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
 
     TensorShardingAttr opShardings[] = {rotateSharding};
     TensorShardingPerValueAttr inShardings =
-        TensorShardingPerValueAttr::get(rotate.getContext(), opShardings);
+        TensorShardingPerValueAttr::get(rewriter.getContext(), opShardings);
     TensorShardingPerValueAttr outShardings =
-        TensorShardingPerValueAttr::get(rotate.getContext(), opShardings);
+        TensorShardingPerValueAttr::get(rewriter.getContext(), opShardings);
 
     SmallVector<StringAttr> manualAxes;
     SmallVector<int64_t> localShape = llvm::to_vector(rotateShape);
@@ -1746,7 +2075,7 @@ struct RotateCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
                   {(int64_t)(sourceTargetIdxs.size() / 2), (int64_t)2},
                   rewriter.getI64Type()),
               sourceTargetIdxs),
-          stablehlo::ChannelHandleAttr::get(rotate.getContext(),
+          stablehlo::ChannelHandleAttr::get(rewriter.getContext(),
                                             /*handle*/ channel_id,
                                             /*type*/ 0));
       channel_id++;
@@ -1800,6 +2129,524 @@ struct RotateCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
   }
 };
 
+struct RotateSpmdOptimize : public OpRewritePattern<enzymexla::RotateOp> {
+  int64_t bufferize;
+  RotateSpmdOptimize(int64_t bufferize, MLIRContext *context,
+                     PatternBenefit benefit = 1)
+      : OpRewritePattern(context, benefit), bufferize(bufferize) {}
+  LogicalResult matchAndRewrite(enzymexla::RotateOp rotate,
+                                PatternRewriter &rewriter) const override {
+    if (rotate->getParentOfType<sdy::ManualComputationOp>())
+      return failure();
+
+    auto rotateDimension = rotate.getDimension();
+    auto rotateAmount = rotate.getAmount();
+    auto rotateSharding = mlir::sdy::getSharding(rotate);
+    if (!rotateSharding)
+      return rewriter.notifyMatchFailure(rotate, "No sharding found.");
+
+    int64_t numDevicesAlongDimension =
+        getNumDevicesAlongDimension(rotateSharding, rotateDimension, rotate);
+
+    if (numDevicesAlongDimension == 1) {
+      return rewriter.notifyMatchFailure(
+          rotate,
+          "numDevicesAlongDimension == 1. Communication is already optimized.");
+    }
+    assert(rotate.getType().getShape()[rotateDimension] > 0);
+    assert(rotateAmount < rotate.getType().getShape()[rotateDimension]);
+
+    int64_t shard_size = (rotate.getType().getShape()[rotateDimension] +
+                          numDevicesAlongDimension - 1) /
+                         numDevicesAlongDimension;
+
+    if (rotateAmount <= shard_size) {
+      // Our op is rotate left:
+      std::string opaque =
+          "dimension=" + std::to_string(rotateDimension) +
+          ",left_amount=" + std::to_string(rotateAmount) +
+          ",right_amount=0,bufferize=" + std::to_string(bufferize);
+
+      auto fnSym = rewriter.getStringAttr("_SPMDInternalOp_MultiRotate");
+
+      SmallVector<Type, 2> resultTypes(rotateAmount + 1, rotate.getType());
+
+      // Replace with a custom call
+      auto ccall = stablehlo::CustomCallOp::create(
+          rewriter, rotate.getLoc(), resultTypes, rotate->getOperands(), fnSym,
+          /*has_side_effect=*/rewriter.getBoolAttr(false),
+          /*backend_config=*/rewriter.getStringAttr(opaque),
+          /*api_version=*/nullptr,
+          /*called_computations=*/nullptr,
+          /*operand_layouts=*/nullptr,
+          /*result_layouts=*/nullptr,
+          /*output_operand_aliases=*/nullptr,
+          /*result_tilings*/ nullptr);
+
+      SmallVector<sdy::TensorShardingAttr> newShardings(rotateAmount + 1,
+                                                        rotateSharding);
+      mlir::sdy::setShardings(ccall, sdy::TensorShardingPerValueAttr::get(
+                                         rotate.getContext(), newShardings));
+      rewriter.replaceOp(rotate, ValueRange(ccall->getResults()[0]));
+
+      Value neutral = ccall.getResult(rotateAmount);
+      DominanceInfo domInfo;
+      rewriter.replaceUsesWithIf(ccall.getOperands()[0], neutral,
+                                 [&](OpOperand &use) {
+                                   Operation *user = use.getOwner();
+                                   if (!domInfo.properlyDominates(ccall, user))
+                                     return false;
+                                   return true;
+                                 });
+      return success();
+    }
+
+    if (rotate.getType().getShape()[rotateDimension] - rotateAmount <=
+        shard_size) {
+      int64_t right_amount =
+          rotate.getType().getShape()[rotateDimension] - rotateAmount;
+      // Our op is rotate left:
+      std::string opaque =
+          "dimension=" + std::to_string(rotateDimension) +
+          ",left_amount=0,right_amount=" + std::to_string(right_amount) +
+          ",bufferize=" + std::to_string(bufferize);
+
+      auto fnSym = rewriter.getStringAttr("_SPMDInternalOp_MultiRotate");
+
+      SmallVector<Type, 2> resultTypes(right_amount + 1, rotate.getType());
+
+      // Replace with a custom call
+      auto ccall = stablehlo::CustomCallOp::create(
+          rewriter, rotate.getLoc(), resultTypes, rotate->getOperands(), fnSym,
+          /*has_side_effect=*/rewriter.getBoolAttr(false),
+          /*backend_config=*/rewriter.getStringAttr(opaque),
+          /*api_version=*/nullptr,
+          /*called_computations=*/nullptr,
+          /*operand_layouts=*/nullptr,
+          /*result_layouts=*/nullptr,
+          /*output_operand_aliases=*/nullptr,
+          /*result_tilings*/ nullptr);
+
+      SmallVector<sdy::TensorShardingAttr> newShardings(right_amount + 1,
+                                                        rotateSharding);
+      mlir::sdy::setShardings(ccall, sdy::TensorShardingPerValueAttr::get(
+                                         rotate.getContext(), newShardings));
+      rewriter.replaceOp(rotate, ValueRange(ccall->getResults()[right_amount]));
+
+      Value neutral = ccall.getResult(0);
+      DominanceInfo domInfo;
+      rewriter.replaceUsesWithIf(ccall.getOperands()[0], neutral,
+                                 [&](OpOperand &use) {
+                                   Operation *user = use.getOwner();
+                                   if (!domInfo.properlyDominates(ccall, user))
+                                     return false;
+                                   return true;
+                                 });
+
+      return success();
+    }
+
+    // Our op is rotate left, the spmd one is rotate right. rotateleft(x) =
+    // rotateright(-x), which we add the dim size to make positive.
+    std::string opaque =
+        "dimension=" + std::to_string(rotateDimension) + ",amount=" +
+        std::to_string(rotate.getType().getShape()[rotateDimension] -
+                       rotate.getAmount());
+
+    auto fnSym = rewriter.getStringAttr("_SPMDInternalOp_RotateRight");
+
+    // Replace with a custom call
+    auto ccall = rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
+        rotate, rotate->getResultTypes(), rotate->getOperands(), fnSym,
+        /*has_side_effect=*/rewriter.getBoolAttr(false),
+        /*backend_config=*/rewriter.getStringAttr(opaque),
+        /*api_version=*/nullptr,
+        /*called_computations=*/nullptr,
+        /*operand_layouts=*/nullptr,
+        /*result_layouts=*/nullptr,
+        /*output_operand_aliases=*/nullptr,
+        /*result_tilings*/ nullptr);
+    mlir::sdy::setShardings(ccall, rotateSharding);
+    return success();
+  }
+};
+
+struct MultiRotateCustomCallOptimize
+    : public OpRewritePattern<enzymexla::MultiRotateOp> {
+  int64_t bufferize;
+  MultiRotateCustomCallOptimize(int64_t bufferize, MLIRContext *context,
+                                PatternBenefit benefit = 1)
+      : OpRewritePattern(context, benefit), bufferize(bufferize) {}
+  LogicalResult matchAndRewrite(enzymexla::MultiRotateOp rotate,
+                                PatternRewriter &rewriter) const override {
+    if (rotate->getParentOfType<sdy::ManualComputationOp>())
+      return failure();
+
+    auto rotateDimension = rotate.getDimension();
+    auto shardings = mlir::sdy::getShardingPerValue(rotate);
+    if (!shardings) {
+      return lowerMultiRotateToRotates(rotate, rewriter);
+    }
+    auto rotateSharding = shardings.getSharding(0);
+
+    int64_t numDevicesAlongDimension =
+        getNumDevicesAlongDimension(rotateSharding, rotateDimension, rotate);
+
+    if (numDevicesAlongDimension == 1) {
+      return lowerMultiRotateToRotates(rotate, rewriter);
+    }
+
+    auto rotateShape =
+        cast<RankedTensorType>(rotate.getOperand().getType()).getShape();
+    (void)rotateShape;
+    assert(rotateShape[rotateDimension] > 0);
+
+    std::string opaque =
+        "dimension=" + std::to_string(rotateDimension) +
+        ",left_amount=" + std::to_string(rotate.getLeftAmount()) +
+        ",right_amount=" + std::to_string(rotate.getRightAmount()) +
+        ",bufferize=" + std::to_string(bufferize);
+
+    auto fnSym = rewriter.getStringAttr("_SPMDInternalOp_MultiRotate");
+
+    SmallVector<TensorShardingAttr> opShardings(rotate.getNumResults(),
+                                                rotateSharding);
+
+    auto ccall = rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
+        rotate, rotate->getResultTypes(), rotate->getOperands(), fnSym,
+        /*has_side_effect=*/rewriter.getBoolAttr(false),
+        /*backend_config=*/rewriter.getStringAttr(opaque),
+        /*api_version=*/nullptr,
+        /*called_computations=*/nullptr,
+        /*operand_layouts=*/nullptr,
+        /*result_layouts=*/nullptr,
+        /*output_operand_aliases=*/nullptr,
+        /*result_tilings*/ nullptr);
+    mlir::sdy::setShardings(ccall, TensorShardingPerValueAttr::get(
+                                       rewriter.getContext(), opShardings));
+    return success();
+  }
+};
+
+struct MultiPadCustomCallOptimize
+    : public OpRewritePattern<enzymexla::MultiPadOp> {
+  int64_t bufferize;
+  MultiPadCustomCallOptimize(int64_t bufferize, MLIRContext *context,
+                             PatternBenefit benefit = 1)
+      : OpRewritePattern(context, benefit), bufferize(bufferize) {}
+
+  LogicalResult matchAndRewrite(enzymexla::MultiPadOp pad,
+                                PatternRewriter &rewriter) const override {
+    if (pad->getParentOfType<sdy::ManualComputationOp>())
+      return failure();
+
+    auto padDimension = pad.getDimension();
+    auto shardings = mlir::sdy::getShardingPerValue(pad);
+    if (!shardings) {
+      return failure();
+    }
+    auto padSharding = shardings.getSharding(0);
+
+    int64_t numDevicesAlongDimension =
+        getNumDevicesAlongDimension(padSharding, padDimension, pad);
+
+    if (numDevicesAlongDimension == 1) {
+      return failure();
+    }
+
+    if ((cast<RankedTensorType>(pad.getResult(0).getType())
+             .getShape()[padDimension] +
+         numDevicesAlongDimension - 1) /
+            numDevicesAlongDimension !=
+        (pad.getOperand().getType().getShape()[padDimension] +
+         numDevicesAlongDimension - 1) /
+            numDevicesAlongDimension) {
+      return failure();
+    }
+
+    std::string opaque = "dimension=" + std::to_string(padDimension) +
+                         ",amt=" + std::to_string(pad.getAmount()) +
+                         ",bufferize=" + std::to_string(bufferize);
+
+    auto fnSym = rewriter.getStringAttr("_SPMDInternalOp_MultiPad");
+
+    SmallVector<TensorShardingAttr> opShardings(pad.getNumResults(),
+                                                padSharding);
+
+    auto ccall = rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
+        pad, pad->getResultTypes(), pad->getOperands(), fnSym,
+        /*has_side_effect=*/rewriter.getBoolAttr(false),
+        /*backend_config=*/rewriter.getStringAttr(opaque),
+        /*api_version=*/nullptr,
+        /*called_computations=*/nullptr,
+        /*operand_layouts=*/nullptr,
+        /*result_layouts=*/nullptr,
+        /*output_operand_aliases=*/nullptr,
+        /*result_tilings*/ nullptr);
+
+    mlir::sdy::setShardings(ccall, TensorShardingPerValueAttr::get(
+                                       rewriter.getContext(), opShardings));
+    return success();
+  }
+};
+
+/// Detect whether this MultiSliceOp matches the cross-shard pattern:
+///   1. All strides are 1.
+///   2. For every sharded dimension except the multi-slice dimension,
+///      start/limit span the full tensor extent.
+///   3. Along the multi-slice dimension, every slice's start falls within
+///      one shard and its end falls within a different shard.
+bool detectCrossShardPattern(Value operand, Operation *op,
+                             ArrayRef<int64_t> startIndices,
+                             ArrayRef<int64_t> limitIndices,
+                             ArrayRef<int64_t> strides, int32_t dim,
+                             int32_t amount, bool &needsSlice) {
+  // --- Condition 1: unit strides everywhere ---
+  if (!llvm::all_of(strides, [](int64_t s) { return s == 1; }))
+    return false;
+
+  auto operandType = cast<RankedTensorType>(operand.getType());
+  auto operandSharding = mlir::sdy::getSharding(operand);
+  if (!operandSharding) {
+    return false;
+  }
+  ArrayRef<int64_t> shape = operandType.getShape();
+  int64_t rank = shape.size();
+
+  if (dim < 0 || dim >= rank)
+    return false;
+
+  // --- Condition 2: full span on every sharded dim except `dim` ---
+  for (int64_t d = 0; d < rank; ++d) {
+    if (d == dim)
+      continue;
+    int64_t numShards = getNumDevicesAlongDimension(operandSharding, d, op);
+    if (startIndices[d] != 0 || limitIndices[d] != shape[d]) {
+      needsSlice = true;
+      if (numShards > 1) {
+        return false;
+      }
+    }
+  }
+
+  // --- Condition 3: cross-shard slicing along `dim` ---
+  int64_t numShards = getNumDevicesAlongDimension(operandSharding, dim, op);
+  if (numShards <= 1)
+    return false; // Not sharded along the slice dimension.
+
+  int64_t dimSize = shape[dim];
+  int64_t shardSize = (dimSize + numShards - 1) / numShards;
+
+  if (startIndices[dim] > shardSize) {
+    return false;
+  }
+  if (limitIndices[dim] < (numShards - 1) * shardSize) {
+    return false;
+  }
+  return true;
+}
+
+struct MultiSliceCustomCallOptimize
+    : public OpRewritePattern<enzymexla::MultiSliceOp> {
+  int64_t bufferize;
+  MultiSliceCustomCallOptimize(int64_t bufferize, MLIRContext *context,
+                               PatternBenefit benefit = 1)
+      : OpRewritePattern(context, benefit), bufferize(bufferize) {}
+
+  std::string serializeDenseI64ArrayAttr(ArrayRef<int64_t> array) const {
+    std::string result = "[";
+    for (size_t i = 0; i < array.size(); ++i) {
+      result += std::to_string(array[i]);
+      if (i < array.size() - 1)
+        result += ", ";
+    }
+    result += "]";
+    return result;
+  }
+
+  LogicalResult matchAndRewrite(enzymexla::MultiSliceOp slice,
+                                PatternRewriter &rewriter) const override {
+    if (slice->getParentOfType<sdy::ManualComputationOp>())
+      return failure();
+
+    auto sliceDimension = slice.getDimension();
+    auto shardings = mlir::sdy::getShardingPerValue(slice);
+    if (!shardings)
+      return rewriter.notifyMatchFailure(slice, "No sharding found.");
+    auto sliceSharding = shardings.getSharding(0);
+    for (int64_t i = 1; i < slice.getNumResults(); ++i) {
+      if (shardings.getSharding(i) != sliceSharding)
+        return rewriter.notifyMatchFailure(
+            slice, "Not all results have the same sharding");
+    }
+
+    int64_t numDevicesAlongDimension =
+        getNumDevicesAlongDimension(sliceSharding, sliceDimension, slice);
+
+    if (numDevicesAlongDimension == 1) {
+      return rewriter.notifyMatchFailure(
+          slice,
+          "numDevicesAlongDimension == 1. Communication is already optimized.");
+    }
+
+    Value customCallOperand = slice.getOperand();
+    auto operandSharding = mlir::sdy::getSharding(customCallOperand);
+    if (!operandSharding) {
+      return rewriter.notifyMatchFailure(slice, "No operand shardings");
+    }
+    if (sliceSharding != operandSharding) {
+      return rewriter.notifyMatchFailure(slice,
+                                         "Mismatched input/output sharding");
+    }
+
+    // Only lower to custom call if the cross-shard pattern is detected.
+    auto startIndices = SmallVector<int64_t>(slice.getStartIndices());
+    auto limitIndices = SmallVector<int64_t>(slice.getLimitIndices());
+    auto strideVals = SmallVector<int64_t>(slice.getStrides());
+    bool needs_slice = false;
+    if (!detectCrossShardPattern(customCallOperand, slice, startIndices,
+                                 limitIndices, strideVals, sliceDimension,
+                                 slice.getAmount(), needs_slice))
+      return rewriter.notifyMatchFailure(
+          slice, "MultiSlice does not match cross-shard pattern.");
+
+    // --- Replace the needs_slice bail-out and custom-call emission with this:
+    // ---
+
+    SmallVector<int64_t> finalStartIndices(startIndices);
+    SmallVector<int64_t> finalLimitIndices(limitIndices);
+    SmallVector<int64_t> finalStrides(strideVals);
+
+    if (needs_slice) {
+      // Emit a preliminary stablehlo::SliceOp that trims replicated
+      // (unsharded) dimensions down to the requested range, so that
+      // the MultiSlice custom call afterwards spans the full axis on
+      // every dimension except `dim`.
+      auto operandType = cast<RankedTensorType>(customCallOperand.getType());
+      ArrayRef<int64_t> shape = operandType.getShape();
+      int64_t rank = shape.size();
+
+      auto operandSharding = sdy::getSharding(slice.getOperand());
+
+      SmallVector<int64_t> preStart(rank);
+      SmallVector<int64_t> preLimit(rank);
+      SmallVector<int64_t> preStrides(rank, 1);
+
+      for (int64_t d = 0; d < rank; ++d) {
+        if (d == sliceDimension) {
+          // Keep the full extent along the multi-slice dimension;
+          // the custom call handles cross-shard slicing there.
+          preStart[d] = 0;
+          preLimit[d] = shape[d];
+        } else {
+          int64_t numShards =
+              getNumDevicesAlongDimension(operandSharding, d, slice);
+          if (numShards <= 1 &&
+              (startIndices[d] != 0 || limitIndices[d] != shape[d])) {
+            // Replicated dim that doesn't span the full tensor —
+            // slice it now so the custom call can assume full extent.
+            preStart[d] = startIndices[d];
+            preLimit[d] = limitIndices[d];
+            // After pre-slicing, the custom call sees [0, newSize).
+            finalStartIndices[d] = 0;
+            finalLimitIndices[d] = limitIndices[d] - startIndices[d];
+          } else {
+            preStart[d] = 0;
+            preLimit[d] = shape[d];
+          }
+        }
+      }
+
+      auto preSliceOp = stablehlo::SliceOp::create(rewriter, slice.getLoc(),
+                                                   customCallOperand, preStart,
+                                                   preLimit, preStrides);
+
+      SmallVector<TensorShardingAttr> opShardings(1, sliceSharding);
+      sdy::setShardings(preSliceOp, TensorShardingPerValueAttr::get(
+                                        rewriter.getContext(), opShardings));
+
+      customCallOperand = preSliceOp.getResult();
+    }
+
+    std::string start_indices_str =
+        serializeDenseI64ArrayAttr(finalStartIndices);
+    std::string limit_indices_str =
+        serializeDenseI64ArrayAttr(finalLimitIndices);
+    std::string strides_str = serializeDenseI64ArrayAttr(finalStrides);
+
+    std::string opaque = "dimension=" + std::to_string(sliceDimension) +
+                         ",amount=" + std::to_string(slice.getAmount()) +
+                         ",start_indices=" + start_indices_str +
+                         ",limit_indices=" + limit_indices_str +
+                         ",strides=" + strides_str +
+                         ",bufferize=" + std::to_string(bufferize);
+
+    auto fnSym = rewriter.getStringAttr("_SPMDInternalOp_MultiSlice");
+
+    SmallVector<TensorShardingAttr> opShardings(slice.getAmount() + 1,
+                                                sliceSharding);
+
+    auto ccall = rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
+        slice, slice->getResultTypes(), ValueRange{customCallOperand}, fnSym,
+        /*has_side_effect=*/rewriter.getBoolAttr(false),
+        /*backend_config=*/rewriter.getStringAttr(opaque),
+        /*api_version=*/nullptr,
+        /*called_computations=*/nullptr,
+        /*operand_layouts=*/nullptr,
+        /*result_layouts=*/nullptr,
+        /*output_operand_aliases=*/nullptr,
+        /*result_tilings*/ nullptr);
+    mlir::sdy::setShardings(ccall, TensorShardingPerValueAttr::get(
+                                       rewriter.getContext(), opShardings));
+    return success();
+  }
+};
+
+struct WrapCustomCallOptimize : public OpRewritePattern<enzymexla::WrapOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::WrapOp wrap,
+                                PatternRewriter &rewriter) const override {
+    if (wrap->getParentOfType<sdy::ManualComputationOp>())
+      return failure();
+
+    auto rotateDimension = wrap.getDimension();
+    auto rotateSharding = mlir::sdy::getSharding(wrap);
+    if (!rotateSharding)
+      return failure();
+
+    int64_t numDevicesAlongDimension =
+        getNumDevicesAlongDimension(rotateSharding, rotateDimension, wrap);
+
+    if (numDevicesAlongDimension == 1) {
+      return rewriter.notifyMatchFailure(
+          wrap,
+          "numDevicesAlongDimension == 1. Communication is already optimized.");
+    }
+
+    auto leftAmount = wrap.getLhs();
+    auto rightAmount = wrap.getRhs();
+
+    std::string opaque = "dimension=" + std::to_string(rotateDimension) +
+                         ",left_amount=" + std::to_string(leftAmount) +
+                         ",right_amount=" + std::to_string(rightAmount);
+
+    auto fnSym = rewriter.getStringAttr("_SPMDInternalOp_Wrap");
+
+    auto ccall = rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
+        wrap, wrap->getResultTypes(), wrap->getOperands(), fnSym,
+        /*has_side_effect=*/rewriter.getBoolAttr(false),
+        /*backend_config=*/rewriter.getStringAttr(opaque),
+        /*api_version=*/nullptr,
+        /*called_computations=*/nullptr,
+        /*operand_layouts=*/nullptr,
+        /*result_layouts=*/nullptr,
+        /*output_operand_aliases=*/nullptr,
+        /*result_tilings*/ nullptr);
+    mlir::sdy::setSharding(ccall.getResult(0), rotateSharding);
+    return success();
+  }
+};
 struct RotateToPadCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -1873,6 +2720,364 @@ struct RotateToPadCommOptimize : public OpRewritePattern<enzymexla::RotateOp> {
 };
 
 // TODO: check mesh attr and ensure only applied to iota tile
+
+struct MultiRotateSpmdOptimize
+    : public OpRewritePattern<enzymexla::MultiRotateOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::MultiRotateOp rotate,
+                                PatternRewriter &rewriter) const override {
+    if (rotate->getParentOfType<sdy::ManualComputationOp>()) {
+      return failure();
+    }
+
+    auto rotateDimension = rotate.getDimension();
+    auto shardings = mlir::sdy::getShardingPerValue(rotate);
+    if (!shardings) {
+      return rewriter.notifyMatchFailure(rotate, "No sharding found.");
+    }
+    auto rotateSharding = shardings.getSharding(0);
+
+    int64_t numDevicesAlongDimension =
+        getNumDevicesAlongDimension(rotateSharding, rotateDimension, rotate);
+
+    if (numDevicesAlongDimension == 1) {
+      return lowerMultiRotateToRotates(rotate, rewriter);
+    }
+
+    auto rotateShape =
+        cast<RankedTensorType>(rotate.getOperand().getType()).getShape();
+    int64_t full_size = rotateShape[rotateDimension];
+
+    // We need to calculate shard size and padding
+    TensorShardingAttr op_shardings[] = {rotateSharding};
+    auto meshAttr =
+        mlir::sdy::getCommonMesh(op_shardings, op_shardings, rotate);
+    if (meshAttr == nullptr) {
+      return rewriter.notifyMatchFailure(rotate,
+                                         "operands have different shardings");
+    }
+    int64_t total_mesh_size = 1;
+    for (auto dimSharding :
+         rotateSharding.getDimShardings()[rotateDimension].getAxes()) {
+      total_mesh_size *= meshAttr.getAxisSize(dimSharding.getName());
+    }
+
+    const int64_t shard_size =
+        (full_size + total_mesh_size - 1) / total_mesh_size;
+    int64_t padding = shard_size * total_mesh_size - full_size;
+
+    int64_t left_amount = rotate.getLeftAmount();
+    int64_t right_amount = rotate.getRightAmount();
+
+    if (left_amount > shard_size || right_amount > shard_size) {
+      return rewriter.notifyMatchFailure(rotate,
+                                         "Rotation amount > shard size, not "
+                                         "handled by this optimization yet.");
+    }
+
+    if (right_amount > shard_size - padding) {
+      return rewriter.notifyMatchFailure(
+          rotate, "Right rotation amount exceeds valid data in last shard (due "
+                  "to padding).");
+    }
+
+    Value input = rotate.getOperand();
+    if (padding > 0) {
+      auto inputType = cast<RankedTensorType>(input.getType());
+      auto shape = inputType.getShape();
+      SmallVector<int64_t> paddedShape(shape.begin(), shape.end());
+      paddedShape[rotateDimension] += padding;
+
+      SmallVector<int64_t> paddingLow(shape.size(), 0);
+      SmallVector<int64_t> paddingHigh(shape.size(), 0);
+      paddingHigh[rotateDimension] = padding;
+      SmallVector<int64_t> paddingInterior(shape.size(), 0);
+
+      auto zero = stablehlo::ConstantOp::create(
+          rewriter, rotate.getLoc(),
+          rewriter.getZeroAttr(getElementTypeOrSelf(inputType)));
+      input = stablehlo::PadOp::create(
+          rewriter, rotate.getLoc(),
+          RankedTensorType::get(paddedShape, inputType.getElementType()), input,
+          zero, paddingLow, paddingHigh, paddingInterior);
+      sdy::setSharding(input, rotateSharding);
+    }
+
+    // localShape is derived from shard_size, which is correct for padded input
+    SmallVector<int64_t> localShape(rotateShape.begin(), rotateShape.end());
+    // We calculated shard_size earlier using ceil
+    localShape[rotateDimension] = shard_size;
+
+    SmallVector<StringAttr> manualAxes;
+
+    if (false) {
+      // TODO this is legal, but can cause some downstream xla gather issues
+      // that merit further investigation
+      localShape[rotateDimension] /= total_mesh_size;
+
+      for (auto axis :
+           rotateSharding.getDimShardings()[rotateDimension].getAxes()) {
+        manualAxes.push_back(rewriter.getStringAttr(axis.getName()));
+      }
+    } else {
+      updateManualComputationAxesShape(rotateSharding, rewriter, rotate,
+                                       manualAxes, localShape, rotateDimension);
+      bool nonDivisible = false;
+      for (size_t i = 0; i < rotateShape.size(); i++) {
+        if (i == rotateDimension)
+          continue;
+        if (rotateShape[i] % localShape[i] != 0) {
+          nonDivisible = true;
+          break;
+        }
+      }
+      if (nonDivisible)
+        return lowerMultiRotateToRotates(rotate, rewriter);
+    }
+
+    // Create Manual Computation
+    SmallVector<Value> manualOps = {input};
+    auto inputLocalType = getLocalType(cast<RankedTensorType>(input.getType()),
+                                       rotateSharding, manualAxes, rotate);
+    SmallVector<Type> manualTypes;
+
+    // Result types of ManualComputationOp must be GLOBAL types (padded if we
+    // padded input). The inner block returns local types, which sdy maps to
+    // global types via out_shardings.
+    for (auto res : rotate.getResults()) {
+      (void)res;
+      manualTypes.push_back(input.getType());
+    }
+
+    TensorShardingPerValueAttr in_shardings = TensorShardingPerValueAttr::get(
+        rewriter.getContext(), {rotateSharding});
+
+    SmallVector<TensorShardingAttr> out_shardings_vec(rotate.getNumResults(),
+                                                      rotateSharding);
+    TensorShardingPerValueAttr out_shardings = TensorShardingPerValueAttr::get(
+        rewriter.getContext(), ArrayRef<TensorShardingAttr>(out_shardings_vec));
+
+    auto manual = sdy::ManualComputationOp::create(
+        rewriter, rotate.getLoc(), manualTypes, manualOps, in_shardings,
+        out_shardings, ArrayRef<StringAttr>(manualAxes));
+
+    SmallVector<Type, 1> entryTypes;
+    entryTypes.push_back(inputLocalType);
+    SmallVector<Location, 1> entryLocs;
+    entryLocs.push_back(rotate.getLoc());
+
+    Block *blk = rewriter.createBlock(
+        &manual.getBody(), manual.getBody().begin(), entryTypes, entryLocs);
+
+    Value localInput = blk->getArgument(0);
+
+    // Helper to create slices
+    auto createSlice = [&](Value val, int64_t start, int64_t limit) {
+      SmallVector<int64_t> starts(rotateShape.size(), 0);
+      SmallVector<int64_t> limits(localShape.begin(), localShape.end());
+      SmallVector<int64_t> strides(rotateShape.size(), 1);
+      starts[rotateDimension] = start;
+      limits[rotateDimension] = limit;
+      return rewriter
+          .create<stablehlo::SliceOp>(rotate.getLoc(), val, starts, limits,
+                                      strides)
+          .getResult();
+    };
+
+    Value leftHalo = nullptr;  // From Right Neighbor (for Left Rotate)
+    Value rightHalo = nullptr; // From Left Neighbor (for Right Rotate)
+
+    // Generate Left Halo (Data from Right Neighbor)
+    if (left_amount > 0) {
+      auto pairs =
+          generateShiftPairs(rotateSharding, rotateDimension, rotate,
+                             /*leftToRight*/ false, /*onlyEdges*/ false);
+      SmallVector<int64_t, 2> typeShape;
+      typeShape.push_back((int64_t)(pairs.size() / 2));
+      typeShape.push_back(2);
+      auto pairAttr = DenseIntElementsAttr::get(
+          RankedTensorType::get(typeShape, rewriter.getI64Type()), pairs);
+
+      auto sliceToSend = createSlice(localInput, 0, left_amount);
+
+      // No padding handling needed needed for "Start" of shard.
+
+      leftHalo = rewriter
+                     .create<stablehlo::CollectivePermuteOp>(
+                         rotate.getLoc(), sliceToSend, pairAttr,
+                         stablehlo::ChannelHandleAttr::get(
+                             rewriter.getContext(), /*handle*/ 1, /*type*/ 0))
+                     .getResult();
+    }
+
+    // Generate Right Halo (Data from Left Neighbor)
+    if (right_amount > 0) {
+      auto pairs =
+          generateShiftPairs(rotateSharding, rotateDimension, rotate,
+                             /*leftToRight*/ true, /*onlyEdges*/ false);
+      SmallVector<int64_t, 2> typeShape;
+      typeShape.push_back((int64_t)(pairs.size() / 2));
+      typeShape.push_back(2);
+      auto pairAttr = DenseIntElementsAttr::get(
+          RankedTensorType::get(typeShape, rewriter.getI64Type()), pairs);
+
+      // We need to slice the tail.
+      // If we are NOT the last shard, tail is [shard_size - right_amount,
+      // shard_size]. If we ARE the last shard, tail is [shard_size - padding -
+      // right_amount, shard_size - padding]. We need to conditionally select
+      // the start index.
+
+      Value baseStart = stablehlo::ConstantOp::create(
+          rewriter, rotate.getLoc(),
+          rewriter.getI32IntegerAttr(shard_size - right_amount));
+      Value paddingVal = stablehlo::ConstantOp::create(
+          rewriter, rotate.getLoc(), rewriter.getI32IntegerAttr(padding));
+
+      // Get Partition ID along dimension
+      // Inside ManualComputationOp, partition_id returns the index in the
+      // manual mesh. Since we have 1 manual axis, this is the scalar index.
+      auto partitionId = stablehlo::PartitionIdOp::create(
+          rewriter, rotate.getLoc(),
+          RankedTensorType::get({}, IntegerType::get(rewriter.getContext(), 32,
+                                                     IntegerType::Unsigned)));
+
+      Value dimId = stablehlo::ConvertOp::create(
+          rewriter, rotate.getLoc(),
+          RankedTensorType::get({}, rewriter.getI32Type()), partitionId);
+
+      Value lastShardId = stablehlo::ConstantOp::create(
+          rewriter, rotate.getLoc(),
+          rewriter.getI32IntegerAttr(total_mesh_size - 1));
+
+      Value isLast = stablehlo::CompareOp::create(
+          rewriter, rotate.getLoc(), dimId, lastShardId,
+          stablehlo::ComparisonDirection::EQ);
+
+      Value offset = stablehlo::SelectOp::create(
+          rewriter, rotate.getLoc(), isLast, paddingVal,
+          stablehlo::ConstantOp::create(rewriter, rotate.getLoc(),
+                                        rewriter.getI32IntegerAttr(0)));
+
+      Value startIdx = stablehlo::SubtractOp::create(rewriter, rotate.getLoc(),
+                                                     baseStart, offset);
+
+      // Dynamic Slice
+      SmallVector<Value> startIndices(
+          rotateShape.size(),
+          stablehlo::ConstantOp::create(rewriter, rotate.getLoc(),
+                                        rewriter.getI32IntegerAttr(0)));
+      startIndices[rotateDimension] = startIdx;
+
+      SmallVector<int64_t> sliceSizes(localShape.begin(), localShape.end());
+      sliceSizes[rotateDimension] = right_amount;
+
+      Value sliceToSend =
+          rewriter
+              .create<stablehlo::DynamicSliceOp>(rotate.getLoc(), localInput,
+                                                 startIndices, sliceSizes)
+              .getResult();
+
+      rightHalo = rewriter
+                      .create<stablehlo::CollectivePermuteOp>(
+                          rotate.getLoc(), sliceToSend, pairAttr,
+                          stablehlo::ChannelHandleAttr::get(
+                              rewriter.getContext(), /*handle*/ 2, /*type*/ 0))
+                      .getResult();
+    }
+
+    // Concatenate
+    SmallVector<Value> concatOps;
+    if (leftHalo)
+      concatOps.push_back(leftHalo);
+    concatOps.push_back(localInput);
+    if (rightHalo)
+      concatOps.push_back(rightHalo);
+
+    Value superShard;
+    if (concatOps.size() > 1) {
+      superShard = rewriter
+                       .create<stablehlo::ConcatenateOp>(
+                           rotate.getLoc(), concatOps, rotateDimension)
+                       .getResult();
+    } else {
+      superShard = localInput;
+    }
+
+    // Slice Results
+    SmallVector<Value> results;
+    concatOps.clear();
+    if (rightHalo)
+      concatOps.push_back(rightHalo); // "Preceding" data
+    concatOps.push_back(localInput);
+    if (leftHalo)
+      concatOps.push_back(leftHalo); // "Succeeding" data
+
+    if (concatOps.size() > 1) {
+      superShard = rewriter
+                       .create<stablehlo::ConcatenateOp>(
+                           rotate.getLoc(), concatOps, rotateDimension)
+                       .getResult();
+    } else {
+      superShard = localInput;
+    }
+
+    int64_t R = rightHalo ? right_amount : 0;
+
+    for (int i = 0; i < rotate.getNumResults(); ++i) {
+      // Map result index to amount.
+      // results[0] -> amount L
+      // results[L] -> amount 0
+      // results[L+R] -> amount -R
+      // amounts go from L down to -R.
+      // amount_i = L - i.
+
+      int64_t amount = left_amount - i;
+      int64_t sliceStart = amount + R;
+
+      // sliceStart is index in SuperShard.
+
+      auto sliced =
+          createSlice(superShard, sliceStart, sliceStart + shard_size);
+      results.push_back(sliced);
+    }
+
+    sdy::ReturnOp::create(rewriter, rotate.getLoc(), results);
+
+    rewriter.setInsertionPointAfter(manual);
+
+    if (padding > 0) {
+      SmallVector<Value> slicedResults;
+      auto shardings = sdy::getShardingPerValue(rotate);
+
+      // Assuming all results have the same shape as the first one (which is
+      // true for MultiRotate)
+      auto origType = cast<RankedTensorType>(rotate.getResult(0).getType());
+      auto shape = origType.getShape();
+      SmallVector<int64_t> starts(shape.size(), 0);
+      SmallVector<int64_t> limits(shape.begin(), shape.end());
+      SmallVector<int64_t> strides(shape.size(), 1);
+
+      int resIdx = 0;
+      for (auto res : manual.getResults()) {
+        auto sliced = rewriter
+                          .create<stablehlo::SliceOp>(rotate.getLoc(), res,
+                                                      starts, limits, strides)
+                          .getResult();
+
+        if (shardings) {
+          sdy::setSharding(sliced, shardings.getSharding(resIdx));
+        }
+        slicedResults.push_back(sliced);
+        resIdx++;
+      }
+      rewriter.replaceOp(rotate, slicedResults);
+    } else {
+      rewriter.replaceOp(rotate, manual.getResults());
+    }
+    return success();
+  }
+};
 // we match if exactly one of the operands is small enough that it can be fit
 // into a single shard
 struct ConcatTwoOperandsCommOptimize
@@ -1999,9 +3204,9 @@ struct ConcatTwoOperandsCommOptimize
 
     TensorShardingAttr opShardingsIn[] = {concatSharding, concatSharding};
     TensorShardingPerValueAttr inShardings =
-        TensorShardingPerValueAttr::get(concat.getContext(), opShardingsIn);
+        TensorShardingPerValueAttr::get(rewriter.getContext(), opShardingsIn);
     TensorShardingPerValueAttr outShardings =
-        TensorShardingPerValueAttr::get(concat.getContext(), opShardings);
+        TensorShardingPerValueAttr::get(rewriter.getContext(), opShardings);
 
     Type manualTypes[] = {globalResultType};
 
@@ -2066,7 +3271,7 @@ struct ConcatTwoOperandsCommOptimize
                   {(int64_t)(shiftPairs.size() / 2), (int64_t)2},
                   rewriter.getI64Type()),
               shiftPairs),
-          stablehlo::ChannelHandleAttr::get(concat.getContext(),
+          stablehlo::ChannelHandleAttr::get(rewriter.getContext(),
                                             /*handle*/ channel_id,
                                             /*type*/ 0));
       channel_id++;
@@ -2842,9 +4047,9 @@ struct ConcatTwoDUSLike : public OpRewritePattern<stablehlo::ConcatenateOp> {
     Type manualTypes[] = {globalResultType};
 
     TensorShardingPerValueAttr in_shardings = TensorShardingPerValueAttr::get(
-        concat.getContext(), in_shardings_array);
+        rewriter.getContext(), in_shardings_array);
     TensorShardingPerValueAttr out_shardings = TensorShardingPerValueAttr::get(
-        concat.getContext(), out_shardings_array);
+        rewriter.getContext(), out_shardings_array);
 
     auto manual = sdy::ManualComputationOp::create(
         rewriter, concat.getLoc(), manualTypes, manualOps, in_shardings,
@@ -2996,9 +4201,9 @@ struct ExtendDUSLike : public OpRewritePattern<enzymexla::ExtendOp> {
     Type manualTypes[] = {globalResultType};
 
     TensorShardingPerValueAttr in_shardings = TensorShardingPerValueAttr::get(
-        concat.getContext(), in_shardings_array);
+        rewriter.getContext(), in_shardings_array);
     TensorShardingPerValueAttr out_shardings = TensorShardingPerValueAttr::get(
-        concat.getContext(), out_shardings_array);
+        rewriter.getContext(), out_shardings_array);
 
     auto manual = sdy::ManualComputationOp::create(
         rewriter, concat.getLoc(), manualTypes, manualOps, in_shardings,
@@ -3028,6 +4233,136 @@ struct ExtendDUSLike : public OpRewritePattern<enzymexla::ExtendOp> {
           concat, manual->getResult(0), starts, limits, interior);
       sdy::setSharding(sl, sharding);
     }
+    return success();
+  }
+};
+
+struct DUSOfConcatSlicesOptimize
+    : public OpRewritePattern<stablehlo::DynamicUpdateSliceOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::DynamicUpdateSliceOp dus,
+                                PatternRewriter &rewriter) const override {
+    if (dus->getParentOfType<sdy::ManualComputationOp>())
+      return failure();
+
+    auto concat = dus.getUpdate().getDefiningOp<stablehlo::ConcatenateOp>();
+    if (!concat)
+      return failure();
+
+    if (!concat->hasOneUse())
+      return failure();
+
+    Value operand = dus.getOperand();
+    auto ndims = dus.getType().getShape().size();
+    auto concatDim = concat.getDimension();
+
+    // Check if all operands of concat are slices of the same operand
+    for (auto arg : concat.getOperands()) {
+      auto slice = arg.getDefiningOp<stablehlo::SliceOp>();
+      if (!slice)
+        return failure();
+      if (slice.getOperand() != operand)
+        return failure();
+      // Check strides are all 1
+      for (auto stride : slice.getStrides()) {
+        if (stride != 1)
+          return failure();
+      }
+    }
+
+    // Get DUS start indices
+    SmallVector<int64_t> dusStarts;
+    for (auto idx : dus.getStartIndices()) {
+      DenseIntElementsAttr curr;
+      if (auto cst = idx.getDefiningOp<sdy::ConstantOp>()) {
+        dusStarts.push_back(
+            (*cast<DenseIntElementsAttr>(cst.getValue()).begin())
+                .getZExtValue());
+      } else if (matchPattern(idx, m_Constant(&curr))) {
+        dusStarts.push_back((*curr.begin()).getZExtValue());
+      } else {
+        return failure(); // Non-constant index
+      }
+    }
+
+    // Analyze slices
+    int64_t offset = 0;
+    SmallVector<bool> isSelfUpdate;
+    bool hasSelfUpdate = false;
+
+    for (auto arg : concat.getOperands()) {
+      auto slice = cast<stablehlo::SliceOp>(arg.getDefiningOp());
+      bool selfUpdate = true;
+      for (int i = 0; i < ndims; i++) {
+        auto start = slice.getStartIndices()[i];
+        if (i == concatDim) {
+          if (start != dusStarts[i] + offset) {
+            selfUpdate = false;
+            break;
+          }
+        } else {
+          if (start != dusStarts[i]) {
+            selfUpdate = false;
+            break;
+          }
+        }
+      }
+      isSelfUpdate.push_back(selfUpdate);
+      if (selfUpdate)
+        hasSelfUpdate = true;
+      offset += cast<RankedTensorType>(arg.getType()).getShape()[concatDim];
+    }
+
+    if (!hasSelfUpdate)
+      return failure(); // Nothing to optimize
+
+    // Rewrite
+    Value current = operand;
+    offset = 0;
+
+    DenseMap<std::pair<int64_t, Type>, Value> constantCache;
+    auto getOrCreateConstant = [&](int64_t v, Type TT) -> Value {
+      auto key = std::make_pair(v, TT);
+      auto found = constantCache.find(key);
+      if (found != constantCache.end())
+        return found->second;
+      auto cst = stablehlo::ConstantOp::create(
+          rewriter, dus.getLoc(), TT, cast<ElementsAttr>(makeAttr(TT, v)));
+      constantCache[key] = cst;
+      return cst;
+    };
+
+    for (size_t i = 0; i < concat.getOperands().size(); i++) {
+      auto arg = concat.getOperands()[i];
+      auto argType = cast<RankedTensorType>(arg.getType());
+
+      if (isSelfUpdate[i]) {
+        offset += argType.getShape()[concatDim];
+        continue;
+      }
+
+      // Create new DUS for this slice
+      SmallVector<Value> newIndices;
+      for (int j = 0; j < ndims; j++) {
+        auto idxType = dus.getStartIndices()[j].getType();
+        if (j == concatDim) {
+          newIndices.push_back(
+              getOrCreateConstant(dusStarts[j] + offset, idxType));
+        } else {
+          newIndices.push_back(dus.getStartIndices()[j]);
+        }
+      }
+
+      auto newDus = stablehlo::DynamicUpdateSliceOp::create(
+          rewriter, dus.getLoc(), dus.getType(), current, arg, newIndices);
+      sdy::setShardings(newDus, sdy::getShardingPerValue(dus));
+      current = newDus.getResult();
+
+      offset += argType.getShape()[concatDim];
+    }
+
+    rewriter.replaceOp(dus, current);
     return success();
   }
 };
@@ -3241,10 +4576,10 @@ struct DUSToPadManualCompComm
       manualOps.push_back(pad2);
     Type manualTypes[] = {globalResultType};
 
-    TensorShardingPerValueAttr in_shardings =
-        TensorShardingPerValueAttr::get(dus.getContext(), in_shardings_array);
-    TensorShardingPerValueAttr out_shardings =
-        TensorShardingPerValueAttr::get(dus.getContext(), out_shardings_array);
+    TensorShardingPerValueAttr in_shardings = TensorShardingPerValueAttr::get(
+        rewriter.getContext(), in_shardings_array);
+    TensorShardingPerValueAttr out_shardings = TensorShardingPerValueAttr::get(
+        rewriter.getContext(), out_shardings_array);
 
     auto manual = sdy::ManualComputationOp::create(rewriter, loc, manualTypes,
                                                    manualOps, in_shardings,
@@ -3313,6 +4648,12 @@ struct ConcatToPadCommOptimize
           "numDevicesAlongDimension == 1. Communication is already optimized.");
     }
 
+    if (concat.getNumOperands() == 2 &&
+        isRotateLike(concat.getDimension(), concat.getOperands()[0],
+                     concat.getOperands()[1])) {
+      return rewriter.notifyMatchFailure(concat, "Explicit rotate like comm");
+    }
+
     SmallVector<int64_t> padLow(ndims, 0);
     SmallVector<int64_t> padHigh(ndims, 0);
     SmallVector<int64_t> padInner(ndims, 0);
@@ -3372,6 +4713,305 @@ struct ConcatToPadCommOptimize
   }
 };
 
+template <bool any>
+struct ConcatToDUSOptimize : public OpRewritePattern<stablehlo::ConcatenateOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::ConcatenateOp concat,
+                                PatternRewriter &rewriter) const override {
+    if (concat->getParentOfType<sdy::ManualComputationOp>())
+      return failure();
+    auto ndims = concat.getType().getShape().size();
+    auto concatShape = concat.getType().getShape();
+    auto concatDimension = concat.getDimension();
+    auto concatDimSize = concatShape[concatDimension];
+
+    auto concatSharding = mlir::sdy::getSharding(concat);
+    if (!concatSharding)
+      return failure();
+
+    auto numDevicesAlongDimension =
+        getNumDevicesAlongDimension(concatSharding, concatDimension, concat);
+    if (!any && numDevicesAlongDimension == 1) {
+      return rewriter.notifyMatchFailure(
+          concat,
+          "numDevicesAlongDimension == 1. Communication is already optimized.");
+    }
+
+    if (concat.getNumOperands() == 2 &&
+        isRotateLike(concat.getDimension(), concat.getOperands()[0],
+                     concat.getOperands()[1])) {
+      return rewriter.notifyMatchFailure(concat, "Explicit rotate like comm");
+    }
+
+    size_t largest_idx = 0;
+    for (auto &&[idx, operand] : llvm::enumerate(concat.getOperands())) {
+      auto operandSharding = mlir::sdy::getSharding(operand);
+      if (!operandSharding || (operandSharding != concatSharding))
+        return failure();
+      if (cast<RankedTensorType>(operand.getType())
+              .getShape()[concatDimension] >
+          cast<RankedTensorType>(concat.getOperands()[largest_idx].getType())
+              .getShape()[concatDimension]) {
+        largest_idx = idx;
+      }
+    }
+
+    int64_t leftPadding = 0;
+    for (auto [i, operand] : llvm::enumerate(concat.getOperands())) {
+      auto operandConcatDimSize =
+          cast<RankedTensorType>(operand.getType()).getShape()[concatDimension];
+      if (i == largest_idx)
+        break;
+      leftPadding += operandConcatDimSize;
+    }
+
+    auto padStart = padWithUndefinedValueInDim(
+        rewriter, concat.getLoc(), concat.getOperands()[largest_idx],
+        concatSharding, concatDimension, leftPadding,
+        concatDimSize - leftPadding -
+            cast<RankedTensorType>(concat.getOperands()[largest_idx].getType())
+                .getShape()[concatDimension]);
+    assert(concat.getType() == padStart.getType());
+
+    Value current = padStart;
+
+    leftPadding = 0;
+
+    auto i32 = RankedTensorType::get({}, concatDimSize < (1ULL << 32)
+                                             ? rewriter.getI32Type()
+                                             : rewriter.getI64Type());
+    auto zeroI32 = stablehlo::ConstantOp::create(rewriter, concat.getLoc(),
+                                                 rewriter.getZeroAttr(i32));
+
+    for (auto [i, operand] : llvm::enumerate(concat.getOperands())) {
+      auto operandConcatDimSize =
+          cast<RankedTensorType>(operand.getType()).getShape()[concatDimension];
+
+      if (i == largest_idx) {
+        leftPadding += operandConcatDimSize;
+        continue;
+      }
+
+      SmallVector<Value> idxs(ndims, zeroI32);
+      idxs[concatDimension] = stablehlo::ConstantOp::create(
+          rewriter, concat.getLoc(), i32,
+          cast<ElementsAttr>(makeAttr(i32, leftPadding)));
+
+      auto paddedOperand = stablehlo::DynamicUpdateSliceOp::create(
+
+          rewriter, concat.getLoc(), current, operand, idxs);
+
+      assert(concat.getType() == paddedOperand.getType());
+      sdy::setSharding(paddedOperand, concatSharding);
+      leftPadding += operandConcatDimSize;
+      current = paddedOperand;
+    }
+
+    rewriter.replaceOp(concat, current);
+    return success();
+  }
+};
+
+struct ConcatToRotatePadOptimize
+    : public OpRewritePattern<stablehlo::ConcatenateOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(stablehlo::ConcatenateOp concat,
+                                PatternRewriter &rewriter) const override {
+    if (concat->getParentOfType<sdy::ManualComputationOp>())
+      return failure();
+    auto ndims = concat.getType().getShape().size();
+    auto concatShape = concat.getType().getShape();
+    auto concatDimension = concat.getDimension();
+    auto concatDimSize = concatShape[concatDimension];
+
+    auto concatSharding = mlir::sdy::getSharding(concat);
+    if (!concatSharding)
+      return failure();
+
+    auto numDevicesAlongDimension =
+        getNumDevicesAlongDimension(concatSharding, concatDimension, concat);
+    if (numDevicesAlongDimension == 1) {
+      return rewriter.notifyMatchFailure(
+          concat,
+          "numDevicesAlongDimension == 1. Communication is already optimized.");
+    }
+
+    if (concat.getNumOperands() == 2 &&
+        isRotateLike(concat.getDimension(), concat.getOperands()[0],
+                     concat.getOperands()[1])) {
+      return rewriter.notifyMatchFailure(concat, "Explicit rotate like comm");
+    }
+
+    if (concat.getNumOperands() != 2)
+      return failure();
+
+    // Check if both operands are slices from the same source
+    auto slice0 = concat.getOperands()[0].getDefiningOp<stablehlo::SliceOp>();
+    auto slice1 = concat.getOperands()[1].getDefiningOp<stablehlo::SliceOp>();
+
+    if (!slice0 || !slice1)
+      return failure();
+
+    // Both slices must come from the same source
+    if (slice0.getOperand() != slice1.getOperand())
+      return failure();
+
+    // Check that dimensions other than concatDim are the same
+    for (int64_t i = 0; i < ndims; i++) {
+      if (i == concatDimension) {
+        if (slice0.getStrides()[i] != slice1.getStrides()[i]) {
+          return failure();
+        }
+        if (slice0.getStrides()[i] != 1) {
+          return failure();
+        }
+        continue;
+      }
+      if (slice0.getStartIndices()[i] != slice1.getStartIndices()[i] ||
+          slice0.getLimitIndices()[i] != slice1.getLimitIndices()[i] ||
+          slice0.getStrides()[i] != slice1.getStrides()[i])
+        return failure();
+    }
+
+    size_t largest_idx = 0;
+    for (auto &&[idx, operand] : llvm::enumerate(concat.getOperands())) {
+      auto operandSharding = mlir::sdy::getSharding(operand);
+      if (!operandSharding || (operandSharding != concatSharding))
+        return failure();
+      if (cast<RankedTensorType>(operand.getType())
+              .getShape()[concatDimension] >
+          cast<RankedTensorType>(concat.getOperands()[largest_idx].getType())
+              .getShape()[concatDimension]) {
+        largest_idx = idx;
+      }
+    }
+
+    auto largestSlice =
+        concat.getOperands()[largest_idx].getDefiningOp<stablehlo::SliceOp>();
+
+    // The indices of the smaller one must be contained fully within the larger
+    // one.
+    for (auto &&[idx, operand] : llvm::enumerate(concat.getOperands())) {
+      if (idx == largest_idx)
+        continue;
+      auto slop = operand.getDefiningOp<stablehlo::SliceOp>();
+      if (largestSlice.getStartIndices()[concatDimension] >
+          slop.getStartIndices()[concatDimension])
+        return failure();
+
+      if (largestSlice.getLimitIndices()[concatDimension] <
+          slop.getLimitIndices()[concatDimension])
+        return failure();
+    }
+
+    int64_t leftPadding = 0;
+    for (auto [i, operand] : llvm::enumerate(concat.getOperands())) {
+      auto operandConcatDimSize =
+          cast<RankedTensorType>(operand.getType()).getShape()[concatDimension];
+      if (i == largest_idx)
+        break;
+      leftPadding += operandConcatDimSize;
+    }
+
+    auto startPadLow = leftPadding;
+    auto padStart = padWithUndefinedValueInDim(
+        rewriter, concat.getLoc(), concat.getOperands()[largest_idx],
+        concatSharding, concatDimension, leftPadding,
+        concatDimSize - leftPadding -
+            cast<RankedTensorType>(concat.getOperands()[largest_idx].getType())
+                .getShape()[concatDimension]);
+    assert(concat.getType() == padStart.getType());
+
+    Value current = padStart;
+
+    leftPadding = 0;
+
+    auto i32 = RankedTensorType::get({}, concatDimSize < (1ULL << 32)
+                                             ? rewriter.getI32Type()
+                                             : rewriter.getI64Type());
+    auto zeroI32 = stablehlo::ConstantOp::create(rewriter, concat.getLoc(),
+                                                 rewriter.getZeroAttr(i32));
+
+    for (auto [i, operand] : llvm::enumerate(concat.getOperands())) {
+      auto operandConcatDimSize =
+          cast<RankedTensorType>(operand.getType()).getShape()[concatDimension];
+
+      if (isZero(operand) || i == largest_idx) {
+        leftPadding += operandConcatDimSize;
+        continue;
+      }
+
+      auto slop = operand.getDefiningOp<stablehlo::SliceOp>();
+
+      int64_t dstart = slop.getStartIndices()[concatDimension] -
+                       largestSlice.getStartIndices()[concatDimension];
+
+      // Note: our rotate op is a rotate left.
+      int64_t offset = dstart + startPadLow;
+
+      int64_t amt = offset - leftPadding;
+      if (amt < 0) {
+        amt += concatDimSize;
+      }
+
+      Value toslice = nullptr;
+      if (dstart <= leftPadding &&
+          concatDimSize >= leftPadding - dstart +
+                               cast<RankedTensorType>(
+                                   concat.getOperands()[largest_idx].getType())
+                                   .getShape()[concatDimension]) {
+
+        toslice = padWithUndefinedValueInDim(
+            rewriter, concat.getLoc(), concat.getOperands()[largest_idx],
+            concatSharding, concatDimension, leftPadding - dstart,
+            concatDimSize - (leftPadding - dstart) -
+                cast<RankedTensorType>(
+                    concat.getOperands()[largest_idx].getType())
+                    .getShape()[concatDimension]);
+      } else {
+        auto rot = enzymexla::RotateOp::create(rewriter, concat.getLoc(),
+                                               padStart, amt, concatDimension);
+        sdy::setSharding(padStart, concatSharding);
+        toslice = rot;
+      }
+
+      SmallVector<int64_t> starts(ndims, 0);
+      starts[concatDimension] = leftPadding;
+      SmallVector<int64_t> strides(ndims, 1);
+      SmallVector<int64_t> limits = llvm::to_vector(
+          cast<RankedTensorType>(padStart.getType()).getShape());
+      limits[concatDimension] =
+          starts[concatDimension] +
+          cast<RankedTensorType>(operand.getType()).getShape()[concatDimension];
+      auto slice = stablehlo::SliceOp::create(rewriter, concat.getLoc(),
+                                              toslice, starts, limits, strides);
+      sdy::setSharding(slice, concatSharding);
+
+      // TODO if the slice location is such that we
+      // TODO we need to consider rotate or add, instead of using operand
+      // directly.
+      SmallVector<Value> idxs(ndims, zeroI32);
+      idxs[concatDimension] = stablehlo::ConstantOp::create(
+          rewriter, concat.getLoc(), i32,
+          cast<ElementsAttr>(makeAttr(i32, leftPadding)));
+
+      auto paddedOperand = stablehlo::DynamicUpdateSliceOp::create(
+
+          rewriter, concat.getLoc(), current, slice, idxs);
+
+      assert(concat.getType() == paddedOperand.getType());
+      sdy::setSharding(paddedOperand, concatSharding);
+      leftPadding += operandConcatDimSize;
+      current = paddedOperand;
+    }
+
+    rewriter.replaceOp(concat, current);
+    return success();
+  }
+};
+
 // See https://github.com/EnzymeAD/Enzyme-JAX/issues/854 for the motivation
 // TODO: At some point if we can come up with a cost model for this, we can do a
 //       greedy search for the best ordering
@@ -3425,20 +5065,18 @@ struct ReorderAssociativeOp : public OpRewritePattern<opTy> {
         return failure();
 
       if (aOpSharding == cOpSharding && isCommutative) {
-        auto newOp = rewriter.template create<opTy>(op.getLoc(), aOp, cOp);
+        auto newOp = opTy::create(rewriter, op.getLoc(), aOp, cOp);
         sdy::setSharding(newOp, aOpSharding);
-        auto newFinalOp =
-            rewriter.template create<opTy>(op.getLoc(), newOp, bOp);
+        auto newFinalOp = opTy::create(rewriter, op.getLoc(), newOp, bOp);
         sdy::setSharding(newFinalOp, opSharding);
         rewriter.replaceOp(op, newFinalOp); // op (op a c) b
         return success();
       }
 
       if (aOpSharding == bOpSharding) {
-        auto newOp = rewriter.template create<opTy>(op.getLoc(), aOp, bOp);
+        auto newOp = opTy::create(rewriter, op.getLoc(), aOp, bOp);
         sdy::setSharding(newOp, aOpSharding);
-        auto newFinalOp =
-            rewriter.template create<opTy>(op.getLoc(), newOp, cOp);
+        auto newFinalOp = opTy::create(rewriter, op.getLoc(), newOp, cOp);
         sdy::setSharding(newFinalOp, opSharding);
         rewriter.replaceOp(op, newFinalOp); // op (op a b) c
         return success();
@@ -3465,20 +5103,18 @@ struct ReorderAssociativeOp : public OpRewritePattern<opTy> {
           return failure();
 
         if (aOpSharding == cOpSharding && isCommutative) {
-          auto newOp = rewriter.template create<opTy>(op.getLoc(), aOp, cOp);
+          auto newOp = opTy::create(rewriter, op.getLoc(), aOp, cOp);
           sdy::setSharding(newOp, aOpSharding);
-          auto newFinalOp =
-              rewriter.template create<opTy>(op.getLoc(), newOp, bOp);
+          auto newFinalOp = opTy::create(rewriter, op.getLoc(), newOp, bOp);
           sdy::setSharding(newFinalOp, opSharding);
           rewriter.replaceOp(op, newFinalOp); // op (op a c) b
           return success();
         }
 
         if (bOpSharding == cOpSharding) {
-          auto newOp = rewriter.template create<opTy>(op.getLoc(), bOp, cOp);
+          auto newOp = opTy::create(rewriter, op.getLoc(), bOp, cOp);
           sdy::setSharding(newOp, bOpSharding);
-          auto newFinalOp =
-              rewriter.template create<opTy>(op.getLoc(), aOp, newOp);
+          auto newFinalOp = opTy::create(rewriter, op.getLoc(), aOp, newOp);
           sdy::setSharding(newFinalOp, opSharding);
           rewriter.replaceOp(op, newFinalOp); // op a (op b c)
           return success();
@@ -3513,24 +5149,22 @@ struct ReorderAssociativeOp : public OpRewritePattern<opTy> {
           return failure();
 
         if (aOpSharding == cOpSharding && bOpSharding == dOpSharding) {
-          auto newLhsOp = rewriter.template create<opTy>(op.getLoc(), aOp, cOp);
+          auto newLhsOp = opTy::create(rewriter, op.getLoc(), aOp, cOp);
           sdy::setSharding(newLhsOp, aOpSharding);
-          auto newRhsOp = rewriter.template create<opTy>(op.getLoc(), bOp, dOp);
+          auto newRhsOp = opTy::create(rewriter, op.getLoc(), bOp, dOp);
           sdy::setSharding(newRhsOp, bOpSharding);
-          auto newOp =
-              rewriter.template create<opTy>(op.getLoc(), newLhsOp, newRhsOp);
+          auto newOp = opTy::create(rewriter, op.getLoc(), newLhsOp, newRhsOp);
           sdy::setSharding(newOp, opSharding);
           rewriter.replaceOp(op, newOp); // op (op a c) (op b d)
           return success();
         }
 
         if (aOpSharding == dOpSharding && bOpSharding == cOpSharding) {
-          auto newLhsOp = rewriter.template create<opTy>(op.getLoc(), aOp, dOp);
+          auto newLhsOp = opTy::create(rewriter, op.getLoc(), aOp, dOp);
           sdy::setSharding(newLhsOp, aOpSharding);
-          auto newRhsOp = rewriter.template create<opTy>(op.getLoc(), bOp, cOp);
+          auto newRhsOp = opTy::create(rewriter, op.getLoc(), bOp, cOp);
           sdy::setSharding(newRhsOp, bOpSharding);
-          auto newOp =
-              rewriter.template create<opTy>(op.getLoc(), newLhsOp, newRhsOp);
+          auto newOp = opTy::create(rewriter, op.getLoc(), newLhsOp, newRhsOp);
           sdy::setSharding(newOp, opSharding);
           rewriter.replaceOp(op, newOp); // op (op a d) (op b c)
           return success();
@@ -3566,6 +5200,18 @@ struct OptimizeCommunicationPass
       patterns.add<ConcatToPadCommOptimize>(context,
                                             PatternBenefit(concat_to_pad_comm));
 
+    if (concat_to_dus > 0)
+      patterns.add<ConcatToDUSOptimize<false>>(context,
+                                               PatternBenefit(concat_to_dus));
+
+    if (concat_to_dus_any > 0)
+      patterns.add<ConcatToDUSOptimize<true>>(
+          context, PatternBenefit(concat_to_dus_any));
+
+    if (concat_to_rotatepad > 0)
+      patterns.add<ConcatToRotatePadOptimize>(
+          context, PatternBenefit(concat_to_rotatepad));
+
     if (concat_two_operands_comm > 0)
       patterns.add<ConcatTwoOperandsCommOptimize>(
           channel_id, context, PatternBenefit(concat_two_operands_comm));
@@ -3574,9 +5220,34 @@ struct OptimizeCommunicationPass
       patterns.add<RotateCommOptimize>(channel_id, context,
                                        PatternBenefit(rotate_comm));
 
+    if (rotate_spmd > 0)
+      patterns.add<RotateSpmdOptimize>(multi_buffer, context,
+                                       PatternBenefit(rotate_spmd));
+
+    if (multirotate_spmd > 0)
+      patterns.add<MultiRotateSpmdOptimize>(context,
+                                            PatternBenefit(multirotate_spmd));
+
+    if (multirotate_custom_call > 0)
+      patterns.add<MultiRotateCustomCallOptimize>(
+          multi_buffer, context, PatternBenefit(multirotate_custom_call));
+
+    if (multislice_custom_call > 0)
+      patterns.add<MultiSliceCustomCallOptimize>(
+          multi_buffer, context, PatternBenefit(multislice_custom_call));
+
+    if (multipad_custom_call > 0)
+      patterns.add<MultiPadCustomCallOptimize>(
+          multi_buffer, context, PatternBenefit(multipad_custom_call));
+
     if (rotate_to_pad_comm > 0)
       patterns.add<RotateToPadCommOptimize>(context,
                                             PatternBenefit(rotate_to_pad_comm));
+
+    if (wrap_custom_call > 0)
+
+      patterns.add<WrapCustomCallOptimize>(context,
+                                           PatternBenefit(wrap_custom_call));
 
     if (wrap_comm > 0)
       patterns.add<WrapCommOptimize>(channel_id, context,
@@ -3586,6 +5257,10 @@ struct OptimizeCommunicationPass
       patterns.add<WrapToPadCommOptimize>(context,
                                           PatternBenefit(wrap_to_pad_comm));
 
+    if (wrap_to_rotate > 0)
+      patterns.add<WrapToRotateOptimize>(context,
+                                         PatternBenefit(wrap_to_rotate));
+
     if (extend_comm > 0)
       patterns.add<ExtendCommOptimize>(channel_id, context,
                                        PatternBenefit(extend_comm));
@@ -3593,6 +5268,18 @@ struct OptimizeCommunicationPass
     if (extend_to_pad_comm > 0)
       patterns.add<ExtendToPadCommOptimize>(context,
                                             PatternBenefit(extend_to_pad_comm));
+
+    if (extend_to_pad_comm2 > 0)
+      patterns.add<ExtendToPadCommOptimize2>(
+          context, PatternBenefit(extend_to_pad_comm2));
+
+    if (updatewithoutcorners_to_select > 0)
+      patterns.add<UpdateWithoutCornersToSelect>(
+          context, PatternBenefit(updatewithoutcorners_to_select));
+
+    if (dus_of_concat_slices > 0)
+      patterns.add<DUSOfConcatSlicesOptimize>(
+          context, PatternBenefit(dus_of_concat_slices));
 
     if (dus_to_pad_manual_comp_comm > 0)
       patterns.add<DUSToPadManualCompComm>(
@@ -3621,9 +5308,37 @@ struct OptimizeCommunicationPass
     }
 
     GreedyRewriteConfig config;
-    if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),
-                                            config))) {
+    config.enableFolding();
+    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
+                                     config))) {
       signalPassFailure();
+    }
+
+    SmallVector<stablehlo::SliceOp> slices;
+    getOperation()->walk([&](stablehlo::SliceOp slice) {
+      bool needed = false;
+      for (auto u : slice.getResult().getUsers()) {
+        if (!isa<stablehlo::DynamicUpdateSliceOp>(u))
+          continue;
+        if (u->getParentOp() == slice->getParentOp())
+          continue;
+        needed = true;
+        break;
+      }
+      if (needed)
+        slices.push_back(slice);
+    });
+    for (auto slice : slices) {
+      DenseMap<Block *, Value> map;
+      for (auto &u : llvm::make_early_inc_range(slice.getResult().getUses())) {
+        auto blk = u.getOwner()->getBlock();
+        if (!map.contains(blk)) {
+          OpBuilder b(u.getOwner());
+          b.setInsertionPointToStart(blk);
+          map[blk] = b.clone(*slice)->getResult(0);
+        }
+        u.assign(map[blk]);
+      }
     }
   }
 };

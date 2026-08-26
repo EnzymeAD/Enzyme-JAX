@@ -18,6 +18,7 @@
 
 #include "src/enzyme_ad/jax/CheckedRewrite.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
+#include "src/enzyme_ad/jax/Utils.h"
 #include "xla/mlir_hlo/mhlo/IR/hlo_ops.h"
 
 #include "stablehlo/dialect/StablehloOps.h"
@@ -44,9 +45,16 @@ using namespace mlir;
 using namespace mlir::enzyme;
 using namespace enzyme;
 
-LogicalResult
-WhileUnroll::matchAndRewriteImpl(mlir::stablehlo::WhileOp op,
-                                 PatternRewriter &rewriter) const {
+LogicalResult unrollWhileOp(mlir::stablehlo::WhileOp op, RewriterBase &rewriter,
+                            int64_t maxNumIterations,
+                            int64_t maxOperationThreshold,
+                            SmallVectorImpl<Value> *replacements) {
+
+  // Unrolling a checkpoint segment loop makes every iteration of the segment
+  // live at once, which is what the checkpointing was paying recompute to
+  // avoid. See markCheckpointSegmentLoop.
+  if (isOrContainsCheckpointSegmentLoop(op))
+    return failure();
 
   WhileLoopInfo info(op);
   if (info.computeInfo().failed() || !info.isConstant())
@@ -57,8 +65,12 @@ WhileUnroll::matchAndRewriteImpl(mlir::stablehlo::WhileOp op,
 
   auto iters = info.getConstantNumIters();
   if (maxNumIterations != -1 && iters > maxNumIterations)
-    return rewriter.notifyMatchFailure(op,
-                                       "max iterations for unrolling exceeded");
+    return failure();
+
+  if (iters > 1 && maxOperationThreshold > -1 &&
+      std::distance(loopBodyBlock->begin(), loopBodyBlock->end()) >
+          maxOperationThreshold)
+    return failure();
 
   SmallVector<Value> results(op.getOperands().begin(), op.getOperands().end());
 
@@ -75,8 +87,18 @@ WhileUnroll::matchAndRewriteImpl(mlir::stablehlo::WhileOp op,
       results.push_back(operandMap.lookupOrDefault(r));
     }
   }
+
+  if (replacements)
+    *replacements = results;
+
   rewriter.replaceOp(op, results);
   return success();
+}
+
+LogicalResult
+WhileUnroll::matchAndRewriteImpl(mlir::stablehlo::WhileOp op,
+                                 PatternRewriter &rewriter) const {
+  return unrollWhileOp(op, rewriter, maxNumIterations, maxOperationThreshold);
 }
 
 struct EnzymeHLOUnrollPass
@@ -86,10 +108,11 @@ struct EnzymeHLOUnrollPass
   void runOnOperation() override {
     auto context = getOperation()->getContext();
     RewritePatternSet patterns(context);
-    patterns.add<WhileUnroll>(maxNumIterations, context);
+    patterns.add<WhileUnroll>(maxNumIterations, maxOperationThreshold, context);
     GreedyRewriteConfig config;
-    if (failed(applyPatternsAndFoldGreedily(getOperation(), std::move(patterns),
-                                            config))) {
+    config.enableFolding();
+    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
+                                     config))) {
       signalPassFailure();
     }
   }

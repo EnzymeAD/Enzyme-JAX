@@ -2,12 +2,19 @@
 #include "llvm/ADT/TypeSwitch.h"
 
 #include "Dialect.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/LLVMIR/LLVMTypes.h"
 #include "mlir/IR/IRMapping.h"
+#include "mlir/Interfaces/CallInterfaces.h"
 #include "mlir/Interfaces/FunctionImplementation.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 
 using namespace mlir;
 using namespace mlir::enzyme::tessera;
+
+#define GET_OP_CLASSES
+#include "src/enzyme_ad/jax/Dialect/Tessera/TesseraOps.cpp.inc"
 
 namespace mlir::enzyme::tessera {} // namespace mlir::enzyme::tessera
 
@@ -15,41 +22,28 @@ namespace mlir::enzyme::tessera {} // namespace mlir::enzyme::tessera
 // DefineOp
 //===----------------------------------------------------------------------===//
 
-DefineOp DefineOp::create(Location location, StringRef name, FunctionType type,
-                          ArrayRef<NamedAttribute> attrs) {
-  OpBuilder builder(location->getContext());
-  OperationState state(location, getOperationName());
-  DefineOp::build(builder, state, name, type, attrs);
-  return cast<DefineOp>(Operation::create(state));
-}
-DefineOp DefineOp::create(Location location, StringRef name, FunctionType type,
-                          Operation::dialect_attr_range attrs) {
-  SmallVector<NamedAttribute, 8> attrRef(attrs);
-  return create(location, name, type, llvm::ArrayRef(attrRef));
-}
-DefineOp DefineOp::create(Location location, StringRef name, FunctionType type,
-                          ArrayRef<NamedAttribute> attrs,
-                          ArrayRef<DictionaryAttr> argAttrs) {
-  DefineOp func = create(location, name, type, attrs);
-  func.setAllArgAttrs(argAttrs);
-  return func;
-}
-
 void DefineOp::build(OpBuilder &builder, OperationState &state, StringRef name,
-                     FunctionType type, ArrayRef<NamedAttribute> attrs,
+                     FunctionType type, ArrayAttr byRefTypes, bool pure,
+                     StringAttr sym_visibility, ArrayRef<NamedAttribute> attrs,
                      ArrayRef<DictionaryAttr> argAttrs) {
   state.addAttribute(SymbolTable::getSymbolAttrName(),
                      builder.getStringAttr(name));
   state.addAttribute(getFunctionTypeAttrName(state.name), TypeAttr::get(type));
+  state.addAttribute("pure", builder.getBoolAttr(pure));
+  state.addAttribute("byRefTypes", byRefTypes);
+
+  if (sym_visibility)
+    state.addAttribute(getSymVisibilityAttrName(state.name), sym_visibility);
+
   state.attributes.append(attrs.begin(), attrs.end());
   state.addRegion();
 
-  if (argAttrs.empty())
-    return;
-  assert(type.getNumInputs() == argAttrs.size());
-  call_interface_impl::addArgAndResultAttrs(
-      builder, state, argAttrs, /*resultAttrs=*/{},
-      getArgAttrsAttrName(state.name), getResAttrsAttrName(state.name));
+  if (!argAttrs.empty()) {
+    assert(type.getNumInputs() == argAttrs.size());
+    call_interface_impl::addArgAndResultAttrs(
+        builder, state, argAttrs, /*resultAttrs=*/{},
+        getArgAttrsAttrName(state.name), getResAttrsAttrName(state.name));
+  }
 }
 
 ParseResult DefineOp::parse(OpAsmParser &parser, OperationState &result) {
@@ -96,7 +90,6 @@ void DefineOp::cloneInto(DefineOp dest, IRMapping &mapper) {
 /// to cloned sub-values with the corresponding value that is copied, and adds
 /// those mappings to the mapper.
 DefineOp DefineOp::clone(IRMapping &mapper) {
-  // Create the new function.
   DefineOp newFunc = cast<DefineOp>(getOperation()->cloneWithoutRegions());
 
   // If the function has a body, then the user might be deleting arguments to
@@ -138,27 +131,60 @@ DefineOp DefineOp::clone() {
   return clone(mapper);
 }
 
-//===----------------------------------------------------------------------===//
-// ReturnOp
-//===----------------------------------------------------------------------===//
+Attribute DefineOp::getSretAttr() {
+  if (getFunctionType().getNumInputs() == 0)
+    return nullptr;
+  if (auto argAttrs = getAllArgAttrs())
+    return cast<DictionaryAttr>(argAttrs[0])
+        .get(LLVM::LLVMDialect::getStructRetAttrName());
+  return nullptr;
+}
 
-LogicalResult ReturnOp::verify() {
-  auto function = cast<DefineOp>((*this)->getParentOp());
+// Override getArgAttr to map call-side indices to define-side indices.
+// tessera::DefineOp has one extra argument at index 0 for sret, which
+// is not present in tessera::CallOp operands. This allows generic
+// FunctionOpInterface callers to use call-side indices directly.
+Attribute DefineOp::getArgAttr(unsigned index, StringAttr name) {
+  unsigned offset = getSretAttr() != nullptr ? 1 : 0;
+  if (auto dict = mlir::function_interface_impl::getArgAttrDict(
+          cast<FunctionOpInterface>(getOperation()), index + offset))
+    return dict.get(name);
+  return nullptr;
+}
 
-  // The operand number and types must match the function signature.
-  const auto &results = function.getFunctionType().getResults();
-  if (getNumOperands() != results.size())
-    return emitOpError("has ")
-           << getNumOperands() << " operands, but enclosing function (@"
-           << function.getName() << ") returns " << results.size();
+Attribute DefineOp::getArgAttr(unsigned index, StringRef name) {
+  unsigned offset = getSretAttr() != nullptr ? 1 : 0;
+  if (auto dict = mlir::function_interface_impl::getArgAttrDict(
+          cast<FunctionOpInterface>(getOperation()), index + offset))
+    return dict.get(name);
+  return nullptr;
+}
 
-  for (unsigned i = 0, e = results.size(); i != e; ++i)
-    if (getOperand(i).getType() != results[i])
-      return emitError() << "type of return operand " << i << " ("
-                         << getOperand(i).getType()
-                         << ") doesn't match function result type ("
-                         << results[i] << ")"
-                         << " in function @" << function.getName();
+ArrayRef<Attribute> DefineOp::getByRefTypesArray() {
+  return getByRefTypes().getValue();
+}
+
+Type DefineOp::getByRefType(unsigned argIdx) {
+  auto types = getByRefTypesArray();
+  assert(argIdx < types.size() && "argIdx out of bounds in getByRefType");
+  auto attr = types[argIdx];
+  if (!isa<TypeAttr>(attr))
+    return nullptr;
+  return cast<TypeAttr>(attr).getValue();
+}
+
+LogicalResult DefineOp::verify() {
+  for (Attribute a : getByRefTypes())
+    if (!isa<TypeAttr>(a) && !isa<UnitAttr>(a))
+      return emitOpError(
+                 "byRefTypes entry must be TypeAttr or UnitAttr, but got ")
+             << a;
+
+  unsigned offset = getSretAttr() != nullptr ? 1 : 0;
+  if (getByRefTypes().size() != getFunctionType().getNumInputs() - offset)
+    return emitOpError("byRefTypes size (")
+           << getByRefTypes().size() << ") must match number of args ("
+           << getFunctionType().getNumInputs() - offset << ")";
 
   return success();
 }
@@ -177,23 +203,54 @@ LogicalResult CallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
     return emitOpError() << "'" << fnAttr.getValue()
                          << "' does not reference a valid function";
 
-  // Verify that the operand and result types match the callee.
   auto fnType = fn.getFunctionType();
-  if (fnType.getNumInputs() != getNumOperands())
+
+  // Verify that the operand and result types match the callee,
+  // unless callee has attribute to indicate struct return.
+  bool has_sret = fn.getSretAttr() != nullptr;
+
+  // If tessera.define has sret attribute,
+  // tessera.call operand count = tessera.define input count - 1
+  if (has_sret && (fnType.getNumInputs() == 0 ||
+                   (fnType.getNumInputs() - 1) != getNumOperands()))
+    return emitOpError("incorrect number of operands for callee");
+  if (!has_sret && fnType.getNumInputs() != getNumOperands())
     return emitOpError("incorrect number of operands for callee");
 
-  for (unsigned i = 0, e = fnType.getNumInputs(); i != e; ++i)
-    if (getOperand(i).getType() != fnType.getInput(i))
-      return emitOpError("operand type mismatch: expected operand type ")
-             << fnType.getInput(i) << ", but provided "
-             << getOperand(i).getType() << " for operand number " << i;
+  // Allow type mismatch only for byref pointer args that have been converted
+  // to values
+  unsigned argOffset = has_sret ? 1 : 0;
+  for (unsigned i = 0, e = getNumOperands(); i != e; ++i) {
+    if (getOperand(i).getType() == fnType.getInput(i + argOffset))
+      continue;
+    if (isa<LLVM::LLVMPointerType>(fnType.getInput(i + argOffset)) &&
+        (fn.getArgAttr(i, LLVM::LLVMDialect::getByValAttrName()) ||
+         fn.getByRefType(i)))
+      continue;
+    return emitOpError("operand type mismatch: expected operand type ")
+           << fnType.getInput(i + argOffset) << ", but provided "
+           << getOperand(i).getType() << " for operand number " << i;
+  }
 
-  if (fnType.getNumResults() != getNumResults())
+  // If tessera.define has sret attribute,
+  // tessera.call result count = tessera.define result count + 1
+  if (has_sret && getNumResults() != 1)
+    return emitOpError("incorrect number of results for callee");
+  if (!has_sret && fnType.getNumResults() != getNumResults())
     return emitOpError("incorrect number of results for callee");
 
+  if (has_sret) {
+    auto sret = fn.getSretAttr();
+    auto sretType = cast<TypeAttr>(sret).getValue();
+    if (getResult(0).getType() != sretType)
+      return emitOpError("result type mismatch: expected ")
+             << sretType << " but got " << getResult(0).getType();
+  }
+
+  unsigned offset = has_sret ? 1 : 0;
   for (unsigned i = 0, e = fnType.getNumResults(); i != e; ++i)
-    if (getResult(i).getType() != fnType.getResult(i)) {
-      auto diag = emitOpError("result type mismatch at index ") << i;
+    if (getResult(i + offset).getType() != fnType.getResult(i)) {
+      auto diag = emitOpError("result type mismatch at index ") << i + offset;
       diag.attachNote() << "      op result types: " << getResultTypes();
       diag.attachNote() << "function result types: " << fnType.getResults();
       return diag;
@@ -206,5 +263,45 @@ FunctionType CallOp::getCalleeType() {
   return FunctionType::get(getContext(), getOperandTypes(), getResultTypes());
 }
 
-#define GET_OP_CLASSES
-#include "src/enzyme_ad/jax/Dialect/Tessera/TesseraOps.cpp.inc"
+void CallOp::getEffects(
+    SmallVectorImpl<SideEffects::EffectInstance<MemoryEffects::Effect>>
+        &effects) {
+  auto fnAttr = (*this)->getAttrOfType<FlatSymbolRefAttr>("callee");
+  if (!fnAttr)
+    return;
+  DefineOp fn = SymbolTable::lookupNearestSymbolFrom<DefineOp>(*this, fnAttr);
+  if (!fn)
+    return;
+  if (fn.getPure())
+    return; // return nothing = no effects = side effect free
+
+  // if not side effect free, add all possible memory effects
+  effects.emplace_back(MemoryEffects::Effect::get<MemoryEffects::Read>());
+  effects.emplace_back(MemoryEffects::Effect::get<MemoryEffects::Write>());
+  effects.emplace_back(MemoryEffects::Effect::get<MemoryEffects::Allocate>());
+  effects.emplace_back(MemoryEffects::Effect::get<MemoryEffects::Free>());
+}
+
+//===----------------------------------------------------------------------===//
+// ReturnOp
+//===----------------------------------------------------------------------===//
+
+LogicalResult ReturnOp::verify() {
+  auto fn = cast<DefineOp>((*this)->getParentOp());
+
+  // The operand number and types must match the function signature.
+  const auto &results = fn.getFunctionType().getResults();
+  if (getNumOperands() != results.size())
+    return emitOpError("has ")
+           << getNumOperands() << " operands, but enclosing function (@"
+           << fn.getName() << ") returns " << results.size();
+
+  for (unsigned i = 0, e = results.size(); i != e; ++i)
+    if (getOperand(i).getType() != results[i])
+      return emitError() << "type of return operand " << i << " ("
+                         << getOperand(i).getType() << ") in function @"
+                         << fn.getName()
+                         << " doesn't match function result type ("
+                         << results[i] << ")";
+  return success();
+}

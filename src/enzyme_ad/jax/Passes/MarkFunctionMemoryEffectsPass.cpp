@@ -10,8 +10,16 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
+#include "src/enzyme_ad/jax/Dialect/TritonExt/Ops.h"
 #include "stablehlo/dialect/StablehloOps.h"
+
+#ifndef ENZYME_JAX_ENABLE_TRITON
+#define ENZYME_JAX_ENABLE_TRITON 1
+#endif
+
+#if ENZYME_JAX_ENABLE_TRITON
 #include "triton/Dialect/Triton/IR/Dialect.h"
+#endif
 
 #include <queue>
 
@@ -24,6 +32,7 @@ namespace enzyme {
 
 using namespace mlir;
 using namespace mlir::enzyme;
+using namespace mlir::enzymexla;
 
 namespace {
 
@@ -175,7 +184,11 @@ struct MarkFunctionMemoryEffectsPass
   bool isPointerType(Value v) { return isPointerType(v.getType()); }
 
   bool isPointerType(Type t) {
-    return isa<LLVM::LLVMPointerType, MemRefType, triton::PointerType>(t);
+#if ENZYME_JAX_ENABLE_TRITON
+    if (isa<triton::PointerType>(t))
+      return true;
+#endif
+    return isa<LLVM::LLVMPointerType, MemRefType>(t);
   }
 
   void analyzeMemoryEffects(
@@ -332,6 +345,12 @@ struct MarkFunctionMemoryEffectsPass
           }
         } else if (auto kcall = dyn_cast<enzymexla::KernelCallOp>(op)) {
           if (kcall.getXlaSideEffectFreeAttr()) {
+            return WalkResult::advance();
+          } else {
+            insertMemoryEffects(effects);
+          }
+        } else if (auto tcall = dyn_cast<triton_ext::TritonCallOp>(op)) {
+          if (tcall.getXlaSideEffectFreeAttr()) {
             return WalkResult::advance();
           } else {
             insertMemoryEffects(effects);

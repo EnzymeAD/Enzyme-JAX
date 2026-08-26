@@ -99,8 +99,14 @@ struct ConvertLLVMToControlFlow
   void runOnOperation() override {
     RewritePatternSet patterns(&getContext());
     mlir::cf::populateLLVMToControlFlowConversionPatterns(patterns);
-    if (failed(
-            applyPatternsAndFoldGreedily(getOperation(), std::move(patterns))))
+    // Aggressive region simplification merges structurally identical
+    // blocks -- including cold error tails differing only in constants,
+    // which LLVM cannot split back apart and whose merged setup its
+    // machine passes then hoist into the hot path.
+    if (failed(applyPatternsGreedily(
+            getOperation(), std::move(patterns),
+            GreedyRewriteConfig().enableFolding().setRegionSimplificationLevel(
+                GreedySimplifyRegionLevel::Normal))))
       signalPassFailure();
   }
 };

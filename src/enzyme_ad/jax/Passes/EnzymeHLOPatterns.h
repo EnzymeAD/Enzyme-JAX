@@ -8,6 +8,8 @@
 
 #include <stdint.h>
 
+#include "mlir/Support/LogicalResult.h"
+
 namespace mlir {
 class MLIRContext;
 class PatternBenefit;
@@ -41,6 +43,8 @@ void addNoNanZeroBasePowSimplify(RewritePatternSet &patterns,
                                  MLIRContext &context, PatternBenefit benefit);
 void addIotaSimplify(RewritePatternSet &patterns, int64_t maxConstantExpansion,
                      MLIRContext &context, PatternBenefit benefit);
+void addRecognizeFromConstant(RewritePatternSet &patterns, int64_t minFoldSize,
+                              MLIRContext &context, PatternBenefit benefit);
 void addConcatConstProp(RewritePatternSet &patterns,
                         int64_t maxConstantExpansion, MLIRContext &context,
                         PatternBenefit benefit);
@@ -57,6 +61,8 @@ void addWhileSimplify(RewritePatternSet &patterns, bool hoist_all,
                       MLIRContext &context, PatternBenefit benefit);
 void addWhileLICM(RewritePatternSet &patterns, bool hoist_all,
                   MLIRContext &context, PatternBenefit benefit);
+void addLoopUnswitch(RewritePatternSet &patterns, int64_t maxOpsOutside,
+                     MLIRContext &context, PatternBenefit benefit);
 void addSliceLICM(RewritePatternSet &patterns, bool single_user,
                   MLIRContext &context, PatternBenefit benefit);
 void addDotGeneralLICM(RewritePatternSet &patterns, bool single_user,
@@ -71,6 +77,12 @@ void addDUSLICM(RewritePatternSet &patterns, bool single_user,
                 MLIRContext &context, PatternBenefit benefit);
 void addPadLICM(RewritePatternSet &patterns, bool single_user,
                 MLIRContext &context, PatternBenefit benefit);
+void addRotateLICM(RewritePatternSet &patterns, bool single_user,
+                   MLIRContext &context, PatternBenefit benefit);
+void addWrapLICM(RewritePatternSet &patterns, bool single_user,
+                 MLIRContext &context, PatternBenefit benefit);
+void addExtendLICM(RewritePatternSet &patterns, bool single_user,
+                   MLIRContext &context, PatternBenefit benefit);
 void addElementwiseLICM(RewritePatternSet &patterns, bool single_user,
                         MLIRContext &context, PatternBenefit benefit);
 void addConcatenateLICM(RewritePatternSet &patterns, bool single_user,
@@ -81,6 +93,16 @@ void addReshapeLICM(RewritePatternSet &patterns, bool single_user,
                     MLIRContext &context, PatternBenefit benefit);
 void addTransposeLICM(RewritePatternSet &patterns, bool single_user,
                       MLIRContext &context, PatternBenefit benefit);
+void addConvolutionLICM(RewritePatternSet &patterns, bool single_user,
+                        MLIRContext &context, PatternBenefit benefit);
+void addDynamicSliceLICM(RewritePatternSet &patterns, bool single_user,
+                         MLIRContext &context, PatternBenefit benefit);
+void addScatterLICM(RewritePatternSet &patterns, bool single_user,
+                    MLIRContext &context, PatternBenefit benefit);
+void addGatherLICM(RewritePatternSet &patterns, bool single_user,
+                   MLIRContext &context, PatternBenefit benefit);
+void addIotaLICM(RewritePatternSet &patterns, bool single_user,
+                 MLIRContext &context, PatternBenefit benefit);
 void addBroadcastInDimSimplify(RewritePatternSet &patterns,
                                int64_t maxConstantExpansion,
                                MLIRContext &context, PatternBenefit benefit);
@@ -91,8 +113,15 @@ void addConcatenateOpCanon(RewritePatternSet &patterns,
                            PatternBenefit benefit);
 void addTransposeElementwise(RewritePatternSet &patterns, bool onlySingleUser,
                              MLIRContext &context, PatternBenefit benefit);
+void addTransposeLikeBroadcastElementwise(RewritePatternSet &patterns,
+                                          bool onlySingleUser,
+                                          MLIRContext &context,
+                                          PatternBenefit benefit);
 void addReshapeElementwise(RewritePatternSet &patterns, bool onlySingleUser,
                            MLIRContext &context, PatternBenefit benefit);
+void addReshapeElementwiseOnlyFusible(RewritePatternSet &patterns,
+                                      bool onlySingleUser, MLIRContext &context,
+                                      PatternBenefit benefit);
 void addReshapeSlice(RewritePatternSet &patterns, bool onlySingleUser,
                      MLIRContext &context, PatternBenefit benefit);
 void addReshapeDynamicSlice(RewritePatternSet &patterns, bool onlySingleUser,
@@ -113,5 +142,23 @@ void addSelfMulToConvolutionLike(RewritePatternSet &patterns,
                                  MLIRContext &context, PatternBenefit benefit);
 void addEnzymeHLOUnroll(RewritePatternSet &patterns, int64_t maxNumIterations,
                         MLIRContext &context, PatternBenefit benefit);
+void addMultiSliceLICM(RewritePatternSet &patterns, bool single_user,
+                       MLIRContext &context, PatternBenefit benefit);
+void addMultiRotateLICM(RewritePatternSet &patterns, bool single_user,
+                        MLIRContext &context, PatternBenefit benefit);
 
 } // namespace mlir::transform
+
+// Forward declarations for helper function
+namespace mlir {
+class PatternRewriter;
+
+namespace enzymexla {
+class MultiRotateOp;
+} // namespace enzymexla
+
+// Helper function to lower MultiRotateOp into individual RotateOps
+LogicalResult lowerMultiRotateToRotates(enzymexla::MultiRotateOp op,
+                                        PatternRewriter &rewriter);
+
+} // namespace mlir

@@ -1,0 +1,389 @@
+include:
+  - remote: 'https://gitlab.com/cscs-ci/recipes/-/raw/master/templates/v2/.ci-ext.yml'
+
+test-gb-25:
+  extends: .baremetal-runner-beverin-mi300
+  variables:
+    JULIA: /users/lraess/julia_amd/juliaup/julia-1.11.9+0.x64.linux.gnu/bin/julia
+    UENV: ab517d8a08f537d2
+    JULIA_PKG_SERVER_REGISTRY_PREFERENCE: conservative
+    JULIA_MAX_NUM_PRECOMPILE_FILES: 3
+    # Pinned configuration — expand into a matrix once the single case passes
+    REACTANT_COMMIT: main
+    GB25_COMMIT: main
+    FLOAT_TYPE: '--float-type=Float64'
+    # Slurm resource request
+    SLURM_JOB_NUM_NODES: 1
+    SLURM_NTASKS_PER_NODE: 1
+    SLURM_GPUS_PER_TASK: 4
+    SLURM_TIMELIMIT: "02:30:00"
+    # Paths — all under CI_PROJECT_DIR (scratch) to avoid touching user home/cache
+    REACTANT_DIR: "${CI_PROJECT_DIR}/Reactant.jl"
+    GB25_DIR: "${CI_PROJECT_DIR}/GB-25"
+    LOCAL_BIN: "${CI_PROJECT_DIR}/bin"
+    JULIA_DEPOT_PATH: "${CI_PROJECT_DIR}/.julia"    # overrides default ~/.julia
+    BAZELISK_HOME: "${CI_PROJECT_DIR}/.bazelisk"   # overrides default ~/.cache/bazelisk
+    BAZEL_OUTPUT_ROOT: "${CI_PROJECT_DIR}/.bazel"  # used by the bazel wrapper
+    # ROCm path — UENV-specific, update when the UENV hash changes.
+    # ROCM_PATH is overridden in the script to point at the overlay (view + MIOpen).
+    ROCM_PATH: "/user-environment/env/default"
+
+  script:
+    # Create all job-scoped directories up front
+    - mkdir -p "${LOCAL_BIN}" "${JULIA_DEPOT_PATH}" "${BAZELISK_HOME}" "${BAZEL_OUTPUT_ROOT}"
+
+    # Download bazelisk and create bazelisk/bazel wrappers that inject --output_user_root.
+    # build_local.jl calls `bazelisk` directly, so the wrapper must intercept that name.
+    # The wrapper aborts if BAZEL_OUTPUT_ROOT is unset or outside CI_PROJECT_DIR.
+    - |
+      curl -fsSL -o "${LOCAL_BIN}/bazelisk-real" \
+        https://github.com/bazelbuild/bazelisk/releases/latest/download/bazelisk-linux-amd64
+      chmod +x "${LOCAL_BIN}/bazelisk-real"
+      for CMD in bazelisk bazel; do
+        printf '#!/bin/bash\nset -euo pipefail\n' > "${LOCAL_BIN}/${CMD}"
+        printf 'if [[ -z "${BAZEL_OUTPUT_ROOT:-}" ]]; then\n' >> "${LOCAL_BIN}/${CMD}"
+        printf '  echo "ERROR: BAZEL_OUTPUT_ROOT is not set. Refusing to run (would write to ~/.cache/bazel)." >&2\n' >> "${LOCAL_BIN}/${CMD}"
+        printf '  exit 1\n' >> "${LOCAL_BIN}/${CMD}"
+        printf 'fi\n' >> "${LOCAL_BIN}/${CMD}"
+        printf 'if [[ "${BAZEL_OUTPUT_ROOT}" != "${CI_PROJECT_DIR}"* ]]; then\n' >> "${LOCAL_BIN}/${CMD}"
+        printf '  echo "ERROR: BAZEL_OUTPUT_ROOT (${BAZEL_OUTPUT_ROOT}) is not under CI_PROJECT_DIR (${CI_PROJECT_DIR})." >&2\n' >> "${LOCAL_BIN}/${CMD}"
+        printf '  exit 1\n' >> "${LOCAL_BIN}/${CMD}"
+        printf 'fi\n' >> "${LOCAL_BIN}/${CMD}"
+        printf 'exec "$(dirname "$0")/bazelisk-real" --output_user_root="${BAZEL_OUTPUT_ROOT}" "$@"\n' >> "${LOCAL_BIN}/${CMD}"
+        chmod +x "${LOCAL_BIN}/${CMD}"
+      done
+    - export PATH="${LOCAL_BIN}:${PATH}"
+    # Verify the wrappers are resolved first — catch misconfigured PATH early
+    - |
+      for CMD in bazelisk bazel; do
+        RESOLVED=$(command -v "${CMD}")
+        if [[ "${RESOLVED}" != "${LOCAL_BIN}/${CMD}" ]]; then
+          echo "ERROR: ${CMD} resolves to ${RESOLVED}, expected ${LOCAL_BIN}/${CMD}" >&2
+          exit 1
+        fi
+        echo "OK: ${CMD} -> ${RESOLVED}"
+      done
+
+    # Clone Reactant.jl and patch in the current Enzyme-JAX commit
+    - git clone --depth=1 --branch "${REACTANT_COMMIT}" https://github.com/EnzymeAD/Reactant.jl "${REACTANT_DIR}"
+    - sed -i 's/ENZYMEXLA_COMMIT = ".*"/ENZYMEXLA_COMMIT = "'"${CI_COMMIT_SHA}"'"/' "${REACTANT_DIR}/deps/ReactantExtra/WORKSPACE"
+    - grep ENZYMEXLA_COMMIT "${REACTANT_DIR}/deps/ReactantExtra/WORKSPACE"
+
+    # Instantiate the Reactant build environment (no GPU/UENV needed here)
+    - cd "${REACTANT_DIR}/deps" && ${JULIA} --project --color=yes -e 'using Pkg; Pkg.instantiate()'
+
+    # Generate build_reactant.sh; it runs later inside srun (where the UENV is
+    # mounted) and builds the ROCm overlay before invoking Bazel. Unquoted heredoc:
+    # CI_PROJECT_DIR/REACTANT_DIR/JULIA expand at write time, runtime shell vars use
+    # \$ escaping. Overlay design + all workarounds: see cscs-mi300.md.
+    - |
+      cat > "${CI_PROJECT_DIR}/build_reactant.sh" << BUILDSCRIPT
+      #!/bin/bash
+      set -euo pipefail
+      # Seed the overlay's include/ from the UENV view, but SKIP LLVM/clang toolchain
+      # headers: they shadow XLA's own LLVM/MLIR and miscompile ROCm targets (the
+      # shadow guard below enforces it). See cscs-mi300.md: "LLVM headers".
+      mkdir -p "${CI_PROJECT_DIR}/.rocm/include"
+      for f in /user-environment/env/default/include/*; do
+        [[ -e "\$f" ]] || continue
+        name="\$(basename "\$f")"
+        case "\${name}" in
+          llvm|llvm-c|mlir|mlir-c|clang|clang-c|lld|lldb|polly) continue ;;
+        esac
+        ln -sfn "\$f" "${CI_PROJECT_DIR}/.rocm/include/\${name}"
+      done
+      # MIOpen: separate spack package (not in the view), seed miopen/ from it.
+      for pkg in /user-environment/linux-zen3/miopen-hip-*/; do
+        [[ -f "\${pkg}include/miopen/version.h" ]] || continue
+        ln -sfn "\${pkg}include/miopen" "${CI_PROJECT_DIR}/.rocm/include/miopen"
+        export CPATH="\${pkg}include\${CPATH:+:\${CPATH}}"
+        break
+      done
+      # rocm-smi-lib: separate spack package needed by newer XLA (rocm_smi_util.cc).
+      # See cscs-mi300.md: "rocm-smi header".
+      if [[ ! -e "${CI_PROJECT_DIR}/.rocm/include/rocm_smi/rocm_smi.h" ]]; then
+        # well-known names first, then a header-gated scan of all spack packages
+        for pkg in /user-environment/linux-zen3/rocm-smi-lib-*/ \
+                   /user-environment/linux-zen3/rocm-smi-*/ \
+                   /user-environment/linux-zen3/*/; do
+          [[ -f "\${pkg}include/rocm_smi/rocm_smi.h" ]] || continue
+          ln -sfn "\${pkg}include/rocm_smi" "${CI_PROJECT_DIR}/.rocm/include/rocm_smi"
+          export CPATH="\${pkg}include\${CPATH:+:\${CPATH}}"
+          echo "rocm_smi -> \${pkg}include/rocm_smi"
+          break
+        done
+      fi
+      # NB: amdgcn is intentionally excluded — it must stay a real, writable dir for
+      # the device-bitcode block below. See cscs-mi300.md: "amdgcn must stay a real dir".
+      for d in lib64 share; do
+        [[ -e "/user-environment/env/default/\${d}" ]] && \
+          ln -sfn "/user-environment/env/default/\${d}" "${CI_PROJECT_DIR}/.rocm/\${d}"
+      done
+      # bin/ is a real dir (not a whole-dir symlink) so we can override clang/clang++
+      # with the resource-dir wrappers below (HIP invokes \${ROCM_PATH}/bin/clang++
+      # directly, bypassing PATH). See cscs-mi300.md: "clang wrapper + HIP_CLANG_PATH".
+      mkdir -p "${CI_PROJECT_DIR}/.rocm/bin"
+      for f in /user-environment/env/default/bin/*; do
+        [[ -e "\$f" ]] || continue
+        name="\$(basename "\$f")"
+        [[ -e "${CI_PROJECT_DIR}/.rocm/bin/\${name}" ]] || \
+          ln -sfn "\$f" "${CI_PROJECT_DIR}/.rocm/bin/\${name}"
+      done
+      # ROCm device bitcode must appear at BOTH \${ROCM_PATH}/amdgcn/bitcode (HIP
+      # clang default) and \${ROCM_PATH}/lib/llvm/amdgcn/bitcode (XLA genrule). Resolve
+      # the source dir (view or spack), then link both. See cscs-mi300.md: "Device bitcode".
+      DEVICE_LIB_DIR=""
+      if [[ -f "${CI_PROJECT_DIR}/.rocm/amdgcn/bitcode/ocml.bc" ]]; then
+        DEVICE_LIB_DIR="\$(dirname "\$(readlink -f "${CI_PROJECT_DIR}/.rocm/amdgcn/bitcode/ocml.bc")")"
+      else
+        for candidate in \
+          /user-environment/env/default/amdgcn/bitcode \
+          /user-environment/env/default/lib/llvm/lib/clang/*/amdgcn/bitcode \
+          /user-environment/env/default/lib/clang/*/amdgcn/bitcode \
+          /user-environment/linux-zen3/rocm-device-libs-*/amdgcn/bitcode \
+          /user-environment/linux-zen3/rocm-device-libs-*/lib/amdgcn/bitcode \
+          /user-environment/linux-zen3/llvm-amdgpu-*/lib/clang/*/amdgcn/bitcode; do
+          [[ -f "\${candidate}/ocml.bc" ]] || continue
+          DEVICE_LIB_DIR="\${candidate}"
+          break
+        done
+      fi
+      if [[ -n "\${DEVICE_LIB_DIR}" ]]; then
+        # Parents must be real, writable dirs: a symlink into the read-only view makes
+        # writing `bitcode` fail. Replace any such symlink (removing it never touches
+        # its target). See cscs-mi300.md: "amdgcn must stay a real dir".
+        for parent in "${CI_PROJECT_DIR}/.rocm/amdgcn" "${CI_PROJECT_DIR}/.rocm/lib/llvm/amdgcn"; do
+          [[ -L "\${parent}" ]] && rm -f "\${parent}"
+          mkdir -p "\${parent}"
+        done
+        # Now the bitcode entries live inside real dirs; drop any stale link/file.
+        rm -f "${CI_PROJECT_DIR}/.rocm/amdgcn/bitcode" "${CI_PROJECT_DIR}/.rocm/lib/llvm/amdgcn/bitcode"
+        ln -s "\${DEVICE_LIB_DIR}" "${CI_PROJECT_DIR}/.rocm/amdgcn/bitcode"
+        ln -s "\${DEVICE_LIB_DIR}" "${CI_PROJECT_DIR}/.rocm/lib/llvm/amdgcn/bitcode"
+        echo "amdgcn/bitcode -> \${DEVICE_LIB_DIR}"
+        echo "lib/llvm/amdgcn/bitcode -> \${DEVICE_LIB_DIR}"
+      else
+        echo "WARNING: ROCm device libraries not found; HIP compilation may fail"
+      fi
+      # lib/ uses per-file symlinks (rocm_configure references rocm_dist/lib/<name>,
+      # so lib64-only libs must appear here too), seeded from the view then spack.
+      mkdir -p "${CI_PROJECT_DIR}/.rocm/lib"
+      # Seed from view lib/ and lib64/
+      for subdir in lib lib64; do
+        for f in /user-environment/env/default/\${subdir}/*.so*; do
+          [[ -e "\$f" ]] || continue
+          name="\$(basename "\$f")"
+          [[ -e "${CI_PROJECT_DIR}/.rocm/lib/\${name}" ]] || \
+            ln -sfn "\$f" "${CI_PROJECT_DIR}/.rocm/lib/\${name}"
+        done
+      done
+      # Auto-fill from spack packages (lib/ and lib64/) for anything still missing
+      for pkg in /user-environment/linux-zen3/*/; do
+        for subdir in lib lib64; do
+          [[ -d "\${pkg}\${subdir}" ]] || continue
+          for item in "\${pkg}\${subdir}/"*.so*; do
+            [[ -e "\${item}" ]] || continue
+            name="\$(basename "\${item}")"
+            [[ -e "${CI_PROJECT_DIR}/.rocm/lib/\${name}" ]] || \
+              ln -sfn "\${item}" "${CI_PROJECT_DIR}/.rocm/lib/\${name}"
+          done
+        done
+      done
+      # Wrap the UENV clang so -print-resource-dir reports (and -resource-dir forces)
+      # an overlay path; otherwise Bazel sees an undeclared absolute include and the
+      # assembly compiles fail. See cscs-mi300.md: "clang wrapper + HIP_CLANG_PATH".
+      REAL_CLANG_BIN="\$(which clang 2>/dev/null || true)"
+      if [[ -n "\${REAL_CLANG_BIN}" && -x "\${REAL_CLANG_BIN}" ]]; then
+        REAL_CLANGXX_BIN="\$(dirname "\${REAL_CLANG_BIN}")/clang++"
+        [[ -x "\${REAL_CLANGXX_BIN}" ]] || REAL_CLANGXX_BIN="\${REAL_CLANG_BIN}"
+        REAL_RESOURCE_DIR="\$("\${REAL_CLANG_BIN}" -print-resource-dir)"
+        CLANG_RESOURCE_VERSION="\$(basename "\${REAL_RESOURCE_DIR}")"
+        OVERLAY_RESOURCE_DIR="${CI_PROJECT_DIR}/.rocm/llvm/lib/clang/\${CLANG_RESOURCE_VERSION}"
+        mkdir -p "${CI_PROJECT_DIR}/.rocm/llvm/bin" "\$(dirname "\${OVERLAY_RESOURCE_DIR}")"
+        rm -rf "\${OVERLAY_RESOURCE_DIR}"
+        cp -a "\${REAL_RESOURCE_DIR}" "\${OVERLAY_RESOURCE_DIR}"
+        printf '#!/bin/bash\n' > "${CI_PROJECT_DIR}/.rocm/llvm/bin/clang"
+        printf 'if [[ "\$#" -eq 1 && "\$1" == "-print-resource-dir" ]]; then\n' >> "${CI_PROJECT_DIR}/.rocm/llvm/bin/clang"
+        printf '  printf "%%s\\n" "%s"\n' "\${OVERLAY_RESOURCE_DIR}" >> "${CI_PROJECT_DIR}/.rocm/llvm/bin/clang"
+        printf '  exit 0\n' >> "${CI_PROJECT_DIR}/.rocm/llvm/bin/clang"
+        printf 'fi\n' >> "${CI_PROJECT_DIR}/.rocm/llvm/bin/clang"
+        printf 'args=()\n' >> "${CI_PROJECT_DIR}/.rocm/llvm/bin/clang"
+        printf 'for arg in "\$@"; do\n' >> "${CI_PROJECT_DIR}/.rocm/llvm/bin/clang"
+        printf '  if [[ "\${arg}" == "-fuse-ld=gold" ]]; then\n' >> "${CI_PROJECT_DIR}/.rocm/llvm/bin/clang"
+        printf '    args+=("-fuse-ld=lld")\n' >> "${CI_PROJECT_DIR}/.rocm/llvm/bin/clang"
+        printf '  else\n' >> "${CI_PROJECT_DIR}/.rocm/llvm/bin/clang"
+        printf '    args+=("\${arg}")\n' >> "${CI_PROJECT_DIR}/.rocm/llvm/bin/clang"
+        printf '  fi\n' >> "${CI_PROJECT_DIR}/.rocm/llvm/bin/clang"
+        printf 'done\n' >> "${CI_PROJECT_DIR}/.rocm/llvm/bin/clang"
+        printf 'exec "%s" -resource-dir "%s" "\${args[@]}"\n' \
+          "\${REAL_CLANG_BIN}" "\${OVERLAY_RESOURCE_DIR}" >> "${CI_PROJECT_DIR}/.rocm/llvm/bin/clang"
+        chmod +x "${CI_PROJECT_DIR}/.rocm/llvm/bin/clang"
+        printf '#!/bin/bash\n' > "${CI_PROJECT_DIR}/.rocm/llvm/bin/clang++"
+        printf 'if [[ "\$#" -eq 1 && "\$1" == "-print-resource-dir" ]]; then\n' >> "${CI_PROJECT_DIR}/.rocm/llvm/bin/clang++"
+        printf '  printf "%%s\\n" "%s"\n' "\${OVERLAY_RESOURCE_DIR}" >> "${CI_PROJECT_DIR}/.rocm/llvm/bin/clang++"
+        printf '  exit 0\n' >> "${CI_PROJECT_DIR}/.rocm/llvm/bin/clang++"
+        printf 'fi\n' >> "${CI_PROJECT_DIR}/.rocm/llvm/bin/clang++"
+        printf 'args=()\n' >> "${CI_PROJECT_DIR}/.rocm/llvm/bin/clang++"
+        printf 'for arg in "\$@"; do\n' >> "${CI_PROJECT_DIR}/.rocm/llvm/bin/clang++"
+        printf '  if [[ "\${arg}" == "-fuse-ld=gold" ]]; then\n' >> "${CI_PROJECT_DIR}/.rocm/llvm/bin/clang++"
+        printf '    args+=("-fuse-ld=lld")\n' >> "${CI_PROJECT_DIR}/.rocm/llvm/bin/clang++"
+        printf '  else\n' >> "${CI_PROJECT_DIR}/.rocm/llvm/bin/clang++"
+        printf '    args+=("\${arg}")\n' >> "${CI_PROJECT_DIR}/.rocm/llvm/bin/clang++"
+        printf '  fi\n' >> "${CI_PROJECT_DIR}/.rocm/llvm/bin/clang++"
+        printf 'done\n' >> "${CI_PROJECT_DIR}/.rocm/llvm/bin/clang++"
+        printf 'exec "%s" -resource-dir "%s" "\${args[@]}"\n' \
+          "\${REAL_CLANGXX_BIN}" "\${OVERLAY_RESOURCE_DIR}" >> "${CI_PROJECT_DIR}/.rocm/llvm/bin/clang++"
+        chmod +x "${CI_PROJECT_DIR}/.rocm/llvm/bin/clang++"
+        # Override \${ROCM_PATH}/bin/clang{,++} so HIP compiles use the wrappers.
+        ln -sfn "${CI_PROJECT_DIR}/.rocm/llvm/bin/clang" "${CI_PROJECT_DIR}/.rocm/bin/clang"
+        ln -sfn "${CI_PROJECT_DIR}/.rocm/llvm/bin/clang++" "${CI_PROJECT_DIR}/.rocm/bin/clang++"
+        CLANG_BIN="${CI_PROJECT_DIR}/.rocm/llvm/bin/clang"
+        CLANGXX_BIN="${CI_PROJECT_DIR}/.rocm/llvm/bin/clang++"
+        export PATH="${CI_PROJECT_DIR}/.rocm/llvm/bin:\${PATH}"
+        # HIP .cu.cc compiles go through hipcc, which finds clang via HIP_CLANG_PATH;
+        # point it at the wrapper dir so those funnel through the wrapper too.
+        export HIP_CLANG_PATH="${CI_PROJECT_DIR}/.rocm/llvm/bin"
+      else
+        echo "ERROR: clang not found in PATH; llvm/bin/clang wrapper not created" >&2
+        exit 1
+      fi
+      # Overlay sanity check (compact, always-on): key headers + device bitcode.
+      echo "=== ROCm overlay check ==="
+      for f in rocm-core/rocm_version.h hip/hip_version.h miopen/version.h \
+               rocblas/internal/rocblas-version.h rocrand/rocrand_version.h \
+               rocfft/rocfft-version.h hipfft/hipfft-version.h \
+               roctracer/roctracer.h hipsparse/hipsparse-version.h \
+               hipsolver/internal/hipsolver-version.h rocsolver/rocsolver-version.h \
+               rocm_smi/rocm_smi.h; do
+        [[ -e "${CI_PROJECT_DIR}/.rocm/include/\${f}" ]] && echo "  ok   \${f}" || echo "  MISS \${f}"
+      done
+      for b in amdgcn/bitcode/ocml.bc lib/llvm/amdgcn/bitcode/ocml.bc; do
+        [[ -e "${CI_PROJECT_DIR}/.rocm/\${b}" ]] && echo "  ok   \${b}" || echo "  MISS \${b}"
+      done
+      # Functional guard (not just diagnostic): LLVM/clang headers in the overlay
+      # miscompile ROCm targets. See cscs-mi300.md: "LLVM headers".
+      for d in llvm mlir clang; do
+        [[ -e "${CI_PROJECT_DIR}/.rocm/include/\${d}" ]] && \
+          { echo "FATAL: overlay include/\${d} shadows XLA's LLVM/MLIR" >&2; exit 1; }
+      done
+      # Curate reactant_libs/ for run_julia.sh: overlay ROCm libs minus any soname
+      # Julia bundles (else its old libcurl/libstdc++ shadow Julia's and break Pkg,
+      # "curl_easy_setopt: 48"). See cscs-mi300.md: "Curated runtime libs".
+      JULIA_LIBDIR="\$(dirname "\$(dirname "${JULIA}")")/lib/julia"
+      CURATED="${CI_PROJECT_DIR}/.rocm/reactant_libs"
+      rm -rf "\${CURATED}"; mkdir -p "\${CURATED}"
+      shopt -s nullglob
+      for f in "${CI_PROJECT_DIR}/.rocm/lib/"*.so*; do
+        [[ -e "\$f" ]] || continue
+        base="\$(basename "\$f")"
+        stem="\${base%%.so*}"
+        # skip if Julia bundles any version of this soname (avoid shadowing)
+        jmatch=("\${JULIA_LIBDIR}/\${stem}".so*)
+        (( \${#jmatch[@]} )) && continue
+        ln -sfn "\$f" "\${CURATED}/\${base}"
+      done
+      shopt -u nullglob
+      echo "  curated \$(ls -1 "\${CURATED}" 2>/dev/null | wc -l) runtime libs"
+      echo "========================="
+      # --extraopt passes overlay/toolchain settings to rocm_configure without editing
+      # the checked-in .bazelrc. TF_ROCM_AMDGPU_TARGETS also suppresses
+      # rocm_agent_enumerator (which needs a GPU srun).
+      cd "${REACTANT_DIR}/deps" && ${JULIA} --project --color=yes -O0 build_local.jl \
+        --cc=clang --gcc_host_compiler_path= \
+        --extraopt="--repo_env=ROCM_PATH=${CI_PROJECT_DIR}/.rocm" \
+        --extraopt="--repo_env=TF_ROCM_AMDGPU_TARGETS=gfx942" \
+        --extraopt="--action_env=PATH=${CI_PROJECT_DIR}/.rocm/llvm/bin:\${PATH}" \
+        --extraopt="--action_env=HIP_CLANG_PATH=${CI_PROJECT_DIR}/.rocm/llvm/bin" \
+        --extraopt="--action_env=CLANGXX_COMPILER_PATH=\${CLANGXX_BIN}" \
+        --extraopt="--linkopt=-fuse-ld=lld" \
+        --extraopt="--host_linkopt=-fuse-ld=lld" \
+        --extraopt="--action_env=CLANG_COMPILER_PATH=\${CLANG_BIN}"
+      BUILDSCRIPT
+      chmod +x "${CI_PROJECT_DIR}/build_reactant.sh"
+
+    # Build libReactant — the script creates the ROCm overlay then invokes Bazel
+    - srun -n 1 --export=ALL --uenv "${UENV}" --view=default "${CI_PROJECT_DIR}/build_reactant.sh"
+
+    # Generate run_julia.sh: launches Julia with LD_LIBRARY_PATH = curated ROCm libs
+    # so libReactantExtra.so's deps dlopen at load time. Every Reactant-loading Julia
+    # step (precompile + sims) uses it INSIDE `srun --uenv`. Quoted heredoc: vars
+    # resolve at run time. See cscs-mi300.md: "run_julia.sh".
+    - |
+      cat > "${CI_PROJECT_DIR}/run_julia.sh" << 'RUNSCRIPT'
+      #!/bin/bash
+      set -euo pipefail
+      # Curated dir ONLY — not the inherited view LD_LIBRARY_PATH (its old libcurl/
+      # libstdc++ would shadow Julia's). See cscs-mi300.md: "Curated runtime libs".
+      export LD_LIBRARY_PATH="${CI_PROJECT_DIR}/.rocm/reactant_libs"
+      exec "${JULIA}" "$@"
+      RUNSCRIPT
+      chmod +x "${CI_PROJECT_DIR}/run_julia.sh"
+
+    # Clone GB-25 and set up its Julia environment
+    - git clone --depth=1 --branch "${GB25_COMMIT}" https://github.com/PRONTOLab/GB-25 "${GB25_DIR}"
+    - cp "${REACTANT_DIR}/LocalPreferences.toml" "${GB25_DIR}/LocalPreferences.toml"
+    # Runs inside srun so /user-environment is mounted and libReactantExtra.so's
+    # ROCm deps resolve while Pkg precompiles Reactant.
+    - |
+      srun -n 1 --export=ALL --uenv "${UENV}" --view=default \
+        "${CI_PROJECT_DIR}/run_julia.sh" --project="${GB25_DIR}" --color=yes -e "
+        using Pkg
+        Pkg.add([
+            PackageSpec(; name=\"ReactantCore\", rev=\"${REACTANT_COMMIT}\"),
+            PackageSpec(; name=\"Reactant\",     rev=\"${REACTANT_COMMIT}\"),
+        ])
+        Pkg.instantiate()
+        Pkg.gc()"
+
+    # Compile the GB-25 simulation
+    - |
+      srun -n 1 --export=ALL --uenv "${UENV}" --view=default \
+        timeout 29m \
+        "${CI_PROJECT_DIR}/run_julia.sh" --color=yes --project="${GB25_DIR}" -O0 --startup-file=no --threads=16 \
+          --compiled-modules=strict \
+          "${GB25_DIR}/sharding/sharded_baroclinic_instability_simulation_compile.jl" \
+          ${FLOAT_TYPE}
+
+    # Check remaining collective operations against thresholds (copied from A100 case; calibrate for MI300)
+    - |
+      cd "${GB25_DIR}"
+      OK="true"
+      ALL_TO_ALL_THRESHOLD=1000
+      ALL_GATHER_THRESHOLD=1000
+      ALL_REDUCE_THRESHOLD=1000
+      COLLECTIVE_PERMUTE_THRESHOLD=29900  # TODO: calibrate for MI300
+
+      for OP in "all-to-all" "all-gather" "all-reduce" "%collective-permute-start.* ="; do
+          COLLECTIVES=$(find . -name 'optimised_sharded_baroclinic_instability*.xla' \
+              -exec grep --with-filename --line-number --extended-regexp "${OP}" '{}' \; | sort)
+          NUM_COLLECTIVES=$(echo "${COLLECTIVES}" | grep -c . || true)
+          if [[ -n "${COLLECTIVES}" ]]; then
+              echo "Found ${NUM_COLLECTIVES} remaining '${OP}' operations"
+              echo "${COLLECTIVES}"
+              if [[ "${OP}" == "all-to-all" && ${NUM_COLLECTIVES} -gt ${ALL_TO_ALL_THRESHOLD}           ]] || \
+                 [[ "${OP}" == "all-gather" && ${NUM_COLLECTIVES} -gt ${ALL_GATHER_THRESHOLD}           ]] || \
+                 [[ "${OP}" == "all-reduce" && ${NUM_COLLECTIVES} -gt ${ALL_REDUCE_THRESHOLD}           ]] || \
+                 [[ "${OP}" =~ "collective-permute" && ${NUM_COLLECTIVES} -gt ${COLLECTIVE_PERMUTE_THRESHOLD} ]]; then
+                  OK="false"
+              fi
+          fi
+      done
+      [[ "${OK}" == "true" ]] || exit 1
+
+    # Run the GB-25 simulation
+    - |
+      srun -n 1 --export=ALL --uenv "${UENV}" --view=default \
+        timeout 59m \
+        "${CI_PROJECT_DIR}/run_julia.sh" --color=yes --project="${GB25_DIR}" -O0 --startup-file=no --threads=16 \
+          --compiled-modules=strict \
+          "${GB25_DIR}/sharding/sharded_baroclinic_instability_simulation_run.jl" \
+          ${FLOAT_TYPE}
+
+    # Test correctness
+    - |
+      srun -n 1 --export=ALL --uenv "${UENV}" --view=default \
+        timeout 19m \
+        "${CI_PROJECT_DIR}/run_julia.sh" --color=yes --project="${GB25_DIR}" -O0 --startup-file=no --threads=16 \
+          --compiled-modules=strict \
+          "${GB25_DIR}/correctness/correctness_sharded_baroclinic_instability_simulation_run.jl" \
+          ${FLOAT_TYPE}

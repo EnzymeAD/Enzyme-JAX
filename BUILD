@@ -35,7 +35,6 @@ py_package(
 cc_binary(
     name = "enzymexlamlir-opt",
     srcs = [
-        "//src/enzyme_ad/jax:RegistryUtils.cpp",
         "//src/enzyme_ad/jax:enzymexlamlir-opt.cpp",
     ],
     copts = [
@@ -45,10 +44,13 @@ cc_binary(
     visibility = ["//visibility:public"],
     deps = [
         "//src/enzyme_ad/jax:RegistryUtils",
+        "@stablehlo//stablehlo/tests:check_ops",
+        "@stablehlo//:interpreter_ops",
         "@llvm-project//mlir:GPUToLLVMIRTranslation",
         "@llvm-project//mlir:LLVMToLLVMIRTranslation",
         "@llvm-project//mlir:MlirOptLib",
         "@llvm-project//mlir:NVVMToLLVMIRTranslation",
+        "@llvm-project//mlir:Transforms",
         "@tsl//tsl/platform:env",
         "@tsl//tsl/platform:env_impl",
     ] + if_llvm_aarch32_available([
@@ -69,11 +71,35 @@ cc_binary(
     ]),
 )
 
+alias(
+    name = "enzymexla-registry",
+    actual = "//src/enzyme_ad/jax:RegistryUtils",
+    visibility = ["//visibility:public"],
+)
+
+cc_binary(
+    name = "enzymexla-lsp-server",
+    srcs = ["//src/enzyme_ad/tools:EnzymeXLALspServerMain.cpp"],
+    copts = [
+        "-Wno-unused-variable",
+        "-Wno-return-type",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//src/enzyme_ad/jax:RegistryUtils",
+        "@llvm-project//mlir:MlirLspServerLib",
+        "@stablehlo//:interpreter_ops",
+        "@stablehlo//stablehlo/tests:check_ops",
+    ],
+)
+
 cc_library(
     name = "RaiseLib",
     srcs = [
-        "//src/enzyme_ad/jax:RegistryUtils.cpp",
         "//src/enzyme_ad/jax:raise.cpp",
+    ],
+    hdrs = [
+        "//src/enzyme_ad/jax:raise.h",
     ],
     copts = [
         "-Wno-unused-variable",
@@ -163,8 +189,8 @@ py_wheel(
     python_tag = "py" + HERMETIC_PYTHON_VERSION.replace(".", ""),
     requires = [
         "absl_py >= 2.0.0",
-        "jax >= 0.4.21",
-        "jaxlib >= 0.4.21",
+        "jax >= 0.8.0",
+        "jaxlib >= 0.8.0",
     ],
     strip_path_prefixes = ["src/"],
     summary = "Enzyme automatic differentiation tool.",

@@ -3,6 +3,8 @@ package(
     features = ["layering_check"],
 )
 
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+
 cc_library(
     name = "Isl",
     srcs = [

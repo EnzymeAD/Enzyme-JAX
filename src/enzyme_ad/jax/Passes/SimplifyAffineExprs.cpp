@@ -27,6 +27,7 @@
 #include <isl/space.h>
 #include <isl/space_type.h>
 #include <isl/val.h>
+#include <optional>
 
 extern "C" {
 #include <isl_ast_build_expr.h>
@@ -91,16 +92,23 @@ static LogicalResult addAffineIfOpDomain(AffineIfOp ifOp, bool isElse,
   SmallVector<Value> operands(ifOp.getOperands());
   canonicalizeSetAndOperands(&set, &operands);
 
-  // Create the base constraints from the integer set attached to ifOp.
-  FlatAffineValueConstraints cst(set, operands);
+  // Create the base constraints from the integer set attached to ifOp. This
+  // fails for semi-affine sets, which cannot be flattened.
+  FailureOr<FlatAffineValueConstraints> cst =
+      FlatAffineValueConstraints::create(set, operands);
+  if (failed(cst)) {
+    LLVM_DEBUG(llvm::dbgs()
+               << "semi-affine integer sets in 'affine.if' not supported\n");
+    return failure();
+  }
 
   if (!isElse) {
-    domain->mergeAndAlignVarsWithOther(0, &cst);
-    domain->append(cst);
+    domain->mergeAndAlignVarsWithOther(0, &*cst);
+    domain->append(*cst);
     return success();
   }
 
-  presburger::PresburgerRelation pr(cst);
+  presburger::PresburgerRelation pr(*cst);
   pr = pr.complement();
   if (pr.getNumDisjuncts() > 1) {
     // TODO: we can turn the domain into a PresburgerSet that supports
@@ -111,7 +119,7 @@ static LogicalResult addAffineIfOpDomain(AffineIfOp ifOp, bool isElse,
   }
 
   FlatLinearValueConstraints flvc(
-      presburger::IntegerPolyhedron(pr.getDisjunct(0)), cst.getMaybeValues());
+      presburger::IntegerPolyhedron(pr.getDisjunct(0)), cst->getMaybeValues());
 
   domain->mergeAndAlignVarsWithOther(0, &flvc);
   domain->append(flvc);
@@ -271,8 +279,41 @@ struct AffineExprToIslAffConverter {
 
 AffineExpr internalAdd(AffineExpr LHS, AffineExpr RHS, bool allownegate = true);
 
+// Decompose `term` into (body, coeff) such that term == body * coeff.
+static std::pair<AffineExpr, int64_t> decomposeMulByConst(AffineExpr term) {
+  if (auto bin = dyn_cast<AffineBinaryOpExpr>(term))
+    if (bin.getKind() == AffineExprKind::Mul)
+      if (auto cst = dyn_cast<AffineConstantExpr>(bin.getRHS()))
+        return {bin.getLHS(), cst.getValue()};
+  return {term, 1};
+}
+
+// Fold the implicit remainder c*e + (-c*k)*(e floordiv k) to (e mod k) * c.
+// This is a pure integer identity, valid for any e and constants c, k > 1.
+static std::optional<AffineExpr> tryFoldImplicitMod(AffineExpr A,
+                                                    AffineExpr B) {
+  for (int i = 0; i < 2; i++) {
+    auto [e, c] = decomposeMulByConst(i == 0 ? A : B);
+    auto [divBody, divCoeff] = decomposeMulByConst(i == 0 ? B : A);
+    auto div = dyn_cast<AffineBinaryOpExpr>(divBody);
+    if (!div || div.getKind() != AffineExprKind::FloorDiv)
+      continue;
+    auto kCst = dyn_cast<AffineConstantExpr>(div.getRHS());
+    if (!kCst || kCst.getValue() < 2)
+      continue;
+    if (div.getLHS() != e)
+      continue;
+    if (divCoeff != -c * kCst.getValue())
+      continue;
+    return (e % kCst.getValue()) * c;
+  }
+  return std::nullopt;
+}
+
 AffineExpr commonAddWithMul(AffineExpr LHS, AffineExpr RHS,
                             bool allownegate = true) {
+  if (auto folded = tryFoldImplicitMod(LHS, RHS))
+    return *folded;
   auto lhsD = llvm::DynamicAPInt(LHS.getLargestKnownDivisor());
   auto rhsD = llvm::DynamicAPInt(RHS.getLargestKnownDivisor());
   auto gcd = llvm::int64fromDynamicAPInt(llvm::gcd(abs(lhsD), abs(rhsD)));
@@ -856,6 +897,11 @@ isl_set *IslAnalysis::getDomain(Operation *op) {
   return domain;
 }
 
+std::tuple<isl_set *, FlatAffineValueConstraints>
+IslAnalysis::getDomainAndValueConstraints(Operation *op) {
+  return ::getDomain(ctx, op);
+}
+
 std::optional<SmallVector<isl_aff *>> IslAnalysis::getAffExprs(Operation *op) {
   return getAffExprs(op, getAVM(op));
 }
@@ -869,18 +915,12 @@ IslAnalysis::IslAnalysis() {
 
 IslAnalysis::~IslAnalysis() { isl_ctx_free(ctx); }
 
-template <typename T>
-LogicalResult handleAffineOp(IslAnalysis &islAnalysis, T access) {
+std::optional<AffineMap> handleAffineValueMap(IslAnalysis &islAnalysis,
+                                              AffineValueMap avm,
+                                              isl_set *domain,
+                                              FlatAffineValueConstraints cst) {
   isl_ctx *ctx = islAnalysis.getCtx();
-  LLVM_DEBUG(llvm::dbgs() << "Got domain\n");
-  auto [domain, cst] = ::getDomain(ctx, access, true);
-  if (!domain)
-    return failure();
-  LLVM_DEBUG(isl_set_dump(domain));
-  LLVM_DEBUG(cst.dump());
-  AffineMap map = access.getMap();
-  AffineValueMap avm(map, access.getMapOperands(), {});
-
+  AffineMap map = avm.getAffineMap();
   LLVM_DEBUG(llvm::dbgs() << "Mapping dims:\n");
   PosMapTy dimPosMap;
   PosMapTy dimPosMapReverse;
@@ -904,7 +944,7 @@ LogicalResult handleAffineOp(IslAnalysis &islAnalysis, T access) {
     // this is not the case for symbols. We do not handle that case correctly
     // currently, thus we abort early.
     domain = isl_set_free(domain);
-    return failure();
+    return {};
   }
 
   bool changed = false;
@@ -941,8 +981,8 @@ LogicalResult handleAffineOp(IslAnalysis &islAnalysis, T access) {
   isl_local_space *ls = isl_local_space_from_space(isl_space_copy(space));
   space = isl_space_free(space);
   AffineExprToIslAffConverter m2i{dimPosMap, symPosMap, ls, ctx};
-  IslToAffineExprConverter i2m{access->getContext(), symOffset,
-                               dimPosMapReverse, symPosMapReverse};
+  IslToAffineExprConverter i2m{map.getContext(), symOffset, dimPosMapReverse,
+                               symPosMapReverse};
   SmallVector<AffineExpr> newExprs;
   for (unsigned i = 0; i < map.getNumResults(); i++) {
     AffineExpr mlirExpr = map.getResult(i);
@@ -968,16 +1008,58 @@ LogicalResult handleAffineOp(IslAnalysis &islAnalysis, T access) {
   build = isl_ast_build_free(build);
 
   if (!changed)
-    return failure();
+    return std::nullopt;
 
   AffineMap newMap = AffineMap::get(map.getNumDims(), map.getNumSymbols(),
-                                    newExprs, access->getContext());
+                                    newExprs, map.getContext());
   newMap = mlir::enzyme::recreateExpr(newMap);
 
   if (map == newMap)
+    return {};
+
+  return newMap;
+}
+
+template <typename T>
+LogicalResult handleAffineAccessOp(IslAnalysis &islAnalysis, T access) {
+  isl_ctx *ctx = islAnalysis.getCtx();
+  LLVM_DEBUG(llvm::dbgs() << "Got domain\n");
+  auto [domain, cst] = ::getDomain(ctx, access, true);
+  if (!domain)
+    return failure();
+  LLVM_DEBUG(isl_set_dump(domain));
+  LLVM_DEBUG(cst.dump());
+  AffineMap map = access.getMap();
+  AffineValueMap avm(map, access.getMapOperands(), {});
+
+  auto newMap = handleAffineValueMap(islAnalysis, avm, domain, cst);
+  if (!newMap)
     return failure();
 
-  access.setMap(newMap);
+  access.setMap(*newMap);
+  return success();
+}
+
+LogicalResult handleAffineIfOp(IslAnalysis &islAnalysis, AffineIfOp ifOp) {
+  isl_ctx *ctx = islAnalysis.getCtx();
+  LLVM_DEBUG(llvm::dbgs() << "Got domain\n");
+  auto [domain, cst] = ::getDomain(ctx, ifOp, true);
+  if (!domain)
+    return failure();
+  LLVM_DEBUG(isl_set_dump(domain));
+  LLVM_DEBUG(cst.dump());
+  IntegerSet set = ifOp.getCondition();
+  auto csts = set.getConstraints();
+  AffineMap map = AffineMap::get(set.getNumDims(), set.getNumSymbols(), csts,
+                                 ifOp.getContext());
+  AffineValueMap avm(map, ifOp.getOperands(), {});
+  auto newMap = handleAffineValueMap(islAnalysis, avm, domain, cst);
+  if (!newMap)
+    return failure();
+
+  IntegerSet newSet = IntegerSet::get(set.getNumDims(), set.getNumSymbols(),
+                                      newMap->getResults(), set.getEqFlags());
+  ifOp.setCondition(newSet);
   return success();
 }
 
@@ -991,13 +1073,15 @@ struct SimplifyAffineExprsPass
     Operation *op = getOperation();
     op->walk([&](Operation *op) {
       if (auto cop = dyn_cast<AffineLoadOp>(op))
-        (void)handleAffineOp(ia, cop);
+        (void)handleAffineAccessOp(ia, cop);
       else if (auto cop = dyn_cast<AffineStoreOp>(op))
-        (void)handleAffineOp(ia, cop);
+        (void)handleAffineAccessOp(ia, cop);
       else if (auto cop = dyn_cast<AffineVectorLoadOp>(op))
-        (void)handleAffineOp(ia, cop);
+        (void)handleAffineAccessOp(ia, cop);
       else if (auto cop = dyn_cast<AffineVectorStoreOp>(op))
-        (void)handleAffineOp(ia, cop);
+        (void)handleAffineAccessOp(ia, cop);
+      else if (auto cop = dyn_cast<AffineIfOp>(op))
+        (void)handleAffineIfOp(ia, cop);
     });
 
     op->walk([=](AffineIfOp affineOp) {
@@ -1017,7 +1101,18 @@ struct SimplifyAccessAffineExprs : public OpRewritePattern<T> {
       : OpRewritePattern<T>(&context), islAnalysis(islAnalysis) {}
   LogicalResult matchAndRewrite(T access,
                                 PatternRewriter &rewriter) const override {
-    return handleAffineOp(islAnalysis, access);
+    return handleAffineAccessOp(islAnalysis, access);
+  }
+};
+
+struct SimplifyIfAffineExprs : public OpRewritePattern<AffineIfOp> {
+  using OpRewritePattern<AffineIfOp>::OpRewritePattern;
+  IslAnalysis &islAnalysis;
+  SimplifyIfAffineExprs(MLIRContext &context, IslAnalysis &islAnalysis)
+      : OpRewritePattern<AffineIfOp>(&context), islAnalysis(islAnalysis) {}
+  LogicalResult matchAndRewrite(AffineIfOp op,
+                                PatternRewriter &rewriter) const override {
+    return handleAffineIfOp(islAnalysis, op);
   }
 };
 
@@ -1028,7 +1123,8 @@ void mlir::populateAffineExprSimplificationPatterns(
     SimplifyAccessAffineExprs<affine::AffineLoadOp>,
     SimplifyAccessAffineExprs<affine::AffineStoreOp>,
     SimplifyAccessAffineExprs<affine::AffineVectorLoadOp>,
-    SimplifyAccessAffineExprs<affine::AffineVectorStoreOp>
+    SimplifyAccessAffineExprs<affine::AffineVectorStoreOp>,
+    SimplifyIfAffineExprs
   >(*patterns.getContext(), islAnalysis);
   // clang-format on
 }

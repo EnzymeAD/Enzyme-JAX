@@ -36,7 +36,7 @@ module {
 // CHECK-NEXT:       stablehlo.return %2 : tensor<i1>
 // CHECK-NEXT:     } do {
 // CHECK-NEXT:       %2 = stablehlo.multiply %iterArg_2, %cst : tensor<f64>
-// CHECK-NEXT:       %3 = stablehlo.add %iterArg, %c_0 : tensor<i64>
+// CHECK-NEXT:       %3 = stablehlo.add %iterArg, %c_0 {enzymexla.bounds = {{\[}}[1, 3]{{\]}}} : tensor<i64>
 // CHECK-NEXT:       stablehlo.return %3, %2 : tensor<i64>, tensor<f64>
 // CHECK-NEXT:     }
 // CHECK-NEXT:     %1 = stablehlo.add %0#1, %cst : tensor<f64>

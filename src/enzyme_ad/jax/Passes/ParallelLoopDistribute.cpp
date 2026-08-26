@@ -64,6 +64,13 @@ static bool couldWrite(Operation *op) {
   return true;
 }
 
+// Internal linkage: Enzyme's RemovalUtils.cpp declares an unrelated
+// `struct Node` at global scope. Two distinct definitions of the same
+// name would be an ODR violation, and the linker would silently pick one
+// COMDAT copy of `Node::Node()` (and of every `std::deque<Node>` member)
+// for both, corrupting the stack of whichever translation unit lost.
+namespace {
+
 struct Node {
   Operation *O;
   Value V;
@@ -114,6 +121,8 @@ void dump(Graph &G) {
     }
   }
 }
+
+} // namespace
 
 /* Returns true if there is a path from source 's' to sink 't' in
    residual graph. Also fills parent[] to store the path */
@@ -477,9 +486,8 @@ static void minCutCache(enzymexla::BarrierOp barrier,
     todo.push_back(Node(V));
 
   while (todo.size()) {
-    auto N = todo.front();
+    // auto N = todo.front();
     todo.pop_front();
-    auto found = Orig.find(N);
     // TODO
     break;
   }
@@ -792,7 +800,6 @@ splitSubLoop(affine::AffineParallelOp op, PatternRewriter &rewriter,
   SmallVector<AffineMap> innerLower;
   SmallVector<AffineMap> innerUpper;
   SmallVector<int64_t> innerStep;
-  unsigned idx = 0;
   for (auto en : llvm::enumerate(
            llvm::zip(op.getBody()->getArguments(), op.getSteps()))) {
     bool found = false;
@@ -808,7 +815,6 @@ splitSubLoop(affine::AffineParallelOp op, PatternRewriter &rewriter,
       outerUpper.push_back(op.getUpperBoundsMap().getSliceMap(en.index(), 1));
       outerStep.push_back(std::get<1>(en.value()));
     }
-    idx++;
   }
   if (!innerLower.size())
     return failure();
@@ -1434,7 +1440,6 @@ static void insertRecomputables(PatternRewriter &rewriter, T oldParallel,
 template <typename T, typename IfType>
 static void moveBodiesIf(PatternRewriter &rewriter, T op, IfType ifOp,
                          IfType newIf) {
-  rewriter.startOpModification(op);
   {
     OpBuilder::InsertionGuard guard(rewriter);
     rewriter.setInsertionPointToStart(getThenBlock(newIf));
@@ -1491,7 +1496,6 @@ static void moveBodiesIf(PatternRewriter &rewriter, T op, IfType ifOp,
 
   rewriter.eraseOp(ifOp);
   rewriter.eraseOp(op);
-  rewriter.finalizeOpModification(op);
 }
 
 mlir::OperandRange getLowerBounds(scf::ParallelOp op,
@@ -2278,7 +2282,7 @@ struct DistributeIfAroundBarrier : public OpRewritePattern<IfOpType> {
               recalculateVal(res);
 
       if (op->getBlock() == ifOp->getBlock())
-        auto cloned = rewriter.clone(*op, mapping);
+        rewriter.clone(*op, mapping);
       else
         for (Value v : op->getResults())
           mapping.map(v, v);
@@ -2924,8 +2928,9 @@ struct SCFCPUifyPass : public enzyme::impl::SCFCPUifyBase<SCFCPUifyPass> {
         //  config.maxIterations = 142;
         mlir::GreedyRewriteConfig config;
         config.setMaxIterations(142);
-        if (failed(applyPatternsAndFoldGreedily(getOperation(),
-                                                std::move(patterns), config))) {
+        config.enableFolding();
+        if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
+                                         config))) {
           signalPassFailure();
           return;
         }
@@ -2933,9 +2938,10 @@ struct SCFCPUifyPass : public enzyme::impl::SCFCPUifyBase<SCFCPUifyPass> {
       {
         RewritePatternSet patterns(&getContext());
         GreedyRewriteConfig config;
+        config.enableFolding();
         patterns.insert<LowerCacheLoad>(&getContext());
-        if (failed(applyPatternsAndFoldGreedily(getOperation(),
-                                                std::move(patterns), config))) {
+        if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
+                                         config))) {
           signalPassFailure();
           return;
         }

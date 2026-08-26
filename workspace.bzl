@@ -1,25 +1,46 @@
-JAX_COMMIT = "eb2d56b99ceef305933d9293d5c1715fdb333950"
+JAX_COMMIT = "cec06d116c05f0d52adfceee3d3b730fdbcb0ce5"
 JAX_SHA256 = ""
 
-ENZYME_COMMIT = "6b1848d8582e57dd57c0bb5d0c373c5cb1c1bbfb"
+ENZYME_COMMIT = "fc6bb335b90ef09c2c16b413a408cafcc836086b"
 ENZYME_SHA256 = ""
 
-ML_TOOLCHAIN_COMMIT = "78ef5eda03c54a912c000f1f872242d4ca6063a4"
+ML_TOOLCHAIN_COMMIT = "30ef4a9096f9490e8f198faa5ce5bbddd1b72fdb"
 ML_TOOLCHAIN_SHA256 = ""
 
 # If the empty string this will automatically use the commit above
 # otherwise this should be a path to the folder containing the BUILD file for enzyme
 OVERRIDE_ENZYME_PATH = ""
 
-HEDRON_COMPILE_COMMANDS_COMMIT = "d107d9c9025915902fd52346f1c6e18d87f7013a"
-HEDRON_COMPILE_COMMANDS_SHA256 = ""
-
 XLA_PATCHES = [
+    """
+    # Use clang not msvc
+    sed -i.bak0 "s|/std:c++17|-std=c++17|g" third_party/mkl_dnn/mkldnn_v1.BUILD
+    """,
+    """
+    # Fix support for rocm ygg build
+    sed -i.bak0 "s|clang/18/include|clang/22/include|g" third_party/gpus/rocm_configure.bzl
+    """,
+    """
+    # The hermetic rocm toolchain compiles through the repository's own
+    # rocm_dist copy of hipcc, whose resource headers the crosstool never
+    # declared: the absolute-path inclusion check then rejects every
+    # device compile. Declare that resource directory both by package
+    # token and by its resolved path, since the dependency file can
+    # spell it either way depending on how the distribution was reached.
+    sed -i.bak1 "s|cxx_builtin_include_directories = _LOCAL_CLANG.include_directories,|cxx_builtin_include_directories = _LOCAL_CLANG.include_directories + [\\\"%package(@local_config_rocm//rocm)%/rocm_dist/lib/llvm/lib/clang/22/include\\\", \\\"%{hipcc_resource_dir}\\\", \\\"%{hipcc_resource_dir_realpath}\\\"],|" third_party/gpus/crosstool/BUILD.rocm.tpl
+    perl -0777 -pi -e 's|(tpl_paths\\["crosstool:BUILD.rocm"\\],)|$1\\n        {"%{hipcc_resource_dir}": str(repository_ctx.path("rocm/rocm_dist/lib/llvm/lib/clang/22/include")), "%{hipcc_resource_dir_realpath}": str(repository_ctx.path("rocm/rocm_dist/lib/llvm/lib/clang/22/include").realpath)},|' third_party/gpus/rocm_configure.bzl
+    """,
+    """
+    # Fix support for musl stacktrace issue where execinfo.h is otherwise included
+    sed -i.bak0 "s/defined(__clang__) || defined(__GNUC__)/defined(__GLIBC__)/g" xla/tsl/platform/default/stacktrace.h
+    """,
+    """
+    sed -i.bak0 "s/\\\"-lamd_comgr\\\",//g" third_party/gpus/rocm/BUILD.tpl 
+    """,
     """
     sed -i.bak0 "s/return TryDlopenCUDALibraries()/LOG(INFO) << \\"GPU libraries are statically linked, skip dlopen check.\\";\\nreturn absl::OkStatus();/g" xla/tsl/platform/default/dlopen_checker.cc
 """,
     """
-    sed -i.bak0 "s/return TryDlopenCUDALibraries()/LOG(INFO) << \\"GPU libraries are statically linked, skip dlopen check.\\";\\nreturn absl::OkStatus();/g" n
     sed -i.bak0 "s/namespace/THIS_SHOULD_NEVER_BE_COMPILED/g" xla/tsl/cuda/{cublas,cublasLt,cufft,cusolver,cusparse,cudnn,cudart}_stub.cc
 """,
     """
@@ -29,24 +50,43 @@ XLA_PATCHES = [
     	sed -i.bak0 "s/\\\"\\/\\/xla\\/service\\/gpu\\/llvm_gpu_backend:nvptx_backend\\\"/\\0]) + if_rocm_is_configured([\\\"\\/\\/xla\\/service\\/gpu\\/llvm_gpu_backend:amdgpu_backend\\\"/g" xla/backends/gpu/codegen/triton/BUILD
     """,
     """
-    sed -i.bak0 "s/load(\\\"\\/\\/xla\\/tsl:tsl.bzl\\\", \\\"if_google\\\")/\\0\\nload(\\\"@local_config_rocm\\/\\/rocm:build_defs.bzl\\\", \\\"if_rocm_is_configured\\\")/g" xla/backends/gpu/codegen/triton/BUILD
+    sed -i.bak0 "s/load(\\\"\\/\\/xla\\/tsl:tsl.bzl\\\", \\\"if_google\\\")/load(\\\"\\/\\/xla\\/tsl:tsl.bzl\\\", \\\"if_google\\\")\\nload(\\\"@local_config_rocm\\/\\/rocm:build_defs.bzl\\\", \\\"if_rocm_is_configured\\\")/g" xla/backends/gpu/codegen/triton/BUILD
     """,
     """
-    sed -i.bak0 "s/e07debd5e257ec1e118f18c54068977b89f03b2f/9018c682b99eb20d5874a4e38271ce63d7393879/g" third_party/stablehlo/workspace.bzl
+    sed -i.bak0 "s,third_party/llvm/llvm-project/llvm/include/,,g" third_party/stablehlo/temporary.patch
+    sed -i.bak0 "s,third_party/llvm/llvm-project/mlir/include/,,g" third_party/stablehlo/temporary.patch
+    """,
+    """
+    # Required for windows due to mingw std::call_once issue in ygg
+
+echo "" >> third_party/stablehlo/temporary.patch
+echo "diff --git a/stablehlo/reference/InterpreterOps.cpp b/stablehlo/reference/InterpreterOps.cpp" >> third_party/stablehlo/temporary.patch
+echo "--- a/stablehlo/reference/InterpreterOps.cpp" >> third_party/stablehlo/temporary.patch
+echo "+++ b/stablehlo/reference/InterpreterOps.cpp" >> third_party/stablehlo/temporary.patch
+echo "@@ -172,6 +172,10 @@" >> third_party/stablehlo/temporary.patch
+echo " SmallVector<InterpreterValue> evalRunParallelOp(" >> third_party/stablehlo/temporary.patch
+echo "     ArrayRef<InterpreterValue> inputs, std::queue<StringAttr>& infeed," >> third_party/stablehlo/temporary.patch
+echo "     SmallVector<SmallVector<StringAttr>> programs, SymbolTable& symbolTable," >> third_party/stablehlo/temporary.patch
+echo "     InterpreterFallback* fallback) {" >> third_party/stablehlo/temporary.patch
+echo "+#if (defined(_WIN32) || defined(__CYGWIN__))" >> third_party/stablehlo/temporary.patch
+echo "+  llvm::report_fatal_error(\\"Op not supported on windows due to std::future\\");" >> third_party/stablehlo/temporary.patch
+echo "+#else" >> third_party/stablehlo/temporary.patch
+echo "   llvm::DefaultThreadPool threadPool;" >> third_party/stablehlo/temporary.patch
+echo "   SmallVector<std::shared_future<SmallVector<InterpreterValue>>> futures;" >> third_party/stablehlo/temporary.patch
+echo "@@ -207,6 +211,7 @@" >> third_party/stablehlo/temporary.patch
+echo "   for (auto& future : futures) results.append(future.get());" >> third_party/stablehlo/temporary.patch
+echo "   // TODO(#1725): Figure out how to test the outfeed queue." >> third_party/stablehlo/temporary.patch
+echo "   return results;" >> third_party/stablehlo/temporary.patch
+echo "+#endif" >> third_party/stablehlo/temporary.patch
+echo " }" >> third_party/stablehlo/temporary.patch
+echo " " >> third_party/stablehlo/temporary.patch
+echo " llvm::Error evalPrintOp(PrintOp& op, InterpreterValue operand) {" >> third_party/stablehlo/temporary.patch
     """,
     """
     sed -i.bak0 "s/\\/\\/third_party:repo.bzl/@bazel_tools\\/\\/tools\\/build_defs\\/repo:http.bzl/g" third_party/llvm/workspace.bzl
     """,
     """
     sed -i.bak0 "s/patch_file/patch_args = [\\\"-p1\\\"],patches/g" third_party/llvm/workspace.bzl
-    """,
-    # TODO remove
-    """
-    sed -i.bak0 "s/DCHECK_NE(runtime, nullptr/DCHECK_NE(runtime.get(), nullptr/g" xla/backends/cpu/runtime/xnnpack/xnn_fusion_thunk.cc
-    """,
-    # TODO remove
-    """
-    sed -i.bak0 "s/^bool IsSupportedType/static inline bool IsSupportedType/g" xla/backends/cpu/runtime/convolution_lib.cc
     """,
     """
     sed -i.bak0 "s/Node::Leaf(std::forward<decltype(value)>/Node::Leaf(std::forward<T>/g" xla/tuple_tree.h
@@ -73,7 +113,11 @@ XLA_PATCHES = [
     sed -i.bak0 "s/strip_prefix/patch_cmds = [\\\"sed -i.bak0 's\\/_MSC_VER\\/_WIN32\\/g' src\\/pthreads.c\\\"], strip_prefix/g" third_party/pthreadpool/workspace.bzl
     """,
     """
-    sed -i.bak0 "s/strip_prefix/patch_cmds = [\\\"find . -type f -name config.bzl -exec sed -i.bak0 's\\/HAVE_BACKTRACE=1\\/NO_HAVE_BACKTRACE=0\\/g' {} +\\\"], strip_prefix/g" third_party/llvm/workspace.bzl
+    # The second command disables llvm's use of __builtin_cpu_supports on apple
+    # platforms (e.g. clang's SSE4.2 identifier lexer fast path).  The darwin
+    # compiler-rt shipped by the cross toolchain does not provide __cpu_model,
+    # so leaving it enabled breaks linking libReactantExtra on x86_64-apple-darwin.
+    sed -i.bak0 "s/strip_prefix/patch_cmds = [\\\"find . -type f -name config.bzl -exec sed -i.bak0 's\\/HAVE_BACKTRACE=1\\/NO_HAVE_BACKTRACE=0\\/g' {} +\\\", \\\"sed -i.bak0 's\\/ || defined(__APPLE__))\\/)\\/' llvm\\/include\\/llvm\\/Support\\/Compiler.h\\\"], strip_prefix/g" third_party/llvm/workspace.bzl
     """,
     "find . -type f -name BUILD -exec sed -i.bak1 's/\\/\\/third_party\\/py\\/enzyme_ad\\/\\.\\.\\./public/g' {} +",
     "find . -type f -name BUILD -exec sed -i.bak2 's/\\/\\/xla\\/mlir\\/memref:friends/\\/\\/visibility:public/g' {} +",
@@ -100,24 +144,20 @@ echo "" >> third_party/proto.patch
 echo " #ifndef bswap_16" >> third_party/proto.patch
 echo " static inline uint16_t bswap_16(uint16_t x) {" >> third_party/proto.patch
 sed -i.bak0 "s/protobuf.patch\\"/protobuf.patch\\", \\":proto.patch\\"/g" workspace2.bzl
-sed -i.bak0 "s/patch_file = \\[\\"@xla\\/\\/third_party\\/protobuf:protobuf.patch\\"/patches = \\[Label(\\"@xla\\/\\/third_party\\/protobuf:protobuf.patch\\"), Label(\\"\\/\\/third_party:proto.patch\\"\\)], patch_args = \\[\\"-p1\\"/g" third_party/py/python_init_rules.bzl
-sed -i.bak0 "s/tf_http_archive(/http_archive(/g" third_party/py/python_init_rules.bzl
+sed -i.bak0 "s/\\"@xla\\/\\/third_party\\/protobuf:protobuf.patch\\"/\\"@xla\\/\\/third_party\\/protobuf:protobuf.patch\\", \\"\\/\\/third_party:proto.patch\\"/g" third_party/py/python_init_rules.bzl
 
 """,
     """
-sed -i.bak0 "s/_DEFAULT_ROCM_TOOLKIT_PATH =/_TMPDIR = \\"TMPDIR\\"\\n_DEFAULT_ROCM_TOOLKIT_PATH =/g" third_party/gpus/rocm_configure.bzl
-sed -i.bak0 "s/\\"%{gcc_host_compiler_path}\\"/\\"%{tmpdir}\\":get_host_environ(repository_ctx,_TMPDIR,\\"\\"), \\"%{gcc_host_compiler_path}\\"/g" third_party/gpus/rocm_configure.bzl
-sed -i.bak0 "s/VERBOSE =/TMPDIR= '%{tmpdir}'\\nVERBOSE =/g" third_party/gpus/crosstool/clang/bin/crosstool_wrapper_driver_rocm.tpl
-sed -i.bak0 "s/def main():/def main():\\n  if TMPDIR: os.environ['TMPDIR'] = TMPDIR/g" third_party/gpus/crosstool/clang/bin/crosstool_wrapper_driver_is_not_gcc.tpl third_party/gpus/crosstool/clang/bin/crosstool_wrapper_driver_rocm.tpl
+sed -i.bak0 's/registry\\["__chkstk"\\] = SymbolDef(__chkstk)/registry["__chkstk"] = SymbolDef(__chkstk_ms);\\nregistry["__chkstk_ms"] = SymbolDef(__chkstk_ms)/g' xla/backends/cpu/codegen/builtin_definition_generator.cc
 """,
     """
-sed -i.bak0 "s/__chkstk/__chkstk_ms/g" xla/service/cpu/runtime_symbol_generator.cc
+sed -i.bak0 's/void __chkstk(size_t)/void __chkstk_ms(size_t)/g' xla/backends/cpu/codegen/builtin_definition_generator.cc
 """,
     """
-sed -i.bak0 "1s/^/#include \\"llvm\\/Support\\/DynamicLibrary.h\\"\\n/g" xla/service/cpu/runtime_symbol_generator.cc
+sed -i.bak0 "1s/^/#include \\"llvm\\/Support\\/DynamicLibrary.h\\"\\n/g" xla/backends/cpu/codegen/builtin_definition_generator.cc
 """,
     """
-sed -i.bak0 "s/SymbolDef(__chkstk_ms)/SymbolDef(reinterpret_cast<void* (*)(size_t)>(llvm::sys::DynamicLibrary::SearchForAddressOfSymbol(\\"__chkstk_ms\\")))/g" xla/service/cpu/runtime_symbol_generator.cc
+sed -i.bak0 "s/SymbolDef(__chkstk_ms)/SymbolDef(reinterpret_cast<void* (*)(size_t)>(llvm::sys::DynamicLibrary::SearchForAddressOfSymbol(\\"__chkstk_ms\\")))/g" xla/backends/cpu/codegen/builtin_definition_generator.cc
 """,
     """
 sed -i.bak0 "s/Shlwapi/shlwapi/g" xla/tsl/platform/windows/load_library.cc xla/tsl/platform/windows/windows_file_system.cc xla/tsl/platform/windows/env.cc
@@ -133,6 +173,12 @@ sed -i.bak0 "s/Windows\\.h/windows\\.h/g" xla/tsl/platform/windows/port.cc xla/t
 """,
     """
 sed -i.bak0 "/D_FORTIFY_SOURCE/d" third_party/gpus/crosstool/cc_toolchain_config.bzl.tpl tools/toolchains/cross_compile/cc/BUILD tools/toolchains/clang6/CROSSTOOL.tpl third_party/gpus/crosstool/BUILD.rocm.tpl
+""",
+    """
+sed -i.bak0 "1s|^|load(\\\"@bazel_tools//tools/build_defs/repo:http.bzl\\\", \\\"http_archive\\\")\\n|" workspace3.bzl
+""",
+    """
+sed -i.bak0 '$!N; s|tf_http_archive(\\n\\([ ]*\\)name = "rules_ml_toolchain",|http_archive(\\n\\1name = "rules_ml_toolchain", patch_cmds = [\\\"sed -i.bak0 '/D_FORTIFY_SOURCE/d' cc/features/BUILD gpu/cuda/legacy/crosstool/cc_toolchain_config.bzl.tpl\\\"],|; P; D;' workspace3.bzl
 """,
     """
 sed -i.bak0 "s/i64/LL/g" xla/tsl/platform/windows/env_time.cc
@@ -156,6 +202,14 @@ sed -i.bak0 "s/cupti_driver_cbid/cupti/g" xla/backends/profiler/gpu/cupti_tracer
 sed -i.bak0 "s/patch_cmds = \\[/patch_cmds = \\[\\\"find . -type f -name config.bzl -exec sed -i.bak0 's\\/HAVE_LINK_H=1\\/HAVE_LINK_H=0\\/g' {} +\\\",/g" third_party/llvm/workspace.bzl
 """,
     """
+# arith.extui's fold merges extui(extui(x)) by swapping the outer op's source
+# while keeping its nneg flag. The flag asserts the source is non-negative as
+# a signed value, about which the outer flag says nothing once the source
+# changes: extui nneg i8->i32 over extui i1->i8 becomes extui nneg i1->i32,
+# poison whenever the bool is true. Keep nneg only if the inner ext had it.
+sed -i.bak0 "s/patch_cmds = \\[/patch_cmds = \\[\\\"sed -i.baknneg 's\\/auto lhs = getIn().getDefiningOp<ExtUIOp>()) {\\/auto lhs = getIn().getDefiningOp<ExtUIOp>()) { setNonNeg(lhs.getNonNeg());\\/' mlir\\/lib\\/Dialect\\/Arith\\/IR\\/ArithOps.cpp\\\",/g" third_party/llvm/workspace.bzl
+""",
+    """
 sed -i.bak0 "s/patch_cmds = \\[/patch_cmds = \\[\\\"find . -type f -name config.bzl -exec sed -i.bak0 's\\/LLVM_ENABLE_THREADS=1\\/LLVM_ENABLE_THREADS=0\\/g' {} +\\\",/g" third_party/llvm/workspace.bzl
 """,
     """
@@ -176,6 +230,19 @@ sed -i.bak0 "s/patch_cmds = \\[/patch_cmds = \\[\\\"find . -type f -name config.
     """
 sed -i.bak0 "s/patch_cmds = \\[/patch_cmds = \\[\\\"find . -type f -name config.h -exec sed -i.bak0 's\\/HAVE_PTHREAD_SETNAME_NP\\/FAKE_HAVE_PTHREAD_SETNAME_NP\\/g' {} +\\\",/g" third_party/llvm/workspace.bzl
 """,
+    """
+    sed -i.bak0 "s/def repo/load(\\\"@bazel_tools\\/\\/tools\\/build_defs\\/repo:http.bzl\\\", \\\"http_archive\\\")\\ndef repo/g" third_party/eigen3/workspace.bzl
+    sed -i.bak0 "s/tf_http_archive(/http_archive(/g" third_party/eigen3/workspace.bzl
+    sed -i.bak0 "s/build_file = \\\"/build_file = \\\"@xla/g" third_party/eigen3/workspace.bzl
+
+    sed -i.bak0 "s/urls = /patch_cmds = \\[\\\"sed -i.bak -e 's\\/return PACKET_TYPE(0) == PACKET_TYPE(0);\\/return (PACKET_TYPE)(PACKET_TYPE(0) == PACKET_TYPE(0));\\/g' -e 's\\/return CAST_FROM_INT(CAST_TO_INT(a) == CAST_TO_INT(a));\\/return CAST_FROM_INT((decltype(CAST_TO_INT(a)))(CAST_TO_INT(a) == CAST_TO_INT(a)));\\/' Eigen\\/src\\/Core\\/arch\\/clang\\/PacketMath.h\\\"\\],urls = /g" third_party/eigen3/workspace.bzl
+    """,
+    """
+    echo '#ifdef REACTANT_TOOLCHAIN_IS_BB' >> xla/tsl/util/filewrapper.cc
+    echo '#include <cstdio>' >> xla/tsl/util/filewrapper.cc
+    echo 'namespace std { __attribute__((weak)) void __throw_bad_array_new_length() { fprintf(stderr, "erring in throw_bad_array_new_length\\n"); __builtin_trap(); } }' >> xla/tsl/util/filewrapper.cc
+    echo '#endif' >> xla/tsl/util/filewrapper.cc
+    """,
 ]
 
 LLVM_TARGETS = ["X86", "AArch64", "AMDGPU", "NVPTX"]

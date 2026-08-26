@@ -80,10 +80,10 @@ func.func @main4(%arg0: tensor<1024xf32> {enzymexla.memory_effects = []}, %arg1:
 
 // CHECK: func.func @main4(%arg0: tensor<1024xf32> {enzymexla.memory_effects = []}, %arg1: tensor<32x1024xf32> {enzymexla.memory_effects = []}, %arg2: tensor<32x1024xf32> {enzymexla.memory_effects = []}) -> tensor<f32> attributes {enzymexla.memory_effects = []} {
 // CHECK-NEXT:     %cst = stablehlo.constant dense<0.000000e+00> : tensor<f32>
-// CHECK-NEXT:     %0 = stablehlo.broadcast_in_dim %arg0, dims = [1] : (tensor<1024xf32>) -> tensor<32x1024xf32>
-// CHECK-NEXT:     %1 = stablehlo.multiply %0, %arg1 : tensor<32x1024xf32>
-// CHECK-NEXT:     %2 = stablehlo.add %1, %arg2 : tensor<32x1024xf32>
-// CHECK-NEXT:     %3 = stablehlo.reduce(%2 init: %cst) applies stablehlo.add across dimensions = [0, 1] : (tensor<32x1024xf32>, tensor<f32>) -> tensor<f32>
+// CHECK-NEXT:     %0 = stablehlo.reduce(%arg2 init: %cst) applies stablehlo.add across dimensions = [0, 1] : (tensor<32x1024xf32>, tensor<f32>) -> tensor<f32>
+// CHECK-NEXT:     %1 = stablehlo.broadcast_in_dim %arg0, dims = [1] : (tensor<1024xf32>) -> tensor<32x1024xf32>
+// CHECK-NEXT:     %2 = stablehlo.dot_general %1, %arg1, contracting_dims = [0, 1] x [0, 1] : (tensor<32x1024xf32>, tensor<32x1024xf32>) -> tensor<f32>
+// CHECK-NEXT:     %3 = stablehlo.add %2, %0 : tensor<f32>
 // CHECK-NEXT:     return %3 : tensor<f32>
 // CHECK-NEXT: }
 
@@ -104,9 +104,9 @@ func.func @main5(%arg0: tensor<1024xf32> {enzymexla.memory_effects = []}, %arg1:
 
 // CHECK: func.func @main5(%arg0: tensor<1024xf32> {enzymexla.memory_effects = []}, %arg1: tensor<1024x32xf32> {enzymexla.memory_effects = []}, %arg2: tensor<1024x32xf32> {enzymexla.memory_effects = []}) -> tensor<f32> attributes {enzymexla.memory_effects = []} {
 // CHECK-NEXT:     %cst = stablehlo.constant dense<0.000000e+00> : tensor<f32>
-// CHECK-NEXT:     %0 = stablehlo.broadcast_in_dim %arg0, dims = [0] : (tensor<1024xf32>) -> tensor<1024x32xf32>
-// CHECK-NEXT:     %1 = stablehlo.multiply %0, %arg1 : tensor<1024x32xf32>
-// CHECK-NEXT:     %2 = stablehlo.add %1, %arg2 : tensor<1024x32xf32>
-// CHECK-NEXT:     %3 = stablehlo.reduce(%2 init: %cst) applies stablehlo.add across dimensions = [0, 1] : (tensor<1024x32xf32>, tensor<f32>) -> tensor<f32>
+// CHECK-NEXT:     %0 = stablehlo.reduce(%arg2 init: %cst) applies stablehlo.add across dimensions = [0, 1] : (tensor<1024x32xf32>, tensor<f32>) -> tensor<f32>
+// CHECK-NEXT:     %1 = stablehlo.broadcast_in_dim %arg0, dims = [0] : (tensor<1024xf32>) -> tensor<1024x32xf32>
+// CHECK-NEXT:     %2 = stablehlo.dot_general %1, %arg1, contracting_dims = [0, 1] x [0, 1] : (tensor<1024x32xf32>, tensor<1024x32xf32>) -> tensor<f32>
+// CHECK-NEXT:     %3 = stablehlo.add %2, %0 : tensor<f32>
 // CHECK-NEXT:     return %3 : tensor<f32>
 // CHECK-NEXT: }

@@ -9,6 +9,8 @@
 #include "Ops.h"
 #include "Dialect.h"
 #include "Interfaces/AutoDiffTypeInterface.h"
+#include "src/enzyme_ad/jax/Dialect/Canonicalizers.h"
+#include "src/enzyme_ad/jax/Dialect/Utils.h"
 #include "src/enzyme_ad/jax/Utils.h"
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
@@ -44,6 +46,7 @@
 #define DEBUG_TYPE "enzymexla"
 
 using namespace mlir;
+using namespace mlir::enzyme;
 using namespace enzymexla;
 using namespace mlir::arith;
 
@@ -124,36 +127,6 @@ MutableOperandRange KernelCallOp::getArgOperandsMutable() {
   return getInputsMutable();
 }
 
-static void addMemoryEffectsFromAttr(
-    SmallVectorImpl<MemoryEffects::EffectInstance> &effects,
-    ArrayAttr effectsAttr) {
-  for (auto attr : effectsAttr) {
-    auto strAttr = dyn_cast<StringAttr>(attr);
-    assert(strAttr &&
-           "enzymexla.memory_effects must be a ArrayAttr<StringAttr>");
-
-    StringRef kind = strAttr.getValue();
-    if (kind == "allocate")
-      effects.emplace_back(MemoryEffects::Allocate::get());
-    else if (kind == "free")
-      effects.emplace_back(MemoryEffects::Free::get());
-    else if (kind == "write")
-      effects.emplace_back(MemoryEffects::Write::get());
-    else if (kind == "read")
-      effects.emplace_back(MemoryEffects::Read::get());
-    else
-      assert(false && "enzymexla.memory_effects has an invalid value");
-  }
-}
-
-static void
-addAllMemoryEffects(SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
-  effects.emplace_back(MemoryEffects::Allocate::get());
-  effects.emplace_back(MemoryEffects::Free::get());
-  effects.emplace_back(MemoryEffects::Write::get());
-  effects.emplace_back(MemoryEffects::Read::get());
-}
-
 void KernelCallOp::getEffects(
     SmallVectorImpl<MemoryEffects::EffectInstance> &effects) {
   ModuleOp moduleOp = (*this)->getParentOfType<ModuleOp>();
@@ -219,104 +192,6 @@ void JITCallOp::getEffects(
   addMemoryEffectsFromAttr(effects, effectsAttr);
 }
 
-/// Replace cast(subindex(x, InterimType), FinalType) with subindex(x,
-/// FinalType)
-template <typename OpTy>
-class ReadOnlyArg final : public OpRewritePattern<OpTy> {
-public:
-  using OpRewritePattern<OpTy>::OpRewritePattern;
-
-  OpTy create(PatternRewriter &rewriter, OpTy launchOp, ArrayRef<Type> resTys,
-              ArrayAttr outputAliases) const;
-  LogicalResult matchAndRewrite(OpTy launchOp,
-                                PatternRewriter &rewriter) const override {
-    SymbolTableCollection symbolTable;
-    symbolTable.getSymbolTable(
-        ((Operation *)launchOp)->getParentOfType<ModuleOp>());
-    auto fn = cast<FunctionOpInterface>(
-        symbolTable.lookupNearestSymbolFrom(launchOp, launchOp.getFnAttr()));
-
-    auto operand_aliases = launchOp.getOutputOperandAliases();
-    assert(operand_aliases.size() == launchOp.getNumResults());
-    bool changed = false;
-    size_t outputs = launchOp.getNumResults();
-    for (auto alias_attr : operand_aliases) {
-      auto alias = cast<OutputOperandAliasAttr>(alias_attr);
-      auto operandIndex = alias.getOperandIndex();
-
-      auto operand = fn.front().getArgument(operandIndex);
-      bool readonly =
-          operand.use_empty() ||
-          fn.getArgAttr(operandIndex, LLVMDialect::getReadonlyAttrName()) ||
-          fn.getArgAttr(operandIndex, LLVMDialect::getReadnoneAttrName());
-
-      if (readonly) {
-
-        changed = true;
-        outputs--;
-      }
-    }
-    if (!changed)
-      return failure();
-    SmallVector<Attribute> outputAliases;
-    SmallVector<Type> resTys;
-    size_t out_idx = 0;
-    for (auto en : llvm::enumerate(operand_aliases)) {
-      auto idx = en.index();
-      auto alias = cast<OutputOperandAliasAttr>(en.value());
-      auto operandIndex = alias.getOperandIndex();
-
-      auto operand = fn.front().getArgument(operandIndex);
-      assert(launchOp.getInputs()[operandIndex].getType() ==
-             launchOp.getResultTypes()[idx]);
-      bool readonly =
-          operand.use_empty() ||
-          fn.getArgAttr(operandIndex, LLVMDialect::getReadonlyAttrName()) ||
-          fn.getArgAttr(operandIndex, LLVMDialect::getReadnoneAttrName());
-
-      if (readonly) {
-        continue;
-      }
-      resTys.push_back(launchOp.getResultTypes()[idx]);
-      if (outputs == 1) {
-        outputAliases.push_back(OutputOperandAliasAttr::get(
-            launchOp->getContext(), {}, operandIndex, {}));
-      } else {
-        outputAliases.push_back(OutputOperandAliasAttr::get(
-            launchOp->getContext(), {(long)out_idx}, operandIndex, {}));
-      }
-      out_idx++;
-    }
-
-    auto newOp = create(rewriter, launchOp, resTys,
-                        ArrayAttr::get(launchOp->getContext(), outputAliases));
-
-    assert(outputAliases.size() == newOp.getNumResults());
-    SmallVector<Value> replacements;
-    out_idx = 0;
-    for (auto alias_attr : operand_aliases) {
-      auto alias = cast<OutputOperandAliasAttr>(alias_attr);
-      auto operandIndex = alias.getOperandIndex();
-
-      auto operand = fn.front().getArgument(operandIndex);
-      bool readonly =
-          operand.use_empty() ||
-          fn.getArgAttr(operandIndex, LLVMDialect::getReadonlyAttrName()) ||
-          fn.getArgAttr(operandIndex, LLVMDialect::getReadnoneAttrName());
-
-      if (readonly) {
-        replacements.push_back(launchOp.getInputs()[operandIndex]);
-        continue;
-      } else {
-        replacements.push_back(newOp.getResult(out_idx));
-        out_idx++;
-      }
-    }
-    rewriter.replaceOp(launchOp, replacements);
-    return success();
-  }
-};
-
 template <>
 enzymexla::KernelCallOp ReadOnlyArg<enzymexla::KernelCallOp>::create(
     PatternRewriter &rewriter, enzymexla::KernelCallOp launchOp,
@@ -345,130 +220,6 @@ enzymexla::JITCallOp ReadOnlyArg<enzymexla::JITCallOp>::create(
       launchOp.getResAttrsAttr(), outputAliases,
       launchOp.getXlaSideEffectFreeAttr());
 }
-
-template <typename OpTy>
-class ReadNoneArg final : public OpRewritePattern<OpTy> {
-public:
-  using OpRewritePattern<OpTy>::OpRewritePattern;
-
-  void updateOperandSegmentSizes(OpTy call, int32_t numLiveOperands,
-                                 PatternRewriter &rewriter) const;
-
-  LogicalResult matchAndRewrite(OpTy launchOp,
-                                PatternRewriter &rewriter) const override {
-    SymbolTableCollection symbolTable;
-    auto mod = ((Operation *)launchOp)->getParentOfType<ModuleOp>();
-    symbolTable.getSymbolTable(mod);
-    auto fn = cast<FunctionOpInterface>(
-        symbolTable.lookupNearestSymbolFrom(launchOp, launchOp.getFnAttr()));
-
-    // Early error if no arg is read none
-    {
-      bool potentialReadNone = false;
-      for (auto arg : fn.front().getArguments()) {
-        bool readnone = arg.use_empty();
-        if (!readnone)
-          continue;
-        potentialReadNone = true;
-        break;
-      }
-      if (!potentialReadNone)
-        return failure();
-    }
-    bool changed = false;
-
-    SmallVector<OpTy> calls;
-    auto use_opt = symbolTable.getSymbolTable(mod).getSymbolUses(fn, mod);
-    if (!use_opt)
-      return failure();
-    for (auto u : *use_opt) {
-      auto launch2 = dyn_cast<OpTy>(u.getUser());
-      if (!launch2)
-        return failure();
-      calls.push_back(launch2);
-      auto operand_aliases2 = launchOp.getOutputOperandAliases();
-      (void)operand_aliases2;
-      assert(operand_aliases2.size() == launchOp.getNumResults());
-    }
-
-    BitVector deadArgs(fn.front().getNumArguments(), false);
-    for (auto arg : fn.front().getArguments()) {
-      auto operandIndex = arg.getArgNumber();
-      bool readnone = arg.use_empty();
-      if (!readnone)
-        continue;
-
-      for (auto call : calls) {
-        auto operand_aliases = call.getOutputOperandAliases();
-        for (auto alias_attr : operand_aliases) {
-          auto alias = cast<OutputOperandAliasAttr>(alias_attr);
-          auto aliasOperandIndex = alias.getOperandIndex();
-          if (aliasOperandIndex == operandIndex) {
-            return failure();
-          }
-        }
-      }
-      changed = true;
-      deadArgs[operandIndex] = true;
-    }
-
-    if (!changed)
-      return failure();
-
-    rewriter.modifyOpInPlace(fn, [&]() {
-      // fn.eraseArguments(deadArgs);
-      if (auto T = dyn_cast<LLVMFunctionType>(fn.getFunctionType())) {
-        SmallVector<Type> argStorage;
-        mlir::filterTypesOut(fn.getArgumentTypes(), deadArgs, argStorage);
-        auto fty2 =
-            LLVMFunctionType::get(T.getReturnType(), argStorage, T.getVarArg());
-        mlir::function_interface_impl::eraseFunctionArguments(fn, deadArgs,
-                                                              fty2);
-      } else {
-        (void)fn.eraseArguments(deadArgs);
-      }
-    });
-
-    for (auto call : calls) {
-      BitVector nonLiveCallOperands(call.getNumOperands(), false);
-      for (int index : deadArgs.set_bits())
-        nonLiveCallOperands.set(call.getInputs().getBeginOperandIndex() +
-                                index);
-
-      int32_t numLiveOperands = 0;
-      for (int32_t idx = call.getInputs().getBeginOperandIndex();
-           idx < nonLiveCallOperands.size(); idx++) {
-        if (nonLiveCallOperands[idx])
-          continue;
-        numLiveOperands++;
-      }
-
-      SmallVector<Attribute> outputAliases;
-      auto operand_aliases = call.getOutputOperandAliases();
-
-      for (auto alias_attr : operand_aliases) {
-        auto alias = cast<OutputOperandAliasAttr>(alias_attr);
-        auto operandIndex = alias.getOperandIndex();
-        size_t nextIndex = operandIndex;
-        for (int index : deadArgs.set_bits()) {
-          if (index <= operandIndex)
-            nextIndex--;
-        }
-        outputAliases.push_back(OutputOperandAliasAttr::get(
-            call->getContext(), alias.getOutputTupleIndices(), nextIndex,
-            alias.getOperandTupleIndices()));
-      }
-
-      rewriter.modifyOpInPlace(call, [&]() {
-        call->eraseOperands(nonLiveCallOperands);
-        updateOperandSegmentSizes(call, numLiveOperands, rewriter);
-        call.setOutputOperandAliasesAttr(
-            ArrayAttr::get(call->getContext(), outputAliases));
-      });
-    }
-    return success();
-  }
-};
 
 template <>
 void ReadNoneArg<KernelCallOp>::updateOperandSegmentSizes(
@@ -677,14 +428,13 @@ public:
     Value c0 = arith::ConstantIndexOp::create(rewriter, op.getLoc(), 0);
     Value c1 = arith::ConstantIndexOp::create(rewriter, op.getLoc(), 1);
     SmallVector<Value> idxs;
+    Value lenIdx = arith::IndexCastOp::create(
+        rewriter, op.getLoc(), rewriter.getIndexType(), op.getLen());
+    Value widthCst =
+        arith::ConstantIndexOp::create(rewriter, op.getLoc(), width);
     auto forOp = scf::ForOp::create(
         rewriter, op.getLoc(), c0,
-        arith::DivUIOp::create(
-            rewriter, op.getLoc(),
-            arith::IndexCastOp::create(rewriter, op.getLoc(),
-                                       rewriter.getIndexType(), op.getLen()),
-            arith::ConstantIndexOp::create(rewriter, op.getLoc(), width)),
-        c1);
+        arith::DivUIOp::create(rewriter, op.getLoc(), lenIdx, widthCst), c1);
 
     rewriter.setInsertionPointToStart(&forOp.getRegion().getBlocks().front());
     idxs.push_back(forOp.getInductionVar());
@@ -781,14 +531,13 @@ public:
     Value val = cast<mlir::enzyme::AutoDiffTypeInterface>(elTy).createNullValue(
         rewriter, op.getLoc());
 
+    Value lenIdx = arith::IndexCastOp::create(
+        rewriter, op.getLoc(), rewriter.getIndexType(), op.getLen());
+    Value widthCst =
+        arith::ConstantIndexOp::create(rewriter, op.getLoc(), width);
     auto forOp = scf::ForOp::create(
         rewriter, op.getLoc(), c0,
-        arith::DivUIOp::create(
-            rewriter, op.getLoc(),
-            arith::IndexCastOp::create(rewriter, op.getLoc(),
-                                       rewriter.getIndexType(), op.getLen()),
-            arith::ConstantIndexOp::create(rewriter, op.getLoc(), width)),
-        c1);
+        arith::DivUIOp::create(rewriter, op.getLoc(), lenIdx, widthCst), c1);
 
     rewriter.setInsertionPointToStart(&forOp.getRegion().getBlocks().front());
     idxs.push_back(forOp.getInductionVar());
@@ -895,7 +644,7 @@ public:
   LogicalResult matchAndRewrite(T op,
                                 PatternRewriter &rewriter) const override {
     // FIXME: Only handle memref.load with single index for now
-    if (op.getIndices().size() != 1)
+    if (op.getMemRefType().getRank() != 1)
       return failure();
 
     // Match pointer2memref -> load pattern
@@ -926,6 +675,15 @@ public:
       auto elemTy = gep.getElemType();
       if (elemTy.isIntOrFloat()) {
         gepElemSize = elemTy.getIntOrFloatBitWidth() / 8;
+      } else if (auto arrayTy = dyn_cast<LLVM::LLVMArrayType>(elemTy)) {
+        auto baseTy = arrayTy.getElementType();
+        if (baseTy.isIntOrFloat()) {
+          gepElemSize =
+              (baseTy.getIntOrFloatBitWidth() / 8) * arrayTy.getNumElements();
+        } else {
+          // Nested arrays not supported yet, or other types
+          break;
+        }
       } else {
         // Unknown type to get size from, bail early.
         break;
@@ -1038,7 +796,6 @@ template <>
 SmallVector<Value> LoadStorePointer2MemrefGEP<affine::AffineLoadOp>::newIndex(
     affine::AffineLoadOp op, Value finalIndex,
     PatternRewriter &rewriter) const {
-  auto map = op.getAffineMap();
   auto apply = affine::AffineApplyOp::create(
       rewriter, op.getLoc(), op.getAffineMap(), op.getMapOperands());
 
@@ -1063,7 +820,6 @@ template <>
 SmallVector<Value> LoadStorePointer2MemrefGEP<affine::AffineStoreOp>::newIndex(
     affine::AffineStoreOp op, Value finalIndex,
     PatternRewriter &rewriter) const {
-  auto map = op.getAffineMap();
   auto apply = affine::AffineApplyOp::create(
       rewriter, op.getLoc(), op.getAffineMap(), op.getMapOperands());
 
@@ -1286,10 +1042,12 @@ OpFoldResult Pointer2MemrefOp::fold(FoldAdaptor adaptor) {
   return nullptr;
 }
 
-LogicalResult WrapOp::inferReturnTypes(
-    MLIRContext * /*context*/, std::optional<Location> location,
-    ValueRange operands, DictionaryAttr attributes, OpaqueProperties properties,
-    RegionRange regions, SmallVectorImpl<Type> &inferredReturnTypes) {
+LogicalResult
+WrapOp::inferReturnTypes(MLIRContext * /*context*/,
+                         std::optional<Location> location, ValueRange operands,
+                         DictionaryAttr attributes,
+                         mlir::PropertyRef properties, RegionRange regions,
+                         SmallVectorImpl<Type> &inferredReturnTypes) {
   WrapOpAdaptor adaptor(operands, attributes, properties, regions);
   if (adaptor.getLhs() < 0)
     return failure();
@@ -1309,10 +1067,12 @@ LogicalResult WrapOp::inferReturnTypes(
   return success();
 }
 
-LogicalResult ExtendOp::inferReturnTypes(
-    MLIRContext * /*context*/, std::optional<Location> location,
-    ValueRange operands, DictionaryAttr attributes, OpaqueProperties properties,
-    RegionRange regions, SmallVectorImpl<Type> &inferredReturnTypes) {
+LogicalResult
+ExtendOp::inferReturnTypes(MLIRContext * /*context*/,
+                           std::optional<Location> location,
+                           ValueRange operands, DictionaryAttr attributes,
+                           mlir::PropertyRef properties, RegionRange regions,
+                           SmallVectorImpl<Type> &inferredReturnTypes) {
   ExtendOpAdaptor adaptor(operands, attributes, properties, regions);
   if (adaptor.getLhs() < 0)
     return failure();
@@ -1329,6 +1089,43 @@ LogicalResult ExtendOp::inferReturnTypes(
     resShape[adaptor.getDimension()] += adaptor.getLhs() + adaptor.getRhs();
   inferredReturnTypes.push_back(
       RankedTensorType::get(resShape, RT.getElementType()));
+  return success();
+}
+
+LogicalResult UpdateWithoutCornersOp::inferReturnTypes(
+    MLIRContext * /*context*/, std::optional<Location> location,
+    ValueRange operands, DictionaryAttr attributes,
+    mlir::PropertyRef properties, RegionRange regions,
+    SmallVectorImpl<Type> &inferredReturnTypes) {
+  UpdateWithoutCornersOpAdaptor adaptor(operands, attributes, properties,
+                                        regions);
+  auto RT = cast<RankedTensorType>(adaptor.getOperand().getType());
+  if (adaptor.getDimensionX() < 0 ||
+      adaptor.getDimensionX() >= RT.getShape().size())
+    return failure();
+  if (adaptor.getDimensionY() < 0 ||
+      adaptor.getDimensionY() >= RT.getShape().size())
+    return failure();
+  if (adaptor.getDimensionX() >= adaptor.getDimensionY())
+    return failure();
+  if (adaptor.getX1() < 0)
+    return failure();
+  if (adaptor.getX2() < 0)
+    return failure();
+  if (adaptor.getX1() >= adaptor.getX2())
+    return failure();
+  if (adaptor.getX2() >= RT.getShape()[adaptor.getDimensionX()])
+    return failure();
+  if (adaptor.getY1() < 0)
+    return failure();
+  if (adaptor.getY2() < 0)
+    return failure();
+  if (adaptor.getY1() >= adaptor.getY2())
+    return failure();
+  if (adaptor.getY2() >= RT.getShape()[adaptor.getDimensionY()])
+    return failure();
+
+  inferredReturnTypes.push_back(RT);
   return success();
 }
 
@@ -1351,6 +1148,128 @@ LogicalResult enzymexla::MemcpyOp::verify() {
 
   if (getElementTypeOrSelf(srcType) != getElementTypeOrSelf(dstType))
     return emitOpError("arguments have incompatible element type");
+
+  return success();
+}
+
+LogicalResult enzymexla::GemmOp::verify() {
+  auto alpha = getAlpha();
+  auto A = getA();
+  auto B = getB();
+  auto beta = getBeta();
+  auto C = getC();
+
+  auto type_alpha = cast<RankedTensorType>(alpha.getType());
+  auto type_A = cast<RankedTensorType>(A.getType());
+  auto type_B = cast<RankedTensorType>(B.getType());
+  auto type_beta = cast<RankedTensorType>(beta.getType());
+  auto type_C = cast<RankedTensorType>(C.getType());
+
+  auto shape_A = type_A.getShape();
+  auto shape_B = type_B.getShape();
+  auto shape_C = type_C.getShape();
+
+  auto type_element = type_alpha.getElementType();
+  auto rank = type_A.getRank();
+
+  auto inner_dim_A =
+      getTransa() == enzymexla::LapackTranspose::none ? rank - 1 : rank - 2;
+  auto inner_dim_B =
+      getTransb() == enzymexla::LapackTranspose::none ? rank - 2 : rank - 1;
+
+  auto outer_dim_A =
+      getTransa() == enzymexla::LapackTranspose::none ? rank - 2 : rank - 1;
+  auto outer_dim_B =
+      getTransb() == enzymexla::LapackTranspose::none ? rank - 1 : rank - 2;
+
+  if (type_A.getElementType() != type_element ||
+      type_B.getElementType() != type_element ||
+      type_C.getElementType() != type_element ||
+      type_beta.getElementType() != type_element) {
+    return emitOpError("Element types of alpha, A, B and C must match");
+  }
+
+  if (type_A.getRank() != type_B.getRank() ||
+      type_A.getRank() != type_C.getRank()) {
+    return emitOpError("Ranks of A, B and C must match");
+  }
+
+  if (shape_A.drop_back(2) != shape_B.drop_back(2) ||
+      shape_A.drop_back(2) != shape_C.drop_back(2)) {
+    return emitOpError("Batch dimensions of A, B and C must match");
+  }
+
+  if (shape_A[inner_dim_A] != shape_B[inner_dim_B]) {
+    return emitOpError("Inner dimensions of A and B must match");
+  }
+
+  if (shape_A[outer_dim_A] != shape_C[rank - 2] ||
+      shape_B[outer_dim_B] != shape_C[rank - 1]) {
+    return emitOpError(
+        "Outer dimensions of A and B must match corresponding dimensions of C");
+  }
+
+  if (getResult().getType() != type_C) {
+    return emitOpError("Result type must match C's type");
+  }
+
+  return success();
+}
+
+void GemmOp::build(OpBuilder &builder, OperationState &result, Value A, Value B,
+                   enzymexla::LapackTranspose transa,
+                   enzymexla::LapackTranspose transb) {
+  auto type_A = cast<RankedTensorType>(A.getType());
+  auto type_B = cast<RankedTensorType>(B.getType());
+
+  auto element_type = type_A.getElementType();
+  auto rank = type_A.getRank();
+
+  auto outer_dim_A =
+      transa == enzymexla::LapackTranspose::none ? rank - 2 : rank - 1;
+  auto outer_dim_B =
+      transb == enzymexla::LapackTranspose::none ? rank - 1 : rank - 2;
+
+  auto shape_a = type_A.getShape();
+  auto shape_b = type_B.getShape();
+  SmallVector<int64_t> shape_c;
+  for (int i = 0; i < rank - 2; i++) {
+    shape_c.push_back(shape_a[i]);
+  }
+  shape_c.push_back(shape_a[outer_dim_A]);
+  shape_c.push_back(shape_b[outer_dim_B]);
+
+  auto type_scalar = RankedTensorType::get({}, element_type);
+  auto alpha = stablehlo::ConstantOp::create(
+      builder, result.location, type_scalar,
+      cast<ElementsAttr>(makeAttr(type_scalar, 1)));
+  auto beta = stablehlo::ConstantOp::create(
+      builder, result.location, type_scalar,
+      cast<ElementsAttr>(makeAttr(type_scalar, 0)));
+
+  auto type_C = RankedTensorType::get(shape_c, element_type);
+  auto C =
+      stablehlo::ConstantOp::create(builder, result.location, type_C,
+                                    cast<ElementsAttr>(makeAttr(type_C, 0)));
+
+  result.addTypes(type_C);
+  result.addOperands({alpha, A, B, beta, C});
+  result.addAttribute("transa", enzymexla::LapackTransposeAttr::get(
+                                    builder.getContext(), transa));
+  result.addAttribute("transb", enzymexla::LapackTransposeAttr::get(
+                                    builder.getContext(), transb));
+}
+
+LogicalResult enzymexla::SyrkOp::verify() {
+  auto CType = cast<RankedTensorType>(getC().getType());
+  bool isComplex = false;
+  if (auto complex_type = dyn_cast<ComplexType>(CType.getElementType())) {
+    isComplex = true;
+  }
+
+  if (isComplex && getTranspose() == enzymexla::LapackTranspose::adjoint) {
+    return emitOpError("Complex matrix not supported for complex transpose");
+  }
 
   return success();
 }
@@ -1543,11 +1462,65 @@ struct CopyWithTypes : public OpRewritePattern<enzymexla::MemcpyOp> {
   }
 };
 
+struct Memcpy2DOpToMemcpyOp : public OpRewritePattern<enzymexla::Memcpy2DOp> {
+  using OpRewritePattern<enzymexla::Memcpy2DOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::Memcpy2DOp op,
+                                PatternRewriter &rewriter) const override {
+    Value dpitch = op.getDpitch();
+    Value spitch = op.getSpitch();
+    Value width = op.getWidth();
+    Value height = op.getHeight();
+
+    APInt dpitchConst, spitchConst, widthConst, heightConst;
+    bool dpitchIsConst = matchPattern(dpitch, m_ConstantInt(&dpitchConst));
+    bool spitchIsConst = matchPattern(spitch, m_ConstantInt(&spitchConst));
+    bool widthIsConst = matchPattern(width, m_ConstantInt(&widthConst));
+    bool heightIsConst = matchPattern(height, m_ConstantInt(&heightConst));
+
+    bool canSimplify = false;
+    Value totalSize = nullptr;
+
+    if (heightIsConst && heightConst.getSExtValue() == 1) {
+      canSimplify = true;
+      totalSize = width;
+    } else if (dpitchIsConst && spitchIsConst && widthIsConst) {
+      if (dpitchConst == widthConst && spitchConst == widthConst) {
+        canSimplify = true;
+        if (heightIsConst) {
+          int64_t totalSizeBytes =
+              widthConst.getSExtValue() * heightConst.getSExtValue();
+          totalSize = arith::ConstantIndexOp::create(rewriter, op.getLoc(),
+                                                     totalSizeBytes);
+        } else {
+          totalSize =
+              arith::MulIOp::create(rewriter, op.getLoc(), width, height);
+        }
+      }
+    }
+
+    if (!canSimplify)
+      return failure();
+
+    enzymexla::MemcpyOp::create(rewriter, op.getLoc(), (mlir::Type) nullptr,
+                                op.getAsyncDependencies(), op.getTarget(),
+                                op.getSource(), totalSize);
+
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 } // end anonymous namespace
 
 void enzymexla::MemcpyOp::getCanonicalizationPatterns(
     RewritePatternSet &results, MLIRContext *context) {
   results.add<EraseTrivialCopyOp, CopyWithTypes>(context);
+}
+
+void enzymexla::Memcpy2DOp::getCanonicalizationPatterns(
+    RewritePatternSet &results, MLIRContext *context) {
+  results.add<Memcpy2DOpToMemcpyOp>(context);
 }
 
 LogicalResult
@@ -1560,6 +1533,87 @@ using namespace mlir::enzyme;
 llvm::cl::opt<bool> BarrierOpt("barrier-opt", llvm::cl::init(true),
                                llvm::cl::desc("Optimize barriers"));
 
+// Whether every thread runs `ifOp`'s body, i.e. the condition selects no subset
+// of them. `threadIVs` are the indices the barrier synchronises over, which
+// name the parallel whose iterations are the threads.
+static bool selectsAllThreads(Operation *ifOp, ValueRange threadIVs) {
+  // Synchronising over no index at all: there is no dimension for the
+  // condition to vary along, so no subset for it to select.
+  if (threadIVs.empty())
+    return true;
+  Operation *par =
+      cast<BlockArgument>(threadIVs.front()).getOwner()->getParentOp();
+
+  SmallVector<Value> worklist;
+  if (auto scfIf = dyn_cast<scf::IfOp>(ifOp))
+    worklist.push_back(scfIf.getCondition());
+  else if (auto affIf = dyn_cast<affine::AffineIfOp>(ifOp))
+    worklist.append(affIf.getOperands().begin(), affIf.getOperands().end());
+  else
+    return false;
+
+  DenseSet<Value> seen;
+  while (!worklist.empty()) {
+    Value v = worklist.pop_back_val();
+    if (!seen.insert(v).second)
+      continue;
+    if (llvm::is_contained(threadIVs, v))
+      return false;
+
+    Operation *owner = isa<BlockArgument>(v)
+                           ? cast<BlockArgument>(v).getOwner()->getParentOp()
+                           : v.getDefiningOp();
+    // Anything from outside the thread parallel holds the same value in every
+    // thread, whatever computed it.
+    if (!owner || !par->isAncestor(owner))
+      continue;
+    // Inside it, a block argument is something like a serial loop's index,
+    // whose value can differ per thread however its bounds were written.
+    if (isa<BlockArgument>(v))
+      return false;
+    Operation *def = v.getDefiningOp();
+    if (def->getNumRegions() != 0)
+      return false;
+    worklist.append(def->getOperands().begin(), def->getOperands().end());
+  }
+  return true;
+}
+
+static bool anyBarrierWithin(Operation *op, BarrierOp except) {
+  bool found = false;
+  op->walk([&](BarrierOp other) {
+    if (other != except)
+      found = true;
+  });
+  return found;
+}
+
+static bool containsBarrier(Operation *op) {
+  bool found = false;
+  op->walk([&](BarrierOp) { found = true; });
+  return found;
+}
+
+// Whether a thread can reach a barrier past `op`. Not just the operations
+// beside it: what encloses `op` may end before the thread does, and a region
+// that runs more than once puts its own earlier operations after this one too.
+static bool anyBarrierAfter(Operation *op) {
+  for (Operation *it = op->getNextNode(); it != nullptr; it = it->getNextNode())
+    if (containsBarrier(it))
+      return true;
+
+  Operation *parent = op->getParentOp();
+  if (!parent)
+    return false;
+  // The thread parallel is where one thread's execution ends.
+  if (isa<scf::ParallelOp, affine::AffineParallelOp>(parent))
+    return false;
+  if (!isa<scf::IfOp, affine::AffineIfOp, memref::AllocaScopeOp>(parent) &&
+      containsBarrier(parent))
+    return true;
+  return anyBarrierAfter(parent);
+}
+
 class BarrierHoist final : public OpRewritePattern<BarrierOp> {
 public:
   using OpRewritePattern<BarrierOp>::OpRewritePattern;
@@ -1569,6 +1623,19 @@ public:
     if (!BarrierOpt)
       return failure();
     if (isa<scf::IfOp, affine::AffineIfOp>(barrier->getParentOp())) {
+      // Moving a barrier across a conditional changes who runs it: inside only
+      // the threads taking the branch do, outside every thread does. That is a
+      // rewrite only where the branch is taken uniformly across the block, and
+      // a condition any thread index reaches is not. CUDA's `if (k >= N)
+      // return;` reads a thread index, and lifting one of the body's barriers
+      // out of it leaves the threads that skipped the body waiting at a barrier
+      // their block-mates never arrive at.
+      Operation *ifOp = barrier->getParentOp();
+      // Lifting a barrier out of a branch only some threads take makes every
+      // thread run it. That is a rewrite where the branch selects no subset of
+      // the threads, or -- moving it past the branch -- where nothing beyond
+      // holds a barrier for the threads that skipped to run instead.
+      bool allThreads = selectsAllThreads(ifOp, barrier.getOperands());
 
       bool below = true;
       for (Operation *it = barrier->getNextNode(); it != nullptr;
@@ -1578,7 +1645,11 @@ public:
           break;
         }
       }
-      if (below) {
+      // A barrier left behind in the branch is the other half of the same
+      // split: the threads that skipped it wait out here, the ones that took
+      // it wait in there.
+      if (below && (allThreads || (!anyBarrierAfter(ifOp) &&
+                                   !anyBarrierWithin(ifOp, barrier)))) {
         rewriter.setInsertionPoint(barrier->getParentOp()->getNextNode());
         BarrierOp::create(rewriter, barrier.getLoc(), barrier.getOperands());
         rewriter.eraseOp(barrier);
@@ -1592,7 +1663,7 @@ public:
           break;
         }
       }
-      if (above) {
+      if (above && allThreads) {
         rewriter.setInsertionPoint(barrier->getParentOp());
         BarrierOp::create(rewriter, barrier.getLoc(), barrier.getOperands());
         rewriter.eraseOp(barrier);
@@ -1668,6 +1739,22 @@ void GPUWrapperOp::build(OpBuilder &builder, OperationState &result) {
   Region *bodyRegion = result.addRegion();
   builder.createBlock(bodyRegion);
   GPUWrapperOp::ensureTerminator(*bodyRegion, builder, result.location);
+}
+
+void GPUWrapperOp::getSuccessorRegions(
+    RegionBranchPoint point, SmallVectorImpl<RegionSuccessor> &regions) {
+  // If the predecessor is the GPUWrapperOp, branch into the body.
+  if (point.isParent()) {
+    regions.push_back(RegionSuccessor(&getRegion()));
+    return;
+  }
+
+  // Otherwise, the region branches back to the parent operation.
+  regions.push_back(RegionSuccessor(getOperation()));
+}
+
+ValueRange GPUWrapperOp::getSuccessorInputs(RegionSuccessor successor) {
+  return ValueRange();
 }
 
 LogicalResult fixupGetFunc(LLVM::CallOp op, OpBuilder &rewriter,
@@ -1752,7 +1839,7 @@ LogicalResult fixupGetFunc(LLVM::CallOp op, OpBuilder &rewriter,
 struct NoopResource : public SideEffects::Resource::Base<NoopResource> {
   MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(NoopResource)
 
-  StringRef getName() final { return "<NoopResource>"; }
+  StringRef getName() const final { return "<NoopResource>"; }
 };
 
 void NoopOp::build(OpBuilder &builder, OperationState &result,
@@ -2025,7 +2112,7 @@ public:
     auto dims = srcMemRefType.getShape().size();
 
     // For now, restrict subview lowering to statically defined memref's
-    if (!srcMemRefType.hasStaticShape() | !resMemRefType.hasStaticShape())
+    if (!srcMemRefType.hasStaticShape() || !resMemRefType.hasStaticShape())
       return failure();
 
     // For now, restrict to simple rank-reducing indexing
@@ -2253,6 +2340,11 @@ struct SimplifySubViewUsers : public OpRewritePattern<memref::SubViewOp> {
                                 PatternRewriter &rewriter) const override {
     bool changed = false;
     int64_t offs = -1;
+    // Only support dynamic offsets in the leading dimension
+    if (llvm::any_of(subindex.getStaticOffsets().drop_front(1),
+                     [](int64_t off) { return off == ShapedType::kDynamic; }))
+      return failure();
+
     for (auto tup :
          llvm::zip(subindex.getStaticOffsets(), subindex.getStaticSizes(),
                    subindex.getStaticStrides())) {
@@ -2268,7 +2360,10 @@ struct SimplifySubViewUsers : public OpRewritePattern<memref::SubViewOp> {
           return failure();
       }
     }
-    Value off = ConstantIndexOp::create(rewriter, subindex.getLoc(), offs);
+    Value off =
+        offs == ShapedType::kDynamic
+            ? subindex.getDynamicOffset(0)
+            : ConstantIndexOp::create(rewriter, subindex.getLoc(), offs);
     assert(off);
 
     for (OpOperand &use : llvm::make_early_inc_range(subindex->getUses())) {
@@ -2666,4 +2761,197 @@ void SubIndexOp::getCanonicalizationPatterns(RewritePatternSet &results,
                  LoadSelect<affine::AffineLoadOp>, LoadSelect<LLVM::LoadOp>>(
       context);
   // Disabled: SubToSubView
+}
+
+OpFoldResult RotateOp::fold(FoldAdaptor adaptor) {
+  if (getAmount() == 0) {
+    return getOperand();
+  }
+  return nullptr;
+}
+
+OpFoldResult WrapOp::fold(FoldAdaptor adaptor) {
+  if (getLhs() == 0 && getRhs() == 0) {
+    return getOperand();
+  }
+  return nullptr;
+}
+
+OpFoldResult ExtendOp::fold(FoldAdaptor adaptor) {
+  if (getLhs() == 0 && getRhs() == 0) {
+    return getOperand();
+  }
+  return nullptr;
+}
+
+LogicalResult enzymexla::MultiRotateOp::verify() {
+  auto operandType = cast<RankedTensorType>(getOperand().getType());
+  int64_t rank = operandType.getRank();
+
+  // Verify left_amount and right_amount are non-negative
+  int32_t leftAmount = getLeftAmount();
+  int32_t rightAmount = getRightAmount();
+
+  if (leftAmount < 0)
+    return emitOpError("left_amount must be non-negative, got ") << leftAmount;
+
+  if (rightAmount < 0)
+    return emitOpError("right_amount must be non-negative, got ")
+           << rightAmount;
+
+  // Verify dimension is valid
+  int32_t dimension = getDimension();
+  if (dimension < 0 || dimension >= rank)
+    return emitOpError("dimension ")
+           << dimension << " is out of range for tensor of rank " << rank;
+
+  // Verify number of results
+  int64_t expectedNumResults = leftAmount + rightAmount + 1;
+  if ((int64_t)getNumResults() != expectedNumResults)
+    return emitOpError("expected ")
+           << expectedNumResults
+           << " results (left_amount + right_amount + 1), got "
+           << getNumResults();
+
+  // Verify all result types match the operand type (rotation preserves shape)
+  for (auto result : getResults()) {
+    if (result.getType() != operandType)
+      return emitOpError("all results must have the same type as the operand, "
+                         "expected ")
+             << operandType << " but got " << result.getType();
+  }
+
+  return success();
+}
+
+LogicalResult enzymexla::MultiSliceOp::verify() {
+  auto operandType = cast<RankedTensorType>(getOperand().getType());
+  int64_t rank = operandType.getRank();
+
+  // Verify amount is non-negative
+  int32_t amount = getAmount();
+
+  if (amount < 0)
+    return emitOpError("amount must be non-negative, got ") << amount;
+
+  // Verify dimension is valid
+  int32_t dimension = getDimension();
+  if (dimension < 0 || dimension >= rank)
+    return emitOpError("dimension ")
+           << dimension << " is out of range for tensor of rank " << rank;
+
+  // Verify slice parameter arrays have correct size
+  auto startIndices = getStartIndices();
+  auto limitIndices = getLimitIndices();
+  auto strides = getStrides();
+
+  if ((int64_t)startIndices.size() != rank)
+    return emitOpError("start_indices size ")
+           << startIndices.size() << " does not match tensor rank " << rank;
+
+  if ((int64_t)limitIndices.size() != rank)
+    return emitOpError("limit_indices size ")
+           << limitIndices.size() << " does not match tensor rank " << rank;
+
+  if ((int64_t)strides.size() != rank)
+    return emitOpError("strides size ")
+           << strides.size() << " does not match tensor rank " << rank;
+
+  // Verify strides are positive
+  for (int64_t i = 0; i < rank; ++i) {
+    if (strides[i] <= 0)
+      return emitOpError("strides must be positive, got ")
+             << strides[i] << " at index " << i;
+  }
+
+  // Verify number of results
+  int64_t expectedNumResults = amount + 1;
+  if ((int64_t)getNumResults() != expectedNumResults)
+    return emitOpError("expected ")
+           << expectedNumResults << " results (amount + 1), got "
+           << getNumResults();
+
+  // Verify indices are in bounds for all slices
+  // Result i uses indices shifted by +i along the slice dimension
+  auto operandShape = operandType.getShape();
+  for (int64_t i = 0; i < rank; ++i) {
+    auto begin = startIndices[i];
+    auto end = limitIndices[i];
+
+    // For the slice dimension, the last result (at index `amount`)
+    // has its indices shifted by `amount`
+    if (i == dimension) {
+      end += amount;
+    }
+
+    if (begin < 0 || end > operandShape[i]) {
+      return emitOpError("indices at dimension ") << i << " are out of bounds";
+    }
+  }
+
+  // Compute expected result shape from slice parameters
+  SmallVector<int64_t> expectedShape;
+  for (int64_t i = 0; i < rank; ++i) {
+    int64_t sliceSize =
+        (limitIndices[i] - startIndices[i] + strides[i] - 1) / strides[i];
+    expectedShape.push_back(sliceSize);
+  }
+
+  auto expectedResultType =
+      RankedTensorType::get(expectedShape, operandType.getElementType());
+
+  // Verify all result types have the expected shape
+  for (auto [idx, result] : llvm::enumerate(getResults())) {
+    if (result.getType() != expectedResultType)
+      return emitOpError("result #")
+             << idx << " has type " << result.getType() << " but expected "
+             << expectedResultType << " based on slice parameters";
+  }
+
+  return success();
+}
+
+LogicalResult enzymexla::MultiPadOp::verify() {
+  auto operandType = cast<RankedTensorType>(getOperand().getType());
+  int64_t rank = operandType.getRank();
+
+  int32_t dimension = getDimension();
+  if (dimension < 0 || dimension >= rank)
+    return emitOpError("dimension ")
+           << dimension << " is out of range for tensor of rank " << rank;
+
+  int64_t amount = getAmount();
+  if (amount < 0)
+    return emitOpError("amount must be non-negative");
+
+  int64_t expectedNumResults = amount + 1;
+  if ((int64_t)getNumResults() != expectedNumResults)
+    return emitOpError("expected ")
+           << expectedNumResults << " results (amount + 1), got "
+           << getNumResults();
+
+  auto operandShape = operandType.getShape();
+  for (auto [idx, result] : llvm::enumerate(getResults())) {
+    auto resType = cast<RankedTensorType>(result.getType());
+    if (resType.getRank() != rank)
+      return emitOpError("result #")
+             << idx << " must have the same rank as operand";
+
+    for (int64_t d = 0; d < rank; ++d) {
+      if (d == dimension) {
+        int64_t expectedSize = operandShape[d] + amount;
+        if (resType.getDimSize(d) != expectedSize)
+          return emitOpError("result #")
+                 << idx << " dimension " << d << " must have size "
+                 << expectedSize << " but got " << resType.getDimSize(d);
+      } else {
+        if (resType.getDimSize(d) != operandShape[d])
+          return emitOpError("result #")
+                 << idx << " dimension " << d << " must match operand size "
+                 << operandShape[d] << " but got " << resType.getDimSize(d);
+      }
+    }
+  }
+
+  return success();
 }

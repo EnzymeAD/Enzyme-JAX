@@ -29,7 +29,7 @@ module {
 // FORWARD-NEXT:      %1 = stablehlo.add %iterArg, %c_0 : tensor<i64>
 // FORWARD-NEXT:      %2 = stablehlo.multiply %iterArg_2, %iterArg_1 : tensor<3xf64>
 // FORWARD-NEXT:      %3 = stablehlo.multiply %iterArg_2, %iterArg_1 : tensor<3xf64>
-// FORWARD-NEXT:      %4 = arith.addf %2, %3 : tensor<3xf64>
+// FORWARD-NEXT:      %4 = arith.addf %2, %3 fastmath<fast> : tensor<3xf64>
 // FORWARD-NEXT:      %5 = stablehlo.multiply %iterArg_1, %iterArg_1 : tensor<3xf64>
 // FORWARD-NEXT:      stablehlo.return %1, %5, %4 : tensor<i64>, tensor<3xf64>, tensor<3xf64>
 // FORWARD-NEXT:    }

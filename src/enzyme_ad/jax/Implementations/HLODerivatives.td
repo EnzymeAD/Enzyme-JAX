@@ -208,7 +208,7 @@ def ShadowLHSDotDim : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   );
 }]>;
 
-def ShadowLHSDotRes : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+def ShadowLHSDotResTy : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   auto existingattr = op.getDotDimensionNumbersAttr();
   auto elemType = cast<RankedTensorType>(op->getResult(0).getType()).getElementType();
   auto resShape = cast<RankedTensorType>(op->getResult(0).getType()).getShape();
@@ -242,8 +242,12 @@ def ShadowLHSDotRes : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
     shapes.push_back(resShape[i]);
   }
 
-  for (auto i: rhsContracting)
-    shapes.push_back(rhsShape[i]);
+  // Add shapes for RHS kept dims in backward dot (which are original rhsContracting)
+  // Iterate in dimension order to preserve correct shape ordering
+  for (int64_t i = 0; i < rhsRank; i++) {
+    if (llvm::is_contained(rhsContracting, i))
+      shapes.push_back(rhsShape[i]);
+  }
 
   RankedTensorType::get(shapes, elemType);
 }]>;
@@ -298,10 +302,8 @@ def ShadowRHSDotDim : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   auto lhsBatching = existingattr.getLhsBatchingDimensions();
   auto lhsContracting = existingattr.getLhsContractingDimensions();
   auto rhsBatching = existingattr.getRhsBatchingDimensions();
-  auto rhsContracting = existingattr.getRhsContractingDimensions();
 
   auto lhsRank = cast<RankedTensorType>(op.getLhs().getType()).getRank();
-  auto rhsRank = cast<RankedTensorType>(op.getRhs().getType()).getRank();
 
   SmallVector<int64_t> lhsKept;
   for (int64_t i = 0; i < lhsRank; i++) {
@@ -329,7 +331,7 @@ def ShadowRHSDotDim : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   );
 }]>;
 
-def ShadowRHSDotRes : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+def ShadowRHSDotResTy : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   auto existingattr = op.getDotDimensionNumbersAttr();
   auto elemType = cast<RankedTensorType>(op->getResult(0).getType()).getElementType();
   auto resShape = cast<RankedTensorType>(op->getResult(0).getType()).getShape();
@@ -338,12 +340,7 @@ def ShadowRHSDotRes : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
   auto lhsContracting = existingattr.getLhsContractingDimensions();
   auto lhsShape = cast<RankedTensorType>(op.getLhs().getType()).getShape();
 
-  auto rhsBatching = existingattr.getRhsBatchingDimensions();
-  auto rhsContracting = existingattr.getRhsContractingDimensions();
-  auto rhsShape = cast<RankedTensorType>(op.getRhs().getType()).getShape();
-
   auto lhsRank = cast<RankedTensorType>(op.getLhs().getType()).getRank();
-  auto rhsRank = cast<RankedTensorType>(op.getRhs().getType()).getRank();
 
   SmallVector<int64_t> shapes;
 
@@ -351,7 +348,6 @@ def ShadowRHSDotRes : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
     shapes.push_back(lhsShape[B]);
 
   int64_t lhsKeptSize = lhsRank - lhsBatching.size() - lhsContracting.size();
-  int64_t rhsKeptSize = rhsRank - rhsBatching.size() - rhsContracting.size();
 
   SmallVector<int64_t> resContractingDims;
   for (int64_t i = 0; i < lhsKeptSize; i++) {
@@ -363,8 +359,12 @@ def ShadowRHSDotRes : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
     shapes.push_back(resShape[i]);
   }
 
-  for (auto i: lhsContracting)
-    shapes.push_back(lhsShape[i]);
+  // Add shapes for LHS kept dims in backward dot (which are original lhsContracting)
+  // Iterate in dimension order to preserve correct shape ordering
+  for (int64_t i = 0; i < lhsRank; i++) {
+    if (llvm::is_contained(lhsContracting, i))
+      shapes.push_back(lhsShape[i]);
+  }
 
   RankedTensorType::get(shapes, elemType);
 }]>;
@@ -969,12 +969,12 @@ def : HLODerivative<"AddOp", (Op $x, $y),
                     (Add (Shadow $x), (Shadow $y))
                   >;
 
-def : HLODerivative<"Atan2Op", (Op $x, $y),
+def : HLODerivative<"Atan2Op", (Op $y, $x),
                     [
-                      (CheckedMul (DiffeRet), (Div (Neg $y), (Add (Pow $x, (HLOConstantFP<"2">)), (Pow $y, (HLOConstantFP<"2"> $y))))),
-                      (CheckedMul (DiffeRet), (Div $x, (Add (Pow $x, (HLOConstantFP<"2">)), (Pow $y, (HLOConstantFP<"2"> $y)))))
+                      (CheckedMul (DiffeRet), (Div $x, (Add (Mul $x, $x), (Mul $y, $y)))),
+                      (CheckedMul (DiffeRet), (Div (Neg $y), (Add (Mul $x, $x), (Mul $y,  $y)))),
                     ],
-                    (CheckedDiv (Sub (Mul $x, (Shadow $y)), (Mul $y, (Shadow $x))), (Add (Pow $x, (HLOConstantFP<"2">)), (Pow $y, (HLOConstantFP<"2"> $y))))
+                    (CheckedDiv (Sub (Mul $x, (Shadow $y)), (Mul $y, (Shadow $x))), (Add (Mul $x, $x), (Mul $y, $y)))
                   >;
 
 def : HLOReadOnlyIdentityOp<"BroadcastInDimOp">;
@@ -1034,7 +1034,7 @@ def : HLODerivative<"GatherOp", (Op $operand, $start_indices),
                     ],
                     // Forward shadow rule
                     (SelectIfActive $operand,
-                      (Gather 
+                      (Gather
                         (ResultTypes),
                         (Shadow $operand),
                         $start_indices,
@@ -1078,15 +1078,19 @@ def : HLODerivative<"ClampOp", (Op $min, $operand, $max), [
         (SelectIfActive $operand, (Shadow $operand), (HLOConstantFP<"0"> $operand)))
 )>;
 
+// d/dx cbrt(x) = 1 / (3 * cbrt(x)^2). Computed from the real primal cbrt(x),
+// which is defined and smooth for x < 0, rather than through pow(x, -2/3),
+// which is NaN on negative bases (StableHLO power spec: power([-36],[1.1]) = -nan).
+// Mirrors jax.lax.cbrt's JVP (g * (1/3) * integer_pow(ans, -2)). See issue #2571.
 def : HLODerivative<"CbrtOp", (Op $x), [
-  (CheckedMul (DiffeRet), (Div (Pow $x, (Div (HLOConstantFP<"-2">), (HLOConstantFP<"3">))), (HLOConstantFP<"3">))),
+  (CheckedDiv (DiffeRet), (Mul (HLOConstantFP<"3">), (Mul (Cbrt $x), (Cbrt $x)))),
 ]>;
 
 def : HLOInactiveOp<"CompareOp">;
 
 def : HLODerivative<"ComplexOp", (Op $re, $im), [
   (Real (DiffeRet)),
-  (Imag (DiffeRet)),
+  (Neg (Imag (DiffeRet))),
 ], (Complex (Shadow $re), (Shadow $im))>;
 
 def : HLOMemoryIdentityOp<"ConcatenateOp", [], [-1]>;
@@ -1134,12 +1138,43 @@ def : HLODerivative<"DivOp", (Op $x, $y),
                     (CheckedDiv (Sub (SelectIfActive $x, (Mul (Shadow $x), $y), (HLOConstantFP<"0">)), (SelectIfActive $y, (Mul (Shadow $y), $x), (HLOConstantFP<"0">))), (Mul $y, $y))
                   >;
 
+def DotGeneralBatchedResultType : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  auto resType = cast<RankedTensorType>(op.getResult().getType());
+  if (gutils->width != 1) {
+    resType = RankedTensorType::get(
+      shiftDimensions(resType.getShape(), {gutils->width}, 0),
+      resType.getElementType()
+    );
+  }
+  resType;
+}]>;
+
+def DotGeneralBatchedDim : GlobalExpr</*needsprimal*/0, /*needsshadow*/0, [{
+  auto attr = op.getDotDimensionNumbersAttr();
+  if (gutils->width != 1) {
+    attr = DotDimensionNumbersAttr::get(
+      attr.getContext(),
+      shiftDimensions(attr.getLhsBatchingDimensions(), {0}, 1),
+      shiftDimensions(attr.getRhsBatchingDimensions(), {0}, 1),
+      shiftDimensions(attr.getLhsContractingDimensions(), {}, 1),
+      shiftDimensions(attr.getRhsContractingDimensions(), {}, 1)
+    );
+  }
+  attr;
+}]>;
+
 def : HLODerivative<"DotGeneralOp", (Op $lhs, $rhs),
                     [
-                        (Transpose (TypeOf $lhs), (DotGeneral (ShadowLHSDotRes), (DiffeRet), $rhs, (ShadowLHSDotDim), (ResultDotPrec), (ResultDotAlg)), (ShadowLHSTranspose)),
-                        (Transpose (TypeOf $rhs), (DotGeneral (ShadowRHSDotRes), (DiffeRet), $lhs, (ShadowRHSDotDim), (ResultDotPrec), (ResultDotAlg)), (ShadowRHSTranspose))
+                        (Transpose (TypeOf $lhs), (DotGeneral (ShadowLHSDotResTy), (DiffeRet), $rhs, (ShadowLHSDotDim), (ResultDotPrec), (ResultDotAlg)), (ShadowLHSTranspose)),
+                        (Transpose (TypeOf $rhs), (DotGeneral (ShadowRHSDotResTy), (DiffeRet), $lhs, (ShadowRHSDotDim), (ResultDotPrec), (ResultDotAlg)), (ShadowRHSTranspose))
                       ],
-                    (Add (SelectIfActive $lhs, (DotGeneral (ResultTypes), (Shadow $lhs), $rhs, (ResultDotDim), (ResultDotPrec), (ResultDotAlg)), (HLOConstantFP<"0">)), (SelectIfActive $rhs, (DotGeneral (ResultTypes), $lhs, (Shadow $rhs), (ResultDotDim), (ResultDotPrec), (ResultDotAlg)), (HLOConstantFP<"0">)))
+                    (Add
+                      (SelectIfActive $lhs,
+                        (DotGeneral (DotGeneralBatchedResultType), (Shadow $lhs), $rhs, (DotGeneralBatchedDim), (ResultDotPrec), (ResultDotAlg)),
+                        (HLOConstantFP<"0">)),
+                      (SelectIfActive $rhs,
+                        (DotGeneral (DotGeneralBatchedResultType), $lhs, (Shadow $rhs), (DotGeneralBatchedDim), (ResultDotPrec), (ResultDotAlg)),
+                        (HLOConstantFP<"0">)))
                   >;
 
 def : HLOInactiveOp<"DynamicIotaOp">;
@@ -1210,8 +1245,8 @@ def : HLODerivative<"AbsOp", (Op $x),
                   [
                     (SelectIfComplex $x,
                       (Complex
-                        (Div (Real $x), (Abs $x)),
-                        (Neg (Div (Imag $x), (Abs $x)))
+                        (CheckedMul (DiffeRet), (Div (Real $x), (Abs $x))),
+                        (CheckedMul (DiffeRet), (Div (Imag $x), (Abs $x)))
                       ),
                       (Select (Compare $x, (HLOConstantFP<"0"> (Shadow $x)), (GE)), (DiffeRet), (Neg (DiffeRet))))
                   ], (SelectIfComplex $x,
@@ -1429,12 +1464,9 @@ def : HLODerivative<"FftOp",
         (
           SelectIfIRFFT
           (
-            Conj
-            (
-              Mul
-              (Fft (DiffeRet), (RFFTType), (FftLength)),
-              (IRFFTMaskedScaling)
-            )
+            Mul
+            (Conj (Fft (Conj (DiffeRet)), (RFFTType), (FftLength))),
+            (IRFFTMaskedScaling)
           ),
           (
             Fft (DiffeRet), (FftType), (FftLength)

@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --auto-batching --inline --enzyme-hlo-opt %s | FileCheck %s
+// RUN: enzymexlamlir-opt --auto-batching --enzyme-hlo-opt %s | FileCheck %s
 
 func.func @main(%arg0: tensor<3x4x2xf32>, %arg1: tensor<6x3x5xf32>) -> (tensor<5x3x1xf32>, tensor<5x3x1xf32>, tensor<5x3x1xf32>, tensor<5x3x1xf32>, tensor<5x3x1xf32>, tensor<5x3x1xf32>) {
     %0 = stablehlo.slice %arg1 [5:6, 0:3, 0:5] : (tensor<6x3x5xf32>) -> tensor<1x3x5xf32>

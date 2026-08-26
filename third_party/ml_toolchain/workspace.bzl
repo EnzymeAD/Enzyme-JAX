@@ -5,11 +5,12 @@ load("//:workspace.bzl", "ML_TOOLCHAIN_COMMIT", "ML_TOOLCHAIN_SHA256")
 
 ML_TOOLCHAIN_PATCHES = [
     """
-	sed -i.bak0 "/D_FORTIFY_SOURCE/d" cc/features/BUILD third_party/gpus/crosstool/cc_toolchain_config.bzl.tpl
+       sed -i.bak0 "/D_FORTIFY_SOURCE/d" cc/features/BUILD gpu/cuda/legacy/crosstool/cc_toolchain_config.bzl.tpl
 	""",
 ]
 
 def repo(extra_patches = [], override_commit = ""):
+    return
     commit = ML_TOOLCHAIN_COMMIT
     sha = ML_TOOLCHAIN_SHA256
     if len(override_commit):

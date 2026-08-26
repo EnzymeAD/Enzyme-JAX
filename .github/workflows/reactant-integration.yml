@@ -1,0 +1,50 @@
+name: Reactant Integration
+on:
+  push:
+    branches:
+      - main
+    paths: &paths
+      - ".github/workflows/reactant-integration.yml"
+      - "**/BUILD"
+      - "**/WORKSPACE"
+      - "**/*.bzl"
+      - "builddeps/**"
+      - "patches/**"
+      - "src/**"
+      - "test/**"
+      - "third_party/**"
+  pull_request:
+    branches:
+      - main
+    paths: *paths
+  workflow_dispatch:
+    inputs:
+      enzymejax_commit:
+        description: 'Enzyme-JAX commit to test'
+        required: false
+        default: ''
+        type: string
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ startsWith(github.ref, 'refs/pull/') }}
+
+jobs:
+  integration:
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - linux-x86-n2-32
+          # - macOS-latest
+          - linux-x86-a2-48-a100-4gpu
+          - linux-x86-ct6e-180-4tpu
+    name: '${{ matrix.os }} Integration'
+    uses: EnzymeAD/Reactant.jl/.github/workflows/CommonCI.yml@main
+    secrets: inherit
+    with:
+      enzymejax_commit: ${{ inputs.enzymejax_commit || github.sha }}
+      julia_version: '1.12'
+      os: ${{ matrix.os }}
+      localjll: true
+      runtime: "ifrt"

@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --enzyme-hlo-opt --auto-batching --inline --enzyme-hlo-opt %s | FileCheck %s
+// RUN: enzymexlamlir-opt --enzyme-hlo-opt --auto-batching --enzyme-hlo-opt="passses=65536" %s | FileCheck %s
 
 module @reactant_bar attributes {mhlo.num_partitions = 1 : i64, mhlo.num_replicas = 1 : i64} {
   func.func @main(%arg0: tensor<5x7xf32> {tf.aliasing_output = 1 : i32}) -> (tensor<7x5xf32>, tensor<5x7xf32>) {

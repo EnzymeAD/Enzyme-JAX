@@ -7,55 +7,167 @@
 //===----------------------------------------------------------------------===//
 #pragma once
 
+#include "mlir/IR/IRMapping.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/MapVector.h"
 
 #include "stablehlo/dialect/StablehloOps.h"
-
-using namespace mlir;
-using namespace mlir::stablehlo;
 
 namespace mlir {
 
 namespace enzyme {
 
 struct WhileLoopInfo {
-  WhileOp op;
-  DenseMap<Value, APInt> inductionVarOffsets;
-  mlir::Value start; // guaranteed to dominate the while op
-  mlir::Value limit; // not guaranteed to dominate the while op
-  mlir::Value step;  // not guaranteed to dominate the while op
+  struct AffineIndexInfo {
+    llvm::APInt scale;
+    llvm::APInt offset;
+  };
 
-  WhileLoopInfo(WhileOp op_) : op(op_) {}
+  struct Bounds {
+    llvm::APInt min;
+    llvm::APInt max;
+  };
+
+  WhileLoopInfo(stablehlo::WhileOp op_) : op(op_) {}
 
   LogicalResult computeInfo();
 
-  bool isValid() { return start && limit && step; }
+  stablehlo::WhileOp getOp() { return op; }
+
+  bool isValid() { return start && limit && foundStep; }
+  bool isConstantStart() { return constStart.has_value(); }
+  bool isConstantLimit() { return constLimit.has_value(); }
+  bool isConstantStep() { return constStep.has_value(); }
   bool isConstant() {
-    return getConstantStep().has_value() && getConstantStart().has_value() &&
-           getConstantLimit().has_value();
+    return isConstantStart() && isConstantLimit() && isConstantStep();
   }
 
-  std::optional<int64_t> getConstantStep();
-  std::optional<int64_t> getConstantStart();
-  std::optional<int64_t> getConstantLimit();
+  std::optional<int64_t> getConstantStep() { return constStep; }
+  std::optional<int64_t> getConstantStart() { return constStart; }
+  std::optional<int64_t> getConstantLimit() { return constLimit; }
 
-  Value getInductionVariable() { return op.getBody().front().getArgument(0); }
+  bool isStepOne();
+
+  mlir::Value getStart() { return start; }
+
+  mlir::Value getLimit() { return limit; }
+
+  mlir::Value getStep(OpBuilder &builder, const IRMapping &mapping = {});
+
+  // returns the arg number of the iv. assumes computeInfo() has been called and
+  // was successful
+  size_t getArgNumber() {
+    auto &condBlk = op.getCond().front();
+    auto condTerm = cast<stablehlo::ReturnOp>(condBlk.getTerminator());
+    auto condV = condTerm->getOperand(0);
+    auto cond = condV.getDefiningOp<stablehlo::CompareOp>();
+    if (!cond ||
+        cond.getComparisonDirection() != stablehlo::ComparisonDirection::LT) {
+      return -1;
+    }
+    auto induct = dyn_cast<BlockArgument>(cond.getOperand(0));
+    size_t blockArgNum = induct.getArgNumber();
+    return blockArgNum;
+  }
+
+  // assumes computeInfo() has been called and was successful
+  // returns the induction variable in the body of the while op
+  Value getInductionVariable() {
+    auto blockArgNum = getArgNumber();
+    return blockArgNum == -1 ? nullptr
+                             : op.getBody().front().getArgument(blockArgNum);
+  }
 
   int64_t getConstantNumIters();
-  Value getNumIters(OpBuilder &builder);
+  Value getNumIters(OpBuilder &builder, const IRMapping &mapping = {});
 
-  void propagateInductionVarOffsets();
-  DenseMap<Value, APInt> getInductionVarOffsets() {
-    return inductionVarOffsets;
+  void propagateAffineIndexInfo();
+  void propagateAffineIndexInfo(Value v, AffineIndexInfo curInfo,
+                                SmallVectorImpl<Value> &newPropagated);
+
+  void propagateBounds();
+  void propagateBounds(Value v, Bounds curBounds,
+                       SmallVectorImpl<Value> &newPropagated);
+
+  std::optional<Bounds> getBounds(Value v);
+
+  llvm::MapVector<Value, AffineIndexInfo> getAffineIndexInfo() {
+    return affineIndexInfo;
   }
+
+  llvm::MapVector<Value, Bounds> &getBoundsMap() { return boundsMap; }
+
+  unsigned getBoundsBitWidth() const { return boundsBitWidth; }
+
+  bool isConstantAcrossIterations(Value v, bool checkOperands = true);
+  bool isConstantAcrossIterations(Value v, Value &outerValue,
+                                  SmallVector<Operation *> &canBeHoisted,
+                                  bool checkOperands = true);
+
+  bool canHoistOperationFromLoop(mlir::stablehlo::DynamicSliceOp sliceOp,
+                                 SmallVectorImpl<int64_t> &dimensions);
+  bool hoistOperationFromLoop(OpBuilder &builder, Value operand,
+                              mlir::stablehlo::DynamicSliceOp sliceOp,
+                              int64_t sliceIndex, Value &result);
+  bool hoistOperationFromLoop(OpBuilder &builder, Value operand,
+                              mlir::stablehlo::DynamicSliceOp sliceOp,
+                              SmallVectorImpl<int64_t> &dimensions,
+                              Value &result);
+
+  bool canHoistOperationFromLoop(mlir::stablehlo::DynamicUpdateSliceOp dusOp,
+                                 SmallVectorImpl<int64_t> &dimensions);
+  bool hoistOperationFromLoop(OpBuilder &builder, Value operand, Value update,
+                              mlir::stablehlo::DynamicUpdateSliceOp dusOp,
+                              int64_t dusIndex, Value &result);
+  bool hoistOperationFromLoop(OpBuilder &builder, Value operand, Value update,
+                              mlir::stablehlo::DynamicUpdateSliceOp dusOp,
+                              SmallVectorImpl<int64_t> &dimensions,
+                              Value &result);
 
 private:
-  APInt updateOffset(APInt curOffset, APInt update) {
-    if (curOffset.getBitWidth() != update.getBitWidth())
-      update = update.sextOrTrunc(curOffset.getBitWidth());
-    return curOffset + update;
-  }
+  stablehlo::WhileOp op;
+
+  mlir::Value start; // guaranteed to dominate the while op
+  std::optional<int64_t> constStart;
+
+  mlir::Value limit; // not guaranteed to dominate the while op
+  std::optional<int64_t> constLimit;
+
+  mlir::Value step; // not guaranteed to dominate the while op
+  APInt stepInt;
+  bool foundStep;
+  std::optional<int64_t> constStep;
+
+  llvm::MapVector<Value, AffineIndexInfo> affineIndexInfo;
+  DenseSet<Value> affineIndexPropagationVisited;
+
+  llvm::MapVector<Value, Bounds> boundsMap;
+  unsigned int boundsBitWidth;
+
+  std::optional<Bounds> computeBounds(Operation *op);
+
+  void computeConstantValues();
+
+  bool isConstantValue(Value v, llvm::APInt &constVal);
+
+  std::optional<int64_t> getConstantStepCalculate();
+  std::optional<int64_t> getConstantStartCalculate();
+  std::optional<int64_t> getConstantLimitCalculate();
+
+  AffineIndexInfo updateAffineIndexInfo(AffineIndexInfo curInfo,
+                                        llvm::APInt scale, llvm::APInt offset);
 };
+
+template <typename OpTy>
+void hoistStartIndicesOutsideLoop(OpTy op, OpBuilder &builder,
+                                  SmallVectorImpl<Value> &newStartIndices,
+                                  SmallVectorImpl<int64_t> &dimensions,
+                                  WhileLoopInfo &whileLoopInfo);
+
+void hoistChainOfOps(DenseMap<Value, SmallVector<Operation *>> &hoistMap,
+                     OpBuilder &builder, stablehlo::WhileOp whileOp,
+                     WhileLoopInfo &info,
+                     DenseMap<Value, Value> &hoistedValues);
 
 } // end namespace enzyme
 

@@ -11,10 +11,24 @@
 
 include "mlir/Pass/PassBase.td"
 
+def TestPolymerPass : Pass<"test-polymer"> {
+  let dependentDialects = [
+    "enzymexla::EnzymeXLADialect",
+  ];
+}
+
 def CanonicalizeLoopsPass : InterfacePass<"canonicalize-loops", 
                                           "mlir::FunctionOpInterface"> {
   let summary = "Canonicalize loops";
   let dependentDialects = ["affine::AffineDialect"];
+  let options = [
+    Option<"speculate_if", "speculate_if", "bool",
+           /*default=*/"false",
+	   "Whether to speculate if statement bodies">,
+    Option<"speculate_partial_if", "speculate_partial_if", "bool",
+           /*default=*/"false",
+	   "Whether to partially speculate if statement bodies">
+  ];
 }
 
 def DialectCanonicalize : Pass<"dialect-canonicalize"> {
@@ -65,7 +79,6 @@ def MarkFunctionMemoryEffectsPass : Pass<"mark-func-memory-effects", "ModuleOp">
   let summary = "Attach enzymexla.memory_effects attribute summarizing memory access";
   let dependentDialects = [
     "mlir::LLVM::LLVMDialect",
-    "triton::TritonDialect",
     "memref::MemRefDialect",
   ];
   let options = [
@@ -100,11 +113,50 @@ def ArithRaisingPass : Pass<"arith-raise"> {
       /*description=*/"Whether to raise to stablehlo vs mhlo">];
 }
 
+def MultiFloatConversionPass : Pass<"multi-float-conversion"> {
+  let summary = "Rewrite floating-point computations to use multi-float representation (tensor of 2xY).";
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "tensor::TensorDialect",
+    "arith::ArithDialect",
+  ];
+  let options = [
+    Option<"sourceType", "source-type", "std::string", "\"f64\"", "Source floating-point type (e.g., f64, f32)">,
+    Option<"targetType", "target-type", "std::string", "\"f32\"", "Target floating-point type (e.g., f32, f16, bf16)">,
+    Option<"concatDimension", "concat-dimension", "std::string", "\"first\"", "Dimension to concatenate ('first' or 'last')">,
+    Option<"expansionSize", "expansion-size", "int32_t", "2", "Number of limbs for expansion (1 or 2)">,
+    Option<"convertSignatures", "convert-signatures", "bool", "false", "Whether to convert function signatures">,
+    Option<"divSubsteps", "div-substeps", "int32_t", "0", "Number of Newton-Raphson iterations for division (0 for Dekker's algorithm)">,
+    Option<"dotGeneralToReduce", "dot-general-to-reduce", "bool", "true", "Whether to rewrite dot_general to mul + reduce as preprocessing">,
+    Option<"preciseReduce", "precise-reduce", "bool", "false", "Whether to use precise MultiFloat reduction with custom addition in block">,
+  ];
+}
+
+def LowerComplexOperationsPass : Pass<"lower-complex-operations"> {
+  let summary = "Lower operations on complex-element tensor types to use real elements with an extra dimension.";
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "tensor::TensorDialect",
+    "arith::ArithDialect",
+  ];
+  let options = [
+    Option<"concatDimension", "concat-dimension", "std::string", "\"first\"", "Dimension to concatenate ('first' or 'last')">,
+  ];
+}
+
 def TensorEmptyOpRaisingPass : Pass<"tensor-empty-raise"> {
   let summary = "Raise tensor.empty ops";
   let dependentDialects = [
     "tensor::TensorDialect",
     "stablehlo::StablehloDialect"
+  ];
+}
+
+def KernelCastPass : Pass<"kernelcast", "func::FuncOp"> {
+  let summary = "Cast GPU kernel floating point type based on enzymexla.float_type attribute";
+  let dependentDialects = [
+    "arith::ArithDialect",
+    "func::FuncDialect",
   ];
 }
 
@@ -132,6 +184,12 @@ def EnzymeHLOOptPass : Pass<"enzyme-hlo-opt"> {
         /*type=*/"bool",
         /*default=*/"false",
         /*description=*/"Whether to raise to assume all variables are finite">,
+    Option<
+        /*C++ variable name=*/"licm_passes",
+        /*CLI argument=*/"licm_passes",
+        /*type=*/"bool",
+        /*default=*/"false",
+        /*description=*/"Whether to run LICM passes">,
     Option<
         /*C++ variable name=*/"no_nan",
         /*CLI argument=*/"no_nan",
@@ -174,6 +232,18 @@ def EnzymeHLOOptPass : Pass<"enzyme-hlo-opt"> {
         /*type=*/"bool",
         /*default=*/"false",
         /*description=*/"Enable convert to convolution">,
+    Option<
+        /*C++ variable name=*/"enable_auto_batching_passes",
+        /*CLI argument=*/"enable_auto_batching_passes",
+        /*type=*/"bool",
+        /*default=*/"false",
+        /*description=*/"Enable auto batching passes">,
+    Option<
+        /*C++ variable name=*/"structured_tensors_detection",
+        /*CLI argument=*/"structured_tensors_detection",
+        /*type=*/"bool",
+        /*default=*/"false",
+        /*description=*/"Enable detection of structured tensor operations (syrk, symm, etc.)">
   ];
 }
 
@@ -188,6 +258,52 @@ def EnzymeHLOUnrollPass : Pass<"enzyme-hlo-unroll"> {
         /*type=*/"int",
         /*default=*/"-1",
         /*description=*/"Only unroll if total iterations is less than this value. If -1, no limit.">,
+    Option<
+        /*C++ variable name=*/"maxOperationThreshold",
+        /*CLI argument=*/"max-operation-threshold",
+        /*type=*/"int",
+        /*default=*/"-1",
+        /*description=*/"Only unroll if total operations is less than this value. If -1, no limit.">
+  ];
+}
+
+def CanonicalizeElementwiseShapesPass
+    : Pass<"canonicalize-elementwise-shapes"> {
+  let summary = "Give each maximal elementwise chain a single tensor shape";
+  let description = [{
+    `stablehlo.reshape` preserves the linearized element order, so two shapes
+    with the same number of elements denote the same buffer and a reshape
+    between them is a bitcast. Reshape propagation is free to move such a
+    reshape across an elementwise op, and doing so is neutral in isolation.
+
+    It stops being neutral once a value in the chain is consumed at more than
+    one of those shapes, which is common after differentiation: the primal
+    reads an intermediate at the propagated shape while the reverse pass reads
+    it at the pre-propagation shape. The chain then straddles two
+    bitcast-equivalent shapes. XLA groups elementwise producers into a fusion
+    by shape, so a chain whose shape changes part way through can no longer be
+    fused into the op consuming it, and that consumer -- typically a transpose
+    -- is emitted as a standalone kernel instead of absorbing the chain.
+
+    This pass repairs that. For each maximal chain of elementwise ops connected
+    through bitcast reshapes, it picks the shape minimizing the number of
+    reshapes materialized at the chain boundary and rewrites the whole chain
+    into it, leaving reshapes only where a value genuinely escapes to a
+    consumer wanting a different shape. It never increases the boundary reshape
+    count, and does not duplicate arithmetic.
+  }];
+  let dependentDialects = ["stablehlo::StablehloDialect"];
+}
+
+def EnzymeRefineArgumentsPass : Pass<"enzyme-refine-arguments", "ModuleOp"> {
+  let summary = "Refine function arguments with potential type conversion.";
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "tensor::TensorDialect",
+  ];
+  let options = [
+    ListOption<"refinedTypesOption", "refined-types", "std::string",
+               "List of refined types for function arguments">
   ];
 }
 
@@ -219,6 +335,53 @@ def PrintPass : Pass<"print"> {
 
 def SortMemory : Pass<"sort-memory"> {
   let summary = "Sort memory accesses";
+}
+
+def LowerAlignedAffineAccessesPass
+    : Pass<"lower-aligned-affine-accesses"> {
+  let summary = "Lower affine accesses that carry an alignment attribute to "
+                "memref accesses that keep it";
+  let description = [{
+    llvm-to-affine-access records the alignment of the access it raised as an
+    attribute on the affine.load/affine.store it made. Upstream lower-affine
+    rebuilds those as memref accesses without carrying attributes over, so the
+    recorded alignment is lost and the final llvm access is emitted at the
+    element type's ABI alignment -- which may promise more than the pointer
+    holds (a 16-byte member swap clang emits as `load i128, align 8`).
+
+    Run before lower-affine, this lowers exactly the accesses that carry an
+    alignment attribute, keeping their attributes; lower-affine handles the
+    affine.apply this leaves behind, and everything else, as before.
+  }];
+  let dependentDialects = [
+    "affine::AffineDialect",
+    "memref::MemRefDialect",
+  ];
+}
+
+def HoistAllocasPass : Pass<"hoist-allocas"> {
+  let summary = "Move stack allocations to the start of the region that frees "
+                "them";
+  let dependentDialects = [
+    "LLVM::LLVMDialect",
+    "memref::MemRefDialect",
+  ];
+}
+
+def RestorePreserveNVVMPass : Pass<"restore-preserve-nvvm"> {
+  let summary = "Undo PreserveNVVM(Begin)'s linkage and inlining fixups once "
+                "the raising has consumed the calls they protected";
+  let dependentDialects = [
+    "LLVM::LLVMDialect",
+  ];
+}
+
+def SortBlockMemoryPass : Pass<"sort-block-memory"> {
+  let summary = "Hoist non-overlapping loads to the start of their block and "
+                "sink stores to the end";
+  let dependentDialects = [
+    "affine::AffineDialect",
+  ];
 }
 
 def PrintLocationPass : Pass<"print-location"> {
@@ -290,11 +453,21 @@ def SROAWrappersPass : Pass<"sroa-wrappers", "mlir::ModuleOp"> {
   ];
 }
 
+def CanonicalizeParallelPass : Pass<"canonicalize-parallel"> {
+  let summary = "Canonicalize top-level ops in parallel, confining region simplification to each";
+  let options = [Option<
+      "parallel", "parallel", "bool", "false",
+      "Rewrite top-level ops on the context's thread pool; without it "
+      "they are processed serially, still confining region "
+      "simplification to each op">];
+}
+
 def LibDeviceFuncsRaisingPass : Pass<"libdevice-funcs-raise"> {
   let summary = "Raise libdevice function calls to arith/math operations";
   let dependentDialects = [
     "arith::ArithDialect",
     "enzyme::EnzymeDialect",
+    "enzymexla::EnzymeXLADialect",
     "math::MathDialect",
     "gpu::GPUDialect",
   ];
@@ -342,6 +515,7 @@ def ConvertPolygeistToLLVM
                 .Block argument types are updated to use LLVM IR types.
   }];
   let dependentDialects = [
+    "enzymexla::EnzymeXLADialect",
     "func::FuncDialect",
     "LLVM::LLVMDialect",
     "memref::MemRefDialect",
@@ -349,6 +523,7 @@ def ConvertPolygeistToLLVM
     "arith::ArithDialect",
     "cf::ControlFlowDialect",
     "scf::SCFDialect",
+    "ROCDL::ROCDLDialect"
   ];
   let options = [
     Option<"useBarePtrCallConv", "use-bare-ptr-memref-call-conv", "bool",
@@ -416,6 +591,7 @@ def LowerEnzymeXLALinalgPass : Pass<"lower-enzymexla-linalg"> {
     "stablehlo::StablehloDialect",
     "enzymexla::EnzymeXLADialect",
     "LLVM::LLVMDialect",
+    "enzyme::EnzymeDialect",
   ];
 
   let options = [
@@ -431,6 +607,22 @@ def LowerEnzymeXLALinalgPass : Pass<"lower-enzymexla-linalg"> {
         /*type=*/"int",
         /*default=*/"64",
         /*description=*/"Blas int width (32 or 64). Only used for CPU backend.">,
+  ];
+}
+
+def LowerEnzymeXLAMPIPass : Pass<"lower-enzymexla-mpi"> {
+  let summary = "Lower MPI Ops to LLVM";
+  let dependentDialects = [
+    "enzymexla::EnzymeXLADialect",
+    "LLVM::LLVMDialect",
+  ];
+  let options = [
+    Option<
+        /*C++ variable name=*/"backend",
+        /*CLI argument=*/"backend",
+        /*type=*/"std::string",
+        /*default=*/"\"cpu\"",
+        /*description=*/"HW backend">,
   ];
 }
 
@@ -458,10 +650,34 @@ def LowerEnzymeXLALapackPass : Pass<"lower-enzymexla-lapack"> {
   ];
 }
 
-def LowerProbProgToStableHLOPass : Pass<"lower-probprog-to-stablehlo"> {
-  let summary = "Lower computational enzyme ops to StableHLO";
+def LowerEnzymeXLABLASPass : Pass<"lower-enzymexla-blas"> {
+  let summary = "Lower enzymexla.blas ops to stablehlo";
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "enzymexla::EnzymeXLADialect",
+    "LLVM::LLVMDialect",
+  ];
+
+  let options = [
+    Option<
+        /*C++ variable name=*/"backend",
+        /*CLI argument=*/"backend",
+        /*type=*/"std::string",
+        /*default=*/"\"cpu\"",
+        /*description=*/"HW backend">,
+    Option<
+        /*C++ variable name=*/"blasIntWidth",
+        /*CLI argument=*/"blas_int_width",
+        /*type=*/"int",
+        /*default=*/"64",
+        /*description=*/"Blas int width (32 or 64). Only used for CPU backend.">,
+  ];
+}
+
+def LowerImpulseToStableHLOPass : Pass<"lower-impulse-to-stablehlo"> {
+  let summary = "Lower Impulse dialect ops to StableHLO";
   let description = [{
-    Lower computational probprog ops (loop, dot, cholesky_solve, random, unflatten_slice)
+    Lower Impulse dialect ops (loop, dot, cholesky, triangular_solve, random, etc.)
     to StableHLO dialect operations.
   }];
   let dependentDialects = [
@@ -470,6 +686,7 @@ def LowerProbProgToStableHLOPass : Pass<"lower-probprog-to-stablehlo"> {
     "arith::ArithDialect",
     "func::FuncDialect",
     "enzyme::EnzymeDialect",
+    "impulse::ImpulseDialect",
   ];
 
   let options = [
@@ -479,21 +696,26 @@ def LowerProbProgToStableHLOPass : Pass<"lower-probprog-to-stablehlo"> {
         /*type=*/"std::string",
         /*default=*/"\"cpu\"",
         /*description=*/"HW backend">,
+    Option<
+        /*C++ variable name=*/"debugDump",
+        /*CLI argument=*/"debug-dump",
+        /*type=*/"bool",
+        /*default=*/"false",
+        /*description=*/"Enable debug dump">,
   ];
 }
 
-def LowerProbProgTraceOpsPass : Pass<"lower-probprog-trace-ops"> {
-  let summary = "Lower probprog trace manipulation ops to JIT calls";
+def LowerImpulseTraceOpsPass : Pass<"lower-impulse-trace-ops"> {
+  let summary = "Lower Impulse trace manipulation ops to JIT calls";
   let description = [{
-    Lower probprog trace manipulation ops (initTrace, addSampleToTrace, getSampleFromTrace, etc.)
-    to enzymexla.jit_call operations that invoke external runtime functions (e.g., Julia `@cfunction`).
-    This pass also handles type conversions (!enzyme.Trace -> tensor<ui64>, !enzyme.Constraint -> tensor<ui64>).
+    Lower Impulse ops that requires JIT calls
   }];
   let dependentDialects = [
     "stablehlo::StablehloDialect",
     "enzymexla::EnzymeXLADialect",
     "LLVM::LLVMDialect",
     "func::FuncDialect",
+    "impulse::ImpulseDialect",
   ];
 
   let options = [
@@ -506,12 +728,32 @@ def LowerProbProgTraceOpsPass : Pass<"lower-probprog-trace-ops"> {
   ];
 }
 
-def LowerEnzymeXLAMLPass : Pass<"lower-enzymexla-ml"> {
-  let summary = "Lower enzymexla mlops to stablehlo";
+def LowerEnzymeXLAMathPass : Pass<"lower-enzymexla-math"> {
+  let summary = "Lower enzymexla math ops to stablehlo";
   let dependentDialects = [
     "stablehlo::StablehloDialect",
     "chlo::ChloDialect",
     "enzymexla::EnzymeXLADialect",
+    "enzyme::EnzymeDialect",
+  ];
+}
+
+def LowerEnzymeXLAMLPass : Pass<"lower-enzymexla-ml"> {
+  let summary = "Lower enzymexla math ops to stablehlo (deprecated alias for lower-enzymexla-math)";
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "chlo::ChloDialect",
+    "enzymexla::EnzymeXLADialect",
+    "enzyme::EnzymeDialect",
+  ];
+}
+
+def RaiseTritonCustomCallPass : Pass<"raise-triton-custom-call"> {
+  let summary = "Raise triton custom kernel call";
+  let dependentDialects = [
+    "triton::TritonDialect",
+    "mlir::enzymexla::triton_ext::TritonExtDialect",
+    "stablehlo::StablehloDialect"
   ];
 }
 
@@ -629,6 +871,12 @@ def LowerJITPass : Pass<"lower-jit"> {
         /*type=*/"bool",
         /*default=*/"true",
         /*description=*/"whether to use openmp for lowering">,
+    Option<
+        /*C++ variable name=*/"dump_final_module",
+        /*CLI argument=*/"dump_final_module",
+        /*type=*/"bool",
+        /*default=*/"false",
+        /*description=*/"whether to dump the final module before jit">,
   ];
 }
 
@@ -669,6 +917,14 @@ def EnzymeLiftControlFlowToSCFPass : Pass<"enzyme-lift-cf-to-scf"> {
     // TODO: This is only necessary until we have a
     //       ub.unreachable op.
     "func::FuncDialect"
+  ];
+
+  let options = [
+    Option</*C++ variable name=*/"rewrite_index_switch",
+           /*CLI argument=*/"rewrite_index_switch",
+           /*type=*/"bool",
+           /*default=*/"true",
+           /*description=*/"Rewrite scf.index_switch to a chain of scf.if ops">
   ];
 }
 
@@ -712,6 +968,7 @@ def AffineCFG : Pass<"affine-cfg"> {
   let dependentDialects = [
     "scf::SCFDialect",
     "affine::AffineDialect",
+    "enzyme::EnzymeDialect",
   ];
 }
 
@@ -724,20 +981,29 @@ def CuDNNHLOOpt : Pass<"enzymexla-cudnn-hlo-opt"> {
 }
 
 def GPULaunchRecognition : Pass<"gpu-launch-recognition"> {
-  let summary = "Optimize stablehlo to emit cuDNN specific optimizations";
+  let summary = "Recognize and convert GPU kernel launches to GPU dialect operations";
   let dependentDialects = [
     "enzymexla::EnzymeXLADialect",
     "arith::ArithDialect", 
     "gpu::GPUDialect",
     "mlir::NVVM::NVVMDialect",
+    "mlir::ROCDL::ROCDLDialect",
     "mlir::DLTIDialect"
   ];
-  let options = [Option<
+  let options = [
+    Option<
        /*C++ variable name=*/"use_launch_func",
        /*CLI argument=*/"use_launch_func",
        /*type=*/"bool",
        /*default=*/"false",
-       /*description=*/"Convert Periodic Concat to Manual Computation with CollectivePermute">];
+       /*description=*/"Convert Periodic Concat to Manual Computation with CollectivePermute">,
+    Option<
+      /*C++ variable name=*/"backend",
+        /*CLI argument=*/"backend",
+        /*type=*/"std::string",
+        /*default=*/"\"cuda\"",
+        /*description=*/"HW backend">,
+    ];
 }
 
 def MergeGPUModulesPass : Pass<"merge-gpu-modules", "mlir::ModuleOp"> {
@@ -755,23 +1021,35 @@ def ConvertParallelToGPU1 : Pass<"convert-parallel-to-gpu1"> {
 
 def ConvertParallelToGPU2 : Pass<"convert-parallel-to-gpu2"> {
   let summary = "Convert parallel loops to gpu";
-  let dependentDialects = ["func::FuncDialect", "LLVM::LLVMDialect", "memref::MemRefDialect", "gpu::GPUDialect", "mlir::NVVM::NVVMDialect"];
-  let options = [Option<
+  let dependentDialects = ["func::FuncDialect", "LLVM::LLVMDialect", "memref::MemRefDialect", "gpu::GPUDialect", "mlir::NVVM::NVVMDialect", "mlir::ROCDL::ROCDLDialect"];
+  let options = [
+    Option<
        /*C++ variable name=*/"emitGPUKernelLaunchBounds",
        /*CLI argument=*/"emitGPUKernelLaunchBounds",
        /*type=*/"bool",
        /*default=*/"false",
-       /*description=*/"Convert Periodic Concat to Manual Computation with CollectivePermute">];
+       /*description=*/"Convert Periodic Concat to Manual Computation with CollectivePermute">,
+    Option<
+       /*C++ variable name=*/"backend",
+       /*CLI argument=*/"backend",
+       /*type=*/"std::string",
+       /*default=*/"\"cuda\"",
+       /*description=*/"Target backend (cuda or rocm)">
+  ];
 }
 
 def PolygeistMem2Reg : Pass<"polygeist-mem2reg"> {
   let summary = "Replace scf.if and similar with affine.if";
+  let dependentDialects = [
+    "arith::ArithDialect"
+  ];
 }
 
 def OptimizeCommunication : Pass<"optimize-communication"> {
   let summary = "Optimize communication";
   let dependentDialects = [
     "stablehlo::StablehloDialect",
+    "enzymexla::EnzymeXLADialect",
     "sdy::SdyDialect",
   ];
   let options =
@@ -787,6 +1065,53 @@ def OptimizeCommunication : Pass<"optimize-communication"> {
        /*type=*/"int",
        /*default=*/"0",
        /*description=*/"Convert Rotate to Manual Computation with CollectivePermute">,
+       Option<
+       /*C++ variable name=*/"rotate_spmd",
+       /*CLI argument=*/"rotate_spmd",
+       /*type=*/"int",
+       /*default=*/"0",
+       /*description=*/"Convert Rotate to Spmd custom call">,
+       Option<
+       /*C++ variable name=*/"multi_buffer",
+       /*CLI argument=*/"multi_buffer",
+       /*type=*/"int",
+       /*default=*/"0",
+       /*description=*/"Force multi-X to buffer">,
+       Option<
+       /*C++ variable name=*/"multirotate_spmd",
+       /*CLI argument=*/"multirotate_spmd",
+       /*type=*/"int",
+       /*default=*/"0",
+       /*description=*/"Convert MultiRotate to Manual Computation with CollectivePermute">,
+       Option<
+
+       /*C++ variable name=*/"wrap_custom_call",
+
+       /*CLI argument=*/"wrap_custom_call",
+
+       /*type=*/"int",
+
+       /*default=*/"0",
+
+       /*description=*/"Convert Wrap to Spmd custom call">,
+       Option<
+       /*C++ variable name=*/"multirotate_custom_call",
+       /*CLI argument=*/"multirotate_custom_call",
+       /*type=*/"int",
+       /*default=*/"0",
+       /*description=*/"Convert MultiRotate to Spmd custom call">,
+       Option<
+       /*C++ variable name=*/"multislice_custom_call",
+       /*CLI argument=*/"multislice_custom_call",
+       /*type=*/"int",
+       /*default=*/"0",
+       /*description=*/"Convert MultiSlice to Spmd custom call">,
+       Option<
+       /*C++ variable name=*/"multipad_custom_call",
+       /*CLI argument=*/"multipad_custom_call",
+       /*type=*/"int",
+       /*default=*/"0",
+       /*description=*/"Convert MultiPad to Spmd custom call">,
        Option<
        /*C++ variable name=*/"rotate_to_pad_comm",
        /*CLI argument=*/"rotate_to_pad_comm",
@@ -823,6 +1148,24 @@ def OptimizeCommunication : Pass<"optimize-communication"> {
        /*default=*/"0",
        /*description=*/"Convert Concatenate two operands to Manual Computation with CollectivePermute">,
        Option<
+       /*C++ variable name=*/"concat_to_dus",
+       /*CLI argument=*/"concat_to_dus",
+       /*type=*/"int",
+       /*default=*/"0",
+       /*description=*/"Perform a Concatenate with Padding to optimize the communication">,
+       Option<
+       /*C++ variable name=*/"concat_to_dus_any",
+       /*CLI argument=*/"concat_to_dus_any",
+       /*type=*/"int",
+       /*default=*/"0",
+       /*description=*/"Perform a Concatenate with Padding to optimize the communication">,
+       Option<
+       /*C++ variable name=*/"concat_to_rotatepad",
+       /*CLI argument=*/"concat_to_rotatepad",
+       /*type=*/"int",
+       /*default=*/"0",
+       /*description=*/"Perform a Concatenate with Padding to optimize the communication">,
+       Option<
        /*C++ variable name=*/"concat_to_pad_comm",
        /*CLI argument=*/"concat_to_pad_comm",
        /*type=*/"int",
@@ -833,6 +1176,12 @@ def OptimizeCommunication : Pass<"optimize-communication"> {
        /*CLI argument=*/"extend_to_pad_comm",
        /*type=*/"int",
        /*default=*/"1",
+       /*description=*/"Perform an Extend with Padding to optimize the communication">,
+       Option<
+       /*C++ variable name=*/"extend_to_pad_comm2",
+       /*CLI argument=*/"extend_to_pad_comm2",
+       /*type=*/"int",
+       /*default=*/"0",
        /*description=*/"Perform an Extend with Padding to optimize the communication">,
        Option<
        /*C++ variable name=*/"concat_two_dus_like",
@@ -847,11 +1196,29 @@ def OptimizeCommunication : Pass<"optimize-communication"> {
        /*default=*/"0",
        /*description=*/"Perform a two-concat with pads and a manual select">,
        Option<
+       /*C++ variable name=*/"dus_of_concat_slices",
+       /*CLI argument=*/"dus_of_concat_slices",
+       /*type=*/"int",
+       /*default=*/"2",
+       /*description=*/"Optimize DUS of concat of slices">,
+       Option<
        /*C++ variable name=*/"wrap_to_pad_comm",
        /*CLI argument=*/"wrap_to_pad_comm",
        /*type=*/"int",
        /*default=*/"1",
        /*description=*/"Perform a Wrap with Padding to optimize the communication">,
+       Option<
+       /*C++ variable name=*/"wrap_to_rotate",
+       /*CLI argument=*/"wrap_to_rotate",
+       /*type=*/"int",
+       /*default=*/"0",
+       /*description=*/"Rewrite Wrap operations in terms of Extend and Rotate">,
+       Option<
+       /*C++ variable name=*/"updatewithoutcorners_to_select",
+       /*CLI argument=*/"updatewithoutcorners_to_select",
+       /*type=*/"int",
+       /*default=*/"1",
+       /*description=*/"Rewrite updatewithoutcorners_to_select to a select">,
        Option<
        /*C++ variable name=*/"reorder_associative",
        /*CLI argument=*/"reorder_associative",
@@ -864,8 +1231,11 @@ def AffineToStableHLORaising : Pass<"raise-affine-to-stablehlo"> {
   let summary = "Raise affine parallel loops to stablehlo ops if possible";
   let dependentDialects = [
     "affine::AffineDialect",
+    "memref::MemRefDialect",
+    "scf::SCFDialect",
     "stablehlo::StablehloDialect",
     "func::FuncDialect",
+    "gpu::GPUDialect",
   ];
   let options =
       [Option<
@@ -886,6 +1256,12 @@ def AffineToStableHLORaising : Pass<"raise-affine-to-stablehlo"> {
            /*type=*/"bool",
            /*default=*/"false",
            /*description=*/"Whether to enable the lockstep for raising">,
+       Option<
+           /*C++ variable name=*/"strip_llvm_debuginfo",
+           /*CLI argument=*/"strip_llvm_debuginfo",
+           /*type=*/"bool",
+           /*default=*/"false",
+           /*description=*/"Whether to strip llvm debug info">,
        Option<
            /*C++ variable name=*/"prefer_while_raising",
            /*CLI argument=*/"prefer_while_raising",
@@ -914,6 +1290,13 @@ def ParallelLower : Pass<"parallel-lower"> {
            /*type=*/"bool",
            /*default=*/"false",
            /*description=*/"Whether to throw a pass error if not fully raised">,
+  ];
+}
+
+def ConvertCudaRTtoHipRT : Pass<"convert-cudart-to-hiprt", "mlir::ModuleOp"> {
+  let summary = "Convert CUDA runtime calls to HIP runtime calls";
+  let dependentDialects = [
+    "mlir::ROCDL::ROCDLDialect",
   ];
 }
 
@@ -973,6 +1356,24 @@ def AutoBatchingPass : Pass<"auto-batching"> {
       /*default=*/"\"greedy\"",
       /*description=*/"Whether to run while loop batching passes (greedy, none)">,
     Option<
+      /*C++ variable name=*/"while_elementwise_reduction_to_reduce_passes",
+      /*CLI argument=*/"while_elementwise_reduction_to_reduce_passes",
+      /*type=*/"bool",
+      /*default=*/"true",
+      /*description=*/"Whether to run while elementwise reduction to reduce passes">,
+    Option<
+      /*C++ variable name=*/"while_is_copy_simplify_passes",
+      /*CLI argument=*/"while_is_copy_simplify_passes",
+      /*type=*/"bool",
+      /*default=*/"true",
+      /*description=*/"Whether to run while is copy simplify passes">,
+    Option<
+      /*C++ variable name=*/"while_remove_loop_carried_dependencies_from_load_operations",
+      /*CLI argument=*/"while_remove_loop_carried_dependencies_from_load_operations",
+      /*type=*/"bool",
+      /*default=*/"true",
+      /*description=*/"remove loop carried deps from load operations">,
+    Option<
         /*C++ variable name=*/"max_iterations",
         /*CLI argument=*/"max_iterations",
         /*type=*/"int64_t",
@@ -997,6 +1398,25 @@ def DropUnsupportedAttributesPass : Pass<"drop-unsupported-attributes", "ModuleO
         /*type=*/"bool",
         /*default=*/"true",
         /*description=*/"Drop enzymexla.memory_effects attribute">,
+    Option<
+        /*C++ variable name=*/"enzymexla_analysis_result",
+        /*CLI argument=*/"enzymexla-analysis-result",
+        /*type=*/"bool",
+        /*default=*/"true",
+        /*description=*/"Drop attribute from various analysis results">,
+  ];
+}
+
+def TrimCallsites : Pass<"trim-callsites"> {
+  let summary = "Trim callsite debug info";
+  let dependentDialects = [];
+  let options = [
+    Option<
+        /*C++ variable name=*/"to_trim",
+        /*CLI argument=*/"to_trim",
+        /*type=*/"std::string",
+        /*default=*/"\"\"",
+        /*description=*/";-separated list of prefixes to trim">,
   ];
 }
 
@@ -1008,4 +1428,105 @@ def SCFCPUify : Pass<"cpuify"> {
   Option<"method", "method", "std::string", /*default=*/"\"distribute\"", "Method of doing distribution">
   ];
 }
+
+def ConvertTritonToTritonGPUPreservingModuleAttributesPass : Pass<
+    "convert-triton-to-triton-gpu-preserving-module-attributes", "mlir::ModuleOp"> {
+  let summary = "Triton generally compiles a single kernel, so they can specify the number of ctas and warps. However, we want to be able to compile multiple kernels. This pass will use the attributes from the module and use that to lower to TritonGPU.";
+  let dependentDialects = [];
+  let options = [
+    Option<
+        /*C++ variable name=*/"target",
+        /*CLI argument=*/"target",
+        /*type=*/"std::string",
+        /*default=*/"\"\"",
+        /*description=*/"the GPU target, e.g., cuda:80, hip:gfx942"
+      >];
+}
+
+def LowerTritonPass : Pass<"lower-triton", "mlir::ModuleOp"> {
+  let summary = "Lower Triton to xla custom call";
+  let dependentDialects = [
+    "triton::TritonDialect",
+    "func::FuncDialect",
+    "enzymexla::triton_ext::TritonExtDialect",
+    "stablehlo::StablehloDialect",
+  ];
+  let options = [
+    Option<
+        /*C++ variable name=*/"backend",
+        /*CLI argument=*/"backend",
+        /*type=*/"std::string",
+        /*default=*/"\"cuda\"",
+        /*description=*/"HW backend">];
+}
+
+def EnzymeBatchToStableHLOPass : Pass<"enzyme-batch-to-stablehlo"> {
+  let summary = "Legalize batching specific enzyme ops to stablehlo dialect";
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "enzyme::EnzymeDialect"
+  ];
+}
+
+def LowerEnzymeJacobianStableHLO : Pass<"lower-enzyme-jacobian-stablehlo"> {
+  let summary = "Lowers JVPs/VJPs in StableHLO to fwddiff/autodiff calls";
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "enzyme::EnzymeDialect"
+  ];
+}
+
+def PartialSymmetryAnnotatePass : Pass<"partial-symmetry-annotate", "ModuleOp"> {
+  let summary = "Annotate operations using partial symmetry analysis";
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "enzymexla::EnzymeXLADialect",
+    "func::FuncDialect",
+  ];
+}
+
+def ConvertAllConstantsToSplattedConstantPass : Pass<"convert-all-constants-to-splatted-constant", "ModuleOp"> {
+  let summary = "Convert all constants to splatted constants. This is supposed to be used for debugging purposes when dumping the module.";
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+  ];
+}
+
+def RemoveAtomicsPass : Pass<"remove-atomics"> {
+  let summary = "Remove unnecessary atomics";
+  let dependentDialects = [
+    "affine::AffineDialect",
+    "enzymexla::EnzymeXLADialect",
+  ];
+}
+
+def GpuModuleToBinarySink : Pass<"enzymexla-gpu-module-to-binary", ""> {
+  let summary = "Serialize GPU modules to binaries, sinking cheap address "
+                "arithmetic after the LLVM optimization pipeline";
+  let description = [{
+    Drop-in for the upstream `gpu-module-to-binary` pass that additionally
+    rematerializes cheap integer/address computations next to their uses on
+    the optimized LLVM IR, immediately before ISA generation. Running after
+    the target's optimization pipeline means EarlyCSE/GVN can no longer
+    re-hoist the clones, shortening live ranges that otherwise inflate
+    register pressure in large kernels.
+  }];
+  let options =
+      [Option<"toolkitPath", "toolkit", "std::string", [{""}], "Toolkit path.">,
+       ListOption<"linkFiles", "l", "std::string", "Extra files to link to.">,
+       Option<"cmdOptions", "opts", "std::string", [{""}],
+              "Command line options to pass to the tools.">,
+       Option<"compilationTarget", "format", "std::string", [{"fatbin"}],
+              "The target representation of the compilation process.">,
+       Option<"elfSection", "section", "std::string", [{""}],
+              "ELF section where binary is to be located.">,
+       Option<"sinkMode", "sink", "int", "2",
+              "0: no sinking; 1: sink only within the defining loop; "
+              "2: also sink into deeper loops">,
+       Option<"dumpIR", "dump", "bool", "false",
+              "Print each serialized module's LLVM IR as handed to "
+              "instruction selection, after any sinking">];
+  let dependentDialects = ["gpu::GPUDialect", "LLVM::LLVMDialect", ];
+}
+
 #endif

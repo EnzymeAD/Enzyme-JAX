@@ -2,7 +2,6 @@
 #define ENZYME_AD_JAX_DIALECT_TESSERA_DIALECT_TD
 
 include "mlir/IR/DialectBase.td"
-include "mlir/IR/AttrTypeBase.td"
 include "mlir/IR/Traits.td"
 include "mlir/IR/OpBase.td"
 
@@ -18,7 +17,7 @@ def TesseraDialect : Dialect {
         semantics and thus enable user-defined optimizations on the DSL their code represents.
     }];
     let cppNamespace = "::mlir::enzyme::tessera";
-    // let useDefaultTypePrinterParser = 1; // type or attribute?
+    // let useDefaultAttributePrinterParser = 1;
 }
 
 //===----------------------------------------------------------------------===//
@@ -27,7 +26,5 @@ def TesseraDialect : Dialect {
 
 class TesseraOp<string mnemonic, list<Trait> traits = []>
     : Op<TesseraDialect, mnemonic, traits>;
-
-class TesseraType<string name> : TypeDef<TesseraDialect, name>; // may need to be modified
 
 #endif // ENZYME_AD_JAX_DIALECT_TESSERA_DIALECT_TD

@@ -109,7 +109,7 @@ reshapeMemref2(Value memref, ArrayRef<int64_t> shape,
       AffineMap map = ainfo.map;
       for (auto expr : map.getResults()) {
         auto cst = dyn_cast<AffineConstantExpr>(expr);
-        if (cst.getValue() != 0)
+        if (!cst || cst.getValue() != 0)
           return failure();
       }
       ainfo.map = AffineMap::get(map.getNumDims(), map.getNumSymbols(), {},
@@ -187,15 +187,20 @@ reshapeMemref2(Value memref, ArrayRef<int64_t> shape,
       ainfo.updated_indices.push_back(ainfo.last_dim_key);
       std::reverse(ainfo.updated_indices.begin(), ainfo.updated_indices.end());
       rewriter.setInsertionPoint(load);
-      rewriter.replaceOpWithNewOp<memref::LoadOp>(load, load.getMemref(),
-                                                  ainfo.updated_indices);
+      auto align = load.getAlignment();
+      auto newLoad = rewriter.replaceOpWithNewOp<memref::LoadOp>(
+          load, load.getMemref(), ainfo.updated_indices);
+      if (align)
+        newLoad.setAlignment(*align);
     } else if (auto store = dyn_cast<memref::StoreOp>(ainfo.mOpInst)) {
-
       ainfo.updated_indices.push_back(ainfo.last_dim_key);
       std::reverse(ainfo.updated_indices.begin(), ainfo.updated_indices.end());
-      rewriter.setInsertionPoint(load);
-      rewriter.replaceOpWithNewOp<memref::StoreOp>(
+      rewriter.setInsertionPoint(store);
+      auto align = store.getAlignment();
+      auto newStore = rewriter.replaceOpWithNewOp<memref::StoreOp>(
           store, store.getValue(), store.getMemref(), ainfo.updated_indices);
+      if (align)
+        newStore.setAlignment(*align);
     } else {
       llvm_unreachable("unexpected memref access");
     }
@@ -251,6 +256,11 @@ LogicalResult reshapeAtAddr(enzymexla::Pointer2MemrefOp &atAddr) {
       if (&(ba.getOwner()->getParent()->front()) == ba.getOwner()) {
 
         auto memref = atAddr.getResult();
+        auto oldMt = cast<MemRefType>(memref.getType());
+
+        if (newMt.getElementType() != oldMt.getElementType())
+          return failure();
+
         return reshapeMemref2(memref, shape, [&](RewriterBase &rewriter) {
           rewriter.setInsertionPoint(atAddr);
 

@@ -79,17 +79,63 @@
     return
   }
 
-// CHECK-LABEL:   func.func private @if_with_load(
-// CHECK:           affine
+
+
+// CHECK-LABEL:   func.func private @if_with_load_raised(
+// CHECK-SAME:                                           %[[VAL_0:.*]]: tensor<194xf64>, %[[VAL_1:.*]]: tensor<194xf64>, %[[VAL_2:.*]]: tensor<194xf64>) -> (tensor<194xf64>, tensor<194xf64>, tensor<194xf64>) {
+// CHECK:           %[[SL1:.*]] = stablehlo.slice %[[VAL_1]] [74:194] : (tensor<194xf64>) -> tensor<120xf64>
+// CHECK:           %[[SL0:.*]] = stablehlo.slice %[[VAL_0]] [2:73] : (tensor<194xf64>) -> tensor<71xf64>
+// CHECK:           %[[TAIL:.*]] = stablehlo.slice %[[VAL_2]] [191:194] : (tensor<194xf64>) -> tensor<3xf64>
+// CHECK:           %[[CAT:.*]] = stablehlo.concatenate %[[SL0]], %[[SL1]], %[[TAIL]], dim = 0 : (tensor<71xf64>, tensor<120xf64>, tensor<3xf64>) -> tensor<194xf64>
+// CHECK:           return %[[VAL_0]], %[[VAL_1]], %[[CAT]] : tensor<194xf64>, tensor<194xf64>, tensor<194xf64>
+// CHECK:         }
 
 // CHECK-LABEL:   func.func private @if_yield_with_load_raised(
-// CHECK:           stablehlo
+// CHECK-SAME:                                                  %[[VAL_0:.*]]: tensor<194xf64>, %[[VAL_1:.*]]: tensor<194xf64>, %[[VAL_2:.*]]: tensor<194xf64>) -> (tensor<194xf64>, tensor<194xf64>, tensor<194xf64>) {
+// CHECK:           %[[SL1:.*]] = stablehlo.slice %[[VAL_1]] [74:194] : (tensor<194xf64>) -> tensor<120xf64>
+// CHECK:           %[[SL0:.*]] = stablehlo.slice %[[VAL_0]] [2:73] : (tensor<194xf64>) -> tensor<71xf64>
+// CHECK:           %[[TAIL:.*]] = stablehlo.slice %[[VAL_2]] [191:194] : (tensor<194xf64>) -> tensor<3xf64>
+// CHECK:           %[[CAT:.*]] = stablehlo.concatenate %[[SL0]], %[[SL1]], %[[TAIL]], dim = 0 : (tensor<71xf64>, tensor<120xf64>, tensor<3xf64>) -> tensor<194xf64>
+// CHECK:           return %[[VAL_0]], %[[VAL_1]], %[[CAT]] : tensor<194xf64>, tensor<194xf64>, tensor<194xf64>
+// CHECK:         }
 
-// CHECK-LABEL:   func.func private @with_load_out_of_bounds(
-// CHECK:           affine
+// CHECK-LABEL:   func.func private @with_load_out_of_bounds_raised(
+// CHECK-SAME:                                                       %[[VAL_0:.*]]: tensor<194xf64>, %[[VAL_1:.*]]: tensor<194xf64>, %[[VAL_2:.*]]: tensor<194xf64>) -> (tensor<194xf64>, tensor<194xf64>, tensor<194xf64>) {
+// CHECK:           %[[CST:.*]] = stablehlo.constant dense<0.000000e+00> : tensor<f64>
+// CHECK:           %[[SL1:.*]] = stablehlo.slice %[[VAL_1]] [74:194] : (tensor<194xf64>) -> tensor<120xf64>
+// CHECK:           %[[PAD1:.*]] = stablehlo.pad %[[SL1]], %[[CST]], low = [0], high = [2], interior = [0] : (tensor<120xf64>, tensor<f64>) -> tensor<122xf64>
+// CHECK:           %[[SL0:.*]] = stablehlo.slice %[[VAL_0]] [2:73] : (tensor<194xf64>) -> tensor<71xf64>
+// CHECK:           %[[TAIL:.*]] = stablehlo.slice %[[VAL_2]] [193:194] : (tensor<194xf64>) -> tensor<1xf64>
+// CHECK:           %[[CAT:.*]] = stablehlo.concatenate %[[SL0]], %[[PAD1]], %[[TAIL]], dim = 0 : (tensor<71xf64>, tensor<122xf64>, tensor<1xf64>) -> tensor<194xf64>
+// CHECK:           return %[[VAL_0]], %[[VAL_1]], %[[CAT]] : tensor<194xf64>, tensor<194xf64>, tensor<194xf64>
+// CHECK:         }
 
 // CHECK-LABEL:   func.func private @if_with_multidimload_raised(
-// CHECK:           stablehlo
+// CHECK-SAME:                                                    %[[VAL_0:.*]]: tensor<100x194xf64>, %[[VAL_1:.*]]: tensor<100x194xf64>, %[[VAL_2:.*]]: tensor<100x194xf64>) -> (tensor<100x194xf64>, tensor<100x194xf64>, tensor<100x194xf64>) {
+// CHECK:           %[[C0I:.*]] = stablehlo.constant dense<0> : tensor<i64>
+// CHECK:           %[[C2I:.*]] = stablehlo.constant dense<2> : tensor<i64>
+// CHECK:           %[[SL1:.*]] = stablehlo.slice %[[VAL_1]] [0:98, 73:194] : (tensor<100x194xf64>) -> tensor<98x121xf64>
+// CHECK:           %[[TR1:.*]] = stablehlo.transpose %[[SL1]], dims = [1, 0] : (tensor<98x121xf64>) -> tensor<121x98xf64>
+// CHECK:           %[[SL0:.*]] = stablehlo.slice %[[VAL_0]] [0:98, 2:73] : (tensor<100x194xf64>) -> tensor<98x71xf64>
+// CHECK:           %[[TR0:.*]] = stablehlo.transpose %[[SL0]], dims = [1, 0] : (tensor<98x71xf64>) -> tensor<71x98xf64>
+// CHECK:           %[[CAT:.*]] = stablehlo.concatenate %[[TR0]], %[[TR1]], dim = 0 : (tensor<71x98xf64>, tensor<121x98xf64>) -> tensor<192x98xf64>
+// CHECK:           %[[TR2:.*]] = stablehlo.transpose %[[CAT]], dims = [1, 0] : (tensor<192x98xf64>) -> tensor<98x192xf64>
+// CHECK:           %[[UPD:.*]] = stablehlo.dynamic_update_slice %[[VAL_2]], %[[TR2]], %[[C2I]], %[[C0I]] : (tensor<100x194xf64>, tensor<98x192xf64>, tensor<i64>, tensor<i64>) -> tensor<100x194xf64>
+// CHECK:           return %[[VAL_0]], %[[VAL_1]], %[[UPD]] : tensor<100x194xf64>, tensor<100x194xf64>, tensor<100x194xf64>
+// CHECK:         }
 
-// CHECK-LABEL:   func.func private @if_with_multidimload_out_of_bounds
-// CHECK:           affine
+// CHECK-LABEL:   func.func private @if_with_multidimload_out_of_bounds_raised(
+// CHECK-SAME:                                                                   %[[VAL_0:.*]]: tensor<100x194xf64>, %[[VAL_1:.*]]: tensor<100x194xf64>, %[[VAL_2:.*]]: tensor<100x194xf64>) -> (tensor<100x194xf64>, tensor<100x194xf64>, tensor<100x194xf64>) {
+// CHECK:           %[[C0I:.*]] = stablehlo.constant dense<0> : tensor<i64>
+// CHECK:           %[[C1I:.*]] = stablehlo.constant dense<1> : tensor<i64>
+// CHECK:           %[[CST:.*]] = stablehlo.constant dense<0.000000e+00> : tensor<f64>
+// CHECK:           %[[SL1:.*]] = stablehlo.slice %[[VAL_1]] [0:98, 73:194] : (tensor<100x194xf64>) -> tensor<98x121xf64>
+// CHECK:           %[[TR1:.*]] = stablehlo.transpose %[[SL1]], dims = [1, 0] : (tensor<98x121xf64>) -> tensor<121x98xf64>
+// CHECK:           %[[SL0:.*]] = stablehlo.slice %[[VAL_0]] [0:98, 2:73] : (tensor<100x194xf64>) -> tensor<98x71xf64>
+// CHECK:           %[[TR0:.*]] = stablehlo.transpose %[[SL0]], dims = [1, 0] : (tensor<98x71xf64>) -> tensor<71x98xf64>
+// CHECK:           %[[CAT:.*]] = stablehlo.concatenate %[[TR0]], %[[TR1]], dim = 0 : (tensor<71x98xf64>, tensor<121x98xf64>) -> tensor<192x98xf64>
+// CHECK:           %[[TR2:.*]] = stablehlo.transpose %[[CAT]], dims = [1, 0] : (tensor<192x98xf64>) -> tensor<98x192xf64>
+// CHECK:           %[[PAD:.*]] = stablehlo.pad %[[TR2]], %[[CST]], low = [1, 0], high = [0, 0], interior = [0, 0] : (tensor<98x192xf64>, tensor<f64>) -> tensor<99x192xf64>
+// CHECK:           %[[UPD:.*]] = stablehlo.dynamic_update_slice %[[VAL_2]], %[[PAD]], %[[C1I]], %[[C0I]] : (tensor<100x194xf64>, tensor<99x192xf64>, tensor<i64>, tensor<i64>) -> tensor<100x194xf64>
+// CHECK:           return %[[VAL_0]], %[[VAL_1]], %[[UPD]] : tensor<100x194xf64>, tensor<100x194xf64>, tensor<100x194xf64>
+// CHECK:         }

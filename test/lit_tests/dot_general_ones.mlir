@@ -54,13 +54,13 @@ func.func @main3(%arg0: tensor<2x2xcomplex<f64>> {enzymexla.memory_effects = []}
 // CHECK-NEXT:     %cst = stablehlo.constant dense<(1.000000e+00,-0.000000e+00)> : tensor<2xcomplex<f64>>
 // CHECK-NEXT:     %cst_0 = stablehlo.constant dense<(0.000000e+00,0.000000e+00)> : tensor<complex<f64>>
 // CHECK-NEXT:     %0 = stablehlo.dot_general %arg1, %arg0, contracting_dims = [1] x [0], precision = [DEFAULT, DEFAULT] : (tensor<2x2xcomplex<f64>>, tensor<2x2xcomplex<f64>>) -> tensor<2x2xcomplex<f64>>
-// CHECK-NEXT:     %1 = stablehlo.reduce(%arg0 init: %cst_0) applies stablehlo.add across dimensions = [1] : (tensor<2x2xcomplex<f64>>, tensor<complex<f64>>) -> tensor<2xcomplex<f64>>
-// CHECK-NEXT:     %2 = stablehlo.multiply %1, %cst : tensor<2xcomplex<f64>>
-// CHECK-NEXT:     %3 = stablehlo.broadcast_in_dim %2, dims = [1] : (tensor<2xcomplex<f64>>) -> tensor<2x2xcomplex<f64>>
+// CHECK-NEXT:     %1 = stablehlo.reduce(%arg0 init: %cst_0) applies stablehlo.add across dimensions = [1] {enzymexla.complex_is_purely_real = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<2x2xcomplex<f64>>, tensor<complex<f64>>) -> tensor<2xcomplex<f64>>
+// CHECK-NEXT:     %2 = stablehlo.multiply %1, %cst {enzymexla.complex_is_purely_real = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<2xcomplex<f64>>
+// CHECK-NEXT:     %3 = stablehlo.broadcast_in_dim %2, dims = [1] {enzymexla.complex_is_purely_real = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<2xcomplex<f64>>) -> tensor<2x2xcomplex<f64>>
 // CHECK-NEXT:     %4 = chlo.conj %3 : tensor<2x2xcomplex<f64>> -> tensor<2x2xcomplex<f64>>
-// CHECK-NEXT:     %5 = stablehlo.reduce(%arg1 init: %cst_0) applies stablehlo.add across dimensions = [0] : (tensor<2x2xcomplex<f64>>, tensor<complex<f64>>) -> tensor<2xcomplex<f64>>
-// CHECK-NEXT:     %6 = stablehlo.multiply %5, %cst : tensor<2xcomplex<f64>>
-// CHECK-NEXT:     %7 = stablehlo.broadcast_in_dim %6, dims = [0] : (tensor<2xcomplex<f64>>) -> tensor<2x2xcomplex<f64>>
+// CHECK-NEXT:     %5 = stablehlo.reduce(%arg1 init: %cst_0) applies stablehlo.add across dimensions = [0] {enzymexla.complex_is_purely_real = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<2x2xcomplex<f64>>, tensor<complex<f64>>) -> tensor<2xcomplex<f64>>
+// CHECK-NEXT:     %6 = stablehlo.multiply %5, %cst {enzymexla.complex_is_purely_real = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<2xcomplex<f64>>
+// CHECK-NEXT:     %7 = stablehlo.broadcast_in_dim %6, dims = [0] {enzymexla.complex_is_purely_real = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<2xcomplex<f64>>) -> tensor<2x2xcomplex<f64>>
 // CHECK-NEXT:     %8 = chlo.conj %7 : tensor<2x2xcomplex<f64>> -> tensor<2x2xcomplex<f64>>
 // CHECK-NEXT:     return %8, %4, %0 : tensor<2x2xcomplex<f64>>, tensor<2x2xcomplex<f64>>, tensor<2x2xcomplex<f64>>
 // CHECK-NEXT: }

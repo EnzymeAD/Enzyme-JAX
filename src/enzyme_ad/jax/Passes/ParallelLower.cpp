@@ -23,6 +23,7 @@
 #include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/Dominance.h"
 #include "mlir/IR/OpDefinition.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -31,6 +32,8 @@
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/DebugLog.h"
+#include <llvm/ADT/SmallVector.h>
+#include <mlir/Dialect/LLVMIR/LLVMDialect.h>
 
 #include "Enzyme/MLIR/Dialect/Ops.h"
 #include "Enzyme/MLIR/Passes/Passes.h"
@@ -45,6 +48,7 @@ namespace enzyme {
 #define GEN_PASS_DEF_PARALLELLOWER
 #define GEN_PASS_DEF_FIXGPUFUNC
 #define GEN_PASS_DEF_STRIPGPUINFO
+#define GEN_PASS_DEF_CONVERTCUDARTTOHIPRT
 #include "src/enzyme_ad/jax/Passes/Passes.h.inc"
 } // namespace enzyme
 } // namespace mlir
@@ -56,6 +60,37 @@ namespace enzyme {
 #include "RuntimeWrapperUtils.h"
 
 #define DEBUG_TYPE "parallel-lower-opt"
+
+// A call wrapped in an execute_region yields the call's results, but when
+// the inlined callee never returns -- an assert or error path ending in a
+// trap -- the yield is left with nothing to forward. Control cannot reach
+// such a yield; say its operands as poison so the op stays consistent.
+// Inlining a callee with no returning path leaves the call's results with
+// nothing to replace them; the yield built to forward them would be erased
+// out from under. Control cannot reach those uses; say them as poison.
+static void poisonRemainingUses(mlir::CallOpInterface caller) {
+  if (caller->use_empty())
+    return;
+  mlir::OpBuilder b(caller);
+  llvm::SmallVector<mlir::Value> vals;
+  for (mlir::Value r : caller->getResults())
+    vals.push_back(
+        mlir::ub::PoisonOp::create(b, caller->getLoc(), r.getType()));
+  caller->replaceAllUsesWith(vals);
+}
+
+static void repairNonReturningYields(mlir::scf::ExecuteRegionOp exOp) {
+  for (mlir::Block &blk : exOp.getRegion()) {
+    auto yield = llvm::dyn_cast<mlir::scf::YieldOp>(blk.getTerminator());
+    if (!yield || yield.getNumOperands() == exOp.getNumResults())
+      continue;
+    mlir::OpBuilder yb(yield);
+    llvm::SmallVector<mlir::Value> vals;
+    for (mlir::Type t : exOp.getResultTypes())
+      vals.push_back(mlir::ub::PoisonOp::create(yb, yield.getLoc(), t));
+    yield->setOperands(vals);
+  }
+}
 
 using namespace mlir;
 using namespace mlir::arith;
@@ -109,11 +144,13 @@ struct ConvertCudaRTtoCPU : public ConvertCudaRTtoCPUBase<ConvertCudaRTtoCPU> {
 struct ConvertCudaRTtoGPU : public ConvertCudaRTtoGPUBase<ConvertCudaRTtoGPU> {
   void runOnOperation() override;
 };
+*/
+
 struct ConvertCudaRTtoHipRT
-    : public ConvertCudaRTtoHipRTBase<ConvertCudaRTtoHipRT> {
+    : public enzyme::impl::ConvertCudaRTtoHipRTBase<ConvertCudaRTtoHipRT> {
   void runOnOperation() override;
 };
-*/
+
 struct FixGPUFunc : public enzyme::impl::FixGPUFuncBase<FixGPUFunc> {
   using FixGPUFuncBase::FixGPUFuncBase;
   void runOnOperation() override;
@@ -234,46 +271,56 @@ prepareForGPUInline(LLVM::CallOp callOp, Operation *hostInsertionPoint,
   SmallVector<Value> newArgs;
   SmallVector<DictionaryAttr> newArgAttrs;
   std::optional<mlir::ArrayAttr> argAttrs = lfn.getArgAttrs();
-  assert(argAttrs);
   SmallVector<std::function<Value(OpBuilder &, Value)>> prepArg;
-  for (auto [arg, argumentAttrsA] :
-       llvm::zip(callOp.getArgOperands(), argAttrs->getValue())) {
-    DictionaryAttr argumentAttrs = cast<DictionaryAttr>(argumentAttrsA);
-    if (std::optional<NamedAttribute> attr =
-            argumentAttrs.getNamed(LLVM::LLVMDialect::getByValAttrName())) {
-      Type elementType = cast<TypeAttr>(attr->getValue()).getValue();
-      Value newArg =
-          LLVM::LoadOp::create(hostBuilder, arg.getLoc(), elementType, arg);
-      newArgs.push_back(newArg);
-      newArgAttrs.push_back(
-          NamedAttrList().getDictionary(callOp->getContext()));
-      prepArg.push_back([=](OpBuilder &builder, Value v) {
-        DataLayout dataLayout = DataLayout::closest(callOp);
-        uint64_t minimumAlignment = dataLayout.getTypeABIAlignment(elementType);
-        uint64_t requestedAlignment = 1;
-        if (std::optional<NamedAttribute> alignAttr =
-                argumentAttrs.getNamed(LLVM::LLVMDialect::getAlignAttrName())) {
-          requestedAlignment = cast<IntegerAttr>(alignAttr->getValue())
-                                   .getValue()
-                                   .getLimitedValue();
-        }
-        uint64_t targetAlignment =
-            std::max(requestedAlignment, minimumAlignment);
-        // Since this is a static alloca, we can put it directly in the entry
-        // block, so they can be absorbed into the prologue/epilogue at code
-        // generation.
-        Value one =
-            LLVM::ConstantOp::create(builder, v.getLoc(), builder.getI64Type(),
-                                     builder.getI64IntegerAttr(1));
-        Value allocaOp =
-            LLVM::AllocaOp::create(builder, v.getLoc(), arg.getType(),
-                                   elementType, one, targetAlignment);
-        LLVM::StoreOp::create(builder, v.getLoc(), v, allocaOp);
-        return allocaOp;
-      });
-    } else {
+
+  if (argAttrs) {
+    for (auto [arg, argumentAttrsA] :
+         llvm::zip(callOp.getArgOperands(), argAttrs->getValue())) {
+      DictionaryAttr argumentAttrs = cast<DictionaryAttr>(argumentAttrsA);
+      if (std::optional<NamedAttribute> attr =
+              argumentAttrs.getNamed(LLVM::LLVMDialect::getByValAttrName())) {
+        Type elementType = cast<TypeAttr>(attr->getValue()).getValue();
+        Value newArg =
+            LLVM::LoadOp::create(hostBuilder, arg.getLoc(), elementType, arg);
+        newArgs.push_back(newArg);
+        newArgAttrs.push_back(
+            NamedAttrList().getDictionary(callOp->getContext()));
+        Value argCopy = arg;
+        prepArg.push_back([=](OpBuilder &builder, Value v) {
+          DataLayout dataLayout = DataLayout::closest(callOp);
+          uint64_t minimumAlignment =
+              dataLayout.getTypeABIAlignment(elementType);
+          uint64_t requestedAlignment = 1;
+          if (std::optional<NamedAttribute> alignAttr = argumentAttrs.getNamed(
+                  LLVM::LLVMDialect::getAlignAttrName())) {
+            requestedAlignment = cast<IntegerAttr>(alignAttr->getValue())
+                                     .getValue()
+                                     .getLimitedValue();
+          }
+          uint64_t targetAlignment =
+              std::max(requestedAlignment, minimumAlignment);
+          // Since this is a static alloca, we can put it directly in the entry
+          // block, so they can be absorbed into the prologue/epilogue at code
+          // generation.
+          Value one = LLVM::ConstantOp::create(builder, v.getLoc(),
+                                               builder.getI64Type(),
+                                               builder.getI64IntegerAttr(1));
+          Value allocaOp =
+              LLVM::AllocaOp::create(builder, v.getLoc(), argCopy.getType(),
+                                     elementType, one, targetAlignment);
+          LLVM::StoreOp::create(builder, v.getLoc(), v, allocaOp);
+          return allocaOp;
+        });
+      } else {
+        newArgs.push_back(arg);
+        newArgAttrs.push_back(argumentAttrs);
+        prepArg.push_back([](OpBuilder &, Value v) { return v; });
+      }
+    }
+  } else {
+    for (auto arg : callOp.getArgOperands()) {
       newArgs.push_back(arg);
-      newArgAttrs.push_back(argumentAttrs);
+      newArgAttrs.push_back(DictionaryAttr::get(arg.getContext(), {}));
       prepArg.push_back([](OpBuilder &, Value v) { return v; });
     }
   }
@@ -370,9 +417,11 @@ void ParallelLower::runOnOperation() {
     if (inlineCall(interface, cloneCallback, caller, callableOp, targetRegion,
                    /*shouldCloneInlinedRegion=*/true)
             .succeeded()) {
+      poisonRemainingUses(caller);
       caller.erase();
       replacedCallables.insert(callableOp);
     }
+    repairNonReturningYields(exOp);
     b.setInsertionPointToEnd(&allocScope.getRegion().front());
     memref::AllocaScopeReturnOp::create(b, allocScope.getLoc(),
                                         exOp.getResults());
@@ -432,10 +481,12 @@ void ParallelLower::runOnOperation() {
       if (inlineCall(interface, cloneCallback, caller, callableOp, targetRegion,
                      /*shouldCloneInlinedRegion=*/true)
               .succeeded()) {
+        poisonRemainingUses(caller);
         caller.erase();
         replacedCallables.insert(callableOp);
       }
     }
+    repairNonReturningYields(exOp);
     b.setInsertionPointToEnd(&allocScope.getRegion().front());
     memref::AllocaScopeReturnOp::create(b, allocScope.getLoc(),
                                         exOp.getResults());
@@ -473,6 +524,7 @@ void ParallelLower::runOnOperation() {
     ret.erase();
     b.setInsertionPointToEnd(&exOp.getRegion().back());
     scf::YieldOp::create(b, callerLoc, retVals);
+    repairNonReturningYields(exOp);
     b.setInsertionPointToEnd(&allocScope.getRegion().front());
     memref::AllocaScopeReturnOp::create(b, allocScope.getLoc(),
                                         exOp.getResults());
@@ -537,7 +589,7 @@ void ParallelLower::runOnOperation() {
     getOperation()->walk(
         [&](mlir::gpu::GridDimOp bidx) { inlineOps.push_back(bidx); });
     getOperation()->walk(
-        [&](mlir::NVVM::Barrier0Op bidx) { inlineOps.push_back(bidx); });
+        [&](mlir::NVVM::BarrierOp bidx) { inlineOps.push_back(bidx); });
 
     SymbolUserMap symbolUserMap(symbolTable, getOperation());
     while (inlineOps.size()) {
@@ -653,6 +705,7 @@ void ParallelLower::runOnOperation() {
         launchOp.getBlockSizeZ(), launchOp.getDynamicSharedMemorySize(),
         launchOp.getNumResults() ? launchOp.getResultTypes()[0] : nullptr,
         launchOp.getAsyncDependencies(),
+        /*asyncObject=*/nullptr,
         /*workgroup*/ TypeRange(),
         /*private*/ TypeRange(), launchOp.getClusterSizeX(),
         launchOp.getClusterSizeY(), launchOp.getClusterSizeZ());
@@ -720,7 +773,6 @@ void ParallelLower::runOnOperation() {
       builder.setInsertionPointToStart(blockB);
     }
 
-    OpBuilder hostBuilder = builder;
     if (wrapParallelOps) {
       auto pw = enzymexla::GPUWrapperOp::create(
           builder, loc,
@@ -734,7 +786,14 @@ void ParallelLower::runOnOperation() {
         if (auto passthrough = lfn.getTargetFeatures()) {
           pw->setAttr("target_features", *passthrough);
         }
+        if (auto targetCpu = lfn.getTargetCpuAttr()) {
+          pw->setAttr("target_cpu", targetCpu);
+        }
       }
+      for (auto atname : {"passthrough", "target_features", "target_cpu"})
+        if (!pw->hasAttr(atname))
+          if (auto attr = launchOp->getAttr(atname))
+            pw->setAttr(atname, attr);
       builder.setInsertionPointToStart(pw.getBody());
     }
 
@@ -835,6 +894,8 @@ void ParallelLower::runOnOperation() {
               MemRefType::get(alop.getType().getShape(),
                               alop.getType().getElementType(),
                               alop.getType().getLayout(), Attribute()));
+          if (auto align = alop.getAlignment())
+            newAlloca.setAlignment(*align);
           builder.replaceOpWithNewOp<memref::CastOp>(alop, alop.getType(),
                                                      newAlloca);
         }
@@ -848,6 +909,8 @@ void ParallelLower::runOnOperation() {
             builder, alop.getLoc(),
             LLVM::LLVMPointerType::get(alop.getContext(), 0),
             alop.getArraySize());
+        if (auto align = alop.getAlignment())
+          newAlloca.setAlignment(*align);
         builder.replaceOpWithNewOp<LLVM::AddrSpaceCastOp>(alop, PT, newAlloca);
       }
     });
@@ -869,6 +932,8 @@ void ParallelLower::runOnOperation() {
           }
           auto newAlloca = memref::AllocaOp::create(
               builder, alop.getLoc(), MemRefType::get(size, elType));
+          if (auto align = glob.getAlignment())
+            newAlloca.setAlignment(*align);
           sharedmems[glob.getName()] = newAlloca;
         }
         builder.replaceOpWithNewOp<enzymexla::Memref2PointerOp>(
@@ -908,7 +973,7 @@ void ParallelLower::runOnOperation() {
       builder.replaceOp(bidx, ValueRange(threadB->getArgument(idx)));
     });
 
-    container.walk([&](mlir::NVVM::Barrier0Op op) {
+    container.walk([&](mlir::NVVM::BarrierOp op) {
       builder.setInsertionPoint(op);
       builder.replaceOpWithNewOp<mlir::enzymexla::BarrierOp>(
           op, threadB->getArguments());
@@ -979,7 +1044,12 @@ void ParallelLower::runOnOperation() {
   {
     mlir::RewritePatternSet rpl(getOperation()->getContext());
     GreedyRewriteConfig config;
-    (void)applyPatternsAndFoldGreedily(getOperation(), std::move(rpl), config);
+    config.enableFolding();
+    // We disable region simplification to avoid inadvertently merging
+    // llvm.cond_br now that there is an index type.
+    config.setRegionSimplificationLevel(
+        mlir::GreedySimplifyRegionLevel::Disabled);
+    (void)applyPatternsGreedily(getOperation(), std::move(rpl), config);
   }
 
   {
@@ -1078,6 +1148,7 @@ void FixGPUFunc::runOnOperation() {
     if (inlineCall(interface, cloneCallback, caller, callableOp, targetRegion,
                    /*shouldCloneInlinedRegion=*/true)
             .succeeded()) {
+      poisonRemainingUses(caller);
       caller.erase();
     }
   };
@@ -1274,7 +1345,10 @@ void ConvertCudaRTtoCPU::runOnOperation() {
   {
     mlir::RewritePatternSet rpl(getOperation()->getContext());
     GreedyRewriteConfig config;
-    (void)applyPatternsAndFoldGreedily(getOperation(), std::move(rpl), config);
+    config.setRegionSimplificationLevel(
+        GreedySimplifyRegionLevel::Normal);
+    config.enableFolding();
+    (void)applyPatternsGreedily(getOperation(), std::move(rpl), config);
   }
 }
 #endif
@@ -1293,6 +1367,49 @@ void StripGPUInfo::runOnOperation() {
       }
     });
   });
+
+  // Extracting device code into gpu modules can leave renamed host-side
+  // residue behind: internal-linkage clones of device functions, held only
+  // by equally dead device vtable globals. LLVM internal linkage is not
+  // MLIR private visibility, so symbol-dce keeps them, and the host backend
+  // then fatals on their sm_* subtargets. Erase the residue: any host-level
+  // function whose target cpu names a device, together with the internal
+  // globals whose initializers are the only things holding its address.
+  auto m = dyn_cast<ModuleOp>(getOperation());
+  if (!m)
+    return;
+  SmallVector<LLVM::LLVMFuncOp> residue;
+  for (auto fn : m.getBody()->getOps<LLVM::LLVMFuncOp>()) {
+    auto cpu = fn->getAttrOfType<StringAttr>("target_cpu");
+    if (cpu && (cpu.getValue().starts_with("sm_") ||
+                cpu.getValue().starts_with("gfx")))
+      residue.push_back(fn);
+  }
+  if (residue.empty())
+    return;
+  DenseSet<Operation *> residueSyms;
+  for (auto fn : residue)
+    residueSyms.insert(fn);
+  SmallVector<LLVM::GlobalOp> deadGlobals;
+  for (auto glob : m.getBody()->getOps<LLVM::GlobalOp>()) {
+    if (glob.getLinkage() != LLVM::Linkage::Internal &&
+        glob.getLinkage() != LLVM::Linkage::Private)
+      continue;
+    bool holdsResidue = false;
+    glob.walk([&](LLVM::AddressOfOp addr) {
+      if (auto *sym = SymbolTable::lookupNearestSymbolFrom(
+              addr, addr.getGlobalNameAttr()))
+        if (residueSyms.count(sym))
+          holdsResidue = true;
+    });
+    if (holdsResidue && SymbolTable::symbolKnownUseEmpty(glob, m))
+      deadGlobals.push_back(glob);
+  }
+  for (auto glob : deadGlobals)
+    glob.erase();
+  for (auto fn : residue)
+    if (SymbolTable::symbolKnownUseEmpty(fn, m))
+      fn.erase();
 }
 
 // Returns a list of all symbols provided by cudart (obtained from
@@ -1330,18 +1447,19 @@ static void setCallee(LLVM::CallOp call, StringRef symName) {
   call.setCallee(symName);
 }
 template <typename CallOpTy, typename FuncOpTy>
-void replaceCallOp(ModuleOp m, CallOpTy call, llvm::StringRef callee) {
-  auto loc = call->getLoc();
-  OpBuilder moduleBuilder = OpBuilder::atBlockEnd(m.getBody());
+void replaceCallOp(ModuleOp m, CallOpTy call, llvm::StringRef callee,
+                   SmallPtrSetImpl<Operation *> &toErase) {
   OpBuilder callBuilder(call);
   auto funcOp = m.lookupSymbol<FuncOpTy>(callee);
   if (isHipCallEquivalent(callee)) {
     assert(funcOp);
     auto hipName = getHipName(callee);
     if (!m.lookupSymbol<FuncOpTy>(hipName)) {
+      OpBuilder moduleBuilder(funcOp.getOperation());
       auto hipFuncOp =
           cast<FuncOpTy>(moduleBuilder.clone(*funcOp.getOperation()));
       hipFuncOp.setSymName(hipName);
+      toErase.insert(funcOp.getOperation());
     }
     setCallee(call, hipName);
   } else {
@@ -1351,32 +1469,39 @@ void replaceCallOp(ModuleOp m, CallOpTy call, llvm::StringRef callee) {
   }
 }
 
-#if 0
 void ConvertCudaRTtoHipRT::runOnOperation() {
+  SmallPtrSet<Operation *, 8> toErase;
+
   getOperation().walk([&](LLVM::CallOp call) {
     if (!call.getCallee())
       return;
     auto name = *call.getCallee();
     if (!isCudartCall(name))
       return;
-    replaceCallOp<LLVM::CallOp, LLVM::LLVMFuncOp>(getOperation(), call, name);
+    replaceCallOp<LLVM::CallOp, LLVM::LLVMFuncOp>(getOperation(), call, name,
+                                                  toErase);
   });
 
   getOperation().walk([&](CallOp call) {
     auto name = call.getCallee();
     if (!isCudartCall(name))
       return;
-    replaceCallOp<CallOp, func::FuncOp>(getOperation(), call, name);
+    replaceCallOp<CallOp, func::FuncOp>(getOperation(), call, name, toErase);
   });
 
+  // Erase old CUDA function declarations after all calls are updated
+  for (Operation *op : toErase)
+    op->erase();
+
   OpBuilder builder(&getContext());
-  getOperation().walk([&](mlir::NVVM::Barrier0Op op) {
+  getOperation().walk([&](mlir::NVVM::BarrierOp op) {
     builder.setInsertionPoint(op);
     mlir::ROCDL::BarrierOp::create(builder, op->getLoc());
     op->erase();
   });
 }
 
+#if 0
 void ConvertCudaRTtoGPU::runOnOperation() {
   std::function<void(Operation * call, llvm::StringRef callee)> replaceWithOp =
       [&](Operation *call, llvm::StringRef callee) {

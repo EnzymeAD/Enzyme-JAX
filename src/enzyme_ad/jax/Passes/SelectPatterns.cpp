@@ -25,14 +25,18 @@ struct SelectExtractElementToExtractElementSelect
     auto idx = op.getPosition();
 
     // Create new extract operations
+    if (isa<VectorType>(cond.getType())) {
+      cond = LLVM::ExtractElementOp::create(rewriter, op.getLoc(), cond, idx);
+    }
+
     auto aExtract =
         LLVM::ExtractElementOp::create(rewriter, op.getLoc(), a, idx);
     auto bExtract =
         LLVM::ExtractElementOp::create(rewriter, op.getLoc(), b, idx);
 
     // Create new select with same condition and operands
-    auto newSelect = rewriter.template create<SelectOpTy>(
-        selectOp.getLoc(), op.getType(), cond, aExtract, bExtract);
+    auto newSelect = SelectOpTy::create(rewriter, selectOp.getLoc(),
+                                        op.getType(), cond, aExtract, bExtract);
 
     // Replace old extract with new select
     rewriter.replaceOp(op, newSelect);
@@ -59,12 +63,16 @@ struct SelectExtractValueToExtractValueSelect
     auto idx = op.getPosition();
 
     // Create new extract operations
+    if (isa<VectorType, LLVM::LLVMArrayType, TupleType>(cond.getType())) {
+      cond = LLVM::ExtractValueOp::create(rewriter, op.getLoc(), cond, idx);
+    }
+
     auto aExtract = LLVM::ExtractValueOp::create(rewriter, op.getLoc(), a, idx);
     auto bExtract = LLVM::ExtractValueOp::create(rewriter, op.getLoc(), b, idx);
 
     // Create new select with same condition and operands
-    auto newSelect = rewriter.template create<SelectOpTy>(
-        selectOp.getLoc(), op.getType(), cond, aExtract, bExtract);
+    auto newSelect = SelectOpTy::create(rewriter, selectOp.getLoc(),
+                                        op.getType(), cond, aExtract, bExtract);
 
     // Replace old extract with new select
     rewriter.replaceOp(op, newSelect);

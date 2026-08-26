@@ -146,6 +146,7 @@ void buildCommonPassPipeline(
 void buildGpuPassPipeline(OpPassManager &pm,
                           const mlir::gpu::GPUToNVVMPipelineOptions &options) {
   pm.addNestedPass<gpu::GPUModuleOp>(createStripDebugInfoPass());
+  pm.addNestedPass<gpu::GPUModuleOp>(createSCFToControlFlowPass());
   ConvertGpuOpsToNVVMOpsOptions opt;
   opt.useBarePtrCallConv = options.kernelUseBarePtrCallConv;
   opt.indexBitwidth = options.indexBitWidth;
@@ -244,13 +245,70 @@ llvm::sys::SmartRWMutex<true> jit_kernel_mutex;
 std::unique_ptr<llvm::orc::LLJIT> JIT = nullptr;
 llvm::orc::SymbolMap MappedSymbols;
 
+bool initJIT();
+
+extern "C" MLIR_CAPI_EXPORTED void EnzymeJaXMapSymbol(const char *name,
+                                                      void *symbol) {
+  initJIT();
+  MappedSymbols[JIT->mangleAndIntern(name)] = llvm::orc::ExecutorSymbolDef(
+      llvm::orc::ExecutorAddr::fromPtr(symbol), llvm::JITSymbolFlags());
+}
+
+#if defined(_WIN32)
+#ifdef __MINGW32__
+#if defined(__i386__)
+#undef _alloca
+extern "C" void _alloca(void);
+#elif defined(__x86_64__)
+extern "C" void ___chkstk_ms(void);
+#else
+extern "C" void __chkstk(void);
+#endif
+#else
+extern "C" void __chkstk(void);
+#endif
+#endif
+
 bool initJIT() {
   if (!JIT) {
+    auto tJTMB = llvm::orc::JITTargetMachineBuilder::detectHost();
+    if (!tJTMB) {
+      llvm::errs() << " jit host detection error: " << tJTMB.takeError()
+                   << "\n";
+      return false;
+    }
+
+    // On Windows, compile as if we were mingw rather than MSVC. With an MSVC
+    // environment LLVM emits every mergeable floating point constant into its
+    // own COMDAT section carrying a global `__real@<hex>` (or `__xmm@<hex>`)
+    // symbol -- see TargetLoweringObjectFileCOFF::getSectionForConstant
+    // together with AsmPrinter::GetCPISymbol, which is gated on
+    // isWindowsMSVCEnvironment(). LLJIT links x86-64 COFF objects with
+    // RuntimeDyld, whose COMDAT support cannot resolve those symbols
+    // (llvm.org/PR40074, which RTDyldObjectLinkingLayer::onObjLoad only
+    // partially works around), so a kernel containing a literal such as `0.5`
+    // intermittently fails to materialize:
+    //
+    //   Failed to materialize symbols:
+    //     { (enzymejitdl_12, { __real@3fe0000000000000 }) }
+    //
+    // The GNU environment selects MCAsmInfoGNUCOFF, which sets
+    // HasCOFFComdatConstants = false, so constants are emitted as ordinary
+    // constant-pool entries with local labels that RuntimeDyld handles fine.
+    // Both environments share the same architecture, object format, data
+    // layout and calling convention, so this only changes how constants are
+    // emitted. The one externally visible difference is the name of the stack
+    // probe helper, which is mapped below. See EnzymeAD/Reactant.jl#1673.
+    if (tJTMB->getTargetTriple().isWindowsMSVCEnvironment())
+      tJTMB->getTargetTriple().setEnvironment(llvm::Triple::GNU);
+
     auto tJIT =
         llvm::orc::LLJITBuilder()
+            .setJITTargetMachineBuilder(std::move(*tJTMB))
             .setLinkProcessSymbolsByDefault(true)
             .setObjectLinkingLayerCreator(
-                [](llvm::orc::ExecutionSession &ES)
+                [](llvm::orc::ExecutionSession &ES,
+                   llvm::jitlink::JITLinkMemoryManager &)
                     -> llvm::Expected<std::unique_ptr<llvm::orc::ObjectLayer>> {
                   auto obj = std::make_unique<
                       llvm::orc::RTDyldObjectLinkingLayer>(
@@ -286,19 +344,37 @@ bool initJIT() {
     }
 
     JIT->getMainJITDylib().addGenerator(std::move(ProcessSymsGenerator.get()));
+
+#if defined(_WIN32)
+#ifdef __MINGW32__
+#if defined(__i386__)
+    void *StackProbe = (void *)&_alloca;
+#elif defined(__x86_64__)
+    void *StackProbe = (void *)&___chkstk_ms;
+#else
+    void *StackProbe = (void *)&__chkstk;
+#endif
+#else
+    void *StackProbe = (void *)&__chkstk;
+#endif
+    EnzymeJaXMapSymbol("__chkstk", StackProbe);
+#if defined(_M_X64) || defined(__x86_64__)
+    // We select the GNU environment above, and x86-64 mingw names the stack
+    // probe ___chkstk_ms rather than __chkstk (see RuntimeLibcalls.td, where
+    // ___chkstk_ms is isCygwinMinGW64 and __chkstk is isWin64NotCygMing). The
+    // two are interchangeable there: both take the allocation size in %rax,
+    // only probe, and leave %rsp and %rax alone (see the comment in
+    // X86FrameLowering::emitStackProbeCall), so whichever one this process was
+    // built with can serve both names.
+    EnzymeJaXMapSymbol("___chkstk_ms", StackProbe);
+#endif
+#endif
   }
   return true;
 }
 
-extern "C" MLIR_CAPI_EXPORTED void EnzymeJaXMapSymbol(const char *name,
-                                                      void *symbol) {
-  initJIT();
-  MappedSymbols[JIT->mangleAndIntern(name)] = llvm::orc::ExecutorSymbolDef(
-      llvm::orc::ExecutorAddr::fromPtr(symbol), llvm::JITSymbolFlags());
-}
-
 CallInfo CompileHostModule(std::string &key, mlir::ModuleOp modOp,
-                           bool compileInit) {
+                           bool compileInit, bool dump_final_module) {
   std::unique_ptr<llvm::LLVMContext> ctx(new llvm::LLVMContext);
   auto llvmModule = translateModuleToLLVMIR(modOp, *ctx);
   if (!llvmModule) {
@@ -312,6 +388,9 @@ CallInfo CompileHostModule(std::string &key, mlir::ModuleOp modOp,
   llvmModule->setDataLayout(JIT->getDataLayout());
   llvmModule->setTargetTriple(JIT->getTargetTriple());
 
+  if (dump_final_module) {
+    llvm::errs() << " final_llvm_module before jit: " << *llvmModule << "\n";
+  }
   auto LibA =
       JIT->createJITDylib("enzymejitdl_" + std::to_string(jitkernels.size()));
   if (auto Err = JIT->addIRModule(
@@ -569,9 +648,18 @@ void rewriteKernelCallABI(
     auto pfunc = op->getParentOfType<LLVM::LLVMFuncOp>();
     mlir::Value cufunc = pfunc.getBody().begin()->getArgument(2);
 
-    auto ldop = op.getKernelOperands().front().getDefiningOp<LLVM::LoadOp>();
-    assert(ldop);
-    auto params = ldop.getOperand();
+    mlir::Value params;
+    LLVM::LoadOp ldop = nullptr;
+    if (op.getKernelOperands().empty()) {
+      // Kernels with no runtime arguments (e.g. fully static configs baked
+      // in as compile-time constants) legitimately have no packed params
+      // struct to load; pass a null pointer as cuLaunchKernel accepts.
+      params = LLVM::ZeroOp::create(builder, loc, ptrty);
+    } else {
+      ldop = op.getKernelOperands().front().getDefiningOp<LLVM::LoadOp>();
+      assert(ldop);
+      params = ldop.getOperand();
+    }
 
     llvm::SmallVector<mlir::Value> args = {
         cufunc,
@@ -636,7 +724,8 @@ void rewriteKernelCallABI(
     }
 
     op.erase();
-    ldop.erase();
+    if (ldop)
+      ldop.erase();
   });
 }
 
@@ -650,7 +739,7 @@ CallInfo CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
                      const std::string &cubinFormat, int cuOptLevel,
                      const std::string &toolkitPath,
                      const llvm::SmallVectorImpl<std::string> &linkFiles,
-                     bool debug, bool returnPtr) {
+                     bool debug, bool returnPtr, bool dump_final_module) {
 
   OpBuilder builder(op);
 
@@ -860,6 +949,13 @@ CallInfo CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
         if (str.size() > 200)
           gmod.setName(str.substr(0, 200));
       });
+      submod->walk([](enzymexla::FMulAddOp op) {
+        OpBuilder builder(op);
+        auto newOp = LLVM::FMulAddOp::create(builder, op->getLoc(), op.getA(),
+                                             op.getB(), op.getC());
+        op.getResult().replaceAllUsesWith(newOp.getResult());
+        op->erase();
+      });
 
       std::string legalName;
       submod->walk([&](gpu::LaunchFuncOp gmod) {
@@ -899,7 +995,8 @@ CallInfo CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
                            cubinFormat, cuOptLevel, toolkitPath, linkFiles);
     }
 
-    auto ptr = CompileHostModule(ss.str(), submod, numGPUModule != 0);
+    auto ptr = CompileHostModule(ss.str(), submod, numGPUModule != 0,
+                                 dump_final_module);
     jitkernels[ss.str()] = ptr;
     submod.erase();
     return ptr;
@@ -1004,7 +1101,7 @@ struct LowerJITPass
           symbolTable, op.getLoc(), fn, jit, op, openmp, cuResultHandlerPtr,
           cuStreamSynchronizePtr, indexBitWidth, cubinTriple, cubinChip,
           cubinFeatures, cubinFormat, cuOptLevel, toolkitPath, linkFilesArray,
-          debug, hasReturn);
+          debug, hasReturn, dump_final_module);
 
       std::string backendinfo((char *)&cdata, sizeof(CallInfo));
       if (jit) {
@@ -1042,7 +1139,7 @@ struct LowerJITPass
                 rewriter.getContext(),
                 mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
             /*calledcomputations*/ nullptr, operand_layouts, result_layouts,
-            output_operand_aliases);
+            output_operand_aliases, /*result_tilings*/ nullptr);
       else if (backend == "cpu")
         replacement = stablehlo::CustomCallOp::create(
             rewriter, op.getLoc(), op.getResultTypes(), op.getInputs(),
@@ -1057,7 +1154,7 @@ struct LowerJITPass
                 mlir::stablehlo::CustomCallApiVersion::
                     API_VERSION_STATUS_RETURNING_UNIFIED),
             /*calledcomputations*/ nullptr, operand_layouts, result_layouts,
-            output_operand_aliases);
+            output_operand_aliases, /*result_tilings*/ nullptr);
 
       op.replaceAllUsesWith(replacement);
       op.erase();

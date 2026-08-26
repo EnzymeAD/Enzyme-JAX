@@ -189,7 +189,7 @@ func.func @non_constant_step(%arg0: memref<10xindex>, %step: index) {
 // CHECK:           %[[VAL:.+]] = arith.subi %[[I]], %[[ARG1]] : index
 // CHECK:           %[[SEL:.+]] = arith.select %[[COND]], %[[C0]], %[[VAL]] : index
 // CHECK:           "test.use"(%[[SEL]])
-// CHECK:           %[[LOAD:.+]] = memref.load %[[ARG]][%[[I]]]
+// CHECK:           %[[LOAD:.+]] = memref.load %[[ARG0]][%[[I]]]
 // CHECK:           scf.yield %[[LOAD]]
 // CHECK:         %[[DIV:.+]] = arith.divui %[[C9]], %[[ARG1]] : index
 // CHECK:         %[[MUL:.+]] = arith.muli %[[ARG1]], %[[DIV]] : index

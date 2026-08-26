@@ -23,42 +23,13 @@ def Mul : Inst<"MulOp", "stablehlo">;
 def Div : Inst<"DivOp", "stablehlo">;
 def Neg : Inst<"NegOp", "stablehlo">;
 def Sqrt : Inst<"SqrtOp", "stablehlo">;
+def Exp : Inst<"ExpOp", "stablehlo">;
 def Pow : Inst<"PowOp", "stablehlo">;
 def Cos : Inst<"CosineOp", "stablehlo">;
 def Sin : Inst<"SineOp", "stablehlo">;
 
-// Operations
-/// CHLO - binary elementwise operations
-def BroadcastAdd : HLOInst<"BroadcastAddOp">;
-def BroadcastAtan2 : HLOInst<"BroadcastAtan2Op">;
-def BroadcastDiv : HLOInst<"BroadcastDivOp">;
-def BroadcastMax : HLOInst<"BroadcastMaxOp">;
-def BroadcastMin : HLOInst<"BroadcastMinOp">;
-def BroadcastMul : HLOInst<"BroadcastMulOp">;
-def BroadcastNextAfter : HLOInst<"BroadcastNextAfterOp">;
-def BroadcastPolygamma : HLOInst<"BroadcastPolygammaOp">;
-def BroadcastPow : HLOInst<"BroadcastPowOp">;
-def BroadcastRem : HLOInst<"BroadcastRemOp">;
-def BroadcastShiftLeft : HLOInst<"BroadcastShiftLeftOp">;
-def BroadcastShiftRightArithmetic : HLOInst<"BroadcastShiftRightArithmeticOp">;
-def BroadcastShiftRightLogical : HLOInst<"BroadcastShiftRightLogicalOp">;
-def BroadcastSub : HLOInst<"BroadcastSubOp">;
-def BroadcastZeta : HLOInst<"BroadcastZetaOp">;
-
-/// CHLO - binary logical elementwise operations
-def BroadcastAnd : HLOInst<"BroadcastAndOp">;
-def BroadcastOr : HLOInst<"BroadcastOrOp">;
-def BroadcastXor : HLOInst<"BroadcastXorOp">;
-
-/// CHLO - non-broadcasting binary operations
-def NextAfter : HLOInst<"NextAfterOp">;
-def Polygamma : HLOInst<"PolygammaOp">;
-def Zeta : HLOInst<"ZetaOp">;
-
-/// CHLO - complex broadcasting operation
-def BroadcastComplex : HLOInst<"BroadcastComplexOp">;
-
-/// CHLO - unary elementwise operations
+// CHLO ops from https://openxla.org/stablehlo/generated/chlo
+def AsinAcosKernel : HLOInst<"AsinAcosKernelOp">;
 def Acos : HLOInst<"AcosOp">;
 def Acosh : HLOInst<"AcoshOp">;
 def Asin : HLOInst<"AsinOp">;
@@ -66,12 +37,31 @@ def Asinh : HLOInst<"AsinhOp">;
 def Atan : HLOInst<"AtanOp">;
 def Atanh : HLOInst<"AtanhOp">;
 def BesselI1e : HLOInst<"BesselI1eOp">;
+def BroadcastAdd : HLOInst<"BroadcastAddOp">;
+def BroadcastAnd : HLOInst<"BroadcastAndOp">;
+def BroadcastAtan2 : HLOInst<"BroadcastAtan2Op">;
+def BroadcastCompare : HLOInst<"BroadcastCompareOp">;
+def BroadcastComplex : HLOInst<"BroadcastComplexOp">;
+def BroadcastDiv : HLOInst<"BroadcastDivOp">;
+def BroadcastMax : HLOInst<"BroadcastMaxOp">;
+def BroadcastMin : HLOInst<"BroadcastMinOp">;
+def BroadcastMul : HLOInst<"BroadcastMulOp">;
+def BroadcastNextAfter : HLOInst<"BroadcastNextAfterOp">;
+def BroadcastOr : HLOInst<"BroadcastOrOp">;
+def BroadcastPolygamma : HLOInst<"BroadcastPolygammaOp">;
+def BroadcastPow : HLOInst<"BroadcastPowOp">;
+def BroadcastRem : HLOInst<"BroadcastRemOp">;
+def BroadcastSelect : HLOInst<"BroadcastSelectOp">;
+def BroadcastShiftLeft : HLOInst<"BroadcastShiftLeftOp">;
+def BroadcastShiftRightArithmetic : HLOInst<"BroadcastShiftRightArithmeticOp">;
+def BroadcastShiftRightLogical : HLOInst<"BroadcastShiftRightLogicalOp">;
+def BroadcastSub : HLOInst<"BroadcastSubOp">;
+def BroadcastXor : HLOInst<"BroadcastXorOp">;
+def BroadcastZeta : HLOInst<"BroadcastZetaOp">;
 def Conj : HLOInst<"ConjOp">;
-def Cosh : HLOInst<"CoshOp">;
-def Sinh : HLOInst<"SinhOp">;
-def Tan : HLOInst<"TanOp">;
 def Constant : HLOInst<"ConstantOp">;
 def ConstantLike : HLOInst<"ConstantLikeOp">;
+def Cosh : HLOInst<"CoshOp">;
 def Digamma : HLOInst<"DigammaOp">;
 def Erf : HLOInst<"ErfOp">;
 def ErfInv : HLOInst<"ErfInvOp">;
@@ -80,15 +70,15 @@ def IsInf : HLOInst<"IsInfOp">;
 def IsNegInf : HLOInst<"IsNegInfOp">;
 def IsPosInf : HLOInst<"IsPosInfOp">;
 def Lgamma : HLOInst<"LgammaOp">;
-
-/// CHLO - broadcasting compare operation
-def BroadcastCompare : HLOInst<"BroadcastCompareOp">;
-
-/// CHLO - broadcasting select operation
-def BroadcastSelect : HLOInst<"BroadcastSelectOp">;
-
-/// CHLO - miscelaneous operations
+def NextAfter : HLOInst<"NextAfterOp">;
+def Polygamma : HLOInst<"PolygammaOp">;
+def RaggedDot : HLOInst<"RaggedDotOp">;
+def Scan : HLOInst<"ScanOp">;
+def Sinh : HLOInst<"SinhOp">;
+def Square : HLOInst<"SquareOp">;
+def Tan : HLOInst<"TanOp">;
 def TopK : HLOInst<"TopKOp">;
+def Zeta : HLOInst<"ZetaOp">;
 
 // Derivative rules
 def : HLODerivative<"AcosOp", (Op $x), [
@@ -124,6 +114,10 @@ def : HLODerivative<"DigammaOp", (Op $x),
                     (Mul (Shadow $x), (Polygamma $x, (HLOConstantFP<"2"> $x)))
 >;
 
+def : HLODerivative<"ErfOp", (Op $x), [
+  (Mul (DiffeRet), (Mul (HLOConstantFP<"1.1283791670955126"> $x), (Exp (Neg (Mul $x, $x)))))
+]>;
+
 def : HLOInactiveOp<"IsInfOp">;
 
 def : HLOInactiveOp<"IsNegInfOp">;
@@ -137,8 +131,31 @@ def : HLODerivative<"PolygammaOp", (Op $x, $n),
                     ]
                     >;
 
+def : HLODerivative<"LgammaOp", (Op $x),
+                    [(Mul (DiffeRet), (Digamma $x))]
+>;
+
 def : HLODerivative<"SinhOp", (Op $x), [(Mul (DiffeRet), (Cosh $x))]>;
+
+// check that the conj-conj is correct for complex inputs
+def : HLODerivative<"SquareOp", (Op $x), [
+  (Mul (DiffeRet), (Mul $x, (HLOConstantFP<"2"> $x)))
+]>;
 
 def : HLODerivative<"TanOp", (Op $x), [
   (Div (DiffeRet), (Mul (Cos $x), (Cos $x)))
 ]>;
+
+// erfc(x):   d/dx = -(2/sqrt(pi)) * exp(-x^2)
+def : HLODerivative<"ErfcOp", (Op $x), [
+  (Neg (Mul (DiffeRet), (Mul (HLOConstantFP<"1.1283791670955126"> $x), (Exp (Neg (Mul $x, $x))))))
+],
+  (Neg (Mul (Shadow $x), (Mul (HLOConstantFP<"1.1283791670955126"> $x), (Exp (Neg (Mul $x, $x))))))
+>;
+
+// erfinv(x): d/dx = (sqrt(pi)/2) * exp(erfinv(x)^2)
+def : HLODerivative<"ErfInvOp", (Op $x), [
+  (Mul (DiffeRet), (Mul (HLOConstantFP<"0.8862269254527580"> $x), (Exp (Mul (ErfInv $x), (ErfInv $x)))))
+],
+  (Mul (Shadow $x), (Mul (HLOConstantFP<"0.8862269254527580"> $x), (Exp (Mul (ErfInv $x), (ErfInv $x)))))
+>;

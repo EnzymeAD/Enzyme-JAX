@@ -2,7 +2,7 @@
 
 module @"reactant_loop!" {
   func.func @main(%0: tensor<4x8x80xf64>) -> tensor<4x8x80xf64> {
-    %1 = "enzymexla.rotate"(%0) <{amount = 2 : si32, dimension = 2 : si32}> : (tensor<4x8x80xf64>) -> tensor<4x8x80xf64>
+    %1 = "enzymexla.rotate"(%0) <{amount = 2 : i32, dimension = 2 : i32}> : (tensor<4x8x80xf64>) -> tensor<4x8x80xf64>
     stablehlo.return %1 : tensor<4x8x80xf64>
   }
 }
