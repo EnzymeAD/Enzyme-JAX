@@ -38,7 +38,7 @@ struct CommMpiCommRankOpLowering
     // Replace the MpiCommRankOp with a stablehlo.custom_call operation
     rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
         op, converted_res_types, ValueRange{op.getComm()},
-        rewriter.getStringAttr("enzymexla_ffi_mpi_comm_rank"),
+        rewriter.getStringAttr("MpiCommRank"),
         /*has_side_effect=*/rewriter.getBoolAttr(false),
         /*backend_config=*/nullptr,
         /*api_version=*/nullptr,
@@ -77,7 +77,7 @@ struct CommMpiCommSizeOpLowering
     // Replace the MpiCommSizeOp with a stablehlo.custom_call operation
     rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
         op, converted_res_types, ValueRange{op.getComm()},
-        rewriter.getStringAttr("enzymexla_ffi_mpi_comm_size"),
+        rewriter.getStringAttr("MpiCommSize"),
         /*has_side_effect=*/rewriter.getBoolAttr(false),
         /*backend_config=*/nullptr,
         /*api_version=*/nullptr,
@@ -117,7 +117,7 @@ struct CommMpiCommSplitOpLowering
     rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
         op, converted_res_types,
         ValueRange{op.getComm(), op.getColor(), op.getKey()},
-        rewriter.getStringAttr("enzymexla_ffi_mpi_comm_split"),
+        rewriter.getStringAttr("MpiCommSplit"),
         /*has_side_effect=*/rewriter.getBoolAttr(false),
         /*backend_config=*/nullptr,
         /*api_version=*/nullptr,
@@ -143,7 +143,7 @@ struct CommMpiBarrierOpLowering
     // Replace the MpiBarrierOp with a stablehlo.custom_call operation
     rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
         op, TypeRange{}, ValueRange{op.getComm()},
-        rewriter.getStringAttr("enzymexla_ffi_mpi_barrier"),
+        rewriter.getStringAttr("MpiBarrier"),
         /*has_side_effect=*/rewriter.getBoolAttr(true),
         /*backend_config=*/nullptr,
         /*api_version=*/nullptr,
@@ -169,7 +169,7 @@ struct CommMpiSendOpLowering : public OpConversionPattern<comm::MpiSendOp> {
     rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
         op, TypeRange{},
         ValueRange{op.getBuffer(), op.getDest(), op.getTag(), op.getComm()},
-        rewriter.getStringAttr("enzymexla_ffi_mpi_send"),
+        rewriter.getStringAttr("MpiSend"),
         /*has_side_effect=*/rewriter.getBoolAttr(true),
         /*backend_config=*/nullptr,
         /*api_version=*/nullptr,
@@ -201,7 +201,7 @@ struct CommMpiIsendOpLowering : public OpConversionPattern<comm::MpiIsendOp> {
     rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
         op, converted_res_types,
         ValueRange{op.getBuffer(), op.getDest(), op.getTag(), op.getComm()},
-        rewriter.getStringAttr("enzymexla_ffi_mpi_isend"),
+        rewriter.getStringAttr("MpiIsend"),
         /*has_side_effect=*/rewriter.getBoolAttr(true),
         /*backend_config=*/nullptr,
         /*api_version=*/nullptr,
@@ -233,7 +233,7 @@ struct CommMpiRecvOpLowering : public OpConversionPattern<comm::MpiRecvOp> {
     rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
         op, converted_res_types,
         ValueRange{op.getBuffer(), op.getSource(), op.getTag(), op.getComm()},
-        rewriter.getStringAttr("enzymexla_ffi_mpi_recv"),
+        rewriter.getStringAttr("MpiRecv"),
         /*has_side_effect=*/rewriter.getBoolAttr(true),
         /*backend_config=*/nullptr,
         /*api_version=*/nullptr,
@@ -265,7 +265,7 @@ struct CommMpiIrecvOpLowering : public OpConversionPattern<comm::MpiIrecvOp> {
     rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
         op, converted_res_types,
         ValueRange{op.getBuffer(), op.getSource(), op.getTag(), op.getComm()},
-        rewriter.getStringAttr("enzymexla_ffi_mpi_irecv"),
+        rewriter.getStringAttr("MpiIrecv"),
         /*has_side_effect=*/rewriter.getBoolAttr(true),
         /*backend_config=*/nullptr,
         /*api_version=*/nullptr,
@@ -290,7 +290,7 @@ struct CommMpiWaitOpLowering : public OpConversionPattern<comm::MpiWaitOp> {
     // Replace the MpiWaitOp with a stablehlo.custom_call operation
     rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
         op, TypeRange{}, ValueRange{op.getRequest()},
-        rewriter.getStringAttr("enzymexla_ffi_mpi_wait"),
+        rewriter.getStringAttr("MpiWait"),
         /*has_side_effect=*/rewriter.getBoolAttr(true),
         /*backend_config=*/nullptr,
         /*api_version=*/nullptr,
@@ -316,7 +316,7 @@ struct CommMpiWaitallOpLowering
     // Replace the MpiWaitallOp with a stablehlo.custom_call operation
     rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
         op, TypeRange{}, ValueRange{op.getRequests()},
-        rewriter.getStringAttr("enzymexla_ffi_mpi_waitall"),
+        rewriter.getStringAttr("MpiWaitall"),
         /*has_side_effect=*/rewriter.getBoolAttr(true),
         /*backend_config=*/nullptr,
         /*api_version=*/nullptr,
@@ -349,7 +349,7 @@ struct CommMpiAllreduceOpLowering
     // Replace the MpiAllreduceOp with a stablehlo.custom_call operation
     rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
         op, converted_res_types, ValueRange{op.getSendbuf(), op.getComm()},
-        rewriter.getStringAttr("enzymexla_ffi_mpi_allreduce"),
+        rewriter.getStringAttr("MpiAllreduce"),
         /*has_side_effect=*/rewriter.getBoolAttr(true),
         /*backend_config=*/nullptr,
         /*api_version=*/nullptr,
@@ -381,7 +381,7 @@ struct CommMpiBcastOpLowering : public OpConversionPattern<comm::MpiBcastOp> {
     rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
         op, converted_res_types,
         ValueRange{op.getInBuffer(), op.getRoot(), op.getComm()},
-        rewriter.getStringAttr("enzymexla_ffi_mpi_bcast"),
+        rewriter.getStringAttr("MpiBcast"),
         /*has_side_effect=*/rewriter.getBoolAttr(true),
         /*backend_config=*/nullptr,
         /*api_version=*/nullptr,
