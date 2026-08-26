@@ -3110,6 +3110,15 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
   if (auto p2m = dyn_cast<enzymexla::Pointer2MemrefOp>(op)) {
     Value operand = op->getOperand(0), result = op->getResult(0);
+    // A view of a buffer that itself is raised gets a value-semantics
+    // snapshot here: a store through it would silently diverge from the
+    // base. Flattening removes the scratch chains; any store-through view
+    // that remains is unsound.
+    if (operand.getDefiningOp<enzymexla::Memref2PointerOp>())
+      for (Operation *user : result.getUsers())
+        if ((isa<affine::AffineStoreOp, memref::StoreOp>(user) &&
+             user->getOperand(1) == result))
+          return op->emitError("cannot raise a store through an aliasing view");
     auto input = mapping.lookup(operand);
     auto MT = p2m.getType();
     if (!isXLACompatiblePrimitive(MT.getElementType())) {
@@ -3677,6 +3686,123 @@ struct AffineToStableHLORaisingPass
     }
   }
 
+  // Shared-memory scratch arrives as a static alloca viewed through a
+  // memref2pointer/pointer2memref round trip that changes shape and address
+  // space, which no access-based raising can see through. When the alloca is
+  // only ever read and written through such flat views, replace the whole
+  // chain with one flat static alloca the raising handles directly.
+  static void flattenViewedScratch(Operation *root) {
+    SmallVector<memref::AllocaOp> allocas;
+    root->walk([&](memref::AllocaOp a) { allocas.push_back(a); });
+    for (auto alloca : allocas) {
+      auto MT = alloca.getType();
+      if (!MT.hasStaticShape())
+        continue;
+      SmallVector<enzymexla::Pointer2MemrefOp> views;
+      SmallVector<enzymexla::Memref2PointerOp> casts;
+      SmallVector<Operation *> directAccesses;
+      bool viewedOnly = true;
+      for (Operation *user : alloca->getUsers()) {
+        auto m2p = dyn_cast<enzymexla::Memref2PointerOp>(user);
+        if (!m2p) {
+          // A direct access can move to the flat buffer with its indexing
+          // linearized; anything else keeps the chain intact.
+          if (isa<affine::AffineLoadOp, affine::AffineStoreOp, memref::LoadOp>(
+                  user)) {
+            directAccesses.push_back(user);
+            continue;
+          }
+          if (auto st = dyn_cast<memref::StoreOp>(user)) {
+            if (st.getMemRef() == alloca.getResult()) {
+              directAccesses.push_back(user);
+              continue;
+            }
+          }
+          viewedOnly = false;
+          break;
+        }
+        casts.push_back(m2p);
+        for (Operation *viewUser : m2p->getUsers()) {
+          auto p2m = dyn_cast<enzymexla::Pointer2MemrefOp>(viewUser);
+          if (!p2m || p2m.getType().getRank() != 1 ||
+              p2m.getType().getElementType() != MT.getElementType() ||
+              (p2m.getType().hasStaticShape() &&
+               p2m.getType().getShape()[0] > MT.getNumElements())) {
+            viewedOnly = false;
+            break;
+          }
+          views.push_back(p2m);
+        }
+        if (!viewedOnly)
+          break;
+      }
+      if (!viewedOnly || views.empty())
+        continue;
+      OpBuilder b(alloca);
+      auto flatTy = MemRefType::get({MT.getNumElements()}, MT.getElementType());
+      auto flat = memref::AllocaOp::create(b, alloca.getLoc(), flatTy);
+      for (auto p2m : views) {
+        p2m.getResult().replaceAllUsesWith(flat.getResult());
+        p2m.erase();
+      }
+      for (auto m2p : casts)
+        m2p.erase();
+      auto linearizeValues = [&](OpBuilder &ab, Location loc,
+                                 ValueRange idxs) -> Value {
+        Value lin = arith::ConstantIndexOp::create(ab, loc, 0);
+        int64_t stride = 1;
+        for (int64_t d = MT.getRank() - 1; d >= 0; --d) {
+          Value term = idxs[d];
+          if (stride != 1) {
+            Value c = arith::ConstantIndexOp::create(ab, loc, stride);
+            term = arith::MulIOp::create(ab, loc, term, c);
+          }
+          lin = arith::AddIOp::create(ab, loc, lin, term);
+          stride *= MT.getShape()[d];
+        }
+        return lin;
+      };
+      for (Operation *access : directAccesses) {
+        if (auto mload = dyn_cast<memref::LoadOp>(access)) {
+          OpBuilder ab(mload);
+          Value lin = linearizeValues(ab, mload.getLoc(), mload.getIndices());
+          Value idxs[] = {lin};
+          mload.getMemrefMutable().assign(flat);
+          mload.getIndicesMutable().assign(idxs);
+          continue;
+        }
+        if (auto mstore = dyn_cast<memref::StoreOp>(access)) {
+          OpBuilder ab(mstore);
+          Value lin = linearizeValues(ab, mstore.getLoc(), mstore.getIndices());
+          Value idxs[] = {lin};
+          mstore.getMemrefMutable().assign(flat);
+          mstore.getIndicesMutable().assign(idxs);
+          continue;
+        }
+        AffineMap oldMap = isa<affine::AffineLoadOp>(access)
+                               ? cast<affine::AffineLoadOp>(access).getMap()
+                               : cast<affine::AffineStoreOp>(access).getMap();
+        AffineExpr lin = getAffineConstantExpr(0, oldMap.getContext());
+        int64_t stride = 1;
+        for (int64_t d = MT.getRank() - 1; d >= 0; --d) {
+          lin = lin + oldMap.getResult(d) * stride;
+          stride *= MT.getShape()[d];
+        }
+        auto linMap =
+            AffineMap::get(oldMap.getNumDims(), oldMap.getNumSymbols(), lin);
+        if (auto load = dyn_cast<affine::AffineLoadOp>(access)) {
+          load.setMap(linMap);
+          load.getMemrefMutable().assign(flat);
+        } else {
+          auto store = cast<affine::AffineStoreOp>(access);
+          store.setMap(linMap);
+          store.getMemrefMutable().assign(flat);
+        }
+      }
+      alloca.erase();
+    }
+  }
+
   void runOnOperation() override {
     ParallelContext::Options options{enable_lockstep_for, dump_failed_lockstep,
                                      prefer_while_raising,
@@ -3715,6 +3841,7 @@ struct AffineToStableHLORaisingPass
     // actually raises.
     for (auto func : funcs) {
       stripAccessMemorySpaceCasts(func);
+      flattenViewedScratch(func);
       peelDynamicParallelDims(func);
     }
 
@@ -3737,6 +3864,7 @@ struct AffineToStableHLORaisingPass
     op->walk([&](enzymexla::GPUWrapperOp g) { gwrap.push_back(g); });
     for (auto g : gwrap) {
       stripAccessMemorySpaceCasts(g);
+      flattenViewedScratch(g);
       peelDynamicParallelDims(g);
     }
     size_t raised_count = 0;
