@@ -1924,6 +1924,20 @@ static void collectLeaves(OpBuilder &b, Value val,
   }
 }
 
+static void collectLeafTypes(Type t, SmallVectorImpl<Type> &out) {
+  if (auto ST = dyn_cast<LLVM::LLVMStructType>(t)) {
+    for (Type m : ST.getBody())
+      collectLeafTypes(m, out);
+    return;
+  }
+  if (auto AT = dyn_cast<LLVM::LLVMArrayType>(t)) {
+    for (unsigned i = 0; i < AT.getNumElements(); ++i)
+      collectLeafTypes(AT.getElementType(), out);
+    return;
+  }
+  out.push_back(t);
+}
+
 Value castToType(Type elType, Value val, Operation *op) {
   if (val.getType() == elType)
     return val;
@@ -1995,9 +2009,86 @@ Value castToType(Type elType, Value val, Operation *op) {
                                          b.getDenseI64ArrayAttr({0}));
     }
   }
+  if ((isa<IntegerType, FloatType>(val.getType())) &&
+      isa<LLVM::LLVMStructType, LLVM::LLVMArrayType>(elType)) {
+    // A scalar spelling of a small aggregate goes through the matching
+    // vector, the inverse of the leaf collection above and with the same
+    // element correspondence.
+    SmallVector<Type> leafTypes;
+    collectLeafTypes(elType, leafTypes);
+    if (!leafTypes.empty() && isa<IntegerType, FloatType>(leafTypes[0]) &&
+        llvm::all_of(leafTypes, [&](Type t) { return t == leafTypes[0]; })) {
+      auto vecType = VectorType::get(leafTypes.size(), leafTypes[0]);
+      DataLayout dl(op->getParentOfType<ModuleOp>());
+      if (dl.getTypeSize(vecType) == dl.getTypeSize(val.getType())) {
+        Value vec = LLVM::BitcastOp::create(b, val.getLoc(), vecType, val);
+        Value agg = LLVM::UndefOp::create(b, val.getLoc(), elType);
+        unsigned leafIdx = 0;
+        SmallVector<int64_t> path;
+        std::function<Value(Value, Type)> fill = [&](Value agg,
+                                                     Type t) -> Value {
+          if (auto ST = dyn_cast<LLVM::LLVMStructType>(t)) {
+            for (auto &&[i, m] : llvm::enumerate(ST.getBody())) {
+              path.push_back(i);
+              agg = fill(agg, m);
+              path.pop_back();
+            }
+            return agg;
+          }
+          if (auto AT = dyn_cast<LLVM::LLVMArrayType>(t)) {
+            for (unsigned i = 0; i < AT.getNumElements(); ++i) {
+              path.push_back(i);
+              agg = fill(agg, AT.getElementType());
+              path.pop_back();
+            }
+            return agg;
+          }
+          Value idx = LLVM::ConstantOp::create(b, val.getLoc(), b.getI32Type(),
+                                               b.getI32IntegerAttr(leafIdx++));
+          Value elem =
+              LLVM::ExtractElementOp::create(b, val.getLoc(), vec, idx);
+          return LLVM::InsertValueOp::create(b, val.getLoc(), agg, elem, path);
+        };
+        return fill(agg, elType);
+      }
+    }
+  }
   llvm::errs() << " mismatched load type, needed: " << elType << " found "
                << val << "\n";
   llvm_unreachable("mismatched type");
+}
+
+// Whether castToType can spell src as dst. Conservative: a subset of what it
+// handles is enough, since callers fall back to slicing or to leaving the
+// memory operation in place.
+static bool castCompatible(Type dst, Type src) {
+  if (dst == src)
+    return true;
+  auto scalar = [](Type t) {
+    return isa<IntegerType, FloatType, LLVM::LLVMPointerType>(t);
+  };
+  if (scalar(dst) && scalar(src))
+    return true;
+  auto uniformScalar = [&](Type t, Type &leaf) {
+    SmallVector<Type> leaves;
+    collectLeafTypes(t, leaves);
+    if (leaves.empty() || !isa<IntegerType, FloatType>(leaves[0]))
+      return false;
+    if (!llvm::all_of(leaves, [&](Type l) { return l == leaves[0]; }))
+      return false;
+    leaf = leaves[0];
+    return true;
+  };
+  Type leaf;
+  if (isa<IntegerType, FloatType>(src) &&
+      isa<LLVM::LLVMStructType, LLVM::LLVMArrayType>(dst) &&
+      uniformScalar(dst, leaf))
+    return true;
+  if (isa<IntegerType, FloatType>(dst) &&
+      isa<LLVM::LLVMStructType, LLVM::LLVMArrayType>(src) &&
+      uniformScalar(src, leaf))
+    return true;
+  return false;
 }
 
 // Whether every position the value is passed at carries the given attribute
@@ -2168,6 +2259,53 @@ static bool extractPath(Type from, uint64_t at, Type want, const DataLayout &dl,
   return false;
 }
 
+// The leaves of an aggregate that a range of bytes covers: every leaf the
+// range touches must lie whole inside it, and bytes of the range no leaf
+// claims are padding. Fails where a leaf straddles the range's edge.
+static bool coveredLeaves(Type from, uint64_t at, uint64_t size,
+                          const DataLayout &dl,
+                          SmallVectorImpl<std::pair<uint64_t, Type>> &leaves,
+                          uint64_t base = 0) {
+  auto fromSize = typeSize(from, dl);
+  if (!fromSize)
+    return false;
+  if (base + *fromSize <= at || base >= at + size)
+    return true;
+  if (auto ST = dyn_cast<LLVM::LLVMStructType>(from)) {
+    uint64_t byte = 0;
+    for (Type member : ST.getBody()) {
+      auto msize = typeSize(member, dl);
+      if (!msize)
+        return false;
+      if (!ST.isPacked())
+        byte = llvm::alignTo(byte, dl.getTypeABIAlignment(member));
+      if (!coveredLeaves(member, at, size, dl, leaves, base + byte))
+        return false;
+      byte += *msize;
+    }
+    return true;
+  }
+  if (auto AT = dyn_cast<LLVM::LLVMArrayType>(from)) {
+    auto esize = typeSize(AT.getElementType(), dl);
+    if (!esize || !*esize)
+      return false;
+    for (uint64_t i = 0; i < AT.getNumElements(); i++)
+      if (!coveredLeaves(AT.getElementType(), at, size, dl, leaves,
+                         base + i * *esize))
+        return false;
+    return true;
+  }
+  if (base < at || base + *fromSize > at + size)
+    return false;
+  leaves.emplace_back(base, from);
+  return true;
+}
+
+static bool isLittleEndian(const DataLayout &dl) {
+  auto endian = dyn_cast_or_null<StringAttr>(dl.getEndianness());
+  return !endian || endian.getValue() == "little";
+}
+
 bool PolygeistMem2Reg::forwardStoreToLoad(
     mlir::Value AI, OffsetTree idx,
     SmallVectorImpl<Operation *> &loadOpsToErase,
@@ -2179,6 +2317,8 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
   std::set<mlir::Operation *> transferLoads;
   // Loads of a piece of the slot, and how far into it that piece lies.
   DenseMap<mlir::Operation *, uint64_t> containedLoads;
+  // Stores of a piece of the slot, and how far into it that piece lands.
+  DenseMap<mlir::Operation *, uint64_t> containedStores;
   mlir::Location loc = AI.getLoc();
   std::set<mlir::Operation *> allStoreOps;
   // Reads standing for what a transfer moved. One is worth the load it costs
@@ -2192,6 +2332,25 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
     for (auto *read : llvm::reverse(transferReads))
       if (read->getResult(0).use_empty())
         read->erase();
+  });
+  // Reads created to name the value flowing into a piece store. Forwarding
+  // one is not progress -- the store that needed it is still there, and the
+  // round after names the value again -- so they never mark change, and one
+  // left dead is dropped rather than left to be found as a load next round.
+  SmallPtrSet<Operation *, 2> syntheticReads;
+  auto dropDeadSyntheticReads = llvm::scope_exit([&]() {
+    for (auto *read : syntheticReads)
+      if (read->getResult(0).use_empty() &&
+          !llvm::is_contained(loadOpsToErase, read))
+        read->erase();
+  });
+  // Values built while folding piece stores into the slot's value, dropped
+  // where nothing came to ask for them.
+  SmallVector<Operation *> synthesized;
+  auto dropUnaskedSynthesized = llvm::scope_exit([&synthesized]() {
+    for (auto *op : llvm::reverse(synthesized))
+      if (op->getResult(0).use_empty())
+        op->erase();
   });
 
   if (idx.isUnknown())
@@ -2320,12 +2479,54 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
         LLVM_DEBUG(llvm::dbgs() << "Matching Load: " << *loadOp << "\n");
       };
       auto matchStore = [&](Operation *storeOp, OffsetTree accessed) {
-        switch (idx.matches(tree.add(accessed, dl), dl)) {
+        uint64_t at = 0;
+        switch (idx.matches(tree.add(accessed, dl), dl, &at)) {
         case Match::Exact:
           LLVM_DEBUG(llvm::dbgs() << "Matching Store: " << *storeOp << "\n");
           allStoreOps.insert(storeOp);
           break;
-        case Match::Contains:
+        case Match::Contains: {
+          // Writing a piece of the slot writes a piece of its value, as long
+          // as there is a way into it that lands that piece. An integer
+          // written over several leaves -- merged adjacent field stores, or a
+          // field store widened over padding -- lands a slice on each leaf it
+          // covers.
+          Type held = elType ? elType : idx.getBase();
+          Type written = cast<enzyme::StoreLikeInterface>(storeOp)
+                             .getStoredValue()
+                             .getType();
+          SmallVector<int64_t> path;
+          if (held && extractPath(held, at, written, dl, path)) {
+            // The path may land at a spelling of the piece rather than its
+            // type; only claim the store if that spelling is reachable.
+            Type landing = path.empty()
+                               ? held
+                               : aggregateFieldOffset(held, path, dl)->second;
+            if (castCompatible(landing, written)) {
+              LLVM_DEBUG(llvm::dbgs()
+                         << "Matching Piece Store: " << *storeOp << "\n");
+              containedStores[storeOp] = at;
+              allStoreOps.insert(storeOp);
+              break;
+            }
+          }
+          auto wsize = typeSize(written, dl);
+          SmallVector<std::pair<uint64_t, Type>> leaves;
+          if (held && wsize && isa<IntegerType>(written) &&
+              isLittleEndian(dl) &&
+              coveredLeaves(held, at, *wsize, dl, leaves) && !leaves.empty() &&
+              leaves.size() <= 8 && llvm::all_of(leaves, [&](auto &leaf) {
+                SmallVector<int64_t> lpath;
+                return extractPath(held, leaf.first, leaf.second, dl, lpath);
+              })) {
+            LLVM_DEBUG(llvm::dbgs()
+                       << "Matching Piece Store: " << *storeOp << "\n");
+            containedStores[storeOp] = at;
+            allStoreOps.insert(storeOp);
+            break;
+          }
+          LLVM_FALLTHROUGH;
+        }
         case Match::Maybe:
           LLVM_DEBUG(llvm::dbgs()
                      << "Mabye Aliasing Store: " << *storeOp << "\n");
@@ -2685,6 +2886,18 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
                        << "\nstarting block: lastVal=" << *lastVal << "\n";
                    block.print(llvm::dbgs()); llvm::dbgs() << "\n";);
         for (auto *a : ops) {
+          if (a == AI.getDefiningOp() && !containedStores.empty() &&
+              isa<LLVM::AllocaOp, memref::AllocaOp, memref::AllocOp>(a) &&
+              LLVM::isCompatibleType(elType)) {
+            // The slot begins undefined, which gives the first piece store a
+            // value to build on. Later unknown writes still overwrite this,
+            // and after those piece stores have nothing to build on again.
+            OpBuilder builder(a->getBlock(), std::next(a->getIterator()));
+            Value undef = LLVM::UndefOp::create(builder, a->getLoc(), elType);
+            synthesized.push_back(undef.getDefiningOp());
+            lastVal = metaMap.get(undef);
+            continue;
+          }
           if (StoringOperations.count(a)) {
             // erase a, in case overwritten later in metamap replacement/lookup.
             StoringOperations.erase(a);
@@ -2758,7 +2971,108 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
             }
           } else if (auto storeOp = dyn_cast<enzyme::StoreLikeInterface>(a)) {
             if (allStoreOps.count(storeOp)) {
-              lastVal = metaMap.get(storeOp.getStoredValue());
+              auto contained = containedStores.find(a);
+              Value baseRaw = nullptr;
+              if (contained != containedStores.end()) {
+                if (lastVal->val) {
+                  baseRaw = lastVal->val;
+                } else if (!lastVal->overwritten &&
+                           isa_and_nonnull<LLVM::LLVMPointerType>(
+                               AI.getType()) &&
+                           idx.matches(accessOffsets(elType), dl) ==
+                               Match::Exact &&
+                           LLVM::isCompatibleType(elType)) {
+                  // The value coming in has no name here yet: read it out of
+                  // the slot it still sits in, and let the forwarding treat
+                  // that read like any other load of the slot.
+                  OpBuilder builder(a);
+                  Value incoming =
+                      LLVM::LoadOp::create(builder, a->getLoc(), elType, AI);
+                  loadOps.insert(incoming.getDefiningOp());
+                  syntheticReads.insert(incoming.getDefiningOp());
+                  replaceValue(incoming, lastVal);
+                  baseRaw = incoming;
+                }
+              }
+              if (contained == containedStores.end()) {
+                lastVal = metaMap.get(storeOp.getStoredValue());
+              } else if (baseRaw) {
+                // A store of a piece leaves the rest as it was: fold it into
+                // the value already there.
+                uint64_t at = contained->second;
+                Value base = castToType(elType, baseRaw, a);
+                Value piece = storeOp.getStoredValue();
+                OpBuilder builder(a);
+                SmallVector<int64_t> path;
+                Type landing;
+                if (extractPath(elType, at, piece.getType(), dl, path) &&
+                    (landing =
+                         path.empty()
+                             ? elType
+                             : aggregateFieldOffset(elType, path, dl)->second,
+                     castCompatible(landing, piece.getType()))) {
+                  Value built;
+                  if (path.empty()) {
+                    built = castToType(elType, piece, a);
+                  } else {
+                    Type pathTy =
+                        aggregateFieldOffset(elType, path, dl)->second;
+                    built = LLVM::InsertValueOp::create(
+                        builder, a->getLoc(), base,
+                        castToType(pathTy, piece, a), path);
+                    synthesized.push_back(built.getDefiningOp());
+                  }
+                  lastVal = metaMap.get(built);
+                } else {
+                  // An integer over several leaves: each gets its slice.
+                  uint64_t wsize = *typeSize(piece.getType(), dl);
+                  SmallVector<std::pair<uint64_t, Type>> leaves;
+                  bool found = coveredLeaves(elType, at, wsize, dl, leaves);
+                  (void)found;
+                  assert(found && !leaves.empty() &&
+                         "a piece that was named cannot be landed");
+                  Value built = base;
+                  for (auto &[off, leafTy] : leaves) {
+                    uint64_t delta = off - at;
+                    uint64_t lsize = *typeSize(leafTy, dl);
+                    Value v = piece;
+                    if (delta) {
+                      Value amt = LLVM::ConstantOp::create(
+                          builder, a->getLoc(), v.getType(),
+                          builder.getIntegerAttr(v.getType(), delta * 8));
+                      synthesized.push_back(amt.getDefiningOp());
+                      v = LLVM::LShrOp::create(builder, a->getLoc(), v, amt);
+                      synthesized.push_back(v.getDefiningOp());
+                    }
+                    if (lsize < wsize) {
+                      v = LLVM::TruncOp::create(
+                          builder, a->getLoc(),
+                          builder.getIntegerType(lsize * 8), v);
+                      synthesized.push_back(v.getDefiningOp());
+                    }
+                    SmallVector<int64_t> lpath;
+                    bool leafFound =
+                        extractPath(elType, off, leafTy, dl, lpath);
+                    (void)leafFound;
+                    assert(leafFound && "a named leaf cannot be landed");
+                    // The path may stop above the leaf at a wrapper of the
+                    // same extent; the value goes in as what the path names.
+                    Type pathTy =
+                        lpath.empty()
+                            ? elType
+                            : aggregateFieldOffset(elType, lpath, dl)->second;
+                    v = castToType(pathTy, v, a);
+                    built = LLVM::InsertValueOp::create(builder, a->getLoc(),
+                                                        built, v, lpath);
+                    synthesized.push_back(built.getDefiningOp());
+                  }
+                  lastVal = metaMap.get(built);
+                }
+              } else {
+                // No value to build on: past this store the slot holds an
+                // unknown with one piece changed, which is unknown.
+                lastVal = emptyValue;
+              }
             }
           } else {
             // since not storing operation the value at the start of every block
@@ -2943,7 +3257,8 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
     Value val = pair.second->materialize(true);
     assert(val);
 
-    changed = true;
+    if (!syntheticReads.count(pair.first.getDefiningOp()))
+      changed = true;
     assert(pair.first != val);
     assert(val.getType() == elType);
     val = valueFor(pair.first, val);
@@ -2952,8 +3267,10 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
                << " replaced " << pair.first << " with " << val << "\n");
     metaMap.replaceValue(pair.first, val);
 
-    // Record this to erase later.
-    loadOpsToErase.push_back(pair.first.getDefiningOp());
+    // Record this to erase later. A synthetic read is not the caller's to
+    // erase -- or to count as progress -- and is dropped on the way out.
+    if (!syntheticReads.count(pair.first.getDefiningOp()))
+      loadOpsToErase.push_back(pair.first.getDefiningOp());
     loadOps.erase(pair.first.getDefiningOp());
   }
   replaceableValues.clear();
