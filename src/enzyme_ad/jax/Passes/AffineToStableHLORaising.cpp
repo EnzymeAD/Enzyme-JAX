@@ -3398,9 +3398,63 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     // it, which is exactly what materializing its initial value where the
     // alloca sits gives. Reads before any write see zeros.
     auto MT = alloca.getType();
-    if (!MT.hasStaticShape() || !isXLACompatiblePrimitive(MT.getElementType()))
+    if (!isXLACompatiblePrimitive(MT.getElementType()))
       return op->emitError("cannot raise dynamic or non-primitive alloca")
              << *op;
+    if (!MT.hasStaticShape()) {
+      // A scratch of runtime extent: a dynamic broadcast of the zero makes
+      // the buffer, its shape assembled from the mapped extents.
+      auto loc = rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo);
+      SmallVector<Value> dims;
+      unsigned dynIdx = 0;
+      auto i64Ty = RankedTensorType::get({}, builder.getI64Type());
+      auto i64x1Ty = RankedTensorType::get({1}, builder.getI64Type());
+      for (int64_t d = 0; d < MT.getRank(); ++d) {
+        Value dv;
+        if (MT.isDynamicDim(d)) {
+          if (dynIdx >= alloca.getDynamicSizes().size())
+            return op->emitError("cannot raise dynamic or non-primitive "
+                                 "alloca")
+                   << *op;
+          Value szv = mapping.lookupOrNull(alloca.getDynamicSizes()[dynIdx++]);
+          if (!szv || cast<RankedTensorType>(szv.getType()).getRank() != 0)
+            return op->emitError("cannot raise dynamic or non-primitive "
+                                 "alloca")
+                   << *op;
+          if (!cast<RankedTensorType>(szv.getType())
+                   .getElementType()
+                   .isInteger(64))
+            szv = stablehlo::ConvertOp::create(builder, loc, i64Ty, szv);
+          dv = szv;
+        } else {
+          dv = stablehlo::ConstantOp::create(
+              builder, loc, i64Ty,
+              SplatElementsAttr::get(
+                  i64Ty, builder.getI64IntegerAttr(MT.getDimSize(d))));
+        }
+        dims.push_back(stablehlo::ReshapeOp::create(builder, loc, i64x1Ty, dv));
+      }
+      Value shape =
+          dims.size() == 1
+              ? dims[0]
+              : stablehlo::ConcatenateOp::create(builder, loc, dims, 0)
+                    .getResult();
+      auto ST = RankedTensorType::get({}, MT.getElementType());
+      Value zeroScalar = stablehlo::ConstantOp::create(
+          builder, loc, ST,
+          SplatElementsAttr::get(ST, builder.getZeroAttr(MT.getElementType())));
+      SmallVector<int64_t> dynShape(MT.getRank(), ShapedType::kDynamic);
+      for (int64_t d = 0; d < MT.getRank(); ++d)
+        if (!MT.isDynamicDim(d))
+          dynShape[d] = MT.getDimSize(d);
+      auto TT = RankedTensorType::get(dynShape, MT.getElementType());
+      Value dyn = stablehlo::DynamicBroadcastInDimOp::create(
+          builder, loc, TT, zeroScalar, shape,
+          builder.getDenseI64ArrayAttr({}));
+      mapping.map(alloca.getResult(), dyn);
+      maps[dyn] = affine::AffineValueMap(AffineMap::get(op->getContext()), {});
+      return success();
+    }
     auto TT = RankedTensorType::get(MT.getShape(), MT.getElementType());
     Value zero = stablehlo::ConstantOp::create(
         builder, rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
@@ -3419,6 +3473,13 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
   // thread axis completes for the entire axis before the next op runs, which
   // is exactly what the barrier guaranteed.
   if (isa<enzymexla::BarrierOp>(op)) {
+    // A serialized (dynamic-extent) axis has no whole-tensor ordering, and
+    // should have been distributed away before raising.
+    for (Operation *p = op->getParentOp(); p; p = p->getParentOp())
+      if (auto ap = dyn_cast<affine::AffineParallelOp>(p))
+        if (!ap.getConstantRanges())
+          return op->emitError(
+              "barrier under a serialized parallel axis was not distributed");
     return success();
   }
 
@@ -3576,6 +3637,38 @@ struct AffineToStableHLORaisingPass
   // raising identifies buffers by SSA root: a memory_space_cast view would
   // split one buffer into two roots and lose store propagation. Retarget the
   // accesses to the source and drop the cast.
+  // An alloca scope only delimits stack lifetime, which the raised value
+  // semantics make meaningless: splice its body into the parent.
+  static void inlineAllocaScopes(Operation *g) {
+    SmallVector<memref::AllocaScopeOp> scopes;
+    g->walk([&](memref::AllocaScopeOp sc) { scopes.push_back(sc); });
+    for (auto sc : scopes) {
+      if (sc->getNumResults() != 0)
+        continue;
+      Block *body = &sc.getBodyRegion().front();
+      body->getTerminator()->erase();
+      sc->getBlock()->getOperations().splice(sc->getIterator(),
+                                             body->getOperations());
+      sc.erase();
+    }
+  }
+
+  // A barrier under a parallel axis of dynamic extent raises serialized, so
+  // it cannot be dropped as a no-op: distribute the loops around it first,
+  // cpuify-style, so every pre-barrier phase completes for the whole axis
+  // before the next phase starts.
+  static void distributeSerializedBarriers(Operation *g) {
+    bool need = false;
+    g->walk([&](enzymexla::BarrierOp b) {
+      for (Operation *p = b->getParentOp(); p && p != g; p = p->getParentOp())
+        if (auto ap = dyn_cast<affine::AffineParallelOp>(p))
+          if (!ap.getConstantRanges())
+            need = true;
+    });
+    if (need)
+      (void)enzymexla::distributeAroundBarriers(g);
+  }
+
   static void stripAccessMemorySpaceCasts(Operation *root) {
     SmallVector<memref::MemorySpaceCastOp> casts;
     root->walk([&](memref::MemorySpaceCastOp c) { casts.push_back(c); });
@@ -3715,6 +3808,8 @@ struct AffineToStableHLORaisingPass
     // actually raises.
     for (auto func : funcs) {
       stripAccessMemorySpaceCasts(func);
+      distributeSerializedBarriers(func);
+      inlineAllocaScopes(func);
       peelDynamicParallelDims(func);
     }
 
@@ -3737,6 +3832,8 @@ struct AffineToStableHLORaisingPass
     op->walk([&](enzymexla::GPUWrapperOp g) { gwrap.push_back(g); });
     for (auto g : gwrap) {
       stripAccessMemorySpaceCasts(g);
+      distributeSerializedBarriers(g);
+      inlineAllocaScopes(g);
       peelDynamicParallelDims(g);
     }
     size_t raised_count = 0;

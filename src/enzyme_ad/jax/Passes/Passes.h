@@ -54,6 +54,10 @@ namespace cf {
 void populateLLVMToControlFlowConversionPatterns(RewritePatternSet &patterns);
 } // namespace cf
 
+namespace enzymexla {
+// Distribute loops around enzymexla.barrier ops in `root`, cpuify-style.
+LogicalResult distributeAroundBarriers(Operation *root);
+} // namespace enzymexla
 } // end namespace mlir
 
 void fully2ComposeAffineMapAndOperands(
