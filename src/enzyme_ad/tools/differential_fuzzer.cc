@@ -22,6 +22,7 @@
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/StringSaver.h"
+#include "llvm/Support/WithColor.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
@@ -61,6 +62,12 @@ llvm::cl::opt<unsigned> maxUlpsOpt(
                    "least signficant mantissa bits are allowed to deviate"),
     llvm::cl::init(8));
 
+// --quiet (show diagnostics or not)
+llvm::cl::opt<bool> quiet(
+    "quiet",
+    llvm::cl::desc("Suppress diagnostics; report results via exit code only"),
+    llvm::cl::init(false));
+
 // --maxElements (do not blow up CI or your machine with a large number)
 llvm::cl::opt<int64_t> maxElements(
     "max-elements",
@@ -69,11 +76,16 @@ llvm::cl::opt<int64_t> maxElements(
     llvm::cl::init(10000000));
 } // namespace
 
+static llvm::raw_ostream &diag() {
+  return quiet ? llvm::nulls() : llvm::errs();
+}
+
 using namespace mlir;
 
 struct PrintableComplex {
   const mlir::Complex<APFloat> v;
 };
+
 static llvm::raw_ostream &operator<<(llvm::raw_ostream &os,
                                      PrintableComplex p) {
   APFloat im = p.v.imag();
@@ -191,7 +203,8 @@ OwningOpRef<ModuleOp> loadMLIRModule(MLIRContext &context,
   std::string errorMessage;
   auto file = mlir::openInputFile(filePath, &errorMessage);
   if (!file) {
-    llvm::errs() << "Failed to open file: " << errorMessage << "\n";
+    llvm::WithColor::warning(diag())
+        << "Failed to open file: " << errorMessage << "\n";
     return nullptr;
   }
 
@@ -305,8 +318,8 @@ std::optional<AnyVector> CreateCursedPool(mlir::Type elementType) {
   }
 
   else {
-    llvm::outs()
-        << "Warning: Unsupported element type or bitwidth. Skipping.\n";
+    llvm::WithColor::warning(diag())
+        << "Unsupported element type or bitwidth. Skipping.\n";
 
     return std::nullopt;
   }
@@ -402,21 +415,24 @@ int main(int argc, char **argv) {
   if (seed == 0) {
     std::random_device rd;
     seed = rd();
-    llvm::outs() << "[*] Running with random seed: " << seed << "\n";
+    llvm::WithColor::remark(diag())
+        << "Running with random seed: " << seed << "\n";
   } else {
-    llvm::outs() << "[*] Running with manual seed: " << seed << "\n";
+    llvm::WithColor::remark(diag())
+        << "Running with manual seed: " << seed << "\n";
   }
 
   auto [passPipeline, allowUnreg, split] = parseRunLine(inputFilename);
   if (passPipeline.empty()) {
-    llvm::errs() << "No RUN line found in file!\n";
+    llvm::WithColor::warning(diag()) << "No RUN line found in file!\n";
     return 2;
   }
 
   if (split) {
-    llvm::outs() << "[!] Skipping test: Fuzzer does not yet support "
-                    "--split-input-file.\n";
-    return 2;
+    llvm::WithColor::warning(diag())
+        << "Skipping test: Fuzzer does not yet support "
+           "--split-input-file.\n";
+    return 0;
   }
 
   std::mt19937 gen(seed);
@@ -434,7 +450,7 @@ int main(int argc, char **argv) {
 
   OwningOpRef<ModuleOp> module = loadMLIRModule(context, inputFilename);
   if (!module)
-    return 1;
+    return 2;
 
   mlir::PassManager legalizationPM(&context);
   // Make it possible to run the chlo tests
@@ -451,15 +467,16 @@ int main(int argc, char **argv) {
   funcPM.addPass(mlir::enzyme::createLowerEnzymeXLAMPIPass());
 
   mlir::PassManager pm(&context);
-  if (mlir::failed(mlir::parsePassPipeline(passPipeline, pm, llvm::errs()))) {
-    llvm::errs() << "Failed to parse the pass pipeline: " << passPipeline
-                 << "\n";
+  if (mlir::failed(mlir::parsePassPipeline(passPipeline, pm, diag()))) {
+    llvm::WithColor::error(diag())
+        << "Failed to parse the pass pipeline: " << passPipeline << "\n";
     return 1;
   }
 
   OwningOpRef<ModuleOp> optimizedModule = module->clone();
   if (mlir::failed(pm.run(*optimizedModule))) {
-    llvm::errs() << "Pass pipeline failed to run on module!\n";
+    llvm::WithColor::warning(diag())
+        << "Pass pipeline failed to run on module!\n";
     return 1;
   }
   module->walk([&](mlir::func::FuncOp unoptFunc) {
@@ -467,7 +484,8 @@ int main(int argc, char **argv) {
 
     auto optFunc = optimizedModule->lookupSymbol<mlir::func::FuncOp>(funcName);
     if (!optFunc) {
-      llvm::outs() << "Skipping: Function deleted by optimization.\n";
+      llvm::WithColor::warning(diag())
+          << "Skipping: Function deleted by optimization.\n";
       return;
     }
 
@@ -478,9 +496,10 @@ int main(int argc, char **argv) {
 
       int64_t numElements = tensorType.getNumElements();
       if (numElements > maxElements) {
-        llvm::outs() << "  Skipping function: argument has " << numElements
-                     << " elements (exceeds --max-elements limit of "
-                     << maxElements << ").\n";
+        llvm::WithColor::warning(diag())
+            << "Skipping function: argument has " << numElements
+            << " elements (exceeds --max-elements limit of " << maxElements
+            << ").\n";
         return; // Aborts this function, moves to the next
       }
 
@@ -488,7 +507,8 @@ int main(int argc, char **argv) {
           generateCursedTensor(arg.getType(), gen);
 
       if (!attrOpt) {
-        llvm::outs() << "Skipping non-ranked tensor argument.\n";
+        llvm::WithColor::warning(diag())
+            << "Skipping non-ranked tensor argument.\n";
         continue;
       }
       evalArgs.push_back(*attrOpt);
@@ -501,15 +521,15 @@ int main(int argc, char **argv) {
     tempUnoptMod->push_back(clonedUnopt);
 
     if (mlir::failed(legalizationPM.run(*tempUnoptMod))) {
-      llvm::outs()
-          << "  [!] Legalization failed on unoptimized IR. Skipping.\n";
+      llvm::WithColor::warning(diag())
+          << "Legalization failed on unoptimized IR. Skipping.\n";
       return;
     }
 
     auto unoptResults =
         stablehlo::evalModule(tempUnoptMod.get(), evalArgs, config);
     if (mlir::failed(unoptResults)) {
-      llvm::outs() << "  [!] Unoptimized evaluation failed.\n";
+      llvm::WithColor::warning(diag()) << "Unoptimized evaluation failed.\n";
       return;
     }
 
@@ -519,13 +539,16 @@ int main(int argc, char **argv) {
     tempOptMod->push_back(clonedOpt); // Push BEFORE running pass
 
     if (mlir::failed(legalizationPM.run(*tempOptMod))) {
-      llvm::outs() << "  [!] Legalization failed on optimized IR. Skipping.\n";
+      llvm::WithColor::error(diag())
+          << "Legalization failed on optimized IR. Skipping.\n";
+      anyMismatch = true;
       return;
     }
 
     auto optResults = stablehlo::evalModule(tempOptMod.get(), evalArgs, config);
     if (mlir::failed(optResults)) {
-      llvm::outs() << "   Optimized evaluation failed.\n";
+      llvm::WithColor::error(diag()) << "Optimized evaluation failed.\n";
+      anyMismatch = true;
       return;
     }
 
@@ -533,7 +556,8 @@ int main(int argc, char **argv) {
     auto &unoptVals = *unoptResults;
     auto &optVals = *optResults;
     if (unoptVals.size() != optVals.size()) {
-      llvm::outs() << "   MISMATCH: Different number of return values!\n";
+      llvm::WithColor::warning(diag())
+          << "mismatch different number of return values!\n";
       return;
     }
     bool mismatch = false;
@@ -551,8 +575,9 @@ int main(int argc, char **argv) {
              llvm::zip_equal(unoptAttr.getValues<llvm::APFloat>(),
                              optAttr.getValues<llvm::APFloat>())) {
           if (!isClose(u, o, maxUlpsOpt)) {
-            llvm::outs() << "  [!] FLOAT MISMATCH: Expected " << u
-                         << " but got " << o << "\n";
+            llvm::WithColor::error(diag())
+                << "float mismatch in " << funcName << " expected " << u
+                << " but got " << o << "\n";
             mismatch = true;
             anyMismatch = true;
             break;
@@ -576,8 +601,9 @@ int main(int argc, char **argv) {
 
           if ((!isClose(uReal, oReal, maxUlpsOpt)) ||
               !isClose(uImag, oImag, maxUlpsOpt)) {
-            llvm::outs() << "  [!] Complex MISMATCH: Expected " << uPrint
-                         << " but got " << oPrint << "\n";
+            llvm::WithColor::error(diag())
+                << "complex mismatch in " << funcName << " expected " << uPrint
+                << " but got " << oPrint << "\n";
             mismatch = true;
             anyMismatch = true;
             break;
@@ -586,12 +612,16 @@ int main(int argc, char **argv) {
       } else {
         // If it's an integer/bool type and failed strict equality, it's a
         // definitive bug.
-        llvm::outs() << "  [!] MISMATCH on return value " << i << "!\n";
+        llvm::WithColor::error(diag())
+            << "mismatch in " << funcName << " expected " << unoptVals[i]
+            << " but got " << optVals[i] << "!\n";
         mismatch = true;
+        anyMismatch = true;
       }
     }
     if (!mismatch) {
-      llvm::outs() << "  PASS: Outputs match exactly.\n";
+      llvm::WithColor::remark(diag())
+          << "passed outputs in " << funcName << " match exactly.\n";
     }
   });
   return anyMismatch ? 1 : 0;
