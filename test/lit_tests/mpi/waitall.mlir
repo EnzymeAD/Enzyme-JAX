@@ -17,7 +17,9 @@ module {
 // CPU:           llvm.call @MPI_Waitall(%[[COUNT]], %[[REQUESTS]], {{.*}})
 // CPU:           llvm.store {{.*}}, %arg0
 // CPU:           llvm.store {{.*}}, %arg1
-// CPU-LABEL:   func.func @main(%[[REQUEST0:.*]]: tensor<i32>, %[[REQUEST1:.*]]: tensor<i32>)
+// CPU-LABEL:   func.func @main(
+// CPU-SAME:        %[[REQUEST0:[^,]+]]: tensor<i32>,
+// CPU-SAME:        %[[REQUEST1:[^)]+]]: tensor<i32>)
 // CPU:           enzymexla.jit_call @enzymexla_wrapper_MPI_Waitall_2 (%[[REQUEST0]], %[[REQUEST1]]) : (tensor<i32>, tensor<i32>) -> ()
 // CPU-NOT:       stablehlo.broadcast_in_dim
 // CPU-NOT:       stablehlo.concatenate
