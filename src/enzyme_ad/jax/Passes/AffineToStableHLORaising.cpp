@@ -3930,12 +3930,19 @@ struct AffineToStableHLORaisingPass
             affine::AffineStoreOp::create(
                 b, rewriteLocation(g.getLoc(), options.strip_llvm_debuginfo),
                 storeVal, res0, b.getMultiDimIdentityMap(0), ValueRange());
-            auto c1 = arith::ConstantIndexOp::create(
+            // The memcpy size is in bytes: a count of one only copies the
+            // low byte of the scalar.
+            int64_t elemBytes = (cast<MemRefType>(res0.getType())
+                                     .getElementType()
+                                     .getIntOrFloatBitWidth() +
+                                 7) /
+                                8;
+            auto csz = arith::ConstantIndexOp::create(
                 b, rewriteLocation(g.getLoc(), options.strip_llvm_debuginfo),
-                1);
+                elemBytes);
             enzymexla::MemcpyOp::create(
                 b, rewriteLocation(g.getLoc(), options.strip_llvm_debuginfo),
-                (mlir::Type) nullptr, ValueRange(), res, res0, c1);
+                (mlir::Type) nullptr, ValueRange(), res, res0, csz);
             b.setInsertionPointToStart(body);
             auto ld = affine::AffineLoadOp::create(
                 b, rewriteLocation(g.getLoc(), options.strip_llvm_debuginfo),
