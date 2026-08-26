@@ -62,11 +62,17 @@ llvm::cl::opt<unsigned> maxUlpsOpt(
                    "least signficant mantissa bits are allowed to deviate"),
     llvm::cl::init(8));
 
-// --quiet (show diagnostics or not)
-llvm::cl::opt<bool> quiet(
-    "quiet",
-    llvm::cl::desc("Suppress diagnostics; report results via exit code only"),
-    llvm::cl::init(false));
+// --verbosity (how much your screen gets spammend full of stuff)
+enum class Verbosity { Quiet, Normal, Verbose };
+
+llvm::cl::opt<Verbosity> verbosity(
+    "verbosity", llvm::cl::desc("Output detail level"),
+    llvm::cl::values(clEnumValN(Verbosity::Quiet, "quiet", "Exit code only"),
+                     clEnumValN(Verbosity::Normal, "normal",
+                                "Seed, mismatches and summary"),
+                     clEnumValN(Verbosity::Verbose, "verbose",
+                                "Also report passing functions")),
+    llvm::cl::init(Verbosity::Normal));
 
 // --maxElements (do not blow up CI or your machine with a large number)
 llvm::cl::opt<int64_t> maxElements(
@@ -77,7 +83,7 @@ llvm::cl::opt<int64_t> maxElements(
 } // namespace
 
 static llvm::raw_ostream &diag() {
-  return quiet ? llvm::nulls() : llvm::errs();
+  return verbosity == Verbosity::Quiet ? llvm::nulls() : llvm::errs();
 }
 
 using namespace mlir;
@@ -624,7 +630,7 @@ int main(int argc, char **argv) {
         anyMismatch = true;
       }
     }
-    if (!mismatch) {
+    if (!mismatch && (verbosity == Verbosity::Verbose)) {
       llvm::WithColor::remark(diag())
           << "passed outputs in " << funcName << " match exactly.\n";
     }
