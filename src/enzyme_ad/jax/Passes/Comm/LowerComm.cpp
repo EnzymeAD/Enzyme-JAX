@@ -447,8 +447,8 @@ struct LowerCommToStablehloPass
                  CommMpiAllreduceOpLowering, CommMpiBcastOpLowering>(converter,
                                                                      context);
 
-    if (failed(
-            applyFullConversion(getOperation(), target, std::move(patterns)))) {
+    if (failed(applyPartialConversion(getOperation(), target,
+                                      std::move(patterns)))) {
       signalPassFailure();
     }
   }
