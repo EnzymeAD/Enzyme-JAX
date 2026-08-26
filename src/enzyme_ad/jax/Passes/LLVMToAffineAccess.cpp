@@ -1332,6 +1332,111 @@ struct ExpandAggregateStore : public OpRewritePattern<affine::AffineStoreOp> {
   }
 };
 
+// The expanded piece stores land after the last mem2reg of the pipeline, so
+// forward them here. A slot whose every access is a constant offset through
+// a view is a bundle of registers: an offset written exactly once forwards
+// to every load of the same offset and type the store dominates.
+struct ForwardSlotStores : public OpRewritePattern<LLVM::AllocaOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(LLVM::AllocaOp alloca,
+                                PatternRewriter &rewriter) const override {
+    DataLayout dl = DataLayout::closest(alloca);
+    struct Access {
+      Operation *op;
+      uint64_t off, size;
+      bool isStore;
+    };
+    SmallVector<Access> accesses;
+    for (Operation *user : alloca->getUsers()) {
+      if (isa<LLVM::LifetimeStartOp, LLVM::LifetimeEndOp>(user))
+        continue;
+      auto p2m = dyn_cast<enzymexla::Pointer2MemrefOp>(user);
+      if (!p2m)
+        return failure();
+      auto MT = cast<MemRefType>(p2m.getType());
+      if (MT.getRank() != 1)
+        return failure();
+      uint64_t esize = dl.getTypeSize(MT.getElementType());
+      if (!esize)
+        return failure();
+      for (Operation *vu : p2m->getUsers()) {
+        AffineMap map;
+        bool isStore;
+        if (auto ld = dyn_cast<affine::AffineLoadOp>(vu)) {
+          map = ld.getAffineMap();
+          isStore = false;
+        } else if (auto st = dyn_cast<affine::AffineStoreOp>(vu)) {
+          if (st.getValueToStore() == p2m.getResult())
+            return failure();
+          map = st.getAffineMap();
+          isStore = true;
+        } else {
+          return failure();
+        }
+        if (map.getNumResults() != 1)
+          return failure();
+        auto cst = dyn_cast<AffineConstantExpr>(map.getResult(0));
+        if (!cst || cst.getValue() < 0)
+          return failure();
+        accesses.push_back(
+            {vu, (uint64_t)cst.getValue() * esize, esize, isStore});
+      }
+    }
+    // Partially overlapping ranges make reaching values ambiguous.
+    for (auto &a : accesses)
+      for (auto &b : accesses) {
+        if (&a == &b)
+          continue;
+        bool disjoint = a.off + a.size <= b.off || b.off + b.size <= a.off;
+        bool identical = a.off == b.off && a.size == b.size;
+        if (!disjoint && !identical)
+          return failure();
+      }
+    DominanceInfo DI(alloca->getParentOp());
+    bool changed = false;
+    for (auto &ld : accesses) {
+      if (ld.isStore)
+        continue;
+      Operation *only = nullptr;
+      bool multiple = false;
+      for (auto &st : accesses) {
+        if (!st.isStore || st.off != ld.off)
+          continue;
+        if (only)
+          multiple = true;
+        only = st.op;
+      }
+      if (!only || multiple)
+        continue;
+      auto st = cast<affine::AffineStoreOp>(only);
+      auto load = cast<affine::AffineLoadOp>(ld.op);
+      if (st.getValueToStore().getType() != load.getType())
+        continue;
+      if (!DI.properlyDominates(only, ld.op))
+        continue;
+      rewriter.replaceOp(ld.op, st.getValueToStore());
+      ld.op = nullptr;
+      changed = true;
+    }
+    // The slot cannot escape (every user was accounted for above), so a
+    // store no remaining load reads is dead.
+    for (auto &st : accesses) {
+      if (!st.isStore)
+        continue;
+      bool observed = false;
+      for (auto &ld : accesses)
+        if (!ld.isStore && ld.op && ld.off == st.off)
+          observed = true;
+      if (!observed) {
+        rewriter.eraseOp(st.op);
+        changed = true;
+      }
+    }
+    return success(changed);
+  }
+};
+
 struct LoadSelect : public OpRewritePattern<affine::AffineLoadOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -2667,7 +2772,7 @@ convertLLVMToAffineAccess(Operation *op,
         SimplifyDeadAlloc<LLVM::AllocaOp>,
         SimplifyDeadAlloc<gpu::AllocOp, true>, Pointer2MemrefSelect, LoadSelect,
         Pointer2MemrefIf, LoadIf, SplitAggregateLoad, ExpandAggregateStore,
-        RetypePunnedView, AffineIfDeadResults,
+        ForwardSlotStores, RetypePunnedView, AffineIfDeadResults,
         SimpleMem2Reg<memref::AllocaOp>>(context);
     GreedyRewriteConfig config;
     config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);
