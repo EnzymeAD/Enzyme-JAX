@@ -15,6 +15,7 @@
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "llvm/ADT/StringSet.h"
+#include "llvm/Support/MD5.h"
 
 #include "mlir/Analysis/DataLayoutAnalysis.h"
 #include "mlir/Conversion/ArithToLLVM/ArithToLLVM.h"
@@ -3490,19 +3491,40 @@ private:
 
     auto loc = wrap.getLoc();
 
-    std::string str;
-    llvm::raw_string_ostream stream(str);
-
     auto i64 = rewriter.getIntegerType(64);
 
     auto fn = cast<FunctionOpInterface>(
         SymbolTable::lookupNearestSymbolFrom(wrap, wrap.getFn()));
-    stream << fn << "\n" << '\0';
 
-    auto stringval = mlir::LLVM::createGlobalString(
-        loc, rewriter,
-        "xlamod$" + cast<FlatSymbolRefAttr>(wrap.getFn()).getValue().str(), str,
-        LLVM::Linkage::Internal);
+    // Every launch site of a kernel lowers through here, and separate
+    // instantiations often raise to identical functions. The runtime renames
+    // the parsed function to `main` anyway, so print under a fixed name and
+    // key the embedded module by its content: every site of every identical
+    // kernel shares one copy (and one runtime executable-cache entry).
+    std::string str;
+    {
+      Operation *cloned = fn->clone();
+      cloned->setAttr(SymbolTable::getSymbolAttrName(),
+                      rewriter.getStringAttr("reactant_kernel"));
+      llvm::raw_string_ostream stream(str);
+      stream << *cloned << "\n" << '\0';
+      cloned->erase();
+    }
+    llvm::MD5 md5;
+    md5.update(str);
+    llvm::MD5::MD5Result res;
+    md5.final(res);
+    SmallString<32> hex;
+    llvm::MD5::stringifyResult(res, hex);
+    std::string modName = ("xlamod$" + hex).str();
+    Value stringval;
+    if (auto existing = SymbolTable::lookupNearestSymbolFrom<LLVM::GlobalOp>(
+            wrap, rewriter.getStringAttr(modName))) {
+      stringval = LLVM::AddressOfOp::create(rewriter, loc, existing);
+    } else {
+      stringval = mlir::LLVM::createGlobalString(loc, rewriter, modName, str,
+                                                 LLVM::Linkage::Internal);
+    }
 
     auto ptrty = LLVM::LLVMPointerType::get(rewriter.getContext());
 
