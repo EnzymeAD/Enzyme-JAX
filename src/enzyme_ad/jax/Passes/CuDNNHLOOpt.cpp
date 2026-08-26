@@ -86,11 +86,18 @@ struct DotGeneralElementwiseToCuDNNFusion
     if (!mod)
       return rewriter.notifyMatchFailure(elemOp, "No module found");
 
-    static int fusionCounter = 0;
-    std::string fnName =
-        (kCuDNNFusionFuncPrefix + std::to_string(fusionCounter)).str();
+    // Pick a name that is unused in this module. A counter local to the pattern
+    // is not enough: it is `static` inside a class template, so every
+    // ElementwiseOpTy instantiation gets its own and they all restart at 0,
+    // redefining each other's symbols.
+    SymbolTable symbolTable(mod);
+    std::string fnName;
+    for (unsigned i = 0;; ++i) {
+      fnName = (kCuDNNFusionFuncPrefix + std::to_string(i)).str();
+      if (!symbolTable.lookup(fnName))
+        break;
+    }
     auto fnSym = rewriter.getStringAttr(fnName);
-    fusionCounter++;
 
     // Input Types
     auto dotGeneralLhsTy = dotGeneral.getLhs().getType();
