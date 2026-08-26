@@ -22,6 +22,7 @@
 #include "mlir/Dialect/Affine/LoopUtils.h"
 #include "mlir/Dialect/Affine/Utils.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Math/IR/Math.h"
@@ -4801,6 +4802,17 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     return success();
   }
 
+  // A shape-erasing cast of an already-raised buffer is the identity on the
+  // underlying tensor.
+  if (auto castOp = dyn_cast<memref::CastOp>(op)) {
+    Value src = mapping.lookupOrNull(castOp.getSource());
+    if (src && maps.count(src)) {
+      mapping.map(castOp.getResult(), src);
+      maps[src] = maps.lookup(src);
+      return success();
+    }
+  }
+
   // Raised execution is ordered over whole tensors: a store over a batched
   // thread axis completes for the entire axis before the next op runs, which
   // is exactly what the barrier guaranteed.
@@ -5005,17 +5017,121 @@ struct AffineToStableHLORaisingPass
   // accesses to the source and drop the cast.
   // An alloca scope only delimits stack lifetime, which the raised value
   // semantics make meaningless: splice its body into the parent.
-  static void inlineAllocaScopes(Operation *g) {
-    SmallVector<memref::AllocaScopeOp> scopes;
-    g->walk([&](memref::AllocaScopeOp sc) { scopes.push_back(sc); });
-    for (auto sc : scopes) {
-      if (sc->getNumResults() != 0)
+  // Straight-line CFG inside a cloned callee region folds into one block,
+  // so the scope inlining below can dissolve it.
+  static void linearizeRegionBlocks(Region &r) {
+    auto isTrapBlock = [](Block *b) {
+      return isa<LLVM::UnreachableOp>(b->getTerminator());
+    };
+    bool changed = true;
+    while (changed) {
+      changed = false;
+      // Branches whose other targets only trap take their one live successor
+      // unconditionally.
+      for (Block &b : r) {
+        Operation *term = b.getTerminator();
+        SmallVector<std::pair<Block *, SmallVector<Value>>> live;
+        bool anyTrap = false;
+        if (isa<cf::SwitchOp, cf::CondBranchOp>(term)) {
+          for (auto [i, succ] : llvm::enumerate(term->getSuccessors())) {
+            if (isTrapBlock(succ)) {
+              anyTrap = true;
+              continue;
+            }
+            auto sops =
+                cast<BranchOpInterface>(term).getSuccessorOperands(i);
+            SmallVector<Value> args(sops.getForwardedOperands().begin(),
+                                    sops.getForwardedOperands().end());
+            live.push_back({succ, std::move(args)});
+          }
+        }
+        if (anyTrap && live.size() == 1) {
+          OpBuilder tb(term);
+          cf::BranchOp::create(tb, term->getLoc(), live[0].first,
+                               live[0].second);
+          term->erase();
+          changed = true;
+          break;
+        }
+      }
+      if (changed)
         continue;
-      Block *body = &sc.getBodyRegion().front();
-      body->getTerminator()->erase();
-      sc->getBlock()->getOperations().splice(sc->getIterator(),
-                                             body->getOperations());
-      sc.erase();
+      // Trap blocks with no remaining predecessors disappear.
+      for (Block &b : llvm::make_early_inc_range(r)) {
+        if (&b != &r.front() && b.hasNoPredecessors()) {
+          b.dropAllDefinedValueUses();
+          b.erase();
+          changed = true;
+        }
+      }
+      if (changed)
+        continue;
+      for (Block &b : r) {
+        Operation *term = b.getTerminator();
+        Block *succ = nullptr;
+        SmallVector<Value> args;
+        if (auto br = dyn_cast<cf::BranchOp>(term)) {
+          succ = br.getDest();
+          args.assign(br.getDestOperands().begin(),
+                      br.getDestOperands().end());
+        } else if (auto br = dyn_cast<LLVM::BrOp>(term)) {
+          succ = br.getDest();
+          args.assign(br.getDestOperands().begin(),
+                      br.getDestOperands().end());
+        } else {
+          continue;
+        }
+        if (!succ || succ == &b || succ->getSinglePredecessor() != &b)
+          continue;
+        for (auto [ba, v] : llvm::zip(succ->getArguments(), args))
+          ba.replaceAllUsesWith(v);
+        term->erase();
+        b.getOperations().splice(b.end(), succ->getOperations());
+        succ->erase();
+        changed = true;
+        break;
+      }
+    }
+  }
+
+  static void inlineAllocaScopes(Operation *g) {
+    // Inliner wrappers stack alloca_scope/execute_region pairs, so inlining
+    // one can expose another: iterate to a fixed point.
+    bool changed = true;
+    while (changed) {
+      changed = false;
+      SmallVector<Operation *> scopes;
+      g->walk([&](Operation *op) {
+        if (isa<memref::AllocaScopeOp, scf::ExecuteRegionOp>(op))
+          scopes.push_back(op);
+      });
+      for (Operation *sc : scopes) {
+        Region &r = sc->getRegion(0);
+        if (!r.hasOneBlock())
+          linearizeRegionBlocks(r);
+        if (!r.hasOneBlock()) {
+          if (getenv("DEBUG_SCOPES")) {
+            llvm::errs() << "scope multiblock after linearize: "
+                         << std::distance(r.begin(), r.end()) << " blocks;";
+            for (Block &b : r)
+              llvm::errs() << " term=" << b.getTerminator()->getName()
+                           << " preds="
+                           << std::distance(b.pred_begin(), b.pred_end());
+            llvm::errs() << "\n";
+          }
+          continue;
+        }
+        Block *body = &r.front();
+        Operation *term = body->getTerminator();
+        for (auto [res, yielded] :
+             llvm::zip(sc->getResults(), term->getOperands()))
+          res.replaceAllUsesWith(yielded);
+        term->erase();
+        sc->getBlock()->getOperations().splice(sc->getIterator(),
+                                               body->getOperations());
+        sc->erase();
+        changed = true;
+      }
     }
   }
 
@@ -5073,6 +5189,25 @@ struct AffineToStableHLORaisingPass
     SmallVector<memref::MemorySpaceCastOp> casts;
     root->walk([&](memref::MemorySpaceCastOp c) { casts.push_back(c); });
     for (auto c : casts) {
+      if (!llvm::all_of(c->getUsers(), [](Operation *u) {
+            return isa<affine::AffineLoadOp, affine::AffineStoreOp,
+                       memref::LoadOp, memref::StoreOp>(u);
+          }))
+        continue;
+      for (Operation *u : llvm::make_early_inc_range(c->getUsers()))
+        u->replaceUsesOfWith(c.getResult(), c.getSource());
+      c.erase();
+    }
+    // Shape-erasing casts of static buffers block raising the same way:
+    // accesses go straight to the static source.
+    SmallVector<memref::CastOp> shapeCasts;
+    root->walk([&](memref::CastOp c) {
+      auto src = dyn_cast<MemRefType>(c.getSource().getType());
+      auto dst = dyn_cast<MemRefType>(c.getType());
+      if (src && dst && src.hasStaticShape() && !dst.hasStaticShape())
+        shapeCasts.push_back(c);
+    });
+    for (auto c : shapeCasts) {
       if (!llvm::all_of(c->getUsers(), [](Operation *u) {
             return isa<affine::AffineLoadOp, affine::AffineStoreOp,
                        memref::LoadOp, memref::StoreOp>(u);
@@ -6518,10 +6653,16 @@ struct AffineToStableHLORaisingPass
       auto MT = alloca.getType();
       if (!MT.hasStaticShape())
         continue;
-      SmallVector<enzymexla::Pointer2MemrefOp> views;
-      SmallVector<enzymexla::Memref2PointerOp> casts;
+      // Views reach the scratch through chains of address-space casts and
+      // constant-offset geps; each view carries the byte offset its chain
+      // accumulated.
+      SmallVector<std::pair<enzymexla::Pointer2MemrefOp, int64_t>> views;
+      SmallVector<Operation *> chainOps;
       SmallVector<Operation *> directAccesses;
       bool viewedOnly = true;
+      int64_t elemBytes =
+          (MT.getElementType().getIntOrFloatBitWidth() + 7) / 8;
+      SmallVector<std::pair<Value, int64_t>> ptrWork;
       for (Operation *user : alloca->getUsers()) {
         auto m2p = dyn_cast<enzymexla::Memref2PointerOp>(user);
         if (!m2p) {
@@ -6541,32 +6682,106 @@ struct AffineToStableHLORaisingPass
           viewedOnly = false;
           break;
         }
-        casts.push_back(m2p);
-        for (Operation *viewUser : m2p->getUsers()) {
+        chainOps.push_back(m2p);
+        ptrWork.push_back({m2p.getResult(), 0});
+      }
+      while (viewedOnly && !ptrWork.empty()) {
+        auto [ptr, off] = ptrWork.pop_back_val();
+        for (Operation *viewUser : ptr.getUsers()) {
+          if (isa<LLVM::AddrSpaceCastOp>(viewUser)) {
+            chainOps.push_back(viewUser);
+            ptrWork.push_back({viewUser->getResult(0), off});
+            continue;
+          }
+          if (auto gep = dyn_cast<LLVM::GEPOp>(viewUser)) {
+            // Only all-constant geps carry a static byte offset.
+            int64_t gepOff = 0;
+            bool constGep = gep.getDynamicIndices().empty() &&
+                            gep.getIndices().size() >= 1;
+            if (constGep) {
+              DataLayout dl = DataLayout::closest(gep);
+              Type cur = gep.getElemType();
+              auto idxs = gep.getIndices();
+              gepOff = cast<IntegerAttr>(idxs[0]).getInt() *
+                       (int64_t)dl.getTypeSize(cur);
+              for (unsigned i = 1; constGep && i < idxs.size(); ++i) {
+                int64_t want = cast<IntegerAttr>(idxs[i]).getInt();
+                if (auto AT = dyn_cast<LLVM::LLVMArrayType>(cur)) {
+                  cur = AT.getElementType();
+                  gepOff += want * (int64_t)dl.getTypeSize(cur);
+                } else {
+                  constGep = false;
+                }
+              }
+            }
+            if (!constGep) {
+              viewedOnly = false;
+              break;
+            }
+            chainOps.push_back(gep);
+            ptrWork.push_back({gep.getResult(), off + gepOff});
+            continue;
+          }
           auto p2m = dyn_cast<enzymexla::Pointer2MemrefOp>(viewUser);
           if (!p2m || p2m.getType().getRank() != 1 ||
               p2m.getType().getElementType() != MT.getElementType() ||
+              off % elemBytes != 0 ||
               (p2m.getType().hasStaticShape() &&
-               p2m.getType().getShape()[0] > MT.getNumElements())) {
+               off / elemBytes + p2m.getType().getShape()[0] >
+                   MT.getNumElements())) {
             viewedOnly = false;
             break;
           }
-          views.push_back(p2m);
+          if (off != 0) {
+            // Offset views only rewrite through plain accesses.
+            if (!llvm::all_of(p2m->getUsers(), [&](Operation *u) {
+                  if (isa<affine::AffineLoadOp, memref::LoadOp>(u))
+                    return u->getOperand(0) == p2m.getResult();
+                  if (isa<affine::AffineStoreOp, memref::StoreOp>(u))
+                    return u->getOperand(1) == p2m.getResult();
+                  return false;
+                })) {
+              viewedOnly = false;
+              break;
+            }
+          }
+          views.push_back({p2m, off / elemBytes});
         }
-        if (!viewedOnly)
-          break;
       }
       if (!viewedOnly || views.empty())
         continue;
       OpBuilder b(alloca);
       auto flatTy = MemRefType::get({MT.getNumElements()}, MT.getElementType());
       auto flat = memref::AllocaOp::create(b, alloca.getLoc(), flatTy);
-      for (auto p2m : views) {
+      for (auto [p2m, elemOff] : views) {
+        if (elemOff != 0) {
+          for (Operation *u :
+               llvm::make_early_inc_range(p2m->getUsers())) {
+            if (auto ld = dyn_cast<affine::AffineLoadOp>(u)) {
+              auto m = ld.getMap();
+              ld.setMap(AffineMap::get(m.getNumDims(), m.getNumSymbols(),
+                                       m.getResult(0) + elemOff));
+            } else if (auto st = dyn_cast<affine::AffineStoreOp>(u)) {
+              auto m = st.getMap();
+              st.setMap(AffineMap::get(m.getNumDims(), m.getNumSymbols(),
+                                       m.getResult(0) + elemOff));
+            } else {
+              OpBuilder ab(u);
+              unsigned idxPos = isa<memref::LoadOp>(u) ? 1 : 2;
+              Value c = arith::ConstantIndexOp::create(ab, u->getLoc(),
+                                                       elemOff);
+              Value ni = arith::AddIOp::create(ab, u->getLoc(),
+                                               u->getOperand(idxPos), c);
+              u->setOperand(idxPos, ni);
+            }
+          }
+        }
         p2m.getResult().replaceAllUsesWith(flat.getResult());
         p2m.erase();
       }
-      for (auto m2p : casts)
-        m2p.erase();
+      for (Operation *c : llvm::reverse(chainOps))
+        if (c->use_empty())
+          c->erase();
       auto linearizeValues = [&](OpBuilder &ab, Location loc,
                                  ValueRange idxs) -> Value {
         Value lin = arith::ConstantIndexOp::create(ab, loc, 0);

@@ -29,6 +29,7 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/Transforms/Passes.h"
 #include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/DebugLog.h"
@@ -369,6 +370,14 @@ void ParallelLower::runOnOperation() {
   std::function<void(enzyme::AutoDiffOp)> autodiffInliner;
   std::function<void(LLVM::CallOp)> LLVMcallInliner;
   SmallPtrSet<Operation *, 1> replacedCallables;
+  // Pre-inlining recurses into the callee's own calls; a (mutually)
+  // recursive callee would recurse forever. A callable already on the
+  // stack keeps its recursive call sites uninlined.
+  SmallPtrSet<Operation *, 8> inliningStack;
+  // Inlined-away callees are erased only after all inlining: erasing one
+  // mid-run hands later callers freed memory through the cached symbol
+  // tables, and keeping them alive trips the gpu-instruction check below.
+  SetVector<Operation *> deferredFnErase;
   std::function<void(CallOp)> callInliner = [&](CallOp caller) {
     // Build the inliner interface.
     AlwaysInlinerInterface interface(&getContext());
@@ -382,6 +391,10 @@ void ParallelLower::runOnOperation() {
       return;
     if (targetRegion->empty())
       return;
+    if (!inliningStack.insert(callableOp).second)
+      return;
+    llvm::scope_exit stackGuard(
+        [&, op = callableOp.getOperation()] { inliningStack.erase(op); });
     {
       SmallVector<CallOp> ops;
       callableOp.walk([&](CallOp caller) { ops.push_back(caller); });
@@ -439,6 +452,10 @@ void ParallelLower::runOnOperation() {
       return;
     if (targetRegion->empty())
       return;
+    if (!inliningStack.insert(callableOp).second)
+      return;
+    llvm::scope_exit stackGuard(
+        [&, op = callableOp.getOperation()] { inliningStack.erase(op); });
     {
       SmallVector<CallOp> ops;
       callableOp.walk([&](CallOp caller) { ops.push_back(caller); });
@@ -528,7 +545,7 @@ void ParallelLower::runOnOperation() {
     b.setInsertionPointToEnd(&allocScope.getRegion().front());
     memref::AllocaScopeReturnOp::create(b, allocScope.getLoc(),
                                         exOp.getResults());
-    lfn->erase();
+    deferredFnErase.insert(lfn);
   };
   autodiffInliner = [&](enzyme::AutoDiffOp caller) {
     // Build the inliner interface.
@@ -541,6 +558,10 @@ void ParallelLower::runOnOperation() {
     Region &targetRegion = callableOp.getFunctionBody();
     if (targetRegion.empty())
       return;
+    if (!inliningStack.insert(callableOp).second)
+      return;
+    llvm::scope_exit stackGuard(
+        [&, op = callableOp.getOperation()] { inliningStack.erase(op); });
     {
       SmallVector<CallOp> ops;
       callableOp.walk([&](CallOp caller) { ops.push_back(caller); });
@@ -574,8 +595,11 @@ void ParallelLower::runOnOperation() {
           bidx.getCallee() == "_ZN4dim3C1Ejjj")
         dimsToInline.push_back(bidx);
     });
-    for (auto op : dimsToInline)
+    for (auto op : dimsToInline) {
+      if (getenv("DEBUG_PL"))
+        llvm::errs() << "PL site A\n";
       callInliner(op);
+    }
   }
 
   {
@@ -622,12 +646,18 @@ void ParallelLower::runOnOperation() {
           atoinl.push_back(ac);
       }
       for (auto l : ltoinl) {
+        if (getenv("DEBUG_PL"))
+          llvm::errs() << "PL site BL\n";
         LLVMcallInliner(l);
       }
       for (auto m : mtoinl) {
+        if (getenv("DEBUG_PL"))
+          llvm::errs() << "PL site B\n";
         callInliner(m);
       }
       for (auto a : atoinl) {
+        if (getenv("DEBUG_PL"))
+          llvm::errs() << "PL site BA\n";
         autodiffInliner(a);
       }
     }
@@ -666,6 +696,8 @@ void ParallelLower::runOnOperation() {
         inlined = true;
       }
       for (auto m : mtoinl) {
+        if (getenv("DEBUG_PL"))
+          llvm::errs() << "PL site C\n";
         callInliner(m);
         inlined = true;
       }
@@ -728,8 +760,12 @@ void ParallelLower::runOnOperation() {
     {
       SmallVector<CallOp> ops;
       launchOp.walk([&](CallOp caller) { ops.push_back(caller); });
-      for (auto op : ops)
+      for (auto op : ops) {
+        if (getenv("DEBUG_PL"))
+          llvm::errs() << "PL site D: " << op.getCallee() << " nops="
+                       << op.getNumOperands() << "\n";
         callInliner(op);
+      }
     }
     {
       SmallVector<enzyme::AutoDiffOp> ops;
@@ -1101,6 +1137,9 @@ void ParallelLower::runOnOperation() {
       }
     }
   }
+  for (Operation *fn : deferredFnErase)
+    fn->erase();
+  deferredFnErase.clear();
   if (getOperation()
           ->walk<WalkOrder::PreOrder>([](Operation *op) {
             if (isa<gpu::GPUModuleOp>(op))
@@ -1184,9 +1223,13 @@ void FixGPUFunc::runOnOperation() {
     }
     auto callOp2 = getDirectlyNestedCallOp(funcOp);
 
-    if (callOp2)
+    if (callOp2) {
+      if (getenv("DEBUG_PL"))
+        llvm::errs() << "PL site E\n";
       callInliner(callOp2);
-
+    }
+    if (getenv("DEBUG_PL"))
+      llvm::errs() << "PL site F\n";
     callInliner(callOp);
   });
 }
