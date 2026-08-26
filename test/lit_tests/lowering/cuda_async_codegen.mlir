@@ -14,11 +14,10 @@ module attributes {gpu.container_module} {
     %4 = arith.index_cast %arg3 : i32 to index
     %5 = arith.index_cast %arg3 : i32 to index
     %6 = arith.index_cast %arg3 : i32 to index
-    %7 = "enzymexla.stream2token"(%2) : (!llvm.ptr) -> !gpu.async.token
     %8 = "enzymexla.gpu_error"() ({
       %9 = arith.cmpi sge, %arg0, %c1_i64 : i64
       scf.if %9 {
-        gpu.launch_func [%7] @_ZN9AllocatorI8Vector_dIiEE6resizeEPS1_ii_kernel_29::@_ZN9AllocatorI8Vector_dIiEE6resizeEPS1_ii_kernel blocks in (%c1, %c8, %c1) threads in (%c32, %c1, %c1)  args(%1 : !llvm.ptr, %3 : !llvm.ptr, %6 : index, %4 : index, %5 : index)
+        gpu.launch_func <%2 : !llvm.ptr> @_ZN9AllocatorI8Vector_dIiEE6resizeEPS1_ii_kernel_29::@_ZN9AllocatorI8Vector_dIiEE6resizeEPS1_ii_kernel blocks in (%c1, %c8, %c1) threads in (%c32, %c1, %c1)  args(%1 : !llvm.ptr, %3 : !llvm.ptr, %6 : index, %4 : index, %5 : index)
       }
       "enzymexla.polygeist_yield"() : () -> ()
     }) : () -> index
@@ -32,7 +31,7 @@ module attributes {gpu.container_module} {
 }
 
 
-// CHECK:  llvm.func weak_odr local_unnamed_addr @_ZN9AllocatorI8Vector_dIiEE6resizeEPS1_ii(%arg0: i64, %arg1: !llvm.ptr, %arg2: i32, %arg3: i32) -> !llvm.ptr {
+// CHECK: llvm.func weak_odr local_unnamed_addr @_ZN9AllocatorI8Vector_dIiEE6resizeEPS1_ii(%arg0: i64, %arg1: !llvm.ptr, %arg2: i32, %arg3: i32) -> !llvm.ptr {
 // CHECK-NEXT:    %0 = llvm.mlir.constant(0 : i64) : i64
 // CHECK-NEXT:    %1 = llvm.mlir.constant(32 : i64) : i64
 // CHECK-NEXT:    %2 = llvm.mlir.addressof @__polygeist__ZN9AllocatorI8Vector_dIiEE6resizeEPS1_ii_kernel_29__ZN9AllocatorI8Vector_dIiEE6resizeEPS1_ii_kernel_device_stub : !llvm.ptr

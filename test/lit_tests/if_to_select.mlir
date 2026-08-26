@@ -1,4 +1,5 @@
-// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(func.func(canonicalize-loops))" --split-input-file | FileCheck %s
+// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(func.func(canonicalize-loops{speculate_if}))" --split-input-file | FileCheck %s
+// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(func.func(canonicalize-loops{speculate_partial_if=false}))" --split-input-file | FileCheck %s --check-prefix=NOSPECULATE
 
 func.func @if_to_select(%arg0: i1, %arg1: i32, %arg2: i32) -> i32 {
   %result = scf.if %arg0 -> i32 {
@@ -55,3 +56,32 @@ func.func @if_to_select_nested(%cond: i1, %val1: f64, %val2: f64, %const: f64, %
 // CHECK: %[[COPY:.*]] = math.copysign %[[VAL1]], %[[CONST2]] : f64
 // CHECK: %[[SEL2:.*]] = arith.select %[[COND]], %[[SEL1]], %[[COPY]] : f64
 // CHECK: return %[[SEL2]] : f64   
+
+// -----
+
+func.func @if_to_select_nested(%cond: i1, %val1: f64, %val2: f64, %const: f64, %const2: f64) -> f64 {
+  %result = scf.if %cond -> (f64) {
+    %cmp = arith.cmpf ogt, %val1, %const {fastmathFlags = #llvm.fastmath<none>} : f64
+    %sel = arith.select %cmp, %val1, %val2 {fastmathFlags = #llvm.fastmath<none>} : f64
+    scf.yield %sel : f64
+  } else {
+    %copy = math.copysign %val1, %const2 : f64
+    scf.yield %copy : f64
+  }
+  return %result : f64
+}
+
+// With speculation disabled, the if should be left in place.
+
+// NOSPECULATE-LABEL:   func.func @if_to_select_nested(
+// NOSPECULATE-SAME:      %[[ARG0:.*]]: i1, %[[ARG1:.*]]: f64, %[[ARG2:.*]]: f64, %[[ARG3:.*]]: f64, %[[ARG4:.*]]: f64) -> f64 {
+// NOSPECULATE:           %[[IF_0:.*]] = scf.if %[[ARG0]] -> (f64) {
+// NOSPECULATE:             %[[CMPF_0:.*]] = arith.cmpf ogt, %[[ARG1]], %[[ARG3]] {fastmathFlags = #llvm.fastmath<none>} : f64
+// NOSPECULATE:             %[[SELECT_0:.*]] = arith.select %[[CMPF_0]], %[[ARG1]], %[[ARG2]] {fastmathFlags = #llvm.fastmath<none>} : f64
+// NOSPECULATE:             scf.yield %[[SELECT_0]] : f64
+// NOSPECULATE:           } else {
+// NOSPECULATE:             %[[COPYSIGN_0:.*]] = math.copysign %[[ARG1]], %[[ARG4]] : f64
+// NOSPECULATE:             scf.yield %[[COPYSIGN_0]] : f64
+// NOSPECULATE:           }
+// NOSPECULATE:           return %[[IF_0]] : f64
+// NOSPECULATE:         }

@@ -272,9 +272,18 @@ convertLLVMAllocaToMemrefAlloca(FromAlloc alloc, RewriterBase &rewriter,
         MemRefLayoutAttrInterface{}, alloc.getType().getMemorySpace());
   }
   Value newAlloc;
-  if constexpr (!inPlace)
-    newAlloc = memref::AllocaOp::create(rewriter, alloc->getLoc(), memrefType);
-  else {
+  if constexpr (!inPlace) {
+    // Carry the allocation's alignment onto the memref: an llvm.alloca is
+    // often over-aligned past its element type (a stack array gets 16 for
+    // vectorization), and a memref.alloca without it falls back to the
+    // element's natural alignment. Lowered back, the under-aligned slot shifts
+    // the frame and leaves an adjacent aligned alloca on a misaligned address.
+    IntegerAttr alignAttr;
+    if (auto al = alloc.getAlignment())
+      alignAttr = rewriter.getI64IntegerAttr(*al);
+    newAlloc = memref::AllocaOp::create(rewriter, alloc->getLoc(), memrefType,
+                                        ValueRange{}, alignAttr);
+  } else {
 
     auto tys = llvm::to_vector(alloc->getResultTypes());
     tys[0] = memrefType;
@@ -309,6 +318,16 @@ convertLLVMAllocaToMemrefAlloca(FromAlloc alloc, RewriterBase &rewriter,
 
   for (auto p2m : p2ms) {
     Value replacement = newAlloc;
+    // memref.cast can reshape but not change the memory space; say the
+    // space change as the memory_space_cast it is.
+    if (memrefType.getMemorySpace() != p2m.getType().getMemorySpace() &&
+        memrefType.getElementType() == p2m.getType().getElementType()) {
+      auto spaceType = MemRefType::get(
+          memrefType.getShape(), memrefType.getElementType(),
+          memrefType.getLayout(), p2m.getType().getMemorySpace());
+      replacement = memref::MemorySpaceCastOp::create(rewriter, p2m.getLoc(),
+                                                      spaceType, replacement);
+    }
     if (memrefType.getElementType() != p2m.getType().getElementType()) {
       replacement = enzymexla::Memref2PointerOp::create(
           rewriter, alloc->getLoc(), p2m.getOperand().getType(), replacement);
@@ -484,14 +503,49 @@ template <typename T> struct SimplifyInPlaceAlloc : public OpRewritePattern<T> {
   }
 };
 
+// Where something computed from a value can be materialized: after its
+// defining op -- except that an invoke is a terminator, and its result only
+// exists on the normal edge, so the successor is where the value lives.
+// A landingpad has to stay the first operation of its block, so the start of
+// a block is after it when it has one.
+static void setInsertionPointToStartSkippingLandingpad(OpBuilder &builder,
+                                                       Block *block) {
+  if (!block->empty() && isa<LLVM::LandingpadOp>(&block->front()))
+    builder.setInsertionPointAfter(&block->front());
+  else
+    builder.setInsertionPointToStart(block);
+}
+
+static void setInsertionPointAfterValue(OpBuilder &builder, Value v) {
+  if (auto ba = dyn_cast<BlockArgument>(v)) {
+    setInsertionPointToStartSkippingLandingpad(builder, ba.getOwner());
+    return;
+  }
+  Operation *def = v.getDefiningOp();
+  if (auto inv = dyn_cast<LLVM::InvokeOp>(def)) {
+    setInsertionPointToStartSkippingLandingpad(builder, inv.getNormalDest());
+    return;
+  }
+  builder.setInsertionPointAfter(def);
+}
+
+// A shared conversion of a value is materialized right after its definition;
+// for an invoke that place is the start of the normal successor, which only
+// exists as a place when that edge is the block's only way in.
+static bool canMaterializeAfterValue(Value v) {
+  Operation *def = v.getDefiningOp();
+  if (!def)
+    return true;
+  if (auto inv = dyn_cast<LLVM::InvokeOp>(def))
+    return inv.getNormalDest()->getSinglePredecessor() == inv->getBlock();
+  return !def->hasTrait<OpTrait::IsTerminator>();
+}
+
 static Value convertToIndex(Value v) {
   OpBuilder builder(v.getContext());
   if (v.getType() == builder.getIndexType())
     return v;
-  if (auto ba = dyn_cast<BlockArgument>(v))
-    builder.setInsertionPointToStart(ba.getOwner());
-  else
-    builder.setInsertionPointAfter(v.getDefiningOp());
+  setInsertionPointAfterValue(builder, v);
   return arith::IndexCastOp::create(builder, v.getLoc(), builder.getIndexType(),
                                     v)
       .getResult();
@@ -615,6 +669,21 @@ struct MemrefLoadAffineApply : public OpRewritePattern<memref::LoadOp> {
       return failure();
     SmallVector<Value> preoperands = operands;
 
+    // Legalizing the operands moves the ops that define them, which erases the
+    // ones it clones, so anything to be read off an operand has to be read
+    // before that and not after: what is left afterwards may be a value whose
+    // op is gone.
+    Attribute preConstant;
+    AffineMap preApplyMap;
+    SmallVector<Value> preApplyOperands;
+    if (preoperands.size() == 1) {
+      matchPattern(preoperands[0], m_Constant(&preConstant));
+      if (auto app = preoperands[0].getDefiningOp<affine::AffineApplyOp>()) {
+        preApplyMap = app.getAffineMap();
+        preApplyOperands = llvm::to_vector(app.getMapOperands());
+      }
+    }
+
     AffineExpr exprs[1] = {expr};
     auto map = AffineMap::get(/*dimCount=*/0, /*symbolCount=*/operands.size(),
                               exprs, rewriter.getContext());
@@ -628,15 +697,13 @@ struct MemrefLoadAffineApply : public OpRewritePattern<memref::LoadOp> {
     map = mlir::enzyme::recreateExpr(map);
 
     if (preoperands.size() == 1) {
-      Attribute attr;
-      if (matchPattern(preoperands[0], m_Constant(&attr)))
+      if (preConstant)
         return failure();
       if (preoperands == operands)
         return failure();
-      if (auto app = preoperands[0].getDefiningOp<affine::AffineApplyOp>()) {
-        if (app.getAffineMap() == map && app.getMapOperands() == operands)
-          return failure();
-      }
+      if (preApplyMap && preApplyMap == map &&
+          ArrayRef<Value>(preApplyOperands) == ArrayRef<Value>(operands))
+        return failure();
     }
 
     Value app;
@@ -681,7 +748,7 @@ struct SelectCSE : public OpRewritePattern<arith::SelectOp> {
                                 lhs->getOperand(0), rhs->getOperand(0));
     auto op1 =
         arith::SelectOp::create(rewriter, rhs->getLoc(), sel.getCondition(),
-                                rhs->getOperand(1), rhs->getOperand(1));
+                                lhs->getOperand(1), rhs->getOperand(1));
     if (isa<arith::AddIOp>(lhs)) {
       rewriter.replaceOpWithNewOp<arith::AddIOp>(sel, op0, op1);
     } else {
@@ -735,6 +802,50 @@ struct Pointer2MemrefSelect
   }
 };
 
+struct AffineIfDeadResults : public OpRewritePattern<affine::AffineIfOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(affine::AffineIfOp ifOp,
+                                PatternRewriter &rewriter) const override {
+    if (ifOp.getNumResults() == 0)
+      return failure();
+    SmallVector<unsigned> keep;
+    for (OpResult res : ifOp.getResults())
+      if (!res.use_empty())
+        keep.push_back(res.getResultNumber());
+    if (keep.size() == ifOp.getNumResults())
+      return failure();
+
+    SmallVector<Type> newTypes;
+    for (unsigned i : keep)
+      newTypes.push_back(ifOp.getResult(i).getType());
+
+    rewriter.setInsertionPoint(ifOp);
+    auto newIf =
+        affine::AffineIfOp::create(rewriter, ifOp.getLoc(), newTypes,
+                                   ifOp.getIntegerSet(), ifOp.getOperands(),
+                                   /*withElseRegion=*/true);
+    // The new branches take the old regions wholesale, and the existing
+    // yields just drop the dead operands.
+    for (unsigned r = 0; r < 2; ++r) {
+      Region &oldRegion = r ? ifOp.getElseRegion() : ifOp.getThenRegion();
+      Region &newRegion = r ? newIf.getElseRegion() : newIf.getThenRegion();
+      rewriter.inlineRegionBefore(oldRegion, newRegion, newRegion.begin());
+      rewriter.eraseBlock(&newRegion.back());
+      auto yield =
+          cast<affine::AffineYieldOp>(newRegion.front().getTerminator());
+      SmallVector<Value> ops;
+      for (unsigned i : keep)
+        ops.push_back(yield.getOperand(i));
+      rewriter.modifyOpInPlace(yield, [&] { yield->setOperands(ops); });
+    }
+    for (auto [j, i] : llvm::enumerate(keep))
+      rewriter.replaceAllUsesWith(ifOp.getResult(i), newIf.getResult(j));
+    rewriter.eraseOp(ifOp);
+    return success();
+  }
+};
+
 struct LoadSelect : public OpRewritePattern<affine::AffineLoadOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -776,10 +887,7 @@ struct LoadSelect : public OpRewritePattern<affine::AffineLoadOp> {
 
 static MemRefVal convertToMemref(PtrVal addr) {
   OpBuilder builder(addr.getContext());
-  if (auto ba = dyn_cast<BlockArgument>(addr))
-    builder.setInsertionPointToStart(ba.getOwner());
-  else
-    builder.setInsertionPointAfter(addr.getDefiningOp());
+  setInsertionPointAfterValue(builder, addr);
   Attribute addrSpace;
   if (addr.getType().getAddressSpace() == 0)
     addrSpace = nullptr;
@@ -994,28 +1102,75 @@ struct AffineExprBuilder {
           return (*lhs) + (*rhs);
         else if (isa<LLVM::SubOp, arith::SubIOp>(op))
           return (*lhs) - (*rhs);
-        else if (isa<LLVM::MulOp, arith::MulIOp>(op))
+        else if (isa<LLVM::MulOp, arith::MulIOp>(op)) {
+          // A product is affine only where one side is free of dims.
+          if (!lhs->isSymbolicOrConstant() && !rhs->isSymbolicOrConstant())
+            return failure();
           return (*lhs) * (*rhs);
-        else if (isa<LLVM::UDivOp, LLVM::SDivOp, arith::DivUIOp,
-                     arith::DivSIOp>(op))
+        } else if (isa<LLVM::UDivOp, LLVM::SDivOp, arith::DivUIOp,
+                       arith::DivSIOp>(op)) {
+          // An affine floordiv agrees with sdiv only for a non-negative
+          // numerator -- sdiv rounds toward zero -- and with udiv only
+          // when the number is not a negative one read as enormous.
+          // MFEM's Hilbert-curve ordering divides direction deltas that
+          // go negative on every odd-sized grid.
+          if (!valueCmp(Cmp::GE, op->getOperand(0), 0))
+            return failure();
+          // An affine floordiv divides by a positive value: it is the only
+          // divisor its lowering, and the flattening the maps go through,
+          // are written for.  A negative one does reach here -- `-x / c` is
+          // `x / -c` to instcombine -- and is the same division with the
+          // sign taken out, which the expression can say instead.
+          if (auto cexpr = dyn_cast<AffineConstantExpr>(*rhs)) {
+            if (cexpr.getValue() == 0)
+              return failure();
+            if (cexpr.getValue() < 0)
+              return -((*lhs).floorDiv(-cexpr.getValue()));
+          }
           return (*lhs).floorDiv(*rhs);
-        else if (isa<arith::ShRUIOp, arith::ShRSIOp, LLVM::LShrOp,
-                     LLVM::AShrOp>(op)) {
+        } else if (isa<arith::ShRUIOp, arith::ShRSIOp, LLVM::LShrOp,
+                       LLVM::AShrOp>(op)) {
           auto cexpr = dyn_cast<AffineConstantExpr>(*rhs);
           if (!cexpr)
             return failure();
+          // The power of two the shift stands for has to be worked out at the
+          // width the expression holds. Taken as an int, `1 << 31` is the
+          // largest negative number there is, and a shift by 31 is how a sign
+          // bit is read -- MFEM does it and got `floordiv -2147483648`.
+          int64_t shift = cexpr.getValue();
+          if (shift < 0 || shift >= 63)
+            return failure();
+          int64_t scale = int64_t(1) << shift;
           if (isa<arith::ShLIOp, LLVM::ShlOp>(op)) {
-            return (*lhs) * getAffineConstantExpr(1 << cexpr.getValue(),
-                                                  op->getContext());
+            return (*lhs) * getAffineConstantExpr(scale, op->getContext());
           } else if (isa<arith::ShRUIOp, arith::ShRSIOp, LLVM::LShrOp,
                          LLVM::AShrOp>(op)) {
+            // An arithmetic shift right is a floor division whatever the
+            // sign; a logical one reads a negative number as enormous and
+            // is one only for non-negative values.
+            if (isa<arith::ShRUIOp, LLVM::LShrOp>(op) &&
+                !valueCmp(Cmp::GE, op->getOperand(0), 0))
+              return failure();
             return (*lhs).floorDiv(
-                getAffineConstantExpr(1 << cexpr.getValue(), op->getContext()));
+                getAffineConstantExpr(scale, op->getContext()));
           } else {
             llvm_unreachable("unknown operation");
           }
         } else if (isa<LLVM::URemOp, arith::RemSIOp, LLVM::SRemOp,
                        arith::RemUIOp>(op)) {
+          // An affine mod is never negative; srem takes the numerator's
+          // sign and the unsigned forms read a negative number as
+          // enormous. They agree only for a non-negative numerator.
+          if (!valueCmp(Cmp::GE, op->getOperand(0), 0))
+            return failure();
+          // As with floordiv above: a remainder is taken against a positive
+          // value, and against a negative one it is the same remainder.
+          if (auto cexpr = dyn_cast<AffineConstantExpr>(*rhs)) {
+            if (cexpr.getValue() == 0)
+              return failure();
+            if (cexpr.getValue() < 0)
+              return (*lhs) % (-cexpr.getValue());
+          }
           return (*lhs) % (*rhs);
         } else if (isa<arith::OrIOp>(op)) {
           auto cexpr = dyn_cast<AffineConstantExpr>(*rhs);
@@ -1029,9 +1184,8 @@ struct AffineExprBuilder {
         } else {
           llvm_unreachable("unknown operation");
         }
-      } else if (isa<LLVM::ZExtOp, LLVM::SExtOp, LLVM::TruncOp, arith::ExtSIOp,
-                     arith::ExtUIOp, arith::TruncIOp, arith::IndexCastOp,
-                     arith::IndexCastUIOp>(op)) {
+      } else if (isa<LLVM::ZExtOp, LLVM::SExtOp, arith::ExtSIOp, arith::ExtUIOp,
+                     arith::IndexCastOp, arith::IndexCastUIOp>(op)) {
         return getExpr(op->getOperand(0));
       }
     }
@@ -1668,18 +1822,21 @@ template <typename T> struct SimpleMem2Reg : public OpRewritePattern<T> {
   LogicalResult matchAndRewrite(T alloc,
                                 PatternRewriter &rewriter) const override {
     SmallVector<Value> stored;
+    SmallVector<Operation *> storeOps;
     SmallVector<Operation *> loads;
     for (auto op : alloc->getUsers()) {
       if (auto storeOp = dyn_cast<memref::StoreOp>(op)) {
         if (storeOp.getValue() == alloc)
           return failure();
         stored.push_back(storeOp.getValue());
+        storeOps.push_back(storeOp);
         continue;
       }
       if (auto storeOp = dyn_cast<affine::AffineStoreOp>(op)) {
         if (storeOp.getValue() == alloc)
           return failure();
         stored.push_back(storeOp.getValue());
+        storeOps.push_back(storeOp);
         continue;
       }
 
@@ -1707,11 +1864,28 @@ template <typename T> struct SimpleMem2Reg : public OpRewritePattern<T> {
     if (loads.size() != 1 || stored.size() != 1)
       return failure();
 
+    // The load reads what the single store wrote only where the store has
+    // always run first -- availability of the stored value proves nothing --
+    // and only where both address the same slot: a store to a[i] says
+    // nothing about a load of a[j]. Identical maps over identical operands
+    // is the one case where sameness is a fact rather than an analysis.
+    auto sameSlot = [](Operation *st, Operation *ld) {
+      if (auto as = dyn_cast<affine::AffineStoreOp>(st)) {
+        auto al = dyn_cast<affine::AffineLoadOp>(ld);
+        return al && as.getAffineMap() == al.getAffineMap() &&
+               llvm::equal(as.getMapOperands(), al.getMapOperands());
+      }
+      if (auto ms = dyn_cast<memref::StoreOp>(st)) {
+        auto ml = dyn_cast<memref::LoadOp>(ld);
+        return ml && llvm::equal(ms.getIndices(), ml.getIndices());
+      }
+      return false;
+    };
     DominanceInfo DI(alloc->getParentOp());
     bool changed = false;
     for (auto load : loads) {
-      if (definedOutsideOrAt(stored[0], alloc->getParentOp()) ||
-          DI.dominates(stored[0], load)) {
+      if (sameSlot(storeOps[0], load) &&
+          DI.properlyDominates(storeOps[0], load)) {
         rewriter.replaceOp(load, stored);
         changed = true;
         continue;
@@ -1783,6 +1957,14 @@ convertLLVMToAffineAccess(Operation *op,
 
     // TODO this looks terribly slow
     for (Block *b : innermostBlocks) {
+      // A function that kept its cf blocks -- one that throws or catches
+      // stays unraised -- cannot have one of them wrapped in a scope: the
+      // wrapping rebuilds the block around its terminator, and here the
+      // terminator is a branch or an invoke whose edges the scope has no
+      // reading of. The accesses that wanted the scope stay illegal and
+      // lower as plain memref accesses instead.
+      if (!llvm::hasSingleElement(*b->getParent()))
+        continue;
       SmallPtrSet<Value, 6> symbols;
       for (auto &aabp : accessBuilders)
         aabp->collectSymbolsForScope(b->getParent(), symbols);
@@ -1806,12 +1988,26 @@ convertLLVMToAffineAccess(Operation *op,
     };
 
     auto dl = dataLayoutAnalysis.getAtOrAbove(aab.user);
+
     if (auto load = dyn_cast<LLVM::LoadOp>(aab.user)) {
       IRRewriter rewriter(load);
 
       Type ty = load.getType();
       auto tySize = dl.getTypeSize(ty);
-      if (MemRefType::isValidElementType(ty) && aab.isLegal() && aab.base) {
+      // Memref indexing strides by the element's allocation size, and every
+      // downstream form -- the affine map division here, and the
+      // canonicalizations that fold byte GEPs into element GEPs -- assumes
+      // that stride equals the store size. A type that stores fewer bytes
+      // than its stride (i480 stores 60 but strides 64) breaks that
+      // assumption at every element but the first, and its memref form also
+      // loses the op's explicit sub-ABI alignment. Leave such accesses in
+      // llvm dialect form.
+      if (llvm::alignTo(static_cast<uint64_t>(tySize),
+                        dl.getTypeABIAlignment(ty)) != tySize)
+        continue;
+      if (MemRefType::isValidElementType(ty) && aab.isLegal() && aab.base &&
+          canMaterializeAfterValue(aab.base) &&
+          llvm::all_of(aab.getMap().operands, canMaterializeAfterValue)) {
         auto memref0 = mc(aab.base);
         Value memref = memref0;
         auto memrefTy = memref0.getType();
@@ -1876,14 +2072,33 @@ convertLLVMToAffineAccess(Operation *op,
       ic.replace(load, newLoad);
       rewriter.replaceOp(load, newLoad);
       for (auto attr : attrs) {
-        newLoad->setAttr(attr.getName(), attr.getValue());
+        // memref.load owns an alignment attribute, and only the owned one is
+        // what its lowering reads; a discardable one of the same name is shown
+        // by the printer and seen by nothing.
+        if (attr.getName() == "alignment")
+          newLoad.setAlignmentAttr(cast<IntegerAttr>(attr.getValue()));
+        else
+          newLoad->setAttr(attr.getName(), attr.getValue());
       }
 
     } else if (auto store = dyn_cast<LLVM::StoreOp>(aab.user)) {
       Type ty = store.getValue().getType();
       IRRewriter rewriter(store);
       auto tySize = dl.getTypeSize(ty);
-      if (MemRefType::isValidElementType(ty) && aab.isLegal() && aab.base) {
+      // Memref indexing strides by the element's allocation size, and every
+      // downstream form -- the affine map division here, and the
+      // canonicalizations that fold byte GEPs into element GEPs -- assumes
+      // that stride equals the store size. A type that stores fewer bytes
+      // than its stride (i480 stores 60 but strides 64) breaks that
+      // assumption at every element but the first, and its memref form also
+      // loses the op's explicit sub-ABI alignment. Leave such accesses in
+      // llvm dialect form.
+      if (llvm::alignTo(static_cast<uint64_t>(tySize),
+                        dl.getTypeABIAlignment(ty)) != tySize)
+        continue;
+      if (MemRefType::isValidElementType(ty) && aab.isLegal() && aab.base &&
+          canMaterializeAfterValue(aab.base) &&
+          llvm::all_of(aab.getMap().operands, canMaterializeAfterValue)) {
         auto memref0 = mc(aab.base);
         Value memref = memref0;
         auto memrefTy = memref0.getType();
@@ -1937,7 +2152,11 @@ convertLLVMToAffineAccess(Operation *op,
               store.getAddr()),
           idxs);
       for (auto attr : attrs) {
-        newStore->setAttr(attr.getName(), attr.getValue());
+        // See the load path above.
+        if (attr.getName() == "alignment")
+          newStore.setAlignmentAttr(cast<IntegerAttr>(attr.getValue()));
+        else
+          newStore->setAttr(attr.getName(), attr.getValue());
       }
     } else {
       llvm_unreachable("Unknown operation to raise");
@@ -1956,12 +2175,13 @@ convertLLVMToAffineAccess(Operation *op,
     patterns.insert<SimplifyAllocConst<memref::AllocOp>,
                     SimplifyAllocConst<memref::AllocaOp>,
                     SimplifyAllocConst<gpu::AllocOp, true>>(context);
-    patterns.insert<SimplifyDeadAlloc<memref::AllocaOp>,
-                    SimplifyDeadAlloc<memref::AllocOp>,
-                    SimplifyDeadAlloc<LLVM::AllocaOp>,
-                    SimplifyDeadAlloc<gpu::AllocOp, true>, Pointer2MemrefSelect,
-                    LoadSelect, SimpleMem2Reg<memref::AllocaOp>>(context);
+    patterns.insert<
+        SimplifyDeadAlloc<memref::AllocaOp>, SimplifyDeadAlloc<memref::AllocOp>,
+        SimplifyDeadAlloc<LLVM::AllocaOp>,
+        SimplifyDeadAlloc<gpu::AllocOp, true>, Pointer2MemrefSelect, LoadSelect,
+        AffineIfDeadResults, SimpleMem2Reg<memref::AllocaOp>>(context);
     GreedyRewriteConfig config;
+    config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);
     config.enableFolding();
     if (applyPatternsGreedily(op, std::move(patterns), config).failed())
       return failure();
@@ -1987,6 +2207,7 @@ struct LLVMToAffineAccessPass
     RewritePatternSet patterns(context);
     populateRemoveIVPatterns(patterns);
     GreedyRewriteConfig config;
+    config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);
     config.enableFolding();
     if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
                                      config))) {

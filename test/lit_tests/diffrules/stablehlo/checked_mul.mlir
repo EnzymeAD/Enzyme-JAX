@@ -15,6 +15,6 @@ func.func @dsquare(%x: tensor<2xf32>, %dr: tensor<2xf32>) -> tensor<2xf32> {
 // CHECK-NEXT:    %0 = stablehlo.compare  EQ, %arg1, %cst : (tensor<2xf32>, tensor<2xf32>) -> tensor<2xi1>
 // CHECK-NEXT:    %1 = stablehlo.multiply %arg1, %arg0 : tensor<2xf32>
 // CHECK-NEXT:    %2 = stablehlo.select %0, %cst, %1 : tensor<2xi1>, tensor<2xf32>
-// CHECK-NEXT:    %3 = arith.addf %2, %2 : tensor<2xf32>
+// CHECK-NEXT:    %3 = arith.addf %2, %2 fastmath<fast> : tensor<2xf32>
 // CHECK-NEXT:    return %3 : tensor<2xf32>
 // CHECK-NEXT:  }

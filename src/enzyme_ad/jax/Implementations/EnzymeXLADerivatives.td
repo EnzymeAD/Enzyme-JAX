@@ -26,6 +26,8 @@ def : EnzymeXLAControlFlowOp<"GPUWrapperOp", [{
   }
 }]>;
 
+def : EnzymeXLARegionTerminatorOp<"PolygeistYieldOp">;
+
 def : EnzymeXLAReadOnlyIdentityOp<"Pointer2MemrefOp", [0]>;
 def : EnzymeXLAReadOnlyIdentityOp<"Memref2PointerOp", [0]>;
 
@@ -227,6 +229,16 @@ def : EnzymeXLADerivative<"SincOp", (Op $x),
     (CheckedMul (DiffeRet), (Cosc $x))
   ],
   (Sinc (Shadow $x))
+>;
+
+// Scalar op from the raised-LLVM path (FloatLike, not tensors), so its
+// adjoints are arith ops -- the same rule as math.fma, whose value it shares.
+def : EnzymeXLADerivative<"FMulAddOp", (Op $x, $y, $z),
+  [
+    (CheckedMulF (DiffeRet), $y),
+    (CheckedMulF (DiffeRet), $x),
+    (DiffeRet)
+  ]
 >;
 
 def CoscDerivTerm : SubRoutine<(Op $diffret, $x),

@@ -929,6 +929,126 @@ def ApplyCSEAbsPatterns : EnzymeHLOPatternOp<
     "cse_abs"> {
   let patterns = ["CSE<stablehlo::AbsOp>"];
 }
+def ApplyCseBatchNormTrainingPatterns : EnzymeHLOPatternOp<
+    "cse_batch_norm_training"> {
+  let patterns = ["CSE<stablehlo::BatchNormTrainingOp>"];
+}
+def ApplyCseBatchNormInferencePatterns : EnzymeHLOPatternOp<
+    "cse_batch_norm_inference"> {
+  let patterns = ["CSE<stablehlo::BatchNormInferenceOp>"];
+}
+def ApplyCseBatchNormGradPatterns : EnzymeHLOPatternOp<
+    "cse_batch_norm_grad"> {
+  let patterns = ["CSE<stablehlo::BatchNormGradOp>"];
+}
+def ApplyCseExpPatterns : EnzymeHLOPatternOp<
+    "cse_exp"> {
+  let patterns = ["CSE<stablehlo::ExpOp>"];
+}
+def ApplyCseExpm1Patterns : EnzymeHLOPatternOp<
+    "cse_expm1"> {
+  let patterns = ["CSE<stablehlo::Expm1Op>"];
+}
+def ApplyCseLogPatterns : EnzymeHLOPatternOp<
+    "cse_log"> {
+  let patterns = ["CSE<stablehlo::LogOp>"];
+}
+def ApplyCseLog1pPatterns : EnzymeHLOPatternOp<
+    "cse_log1p"> {
+  let patterns = ["CSE<stablehlo::Log1pOp>"];
+}
+def ApplyCseTanhPatterns : EnzymeHLOPatternOp<
+    "cse_tanh"> {
+  let patterns = ["CSE<stablehlo::TanhOp>"];
+}
+def ApplyCseLogisticPatterns : EnzymeHLOPatternOp<
+    "cse_logistic"> {
+  let patterns = ["CSE<stablehlo::LogisticOp>"];
+}
+def ApplyCseSqrtPatterns : EnzymeHLOPatternOp<
+    "cse_sqrt"> {
+  let patterns = ["CSE<stablehlo::SqrtOp>"];
+}
+def ApplyCseRsqrtPatterns : EnzymeHLOPatternOp<
+    "cse_rsqrt"> {
+  let patterns = ["CSE<stablehlo::RsqrtOp>"];
+}
+def ApplyCseCbrtPatterns : EnzymeHLOPatternOp<
+    "cse_cbrt"> {
+  let patterns = ["CSE<stablehlo::CbrtOp>"];
+}
+def ApplyCseSinePatterns : EnzymeHLOPatternOp<
+    "cse_sine"> {
+  let patterns = ["CSE<stablehlo::SineOp>"];
+}
+def ApplyCseCosinePatterns : EnzymeHLOPatternOp<
+    "cse_cosine"> {
+  let patterns = ["CSE<stablehlo::CosineOp>"];
+}
+def ApplyCseAtan2Patterns : EnzymeHLOPatternOp<
+    "cse_atan2"> {
+  let patterns = ["CSE<stablehlo::Atan2Op>"];
+}
+def ApplyCseFloorPatterns : EnzymeHLOPatternOp<
+    "cse_floor"> {
+  let patterns = ["CSE<stablehlo::FloorOp>"];
+}
+def ApplyCseCeilPatterns : EnzymeHLOPatternOp<
+    "cse_ceil"> {
+  let patterns = ["CSE<stablehlo::CeilOp>"];
+}
+def ApplyCseRoundPatterns : EnzymeHLOPatternOp<
+    "cse_round"> {
+  let patterns = ["CSE<stablehlo::RoundOp>"];
+}
+def ApplyCseSignPatterns : EnzymeHLOPatternOp<
+    "cse_sign"> {
+  let patterns = ["CSE<stablehlo::SignOp>"];
+}
+def ApplyCseIsFinitePatterns : EnzymeHLOPatternOp<
+    "cse_is_finite"> {
+  let patterns = ["CSE<stablehlo::IsFiniteOp>"];
+}
+def ApplyCseClampPatterns : EnzymeHLOPatternOp<
+    "cse_clamp"> {
+  let patterns = ["CSE<stablehlo::ClampOp>"];
+}
+def ApplyCseRemainderPatterns : EnzymeHLOPatternOp<
+    "cse_remainder"> {
+  let patterns = ["CSE<stablehlo::RemOp>"];
+}
+def ApplyCseAndPatterns : EnzymeHLOPatternOp<
+    "cse_and"> {
+  let patterns = ["CSE<stablehlo::AndOp>"];
+}
+def ApplyCseOrPatterns : EnzymeHLOPatternOp<
+    "cse_or"> {
+  let patterns = ["CSE<stablehlo::OrOp>"];
+}
+def ApplyCseXorPatterns : EnzymeHLOPatternOp<
+    "cse_xor"> {
+  let patterns = ["CSE<stablehlo::XorOp>"];
+}
+def ApplyCseConvolutionPatterns : EnzymeHLOPatternOp<
+    "cse_convolution"> {
+  let patterns = ["CSE<stablehlo::ConvolutionOp>"];
+}
+def ApplyCseFftPatterns : EnzymeHLOPatternOp<
+    "cse_fft"> {
+  let patterns = ["CSE<stablehlo::FftOp>"];
+}
+def ApplyCseDynamicSlicePatterns : EnzymeHLOPatternOp<
+    "cse_dynamic_slice"> {
+  let patterns = ["CSE<stablehlo::DynamicSliceOp>"];
+}
+def ApplyCseDynamicUpdateSlicePatterns : EnzymeHLOPatternOp<
+    "cse_dynamic_update_slice"> {
+  let patterns = ["CSE<stablehlo::DynamicUpdateSliceOp>"];
+}
+def ApplyCseReversePatterns : EnzymeHLOPatternOp<
+    "cse_reverse"> {
+  let patterns = ["CSE<stablehlo::ReverseOp>"];
+}
 
 def ApplyCSEUpdateWithoutCornersPatterns : EnzymeHLOPatternOp<
     "cse_updatewithoutcorners"> {
@@ -1500,6 +1620,11 @@ def SelectPadToDUS : EnzymeHLOPatternOp<
   let patterns = ["SelectPadToDUS"];
 }
 
+def SelectToLogical : EnzymeHLOPatternOp<
+    "select_to_logical"> {
+  let patterns = ["SelectToLogical"];
+}
+
 def SelectSelectSameCond : EnzymeHLOPatternOp<
     "select_select_same_cond"> {
   let patterns = ["SelectSelectSameCond"];
@@ -1676,6 +1801,11 @@ def ApplyScatterIndicesAreUniquePatterns : EnzymeHLOPatternOp<
 def ApplyReduceTransposeSimplifyPatterns : EnzymeHLOPatternOp<
     "reduce_transpose_simplify"> {
   let patterns = ["ReduceTransposeSimplify"];
+}
+
+def ApplyWhileScatterAccumulatorNoAddPatterns : EnzymeHLOPatternOp<
+    "while_scatter_accumulator_no_add"> {
+  let patterns = ["WhileScatterAccumulatorNoAdd"];
 }
 
 def CompareIotaConstSimplifyPatterns : EnzymeHLOPatternOp<

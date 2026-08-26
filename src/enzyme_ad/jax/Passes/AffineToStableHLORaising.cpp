@@ -11,6 +11,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "src/enzyme_ad/jax/Passes/AffineUtils.h"
+#include "src/enzyme_ad/jax/Passes/EnzymeHLOUnroll.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "src/enzyme_ad/jax/Utils.h"
 
@@ -324,28 +325,52 @@ struct ParallelContext {
     if (!CTT)
       return std::nullopt;
     auto TT = getTensorType(CTT.getElementType());
-    assert(CTT.getElementType() == TT.getElementType());
-    if (CTT.getShape() == TT.getShape())
-      return Broadcast{v, avm};
-    if (llvm::any_of(llvm::zip(CTT.getShape(), TT.getShape()),
-                     [](auto p) { return std::get<0>(p) != std::get<1>(p); }))
-      return std::nullopt;
+    assert(TT.getElementType() == CTT.getElementType());
     if (CTT.getRank() > TT.getRank())
       return std::nullopt;
 
-    // TODO I haven't thought through how to broadcast non-scalars to the
-    // shape we need.
-    if (CTT.getRank() != 0)
-      return std::nullopt;
-    SmallVector<int64_t> dimsToBroadcast;
-    auto bc = stablehlo::BroadcastInDimOp::create(
-        b, rewriteLocation(v.getLoc(), options.strip_llvm_debuginfo), TT, v,
-        dimsToBroadcast);
+    SmallVector<int64_t> broadcastDims(CTT.getRank(), -1);
 
-    AffineMap newMap = AffineMap::getMultiDimIdentityMap(
-        TT.getRank() - CTT.getRank(), b.getContext());
+    for (auto [i, E] : llvm::enumerate(avm.getAffineMap().getResults())) {
+      if (E.isSymbolicOrConstant())
+        return std::nullopt;
 
-    return Broadcast{bc, affine::AffineValueMap(newMap, ivs)};
+      Value iv = nullptr;
+      for (auto [j, I] : llvm::enumerate(avm.getOperands())) {
+        if (E.isFunctionOfDim(j)) {
+          if (!iv)
+            iv = I;
+          else
+            return std::nullopt;
+        }
+      }
+
+      int64_t pos = 0;
+
+      for (auto I : ivs) {
+        if (iv == I) {
+          broadcastDims[i] = pos;
+          break;
+        }
+        pos++;
+      }
+
+      if (pos == ivs.size())
+        return std::nullopt;
+
+      broadcastDims[i] = pos;
+    }
+
+    for (auto bdim : broadcastDims)
+      if (bdim == -1)
+        return std::nullopt;
+
+    Value br = stablehlo::BroadcastInDimOp::create(b, v.getLoc(), TT, v,
+                                                   broadcastDims);
+
+    affine::AffineValueMap TMap(
+        AffineMap::getMultiDimIdentityMap(TT.getRank(), b.getContext()), ivs);
+    return Broadcast{.v = br, .avm = TMap};
   }
 
   std::optional<ParallelContext> add(affine::AffineForOp forOp) {
@@ -699,14 +724,16 @@ expandAffineExpr(OpBuilder &builder, Location loc, AffineExpr expr,
             makeI64Constant(cast<ShapedType>(lhs.getType()), 0),
             stablehlo::ComparisonDirection::LE);
         Value one = makeI64Constant(cast<ShapedType>(lhs.getType()), 1);
-        Value absolute = stablehlo::SelectOp::create(
-            builder, loc, negative, stablehlo::NegOp::create(builder, loc, lhs),
-            stablehlo::AddOp::create(builder, loc, lhs, one));
+        Value negLhs = stablehlo::NegOp::create(builder, loc, lhs);
+        Value lhsPlusOne = stablehlo::AddOp::create(builder, loc, lhs, one);
+        Value absolute = stablehlo::SelectOp::create(builder, loc, negative,
+                                                     negLhs, lhsPlusOne);
         Value quotient = stablehlo::DivOp::create(builder, loc, absolute, rhs);
-        result = stablehlo::SelectOp::create(
-            builder, loc, negative,
-            stablehlo::NegOp::create(builder, loc, quotient),
-            stablehlo::AddOp::create(builder, loc, quotient, one));
+        Value negQuotient = stablehlo::NegOp::create(builder, loc, quotient);
+        Value quotientPlusOne =
+            stablehlo::AddOp::create(builder, loc, quotient, one);
+        result = stablehlo::SelectOp::create(builder, loc, negative,
+                                             negQuotient, quotientPlusOne);
       };
       break;
     default:
@@ -785,6 +812,22 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
                         llvm::DenseMap<Value, affine::AffineValueMap> &maps,
                         ParallelContext pc);
 
+// The buffers a loop must carry are the arguments of the block being raised
+// from: the kernel function's entry, or the gpu_wrapper region's block when
+// raising a wrapper in place.
+static Block *getRaisedEntryBlock(Operation *op) {
+  while (op->getParentOp() &&
+         !isa<func::FuncOp, enzymexla::GPUWrapperOp>(op->getParentOp()))
+    op = op->getParentOp();
+  return &op->getParentRegion()->front();
+}
+
+static LogicalResult tryRaisingForOpToStableHLOWhile(
+    affine::AffineForOp forOp, IRMapping &parentMapping, OpBuilder &builder,
+    llvm::DenseMap<Value, affine::AffineValueMap> &maps, ParallelContext pc,
+    stablehlo::WhileOp *createdWhileOp = nullptr,
+    SmallVectorImpl<Value> *carriedBuffers = nullptr);
+
 static LogicalResult
 emitIfAsSelect(Operation *ifOp, Value cond, affine::AffineValueMap map,
                OpBuilder &builder, IRMapping &mapping,
@@ -855,12 +898,45 @@ emitIfAsSelect(Operation *ifOp, Value cond, affine::AffineValueMap map,
          llvm::zip_equal(thenTerm->getOperands(), elseTerm->getOperands(),
                          ifOp->getResults())) {
       Value a = cond;
+      if (isa<MemRefType, LLVM::LLVMPointerType>(res.getType())) {
+        // A branch choosing between whole buffers raises as a select of the
+        // whole tensors when the choice is uniform and nothing writes through
+        // it; a write would have to fan back out into both source buffers.
+        Value thenBuf = mapping.lookupOrNull(thenVal);
+        Value elseBuf = mapping.lookupOrNull(elseVal);
+        auto condTy = dyn_cast<RankedTensorType>(cond.getType());
+        // The select captures the buffers as of this point, so nothing may
+        // write to them (through the select or directly) or later reads
+        // through the select would miss the write.
+        auto loadOnly = [&](Value buf) {
+          return llvm::all_of(buf.getUsers(), [&](Operation *user) {
+            return isa<affine::AffineLoadOp, memref::LoadOp,
+                       affine::AffineVectorLoadOp>(user) ||
+                   user == ifOp || user == thenTerm || user == elseTerm;
+          });
+        };
+        bool readOnly = loadOnly(res) && loadOnly(thenVal) && loadOnly(elseVal);
+        if (!thenBuf || !elseBuf || thenBuf.getType() != elseBuf.getType() ||
+            !condTy || condTy.getRank() != 0 || !readOnly)
+          return ifOp->emitError(
+              "cannot raise a branch choosing between buffers");
+        auto sel = stablehlo::SelectOp::create(
+            builder,
+            rewriteLocation(ifOp->getLoc(), pc.options.strip_llvm_debuginfo),
+            cond, thenBuf, elseBuf);
+        mapping.map(res, sel.getResult());
+        maps[sel.getResult()] = maps.lookup(thenBuf);
+        continue;
+      }
       Value b = mapping.lookup(thenVal);
       Value c = mapping.lookup(elseVal);
 
       auto mapA = map;
       auto mapB = maps.lookup(b);
       auto mapC = maps.lookup(c);
+      if (!mapA.getAffineMap() || !mapB.getAffineMap() || !mapC.getAffineMap())
+        return ifOp->emitError(
+            "cannot raise branch result without an access map");
 
       Value dsts[] = {b, c};
       affine::AffineValueMap submaps[] = {mapB, mapC};
@@ -1144,109 +1220,157 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
 static LogicalResult tryRaisingForOpToStableHLOUnroll(
     affine::AffineForOp forOp, IRMapping &mapping, OpBuilder &builder,
     llvm::DenseMap<Value, affine::AffineValueMap> &maps, ParallelContext pc) {
-  // Materialize an unrolled version of the loop in a temporary block and
-  // generate the raised version of that. The unrolled version will be deleted
-  // afterwards and the results of the original for loop will be mapped to it.
 
-  // There arises a problem with the affine maps contained in the for loop which
-  // until now correctly identified the loop iv as an affine dim, but will now
-  // take constants as inputs. We need to canonicalize those maps before raising
-  // the operations because we assume dim inputs to be loop ivs. This is the
-  // reason we need to canonicalize all affine maps before we raise them in the
-  // other parts of the code.
-  auto tmpBlock = std::make_unique<Block>();
-  OpBuilder oldFuncBuilder(builder.getContext());
-  oldFuncBuilder.setInsertionPointToStart(tmpBlock.get());
-  auto clonedFor = cast<affine::AffineForOp>(oldFuncBuilder.clone(*forOp));
-  auto yield = affine::AffineYieldOp::create(
-      oldFuncBuilder,
-      rewriteLocation(clonedFor.getLoc(), pc.options.strip_llvm_debuginfo),
-      clonedFor.getResults());
-  if (failed(affine::loopUnrollFull(clonedFor))) {
-    llvm::errs() << " failed to fully unroll loop: " << *clonedFor << "\n";
+  stablehlo::WhileOp whileOp;
+  SmallVector<Value> carriedBuffers;
+  if (tryRaisingForOpToStableHLOWhile(forOp, mapping, builder, maps, pc,
+                                      &whileOp, &carriedBuffers)
+          .failed()) {
     return failure();
   }
 
-  // Make a temporary new mapping because we will map values from the temporary
-  // block which we will delete later.
-  IRMapping forMapping = mapping;
-  for (auto &innerOp : tmpBlock->without_terminator()) {
-    if (tryRaisingOpToStableHLO(&innerOp, forMapping, builder, maps, pc)
-            .failed()) {
-      return failure();
-    }
+  unsigned numIterArgs = forOp.getNumRegionIterArgs();
+  SmallVector<affine::AffineValueMap> resMaps;
+  resMaps.reserve(forOp.getNumResults());
+  for (unsigned i = 0, e = forOp.getNumResults(); i < e; ++i)
+    resMaps.push_back(maps.lookup(whileOp.getResult(1 + i)));
+
+  IRRewriter rewriter(builder);
+  rewriter.setInsertionPoint(whileOp);
+  SmallVector<Value> results;
+  if (failed(unrollWhileOp(whileOp, rewriter, /*maxNumIterations=*/-1,
+                           /*maxOperationThreshold=*/-1, &results))) {
+    return failure();
   }
-  // Remap the results of the loop in the main mapping which will be needed for
-  // raising subsequent ops.
-  for (auto [yielded, res] :
-       llvm::zip_equal(yield.getOperands(), forOp.getResults())) {
-    auto mapped = forMapping.lookupOrNull(yielded);
-    assert(mapped);
-    mapping.map(res, mapped);
+
+  for (auto [i, forRes] : llvm::enumerate(forOp.getResults())) {
+    mapping.map(forRes, results[1 + i]);
+    maps[results[1 + i]] = resMaps[i];
   }
-  for (auto [from, to] : forMapping.getValueMap()) {
-    Block *b = from.getParentBlock();
-    // This checks whether `tmpBlock` is an ancestor of `from`. If it is not,
-    // then we need to reflect any change in the `forMapping` in the global
-    // `mapping`. We need to do this because memref arguments to the function we
-    // are raising get remapped as the raising process goes on.
-    bool shouldRemap;
-    while (true) {
-      if (!b) {
-        shouldRemap = true;
-        break;
-      }
-      if (b == tmpBlock.get()) {
-        shouldRemap = false;
-        break;
-      }
-      Operation *op = b->getParentOp();
-      if (op) {
-        b = op->getBlock();
-      } else {
-        shouldRemap = true;
-        break;
-      }
-    }
-    if (shouldRemap)
-      mapping.map(from, to);
-  }
+
+  for (auto [i, memref] : llvm::enumerate(carriedBuffers))
+    mapping.map(memref, results[1 + numIterArgs + i]);
   return success();
+}
+
+// compares the two AffineValueMap and return whether they are aligned
+// under their respective dynamic dimensions. that is:
+//
+//  - they depend on the same induction variables
+//  - they have the same number of results
+//  - each result depending on the same induction variable as the corresponding
+//    result in the other map (up to a constant offset).
+//  - up to a permutation can be applied.
+//
+//  it returns the permutation to apply to a in order to align to b.
+//
+static std::optional<SmallVector<int64_t>>
+memoryEquivalentPermutation(const affine::AffineValueMap &a,
+                            const affine::AffineValueMap &b) {
+  SmallVector<int64_t> perm(a.getNumResults(), -1);
+
+  auto amap = a.getAffineMap(), bmap = b.getAffineMap();
+
+  if (amap.getNumDims() != bmap.getNumDims() ||
+      amap.getNumSymbols() != bmap.getNumSymbols() ||
+      amap.getNumResults() != bmap.getNumResults())
+    return std::nullopt;
+
+  for (auto EA : amap.getResults()) {
+    if (EA.isSymbolicOrConstant())
+      return std::nullopt;
+
+    auto apos = getIVPos(a, EA);
+    auto aiv = a.getOperand(apos);
+
+    AffineExpr EB = nullptr;
+    unsigned bpos;
+    for (auto EBB : bmap.getResults()) {
+      bpos = getIVPos(b, EBB);
+
+      if (b.getOperand(bpos) == aiv) {
+        EB = EBB;
+        break;
+      }
+    }
+
+    if (!EB)
+      return std::nullopt;
+
+    perm[bpos] = apos;
+    EB = EB.replace(mlir::getAffineDimExpr(bpos, aiv.getContext()),
+                    mlir::getAffineDimExpr(apos, aiv.getContext()));
+    AffineExpr E = EA - EB;
+    if (!E.isSymbolicOrConstant())
+      return std::nullopt;
+  }
+
+  if (!perm.empty() && llvm::any_of(perm, [](int64_t d) { return d == -1; }))
+    return std::nullopt;
+
+  return {perm};
 }
 
 static LogicalResult tryRaisingForOpToStableHLOWhile(
     affine::AffineForOp forOp, IRMapping &parentMapping, OpBuilder &builder,
-    llvm::DenseMap<Value, affine::AffineValueMap> &maps, ParallelContext pc) {
+    llvm::DenseMap<Value, affine::AffineValueMap> &maps, ParallelContext pc,
+    stablehlo::WhileOp *createdWhileOp,
+    SmallVectorImpl<Value> *carriedBuffers) {
   IRMapping mapping = parentMapping;
-  if (!forOp.hasConstantBounds()) {
-    return forOp.emitError("CPU kernels do not support cluster");
-  }
 
   Value iv = forOp.getInductionVar();
-  InductionVariableRange range{forOp.getConstantLowerBound(),
-                               forOp.getConstantUpperBound(),
-                               forOp.getStepAsInt()};
 
   auto ET = builder.getI64Type();
   auto TT = RankedTensorType::get({}, ET);
+  auto wloc = rewriteLocation(forOp.getLoc(), pc.options.strip_llvm_debuginfo);
 
-  Value lb = stablehlo::ConstantOp::create(
-      builder, rewriteLocation(forOp.getLoc(), pc.options.strip_llvm_debuginfo),
-      TT,
-      SplatElementsAttr::get(
-          TT, ArrayRef<Attribute>(IntegerAttr::get(ET, range.lb))));
-  Value ub = stablehlo::ConstantOp::create(
-      builder, rewriteLocation(forOp.getLoc(), pc.options.strip_llvm_debuginfo),
-      TT,
-      SplatElementsAttr::get(
-          TT, ArrayRef<Attribute>(IntegerAttr::get(ET, range.ub))));
-  Value step = stablehlo::ConstantOp::create(
-      builder, rewriteLocation(forOp.getLoc(), pc.options.strip_llvm_debuginfo),
-      TT,
-      SplatElementsAttr::get(
-          TT, ArrayRef<Attribute>(IntegerAttr::get(ET, range.step))));
+  auto makeConst = [&](int64_t v) -> Value {
+    return stablehlo::ConstantOp::create(
+        builder, wloc, TT,
+        SplatElementsAttr::get(TT,
+                               ArrayRef<Attribute>(IntegerAttr::get(ET, v))));
+  };
 
-  Block *entryBlock = &forOp->getParentOfType<func::FuncOp>().getBody().front();
+  Value lb, ub;
+  if (forOp.hasConstantBounds()) {
+    lb = makeConst(forOp.getConstantLowerBound());
+    ub = makeConst(forOp.getConstantUpperBound());
+  } else {
+    // A while iterates however many times the bounds say at runtime, so the
+    // bounds only need to be evaluated as scalars: a lower bound is the max
+    // of its results, an upper bound the min.
+    auto evalBound = [&](AffineMap map, ValueRange operands,
+                         bool isUpper) -> Value {
+      Value acc;
+      for (AffineExpr expr : map.getResults()) {
+        auto [val, avm] = expandAffineExpr(builder, wloc, expr, operands,
+                                           mapping, map.getNumDims(), pc);
+        if (!val)
+          return nullptr;
+        auto vt = dyn_cast<RankedTensorType>(val.getType());
+        if (!vt || vt.getRank() != 0)
+          return nullptr;
+        if (vt.getElementType() != ET)
+          val = stablehlo::ConvertOp::create(builder, wloc, TT, val);
+        acc = !acc ? val
+                   : (isUpper ? (Value)stablehlo::MinOp::create(builder, wloc,
+                                                                acc, val)
+                              : (Value)stablehlo::MaxOp::create(builder, wloc,
+                                                                acc, val));
+      }
+      return acc;
+    };
+    lb = evalBound(forOp.getLowerBoundMap(), forOp.getLowerBoundOperands(),
+                   /*isUpper=*/false);
+    ub = evalBound(forOp.getUpperBoundMap(), forOp.getUpperBoundOperands(),
+                   /*isUpper=*/true);
+    if (!lb || !ub)
+      return forOp.emitError(
+          "cannot evaluate non-constant loop bounds as scalars");
+  }
+  Value step = makeConst(forOp.getStepAsInt());
+
+  Block *entryBlock = getRaisedEntryBlock(forOp);
 
   Block *cond = new Block(), *body = new Block();
   Value ivInCond = cond->addArgument(
@@ -1275,7 +1399,27 @@ static LogicalResult tryRaisingForOpToStableHLOWhile(
     maps[iterArgInBody] = broadcastInit->avm;
   }
 
-  for (auto memref : entryBlock->getArguments()) {
+  // Every buffer written in the body must be loop-carried, or its mapping
+  // after the loop would point into the body. That is the entry block's
+  // arguments plus any other outside-defined buffer the body touches
+  // (e.g. a raised memref.alloca).
+  SmallVector<Value> buffers(entryBlock->getArguments().begin(),
+                             entryBlock->getArguments().end());
+  {
+    llvm::SmallPtrSet<Value, 8> seen(buffers.begin(), buffers.end());
+    forOp.getBody()->walk([&](Operation *innerOp) {
+      for (Value v : innerOp->getOperands())
+        if (isa<MemRefType>(v.getType()) && mapping.contains(v) &&
+            !forOp->isAncestor(v.getParentRegion()->getParentOp()) &&
+            seen.insert(v).second)
+          buffers.push_back(v);
+    });
+  }
+
+  if (carriedBuffers)
+    carriedBuffers->assign(buffers.begin(), buffers.end());
+
+  for (auto memref : buffers) {
     Value mappedMemref = mapping.lookup(memref);
     inits.push_back(mappedMemref);
 
@@ -1295,6 +1439,14 @@ static LogicalResult tryRaisingForOpToStableHLOWhile(
 
   whileOp->getRegion(0).push_back(cond);
   whileOp->getRegion(1).push_back(body);
+
+  // A loop peeled off a parallel axis stays a parallel axis: iterations are
+  // independent, which downstream passes may use without reanalyzing.
+  if (forOp->hasAttr("enzymexla.parallel"))
+    whileOp->setAttr("enzymexla.parallel", builder.getUnitAttr());
+
+  if (createdWhileOp)
+    *createdWhileOp = whileOp;
 
   {
     OpBuilder::InsertionGuard guard(builder);
@@ -1333,16 +1485,28 @@ static LogicalResult tryRaisingForOpToStableHLOWhile(
     for (auto [iterArg, yieldedIterArgs] :
          llvm::zip(forOp.getRegionIterArgs(),
                    forOp.getBody()->getTerminator()->getOperands())) {
-      if (maps.lookup(mapping.lookup(iterArg)) !=
-          maps.lookup(mapping.lookup(yieldedIterArgs))) {
+
+      Value raisedYieldedIterArg = mapping.lookup(yieldedIterArgs);
+      Value raisedIterArg = mapping.lookup(iterArg);
+
+      auto perm = memoryEquivalentPermutation(maps.lookup(raisedYieldedIterArg),
+                                              maps.lookup(raisedIterArg));
+
+      if (!perm.has_value()) {
         auto err = forOp.emitError("invalid init for iterArg: ") << iterArg;
         whileOp->erase();
         return err;
       }
-      loopCarried.push_back(mapping.lookup(yieldedIterArgs));
+
+      if (!std::is_sorted(perm->begin(), perm->end()))
+        raisedYieldedIterArg = stablehlo::TransposeOp::create(
+            builder, raisedYieldedIterArg.getLoc(), raisedYieldedIterArg,
+            *perm);
+
+      loopCarried.push_back(raisedYieldedIterArg);
     }
 
-    for (auto memref : entryBlock->getArguments())
+    for (auto memref : buffers)
       loopCarried.push_back(mapping.lookup(memref));
     stablehlo::ReturnOp::create(
         builder,
@@ -1350,7 +1514,7 @@ static LogicalResult tryRaisingForOpToStableHLOWhile(
         loopCarried);
   }
 
-  for (auto [i, memref] : llvm::enumerate(entryBlock->getArguments()))
+  for (auto [i, memref] : llvm::enumerate(buffers))
     mapping.map(memref,
                 whileOp.getResult(i + 1 + forOp.getNumRegionIterArgs()));
   for (auto [forRes, forIterArg, whileRes] :
@@ -2316,10 +2480,18 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
         limit = constOp.getValue() + 1;
       } else if (!E.isSymbolicOrConstant()) {
         auto range = computeExprRange(accessValueMap, E);
-        if (!range.has_value())
-          return failure();
-        start = range->step < 0 ? range->ub - range->step : range->lb;
-        limit = range->step < 0 ? range->lb - range->step : range->ub;
+        if (range.has_value()) {
+          start = range->step < 0 ? range->ub - range->step : range->lb;
+          limit = range->step < 0 ? range->lb - range->step : range->ub;
+        } else {
+          // A while-raised loop's IV has no static range, but its store is a
+          // single dynamically-indexed element along this dim: no padding
+          // analysis needed. Only a batched (parallel-IV) dim needs the range.
+          Value iv = getIVForExpr(accessValueMap, E);
+          if (!iv || pc.isParallelIV(iv))
+            return failure();
+          hasRange = false;
+        }
       } else {
         hasRange = false;
       }
@@ -2853,8 +3025,11 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
         SplatElementsAttr::get(
             unrankedTensorType,
             ArrayRef<Attribute>(
-                ET.isInteger() ? (Attribute)IntegerAttr::get(ET, 0)
-                               : (Attribute)FloatAttr::get(ET, APFloat(0.0)))));
+                ET.isInteger()
+                    ? (Attribute)IntegerAttr::get(ET, 0)
+                    : (Attribute)FloatAttr::get(
+                          ET, APFloat::getZero(
+                                  cast<FloatType>(ET).getFloatSemantics())))));
 
     auto newVal = newConst.getResult();
     mapping.map(op->getResult(0), newVal);
@@ -3064,7 +3239,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
           arith::ShLIOp, arith::MinimumFOp, arith::MaximumFOp, arith::MaxNumFOp,
           arith::MinNumFOp, arith::MinUIOp, arith::MinSIOp, arith::MaxUIOp,
           arith::MaxSIOp, arith::RemSIOp, arith::RemUIOp, arith::RemFOp,
-          math::CopySignOp, math::PowFOp>(op)) {
+          math::CopySignOp, math::Atan2Op, math::PowFOp>(op)) {
     assert(op->getNumOperands() == 2 && op->getNumResults() == 1);
 
     Value a = mapping.lookup(op->getOperand(0)),
@@ -3095,7 +3270,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
   }
 
   // ternary ops
-  if (isa<arith::SelectOp, math::FmaOp>(op)) {
+  if (isa<arith::SelectOp, math::FmaOp, enzymexla::FMulAddOp>(op)) {
     assert(op->getNumOperands() == 3 && op->getNumResults() == 1);
 
     Value a = mapping.lookup(op->getOperand(0)),
@@ -3142,10 +3317,6 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
   if (auto ifOp = dyn_cast<affine::AffineIfOp>(op)) {
 
     auto is = ifOp.getIntegerSet();
-    if (is.getNumSymbols() != 0) {
-      return op->emitError("cannot raise integer set with symbols yet\n")
-             << *op;
-    }
 
     Value cond = nullptr;
     affine::AffineValueMap map(AffineMap::get(ifOp.getContext()), {});
@@ -3204,12 +3375,14 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
   // Inner for op
   if (auto forOp = dyn_cast<affine::AffineForOp>(op)) {
-    if (pc.options.enableLockstepFor &&
+    if (pc.options.enableLockstepFor && forOp.hasConstantBounds() &&
         tryRaisingLockStepForOpToStableHLO(forOp, mapping, builder, maps, pc)
             .succeeded()) {
       return success();
     }
-    if (pc.options.preferWhileRaising &&
+    // A loop whose trip count is only known at runtime can still iterate as
+    // a while, whatever the preference says.
+    if ((pc.options.preferWhileRaising || !forOp.hasConstantBounds()) &&
         tryRaisingForOpToStableHLOWhile(forOp, mapping, builder, maps, pc)
             .succeeded()) {
       return success();
@@ -3220,7 +3393,32 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     }
   }
 
+  if (auto alloca = dyn_cast<memref::AllocaOp>(op)) {
+    // Kernel scratch: a fresh buffer per iteration of whatever loop holds
+    // it, which is exactly what materializing its initial value where the
+    // alloca sits gives. Reads before any write see zeros.
+    auto MT = alloca.getType();
+    if (!MT.hasStaticShape() || !isXLACompatiblePrimitive(MT.getElementType()))
+      return op->emitError("cannot raise dynamic or non-primitive alloca")
+             << *op;
+    auto TT = RankedTensorType::get(MT.getShape(), MT.getElementType());
+    Value zero = stablehlo::ConstantOp::create(
+        builder, rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+        TT,
+        SplatElementsAttr::get(TT, builder.getZeroAttr(MT.getElementType())));
+    mapping.map(alloca.getResult(), zero);
+    maps[zero] = affine::AffineValueMap(AffineMap::get(op->getContext()), {});
+    return success();
+  }
+
   if (isa<LLVM::NoAliasScopeDeclOp>(op)) {
+    return success();
+  }
+
+  // Raised execution is ordered over whole tensors: a store over a batched
+  // thread axis completes for the entire axis before the next op runs, which
+  // is exactly what the barrier guaranteed.
+  if (isa<enzymexla::BarrierOp>(op)) {
     return success();
   }
 
@@ -3374,6 +3572,111 @@ struct AffineToStableHLORaisingPass
           AffineToStableHLORaisingPass> {
   using AffineToStableHLORaisingBase::AffineToStableHLORaisingBase;
 
+  // An access does not care about the address space of its base, but the
+  // raising identifies buffers by SSA root: a memory_space_cast view would
+  // split one buffer into two roots and lose store propagation. Retarget the
+  // accesses to the source and drop the cast.
+  static void stripAccessMemorySpaceCasts(Operation *root) {
+    SmallVector<memref::MemorySpaceCastOp> casts;
+    root->walk([&](memref::MemorySpaceCastOp c) { casts.push_back(c); });
+    for (auto c : casts) {
+      if (!llvm::all_of(c->getUsers(), [](Operation *u) {
+            return isa<affine::AffineLoadOp, affine::AffineStoreOp,
+                       memref::LoadOp, memref::StoreOp>(u);
+          }))
+        continue;
+      for (Operation *u : llvm::make_early_inc_range(c->getUsers()))
+        u->replaceUsesOfWith(c.getResult(), c.getSource());
+      c.erase();
+    }
+  }
+
+  // A parallel dimension whose extent is only known at runtime cannot become
+  // a tensor axis, but its iterations are still independent: peel each such
+  // dimension into an affine.for tagged enzymexla.parallel, which the while
+  // raising then iterates, leaving the constant-extent dimensions to raise as
+  // axes. The tag rides onto the stablehlo.while so downstream passes know
+  // the iterations commute.
+  static void peelDynamicParallelDims(Operation *root) {
+    SmallVector<affine::AffineParallelOp> worklist;
+    root->walk([&](affine::AffineParallelOp par) { worklist.push_back(par); });
+    for (auto par : worklist) {
+      if (!par.getReductions().empty())
+        continue;
+      unsigned n = par.getNumDims();
+      SmallVector<unsigned> dyn, stat;
+      for (unsigned i = 0; i < n; ++i) {
+        if (getConstant(par.getLowerBoundMap(i)) &&
+            getConstant(par.getUpperBoundMap(i)))
+          stat.push_back(i);
+        else
+          dyn.push_back(i);
+      }
+      if (dyn.empty())
+        continue;
+
+      OpBuilder b(par);
+      Location loc = par.getLoc();
+      SmallVector<Value> ivRepl(n);
+      for (unsigned idx : dyn) {
+        auto forOp = affine::AffineForOp::create(
+            b, loc, par.getLowerBoundsOperands(), par.getLowerBoundMap(idx),
+            par.getUpperBoundsOperands(), par.getUpperBoundMap(idx),
+            par.getSteps()[idx]);
+        forOp->setAttr("enzymexla.parallel", b.getUnitAttr());
+        ivRepl[idx] = forOp.getInductionVar();
+        b.setInsertionPointToStart(forOp.getBody());
+      }
+
+      Block *target;
+      if (!stat.empty()) {
+        SmallVector<AffineExpr> lbounds, ubounds;
+        SmallVector<int32_t> lboundGroup, uboundGroup;
+        SmallVector<int64_t> steps;
+        for (unsigned idx : stat) {
+          auto lm = par.getLowerBoundMap(idx);
+          auto um = par.getUpperBoundMap(idx);
+          lbounds.append(lm.getResults().begin(), lm.getResults().end());
+          ubounds.append(um.getResults().begin(), um.getResults().end());
+          lboundGroup.push_back(lm.getNumResults());
+          uboundGroup.push_back(um.getNumResults());
+          steps.push_back(par.getSteps()[idx]);
+        }
+        auto inner = affine::AffineParallelOp::create(
+            b, loc, TypeRange(), b.getArrayAttr({}),
+            AffineMapAttr::get(
+                AffineMap::get(par.getLowerBoundsMap().getNumDims(),
+                               par.getLowerBoundsMap().getNumSymbols(), lbounds,
+                               par.getContext())),
+            b.getI32TensorAttr(lboundGroup),
+            AffineMapAttr::get(
+                AffineMap::get(par.getUpperBoundsMap().getNumDims(),
+                               par.getUpperBoundsMap().getNumSymbols(), ubounds,
+                               par.getContext())),
+            b.getI32TensorAttr(uboundGroup), b.getI64ArrayAttr(steps),
+            par.getOperands());
+        Block *blk = new Block();
+        for (auto [j, idx] : llvm::enumerate(stat))
+          ivRepl[idx] = blk->addArgument(b.getIndexType(), loc);
+        inner.getRegion().push_back(blk);
+        b.setInsertionPointToEnd(blk);
+        affine::AffineYieldOp::create(b, loc);
+        target = blk;
+      } else {
+        target = b.getInsertionBlock();
+      }
+
+      Block *oldBody = par.getBody();
+      for (unsigned i = 0; i < n; ++i)
+        oldBody->getArgument(i).replaceAllUsesWith(ivRepl[i]);
+      target->getOperations().splice(std::prev(target->getOperations().end()),
+                                     oldBody->getOperations(),
+                                     oldBody->getOperations().begin(),
+                                     std::prev(oldBody->getOperations().end()));
+      par.erase();
+    }
+  }
+
   void runOnOperation() override {
     ParallelContext::Options options{enable_lockstep_for, dump_failed_lockstep,
                                      prefer_while_raising,
@@ -3408,6 +3711,13 @@ struct AffineToStableHLORaisingPass
       }
     });
 
+    // Peeling rewrites loops, so it stays scoped to the regions this pass
+    // actually raises.
+    for (auto func : funcs) {
+      stripAccessMemorySpaceCasts(func);
+      peelDynamicParallelDims(func);
+    }
+
     SymbolTableCollection symbolTable;
     SymbolUserMap userMap(symbolTable, op);
 
@@ -3425,6 +3735,10 @@ struct AffineToStableHLORaisingPass
     }
     std::vector<enzymexla::GPUWrapperOp> gwrap;
     op->walk([&](enzymexla::GPUWrapperOp g) { gwrap.push_back(g); });
+    for (auto g : gwrap) {
+      stripAccessMemorySpaceCasts(g);
+      peelDynamicParallelDims(g);
+    }
     size_t raised_count = 0;
     for (auto g : gwrap) {
       auto modOp = g->getParentOfType<ModuleOp>();
@@ -3447,7 +3761,11 @@ struct AffineToStableHLORaisingPass
 
           Attribute attr;
 
-          if (matchPattern(arg, m_Constant(&attr))) {
+          // Only splat what a tensor can hold; a pointer constant (null, a
+          // global's address) falls through to the pointer handling and, if
+          // unhandled there, to the unraised-operand report.
+          if (isa<IntegerType, FloatType, IndexType>(arg.getType()) &&
+              matchPattern(arg, m_Constant(&attr))) {
             affine::AffineValueMap accessMap(AffineMap::get(arg.getContext()),
                                              {});
 

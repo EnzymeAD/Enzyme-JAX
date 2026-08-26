@@ -28,14 +28,14 @@ module {
 // REVERSE-NEXT:    %c = stablehlo.constant dense<0> : tensor<1xi32>
 // REVERSE-NEXT:    %cst_1 = arith.constant dense<0.000000e+00> : tensor<1x1x8192x16x256xbf16>
 // REVERSE-NEXT:    %cst_2 = arith.constant dense<0.000000e+00> : tensor<1x1x2048x16x256xbf16>
-// REVERSE-NEXT:    %0 = arith.addf %arg2, %cst_1 : tensor<1x1x8192x16x256xbf16>
+// REVERSE-NEXT:    %0 = arith.addf %arg2, %cst_1 fastmath<fast> : tensor<1x1x8192x16x256xbf16>
 // REVERSE-NEXT:    %1 = "stablehlo.scatter"(%0, %c, %cst_0) <{indices_are_sorted = true, scatter_dimension_numbers = #stablehlo.scatter<update_window_dims = [0, 1, 2, 3, 4], scatter_dims_to_operand_dims = [2]>, unique_indices = true}> ({
 // REVERSE-NEXT:    ^bb0(%arg3: tensor<bf16>, %arg4: tensor<bf16>):
 // REVERSE-NEXT:      stablehlo.return %cst : tensor<bf16>
 // REVERSE-NEXT:    }) : (tensor<1x1x8192x16x256xbf16>, tensor<1xi32>, tensor<1x1x2048x16x256xbf16>) -> tensor<1x1x8192x16x256xbf16>
-// REVERSE-NEXT:    %2 = arith.addf %1, %cst_1 : tensor<1x1x8192x16x256xbf16>
+// REVERSE-NEXT:    %2 = arith.addf %1, %cst_1 fastmath<fast> : tensor<1x1x8192x16x256xbf16>
 // REVERSE-NEXT:    %3 = "stablehlo.gather"(%0, %c) <{dimension_numbers = #stablehlo.gather<offset_dims = [0, 1, 2, 3, 4], start_index_map = [2]>, indices_are_sorted = true, slice_sizes = array<i64: 1, 1, 2048, 16, 256>}> : (tensor<1x1x8192x16x256xbf16>, tensor<1xi32>) -> tensor<1x1x2048x16x256xbf16>
-// REVERSE-NEXT:    %4 = arith.addf %3, %cst_2 : tensor<1x1x2048x16x256xbf16>
+// REVERSE-NEXT:    %4 = arith.addf %3, %cst_2 fastmath<fast> : tensor<1x1x2048x16x256xbf16>
 // REVERSE-NEXT:    return %2, %4 : tensor<1x1x8192x16x256xbf16>, tensor<1x1x2048x16x256xbf16>
 // REVERSE-NEXT:  }
 
@@ -43,8 +43,8 @@ module {
 // REVERSE2-NEXT:     %c = stablehlo.constant dense<0> : tensor<1xi32>
 // REVERSE2-NEXT:     %cst = arith.constant dense<0.000000e+00> : tensor<1x1x8192x16x256xbf16>
 // REVERSE2-NEXT:     %cst_0 = arith.constant dense<0.000000e+00> : tensor<1x1x2048x16x256xbf16>
-// REVERSE2-NEXT:     %0 = arith.addf %arg2, %cst : tensor<1x1x8192x16x256xbf16>
+// REVERSE2-NEXT:     %0 = arith.addf %arg2, %cst fastmath<fast> : tensor<1x1x8192x16x256xbf16>
 // REVERSE2-NEXT:     %1 = "stablehlo.gather"(%0, %c) <{dimension_numbers = #stablehlo.gather<offset_dims = [0, 1, 2, 3, 4], start_index_map = [2]>, indices_are_sorted = true, slice_sizes = array<i64: 1, 1, 2048, 16, 256>}> : (tensor<1x1x8192x16x256xbf16>, tensor<1xi32>) -> tensor<1x1x2048x16x256xbf16>
-// REVERSE2-NEXT:     %2 = arith.addf %1, %cst_0 : tensor<1x1x2048x16x256xbf16>
+// REVERSE2-NEXT:     %2 = arith.addf %1, %cst_0 fastmath<fast> : tensor<1x1x2048x16x256xbf16>
 // REVERSE2-NEXT:     return %2 : tensor<1x1x2048x16x256xbf16>
 // REVERSE2-NEXT: }

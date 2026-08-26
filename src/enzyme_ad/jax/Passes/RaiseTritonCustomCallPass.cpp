@@ -25,7 +25,6 @@
 #include "src/enzyme_ad/jax/Dialect/TritonExt/Dialect.h"
 #include "src/enzyme_ad/jax/Utils.h"
 #include "stablehlo/dialect/StablehloOps.h"
-#include "triton/Dialect/Triton/IR/Dialect.h"
 
 #include "jaxlib/gpu/triton.pb.h"
 
@@ -88,15 +87,21 @@ replaceWithTritonCall(stablehlo::CustomCallOp callOp, PatternRewriter &rewriter,
                                         outerMod.getSymNameAttr(), nestedRefs);
 
   rewriter.setInsertionPoint(callOp);
+
+  Value gridxVal = TI64(rewriter, callOp->getLoc(), gridx);
+  Value gridyVal = TI64(rewriter, callOp->getLoc(), gridy);
+  Value gridzVal = TI64(rewriter, callOp->getLoc(), gridz);
+
+  Value blockxVal = TI64(rewriter, callOp->getLoc(), 1);
+  Value blockyVal = TI64(rewriter, callOp->getLoc(), 1);
+  Value blockzVal = TI64(rewriter, callOp->getLoc(), 1);
+
   rewriter.replaceOpWithNewOp<enzymexla::triton_ext::TritonCallOp>(
       callOp, callOp->getResultTypes(), fn,
 
-      TI64(rewriter, callOp->getLoc(), gridx),
-      TI64(rewriter, callOp->getLoc(), gridy),
-      TI64(rewriter, callOp->getLoc(), gridz),
+      gridxVal, gridyVal, gridzVal,
 
-      TI64(rewriter, callOp->getLoc(), 1), TI64(rewriter, callOp->getLoc(), 1),
-      TI64(rewriter, callOp->getLoc(), 1),
+      blockxVal, blockyVal, blockzVal,
 
       callOp.getInputs(),
       /* backendConfig */ StringAttr::get(callOp.getContext(), ""),

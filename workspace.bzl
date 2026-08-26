@@ -1,7 +1,7 @@
-JAX_COMMIT = "6b606dd6aeb73adb0c73c3ee2649b1104feb4e1f"
+JAX_COMMIT = "cec06d116c05f0d52adfceee3d3b730fdbcb0ce5"
 JAX_SHA256 = ""
 
-ENZYME_COMMIT = "7be5247eb207215f04a1d8e3150d6a7394b7a85d"
+ENZYME_COMMIT = "fc6bb335b90ef09c2c16b413a408cafcc836086b"
 ENZYME_SHA256 = ""
 
 ML_TOOLCHAIN_COMMIT = "30ef4a9096f9490e8f198faa5ce5bbddd1b72fdb"
@@ -11,9 +11,6 @@ ML_TOOLCHAIN_SHA256 = ""
 # otherwise this should be a path to the folder containing the BUILD file for enzyme
 OVERRIDE_ENZYME_PATH = ""
 
-HEDRON_COMPILE_COMMANDS_COMMIT = "84c8aadfeee9a09105ec22cc85d0f478c90a788a"
-HEDRON_COMPILE_COMMANDS_SHA256 = ""
-
 XLA_PATCHES = [
     """
     # Use clang not msvc
@@ -22,6 +19,16 @@ XLA_PATCHES = [
     """
     # Fix support for rocm ygg build
     sed -i.bak0 "s|clang/18/include|clang/22/include|g" third_party/gpus/rocm_configure.bzl
+    """,
+    """
+    # The hermetic rocm toolchain compiles through the repository's own
+    # rocm_dist copy of hipcc, whose resource headers the crosstool never
+    # declared: the absolute-path inclusion check then rejects every
+    # device compile. Declare that resource directory both by package
+    # token and by its resolved path, since the dependency file can
+    # spell it either way depending on how the distribution was reached.
+    sed -i.bak1 "s|cxx_builtin_include_directories = _LOCAL_CLANG.include_directories,|cxx_builtin_include_directories = _LOCAL_CLANG.include_directories + [\\\"%package(@local_config_rocm//rocm)%/rocm_dist/lib/llvm/lib/clang/22/include\\\", \\\"%{hipcc_resource_dir}\\\", \\\"%{hipcc_resource_dir_realpath}\\\"],|" third_party/gpus/crosstool/BUILD.rocm.tpl
+    perl -0777 -pi -e 's|(tpl_paths\\["crosstool:BUILD.rocm"\\],)|$1\\n        {"%{hipcc_resource_dir}": str(repository_ctx.path("rocm/rocm_dist/lib/llvm/lib/clang/22/include")), "%{hipcc_resource_dir_realpath}": str(repository_ctx.path("rocm/rocm_dist/lib/llvm/lib/clang/22/include").realpath)},|' third_party/gpus/rocm_configure.bzl
     """,
     """
     # Fix support for musl stacktrace issue where execinfo.h is otherwise included
@@ -34,7 +41,6 @@ XLA_PATCHES = [
     sed -i.bak0 "s/return TryDlopenCUDALibraries()/LOG(INFO) << \\"GPU libraries are statically linked, skip dlopen check.\\";\\nreturn absl::OkStatus();/g" xla/tsl/platform/default/dlopen_checker.cc
 """,
     """
-    sed -i.bak0 "s/return TryDlopenCUDALibraries()/LOG(INFO) << \\"GPU libraries are statically linked, skip dlopen check.\\";\\nreturn absl::OkStatus();/g" n
     sed -i.bak0 "s/namespace/THIS_SHOULD_NEVER_BE_COMPILED/g" xla/tsl/cuda/{cublas,cublasLt,cufft,cusolver,cusparse,cudnn,cudart}_stub.cc
 """,
     """
@@ -107,7 +113,11 @@ echo " llvm::Error evalPrintOp(PrintOp& op, InterpreterValue operand) {" >> thir
     sed -i.bak0 "s/strip_prefix/patch_cmds = [\\\"sed -i.bak0 's\\/_MSC_VER\\/_WIN32\\/g' src\\/pthreads.c\\\"], strip_prefix/g" third_party/pthreadpool/workspace.bzl
     """,
     """
-    sed -i.bak0 "s/strip_prefix/patch_cmds = [\\\"find . -type f -name config.bzl -exec sed -i.bak0 's\\/HAVE_BACKTRACE=1\\/NO_HAVE_BACKTRACE=0\\/g' {} +\\\"], strip_prefix/g" third_party/llvm/workspace.bzl
+    # The second command disables llvm's use of __builtin_cpu_supports on apple
+    # platforms (e.g. clang's SSE4.2 identifier lexer fast path).  The darwin
+    # compiler-rt shipped by the cross toolchain does not provide __cpu_model,
+    # so leaving it enabled breaks linking libReactantExtra on x86_64-apple-darwin.
+    sed -i.bak0 "s/strip_prefix/patch_cmds = [\\\"find . -type f -name config.bzl -exec sed -i.bak0 's\\/HAVE_BACKTRACE=1\\/NO_HAVE_BACKTRACE=0\\/g' {} +\\\", \\\"sed -i.bak0 's\\/ || defined(__APPLE__))\\/)\\/' llvm\\/include\\/llvm\\/Support\\/Compiler.h\\\"], strip_prefix/g" third_party/llvm/workspace.bzl
     """,
     "find . -type f -name BUILD -exec sed -i.bak1 's/\\/\\/third_party\\/py\\/enzyme_ad\\/\\.\\.\\./public/g' {} +",
     "find . -type f -name BUILD -exec sed -i.bak2 's/\\/\\/xla\\/mlir\\/memref:friends/\\/\\/visibility:public/g' {} +",
@@ -190,6 +200,14 @@ sed -i.bak0 "s/cupti_driver_cbid/cupti/g" xla/backends/profiler/gpu/cupti_tracer
 """,
     """
 sed -i.bak0 "s/patch_cmds = \\[/patch_cmds = \\[\\\"find . -type f -name config.bzl -exec sed -i.bak0 's\\/HAVE_LINK_H=1\\/HAVE_LINK_H=0\\/g' {} +\\\",/g" third_party/llvm/workspace.bzl
+""",
+    """
+# arith.extui's fold merges extui(extui(x)) by swapping the outer op's source
+# while keeping its nneg flag. The flag asserts the source is non-negative as
+# a signed value, about which the outer flag says nothing once the source
+# changes: extui nneg i8->i32 over extui i1->i8 becomes extui nneg i1->i32,
+# poison whenever the bool is true. Keep nneg only if the inner ext had it.
+sed -i.bak0 "s/patch_cmds = \\[/patch_cmds = \\[\\\"sed -i.baknneg 's\\/auto lhs = getIn().getDefiningOp<ExtUIOp>()) {\\/auto lhs = getIn().getDefiningOp<ExtUIOp>()) { setNonNeg(lhs.getNonNeg());\\/' mlir\\/lib\\/Dialect\\/Arith\\/IR\\/ArithOps.cpp\\\",/g" third_party/llvm/workspace.bzl
 """,
     """
 sed -i.bak0 "s/patch_cmds = \\[/patch_cmds = \\[\\\"find . -type f -name config.bzl -exec sed -i.bak0 's\\/LLVM_ENABLE_THREADS=1\\/LLVM_ENABLE_THREADS=0\\/g' {} +\\\",/g" third_party/llvm/workspace.bzl

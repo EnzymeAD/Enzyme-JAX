@@ -1826,7 +1826,8 @@ void IslScop::rescopeStatements(
 namespace polymer {
 
 /// Build IslScop from a given FuncOp.
-std::unique_ptr<IslScop> IslScopBuilder::build(Operation *f) {
+std::unique_ptr<IslScop>
+IslScopBuilder::build(Operation *f, bool allowScfIfConditionalWritesAsMay) {
 
   /// Context constraints.
   affine::FlatAffineValueConstraints ctx;
@@ -1841,6 +1842,18 @@ std::unique_ptr<IslScop> IslScopBuilder::build(Operation *f) {
   // name SCOP_STMT_ATTR_NAME.
   IRMapping redirectMap;
   gatherStmts(f, redirectMap, *scop);
+
+  if (allowScfIfConditionalWritesAsMay) {
+    // The enclosing scf.if statement models effects for its nested ops.
+    // Drop nested statements here to avoid double-counting accesses. Only an
+    // scf.if inside the scop has a statement of its own to do that modelling:
+    // one enclosing the whole scop is not part of it, and treating it as the
+    // modelling statement would drop every statement we just gathered.
+    llvm::erase_if(scop->stmts, [&](ScopStmt &stmt) {
+      auto ifOp = stmt.getOperation()->getParentOfType<scf::IfOp>();
+      return ifOp && f->isProperAncestor(ifOp);
+    });
+  }
 
   // Build context in it.
   buildScopContext(f, scop.get(), ctx);
@@ -1923,18 +1936,32 @@ std::unique_ptr<IslScop> IslScopBuilder::build(Operation *f) {
       bool needToStoreResults = true;
       auto unitMap = AffineMap::get(op->getContext());
       affine::AffineValueMap unitVMap(unitMap, ValueRange{}, ValueRange{});
-      if (!isMemoryEffectFree(op)) {
+      auto addWholeLoad = [&](Value memref, MemoryAccess::MemoryKind kind) {
+        if (needsMemEffects(memref))
+          (void)scop->addAccessRelation(stmt, kind, polymer::MemoryAccess::READ,
+                                        redirectMap.lookupOrDefault(memref),
+                                        unitVMap, true, domain);
+      };
+      auto addWholeMayStore = [&](Value memref, MemoryAccess::MemoryKind kind) {
+        if (needsMemEffects(memref))
+          (void)scop->addAccessRelation(
+              stmt, kind, polymer::MemoryAccess::MAY_WRITE,
+              redirectMap.lookupOrDefault(memref), unitVMap, true, domain);
+      };
+
+      auto collectKnownEffects = [&](Operation *opToHandle,
+                                     bool conditionalWritesAsMay) {
         // TODO FIXME NEED TO PUT THE VECTOR SIZE INTO THE RELATION FOR
         // affine.vector_{store,load}
-        if (isa<mlir::affine::AffineReadOpInterface>(op) ||
-            isa<mlir::affine::AffineWriteOpInterface>(op)) {
-
+        if (isa<mlir::affine::AffineReadOpInterface>(opToHandle) ||
+            isa<mlir::affine::AffineWriteOpInterface>(opToHandle)) {
           affine::AffineValueMap vMap;
           mlir::Value memref;
 
           AffineMap map;
           SmallVector<Value, 4> indices;
-          if (auto loadOp = dyn_cast<affine::AffineReadOpInterface>(op)) {
+          if (auto loadOp =
+                  dyn_cast<affine::AffineReadOpInterface>(opToHandle)) {
             memref = loadOp.getMemRef();
             llvm::append_range(indices, loadOp.getMapOperands());
             map = loadOp.getAffineMap();
@@ -1943,20 +1970,25 @@ std::unique_ptr<IslScop> IslScopBuilder::build(Operation *f) {
             addMustStore(loadOp.getValue(), polymer::MemoryAccess::MT_Value,
                          unitVMap);
           } else {
-            assert(isa<affine::AffineWriteOpInterface>(op) &&
+            assert(isa<affine::AffineWriteOpInterface>(opToHandle) &&
                    "Affine read/write op expected");
-            auto storeOp = cast<affine::AffineWriteOpInterface>(op);
+            auto storeOp = cast<affine::AffineWriteOpInterface>(opToHandle);
             memref = storeOp.getMemRef();
             llvm::append_range(indices, storeOp.getMapOperands());
-            map = cast<affine::AffineWriteOpInterface>(op).getAffineMap();
+            map =
+                cast<affine::AffineWriteOpInterface>(opToHandle).getAffineMap();
             vMap.reset(map, indices);
-            addMustStore(memref, polymer::MemoryAccess::MT_Array, vMap);
+            if (conditionalWritesAsMay)
+              addMayStore(memref, polymer::MemoryAccess::MT_Array, vMap);
+            else
+              addMustStore(memref, polymer::MemoryAccess::MT_Array, vMap);
             addLoad(storeOp.getValueToStore(), polymer::MemoryAccess::MT_Value,
                     unitVMap);
           }
-          needToLoadOperands = false;
-          needToStoreResults = false;
-        } else if (auto rmw = dyn_cast<enzyme::AffineAtomicRMWOp>(op)) {
+          return true;
+        }
+
+        if (auto rmw = dyn_cast<enzyme::AffineAtomicRMWOp>(opToHandle)) {
           affine::AffineValueMap vMap;
           mlir::Value memref = rmw.getMemref();
           AffineMap map;
@@ -1966,15 +1998,122 @@ std::unique_ptr<IslScop> IslScopBuilder::build(Operation *f) {
           vMap.reset(map, indices);
           addLoad(rmw.getValue(), polymer::MemoryAccess::MT_Value, unitVMap);
           addLoad(memref, polymer::MemoryAccess::MT_Array, vMap);
-          addMustStore(memref, polymer::MemoryAccess::MT_Array, vMap);
+          if (conditionalWritesAsMay)
+            addMayStore(memref, polymer::MemoryAccess::MT_Array, vMap);
+          else
+            addMustStore(memref, polymer::MemoryAccess::MT_Array, vMap);
           addMustStore(rmw.getResult(), polymer::MemoryAccess::MT_Value,
                        unitVMap);
-          needToLoadOperands = false;
-          needToStoreResults = false;
-        } else if (isa<memref::AllocOp, memref::AllocaOp, memref::DeallocOp>(
-                       op)) {
-          needToLoadOperands = false;
-          needToStoreResults = false;
+          return true;
+        }
+
+        if (allowScfIfConditionalWritesAsMay) {
+          if (auto rmw = dyn_cast<memref::AtomicRMWOp>(opToHandle)) {
+            addLoad(rmw.getValue(), polymer::MemoryAccess::MT_Value, unitVMap);
+            for (Value index : rmw.getIndices())
+              addLoad(index, polymer::MemoryAccess::MT_Value, unitVMap);
+            addWholeLoad(rmw.getMemref(), polymer::MemoryAccess::MT_Array);
+            addWholeMayStore(rmw.getMemref(), polymer::MemoryAccess::MT_Array);
+            addMustStore(rmw.getResult(), polymer::MemoryAccess::MT_Value,
+                         unitVMap);
+            return true;
+          }
+
+          if (auto rmw = dyn_cast<memref::GenericAtomicRMWOp>(opToHandle)) {
+            for (Value index : rmw.getIndices())
+              addLoad(index, polymer::MemoryAccess::MT_Value, unitVMap);
+            addWholeLoad(rmw.getMemref(), polymer::MemoryAccess::MT_Array);
+            addWholeMayStore(rmw.getMemref(), polymer::MemoryAccess::MT_Array);
+            addMustStore(rmw.getResult(), polymer::MemoryAccess::MT_Value,
+                         unitVMap);
+            return true;
+          }
+
+          if (auto rmw = dyn_cast<enzyme::AtomicRMWOp>(opToHandle)) {
+            addLoad(rmw.getValue(), polymer::MemoryAccess::MT_Value, unitVMap);
+            for (Value index : rmw.getIndices())
+              addLoad(index, polymer::MemoryAccess::MT_Value, unitVMap);
+            addWholeLoad(rmw.getMemref(), polymer::MemoryAccess::MT_Array);
+            addWholeMayStore(rmw.getMemref(), polymer::MemoryAccess::MT_Array);
+            addMustStore(rmw.getResult(), polymer::MemoryAccess::MT_Value,
+                         unitVMap);
+            return true;
+          }
+        }
+
+        if (isa<memref::AllocOp, memref::AllocaOp, memref::DeallocOp>(
+                opToHandle))
+          return true;
+
+        if (auto yield = dyn_cast<affine::AffineYieldOp>(opToHandle)) {
+          for (auto [res, opr] :
+               llvm::zip(ValueRange(yield->getParentOp()->getResults()),
+                         ValueRange(yield->getOperands()))) {
+            addMustStore(res, polymer::MemoryAccess::MT_Value, unitVMap);
+            addLoad(opr, polymer::MemoryAccess::MT_Value, unitVMap);
+          }
+          return true;
+        }
+
+        return false;
+      };
+
+      std::function<LogicalResult(Operation *)> collectConditionalEffects =
+          [&](Operation *nestedOp) -> LogicalResult {
+        if (isa<enzymexla::Pointer2MemrefOp>(nestedOp))
+          return success();
+
+        if (isa<affine::AffineForOp, affine::AffineParallelOp,
+                affine::AffineIfOp, scf::IfOp, scf::ForOp, scf::ParallelOp>(
+                nestedOp)) {
+          // Handle affine/scf structured control ops explicitly so their
+          // conditions/bounds are recorded as reads before descending.
+          // Account for operands that control region execution (e.g. if
+          // predicates, loop bounds, and symbols used in affine conditions).
+          for (Value opr : nestedOp->getOperands())
+            addLoad(opr, polymer::MemoryAccess::MT_Value, unitVMap);
+
+          for (Region &region : nestedOp->getRegions())
+            for (Block &block : region)
+              for (Operation &inner : block)
+                if (failed(collectConditionalEffects(&inner)))
+                  return failure();
+          return success();
+        }
+
+        if (collectKnownEffects(nestedOp, /*conditionalWritesAsMay=*/true))
+          return success();
+
+        if (!isMemoryEffectFree(nestedOp)) {
+          LDBG() << "Unexpected op in scf.if " << *nestedOp;
+          return failure();
+        }
+
+        if (nestedOp->getNumRegions() != 0) {
+          // Be conservative for unknown region semantics.
+          LDBG() << "Unhandled region op in scf.if " << *nestedOp;
+          return failure();
+        }
+
+        return success();
+      };
+
+      if (collectKnownEffects(op, /*conditionalWritesAsMay=*/false)) {
+        needToLoadOperands = false;
+        needToStoreResults = false;
+      } else if (!isMemoryEffectFree(op)) {
+        if (allowScfIfConditionalWritesAsMay) {
+          if (auto ifOp = dyn_cast<scf::IfOp>(op)) {
+            if (failed(collectConditionalEffects(ifOp.getOperation())))
+              return nullptr;
+            needToLoadOperands = false;
+            needToStoreResults = false;
+          } else {
+            LDBG() << "Unexpected op " << *op;
+            // TODO we can handle memref load/store here by doing a
+            // read/may-write on the whole memref.
+            return nullptr;
+          }
         } else {
           LDBG() << "Unexpected op " << *op;
           // TODO we can handle memref load/store here by doing a
@@ -2000,16 +2139,9 @@ std::unique_ptr<IslScop> IslScopBuilder::build(Operation *f) {
         } else {
           llvm_unreachable("??");
         }
-      } else if (auto yield = dyn_cast<affine::AffineYieldOp>(op)) {
-        for (auto [res, opr] :
-             llvm::zip(ValueRange(yield->getParentOp()->getResults()),
-                       ValueRange(yield->getOperands()))) {
-          addMustStore(res, polymer::MemoryAccess::MT_Value, unitVMap);
-          addLoad(opr, polymer::MemoryAccess::MT_Value, unitVMap);
-        }
-        needToLoadOperands = false;
-        needToStoreResults = false;
       }
+      // Here-ish, if we see an scf.if/for, we can convert it to a statement but
+      // treat all writes as may instead of must
 
       if (op->getBlock()->getTerminator() == op)
         for (auto &toKill : op->getBlock()->without_terminator())
@@ -2208,8 +2340,9 @@ void IslScopBuilder::buildScopContext(
   }
 }
 
-std::unique_ptr<IslScop> createIslFromFuncOp(Operation *f) {
-  return IslScopBuilder().build(f);
+std::unique_ptr<IslScop>
+createIslFromFuncOp(Operation *f, bool allowScfIfConditionalWritesAsMay) {
+  return IslScopBuilder().build(f, allowScfIfConditionalWritesAsMay);
 }
 
 } // namespace polymer

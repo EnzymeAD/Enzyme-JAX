@@ -146,6 +146,7 @@ void buildCommonPassPipeline(
 void buildGpuPassPipeline(OpPassManager &pm,
                           const mlir::gpu::GPUToNVVMPipelineOptions &options) {
   pm.addNestedPass<gpu::GPUModuleOp>(createStripDebugInfoPass());
+  pm.addNestedPass<gpu::GPUModuleOp>(createSCFToControlFlowPass());
   ConvertGpuOpsToNVVMOpsOptions opt;
   opt.useBarePtrCallConv = options.kernelUseBarePtrCallConv;
   opt.indexBitwidth = options.indexBitWidth;
@@ -270,8 +271,40 @@ extern "C" void __chkstk(void);
 
 bool initJIT() {
   if (!JIT) {
+    auto tJTMB = llvm::orc::JITTargetMachineBuilder::detectHost();
+    if (!tJTMB) {
+      llvm::errs() << " jit host detection error: " << tJTMB.takeError()
+                   << "\n";
+      return false;
+    }
+
+    // On Windows, compile as if we were mingw rather than MSVC. With an MSVC
+    // environment LLVM emits every mergeable floating point constant into its
+    // own COMDAT section carrying a global `__real@<hex>` (or `__xmm@<hex>`)
+    // symbol -- see TargetLoweringObjectFileCOFF::getSectionForConstant
+    // together with AsmPrinter::GetCPISymbol, which is gated on
+    // isWindowsMSVCEnvironment(). LLJIT links x86-64 COFF objects with
+    // RuntimeDyld, whose COMDAT support cannot resolve those symbols
+    // (llvm.org/PR40074, which RTDyldObjectLinkingLayer::onObjLoad only
+    // partially works around), so a kernel containing a literal such as `0.5`
+    // intermittently fails to materialize:
+    //
+    //   Failed to materialize symbols:
+    //     { (enzymejitdl_12, { __real@3fe0000000000000 }) }
+    //
+    // The GNU environment selects MCAsmInfoGNUCOFF, which sets
+    // HasCOFFComdatConstants = false, so constants are emitted as ordinary
+    // constant-pool entries with local labels that RuntimeDyld handles fine.
+    // Both environments share the same architecture, object format, data
+    // layout and calling convention, so this only changes how constants are
+    // emitted. The one externally visible difference is the name of the stack
+    // probe helper, which is mapped below. See EnzymeAD/Reactant.jl#1673.
+    if (tJTMB->getTargetTriple().isWindowsMSVCEnvironment())
+      tJTMB->getTargetTriple().setEnvironment(llvm::Triple::GNU);
+
     auto tJIT =
         llvm::orc::LLJITBuilder()
+            .setJITTargetMachineBuilder(std::move(*tJTMB))
             .setLinkProcessSymbolsByDefault(true)
             .setObjectLinkingLayerCreator(
                 [](llvm::orc::ExecutionSession &ES,
@@ -315,14 +348,25 @@ bool initJIT() {
 #if defined(_WIN32)
 #ifdef __MINGW32__
 #if defined(__i386__)
-    EnzymeJaXMapSymbol("__chkstk", (void *)&_alloca);
+    void *StackProbe = (void *)&_alloca;
 #elif defined(__x86_64__)
-    EnzymeJaXMapSymbol("__chkstk", (void *)&___chkstk_ms);
+    void *StackProbe = (void *)&___chkstk_ms;
 #else
-    EnzymeJaXMapSymbol("__chkstk", (void *)&__chkstk);
+    void *StackProbe = (void *)&__chkstk;
 #endif
 #else
-    EnzymeJaXMapSymbol("__chkstk", (void *)&__chkstk);
+    void *StackProbe = (void *)&__chkstk;
+#endif
+    EnzymeJaXMapSymbol("__chkstk", StackProbe);
+#if defined(_M_X64) || defined(__x86_64__)
+    // We select the GNU environment above, and x86-64 mingw names the stack
+    // probe ___chkstk_ms rather than __chkstk (see RuntimeLibcalls.td, where
+    // ___chkstk_ms is isCygwinMinGW64 and __chkstk is isWin64NotCygMing). The
+    // two are interchangeable there: both take the allocation size in %rax,
+    // only probe, and leave %rsp and %rax alone (see the comment in
+    // X86FrameLowering::emitStackProbeCall), so whichever one this process was
+    // built with can serve both names.
+    EnzymeJaXMapSymbol("___chkstk_ms", StackProbe);
 #endif
 #endif
   }
@@ -904,6 +948,13 @@ CallInfo CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
         auto str = gmod.getName();
         if (str.size() > 200)
           gmod.setName(str.substr(0, 200));
+      });
+      submod->walk([](enzymexla::FMulAddOp op) {
+        OpBuilder builder(op);
+        auto newOp = LLVM::FMulAddOp::create(builder, op->getLoc(), op.getA(),
+                                             op.getB(), op.getC());
+        op.getResult().replaceAllUsesWith(newOp.getResult());
+        op->erase();
       });
 
       std::string legalName;
