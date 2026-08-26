@@ -4772,6 +4772,29 @@ struct AffineToStableHLORaisingPass
           AffineToStableHLORaisingPass> {
   using AffineToStableHLORaisingBase::AffineToStableHLORaisingBase;
 
+  // A pointer comparison has no tensor form, so a null check of an optional
+  // buffer computed inside the kernel blocks capturing the pointer. When
+  // both pointers are defined outside the wrapper the comparison is the
+  // host's to compute: hoist it out, so the kernel captures the resulting
+  // flag instead.
+  static void hoistWrapperInvariantPointerCompares(Operation *g) {
+    auto definedOutside = [&](Value v) {
+      if (auto ba = dyn_cast<BlockArgument>(v))
+        return !g->isProperAncestor(ba.getOwner()->getParentOp()) &&
+               ba.getOwner()->getParentOp() != g;
+      return !g->isProperAncestor(v.getDefiningOp());
+    };
+    SmallVector<LLVM::ICmpOp> toHoist;
+    g->walk([&](LLVM::ICmpOp cmp) {
+      if (!isa<LLVM::LLVMPointerType>(cmp.getLhs().getType()))
+        return;
+      if (definedOutside(cmp.getLhs()) && definedOutside(cmp.getRhs()))
+        toHoist.push_back(cmp);
+    });
+    for (auto cmp : toHoist)
+      cmp->moveBefore(g);
+  }
+
   // An access does not care about the address space of its base, but the
   // raising identifies buffers by SSA root: a memory_space_cast view would
   // split one buffer into two roots and lose store propagation. Retarget the
@@ -5103,6 +5126,7 @@ struct AffineToStableHLORaisingPass
     op->walk([&](enzymexla::GPUWrapperOp g) { gwrap.push_back(g); });
     for (auto g : gwrap) {
       stripAccessMemorySpaceCasts(g);
+      hoistWrapperInvariantPointerCompares(g);
       boundParallelAxes(g);
       peelDynamicParallelDims(g);
     }
