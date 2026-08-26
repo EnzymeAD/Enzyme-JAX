@@ -1460,6 +1460,48 @@ struct ForwardSlotStores : public OpRewritePattern<LLVM::AllocaOp> {
   }
 };
 
+// An access through a view of the null pointer can only execute as
+// undefined behavior, so it is dynamically dead: an optional buffer a kernel
+// receives as null is always guarded by a flag. Fold loads to a zero of the
+// element type and drop stores; the views and the captured null then die,
+// instead of blocking the kernel on an untypable operand.
+struct NullAccessFold : public OpRewritePattern<enzymexla::Pointer2MemrefOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::Pointer2MemrefOp p2m,
+                                PatternRewriter &rewriter) const override {
+    Value src = p2m.getSource();
+    while (auto asc = src.getDefiningOp<LLVM::AddrSpaceCastOp>())
+      src = asc.getArg();
+    if (!src.getDefiningOp<LLVM::ZeroOp>())
+      return failure();
+    bool changed = false;
+    for (Operation *user : llvm::make_early_inc_range(p2m->getUsers())) {
+      if (auto ld = dyn_cast<affine::AffineLoadOp>(user)) {
+        rewriter.setInsertionPoint(ld);
+        rewriter.replaceOpWithNewOp<arith::ConstantOp>(
+            ld, ld.getType(), rewriter.getZeroAttr(ld.getType()));
+        changed = true;
+      } else if (auto ld = dyn_cast<memref::LoadOp>(user)) {
+        rewriter.setInsertionPoint(ld);
+        rewriter.replaceOpWithNewOp<arith::ConstantOp>(
+            ld, ld.getType(), rewriter.getZeroAttr(ld.getType()));
+        changed = true;
+      } else if (isa<affine::AffineStoreOp, memref::StoreOp>(user) &&
+                 user->getOperand(1) == p2m.getResult() &&
+                 user->getOperand(0) != p2m.getResult()) {
+        rewriter.eraseOp(user);
+        changed = true;
+      }
+    }
+    if (p2m->use_empty()) {
+      rewriter.eraseOp(p2m);
+      changed = true;
+    }
+    return success(changed);
+  }
+};
+
 struct LoadSelect : public OpRewritePattern<affine::AffineLoadOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -2795,7 +2837,7 @@ convertLLVMToAffineAccess(Operation *op,
         SimplifyDeadAlloc<LLVM::AllocaOp>,
         SimplifyDeadAlloc<gpu::AllocOp, true>, Pointer2MemrefSelect, LoadSelect,
         Pointer2MemrefIf, LoadIf, SplitAggregateLoad, ExpandAggregateStore,
-        ForwardSlotStores, AffineIfDeadResults,
+        ForwardSlotStores, NullAccessFold, AffineIfDeadResults,
         SimpleMem2Reg<memref::AllocaOp>>(context);
     GreedyRewriteConfig config;
     config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);
