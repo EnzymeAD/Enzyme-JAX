@@ -5580,6 +5580,7 @@ struct AffineToStableHLORaisingPass
       SmallVector<Operation *> spaceCasts;
       llvm::MapVector<Operation *, Value> pairGeps;
       llvm::SetVector<Operation *> pairCopies;
+      DenseSet<Value> basePtrs;
       bool viewedOnly = true;
       for (Operation *user : alloca->getUsers()) {
         auto m2p = dyn_cast<enzymexla::Memref2PointerOp>(user);
@@ -5588,20 +5589,34 @@ struct AffineToStableHLORaisingPass
           break;
         }
         casts.push_back(m2p);
+        basePtrs.insert(m2p.getResult());
         SmallVector<Operation *> viewUsers(m2p->getUsers());
         for (unsigned vi = 0; vi < viewUsers.size() && viewedOnly; ++vi) {
           Operation *viewUser = viewUsers[vi];
           if (isa<LLVM::AddrSpaceCastOp>(viewUser)) {
             spaceCasts.push_back(viewUser);
+            basePtrs.insert(viewUser->getResult(0));
             viewUsers.append(viewUser->getUsers().begin(),
                              viewUser->getUsers().end());
+            continue;
+          }
+          // A copy of pair zero addresses the scratch base directly.
+          if (auto mc = dyn_cast<LLVM::MemcpyOp>(viewUser)) {
+            APInt len;
+            if (mc.getIsVolatile() ||
+                !matchPattern(mc.getLen(), m_ConstantInt(&len)) ||
+                len.getSExtValue() != pairSize) {
+              viewedOnly = false;
+              break;
+            }
+            pairCopies.insert(mc);
             continue;
           }
           // A whole-struct move arrives as a fixed-size memcpy between
           // struct-strided geps into the scratch: split it per field.
           if (auto gep = dyn_cast<LLVM::GEPOp>(viewUser)) {
             auto idxs = gep.getIndices();
-            if (gep.getDynamicIndices().size() != 1 || idxs.size() != 1 ||
+            if (idxs.size() != 1 ||
                 (int64_t)dl.getTypeSize(gep.getElemType()) != pairSize) {
               viewedOnly = false;
               break;
@@ -5622,7 +5637,15 @@ struct AffineToStableHLORaisingPass
               viewedOnly = false;
               break;
             }
-            pairGeps.insert({gep, gep.getDynamicIndices()[0]});
+            Value gepIdx;
+            if (!gep.getDynamicIndices().empty()) {
+              gepIdx = gep.getDynamicIndices()[0];
+            } else {
+              OpBuilder gb(gep);
+              gepIdx = arith::ConstantIndexOp::create(
+                  gb, gep.getLoc(), cast<IntegerAttr>(idxs[0]).getInt());
+            }
+            pairGeps.insert({gep, gepIdx});
             continue;
           }
           auto p2m = dyn_cast<enzymexla::Pointer2MemrefOp>(viewUser);
@@ -5661,11 +5684,14 @@ struct AffineToStableHLORaisingPass
         if (!viewedOnly)
           break;
       }
-      // Every pair copy must connect two classified geps.
+      // Every pair copy must connect two classified geps or scratch bases.
+      auto copyEnd = [&](Value p) {
+        return basePtrs.contains(p) ||
+               (p.getDefiningOp() && pairGeps.count(p.getDefiningOp()));
+      };
       for (Operation *mc : pairCopies) {
         auto cp = cast<LLVM::MemcpyOp>(mc);
-        if (!pairGeps.count(cp.getDst().getDefiningOp()) ||
-            !pairGeps.count(cp.getSrc().getDefiningOp()))
+        if (!copyEnd(cp.getDst()) || !copyEnd(cp.getSrc()))
           viewedOnly = false;
       }
       if (!viewedOnly || (fieldAccesses.empty() && wideAccesses.empty()))
@@ -5776,18 +5802,38 @@ struct AffineToStableHLORaisingPass
         auto cp = cast<LLVM::MemcpyOp>(mc);
         OpBuilder ab(cp);
         Location loc = cp.getLoc();
-        auto toIdx = [&](Value v) -> Value {
-          if (isa<IndexType>(v.getType()))
-            return v;
-          return arith::IndexCastUIOp::create(ab, loc, ab.getIndexType(), v);
+        // Constant pair indices stay affine so the accesses raise directly.
+        auto toIdx = [&](Value p) -> std::pair<Value, std::optional<int64_t>> {
+          if (basePtrs.contains(p))
+            return {Value(), 0};
+          Value v = pairGeps.find(p.getDefiningOp())->second;
+          APInt c;
+          if (matchPattern(v, m_ConstantInt(&c)))
+            return {Value(), c.getSExtValue()};
+          if (!isa<IndexType>(v.getType()))
+            v = arith::IndexCastUIOp::create(ab, loc, ab.getIndexType(), v);
+          return {v, std::nullopt};
         };
-        Value dstIdx = toIdx(pairGeps.find(cp.getDst().getDefiningOp())->second);
-        Value srcIdx = toIdx(pairGeps.find(cp.getSrc().getDefiningOp())->second);
+        auto [dstIdx, dstC] = toIdx(cp.getDst());
+        auto [srcIdx, srcC] = toIdx(cp.getSrc());
         for (auto &&[i, f] : llvm::enumerate(fields)) {
-          Value v = memref::LoadOp::create(ab, loc, fieldBufs[i],
-                                           ValueRange{srcIdx});
-          memref::StoreOp::create(ab, loc, v, fieldBufs[i],
-                                  ValueRange{dstIdx});
+          Value v;
+          if (srcC)
+            v = affine::AffineLoadOp::create(
+                ab, loc, fieldBufs[i],
+                AffineMap::getConstantMap(*srcC, ab.getContext()),
+                ValueRange());
+          else
+            v = memref::LoadOp::create(ab, loc, fieldBufs[i],
+                                       ValueRange{srcIdx});
+          if (dstC)
+            affine::AffineStoreOp::create(
+                ab, loc, v, fieldBufs[i],
+                AffineMap::getConstantMap(*dstC, ab.getContext()),
+                ValueRange());
+          else
+            memref::StoreOp::create(ab, loc, v, fieldBufs[i],
+                                    ValueRange{dstIdx});
         }
         cp.erase();
       }
