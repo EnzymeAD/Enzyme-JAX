@@ -56,7 +56,7 @@ module {
 // CHECK:   llvm.func local_unnamed_addr @main() -> (i32 {llvm.noundef}) attributes {dso_local, passthrough = ["mustprogress", "norecurse", ["min-legal-vector-width", "0"], ["no-trapping-math", "true"], ["stack-protector-buffer-size", "8"], ["target-cpu", "x86-64"]], target_cpu = "x86-64", target_features = #llvm.target_features<["+cmov", "+cx8", "+fxsr", "+mmx", "+sse", "+sse2", "+x87"]>, tune_cpu = "generic", uwtable_kind = #llvm.uwtableKind<async>} {
 // CHECK-NEXT:      %0 = llvm.mlir.constant(2 : i32) : i32
 // CHECK-NEXT:      %1 = llvm.mlir.constant(2 : i64) : i64
-// CHECK-NEXT:      %2 = llvm.mlir.addressof @xlamod$raised : !llvm.ptr
+// CHECK-NEXT:      %2 = llvm.mlir.addressof @[[MOD:xlamod\$[0-9a-f]+]] : !llvm.ptr
 // CHECK-NEXT:      %3 = llvm.mlir.constant(1 : i32) : i32
 // CHECK-NEXT:      %4 = llvm.mlir.addressof @__reactant_xla_data : !llvm.ptr
 // CHECK-NEXT:      %5 = llvm.mlir.constant(12 : i64) : i64
@@ -101,7 +101,7 @@ module {
 // CHECK-NEXT:      llvm.call @reactantXLAMemcpy(%4, %29, %22, %14, %3) : (!llvm.ptr, !llvm.ptr, !llvm.ptr, i64, i32) -> ()
 // CHECK-NEXT:      llvm.call @reactantXLAMemcpy(%4, %31, %23, %14, %3) : (!llvm.ptr, !llvm.ptr, !llvm.ptr, i64, i32) -> ()
 // CHECK-NEXT:      llvm.call @reactantXLAMemcpy(%4, %34, %24, %14, %3) : (!llvm.ptr, !llvm.ptr, !llvm.ptr, i64, i32) -> ()
-// CHECK-NEXT:      %35 = llvm.getelementptr %2[0, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<574 x i8>
+// CHECK-NEXT:      %35 = llvm.getelementptr %2[0, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<583 x i8>
 // CHECK-NEXT:      %36 = llvm.getelementptr %16[0, 0] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<2 x i64>
 // CHECK-NEXT:      llvm.store %27, %36 : !llvm.ptr<1>, !llvm.ptr
 // CHECK-NEXT:      %37 = llvm.getelementptr %16[0, 1] : (!llvm.ptr) -> !llvm.ptr, !llvm.array<2 x i64>
