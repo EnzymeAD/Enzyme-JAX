@@ -5638,7 +5638,8 @@ struct AffineToStableHLORaisingPass
           return std::nullopt;
         }
         anyCall = true;
-        auto b = derivedExtentBound(actual, depth + 1, anchor);
+        // Guards around the call site hold for the launch inside.
+        auto b = derivedExtentBound(actual, depth + 1, call);
         if (!b) {
           if (getenv("DEBUG_BOUND")) {
             llvm::errs() << "interproc: underivable actual in "

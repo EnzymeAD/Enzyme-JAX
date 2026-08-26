@@ -146,7 +146,31 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       "affine-cfg," + canonicalize + ",llvm-to-affine-access," + canonicalize + ","
       "func.func(affine-loop-invariant-code-motion),"
       "" + canonicalize + ",sort-memory,llvm-to-tessera,tessera-apply-pdl,tessera-to-llvm,";
+  // Differentiation runs before raising on every backend, so the generated
+  // derivative launches raise to stablehlo like any other kernel.
+  std::string adSegment = "symbol-dce,raise-llvm-ext,outline-enzyme-regions,";
+  {
+    adSegment += "sink-checkpoint-views,";
+    adSegment += "enzyme{";
+    if (options->dataflow)
+      adSegment += "dataflow ";
+    if (options->markReadonly)
+      adSegment += "markReadonly ";
+    adSegment += "postpasses=\"canonicalize,";
+    if (options->splitMultiResults)
+      adSegment += "split-multi-results,";
+    adSegment += "remove-unnecessary-enzyme-ops,"
+                 "flatten-enzyme-caches,lower-enzyme-binomial-progress,";
+    if (options->hoistLoopAllocations)
+      adSegment += "hoist-loop-allocations,";
+    adSegment += "enzyme-simplify-math\"";
+    adSegment += "},"
+                 "lower-llvm-ext,"
+                 "inline{default-pipeline=canonicalize max-iterations=4},"
+                 "polygeist-mem2reg," + canonicalize + ",symbol-dce,cse,";
+  }
   if (StringRef(backend).starts_with("xla")) {
+      pass_pipeline += adSegment;
       pass_pipeline += "func.func(kernelcast),raise-affine-to-stablehlo{prefer_while_raising=false "
       "dump_failed_lockstep=true}," + canonicalize + ",arith-raise{stablehlo=true},"
       "symbol-dce";
