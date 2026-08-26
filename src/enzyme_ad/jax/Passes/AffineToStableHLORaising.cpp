@@ -1955,10 +1955,8 @@ static LogicalResult tryRaisingSCFForOpToMaskedWhile(
     llvm::DenseMap<Value, affine::AffineValueMap> &maps, ParallelContext pc) {
   IRMapping mapping = parentMapping;
 
-  APInt stepCst;
-  if (!matchPattern(forOp.getStep(), m_ConstantInt(&stepCst)) ||
-      !stepCst.isStrictlyPositive())
-    return failure();
+  // scf.for requires a positive step, so the trip-count math below is sound
+  // for dynamic steps too (a thread-stride loop steps by the block size).
 
   Value lb = mapping.lookupOrNull(forOp.getLowerBound());
   Value ub = mapping.lookupOrNull(forOp.getUpperBound());
@@ -1983,19 +1981,35 @@ static LogicalResult raiseLoopToMaskedWhile(
   auto wloc =
       rewriteLocation(loopOp->getLoc(), pc.options.strip_llvm_debuginfo);
 
-  // One common lane space for the bounds.
+  // One common lane space for the bounds, referenced from whichever bound
+  // already carries the richest lane shape (lb may be uniform while ub is
+  // per-lane).
   if (!maps.count(lb) || !maps.count(ub) || !maps.count(step))
     return failure();
-  Value vals[] = {ub, step};
-  affine::AffineValueMap dsts[] = {maps.lookup(ub), maps.lookup(step)};
+  Value bnds[3] = {lb, ub, step};
+  unsigned refIdx = 0;
+  int64_t bestRank = -1;
+  for (unsigned i = 0; i < 3; ++i) {
+    int64_t r = cast<RankedTensorType>(bnds[i].getType()).getRank();
+    if (r > bestRank) {
+      bestRank = r;
+      refIdx = i;
+    }
+  }
+  Value vals[] = {bnds[(refIdx + 1) % 3], bnds[(refIdx + 2) % 3]};
+  affine::AffineValueMap dsts[] = {maps.lookup(vals[0]), maps.lookup(vals[1])};
   bool laneOk = true;
-  affine::AffineValueMap laneMap =
-      alignMemoryAccess(lb, maps.lookup(lb), vals, dsts, builder, pc, &laneOk);
+  affine::AffineValueMap laneMap = alignMemoryAccess(
+      bnds[refIdx], maps.lookup(bnds[refIdx]), vals, dsts, builder, pc,
+      &laneOk);
   if (!laneOk)
     return failure();
-  ub = vals[0];
-  step = vals[1];
-  auto laneTy = cast<RankedTensorType>(lb.getType());
+  bnds[(refIdx + 1) % 3] = vals[0];
+  bnds[(refIdx + 2) % 3] = vals[1];
+  lb = bnds[0];
+  ub = bnds[1];
+  step = bnds[2];
+  auto laneTy = cast<RankedTensorType>(bnds[refIdx].getType());
   if (laneTy.getRank() == 0)
     return failure(); // the uniform path handles this
   auto ET = laneTy.getElementType();
@@ -5196,14 +5210,178 @@ struct AffineToStableHLORaisingPass
         return std::min(*l, *r);
       return l ? l : r;
     }
+    // A max of bounded values is bounded by the larger bound; both sides
+    // must be bounded, unlike min.
+    if (auto mx = v.getDefiningOp<arith::MaxSIOp>()) {
+      auto l = derivedExtentBound(mx.getLhs(), depth + 1);
+      auto r = derivedExtentBound(mx.getRhs(), depth + 1);
+      if (l && r)
+        return std::max(*l, *r);
+      return std::nullopt;
+    }
+    if (auto mx = v.getDefiningOp<arith::MaxUIOp>()) {
+      auto l = derivedExtentBound(mx.getLhs(), depth + 1);
+      auto r = derivedExtentBound(mx.getRhs(), depth + 1);
+      if (l && r)
+        return std::max(*l, *r);
+      return std::nullopt;
+    }
+    if (auto sel = v.getDefiningOp<arith::SelectOp>()) {
+      auto l = derivedExtentBound(sel.getTrueValue(), depth + 1);
+      auto r = derivedExtentBound(sel.getFalseValue(), depth + 1);
+      if (l && r)
+        return std::max(*l, *r);
+      return std::nullopt;
+    }
+    if (isa_and_nonnull<arith::ExtUIOp, arith::ExtSIOp>(v.getDefiningOp()))
+      return derivedExtentBound(v.getDefiningOp()->getOperand(0), depth + 1);
+    if (auto t = v.getDefiningOp<arith::TruncIOp>()) {
+      // dim3 packing replicates a 32-bit dim into both halves of an i64 as
+      // x * 0x100000001; either half recovers the dim.
+      if (auto mul = t.getIn().getDefiningOp<arith::MulIOp>()) {
+        APInt k;
+        if (matchPattern(mul.getRhs(), m_ConstantInt(&k)) &&
+            k.getZExtValue() == 0x100000001ULL)
+          return derivedExtentBound(mul.getLhs(), depth + 1);
+      }
+      auto b = derivedExtentBound(t.getIn(), depth + 1);
+      unsigned w = t.getType().getIntOrFloatBitWidth();
+      if (b && *b >= 0 && (w >= 63 || *b < (int64_t(1) << w)))
+        return b;
+      return std::nullopt;
+    }
+    if (auto sh = v.getDefiningOp<arith::ShRUIOp>()) {
+      APInt k;
+      if (matchPattern(sh.getRhs(), m_ConstantInt(&k)) &&
+          k.getZExtValue() < 63) {
+        auto b = derivedExtentBound(sh.getLhs(), depth + 1);
+        if (b && *b >= 0)
+          return *b >> k.getZExtValue();
+      }
+      return std::nullopt;
+    }
+    if (auto mul = v.getDefiningOp<arith::MulIOp>()) {
+      APInt k;
+      if (matchPattern(mul.getRhs(), m_ConstantInt(&k))) {
+        auto b = derivedExtentBound(mul.getLhs(), depth + 1);
+        int64_t c = k.getSExtValue();
+        if (b && *b >= 0 && c >= 0 && (c == 0 || *b <= INT64_MAX / c))
+          return *b * c;
+      }
+      return std::nullopt;
+    }
+    // A launch-stub argument takes its bound from what the callers pass:
+    // the max over all call sites, each of which must itself be bounded.
+    if (auto ba = dyn_cast<BlockArgument>(v)) {
+      if (depth > 4)
+        return std::nullopt;
+      auto func =
+          dyn_cast_or_null<FunctionOpInterface>(ba.getOwner()->getParentOp());
+      if (!func || func.getFunctionBody().empty() ||
+          ba.getOwner() != &func.getFunctionBody().front())
+        return std::nullopt;
+      auto mod = func->getParentOfType<ModuleOp>();
+      if (!mod)
+        return std::nullopt;
+      auto uses = SymbolTable::getSymbolUses(func, mod);
+      if (!uses)
+        return std::nullopt;
+      std::optional<int64_t> bound;
+      for (const SymbolTable::SymbolUse &use : *uses) {
+        Operation *call = use.getUser();
+        Value actual;
+        if (auto c = dyn_cast<LLVM::CallOp>(call)) {
+          if (ba.getArgNumber() >= c.getArgOperands().size())
+            return std::nullopt;
+          actual = c.getArgOperands()[ba.getArgNumber()];
+        } else if (auto c = dyn_cast<func::CallOp>(call)) {
+          if (ba.getArgNumber() >= c.getOperands().size())
+            return std::nullopt;
+          actual = c.getOperands()[ba.getArgNumber()];
+        } else {
+          return std::nullopt;
+        }
+        auto b = derivedExtentBound(actual, depth + 1);
+        if (!b)
+          return std::nullopt;
+        bound = bound ? std::max(*bound, *b) : *b;
+      }
+      return bound;
+    }
     return std::nullopt;
   }
 
+  // Bound on a parallel axis implied by the static scratch buffers its iv
+  // indexes: a lane past the buffer extent would access out of bounds, so
+  // the axis cannot exceed it. Only accesses every lane is guaranteed to
+  // execute count -- directly in the body, or under constant-trip loops.
+  static std::optional<int64_t> allocaIndexBound(affine::AffineParallelOp par,
+                                                 unsigned dim) {
+    Value iv = par.getBody()->getArgument(dim);
+    std::optional<int64_t> bound;
+    auto consider = [&](int64_t b) {
+      if (!bound || b < *bound)
+        bound = b;
+    };
+    par.getBody()->walk([&](Operation *op) {
+      if (!isa<affine::AffineLoadOp, affine::AffineStoreOp, memref::LoadOp,
+               memref::StoreOp>(op))
+        return;
+      for (Operation *a = op->getParentOp(); a != par.getOperation();
+           a = a->getParentOp()) {
+        auto f = dyn_cast<affine::AffineForOp>(a);
+        if (!f || !f.hasConstantBounds() ||
+            f.getConstantLowerBound() >= f.getConstantUpperBound())
+          return;
+      }
+      MemRefType MT;
+      Value memref;
+      if (auto ld = dyn_cast<affine::AffineLoadOp>(op)) {
+        MT = ld.getMemRefType();
+        memref = ld.getMemRef();
+      } else if (auto st = dyn_cast<affine::AffineStoreOp>(op)) {
+        MT = st.getMemRefType();
+        memref = st.getMemRef();
+      } else if (auto mld = dyn_cast<memref::LoadOp>(op)) {
+        MT = mld.getMemRefType();
+        memref = mld.getMemRef();
+      } else {
+        auto mst = cast<memref::StoreOp>(op);
+        MT = mst.getMemRefType();
+        memref = mst.getMemRef();
+      }
+      if (!isa_and_nonnull<memref::AllocaOp>(memref.getDefiningOp()) ||
+          !MT.hasStaticShape())
+        return;
+      if (isa<affine::AffineLoadOp, affine::AffineStoreOp>(op)) {
+        AffineMap map = isa<affine::AffineLoadOp>(op)
+                            ? cast<affine::AffineLoadOp>(op).getMap()
+                            : cast<affine::AffineStoreOp>(op).getMap();
+        auto operands = isa<affine::AffineLoadOp>(op)
+                            ? cast<affine::AffineLoadOp>(op).getMapOperands()
+                            : cast<affine::AffineStoreOp>(op).getMapOperands();
+        for (auto &&[ri, expr] : llvm::enumerate(map.getResults()))
+          if (auto de = dyn_cast<AffineDimExpr>(expr))
+            if (operands[de.getPosition()] == iv)
+              consider(MT.getShape()[ri]);
+      } else {
+        auto indices = isa<memref::LoadOp>(op)
+                           ? cast<memref::LoadOp>(op).getIndices()
+                           : cast<memref::StoreOp>(op).getIndices();
+        for (auto &&[ri, idx] : llvm::enumerate(indices))
+          if (idx == iv)
+            consider(MT.getShape()[ri]);
+      }
+    });
+    return bound;
+  }
+
   // A parallel axis whose extent is dynamic but provably bounded (a block
-  // size clamped by a min against a constant) batches at the bound instead
-  // of peeling to a serial loop: the axis becomes constant-extent and the
-  // body sits behind an `iv < extent` guard, which the masking machinery
-  // already understands. Barriers over the axis then stay batched no-ops.
+  // size clamped by a min against a constant, or an iv indexing a static
+  // scratch buffer) batches at the bound instead of peeling to a serial
+  // loop: the axis becomes constant-extent and the body sits behind an
+  // `iv < extent` guard, which the masking machinery already understands.
+  // Barriers over the axis then stay batched no-ops.
   static void boundParallelAxes(Operation *root) {
     SmallVector<affine::AffineParallelOp> worklist;
     root->walk([&](affine::AffineParallelOp par) { worklist.push_back(par); });
@@ -5234,6 +5412,8 @@ struct AffineToStableHLORaisingPass
                                          se.getPosition()];
         if (auto c = derivedExtentBound(ext))
           bounded.push_back({i, *c, ext});
+        else if (auto ab = allocaIndexBound(par, i))
+          bounded.push_back({i, *ab, ext});
       }
       if (bounded.empty())
         continue;
