@@ -846,6 +846,73 @@ struct AffineIfDeadResults : public OpRewritePattern<affine::AffineIfOp> {
   }
 };
 
+// An integer-typed view of a floating-point alloca is a bit-preserving
+// access: a zeroed double stores as i64 0, a copied one loads as i64. The
+// mixed views keep the alloca from ever becoming a typed memref, so retype
+// the view to the alloca's element type and bitcast at each access; paired
+// casts and constants fold away.
+struct RetypePunnedView : public OpRewritePattern<enzymexla::Pointer2MemrefOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::Pointer2MemrefOp p2m,
+                                PatternRewriter &rewriter) const override {
+    auto MT = cast<MemRefType>(p2m.getType());
+    auto intTy = dyn_cast<IntegerType>(MT.getElementType());
+    if (!intTy)
+      return failure();
+    Value src = p2m.getSource();
+    while (auto asc = src.getDefiningOp<LLVM::AddrSpaceCastOp>())
+      src = asc.getArg();
+    auto alloca = src.getDefiningOp<LLVM::AllocaOp>();
+    if (!alloca)
+      return failure();
+    Type elt = alloca.getElemType();
+    while (auto arr = dyn_cast<LLVM::LLVMArrayType>(elt))
+      elt = arr.getElementType();
+    auto fltTy = dyn_cast<FloatType>(elt);
+    if (!fltTy || fltTy.getWidth() != intTy.getWidth())
+      return failure();
+    for (Operation *user : p2m->getUsers()) {
+      if (auto ld = dyn_cast<affine::AffineLoadOp>(user)) {
+        if (ld.getMemref() != p2m.getResult())
+          return failure();
+        continue;
+      }
+      if (auto st = dyn_cast<affine::AffineStoreOp>(user)) {
+        if (st.getMemref() != p2m.getResult() ||
+            st.getValueToStore() == p2m.getResult())
+          return failure();
+        continue;
+      }
+      return failure();
+    }
+    auto newView = enzymexla::Pointer2MemrefOp::create(
+        rewriter, p2m.getLoc(),
+        MemRefType::get(MT.getShape(), fltTy, MemRefLayoutAttrInterface{},
+                        MT.getMemorySpace()),
+        p2m.getSource());
+    for (Operation *user : llvm::make_early_inc_range(p2m->getUsers())) {
+      if (auto ld = dyn_cast<affine::AffineLoadOp>(user)) {
+        rewriter.setInsertionPoint(ld);
+        auto newLd = affine::AffineLoadOp::create(
+            rewriter, ld.getLoc(), newView, ld.getMap(), ld.getMapOperands());
+        rewriter.replaceOpWithNewOp<arith::BitcastOp>(ld, intTy,
+                                                      newLd.getResult());
+      } else {
+        auto st = cast<affine::AffineStoreOp>(user);
+        rewriter.setInsertionPoint(st);
+        auto cast = arith::BitcastOp::create(rewriter, st.getLoc(), fltTy,
+                                             st.getValueToStore());
+        affine::AffineStoreOp::create(rewriter, st.getLoc(), cast, newView,
+                                      st.getMap(), st.getMapOperands());
+        rewriter.eraseOp(st);
+      }
+    }
+    rewriter.eraseOp(p2m);
+    return success();
+  }
+};
+
 struct LoadSelect : public OpRewritePattern<affine::AffineLoadOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -2179,7 +2246,8 @@ convertLLVMToAffineAccess(Operation *op,
         SimplifyDeadAlloc<memref::AllocaOp>, SimplifyDeadAlloc<memref::AllocOp>,
         SimplifyDeadAlloc<LLVM::AllocaOp>,
         SimplifyDeadAlloc<gpu::AllocOp, true>, Pointer2MemrefSelect, LoadSelect,
-        AffineIfDeadResults, SimpleMem2Reg<memref::AllocaOp>>(context);
+        RetypePunnedView, AffineIfDeadResults, SimpleMem2Reg<memref::AllocaOp>>(
+        context);
     GreedyRewriteConfig config;
     config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);
     config.enableFolding();
