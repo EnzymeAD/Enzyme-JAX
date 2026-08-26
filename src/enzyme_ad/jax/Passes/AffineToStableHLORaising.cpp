@@ -3893,6 +3893,23 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
         }
       }
 
+      // A scalar (or lower-rank) update stores one element along the store
+      // dims it does not carry: give it explicit size-1 dims so every store
+      // dimension has an update dimension.
+      {
+        ShapedType ut = cast<ShapedType>(update.getType());
+        int64_t numResults = (int64_t)storeOp.getMap().getNumResults();
+        if (ut.getRank() < numResults) {
+          SmallVector<int64_t> shape(numResults - ut.getRank(), 1);
+          shape.append(ut.getShape().begin(), ut.getShape().end());
+          auto newTy = RankedTensorType::get(shape, ut.getElementType());
+          update = stablehlo::ReshapeOp::create(
+              builder,
+              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+              newTy, update);
+        }
+      }
+
       // here this is a bit annoying but alignMemoryAccess expects non constant
       // dims in its value maps. as such, we remove constant dims from the
       // update and subsequent previous value as to use the storeValueMap.
@@ -3915,6 +3932,18 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
       SmallVector<int64_t> updateShape(updateType.getShape().begin(),
                                        updateType.getShape().end());
+      // An update that does not fit the buffer -- a stray lane axis wider
+      // than the destination (per-lane scratch modeled as one shared buffer;
+      // privatization is the real fix), or a dynamic dim -- would make the
+      // slice below fatally fail result type inference. Report it instead.
+      auto operandShape = cast<RankedTensorType>(operand.getType()).getShape();
+      bool unfit = updateShape.size() != operandShape.size();
+      if (!unfit)
+        for (auto [u, o] : llvm::zip(updateShape, operandShape))
+          if (u == ShapedType::kDynamic || u > o)
+            unfit = true;
+      if (unfit)
+        return op->emitError("masked store update shape does not fit buffer");
       Value prev = stablehlo::DynamicSliceOp::create(
           builder,
           rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
