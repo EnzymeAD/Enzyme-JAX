@@ -3617,6 +3617,171 @@ struct AffineToStableHLORaisingPass
   // raising then iterates, leaving the constant-extent dimensions to raise as
   // axes. The tag rides onto the stablehlo.while so downstream passes know
   // the iterations commute.
+  // The constant upper bound of an extent value, where one can be derived:
+  // the value itself when constant, or the constant side of a min it is
+  // clamped by (MFEM's block sizes arrive as min(1 << log2(N), 256)).
+  static std::optional<int64_t> derivedExtentBound(Value v,
+                                                   unsigned depth = 0) {
+    if (depth > 8)
+      return std::nullopt;
+    while (true) {
+      if (auto c = v.getDefiningOp<arith::IndexCastOp>()) {
+        v = c.getIn();
+        continue;
+      }
+      if (auto c = v.getDefiningOp<arith::IndexCastUIOp>()) {
+        v = c.getIn();
+        continue;
+      }
+      break;
+    }
+    APInt cst;
+    if (matchPattern(v, m_ConstantInt(&cst)))
+      return cst.getSExtValue();
+    if (auto mn = v.getDefiningOp<arith::MinSIOp>()) {
+      auto l = derivedExtentBound(mn.getLhs(), depth + 1);
+      auto r = derivedExtentBound(mn.getRhs(), depth + 1);
+      if (l && r)
+        return std::min(*l, *r);
+      return l ? l : r;
+    }
+    if (auto mn = v.getDefiningOp<arith::MinUIOp>()) {
+      auto l = derivedExtentBound(mn.getLhs(), depth + 1);
+      auto r = derivedExtentBound(mn.getRhs(), depth + 1);
+      if (l && r)
+        return std::min(*l, *r);
+      return l ? l : r;
+    }
+    return std::nullopt;
+  }
+
+  // A parallel axis whose extent is dynamic but provably bounded (a block
+  // size clamped by a min against a constant) batches at the bound instead
+  // of peeling to a serial loop: the axis becomes constant-extent and the
+  // body sits behind an `iv < extent` guard, which the masking machinery
+  // already understands. Barriers over the axis then stay batched no-ops.
+  static void boundParallelAxes(Operation *root) {
+    SmallVector<affine::AffineParallelOp> worklist;
+    root->walk([&](affine::AffineParallelOp par) { worklist.push_back(par); });
+    for (auto par : worklist) {
+      if (!par.getReductions().empty())
+        continue;
+      unsigned n = par.getNumDims();
+      struct BoundedDim {
+        unsigned dim;
+        int64_t bound;
+        Value extent;
+      };
+      SmallVector<BoundedDim> bounded;
+      for (unsigned i = 0; i < n; ++i) {
+        auto lb = getConstant(par.getLowerBoundMap(i));
+        if (!lb || *lb != 0 || par.getSteps()[i] != 1)
+          continue;
+        if (getConstant(par.getUpperBoundMap(i)))
+          continue;
+        auto um = par.getUpperBoundMap(i);
+        if (um.getNumResults() != 1)
+          continue;
+        auto se = dyn_cast<AffineSymbolExpr>(um.getResult(0));
+        if (!se)
+          continue;
+        Value ext =
+            par.getUpperBoundsOperands()[par.getUpperBoundsMap().getNumDims() +
+                                         se.getPosition()];
+        if (auto c = derivedExtentBound(ext))
+          bounded.push_back({i, *c, ext});
+      }
+      if (bounded.empty())
+        continue;
+
+      OpBuilder b(par);
+      Location loc = par.getLoc();
+      SmallVector<AffineExpr> lbounds, ubounds;
+      SmallVector<int32_t> lboundGroup, uboundGroup;
+      SmallVector<int64_t> steps;
+      for (unsigned i = 0; i < n; ++i) {
+        auto lm = par.getLowerBoundMap(i);
+        lbounds.append(lm.getResults().begin(), lm.getResults().end());
+        lboundGroup.push_back(lm.getNumResults());
+        auto um = par.getUpperBoundMap(i);
+        auto bit = llvm::find_if(
+            bounded, [&](const BoundedDim &bd) { return bd.dim == i; });
+        if (bit != bounded.end()) {
+          ubounds.push_back(
+              getAffineConstantExpr(bit->bound, par.getContext()));
+          uboundGroup.push_back(1);
+        } else {
+          ubounds.append(um.getResults().begin(), um.getResults().end());
+          uboundGroup.push_back(um.getNumResults());
+        }
+        steps.push_back(par.getSteps()[i]);
+      }
+      // When every bound came out constant, drop the stale symbols and
+      // operands entirely: downstream batching expects clean constant maps.
+      bool allConstant = llvm::all_of(lbounds,
+                                      [](AffineExpr e) {
+                                        return isa<AffineConstantExpr>(e);
+                                      }) &&
+                         llvm::all_of(ubounds, [](AffineExpr e) {
+                           return isa<AffineConstantExpr>(e);
+                         });
+      unsigned lbDims = par.getLowerBoundsMap().getNumDims(),
+               lbSyms = par.getLowerBoundsMap().getNumSymbols(),
+               ubDims = par.getUpperBoundsMap().getNumDims(),
+               ubSyms = par.getUpperBoundsMap().getNumSymbols();
+      SmallVector<Value> mapOperands(par.getOperands());
+      if (allConstant) {
+        lbDims = lbSyms = ubDims = ubSyms = 0;
+        mapOperands.clear();
+      }
+      auto newPar = affine::AffineParallelOp::create(
+          b, loc, TypeRange(), b.getArrayAttr({}),
+          AffineMapAttr::get(
+              AffineMap::get(lbDims, lbSyms, lbounds, par.getContext())),
+          b.getI32TensorAttr(lboundGroup),
+          AffineMapAttr::get(
+              AffineMap::get(ubDims, ubSyms, ubounds, par.getContext())),
+          b.getI32TensorAttr(uboundGroup), b.getI64ArrayAttr(steps),
+          mapOperands);
+      Block *blk = new Block();
+      SmallVector<Value> ivRepl;
+      for (unsigned i = 0; i < n; ++i)
+        ivRepl.push_back(blk->addArgument(b.getIndexType(), loc));
+      newPar.getRegion().push_back(blk);
+      b.setInsertionPointToEnd(blk);
+      auto yield = affine::AffineYieldOp::create(b, loc);
+
+      // Guard: every bounded axis only runs its true extent.
+      SmallVector<AffineExpr> constraints;
+      SmallVector<bool> eqs;
+      SmallVector<Value> setOperands;
+      for (auto [k, bd] : llvm::enumerate(bounded)) {
+        constraints.push_back(getAffineSymbolExpr(k, par.getContext()) -
+                              getAffineDimExpr(k, par.getContext()) - 1);
+        eqs.push_back(false);
+      }
+      auto iset =
+          IntegerSet::get(bounded.size(), bounded.size(), constraints, eqs);
+      for (auto &bd : bounded)
+        setOperands.push_back(ivRepl[bd.dim]);
+      for (auto &bd : bounded)
+        setOperands.push_back(bd.extent);
+      b.setInsertionPoint(yield);
+      auto ifOp =
+          affine::AffineIfOp::create(b, loc, TypeRange(), iset, setOperands,
+                                     /*withElseRegion=*/false);
+      Block *oldBody = par.getBody();
+      for (unsigned i = 0; i < n; ++i)
+        oldBody->getArgument(i).replaceAllUsesWith(ivRepl[i]);
+      Block *thenBlk = ifOp.getThenBlock();
+      thenBlk->getOperations().splice(
+          std::prev(thenBlk->getOperations().end()), oldBody->getOperations(),
+          oldBody->getOperations().begin(),
+          std::prev(oldBody->getOperations().end()));
+      par.erase();
+    }
+  }
+
   static void peelDynamicParallelDims(Operation *root) {
     SmallVector<affine::AffineParallelOp> worklist;
     root->walk([&](affine::AffineParallelOp par) { worklist.push_back(par); });
@@ -3735,6 +3900,7 @@ struct AffineToStableHLORaisingPass
     // actually raises.
     for (auto func : funcs) {
       stripAccessMemorySpaceCasts(func);
+      boundParallelAxes(func);
       peelDynamicParallelDims(func);
     }
 
@@ -3757,6 +3923,7 @@ struct AffineToStableHLORaisingPass
     op->walk([&](enzymexla::GPUWrapperOp g) { gwrap.push_back(g); });
     for (auto g : gwrap) {
       stripAccessMemorySpaceCasts(g);
+      boundParallelAxes(g);
       peelDynamicParallelDims(g);
     }
     size_t raised_count = 0;
