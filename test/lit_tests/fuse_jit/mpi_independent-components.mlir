@@ -20,9 +20,9 @@ module {
 
 // CHECK-LABEL: func.func @main
 // CHECK-NOT:     enzymexla.jit_call @enzymexla_wrapper_MPI_Irecv_MPI_INT
-// CHECK:         %[[FIRST:.*]] = enzymexla.jit_call @fused__enzymexla_wrapper_MPI_Irecv_MPI_INT_enzymexla_wrapper_MPI_Wait
+// CHECK:         %[[FIRST:.*]] = enzymexla.jit_call @fused__enzymexla_wrapper_MPI_Irecv_MPI_INT_enzymexla_wrapper_MPI_Wait{{(_1)?}}
 // CHECK-SAME:    output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]
-// CHECK:         %[[SECOND:.*]] = enzymexla.jit_call @fused__enzymexla_wrapper_MPI_Irecv_MPI_INT_enzymexla_wrapper_MPI_Wait_1
+// CHECK:         %[[SECOND:.*]] = enzymexla.jit_call @fused__enzymexla_wrapper_MPI_Irecv_MPI_INT_enzymexla_wrapper_MPI_Wait{{(_1)?}}
 // CHECK-SAME:    output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]
 // CHECK-NOT:     enzymexla.jit_call @enzymexla_wrapper_MPI_Wait
 // CHECK:         return %[[FIRST]], %[[SECOND]] : tensor<4xi32>, tensor<4xi32>
