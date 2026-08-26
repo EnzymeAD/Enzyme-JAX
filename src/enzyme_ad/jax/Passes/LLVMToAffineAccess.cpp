@@ -974,6 +974,10 @@ struct AffineIfDeadResults : public OpRewritePattern<affine::AffineIfOp> {
     for (auto [j, i] : llvm::enumerate(keep))
       rewriter.replaceAllUsesWith(ifOp.getResult(i), newIf.getResult(j));
     rewriter.eraseOp(ifOp);
+    return success();
+  }
+};
+
 struct Pointer2MemrefIf : public OpRewritePattern<enzymexla::Pointer2MemrefOp> {
   using OpRewritePattern::OpRewritePattern;
 
