@@ -551,6 +551,138 @@ static Value convertToIndex(Value v) {
       .getResult();
 }
 
+// A small constant-length llvm.intr.memcpy of struct data (MFEM's
+// work[work_idx] = buffer[0] tail writing a DevicePair) is opaque to both
+// mem2reg (no promotable slot: the shared source is dynamically indexed) and
+// the access raising. When either end traces to a memref of a homogeneous
+// struct -- every field the same scalar -- the copy is just n typed
+// load/store pairs, which the affine raising handles like any other access.
+struct ExpandStructMemcpy : public OpRewritePattern<LLVM::MemcpyOp> {
+  using OpRewritePattern<LLVM::MemcpyOp>::OpRewritePattern;
+
+  static Type tracedElementType(Value ptr, unsigned depth = 0) {
+    if (depth > 6)
+      return nullptr;
+    if (auto cast = ptr.getDefiningOp<LLVM::AddrSpaceCastOp>())
+      return tracedElementType(cast.getArg(), depth + 1);
+    if (auto gep = ptr.getDefiningOp<LLVM::GEPOp>())
+      return tracedElementType(gep.getBase(), depth + 1);
+    if (auto m2p = ptr.getDefiningOp<enzymexla::Memref2PointerOp>()) {
+      Type elt = cast<MemRefType>(m2p.getSource().getType()).getElementType();
+      return homogeneousScalar(elt);
+    }
+    if (auto alloca = ptr.getDefiningOp<LLVM::AllocaOp>())
+      return homogeneousScalar(alloca.getElemType());
+    return nullptr;
+  }
+
+  // The scalar a type is homogeneously made of: itself for a scalar, the
+  // field type for a struct or array of one scalar.
+  static Type homogeneousScalar(Type elt, unsigned depth = 0) {
+    if (depth > 4)
+      return nullptr;
+    if (auto st = dyn_cast<LLVM::LLVMStructType>(elt)) {
+      ArrayRef<Type> body = st.getBody();
+      if (body.empty() || !llvm::all_equal(body))
+        return nullptr;
+      return homogeneousScalar(body.front(), depth + 1);
+    }
+    if (auto at = dyn_cast<LLVM::LLVMArrayType>(elt))
+      return homogeneousScalar(at.getElementType(), depth + 1);
+    if (elt.isIntOrFloat())
+      return elt;
+    return nullptr;
+  }
+
+  static unsigned argAlignment(Operation *op, unsigned arg) {
+    auto argAttrs = op->getAttrOfType<ArrayAttr>("arg_attrs");
+    if (!argAttrs || argAttrs.size() <= arg)
+      return 1;
+    auto dict = dyn_cast<DictionaryAttr>(argAttrs[arg]);
+    if (!dict)
+      return 1;
+    if (auto align =
+            dict.getAs<IntegerAttr>(LLVM::LLVMDialect::getAlignAttrName()))
+      return align.getInt();
+    return 1;
+  }
+
+  LogicalResult matchAndRewrite(LLVM::MemcpyOp op,
+                                PatternRewriter &rewriter) const override {
+    if (op.getIsVolatile())
+      return failure();
+    APInt lenCst;
+    if (!matchPattern(op.getLen(), m_ConstantInt(&lenCst)))
+      return failure();
+    uint64_t len = lenCst.getZExtValue();
+    if (!len || len > 64)
+      return failure();
+    Type elt = tracedElementType(op.getSrc());
+    if (!elt)
+      elt = tracedElementType(op.getDst());
+    if (!elt)
+      return failure();
+    uint64_t eltBytes = elt.getIntOrFloatBitWidth() / 8;
+    if (!eltBytes || len % eltBytes)
+      return failure();
+    if (argAlignment(op, 0) < eltBytes || argAlignment(op, 1) < eltBytes)
+      return failure();
+
+    Location loc = op.getLoc();
+    for (uint64_t k = 0; k * eltBytes < len; ++k) {
+      Value sgep = LLVM::GEPOp::create(
+          rewriter, loc, op.getSrc().getType(), elt, op.getSrc(),
+          ArrayRef<LLVM::GEPArg>{LLVM::GEPArg((int32_t)k)});
+      Value dgep = LLVM::GEPOp::create(
+          rewriter, loc, op.getDst().getType(), elt, op.getDst(),
+          ArrayRef<LLVM::GEPArg>{LLVM::GEPArg((int32_t)k)});
+      Value v = LLVM::LoadOp::create(rewriter, loc, elt, sgep, eltBytes);
+      LLVM::StoreOp::create(rewriter, loc, v, dgep, eltBytes);
+    }
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+// The zero-memset sibling: SetInitialValue zeroes the struct slot with a
+// 16-byte llvm.intr.memset, which expands to typed zero stores the same way.
+struct ExpandStructMemsetZero : public OpRewritePattern<LLVM::MemsetOp> {
+  using OpRewritePattern<LLVM::MemsetOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(LLVM::MemsetOp op,
+                                PatternRewriter &rewriter) const override {
+    if (op.getIsVolatile())
+      return failure();
+    APInt lenCst, valCst;
+    if (!matchPattern(op.getLen(), m_ConstantInt(&lenCst)) ||
+        !matchPattern(op.getVal(), m_ConstantInt(&valCst)) || !valCst.isZero())
+      return failure();
+    uint64_t len = lenCst.getZExtValue();
+    if (!len || len > 64)
+      return failure();
+    Type elt = ExpandStructMemcpy::tracedElementType(op.getDst());
+    if (!elt)
+      return failure();
+    uint64_t eltBytes = elt.getIntOrFloatBitWidth() / 8;
+    if (!eltBytes || len % eltBytes)
+      return failure();
+    if (ExpandStructMemcpy::argAlignment(op, 0) < eltBytes)
+      return failure();
+
+    Location loc = op.getLoc();
+    Value zero = arith::ConstantOp::create(rewriter, loc, elt,
+                                           rewriter.getZeroAttr(elt));
+    for (uint64_t k = 0; k * eltBytes < len; ++k) {
+      Value dgep = LLVM::GEPOp::create(
+          rewriter, loc, op.getDst().getType(), elt, op.getDst(),
+          ArrayRef<LLVM::GEPArg>{LLVM::GEPArg((int32_t)k)});
+      LLVM::StoreOp::create(rewriter, loc, zero, dgep, eltBytes);
+    }
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 struct GEPOfMemRefLoad : public OpRewritePattern<memref::LoadOp> {
   using OpRewritePattern<memref::LoadOp>::OpRewritePattern;
   const DataLayoutAnalysis &dl;
@@ -2171,7 +2303,8 @@ convertLLVMToAffineAccess(Operation *op,
                     SimplifyInPlaceAlloc<gpu::AllocOp>>(context,
                                                         dataLayoutAnalysis);
     patterns.insert<IndexCastAddSub, MemrefLoadAffineApply, SelectCSE,
-                    SelectAddrCast>(context);
+                    SelectAddrCast, ExpandStructMemcpy, ExpandStructMemsetZero>(
+        context);
     patterns.insert<SimplifyAllocConst<memref::AllocOp>,
                     SimplifyAllocConst<memref::AllocaOp>,
                     SimplifyAllocConst<gpu::AllocOp, true>>(context);
