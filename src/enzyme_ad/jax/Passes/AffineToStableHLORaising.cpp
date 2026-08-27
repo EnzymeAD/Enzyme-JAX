@@ -3436,7 +3436,14 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
               "barrier over a dynamically sized parallel axis");
         continue;
       }
-      if (isa<affine::AffineForOp, scf::ForOp, scf::WhileOp>(owner))
+      if (auto forOwner = dyn_cast<affine::AffineForOp>(owner)) {
+        // A constant-trip for raises in lockstep with whole-tensor ordering,
+        // making the barrier a no-op exactly like a batched parallel axis.
+        if (forOwner.hasConstantBounds())
+          continue;
+        return op->emitError("barrier over a dynamically sized parallel axis");
+      }
+      if (isa<scf::ForOp, scf::WhileOp>(owner))
         return op->emitError("barrier over a dynamically sized parallel axis");
     }
     return success();
@@ -3620,8 +3627,197 @@ struct AffineToStableHLORaisingPass
   // The constant upper bound of an extent value, where one can be derived:
   // the value itself when constant, or the constant side of a min it is
   // clamped by (MFEM's block sizes arrive as min(1 << log2(N), 256)).
-  static std::optional<int64_t> derivedExtentBound(Value v,
-                                                   unsigned depth = 0) {
+  // Upper bound from a dominating verify guard: `if (v REL C) <noreturn>`
+  // leaves the complementary relation holding on every path that reaches
+  // the launch.
+  static std::optional<int64_t> guardBound(Value v, Operation *anchor) {
+    if (!anchor)
+      return std::nullopt;
+    std::optional<int64_t> bound;
+    auto consider = [&](int64_t b) {
+      if (!bound || b < *bound)
+        bound = b;
+    };
+    for (Operation *user : v.getUsers()) {
+      auto cmp = dyn_cast<arith::CmpIOp>(user);
+      if (getenv("DEBUG_GUARD") && cmp) {
+        llvm::errs() << "guard cmp: " << *cmp << "\n";
+        for (Operation *cu : cmp->getUsers())
+          llvm::errs() << "  user: " << cu->getName() << "\n";
+      }
+      if (!cmp)
+        continue;
+      APInt cst;
+      bool vLhs;
+      if (cmp.getLhs() == v && matchPattern(cmp.getRhs(), m_ConstantInt(&cst)))
+        vLhs = true;
+      else if (cmp.getRhs() == v &&
+               matchPattern(cmp.getLhs(), m_ConstantInt(&cst)))
+        vLhs = false;
+      else
+        continue;
+      int64_t C = cst.getSExtValue();
+      for (Operation *cu : cmp->getUsers()) {
+        auto ifOp = dyn_cast<scf::IfOp>(cu);
+        if (!ifOp || ifOp.getCondition() != cmp.getResult())
+          continue;
+        auto isNoReturn = [](Region &r) {
+          bool f = false;
+          r.walk([&](LLVM::UnreachableOp) { f = true; });
+          return f;
+        };
+        bool thenNR = isNoReturn(ifOp.getThenRegion());
+        bool elseNR =
+            !ifOp.getElseRegion().empty() && isNoReturn(ifOp.getElseRegion());
+        if (thenNR == elseNR)
+          continue;
+        Operation *a = anchor;
+        while (a && a->getBlock() != ifOp->getBlock())
+          a = a->getParentOp();
+        if (!a || a == ifOp || !ifOp->isBeforeInBlock(a))
+          continue;
+        // The surviving path holds cond when the else branch aborts, and
+        // !cond when the then branch aborts.
+        arith::CmpIPredicate pred = cmp.getPredicate();
+        if (thenNR)
+          pred = arith::invertPredicate(pred);
+        if (!vLhs) {
+          switch (pred) {
+          case arith::CmpIPredicate::sgt:
+            pred = arith::CmpIPredicate::slt;
+            break;
+          case arith::CmpIPredicate::sge:
+            pred = arith::CmpIPredicate::sle;
+            break;
+          case arith::CmpIPredicate::slt:
+            pred = arith::CmpIPredicate::sgt;
+            break;
+          case arith::CmpIPredicate::sle:
+            pred = arith::CmpIPredicate::sge;
+            break;
+          case arith::CmpIPredicate::ugt:
+            pred = arith::CmpIPredicate::ult;
+            break;
+          case arith::CmpIPredicate::uge:
+            pred = arith::CmpIPredicate::ule;
+            break;
+          case arith::CmpIPredicate::ult:
+            pred = arith::CmpIPredicate::ugt;
+            break;
+          case arith::CmpIPredicate::ule:
+            pred = arith::CmpIPredicate::uge;
+            break;
+          default:
+            break;
+          }
+        }
+        switch (pred) {
+        case arith::CmpIPredicate::sle:
+        case arith::CmpIPredicate::ule:
+          consider(C);
+          break;
+        case arith::CmpIPredicate::slt:
+        case arith::CmpIPredicate::ult:
+          consider(C - 1);
+          break;
+        default:
+          break;
+        }
+      }
+    }
+    return bound;
+  }
+
+  // Upper bound from the guards enclosing the launch: inside the surviving
+  // branch of `if (v REL C)`, the relation holds.
+  static std::optional<int64_t> enclosingGuardBound(Value v,
+                                                    Operation *anchor) {
+    if (!anchor)
+      return std::nullopt;
+    std::optional<int64_t> bound;
+    auto consider = [&](int64_t b) {
+      if (!bound || b < *bound)
+        bound = b;
+    };
+    for (Operation *cur = anchor; cur->getParentOp();
+         cur = cur->getParentOp()) {
+      auto ifOp = dyn_cast<scf::IfOp>(cur->getParentOp());
+      if (!ifOp)
+        continue;
+      bool inThen = cur->getParentRegion() == &ifOp.getThenRegion();
+      auto cmp = ifOp.getCondition().getDefiningOp<arith::CmpIOp>();
+      if (getenv("DEBUG_GUARD")) {
+        llvm::errs() << "enclosing if cond for " << v << ": ";
+        if (auto *d = ifOp.getCondition().getDefiningOp())
+          llvm::errs() << *d;
+        llvm::errs() << " inThen=" << inThen << "\n";
+      }
+      if (!cmp)
+        continue;
+      APInt cst;
+      bool vLhs;
+      if (cmp.getLhs() == v && matchPattern(cmp.getRhs(), m_ConstantInt(&cst)))
+        vLhs = true;
+      else if (cmp.getRhs() == v &&
+               matchPattern(cmp.getLhs(), m_ConstantInt(&cst)))
+        vLhs = false;
+      else
+        continue;
+      int64_t C = cst.getSExtValue();
+      arith::CmpIPredicate pred = cmp.getPredicate();
+      if (!inThen)
+        pred = arith::invertPredicate(pred);
+      if (!vLhs) {
+        switch (pred) {
+        case arith::CmpIPredicate::sgt:
+          pred = arith::CmpIPredicate::slt;
+          break;
+        case arith::CmpIPredicate::sge:
+          pred = arith::CmpIPredicate::sle;
+          break;
+        case arith::CmpIPredicate::slt:
+          pred = arith::CmpIPredicate::sgt;
+          break;
+        case arith::CmpIPredicate::sle:
+          pred = arith::CmpIPredicate::sge;
+          break;
+        case arith::CmpIPredicate::ugt:
+          pred = arith::CmpIPredicate::ult;
+          break;
+        case arith::CmpIPredicate::uge:
+          pred = arith::CmpIPredicate::ule;
+          break;
+        case arith::CmpIPredicate::ult:
+          pred = arith::CmpIPredicate::ugt;
+          break;
+        case arith::CmpIPredicate::ule:
+          pred = arith::CmpIPredicate::uge;
+          break;
+        default:
+          break;
+        }
+      }
+      switch (pred) {
+      case arith::CmpIPredicate::sle:
+      case arith::CmpIPredicate::ule:
+        consider(C);
+        break;
+      case arith::CmpIPredicate::slt:
+      case arith::CmpIPredicate::ult:
+        consider(C - 1);
+        break;
+      case arith::CmpIPredicate::eq:
+        consider(C);
+        break;
+      default:
+        break;
+      }
+    }
+    return bound;
+  }
+
+  static std::optional<int64_t>
+  derivedExtentBound(Value v, unsigned depth = 0, Operation *anchor = nullptr) {
     if (depth > 8)
       return std::nullopt;
     while (true) {
@@ -3639,27 +3835,340 @@ struct AffineToStableHLORaisingPass
     if (matchPattern(v, m_ConstantInt(&cst)))
       return cst.getSExtValue();
     if (auto mn = v.getDefiningOp<arith::MinSIOp>()) {
-      auto l = derivedExtentBound(mn.getLhs(), depth + 1);
-      auto r = derivedExtentBound(mn.getRhs(), depth + 1);
+      auto l = derivedExtentBound(mn.getLhs(), depth + 1, anchor);
+      auto r = derivedExtentBound(mn.getRhs(), depth + 1, anchor);
       if (l && r)
         return std::min(*l, *r);
       return l ? l : r;
     }
     if (auto mn = v.getDefiningOp<arith::MinUIOp>()) {
-      auto l = derivedExtentBound(mn.getLhs(), depth + 1);
-      auto r = derivedExtentBound(mn.getRhs(), depth + 1);
+      auto l = derivedExtentBound(mn.getLhs(), depth + 1, anchor);
+      auto r = derivedExtentBound(mn.getRhs(), depth + 1, anchor);
       if (l && r)
         return std::min(*l, *r);
       return l ? l : r;
     }
-    return std::nullopt;
+    if (auto mn = v.getDefiningOp<LLVM::SMinOp>()) {
+      auto l = derivedExtentBound(mn->getOperand(0), depth + 1, anchor);
+      auto r = derivedExtentBound(mn->getOperand(1), depth + 1, anchor);
+      if (l && r)
+        return std::min(*l, *r);
+      return l ? l : r;
+    }
+    if (auto mn = v.getDefiningOp<LLVM::UMinOp>()) {
+      auto l = derivedExtentBound(mn->getOperand(0), depth + 1, anchor);
+      auto r = derivedExtentBound(mn->getOperand(1), depth + 1, anchor);
+      if (l && r)
+        return std::min(*l, *r);
+      return l ? l : r;
+    }
+    if (isa_and_nonnull<LLVM::SMaxOp, LLVM::UMaxOp>(v.getDefiningOp())) {
+      auto l = derivedExtentBound(v.getDefiningOp()->getOperand(0), depth + 1,
+                                  anchor);
+      auto r = derivedExtentBound(v.getDefiningOp()->getOperand(1), depth + 1,
+                                  anchor);
+      if (l && r)
+        return std::max(*l, *r);
+      return std::nullopt;
+    }
+    // A max of bounded values is bounded by the larger bound; both sides
+    // must be bounded, unlike min.
+    if (auto mx = v.getDefiningOp<arith::MaxSIOp>()) {
+      auto l = derivedExtentBound(mx.getLhs(), depth + 1, anchor);
+      auto r = derivedExtentBound(mx.getRhs(), depth + 1, anchor);
+      if (l && r)
+        return std::max(*l, *r);
+      return std::nullopt;
+    }
+    if (auto mx = v.getDefiningOp<arith::MaxUIOp>()) {
+      auto l = derivedExtentBound(mx.getLhs(), depth + 1, anchor);
+      auto r = derivedExtentBound(mx.getRhs(), depth + 1, anchor);
+      if (l && r)
+        return std::max(*l, *r);
+      return std::nullopt;
+    }
+    if (auto sel = v.getDefiningOp<arith::SelectOp>()) {
+      auto l = derivedExtentBound(sel.getTrueValue(), depth + 1, anchor);
+      auto r = derivedExtentBound(sel.getFalseValue(), depth + 1, anchor);
+      if (l && r)
+        return std::max(*l, *r);
+      return std::nullopt;
+    }
+    if (isa_and_nonnull<arith::ExtUIOp, arith::ExtSIOp>(v.getDefiningOp()))
+      return derivedExtentBound(v.getDefiningOp()->getOperand(0), depth + 1,
+                                anchor);
+    if (auto t = v.getDefiningOp<arith::TruncIOp>()) {
+      // dim3 packing replicates a 32-bit dim into both halves of an i64 as
+      // x * 0x100000001; either half recovers the dim.
+      if (auto mul = t.getIn().getDefiningOp<arith::MulIOp>()) {
+        APInt k;
+        if (matchPattern(mul.getRhs(), m_ConstantInt(&k)) &&
+            k.getZExtValue() == 0x100000001ULL)
+          return derivedExtentBound(mul.getLhs(), depth + 1, anchor);
+      }
+      auto b = derivedExtentBound(t.getIn(), depth + 1, anchor);
+      unsigned w = t.getType().getIntOrFloatBitWidth();
+      if (b && *b >= 0 && (w >= 63 || *b < (int64_t(1) << w)))
+        return b;
+      return std::nullopt;
+    }
+    if (auto sh = v.getDefiningOp<arith::ShRUIOp>()) {
+      APInt k;
+      if (matchPattern(sh.getRhs(), m_ConstantInt(&k)) &&
+          k.getZExtValue() < 63) {
+        auto b = derivedExtentBound(sh.getLhs(), depth + 1, anchor);
+        if (b && *b >= 0)
+          return *b >> k.getZExtValue();
+      }
+      return std::nullopt;
+    }
+    // dim3 packing with a constant second half arrives as a disjoint or:
+    // either half of (a | c) recovers its own dim.
+    if (auto orOp = v.getDefiningOp<arith::OrIOp>()) {
+      APInt k;
+      if (matchPattern(orOp.getRhs(), m_ConstantInt(&k))) {
+        auto b = derivedExtentBound(orOp.getLhs(), depth + 1, anchor);
+        // a <= b does not order a|c against b|c bitwise; a|c <= a+c <= b+c.
+        if (b && *b >= 0 && k.getSExtValue() >= 0)
+          return *b + k.getSExtValue();
+      }
+      return std::nullopt;
+    }
+    if (auto mul = v.getDefiningOp<arith::MulIOp>()) {
+      APInt k;
+      if (matchPattern(mul.getRhs(), m_ConstantInt(&k))) {
+        auto b = derivedExtentBound(mul.getLhs(), depth + 1, anchor);
+        int64_t c = k.getSExtValue();
+        if (b && *b >= 0 && c >= 0 && (c == 0 || *b <= INT64_MAX / c))
+          return *b * c;
+        return std::nullopt;
+      }
+      // Launch dims are non-negative by construction, so a product of two
+      // bounded dims (a dof count like 2*(D1D-1)*D1D) stays under the
+      // product of the bounds.
+      auto l = derivedExtentBound(mul.getLhs(), depth + 1, anchor);
+      auto r = derivedExtentBound(mul.getRhs(), depth + 1, anchor);
+      if (l && r && *l >= 0 && *r >= 0 && (*l == 0 || *r <= INT64_MAX / *l))
+        return *l * *r;
+      return std::nullopt;
+    }
+    if (auto add = v.getDefiningOp<arith::AddIOp>()) {
+      APInt k;
+      if (matchPattern(add.getRhs(), m_ConstantInt(&k))) {
+        auto b = derivedExtentBound(add.getLhs(), depth + 1, anchor);
+        if (b)
+          return *b + k.getSExtValue();
+      }
+      return std::nullopt;
+    }
+    if (auto sub = v.getDefiningOp<arith::SubIOp>()) {
+      APInt k;
+      if (matchPattern(sub.getRhs(), m_ConstantInt(&k))) {
+        auto b = derivedExtentBound(sub.getLhs(), depth + 1, anchor);
+        if (b)
+          return *b - k.getSExtValue();
+      }
+      return std::nullopt;
+    }
+    // A scalar hoisted into a staging buffer (gpu.alloc + memcpy from a
+    // stored alloca) reads back the value stored on the host side.
+    if (auto ld = v.getDefiningOp<affine::AffineLoadOp>()) {
+      if (ld.getMapOperands().empty() &&
+          ld.getMap().getNumResults() ==
+              (unsigned)ld.getMemRefType().getRank() &&
+          ld.getMemRefType().getNumElements() == 1) {
+        Value buf = ld.getMemRef();
+        if (isa_and_nonnull<gpu::AllocOp>(buf.getDefiningOp())) {
+          Value src;
+          for (Operation *u : buf.getUsers())
+            if (auto mc = dyn_cast<enzymexla::MemcpyOp>(u))
+              if (mc->getNumOperands() >= 2 && mc->getOperand(0) == buf) {
+                if (src)
+                  return std::nullopt;
+                src = mc->getOperand(1);
+              }
+          if (src) {
+            Value stored;
+            for (Operation *u : src.getUsers())
+              if (auto st = dyn_cast<affine::AffineStoreOp>(u)) {
+                if (st.getMemRef() != src)
+                  continue;
+                if (stored)
+                  return std::nullopt;
+                stored = st.getValueToStore();
+              }
+            if (stored) {
+              auto r = derivedExtentBound(stored, depth + 1, anchor);
+              if (!r && getenv("DEBUG_BOUND")) {
+                llvm::errs() << "staged scalar underivable:\n";
+                Value w = stored;
+                for (int k = 0; k < 8 && w.getDefiningOp(); ++k) {
+                  llvm::errs() << "  <- " << *w.getDefiningOp() << "\n";
+                  if (w.getDefiningOp()->getNumOperands() == 0)
+                    break;
+                  w = w.getDefiningOp()->getOperand(0);
+                }
+              }
+              return r;
+            }
+          }
+        }
+        if (getenv("DEBUG_BOUND"))
+          llvm::errs() << "staged scalar: no source found\n";
+      }
+      return std::nullopt;
+    }
+    // A launch-stub argument takes its bound from what the callers pass:
+    // the max over all call sites, each of which must itself be bounded.
+    if (auto ba = dyn_cast<BlockArgument>(v)) {
+      if (getenv("DEBUG_BOUND"))
+        llvm::errs() << "interproc: blockarg " << ba.getArgNumber() << " depth "
+                     << depth << " owner "
+                     << ba.getOwner()->getParentOp()->getName() << "\n";
+      if (depth > 4)
+        return std::nullopt;
+      auto func =
+          dyn_cast_or_null<FunctionOpInterface>(ba.getOwner()->getParentOp());
+      if (!func || func.getFunctionBody().empty() ||
+          ba.getOwner() != &func.getFunctionBody().front())
+        return std::nullopt;
+      auto mod = func->getParentOfType<ModuleOp>();
+      if (!mod)
+        return std::nullopt;
+      auto uses = SymbolTable::getSymbolUses(func, mod);
+      if (!uses) {
+        if (getenv("DEBUG_BOUND"))
+          llvm::errs() << "interproc: no uses view for " << func.getNameAttr()
+                       << "\n";
+        return std::nullopt;
+      }
+      std::optional<int64_t> bound;
+      bool anyCall = false;
+      for (const SymbolTable::SymbolUse &use : *uses) {
+        Operation *call = use.getUser();
+        Value actual;
+        if (auto c = dyn_cast<LLVM::CallOp>(call)) {
+          if (ba.getArgNumber() >= c.getArgOperands().size())
+            return std::nullopt;
+          actual = c.getArgOperands()[ba.getArgNumber()];
+        } else if (auto c = dyn_cast<func::CallOp>(call)) {
+          if (ba.getArgNumber() >= c.getOperands().size())
+            return std::nullopt;
+          actual = c.getOperands()[ba.getArgNumber()];
+        } else if (isa<LLVM::AddressOfOp>(call)) {
+          // Launch stubs keep an addressof for kernel registration; the
+          // launches themselves come in as direct calls.
+          continue;
+        } else {
+          if (getenv("DEBUG_BOUND"))
+            llvm::errs() << "interproc: non-call use " << call->getName()
+                         << " of " << func.getNameAttr() << "\n";
+          return std::nullopt;
+        }
+        anyCall = true;
+        // Guards around the call site hold for the launch inside.
+        auto b = derivedExtentBound(actual, depth + 1, call);
+        if (!b) {
+          if (getenv("DEBUG_BOUND")) {
+            llvm::errs()
+                << "interproc: underivable actual in "
+                << call->getParentOfType<FunctionOpInterface>().getNameAttr()
+                << "\n";
+            Value w = actual;
+            for (int k = 0; k < 8 && w.getDefiningOp(); ++k) {
+              llvm::errs() << "   <- " << *w.getDefiningOp() << "\n";
+              if (w.getDefiningOp()->getNumOperands() == 0)
+                break;
+              w = w.getDefiningOp()->getOperand(0);
+            }
+          }
+          return std::nullopt;
+        }
+        bound = bound ? std::max(*bound, *b) : *b;
+      }
+      if (!anyCall && getenv("DEBUG_BOUND"))
+        llvm::errs() << "interproc: no direct callers of " << func.getNameAttr()
+                     << "\n";
+      if (anyCall)
+        return bound;
+      if (auto g = guardBound(v, anchor))
+        return g;
+      return enclosingGuardBound(v, anchor);
+    }
+    if (auto g = guardBound(v, anchor))
+      return g;
+    return enclosingGuardBound(v, anchor);
+  }
+
+  // Bound on a parallel axis implied by the static scratch buffers its iv
+  // indexes: a lane past the buffer extent would access out of bounds, so
+  // the axis cannot exceed it. Only accesses every lane is guaranteed to
+  // execute count -- directly in the body, or under constant-trip loops.
+  static std::optional<int64_t> allocaIndexBound(Operation *loop, Block *body,
+                                                 Value iv) {
+    std::optional<int64_t> bound;
+    auto consider = [&](int64_t b) {
+      if (!bound || b < *bound)
+        bound = b;
+    };
+    body->walk([&](Operation *op) {
+      if (!isa<affine::AffineLoadOp, affine::AffineStoreOp, memref::LoadOp,
+               memref::StoreOp>(op))
+        return;
+      for (Operation *a = op->getParentOp(); a != loop; a = a->getParentOp()) {
+        auto f = dyn_cast<affine::AffineForOp>(a);
+        if (!f || !f.hasConstantBounds() ||
+            f.getConstantLowerBound() >= f.getConstantUpperBound())
+          return;
+      }
+      MemRefType MT;
+      Value memref;
+      if (auto ld = dyn_cast<affine::AffineLoadOp>(op)) {
+        MT = ld.getMemRefType();
+        memref = ld.getMemRef();
+      } else if (auto st = dyn_cast<affine::AffineStoreOp>(op)) {
+        MT = st.getMemRefType();
+        memref = st.getMemRef();
+      } else if (auto mld = dyn_cast<memref::LoadOp>(op)) {
+        MT = mld.getMemRefType();
+        memref = mld.getMemRef();
+      } else {
+        auto mst = cast<memref::StoreOp>(op);
+        MT = mst.getMemRefType();
+        memref = mst.getMemRef();
+      }
+      if (!isa_and_nonnull<memref::AllocaOp>(memref.getDefiningOp()) ||
+          !MT.hasStaticShape())
+        return;
+      if (isa<affine::AffineLoadOp, affine::AffineStoreOp>(op)) {
+        AffineMap map = isa<affine::AffineLoadOp>(op)
+                            ? cast<affine::AffineLoadOp>(op).getMap()
+                            : cast<affine::AffineStoreOp>(op).getMap();
+        auto operands = isa<affine::AffineLoadOp>(op)
+                            ? cast<affine::AffineLoadOp>(op).getMapOperands()
+                            : cast<affine::AffineStoreOp>(op).getMapOperands();
+        for (auto &&[ri, expr] : llvm::enumerate(map.getResults()))
+          if (auto de = dyn_cast<AffineDimExpr>(expr))
+            if (operands[de.getPosition()] == iv)
+              consider(MT.getShape()[ri]);
+      } else {
+        auto indices = isa<memref::LoadOp>(op)
+                           ? cast<memref::LoadOp>(op).getIndices()
+                           : cast<memref::StoreOp>(op).getIndices();
+        for (auto &&[ri, idx] : llvm::enumerate(indices))
+          if (idx == iv)
+            consider(MT.getShape()[ri]);
+      }
+    });
+    return bound;
   }
 
   // A parallel axis whose extent is dynamic but provably bounded (a block
-  // size clamped by a min against a constant) batches at the bound instead
-  // of peeling to a serial loop: the axis becomes constant-extent and the
-  // body sits behind an `iv < extent` guard, which the masking machinery
-  // already understands. Barriers over the axis then stay batched no-ops.
+  // size clamped by a min against a constant, or an iv indexing a static
+  // scratch buffer) batches at the bound instead of peeling to a serial
+  // loop: the axis becomes constant-extent and the body sits behind an
+  // `iv < extent` guard, which the masking machinery already understands.
+  // Barriers over the axis then stay batched no-ops.
   static void boundParallelAxes(Operation *root) {
     SmallVector<affine::AffineParallelOp> worklist;
     root->walk([&](affine::AffineParallelOp par) { worklist.push_back(par); });
@@ -3673,23 +4182,61 @@ struct AffineToStableHLORaisingPass
         Value extent;
       };
       SmallVector<BoundedDim> bounded;
+      bool dbg = getenv("DEBUG_BOUND") != nullptr;
       for (unsigned i = 0; i < n; ++i) {
         auto lb = getConstant(par.getLowerBoundMap(i));
-        if (!lb || *lb != 0 || par.getSteps()[i] != 1)
+        if (!lb || *lb != 0 || par.getSteps()[i] != 1) {
+          if (dbg)
+            llvm::errs() << "bpa dim " << i << ": lb/step skip\n";
           continue;
+        }
         if (getConstant(par.getUpperBoundMap(i)))
           continue;
         auto um = par.getUpperBoundMap(i);
         if (um.getNumResults() != 1)
           continue;
-        auto se = dyn_cast<AffineSymbolExpr>(um.getResult(0));
-        if (!se)
+        Value ext;
+        if (auto se = dyn_cast<AffineSymbolExpr>(um.getResult(0)))
+          ext = par.getUpperBoundsOperands()
+                    [par.getUpperBoundsMap().getNumDims() + se.getPosition()];
+        else if (auto de = dyn_cast<AffineDimExpr>(um.getResult(0)))
+          ext = par.getUpperBoundsOperands()[de.getPosition()];
+        else {
+          if (dbg)
+            llvm::errs() << "bpa dim " << i << ": ub form skip "
+                         << par.getUpperBoundMap(i) << "\n";
           continue;
-        Value ext =
-            par.getUpperBoundsOperands()[par.getUpperBoundsMap().getNumDims() +
-                                         se.getPosition()];
-        if (auto c = derivedExtentBound(ext))
+        }
+        if (dbg) {
+          llvm::errs() << "bpa dim " << i << " ext: " << ext << "\n";
+        }
+        if (auto c = derivedExtentBound(ext, 0, par))
           bounded.push_back({i, *c, ext});
+        else if (auto ab = allocaIndexBound(par.getOperation(), par.getBody(),
+                                            par.getBody()->getArgument(i)))
+          bounded.push_back({i, *ab, ext});
+        else if (getenv("DEBUG_BOUND")) {
+          llvm::errs() << "unbounded extent: " << ext << "\n";
+          std::function<void(Value, int)> dump = [&](Value v, int ind) {
+            if (ind > 4)
+              return;
+            for (int k = 0; k < ind; ++k)
+              llvm::errs() << "  ";
+            if (auto ba = dyn_cast<BlockArgument>(v)) {
+              llvm::errs() << "blockarg " << ba.getArgNumber() << " of "
+                           << ba.getOwner()->getParentOp()->getName() << "\n";
+              return;
+            }
+            if (!v.getDefiningOp()) {
+              llvm::errs() << "?\n";
+              return;
+            }
+            llvm::errs() << *v.getDefiningOp() << "\n";
+            for (Value o : v.getDefiningOp()->getOperands())
+              dump(o, ind + 1);
+          };
+          dump(ext, 1);
+        }
       }
       if (bounded.empty())
         continue;
@@ -3779,6 +4326,84 @@ struct AffineToStableHLORaisingPass
           oldBody->getOperations().begin(),
           std::prev(oldBody->getOperations().end()));
       par.erase();
+    }
+  }
+
+  // The same batching-by-bound for a parallel-marked affine.for that never
+  // became an affine.parallel: constant trip count at the bound, body behind
+  // an `iv < extent` guard.
+  static void boundParallelFors(Operation *root) {
+    // The loops needing a constant trip count are the ones barriers span:
+    // their ivs appear as barrier operands.
+    llvm::SetVector<Operation *> forSet;
+    root->walk([&](enzymexla::BarrierOp bar) {
+      for (Value iv : bar->getOperands())
+        if (auto ba = dyn_cast<BlockArgument>(iv))
+          if (auto f =
+                  dyn_cast<affine::AffineForOp>(ba.getOwner()->getParentOp()))
+            forSet.insert(f);
+    });
+    SmallVector<affine::AffineForOp> fors;
+    for (Operation *f : forSet)
+      fors.push_back(cast<affine::AffineForOp>(f));
+    if (getenv("DEBUG_BOUND")) {
+      root->walk([&](enzymexla::BarrierOp bar) {
+        llvm::errs() << "bar operands:";
+        for (Value iv : bar->getOperands()) {
+          if (auto ba = dyn_cast<BlockArgument>(iv))
+            llvm::errs() << " arg-of-"
+                         << ba.getOwner()->getParentOp()->getName();
+          else if (iv.getDefiningOp())
+            llvm::errs() << " " << iv.getDefiningOp()->getName();
+        }
+        llvm::errs() << "\n";
+        return WalkResult::interrupt();
+      });
+    }
+    for (auto f : fors) {
+      if (f.hasConstantUpperBound())
+        continue;
+      if (!f.hasConstantLowerBound() || f.getConstantLowerBound() != 0 ||
+          f.getStepAsInt() != 1)
+        continue;
+      auto um = f.getUpperBoundMap();
+      if (um.getNumResults() != 1)
+        continue;
+      Value ext;
+      if (auto se = dyn_cast<AffineSymbolExpr>(um.getResult(0)))
+        ext = f.getUpperBoundOperands()[um.getNumDims() + se.getPosition()];
+      else if (auto de = dyn_cast<AffineDimExpr>(um.getResult(0)))
+        ext = f.getUpperBoundOperands()[de.getPosition()];
+      else
+        continue;
+      auto b = derivedExtentBound(ext, 0, f);
+      if (!b)
+        b = allocaIndexBound(f, f.getBody(), f.getInductionVar());
+      if (!b || *b <= 0)
+        continue;
+
+      OpBuilder bld(f);
+      Location loc = f.getLoc();
+      auto newFor = affine::AffineForOp::create(bld, loc, 0, *b, 1);
+      newFor->setAttrs(f->getAttrs());
+      Block *nb = newFor.getBody();
+      bld.setInsertionPointToStart(nb);
+      auto iset = IntegerSet::get(1, 1,
+                                  {getAffineSymbolExpr(0, f.getContext()) -
+                                   getAffineDimExpr(0, f.getContext()) - 1},
+                                  {false});
+      Value setOperands[] = {newFor.getInductionVar(), ext};
+      auto ifOp =
+          affine::AffineIfOp::create(bld, loc, TypeRange(), iset, setOperands,
+                                     /*withElseRegion=*/false);
+      Block *oldBody = f.getBody();
+      oldBody->getArgument(0).replaceAllUsesWith(newFor.getInductionVar());
+      Block *thenBlk = ifOp.getThenBlock();
+      thenBlk->getOperations().splice(
+          std::prev(thenBlk->getOperations().end()), oldBody->getOperations(),
+          oldBody->getOperations().begin(),
+          std::prev(oldBody->getOperations().end()));
+      f.erase();
     }
   }
 
@@ -3901,6 +4526,7 @@ struct AffineToStableHLORaisingPass
     for (auto func : funcs) {
       stripAccessMemorySpaceCasts(func);
       boundParallelAxes(func);
+      boundParallelFors(func);
       peelDynamicParallelDims(func);
     }
 
@@ -3924,6 +4550,7 @@ struct AffineToStableHLORaisingPass
     for (auto g : gwrap) {
       stripAccessMemorySpaceCasts(g);
       boundParallelAxes(g);
+      boundParallelFors(g);
       peelDynamicParallelDims(g);
     }
     size_t raised_count = 0;
