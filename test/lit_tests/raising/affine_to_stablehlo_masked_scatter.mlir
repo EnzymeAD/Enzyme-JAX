@@ -1,10 +1,10 @@
 // RUN: enzymexlamlir-opt %s --raise-affine-to-stablehlo --canonicalize --enzyme-hlo-opt=max_constant_expansion=0 | FileCheck %s
 
-// A memref.store guarded by an affine.if raises to a masked scatter: the
-// store is conditioned on the if's condition, so masked-out positions must
-// keep their original value. This is done by gathering the original input,
-// selecting between the update and the original using the broadcasted mask,
-// and scattering with unique_indices = false.
+// A memref.store guarded by an affine.if raises to a masked scatter: a
+// masked-out lane must not write at all — its index expression is
+// unconstrained and can collide with a live lane's slot, and scatter
+// applies duplicate indices in unspecified order. Dead lanes' indices are
+// selected out of bounds, so the scatter drops their updates.
 
 module {
   func.func @main(%arg0: memref<100xf32>, %arg1: memref<100xf32>) {
@@ -18,17 +18,13 @@ module {
   }
 }
 
-// CHECK:  func.func private @main_raised(%arg0: tensor<100xf32>, %arg1: tensor<100xf32>) -> (tensor<100xf32>, tensor<100xf32>) {
-// CHECK-NEXT:    %c = stablehlo.constant dense<0> : tensor<10x10xi64>
-// CHECK-NEXT:    %0 = stablehlo.iota dim = 0 {enzymexla.non_negative = [#enzymexla<guaranteed GUARANTEED>]} : tensor<10xi64>
-// CHECK-NEXT:    %1 = stablehlo.negate %0 : tensor<10xi64>
-// CHECK-NEXT:    %2 = stablehlo.iota dim = 0 : tensor<10x10xi64>
-// CHECK-NEXT:    %3 = stablehlo.broadcast_in_dim %1, dims = [1] {enzymexla.non_negative = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<10xi64>) -> tensor<10x10xi64>
-// CHECK-NEXT:    %4 = stablehlo.add %2, %3 {enzymexla.non_negative = [#enzymexla<guaranteed NOTGUARANTEED>]} : tensor<10x10xi64>
-// CHECK-NEXT:    %5 = stablehlo.compare GE, %4, %c : (tensor<10x10xi64>, tensor<10x10xi64>) -> tensor<10x10xi1>
-// CHECK-NEXT:    %6 = stablehlo.reshape %arg1 : (tensor<100xf32>) -> tensor<10x10xf32>
-// CHECK-NEXT:    %7 = stablehlo.reshape %arg0 : (tensor<100xf32>) -> tensor<10x10xf32>
-// CHECK-NEXT:    %8 = stablehlo.select %5, %6, %7 : tensor<10x10xi1>, tensor<10x10xf32>
-// CHECK-NEXT:    %9 = stablehlo.reshape %8 : (tensor<10x10xf32>) -> tensor<100xf32>
-// CHECK-NEXT:    return %9, %arg1 : tensor<100xf32>, tensor<100xf32>
-// CHECK-NEXT:  }
+// CHECK-LABEL: func.func private @main_raised(
+// CHECK-SAME:    %[[ARG0:.+]]: tensor<100xf32>, %[[ARG1:.+]]: tensor<100xf32>
+// CHECK-DAG:   %[[OOB:.+]] = stablehlo.constant dense<-1> : tensor<10x10x1xi64>
+// CHECK:       %[[MASK:.+]] = stablehlo.compare GE, %{{.+}}, %{{.+}} : (tensor<10x10xi64>, tensor<10x10xi64>) -> tensor<10x10xi1>
+// CHECK-NOT:   stablehlo.gather
+// CHECK:       %[[MASK3:.+]] = stablehlo.reshape %[[MASK]] : (tensor<10x10xi1>) -> tensor<10x10x1xi1>
+// CHECK:       %[[IDX:.+]] = stablehlo.select %[[MASK3]], %{{.+}}, %[[OOB]] : tensor<10x10x1xi1>, tensor<10x10x1xi64>
+// CHECK:       %[[SCATTER:.+]] = "stablehlo.scatter"(%[[ARG0]], %[[IDX]], %{{.+}}) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0], scatter_dims_to_operand_dims = [0], index_vector_dim = 2>, unique_indices = false}>
+// CHECK:         stablehlo.return %{{.+}} : tensor<f32>
+// CHECK:       return %[[SCATTER]], %[[ARG1]] : tensor<100xf32>, tensor<100xf32>

@@ -1144,21 +1144,6 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
       builder, loc, UTy.clone(gridShape), update, broadcastDims);
 
   if (pc.mask) {
-    SmallVector<int64_t> collapsedDims(scatterDimsToOperandDims.begin(),
-                                       scatterDimsToOperandDims.end());
-    SmallVector<int64_t> sliceSizes(collapsedDims.size(), 1);
-    Value orig = stablehlo::GatherOp::create(
-        builder, loc, input, indices,
-        stablehlo::GatherDimensionNumbersAttr::get(
-            loc.getContext(),
-            /*offsetDims*/ {},
-            /*collapsedSliceDims*/ collapsedDims,
-            /*operandBatchingDims*/ {},
-            /*startIndicesBatchingDims*/ {},
-            /*startIndexMap*/ collapsedDims,
-            /*indexVectorDim*/ (int64_t)gridShape.size()),
-        sliceSizes);
-
     // Broadcast the mask from its IV-space to the update's grid shape.
     Value mask = pc.mask;
     affine::AffineValueMap maskMap = maps.lookup(mask);
@@ -1178,8 +1163,24 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
     Value broadcastedMask = stablehlo::BroadcastInDimOp::create(
         builder, loc, maskGridTy, mask, maskBroadcastDims);
 
-    update = stablehlo::SelectOp::create(builder, loc, broadcastedMask, update,
-                                         orig);
+    // A masked-out lane must not write at all: its index expression is
+    // unconstrained and can collide with a live lane's slot, and scatter
+    // applies duplicate indices in unspecified order. Send dead lanes out
+    // of bounds — the scatter drops those updates.
+    auto idxTy = cast<RankedTensorType>(indices.getType());
+    Value minusOne = stablehlo::ConstantOp::create(
+        builder, loc, idxTy,
+        SplatElementsAttr::get(
+            idxTy, builder.getIntegerAttr(idxTy.getElementType(), -1)));
+    auto idxMaskTy =
+        RankedTensorType::get(idxTy.getShape(), builder.getI1Type());
+    SmallVector<int64_t> idxMaskDims;
+    for (int64_t k = 0, e = (int64_t)gridShape.size(); k < e; ++k)
+      idxMaskDims.push_back(k);
+    Value idxMask = stablehlo::BroadcastInDimOp::create(
+        builder, loc, idxMaskTy, broadcastedMask, idxMaskDims);
+    indices =
+        stablehlo::SelectOp::create(builder, loc, idxMask, indices, minusOne);
   }
 
   auto Ty = cast<RankedTensorType>(input.getType());
@@ -1195,8 +1196,8 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
           /*scatterDimsToOperandDims*/ scatterDimsToOperandDims,
           /*indexVectorDim*/ (int64_t)gridShape.size()),
       /*indicesAreSorted*/ false,
-      // With a mask, masked-out positions scatter orig back at potentially
-      // repeated indices — uniqueness can only be claimed without a mask.
+      // Masked-out lanes all share the out-of-bounds index, so uniqueness
+      // can only be claimed without a mask.
       /*uniqueIndices*/ !pc.mask);
   Value res = scatter.getResult(0);
 
