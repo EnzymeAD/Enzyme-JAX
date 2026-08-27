@@ -5580,8 +5580,52 @@ struct AffineToStableHLORaisingPass
         }
       }
       if (llvm::all_of(ifOp.getResults(),
-                       [](Value r) { return r.use_empty(); }))
+                       [](Value r) { return r.use_empty(); })) {
         ifOp.erase();
+        continue;
+      }
+      // Scalar results may keep the branch alive; rebuild it without the
+      // now-dead buffer results so no unraisable cast lingers in the arms.
+      if (llvm::any_of(ifOp.getResults(), [](Value r) {
+            return isa<MemRefType>(r.getType()) && r.use_empty();
+          })) {
+        SmallVector<unsigned> liveIdx;
+        SmallVector<Type> liveTypes;
+        for (auto [i, res] : llvm::enumerate(ifOp.getResults())) {
+          if (isa<MemRefType>(res.getType()) && res.use_empty())
+            continue;
+          liveIdx.push_back((unsigned)i);
+          liveTypes.push_back(res.getType());
+        }
+        OpBuilder b(ifOp);
+        auto newIf = affine::AffineIfOp::create(
+            b, ifOp.getLoc(), liveTypes, ifOp.getIntegerSet(),
+            ifOp.getOperands(), /*withElseRegion=*/true);
+        auto rebuildArm = [&](Block *srcArm, Block *dstArm) {
+          if (Operation *term = dstArm->empty() ? nullptr : &dstArm->back())
+            if (term->hasTrait<OpTrait::IsTerminator>())
+              term->erase();
+          IRMapping m;
+          OpBuilder ab = OpBuilder::atBlockEnd(dstArm);
+          for (Operation &armOp : srcArm->without_terminator())
+            ab.clone(armOp, m);
+          SmallVector<Value> yields;
+          for (unsigned i : liveIdx)
+            yields.push_back(
+                m.lookupOrDefault(srcArm->getTerminator()->getOperand(i)));
+          affine::AffineYieldOp::create(ab, ifOp.getLoc(), yields);
+          // The buffer arms may still hold the dead casts; drop them.
+          for (Operation &armOp :
+               llvm::make_early_inc_range(dstArm->without_terminator()))
+            if (armOp.use_empty() && isMemoryEffectFree(&armOp))
+              armOp.erase();
+        };
+        rebuildArm(thenB, newIf.getThenBlock());
+        rebuildArm(elseB, newIf.getElseBlock());
+        for (auto [k, i] : llvm::enumerate(liveIdx))
+          ifOp.getResult(i).replaceAllUsesWith(newIf.getResult(k));
+        ifOp.erase();
+      }
     }
   }
 
