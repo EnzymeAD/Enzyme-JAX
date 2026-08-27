@@ -31,7 +31,7 @@ struct LowerCommMpiCommRankOp
     }
 
     rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
-        op, converted_res_types, ValueRange{op.getComm()},
+        op, converted_res_types, ValueRange{adaptor.getComm()},
         rewriter.getStringAttr("MpiCommRank"),
         /*has_side_effect=*/rewriter.getBoolAttr(false),
         /*backend_config=*/nullptr,
@@ -62,7 +62,7 @@ struct LowerCommMpiCommSizeOp
     }
 
     rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
-        op, converted_res_types, ValueRange{op.getComm()},
+        op, converted_res_types, ValueRange{adaptor.getComm()},
         rewriter.getStringAttr("MpiCommSize"),
         /*has_side_effect=*/rewriter.getBoolAttr(false),
         /*backend_config=*/nullptr,
@@ -94,7 +94,7 @@ struct LowerCommMpiCommSplitOp
 
     rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
         op, converted_res_types,
-        ValueRange{op.getComm(), op.getColor(), op.getKey()},
+        ValueRange{adaptor.getComm(), adaptor.getColor(), adaptor.getKey()},
         rewriter.getStringAttr("MpiCommSplit"),
         /*has_side_effect=*/rewriter.getBoolAttr(false),
         /*backend_config=*/nullptr,
@@ -116,7 +116,7 @@ struct LowerCommMpiBarrierOp : public OpConversionPattern<comm::MpiBarrierOp> {
   matchAndRewrite(comm::MpiBarrierOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
-        op, TypeRange{}, ValueRange{op.getComm()},
+        op, TypeRange{}, ValueRange{adaptor.getComm()},
         rewriter.getStringAttr("MpiBarrier"),
         /*has_side_effect=*/rewriter.getBoolAttr(true),
         /*backend_config=*/nullptr,
@@ -139,7 +139,8 @@ struct LowerCommMpiSendOp : public OpConversionPattern<comm::MpiSendOp> {
                   ConversionPatternRewriter &rewriter) const override {
     rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
         op, TypeRange{},
-        ValueRange{op.getBuffer(), op.getDest(), op.getTag(), op.getComm()},
+        ValueRange{adaptor.getBuffer(), adaptor.getDest(), adaptor.getTag(),
+                   adaptor.getComm()},
         rewriter.getStringAttr("MpiSend"),
         /*has_side_effect=*/rewriter.getBoolAttr(true),
         /*backend_config=*/nullptr,
@@ -168,7 +169,8 @@ struct LowerCommMpiIsendOp : public OpConversionPattern<comm::MpiIsendOp> {
 
     rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
         op, converted_res_types,
-        ValueRange{op.getBuffer(), op.getDest(), op.getTag(), op.getComm()},
+        ValueRange{adaptor.getBuffer(), adaptor.getDest(), adaptor.getTag(),
+                   adaptor.getComm()},
         rewriter.getStringAttr("MpiIsend"),
         /*has_side_effect=*/rewriter.getBoolAttr(true),
         /*backend_config=*/nullptr,
@@ -197,7 +199,7 @@ struct LowerCommMpiRecvOp : public OpConversionPattern<comm::MpiRecvOp> {
 
     rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
         op, converted_res_types,
-        ValueRange{op.getBuffer(), op.getSource(), op.getTag(), op.getComm()},
+        ValueRange{adaptor.getSource(), adaptor.getTag(), adaptor.getComm()},
         rewriter.getStringAttr("MpiRecv"),
         /*has_side_effect=*/rewriter.getBoolAttr(true),
         /*backend_config=*/nullptr,
@@ -226,7 +228,7 @@ struct LowerCommMpiIrecvOp : public OpConversionPattern<comm::MpiIrecvOp> {
 
     rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
         op, converted_res_types,
-        ValueRange{op.getBuffer(), op.getSource(), op.getTag(), op.getComm()},
+        ValueRange{adaptor.getSource(), adaptor.getTag(), adaptor.getComm()},
         rewriter.getStringAttr("MpiIrecv"),
         /*has_side_effect=*/rewriter.getBoolAttr(true),
         /*backend_config=*/nullptr,
@@ -248,7 +250,7 @@ struct LowerCommMpiWaitOp : public OpConversionPattern<comm::MpiWaitOp> {
   matchAndRewrite(comm::MpiWaitOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
-        op, TypeRange{}, ValueRange{op.getRequest()},
+        op, TypeRange{}, ValueRange{adaptor.getRequest()},
         rewriter.getStringAttr("MpiWait"),
         /*has_side_effect=*/rewriter.getBoolAttr(true),
         /*backend_config=*/nullptr,
@@ -270,7 +272,7 @@ struct LowerCommMpiWaitallOp : public OpConversionPattern<comm::MpiWaitallOp> {
   matchAndRewrite(comm::MpiWaitallOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
     rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
-        op, TypeRange{}, ValueRange{op.getRequests()},
+        op, TypeRange{}, ValueRange{adaptor.getRequests()},
         rewriter.getStringAttr("MpiWaitall"),
         /*has_side_effect=*/rewriter.getBoolAttr(true),
         /*backend_config=*/nullptr,
@@ -300,7 +302,8 @@ struct LowerCommMpiAllreduceOp
 
     // TODO pass attributes: reduceOp
     rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
-        op, converted_res_types, ValueRange{op.getSendbuf(), op.getComm()},
+        op, converted_res_types,
+        ValueRange{adaptor.getSendbuf(), adaptor.getComm()},
         rewriter.getStringAttr("MpiAllreduce"),
         /*has_side_effect=*/rewriter.getBoolAttr(true),
         /*backend_config=*/nullptr,
@@ -329,7 +332,7 @@ struct LowerCommMpiBcastOp : public OpConversionPattern<comm::MpiBcastOp> {
 
     rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
         op, converted_res_types,
-        ValueRange{op.getInBuffer(), op.getRoot(), op.getComm()},
+        ValueRange{adaptor.getInBuffer(), adaptor.getRoot(), adaptor.getComm()},
         rewriter.getStringAttr("MpiBcast"),
         /*has_side_effect=*/rewriter.getBoolAttr(true),
         /*backend_config=*/nullptr,
