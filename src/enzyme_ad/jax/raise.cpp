@@ -120,15 +120,12 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       "inline{default-pipeline=canonicalize "
       "max-iterations=4},sroa-wrappers{set_private=false attributor=false},"
       "lift-tessera-annotations,parse-optimization-rules,"
-      // __enzyme_* calls raise to enzyme ops before launch recognition,
-      // resolving the kernel-stub pointer they hold into a symbol: a stub
-      // handed to them is then not an escaped address forcing launch_func.
-      "libdevice-funcs-raise,restore-preserve-nvvm,"
+      "libdevice-funcs-raise,"
       "gpu-launch-recognition{backend=";
   pass_pipeline += backend;
   pass_pipeline += "}";
   pass_pipeline += ","
-      "" + canonicalize + ","
+      "" + canonicalize + ",restore-preserve-nvvm," + canonicalize + ","
       "inline-enzyme-regions,symbol-dce,";
   
   if (backend == "cpu")
