@@ -29,3 +29,15 @@ module {
 // CHECK-NEXT: affine.store %[[FZ]], %[[OUT]][0] : memref<?xf64>
 // CHECK-NEXT: }
 // CHECK-NEXT: return
+
+// A pointer loaded from a null view has no arith zero attribute; it folds to
+// llvm null instead.
+// CHECK-LABEL: func.func @optionalptr(
+// CHECK: llvm.mlir.zero
+// CHECK-NOT: arith.constant {{.*}} !llvm.ptr
+func.func @optionalptr(%flag: i1) -> !llvm.ptr {
+  %null = llvm.mlir.zero : !llvm.ptr
+  %view = "enzymexla.pointer2memref"(%null) : (!llvm.ptr) -> memref<?x!llvm.ptr>
+  %p = affine.load %view[3] : memref<?x!llvm.ptr>
+  return %p : !llvm.ptr
+}
