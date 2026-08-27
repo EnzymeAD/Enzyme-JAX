@@ -38,6 +38,8 @@ XLA_FFI_Error *prepare(XLA_FFI_CallFrame *call_frame) { return nullptr; }
 
 struct CuFuncWrapper {
   void *func;
+  void operator delete(void* ptr) noexcept {
+  }
 };
 
 template <bool withError>
