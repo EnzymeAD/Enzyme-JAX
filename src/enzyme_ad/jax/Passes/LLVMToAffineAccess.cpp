@@ -710,7 +710,7 @@ struct ExpandStructMemcpy : public OpRewritePattern<LLVM::MemcpyOp> {
     Type elt = tracedElementType(op.getSrc());
     if (!elt)
       elt = tracedElementType(op.getDst());
-    if (!elt)
+    if (!elt || !elt.isIntOrFloat())
       return failure();
     uint64_t eltBytes = elt.getIntOrFloatBitWidth() / 8;
     if (!eltBytes || len % eltBytes)
@@ -751,7 +751,7 @@ struct ExpandStructMemsetZero : public OpRewritePattern<LLVM::MemsetOp> {
     if (!len || len > 64)
       return failure();
     Type elt = ExpandStructMemcpy::tracedElementType(op.getDst());
-    if (!elt)
+    if (!elt || !elt.isIntOrFloat())
       return failure();
     uint64_t eltBytes = elt.getIntOrFloatBitWidth() / 8;
     if (!eltBytes || len % eltBytes)
@@ -1477,16 +1477,24 @@ struct NullAccessFold : public OpRewritePattern<enzymexla::Pointer2MemrefOp> {
       return failure();
     bool changed = false;
     for (Operation *user : llvm::make_early_inc_range(p2m->getUsers())) {
+      auto zeroFor = [&](Operation *ld, Type t) {
+        rewriter.setInsertionPoint(ld);
+        // getZeroAttr has no answer for pointers; those zero as llvm null.
+        if (t.isIntOrFloat()) {
+          rewriter.replaceOpWithNewOp<arith::ConstantOp>(
+              ld, t, rewriter.getZeroAttr(t));
+          return true;
+        }
+        if (isa<LLVM::LLVMPointerType>(t)) {
+          rewriter.replaceOpWithNewOp<LLVM::ZeroOp>(ld, t);
+          return true;
+        }
+        return false;
+      };
       if (auto ld = dyn_cast<affine::AffineLoadOp>(user)) {
-        rewriter.setInsertionPoint(ld);
-        rewriter.replaceOpWithNewOp<arith::ConstantOp>(
-            ld, ld.getType(), rewriter.getZeroAttr(ld.getType()));
-        changed = true;
+        changed |= zeroFor(ld, ld.getType());
       } else if (auto ld = dyn_cast<memref::LoadOp>(user)) {
-        rewriter.setInsertionPoint(ld);
-        rewriter.replaceOpWithNewOp<arith::ConstantOp>(
-            ld, ld.getType(), rewriter.getZeroAttr(ld.getType()));
-        changed = true;
+        changed |= zeroFor(ld, ld.getType());
       } else if (isa<affine::AffineStoreOp, memref::StoreOp>(user) &&
                  user->getOperand(1) == p2m.getResult() &&
                  user->getOperand(0) != p2m.getResult()) {
