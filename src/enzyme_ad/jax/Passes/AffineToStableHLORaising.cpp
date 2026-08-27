@@ -22,6 +22,7 @@
 #include "mlir/Dialect/Affine/LoopUtils.h"
 #include "mlir/Dialect/Affine/Utils.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Math/IR/Math.h"
@@ -3415,6 +3416,17 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     return success();
   }
 
+  // A shape-erasing cast of an already-raised buffer is the identity on the
+  // underlying tensor.
+  if (auto castOp = dyn_cast<memref::CastOp>(op)) {
+    Value src = mapping.lookupOrNull(castOp.getSource());
+    if (src && maps.count(src)) {
+      mapping.map(castOp.getResult(), src);
+      maps[src] = maps.lookup(src);
+      return success();
+    }
+  }
+
   // Raised execution is ordered over whole tensors: a store over a batched
   // thread axis completes for the entire axis before the next op runs, which
   // is exactly what the barrier guaranteed.
@@ -3596,10 +3608,144 @@ struct AffineToStableHLORaisingPass
   // raising identifies buffers by SSA root: a memory_space_cast view would
   // split one buffer into two roots and lose store propagation. Retarget the
   // accesses to the source and drop the cast.
+  // Straight-line CFG inside a cloned callee region folds into one block,
+  // so the scope inlining below can dissolve it.
+  static void linearizeRegionBlocks(Region &r) {
+    auto isTrapBlock = [](Block *b) {
+      return isa<LLVM::UnreachableOp>(b->getTerminator());
+    };
+    bool changed = true;
+    while (changed) {
+      changed = false;
+      // Branches whose other targets only trap take their one live successor
+      // unconditionally.
+      for (Block &b : r) {
+        Operation *term = b.getTerminator();
+        SmallVector<std::pair<Block *, SmallVector<Value>>> live;
+        bool anyTrap = false;
+        if (isa<cf::SwitchOp, cf::CondBranchOp>(term)) {
+          for (auto [i, succ] : llvm::enumerate(term->getSuccessors())) {
+            if (isTrapBlock(succ)) {
+              anyTrap = true;
+              continue;
+            }
+            auto sops = cast<BranchOpInterface>(term).getSuccessorOperands(i);
+            SmallVector<Value> args(sops.getForwardedOperands().begin(),
+                                    sops.getForwardedOperands().end());
+            live.push_back({succ, std::move(args)});
+          }
+        }
+        if (anyTrap && live.size() == 1) {
+          OpBuilder tb(term);
+          cf::BranchOp::create(tb, term->getLoc(), live[0].first,
+                               live[0].second);
+          term->erase();
+          changed = true;
+          break;
+        }
+      }
+      if (changed)
+        continue;
+      // Trap blocks with no remaining predecessors disappear.
+      for (Block &b : llvm::make_early_inc_range(r)) {
+        if (&b != &r.front() && b.hasNoPredecessors()) {
+          b.dropAllDefinedValueUses();
+          b.erase();
+          changed = true;
+        }
+      }
+      if (changed)
+        continue;
+      for (Block &b : r) {
+        Operation *term = b.getTerminator();
+        Block *succ = nullptr;
+        SmallVector<Value> args;
+        if (auto br = dyn_cast<cf::BranchOp>(term)) {
+          succ = br.getDest();
+          args.assign(br.getDestOperands().begin(), br.getDestOperands().end());
+        } else if (auto br = dyn_cast<LLVM::BrOp>(term)) {
+          succ = br.getDest();
+          args.assign(br.getDestOperands().begin(), br.getDestOperands().end());
+        } else {
+          continue;
+        }
+        if (!succ || succ == &b || succ->getSinglePredecessor() != &b)
+          continue;
+        for (auto [ba, v] : llvm::zip(succ->getArguments(), args))
+          ba.replaceAllUsesWith(v);
+        term->erase();
+        b.getOperations().splice(b.end(), succ->getOperations());
+        succ->erase();
+        changed = true;
+        break;
+      }
+    }
+  }
+
+  static void inlineAllocaScopes(Operation *g) {
+    // Inliner wrappers stack alloca_scope/execute_region pairs, so inlining
+    // one can expose another: iterate to a fixed point.
+    bool changed = true;
+    while (changed) {
+      changed = false;
+      SmallVector<Operation *> scopes;
+      g->walk([&](Operation *op) {
+        if (isa<memref::AllocaScopeOp, scf::ExecuteRegionOp>(op))
+          scopes.push_back(op);
+      });
+      for (Operation *sc : scopes) {
+        Region &r = sc->getRegion(0);
+        if (!r.hasOneBlock())
+          linearizeRegionBlocks(r);
+        if (!r.hasOneBlock()) {
+          if (getenv("DEBUG_SCOPES")) {
+            llvm::errs() << "scope multiblock after linearize: "
+                         << std::distance(r.begin(), r.end()) << " blocks;";
+            for (Block &b : r)
+              llvm::errs() << " term=" << b.getTerminator()->getName()
+                           << " preds="
+                           << std::distance(b.pred_begin(), b.pred_end());
+            llvm::errs() << "\n";
+          }
+          continue;
+        }
+        Block *body = &r.front();
+        Operation *term = body->getTerminator();
+        for (auto [res, yielded] :
+             llvm::zip(sc->getResults(), term->getOperands()))
+          res.replaceAllUsesWith(yielded);
+        term->erase();
+        sc->getBlock()->getOperations().splice(sc->getIterator(),
+                                               body->getOperations());
+        sc->erase();
+        changed = true;
+      }
+    }
+  }
+
   static void stripAccessMemorySpaceCasts(Operation *root) {
     SmallVector<memref::MemorySpaceCastOp> casts;
     root->walk([&](memref::MemorySpaceCastOp c) { casts.push_back(c); });
     for (auto c : casts) {
+      if (!llvm::all_of(c->getUsers(), [](Operation *u) {
+            return isa<affine::AffineLoadOp, affine::AffineStoreOp,
+                       memref::LoadOp, memref::StoreOp>(u);
+          }))
+        continue;
+      for (Operation *u : llvm::make_early_inc_range(c->getUsers()))
+        u->replaceUsesOfWith(c.getResult(), c.getSource());
+      c.erase();
+    }
+    // Shape-erasing casts of static buffers block raising the same way:
+    // accesses go straight to the static source.
+    SmallVector<memref::CastOp> shapeCasts;
+    root->walk([&](memref::CastOp c) {
+      auto src = dyn_cast<MemRefType>(c.getSource().getType());
+      auto dst = dyn_cast<MemRefType>(c.getType());
+      if (src && dst && src.hasStaticShape() && !dst.hasStaticShape())
+        shapeCasts.push_back(c);
+    });
+    for (auto c : shapeCasts) {
       if (!llvm::all_of(c->getUsers(), [](Operation *u) {
             return isa<affine::AffineLoadOp, affine::AffineStoreOp,
                        memref::LoadOp, memref::StoreOp>(u);
@@ -3900,6 +4046,7 @@ struct AffineToStableHLORaisingPass
     // actually raises.
     for (auto func : funcs) {
       stripAccessMemorySpaceCasts(func);
+      inlineAllocaScopes(func);
       boundParallelAxes(func);
       peelDynamicParallelDims(func);
     }
@@ -3923,6 +4070,7 @@ struct AffineToStableHLORaisingPass
     op->walk([&](enzymexla::GPUWrapperOp g) { gwrap.push_back(g); });
     for (auto g : gwrap) {
       stripAccessMemorySpaceCasts(g);
+      inlineAllocaScopes(g);
       boundParallelAxes(g);
       peelDynamicParallelDims(g);
     }
