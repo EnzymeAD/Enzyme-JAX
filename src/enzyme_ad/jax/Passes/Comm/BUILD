@@ -37,6 +37,7 @@ cc_library(
     deps = [
         ":PassesIncGen",
         "//src/enzyme_ad/jax/Dialect/Comm:CommDialect",
+        "@llvm-project//mlir:FuncTransforms",
         "@llvm-project//mlir:LLVMCommonConversion",
         "@stablehlo//:stablehlo_ops",
     ],
