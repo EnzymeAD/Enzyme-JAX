@@ -460,8 +460,8 @@ static void insertEmptyGPUInit(mlir::ModuleOp &submod, mlir::Location loc) {
   initfn.getRegion().push_back(blk);
   builder.setInsertionPointToEnd(blk);
   auto i64 = builder.getIntegerType(64);
-  auto one = LLVM::ConstantOp::create(builder, loc, i64,
-                                      builder.getI64IntegerAttr(1));
+  auto one =
+      LLVM::ConstantOp::create(builder, loc, i64, builder.getI64IntegerAttr(1));
   auto sentinel =
       LLVM::IntToPtrOp::create(builder, loc, ptrty, one.getResult());
   LLVM::ReturnOp::create(builder, loc, ValueRange(sentinel));
