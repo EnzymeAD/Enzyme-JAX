@@ -6660,6 +6660,8 @@ struct AffineToStableHLORaisingPass
       SmallVector<Operation *> chainOps;
       SmallVector<Operation *> directAccesses;
       bool viewedOnly = true;
+      if (!MT.getElementType().isIntOrFloat())
+        continue;
       int64_t elemBytes =
           (MT.getElementType().getIntOrFloatBitWidth() + 7) / 8;
       SmallVector<std::pair<Value, int64_t>> ptrWork;

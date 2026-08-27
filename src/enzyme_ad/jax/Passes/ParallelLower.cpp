@@ -382,6 +382,8 @@ void ParallelLower::runOnOperation() {
     // Build the inliner interface.
     AlwaysInlinerInterface interface(&getContext());
 
+    if (!caller.getCalleeAttr())
+      return;
     CallableOpInterface callableOp = dyn_cast_or_null<CallableOpInterface>(
         caller.resolveCallableInTable(&symbolTable));
     if (!callableOp)
@@ -518,6 +520,12 @@ void ParallelLower::runOnOperation() {
     assert(gpuWrapper);
     auto [callInGPU, lfn] =
         prepareForGPUInline(caller, gpuWrapper, symbolTable);
+    if (callInGPU == caller) {
+      // Already-prepared callee: the plain inliner consumes the call whole,
+      // and the clone-based tail below would then touch the erased op.
+      LLVMcallInlinerImpl(caller);
+      return;
+    }
     LLVMcallInlinerImpl(callInGPU);
     OpBuilder b(caller);
     auto allocScope = memref::AllocaScopeOp::create(b, caller.getLoc(),
@@ -596,8 +604,6 @@ void ParallelLower::runOnOperation() {
         dimsToInline.push_back(bidx);
     });
     for (auto op : dimsToInline) {
-      if (getenv("DEBUG_PL"))
-        llvm::errs() << "PL site A\n";
       callInliner(op);
     }
   }
@@ -646,18 +652,12 @@ void ParallelLower::runOnOperation() {
           atoinl.push_back(ac);
       }
       for (auto l : ltoinl) {
-        if (getenv("DEBUG_PL"))
-          llvm::errs() << "PL site BL\n";
         LLVMcallInliner(l);
       }
       for (auto m : mtoinl) {
-        if (getenv("DEBUG_PL"))
-          llvm::errs() << "PL site B\n";
         callInliner(m);
       }
       for (auto a : atoinl) {
-        if (getenv("DEBUG_PL"))
-          llvm::errs() << "PL site BA\n";
         autodiffInliner(a);
       }
     }
@@ -696,8 +696,6 @@ void ParallelLower::runOnOperation() {
         inlined = true;
       }
       for (auto m : mtoinl) {
-        if (getenv("DEBUG_PL"))
-          llvm::errs() << "PL site C\n";
         callInliner(m);
         inlined = true;
       }
@@ -743,8 +741,11 @@ void ParallelLower::runOnOperation() {
         launchOp.getClusterSizeY(), launchOp.getClusterSizeZ());
 
     builder.setInsertionPointToStart(&op.getRegion().front());
-    func::CallOp::create(builder, launchOp.getLoc(), launchOp.getKernel(),
-                         TypeRange(), launchOp.getKernelOperands());
+    // func.call cannot carry the nested gpu-module reference; the top-level
+    // original of the kernel launcher shares the leaf name and body.
+    func::CallOp::create(builder, launchOp.getLoc(),
+                         launchOp.getKernelName().getValue(), TypeRange(),
+                         launchOp.getKernelOperands());
     gpu::TerminatorOp::create(builder, launchOp.getLoc());
     for (auto &&[lhs, rhs] :
          llvm::zip_equal(launchOp->getResults(), op->getResults())) {
@@ -760,12 +761,8 @@ void ParallelLower::runOnOperation() {
     {
       SmallVector<CallOp> ops;
       launchOp.walk([&](CallOp caller) { ops.push_back(caller); });
-      for (auto op : ops) {
-        if (getenv("DEBUG_PL"))
-          llvm::errs() << "PL site D: " << op.getCallee() << " nops="
-                       << op.getNumOperands() << "\n";
+      for (auto op : ops)
         callInliner(op);
-      }
     }
     {
       SmallVector<enzyme::AutoDiffOp> ops;
@@ -793,6 +790,21 @@ void ParallelLower::runOnOperation() {
 
     auto oneindex = ConstantIndexOp::create(builder, loc, 1);
 
+    // launch_func-recognized kernels carry i64 dims; everything below wants
+    // index.
+    auto dimToIndex = [&](Value v) -> Value {
+      if (isa<IndexType>(v.getType()))
+        return v;
+      return arith::IndexCastOp::create(builder, loc, builder.getIndexType(),
+                                        v);
+    };
+    Value dimGridX = dimToIndex(launchOp.getGridSizeX());
+    Value dimGridY = dimToIndex(launchOp.getGridSizeY());
+    Value dimGridZ = dimToIndex(launchOp.getGridSizeZ());
+    Value dimBlockX = dimToIndex(launchOp.getBlockSizeX());
+    Value dimBlockY = dimToIndex(launchOp.getBlockSizeY());
+    Value dimBlockZ = dimToIndex(launchOp.getBlockSizeZ());
+
     async::ExecuteOp asyncOp = nullptr;
     if (!launchOp.getAsyncDependencies().empty()) {
       SmallVector<Value> dependencies;
@@ -812,9 +824,8 @@ void ParallelLower::runOnOperation() {
     if (wrapParallelOps) {
       auto pw = enzymexla::GPUWrapperOp::create(
           builder, loc,
-          ValueRange({launchOp.getGridSizeX(), launchOp.getGridSizeY(),
-                      launchOp.getGridSizeZ(), launchOp.getBlockSizeX(),
-                      launchOp.getBlockSizeY(), launchOp.getBlockSizeZ()}));
+          ValueRange({dimGridX, dimGridY, dimGridZ, dimBlockX, dimBlockY,
+                      dimBlockZ}));
       if (lfn) {
         if (auto passthrough = lfn.getPassthrough()) {
           pw->setAttr("passthrough", *passthrough);
@@ -835,8 +846,8 @@ void ParallelLower::runOnOperation() {
 
     auto block = mlir::scf::ParallelOp::create(
         builder, loc, std::vector<Value>({zindex, zindex, zindex}),
-        std::vector<Value>({launchOp.getGridSizeX(), launchOp.getGridSizeY(),
-                            launchOp.getGridSizeZ()}),
+        std::vector<Value>({dimGridX, dimGridY,
+                            dimGridZ}),
         std::vector<Value>({oneindex, oneindex, oneindex}));
     Block *blockB = &block.getRegion().front();
     builder.setInsertionPointToStart(blockB);
@@ -858,8 +869,8 @@ void ParallelLower::runOnOperation() {
 
     auto threadr = mlir::scf::ParallelOp::create(
         builder, loc, std::vector<Value>({zindex, zindex, zindex}),
-        std::vector<Value>({launchOp.getBlockSizeX(), launchOp.getBlockSizeY(),
-                            launchOp.getBlockSizeZ()}),
+        std::vector<Value>({dimBlockX, dimBlockY,
+                            dimBlockZ}),
         std::vector<Value>({oneindex, oneindex, oneindex}));
     Block *threadB = &threadr.getRegion().front();
     builder.setInsertionPointToStart(threadB);
@@ -895,12 +906,12 @@ void ParallelLower::runOnOperation() {
     SmallVector<Value> launchArgs;
     llvm::append_range(launchArgs, blockB->getArguments());
     llvm::append_range(launchArgs, threadB->getArguments());
-    launchArgs.push_back(launchOp.getGridSizeX());
-    launchArgs.push_back(launchOp.getGridSizeY());
-    launchArgs.push_back(launchOp.getGridSizeZ());
-    launchArgs.push_back(launchOp.getBlockSizeX());
-    launchArgs.push_back(launchOp.getBlockSizeY());
-    launchArgs.push_back(launchOp.getBlockSizeZ());
+    launchArgs.push_back(dimGridX);
+    launchArgs.push_back(dimGridY);
+    launchArgs.push_back(dimGridZ);
+    launchArgs.push_back(dimBlockX);
+    launchArgs.push_back(dimBlockY);
+    launchArgs.push_back(dimBlockZ);
     builder.inlineBlockBefore(&launchOp.getRegion().front(), mergeLoc,
                               launchArgs);
 
@@ -1023,11 +1034,11 @@ void ParallelLower::runOnOperation() {
     container.walk([&](gpu::GridDimOp bidx) {
       Value val = nullptr;
       if (bidx.getDimension() == gpu::Dimension::x)
-        val = launchOp.getGridSizeX();
+        val = dimGridX;
       else if (bidx.getDimension() == gpu::Dimension::y)
-        val = launchOp.getGridSizeY();
+        val = dimGridY;
       else if (bidx.getDimension() == gpu::Dimension::z)
-        val = launchOp.getGridSizeZ();
+        val = dimGridZ;
       else
         llvm_unreachable("illegal dimension");
       builder.replaceOp(bidx, val);
@@ -1036,11 +1047,11 @@ void ParallelLower::runOnOperation() {
     container.walk([&](gpu::BlockDimOp bidx) {
       Value val = nullptr;
       if (bidx.getDimension() == gpu::Dimension::x)
-        val = launchOp.getBlockSizeX();
+        val = dimBlockX;
       else if (bidx.getDimension() == gpu::Dimension::y)
-        val = launchOp.getBlockSizeY();
+        val = dimBlockY;
       else if (bidx.getDimension() == gpu::Dimension::z)
-        val = launchOp.getBlockSizeZ();
+        val = dimBlockZ;
       else
         llvm_unreachable("illegal dimension");
       builder.replaceOp(bidx, val);
@@ -1223,13 +1234,8 @@ void FixGPUFunc::runOnOperation() {
     }
     auto callOp2 = getDirectlyNestedCallOp(funcOp);
 
-    if (callOp2) {
-      if (getenv("DEBUG_PL"))
-        llvm::errs() << "PL site E\n";
+    if (callOp2)
       callInliner(callOp2);
-    }
-    if (getenv("DEBUG_PL"))
-      llvm::errs() << "PL site F\n";
     callInliner(callOp);
   });
 }
