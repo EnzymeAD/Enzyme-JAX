@@ -20,7 +20,6 @@ struct CommMpiCommRankOpLowering
   LogicalResult
   matchAndRewrite(comm::MpiCommRankOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto context = op->getContext();
     const TypeConverter *converter = getTypeConverter();
 
     SmallVector<Type> converted_res_types;
@@ -29,13 +28,6 @@ struct CommMpiCommRankOpLowering
       return failure();
     }
 
-    // SmallVector<Type> converted_arg_types;
-    // if (failed(converter->convertTypes(op->getOperandTypes(),
-    //                                    converted_arg_types))) {
-    //   return failure();
-    // }
-
-    // Replace the MpiCommRankOp with a stablehlo.custom_call operation
     rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
         op, converted_res_types, ValueRange{op.getComm()},
         rewriter.getStringAttr("MpiCommRank"),
@@ -59,7 +51,6 @@ struct CommMpiCommSizeOpLowering
   LogicalResult
   matchAndRewrite(comm::MpiCommSizeOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto context = op->getContext();
     const TypeConverter *converter = getTypeConverter();
 
     SmallVector<Type> converted_res_types;
@@ -68,13 +59,6 @@ struct CommMpiCommSizeOpLowering
       return failure();
     }
 
-    // SmallVector<Type> converted_arg_types;
-    // if (failed(converter->convertTypes(op->getOperandTypes(),
-    //                                    converted_arg_types))) {
-    //   return failure();
-    // }
-
-    // Replace the MpiCommSizeOp with a stablehlo.custom_call operation
     rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
         op, converted_res_types, ValueRange{op.getComm()},
         rewriter.getStringAttr("MpiCommSize"),
@@ -98,7 +82,6 @@ struct CommMpiCommSplitOpLowering
   LogicalResult
   matchAndRewrite(comm::MpiCommSplitOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto context = op->getContext();
     const TypeConverter *converter = getTypeConverter();
 
     SmallVector<Type> converted_res_types;
@@ -107,13 +90,6 @@ struct CommMpiCommSplitOpLowering
       return failure();
     }
 
-    // SmallVector<Type> converted_arg_types;
-    // if (failed(converter->convertTypes(op->getOperandTypes(),
-    //                                    converted_arg_types))) {
-    //   return failure();
-    // }
-
-    // Replace the MpiCommSplitOp with a stablehlo.custom_call operation
     rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
         op, converted_res_types,
         ValueRange{op.getComm(), op.getColor(), op.getKey()},
@@ -138,9 +114,6 @@ struct CommMpiBarrierOpLowering
   LogicalResult
   matchAndRewrite(comm::MpiBarrierOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto context = op->getContext();
-
-    // Replace the MpiBarrierOp with a stablehlo.custom_call operation
     rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
         op, TypeRange{}, ValueRange{op.getComm()},
         rewriter.getStringAttr("MpiBarrier"),
@@ -163,9 +136,6 @@ struct CommMpiSendOpLowering : public OpConversionPattern<comm::MpiSendOp> {
   LogicalResult
   matchAndRewrite(comm::MpiSendOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto context = op->getContext();
-
-    // Replace the MpiSendOp with a stablehlo.custom_call operation
     rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
         op, TypeRange{},
         ValueRange{op.getBuffer(), op.getDest(), op.getTag(), op.getComm()},
@@ -189,15 +159,12 @@ struct CommMpiIsendOpLowering : public OpConversionPattern<comm::MpiIsendOp> {
   LogicalResult
   matchAndRewrite(comm::MpiIsendOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto context = op->getContext();
-
     SmallVector<Type> converted_res_types;
     if (failed(getTypeConverter()->convertTypes(op->getResultTypes(),
                                                 converted_res_types))) {
       return failure();
     }
 
-    // Replace the MpiIsendOp with a stablehlo.custom_call operation
     rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
         op, converted_res_types,
         ValueRange{op.getBuffer(), op.getDest(), op.getTag(), op.getComm()},
@@ -221,15 +188,12 @@ struct CommMpiRecvOpLowering : public OpConversionPattern<comm::MpiRecvOp> {
   LogicalResult
   matchAndRewrite(comm::MpiRecvOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto context = op->getContext();
-
     SmallVector<Type> converted_res_types;
     if (failed(getTypeConverter()->convertTypes(op->getResultTypes(),
                                                 converted_res_types))) {
       return failure();
     }
 
-    // Replace the MpiRecvOp with a stablehlo.custom_call operation
     rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
         op, converted_res_types,
         ValueRange{op.getBuffer(), op.getSource(), op.getTag(), op.getComm()},
@@ -253,15 +217,12 @@ struct CommMpiIrecvOpLowering : public OpConversionPattern<comm::MpiIrecvOp> {
   LogicalResult
   matchAndRewrite(comm::MpiIrecvOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto context = op->getContext();
-
     SmallVector<Type> converted_res_types;
     if (failed(getTypeConverter()->convertTypes(op->getResultTypes(),
                                                 converted_res_types))) {
       return failure();
     }
 
-    // Replace the MpiIrecvOp with a stablehlo.custom_call operation
     rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
         op, converted_res_types,
         ValueRange{op.getBuffer(), op.getSource(), op.getTag(), op.getComm()},
@@ -285,9 +246,6 @@ struct CommMpiWaitOpLowering : public OpConversionPattern<comm::MpiWaitOp> {
   LogicalResult
   matchAndRewrite(comm::MpiWaitOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto context = op->getContext();
-
-    // Replace the MpiWaitOp with a stablehlo.custom_call operation
     rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
         op, TypeRange{}, ValueRange{op.getRequest()},
         rewriter.getStringAttr("MpiWait"),
@@ -311,9 +269,6 @@ struct CommMpiWaitallOpLowering
   LogicalResult
   matchAndRewrite(comm::MpiWaitallOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto context = op->getContext();
-
-    // Replace the MpiWaitallOp with a stablehlo.custom_call operation
     rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
         op, TypeRange{}, ValueRange{op.getRequests()},
         rewriter.getStringAttr("MpiWaitall"),
@@ -337,8 +292,6 @@ struct CommMpiAllreduceOpLowering
   LogicalResult
   matchAndRewrite(comm::MpiAllreduceOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto context = op->getContext();
-
     SmallVector<Type> converted_res_types;
     if (failed(getTypeConverter()->convertTypes(op->getResultTypes(),
                                                 converted_res_types))) {
@@ -346,7 +299,6 @@ struct CommMpiAllreduceOpLowering
     }
 
     // TODO pass attributes: reduceOp
-    // Replace the MpiAllreduceOp with a stablehlo.custom_call operation
     rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
         op, converted_res_types, ValueRange{op.getSendbuf(), op.getComm()},
         rewriter.getStringAttr("MpiAllreduce"),
@@ -369,15 +321,12 @@ struct CommMpiBcastOpLowering : public OpConversionPattern<comm::MpiBcastOp> {
   LogicalResult
   matchAndRewrite(comm::MpiBcastOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const override {
-    auto context = op->getContext();
-
     SmallVector<Type> converted_res_types;
     if (failed(getTypeConverter()->convertTypes(op->getResultTypes(),
                                                 converted_res_types))) {
       return failure();
     }
 
-    // Replace the MpiBcastOp with a stablehlo.custom_call operation
     rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
         op, converted_res_types,
         ValueRange{op.getInBuffer(), op.getRoot(), op.getComm()},
@@ -405,20 +354,9 @@ struct LowerCommToStablehloPass
 
     ConversionTarget target(*context);
     target.addLegalDialect<stablehlo::StablehloDialect>();
+    target.addIllegalDialect<comm::CommDialect>();
 
-    target.addIllegalOp<comm::MpiCommRankOp>();
-    target.addIllegalOp<comm::MpiCommSizeOp>();
-    target.addIllegalOp<comm::MpiCommSplitOp>();
-    target.addIllegalOp<comm::MpiBarrierOp>();
-    target.addIllegalOp<comm::MpiSendOp>();
-    target.addIllegalOp<comm::MpiIsendOp>();
-    target.addIllegalOp<comm::MpiRecvOp>();
-    target.addIllegalOp<comm::MpiIrecvOp>();
-    target.addIllegalOp<comm::MpiWaitOp>();
-    target.addIllegalOp<comm::MpiWaitallOp>();
-    target.addIllegalOp<comm::MpiAllreduceOp>();
-    target.addIllegalOp<comm::MpiBcastOp>();
-
+    // defaults to no conversion for other types
     TypeConverter converter;
 
     // !comm.mpi.comm, !comm.mpi.request are pointer-like, so lower to
@@ -429,13 +367,6 @@ struct LowerCommToStablehloPass
         [&](comm::MpiCommType type) { return ptr_tensor_type; });
     converter.addConversion(
         [&](comm::MpiRequestType type) { return ptr_tensor_type; });
-
-    // TODO !comm.mpi.status is a opaque type, so lower to
-    // tensor<MPI_STATUS_SIZExi8> converter.addConversion([](comm::MpiStatus
-    // type) {
-    //   return RankedTensorType::get({MPI_STATUS_SIZE},
-    //                                IntegerType::get(type.getContext(), 8));
-    // });
 
     // lower comm.mpi ops to stablehlo.custom_call ops
     RewritePatternSet patterns(context);
