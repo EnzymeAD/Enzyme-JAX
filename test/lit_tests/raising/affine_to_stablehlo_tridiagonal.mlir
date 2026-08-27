@@ -675,7 +675,7 @@ module {
   }
 }
 
-// CHECK:      %[[ALIGN1:.+]] = stablehlo.transpose %3191, dims = [0, 2, 3, 1] : (tensor<2x16x16x3xf32>) -> tensor<2x16x3x16xf32>
-// CHECK-NEXT:      %[[ALIGN2:.+]] = stablehlo.transpose %3508, dims = [0, 2, 3, 1] : (tensor<2x16x16x3xf32>) -> tensor<2x16x3x16xf32>
-// CHECK-NEXT:      stablehlo.return %{{.+}}, %[[ALIGN1]], %[[ALIGN2]], %{{.+}}, %{{.+}}, %iterArg_491, %iterArg_492, %iterArg_493, %iterArg_494, %iterArg_495, %iterArg_496, %iterArg_497, %iterArg_498, %iterArg_499 : tensor<i64>, tensor<2x16x3x16xf32>, tensor<2x16x3x16xf32>, tensor<61x28x46xf32>, tensor<50x18x36xf32>, tensor<61xf32>, tensor<60xf32>, tensor<1x28x46xf32>, tensor<60x28x46xf32>, tensor<60x28x46xf32>, tensor<60x28x46xf32>, tensor<f32>, tensor<f32>, tensor<f32>
+// CHECK:      %[[ALIGN1:.+]] = stablehlo.transpose %{{.+}}, dims = [0, 2, 3, 1] : (tensor<2x16x16x3xf32>) -> tensor<2x16x3x16xf32>
+// CHECK-NEXT:      %[[ALIGN2:.+]] = stablehlo.transpose %{{.+}}, dims = [0, 2, 3, 1] : (tensor<2x16x16x3xf32>) -> tensor<2x16x3x16xf32>
+// CHECK-NEXT:      stablehlo.return %{{.+}}, %[[ALIGN1]], %[[ALIGN2]], %{{.+}}, %{{.+}}, %iterArg{{.+}} : tensor<i64>, tensor<2x16x3x16xf32>, tensor<2x16x3x16xf32>, tensor<61x28x46xf32>, tensor<50x18x36xf32>, tensor<61xf32>, tensor<60xf32>, tensor<1x28x46xf32>, tensor<60x28x46xf32>, tensor<60x28x46xf32>, tensor<60x28x46xf32>, tensor<f32>, tensor<f32>, tensor<f32>
 // CHECK-NEXT:    }
