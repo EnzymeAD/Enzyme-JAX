@@ -35158,6 +35158,71 @@ struct RecognizeMultiPad final
   }
 };
 
+// The raising masks a store by sending dead lanes' scatter indices out of
+// bounds, which scatter semantics drop. Single-point scatter rewrites turn
+// the op into dynamic_update_slice, whose index clamping would bring the
+// dead write back in range; resolve the mask first: scatter at the live
+// index and write the original value back when masked off (a no-op store).
+struct ScatterMaskedIndexSimplify final
+    : CheckedOpRewritePattern<stablehlo::ScatterOp,
+                              ScatterMaskedIndexSimplify> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ScatterOp op,
+                                    PatternRewriter &rewriter) const {
+    if (op.getInputs().size() != 1)
+      return failure();
+    auto &block = op.getUpdateComputation().front();
+    if (!isSetindexBlock(&block))
+      return failure();
+    auto inputTy = cast<RankedTensorType>(op.getInputs()[0].getType());
+    if (inputTy.getRank() != 1)
+      return failure();
+    auto indices = op.getScatterIndices();
+    auto idxTy = cast<RankedTensorType>(indices.getType());
+    if (idxTy.getNumElements() != 1)
+      return failure();
+    auto sel = indices.getDefiningOp<stablehlo::SelectOp>();
+    if (!sel)
+      return failure();
+    SplatElementsAttr offSplat;
+    if (!matchPattern(sel.getOnFalse(), m_Constant(&offSplat)) ||
+        !offSplat.getSplatValue<APInt>().isNegative())
+      return failure();
+    auto predTy = cast<RankedTensorType>(sel.getPred().getType());
+    if (predTy.getNumElements() != 1)
+      return failure();
+
+    auto loc = op.getLoc();
+    Value scalarIdx =
+        stablehlo::ReshapeOpCreate(rewriter, loc, sel.getOnTrue(), {});
+    Value scalarPred =
+        stablehlo::ReshapeOpCreate(rewriter, loc, sel.getPred(), {});
+    Value update = op.getUpdates()[0];
+    auto updTy = cast<RankedTensorType>(update.getType());
+    Value orig = stablehlo::DynamicSliceOpCreate(
+        rewriter, loc, op.getInputs()[0], {scalarIdx}, {1});
+    orig = stablehlo::ReshapeOpCreate(rewriter, loc, orig, updTy.getShape());
+    Value pred = scalarPred;
+    if (updTy.getRank() != 0) {
+      SmallVector<int64_t> noDims;
+      pred = stablehlo::BroadcastInDimOp::create(
+          rewriter, loc,
+          RankedTensorType::get(updTy.getShape(), rewriter.getI1Type()),
+          scalarPred, rewriter.getDenseI64ArrayAttr(noDims));
+    }
+    Value newUpd =
+        stablehlo::SelectOp::create(rewriter, loc, pred, update, orig);
+    Value newIdx =
+        stablehlo::ReshapeOpCreate(rewriter, loc, scalarIdx, idxTy.getShape());
+    rewriter.modifyOpInPlace(op, [&] {
+      op.getScatterIndicesMutable().assign(newIdx);
+      op.getUpdatesMutable()[0].assign(newUpd);
+    });
+    return success();
+  }
+};
+
 struct ScatterOpCanon final
     : CheckedOpRewritePattern<stablehlo::ScatterOp, ScatterOpCanon> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -36946,6 +37011,7 @@ struct EnzymeHLOOptPass
         DynamicReshapeOpCanon,
         EmptyReduceOpCanon,
         GatherOpCanon,
+        ScatterMaskedIndexSimplify,
         ScatterOpCanon,
         GetDimensionSizeOpCanon,
         GetTupleElementOpCanon,
