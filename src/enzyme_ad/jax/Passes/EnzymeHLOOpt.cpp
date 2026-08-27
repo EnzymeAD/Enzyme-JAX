@@ -21918,6 +21918,10 @@ struct CommonCompareExpressionRewrite
           rewriter.replaceOp(op, negatedCondition);
           return success();
         } else {
+          // The negation reads op's result, so it must sit after op — the
+          // rewriter's insertion point is before op here.
+          PatternRewriter::InsertionGuard guard(rewriter);
+          rewriter.setInsertionPoint(user);
           auto negatedCondition = stablehlo::NotOp::create(
               rewriter, userCompareOp.getLoc(), op.getResult());
           rewriter.replaceOp(user, negatedCondition);
