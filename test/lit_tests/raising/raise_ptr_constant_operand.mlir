@@ -1,7 +1,7 @@
-// RUN: not enzymexlamlir-opt %s --raise-affine-to-stablehlo 2>&1 | FileCheck %s
+// RUN: enzymexlamlir-opt %s --raise-affine-to-stablehlo | FileCheck %s
 
-// A pointer constant reaching a kernel is not a value a tensor can hold; it
-// must be reported as an unraised operand, not splatted.
+// A pointer constant observed only through ptrtoint is a wrapper-invariant
+// scalar: the computation hoists out of the kernel and the store raises.
 func.func @null_ptr_operand(%out: memref<?xf64>, %n: i64) {
   %c1 = arith.constant 1 : index
   %null = llvm.mlir.zero : !llvm.ptr
@@ -16,4 +16,5 @@ func.func @null_ptr_operand(%out: memref<?xf64>, %n: i64) {
   return
 }
 
-// CHECK: failed to raise operand: %{{.+}} = llvm.mlir.zero : !llvm.ptr
+// CHECK-NOT: failed to raise
+// CHECK: stablehlo.dynamic_pad
