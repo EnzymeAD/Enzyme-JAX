@@ -48,3 +48,20 @@ func.func @arrayinit() -> f64 {
 
 // CHECK-LABEL: func.func @arrayinit(
 // CHECK-NOT: llvm.intr.memset
+
+// -----
+
+// A pointer-element struct has no int-or-float width to expand with; the
+// memset stays a memset instead of producing a typeless zero constant.
+// CHECK-LABEL: llvm.func @ptrelems(
+// CHECK: "llvm.intr.memset"
+func.func private @use(!llvm.ptr)
+llvm.func @ptrelems() {
+  %c1 = llvm.mlir.constant(1 : i64) : i64
+  %len = llvm.mlir.constant(16 : i64) : i64
+  %zero = llvm.mlir.constant(0 : i8) : i8
+  %slot = llvm.alloca %c1 x !llvm.struct<(ptr, ptr)> {alignment = 8 : i64} : (i64) -> !llvm.ptr
+  "llvm.intr.memset"(%slot, %zero, %len) <{isVolatile = false}> : (!llvm.ptr, i8, i64) -> ()
+  func.call @use(%slot) : (!llvm.ptr) -> ()
+  llvm.return
+}

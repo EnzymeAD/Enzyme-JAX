@@ -620,7 +620,7 @@ struct ExpandStructMemcpy : public OpRewritePattern<LLVM::MemcpyOp> {
     Type elt = tracedElementType(op.getSrc());
     if (!elt)
       elt = tracedElementType(op.getDst());
-    if (!elt)
+    if (!elt || !elt.isIntOrFloat())
       return failure();
     uint64_t eltBytes = elt.getIntOrFloatBitWidth() / 8;
     if (!eltBytes || len % eltBytes)
@@ -661,7 +661,7 @@ struct ExpandStructMemsetZero : public OpRewritePattern<LLVM::MemsetOp> {
     if (!len || len > 64)
       return failure();
     Type elt = ExpandStructMemcpy::tracedElementType(op.getDst());
-    if (!elt)
+    if (!elt || !elt.isIntOrFloat())
       return failure();
     uint64_t eltBytes = elt.getIntOrFloatBitWidth() / 8;
     if (!eltBytes || len % eltBytes)
