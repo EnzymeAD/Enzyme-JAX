@@ -5361,6 +5361,27 @@ struct AffineToStableHLORaisingPass
     }
   }
 
+  // Access rewrites leave dead pointer plumbing behind, and raising visits
+  // every op in the region: sweep the unused chains.
+  static void dropDeadPointerChains(Operation *root) {
+    bool changed = true;
+    while (changed) {
+      changed = false;
+      SmallVector<Operation *> dead;
+      root->walk([&](Operation *op) {
+        if (isa<LLVM::GEPOp, LLVM::AddrSpaceCastOp,
+                enzymexla::Pointer2MemrefOp, enzymexla::Memref2PointerOp>(
+                op) &&
+            op->use_empty())
+          dead.push_back(op);
+      });
+      for (Operation *op : dead) {
+        op->erase();
+        changed = true;
+      }
+    }
+  }
+
   static void stripAccessMemorySpaceCasts(Operation *root) {
     SmallVector<memref::MemorySpaceCastOp> casts;
     root->walk([&](memref::MemorySpaceCastOp c) { casts.push_back(c); });
@@ -7056,13 +7077,16 @@ struct AffineToStableHLORaisingPass
     // Peeling rewrites loops, so it stays scoped to the regions this pass
     // actually raises.
     for (auto func : funcs) {
-      stripAccessMemorySpaceCasts(func);
-      rebaseViewedGeps(func);
-      convertRawGepAccesses(func);
-      splitStructScratch(func);
-      flattenViewedScratch(func);
-      expandBufferBranches(func);
       inlineAllocaScopes(func);
+      for (int round = 0; round < 2; ++round) {
+        stripAccessMemorySpaceCasts(func);
+        rebaseViewedGeps(func);
+        convertRawGepAccesses(func);
+        expandBufferBranches(func);
+        splitStructScratch(func);
+        flattenViewedScratch(func);
+      }
+      dropDeadPointerChains(func);
       boundParallelAxes(func);
       boundParallelFors(func);
       peelDynamicParallelDims(func);
@@ -7086,14 +7110,24 @@ struct AffineToStableHLORaisingPass
     std::vector<enzymexla::GPUWrapperOp> gwrap;
     op->walk([&](enzymexla::GPUWrapperOp g) { gwrap.push_back(g); });
     for (auto g : gwrap) {
-      stripAccessMemorySpaceCasts(g);
-      rebaseViewedGeps(g);
-      convertRawGepAccesses(g);
-      splitStructScratch(g);
-      flattenViewedScratch(g);
-      expandBufferBranches(g);
+      // Scope inlining hoists scratch allocas to the surrounding function,
+      // so the buffer normalizations must see the whole function, not just
+      // the wrapper region; the rewrites also expose one another (a rebase
+      // creates the direct views a flatten wants), so iterate once more.
+      Operation *root = g->getParentOfType<FunctionOpInterface>();
+      if (!root)
+        root = g;
+      inlineAllocaScopes(root);
+      for (int round = 0; round < 2; ++round) {
+        stripAccessMemorySpaceCasts(root);
+        rebaseViewedGeps(root);
+        convertRawGepAccesses(root);
+        expandBufferBranches(root);
+        splitStructScratch(root);
+        flattenViewedScratch(root);
+      }
       hoistWrapperInvariantScalars(g);
-      inlineAllocaScopes(g);
+      dropDeadPointerChains(root);
       boundParallelAxes(g);
       boundParallelFors(g);
       peelDynamicParallelDims(g);
