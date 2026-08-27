@@ -3698,10 +3698,17 @@ struct AffineToStableHLORaisingPass
       auto MT = alloca.getType();
       if (!MT.hasStaticShape())
         continue;
-      SmallVector<enzymexla::Pointer2MemrefOp> views;
-      SmallVector<enzymexla::Memref2PointerOp> casts;
+      // Views reach the scratch through chains of address-space casts and
+      // constant-offset geps; each view carries the byte offset its chain
+      // accumulated.
+      SmallVector<std::pair<enzymexla::Pointer2MemrefOp, int64_t>> views;
+      SmallVector<Operation *> chainOps;
       SmallVector<Operation *> directAccesses;
       bool viewedOnly = true;
+      if (!MT.getElementType().isIntOrFloat())
+        continue;
+      int64_t elemBytes = (MT.getElementType().getIntOrFloatBitWidth() + 7) / 8;
+      SmallVector<std::pair<Value, int64_t>> ptrWork;
       for (Operation *user : alloca->getUsers()) {
         auto m2p = dyn_cast<enzymexla::Memref2PointerOp>(user);
         if (!m2p) {
@@ -3721,36 +3728,110 @@ struct AffineToStableHLORaisingPass
           viewedOnly = false;
           break;
         }
-        casts.push_back(m2p);
-        for (Operation *viewUser : m2p->getUsers()) {
+        chainOps.push_back(m2p);
+        ptrWork.push_back({m2p.getResult(), 0});
+      }
+      while (viewedOnly && !ptrWork.empty()) {
+        auto [ptr, off] = ptrWork.pop_back_val();
+        for (Operation *viewUser : ptr.getUsers()) {
+          if (isa<LLVM::AddrSpaceCastOp>(viewUser)) {
+            chainOps.push_back(viewUser);
+            ptrWork.push_back({viewUser->getResult(0), off});
+            continue;
+          }
+          if (auto gep = dyn_cast<LLVM::GEPOp>(viewUser)) {
+            // Only all-constant geps carry a static byte offset.
+            int64_t gepOff = 0;
+            bool constGep =
+                gep.getDynamicIndices().empty() && gep.getIndices().size() >= 1;
+            if (constGep) {
+              DataLayout dl = DataLayout::closest(gep);
+              Type cur = gep.getElemType();
+              auto idxs = gep.getIndices();
+              gepOff = cast<IntegerAttr>(idxs[0]).getInt() *
+                       (int64_t)dl.getTypeSize(cur);
+              for (unsigned i = 1; constGep && i < idxs.size(); ++i) {
+                int64_t want = cast<IntegerAttr>(idxs[i]).getInt();
+                if (auto AT = dyn_cast<LLVM::LLVMArrayType>(cur)) {
+                  cur = AT.getElementType();
+                  gepOff += want * (int64_t)dl.getTypeSize(cur);
+                } else {
+                  constGep = false;
+                }
+              }
+            }
+            if (!constGep) {
+              viewedOnly = false;
+              break;
+            }
+            chainOps.push_back(gep);
+            ptrWork.push_back({gep.getResult(), off + gepOff});
+            continue;
+          }
           auto p2m = dyn_cast<enzymexla::Pointer2MemrefOp>(viewUser);
           if (!p2m || p2m.getType().getRank() != 1 ||
               p2m.getType().getElementType() != MT.getElementType() ||
+              off % elemBytes != 0 ||
               (p2m.getType().hasStaticShape() &&
-               p2m.getType().getShape()[0] > MT.getNumElements())) {
+               off / elemBytes + p2m.getType().getShape()[0] >
+                   MT.getNumElements())) {
             viewedOnly = false;
             break;
           }
-          views.push_back(p2m);
+          if (off != 0) {
+            // Offset views only rewrite through plain accesses.
+            if (!llvm::all_of(p2m->getUsers(), [&](Operation *u) {
+                  if (isa<affine::AffineLoadOp, memref::LoadOp>(u))
+                    return u->getOperand(0) == p2m.getResult();
+                  if (isa<affine::AffineStoreOp, memref::StoreOp>(u))
+                    return u->getOperand(1) == p2m.getResult();
+                  return false;
+                })) {
+              viewedOnly = false;
+              break;
+            }
+          }
+          views.push_back({p2m, off / elemBytes});
         }
-        if (!viewedOnly)
-          break;
       }
       if (!viewedOnly || views.empty())
         continue;
       OpBuilder b(alloca);
       auto flatTy = MemRefType::get({MT.getNumElements()}, MT.getElementType());
       auto flat = memref::AllocaOp::create(b, alloca.getLoc(), flatTy);
-      for (auto p2m : views) {
+      for (auto [p2m, elemOff] : views) {
+        if (elemOff != 0) {
+          for (Operation *u : llvm::make_early_inc_range(p2m->getUsers())) {
+            if (auto ld = dyn_cast<affine::AffineLoadOp>(u)) {
+              auto m = ld.getMap();
+              ld.setMap(AffineMap::get(m.getNumDims(), m.getNumSymbols(),
+                                       m.getResult(0) + elemOff));
+            } else if (auto st = dyn_cast<affine::AffineStoreOp>(u)) {
+              auto m = st.getMap();
+              st.setMap(AffineMap::get(m.getNumDims(), m.getNumSymbols(),
+                                       m.getResult(0) + elemOff));
+            } else {
+              OpBuilder ab(u);
+              unsigned idxPos = isa<memref::LoadOp>(u) ? 1 : 2;
+              Value c =
+                  arith::ConstantIndexOp::create(ab, u->getLoc(), elemOff);
+              Value ni = arith::AddIOp::create(ab, u->getLoc(),
+                                               u->getOperand(idxPos), c);
+              u->setOperand(idxPos, ni);
+            }
+          }
+        }
         p2m.getResult().replaceAllUsesWith(flat.getResult());
         p2m.erase();
       }
-      for (auto m2p : casts)
-        m2p.erase();
+      for (Operation *c : llvm::reverse(chainOps))
+        if (c->use_empty())
+          c->erase();
       auto linearizeValues = [&](OpBuilder &ab, Location loc,
                                  ValueRange idxs) -> Value {
         Value lin = arith::ConstantIndexOp::create(ab, loc, 0);
         int64_t stride = 1;
+        SmallVector<Value> scaled;
         for (int64_t d = MT.getRank() - 1; d >= 0; --d) {
           Value term = idxs[d];
           if (stride != 1) {

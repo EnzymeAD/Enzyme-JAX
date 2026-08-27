@@ -67,3 +67,26 @@ func.func @direct_mix(%out: memref<32xf64, 1>) {
 }
 
 // CHECK-LABEL: func.func private @direct_mix_raised(
+
+// -----
+
+// Views can reach the scratch through an address-space cast and a
+// constant-offset gep; the accumulated byte offset folds into the access
+// indices of the flat buffer.
+func.func @offsetview(%out: memref<8xf64, 1>, %in: memref<8xf64, 1>) {
+  %scr = memref.alloca() : memref<16xf64>
+  %ptr = "enzymexla.memref2pointer"(%scr) : (memref<16xf64>) -> !llvm.ptr<3>
+  %gp = llvm.addrspacecast %ptr : !llvm.ptr<3> to !llvm.ptr
+  %off = llvm.getelementptr inbounds %gp[64] : (!llvm.ptr) -> !llvm.ptr, i8
+  affine.parallel (%t) = (0) to (8) {
+    %view = "enzymexla.pointer2memref"(%off) : (!llvm.ptr) -> memref<?xf64>
+    %v = affine.load %in[%t] : memref<8xf64, 1>
+    affine.store %v, %view[%t] : memref<?xf64>
+    %r = affine.load %view[7 - %t] : memref<?xf64>
+    affine.store %r, %out[%t] : memref<8xf64, 1>
+  }
+  return
+}
+
+// CHECK-LABEL: func.func private @offsetview_raised(
+// CHECK: stablehlo.reverse
