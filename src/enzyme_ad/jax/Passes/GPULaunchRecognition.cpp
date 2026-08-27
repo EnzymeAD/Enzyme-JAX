@@ -485,15 +485,6 @@ enum __device_builtin__ cudaMemcpyKind
       }
     }
 
-    // A function pointer handed to an __enzyme_* call is not a capture:
-    // differentiation resolves it into direct calls before raising.
-    auto isEnzymeCall = [](Operation *op) {
-      auto call = dyn_cast<CallOpInterface>(op);
-      if (!call)
-        return false;
-      auto sym = dyn_cast<SymbolRefAttr>(call.getCallableForCallee());
-      return sym && sym.getLeafReference().getValue().contains("__enzyme_");
-    };
     SmallVector<Operation *> toErase;
     for (auto &launch : kernelLaunches) {
       bool captured = false;
@@ -510,8 +501,7 @@ enum __device_builtin__ cudaMemcpyKind
             captured = true;
             break;
           }
-          if (!llvm::is_contained(launch.second, user3) &&
-              !isEnzymeCall(user3)) {
+          if (!llvm::is_contained(launch.second, user3)) {
             captured = true;
             break;
           }
@@ -542,10 +532,7 @@ enum __device_builtin__ cudaMemcpyKind
                                   .lookup<LLVM::LLVMFuncOp>(hostStubName)) {
             if (auto hostStubUses = hostStub.getSymbolUses(getOperation()))
               for (auto use : *hostStubUses)
-                if (auto addr = dyn_cast<LLVM::AddressOfOp>(use.getUser())) {
-                  if (llvm::all_of(addr->getResult(0).getUsers(),
-                                   isEnzymeCall))
-                    continue;
+                if (isa<LLVM::AddressOfOp>(use.getUser())) {
                   captured = true;
                   break;
                 }

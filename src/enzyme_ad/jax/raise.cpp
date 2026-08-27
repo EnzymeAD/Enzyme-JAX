@@ -120,11 +120,15 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       "inline{default-pipeline=canonicalize "
       "max-iterations=4},sroa-wrappers{set_private=false attributor=false},"
       "lift-tessera-annotations,parse-optimization-rules,"
+      // __enzyme_* calls raise to enzyme ops before launch recognition,
+      // resolving the kernel-stub pointer they hold into a symbol: a stub
+      // handed to them is then not an escaped address forcing launch_func.
+      "libdevice-funcs-raise,restore-preserve-nvvm,"
       "gpu-launch-recognition{backend=";
   pass_pipeline += backend;
   pass_pipeline += "}";
   pass_pipeline += ","
-      "" + canonicalize + ",libdevice-funcs-raise,restore-preserve-nvvm," + canonicalize + ","
+      "" + canonicalize + ","
       "inline-enzyme-regions,symbol-dce,";
   
   if (backend == "cpu")
@@ -146,31 +150,56 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       "affine-cfg," + canonicalize + ",llvm-to-affine-access," + canonicalize + ","
       "func.func(affine-loop-invariant-code-motion),"
       "" + canonicalize + ",sort-memory,llvm-to-tessera,tessera-apply-pdl,tessera-to-llvm,";
-  // Differentiation runs before raising on every backend, so the generated
-  // derivative launches raise to stablehlo like any other kernel.
-  std::string adSegment = "symbol-dce,raise-llvm-ext,outline-enzyme-regions,";
-  {
-    adSegment += "sink-checkpoint-views,";
-    adSegment += "enzyme{";
-    if (options->dataflow)
-      adSegment += "dataflow ";
-    if (options->markReadonly)
-      adSegment += "markReadonly ";
-    adSegment += "postpasses=\"canonicalize,";
-    if (options->splitMultiResults)
-      adSegment += "split-multi-results,";
-    adSegment += "remove-unnecessary-enzyme-ops,"
-                 "flatten-enzyme-caches,lower-enzyme-binomial-progress,";
-    if (options->hoistLoopAllocations)
-      adSegment += "hoist-loop-allocations,";
-    adSegment += "enzyme-simplify-math\"";
-    adSegment += "},"
-                 "lower-llvm-ext,"
-                 "inline{default-pipeline=canonicalize max-iterations=4},"
-                 "polygeist-mem2reg," + canonicalize + ",symbol-dce,cse,";
+  // Differentiation runs before the backends diverge, so on xla the
+  // generated derivative launches raise to stablehlo like any other kernel.
+  if (outfile.size() && getenv("EXPORT_REACTANT")) {
+    pass_pipeline += "print{filename="+outfile+".mlir},";
   }
+  pass_pipeline += "symbol-dce,raise-llvm-ext,outline-enzyme-regions,";
+  if (options->preADLowerAffine)
+    pass_pipeline += "lower-aligned-affine-accesses,lower-affine,";
+
+  // A checkpointed loop must not capture both a value and a view of it:
+  // it would snapshot the same buffer twice. Has to precede `enzyme`,
+  // which is what reads the captures.
+  pass_pipeline += "sink-checkpoint-views,";
+
+  pass_pipeline += "enzyme{";
+  if (options->dataflow)
+    pass_pipeline += "dataflow ";
+  if (options->markReadonly)
+    pass_pipeline += "markReadonly ";
+  // Each generated derivative function is cleaned of enzyme cache ops
+  // the moment it is created: nested differentiation hands the outer AD
+  // the inner function as input, and enzyme.push/pop have no derivative
+  // of their own.
+  pass_pipeline += "postpasses=\"canonicalize,";
+  if (options->splitMultiResults)
+    pass_pipeline += "split-multi-results,";
+  pass_pipeline += "remove-unnecessary-enzyme-ops,"
+    // binomial checkpointing leaves enzyme.binomial_progress behind; it has
+    // no lowering of its own further down, so expand it here.
+    "flatten-enzyme-caches,lower-enzyme-binomial-progress,";
+  if (options->hoistLoopAllocations)
+    pass_pipeline += "hoist-loop-allocations,";
+  pass_pipeline += "enzyme-simplify-math\"";
+  pass_pipeline += "},"
+    // The one module-level survivor: llvm_ext ops also live outside the
+    // generated functions the postpasses clean -- a ptr_size_hint sits in
+    // the primal that carries the user's marker -- and any left behind
+    // fail translation to LLVM IR.
+    "lower-llvm-ext,"
+    "inline{default-pipeline=canonicalize max-iterations=4},"
+    "polygeist-mem2reg," + canonicalize + ",symbol-dce,"
+    // canonicalize-parallel here folds away memref.subview ops before gpu-kernel-outlining
+    "" + canonicalize + ",cse";
+  if (options->removeAtomics)
+    pass_pipeline += ",affine-cfg,remove-atomics";
   if (StringRef(backend).starts_with("xla")) {
-      pass_pipeline += adSegment;
+      // Differentiation and its cleanups disturb the affine structure the
+      // raiser wants; rebuild it the way the shared prefix does.
+      pass_pipeline += ",affine-cfg," + canonicalize +
+                       ",llvm-to-affine-access," + canonicalize + ",";
       pass_pipeline += "func.func(kernelcast),raise-affine-to-stablehlo{prefer_while_raising=false "
       "dump_failed_lockstep=true}," + canonicalize + ",arith-raise{stablehlo=true},"
       "symbol-dce";
@@ -187,49 +216,6 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       pass_pipeline += backend;
       pass_pipeline += "}";
   } else {
-      if (outfile.size() && getenv("EXPORT_REACTANT")) {
-        pass_pipeline += "print{filename="+outfile+".mlir},";
-      }
-      pass_pipeline += "symbol-dce,raise-llvm-ext,outline-enzyme-regions,";
-      if (options->preADLowerAffine)
-        pass_pipeline += "lower-aligned-affine-accesses,lower-affine,";
-
-      // A checkpointed loop must not capture both a value and a view of it:
-      // it would snapshot the same buffer twice. Has to precede `enzyme`,
-      // which is what reads the captures.
-      pass_pipeline += "sink-checkpoint-views,";
-
-      pass_pipeline += "enzyme{";
-      if (options->dataflow)
-        pass_pipeline += "dataflow ";
-      if (options->markReadonly)
-        pass_pipeline += "markReadonly ";
-      // Each generated derivative function is cleaned of enzyme cache ops
-      // the moment it is created: nested differentiation hands the outer AD
-      // the inner function as input, and enzyme.push/pop have no derivative
-      // of their own.
-      pass_pipeline += "postpasses=\"canonicalize,";
-      if (options->splitMultiResults)
-        pass_pipeline += "split-multi-results,";
-      pass_pipeline += "remove-unnecessary-enzyme-ops,"
-        // binomial checkpointing leaves enzyme.binomial_progress behind; it has
-        // no lowering of its own further down, so expand it here.
-        "flatten-enzyme-caches,lower-enzyme-binomial-progress,";
-      if (options->hoistLoopAllocations)
-        pass_pipeline += "hoist-loop-allocations,";
-      pass_pipeline += "enzyme-simplify-math\"";
-      pass_pipeline += "},"
-        // The one module-level survivor: llvm_ext ops also live outside the
-        // generated functions the postpasses clean -- a ptr_size_hint sits in
-        // the primal that carries the user's marker -- and any left behind
-        // fail translation to LLVM IR.
-        "lower-llvm-ext,"
-        "inline{default-pipeline=canonicalize max-iterations=4},"
-        "polygeist-mem2reg," + canonicalize + ",symbol-dce,"
-        // canonicalize-parallel here folds away memref.subview ops before gpu-kernel-outlining
-        "" + canonicalize + ",cse";
-      if (options->removeAtomics)
-        pass_pipeline += ",affine-cfg,remove-atomics";
       if (options->sortBlockMemory)
         pass_pipeline += ",sort-block-memory";
       pass_pipeline += ",lower-aligned-affine-accesses,lower-affine,"
