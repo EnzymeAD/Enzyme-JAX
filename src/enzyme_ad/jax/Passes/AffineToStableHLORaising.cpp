@@ -3660,6 +3660,125 @@ struct AffineToStableHLORaisingPass
   // of peeling to a serial loop: the axis becomes constant-extent and the
   // body sits behind an `iv < extent` guard, which the masking machinery
   // already understands. Barriers over the axis then stay batched no-ops.
+  // A thread-private array lives inside the lane-batched parallel: every
+  // lane owns a copy. The raising models buffers as whole tensors, and a
+  // store whose index map does not involve the lane axes looks uniform, so
+  // reads would collapse to one lane's value. Give the buffer one leading
+  // dimension per lane axis and index every access with the lane IVs.
+  static void privatizeLaneScratch(Operation *root) {
+    SmallVector<memref::AllocaOp> allocas;
+    root->walk([&](memref::AllocaOp a) { allocas.push_back(a); });
+    for (auto a : allocas) {
+      auto par = a->getParentOfType<affine::AffineParallelOp>();
+      if (!par)
+        continue;
+      // Only the nested (thread) parallel batches into lanes; scratch
+      // directly under the grid parallel is genuinely shared.
+      if (!par->getParentOfType<affine::AffineParallelOp>())
+        continue;
+      if (par.hasMinMaxBounds())
+        continue;
+      auto ranges = par.getConstantRanges();
+      if (!ranges)
+        continue;
+      int64_t total = 1;
+      bool ok = true;
+      for (auto [i, ext] : llvm::enumerate(*ranges)) {
+        auto lb = getConstant(par.getLowerBoundMap(i));
+        if (!lb || *lb != 0 || par.getSteps()[i] != 1 || ext <= 0) {
+          ok = false;
+          break;
+        }
+        total *= ext;
+      }
+      auto MT = cast<MemRefType>(a.getType());
+      if (!ok || !MT.hasStaticShape() ||
+          total * MT.getNumElements() > (1 << 16))
+        continue;
+      SmallVector<Operation *> accesses;
+      bool legal = true;
+      for (Operation *u : a->getUsers()) {
+        bool isAccess = (isa<affine::AffineLoadOp, memref::LoadOp>(u) &&
+                         u->getOperand(0) == a.getResult()) ||
+                        (isa<affine::AffineStoreOp, memref::StoreOp>(u) &&
+                         u->getOperand(1) == a.getResult());
+        if (!isAccess || !par->isProperAncestor(u)) {
+          legal = false;
+          break;
+        }
+        accesses.push_back(u);
+      }
+      if (!legal)
+        continue;
+
+      SmallVector<int64_t> newShape(ranges->begin(), ranges->end());
+      newShape.append(MT.getShape().begin(), MT.getShape().end());
+      OpBuilder b(par);
+      auto newAlloca = memref::AllocaOp::create(
+          b, a.getLoc(),
+          MemRefType::get(newShape, MT.getElementType(),
+                          MemRefLayoutAttrInterface{}, MT.getMemorySpace()));
+      auto ivs = par.getIVs();
+      unsigned K = ivs.size();
+      for (Operation *u : accesses) {
+        if (auto ld = dyn_cast<memref::LoadOp>(u)) {
+          OpBuilder ub(u);
+          SmallVector<Value> idx(ivs.begin(), ivs.end());
+          idx.append(ld.getIndices().begin(), ld.getIndices().end());
+          Value nl = memref::LoadOp::create(ub, u->getLoc(), newAlloca, idx);
+          u->getResult(0).replaceAllUsesWith(nl);
+          u->erase();
+          continue;
+        }
+        if (auto st = dyn_cast<memref::StoreOp>(u)) {
+          OpBuilder ub(u);
+          SmallVector<Value> idx(ivs.begin(), ivs.end());
+          idx.append(st.getIndices().begin(), st.getIndices().end());
+          memref::StoreOp::create(ub, u->getLoc(), st.getValue(), newAlloca,
+                                  idx);
+          u->erase();
+          continue;
+        }
+        AffineMap map;
+        SmallVector<Value> mapOperands;
+        if (auto ld = dyn_cast<affine::AffineLoadOp>(u)) {
+          map = ld.getAffineMap();
+          mapOperands.assign(ld.getMapOperands().begin(),
+                             ld.getMapOperands().end());
+        } else {
+          auto st = cast<affine::AffineStoreOp>(u);
+          map = st.getAffineMap();
+          mapOperands.assign(st.getMapOperands().begin(),
+                             st.getMapOperands().end());
+        }
+        unsigned nd = map.getNumDims();
+        SmallVector<AffineExpr> exprs;
+        for (unsigned k = 0; k < K; ++k)
+          exprs.push_back(getAffineDimExpr(nd + k, par.getContext()));
+        for (AffineExpr e : map.getResults())
+          exprs.push_back(e);
+        auto newMap = AffineMap::get(nd + K, map.getNumSymbols(), exprs,
+                                     par.getContext());
+        SmallVector<Value> newOperands(mapOperands.begin(),
+                                       mapOperands.begin() + nd);
+        newOperands.append(ivs.begin(), ivs.end());
+        newOperands.append(mapOperands.begin() + nd, mapOperands.end());
+        OpBuilder ub(u);
+        if (auto ld = dyn_cast<affine::AffineLoadOp>(u)) {
+          Value nl = affine::AffineLoadOp::create(ub, u->getLoc(), newAlloca,
+                                                  newMap, newOperands);
+          u->getResult(0).replaceAllUsesWith(nl);
+        } else {
+          auto st = cast<affine::AffineStoreOp>(u);
+          affine::AffineStoreOp::create(ub, u->getLoc(), st.getValue(),
+                                        newAlloca, newMap, newOperands);
+        }
+        u->erase();
+      }
+      a.erase();
+    }
+  }
+
   static void boundParallelAxes(Operation *root) {
     SmallVector<affine::AffineParallelOp> worklist;
     root->walk([&](affine::AffineParallelOp par) { worklist.push_back(par); });
@@ -3901,6 +4020,7 @@ struct AffineToStableHLORaisingPass
     for (auto func : funcs) {
       stripAccessMemorySpaceCasts(func);
       boundParallelAxes(func);
+      privatizeLaneScratch(func);
       peelDynamicParallelDims(func);
     }
 
@@ -3924,6 +4044,7 @@ struct AffineToStableHLORaisingPass
     for (auto g : gwrap) {
       stripAccessMemorySpaceCasts(g);
       boundParallelAxes(g);
+      privatizeLaneScratch(g);
       peelDynamicParallelDims(g);
     }
     size_t raised_count = 0;
