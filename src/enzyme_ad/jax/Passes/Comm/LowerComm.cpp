@@ -1,9 +1,11 @@
 #include "mlir/Conversion/LLVMCommon/ConversionTarget.h"
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Func/Transforms/FuncConversions.h"
+#include "mlir/Transforms/DialectConversion.h"
 #include "src/enzyme_ad/jax/Dialect/Comm/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Comm/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Comm/Passes.h"
-// #include "stablehlo/dialect/Base.h"
 #include "stablehlo/dialect/StablehloOps.h"
 
 namespace mlir::comm {
@@ -356,6 +358,7 @@ struct LowerCommToStablehloPass
 
     // defaults to no conversion for other types
     TypeConverter converter;
+    converter.addConversion([](Type type) { return type; });
 
     // !comm.mpi.comm, !comm.mpi.request are pointer-like, so lower to
     // tensor<i64>
@@ -366,8 +369,24 @@ struct LowerCommToStablehloPass
     converter.addConversion(
         [&](comm::MpiRequestType type) { return ptr_tensor_type; });
 
+    target.addDynamicallyLegalOp<func::FuncOp>([&](func::FuncOp op) {
+      return converter.isSignatureLegal(op.getFunctionType());
+    });
+    target.addDynamicallyLegalOp<func::CallOp>([&](func::CallOp op) {
+      return converter.isSignatureLegal(op.getCalleeType());
+    });
+    target.addDynamicallyLegalOp<func::ReturnOp>([&](func::ReturnOp op) {
+      return converter.isLegal(op.getOperandTypes());
+    });
+
     // lower comm.mpi ops to stablehlo.custom_call ops
     RewritePatternSet patterns(context);
+
+    mlir::populateFunctionOpInterfaceTypeConversionPattern<func::FuncOp>(
+        patterns, converter);
+    mlir::populateCallOpTypeConversionPattern(patterns, converter);
+    mlir::populateReturnOpTypeConversionPattern(patterns, converter);
+
     patterns.add<LowerCommMpiCommRankOp, LowerCommMpiCommSizeOp,
                  LowerCommMpiCommSplitOp, LowerCommMpiBarrierOp,
                  LowerCommMpiSendOp, LowerCommMpiIsendOp, LowerCommMpiRecvOp,
