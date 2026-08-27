@@ -11,9 +11,7 @@
 #include "stablehlo/dialect/ChloOps.h"
 #include "stablehlo/dialect/StablehloOps.h"
 #include "stablehlo/reference/Api.h"
-// #include "stablehlo/reference/Tensor.h"
 #include "stablehlo/reference/Types.h"
-// #include "stablehlo/reference/Value.h"
 #include "stablehlo/transforms/Passes.h"
 
 #include "llvm/ADT/StringExtras.h"
@@ -28,7 +26,6 @@
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 
-#include <limits>
 #include <optional>
 #include <random>
 #include <string>
@@ -77,8 +74,8 @@ llvm::cl::opt<Verbosity> verbosity(
 // --maxElements (do not blow up CI or your machine with a large number)
 llvm::cl::opt<int64_t> maxElements(
     "max-elements",
-    llvm::cl::desc(
-        "Maximum tensor elements to fuzz before skipping (default 100M)"),
+    llvm::cl::desc("Maximum number of tensor elements in an argument to fuzz "
+                   "before skipping (default 10M)"),
     llvm::cl::init(10000000));
 } // namespace
 
@@ -177,32 +174,6 @@ createCursedComplexPool(const llvm::fltSemantics &sem) {
       ComplexPool.emplace_back(re, im);
   return ComplexPool;
 }
-
-/*
-std::vector<uint16_t> createCursedBF16Vector() {
-  // BFloat16 (1 sign bit, 8 exponent bits, 7 mantissa bits)
-  return {
-      0x0000, // 0.0
-      0x8000, // -0.0
-      0x3F80, // 1.0
-      0xBF80, // -1.0
-      0x4000, // 2.0
-      0xC000, // -2.0
-      0x7FC0, // quiet_NaN
-      0x7F80, // infinity
-      0xFF80, // -infinity
-      0x0001, // denorm_min
-      0x7F7F, // max
-      0xFF7F, // -max
-      0x0080, // min (smallest normalized)
-      0x3F7F, // 0.999... (largest value < 1.0)
-      0x3F81, // 1.000... (smallest value > 1.0)
-      0x4049, // M_PI (~3.140625)
-      0x3FC9, // M_PI_2 (~1.5703125)
-      0x402E  // M_E (~2.71875)
-  };
-}
-*/
 
 OwningOpRef<ModuleOp> loadMLIRModule(MLIRContext &context,
                                      llvm::StringRef filePath) {
@@ -637,5 +608,3 @@ int main(int argc, char **argv) {
   });
   return anyMismatch ? 1 : 0;
 }
-// TODO: Transform interpreter making it work or at least checking if it exists
-// in a file and just erroring predictably
