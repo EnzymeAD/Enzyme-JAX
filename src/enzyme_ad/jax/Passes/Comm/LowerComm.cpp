@@ -13,7 +13,7 @@ namespace mlir::comm {
 
 using namespace mlir;
 
-struct CommMpiCommRankOpLowering
+struct LowerCommMpiCommRankOp
     : public OpConversionPattern<comm::MpiCommRankOp> {
   using OpConversionPattern::OpConversionPattern;
 
@@ -44,7 +44,7 @@ struct CommMpiCommRankOpLowering
   }
 };
 
-struct CommMpiCommSizeOpLowering
+struct LowerCommMpiCommSizeOp
     : public OpConversionPattern<comm::MpiCommSizeOp> {
   using OpConversionPattern::OpConversionPattern;
 
@@ -75,7 +75,7 @@ struct CommMpiCommSizeOpLowering
   }
 };
 
-struct CommMpiCommSplitOpLowering
+struct LowerCommMpiCommSplitOp
     : public OpConversionPattern<comm::MpiCommSplitOp> {
   using OpConversionPattern::OpConversionPattern;
 
@@ -107,8 +107,7 @@ struct CommMpiCommSplitOpLowering
   }
 };
 
-struct CommMpiBarrierOpLowering
-    : public OpConversionPattern<comm::MpiBarrierOp> {
+struct LowerCommMpiBarrierOp : public OpConversionPattern<comm::MpiBarrierOp> {
   using OpConversionPattern::OpConversionPattern;
 
   LogicalResult
@@ -130,7 +129,7 @@ struct CommMpiBarrierOpLowering
   }
 };
 
-struct CommMpiSendOpLowering : public OpConversionPattern<comm::MpiSendOp> {
+struct LowerCommMpiSendOp : public OpConversionPattern<comm::MpiSendOp> {
   using OpConversionPattern::OpConversionPattern;
 
   LogicalResult
@@ -153,7 +152,7 @@ struct CommMpiSendOpLowering : public OpConversionPattern<comm::MpiSendOp> {
   }
 };
 
-struct CommMpiIsendOpLowering : public OpConversionPattern<comm::MpiIsendOp> {
+struct LowerCommMpiIsendOp : public OpConversionPattern<comm::MpiIsendOp> {
   using OpConversionPattern::OpConversionPattern;
 
   LogicalResult
@@ -182,7 +181,7 @@ struct CommMpiIsendOpLowering : public OpConversionPattern<comm::MpiIsendOp> {
   }
 };
 
-struct CommMpiRecvOpLowering : public OpConversionPattern<comm::MpiRecvOp> {
+struct LowerCommMpiRecvOp : public OpConversionPattern<comm::MpiRecvOp> {
   using OpConversionPattern::OpConversionPattern;
 
   LogicalResult
@@ -211,7 +210,7 @@ struct CommMpiRecvOpLowering : public OpConversionPattern<comm::MpiRecvOp> {
   }
 };
 
-struct CommMpiIrecvOpLowering : public OpConversionPattern<comm::MpiIrecvOp> {
+struct LowerCommMpiIrecvOp : public OpConversionPattern<comm::MpiIrecvOp> {
   using OpConversionPattern::OpConversionPattern;
 
   LogicalResult
@@ -240,7 +239,7 @@ struct CommMpiIrecvOpLowering : public OpConversionPattern<comm::MpiIrecvOp> {
   }
 };
 
-struct CommMpiWaitOpLowering : public OpConversionPattern<comm::MpiWaitOp> {
+struct LowerCommMpiWaitOp : public OpConversionPattern<comm::MpiWaitOp> {
   using OpConversionPattern::OpConversionPattern;
 
   LogicalResult
@@ -262,8 +261,7 @@ struct CommMpiWaitOpLowering : public OpConversionPattern<comm::MpiWaitOp> {
   }
 };
 
-struct CommMpiWaitallOpLowering
-    : public OpConversionPattern<comm::MpiWaitallOp> {
+struct LowerCommMpiWaitallOp : public OpConversionPattern<comm::MpiWaitallOp> {
   using OpConversionPattern::OpConversionPattern;
 
   LogicalResult
@@ -285,7 +283,7 @@ struct CommMpiWaitallOpLowering
   }
 };
 
-struct CommMpiAllreduceOpLowering
+struct LowerCommMpiAllreduceOp
     : public OpConversionPattern<comm::MpiAllreduceOp> {
   using OpConversionPattern::OpConversionPattern;
 
@@ -315,7 +313,7 @@ struct CommMpiAllreduceOpLowering
   }
 };
 
-struct CommMpiBcastOpLowering : public OpConversionPattern<comm::MpiBcastOp> {
+struct LowerCommMpiBcastOp : public OpConversionPattern<comm::MpiBcastOp> {
   using OpConversionPattern::OpConversionPattern;
 
   LogicalResult
@@ -370,13 +368,12 @@ struct LowerCommToStablehloPass
 
     // lower comm.mpi ops to stablehlo.custom_call ops
     RewritePatternSet patterns(context);
-    patterns.add<CommMpiCommRankOpLowering, CommMpiCommSizeOpLowering,
-                 CommMpiCommSplitOpLowering, CommMpiBarrierOpLowering,
-                 CommMpiSendOpLowering, CommMpiIsendOpLowering,
-                 CommMpiRecvOpLowering, CommMpiIrecvOpLowering,
-                 CommMpiWaitOpLowering, CommMpiWaitallOpLowering,
-                 CommMpiAllreduceOpLowering, CommMpiBcastOpLowering>(converter,
-                                                                     context);
+    patterns.add<LowerCommMpiCommRankOp, LowerCommMpiCommSizeOp,
+                 LowerCommMpiCommSplitOp, LowerCommMpiBarrierOp,
+                 LowerCommMpiSendOp, LowerCommMpiIsendOp, LowerCommMpiRecvOp,
+                 LowerCommMpiIrecvOp, LowerCommMpiWaitOp, LowerCommMpiWaitallOp,
+                 LowerCommMpiAllreduceOp, LowerCommMpiBcastOp>(converter,
+                                                               context);
 
     if (failed(applyPartialConversion(getOperation(), target,
                                       std::move(patterns)))) {
