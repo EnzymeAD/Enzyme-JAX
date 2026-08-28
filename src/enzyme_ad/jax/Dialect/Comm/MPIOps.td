@@ -31,14 +31,6 @@ def TensorI32
 //   let assemblyFormat = "attr-dict `:` type(results)";
 // }
 
-// NOTE not sure if necessary since we take the datatype from the MLIR tensor eltype
-// def MpiPredefinedDatatypeOp : Comm_Op<"mpi.predefined_datatype", [Pure]> {
-//   let summary = "Get the named predefined MPI datatype";
-//   let arguments = (ins MpiDatatypesAttr : $value);
-//   let results = (outs MpiDatatype : $datatype);
-//   let assemblyFormat = "attr-dict `:` type(results)";
-// }
-
 def MpiCommRankOp : Comm_Op<"mpi.comm_rank", [Pure]> {
   let summary = "Equivalent to `MPI_Comm_rank`";
   let arguments = (ins MpiComm : $comm);
@@ -63,13 +55,13 @@ def MpiCommSplitOp : Comm_Op<"mpi.comm_split", []> {
   );
 
   let results = (outs MpiComm : $newcomm);
-  let assemblyFormat = "operands attr-dict `:` functional-type($comm, results)";
+  let assemblyFormat = "operands attr-dict `:` functional-type(operands, results)";
 }
 
 def MpiBarrierOp : Comm_Op<"mpi.barrier", []> {
   let summary = "Equivalent to `MPI_Barrier`";
   let arguments = (ins MpiComm : $comm);
-  let assemblyFormat = "$comm attr-dict";
+  let assemblyFormat = "$comm attr-dict `:` type(operands)";
 }
 
 def MpiSendOp : Comm_Op<"mpi.send", []> {
@@ -83,7 +75,7 @@ def MpiSendOp : Comm_Op<"mpi.send", []> {
     MpiComm : $comm
   );
 
-  let assemblyFormat = "operands attr-dict `:` type($buffer)";
+  let assemblyFormat = "operands attr-dict `:` type(operands)";
 }
 
 def MpiIsendOp : Comm_Op<"mpi.isend", []> {
@@ -98,7 +90,7 @@ def MpiIsendOp : Comm_Op<"mpi.isend", []> {
   );
 
   let results = (outs MpiRequest : $request);
-  let assemblyFormat = "operands attr-dict `:` functional-type($buffer, results)";
+  let assemblyFormat = "operands attr-dict `:` functional-type(operands, results)";
 }
 
 def MpiRecvOp : Comm_Op<"mpi.recv", []> {
@@ -112,7 +104,7 @@ def MpiRecvOp : Comm_Op<"mpi.recv", []> {
   );
 
   let results = (outs AnyTensor : $buffer);
-  let assemblyFormat = "operands attr-dict `:` type(results)";
+  let assemblyFormat = "operands attr-dict `:` functional-type(operands, results)";
 }
 
 def MpiIrecvOp : Comm_Op<"mpi.irecv", []> {
@@ -128,7 +120,7 @@ def MpiIrecvOp : Comm_Op<"mpi.irecv", []> {
     AnyTensor : $buffer,
     MpiRequest : $request
   );
-  let assemblyFormat = "operands attr-dict `:` type(results)";
+  let assemblyFormat = "operands attr-dict `:` functional-type(operands, results)";
 }
 
 def MpiWaitOp : Comm_Op<"mpi.wait", []> {
@@ -153,7 +145,7 @@ def MpiAllreduceOp : Comm_Op<"mpi.allreduce", []> {
   );
 
   let results = (outs AnyTensor : $recvbuf);
-  let assemblyFormat = "$sendbuf `,` $reduceOp `,` $comm attr-dict `:` functional-type($sendbuf, results)";
+  let assemblyFormat = "$sendbuf `,` $reduceOp `,` $comm attr-dict `:` functional-type(operands, results)";
 }
 
 def MpiBcastOp : Comm_Op<"mpi.bcast", []> {
@@ -166,7 +158,7 @@ def MpiBcastOp : Comm_Op<"mpi.bcast", []> {
   );
 
   let results = (outs AnyTensor : $outBuffer);
-  let assemblyFormat = "operands attr-dict `:` functional-type($inBuffer, results)";
+  let assemblyFormat = "operands attr-dict `:` functional-type(operands, results)";
 }
 
 #endif // ENZYMEXLA_COMM_DIALECT_MPI_OPS_TD
