@@ -4035,6 +4035,23 @@ struct AffineToStableHLORaisingPass
         }
         p2m.erase();
       }
+      // Sweep what died so the raising never visits the stranded null.
+      bool changed = true;
+      while (changed) {
+        changed = false;
+        SmallVector<Operation *> dead;
+        for (Operation *u : z->getUsers())
+          if (u->use_empty() &&
+              isa<LLVM::GEPOp, LLVM::AddrSpaceCastOp, arith::SelectOp,
+                  enzymexla::Pointer2MemrefOp>(u))
+            dead.push_back(u);
+        for (Operation *u : dead) {
+          u->erase();
+          changed = true;
+        }
+      }
+      if (z->use_empty())
+        z.erase();
     }
   }
 
