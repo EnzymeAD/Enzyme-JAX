@@ -2,7 +2,7 @@
 
 // CHECK: func.func @main(%[[REQ:.*]]: tensor<i64>) {
 func.func @main(%req : !comm.mpi.request) {
-    // CHECK-NEXT: stablehlo.custom_call @MpiWait(%[[COMM]]) {has_side_effect = true} : (tensor<i64>) -> ()
+    // CHECK-NEXT: stablehlo.custom_call @MpiWait(%[[REQ]]) {has_side_effect = true} : (tensor<i64>) -> ()
     comm.mpi.wait %req : !comm.mpi.request
     return
 }
