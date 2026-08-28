@@ -5272,6 +5272,12 @@ struct AffineToStableHLORaisingPass
   // fold the gep's element offset into each access index; data-dependent
   // offsets make the accesses plain memref ops, which raising gathers.
   static void rebaseViewedGeps(Operation *root) {
+    // Multi-dimensional register arrays produce chains of geps (slab of a
+    // slab of a slab); each pulled-up view exposes the next level, so
+    // iterate to a fixpoint.
+    bool changedAny = true;
+    while (changedAny) {
+      changedAny = false;
     SmallVector<LLVM::GEPOp> geps;
     root->walk([&](LLVM::GEPOp g) { geps.push_back(g); });
     for (auto gep : geps) {
@@ -5284,10 +5290,25 @@ struct AffineToStableHLORaisingPass
       SmallVector<enzymexla::Pointer2MemrefOp> views;
       for (Operation *u : gep->getUsers()) {
         auto p2m = dyn_cast<enzymexla::Pointer2MemrefOp>(u);
-        if (!p2m || p2m.getType().getRank() != 1 ||
-            !p2m.getType().getElementType().isIntOrFloat() ||
-            (int64_t)dl.getTypeSize(p2m.getType().getElementType()) !=
-                elemSz) {
+        // Chained geps rebase in a later round once their own views have
+        // been pulled up; they do not block this gep's direct views.
+        if (!p2m && isa<LLVM::GEPOp>(u))
+          continue;
+        // A byte-array gep still addresses whole view elements when its
+        // stride divides (a constant byte offset) or is a multiple of (a
+        // dynamic element walk) the view's element size.
+        auto viewSz =
+            p2m && p2m.getType().getElementType().isIntOrFloat()
+                ? (int64_t)dl.getTypeSize(p2m.getType().getElementType())
+                : 0;
+        bool sizeOk =
+            viewSz &&
+            (viewSz == elemSz ||
+             (gep.getDynamicIndices().empty()
+                  ? (cast<IntegerAttr>(idxs[0]).getInt() * elemSz) % viewSz ==
+                        0
+                  : elemSz % viewSz == 0));
+        if (!p2m || p2m.getType().getRank() != 1 || !sizeOk) {
           ok = false;
           break;
         }
@@ -5328,6 +5349,22 @@ struct AffineToStableHLORaisingPass
             gb, loc, cast<IntegerAttr>(idxs[0]).getInt());
       }
       for (auto p2m : views) {
+        // Convert the gep-element offset into view elements.
+        Value voff = off;
+        int64_t viewSz =
+            (int64_t)dl.getTypeSize(p2m.getType().getElementType());
+        if (viewSz != elemSz) {
+          OpBuilder ob(p2m);
+          if (elemSz % viewSz == 0 && elemSz != viewSz) {
+            voff = arith::MulIOp::create(
+                ob, loc, off,
+                arith::ConstantIndexOp::create(ob, loc, elemSz / viewSz));
+          } else {
+            // constant byte offset divisible by the view element size
+            int64_t bytes = cast<IntegerAttr>(idxs[0]).getInt() * elemSz;
+            voff = arith::ConstantIndexOp::create(ob, loc, bytes / viewSz);
+          }
+        }
         OpBuilder vb(p2m);
         Value newView = enzymexla::Pointer2MemrefOp::create(
             vb, p2m.getLoc(), p2m.getType(), gep.getBase());
@@ -5340,20 +5377,20 @@ struct AffineToStableHLORaisingPass
           };
           if (auto ld = dyn_cast<affine::AffineLoadOp>(a)) {
             Value idx = toIdx(ld.getMap(), ld.getMapOperands());
-            idx = arith::AddIOp::create(ab, a->getLoc(), idx, off);
+            idx = arith::AddIOp::create(ab, a->getLoc(), idx, voff);
             Value nl = memref::LoadOp::create(ab, a->getLoc(), newView,
                                               ValueRange{idx});
             a->getResult(0).replaceAllUsesWith(nl);
             a->erase();
           } else if (auto st = dyn_cast<affine::AffineStoreOp>(a)) {
             Value idx = toIdx(st.getMap(), st.getMapOperands());
-            idx = arith::AddIOp::create(ab, a->getLoc(), idx, off);
+            idx = arith::AddIOp::create(ab, a->getLoc(), idx, voff);
             memref::StoreOp::create(ab, a->getLoc(), st.getValueToStore(),
                                     newView, ValueRange{idx});
             a->erase();
           } else if (auto ld = dyn_cast<memref::LoadOp>(a)) {
             Value idx = arith::AddIOp::create(ab, a->getLoc(),
-                                              ld.getIndices()[0], off);
+                                              ld.getIndices()[0], voff);
             Value nl = memref::LoadOp::create(ab, a->getLoc(), newView,
                                               ValueRange{idx});
             a->getResult(0).replaceAllUsesWith(nl);
@@ -5361,7 +5398,7 @@ struct AffineToStableHLORaisingPass
           } else {
             auto st = cast<memref::StoreOp>(a);
             Value idx = arith::AddIOp::create(ab, a->getLoc(),
-                                              st.getIndices()[0], off);
+                                              st.getIndices()[0], voff);
             memref::StoreOp::create(ab, a->getLoc(), st.getValueToStore(),
                                     newView, ValueRange{idx});
             a->erase();
@@ -5371,6 +5408,8 @@ struct AffineToStableHLORaisingPass
       }
       if (gep->use_empty())
         gep.erase();
+      changedAny = true;
+    }
     }
   }
 
@@ -5657,6 +5696,78 @@ struct AffineToStableHLORaisingPass
         }
         view.p2m.erase();
       }
+    }
+  }
+
+  // A register array's zero-initialization arrives as llvm.intr.memset of
+  // the slab; as element stores of zero it flows through the same view
+  // rebasing as every other access.
+  static void memsetZeroToStores(Operation *root) {
+    SmallVector<LLVM::MemsetOp> sets;
+    root->walk([&](LLVM::MemsetOp m) { sets.push_back(m); });
+    for (auto m : sets) {
+      llvm::APInt val, len;
+      if (!matchPattern(m.getVal(), m_ConstantInt(&val)) ||
+          !matchPattern(m.getLen(), m_ConstantInt(&len)))
+        continue;
+      if (val.getSExtValue() != 0)
+        continue;
+      int64_t L = len.getSExtValue();
+      if (L <= 0 || L > 4096 || L % 8 != 0)
+        continue;
+      OpBuilder b(m);
+      Location loc = m.getLoc();
+      auto MT = MemRefType::get({ShapedType::kDynamic}, b.getF64Type());
+      Value view =
+          enzymexla::Pointer2MemrefOp::create(b, loc, MT, m.getDst());
+      Value zero = arith::ConstantOp::create(b, loc, b.getF64FloatAttr(0.0));
+      for (int64_t i = 0; i < L / 8; ++i) {
+        Value idx = arith::ConstantIndexOp::create(b, loc, i);
+        memref::StoreOp::create(b, loc, zero, view, ValueRange{idx});
+      }
+      m.erase();
+    }
+  }
+
+  // Register-array scratch survives as an llvm.alloca of nested arrays of
+  // one scalar type; hand it to the memref machinery as flat scratch so
+  // the gep rebasing and view flattening see it like any other buffer.
+  static void flattenLLVMArrayAllocas(Operation *root) {
+    SmallVector<LLVM::AllocaOp> allocas;
+    root->walk([&](LLVM::AllocaOp a) { allocas.push_back(a); });
+    for (auto a : allocas) {
+      llvm::APInt cnt;
+      if (!matchPattern(a.getArraySize(), m_ConstantInt(&cnt)))
+        continue;
+      int64_t total = cnt.getSExtValue();
+      if (total <= 0)
+        continue;
+      Type ty = a.getElemType();
+      while (auto at = dyn_cast<LLVM::LLVMArrayType>(ty)) {
+        total *= at.getNumElements();
+        ty = at.getElementType();
+      }
+      if (!ty.isIntOrFloat() || total > (1 << 22))
+        continue;
+      // Only rewrite scratch the pointer machinery can chase afterwards.
+      bool ok = llvm::all_of(a->getUsers(), [](Operation *u) {
+        return isa<LLVM::GEPOp, LLVM::AddrSpaceCastOp,
+                   enzymexla::Pointer2MemrefOp, LLVM::LoadOp, LLVM::StoreOp,
+                   LLVM::LifetimeStartOp, LLVM::LifetimeEndOp>(u);
+      });
+      if (!ok)
+        continue;
+      OpBuilder b(a);
+      auto MT = MemRefType::get({total}, ty);
+      auto alloc = memref::AllocaOp::create(b, a.getLoc(), MT);
+      auto ptr = enzymexla::Memref2PointerOp::create(
+          b, a.getLoc(), a.getResult().getType(), alloc);
+      for (Operation *u :
+           llvm::make_early_inc_range(a->getUsers()))
+        if (isa<LLVM::LifetimeStartOp, LLVM::LifetimeEndOp>(u))
+          u->erase();
+      a.getResult().replaceAllUsesWith(ptr.getResult());
+      a.erase();
     }
   }
 
@@ -8296,7 +8407,9 @@ struct AffineToStableHLORaisingPass
     // actually raises.
     for (auto func : funcs) {
       inlineAllocaScopes(func);
-      for (int round = 0; round < 2; ++round) {
+      for (int round = 0; round < 5; ++round) {
+        memsetZeroToStores(func);
+        flattenLLVMArrayAllocas(func);
         dropNullPointerSelects(func);
         if (!getenv("DISABLE_NULL_BUFFER"))
           dropNullBufferAccesses(func);
@@ -8346,7 +8459,9 @@ struct AffineToStableHLORaisingPass
       if (!root)
         root = g;
       inlineAllocaScopes(root);
-      for (int round = 0; round < 2; ++round) {
+      for (int round = 0; round < 5; ++round) {
+        memsetZeroToStores(root);
+        flattenLLVMArrayAllocas(root);
         dropNullPointerSelects(root);
         if (!getenv("DISABLE_NULL_BUFFER"))
           dropNullBufferAccesses(root);
