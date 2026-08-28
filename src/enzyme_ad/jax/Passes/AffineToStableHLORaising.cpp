@@ -3912,6 +3912,201 @@ struct AffineToStableHLORaisingPass
     }
   }
 
+  // A loop that walks a pointer forward by a constant stride each iteration
+  // carries it as an iter arg the raising cannot type as a tensor. The
+  // pointer is a pure function of the induction variable, so accesses
+  // through it rebase onto the init pointer at `orig + k*stride` and the
+  // carried pointer disappears from the loop.
+  static void rewritePointerInduction(Operation *root) {
+    SmallVector<affine::AffineForOp> fors;
+    // Post-order walk: inner loops rewrite before the outer loops that
+    // contain them.
+    root->walk([&](affine::AffineForOp f) {
+      if (f.getNumIterOperands() > 0)
+        fors.push_back(f);
+    });
+    if (getenv("DEBUG_PTRIND"))
+      llvm::errs() << "PTRIND: " << fors.size() << " candidate fors\n";
+    for (auto f : fors) {
+      if (f.getStepAsInt() != 1 || f.getLowerBoundMap().getNumResults() != 1)
+        continue;
+      auto yield = cast<affine::AffineYieldOp>(f.getBody()->getTerminator());
+      DataLayout dl = DataLayout::closest(f);
+      unsigned n = f.getNumIterOperands();
+      SmallVector<bool> drop(n, false);
+      struct Induction {
+        unsigned idx;
+        int64_t byteStep;
+        LLVM::GEPOp advance;
+      };
+      SmallVector<Induction> inductions;
+      bool ok = true;
+      bool anyPtr = false;
+      for (unsigned i = 0; ok && i < n; ++i) {
+        Value init = f.getInits()[i];
+        if (!isa<LLVM::LLVMPointerType>(init.getType()))
+          continue;
+        anyPtr = true;
+        if (!f.getResult(i).use_empty()) {
+          ok = false;
+          break;
+        }
+        BlockArgument arg = f.getRegionIterArgs()[i];
+        if (arg.use_empty()) {
+          drop[i] = true;
+          continue;
+        }
+        auto gep = yield.getOperand(i).getDefiningOp<LLVM::GEPOp>();
+        if (!gep || gep.getBase() != arg || !gep.getDynamicIndices().empty() ||
+            gep.getIndices().size() != 1) {
+          ok = false;
+          break;
+        }
+        int64_t byteStep = cast<IntegerAttr>(gep.getIndices()[0]).getInt() *
+                           (int64_t)dl.getTypeSize(gep.getElemType());
+        for (Operation *u : arg.getUsers()) {
+          if (u == gep.getOperation())
+            continue;
+          auto p2m = dyn_cast<enzymexla::Pointer2MemrefOp>(u);
+          if (!p2m || p2m.getType().getRank() != 1 ||
+              !p2m.getType().getElementType().isIntOrFloat() ||
+              byteStep %
+                      (int64_t)dl.getTypeSize(p2m.getType().getElementType()) !=
+                  0) {
+            ok = false;
+            break;
+          }
+          for (Operation *a : p2m->getUsers()) {
+            if (auto ld = dyn_cast<affine::AffineLoadOp>(a)) {
+              if (ld.getMap().getNumResults() == 1)
+                continue;
+            } else if (auto st = dyn_cast<affine::AffineStoreOp>(a)) {
+              if (st.getMap().getNumResults() == 1 &&
+                  st.getValueToStore() != p2m.getResult())
+                continue;
+            } else if (auto ld = dyn_cast<memref::LoadOp>(a)) {
+              if (ld.getIndices().size() == 1)
+                continue;
+            } else if (auto st = dyn_cast<memref::StoreOp>(a)) {
+              if (st.getIndices().size() == 1 &&
+                  st.getValueToStore() != p2m.getResult())
+                continue;
+            }
+            ok = false;
+            break;
+          }
+          if (!ok)
+            break;
+        }
+        if (!ok)
+          break;
+        inductions.push_back({i, byteStep, gep});
+        drop[i] = true;
+      }
+      if (!ok || !anyPtr || llvm::none_of(drop, [](bool d) { return d; }))
+        continue;
+
+      // Completed iterations: k = iv - lb.
+      OpBuilder kb(f.getBody(), f.getBody()->begin());
+      Location loc = f.getLoc();
+      Value k = f.getInductionVar();
+      AffineMap lbMap = f.getLowerBoundMap();
+      if (!(lbMap.isSingleConstant() && lbMap.getSingleConstantResult() == 0)) {
+        Value lb = affine::AffineApplyOp::create(kb, loc, lbMap,
+                                                 f.getLowerBoundOperands());
+        k = arith::SubIOp::create(kb, loc, k, lb);
+      }
+
+      for (auto &ind : inductions) {
+        Value init = f.getInits()[ind.idx];
+        BlockArgument arg = f.getRegionIterArgs()[ind.idx];
+        for (Operation *u : llvm::make_early_inc_range(arg.getUsers())) {
+          auto p2m = dyn_cast<enzymexla::Pointer2MemrefOp>(u);
+          if (!p2m)
+            continue;
+          int64_t stepElts = ind.byteStep / (int64_t)dl.getTypeSize(
+                                                p2m.getType().getElementType());
+          OpBuilder vb(p2m);
+          Value nv = enzymexla::Pointer2MemrefOp::create(vb, p2m.getLoc(),
+                                                         p2m.getType(), init);
+          Value off = k;
+          if (stepElts != 1)
+            off = arith::MulIOp::create(
+                vb, loc, k, arith::ConstantIndexOp::create(vb, loc, stepElts));
+          for (Operation *a : llvm::make_early_inc_range(p2m->getUsers())) {
+            OpBuilder ab(a);
+            auto add = [&](Value idx) {
+              return arith::AddIOp::create(ab, a->getLoc(), idx, off)
+                  .getResult();
+            };
+            if (auto ld = dyn_cast<affine::AffineLoadOp>(a)) {
+              auto expanded = affine::expandAffineMap(
+                  ab, a->getLoc(), ld.getMap(), ld.getMapOperands());
+              Value nl = memref::LoadOp::create(
+                  ab, a->getLoc(), nv, ValueRange{add((*expanded)[0])});
+              a->getResult(0).replaceAllUsesWith(nl);
+              a->erase();
+            } else if (auto st = dyn_cast<affine::AffineStoreOp>(a)) {
+              auto expanded = affine::expandAffineMap(
+                  ab, a->getLoc(), st.getMap(), st.getMapOperands());
+              memref::StoreOp::create(ab, a->getLoc(), st.getValueToStore(), nv,
+                                      ValueRange{add((*expanded)[0])});
+              a->erase();
+            } else if (auto ld = dyn_cast<memref::LoadOp>(a)) {
+              Value nl = memref::LoadOp::create(
+                  ab, a->getLoc(), nv, ValueRange{add(ld.getIndices()[0])});
+              a->getResult(0).replaceAllUsesWith(nl);
+              a->erase();
+            } else {
+              auto st = cast<memref::StoreOp>(a);
+              memref::StoreOp::create(ab, a->getLoc(), st.getValueToStore(), nv,
+                                      ValueRange{add(st.getIndices()[0])});
+              a->erase();
+            }
+          }
+          p2m.erase();
+        }
+      }
+
+      // Rebuild the loop without the pointer iter args.
+      SmallVector<Value> newInits;
+      for (unsigned i = 0; i < n; ++i)
+        if (!drop[i])
+          newInits.push_back(f.getInits()[i]);
+      OpBuilder b(f);
+      auto nf = affine::AffineForOp::create(
+          b, f.getLoc(), f.getLowerBoundOperands(), f.getLowerBoundMap(),
+          f.getUpperBoundOperands(), f.getUpperBoundMap(), f.getStepAsInt(),
+          newInits);
+      Block *ob = f.getBody(), *nb = nf.getBody();
+      if (!nb->empty())
+        nb->clear();
+      f.getInductionVar().replaceAllUsesWith(nf.getInductionVar());
+      unsigned kept = 0;
+      for (unsigned i = 0; i < n; ++i)
+        if (!drop[i])
+          f.getRegionIterArgs()[i].replaceAllUsesWith(
+              nf.getRegionIterArgs()[kept++]);
+      SmallVector<Value> keptYields;
+      for (unsigned i = 0; i < n; ++i)
+        if (!drop[i])
+          keptYields.push_back(yield.getOperand(i));
+      OpBuilder yb(yield);
+      affine::AffineYieldOp::create(yb, yield.getLoc(), keptYields);
+      yield.erase();
+      // The advancing geps are dead now that nothing yields them.
+      for (auto &ind : inductions)
+        if (ind.advance->use_empty())
+          ind.advance.erase();
+      nb->getOperations().splice(nb->end(), ob->getOperations());
+      kept = 0;
+      for (unsigned i = 0; i < n; ++i)
+        if (!drop[i])
+          f.getResult(i).replaceAllUsesWith(nf.getResult(kept++));
+      f.erase();
+    }
+  }
+
   static void stripAccessMemorySpaceCasts(Operation *root) {
     SmallVector<memref::MemorySpaceCastOp> casts;
     root->walk([&](memref::MemorySpaceCastOp c) { casts.push_back(c); });
@@ -4220,6 +4415,7 @@ struct AffineToStableHLORaisingPass
         stripAccessMemorySpaceCasts(func);
         rebaseViewedGeps(func);
         convertRawGepAccesses(func);
+        rewritePointerInduction(func);
       }
       dropDeadPointerChains(func);
       boundParallelAxes(func);
@@ -4256,6 +4452,7 @@ struct AffineToStableHLORaisingPass
         stripAccessMemorySpaceCasts(root);
         rebaseViewedGeps(root);
         convertRawGepAccesses(root);
+        rewritePointerInduction(root);
       }
       dropDeadPointerChains(root);
       boundParallelAxes(g);
