@@ -1985,7 +1985,7 @@ struct ParallelToGPULaunch : public OpRewritePattern<enzymexla::GPUWrapperOp> {
     for (unsigned i = 0; i < popGridBounds.size(); i++)
       if (!fitsOutsideGridX(popGridBounds[i]))
         gridOrder.push_back(i);
-    unsigned overflowing_blocks = gridOrder.size();
+    unsigned potentiallyOversizedDims = gridOrder.size();
     for (unsigned i = 0; i < popGridBounds.size(); i++)
       if (fitsOutsideGridX(popGridBounds[i]))
         gridOrder.push_back(i);
@@ -1994,11 +1994,9 @@ struct ParallelToGPULaunch : public OpRewritePattern<enzymexla::GPUWrapperOp> {
     for (unsigned i = 0; i < gridOrder.size(); i++)
       gridDimOfArg[gridOrder[i]] = i;
 
-    if (overflowing_blocks > 1) {
-      LLVM_DEBUG({
-        DBGS() << "more than one grid dimension may exceed the y/z limit\n";
-      });
-    }
+    if (potentiallyOversizedDims > 1)
+      LLVM_DEBUG(
+          DBGS() << "more than one grid dimension may exceed the y/z limit\n");
 
     Value gridBounds[3];
     for (unsigned int i = 0; i < 3; i++) {
