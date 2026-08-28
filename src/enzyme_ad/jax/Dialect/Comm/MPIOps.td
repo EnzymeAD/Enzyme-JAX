@@ -17,20 +17,6 @@ def TensorI32
            "tensor<i32>", "::mlir::TensorType">,
       BuildableType<"RankedTensorType::get({}, $_builder.getIntegerType(32))">;
 
-// def MpiPredefinedCommOp : Comm_Op<"mpi.predefined_comm", [Pure]> {
-//   let summary = "Get the named predefined MPI communicator";
-//   let arguments = (ins MpiCommsAttr : $value);
-//   let results = (outs MpiComm : $comm);
-//   let assemblyFormat = "attr-dict `:` type(results)";
-// }
-
-// def MpiPredefinedOpOp : Comm_Op<"mpi.predefined_op", [Pure]> {
-//   let summary = "Get the named predefined MPI reduction operator";
-//   let arguments = (ins MpiOpsAttr : $value);
-//   let results = (outs MpiOps : $op);
-//   let assemblyFormat = "attr-dict `:` type(results)";
-// }
-
 def MpiCommRankOp : Comm_Op<"mpi.comm_rank", [Pure]> {
   let summary = "Equivalent to `MPI_Comm_rank`";
   let arguments = (ins MpiComm : $comm);
