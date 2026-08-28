@@ -44,7 +44,7 @@ module @reactant_gradmyfunc attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
 // CHECK-NEXT:    %c_5 = stablehlo.constant dense<0> : tensor<i64>
 // CHECK-NEXT:    %cst = stablehlo.constant dense<2.000000e+00> : tensor<3xf64>
 // CHECK-NEXT:    %cst_6 = stablehlo.constant dense<0.000000e+00> : tensor<3xf64>
-// CHECK-NEXT:    %0:2 = stablehlo.while(%iterArg = %c_5, %iterArg_7 = %arg0) : tensor<i64>, tensor<3xf64> attributes {enzyme.disable_mincut}
+// CHECK-NEXT:    %0:2 = stablehlo.while(%iterArg = %c_5, %iterArg_7 = %arg0) : tensor<i64>, tensor<3xf64> attributes {enzyme.disable_mincut, enzymexla.checkpoint_segment}
 // CHECK-NEXT:    cond {
 // CHECK-NEXT:      %2 = stablehlo.compare LT, %iterArg, %c_1 : (tensor<i64>, tensor<i64>) -> tensor<i1>
 // CHECK-NEXT:      stablehlo.return %2 : tensor<i1>
@@ -52,12 +52,12 @@ module @reactant_gradmyfunc attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
 // CHECK-NEXT:      %2 = stablehlo.multiply %iterArg, %c {enzymexla.bounds = {{.*}} : tensor<i64>
 // CHECK-NEXT:      %3 = stablehlo.add %c_4, %2 {enzymexla.bounds = {{.*}} : tensor<i64>
 // CHECK-NEXT:      %4 = stablehlo.minimum %c_2, %3 {enzymexla.bounds = {{.*}} : tensor<i64>
-// CHECK-NEXT:      %5:2 = stablehlo.while(%iterArg_8 = %c_5, %iterArg_9 = %iterArg_7) : tensor<i64>, tensor<3xf64> attributes {enzyme.disable_mincut}
+// CHECK-NEXT:      %5:2 = stablehlo.while(%iterArg_8 = %c_5, %iterArg_9 = %iterArg_7) : tensor<i64>, tensor<3xf64> attributes {enzyme.disable_mincut, enzymexla.checkpoint_segment}
 // CHECK-NEXT:      cond {
 // CHECK-NEXT:        %7 = stablehlo.compare LT, %iterArg_8, %4 : (tensor<i64>, tensor<i64>) -> tensor<i1>
 // CHECK-NEXT:        stablehlo.return %7 : tensor<i1>
 // CHECK-NEXT:      } do {
-// CHECK-NEXT:        %7:2 = stablehlo.while(%iterArg_10 = %c_5, %iterArg_11 = %iterArg_9) : tensor<i64>, tensor<3xf64> attributes {enzyme.checkpoint_period = 3 : i64, enzyme.disable_mincut, enzyme.enable_checkpointing = true}
+// CHECK-NEXT:        %7:2 = stablehlo.while(%iterArg_10 = %c_5, %iterArg_11 = %iterArg_9) : tensor<i64>, tensor<3xf64> attributes {enzyme.checkpoint_period = 3 : i64, enzyme.disable_mincut, enzyme.enable_checkpointing = true, enzymexla.checkpoint_segment}
 // CHECK-NEXT:        cond {
 // CHECK-NEXT:          %9 = stablehlo.compare LT, %iterArg_10, %c_4 : (tensor<i64>, tensor<i64>) -> tensor<i1>
 // CHECK-NEXT:          stablehlo.return %9 : tensor<i1>

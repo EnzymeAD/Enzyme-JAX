@@ -802,6 +802,50 @@ struct Pointer2MemrefSelect
   }
 };
 
+struct AffineIfDeadResults : public OpRewritePattern<affine::AffineIfOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(affine::AffineIfOp ifOp,
+                                PatternRewriter &rewriter) const override {
+    if (ifOp.getNumResults() == 0)
+      return failure();
+    SmallVector<unsigned> keep;
+    for (OpResult res : ifOp.getResults())
+      if (!res.use_empty())
+        keep.push_back(res.getResultNumber());
+    if (keep.size() == ifOp.getNumResults())
+      return failure();
+
+    SmallVector<Type> newTypes;
+    for (unsigned i : keep)
+      newTypes.push_back(ifOp.getResult(i).getType());
+
+    rewriter.setInsertionPoint(ifOp);
+    auto newIf =
+        affine::AffineIfOp::create(rewriter, ifOp.getLoc(), newTypes,
+                                   ifOp.getIntegerSet(), ifOp.getOperands(),
+                                   /*withElseRegion=*/true);
+    // The new branches take the old regions wholesale, and the existing
+    // yields just drop the dead operands.
+    for (unsigned r = 0; r < 2; ++r) {
+      Region &oldRegion = r ? ifOp.getElseRegion() : ifOp.getThenRegion();
+      Region &newRegion = r ? newIf.getElseRegion() : newIf.getThenRegion();
+      rewriter.inlineRegionBefore(oldRegion, newRegion, newRegion.begin());
+      rewriter.eraseBlock(&newRegion.back());
+      auto yield =
+          cast<affine::AffineYieldOp>(newRegion.front().getTerminator());
+      SmallVector<Value> ops;
+      for (unsigned i : keep)
+        ops.push_back(yield.getOperand(i));
+      rewriter.modifyOpInPlace(yield, [&] { yield->setOperands(ops); });
+    }
+    for (auto [j, i] : llvm::enumerate(keep))
+      rewriter.replaceAllUsesWith(ifOp.getResult(i), newIf.getResult(j));
+    rewriter.eraseOp(ifOp);
+    return success();
+  }
+};
+
 struct LoadSelect : public OpRewritePattern<affine::AffineLoadOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -2131,12 +2175,13 @@ convertLLVMToAffineAccess(Operation *op,
     patterns.insert<SimplifyAllocConst<memref::AllocOp>,
                     SimplifyAllocConst<memref::AllocaOp>,
                     SimplifyAllocConst<gpu::AllocOp, true>>(context);
-    patterns.insert<SimplifyDeadAlloc<memref::AllocaOp>,
-                    SimplifyDeadAlloc<memref::AllocOp>,
-                    SimplifyDeadAlloc<LLVM::AllocaOp>,
-                    SimplifyDeadAlloc<gpu::AllocOp, true>, Pointer2MemrefSelect,
-                    LoadSelect, SimpleMem2Reg<memref::AllocaOp>>(context);
+    patterns.insert<
+        SimplifyDeadAlloc<memref::AllocaOp>, SimplifyDeadAlloc<memref::AllocOp>,
+        SimplifyDeadAlloc<LLVM::AllocaOp>,
+        SimplifyDeadAlloc<gpu::AllocOp, true>, Pointer2MemrefSelect, LoadSelect,
+        AffineIfDeadResults, SimpleMem2Reg<memref::AllocaOp>>(context);
     GreedyRewriteConfig config;
+    config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);
     config.enableFolding();
     if (applyPatternsGreedily(op, std::move(patterns), config).failed())
       return failure();
@@ -2162,6 +2207,7 @@ struct LLVMToAffineAccessPass
     RewritePatternSet patterns(context);
     populateRemoveIVPatterns(patterns);
     GreedyRewriteConfig config;
+    config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);
     config.enableFolding();
     if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
                                      config))) {

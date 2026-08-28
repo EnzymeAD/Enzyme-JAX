@@ -1345,6 +1345,8 @@ void ConvertCudaRTtoCPU::runOnOperation() {
   {
     mlir::RewritePatternSet rpl(getOperation()->getContext());
     GreedyRewriteConfig config;
+    config.setRegionSimplificationLevel(
+        GreedySimplifyRegionLevel::Normal);
     config.enableFolding();
     (void)applyPatternsGreedily(getOperation(), std::move(rpl), config);
   }

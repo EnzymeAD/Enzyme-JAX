@@ -7,7 +7,10 @@ namespace ffi_internal {
 
 void registerEnzymeJaXXLAHostFFI() {
   registerEnzymeJaXXLAHostThrowErrorFFI();
+#ifndef _WIN32
+  // MPItrampoline is POSIX-only (dlfcn), so Windows builds skip MPI.
   registerEnzymeJaXXLAHostMPIFFI();
+#endif
 }
 
 } // namespace ffi_internal

@@ -37,6 +37,7 @@
 #include "src/enzyme_ad/jax/Implementations/XLADerivatives.h"
 #include "src/enzyme_ad/jax/Utils.h"
 #include <cstdint>
+#include <utility>
 
 using namespace mlir;
 using namespace mlir::enzyme;
@@ -554,6 +555,29 @@ class AutoDiffWhileRev
         ReshapeOpCreate(builder, val.getLoc(), val, updateShape), startIndices);
 
     return arr;
+  }
+
+  // Runs `build`, then marks every `stablehlo.while` it added under `scope` as
+  // a checkpoint segment loop (see markCheckpointSegmentLoop).
+  // LoopCheckpointing creates the scaffold's loops itself, through hooks that
+  // are not told what they are building, so there is no per-loop place to mark
+  // from; the loops it just created are exactly the ones that were not there
+  // before. `scope` has to outlive the call -- the scaffold replaces the loop
+  // being differentiated, so pass an ancestor of it, not the loop.
+  template <typename BuildFn>
+  static auto markScaffoldLoops(Operation *scope, BuildFn &&build) {
+    DenseSet<Operation *> before;
+    scope->walk([&](stablehlo::WhileOp op) { before.insert(op); });
+
+    auto result = std::forward<BuildFn>(build)();
+
+    if (result) {
+      scope->walk([&](stablehlo::WhileOp op) {
+        if (!before.contains(op))
+          markCheckpointSegmentLoop(op);
+      });
+    }
+    return result;
   }
 
   static stablehlo::WhileOp makeForLoop(OpBuilder &builder, Location loc,
@@ -1174,9 +1198,12 @@ public:
         }
       }
 
-      if (auto r = tryCreateReverseModeAdjoint(whileOp, orig, builder, gutils,
+      Operation *scope = builder.getInsertionBlock()->getParentOp();
+      if (auto r = markScaffoldLoops(scope, [&] {
+            return tryCreateReverseModeAdjoint(whileOp, orig, builder, gutils,
                                                caches, carriedActive,
-                                               incomingGradients))
+                                               incomingGradients);
+          }))
         return *r;
     }
 
@@ -1367,7 +1394,9 @@ public:
 
         if (needsCheckpointing(whileOp) ||
             needsBinomialCheckpointing(whileOp)) {
-          if (auto caches = tryCacheValues(whileOp, orig, gutils))
+          Operation *scope = newWhile->getParentOp();
+          if (auto caches = markScaffoldLoops(
+                  scope, [&] { return tryCacheValues(whileOp, orig, gutils); }))
             return *caches;
         }
 
