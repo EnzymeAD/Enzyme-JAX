@@ -675,7 +675,9 @@ module {
   }
 }
 
-// CHECK:      %[[ALIGN1:.+]] = stablehlo.transpose %{{.+}}, dims = [0, 2, 3, 1] : (tensor<2x16x16x3xf32>) -> tensor<2x16x3x16xf32>
-// CHECK-NEXT:      %[[ALIGN2:.+]] = stablehlo.transpose %{{.+}}, dims = [0, 2, 3, 1] : (tensor<2x16x16x3xf32>) -> tensor<2x16x3x16xf32>
-// CHECK-NEXT:      stablehlo.return %{{.+}}, %[[ALIGN1]], %[[ALIGN2]], %{{.+}}, %{{.+}}, %iterArg{{.+}} : tensor<i64>, tensor<2x16x3x16xf32>, tensor<2x16x3x16xf32>, tensor<61x28x46xf32>, tensor<50x18x36xf32>, tensor<61xf32>, tensor<60xf32>, tensor<1x28x46xf32>, tensor<60x28x46xf32>, tensor<60x28x46xf32>, tensor<60x28x46xf32>, tensor<f32>, tensor<f32>, tensor<f32>
+// The yielded accumulators re-align (as permuting broadcasts) onto the
+// carried layout before the return.
+// CHECK:      %[[ALIGN1:.+]] = stablehlo.broadcast_in_dim %{{.+}}, dims = [0, 3, 1, 2] : (tensor<2x16x16x3xf32>) -> tensor<2x16x3x16xf32>
+// CHECK:      %[[ALIGN2:.+]] = stablehlo.broadcast_in_dim %{{.+}}, dims = [0, 3, 1, 2] : (tensor<2x16x16x3xf32>) -> tensor<2x16x3x16xf32>
+// CHECK:      stablehlo.return %{{.+}}, %{{.+}}, %{{.+}}, %{{.+}}, %{{.+}}, %iterArg{{.+}} : tensor<i64>, tensor<2x16x3x16xf32>, tensor<2x16x3x16xf32>, tensor<61x28x46xf32>, tensor<50x18x36xf32>, tensor<61xf32>, tensor<60xf32>, tensor<1x28x46xf32>, tensor<60x28x46xf32>, tensor<60x28x46xf32>, tensor<60x28x46xf32>, tensor<f32>, tensor<f32>, tensor<f32>
 // CHECK-NEXT:    }
