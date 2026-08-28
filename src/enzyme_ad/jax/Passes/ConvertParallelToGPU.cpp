@@ -1976,7 +1976,7 @@ struct ParallelToGPULaunch : public OpRewritePattern<enzymexla::GPUWrapperOp> {
       APInt cst;
       if (matchPattern(bound, m_ConstantInt(&cst)))
         return cst.ule(MAX_GRID_DIM_Y_Z);
-      return llvm::is_contained(cappedByOriginalLaunch, bound);
+      return llvm::any_of(cappedByOriginalLaunch, [&](Value originalBound){return boundMatchesLaunch(bound,originalBound);});
     };
 
     SmallVector<unsigned, 3> gridOrder;
