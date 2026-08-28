@@ -1202,7 +1202,7 @@ static Value
 emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
                    OpBuilder &builder,
                    llvm::DenseMap<Value, affine::AffineValueMap> &maps,
-                   const ParallelContext &pc) {
+                   const ParallelContext &pc, bool accumulate = false) {
   if (!maps.count(update))
     return nullptr;
   affine::AffineValueMap updateValueMap = maps.lookup(update);
@@ -1461,8 +1461,9 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
           /*indexVectorDim*/ (int64_t)gridShape.size()),
       /*indicesAreSorted*/ false,
       // Masked-out lanes all share the out-of-bounds index, so uniqueness
-      // can only be claimed without a mask.
-      /*uniqueIndices*/ !pc.mask);
+      // can only be claimed without a mask; an accumulating scatter's
+      // colliding indices are the whole point.
+      /*uniqueIndices*/ !pc.mask && !accumulate);
   Value res = scatter.getResult(0);
 
   Block *updateBody = new Block();
@@ -1470,13 +1471,25 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
 
   auto unrankedTy = RankedTensorType::get(
       {}, cast<RankedTensorType>(update.getType()).getElementType());
-  updateBody->addArgument(unrankedTy, loc);
+  Value currentInBody = updateBody->addArgument(unrankedTy, loc);
   Value updateInBody = updateBody->addArgument(unrankedTy, loc);
 
   {
     OpBuilder::InsertionGuard guard(builder);
     builder.setInsertionPointToStart(updateBody);
-    stablehlo::ReturnOp::create(builder, loc, updateInBody);
+    Value out = updateInBody;
+    if (accumulate) {
+      // An atomic add raises as a combining scatter: adds commute (up to
+      // rounding, exactly like the atomic), so application order is
+      // irrelevant.
+      if (isa<FloatType>(unrankedTy.getElementType()))
+        out = stablehlo::AddOp::create(builder, loc, currentInBody,
+                                       updateInBody);
+      else
+        out = stablehlo::AddOp::create(builder, loc, currentInBody,
+                                       updateInBody);
+    }
+    stablehlo::ReturnOp::create(builder, loc, out);
   }
 
   return res;
@@ -4297,6 +4310,36 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     return success();
   }
 
+  if (auto rmw = dyn_cast<memref::AtomicRMWOp>(op)) {
+    // Only accumulation raises (as a combining scatter), and only when the
+    // old value is unobserved.
+    if ((rmw.getKind() != arith::AtomicRMWKind::addf &&
+         rmw.getKind() != arith::AtomicRMWKind::addi) ||
+        !rmw.getResult().use_empty())
+      return failure();
+    Value value = rmw.getValue();
+    Value memref = rmw.getMemref();
+    SmallVector<Value> sIndices;
+    for (auto idx : rmw.getIndices()) {
+      Value mapped = mapping.lookupOrNull(idx);
+      if (!mapped || !maps.count(mapped))
+        return failure();
+      sIndices.push_back(mapped);
+    }
+    if (!mapping.lookupOrNull(value) || !mapping.lookupOrNull(memref))
+      return failure();
+    Value res = emitStoreAsScatter(
+        rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+        mapping.lookup(value), mapping.lookup(memref), sIndices, builder, maps,
+        pc, /*accumulate=*/true);
+    if (!res)
+      return op->emitError(
+                 "atomic add is dependent on less dims than stored value: ")
+             << *op;
+    mapping.map(memref, res);
+    return success();
+  }
+
   if (auto storeOp = dyn_cast<memref::StoreOp>(op)) {
     Value value = storeOp.getValueToStore();
     Value memref = storeOp.getMemref();
@@ -5327,6 +5370,9 @@ struct AffineToStableHLORaisingPass
             if (st.getIndices().size() == 1 &&
                 st.getValueToStore() != p2m.getResult())
               continue;
+          } else if (auto rmw = dyn_cast<memref::AtomicRMWOp>(a)) {
+            if (rmw.getIndices().size() == 1)
+              continue;
           }
           ok = false;
           break;
@@ -5395,6 +5441,13 @@ struct AffineToStableHLORaisingPass
                                               ValueRange{idx});
             a->getResult(0).replaceAllUsesWith(nl);
             a->erase();
+          } else if (auto rmw = dyn_cast<memref::AtomicRMWOp>(a)) {
+            Value idx = arith::AddIOp::create(ab, a->getLoc(),
+                                              rmw.getIndices()[0], voff);
+            memref::AtomicRMWOp::create(ab, a->getLoc(), rmw.getKind(),
+                                        rmw.getValue(), newView,
+                                        ValueRange{idx});
+            a->erase();
           } else {
             auto st = cast<memref::StoreOp>(a);
             Value idx = arith::AddIOp::create(ab, a->getLoc(),
@@ -5422,15 +5475,23 @@ struct AffineToStableHLORaisingPass
     root->walk([&](Operation *op) {
       if (isa<LLVM::LoadOp, LLVM::StoreOp>(op))
         accesses.push_back(op);
+      else if (auto rmw = dyn_cast<LLVM::AtomicRMWOp>(op))
+        if ((rmw.getBinOp() == LLVM::AtomicBinOp::fadd ||
+             rmw.getBinOp() == LLVM::AtomicBinOp::add) &&
+            rmw.getRes().use_empty())
+          accesses.push_back(op);
     });
     for (Operation *op : accesses) {
       bool isLoad = isa<LLVM::LoadOp>(op);
-      if (isLoad ? cast<LLVM::LoadOp>(op).getVolatile_()
-                 : cast<LLVM::StoreOp>(op).getVolatile_())
+      bool isAtomic = isa<LLVM::AtomicRMWOp>(op);
+      if (!isAtomic && (isLoad ? cast<LLVM::LoadOp>(op).getVolatile_()
+                               : cast<LLVM::StoreOp>(op).getVolatile_()))
         continue;
-      Value addr = isLoad ? op->getOperand(0) : op->getOperand(1);
+      Value addr = isLoad ? op->getOperand(0) : op->getOperand(isAtomic ? 0 : 1);
       Type valTy = isLoad ? op->getResult(0).getType()
-                          : op->getOperand(0).getType();
+                          : op->getOperand(1).getType();
+      if (!isAtomic && !isLoad)
+        valTy = op->getOperand(0).getType();
       if (!valTy.isIntOrFloat())
         continue;
       DataLayout dl = DataLayout::closest(op);
@@ -5473,6 +5534,14 @@ struct AffineToStableHLORaisingPass
         Value ld =
             memref::LoadOp::create(b, loc, view, ValueRange{idx});
         op->getResult(0).replaceAllUsesWith(ld);
+        op->erase();
+      } else if (isAtomic) {
+        auto rmw = cast<LLVM::AtomicRMWOp>(op);
+        auto kind = rmw.getBinOp() == LLVM::AtomicBinOp::fadd
+                        ? arith::AtomicRMWKind::addf
+                        : arith::AtomicRMWKind::addi;
+        memref::AtomicRMWOp::create(b, loc, kind, rmw.getVal(), view,
+                                    ValueRange{idx});
         op->erase();
       } else {
         memref::StoreOp::create(b, loc, op->getOperand(0), view,
@@ -5696,6 +5765,96 @@ struct AffineToStableHLORaisingPass
         }
         view.p2m.erase();
       }
+    }
+  }
+
+  // A rotated strided-copy loop (`k = tid; do { copy(k); } while (k < n)`
+  // with the increment folded by the range analysis) arrives as an
+  // scf.while whose after region yields only loop-invariant values or
+  // pass-throughs of the condition-forwarded ones: every iteration past
+  // the second would repeat the second's state exactly, so a third
+  // implies the original program never terminates. Unroll it to
+  // body(init); if (cond) body(invariant), selecting the forwarded
+  // results accordingly.
+  static void unrollInvariantYieldWhiles(Operation *root) {
+    SmallVector<scf::WhileOp> whiles;
+    root->walk([&](scf::WhileOp w) { whiles.push_back(w); });
+    for (auto w : whiles) {
+      Block &after = w.getAfter().front();
+      if (!llvm::hasSingleElement(after.getOperations()))
+        continue;
+      auto yield = cast<scf::YieldOp>(after.getTerminator());
+      Block &before = w.getBefore().front();
+      auto condOp = cast<scf::ConditionOp>(before.getTerminator());
+      // Each next-iteration value is loop-invariant or a pass-through of a
+      // condition-forwarded value.
+      bool ok = true;
+      for (Value v : yield.getOperands()) {
+        if (auto ba = dyn_cast<BlockArgument>(v)) {
+          if (ba.getOwner() == &after)
+            continue;
+          if (w.getBefore().isAncestor(ba.getOwner()->getParent())) {
+            ok = false;
+            break;
+          }
+          continue;
+        }
+        if (w->isAncestor(v.getDefiningOp())) {
+          ok = false;
+          break;
+        }
+      }
+      if (!ok)
+        continue;
+      OpBuilder b(w);
+      // First iteration with the init values.
+      IRMapping m1;
+      for (auto [ba, init] : llvm::zip(before.getArguments(), w.getInits()))
+        m1.map(ba, init);
+      for (Operation &op : before.without_terminator())
+        b.clone(op, m1);
+      Value cond1 = m1.lookupOrDefault(condOp.getCondition());
+      SmallVector<Value> fwd1;
+      for (Value v : condOp.getArgs())
+        fwd1.push_back(m1.lookupOrDefault(v));
+      // Second (and by the argument above, last) iteration.
+      SmallVector<Type> resTypes(w.getResultTypes().begin(),
+                                 w.getResultTypes().end());
+      auto ifOp = scf::IfOp::create(b, w.getLoc(), resTypes, cond1,
+                                    /*withElseRegion=*/true);
+      {
+        OpBuilder tb(ifOp.thenBlock(), ifOp.thenBlock()->begin());
+        IRMapping m2;
+        for (auto [ba, nv] : llvm::zip(before.getArguments(),
+                                       yield.getOperands())) {
+          Value next = nv;
+          if (auto aba = dyn_cast<BlockArgument>(nv))
+            if (aba.getOwner() == &after)
+              next = fwd1[aba.getArgNumber()];
+          m2.map(ba, next);
+        }
+        for (Operation &op : before.without_terminator())
+          tb.clone(op, m2);
+        SmallVector<Value> fwd2;
+        for (Value v : condOp.getArgs())
+          fwd2.push_back(m2.lookupOrDefault(v));
+        if (ifOp.thenBlock()->mightHaveTerminator() &&
+            !ifOp.thenBlock()->empty() &&
+            isa<scf::YieldOp>(&ifOp.thenBlock()->back()))
+          ifOp.thenBlock()->back().erase();
+        OpBuilder te = OpBuilder::atBlockEnd(ifOp.thenBlock());
+        scf::YieldOp::create(te, w.getLoc(), fwd2);
+      }
+      {
+        if (!ifOp.elseBlock()->empty() &&
+            isa<scf::YieldOp>(&ifOp.elseBlock()->back()))
+          ifOp.elseBlock()->back().erase();
+        OpBuilder eb = OpBuilder::atBlockEnd(ifOp.elseBlock());
+        scf::YieldOp::create(eb, w.getLoc(), fwd1);
+      }
+      for (auto [res, nres] : llvm::zip(w.getResults(), ifOp.getResults()))
+        res.replaceAllUsesWith(nres);
+      w.erase();
     }
   }
 
@@ -6620,7 +6779,7 @@ struct AffineToStableHLORaisingPass
     SmallVector<affine::AffineIfOp> worklist;
     root->walk([&](affine::AffineIfOp ifOp) {
       if (ifOp.hasElse() && llvm::any_of(ifOp.getResultTypes(), [](Type t) {
-            return isa<MemRefType>(t);
+            return isa<MemRefType, LLVM::LLVMPointerType>(t);
           }))
         worklist.push_back(ifOp);
     });
@@ -6628,6 +6787,56 @@ struct AffineToStableHLORaisingPass
       Block *thenB = ifOp.getThenBlock(), *elseB = ifOp.getElseBlock();
       if (!armClonable(thenB) || !armClonable(elseB))
         continue;
+      // A pointer yield expands through its views like the scf.if case:
+      // push each viewing access down into a clone of the branch.
+      for (auto [i, res] : llvm::enumerate(ifOp.getResults())) {
+        if (!isa<LLVM::LLVMPointerType>(res.getType()))
+          continue;
+        Value thenV = thenB->getTerminator()->getOperand(i);
+        Value elseV = elseB->getTerminator()->getOperand(i);
+        for (OpOperand &use : llvm::make_early_inc_range(res.getUses())) {
+          auto p2m = dyn_cast<enzymexla::Pointer2MemrefOp>(use.getOwner());
+          if (!p2m)
+            continue;
+          for (OpOperand &ause : llvm::make_early_inc_range(p2m->getUses())) {
+            Operation *acc = ause.getOwner();
+            bool isLoad = isa<memref::LoadOp, affine::AffineLoadOp>(acc);
+            bool isStore = isa<memref::StoreOp, affine::AffineStoreOp>(acc);
+            unsigned memIdx = isLoad ? 0 : 1;
+            if ((!isLoad && !isStore) || ause.getOperandNumber() != memIdx)
+              continue;
+            OpBuilder b(acc);
+            auto newIf = affine::AffineIfOp::create(
+                b, acc->getLoc(),
+                isLoad ? TypeRange(acc->getResult(0).getType()) : TypeRange(),
+                ifOp.getIntegerSet(), ifOp.getOperands(),
+                /*withElseRegion=*/true);
+            auto fillArm = [&](Block *srcArm, Value yielded, Block *dstArm) {
+              if (Operation *term = dstArm->empty() ? nullptr : &dstArm->back())
+                if (term->hasTrait<OpTrait::IsTerminator>())
+                  term->erase();
+              IRMapping m;
+              OpBuilder ab = OpBuilder::atBlockEnd(dstArm);
+              for (Operation &armOp : srcArm->without_terminator())
+                ab.clone(armOp, m);
+              Operation *view = ab.clone(*p2m.getOperation(), m);
+              view->setOperand(0, m.lookupOrDefault(yielded));
+              Operation *access = ab.clone(*acc, m);
+              access->setOperand(memIdx, view->getResult(0));
+              affine::AffineYieldOp::create(
+                  ab, acc->getLoc(),
+                  isLoad ? ValueRange(access->getResult(0)) : ValueRange());
+            };
+            fillArm(thenB, thenV, newIf.getThenBlock());
+            fillArm(elseB, elseV, newIf.getElseBlock());
+            if (isLoad)
+              acc->getResult(0).replaceAllUsesWith(newIf.getResult(0));
+            acc->erase();
+          }
+          if (p2m->use_empty())
+            p2m.erase();
+        }
+      }
       for (auto [i, res] : llvm::enumerate(ifOp.getResults())) {
         if (!isa<MemRefType>(res.getType()))
           continue;
@@ -6675,12 +6884,14 @@ struct AffineToStableHLORaisingPass
       // Scalar results may keep the branch alive; rebuild it without the
       // now-dead buffer results so no unraisable cast lingers in the arms.
       if (llvm::any_of(ifOp.getResults(), [](Value r) {
-            return isa<MemRefType>(r.getType()) && r.use_empty();
+            return isa<MemRefType, LLVM::LLVMPointerType>(r.getType()) &&
+                   r.use_empty();
           })) {
         SmallVector<unsigned> liveIdx;
         SmallVector<Type> liveTypes;
         for (auto [i, res] : llvm::enumerate(ifOp.getResults())) {
-          if (isa<MemRefType>(res.getType()) && res.use_empty())
+          if (isa<MemRefType, LLVM::LLVMPointerType>(res.getType()) &&
+              res.use_empty())
             continue;
           liveIdx.push_back((unsigned)i);
           liveTypes.push_back(res.getType());
@@ -8409,6 +8620,7 @@ struct AffineToStableHLORaisingPass
       inlineAllocaScopes(func);
       for (int round = 0; round < 5; ++round) {
         memsetZeroToStores(func);
+        unrollInvariantYieldWhiles(func);
         flattenLLVMArrayAllocas(func);
         dropNullPointerSelects(func);
         if (!getenv("DISABLE_NULL_BUFFER"))
@@ -8461,6 +8673,7 @@ struct AffineToStableHLORaisingPass
       inlineAllocaScopes(root);
       for (int round = 0; round < 5; ++round) {
         memsetZeroToStores(root);
+        unrollInvariantYieldWhiles(root);
         flattenLLVMArrayAllocas(root);
         dropNullPointerSelects(root);
         if (!getenv("DISABLE_NULL_BUFFER"))
