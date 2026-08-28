@@ -5791,6 +5791,116 @@ struct AffineToStableHLORaisingPass
         sel.erase();
     }
 
+    // The coefficient ternary arrives as an scf.if yielding a pointer whose
+    // arms compute constant- or index-offset geps; push each viewing access
+    // down into a clone of the branch so no pointer crosses the yield.
+    SmallVector<scf::IfOp> scfWorklist;
+    root->walk([&](scf::IfOp ifOp) {
+      if (ifOp.elseBlock() && llvm::any_of(ifOp.getResultTypes(), [](Type t) {
+            return isa<LLVM::LLVMPointerType>(t);
+          }))
+        scfWorklist.push_back(ifOp);
+    });
+    for (auto ifOp : scfWorklist) {
+      Block *thenB = ifOp.thenBlock(), *elseB = ifOp.elseBlock();
+      auto effectFree = [](Block *b) {
+        return llvm::all_of(b->without_terminator(), [](Operation &op) {
+          return isMemoryEffectFree(&op);
+        });
+      };
+      if (!effectFree(thenB) || !effectFree(elseB))
+        continue;
+      for (auto [i, res] : llvm::enumerate(ifOp.getResults())) {
+        if (!isa<LLVM::LLVMPointerType>(res.getType()))
+          continue;
+        Value thenV = thenB->getTerminator()->getOperand(i);
+        Value elseV = elseB->getTerminator()->getOperand(i);
+        for (OpOperand &use : llvm::make_early_inc_range(res.getUses())) {
+          auto p2m = dyn_cast<enzymexla::Pointer2MemrefOp>(use.getOwner());
+          if (!p2m)
+            continue;
+          for (OpOperand &ause :
+               llvm::make_early_inc_range(p2m->getUses())) {
+            Operation *acc = ause.getOwner();
+            bool isLoad = isa<memref::LoadOp, affine::AffineLoadOp>(acc);
+            bool isStore = isa<memref::StoreOp, affine::AffineStoreOp>(acc);
+            unsigned memIdx = isLoad ? 0 : 1;
+            if ((!isLoad && !isStore) || ause.getOperandNumber() != memIdx)
+              continue;
+            OpBuilder b(acc);
+            auto newIf = scf::IfOp::create(
+                b, acc->getLoc(),
+                isLoad ? TypeRange(acc->getResult(0).getType()) : TypeRange(),
+                ifOp.getCondition(), /*withElseRegion=*/true);
+            auto fillArm = [&](Block *srcArm, Value yielded, Block *dstArm) {
+              dstArm->clear();
+              IRMapping m;
+              OpBuilder ab = OpBuilder::atBlockBegin(dstArm);
+              for (Operation &armOp : srcArm->without_terminator())
+                ab.clone(armOp, m);
+              Operation *view = ab.clone(*p2m.getOperation(), m);
+              view->setOperand(0, m.lookupOrDefault(yielded));
+              Operation *access = ab.clone(*acc, m);
+              access->setOperand(memIdx, view->getResult(0));
+              scf::YieldOp::create(ab, acc->getLoc(),
+                                   isLoad ? ValueRange(access->getResult(0))
+                                          : ValueRange());
+            };
+            fillArm(thenB, thenV, newIf.thenBlock());
+            fillArm(elseB, elseV, newIf.elseBlock());
+            if (isLoad)
+              acc->getResult(0).replaceAllUsesWith(newIf.getResult(0));
+            acc->erase();
+          }
+          if (p2m->use_empty())
+            p2m.erase();
+        }
+      }
+      // Rebuild without dead pointer results if scalars keep it alive.
+      if (llvm::all_of(ifOp.getResults(),
+                       [](Value r) { return r.use_empty(); })) {
+        ifOp.erase();
+        continue;
+      }
+      if (llvm::any_of(ifOp.getResults(), [](Value r) {
+            return isa<LLVM::LLVMPointerType>(r.getType()) && r.use_empty();
+          })) {
+        SmallVector<unsigned> liveIdx;
+        SmallVector<Type> liveTypes;
+        for (auto [i, res] : llvm::enumerate(ifOp.getResults())) {
+          if (isa<LLVM::LLVMPointerType>(res.getType()) && res.use_empty())
+            continue;
+          liveIdx.push_back((unsigned)i);
+          liveTypes.push_back(res.getType());
+        }
+        OpBuilder b(ifOp);
+        auto newIf = scf::IfOp::create(b, ifOp.getLoc(), liveTypes,
+                                       ifOp.getCondition(),
+                                       /*withElseRegion=*/true);
+        auto rebuildArm = [&](Block *srcArm, Block *dstArm) {
+          dstArm->clear();
+          IRMapping m;
+          OpBuilder ab = OpBuilder::atBlockBegin(dstArm);
+          for (Operation &armOp : srcArm->without_terminator())
+            ab.clone(armOp, m);
+          SmallVector<Value> yields;
+          for (unsigned i : liveIdx)
+            yields.push_back(
+                m.lookupOrDefault(srcArm->getTerminator()->getOperand(i)));
+          scf::YieldOp::create(ab, ifOp.getLoc(), yields);
+          for (Operation &armOp :
+               llvm::make_early_inc_range(dstArm->without_terminator()))
+            if (armOp.use_empty() && isMemoryEffectFree(&armOp))
+              armOp.erase();
+        };
+        rebuildArm(thenB, newIf.thenBlock());
+        rebuildArm(elseB, newIf.elseBlock());
+        for (auto [k, i] : llvm::enumerate(liveIdx))
+          ifOp.getResult(i).replaceAllUsesWith(newIf.getResult(k));
+        ifOp.erase();
+      }
+    }
+
     SmallVector<affine::AffineIfOp> worklist;
     root->walk([&](affine::AffineIfOp ifOp) {
       if (ifOp.hasElse() && llvm::any_of(ifOp.getResultTypes(), [](Type t) {
