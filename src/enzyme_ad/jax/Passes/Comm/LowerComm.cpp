@@ -313,7 +313,10 @@ struct LowerCommMpiAllreduceOp
         rewriter.getStringAttr("MpiAllreduce"),
         /*has_side_effect=*/rewriter.getBoolAttr(true),
         /*backend_config=*/backend_config,
-        /*api_version=*/nullptr,
+        /*api_version=*/
+        stablehlo::CustomCallApiVersionAttr::get(
+            rewriter.getContext(),
+            mlir::stablehlo::CustomCallApiVersion::API_VERSION_TYPED_FFI),
         /*called_computations=*/nullptr,
         /*operand_layouts=*/nullptr,
         /*result_layouts=*/nullptr,
