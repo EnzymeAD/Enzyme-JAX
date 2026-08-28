@@ -1976,14 +1976,16 @@ struct ParallelToGPULaunch : public OpRewritePattern<enzymexla::GPUWrapperOp> {
       APInt cst;
       if (matchPattern(bound, m_ConstantInt(&cst)))
         return cst.ule(MAX_GRID_DIM_Y_Z);
-      return llvm::any_of(cappedByOriginalLaunch, [&](Value originalBound){return boundMatchesLaunch(bound,originalBound);});
+      return llvm::any_of(cappedByOriginalLaunch, [&](Value originalBound) {
+        return boundMatchesLaunch(bound, originalBound);
+      });
     };
 
     SmallVector<unsigned, 3> gridOrder;
     for (unsigned i = 0; i < popGridBounds.size(); i++)
       if (!fitsOutsideGridX(popGridBounds[i]))
         gridOrder.push_back(i);
-    unsigned unprovable = gridOrder.size();
+    unsigned overflowing_blocks = gridOrder.size();
     for (unsigned i = 0; i < popGridBounds.size(); i++)
       if (fitsOutsideGridX(popGridBounds[i]))
         gridOrder.push_back(i);
@@ -1992,14 +1994,11 @@ struct ParallelToGPULaunch : public OpRewritePattern<enzymexla::GPUWrapperOp> {
     for (unsigned i = 0; i < gridOrder.size(); i++)
       gridDimOfArg[gridOrder[i]] = i;
 
-    if (unprovable > 1)
-      gridPop->emitWarning()
-          << "grid has " << unprovable
-          << " dimensions whose size is not known here; only gridDim.x holds "
-             "more than "
-          << MAX_GRID_DIM_Y_Z
-          << " blocks, so this kernel does not launch if more than one of them "
-             "exceeds that";
+    if (overflowing_blocks > 1) {
+      LLVM_DEBUG({
+        DBGS() << "more than one grid dimension may exceed the y/z limit\n";
+      });
+    }
 
     Value gridBounds[3];
     for (unsigned int i = 0; i < 3; i++) {
