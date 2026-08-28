@@ -29,9 +29,8 @@ def DefineOp : TesseraOp<"define", [
 
   let arguments = (ins SymbolNameAttr:$sym_name,
                        TypeAttrOf<FunctionType>:$function_type,
-	                     ArrayAttr:$byRefTypes,
+                       ArrayAttr:$argModes,
                        BoolAttr:$pure,
-                       OptionalAttr<ArrayAttr>:$resultArgTypes,
                        OptionalAttr<StrAttr>:$sym_visibility,
                        OptionalAttr<DictArrayAttr>:$arg_attrs,
                        OptionalAttr<DictArrayAttr>:$res_attrs
@@ -40,9 +39,8 @@ def DefineOp : TesseraOp<"define", [
 
   let builders = [OpBuilder<(ins
     "StringRef":$name, "FunctionType":$type,
-    "ArrayAttr":$byRefTypes,
+    "ArrayAttr":$argModes,
     "bool":$pure,
-    CArg<"ArrayAttr", "{}">:$resultArgTypes,
     CArg<"StringAttr", "{}">:$sym_visibility,
     CArg<"ArrayRef<NamedAttribute>", "{}">:$attrs,
     CArg<"ArrayRef<DictionaryAttr>", "{}">:$argAttrs)
@@ -66,39 +64,60 @@ def DefineOp : TesseraOp<"define", [
 
     ::mlir::Attribute getSretAttr();
 
-    // Returns the stored byref-type array as an ArrayRef. Index convention: sret-excluded
-    // argument index, since it is based on the argument list in the annotation string,
-    // which does not include the sret argument. Each entry is either a TypeAttr
-    // (arg is byref) or null (arg is not byref).
-    ::mlir::ArrayRef<Attribute> getByRefTypesArray();
+    // Per-argument lifting mode. Index convention: sret-excluded argument
+    // index, since it is based on the argument list in the annotation string,
+    // which does not include the sret argument.
+    //
+    // A "lifted" argument is one the call site dereferences, so that
+    // tessera.call carries the pointee as an SSA value instead of the pointer.
+    // That is what makes an argument nameable in a PDL rewrite rule: PDL
+    // matches SSA def-use edges and cannot see dependencies carried through
+    // memory, so an argument only participates in rewriting once lifted.
+    //
+    // Each entry is either UnitAttr (not lifted -- a plain scalar, or a
+    // pointer deliberately passed through opaquely) or a DictionaryAttr:
+    //   type : TypeAttr -- the pointee type, stored exactly once
+    //   dir  : StrAttr  -- "in", "out", or "inout"
+    //
+    // The direction records what the callee does to the pointee, which
+    // determines the shape of the call:
+    //   in    -- callee reads it. Takes an operand slot carrying the value
+    //            loaded at the call site; contributes no result.
+    //   out   -- callee only writes it. Takes no operand slot (supplying one
+    //            would load uninitialized memory and pass undef); contributes
+    //            a trailing result.
+    //   inout -- callee reads and writes. Takes an operand slot carrying the
+    //            incoming value AND contributes a trailing result (e.g. MPFR's
+    //            rop).
+    ::mlir::ArrayRef<Attribute> getArgModeEntries();
 
-    // Returns the byref type for a given argument index, or null if the argument is not byref.
-    ::mlir::Type getByRefType(unsigned argIdx);
+    // The pointee type of a lifted argument, or null if it is not lifted.
+    ::mlir::Type getArgLiftedType(unsigned argIdx);
 
-    // Returns the stored result-type array as an ArrayRef. Index convention: sret-excluded
-    // argument index, since it is based on the argument list in the annotation string,
-    // which does not include the sret argument. Each entry is either a TypeAttr
-    // (arg is output/result) or null (arg is not output/result). Function may return null
-    // if the result type array is not present (i.e. the function has no output parameters).
-    ::mlir::ArrayRef<Attribute> getResultArgTypesArray();
+    // True if this argument is lifted into the value domain at all.
+    bool isLiftedArg(unsigned argIdx);
 
-    // Returns the result type for a given argument index, or null if the argument is not 
-    // a result/output.
-    ::mlir::Type getResultArgType(unsigned argIdx);
+    // True if the callee reads the pointee (dir is "in" or "inout"). Such an
+    // argument consumes a tessera.call operand slot carrying the loaded value.
+    bool argIsRead(unsigned argIdx);
 
-    // Number of arguments marked :result, i.e. the number of training results
-    // the tessera.call adds beyond the callee's natural (function_type) results.
-    // Equal to the number of non-unit entries in resultArgTypes array.
-    unsigned getNumResultArgs();
+    // True if the callee writes the pointee (dir is "out" or "inout"). Such an
+    // argument contributes a trailing tessera.call result.
+    bool argIsWritten(unsigned argIdx);
 
-    // True if this argument is marked :result but not :byref, i.e. it is a
-    // pure output param that does NOT consume a tessera.call operand slot
-    // (unlike an inout arg, which is both byref and result and still
-    // consumes an operand).
-    bool isResultOnlyArg(unsigned argIdx);
+    // Number of arguments the callee writes, i.e. how many trailing results
+    // tessera.call adds beyond the callee's natural (function_type) results.
+    unsigned getNumWrittenArgs();
+
+    // The pointee type the callee takes this operand through: an LLVM byVal
+    // attribute if present, otherwise the arg's lifted type, or null if the
+    // callee takes the operand directly. Indexed by tessera.call operand position.
+    // Operands with a pointee type were loaded from memory when entering
+    // tessera.call and must be reconstructed into memory when leaving it.
+    ::mlir::Type getCallOperandPointeeType(unsigned callOperandIdx);
 
     // Number of operands tessera.call should have for this callee: every
-    // sret-excluded argument, minus the pure-output (isResultOnlyArg) ones.
+    // sret-excluded argument, minus the pure-output ("out") ones.
     unsigned getNumCallOperands();
 
     //===------------------------------------------------------------------===//
