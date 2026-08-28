@@ -13,7 +13,7 @@ module {
 // CHECK: pdl.pattern : benefit(1) {
 // CHECK-NEXT:   %[[X0:.*]] = operand
 // CHECK-NEXT:   %[[T0:.*]] = type
-// CHECK-NEXT:   %[[C0:.*]] = operation "llvm.mlir.constant"  -> (%[[T0]] : !pdl.type)
+// CHECK-NEXT:   %[[C0:.*]] = operation  -> (%[[T0]] : !pdl.type)
 // CHECK-NEXT:   %[[TWO:.*]] = attribute = 2 : i32
 // CHECK-NEXT:   apply_native_constraint "isConstantEqualTo"(%[[C0]], %[[TWO]] : !pdl.operation, !pdl.attribute)
 // CHECK-NEXT:   %[[RES0:.*]] = result 0 of %[[C0]]

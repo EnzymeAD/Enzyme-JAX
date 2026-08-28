@@ -8,6 +8,7 @@
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/PDL/IR/PDL.h"
 #include "mlir/Dialect/PDLInterp/IR/PDLInterp.h"
+#include "mlir/IR/Matchers.h"
 #include "mlir/IR/PatternMatch.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -32,24 +33,29 @@ namespace {
 static LogicalResult isConstantEqualTo(PatternRewriter &rewriter,
                                        PDLResultList &results,
                                        ArrayRef<PDLValue> args) {
-  // args[0]: the matched llvm.mlir.constant Operation*
-  // args[1]: the expected i64 value, passed as a PDL attribute (IntegerAttr)
+  // args[0]: the matched Operation* that should be producing a constant
+  // args[1]: the expected value, passed as a PDL attribute (IntegerAttr)
   Operation *constOp = args[0].cast<Operation *>();
   auto expectedAttr = args[1].cast<Attribute>();
 
-  auto llvmConst = dyn_cast<LLVM::ConstantOp>(constOp);
-  if (!llvmConst)
+  // The pattern side deliberately does not pin the op name, so this is where
+  // "is it a constant?" is actually decided. Match through the constant
+  // interface rather than a concrete op class: the same rule has to fire both
+  // on llvm.mlir.constant and on arith.constant.
+  if (constOp->getNumResults() != 1)
     return failure();
 
-  auto actualIntAttr = dyn_cast<IntegerAttr>(llvmConst.getValue());
+  llvm::APInt actual;
+  if (!matchPattern(constOp->getResult(0), m_ConstantInt(&actual)))
+    return failure();
+
   auto expectedIntAttr = dyn_cast<IntegerAttr>(expectedAttr);
-  if (!actualIntAttr || !expectedIntAttr)
+  if (!expectedIntAttr)
     return failure();
 
   // Compare numeric value only, ignoring bit-width, so this stays robust
   // if the constant's width ever differs from what the annotation assumed.
-  if (actualIntAttr.getValue().getSExtValue() !=
-      expectedIntAttr.getValue().getSExtValue())
+  if (actual.getSExtValue() != expectedIntAttr.getValue().getSExtValue())
     return failure();
 
   return success();

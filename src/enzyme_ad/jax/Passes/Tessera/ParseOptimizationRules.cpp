@@ -273,7 +273,7 @@ emitMatchPDL(const Expr &expr, OpBuilder &builder, Location loc,
                 builder, loc, builder.getType<pdl::TypeType>(),
                 /*type=*/TypeAttr());
             auto constOp =
-                pdl::OperationOp::create(builder, loc, "llvm.mlir.constant",
+                pdl::OperationOp::create(builder, loc, /*name=*/std::nullopt,
                                          /*operands=*/ValueRange{},
                                          /*attrNames=*/ArrayRef<StringRef>{},
                                          /*attrs=*/ValueRange{},
@@ -328,6 +328,17 @@ emitRewritePDL(const Expr &expr, OpBuilder &builder, Location loc,
             return {boundVars[v.name], mlir::Value()};
           },
           [&](const Num &n) -> std::pair<mlir::Value, mlir::Value> {
+            // NOTE: Unlike the match side, where isConstantEqualTo compares
+            // numeric values and ignores bit-width, the width here is
+            // load-bearing: this attribute becomes the "value" attribute of a
+            // materialized llvm.mlir.constant, so it also fixes that op's
+            // result type. The i32 below is hard-coded and takes no account of
+            // what the surrounding IR expects, so a literal spliced next to an
+            // i64 or index consumer yields a type-mismatched operand. No rule
+            // currently puts a literal on the right-hand side, so this path is
+            // untested; before writing one, derive the type from context (the
+            // replaced value, or a type bound while matching) instead of
+            // hard-coding it here.
             auto attrVal = pdl::AttributeOp::create(
                 builder, loc, builder.getI32IntegerAttr(n.value));
             auto constOp = pdl::OperationOp::create(
