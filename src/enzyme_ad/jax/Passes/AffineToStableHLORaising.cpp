@@ -1265,8 +1265,18 @@ static LogicalResult tryRaisingForOpToStableHLOUnroll(
 //  it returns the permutation to apply to a in order to align to b.
 //
 static std::optional<SmallVector<int64_t>>
-memoryEquivalentPermutation(const affine::AffineValueMap &a,
-                            const affine::AffineValueMap &b) {
+memoryEquivalentPermutation(const affine::AffineValueMap &aIn,
+                            const affine::AffineValueMap &bIn) {
+  // Dims that appear in no result do not affect the laid-out memory (an
+  // eliminated unit axis leaves its dim behind); canonicalize them away so
+  // equivalent maps compare equal.
+  auto canonicalize = [](const affine::AffineValueMap &m) {
+    AffineMap map = m.getAffineMap();
+    SmallVector<Value> ops(m.getOperands().begin(), m.getOperands().end());
+    affine::canonicalizeMapAndOperands(&map, &ops);
+    return affine::AffineValueMap(map, ops);
+  };
+  affine::AffineValueMap a = canonicalize(aIn), b = canonicalize(bIn);
   SmallVector<int64_t> perm(a.getNumResults(), -1);
 
   auto amap = a.getAffineMap(), bmap = b.getAffineMap();
@@ -3388,6 +3398,14 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
       return success();
     }
     if (tryRaisingForOpToStableHLOUnroll(forOp, mapping, builder, maps, pc)
+            .succeeded()) {
+      return success();
+    }
+    // The preference skipped the while for constant bounds; as a last
+    // resort a sequential while still raises what lockstep and unrolling
+    // could not (accumulators chained through nested reductions).
+    if (!pc.options.preferWhileRaising && forOp.hasConstantBounds() &&
+        tryRaisingForOpToStableHLOWhile(forOp, mapping, builder, maps, pc)
             .succeeded()) {
       return success();
     }
