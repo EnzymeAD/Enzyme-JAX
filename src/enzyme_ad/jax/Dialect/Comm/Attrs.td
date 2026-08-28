@@ -102,7 +102,7 @@ def MpiDatatypesAttr : EnumAttr<Comm_Dialect, MpiDatatypes, "mpi.datatype"> {
   let assemblyFormat = "`<` $value `>`";
 }
 
-def MpiOps : I32EnumAttr<"MpiOps", "Named predefined MPI operations", [
+def MpiOps : I32EnumAttr<"MpiOps", "Named predefined MPI (reduction) operations", [
       I32EnumAttrCase<"MPI_OP_NULL", 32>,
       I32EnumAttrCase<"MPI_SUM", 33>,
       I32EnumAttrCase<"MPI_MIN", 34>,

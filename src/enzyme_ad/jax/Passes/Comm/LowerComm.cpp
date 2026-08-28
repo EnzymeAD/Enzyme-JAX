@@ -300,13 +300,19 @@ struct LowerCommMpiAllreduceOp
       return failure();
     }
 
+    auto backend_config = rewriter.getDictionaryAttr({
+        rewriter.getNamedAttr(
+            "op",
+            rewriter.getStringAttr(comm::stringifyMpiOps(op.getReduceOp()))),
+    });
+
     // TODO pass attributes: reduceOp
     rewriter.replaceOpWithNewOp<stablehlo::CustomCallOp>(
         op, converted_res_types,
         ValueRange{adaptor.getSendbuf(), adaptor.getComm()},
         rewriter.getStringAttr("MpiAllreduce"),
         /*has_side_effect=*/rewriter.getBoolAttr(true),
-        /*backend_config=*/nullptr,
+        /*backend_config=*/backend_config,
         /*api_version=*/nullptr,
         /*called_computations=*/nullptr,
         /*operand_layouts=*/nullptr,
