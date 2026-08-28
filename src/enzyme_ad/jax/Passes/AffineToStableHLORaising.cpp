@@ -5809,6 +5809,14 @@ struct AffineToStableHLORaisingPass
         Value value; // stored value for stores
       };
       SmallVector<Access> accesses;
+      struct DynLoad {
+        Operation *op;
+        int64_t viewBase;
+        int64_t esz;
+        Type ty;
+        Value idx;
+      };
+      SmallVector<DynLoad> dynLoads;
       SmallVector<Operation *> chain;
       bool ok = true;
       SmallVector<std::pair<Value, int64_t>> work{{a.getResult(), 0}};
@@ -5817,7 +5825,17 @@ struct AffineToStableHLORaisingPass
         auto [v, off] = work.pop_back_val();
         for (Operation *u : v.getUsers()) {
           if (auto gep = dyn_cast<LLVM::GEPOp>(u)) {
-            if (gep.getBase() != v || !gep.getDynamicIndices().empty()) {
+            // A constant-valued SSA index is as good as an attribute one.
+            auto constIdx =
+                [](llvm::PointerUnion<IntegerAttr, Value> e) -> std::optional<int64_t> {
+              if (auto attr = dyn_cast<IntegerAttr>(e))
+                return attr.getInt();
+              llvm::APInt c;
+              if (matchPattern(cast<Value>(e), m_ConstantInt(&c)))
+                return c.getSExtValue();
+              return std::nullopt;
+            };
+            if (gep.getBase() != v) {
               ok = false;
               break;
             }
@@ -5825,11 +5843,19 @@ struct AffineToStableHLORaisingPass
             Type cur = gep.getElemType();
             auto idxs = gep.getIndices();
             bool constGep = idxs.size() >= 1;
-            if (constGep)
-              gepOff = cast<IntegerAttr>(idxs[0]).getInt() *
-                       (int64_t)dl.getTypeSize(cur);
+            if (constGep) {
+              auto c0 = constIdx(idxs[0]);
+              constGep = c0.has_value();
+              if (constGep)
+                gepOff = *c0 * (int64_t)dl.getTypeSize(cur);
+            }
             for (unsigned i = 1; constGep && i < idxs.size(); ++i) {
-              int64_t want = cast<IntegerAttr>(idxs[i]).getInt();
+              auto ci = constIdx(idxs[i]);
+              if (!ci) {
+                constGep = false;
+                break;
+              }
+              int64_t want = *ci;
               if (auto AT = dyn_cast<LLVM::LLVMArrayType>(cur)) {
                 cur = AT.getElementType();
                 gepOff += want * (int64_t)dl.getTypeSize(cur);
@@ -5885,8 +5911,19 @@ struct AffineToStableHLORaisingPass
                 if (st.getValue() != p2m.getResult())
                   if (auto c = getConstant(st.getAffineMap()))
                     idx = *c;
+              } else if (auto ld = dyn_cast<memref::LoadOp>(au)) {
+                // A runtime-indexed scalar read (a shape array walked in a
+                // loop) selects among the constant-offset slots of its own
+                // element type.
+                if (!isa<LLVM::LLVMPointerType>(ET) &&
+                    ld.getIndices().size() == 1) {
+                  dynLoads.push_back({au, off, esz, ET, ld.getIndices()[0]});
+                  continue;
+                }
               }
               if (!idx) {
+                if (getenv("DEBUG_FWD"))
+                  llvm::errs() << "FWD bail view user: " << *au << "\n  for alloca: " << *a << "\n";
                 viewOk = false;
                 break;
               }
@@ -5920,6 +5957,14 @@ struct AffineToStableHLORaisingPass
             chain.push_back(u);
             continue;
           }
+          // Earlier normalizations strand dead pointer plumbing (a select
+          // whose accesses were all expanded); it observes nothing.
+          if (u->use_empty() && isMemoryEffectFree(u)) {
+            chain.push_back(u);
+            continue;
+          }
+          if (getenv("DEBUG_FWD"))
+            llvm::errs() << "FWD bail user: " << *u << "\n  for alloca: " << *a << "\n";
           ok = false;
           break;
         }
@@ -5950,14 +5995,57 @@ struct AffineToStableHLORaisingPass
           break;
         }
       }
+      // Every candidate slot of a dynamic load must be forwardable.
+      for (auto &dyn : llvm::make_range(dynLoads.begin(),
+                                        legal ? dynLoads.end()
+                                              : dynLoads.begin())) {
+        bool any = false;
+        for (auto &acc : accesses)
+          if (acc.isStore && acc.ty == dyn.ty &&
+              (acc.byteOff - dyn.viewBase) % dyn.esz == 0 &&
+              acc.byteOff >= dyn.viewBase) {
+            if (!dom.properlyDominates(acc.op, dyn.op)) {
+              legal = false;
+              break;
+            }
+            any = true;
+          }
+        if (!any)
+          legal = false;
+        if (!legal)
+          break;
+      }
       if (!legal)
         continue;
-      for (auto &acc : accesses)
-        if (!acc.isStore) {
-          acc.op->getResult(0).replaceAllUsesWith(
-              storeAt[acc.byteOff]->value);
-          acc.op->erase();
+      for (auto &acc : accesses) {
+        if (acc.isStore)
+          continue;
+        acc.op->getResult(0).replaceAllUsesWith(storeAt[acc.byteOff]->value);
+        acc.op->erase();
+      }
+      for (auto &dyn : dynLoads) {
+        OpBuilder b(dyn.op);
+        Location loc = dyn.op->getLoc();
+        Value idx = dyn.idx;
+        Value res;
+        for (auto &acc : accesses) {
+          if (!acc.isStore || acc.ty != dyn.ty ||
+              (acc.byteOff - dyn.viewBase) % dyn.esz != 0 ||
+              acc.byteOff < dyn.viewBase)
+            continue;
+          int64_t slot = (acc.byteOff - dyn.viewBase) / dyn.esz;
+          if (!res) {
+            res = acc.value;
+            continue;
+          }
+          Value c = arith::ConstantIndexOp::create(b, loc, slot);
+          Value eq = arith::CmpIOp::create(b, loc, arith::CmpIPredicate::eq,
+                                           idx, c);
+          res = arith::SelectOp::create(b, loc, eq, acc.value, res);
         }
+        dyn.op->getResult(0).replaceAllUsesWith(res);
+        dyn.op->erase();
+      }
       for (auto &acc : accesses)
         if (acc.isStore)
           acc.op->erase();
