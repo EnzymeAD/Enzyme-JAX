@@ -3380,9 +3380,34 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
             .succeeded()) {
       return success();
     }
+    // Nested constant-bound loops unroll multiplicatively (a generic
+    // max-degree kernel reaches millions of ops and gigabytes of module
+    // text); past a budget, iterating as a while beats unrolling even when
+    // the preference says otherwise.
+    std::function<int64_t(Operation *)> unrollCost =
+        [&](Operation *o) -> int64_t {
+      int64_t body = 1;
+      for (Region &r : o->getRegions())
+        for (Block &b : r)
+          for (Operation &inner : b)
+            body = std::min(body + unrollCost(&inner), (int64_t)1 << 40);
+      if (auto f = dyn_cast<affine::AffineForOp>(o)) {
+        if (!f.hasConstantBounds())
+          return body;
+        int64_t step = f.getStepAsInt();
+        int64_t trip =
+            (f.getConstantUpperBound() - f.getConstantLowerBound() + step - 1) /
+            step;
+        return std::min(std::max(trip, (int64_t)1) * body, (int64_t)1 << 40);
+      }
+      return body;
+    };
+    bool hugeUnroll = forOp.hasConstantBounds() &&
+                      unrollCost(forOp.getOperation()) > (1 << 16);
     // A loop whose trip count is only known at runtime can still iterate as
     // a while, whatever the preference says.
-    if ((pc.options.preferWhileRaising || !forOp.hasConstantBounds()) &&
+    if ((pc.options.preferWhileRaising || !forOp.hasConstantBounds() ||
+         hugeUnroll) &&
         tryRaisingForOpToStableHLOWhile(forOp, mapping, builder, maps, pc)
             .succeeded()) {
       return success();
