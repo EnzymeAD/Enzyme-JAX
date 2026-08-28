@@ -15,6 +15,7 @@
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "src/enzyme_ad/jax/Utils.h"
 
+#include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/Affine/Analysis/AffineAnalysis.h"
 #include "mlir/Dialect/Affine/Analysis/Utils.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -3938,32 +3939,108 @@ struct AffineToStableHLORaisingPass
         unsigned idx;
         int64_t byteStep;
         LLVM::GEPOp advance;
+        Type advanceElemType;
+        Attribute advanceIdxAttr;
+        Value dynStep;
       };
       SmallVector<Induction> inductions;
+      // A rotated loop can carry a lagging copy of another pointer
+      // induction: dead in the body, re-yielding that induction's advance.
+      struct Alias {
+        unsigned idx;
+        unsigned baseIdx;
+      };
+      SmallVector<Alias> aliases;
       bool ok = true;
       bool anyPtr = false;
+      // A used final pointer is the init advanced by the whole trip count;
+      // that needs a single-result upper bound to materialize.
+      bool resultUsed = false;
       for (unsigned i = 0; ok && i < n; ++i) {
         Value init = f.getInits()[i];
         if (!isa<LLVM::LLVMPointerType>(init.getType()))
           continue;
         anyPtr = true;
         if (!f.getResult(i).use_empty()) {
-          ok = false;
-          break;
+          if (f.getUpperBoundMap().getNumResults() != 1) {
+            ok = false;
+            break;
+          }
+          resultUsed = true;
         }
         BlockArgument arg = f.getRegionIterArgs()[i];
-        if (arg.use_empty()) {
+        if (arg.use_empty() && f.getResult(i).use_empty()) {
           drop[i] = true;
           continue;
         }
         auto gep = yield.getOperand(i).getDefiningOp<LLVM::GEPOp>();
-        if (!gep || gep.getBase() != arg || !gep.getDynamicIndices().empty() ||
-            gep.getIndices().size() != 1) {
+        if (!gep || gep.getIndices().size() != 1) {
           ok = false;
           break;
         }
-        int64_t byteStep = cast<IntegerAttr>(gep.getIndices()[0]).getInt() *
-                           (int64_t)dl.getTypeSize(gep.getElemType());
+        if (gep.getBase() != arg) {
+          auto base = dyn_cast<BlockArgument>(gep.getBase());
+          if (!arg.use_empty() || !base || base.getOwner() != f.getBody() ||
+              base.getArgNumber() == 0) {
+            ok = false;
+            break;
+          }
+          // Validated against the base once every induction is known; its
+          // final value is the base's final for any completed trip and its
+          // own init otherwise.
+          aliases.push_back({i, base.getArgNumber() - 1});
+          drop[i] = true;
+          continue;
+        }
+        // The stride may be a loop-invariant runtime value (an inner
+        // loop's whole-trip advance); it must still address whole
+        // elements of every view.
+        Value dynStep;
+        int64_t byteStep = 0;
+        llvm::APInt cstStep;
+        if (gep.getDynamicIndices().empty()) {
+          byteStep = cast<IntegerAttr>(gep.getIndices()[0]).getInt() *
+                     (int64_t)dl.getTypeSize(gep.getElemType());
+        } else if (matchPattern(gep.getDynamicIndices()[0],
+                                m_ConstantInt(&cstStep))) {
+          // A constant-valued SSA stride (a folded whole-trip advance) is as
+          // good as an attribute one.
+          byteStep = cstStep.getSExtValue() *
+                     (int64_t)dl.getTypeSize(gep.getElemType());
+        } else {
+          dynStep = gep.getDynamicIndices()[0];
+          // The stride may be computed inside the body (an inner loop's
+          // materialized whole-trip advance); it is usable if nothing in
+          // its backward slice depends on this loop's iteration.
+          auto invariantIn = [&](Value v) {
+            SmallVector<Value> work{v};
+            llvm::SmallPtrSet<Value, 16> seen;
+            while (!work.empty()) {
+              Value c = work.pop_back_val();
+              if (!seen.insert(c).second)
+                continue;
+              if (auto ba = dyn_cast<BlockArgument>(c)) {
+                if (ba.getOwner()->getParentOp() == f.getOperation() ||
+                    f->isAncestor(ba.getOwner()->getParentOp()))
+                  return false;
+                continue;
+              }
+              Operation *def = c.getDefiningOp();
+              if (!f->isAncestor(def))
+                continue;
+              if (!isMemoryEffectFree(def) || def->getNumRegions())
+                return false;
+              for (Value o : def->getOperands())
+                work.push_back(o);
+            }
+            return true;
+          };
+          if (!invariantIn(dynStep)) {
+            ok = false;
+            break;
+          }
+          byteStep = (int64_t)dl.getTypeSize(gep.getElemType());
+        }
         for (Operation *u : arg.getUsers()) {
           if (u == gep.getOperation())
             continue;
@@ -3972,7 +4049,9 @@ struct AffineToStableHLORaisingPass
               !p2m.getType().getElementType().isIntOrFloat() ||
               byteStep %
                       (int64_t)dl.getTypeSize(p2m.getType().getElementType()) !=
-                  0) {
+                  0 ||
+              (dynStep && (int64_t)dl.getTypeSize(
+                              p2m.getType().getElementType()) > byteStep)) {
             ok = false;
             break;
           }
@@ -4000,10 +4079,57 @@ struct AffineToStableHLORaisingPass
         }
         if (!ok)
           break;
-        inductions.push_back({i, byteStep, gep});
+        Attribute idxAttr;
+        if (gep.getDynamicIndices().empty())
+          idxAttr = cast<IntegerAttr>(gep.getIndices()[0]);
+        else if (!dynStep)
+          idxAttr = IntegerAttr::get(IntegerType::get(f->getContext(), 64),
+                                     cstStep.getSExtValue());
+        inductions.push_back(
+            {i, byteStep, gep, gep.getElemType(), idxAttr, dynStep});
         drop[i] = true;
       }
-      if (!ok || !anyPtr || llvm::none_of(drop, [](bool d) { return d; }))
+      for (auto &al : aliases) {
+        if (!ok)
+          break;
+        const Induction *base = nullptr;
+        for (auto &ind : inductions)
+          if (ind.idx == al.baseIdx)
+            base = &ind;
+        if (!base || yield.getOperand(al.idx) != yield.getOperand(al.baseIdx))
+          ok = false;
+      }
+      if (!ok || !anyPtr || llvm::none_of(drop, [](bool d) { return d; })) {
+        if (getenv("DEBUG_PTRIND") && anyPtr)
+          llvm::errs() << "PTRIND bail ok=" << ok
+                       << " aliases=" << aliases.size() << " for: " << f
+                       << "\n";
+        continue;
+      }
+
+      // An invariant step chain can live inside the body (an inner loop's
+      // materialized whole-trip advance, emitted after that loop); clone
+      // it above this loop so accesses anywhere in the body and the final
+      // materialization can use it.
+      for (auto &ind : inductions) {
+        Operation *def = ind.dynStep ? ind.dynStep.getDefiningOp() : nullptr;
+        if (!def || !f->isAncestor(def))
+          continue;
+        SetVector<Operation *> slice;
+        BackwardSliceOptions opts;
+        opts.inclusive = true;
+        opts.filter = [&](Operation *op) { return f->isAncestor(op); };
+        if (getBackwardSlice(ind.dynStep, &slice, opts).failed()) {
+          ok = false;
+          break;
+        }
+        OpBuilder hb(f);
+        IRMapping hm;
+        for (Operation *op : slice)
+          hb.clone(*op, hm);
+        ind.dynStep = hm.lookupOrDefault(ind.dynStep);
+      }
+      if (!ok)
         continue;
 
       // Completed iterations: k = iv - lb.
@@ -4024,13 +4150,25 @@ struct AffineToStableHLORaisingPass
           auto p2m = dyn_cast<enzymexla::Pointer2MemrefOp>(u);
           if (!p2m)
             continue;
-          int64_t stepElts = ind.byteStep / (int64_t)dl.getTypeSize(
-                                                p2m.getType().getElementType());
+          int64_t viewSz =
+              (int64_t)dl.getTypeSize(p2m.getType().getElementType());
+          if (ind.byteStep % viewSz != 0)
+            continue;
+          int64_t stepElts = ind.byteStep / viewSz;
           OpBuilder vb(p2m);
           Value nv = enzymexla::Pointer2MemrefOp::create(vb, p2m.getLoc(),
                                                          p2m.getType(), init);
           Value off = k;
-          if (stepElts != 1)
+          if (ind.dynStep) {
+            Value ds = ind.dynStep;
+            if (!isa<IndexType>(ds.getType()))
+              ds = arith::IndexCastOp::create(vb, loc, vb.getIndexType(), ds);
+            if (stepElts != 1)
+              ds = arith::MulIOp::create(
+                  vb, loc, ds,
+                  arith::ConstantIndexOp::create(vb, loc, stepElts));
+            off = arith::MulIOp::create(vb, loc, k, ds);
+          } else if (stepElts != 1)
             off = arith::MulIOp::create(
                 vb, loc, k, arith::ConstantIndexOp::create(vb, loc, stepElts));
           for (Operation *a : llvm::make_early_inc_range(p2m->getUsers())) {
@@ -4039,18 +4177,46 @@ struct AffineToStableHLORaisingPass
               return arith::AddIOp::create(ab, a->getLoc(), idx, off)
                   .getResult();
             };
+            // A static step composes into the affine map so the access
+            // stays affine; a runtime step forces an arith-indexed access.
+            bool affineStep = !ind.dynStep && isa<BlockArgument>(k);
+            auto composed = [&](AffineMap m) {
+              AffineExpr e =
+                  m.getResult(0) +
+                  getAffineDimExpr(m.getNumDims(), m.getContext()) * stepElts;
+              return AffineMap::get(m.getNumDims() + 1, m.getNumSymbols(), e);
+            };
+            auto composedOps = [&](OperandRange ops, AffineMap m) {
+              SmallVector<Value> nops(ops.begin(), ops.end());
+              nops.insert(nops.begin() + m.getNumDims(), k);
+              return nops;
+            };
             if (auto ld = dyn_cast<affine::AffineLoadOp>(a)) {
-              auto expanded = affine::expandAffineMap(
-                  ab, a->getLoc(), ld.getMap(), ld.getMapOperands());
-              Value nl = memref::LoadOp::create(
-                  ab, a->getLoc(), nv, ValueRange{add((*expanded)[0])});
+              Value nl;
+              if (affineStep) {
+                nl = affine::AffineLoadOp::create(
+                    ab, a->getLoc(), nv, composed(ld.getMap()),
+                    composedOps(ld.getMapOperands(), ld.getMap()));
+              } else {
+                auto expanded = affine::expandAffineMap(
+                    ab, a->getLoc(), ld.getMap(), ld.getMapOperands());
+                nl = memref::LoadOp::create(ab, a->getLoc(), nv,
+                                            ValueRange{add((*expanded)[0])});
+              }
               a->getResult(0).replaceAllUsesWith(nl);
               a->erase();
             } else if (auto st = dyn_cast<affine::AffineStoreOp>(a)) {
-              auto expanded = affine::expandAffineMap(
-                  ab, a->getLoc(), st.getMap(), st.getMapOperands());
-              memref::StoreOp::create(ab, a->getLoc(), st.getValueToStore(), nv,
-                                      ValueRange{add((*expanded)[0])});
+              if (affineStep) {
+                affine::AffineStoreOp::create(
+                    ab, a->getLoc(), st.getValueToStore(), nv,
+                    composed(st.getMap()),
+                    composedOps(st.getMapOperands(), st.getMap()));
+              } else {
+                auto expanded = affine::expandAffineMap(
+                    ab, a->getLoc(), st.getMap(), st.getMapOperands());
+                memref::StoreOp::create(ab, a->getLoc(), st.getValueToStore(),
+                                        nv, ValueRange{add((*expanded)[0])});
+              }
               a->erase();
             } else if (auto ld = dyn_cast<memref::LoadOp>(a)) {
               Value nl = memref::LoadOp::create(
@@ -4103,6 +4269,96 @@ struct AffineToStableHLORaisingPass
       for (unsigned i = 0; i < n; ++i)
         if (!drop[i])
           f.getResult(i).replaceAllUsesWith(nf.getResult(kept++));
+      if (resultUsed) {
+        OpBuilder fb(nf->getContext());
+        fb.setInsertionPointAfter(nf);
+        Location loc = nf.getLoc();
+        // A statically known trip folds the whole advance to a constant so
+        // downstream users stay affine.
+        std::optional<int64_t> ctrip;
+        if (f.getLowerBoundMap().isSingleConstant() &&
+            f.getUpperBoundMap().isSingleConstant())
+          ctrip = std::max<int64_t>(
+              0, f.getUpperBoundMap().getSingleConstantResult() -
+                     f.getLowerBoundMap().getSingleConstantResult());
+        Value zero = arith::ConstantIndexOp::create(fb, loc, 0);
+        Value trip, trip64;
+        if (ctrip) {
+          trip = arith::ConstantIndexOp::create(fb, loc, *ctrip);
+          trip64 =
+              arith::ConstantOp::create(fb, loc, fb.getI64IntegerAttr(*ctrip));
+        } else {
+          Value lbv = affine::AffineApplyOp::create(
+              fb, loc, f.getLowerBoundMap(), f.getLowerBoundOperands());
+          Value ubv = affine::AffineApplyOp::create(
+              fb, loc, f.getUpperBoundMap(), f.getUpperBoundOperands());
+          trip = arith::SubIOp::create(fb, loc, ubv, lbv);
+          Value neg = arith::CmpIOp::create(fb, loc, arith::CmpIPredicate::slt,
+                                            trip, zero);
+          trip = arith::SelectOp::create(fb, loc, neg, zero, trip);
+          trip64 = arith::IndexCastOp::create(fb, loc, fb.getI64Type(), trip);
+        }
+        auto finFor = [&](const Induction &ind) -> Value {
+          // Emit the advance in the widest aligned element so downstream
+          // rebasing sees whole-element addressing.
+          Type finElem = ind.advanceElemType;
+          int64_t finIdxScale = 1;
+          if (ind.byteStep % 8 == 0) {
+            finElem = fb.getF64Type();
+            finIdxScale = ind.byteStep / 8;
+          } else if (isa<IntegerAttr>(ind.advanceIdxAttr)) {
+            finIdxScale = cast<IntegerAttr>(ind.advanceIdxAttr).getInt();
+          }
+          Value scaled;
+          if (ctrip && !ind.dynStep) {
+            scaled = arith::ConstantOp::create(
+                fb, loc, fb.getI64IntegerAttr(*ctrip * finIdxScale));
+          } else {
+            scaled = arith::MulIOp::create(
+                fb, loc, trip64,
+                arith::ConstantOp::create(fb, loc,
+                                          fb.getI64IntegerAttr(finIdxScale)));
+            if (ind.dynStep) {
+              Value ds = ind.dynStep;
+              if (isa<IndexType>(ds.getType()))
+                ds = arith::IndexCastOp::create(fb, loc, fb.getI64Type(), ds);
+              else if (ds.getType() != fb.getI64Type())
+                ds = arith::ExtSIOp::create(fb, loc, fb.getI64Type(), ds);
+              scaled = arith::MulIOp::create(fb, loc, scaled, ds);
+            }
+          }
+          return LLVM::GEPOp::create(fb, loc, f.getInits()[ind.idx].getType(),
+                                     finElem, f.getInits()[ind.idx],
+                                     ValueRange{scaled});
+        };
+        for (auto &ind : inductions) {
+          if (f.getResult(ind.idx).use_empty())
+            continue;
+          f.getResult(ind.idx).replaceAllUsesWith(finFor(ind));
+        }
+        for (auto &al : aliases) {
+          if (f.getResult(al.idx).use_empty())
+            continue;
+          const Induction *base = nullptr;
+          for (auto &ind : inductions)
+            if (ind.idx == al.baseIdx)
+              base = &ind;
+          Value init = f.getInits()[al.idx];
+          Value repl;
+          if (init.getDefiningOp<ub::PoisonOp>() ||
+              init.getDefiningOp<LLVM::UndefOp>() ||
+              init.getDefiningOp<LLVM::PoisonOp>()) {
+            // A poison zero-trip value never materializes; the base's
+            // final stands unconditionally.
+            repl = finFor(*base);
+          } else {
+            Value pos = arith::CmpIOp::create(
+                fb, loc, arith::CmpIPredicate::sgt, trip, zero);
+            repl = arith::SelectOp::create(fb, loc, pos, finFor(*base), init);
+          }
+          f.getResult(al.idx).replaceAllUsesWith(repl);
+        }
+      }
       f.erase();
     }
   }
