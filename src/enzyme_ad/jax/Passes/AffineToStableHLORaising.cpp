@@ -3593,6 +3593,79 @@ struct AffineToStableHLORaisingPass
           AffineToStableHLORaisingPass> {
   using AffineToStableHLORaisingBase::AffineToStableHLORaisingBase;
 
+  // Whether the pointer's value is only ever consumed as an address of a
+  // memory access (through geps, casts, further selects, or memref views):
+  // anything that observes the value itself — a comparison, an int cast, a
+  // call, a store of the pointer as data — disqualifies it.
+  static bool onlyAddressesMemory(Value v) {
+    for (OpOperand &use : v.getUses()) {
+      Operation *u = use.getOwner();
+      if (auto gep = dyn_cast<LLVM::GEPOp>(u)) {
+        if (use.get() != gep.getBase() || !onlyAddressesMemory(gep.getResult()))
+          return false;
+      } else if (isa<LLVM::AddrSpaceCastOp>(u)) {
+        if (!onlyAddressesMemory(u->getResult(0)))
+          return false;
+      } else if (auto sel = dyn_cast<arith::SelectOp>(u)) {
+        if (use.get() == sel.getCondition() ||
+            !onlyAddressesMemory(sel.getResult()))
+          return false;
+      } else if (auto p2m = dyn_cast<enzymexla::Pointer2MemrefOp>(u)) {
+        for (Operation *mu : p2m->getUsers())
+          if (!isa<affine::AffineLoadOp, affine::AffineStoreOp, memref::LoadOp,
+                   memref::StoreOp, memref::AtomicRMWOp>(mu))
+            return false;
+      } else if (isa<LLVM::LoadOp>(u)) {
+      } else if (auto store = dyn_cast<LLVM::StoreOp>(u)) {
+        if (use.get() == store.getValue())
+          return false;
+      } else if (auto rmw = dyn_cast<LLVM::AtomicRMWOp>(u)) {
+        if (use.get() != rmw.getPtr())
+          return false;
+      } else {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  // mfem's Read/Write staging helpers return null for empty buffers, so a
+  // captured device pointer arrives as `select(size > 0, ptr, null)`. When
+  // the pointer is only dereferenced, the null arm can only fault, so the
+  // select collapses to the real pointer.
+  static void dropNullPointerSelects(Operation *root) {
+    SmallVector<arith::SelectOp> sels;
+    root->walk([&](arith::SelectOp s) {
+      if (isa<LLVM::LLVMPointerType>(s.getType()))
+        sels.push_back(s);
+    });
+    // The null may hide behind offset arithmetic: `select(p, gep(buf, i),
+    // gep(null, i))` still only ever dereferences the real buffer.
+    auto isNullDerived = [](Value v) {
+      while (true) {
+        if (v.getDefiningOp<LLVM::ZeroOp>())
+          return true;
+        if (auto gep = v.getDefiningOp<LLVM::GEPOp>())
+          v = gep.getBase();
+        else if (auto c = v.getDefiningOp<LLVM::AddrSpaceCastOp>())
+          v = c.getArg();
+        else
+          return false;
+      }
+    };
+    for (auto s : sels) {
+      Value tv = s.getTrueValue(), fv = s.getFalseValue();
+      bool tNull = isNullDerived(tv);
+      bool fNull = isNullDerived(fv);
+      if (tNull == fNull)
+        continue;
+      if (!onlyAddressesMemory(s.getResult()))
+        continue;
+      s.getResult().replaceAllUsesWith(tNull ? fv : tv);
+      s.erase();
+    }
+  }
+
   // An access does not care about the address space of its base, but the
   // raising identifies buffers by SSA root: a memory_space_cast view would
   // split one buffer into two roots and lose store propagation. Retarget the
@@ -3912,6 +3985,59 @@ struct AffineToStableHLORaisingPass
     }
   }
 
+
+  // An empty optional buffer arrives as a null base pointer used directly
+  // (not through a select): every access through it sits on a path that
+  // can only fault, so loads read as zero and stores vanish, and the null
+  // never has to become a kernel argument.
+  static void dropNullBufferAccesses(Operation *root) {
+    SmallVector<LLVM::ZeroOp> zeros;
+    root->walk([&](LLVM::ZeroOp z) {
+      if (isa<LLVM::LLVMPointerType>(z.getType()))
+        zeros.push_back(z);
+    });
+    for (auto z : zeros) {
+      // Collect views whose base is provably the null pointer. Unrelated
+      // users of the null (a null check, a select) are left alone: dropping
+      // a dereference of null is sound no matter what else observes it.
+      SmallVector<Value> work{z.getResult()};
+      SmallVector<enzymexla::Pointer2MemrefOp> views;
+      while (!work.empty()) {
+        Value v = work.pop_back_val();
+        for (Operation *u : v.getUsers()) {
+          if (auto gep = dyn_cast<LLVM::GEPOp>(u)) {
+            if (gep.getBase() == v)
+              work.push_back(gep.getResult());
+          } else if (isa<LLVM::AddrSpaceCastOp>(u)) {
+            work.push_back(u->getResult(0));
+          } else if (auto p2m = dyn_cast<enzymexla::Pointer2MemrefOp>(u)) {
+            views.push_back(p2m);
+          }
+        }
+      }
+      for (auto p2m : views) {
+        bool allAccesses = llvm::all_of(p2m->getUsers(), [&](Operation *a) {
+          return isa<affine::AffineLoadOp, memref::LoadOp>(a) ||
+                 (isa<affine::AffineStoreOp, memref::StoreOp>(a) &&
+                  a->getOperand(0) != p2m.getResult());
+        });
+        if (!allAccesses)
+          continue;
+        for (Operation *a : llvm::make_early_inc_range(p2m->getUsers())) {
+          if (isa<affine::AffineLoadOp, memref::LoadOp>(a)) {
+            OpBuilder b(a);
+            Type ty = a->getResult(0).getType();
+            Value zc = arith::ConstantOp::create(b, a->getLoc(),
+                                                 b.getZeroAttr(ty));
+            a->getResult(0).replaceAllUsesWith(zc);
+          }
+          a->erase();
+        }
+        p2m.erase();
+      }
+    }
+  }
+
   static void stripAccessMemorySpaceCasts(Operation *root) {
     SmallVector<memref::MemorySpaceCastOp> casts;
     root->walk([&](memref::MemorySpaceCastOp c) { casts.push_back(c); });
@@ -4217,6 +4343,8 @@ struct AffineToStableHLORaisingPass
     for (auto func : funcs) {
       inlineAllocaScopes(func);
       for (int round = 0; round < 2; ++round) {
+        dropNullPointerSelects(func);
+        dropNullBufferAccesses(func);
         stripAccessMemorySpaceCasts(func);
         rebaseViewedGeps(func);
         convertRawGepAccesses(func);
@@ -4253,6 +4381,8 @@ struct AffineToStableHLORaisingPass
         root = g;
       inlineAllocaScopes(root);
       for (int round = 0; round < 2; ++round) {
+        dropNullPointerSelects(root);
+        dropNullBufferAccesses(root);
         stripAccessMemorySpaceCasts(root);
         rebaseViewedGeps(root);
         convertRawGepAccesses(root);
