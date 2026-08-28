@@ -5461,6 +5461,255 @@ struct AffineToStableHLORaisingPass
     }
   }
 
+  // A not-quite-inlined device lambda packs its captures into a stack
+  // struct and reads them back through typed views at constant offsets.
+  // Forward each load to the unique dominating store of the same slot so
+  // the pointer-typed members never reach the raising as memory.
+  static void forwardPackedScratch(Operation *root) {
+    SmallVector<LLVM::AllocaOp> allocas;
+    root->walk([&](LLVM::AllocaOp a) { allocas.push_back(a); });
+    for (auto a : allocas) {
+      // Transitively collect constant-byte-offset accesses.
+      struct Access {
+        Operation *op;
+        int64_t byteOff;
+        bool isStore;
+        Type ty;
+        Value value; // stored value for stores
+      };
+      SmallVector<Access> accesses;
+      SmallVector<Operation *> chain;
+      bool ok = true;
+      SmallVector<std::pair<Value, int64_t>> work{{a.getResult(), 0}};
+      DataLayout dl = DataLayout::closest(a);
+      while (ok && !work.empty()) {
+        auto [v, off] = work.pop_back_val();
+        for (Operation *u : v.getUsers()) {
+          if (auto gep = dyn_cast<LLVM::GEPOp>(u)) {
+            if (gep.getBase() != v || !gep.getDynamicIndices().empty()) {
+              ok = false;
+              break;
+            }
+            int64_t gepOff = 0;
+            Type cur = gep.getElemType();
+            auto idxs = gep.getIndices();
+            bool constGep = idxs.size() >= 1;
+            if (constGep)
+              gepOff = cast<IntegerAttr>(idxs[0]).getInt() *
+                       (int64_t)dl.getTypeSize(cur);
+            for (unsigned i = 1; constGep && i < idxs.size(); ++i) {
+              int64_t want = cast<IntegerAttr>(idxs[i]).getInt();
+              if (auto AT = dyn_cast<LLVM::LLVMArrayType>(cur)) {
+                cur = AT.getElementType();
+                gepOff += want * (int64_t)dl.getTypeSize(cur);
+              } else if (auto ST = dyn_cast<LLVM::LLVMStructType>(cur)) {
+                if (ST.isOpaque() || (size_t)want >= ST.getBody().size()) {
+                  constGep = false;
+                  break;
+                }
+                for (int64_t k = 0; k < want; ++k) {
+                  int64_t sz = (int64_t)dl.getTypeSize(ST.getBody()[k]);
+                  int64_t al = (int64_t)dl.getTypeABIAlignment(ST.getBody()[k]);
+                  gepOff = (gepOff + al - 1) / al * al + sz;
+                }
+                int64_t al =
+                    (int64_t)dl.getTypeABIAlignment(ST.getBody()[want]);
+                gepOff = (gepOff + al - 1) / al * al;
+                cur = ST.getBody()[want];
+              } else {
+                constGep = false;
+              }
+            }
+            if (!constGep) {
+              ok = false;
+              break;
+            }
+            chain.push_back(gep);
+            work.push_back({gep.getResult(), off + gepOff});
+            continue;
+          }
+          if (auto p2m = dyn_cast<enzymexla::Pointer2MemrefOp>(u)) {
+            auto MT = p2m.getType();
+            if (MT.getRank() != 1) {
+              ok = false;
+              break;
+            }
+            Type ET = MT.getElementType();
+            int64_t esz = isa<LLVM::LLVMPointerType>(ET)
+                              ? 8
+                              : (ET.isIntOrFloat()
+                                     ? (ET.getIntOrFloatBitWidth() + 7) / 8
+                                     : 0);
+            if (esz == 0) {
+              ok = false;
+              break;
+            }
+            bool viewOk = true;
+            for (Operation *au : p2m->getUsers()) {
+              std::optional<int64_t> idx;
+              if (auto ld = dyn_cast<affine::AffineLoadOp>(au)) {
+                if (auto c = getConstant(ld.getAffineMap()))
+                  idx = *c;
+              } else if (auto st = dyn_cast<affine::AffineStoreOp>(au)) {
+                if (st.getValue() != p2m.getResult())
+                  if (auto c = getConstant(st.getAffineMap()))
+                    idx = *c;
+              }
+              if (!idx) {
+                viewOk = false;
+                break;
+              }
+              bool isStore = isa<affine::AffineStoreOp>(au);
+              accesses.push_back(
+                  {au, off + *idx * esz, isStore, ET,
+                   isStore ? cast<affine::AffineStoreOp>(au).getValue()
+                           : Value()});
+            }
+            if (!viewOk) {
+              ok = false;
+              break;
+            }
+            chain.push_back(p2m);
+            continue;
+          }
+          if (auto ld = dyn_cast<LLVM::LoadOp>(u)) {
+            accesses.push_back({u, off, false, ld.getType(), Value()});
+            continue;
+          }
+          if (auto st = dyn_cast<LLVM::StoreOp>(u)) {
+            if (st.getValue() == v) {
+              ok = false;
+              break;
+            }
+            accesses.push_back(
+                {u, off, true, st.getValue().getType(), st.getValue()});
+            continue;
+          }
+          if (isa<LLVM::LifetimeStartOp, LLVM::LifetimeEndOp>(u)) {
+            chain.push_back(u);
+            continue;
+          }
+          ok = false;
+          break;
+        }
+      }
+      if (!ok)
+        continue;
+      // One store per slot, dominating every load of that slot.
+      DominanceInfo dom(root);
+      llvm::DenseMap<int64_t, Access *> storeAt;
+      bool legal = true;
+      for (auto &acc : accesses)
+        if (acc.isStore) {
+          if (storeAt.count(acc.byteOff)) {
+            legal = false;
+            break;
+          }
+          storeAt[acc.byteOff] = &acc;
+        }
+      if (!legal)
+        continue;
+      for (auto &acc : accesses) {
+        if (acc.isStore)
+          continue;
+        auto it = storeAt.find(acc.byteOff);
+        if (it == storeAt.end() || it->second->ty != acc.ty ||
+            !dom.properlyDominates(it->second->op, acc.op)) {
+          legal = false;
+          break;
+        }
+      }
+      if (!legal)
+        continue;
+      for (auto &acc : accesses)
+        if (!acc.isStore) {
+          acc.op->getResult(0).replaceAllUsesWith(
+              storeAt[acc.byteOff]->value);
+          acc.op->erase();
+        }
+      for (auto &acc : accesses)
+        if (acc.isStore)
+          acc.op->erase();
+      for (Operation *c : llvm::reverse(chain))
+        if (c->use_empty())
+          c->erase();
+      if (a->use_empty())
+        a.erase();
+    }
+  }
+
+  // A side-selected view arrives as a select of byte offsets (or of the
+  // pointers themselves) feeding geps: distribute the gep and the memref
+  // view over the select so the buffer-branch expansion can take over.
+  static void distributeGepOverSelect(Operation *root) {
+    bool changed = true;
+    while (changed) {
+      changed = false;
+      SmallVector<Operation *> worklist;
+      root->walk([&](Operation *op) {
+        if (isa<LLVM::GEPOp, enzymexla::Pointer2MemrefOp>(op))
+          worklist.push_back(op);
+      });
+      for (Operation *op : worklist) {
+        if (auto p2m = dyn_cast<enzymexla::Pointer2MemrefOp>(op)) {
+          auto sel = p2m.getSource().getDefiningOp<arith::SelectOp>();
+          if (!sel)
+            continue;
+          auto condTy = dyn_cast<RankedTensorType>(sel.getCondition().getType());
+          if (condTy)
+            continue;
+          OpBuilder b(op);
+          Value t = enzymexla::Pointer2MemrefOp::create(
+              b, op->getLoc(), p2m.getType(), sel.getTrueValue());
+          Value f = enzymexla::Pointer2MemrefOp::create(
+              b, op->getLoc(), p2m.getType(), sel.getFalseValue());
+          Value ns = arith::SelectOp::create(b, op->getLoc(),
+                                             sel.getCondition(), t, f);
+          op->getResult(0).replaceAllUsesWith(ns);
+          op->erase();
+          changed = true;
+          continue;
+        }
+        auto gep = cast<LLVM::GEPOp>(op);
+        // Base is a select of pointers.
+        if (auto sel = gep.getBase().getDefiningOp<arith::SelectOp>()) {
+          OpBuilder b(op);
+          IRMapping mt, mf;
+          mt.map(gep.getBase(), sel.getTrueValue());
+          mf.map(gep.getBase(), sel.getFalseValue());
+          Operation *gt = b.clone(*op, mt);
+          Operation *gf = b.clone(*op, mf);
+          Value ns = arith::SelectOp::create(
+              b, op->getLoc(), sel.getCondition(), gt->getResult(0),
+              gf->getResult(0));
+          op->getResult(0).replaceAllUsesWith(ns);
+          op->erase();
+          changed = true;
+          continue;
+        }
+        // A single dynamic index that is a select of two values.
+        if (gep.getDynamicIndices().size() == 1) {
+          auto sel =
+              gep.getDynamicIndices()[0].getDefiningOp<arith::SelectOp>();
+          if (!sel || isa<RankedTensorType>(sel.getCondition().getType()))
+            continue;
+          OpBuilder b(op);
+          IRMapping mt, mf;
+          mt.map(gep.getDynamicIndices()[0], sel.getTrueValue());
+          mf.map(gep.getDynamicIndices()[0], sel.getFalseValue());
+          Operation *gt = b.clone(*op, mt);
+          Operation *gf = b.clone(*op, mf);
+          Value ns = arith::SelectOp::create(
+              b, op->getLoc(), sel.getCondition(), gt->getResult(0),
+              gf->getResult(0));
+          op->getResult(0).replaceAllUsesWith(ns);
+          op->erase();
+          changed = true;
+        }
+      }
+    }
+  }
+
   static void stripAccessMemorySpaceCasts(Operation *root) {
     SmallVector<memref::MemorySpaceCastOp> casts;
     root->walk([&](memref::MemorySpaceCastOp c) { casts.push_back(c); });
@@ -7324,6 +7573,8 @@ struct AffineToStableHLORaisingPass
       inlineAllocaScopes(func);
       for (int round = 0; round < 2; ++round) {
         dropNullPointerSelects(func);
+        distributeGepOverSelect(func);
+        forwardPackedScratch(func);
         stripAccessMemorySpaceCasts(func);
         rebaseViewedGeps(func);
         convertRawGepAccesses(func);
@@ -7366,6 +7617,8 @@ struct AffineToStableHLORaisingPass
       inlineAllocaScopes(root);
       for (int round = 0; round < 2; ++round) {
         dropNullPointerSelects(root);
+        distributeGepOverSelect(root);
+        forwardPackedScratch(root);
         stripAccessMemorySpaceCasts(root);
         rebaseViewedGeps(root);
         convertRawGepAccesses(root);
