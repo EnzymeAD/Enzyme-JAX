@@ -5543,6 +5543,123 @@ struct AffineToStableHLORaisingPass
     }
   }
 
+  // A kernel-local constant table (`const int map[9] = {...}`) is promoted
+  // to a host rodata global whose address would otherwise become a kernel
+  // argument that can never resolve to a device buffer. Reads of such a
+  // global fold to the initializer: directly for constant offsets, as a
+  // select chain over the elements for runtime indices.
+  static void foldConstantGlobalAccesses(Operation *root) {
+    SmallVector<LLVM::AddressOfOp> addrs;
+    root->walk([&](LLVM::AddressOfOp a) { addrs.push_back(a); });
+    for (auto addr : addrs) {
+      auto g = SymbolTable::lookupNearestSymbolFrom<LLVM::GlobalOp>(
+          addr, addr.getGlobalNameAttr());
+      if (!g || !g.getConstant())
+        continue;
+      auto dense = dyn_cast_or_null<DenseElementsAttr>(g.getValueOrNull());
+      if (!dense || !dense.getElementType().isIntOrFloat() ||
+          dense.getNumElements() > 256)
+        continue;
+      DataLayout dl = DataLayout::closest(addr);
+      int64_t elemSz = dl.getTypeSize(dense.getElementType());
+      SmallVector<Attribute> elems(dense.getValues<Attribute>().begin(),
+                                   dense.getValues<Attribute>().end());
+
+      // Collect typed views at constant byte offsets.
+      struct View {
+        enzymexla::Pointer2MemrefOp p2m;
+        int64_t byteOff;
+      };
+      SmallVector<View> views;
+      SmallVector<std::pair<Value, int64_t>> work{{addr.getResult(), 0}};
+      bool ok = true;
+      while (ok && !work.empty()) {
+        auto [v, off] = work.pop_back_val();
+        for (Operation *u : v.getUsers()) {
+          if (auto gep = dyn_cast<LLVM::GEPOp>(u)) {
+            if (gep.getBase() != v || !gep.getDynamicIndices().empty() ||
+                gep.getIndices().size() != 1) {
+              ok = false;
+              break;
+            }
+            work.push_back(
+                {gep.getResult(),
+                 off + cast<IntegerAttr>(gep.getIndices()[0]).getInt() *
+                           (int64_t)dl.getTypeSize(gep.getElemType())});
+          } else if (auto p2m = dyn_cast<enzymexla::Pointer2MemrefOp>(u)) {
+            Type ET = p2m.getType().getElementType();
+            if (p2m.getType().getRank() != 1 || ET != dense.getElementType() ||
+                off % elemSz != 0) {
+              ok = false;
+              break;
+            }
+            views.push_back({p2m, off});
+          } else if (u->use_empty() && isMemoryEffectFree(u)) {
+            // stranded plumbing
+          } else {
+            ok = false;
+            break;
+          }
+        }
+      }
+      if (!ok || views.empty())
+        continue;
+      for (auto &view : views) {
+        int64_t base = view.byteOff / elemSz;
+        bool allOk = llvm::all_of(view.p2m->getUsers(), [&](Operation *a) {
+          if (auto ld = dyn_cast<affine::AffineLoadOp>(a))
+            return ld.getAffineMap().getNumResults() == 1;
+          if (auto ld = dyn_cast<memref::LoadOp>(a))
+            return ld.getIndices().size() == 1;
+          return false;
+        });
+        if (!allOk) {
+          ok = false;
+          break;
+        }
+        for (Operation *a : llvm::make_early_inc_range(view.p2m->getUsers())) {
+          OpBuilder b(a);
+          Location loc = a->getLoc();
+          auto elemConst = [&](int64_t i) -> Value {
+            int64_t j = std::clamp<int64_t>(base + i, 0,
+                                            (int64_t)elems.size() - 1);
+            return arith::ConstantOp::create(b, loc,
+                                             cast<TypedAttr>(elems[j]));
+          };
+          std::optional<int64_t> cst;
+          Value idx;
+          if (auto ld = dyn_cast<affine::AffineLoadOp>(a)) {
+            if (auto c = getConstant(ld.getAffineMap()))
+              cst = *c;
+            else {
+              auto expanded = affine::expandAffineMap(
+                  b, loc, ld.getAffineMap(), ld.getMapOperands());
+              idx = (*expanded)[0];
+            }
+          } else {
+            idx = cast<memref::LoadOp>(a).getIndices()[0];
+          }
+          Value res;
+          if (cst) {
+            res = elemConst(*cst);
+          } else {
+            int64_t n = (int64_t)elems.size() - base;
+            res = elemConst(0);
+            for (int64_t i = 1; i < n; ++i) {
+              Value c = arith::ConstantIndexOp::create(b, loc, i);
+              Value eq = arith::CmpIOp::create(
+                  b, loc, arith::CmpIPredicate::eq, idx, c);
+              res = arith::SelectOp::create(b, loc, eq, elemConst(i), res);
+            }
+          }
+          a->getResult(0).replaceAllUsesWith(res);
+          a->erase();
+        }
+        view.p2m.erase();
+      }
+    }
+  }
+
   // An empty optional buffer arrives as a null base pointer used directly
   // (not through a select): every access through it sits on a path that
   // can only fault, so loads read as zero and stores vanish, and the null
@@ -8158,6 +8275,7 @@ struct AffineToStableHLORaisingPass
       for (int round = 0; round < 2; ++round) {
         dropNullPointerSelects(func);
         dropNullBufferAccesses(func);
+        foldConstantGlobalAccesses(func);
         distributeGepOverSelect(func);
         forwardPackedScratch(func);
         stripAccessMemorySpaceCasts(func);
@@ -8204,6 +8322,7 @@ struct AffineToStableHLORaisingPass
       for (int round = 0; round < 2; ++round) {
         dropNullPointerSelects(root);
         dropNullBufferAccesses(root);
+        foldConstantGlobalAccesses(root);
         distributeGepOverSelect(root);
         forwardPackedScratch(root);
         stripAccessMemorySpaceCasts(root);
