@@ -3112,6 +3112,26 @@ struct SliceBroadcast final
       tobcast = stablehlo::SliceOp::create(rewriter, op.getLoc(), tobcast,
                                            in_start, in_end, in_stride);
 
+    // The new broadcast must be dimensionally consistent: every mapped
+    // operand dim must equal its result dim or be 1.
+    {
+      auto nt = cast<RankedTensorType>(tobcast.getType());
+      for (auto [i, outdim] :
+           llvm::enumerate(bcast.getBroadcastDimensions())) {
+        int64_t od = nt.getShape()[i];
+        int64_t rd = op.getType().getShape()[outdim];
+        if (od != rd && od != 1) {
+          if (getenv("DEBUG_SLICE_BROADCAST"))
+            llvm::errs() << "SliceBroadcast invalid rewrite:\n  slice: " << op
+                         << "\n  bcast: " << bcast << "\n  tobcast type: "
+                         << nt << "\n";
+          if (innerSlice)
+            rewriter.eraseOp(tobcast.getDefiningOp());
+          return failure();
+        }
+      }
+    }
+
     rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
         op, op.getType(), tobcast, bcast.getBroadcastDimensions());
     return success();
@@ -36805,8 +36825,9 @@ struct EnzymeHLOOptPass
     if (passses & 1)
       patterns.add<SliceTransposeBase<stablehlo::SliceOp>,
                    SliceTransposeBase<stablehlo::DynamicSliceOp>,
-                   SliceReshapeTranspose, SliceBroadcast, SliceReduceWindow>(
-          context);
+                   SliceReshapeTranspose, SliceReduceWindow>(context);
+    if ((passses & 1) && !getenv("DISABLE_SLICE_BROADCAST"))
+      patterns.add<SliceBroadcast>(context);
 
     if (passses & 2)
       patterns.add<ReducePad, BroadcastPad>(context);

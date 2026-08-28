@@ -5948,7 +5948,8 @@ struct AffineToStableHLORaisingPass
               if (auto attr = dyn_cast<IntegerAttr>(e))
                 return attr.getInt();
               llvm::APInt c;
-              if (matchPattern(cast<Value>(e), m_ConstantInt(&c)))
+              if (!getenv("DISABLE_CONST_SSA_GEP") &&
+                  matchPattern(cast<Value>(e), m_ConstantInt(&c)))
                 return c.getSExtValue();
               return std::nullopt;
             };
@@ -6086,9 +6087,12 @@ struct AffineToStableHLORaisingPass
             chain.push_back(u);
             continue;
           }
-          // Earlier normalizations strand dead pointer plumbing (a select
-          // whose accesses were all expanded); it observes nothing.
-          if (u->use_empty() && isMemoryEffectFree(u)) {
+          // Buffer-branch expansion strands dead pointer selects over views
+          // of the struct; they observe nothing. Only that exact shape is
+          // skipped: a general dead-user skip admits big register scratch
+          // whose forwarding corrupts downstream passes.
+          if (u->use_empty() && isa<arith::SelectOp>(u) &&
+              isa<LLVM::LLVMPointerType>(u->getResult(0).getType())) {
             chain.push_back(u);
             continue;
           }
@@ -6215,9 +6219,14 @@ struct AffineToStableHLORaisingPass
       for (auto &acc : accesses)
         if (acc.isStore)
           acc.op->erase();
-      for (Operation *c : llvm::reverse(chain))
-        if (c->use_empty())
-          c->erase();
+      // The walk can reach one op through several operands (a dead select
+      // over two views of this alloca): erase each op once.
+      {
+        llvm::SmallPtrSet<Operation *, 8> erased;
+        for (Operation *c : llvm::reverse(chain))
+          if (erased.insert(c).second && c->use_empty())
+            c->erase();
+      }
       if (a->use_empty())
         a.erase();
     }
@@ -8274,15 +8283,18 @@ struct AffineToStableHLORaisingPass
       inlineAllocaScopes(func);
       for (int round = 0; round < 2; ++round) {
         dropNullPointerSelects(func);
-        dropNullBufferAccesses(func);
-        foldConstantGlobalAccesses(func);
+        if (!getenv("DISABLE_NULL_BUFFER"))
+          dropNullBufferAccesses(func);
+        if (!getenv("DISABLE_FOLD_CONST_GLOBAL"))
+          foldConstantGlobalAccesses(func);
         distributeGepOverSelect(func);
         forwardPackedScratch(func);
         stripAccessMemorySpaceCasts(func);
         rebaseViewedGeps(func);
         convertRawGepAccesses(func);
         expandBufferBranches(func);
-        rewritePointerInduction(func);
+        if (!getenv("DISABLE_PTR_INDUCTION"))
+          rewritePointerInduction(func);
         splitStructScratch(func);
         flattenViewedScratch(func);
       }
@@ -8321,15 +8333,18 @@ struct AffineToStableHLORaisingPass
       inlineAllocaScopes(root);
       for (int round = 0; round < 2; ++round) {
         dropNullPointerSelects(root);
-        dropNullBufferAccesses(root);
-        foldConstantGlobalAccesses(root);
+        if (!getenv("DISABLE_NULL_BUFFER"))
+          dropNullBufferAccesses(root);
+        if (!getenv("DISABLE_FOLD_CONST_GLOBAL"))
+          foldConstantGlobalAccesses(root);
         distributeGepOverSelect(root);
         forwardPackedScratch(root);
         stripAccessMemorySpaceCasts(root);
         rebaseViewedGeps(root);
         convertRawGepAccesses(root);
         expandBufferBranches(root);
-        rewritePointerInduction(root);
+        if (!getenv("DISABLE_PTR_INDUCTION"))
+          rewritePointerInduction(root);
         splitStructScratch(root);
         flattenViewedScratch(root);
       }
