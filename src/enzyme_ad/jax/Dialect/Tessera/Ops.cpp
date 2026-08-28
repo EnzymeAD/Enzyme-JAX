@@ -25,18 +25,14 @@ namespace mlir::enzyme::tessera {} // namespace mlir::enzyme::tessera
 //===----------------------------------------------------------------------===//
 
 void DefineOp::build(OpBuilder &builder, OperationState &state, StringRef name,
-                     FunctionType type, ArrayAttr byRefTypes, bool pure,
-                     ArrayAttr resultArgTypes, StringAttr sym_visibility,
-                     ArrayRef<NamedAttribute> attrs,
+                     FunctionType type, ArrayAttr argModes, bool pure,
+                     StringAttr sym_visibility, ArrayRef<NamedAttribute> attrs,
                      ArrayRef<DictionaryAttr> argAttrs) {
   state.addAttribute(SymbolTable::getSymbolAttrName(),
                      builder.getStringAttr(name));
   state.addAttribute(getFunctionTypeAttrName(state.name), TypeAttr::get(type));
   state.addAttribute("pure", builder.getBoolAttr(pure));
-  state.addAttribute("byRefTypes", byRefTypes);
-
-  if (resultArgTypes)
-    state.addAttribute("resultArgTypes", resultArgTypes);
+  state.addAttribute("argModes", argModes);
 
   if (sym_visibility)
     state.addAttribute(getSymVisibilityAttrName(state.name), sym_visibility);
@@ -155,8 +151,8 @@ static std::optional<unsigned> translateCallOperandIndex(DefineOp defineOp,
                                                          unsigned index) {
   unsigned offset = defineOp.getSretAttr() != nullptr ? 1 : 0;
   unsigned seen = 0;
-  for (unsigned i = 0, e = defineOp.getByRefTypesArray().size(); i != e; ++i) {
-    if (defineOp.isResultOnlyArg(i))
+  for (unsigned i = 0, e = defineOp.getArgModeEntries().size(); i != e; ++i) {
+    if (defineOp.argIsWritten(i) && !defineOp.argIsRead(i))
       continue;
     if (seen == index)
       return i + offset;
@@ -188,90 +184,129 @@ Attribute DefineOp::getArgAttr(unsigned index, StringRef name) {
   return nullptr;
 }
 
-ArrayRef<Attribute> DefineOp::getByRefTypesArray() {
-  return getByRefTypes().getValue();
+// Field names inside a lifted argument's mode dictionary.
+static constexpr llvm::StringLiteral argModeTypeField = "type";
+static constexpr llvm::StringLiteral argModeDirField = "dir";
+
+ArrayRef<Attribute> DefineOp::getArgModeEntries() {
+  return getArgModes().getValue();
 }
 
-Type DefineOp::getByRefType(unsigned argIdx) {
-  auto types = getByRefTypesArray();
-  assert(argIdx < types.size() && "argIdx out of bounds in getByRefType");
-  auto attr = types[argIdx];
-  if (!isa<TypeAttr>(attr))
+// The mode dictionary for an argument, or null if the argument is not lifted.
+static DictionaryAttr getArgModeDict(DefineOp op, unsigned argIdx) {
+  auto modes = op.getArgModeEntries();
+  assert(argIdx < modes.size() && "argIdx out of bounds in getArgModeDict");
+  return dyn_cast<DictionaryAttr>(modes[argIdx]);
+}
+
+// The direction string of a lifted argument, or empty if it is not lifted.
+static StringRef getArgDir(DefineOp op, unsigned argIdx) {
+  auto dict = getArgModeDict(op, argIdx);
+  if (!dict)
+    return StringRef();
+  if (auto dirAttr = dyn_cast_or_null<StringAttr>(dict.get(argModeDirField)))
+    return dirAttr.getValue();
+  return StringRef();
+}
+
+Type DefineOp::getArgLiftedType(unsigned argIdx) {
+  auto dict = getArgModeDict(*this, argIdx);
+  if (!dict)
     return nullptr;
-  return cast<TypeAttr>(attr).getValue();
-}
-
-ArrayRef<Attribute> DefineOp::getResultArgTypesArray() {
-  if (auto resultArgTypes = getResultArgTypes())
-    return resultArgTypes->getValue();
-  else
-    return ArrayRef<Attribute>();
-}
-
-Type DefineOp::getResultArgType(unsigned argIdx) {
-  auto types = getResultArgTypesArray();
-  if (types.empty())
+  auto typeAttr = dyn_cast_or_null<TypeAttr>(dict.get(argModeTypeField));
+  if (!typeAttr)
     return nullptr;
-  assert(argIdx < types.size() && "argIdx out of bounds in getResultArgType");
-  auto attr = types[argIdx];
-  if (!isa<TypeAttr>(attr))
+  return typeAttr.getValue();
+}
+
+bool DefineOp::isLiftedArg(unsigned argIdx) {
+  return getArgModeDict(*this, argIdx) != nullptr;
+}
+
+bool DefineOp::argIsRead(unsigned argIdx) {
+  StringRef dir = getArgDir(*this, argIdx);
+  return dir == "in" || dir == "inout";
+}
+
+bool DefineOp::argIsWritten(unsigned argIdx) {
+  StringRef dir = getArgDir(*this, argIdx);
+  return dir == "out" || dir == "inout";
+}
+
+unsigned DefineOp::getNumWrittenArgs() {
+  unsigned count = 0;
+  for (unsigned i = 0, e = getArgModeEntries().size(); i != e; ++i)
+    if (argIsWritten(i))
+      count++;
+  return count;
+}
+
+Type DefineOp::getCallOperandPointeeType(unsigned callOperandIdx) {
+  // getArgAttr already maps call-operand indices onto define-argument ones.
+  if (auto byValAttr =
+          getArgAttr(callOperandIdx, LLVM::LLVMDialect::getByValAttrName()))
+    return cast<TypeAttr>(byValAttr).getValue();
+  auto rawIndex = translateCallOperandIndex(*this, callOperandIdx);
+  if (!rawIndex)
     return nullptr;
-  return cast<TypeAttr>(attr).getValue();
-}
-
-unsigned DefineOp::getNumResultArgs() {
-  if (auto resultArgTypes = getResultArgTypes()) {
-    unsigned count = 0;
-    for (Attribute a : resultArgTypes->getValue()) {
-      if (isa<TypeAttr>(a))
-        count++;
-    }
-    return count;
-  } else {
-    return 0;
-  }
-}
-
-bool DefineOp::isResultOnlyArg(unsigned argIdx) {
-  return getResultArgType(argIdx) != nullptr && getByRefType(argIdx) == nullptr;
+  // argModes is indexed sret-exclusive, so undo the sret offset. Only a
+  // read argument reaches the callee through a loaded value; a write-only
+  // ("out") argument has no operand slot to carry one.
+  unsigned offset = getSretAttr() != nullptr ? 1 : 0;
+  if (!argIsRead(*rawIndex - offset))
+    return nullptr;
+  return getArgLiftedType(*rawIndex - offset);
 }
 
 unsigned DefineOp::getNumCallOperands() {
   unsigned count = 0;
-  for (unsigned i = 0, e = getByRefTypesArray().size(); i != e; ++i)
-    if (!isResultOnlyArg(i))
+  for (unsigned i = 0, e = getArgModeEntries().size(); i != e; ++i)
+    if (!argIsWritten(i) || argIsRead(i))
       count++;
   return count;
 }
 
 LogicalResult DefineOp::verify() {
-  for (Attribute a : getByRefTypes())
-    if (!isa<TypeAttr>(a) && !isa<UnitAttr>(a))
-      return emitOpError(
-                 "byRefTypes entry must be TypeAttr or UnitAttr, but got ")
-             << a;
+  // Each entry is either UnitAttr (argument not lifted) or a dictionary
+  // carrying exactly one pointee type and one direction. Storing the type once
+  // is deliberate: the previous representation kept it in two parallel arrays,
+  // which could disagree without any verifier noticing.
+  for (auto [i, a] : llvm::enumerate(getArgModes())) {
+    if (isa<UnitAttr>(a))
+      continue;
+    auto dict = dyn_cast<DictionaryAttr>(a);
+    if (!dict)
+      return emitOpError("argModes entry ")
+             << i << " must be a DictionaryAttr or UnitAttr, but got " << a;
 
-  unsigned offset = getSretAttr() != nullptr ? 1 : 0;
-  if (getByRefTypes().size() != getFunctionType().getNumInputs() - offset)
-    return emitOpError("byRefTypes size (")
-           << getByRefTypes().size() << ") must match number of args ("
-           << getFunctionType().getNumInputs() - offset << ")";
+    auto typeAttr = dyn_cast_or_null<TypeAttr>(dict.get(argModeTypeField));
+    if (!typeAttr)
+      return emitOpError("argModes entry ")
+             << i << " must have a '" << argModeTypeField << "' TypeAttr";
 
-  if (auto resultArgTypes = getResultArgTypes()) {
-    for (Attribute a : resultArgTypes->getValue())
-      if (!isa<TypeAttr>(a) && !isa<UnitAttr>(a))
-        return emitOpError("resultArgTypes entry must be TypeAttr or UnitAttr, "
-                           "but got ")
-               << a;
-    if (resultArgTypes->getValue().size() != getByRefTypes().size())
-      return emitOpError("resultArgTypes size (")
-             << resultArgTypes->getValue().size()
-             << ") must match number of byRef types (" << getByRefTypes().size()
-             << ")";
+    auto dirAttr = dyn_cast_or_null<StringAttr>(dict.get(argModeDirField));
+    if (!dirAttr)
+      return emitOpError("argModes entry ")
+             << i << " must have a '" << argModeDirField << "' StringAttr";
+
+    StringRef dir = dirAttr.getValue();
+    if (dir != "in" && dir != "out" && dir != "inout")
+      return emitOpError("argModes entry ")
+             << i << " has invalid direction '" << dir
+             << "', expected 'in', 'out', or 'inout'";
   }
 
-  if (getSretAttr() && getNumResultArgs() > 0)
-    return emitOpError("cannot have both sret and resultArgTypes");
+  // One entry per sret-excluded argument. Write-only ("out") arguments stay in
+  // the define op's signature -- it is tessera.call's operand list, not this
+  // one, that drops them (see getNumCallOperands).
+  unsigned offset = getSretAttr() != nullptr ? 1 : 0;
+  if (getArgModes().size() != getFunctionType().getNumInputs() - offset)
+    return emitOpError("argModes size (")
+           << getArgModes().size() << ") must match number of args ("
+           << getFunctionType().getNumInputs() - offset << ")";
+
+  if (getSretAttr() && getNumWrittenArgs() > 0)
+    return emitOpError("cannot have both sret and write ('out'/'inout') args");
 
   if (getSretAttr() && !getFunctionType().getResults().empty())
     return emitOpError(
@@ -297,23 +332,23 @@ LogicalResult CallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
   auto fnType = fn.getFunctionType();
 
   // tessera.call operand count = every non-sret argument, minus any
-  // pure-output (:result but not :byref) args, which are dropped from the
-  // operand list and added as trailing results.
+  // write-only ("out") args, which are dropped from the operand list and
+  // added as trailing results.
   unsigned expectedNumOperands = fn.getNumCallOperands();
   if (getNumOperands() != expectedNumOperands)
     return emitOpError("incorrect number of operands for callee: expected ")
            << expectedNumOperands << ", got " << getNumOperands();
 
   // Walk the callee's sret-excluded arguments in order, matching each
-  // argument to the next tessera.call operand, skipping any pure-output
-  // args are skipped. Allow type mismatch only for byref pointer args
-  // that have been converted to values.
+  // argument to the next tessera.call operand and skipping the write-only
+  // ones. Allow a type mismatch only where the operand carries a pointee
+  // value loaded at the call site rather than the pointer itself.
   bool has_sret = fn.getSretAttr() != nullptr;
   unsigned argOffset = has_sret ? 1 : 0;
   unsigned operandIdx = 0;
-  for (unsigned i = 0, e = fn.getByRefTypesArray().size(); i != e; ++i) {
-    if (fn.isResultOnlyArg(i))
-      continue; // call operand list does not include pure-output args
+  for (unsigned i = 0, e = fn.getArgModeEntries().size(); i != e; ++i) {
+    if (fn.argIsWritten(i) && !fn.argIsRead(i))
+      continue; // call operand list does not include write-only args
     Type expectedType = fnType.getInput(i + argOffset);
     if (getOperand(operandIdx).getType() == expectedType) {
       operandIdx++;
@@ -321,10 +356,10 @@ LogicalResult CallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
     }
     if (isa<LLVM::LLVMPointerType>(expectedType) &&
         (fn.getArgAttr(operandIdx, LLVM::LLVMDialect::getByValAttrName()) ||
-         fn.getByRefType(i))) {
+         fn.argIsRead(i))) {
       operandIdx++;
-      continue; // operand was loaded from a byref pointer, so type mismatch is
-                // allowed
+      continue; // operand was loaded from the pointer, so a type mismatch
+                // against the pointer type is expected here
     }
     return emitOpError("operand type mismatch: expected operand type ")
            << expectedType << ", but provided "
@@ -332,12 +367,12 @@ LogicalResult CallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
            << operandIdx;
   }
 
-  // tessera.call result count = one leading result per :result-marked
-  // argument (in argument order), followed by the callee's natural
+  // tessera.call result count = one leading result per written ("out" or
+  // "inout") argument, in argument order, followed by the callee's natural
   // function_type results; if a sret is present, the result count is 1
   // (the sret-derived value).
   unsigned calleeNumResults = fnType.getNumResults();
-  unsigned numResultArgs = fn.getNumResultArgs();
+  unsigned numResultArgs = fn.getNumWrittenArgs();
   unsigned expectedNumResults =
       has_sret ? 1 : (calleeNumResults + numResultArgs);
   if (getNumResults() != expectedNumResults)
@@ -351,10 +386,14 @@ LogicalResult CallOp::verifySymbolUses(SymbolTableCollection &symbolTable) {
       return emitOpError("result type mismatch: expected ")
              << sretType << " but got " << getResult(0).getType();
   } else {
-    // Verify leading, :result-arg-derived result types, in argument order.
+    // Verify the leading results derived from written arguments, in argument
+    // order. The direction check is load-bearing: getArgLiftedType is also
+    // non-null for read-only ("in") args, which contribute no result.
     unsigned resultArgIdx = 0;
-    for (unsigned i = 0, e = fn.getByRefTypesArray().size(); i != e; ++i) {
-      Type resultType = fn.getResultArgType(i);
+    for (unsigned i = 0, e = fn.getArgModeEntries().size(); i != e; ++i) {
+      if (!fn.argIsWritten(i))
+        continue;
+      Type resultType = fn.getArgLiftedType(i);
       if (!resultType)
         continue;
       Value result = getResult(resultArgIdx);

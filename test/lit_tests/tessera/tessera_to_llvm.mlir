@@ -1,6 +1,6 @@
 // RUN: enzymexlamlir-opt %s -tessera-to-llvm -split-input-file | FileCheck %s
 
-tessera.define @tessera_simple_func() attributes {byRefTypes = [], pure = false, tessera.original_name = "simple_func"} {
+tessera.define @tessera_simple_func() attributes {argModes = [], pure = false, tessera.original_name = "simple_func"} {
   tessera.return
 }
 
@@ -9,7 +9,7 @@ tessera.define @tessera_simple_func() attributes {byRefTypes = [], pure = false,
 
 // -----
 
-tessera.define @tessera_func_with_args(%arg0: i32, %arg1: f32) -> i32 attributes {byRefTypes = [unit, unit], pure = false, tessera.original_name = "func_with_args"} {
+tessera.define @tessera_func_with_args(%arg0: i32, %arg1: f32) -> i32 attributes {argModes = [unit, unit], pure = false, tessera.original_name = "func_with_args"} {
   tessera.return %arg0 : i32
 }
 
@@ -18,11 +18,11 @@ tessera.define @tessera_func_with_args(%arg0: i32, %arg1: f32) -> i32 attributes
 
 // -----
 
-tessera.define @tessera_helper() attributes {byRefTypes = [], pure = false, tessera.original_name = "helper"} {
+tessera.define @tessera_helper() attributes {argModes = [], pure = false, tessera.original_name = "helper"} {
   tessera.return
 }
 
-tessera.define @tessera_func_with_call() attributes {byRefTypes = [], pure = false, tessera.original_name = "func_with_call"} {
+tessera.define @tessera_func_with_call() attributes {argModes = [], pure = false, tessera.original_name = "func_with_call"} {
   tessera.call @tessera_helper() {op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 0, 0>} : () -> ()
   tessera.return
 }
@@ -37,7 +37,7 @@ tessera.define @tessera_func_with_call() attributes {byRefTypes = [], pure = fal
 // -----
 
 tessera.define @tessera_sret_func(%arg0: !llvm.ptr {llvm.align = 8 : i64, llvm.nonnull, llvm.sret = !llvm.struct<(f32, f32)>}, %arg1: !llvm.ptr {llvm.noundef, llvm.readonly}) 
-attributes {byRefTypes = [!llvm.struct<(f32, f32)>], linkage = #llvm.linkage<external>, pure = true, tessera.original_name = "sret_func"} {
+attributes {argModes = [{dir = "in", type = !llvm.struct<(f32, f32)>}], linkage = #llvm.linkage<external>, pure = true, tessera.original_name = "sret_func"} {
   %0 = llvm.load %arg1 {alignment = 8 : i64} : !llvm.ptr -> f32
   llvm.store %0, %arg0 {alignment = 8 : i64} : f32, !llvm.ptr
   tessera.return
@@ -48,7 +48,7 @@ llvm.func @caller() {
   %1 = llvm.alloca %0 x !llvm.struct<(f32, f32)> {alignment = 8 : i64} : (i32) -> !llvm.ptr
   %2 = llvm.alloca %0 x !llvm.struct<(f32, f32)> {alignment = 8 : i64} : (i32) -> !llvm.ptr
   %3 = llvm.load %2 : !llvm.ptr -> !llvm.struct<(f32, f32)>
-  %4 = tessera.call @tessera_sret_func(%3) {arg_attrs = [{llvm.nonnull, llvm.noundef}], op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 2, 0>, tessera.loaded_operands = array<i32: 0>} : (!llvm.struct<(f32, f32)>) -> !llvm.struct<(f32, f32)>
+  %4 = tessera.call @tessera_sret_func(%3) {arg_attrs = [{llvm.nonnull, llvm.noundef}], op_bundle_sizes = array<i32>, operandSegmentSizes = array<i32: 2, 0>} : (!llvm.struct<(f32, f32)>) -> !llvm.struct<(f32, f32)>
   llvm.store %4, %1 : !llvm.struct<(f32, f32)>, !llvm.ptr
   llvm.return
 }
@@ -73,7 +73,7 @@ llvm.func @caller() {
 
 // -----
 
-tessera.define @tessera_func_with_result_arg(%arg0: !llvm.ptr, %arg1: i32) -> i32 attributes {byRefTypes = [unit, unit], pure = false, resultArgTypes = [i32, unit], tessera.original_name = "func_with_result_arg"} {
+tessera.define @tessera_func_with_result_arg(%arg0: !llvm.ptr, %arg1: i32) -> i32 attributes {argModes = [{dir = "out", type = i32}, unit], pure = false, tessera.original_name = "func_with_result_arg"} {
   llvm.store %arg1, %arg0 : i32, !llvm.ptr
   tessera.return %arg1 : i32
 }
@@ -81,7 +81,7 @@ tessera.define @tessera_func_with_result_arg(%arg0: !llvm.ptr, %arg1: i32) -> i3
 llvm.func @result_arg_func_caller() {
   %0 = llvm.mlir.constant(1 : i32) : i32
   %1 = llvm.alloca %0 x i32 : (i32) -> !llvm.ptr
-  %2:2 = tessera.call @tessera_func_with_result_arg(%0) {tessera.loaded_operands = array<i32>} : (i32) -> (i32, i32)
+  %2:2 = tessera.call @tessera_func_with_result_arg(%0) : (i32) -> (i32, i32)
   llvm.store %2#0, %1 : i32, !llvm.ptr
   llvm.return
 }
