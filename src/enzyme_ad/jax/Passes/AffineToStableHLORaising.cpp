@@ -5907,6 +5907,18 @@ struct AffineToStableHLORaisingPass
               if (auto ld = dyn_cast<affine::AffineLoadOp>(au)) {
                 if (auto c = getConstant(ld.getAffineMap()))
                   idx = *c;
+                else if (!isa<LLVM::LLVMPointerType>(ET) &&
+                         ld.getAffineMap().getNumResults() == 1) {
+                  // Runtime-indexed scalar read through an affine map.
+                  OpBuilder eb(au);
+                  auto expanded = affine::expandAffineMap(
+                      eb, au->getLoc(), ld.getAffineMap(),
+                      ld.getMapOperands());
+                  if (expanded) {
+                    dynLoads.push_back({au, off, esz, ET, (*expanded)[0]});
+                    continue;
+                  }
+                }
               } else if (auto st = dyn_cast<affine::AffineStoreOp>(au)) {
                 if (st.getValue() != p2m.getResult())
                   if (auto c = getConstant(st.getAffineMap()))
