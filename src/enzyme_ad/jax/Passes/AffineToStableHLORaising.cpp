@@ -22,6 +22,7 @@
 #include "mlir/Dialect/Affine/LoopUtils.h"
 #include "mlir/Dialect/Affine/Utils.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Math/IR/Math.h"
@@ -3596,6 +3597,321 @@ struct AffineToStableHLORaisingPass
   // raising identifies buffers by SSA root: a memory_space_cast view would
   // split one buffer into two roots and lose store propagation. Retarget the
   // accesses to the source and drop the cast.
+  // An alloca scope only delimits stack lifetime, which the raised value
+  // semantics make meaningless: splice its body into the parent.
+  // Straight-line CFG inside a cloned callee region folds into one block,
+  // so the scope inlining below can dissolve it.
+  static void linearizeRegionBlocks(Region &r) {
+    auto isTrapBlock = [](Block *b) {
+      return isa<LLVM::UnreachableOp>(b->getTerminator());
+    };
+    bool changed = true;
+    while (changed) {
+      changed = false;
+      // Branches whose other targets only trap take their one live successor
+      // unconditionally.
+      for (Block &b : r) {
+        Operation *term = b.getTerminator();
+        SmallVector<std::pair<Block *, SmallVector<Value>>> live;
+        bool anyTrap = false;
+        if (isa<cf::SwitchOp, cf::CondBranchOp>(term)) {
+          for (auto [i, succ] : llvm::enumerate(term->getSuccessors())) {
+            if (isTrapBlock(succ)) {
+              anyTrap = true;
+              continue;
+            }
+            auto sops = cast<BranchOpInterface>(term).getSuccessorOperands(i);
+            SmallVector<Value> args(sops.getForwardedOperands().begin(),
+                                    sops.getForwardedOperands().end());
+            live.push_back({succ, std::move(args)});
+          }
+        }
+        if (anyTrap && live.size() == 1) {
+          OpBuilder tb(term);
+          cf::BranchOp::create(tb, term->getLoc(), live[0].first,
+                               live[0].second);
+          term->erase();
+          changed = true;
+          break;
+        }
+      }
+      if (changed)
+        continue;
+      // Trap blocks with no remaining predecessors disappear.
+      for (Block &b : llvm::make_early_inc_range(r)) {
+        if (&b != &r.front() && b.hasNoPredecessors()) {
+          b.dropAllDefinedValueUses();
+          b.erase();
+          changed = true;
+        }
+      }
+      if (changed)
+        continue;
+      for (Block &b : r) {
+        Operation *term = b.getTerminator();
+        Block *succ = nullptr;
+        SmallVector<Value> args;
+        if (auto br = dyn_cast<cf::BranchOp>(term)) {
+          succ = br.getDest();
+          args.assign(br.getDestOperands().begin(), br.getDestOperands().end());
+        } else if (auto br = dyn_cast<LLVM::BrOp>(term)) {
+          succ = br.getDest();
+          args.assign(br.getDestOperands().begin(), br.getDestOperands().end());
+        } else {
+          continue;
+        }
+        if (!succ || succ == &b || succ->getSinglePredecessor() != &b)
+          continue;
+        for (auto [ba, v] : llvm::zip(succ->getArguments(), args))
+          ba.replaceAllUsesWith(v);
+        term->erase();
+        b.getOperations().splice(b.end(), succ->getOperations());
+        succ->erase();
+        changed = true;
+        break;
+      }
+    }
+  }
+
+  static void inlineAllocaScopes(Operation *g) {
+    // Inliner wrappers stack alloca_scope/execute_region pairs, so inlining
+    // one can expose another: iterate to a fixed point.
+    bool changed = true;
+    while (changed) {
+      changed = false;
+      SmallVector<Operation *> scopes;
+      g->walk([&](Operation *op) {
+        if (isa<memref::AllocaScopeOp, scf::ExecuteRegionOp>(op))
+          scopes.push_back(op);
+      });
+      for (Operation *sc : scopes) {
+        Region &r = sc->getRegion(0);
+        if (!r.hasOneBlock())
+          linearizeRegionBlocks(r);
+        if (!r.hasOneBlock()) {
+          if (getenv("DEBUG_SCOPES")) {
+            llvm::errs() << "scope multiblock after linearize: "
+                         << std::distance(r.begin(), r.end()) << " blocks;";
+            for (Block &b : r)
+              llvm::errs() << " term=" << b.getTerminator()->getName()
+                           << " preds="
+                           << std::distance(b.pred_begin(), b.pred_end());
+            llvm::errs() << "\n";
+          }
+          continue;
+        }
+        Block *body = &r.front();
+        Operation *term = body->getTerminator();
+        for (auto [res, yielded] :
+             llvm::zip(sc->getResults(), term->getOperands()))
+          res.replaceAllUsesWith(yielded);
+        term->erase();
+        sc->getBlock()->getOperations().splice(sc->getIterator(),
+                                               body->getOperations());
+        sc->erase();
+        changed = true;
+      }
+    }
+  }
+
+  // A barrier under a parallel axis of dynamic extent raises serialized, so
+  // it cannot be dropped as a no-op: distribute the loops around it first,
+  // cpuify-style, so every pre-barrier phase completes for the whole axis
+  // before the next phase starts.
+
+  // A view taken of a gep result pins the kernel operand to the gep, which
+  // no tensor can stand for. Rebase the view onto the underlying pointer and
+  // fold the gep's element offset into each access index; data-dependent
+  // offsets make the accesses plain memref ops, which raising gathers.
+  static void rebaseViewedGeps(Operation *root) {
+    SmallVector<LLVM::GEPOp> geps;
+    root->walk([&](LLVM::GEPOp g) { geps.push_back(g); });
+    for (auto gep : geps) {
+      auto idxs = gep.getIndices();
+      if (idxs.size() != 1)
+        continue;
+      DataLayout dl = DataLayout::closest(gep);
+      int64_t elemSz = dl.getTypeSize(gep.getElemType());
+      bool ok = true;
+      SmallVector<enzymexla::Pointer2MemrefOp> views;
+      for (Operation *u : gep->getUsers()) {
+        auto p2m = dyn_cast<enzymexla::Pointer2MemrefOp>(u);
+        if (!p2m || p2m.getType().getRank() != 1 ||
+            !p2m.getType().getElementType().isIntOrFloat() ||
+            (int64_t)dl.getTypeSize(p2m.getType().getElementType()) != elemSz) {
+          ok = false;
+          break;
+        }
+        for (Operation *a : p2m->getUsers()) {
+          if (auto ld = dyn_cast<affine::AffineLoadOp>(a)) {
+            if (ld.getMap().getNumResults() == 1)
+              continue;
+          } else if (auto st = dyn_cast<affine::AffineStoreOp>(a)) {
+            if (st.getMap().getNumResults() == 1 &&
+                st.getValueToStore() != p2m.getResult())
+              continue;
+          } else if (auto ld = dyn_cast<memref::LoadOp>(a)) {
+            if (ld.getIndices().size() == 1)
+              continue;
+          } else if (auto st = dyn_cast<memref::StoreOp>(a)) {
+            if (st.getIndices().size() == 1 &&
+                st.getValueToStore() != p2m.getResult())
+              continue;
+          }
+          ok = false;
+          break;
+        }
+        if (!ok)
+          break;
+        views.push_back(p2m);
+      }
+      if (!ok || views.empty())
+        continue;
+      OpBuilder gb(gep);
+      Location loc = gep.getLoc();
+      Value off;
+      if (!gep.getDynamicIndices().empty()) {
+        off = gep.getDynamicIndices()[0];
+        if (!isa<IndexType>(off.getType()))
+          off = arith::IndexCastOp::create(gb, loc, gb.getIndexType(), off);
+      } else {
+        off = arith::ConstantIndexOp::create(
+            gb, loc, cast<IntegerAttr>(idxs[0]).getInt());
+      }
+      for (auto p2m : views) {
+        OpBuilder vb(p2m);
+        Value newView = enzymexla::Pointer2MemrefOp::create(
+            vb, p2m.getLoc(), p2m.getType(), gep.getBase());
+        for (Operation *a : llvm::make_early_inc_range(p2m->getUsers())) {
+          OpBuilder ab(a);
+          auto toIdx = [&](AffineMap map, ValueRange operands) -> Value {
+            auto expanded =
+                affine::expandAffineMap(ab, a->getLoc(), map, operands);
+            return (*expanded)[0];
+          };
+          if (auto ld = dyn_cast<affine::AffineLoadOp>(a)) {
+            Value idx = toIdx(ld.getMap(), ld.getMapOperands());
+            idx = arith::AddIOp::create(ab, a->getLoc(), idx, off);
+            Value nl = memref::LoadOp::create(ab, a->getLoc(), newView,
+                                              ValueRange{idx});
+            a->getResult(0).replaceAllUsesWith(nl);
+            a->erase();
+          } else if (auto st = dyn_cast<affine::AffineStoreOp>(a)) {
+            Value idx = toIdx(st.getMap(), st.getMapOperands());
+            idx = arith::AddIOp::create(ab, a->getLoc(), idx, off);
+            memref::StoreOp::create(ab, a->getLoc(), st.getValueToStore(),
+                                    newView, ValueRange{idx});
+            a->erase();
+          } else if (auto ld = dyn_cast<memref::LoadOp>(a)) {
+            Value idx =
+                arith::AddIOp::create(ab, a->getLoc(), ld.getIndices()[0], off);
+            Value nl = memref::LoadOp::create(ab, a->getLoc(), newView,
+                                              ValueRange{idx});
+            a->getResult(0).replaceAllUsesWith(nl);
+            a->erase();
+          } else {
+            auto st = cast<memref::StoreOp>(a);
+            Value idx =
+                arith::AddIOp::create(ab, a->getLoc(), st.getIndices()[0], off);
+            memref::StoreOp::create(ab, a->getLoc(), st.getValueToStore(),
+                                    newView, ValueRange{idx});
+            a->erase();
+          }
+        }
+        p2m.erase();
+      }
+      if (gep->use_empty())
+        gep.erase();
+    }
+  }
+
+  // Data-dependent indexing (CSR-style loops over runtime offsets) can never
+  // become affine, so llvm-to-affine-access leaves it as raw gep+load. The
+  // access still addresses whole elements of the loaded type; a plain memref
+  // access through a flat view carries that, and raising gathers it.
+  static void convertRawGepAccesses(Operation *root) {
+    SmallVector<Operation *> accesses;
+    root->walk([&](Operation *op) {
+      if (isa<LLVM::LoadOp, LLVM::StoreOp>(op))
+        accesses.push_back(op);
+    });
+    for (Operation *op : accesses) {
+      bool isLoad = isa<LLVM::LoadOp>(op);
+      if (isLoad ? cast<LLVM::LoadOp>(op).getVolatile_()
+                 : cast<LLVM::StoreOp>(op).getVolatile_())
+        continue;
+      Value addr = isLoad ? op->getOperand(0) : op->getOperand(1);
+      Type valTy =
+          isLoad ? op->getResult(0).getType() : op->getOperand(0).getType();
+      if (!valTy.isIntOrFloat())
+        continue;
+      DataLayout dl = DataLayout::closest(op);
+      Value base;
+      Value dynIdx;
+      int64_t constIdx = 0;
+      if (auto gep = addr.getDefiningOp<LLVM::GEPOp>()) {
+        auto idxs = gep.getIndices();
+        if (idxs.size() != 1 || (int64_t)dl.getTypeSize(gep.getElemType()) !=
+                                    (int64_t)dl.getTypeSize(valTy))
+          continue;
+        base = gep.getBase();
+        if (!gep.getDynamicIndices().empty())
+          dynIdx = gep.getDynamicIndices()[0];
+        else
+          constIdx = cast<IntegerAttr>(idxs[0]).getInt();
+      } else {
+        continue;
+      }
+      auto basePtrTy = cast<LLVM::LLVMPointerType>(base.getType());
+      Attribute space;
+      if (basePtrTy.getAddressSpace() != 0)
+        space = IntegerAttr::get(IntegerType::get(op->getContext(), 64),
+                                 basePtrTy.getAddressSpace());
+      OpBuilder b(op);
+      Location loc = op->getLoc();
+      auto MT = MemRefType::get({ShapedType::kDynamic}, valTy,
+                                MemRefLayoutAttrInterface{}, space);
+      Value view = enzymexla::Pointer2MemrefOp::create(b, loc, MT, base);
+      Value idx;
+      if (dynIdx) {
+        idx = dynIdx;
+        if (!isa<IndexType>(idx.getType()))
+          idx = arith::IndexCastOp::create(b, loc, b.getIndexType(), idx);
+      } else {
+        idx = arith::ConstantIndexOp::create(b, loc, constIdx);
+      }
+      if (isLoad) {
+        Value ld = memref::LoadOp::create(b, loc, view, ValueRange{idx});
+        op->getResult(0).replaceAllUsesWith(ld);
+        op->erase();
+      } else {
+        memref::StoreOp::create(b, loc, op->getOperand(0), view,
+                                ValueRange{idx});
+        op->erase();
+      }
+    }
+  }
+
+  // Access rewrites leave dead pointer plumbing behind, and raising visits
+  // every op in the region: sweep the unused chains.
+  static void dropDeadPointerChains(Operation *root) {
+    bool changed = true;
+    while (changed) {
+      changed = false;
+      SmallVector<Operation *> dead;
+      root->walk([&](Operation *op) {
+        if (isa<LLVM::GEPOp, LLVM::AddrSpaceCastOp, enzymexla::Pointer2MemrefOp,
+                enzymexla::Memref2PointerOp>(op) &&
+            op->use_empty())
+          dead.push_back(op);
+      });
+      for (Operation *op : dead) {
+        op->erase();
+        changed = true;
+      }
+    }
+  }
+
   static void stripAccessMemorySpaceCasts(Operation *root) {
     SmallVector<memref::MemorySpaceCastOp> casts;
     root->walk([&](memref::MemorySpaceCastOp c) { casts.push_back(c); });
@@ -3899,7 +4215,13 @@ struct AffineToStableHLORaisingPass
     // Peeling rewrites loops, so it stays scoped to the regions this pass
     // actually raises.
     for (auto func : funcs) {
-      stripAccessMemorySpaceCasts(func);
+      inlineAllocaScopes(func);
+      for (int round = 0; round < 2; ++round) {
+        stripAccessMemorySpaceCasts(func);
+        rebaseViewedGeps(func);
+        convertRawGepAccesses(func);
+      }
+      dropDeadPointerChains(func);
       boundParallelAxes(func);
       peelDynamicParallelDims(func);
     }
@@ -3922,7 +4244,20 @@ struct AffineToStableHLORaisingPass
     std::vector<enzymexla::GPUWrapperOp> gwrap;
     op->walk([&](enzymexla::GPUWrapperOp g) { gwrap.push_back(g); });
     for (auto g : gwrap) {
-      stripAccessMemorySpaceCasts(g);
+      // Scope inlining hoists scratch allocas to the surrounding function,
+      // so the buffer normalizations must see the whole function, not just
+      // the wrapper region; the rewrites also expose one another (a rebase
+      // creates the direct views a flatten wants), so iterate once more.
+      Operation *root = g->getParentOfType<FunctionOpInterface>();
+      if (!root)
+        root = g;
+      inlineAllocaScopes(root);
+      for (int round = 0; round < 2; ++round) {
+        stripAccessMemorySpaceCasts(root);
+        rebaseViewedGeps(root);
+        convertRawGepAccesses(root);
+      }
+      dropDeadPointerChains(root);
       boundParallelAxes(g);
       peelDynamicParallelDims(g);
     }
