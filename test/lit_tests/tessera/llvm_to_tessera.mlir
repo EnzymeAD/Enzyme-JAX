@@ -5,7 +5,7 @@ llvm.func @simple_func() attributes {tessera_op = "tessera_simple_func()"} {
 }
 
 // CHECK: tessera.define @tessera_simple_func()
-// CHECK-SAME: byRefTypes = []
+// CHECK-SAME: argModes = []
 // CHECK-SAME: pure = false
 // CHECK-SAME: tessera.original_name = "simple_func"
 // CHECK-NEXT: tessera.return
@@ -18,7 +18,7 @@ llvm.func @func_with_args(%arg0: i32, %arg1: f32) -> i32 attributes {tessera_op 
 }
 
 // CHECK: tessera.define @tessera_func_with_args(%arg0: i32, %arg1: f32)
-// CHECK-SAME: byRefTypes = [unit, unit]
+// CHECK-SAME: argModes = [unit, unit]
 // CHECK-SAME: pure = false
 // CHECK-SAME: tessera.original_name = "func_with_args"
 // CHECK-NEXT: tessera.return %arg0 : i32
@@ -27,12 +27,12 @@ llvm.func @func_with_args(%arg0: i32, %arg1: f32) -> i32 attributes {tessera_op 
 
 llvm.mlir.global internal constant @_ZL20__tessera_arg_type_0() : !llvm.struct<(f32)>
 
-llvm.func @pure_func(%arg0: i32, %arg1: !llvm.ptr) -> i32 attributes {pure_tessera_op = "tessera_pure_func(x, y:byref):globals=0"} {
+llvm.func @pure_func(%arg0: i32, %arg1: !llvm.ptr) -> i32 attributes {pure_tessera_op = "tessera_pure_func(x, y:val=in):globals=0"} {
   llvm.return %arg0 : i32
 }
 
 // CHECK: tessera.define @tessera_pure_func(%arg0: i32, %arg1: !llvm.ptr)
-// CHECK-SAME: byRefTypes = [unit, !llvm.struct<(f32)>]
+// CHECK-SAME: argModes = [unit, {dir = "in", type = !llvm.struct<(f32)>}]
 // CHECK-SAME: pure = true
 // CHECK-SAME: tessera.original_name = "pure_func"
 // CHECK-NEXT: tessera.return %arg0 : i32
@@ -49,7 +49,7 @@ llvm.func @func_with_call() {
 }
 
 // CHECK: tessera.define @tessera_helper()
-// CHECK-SAME: byRefTypes = []
+// CHECK-SAME: argModes = []
 // CHECK-SAME: pure = false
 // CHECK-SAME: tessera.original_name = "helper"
 // CHECK-NEXT: tessera.return
@@ -82,7 +82,7 @@ llvm.func @func_with_indirect_call(%arg0: !llvm.ptr) {
 
 llvm.mlir.global internal constant @_ZL20__tessera_arg_type_1() : !llvm.struct<(f32, f32)>
 
-llvm.func @sret_func(%arg0: !llvm.ptr {llvm.sret = !llvm.struct<(f32, f32)>, llvm.align = 8 : i64, llvm.nonnull}, %arg1: !llvm.ptr {llvm.noundef, llvm.readonly}) attributes {pure_tessera_op = "tessera_sret_func(x:byref):globals=1"} {
+llvm.func @sret_func(%arg0: !llvm.ptr {llvm.sret = !llvm.struct<(f32, f32)>, llvm.align = 8 : i64, llvm.nonnull}, %arg1: !llvm.ptr {llvm.noundef, llvm.readonly}) attributes {pure_tessera_op = "tessera_sret_func(x:val=in):globals=1"} {
   %0 = llvm.load %arg1 {alignment = 8 : i64} : !llvm.ptr -> f32
   llvm.store %0, %arg0 {alignment = 8 : i64} : f32, !llvm.ptr
   llvm.return
@@ -97,7 +97,7 @@ llvm.func @caller() {
 }
 
 // CHECK: tessera.define @tessera_sret_func(%arg0: !llvm.ptr {llvm.align = 8 : i64, llvm.nonnull, llvm.sret = !llvm.struct<(f32, f32)>}, %arg1: !llvm.ptr {llvm.noundef, llvm.readonly})
-// CHECK-SAME: byRefTypes = [!llvm.struct<(f32, f32)>]
+// CHECK-SAME: argModes = [{dir = "in", type = !llvm.struct<(f32, f32)>}]
 // CHECK-SAME: pure = true
 // CHECK-SAME: tessera.original_name = "sret_func"
 // CHECK-NEXT: %[[LOAD:.*]] = llvm.load %arg1 {alignment = 8 : i64} : !llvm.ptr -> f32
@@ -111,7 +111,6 @@ llvm.func @caller() {
 // CHECK-NEXT: %[[LOADED:.*]] = llvm.load %[[A2]] : !llvm.ptr -> !llvm.struct<(f32, f32)>
 // CHECK-NEXT: %[[RES:.*]] = tessera.call @tessera_sret_func(%[[LOADED]])
 // CHECK-SAME: arg_attrs = [{llvm.nonnull, llvm.noundef}]
-// CHECK-SAME: tessera.loaded_operands = array<i32: 0>
 // CHECK-SAME: (!llvm.struct<(f32, f32)>) -> !llvm.struct<(f32, f32)>
 // CHECK-NEXT: llvm.store %[[RES]], %[[A1]] : !llvm.struct<(f32, f32)>, !llvm.ptr
 // CHECK-NEXT: llvm.return
@@ -120,7 +119,7 @@ llvm.func @caller() {
 
 llvm.mlir.global internal constant @_ZL20__tessera_arg_type_2() : i32
 
-llvm.func @func_with_result_arg(%arg0: !llvm.ptr, %arg1: i32) -> i32 attributes {tessera_op = "tessera_func_with_result_arg(x:result, y):globals=2"} {
+llvm.func @func_with_result_arg(%arg0: !llvm.ptr, %arg1: i32) -> i32 attributes {tessera_op = "tessera_func_with_result_arg(x:val=out, y):globals=2"} {
   llvm.store %arg1, %arg0 : i32, !llvm.ptr
   llvm.return %arg1 : i32
 }
@@ -134,9 +133,8 @@ llvm.func @result_arg_func_caller() {
 }
 
 // CHECK: tessera.define @tessera_func_with_result_arg(%[[ARG0:.*]]: !llvm.ptr, %[[ARG1:.*]]: i32) -> i32
-// CHECK-SAME: byRefTypes = [unit, unit]
+// CHECK-SAME: argModes = [{dir = "out", type = i32}, unit]
 // CHECK-SAME: pure = false
-// CHECK-SAME: resultArgTypes = [i32, unit]
 // CHECK-SAME: tessera.original_name = "func_with_result_arg"
 // CHECK-NEXT: llvm.store %[[ARG1]], %[[ARG0]] : i32, !llvm.ptr
 // CHECK-NEXT: tessera.return %[[ARG1]] : i32
@@ -146,6 +144,50 @@ llvm.func @result_arg_func_caller() {
 // CHECK-NEXT: %[[AL:.*]] = llvm.alloca %[[ONE]] x i32 : (i32) -> !llvm.ptr
 // CHECK-NEXT: %[[RES:.*]]:2 = tessera.call @tessera_func_with_result_arg(%[[ONE]])
 // CHECK-SAME: (i32) -> (i32, i32)
+// CHECK-NEXT: llvm.store %[[RES]]#0, %[[AL]] : i32, !llvm.ptr
+// CHECK-NEXT: llvm.return
+// CHECK-NEXT: }
+
+// -----
+
+// An :val=inout argument, the counterpart to the :val=out case above. The
+// callee reads the pointee before overwriting it, so unlike a pure output the
+// argument keeps its tessera.call operand slot -- carrying the value loaded at
+// the call site -- as well as contributing a trailing result. Dropping that
+// operand would hand the callee uninitialized stack storage.
+
+llvm.mlir.global internal constant @_ZL20__tessera_arg_type_3() : i32
+
+llvm.func @func_with_inout_arg(%arg0: !llvm.ptr, %arg1: i32) -> i32 attributes {tessera_op = "tessera_func_with_inout_arg(x:val=inout, y):globals=3"} {
+  %0 = llvm.load %arg0 : !llvm.ptr -> i32
+  %1 = llvm.add %0, %arg1 : i32
+  llvm.store %1, %arg0 : i32, !llvm.ptr
+  llvm.return %1 : i32
+}
+
+llvm.func @inout_arg_func_caller() {
+  %0 = llvm.mlir.constant(1 : i32) : i32
+  %1 = llvm.alloca %0 x i32 : (i32) -> !llvm.ptr
+  %2 = llvm.call @func_with_inout_arg(%1, %0) : (!llvm.ptr, i32) -> i32
+  llvm.return
+}
+
+// CHECK: tessera.define @tessera_func_with_inout_arg(%[[ARG0:.*]]: !llvm.ptr, %[[ARG1:.*]]: i32) -> i32
+// CHECK-SAME: argModes = [{dir = "inout", type = i32}, unit]
+// CHECK-SAME: pure = false
+// CHECK-SAME: tessera.original_name = "func_with_inout_arg"
+// CHECK-NEXT: %[[LOAD:.*]] = llvm.load %[[ARG0]] : !llvm.ptr -> i32
+// CHECK-NEXT: %[[SUM:.*]] = llvm.add %[[LOAD]], %[[ARG1]] : i32
+// CHECK-NEXT: llvm.store %[[SUM]], %[[ARG0]] : i32, !llvm.ptr
+// CHECK-NEXT: tessera.return %[[SUM]] : i32
+
+// The call keeps two operands, unlike the single-operand :val=out call above.
+// CHECK: llvm.func @inout_arg_func_caller() {
+// CHECK-NEXT: %[[ONE:.*]] = llvm.mlir.constant(1 : i32) : i32
+// CHECK-NEXT: %[[AL:.*]] = llvm.alloca %[[ONE]] x i32 : (i32) -> !llvm.ptr
+// CHECK-NEXT: %[[IN:.*]] = llvm.load %[[AL]] : !llvm.ptr -> i32
+// CHECK-NEXT: %[[RES:.*]]:2 = tessera.call @tessera_func_with_inout_arg(%[[IN]], %[[ONE]])
+// CHECK-SAME: (i32, i32) -> (i32, i32)
 // CHECK-NEXT: llvm.store %[[RES]]#0, %[[AL]] : i32, !llvm.ptr
 // CHECK-NEXT: llvm.return
 // CHECK-NEXT: }
