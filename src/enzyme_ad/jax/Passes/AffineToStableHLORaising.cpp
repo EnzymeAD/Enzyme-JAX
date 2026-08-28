@@ -7160,6 +7160,11 @@ struct AffineToStableHLORaisingPass
     root->walk([&](memref::AllocaOp a) { allocas.push_back(a); });
     for (auto a : allocas) {
       auto par = a->getParentOfType<affine::AffineParallelOp>();
+      if (getenv("DEBUG_PRIV"))
+        llvm::errs() << "PRIV consider: " << *a << " par=" << (bool)par
+                     << " nested="
+                     << (par && par->getParentOfType<affine::AffineParallelOp>())
+                     << "\n";
       if (!par)
         continue;
       // Only the nested (thread) parallel batches into lanes; scratch
@@ -7169,8 +7174,11 @@ struct AffineToStableHLORaisingPass
       if (par.hasMinMaxBounds())
         continue;
       auto ranges = par.getConstantRanges();
-      if (!ranges)
+      if (!ranges) {
+        if (getenv("DEBUG_PRIV"))
+          llvm::errs() << "PRIV skip (symbolic ranges): " << *a << "\n";
         continue;
+      }
       int64_t total = 1;
       bool ok = true;
       for (auto [i, ext] : llvm::enumerate(*ranges)) {
@@ -7183,8 +7191,12 @@ struct AffineToStableHLORaisingPass
       }
       auto MT = cast<MemRefType>(a.getType());
       if (!ok || !MT.hasStaticShape() ||
-          total * MT.getNumElements() > (1 << 16))
+          total * MT.getNumElements() > (1 << 22)) {
+        if (getenv("DEBUG_PRIV"))
+          llvm::errs() << "PRIV size skip: " << *a << " total=" << total
+                       << "\n";
         continue;
+      }
       SmallVector<Operation *> accesses;
       bool legal = true;
       for (Operation *u : a->getUsers()) {
@@ -7199,8 +7211,11 @@ struct AffineToStableHLORaisingPass
         }
         accesses.push_back(u);
       }
-      if (!legal)
+      if (!legal) {
+        if (getenv("DEBUG_PRIV"))
+          llvm::errs() << "PRIV illegal users: " << *a << "\n";
         continue;
+      }
 
       SmallVector<int64_t> newShape(ranges->begin(), ranges->end());
       newShape.append(MT.getShape().begin(), MT.getShape().end());
