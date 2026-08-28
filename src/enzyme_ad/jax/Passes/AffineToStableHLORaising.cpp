@@ -4948,7 +4948,7 @@ struct AffineToStableHLORaisingPass
       }
       auto MT = cast<MemRefType>(a.getType());
       if (!ok || !MT.hasStaticShape() ||
-          total * MT.getNumElements() > (1 << 16))
+          total * MT.getNumElements() > (1 << 22))
         continue;
       SmallVector<Operation *> accesses;
       bool legal = true;
