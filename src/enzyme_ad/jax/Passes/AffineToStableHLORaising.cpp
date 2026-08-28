@@ -6083,8 +6083,15 @@ struct AffineToStableHLORaisingPass
         // elements of every view.
         Value dynStep;
         int64_t byteStep = 0;
+        llvm::APInt cstStep;
         if (gep.getDynamicIndices().empty()) {
           byteStep = cast<IntegerAttr>(gep.getIndices()[0]).getInt() *
+                     (int64_t)dl.getTypeSize(gep.getElemType());
+        } else if (matchPattern(gep.getDynamicIndices()[0],
+                                m_ConstantInt(&cstStep))) {
+          // A constant-valued SSA stride (a folded whole-trip advance) is as
+          // good as an attribute one.
+          byteStep = cstStep.getSExtValue() *
                      (int64_t)dl.getTypeSize(gep.getElemType());
         } else {
           dynStep = gep.getDynamicIndices()[0];
@@ -6159,12 +6166,14 @@ struct AffineToStableHLORaisingPass
         }
         if (!ok)
           break;
+        Attribute idxAttr;
+        if (gep.getDynamicIndices().empty())
+          idxAttr = cast<IntegerAttr>(gep.getIndices()[0]);
+        else if (!dynStep)
+          idxAttr = IntegerAttr::get(IntegerType::get(f->getContext(), 64),
+                                     cstStep.getSExtValue());
         inductions.push_back(
-            {i, byteStep, gep, gep.getElemType(),
-             gep.getDynamicIndices().empty()
-                 ? cast<Attribute>(cast<IntegerAttr>(gep.getIndices()[0]))
-                 : Attribute(),
-             dynStep});
+            {i, byteStep, gep, gep.getElemType(), idxAttr, dynStep});
         drop[i] = true;
       }
       for (auto &al : aliases) {
@@ -6255,18 +6264,46 @@ struct AffineToStableHLORaisingPass
               return arith::AddIOp::create(ab, a->getLoc(), idx, off)
                   .getResult();
             };
+            // A static step composes into the affine map so the access
+            // stays affine; a runtime step forces an arith-indexed access.
+            bool affineStep = !ind.dynStep && isa<BlockArgument>(k);
+            auto composed = [&](AffineMap m) {
+              AffineExpr e =
+                  m.getResult(0) +
+                  getAffineDimExpr(m.getNumDims(), m.getContext()) * stepElts;
+              return AffineMap::get(m.getNumDims() + 1, m.getNumSymbols(), e);
+            };
+            auto composedOps = [&](OperandRange ops, AffineMap m) {
+              SmallVector<Value> nops(ops.begin(), ops.end());
+              nops.insert(nops.begin() + m.getNumDims(), k);
+              return nops;
+            };
             if (auto ld = dyn_cast<affine::AffineLoadOp>(a)) {
-              auto expanded = affine::expandAffineMap(
-                  ab, a->getLoc(), ld.getMap(), ld.getMapOperands());
-              Value nl = memref::LoadOp::create(ab, a->getLoc(), nv,
-                                                ValueRange{add((*expanded)[0])});
+              Value nl;
+              if (affineStep) {
+                nl = affine::AffineLoadOp::create(
+                    ab, a->getLoc(), nv, composed(ld.getMap()),
+                    composedOps(ld.getMapOperands(), ld.getMap()));
+              } else {
+                auto expanded = affine::expandAffineMap(
+                    ab, a->getLoc(), ld.getMap(), ld.getMapOperands());
+                nl = memref::LoadOp::create(ab, a->getLoc(), nv,
+                                            ValueRange{add((*expanded)[0])});
+              }
               a->getResult(0).replaceAllUsesWith(nl);
               a->erase();
             } else if (auto st = dyn_cast<affine::AffineStoreOp>(a)) {
-              auto expanded = affine::expandAffineMap(
-                  ab, a->getLoc(), st.getMap(), st.getMapOperands());
-              memref::StoreOp::create(ab, a->getLoc(), st.getValueToStore(),
-                                      nv, ValueRange{add((*expanded)[0])});
+              if (affineStep) {
+                affine::AffineStoreOp::create(
+                    ab, a->getLoc(), st.getValueToStore(), nv,
+                    composed(st.getMap()),
+                    composedOps(st.getMapOperands(), st.getMap()));
+              } else {
+                auto expanded = affine::expandAffineMap(
+                    ab, a->getLoc(), st.getMap(), st.getMapOperands());
+                memref::StoreOp::create(ab, a->getLoc(), st.getValueToStore(),
+                                        nv, ValueRange{add((*expanded)[0])});
+              }
               a->erase();
             } else if (auto ld = dyn_cast<memref::LoadOp>(a)) {
               Value nl = memref::LoadOp::create(
@@ -6323,17 +6360,31 @@ struct AffineToStableHLORaisingPass
         OpBuilder fb(nf->getContext());
         fb.setInsertionPointAfter(nf);
         Location loc = nf.getLoc();
-        Value lbv = affine::AffineApplyOp::create(
-            fb, loc, f.getLowerBoundMap(), f.getLowerBoundOperands());
-        Value ubv = affine::AffineApplyOp::create(
-            fb, loc, f.getUpperBoundMap(), f.getUpperBoundOperands());
-        Value trip = arith::SubIOp::create(fb, loc, ubv, lbv);
+        // A statically known trip folds the whole advance to a constant so
+        // downstream users stay affine.
+        std::optional<int64_t> ctrip;
+        if (f.getLowerBoundMap().isSingleConstant() &&
+            f.getUpperBoundMap().isSingleConstant())
+          ctrip = std::max<int64_t>(
+              0, f.getUpperBoundMap().getSingleConstantResult() -
+                     f.getLowerBoundMap().getSingleConstantResult());
         Value zero = arith::ConstantIndexOp::create(fb, loc, 0);
-        Value neg = arith::CmpIOp::create(fb, loc, arith::CmpIPredicate::slt,
-                                          trip, zero);
-        trip = arith::SelectOp::create(fb, loc, neg, zero, trip);
-        Value trip64 = arith::IndexCastOp::create(
-            fb, loc, fb.getI64Type(), trip);
+        Value trip, trip64;
+        if (ctrip) {
+          trip = arith::ConstantIndexOp::create(fb, loc, *ctrip);
+          trip64 = arith::ConstantOp::create(fb, loc,
+                                             fb.getI64IntegerAttr(*ctrip));
+        } else {
+          Value lbv = affine::AffineApplyOp::create(
+              fb, loc, f.getLowerBoundMap(), f.getLowerBoundOperands());
+          Value ubv = affine::AffineApplyOp::create(
+              fb, loc, f.getUpperBoundMap(), f.getUpperBoundOperands());
+          trip = arith::SubIOp::create(fb, loc, ubv, lbv);
+          Value neg = arith::CmpIOp::create(fb, loc, arith::CmpIPredicate::slt,
+                                            trip, zero);
+          trip = arith::SelectOp::create(fb, loc, neg, zero, trip);
+          trip64 = arith::IndexCastOp::create(fb, loc, fb.getI64Type(), trip);
+        }
         auto finFor = [&](const Induction &ind) -> Value {
           // Emit the advance in the widest aligned element so downstream
           // rebasing sees whole-element addressing.
@@ -6345,17 +6396,23 @@ struct AffineToStableHLORaisingPass
           } else if (isa<IntegerAttr>(ind.advanceIdxAttr)) {
             finIdxScale = cast<IntegerAttr>(ind.advanceIdxAttr).getInt();
           }
-          Value scaled = arith::MulIOp::create(
-              fb, loc, trip64,
-              arith::ConstantOp::create(
-                  fb, loc, fb.getI64IntegerAttr(finIdxScale)));
-          if (ind.dynStep) {
-            Value ds = ind.dynStep;
-            if (isa<IndexType>(ds.getType()))
-              ds = arith::IndexCastOp::create(fb, loc, fb.getI64Type(), ds);
-            else if (ds.getType() != fb.getI64Type())
-              ds = arith::ExtSIOp::create(fb, loc, fb.getI64Type(), ds);
-            scaled = arith::MulIOp::create(fb, loc, scaled, ds);
+          Value scaled;
+          if (ctrip && !ind.dynStep) {
+            scaled = arith::ConstantOp::create(
+                fb, loc, fb.getI64IntegerAttr(*ctrip * finIdxScale));
+          } else {
+            scaled = arith::MulIOp::create(
+                fb, loc, trip64,
+                arith::ConstantOp::create(
+                    fb, loc, fb.getI64IntegerAttr(finIdxScale)));
+            if (ind.dynStep) {
+              Value ds = ind.dynStep;
+              if (isa<IndexType>(ds.getType()))
+                ds = arith::IndexCastOp::create(fb, loc, fb.getI64Type(), ds);
+              else if (ds.getType() != fb.getI64Type())
+                ds = arith::ExtSIOp::create(fb, loc, fb.getI64Type(), ds);
+              scaled = arith::MulIOp::create(fb, loc, scaled, ds);
+            }
           }
           return LLVM::GEPOp::create(fb, loc,
                                      f.getInits()[ind.idx].getType(), finElem,
