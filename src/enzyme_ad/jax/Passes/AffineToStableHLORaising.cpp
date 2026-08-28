@@ -6007,21 +6007,48 @@ struct AffineToStableHLORaisingPass
           break;
         }
       }
+      // A store contributes the slots it covers: its own slot for an exact
+      // type match, or several for a wider integer store (two i32 sizes
+      // packed into one i64 write). Little-endian extraction.
+      DataLayout dlq = dl;
+      auto coveredSlots = [&](Access &acc, int64_t viewBase, int64_t esz,
+                              Type ty) -> SmallVector<std::pair<int64_t, int64_t>> {
+        // pairs of (slot index, byte offset of the piece inside the store)
+        SmallVector<std::pair<int64_t, int64_t>> out;
+        if (acc.byteOff < viewBase)
+          return out;
+        if (acc.ty == ty && (acc.byteOff - viewBase) % esz == 0) {
+          out.push_back({(acc.byteOff - viewBase) / esz, 0});
+          return out;
+        }
+        auto sInt = dyn_cast<IntegerType>(acc.ty);
+        auto dInt = dyn_cast<IntegerType>(ty);
+        if (!sInt || !dInt)
+          return out;
+        int64_t ssz = (int64_t)dlq.getTypeSize(acc.ty);
+        if (ssz <= esz || (acc.byteOff - viewBase) % esz != 0)
+          return out;
+        for (int64_t b = 0; b + esz <= ssz; b += esz)
+          out.push_back({(acc.byteOff + b - viewBase) / esz, b});
+        return out;
+      };
       // Every candidate slot of a dynamic load must be forwardable.
       for (auto &dyn : llvm::make_range(dynLoads.begin(),
                                         legal ? dynLoads.end()
                                               : dynLoads.begin())) {
         bool any = false;
-        for (auto &acc : accesses)
-          if (acc.isStore && acc.ty == dyn.ty &&
-              (acc.byteOff - dyn.viewBase) % dyn.esz == 0 &&
-              acc.byteOff >= dyn.viewBase) {
-            if (!dom.properlyDominates(acc.op, dyn.op)) {
-              legal = false;
-              break;
-            }
-            any = true;
+        for (auto &acc : accesses) {
+          if (!acc.isStore)
+            continue;
+          auto cov = coveredSlots(acc, dyn.viewBase, dyn.esz, dyn.ty);
+          if (cov.empty())
+            continue;
+          if (!dom.properlyDominates(acc.op, dyn.op)) {
+            legal = false;
+            break;
           }
+          any = true;
+        }
         if (!any)
           legal = false;
         if (!legal)
@@ -6041,19 +6068,29 @@ struct AffineToStableHLORaisingPass
         Value idx = dyn.idx;
         Value res;
         for (auto &acc : accesses) {
-          if (!acc.isStore || acc.ty != dyn.ty ||
-              (acc.byteOff - dyn.viewBase) % dyn.esz != 0 ||
-              acc.byteOff < dyn.viewBase)
+          if (!acc.isStore)
             continue;
-          int64_t slot = (acc.byteOff - dyn.viewBase) / dyn.esz;
-          if (!res) {
-            res = acc.value;
-            continue;
+          for (auto [slot, pieceOff] :
+               coveredSlots(acc, dyn.viewBase, dyn.esz, dyn.ty)) {
+            Value piece = acc.value;
+            if (piece.getType() != dyn.ty) {
+              if (pieceOff != 0) {
+                Value sh = arith::ConstantOp::create(
+                    b, loc,
+                    IntegerAttr::get(piece.getType(), pieceOff * 8));
+                piece = arith::ShRUIOp::create(b, loc, piece, sh);
+              }
+              piece = arith::TruncIOp::create(b, loc, dyn.ty, piece);
+            }
+            if (!res) {
+              res = piece;
+              continue;
+            }
+            Value c = arith::ConstantIndexOp::create(b, loc, slot);
+            Value eq = arith::CmpIOp::create(b, loc,
+                                             arith::CmpIPredicate::eq, idx, c);
+            res = arith::SelectOp::create(b, loc, eq, piece, res);
           }
-          Value c = arith::ConstantIndexOp::create(b, loc, slot);
-          Value eq = arith::CmpIOp::create(b, loc, arith::CmpIPredicate::eq,
-                                           idx, c);
-          res = arith::SelectOp::create(b, loc, eq, acc.value, res);
         }
         dyn.op->getResult(0).replaceAllUsesWith(res);
         dyn.op->erase();
@@ -8275,6 +8312,28 @@ struct AffineToStableHLORaisingPass
           }
 
           if (isa<LLVM::LLVMPointerType>(arg.getType())) {
+            // A pointer rooted at a host stack slot compiles into a kernel
+            // argument that can never resolve to a device buffer; fail here
+            // rather than at runtime.
+            {
+              Value base = arg;
+              while (true) {
+                if (auto gepB = base.getDefiningOp<LLVM::GEPOp>())
+                  base = gepB.getBase();
+                else if (auto cast = base.getDefiningOp<LLVM::AddrSpaceCastOp>())
+                  base = cast.getArg();
+                else
+                  break;
+              }
+              if (base.getDefiningOp<LLVM::AllocaOp>() &&
+                  err_if_not_fully_raised) {
+                llvm::errs()
+                    << "kernel operand rooted at a host alloca: " << arg
+                    << "\n within " << g << "\n";
+                signalPassFailure();
+                return;
+              }
+            }
             OpBuilder b(g);
             b.setInsertionPoint(g);
             bool legal = true;
