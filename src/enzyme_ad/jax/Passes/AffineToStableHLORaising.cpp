@@ -3912,6 +3912,647 @@ struct AffineToStableHLORaisingPass
     }
   }
 
+  // Residue of an integer/index value modulo m, when the defining arith
+  // chain pins it down. Extension and truncation preserve residues for the
+  // power-of-two moduli struct layouts produce.
+  static std::optional<int64_t> staticResidue(Value v, int64_t m,
+                                              unsigned depth = 0) {
+    if (m == 1)
+      return 0;
+    if (depth > 16)
+      return std::nullopt;
+    APInt cst;
+    if (matchPattern(v, m_ConstantInt(&cst)))
+      return ((cst.getSExtValue() % m) + m) % m;
+    Operation *op = v.getDefiningOp();
+    if (!op)
+      return std::nullopt;
+    if (isa<arith::IndexCastOp, arith::IndexCastUIOp, arith::ExtSIOp,
+            arith::ExtUIOp>(op) ||
+        (isa<arith::TruncIOp>(op) && llvm::isPowerOf2_64(m)))
+      return staticResidue(op->getOperand(0), m, depth + 1);
+    if (auto add = dyn_cast<arith::AddIOp>(op)) {
+      auto a = staticResidue(add.getLhs(), m, depth + 1);
+      auto b = staticResidue(add.getRhs(), m, depth + 1);
+      if (a && b)
+        return (*a + *b) % m;
+      return std::nullopt;
+    }
+    if (auto mul = dyn_cast<arith::MulIOp>(op)) {
+      auto a = staticResidue(mul.getLhs(), m, depth + 1);
+      auto b = staticResidue(mul.getRhs(), m, depth + 1);
+      if (a && b)
+        return (*a * *b) % m;
+      if ((a && *a == 0) || (b && *b == 0))
+        return 0;
+      return std::nullopt;
+    }
+    if (auto shl = dyn_cast<arith::ShLIOp>(op)) {
+      APInt sh;
+      if (matchPattern(shl.getRhs(), m_ConstantInt(&sh)) &&
+          sh.getZExtValue() < 63) {
+        int64_t f = (int64_t(1) << sh.getZExtValue()) % m;
+        if (f == 0)
+          return 0;
+        auto a = staticResidue(shl.getLhs(), m, depth + 1);
+        if (a)
+          return (*a * f) % m;
+      }
+      return std::nullopt;
+    }
+    return std::nullopt;
+  }
+
+  // Struct-element scratch (e.g. reduce-with-location value/index pairs)
+  // cannot become a tensor whole. Every access reaches it through a flat
+  // primitive view whose affine index resolves to a fixed byte offset within
+  // the struct, so the array-of-structs splits into one primitive scratch
+  // per field, with whole-struct integer moves split into their fields.
+  static void splitStructScratch(Operation *root) {
+    SmallVector<memref::AllocaOp> allocas;
+    root->walk([&](memref::AllocaOp a) { allocas.push_back(a); });
+    for (auto alloca : allocas) {
+      auto MT = alloca.getType();
+      if (!MT.hasStaticShape())
+        continue;
+      auto ST = dyn_cast<LLVM::LLVMStructType>(MT.getElementType());
+      if (!ST)
+        continue;
+      DataLayout dl = DataLayout::closest(alloca);
+      struct Field {
+        uint64_t off, size;
+        Type ty;
+      };
+      SmallVector<Field> fields;
+      uint64_t byte = 0;
+      bool ok = true;
+      for (Type member : ST.getBody()) {
+        if (!member.isIntOrFloat()) {
+          ok = false;
+          break;
+        }
+        if (!ST.isPacked())
+          byte = llvm::alignTo(byte, dl.getTypeABIAlignment(member));
+        fields.push_back({byte, dl.getTypeSize(member), member});
+        byte += dl.getTypeSize(member);
+      }
+      if (!ok)
+        continue;
+      int64_t pairSize = dl.getTypeSize(ST);
+
+      struct FieldAccess {
+        Operation *op;
+        unsigned field;
+        AffineMap pairMap;
+        bool bitcast;
+      };
+      struct WideAccess {
+        Operation *op;
+        SmallVector<unsigned> covered;
+        uint64_t base;
+        AffineMap pairMap;
+      };
+      struct DynAccess {
+        Operation *op;
+        unsigned field;
+        int64_t q;
+        bool bitcast;
+      };
+      SmallVector<FieldAccess> fieldAccesses;
+      SmallVector<WideAccess> wideAccesses;
+      SmallVector<DynAccess> dynAccesses;
+      SmallVector<enzymexla::Pointer2MemrefOp> views;
+      SmallVector<enzymexla::Memref2PointerOp> casts;
+
+      auto classify = [&](Operation *op, Type elemTy, AffineMap map) -> bool {
+        if (map.getNumResults() != 1)
+          return false;
+        int64_t s = dl.getTypeSize(elemTy);
+        AffineExpr byteExpr = map.getResult(0) * s;
+        AffineExpr rem = simplifyAffineExpr(
+            byteExpr % pairSize, map.getNumDims(), map.getNumSymbols());
+        auto remCst = dyn_cast<AffineConstantExpr>(rem);
+        if (!remCst)
+          return false;
+        uint64_t off = remCst.getValue();
+        AffineMap pairMap = AffineMap::get(
+            map.getNumDims(), map.getNumSymbols(),
+            simplifyAffineExpr(byteExpr.floorDiv(pairSize), map.getNumDims(),
+                               map.getNumSymbols()));
+        for (auto &&[i, f] : llvm::enumerate(fields))
+          if (f.off == off && f.size == (uint64_t)s) {
+            fieldAccesses.push_back({op, (unsigned)i, pairMap,
+                                     /*bitcast=*/f.ty != elemTy});
+            return true;
+          }
+        // A wider integer move covering whole fields splits into them.
+        if (!isa<IntegerType>(elemTy))
+          return false;
+        SmallVector<unsigned> covered;
+        for (auto &&[i, f] : llvm::enumerate(fields)) {
+          if (f.off + f.size <= off || f.off >= off + s)
+            continue;
+          if (f.off < off || f.off + f.size > off + s ||
+              !isa<IntegerType>(f.ty))
+            return false;
+          covered.push_back(i);
+        }
+        if (covered.empty())
+          return false;
+        wideAccesses.push_back({op, covered, off, pairMap});
+        return true;
+      };
+
+      // The same classification for accesses whose index arrives through
+      // plain arithmetic instead of an affine map: the field is fixed when
+      // the index has a static residue modulo the per-struct element count.
+      auto classifyDyn = [&](Operation *op, Type elemTy, Value idx) -> bool {
+        int64_t s = dl.getTypeSize(elemTy);
+        if (!s || pairSize % s)
+          return false;
+        int64_t q = pairSize / s;
+        auto r = staticResidue(idx, q);
+        if (!r)
+          return false;
+        uint64_t off = (uint64_t)*r * s;
+        for (auto &&[i, f] : llvm::enumerate(fields))
+          if (f.off == off && f.size == (uint64_t)s) {
+            dynAccesses.push_back({op, (unsigned)i, q,
+                                   /*bitcast=*/f.ty != elemTy});
+            return true;
+          }
+        return false;
+      };
+
+      SmallVector<Operation *> spaceCasts;
+      llvm::MapVector<Operation *, Value> pairGeps;
+      llvm::SetVector<Operation *> pairCopies;
+      DenseSet<Value> basePtrs;
+      bool viewedOnly = true;
+      for (Operation *user : alloca->getUsers()) {
+        auto m2p = dyn_cast<enzymexla::Memref2PointerOp>(user);
+        if (!m2p) {
+          viewedOnly = false;
+          break;
+        }
+        casts.push_back(m2p);
+        basePtrs.insert(m2p.getResult());
+        SmallVector<Operation *> viewUsers(m2p->getUsers());
+        for (unsigned vi = 0; vi < viewUsers.size() && viewedOnly; ++vi) {
+          Operation *viewUser = viewUsers[vi];
+          if (isa<LLVM::AddrSpaceCastOp>(viewUser)) {
+            spaceCasts.push_back(viewUser);
+            basePtrs.insert(viewUser->getResult(0));
+            viewUsers.append(viewUser->getUsers().begin(),
+                             viewUser->getUsers().end());
+            continue;
+          }
+          // A copy of pair zero addresses the scratch base directly.
+          if (auto mc = dyn_cast<LLVM::MemcpyOp>(viewUser)) {
+            APInt len;
+            if (mc.getIsVolatile() ||
+                !matchPattern(mc.getLen(), m_ConstantInt(&len)) ||
+                len.getSExtValue() != pairSize) {
+              viewedOnly = false;
+              break;
+            }
+            pairCopies.insert(mc);
+            continue;
+          }
+          // A whole-struct move arrives as a fixed-size memcpy between
+          // struct-strided geps into the scratch: split it per field.
+          if (auto gep = dyn_cast<LLVM::GEPOp>(viewUser)) {
+            auto idxs = gep.getIndices();
+            if (idxs.size() != 1 ||
+                (int64_t)dl.getTypeSize(gep.getElemType()) != pairSize) {
+              viewedOnly = false;
+              break;
+            }
+            bool copiesOnly = true;
+            for (Operation *gu : gep->getUsers()) {
+              auto mc = dyn_cast<LLVM::MemcpyOp>(gu);
+              APInt len;
+              if (!mc || mc.getIsVolatile() ||
+                  !matchPattern(mc.getLen(), m_ConstantInt(&len)) ||
+                  len.getSExtValue() != pairSize) {
+                copiesOnly = false;
+                break;
+              }
+              pairCopies.insert(mc);
+            }
+            if (!copiesOnly) {
+              viewedOnly = false;
+              break;
+            }
+            Value gepIdx;
+            if (!gep.getDynamicIndices().empty()) {
+              gepIdx = gep.getDynamicIndices()[0];
+            } else {
+              OpBuilder gb(gep);
+              gepIdx = arith::ConstantIndexOp::create(
+                  gb, gep.getLoc(), cast<IntegerAttr>(idxs[0]).getInt());
+            }
+            pairGeps.insert({gep, gepIdx});
+            continue;
+          }
+          auto p2m = dyn_cast<enzymexla::Pointer2MemrefOp>(viewUser);
+          if (!p2m || p2m.getType().getRank() != 1 ||
+              !p2m.getType().getElementType().isIntOrFloat()) {
+            viewedOnly = false;
+            break;
+          }
+          for (Operation *access : p2m->getUsers()) {
+            if (auto ld = dyn_cast<affine::AffineLoadOp>(access)) {
+              if (classify(ld, ld.getType(), ld.getMap()))
+                continue;
+            } else if (auto st = dyn_cast<affine::AffineStoreOp>(access)) {
+              if (st.getValueToStore() != p2m.getResult() &&
+                  classify(st, st.getValueToStore().getType(), st.getMap()))
+                continue;
+            } else if (auto mld = dyn_cast<memref::LoadOp>(access)) {
+              if (mld.getIndices().size() == 1 &&
+                  classifyDyn(mld, mld.getType(), mld.getIndices()[0]))
+                continue;
+            } else if (auto mst = dyn_cast<memref::StoreOp>(access)) {
+              if (mst.getMemRef() == p2m.getResult() &&
+                  mst.getValueToStore() != p2m.getResult() &&
+                  mst.getIndices().size() == 1 &&
+                  classifyDyn(mst, mst.getValueToStore().getType(),
+                              mst.getIndices()[0]))
+                continue;
+            }
+            viewedOnly = false;
+            break;
+          }
+          if (!viewedOnly)
+            break;
+          views.push_back(p2m);
+        }
+        if (!viewedOnly)
+          break;
+      }
+      // Every pair copy must connect two classified geps or scratch bases.
+      auto copyEnd = [&](Value p) {
+        return basePtrs.contains(p) ||
+               (p.getDefiningOp() && pairGeps.count(p.getDefiningOp()));
+      };
+      for (Operation *mc : pairCopies) {
+        auto cp = cast<LLVM::MemcpyOp>(mc);
+        if (!copyEnd(cp.getDst()) || !copyEnd(cp.getSrc()))
+          viewedOnly = false;
+      }
+      if (!viewedOnly || (fieldAccesses.empty() && wideAccesses.empty()))
+        continue;
+
+      OpBuilder b(alloca);
+      SmallVector<Value> fieldBufs;
+      for (auto &f : fields)
+        fieldBufs.push_back(memref::AllocaOp::create(
+            b, alloca.getLoc(), MemRefType::get({MT.getNumElements()}, f.ty)));
+
+      for (auto &fa : fieldAccesses) {
+        if (auto ld = dyn_cast<affine::AffineLoadOp>(fa.op)) {
+          OpBuilder ab(ld);
+          Value newLd =
+              affine::AffineLoadOp::create(ab, ld.getLoc(), fieldBufs[fa.field],
+                                           fa.pairMap, ld.getMapOperands());
+          if (fa.bitcast)
+            newLd =
+                arith::BitcastOp::create(ab, ld.getLoc(), ld.getType(), newLd);
+          ld.getResult().replaceAllUsesWith(newLd);
+          ld.erase();
+        } else {
+          auto st = cast<affine::AffineStoreOp>(fa.op);
+          OpBuilder ab(st);
+          Value val = st.getValueToStore();
+          if (fa.bitcast)
+            val = arith::BitcastOp::create(ab, st.getLoc(), fields[fa.field].ty,
+                                           val);
+          affine::AffineStoreOp::create(ab, st.getLoc(), val,
+                                        fieldBufs[fa.field], fa.pairMap,
+                                        st.getMapOperands());
+          st.erase();
+        }
+      }
+      for (auto &wa : wideAccesses) {
+        if (auto ld = dyn_cast<affine::AffineLoadOp>(wa.op)) {
+          OpBuilder ab(ld);
+          Location loc = ld.getLoc();
+          Type wideTy = ld.getType();
+          Value acc = arith::ConstantOp::create(ab, loc, wideTy,
+                                                ab.getIntegerAttr(wideTy, 0));
+          for (unsigned i : wa.covered) {
+            Value v = affine::AffineLoadOp::create(
+                ab, loc, fieldBufs[i], wa.pairMap, ld.getMapOperands());
+            Value z = arith::ExtUIOp::create(ab, loc, wideTy, v);
+            uint64_t sh = (fields[i].off - wa.base) * 8;
+            if (sh) {
+              Value shv = arith::ConstantOp::create(
+                  ab, loc, wideTy, ab.getIntegerAttr(wideTy, sh));
+              z = arith::ShLIOp::create(ab, loc, z, shv);
+            }
+            acc = arith::OrIOp::create(ab, loc, acc, z);
+          }
+          ld.getResult().replaceAllUsesWith(acc);
+          ld.erase();
+        } else {
+          auto st = cast<affine::AffineStoreOp>(wa.op);
+          OpBuilder ab(st);
+          Location loc = st.getLoc();
+          Value val = st.getValueToStore();
+          Type wideTy = val.getType();
+          for (unsigned i : wa.covered) {
+            Value part = val;
+            uint64_t sh = (fields[i].off - wa.base) * 8;
+            if (sh) {
+              Value shv = arith::ConstantOp::create(
+                  ab, loc, wideTy, ab.getIntegerAttr(wideTy, sh));
+              part = arith::ShRUIOp::create(ab, loc, part, shv);
+            }
+            part = arith::TruncIOp::create(ab, loc, fields[i].ty, part);
+            affine::AffineStoreOp::create(ab, loc, part, fieldBufs[i],
+                                          wa.pairMap, st.getMapOperands());
+          }
+          st.erase();
+        }
+      }
+      for (auto &da : dynAccesses) {
+        OpBuilder ab(da.op);
+        Location loc = da.op->getLoc();
+        Value idx = isa<memref::LoadOp>(da.op)
+                        ? cast<memref::LoadOp>(da.op).getIndices()[0]
+                        : cast<memref::StoreOp>(da.op).getIndices()[0];
+        Value pairIdx = idx;
+        if (da.q != 1) {
+          Value qc = arith::ConstantIndexOp::create(ab, loc, da.q);
+          pairIdx = arith::DivUIOp::create(ab, loc, idx, qc);
+        }
+        if (auto mld = dyn_cast<memref::LoadOp>(da.op)) {
+          Value newLd = memref::LoadOp::create(ab, loc, fieldBufs[da.field],
+                                               ValueRange{pairIdx});
+          if (da.bitcast)
+            newLd = arith::BitcastOp::create(ab, loc, mld.getType(), newLd);
+          mld.getResult().replaceAllUsesWith(newLd);
+          mld.erase();
+        } else {
+          auto mst = cast<memref::StoreOp>(da.op);
+          Value val = mst.getValueToStore();
+          if (da.bitcast)
+            val = arith::BitcastOp::create(ab, loc, fields[da.field].ty, val);
+          memref::StoreOp::create(ab, loc, val, fieldBufs[da.field],
+                                  ValueRange{pairIdx});
+          mst.erase();
+        }
+      }
+      for (Operation *mc : pairCopies) {
+        auto cp = cast<LLVM::MemcpyOp>(mc);
+        OpBuilder ab(cp);
+        Location loc = cp.getLoc();
+        // Constant pair indices stay affine so the accesses raise directly.
+        auto toIdx = [&](Value p) -> std::pair<Value, std::optional<int64_t>> {
+          if (basePtrs.contains(p))
+            return {Value(), 0};
+          Value v = pairGeps.find(p.getDefiningOp())->second;
+          APInt c;
+          if (matchPattern(v, m_ConstantInt(&c)))
+            return {Value(), c.getSExtValue()};
+          if (!isa<IndexType>(v.getType()))
+            v = arith::IndexCastUIOp::create(ab, loc, ab.getIndexType(), v);
+          return {v, std::nullopt};
+        };
+        auto [dstIdx, dstC] = toIdx(cp.getDst());
+        auto [srcIdx, srcC] = toIdx(cp.getSrc());
+        for (auto &&[i, f] : llvm::enumerate(fields)) {
+          Value v;
+          if (srcC)
+            v = affine::AffineLoadOp::create(
+                ab, loc, fieldBufs[i],
+                AffineMap::getConstantMap(*srcC, ab.getContext()),
+                ValueRange());
+          else
+            v = memref::LoadOp::create(ab, loc, fieldBufs[i],
+                                       ValueRange{srcIdx});
+          if (dstC)
+            affine::AffineStoreOp::create(
+                ab, loc, v, fieldBufs[i],
+                AffineMap::getConstantMap(*dstC, ab.getContext()),
+                ValueRange());
+          else
+            memref::StoreOp::create(ab, loc, v, fieldBufs[i],
+                                    ValueRange{dstIdx});
+        }
+        cp.erase();
+      }
+      for (auto &g : pairGeps)
+        g.first->erase();
+      for (auto p2m : views)
+        p2m.erase();
+      for (Operation *sc : llvm::reverse(spaceCasts))
+        sc->erase();
+      for (auto m2p : casts)
+        m2p.erase();
+      alloca.erase();
+    }
+  }
+
+  // Shared-memory scratch arrives as a static alloca viewed through a
+  // memref2pointer/pointer2memref round trip that changes shape and address
+  // space, which no access-based raising can see through. When the alloca is
+  // only ever read and written through such flat views, replace the whole
+  // chain with one flat static alloca the raising handles directly.
+  static void flattenViewedScratch(Operation *root) {
+    SmallVector<memref::AllocaOp> allocas;
+    root->walk([&](memref::AllocaOp a) { allocas.push_back(a); });
+    for (auto alloca : allocas) {
+      auto MT = alloca.getType();
+      if (!MT.hasStaticShape())
+        continue;
+      // Views reach the scratch through chains of address-space casts and
+      // constant-offset geps; each view carries the byte offset its chain
+      // accumulated.
+      SmallVector<std::pair<enzymexla::Pointer2MemrefOp, int64_t>> views;
+      SmallVector<Operation *> chainOps;
+      SmallVector<Operation *> directAccesses;
+      bool viewedOnly = true;
+      if (!MT.getElementType().isIntOrFloat())
+        continue;
+      int64_t elemBytes = (MT.getElementType().getIntOrFloatBitWidth() + 7) / 8;
+      SmallVector<std::pair<Value, int64_t>> ptrWork;
+      for (Operation *user : alloca->getUsers()) {
+        auto m2p = dyn_cast<enzymexla::Memref2PointerOp>(user);
+        if (!m2p) {
+          // A direct access can move to the flat buffer with its indexing
+          // linearized; anything else keeps the chain intact.
+          if (isa<affine::AffineLoadOp, affine::AffineStoreOp, memref::LoadOp>(
+                  user)) {
+            directAccesses.push_back(user);
+            continue;
+          }
+          if (auto st = dyn_cast<memref::StoreOp>(user)) {
+            if (st.getMemRef() == alloca.getResult()) {
+              directAccesses.push_back(user);
+              continue;
+            }
+          }
+          viewedOnly = false;
+          break;
+        }
+        chainOps.push_back(m2p);
+        ptrWork.push_back({m2p.getResult(), 0});
+      }
+      while (viewedOnly && !ptrWork.empty()) {
+        auto [ptr, off] = ptrWork.pop_back_val();
+        for (Operation *viewUser : ptr.getUsers()) {
+          if (isa<LLVM::AddrSpaceCastOp>(viewUser)) {
+            chainOps.push_back(viewUser);
+            ptrWork.push_back({viewUser->getResult(0), off});
+            continue;
+          }
+          if (auto gep = dyn_cast<LLVM::GEPOp>(viewUser)) {
+            // Only all-constant geps carry a static byte offset.
+            int64_t gepOff = 0;
+            bool constGep =
+                gep.getDynamicIndices().empty() && gep.getIndices().size() >= 1;
+            if (constGep) {
+              DataLayout dl = DataLayout::closest(gep);
+              Type cur = gep.getElemType();
+              auto idxs = gep.getIndices();
+              gepOff = cast<IntegerAttr>(idxs[0]).getInt() *
+                       (int64_t)dl.getTypeSize(cur);
+              for (unsigned i = 1; constGep && i < idxs.size(); ++i) {
+                int64_t want = cast<IntegerAttr>(idxs[i]).getInt();
+                if (auto AT = dyn_cast<LLVM::LLVMArrayType>(cur)) {
+                  cur = AT.getElementType();
+                  gepOff += want * (int64_t)dl.getTypeSize(cur);
+                } else {
+                  constGep = false;
+                }
+              }
+            }
+            if (!constGep) {
+              viewedOnly = false;
+              break;
+            }
+            chainOps.push_back(gep);
+            ptrWork.push_back({gep.getResult(), off + gepOff});
+            continue;
+          }
+          auto p2m = dyn_cast<enzymexla::Pointer2MemrefOp>(viewUser);
+          if (!p2m || p2m.getType().getRank() != 1 ||
+              p2m.getType().getElementType() != MT.getElementType() ||
+              off % elemBytes != 0 ||
+              (p2m.getType().hasStaticShape() &&
+               off / elemBytes + p2m.getType().getShape()[0] >
+                   MT.getNumElements())) {
+            viewedOnly = false;
+            break;
+          }
+          if (off != 0) {
+            // Offset views only rewrite through plain accesses.
+            if (!llvm::all_of(p2m->getUsers(), [&](Operation *u) {
+                  if (isa<affine::AffineLoadOp, memref::LoadOp>(u))
+                    return u->getOperand(0) == p2m.getResult();
+                  if (isa<affine::AffineStoreOp, memref::StoreOp>(u))
+                    return u->getOperand(1) == p2m.getResult();
+                  return false;
+                })) {
+              viewedOnly = false;
+              break;
+            }
+          }
+          views.push_back({p2m, off / elemBytes});
+        }
+      }
+      if (!viewedOnly || views.empty())
+        continue;
+      OpBuilder b(alloca);
+      auto flatTy = MemRefType::get({MT.getNumElements()}, MT.getElementType());
+      auto flat = memref::AllocaOp::create(b, alloca.getLoc(), flatTy);
+      for (auto [p2m, elemOff] : views) {
+        if (elemOff != 0) {
+          for (Operation *u : llvm::make_early_inc_range(p2m->getUsers())) {
+            if (auto ld = dyn_cast<affine::AffineLoadOp>(u)) {
+              auto m = ld.getMap();
+              ld.setMap(AffineMap::get(m.getNumDims(), m.getNumSymbols(),
+                                       m.getResult(0) + elemOff));
+            } else if (auto st = dyn_cast<affine::AffineStoreOp>(u)) {
+              auto m = st.getMap();
+              st.setMap(AffineMap::get(m.getNumDims(), m.getNumSymbols(),
+                                       m.getResult(0) + elemOff));
+            } else {
+              OpBuilder ab(u);
+              unsigned idxPos = isa<memref::LoadOp>(u) ? 1 : 2;
+              Value c =
+                  arith::ConstantIndexOp::create(ab, u->getLoc(), elemOff);
+              Value ni = arith::AddIOp::create(ab, u->getLoc(),
+                                               u->getOperand(idxPos), c);
+              u->setOperand(idxPos, ni);
+            }
+          }
+        }
+        p2m.getResult().replaceAllUsesWith(flat.getResult());
+        p2m.erase();
+      }
+      for (Operation *c : llvm::reverse(chainOps))
+        if (c->use_empty())
+          c->erase();
+      auto linearizeValues = [&](OpBuilder &ab, Location loc,
+                                 ValueRange idxs) -> Value {
+        Value lin = arith::ConstantIndexOp::create(ab, loc, 0);
+        int64_t stride = 1;
+        SmallVector<Value> scaled;
+        for (int64_t d = MT.getRank() - 1; d >= 0; --d) {
+          Value term = idxs[d];
+          if (stride != 1) {
+            Value c = arith::ConstantIndexOp::create(ab, loc, stride);
+            term = arith::MulIOp::create(ab, loc, term, c);
+          }
+          lin = arith::AddIOp::create(ab, loc, lin, term);
+          stride *= MT.getShape()[d];
+        }
+        return lin;
+      };
+      for (Operation *access : directAccesses) {
+        if (auto mload = dyn_cast<memref::LoadOp>(access)) {
+          OpBuilder ab(mload);
+          Value lin = linearizeValues(ab, mload.getLoc(), mload.getIndices());
+          Value idxs[] = {lin};
+          mload.getMemrefMutable().assign(flat);
+          mload.getIndicesMutable().assign(idxs);
+          continue;
+        }
+        if (auto mstore = dyn_cast<memref::StoreOp>(access)) {
+          OpBuilder ab(mstore);
+          Value lin = linearizeValues(ab, mstore.getLoc(), mstore.getIndices());
+          Value idxs[] = {lin};
+          mstore.getMemrefMutable().assign(flat);
+          mstore.getIndicesMutable().assign(idxs);
+          continue;
+        }
+        AffineMap oldMap = isa<affine::AffineLoadOp>(access)
+                               ? cast<affine::AffineLoadOp>(access).getMap()
+                               : cast<affine::AffineStoreOp>(access).getMap();
+        AffineExpr lin = getAffineConstantExpr(0, oldMap.getContext());
+        int64_t stride = 1;
+        for (int64_t d = MT.getRank() - 1; d >= 0; --d) {
+          lin = lin + oldMap.getResult(d) * stride;
+          stride *= MT.getShape()[d];
+        }
+        auto linMap =
+            AffineMap::get(oldMap.getNumDims(), oldMap.getNumSymbols(), lin);
+        if (auto load = dyn_cast<affine::AffineLoadOp>(access)) {
+          load.setMap(linMap);
+          load.getMemrefMutable().assign(flat);
+        } else {
+          auto store = cast<affine::AffineStoreOp>(access);
+          store.setMap(linMap);
+          store.getMemrefMutable().assign(flat);
+        }
+      }
+      alloca.erase();
+    }
+  }
+
   static void stripAccessMemorySpaceCasts(Operation *root) {
     SmallVector<memref::MemorySpaceCastOp> casts;
     root->walk([&](memref::MemorySpaceCastOp c) { casts.push_back(c); });
@@ -4220,6 +4861,8 @@ struct AffineToStableHLORaisingPass
         stripAccessMemorySpaceCasts(func);
         rebaseViewedGeps(func);
         convertRawGepAccesses(func);
+        splitStructScratch(func);
+        flattenViewedScratch(func);
       }
       dropDeadPointerChains(func);
       boundParallelAxes(func);
@@ -4256,6 +4899,8 @@ struct AffineToStableHLORaisingPass
         stripAccessMemorySpaceCasts(root);
         rebaseViewedGeps(root);
         convertRawGepAccesses(root);
+        splitStructScratch(root);
+        flattenViewedScratch(root);
       }
       dropDeadPointerChains(root);
       boundParallelAxes(g);
