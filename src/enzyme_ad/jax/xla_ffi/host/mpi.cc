@@ -7,8 +7,6 @@
 #include "mpi.h"
 #include "mpi_ffi.h"
 
-#include "src/enzyme_ad/jax/Passes/Comm/Dialect.h"
-
 #include "../export_macro.h"
 
 int mpi_unimplemented_stub(...) {
