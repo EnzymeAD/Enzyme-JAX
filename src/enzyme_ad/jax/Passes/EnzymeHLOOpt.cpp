@@ -15875,6 +15875,18 @@ struct GatherOpCanon final
             rewriter, op.getLoc(), result, rewriter.getDenseI64ArrayAttr({0}));
       }
 
+      // The grid may carry dimensions beyond the single mapped one, along
+      // which the index is constant; the slice only covers the mapped
+      // extent, so the rest comes back by broadcast, not reshape.
+      auto gridResultTy =
+          RankedTensorType::get(gridTy.getShape(), operandTy.getElementType());
+      if (gridResultTy.getNumElements() !=
+          cast<ShapedType>(result.getType()).getNumElements()) {
+        result = stablehlo::BroadcastInDimOp::create(
+            rewriter, op.getLoc(), gridResultTy, result,
+            rewriter.getDenseI64ArrayAttr({analysis.mappings[0].gridDim}));
+      }
+
       if (result.getType() != op.getType()) {
         result = stablehlo::ReshapeOp::create(rewriter, op.getLoc(),
                                               op.getType(), result);
