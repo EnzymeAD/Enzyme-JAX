@@ -228,8 +228,10 @@ ffi::Error MpiSendImpl(ffi::AnyBuffer buf, IntBuffer dest_ptr,
   int count = buf.element_count();
   auto datatype = convertPrimitiveTypeToMpiDatatype(buf.element_type());
   if (!datatype.has_value()) {
-    return ffi::Error::InvalidArgument(absl::StrFormat(
-        "MPI_Send: unsupported datatype %s", buf.element_type().getAsString()));
+    std::ostringstream oss;
+    oss << buf.element_type();
+    return ffi::Error::InvalidArgument(
+        absl::StrFormat("MPI_Send: unsupported datatype %s", oss.str()));
   }
   int err = EXLA_MPI_Send(buf.untyped_data(), count, datatype.value(), dest,
                           tag, comm);
@@ -249,9 +251,10 @@ ffi::Error MpiIsendImpl(ffi::AnyBuffer buf, IntBuffer dest_ptr,
                         Result<MpiRequestBuffer> request_ptr) {
   auto datatype = convertPrimitiveTypeToMpiDatatype(buf.element_type());
   if (!datatype.has_value()) {
+    std::ostringstream oss;
+    oss << buf.element_type();
     return ffi::Error::InvalidArgument(
-        absl::StrFormat("MPI_Isend: unsupported datatype %s",
-                        buf.element_type().getAsString()));
+        absl::StrFormat("MPI_Isend: unsupported datatype %s", oss.str()));
   }
   MPI_Comm comm = *reinterpret_cast<MPI_Comm *>(comm_ptr.typed_data());
   int dest = *dest_ptr.typed_data();
@@ -273,9 +276,8 @@ XLA_FFI_DEFINE_HANDLER(MpiIsendFfi, MpiIsendImpl,
                            .Ret<MpiRequestBuffer>() // request
 );
 
-ffi::Error MpiRecvImpl(int32_t datatype, IntBuffer source_ptr,
-                       IntBuffer tag_ptr, MpiCommBuffer comm_ptr,
-                       Result<ffi::AnyBuffer> buf,
+ffi::Error MpiRecvImpl(IntBuffer source_ptr, IntBuffer tag_ptr,
+                       MpiCommBuffer comm_ptr, Result<ffi::AnyBuffer> buf,
                        Result<MpiStatusBuffer> status_ptr) {
   if (auto error = checkMpiStatusSize(*status_ptr); error.failure()) {
     return error;
@@ -283,9 +285,10 @@ ffi::Error MpiRecvImpl(int32_t datatype, IntBuffer source_ptr,
   MPI_Comm comm = *reinterpret_cast<MPI_Comm *>(comm_ptr.typed_data());
   auto datatype = convertPrimitiveTypeToMpiDatatype(buf->element_type());
   if (!datatype.has_value()) {
+    std::ostringstream oss;
+    oss << buf->element_type();
     return ffi::Error::InvalidArgument(
-        absl::StrFormat("MPI_Recv: unsupported datatype %s",
-                        buf->element_type().getAsString()));
+        absl::StrFormat("MPI_Recv: unsupported datatype %s", oss.str()));
   }
   int source = *source_ptr.typed_data();
   int tag = *tag_ptr.typed_data();
@@ -305,16 +308,16 @@ XLA_FFI_DEFINE_HANDLER(MpiRecvFfi, MpiRecvImpl,
                            .Ret<MpiStatusBuffer>() // status
 );
 
-ffi::Error MpiIrecvImpl(int32_t datatype, IntBuffer source_ptr,
-                        IntBuffer tag_ptr, MpiCommBuffer comm_ptr,
-                        Result<ffi::AnyBuffer> buf,
+ffi::Error MpiIrecvImpl(IntBuffer source_ptr, IntBuffer tag_ptr,
+                        MpiCommBuffer comm_ptr, Result<ffi::AnyBuffer> buf,
                         Result<MpiRequestBuffer> request_ptr) {
   MPI_Comm comm = *reinterpret_cast<MPI_Comm *>(comm_ptr.typed_data());
   auto datatype = convertPrimitiveTypeToMpiDatatype(buf->element_type());
   if (!datatype.has_value()) {
+    std::ostringstream oss;
+    oss << buf->element_type();
     return ffi::Error::InvalidArgument(
-        absl::StrFormat("MPI_Irecv: unsupported datatype %s",
-                        buf->element_type().getAsString()));
+        absl::StrFormat("MPI_Irecv: unsupported datatype %s", oss.str()));
   }
   int source = *source_ptr.typed_data();
   int tag = *tag_ptr.typed_data();
@@ -403,7 +406,7 @@ XLA_FFI_DEFINE_HANDLER(MpiWaitallFfi, MpiWaitallImpl,
                            .RemainingArgs() // requests
                            .RemainingRets() // statuses
 );
-ffi::Error MpiAllreduceImpl(ffi::AnyBuffer sendbuf, llvm::StringRef op_str,
+ffi::Error MpiAllreduceImpl(ffi::AnyBuffer sendbuf, std::string_view op_str,
                             MpiCommBuffer comm_ptr,
                             Result<ffi::AnyBuffer> recvbuf) {
   if (sendbuf.element_count() <= recvbuf->element_count()) {
@@ -412,22 +415,25 @@ ffi::Error MpiAllreduceImpl(ffi::AnyBuffer sendbuf, llvm::StringRef op_str,
         recvbuf->element_count(), sendbuf.element_count()));
   }
   if (sendbuf.element_type() != recvbuf->element_type()) {
+    std::ostringstream oss_send, oss_recv;
+    oss_send << sendbuf.element_type();
+    oss_recv << recvbuf->element_type();
     return ffi::Error::InvalidArgument(absl::StrFormat(
         "MPI_Allreduce: sendbuf type (%s) must match recvbuf type (%s)",
-        sendbuf.element_type().getAsString(),
-        recvbuf->element_type().getAsString()));
+        oss_send.str(), oss_recv.str()));
   }
   MPI_Comm comm = *reinterpret_cast<MPI_Comm *>(comm_ptr.typed_data());
   auto datatype = convertPrimitiveTypeToMpiDatatype(sendbuf.element_type());
   if (!datatype.has_value()) {
+    std::ostringstream oss;
+    oss << sendbuf.element_type();
     return ffi::Error::InvalidArgument(
-        absl::StrFormat("MPI_Allreduce: unsupported datatype %s",
-                        sendbuf.element_type().getAsString()));
+        absl::StrFormat("MPI_Allreduce: unsupported datatype %s", oss.str()));
   }
   auto op = symbolizeMpiOp(op_str);
   if (!op.has_value()) {
     return ffi::Error::InvalidArgument(
-        absl::StrFormat("MPI_Allreduce: invalid operation %s", op_str.str()));
+        absl::StrFormat("MPI_Allreduce: invalid operation %s", op_str));
   }
   int count = sendbuf.element_count();
   int err = EXLA_MPI_Allreduce(sendbuf.untyped_data(), recvbuf->untyped_data(),
@@ -437,10 +443,10 @@ ffi::Error MpiAllreduceImpl(ffi::AnyBuffer sendbuf, llvm::StringRef op_str,
 
 XLA_FFI_DEFINE_HANDLER(MpiAllreduceFfi, MpiAllreduceImpl,
                        xla::ffi::Ffi::Bind()
-                           .Arg<ffi::AnyBuffer>()   // sendbuf
-                           .Attr<llvm::StringRef>() // op
-                           .Arg<MpiCommBuffer>()    // comm
-                           .Ret<ffi::AnyBuffer>()   // recvbuf
+                           .Arg<ffi::AnyBuffer>()    // sendbuf
+                           .Attr<std::string_view>() // op
+                           .Arg<MpiCommBuffer>()     // comm
+                           .Ret<ffi::AnyBuffer>()    // recvbuf
 );
 
 ffi::Error MpiBcastImpl(ffi::AnyBuffer buf, IntBuffer root_ptr,
@@ -448,9 +454,10 @@ ffi::Error MpiBcastImpl(ffi::AnyBuffer buf, IntBuffer root_ptr,
   MPI_Comm comm = *reinterpret_cast<MPI_Comm *>(comm_ptr.typed_data());
   auto datatype = convertPrimitiveTypeToMpiDatatype(buf.element_type());
   if (!datatype.has_value()) {
+    std::ostringstream oss;
+    oss << buf.element_type();
     return ffi::Error::InvalidArgument(
-        absl::StrFormat("MPI_Bcast: unsupported datatype %s",
-                        buf.element_type().getAsString()));
+        absl::StrFormat("MPI_Bcast: unsupported datatype %s", oss.str()));
   }
   int root = *root_ptr.typed_data();
   int count = buf.element_count();
