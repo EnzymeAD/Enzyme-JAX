@@ -3998,16 +3998,36 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
         if (ut.getRank() == (int64_t)operandShape.size()) {
           for (auto [i, E] : llvm::enumerate(storeOp.getMap().getResults())) {
             int64_t u = ut.getShape()[i], o = operandShape[i];
-            if (u == ShapedType::kDynamic || o == ShapedType::kDynamic ||
-                u <= o)
+            if (u == ShapedType::kDynamic || o == ShapedType::kDynamic)
               continue;
             DenseIntElementsAttr startAttr;
-            if (!matchPattern(startIndicesValues[i], m_Constant(&startAttr)) ||
-                !startAttr.getSplatValue<APInt>().isZero())
+            if (!matchPattern(startIndicesValues[i], m_Constant(&startAttr))) {
+              if (u <= o)
+                continue;
+              if (getenv("DEBUG_MASKSTORE"))
+                llvm::errs() << "MASKSTORE trim skip: non-constant start axis "
+                             << i << " val " << startIndicesValues[i] << "\n";
               continue;
+            }
+            // A constant-offset tile keeps o - s lanes in bounds; every lane
+            // past that could only have stored out of bounds, so its mask is
+            // necessarily false and the excess slices away.
+            int64_t s = startAttr.getSplatValue<APInt>().getSExtValue();
+            if (s + u <= o)
+              continue;
+            if (s < 0 || s >= o) {
+              if (getenv("DEBUG_MASKSTORE"))
+                llvm::errs() << "MASKSTORE trim skip: start " << s
+                             << " outside buffer " << o << "\n";
+              continue;
+            }
             Value iv = getIVForExpr(accessValueMap, E);
-            if (!iv)
+            if (!iv) {
+              if (getenv("DEBUG_MASKSTORE"))
+                llvm::errs()
+                    << "MASKSTORE trim skip: no iv for axis " << i << "\n";
               continue;
+            }
             // The mask must carry the same axis at full extent so the pair
             // stays aligned after the cut.
             int64_t maskAxis = -1;
@@ -4019,8 +4039,13 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
                 break;
               }
             if (maskAxis < 0 || maskTy.getRank() <= maskAxis ||
-                maskTy.getShape()[maskAxis] != u)
+                maskTy.getShape()[maskAxis] != u) {
+              if (getenv("DEBUG_MASKSTORE"))
+                llvm::errs() << "MASKSTORE trim skip: mask axis " << maskAxis
+                             << " for store axis " << i << " mask "
+                             << mask.getType() << " u " << u << "\n";
               continue;
+            }
             auto loc =
                 rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo);
             auto sliceTo = [&](Value v, int64_t axis, int64_t len) {
@@ -4033,9 +4058,12 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
                                                 limits, strides)
                   .getResult();
             };
-            update = sliceTo(update, (int64_t)i, o);
+            int64_t len = o - s;
+            if (len >= u)
+              continue;
+            update = sliceTo(update, (int64_t)i, len);
             ut = cast<ShapedType>(update.getType());
-            mask = sliceTo(mask, maskAxis, o);
+            mask = sliceTo(mask, maskAxis, len);
             maps[mask] = maskMap;
           }
         }
