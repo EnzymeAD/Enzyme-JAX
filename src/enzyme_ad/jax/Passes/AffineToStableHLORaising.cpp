@@ -4061,6 +4061,10 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
             int64_t len = o - s;
             if (len >= u)
               continue;
+            if (getenv("DEBUG_MASKSTORE"))
+              llvm::errs() << "MASKSTORE trim fired: axis " << i << " u " << u
+                           << " o " << o << " s " << s << " len " << len
+                           << " expr " << E << "\n";
             update = sliceTo(update, (int64_t)i, len);
             ut = cast<ShapedType>(update.getType());
             mask = sliceTo(mask, maskAxis, len);
@@ -7914,10 +7918,21 @@ struct AffineToStableHLORaisingPass
                      << "\n";
       if (!par)
         continue;
-      // Only the nested (thread) parallel batches into lanes; scratch
-      // directly under the grid parallel is genuinely shared.
-      if (!par->getParentOfType<affine::AffineParallelOp>())
-        continue;
+      // Scratch under the outermost parallel is per-lane for elementwise
+      // kernels — the inner parallels are data-parallel loops over the
+      // same lane's work — but a kernel that synchronizes carries real
+      // shared memory the whole-tensor machinery models as one buffer;
+      // leave that alone.
+      if (!par->getParentOfType<affine::AffineParallelOp>()) {
+        bool hasBarrier = false;
+        par.getBody()->walk(
+            [&](enzymexla::BarrierOp) { hasBarrier = true; });
+        if (hasBarrier) {
+          if (getenv("DEBUG_PRIV"))
+            llvm::errs() << "PRIV skip (synchronized shared): " << *a << "\n";
+          continue;
+        }
+      }
       if (par.hasMinMaxBounds())
         continue;
       auto ranges = par.getConstantRanges();
