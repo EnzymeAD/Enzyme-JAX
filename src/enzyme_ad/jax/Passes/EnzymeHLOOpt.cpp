@@ -35202,7 +35202,11 @@ struct ScatterMaskedIndexSimplify final
     auto idxTy = cast<RankedTensorType>(indices.getType());
     if (idxTy.getNumElements() != 1)
       return failure();
-    auto sel = indices.getDefiningOp<stablehlo::SelectOp>();
+    // The select may sit behind reshapes of the single-element index.
+    Value idxSrc = indices;
+    while (auto rs = idxSrc.getDefiningOp<stablehlo::ReshapeOp>())
+      idxSrc = rs.getOperand();
+    auto sel = idxSrc.getDefiningOp<stablehlo::SelectOp>();
     if (!sel)
       return failure();
     SplatElementsAttr offSplat;
@@ -35471,6 +35475,21 @@ private:
 
     // size 1 index can be trivially simplified to a DUS
     if (indices.getType().getNumElements() == 1) {
+      // A dead-lane scatter sends its index out of bounds and relies on
+      // the update being DROPPED; dynamic-slice/update-slice CLAMP
+      // instead, so the conversion would resurrect the write at slot 0.
+      // Leave masked indices to ScatterMaskedIndexSimplify.
+      Value idxSrc = indices;
+      while (auto rs = idxSrc.getDefiningOp<stablehlo::ReshapeOp>())
+        idxSrc = rs.getOperand();
+      if (auto sel = idxSrc.getDefiningOp<stablehlo::SelectOp>()) {
+        SplatElementsAttr offSplat;
+        if ((matchPattern(sel.getOnFalse(), m_Constant(&offSplat)) &&
+             offSplat.getSplatValue<APInt>().isNegative()) ||
+            (matchPattern(sel.getOnTrue(), m_Constant(&offSplat)) &&
+             offSplat.getSplatValue<APInt>().isNegative()))
+          return failure();
+      }
       auto scalarIndex =
           stablehlo::ReshapeOpCreate(rewriter, op.getLoc(), indices, {});
 
