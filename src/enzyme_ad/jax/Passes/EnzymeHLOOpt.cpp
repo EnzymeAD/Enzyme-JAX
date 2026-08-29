@@ -35517,6 +35517,20 @@ private:
 
     // size 1 index can be trivially simplified to a DUS
     if (indices.getType().getNumElements() == 1) {
+      // A dead-lane scatter sends its index out of bounds and relies on
+      // the update being DROPPED; dynamic-slice/update-slice CLAMP
+      // instead, so the conversion would resurrect the write at slot 0.
+      Value idxSrc = indices;
+      while (auto rs = idxSrc.getDefiningOp<stablehlo::ReshapeOp>())
+        idxSrc = rs.getOperand();
+      if (auto sel = idxSrc.getDefiningOp<stablehlo::SelectOp>()) {
+        SplatElementsAttr offSplat;
+        if ((matchPattern(sel.getOnFalse(), m_Constant(&offSplat)) &&
+             offSplat.getSplatValue<APInt>().isNegative()) ||
+            (matchPattern(sel.getOnTrue(), m_Constant(&offSplat)) &&
+             offSplat.getSplatValue<APInt>().isNegative()))
+          return failure();
+      }
       auto scalarIndex =
           stablehlo::ReshapeOpCreate(rewriter, op.getLoc(), indices, {});
 
