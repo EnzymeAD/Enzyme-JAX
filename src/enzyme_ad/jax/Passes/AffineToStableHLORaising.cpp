@@ -3442,6 +3442,10 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     return success();
   }
 
+  // An optimizer hint carries no semantics a tensor program needs.
+  if (isa<LLVM::AssumeOp>(op))
+    return success();
+
   return op->emitError("cannot raise op to stablehlo") << *op;
 }
 
