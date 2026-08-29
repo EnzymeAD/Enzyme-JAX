@@ -5802,7 +5802,14 @@ struct AffineToStableHLORaisingPass
     root->walk([&](scf::WhileOp w) { whiles.push_back(w); });
     for (auto w : whiles) {
       Block &after = w.getAfter().front();
-      if (!llvm::hasSingleElement(after.getOperations()))
+      // The after region may carry side ops (a barrier between the two
+      // halves of a ping-pong); they clone ahead of the second body. The
+      // invariance check on the yield operands below keeps any after-region
+      // computation from leaking into the next iteration's state.
+      bool afterOk = llvm::all_of(
+          after.without_terminator(),
+          [](Operation &op) { return op.getNumRegions() == 0; });
+      if (!afterOk)
         continue;
       auto yield = cast<scf::YieldOp>(after.getTerminator());
       Block &before = w.getBefore().front();
@@ -5845,6 +5852,12 @@ struct AffineToStableHLORaisingPass
                                     /*withElseRegion=*/true);
       {
         OpBuilder tb(ifOp.thenBlock(), ifOp.thenBlock()->begin());
+        // The after region's side ops ran between the two body halves.
+        IRMapping mA;
+        for (auto [aa, fw] : llvm::zip(after.getArguments(), fwd1))
+          mA.map(aa, fw);
+        for (Operation &op : after.without_terminator())
+          tb.clone(op, mA);
         IRMapping m2;
         for (auto [ba, nv] : llvm::zip(before.getArguments(),
                                        yield.getOperands())) {
@@ -5852,7 +5865,7 @@ struct AffineToStableHLORaisingPass
           if (auto aba = dyn_cast<BlockArgument>(nv))
             if (aba.getOwner() == &after)
               next = fwd1[aba.getArgNumber()];
-          m2.map(ba, next);
+          m2.map(ba, mA.lookupOrDefault(next));
         }
         for (Operation &op : before.without_terminator())
           tb.clone(op, m2);
@@ -5909,6 +5922,82 @@ struct AffineToStableHLORaisingPass
     }
   }
 
+  // Count scalar leaves of a nested array/struct type; all leaves must be
+  // one scalar type (set into `leaf`), else -1.
+  static int64_t homogeneousLeafCount(Type t, Type &leaf) {
+    if (auto at = dyn_cast<LLVM::LLVMArrayType>(t)) {
+      int64_t n = homogeneousLeafCount(at.getElementType(), leaf);
+      return n < 0 ? -1 : n * at.getNumElements();
+    }
+    if (auto st = dyn_cast<LLVM::LLVMStructType>(t)) {
+      if (st.isOpaque())
+        return -1;
+      int64_t tot = 0;
+      for (Type f : st.getBody()) {
+        int64_t n = homogeneousLeafCount(f, leaf);
+        if (n < 0)
+          return -1;
+        tot += n;
+      }
+      return tot;
+    }
+    if (t.isIntOrFloat()) {
+      if (!leaf)
+        leaf = t;
+      return leaf == t ? 1 : -1;
+    }
+    return -1;
+  }
+
+  // Scratch declared as one struct value (a union wrapping a register
+  // array) reaches the memref world as a memref of LLVM struct whose only
+  // consumers cast straight back to a pointer; hand it over as flat scalar
+  // scratch instead.
+  static void flattenStructMemrefAllocas(Operation *root) {
+    SmallVector<memref::AllocaOp> allocas;
+    root->walk([&](memref::AllocaOp a) {
+      if (isa<LLVM::LLVMStructType>(a.getType().getElementType()))
+        allocas.push_back(a);
+    });
+    for (auto a : allocas) {
+      MemRefType MT = a.getType();
+      if (!MT.hasStaticShape())
+        continue;
+      Type leaf;
+      int64_t leaves = homogeneousLeafCount(MT.getElementType(), leaf);
+      if (leaves <= 0 || !leaf)
+        continue;
+      DataLayout dl = DataLayout::closest(a);
+      if ((int64_t)dl.getTypeSize(MT.getElementType()) !=
+          leaves * (int64_t)dl.getTypeSize(leaf))
+        continue;
+      int64_t total = leaves;
+      for (int64_t d : MT.getShape())
+        total *= d;
+      if (total > (1 << 22))
+        continue;
+      if (!llvm::all_of(a->getUsers(), [](Operation *u) {
+            return isa<enzymexla::Memref2PointerOp>(u);
+          }))
+        continue;
+      OpBuilder b(a);
+      auto NT = MemRefType::get({total}, leaf, MemRefLayoutAttrInterface{},
+                                MT.getMemorySpace());
+      auto na = memref::AllocaOp::create(b, a.getLoc(), NT);
+      if (a.getAlignment())
+        na.setAlignment(*a.getAlignment());
+      for (Operation *u : llvm::make_early_inc_range(a->getUsers())) {
+        auto m2p = cast<enzymexla::Memref2PointerOp>(u);
+        OpBuilder ub(m2p);
+        auto np = enzymexla::Memref2PointerOp::create(ub, m2p.getLoc(),
+                                                      m2p.getType(), na);
+        m2p.getResult().replaceAllUsesWith(np.getResult());
+        m2p.erase();
+      }
+      a.erase();
+    }
+  }
+
   // Register-array scratch survives as an llvm.alloca of nested arrays of
   // one scalar type; hand it to the memref machinery as flat scratch so
   // the gep rebasing and view flattening see it like any other buffer.
@@ -5923,10 +6012,42 @@ struct AffineToStableHLORaisingPass
       if (total <= 0)
         continue;
       Type ty = a.getElemType();
-      while (auto at = dyn_cast<LLVM::LLVMArrayType>(ty)) {
-        total *= at.getNumElements();
-        ty = at.getElementType();
-      }
+      // Arrays and homogeneous structs both flatten; a struct qualifies
+      // when every leaf is the same scalar and the layout has no padding.
+      Type leaf;
+      std::function<int64_t(Type)> countLeaves = [&](Type t) -> int64_t {
+        if (auto at = dyn_cast<LLVM::LLVMArrayType>(t)) {
+          int64_t n = countLeaves(at.getElementType());
+          return n < 0 ? -1 : n * at.getNumElements();
+        }
+        if (auto st = dyn_cast<LLVM::LLVMStructType>(t)) {
+          if (st.isOpaque())
+            return -1;
+          int64_t tot = 0;
+          for (Type f : st.getBody()) {
+            int64_t n = countLeaves(f);
+            if (n < 0)
+              return -1;
+            tot += n;
+          }
+          return tot;
+        }
+        if (t.isIntOrFloat()) {
+          if (!leaf)
+            leaf = t;
+          return leaf == t ? 1 : -1;
+        }
+        return -1;
+      };
+      int64_t leaves = countLeaves(ty);
+      if (leaves <= 0 || !leaf)
+        continue;
+      DataLayout dl = DataLayout::closest(a);
+      if ((int64_t)dl.getTypeSize(ty) !=
+          leaves * (int64_t)dl.getTypeSize(leaf))
+        continue;
+      total *= leaves;
+      ty = leaf;
       if (!ty.isIntOrFloat() || total > (1 << 22))
         continue;
       // Only rewrite scratch the pointer machinery can chase afterwards.
@@ -8898,6 +9019,7 @@ struct AffineToStableHLORaisingPass
         memsetZeroToStores(func);
         unrollInvariantYieldWhiles(func);
         flattenLLVMArrayAllocas(func);
+        flattenStructMemrefAllocas(func);
         dropNullPointerSelects(func);
         if (!getenv("DISABLE_NULL_BUFFER"))
           dropNullBufferAccesses(func);
@@ -8951,6 +9073,7 @@ struct AffineToStableHLORaisingPass
         memsetZeroToStores(root);
         unrollInvariantYieldWhiles(root);
         flattenLLVMArrayAllocas(root);
+        flattenStructMemrefAllocas(root);
         dropNullPointerSelects(root);
         if (!getenv("DISABLE_NULL_BUFFER"))
           dropNullBufferAccesses(root);
