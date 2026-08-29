@@ -31,6 +31,7 @@
 #include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/IRMapping.h"
+#include "mlir/IR/Verifier.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include <numeric>
 
@@ -5830,18 +5831,31 @@ struct AffineToStableHLORaisingPass
   // body(init); if (cond) body(invariant), selecting the forwarded
   // results accordingly.
   static void unrollInvariantYieldWhiles(Operation *root) {
+    if (getenv("DISABLE_UIYW"))
+      return;
     SmallVector<scf::WhileOp> whiles;
     root->walk([&](scf::WhileOp w) { whiles.push_back(w); });
+    if (getenv("DEBUG_UIYW"))
+      llvm::errs() << "UIYW: " << whiles.size() << " whiles\n";
     for (auto w : whiles) {
       Block &after = w.getAfter().front();
       // The after region may carry side ops (a barrier between the two
       // halves of a ping-pong); they clone ahead of the second body. The
       // invariance check on the yield operands below keeps any after-region
       // computation from leaking into the next iteration's state.
-      bool afterOk = llvm::all_of(
-          after.without_terminator(),
-          [](Operation &op) { return op.getNumRegions() == 0; });
+      bool afterOk =
+          !after.empty() &&
+          llvm::all_of(after.without_terminator(), [](Operation &op) {
+            return op.getNumRegions() == 0;
+          });
       if (!afterOk)
+        continue;
+      // A nested while in the body would end up inside the scf.if arms, a
+      // shape the while raising cannot yet digest; leave such loops to the
+      // general machinery.
+      bool hasNestedWhile = false;
+      w.getBefore().walk([&](scf::WhileOp) { hasNestedWhile = true; });
+      if (hasNestedWhile)
         continue;
       auto yield = cast<scf::YieldOp>(after.getTerminator());
       Block &before = w.getBefore().front();
@@ -5867,6 +5881,8 @@ struct AffineToStableHLORaisingPass
       if (!ok)
         continue;
       OpBuilder b(w);
+      if (getenv("DEBUG_UIYW"))
+        llvm::errs() << "UIYW unrolling: " << w << "\n";
       // First iteration with the init values.
       IRMapping m1;
       for (auto [ba, init] : llvm::zip(before.getArguments(), w.getInits()))
