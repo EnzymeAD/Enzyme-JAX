@@ -612,6 +612,9 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
         continue;
       }
       if (auto idx = decast.getDefiningOp<ExtSIOp>()) {
+        // Sign extension of i1 flips the value (true -> -1).
+        if (idx.getIn().getType().isInteger(1))
+          break;
         decast = idx.getIn();
         continue;
       }
@@ -1447,7 +1450,8 @@ bool isValidIndex(Value val, Region *scope) {
     return isValidIndex(cast.getOperand(), scope);
 
   if (auto cast = val.getDefiningOp<ExtSIOp>())
-    return isValidIndex(cast.getOperand(), scope);
+    if (!cast.getOperand().getType().isInteger(1))
+      return isValidIndex(cast.getOperand(), scope);
 
   if (auto cast = val.getDefiningOp<ExtUIOp>())
     return isValidIndex(cast.getOperand(), scope);

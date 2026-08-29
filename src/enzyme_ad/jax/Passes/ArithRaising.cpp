@@ -110,6 +110,18 @@ struct RaiseToConvert : public OpRewritePattern<SrcOp> {
     if (!ty)
       return failure();
 
+    // stablehlo.convert reads i1 as boolean (true -> 1), but a sign
+    // extension of i1 means true -> -1: negate the boolean's conversion.
+    if (std::is_same_v<SrcOp, arith::ExtSIOp> &&
+        cast<RankedTensorType>(op.getIn().getType())
+            .getElementType()
+            .isInteger(1)) {
+      Value conv =
+          stablehlo::ConvertOp::create(rewriter, op.getLoc(), ty, op.getIn());
+      rewriter.replaceOpWithNewOp<stablehlo::NegOp>(op, conv);
+      return success();
+    }
+
     rewriter.replaceOpWithNewOp<stablehlo::ConvertOp>(op, ty, op.getIn());
     return success();
   }
