@@ -1450,7 +1450,8 @@ bool isValidIndex(Value val, Region *scope) {
     return isValidIndex(cast.getOperand(), scope);
 
   if (auto cast = val.getDefiningOp<ExtSIOp>())
-    if (!cast.getOperand().getType().isInteger(1))
+    if (!cast.getOperand().getType().isInteger(1) ||
+        getenv("ALLOW_I1_EXTSI_INDEX"))
       return isValidIndex(cast.getOperand(), scope);
 
   if (auto cast = val.getDefiningOp<ExtUIOp>())

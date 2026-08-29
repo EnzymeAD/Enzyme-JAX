@@ -9125,7 +9125,10 @@ struct AffineToStableHLORaisingPass
       // the wrapper region; the rewrites also expose one another (a rebase
       // creates the direct views a flatten wants), so iterate once more.
       inlineAllocaScopes(root);
-      for (int round = 0; round < 5; ++round) {
+      // The rounds used to re-run once per wrapper; a multi-wrapper root
+      // could converge only through that repetition, so keep the total
+      // budget comparable.
+      for (int round = 0; round < 10; ++round) {
         memsetZeroToStores(root);
         unrollInvariantYieldWhiles(root);
         flattenLLVMArrayAllocas(root);
