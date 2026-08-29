@@ -5,6 +5,9 @@
 namespace enzymexla {
 namespace ffi_internal {
 
+void registerEnzymeJaXXLACudaBlasFFI();
+void registerEnzymeJaXXLACudaThrowErrorFFI();
+
 void registerEnzymeJaXXLACudaFFI() {
   registerEnzymeJaXXLACudaThrowErrorFFI();
   registerEnzymeJaXXLACudaBlasFFI();

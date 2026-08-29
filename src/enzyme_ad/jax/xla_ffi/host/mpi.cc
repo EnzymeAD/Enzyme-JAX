@@ -5,10 +5,13 @@
 #include "xla/ffi/api/ffi.h"
 #include "xla/ffi/ffi_api.h"
 
-#include "mpi.h"
-#include "mpi_ffi.h"
-
 #include "../export_macro.h"
+
+#if defined(_WIN32)
+void registerEnzymeJaXXLAHostMPIFFI() {}
+#else
+
+#include "mpi.h"
 
 int mpi_unimplemented_stub(...) {
   abort();
@@ -500,3 +503,5 @@ void registerEnzymeJaXXLAHostMPIFFI() {
 }
 
 } // namespace enzymexla::ffi_internal
+
+#endif // _WIN32
