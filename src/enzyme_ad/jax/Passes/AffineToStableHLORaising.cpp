@@ -5673,6 +5673,8 @@ struct AffineToStableHLORaisingPass
   // the pointer is only dereferenced, the null arm can only fault, so the
   // select collapses to the real pointer.
   static void dropNullPointerSelects(Operation *root) {
+    if (getenv("DISABLE_NULL_SELECT"))
+      return;
     SmallVector<arith::SelectOp> sels;
     root->walk([&](arith::SelectOp s) {
       if (isa<LLVM::LLVMPointerType>(s.getType()))
