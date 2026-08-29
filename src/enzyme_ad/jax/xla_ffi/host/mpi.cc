@@ -1,3 +1,4 @@
+#include <string_view>
 #include <type_traits>
 
 #include "xla/ffi/api/c_api.h"
@@ -20,115 +21,63 @@ int mpi_unimplemented_stub(...) {
 // `mpi_unimplemented_stub` by default and a exported C function for setting the
 // value dynamically
 // TODO replace with call to libdl like libblastrampoline does
-#define EXLA_FFI_MPI_FUNCTION_BINDING(FNAME, CNAME)                            \
+#define EXLA_FFI_MPI_FUNCTION_BINDING(FNAME)                                   \
   decltype(FNAME) *EXLA_##FNAME =                                              \
       reinterpret_cast<decltype(FNAME) *>(&mpi_unimplemented_stub);            \
-  extern "C" MLIR_CAPI_EXPORTED void EXLA_FFI_PREFIX##_set_##CNAME(            \
+  extern "C" MLIR_CAPI_EXPORTED void EXLA_FFI_PREFIX##_set_##FNAME(            \
       void *ptr) {                                                             \
     EXLA_##FNAME = reinterpret_cast<decltype(FNAME) *>(ptr);                   \
   }
+
+EXLA_FFI_MPI_FUNCTION_BINDING(MPI_Comm_rank)
+EXLA_FFI_MPI_FUNCTION_BINDING(MPI_Comm_size)
+EXLA_FFI_MPI_FUNCTION_BINDING(MPI_Comm_split)
+EXLA_FFI_MPI_FUNCTION_BINDING(MPI_Barrier)
+EXLA_FFI_MPI_FUNCTION_BINDING(MPI_Send)
+EXLA_FFI_MPI_FUNCTION_BINDING(MPI_Isend)
+EXLA_FFI_MPI_FUNCTION_BINDING(MPI_Recv)
+EXLA_FFI_MPI_FUNCTION_BINDING(MPI_Irecv)
+EXLA_FFI_MPI_FUNCTION_BINDING(MPI_Wait)
+EXLA_FFI_MPI_FUNCTION_BINDING(MPI_Waitall)
+EXLA_FFI_MPI_FUNCTION_BINDING(MPI_Allreduce)
+EXLA_FFI_MPI_FUNCTION_BINDING(MPI_Bcast)
+EXLA_FFI_MPI_FUNCTION_BINDING(MPI_Error_string)
 
 // generates a global variable for `FNAME` that defaults to the value by
 // MPItrampoline by default and a exported C function for setting the value
 // dynamically NOTE this should not be required once MPI v5 ABI is used as
 // minimum version
-#define EXLA_FFI_MPI_CONSTANT_BINDING(FNAME, CNAME)                            \
-  int EXLA_##FNAME = FNAME;                                                    \
-  extern "C" MLIR_CAPI_EXPORTED void EXLA_FFI_PREFIX##_set_##CNAME(int val) {  \
+#define EXLA_FFI_MPI_CONSTANT_BINDING(T, FNAME)                                \
+  T EXLA_##FNAME = FNAME;                                                      \
+  extern "C" MLIR_CAPI_EXPORTED void EXLA_FFI_PREFIX##_set_##FNAME(T val) {    \
     EXLA_##FNAME = val;                                                        \
   }                                                                            \
-  extern "C" MLIR_CAPI_EXPORTED int EXLA_FFI_PREFIX##_get_##CNAME() {          \
+  extern "C" MLIR_CAPI_EXPORTED T EXLA_FFI_PREFIX##_get_##FNAME() {            \
     return EXLA_##FNAME;                                                       \
   }
 
-EXLA_FFI_MPI_FUNCTION_BINDING(MPI_Comm_rank, mpi_comm_rank)
-EXLA_FFI_MPI_FUNCTION_BINDING(MPI_Comm_size, mpi_comm_size)
-EXLA_FFI_MPI_FUNCTION_BINDING(MPI_Comm_split, mpi_comm_split)
-EXLA_FFI_MPI_FUNCTION_BINDING(MPI_Barrier, mpi_barrier)
-EXLA_FFI_MPI_FUNCTION_BINDING(MPI_Send, mpi_send)
-EXLA_FFI_MPI_FUNCTION_BINDING(MPI_Isend, mpi_isend)
-EXLA_FFI_MPI_FUNCTION_BINDING(MPI_Recv, mpi_recv)
-EXLA_FFI_MPI_FUNCTION_BINDING(MPI_Irecv, mpi_irecv)
-EXLA_FFI_MPI_FUNCTION_BINDING(MPI_Wait, mpi_wait)
-EXLA_FFI_MPI_FUNCTION_BINDING(MPI_Waitall, mpi_waitall)
-EXLA_FFI_MPI_FUNCTION_BINDING(MPI_Allreduce, mpi_allreduce)
-EXLA_FFI_MPI_FUNCTION_BINDING(MPI_Bcast, mpi_bcast)
-EXLA_FFI_MPI_FUNCTION_BINDING(MPI_Error_string, mpi_error_string)
-
-EXLA_FFI_MPI_CONSTANT_BINDING(MPI_STATUS_SIZE, mpi_status_size)
-EXLA_FFI_MPI_CONSTANT_BINDING(MPI_SUCCESS, mpi_success)
-EXLA_FFI_MPI_CONSTANT_BINDING(MPI_MAX_ERROR_STRING, mpi_max_error_string)
+EXLA_FFI_MPI_CONSTANT_BINDING(int, MPI_STATUS_SIZE)
+EXLA_FFI_MPI_CONSTANT_BINDING(int, MPI_SUCCESS)
+EXLA_FFI_MPI_CONSTANT_BINDING(int, MPI_MAX_ERROR_STRING)
 
 #define GENERATE_MPI_OP_LIST(X)                                                \
-  X(MPI_OP_NULL, mpi_op_null)                                                  \
-  X(MPI_SUM, mpi_sum)                                                          \
-  X(MPI_MIN, mpi_min)                                                          \
-  X(MPI_MAX, mpi_max)                                                          \
-  X(MPI_PROD, mpi_prod)                                                        \
-  X(MPI_BAND, mpi_band)                                                        \
-  X(MPI_BOR, mpi_bor)                                                          \
-  X(MPI_BXOR, mpi_bxor)                                                        \
-  X(MPI_LAND, mpi_land)                                                        \
-  X(MPI_LOR, mpi_lor)                                                          \
-  X(MPI_LXOR, mpi_lxor)                                                        \
-  X(MPI_MINLOC, mpi_minloc)                                                    \
-  X(MPI_MAXLOC, mpi_maxloc)                                                    \
-  X(MPI_REPLACE, mpi_replace)                                                  \
-  X(MPI_NO_OP, mpi_no_op)
+  X(MPI_Op, MPI_OP_NULL)                                                       \
+  X(MPI_Op, MPI_SUM)                                                           \
+  X(MPI_Op, MPI_MIN)                                                           \
+  X(MPI_Op, MPI_MAX)                                                           \
+  X(MPI_Op, MPI_PROD)                                                          \
+  X(MPI_Op, MPI_BAND)                                                          \
+  X(MPI_Op, MPI_BOR)                                                           \
+  X(MPI_Op, MPI_BXOR)                                                          \
+  X(MPI_Op, MPI_LAND)                                                          \
+  X(MPI_Op, MPI_LOR)                                                           \
+  X(MPI_Op, MPI_LXOR)                                                          \
+  X(MPI_Op, MPI_MINLOC)                                                        \
+  X(MPI_Op, MPI_MAXLOC)                                                        \
+  X(MPI_Op, MPI_REPLACE)                                                       \
+  X(MPI_Op, MPI_NO_OP)
 
-GENERATE_MPI_OP_LIST(EXLA_FFI_MPI_ENUM_BINDING_CASE)
-
-std::optional<MPI_Op> symbolizeMpiOp(llvm::StringRef op) {
-  switch (op) {
-    // clang-format off
-    #define X(NAME, _) case #NAME: return EXLA_##NAME;
-    GENERATE_MPI_OP_LIST(X)
-    #undef X
-    default: return std::nullopt;
-    // clang-format on
-  }
-}
-
-std::optional<MPI_Datatype>
-convertPrimitiveTypeToMpiDatatype(ffi::DataType type) {
-  switch (type) {
-    // clang-format off
-    case ffi::DataType::INVALID: return std::nullopt;
-    case ffi::DataType::PRED: return MPI_C_BOOL;
-    case ffi::DataType::S1: return std::nullopt;
-    case ffi::DataType::S2: return std::nullopt;
-    case ffi::DataType::S4: return std::nullopt;
-    case ffi::DataType::S8: return MPI_INT8_T;
-    case ffi::DataType::S16: return MPI_INT16_T;
-    case ffi::DataType::S32: return MPI_INT32_T;
-    case ffi::DataType::S64: return MPI_INT64_T;
-    case ffi::DataType::U1: return std::nullopt;
-    case ffi::DataType::U2: return std::nullopt;
-    case ffi::DataType::U4: return std::nullopt;
-    case ffi::DataType::U8: return MPI_UINT8_T;
-    case ffi::DataType::U16: return MPI_UINT16_T;
-    case ffi::DataType::U32: return MPI_UINT32_T;
-    case ffi::DataType::U64: return MPI_UINT64_T;
-    case ffi::DataType::F16: return std::nullopt;
-    case ffi::DataType::F32: return MPI_FLOAT;
-    case ffi::DataType::F64: return MPI_DOUBLE;
-    case ffi::DataType::BF16: return std::nullopt;
-    case ffi::DataType::C64: return MPI_C_FLOAT_COMPLEX;
-    case ffi::DataType::C128: return MPI_C_DOUBLE_COMPLEX;
-    case ffi::DataType::TOKEN: return std::nullopt;
-    case ffi::DataType::F8E5M2: return std::nullopt;
-    case ffi::DataType::F8E4M3: return std::nullopt;
-    case ffi::DataType::F8E4M3FN: return std::nullopt;
-    case ffi::DataType::F8E4M3B11FNUZ: return std::nullopt;
-    case ffi::DataType::F8E5M2FNUZ: return std::nullopt;
-    case ffi::DataType::F8E4M3FNUZ: return std::nullopt;
-    case ffi::DataType::F8E3M4: return std::nullopt;
-    case ffi::DataType::F4E2M1FN: return std::nullopt;
-    case ffi::DataType::F8E8M0FNU: return std::nullopt;
-    default: return std::nullopt;
-    // clang-format on
-  }
-}
+GENERATE_MPI_OP_LIST(EXLA_FFI_MPI_CONSTANT_BINDING)
 
 namespace enzymexla::ffi_internal {
 namespace ffi = xla::ffi;
@@ -166,6 +115,56 @@ ffi::Error checkMpiError(const char *fname, const int err) {
   std::string str(cstr.data(), len);
   return ffi::Error::InvalidArgument(
       absl::StrFormat("%s failed with error code %d: %s", fname, err, str));
+}
+
+std::optional<MPI_Op> symbolizeMpiOp(std::string_view op) {
+  // clang-format off
+  #define X(_, NAME) if (op == #NAME) return EXLA_##NAME;
+  GENERATE_MPI_OP_LIST(X)
+  #undef X
+  return std::nullopt;
+  // clang-format on
+}
+
+std::optional<MPI_Datatype>
+convertPrimitiveTypeToMpiDatatype(ffi::DataType type, bool allow_cast = false) {
+  switch (type) {
+    // clang-format off
+    case ffi::DataType::INVALID: return std::nullopt;
+    case ffi::DataType::PRED: return MPI_C_BOOL;
+    case ffi::DataType::S1: return std::nullopt;
+    case ffi::DataType::S2: return std::nullopt;
+    case ffi::DataType::S4: return std::nullopt;
+    case ffi::DataType::S8: return MPI_INT8_T;
+    case ffi::DataType::S16: return MPI_INT16_T;
+    case ffi::DataType::S32: return MPI_INT32_T;
+    case ffi::DataType::S64: return MPI_INT64_T;
+    case ffi::DataType::U1: return std::nullopt;
+    case ffi::DataType::U2: return std::nullopt;
+    case ffi::DataType::U4: return std::nullopt;
+    case ffi::DataType::U8: return MPI_UINT8_T;
+    case ffi::DataType::U16: return MPI_UINT16_T;
+    case ffi::DataType::U32: return MPI_UINT32_T;
+    case ffi::DataType::U64: return MPI_UINT64_T;
+    case ffi::DataType::F16: return std::nullopt; // allow_cast ? MPI_UINT16_T : std::nullopt;
+    case ffi::DataType::F32: return MPI_FLOAT;
+    case ffi::DataType::F64: return MPI_DOUBLE;
+    case ffi::DataType::BF16: return std::nullopt; // allow_cast ? MPI_UINT16_T : std::nullopt;
+    case ffi::DataType::C64: return MPI_C_FLOAT_COMPLEX;
+    case ffi::DataType::C128: return MPI_C_DOUBLE_COMPLEX;
+    case ffi::DataType::TOKEN: return std::nullopt;
+    case ffi::DataType::F8E5M2: return std::nullopt; // allow_cast ? MPI_UINT8_T : std::nullopt;
+    case ffi::DataType::F8E4M3: return std::nullopt; // allow_cast ? MPI_UINT8_T : std::nullopt;
+    case ffi::DataType::F8E4M3FN: return std::nullopt; // allow_cast ? MPI_UINT8_T : std::nullopt;
+    case ffi::DataType::F8E4M3B11FNUZ: return std::nullopt; // allow_cast ? MPI_UINT8_T : std::nullopt;
+    case ffi::DataType::F8E5M2FNUZ: return std::nullopt; // allow_cast ? MPI_UINT8_T : std::nullopt;
+    case ffi::DataType::F8E4M3FNUZ: return std::nullopt; // allow_cast ? MPI_UINT8_T : std::nullopt;
+    case ffi::DataType::F8E3M4: return std::nullopt; // allow_cast ? MPI_UINT8_T : std::nullopt;
+    case ffi::DataType::F4E2M1FN: return std::nullopt;
+    case ffi::DataType::F8E8M0FNU: return std::nullopt; // allow_cast ? MPI_UINT8_T : std::nullopt;
+    default: return std::nullopt;
+    // clang-format on
+  }
 }
 
 ffi::Error MpiCommRankImpl(MpiCommBuffer comm_ptr, Result<IntBuffer> rank_ptr) {
@@ -443,10 +442,10 @@ ffi::Error MpiAllreduceImpl(ffi::AnyBuffer sendbuf, std::string_view op_str,
 
 XLA_FFI_DEFINE_HANDLER(MpiAllreduceFfi, MpiAllreduceImpl,
                        xla::ffi::Ffi::Bind()
-                           .Arg<ffi::AnyBuffer>()    // sendbuf
-                           .Attr<std::string_view>() // op
-                           .Arg<MpiCommBuffer>()     // comm
-                           .Ret<ffi::AnyBuffer>()    // recvbuf
+                           .Arg<ffi::AnyBuffer>()        // sendbuf
+                           .Attr<std::string_view>("op") // op
+                           .Arg<MpiCommBuffer>()         // comm
+                           .Ret<ffi::AnyBuffer>()        // recvbuf
 );
 
 ffi::Error MpiBcastImpl(ffi::AnyBuffer buf, IntBuffer root_ptr,
