@@ -1835,14 +1835,18 @@ std::optional<IotaLikeTensor> detectIotaLikeTensor(mlir::Value tensor) {
 
     // navigate to the next op. If any unsupported intermediate op is found,
     // then return std::nullopt
-    // TODO: we might want to support broadcast_in_dim / insert_dims / drop_dims
-    // as well
+    // TODO: we might want to support insert_dims / drop_dims as well
     auto nextOp =
         llvm::TypeSwitch<Operation *, Operation *>(currentOp)
             .Case<stablehlo::TransposeOp>([&](auto transposeOp) {
               chain.push_back({currentOp, nullptr, nullptr});
               return transposeOp.getOperand().getDefiningOp();
             })
+            .Case<stablehlo::BroadcastInDimOp>(
+                [&](auto broadcastOp) -> Operation * {
+                  chain.push_back({currentOp, nullptr, nullptr});
+                  return broadcastOp.getOperand().getDefiningOp();
+                })
             .Case<stablehlo::ConvertOp>([&](auto convertOp) -> Operation * {
               auto elemType = cast<TensorType>(convertOp.getOperand().getType())
                                   .getElementType();
@@ -1958,6 +1962,16 @@ std::optional<IotaLikeTensor> detectIotaLikeTensor(mlir::Value tensor) {
                 }
               }
               return true;
+            })
+            .Case<stablehlo::BroadcastInDimOp>([&](auto broadcastOp) {
+              auto broadcastDims = broadcastOp.getBroadcastDimensions();
+              if (result.dimension >= 0 &&
+                  result.dimension <
+                      static_cast<int64_t>(broadcastDims.size())) {
+                result.dimension = broadcastDims[result.dimension];
+                return true;
+              }
+              return false;
             })
             .Case<stablehlo::AddOp>([&](auto) {
               auto startVal = getDoubleFromAttr(result.start);
@@ -3002,7 +3016,8 @@ struct ConcatSlicedElem {
   int64_t start, limit, stride;
 };
 
-std::optional<ConcatSlicedElem> findConcatSlicedElem(Value concatOperand) {
+std::optional<ConcatSlicedElem> findConcatSlicedElem(Value concatOperand,
+                                                     int64_t concatDim) {
   Value operand = concatOperand;
 
   auto operandTy = cast<ShapedType>(concatOperand.getType());
@@ -3115,13 +3130,17 @@ std::optional<ConcatSlicedElem> findConcatSlicedElem(Value concatOperand) {
   if (!foundFirst)
     return std::nullopt;
 
+  if (iperm[sliceDim] != concatDim) {
+    if ((limit - start) / stride != 1 || operandTy.getDimSize(concatDim) != 1)
+      return std::nullopt;
+  }
+
   return {ConcatSlicedElem{operand, iperm, concatOperand, sliceDim, start,
                            limit, stride}};
 }
 
 static Value mergeConcatSlicedElems(PatternRewriter &rewriter,
-                                    int64_t concatDim, ConcatSlicedElem a,
-                                    ConcatSlicedElem b) {
+                                    ConcatSlicedElem a, ConcatSlicedElem b) {
   Value newConcatOperand = nullptr;
 
   if (a.src != b.src) {
@@ -3143,8 +3162,17 @@ static Value mergeConcatSlicedElems(PatternRewriter &rewriter,
   if (sliceSizeA == 1 && sliceSizeB == 1)
     return nullptr;
 
+  // Both elements must slice the same dimension of the source, and agree on
+  // where every other source dimension lands in the operand: the merged value
+  // only keeps one of the two permutations.
+  if (a.dim != b.dim || a.perm.size() != b.perm.size())
+    return nullptr;
+  for (auto [d, p] : llvm::enumerate(a.perm))
+    if ((int64_t)d != a.dim && p != b.perm[d])
+      return nullptr;
+
   auto operandTy = cast<ShapedType>(a.src.getType());
-  int64_t sliceDim = sliceSizeA < sliceSizeB ? b.dim : a.dim;
+  int64_t sliceDim = a.dim;
   SmallVector<int64_t> startIndices(operandTy.getRank(), 0),
       limitIndices(operandTy.getShape()),
       strides(operandTy.getRank(), a.stride);
@@ -3198,7 +3226,8 @@ concatBroadcastSliceSimplify(PatternRewriter &rewriter,
   for (size_t i = 0, e = operands.size(); i < e; ++i) {
     auto operand = operands[i];
 
-    std::optional<ConcatSlicedElem> curElemOpt = findConcatSlicedElem(operand);
+    std::optional<ConcatSlicedElem> curElemOpt =
+        findConcatSlicedElem(operand, dim);
     if (!curElemOpt) {
       newOperands.push_back(operand);
       continue;
@@ -3206,19 +3235,18 @@ concatBroadcastSliceSimplify(PatternRewriter &rewriter,
     ConcatSlicedElem curElem = *curElemOpt;
 
     while (i + 1 < e) {
-      auto otherElemOpt = findConcatSlicedElem(operands[i + 1]);
+      auto otherElemOpt = findConcatSlicedElem(operands[i + 1], dim);
       if (!otherElemOpt) {
         break;
       }
 
-      Value newSlice =
-          mergeConcatSlicedElems(rewriter, dim, curElem, *otherElemOpt);
+      Value newSlice = mergeConcatSlicedElems(rewriter, curElem, *otherElemOpt);
       if (!newSlice) {
         break;
       }
 
       changed = true;
-      curElemOpt = findConcatSlicedElem(newSlice);
+      curElemOpt = findConcatSlicedElem(newSlice, dim);
       if (!curElemOpt) {
         // the slice is full
         curElem.orig = newSlice;

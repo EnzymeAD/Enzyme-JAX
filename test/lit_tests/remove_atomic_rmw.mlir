@@ -786,7 +786,7 @@ module {
 // CHECK:               %[[LOAD_0:.*]] = affine.load %[[ARG2]]{{\[}}%[[VAL_1]]] : memref<?xf32>
 // CHECK:               %[[ADDF_0:.*]] = arith.addf %[[LOAD_0]], %[[ARG0]] : f32
 // CHECK:               affine.store %[[ADDF_0]], %[[ARG2]]{{\[}}%[[VAL_1]]] : memref<?xf32>
-// CHECK:               affine.store %[[ADDF_0]], %[[ARG2]]{{\[}}%[[VAL_1]] + 4] : memref<?xf32>
+// CHECK:               affine.store %[[LOAD_0]], %[[ARG2]]{{\[}}%[[VAL_1]] + 4] : memref<?xf32>
 // CHECK:             }
 // CHECK:             "enzymexla.polygeist_yield"() : () -> ()
 // CHECK:           }) : (index, index, index, index, index, index) -> index
@@ -1107,6 +1107,42 @@ module {
       }
       "enzymexla.polygeist_yield"() : () -> ()
     }) : (index, index) -> index
+    return
+  }
+}
+
+// -----
+
+// An scf.if enclosing the whole gpu_wrapper is outside the scop and has no
+// statement of its own to model nested effects, so it must not drop the
+// statements gathered inside the wrapper. Dropping them left the stale
+// polymer.stmt.name attributes behind and crashed schedule construction with
+// "stmt not found".
+
+#map = affine_map<(d0) -> (d0)>
+module {
+// CHECK-LABEL:   func.func @gpu_wrapper_enclosed_by_scf_if(
+// CHECK:           scf.if
+// CHECK:             scf.for
+// CHECK:               affine.parallel (%[[I:.*]]) = (0) to (4) {
+// CHECK:                 %[[OLD:.*]] = affine.load %[[ARR:.*]]{{\[}}%[[I]]] : memref<?xf32>
+// CHECK:                 %[[NEW:.*]] = arith.addf %[[OLD]], %[[V:.*]] : f32
+// CHECK:                 affine.store %[[NEW]], %[[ARR]]{{\[}}%[[I]]] : memref<?xf32>
+// CHECK-NOT:       enzyme.affine_atomic_rmw
+  func.func @gpu_wrapper_enclosed_by_scf_if(%pred: i1, %v: f32, %arr: memref<?xf32>) {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c4 = arith.constant 4 : index
+    scf.if %pred {
+      scf.for %t = %c0 to %c4 step %c1 {
+        %0 = "enzymexla.gpu_wrapper"(%c1, %c1, %c1, %c1, %c1, %c1) ({
+          affine.parallel (%i) = (0) to (4) {
+            %r = enzyme.affine_atomic_rmw addf %v, %arr, (#map) [%i] : (f32, memref<?xf32>) -> f32
+          }
+          "enzymexla.polygeist_yield"() : () -> ()
+        }) : (index, index, index, index, index, index) -> index
+      }
+    }
     return
   }
 }

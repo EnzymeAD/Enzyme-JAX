@@ -38,7 +38,7 @@ module {
 // CHECK-NEXT:      %[[v10:.+]] = stablehlo.multiply %[[v9]], %[[v9]] : tensor<3xf64>
 // CHECK-NEXT:      stablehlo.return %[[v8]], %[[v10]], %[[v7]] : tensor<i64>, tensor<3xf64>, tensor<10x3xf64>
 // CHECK-NEXT:    }
-// CHECK-NEXT:    %[[ADD:.+]] = arith.addf %[[ARG1]], %[[ZERO]] : tensor<3xf64>
+// CHECK-NEXT:    %[[ADD:.+]] = arith.addf %[[ARG1]], %[[ZERO]] fastmath<fast> : tensor<3xf64>
 // CHECK-NEXT:    %[[REV:.+]]:3 = stablehlo.while(%iterArg = %[[ZEROI]], %iterArg_4 = %[[ADD]], %iterArg_5 = %c) : tensor<i64>, tensor<3xf64>, tensor<i64>
 // CHECK-NEXT:     cond {
 // CHECK-NEXT:      %[[CMP:.+]] = stablehlo.compare  LT, %iterArg, %c_1 : (tensor<i64>, tensor<i64>) -> tensor<i1>
@@ -48,18 +48,18 @@ module {
 // CHECK-NEXT:      %[[v7:.+]] = stablehlo.reshape %[[v6]] : (tensor<1x3xf64>) -> tensor<3xf64>
 // CHECK-NEXT:      %[[v8:.+]] = stablehlo.cosine %[[v7]] : tensor<3xf64>
 // CHECK-NEXT:      %[[v9:.+]] = stablehlo.add %iterArg, %c_0 : tensor<i64>
-// CHECK-NEXT:      %[[a4:.+]] = arith.addf %iterArg_4, %[[ZERO]] : tensor<3xf64>
+// CHECK-NEXT:      %[[a4:.+]] = arith.addf %iterArg_4, %[[ZERO]] fastmath<fast> : tensor<3xf64>
 // CHECK-NEXT:      %[[v10:.+]] = stablehlo.multiply %[[a4]], %[[v8]] : tensor<3xf64>
-// CHECK-NEXT:      %[[v11:.+]] = arith.addf %[[v10]], %[[ZERO]] : tensor<3xf64>
+// CHECK-NEXT:      %[[v11:.+]] = arith.addf %[[v10]], %[[ZERO]] fastmath<fast> : tensor<3xf64>
 // CHECK-NEXT:      %[[v12:.+]] = stablehlo.multiply %[[a4]], %[[v8]] : tensor<3xf64>
-// CHECK-NEXT:      %[[v13:.+]] = arith.addf %[[v11]], %[[v12]] : tensor<3xf64>
+// CHECK-NEXT:      %[[v13:.+]] = arith.addf %[[v11]], %[[v12]] fastmath<fast> : tensor<3xf64>
 // CHECK-NEXT:      %[[v14:.+]] = stablehlo.sine %[[v7]] : tensor<3xf64>
 // CHECK-NEXT:      %[[v15:.+]] = stablehlo.negate %[[v14]] : tensor<3xf64>
 // CHECK-NEXT:      %[[v16:.+]] = stablehlo.multiply %[[v13]], %[[v15]] : tensor<3xf64>
-// CHECK-NEXT:      %[[v17:.+]] = arith.addf %[[v16]], %[[ZERO]] : tensor<3xf64>
+// CHECK-NEXT:      %[[v17:.+]] = arith.addf %[[v16]], %[[ZERO]] fastmath<fast> : tensor<3xf64>
 // CHECK-NEXT:      %[[v18:.+]] = stablehlo.subtract %iterArg_5, %c_0 : tensor<i64>
 // CHECK-NEXT:      stablehlo.return %[[v9]], %[[v17]], %[[v18]] : tensor<i64>, tensor<3xf64>, tensor<i64>
 // CHECK-NEXT:    }
-// CHECK-NEXT:    %[[v5:.+]] = arith.addf %[[REV]]#1, %[[ZERO]] : tensor<3xf64>
+// CHECK-NEXT:    %[[v5:.+]] = arith.addf %[[REV]]#1, %[[ZERO]] fastmath<fast> : tensor<3xf64>
 // CHECK-NEXT:    return %[[v5]] : tensor<3xf64>
 // CHECK-NEXT:  }

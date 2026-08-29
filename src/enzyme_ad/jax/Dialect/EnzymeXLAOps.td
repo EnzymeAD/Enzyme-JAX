@@ -257,12 +257,12 @@ def XLAWrapperOp : EnzymeXLA_Op<"xla_wrapper", [
 ]> {
   let summary = "XLA Call operation";
 
-  let arguments = (ins
-    SymbolRefAttr:$fn,
-    Variadic<AnyType>:$inputs,
-    OptionalAttr<DictArrayAttr>:$arg_attrs,
-    OptionalAttr<DictArrayAttr>:$res_attrs
-  );
+  let arguments = (ins SymbolRefAttr:$fn, Variadic<AnyType>:$inputs,
+      OptionalAttr<DictArrayAttr>:$arg_attrs,
+      OptionalAttr<DictArrayAttr>:$res_attrs,
+      // How many trailing inputs are scalars the runtime specializes the
+      // executable over, injected as compile-time constants per distinct value.
+      DefaultValuedAttr<I64Attr, "0">:$num_specialized);
 
   let assemblyFormat = [{
     $fn ` ` `(` $inputs `)` attr-dict `:` functional-type($inputs, results)
@@ -1298,6 +1298,31 @@ def ReluOp: EnzymeXLA_Op<"math.relu", [Pure, SameOperandsAndResultType, Elementw
   }];
 }
 
+def FMulAddOp: EnzymeXLA_Op<"math.fmuladd", [Pure, SameOperandsAndResultType, Elementwise]> {
+  let summary = "Multiply-add that may, but need not, be fused";
+
+  let description = [{
+    Carries the semantics of the `llvm.fmuladd` intrinsic through the round
+    trip: compute `a * b + c`, fused into a single rounding only when the
+    target can do so profitably, otherwise as an ordinary multiply and add.
+    This is a *permission* to fuse, unlike `math.fma`, whose single rounding
+    is required and whose honest lowering on a target without FMA units is a
+    libm call. Raised from `llvm.intr.fmuladd`; lowered back to the same.
+  }];
+
+  let arguments = (ins
+    FloatLike:$a,
+    FloatLike:$b,
+    FloatLike:$c
+  );
+
+  let results = (outs FloatLike:$result);
+
+  let assemblyFormat = [{
+    $a `,` $b `,` $c attr-dict `:` type($result)
+  }];
+}
+
 def TGammaOp: EnzymeXLA_Op<"math.tgamma", [Pure, SameOperandsAndResultType, Elementwise]> {
   let summary = "Computes the true gamma function";
 
@@ -1338,20 +1363,6 @@ def SoftplusOp: EnzymeXLA_Op<"math.softplus", [Pure, SameOperandsAndResultType, 
   let assemblyFormat = [{
     $input attr-dict `:` functional-type($input, results)
   }];
-}
-
-def BinomialProgressOp : EnzymeXLA_Op<"math.binomial_progress", [Pure, SameOperandsAndResultType]> {
-  let summary = "Computes the number of steps to progress from in a binomial checkpointing scheme";
-
-  let arguments = (ins
-    TensorI64:$num_steps,
-    TensorI64:$budget,
-    OptionalAttr<I64Attr>:$max_iters
-  );
-
-  let results = (outs TensorI64:$result);
-
-  let assemblyFormat = "`(` operands `)` attr-dict `:` functional-type(operands, results)";
 }
 
 def HypotOp: EnzymeXLA_Op<"math.hypot", [Pure, SameOperandsAndResultType, Elementwise]> {

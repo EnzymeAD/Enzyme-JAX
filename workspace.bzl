@@ -1,7 +1,7 @@
-JAX_COMMIT = "269d3f7bebc76fc8be53975eaf11cef6cd7caf35"
+JAX_COMMIT = "cec06d116c05f0d52adfceee3d3b730fdbcb0ce5"
 JAX_SHA256 = ""
 
-ENZYME_COMMIT = "0ed71b22bb1f0952c9e85fea0ab9dfcf2f80feb2"
+ENZYME_COMMIT = "fc6bb335b90ef09c2c16b413a408cafcc836086b"
 ENZYME_SHA256 = ""
 
 ML_TOOLCHAIN_COMMIT = "30ef4a9096f9490e8f198faa5ce5bbddd1b72fdb"
@@ -19,6 +19,16 @@ XLA_PATCHES = [
     """
     # Fix support for rocm ygg build
     sed -i.bak0 "s|clang/18/include|clang/22/include|g" third_party/gpus/rocm_configure.bzl
+    """,
+    """
+    # The hermetic rocm toolchain compiles through the repository's own
+    # rocm_dist copy of hipcc, whose resource headers the crosstool never
+    # declared: the absolute-path inclusion check then rejects every
+    # device compile. Declare that resource directory both by package
+    # token and by its resolved path, since the dependency file can
+    # spell it either way depending on how the distribution was reached.
+    sed -i.bak1 "s|cxx_builtin_include_directories = _LOCAL_CLANG.include_directories,|cxx_builtin_include_directories = _LOCAL_CLANG.include_directories + [\\\"%package(@local_config_rocm//rocm)%/rocm_dist/lib/llvm/lib/clang/22/include\\\", \\\"%{hipcc_resource_dir}\\\", \\\"%{hipcc_resource_dir_realpath}\\\"],|" third_party/gpus/crosstool/BUILD.rocm.tpl
+    perl -0777 -pi -e 's|(tpl_paths\\["crosstool:BUILD.rocm"\\],)|$1\\n        {"%{hipcc_resource_dir}": str(repository_ctx.path("rocm/rocm_dist/lib/llvm/lib/clang/22/include")), "%{hipcc_resource_dir_realpath}": str(repository_ctx.path("rocm/rocm_dist/lib/llvm/lib/clang/22/include").realpath)},|' third_party/gpus/rocm_configure.bzl
     """,
     """
     # Fix support for musl stacktrace issue where execinfo.h is otherwise included
@@ -77,15 +87,6 @@ echo " llvm::Error evalPrintOp(PrintOp& op, InterpreterValue operand) {" >> thir
     """,
     """
     sed -i.bak0 "s/patch_file/patch_args = [\\\"-p1\\\"],patches/g" third_party/llvm/workspace.bzl
-    """,
-    """
-    # Apply our own patches on top of the LLVM pinned by XLA. This lets us use
-    # upstream APIs which have not yet made it into the pinned commit. Drop the
-    # corresponding hunks from patches/llvm.patch once XLA moves to an LLVM
-    # which already contains them. The label is written in escaped form so that
-    # downstream users of this file (e.g. Reactant.jl) can rewrite it to
-    # @enzyme_ad//:patches when this repo is not the main one.
-    sed -i.bak0 "s/patches = \\[/patches = [\\\"\\/\\/:patches\\/llvm.patch\\\",/g" third_party/llvm/workspace.bzl
     """,
     """
     sed -i.bak0 "s/Node::Leaf(std::forward<decltype(value)>/Node::Leaf(std::forward<T>/g" xla/tuple_tree.h
@@ -199,6 +200,14 @@ sed -i.bak0 "s/cupti_driver_cbid/cupti/g" xla/backends/profiler/gpu/cupti_tracer
 """,
     """
 sed -i.bak0 "s/patch_cmds = \\[/patch_cmds = \\[\\\"find . -type f -name config.bzl -exec sed -i.bak0 's\\/HAVE_LINK_H=1\\/HAVE_LINK_H=0\\/g' {} +\\\",/g" third_party/llvm/workspace.bzl
+""",
+    """
+# arith.extui's fold merges extui(extui(x)) by swapping the outer op's source
+# while keeping its nneg flag. The flag asserts the source is non-negative as
+# a signed value, about which the outer flag says nothing once the source
+# changes: extui nneg i8->i32 over extui i1->i8 becomes extui nneg i1->i32,
+# poison whenever the bool is true. Keep nneg only if the inner ext had it.
+sed -i.bak0 "s/patch_cmds = \\[/patch_cmds = \\[\\\"sed -i.baknneg 's\\/auto lhs = getIn().getDefiningOp<ExtUIOp>()) {\\/auto lhs = getIn().getDefiningOp<ExtUIOp>()) { setNonNeg(lhs.getNonNeg());\\/' mlir\\/lib\\/Dialect\\/Arith\\/IR\\/ArithOps.cpp\\\",/g" third_party/llvm/workspace.bzl
 """,
     """
 sed -i.bak0 "s/patch_cmds = \\[/patch_cmds = \\[\\\"find . -type f -name config.bzl -exec sed -i.bak0 's\\/LLVM_ENABLE_THREADS=1\\/LLVM_ENABLE_THREADS=0\\/g' {} +\\\",/g" third_party/llvm/workspace.bzl

@@ -327,6 +327,20 @@ bool isAccessRacy(ScopStmt &stmtA, MemoryAccess *accessA, ScopStmt &stmtB,
   LLVM_DEBUG(polly::dumpIslObj(stmtA.getSchedule()));
   LLVM_DEBUG(polly::dumpIslObj(stmtB.getSchedule()));
 
+  // Two accesses can only be dependent, and hence racy, if they can reach the
+  // same element. Ruling that out costs a set intersection, where getDeps below
+  // solves three dataflow problems over the whole schedule tree -- and it is
+  // asked for every pair of atomics in the scop.
+  isl::set rangeA =
+      accessA->getAccessRelation().intersect_domain(stmtA.getDomain()).range();
+  isl::set rangeB =
+      accessB->getAccessRelation().intersect_domain(stmtB.getDomain()).range();
+  if (rangeA.get_space().is_equal(rangeB.get_space()) &&
+      rangeA.intersect(rangeB).is_empty()) {
+    LDBG() << "Accesses touch disjoint elements";
+    return false;
+  }
+
   isl::union_map deps = getDeps(stmtA, accessA, stmtB, accessB);
 
   isl::schedule schedule = stmtA.getParent()->getScheduleTree();
@@ -496,7 +510,6 @@ void convertRmw(enzyme::AffineAtomicRMWOp rmw) {
                                            rmw.getMap(), rmw.getIndices());
 
   mlir::Value modify;
-  // TODO fast math flags?
   switch (rmw.getKind()) {
   case mlir::arith::AtomicRMWKind::addf:
     modify = arith::AddFOp::create(b, rmw.getLoc(), read, rmw.getValue());
@@ -548,9 +561,19 @@ void convertRmw(enzyme::AffineAtomicRMWOp rmw) {
     break;
   }
 
+  // The arithmetic we just wrote out is the arithmetic the atomic stood for,
+  // so it is entitled to the same fast-math flags. `assign` writes the operand
+  // through untouched, and that operand is someone else's op to flag.
+  if (modify != rmw.getValue())
+    if (auto iface =
+            dyn_cast<arith::ArithFastMathInterface>(modify.getDefiningOp()))
+      modify.getDefiningOp()->setAttr(
+          iface.getFastMathAttrName(),
+          arith::FastMathFlagsAttr::get(rmw.getContext(), rmw.getFastmath()));
+
   affine::AffineStoreOp::create(b, rmw.getLoc(), modify, rmw.getMemref(),
                                 rmw.getMap(), rmw.getIndices());
-  rmw.getResult().replaceAllUsesWith(modify);
+  rmw.getResult().replaceAllUsesWith(read);
   rmw.erase();
 }
 

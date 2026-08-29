@@ -1,13 +1,12 @@
 diff --git a/jaxlib/mosaic/BUILD b/jaxlib/mosaic/BUILD
-index 088411939..8a8ae857e 100644
+index cb2c243b2..b9be72179 100644
 --- a/jaxlib/mosaic/BUILD
 +++ b/jaxlib/mosaic/BUILD
-@@ -45,11 +45,9 @@ cc_library(
+@@ -44,10 +44,9 @@ cc_library(
          "dialect/tpu/tpu_ops.cc",
          "dialect/tpu/util.cc",
      ],
 -    hdrs = [
--        "dialect/tpu/layout.h",
 -        "dialect/tpu/tpu_dialect.h",
 -        "dialect/tpu/util.h",
 -    ],

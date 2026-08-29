@@ -97,12 +97,20 @@ cc_library(
     srcs =
         [
             "xla_ffi/register.cc",
-        ] + glob([
-            "xla_ffi/host/**/*.cc",
-            "xla_ffi/cuda/**/*.cc",
-        ]),
+        ] + glob(
+            [
+                "xla_ffi/host/**/*.cc",
+                "xla_ffi/cuda/**/*.cc",
+            ],
+            exclude = ["xla_ffi/host/mpi.cc"],
+        ) + select({
+            "@xla//xla/tsl:windows": [],
+            "//conditions:default": ["xla_ffi/host/mpi.cc"],
+        }),
     hdrs =
-        glob([
+        [
+            "xla_ffi/export_macro.h",
+        ] + glob([
             "xla_ffi/host/**/*.h",
             "xla_ffi/cuda/**/*.h",
         ]),
@@ -118,6 +126,9 @@ cc_library(
         "@xla//xla/ffi/api:c_api",
         "@xla//xla/ffi/api:ffi",
     ] + select({
+        "@xla//xla/tsl:windows": [],
+        "//conditions:default": ["@mpitrampoline"],
+    }) + select({
         "@local_config_cuda//:is_cuda_enabled": [
             "@jax//jaxlib:ffi_helpers",
             "@jax//jaxlib/cuda:cuda_blas_handle_pool",
@@ -1315,6 +1326,7 @@ cc_library(
         "@com_google_absl//absl/status:statusor",
         "@enzyme//:EnzymeMLIR",
         "@jax//jaxlib/gpu:triton_cc_proto",
+        "@llvm-project//llvm:Analysis",
         "@llvm-project//llvm:Core",
         "@llvm-project//llvm:ExecutionEngine",
         "@llvm-project//llvm:IPO",
@@ -1348,6 +1360,7 @@ cc_library(
         "@llvm-project//mlir:ControlFlowToLLVM",
         "@llvm-project//mlir:ControlFlowToSCF",
         "@llvm-project//mlir:DLTIDialect",
+        "@llvm-project//mlir:DialectUtils",
         "@llvm-project//mlir:FromLLVMIRTranslation",
         "@llvm-project//mlir:FromLLVMIRTranslationRegistration",
         "@llvm-project//mlir:FuncDialect",
@@ -1367,6 +1380,7 @@ cc_library(
         "@llvm-project//mlir:InliningUtils",
         "@llvm-project//mlir:LLVMCommonConversion",
         "@llvm-project//mlir:LLVMDialect",
+        "@llvm-project//mlir:LoopLikeInterface",
         "@llvm-project//mlir:LinalgTransforms",
         "@llvm-project//mlir:MathDialect",
         "@llvm-project//mlir:MathToLLVM",
@@ -1534,6 +1548,7 @@ cc_library(
 
         # EnzymeMLIR
         "@enzyme//:EnzymeMLIR",
+        "@enzyme//:LLVMExtDialect",
 
         # Mosaic
         # "@jax//jaxlib/mosaic:tpu_dialect",

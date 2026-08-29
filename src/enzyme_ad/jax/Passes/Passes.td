@@ -267,6 +267,34 @@ def EnzymeHLOUnrollPass : Pass<"enzyme-hlo-unroll"> {
   ];
 }
 
+def CanonicalizeElementwiseShapesPass
+    : Pass<"canonicalize-elementwise-shapes"> {
+  let summary = "Give each maximal elementwise chain a single tensor shape";
+  let description = [{
+    `stablehlo.reshape` preserves the linearized element order, so two shapes
+    with the same number of elements denote the same buffer and a reshape
+    between them is a bitcast. Reshape propagation is free to move such a
+    reshape across an elementwise op, and doing so is neutral in isolation.
+
+    It stops being neutral once a value in the chain is consumed at more than
+    one of those shapes, which is common after differentiation: the primal
+    reads an intermediate at the propagated shape while the reverse pass reads
+    it at the pre-propagation shape. The chain then straddles two
+    bitcast-equivalent shapes. XLA groups elementwise producers into a fusion
+    by shape, so a chain whose shape changes part way through can no longer be
+    fused into the op consuming it, and that consumer -- typically a transpose
+    -- is emitted as a standalone kernel instead of absorbing the chain.
+
+    This pass repairs that. For each maximal chain of elementwise ops connected
+    through bitcast reshapes, it picks the shape minimizing the number of
+    reshapes materialized at the chain boundary and rewrites the whole chain
+    into it, leaving reshapes only where a value genuinely escapes to a
+    consumer wanting a different shape. It never increases the boundary reshape
+    count, and does not duplicate arithmetic.
+  }];
+  let dependentDialects = ["stablehlo::StablehloDialect"];
+}
+
 def EnzymeRefineArgumentsPass : Pass<"enzyme-refine-arguments", "ModuleOp"> {
   let summary = "Refine function arguments with potential type conversion.";
   let dependentDialects = [
@@ -307,6 +335,53 @@ def PrintPass : Pass<"print"> {
 
 def SortMemory : Pass<"sort-memory"> {
   let summary = "Sort memory accesses";
+}
+
+def LowerAlignedAffineAccessesPass
+    : Pass<"lower-aligned-affine-accesses"> {
+  let summary = "Lower affine accesses that carry an alignment attribute to "
+                "memref accesses that keep it";
+  let description = [{
+    llvm-to-affine-access records the alignment of the access it raised as an
+    attribute on the affine.load/affine.store it made. Upstream lower-affine
+    rebuilds those as memref accesses without carrying attributes over, so the
+    recorded alignment is lost and the final llvm access is emitted at the
+    element type's ABI alignment -- which may promise more than the pointer
+    holds (a 16-byte member swap clang emits as `load i128, align 8`).
+
+    Run before lower-affine, this lowers exactly the accesses that carry an
+    alignment attribute, keeping their attributes; lower-affine handles the
+    affine.apply this leaves behind, and everything else, as before.
+  }];
+  let dependentDialects = [
+    "affine::AffineDialect",
+    "memref::MemRefDialect",
+  ];
+}
+
+def HoistAllocasPass : Pass<"hoist-allocas"> {
+  let summary = "Move stack allocations to the start of the region that frees "
+                "them";
+  let dependentDialects = [
+    "LLVM::LLVMDialect",
+    "memref::MemRefDialect",
+  ];
+}
+
+def RestorePreserveNVVMPass : Pass<"restore-preserve-nvvm"> {
+  let summary = "Undo PreserveNVVM(Begin)'s linkage and inlining fixups once "
+                "the raising has consumed the calls they protected";
+  let dependentDialects = [
+    "LLVM::LLVMDialect",
+  ];
+}
+
+def SortBlockMemoryPass : Pass<"sort-block-memory"> {
+  let summary = "Hoist non-overlapping loads to the start of their block and "
+                "sink stores to the end";
+  let dependentDialects = [
+    "affine::AffineDialect",
+  ];
 }
 
 def PrintLocationPass : Pass<"print-location"> {
@@ -378,11 +453,21 @@ def SROAWrappersPass : Pass<"sroa-wrappers", "mlir::ModuleOp"> {
   ];
 }
 
+def CanonicalizeParallelPass : Pass<"canonicalize-parallel"> {
+  let summary = "Canonicalize top-level ops in parallel, confining region simplification to each";
+  let options = [Option<
+      "parallel", "parallel", "bool", "false",
+      "Rewrite top-level ops on the context's thread pool; without it "
+      "they are processed serially, still confining region "
+      "simplification to each op">];
+}
+
 def LibDeviceFuncsRaisingPass : Pass<"libdevice-funcs-raise"> {
   let summary = "Raise libdevice function calls to arith/math operations";
   let dependentDialects = [
     "arith::ArithDialect",
     "enzyme::EnzymeDialect",
+    "enzymexla::EnzymeXLADialect",
     "math::MathDialect",
     "gpu::GPUDialect",
   ];
@@ -649,6 +734,7 @@ def LowerEnzymeXLAMathPass : Pass<"lower-enzymexla-math"> {
     "stablehlo::StablehloDialect",
     "chlo::ChloDialect",
     "enzymexla::EnzymeXLADialect",
+    "enzyme::EnzymeDialect",
   ];
 }
 
@@ -658,6 +744,7 @@ def LowerEnzymeXLAMLPass : Pass<"lower-enzymexla-ml"> {
     "stablehlo::StablehloDialect",
     "chlo::ChloDialect",
     "enzymexla::EnzymeXLADialect",
+    "enzyme::EnzymeDialect",
   ];
 }
 
@@ -1411,6 +1498,35 @@ def RemoveAtomicsPass : Pass<"remove-atomics"> {
     "affine::AffineDialect",
     "enzymexla::EnzymeXLADialect",
   ];
+}
+
+def GpuModuleToBinarySink : Pass<"enzymexla-gpu-module-to-binary", ""> {
+  let summary = "Serialize GPU modules to binaries, sinking cheap address "
+                "arithmetic after the LLVM optimization pipeline";
+  let description = [{
+    Drop-in for the upstream `gpu-module-to-binary` pass that additionally
+    rematerializes cheap integer/address computations next to their uses on
+    the optimized LLVM IR, immediately before ISA generation. Running after
+    the target's optimization pipeline means EarlyCSE/GVN can no longer
+    re-hoist the clones, shortening live ranges that otherwise inflate
+    register pressure in large kernels.
+  }];
+  let options =
+      [Option<"toolkitPath", "toolkit", "std::string", [{""}], "Toolkit path.">,
+       ListOption<"linkFiles", "l", "std::string", "Extra files to link to.">,
+       Option<"cmdOptions", "opts", "std::string", [{""}],
+              "Command line options to pass to the tools.">,
+       Option<"compilationTarget", "format", "std::string", [{"fatbin"}],
+              "The target representation of the compilation process.">,
+       Option<"elfSection", "section", "std::string", [{""}],
+              "ELF section where binary is to be located.">,
+       Option<"sinkMode", "sink", "int", "2",
+              "0: no sinking; 1: sink only within the defining loop; "
+              "2: also sink into deeper loops">,
+       Option<"dumpIR", "dump", "bool", "false",
+              "Print each serialized module's LLVM IR as handed to "
+              "instruction selection, after any sinking">];
+  let dependentDialects = ["gpu::GPUDialect", "LLVM::LLVMDialect", ];
 }
 
 #endif
