@@ -117,19 +117,19 @@ ffi::Error checkMpiError(const char *fname, const int err) {
       absl::StrFormat("%s failed with error code %d: %s", fname, err, str));
 }
 
+// clang-format off
 std::optional<MPI_Op> symbolizeMpiOp(std::string_view op) {
-  // clang-format off
   #define X(_, NAME) if (op == #NAME) return EXLA_##NAME;
   GENERATE_MPI_OP_LIST(X)
   #undef X
   return std::nullopt;
-  // clang-format on
 }
+// clang-format on
 
+// clang-format off
 std::optional<MPI_Datatype>
 convertPrimitiveTypeToMpiDatatype(ffi::DataType type, bool allow_cast = false) {
   switch (type) {
-    // clang-format off
     case ffi::DataType::INVALID: return std::nullopt;
     case ffi::DataType::PRED: return MPI_C_BOOL;
     case ffi::DataType::S1: return std::nullopt;
@@ -163,9 +163,9 @@ convertPrimitiveTypeToMpiDatatype(ffi::DataType type, bool allow_cast = false) {
     case ffi::DataType::F4E2M1FN: return std::nullopt;
     case ffi::DataType::F8E8M0FNU: return std::nullopt; // allow_cast ? MPI_UINT8_T : std::nullopt;
     default: return std::nullopt;
-    // clang-format on
   }
 }
+// clang-format on
 
 ffi::Error MpiCommRankImpl(MpiCommBuffer comm_ptr, Result<IntBuffer> rank_ptr) {
   MPI_Comm comm = *reinterpret_cast<MPI_Comm *>(comm_ptr.typed_data());
