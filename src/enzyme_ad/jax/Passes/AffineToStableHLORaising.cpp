@@ -5850,13 +5850,6 @@ struct AffineToStableHLORaisingPass
           });
       if (!afterOk)
         continue;
-      // A nested while in the body would end up inside the scf.if arms, a
-      // shape the while raising cannot yet digest; leave such loops to the
-      // general machinery.
-      bool hasNestedWhile = false;
-      w.getBefore().walk([&](scf::WhileOp) { hasNestedWhile = true; });
-      if (hasNestedWhile)
-        continue;
       auto yield = cast<scf::YieldOp>(after.getTerminator());
       Block &before = w.getBefore().front();
       auto condOp = cast<scf::ConditionOp>(before.getTerminator());
@@ -9117,16 +9110,20 @@ struct AffineToStableHLORaisingPass
       }
       funcs.pop_back();
     }
-    std::vector<enzymexla::GPUWrapperOp> gwrap;
-    op->walk([&](enzymexla::GPUWrapperOp g) { gwrap.push_back(g); });
-    for (auto g : gwrap) {
+    // The normalizations clone and erase whole host regions (a do-while
+    // unroll duplicates a launch-carrying body), so wrapper handles are
+    // only stable per phase: preprocess by deduplicated root, then
+    // re-collect the wrappers that survive.
+    llvm::SetVector<Operation *> wrapRoots;
+    op->walk([&](enzymexla::GPUWrapperOp g) {
+      Operation *root = g->getParentOfType<FunctionOpInterface>();
+      wrapRoots.insert(root ? root : g.getOperation());
+    });
+    for (Operation *root : wrapRoots) {
       // Scope inlining hoists scratch allocas to the surrounding function,
       // so the buffer normalizations must see the whole function, not just
       // the wrapper region; the rewrites also expose one another (a rebase
       // creates the direct views a flatten wants), so iterate once more.
-      Operation *root = g->getParentOfType<FunctionOpInterface>();
-      if (!root)
-        root = g;
       inlineAllocaScopes(root);
       for (int round = 0; round < 5; ++round) {
         memsetZeroToStores(root);
@@ -9149,13 +9146,20 @@ struct AffineToStableHLORaisingPass
         splitStructScratch(root);
         flattenViewedScratch(root);
       }
-      hoistWrapperInvariantScalars(g);
       dropDeadPointerChains(root);
-      boundParallelAxes(g);
-      boundParallelFors(g);
-      privatizeLaneScratch(g);
-      peelDynamicParallelDims(g);
+      SmallVector<enzymexla::GPUWrapperOp> rootWraps;
+      root->walk(
+          [&](enzymexla::GPUWrapperOp g) { rootWraps.push_back(g); });
+      for (auto g : rootWraps) {
+        hoistWrapperInvariantScalars(g);
+        boundParallelAxes(g);
+        boundParallelFors(g);
+        privatizeLaneScratch(g);
+        peelDynamicParallelDims(g);
+      }
     }
+    std::vector<enzymexla::GPUWrapperOp> gwrap;
+    op->walk([&](enzymexla::GPUWrapperOp g) { gwrap.push_back(g); });
     size_t raised_count = 0;
     for (auto g : gwrap) {
       auto modOp = g->getParentOfType<ModuleOp>();
