@@ -694,6 +694,7 @@ struct ArithRaisingPass
         RaiseUnary<math::CountLeadingZerosOp, stablehlo::ClzOp, mhlo::ClzOp>,
         RaiseUnary<math::CtPopOp,       stablehlo::PopulationCountOp, mhlo::PopulationCountOp>,
         RaiseUnary<math::AbsFOp,        stablehlo::AbsOp,      mhlo::AbsOp>,
+        RaiseUnary<math::AbsIOp,        stablehlo::AbsOp,      mhlo::AbsOp>,
         RaiseUnary<math::IsFiniteOp,    stablehlo::IsFiniteOp, mhlo::IsFiniteOp>,
         RaiseUnary<math::CeilOp,        stablehlo::CeilOp,     mhlo::CeilOp>,
         RaiseUnary<math::FloorOp,       stablehlo::FloorOp,    mhlo::FloorOp>,
