@@ -3832,6 +3832,273 @@ struct AffineToStableHLORaisingPass
           AffineToStableHLORaisingPass> {
   using AffineToStableHLORaisingBase::AffineToStableHLORaisingBase;
 
+  // A branch yielding one of several buffers blocks raising: no tensor can
+  // stand for "one of these two memrefs". Duplicate the branch at every
+  // access instead — a load becomes a value-yielding branch loading in each
+  // arm, a store becomes a store in each arm — so every access reaches a
+  // real buffer and the usual select/mask raising applies. Branch bodies are
+  // cloned per access, so only effect-free bodies qualify.
+  static void expandBufferBranches(Operation *root) {
+    // The same shape also arrives as an arith.select of two buffers: expand
+    // each access into an scf.if on the select's condition.
+    SmallVector<arith::SelectOp> selects;
+    root->walk([&](arith::SelectOp sel) {
+      if (isa<MemRefType>(sel.getType()))
+        selects.push_back(sel);
+    });
+    for (auto sel : selects) {
+      for (OpOperand &use : llvm::make_early_inc_range(sel->getUses())) {
+        Operation *user = use.getOwner();
+        bool isLoad = isa<memref::LoadOp, affine::AffineLoadOp>(user);
+        bool isStore = isa<memref::StoreOp, affine::AffineStoreOp>(user);
+        unsigned memIdx = isLoad ? 0 : 1;
+        if ((!isLoad && !isStore) || use.getOperandNumber() != memIdx)
+          continue;
+        OpBuilder b(user);
+        auto newIf = scf::IfOp::create(
+            b, user->getLoc(),
+            isLoad ? TypeRange(user->getResult(0).getType()) : TypeRange(),
+            sel.getCondition(), /*withElseRegion=*/true);
+        auto fillArm = [&](Value buf, Block *dstArm) {
+          dstArm->clear();
+          IRMapping m;
+          OpBuilder ab = OpBuilder::atBlockBegin(dstArm);
+          Operation *access = ab.clone(*user, m);
+          access->setOperand(memIdx, buf);
+          scf::YieldOp::create(ab, user->getLoc(),
+                               isLoad ? ValueRange(access->getResult(0))
+                                      : ValueRange());
+        };
+        fillArm(sel.getTrueValue(), newIf.thenBlock());
+        fillArm(sel.getFalseValue(), newIf.elseBlock());
+        if (isLoad)
+          user->getResult(0).replaceAllUsesWith(newIf.getResult(0));
+        user->erase();
+      }
+      if (sel->use_empty())
+        sel.erase();
+    }
+
+    // The coefficient ternary arrives as an scf.if yielding a pointer whose
+    // arms compute constant- or index-offset geps; push each viewing access
+    // down into a clone of the branch so no pointer crosses the yield.
+    SmallVector<scf::IfOp> scfWorklist;
+    root->walk([&](scf::IfOp ifOp) {
+      if (ifOp.elseBlock() && llvm::any_of(ifOp.getResultTypes(), [](Type t) {
+            return isa<LLVM::LLVMPointerType>(t);
+          }))
+        scfWorklist.push_back(ifOp);
+    });
+    // Arms may be cloned once per pushed-down access, so they must not
+    // write; reads are idempotent and safe to duplicate.
+    auto armClonable = [](Block *b) {
+      return llvm::all_of(b->without_terminator(), [](Operation &op) {
+        if (isMemoryEffectFree(&op))
+          return true;
+        auto mem = dyn_cast<MemoryEffectOpInterface>(&op);
+        if (!mem || op.getNumRegions() != 0)
+          return false;
+        SmallVector<MemoryEffects::EffectInstance> effects;
+        mem.getEffects(effects);
+        return llvm::all_of(effects, [](MemoryEffects::EffectInstance &e) {
+          return isa<MemoryEffects::Read>(e.getEffect());
+        });
+      });
+    };
+    for (auto ifOp : scfWorklist) {
+      Block *thenB = ifOp.thenBlock(), *elseB = ifOp.elseBlock();
+      if (!armClonable(thenB) || !armClonable(elseB))
+        continue;
+      for (auto [i, res] : llvm::enumerate(ifOp.getResults())) {
+        if (!isa<LLVM::LLVMPointerType>(res.getType()))
+          continue;
+        Value thenV = thenB->getTerminator()->getOperand(i);
+        Value elseV = elseB->getTerminator()->getOperand(i);
+        for (OpOperand &use : llvm::make_early_inc_range(res.getUses())) {
+          auto p2m = dyn_cast<enzymexla::Pointer2MemrefOp>(use.getOwner());
+          if (!p2m)
+            continue;
+          for (OpOperand &ause : llvm::make_early_inc_range(p2m->getUses())) {
+            Operation *acc = ause.getOwner();
+            bool isLoad = isa<memref::LoadOp, affine::AffineLoadOp>(acc);
+            bool isStore = isa<memref::StoreOp, affine::AffineStoreOp>(acc);
+            unsigned memIdx = isLoad ? 0 : 1;
+            if ((!isLoad && !isStore) || ause.getOperandNumber() != memIdx)
+              continue;
+            OpBuilder b(acc);
+            auto newIf = scf::IfOp::create(
+                b, acc->getLoc(),
+                isLoad ? TypeRange(acc->getResult(0).getType()) : TypeRange(),
+                ifOp.getCondition(), /*withElseRegion=*/true);
+            auto fillArm = [&](Block *srcArm, Value yielded, Block *dstArm) {
+              dstArm->clear();
+              IRMapping m;
+              OpBuilder ab = OpBuilder::atBlockBegin(dstArm);
+              for (Operation &armOp : srcArm->without_terminator())
+                ab.clone(armOp, m);
+              Operation *view = ab.clone(*p2m.getOperation(), m);
+              view->setOperand(0, m.lookupOrDefault(yielded));
+              Operation *access = ab.clone(*acc, m);
+              access->setOperand(memIdx, view->getResult(0));
+              scf::YieldOp::create(ab, acc->getLoc(),
+                                   isLoad ? ValueRange(access->getResult(0))
+                                          : ValueRange());
+            };
+            fillArm(thenB, thenV, newIf.thenBlock());
+            fillArm(elseB, elseV, newIf.elseBlock());
+            if (isLoad)
+              acc->getResult(0).replaceAllUsesWith(newIf.getResult(0));
+            acc->erase();
+          }
+          if (p2m->use_empty())
+            p2m.erase();
+        }
+      }
+      // Rebuild without dead pointer results if scalars keep it alive.
+      if (llvm::all_of(ifOp.getResults(),
+                       [](Value r) { return r.use_empty(); })) {
+        ifOp.erase();
+        continue;
+      }
+      if (llvm::any_of(ifOp.getResults(), [](Value r) {
+            return isa<LLVM::LLVMPointerType>(r.getType()) && r.use_empty();
+          })) {
+        SmallVector<unsigned> liveIdx;
+        SmallVector<Type> liveTypes;
+        for (auto [i, res] : llvm::enumerate(ifOp.getResults())) {
+          if (isa<LLVM::LLVMPointerType>(res.getType()) && res.use_empty())
+            continue;
+          liveIdx.push_back((unsigned)i);
+          liveTypes.push_back(res.getType());
+        }
+        OpBuilder b(ifOp);
+        auto newIf =
+            scf::IfOp::create(b, ifOp.getLoc(), liveTypes, ifOp.getCondition(),
+                              /*withElseRegion=*/true);
+        auto rebuildArm = [&](Block *srcArm, Block *dstArm) {
+          dstArm->clear();
+          IRMapping m;
+          OpBuilder ab = OpBuilder::atBlockBegin(dstArm);
+          for (Operation &armOp : srcArm->without_terminator())
+            ab.clone(armOp, m);
+          SmallVector<Value> yields;
+          for (unsigned i : liveIdx)
+            yields.push_back(
+                m.lookupOrDefault(srcArm->getTerminator()->getOperand(i)));
+          scf::YieldOp::create(ab, ifOp.getLoc(), yields);
+          for (Operation &armOp :
+               llvm::make_early_inc_range(dstArm->without_terminator()))
+            if (armOp.use_empty() && isMemoryEffectFree(&armOp))
+              armOp.erase();
+        };
+        rebuildArm(thenB, newIf.thenBlock());
+        rebuildArm(elseB, newIf.elseBlock());
+        for (auto [k, i] : llvm::enumerate(liveIdx))
+          ifOp.getResult(i).replaceAllUsesWith(newIf.getResult(k));
+        ifOp.erase();
+      }
+    }
+
+    SmallVector<affine::AffineIfOp> worklist;
+    root->walk([&](affine::AffineIfOp ifOp) {
+      if (ifOp.hasElse() && llvm::any_of(ifOp.getResultTypes(), [](Type t) {
+            return isa<MemRefType>(t);
+          }))
+        worklist.push_back(ifOp);
+    });
+    for (auto ifOp : worklist) {
+      Block *thenB = ifOp.getThenBlock(), *elseB = ifOp.getElseBlock();
+      if (!armClonable(thenB) || !armClonable(elseB))
+        continue;
+      for (auto [i, res] : llvm::enumerate(ifOp.getResults())) {
+        if (!isa<MemRefType>(res.getType()))
+          continue;
+        Value thenV = thenB->getTerminator()->getOperand(i);
+        Value elseV = elseB->getTerminator()->getOperand(i);
+        for (OpOperand &use : llvm::make_early_inc_range(res.getUses())) {
+          Operation *user = use.getOwner();
+          bool isLoad = isa<memref::LoadOp, affine::AffineLoadOp>(user);
+          bool isStore = isa<memref::StoreOp, affine::AffineStoreOp>(user);
+          unsigned memIdx = isLoad ? 0 : 1;
+          if ((!isLoad && !isStore) || use.getOperandNumber() != memIdx)
+            continue;
+          OpBuilder b(user);
+          auto newIf = affine::AffineIfOp::create(
+              b, user->getLoc(),
+              isLoad ? TypeRange(user->getResult(0).getType()) : TypeRange(),
+              ifOp.getIntegerSet(), ifOp.getOperands(),
+              /*withElseRegion=*/true);
+          auto fillArm = [&](Block *srcArm, Value yielded, Block *dstArm) {
+            if (Operation *term = dstArm->empty() ? nullptr : &dstArm->back())
+              if (term->hasTrait<OpTrait::IsTerminator>())
+                term->erase();
+            IRMapping m;
+            OpBuilder ab = OpBuilder::atBlockEnd(dstArm);
+            for (Operation &armOp : srcArm->without_terminator())
+              ab.clone(armOp, m);
+            Operation *access = ab.clone(*user, m);
+            access->setOperand(memIdx, m.lookupOrDefault(yielded));
+            affine::AffineYieldOp::create(
+                ab, user->getLoc(),
+                isLoad ? ValueRange(access->getResult(0)) : ValueRange());
+          };
+          fillArm(thenB, thenV, newIf.getThenBlock());
+          fillArm(elseB, elseV, newIf.getElseBlock());
+          if (isLoad)
+            user->getResult(0).replaceAllUsesWith(newIf.getResult(0));
+          user->erase();
+        }
+      }
+      if (llvm::all_of(ifOp.getResults(),
+                       [](Value r) { return r.use_empty(); })) {
+        ifOp.erase();
+        continue;
+      }
+      // Scalar results may keep the branch alive; rebuild it without the
+      // now-dead buffer results so no unraisable cast lingers in the arms.
+      if (llvm::any_of(ifOp.getResults(), [](Value r) {
+            return isa<MemRefType>(r.getType()) && r.use_empty();
+          })) {
+        SmallVector<unsigned> liveIdx;
+        SmallVector<Type> liveTypes;
+        for (auto [i, res] : llvm::enumerate(ifOp.getResults())) {
+          if (isa<MemRefType>(res.getType()) && res.use_empty())
+            continue;
+          liveIdx.push_back((unsigned)i);
+          liveTypes.push_back(res.getType());
+        }
+        OpBuilder b(ifOp);
+        auto newIf = affine::AffineIfOp::create(
+            b, ifOp.getLoc(), liveTypes, ifOp.getIntegerSet(),
+            ifOp.getOperands(), /*withElseRegion=*/true);
+        auto rebuildArm = [&](Block *srcArm, Block *dstArm) {
+          if (Operation *term = dstArm->empty() ? nullptr : &dstArm->back())
+            if (term->hasTrait<OpTrait::IsTerminator>())
+              term->erase();
+          IRMapping m;
+          OpBuilder ab = OpBuilder::atBlockEnd(dstArm);
+          for (Operation &armOp : srcArm->without_terminator())
+            ab.clone(armOp, m);
+          SmallVector<Value> yields;
+          for (unsigned i : liveIdx)
+            yields.push_back(
+                m.lookupOrDefault(srcArm->getTerminator()->getOperand(i)));
+          affine::AffineYieldOp::create(ab, ifOp.getLoc(), yields);
+          // The buffer arms may still hold the dead casts; drop them.
+          for (Operation &armOp :
+               llvm::make_early_inc_range(dstArm->without_terminator()))
+            if (armOp.use_empty() && isMemoryEffectFree(&armOp))
+              armOp.erase();
+        };
+        rebuildArm(thenB, newIf.getThenBlock());
+        rebuildArm(elseB, newIf.getElseBlock());
+        for (auto [k, i] : llvm::enumerate(liveIdx))
+          ifOp.getResult(i).replaceAllUsesWith(newIf.getResult(k));
+        ifOp.erase();
+      }
+    }
+  }
+
   // An access does not care about the address space of its base, but the
   // raising identifies buffers by SSA root: a memory_space_cast view would
   // split one buffer into two roots and lose store propagation. Retarget the
@@ -4140,6 +4407,7 @@ struct AffineToStableHLORaisingPass
     // actually raises.
     for (auto func : funcs) {
       stripAccessMemorySpaceCasts(func);
+      expandBufferBranches(func);
       boundParallelAxes(func);
       peelDynamicParallelDims(func);
     }
@@ -4163,6 +4431,7 @@ struct AffineToStableHLORaisingPass
     op->walk([&](enzymexla::GPUWrapperOp g) { gwrap.push_back(g); });
     for (auto g : gwrap) {
       stripAccessMemorySpaceCasts(g);
+      expandBufferBranches(g);
       boundParallelAxes(g);
       peelDynamicParallelDims(g);
     }
