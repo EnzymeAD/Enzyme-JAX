@@ -987,10 +987,10 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
 
   // (mul a a) is always non-negative
   if (auto mulOp = dyn_cast<stablehlo::MulOp>(op)) {
-    auto lhsOp = mulOp.getLhs().getDefiningOp();
-    auto rhsOp = mulOp.getRhs().getDefiningOp();
-
-    if (lhsOp == rhsOp) {
+    // Compare the operand Values, not their defining ops: two distinct block
+    // arguments both have a null defining op, so a defining-op comparison
+    // would wrongly prove mul(%arg0, %arg1) non-negative.
+    if (mulOp.getLhs() == mulOp.getRhs()) {
       return State::GUARANTEED;
     }
   }
