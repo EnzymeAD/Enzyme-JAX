@@ -3596,6 +3596,109 @@ struct AffineToStableHLORaisingPass
           AffineToStableHLORaisingPass> {
   using AffineToStableHLORaisingBase::AffineToStableHLORaisingBase;
 
+  // A rotated strided-copy loop (`k = tid; do { copy(k); } while (k < n)`
+  // with the increment folded by the range analysis) arrives as an
+  // scf.while whose after region yields only loop-invariant values or
+  // pass-throughs of the condition-forwarded ones: every iteration past
+  // the second would repeat the second's state exactly, so a third
+  // implies the original program never terminates. Unroll it to
+  // body(init); if (cond) body(invariant), selecting the forwarded
+  // results accordingly.
+  static void unrollInvariantYieldWhiles(Operation *root) {
+    SmallVector<scf::WhileOp> whiles;
+    root->walk([&](scf::WhileOp w) { whiles.push_back(w); });
+    for (auto w : whiles) {
+      Block &after = w.getAfter().front();
+      // The after region may carry side ops (a barrier between the two
+      // halves of a ping-pong); they clone ahead of the second body. The
+      // invariance check on the yield operands below keeps any after-region
+      // computation from leaking into the next iteration's state.
+      bool afterOk =
+          llvm::all_of(after.without_terminator(),
+                       [](Operation &op) { return op.getNumRegions() == 0; });
+      if (!afterOk)
+        continue;
+      auto yield = cast<scf::YieldOp>(after.getTerminator());
+      Block &before = w.getBefore().front();
+      auto condOp = cast<scf::ConditionOp>(before.getTerminator());
+      // Each next-iteration value is loop-invariant or a pass-through of a
+      // condition-forwarded value.
+      bool ok = true;
+      for (Value v : yield.getOperands()) {
+        if (auto ba = dyn_cast<BlockArgument>(v)) {
+          if (ba.getOwner() == &after)
+            continue;
+          if (w.getBefore().isAncestor(ba.getOwner()->getParent())) {
+            ok = false;
+            break;
+          }
+          continue;
+        }
+        if (w->isAncestor(v.getDefiningOp())) {
+          ok = false;
+          break;
+        }
+      }
+      if (!ok)
+        continue;
+      OpBuilder b(w);
+      // First iteration with the init values.
+      IRMapping m1;
+      for (auto [ba, init] : llvm::zip(before.getArguments(), w.getInits()))
+        m1.map(ba, init);
+      for (Operation &op : before.without_terminator())
+        b.clone(op, m1);
+      Value cond1 = m1.lookupOrDefault(condOp.getCondition());
+      SmallVector<Value> fwd1;
+      for (Value v : condOp.getArgs())
+        fwd1.push_back(m1.lookupOrDefault(v));
+      // Second (and by the argument above, last) iteration.
+      SmallVector<Type> resTypes(w.getResultTypes().begin(),
+                                 w.getResultTypes().end());
+      auto ifOp = scf::IfOp::create(b, w.getLoc(), resTypes, cond1,
+                                    /*withElseRegion=*/true);
+      {
+        OpBuilder tb(ifOp.thenBlock(), ifOp.thenBlock()->begin());
+        // The after region's side ops ran between the two body halves.
+        IRMapping mA;
+        for (auto [aa, fw] : llvm::zip(after.getArguments(), fwd1))
+          mA.map(aa, fw);
+        for (Operation &op : after.without_terminator())
+          tb.clone(op, mA);
+        IRMapping m2;
+        for (auto [ba, nv] :
+             llvm::zip(before.getArguments(), yield.getOperands())) {
+          Value next = nv;
+          if (auto aba = dyn_cast<BlockArgument>(nv))
+            if (aba.getOwner() == &after)
+              next = fwd1[aba.getArgNumber()];
+          m2.map(ba, mA.lookupOrDefault(next));
+        }
+        for (Operation &op : before.without_terminator())
+          tb.clone(op, m2);
+        SmallVector<Value> fwd2;
+        for (Value v : condOp.getArgs())
+          fwd2.push_back(m2.lookupOrDefault(v));
+        if (ifOp.thenBlock()->mightHaveTerminator() &&
+            !ifOp.thenBlock()->empty() &&
+            isa<scf::YieldOp>(&ifOp.thenBlock()->back()))
+          ifOp.thenBlock()->back().erase();
+        OpBuilder te = OpBuilder::atBlockEnd(ifOp.thenBlock());
+        scf::YieldOp::create(te, w.getLoc(), fwd2);
+      }
+      {
+        if (!ifOp.elseBlock()->empty() &&
+            isa<scf::YieldOp>(&ifOp.elseBlock()->back()))
+          ifOp.elseBlock()->back().erase();
+        OpBuilder eb = OpBuilder::atBlockEnd(ifOp.elseBlock());
+        scf::YieldOp::create(eb, w.getLoc(), fwd1);
+      }
+      for (auto [res, nres] : llvm::zip(w.getResults(), ifOp.getResults()))
+        res.replaceAllUsesWith(nres);
+      w.erase();
+    }
+  }
+
   // An access does not care about the address space of its base, but the
   // raising identifies buffers by SSA root: a memory_space_cast view would
   // split one buffer into two roots and lose store propagation. Retarget the
@@ -3903,6 +4006,7 @@ struct AffineToStableHLORaisingPass
     // Peeling rewrites loops, so it stays scoped to the regions this pass
     // actually raises.
     for (auto func : funcs) {
+      unrollInvariantYieldWhiles(func);
       stripAccessMemorySpaceCasts(func);
       boundParallelAxes(func);
       peelDynamicParallelDims(func);
@@ -3923,13 +4027,27 @@ struct AffineToStableHLORaisingPass
       }
       funcs.pop_back();
     }
+    // The normalizations clone and erase whole host regions (a do-while
+    // unroll duplicates a launch-carrying body), so wrapper handles are
+    // only stable per phase: preprocess by deduplicated root, then
+    // re-collect the wrappers that survive.
+    llvm::SetVector<Operation *> wrapRoots;
+    op->walk([&](enzymexla::GPUWrapperOp g) {
+      Operation *root = g->getParentOfType<FunctionOpInterface>();
+      wrapRoots.insert(root ? root : g.getOperation());
+    });
+    for (Operation *root : wrapRoots) {
+      unrollInvariantYieldWhiles(root);
+      SmallVector<enzymexla::GPUWrapperOp> rootWraps;
+      root->walk([&](enzymexla::GPUWrapperOp g) { rootWraps.push_back(g); });
+      for (auto g : rootWraps) {
+        stripAccessMemorySpaceCasts(g);
+        boundParallelAxes(g);
+        peelDynamicParallelDims(g);
+      }
+    }
     std::vector<enzymexla::GPUWrapperOp> gwrap;
     op->walk([&](enzymexla::GPUWrapperOp g) { gwrap.push_back(g); });
-    for (auto g : gwrap) {
-      stripAccessMemorySpaceCasts(g);
-      boundParallelAxes(g);
-      peelDynamicParallelDims(g);
-    }
     size_t raised_count = 0;
     for (auto g : gwrap) {
       auto modOp = g->getParentOfType<ModuleOp>();
