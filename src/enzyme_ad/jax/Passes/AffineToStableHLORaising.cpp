@@ -8160,10 +8160,21 @@ struct AffineToStableHLORaisingPass
     root->walk([&](memref::AllocaOp a) { allocas.push_back(a); });
     for (auto a : allocas) {
       auto par = a->getParentOfType<affine::AffineParallelOp>();
+      // The grid axis may already be peeled into a parallel-tagged for;
+      // it still counts as the enclosing parallel level.
+      auto hasParallelAncestor = [](Operation *op) {
+        for (Operation *p = op->getParentOp(); p; p = p->getParentOp()) {
+          if (isa<affine::AffineParallelOp>(p))
+            return true;
+          if (auto f = dyn_cast<affine::AffineForOp>(p))
+            if (f->hasAttr("enzymexla.parallel"))
+              return true;
+        }
+        return false;
+      };
       if (getenv("DEBUG_PRIV"))
         llvm::errs() << "PRIV consider: " << *a << " par=" << (bool)par
-                     << " nested="
-                     << (par && par->getParentOfType<affine::AffineParallelOp>())
+                     << " nested=" << (par && hasParallelAncestor(par))
                      << "\n";
       if (!par)
         continue;
@@ -8172,7 +8183,7 @@ struct AffineToStableHLORaisingPass
       // same lane's work — but a kernel that synchronizes carries real
       // shared memory the whole-tensor machinery models as one buffer;
       // leave that alone.
-      if (!par->getParentOfType<affine::AffineParallelOp>()) {
+      if (!hasParallelAncestor(par)) {
         bool hasBarrier = false;
         par.getBody()->walk(
             [&](enzymexla::BarrierOp) { hasBarrier = true; });
@@ -9672,8 +9683,11 @@ struct AffineToStableHLORaisingPass
       dropDeadPointerChains(func);
       boundParallelAxes(func);
       boundParallelFors(func);
-      privatizeLaneScratch(func);
+      // Peel before privatizing: a parallel with one leftover dynamic
+      // (grid) dim would otherwise hide its constant lane dims from the
+      // privatizer's constant-range check.
       peelDynamicParallelDims(func);
+      privatizeLaneScratch(func);
       // Peeling turns rejected dynamic dims into parallel-marked fors;
       // give those a bounding pass too.
       boundParallelFors(func);
@@ -9741,8 +9755,8 @@ struct AffineToStableHLORaisingPass
         hoistWrapperInvariantScalars(g);
         boundParallelAxes(g);
         boundParallelFors(g);
-        privatizeLaneScratch(g);
         peelDynamicParallelDims(g);
+        privatizeLaneScratch(g);
         boundParallelFors(g);
       }
     }
