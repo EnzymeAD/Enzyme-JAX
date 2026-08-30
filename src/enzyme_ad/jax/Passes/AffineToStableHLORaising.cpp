@@ -5876,14 +5876,44 @@ struct AffineToStableHLORaisingPass
           llvm::all_of(after.without_terminator(), [](Operation &op) {
             return op.getNumRegions() == 0;
           });
-      if (!afterOk)
+      if (!afterOk) {
+        if (getenv("DEBUG_UIYW"))
+          llvm::errs() << "UIYW skip afterOk: " << *w << "\n";
         continue;
+      }
       auto yield = cast<scf::YieldOp>(after.getTerminator());
       Block &before = w.getBefore().front();
       auto condOp = cast<scf::ConditionOp>(before.getTerminator());
       // Each next-iteration value is loop-invariant or a pass-through of a
       // condition-forwarded value.
       bool ok = true;
+      // A value computed inside the loop qualifies when its slice roots
+      // only at loop-invariant inputs (no block arguments of the loop, no
+      // regions, no memory): it takes the same value every iteration.
+      auto invariantValued = [&](Value v) {
+        SmallVector<Value> stack{v};
+        DenseSet<Value> seen;
+        while (!stack.empty()) {
+          Value s = stack.pop_back_val();
+          if (!seen.insert(s).second)
+            continue;
+          if (auto ba = dyn_cast<BlockArgument>(s)) {
+            if (w->isAncestor(ba.getOwner()->getParentOp()) ||
+                ba.getOwner() == &w.getBefore().front() ||
+                ba.getOwner() == &w.getAfter().front())
+              return false;
+            continue;
+          }
+          Operation *d = s.getDefiningOp();
+          if (!d || !w->isAncestor(d))
+            continue;
+          if (d->getNumRegions() || !isMemoryEffectFree(d))
+            return false;
+          for (Value o : d->getOperands())
+            stack.push_back(o);
+        }
+        return true;
+      };
       for (Value v : yield.getOperands()) {
         if (auto ba = dyn_cast<BlockArgument>(v)) {
           if (ba.getOwner() == &after)
@@ -5894,13 +5924,24 @@ struct AffineToStableHLORaisingPass
           }
           continue;
         }
-        if (w->isAncestor(v.getDefiningOp())) {
+        if (w->isAncestor(v.getDefiningOp()) && !invariantValued(v)) {
           ok = false;
           break;
         }
       }
-      if (!ok)
+      if (!ok) {
+        if (getenv("DEBUG_UIYW")) {
+          llvm::errs() << "UIYW skip yield-inv, yields:\n";
+          for (Value v : yield.getOperands()) {
+            if (Operation *d = v.getDefiningOp())
+              llvm::errs() << "  def: " << *d << " (inside="
+                           << w->isAncestor(d) << ")\n";
+            else
+              llvm::errs() << "  blockarg\n";
+          }
+        }
         continue;
+      }
       OpBuilder b(w);
       if (getenv("DEBUG_UIYW"))
         llvm::errs() << "UIYW unrolling: " << w << "\n";
@@ -5934,6 +5975,8 @@ struct AffineToStableHLORaisingPass
           if (auto aba = dyn_cast<BlockArgument>(nv))
             if (aba.getOwner() == &after)
               next = fwd1[aba.getArgNumber()];
+          // An inside-defined invariant yield was cloned with body one.
+          next = m1.lookupOrDefault(next);
           m2.map(ba, mA.lookupOrDefault(next));
         }
         for (Operation &op : before.without_terminator())
@@ -8316,13 +8359,22 @@ struct AffineToStableHLORaisingPass
         if (dbg) {
           llvm::errs() << "bpa dim " << i << " ext: " << ext << "\n";
         }
+        std::optional<int64_t> launchB;
+        if (auto g = par->getParentOfType<enzymexla::GPUWrapperOp>())
+          launchB = launchDimBound(ext, g);
         if (mapBound)
           bounded.push_back({i, *mapBound, ext});
         else if (auto c = derivedExtentBound(ext, 0, par))
-          bounded.push_back({i, *c, ext});
+          bounded.push_back({i, launchB ? std::min(*c, *launchB) : *c, ext});
         else if (auto ab = allocaIndexBound(par.getOperation(), par.getBody(),
                                             par.getBody()->getArgument(i)))
-          bounded.push_back({i, *ab, ext});
+          bounded.push_back({i, launchB ? std::min(*ab, *launchB) : *ab, ext});
+        else if (launchB) {
+          if (dbg)
+            llvm::errs() << "bpa launch-budget bound " << *launchB << " dim "
+                         << i << "\n";
+          bounded.push_back({i, *launchB, ext});
+        }
         else if (getenv("DEBUG_BOUND")) {
           llvm::errs() << "unbounded extent: " << ext << "\n";
           std::function<void(Value, int)> dump = [&](Value v, int ind) {
@@ -8511,6 +8563,24 @@ struct AffineToStableHLORaisingPass
         continue;
       }
       if (auto t = v.getDefiningOp<arith::TruncIOp>()) {
+        // Disjoint-or dim3 packing (x | (y << 32)): the low half is the
+        // un-shifted side.
+        if (auto orv = t.getIn().getDefiningOp<arith::OrIOp>()) {
+          auto isHigh = [](Value s) {
+            auto sl = s.getDefiningOp<arith::ShLIOp>();
+            APInt c;
+            return sl && matchPattern(sl.getRhs(), m_ConstantInt(&c)) &&
+                   c.getZExtValue() == 32;
+          };
+          if (isHigh(orv.getRhs())) {
+            v = orv.getLhs();
+            continue;
+          }
+          if (isHigh(orv.getLhs())) {
+            v = orv.getRhs();
+            continue;
+          }
+        }
         v = t.getIn();
         continue;
       }
@@ -8518,6 +8588,21 @@ struct AffineToStableHLORaisingPass
         APInt k;
         if (matchPattern(sh.getRhs(), m_ConstantInt(&k)) &&
             k.getZExtValue() == 32) {
+          // High half of a disjoint-or pack shifts back out of the
+          // shifted side.
+          if (auto orv = sh.getLhs().getDefiningOp<arith::OrIOp>()) {
+            for (Value s : {orv.getRhs(), orv.getLhs()}) {
+              auto sl = s.getDefiningOp<arith::ShLIOp>();
+              APInt c;
+              if (sl && matchPattern(sl.getRhs(), m_ConstantInt(&c)) &&
+                  c.getZExtValue() == 32) {
+                v = sl.getLhs();
+                break;
+              }
+            }
+            if (v != sh.getResult() && v != sh.getLhs())
+              continue;
+          }
           v = sh.getLhs();
           continue;
         }
@@ -8571,6 +8656,56 @@ struct AffineToStableHLORaisingPass
     return stored;
   }
 
+  // Two values a dominating noreturn verify pins equal (MFEM_VERIFY(q == d))
+  // share their launch-budget dimension.
+  static bool guardEqual(Value a, Value b, Operation *anchor) {
+    if (a == b || sameMemberLoad(a, b))
+      return true;
+    auto fn = anchor ? anchor->getParentOfType<FunctionOpInterface>()
+                     : FunctionOpInterface();
+    if (!fn)
+      return false;
+    bool eq = false;
+    fn->walk([&](arith::CmpIOp cmp) {
+      if (eq)
+        return;
+      bool lhsA = cmp.getLhs() == a || sameMemberLoad(cmp.getLhs(), a);
+      bool rhsB = cmp.getRhs() == b || sameMemberLoad(cmp.getRhs(), b);
+      bool lhsB = cmp.getLhs() == b || sameMemberLoad(cmp.getLhs(), b);
+      bool rhsA = cmp.getRhs() == a || sameMemberLoad(cmp.getRhs(), a);
+      if (!((lhsA && rhsB) || (lhsB && rhsA)))
+        return;
+      for (Operation *cu : cmp->getUsers()) {
+        auto ifOp = dyn_cast<scf::IfOp>(cu);
+        if (!ifOp || ifOp.getCondition() != cmp.getResult())
+          continue;
+        auto isNR = [](Region &r) {
+          bool f = false;
+          r.walk([&](LLVM::UnreachableOp) { f = true; });
+          return f;
+        };
+        bool thenNR = isNR(ifOp.getThenRegion());
+        bool elseNR =
+            !ifOp.getElseRegion().empty() && isNR(ifOp.getElseRegion());
+        if (thenNR == elseNR)
+          continue;
+        Operation *aop = anchor;
+        while (aop && aop->getBlock() != ifOp->getBlock())
+          aop = aop->getParentOp();
+        if (!aop || aop == ifOp || !ifOp->isBeforeInBlock(aop))
+          continue;
+        auto pred = cmp.getPredicate();
+        if (thenNR)
+          pred = arith::invertPredicate(pred);
+        if (pred == arith::CmpIPredicate::eq) {
+          eq = true;
+          return;
+        }
+      }
+    });
+    return eq;
+  }
+
   // A CUDA launch whose block exceeds 1024 threads fails, so the reference
   // execution only ever runs block extents within the hardware budget.
   // When this extent is one of the launch's block dimensions, split the
@@ -8595,7 +8730,13 @@ struct AffineToStableHLORaisingPass
       Value r = stripLaunchDimPacking(bd);
       if (Value host = stagedHostValue(r))
         r = stripLaunchDimPacking(host);
-      if (r == root || sameMemberLoad(r, root))
+      if (getenv("DEBUG_BOUND")) {
+        llvm::errs() << "  launch dim " << i << " root: " << r
+                     << (r == root ? " (==ext)" : "") << "\n";
+        if (r != root)
+          llvm::errs() << "    ext root: " << root << "\n";
+      }
+      if (r == root || sameMemberLoad(r, root) || guardEqual(r, root, g))
         ++k;
     }
     if (!k || budget <= 0)
@@ -8678,8 +8819,15 @@ struct AffineToStableHLORaisingPass
       if (!b)
         b = allocaIndexBound(f, f.getBody(), f.getInductionVar());
       if (!b && ext)
-        if (auto g = f->getParentOfType<enzymexla::GPUWrapperOp>())
+        if (auto g = f->getParentOfType<enzymexla::GPUWrapperOp>()) {
           b = launchDimBound(ext, g);
+          if (b && getenv("DEBUG_BOUND"))
+            llvm::errs() << "bpf launch-budget bound " << *b << " for "
+                         << f.getUpperBoundMap() << "\n";
+        }
+      if (b && getenv("DEBUG_BOUND"))
+        llvm::errs() << "bpf padding to " << *b << " ub "
+                     << f.getUpperBoundMap() << "\n";
       if (!b || *b <= 0) {
         if (getenv("DEBUG_BOUND")) {
           llvm::errs() << "bpf unbounded for ub " << f.getUpperBoundMap()
