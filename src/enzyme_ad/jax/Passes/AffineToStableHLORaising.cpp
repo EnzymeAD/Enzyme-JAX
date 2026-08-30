@@ -5481,6 +5481,8 @@ struct AffineToStableHLORaisingPass
   // fold the gep's element offset into each access index; data-dependent
   // offsets make the accesses plain memref ops, which raising gathers.
   static void rebaseViewedGeps(Operation *root) {
+    if (getenv("DISABLE_REBASE_VIEWED_GEPS"))
+      return;
     // Multi-dimensional register arrays produce chains of geps (slab of a
     // slab of a slab); each pulled-up view exposes the next level, so
     // iterate to a fixpoint.
@@ -5637,6 +5639,8 @@ struct AffineToStableHLORaisingPass
   // access still addresses whole elements of the loaded type; a plain memref
   // access through a flat view carries that, and raising gathers it.
   static void convertRawGepAccesses(Operation *root) {
+    if (getenv("DISABLE_RAW_GEP_ACCESSES"))
+      return;
     SmallVector<Operation *> accesses;
     root->walk([&](Operation *op) {
       if (isa<LLVM::LoadOp, LLVM::StoreOp>(op))
