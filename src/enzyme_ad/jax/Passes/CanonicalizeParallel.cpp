@@ -23,6 +23,7 @@
 #include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 
 namespace mlir {
@@ -126,6 +127,52 @@ struct SelectOfSameBaseGEPs : public OpRewritePattern<arith::SelectOp> {
   }
 };
 
+// Clang lowers every CUDA __shared__ access through one generic-izing
+// addrspacecast, and all gep arithmetic happens on the generic pointer.
+// Sink the cast toward its uses - the cast does not change the pointed-at
+// bytes, so the offsets are identical in either space - until it dies at a
+// pointer2memref, whose view type already tolerates the space mismatch.
+struct SinkAddrSpaceCastThroughGEP : public OpRewritePattern<LLVM::GEPOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(LLVM::GEPOp gep,
+                                PatternRewriter &rewriter) const override {
+    auto asc = gep.getBase().getDefiningOp<LLVM::AddrSpaceCastOp>();
+    if (!asc)
+      return failure();
+    auto srcTy = cast<LLVM::LLVMPointerType>(asc.getArg().getType());
+    SmallVector<LLVM::GEPArg> args;
+    for (auto idx : gep.getIndices()) {
+      if (auto v = dyn_cast_if_present<Value>(idx))
+        args.push_back(v);
+      else
+        args.push_back(cast<IntegerAttr>(idx).getValue().getSExtValue());
+    }
+    auto newGep = LLVM::GEPOp::create(
+        rewriter, gep.getLoc(),
+        LLVM::LLVMPointerType::get(gep.getContext(), srcTy.getAddressSpace()),
+        gep.getElemType(), asc.getArg(), args, gep.getNoWrapFlags());
+    rewriter.replaceOpWithNewOp<LLVM::AddrSpaceCastOp>(gep, gep.getType(),
+                                                       newGep);
+    return success();
+  }
+};
+
+struct Pointer2MemrefOfAddrSpaceCast
+    : public OpRewritePattern<enzymexla::Pointer2MemrefOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::Pointer2MemrefOp p2m,
+                                PatternRewriter &rewriter) const override {
+    auto asc = p2m.getSource().getDefiningOp<LLVM::AddrSpaceCastOp>();
+    if (!asc)
+      return failure();
+    rewriter.replaceOpWithNewOp<enzymexla::Pointer2MemrefOp>(p2m, p2m.getType(),
+                                                             asc.getArg());
+    return success();
+  }
+};
+
 struct CanonicalizeParallelPass
     : public enzyme::impl::CanonicalizeParallelPassBase<
           CanonicalizeParallelPass> {
@@ -141,7 +188,9 @@ struct CanonicalizeParallelPass
       dialect->getCanonicalizationPatterns(owningPatterns);
     for (RegisteredOperationName op : ctx->getRegisteredOperations())
       op.getCanonicalizationPatterns(owningPatterns, ctx);
-    owningPatterns.add<TruncOrConst, SelectOfSameBaseGEPs>(ctx);
+    owningPatterns
+        .add<TruncOrConst, SelectOfSameBaseGEPs, SinkAddrSpaceCastThroughGEP,
+             Pointer2MemrefOfAddrSpaceCast>(ctx);
     FrozenRewritePatternSet patterns(std::move(owningPatterns));
 
     GreedyRewriteConfig config;
