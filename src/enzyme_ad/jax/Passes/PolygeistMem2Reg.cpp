@@ -177,7 +177,7 @@ public:
     for (unsigned i = 0; i < numDims; i++)
       dim.push_back(vals[i]);
 
-    for (unsigned i = numDims; i < numSymbols; i++)
+    for (unsigned i = numDims; i < numDims + numSymbols; i++)
       sym.push_back(vals[i]);
 
     type = Type::Affine;
