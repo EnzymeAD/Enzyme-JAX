@@ -1731,6 +1731,10 @@ def ConcatSlicesToReversePatterns : EnzymeHLOPatternOp<
     "concat_slices_to_reverse"> {
   let patterns = ["ConcatSlicesToReverse"];
 }
+def SliceOfGatherPatterns : EnzymeHLOPatternOp<
+    "slice_of_gather"> {
+  let patterns = ["SliceOfGather"];
+}
 def DotReshapePadPatterns : EnzymeHLOPatternOp<
     "dot_reshape_pad"> {
   let patterns = ["DotReshapePad"];
