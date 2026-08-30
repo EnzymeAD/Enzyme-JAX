@@ -35355,6 +35355,95 @@ struct RecognizeMultiPad final
   }
 };
 
+// Signed range of a scalar (or splat) integer tensor, over widened APInts so
+// the arithmetic cannot overflow. A chain the walk does not understand falls
+// back to the bounds of its element type.
+static std::pair<APInt, APInt> provableIndexRange(Value v, int depth = 0) {
+  auto ty = cast<RankedTensorType>(v.getType());
+  auto ety = cast<IntegerType>(ty.getElementType());
+  unsigned width = ety.getWidth();
+  bool isUns = ety.isUnsignedInteger();
+  auto typeRange = [&]() -> std::pair<APInt, APInt> {
+    if (isUns)
+      return {APInt::getZero(128), APInt::getMaxValue(width).zext(128)};
+    return {APInt::getSignedMinValue(width).sext(128),
+            APInt::getSignedMaxValue(width).sext(128)};
+  };
+  SplatElementsAttr splat;
+  if (matchPattern(v, m_Constant(&splat))) {
+    APInt c = splat.getSplatValue<APInt>();
+    APInt e = isUns ? c.zext(128) : c.sext(128);
+    return {e, e};
+  }
+  Operation *def = v.getDefiningOp();
+  if (!def || depth > 8)
+    return typeRange();
+  if (isa<stablehlo::ReshapeOp, stablehlo::BroadcastInDimOp,
+          stablehlo::SliceOp, stablehlo::DynamicSliceOp,
+          stablehlo::ReverseOp, stablehlo::TransposeOp>(def))
+    // Element subsets and rearrangements keep the operand's range.
+    return provableIndexRange(def->getOperand(0), depth + 1);
+  if (auto cvt = dyn_cast<stablehlo::ConvertOp>(def)) {
+    auto inEty = dyn_cast<IntegerType>(
+        cast<RankedTensorType>(cvt.getOperand().getType()).getElementType());
+    // Only a widening integer conversion preserves the operand's range.
+    if (inEty && inEty.getWidth() <= width)
+      return provableIndexRange(cvt.getOperand(), depth + 1);
+    return typeRange();
+  }
+  if (auto clamp = dyn_cast<stablehlo::ClampOp>(def)) {
+    auto lo = provableIndexRange(clamp.getMin(), depth + 1);
+    auto hi = provableIndexRange(clamp.getMax(), depth + 1);
+    return {lo.first, hi.second};
+  }
+  if (auto mx = dyn_cast<stablehlo::MaxOp>(def)) {
+    auto a = provableIndexRange(mx.getLhs(), depth + 1);
+    auto b = provableIndexRange(mx.getRhs(), depth + 1);
+    return {llvm::APIntOps::smax(a.first, b.first),
+            llvm::APIntOps::smax(a.second, b.second)};
+  }
+  if (auto mn = dyn_cast<stablehlo::MinOp>(def)) {
+    auto a = provableIndexRange(mn.getLhs(), depth + 1);
+    auto b = provableIndexRange(mn.getRhs(), depth + 1);
+    return {llvm::APIntOps::smin(a.first, b.first),
+            llvm::APIntOps::smin(a.second, b.second)};
+  }
+  if (auto sel = dyn_cast<stablehlo::SelectOp>(def)) {
+    auto a = provableIndexRange(sel.getOnTrue(), depth + 1);
+    auto b = provableIndexRange(sel.getOnFalse(), depth + 1);
+    return {llvm::APIntOps::smin(a.first, b.first),
+            llvm::APIntOps::smax(a.second, b.second)};
+  }
+  if (auto add = dyn_cast<stablehlo::AddOp>(def)) {
+    auto a = provableIndexRange(add.getLhs(), depth + 1);
+    auto b = provableIndexRange(add.getRhs(), depth + 1);
+    return {a.first + b.first, a.second + b.second};
+  }
+  if (auto sub = dyn_cast<stablehlo::SubtractOp>(def)) {
+    auto a = provableIndexRange(sub.getLhs(), depth + 1);
+    auto b = provableIndexRange(sub.getRhs(), depth + 1);
+    return {a.first - b.second, a.second - b.first};
+  }
+  if (auto neg = dyn_cast<stablehlo::NegOp>(def)) {
+    auto a = provableIndexRange(neg.getOperand(), depth + 1);
+    return {-a.second, -a.first};
+  }
+  if (auto mul = dyn_cast<stablehlo::MulOp>(def)) {
+    for (int i = 0; i < 2; ++i) {
+      SplatElementsAttr cs;
+      if (matchPattern(def->getOperand(i), m_Constant(&cs))) {
+        APInt c = cs.getSplatValue<APInt>().sext(128);
+        auto a = provableIndexRange(def->getOperand(1 - i), depth + 1);
+        if (c.isNonNegative())
+          return {a.first * c, a.second * c};
+        return {a.second * c, a.first * c};
+      }
+    }
+    return typeRange();
+  }
+  return typeRange();
+}
+
 struct ScatterOpCanon final
     : CheckedOpRewritePattern<stablehlo::ScatterOp, ScatterOpCanon> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -35583,20 +35672,14 @@ private:
 
     // size 1 index can be trivially simplified to a DUS
     if (indices.getType().getNumElements() == 1) {
-      // A dead-lane scatter sends its index out of bounds and relies on
-      // the update being DROPPED; dynamic-slice/update-slice CLAMP
-      // instead, so the conversion would resurrect the write at slot 0.
-      Value idxSrc = indices;
-      while (auto rs = idxSrc.getDefiningOp<stablehlo::ReshapeOp>())
-        idxSrc = rs.getOperand();
-      if (auto sel = idxSrc.getDefiningOp<stablehlo::SelectOp>()) {
-        SplatElementsAttr offSplat;
-        if ((matchPattern(sel.getOnFalse(), m_Constant(&offSplat)) &&
-             offSplat.getSplatValue<APInt>().isNegative()) ||
-            (matchPattern(sel.getOnTrue(), m_Constant(&offSplat)) &&
-             offSplat.getSplatValue<APInt>().isNegative()))
-          return failure();
-      }
+      // A scatter DROPS an out-of-bounds update while dynamic-slice and
+      // dynamic-update-slice CLAMP the start, resurrecting the write at a
+      // clamped slot: the conversion is only sound when the index provably
+      // lands in bounds.
+      auto [idxLo, idxHi] = provableIndexRange(indices);
+      if (idxLo.isNegative() ||
+          idxHi.sgt(APInt(128, inputTy.getDimSize(0) - 1)))
+        return failure();
       auto scalarIndex =
           stablehlo::ReshapeOpCreate(rewriter, op.getLoc(), indices, {});
 
@@ -35669,7 +35752,8 @@ private:
       stride = -stride;
     }
 
-    if (limit > inputTy.getDimSize(0)) { // gather clamps indices
+    if (start < 0 || limit > inputTy.getDimSize(0)) {
+      // The slice/DUS pair clamps where the scatter would drop.
       return failure();
     }
 

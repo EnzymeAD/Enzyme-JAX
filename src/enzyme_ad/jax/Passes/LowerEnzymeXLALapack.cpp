@@ -1600,11 +1600,24 @@ private:
         rewriter, op.getLoc(), iterType,
         cast<ElementsAttr>(makeAttr(iterType, 0)));
 
-    auto pivots0indexed = stablehlo::SubtractOp::create(
+    Value pivots0indexed = stablehlo::SubtractOp::create(
         rewriter, op.getLoc(), pivotResult,
         stablehlo::ConstantOp::create(
             rewriter, op.getLoc(), blasPivotType,
             cast<ElementsAttr>(makeAttr(blasPivotType, 1))));
+    // LAPACK guarantees every pivot lands in [1, n]; the clamp writes that
+    // contract into the IR so the scatter below provably stays in bounds.
+    pivots0indexed = stablehlo::ClampOp::create(
+        rewriter, op.getLoc(),
+        stablehlo::ConstantOp::create(
+            rewriter, op.getLoc(), blasPivotType,
+            cast<ElementsAttr>(makeAttr(blasPivotType, 0))),
+        pivots0indexed,
+        stablehlo::ConstantOp::create(
+            rewriter, op.getLoc(), blasPivotType,
+            cast<ElementsAttr>(makeAttr(
+                blasPivotType,
+                blasPivotType.getShape()[blasPivotType.getRank() - 1] - 1))));
 
     auto permutation = stablehlo::IotaOp::create(
         rewriter, op.getLoc(), blasPivotType,
