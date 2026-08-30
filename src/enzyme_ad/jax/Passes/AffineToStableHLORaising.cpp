@@ -64,6 +64,7 @@ static Block *getAllocaBlock(Operation *op) {
 namespace enzyme {
 #define GEN_PASS_DEF_AFFINETOSTABLEHLORAISING
 #include "src/enzyme_ad/jax/Passes/Passes.h.inc"
+#include <deque>
 } // namespace enzyme
 } // namespace mlir
 
@@ -827,6 +828,43 @@ static LogicalResult tryRaisingForOpToStableHLOWhile(
     llvm::DenseMap<Value, affine::AffineValueMap> &maps, ParallelContext pc,
     stablehlo::WhileOp *createdWhileOp = nullptr,
     SmallVectorImpl<Value> *carriedBuffers = nullptr);
+
+// Blocks guaranteed to reach llvm.unreachable (abort branches), mirroring
+// Enzyme's getGuaranteedUnreachable in FunctionUtils.h.
+static DenseSet<Block *> getGuaranteedUnreachable(Region &r) {
+  DenseSet<Block *> knownUnreachable;
+  std::deque<Block *> todo;
+  for (Block &b : r)
+    todo.push_back(&b);
+
+  while (!todo.empty()) {
+    Block *next = todo.front();
+    todo.pop_front();
+
+    if (knownUnreachable.contains(next))
+      continue;
+
+    bool unreachable = isa<LLVM::UnreachableOp>(next->getTerminator());
+    if (!unreachable) {
+      auto succs = next->getSuccessors();
+      unreachable = !succs.empty();
+      for (Block *succ : succs) {
+        if (!knownUnreachable.contains(succ)) {
+          unreachable = false;
+          break;
+        }
+      }
+    }
+    if (!unreachable)
+      continue;
+
+    knownUnreachable.insert(next);
+    for (Block *pred : next->getPredecessors())
+      todo.push_back(pred);
+  }
+
+  return knownUnreachable;
+}
 
 static LogicalResult
 emitIfAsSelect(Operation *ifOp, Value cond, affine::AffineValueMap map,
@@ -3340,6 +3378,72 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     }
 
     return success();
+  }
+
+  // An alloca scope only delimits stack lifetime, meaningless under value
+  // semantics: raise its single-block body and forward the yields.
+  if (auto scope = dyn_cast<memref::AllocaScopeOp>(op)) {
+    Region &r = scope.getBodyRegion();
+    if (!r.hasOneBlock())
+      return failure();
+    Block *body = &r.front();
+    for (auto &innerOp : body->without_terminator()) {
+      if (tryRaisingOpToStableHLO(&innerOp, mapping, builder, maps, pc)
+              .failed())
+        return failure();
+    }
+    Operation *term = body->getTerminator();
+    for (auto [res, yielded] :
+         llvm::zip_equal(scope->getResults(), term->getOperands()))
+      mapping.map(res, mapping.lookup(yielded));
+    return success();
+  }
+
+  // An execute region wraps the inliner's cloned callee CFG. It raises when
+  // there is a unique live path from the entry to the yield, where a block
+  // is dead if every path out of it reaches llvm.unreachable (abort
+  // branches); a real diamond or a revisited block fails.
+  if (auto exec = dyn_cast<scf::ExecuteRegionOp>(op)) {
+    Region &r = exec.getRegion();
+    DenseSet<Block *> trapping = getGuaranteedUnreachable(r);
+    Block *cur = &r.front();
+    DenseSet<Block *> visited;
+    while (true) {
+      if (!visited.insert(cur).second)
+        return failure();
+      for (auto &innerOp : cur->without_terminator()) {
+        if (tryRaisingOpToStableHLO(&innerOp, mapping, builder, maps, pc)
+                .failed())
+          return failure();
+      }
+      Operation *term = cur->getTerminator();
+      if (isa<scf::YieldOp>(term)) {
+        for (auto [res, yielded] :
+             llvm::zip_equal(exec->getResults(), term->getOperands()))
+          mapping.map(res, mapping.lookup(yielded));
+        return success();
+      }
+      auto br = dyn_cast<BranchOpInterface>(term);
+      if (!br)
+        return failure();
+      Block *next = nullptr;
+      int64_t liveIdx = -1;
+      for (auto [i, succ] : llvm::enumerate(term->getSuccessors())) {
+        if (trapping.contains(succ))
+          continue;
+        if (next)
+          return failure();
+        next = succ;
+        liveIdx = i;
+      }
+      if (!next)
+        return failure();
+      auto sops = br.getSuccessorOperands(liveIdx);
+      for (auto [ba, v] :
+           llvm::zip(next->getArguments(), sops.getForwardedOperands()))
+        mapping.map(ba, mapping.lookup(v));
+      cur = next;
+    }
   }
 
   if (auto ifOp = dyn_cast<scf::IfOp>(op)) {
