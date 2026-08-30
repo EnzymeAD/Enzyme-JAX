@@ -1100,7 +1100,7 @@ static Value
 emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
                    OpBuilder &builder,
                    llvm::DenseMap<Value, affine::AffineValueMap> &maps,
-                   const ParallelContext &pc) {
+                   const ParallelContext &pc, bool accumulate = false) {
   affine::AffineValueMap updateValueMap = maps.lookup(update);
 
   auto UTy = cast<RankedTensorType>(update.getType());
@@ -1196,8 +1196,9 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
           /*indexVectorDim*/ (int64_t)gridShape.size()),
       /*indicesAreSorted*/ false,
       // With a mask, masked-out positions scatter orig back at potentially
-      // repeated indices — uniqueness can only be claimed without a mask.
-      /*uniqueIndices*/ !pc.mask);
+      // repeated indices — uniqueness can only be claimed without a mask; an
+      // accumulating scatter's colliding indices are the whole point.
+      /*uniqueIndices*/ !pc.mask && !accumulate);
   Value res = scatter.getResult(0);
 
   Block *updateBody = new Block();
@@ -1205,13 +1206,20 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
 
   auto unrankedTy = RankedTensorType::get(
       {}, cast<RankedTensorType>(update.getType()).getElementType());
-  updateBody->addArgument(unrankedTy, loc);
+  Value currentInBody = updateBody->addArgument(unrankedTy, loc);
   Value updateInBody = updateBody->addArgument(unrankedTy, loc);
 
   {
     OpBuilder::InsertionGuard guard(builder);
     builder.setInsertionPointToStart(updateBody);
-    stablehlo::ReturnOp::create(builder, loc, updateInBody);
+    Value out = updateInBody;
+    if (accumulate) {
+      // An atomic add raises as a combining scatter: adds commute (up to
+      // rounding, exactly like the atomic), so application order is
+      // irrelevant.
+      out = stablehlo::AddOp::create(builder, loc, currentInBody, updateInBody);
+    }
+    stablehlo::ReturnOp::create(builder, loc, out);
   }
 
   return res;
@@ -2984,6 +2992,36 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     }
     mapping.map(loadOp.getResult(), res);
 
+    return success();
+  }
+
+  if (auto rmw = dyn_cast<memref::AtomicRMWOp>(op)) {
+    // Only accumulation raises (as a combining scatter), and only when the
+    // old value is unobserved.
+    if ((rmw.getKind() != arith::AtomicRMWKind::addf &&
+         rmw.getKind() != arith::AtomicRMWKind::addi) ||
+        !rmw.getResult().use_empty())
+      return failure();
+    Value value = rmw.getValue();
+    Value memref = rmw.getMemref();
+    SmallVector<Value> sIndices;
+    for (auto idx : rmw.getIndices()) {
+      Value mapped = mapping.lookupOrNull(idx);
+      if (!mapped || !maps.count(mapped))
+        return failure();
+      sIndices.push_back(mapped);
+    }
+    if (!mapping.lookupOrNull(value) || !mapping.lookupOrNull(memref))
+      return failure();
+    Value res = emitStoreAsScatter(
+        rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+        mapping.lookup(value), mapping.lookup(memref), sIndices, builder, maps,
+        pc, /*accumulate=*/true);
+    if (!res)
+      return op->emitError(
+                 "atomic add is dependent on less dims than stored value: ")
+             << *op;
+    mapping.map(memref, res);
     return success();
   }
 
