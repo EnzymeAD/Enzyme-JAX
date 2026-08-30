@@ -3757,6 +3757,9 @@ struct AffineToStableHLORaisingPass
             if (st.getIndices().size() == 1 &&
                 st.getValueToStore() != p2m.getResult())
               continue;
+          } else if (auto rmw = dyn_cast<memref::AtomicRMWOp>(a)) {
+            if (rmw.getIndices().size() == 1)
+              continue;
           }
           ok = false;
           break;
@@ -3809,6 +3812,13 @@ struct AffineToStableHLORaisingPass
                                               ValueRange{idx});
             a->getResult(0).replaceAllUsesWith(nl);
             a->erase();
+          } else if (auto rmw = dyn_cast<memref::AtomicRMWOp>(a)) {
+            Value idx = arith::AddIOp::create(ab, a->getLoc(),
+                                              rmw.getIndices()[0], off);
+            memref::AtomicRMWOp::create(ab, a->getLoc(), rmw.getKind(),
+                                        rmw.getValue(), newView,
+                                        ValueRange{idx});
+            a->erase();
           } else {
             auto st = cast<memref::StoreOp>(a);
             Value idx =
@@ -3834,15 +3844,24 @@ struct AffineToStableHLORaisingPass
     root->walk([&](Operation *op) {
       if (isa<LLVM::LoadOp, LLVM::StoreOp>(op))
         accesses.push_back(op);
+      else if (auto rmw = dyn_cast<LLVM::AtomicRMWOp>(op))
+        if ((rmw.getBinOp() == LLVM::AtomicBinOp::fadd ||
+             rmw.getBinOp() == LLVM::AtomicBinOp::add) &&
+            rmw.getRes().use_empty())
+          accesses.push_back(op);
     });
     for (Operation *op : accesses) {
       bool isLoad = isa<LLVM::LoadOp>(op);
-      if (isLoad ? cast<LLVM::LoadOp>(op).getVolatile_()
-                 : cast<LLVM::StoreOp>(op).getVolatile_())
+      bool isAtomic = isa<LLVM::AtomicRMWOp>(op);
+      if (!isAtomic && (isLoad ? cast<LLVM::LoadOp>(op).getVolatile_()
+                               : cast<LLVM::StoreOp>(op).getVolatile_()))
         continue;
-      Value addr = isLoad ? op->getOperand(0) : op->getOperand(1);
+      Value addr =
+          isLoad ? op->getOperand(0) : op->getOperand(isAtomic ? 0 : 1);
       Type valTy =
-          isLoad ? op->getResult(0).getType() : op->getOperand(0).getType();
+          isLoad ? op->getResult(0).getType() : op->getOperand(1).getType();
+      if (!isAtomic && !isLoad)
+        valTy = op->getOperand(0).getType();
       if (!valTy.isIntOrFloat())
         continue;
       DataLayout dl = DataLayout::closest(op);
@@ -3883,6 +3902,14 @@ struct AffineToStableHLORaisingPass
       if (isLoad) {
         Value ld = memref::LoadOp::create(b, loc, view, ValueRange{idx});
         op->getResult(0).replaceAllUsesWith(ld);
+        op->erase();
+      } else if (isAtomic) {
+        auto rmw = cast<LLVM::AtomicRMWOp>(op);
+        auto kind = rmw.getBinOp() == LLVM::AtomicBinOp::fadd
+                        ? arith::AtomicRMWKind::addf
+                        : arith::AtomicRMWKind::addi;
+        memref::AtomicRMWOp::create(b, loc, kind, rmw.getVal(), view,
+                                    ValueRange{idx});
         op->erase();
       } else {
         memref::StoreOp::create(b, loc, op->getOperand(0), view,
