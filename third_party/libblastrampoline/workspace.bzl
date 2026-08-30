@@ -6,11 +6,32 @@ LIBBLASTRAMPOLINE_COMMIT = "072b5f67895bec0b92f8c83194567c1c48e9833d"  # v5.15.0
 LIBBLASTRAMPOLINE_SHA256 = ""
 
 PATCHES = [
+    # fix PREFIX var name
     """
-    sed -i.bak0 "s/\\$(LBT_ROOT)\\/src\\//\\$(LBT_ROOT)\\/libblastrampoline.build_tmpdir\\//g" src/Makefile
+    sed -i "s/prefix/PREFIX/g" src/Make.inc
+    """,
+    # fix Make.inc path
+    """
+    sed -i "s/include \\$(LBT_ROOT)\\/src/include \\$(BUILD_TMPDIR)/g" src/Makefile
+    """,
+    # remove erroring install command (also, no header to copy)
+    """
+    sed -i "/-@cp -Ra \\$(LBT_ROOT)\\/include\\/*/d" src/Makefile
+    """,
+    # # fix source path of header install command
+    """
+    sed -i "s/@cp -a \\$(LBT_ROOT)\\/src\\/libblastrampoline.h/@cp -a \\$(BUILD_TMPDIR)\\/libblastrampoline.h/g" src/Makefile
+    """,
+    # follow symbolic links
+    """
+    sed -i "s/@cp/@cp -L/g" src/Makefile
+    """,
+    # enable echoing commands to ease debugging
+    """
+    sed -i "s/-@//g" src/Makefile
     """,
     """
-    sed -i.bak0 "s/prefix/PREFIX/g" src/Make.inc
+    sed -i "s/^@//g" src/Makefile
     """,
 ]
 
