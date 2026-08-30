@@ -41,7 +41,7 @@ pip install enzyme-ad
 
 ## Building from source
 
-Requirements: `bazel-6.5`, `clang++`, `python`, `python-virtualenv`,
+Requirements: `bazel` (7.7.0, see `.bazelversion`; [bazelisk](https://github.com/bazelbuild/bazelisk) picks it up automatically), `clang++`, `python`, `python-virtualenv`,
 `python3-dev`.
 
 Build our extension with:

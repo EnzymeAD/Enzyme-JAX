@@ -9,6 +9,7 @@ lit_expand_template(
     dirname_substitutions = {
         "@LLVM_TOOLS_BINARY_DIR@": "@llvm-project//llvm:FileCheck",
         "@LLVM_LIBS_DIR@": "@llvm-project//llvm:FileCheck",
+        "@STABLEHLO_TOOLS_DIR@": "@stablehlo//:stablehlo-translate",
     },
     substitutions = select({
         "//src/enzyme_ad/jax:disable_triton_config": {
@@ -47,13 +48,13 @@ config_setting(
 
 TEST_DEPS = [
     "//:enzyme_ad",
-    "@pypi_jax//:pkg",
-    "@pypi_absl_py//:pkg",
-    "@pypi_xprof//:pkg",
+    "@pypi//jax",
+    "@pypi//absl_py",
+    "@pypi//xprof",
 ] + select({
     ":use_tpu": [
-        "@pypi_libtpu_nightly//:pkg",
-        "@pypi_requests//:pkg",
+        "@pypi//libtpu_nightly",
+        "@pypi//requests",
     ],
     "@bazel_tools//src/conditions:linux_x86_64": [],
     "//conditions:default": [],
@@ -143,8 +144,8 @@ py_test(
     tags = ["exclusive"],
     deps = TEST_DEPS + select({
         "@bazel_tools//src/conditions:linux_x86_64": [
-            "@pypi_jax_md//:pkg",
-            "@pypi_jraph//:pkg",
+            "@pypi//jax_md",
+            "@pypi//jraph",
         ],
         "//conditions:default": [],
     }),
@@ -160,7 +161,7 @@ py_test(
     ],
     imports = ["."],
     tags = ["exclusive"],
-    deps = TEST_DEPS + ["@pypi_jaxpi//:pkg"],
+    deps = TEST_DEPS + ["@pypi//jaxpi"],
 )
 
 py_test(
@@ -173,8 +174,8 @@ py_test(
     ],
     imports = ["."],
     tags = ["exclusive"],
-    deps = TEST_DEPS + ["@pypi_neuralgcm//:pkg"] + select({
-        "@bazel_tools//src/conditions:linux_x86_64": ["@pypi_gcsfs//:pkg"],
+    deps = TEST_DEPS + ["@pypi//neuralgcm"] + select({
+        "@bazel_tools//src/conditions:linux_x86_64": ["@pypi//gcsfs"],
         "//conditions:default": [],
     }),
 )
@@ -190,10 +191,10 @@ py_test(
 #     tags = ["exclusive"],
 #     deps = TEST_DEPS + select({
 #         "@bazel_tools//src/conditions:linux_x86_64": [
-#             "@pypi_benchmark//:pkg",
-#             "@pypi_keras//:pkg",
-#             "@pypi_keras_cv//:pkg",
-#             "@pypi_keras_hub//:pkg",
+#             "@pypi//benchmark",
+#             "@pypi//keras",
+#             "@pypi//keras_cv",
+#             "@pypi//keras_hub",
 #         ],
 #         "//conditions:default": [],
 #     }),
@@ -205,7 +206,7 @@ py_test(
 #         "maxtext.py",
 #     ],
 #     imports = ["."],
-#     deps = TEST_DEPS + ["@pypi_maxtext//:pkg"],
+#     deps = TEST_DEPS + ["@pypi//maxtext"],
 #     timeout='long'
 #     tags = ["exclusive"]
 # )

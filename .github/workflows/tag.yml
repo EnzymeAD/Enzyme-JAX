@@ -88,18 +88,18 @@ jobs:
           case "${{ matrix.os }}" in
             *macOS*|*macos*)
               if [ "${{ runner.arch }}" = "ARM64" ]; then
-                sed -i.bak -e 's/"AMDGPU", //g' -e 's/, "AMDGPU"//g' -e 's/"X86", //g' -e 's/, "X86"//g' workspace.bzl
+                sed -i.bak -e 's/"AMDGPU", //g' -e 's/, "AMDGPU"//g' -e 's/"X86", //g' -e 's/, "X86"//g' MODULE.bazel
               else
-                sed -i.bak -e 's/"AMDGPU", //g' -e 's/, "AMDGPU"//g' workspace.bzl
+                sed -i.bak -e 's/"AMDGPU", //g' -e 's/, "AMDGPU"//g' MODULE.bazel
               fi
               ;;
             *arm64*|*arm*)
-              sed -i.bak -e 's/"X86", //g' -e 's/, "X86"//g' workspace.bzl
+              sed -i.bak -e 's/"X86", //g' -e 's/, "X86"//g' MODULE.bazel
               ;;
             *)
               ;;
           esac
-          cat workspace.bzl
+          cat MODULE.bazel
       - name: Update JAX version
         run: |
           if [[ "${{ matrix.os }}" == *"tpu"* ]]; then

@@ -23,7 +23,7 @@ py_package(
     name = "enzyme_jax_data",
     # Only include these Python packages.
     packages = [
-        "@//src/enzyme_ad/jax:enzyme_call.so",
+        "//src/enzyme_ad/jax:enzyme_call.so",
         "@llvm-project//clang:builtin_headers_gen",
     ],
     deps = [
@@ -162,8 +162,8 @@ py_library(
     imports = ["src"],
     visibility = ["//visibility:public"],
     deps = [
-        "@pypi_absl_py//:pkg",
-        "@pypi_jax//:pkg",
+        "@pypi//absl_py",
+        "@pypi//jax",
     ],
 )
 

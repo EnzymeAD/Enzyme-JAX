@@ -1,9 +1,30 @@
 import os
+import re
 import subprocess
 import tempfile
 import ctypes
 import glob
 import platform
+
+
+def _pypi_runfiles_dir(runfiles, package):
+    """Directory of a pypi package inside the runfiles tree.
+
+    With WORKSPACE the directory was simply ``pypi_<package>``.  With bzlmod it
+    is the canonical repository name, ``<pip extension>+<hub>_<python
+    version>_<package>`` optionally followed by the wheel tags and a hash, e.g.
+    ``rules_python++pip+enzyme_ad_pypi_311_jax_cuda13_plugin_cp311_cp311_manylinux_2_27_x86_64_1a2b3c4d``.
+    Return the first match, or the legacy name if none exists (so callers can
+    still test for existence).
+    """
+    legacy = os.path.join(runfiles, f"pypi_{package}")
+    if os.path.isdir(legacy):
+        return legacy
+    pattern = re.compile(r"pypi_\d+_" + re.escape(package) + r"(_(py|cp|pp)\d[^/]*)?$")
+    for entry in sorted(os.listdir(runfiles)):
+        if pattern.search(entry):
+            return os.path.join(runfiles, entry)
+    return legacy
 
 
 def _has_cuda():
@@ -57,13 +78,12 @@ def fix_paths():
 
     cuda_version = 12
     cuda_postfix = "_cu12"
-    if os.path.exists(os.path.join(runfiles, "pypi_jax_cuda13_plugin")):
+    if os.path.exists(_pypi_runfiles_dir(runfiles, "jax_cuda13_plugin")):
         cuda_version = 13
         cuda_postfix = ""  # from v13 there are no postfixes
 
     CUDA_DIR = os.path.join(
-        runfiles,
-        f"pypi_nvidia_cuda_nvcc{cuda_postfix}",
+        _pypi_runfiles_dir(runfiles, f"nvidia_cuda_nvcc{cuda_postfix}"),
         "site-packages",
         "nvidia",
         "cuda_nvcc" if cuda_version == 12 else f"cu{cuda_version}",
@@ -74,7 +94,10 @@ def fix_paths():
         # The nvidia-nvvm package has structure: cu13/nvvm/libdevice/libdevice.10.bc
         # We need to symlink the inner nvvm/ directory to CUDA_DIR/nvvm
         NVVM_PKG_DIR = os.path.join(
-            runfiles, "pypi_nvidia_nvvm", "site-packages", "nvidia", f"cu{cuda_version}"
+            _pypi_runfiles_dir(runfiles, "nvidia_nvvm"),
+            "site-packages",
+            "nvidia",
+            f"cu{cuda_version}",
         )
         NVVM_DIR = os.path.join(NVVM_PKG_DIR, "nvvm")
         assert os.path.isdir(NVVM_DIR), f"nvvm dir not found: {NVVM_DIR}"
@@ -101,8 +124,7 @@ def fix_paths():
     def get_cuda_path(lib: str, dir: str) -> str:
         if lib == "cudnn":
             return os.path.join(
-                runfiles,
-                f"pypi_nvidia_{lib}_cu{cuda_version}",
+                _pypi_runfiles_dir(runfiles, f"nvidia_{lib}_cu{cuda_version}"),
                 "site-packages",
                 "nvidia",
                 "cudnn",
@@ -110,8 +132,7 @@ def fix_paths():
             )
 
         return os.path.join(
-            runfiles,
-            f"pypi_nvidia_{lib}{cuda_postfix}",
+            _pypi_runfiles_dir(runfiles, f"nvidia_{lib}{cuda_postfix}"),
             "site-packages",
             "nvidia",
             lib if cuda_version == 12 else f"cu{cuda_version}",
@@ -169,8 +190,7 @@ def fix_paths():
     os.environ["PATH"] = PATH
 
     CUDNN_PATH = os.path.join(
-        runfiles,
-        f"pypi_nvidia_cudnn_cu{cuda_version}",
+        _pypi_runfiles_dir(runfiles, f"nvidia_cudnn_cu{cuda_version}"),
         "site-packages",
         "nvidia",
         "cudnn",
@@ -180,14 +200,17 @@ def fix_paths():
 
     # Somewhere, someone hardcodes the path to the nvidia libs
     src_path = os.path.join(
-        runfiles,
-        f"pypi_nvidia_cuda_runtime{cuda_postfix}",
+        _pypi_runfiles_dir(runfiles, f"nvidia_cuda_runtime{cuda_postfix}"),
         "site-packages",
         "nvidia",
     )
     for dst_path in [
-        os.path.join(runfiles, f"pypi_jax_cuda{cuda_version}_plugin", "nvidia"),
-        os.path.join(runfiles, f"pypi_jax_cuda{cuda_version}_pjrt", "nvidia"),
+        os.path.join(
+            _pypi_runfiles_dir(runfiles, f"jax_cuda{cuda_version}_plugin"), "nvidia"
+        ),
+        os.path.join(
+            _pypi_runfiles_dir(runfiles, f"jax_cuda{cuda_version}_pjrt"), "nvidia"
+        ),
     ]:
         assert os.path.isdir(src_path)
         if not os.path.exists(dst_path):
@@ -195,11 +218,15 @@ def fix_paths():
 
     # Hardcoding also exists in tensorflow....and causes a segfault in jax otherwise???
     for src_path in [
-        os.path.join(runfiles, "pypi_tensorflow", "site-packages", "nvidia"),
-        os.path.join(runfiles, "pypi_tensorflow_cpu", "site-packages", "nvidia"),
+        os.path.join(
+            _pypi_runfiles_dir(runfiles, "tensorflow"), "site-packages", "nvidia"
+        ),
+        os.path.join(
+            _pypi_runfiles_dir(runfiles, "tensorflow_cpu"), "site-packages", "nvidia"
+        ),
     ]:
         dst_path = os.path.join(
-            runfiles, f"pypi_jax_cuda{cuda_version}_plugin", "nvidia"
+            _pypi_runfiles_dir(runfiles, f"jax_cuda{cuda_version}_plugin"), "nvidia"
         )
         if os.path.exists(src_path) and not os.path.exists(dst_path):
             os.symlink(src_path, dst_path)

@@ -24,4 +24,7 @@ jobs:
       upstream_repo: "jax-ml/jax"
       upstream_commit: ${{ inputs.jax_commit }}
       variable_name: "JAX_COMMIT"
+      workspace_path: "MODULE.bazel"
+      # XLA and rules_ml_toolchain are pinned to what JAX uses.
+      post_update_command: scripts/sync_xla_from_jax.sh "${NEW_UPSTREAM_COMMIT}"
     secrets: inherit

@@ -7,7 +7,7 @@ on:
   #   paths:
   #     - '.github/workflows/build-reactantjll.yml'
   #     - '**/BUILD'
-  #     - '**/WORKSPACE'
+  #     - 'MODULE.bazel'
   #     - '**/*.bzl'
   #     - 'patches/**'
   #     - 'src/**'
@@ -18,7 +18,7 @@ on:
     paths:
       - '.github/workflows/build-reactantjll.yml'
       - '**/BUILD'
-      - '**/WORKSPACE'
+      - 'MODULE.bazel'
       - '**/*.bzl'
       - 'patches/**'
       - 'src/**'

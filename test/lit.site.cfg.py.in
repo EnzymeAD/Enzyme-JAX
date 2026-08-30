@@ -8,6 +8,10 @@ if len("@ENZYME_BINARY_DIR@") == 0 and not os.path.isabs(config.llvm_tools_dir):
 
 config.enzymexla_tools_dir = "@ENZYMEXLA_BINARY_DIR@"
 
+config.stablehlo_tools_dir = "@STABLEHLO_TOOLS_DIR@"
+if not os.path.isabs(config.stablehlo_tools_dir):
+  config.stablehlo_tools_dir = os.getcwd() + "/" + config.stablehlo_tools_dir
+
 if len(config.enzymexla_tools_dir) == 0:
   config.enzymexla_tools_dir = os.getcwd()
 

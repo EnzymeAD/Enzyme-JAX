@@ -36,6 +36,11 @@ on:
         required: false
         type: 'string'
         default: 'main'
+      post_update_command:
+        description: 'Shell command to run after updating the commit, e.g. to sync derived pins (optional). The new commit is available as ${NEW_UPSTREAM_COMMIT}'
+        required: false
+        type: 'string'
+        default: ''
          
 
 jobs:
@@ -74,6 +79,9 @@ jobs:
       - name: Modify upstream commit
         run: |
           sed -i 's/${{ inputs.variable_name }} *= *".*"/${{ inputs.variable_name }} = "${{ env.NEW_UPSTREAM_COMMIT }}"/' ${{ inputs.workspace_path }}
+      - name: Run post-update command
+        if: ${{ inputs.post_update_command != '' }}
+        run: ${{ inputs.post_update_command }}
       - name: Decide whether to open the pull request
         id: decide
         run: |

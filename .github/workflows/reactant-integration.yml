@@ -6,7 +6,7 @@ on:
     paths: &paths
       - ".github/workflows/reactant-integration.yml"
       - "**/BUILD"
-      - "**/WORKSPACE"
+      - "MODULE.bazel"
       - "**/*.bzl"
       - "builddeps/**"
       - "patches/**"

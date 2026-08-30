@@ -6,6 +6,26 @@ The `.devcontainer` configuration is helpful but not recommended. While it provi
 
 ## Building the Project
 
+Dependencies are managed with bzlmod:
+
+- `MODULE.bazel` declares the module (`enzyme_ad`), the Python toolchain and the pypi
+  dependencies (`builddeps/requirements_lock_*.txt`). The region between the
+  `BEGIN: xla_deps.MODULE.bazel` / `END: xla_deps.MODULE.bazel` markers pins JAX, XLA,
+  rules_ml_toolchain and the hedron compile-commands fork, together with the patches applied
+  to them and the overrides that XLA/JAX apply to their Bazel Central Registry dependencies
+  (bzlmod ignores overrides declared by non-root modules, hence they are repeated here).
+  Downstream consumers such as Reactant.jl copy that region and the `patches/` directory
+  verbatim and `include()` it from their own `MODULE.bazel` (Bazel only accepts override
+  patches from the main repository, and `include()` only in the root module). When bumping
+  `JAX_COMMIT`, run `scripts/sync_xla_from_jax.sh <jax_commit>` to align `XLA_COMMIT`,
+  `RULES_ML_TOOLCHAIN_COMMIT` and the vendored `patches/upstream/*.patch`.
+- `workspace.bzl` pins Enzyme and cuda-tile, which are fetched by the `enzyme_deps` module
+  extension in `third_party/extensions.bzl`.
+
+To build against a local Enzyme checkout, either set `OVERRIDE_ENZYME_PATH` in `workspace.bzl`
+or pass `--override_repository=enzyme=/path/to/Enzyme/enzyme`. `bazel mod graph` and
+`bazel mod show_repo <name>` help debugging dependency resolution.
+
 ### Quick Build
 ```bash
 bazel build --repo_env=CC=clang-18 --color=yes --copt=-fbracket-depth=1024 --host_copt=-fbracket-depth=1024 -c dbg :enzymexlamlir-opt

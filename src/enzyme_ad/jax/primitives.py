@@ -240,9 +240,6 @@ def resource_dir():
     dn = os.path.dirname(enzyme_call.__file__)
     if os.getenv("ENZYME_BAZEL_NOWHEEL", None) is None:
         res = default_nowheel_resource(dn)
-        os.path.join(
-            dn, "..", "..", "..", "external", "llvm-project", "clang", "staging"
-        )
     else:
         res = os.path.join(dn, "..", "..", "clang", "staging")
     return res
