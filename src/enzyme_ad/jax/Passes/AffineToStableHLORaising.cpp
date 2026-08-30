@@ -3638,6 +3638,93 @@ struct AffineToStableHLORaisingPass
   // raising identifies buffers by SSA root: a memory_space_cast view would
   // split one buffer into two roots and lose store propagation. Retarget the
   // accesses to the source and drop the cast.
+  // Data-dependent indexing (CSR-style loops over runtime offsets) can never
+  // become affine, so llvm-to-affine-access leaves it as raw gep+load. The
+  // access still addresses whole elements of the loaded type; a plain memref
+  // access through a flat view carries that, and raising gathers it.
+  static void convertRawGepAccesses(Operation *root) {
+    SmallVector<Operation *> accesses;
+    root->walk([&](Operation *op) {
+      if (isa<LLVM::LoadOp, LLVM::StoreOp>(op))
+        accesses.push_back(op);
+    });
+    for (Operation *op : accesses) {
+      bool isLoad = isa<LLVM::LoadOp>(op);
+      if (isLoad ? cast<LLVM::LoadOp>(op).getVolatile_()
+                 : cast<LLVM::StoreOp>(op).getVolatile_())
+        continue;
+      Value addr = isLoad ? op->getOperand(0) : op->getOperand(1);
+      Type valTy =
+          isLoad ? op->getResult(0).getType() : op->getOperand(0).getType();
+      if (!valTy.isIntOrFloat())
+        continue;
+      DataLayout dl = DataLayout::closest(op);
+      Value base;
+      Value dynIdx;
+      int64_t constIdx = 0;
+      if (auto gep = addr.getDefiningOp<LLVM::GEPOp>()) {
+        auto idxs = gep.getIndices();
+        if (idxs.size() != 1 || (int64_t)dl.getTypeSize(gep.getElemType()) !=
+                                    (int64_t)dl.getTypeSize(valTy))
+          continue;
+        base = gep.getBase();
+        if (!gep.getDynamicIndices().empty())
+          dynIdx = gep.getDynamicIndices()[0];
+        else
+          constIdx = cast<IntegerAttr>(idxs[0]).getInt();
+      } else {
+        continue;
+      }
+      auto basePtrTy = cast<LLVM::LLVMPointerType>(base.getType());
+      Attribute space;
+      if (basePtrTy.getAddressSpace() != 0)
+        space = IntegerAttr::get(IntegerType::get(op->getContext(), 64),
+                                 basePtrTy.getAddressSpace());
+      OpBuilder b(op);
+      Location loc = op->getLoc();
+      auto MT = MemRefType::get({ShapedType::kDynamic}, valTy,
+                                MemRefLayoutAttrInterface{}, space);
+      Value view = enzymexla::Pointer2MemrefOp::create(b, loc, MT, base);
+      Value idx;
+      if (dynIdx) {
+        idx = dynIdx;
+        if (!isa<IndexType>(idx.getType()))
+          idx = arith::IndexCastOp::create(b, loc, b.getIndexType(), idx);
+      } else {
+        idx = arith::ConstantIndexOp::create(b, loc, constIdx);
+      }
+      if (isLoad) {
+        Value ld = memref::LoadOp::create(b, loc, view, ValueRange{idx});
+        op->getResult(0).replaceAllUsesWith(ld);
+        op->erase();
+      } else {
+        memref::StoreOp::create(b, loc, op->getOperand(0), view,
+                                ValueRange{idx});
+        op->erase();
+      }
+    }
+  }
+
+  // Access rewrites leave dead pointer plumbing behind, and raising visits
+  // every op in the region: sweep the unused chains.
+  static void dropDeadPointerChains(Operation *root) {
+    bool changed = true;
+    while (changed) {
+      changed = false;
+      SmallVector<Operation *> dead;
+      root->walk([&](Operation *op) {
+        if (isa<LLVM::GEPOp, LLVM::AddrSpaceCastOp, enzymexla::Pointer2MemrefOp,
+                enzymexla::Memref2PointerOp>(op) &&
+            op->use_empty())
+          dead.push_back(op);
+      });
+      for (Operation *op : dead) {
+        op->erase();
+        changed = true;
+      }
+    }
+  }
+
   static void stripAccessMemorySpaceCasts(Operation *root) {
     SmallVector<memref::MemorySpaceCastOp> casts;
     root->walk([&](memref::MemorySpaceCastOp c) { casts.push_back(c); });
@@ -3942,6 +4029,8 @@ struct AffineToStableHLORaisingPass
     // actually raises.
     for (auto func : funcs) {
       stripAccessMemorySpaceCasts(func);
+      convertRawGepAccesses(func);
+      dropDeadPointerChains(func);
       boundParallelAxes(func);
       peelDynamicParallelDims(func);
     }
@@ -3965,6 +4054,8 @@ struct AffineToStableHLORaisingPass
     op->walk([&](enzymexla::GPUWrapperOp g) { gwrap.push_back(g); });
     for (auto g : gwrap) {
       stripAccessMemorySpaceCasts(g);
+      convertRawGepAccesses(g);
+      dropDeadPointerChains(g);
       boundParallelAxes(g);
       peelDynamicParallelDims(g);
     }
