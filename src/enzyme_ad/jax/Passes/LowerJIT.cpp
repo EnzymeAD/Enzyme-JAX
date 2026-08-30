@@ -29,6 +29,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/GPU/Pipelines/Passes.h"
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
+#include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
 #include "mlir/Pass/PassManager.h"
 #include "llvm/Support/raw_ostream.h"
 
@@ -55,6 +56,7 @@
 #include "mlir/Conversion/FuncToLLVM/ConvertFuncToLLVMPass.h"
 #include "mlir/Conversion/GPUCommon/GPUCommonPass.h"
 #include "mlir/Conversion/GPUToNVVM/GPUToNVVMPass.h"
+#include "mlir/Conversion/GPUToROCDL/GPUToROCDLPass.h"
 #include "mlir/Conversion/IndexToLLVM/IndexToLLVM.h"
 #include "mlir/Conversion/MathToLLVM/MathToLLVM.h"
 #include "mlir/Conversion/MemRefToLLVM/MemRefToLLVM.h"
@@ -193,6 +195,61 @@ void buildLowerToNVVMPassPipeline(
   pm.addPass(createArithToLLVMConversionPass());
 
   // Host post-GPUModule-specific stuff
+  buildHostPostPipeline(pm, options, toolkitPath, linkFiles);
+}
+
+// ROCm analogue of buildCommonPassPipeline. The options struct is reused for
+// its target strings: cubinTriple/cubinChip/cubinFeatures carry the amdgcn
+// triple, gfx chip, and LLVM target features respectively.
+void buildCommonPassPipelineROCDL(
+    OpPassManager &pm, const mlir::gpu::GPUToNVVMPipelineOptions &options) {
+  pm.addPass(createGpuKernelOutliningPass());
+  pm.addPass(createConvertVectorToSCFPass());
+  pm.addPass(createSCFToControlFlowPass());
+  pm.addPass(createConvertFuncToLLVMPass());
+  pm.addPass(memref::createExpandStridedMetadataPass());
+
+  GpuROCDLAttachTargetOptions rocdlTargetOptions;
+  rocdlTargetOptions.triple = options.cubinTriple;
+  rocdlTargetOptions.chip = options.cubinChip;
+  rocdlTargetOptions.features = options.cubinFeatures;
+  rocdlTargetOptions.optLevel = options.optLevel;
+  pm.addPass(createGpuROCDLAttachTarget(rocdlTargetOptions));
+  pm.addPass(createLowerAffinePass());
+  ConvertIndexToLLVMPassOptions convertIndexToLLVMPassOpt;
+  convertIndexToLLVMPassOpt.indexBitwidth = options.indexBitWidth;
+  pm.addPass(createConvertIndexToLLVMPass(convertIndexToLLVMPassOpt));
+  pm.addPass(createCanonicalizerPass());
+  pm.addPass(createCSEPass());
+}
+
+// ROCm analogue of buildGpuPassPipeline.
+void buildGpuPassPipelineROCDL(
+    OpPassManager &pm, const mlir::gpu::GPUToNVVMPipelineOptions &options) {
+  pm.addNestedPass<gpu::GPUModuleOp>(createStripDebugInfoPass());
+  pm.addNestedPass<gpu::GPUModuleOp>(createSCFToControlFlowPass());
+  ConvertGpuOpsToROCDLOpsOptions opt;
+  opt.chipset = options.cubinChip;
+  opt.useBarePtrCallConv = options.kernelUseBarePtrCallConv;
+  opt.indexBitwidth = options.indexBitWidth;
+  opt.runtime = gpu::amd::Runtime::HIP;
+  pm.addNestedPass<gpu::GPUModuleOp>(createConvertGpuOpsToROCDLOps(opt));
+  pm.addNestedPass<gpu::GPUModuleOp>(createCanonicalizerPass());
+  pm.addNestedPass<gpu::GPUModuleOp>(createCSEPass());
+  pm.addNestedPass<gpu::GPUModuleOp>(createReconcileUnrealizedCastsPass());
+}
+
+// ROCm analogue of buildLowerToNVVMPassPipeline. The host-post pipeline is
+// shared: gpu-module-to-binary picks the serialization backend from the
+// #rocdl.target attribute attached above (toolkitPath must point at ROCm for
+// the device-library link).
+void buildLowerToROCDLPassPipeline(
+    OpPassManager &pm, const GPUToNVVMPipelineOptions &options,
+    std::string toolkitPath,
+    const llvm::SmallVectorImpl<std::string> &linkFiles) {
+  buildCommonPassPipelineROCDL(pm, options);
+  buildGpuPassPipelineROCDL(pm, options);
+  pm.addPass(createArithToLLVMConversionPass());
   buildHostPostPipeline(pm, options, toolkitPath, linkFiles);
 }
 
@@ -433,7 +490,13 @@ void rewriteKernelCallABI(
     const std::string &cubinTriple, const std::string &cubinChip,
     const std::string &cubinFeatures, const std::string &cubinFormat,
     int cuOptLevel, const std::string &toolkitPath,
-    const llvm::SmallVectorImpl<std::string> &linkFiles) {
+    const llvm::SmallVectorImpl<std::string> &linkFiles, bool useRocm) {
+  // The HIP module API mirrors the CUDA driver API symbol-for-symbol with
+  // identical argument layouts, so the generated calls differ only by name.
+  const char *modLoadName = useRocm ? "hipModuleLoadData" : "cuModuleLoadData";
+  const char *launchName = useRocm ? "hipModuleLaunchKernel" : "cuLaunchKernel";
+  const char *funcLoadName =
+      useRocm ? "hipModuleGetFunction" : "cuModuleGetFunction";
   OpBuilder builder(submod);
 
   builder.setInsertionPointToStart(&submod.getBodyRegion().front());
@@ -446,7 +509,7 @@ void rewriteKernelCallABI(
   mlir::Type cumodtys[] = {ptrty, ptrty};
   auto modload_ty = LLVM::LLVMFunctionType::get(i32, cumodtys);
   LLVM::LLVMFuncOp modload =
-      LLVM::LLVMFuncOp::create(builder, loc, "cuModuleLoadData", modload_ty);
+      LLVM::LLVMFuncOp::create(builder, loc, modLoadName, modload_ty);
 
   mlir::Type cutys[] = {ptrty, idx, idx,   idx,   idx,  idx,
                         idx,   i32, ptrty, ptrty, ptrty};
@@ -455,13 +518,13 @@ void rewriteKernelCallABI(
   mlir::Type curesulttys[] = {i32};
   auto curesult_handler_ty = LLVM::LLVMFunctionType::get(voidty, curesulttys);
   LLVM::LLVMFuncOp launch =
-      LLVM::LLVMFuncOp::create(builder, loc, "cuLaunchKernel", launch_ty);
+      LLVM::LLVMFuncOp::create(builder, loc, launchName, launch_ty);
   auto cusync_ty = LLVM::LLVMFunctionType::get(i32, {ptrty});
 
   mlir::Type cufunctys[] = {ptrty, ptrty, ptrty};
   auto funcload_ty = LLVM::LLVMFunctionType::get(i32, cufunctys);
-  LLVM::LLVMFuncOp funcload = LLVM::LLVMFuncOp::create(
-      builder, loc, "cuModuleGetFunction", funcload_ty);
+  LLVM::LLVMFuncOp funcload =
+      LLVM::LLVMFuncOp::create(builder, loc, funcLoadName, funcload_ty);
 
   LLVM::GlobalOp kernStr;
   {
@@ -729,17 +792,16 @@ void rewriteKernelCallABI(
   });
 }
 
-CallInfo CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
-                     FunctionOpInterface op, bool jit,
-                     enzymexla::JITCallOp jcall, bool openmp,
-                     size_t cuResultHandlerPtr, size_t cuStreamSynchronizePtr,
-                     int indexBitWidth, const std::string &cubinTriple,
-                     const std::string &cubinChip,
-                     const std::string &cubinFeatures,
-                     const std::string &cubinFormat, int cuOptLevel,
-                     const std::string &toolkitPath,
-                     const llvm::SmallVectorImpl<std::string> &linkFiles,
-                     bool debug, bool returnPtr, bool dump_final_module) {
+CallInfo
+CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
+            FunctionOpInterface op, bool jit, enzymexla::JITCallOp jcall,
+            bool openmp, const std::string &backend, size_t cuResultHandlerPtr,
+            size_t cuStreamSynchronizePtr, int indexBitWidth,
+            const std::string &cubinTriple, const std::string &cubinChip,
+            const std::string &cubinFeatures, const std::string &cubinFormat,
+            int cuOptLevel, const std::string &toolkitPath,
+            const llvm::SmallVectorImpl<std::string> &linkFiles, bool debug,
+            bool returnPtr, bool dump_final_module) {
 
   OpBuilder builder(op);
 
@@ -969,16 +1031,31 @@ CallInfo CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
               StringAttr::get(gmod.getContext(), str.substr(0, 200)),
               gmod.getKernel().getNestedReferences()));
       });
+      bool useRocm = backend == "rocm";
       mlir::gpu::GPUToNVVMPipelineOptions options;
       options.indexBitWidth = indexBitWidth;
       options.cubinTriple = cubinTriple;
       options.cubinChip = cubinChip;
       options.cubinFeatures = cubinFeatures;
+      // The pass options default to CUDA values; when targeting ROCm,
+      // substitute amdgcn equivalents for any the caller left at those
+      // defaults.
+      if (useRocm) {
+        if (StringRef(cubinTriple).starts_with("nvptx"))
+          options.cubinTriple = "amdgcn-amd-amdhsa";
+        if (StringRef(cubinChip).starts_with("sm_"))
+          options.cubinChip = "gfx90a";
+        if (StringRef(cubinFeatures).starts_with("+ptx"))
+          options.cubinFeatures = "";
+      }
       options.cubinFormat = cubinFormat;
       options.optLevel = cuOptLevel;
       options.kernelUseBarePtrCallConv = false;
       options.hostUseBarePtrCallConv = false;
-      buildLowerToNVVMPassPipeline(pm, options, toolkitPath, linkFiles);
+      if (useRocm)
+        buildLowerToROCDLPassPipeline(pm, options, toolkitPath, linkFiles);
+      else
+        buildLowerToNVVMPassPipeline(pm, options, toolkitPath, linkFiles);
       if (numGPUModule != 1) {
         llvm::errs() << " only single gpu module calls supported atm\n";
         submod.erase();
@@ -992,7 +1069,8 @@ CallInfo CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
       rewriteKernelCallABI(submod, loc, legalName, debug, jcall, modstr,
                            cuResultHandlerPtr, cuStreamSynchronizePtr,
                            indexBitWidth, cubinTriple, cubinChip, cubinFeatures,
-                           cubinFormat, cuOptLevel, toolkitPath, linkFiles);
+                           cubinFormat, cuOptLevel, toolkitPath, linkFiles,
+                           useRocm);
     }
 
     auto ptr = CompileHostModule(ss.str(), submod, numGPUModule != 0,
@@ -1026,6 +1104,17 @@ struct LowerJITPass
       std::string toolkitPath = "";
       SmallVector<std::string> linkFiles;
       buildLowerToNVVMPassPipeline(pm, options, toolkitPath, linkFiles);
+
+      mlir::gpu::GPUToNVVMPipelineOptions rocdlOptions;
+      rocdlOptions.indexBitWidth = 64;
+      rocdlOptions.cubinTriple = "amdgcn-amd-amdhsa";
+      rocdlOptions.cubinChip = "gfx90a";
+      rocdlOptions.cubinFeatures = "";
+      rocdlOptions.cubinFormat = "bin";
+      rocdlOptions.optLevel = 2;
+      rocdlOptions.kernelUseBarePtrCallConv = false;
+      rocdlOptions.hostUseBarePtrCallConv = false;
+      buildLowerToROCDLPassPipeline(pm, rocdlOptions, toolkitPath, linkFiles);
       /*
       mlir::gpu::GPUToNVVMPipelineOptions options;
       options.indexBitWidth = indexBitWidth;
@@ -1046,7 +1135,8 @@ struct LowerJITPass
                     mlir::math::MathDialect, mlir::memref::MemRefDialect,
                     mlir::scf::SCFDialect, mlir::vector::VectorDialect,
                     mlir::gpu::GPUDialect, mlir::nvgpu::NVGPUDialect,
-                    mlir::NVVM::NVVMDialect, mlir::LLVM::LLVMDialect>();
+                    mlir::NVVM::NVVMDialect, mlir::ROCDL::ROCDLDialect,
+                    mlir::LLVM::LLVMDialect>();
   }
 
   SmallVector<std::string> parseLinkFilesString(StringRef inp) {
@@ -1098,10 +1188,10 @@ struct LowerJITPass
       }
 
       CallInfo cdata = CompileCall(
-          symbolTable, op.getLoc(), fn, jit, op, openmp, cuResultHandlerPtr,
-          cuStreamSynchronizePtr, indexBitWidth, cubinTriple, cubinChip,
-          cubinFeatures, cubinFormat, cuOptLevel, toolkitPath, linkFilesArray,
-          debug, hasReturn, dump_final_module);
+          symbolTable, op.getLoc(), fn, jit, op, openmp, backend,
+          cuResultHandlerPtr, cuStreamSynchronizePtr, indexBitWidth,
+          cubinTriple, cubinChip, cubinFeatures, cubinFormat, cuOptLevel,
+          toolkitPath, linkFilesArray, debug, hasReturn, dump_final_module);
 
       std::string backendinfo((char *)&cdata, sizeof(CallInfo));
       if (jit) {
@@ -1126,7 +1216,7 @@ struct LowerJITPass
       }
 
       Operation *replacement;
-      if (backend == "cuda")
+      if (backend == "cuda" || backend == "rocm")
         replacement = stablehlo::CustomCallOp::create(
             rewriter, op.getLoc(), op.getResultTypes(), op.getInputs(),
             hasReturn

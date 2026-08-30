@@ -22,6 +22,7 @@
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/NVVMDialect.h"
+#include "mlir/Dialect/LLVMIR/ROCDLDialect.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -370,6 +371,13 @@ bool CompileCPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
     idxOp.replaceAllUsesWith(rep.getResult());
     idxOp.erase();
   });
+  executeRegion->walk([&](ROCDL::BlockIdXOp idxOp) {
+    OpBuilder rewriter(idxOp);
+    auto rep = arith::IndexCastUIOp::create(rewriter, op.getLoc(),
+                                            idxOp.getType(), par.getIVs()[0]);
+    idxOp.replaceAllUsesWith(rep.getResult());
+    idxOp.erase();
+  });
   executeRegion->walk([&](NVVM::BlockIdYOp idxOp) {
     OpBuilder rewriter(idxOp);
     auto rep = arith::IndexCastUIOp::create(rewriter, op.getLoc(),
@@ -377,7 +385,21 @@ bool CompileCPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
     idxOp.replaceAllUsesWith(rep.getResult());
     idxOp.erase();
   });
+  executeRegion->walk([&](ROCDL::BlockIdYOp idxOp) {
+    OpBuilder rewriter(idxOp);
+    auto rep = arith::IndexCastUIOp::create(rewriter, op.getLoc(),
+                                            idxOp.getType(), par.getIVs()[1]);
+    idxOp.replaceAllUsesWith(rep.getResult());
+    idxOp.erase();
+  });
   executeRegion->walk([&](NVVM::BlockIdZOp idxOp) {
+    OpBuilder rewriter(idxOp);
+    auto rep = arith::IndexCastUIOp::create(rewriter, op.getLoc(),
+                                            idxOp.getType(), par.getIVs()[2]);
+    idxOp.replaceAllUsesWith(rep.getResult());
+    idxOp.erase();
+  });
+  executeRegion->walk([&](ROCDL::BlockIdZOp idxOp) {
     OpBuilder rewriter(idxOp);
     auto rep = arith::IndexCastUIOp::create(rewriter, op.getLoc(),
                                             idxOp.getType(), par.getIVs()[2]);
@@ -406,6 +428,13 @@ bool CompileCPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
     idxOp.replaceAllUsesWith(rep.getResult());
     idxOp.erase();
   });
+  executeRegion->walk([&](ROCDL::ThreadIdXOp idxOp) {
+    OpBuilder rewriter(idxOp);
+    auto rep = arith::IndexCastUIOp::create(rewriter, op.getLoc(),
+                                            idxOp.getType(), par.getIVs()[3]);
+    idxOp.replaceAllUsesWith(rep.getResult());
+    idxOp.erase();
+  });
   executeRegion->walk([&](NVVM::ThreadIdYOp idxOp) {
     OpBuilder rewriter(idxOp);
     auto rep = arith::IndexCastUIOp::create(rewriter, op.getLoc(),
@@ -413,7 +442,21 @@ bool CompileCPUKernel(SymbolTableCollection &symbolTable, mlir::Location loc,
     idxOp.replaceAllUsesWith(rep.getResult());
     idxOp.erase();
   });
+  executeRegion->walk([&](ROCDL::ThreadIdYOp idxOp) {
+    OpBuilder rewriter(idxOp);
+    auto rep = arith::IndexCastUIOp::create(rewriter, op.getLoc(),
+                                            idxOp.getType(), par.getIVs()[4]);
+    idxOp.replaceAllUsesWith(rep.getResult());
+    idxOp.erase();
+  });
   executeRegion->walk([&](NVVM::ThreadIdZOp idxOp) {
+    OpBuilder rewriter(idxOp);
+    auto rep = arith::IndexCastUIOp::create(rewriter, op.getLoc(),
+                                            idxOp.getType(), par.getIVs()[5]);
+    idxOp.replaceAllUsesWith(rep.getResult());
+    idxOp.erase();
+  });
+  executeRegion->walk([&](ROCDL::ThreadIdZOp idxOp) {
     OpBuilder rewriter(idxOp);
     auto rep = arith::IndexCastUIOp::create(rewriter, op.getLoc(),
                                             idxOp.getType(), par.getIVs()[5]);
@@ -490,7 +533,10 @@ struct LowerKernelPass
       }
 
       // Compiled kernel goes here once ready
-      if (backend == "cuda") {
+      // The GPU wrapper built here is target-neutral: it only wraps the
+      // kernel in a gpu.module and a gpu.launch_func for lower-jit to
+      // compile, so ROCm shares the path.
+      if (backend == "cuda" || backend == "rocm") {
         CompileGPUKernel(symbolTable, op.getLoc(), fn, data[1], data[2],
                          data[3], data[4], data[5], data[6], data[7], data[8],
                          data[9], data[10], op);
