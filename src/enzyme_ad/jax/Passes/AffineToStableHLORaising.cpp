@@ -3638,6 +3638,112 @@ struct AffineToStableHLORaisingPass
   // raising identifies buffers by SSA root: a memory_space_cast view would
   // split one buffer into two roots and lose store propagation. Retarget the
   // accesses to the source and drop the cast.
+  // A view taken of a gep result pins the kernel operand to the gep, which
+  // no tensor can stand for. Rebase the view onto the underlying pointer and
+  // fold the gep's element offset into each access index; data-dependent
+  // offsets make the accesses plain memref ops, which raising gathers.
+  static void rebaseViewedGeps(Operation *root) {
+    SmallVector<LLVM::GEPOp> geps;
+    root->walk([&](LLVM::GEPOp g) { geps.push_back(g); });
+    for (auto gep : geps) {
+      auto idxs = gep.getIndices();
+      if (idxs.size() != 1)
+        continue;
+      DataLayout dl = DataLayout::closest(gep);
+      int64_t elemSz = dl.getTypeSize(gep.getElemType());
+      bool ok = true;
+      SmallVector<enzymexla::Pointer2MemrefOp> views;
+      for (Operation *u : gep->getUsers()) {
+        auto p2m = dyn_cast<enzymexla::Pointer2MemrefOp>(u);
+        if (!p2m || p2m.getType().getRank() != 1 ||
+            !p2m.getType().getElementType().isIntOrFloat() ||
+            (int64_t)dl.getTypeSize(p2m.getType().getElementType()) != elemSz) {
+          ok = false;
+          break;
+        }
+        for (Operation *a : p2m->getUsers()) {
+          if (auto ld = dyn_cast<affine::AffineLoadOp>(a)) {
+            if (ld.getMap().getNumResults() == 1)
+              continue;
+          } else if (auto st = dyn_cast<affine::AffineStoreOp>(a)) {
+            if (st.getMap().getNumResults() == 1 &&
+                st.getValueToStore() != p2m.getResult())
+              continue;
+          } else if (auto ld = dyn_cast<memref::LoadOp>(a)) {
+            if (ld.getIndices().size() == 1)
+              continue;
+          } else if (auto st = dyn_cast<memref::StoreOp>(a)) {
+            if (st.getIndices().size() == 1 &&
+                st.getValueToStore() != p2m.getResult())
+              continue;
+          }
+          ok = false;
+          break;
+        }
+        if (!ok)
+          break;
+        views.push_back(p2m);
+      }
+      if (!ok || views.empty())
+        continue;
+      OpBuilder gb(gep);
+      Location loc = gep.getLoc();
+      Value off;
+      if (!gep.getDynamicIndices().empty()) {
+        off = gep.getDynamicIndices()[0];
+        if (!isa<IndexType>(off.getType()))
+          off = arith::IndexCastOp::create(gb, loc, gb.getIndexType(), off);
+      } else {
+        off = arith::ConstantIndexOp::create(
+            gb, loc, cast<IntegerAttr>(idxs[0]).getInt());
+      }
+      for (auto p2m : views) {
+        OpBuilder vb(p2m);
+        Value newView = enzymexla::Pointer2MemrefOp::create(
+            vb, p2m.getLoc(), p2m.getType(), gep.getBase());
+        for (Operation *a : llvm::make_early_inc_range(p2m->getUsers())) {
+          OpBuilder ab(a);
+          auto toIdx = [&](AffineMap map, ValueRange operands) -> Value {
+            auto expanded =
+                affine::expandAffineMap(ab, a->getLoc(), map, operands);
+            return (*expanded)[0];
+          };
+          if (auto ld = dyn_cast<affine::AffineLoadOp>(a)) {
+            Value idx = toIdx(ld.getMap(), ld.getMapOperands());
+            idx = arith::AddIOp::create(ab, a->getLoc(), idx, off);
+            Value nl = memref::LoadOp::create(ab, a->getLoc(), newView,
+                                              ValueRange{idx});
+            a->getResult(0).replaceAllUsesWith(nl);
+            a->erase();
+          } else if (auto st = dyn_cast<affine::AffineStoreOp>(a)) {
+            Value idx = toIdx(st.getMap(), st.getMapOperands());
+            idx = arith::AddIOp::create(ab, a->getLoc(), idx, off);
+            memref::StoreOp::create(ab, a->getLoc(), st.getValueToStore(),
+                                    newView, ValueRange{idx});
+            a->erase();
+          } else if (auto ld = dyn_cast<memref::LoadOp>(a)) {
+            Value idx =
+                arith::AddIOp::create(ab, a->getLoc(), ld.getIndices()[0], off);
+            Value nl = memref::LoadOp::create(ab, a->getLoc(), newView,
+                                              ValueRange{idx});
+            a->getResult(0).replaceAllUsesWith(nl);
+            a->erase();
+          } else {
+            auto st = cast<memref::StoreOp>(a);
+            Value idx =
+                arith::AddIOp::create(ab, a->getLoc(), st.getIndices()[0], off);
+            memref::StoreOp::create(ab, a->getLoc(), st.getValueToStore(),
+                                    newView, ValueRange{idx});
+            a->erase();
+          }
+        }
+        p2m.erase();
+      }
+      if (gep->use_empty())
+        gep.erase();
+    }
+  }
+
   static void stripAccessMemorySpaceCasts(Operation *root) {
     SmallVector<memref::MemorySpaceCastOp> casts;
     root->walk([&](memref::MemorySpaceCastOp c) { casts.push_back(c); });
@@ -3942,6 +4048,7 @@ struct AffineToStableHLORaisingPass
     // actually raises.
     for (auto func : funcs) {
       stripAccessMemorySpaceCasts(func);
+      rebaseViewedGeps(func);
       boundParallelAxes(func);
       peelDynamicParallelDims(func);
     }
@@ -3965,6 +4072,7 @@ struct AffineToStableHLORaisingPass
     op->walk([&](enzymexla::GPUWrapperOp g) { gwrap.push_back(g); });
     for (auto g : gwrap) {
       stripAccessMemorySpaceCasts(g);
+      rebaseViewedGeps(g);
       boundParallelAxes(g);
       peelDynamicParallelDims(g);
     }
