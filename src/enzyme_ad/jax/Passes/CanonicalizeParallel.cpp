@@ -191,6 +191,72 @@ static affine::AffineIfOp createLikeIf(PatternRewriter &rewriter,
                                     /*withElseRegion=*/true);
 }
 
+static void createLikeYield(PatternRewriter &rewriter, Location loc, scf::IfOp,
+                            ValueRange values) {
+  scf::YieldOp::create(rewriter, loc, values);
+}
+static void createLikeYield(PatternRewriter &rewriter, Location loc,
+                            affine::AffineIfOp, ValueRange values) {
+  affine::AffineYieldOp::create(rewriter, loc, values);
+}
+
+/// An op over what a branch chose between constants is the branch choosing
+/// between the op's own results: the op rides into the arms, where it meets a
+/// constant and folds. What a branch chose then reaches its user as the
+/// branch's own result rather than at the far end of some arithmetic, which
+/// is how an index reaches an access for split-branched-accesses.
+template <typename OpT, typename IfT>
+struct SinkThroughIfOfConstants : public OpRewritePattern<OpT> {
+  using OpRewritePattern<OpT>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(OpT op,
+                                PatternRewriter &rewriter) const override {
+    // One operand comes from the branch and the rest are constants, so each
+    // arm folds to a constant of its own.
+    OpResult branched;
+    for (Value operand : op->getOperands()) {
+      Attribute cst;
+      if (matchPattern(operand, m_Constant(&cst)))
+        continue;
+      auto res = dyn_cast<OpResult>(operand);
+      if (branched || !res || !isa<IfT>(res.getOwner()))
+        return failure();
+      branched = res;
+    }
+    // A second user would keep the branch alive and pay for it twice.
+    if (!branched || !branched.hasOneUse())
+      return failure();
+
+    auto ifOp = cast<IfT>(branched.getOwner());
+    if (ifOp->getRegion(1).empty())
+      return failure();
+    // The regions of both flavours of if are the arms, in order.
+    unsigned resultNo = branched.getResultNumber();
+    Value arms[2];
+    for (unsigned arm = 0; arm < 2; ++arm) {
+      arms[arm] =
+          ifOp->getRegion(arm).front().getTerminator()->getOperand(resultNo);
+      Attribute cst;
+      if (!matchPattern(arms[arm], m_Constant(&cst)))
+        return failure();
+    }
+
+    // Built where the op stands, so what the branch is taken over -- in hand
+    // before the branch -- is in hand here too.
+    auto newIf = createLikeIf(rewriter, ifOp, op->getResultTypes());
+    for (unsigned arm = 0; arm < 2; ++arm) {
+      rewriter.setInsertionPointToStart(&newIf->getRegion(arm).front());
+      Operation *chosen = rewriter.clone(*arms[arm].getDefiningOp());
+      IRMapping map;
+      map.map(branched, chosen->getResult(0));
+      Operation *cloned = rewriter.clone(*op.getOperation(), map);
+      createLikeYield(rewriter, op.getLoc(), newIf, cloned->getResults());
+    }
+    rewriter.replaceOp(op, newIf->getResults());
+    return success();
+  }
+};
+
 /// The if counterpart of SelectOfSameBaseGEPs: arms that index one base
 /// differently choose the index instead, with a constant index materialized
 /// where the gep kept it in an attribute.
@@ -426,8 +492,13 @@ struct CanonicalizeParallelPass
         TruncOrConst, SelectOfSameBaseGEPs, SinkAddrSpaceCastThroughGEP,
         Pointer2MemrefOfAddrSpaceCast, IfOfSameBaseGEPs<scf::IfOp>,
         IfOfSameBaseGEPs<affine::AffineIfOp>, IfOfDifferentBaseGEPs<scf::IfOp>,
-        IfOfDifferentBaseGEPs<affine::AffineIfOp>, SelectOfDifferentBaseGEPs>(
-        ctx);
+        IfOfDifferentBaseGEPs<affine::AffineIfOp>, SelectOfDifferentBaseGEPs,
+        SinkThroughIfOfConstants<arith::IndexCastOp, scf::IfOp>,
+        SinkThroughIfOfConstants<arith::IndexCastOp, affine::AffineIfOp>,
+        SinkThroughIfOfConstants<arith::DivSIOp, scf::IfOp>,
+        SinkThroughIfOfConstants<arith::DivSIOp, affine::AffineIfOp>,
+        SinkThroughIfOfConstants<arith::DivUIOp, scf::IfOp>,
+        SinkThroughIfOfConstants<arith::DivUIOp, affine::AffineIfOp>>(ctx);
     FrozenRewritePatternSet patterns(std::move(owningPatterns));
 
     GreedyRewriteConfig config;

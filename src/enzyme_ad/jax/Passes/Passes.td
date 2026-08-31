@@ -453,6 +453,19 @@ def SROAWrappersPass : Pass<"sroa-wrappers", "mlir::ModuleOp"> {
   ];
 }
 
+def SplitBranchedAccessesPass : Pass<"split-branched-accesses"> {
+  let summary = "Do an access whose index a branch chose in each arm instead";
+  let description = [{
+    An access at an index chosen between constants by a branch names no slot
+    the store forwarding can see. Doing it in each arm, at the constant that
+    arm chose, gives a constant index there, and the arithmetic in between
+    rides along and folds.
+  }];
+  let dependentDialects = ["affine::AffineDialect", "arith::ArithDialect",
+                           "memref::MemRefDialect", "scf::SCFDialect",
+  ];
+}
+
 def CanonicalizeParallelPass : Pass<"canonicalize-parallel"> {
   let summary = "Canonicalize top-level ops in parallel, confining region simplification to each";
   let options = [Option<
