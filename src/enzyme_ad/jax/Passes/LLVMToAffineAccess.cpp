@@ -883,6 +883,38 @@ struct LoadSelect : public OpRewritePattern<affine::AffineLoadOp> {
   }
 };
 
+// The store twin of LoadSelect: a store through a selected view executes
+// on whichever arm the condition chose, so it splits into an if with one
+// store per arm - each through a concrete view the later rewrites can see.
+template <typename T> struct StoreSelect : public OpRewritePattern<T> {
+  using OpRewritePattern<T>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(T st,
+                                PatternRewriter &rewriter) const override {
+    auto sel = st.getMemRef().template getDefiningOp<arith::SelectOp>();
+    if (!sel)
+      return failure();
+
+    auto newIfOp = scf::IfOp::create(rewriter, sel.getLoc(), TypeRange{},
+                                     sel.getCondition(),
+                                     /*hasElse=*/true);
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(newIfOp.thenBlock());
+      auto st2 = cast<T>(rewriter.clone(*st));
+      st2.getMemrefMutable().set(sel.getTrueValue());
+    }
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(newIfOp.elseBlock());
+      auto st2 = cast<T>(rewriter.clone(*st));
+      st2.getMemrefMutable().set(sel.getFalseValue());
+    }
+    rewriter.eraseOp(st);
+    return success();
+  }
+};
+
 } // namespace
 
 static MemRefVal convertToMemref(PtrVal addr) {
@@ -2179,6 +2211,7 @@ convertLLVMToAffineAccess(Operation *op,
         SimplifyDeadAlloc<memref::AllocaOp>, SimplifyDeadAlloc<memref::AllocOp>,
         SimplifyDeadAlloc<LLVM::AllocaOp>,
         SimplifyDeadAlloc<gpu::AllocOp, true>, Pointer2MemrefSelect, LoadSelect,
+        StoreSelect<affine::AffineStoreOp>, StoreSelect<memref::StoreOp>,
         AffineIfDeadResults, SimpleMem2Reg<memref::AllocaOp>>(context);
     GreedyRewriteConfig config;
     config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);
