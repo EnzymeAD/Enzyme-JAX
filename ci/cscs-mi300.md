@@ -231,6 +231,36 @@ still carries the shadowing libcurl. The bare-`${JULIA}` steps (lines that
 instantiate/build Reactant itself) don't load `libReactantExtra.so` and correctly
 keep their own `--project` without the wrapper.
 
+### Collectives gate
+
+`sharded_baroclinic_instability_simulation_compile.jl` writes its
+`optimised_sharded_baroclinic_instability_*.xla` files **relative to the current
+working directory**, and the threshold check greps for them under `GB25_DIR`. All
+`script:` steps share one shell, so the `cd "${REACTANT_DIR}/deps"` from the
+Reactant instantiate step is still in effect when the compile step runs — the files
+landed in `Reactant.jl/deps`, `find` matched nothing, every `NUM_COLLECTIVES` was
+0, and the gate passed **without checking anything**. It had been green for that
+reason, not because the collective counts were acceptable.
+
+Two changes: the compile step now `cd`s into `GB25_DIR` first, and the gate fails
+loudly when it finds no `.xla` files instead of silently comparing zeroes. The
+thresholds themselves are still the A100 numbers and still need calibrating — the
+first run that actually reports counts is the one to calibrate from.
+
+### Collective timeouts
+
+XLA warns when a thread has waited on the first collective rendezvous longer than
+`--xla_gpu_first_collective_call_warn_stuck_timeout_seconds` (10 s by default) and
+kills the job past the matching `..._terminate_timeout_seconds`. Clique init for
+`devices=4:[0,1,2,3]` measured **~57 s** on this node, so every run logged three
+alarming "may be stuck / leader can be deadlocked" errors and then retracted them
+("Warning above was a false-positive"). The job sets `XLA_FLAGS` to raise the warn
+threshold to 120 s. Note `GordonBell25.preamble()` refuses to set these itself and
+directs you to `XLA_FLAGS`, which is why they live in the job variables.
+
+If clique init ever *does* hang, that same knob is where to lower the terminate
+timeout to get a fast failure.
+
 ## UENV bump checklist
 
 When `UENV:` (and thus the ROCm/LLVM toolchain) changes, re-verify:
