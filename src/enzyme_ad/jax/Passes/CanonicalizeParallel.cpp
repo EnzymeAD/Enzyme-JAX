@@ -17,11 +17,13 @@
 //===----------------------------------------------------------------------===//
 
 #include "mlir/Dialect/Arith/IR/Arith.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/Threading.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 
 namespace mlir {
@@ -67,6 +69,110 @@ struct TruncOrConst : public OpRewritePattern<arith::TruncIOp> {
   }
 };
 
+// The symmetric/nonsymmetric slice picks of MFEM kernels reach MLIR as a
+// select over geps off one base: clang folds the constant slice indices
+// into the addressing, and the conditional survives as pointer control
+// flow. Sink the select back into the index so the address chain stays a
+// single gep, which the view rebasing canonicalizations can see through.
+struct SelectOfSameBaseGEPs : public OpRewritePattern<arith::SelectOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::SelectOp sel,
+                                PatternRewriter &rewriter) const override {
+    if (!isa<LLVM::LLVMPointerType>(sel.getType()))
+      return failure();
+    auto gepT = sel.getTrueValue().getDefiningOp<LLVM::GEPOp>();
+    auto gepF = sel.getFalseValue().getDefiningOp<LLVM::GEPOp>();
+    if (!gepT || !gepF)
+      return failure();
+    if (gepT.getBase() != gepF.getBase() ||
+        gepT.getElemType() != gepF.getElemType())
+      return failure();
+    if (gepT.getIndices().size() != 1 || gepF.getIndices().size() != 1)
+      return failure();
+
+    auto dynT = dyn_cast_if_present<Value>(gepT.getIndices()[0]);
+    auto dynF = dyn_cast_if_present<Value>(gepF.getIndices()[0]);
+    Type idxTy;
+    if (dynT && dynF) {
+      if (dynT.getType() != dynF.getType())
+        return failure();
+      idxTy = dynT.getType();
+    } else if (dynT) {
+      idxTy = dynT.getType();
+    } else if (dynF) {
+      idxTy = dynF.getType();
+    } else {
+      idxTy = rewriter.getI64Type();
+    }
+
+    auto materialize = [&](LLVM::GEPOp gep, Value dyn) -> Value {
+      if (dyn)
+        return dyn;
+      auto attr = cast<IntegerAttr>(gep.getIndices()[0]);
+      Value c = arith::ConstantOp::create(
+          rewriter, gep.getLoc(),
+          IntegerAttr::get(idxTy, attr.getValue().getSExtValue()));
+      return c;
+    };
+    Value idxT = materialize(gepT, dynT);
+    Value idxF = materialize(gepF, dynF);
+    Value idx = arith::SelectOp::create(rewriter, sel.getLoc(),
+                                        sel.getCondition(), idxT, idxF);
+    rewriter.replaceOpWithNewOp<LLVM::GEPOp>(
+        sel, sel.getType(), gepT.getElemType(), gepT.getBase(),
+        SmallVector<LLVM::GEPArg>{idx},
+        gepT.getNoWrapFlags() & gepF.getNoWrapFlags());
+    return success();
+  }
+};
+
+// Clang lowers every CUDA __shared__ access through one generic-izing
+// addrspacecast, and all gep arithmetic happens on the generic pointer.
+// Sink the cast toward its uses - the cast does not change the pointed-at
+// bytes, so the offsets are identical in either space - until it dies at a
+// pointer2memref, whose view type already tolerates the space mismatch.
+struct SinkAddrSpaceCastThroughGEP : public OpRewritePattern<LLVM::GEPOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(LLVM::GEPOp gep,
+                                PatternRewriter &rewriter) const override {
+    auto asc = gep.getBase().getDefiningOp<LLVM::AddrSpaceCastOp>();
+    if (!asc)
+      return failure();
+    auto srcTy = cast<LLVM::LLVMPointerType>(asc.getArg().getType());
+    SmallVector<LLVM::GEPArg> args;
+    for (auto idx : gep.getIndices()) {
+      if (auto v = dyn_cast_if_present<Value>(idx))
+        args.push_back(v);
+      else
+        args.push_back(cast<IntegerAttr>(idx).getValue().getSExtValue());
+    }
+    auto newGep = LLVM::GEPOp::create(
+        rewriter, gep.getLoc(),
+        LLVM::LLVMPointerType::get(gep.getContext(), srcTy.getAddressSpace()),
+        gep.getElemType(), asc.getArg(), args, gep.getNoWrapFlags());
+    rewriter.replaceOpWithNewOp<LLVM::AddrSpaceCastOp>(gep, gep.getType(),
+                                                       newGep);
+    return success();
+  }
+};
+
+struct Pointer2MemrefOfAddrSpaceCast
+    : public OpRewritePattern<enzymexla::Pointer2MemrefOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(enzymexla::Pointer2MemrefOp p2m,
+                                PatternRewriter &rewriter) const override {
+    auto asc = p2m.getSource().getDefiningOp<LLVM::AddrSpaceCastOp>();
+    if (!asc)
+      return failure();
+    rewriter.replaceOpWithNewOp<enzymexla::Pointer2MemrefOp>(p2m, p2m.getType(),
+                                                             asc.getArg());
+    return success();
+  }
+};
+
 struct CanonicalizeParallelPass
     : public enzyme::impl::CanonicalizeParallelPassBase<
           CanonicalizeParallelPass> {
@@ -82,7 +188,9 @@ struct CanonicalizeParallelPass
       dialect->getCanonicalizationPatterns(owningPatterns);
     for (RegisteredOperationName op : ctx->getRegisteredOperations())
       op.getCanonicalizationPatterns(owningPatterns, ctx);
-    owningPatterns.add<TruncOrConst>(ctx);
+    owningPatterns
+        .add<TruncOrConst, SelectOfSameBaseGEPs, SinkAddrSpaceCastThroughGEP,
+             Pointer2MemrefOfAddrSpaceCast>(ctx);
     FrozenRewritePatternSet patterns(std::move(owningPatterns));
 
     GreedyRewriteConfig config;
