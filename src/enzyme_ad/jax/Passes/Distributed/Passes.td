@@ -17,9 +17,39 @@ def PrintShardyFunctionNamesPass
                           attributes in their bodies.}];
 }
 
-def ShardyToDistributedHigherLevelPass
-    : Pass<"shardy-to-distributed-higher-level", "::mlir::ModuleOp"> {
-  let summary = "Temporary higher-level skeleton pass for Shardy-to-distributed debugging.";
+def ConvertMainToDistributedFunctionPass
+    : Pass<"convert-main-to-distributed-function", "::mlir::ModuleOp"> {
+  let summary = "Convert the main func.func into distributed.function.";
+  let dependentDialects = [
+    "enzyme::axis::AxisDialect", "sdy::SdyDialect",
+    "enzyme::distributed::DistributedDialect"
+  ];
+  let description = [{
+    Expects a unique func.func @main with a single block. Uses the current
+    Shardy logical-axis analysis to build distributed.function partitioning
+    axes and indexed sharding metadata, then rewrites the function body to a
+    distributed.function with a distributed.yield terminator. If main has
+    already been converted, the pass leaves it unchanged.
+  }];
+}
+
+def MaterializeDistributedCollectivesPass
+    : Pass<"materialize-distributed-collectives", "::mlir::ModuleOp"> {
+  let summary = "Replace Shardy reshards with distributed collectives.";
+  let dependentDialects = [
+    "enzyme::axis::AxisDialect", "sdy::SdyDialect",
+    "enzyme::distributed::DistributedDialect"
+  ];
+  let description = [{
+    Runs on the unique main function-like op, removes explicit sdy.reshard
+    operations, then materializes distributed collectives for reduction and
+    layout conflicts inferred from Shardy logical-axis analysis.
+  }];
+}
+
+def ClusterDistributedKernelsPass
+    : Pass<"cluster-distributed-kernels", "::mlir::ModuleOp"> {
+  let summary = "Cluster main compute ops into distributed.kernel regions.";
   let options = [
     Option<"dumpLogicalAxes", "dump-logical-axes", "bool", "false",
            "Print ShardyLogicalAxisAnalysis axis symbols for each operation in main">,
@@ -29,10 +59,10 @@ def ShardyToDistributedHigherLevelPass
     "enzyme::distributed::DistributedDialect"
   ];
   let description = [{
-    Scans a module for a main function, asserts that it is single-block,
-    runs ShardyLogicalAxisAnalysis on that function, prints the logical axes
-    for each operation in the main block, and runs the SSA block partial-order
-    analysis as a temporary debugging scaffold.
+    Runs on the unique main function-like op and outlines clusterable compute
+    operations into distributed.kernel regions while preserving SSA/topological
+    ordering constraints. This pass assumes conversion to distributed.function
+    and distributed collective materialization have already run.
   }];
 }
 

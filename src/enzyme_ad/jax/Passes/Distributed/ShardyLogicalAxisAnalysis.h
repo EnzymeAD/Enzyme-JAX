@@ -150,7 +150,7 @@ private:
  */
 class ShardyLogicalAxisAnalysis {
 public:
-  ShardyLogicalAxisAnalysis(func::FuncOp sdy_func);
+  ShardyLogicalAxisAnalysis(Operation *sdy_func);
   ShardyLogicalAxisAnalysis() = default;
 
   using SymbolsPerPartitioningAxis =
@@ -203,7 +203,7 @@ private:
   llvm::DenseMap<Operation *, DimToSymbol> reshardLHSSymbols;
   llvm::DenseMap<Operation *, DimToSymbol> reshardRHSSymbols;
   SymbolFactorMerge symbolFactorMerge;
-  func::FuncOp sdy_func;
+  Operation *sdy_func = nullptr;
 
   void buildInitialSymbols();
   // Internal implementation for either a producer (lhs) or consumer (rhs) of a

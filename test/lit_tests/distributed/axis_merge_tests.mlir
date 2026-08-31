@@ -1,5 +1,20 @@
-// RUN: enzymexlamlir-opt --sdy-propagation-pipeline --sdy-insert-explicit-reshards --shardy-to-distributed-higher-level="dump-logical-axes=true" -split-input-file -o /dev/null %s 2>&1 | FileCheck %s
-// RUN: enzymexlamlir-opt --sdy-propagation-pipeline --sdy-insert-explicit-reshards --shardy-to-distributed-higher-level="dump-logical-axes=true" --mlir-print-ir-after=shardy-to-distributed-higher-level -split-input-file -o /dev/null %s 2>&1 | FileCheck %s --check-prefix=CHAIN
+// -- Smoke tests and IR dump checks for the distributed pass chain.
+// RUN: enzymexlamlir-opt --sdy-propagation-pipeline --sdy-insert-explicit-reshards --convert-main-to-distributed-function --materialize-distributed-collectives --cluster-distributed-kernels="dump-logical-axes=true" -split-input-file -o /dev/null %s 2>&1 | FileCheck %s
+// RUN: enzymexlamlir-opt --sdy-propagation-pipeline --sdy-insert-explicit-reshards --convert-main-to-distributed-function --materialize-distributed-collectives --cluster-distributed-kernels="dump-logical-axes=true" --mlir-print-ir-after=cluster-distributed-kernels -split-input-file -o /dev/null %s 2>&1 | FileCheck %s --check-prefix=CHAIN
+// RUN: enzymexlamlir-opt --sdy-propagation-pipeline --sdy-insert-explicit-reshards --convert-main-to-distributed-function --mlir-print-ir-after=convert-main-to-distributed-function -split-input-file -o /dev/null %s 2>&1 | FileCheck %s --check-prefix=CONVERT
+// RUN: enzymexlamlir-opt --sdy-propagation-pipeline --sdy-insert-explicit-reshards --convert-main-to-distributed-function --materialize-distributed-collectives --mlir-print-ir-after=materialize-distributed-collectives -split-input-file -o /dev/null %s 2>&1 | FileCheck %s --check-prefix=MATERIALIZE
+
+// -- Pipeline equivalence: the bundled pipeline must match the explicit pass chain.
+// RUN: enzymexlamlir-opt --sdy-propagation-pipeline --shardy-to-distributed-pipeline -split-input-file %s -o - > %t.pipeline
+// RUN: enzymexlamlir-opt --sdy-propagation-pipeline --sdy-insert-explicit-reshards --convert-main-to-distributed-function --materialize-distributed-collectives --cluster-distributed-kernels -split-input-file %s -o - > %t.explicit
+// RUN: diff -u %t.explicit %t.pipeline
+
+// -- Stage-by-stage equivalence: pipeline must match round-tripping to file
+// RUN: enzymexlamlir-opt --sdy-propagation-pipeline --sdy-insert-explicit-reshards -split-input-file %s -o %t.stage1
+// RUN: enzymexlamlir-opt --convert-main-to-distributed-function -split-input-file %t.stage1 -o %t.stage2
+// RUN: enzymexlamlir-opt --materialize-distributed-collectives -split-input-file %t.stage2 -o %t.stage3
+// RUN: enzymexlamlir-opt --cluster-distributed-kernels -split-input-file %t.stage3 -o %t.stage4
+// RUN: diff -u %t.stage4 %t.pipeline
 
 // 2D mesh sharding on both X axes.
 module @x_plus_xt_2d {
@@ -17,6 +32,9 @@ module @x_plus_xt_2d {
 // CHECK: op: %{{.*}} = stablehlo.add %{{.*}} : tensor<4x4xf32>
 // CHECK-NEXT:     partitioning axes: [a[[A2D:[0-9]+]]:4 ] [a[[B2D:[0-9]+]]:4 ]
 // CHECK-NOT: partitioning axes: [a[[A2D]]:4 ] [a[[A2D]]:4 ]
+// CONVERT-LABEL: module @x_plus_xt_2d {
+// CONVERT-NOT: func.func @main
+// CONVERT: distributed.DistributedYield
 
 // -----
 
@@ -77,6 +95,12 @@ module @reduce_over_sharded_axis {
 // CHAIN-SAME: reduces (%{{.*}})
 // CHAIN-SAME: maps %{{.*}} : !axis.map
 
+// MATERIALIZE-LABEL: module @reduce_over_sharded_axis {
+// MATERIALIZE: distributed.Collective
+// MATERIALIZE-SAME: reduces (%{{.*}})
+// MATERIALIZE-SAME: maps %{{.*}} : !axis.map
+// MATERIALIZE-NOT: distributed.DistributedKernel
+
 // -----
 
 // Reduce over one sharded axis, then consume the reduced value through both a
@@ -104,6 +128,16 @@ module @reduce_then_conflict_chain {
 // CHAIN: distributed.Collective
 // CHAIN-SAME: reduces ()
 // CHAIN-SAME: maps %{{.*}} : !axis.map
+
+// MATERIALIZE-LABEL: module @reduce_then_conflict_chain {
+// MATERIALIZE: distributed.Collective
+// MATERIALIZE-SAME: reduces (%{{.*}})
+// MATERIALIZE-SAME: maps %{{.*}} : !axis.map
+// MATERIALIZE: distributed.Await
+// MATERIALIZE: distributed.Collective
+// MATERIALIZE-SAME: reduces ()
+// MATERIALIZE-SAME: maps %{{.*}} : !axis.map
+// MATERIALIZE-NOT: distributed.DistributedKernel
 
 // -----
 

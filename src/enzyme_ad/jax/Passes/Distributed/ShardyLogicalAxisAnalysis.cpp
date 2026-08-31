@@ -324,10 +324,11 @@ bool structurallyEqual(sdy::DimensionShardingAttr a,
   return true;
 }
 
-ShardyLogicalAxisAnalysis::ShardyLogicalAxisAnalysis(func::FuncOp sdy_func)
+ShardyLogicalAxisAnalysis::ShardyLogicalAxisAnalysis(Operation *sdy_func)
     : sdy_func(sdy_func) {
-  assert(sdy_func.getBody().hasOneBlock() &&
-         "axis analysis currently only supports single-block functions");
+  assert(sdy_func && sdy_func->getNumRegions() == 1 &&
+         sdy_func->getRegion(0).hasOneBlock() &&
+         "axis analysis currently only supports single-block main ops");
   buildInitialSymbols();
   buildUnion();
 }
@@ -341,19 +342,18 @@ MainFunctionShardyLogicalAxisAnalysis::MainFunctionShardyLogicalAxisAnalysis(
     return;
   }
 
-  func::FuncOp mainFunc = mainFunctionAnalysis.getMainFuncOp();
-  if (!mainFunc) {
+  Operation *mainOp = mainFunctionAnalysis.getMainFunctionOp();
+  if (!mainOp) {
     valid = false;
     return;
   }
-  if (!mainFunc.getBody().hasOneBlock()) {
+  if (mainOp->getNumRegions() != 1 || !mainOp->getRegion(0).hasOneBlock()) {
     valid = false;
     return;
   }
 
-  analysis =
-      &analysisManager
-           .getChildAnalysis<ShardyLogicalAxisAnalysis, func::FuncOp>(mainFunc);
+  analysis = &analysisManager.getChildAnalysis<ShardyLogicalAxisAnalysis>(
+      mainOp);
 }
 
 ShardyLogicalAxisAnalysis::SymbolsPerPartitioningAxis
@@ -452,7 +452,8 @@ ShardyLogicalAxisAnalysis::getTensorPartitionDims(BlockArgument arg) {
 void ShardyLogicalAxisAnalysis::buildInitialSymbols() {
   // For each tensor argument, add a partitioning dimension per
   // tensor axis.
-  for (BlockArgument arg : sdy_func.getArguments()) {
+  Block &bodyBlock = sdy_func->getRegion(0).front();
+  for (BlockArgument arg : bodyBlock.getArguments()) {
     auto tensorType = dyn_cast_or_null<RankedTensorType>(arg.getType());
     if (!tensorType) {
       continue;
@@ -462,7 +463,7 @@ void ShardyLogicalAxisAnalysis::buildInitialSymbols() {
     dims.reserve(tensorType.getRank());
     for (int64_t dimIdx = 0; dimIdx < tensorType.getRank(); ++dimIdx) {
       if (tensorType.isDynamicDim(dimIdx)) {
-        sdy_func.emitError()
+        sdy_func->emitError()
             << "function argument tensor at position " << arg.getArgNumber()
             << " has a dynamic dimension at index " << dimIdx
             << "; axis analysis requires static-ranked arguments";
@@ -479,7 +480,7 @@ void ShardyLogicalAxisAnalysis::buildInitialSymbols() {
 
   // For each direct op in the entry block, if it
   // has a sharding rule, give it a new symbol per partitioning factor.
-  for (Operation &opRef : sdy_func.getBody().front().getOperations()) {
+  for (Operation &opRef : bodyBlock.getOperations()) {
     Operation *op = &opRef;
 
     if (auto reshard_op = toCollective(op)) {
@@ -651,7 +652,8 @@ void ShardyLogicalAxisAnalysis::buildUnion() {
     }
   };
 
-  for (BlockArgument arg : sdy_func.getArguments()) {
+  Block &bodyBlock = sdy_func->getRegion(0).front();
+  for (BlockArgument arg : bodyBlock.getArguments()) {
     auto it = argToPartitioningAxes.find(arg);
     if (it == argToPartitioningAxes.end()) {
       continue;
@@ -661,7 +663,7 @@ void ShardyLogicalAxisAnalysis::buildUnion() {
     mergeUses(producerMapping, [&]() { return arg.getUses(); });
   }
 
-  sdy_func.walk([&](Operation *op) {
+  sdy_func->walk([&](Operation *op) {
     // if we are a sharding op or a reshard op,
     // need to consider merges between producer / consumer
     for (OpResult result : op->getResults()) {
