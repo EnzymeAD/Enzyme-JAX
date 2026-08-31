@@ -28952,12 +28952,13 @@ struct DotGeneralReshape final
       newShape.push_back(dim);
     }
 
+    // The result element type may differ from the operands' (e.g. a bf16 x bf16
+    // -> f32 accumulating dot), so take it from the op being replaced: the
+    // trailing reshape has to be element-type preserving.
     auto newDotGeneral = stablehlo::DotGeneralOp::create(
         rewriter, op.getLoc(),
-        RankedTensorType::get(
-            newShape,
-            cast<RankedTensorType>(newLhs.getType()).getElementType()),
-        newLhs, newRhs,
+        RankedTensorType::get(newShape, op.getType().getElementType()), newLhs,
+        newRhs,
         stablehlo::DotDimensionNumbersAttr::get(
             rewriter.getContext(), adjustedLhsBatchingDims,
             adjustedRhsBatchingDims, adjustedLhsContractingDims,
