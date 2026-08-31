@@ -1,5 +1,6 @@
 // #include "mhlo/IR/hlo_ops.h"
 #include "mlir/Conversion/LLVMCommon/TypeConverter.h"
+#include "mlir/Dialect/GPU/IR/GPUDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
@@ -26,6 +27,44 @@ namespace enzyme {
 } // namespace mlir
 
 using namespace mlir;
+
+static FailureOr<int32_t> mapMPIToNCCLDatatype(enzymexla::MPIDatatype dt) {
+  switch (dt) {
+  case enzymexla::MPIDatatype::MPI_INT32_T:
+  case enzymexla::MPIDatatype::MPI_INT:
+    return 2; // ncclInt32
+  case enzymexla::MPIDatatype::MPI_UINT32_T:
+  case enzymexla::MPIDatatype::MPI_UNSIGNED:
+    return 3; // ncclUint32
+  case enzymexla::MPIDatatype::MPI_INT64_T:
+  case enzymexla::MPIDatatype::MPI_LONG_LONG_INT:
+    return 4; // ncclInt64
+  case enzymexla::MPIDatatype::MPI_UINT64_T:
+  case enzymexla::MPIDatatype::MPI_UNSIGNED_LONG_LONG:
+    return 5; // ncclUint64
+  case enzymexla::MPIDatatype::MPI_FLOAT:
+    return 7; // ncclFloat32
+  case enzymexla::MPIDatatype::MPI_DOUBLE:
+    return 8; // ncclFloat64
+  default:
+    return failure();
+  }
+}
+
+static FailureOr<int32_t> mapMPIToNCCLRedOp(enzymexla::MPIOp op) {
+  switch (op) {
+  case enzymexla::MPIOp::MPI_SUM:
+    return 0; // ncclSum
+  case enzymexla::MPIOp::MPI_PROD:
+    return 1; // ncclProd
+  case enzymexla::MPIOp::MPI_MAX:
+    return 2; // ncclMax
+  case enzymexla::MPIOp::MPI_MIN:
+    return 3; // ncclMin
+  default:
+    return failure();
+  }
+}
 
 struct MPICommRankOpLowering
     : public OpRewritePattern<enzymexla::MPICommRankOp> {
@@ -1374,9 +1413,11 @@ struct MPIAllreduceOpLowering
     : public OpRewritePattern<enzymexla::MPIAllreduceOp> {
 
   std::string backend;
-  MPIAllreduceOpLowering(std::string backend, MLIRContext *context,
-                         PatternBenefit benefit = 1)
-      : OpRewritePattern(context, benefit), backend(backend) {}
+  size_t ncclCommPtr;
+  MPIAllreduceOpLowering(std::string backend, size_t ncclCommPtr,
+                         MLIRContext *context, PatternBenefit benefit = 1)
+      : OpRewritePattern(context, benefit), backend(backend),
+        ncclCommPtr(ncclCommPtr) {}
 
   LogicalResult matchAndRewrite(enzymexla::MPIAllreduceOp op,
                                 PatternRewriter &rewriter) const override {
@@ -1551,6 +1592,139 @@ struct MPIAllreduceOpLowering
       rewriter.replaceOp(op, jitCall);
 
       return success();
+
+    } else if (backend == "cuda") {
+
+      auto moduleOp = op->getParentOfType<ModuleOp>();
+      auto sendbufType = cast<RankedTensorType>(op.getOperand(0).getType());
+      auto llvmPtrType = LLVM::LLVMPointerType::get(context);
+      auto llvmVoidType = LLVM::LLVMVoidType::get(context);
+      auto i32Type = IntegerType::get(context, 32);
+      auto i64Type = IntegerType::get(context, 64);
+
+      std::string ncclFunctionName = "ncclAllReduce";
+
+      auto datatype = op.getDatatype();
+      StringRef datatypeName = stringifyMPIDatatype(datatype);
+      auto ncclDatatype = mapMPIToNCCLDatatype(datatype);
+
+      auto mpiOp = op.getOp();
+      StringRef mpiOpName = stringifyMPIOp(mpiOp);
+      auto ncclRedOp = mapMPIToNCCLRedOp(mpiOp);
+
+      // Generate the enzymexla_wrapper LLVM function body
+      std::string wrapperFunctionName =
+          "enzymexla_wrapper_" + ncclFunctionName + "_" + mpiOpName.str() +
+          "_" + datatypeName.str();
+
+      if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapperFunctionName)) {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+        // Create the wrapper function decl
+        auto funcType = LLVM::LLVMFunctionType::get(
+            llvmVoidType, {llvmPtrType, llvmPtrType}, false);
+
+        auto wrapperFunc = rewriter.create<LLVM::LLVMFuncOp>(
+            op.getLoc(), wrapperFunctionName, funcType);
+
+        // Add function-level memory effects attribute
+        auto memoryEffectsAttr = rewriter.getArrayAttr(
+            {rewriter.getStringAttr("read"), rewriter.getStringAttr("write"),
+             rewriter.getStringAttr("allocate"),
+             rewriter.getStringAttr("free")});
+        wrapperFunc->setAttr("enzymexla.memory_effects", memoryEffectsAttr);
+        wrapperFunc->setAttr("enzymexla.device_abi",
+                             rewriter.getStringAttr("cuda"));
+
+        Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
+        rewriter.setInsertionPointToStart(entryBlock);
+
+        // Add argument-level memory effects attribute to all arguments
+        for (unsigned i = 0; i < 2; ++i) {
+          wrapperFunc.setArgAttr(i, "enzymexla.memory_effects",
+                                 memoryEffectsAttr);
+        }
+
+        // Get the function arguments
+        Value sendbufPtr = entryBlock->getArgument(0);
+        Value recvbufPtr = entryBlock->getArgument(1);
+
+        Value count = rewriter.create<LLVM::ConstantOp>(
+            op.getLoc(), i64Type,
+            rewriter.getI64IntegerAttr(sendbufType.getNumElements()));
+
+        Value dtype = rewriter.create<LLVM::ConstantOp>(
+            op.getLoc(), i32Type, rewriter.getI32IntegerAttr(*ncclDatatype));
+
+        // Get the address of the communicator
+        Value ncclCommInt = rewriter.create<LLVM::ConstantOp>(
+            op.getLoc(), i64Type, rewriter.getI64IntegerAttr(ncclCommPtr));
+        Value ncclComm = rewriter.create<LLVM::IntToPtrOp>(
+            op.getLoc(), llvmPtrType, ncclCommInt);
+
+        Value redOp = rewriter.create<LLVM::ConstantOp>(
+            op.getLoc(), i32Type, rewriter.getI32IntegerAttr(*ncclRedOp));
+
+        Value stream =
+            enzymexla::GetStreamOp::create(rewriter, op.getLoc(), llvmPtrType);
+
+        Value sendDataPtr =
+            rewriter.create<LLVM::LoadOp>(op.getLoc(), llvmPtrType, sendbufPtr);
+        Value recvDataPtr =
+            rewriter.create<LLVM::LoadOp>(op.getLoc(), llvmPtrType, recvbufPtr);
+
+        // Call ncclAllReduce
+        // TODO error handling
+        rewriter.create<LLVM::CallOp>(
+            op.getLoc(), TypeRange{i32Type},
+            SymbolRefAttr::get(context, ncclFunctionName),
+            ValueRange{sendDataPtr, recvDataPtr, count, dtype, redOp, ncclComm,
+                       stream});
+
+        rewriter.create<LLVM::ReturnOp>(op.getLoc(), ValueRange{});
+      }
+
+      // Insert ncclAllReduce function declaration if not already present
+      if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(ncclFunctionName)) {
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+        auto funcType = LLVM::LLVMFunctionType::get(i32Type,
+                                                    {llvmPtrType, llvmPtrType,
+                                                     i64Type, i32Type, i32Type,
+                                                     llvmPtrType, llvmPtrType},
+                                                    false);
+
+        rewriter.create<LLVM::LLVMFuncOp>(op.getLoc(), ncclFunctionName,
+                                          funcType, LLVM::Linkage::External);
+      }
+
+      Value operands[] = {op.getOperand(0), op.getOperand(1)};
+
+      // Add inbuf to output operand aliases
+      SmallVector<Attribute> aliases;
+      aliases.push_back(stablehlo::OutputOperandAliasAttr::get(
+          context,
+          /*output_operand_aliases=*/std::vector<int64_t>{},
+          /*operand_index=*/1,
+          /*operand_tuple_indices=*/std::vector<int64_t>{}));
+
+      auto jitCall = rewriter.create<enzymexla::JITCallOp>(
+          op.getLoc(), op->getResultTypes(),
+          mlir::FlatSymbolRefAttr::get(context, wrapperFunctionName),
+          ValueRange{operands}, rewriter.getStringAttr(""),
+          /*operand_layouts=*/nullptr,
+          /*result_layouts=*/nullptr,
+          /*arg_attrs=*/nullptr,
+          /*res_attrs=*/nullptr,
+          /*output_operand_aliases=*/rewriter.getArrayAttr(aliases),
+          /*xla_side_effect_free=*/nullptr);
+
+      rewriter.replaceOp(op, jitCall);
+
+      return success();
+
     } else {
       return rewriter.notifyMatchFailure(op,
                                          "Backend not supported: " + backend);
@@ -1729,7 +1903,101 @@ struct LowerEnzymeXLAMPIPass
   using Base::Base;
 
   void runOnOperation() override {
-    auto context = getOperation()->getContext();
+    // TODO: declare LowerEnzymeXLAMPIPass as a ModuleOp pass in Passes.td
+    // so getOperation() has the right static type here.
+    ModuleOp module = dyn_cast<ModuleOp>(getOperation());
+    if (!module) {
+      getOperation()->emitError()
+          << "lower-enzymexla-mpi must run on a builtin.module";
+      signalPassFailure();
+      return;
+    }
+
+    auto context = module->getContext();
+
+    if (backend == "cuda" && !ncclCommPtr) {
+      if (module
+              .walk([&](Operation *op) -> WalkResult {
+                if (isa<enzymexla::MPIBarrierOp, enzymexla::MPISendOp,
+                        enzymexla::MPIRecvOp, enzymexla::MPIIsendOp,
+                        enzymexla::MPIIrecvOp, enzymexla::MPIWaitOp,
+                        enzymexla::MPIWaitallOp, enzymexla::MPIAllreduceOp,
+                        enzymexla::MPIBcastOp>(op)) {
+                  return WalkResult::interrupt();
+                }
+                return WalkResult::advance();
+              })
+              .wasInterrupted()) {
+        module.emitError() << "lower-enzymexla-mpi with backend=cuda requires "
+                              "a valid NCCL communicator pointer";
+        signalPassFailure();
+        return;
+      }
+    }
+
+    if (backend == "cuda") {
+      bool hasUnsupportedMPIOp = false;
+      module.walk([&](Operation *op) {
+        if (isa<enzymexla::MPICommRankOp, enzymexla::MPICommSizeOp,
+                enzymexla::MPIBarrierOp, enzymexla::MPISendOp,
+                enzymexla::MPIRecvOp, enzymexla::MPIIsendOp,
+                enzymexla::MPIIrecvOp, enzymexla::MPIWaitOp,
+                enzymexla::MPIWaitallOp, enzymexla::MPIBcastOp>(op)) {
+          op->emitError() << "MPI operation not supported by backend cuda";
+          hasUnsupportedMPIOp = true;
+        }
+      });
+      if (hasUnsupportedMPIOp) {
+        signalPassFailure();
+        return;
+      }
+
+      bool hasUnsupportedAllreduce = false;
+      module.walk([&](enzymexla::MPIAllreduceOp op) {
+        auto sendbufType =
+            dyn_cast<RankedTensorType>(op.getOperand(0).getType());
+        auto recvbufType =
+            dyn_cast<RankedTensorType>(op.getOperand(1).getType());
+        if (!sendbufType || !sendbufType.hasStaticShape()) {
+          op.emitError() << "CUDA NCCL allreduce lowering requires statically "
+                            "shaped sendbuf to derive the element count";
+          hasUnsupportedAllreduce = true;
+          return;
+        }
+        if (!recvbufType || !recvbufType.hasStaticShape()) {
+          op.emitError() << "CUDA NCCL allreduce lowering requires statically "
+                            "shaped recvbuf to validate the element count";
+          hasUnsupportedAllreduce = true;
+          return;
+        }
+        if (sendbufType.getShape() != recvbufType.getShape()) {
+          op.emitError() << "CUDA NCCL allreduce lowering requires sendbuf and "
+                            "recvbuf to have the same shape";
+          hasUnsupportedAllreduce = true;
+          return;
+        }
+
+        auto datatype = op.getDatatype();
+        if (failed(mapMPIToNCCLDatatype(datatype))) {
+          op.emitError() << "MPI datatype not supported by NCCL lowering: "
+                         << stringifyMPIDatatype(datatype);
+          hasUnsupportedAllreduce = true;
+          return;
+        }
+
+        auto mpiOp = op.getOp();
+        if (failed(mapMPIToNCCLRedOp(mpiOp))) {
+          op.emitError() << "MPI reduction op not supported by NCCL lowering: "
+                         << stringifyMPIOp(mpiOp);
+          hasUnsupportedAllreduce = true;
+        }
+      });
+      if (hasUnsupportedAllreduce) {
+        signalPassFailure();
+        return;
+      }
+    }
+
     RewritePatternSet patterns(context);
 
     patterns.add<MPICommRankOpLowering>(backend, context);
@@ -1741,13 +2009,12 @@ struct LowerEnzymeXLAMPIPass
     patterns.add<MPIIrecvOpLowering>(backend, context);
     patterns.add<MPIWaitOpLowering>(backend, context);
     patterns.add<MPIWaitallOpLowering>(backend, context);
-    patterns.add<MPIAllreduceOpLowering>(backend, context);
+    patterns.add<MPIAllreduceOpLowering>(backend, ncclCommPtr, context);
     patterns.add<MPIBcastOpLowering>(backend, context);
 
     GreedyRewriteConfig config;
     config.enableFolding();
-    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
-                                     config))) {
+    if (failed(applyPatternsGreedily(module, std::move(patterns), config))) {
       signalPassFailure();
     }
   }

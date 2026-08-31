@@ -16,6 +16,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "mlir/Analysis/DataLayoutAnalysis.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -257,11 +258,10 @@ template <typename IfT> struct IfOfSameBaseGEPs : public OpRewritePattern<IfT> {
         auto idx = gep.getIndices()[0];
         OpBuilder::InsertionGuard guard(rewriter);
         rewriter.setInsertionPoint(y);
-        int64_t scale =
-            inBytes[i]
-                ? (int64_t)DataLayout::closest(gep).getTypeSize(
-                      gep.getElemType())
-                : 1;
+        int64_t scale = inBytes[i]
+                            ? (int64_t)DataLayout::closest(gep).getTypeSize(
+                                  gep.getElemType())
+                            : 1;
         if (auto dv = dyn_cast_if_present<Value>(idx)) {
           if (scale != 1) {
             Value k = arith::ConstantOp::create(

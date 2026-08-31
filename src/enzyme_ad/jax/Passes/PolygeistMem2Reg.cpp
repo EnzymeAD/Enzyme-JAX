@@ -794,6 +794,28 @@ public:
     if (!sameExtent && (!size || !osize))
       return Match::Maybe;
 
+    // Two accesses that each land at a known byte and reach a known distance
+    // either share bytes or they do not, whatever units either counted its way
+    // there in: a byte written through one spelling of the allocation says
+    // nothing about a field that lies elsewhere, however differently that
+    // field is read. The stride comparison below cannot relate two paths
+    // counted in different sizes, so it would call such a pair Maybe.
+    if (size && osize) {
+      auto mine = constantOffset(dl), theirs = o.constantOffset(dl);
+      if (mine && theirs) {
+        uint64_t myEnd = *mine + *size, oEnd = *theirs + *osize;
+        if (*theirs >= myEnd || *mine >= oEnd)
+          return Match::None;
+        if (*mine == *theirs && *size == *osize)
+          return Match::Exact;
+        if (*theirs >= *mine && oEnd <= myEnd && containedAt) {
+          *containedAt = *theirs - *mine;
+          return Match::Contains;
+        }
+        return Match::Maybe;
+      }
+    }
+
     // Lying wholly within is a question of where each lands and how far it
     // reaches, which needs nothing of how either counts its way there. It is
     // a real relationship whether or not the caller wants the offset: hand
