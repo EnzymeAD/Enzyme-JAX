@@ -139,7 +139,13 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       "func.func(canonicalize-loops),"
       "llvm.func(canonicalize-loops),"
       "canonicalize-scf-for,"
+      // An access at a branch-chosen index names no slot the forwarding can
+      // see; splitting it into the arms gives each a constant one, which is
+      // why another mem2reg run follows. The branch it needs is only here,
+      // once affine-cfg has structured it.
       "" + canonicalize + ",affine-cfg," + canonicalize + ","
+      "split-branched-accesses," + canonicalize + ",polygeist-mem2reg,"
+      "" + canonicalize + ","
       "func.func(canonicalize-loops),"
       "llvm.func(canonicalize-loops),"
       "" + canonicalize + ",llvm-to-affine-access,"
