@@ -47,7 +47,8 @@ def GetPhysicalMeshAxesOp
 }
 
 def LogicalMeshAxesOp : DistributedOp<"LogicalMeshAxes", [
-  DeclarativeDistributedMetadata, DeclareOpInterfaceMethods<InferTypeOpInterface>
+  DeclarativeDistributedMetadata, DeclareOpInterfaceMethods<InferTypeOpInterface>,
+  DeclareOpInterfaceMethods<MaybeTemporaryInterface>
 ]> {
   let description = [{Declares a new logical mesh of axes,
                       which may or may not correspond to a physical mesh.}];

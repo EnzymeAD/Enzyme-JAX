@@ -66,6 +66,24 @@ def ClusterDistributedKernelsPass
   }];
 }
 
+def StabilizeAxisOrderPass
+    : Pass<"stabilize-axis-order", "::mlir::ModuleOp"> {
+  let summary = "Canonicalize the textual placement of axis-algebra ops for "
+                "determinism.";
+  let dependentDialects = [
+    "enzyme::axis::AxisDialect", "enzyme::distributed::DistributedDialect"
+  ];
+  let description = [{
+    Sorts axis algebra ops into the order they appear as uses. This has no
+    semantics meaning: mainly this pass is used for canonicalization / to 
+    simplify testing of otherwise arbitrary axis orderings.
+
+    Expects --canonicalize (or equivalent DCE) to have already run: any
+    axis-algebra op left unreferenced by a real op afterward is unexpected
+    and is reported with a remark before being erased.
+  }];
+}
+
 def InsertPhysicalMeshPass : Pass<"insert-physical-mesh", "::mlir::ModuleOp"> {
   let summary = "Insert a mock distributed.PhysicalMesh derived from Shardy "
                 "mesh metadata.";
