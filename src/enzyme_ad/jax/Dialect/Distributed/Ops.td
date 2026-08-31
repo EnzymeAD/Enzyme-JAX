@@ -192,7 +192,7 @@ def DistributedCollectiveOp
   let assemblyFormat =
       "$input_object `:` type($input_object) `on` $input_mesh `:` "
       "type($input_mesh) `to` $output_type `on` $output_mesh `:` "
-      "type($output_mesh) `reduces` custom<ReductionGroups>($reduction_groups) `:` type($reduction_groups) `maps` $mapping `:` "
+      "type($output_mesh) `reduces` custom<VariadicWithTypes>($reduction_groups, type($reduction_groups)) `maps` $mapping `:` "
       "type($mapping) $reduction_bodies attr-dict";
   let hasVerifier = 1;
 }

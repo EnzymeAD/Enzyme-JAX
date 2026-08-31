@@ -20,7 +20,7 @@ def IndexedTensorShardingAttr : AttrDef<DistributedDialect, "IndexedTensorShardi
   );
 
   let assemblyFormat = [{
-    `<` `dim_partitioning_axes` `=` $dim_partitioning_axes `,`
+    `<` `dim_partitioning_axes` `=` `[` $dim_partitioning_axes `]` `:`
     `unreduced_axes` `=` $unreduced_axes `>`
   }];
 }
@@ -36,7 +36,7 @@ def IndexedTensorShardingPerValueAttr : AttrDef<DistributedDialect, "IndexedTens
   );
 
   let assemblyFormat = [{
-    `<` $shardings `>`
+    `<` `[` $shardings `]` `>`
   }];
 }
 

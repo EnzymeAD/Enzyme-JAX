@@ -6,9 +6,16 @@
 
 namespace mlir::enzyme::distributed {
 
-static ParseResult parseReductionGroups(
+/**
+ *  Parses a type-annotated variadic as:
+ *  (%arg1 : type1, %arg2 : type2, ..., %argN : typeN)
+ *  OR
+ *  ()
+ */
+static ParseResult parseVariadicWithTypes(
     OpAsmParser &parser,
-  SmallVectorImpl<OpAsmParser::UnresolvedOperand> &reductionGroups) {
+    SmallVectorImpl<OpAsmParser::UnresolvedOperand> &ssa_operands,
+    SmallVectorImpl<Type> &types) {
 
   if (failed(parser.parseLParen())) {
     return failure();
@@ -23,7 +30,12 @@ static ParseResult parseReductionGroups(
     if (parser.parseOperand(reductionGroup)) {
       return failure();
     }
-    reductionGroups.push_back(reductionGroup);
+    ssa_operands.push_back(reductionGroup);
+    Type type;
+    if (parser.parseColonType(type)) {
+      return failure();
+    }
+    types.push_back(type);
 
     if (succeeded(parser.parseOptionalComma())) {
       continue;
@@ -37,14 +49,15 @@ static ParseResult parseReductionGroups(
   return success();
 }
 
-static void printReductionGroups(OpAsmPrinter &printer, Operation *op,
-                                 OperandRange reductionGroups) {
+static void printVariadicWithTypes(OpAsmPrinter &printer, Operation *op,
+                                   OperandRange ssa_operands, TypeRange types) {
   printer << '(';
-  for (auto [idx, reductionGroup] : llvm::enumerate(reductionGroups)) {
+  for (auto [idx, pair] : llvm::enumerate(llvm::zip(ssa_operands, types))) {
+    auto [ssa_operand, type] = pair;
     if (idx != 0) {
       printer << ", ";
     }
-    printer << reductionGroup;
+    printer << ssa_operand << " : " << type;
   }
   printer << ')';
 }
