@@ -246,7 +246,7 @@ void JITCallOp::getCanonicalizationPatterns(RewritePatternSet &results,
   results.insert<ReadOnlyArg<JITCallOp>, ReadNoneArg<JITCallOp>>(context);
 }
 
-/// Simplify pointer2memref(memref2pointer(x)) to cast(x)
+/// Simplify pointer2memref(memref2pointer(x)) to a view of x
 class Memref2Pointer2MemrefCast final
     : public OpRewritePattern<Pointer2MemrefOp> {
 public:
@@ -259,19 +259,30 @@ public:
       return failure();
     auto smt = cast<MemRefType>(src.getSource().getType());
     auto omt = cast<MemRefType>(op.getType());
-    if (smt.getShape().size() != omt.getShape().size())
-      return failure();
-    for (unsigned i = 1; i < smt.getShape().size(); i++) {
-      if (smt.getShape()[i] != omt.getShape()[i])
-        return failure();
-    }
     if (smt.getElementType() != omt.getElementType())
       return failure();
-    if (smt.getMemorySpace() != omt.getMemorySpace())
+    // A strided source is not the flat view the pointer handed out, and a
+    // rank change is what delinearization rebuilds into typed accesses.
+    if (!smt.getLayout().isIdentity() || !omt.getLayout().isIdentity() ||
+        smt.getRank() != omt.getRank())
       return failure();
 
-    rewriter.replaceOpWithNewOp<memref::CastOp>(op, op.getType(),
-                                                src.getSource());
+    // The shapes adapt in the source's own space, so a memory space cast
+    // lands last, closest to the accesses, where it can sink into them.
+    auto inSrcSpace =
+        MemRefType::get(omt.getShape(), omt.getElementType(),
+                        MemRefLayoutAttrInterface{}, smt.getMemorySpace());
+    Value v = src.getSource();
+    if (inSrcSpace != smt) {
+      if (!memref::CastOp::areCastCompatible(smt, inSrcSpace))
+        return failure();
+      v = memref::CastOp::create(rewriter, op.getLoc(), inSrcSpace, v)
+              .getResult();
+    }
+    if (smt.getMemorySpace() != omt.getMemorySpace())
+      v = memref::MemorySpaceCastOp::create(rewriter, op.getLoc(), omt, v)
+              .getResult();
+    rewriter.replaceOp(op, v);
     return success();
   }
 };
