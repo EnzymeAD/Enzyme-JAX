@@ -251,27 +251,23 @@ LogicalResult reshapeAtAddr(enzymexla::Pointer2MemrefOp &atAddr) {
   //                         << " memref loads, " << memrefStores
   //                         << " memref stores, " << others << " others\n");
 
-  if (auto ba = dyn_cast<BlockArgument>(m2p.getSource())) {
-    if (isa<FunctionOpInterface>(ba.getOwner()->getParentOp())) {
-      if (&(ba.getOwner()->getParent()->front()) == ba.getOwner()) {
+  auto memref = atAddr.getResult();
+  auto oldMt = cast<MemRefType>(memref.getType());
 
-        auto memref = atAddr.getResult();
-        auto oldMt = cast<MemRefType>(memref.getType());
+  if (newMt.getElementType() != oldMt.getElementType())
+    return failure();
 
-        if (newMt.getElementType() != oldMt.getElementType())
-          return failure();
+  // The buffer the view is taken of is named by the shape it was declared
+  // with, wherever it came from: a function's argument, or an alloca beside
+  // the accesses. The view's flat index splits over that shape exactly, by
+  // floordiv and mod, so nothing has to be proven in bounds for the split to
+  // mean what the flat index meant.
+  return reshapeMemref2(memref, shape, [&](RewriterBase &rewriter) {
+    rewriter.setInsertionPoint(atAddr);
 
-        return reshapeMemref2(memref, shape, [&](RewriterBase &rewriter) {
-          rewriter.setInsertionPoint(atAddr);
-
-          atAddr = rewriter.replaceOpWithNewOp<enzymexla::Pointer2MemrefOp>(
-              atAddr, newMt, atAddr.getSource());
-        });
-      }
-    }
-  }
-
-  return failure();
+    atAddr = rewriter.replaceOpWithNewOp<enzymexla::Pointer2MemrefOp>(
+        atAddr, newMt, atAddr.getSource());
+  });
 }
 
 } // namespace
