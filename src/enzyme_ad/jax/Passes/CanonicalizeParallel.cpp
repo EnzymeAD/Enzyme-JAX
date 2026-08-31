@@ -16,6 +16,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "mlir/Analysis/DataLayoutAnalysis.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -204,6 +205,8 @@ template <typename IfT> struct IfOfSameBaseGEPs : public OpRewritePattern<IfT> {
 
     SmallVector<Type> newTypes;
     SmallVector<LLVM::GEPOp> tmpl(ifOp->getNumResults(), nullptr);
+    SmallVector<LLVM::GEPOp> other(ifOp->getNumResults(), nullptr);
+    SmallVector<char> inBytes(ifOp->getNumResults(), 0);
     bool any = false;
     for (auto [i, res] : llvm::enumerate(ifOp->getResults())) {
       newTypes.push_back(res.getType());
@@ -212,17 +215,28 @@ template <typename IfT> struct IfOfSameBaseGEPs : public OpRewritePattern<IfT> {
       auto f = dyn_cast_if_present<LLVM::GEPOp>(
           elseY->getOperand(i).getDefiningOp());
       if (!t || !f || t.getBase() != f.getBase() ||
-          t.getElemType() != f.getElemType() || t.getType() != f.getType() ||
-          t.getIndices().size() != 1 || f.getIndices().size() != 1)
+          t.getType() != f.getType() || t.getIndices().size() != 1 ||
+          f.getIndices().size() != 1)
         continue;
       auto dynT = dyn_cast_if_present<Value>(t.getIndices()[0]);
       auto dynF = dyn_cast_if_present<Value>(f.getIndices()[0]);
-      if (dynT && dynF && dynT.getType() != dynF.getType())
+      // Element types that disagree share no index scale, so the arms choose
+      // a byte offset and the rebuilt gep walks bytes.
+      bool bytes = t.getElemType() != f.getElemType();
+      Type i64 = rewriter.getI64Type();
+      if (bytes) {
+        if ((dynT && dynT.getType() != i64) || (dynF && dynF.getType() != i64))
+          continue;
+      } else if (dynT && dynF && dynT.getType() != dynF.getType()) {
         continue;
+      }
       tmpl[i] = t;
-      newTypes[i] = dynT   ? dynT.getType()
+      other[i] = f;
+      inBytes[i] = bytes;
+      newTypes[i] = bytes  ? i64
+                    : dynT ? dynT.getType()
                     : dynF ? dynF.getType()
-                           : rewriter.getI64Type();
+                           : i64;
       any = true;
     }
     if (!any)
@@ -241,16 +255,28 @@ template <typename IfT> struct IfOfSameBaseGEPs : public OpRewritePattern<IfT> {
           continue;
         auto gep = cast<LLVM::GEPOp>(ops[i].getDefiningOp());
         auto idx = gep.getIndices()[0];
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPoint(y);
+        int64_t scale = inBytes[i]
+                            ? (int64_t)DataLayout::closest(gep).getTypeSize(
+                                  gep.getElemType())
+                            : 1;
         if (auto dv = dyn_cast_if_present<Value>(idx)) {
+          if (scale != 1) {
+            Value k = arith::ConstantOp::create(
+                          rewriter, ifOp.getLoc(), newTypes[i],
+                          rewriter.getIntegerAttr(newTypes[i], scale))
+                          .getResult();
+            dv = arith::MulIOp::create(rewriter, ifOp.getLoc(), dv, k)
+                     .getResult();
+          }
           ops[i] = dv;
           continue;
         }
-        OpBuilder::InsertionGuard guard(rewriter);
-        rewriter.setInsertionPoint(y);
         ops[i] = arith::ConstantOp::create(
                      rewriter, ifOp.getLoc(), newTypes[i],
-                     rewriter.getIntegerAttr(newTypes[i],
-                                             cast<IntegerAttr>(idx).getInt()))
+                     rewriter.getIntegerAttr(
+                         newTypes[i], cast<IntegerAttr>(idx).getInt() * scale))
                      .getResult();
       }
       rewriter.modifyOpInPlace(y, [&] { y->setOperands(ops); });
@@ -260,11 +286,14 @@ template <typename IfT> struct IfOfSameBaseGEPs : public OpRewritePattern<IfT> {
     SmallVector<Value> results;
     for (auto [i, g] : llvm::enumerate(tmpl)) {
       Value v = newIf->getResult(i);
-      if (g)
-        v = LLVM::GEPOp::create(
-                rewriter, g.getLoc(), g.getType(), g.getElemType(), g.getBase(),
-                SmallVector<LLVM::GEPArg>{v}, g.getNoWrapFlags())
+      if (g) {
+        Type elem = inBytes[i] ? rewriter.getI8Type() : g.getElemType();
+        // Neither arm's guarantees hold on the other's path.
+        v = LLVM::GEPOp::create(rewriter, g.getLoc(), g.getType(), elem,
+                                g.getBase(), SmallVector<LLVM::GEPArg>{v},
+                                g.getNoWrapFlags() & other[i].getNoWrapFlags())
                 .getResult();
+      }
       results.push_back(v);
     }
     rewriter.replaceOp(ifOp, results);
@@ -278,7 +307,6 @@ template <typename IfT> struct IfOfSameBaseGEPs : public OpRewritePattern<IfT> {
 /// sibling arm could not otherwise name them.
 static bool gepsDifferOnlyInBase(LLVM::GEPOp t, LLVM::GEPOp f) {
   if (t.getElemType() != f.getElemType() || t.getType() != f.getType() ||
-      t.getNoWrapFlags() != f.getNoWrapFlags() ||
       t.getRawConstantIndices() != f.getRawConstantIndices() ||
       t.getBase() == f.getBase() ||
       t.getDynamicIndices().size() != f.getDynamicIndices().size())
@@ -303,6 +331,7 @@ struct IfOfDifferentBaseGEPs : public OpRewritePattern<IfT> {
 
     SmallVector<Type> newTypes;
     SmallVector<LLVM::GEPOp> tmpl(ifOp->getNumResults(), nullptr);
+    SmallVector<LLVM::GEPOp> other(ifOp->getNumResults(), nullptr);
     bool any = false;
     for (auto [i, res] : llvm::enumerate(ifOp->getResults())) {
       newTypes.push_back(res.getType());
@@ -313,6 +342,7 @@ struct IfOfDifferentBaseGEPs : public OpRewritePattern<IfT> {
       if (!t || !f || !gepsDifferOnlyInBase(t, f))
         continue;
       tmpl[i] = t;
+      other[i] = f;
       newTypes[i] = t.getBase().getType();
       any = true;
     }
@@ -338,9 +368,11 @@ struct IfOfDifferentBaseGEPs : public OpRewritePattern<IfT> {
     for (auto [i, g] : llvm::enumerate(tmpl)) {
       Value v = newIf->getResult(i);
       if (g) {
-        Operation *cloned = rewriter.clone(*g.getOperation());
-        cloned->setOperand(0, v);
-        v = cloned->getResult(0);
+        auto cloned = cast<LLVM::GEPOp>(rewriter.clone(*g.getOperation()));
+        cloned.setOperand(0, v);
+        // Neither arm's guarantees hold on the other's path.
+        cloned.setNoWrapFlags(g.getNoWrapFlags() & other[i].getNoWrapFlags());
+        v = cloned.getResult();
       }
       results.push_back(v);
     }
@@ -366,9 +398,10 @@ struct SelectOfDifferentBaseGEPs : public OpRewritePattern<arith::SelectOp> {
         arith::SelectOp::create(rewriter, sel.getLoc(), sel.getCondition(),
                                 t.getBase(), f.getBase())
             .getResult();
-    Operation *cloned = rewriter.clone(*t.getOperation());
-    cloned->setOperand(0, base);
-    rewriter.replaceOp(sel, cloned->getResult(0));
+    auto cloned = cast<LLVM::GEPOp>(rewriter.clone(*t.getOperation()));
+    cloned.setOperand(0, base);
+    cloned.setNoWrapFlags(t.getNoWrapFlags() & f.getNoWrapFlags());
+    rewriter.replaceOp(sel, cloned.getResult());
     return success();
   }
 };

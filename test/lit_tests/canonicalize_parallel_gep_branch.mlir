@@ -139,3 +139,57 @@ module {
 // CHECK-NEXT: %3 = "enzymexla.pointer2memref"(%2) : (!llvm.ptr<3>) -> memref<?xf64>
 // CHECK-NEXT: return %3 : memref<?xf64>
 // CHECK-NEXT: }
+
+// -----
+
+// The arms need not agree on the no-wrap flags or on the element type: the
+// rebuilt gep keeps only the guarantees both made, and element types that
+// disagree share no index scale, so the choice becomes a byte offset.
+
+#set = affine_set<()[s0] : (s0 >= 1)>
+module {
+  // the real shape: same base, different element types AND different nowrap flags
+  func.func private @mixed_elem_and_flags(%b: !llvm.ptr<3>, %i: i64, %j: i64, %s: index) -> !llvm.ptr<3> {
+    %g1 = llvm.getelementptr inbounds %b[%i] : (!llvm.ptr<3>, i64) -> !llvm.ptr<3>, !llvm.array<288 x i8>
+    %g2 = llvm.getelementptr inbounds|nuw %b[%j] : (!llvm.ptr<3>, i64) -> !llvm.ptr<3>, i8
+    %r = affine.if #set()[%s] -> !llvm.ptr<3> {
+      affine.yield %g1 : !llvm.ptr<3>
+    } else {
+      affine.yield %g2 : !llvm.ptr<3>
+    }
+    return %r : !llvm.ptr<3>
+  }
+  // same element type, differing flags only
+  func.func private @flags_only(%b: !llvm.ptr<3>, %i: i64, %j: i64, %s: index) -> !llvm.ptr<3> {
+    %g1 = llvm.getelementptr inbounds %b[%i] : (!llvm.ptr<3>, i64) -> !llvm.ptr<3>, f64
+    %g2 = llvm.getelementptr inbounds|nuw %b[%j] : (!llvm.ptr<3>, i64) -> !llvm.ptr<3>, f64
+    %r = affine.if #set()[%s] -> !llvm.ptr<3> {
+      affine.yield %g1 : !llvm.ptr<3>
+    } else {
+      affine.yield %g2 : !llvm.ptr<3>
+    }
+    return %r : !llvm.ptr<3>
+  }
+}
+
+// CHECK:  func.func private @mixed_elem_and_flags(%[[f1:.+]]: !llvm.ptr<3>, %[[f2:.+]]: i64, %[[f3:.+]]: i64, %[[f4:.+]]: index) -> !llvm.ptr<3> {
+// CHECK-NEXT:  %[[f5:.+]] = arith.constant 288 : i64
+// CHECK-NEXT:  %[[f6:.+]] = affine.if #set()[%[[f4]]] -> i64 {
+// CHECK-NEXT:  %[[f7:.+]] = arith.muli %[[f2]], %[[f5]] : i64
+// CHECK-NEXT:  affine.yield %[[f7]] : i64
+// CHECK-NEXT:  } else {
+// CHECK-NEXT:  affine.yield %[[f3]] : i64
+// CHECK-NEXT:  }
+// CHECK-NEXT:  %[[f8:.+]] = llvm.getelementptr inbounds %[[f1]][%[[f6]]] : (!llvm.ptr<3>, i64) -> !llvm.ptr<3>, i8
+// CHECK-NEXT:  return %[[f8]] : !llvm.ptr<3>
+// CHECK-NEXT:  }
+
+// CHECK:  func.func private @flags_only(%[[f1:.+]]: !llvm.ptr<3>, %[[f2:.+]]: i64, %[[f3:.+]]: i64, %[[f4:.+]]: index) -> !llvm.ptr<3> {
+// CHECK-NEXT:  %[[f5:.+]] = affine.if #set()[%[[f4]]] -> i64 {
+// CHECK-NEXT:  affine.yield %[[f2]] : i64
+// CHECK-NEXT:  } else {
+// CHECK-NEXT:  affine.yield %[[f3]] : i64
+// CHECK-NEXT:  }
+// CHECK-NEXT:  %[[f6:.+]] = llvm.getelementptr inbounds %[[f1]][%[[f5]]] : (!llvm.ptr<3>, i64) -> !llvm.ptr<3>, f64
+// CHECK-NEXT:  return %[[f6]] : !llvm.ptr<3>
+// CHECK-NEXT:  }
