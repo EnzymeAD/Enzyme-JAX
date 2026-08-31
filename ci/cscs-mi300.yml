@@ -29,6 +29,9 @@ test-gb-25:
     # ROCm path — UENV-specific, update when the UENV hash changes.
     # ROCM_PATH is overridden in the script to point at the overlay (view + MIOpen).
     ROCM_PATH: "/user-environment/env/default"
+    # Clique init measured at ~57 s here, so the 10 s default floods the log with
+    # "may be stuck" warnings it then retracts. See cscs-mi300.md: "Collective timeouts".
+    XLA_FLAGS: "--xla_gpu_first_collective_call_warn_stuck_timeout_seconds=120 --xla_gpu_first_collective_call_terminate_timeout_seconds=600"
 
   script:
     # Create all job-scoped directories up front
@@ -307,12 +310,24 @@ test-gb-25:
         Pkg.instantiate()
         Pkg.gc()"
 
-    # Compile the GB-25 simulation
+    # Compile the GB-25 simulation. cd first: compile.jl writes its .xla artifacts
+    # relative to the *current* directory, which is otherwise still Reactant.jl/deps
+    # from the instantiate step. See cscs-mi300.md: "Collectives gate".
+    - cd "${GB25_DIR}"
     - ${SRUN_UENV} timeout 29m "${CI_PROJECT_DIR}/run_julia.sh" --project="${GB25_DIR}" ${JULIA_FLAGS} "${GB25_DIR}/sharding/sharded_baroclinic_instability_simulation_compile.jl" ${FLOAT_TYPE}
 
     # Check remaining collective operations against thresholds (copied from A100 case; calibrate for MI300)
     - |
       cd "${GB25_DIR}"
+      # Guard: with no .xla files every threshold below compares against 0 and the
+      # gate passes without checking anything. See cscs-mi300.md: "Collectives gate".
+      NUM_XLA=$(find . -name 'optimised_sharded_baroclinic_instability*.xla' | wc -l)
+      if [[ "${NUM_XLA}" -eq 0 ]]; then
+          echo "ERROR: compile step produced no optimised_sharded_baroclinic_instability*.xla under $(pwd);" >&2
+          echo "       the collective thresholds below would pass vacuously." >&2
+          exit 1
+      fi
+      echo "Checking ${NUM_XLA} .xla file(s) against collective thresholds"
       OK="true"
       ALL_TO_ALL_THRESHOLD=1000
       ALL_GATHER_THRESHOLD=1000
@@ -341,3 +356,12 @@ test-gb-25:
 
     # Test correctness
     - ${SRUN_UENV} timeout 19m "${CI_PROJECT_DIR}/run_julia.sh" --project="${GB25_DIR}" ${JULIA_FLAGS} "${GB25_DIR}/correctness/correctness_sharded_baroclinic_instability_simulation_run.jl" ${FLOAT_TYPE}
+
+  # The runner wipes the job directory on cleanup, so a crash otherwise leaves
+  # nothing to inspect. Keep the compiled program text. (MLIR dumps under
+  # GB-25/sharding/mlir_dumps/ are far larger and deliberately not collected.)
+  artifacts:
+    when: always
+    expire_in: 1 week
+    paths:
+      - GB-25/optimised_sharded_baroclinic_instability*.xla
