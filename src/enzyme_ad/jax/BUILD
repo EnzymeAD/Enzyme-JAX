@@ -99,6 +99,7 @@ cc_library(
             "xla_ffi/cuda/blas.cc",
             "xla_ffi/cuda/register.cc",
             "xla_ffi/cuda/throw_error.cc",
+            "xla_ffi/host/blas.cc",
             "xla_ffi/host/mpi.cc",
             "xla_ffi/host/register.cc",
             "xla_ffi/host/throw_error.cc",
@@ -119,6 +120,7 @@ cc_library(
     deps = [
         "@com_google_absl//absl/base",
         "@com_google_absl//absl/strings:str_format",
+        "@libblastrampoline",
         "@xla//xla/ffi:ffi_api",
         "@xla//xla/ffi/api:c_api",
         "@xla//xla/ffi/api:ffi",

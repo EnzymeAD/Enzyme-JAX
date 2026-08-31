@@ -7,6 +7,8 @@
 
 #include "../export_macro.h"
 
+#include "libblastrampoline.h"
+
 // libblastrampoline C API wrapper
 extern "C" MLIR_CAPI_EXPORTED int32_t
 enzymexla_lbt_forward(const char *libname, int32_t clear, int32_t verbose,
