@@ -6,32 +6,30 @@ LIBBLASTRAMPOLINE_COMMIT = "072b5f67895bec0b92f8c83194567c1c48e9833d"  # v5.15.0
 LIBBLASTRAMPOLINE_SHA256 = ""
 
 PATCHES = [
-    # fix PREFIX var name
+    # fix LBT_ROOT path
     """
-    sed -i "s/prefix/PREFIX/g" src/Make.inc
+    sed -i "s/LBT_ROOT := .*/LBT_ROOT := \\$(EXT_BUILD_ROOT)\\/external\\/libblastrampoline/g" src/Makefile
     """,
-    # fix Make.inc path
+    # remove prefix assignment and replace DESTDIR with INSTALLDIR
     """
-    sed -i "s/include \\$(LBT_ROOT)\\/src/include \\$(BUILD_TMPDIR)/g" src/Makefile
+    sed -i "/prefix ?= prefix/d" src/Make.inc
     """,
-    # remove erroring install command (also, no header to copy)
     """
-    sed -i "/-@cp -Ra \\$(LBT_ROOT)\\/include\\/*/d" src/Makefile
+    sed -i "s/DESTDIR/INSTALLDIR/g" src/Makefile
     """,
-    # # fix source path of header install command
+    # dereference symbolic links
     """
-    sed -i "s/@cp -a \\$(LBT_ROOT)\\/src\\/libblastrampoline.h/@cp -a \\$(BUILD_TMPDIR)\\/libblastrampoline.h/g" src/Makefile
+    sed -i "s/cp -a/cp -l/g" src/Makefile
     """,
-    # follow symbolic links
     """
-    sed -i "s/@cp/@cp -L/g" src/Makefile
+    sed -i "s/cp -Ra/cp -RL/g" src/Makefile
     """,
     # enable echoing commands to ease debugging
     """
-    sed -i "s/-@//g" src/Makefile
+    sed -i -E "s/^(\\s*)@/\\1/g" src/Makefile
     """,
     """
-    sed -i "s/^@//g" src/Makefile
+    sed -i "s/-@//g" src/Makefile
     """,
 ]
 
