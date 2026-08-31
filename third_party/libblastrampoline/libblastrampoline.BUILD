@@ -12,9 +12,9 @@ make(
     name = "libblastrampoline",
     env = {},  # TODO forward env vars from BB for cross-compiling
     lib_source = "//:srcs",
-    out_shared_libs = ["libblastrampoline.so.5"],
-    targets = [
-        "all",
-        "install",
+    out_shared_libs = [
+        "libblastrampoline.so",
+        "libblastrampoline.so.5",
+        "libblastrampoline.so.5.15.0",
     ],
 )
