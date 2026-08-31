@@ -16,8 +16,10 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Matchers.h"
 #include "mlir/IR/Threading.h"
 #include "mlir/Interfaces/FunctionInterfaces.h"
@@ -173,6 +175,204 @@ struct Pointer2MemrefOfAddrSpaceCast
   }
 };
 
+/// Builds an if of the same flavour and condition with new result types.
+static scf::IfOp createLikeIf(PatternRewriter &rewriter, scf::IfOp ifOp,
+                              TypeRange types) {
+  return scf::IfOp::create(rewriter, ifOp.getLoc(), types, ifOp.getCondition(),
+                           /*withElseRegion=*/true);
+}
+static affine::AffineIfOp createLikeIf(PatternRewriter &rewriter,
+                                       affine::AffineIfOp ifOp,
+                                       TypeRange types) {
+  return affine::AffineIfOp::create(rewriter, ifOp.getLoc(), types,
+                                    ifOp.getIntegerSet(), ifOp.getOperands(),
+                                    /*withElseRegion=*/true);
+}
+
+/// The if counterpart of SelectOfSameBaseGEPs: arms that index one base
+/// differently choose the index instead, with a constant index materialized
+/// where the gep kept it in an attribute.
+template <typename IfT> struct IfOfSameBaseGEPs : public OpRewritePattern<IfT> {
+  using OpRewritePattern<IfT>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(IfT ifOp,
+                                PatternRewriter &rewriter) const override {
+    if (ifOp->getNumResults() == 0 || ifOp.getElseRegion().empty())
+      return failure();
+    Operation *thenY = ifOp.getThenRegion().front().getTerminator();
+    Operation *elseY = ifOp.getElseRegion().front().getTerminator();
+
+    SmallVector<Type> newTypes;
+    SmallVector<LLVM::GEPOp> tmpl(ifOp->getNumResults(), nullptr);
+    bool any = false;
+    for (auto [i, res] : llvm::enumerate(ifOp->getResults())) {
+      newTypes.push_back(res.getType());
+      auto t = dyn_cast_if_present<LLVM::GEPOp>(
+          thenY->getOperand(i).getDefiningOp());
+      auto f = dyn_cast_if_present<LLVM::GEPOp>(
+          elseY->getOperand(i).getDefiningOp());
+      if (!t || !f || t.getBase() != f.getBase() ||
+          t.getElemType() != f.getElemType() || t.getType() != f.getType() ||
+          t.getIndices().size() != 1 || f.getIndices().size() != 1)
+        continue;
+      auto dynT = dyn_cast_if_present<Value>(t.getIndices()[0]);
+      auto dynF = dyn_cast_if_present<Value>(f.getIndices()[0]);
+      if (dynT && dynF && dynT.getType() != dynF.getType())
+        continue;
+      tmpl[i] = t;
+      newTypes[i] = dynT   ? dynT.getType()
+                    : dynF ? dynF.getType()
+                           : rewriter.getI64Type();
+      any = true;
+    }
+    if (!any)
+      return failure();
+
+    auto newIf = createLikeIf(rewriter, ifOp, newTypes);
+    for (unsigned r = 0; r < 2; ++r) {
+      Region &from = r ? ifOp.getElseRegion() : ifOp.getThenRegion();
+      Region &to = r ? newIf.getElseRegion() : newIf.getThenRegion();
+      rewriter.inlineRegionBefore(from, to, to.begin());
+      rewriter.eraseBlock(&to.back());
+      Operation *y = to.front().getTerminator();
+      SmallVector<Value> ops(y->getOperands());
+      for (auto [i, g] : llvm::enumerate(tmpl)) {
+        if (!g)
+          continue;
+        auto gep = cast<LLVM::GEPOp>(ops[i].getDefiningOp());
+        auto idx = gep.getIndices()[0];
+        if (auto dv = dyn_cast_if_present<Value>(idx)) {
+          ops[i] = dv;
+          continue;
+        }
+        OpBuilder::InsertionGuard guard(rewriter);
+        rewriter.setInsertionPoint(y);
+        ops[i] = arith::ConstantOp::create(
+                     rewriter, ifOp.getLoc(), newTypes[i],
+                     rewriter.getIntegerAttr(newTypes[i],
+                                             cast<IntegerAttr>(idx).getInt()))
+                     .getResult();
+      }
+      rewriter.modifyOpInPlace(y, [&] { y->setOperands(ops); });
+    }
+
+    rewriter.setInsertionPointAfter(newIf);
+    SmallVector<Value> results;
+    for (auto [i, g] : llvm::enumerate(tmpl)) {
+      Value v = newIf->getResult(i);
+      if (g)
+        v = LLVM::GEPOp::create(
+                rewriter, g.getLoc(), g.getType(), g.getElemType(), g.getBase(),
+                SmallVector<LLVM::GEPArg>{v}, g.getNoWrapFlags())
+                .getResult();
+      results.push_back(v);
+    }
+    rewriter.replaceOp(ifOp, results);
+    return success();
+  }
+};
+
+/// The other way two geps disagree: identical indices off different bases,
+/// as MFEM's shared memory slices are indexed. The branch chooses the base.
+/// Operands the arms share are defined above the branch already, since the
+/// sibling arm could not otherwise name them.
+static bool gepsDifferOnlyInBase(LLVM::GEPOp t, LLVM::GEPOp f) {
+  if (t.getElemType() != f.getElemType() || t.getType() != f.getType() ||
+      t.getNoWrapFlags() != f.getNoWrapFlags() ||
+      t.getRawConstantIndices() != f.getRawConstantIndices() ||
+      t.getBase() == f.getBase() ||
+      t.getDynamicIndices().size() != f.getDynamicIndices().size())
+    return false;
+  for (auto [a, b] :
+       llvm::zip_equal(t.getDynamicIndices(), f.getDynamicIndices()))
+    if (a != b)
+      return false;
+  return true;
+}
+
+template <typename IfT>
+struct IfOfDifferentBaseGEPs : public OpRewritePattern<IfT> {
+  using OpRewritePattern<IfT>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(IfT ifOp,
+                                PatternRewriter &rewriter) const override {
+    if (ifOp->getNumResults() == 0 || ifOp.getElseRegion().empty())
+      return failure();
+    Operation *thenY = ifOp.getThenRegion().front().getTerminator();
+    Operation *elseY = ifOp.getElseRegion().front().getTerminator();
+
+    SmallVector<Type> newTypes;
+    SmallVector<LLVM::GEPOp> tmpl(ifOp->getNumResults(), nullptr);
+    bool any = false;
+    for (auto [i, res] : llvm::enumerate(ifOp->getResults())) {
+      newTypes.push_back(res.getType());
+      auto t = dyn_cast_if_present<LLVM::GEPOp>(
+          thenY->getOperand(i).getDefiningOp());
+      auto f = dyn_cast_if_present<LLVM::GEPOp>(
+          elseY->getOperand(i).getDefiningOp());
+      if (!t || !f || !gepsDifferOnlyInBase(t, f))
+        continue;
+      tmpl[i] = t;
+      newTypes[i] = t.getBase().getType();
+      any = true;
+    }
+    if (!any)
+      return failure();
+
+    auto newIf = createLikeIf(rewriter, ifOp, newTypes);
+    for (unsigned r = 0; r < 2; ++r) {
+      Region &from = r ? ifOp.getElseRegion() : ifOp.getThenRegion();
+      Region &to = r ? newIf.getElseRegion() : newIf.getThenRegion();
+      rewriter.inlineRegionBefore(from, to, to.begin());
+      rewriter.eraseBlock(&to.back());
+      Operation *y = to.front().getTerminator();
+      SmallVector<Value> ops(y->getOperands());
+      for (auto [i, g] : llvm::enumerate(tmpl))
+        if (g)
+          ops[i] = cast<LLVM::GEPOp>(ops[i].getDefiningOp()).getBase();
+      rewriter.modifyOpInPlace(y, [&] { y->setOperands(ops); });
+    }
+
+    rewriter.setInsertionPointAfter(newIf);
+    SmallVector<Value> results;
+    for (auto [i, g] : llvm::enumerate(tmpl)) {
+      Value v = newIf->getResult(i);
+      if (g) {
+        Operation *cloned = rewriter.clone(*g.getOperation());
+        cloned->setOperand(0, v);
+        v = cloned->getResult(0);
+      }
+      results.push_back(v);
+    }
+    rewriter.replaceOp(ifOp, results);
+    return success();
+  }
+};
+
+/// The select twin. A pointer result means the condition is a scalar i1: a
+/// shaped condition selects elementwise and would need a shaped result.
+struct SelectOfDifferentBaseGEPs : public OpRewritePattern<arith::SelectOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::SelectOp sel,
+                                PatternRewriter &rewriter) const override {
+    if (!isa<LLVM::LLVMPointerType>(sel.getType()))
+      return failure();
+    auto t = sel.getTrueValue().getDefiningOp<LLVM::GEPOp>();
+    auto f = sel.getFalseValue().getDefiningOp<LLVM::GEPOp>();
+    if (!t || !f || !gepsDifferOnlyInBase(t, f))
+      return failure();
+    Value base =
+        arith::SelectOp::create(rewriter, sel.getLoc(), sel.getCondition(),
+                                t.getBase(), f.getBase())
+            .getResult();
+    Operation *cloned = rewriter.clone(*t.getOperation());
+    cloned->setOperand(0, base);
+    rewriter.replaceOp(sel, cloned->getResult(0));
+    return success();
+  }
+};
+
 struct CanonicalizeParallelPass
     : public enzyme::impl::CanonicalizeParallelPassBase<
           CanonicalizeParallelPass> {
@@ -188,9 +388,12 @@ struct CanonicalizeParallelPass
       dialect->getCanonicalizationPatterns(owningPatterns);
     for (RegisteredOperationName op : ctx->getRegisteredOperations())
       op.getCanonicalizationPatterns(owningPatterns, ctx);
-    owningPatterns
-        .add<TruncOrConst, SelectOfSameBaseGEPs, SinkAddrSpaceCastThroughGEP,
-             Pointer2MemrefOfAddrSpaceCast>(ctx);
+    owningPatterns.add<
+        TruncOrConst, SelectOfSameBaseGEPs, SinkAddrSpaceCastThroughGEP,
+        Pointer2MemrefOfAddrSpaceCast, IfOfSameBaseGEPs<scf::IfOp>,
+        IfOfSameBaseGEPs<affine::AffineIfOp>, IfOfDifferentBaseGEPs<scf::IfOp>,
+        IfOfDifferentBaseGEPs<affine::AffineIfOp>, SelectOfDifferentBaseGEPs>(
+        ctx);
     FrozenRewritePatternSet patterns(std::move(owningPatterns));
 
     GreedyRewriteConfig config;
