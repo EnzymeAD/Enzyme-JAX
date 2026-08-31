@@ -1,48 +1,61 @@
 // RUN: enzymexlamlir-opt --split-input-file %s | FileCheck %s
 
-// Roundtrip distributed.Function / distributed.DistributedCall /
+// Roundtrip mesh metadata, distributed.DistributedFunction, and
 // distributed.DistributedYield.
 module {
   distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 3>, !distributed.physical_comm_axis<3, 1>]
 
   %p0, %p1 = distributed.GetPhysicalMeshAxes @mesh0 : !distributed.physical_comm_axis<2, 3>, !distributed.physical_comm_axis<3, 1>
+  %l0, %l1 = distributed.LogicalMeshAxes [2, 3] : !distributed.logical_mesh_axis<2>, !distributed.logical_mesh_axis<3>
+  %r0 = distributed.ReplicationAxis 4 : !distributed.replication_axis<4>
 
   %axis = axis.getaxis tensor<12xf32> 0
   %f0 = axis.factor %axis : !axis.shape_axis<tensor<12xf32>, 0> <2, 6>
   %f1 = axis.factor %axis : !axis.shape_axis<tensor<12xf32>, 0> <2, 3>
-  %f2 = axis.factor %axis : !axis.shape_axis<tensor<12xf32>, 0> <3, 1>
   %ctx_callee = axis.product %f0, %f1 : !axis.axis_factor<!axis.shape_axis<tensor<12xf32>, 0>, 2, 6>, !axis.axis_factor<!axis.shape_axis<tensor<12xf32>, 0>, 2, 3>
-  %ctx_rep = axis.product %f2 : !axis.axis_factor<!axis.shape_axis<tensor<12xf32>, 0>, 3, 1>
-  %ctx_caller = axis.product %f0, %f1, %f2 : !axis.axis_factor<!axis.shape_axis<tensor<12xf32>, 0>, 2, 6>, !axis.axis_factor<!axis.shape_axis<tensor<12xf32>, 0>, 2, 3>, !axis.axis_factor<!axis.shape_axis<tensor<12xf32>, 0>, 3, 1>
 
-  distributed.Function @callee context %ctx_callee : !axis.factor_group<4> arg_types [i32] ret_types [i32] {
-  ^bb0(%arg0: i32):
-    distributed.DistributedYield %arg0 i32
-  }
-
-  distributed.Function @caller context %ctx_caller : !axis.factor_group<12> arg_types [i32] ret_types [i32] {
-  ^bb0(%arg0: i32):
-    %r = distributed.DistributedCall @callee replicate_over %ctx_rep %arg0 : !axis.factor_group<3>, i32 -> i32
-    distributed.DistributedYield %r i32
-  }
+  "distributed.DistributedFunction"(%ctx_callee) <{argument_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0]] : unreduced_axes = []>]>, function_type = (tensor<12xf32>) -> tensor<12xf32>, output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0]] : unreduced_axes = [0]>]>, sym_name = "identity"}> ({
+  ^bb0(%arg0: tensor<12xf32>):
+    distributed.DistributedYield %arg0 tensor<12xf32>
+  }) : (!axis.factor_group<4>) -> ()
 }
 
 // CHECK-LABEL: module {
 // CHECK: distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 3>, !distributed.physical_comm_axis<3, 1>]
 // CHECK: %{{.*}}:2 = distributed.GetPhysicalMeshAxes @mesh0 : !distributed.physical_comm_axis<2, 3>, !distributed.physical_comm_axis<3, 1>
-// CHECK: distributed.Function @callee context
-// CHECK: distributed.Function @caller context
-// CHECK: distributed.DistributedCall @callee replicate_over
+// CHECK: %{{.*}}:2 = distributed.LogicalMeshAxes [2, 3] : !distributed.logical_mesh_axis<2>, !distributed.logical_mesh_axis<3>
+// CHECK: %{{.*}} = distributed.ReplicationAxis 4 : <4>
+// CHECK: "distributed.DistributedFunction"(%{{.*}}) <{argument_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = {{\[\[}}0{{\]\]}} : unreduced_axes = []>]>, function_type = (tensor<12xf32>) -> tensor<12xf32>, output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = {{\[\[}}0{{\]\]}} : unreduced_axes = [0]>]>, sym_name = "identity"}> ({
+// CHECK: distributed.DistributedYield %{{.*}} tensor<12xf32>
+// CHECK: }) : (!axis.factor_group<4>) -> ()
+
+// -----
+
+// Roundtrip distributed.DistributedKernel custom assembly.
+module {
+  %axis = axis.getaxis tensor<8xf32> 0
+  %factor = axis.factor %axis : !axis.shape_axis<tensor<8xf32>, 0> <2, 4>
+  %ctx = axis.product %factor : !axis.axis_factor<!axis.shape_axis<tensor<8xf32>, 0>, 2, 4>
+  %input = tensor.empty() : tensor<8xf32>
+
+  %result = distributed.DistributedKernel %input : tensor<8xf32> #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0]] : unreduced_axes = []>]>
+    -> tensor<8xf32> #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0]] : unreduced_axes = []>]>
+    axes %ctx : !axis.factor_group<2> {
+  ^bb0(%arg0: tensor<8xf32>):
+    distributed.DistributedYield %arg0 tensor<8xf32>
+  }
+}
+
+// CHECK-LABEL: module {
+// CHECK: %{{.*}} = distributed.DistributedKernel %{{.*}} : tensor<8xf32> <[<dim_partitioning_axes = {{\[\[}}0{{\]\]}} : unreduced_axes = []>]>
+// CHECK-NEXT: -> tensor<8xf32> <[<dim_partitioning_axes = {{\[\[}}0{{\]\]}} : unreduced_axes = []>]>
+// CHECK-NEXT: axes %{{.*}} : !axis.factor_group<2> {
+// CHECK: distributed.DistributedYield %{{.*}} tensor<8xf32>
 
 // -----
 
 // Roundtrip distributed.Collective / distributed.Await.
 module {
-  func.func @add(%lhs: f32, %rhs: f32) -> f32 {
-    %0 = arith.addf %lhs, %rhs : f32
-    return %0 : f32
-  }
-
   distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>]
 
   %p0, %p1 = distributed.GetPhysicalMeshAxes @mesh0 : !distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>
@@ -63,19 +76,21 @@ module {
   %lhs_group_2 = axis.product %lf0, %tf_remain : !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>, !axis.axis_factor<!axis.shape_axis<tensor<8xf32>, 0>, 2, 1>
   %rhs_group_2 = axis.product %tf_out : !axis.axis_factor<!axis.shape_axis<tensor<4xf32>, 0>, 4, 1>
   %mapping = axis.map %lhs_group_1, %lhs_group_2 to %mesh_out, %rhs_group_2 : [!axis.factor_group<4>, !axis.factor_group<4>] [!axis.factor_group<4>, !axis.factor_group<4>]
+  %input = tensor.empty() : tensor<8xf32>
 
-  distributed.Function @collective context %mesh_in : !axis.factor_group<4> arg_types [tensor<8xf32>] ret_types [tensor<4xf32>] {
-  ^bb0(%arg0: tensor<8xf32>):
-    %h = distributed.Collective %arg0 : tensor<8xf32> on %mesh_in : !axis.factor_group<4> to tensor<4xf32> on %mesh_out : !axis.factor_group<4> reduces (%reduction @add) : !axis.factor_group<2> maps %mapping : !axis.map
-    %v = distributed.Await %h : !distributed.asynch_handle<tensor<4xf32>> -> tensor<4xf32>
-    distributed.DistributedYield %v tensor<4xf32>
+  %h = distributed.Collective %input : tensor<8xf32> on %mesh_in : !axis.factor_group<4> to tensor<4xf32> on %mesh_out : !axis.factor_group<4> reduces (%reduction : !axis.factor_group<2>) maps %mapping : !axis.map {
+  ^bb0(%lhs: f32, %rhs: f32):
+    %sum = arith.addf %lhs, %rhs : f32
+    distributed.DistributedYield %sum f32
   }
+  %v = distributed.Await %h : !distributed.asynch_handle<tensor<4xf32>> -> tensor<4xf32>
 }
 
-// CHECK: func.func @add(%{{.*}}: f32, %{{.*}}: f32) -> f32
 // CHECK: distributed.PhysicalMesh @mesh0 device_target "cpu" axes [!distributed.physical_comm_axis<2, 2>, !distributed.physical_comm_axis<2, 1>]
 // CHECK: axis.map %{{.*}}, %{{.*}} to %{{.*}}, %{{.*}} : [!axis.factor_group<4>, !axis.factor_group<4>] [!axis.factor_group<4>, !axis.factor_group<4>]
-// CHECK: %{{.*}} = distributed.Collective %{{.*}} : tensor<8xf32> on %{{.*}} : <4> to tensor<4xf32> on %{{.*}} : <4> reduces (%{{.*}} @add) : !axis.factor_group<2> maps %{{.*}} : !axis.map
+// CHECK: %{{.*}} = distributed.Collective %{{.*}} : tensor<8xf32> on %{{.*}} : <4> to tensor<4xf32> on %{{.*}} : <4> reduces (%{{.*}} : !axis.factor_group<2>) maps %{{.*}} : !axis.map {
+// CHECK: arith.addf
+// CHECK: distributed.DistributedYield %{{.*}} f32
 // CHECK: %{{.*}} = distributed.Await %{{.*}} : <tensor<4xf32>> -> tensor<4xf32>
 
 // -----

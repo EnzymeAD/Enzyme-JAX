@@ -49,7 +49,7 @@ func.func @factor_requires_axis_op_result(%arg0: !axis.shape_axis<tensor<6xf32>,
 
 func.func @factor_requires_positive_extents() {
   %axis = axis.getaxis tensor<6xf32> 0
-  // expected-error @+1 {{requires factor extent to be > 0}}
+  // expected-error @+1 {{requires extent to be positive, got 0}}
   %f0 = axis.factor %axis : !axis.shape_axis<tensor<6xf32>, 0> <0, 1>
   return
 }
@@ -58,7 +58,7 @@ func.func @factor_requires_positive_extents() {
 
 func.func @factor_requires_positive_stride() {
   %axis = axis.getaxis tensor<6xf32> 0
-  // expected-error @+1 {{requires factor stride to be > 0}}
+  // expected-error @+1 {{requires stride to be positive, got 0}}
   %f0 = axis.factor %axis : !axis.shape_axis<tensor<6xf32>, 0> <2, 0>
   return
 }
