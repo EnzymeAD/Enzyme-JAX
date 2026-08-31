@@ -1580,6 +1580,132 @@ template <typename T> struct StoreSelect : public OpRewritePattern<T> {
 };
 
 
+// A view can also arrive through an if that merely multiplexes two views
+// defined above it. The access cannot move into the original arms - its
+// other operands are computed after the if - but it can re-condition at
+// the access site: a fresh if with the same guard, each arm accessing its
+// concrete view.
+static bool definedAbove(Value v, Operation *ifOp) {
+  if (Operation *def = v.getDefiningOp())
+    return !ifOp->isAncestor(def);
+  return !ifOp->isAncestor(cast<BlockArgument>(v).getOwner()->getParentOp());
+}
+
+// Returns the two views the if result multiplexes, when both dominate it.
+static std::optional<std::pair<Value, Value>> ifYieldedViews(Value memref) {
+  auto res = dyn_cast<OpResult>(memref);
+  if (!res)
+    return std::nullopt;
+  Value tv, fv;
+  if (auto ifOp = dyn_cast<scf::IfOp>(res.getOwner())) {
+    if (ifOp.getElseRegion().empty())
+      return std::nullopt;
+    tv = ifOp.thenYield().getOperand(res.getResultNumber());
+    fv = ifOp.elseYield().getOperand(res.getResultNumber());
+    if (!definedAbove(tv, ifOp) || !definedAbove(fv, ifOp))
+      return std::nullopt;
+    return std::make_pair(tv, fv);
+  }
+  if (auto ifOp = dyn_cast<affine::AffineIfOp>(res.getOwner())) {
+    if (!ifOp.hasElse())
+      return std::nullopt;
+    tv = cast<affine::AffineYieldOp>(ifOp.getThenBlock()->getTerminator())
+             .getOperand(res.getResultNumber());
+    fv = cast<affine::AffineYieldOp>(ifOp.getElseBlock()->getTerminator())
+             .getOperand(res.getResultNumber());
+    if (!definedAbove(tv, ifOp) || !definedAbove(fv, ifOp))
+      return std::nullopt;
+    return std::make_pair(tv, fv);
+  }
+  return std::nullopt;
+}
+
+// Rebuilds the guard at the access site and runs armFn in each arm.
+template <typename FnT>
+static LogicalResult recondition(Operation *acc, Value memref,
+                                 PatternRewriter &rewriter, TypeRange results,
+                                 FnT &&armFn) {
+  Operation *ifOp = cast<OpResult>(memref).getOwner();
+  if (auto sif = dyn_cast<scf::IfOp>(ifOp)) {
+    auto newIf = scf::IfOp::create(rewriter, acc->getLoc(), results,
+                                   sif.getCondition(), /*hasElse=*/true);
+    for (int arm = 0; arm < 2; ++arm) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      Block *b = arm ? newIf.elseBlock() : newIf.thenBlock();
+      // The zero-result builder already made the terminator.
+      if (b->empty())
+        rewriter.setInsertionPointToStart(b);
+      else
+        rewriter.setInsertionPoint(b->getTerminator());
+      Value v = armFn(arm, rewriter);
+      if (v)
+        scf::YieldOp::create(rewriter, acc->getLoc(), ValueRange{v});
+    }
+    if (!results.empty())
+      rewriter.replaceOp(acc, newIf);
+    else
+      rewriter.eraseOp(acc);
+    return success();
+  }
+  auto aif = cast<affine::AffineIfOp>(ifOp);
+  auto newIf = affine::AffineIfOp::create(
+      rewriter, acc->getLoc(), results, aif.getIntegerSet(), aif.getOperands(),
+      /*withElseRegion=*/true);
+  for (int arm = 0; arm < 2; ++arm) {
+    OpBuilder::InsertionGuard guard(rewriter);
+    Block *b = arm ? newIf.getElseBlock() : newIf.getThenBlock();
+    if (b->empty())
+      rewriter.setInsertionPointToStart(b);
+    else
+      rewriter.setInsertionPoint(b->getTerminator());
+    Value v = armFn(arm, rewriter);
+    if (v)
+      affine::AffineYieldOp::create(rewriter, acc->getLoc(), ValueRange{v});
+  }
+  if (!results.empty())
+    rewriter.replaceOp(acc, newIf);
+  else
+    rewriter.eraseOp(acc);
+  return success();
+}
+
+template <typename T> struct LoadIfYield : public OpRewritePattern<T> {
+  using OpRewritePattern<T>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(T ld,
+                                PatternRewriter &rewriter) const override {
+    auto views = ifYieldedViews(ld.getMemRef());
+    if (!views)
+      return failure();
+    return recondition(ld, ld.getMemRef(), rewriter, TypeRange{ld.getType()},
+                       [&](int arm, PatternRewriter &rw) -> Value {
+                         auto ld2 = cast<T>(rw.clone(*ld));
+                         ld2.getMemrefMutable().set(arm ? views->second
+                                                        : views->first);
+                         return ld2->getResult(0);
+                       });
+  }
+};
+
+template <typename T> struct StoreIfYield : public OpRewritePattern<T> {
+  using OpRewritePattern<T>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(T st,
+                                PatternRewriter &rewriter) const override {
+    auto views = ifYieldedViews(st.getMemRef());
+    if (!views)
+      return failure();
+    return recondition(st, st.getMemRef(), rewriter, TypeRange{},
+                       [&](int arm, PatternRewriter &rw) -> Value {
+                         auto st2 = cast<T>(rw.clone(*st));
+                         st2.getMemrefMutable().set(arm ? views->second
+                                                        : views->first);
+                         return Value();
+                       });
+  }
+};
+
+
 } // namespace
 
 static MemRefVal convertToMemref(PtrVal addr) {
@@ -2878,6 +3004,8 @@ convertLLVMToAffineAccess(Operation *op,
         SimplifyDeadAlloc<LLVM::AllocaOp>,
         SimplifyDeadAlloc<gpu::AllocOp, true>, Pointer2MemrefSelect, LoadSelect,
         StoreSelect<affine::AffineStoreOp>, StoreSelect<memref::StoreOp>,
+        LoadIfYield<affine::AffineLoadOp>, LoadIfYield<memref::LoadOp>,
+        StoreIfYield<affine::AffineStoreOp>, StoreIfYield<memref::StoreOp>,
         Pointer2MemrefIf, LoadIf, SplitAggregateLoad, ExpandAggregateStore,
         ForwardSlotStores, NullAccessFold, AffineIfDeadResults,
         SimpleMem2Reg<memref::AllocaOp>>(context);
