@@ -246,7 +246,7 @@ void JITCallOp::getCanonicalizationPatterns(RewritePatternSet &results,
   results.insert<ReadOnlyArg<JITCallOp>, ReadNoneArg<JITCallOp>>(context);
 }
 
-/// Simplify pointer2memref(memref2pointer(x)) to cast(x)
+/// Simplify pointer2memref(memref2pointer(x)) to a view of x
 class Memref2Pointer2MemrefCast final
     : public OpRewritePattern<Pointer2MemrefOp> {
 public:
@@ -259,19 +259,30 @@ public:
       return failure();
     auto smt = cast<MemRefType>(src.getSource().getType());
     auto omt = cast<MemRefType>(op.getType());
-    if (smt.getShape().size() != omt.getShape().size())
-      return failure();
-    for (unsigned i = 1; i < smt.getShape().size(); i++) {
-      if (smt.getShape()[i] != omt.getShape()[i])
-        return failure();
-    }
     if (smt.getElementType() != omt.getElementType())
       return failure();
-    if (smt.getMemorySpace() != omt.getMemorySpace())
+    // A strided source is not the flat view the pointer handed out, and a
+    // rank change is what delinearization rebuilds into typed accesses.
+    if (!smt.getLayout().isIdentity() || !omt.getLayout().isIdentity() ||
+        smt.getRank() != omt.getRank())
       return failure();
 
-    rewriter.replaceOpWithNewOp<memref::CastOp>(op, op.getType(),
-                                                src.getSource());
+    // The shapes adapt in the source's own space, so a memory space cast
+    // lands last, closest to the accesses, where it can sink into them.
+    auto inSrcSpace =
+        MemRefType::get(omt.getShape(), omt.getElementType(),
+                        MemRefLayoutAttrInterface{}, smt.getMemorySpace());
+    Value v = src.getSource();
+    if (inSrcSpace != smt) {
+      if (!memref::CastOp::areCastCompatible(smt, inSrcSpace))
+        return failure();
+      v = memref::CastOp::create(rewriter, op.getLoc(), inSrcSpace, v)
+              .getResult();
+    }
+    if (smt.getMemorySpace() != omt.getMemorySpace())
+      v = memref::MemorySpaceCastOp::create(rewriter, op.getLoc(), omt, v)
+              .getResult();
+    rewriter.replaceOp(op, v);
     return success();
   }
 };
@@ -992,13 +1003,118 @@ void MetaPointer2Memref<affine::AffineStoreOp>::rewriteInternal(
   rewriter.replaceOpWithNewOp<LLVM::StoreOp>(op, op.getValue(), ptr);
 }
 
+// An if whose arms all yield the same pointer/memref conversion does the
+// conversion once on the if result instead: the conversion depends only on
+// the yielded value, so hoisting it needs nothing to dominate anything new.
+// Chains of such ifs (nested ternaries picking a slice) collapse to one
+// conversion over a pointer-yielding if.
+template <typename IfT>
+struct HoistIfYieldConversion : public OpRewritePattern<IfT> {
+  using OpRewritePattern<IfT>::OpRewritePattern;
+
+  static Operation *yieldOf(Region &r) { return r.front().getTerminator(); }
+
+  LogicalResult matchAndRewrite(IfT ifOp,
+                                PatternRewriter &rewriter) const override {
+    if (ifOp->getNumResults() == 0 || ifOp.getElseRegion().empty())
+      return failure();
+    Operation *thenY = yieldOf(ifOp.getThenRegion());
+    Operation *elseY = yieldOf(ifOp.getElseRegion());
+
+    SmallVector<Type> newTypes;
+    SmallVector<Operation *> conv(ifOp->getNumResults(), nullptr);
+    bool any = false;
+    for (auto [i, res] : llvm::enumerate(ifOp->getResults())) {
+      Operation *t = thenY->getOperand(i).getDefiningOp();
+      Operation *f = elseY->getOperand(i).getDefiningOp();
+      if (t && f && t->getName() == f->getName() &&
+          isa<Pointer2MemrefOp, Memref2PointerOp>(t) &&
+          t->getOperand(0).getType() == f->getOperand(0).getType()) {
+        conv[i] = t;
+        newTypes.push_back(t->getOperand(0).getType());
+        any = true;
+        continue;
+      }
+      newTypes.push_back(res.getType());
+    }
+    if (!any)
+      return failure();
+
+    auto newIf = create(rewriter, ifOp, newTypes);
+    for (unsigned r = 0; r < 2; ++r) {
+      Region &from = r ? ifOp.getElseRegion() : ifOp.getThenRegion();
+      Region &to = r ? newIf.getElseRegion() : newIf.getThenRegion();
+      rewriter.inlineRegionBefore(from, to, to.begin());
+      rewriter.eraseBlock(&to.back());
+      Operation *y = yieldOf(to);
+      SmallVector<Value> ops(y->getOperands());
+      for (auto [i, c] : llvm::enumerate(conv))
+        if (c)
+          ops[i] = ops[i].getDefiningOp()->getOperand(0);
+      rewriter.modifyOpInPlace(y, [&] { y->setOperands(ops); });
+    }
+
+    rewriter.setInsertionPointAfter(newIf);
+    SmallVector<Value> results;
+    for (auto [i, c] : llvm::enumerate(conv)) {
+      Value v = newIf->getResult(i);
+      if (c) {
+        Operation *cloned = rewriter.clone(*c);
+        cloned->setOperand(0, v);
+        v = cloned->getResult(0);
+      }
+      results.push_back(v);
+    }
+    rewriter.replaceOp(ifOp, results);
+    return success();
+  }
+
+  static scf::IfOp create(PatternRewriter &rewriter, scf::IfOp ifOp,
+                          TypeRange types) {
+    return scf::IfOp::create(rewriter, ifOp.getLoc(), types,
+                             ifOp.getCondition(), /*withElseRegion=*/true);
+  }
+  static affine::AffineIfOp create(PatternRewriter &rewriter,
+                                   affine::AffineIfOp ifOp, TypeRange types) {
+    return affine::AffineIfOp::create(rewriter, ifOp.getLoc(), types,
+                                      ifOp.getIntegerSet(), ifOp.getOperands(),
+                                      /*withElseRegion=*/true);
+  }
+};
+
+// The select twin of the above: an if whose arms only yield existing values
+// becomes a select before this pattern can see it, so hoist there too.
+struct HoistSelectConversion : public OpRewritePattern<arith::SelectOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::SelectOp sel,
+                                PatternRewriter &rewriter) const override {
+    Operation *t = sel.getTrueValue().getDefiningOp();
+    Operation *f = sel.getFalseValue().getDefiningOp();
+    if (!t || !f || t->getName() != f->getName() ||
+        !isa<Pointer2MemrefOp, Memref2PointerOp>(t) ||
+        t->getOperand(0).getType() != f->getOperand(0).getType())
+      return failure();
+    Value inner =
+        arith::SelectOp::create(rewriter, sel.getLoc(), sel.getCondition(),
+                                t->getOperand(0), f->getOperand(0));
+    Operation *conv = rewriter.clone(*t);
+    conv->setOperand(0, inner);
+    rewriter.replaceOp(sel, conv->getResult(0));
+    return success();
+  }
+};
+
 void Pointer2MemrefOp::getCanonicalizationPatterns(RewritePatternSet &results,
                                                    MLIRContext *context) {
   results.insert<Pointer2MemrefCast, Pointer2Memref2PointerCast,
                  LoadStorePointer2MemrefGEP<memref::LoadOp>,
                  LoadStorePointer2MemrefGEP<affine::AffineLoadOp>,
                  LoadStorePointer2MemrefGEP<memref::StoreOp>,
-                 LoadStorePointer2MemrefGEP<affine::AffineStoreOp>>(context);
+                 LoadStorePointer2MemrefGEP<affine::AffineStoreOp>,
+                 HoistIfYieldConversion<scf::IfOp>,
+                 HoistIfYieldConversion<affine::AffineIfOp>,
+                 HoistSelectConversion>(context);
   /*
   results.insert<Pointer2MemrefCast, Pointer2Memref2PointerCast,
                  MetaPointer2Memref<memref::LoadOp>,

@@ -68,6 +68,7 @@ static Block *getAllocaBlock(Operation *op) {
 namespace enzyme {
 #define GEN_PASS_DEF_AFFINETOSTABLEHLORAISING
 #include "src/enzyme_ad/jax/Passes/Passes.h.inc"
+#include <deque>
 } // namespace enzyme
 } // namespace mlir
 
@@ -898,6 +899,43 @@ static LogicalResult tryRaisingForOpToStableHLOWhile(
     stablehlo::WhileOp *createdWhileOp = nullptr,
     SmallVectorImpl<Value> *carriedBuffers = nullptr);
 
+// Blocks guaranteed to reach llvm.unreachable (abort branches), mirroring
+// Enzyme's getGuaranteedUnreachable in FunctionUtils.h.
+static DenseSet<Block *> getGuaranteedUnreachable(Region &r) {
+  DenseSet<Block *> knownUnreachable;
+  std::deque<Block *> todo;
+  for (Block &b : r)
+    todo.push_back(&b);
+
+  while (!todo.empty()) {
+    Block *next = todo.front();
+    todo.pop_front();
+
+    if (knownUnreachable.contains(next))
+      continue;
+
+    bool unreachable = isa<LLVM::UnreachableOp>(next->getTerminator());
+    if (!unreachable) {
+      auto succs = next->getSuccessors();
+      unreachable = !succs.empty();
+      for (Block *succ : succs) {
+        if (!knownUnreachable.contains(succ)) {
+          unreachable = false;
+          break;
+        }
+      }
+    }
+    if (!unreachable)
+      continue;
+
+    knownUnreachable.insert(next);
+    for (Block *pred : next->getPredecessors())
+      todo.push_back(pred);
+  }
+
+  return knownUnreachable;
+}
+
 static LogicalResult
 emitIfAsSelect(Operation *ifOp, Value cond, affine::AffineValueMap map,
                OpBuilder &builder, IRMapping &mapping,
@@ -1462,9 +1500,9 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
           /*scatterDimsToOperandDims*/ scatterDimsToOperandDims,
           /*indexVectorDim*/ (int64_t)gridShape.size()),
       /*indicesAreSorted*/ false,
-      // Masked-out lanes all share the out-of-bounds index, so uniqueness
-      // can only be claimed without a mask; an accumulating scatter's
-      // colliding indices are the whole point.
+      // With a mask, masked-out positions scatter orig back at potentially
+      // repeated indices — uniqueness can only be claimed without a mask; an
+      // accumulating scatter's colliding indices are the whole point.
       /*uniqueIndices*/ !pc.mask && !accumulate);
   Value res = scatter.getResult(0);
 
@@ -1484,12 +1522,7 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
       // An atomic add raises as a combining scatter: adds commute (up to
       // rounding, exactly like the atomic), so application order is
       // irrelevant.
-      if (isa<FloatType>(unrankedTy.getElementType()))
-        out = stablehlo::AddOp::create(builder, loc, currentInBody,
-                                       updateInBody);
-      else
-        out = stablehlo::AddOp::create(builder, loc, currentInBody,
-                                       updateInBody);
+      out = stablehlo::AddOp::create(builder, loc, currentInBody, updateInBody);
     }
     stablehlo::ReturnOp::create(builder, loc, out);
   }
@@ -4732,6 +4765,72 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     return success();
   }
 
+  // An alloca scope only delimits stack lifetime, meaningless under value
+  // semantics: raise its single-block body and forward the yields.
+  if (auto scope = dyn_cast<memref::AllocaScopeOp>(op)) {
+    Region &r = scope.getBodyRegion();
+    if (!r.hasOneBlock())
+      return failure();
+    Block *body = &r.front();
+    for (auto &innerOp : body->without_terminator()) {
+      if (tryRaisingOpToStableHLO(&innerOp, mapping, builder, maps, pc)
+              .failed())
+        return failure();
+    }
+    Operation *term = body->getTerminator();
+    for (auto [res, yielded] :
+         llvm::zip_equal(scope->getResults(), term->getOperands()))
+      mapping.map(res, mapping.lookup(yielded));
+    return success();
+  }
+
+  // An execute region wraps the inliner's cloned callee CFG. It raises when
+  // there is a unique live path from the entry to the yield, where a block
+  // is dead if every path out of it reaches llvm.unreachable (abort
+  // branches); a real diamond or a revisited block fails.
+  if (auto exec = dyn_cast<scf::ExecuteRegionOp>(op)) {
+    Region &r = exec.getRegion();
+    DenseSet<Block *> trapping = getGuaranteedUnreachable(r);
+    Block *cur = &r.front();
+    DenseSet<Block *> visited;
+    while (true) {
+      if (!visited.insert(cur).second)
+        return failure();
+      for (auto &innerOp : cur->without_terminator()) {
+        if (tryRaisingOpToStableHLO(&innerOp, mapping, builder, maps, pc)
+                .failed())
+          return failure();
+      }
+      Operation *term = cur->getTerminator();
+      if (isa<scf::YieldOp>(term)) {
+        for (auto [res, yielded] :
+             llvm::zip_equal(exec->getResults(), term->getOperands()))
+          mapping.map(res, mapping.lookup(yielded));
+        return success();
+      }
+      auto br = dyn_cast<BranchOpInterface>(term);
+      if (!br)
+        return failure();
+      Block *next = nullptr;
+      int64_t liveIdx = -1;
+      for (auto [i, succ] : llvm::enumerate(term->getSuccessors())) {
+        if (trapping.contains(succ))
+          continue;
+        if (next)
+          return failure();
+        next = succ;
+        liveIdx = i;
+      }
+      if (!next)
+        return failure();
+      auto sops = br.getSuccessorOperands(liveIdx);
+      for (auto [ba, v] :
+           llvm::zip(next->getArguments(), sops.getForwardedOperands()))
+        mapping.map(ba, mapping.lookup(v));
+      cur = next;
+    }
+  }
+
   if (auto ifOp = dyn_cast<scf::IfOp>(op)) {
 
     Value cond = mapping.lookupOrNull(ifOp.getCondition());
@@ -4976,9 +5075,12 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
   // thread axis completes for the entire axis before the next op runs, which
   // is exactly what the barrier guaranteed.
   if (isa<enzymexla::BarrierOp>(op)) {
-    // The no-op treatment is only sound for the axes the barrier spans when
-    // they are batched: an induction variable of a dynamically sized loop
-    // raises serialized, with no whole-tensor ordering to lean on.
+    // Raised execution is ordered over whole tensors, so a barrier over
+    // batched axes is a no-op. That is only sound for the axes the barrier
+    // spans when they are batched: an induction variable of a dynamically
+    // sized loop raises serialized, with no whole-tensor ordering to lean
+    // on, and dropping the barrier would let one lane run ahead of the
+    // others' stores.
     for (Value iv : op->getOperands()) {
       auto ba = dyn_cast<BlockArgument>(iv);
       if (!ba)
@@ -9762,6 +9864,11 @@ struct AffineToStableHLORaisingPass
     }
     std::vector<enzymexla::GPUWrapperOp> gwrap;
     op->walk([&](enzymexla::GPUWrapperOp g) { gwrap.push_back(g); });
+    for (auto g : gwrap) {
+      stripAccessMemorySpaceCasts(g);
+      boundParallelAxes(g);
+      peelDynamicParallelDims(g);
+    }
     size_t raised_count = 0;
     for (auto g : gwrap) {
       auto modOp = g->getParentOfType<ModuleOp>();

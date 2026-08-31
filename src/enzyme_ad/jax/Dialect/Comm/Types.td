@@ -6,19 +6,19 @@ include "Dialect.td"
 include "mlir/IR/CommonTypeConstraints.td"
 
 // MPI
-def MPI_Comm : Comm_Type<"MPI_Comm", "mpi.comm"> {
+def MpiComm : Comm_Type<"MpiComm", "mpi.comm"> {
   let summary = "MPI communicator handler";
 }
 
-def MPI_Request : Comm_Type<"MPI_Request", "mpi.request"> {
+def MpiRequest : Comm_Type<"MpiRequest", "mpi.request"> {
   let summary = "MPI asynchronous request handler";
 }
 
-def MPI_Datatype : Comm_Type<"MPI_Datatype", "mpi.datatype"> {
+def MpiDatatype : Comm_Type<"MpiDatatype", "mpi.datatype"> {
   let summary = "MPI datatype handler";
 }
 
-def MPI_Op : Comm_Type<"MPI_Op", "mpi.op"> {
+def MpiOp : Comm_Type<"MpiOp", "mpi.op"> {
   let summary = "MPI reduction operator handler";
 }
 

@@ -16,7 +16,7 @@
 #define GET_TYPEDEF_CLASSES
 #include "src/enzyme_ad/jax/Dialect/Comm/Types.cpp.inc"
 
-void mlir::enzymexla::comm::CommDialect::initialize() {
+void mlir::comm::CommDialect::initialize() {
   addAttributes<
 #define GET_ATTRDEF_LIST
 #include "src/enzyme_ad/jax/Dialect/Comm/AttrDefs.cpp.inc"

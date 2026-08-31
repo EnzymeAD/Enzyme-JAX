@@ -8,156 +8,143 @@ include "mlir/Interfaces/SideEffectInterfaces.td"
 include "Types.td"
 include "Attrs.td"
 
-def MPI_PredefinedCommOp : Comm_Op<"mpi.predefined_comm", [Pure]> {
-  let summary = "Get the named predefined MPI communicator";
-  let arguments = (ins MPI_CommsAttr : $value);
-  let results = (outs MPI_Comm : $comm);
-  let assemblyFormat = "attr-dict `:` type(results)";
-}
+def TensorI32
+    : Type<CPred<"::llvm::isa<::mlir::TensorType>($_self) && "
+                 "::llvm::cast<::mlir::TensorType>($_self).getShape().size() "
+                 "== 0 && "
+                 "::llvm::cast<::mlir::TensorType>($_self).getElementType()."
+                 "isSignlessInteger(32)">,
+           "tensor<i32>", "::mlir::TensorType">,
+      BuildableType<"RankedTensorType::get({}, $_builder.getIntegerType(32))">;
 
-def MPI_PredefinedOpOp : Comm_Op<"mpi.predefined_op", [Pure]> {
-  let summary = "Get the named predefined MPI reduction operator";
-  let arguments = (ins MPI_OpsAttr : $value);
-  let results = (outs MPI_Op : $op);
-  let assemblyFormat = "attr-dict `:` type(results)";
-}
-
-// NOTE not sure if necessary since we take the datatype from the MLIR tensor eltype
-// def MPI_PredefinedDatatypeOp : Comm_Op<"mpi.predefined_datatype", [Pure]> {
-//   let summary = "Get the named predefined MPI datatype";
-//   let arguments = (ins MPI_DatatypesAttr : $value);
-//   let results = (outs MPI_Datatype : $datatype);
-//   let assemblyFormat = "attr-dict `:` type(results)";
-// }
-
-def MPI_CommRankOp : Comm_Op<"mpi.comm_rank", [Pure]> {
+def MpiCommRankOp : Comm_Op<"mpi.comm_rank", [Pure]> {
   let summary = "Equivalent to `MPI_Comm_rank`";
-  let arguments = (ins MPI_Comm : $comm);
-  let results = (outs I32 : $rank);
+  let arguments = (ins MpiComm : $comm);
+  let results = (outs TensorI32 : $rank);
   let assemblyFormat = "$comm attr-dict `:` type(results)";
 }
 
-def MPI_CommSizeOp : Comm_Op<"mpi.comm_size", [Pure]> {
+def MpiCommSizeOp : Comm_Op<"mpi.comm_size", [Pure]> {
   let summary = "Equivalent to `MPI_Comm_size`";
-  let arguments = (ins MPI_Comm : $comm);
-  let results = (outs I32 : $size);
+  let arguments = (ins MpiComm : $comm);
+  let results = (outs TensorI32 : $size);
   let assemblyFormat = "$comm attr-dict `:` type(results)";
 }
 
-def MPI_CommSplitOp : Comm_Op<"mpi.comm_split", []> {
+def MpiCommSplitOp : Comm_Op<"mpi.comm_split", []> {
   let summary = "Equivalent to `MPI_Comm_split`";
 
   let arguments = (ins
-    MPI_Comm : $comm,
-    I32 : $color,
-    I32 : $key
+    MpiComm : $comm,
+    TensorI32 : $color,
+    TensorI32 : $key
   );
 
-  let results = (outs MPI_Comm : $newcomm);
-  let assemblyFormat = "operands attr-dict `:` functional-type($comm, results)";
+  let results = (outs MpiComm : $newcomm);
+  let assemblyFormat = "operands attr-dict `:` functional-type(operands, results)";
 }
 
-def MPI_BarrierOp : Comm_Op<"mpi.barrier", []> {
+def MpiBarrierOp : Comm_Op<"mpi.barrier", []> {
   let summary = "Equivalent to `MPI_Barrier`";
-  let arguments = (ins MPI_Comm : $comm);
-  let assemblyFormat = "$comm attr-dict";
+  let arguments = (ins MpiComm : $comm);
+  let assemblyFormat = "$comm attr-dict `:` type(operands)";
 }
 
-def MPI_SendOp : Comm_Op<"mpi.send", []> {
+def MpiSendOp : Comm_Op<"mpi.send", []> {
   let summary = "Equivalent to `MPI_Send`";
 
   // TODO add optional `count` operand for dynamic-shaped tensors?
   let arguments = (ins
-    AnyTensor : $buf,
-    I32 : $tag,
-    I32 : $dest,
-    MPI_Comm : $comm
+    AnyTensor : $buffer,
+    TensorI32 : $dest,
+    TensorI32 : $tag,
+    MpiComm : $comm
   );
 
-  let assemblyFormat = "operands attr-dict `:` type($buf)";
+  let assemblyFormat = "operands attr-dict `:` type(operands)";
 }
 
-def MPI_IsendOp : Comm_Op<"mpi.isend", []> {
+def MpiIsendOp : Comm_Op<"mpi.isend", []> {
   let summary = "Equivalent to `MPI_Isend`";
 
   // TODO add optional `count` operand for dynamic-shaped tensors?
   let arguments = (ins
-    AnyTensor : $buf,
-    I32 : $tag,
-    I32 : $dest,
-    MPI_Comm : $comm
+    AnyTensor : $buffer,
+    TensorI32 : $dest,
+    TensorI32 : $tag,
+    MpiComm : $comm
   );
 
-  let results = (outs MPI_Request : $request);
-  let assemblyFormat = "operands attr-dict `:` functional-type($buf, results)";
+  let results = (outs MpiRequest : $request);
+  let assemblyFormat = "operands attr-dict `:` functional-type(operands, results)";
 }
 
-def MPI_RecvOp : Comm_Op<"mpi.recv", []> {
+def MpiRecvOp : Comm_Op<"mpi.recv", []> {
   let summary = "Equivalent to `MPI_Recv`";
 
   // TODO add optional `count` operand for dynamic-shaped tensors?
   let arguments = (ins
-    I32 : $tag,
-    I32 : $source,
-    MPI_Comm : $comm
+    TensorI32 : $source,
+    TensorI32 : $tag,
+    MpiComm : $comm
   );
 
-  let results = (outs AnyTensor : $buf);
-  let assemblyFormat = "operands attr-dict `:` type(results)";
+  let results = (outs AnyTensor : $buffer);
+  let assemblyFormat = "operands attr-dict `:` functional-type(operands, results)";
 }
 
-def MPI_IrecvOp : Comm_Op<"mpi.irecv", []> {
+def MpiIrecvOp : Comm_Op<"mpi.irecv", []> {
   let summary = "Equivalent to `MPI_Irecv`";
 
   // TODO add optional `count` operand for dynamic-shaped tensors?
   let arguments = (ins
-    I32 : $tag,
-    I32 : $source,
-    MPI_Comm : $comm
+    TensorI32 : $source,
+    TensorI32 : $tag,
+    MpiComm : $comm
   );
   let results = (outs
-    AnyTensor : $buf,
-    MPI_Request : $request
+    AnyTensor : $buffer,
+    MpiRequest : $request
   );
-  let assemblyFormat = "operands attr-dict `:` type(results)";
+  let assemblyFormat = "operands attr-dict `:` functional-type(operands, results)";
 }
 
-def MPI_WaitOp : Comm_Op<"mpi.wait", []> {
+def MpiWaitOp : Comm_Op<"mpi.wait", []> {
   let summary = "Equivalent to `MPI_Wait`";
-  let arguments = (ins MPI_Request : $request);
+  let arguments = (ins MpiRequest : $request);
   let assemblyFormat = "operands attr-dict `:` type(operands)";
 }
 
-def MPI_WaitallOp : Comm_Op<"mpi.waitall", []> {
+def MpiWaitallOp : Comm_Op<"mpi.waitall", []> {
   let summary = "Equivalent to `MPI_Waitall`";
-  let arguments = (ins Variadic<MPI_Request> : $requests);
+  let arguments = (ins Variadic<MpiRequest> : $requests);
   let assemblyFormat = "operands attr-dict `:` type(operands)";
 }
 
-def MPI_AllreduceOp : Comm_Op<"mpi.allreduce", []> {
+def MpiAllreduceOp : Comm_Op<"mpi.allreduce", []> {
   let summary = "Equivalent to `MPI_Allreduce`";
 
   let arguments = (ins
     AnyTensor : $sendbuf,
-    MPI_OpsAttr : $reduceOpAttr,
-    MPI_Comm : $comm
+    MpiOpsAttr : $reduceOp,
+    MpiComm : $comm
   );
 
   let results = (outs AnyTensor : $recvbuf);
-  let assemblyFormat = "$sendbuf `,` $reduceOpAttr `,` $comm attr-dict `:` functional-type($sendbuf, results)";
+  let assemblyFormat = "$sendbuf `,` $reduceOp `,` $comm attr-dict `:` functional-type(operands, results)";
 }
 
-def MPI_BcastOp : Comm_Op<"mpi.bcast", []> {
+def MpiBcastOp : Comm_Op<"mpi.bcast", []> {
   let summary = "Equivalent to `MPI_Bcast`";
 
   let arguments = (ins
-    AnyTensor : $inbuf,
-    I32 : $root,
-    MPI_Comm : $comm
+    AnyTensor : $inBuffer,
+    TensorI32 : $root,
+    MpiComm : $comm
   );
 
-  let results = (outs AnyTensor : $outbuf);
-  let assemblyFormat = "operands attr-dict `:` functional-type($inbuf, results)";
+  let results = (outs AnyTensor : $outBuffer);
+  let assemblyFormat = "operands attr-dict `:` functional-type(operands, results)";
 }
 
 #endif // ENZYMEXLA_COMM_DIALECT_MPI_OPS_TD
