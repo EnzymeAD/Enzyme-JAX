@@ -3,11 +3,13 @@
 namespace enzymexla {
 namespace ffi_internal {
 
-void registerEnzymeJaXXLAHostMPIFFI();
 void registerEnzymeJaXXLAHostThrowErrorFFI();
+void registerEnzymeJaXXLAHostBLASFFI();
+void registerEnzymeJaXXLAHostMPIFFI();
 
 void registerEnzymeJaXXLAHostFFI() {
   registerEnzymeJaXXLAHostThrowErrorFFI();
+  registerEnzymeJaXXLAHostBLASFFI();
 #ifndef _WIN32
   // MPItrampoline is POSIX-only (dlfcn), so Windows builds skip MPI.
   registerEnzymeJaXXLAHostMPIFFI();

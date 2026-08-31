@@ -69,3 +69,57 @@ extern "C" MLIR_CAPI_EXPORTED int32_t enzymexla_lbt_set_forward(
   return lbt_set_forward(symbol_name, addr, interface, complex_retstyle, f2c,
                          verbose);
 }
+
+// FFI handlers
+namespace enzymexla::ffi_internal {
+namespace ffi = xla::ffi;
+
+using ffi::Buffer, ffi::AnyBuffer;
+using ffi::Result, ffi::RemainingArgs, ffi::RemainingRets;
+
+using IntBuffer = Buffer<ffi::S32, 0>;
+using PtrBuffer = Buffer<ffi::U64, 0>; // pointers, so use U64
+
+// generator for apply BLAS prefix to a macro
+// X macro must accept the following args:
+// 1. prefix (s, d, c, z)
+// 2. C-type (float, double, std::complex<float>, std::complex<double>)
+// 3. XLA FFI Primitive type (F32, F64, C64, C128)
+#define GENERATE_BLAS_PREFIX(X)                                                \
+  X(s, float, ::xla::ffi::F32)                                                 \
+  X(d, double, ::xla::ffi::F64)                                                \
+  X(c, std::complex<float>, ::xla::ffi::C64)                                   \
+  X(z, std::complex<double>, ::xla::ffi::C128)
+
+void registerEnzymeJaXXLAHostBLASFFI() {
+  XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(), "BlasSymm", "Host",
+                           SymmFfi);
+  XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(), "BlasSyrk", "Host",
+                           SyrkFfi);
+  XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(), "BlasTrmm", "Host",
+                           TrmmFfi);
+  XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(), "LapackGeqrf", "Host",
+                           GeqrfFfi);
+  XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(), "LapackGeqrt", "Host",
+                           GeqrtFfi);
+  XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(), "LapackOrgqr", "Host",
+                           OrgqrFfi);
+  XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(), "LapackOrmqr", "Host",
+                           OrmqrFfi);
+  XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(), "LapackGemqrt", "Host",
+                           GemqrtFfi);
+  XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(), "LapackGetrf", "Host",
+                           GetrfFfi);
+  XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(), "LapackGetri", "Host",
+                           GetriFfi);
+  XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(), "LapackGesdd", "Host",
+                           GesddFfi);
+  XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(), "LapackGesvd", "Host",
+                           GesvdFfi);
+  XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(), "LapackGesvj", "Host",
+                           GesvjFfi);
+  XLA_FFI_REGISTER_HANDLER(xla::ffi::GetXlaFfiApi(), "LapackPotrf", "Host",
+                           PotrfFfi);
+}
+
+} // namespace enzymexla::ffi_internal
