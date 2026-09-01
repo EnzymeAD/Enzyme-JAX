@@ -1,8 +1,8 @@
 // RUN: enzymexlamlir-opt %s --delinearize-indexing | FileCheck %s
 
 // A flat view of a buffer is rebuilt on the shape the buffer was declared
-// with, whether that buffer is a function's argument or an alloca beside the
-// accesses. MFEM's shared-memory scratch is the latter, and left flat it
+// with, for the two forms whose shape is their own: a block argument and an
+// alloca. MFEM's shared-memory scratch is the latter, and left flat it
 // reaches the raiser as a view that is stored through.
 
 #set = affine_set<(d0, d1) : (-d0 + 1 >= 0, d1 == 0)>
@@ -49,6 +49,30 @@ module {
     affine.store %v, %m[5] : memref<?xi32>
     return
   }
+
+  // a heap buffer is not one of the two forms this rebuilds on
+  func.func @from_alloc(%v: f64) {
+    %a = memref.alloc() : memref<2x3xf64>
+    %p = "enzymexla.memref2pointer"(%a) : (memref<2x3xf64>) -> !llvm.ptr
+    %m = "enzymexla.pointer2memref"(%p) : (!llvm.ptr) -> memref<?xf64>
+    affine.store %v, %m[4] : memref<?xf64>
+    return
+  }
+
+  // a buffer that arrives as a block argument of a loop, not of the function
+  func.func @from_loop_arg(%a: memref<2x3xf64>, %b: memref<2x3xf64>, %v: f64) -> memref<2x3xf64> {
+    %c0 = arith.constant 0 : index
+    %c1 = arith.constant 1 : index
+    %c2 = arith.constant 2 : index
+    %r = scf.for %i = %c0 to %c2 step %c1 iter_args(%buf = %a) -> memref<2x3xf64> {
+      %p = "enzymexla.memref2pointer"(%buf) : (memref<2x3xf64>) -> !llvm.ptr
+      %m = "enzymexla.pointer2memref"(%p) : (!llvm.ptr) -> memref<?xf64>
+      affine.store %v, %m[5] : memref<?xf64>
+      scf.yield %b : memref<2x3xf64>
+    }
+    return %r : memref<2x3xf64>
+  }
+
 }
 
 // CHECK:  func.func @from_alloca(%[[v1:.+]]: f64) {
@@ -89,4 +113,25 @@ module {
 // CHECK-NEXT:  %[[v4:.+]] = "enzymexla.pointer2memref"(%[[v3]]) : (!llvm.ptr) -> memref<?xi32>
 // CHECK-NEXT:  affine.store %[[v1]], %[[v4]][5] : memref<?xi32>
 // CHECK-NEXT:  return
+// CHECK-NEXT:  }
+
+// CHECK:  func.func @from_alloc(%[[h1:.+]]: f64) {
+// CHECK-NEXT:  %[[h2:.+]] = memref.alloc() : memref<2x3xf64>
+// CHECK-NEXT:  %[[h3:.+]] = "enzymexla.memref2pointer"(%[[h2]]) : (memref<2x3xf64>) -> !llvm.ptr
+// CHECK-NEXT:  %[[h4:.+]] = "enzymexla.pointer2memref"(%[[h3]]) : (!llvm.ptr) -> memref<?xf64>
+// CHECK-NEXT:  affine.store %[[h1]], %[[h4]][4] : memref<?xf64>
+// CHECK-NEXT:  return
+// CHECK-NEXT:  }
+
+// CHECK:  func.func @from_loop_arg(%[[w1:.+]]: memref<2x3xf64>, %[[w2:.+]]: memref<2x3xf64>, %[[w3:.+]]: f64) -> memref<2x3xf64> {
+// CHECK-NEXT:  %[[w4:.+]] = arith.constant 0 : index
+// CHECK-NEXT:  %[[w5:.+]] = arith.constant 1 : index
+// CHECK-NEXT:  %[[w6:.+]] = arith.constant 2 : index
+// CHECK-NEXT:  %[[w7:.+]] = scf.for %arg3 = %[[w4]] to %[[w6]] step %[[w5]] iter_args(%arg4 = %[[w1]]) -> (memref<2x3xf64>) {
+// CHECK-NEXT:  %[[w8:.+]] = "enzymexla.memref2pointer"(%arg4) : (memref<2x3xf64>) -> !llvm.ptr
+// CHECK-NEXT:  %[[w9:.+]] = "enzymexla.pointer2memref"(%[[w8]]) : (!llvm.ptr) -> memref<2x3xf64>
+// CHECK-NEXT:  affine.store %[[w3]], %[[w9]][1, 2] : memref<2x3xf64>
+// CHECK-NEXT:  scf.yield %[[w2]] : memref<2x3xf64>
+// CHECK-NEXT:  }
+// CHECK-NEXT:  return %[[w7]] : memref<2x3xf64>
 // CHECK-NEXT:  }
