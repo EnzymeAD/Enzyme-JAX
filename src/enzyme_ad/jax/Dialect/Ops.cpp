@@ -6,9 +6,10 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "Ops.h"
+#include "Enzyme/MLIR/Dialect/Ops.h"
 #include "Dialect.h"
 #include "Interfaces/AutoDiffTypeInterface.h"
+#include "Ops.h"
 #include "src/enzyme_ad/jax/Dialect/Canonicalizers.h"
 #include "src/enzyme_ad/jax/Dialect/Utils.h"
 #include "src/enzyme_ad/jax/Utils.h"
@@ -654,8 +655,12 @@ public:
 
   LogicalResult matchAndRewrite(T op,
                                 PatternRewriter &rewriter) const override {
+    // The accessed memref is the one this op names, whether or not the op
+    // itself spells out a type accessor for it.
+    auto accessedType = cast<MemRefType>(getMemref(op).getType());
+
     // FIXME: Only handle memref.load with single index for now
-    if (op.getMemRefType().getRank() != 1)
+    if (accessedType.getRank() != 1)
       return failure();
 
     // Match pointer2memref -> load pattern
@@ -665,7 +670,7 @@ public:
       return failure();
 
     // Get the element type and size of the final memref
-    Type elementType = op.getMemRefType().getElementType();
+    Type elementType = accessedType.getElementType();
     unsigned elementSize = elementType.isIntOrFloat()
                                ? elementType.getIntOrFloatBitWidth() / 8
                                : 0;
@@ -870,6 +875,90 @@ void LoadStorePointer2MemrefGEP<affine::AffineStoreOp>::createNewOp(
     PatternRewriter &rewriter) const {
   rewriter.replaceOpWithNewOp<memref::StoreOp>(op, op.getValue(), baseMemref,
                                                idxs);
+}
+
+template <>
+Value LoadStorePointer2MemrefGEP<enzyme::AtomicRMWOp>::getMemref(
+    enzyme::AtomicRMWOp op) const {
+  return op.getMemref();
+}
+
+template <>
+SmallVector<Value> LoadStorePointer2MemrefGEP<enzyme::AtomicRMWOp>::newIndex(
+    enzyme::AtomicRMWOp op, Value finalIndex, PatternRewriter &rewriter) const {
+  auto operands = llvm::to_vector(op.getIndices());
+  operands[0] =
+      arith::AddIOp::create(rewriter, op.getLoc(), operands[0], finalIndex);
+  return operands;
+}
+
+template <>
+void LoadStorePointer2MemrefGEP<enzyme::AtomicRMWOp>::createNewOp(
+    enzyme::AtomicRMWOp op, Value baseMemref, SmallVector<Value> idxs,
+    PatternRewriter &rewriter) const {
+  rewriter.replaceOpWithNewOp<enzyme::AtomicRMWOp>(
+      op, op.getResult().getType(), op.getKindAttr(), op.getOrderingAttr(),
+      op.getValue(), baseMemref, idxs, op.getAlignmentAttr(),
+      op.getFastmathAttr());
+}
+
+template <>
+Value LoadStorePointer2MemrefGEP<memref::AtomicRMWOp>::getMemref(
+    memref::AtomicRMWOp op) const {
+  return op.getMemref();
+}
+
+template <>
+SmallVector<Value> LoadStorePointer2MemrefGEP<memref::AtomicRMWOp>::newIndex(
+    memref::AtomicRMWOp op, Value finalIndex, PatternRewriter &rewriter) const {
+  auto operands = llvm::to_vector(op.getIndices());
+  operands[0] =
+      arith::AddIOp::create(rewriter, op.getLoc(), operands[0], finalIndex);
+  return operands;
+}
+
+template <>
+void LoadStorePointer2MemrefGEP<memref::AtomicRMWOp>::createNewOp(
+    memref::AtomicRMWOp op, Value baseMemref, SmallVector<Value> idxs,
+    PatternRewriter &rewriter) const {
+  rewriter.replaceOpWithNewOp<memref::AtomicRMWOp>(
+      op, op.getKind(), op.getValue(), baseMemref, idxs);
+}
+
+template <>
+Value LoadStorePointer2MemrefGEP<enzyme::AffineAtomicRMWOp>::getMemref(
+    enzyme::AffineAtomicRMWOp op) const {
+  return op.getMemref();
+}
+
+template <>
+SmallVector<Value>
+LoadStorePointer2MemrefGEP<enzyme::AffineAtomicRMWOp>::newIndex(
+    enzyme::AffineAtomicRMWOp op, Value finalIndex,
+    PatternRewriter &rewriter) const {
+  auto apply = affine::AffineApplyOp::create(rewriter, op.getLoc(), op.getMap(),
+                                             op.getIndices());
+
+  SmallVector<Value> operands;
+  for (auto res : apply->getResults())
+    operands.push_back(res);
+  operands[0] =
+      arith::AddIOp::create(rewriter, op.getLoc(), operands[0], finalIndex);
+  return operands;
+}
+
+template <>
+void LoadStorePointer2MemrefGEP<enzyme::AffineAtomicRMWOp>::createNewOp(
+    enzyme::AffineAtomicRMWOp op, Value baseMemref, SmallVector<Value> idxs,
+    PatternRewriter &rewriter) const {
+  // As the affine load and store do, this leaves the non-affine form: the
+  // index it is given is a value, not a map. What the op says beyond the
+  // address -- its kind, its ordering, its alignment -- comes with it.
+  rewriter.replaceOpWithNewOp<enzyme::AtomicRMWOp>(
+      op, op.getResult().getType(), op.getKindAttr(),
+      enzyme::OrderingAttr::get(op.getContext(), op.getOrdering()),
+      op.getValue(), baseMemref, idxs, op.getAlignmentAttr(),
+      op.getFastmathAttr());
 }
 
 /// Simplify load (pointer2memref(x)) to llvm.load x
@@ -1112,6 +1201,9 @@ void Pointer2MemrefOp::getCanonicalizationPatterns(RewritePatternSet &results,
                  LoadStorePointer2MemrefGEP<affine::AffineLoadOp>,
                  LoadStorePointer2MemrefGEP<memref::StoreOp>,
                  LoadStorePointer2MemrefGEP<affine::AffineStoreOp>,
+                 LoadStorePointer2MemrefGEP<enzyme::AtomicRMWOp>,
+                 LoadStorePointer2MemrefGEP<memref::AtomicRMWOp>,
+                 LoadStorePointer2MemrefGEP<enzyme::AffineAtomicRMWOp>,
                  HoistIfYieldConversion<scf::IfOp>,
                  HoistIfYieldConversion<affine::AffineIfOp>,
                  HoistSelectConversion>(context);
