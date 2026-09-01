@@ -1038,6 +1038,12 @@ emitIfAsSelect(Operation *ifOp, Value cond, affine::AffineValueMap map,
         if (!thenBuf || !elseBuf || thenBuf.getType() != elseBuf.getType() ||
             !condTy || condTy.getRank() != 0 || !readOnly) {
           if (getenv("DEBUG_BUFSEL")) {
+            for (auto [nm, v] : {std::pair<const char *, Value>{"res", res},
+                                 {"thenVal", thenVal},
+                                 {"elseVal", elseVal}})
+              for (Operation *u : v.getUsers())
+                llvm::errs() << "BUFSEL user of " << nm << ": " << u->getName()
+                             << "\n";
             llvm::errs() << "BUFSEL fail: thenBuf=" << (bool)thenBuf
                          << " elseBuf=" << (bool)elseBuf << " tyEq="
                          << (thenBuf && elseBuf &&
@@ -4482,7 +4488,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
       auto [expandedIndex, indexMap] = expandAffineExpr(
           builder,
           rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo), E,
-          accessValueMap.getOperands(), mapping, map.getNumDims(), pc);
+          accessValueMap.getOperands(), mapping, maps, map.getNumDims(), pc);
       if (!expandedIndex)
         return failure();
       maps[expandedIndex] = indexMap;
@@ -7283,6 +7289,22 @@ struct AffineToStableHLORaisingPass
     }
   }
 
+  // probe: how many byte-array gep chains exist at this point
+  static void gepCensus(Operation *root, const char *after) {
+    if (!getenv("DEBUG_GEPCOUNT"))
+      return;
+    unsigned n = 0;
+    Operation *scope = root->getParentOfType<ModuleOp>();
+    if (!scope)
+      scope = root;
+    scope->walk([&](LLVM::GEPOp g) {
+      if (auto at = dyn_cast<LLVM::LLVMArrayType>(g.getElemType()))
+        if (at.getElementType().isInteger(8))
+          ++n;
+    });
+    llvm::errs() << "GEPCENSUS after " << after << ": " << n << "\n";
+  }
+
   static void stripAccessMemorySpaceCasts(Operation *root) {
     SmallVector<memref::MemorySpaceCastOp> casts;
     root->walk([&](memref::MemorySpaceCastOp c) { casts.push_back(c); });
@@ -7324,6 +7346,9 @@ struct AffineToStableHLORaisingPass
   // real buffer and the usual select/mask raising applies. Branch bodies are
   // cloned per access, so only effect-free bodies qualify.
   static void expandBufferBranches(Operation *root) {
+    // probe: price the buffer-branch expansion (EJ #3016 + #3027)
+    if (getenv("DISABLE_BUFFER_BRANCHES"))
+      return;
     // The same shape also arrives as an arith.select of two buffers: expand
     // each access into an scf.if on the select's condition.
     SmallVector<arith::SelectOp> selects;
@@ -7496,6 +7521,78 @@ struct AffineToStableHLORaisingPass
       Block *thenB = ifOp.getThenBlock(), *elseB = ifOp.getElseBlock();
       if (!armClonable(thenB) || !armClonable(elseB))
         continue;
+      // A memref yield is the same shape without the view: the access names
+      // the branch's result itself, so push it into a clone of the branch
+      // with that arm's buffer in its place.
+      for (auto [i, res] : llvm::enumerate(ifOp.getResults())) {
+        if (!isa<MemRefType>(res.getType()))
+          continue;
+        Value thenV = thenB->getTerminator()->getOperand(i);
+        Value elseV = elseB->getTerminator()->getOperand(i);
+        // The access may name the result itself, or reach it back through a
+        // pointer: the buffer is converted to one and viewed again, and the
+        // access is on that view.
+        SmallVector<std::pair<Operation *, SmallVector<Operation *>>> reached;
+        for (Operation *user : res.getUsers()) {
+          if (isa<memref::LoadOp, affine::AffineLoadOp, memref::StoreOp,
+                  affine::AffineStoreOp>(user)) {
+            reached.push_back({user, {}});
+            continue;
+          }
+          auto m2p = dyn_cast<enzymexla::Memref2PointerOp>(user);
+          if (!m2p)
+            continue;
+          for (Operation *pu : m2p->getUsers()) {
+            auto p2m = dyn_cast<enzymexla::Pointer2MemrefOp>(pu);
+            if (!p2m)
+              continue;
+            for (Operation *acc : p2m->getUsers())
+              if (isa<memref::LoadOp, affine::AffineLoadOp, memref::StoreOp,
+                      affine::AffineStoreOp>(acc))
+                reached.push_back({acc, {m2p, p2m}});
+          }
+        }
+        for (auto &[acc, chain] : reached) {
+          bool isLoad = isa<memref::LoadOp, affine::AffineLoadOp>(acc);
+          unsigned memIdx = isLoad ? 0 : 1;
+          // The buffer must be what the access reads, not what it stores.
+          Value accessed = chain.empty() ? res : chain.back()->getResult(0);
+          if (acc->getOperand(memIdx) != accessed)
+            continue;
+          OpBuilder b(acc);
+          auto newIf = affine::AffineIfOp::create(
+              b, acc->getLoc(),
+              isLoad ? TypeRange(acc->getResult(0).getType()) : TypeRange(),
+              ifOp.getIntegerSet(), ifOp.getOperands(),
+              /*withElseRegion=*/true);
+          auto fillArm = [&](Block *srcArm, Value yielded, Block *dstArm) {
+            if (Operation *term = dstArm->empty() ? nullptr : &dstArm->back())
+              if (term->hasTrait<OpTrait::IsTerminator>())
+                term->erase();
+            IRMapping m;
+            OpBuilder ab = OpBuilder::atBlockEnd(dstArm);
+            for (Operation &armOp : srcArm->without_terminator())
+              ab.clone(armOp, m);
+            Value buf = m.lookupOrDefault(yielded);
+            for (Operation *link : chain) {
+              Operation *cloned = ab.clone(*link, m);
+              cloned->setOperand(0, buf);
+              buf = cloned->getResult(0);
+            }
+            Operation *access = ab.clone(*acc, m);
+            access->setOperand(memIdx, buf);
+            affine::AffineYieldOp::create(
+                ab, acc->getLoc(),
+                isLoad ? ValueRange(access->getResult(0)) : ValueRange());
+          };
+          fillArm(thenB, thenV, newIf.getThenBlock());
+          fillArm(elseB, elseV, newIf.getElseBlock());
+          if (isLoad)
+            acc->getResult(0).replaceAllUsesWith(newIf.getResult(0));
+          acc->erase();
+        }
+      }
+
       // A pointer yield expands through its views like the scf.if case:
       // push each viewing access down into a clone of the branch.
       for (auto [i, res] : llvm::enumerate(ifOp.getResults())) {
@@ -7544,45 +7641,6 @@ struct AffineToStableHLORaisingPass
           }
           if (p2m->use_empty())
             p2m.erase();
-        }
-      }
-      for (auto [i, res] : llvm::enumerate(ifOp.getResults())) {
-        if (!isa<MemRefType>(res.getType()))
-          continue;
-        Value thenV = thenB->getTerminator()->getOperand(i);
-        Value elseV = elseB->getTerminator()->getOperand(i);
-        for (OpOperand &use : llvm::make_early_inc_range(res.getUses())) {
-          Operation *user = use.getOwner();
-          bool isLoad = isa<memref::LoadOp, affine::AffineLoadOp>(user);
-          bool isStore = isa<memref::StoreOp, affine::AffineStoreOp>(user);
-          unsigned memIdx = isLoad ? 0 : 1;
-          if ((!isLoad && !isStore) || use.getOperandNumber() != memIdx)
-            continue;
-          OpBuilder b(user);
-          auto newIf = affine::AffineIfOp::create(
-              b, user->getLoc(),
-              isLoad ? TypeRange(user->getResult(0).getType()) : TypeRange(),
-              ifOp.getIntegerSet(), ifOp.getOperands(),
-              /*withElseRegion=*/true);
-          auto fillArm = [&](Block *srcArm, Value yielded, Block *dstArm) {
-            if (Operation *term = dstArm->empty() ? nullptr : &dstArm->back())
-              if (term->hasTrait<OpTrait::IsTerminator>())
-                term->erase();
-            IRMapping m;
-            OpBuilder ab = OpBuilder::atBlockEnd(dstArm);
-            for (Operation &armOp : srcArm->without_terminator())
-              ab.clone(armOp, m);
-            Operation *access = ab.clone(*user, m);
-            access->setOperand(memIdx, m.lookupOrDefault(yielded));
-            affine::AffineYieldOp::create(
-                ab, user->getLoc(),
-                isLoad ? ValueRange(access->getResult(0)) : ValueRange());
-          };
-          fillArm(thenB, thenV, newIf.getThenBlock());
-          fillArm(elseB, elseV, newIf.getElseBlock());
-          if (isLoad)
-            user->getResult(0).replaceAllUsesWith(newIf.getResult(0));
-          user->erase();
         }
       }
       if (llvm::all_of(ifOp.getResults(),
@@ -9923,31 +9981,55 @@ struct AffineToStableHLORaisingPass
       // the wrapper region; the rewrites also expose one another (a rebase
       // creates the direct views a flatten wants), so iterate once more.
       inlineAllocaScopes(root);
+      gepCensus(root, "inlineAllocaScopes");
       // The rounds used to re-run once per wrapper; a multi-wrapper root
       // could converge only through that repetition, so keep the total
       // budget comparable.
       for (int round = 0; round < 10; ++round) {
         memsetZeroToStores(root);
+      gepCensus(root, "memsetZeroToStores");
+        gepCensus(root, "memsetZeroToStores");
         unrollInvariantYieldWhiles(root);
+      gepCensus(root, "unrollInvariantYieldWhiles");
+        gepCensus(root, "unrollInvariantYieldWhiles");
         flattenLLVMArrayAllocas(root);
+      gepCensus(root, "flattenLLVMArrayAllocas");
+        gepCensus(root, "flattenLLVMArrayAllocas");
         flattenStructMemrefAllocas(root);
+        gepCensus(root, "flattenStructMemrefAllocas");
         dropNullPointerSelects(root);
+      gepCensus(root, "dropNullPointerSelects");
+        gepCensus(root, "dropNullPointerSelects");
         if (!getenv("DISABLE_NULL_BUFFER"))
           dropNullBufferAccesses(root);
+      gepCensus(root, "dropNullBufferAccesses");
+        gepCensus(root, "dropNullBufferAccesses");
         if (!getenv("DISABLE_FOLD_CONST_GLOBAL"))
           foldConstantGlobalAccesses(root);
+      gepCensus(root, "foldConstantGlobalAccesses");
+        gepCensus(root, "foldConstantGlobalAccesses");
         distributeGepOverSelect(root);
+        gepCensus(root, "distributeGepOverSelect");
         forwardPackedScratch(root);
+        gepCensus(root, "forwardPackedScratch");
         stripAccessMemorySpaceCasts(root);
+        gepCensus(root, "stripAccessMemorySpaceCasts");
         rebaseViewedGeps(root);
+        gepCensus(root, "rebaseViewedGeps");
         convertRawGepAccesses(root);
+        gepCensus(root, "convertRawGepAccesses");
         expandBufferBranches(root);
+        gepCensus(root, "expandBufferBranches");
         if (!getenv("DISABLE_PTR_INDUCTION"))
           rewritePointerInduction(root);
+        gepCensus(root, "rewritePointerInduction");
         splitStructScratch(root);
+        gepCensus(root, "splitStructScratch");
         flattenViewedScratch(root);
+        gepCensus(root, "flattenViewedScratch");
       }
       dropDeadPointerChains(root);
+      gepCensus(root, "dropDeadPointerChains");
       SmallVector<enzymexla::GPUWrapperOp> rootWraps;
       root->walk(
           [&](enzymexla::GPUWrapperOp g) { rootWraps.push_back(g); });
@@ -9956,7 +10038,9 @@ struct AffineToStableHLORaisingPass
         boundParallelAxes(g);
         boundParallelFors(g);
         peelDynamicParallelDims(g);
+        gepCensus(g, "peelDynamicParallelDims");
         privatizeLaneScratch(g);
+        gepCensus(g, "privatizeLaneScratch");
         boundParallelFors(g);
       }
     }
@@ -9969,6 +10053,22 @@ struct AffineToStableHLORaisingPass
     }
     size_t raised_count = 0;
     for (auto g : gwrap) {
+      // The scratch passes above build their views as gep chains, after the
+      // last time anything canonicalized this IR. Fold them here the way the
+      // pipeline would have: an access through a view of a gep is an access
+      // on a view of the gep's base at a shifted index.
+      {
+        RewritePatternSet patterns(g.getContext());
+        enzymexla::Pointer2MemrefOp::getCanonicalizationPatterns(
+            patterns, g.getContext());
+        enzymexla::Memref2PointerOp::getCanonicalizationPatterns(
+            patterns, g.getContext());
+        (void)applyPatternsGreedily(g, FrozenRewritePatternSet(std::move(patterns)));
+      }
+      // Last before the descent: a branch that chose between buffers only
+      // acquires the accesses that give it away by this point, and the
+      // descent cannot take one that is written through.
+      expandBufferBranches(g);
       auto modOp = g->getParentOfType<ModuleOp>();
       Block *body = &g->getRegion(0).front();
       Block *newBlock = new Block();
