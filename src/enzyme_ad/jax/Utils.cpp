@@ -264,12 +264,21 @@ bool getEffectsBefore(Operation *op,
 
   bool conservative = false;
 
-  if (isa<scf::ParallelOp, affine::AffineParallelOp>(op->getParentOp()))
+  Operation *parent = op->getParentOp();
+  if (isa<scf::ParallelOp, affine::AffineParallelOp>(parent))
     return true;
+
+  if (isa<FunctionOpInterface>(parent)) {
+    effects.emplace_back(MemoryEffects::Effect::get<MemoryEffects::Read>());
+    effects.emplace_back(MemoryEffects::Effect::get<MemoryEffects::Write>());
+    effects.emplace_back(MemoryEffects::Effect::get<MemoryEffects::Allocate>());
+    effects.emplace_back(MemoryEffects::Effect::get<MemoryEffects::Free>());
+    return false;
+  }
 
   // As we didn't hit another barrier, we must check the predecessors of this
   // operation.
-  if (!getEffectsBefore(op->getParentOp(), effects, stopAtBarrier)) {
+  if (!getEffectsBefore(parent, effects, stopAtBarrier)) {
     return false;
   }
   // If the parent operation is not guaranteed to execute its (single-block)
@@ -304,12 +313,21 @@ bool getEffectsAfter(Operation *op,
 
   bool conservative = false;
 
-  if (isa<scf::ParallelOp, affine::AffineParallelOp>(op->getParentOp()))
+  Operation *parent = op->getParentOp();
+  if (isa<scf::ParallelOp, affine::AffineParallelOp>(parent))
     return true;
+
+  if (isa<FunctionOpInterface>(parent)) {
+    effects.emplace_back(MemoryEffects::Effect::get<MemoryEffects::Read>());
+    effects.emplace_back(MemoryEffects::Effect::get<MemoryEffects::Write>());
+    effects.emplace_back(MemoryEffects::Effect::get<MemoryEffects::Allocate>());
+    effects.emplace_back(MemoryEffects::Effect::get<MemoryEffects::Free>());
+    return false;
+  }
 
   // As we didn't hit another barrier, we must check the predecessors of this
   // operation.
-  if (!getEffectsAfter(op->getParentOp(), effects, stopAtBarrier))
+  if (!getEffectsAfter(parent, effects, stopAtBarrier))
     return false;
 
   // If the parent operation is not guaranteed to execute its (single-block)
