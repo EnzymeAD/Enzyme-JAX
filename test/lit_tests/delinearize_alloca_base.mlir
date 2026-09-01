@@ -73,6 +73,31 @@ module {
     return %r : memref<2x3xf64>
   }
 
+
+  // a ternary picking one of two buffers to index, as mfem's
+  //   (c == 2) ? sBo[qz][dz] : sBc[qz][dz]
+  // leaves: the branch chooses the buffer, and the view is taken of that
+  func.func @select_of_allocas(%c: i1, %v: f64) {
+    %a = memref.alloca() : memref<2x3xf64>
+    %b = memref.alloca() : memref<2x3xf64>
+    %s = arith.select %c, %a, %b : memref<2x3xf64>
+    %p = "enzymexla.memref2pointer"(%s) : (memref<2x3xf64>) -> !llvm.ptr<3>
+    %m = "enzymexla.pointer2memref"(%p) : (!llvm.ptr<3>) -> memref<?xf64>
+    affine.store %v, %m[4] : memref<?xf64>
+    return
+  }
+
+  // a branch with a heap buffer on one side is not one of the forms
+  func.func @select_with_alloc(%c: i1, %v: f64) {
+    %a = memref.alloca() : memref<2x3xf64>
+    %b = memref.alloc() : memref<2x3xf64>
+    %s = arith.select %c, %a, %b : memref<2x3xf64>
+    %p = "enzymexla.memref2pointer"(%s) : (memref<2x3xf64>) -> !llvm.ptr
+    %m = "enzymexla.pointer2memref"(%p) : (!llvm.ptr) -> memref<?xf64>
+    affine.store %v, %m[4] : memref<?xf64>
+    return
+  }
+
 }
 
 // CHECK:  func.func @from_alloca(%[[v1:.+]]: f64) {
@@ -134,4 +159,24 @@ module {
 // CHECK-NEXT:  scf.yield %[[w2]] : memref<2x3xf64>
 // CHECK-NEXT:  }
 // CHECK-NEXT:  return %[[w7]] : memref<2x3xf64>
+// CHECK-NEXT:  }
+
+// CHECK:  func.func @select_of_allocas(%[[s1:.+]]: i1, %[[s2:.+]]: f64) {
+// CHECK-NEXT:  %[[s3:.+]] = memref.alloca() : memref<2x3xf64>
+// CHECK-NEXT:  %[[s4:.+]] = memref.alloca() : memref<2x3xf64>
+// CHECK-NEXT:  %[[s5:.+]] = arith.select %[[s1]], %[[s3]], %[[s4]] : memref<2x3xf64>
+// CHECK-NEXT:  %[[s6:.+]] = "enzymexla.memref2pointer"(%[[s5]]) : (memref<2x3xf64>) -> !llvm.ptr<3>
+// CHECK-NEXT:  %[[s7:.+]] = "enzymexla.pointer2memref"(%[[s6]]) : (!llvm.ptr<3>) -> memref<2x3xf64>
+// CHECK-NEXT:  affine.store %[[s2]], %[[s7]][1, 1] : memref<2x3xf64>
+// CHECK-NEXT:  return
+// CHECK-NEXT:  }
+
+// CHECK:  func.func @select_with_alloc(%[[s1:.+]]: i1, %[[s2:.+]]: f64) {
+// CHECK-NEXT:  %[[s3:.+]] = memref.alloca() : memref<2x3xf64>
+// CHECK-NEXT:  %[[s4:.+]] = memref.alloc() : memref<2x3xf64>
+// CHECK-NEXT:  %[[s5:.+]] = arith.select %[[s1]], %[[s3]], %[[s4]] : memref<2x3xf64>
+// CHECK-NEXT:  %[[s6:.+]] = "enzymexla.memref2pointer"(%[[s5]]) : (memref<2x3xf64>) -> !llvm.ptr
+// CHECK-NEXT:  %[[s7:.+]] = "enzymexla.pointer2memref"(%[[s6]]) : (!llvm.ptr) -> memref<?xf64>
+// CHECK-NEXT:  affine.store %[[s2]], %[[s7]][4] : memref<?xf64>
+// CHECK-NEXT:  return
 // CHECK-NEXT:  }
