@@ -866,6 +866,208 @@ static DenseSet<Block *> getGuaranteedUnreachable(Region &r) {
   return knownUnreachable;
 }
 
+static LogicalResult emitAffineIfAsDUS(
+    affine::AffineIfOp ifOp, OpBuilder &builder, IRMapping &mapping,
+    DenseMap<Value, affine::AffineValueMap> &maps, ParallelContext pc) {
+  if (!ifOp.hasElse())
+    return failure();
+
+  Block *thenBlock = ifOp.getThenBlock(), *elseBlock = ifOp.getElseBlock();
+
+  if (!llvm::hasSingleElement(*thenBlock) ||
+      !llvm::hasSingleElement(*elseBlock))
+    return failure();
+
+  // For each iv in the operand set, we save the start and limit of the values
+  SmallVector<int64_t> starts, limits;
+  SmallVector<InductionVariableRange> operandRanges;
+
+  for (auto operand : ifOp.getOperands()) {
+    auto it = std::find(pc.ivs.begin(), pc.ivs.end(), operand);
+
+    // only support parallel induction variables operands
+    if (it == pc.ivs.end())
+      return failure();
+
+    size_t idx = it - pc.ivs.begin();
+
+    if (pc.ranges[idx].step <= 0)
+      return failure();
+
+    operandRanges.push_back(pc.ranges[idx]);
+    starts.push_back(0);
+    limits.push_back(pc.ranges[idx].getNumIters());
+  }
+
+  SmallVector<bool> constrained(ifOp.getNumOperands(), false);
+
+  IntegerSet condition = ifOp.getCondition();
+
+  AffineExpr zero = builder.getAffineConstantExpr(0);
+
+  for (auto [E, eq] :
+       llvm::zip_equal(condition.getConstraints(), condition.getEqFlags())) {
+    AffineExpr lhs = E, rhs = zero;
+
+    bool ge = true;
+
+    while (true) {
+      if (isa<AffineDimExpr>(lhs))
+        break;
+
+      if (auto binE = dyn_cast<AffineBinaryOpExpr>(lhs)) {
+        AffineExpr binLhs = binE.getLHS();
+        AffineExpr binRhs = binE.getRHS();
+
+        if (lhs.getKind() == AffineExprKind::Add) {
+          lhs = binLhs;
+          rhs = rhs - binRhs;
+          continue;
+        }
+
+        if (lhs.getKind() == AffineExprKind::Mul) {
+          if (auto binRhsConst = dyn_cast<AffineConstantExpr>(binRhs)) {
+            if (binRhsConst.getValue() == -1) {
+              ge = !ge;
+              lhs = binLhs;
+              rhs = -rhs;
+              continue;
+            }
+          }
+        }
+
+        return failure();
+      }
+
+      return failure();
+    }
+
+    auto dimLhs = dyn_cast<AffineDimExpr>(lhs);
+    auto constRhs = dyn_cast<AffineConstantExpr>(rhs);
+    if (!constRhs || !dimLhs)
+      return failure();
+
+    unsigned ivPos = dimLhs.getPosition();
+
+    constrained[ivPos] = true;
+
+    InductionVariableRange range = operandRanges[ivPos];
+    int64_t n = constRhs.getValue() - range.lb;
+
+    if (eq) {
+      if (n % range.step != 0)
+        return failure();
+      starts[ivPos] = std::max(starts[ivPos], n / range.step);
+      limits[ivPos] = std::min(limits[ivPos], n / range.step + 1);
+    } else if (ge) {
+      starts[ivPos] =
+          std::max(starts[ivPos], llvm::divideCeilSigned(n, range.step));
+    } else {
+      limits[ivPos] =
+          std::min(limits[ivPos], llvm::divideFloorSigned(n, range.step) + 1);
+    }
+  }
+
+  for (auto [start, limit] : llvm::zip_equal(starts, limits))
+    if (limit <= start)
+      return failure();
+
+  Operation *thenTerm = thenBlock->getTerminator(),
+            *elseTerm = elseBlock->getTerminator();
+
+  auto hasIV = [](affine::AffineValueMap m, Value iv) {
+    for (auto E : m.getAffineMap().getResults())
+      if (!E.isSymbolicOrConstant() && getIVForExpr(m, E) == iv)
+        return true;
+    return false;
+  };
+
+  for (auto [thenVal, elseVal, result] :
+       llvm::zip_equal(thenTerm->getOperands(), elseTerm->getOperands(),
+                       ifOp->getResults())) {
+    if (isa<MemRefType, LLVM::LLVMPointerType>(result.getType()))
+      return failure();
+
+    Value raisedThenVal = mapping.lookupOrNull(thenVal),
+          raisedElseVal = mapping.lookupOrNull(elseVal);
+    if (!raisedThenVal || !raisedElseVal)
+      return failure();
+
+    affine::AffineValueMap thenMap = maps.lookup(raisedThenVal),
+                           elseMap = maps.lookup(raisedElseVal);
+    if (!thenMap.getAffineMap() || !elseMap.getAffineMap())
+      return failure();
+
+    for (auto [i, isConstrained] : llvm::enumerate(constrained)) {
+      Value iv = ifOp->getOperand(i);
+      if (isConstrained && !hasIV(thenMap, iv) && !hasIV(elseMap, iv))
+        return failure();
+    }
+  }
+
+  for (auto [thenVal, elseVal, result] :
+       llvm::zip_equal(thenTerm->getOperands(), elseTerm->getOperands(),
+                       ifOp->getResults())) {
+    Value raisedThenVal = mapping.lookup(thenVal),
+          raisedElseVal = mapping.lookup(elseVal);
+
+    affine::AffineValueMap thenMap = maps.lookup(raisedThenVal),
+                           elseMap = maps.lookup(raisedElseVal);
+
+    auto map = alignMemoryAccess(raisedThenVal, thenMap, raisedElseVal, elseMap,
+                                 builder, pc);
+
+    auto valType = cast<RankedTensorType>(raisedThenVal.getType());
+    auto indexType = RankedTensorType::get({}, builder.getI64Type());
+
+    SmallVector<int64_t> sliceShape(valType.getRank()),
+        startSlice(valType.getRank()), limitSlice(valType.getRank()),
+        stridesSlice(valType.getRank(), 1);
+    SmallVector<Value> startIndicesValues;
+
+    for (auto [i, E] : llvm::enumerate(map.getAffineMap().getResults())) {
+      auto iv = getIVForExpr(map, E);
+
+      int64_t start = 0;
+      int64_t limit = valType.getDimSize(i);
+
+      for (auto [j, operand] : llvm::enumerate(ifOp->getOperands())) {
+        if (operand != iv)
+          continue;
+        start = std::max(start, starts[j]);
+        limit = std::min(limit, limits[j]);
+      }
+
+      startSlice[i] = start;
+      limitSlice[i] = limit;
+
+      sliceShape[i] = limit - start;
+
+      startIndicesValues.push_back(stablehlo::ConstantOp::create(
+          builder,
+          rewriteLocation(ifOp->getLoc(), pc.options.strip_llvm_debuginfo),
+          indexType,
+          SplatElementsAttr::get(indexType, builder.getI64IntegerAttr(start))));
+    }
+
+    Value slicedThenVal = stablehlo::SliceOp::create(
+        builder,
+        rewriteLocation(ifOp->getLoc(), pc.options.strip_llvm_debuginfo),
+        valType.clone(sliceShape), raisedThenVal, startSlice, limitSlice,
+        stridesSlice);
+
+    Value mergedVal = stablehlo::DynamicUpdateSliceOp::create(
+        builder,
+        rewriteLocation(ifOp->getLoc(), pc.options.strip_llvm_debuginfo),
+        raisedElseVal, slicedThenVal, startIndicesValues);
+
+    mapping.map(result, mergedVal);
+    maps[mergedVal] = map;
+  }
+
+  return success();
+}
+
 static LogicalResult
 emitIfAsSelect(Operation *ifOp, Value cond, affine::AffineValueMap map,
                OpBuilder &builder, IRMapping &mapping,
@@ -3457,6 +3659,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
   }
 
   if (auto ifOp = dyn_cast<affine::AffineIfOp>(op)) {
+    if (emitAffineIfAsDUS(ifOp, builder, mapping, maps, pc).succeeded())
+      return success();
 
     auto is = ifOp.getIntegerSet();
 
