@@ -15,6 +15,7 @@
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "src/enzyme_ad/jax/Utils.h"
 
+#include "Enzyme/MLIR/Dialect/Ops.h"
 #include "mlir/Dialect/Affine/Analysis/AffineAnalysis.h"
 #include "mlir/Dialect/Affine/Analysis/Utils.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -3039,6 +3040,43 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     if ((rmw.getKind() != arith::AtomicRMWKind::addf &&
          rmw.getKind() != arith::AtomicRMWKind::addi) ||
         !rmw.getResult().use_empty())
+      return failure();
+    Value value = rmw.getValue();
+    Value memref = rmw.getMemref();
+    SmallVector<Value> sIndices;
+    for (auto idx : rmw.getIndices()) {
+      Value mapped = mapping.lookupOrNull(idx);
+      if (!mapped || !maps.count(mapped))
+        return failure();
+      sIndices.push_back(mapped);
+    }
+    if (!mapping.lookupOrNull(value) || !mapping.lookupOrNull(memref))
+      return failure();
+    Value res = emitStoreAsScatter(
+        rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+        mapping.lookup(value), mapping.lookup(memref), sIndices, builder, maps,
+        pc, /*accumulate=*/true);
+    if (!res)
+      return op->emitError(
+                 "atomic add is dependent on less dims than stored value: ")
+             << *op;
+    mapping.map(memref, res);
+    return success();
+  }
+
+  if (auto rmw = dyn_cast<enzyme::AtomicRMWOp>(op)) {
+    // As for the memref one: only accumulation raises, as a combining
+    // scatter, and only when the old value is unobserved. A scatter has no
+    // ordering to carry, so only an atomic that asked for none beyond
+    // atomicity itself raises into one -- an acquire or a release is
+    // synchronising with something this cannot express.
+    auto ordering = rmw.getOrdering();
+    if ((rmw.getKind() != arith::AtomicRMWKind::addf &&
+         rmw.getKind() != arith::AtomicRMWKind::addi) ||
+        !rmw.getResult().use_empty() ||
+        (ordering != enzyme::Ordering::not_atomic &&
+         ordering != enzyme::Ordering::unordered &&
+         ordering != enzyme::Ordering::monotonic))
       return failure();
     Value value = rmw.getValue();
     Value memref = rmw.getMemref();
