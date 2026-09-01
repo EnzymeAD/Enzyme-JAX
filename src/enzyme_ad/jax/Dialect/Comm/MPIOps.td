@@ -17,6 +17,13 @@ def TensorI32
            "tensor<i32>", "::mlir::TensorType">,
       BuildableType<"RankedTensorType::get({}, $_builder.getIntegerType(32))">;
 
+def MpiConstantOp : Comm_Op<"mpi.constant", [ConstantLike, Pure, AllTypesMatch<["value", "result"]>]> {
+  let summary = "Creates a value that represents a MPI constant";
+  let arguments = (ins TypedAttrInterface : $value);
+  let results = (outs AnyTypeOf<[MpiComm, MpiOp]> : $result);
+  let assemblyFormat = "attr-dict $value";
+}
+
 def MpiCommRankOp : Comm_Op<"mpi.comm_rank", [Pure]> {
   let summary = "Equivalent to `MPI_Comm_rank`";
   let arguments = (ins MpiComm : $comm);
