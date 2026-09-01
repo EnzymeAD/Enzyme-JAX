@@ -113,10 +113,6 @@ static llvm::raw_ostream &operator<<(llvm::raw_ostream &os,
 // bfloat16 and float16 complex numbers so this might need to be updated at some
 // point)
 
-// Use std::numeric_limits and templates to create most of our cursed values for
-// our types except not supported types in C++ since numeric_limits does not
-// help there
-
 SmallVector<APFloat> createCursedFloatPool(const llvm::fltSemantics &sem) {
   auto fromStr = [&](StringRef s) {
     APFloat v(sem);
