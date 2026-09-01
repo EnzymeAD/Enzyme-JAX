@@ -1,8 +1,8 @@
 // RUN: enzymexlamlir-opt %s --delinearize-indexing | FileCheck %s
 
 // A flat view of a buffer is rebuilt on the shape the buffer was declared
-// with, whether that buffer is a function's argument or an alloca beside the
-// accesses. MFEM's shared-memory scratch is the latter, and left flat it
+// with, for the two forms whose shape is their own: a block argument and an
+// alloca. MFEM's shared-memory scratch is the latter, and left flat it
 // reaches the raiser as a view that is stored through.
 
 #set = affine_set<(d0, d1) : (-d0 + 1 >= 0, d1 == 0)>
@@ -50,7 +50,7 @@ module {
     return
   }
 
-  // a heap buffer
+  // a heap buffer is not one of the two forms this rebuilds on
   func.func @from_alloc(%v: f64) {
     %a = memref.alloc() : memref<2x3xf64>
     %p = "enzymexla.memref2pointer"(%a) : (memref<2x3xf64>) -> !llvm.ptr
@@ -115,11 +115,11 @@ module {
 // CHECK-NEXT:  return
 // CHECK-NEXT:  }
 
-// CHECK:  func.func @from_alloc(%[[w1:.+]]: f64) {
-// CHECK-NEXT:  %[[w2:.+]] = memref.alloc() : memref<2x3xf64>
-// CHECK-NEXT:  %[[w3:.+]] = "enzymexla.memref2pointer"(%[[w2]]) : (memref<2x3xf64>) -> !llvm.ptr
-// CHECK-NEXT:  %[[w4:.+]] = "enzymexla.pointer2memref"(%[[w3]]) : (!llvm.ptr) -> memref<2x3xf64>
-// CHECK-NEXT:  affine.store %[[w1]], %[[w4]][1, 1] : memref<2x3xf64>
+// CHECK:  func.func @from_alloc(%[[h1:.+]]: f64) {
+// CHECK-NEXT:  %[[h2:.+]] = memref.alloc() : memref<2x3xf64>
+// CHECK-NEXT:  %[[h3:.+]] = "enzymexla.memref2pointer"(%[[h2]]) : (memref<2x3xf64>) -> !llvm.ptr
+// CHECK-NEXT:  %[[h4:.+]] = "enzymexla.pointer2memref"(%[[h3]]) : (!llvm.ptr) -> memref<?xf64>
+// CHECK-NEXT:  affine.store %[[h1]], %[[h4]][4] : memref<?xf64>
 // CHECK-NEXT:  return
 // CHECK-NEXT:  }
 
