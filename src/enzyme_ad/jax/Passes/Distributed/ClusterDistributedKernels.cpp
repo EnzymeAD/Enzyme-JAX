@@ -209,8 +209,8 @@ static IndexedTensorShardingAttr buildDefaultShardingForType(MLIRContext *ctx,
 }
 
 struct ClusterDistributedKernelsPass
-  : public impl::ClusterDistributedKernelsPassBase<
-      ClusterDistributedKernelsPass> {
+    : public impl::ClusterDistributedKernelsPassBase<
+          ClusterDistributedKernelsPass> {
   using ClusterDistributedKernelsPassBase::ClusterDistributedKernelsPassBase;
   using TV_AxisFactor = mlir::TypedValue<mlir::enzyme::axis::AxisFactorType>;
   using TV_FactorGroup = mlir::TypedValue<mlir::enzyme::axis::FactorGroupType>;
@@ -695,7 +695,62 @@ struct ClusterDistributedKernelsPass
 
       OpBuilder bodyBuilder = OpBuilder::atBlockBegin(&kernelBlock);
       for (Operation *member : orderedMembers) {
-        bodyBuilder.clone(*member, mapping);
+        Operation *cloned = bodyBuilder.clone(*member, mapping);
+
+        // Query analysis on the original operation, then annotate its clone
+        // using the kernel-wide partitioning-axis index space. This is so
+        // we can look up the partitioning of internal values in the kernel body
+        // later (i.e. for doing the actual sharding rewrite).
+        SmallVector<IndexedTensorShardingAttr> argumentShardings;
+        argumentShardings.reserve(member->getNumOperands());
+        for (OpOperand &operand : member->getOpOperands()) {
+          auto maybePartitioning = axisAnalysis.getTensorPartitionDims(operand);
+          Type operandType = operand.get().getType();
+          if (!maybePartitioning && isa<RankedTensorType>(operandType)) {
+            member->emitError()
+                << "missing sharding for ranked kernel operation operand "
+                << operand.getOperandNumber();
+            return failure();
+          }
+
+          if (auto rankedType = dyn_cast<RankedTensorType>(operandType);
+              rankedType && maybePartitioning) {
+            argumentShardings.push_back(buildIndexedShardingAttr(
+                rankedType, *maybePartitioning, symbolToPartitioningAxisIdx));
+          } else {
+            argumentShardings.push_back(
+                buildDefaultShardingForType(ctx, operandType));
+          }
+        }
+
+        SmallVector<IndexedTensorShardingAttr> outputShardings;
+        outputShardings.reserve(member->getNumResults());
+        for (OpResult result : member->getResults()) {
+          auto maybePartitioning = axisAnalysis.getTensorPartitionDims(result);
+          Type resultType = result.getType();
+          if (!maybePartitioning && isa<RankedTensorType>(resultType)) {
+            member->emitError()
+                << "missing sharding for ranked kernel operation result "
+                << result.getResultNumber();
+            return failure();
+          }
+
+          if (auto rankedType = dyn_cast<RankedTensorType>(resultType);
+              rankedType && maybePartitioning) {
+            outputShardings.push_back(buildIndexedShardingAttr(
+                rankedType, *maybePartitioning, symbolToPartitioningAxisIdx));
+          } else {
+            outputShardings.push_back(
+                buildDefaultShardingForType(ctx, resultType));
+          }
+        }
+
+        cloned->setAttr(
+            "distributed.argument_shardings",
+            IndexedTensorShardingPerValueAttr::get(ctx, argumentShardings));
+        cloned->setAttr(
+            "distributed.output_shardings",
+            IndexedTensorShardingPerValueAttr::get(ctx, outputShardings));
       }
 
       SmallVector<Value> yieldedValues;
@@ -797,9 +852,8 @@ struct ClusterDistributedKernelsPass
       dumpLogicalAxesForMainBlock(mainBlock, axisAnalysis);
     }
 
-    // This pass now assumes conversion/collective passes have already run,
-    // and only handles outlining clusters into distributed.kernel ops.
-    // Step 1: run clustering to group ops into kernels.
+    // need partial order to help clustering: need to ensure that nothing
+    // outside a kernel sits topologically between any part of a kernel.
     auto &order_analysis =
         getAnalysis<MainFunctionSSABlockPartialOrderAnalysis>();
     if (!order_analysis.isValid()) {

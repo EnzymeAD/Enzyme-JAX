@@ -164,10 +164,10 @@ module @test_single_kernel {
 
 // CHAIN-LABEL: module @test_single_kernel {
 // CHAIN: %[[KERNEL:.*]]:2 = distributed.DistributedKernel
-// CHAIN: stablehlo.add
-// CHAIN: stablehlo.add
-// CHAIN: stablehlo.multiply
-// CHAIN: stablehlo.reduce
+// CHAIN: stablehlo.add {{.*}}distributed.argument_shardings{{.*}}distributed.output_shardings
+// CHAIN: stablehlo.add {{.*}}distributed.argument_shardings{{.*}}distributed.output_shardings
+// CHAIN: stablehlo.multiply {{.*}}distributed.argument_shardings{{.*}}distributed.output_shardings
+// CHAIN: stablehlo.reduce{{.*}}distributed.argument_shardings{{.*}}distributed.output_shardings
 // CHAIN: distributed.DistributedYield
 // CHAIN: %[[COLL:.*]] = distributed.Collective
 // CHAIN-SAME: reduces (%{{.*}})
