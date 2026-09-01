@@ -1,6 +1,7 @@
 #include "Passes.h"
 
 #include "Enzyme/MLIR/Dialect/Ops.h"
+#include "Enzyme/MLIR/Interfaces/AutoDiffTypeInterface.h"
 #include "mlir/Analysis/CallGraph.h"
 #include "mlir/Analysis/DataLayoutAnalysis.h"
 #include "mlir/Dialect/Affine/Analysis/AffineStructures.h"
@@ -1681,6 +1682,72 @@ static Value createVectorLoad(OpBuilder &b, Location loc, Type ty,
   llvm_unreachable("");
 }
 
+// A zeroing memset is a loop of stores of zero, and only in that form does an
+// allocation the conversion could take stop being blocked by it: the
+// conversion accepts views of an allocation and nothing else, and a memset
+// names the pointer itself. The element type is the one the allocation was
+// declared with, so the stores land on whole elements; a length that is not a
+// whole number of them is left alone.
+struct MemsetZeroToAffineFill : public OpRewritePattern<LLVM::MemsetOp> {
+  using OpRewritePattern<LLVM::MemsetOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(LLVM::MemsetOp memset,
+                                PatternRewriter &rewriter) const override {
+    llvm::APInt val, len;
+    if (!matchPattern(memset.getVal(), m_ConstantInt(&val)) || !val.isZero())
+      return failure();
+    if (!matchPattern(memset.getLen(), m_ConstantInt(&len)))
+      return failure();
+    int64_t bytes = len.getSExtValue();
+    if (bytes <= 0)
+      return failure();
+    if (memset.getIsVolatile())
+      return failure();
+
+    Value base = memset.getDst();
+    while (true) {
+      if (auto gep = base.getDefiningOp<LLVM::GEPOp>())
+        base = gep.getBase();
+      else if (auto cast = base.getDefiningOp<LLVM::AddrSpaceCastOp>())
+        base = cast.getArg();
+      else
+        break;
+    }
+    auto alloca = base.getDefiningOp<LLVM::AllocaOp>();
+    if (!alloca)
+      return failure();
+    Type elTy = alloca.getElemType();
+    while (auto arr = dyn_cast<LLVM::LLVMArrayType>(elTy))
+      elTy = arr.getElementType();
+    auto adTy = dyn_cast<enzyme::AutoDiffTypeInterface>(elTy);
+    if (!adTy || !MemRefType::isValidElementType(elTy))
+      return failure();
+
+    DataLayout dl = DataLayout::closest(memset);
+    int64_t elSize = dl.getTypeSize(elTy);
+    if (elSize <= 0 || bytes % elSize != 0)
+      return failure();
+
+    Location loc = memset.getLoc();
+    auto ptrTy = cast<LLVM::LLVMPointerType>(memset.getDst().getType());
+    auto viewTy = MemRefType::get(
+        {ShapedType::kDynamic}, elTy, MemRefLayoutAttrInterface{},
+        rewriter.getIndexAttr(ptrTy.getAddressSpace()));
+    Value view = enzymexla::Pointer2MemrefOp::create(rewriter, loc, viewTy,
+                                                     memset.getDst());
+    Value zero = adTy.createNullValue(rewriter, loc);
+    auto loop = affine::AffineForOp::create(rewriter, loc, 0, bytes / elSize);
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(loop.getBody());
+      affine::AffineStoreOp::create(rewriter, loc, zero, view,
+                                    ValueRange{loop.getInductionVar()});
+    }
+    rewriter.eraseOp(memset);
+    return success();
+  }
+};
+
 /// Fold constant dimensions into an alloc like operation.
 template <typename AllocLikeOp, bool gpu = false>
 struct SimplifyAllocConst : public OpRewritePattern<AllocLikeOp> {
@@ -2289,6 +2356,7 @@ convertLLVMToAffineAccess(Operation *op,
                     SimplifyInPlaceAlloc<memref::AllocaOp>,
                     SimplifyInPlaceAlloc<gpu::AllocOp>>(context,
                                                         dataLayoutAnalysis);
+    patterns.insert<MemsetZeroToAffineFill>(context);
     patterns.insert<IndexCastAddSub, MemrefLoadAffineApply, SelectCSE,
                     SelectAddrCast>(context);
     patterns.insert<SimplifyAllocConst<memref::AllocOp>,
