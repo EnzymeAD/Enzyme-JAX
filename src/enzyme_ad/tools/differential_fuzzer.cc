@@ -25,6 +25,7 @@
 
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
+#include "src/enzyme_ad/jax/Utils.h"
 
 #include <optional>
 #include <random>
@@ -77,6 +78,13 @@ llvm::cl::opt<int64_t> maxElements(
     llvm::cl::desc("Maximum number of tensor elements in an argument to fuzz "
                    "before skipping (default 10M)"),
     llvm::cl::init(10000000));
+
+llvm::cl::list<std::string> restrictInput(
+    "restrict-input", llvm::cl::CommaSeparated,
+    llvm::cl::desc(
+        "Categories of values to omit from being part of the number pool used "
+        "to generate tensors: nonzero, non_negative, noNaN, allFinite"));
+
 } // namespace
 
 static llvm::raw_ostream &diag() {
@@ -175,6 +183,82 @@ createCursedComplexPool(const llvm::fltSemantics &sem) {
   return ComplexPool;
 }
 
+enum class Assume { NoNaN, Finite, NonNegative, NonZero, Unknown };
+
+struct PoolConstraints {
+  bool noNaN = false;
+  bool noInf = false;
+  bool noSubnormal = false;
+  bool nonNegative = false;
+  bool nonZero = false;
+  std::optional<APInt> intLo, intHi; // from bounds
+  std::optional<APFloat> floatLo, floatHi;
+};
+
+static bool allowed(const APFloat &v, const PoolConstraints &c) {
+  if (c.noNaN && v.isNaN())
+    return false;
+  if (c.noInf && v.isInfinity())
+    return false;
+  if (c.noSubnormal && v.isDenormal())
+    return false;
+  if (c.nonNegative && v.isNegative())
+    return false;
+  if (c.floatLo && v < *c.floatLo)
+    return false;
+  if (c.floatHi && v > *c.floatHi)
+    return false;
+  if (c.nonZero && v.isZero())
+    return false;
+  return true;
+}
+
+static bool allowed(const APInt &v, const PoolConstraints &c) {
+  if (c.nonZero && v.isZero())
+    return false;
+  if (c.nonNegative && v.isNegative())
+    return false;
+  return true;
+}
+
+PoolConstraints parseRestrictInput(ArrayRef<std::string> tokens) {
+  PoolConstraints p;
+  for (StringRef token : tokens) {
+    switch (llvm::StringSwitch<Assume>(token.lower())
+                .Case("nonan", Assume::NoNaN)
+                .Case("no-nan", Assume::NoNaN)
+                .Case("no_nan", Assume::NoNaN)
+                .Case("finite", Assume::Finite)
+                .Case("allfinite", Assume::Finite)
+                .Case("all-finite", Assume::Finite)
+                .Case("nonnegative", Assume::NonNegative)
+                .Case("non-negative", Assume::NonNegative)
+                .Case("non_negative", Assume::NonNegative)
+                .Case("nonzero", Assume::NonZero)
+                .Case("non-zero", Assume::NonZero)
+                .Case("non_zero", Assume::NonZero)
+                .Default(Assume::Unknown)) {
+    case Assume::NoNaN:
+      p.noNaN = true;
+      break;
+    case Assume::Finite:
+      p.noNaN = p.noInf = true;
+      break;
+    case Assume::NonNegative:
+      p.nonNegative = true;
+      break;
+    case Assume::NonZero:
+      p.nonZero = true;
+      break;
+    case Assume::Unknown:
+      llvm::WithColor::error(diag())
+          << "--restrict-input: unknown  '" << token << "'\n";
+      exit(2);
+    }
+  }
+  return p;
+}
+
 OwningOpRef<ModuleOp> loadMLIRModule(MLIRContext &context,
                                      llvm::StringRef filePath) {
   std::string errorMessage;
@@ -270,6 +354,64 @@ std::tuple<std::string, bool, bool> parseRunLine(llvm::StringRef filePath) {
   return {llvm::join(passes, ","), allowUnreg, split};
 }
 
+void applyConstraintsFromPipeline(StringRef pipeline, PoolConstraints &c) {
+
+  // Option form: no_nan / no_nan=true, all_finite=true. The =false spellings
+  // exist, so the value has to be read rather than just the name matched.
+  auto optionSet = [&](StringRef name) {
+    size_t pos = 0;
+    while ((pos = pipeline.find(name, pos)) != StringRef::npos) {
+      StringRef rest = pipeline.substr(pos + name.size());
+      pos += name.size();
+      if (rest.consume_front("=")) {
+        if (rest.starts_with("true"))
+          return true;
+        continue; // =false
+      }
+      // Bare form: must end at a delimiter, not be a prefix of something else.
+      if (rest.empty() || rest.starts_with("}") || rest.starts_with(",") ||
+          rest.starts_with(" "))
+        return true;
+    }
+    return false;
+  };
+
+  if (optionSet("no_nan"))
+    c.noNaN = true;
+  if (optionSet("all_finite"))
+    c.noNaN = c.noInf = true;
+
+  // Pattern form: a pattern whose name contains no_nan, with argument 1.
+  size_t pos = 0;
+  while ((pos = pipeline.find("no_nan", pos)) != StringRef::npos) {
+    StringRef rest = pipeline.substr(pos);
+    size_t paren = rest.find('(');
+    size_t delim = rest.find_first_of(";,}");
+    if (paren != StringRef::npos &&
+        (delim == StringRef::npos || paren < delim) &&
+        rest.substr(paren).starts_with("(1)"))
+      c.noNaN = true;
+    pos += 6;
+  }
+}
+
+PoolConstraints constraintsFromArg(Value arg, PoolConstraints &base) {
+  PoolConstraints constraints = base;
+  auto get = [&](StringRef name) {
+    return mlir::enzyme::getAttributeFromIR<
+        enzymexla::GuaranteedAnalysisResultAttr>(
+        arg, name, enzymexla::GuaranteedAnalysisResult::UNKNOWN);
+  };
+  using G = enzymexla::GuaranteedAnalysisResult;
+  if (get("enzymexla.no_nan") == G::GUARANTEED)
+    constraints.noNaN = true;
+  if (get("enzymexla.finite") == G::GUARANTEED)
+    constraints.noNaN = constraints.noInf = true;
+  if (get("enzymexla.non_negative") == G::GUARANTEED)
+    constraints.nonNegative = true;
+  return constraints;
+}
+
 std::optional<AnyVector> CreateCursedPool(mlir::Type elementType) {
   if (stablehlo::isSupportedFloatType(elementType)) {
     return createCursedFloatPool(
@@ -304,8 +446,9 @@ std::optional<AnyVector> CreateCursedPool(mlir::Type elementType) {
   return std::nullopt;
 }
 
-std::optional<mlir::DenseElementsAttr> generateCursedTensor(mlir::Type argType,
-                                                            std::mt19937 &gen) {
+std::optional<mlir::DenseElementsAttr>
+generateCursedTensor(mlir::Type argType, std::mt19937 &gen,
+                     PoolConstraints &constraints) {
   auto tensorType = llvm::dyn_cast<RankedTensorType>(argType);
   if (!tensorType) {
     return std::nullopt;
@@ -319,10 +462,12 @@ std::optional<mlir::DenseElementsAttr> generateCursedTensor(mlir::Type argType,
   mlir::DenseElementsAttr attr;
 
   std::visit(
-      [&](auto &&pool) {
+      [&](auto &pool) {
         using VectorType = std::decay_t<decltype(pool)>;
         using T = typename VectorType::value_type;
-
+        if constexpr (std::is_same_v<T, APFloat> || std::is_same_v<T, APInt>)
+          llvm::erase_if(pool,
+                         [&](const T &v) { return !allowed(v, constraints); });
         if (pool.empty())
           return;
 
@@ -411,7 +556,6 @@ int main(int argc, char **argv) {
            "--split-input-file.\n";
     return 0;
   }
-
   std::mt19937 gen(seed);
 
   MLIRContext context;
@@ -450,6 +594,9 @@ int main(int argc, char **argv) {
     return 1;
   }
 
+  auto BaseConstraints = parseRestrictInput(restrictInput);
+  applyConstraintsFromPipeline(passPipeline, BaseConstraints);
+
   OwningOpRef<ModuleOp> optimizedModule = module->clone();
   if (mlir::failed(pm.run(*optimizedModule))) {
     llvm::WithColor::warning(diag())
@@ -485,8 +632,10 @@ int main(int argc, char **argv) {
         return; // Aborts this function, moves to the next
       }
 
+      PoolConstraints UnoptConstraints = constraintsFromArg(
+          optFunc.getArgument(arg.getArgNumber()), BaseConstraints);
       std::optional<mlir::DenseElementsAttr> attrOpt =
-          generateCursedTensor(arg.getType(), gen);
+          generateCursedTensor(arg.getType(), gen, UnoptConstraints);
 
       if (!attrOpt) {
         llvm::WithColor::warning(diag())
