@@ -479,6 +479,94 @@ struct ForOpInductionReplacement : public OpRewritePattern<scf::ForOp> {
   }
 };
 
+// A result whose iter arg the body never reads does not accumulate anything:
+// it is just the yielded value of the last iteration. When that value varies
+// with the loop only through the induction variable, the last one can be
+// computed outside, at the last induction variable the loop reaches -- or the
+// init, when the loop never runs.
+//
+// mfem walks a pointer this way: `TC *c = Cdata;` advanced with `c++` in an
+// inner loop, so the enclosing loop carries it while the inner loop's own copy
+// is dead. Nothing recognizes the enclosing loop as an induction until this
+// inner result is out of the way.
+struct ForOpFinalValueOfDeadIterArg : public OpRewritePattern<scf::ForOp> {
+  using OpRewritePattern<scf::ForOp>::OpRewritePattern;
+
+  // The ops needed to recompute `v` outside the loop, in block order, or
+  // nothing when the loop varies it by more than the induction variable.
+  static bool collectSlice(scf::ForOp forOp, Value v,
+                           SmallVectorImpl<Operation *> &ops) {
+    SmallVector<Value> todo{v};
+    SmallPtrSet<Operation *, 8> seen;
+    while (!todo.empty()) {
+      Value cur = todo.pop_back_val();
+      if (cur == forOp.getInductionVar() || forOp.isDefinedOutsideOfLoop(cur))
+        continue;
+      Operation *def = cur.getDefiningOp();
+      if (!def || def->getParentRegion() != &forOp.getRegion())
+        return false;
+      if (!isMemoryEffectFree(def) || def->getNumRegions())
+        return false;
+      if (!seen.insert(def).second)
+        continue;
+      // Recomputing the whole body outside it is no canonicalization.
+      if (ops.size() >= 8)
+        return false;
+      ops.push_back(def);
+      llvm::append_range(todo, def->getOperands());
+    }
+    llvm::sort(ops, [](Operation *a, Operation *b) { return a->isBeforeInBlock(b); });
+    return true;
+  }
+
+  LogicalResult matchAndRewrite(scf::ForOp forOp,
+                                PatternRewriter &rewriter) const override {
+    auto yieldOp = cast<scf::YieldOp>(forOp.getBody()->getTerminator());
+    Location loc = forOp.getLoc();
+    bool changed = false;
+
+    for (auto [init, iterarg, res, yld] :
+         llvm::zip(forOp.getInits(), forOp.getRegionIterArgs(),
+                   forOp.getResults(), yieldOp.getOperands())) {
+      if (!iterarg.use_empty() || res.use_empty() || yld == iterarg)
+        continue;
+      SmallVector<Operation *> slice;
+      if (!collectSlice(forOp, yld, slice))
+        continue;
+
+      rewriter.setInsertionPoint(forOp);
+      Value lb = forOp.getLowerBound(), ub = forOp.getUpperBound(),
+            step = forOp.getStep();
+      // The last induction variable the loop reaches: lb + ((ub-lb-1)/step)*step.
+      Value one = arith::ConstantOp::create(
+          rewriter, loc, rewriter.getIntegerAttr(lb.getType(), 1));
+      Value span = SubIOp::create(rewriter, loc, ub, lb);
+      Value zero = arith::ConstantOp::create(
+          rewriter, loc, rewriter.getIntegerAttr(lb.getType(), 0));
+      Value clamped = MaxSIOp::create(rewriter, loc, span, zero);
+      Value back = SubIOp::create(rewriter, loc, clamped, one);
+      Value whole = MulIOp::create(
+          rewriter, loc, DivUIOp::create(rewriter, loc, back, step), step);
+      Value lastIV = AddIOp::create(rewriter, loc, lb, whole);
+
+      IRMapping map;
+      map.map(forOp.getInductionVar(), lastIV);
+      for (Operation *op : slice)
+        rewriter.clone(*op, map);
+      Value last = map.lookupOrDefault(yld);
+
+      Value ran = CmpIOp::create(rewriter, loc, CmpIPredicate::sgt, ub, lb);
+      Value replacement = SelectOp::create(rewriter, loc, ran, last, init);
+
+      Value resCopy = res;
+      rewriter.modifyOpInPlace(forOp,
+                               [&] { resCopy.replaceAllUsesWith(replacement); });
+      changed = true;
+    }
+    return success(changed);
+  }
+};
+
 struct RemoveInductionVarRelated : public OpRewritePattern<ForOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -4055,7 +4143,7 @@ void CanonicalizeFor::runOnOperation() {
       RemoveUnusedForResults, RemoveUnusedArgs, MoveWhileToFor,
       ForLiveFlagToIVPredicate, RemoveWhileSelect, SelectTruncToTruncSelect,
       MaxSimplify, ForBoundUnSwitch, SelectI1Simplify,
-      RemoveInductionVarRelated, RotateWhileAnd, MoveWhileDown, MoveWhileDown2,
+      RemoveInductionVarRelated, ForOpFinalValueOfDeadIterArg, RotateWhileAnd, MoveWhileDown, MoveWhileDown2,
 
       ReplaceRedundantArgs,
 
