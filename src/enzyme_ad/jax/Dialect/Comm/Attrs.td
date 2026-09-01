@@ -17,7 +17,7 @@ def MpiCommEnum : I32EnumAttr<"MpiCommEnum", "Named predefined MPI communicators
   let cppNamespace = "::mlir::comm";
 }
 
-def MpiCommAttr : Comm_Attr<"MpiComm", "mpi.comm", [TypedAttrInterface]> {
+def MpiCommAttr : Comm_Attr<"MpiComm", "mpi_comm", [TypedAttrInterface]> {
   let parameters = (ins EnumParameter<MpiCommEnum>:$value);
   let assemblyFormat = "`<` $value `>`";
 
@@ -128,7 +128,7 @@ def MpiOpEnum : I32EnumAttr<"MpiOpEnum", "Named predefined MPI (reduction) opera
   let cppNamespace = "::mlir::comm";
 }
 
-def MpiOpAttr : Comm_Attr<"MpiOp", "mpi.op", [TypedAttrInterface]> {
+def MpiOpAttr : Comm_Attr<"MpiOp", "mpi_op", [TypedAttrInterface]> {
   let parameters = (ins EnumParameter<MpiOpEnum>:$value);
   let assemblyFormat = "`<` $value `>`";
 

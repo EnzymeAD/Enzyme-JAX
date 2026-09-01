@@ -372,7 +372,7 @@ struct LowerCommToStablehloPass
     TypeConverter converter;
     converter.addConversion([](Type type) { return type; });
 
-    // !comm.mpi.comm, !comm.mpi.request are pointer-like, so lower to
+    // !comm.mpi_comm, !comm.mpi_request are pointer-like, so lower to
     // tensor<i64>
     auto ptr_tensor_type =
         RankedTensorType::get({}, IntegerType::get(context, 64));
