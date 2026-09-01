@@ -97,3 +97,40 @@ func.func @varying_stride(%p: !llvm.ptr, %n: i64, %x: f64) {
 
 // CHAIN-LABEL: func.func @varying_stride(
 // CHAIN: iter_args
+
+// -----
+// RUN: enzymexlamlir-opt %s --canonicalize-scf-for --canonicalize | FileCheck %s --check-prefix=TRIP
+
+// 0 to 10 step 4 runs at 0, 4 and 8, so the result is the init advanced three
+// times: the trip count is a ceiling division, not a truncating one.
+func.func @ragged_trip_count(%p: !llvm.ptr, %x: f64) -> !llvm.ptr {
+  %c0 = arith.constant 0 : index
+  %c4 = arith.constant 4 : index
+  %c10 = arith.constant 10 : index
+  %r = scf.for %i = %c0 to %c10 step %c4 iter_args(%q = %p) -> (!llvm.ptr) {
+    llvm.store %x, %q : f64, !llvm.ptr
+    %next = llvm.getelementptr inbounds|nuw %q[8] : (!llvm.ptr) -> !llvm.ptr, i8
+    scf.yield %next : !llvm.ptr
+  }
+  return %r : !llvm.ptr
+}
+
+// A loop that never runs advances nothing.
+func.func @never_runs(%p: !llvm.ptr, %x: f64) -> !llvm.ptr {
+  %c0 = arith.constant 0 : index
+  %c1 = arith.constant 1 : index
+  %c5 = arith.constant 5 : index
+  %r = scf.for %i = %c5 to %c0 step %c1 iter_args(%q = %p) -> (!llvm.ptr) {
+    llvm.store %x, %q : f64, !llvm.ptr
+    %next = llvm.getelementptr inbounds|nuw %q[8] : (!llvm.ptr) -> !llvm.ptr, i8
+    scf.yield %next : !llvm.ptr
+  }
+  return %r : !llvm.ptr
+}
+
+// TRIP-LABEL: func.func @ragged_trip_count(
+// TRIP: %[[r:.+]] = llvm.getelementptr inbounds|nuw %arg0[24]
+// TRIP: return %[[r]]
+
+// TRIP-LABEL: func.func @never_runs(
+// TRIP: return %arg0

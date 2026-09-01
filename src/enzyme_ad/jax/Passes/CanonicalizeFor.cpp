@@ -458,9 +458,20 @@ struct ForOpInductionReplacement : public OpRewritePattern<scf::ForOp> {
 
         if (!res.use_empty()) {
           rewriter.setInsertionPoint(forOp);
-          Value count = SubIOp::create(rewriter, loc, forOp.getUpperBound(),
-                                       forOp.getLowerBound());
-          count = DivUIOp::create(rewriter, loc, count, forOp.getStep());
+          // The trip count is a ceiling division: a range the step does not
+          // divide evenly still runs the iteration that starts inside it. A
+          // range the loop never enters runs none.
+          Value span = SubIOp::create(rewriter, loc, forOp.getUpperBound(),
+                                      forOp.getLowerBound());
+          Value zero = arith::ConstantOp::create(
+              rewriter, loc, rewriter.getIntegerAttr(span.getType(), 0));
+          span = MaxSIOp::create(rewriter, loc, span, zero);
+          Value one = arith::ConstantOp::create(
+              rewriter, loc, rewriter.getIntegerAttr(span.getType(), 1));
+          Value bump = SubIOp::create(rewriter, loc, forOp.getStep(), one);
+          Value count = DivUIOp::create(
+              rewriter, loc, AddIOp::create(rewriter, loc, span, bump),
+              forOp.getStep());
           Value replacement = advancedBy(count);
           Value resCopy = res;
           rewriter.modifyOpInPlace(
