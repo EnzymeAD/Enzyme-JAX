@@ -126,7 +126,7 @@ def MpiAllreduceOp : Comm_Op<"mpi.allreduce", []> {
 
   let arguments = (ins
     AnyTensor : $sendbuf,
-    MpiOpsAttr : $reduceOp,
+    MpiOpAttr : $reduceOp,
     MpiComm : $comm
   );
 

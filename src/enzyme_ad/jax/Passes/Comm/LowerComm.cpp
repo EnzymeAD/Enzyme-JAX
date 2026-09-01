@@ -303,7 +303,7 @@ struct LowerCommMpiAllreduceOp
     auto backend_config = rewriter.getDictionaryAttr({
         rewriter.getNamedAttr(
             "op",
-            rewriter.getStringAttr(comm::stringifyMpiOps(op.getReduceOp()))),
+            rewriter.getStringAttr(comm::stringifyMpiOpEnum(op.getReduceOp()))),
     });
 
     // TODO pass attributes: reduceOp
