@@ -267,6 +267,41 @@ directs you to `XLA_FLAGS`, which is why they live in the job variables.
 If clique init ever *does* hang, that same knob is where to lower the terminate
 timeout to get a fast failure.
 
+### WHILE_CONCAT workaround
+
+`loop!` aborts with `HSA_STATUS_ERROR_MEMORY_APERTURE_VIOLATION` on all four ranks at the
+default problem size. `first_time_step!` is fine. Bisected to a single Reactant knob that
+GB-25 sets in its own scripts:
+
+| `WHILE_CONCAT` | `DEBUG_DISABLE_RESHARDING` | `loop!` |
+|---|---|---|
+| true | true | **crash** |
+| true | false | **crash** |
+| false | true | runs, 34.07 s |
+| false | false | runs, 34.85 s |
+
+So the job sets `GB25_WHILE_CONCAT: "false"` and patches GB-25's `compile.jl` and `run.jl`
+after the clone. The patch is **verified** rather than assumed: a silently-failed `sed`
+would look exactly like a passing run of the unpatched configuration, so the step greps the
+result back and fails loudly if it did not apply. Patching in place is fine here because
+CI's checkout is per-job and discarded.
+
+Two alternatives were rejected. `--float-type=Float32` and shrinking `--grid-x/--grid-y`
+both make the symptom go away by dropping the memory footprint below the threshold where
+the fault occurs — they do not avoid the bug. If it is an out-of-bounds access that only
+escapes its allocation at large sizes, those configurations could pass while computing
+wrong results, which is the worst possible CI signal. Disabling the pass is the only option
+where the reason for green is known. Float32 would also change the shapes the collectives
+gate was calibrated against.
+
+`test-gb-25-upstream` runs the real configuration (`GB25_WHILE_CONCAT: "true"`) on every
+pipeline with `allow_failure: true`, so it is expected to be red today without gating
+anything. It is a separate job, so it gets its own Slurm allocation and its own
+`SLURM_TIMELIMIT`; the cost is roughly double node-hours per pipeline, in exchange for the
+workaround announcing its own obsolescence — the job turns green the day the upstream fix
+lands, with nobody having to check. At that point set `GB25_WHILE_CONCAT` to `"true"` and
+delete the job.
+
 ## UENV bump checklist
 
 When `UENV:` (and thus the ROCm/LLVM toolchain) changes, re-verify:

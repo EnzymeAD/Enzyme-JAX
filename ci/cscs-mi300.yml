@@ -3,7 +3,7 @@ include:
 
 # Maintainer runbook — overlay design, every workaround, and the UENV bump
 # checklist: ci/cscs-mi300.md. Comments below are one-line pointers into it.
-test-gb-25:
+.gb-25-base:
   extends: .baremetal-runner-beverin-mi300
   variables:
     JULIA: /users/lraess/julia_amd/julia_amd-1.11
@@ -14,6 +14,11 @@ test-gb-25:
     REACTANT_COMMIT: main
     GB25_COMMIT: main
     FLOAT_TYPE: '--float-type=Float64'
+    # WORKAROUND: Reactant's WHILE_CONCAT pass makes loop! abort with
+    # HSA_STATUS_ERROR_MEMORY_APERTURE_VIOLATION on MI300A at this problem size.
+    # Bisected to this single knob. Set back to "true" once the upstream fix lands.
+    # See cscs-mi300.md: "WHILE_CONCAT workaround".
+    GB25_WHILE_CONCAT: "false"
     # Slurm resource request
     SLURM_JOB_NUM_NODES: 1
     SLURM_NTASKS_PER_NODE: 1
@@ -104,6 +109,18 @@ test-gb-25:
     # Clone GB-25 and set up its Julia environment
     - git clone --depth=1 --branch "${GB25_COMMIT}" https://github.com/PRONTOLab/GB-25 "${GB25_DIR}"
     - cp "${REACTANT_DIR}/LocalPreferences.toml" "${GB25_DIR}/LocalPreferences.toml"
+    # Apply the WHILE_CONCAT setting and prove it took: a silently-failed sed would
+    # otherwise look like a passing run of the unpatched configuration.
+    - |
+      sed -i "s/^\(Reactant\.Compiler\.WHILE_CONCAT\[\] = \).*/\1${GB25_WHILE_CONCAT}/" \
+        "${GB25_DIR}/sharding/sharded_baroclinic_instability_simulation_compile.jl" \
+        "${GB25_DIR}/sharding/sharded_baroclinic_instability_simulation_run.jl"
+      grep -Hn "^Reactant\.Compiler\.WHILE_CONCAT" \
+        "${GB25_DIR}/sharding/sharded_baroclinic_instability_simulation_compile.jl" \
+        "${GB25_DIR}/sharding/sharded_baroclinic_instability_simulation_run.jl"
+      grep -q "WHILE_CONCAT\[\] = ${GB25_WHILE_CONCAT}" \
+        "${GB25_DIR}/sharding/sharded_baroclinic_instability_simulation_run.jl" \
+        || { echo "ERROR: WHILE_CONCAT patch did not apply" >&2; exit 1; }
     # Inside srun so libReactantExtra.so's ROCm deps resolve while Pkg precompiles
     - |
       ${SRUN_UENV} "${CI_PROJECT_DIR}/run_julia.sh" --project="${GB25_DIR}" --color=yes -e "
@@ -170,3 +187,19 @@ test-gb-25:
     expire_in: 1 week
     paths:
       - GB-25/optimised_sharded_baroclinic_instability*.xla
+
+# The workaround configuration. This is the job that gates the pipeline.
+test-gb-25:
+  extends: .gb-25-base
+
+# The real configuration, tracking the upstream bug. Runs on every pipeline and is
+# expected to fail today; allow_failure keeps it from gating. It is a separate job, so it
+# gets its own Slurm allocation and its own SLURM_TIMELIMIT -- the cost is roughly double
+# node-hours per pipeline, bought in exchange for finding out the day the upstream fix
+# lands without anyone having to check. When it goes green, set GB25_WHILE_CONCAT to
+# "true" above and delete this job.
+test-gb-25-upstream:
+  extends: .gb-25-base
+  variables:
+    GB25_WHILE_CONCAT: "true"
+  allow_failure: true
