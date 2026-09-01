@@ -1,4 +1,4 @@
-JAX_COMMIT = "90eac75fcafcc36cc0a59cce35c05a78fa1199f7"
+JAX_COMMIT = "3b3bebe4d863f5a7cfbe99c6709b6c28aca1bb65"
 JAX_SHA256 = ""
 
 ENZYME_COMMIT = "3e7cc67727eadcdb6cc19bc24292a6fe7aed100c"

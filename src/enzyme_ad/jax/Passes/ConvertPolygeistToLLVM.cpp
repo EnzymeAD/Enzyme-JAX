@@ -730,7 +730,7 @@ public:
     unsigned alignment = globalOp.getAlignment() ? *globalOp.getAlignment() : 0;
     bool dso_local = globalOp->getAttr("enzymexla.cuda_device") ||
                      globalOp->getAttr("enzymexla.cuda_constant");
-    bool thread_local_ = false;
+    auto thread_local_ = LLVM::ThreadLocalMode::NotThreadLocal;
     unsigned addr = originalType.getMemorySpaceAsInt();
     auto newGlobal = rewriter.replaceOpWithNewOp<LLVM::GlobalOp>(
         globalOp, convertedType, globalOp.getConstant(), linkage,

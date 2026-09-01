@@ -15,15 +15,9 @@ func.func @einsum(%a : tensor<2x3xf32>, %b : tensor<4x3x5xf32>) -> tensor<4x2x5x
 // FORWARD-NEXT:  }
 
 // REVERSE:  func.func @einsum(%arg0: tensor<2x3xf32>, %arg1: tensor<4x3x5xf32>, %arg2: tensor<4x2x5xf32>) -> (tensor<2x3xf32>, tensor<4x3x5xf32>) {
-// REVERSE-NEXT:    %cst = arith.constant dense<0.000000e+00> : tensor<4x2x5xf32>
-// REVERSE-NEXT:    %cst_0 = arith.constant dense<0.000000e+00> : tensor<2x3xf32>
-// REVERSE-NEXT:    %cst_1 = arith.constant dense<0.000000e+00> : tensor<4x3x5xf32>
-// REVERSE-NEXT:    %0 = arith.addf %arg2, %cst fastmath<fast> : tensor<4x2x5xf32>
-// REVERSE-NEXT:    %1 = stablehlo.einsum %0, %arg1, config = "cad,cbd->ab" : (tensor<4x2x5xf32>, tensor<4x3x5xf32>) -> tensor<2x3xf32>
-// REVERSE-NEXT:    %2 = arith.addf %1, %cst_0 fastmath<fast> : tensor<2x3xf32>
-// REVERSE-NEXT:    %3 = stablehlo.einsum %0, %arg0, config = "cad,ab->cbd" : (tensor<4x2x5xf32>, tensor<2x3xf32>) -> tensor<4x3x5xf32>
-// REVERSE-NEXT:    %4 = arith.addf %3, %cst_1 fastmath<fast> : tensor<4x3x5xf32>
-// REVERSE-NEXT:    return %2, %4 : tensor<2x3xf32>, tensor<4x3x5xf32>
+// REVERSE-NEXT:    %0 = stablehlo.einsum %arg2, %arg1, config = "cad,cbd->ab" : (tensor<4x2x5xf32>, tensor<4x3x5xf32>) -> tensor<2x3xf32>
+// REVERSE-NEXT:    %1 = stablehlo.einsum %arg2, %arg0, config = "cad,ab->cbd" : (tensor<4x2x5xf32>, tensor<2x3xf32>) -> tensor<4x3x5xf32>
+// REVERSE-NEXT:    return %0, %1 : tensor<2x3xf32>, tensor<4x3x5xf32>
 // REVERSE-NEXT:  }
 
 // RUN: enzymexlamlir-opt %s --enzyme-wrap="infn=einsum_complex outfn= retTys=enzyme_dup argTys=enzyme_dup,enzyme_dup mode=ForwardMode" | FileCheck %s --check-prefix=FORWARD-COMPLEX
