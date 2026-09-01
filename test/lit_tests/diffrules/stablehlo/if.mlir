@@ -31,13 +31,10 @@ module {
 
 // REVERSE:  func.func @main(%arg0: tensor<10xf32>, %arg1: tensor<i1>, %arg2: tensor<10xf32>) -> tensor<10xf32> {
 // REVERSE-NEXT:    %cst = arith.constant dense<0.000000e+00> : tensor<10xf32>
-// REVERSE-NEXT:    %0 = arith.addf %arg2, %cst fastmath<fast> : tensor<10xf32>
-// REVERSE-NEXT:    %1:2 = "stablehlo.if"(%arg1) ({
-// REVERSE-NEXT:      %2 = arith.addf %0, %cst fastmath<fast> : tensor<10xf32>
-// REVERSE-NEXT:      %3 = arith.addf %2, %cst fastmath<fast> : tensor<10xf32>
-// REVERSE-NEXT:      stablehlo.return %cst, %3 : tensor<10xf32>, tensor<10xf32>
+// REVERSE-NEXT:    %0:2 = "stablehlo.if"(%arg1) ({
+// REVERSE-NEXT:      stablehlo.return %cst, %arg2 : tensor<10xf32>, tensor<10xf32>
 // REVERSE-NEXT:    }, {
 // REVERSE-NEXT:      stablehlo.return %cst, %cst : tensor<10xf32>, tensor<10xf32>
 // REVERSE-NEXT:    }) : (tensor<i1>) -> (tensor<10xf32>, tensor<10xf32>)
-// REVERSE-NEXT:    return %1#1 : tensor<10xf32>
+// REVERSE-NEXT:    return %0#1 : tensor<10xf32>
 // REVERSE-NEXT:  }

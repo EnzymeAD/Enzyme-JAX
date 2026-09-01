@@ -64,22 +64,18 @@ module {
 // CHECK-SAME:    %[[DPTR:[^,]+]]: !llvm.ptr,
 // CHECK-SAME:    %[[I:[^,]+]]: index,
 // CHECK-SAME:    %[[SEED:[^)]+]]: f64)
-// CHECK-DAG:     %[[ZERO:.*]] = arith.constant 0.000000e+00 : f64
 // CHECK-DAG:     %[[DMEM:.*]] = "enzymexla.pointer2memref"(%[[DPTR]]) : (!llvm.ptr) -> memref<?xf64>
-// CHECK:         %[[ACC:.*]] = arith.addf %[[SEED]], %[[ZERO]] fastmath<fast> : f64
 // CHECK:         %[[OLD:.*]] = memref.load %[[DMEM]][%[[I]]] : memref<?xf64>
-// CHECK:         %[[NEW:.*]] = arith.addf %[[OLD]], %[[ACC]] fastmath<fast> : f64
+// CHECK:         %[[NEW:.*]] = arith.addf %[[OLD]], %[[SEED]] fastmath<fast> : f64
 // CHECK:         memref.store %[[NEW]], %[[DMEM]][%[[I]]] : memref<?xf64>
 
 // CHECK-LABEL: func.func private @diffeload_via_m2p(
 // CHECK-SAME:    %[[MEM:[^,]+]]: memref<?xf64>,
 // CHECK-SAME:    %[[DMEM:[^,]+]]: memref<?xf64>,
 // CHECK-SAME:    %[[SEED:[^)]+]]: f64)
-// CHECK-DAG:     %[[ZERO:.*]] = arith.constant 0.000000e+00 : f64
 // CHECK-DAG:     %[[DPTR:.*]] = "enzymexla.memref2pointer"(%[[DMEM]]) : (memref<?xf64>) -> !llvm.ptr
-// CHECK:         %[[ACC:.*]] = arith.addf %[[SEED]], %[[ZERO]] fastmath<fast> : f64
 // CHECK:         %[[OLD:.*]] = llvm.load %[[DPTR]] : !llvm.ptr -> f64
-// CHECK:         %[[NEW:.*]] = arith.addf %[[OLD]], %[[ACC]] fastmath<fast> : f64
+// CHECK:         %[[NEW:.*]] = arith.addf %[[OLD]], %[[SEED]] fastmath<fast> : f64
 // CHECK:         llvm.store %[[NEW]], %[[DPTR]] : f64, !llvm.ptr
 
 // CHECK-LABEL: func.func private @diffenested_cast(
