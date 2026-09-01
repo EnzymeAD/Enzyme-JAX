@@ -209,6 +209,32 @@ reshapeMemref2(Value memref, ArrayRef<int64_t> shape,
   return success();
 }
 
+/// A buffer named by the shape it was declared with, rather than a view of
+/// something else whose own shape would be the one to rebuild on: one handed
+/// in as a block argument, one allocated here, or a branch between such
+/// buffers -- as a ternary picking one of two shared arrays to index leaves.
+static bool isDeclaredBuffer(Value buffer) {
+  SmallVector<Value> worklist{buffer};
+  SmallPtrSet<Value, 4> seen;
+  while (!worklist.empty()) {
+    Value v = worklist.pop_back_val();
+    if (!seen.insert(v).second)
+      continue;
+    if (isa<BlockArgument>(v))
+      continue;
+    Operation *def = v.getDefiningOp();
+    if (isa<memref::AllocaOp>(def))
+      continue;
+    if (auto sel = dyn_cast<arith::SelectOp>(def)) {
+      worklist.push_back(sel.getTrueValue());
+      worklist.push_back(sel.getFalseValue());
+      continue;
+    }
+    return false;
+  }
+  return true;
+}
+
 LogicalResult reshapeAtAddr(enzymexla::Pointer2MemrefOp &atAddr) {
   auto source = atAddr.getSource();
   auto m2p = source.getDefiningOp<enzymexla::Memref2PointerOp>();
@@ -251,14 +277,8 @@ LogicalResult reshapeAtAddr(enzymexla::Pointer2MemrefOp &atAddr) {
   //                         << " memref loads, " << memrefStores
   //                         << " memref stores, " << others << " others\n");
 
-  // A buffer handed in as a block argument, or one allocated here: both are
-  // named by the shape they were declared with, and neither is a view of
-  // something else whose own shape would be the one to rebuild on.
-  Value buffer = m2p.getSource();
-  if (!isa<BlockArgument>(buffer) &&
-      !buffer.getDefiningOp<memref::AllocaOp>()) {
-    LLVM_DEBUG(llvm::dbgs()
-               << "Failed: buffer is neither a block argument nor an alloca\n");
+  if (!isDeclaredBuffer(m2p.getSource())) {
+    LLVM_DEBUG(llvm::dbgs() << "Failed: buffer is not one declared here\n");
     return failure();
   }
 
