@@ -2,6 +2,7 @@
 
 load("@bazel_tools//tools/build_defs/repo:http.bzl", "http_archive")
 load("//:workspace.bzl", "JAX_COMMIT", "JAX_SHA256")
+load("//third_party/jax:deps.bzl", "jax_deps_repository")
 
 JAX_PATCHES = [
     """
@@ -37,3 +38,8 @@ def repo(extra_patches = [], override_commit = ""):
         patches = ["//:patches/jax.patch"],
         patch_args = ["-p1"],
     )
+
+    # The repositories that follow are built from the versions JAX pins, which
+    # only its MODULE.bazel knows; read them out of it here, so that a
+    # workspace only has to ask for JAX itself.
+    jax_deps_repository(name = "jax_deps")

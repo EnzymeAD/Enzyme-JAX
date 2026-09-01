@@ -388,11 +388,21 @@ public:
   }
 };
 
+// The operands an llvm.call passes to its callee.
+//
+// CallOpInterface::getArgOperands() names only the parameters the callee
+// declares, and a variadic argument corresponds to none of them. The
+// __enzyme_* entry points are declared `(...)`, so every operand of a call to
+// one is variadic and getArgOperands() names nothing at all.
+static Operation::operand_range getPassedOperands(LLVM::CallOp op) {
+  return op.getCalleeOperands().drop_front(op.getCallee() ? 0 : 1);
+}
+
 // The function `op` names, or null where the operand is not the address of one
 // this can see.
 FunctionOpInterface getEnzymeCallTarget(LLVM::CallOp op, StringRef intrinsic,
                                         FlatSymbolRefAttr &symbol) {
-  Operation::operand_range operands = op.getArgOperands();
+  Operation::operand_range operands = getPassedOperands(op);
   if (operands.empty())
     return nullptr;
   auto targetAddr =
@@ -419,7 +429,7 @@ public:
       return failure();
     if (!callee.getLeafReference().strref().contains("__enzyme_autodiff"))
       return failure();
-    Operation::operand_range operands = op.getArgOperands();
+    Operation::operand_range operands = getPassedOperands(op);
     FlatSymbolRefAttr funcToDiffSymbol;
     auto funcToDiff =
         getEnzymeCallTarget(op, "__enzyme_autodiff", funcToDiffSymbol);
@@ -497,7 +507,7 @@ public:
       return failure();
     if (!callee.getLeafReference().strref().contains("__enzyme_fwddiff"))
       return failure();
-    Operation::operand_range operands = op.getArgOperands();
+    Operation::operand_range operands = getPassedOperands(op);
     FlatSymbolRefAttr funcToDiffSymbol;
     auto funcToDiff =
         getEnzymeCallTarget(op, "__enzyme_fwddiff", funcToDiffSymbol);
