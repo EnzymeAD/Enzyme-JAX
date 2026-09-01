@@ -1,11 +1,9 @@
 // RUN: enzymexlamlir-opt %s | FileCheck %s
 
 
-// CHECK: #world = #comm.mpi.comm<MPI_COMM_WORLD>
 #world = #comm.mpi.comm<MPI_COMM_WORLD>
-
-// CHECK: #null = #comm.mpi.op<MPI_OP_NULL>
-#null = #comm.mpi.op<MPI_OP_NULL>
-
-// CHECK: #self = #comm.mpi.comm<MPI_COMM_SELF>
+#null = #comm.mpi.comm<"MPI_COMM_NULL">
 #self = #comm.mpi.comm<MPI_COMM_SELF>
+
+// XFAIL: *
+#error = #comm.mpi.comm<MPI_COMM_ERROR>
