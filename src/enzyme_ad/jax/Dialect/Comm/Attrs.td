@@ -2,8 +2,10 @@
 #define ENZYMEXLA_COMM_DIALECT_ATTRS_TD
 
 include "Dialect.td"
+include "Types.td"
 
 include "mlir/IR/EnumAttr.td"
+include "mlir/IR/BuiltinAttributeInterfaces.td"
 
 // MPI
 def MpiCommEnum : I32EnumAttr<"MpiCommEnum", "Named predefined MPI communicators", [
@@ -15,8 +17,15 @@ def MpiCommEnum : I32EnumAttr<"MpiCommEnum", "Named predefined MPI communicators
   let cppNamespace = "::mlir::comm";
 }
 
-def MpiCommAttr : EnumAttr<Comm_Dialect, MpiCommEnum, "mpi.comm"> {
+def MpiCommAttr : Comm_Attr<"MpiComm", "mpi.comm", [TypedAttrInterface]> {
+  let parameters = (ins EnumParameter<MpiCommEnum>:$value);
   let assemblyFormat = "`<` $value `>`";
+
+  let extraClassDeclaration = [{
+    ::mlir::Type getType() const {
+      return MpiCommType::get(getContext());
+    }
+  }];
 }
 
 def MpiDatatypes : I32EnumAttr<"MpiDatatypes", "Named predefined MPI datatypes", [
@@ -98,10 +107,6 @@ def MpiDatatypes : I32EnumAttr<"MpiDatatypes", "Named predefined MPI datatypes",
   let cppNamespace = "::mlir::comm";
 }
 
-def MpiDatatypesAttr : EnumAttr<Comm_Dialect, MpiDatatypes, "mpi.datatype"> {
-  let assemblyFormat = "`<` $value `>`";
-}
-
 def MpiOpEnum : I32EnumAttr<"MpiOpEnum", "Named predefined MPI (reduction) operations", [
       I32EnumAttrCase<"MPI_OP_NULL", 32>,
       I32EnumAttrCase<"MPI_SUM", 33>,
@@ -123,8 +128,15 @@ def MpiOpEnum : I32EnumAttr<"MpiOpEnum", "Named predefined MPI (reduction) opera
   let cppNamespace = "::mlir::comm";
 }
 
-def MpiOpAttr : EnumAttr<Comm_Dialect, MpiOpEnum, "mpi.op"> {
+def MpiOpAttr : Comm_Attr<"MpiOp", "mpi.op", [TypedAttrInterface]> {
+  let parameters = (ins EnumParameter<MpiOpEnum>:$value);
   let assemblyFormat = "`<` $value `>`";
+
+  let extraClassDeclaration = [{
+    ::mlir::Type getType() const {
+      return MpiOpType::get(getContext());
+    }
+  }];
 }
 
 // NCCL
