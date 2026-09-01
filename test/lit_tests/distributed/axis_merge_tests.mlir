@@ -6,13 +6,16 @@
 
 // -- Pipeline equivalence: the bundled pipeline must match the explicit pass chain.
 // RUN: enzymexlamlir-opt --sdy-propagation-pipeline --shardy-to-distributed-pipeline --canonicalize --stabilize-axis-order -split-input-file %s -o - > %t.pipeline
-// RUN: enzymexlamlir-opt --sdy-propagation-pipeline --sdy-insert-explicit-reshards --sdy-drop-sharding-and-mesh --convert-main-to-distributed-function --materialize-distributed-collectives --cluster-distributed-kernels --canonicalize --stabilize-axis-order -split-input-file %s -o - > %t.explicit
+// RUN: enzymexlamlir-opt --sdy-propagation-pipeline --sdy-insert-explicit-reshards --sdy-drop-sharding-and-mesh --convert-main-to-distributed-function --materialize-distributed-collectives --canonicalize --cse --cluster-distributed-kernels --canonicalize --stabilize-axis-order -split-input-file %s -o - > %t.explicit
 // RUN: diff -u %t.explicit %t.pipeline
+
+// RUN: enzymexlamlir-opt --split-input-file --sdy-propagation-pipeline --shardy-to-distributed-pipeline %s 2>&1 | FileCheck %s --check-prefix=NO-UNSUPPORTED-OPS --implicit-check-not="Operation has no sharding rule"
+// NO-UNSUPPORTED-OPS: module @x_plus_xt_2d
 
 // -- Stage-by-stage equivalence: pipeline must match round-tripping to file
 // RUN: enzymexlamlir-opt --sdy-propagation-pipeline --sdy-insert-explicit-reshards --sdy-drop-sharding-and-mesh -split-input-file %s -o %t.stage1
 // RUN: enzymexlamlir-opt --convert-main-to-distributed-function -split-input-file %t.stage1 -o %t.stage2
-// RUN: enzymexlamlir-opt --materialize-distributed-collectives -split-input-file %t.stage2 -o %t.stage3
+// RUN: enzymexlamlir-opt --materialize-distributed-collectives --canonicalize --cse -split-input-file %t.stage2 -o %t.stage3
 // RUN: enzymexlamlir-opt --cluster-distributed-kernels --canonicalize --stabilize-axis-order -split-input-file %t.stage3 -o %t.stage4
 // RUN: diff -u %t.stage4 %t.pipeline
 
@@ -172,5 +175,5 @@ module @test_single_kernel {
 // CHAIN: %[[COLL:.*]] = distributed.Collective
 // CHAIN-SAME: reduces (%{{.*}})
 // CHAIN: %[[RED_AWAIT:.*]] = distributed.Await %[[COLL]]
-// CHAIN: builtin.unrealized_conversion_cast %[[RED_AWAIT]]
+// CHAIN: distributed.CastLocalToGlobal %[[RED_AWAIT]] axes %{{.*}}, %{{.*}}
 // CHAIN: distributed.DistributedYield %{{.*}}, %{{.*}}

@@ -153,6 +153,8 @@ public:
   ShardyLogicalAxisAnalysis(Operation *sdy_func);
   ShardyLogicalAxisAnalysis() = default;
 
+  bool isValid() const { return valid; }
+
   using SymbolsPerPartitioningAxis =
       llvm::SmallVector<llvm::SmallVector<AxisSymbol>>;
   using TensorAxesToPartitionAxes =
@@ -184,6 +186,11 @@ public:
   getTensorPartitionDims(OpOperand &use);
   std::optional<TensorAxesToPartitionAxes>
   getTensorPartitionDims(BlockArgument arg);
+  // Associates a resolved logical axis with its canonical serialized factor.
+  // Distinct factors may not be assigned to the same resolved logical axis.
+  LogicalResult assignLogicalAxis(AxisSymbol symbol, Value factor);
+  // Returns the factor previously assigned to a resolved logical axis.
+  Value getLogicalAxis(AxisSymbol symbol) const;
   // Redirects analysis bookkeeping from one op to another after a rewrite.
   void markRewrite(Operation *from, Operation *to);
   /**
@@ -202,10 +209,16 @@ private:
   BlockArgumentToPartitionAxes argToPartitioningAxes;
   llvm::DenseMap<Operation *, DimToSymbol> reshardLHSSymbols;
   llvm::DenseMap<Operation *, DimToSymbol> reshardRHSSymbols;
+  // Explicit view casts assign logical axes to serialized SSA factors.
+  // These maps must agree after all symbol factoring and unification.
+  llvm::DenseMap<Value, AxisSymbol> factorToLogicalAxis;
+  llvm::DenseMap<AxisSymbol, Value> logicalAxisToFactor;
   SymbolFactorMerge symbolFactorMerge;
   Operation *sdy_func = nullptr;
+  bool valid = true;
 
   void buildInitialSymbols();
+  void validateLogicalAxisAssignments();
   // Internal implementation for either a producer (lhs) or consumer (rhs) of a
   // tensor. Three versions: one for a generic op, which may or may not
   // be able to find a sharding rule, and two specializations.
@@ -215,6 +228,8 @@ private:
                          int valueIdx);
   TensorAxesToPartitionAxes getTensorPartitionDims(mlir::sdy::ReshardOp op,
                                                    bool isLHS, int valueIdx);
+  std::optional<TensorAxesToPartitionAxes>
+  getTensorPartitionDimsForViewCast(ValueRange partitioningAxes);
   std::optional<TensorAxesToPartitionAxes>
   getTensorPartitionDims(Operation *op, bool isLHS, int valueIdx);
   void buildUnion();

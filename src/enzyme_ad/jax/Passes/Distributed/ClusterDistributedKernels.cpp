@@ -231,6 +231,11 @@ struct ClusterDistributedKernelsPass
     if (it != symbolToLogicalAxis.end()) {
       return it->second;
     }
+    if (Value logicalAxis = axisAnalysis.getLogicalAxis(symbol)) {
+      auto factor = cast<TV_AxisFactor>(logicalAxis);
+      symbolToLogicalAxis[symbol] = factor;
+      return factor;
+    }
     // otherwise, we need to instantiate a new logical axis,
     // then turn it into a factor.
     auto op =
@@ -332,7 +337,9 @@ struct ClusterDistributedKernelsPass
     auto isClusterableOp = [](Operation *op) {
       // Keep communication and control/meta ops outside kernels.
       if (isa<DistributedCollectiveOp, DistributedAwait, DistributedYieldOp,
-              DistributedKernelOp, UnrealizedConversionCastOp>(op)) {
+              DistributedKernelOp, UnrealizedConversionCastOp,
+              DistributedCastGlobalToLocalOp,
+              DistributedCastLocalToGlobalOp>(op)) {
         return false;
       }
 

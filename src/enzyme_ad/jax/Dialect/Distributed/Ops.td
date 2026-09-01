@@ -96,10 +96,15 @@ def DistributedFunctionOp : DistributedOp<"DistributedFunction", [
 }
 
 def DistributedKernelOp : DistributedOp<"DistributedKernel", [SingleBlock, AttrSizedOperandSegments]> {
-  let description = [{Contains a computation subgraph that will never internally 
+  let description = [{Contains a computation subgraph that will never internally
     create collectives no matter how the partitioning axes are chosen. The results
-    may require a reduction after, as indicated by the unreduced axes on the 
-    output sharding attributes.}];
+    may require a reduction after, as indicated by the unreduced axes on the
+    output sharding attributes. Each partitioning_axes operand represents a unique
+    logical partitioning axis; indexed sharding metadata refers to this ordered,
+    unique axis list. The cluster-distributed-kernels pass establishes this
+    invariant by assigning one index to each logical AxisSymbol. Operations in the
+    body carry distributed.argument_shardings and distributed.output_shardings
+    attributes with the same index space.}];
   let arguments = (ins Variadic<AnyType> : $arguments,
                    Variadic<FactorGroupType> : $partitioning_axes,
                    IndexedTensorShardingPerValueAttr : $argument_shardings,
@@ -132,6 +137,39 @@ def DistributedAwait
   let results = (outs AnyType : $value);
   let assemblyFormat =
       "$async_handle attr-dict `:` type($async_handle) `->` type($value)";
+  let hasVerifier = 1;
+}
+
+def DistributedCastGlobalToLocalOp : DistributedOp<
+    "CastGlobalToLocal", [DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
+  let description = [{Reinterprets one global tensor as its local shard. The
+    partitioning_axes operands are positional: operand i is the factor group
+    partitioning tensor dimension i. The result type is inferred by dividing
+    each static input dimension by the corresponding factor-group extent.}];
+  let arguments = (ins
+    AnyTensor:$input,
+    Variadic<FactorGroupType>:$partitioning_axes
+  );
+  let results = (outs AnyTensor:$output);
+  let assemblyFormat =
+      "$input `axes` $partitioning_axes `:` type($partitioning_axes) attr-dict `:` type($input) `->` type($output)";
+  let hasVerifier = 1;
+}
+
+def DistributedCastLocalToGlobalOp : DistributedOp<
+    "CastLocalToGlobal", [DeclareOpInterfaceMethods<InferTypeOpInterface>]> {
+  let description = [{Reinterprets one local tensor shard as its global tensor.
+    The partitioning_axes operands are positional: operand i is the factor
+    group partitioning tensor dimension i. The result type is inferred by
+    multiplying each static input dimension by the corresponding factor-group
+    extent.}];
+  let arguments = (ins
+    AnyTensor:$input,
+    Variadic<FactorGroupType>:$partitioning_axes
+  );
+  let results = (outs AnyTensor:$output);
+  let assemblyFormat =
+      "$input `axes` $partitioning_axes `:` type($partitioning_axes) attr-dict `:` type($input) `->` type($output)";
   let hasVerifier = 1;
 }
 

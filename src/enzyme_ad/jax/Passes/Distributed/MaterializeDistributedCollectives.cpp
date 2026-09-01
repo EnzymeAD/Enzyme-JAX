@@ -117,6 +117,114 @@ struct MaterializeDistributedCollectivesPass
     return logicalAxes;
   }
 
+  // Builds one positional factor group per tensor dimension for a tensor view
+  // cast. Each group preserves the logical-axis provenance of that dimension.
+  SmallVector<Value> getTensorPartitioningAxisGroups(
+      llvm::ArrayRef<llvm::SmallVector<AxisSymbol>> partitioningAxes) {
+    SmallVector<Value> partitioningAxisGroups;
+    partitioningAxisGroups.reserve(partitioningAxes.size());
+    for (const auto &dimensionAxes : partitioningAxes) {
+      auto factors = getLogicalAxesForSymbols(dimensionAxes);
+      partitioningAxisGroups.push_back(axis::viewFactorsAsProduct(
+          asValues(factors), *axisBuilder, *axisLoc));
+    }
+    return partitioningAxisGroups;
+  }
+
+  // Reuse distributed.function's serialized logical-axis factors so every
+  // materialized cast and collective shares its existing SSA axis anchors.
+  LogicalResult seedLogicalAxesFromFunction(DistributedFunctionOp function) {
+    auto partitioningAxes = function.getPartitioningAxes();
+    auto seedValue = [&](Value value, IndexedTensorShardingAttr sharding) {
+      if (!isa<RankedTensorType>(value.getType())) {
+        return success();
+      }
+
+      std::optional<ShardyLogicalAxisAnalysis::TensorAxesToPartitionAxes>
+          maybePartitioning;
+      if (auto result = dyn_cast<OpResult>(value)) {
+        maybePartitioning = axisAnalysis.getTensorPartitionDims(result);
+      } else if (auto argument = dyn_cast<BlockArgument>(value)) {
+        maybePartitioning = axisAnalysis.getTensorPartitionDims(argument);
+      }
+      if (!maybePartitioning || maybePartitioning->size() !=
+                                    sharding.getDimPartitioningAxes().size()) {
+        function.emitError()
+            << "failed to align function sharding metadata with logical axes";
+        return failure();
+      }
+
+      for (auto [symbols, axisIndices] : llvm::zip_equal(
+               *maybePartitioning, sharding.getDimPartitioningAxes())) {
+        if (symbols.size() != axisIndices.size()) {
+          function.emitError()
+              << "function sharding metadata does not match logical-axis "
+                 "basis";
+          return failure();
+        }
+        for (auto [symbol, axisIndex] :
+             llvm::zip_equal(symbols, axisIndices.asArrayRef())) {
+          if (axisIndex < 0 ||
+              axisIndex >= static_cast<int64_t>(partitioningAxes.size())) {
+            function.emitError()
+                << "function sharding metadata references an invalid axis";
+            return failure();
+          }
+          auto factorGroup =
+              dyn_cast<TV_FactorGroup>(partitioningAxes[axisIndex]);
+          if (!factorGroup) {
+            function.emitError()
+                << "function sharding metadata references a non-factor axis";
+            return failure();
+          }
+          auto factors = axis::getProductProvenanceFactors(factorGroup);
+          if (failed(factors) || factors->size() != 1) {
+            function.emitError()
+                << "function partitioning axis must have one logical factor";
+            return failure();
+          }
+          TV_AxisFactor factor = factors->front();
+          if (failed(axisAnalysis.assignLogicalAxis(symbol, factor))) {
+            return failure();
+          }
+          auto [it, inserted] =
+              symbolToLogicalAxis.try_emplace(symbol, factor);
+          if (!inserted && it->second != factor) {
+            function.emitError()
+                << "unified logical axis has distinct SSA factor anchors";
+            return failure();
+          }
+        }
+      }
+      return success();
+    };
+
+    for (auto [argument, sharding] :
+         llvm::zip_equal(function.getBody().front().getArguments(),
+                         function.getArgumentShardings().getShardings())) {
+      if (failed(seedValue(argument, sharding))) {
+        return failure();
+      }
+    }
+
+    auto yield = dyn_cast<DistributedYieldOp>(
+        function.getBody().front().getTerminator());
+    if (!yield || yield.getNumOperands() !=
+                      function.getOutputShardings().getShardings().size()) {
+      function.emitError() << "failed to align function results with sharding "
+                              "metadata";
+      return failure();
+    }
+    for (auto [operand, sharding] :
+         llvm::zip_equal(yield.getOperands(),
+                         function.getOutputShardings().getShardings())) {
+      if (failed(seedValue(operand, sharding))) {
+        return failure();
+      }
+    }
+    return success();
+  }
+
   // Builds a local-type-aware axis product for collective mapping operands.
   TV_FactorGroup toLocallyTypedAxisProduct(
       RankedTensorType localType,
@@ -202,16 +310,28 @@ struct MaterializeDistributedCollectivesPass
   }
 
   // Rewrites one operand use, inserting casts when type adaptation is required.
-  void rewriteUseWithValue(OpBuilder &builder, Location loc, OpOperand *use,
-                           Value replacement) {
+  void rewriteUseWithValue(
+      OpBuilder &builder, Location loc, OpOperand *use, Value replacement,
+      llvm::ArrayRef<llvm::SmallVector<AxisSymbol>> partitioningAxes) {
     Type expectedUseType = use->get().getType();
     Value valueForUse = replacement;
     if (valueForUse.getType() != expectedUseType) {
       builder.setInsertionPoint(use->getOwner());
-      valueForUse = builder
-                        .create<UnrealizedConversionCastOp>(
-                            loc, expectedUseType, valueForUse)
-                        .getResult(0);
+      if (isa<RankedTensorType>(valueForUse.getType()) &&
+          isa<RankedTensorType>(expectedUseType)) {
+        auto partitioningAxisGroups =
+            getTensorPartitioningAxisGroups(partitioningAxes);
+        valueForUse =
+            builder
+                .create<DistributedCastLocalToGlobalOp>(
+                    loc, expectedUseType, valueForUse, partitioningAxisGroups)
+                .getOutput();
+      } else {
+        valueForUse = builder
+                          .create<UnrealizedConversionCastOp>(
+                              loc, expectedUseType, valueForUse)
+                          .getResult(0);
+      }
     }
     use->set(valueForUse);
   }
@@ -280,9 +400,12 @@ struct MaterializeDistributedCollectivesPass
       auto localType =
           toLocalType(conflict.globalType, conflict.producerPartitioningAxes);
       builder.setInsertionPointAfterValue(conflict.value);
-      auto unrealizedCast = builder.create<UnrealizedConversionCastOp>(
-          conflict.value.getLoc(), localType, conflict.value);
-      conflict.currentValue = unrealizedCast.getResult(0);
+      auto partitioningAxisGroups =
+          getTensorPartitioningAxisGroups(conflict.producerPartitioningAxes);
+      auto localCast = builder.create<DistributedCastGlobalToLocalOp>(
+          conflict.value.getLoc(), localType, conflict.value,
+          partitioningAxisGroups);
+      conflict.currentValue = localCast.getOutput();
       conflict.currentValueType = localType;
 
       if (conflict.reductionAxes.empty()) {
@@ -312,7 +435,8 @@ struct MaterializeDistributedCollectivesPass
       conflict.reductionAxes.clear();
       for (OpOperand *use : conflict.nonConflictingUses) {
         rewriteUseWithValue(builder, conflict.value.getLoc(), use,
-                            conflict.currentValue);
+                            conflict.currentValue,
+                            conflict.producerPartitioningAxes);
       }
     }
 
@@ -341,7 +465,8 @@ struct MaterializeDistributedCollectivesPass
 
       for (OpOperand *use : conflict.nonConflictingUses) {
         rewriteUseWithValue(builder, conflict.value.getLoc(), use,
-                            conflict.currentValue);
+                            conflict.currentValue,
+                            conflict.producerPartitioningAxes);
       }
 
       for (OpOperand *use : conflict.conflictingUses) {
@@ -364,7 +489,8 @@ struct MaterializeDistributedCollectivesPass
         if (!collective) {
           return failure();
         }
-        rewriteUseWithValue(builder, conflict.value.getLoc(), use, collective);
+        rewriteUseWithValue(builder, conflict.value.getLoc(), use, collective,
+                            *rhsPartitioningAxes);
       }
     }
 
@@ -416,6 +542,13 @@ struct MaterializeDistributedCollectivesPass
     }
     axisAnalysis = mainAxisAnalysis.getAnalysis();
 
+    auto distributedFunction = dyn_cast<DistributedFunctionOp>(mainScopeOp);
+    if (!distributedFunction ||
+        failed(seedLogicalAxesFromFunction(distributedFunction))) {
+      signalPassFailure();
+      return;
+    }
+
     removeExistingReshards(mainScopeOp);
     std::vector<ShardConflict> conflicts = collectShardConflicts(mainBlock);
 
@@ -427,6 +560,12 @@ struct MaterializeDistributedCollectivesPass
       signalPassFailure();
       return;
     }
+
+    // Explicit tensor view casts retain the logical-axis basis across this
+    // rewrite, so clustering may safely reuse the analysis. Preserve both
+    // layers because the module wrapper references the child analysis.
+    markAnalysesPreserved<ShardyLogicalAxisAnalysis>();
+    markAnalysesPreserved<MainFunctionShardyLogicalAxisAnalysis>();
   }
 };
 

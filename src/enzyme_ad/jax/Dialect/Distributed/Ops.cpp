@@ -1,5 +1,7 @@
 #include "CollectiveOps.h"
 
+#include "src/enzyme_ad/jax/Dialect/Axis/Utilities.h"
+
 // Central emission point for generated distributed op class definitions.
 // Keep this in a dedicated file so op definitions do not depend on any
 // specific op implementation unit remaining present.
@@ -99,6 +101,89 @@ static LogicalResult verifyIndexedShardingPerValueHasNoUnreducedAxes(
   return success();
 }
 
+static LogicalResult inferTensorViewCastResultType(
+    MLIRContext *context, std::optional<Location> location, Value input,
+    ValueRange partitioningAxes, bool globalToLocal,
+    SmallVectorImpl<Type> &inferredReturnTypes) {
+  auto inputType = dyn_cast<RankedTensorType>(input.getType());
+  if (!inputType || !inputType.hasStaticShape()) {
+    if (location) {
+      emitError(*location)
+          << "requires a statically shaped ranked tensor input";
+    }
+    return failure();
+  }
+  if (partitioningAxes.size() != static_cast<size_t>(inputType.getRank())) {
+    if (location) {
+      emitError(*location) << "requires one partitioning axis per tensor "
+                           << "dimension";
+    }
+    return failure();
+  }
+
+  SmallVector<int64_t> outputShape;
+  outputShape.reserve(inputType.getRank());
+  for (auto [dim, axis] : llvm::enumerate(partitioningAxes)) {
+    auto factorGroup = dyn_cast<TypedValue<axis::FactorGroupType>>(axis);
+    if (!factorGroup) {
+      if (location) {
+        emitError(*location) << "requires partitioning axes to have "
+                             << "FactorGroupType";
+      }
+      return failure();
+    }
+    FailureOr<uint64_t> extent = axis::getFactorGroupExtent(factorGroup);
+    if (failed(extent) || *extent == 0) {
+      if (location) {
+        emitError(*location) << "requires partitioning axes to have "
+                             << "resolvable positive extents";
+      }
+      return failure();
+    }
+
+    int64_t inputDim = inputType.getDimSize(dim);
+    if (globalToLocal) {
+      if (inputDim % static_cast<int64_t>(*extent) != 0) {
+        if (location) {
+          emitError(*location) << "requires each global tensor dimension to "
+                               << "be divisible by its partitioning extent";
+        }
+        return failure();
+      }
+      outputShape.push_back(inputDim / static_cast<int64_t>(*extent));
+    } else {
+      outputShape.push_back(inputDim * static_cast<int64_t>(*extent));
+    }
+  }
+
+  inferredReturnTypes.push_back(
+      RankedTensorType::get(outputShape, inputType.getElementType()));
+  return success();
+}
+
+template <typename CastOp>
+static LogicalResult verifyTensorViewCast(CastOp castOp, bool globalToLocal) {
+  SmallVector<Type> inferredResultTypes;
+  if (failed(inferTensorViewCastResultType(
+          castOp.getContext(), castOp.getLoc(), castOp.getInput(),
+          castOp.getPartitioningAxes(), globalToLocal, inferredResultTypes))) {
+    return failure();
+  }
+  if (castOp.getOutput().getType() != inferredResultTypes.front()) {
+    return castOp.emitOpError()
+           << "requires result type to match the input shape and "
+              "partitioning-axis extents";
+  }
+
+  auto partitioningAxes = axis::castTypedValueList<axis::FactorGroupType>(
+      castOp.getPartitioningAxes(), "FactorGroupType");
+  if (!axis::areFactorGroupsDisjoint(partitioningAxes)) {
+    return castOp.emitOpError()
+           << "requires partitioning-axis factor groups to be disjoint";
+  }
+  return success();
+}
+
 } // namespace
 
 LogicalResult DistributedFunctionOp::verify() {
@@ -177,6 +262,36 @@ LogicalResult DistributedKernelOp::verify() {
     return failure();
   }
   return success();
+}
+
+LogicalResult DistributedCastGlobalToLocalOp::verify() {
+  return verifyTensorViewCast(*this, /*globalToLocal=*/true);
+}
+
+LogicalResult DistributedCastGlobalToLocalOp::inferReturnTypes(
+    MLIRContext *context, std::optional<Location> location, ValueRange operands,
+    DictionaryAttr attributes, PropertyRef properties, RegionRange regions,
+    SmallVectorImpl<Type> &inferredReturnTypes) {
+  DistributedCastGlobalToLocalOpAdaptor adaptor(operands, attributes,
+                                                 properties, regions);
+  return inferTensorViewCastResultType(
+      context, location, adaptor.getInput(), adaptor.getPartitioningAxes(),
+      /*globalToLocal=*/true, inferredReturnTypes);
+}
+
+LogicalResult DistributedCastLocalToGlobalOp::verify() {
+  return verifyTensorViewCast(*this, /*globalToLocal=*/false);
+}
+
+LogicalResult DistributedCastLocalToGlobalOp::inferReturnTypes(
+    MLIRContext *context, std::optional<Location> location, ValueRange operands,
+    DictionaryAttr attributes, PropertyRef properties, RegionRange regions,
+    SmallVectorImpl<Type> &inferredReturnTypes) {
+  DistributedCastLocalToGlobalOpAdaptor adaptor(operands, attributes,
+                                                 properties, regions);
+  return inferTensorViewCastResultType(
+      context, location, adaptor.getInput(), adaptor.getPartitioningAxes(),
+      /*globalToLocal=*/false, inferredReturnTypes);
 }
 
 } // namespace mlir::enzyme::distributed

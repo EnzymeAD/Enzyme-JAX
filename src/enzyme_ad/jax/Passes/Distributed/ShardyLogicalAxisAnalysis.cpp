@@ -307,6 +307,17 @@ mlir::sdy::ReshardOp toCollective(Operation *op) {
   return dyn_cast<mlir::sdy::ReshardOp>(op);
 }
 
+// These operations are introduced after Shardy propagation to materialize
+// communication and local tensor views. They intentionally have no Shardy
+// rule and should be ignored by a later analysis.
+// In the context of our shardy --> distributed pipeline, these are all
+// centered around collectives, which shouldn't have propagation anyways.
+static bool isNoncomputationalOp(Operation *op) {
+  return isa<UnrealizedConversionCastOp, DistributedCollectiveOp,
+             DistributedAwait>(op) ||
+         op->getName().getDialectNamespace() == "axis";
+}
+
 bool structurallyEqual(sdy::DimensionShardingAttr a,
                        sdy::DimensionShardingAttr b) {
   ArrayRef<AxisRefAttr> a_axes = a.getAxes();
@@ -331,6 +342,7 @@ ShardyLogicalAxisAnalysis::ShardyLogicalAxisAnalysis(Operation *sdy_func)
          "axis analysis currently only supports single-block main ops");
   buildInitialSymbols();
   buildUnion();
+  validateLogicalAxisAssignments();
 }
 
 MainFunctionShardyLogicalAxisAnalysis::MainFunctionShardyLogicalAxisAnalysis(
@@ -352,8 +364,9 @@ MainFunctionShardyLogicalAxisAnalysis::MainFunctionShardyLogicalAxisAnalysis(
     return;
   }
 
-  analysis = &analysisManager.getChildAnalysis<ShardyLogicalAxisAnalysis>(
-      mainOp);
+  analysis =
+      &analysisManager.getChildAnalysis<ShardyLogicalAxisAnalysis>(mainOp);
+  valid = analysis->isValid();
 }
 
 ShardyLogicalAxisAnalysis::SymbolsPerPartitioningAxis
@@ -449,6 +462,74 @@ ShardyLogicalAxisAnalysis::getTensorPartitionDims(BlockArgument arg) {
   return it->second;
 }
 
+LogicalResult ShardyLogicalAxisAnalysis::assignLogicalAxis(AxisSymbol symbol,
+                                                           Value factor) {
+  llvm::SmallVector<AxisSymbol> resolved = symbolFactorMerge.resolve(symbol);
+  if (resolved.size() != 1) {
+    sdy_func->emitError()
+        << "cannot anchor a factored logical axis to one SSA factor";
+    valid = false;
+    return failure();
+  }
+
+  AxisSymbol resolvedSymbol = resolved.front();
+    auto [symbolIt, insertedSymbol] =
+      logicalAxisToFactor.try_emplace(resolvedSymbol, factor);
+    auto [factorIt, insertedFactor] =
+      factorToLogicalAxis.try_emplace(factor, resolvedSymbol);
+    if ((!insertedSymbol && symbolIt->second != factor) ||
+      (!insertedFactor && !(factorIt->second == resolvedSymbol))) {
+    sdy_func->emitError() << "conflicting logical axis and SSA factor "
+                << "assignment";
+    valid = false;
+    return failure();
+  }
+  return success();
+}
+
+Value ShardyLogicalAxisAnalysis::getLogicalAxis(AxisSymbol symbol) const {
+  auto it = logicalAxisToFactor.find(symbol);
+  return it == logicalAxisToFactor.end() ? Value() : it->second;
+}
+
+std::optional<ShardyLogicalAxisAnalysis::TensorAxesToPartitionAxes>
+ShardyLogicalAxisAnalysis::getTensorPartitionDimsForViewCast(
+    ValueRange partitioningAxes) {
+  TensorAxesToPartitionAxes mapping;
+  mapping.reserve(partitioningAxes.size());
+  for (Value partitioningAxis : partitioningAxes) {
+    auto factorGroup =
+        dyn_cast<TypedValue<axis::FactorGroupType>>(partitioningAxis);
+    if (!factorGroup) {
+      return std::nullopt;
+    }
+    FailureOr<SmallVector<TypedValue<axis::AxisFactorType>>> factors =
+        axis::getProductProvenanceFactors(factorGroup);
+    if (failed(factors)) {
+      return std::nullopt;
+    }
+
+    // A factor group may represent several logical axes. Preserve that basis
+    // rather than assigning a single symbol to the group itself.
+    SmallVector<AxisSymbol> dimensionSymbols;
+    dimensionSymbols.reserve(factors->size());
+    for (TypedValue<axis::AxisFactorType> factor : *factors) {
+      auto factorIt = factorToLogicalAxis.find(factor);
+      if (factorIt == factorToLogicalAxis.end()) {
+        AxisSymbol symbol =
+            AxisSymbol::create(factor.getType().getExtent());
+        if (failed(assignLogicalAxis(symbol, factor))) {
+          return std::nullopt;
+        }
+        factorIt = factorToLogicalAxis.find(factor);
+      }
+      dimensionSymbols.push_back(factorIt->second);
+    }
+    mapping.push_back(symbolFactorMerge.resolve(dimensionSymbols));
+  }
+  return mapping;
+}
+
 void ShardyLogicalAxisAnalysis::buildInitialSymbols() {
   // For each tensor argument, add a partitioning dimension per
   // tensor axis.
@@ -523,6 +604,26 @@ void ShardyLogicalAxisAnalysis::buildInitialSymbols() {
       }
       symbolFactorMerge.markOverlapping(lhs_list);
       symbolFactorMerge.markOverlapping(rhs_list);
+    } else if (auto globalToLocal =
+                   dyn_cast<DistributedCastGlobalToLocalOp>(op)) {
+      auto mapping = getTensorPartitionDimsForViewCast(
+          globalToLocal.getPartitioningAxes());
+      if (!mapping) {
+        globalToLocal.emitError()
+            << "failed to recover partitioning axes from tensor view cast";
+        continue;
+      }
+      symbolFactorMerge.markOverlapping(flattenNested(*mapping));
+    } else if (auto localToGlobal =
+                   dyn_cast<DistributedCastLocalToGlobalOp>(op)) {
+      auto mapping = getTensorPartitionDimsForViewCast(
+          localToGlobal.getPartitioningAxes());
+      if (!mapping) {
+        localToGlobal.emitError()
+            << "failed to recover partitioning axes from tensor view cast";
+        continue;
+      }
+      symbolFactorMerge.markOverlapping(flattenNested(*mapping));
     } else if (sdy::OpShardingRuleAttr sharding_rule =
                    getOrSynthesizeOpShardingRule(op).rule) {
       int64_t numDims = sharding_rule.getNumFactors();
@@ -537,7 +638,10 @@ void ShardyLogicalAxisAnalysis::buildInitialSymbols() {
       // TBD whether this is a real problem
       collective_op.emitWarning(
           "Analysis called on non-reshard collective operation");
-    } else if (isa<func::ReturnOp>(op)) {
+    } else if (isNoncomputationalOp(op)) {
+      // These values form materialization boundaries, so analysis deliberately
+      // records no logical axes for them.
+    } else if (isa<func::ReturnOp, DistributedYieldOp>(op)) {
       // do nothing.
     } else {
       // Remark the op type encountered that isn't shardable
@@ -594,6 +698,18 @@ ShardyLogicalAxisAnalysis::getTensorPartitionDims(ReshardOp op, bool isLHS,
 std::optional<ShardyLogicalAxisAnalysis::TensorAxesToPartitionAxes>
 ShardyLogicalAxisAnalysis::getTensorPartitionDims(Operation *op, bool isLHS,
                                                   int valueIdx) {
+  if (auto globalToLocal = dyn_cast<DistributedCastGlobalToLocalOp>(op)) {
+    (void)isLHS;
+    (void)valueIdx;
+    return getTensorPartitionDimsForViewCast(
+        globalToLocal.getPartitioningAxes());
+  }
+  if (auto localToGlobal = dyn_cast<DistributedCastLocalToGlobalOp>(op)) {
+    (void)isLHS;
+    (void)valueIdx;
+    return getTensorPartitionDimsForViewCast(
+        localToGlobal.getPartitioningAxes());
+  }
   if (auto reshard_op = toCollective(op)) {
     return getTensorPartitionDims(reshard_op, isLHS, valueIdx);
   }
@@ -617,6 +733,37 @@ static void mergeProducedAndConsumedAxes(
   for (auto [prod_dim_factors, cons_dim_factors] :
        llvm::zip_equal(producerMapping, consumerMapping)) {
     symbolFactorMerge.mergeSymbols(prod_dim_factors, cons_dim_factors);
+  }
+}
+
+void ShardyLogicalAxisAnalysis::validateLogicalAxisAssignments() {
+  llvm::DenseMap<AxisSymbol, Value> resolvedSymbolToFactor;
+  for (const auto &[symbol, factor] : logicalAxisToFactor) {
+    llvm::SmallVector<AxisSymbol> resolved = symbolFactorMerge.resolve(symbol);
+    if (resolved.size() != 1) {
+      sdy_func->emitError()
+          << "factored logical axis cannot have one SSA factor anchor";
+      valid = false;
+      return;
+    }
+
+    AxisSymbol resolvedSymbol = resolved.front();
+    auto [it, inserted] =
+        resolvedSymbolToFactor.try_emplace(resolvedSymbol, factor);
+    if (!inserted && it->second != factor) {
+      sdy_func->emitError()
+          << "unified logical axis has distinct SSA factor anchors "
+          << it->second << " and " << factor;
+      valid = false;
+      return;
+    }
+  }
+
+  // Future lookups use resolved symbols, so retain anchors under the same
+  // canonical keys used by partitioning and kernel construction.
+  logicalAxisToFactor = std::move(resolvedSymbolToFactor);
+  for (auto &[factor, symbol] : factorToLogicalAxis) {
+    symbol = symbolFactorMerge.resolve(symbol).front();
   }
 }
 
@@ -663,9 +810,8 @@ void ShardyLogicalAxisAnalysis::buildUnion() {
     mergeUses(producerMapping, [&]() { return arg.getUses(); });
   }
 
-  sdy_func->walk([&](Operation *op) {
-    // if we are a sharding op or a reshard op,
-    // need to consider merges between producer / consumer
+  for (Operation &opRef : bodyBlock.getOperations()) {
+    Operation *op = &opRef;
     for (OpResult result : op->getResults()) {
       auto maybeProducerMapping = getTensorPartitionDims(result);
       if (!maybeProducerMapping.has_value()) {
@@ -674,6 +820,6 @@ void ShardyLogicalAxisAnalysis::buildUnion() {
       TensorAxesToPartitionAxes producerMapping = maybeProducerMapping.value();
       mergeUses(producerMapping, [&]() { return result.getUses(); });
     }
-  }); // end of sdy_func.walk
+  }
 } // end of buildUnion
 } // namespace mlir::enzyme::distributed
