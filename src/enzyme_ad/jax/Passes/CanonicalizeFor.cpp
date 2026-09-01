@@ -292,6 +292,34 @@ static Value castValue(PatternRewriter &rewriter, Value value, Value target,
   }
 };
 
+// The ops needed to recompute `v` where the loop's own operands are available,
+// in block order. A value the loop does not vary can still be computed inside
+// it, so being defined outside is sufficient but not necessary.
+static bool collectLoopInvariantSlice(scf::ForOp forOp, Value v,
+                                      SmallVectorImpl<Operation *> &ops) {
+  SmallVector<Value> todo{v};
+  SmallPtrSet<Operation *, 8> seen;
+  while (!todo.empty()) {
+    Value cur = todo.pop_back_val();
+    if (forOp.isDefinedOutsideOfLoop(cur))
+      continue;
+    Operation *def = cur.getDefiningOp();
+    if (!def || def->getParentRegion() != &forOp.getRegion())
+      return false;
+    if (!isMemoryEffectFree(def) || def->getNumRegions())
+      return false;
+    if (!seen.insert(def).second)
+      continue;
+    if (ops.size() >= 8)
+      return false;
+    ops.push_back(def);
+    llvm::append_range(todo, def->getOperands());
+  }
+  llvm::sort(ops,
+             [](Operation *a, Operation *b) { return a->isBeforeInBlock(b); });
+  return true;
+}
+
 struct ForOpInductionReplacement : public OpRewritePattern<scf::ForOp> {
   using OpRewritePattern<scf::ForOp>::OpRewritePattern;
 
@@ -399,6 +427,7 @@ struct ForOpInductionReplacement : public OpRewritePattern<scf::ForOp> {
           continue;
         int64_t constStride = 0;
         SmallVector<Value> dynStrides;
+        SmallVector<Operation *> strideSlice;
         bool ok = true;
         for (auto g : chain) {
           auto idx = g.getIndices()[0];
@@ -407,7 +436,7 @@ struct ForOpInductionReplacement : public OpRewritePattern<scf::ForOp> {
             continue;
           }
           Value v = cast<Value>(idx);
-          if (!forOp.isDefinedOutsideOfLoop(v)) {
+          if (!collectLoopInvariantSlice(forOp, v, strideSlice)) {
             ok = false;
             break;
           }
@@ -418,8 +447,14 @@ struct ForOpInductionReplacement : public OpRewritePattern<scf::ForOp> {
         Location loc = forOp.getLoc();
 
         auto advancedBy = [&](Value count) {
+          // The stride may be computed in the body, after the point this is
+          // inserted at, so recompute it here.
+          IRMapping map;
+          for (Operation *op : strideSlice)
+            rewriter.clone(*op, map);
           Value stride = nullptr;
-          for (Value v : dynStrides) {
+          for (Value orig : dynStrides) {
+            Value v = map.lookupOrDefault(orig);
             Value c = castValue(rewriter, v, count, loc);
             stride = stride
                          ? AddIOp::create(rewriter, loc, stride, c).getResult()
@@ -583,6 +618,96 @@ struct ForOpInductionReplacement : public OpRewritePattern<scf::ForOp> {
     }
 
     return success(canonicalize);
+  }
+};
+
+// A result whose iter arg the body never reads does not accumulate anything:
+// it is just the yielded value of the last iteration. When that value varies
+// with the loop only through the induction variable, the last one can be
+// computed outside, at the last induction variable the loop reaches -- or the
+// init, when the loop never runs.
+//
+// mfem walks a pointer this way: `TC *c = Cdata;` advanced with `c++` in an
+// inner loop, so the enclosing loop carries it while the inner loop's own copy
+// is dead. Nothing recognizes the enclosing loop as an induction until this
+// inner result is out of the way.
+struct ForOpFinalValueOfDeadIterArg : public OpRewritePattern<scf::ForOp> {
+  using OpRewritePattern<scf::ForOp>::OpRewritePattern;
+
+  // The ops needed to recompute `v` outside the loop, in block order, or
+  // nothing when the loop varies it by more than the induction variable.
+  static bool collectSlice(scf::ForOp forOp, Value v,
+                           SmallVectorImpl<Operation *> &ops) {
+    SmallVector<Value> todo{v};
+    SmallPtrSet<Operation *, 8> seen;
+    while (!todo.empty()) {
+      Value cur = todo.pop_back_val();
+      if (cur == forOp.getInductionVar() || forOp.isDefinedOutsideOfLoop(cur))
+        continue;
+      Operation *def = cur.getDefiningOp();
+      if (!def || def->getParentRegion() != &forOp.getRegion())
+        return false;
+      if (!isMemoryEffectFree(def) || def->getNumRegions())
+        return false;
+      if (!seen.insert(def).second)
+        continue;
+      // Recomputing the whole body outside it is no canonicalization.
+      if (ops.size() >= 8)
+        return false;
+      ops.push_back(def);
+      llvm::append_range(todo, def->getOperands());
+    }
+    llvm::sort(
+        ops, [](Operation *a, Operation *b) { return a->isBeforeInBlock(b); });
+    return true;
+  }
+
+  LogicalResult matchAndRewrite(scf::ForOp forOp,
+                                PatternRewriter &rewriter) const override {
+    auto yieldOp = cast<scf::YieldOp>(forOp.getBody()->getTerminator());
+    Location loc = forOp.getLoc();
+    bool changed = false;
+
+    for (auto [init, iterarg, res, yld] :
+         llvm::zip(forOp.getInits(), forOp.getRegionIterArgs(),
+                   forOp.getResults(), yieldOp.getOperands())) {
+      if (!iterarg.use_empty() || res.use_empty() || yld == iterarg)
+        continue;
+      SmallVector<Operation *> slice;
+      if (!collectSlice(forOp, yld, slice))
+        continue;
+
+      rewriter.setInsertionPoint(forOp);
+      Value lb = forOp.getLowerBound(), ub = forOp.getUpperBound(),
+            step = forOp.getStep();
+      // The last induction variable the loop reaches: lb +
+      // ((ub-lb-1)/step)*step.
+      Value one = arith::ConstantOp::create(
+          rewriter, loc, rewriter.getIntegerAttr(lb.getType(), 1));
+      Value span = SubIOp::create(rewriter, loc, ub, lb);
+      Value zero = arith::ConstantOp::create(
+          rewriter, loc, rewriter.getIntegerAttr(lb.getType(), 0));
+      Value clamped = MaxSIOp::create(rewriter, loc, span, zero);
+      Value back = SubIOp::create(rewriter, loc, clamped, one);
+      Value whole = MulIOp::create(
+          rewriter, loc, DivUIOp::create(rewriter, loc, back, step), step);
+      Value lastIV = AddIOp::create(rewriter, loc, lb, whole);
+
+      IRMapping map;
+      map.map(forOp.getInductionVar(), lastIV);
+      for (Operation *op : slice)
+        rewriter.clone(*op, map);
+      Value last = map.lookupOrDefault(yld);
+
+      Value ran = CmpIOp::create(rewriter, loc, CmpIPredicate::sgt, ub, lb);
+      Value replacement = SelectOp::create(rewriter, loc, ran, last, init);
+
+      Value resCopy = res;
+      rewriter.modifyOpInPlace(
+          forOp, [&] { resCopy.replaceAllUsesWith(replacement); });
+      changed = true;
+    }
+    return success(changed);
   }
 };
 
@@ -3902,7 +4027,8 @@ void CanonicalizeFor::runOnOperation() {
           RemoveUnusedForResults, RemoveUnusedArgs, MoveWhileToFor,
           RemoveWhileSelect, SelectTruncToTruncSelect, MaxSimplify,
           ForBoundUnSwitch, SelectI1Simplify, RemoveInductionVarRelated,
-          RotateWhileAnd, MoveWhileDown, MoveWhileDown2,
+          ForOpFinalValueOfDeadIterArg, RotateWhileAnd, MoveWhileDown,
+          MoveWhileDown2,
 
           ReplaceRedundantArgs,
 
