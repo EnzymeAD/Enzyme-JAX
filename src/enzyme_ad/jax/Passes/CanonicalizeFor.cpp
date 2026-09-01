@@ -374,6 +374,113 @@ struct ForOpInductionReplacement : public OpRewritePattern<scf::ForOp> {
         continue;
       }
 
+      // A pointer advanced by a fixed distance each iteration is an induction
+      // variable like any other: on iteration n it is the init advanced by n
+      // times that distance. The advance can be a chain of geps, and each
+      // step of it can be a value as long as the loop does not vary it. The
+      // arithmetic is the same as the integer case, done in the gep's index.
+      if (isa<LLVM::LLVMPointerType>(iterarg.getType())) {
+        SmallVector<LLVM::GEPOp> chain;
+        Value cur = yld;
+        while (cur != iterarg) {
+          auto g = cur.getDefiningOp<LLVM::GEPOp>();
+          if (!g || g.getIndices().size() != 1)
+            break;
+          chain.push_back(g);
+          cur = g.getBase();
+        }
+        if (cur != iterarg || chain.empty())
+          continue;
+        // Offsets only add up when they are in the same units.
+        Type elemTy = chain.front().getElemType();
+        if (llvm::any_of(chain, [&](LLVM::GEPOp g) {
+              return g.getElemType() != elemTy;
+            }))
+          continue;
+        int64_t constStride = 0;
+        SmallVector<Value> dynStrides;
+        bool ok = true;
+        for (auto g : chain) {
+          auto idx = g.getIndices()[0];
+          if (auto attr = dyn_cast<IntegerAttr>(idx)) {
+            constStride += attr.getInt();
+            continue;
+          }
+          Value v = cast<Value>(idx);
+          if (!forOp.isDefinedOutsideOfLoop(v)) {
+            ok = false;
+            break;
+          }
+          dynStrides.push_back(v);
+        }
+        if (!ok)
+          continue;
+        Location loc = forOp.getLoc();
+
+        auto advancedBy = [&](Value count) {
+          Value stride = nullptr;
+          for (Value v : dynStrides) {
+            Value c = castValue(rewriter, v, count, loc);
+            stride = stride
+                         ? AddIOp::create(rewriter, loc, stride, c).getResult()
+                         : c;
+          }
+          if (constStride || !stride) {
+            Value c = arith::ConstantOp::create(
+                rewriter, loc,
+                rewriter.getIntegerAttr(count.getType(), constStride));
+            stride = stride
+                         ? AddIOp::create(rewriter, loc, stride, c).getResult()
+                         : c.getDefiningOp()->getResult(0);
+          }
+          Value offset = MulIOp::create(rewriter, loc, count, stride);
+          // A gep index is a signless integer; loop arithmetic is often index.
+          if (isa<IndexType>(offset.getType()))
+            offset = IndexCastOp::create(rewriter, loc, rewriter.getI64Type(),
+                                         offset);
+          return LLVM::GEPOp::create(rewriter, loc, chain.back().getType(),
+                                     elemTy, outiter, ValueRange{offset},
+                                     chain.back().getNoWrapFlags())
+              .getResult();
+        };
+
+        if (!iterarg.use_empty()) {
+          rewriter.setInsertionPointToStart(&forOp.getRegion().front());
+          Value count = SubIOp::create(rewriter, loc, forOp.getInductionVar(),
+                                       forOp.getLowerBound());
+          count = DivUIOp::create(rewriter, loc, count, forOp.getStep());
+          Value replacement = advancedBy(count);
+          Value iterargCopy = iterarg;
+          rewriter.modifyOpInPlace(
+              forOp, [&] { iterargCopy.replaceAllUsesWith(replacement); });
+          canonicalize = true;
+        }
+
+        if (!res.use_empty()) {
+          rewriter.setInsertionPoint(forOp);
+          // The trip count is a ceiling division: a range the step does not
+          // divide evenly still runs the iteration that starts inside it. A
+          // range the loop never enters runs none.
+          Value span = SubIOp::create(rewriter, loc, forOp.getUpperBound(),
+                                      forOp.getLowerBound());
+          Value zero = arith::ConstantOp::create(
+              rewriter, loc, rewriter.getIntegerAttr(span.getType(), 0));
+          span = MaxSIOp::create(rewriter, loc, span, zero);
+          Value one = arith::ConstantOp::create(
+              rewriter, loc, rewriter.getIntegerAttr(span.getType(), 1));
+          Value bump = SubIOp::create(rewriter, loc, forOp.getStep(), one);
+          Value count = DivUIOp::create(
+              rewriter, loc, AddIOp::create(rewriter, loc, span, bump),
+              forOp.getStep());
+          Value replacement = advancedBy(count);
+          Value resCopy = res;
+          rewriter.modifyOpInPlace(
+              forOp, [&] { resCopy.replaceAllUsesWith(replacement); });
+          canonicalize = true;
+        }
+        continue;
+      }
+
       AddIOp addOp = yld.getDefiningOp<AddIOp>();
       if (!addOp)
         continue;
