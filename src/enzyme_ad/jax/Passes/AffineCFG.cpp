@@ -6474,6 +6474,11 @@ struct AffineForReductionSink : public OpRewritePattern<affine::AffineForOp> {
         auto yldu = llvm::dyn_cast<AffineYieldOp>(u.getOwner());
         if (!yldu)
           continue;
+        // A yield of some other op nested in the body -- an affine.if, say --
+        // says nothing about what this loop carries, and its operand number
+        // does not index this loop's inits.
+        if (yldu->getParentOp() != forOp)
+          continue;
         if (yld) {
           legal = false;
           break;
