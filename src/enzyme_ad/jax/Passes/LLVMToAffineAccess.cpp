@@ -1,5 +1,6 @@
 #include "Passes.h"
 
+#include "Enzyme/MLIR/Dialect/Ops.h"
 #include "mlir/Analysis/CallGraph.h"
 #include "mlir/Analysis/DataLayoutAnalysis.h"
 #include "mlir/Dialect/Affine/Analysis/AffineStructures.h"
@@ -1926,6 +1927,10 @@ convertLLVMToAffineAccess(Operation *op,
     PtrVal addr = store.getAddr();
     handleOp(store, addr);
   });
+  op->walk([&](LLVM::AtomicRMWOp rmw) {
+    PtrVal addr = rmw.getPtr();
+    handleOp(rmw, addr);
+  });
   op->walk([&](LLVM::LoadOp load) {
     PtrVal addr = load.getAddr();
     handleOp(load, addr);
@@ -2158,6 +2163,120 @@ convertLLVMToAffineAccess(Operation *op,
         else
           newStore->setAttr(attr.getName(), attr.getValue());
       }
+    } else if (auto rmw = dyn_cast<LLVM::AtomicRMWOp>(aab.user)) {
+      IRRewriter rewriter(rmw);
+
+      // The enzyme atomic rather than the memref one: it is the only form
+      // with somewhere to put the ordering the llvm op carries.
+      arith::AtomicRMWKind kind;
+      switch (rmw.getBinOp()) {
+      case LLVM::AtomicBinOp::xchg:
+        kind = arith::AtomicRMWKind::assign;
+        break;
+      case LLVM::AtomicBinOp::add:
+        kind = arith::AtomicRMWKind::addi;
+        break;
+      case LLVM::AtomicBinOp::_and:
+        kind = arith::AtomicRMWKind::andi;
+        break;
+      case LLVM::AtomicBinOp::_or:
+        kind = arith::AtomicRMWKind::ori;
+        break;
+      case LLVM::AtomicBinOp::max:
+        kind = arith::AtomicRMWKind::maxs;
+        break;
+      case LLVM::AtomicBinOp::min:
+        kind = arith::AtomicRMWKind::mins;
+        break;
+      case LLVM::AtomicBinOp::umax:
+        kind = arith::AtomicRMWKind::maxu;
+        break;
+      case LLVM::AtomicBinOp::umin:
+        kind = arith::AtomicRMWKind::minu;
+        break;
+      case LLVM::AtomicBinOp::fadd:
+        kind = arith::AtomicRMWKind::addf;
+        break;
+      case LLVM::AtomicBinOp::fmax:
+        kind = arith::AtomicRMWKind::maximumf;
+        break;
+      case LLVM::AtomicBinOp::fmin:
+        kind = arith::AtomicRMWKind::minimumf;
+        break;
+      default:
+        // The rest -- sub, nand, xor, the wrapping and saturating ones --
+        // name no arith kind to carry them.
+        continue;
+      }
+      if (rmw.getVolatile_())
+        continue;
+
+      Type ty = rmw.getVal().getType();
+      auto tySize = dl.getTypeSize(ty);
+      // See the load path above.
+      if (llvm::alignTo(static_cast<uint64_t>(tySize),
+                        dl.getTypeABIAlignment(ty)) != tySize)
+        continue;
+      // The two orderings agree case for case, so the llvm one names the
+      // enzyme one directly.
+      auto ordering = static_cast<enzyme::Ordering>(rmw.getOrdering());
+
+      if (MemRefType::isValidElementType(ty) && aab.isLegal() && aab.base &&
+          canMaterializeAfterValue(aab.base) &&
+          llvm::all_of(aab.getMap().operands, canMaterializeAfterValue)) {
+        auto memref0 = mc(aab.base);
+        Value memref = memref0;
+        auto memrefTy = memref0.getType();
+        if (memrefTy.getElementType() != ty) {
+          if (auto p2m = memref.getDefiningOp<enzymexla::Pointer2MemrefOp>())
+            memref = p2m.getOperand();
+          else
+            memref = enzymexla::Memref2PointerOp::create(
+                rewriter, rmw.getLoc(),
+                LLVM::LLVMPointerType::get(ty.getContext()), memref);
+          memref = enzymexla::Pointer2MemrefOp::create(
+                       rewriter, rmw.getLoc(),
+                       MemRefType::get(memrefTy.getShape(), ty,
+                                       MemRefLayoutAttrInterface{},
+                                       memrefTy.getMemorySpace()),
+                       memref)
+                       .getResult();
+        }
+
+        auto mao = aab.getMap();
+        if (mao.map.getResult(0).isMultipleOf(tySize) ||
+            isAligned(rmw, tySize)) {
+          auto expr = mao.map.getResult(0).floorDiv(tySize);
+          // The affine form, as the load and the store here take theirs: the
+          // access keeps its map rather than an index applied ahead of it.
+          auto newRMW = enzyme::AffineAtomicRMWOp::create(
+              rewriter, rmw.getLoc(), ty, kind, ordering, rmw.getVal(), memref,
+              ic(mao.operands),
+              AffineMap::get(mao.map.getNumDims(), mao.map.getNumSymbols(),
+                             expr),
+              rmw.getAlignmentAttr());
+          for (auto &a2 : accessBuilders)
+            a2->maybeReplaceBase(rmw, newRMW);
+          mc.replace(rmw, newRMW);
+          ic.replace(rmw, newRMW);
+          rewriter.replaceOp(rmw, newRMW);
+          continue;
+        }
+      }
+
+      Value idxs[1] = {
+          arith::ConstantIndexOp::create(rewriter, rmw.getLoc(), 0)};
+      auto newRMW = enzyme::AtomicRMWOp::create(
+          rewriter, rmw.getLoc(), ty, kind, ordering, rmw.getVal(),
+          enzymexla::Pointer2MemrefOp::create(
+              rewriter, rmw.getLoc(),
+              MemRefType::get({ShapedType::kDynamic}, ty,
+                              MemRefLayoutAttrInterface{},
+                              rewriter.getIndexAttr(
+                                  rmw.getPtr().getType().getAddressSpace())),
+              rmw.getPtr()),
+          idxs, rmw.getAlignmentAttr());
+      rewriter.replaceOp(rmw, newRMW);
     } else {
       llvm_unreachable("Unknown operation to raise");
     }
