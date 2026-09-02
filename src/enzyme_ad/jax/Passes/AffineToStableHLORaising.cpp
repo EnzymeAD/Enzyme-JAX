@@ -5076,7 +5076,11 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
   }
 
   if (auto scfWhile = dyn_cast<scf::WhileOp>(op)) {
-    if (tryRaisingSCFWhileOpToStableHLO(scfWhile, mapping, builder, maps, pc)
+    if (getenv("DEBUG_WHILE"))
+      llvm::errs() << "WHILE-RAISE " << scfWhile.getLoc() << "\n"
+                   << scfWhile << "\n";
+    if (!getenv("DISABLE_WHILE_RAISE") &&
+        tryRaisingSCFWhileOpToStableHLO(scfWhile, mapping, builder, maps, pc)
             .succeeded())
       return success();
   }
