@@ -1184,9 +1184,10 @@ static isl_aff *affForValue(Value v, const DenseMap<Value, unsigned> &basePos,
 }
 
 // The enclosing affine loop nest as an isl domain: one set dimension per
-// parallel/for induction variable, constrained by its (expanded) bounds;
-// every other leaf value becomes an unconstrained parameter. Bounds that do
-// not convert are dropped, over-approximating the domain, which is sound for
+// parallel/for induction variable, constrained by its (expanded) bounds and
+// by the integer sets of the enclosing affine.ifs; every other leaf value
+// becomes an unconstrained parameter. Bounds and constraints that do not
+// convert are dropped, over-approximating the domain, which is sound for
 // proving a condition constant in either direction.
 namespace {
 struct AffineDomainCtx {
@@ -1228,9 +1229,17 @@ struct AffineDomainCtx {
       unsigned ivPos;
     };
     SmallVector<BoundRef> boundRefs;
+    struct IfRef {
+      affine::AffineIfOp ifOp;
+      bool isElse;
+    };
+    SmallVector<IfRef> ifRefs;
     for (Operation *parent = op->getParentOp(); parent;
          parent = parent->getParentOp()) {
-      if (auto par = dyn_cast<affine::AffineParallelOp>(parent)) {
+      if (auto ifOp = dyn_cast<affine::AffineIfOp>(parent)) {
+        ifRefs.push_back(
+            {ifOp, ifOp.getElseRegion().isAncestor(op->getParentRegion())});
+      } else if (auto par = dyn_cast<affine::AffineParallelOp>(parent)) {
         for (auto [i, iv] : llvm::enumerate(par.getIVs())) {
           unsigned pos = ivs.size();
           ivPos[iv] = pos;
@@ -1255,13 +1264,16 @@ struct AffineDomainCtx {
                              true, pos});
       }
     }
-    if (ivs.empty())
+    if (ivs.empty() && ifRefs.empty())
       return false;
 
     for (Value v : extra)
       collectBases(v, bases, kExpandDepth, &ivPos, subst);
     for (auto &br : boundRefs)
       for (Value o : br.operands)
+        collectBases(o, bases, kExpandDepth, &ivPos, subst);
+    for (auto &ir : ifRefs)
+      for (Value o : ir.ifOp.getOperands())
         collectBases(o, bases, kExpandDepth, &ivPos, subst);
     for (auto [i, v] : llvm::enumerate(bases))
       basePos[v] = i;
@@ -1339,6 +1351,30 @@ struct AffineDomainCtx {
         domain =
             isl_set_intersect(domain, br.isUpper ? isl_aff_lt_set(ivAff, ea)
                                                  : isl_aff_ge_set(ivAff, ea));
+      }
+      for (auto *a : opAffs)
+        isl_aff_free(a);
+    }
+    // An else region is the set's complement, a conjunction only when the
+    // set is a single inequality: e >= 0 fails exactly when e <= -1.
+    for (auto &ir : ifRefs) {
+      IntegerSet set = ir.ifOp.getIntegerSet();
+      if (ir.isElse && (set.getNumConstraints() != 1 || set.isEq(0)))
+        continue;
+      SmallVector<isl_aff *> opAffs;
+      for (Value o : ir.ifOp.getOperands())
+        opAffs.push_back(
+            affForValue(o, basePos, ls, ctx, kExpandDepth, &ivPos, subst));
+      for (auto [i, e] : llvm::enumerate(set.getConstraints())) {
+        isl_aff *ea = exprAff(e, opAffs, set.getNumDims());
+        if (!ea)
+          continue;
+        isl_aff *zero =
+            isl_aff_val_on_domain(isl_local_space_copy(ls), isl_val_zero(ctx));
+        domain =
+            isl_set_intersect(domain, ir.isElse     ? isl_aff_lt_set(ea, zero)
+                                      : set.isEq(i) ? isl_aff_eq_set(ea, zero)
+                                                    : isl_aff_ge_set(ea, zero));
       }
       for (auto *a : opAffs)
         isl_aff_free(a);
@@ -1532,8 +1568,6 @@ static LogicalResult foldNeverLoopingSCFWhile(IslAnalysis &islAnalysis,
 // only folded when both sides are provably non-negative on the domain.
 static LogicalResult foldCmpUsingLoopBounds(IslAnalysis &islAnalysis,
                                             arith::CmpIOp cmp) {
-  isl_ctx *ctx = islAnalysis.getCtx();
-  constexpr unsigned kExpandDepth = 8;
   using Pred = arith::CmpIPredicate;
   Pred pred = cmp.getPredicate();
 
@@ -1579,172 +1613,24 @@ static LogicalResult foldCmpUsingLoopBounds(IslAnalysis &islAnalysis,
     }
   }
 
-  // The domain: one set dimension per enclosing affine parallel/for
-  // induction variable, constrained by its bounds. Bounds that fail to
-  // convert are dropped, which over-approximates the domain and stays sound
-  // for both fold directions. Steps are ignored for the same reason.
-  SmallVector<Value> ivs;
-  struct BoundRef {
-    AffineMap map;
-    SmallVector<Value> operands;
-    bool isUpper;
-    unsigned ivPos;
-  };
-  SmallVector<BoundRef> boundRefs;
-  DenseMap<Value, unsigned> ivPos;
-  for (Operation *parent = cmp->getParentOp(); parent;
-       parent = parent->getParentOp()) {
-    if (auto par = dyn_cast<affine::AffineParallelOp>(parent)) {
-      for (auto [i, iv] : llvm::enumerate(par.getIVs())) {
-        unsigned pos = ivs.size();
-        ivPos[iv] = pos;
-        ivs.push_back(iv);
-        boundRefs.push_back({par.getLowerBoundMap(i),
-                             SmallVector<Value>(par.getLowerBoundsOperands()),
-                             false, pos});
-        boundRefs.push_back({par.getUpperBoundMap(i),
-                             SmallVector<Value>(par.getUpperBoundsOperands()),
-                             true, pos});
-      }
-    } else if (auto forOp = dyn_cast<affine::AffineForOp>(parent)) {
-      Value iv = forOp.getInductionVar();
-      unsigned pos = ivs.size();
-      ivPos[iv] = pos;
-      ivs.push_back(iv);
-      boundRefs.push_back({forOp.getLowerBoundMap(),
-                           SmallVector<Value>(forOp.getLowerBoundOperands()),
-                           false, pos});
-      boundRefs.push_back({forOp.getUpperBoundMap(),
-                           SmallVector<Value>(forOp.getUpperBoundOperands()),
-                           true, pos});
-    }
-  }
-  if (ivs.empty())
+  AffineDomainCtx c;
+  if (!c.build(islAnalysis, cmp, {cmp.getLhs(), cmp.getRhs()}))
     return failure();
-
-  SetVector<Value> bases;
-  collectBases(cmp.getLhs(), bases, kExpandDepth, &ivPos);
-  collectBases(cmp.getRhs(), bases, kExpandDepth, &ivPos);
-  for (auto &br : boundRefs)
-    for (Value o : br.operands)
-      collectBases(o, bases, kExpandDepth, &ivPos);
-  DenseMap<Value, unsigned> basePos;
-  for (auto [i, v] : llvm::enumerate(bases))
-    basePos[v] = i;
-
-  isl_space *space = isl_space_set_alloc(ctx, bases.size(), ivs.size());
-  for (unsigned i = 0; i < ivs.size(); i++) {
-    isl_id *id = isl_id_alloc(ctx, "iv", (void *)(size_t)(i + 1));
-    space = isl_space_set_dim_id(space, isl_dim_set, i, id);
-  }
-  for (unsigned i = 0; i < bases.size(); i++) {
-    isl_id *id = isl_id_alloc(ctx, "sym", (void *)(size_t)(i + 1));
-    space = isl_space_set_dim_id(space, isl_dim_param, i, id);
-  }
-  isl_local_space *ls = isl_local_space_from_space(isl_space_copy(space));
-
-  std::function<isl_aff *(AffineExpr, ArrayRef<isl_aff *>, unsigned)> exprAff =
-      [&](AffineExpr expr, ArrayRef<isl_aff *> opAffs,
-          unsigned numDims) -> isl_aff * {
-    if (auto bo = dyn_cast<AffineBinaryOpExpr>(expr)) {
-      isl_aff *lhs = exprAff(bo.getLHS(), opAffs, numDims);
-      isl_aff *rhs = exprAff(bo.getRHS(), opAffs, numDims);
-      if (!lhs || !rhs) {
-        isl_aff_free(lhs);
-        isl_aff_free(rhs);
-        return nullptr;
-      }
-      switch (bo.getKind()) {
-      case AffineExprKind::Add:
-        return isl_aff_add(lhs, rhs);
-      case AffineExprKind::Mul:
-        return isl_aff_mul(lhs, rhs);
-      case AffineExprKind::FloorDiv:
-        return isl_aff_floor(isl_aff_div(lhs, rhs));
-      case AffineExprKind::CeilDiv:
-        return isl_aff_ceil(isl_aff_div(lhs, rhs));
-      case AffineExprKind::Mod:
-        if (isl_aff_is_cst(rhs) == isl_bool_true) {
-          isl_aff *r = isl_aff_mod_val(lhs, isl_aff_get_constant_val(rhs));
-          isl_aff_free(rhs);
-          return r;
-        }
-        LLVM_FALLTHROUGH;
-      default:
-        isl_aff_free(lhs);
-        isl_aff_free(rhs);
-        return nullptr;
-      }
-    }
-    if (auto c = dyn_cast<AffineConstantExpr>(expr))
-      return isl_aff_val_on_domain(isl_local_space_copy(ls),
-                                   isl_val_int_from_si(ctx, c.getValue()));
-    if (auto dim = dyn_cast<AffineDimExpr>(expr)) {
-      isl_aff *a = opAffs[dim.getPosition()];
-      return a ? isl_aff_copy(a) : nullptr;
-    }
-    if (auto sym = dyn_cast<AffineSymbolExpr>(expr)) {
-      isl_aff *a = opAffs[numDims + sym.getPosition()];
-      return a ? isl_aff_copy(a) : nullptr;
-    }
-    return nullptr;
-  };
-
-  isl_set *domain = isl_set_universe(isl_space_copy(space));
-  for (auto &br : boundRefs) {
-    SmallVector<isl_aff *> opAffs;
-    for (Value o : br.operands)
-      opAffs.push_back(affForValue(o, basePos, ls, ctx, kExpandDepth, &ivPos));
-    for (AffineExpr e : br.map.getResults()) {
-      isl_aff *ea = exprAff(e, opAffs, br.map.getNumDims());
-      if (!ea)
-        continue;
-      isl_aff *ivAff = isl_aff_var_on_domain(isl_local_space_copy(ls),
-                                             isl_dim_set, br.ivPos);
-      domain =
-          isl_set_intersect(domain, br.isUpper ? isl_aff_lt_set(ivAff, ea)
-                                               : isl_aff_ge_set(ivAff, ea));
-    }
-    for (auto *a : opAffs)
-      isl_aff_free(a);
-  }
-
-  isl_aff *lhs =
-      affForValue(cmp.getLhs(), basePos, ls, ctx, kExpandDepth, &ivPos);
-  isl_aff *rhs =
-      affForValue(cmp.getRhs(), basePos, ls, ctx, kExpandDepth, &ivPos);
-  auto cleanup = [&]() {
+  isl_aff *lhs = c.aff(cmp.getLhs()), *rhs = c.aff(cmp.getRhs());
+  auto freeAll = [&]() {
     isl_aff_free(lhs);
     isl_aff_free(rhs);
-    isl_local_space_free(ls);
-    isl_space_free(space);
-    isl_set_free(domain);
   };
   if (!lhs || !rhs) {
-    cleanup();
+    freeAll();
     return failure();
   }
-
-  auto emptyOnDomain = [&](isl_set *set) {
-    set = isl_set_intersect(isl_set_copy(domain), set);
-    bool empty = isl_set_is_empty(set) == isl_bool_true;
-    isl_set_free(set);
-    return empty;
-  };
 
   bool isUnsigned = pred == Pred::ult || pred == Pred::ule ||
                     pred == Pred::ugt || pred == Pred::uge;
-  if (isUnsigned) {
-    isl_aff *zero =
-        isl_aff_val_on_domain(isl_local_space_copy(ls), isl_val_zero(ctx));
-    bool nonneg =
-        emptyOnDomain(isl_aff_lt_set(isl_aff_copy(lhs), isl_aff_copy(zero))) &&
-        emptyOnDomain(isl_aff_lt_set(isl_aff_copy(rhs), isl_aff_copy(zero)));
-    isl_aff_free(zero);
-    if (!nonneg) {
-      cleanup();
-      return failure();
-    }
+  if (isUnsigned && !(c.nonNegOnDomain(lhs) && c.nonNegOnDomain(rhs))) {
+    freeAll();
+    return failure();
   }
 
   isl_set *holds, *fails;
@@ -1779,13 +1665,13 @@ static LogicalResult foldCmpUsingLoopBounds(IslAnalysis &islAnalysis,
     break;
   }
 
-  bool alwaysTrue = emptyOnDomain(fails);
+  freeAll();
+  bool alwaysTrue = c.emptyOnDomain(fails);
   bool alwaysFalse = false;
   if (alwaysTrue)
     isl_set_free(holds);
   else
-    alwaysFalse = emptyOnDomain(holds);
-  cleanup();
+    alwaysFalse = c.emptyOnDomain(holds);
   if (!alwaysTrue && !alwaysFalse)
     return failure();
 
