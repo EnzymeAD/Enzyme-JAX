@@ -153,6 +153,14 @@ bool isValidSymbolInt(Value value, bool recur, Region *scope) {
   return false;
 }
 
+// Whether `value` sits inside a region nested in `scope`, rather than at its
+// top level or above it: the ancestry test isValidSymbolInt opens with, asked
+// on its own.
+bool isNestedInScope(Value value, Region *scope) {
+  assert(scope);
+  return !value.getParentRegion()->isAncestor(scope);
+}
+
 struct AffineApplyNormalizer {
   /// Builds a normalizer for `map` over `operands`, or std::nullopt where
   /// none exists.  Making an operand a valid affine dim or symbol can mean
@@ -364,12 +372,17 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
   };
 
   SmallVector<Operation **> operationContext;
-  std::function<Value(Value, bool)> fix = [&](Value v,
-                                              bool index) -> Value /*legal*/ {
+
+  std::function<Value(Value, bool, bool)> fix =
+      [&](Value v, bool index, bool needTopLevel) -> Value /*legal*/ {
     bool ntop = isNonTopLevelPureSymbol(v);
+
+    if (needTopLevel && isNestedInScope(v, scope))
+      ntop = true;
     if (!ntop && isValidSymbolInt(v, /*recur*/ false, scope)) {
       return v;
     }
+
     if (index && isAffineForArg(v)) {
       return v;
     }
@@ -412,6 +425,8 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
       if (!speculatableOutOf(selTrue, op) || !speculatableOutOf(selFalse, op))
         return nullptr;
     }
+
+    bool needTop = !affine::isValidSymbol(v, scope);
     Operation *front = nullptr;
     operationContext.push_back(&front);
     if (front)
@@ -458,7 +473,7 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
         assert(op->getBlock());
         if (front)
           assert(front->getBlock());
-        if (Value nv = fix(o, index)) {
+        if (Value nv = fix(o, index, needTop)) {
           op = nv.getDefiningOp();
         } else {
           operationContext.pop_back();
@@ -501,6 +516,12 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
     if (!front)
       op->dump();
     assert(front);
+
+    if (!front->getParentRegion()->isAncestor(scope) &&
+        !affine::isValidSymbol(v, scope)) {
+      operationContext.pop_back();
+      return nullptr;
+    }
     if (condIf) {
       // ops now holds the legalized condition and arms: replaceOp rewrote the
       // entries as their defining ops were hoisted.
@@ -638,16 +659,16 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
              (isValidIndex(t.getDefiningOp()->getOperand(1), scope) &&
               isValidSymbolInt(t.getDefiningOp()->getOperand(0), /*recur*/ true,
                                scope))) &&
-            !(fix(t.getDefiningOp()->getOperand(0), false) &&
-              fix(t.getDefiningOp()->getOperand(1), false))
+            !(fix(t.getDefiningOp()->getOperand(0), false, false) &&
+              fix(t.getDefiningOp()->getOperand(1), false, false))
 
                 ) ||
            ((t.getDefiningOp<DivUIOp>() || t.getDefiningOp<DivSIOp>()) &&
             (isValidIndex(t.getDefiningOp()->getOperand(0), scope) &&
              isValidSymbolInt(t.getDefiningOp()->getOperand(1), /*recur*/ true,
                               scope)) &&
-            (!(fix(t.getDefiningOp()->getOperand(0), false) &&
-               fix(t.getDefiningOp()->getOperand(1), false)))) ||
+            (!(fix(t.getDefiningOp()->getOperand(0), false, false) &&
+               fix(t.getDefiningOp()->getOperand(1), false, false)))) ||
            (t.getDefiningOp<DivSIOp>() &&
             (isValidIndex(t.getDefiningOp()->getOperand(0), scope) &&
              isValidSymbolInt(t.getDefiningOp()->getOperand(1), /*recur*/ true,
@@ -885,7 +906,7 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
       if (!isValidSymbolInt(t, /*recur*/ false, scope)) {
         Value orig = t;
         if (t.getDefiningOp()) {
-          if ((t = fix(t, false))) {
+          if ((t = fix(t, false, false))) {
             if (!isValidSymbolInt(t, /*recur*/ false, scope)) {
               llvm::errs()
                   << " op: "
