@@ -1575,6 +1575,137 @@ static LogicalResult tryRaisingForOpToStableHLOWhile(
   return success();
 }
 
+// A general scf.while raises by rotation: its before region runs once
+// (peeled), producing the loop condition and carried values; the
+// stablehlo.while then carries (cond, args, buffers) and its body runs the
+// do region followed by the before region again. Only a uniform (rank-0)
+// condition is supported.
+static LogicalResult tryRaisingSCFWhileOpToStableHLO(
+    scf::WhileOp whileOp, IRMapping &parentMapping, OpBuilder &builder,
+    llvm::DenseMap<Value, affine::AffineValueMap> &maps, ParallelContext pc) {
+  IRMapping mapping = parentMapping;
+  auto wloc =
+      rewriteLocation(whileOp.getLoc(), pc.options.strip_llvm_debuginfo);
+  Block *before = whileOp.getBeforeBody();
+  Block *after = whileOp.getAfterBody();
+  auto condOp = cast<scf::ConditionOp>(before->getTerminator());
+  auto yieldOp = cast<scf::YieldOp>(after->getTerminator());
+
+  for (auto [arg, init] :
+       llvm::zip(before->getArguments(), whileOp.getInits())) {
+    Value m = mapping.lookupOrNull(init);
+    if (!m || !maps.count(m))
+      return failure();
+    mapping.map(arg, m);
+    maps[m] = maps.lookup(m);
+  }
+  for (auto &op : before->without_terminator())
+    if (tryRaisingOpToStableHLO(&op, mapping, builder, maps, pc).failed())
+      return failure();
+  Value cond0 = mapping.lookupOrNull(condOp.getCondition());
+  if (!cond0)
+    return failure();
+  auto condTy = dyn_cast<RankedTensorType>(cond0.getType());
+  if (!condTy || condTy.getRank() != 0)
+    return failure();
+
+  SmallVector<Value> carriedInit{cond0};
+  SmallVector<affine::AffineValueMap> argMaps;
+  for (Value a : condOp.getArgs()) {
+    Value m = mapping.lookupOrNull(a);
+    if (!m || !maps.count(m))
+      return failure();
+    carriedInit.push_back(m);
+    argMaps.push_back(maps.lookup(m));
+  }
+
+  Block *entryBlock = getRaisedEntryBlock(whileOp);
+  SmallVector<Value> buffers(entryBlock->getArguments().begin(),
+                             entryBlock->getArguments().end());
+  {
+    llvm::SmallPtrSet<Value, 8> seen(buffers.begin(), buffers.end());
+    auto collect = [&](Block *b) {
+      b->walk([&](Operation *innerOp) {
+        for (Value v : innerOp->getOperands())
+          if (isa<MemRefType>(v.getType()) && mapping.contains(v) &&
+              !whileOp->isAncestor(v.getParentRegion()->getParentOp()) &&
+              seen.insert(v).second)
+            buffers.push_back(v);
+      });
+    };
+    collect(before);
+    collect(after);
+  }
+  for (auto memref : buffers)
+    carriedInit.push_back(mapping.lookup(memref));
+
+  Block *cond = new Block(), *body = new Block();
+  for (Value v : carriedInit) {
+    cond->addArgument(v.getType(), wloc);
+    body->addArgument(v.getType(), wloc);
+  }
+
+  unsigned nargs = condOp.getArgs().size();
+  for (auto [i, arg] : llvm::enumerate(after->getArguments())) {
+    Value bodyArg = body->getArgument(1 + i);
+    mapping.map(arg, bodyArg);
+    maps[bodyArg] = argMaps[i];
+  }
+  for (auto [i, memref] : llvm::enumerate(buffers))
+    mapping.map(memref, body->getArgument(1 + nargs + i));
+
+  auto newWhile = stablehlo::WhileOp::create(builder, wloc, carriedInit);
+  newWhile->getRegion(0).push_back(cond);
+  newWhile->getRegion(1).push_back(body);
+
+  {
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointToStart(cond);
+    stablehlo::ReturnOp::create(builder, wloc, cond->getArgument(0));
+  }
+  {
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointToStart(body);
+    for (auto &op : after->without_terminator())
+      if (tryRaisingOpToStableHLO(&op, mapping, builder, maps, pc).failed())
+        return failure();
+    // The do region yields the next before-region arguments.
+    for (auto [arg, y] :
+         llvm::zip(before->getArguments(), yieldOp.getOperands())) {
+      Value m = mapping.lookupOrNull(y);
+      if (!m)
+        return failure();
+      mapping.map(arg, m);
+    }
+    for (auto &op : before->without_terminator())
+      if (tryRaisingOpToStableHLO(&op, mapping, builder, maps, pc).failed())
+        return failure();
+    Value nextCond = mapping.lookupOrNull(condOp.getCondition());
+    if (!nextCond || nextCond.getType() != cond0.getType())
+      return failure();
+    SmallVector<Value> carried{nextCond};
+    for (auto [i, a] : llvm::enumerate(condOp.getArgs())) {
+      Value m = mapping.lookupOrNull(a);
+      if (!m || m.getType() != carriedInit[1 + i].getType())
+        return failure();
+      carried.push_back(m);
+    }
+    for (auto memref : buffers)
+      carried.push_back(mapping.lookup(memref));
+    stablehlo::ReturnOp::create(builder, wloc, carried);
+  }
+
+  for (auto [i, res] : llvm::enumerate(whileOp.getResults())) {
+    Value whileRes = newWhile.getResult(1 + i);
+    mapping.map(res, whileRes);
+    maps[whileRes] = argMaps[i];
+  }
+  for (auto [i, memref] : llvm::enumerate(buffers))
+    mapping.map(memref, newWhile.getResult(1 + nargs + i));
+
+  parentMapping = mapping;
+  return success();
+}
 template <class T> static SmallVector<BlockArgument, 6> getIVs(T op);
 template <> SmallVector<BlockArgument, 6> getIVs(affine::AffineParallelOp op) {
   return {op.getIVs().begin(), op.getIVs().end()};
@@ -3627,6 +3758,12 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
             .succeeded()) {
       return success();
     }
+  }
+
+  if (auto scfWhile = dyn_cast<scf::WhileOp>(op)) {
+    if (tryRaisingSCFWhileOpToStableHLO(scfWhile, mapping, builder, maps, pc)
+            .succeeded())
+      return success();
   }
 
   if (auto alloca = dyn_cast<memref::AllocaOp>(op)) {
