@@ -55,7 +55,7 @@
 #include "llvm/Support/LogicalResult.h"
 #include "llvm/Support/raw_ostream.h"
 
-#include "Utils.h"
+#include "src/enzyme_ad/jax/Utils.h"
 
 #include <cmath>
 #include <cstdint>
@@ -1502,24 +1502,6 @@ struct NullAccessFold : public OpRewritePattern<LLVM::ZeroOp> {
         rewriter.eraseOp(access);
         changed = true;
       }
-    }
-    return success(changed);
-  }
-};
-      if (auto ld = dyn_cast<affine::AffineLoadOp>(user)) {
-        changed |= zeroFor(ld, ld.getType());
-      } else if (auto ld = dyn_cast<memref::LoadOp>(user)) {
-        changed |= zeroFor(ld, ld.getType());
-      } else if (isa<affine::AffineStoreOp, memref::StoreOp>(user) &&
-                 user->getOperand(1) == p2m.getResult() &&
-                 user->getOperand(0) != p2m.getResult()) {
-        rewriter.eraseOp(user);
-        changed = true;
-      }
-    }
-    if (p2m->use_empty()) {
-      rewriter.eraseOp(p2m);
-      changed = true;
     }
     return success(changed);
   }
