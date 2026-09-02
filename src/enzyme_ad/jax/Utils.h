@@ -1222,6 +1222,24 @@ bool allAccessesAreOnMainDiagonal(
 bool allAccessesAreOnMainDiagonal(
     stablehlo::GatherOp op, llvm::SetVector<mlir::Operation *> &opsToReplace);
 
+// Walks the values derived from `root` by address arithmetic and views: geps
+// off it, address-space and bit casts, pointer/memref conversions and, when
+// `throughBranches`, selects and branch yields of it. Every other use is
+// handed to `onUse`; the walk stops and answers false the first time it
+// does.
+bool walkPointerDerivations(Value root, bool throughBranches,
+                            llvm::function_ref<bool(OpOperand &)> onUse);
+
+// Whether `use` is the address of a load, store, or atomic, so that only the
+// pointed-to memory is touched and never the pointer itself.
+bool isDereference(OpOperand &use);
+
+// Whether nothing can observe the address itself: every use either reads or
+// writes the pointed-to memory, or carries the pointer somewhere that is in
+// turn only dereferenced. A comparison, an escape into a call, or a store of
+// the pointer as a value all answer no.
+bool onlyDereferenced(Value root);
+
 } // namespace enzyme
 
 namespace stablehlo {

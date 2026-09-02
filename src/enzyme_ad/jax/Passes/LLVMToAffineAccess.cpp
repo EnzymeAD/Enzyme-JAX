@@ -42,6 +42,7 @@
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/EnzymeHLOPatterns.h"
 #include "src/enzyme_ad/jax/TransformOps/RaisingTransformOps.h"
+#include "src/enzyme_ad/jax/Utils.h"
 
 #include "llvm/ADT/BitVector.h"
 #include "llvm/ADT/MapVector.h"
@@ -845,6 +846,51 @@ struct AffineIfDeadResults : public OpRewritePattern<affine::AffineIfOp> {
       rewriter.replaceAllUsesWith(ifOp.getResult(i), newIf.getResult(j));
     rewriter.eraseOp(ifOp);
     return success();
+  }
+};
+
+// An access through the null pointer can only execute as undefined
+// behavior, so it is dynamically dead: an optional buffer a kernel receives
+// as null is always guarded by a flag. Fold loads to a zero of their type and
+// drop stores, wherever the address was derived from the null by offsets,
+// casts, or views; those then die instead of blocking the kernel on an
+// untypable operand. A null chosen against a real pointer is not derived
+// from it here: that select is the real pointer when only dereferenced.
+struct NullAccessFold : public OpRewritePattern<LLVM::ZeroOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(LLVM::ZeroOp null,
+                                PatternRewriter &rewriter) const override {
+    if (!isa<LLVM::LLVMPointerType>(null.getType()))
+      return failure();
+    SmallVector<Operation *> accesses;
+    enzyme::walkPointerDerivations(null, /*throughBranches=*/false,
+                                   [&](OpOperand &use) {
+                                     if (enzyme::isDereference(use))
+                                       accesses.push_back(use.getOwner());
+                                     return true;
+                                   });
+    bool changed = false;
+    for (Operation *access : accesses) {
+      if (isa<LLVM::LoadOp, affine::AffineLoadOp, memref::LoadOp>(access)) {
+        Type t = access->getResult(0).getType();
+        rewriter.setInsertionPoint(access);
+        // getZeroAttr has no answer for pointers; those zero as llvm null.
+        if (t.isIntOrFloat())
+          rewriter.replaceOpWithNewOp<arith::ConstantOp>(
+              access, t, rewriter.getZeroAttr(t));
+        else if (LLVM::isCompatibleType(t))
+          rewriter.replaceOpWithNewOp<LLVM::ZeroOp>(access, t);
+        else
+          continue;
+        changed = true;
+      } else if (isa<LLVM::StoreOp, affine::AffineStoreOp, memref::StoreOp>(
+                     access)) {
+        rewriter.eraseOp(access);
+        changed = true;
+      }
+    }
+    return success(changed);
   }
 };
 
@@ -2381,7 +2427,8 @@ convertLLVMToAffineAccess(Operation *op,
         SimplifyDeadAlloc<memref::AllocaOp>, SimplifyDeadAlloc<memref::AllocOp>,
         SimplifyDeadAlloc<LLVM::AllocaOp>,
         SimplifyDeadAlloc<gpu::AllocOp, true>, Pointer2MemrefSelect, LoadSelect,
-        AffineIfDeadResults, SimpleMem2Reg<memref::AllocaOp>>(context);
+        NullAccessFold, AffineIfDeadResults, SimpleMem2Reg<memref::AllocaOp>>(
+        context);
     GreedyRewriteConfig config;
     config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);
     config.enableFolding();
