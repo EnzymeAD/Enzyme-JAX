@@ -80,7 +80,7 @@ bool isValidSymbolInt(Operation *defOp, bool recur, Region *scope) {
   if (recur) {
     if (isa<arith::SelectOp, IndexCastOp, IndexCastUIOp, AddIOp, MulIOp,
             DivSIOp, DivUIOp, RemSIOp, RemUIOp, SubIOp, CmpIOp, TruncIOp,
-            ExtUIOp, ExtSIOp>(defOp))
+            ExtUIOp, ExtSIOp, MaxSIOp, MinSIOp, MaxUIOp, MinUIOp>(defOp))
       if (llvm::all_of(defOp->getOperands(), [&](Value v) {
             bool b = isValidSymbolInt(v, recur, scope);
             // if (!b)
