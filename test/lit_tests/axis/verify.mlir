@@ -76,7 +76,7 @@ func.func @factor_requires_result_stride_match() {
 
 func.func @product_requires_factor_op_results(%arg0: !axis.axis_factor<!axis.shape_axis<tensor<6xf32>, 0>, 2, 3>) {
   // expected-error @+1 {{requires factor operands to be op results}}
-  %g = axis.product %arg0 : !axis.axis_factor<!axis.shape_axis<tensor<6xf32>, 0>, 2, 3>
+  %g = axis.product (%arg0 : !axis.axis_factor<!axis.shape_axis<tensor<6xf32>, 0>, 2, 3>)
   return
 }
 
@@ -88,7 +88,7 @@ func.func @product_requires_axis_factor_producer() {
   %f1 = axis.factor %axis : !axis.shape_axis<tensor<6xf32>, 0> <3, 1>
   %fake = builtin.unrealized_conversion_cast %f0 : !axis.axis_factor<!axis.shape_axis<tensor<6xf32>, 0>, 2, 3> to !axis.axis_factor<!axis.shape_axis<tensor<6xf32>, 0>, 2, 3>
   // expected-error @+1 {{requires factor operands to be produced by axis.factor}}
-  %g = axis.product %fake, %f1 : !axis.axis_factor<!axis.shape_axis<tensor<6xf32>, 0>, 2, 3>, !axis.axis_factor<!axis.shape_axis<tensor<6xf32>, 0>, 3, 1>
+  %g = axis.product (%fake : !axis.axis_factor<!axis.shape_axis<tensor<6xf32>, 0>, 2, 3>, %f1 : !axis.axis_factor<!axis.shape_axis<tensor<6xf32>, 0>, 3, 1>)
   return
 }
 

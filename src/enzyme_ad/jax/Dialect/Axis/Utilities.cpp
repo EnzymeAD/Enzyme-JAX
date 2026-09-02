@@ -15,6 +15,53 @@
 
 namespace mlir::enzyme::axis {
 
+ParseResult parseVariadicWithTypes(
+    OpAsmParser &parser,
+    SmallVectorImpl<OpAsmParser::UnresolvedOperand> &operands,
+    SmallVectorImpl<Type> &types) {
+  if (parser.parseLParen()) {
+    return failure();
+  }
+
+  if (succeeded(parser.parseOptionalRParen())) {
+    return success();
+  }
+
+  while (true) {
+    OpAsmParser::UnresolvedOperand operand;
+    if (parser.parseOperand(operand)) {
+      return failure();
+    }
+    operands.push_back(operand);
+    Type type;
+    if (parser.parseColonType(type)) {
+      return failure();
+    }
+    types.push_back(type);
+
+    if (succeeded(parser.parseOptionalComma())) {
+      continue;
+    }
+    if (parser.parseRParen()) {
+      return failure();
+    }
+    break;
+  }
+
+  return success();
+}
+
+void printVariadicWithTypes(OpAsmPrinter &printer, Operation *op,
+                            OperandRange operands, TypeRange types) {
+  printer << '(';
+  llvm::interleaveComma(llvm::zip(operands, types), printer,
+                        [&](auto pair) {
+                          auto [operand, type] = pair;
+                          printer << operand << " : " << type;
+                        });
+  printer << ')';
+}
+
 // Refreshes one operation in-place and reports whether any result type changed.
 // Uses InferTypeOpInterface so result types stay driven by op attributes.
 static FailureOr<bool> refreshResultTypesInPlace(Operation *op) {

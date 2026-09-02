@@ -8,11 +8,12 @@ module {
   %p0, %p1 = distributed.GetPhysicalMeshAxes @mesh0 : !distributed.physical_comm_axis<2, 3>, !distributed.physical_comm_axis<3, 1>
   %l0, %l1 = distributed.LogicalMeshAxes [2, 3] : !distributed.logical_mesh_axis<2>, !distributed.logical_mesh_axis<3>
   %r0 = distributed.ReplicationAxis 4 : !distributed.replication_axis<4>
+  %d0 = distributed.DeviceLocalAxis 5 : !distributed.device_local_axis<5>
 
   %axis = axis.getaxis tensor<12xf32> 0
   %f0 = axis.factor %axis : !axis.shape_axis<tensor<12xf32>, 0> <2, 6>
   %f1 = axis.factor %axis : !axis.shape_axis<tensor<12xf32>, 0> <2, 3>
-  %ctx_callee = axis.product %f0, %f1 : !axis.axis_factor<!axis.shape_axis<tensor<12xf32>, 0>, 2, 6>, !axis.axis_factor<!axis.shape_axis<tensor<12xf32>, 0>, 2, 3>
+  %ctx_callee = axis.product (%f0 : !axis.axis_factor<!axis.shape_axis<tensor<12xf32>, 0>, 2, 6>, %f1 : !axis.axis_factor<!axis.shape_axis<tensor<12xf32>, 0>, 2, 3>)
 
   "distributed.DistributedFunction"(%ctx_callee) <{argument_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0]] : unreduced_axes = []>]>, function_type = (tensor<12xf32>) -> tensor<12xf32>, output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0]] : unreduced_axes = [0]>]>, sym_name = "identity"}> ({
   ^bb0(%arg0: tensor<12xf32>):
@@ -25,6 +26,7 @@ module {
 // CHECK: %{{.*}}:2 = distributed.GetPhysicalMeshAxes @mesh0 : !distributed.physical_comm_axis<2, 3>, !distributed.physical_comm_axis<3, 1>
 // CHECK: %{{.*}}:2 = distributed.LogicalMeshAxes [2, 3] : !distributed.logical_mesh_axis<2>, !distributed.logical_mesh_axis<3>
 // CHECK: %{{.*}} = distributed.ReplicationAxis 4 : <4>
+// CHECK: %{{.*}} = distributed.DeviceLocalAxis 5 : <5>
 // CHECK: "distributed.DistributedFunction"(%{{.*}}) <{argument_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = {{\[\[}}0{{\]\]}} : unreduced_axes = []>]>, function_type = (tensor<12xf32>) -> tensor<12xf32>, output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = {{\[\[}}0{{\]\]}} : unreduced_axes = [0]>]>, sym_name = "identity"}> ({
 // CHECK: distributed.DistributedYield %{{.*}} tensor<12xf32>
 // CHECK: }) : (!axis.factor_group<4>) -> ()
@@ -35,7 +37,7 @@ module {
 module {
   %axis = axis.getaxis tensor<8xf32> 0
   %factor = axis.factor %axis : !axis.shape_axis<tensor<8xf32>, 0> <2, 4>
-  %ctx = axis.product %factor : !axis.axis_factor<!axis.shape_axis<tensor<8xf32>, 0>, 2, 4>
+  %ctx = axis.product (%factor : !axis.axis_factor<!axis.shape_axis<tensor<8xf32>, 0>, 2, 4>)
   %input = tensor.empty() : tensor<8xf32>
 
   %result = distributed.DistributedKernel %input : tensor<8xf32> #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0]] : unreduced_axes = []>]>
@@ -68,13 +70,13 @@ module {
   %tf_out = axis.factor %ta_out : !axis.shape_axis<tensor<4xf32>, 0> <4, 1>
   %tf_to_mesh = axis.factor %ta : !axis.shape_axis<tensor<8xf32>, 0> <4, 2>
   %tf_remain = axis.factor %ta : !axis.shape_axis<tensor<8xf32>, 0> <2, 1>
-  %mesh_in = axis.product %lf0, %lf1 : !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>, !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>
-  %mesh_out = axis.product %lf0, %lf1 : !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>, !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>
-  %reduction = axis.product %lf1 : !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>
-  %lhs_group_1 = axis.product %tf_to_mesh : !axis.axis_factor<!axis.shape_axis<tensor<8xf32>, 0>, 4, 2>
+  %mesh_in = axis.product (%lf0 : !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>, %lf1 : !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>)
+  %mesh_out = axis.product (%lf0 : !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>, %lf1 : !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>)
+  %reduction = axis.product (%lf1 : !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>)
+  %lhs_group_1 = axis.product (%tf_to_mesh : !axis.axis_factor<!axis.shape_axis<tensor<8xf32>, 0>, 4, 2>)
   // rhs_group_1 = %mesh_out
-  %lhs_group_2 = axis.product %lf0, %tf_remain : !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>, !axis.axis_factor<!axis.shape_axis<tensor<8xf32>, 0>, 2, 1>
-  %rhs_group_2 = axis.product %tf_out : !axis.axis_factor<!axis.shape_axis<tensor<4xf32>, 0>, 4, 1>
+  %lhs_group_2 = axis.product (%lf0 : !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>, %tf_remain : !axis.axis_factor<!axis.shape_axis<tensor<8xf32>, 0>, 2, 1>)
+  %rhs_group_2 = axis.product (%tf_out : !axis.axis_factor<!axis.shape_axis<tensor<4xf32>, 0>, 4, 1>)
   %mapping = axis.map %lhs_group_1, %lhs_group_2 to %mesh_out, %rhs_group_2 : [!axis.factor_group<4>, !axis.factor_group<4>] [!axis.factor_group<4>, !axis.factor_group<4>]
   %input = tensor.empty() : tensor<8xf32>
 

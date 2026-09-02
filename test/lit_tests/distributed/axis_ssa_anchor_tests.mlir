@@ -3,14 +3,14 @@
 // This is the canonicalized, CSE'd post-materialization form of a sharded
 // reduction. Clustering must reuse the existing <8> logical axis.
 module @axis_ssa_anchor {
-  %0 = axis.product %9 : !axis.axis_factor<!distributed.logical_mesh_axis<8>, 8, 1>
+  %0 = axis.product (%9 : !axis.axis_factor<!distributed.logical_mesh_axis<8>, 8, 1>)
   %1 = axis.getaxis tensor<1xf32> 0
   %2 = axis.factor %1 : !axis.shape_axis<tensor<1xf32>, 0><1, 1>
-  %3 = axis.product %9, %2 : !axis.axis_factor<!distributed.logical_mesh_axis<8>, 8, 1>, !axis.axis_factor<!axis.shape_axis<tensor<1xf32>, 0>, 1, 1>
-  %4 = axis.product %9, %6 : !axis.axis_factor<!distributed.logical_mesh_axis<8>, 8, 1>, !axis.axis_factor<!distributed.logical_mesh_axis<4>, 4, 1>
+  %3 = axis.product (%9 : !axis.axis_factor<!distributed.logical_mesh_axis<8>, 8, 1>, %2 : !axis.axis_factor<!axis.shape_axis<tensor<1xf32>, 0>, 1, 1>)
+  %4 = axis.product (%9 : !axis.axis_factor<!distributed.logical_mesh_axis<8>, 8, 1>, %6 : !axis.axis_factor<!distributed.logical_mesh_axis<4>, 4, 1>)
   %5 = distributed.LogicalMeshAxes [4] : !distributed.logical_mesh_axis<4>
   %6 = axis.factor %5 : !distributed.logical_mesh_axis<4><4, 1>
-  %7 = axis.product %6 : !axis.axis_factor<!distributed.logical_mesh_axis<4>, 4, 1>
+  %7 = axis.product (%6 : !axis.axis_factor<!distributed.logical_mesh_axis<4>, 4, 1>)
   %8 = distributed.LogicalMeshAxes [8] : !distributed.logical_mesh_axis<8>
   %9 = axis.factor %8 : !distributed.logical_mesh_axis<8><8, 1>
   "distributed.DistributedFunction"(%0, %7) <{argument_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0], [1]] : unreduced_axes = []>]>, function_type = (tensor<8x4xf32>) -> tensor<8xf32>, output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0]] : unreduced_axes = []>]>, sym_name = "main"}> ({

@@ -140,4 +140,24 @@ LogicalResult ReplicationAxisOp::inferReturnTypes(
   return success();
 }
 
+LogicalResult DeviceLocalAxisOp::inferReturnTypes(
+    MLIRContext *context, std::optional<Location> location, ValueRange operands,
+    DictionaryAttr attributes, PropertyRef properties, RegionRange regions,
+    SmallVectorImpl<Type> &inferredReturnTypes) {
+  DeviceLocalAxisOpAdaptor adaptor(operands, attributes, properties, regions);
+
+  int32_t extent = adaptor.getExtent();
+  if (extent <= 0) {
+    if (location) {
+      mlir::emitError(*location)
+          << "requires extent to be positive, got " << extent;
+    }
+    return failure();
+  }
+
+  inferredReturnTypes.push_back(
+      DeviceLocalAxisType::get(context, static_cast<unsigned>(extent)));
+  return success();
+}
+
 } // namespace mlir::enzyme::distributed

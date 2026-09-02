@@ -130,4 +130,18 @@ def CanonicalizeAxisMapsPass
         replacing mapping groups with maximal one - to - one split groups.}];
 }
 
+def LowerKernelsPass : Pass<"distributed-lower-kernels", "::mlir::ModuleOp"> {
+  let summary = "Applies sharding to distributed kernels to translate from global to sharded form.";
+  let dependentDialects = [
+    "enzyme::distributed::DistributedDialect", "sdy::SdyDialect",
+    "mlir::func::FuncDialect"
+  ];
+  let options = [ Option<"lowerLogicalAxes", "lower-logical-axes", "bool", "false", "Whether to lower sharding over logical axes. If false, logical axes will be left un-sharded. Default: false">];
+  let description = [{
+    Translates distributed kernels to their sharded form. By default, only shards over sharding factors on physical axes. Axes that have
+    been sharded over are removed from the kernel's axis mapping. Axis factors succesfully sharded over are removed from
+    the kernel's axis mapping.
+  }];
+}
+
 #endif // ENZYME_AD_JAX_DISTRIBUTED_PASSES

@@ -51,10 +51,12 @@ def AxisSegmentOp : AxisOp<"segment", [PureMetadataTrait, DeclareOpInterfaceMeth
 def AxisProductOp : AxisOp<"product", [PureMetadataTrait, DeclareOpInterfaceMethods<InferTypeOpInterface>, DeclareOpInterfaceMethods<MaybeTemporaryInterface>]> {
   let description = [{
     Recombines a leftmost-major factor list into one virtual factor product.
+    An empty factor list denotes a fully-sharded axis (extent 1) and still
+    parses/prints (as "()"), so it can be kept as a placeholder operand.
   }];
   let arguments = (ins Variadic<AxisFactorType>:$factors);
   let results = (outs FactorGroupType:$product);
-  let assemblyFormat = "$factors attr-dict `:` type($factors)";
+  let assemblyFormat = "custom<VariadicWithTypes>($factors, type($factors)) attr-dict";
   let hasVerifier = 1;
 }
 

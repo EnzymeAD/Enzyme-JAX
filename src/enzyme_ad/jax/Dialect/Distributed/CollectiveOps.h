@@ -6,61 +6,10 @@
 
 namespace mlir::enzyme::distributed {
 
-/**
- *  Parses a type-annotated variadic as:
- *  (%arg1 : type1, %arg2 : type2, ..., %argN : typeN)
- *  OR
- *  ()
- */
-static ParseResult parseVariadicWithTypes(
-    OpAsmParser &parser,
-    SmallVectorImpl<OpAsmParser::UnresolvedOperand> &ssa_operands,
-    SmallVectorImpl<Type> &types) {
-
-  if (failed(parser.parseLParen())) {
-    return failure();
-  }
-
-  if (succeeded(parser.parseOptionalRParen())) {
-    return success();
-  }
-
-  while (true) {
-    OpAsmParser::UnresolvedOperand reductionGroup;
-    if (parser.parseOperand(reductionGroup)) {
-      return failure();
-    }
-    ssa_operands.push_back(reductionGroup);
-    Type type;
-    if (parser.parseColonType(type)) {
-      return failure();
-    }
-    types.push_back(type);
-
-    if (succeeded(parser.parseOptionalComma())) {
-      continue;
-    }
-    if (parser.parseRParen()) {
-      return failure();
-    }
-    break;
-  }
-
-  return success();
-}
-
-static void printVariadicWithTypes(OpAsmPrinter &printer, Operation *op,
-                                   OperandRange ssa_operands, TypeRange types) {
-  printer << '(';
-  for (auto [idx, pair] : llvm::enumerate(llvm::zip(ssa_operands, types))) {
-    auto [ssa_operand, type] = pair;
-    if (idx != 0) {
-      printer << ", ";
-    }
-    printer << ssa_operand << " : " << type;
-  }
-  printer << ')';
-}
+// Shared with the axis dialect: parses/prints a type-annotated variadic as
+// "(%arg1 : type1, ..., %argN : typeN)" or "()".
+using ::mlir::enzyme::axis::parseVariadicWithTypes;
+using ::mlir::enzyme::axis::printVariadicWithTypes;
 
 } // namespace mlir::enzyme::distributed
 

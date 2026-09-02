@@ -17,6 +17,20 @@ struct SplitExtentSlice {
   uint64_t stride;
 };
 
+// Parses a type-annotated variadic operand list as:
+// (%arg1 : type1, %arg2 : type2, ..., %argN : typeN) or ()
+// The parenthesized empty form disambiguates an empty list from the next
+// operation's result definition.
+::mlir::ParseResult parseVariadicWithTypes(
+    ::mlir::OpAsmParser &parser,
+    llvm::SmallVectorImpl<::mlir::OpAsmParser::UnresolvedOperand> &operands,
+    llvm::SmallVectorImpl<::mlir::Type> &types);
+
+void printVariadicWithTypes(::mlir::OpAsmPrinter &printer,
+                            ::mlir::Operation *op,
+                            ::mlir::OperandRange operands,
+                            ::mlir::TypeRange types);
+
 // Utility for casting with better error reporting
 template <typename T>
 TypedValue<T> castTypedValue(::mlir::Value value, llvm::StringRef expectedType);
@@ -84,10 +98,11 @@ bool areAxesEquivalent(::mlir::TypedValue<AxisTypeInterface> lhs,
                        ::mlir::TypedValue<AxisTypeInterface> rhs);
 
 // Checks that factors are pairwise non-overlapping for one source axis.
-bool arePairwiseFactorsDisjoint(::mlir::TypedValue<AxisFactorType> lhsFactor,
-                                ::mlir::TypedValue<AxisFactorType> rhsFactor,
-                                ::mlir::TypedValue<AxisTypeInterface> lhsProvenanceAxis = nullptr,
-                                ::mlir::TypedValue<AxisTypeInterface> rhsProvenanceAxis = nullptr);
+bool arePairwiseFactorsDisjoint(
+    ::mlir::TypedValue<AxisFactorType> lhsFactor,
+    ::mlir::TypedValue<AxisFactorType> rhsFactor,
+    ::mlir::TypedValue<AxisTypeInterface> lhsProvenanceAxis = nullptr,
+    ::mlir::TypedValue<AxisTypeInterface> rhsProvenanceAxis = nullptr);
 
 // Checks that factors are pairwise non-overlapping for one source axis.
 bool areFactorsDisjoint(TypedValueArrayRef<AxisFactorType> factors);
@@ -163,9 +178,8 @@ inferMapFromIndices(::mlir::TypedValue<FactorGroupType> index_space,
 // Computes the extent cuts used by split_divisible without materializing SSA
 // factors. The returned extents are maximal one-to-one cuts where possible and
 // minimal indivisible units otherwise.
-llvm::SmallVector<uint64_t> computeSplits(
-  llvm::ArrayRef<uint64_t> lhsExtents,
-  llvm::ArrayRef<uint64_t> rhsExtents);
+llvm::SmallVector<uint64_t> computeSplits(llvm::ArrayRef<uint64_t> lhsExtents,
+                                          llvm::ArrayRef<uint64_t> rhsExtents);
 
 // Materializes one side of a split plan as, for each cut, the list of source
 // extent slices contributing to that cut.

@@ -10,6 +10,14 @@ class DistributedAxisType<string name, string type_mnemonic,
     : DistributedType<name, type_mnemonic,
                       [DeclareTypeInterfaceMethods<AxisTypeInterface>] #traits>;
 
+// Common shape for axis types that are parameterized solely by an extent.
+class DistributedBasicAxisType<string name, string type_mnemonic,
+                               list<Trait> traits = []>
+    : DistributedAxisType<name, type_mnemonic, traits> {
+  let parameters = (ins "unsigned" : $extent);
+  let assemblyFormat = "`<` $extent `>`";
+}
+
 // A natural axis defined by the hardware topology.
 // ID stride is for conversion between device IDs to
 // axis coordinates.
@@ -21,17 +29,16 @@ def PhysicalCommAxisType
 
 // Axis of a logical mesh where hardware details are abstracted away.
 def LogicalMeshAxisType
-    : DistributedAxisType<"LogicalMeshAxis", "logical_mesh_axis"> {
-  let parameters = (ins "unsigned" : $extent);
-  let assemblyFormat = "`<` $extent `>`";
-}
+    : DistributedBasicAxisType<"LogicalMeshAxis", "logical_mesh_axis">;
 
 // A standalone axis type used to represent replication.
 def ReplicationAxisType
-    : DistributedAxisType<"ReplicationAxis", "replication_axis"> {
-  let parameters = (ins "unsigned" : $extent);
-  let assemblyFormat = "`<` $extent `>`";
-}
+    : DistributedBasicAxisType<"ReplicationAxis", "replication_axis">;
+
+// An axis type used to indicate that part of the "parallelism"
+// should instead be placed entirely within a local device.
+def DeviceLocalAxisType
+    : DistributedBasicAxisType<"DeviceLocalAxis", "device_local_axis">;
 
 // Wraps a value type that may be synchronized at a later point.
 def AsynchHandleType : DistributedType<"AsynchHandle", "asynch_handle"> {

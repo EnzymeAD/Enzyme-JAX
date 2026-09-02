@@ -21,21 +21,21 @@ module {
   %r0 = distributed.ReplicationAxis 2 : !distributed.replication_axis<2>
   %rf0 = axis.factor %r0 : !distributed.replication_axis<2> <2, 1>
 
-  %mesh_in = axis.product %lf0_upper, %lf0_lower, %lf1 : !axis.axis_factor<!distributed.logical_mesh_axis<4>, 2, 2>, !axis.axis_factor<!distributed.logical_mesh_axis<4>, 2, 1>, !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>
-  %mesh_out = axis.product %lf0_upper, %lf0_lower, %lf1 : !axis.axis_factor<!distributed.logical_mesh_axis<4>, 2, 2>, !axis.axis_factor<!distributed.logical_mesh_axis<4>, 2, 1>, !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>
-  %reduction = axis.product %lf0_upper : !axis.axis_factor<!distributed.logical_mesh_axis<4>, 2, 2>
+  %mesh_in = axis.product (%lf0_upper : !axis.axis_factor<!distributed.logical_mesh_axis<4>, 2, 2>, %lf0_lower : !axis.axis_factor<!distributed.logical_mesh_axis<4>, 2, 1>, %lf1 : !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>)
+  %mesh_out = axis.product (%lf0_upper : !axis.axis_factor<!distributed.logical_mesh_axis<4>, 2, 2>, %lf0_lower : !axis.axis_factor<!distributed.logical_mesh_axis<4>, 2, 1>, %lf1 : !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>)
+  %reduction = axis.product (%lf0_upper : !axis.axis_factor<!distributed.logical_mesh_axis<4>, 2, 2>)
 
-  %lhs_group_0 = axis.product %rf0 : !axis.axis_factor<!distributed.replication_axis<2>, 2, 1>
-  %rhs_group_0 = axis.product %lf0_upper : !axis.axis_factor<!distributed.logical_mesh_axis<4>, 2, 2>
+  %lhs_group_0 = axis.product (%rf0 : !axis.axis_factor<!distributed.replication_axis<2>, 2, 1>)
+  %rhs_group_0 = axis.product (%lf0_upper : !axis.axis_factor<!distributed.logical_mesh_axis<4>, 2, 2>)
 
-  %lhs_group_1 = axis.product %lf0_lower : !axis.axis_factor<!distributed.logical_mesh_axis<4>, 2, 1>
-  %rhs_group_1 = axis.product %lf0_lower : !axis.axis_factor<!distributed.logical_mesh_axis<4>, 2, 1>
+  %lhs_group_1 = axis.product (%lf0_lower : !axis.axis_factor<!distributed.logical_mesh_axis<4>, 2, 1>)
+  %rhs_group_1 = axis.product (%lf0_lower : !axis.axis_factor<!distributed.logical_mesh_axis<4>, 2, 1>)
 
-  %lhs_group_2 = axis.product %lf1 : !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>
-  %rhs_group_2 = axis.product %lf1 : !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>
+  %lhs_group_2 = axis.product (%lf1 : !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>)
+  %rhs_group_2 = axis.product (%lf1 : !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>)
 
-  %lhs_group_3 = axis.product %tf0 : !axis.axis_factor<!axis.shape_axis<tensor<8xf32>, 0>, 8, 1>
-  %rhs_group_3 = axis.product %tf0 : !axis.axis_factor<!axis.shape_axis<tensor<8xf32>, 0>, 8, 1>
+  %lhs_group_3 = axis.product (%tf0 : !axis.axis_factor<!axis.shape_axis<tensor<8xf32>, 0>, 8, 1>)
+  %rhs_group_3 = axis.product (%tf0 : !axis.axis_factor<!axis.shape_axis<tensor<8xf32>, 0>, 8, 1>)
 
   %mapping = axis.map %lhs_group_0, %lhs_group_1, %lhs_group_2, %lhs_group_3 to %rhs_group_0, %rhs_group_1, %rhs_group_2, %rhs_group_3 : [!axis.factor_group<2>, !axis.factor_group<2>, !axis.factor_group<2>, !axis.factor_group<8>] [!axis.factor_group<2>, !axis.factor_group<2>, !axis.factor_group<2>, !axis.factor_group<8>]
 

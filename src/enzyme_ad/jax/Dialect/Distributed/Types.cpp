@@ -51,4 +51,11 @@ bool ReplicationAxisType::aliases(Value ax1, Value ax2) const {
   return false;
 }
 
+// Also always disjoint: no collision for serializing everything
+bool DeviceLocalAxisType::aliases(Value ax1, Value ax2) const {
+  (void)ax1;
+  (void)ax2;
+  return false;
+}
+
 } // namespace mlir::enzyme::distributed

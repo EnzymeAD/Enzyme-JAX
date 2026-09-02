@@ -69,6 +69,17 @@ def ReplicationAxisOp : DistributedOp<"ReplicationAxis", [
   let assemblyFormat = "$extent attr-dict `:` type($axis)";
 }
 
+def DeviceLocalAxisOp : DistributedOp<"DeviceLocalAxis", [
+  PureDistributedMetadata, DeclareOpInterfaceMethods<InferTypeOpInterface>
+]> {
+  let description = [{Declares a new device-local axis, marking that part of
+                      the parallelism should be placed entirely within a
+                          local device instead of being sharded across the mesh.}];
+  let arguments = (ins I32Attr : $extent);
+  let results = (outs DeviceLocalAxisType : $axis);
+  let assemblyFormat = "$extent attr-dict `:` type($axis)";
+}
+
 def DistributedFunctionOp : DistributedOp<"DistributedFunction", [
   Symbol,
   OpAsmOpInterface,
