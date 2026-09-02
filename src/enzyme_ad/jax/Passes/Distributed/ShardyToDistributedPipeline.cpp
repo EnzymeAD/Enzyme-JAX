@@ -14,9 +14,9 @@ void registerShardyToDistributedPipeline() {
       "distributed on maximal logical axes",
       [](OpPassManager &pm) {
         pm.addPass(mlir::sdy::createInsertExplicitReshardsPass());
-        pm.addPass(mlir::sdy::createDropShardingAndMeshPass());
         pm.addPass(createConvertMainToDistributedFunctionPass());
         pm.addPass(createMaterializeDistributedCollectivesPass());
+        pm.addPass(mlir::sdy::createDropShardingAndMeshPass());
         pm.addPass(createCanonicalizerPass());
         pm.addPass(createCSEPass());
         pm.addPass(createClusterDistributedKernelsPass());
