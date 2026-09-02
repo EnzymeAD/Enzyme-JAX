@@ -1925,6 +1925,11 @@ struct ParallelToGPULaunch : public OpRewritePattern<enzymexla::GPUWrapperOp> {
     if (!blockPop)
       return failure();
 
+    // The blockDim.x the wrapper records, read before the wrapper is replaced
+    Value originalBlockX;
+    if (wrapper->getNumOperands() == 6)
+      originalBlockX = wrapper->getOperand(3);
+
     // Only mutate once the match is certain: an op created before a bail
     // marks the IR changed on every scan, so a wrapper this pattern cannot
     // convert -- such as one whose bounds have to stay beside the parallel,
@@ -1972,11 +1977,52 @@ struct ParallelToGPULaunch : public OpRewritePattern<enzymexla::GPUWrapperOp> {
       else
         gridBounds[i] = oneindex;
     }
-    Value blockBounds[3];
     auto popBlockBounds = getUpperBounds(blockPop);
+
+    constexpr uint64_t MAX_BLOCK_DIM[3] = {1024, 1024, 64};
+    auto overflowsAt = [&](unsigned pos, Value bound) {
+      APInt cst;
+
+      if (!matchPattern(bound, m_ConstantInt(&cst)))
+        return false;
+      return cst.ugt(MAX_BLOCK_DIM[pos]);
+    };
+
+    SmallVector<unsigned, 3> blockOrder;
+    for (unsigned i = 0; i < popBlockBounds.size(); i++)
+      blockOrder.push_back(i);
+
+    bool overflows = false;
+    for (unsigned i = 0; i < popBlockBounds.size() && i < 3; i++)
+      overflows |= overflowsAt(i, popBlockBounds[i]);
+
+    // Only a block that does not fit is reordered
+    if (overflows) {
+      // The dimension the original launch had on blockDim.x goes back to x
+      std::stable_sort(
+          blockOrder.begin(), blockOrder.end(), [&](unsigned a, unsigned b) {
+            bool aIsX = originalBlockX && popBlockBounds[a] == originalBlockX;
+            bool bIsX = originalBlockX && popBlockBounds[b] == originalBlockX;
+            if (aIsX != bIsX)
+              return aIsX;
+            APInt ca, cb;
+            if (matchPattern(popBlockBounds[a], m_ConstantInt(&ca)) &&
+                matchPattern(popBlockBounds[b], m_ConstantInt(&cb)))
+              return ca.ugt(cb);
+            return false;
+          });
+    }
+
+    // The inverse: where each of the parallel op's dimensions ended up, so
+    // that a body reads the thread id of the dimension it is bounded by.
+    SmallVector<unsigned, 3> blockDimOfArg(popBlockBounds.size());
+    for (unsigned i = 0; i < blockOrder.size(); i++)
+      blockDimOfArg[blockOrder[i]] = i;
+
+    Value blockBounds[3];
     for (unsigned int i = 0; i < 3; i++) {
       if (i < popBlockBounds.size())
-        blockBounds[i] = popBlockBounds[i];
+        blockBounds[i] = popBlockBounds[blockOrder[i]];
       else
         blockBounds[i] = oneindex;
     }
@@ -2024,7 +2070,7 @@ struct ParallelToGPULaunch : public OpRewritePattern<enzymexla::GPUWrapperOp> {
     rewriter.setInsertionPointToStart(launchBlock);
     SmallVector<Value, 3> argReplacements;
     for (auto en : llvm::enumerate(blockPop.getBody()->getArguments())) {
-      gpu::Dimension dim = getDim(en.index());
+      gpu::Dimension dim = getDim(blockDimOfArg[en.index()]);
       auto blockIdx = gpu::ThreadIdOp::create(
           rewriter, loc, mlir::IndexType::get(rewriter.getContext()), dim);
       argReplacements.push_back(blockIdx);
