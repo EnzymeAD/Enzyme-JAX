@@ -6557,6 +6557,12 @@ bool areOpposite(Value lhs, Value rhs) {
     if (xorOp.getLhs() == lhs && matchPattern(xorOp.getRhs(), m_One()))
       return true;
   }
+  auto lcmp = lhs.getDefiningOp<arith::CmpIOp>();
+  auto rcmp = rhs.getDefiningOp<arith::CmpIOp>();
+  if (lcmp && rcmp && lcmp.getLhs() == rcmp.getLhs() &&
+      lcmp.getRhs() == rcmp.getRhs() &&
+      lcmp.getPredicate() == arith::invertPredicate(rcmp.getPredicate()))
+    return true;
   return false;
 }
 
@@ -6587,6 +6593,33 @@ struct SimplifyAndOr : public OpRewritePattern<arith::AndIOp> {
   }
 };
 
+struct SimplifyOrAnd : public OpRewritePattern<arith::OrIOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(arith::OrIOp op,
+                                PatternRewriter &rewriter) const override {
+
+    for (int i = 0; i < 2; i++) {
+      if (auto andOp = op->getOperand(i).getDefiningOp<arith::AndIOp>()) {
+        for (int j = 0; j < 2; j++) {
+          // or(a, and(a, b)) -> a
+          if (andOp->getOperand(j) == op->getOperand(1 - i)) {
+            rewriter.replaceOp(op, andOp->getOperand(j));
+            return success();
+          }
+          // or(!a, and(a, b)) -> or(!a, b)
+          if (areOpposite(andOp->getOperand(j), op->getOperand(1 - i))) {
+            rewriter.modifyOpInPlace(
+                op, [&]() { op->setOperand(i, andOp->getOperand(1 - j)); });
+            return success();
+          }
+        }
+      }
+    }
+    return failure();
+  }
+};
+
 void mlir::enzyme::populateAffineCFGPatterns(RewritePatternSet &rpl) {
   MLIRContext *context = rpl.getContext();
   mlir::enzyme::addSingleIter(rpl, context);
@@ -6607,7 +6640,7 @@ void mlir::enzyme::populateAffineCFGPatterns(RewritePatternSet &rpl) {
   rpl.add<FoldAffineApplyAdd, FoldAffineApplySub, FoldAffineApplyRem,
           FoldAffineApplyDiv, FoldAffineApplyMul, FoldAppliesIntoLoad>(context,
                                                                        2);
-  rpl.add<SimplifyAndOr>(context, 2);
+  rpl.add<SimplifyAndOr, SimplifyOrAnd>(context, 2);
   rpl.add<SplitParallelInductions, MaskedAffineParallel>(context, 1);
 }
 
