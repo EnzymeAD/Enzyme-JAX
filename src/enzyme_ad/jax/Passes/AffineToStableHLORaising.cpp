@@ -3905,6 +3905,82 @@ struct AffineToStableHLORaisingPass
     }
   }
 
+  // A slot index picked by a select of constants (a side-selected member)
+  // still names constant slots, one per arm. Fold the index arithmetic
+  // through the selects into a decision tree: a leaf holds a slot, a node the
+  // select's condition. Fails on anything else.
+  struct SlotNode {
+    Value cond;
+    int64_t slot;
+    int t, f;
+  };
+  static std::optional<int> slotTree(Value v,
+                                     SmallVectorImpl<SlotNode> &nodes) {
+    llvm::APInt c;
+    if (matchPattern(v, m_ConstantInt(&c))) {
+      nodes.push_back({nullptr, c.getSExtValue(), -1, -1});
+      return nodes.size() - 1;
+    }
+    if (auto sel = v.getDefiningOp<arith::SelectOp>()) {
+      if (isa<RankedTensorType>(sel.getCondition().getType()))
+        return std::nullopt;
+      auto t = slotTree(sel.getTrueValue(), nodes);
+      if (!t)
+        return std::nullopt;
+      auto f = slotTree(sel.getFalseValue(), nodes);
+      if (!f)
+        return std::nullopt;
+      nodes.push_back({sel.getCondition(), 0, *t, *f});
+      return nodes.size() - 1;
+    }
+    Operation *def = v.getDefiningOp();
+    if (!def)
+      return std::nullopt;
+    if (isa<arith::IndexCastOp, arith::IndexCastUIOp, arith::ExtSIOp,
+            arith::ExtUIOp, arith::TruncIOp>(def))
+      return slotTree(def->getOperand(0), nodes);
+    if (def->getNumOperands() != 2)
+      return std::nullopt;
+    bool lhsConst = matchPattern(def->getOperand(0), m_ConstantInt(&c));
+    if (!lhsConst && !matchPattern(def->getOperand(1), m_ConstantInt(&c)))
+      return std::nullopt;
+    int64_t k = c.getSExtValue();
+    std::function<std::optional<int64_t>(int64_t)> fold;
+    if (isa<arith::AddIOp>(def))
+      fold = [k](int64_t x) { return x + k; };
+    else if (isa<arith::MulIOp>(def))
+      fold = [k](int64_t x) { return x * k; };
+    else if (isa<arith::SubIOp>(def))
+      fold = [k, lhsConst](int64_t x) { return lhsConst ? k - x : x - k; };
+    else if (isa<arith::DivSIOp, arith::DivUIOp>(def))
+      fold = [k, lhsConst](int64_t x) -> std::optional<int64_t> {
+        if (lhsConst || k == 0 || x < 0)
+          return std::nullopt;
+        return x / k;
+      };
+    else if (isa<arith::ShRSIOp, arith::ShRUIOp>(def))
+      fold = [k, lhsConst](int64_t x) -> std::optional<int64_t> {
+        if (lhsConst || k < 0 || k >= 64 || x < 0)
+          return std::nullopt;
+        return x >> k;
+      };
+    else
+      return std::nullopt;
+    size_t start = nodes.size();
+    auto sub = slotTree(def->getOperand(lhsConst ? 1 : 0), nodes);
+    if (!sub)
+      return std::nullopt;
+    for (size_t i = start; i < nodes.size(); ++i) {
+      if (nodes[i].cond)
+        continue;
+      auto r = fold(nodes[i].slot);
+      if (!r)
+        return std::nullopt;
+      nodes[i].slot = *r;
+    }
+    return sub;
+  }
+
   // A not-quite-inlined device lambda packs its captures into a stack
   // struct and reads them back through typed views at constant offsets.
   // Forward each load to the unique dominating store of the same slot so
@@ -3928,6 +4004,9 @@ struct AffineToStableHLORaisingPass
         int64_t esz;
         Type ty;
         Value idx;
+        // Set when the index folds to a decision tree of slots.
+        SmallVector<SlotNode> tree;
+        int root = -1;
       };
       SmallVector<DynLoad> dynLoads;
       SmallVector<Operation *> chain;
@@ -4018,33 +4097,36 @@ struct AffineToStableHLORaisingPass
             bool viewOk = true;
             for (Operation *au : p2m->getUsers()) {
               std::optional<int64_t> idx;
+              // A runtime index picked by selects of constants forwards
+              // each arm's slot; any other runtime-indexed scalar read (a
+              // shape array walked in a loop) selects among the
+              // constant-offset slots of its own element type.
+              auto dynLoad = [&](Value index) {
+                DynLoad dyn{au, off, esz, ET, index};
+                if (auto root = slotTree(index, dyn.tree))
+                  dyn.root = *root;
+                else if (isa<LLVM::LLVMPointerType>(ET))
+                  return false;
+                dynLoads.push_back(std::move(dyn));
+                return true;
+              };
               if (auto ld = dyn_cast<affine::AffineLoadOp>(au)) {
                 if (auto c = getConstant(ld.getAffineMap()))
                   idx = *c;
-                else if (!isa<LLVM::LLVMPointerType>(ET) &&
-                         ld.getAffineMap().getNumResults() == 1) {
-                  // Runtime-indexed scalar read through an affine map.
+                else if (ld.getAffineMap().getNumResults() == 1) {
                   OpBuilder eb(au);
                   auto expanded = affine::expandAffineMap(
                       eb, au->getLoc(), ld.getAffineMap(), ld.getMapOperands());
-                  if (expanded) {
-                    dynLoads.push_back({au, off, esz, ET, (*expanded)[0]});
+                  if (expanded && dynLoad((*expanded)[0]))
                     continue;
-                  }
                 }
               } else if (auto st = dyn_cast<affine::AffineStoreOp>(au)) {
                 if (st.getValue() != p2m.getResult())
                   if (auto c = getConstant(st.getAffineMap()))
                     idx = *c;
               } else if (auto ld = dyn_cast<memref::LoadOp>(au)) {
-                // A runtime-indexed scalar read (a shape array walked in a
-                // loop) selects among the constant-offset slots of its own
-                // element type.
-                if (!isa<LLVM::LLVMPointerType>(ET) &&
-                    ld.getIndices().size() == 1) {
-                  dynLoads.push_back({au, off, esz, ET, ld.getIndices()[0]});
+                if (ld.getIndices().size() == 1 && dynLoad(ld.getIndices()[0]))
                   continue;
-                }
               }
               if (!idx) {
                 if (getenv("DEBUG_FWD"))
@@ -4151,10 +4233,40 @@ struct AffineToStableHLORaisingPass
           out.push_back({(acc.byteOff + b - viewBase) / esz, b});
         return out;
       };
-      // Every candidate slot of a dynamic load must be forwardable.
+      // Every candidate slot of a dynamic load must be forwardable: each
+      // leaf of a slot tree, else every slot of the element type.
+      auto slotStore = [&](DynLoad &dyn, int64_t slot,
+                           int64_t &pieceOff) -> Access * {
+        for (auto &acc : accesses) {
+          if (!acc.isStore)
+            continue;
+          for (auto [s, b] : coveredSlots(acc, dyn.viewBase, dyn.esz, dyn.ty))
+            if (s == slot) {
+              pieceOff = b;
+              return &acc;
+            }
+        }
+        return nullptr;
+      };
       for (auto &dyn : llvm::make_range(
                dynLoads.begin(), legal ? dynLoads.end() : dynLoads.begin())) {
         bool any = false;
+        if (dyn.root >= 0) {
+          any = true;
+          for (auto &n : dyn.tree) {
+            if (n.cond)
+              continue;
+            int64_t pieceOff;
+            Access *st = slotStore(dyn, n.slot, pieceOff);
+            if (!st || !dom.properlyDominates(st->op, dyn.op)) {
+              legal = false;
+              break;
+            }
+          }
+          if (!legal)
+            break;
+          continue;
+        }
         for (auto &acc : accesses) {
           if (!acc.isStore)
             continue;
@@ -4185,20 +4297,39 @@ struct AffineToStableHLORaisingPass
         Location loc = dyn.op->getLoc();
         Value idx = dyn.idx;
         Value res;
+        auto pieceOf = [&](Access &acc, int64_t pieceOff) {
+          Value piece = acc.value;
+          if (piece.getType() != dyn.ty) {
+            if (pieceOff != 0) {
+              Value sh = arith::ConstantOp::create(
+                  b, loc, IntegerAttr::get(piece.getType(), pieceOff * 8));
+              piece = arith::ShRUIOp::create(b, loc, piece, sh);
+            }
+            piece = arith::TruncIOp::create(b, loc, dyn.ty, piece);
+          }
+          return piece;
+        };
+        if (dyn.root >= 0) {
+          std::function<Value(int)> build = [&](int n) -> Value {
+            SlotNode &node = dyn.tree[n];
+            if (!node.cond) {
+              int64_t pieceOff;
+              return pieceOf(*slotStore(dyn, node.slot, pieceOff), pieceOff);
+            }
+            return arith::SelectOp::create(b, loc, node.cond, build(node.t),
+                                           build(node.f));
+          };
+          res = build(dyn.root);
+          dyn.op->getResult(0).replaceAllUsesWith(res);
+          dyn.op->erase();
+          continue;
+        }
         for (auto &acc : accesses) {
           if (!acc.isStore)
             continue;
           for (auto [slot, pieceOff] :
                coveredSlots(acc, dyn.viewBase, dyn.esz, dyn.ty)) {
-            Value piece = acc.value;
-            if (piece.getType() != dyn.ty) {
-              if (pieceOff != 0) {
-                Value sh = arith::ConstantOp::create(
-                    b, loc, IntegerAttr::get(piece.getType(), pieceOff * 8));
-                piece = arith::ShRUIOp::create(b, loc, piece, sh);
-              }
-              piece = arith::TruncIOp::create(b, loc, dyn.ty, piece);
-            }
+            Value piece = pieceOf(acc, pieceOff);
             if (!res) {
               res = piece;
               continue;
