@@ -671,9 +671,11 @@ public:
 
     // Get the element type and size of the final memref
     Type elementType = accessedType.getElementType();
-    unsigned elementSize = elementType.isIntOrFloat()
-                               ? elementType.getIntOrFloatBitWidth() / 8
-                               : 0;
+    if (!elementType.isIntOrFloat() &&
+        !isa<DataLayoutTypeInterface>(elementType))
+      return failure();
+    DataLayout dl = DataLayout::closest(op);
+    unsigned elementSize = dl.getTypeSize(elementType);
     if (elementSize == 0)
       return failure();
 
