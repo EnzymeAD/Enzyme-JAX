@@ -292,6 +292,46 @@ static Value castValue(PatternRewriter &rewriter, Value value, Value target,
   }
 };
 
+// Whether this op can be cloned to recompute a value: nothing it does may be
+// observable, and it must sit directly in the loop's body.
+static bool isRecomputableInLoop(scf::ForOp forOp, Operation *def) {
+  return def && def->getParentRegion() == &forOp.getRegion() &&
+         isMemoryEffectFree(def) && def->getNumRegions() == 0;
+}
+
+// The ops needed to recompute `v` where the loop's own operands are available,
+// in block order. A value the loop does not vary can still be computed inside
+// it, so being defined outside is sufficient but not necessary.
+//
+// With `allowInductionVar` the slice may also vary with the induction
+// variable, and so is no longer invariant: it can hold values like `i + 1`,
+// and means what the caller wants only once the clone substitutes for the
+// induction variable.
+static bool collectLoopInvariantSlice(scf::ForOp forOp, Value v,
+                                      SmallVectorImpl<Operation *> &ops,
+                                      bool allowInductionVar = false) {
+  SmallVector<Value> todo{v};
+  SmallPtrSet<Operation *, 8> seen;
+  while (!todo.empty()) {
+    Value cur = todo.pop_back_val();
+    if ((allowInductionVar && cur == forOp.getInductionVar()) ||
+        forOp.isDefinedOutsideOfLoop(cur))
+      continue;
+    Operation *def = cur.getDefiningOp();
+    if (!isRecomputableInLoop(forOp, def))
+      return false;
+    if (!seen.insert(def).second)
+      continue;
+    if (ops.size() >= 8)
+      return false;
+    ops.push_back(def);
+    llvm::append_range(todo, def->getOperands());
+  }
+  llvm::sort(ops,
+             [](Operation *a, Operation *b) { return a->isBeforeInBlock(b); });
+  return true;
+}
+
 struct ForOpInductionReplacement : public OpRewritePattern<scf::ForOp> {
   using OpRewritePattern<scf::ForOp>::OpRewritePattern;
 
@@ -366,6 +406,120 @@ struct ForOpInductionReplacement : public OpRewritePattern<scf::ForOp> {
             Value init = castValue(rewriter, outiter, yld, loc);
             replacement = SelectOp::create(rewriter, loc, ran, last, init);
           }
+          Value resCopy = res;
+          rewriter.modifyOpInPlace(
+              forOp, [&] { resCopy.replaceAllUsesWith(replacement); });
+          canonicalize = true;
+        }
+        continue;
+      }
+
+      // A pointer advanced by a fixed distance each iteration is an induction
+      // variable like any other: on iteration n it is the init advanced by n
+      // times that distance. The advance can be a chain of geps, and each
+      // step of it can be a value as long as the loop does not vary it. The
+      // arithmetic is the same as the integer case, done in the gep's index.
+      if (isa<LLVM::LLVMPointerType>(iterarg.getType())) {
+        SmallVector<LLVM::GEPOp> chain;
+        Value cur = yld;
+        while (cur != iterarg) {
+          auto g = cur.getDefiningOp<LLVM::GEPOp>();
+          if (!g || g.getIndices().size() != 1)
+            break;
+          chain.push_back(g);
+          cur = g.getBase();
+        }
+        if (cur != iterarg || chain.empty())
+          continue;
+        // Offsets only add up when they are in the same units.
+        Type elemTy = chain.front().getElemType();
+        if (llvm::any_of(chain, [&](LLVM::GEPOp g) {
+              return g.getElemType() != elemTy;
+            }))
+          continue;
+        int64_t constStride = 0;
+        SmallVector<Value> dynStrides;
+        SmallVector<Operation *> strideSlice;
+        bool ok = true;
+        for (auto g : chain) {
+          auto idx = g.getIndices()[0];
+          if (auto attr = dyn_cast<IntegerAttr>(idx)) {
+            constStride += attr.getInt();
+            continue;
+          }
+          Value v = cast<Value>(idx);
+          if (!collectLoopInvariantSlice(forOp, v, strideSlice)) {
+            ok = false;
+            break;
+          }
+          dynStrides.push_back(v);
+        }
+        if (!ok)
+          continue;
+        Location loc = forOp.getLoc();
+
+        auto advancedBy = [&](Value count) {
+          // The stride may be computed in the body, after the point this is
+          // inserted at, so recompute it here.
+          IRMapping map;
+          for (Operation *op : strideSlice)
+            rewriter.clone(*op, map);
+          Value stride = nullptr;
+          for (Value orig : dynStrides) {
+            Value v = map.lookupOrDefault(orig);
+            Value c = castValue(rewriter, v, count, loc);
+            stride = stride
+                         ? AddIOp::create(rewriter, loc, stride, c).getResult()
+                         : c;
+          }
+          if (constStride || !stride) {
+            Value c = arith::ConstantOp::create(
+                rewriter, loc,
+                rewriter.getIntegerAttr(count.getType(), constStride));
+            stride = stride
+                         ? AddIOp::create(rewriter, loc, stride, c).getResult()
+                         : c.getDefiningOp()->getResult(0);
+          }
+          Value offset = MulIOp::create(rewriter, loc, count, stride);
+          // A gep index is a signless integer; loop arithmetic is often index.
+          if (isa<IndexType>(offset.getType()))
+            offset = IndexCastOp::create(rewriter, loc, rewriter.getI64Type(),
+                                         offset);
+          return LLVM::GEPOp::create(rewriter, loc, chain.back().getType(),
+                                     elemTy, outiter, ValueRange{offset},
+                                     chain.back().getNoWrapFlags())
+              .getResult();
+        };
+
+        if (!iterarg.use_empty()) {
+          rewriter.setInsertionPointToStart(&forOp.getRegion().front());
+          Value count = SubIOp::create(rewriter, loc, forOp.getInductionVar(),
+                                       forOp.getLowerBound());
+          count = DivUIOp::create(rewriter, loc, count, forOp.getStep());
+          Value replacement = advancedBy(count);
+          Value iterargCopy = iterarg;
+          rewriter.modifyOpInPlace(
+              forOp, [&] { iterargCopy.replaceAllUsesWith(replacement); });
+          canonicalize = true;
+        }
+
+        if (!res.use_empty()) {
+          rewriter.setInsertionPoint(forOp);
+          // The trip count is a ceiling division: a range the step does not
+          // divide evenly still runs the iteration that starts inside it. A
+          // range the loop never enters runs none.
+          Value span = SubIOp::create(rewriter, loc, forOp.getUpperBound(),
+                                      forOp.getLowerBound());
+          Value zero = arith::ConstantOp::create(
+              rewriter, loc, rewriter.getIntegerAttr(span.getType(), 0));
+          span = MaxSIOp::create(rewriter, loc, span, zero);
+          Value one = arith::ConstantOp::create(
+              rewriter, loc, rewriter.getIntegerAttr(span.getType(), 1));
+          Value bump = SubIOp::create(rewriter, loc, forOp.getStep(), one);
+          Value count = DivUIOp::create(
+              rewriter, loc, AddIOp::create(rewriter, loc, span, bump),
+              forOp.getStep());
+          Value replacement = advancedBy(count);
           Value resCopy = res;
           rewriter.modifyOpInPlace(
               forOp, [&] { resCopy.replaceAllUsesWith(replacement); });
@@ -476,6 +630,69 @@ struct ForOpInductionReplacement : public OpRewritePattern<scf::ForOp> {
     }
 
     return success(canonicalize);
+  }
+};
+
+// A result whose iter arg the body never reads does not accumulate anything:
+// it is just the yielded value of the last iteration. When that value varies
+// with the loop only through the induction variable, the last one can be
+// computed outside, at the last induction variable the loop reaches -- or the
+// init, when the loop never runs.
+//
+// mfem walks a pointer this way: `TC *c = Cdata;` advanced with `c++` in an
+// inner loop, so the enclosing loop carries it while the inner loop's own copy
+// is dead. Nothing recognizes the enclosing loop as an induction until this
+// inner result is out of the way.
+struct ForOpFinalValueOfDeadIterArg : public OpRewritePattern<scf::ForOp> {
+  using OpRewritePattern<scf::ForOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(scf::ForOp forOp,
+                                PatternRewriter &rewriter) const override {
+    auto yieldOp = cast<scf::YieldOp>(forOp.getBody()->getTerminator());
+    Location loc = forOp.getLoc();
+    bool changed = false;
+
+    for (auto [init, iterarg, res, yld] :
+         llvm::zip(forOp.getInits(), forOp.getRegionIterArgs(),
+                   forOp.getResults(), yieldOp.getOperands())) {
+      if (!iterarg.use_empty() || res.use_empty())
+        continue;
+      SmallVector<Operation *> slice;
+      if (!collectLoopInvariantSlice(forOp, yld, slice,
+                                     /*allowInductionVar=*/true))
+        continue;
+
+      rewriter.setInsertionPoint(forOp);
+      Value lb = forOp.getLowerBound(), ub = forOp.getUpperBound(),
+            step = forOp.getStep();
+      // The last induction variable the loop reaches: lb +
+      // ((ub-lb-1)/step)*step.
+      Value one = arith::ConstantOp::create(
+          rewriter, loc, rewriter.getIntegerAttr(lb.getType(), 1));
+      Value span = SubIOp::create(rewriter, loc, ub, lb);
+      Value zero = arith::ConstantOp::create(
+          rewriter, loc, rewriter.getIntegerAttr(lb.getType(), 0));
+      Value clamped = MaxSIOp::create(rewriter, loc, span, zero);
+      Value back = SubIOp::create(rewriter, loc, clamped, one);
+      Value whole = MulIOp::create(
+          rewriter, loc, DivUIOp::create(rewriter, loc, back, step), step);
+      Value lastIV = AddIOp::create(rewriter, loc, lb, whole);
+
+      IRMapping map;
+      map.map(forOp.getInductionVar(), lastIV);
+      for (Operation *op : slice)
+        rewriter.clone(*op, map);
+      Value last = map.lookupOrDefault(yld);
+
+      Value ran = CmpIOp::create(rewriter, loc, CmpIPredicate::sgt, ub, lb);
+      Value replacement = SelectOp::create(rewriter, loc, ran, last, init);
+
+      Value resCopy = res;
+      rewriter.modifyOpInPlace(
+          forOp, [&] { resCopy.replaceAllUsesWith(replacement); });
+      changed = true;
+    }
+    return success(changed);
   }
 };
 
@@ -3795,7 +4012,8 @@ void CanonicalizeFor::runOnOperation() {
           RemoveUnusedForResults, RemoveUnusedArgs, MoveWhileToFor,
           RemoveWhileSelect, SelectTruncToTruncSelect, MaxSimplify,
           ForBoundUnSwitch, SelectI1Simplify, RemoveInductionVarRelated,
-          RotateWhileAnd, MoveWhileDown, MoveWhileDown2,
+          ForOpFinalValueOfDeadIterArg, RotateWhileAnd, MoveWhileDown,
+          MoveWhileDown2,
 
           ReplaceRedundantArgs,
 
