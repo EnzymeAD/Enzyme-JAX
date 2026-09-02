@@ -7,80 +7,19 @@
 
 #include "../export_macro.h"
 
+// from LowerJIT
+// - function pointers should be registered normally
+// - handle constants (communicators, ops and datatypes) should also be
+// registered normally (as they are encoded as pointers)
+// - integer constants (MPI_SUCCESS, MPI_STATUS_SIZE, ...) should be registered
+// as pointers to int
+extern "C" void *EnzymeJaXLookupSymbol(const char *name);
+
 #if defined(_WIN32)
 void registerEnzymeJaXXLAHostMPIFFI() {}
 #else
 
 #include "mpi.h"
-
-int mpi_unimplemented_stub(...) {
-  abort();
-  return -1;
-}
-
-#define EXLA_FFI_PREFIX enzymexla_ffi
-
-// generates a function pointer for `FNAME` that points to
-// `mpi_unimplemented_stub` by default and a exported C function for setting the
-// value dynamically
-// TODO replace with call to libdl like libblastrampoline does
-#define EXLA_FFI_MPI_FUNCTION_BINDING(FNAME)                                   \
-  decltype(FNAME) *EXLA_##FNAME =                                              \
-      reinterpret_cast<decltype(FNAME) *>(&mpi_unimplemented_stub);            \
-  extern "C" MLIR_CAPI_EXPORTED void EXLA_FFI_PREFIX##_set_##FNAME(            \
-      void *ptr) {                                                             \
-    EXLA_##FNAME = reinterpret_cast<decltype(FNAME) *>(ptr);                   \
-  }
-
-EXLA_FFI_MPI_FUNCTION_BINDING(MPI_Comm_rank)
-EXLA_FFI_MPI_FUNCTION_BINDING(MPI_Comm_size)
-EXLA_FFI_MPI_FUNCTION_BINDING(MPI_Comm_split)
-EXLA_FFI_MPI_FUNCTION_BINDING(MPI_Barrier)
-EXLA_FFI_MPI_FUNCTION_BINDING(MPI_Send)
-EXLA_FFI_MPI_FUNCTION_BINDING(MPI_Isend)
-EXLA_FFI_MPI_FUNCTION_BINDING(MPI_Recv)
-EXLA_FFI_MPI_FUNCTION_BINDING(MPI_Irecv)
-EXLA_FFI_MPI_FUNCTION_BINDING(MPI_Wait)
-EXLA_FFI_MPI_FUNCTION_BINDING(MPI_Waitall)
-EXLA_FFI_MPI_FUNCTION_BINDING(MPI_Allreduce)
-EXLA_FFI_MPI_FUNCTION_BINDING(MPI_Bcast)
-EXLA_FFI_MPI_FUNCTION_BINDING(MPI_Error_string)
-
-// generates a global variable for `FNAME` that defaults to the value by
-// MPItrampoline by default and a exported C function for setting the value
-// dynamically NOTE this should not be required once MPI v5 ABI is used as
-// minimum version
-#define EXLA_FFI_MPI_CONSTANT_BINDING(T, FNAME)                                \
-  T EXLA_##FNAME = FNAME;                                                      \
-  extern "C" MLIR_CAPI_EXPORTED void EXLA_FFI_PREFIX##_set_##FNAME(T val) {    \
-    EXLA_##FNAME = val;                                                        \
-  }                                                                            \
-  extern "C" MLIR_CAPI_EXPORTED T EXLA_FFI_PREFIX##_get_##FNAME() {            \
-    return EXLA_##FNAME;                                                       \
-  }
-
-EXLA_FFI_MPI_CONSTANT_BINDING(int, MPI_STATUS_SIZE)
-EXLA_FFI_MPI_CONSTANT_BINDING(int, MPI_SUCCESS)
-EXLA_FFI_MPI_CONSTANT_BINDING(int, MPI_MAX_ERROR_STRING)
-
-#define GENERATE_MPI_OP_LIST(X)                                                \
-  X(MPI_Op, MPI_OP_NULL)                                                       \
-  X(MPI_Op, MPI_SUM)                                                           \
-  X(MPI_Op, MPI_MIN)                                                           \
-  X(MPI_Op, MPI_MAX)                                                           \
-  X(MPI_Op, MPI_PROD)                                                          \
-  X(MPI_Op, MPI_BAND)                                                          \
-  X(MPI_Op, MPI_BOR)                                                           \
-  X(MPI_Op, MPI_BXOR)                                                          \
-  X(MPI_Op, MPI_LAND)                                                          \
-  X(MPI_Op, MPI_LOR)                                                           \
-  X(MPI_Op, MPI_LXOR)                                                          \
-  X(MPI_Op, MPI_MINLOC)                                                        \
-  X(MPI_Op, MPI_MAXLOC)                                                        \
-  X(MPI_Op, MPI_REPLACE)                                                       \
-  X(MPI_Op, MPI_NO_OP)
-
-GENERATE_MPI_OP_LIST(EXLA_FFI_MPI_CONSTANT_BINDING)
 
 namespace enzymexla::ffi_internal {
 namespace ffi = xla::ffi;
@@ -101,78 +40,107 @@ using MpiRequestBuffer = PtrBuffer;
 using MpiStatusBuffer = Buffer<ffi::U8, 1>;
 
 ffi::Error checkMpiStatusSize(const MpiStatusBuffer &buf) {
-  if (buf.element_count() != EXLA_MPI_STATUS_SIZE) {
+  int mpi_status_size =
+      *reinterpret_cast<int *>(EnzymeJaXLookupSymbol("MPI_STATUS_SIZE"));
+  if (buf.element_count() != mpi_status_size) {
     return ffi::Error::InvalidArgument(
         absl::StrFormat("MPI_Status buffer must have %d elements, got %d",
-                        EXLA_MPI_STATUS_SIZE, buf.element_count()));
+                        mpi_status_size, buf.element_count()));
   }
   return ffi::Error::Success();
 }
 
 ffi::Error checkMpiError(const char *fname, const int err) {
-  if (err == EXLA_MPI_SUCCESS)
+  int mpi_success =
+      *reinterpret_cast<int *>(EnzymeJaXLookupSymbol("MPI_SUCCESS"));
+  int mpi_max_error_string =
+      *reinterpret_cast<int *>(EnzymeJaXLookupSymbol("MPI_MAX_ERROR_STRING"));
+
+  if (err == mpi_success)
     return ffi::Error::Success();
-  std::vector<char> cstr(EXLA_MPI_MAX_ERROR_STRING);
+
+  auto *fptr = reinterpret_cast<decltype(MPI_Error_string) *>(
+      EnzymeJaXLookupSymbol("MPI_Error_string"));
+  if (fptr == nullptr)
+    return ffi::Error::Internal("MPI_Error_string symbol not found");
+
+  std::vector<char> cstr(mpi_max_error_string);
   int len;
-  EXLA_MPI_Error_string(err, cstr.data(), &len);
+
+  fptr(err, cstr.data(), &len);
+
   std::string str(cstr.data(), len);
   return ffi::Error::InvalidArgument(
       absl::StrFormat("%s failed with error code %d: %s", fname, err, str));
 }
 
 // clang-format off
-std::optional<MPI_Op> symbolizeMpiOp(std::string_view op) {
-  #define X(_, NAME) if (op == #NAME) return EXLA_##NAME;
-  GENERATE_MPI_OP_LIST(X)
-  #undef X
-  return std::nullopt;
-}
-// clang-format on
-
-// clang-format off
-std::optional<MPI_Datatype>
-convertPrimitiveTypeToMpiDatatype(ffi::DataType type, bool allow_cast = false) {
+const char *
+convertPrimitiveTypeToMpiDatatypeName(ffi::DataType type, bool allow_cast = false) {
   switch (type) {
-    case ffi::DataType::INVALID: return std::nullopt;
-    case ffi::DataType::PRED: return MPI_C_BOOL;
-    case ffi::DataType::S1: return std::nullopt;
-    case ffi::DataType::S2: return std::nullopt;
-    case ffi::DataType::S4: return std::nullopt;
-    case ffi::DataType::S8: return MPI_INT8_T;
-    case ffi::DataType::S16: return MPI_INT16_T;
-    case ffi::DataType::S32: return MPI_INT32_T;
-    case ffi::DataType::S64: return MPI_INT64_T;
-    case ffi::DataType::U1: return std::nullopt;
-    case ffi::DataType::U2: return std::nullopt;
-    case ffi::DataType::U4: return std::nullopt;
-    case ffi::DataType::U8: return MPI_UINT8_T;
-    case ffi::DataType::U16: return MPI_UINT16_T;
-    case ffi::DataType::U32: return MPI_UINT32_T;
-    case ffi::DataType::U64: return MPI_UINT64_T;
-    case ffi::DataType::F16: return std::nullopt; // allow_cast ? MPI_UINT16_T : std::nullopt;
-    case ffi::DataType::F32: return MPI_FLOAT;
-    case ffi::DataType::F64: return MPI_DOUBLE;
-    case ffi::DataType::BF16: return std::nullopt; // allow_cast ? MPI_UINT16_T : std::nullopt;
-    case ffi::DataType::C64: return MPI_C_FLOAT_COMPLEX;
-    case ffi::DataType::C128: return MPI_C_DOUBLE_COMPLEX;
-    case ffi::DataType::TOKEN: return std::nullopt;
-    case ffi::DataType::F8E5M2: return std::nullopt; // allow_cast ? MPI_UINT8_T : std::nullopt;
-    case ffi::DataType::F8E4M3: return std::nullopt; // allow_cast ? MPI_UINT8_T : std::nullopt;
-    case ffi::DataType::F8E4M3FN: return std::nullopt; // allow_cast ? MPI_UINT8_T : std::nullopt;
-    case ffi::DataType::F8E4M3B11FNUZ: return std::nullopt; // allow_cast ? MPI_UINT8_T : std::nullopt;
-    case ffi::DataType::F8E5M2FNUZ: return std::nullopt; // allow_cast ? MPI_UINT8_T : std::nullopt;
-    case ffi::DataType::F8E4M3FNUZ: return std::nullopt; // allow_cast ? MPI_UINT8_T : std::nullopt;
-    case ffi::DataType::F8E3M4: return std::nullopt; // allow_cast ? MPI_UINT8_T : std::nullopt;
-    case ffi::DataType::F4E2M1FN: return std::nullopt;
-    case ffi::DataType::F8E8M0FNU: return std::nullopt; // allow_cast ? MPI_UINT8_T : std::nullopt;
-    default: return std::nullopt;
+    // case ffi::DataType::INVALID: return nullptr;
+    case ffi::DataType::PRED: return "MPI_C_BOOL";
+    // case ffi::DataType::S1: return nullptr;
+    // case ffi::DataType::S2: return nullptr;
+    // case ffi::DataType::S4: return nullptr;
+    case ffi::DataType::S8: return "MPI_INT8_T";
+    case ffi::DataType::S16: return "MPI_INT16_T";
+    case ffi::DataType::S32: return "MPI_INT32_T";
+    case ffi::DataType::S64: return "MPI_INT64_T";
+    // case ffi::DataType::U1: return nullptr;
+    // case ffi::DataType::U2: return nullptr;
+    // case ffi::DataType::U4: return nullptr;
+    case ffi::DataType::U8: return "MPI_UINT8_T";
+    case ffi::DataType::U16: return "MPI_UINT16_T";
+    case ffi::DataType::U32: return "MPI_UINT32_T";
+    case ffi::DataType::U64: return "MPI_UINT64_T";
+    case ffi::DataType::F16: return (allow_cast ? "MPI_UINT16_T" : nullptr);
+    case ffi::DataType::F32: return "MPI_FLOAT";
+    case ffi::DataType::F64: return "MPI_DOUBLE";
+    case ffi::DataType::BF16: return (allow_cast ? "MPI_UINT16_T" : nullptr);
+    case ffi::DataType::C64: return "MPI_C_FLOAT_COMPLEX";
+    case ffi::DataType::C128: return "MPI_C_DOUBLE_COMPLEX";
+    // case ffi::DataType::TOKEN: return nullptr;
+    case ffi::DataType::F8E5M2: return (allow_cast ? "MPI_UINT8_T" : nullptr);
+    case ffi::DataType::F8E4M3: return (allow_cast ? "MPI_UINT8_T" : nullptr);
+    case ffi::DataType::F8E4M3FN: return (allow_cast ? "MPI_UINT8_T" : nullptr);
+    case ffi::DataType::F8E4M3B11FNUZ: return (allow_cast ? "MPI_UINT8_T" : nullptr);
+    case ffi::DataType::F8E5M2FNUZ: return (allow_cast ? "MPI_UINT8_T" : nullptr);
+    case ffi::DataType::F8E4M3FNUZ: return (allow_cast ? "MPI_UINT8_T" : nullptr);
+    case ffi::DataType::F8E3M4: return (allow_cast ? "MPI_UINT8_T" : nullptr);
+    // case ffi::DataType::F4E2M1FN: return nullptr;
+    case ffi::DataType::F8E8M0FNU: return (allow_cast ? "MPI_UINT8_T" : nullptr);
+    default: return nullptr;
   }
 }
 // clang-format on
 
+ffi::ErrorOr<MPI_Datatype>
+convertPrimitiveTypeToMpiDatatype(ffi::DataType type, bool allow_cast = false) {
+  const char *name = convertPrimitiveTypeToMpiDatatypeName(type, allow_cast);
+  if (name == nullptr) {
+    std::ostringstream oss;
+    oss << type;
+    return ffi::Error::InvalidArgument(
+        absl::StrFormat("MPI: unsupported datatype `%s`", oss.str()));
+  }
+
+  auto dt = reinterpret_cast<MPI_Datatype>(EnzymeJaXLookupSymbol(name));
+  if (dt == nullptr) {
+    return ffi::Error::Internal(
+        absl::StrFormat("MPI: symbol `%s` not found", name));
+  }
+
+  return dt;
+}
+
 ffi::Error MpiCommRankImpl(MpiCommBuffer comm_ptr, Result<IntBuffer> rank_ptr) {
+  auto *fptr = reinterpret_cast<decltype(MPI_Comm_rank) *>(
+      EnzymeJaXLookupSymbol("MPI_Comm_rank"));
+  if (fptr == nullptr)
+    return ffi::Error::Internal("MPI_Comm_rank symbol not found");
   MPI_Comm comm = *reinterpret_cast<MPI_Comm *>(comm_ptr.typed_data());
-  int err = EXLA_MPI_Comm_rank(comm, rank_ptr->typed_data());
+  int err = fptr(comm, rank_ptr->typed_data());
   return checkMpiError("MPI_Comm_rank", err);
 }
 
@@ -183,8 +151,12 @@ XLA_FFI_DEFINE_HANDLER(MpiCommRankFfi, MpiCommRankImpl,
 );
 
 ffi::Error MpiCommSizeImpl(MpiCommBuffer comm_ptr, Result<IntBuffer> size_ptr) {
+  auto *fptr = reinterpret_cast<decltype(MPI_Comm_size) *>(
+      EnzymeJaXLookupSymbol("MPI_Comm_size"));
+  if (fptr == nullptr)
+    return ffi::Error::Internal("MPI_Comm_size symbol not found");
   MPI_Comm comm = *reinterpret_cast<MPI_Comm *>(comm_ptr.typed_data());
-  int err = EXLA_MPI_Comm_size(comm, size_ptr->typed_data());
+  int err = fptr(comm, size_ptr->typed_data());
   return checkMpiError("MPI_Comm_size", err);
 }
 
@@ -197,11 +169,15 @@ XLA_FFI_DEFINE_HANDLER(MpiCommSizeFfi, MpiCommSizeImpl,
 ffi::Error MpiCommSplitImpl(MpiCommBuffer comm_ptr, IntBuffer color_ptr,
                             IntBuffer key_ptr,
                             Result<MpiCommBuffer> newcomm_ptr) {
+  auto *fptr = reinterpret_cast<decltype(MPI_Comm_split) *>(
+      EnzymeJaXLookupSymbol("MPI_Comm_split"));
+  if (fptr == nullptr)
+    return ffi::Error::Internal("MPI_Comm_split symbol not found");
   MPI_Comm comm = *reinterpret_cast<MPI_Comm *>(comm_ptr.typed_data());
   int color = *color_ptr.typed_data();
   int key = *key_ptr.typed_data();
   MPI_Comm *newcomm = reinterpret_cast<MPI_Comm *>(newcomm_ptr->typed_data());
-  int err = EXLA_MPI_Comm_split(comm, color, key, newcomm);
+  int err = fptr(comm, color, key, newcomm);
   return checkMpiError("MPI_Comm_split", err);
 }
 
@@ -214,8 +190,12 @@ XLA_FFI_DEFINE_HANDLER(MpiCommSplitFfi, MpiCommSplitImpl,
 );
 
 ffi::Error MpiBarrierImpl(MpiCommBuffer comm_ptr) {
+  auto fptr = reinterpret_cast<decltype(MPI_Barrier) *>(
+      EnzymeJaXLookupSymbol("MPI_Barrier"));
+  if (fptr == nullptr)
+    return ffi::Error::Internal("MPI_Barrier symbol not found");
   MPI_Comm comm = *reinterpret_cast<MPI_Comm *>(comm_ptr.typed_data());
-  int err = EXLA_MPI_Barrier(comm);
+  int err = fptr(comm);
   return checkMpiError("MPI_Barrier", err);
 }
 
@@ -224,19 +204,19 @@ XLA_FFI_DEFINE_HANDLER(MpiBarrierFfi, MpiBarrierImpl,
 
 ffi::Error MpiSendImpl(ffi::AnyBuffer buf, IntBuffer dest_ptr,
                        IntBuffer tag_ptr, MpiCommBuffer comm_ptr) {
+  auto *fptr =
+      reinterpret_cast<decltype(MPI_Send) *>(EnzymeJaXLookupSymbol("MPI_Send"));
+  if (fptr == nullptr)
+    return ffi::Error::Internal("MPI_Send symbol not found");
   MPI_Comm comm = *reinterpret_cast<MPI_Comm *>(comm_ptr.typed_data());
   int dest = *dest_ptr.typed_data();
   int tag = *tag_ptr.typed_data();
   int count = buf.element_count();
   auto datatype = convertPrimitiveTypeToMpiDatatype(buf.element_type());
-  if (!datatype.has_value()) {
-    std::ostringstream oss;
-    oss << buf.element_type();
-    return ffi::Error::InvalidArgument(
-        absl::StrFormat("MPI_Send: unsupported datatype %s", oss.str()));
-  }
-  int err = EXLA_MPI_Send(buf.untyped_data(), count, datatype.value(), dest,
-                          tag, comm);
+  if (datatype.has_error())
+    return datatype.error();
+
+  int err = fptr(buf.untyped_data(), count, datatype.value(), dest, tag, comm);
   return checkMpiError("MPI_Send", err);
 }
 
@@ -251,21 +231,22 @@ XLA_FFI_DEFINE_HANDLER(MpiSendFfi, MpiSendImpl,
 ffi::Error MpiIsendImpl(ffi::AnyBuffer buf, IntBuffer dest_ptr,
                         IntBuffer tag_ptr, MpiCommBuffer comm_ptr,
                         Result<MpiRequestBuffer> request_ptr) {
+  auto *fptr = reinterpret_cast<decltype(MPI_Isend) *>(
+      EnzymeJaXLookupSymbol("MPI_Isend"));
+  if (fptr == nullptr)
+    return ffi::Error::Internal("MPI_Isend symbol not found");
   auto datatype = convertPrimitiveTypeToMpiDatatype(buf.element_type());
-  if (!datatype.has_value()) {
-    std::ostringstream oss;
-    oss << buf.element_type();
-    return ffi::Error::InvalidArgument(
-        absl::StrFormat("MPI_Isend: unsupported datatype %s", oss.str()));
-  }
+  if (datatype.has_error())
+    return datatype.error();
+
   MPI_Comm comm = *reinterpret_cast<MPI_Comm *>(comm_ptr.typed_data());
   int dest = *dest_ptr.typed_data();
   int tag = *tag_ptr.typed_data();
   int count = buf.element_count();
   MPI_Request *request =
       reinterpret_cast<MPI_Request *>(request_ptr->typed_data());
-  int err = EXLA_MPI_Isend(buf.untyped_data(), count, datatype.value(), dest,
-                           tag, comm, request);
+  int err = fptr(buf.untyped_data(), count, datatype.value(), dest, tag, comm,
+                 request);
   return checkMpiError("MPI_Isend", err);
 }
 
@@ -281,23 +262,24 @@ XLA_FFI_DEFINE_HANDLER(MpiIsendFfi, MpiIsendImpl,
 ffi::Error MpiRecvImpl(IntBuffer source_ptr, IntBuffer tag_ptr,
                        MpiCommBuffer comm_ptr, Result<ffi::AnyBuffer> buf,
                        Result<MpiStatusBuffer> status_ptr) {
+  auto *fptr =
+      reinterpret_cast<decltype(MPI_Recv) *>(EnzymeJaXLookupSymbol("MPI_Recv"));
+  if (fptr == nullptr)
+    return ffi::Error::Internal("MPI_Recv symbol not found");
   if (auto error = checkMpiStatusSize(*status_ptr); error.failure()) {
     return error;
   }
   MPI_Comm comm = *reinterpret_cast<MPI_Comm *>(comm_ptr.typed_data());
   auto datatype = convertPrimitiveTypeToMpiDatatype(buf->element_type());
-  if (!datatype.has_value()) {
-    std::ostringstream oss;
-    oss << buf->element_type();
-    return ffi::Error::InvalidArgument(
-        absl::StrFormat("MPI_Recv: unsupported datatype %s", oss.str()));
-  }
+  if (datatype.has_error())
+    return datatype.error();
+
   int source = *source_ptr.typed_data();
   int tag = *tag_ptr.typed_data();
   int count = buf->element_count();
   MPI_Status *status = reinterpret_cast<MPI_Status *>(status_ptr->typed_data());
-  int err = EXLA_MPI_Recv(buf->untyped_data(), count, datatype.value(), source,
-                          tag, comm, status);
+  int err = fptr(buf->untyped_data(), count, datatype.value(), source, tag,
+                 comm, status);
   return checkMpiError("MPI_Recv", err);
 }
 
@@ -313,21 +295,22 @@ XLA_FFI_DEFINE_HANDLER(MpiRecvFfi, MpiRecvImpl,
 ffi::Error MpiIrecvImpl(IntBuffer source_ptr, IntBuffer tag_ptr,
                         MpiCommBuffer comm_ptr, Result<ffi::AnyBuffer> buf,
                         Result<MpiRequestBuffer> request_ptr) {
+  auto *fptr = reinterpret_cast<decltype(MPI_Irecv) *>(
+      EnzymeJaXLookupSymbol("MPI_Irecv"));
+  if (fptr == nullptr)
+    return ffi::Error::Internal("MPI_Irecv symbol not found");
   MPI_Comm comm = *reinterpret_cast<MPI_Comm *>(comm_ptr.typed_data());
   auto datatype = convertPrimitiveTypeToMpiDatatype(buf->element_type());
-  if (!datatype.has_value()) {
-    std::ostringstream oss;
-    oss << buf->element_type();
-    return ffi::Error::InvalidArgument(
-        absl::StrFormat("MPI_Irecv: unsupported datatype %s", oss.str()));
-  }
+  if (datatype.has_error())
+    return datatype.error();
+
   int source = *source_ptr.typed_data();
   int tag = *tag_ptr.typed_data();
   int count = buf->element_count();
   MPI_Request *request =
       reinterpret_cast<MPI_Request *>(request_ptr->typed_data());
-  int err = EXLA_MPI_Irecv(buf->untyped_data(), count, datatype.value(), source,
-                           tag, comm, request);
+  int err = fptr(buf->untyped_data(), count, datatype.value(), source, tag,
+                 comm, request);
   return checkMpiError("MPI_Irecv", err);
 }
 
@@ -342,13 +325,17 @@ XLA_FFI_DEFINE_HANDLER(MpiIrecvFfi, MpiIrecvImpl,
 
 ffi::Error MpiWaitImpl(MpiRequestBuffer request_ptr,
                        Result<MpiStatusBuffer> status_ptr) {
+  auto *fptr =
+      reinterpret_cast<decltype(MPI_Wait) *>(EnzymeJaXLookupSymbol("MPI_Wait"));
+  if (fptr == nullptr)
+    return ffi::Error::Internal("MPI_Wait symbol not found");
   if (auto error = checkMpiStatusSize(*status_ptr); error.failure()) {
     return error;
   }
   MPI_Request *request =
       reinterpret_cast<MPI_Request *>(request_ptr.typed_data());
   MPI_Status *status = reinterpret_cast<MPI_Status *>(status_ptr->typed_data());
-  int err = EXLA_MPI_Wait(request, status);
+  int err = fptr(request, status);
   return checkMpiError("MPI_Wait", err);
 }
 
@@ -360,6 +347,10 @@ XLA_FFI_DEFINE_HANDLER(MpiWaitFfi, MpiWaitImpl,
 
 ffi::Error MpiWaitallImpl(ffi::RemainingArgs requests,
                           ffi::RemainingRets statuses) {
+  auto *fptr = reinterpret_cast<decltype(MPI_Waitall) *>(
+      EnzymeJaXLookupSymbol("MPI_Waitall"));
+  if (fptr == nullptr)
+    return ffi::Error::Internal("MPI_Waitall symbol not found");
   if (requests.size() != statuses.size()) {
     return ffi::Error::InvalidArgument(
         absl::StrFormat("MPI_Waitall: requests and statuses must have the same "
@@ -381,8 +372,7 @@ ffi::Error MpiWaitallImpl(ffi::RemainingArgs requests,
   }
 
   std::vector<MPI_Status> status_vector(count);
-  int err =
-      EXLA_MPI_Waitall(count, request_vector.data(), status_vector.data());
+  int err = fptr(count, request_vector.data(), status_vector.data());
   return checkMpiError("MPI_Waitall", err);
 
   // copy statuses back to the output buffers
@@ -411,6 +401,10 @@ XLA_FFI_DEFINE_HANDLER(MpiWaitallFfi, MpiWaitallImpl,
 ffi::Error MpiAllreduceImpl(ffi::AnyBuffer sendbuf, std::string_view op_str,
                             MpiCommBuffer comm_ptr,
                             Result<ffi::AnyBuffer> recvbuf) {
+  auto *fptr = reinterpret_cast<decltype(MPI_Allreduce) *>(
+      EnzymeJaXLookupSymbol("MPI_Allreduce"));
+  if (fptr == nullptr)
+    return ffi::Error::Internal("MPI_Allreduce symbol not found");
   if (sendbuf.element_count() <= recvbuf->element_count()) {
     return ffi::Error::InvalidArgument(absl::StrFormat(
         "MPI_Allreduce: recvbuf size (%d) must be at least sendbuf size (%d)",
@@ -426,20 +420,18 @@ ffi::Error MpiAllreduceImpl(ffi::AnyBuffer sendbuf, std::string_view op_str,
   }
   MPI_Comm comm = *reinterpret_cast<MPI_Comm *>(comm_ptr.typed_data());
   auto datatype = convertPrimitiveTypeToMpiDatatype(sendbuf.element_type());
-  if (!datatype.has_value()) {
-    std::ostringstream oss;
-    oss << sendbuf.element_type();
+  if (datatype.has_error())
+    return datatype.error();
+
+  auto op = static_cast<MPI_Op>(EnzymeJaXLookupSymbol(op_str.data()));
+  if (op == nullptr) {
     return ffi::Error::InvalidArgument(
-        absl::StrFormat("MPI_Allreduce: unsupported datatype %s", oss.str()));
+        absl::StrFormat("MPI_Allreduce: symbol `%s`", op_str));
   }
-  auto op = symbolizeMpiOp(op_str);
-  if (!op.has_value()) {
-    return ffi::Error::InvalidArgument(
-        absl::StrFormat("MPI_Allreduce: invalid operation %s", op_str));
-  }
+
   int count = sendbuf.element_count();
-  int err = EXLA_MPI_Allreduce(sendbuf.untyped_data(), recvbuf->untyped_data(),
-                               count, datatype.value(), op.value(), comm);
+  int err = fptr(sendbuf.untyped_data(), recvbuf->untyped_data(), count,
+                 datatype.value(), op, comm);
   return checkMpiError("MPI_Allreduce", err);
 }
 
@@ -453,18 +445,18 @@ XLA_FFI_DEFINE_HANDLER(MpiAllreduceFfi, MpiAllreduceImpl,
 
 ffi::Error MpiBcastImpl(ffi::AnyBuffer buf, IntBuffer root_ptr,
                         MpiCommBuffer comm_ptr) {
+  auto *fptr = reinterpret_cast<decltype(MPI_Bcast) *>(
+      EnzymeJaXLookupSymbol("MPI_Bcast"));
+  if (fptr == nullptr)
+    return ffi::Error::Internal("MPI_Bcast symbol not found");
   MPI_Comm comm = *reinterpret_cast<MPI_Comm *>(comm_ptr.typed_data());
   auto datatype = convertPrimitiveTypeToMpiDatatype(buf.element_type());
-  if (!datatype.has_value()) {
-    std::ostringstream oss;
-    oss << buf.element_type();
-    return ffi::Error::InvalidArgument(
-        absl::StrFormat("MPI_Bcast: unsupported datatype %s", oss.str()));
+  if (datatype.has_error()) {
+    return datatype.error();
   }
   int root = *root_ptr.typed_data();
   int count = buf.element_count();
-  int err =
-      EXLA_MPI_Bcast(buf.untyped_data(), count, datatype.value(), root, comm);
+  int err = fptr(buf.untyped_data(), count, datatype.value(), root, comm);
   return checkMpiError("MPI_Bcast", err);
 }
 
