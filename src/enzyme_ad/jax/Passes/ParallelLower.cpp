@@ -28,6 +28,7 @@
 #include "mlir/IR/OpDefinition.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/Transforms/Passes.h"
+#include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/StringRef.h"
@@ -369,6 +370,12 @@ void ParallelLower::runOnOperation() {
   std::function<void(enzyme::AutoDiffOp)> autodiffInliner;
   std::function<void(LLVM::CallOp)> LLVMcallInliner;
   SmallPtrSet<Operation *, 1> replacedCallables;
+  // Pre-inlining recurses into the callee's own calls; a (mutually)
+  // recursive callee would recurse forever. A callable already on the
+  // stack keeps its recursive call sites uninlined, and a call site inside
+  // its own callee is never inlined: cloning a region into itself never
+  // ends.
+  SmallPtrSet<Operation *, 8> inliningStack;
   std::function<void(CallOp)> callInliner = [&](CallOp caller) {
     // Build the inliner interface.
     AlwaysInlinerInterface interface(&getContext());
@@ -382,6 +389,11 @@ void ParallelLower::runOnOperation() {
       return;
     if (targetRegion->empty())
       return;
+    if (callableOp->isAncestor(caller) ||
+        !inliningStack.insert(callableOp).second)
+      return;
+    llvm::scope_exit stackGuard(
+        [&, op = callableOp.getOperation()] { inliningStack.erase(op); });
     {
       SmallVector<CallOp> ops;
       callableOp.walk([&](CallOp caller) { ops.push_back(caller); });
@@ -439,6 +451,11 @@ void ParallelLower::runOnOperation() {
       return;
     if (targetRegion->empty())
       return;
+    if (callableOp->isAncestor(caller) ||
+        !inliningStack.insert(callableOp).second)
+      return;
+    llvm::scope_exit stackGuard(
+        [&, op = callableOp.getOperation()] { inliningStack.erase(op); });
     {
       SmallVector<CallOp> ops;
       callableOp.walk([&](CallOp caller) { ops.push_back(caller); });
@@ -501,6 +518,12 @@ void ParallelLower::runOnOperation() {
     assert(gpuWrapper);
     auto [callInGPU, lfn] =
         prepareForGPUInline(caller, gpuWrapper, symbolTable);
+    if (callInGPU == caller) {
+      // Already-prepared callee: the plain inliner consumes the call whole,
+      // and the clone-based tail below would then touch the erased op.
+      LLVMcallInlinerImpl(caller);
+      return;
+    }
     LLVMcallInlinerImpl(callInGPU);
     OpBuilder b(caller);
     auto allocScope = memref::AllocaScopeOp::create(b, caller.getLoc(),
@@ -541,6 +564,11 @@ void ParallelLower::runOnOperation() {
     Region &targetRegion = callableOp.getFunctionBody();
     if (targetRegion.empty())
       return;
+    if (callableOp->isAncestor(caller) ||
+        !inliningStack.insert(callableOp).second)
+      return;
+    llvm::scope_exit stackGuard(
+        [&, op = callableOp.getOperation()] { inliningStack.erase(op); });
     {
       SmallVector<CallOp> ops;
       callableOp.walk([&](CallOp caller) { ops.push_back(caller); });
@@ -598,7 +626,8 @@ void ParallelLower::runOnOperation() {
       auto lop = op->getParentOfType<gpu::LaunchOp>();
       auto fop = op->getParentOfType<FunctionOpInterface>();
       if (!lop || lop->isAncestor(fop)) {
-        toinl.insert(fop);
+        if (!toinl.insert(fop))
+          continue;
         for (Operation *m : symbolUserMap.getUsers(fop)) {
           if (isa<LLVM::CallOp, func::CallOp>(m))
             inlineOps.push_back(m);
@@ -697,15 +726,6 @@ void ParallelLower::runOnOperation() {
     if (captured)
       return;
 
-    // A kernel lives in a gpu.module, so the launch names it with a nested
-    // symbol reference. func.call takes a flat callee, and building one from a
-    // nested reference yields an op carrying no callee at all, which faults
-    // when symbol resolution later reads it. Lowering the launch to a call is
-    // not expressible here; leave it for the passes that lower
-    // gpu.launch_func directly.
-    if (!isa<FlatSymbolRefAttr>(launchOp.getKernel()))
-      return;
-
     OpBuilder builder(launchOp);
     auto op = mlir::gpu::LaunchOp::create(
         builder, launchOp.getLoc(), launchOp.getGridSizeX(),
@@ -720,8 +740,11 @@ void ParallelLower::runOnOperation() {
         launchOp.getClusterSizeY(), launchOp.getClusterSizeZ());
 
     builder.setInsertionPointToStart(&op.getRegion().front());
-    func::CallOp::create(builder, launchOp.getLoc(), launchOp.getKernel(),
-                         TypeRange(), launchOp.getKernelOperands());
+    // func.call cannot carry the nested gpu-module reference; the top-level
+    // original of the kernel launcher shares the leaf name and body.
+    func::CallOp::create(builder, launchOp.getLoc(),
+                         launchOp.getKernelName().getValue(), TypeRange(),
+                         launchOp.getKernelOperands());
     gpu::TerminatorOp::create(builder, launchOp.getLoc());
     for (auto &&[lhs, rhs] :
          llvm::zip_equal(launchOp->getResults(), op->getResults())) {
@@ -766,6 +789,21 @@ void ParallelLower::runOnOperation() {
 
     auto oneindex = ConstantIndexOp::create(builder, loc, 1);
 
+    // launch_func-recognized kernels carry i64 dims; everything below wants
+    // index.
+    auto dimToIndex = [&](Value v) -> Value {
+      if (isa<IndexType>(v.getType()))
+        return v;
+      return arith::IndexCastOp::create(builder, loc, builder.getIndexType(),
+                                        v);
+    };
+    Value dimGridX = dimToIndex(launchOp.getGridSizeX());
+    Value dimGridY = dimToIndex(launchOp.getGridSizeY());
+    Value dimGridZ = dimToIndex(launchOp.getGridSizeZ());
+    Value dimBlockX = dimToIndex(launchOp.getBlockSizeX());
+    Value dimBlockY = dimToIndex(launchOp.getBlockSizeY());
+    Value dimBlockZ = dimToIndex(launchOp.getBlockSizeZ());
+
     async::ExecuteOp asyncOp = nullptr;
     if (!launchOp.getAsyncDependencies().empty()) {
       SmallVector<Value> dependencies;
@@ -785,9 +823,8 @@ void ParallelLower::runOnOperation() {
     if (wrapParallelOps) {
       auto pw = enzymexla::GPUWrapperOp::create(
           builder, loc,
-          ValueRange({launchOp.getGridSizeX(), launchOp.getGridSizeY(),
-                      launchOp.getGridSizeZ(), launchOp.getBlockSizeX(),
-                      launchOp.getBlockSizeY(), launchOp.getBlockSizeZ()}));
+          ValueRange(
+              {dimGridX, dimGridY, dimGridZ, dimBlockX, dimBlockY, dimBlockZ}));
       if (lfn) {
         if (auto passthrough = lfn.getPassthrough()) {
           pw->setAttr("passthrough", *passthrough);
@@ -808,8 +845,7 @@ void ParallelLower::runOnOperation() {
 
     auto block = mlir::scf::ParallelOp::create(
         builder, loc, std::vector<Value>({zindex, zindex, zindex}),
-        std::vector<Value>({launchOp.getGridSizeX(), launchOp.getGridSizeY(),
-                            launchOp.getGridSizeZ()}),
+        std::vector<Value>({dimGridX, dimGridY, dimGridZ}),
         std::vector<Value>({oneindex, oneindex, oneindex}));
     Block *blockB = &block.getRegion().front();
     builder.setInsertionPointToStart(blockB);
@@ -831,8 +867,7 @@ void ParallelLower::runOnOperation() {
 
     auto threadr = mlir::scf::ParallelOp::create(
         builder, loc, std::vector<Value>({zindex, zindex, zindex}),
-        std::vector<Value>({launchOp.getBlockSizeX(), launchOp.getBlockSizeY(),
-                            launchOp.getBlockSizeZ()}),
+        std::vector<Value>({dimBlockX, dimBlockY, dimBlockZ}),
         std::vector<Value>({oneindex, oneindex, oneindex}));
     Block *threadB = &threadr.getRegion().front();
     builder.setInsertionPointToStart(threadB);
@@ -868,12 +903,12 @@ void ParallelLower::runOnOperation() {
     SmallVector<Value> launchArgs;
     llvm::append_range(launchArgs, blockB->getArguments());
     llvm::append_range(launchArgs, threadB->getArguments());
-    launchArgs.push_back(launchOp.getGridSizeX());
-    launchArgs.push_back(launchOp.getGridSizeY());
-    launchArgs.push_back(launchOp.getGridSizeZ());
-    launchArgs.push_back(launchOp.getBlockSizeX());
-    launchArgs.push_back(launchOp.getBlockSizeY());
-    launchArgs.push_back(launchOp.getBlockSizeZ());
+    launchArgs.push_back(dimGridX);
+    launchArgs.push_back(dimGridY);
+    launchArgs.push_back(dimGridZ);
+    launchArgs.push_back(dimBlockX);
+    launchArgs.push_back(dimBlockY);
+    launchArgs.push_back(dimBlockZ);
     builder.inlineBlockBefore(&launchOp.getRegion().front(), mergeLoc,
                               launchArgs);
 
@@ -996,11 +1031,11 @@ void ParallelLower::runOnOperation() {
     container.walk([&](gpu::GridDimOp bidx) {
       Value val = nullptr;
       if (bidx.getDimension() == gpu::Dimension::x)
-        val = launchOp.getGridSizeX();
+        val = dimGridX;
       else if (bidx.getDimension() == gpu::Dimension::y)
-        val = launchOp.getGridSizeY();
+        val = dimGridY;
       else if (bidx.getDimension() == gpu::Dimension::z)
-        val = launchOp.getGridSizeZ();
+        val = dimGridZ;
       else
         llvm_unreachable("illegal dimension");
       builder.replaceOp(bidx, val);
@@ -1009,11 +1044,11 @@ void ParallelLower::runOnOperation() {
     container.walk([&](gpu::BlockDimOp bidx) {
       Value val = nullptr;
       if (bidx.getDimension() == gpu::Dimension::x)
-        val = launchOp.getBlockSizeX();
+        val = dimBlockX;
       else if (bidx.getDimension() == gpu::Dimension::y)
-        val = launchOp.getBlockSizeY();
+        val = dimBlockY;
       else if (bidx.getDimension() == gpu::Dimension::z)
-        val = launchOp.getBlockSizeZ();
+        val = dimBlockZ;
       else
         llvm_unreachable("illegal dimension");
       builder.replaceOp(bidx, val);
