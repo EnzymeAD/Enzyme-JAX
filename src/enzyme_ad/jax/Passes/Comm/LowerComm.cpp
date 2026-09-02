@@ -15,6 +15,51 @@ namespace mlir::comm {
 
 using namespace mlir;
 
+// from LowerJIT
+extern "C" void *EnzymeJaXLookupSymbol(const char *name);
+
+struct LowerCommMpiConstantOp
+    : public OpConversionPattern<comm::MpiConstantOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(comm::MpiConstantOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    const TypeConverter *converter = getTypeConverter();
+
+    auto restype = converter->convertType(op.getResult().getType());
+    if (restype == nullptr)
+      return failure();
+
+    llvm::StringRef name;
+    auto value_attr = op.getValue();
+    if (auto attr = cast<comm::MpiCommAttr>(value_attr)) {
+      name = comm::stringifyMpiCommEnum(attr.getValue());
+    } else if (auto attr = cast<comm::MpiOpAttr>(value_attr)) {
+      name = comm::stringifyMpiOpEnum(attr.getValue());
+    } else {
+      return rewriter.notifyMatchFailure(
+          op, "MPI constant is not a valid attribute");
+    }
+
+    void *value_abi = EnzymeJaXLookupSymbol(name.data());
+    if (value_abi == nullptr) {
+      return rewriter.notifyMatchFailure(op, "MPI constant `" + name +
+                                                 "` not found");
+    }
+
+    uint64_t value = reinterpret_cast<uint64_t>(value_abi);
+    auto constant_attr = SplatElementsAttr::get(
+        RankedTensorType::get({}, rewriter.getIntegerType(64)),
+        ArrayRef(APInt(64, value)));
+
+    rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+        op, restype, cast<ElementsAttr>(constant_attr));
+
+    return success();
+  }
+};
+
 struct LowerCommMpiCommRankOp
     : public OpConversionPattern<comm::MpiCommRankOp> {
   using OpConversionPattern::OpConversionPattern;
@@ -399,12 +444,12 @@ struct LowerCommToStablehloPass
     mlir::populateCallOpTypeConversionPattern(patterns, converter);
     mlir::populateReturnOpTypeConversionPattern(patterns, converter);
 
-    patterns.add<LowerCommMpiCommRankOp, LowerCommMpiCommSizeOp,
-                 LowerCommMpiCommSplitOp, LowerCommMpiBarrierOp,
-                 LowerCommMpiSendOp, LowerCommMpiIsendOp, LowerCommMpiRecvOp,
-                 LowerCommMpiIrecvOp, LowerCommMpiWaitOp, LowerCommMpiWaitallOp,
-                 LowerCommMpiAllreduceOp, LowerCommMpiBcastOp>(converter,
-                                                               context);
+    patterns.add<LowerCommMpiConstantOp, LowerCommMpiCommRankOp,
+                 LowerCommMpiCommSizeOp, LowerCommMpiCommSplitOp,
+                 LowerCommMpiBarrierOp, LowerCommMpiSendOp, LowerCommMpiIsendOp,
+                 LowerCommMpiRecvOp, LowerCommMpiIrecvOp, LowerCommMpiWaitOp,
+                 LowerCommMpiWaitallOp, LowerCommMpiAllreduceOp,
+                 LowerCommMpiBcastOp>(converter, context);
 
     if (failed(applyPartialConversion(getOperation(), target,
                                       std::move(patterns)))) {
