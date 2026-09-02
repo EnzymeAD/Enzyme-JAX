@@ -1408,6 +1408,7 @@ cc_library(
         "@llvm-project//mlir:SCFTransforms",
         "@llvm-project//mlir:SCFUtils",
         "@llvm-project//mlir:SideEffectInterfaces",
+        "@llvm-project//mlir:SparseTensorDialect",
         "@llvm-project//mlir:Support",
         "@llvm-project//mlir:TensorDialect",
         "@llvm-project//mlir:ToLLVMIRTranslation",
