@@ -5,6 +5,7 @@ include "Dialect.td"
 
 include "mlir/Interfaces/SideEffectInterfaces.td"
 
+include "Utils.td"
 include "Types.td"
 include "Attrs.td"
 
@@ -13,8 +14,8 @@ def NcclCommSplitOp : Comm_Op<"nccl.comm_split", []> {
 
   let arguments = (ins
     NcclComm : $comm,
-    I32 : $color,
-    I32 : $key
+    TensorI32 : $color,
+    TensorI32 : $key
   );
 
   let results = (outs NcclComm : $new_comm);
@@ -42,21 +43,21 @@ def NcclCommAbortOp : Comm_Op<"nccl.comm_abort", []> {
 def NcclCommCountOp : Comm_Op<"nccl.comm_count", [Pure]> {
   let summary = "Equivalent to `ncclCommCount`";
   let arguments = (ins NcclComm : $comm);
-  let results = (outs I32 : $count);
+  let results = (outs TensorI32 : $count);
   let assemblyFormat = "$comm attr-dict `:` type(results)";
 }
 
 def NcclCommCuDeviceOp : Comm_Op<"nccl.comm_cudevice", [Pure]> {
   let summary = "Equivalent to `ncclCommCuDevice`";
   let arguments = (ins NcclComm : $comm);
-  let results = (outs I32 : $cu_device);
+  let results = (outs TensorI32 : $cu_device);
   let assemblyFormat = "$comm attr-dict `:` type(results)";
 }
 
 def NcclCommUserRankOp : Comm_Op<"nccl.comm_user_rank", [Pure]> {
   let summary = "Equivalent to `ncclCommUserRank`";
   let arguments = (ins NcclComm : $comm);
-  let results = (outs I32 : $user_rank);
+  let results = (outs TensorI32 : $user_rank);
   let assemblyFormat = "$comm attr-dict `:` type(results)";
 }
 
@@ -80,7 +81,7 @@ def NcclBroadcastOp : Comm_Op<"nccl.broadcast", []> {
 
   let arguments = (ins
     AnyTensor : $sendbuff,
-    I32 : $root,
+    TensorI32 : $root,
     NcclComm : $comm,
     NcclStream : $stream
     // TODO $inplace unit attr for reusing sendbuf as recvbuf
@@ -95,7 +96,7 @@ def NcclSendOp : Comm_Op<"nccl.send", []> {
 
   let arguments = (ins
     AnyTensor : $sendbuff,
-    I32 : $peer,
+    TensorI32 : $peer,
     NcclComm : $comm,
     NcclStream : $stream
   );
@@ -107,7 +108,7 @@ def NcclRecvOp : Comm_Op<"nccl.recv", []> {
   let summary = "Equivalent to `ncclRecv`";
 
   let arguments = (ins
-    I32 : $peer,
+    TensorI32 : $peer,
     NcclComm : $comm,
     NcclStream : $stream
   );
