@@ -268,21 +268,21 @@ public:
         smt.getRank() != omt.getRank())
       return failure();
 
-    // The shapes adapt in the source's own space, so a memory space cast
-    // lands last, closest to the accesses, where it can sink into them.
-    auto inSrcSpace =
-        MemRefType::get(omt.getShape(), omt.getElementType(),
-                        MemRefLayoutAttrInterface{}, smt.getMemorySpace());
+    // The memory space changes on the source's own shape, so the shape cast
+    // lands last, closest to the accesses, where it folds into them.
+    auto inDstSpace =
+        MemRefType::get(smt.getShape(), smt.getElementType(),
+                        MemRefLayoutAttrInterface{}, omt.getMemorySpace());
+    if (inDstSpace != omt &&
+        !memref::CastOp::areCastCompatible(inDstSpace, omt))
+      return failure();
     Value v = src.getSource();
-    if (inSrcSpace != smt) {
-      if (!memref::CastOp::areCastCompatible(smt, inSrcSpace))
-        return failure();
-      v = memref::CastOp::create(rewriter, op.getLoc(), inSrcSpace, v)
-              .getResult();
-    }
     if (smt.getMemorySpace() != omt.getMemorySpace())
-      v = memref::MemorySpaceCastOp::create(rewriter, op.getLoc(), omt, v)
+      v = memref::MemorySpaceCastOp::create(rewriter, op.getLoc(), inDstSpace,
+                                            v)
               .getResult();
+    if (inDstSpace != omt)
+      v = memref::CastOp::create(rewriter, op.getLoc(), omt, v).getResult();
     rewriter.replaceOp(op, v);
     return success();
   }
