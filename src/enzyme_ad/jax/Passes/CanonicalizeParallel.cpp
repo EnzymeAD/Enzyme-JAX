@@ -702,6 +702,71 @@ struct UnrollInvariantYieldWhile : public OpRewritePattern<scf::WhileOp> {
   }
 };
 
+// How many scalars an LLVM aggregate holds when every leaf is the same scalar
+// type, or -1.
+static int64_t homogeneousLeafCount(Type t, Type &leaf) {
+  if (auto at = dyn_cast<LLVM::LLVMArrayType>(t)) {
+    int64_t n = homogeneousLeafCount(at.getElementType(), leaf);
+    return n < 0 ? -1 : n * at.getNumElements();
+  }
+  if (auto st = dyn_cast<LLVM::LLVMStructType>(t)) {
+    if (st.isOpaque())
+      return -1;
+    int64_t tot = 0;
+    for (Type f : st.getBody()) {
+      int64_t n = homogeneousLeafCount(f, leaf);
+      if (n < 0)
+        return -1;
+      tot += n;
+    }
+    return tot;
+  }
+  if (t.isIntOrFloat()) {
+    if (!leaf)
+      leaf = t;
+    return leaf == t ? 1 : -1;
+  }
+  return -1;
+}
+
+// Scratch declared as one aggregate value (a union wrapping a register array)
+// reaches the memref world as a memref of an LLVM struct whose only consumers
+// cast it straight back to a pointer. Padding-free and single-leaf-typed, that
+// is flat scalar scratch, and the pointer round trip then folds to a view.
+struct FlattenAggregateAlloca : public OpRewritePattern<memref::AllocaOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(memref::AllocaOp alloca,
+                                PatternRewriter &rewriter) const override {
+    MemRefType MT = alloca.getType();
+    if (!isa<LLVM::LLVMStructType, LLVM::LLVMArrayType>(MT.getElementType()) ||
+        !MT.hasStaticShape() || !MT.getLayout().isIdentity())
+      return failure();
+    Type leaf;
+    int64_t leaves = homogeneousLeafCount(MT.getElementType(), leaf);
+    if (leaves <= 0)
+      return failure();
+    DataLayout dl = DataLayout::closest(alloca);
+    if (dl.getTypeSize(MT.getElementType()) != leaves * dl.getTypeSize(leaf))
+      return failure();
+    if (!llvm::all_of(alloca->getUsers(),
+                      llvm::IsaPred<enzymexla::Memref2PointerOp>))
+      return failure();
+
+    auto NT = MemRefType::get({leaves * MT.getNumElements()}, leaf,
+                              MemRefLayoutAttrInterface{}, MT.getMemorySpace());
+    auto flat = memref::AllocaOp::create(rewriter, alloca.getLoc(), NT,
+                                         alloca.getAlignmentAttr());
+    for (Operation *user : llvm::make_early_inc_range(alloca->getUsers())) {
+      rewriter.setInsertionPoint(user);
+      rewriter.replaceOpWithNewOp<enzymexla::Memref2PointerOp>(
+          user, user->getResult(0).getType(), flat);
+    }
+    rewriter.eraseOp(alloca);
+    return success();
+  }
+};
+
 struct CanonicalizeParallelPass
     : public enzyme::impl::CanonicalizeParallelPassBase<
           CanonicalizeParallelPass> {
@@ -729,7 +794,8 @@ struct CanonicalizeParallelPass
         SinkThroughIfOfConstants<arith::DivUIOp, scf::IfOp>,
         SinkThroughIfOfConstants<arith::DivUIOp, affine::AffineIfOp>,
         SelectOfNullPointer, IfOfNullPointer<scf::IfOp>,
-        IfOfNullPointer<affine::AffineIfOp>, UnrollInvariantYieldWhile>(ctx);
+        IfOfNullPointer<affine::AffineIfOp>, UnrollInvariantYieldWhile,
+        FlattenAggregateAlloca>(ctx);
     FrozenRewritePatternSet patterns(std::move(owningPatterns));
 
     GreedyRewriteConfig config;
