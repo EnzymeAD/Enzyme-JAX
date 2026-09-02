@@ -32,6 +32,7 @@
 #include "llvm/Support/KnownBits.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
+#include "src/enzyme_ad/jax/Utils.h"
 
 namespace mlir {
 namespace enzyme {
@@ -477,71 +478,6 @@ struct SelectOfDifferentBaseGEPs : public OpRewritePattern<arith::SelectOp> {
   }
 };
 
-// Whether nothing can observe the address itself: every use either reads or
-// writes the pointed-to memory, or carries the pointer somewhere that is in
-// turn only dereferenced. A comparison, an escape into a call, or a store of
-// the pointer as a value all answer no.
-static bool onlyDereferenced(Value root) {
-  SmallVector<Value> todo{root};
-  SmallPtrSet<Value, 8> seen;
-  while (!todo.empty()) {
-    Value v = todo.pop_back_val();
-    if (!seen.insert(v).second)
-      continue;
-    for (OpOperand &use : v.getUses()) {
-      Operation *user = use.getOwner();
-      if (auto gep = dyn_cast<LLVM::GEPOp>(user)) {
-        if (use.get() != gep.getBase())
-          return false;
-        todo.push_back(gep.getResult());
-      } else if (isa<LLVM::AddrSpaceCastOp, LLVM::BitcastOp>(user)) {
-        todo.push_back(user->getResult(0));
-      } else if (auto sel = dyn_cast<arith::SelectOp>(user)) {
-        if (use.get() == sel.getCondition())
-          return false;
-        todo.push_back(sel.getResult());
-      } else if (auto p2m = dyn_cast<enzymexla::Pointer2MemrefOp>(user)) {
-        todo.push_back(p2m.getResult());
-      } else if (auto m2p = dyn_cast<enzymexla::Memref2PointerOp>(user)) {
-        todo.push_back(m2p.getResult());
-      } else if (isa<affine::AffineYieldOp, scf::YieldOp>(user)) {
-        // Yielded out of a branch, the pointer becomes that branch's result.
-        Operation *parent = user->getParentOp();
-        if (!isa<affine::AffineIfOp, scf::IfOp>(parent))
-          return false;
-        todo.push_back(parent->getResult(use.getOperandNumber()));
-      } else if (isa<LLVM::LoadOp, affine::AffineLoadOp, memref::LoadOp>(
-                     user)) {
-        // Reads the pointed-to memory, never the pointer.
-      } else if (auto store = dyn_cast<LLVM::StoreOp>(user)) {
-        if (use.get() == store.getValue())
-          return false;
-      } else if (auto store = dyn_cast<affine::AffineStoreOp>(user)) {
-        if (use.get() == store.getValueToStore())
-          return false;
-      } else if (auto store = dyn_cast<memref::StoreOp>(user)) {
-        if (use.get() == store.getValueToStore())
-          return false;
-      } else if (auto rmw = dyn_cast<LLVM::AtomicRMWOp>(user)) {
-        if (use.get() != rmw.getPtr())
-          return false;
-      } else if (auto rmw = dyn_cast<memref::AtomicRMWOp>(user)) {
-        if (use.get() != rmw.getMemref())
-          return false;
-      } else if (auto rmw = dyn_cast<enzyme::AtomicRMWOp>(user)) {
-        if (use.get() != rmw.getMemref())
-          return false;
-      } else if (auto rmw = dyn_cast<enzyme::AffineAtomicRMWOp>(user)) {
-        if (use.get() != rmw.getMemref())
-          return false;
-      } else {
-        return false;
-      }
-    }
-  }
-  return true;
-}
-
 // A pointer that is only ever dereferenced cannot tell a null apart from any
 // other address: the null arm can only fault. So a select of a null with a
 // real pointer, whose result reaches nothing but loads and stores, is the
@@ -558,7 +494,7 @@ struct SelectOfNullPointer : public OpRewritePattern<arith::SelectOp> {
         sel.getFalseValue().getDefiningOp<LLVM::ZeroOp>() != nullptr;
     if (trueNull == falseNull)
       return failure();
-    if (!onlyDereferenced(sel.getResult()))
+    if (!enzyme::onlyDereferenced(sel.getResult()))
       return failure();
     rewriter.replaceOp(sel,
                        trueNull ? sel.getFalseValue() : sel.getTrueValue());
@@ -600,7 +536,7 @@ template <typename IfT> struct IfOfNullPointer : public OpRewritePattern<IfT> {
       if (trueNull == falseNull)
         continue;
       Value keep = trueNull ? fv : tv;
-      if (!definedOutside(keep) || !onlyDereferenced(res))
+      if (!definedOutside(keep) || !enzyme::onlyDereferenced(res))
         continue;
       rewriter.replaceAllUsesWith(res, keep);
       changed = true;

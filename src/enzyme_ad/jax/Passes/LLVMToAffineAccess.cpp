@@ -1462,37 +1462,50 @@ struct ForwardSlotStores : public OpRewritePattern<LLVM::AllocaOp> {
   }
 };
 
-// An access through a view of the null pointer can only execute as
-// undefined behavior, so it is dynamically dead: an optional buffer a kernel
-// receives as null is always guarded by a flag. Fold loads to a zero of the
-// element type and drop stores; the views and the captured null then die,
-// instead of blocking the kernel on an untypable operand.
-struct NullAccessFold : public OpRewritePattern<enzymexla::Pointer2MemrefOp> {
+// An access through the null pointer can only execute as undefined
+// behavior, so it is dynamically dead: an optional buffer a kernel receives
+// as null is always guarded by a flag. Fold loads to a zero of their type and
+// drop stores, wherever the address was derived from the null by offsets,
+// casts, or views; those then die instead of blocking the kernel on an
+// untypable operand. A null chosen against a real pointer is not derived
+// from it here: that select is the real pointer when only dereferenced.
+struct NullAccessFold : public OpRewritePattern<LLVM::ZeroOp> {
   using OpRewritePattern::OpRewritePattern;
 
-  LogicalResult matchAndRewrite(enzymexla::Pointer2MemrefOp p2m,
+  LogicalResult matchAndRewrite(LLVM::ZeroOp null,
                                 PatternRewriter &rewriter) const override {
-    Value src = p2m.getSource();
-    while (auto asc = src.getDefiningOp<LLVM::AddrSpaceCastOp>())
-      src = asc.getArg();
-    if (!src.getDefiningOp<LLVM::ZeroOp>())
+    if (!isa<LLVM::LLVMPointerType>(null.getType()))
       return failure();
+    SmallVector<Operation *> accesses;
+    enzyme::walkPointerDerivations(null, /*throughBranches=*/false,
+                                   [&](OpOperand &use) {
+                                     if (enzyme::isDereference(use))
+                                       accesses.push_back(use.getOwner());
+                                     return true;
+                                   });
     bool changed = false;
-    for (Operation *user : llvm::make_early_inc_range(p2m->getUsers())) {
-      auto zeroFor = [&](Operation *ld, Type t) {
-        rewriter.setInsertionPoint(ld);
+    for (Operation *access : accesses) {
+      if (isa<LLVM::LoadOp, affine::AffineLoadOp, memref::LoadOp>(access)) {
+        Type t = access->getResult(0).getType();
+        rewriter.setInsertionPoint(access);
         // getZeroAttr has no answer for pointers; those zero as llvm null.
-        if (t.isIntOrFloat()) {
+        if (t.isIntOrFloat())
           rewriter.replaceOpWithNewOp<arith::ConstantOp>(
-              ld, t, rewriter.getZeroAttr(t));
-          return true;
-        }
-        if (isa<LLVM::LLVMPointerType>(t)) {
-          rewriter.replaceOpWithNewOp<LLVM::ZeroOp>(ld, t);
-          return true;
-        }
-        return false;
-      };
+              access, t, rewriter.getZeroAttr(t));
+        else if (LLVM::isCompatibleType(t))
+          rewriter.replaceOpWithNewOp<LLVM::ZeroOp>(access, t);
+        else
+          continue;
+        changed = true;
+      } else if (isa<LLVM::StoreOp, affine::AffineStoreOp, memref::StoreOp>(
+                     access)) {
+        rewriter.eraseOp(access);
+        changed = true;
+      }
+    }
+    return success(changed);
+  }
+};
       if (auto ld = dyn_cast<affine::AffineLoadOp>(user)) {
         changed |= zeroFor(ld, ld.getType());
       } else if (auto ld = dyn_cast<memref::LoadOp>(user)) {

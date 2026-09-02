@@ -7,6 +7,7 @@
 //===----------------------------------------------------------------------===//
 
 #include "Utils.h"
+#include "Enzyme/MLIR/Dialect/Ops.h"
 #include "Interfaces/AutoDiffTypeInterface.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 
@@ -29,6 +30,7 @@
 #include "mlir/IR/IntegerSet.h"
 
 #include "llvm/ADT/SetVector.h"
+#include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/Support/Debug.h"
 
 #include "shardy/dialect/sdy/ir/utils.h"
@@ -2295,6 +2297,71 @@ bool allAccessesAreOnMainDiagonal(stablehlo::ReshapeOp op,
 bool allAccessesAreOnMainDiagonal(stablehlo::GatherOp op,
                                   llvm::SetVector<Operation *> &opsToReplace) {
   return false; // TODO: implement this where we are doing gather with iota
+}
+
+bool walkPointerDerivations(Value root, bool throughBranches,
+                            llvm::function_ref<bool(OpOperand &)> onUse) {
+  SmallVector<Value> todo{root};
+  SmallPtrSet<Value, 8> seen;
+  while (!todo.empty()) {
+    Value v = todo.pop_back_val();
+    if (!seen.insert(v).second)
+      continue;
+    for (OpOperand &use : v.getUses()) {
+      Operation *user = use.getOwner();
+      if (auto gep = dyn_cast<LLVM::GEPOp>(user)) {
+        if (use.get() == gep.getBase()) {
+          todo.push_back(gep.getResult());
+          continue;
+        }
+      } else if (isa<LLVM::AddrSpaceCastOp, LLVM::BitcastOp,
+                     enzymexla::Pointer2MemrefOp, enzymexla::Memref2PointerOp>(
+                     user)) {
+        todo.push_back(user->getResult(0));
+        continue;
+      } else if (auto sel = dyn_cast<arith::SelectOp>(user)) {
+        if (throughBranches && use.get() != sel.getCondition()) {
+          todo.push_back(sel.getResult());
+          continue;
+        }
+      } else if (isa<affine::AffineYieldOp, scf::YieldOp>(user)) {
+        // Yielded out of a branch, the pointer becomes that branch's result.
+        Operation *parent = user->getParentOp();
+        if (throughBranches && isa<affine::AffineIfOp, scf::IfOp>(parent)) {
+          todo.push_back(parent->getResult(use.getOperandNumber()));
+          continue;
+        }
+      }
+      if (!onUse(use))
+        return false;
+    }
+  }
+  return true;
+}
+
+bool isDereference(OpOperand &use) {
+  Operation *user = use.getOwner();
+  if (isa<LLVM::LoadOp, affine::AffineLoadOp, memref::LoadOp>(user))
+    return true;
+  if (auto store = dyn_cast<LLVM::StoreOp>(user))
+    return use.get() == store.getAddr();
+  if (auto store = dyn_cast<affine::AffineStoreOp>(user))
+    return use.get() == store.getMemRef();
+  if (auto store = dyn_cast<memref::StoreOp>(user))
+    return use.get() == store.getMemRef();
+  if (auto rmw = dyn_cast<LLVM::AtomicRMWOp>(user))
+    return use.get() == rmw.getPtr();
+  if (auto rmw = dyn_cast<memref::AtomicRMWOp>(user))
+    return use.get() == rmw.getMemref();
+  if (auto rmw = dyn_cast<enzyme::AtomicRMWOp>(user))
+    return use.get() == rmw.getMemref();
+  if (auto rmw = dyn_cast<enzyme::AffineAtomicRMWOp>(user))
+    return use.get() == rmw.getMemref();
+  return false;
+}
+
+bool onlyDereferenced(Value root) {
+  return walkPointerDerivations(root, /*throughBranches=*/true, isDereference);
 }
 
 } // namespace enzyme
