@@ -30,6 +30,7 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
+#include "llvm/Support/KnownBits.h"
 
 namespace mlir {
 namespace enzyme {
@@ -39,6 +40,7 @@ namespace enzyme {
 } // namespace mlir
 
 using namespace mlir;
+using llvm::KnownBits;
 
 namespace {
 
@@ -610,6 +612,245 @@ template <typename IfT> struct IfOfNullPointer : public OpRewritePattern<IfT> {
   }
 };
 
+// A loop that cannot iterate a third time unrolls to
+// body(init); if (cond) { after; body(next) }. That holds when the exit test
+// is a pure function of carried state whose next-iteration values are
+// loop-invariant: the third iteration would start from exactly the second's
+// state and take the same exit decision, so the loop would never end, and
+// under the forward-progress guarantee it runs at most twice. It also holds
+// when the bits known of the second iteration's state decide the exit test.
+// MFEM's strided copy loops (`k = tid; do { copy(k); k += stride; } while (k
+// < n)`) arrive the first way once the range analysis folds the increment to
+// a constant; a rotated single-trip loop around a team solve arrives the
+// second with its trip flag yielded as a constant, and a reduction over a
+// leading dimension of one or two (`do { .. } while ((k++ | odd) == 0)`) with
+// its counter's low bit set.
+struct UnrollInvariantYieldWhile : public OpRewritePattern<scf::WhileOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(scf::WhileOp w,
+                                PatternRewriter &rewriter) const override {
+    Block &before = w.getBefore().front();
+    Block &after = w.getAfter().front();
+    auto condOp = cast<scf::ConditionOp>(before.getTerminator());
+    auto yield = cast<scf::YieldOp>(after.getTerminator());
+
+    // The carried state a value is a pure function of, together with values
+    // from outside the loop; nullopt when it is not such a function.
+    auto stateOf =
+        [&](Value root) -> std::optional<SmallVector<BlockArgument>> {
+      SmallVector<BlockArgument> state;
+      SmallVector<Value> stack{root};
+      DenseSet<Value> seen;
+      while (!stack.empty()) {
+        Value v = stack.pop_back_val();
+        if (!seen.insert(v).second)
+          continue;
+        if (auto ba = dyn_cast<BlockArgument>(v)) {
+          Block *owner = ba.getOwner();
+          if (owner == &after) {
+            stack.push_back(condOp.getArgs()[ba.getArgNumber()]);
+            continue;
+          }
+          if (owner == &before) {
+            state.push_back(ba);
+            continue;
+          }
+          if (w->isAncestor(owner->getParentOp()))
+            return std::nullopt;
+          continue;
+        }
+        Operation *d = v.getDefiningOp();
+        if (!w->isAncestor(d))
+          continue;
+        if (d->getNumRegions() || !isMemoryEffectFree(d))
+          return std::nullopt;
+        stack.append(d->operand_begin(), d->operand_end());
+      }
+      return state;
+    };
+    auto invariant = [&](Value v) {
+      auto state = stateOf(v);
+      return state && state->empty();
+    };
+
+    // The bits of v known in a given iteration: the initial operands feed the
+    // first, the yields of the first feed the second, and values from outside
+    // the loop are the same in every one.
+    using Known = std::optional<KnownBits>;
+    DenseMap<std::pair<Value, unsigned>, Known> memo;
+    auto widthOf = [](Type t) -> unsigned {
+      if (auto it = dyn_cast<IntegerType>(t))
+        return it.getWidth();
+      if (isa<IndexType>(t))
+        return IndexType::kInternalStorageBitWidth;
+      return 0;
+    };
+    std::function<Known(Value, unsigned)> knownIn =
+        [&](Value v, unsigned iter) -> Known {
+      unsigned width = widthOf(v.getType());
+      if (!width)
+        return std::nullopt;
+      auto ba = dyn_cast<BlockArgument>(v);
+      Operation *d = v.getDefiningOp();
+      if (!w->isAncestor(ba ? ba.getOwner()->getParentOp() : d))
+        iter = 0;
+      auto key = std::make_pair(v, iter);
+      auto it = memo.find(key);
+      if (it != memo.end())
+        return it->second;
+      Known res = KnownBits(width);
+      APInt c;
+      auto operand = [&](unsigned i) {
+        return *knownIn(d->getOperand(i), iter);
+      };
+      auto pick = [&](Value cond, Value t, Value f) -> Known {
+        Known kc = knownIn(cond, iter);
+        if (kc->isConstant())
+          return knownIn(kc->isZero() ? f : t, iter);
+        Known kt = knownIn(t, iter), kf = knownIn(f, iter);
+        if (!kt || !kf)
+          return std::nullopt;
+        return kt->intersectWith(*kf);
+      };
+      if (ba) {
+        if (ba.getOwner() == &before) {
+          if (iter == 1)
+            res = knownIn(w.getInits()[ba.getArgNumber()], 0);
+          else if (iter == 2)
+            res = knownIn(yield.getOperand(ba.getArgNumber()), 1);
+        } else if (ba.getOwner() == &after) {
+          res = knownIn(condOp.getArgs()[ba.getArgNumber()], iter);
+        }
+      } else if (matchPattern(v, m_ConstantInt(&c))) {
+        res = KnownBits::makeConstant(c);
+      } else if (auto ifOp = dyn_cast<scf::IfOp>(d)) {
+        unsigned resNo = cast<OpResult>(v).getResultNumber();
+        res = pick(ifOp.getCondition(), ifOp.thenYield().getOperand(resNo),
+                   ifOp.elseYield().getOperand(resNo));
+      } else if (auto sel = dyn_cast<arith::SelectOp>(d)) {
+        res = pick(sel.getCondition(), sel.getTrueValue(), sel.getFalseValue());
+      } else if (auto cmp = dyn_cast<arith::CmpIOp>(d)) {
+        KnownBits l = operand(0), r = operand(1);
+        std::optional<bool> k;
+        switch (cmp.getPredicate()) {
+        case arith::CmpIPredicate::eq:
+          k = KnownBits::eq(l, r);
+          break;
+        case arith::CmpIPredicate::ne:
+          k = KnownBits::ne(l, r);
+          break;
+        case arith::CmpIPredicate::slt:
+          k = KnownBits::slt(l, r);
+          break;
+        case arith::CmpIPredicate::sle:
+          k = KnownBits::sle(l, r);
+          break;
+        case arith::CmpIPredicate::sgt:
+          k = KnownBits::sgt(l, r);
+          break;
+        case arith::CmpIPredicate::sge:
+          k = KnownBits::sge(l, r);
+          break;
+        case arith::CmpIPredicate::ult:
+          k = KnownBits::ult(l, r);
+          break;
+        case arith::CmpIPredicate::ule:
+          k = KnownBits::ule(l, r);
+          break;
+        case arith::CmpIPredicate::ugt:
+          k = KnownBits::ugt(l, r);
+          break;
+        case arith::CmpIPredicate::uge:
+          k = KnownBits::uge(l, r);
+          break;
+        }
+        if (k)
+          res = KnownBits::makeConstant(APInt(1, *k));
+      } else if (isa<arith::AddIOp>(d)) {
+        res = KnownBits::add(operand(0), operand(1));
+      } else if (isa<arith::SubIOp>(d)) {
+        res = KnownBits::sub(operand(0), operand(1));
+      } else if (isa<arith::MulIOp>(d)) {
+        res = KnownBits::mul(operand(0), operand(1));
+      } else if (isa<arith::AndIOp>(d)) {
+        res = operand(0) & operand(1);
+      } else if (isa<arith::OrIOp>(d)) {
+        res = operand(0) | operand(1);
+      } else if (isa<arith::XOrIOp>(d)) {
+        res = operand(0) ^ operand(1);
+      } else if (isa<arith::ShLIOp>(d)) {
+        res = KnownBits::shl(operand(0), operand(1));
+      } else if (isa<arith::ShRUIOp>(d)) {
+        res = KnownBits::lshr(operand(0), operand(1));
+      } else if (isa<arith::ShRSIOp>(d)) {
+        res = KnownBits::ashr(operand(0), operand(1));
+      } else if (isa<arith::DivUIOp>(d)) {
+        res = KnownBits::udiv(operand(0), operand(1));
+      } else if (isa<arith::DivSIOp>(d)) {
+        res = KnownBits::sdiv(operand(0), operand(1));
+      } else if (isa<arith::RemUIOp>(d)) {
+        res = KnownBits::urem(operand(0), operand(1));
+      } else if (isa<arith::RemSIOp>(d)) {
+        res = KnownBits::srem(operand(0), operand(1));
+      } else if (isa<arith::ExtUIOp, arith::IndexCastUIOp>(d)) {
+        res = operand(0).zextOrTrunc(width);
+      } else if (isa<arith::ExtSIOp, arith::IndexCastOp>(d)) {
+        res = operand(0).sextOrTrunc(width);
+      } else if (isa<arith::TruncIOp>(d)) {
+        res = operand(0).trunc(width);
+      }
+      memo[key] = res;
+      return res;
+    };
+
+    bool ends = false;
+    if (auto state = stateOf(condOp.getCondition()))
+      ends = llvm::all_of(*state, [&](BlockArgument ba) {
+        return invariant(yield.getOperand(ba.getArgNumber()));
+      });
+    if (!ends) {
+      Known cond = knownIn(condOp.getCondition(), 2);
+      ends = cond->isZero();
+    }
+    if (!ends)
+      return failure();
+
+    Location loc = w.getLoc();
+    IRMapping m1;
+    for (auto [ba, init] : llvm::zip(before.getArguments(), w.getInits()))
+      m1.map(ba, init);
+    for (Operation &op : before.without_terminator())
+      rewriter.clone(op, m1);
+    Value cond1 = m1.lookupOrDefault(condOp.getCondition());
+    SmallVector<Value> fwd1;
+    for (Value v : condOp.getArgs())
+      fwd1.push_back(m1.lookupOrDefault(v));
+
+    auto ifOp = scf::IfOp::create(
+        rewriter, loc, cond1,
+        [&](OpBuilder &b, Location l) {
+          IRMapping m2;
+          for (auto [aa, fw] : llvm::zip(after.getArguments(), fwd1))
+            m2.map(aa, fw);
+          for (Operation &op : after.without_terminator())
+            b.clone(op, m2);
+          for (auto [ba, nv] :
+               llvm::zip(before.getArguments(), yield.getOperands()))
+            m2.map(ba, m2.lookupOrDefault(m1.lookupOrDefault(nv)));
+          for (Operation &op : before.without_terminator())
+            b.clone(op, m2);
+          SmallVector<Value> fwd2;
+          for (Value v : condOp.getArgs())
+            fwd2.push_back(m2.lookupOrDefault(v));
+          scf::YieldOp::create(b, l, fwd2);
+        },
+        [&](OpBuilder &b, Location l) { scf::YieldOp::create(b, l, fwd1); });
+    rewriter.replaceOp(w, ifOp.getResults());
+    return success();
+  }
+};
+
 struct CanonicalizeParallelPass
     : public enzyme::impl::CanonicalizeParallelPassBase<
           CanonicalizeParallelPass> {
@@ -637,7 +878,7 @@ struct CanonicalizeParallelPass
         SinkThroughIfOfConstants<arith::DivUIOp, scf::IfOp>,
         SinkThroughIfOfConstants<arith::DivUIOp, affine::AffineIfOp>,
         SelectOfNullPointer, IfOfNullPointer<scf::IfOp>,
-        IfOfNullPointer<affine::AffineIfOp>>(ctx);
+        IfOfNullPointer<affine::AffineIfOp>, UnrollInvariantYieldWhile>(ctx);
     FrozenRewritePatternSet patterns(std::move(owningPatterns));
 
     GreedyRewriteConfig config;
