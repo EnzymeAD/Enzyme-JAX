@@ -119,7 +119,6 @@ cc_library(
     deps = [
         "@com_google_absl//absl/base",
         "@com_google_absl//absl/strings:str_format",
-        "@llvm-project//llvm:Support",
         "@xla//xla/ffi:ffi_api",
         "@xla//xla/ffi/api:c_api",
         "@xla//xla/ffi/api:ffi",
@@ -1378,8 +1377,8 @@ cc_library(
         "@llvm-project//mlir:InliningUtils",
         "@llvm-project//mlir:LLVMCommonConversion",
         "@llvm-project//mlir:LLVMDialect",
-        "@llvm-project//mlir:LinalgTransforms",
         "@llvm-project//mlir:LoopLikeInterface",
+        "@llvm-project//mlir:LinalgTransforms",
         "@llvm-project//mlir:MathDialect",
         "@llvm-project//mlir:MathToLLVM",
         "@llvm-project//mlir:MathToLibm",
