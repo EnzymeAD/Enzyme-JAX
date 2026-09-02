@@ -2049,6 +2049,25 @@ convertLLVMToAffineAccess(Operation *op,
   }
 
   IRMapping mapping;
+  // A converted access can be the base pointer of other accesses, whose
+  // builders then need the replacement said to them. Saying it to every
+  // builder for every conversion is quadratic in the number of accesses;
+  // index the builders by base once and tell only the bucket that cares.
+  DenseMap<Value, SmallVector<AffineAccessBuilder *>> buildersByBase;
+  for (auto &aabp : accessBuilders)
+    buildersByBase[aabp->getBase()].push_back(aabp.get());
+  auto replaceBases = [&](Value before, Value after) {
+    auto it = buildersByBase.find(before);
+    if (it == buildersByBase.end())
+      return;
+    SmallVector<AffineAccessBuilder *> moved = std::move(it->second);
+    buildersByBase.erase(it);
+    for (AffineAccessBuilder *a2 : moved)
+      a2->maybeReplaceBase(before, after);
+    auto &dst = buildersByBase[after];
+    dst.append(moved.begin(), moved.end());
+  };
+
   for (auto &aabp : accessBuilders) {
     AffineAccessBuilder &aab = *aabp;
     // TODO add a test where some operations are left illegal
@@ -2110,9 +2129,7 @@ convertLLVMToAffineAccess(Operation *op,
               AffineMap::get(mao.map.getNumDims(), mao.map.getNumSymbols(),
                              expr),
               ic(mao.operands));
-          for (auto &a2 : accessBuilders) {
-            a2->maybeReplaceBase(load, newLoad);
-          }
+          replaceBases(load, newLoad);
           mc.replace(load, newLoad);
           ic.replace(load, newLoad);
           rewriter.replaceOp(load, newLoad);
@@ -2137,9 +2154,7 @@ convertLLVMToAffineAccess(Operation *op,
                                   load.getAddr().getType().getAddressSpace())),
               load.getAddr()),
           idxs);
-      for (auto &a2 : accessBuilders) {
-        a2->maybeReplaceBase(load, newLoad);
-      }
+      replaceBases(load, newLoad);
       mc.replace(load, newLoad);
       ic.replace(load, newLoad);
       rewriter.replaceOp(load, newLoad);
