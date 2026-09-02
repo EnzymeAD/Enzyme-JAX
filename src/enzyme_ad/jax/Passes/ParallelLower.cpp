@@ -28,8 +28,8 @@
 #include "mlir/IR/OpDefinition.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "mlir/Transforms/Passes.h"
-#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/ScopeExit.h"
+#include "llvm/ADT/SetVector.h"
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/StringRef.h"
 #include "llvm/Support/DebugLog.h"
@@ -372,18 +372,14 @@ void ParallelLower::runOnOperation() {
   SmallPtrSet<Operation *, 1> replacedCallables;
   // Pre-inlining recurses into the callee's own calls; a (mutually)
   // recursive callee would recurse forever. A callable already on the
-  // stack keeps its recursive call sites uninlined.
+  // stack keeps its recursive call sites uninlined, and a call site inside
+  // its own callee is never inlined: cloning a region into itself never
+  // ends.
   SmallPtrSet<Operation *, 8> inliningStack;
-  // Inlined-away callees are erased only after all inlining: erasing one
-  // mid-run hands later callers freed memory through the cached symbol
-  // tables, and keeping them alive trips the gpu-instruction check below.
-  SetVector<Operation *> deferredFnErase;
   std::function<void(CallOp)> callInliner = [&](CallOp caller) {
     // Build the inliner interface.
     AlwaysInlinerInterface interface(&getContext());
 
-    if (!caller.getCalleeAttr())
-      return;
     CallableOpInterface callableOp = dyn_cast_or_null<CallableOpInterface>(
         caller.resolveCallableInTable(&symbolTable));
     if (!callableOp)
@@ -393,7 +389,8 @@ void ParallelLower::runOnOperation() {
       return;
     if (targetRegion->empty())
       return;
-    if (!inliningStack.insert(callableOp).second)
+    if (callableOp->isAncestor(caller) ||
+        !inliningStack.insert(callableOp).second)
       return;
     llvm::scope_exit stackGuard(
         [&, op = callableOp.getOperation()] { inliningStack.erase(op); });
@@ -454,7 +451,8 @@ void ParallelLower::runOnOperation() {
       return;
     if (targetRegion->empty())
       return;
-    if (!inliningStack.insert(callableOp).second)
+    if (callableOp->isAncestor(caller) ||
+        !inliningStack.insert(callableOp).second)
       return;
     llvm::scope_exit stackGuard(
         [&, op = callableOp.getOperation()] { inliningStack.erase(op); });
@@ -553,7 +551,7 @@ void ParallelLower::runOnOperation() {
     b.setInsertionPointToEnd(&allocScope.getRegion().front());
     memref::AllocaScopeReturnOp::create(b, allocScope.getLoc(),
                                         exOp.getResults());
-    deferredFnErase.insert(lfn);
+    lfn->erase();
   };
   autodiffInliner = [&](enzyme::AutoDiffOp caller) {
     // Build the inliner interface.
@@ -566,7 +564,8 @@ void ParallelLower::runOnOperation() {
     Region &targetRegion = callableOp.getFunctionBody();
     if (targetRegion.empty())
       return;
-    if (!inliningStack.insert(callableOp).second)
+    if (callableOp->isAncestor(caller) ||
+        !inliningStack.insert(callableOp).second)
       return;
     llvm::scope_exit stackGuard(
         [&, op = callableOp.getOperation()] { inliningStack.erase(op); });
@@ -603,9 +602,8 @@ void ParallelLower::runOnOperation() {
           bidx.getCallee() == "_ZN4dim3C1Ejjj")
         dimsToInline.push_back(bidx);
     });
-    for (auto op : dimsToInline) {
+    for (auto op : dimsToInline)
       callInliner(op);
-    }
   }
 
   {
@@ -628,7 +626,8 @@ void ParallelLower::runOnOperation() {
       auto lop = op->getParentOfType<gpu::LaunchOp>();
       auto fop = op->getParentOfType<FunctionOpInterface>();
       if (!lop || lop->isAncestor(fop)) {
-        toinl.insert(fop);
+        if (!toinl.insert(fop))
+          continue;
         for (Operation *m : symbolUserMap.getUsers(fop)) {
           if (isa<LLVM::CallOp, func::CallOp>(m))
             inlineOps.push_back(m);
@@ -824,8 +823,8 @@ void ParallelLower::runOnOperation() {
     if (wrapParallelOps) {
       auto pw = enzymexla::GPUWrapperOp::create(
           builder, loc,
-          ValueRange({dimGridX, dimGridY, dimGridZ, dimBlockX, dimBlockY,
-                      dimBlockZ}));
+          ValueRange(
+              {dimGridX, dimGridY, dimGridZ, dimBlockX, dimBlockY, dimBlockZ}));
       if (lfn) {
         if (auto passthrough = lfn.getPassthrough()) {
           pw->setAttr("passthrough", *passthrough);
@@ -846,8 +845,7 @@ void ParallelLower::runOnOperation() {
 
     auto block = mlir::scf::ParallelOp::create(
         builder, loc, std::vector<Value>({zindex, zindex, zindex}),
-        std::vector<Value>({dimGridX, dimGridY,
-                            dimGridZ}),
+        std::vector<Value>({dimGridX, dimGridY, dimGridZ}),
         std::vector<Value>({oneindex, oneindex, oneindex}));
     Block *blockB = &block.getRegion().front();
     builder.setInsertionPointToStart(blockB);
@@ -869,8 +867,7 @@ void ParallelLower::runOnOperation() {
 
     auto threadr = mlir::scf::ParallelOp::create(
         builder, loc, std::vector<Value>({zindex, zindex, zindex}),
-        std::vector<Value>({dimBlockX, dimBlockY,
-                            dimBlockZ}),
+        std::vector<Value>({dimBlockX, dimBlockY, dimBlockZ}),
         std::vector<Value>({oneindex, oneindex, oneindex}));
     Block *threadB = &threadr.getRegion().front();
     builder.setInsertionPointToStart(threadB);
@@ -1148,9 +1145,6 @@ void ParallelLower::runOnOperation() {
       }
     }
   }
-  for (Operation *fn : deferredFnErase)
-    fn->erase();
-  deferredFnErase.clear();
   if (getOperation()
           ->walk<WalkOrder::PreOrder>([](Operation *op) {
             if (isa<gpu::GPUModuleOp>(op))
@@ -1236,6 +1230,7 @@ void FixGPUFunc::runOnOperation() {
 
     if (callOp2)
       callInliner(callOp2);
+
     callInliner(callOp);
   });
 }
