@@ -4015,17 +4015,40 @@ struct AffineToStableHLORaisingPass
           continue;
         Value thenV = thenB->getTerminator()->getOperand(i);
         Value elseV = elseB->getTerminator()->getOperand(i);
-        for (OpOperand &use : llvm::make_early_inc_range(res.getUses())) {
-          Operation *user = use.getOwner();
-          bool isLoad = isa<memref::LoadOp, affine::AffineLoadOp>(user);
-          bool isStore = isa<memref::StoreOp, affine::AffineStoreOp>(user);
-          unsigned memIdx = isLoad ? 0 : 1;
-          if ((!isLoad && !isStore) || use.getOperandNumber() != memIdx)
+        // The access may name the result itself, or reach it back through a
+        // pointer: the buffer is converted to one and viewed again, and the
+        // access is on that view.
+        SmallVector<std::pair<Operation *, SmallVector<Operation *>>> reached;
+        for (Operation *user : res.getUsers()) {
+          if (isa<memref::LoadOp, affine::AffineLoadOp, memref::StoreOp,
+                  affine::AffineStoreOp>(user)) {
+            reached.push_back({user, {}});
             continue;
-          OpBuilder b(user);
+          }
+          auto m2p = dyn_cast<enzymexla::Memref2PointerOp>(user);
+          if (!m2p)
+            continue;
+          for (Operation *pu : m2p->getUsers()) {
+            auto p2m = dyn_cast<enzymexla::Pointer2MemrefOp>(pu);
+            if (!p2m)
+              continue;
+            for (Operation *acc : p2m->getUsers())
+              if (isa<memref::LoadOp, affine::AffineLoadOp, memref::StoreOp,
+                      affine::AffineStoreOp>(acc))
+                reached.push_back({acc, {m2p, p2m}});
+          }
+        }
+        for (auto &[acc, chain] : reached) {
+          bool isLoad = isa<memref::LoadOp, affine::AffineLoadOp>(acc);
+          unsigned memIdx = isLoad ? 0 : 1;
+          // The buffer must be what the access reads, not what it stores.
+          Value accessed = chain.empty() ? res : chain.back()->getResult(0);
+          if (acc->getOperand(memIdx) != accessed)
+            continue;
+          OpBuilder b(acc);
           auto newIf = affine::AffineIfOp::create(
-              b, user->getLoc(),
-              isLoad ? TypeRange(user->getResult(0).getType()) : TypeRange(),
+              b, acc->getLoc(),
+              isLoad ? TypeRange(acc->getResult(0).getType()) : TypeRange(),
               ifOp.getIntegerSet(), ifOp.getOperands(),
               /*withElseRegion=*/true);
           auto fillArm = [&](Block *srcArm, Value yielded, Block *dstArm) {
@@ -4036,19 +4059,32 @@ struct AffineToStableHLORaisingPass
             OpBuilder ab = OpBuilder::atBlockEnd(dstArm);
             for (Operation &armOp : srcArm->without_terminator())
               ab.clone(armOp, m);
-            Operation *access = ab.clone(*user, m);
-            access->setOperand(memIdx, m.lookupOrDefault(yielded));
+            Value buf = m.lookupOrDefault(yielded);
+            for (Operation *link : chain) {
+              Operation *cloned = ab.clone(*link, m);
+              cloned->setOperand(0, buf);
+              buf = cloned->getResult(0);
+            }
+            Operation *access = ab.clone(*acc, m);
+            access->setOperand(memIdx, buf);
             affine::AffineYieldOp::create(
-                ab, user->getLoc(),
+                ab, acc->getLoc(),
                 isLoad ? ValueRange(access->getResult(0)) : ValueRange());
           };
           fillArm(thenB, thenV, newIf.getThenBlock());
           fillArm(elseB, elseV, newIf.getElseBlock());
           if (isLoad)
-            user->getResult(0).replaceAllUsesWith(newIf.getResult(0));
-          user->erase();
+            acc->getResult(0).replaceAllUsesWith(newIf.getResult(0));
+          acc->erase();
+          // The conversions the access reached the buffer through are the
+          // only thing still naming the branch; with the access gone they
+          // are dead, and while they stand the branch cannot be raised.
+          for (Operation *link : llvm::reverse(chain))
+            if (link->use_empty())
+              link->erase();
         }
       }
+
       if (llvm::all_of(ifOp.getResults(),
                        [](Value r) { return r.use_empty(); })) {
         ifOp.erase();
