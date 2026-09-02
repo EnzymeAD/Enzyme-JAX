@@ -14,9 +14,22 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<!llvm.ptr, dense<
     %v = affine.load %m[0] : memref<?xf64>
     llvm.return %v : f64
   }
+
+  func.func @memref_element(%base: !llvm.ptr, %off: i64) -> memref<?xf32> {
+    %g = llvm.getelementptr inbounds|nuw %base[%off] : (!llvm.ptr, i64) -> !llvm.ptr, i8
+    %m = "enzymexla.pointer2memref"(%g) : (!llvm.ptr) -> memref<?xmemref<?xf32>>
+    %v = affine.load %m[0] : memref<?xmemref<?xf32>>
+    return %v : memref<?xf32>
+  }
+
+  llvm.func @func_element(%base: !llvm.ptr, %off: i64) -> !llvm.func<void ()> {
+    %g = llvm.getelementptr inbounds|nuw %base[%off] : (!llvm.ptr, i64) -> !llvm.ptr, i8
+    %m = "enzymexla.pointer2memref"(%g) : (!llvm.ptr) -> memref<?x!llvm.func<void ()>>
+    %v = affine.load %m[0] : memref<?x!llvm.func<void ()>>
+    llvm.return %v : !llvm.func<void ()>
+  }
 }
 
-// A view of pointers folds the same way a view of floats does.
 // CHECK-LABEL: llvm.func @ptr_element(
 // CHECK-NOT: llvm.getelementptr
 // CHECK: "enzymexla.pointer2memref"(%arg0)
@@ -24,3 +37,11 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<!llvm.ptr, dense<
 // CHECK-LABEL: llvm.func @float_element(
 // CHECK-NOT: llvm.getelementptr
 // CHECK: "enzymexla.pointer2memref"(%arg0)
+
+// CHECK-LABEL: func.func @memref_element(
+// CHECK: %[[g:.+]] = llvm.getelementptr inbounds|nuw %arg0[%arg1]
+// CHECK: "enzymexla.pointer2memref"(%[[g]])
+
+// CHECK-LABEL: llvm.func @func_element(
+// CHECK: %[[g:.+]] = llvm.getelementptr inbounds|nuw %arg0[%arg1]
+// CHECK: "enzymexla.pointer2memref"(%[[g]])

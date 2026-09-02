@@ -669,10 +669,11 @@ public:
     if (!src)
       return failure();
 
-    // Get the element type and size of the final memref. Anything the data
-    // layout can size will do: a view of pointers is as foldable as a view of
-    // floats, and asking only int or float declines those for no reason.
+    // Get the element type and size of the final memref
     Type elementType = accessedType.getElementType();
+    if (!elementType.isIntOrFloat() &&
+        !isa<DataLayoutTypeInterface>(elementType))
+      return failure();
     DataLayout dl = DataLayout::closest(op);
     unsigned elementSize = dl.getTypeSize(elementType);
     if (elementSize == 0)
