@@ -46,81 +46,47 @@ func.func @mixed_use(%out: memref<32xf64, 1>) {
 // CHECK: %[[BC:.+]] = stablehlo.broadcast_in_dim %[[RD]], dims = [0]
 // CHECK: stablehlo.dynamic_update_slice %[[OUT2]], %[[BC]], %{{.+}} : (tensor<32xf64>, tensor<32xf64>, tensor<i64>) -> tensor<32xf64>
 
+
 // -----
 
-// A block-wide barrier over a batched thread axis is a no-op in raised form
-// (whole-tensor updates are already ordered), and a tid==0 broadcast store
-// or-reduces its mask over the thread axis it does not index.
-func.func @bcast(%out: memref<?xf64, 1>, %in: memref<?xf64, 1>, %nbuf: memref<i64, 1>) {
-  %n = affine.load %nbuf[] : memref<i64, 1>
-  %ni = arith.index_cast %n : i64 to index
-  affine.for %e = 0 to %ni {
+// The scratch reaches one access directly as a plain memref.load next to the
+// viewed accesses: it moves to the flat buffer with its indexing linearized
+// instead of keeping the whole chain opaque.
+func.func @direct_mix(%out: memref<32xf64, 1>) {
+  affine.parallel (%i) = (0) to (32) {
     %scr = memref.alloca() : memref<32xf64>
-    %b = memref.alloca() : memref<1xf64>
-    affine.parallel (%t) = (0) to (32) {
-      %v = affine.load %in[%e * 32 + %t] : memref<?xf64, 1>
-      affine.store %v, %scr[%t] : memref<32xf64>
-      affine.if affine_set<(d0) : (d0 == 0)>(%t) {
-        %s = affine.load %in[%e] : memref<?xf64, 1>
-        affine.store %s, %b[0] : memref<1xf64>
-      }
-      "enzymexla.barrier"(%t) : (index) -> ()
-      %x = affine.load %scr[%t] : memref<32xf64>
-      %y = affine.load %b[0] : memref<1xf64>
-      %m = arith.mulf %x, %y : f64
-      affine.store %m, %out[%e * 32 + %t] : memref<?xf64, 1>
-    }
-  } {enzymexla.parallel}
-  return
-}
-
-// CHECK-LABEL: func.func private @bcast_raised(
-// CHECK: stablehlo.while
-// CHECK-SAME: attributes {enzymexla.parallel}
-// CHECK-NOT: enzymexla.barrier
-// CHECK: %[[RED:.+]] = stablehlo.reduce(%{{.+}} init: %{{.+}}) applies stablehlo.or across dimensions = [0] : (tensor<32xi1>, tensor<i1>) -> tensor<i1>
-// CHECK: stablehlo.select %[[RED]], %{{.+}}, %{{.+}} : tensor<i1>, tensor<f64>
-
-// -----
-
-// A uniform branch choosing between two buffers expands into a branch per
-// access, raising as a select over the loaded values.
-func.func @bufsel(%a: memref<100xf64, 1>, %b: memref<100xf64, 1>, %out: memref<100xf64, 1>, %flagbuf: memref<i64, 1>) {
-  %f = affine.load %flagbuf[] : memref<i64, 1>
-  %fi = arith.index_cast %f : i64 to index
-  affine.parallel (%i) = (0) to (100) {
-    %buf = affine.if affine_set<()[s0] : (s0 - 1 >= 0)>()[%fi] -> memref<100xf64, 1> {
-      affine.yield %a : memref<100xf64, 1>
-    } else {
-      affine.yield %b : memref<100xf64, 1>
-    }
-    %v = affine.load %buf[%i] : memref<100xf64, 1>
-    affine.store %v, %out[%i] : memref<100xf64, 1>
+    %p = "enzymexla.memref2pointer"(%scr) : (memref<32xf64>) -> !llvm.ptr<3>
+    %v = "enzymexla.pointer2memref"(%p) : (!llvm.ptr<3>) -> memref<?xf64, 3>
+    %c = arith.constant 3.0 : f64
+    affine.store %c, %v[%i] : memref<?xf64, 3>
+    %idx = arith.constant 0 : index
+    %r = memref.load %scr[%idx] : memref<32xf64>
+    affine.store %r, %out[%i] : memref<32xf64, 1>
   }
   return
 }
 
-// CHECK-LABEL: func.func private @bufsel_raised(
-// CHECK: stablehlo.select %{{.+}}, %{{.+}}, %{{.+}} : tensor<100xi1>, tensor<100xf64>
+// CHECK-LABEL: func.func private @direct_mix_raised(
 
 // -----
 
-// The non-affine store path: a mask axis the scatter grid does not carry
-// (the tid==0 guard) or-reduces instead of producing a rank-mismatched
-// broadcast.
-func.func @bcast_scatter(%out: memref<100xf64, 1>, %in: memref<100xf64, 1>) {
-  affine.parallel (%e, %t) = (0, 0) to (4, 32) {
-    %v = affine.load %in[%e * 25] : memref<100xf64, 1>
-    affine.if affine_set<(d0) : (d0 == 0)>(%t) {
-      %ei = arith.index_castui %e : index to i64
-      %e2 = arith.muli %ei, %ei : i64
-      %idx = arith.index_cast %e2 : i64 to index
-      memref.store %v, %out[%idx] : memref<100xf64, 1>
-    }
+// Views can reach the scratch through an address-space cast and a
+// constant-offset gep; the accumulated byte offset folds into the access
+// indices of the flat buffer.
+func.func @offsetview(%out: memref<8xf64, 1>, %in: memref<8xf64, 1>) {
+  %scr = memref.alloca() : memref<16xf64>
+  %ptr = "enzymexla.memref2pointer"(%scr) : (memref<16xf64>) -> !llvm.ptr<3>
+  %gp = llvm.addrspacecast %ptr : !llvm.ptr<3> to !llvm.ptr
+  %off = llvm.getelementptr inbounds %gp[64] : (!llvm.ptr) -> !llvm.ptr, i8
+  affine.parallel (%t) = (0) to (8) {
+    %view = "enzymexla.pointer2memref"(%off) : (!llvm.ptr) -> memref<?xf64>
+    %v = affine.load %in[%t] : memref<8xf64, 1>
+    affine.store %v, %view[%t] : memref<?xf64>
+    %r = affine.load %view[7 - %t] : memref<?xf64>
+    affine.store %r, %out[%t] : memref<8xf64, 1>
   }
   return
 }
 
-// CHECK-LABEL: func.func private @bcast_scatter_raised(
-// CHECK: stablehlo.reduce{{.*}}applies stablehlo.or across dimensions
-// CHECK: "stablehlo.scatter"
+// CHECK-LABEL: func.func private @offsetview_raised(
+// CHECK: stablehlo.reverse

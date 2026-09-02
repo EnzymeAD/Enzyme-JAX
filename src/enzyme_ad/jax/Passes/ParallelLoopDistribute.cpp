@@ -2861,8 +2861,7 @@ struct LowerCacheLoad : public OpRewritePattern<enzymexla::CacheLoadOp> {
 
 struct SCFCPUifyPass : public enzyme::impl::SCFCPUifyBase<SCFCPUifyPass> {
   template <bool UseMinCut>
-  static void addPatterns(RewritePatternSet &patterns, StringRef method,
-                          MLIRContext *ctx) {
+  void addPatterns(RewritePatternSet &patterns, StringRef method) {
     patterns.insert<
         mlir::enzymexla::BarrierElim</*TopLevelOnly*/ false>, Reg2MemWhile,
         Reg2MemFor<scf::ForOp, UseMinCut>,
@@ -2880,14 +2879,14 @@ struct SCFCPUifyPass : public enzyme::impl::SCFCPUifyBase<SCFCPUifyPass> {
         InterchangeForIfPFor<affine::AffineParallelOp, scf::IfOp>,
         InterchangeForIfPFor<scf::ParallelOp, affine::AffineIfOp>,
         InterchangeForIfPFor<affine::AffineParallelOp, affine::AffineIfOp>>(
-        ctx);
+        &getContext());
     if (method.contains("ifhoist")) {
       patterns
           .insert<HoistBarrierIf<scf::ParallelOp, scf::IfOp>,
                   HoistBarrierIf<scf::ParallelOp, affine::AffineIfOp>,
                   HoistBarrierIf<affine::AffineParallelOp, scf::IfOp>,
                   HoistBarrierIf<affine::AffineParallelOp, affine::AffineIfOp>>(
-              ctx);
+              &getContext());
     } else {
       if (method.contains("ifsplit")) {
         patterns.insert<
@@ -2897,11 +2896,11 @@ struct SCFCPUifyPass : public enzyme::impl::SCFCPUifyBase<SCFCPUifyPass> {
                                       affine::AffineParallelOp, UseMinCut>,
             DistributeIfAroundBarrier<scf::IfOp, scf::ParallelOp, UseMinCut>,
             DistributeIfAroundBarrier<affine::AffineIfOp, scf::ParallelOp,
-                                      UseMinCut>>(ctx);
+                                      UseMinCut>>(&getContext());
       }
       patterns.insert<WrapIfWithBarrier<scf::IfOp, UseMinCut>,
                       WrapIfWithBarrier<affine::AffineIfOp, UseMinCut>>(
-          ctx);
+          &getContext());
     }
 
     patterns.insert<
@@ -2911,7 +2910,7 @@ struct SCFCPUifyPass : public enzyme::impl::SCFCPUifyBase<SCFCPUifyPass> {
 
         DistributeAroundBarrier<scf::ParallelOp, UseMinCut>,
         DistributeAroundBarrier<affine::AffineParallelOp, UseMinCut>>(
-        ctx);
+        &getContext());
   }
   // CPUifyPass() = default;
   // CPUifyPass(StringRef method) { this->method.setValue(method.str()); }
@@ -2922,9 +2921,9 @@ struct SCFCPUifyPass : public enzyme::impl::SCFCPUifyBase<SCFCPUifyPass> {
       {
         RewritePatternSet patterns(&getContext());
         if (method.contains("mincut"))
-          addPatterns<true>(patterns, method, &getContext());
+          addPatterns<true>(patterns, method);
         else
-          addPatterns<false>(patterns, method, &getContext());
+          addPatterns<false>(patterns, method);
         // GreedyRewriteConfig config;
         //  config.maxIterations = 142;
         mlir::GreedyRewriteConfig config;
@@ -2963,39 +2962,6 @@ struct SCFCPUifyPass : public enzyme::impl::SCFCPUifyBase<SCFCPUifyPass> {
   }
 };
 
-
 } // end namespace
-
-// Distribute loops around barriers in `root`, cpuify-style, without running
-// the whole pass: the raising uses this for wrappers whose barrier sits
-// under a serialized parallel axis.
-namespace mlir {
-namespace enzymexla {
-LogicalResult distributeAroundBarriers(Operation *root) {
-  MLIRContext *ctx = root->getContext();
-  {
-    RewritePatternSet patterns(ctx);
-    SCFCPUifyPass::addPatterns<true>(patterns, "distribute.mincut", ctx);
-    GreedyRewriteConfig config;
-    config.setMaxIterations(142);
-    config.enableFolding();
-    if (failed(applyPatternsGreedily(root, std::move(patterns), config)))
-      return failure();
-  }
-  {
-    RewritePatternSet patterns(ctx);
-    patterns.insert<LowerCacheLoad>(ctx);
-    // The cache buffers arrive behind subindex views; fold them into the
-    // accesses so the raising sees plain multi-dimensional indexing.
-    enzymexla::SubIndexOp::getCanonicalizationPatterns(patterns, ctx);
-    GreedyRewriteConfig config;
-    config.enableFolding();
-    if (failed(applyPatternsGreedily(root, std::move(patterns), config)))
-      return failure();
-  }
-  return success();
-}
-} // namespace enzymexla
-} // namespace mlir
 
 // } // namespace mlir

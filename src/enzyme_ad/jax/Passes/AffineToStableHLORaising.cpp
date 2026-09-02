@@ -5485,66 +5485,6 @@ struct AffineToStableHLORaisingPass
     }
   }
 
-  static void inlineAllocaScopes(Operation *g) {
-    if (getenv("DISABLE_INLINE_ALLOCA_SCOPES"))
-      return;
-    // Inliner wrappers stack alloca_scope/execute_region pairs, so inlining
-    // one can expose another: iterate to a fixed point.
-    bool changed = true;
-    while (changed) {
-      changed = false;
-      SmallVector<Operation *> scopes;
-      g->walk([&](Operation *op) {
-        if (isa<memref::AllocaScopeOp, scf::ExecuteRegionOp>(op))
-          scopes.push_back(op);
-      });
-      for (Operation *sc : scopes) {
-        Region &r = sc->getRegion(0);
-        if (!r.hasOneBlock())
-          linearizeRegionBlocks(r);
-        if (!r.hasOneBlock()) {
-          if (getenv("DEBUG_SCOPES")) {
-            llvm::errs() << "scope multiblock after linearize: "
-                         << std::distance(r.begin(), r.end()) << " blocks;";
-            for (Block &b : r)
-              llvm::errs() << " term=" << b.getTerminator()->getName()
-                           << " preds="
-                           << std::distance(b.pred_begin(), b.pred_end());
-            llvm::errs() << "\n";
-          }
-          continue;
-        }
-        Block *body = &r.front();
-        Operation *term = body->getTerminator();
-        for (auto [res, yielded] :
-             llvm::zip(sc->getResults(), term->getOperands()))
-          res.replaceAllUsesWith(yielded);
-        term->erase();
-        sc->getBlock()->getOperations().splice(sc->getIterator(),
-                                               body->getOperations());
-        sc->erase();
-        changed = true;
-      }
-    }
-  }
-
-  // A barrier under a parallel axis of dynamic extent raises serialized, so
-  // it cannot be dropped as a no-op: distribute the loops around it first,
-  // cpuify-style, so every pre-barrier phase completes for the whole axis
-  // before the next phase starts.
-  static void distributeSerializedBarriers(Operation *g) {
-    bool need = false;
-    g->walk([&](enzymexla::BarrierOp b) {
-      for (Operation *p = b->getParentOp(); p && p != g;
-           p = p->getParentOp())
-        if (auto ap = dyn_cast<affine::AffineParallelOp>(p))
-          if (!ap.getConstantRanges())
-            need = true;
-    });
-    if (need)
-      (void)enzymexla::distributeAroundBarriers(g);
-  }
-
   // A pure scalar computed entirely from values defined outside the wrapper
   // (a null check of an optional buffer, a host-side flag chain) is the
   // host's to compute: hoist it out, so the kernel captures the resulting
@@ -5575,371 +5515,6 @@ struct AffineToStableHLORaisingPass
         op->moveBefore(g);
         changed = true;
       }
-    }
-  }
-
-  // A view taken of a gep result pins the kernel operand to the gep, which
-  // no tensor can stand for. Rebase the view onto the underlying pointer and
-  // fold the gep's element offset into each access index; data-dependent
-  // offsets make the accesses plain memref ops, which raising gathers.
-  static void rebaseViewedGeps(Operation *root) {
-    if (getenv("DISABLE_REBASE_VIEWED_GEPS"))
-      return;
-    // Multi-dimensional register arrays produce chains of geps (slab of a
-    // slab of a slab); each pulled-up view exposes the next level, so
-    // iterate to a fixpoint.
-    bool changedAny = true;
-    while (changedAny) {
-      changedAny = false;
-    SmallVector<LLVM::GEPOp> geps;
-    root->walk([&](LLVM::GEPOp g) { geps.push_back(g); });
-    for (auto gep : geps) {
-      auto idxs = gep.getIndices();
-      if (idxs.size() != 1)
-        continue;
-      DataLayout dl = DataLayout::closest(gep);
-      int64_t elemSz = dl.getTypeSize(gep.getElemType());
-      bool ok = true;
-      SmallVector<enzymexla::Pointer2MemrefOp> views;
-      for (Operation *u : gep->getUsers()) {
-        auto p2m = dyn_cast<enzymexla::Pointer2MemrefOp>(u);
-        // Chained geps rebase in a later round once their own views have
-        // been pulled up; they do not block this gep's direct views.
-        if (!p2m && isa<LLVM::GEPOp>(u))
-          continue;
-        // A byte-array gep still addresses whole view elements when its
-        // stride divides (a constant byte offset) or is a multiple of (a
-        // dynamic element walk) the view's element size.
-        auto viewSz =
-            p2m && p2m.getType().getElementType().isIntOrFloat()
-                ? (int64_t)dl.getTypeSize(p2m.getType().getElementType())
-                : 0;
-        bool sizeOk =
-            viewSz &&
-            (viewSz == elemSz ||
-             (gep.getDynamicIndices().empty()
-                  ? (cast<IntegerAttr>(idxs[0]).getInt() * elemSz) % viewSz ==
-                        0
-                  : elemSz % viewSz == 0));
-        if (!p2m || p2m.getType().getRank() != 1 || !sizeOk) {
-          ok = false;
-          break;
-        }
-        for (Operation *a : p2m->getUsers()) {
-          if (auto ld = dyn_cast<affine::AffineLoadOp>(a)) {
-            if (ld.getMap().getNumResults() == 1)
-              continue;
-          } else if (auto st = dyn_cast<affine::AffineStoreOp>(a)) {
-            if (st.getMap().getNumResults() == 1 &&
-                st.getValueToStore() != p2m.getResult())
-              continue;
-          } else if (auto ld = dyn_cast<memref::LoadOp>(a)) {
-            if (ld.getIndices().size() == 1)
-              continue;
-          } else if (auto st = dyn_cast<memref::StoreOp>(a)) {
-            if (st.getIndices().size() == 1 &&
-                st.getValueToStore() != p2m.getResult())
-              continue;
-          } else if (auto rmw = dyn_cast<memref::AtomicRMWOp>(a)) {
-            if (rmw.getIndices().size() == 1)
-              continue;
-          }
-          ok = false;
-          break;
-        }
-        if (!ok)
-          break;
-        views.push_back(p2m);
-      }
-      if (!ok || views.empty())
-        continue;
-      OpBuilder gb(gep);
-      Location loc = gep.getLoc();
-      Value off;
-      if (!gep.getDynamicIndices().empty()) {
-        off = gep.getDynamicIndices()[0];
-        if (!isa<IndexType>(off.getType()))
-          off = arith::IndexCastOp::create(gb, loc, gb.getIndexType(), off);
-      } else {
-        off = arith::ConstantIndexOp::create(
-            gb, loc, cast<IntegerAttr>(idxs[0]).getInt());
-      }
-      for (auto p2m : views) {
-        // Convert the gep-element offset into view elements.
-        Value voff = off;
-        int64_t viewSz =
-            (int64_t)dl.getTypeSize(p2m.getType().getElementType());
-        if (viewSz != elemSz) {
-          OpBuilder ob(p2m);
-          if (elemSz % viewSz == 0 && elemSz != viewSz) {
-            voff = arith::MulIOp::create(
-                ob, loc, off,
-                arith::ConstantIndexOp::create(ob, loc, elemSz / viewSz));
-          } else {
-            // constant byte offset divisible by the view element size
-            int64_t bytes = cast<IntegerAttr>(idxs[0]).getInt() * elemSz;
-            voff = arith::ConstantIndexOp::create(ob, loc, bytes / viewSz);
-          }
-        }
-        OpBuilder vb(p2m);
-        Value newView = enzymexla::Pointer2MemrefOp::create(
-            vb, p2m.getLoc(), p2m.getType(), gep.getBase());
-        for (Operation *a : llvm::make_early_inc_range(p2m->getUsers())) {
-          OpBuilder ab(a);
-          auto toIdx = [&](AffineMap map, ValueRange operands) -> Value {
-            auto expanded =
-                affine::expandAffineMap(ab, a->getLoc(), map, operands);
-            return (*expanded)[0];
-          };
-          if (auto ld = dyn_cast<affine::AffineLoadOp>(a)) {
-            Value idx = toIdx(ld.getMap(), ld.getMapOperands());
-            idx = arith::AddIOp::create(ab, a->getLoc(), idx, voff);
-            Value nl = memref::LoadOp::create(ab, a->getLoc(), newView,
-                                              ValueRange{idx});
-            a->getResult(0).replaceAllUsesWith(nl);
-            a->erase();
-          } else if (auto st = dyn_cast<affine::AffineStoreOp>(a)) {
-            Value idx = toIdx(st.getMap(), st.getMapOperands());
-            idx = arith::AddIOp::create(ab, a->getLoc(), idx, voff);
-            memref::StoreOp::create(ab, a->getLoc(), st.getValueToStore(),
-                                    newView, ValueRange{idx});
-            a->erase();
-          } else if (auto ld = dyn_cast<memref::LoadOp>(a)) {
-            Value idx = arith::AddIOp::create(ab, a->getLoc(),
-                                              ld.getIndices()[0], voff);
-            Value nl = memref::LoadOp::create(ab, a->getLoc(), newView,
-                                              ValueRange{idx});
-            a->getResult(0).replaceAllUsesWith(nl);
-            a->erase();
-          } else if (auto rmw = dyn_cast<memref::AtomicRMWOp>(a)) {
-            Value idx = arith::AddIOp::create(ab, a->getLoc(),
-                                              rmw.getIndices()[0], voff);
-            memref::AtomicRMWOp::create(ab, a->getLoc(), rmw.getKind(),
-                                        rmw.getValue(), newView,
-                                        ValueRange{idx});
-            a->erase();
-          } else {
-            auto st = cast<memref::StoreOp>(a);
-            Value idx = arith::AddIOp::create(ab, a->getLoc(),
-                                              st.getIndices()[0], voff);
-            memref::StoreOp::create(ab, a->getLoc(), st.getValueToStore(),
-                                    newView, ValueRange{idx});
-            a->erase();
-          }
-        }
-        p2m.erase();
-      }
-      if (gep->use_empty())
-        gep.erase();
-      changedAny = true;
-    }
-    }
-  }
-
-  // Data-dependent indexing (CSR-style loops over runtime offsets) can never
-  // become affine, so llvm-to-affine-access leaves it as raw gep+load. The
-  // access still addresses whole elements of the loaded type; a plain memref
-  // access through a flat view carries that, and raising gathers it.
-  static void convertRawGepAccesses(Operation *root) {
-    if (getenv("DISABLE_RAW_GEP_ACCESSES"))
-      return;
-    SmallVector<Operation *> accesses;
-    root->walk([&](Operation *op) {
-      if (isa<LLVM::LoadOp, LLVM::StoreOp>(op))
-        accesses.push_back(op);
-      else if (auto rmw = dyn_cast<LLVM::AtomicRMWOp>(op))
-        if ((rmw.getBinOp() == LLVM::AtomicBinOp::fadd ||
-             rmw.getBinOp() == LLVM::AtomicBinOp::add) &&
-            rmw.getRes().use_empty())
-          accesses.push_back(op);
-    });
-    for (Operation *op : accesses) {
-      bool isLoad = isa<LLVM::LoadOp>(op);
-      bool isAtomic = isa<LLVM::AtomicRMWOp>(op);
-      if (!isAtomic && (isLoad ? cast<LLVM::LoadOp>(op).getVolatile_()
-                               : cast<LLVM::StoreOp>(op).getVolatile_()))
-        continue;
-      Value addr = isLoad ? op->getOperand(0) : op->getOperand(isAtomic ? 0 : 1);
-      Type valTy = isLoad ? op->getResult(0).getType()
-                          : op->getOperand(1).getType();
-      if (!isAtomic && !isLoad)
-        valTy = op->getOperand(0).getType();
-      if (!valTy.isIntOrFloat())
-        continue;
-      DataLayout dl = DataLayout::closest(op);
-      Value base;
-      Value dynIdx;
-      int64_t constIdx = 0;
-      if (auto gep = addr.getDefiningOp<LLVM::GEPOp>()) {
-        auto idxs = gep.getIndices();
-        if (idxs.size() != 1 ||
-            (int64_t)dl.getTypeSize(gep.getElemType()) !=
-                (int64_t)dl.getTypeSize(valTy))
-          continue;
-        base = gep.getBase();
-        if (!gep.getDynamicIndices().empty())
-          dynIdx = gep.getDynamicIndices()[0];
-        else
-          constIdx = cast<IntegerAttr>(idxs[0]).getInt();
-      } else {
-        continue;
-      }
-      auto basePtrTy = cast<LLVM::LLVMPointerType>(base.getType());
-      Attribute space;
-      if (basePtrTy.getAddressSpace() != 0)
-        space = IntegerAttr::get(IntegerType::get(op->getContext(), 64),
-                                 basePtrTy.getAddressSpace());
-      OpBuilder b(op);
-      Location loc = op->getLoc();
-      auto MT = MemRefType::get({ShapedType::kDynamic}, valTy,
-                                MemRefLayoutAttrInterface{}, space);
-      Value view = enzymexla::Pointer2MemrefOp::create(b, loc, MT, base);
-      Value idx;
-      if (dynIdx) {
-        idx = dynIdx;
-        if (!isa<IndexType>(idx.getType()))
-          idx = arith::IndexCastOp::create(b, loc, b.getIndexType(), idx);
-      } else {
-        idx = arith::ConstantIndexOp::create(b, loc, constIdx);
-      }
-      if (isLoad) {
-        Value ld =
-            memref::LoadOp::create(b, loc, view, ValueRange{idx});
-        op->getResult(0).replaceAllUsesWith(ld);
-        op->erase();
-      } else if (isAtomic) {
-        auto rmw = cast<LLVM::AtomicRMWOp>(op);
-        auto kind = rmw.getBinOp() == LLVM::AtomicBinOp::fadd
-                        ? arith::AtomicRMWKind::addf
-                        : arith::AtomicRMWKind::addi;
-        memref::AtomicRMWOp::create(b, loc, kind, rmw.getVal(), view,
-                                    ValueRange{idx});
-        op->erase();
-      } else {
-        memref::StoreOp::create(b, loc, op->getOperand(0), view,
-                                ValueRange{idx});
-        op->erase();
-      }
-    }
-  }
-
-  // Access rewrites leave dead pointer plumbing behind, and raising visits
-  // every op in the region: sweep the unused chains.
-  static void dropDeadPointerChains(Operation *root) {
-    if (getenv("DISABLE_DROP_DEAD_POINTER_CHAINS"))
-      return;
-    bool changed = true;
-    while (changed) {
-      changed = false;
-      SmallVector<Operation *> dead;
-      root->walk([&](Operation *op) {
-        if (isa<LLVM::GEPOp, LLVM::AddrSpaceCastOp,
-                enzymexla::Pointer2MemrefOp, enzymexla::Memref2PointerOp>(
-                op) &&
-            op->use_empty())
-          dead.push_back(op);
-        // Access expansion strands the pointer selects it distributed into.
-        else if (auto sel = dyn_cast<arith::SelectOp>(op))
-          if (sel.use_empty() &&
-              isa<LLVM::LLVMPointerType, MemRefType>(sel.getType()))
-            dead.push_back(op);
-      });
-      for (Operation *op : dead) {
-        op->erase();
-        changed = true;
-      }
-    }
-  }
-
-  // Whether the pointer's value is only ever consumed as an address of a
-  // memory access (through geps, casts, further selects, or memref views):
-  // anything that observes the value itself — a comparison, an int cast, a
-  // call, a store of the pointer as data — disqualifies it.
-  static bool onlyAddressesMemory(Value v) {
-    for (OpOperand &use : v.getUses()) {
-      Operation *u = use.getOwner();
-      if (auto gep = dyn_cast<LLVM::GEPOp>(u)) {
-        if (use.get() != gep.getBase() ||
-            !onlyAddressesMemory(gep.getResult()))
-          return false;
-      } else if (isa<LLVM::AddrSpaceCastOp>(u)) {
-        if (!onlyAddressesMemory(u->getResult(0)))
-          return false;
-      } else if (auto sel = dyn_cast<arith::SelectOp>(u)) {
-        if (use.get() == sel.getCondition() ||
-            !onlyAddressesMemory(sel.getResult()))
-          return false;
-      } else if (auto p2m = dyn_cast<enzymexla::Pointer2MemrefOp>(u)) {
-        for (Operation *mu : p2m->getUsers())
-          if (!isa<affine::AffineLoadOp, affine::AffineStoreOp,
-                   memref::LoadOp, memref::StoreOp, memref::AtomicRMWOp>(mu))
-            return false;
-      } else if (isa<LLVM::LoadOp>(u)) {
-      } else if (auto store = dyn_cast<LLVM::StoreOp>(u)) {
-        if (use.get() == store.getValue())
-          return false;
-      } else if (auto rmw = dyn_cast<LLVM::AtomicRMWOp>(u)) {
-        if (use.get() != rmw.getPtr())
-          return false;
-      } else if (auto forOp = dyn_cast<affine::AffineForOp>(u)) {
-        // A pointer walked through the loop as an iter arg is still only
-        // an address if the carried arg (and any escaping result) is.
-        bool okCarried = true;
-        for (auto [i, init] : llvm::enumerate(forOp.getInits()))
-          if (init == use.get()) {
-            if (!onlyAddressesMemory(forOp.getRegionIterArgs()[i]) ||
-                !(forOp.getResult(i).use_empty() ||
-                  onlyAddressesMemory(forOp.getResult(i))))
-              okCarried = false;
-          }
-        if (!okCarried)
-          return false;
-      } else if (isa<affine::AffineYieldOp>(u)) {
-        // The advancing value of a carried pointer; the loop itself is
-        // vetted where the pointer enters as an init.
-      } else {
-        return false;
-      }
-    }
-    return true;
-  }
-
-  // mfem's Read/Write staging helpers return null for empty buffers, so a
-  // captured device pointer arrives as `select(size > 0, ptr, null)`. When
-  // the pointer is only dereferenced, the null arm can only fault, so the
-  // select collapses to the real pointer.
-  static void dropNullPointerSelects(Operation *root) {
-    if (getenv("DISABLE_NULL_SELECT"))
-      return;
-    SmallVector<arith::SelectOp> sels;
-    root->walk([&](arith::SelectOp s) {
-      if (isa<LLVM::LLVMPointerType>(s.getType()))
-        sels.push_back(s);
-    });
-    // The null may hide behind offset arithmetic: `select(p, gep(buf, i),
-    // gep(null, i))` still only ever dereferences the real buffer.
-    auto isNullDerived = [](Value v) {
-      while (true) {
-        if (v.getDefiningOp<LLVM::ZeroOp>())
-          return true;
-        if (auto gep = v.getDefiningOp<LLVM::GEPOp>())
-          v = gep.getBase();
-        else if (auto c = v.getDefiningOp<LLVM::AddrSpaceCastOp>())
-          v = c.getArg();
-        else
-          return false;
-      }
-    };
-    for (auto s : sels) {
-      Value tv = s.getTrueValue(), fv = s.getFalseValue();
-      bool tNull = isNullDerived(tv);
-      bool fNull = isNullDerived(fv);
-      if (tNull == fNull)
-        continue;
-      if (!onlyAddressesMemory(s.getResult()))
-        continue;
-      s.getResult().replaceAllUsesWith(tNull ? fv : tv);
-      s.erase();
     }
   }
 
@@ -6062,852 +5637,79 @@ struct AffineToStableHLORaisingPass
     }
   }
 
-  // A rotated strided-copy loop (`k = tid; do { copy(k); } while (k < n)`
-  // with the increment folded by the range analysis) arrives as an
-  // scf.while whose after region yields only loop-invariant values or
-  // pass-throughs of the condition-forwarded ones: every iteration past
-  // the second would repeat the second's state exactly, so a third
-  // implies the original program never terminates. Unroll it to
-  // body(init); if (cond) body(invariant), selecting the forwarded
-  // results accordingly.
-  static void unrollInvariantYieldWhiles(Operation *root) {
-    if (getenv("DISABLE_UIYW"))
-      return;
-    SmallVector<scf::WhileOp> whiles;
-    root->walk([&](scf::WhileOp w) { whiles.push_back(w); });
-    if (getenv("DEBUG_UIYW"))
-      llvm::errs() << "UIYW: " << whiles.size() << " whiles\n";
-    for (auto w : whiles) {
-      Block &after = w.getAfter().front();
-      // The after region may carry side ops (a barrier between the two
-      // halves of a ping-pong); they clone ahead of the second body. The
-      // invariance check on the yield operands below keeps any after-region
-      // computation from leaking into the next iteration's state.
-      bool afterOk =
-          !after.empty() &&
-          llvm::all_of(after.without_terminator(), [](Operation &op) {
-            return op.getNumRegions() == 0;
-          });
-      if (!afterOk) {
-        if (getenv("DEBUG_UIYW"))
-          llvm::errs() << "UIYW skip afterOk: " << *w << "\n";
-        continue;
-      }
-      auto yield = cast<scf::YieldOp>(after.getTerminator());
-      Block &before = w.getBefore().front();
-      auto condOp = cast<scf::ConditionOp>(before.getTerminator());
-      // Each next-iteration value is loop-invariant or a pass-through of a
-      // condition-forwarded value.
-      bool ok = true;
-      // A value computed inside the loop qualifies when its slice roots
-      // only at loop-invariant inputs (no block arguments of the loop, no
-      // regions, no memory): it takes the same value every iteration.
-      auto invariantValued = [&](Value v) {
-        SmallVector<Value> stack{v};
-        DenseSet<Value> seen;
-        while (!stack.empty()) {
-          Value s = stack.pop_back_val();
-          if (!seen.insert(s).second)
-            continue;
-          if (auto ba = dyn_cast<BlockArgument>(s)) {
-            if (w->isAncestor(ba.getOwner()->getParentOp()) ||
-                ba.getOwner() == &w.getBefore().front() ||
-                ba.getOwner() == &w.getAfter().front())
-              return false;
-            continue;
-          }
-          Operation *d = s.getDefiningOp();
-          if (!d || !w->isAncestor(d))
-            continue;
-          if (d->getNumRegions() || !isMemoryEffectFree(d))
-            return false;
-          for (Value o : d->getOperands())
-            stack.push_back(o);
-        }
-        return true;
+  // A slot index picked by a select of constants (a side-selected member)
+  // still names constant slots, one per arm. Fold the index arithmetic
+  // through the selects into a decision tree: a leaf holds a slot, a node the
+  // select's condition. Fails on anything else.
+  struct SlotNode {
+    Value cond;
+    int64_t slot;
+    int t, f;
+  };
+  static std::optional<int> slotTree(Value v, SmallVectorImpl<SlotNode> &nodes) {
+    llvm::APInt c;
+    if (matchPattern(v, m_ConstantInt(&c))) {
+      nodes.push_back({nullptr, c.getSExtValue(), -1, -1});
+      return nodes.size() - 1;
+    }
+    if (auto sel = v.getDefiningOp<arith::SelectOp>()) {
+      if (isa<RankedTensorType>(sel.getCondition().getType()))
+        return std::nullopt;
+      auto t = slotTree(sel.getTrueValue(), nodes);
+      if (!t)
+        return std::nullopt;
+      auto f = slotTree(sel.getFalseValue(), nodes);
+      if (!f)
+        return std::nullopt;
+      nodes.push_back({sel.getCondition(), 0, *t, *f});
+      return nodes.size() - 1;
+    }
+    Operation *def = v.getDefiningOp();
+    if (!def)
+      return std::nullopt;
+    if (isa<arith::IndexCastOp, arith::IndexCastUIOp, arith::ExtSIOp,
+            arith::ExtUIOp, arith::TruncIOp>(def))
+      return slotTree(def->getOperand(0), nodes);
+    if (def->getNumOperands() != 2)
+      return std::nullopt;
+    bool lhsConst = matchPattern(def->getOperand(0), m_ConstantInt(&c));
+    if (!lhsConst && !matchPattern(def->getOperand(1), m_ConstantInt(&c)))
+      return std::nullopt;
+    int64_t k = c.getSExtValue();
+    std::function<std::optional<int64_t>(int64_t)> fold;
+    if (isa<arith::AddIOp>(def))
+      fold = [k](int64_t x) { return x + k; };
+    else if (isa<arith::MulIOp>(def))
+      fold = [k](int64_t x) { return x * k; };
+    else if (isa<arith::SubIOp>(def))
+      fold = [k, lhsConst](int64_t x) { return lhsConst ? k - x : x - k; };
+    else if (isa<arith::DivSIOp, arith::DivUIOp>(def))
+      fold = [k, lhsConst](int64_t x) -> std::optional<int64_t> {
+        if (lhsConst || k == 0 || x < 0)
+          return std::nullopt;
+        return x / k;
       };
-      for (Value v : yield.getOperands()) {
-        if (auto ba = dyn_cast<BlockArgument>(v)) {
-          if (ba.getOwner() == &after)
-            continue;
-          if (w.getBefore().isAncestor(ba.getOwner()->getParent())) {
-            ok = false;
-            break;
-          }
-          continue;
-        }
-        if (w->isAncestor(v.getDefiningOp()) && !invariantValued(v)) {
-          ok = false;
-          break;
-        }
-      }
-      if (!ok) {
-        if (getenv("DEBUG_UIYW")) {
-          llvm::errs() << "UIYW skip yield-inv, yields:\n";
-          for (Value v : yield.getOperands()) {
-            if (Operation *d = v.getDefiningOp())
-              llvm::errs() << "  def: " << *d << " (inside="
-                           << w->isAncestor(d) << ")\n";
-            else
-              llvm::errs() << "  blockarg\n";
-          }
-        }
-        continue;
-      }
-      OpBuilder b(w);
-      if (getenv("DEBUG_UIYW"))
-        llvm::errs() << "UIYW unrolling: " << w << "\n";
-      // First iteration with the init values.
-      IRMapping m1;
-      for (auto [ba, init] : llvm::zip(before.getArguments(), w.getInits()))
-        m1.map(ba, init);
-      for (Operation &op : before.without_terminator())
-        b.clone(op, m1);
-      Value cond1 = m1.lookupOrDefault(condOp.getCondition());
-      SmallVector<Value> fwd1;
-      for (Value v : condOp.getArgs())
-        fwd1.push_back(m1.lookupOrDefault(v));
-      // Second (and by the argument above, last) iteration.
-      SmallVector<Type> resTypes(w.getResultTypes().begin(),
-                                 w.getResultTypes().end());
-      auto ifOp = scf::IfOp::create(b, w.getLoc(), resTypes, cond1,
-                                    /*withElseRegion=*/true);
-      {
-        OpBuilder tb(ifOp.thenBlock(), ifOp.thenBlock()->begin());
-        // The after region's side ops ran between the two body halves.
-        IRMapping mA;
-        for (auto [aa, fw] : llvm::zip(after.getArguments(), fwd1))
-          mA.map(aa, fw);
-        for (Operation &op : after.without_terminator())
-          tb.clone(op, mA);
-        IRMapping m2;
-        for (auto [ba, nv] : llvm::zip(before.getArguments(),
-                                       yield.getOperands())) {
-          Value next = nv;
-          if (auto aba = dyn_cast<BlockArgument>(nv))
-            if (aba.getOwner() == &after)
-              next = fwd1[aba.getArgNumber()];
-          // An inside-defined invariant yield was cloned with body one.
-          next = m1.lookupOrDefault(next);
-          m2.map(ba, mA.lookupOrDefault(next));
-        }
-        for (Operation &op : before.without_terminator())
-          tb.clone(op, m2);
-        SmallVector<Value> fwd2;
-        for (Value v : condOp.getArgs())
-          fwd2.push_back(m2.lookupOrDefault(v));
-        if (ifOp.thenBlock()->mightHaveTerminator() &&
-            !ifOp.thenBlock()->empty() &&
-            isa<scf::YieldOp>(&ifOp.thenBlock()->back()))
-          ifOp.thenBlock()->back().erase();
-        OpBuilder te = OpBuilder::atBlockEnd(ifOp.thenBlock());
-        scf::YieldOp::create(te, w.getLoc(), fwd2);
-      }
-      {
-        if (!ifOp.elseBlock()->empty() &&
-            isa<scf::YieldOp>(&ifOp.elseBlock()->back()))
-          ifOp.elseBlock()->back().erase();
-        OpBuilder eb = OpBuilder::atBlockEnd(ifOp.elseBlock());
-        scf::YieldOp::create(eb, w.getLoc(), fwd1);
-      }
-      for (auto [res, nres] : llvm::zip(w.getResults(), ifOp.getResults()))
-        res.replaceAllUsesWith(nres);
-      w.erase();
-    }
-  }
-
-  // A register array's zero-initialization arrives as llvm.intr.memset of
-  // the slab; as element stores of zero it flows through the same view
-  // rebasing as every other access.
-  static void memsetZeroToStores(Operation *root) {
-    if (getenv("DISABLE_MEMSET_ZERO_TO_STORES"))
-      return;
-    SmallVector<LLVM::MemsetOp> sets;
-    root->walk([&](LLVM::MemsetOp m) { sets.push_back(m); });
-    for (auto m : sets) {
-      llvm::APInt val, len;
-      if (!matchPattern(m.getVal(), m_ConstantInt(&val)) ||
-          !matchPattern(m.getLen(), m_ConstantInt(&len)))
-        continue;
-      if (val.getSExtValue() != 0)
-        continue;
-      int64_t L = len.getSExtValue();
-      if (L <= 0 || L > 4096 || L % 8 != 0)
-        continue;
-      OpBuilder b(m);
-      Location loc = m.getLoc();
-      auto MT = MemRefType::get({ShapedType::kDynamic}, b.getF64Type());
-      Value view =
-          enzymexla::Pointer2MemrefOp::create(b, loc, MT, m.getDst());
-      Value zero = arith::ConstantOp::create(b, loc, b.getF64FloatAttr(0.0));
-      for (int64_t i = 0; i < L / 8; ++i) {
-        Value idx = arith::ConstantIndexOp::create(b, loc, i);
-        memref::StoreOp::create(b, loc, zero, view, ValueRange{idx});
-      }
-      m.erase();
-    }
-  }
-
-  // Count scalar leaves of a nested array/struct type; all leaves must be
-  // one scalar type (set into `leaf`), else -1.
-  static int64_t homogeneousLeafCount(Type t, Type &leaf) {
-    if (auto at = dyn_cast<LLVM::LLVMArrayType>(t)) {
-      int64_t n = homogeneousLeafCount(at.getElementType(), leaf);
-      return n < 0 ? -1 : n * at.getNumElements();
-    }
-    if (auto st = dyn_cast<LLVM::LLVMStructType>(t)) {
-      if (st.isOpaque())
-        return -1;
-      int64_t tot = 0;
-      for (Type f : st.getBody()) {
-        int64_t n = homogeneousLeafCount(f, leaf);
-        if (n < 0)
-          return -1;
-        tot += n;
-      }
-      return tot;
-    }
-    if (t.isIntOrFloat()) {
-      if (!leaf)
-        leaf = t;
-      return leaf == t ? 1 : -1;
-    }
-    return -1;
-  }
-
-  // Scratch declared as one struct value (a union wrapping a register
-  // array) reaches the memref world as a memref of LLVM struct whose only
-  // consumers cast straight back to a pointer; hand it over as flat scalar
-  // scratch instead.
-  static void flattenStructMemrefAllocas(Operation *root) {
-    if (getenv("DISABLE_FLATTEN_STRUCT_MEMREF_ALLOCAS"))
-      return;
-    SmallVector<memref::AllocaOp> allocas;
-    root->walk([&](memref::AllocaOp a) {
-      if (isa<LLVM::LLVMStructType>(a.getType().getElementType()))
-        allocas.push_back(a);
-    });
-    for (auto a : allocas) {
-      MemRefType MT = a.getType();
-      if (!MT.hasStaticShape())
-        continue;
-      Type leaf;
-      int64_t leaves = homogeneousLeafCount(MT.getElementType(), leaf);
-      if (leaves <= 0 || !leaf)
-        continue;
-      DataLayout dl = DataLayout::closest(a);
-      if ((int64_t)dl.getTypeSize(MT.getElementType()) !=
-          leaves * (int64_t)dl.getTypeSize(leaf))
-        continue;
-      int64_t total = leaves;
-      for (int64_t d : MT.getShape())
-        total *= d;
-      if (total > (1 << 22))
-        continue;
-      if (!llvm::all_of(a->getUsers(), [](Operation *u) {
-            return isa<enzymexla::Memref2PointerOp>(u);
-          }))
-        continue;
-      OpBuilder b(a);
-      auto NT = MemRefType::get({total}, leaf, MemRefLayoutAttrInterface{},
-                                MT.getMemorySpace());
-      auto na = memref::AllocaOp::create(b, a.getLoc(), NT);
-      if (a.getAlignment())
-        na.setAlignment(*a.getAlignment());
-      for (Operation *u : llvm::make_early_inc_range(a->getUsers())) {
-        auto m2p = cast<enzymexla::Memref2PointerOp>(u);
-        OpBuilder ub(m2p);
-        auto np = enzymexla::Memref2PointerOp::create(ub, m2p.getLoc(),
-                                                      m2p.getType(), na);
-        m2p.getResult().replaceAllUsesWith(np.getResult());
-        m2p.erase();
-      }
-      a.erase();
-    }
-  }
-
-  // Register-array scratch survives as an llvm.alloca of nested arrays of
-  // one scalar type; hand it to the memref machinery as flat scratch so
-  // the gep rebasing and view flattening see it like any other buffer.
-  static void flattenLLVMArrayAllocas(Operation *root) {
-    if (getenv("DISABLE_FLATTEN_LLVM_ARRAY_ALLOCAS"))
-      return;
-    SmallVector<LLVM::AllocaOp> allocas;
-    root->walk([&](LLVM::AllocaOp a) { allocas.push_back(a); });
-    for (auto a : allocas) {
-      llvm::APInt cnt;
-      if (!matchPattern(a.getArraySize(), m_ConstantInt(&cnt)))
-        continue;
-      int64_t total = cnt.getSExtValue();
-      if (total <= 0)
-        continue;
-      Type ty = a.getElemType();
-      // Arrays and homogeneous structs both flatten; a struct qualifies
-      // when every leaf is the same scalar and the layout has no padding.
-      Type leaf;
-      std::function<int64_t(Type)> countLeaves = [&](Type t) -> int64_t {
-        if (auto at = dyn_cast<LLVM::LLVMArrayType>(t)) {
-          int64_t n = countLeaves(at.getElementType());
-          return n < 0 ? -1 : n * at.getNumElements();
-        }
-        if (auto st = dyn_cast<LLVM::LLVMStructType>(t)) {
-          if (st.isOpaque())
-            return -1;
-          int64_t tot = 0;
-          for (Type f : st.getBody()) {
-            int64_t n = countLeaves(f);
-            if (n < 0)
-              return -1;
-            tot += n;
-          }
-          return tot;
-        }
-        if (t.isIntOrFloat()) {
-          if (!leaf)
-            leaf = t;
-          return leaf == t ? 1 : -1;
-        }
-        return -1;
+    else if (isa<arith::ShRSIOp, arith::ShRUIOp>(def))
+      fold = [k, lhsConst](int64_t x) -> std::optional<int64_t> {
+        if (lhsConst || k < 0 || k >= 64 || x < 0)
+          return std::nullopt;
+        return x >> k;
       };
-      int64_t leaves = countLeaves(ty);
-      if (leaves <= 0 || !leaf)
+    else
+      return std::nullopt;
+    size_t start = nodes.size();
+    auto sub = slotTree(def->getOperand(lhsConst ? 1 : 0), nodes);
+    if (!sub)
+      return std::nullopt;
+    for (size_t i = start; i < nodes.size(); ++i) {
+      if (nodes[i].cond)
         continue;
-      DataLayout dl = DataLayout::closest(a);
-      if ((int64_t)dl.getTypeSize(ty) !=
-          leaves * (int64_t)dl.getTypeSize(leaf))
-        continue;
-      total *= leaves;
-      ty = leaf;
-      if (!ty.isIntOrFloat() || total > (1 << 22))
-        continue;
-      // Only rewrite scratch the pointer machinery can chase afterwards.
-      bool ok = llvm::all_of(a->getUsers(), [](Operation *u) {
-        return isa<LLVM::GEPOp, LLVM::AddrSpaceCastOp,
-                   enzymexla::Pointer2MemrefOp, LLVM::LoadOp, LLVM::StoreOp,
-                   LLVM::LifetimeStartOp, LLVM::LifetimeEndOp>(u);
-      });
-      if (!ok)
-        continue;
-      OpBuilder b(a);
-      auto MT = MemRefType::get({total}, ty);
-      auto alloc = memref::AllocaOp::create(b, a.getLoc(), MT);
-      auto ptr = enzymexla::Memref2PointerOp::create(
-          b, a.getLoc(), a.getResult().getType(), alloc);
-      for (Operation *u :
-           llvm::make_early_inc_range(a->getUsers()))
-        if (isa<LLVM::LifetimeStartOp, LLVM::LifetimeEndOp>(u))
-          u->erase();
-      a.getResult().replaceAllUsesWith(ptr.getResult());
-      a.erase();
+      auto r = fold(nodes[i].slot);
+      if (!r)
+        return std::nullopt;
+      nodes[i].slot = *r;
     }
-  }
-
-  // An empty optional buffer arrives as a null base pointer used directly
-  // (not through a select): every access through it sits on a path that
-  // can only fault, so loads read as zero and stores vanish, and the null
-  // never has to become a kernel argument.
-  static void dropNullBufferAccesses(Operation *root) {
-    if (getenv("DISABLE_DROP_NULL_BUFFER_ACCESSES"))
-      return;
-    SmallVector<LLVM::ZeroOp> zeros;
-    root->walk([&](LLVM::ZeroOp z) {
-      if (isa<LLVM::LLVMPointerType>(z.getType()))
-        zeros.push_back(z);
-    });
-    for (auto z : zeros) {
-      // Collect views whose base is provably the null pointer. Unrelated
-      // users of the null (a null check, a select) are left alone: dropping
-      // a dereference of null is sound no matter what else observes it.
-      SmallVector<Value> work{z.getResult()};
-      SmallVector<enzymexla::Pointer2MemrefOp> views;
-      while (!work.empty()) {
-        Value v = work.pop_back_val();
-        for (Operation *u : v.getUsers()) {
-          if (auto gep = dyn_cast<LLVM::GEPOp>(u)) {
-            if (gep.getBase() == v)
-              work.push_back(gep.getResult());
-          } else if (isa<LLVM::AddrSpaceCastOp>(u)) {
-            work.push_back(u->getResult(0));
-          } else if (auto p2m = dyn_cast<enzymexla::Pointer2MemrefOp>(u)) {
-            views.push_back(p2m);
-          }
-        }
-      }
-      for (auto p2m : views) {
-        bool allAccesses = llvm::all_of(p2m->getUsers(), [&](Operation *a) {
-          return isa<affine::AffineLoadOp, memref::LoadOp>(a) ||
-                 (isa<affine::AffineStoreOp, memref::StoreOp>(a) &&
-                  a->getOperand(0) != p2m.getResult());
-        });
-        if (!allAccesses)
-          continue;
-        for (Operation *a : llvm::make_early_inc_range(p2m->getUsers())) {
-          if (isa<affine::AffineLoadOp, memref::LoadOp>(a)) {
-            OpBuilder b(a);
-            Type ty = a->getResult(0).getType();
-            Value zc = arith::ConstantOp::create(b, a->getLoc(),
-                                                 b.getZeroAttr(ty));
-            a->getResult(0).replaceAllUsesWith(zc);
-          }
-          a->erase();
-        }
-        p2m.erase();
-      }
-    }
-  }
-
-  // A loop that walks a pointer forward by a constant stride each iteration
-  // carries it as an iter arg the raising cannot type as a tensor. The
-  // pointer is a pure function of the induction variable, so accesses
-  // through it rebase onto the init pointer at `orig + k*stride` and the
-  // carried pointer disappears from the loop.
-  static void rewritePointerInduction(Operation *root) {
-    if (getenv("DISABLE_REWRITE_POINTER_INDUCTION"))
-      return;
-    SmallVector<affine::AffineForOp> fors;
-    // Post-order walk: inner loops rewrite before the outer loops that
-    // contain them.
-    root->walk([&](affine::AffineForOp f) {
-      if (f.getNumIterOperands() > 0)
-        fors.push_back(f);
-    });
-    if (getenv("DEBUG_PTRIND"))
-      llvm::errs() << "PTRIND: " << fors.size() << " candidate fors\n";
-    for (auto f : fors) {
-      if (f.getStepAsInt() != 1 || f.getLowerBoundMap().getNumResults() != 1)
-        continue;
-      auto yield = cast<affine::AffineYieldOp>(f.getBody()->getTerminator());
-      DataLayout dl = DataLayout::closest(f);
-      unsigned n = f.getNumIterOperands();
-      SmallVector<bool> drop(n, false);
-      struct Induction {
-        unsigned idx;
-        int64_t byteStep;
-        LLVM::GEPOp advance;
-        Type advanceElemType;
-        Attribute advanceIdxAttr;
-        Value dynStep;
-      };
-      SmallVector<Induction> inductions;
-      // A rotated loop can carry a lagging copy of another pointer
-      // induction: dead in the body, re-yielding that induction's advance.
-      struct Alias {
-        unsigned idx;
-        unsigned baseIdx;
-      };
-      SmallVector<Alias> aliases;
-      bool ok = true;
-      bool anyPtr = false;
-      // A used final pointer is the init advanced by the whole trip count;
-      // that needs a single-result upper bound to materialize.
-      bool resultUsed = false;
-      for (unsigned i = 0; ok && i < n; ++i) {
-        Value init = f.getInits()[i];
-        if (!isa<LLVM::LLVMPointerType>(init.getType()))
-          continue;
-        anyPtr = true;
-        if (!f.getResult(i).use_empty()) {
-          if (f.getUpperBoundMap().getNumResults() != 1) {
-            ok = false;
-            break;
-          }
-          resultUsed = true;
-        }
-        BlockArgument arg = f.getRegionIterArgs()[i];
-        if (arg.use_empty() && f.getResult(i).use_empty()) {
-          drop[i] = true;
-          continue;
-        }
-        auto gep = yield.getOperand(i).getDefiningOp<LLVM::GEPOp>();
-        if (!gep || gep.getIndices().size() != 1) {
-          ok = false;
-          break;
-        }
-        if (gep.getBase() != arg) {
-          auto base = dyn_cast<BlockArgument>(gep.getBase());
-          if (!arg.use_empty() || !base || base.getOwner() != f.getBody() ||
-              base.getArgNumber() == 0) {
-            ok = false;
-            break;
-          }
-          // Validated against the base once every induction is known; its
-          // final value is the base's final for any completed trip and its
-          // own init otherwise.
-          aliases.push_back({i, base.getArgNumber() - 1});
-          drop[i] = true;
-          continue;
-        }
-        // The stride may be a loop-invariant runtime value (an inner
-        // loop's whole-trip advance); it must still address whole
-        // elements of every view.
-        Value dynStep;
-        int64_t byteStep = 0;
-        llvm::APInt cstStep;
-        if (gep.getDynamicIndices().empty()) {
-          byteStep = cast<IntegerAttr>(gep.getIndices()[0]).getInt() *
-                     (int64_t)dl.getTypeSize(gep.getElemType());
-        } else if (matchPattern(gep.getDynamicIndices()[0],
-                                m_ConstantInt(&cstStep))) {
-          // A constant-valued SSA stride (a folded whole-trip advance) is as
-          // good as an attribute one.
-          byteStep = cstStep.getSExtValue() *
-                     (int64_t)dl.getTypeSize(gep.getElemType());
-        } else {
-          dynStep = gep.getDynamicIndices()[0];
-          // The stride may be computed inside the body (an inner loop's
-          // materialized whole-trip advance); it is usable if nothing in
-          // its backward slice depends on this loop's iteration.
-          auto invariantIn = [&](Value v) {
-            SmallVector<Value> work{v};
-            llvm::SmallPtrSet<Value, 16> seen;
-            while (!work.empty()) {
-              Value c = work.pop_back_val();
-              if (!seen.insert(c).second)
-                continue;
-              if (auto ba = dyn_cast<BlockArgument>(c)) {
-                if (ba.getOwner()->getParentOp() == f.getOperation() ||
-                    f->isAncestor(ba.getOwner()->getParentOp()))
-                  return false;
-                continue;
-              }
-              Operation *def = c.getDefiningOp();
-              if (!f->isAncestor(def))
-                continue;
-              if (!isMemoryEffectFree(def) || def->getNumRegions())
-                return false;
-              for (Value o : def->getOperands())
-                work.push_back(o);
-            }
-            return true;
-          };
-          if (!invariantIn(dynStep)) {
-            ok = false;
-            break;
-          }
-          byteStep = (int64_t)dl.getTypeSize(gep.getElemType());
-        }
-        for (Operation *u : arg.getUsers()) {
-          if (u == gep.getOperation())
-            continue;
-          auto p2m = dyn_cast<enzymexla::Pointer2MemrefOp>(u);
-          if (!p2m || p2m.getType().getRank() != 1 ||
-              !p2m.getType().getElementType().isIntOrFloat() ||
-              byteStep % (int64_t)dl.getTypeSize(
-                              p2m.getType().getElementType()) !=
-                  0 ||
-              (dynStep &&
-               (int64_t)dl.getTypeSize(p2m.getType().getElementType()) >
-                   byteStep)) {
-            ok = false;
-            break;
-          }
-          for (Operation *a : p2m->getUsers()) {
-            if (auto ld = dyn_cast<affine::AffineLoadOp>(a)) {
-              if (ld.getMap().getNumResults() == 1)
-                continue;
-            } else if (auto st = dyn_cast<affine::AffineStoreOp>(a)) {
-              if (st.getMap().getNumResults() == 1 &&
-                  st.getValueToStore() != p2m.getResult())
-                continue;
-            } else if (auto ld = dyn_cast<memref::LoadOp>(a)) {
-              if (ld.getIndices().size() == 1)
-                continue;
-            } else if (auto st = dyn_cast<memref::StoreOp>(a)) {
-              if (st.getIndices().size() == 1 &&
-                  st.getValueToStore() != p2m.getResult())
-                continue;
-            }
-            ok = false;
-            break;
-          }
-          if (!ok)
-            break;
-        }
-        if (!ok)
-          break;
-        Attribute idxAttr;
-        if (gep.getDynamicIndices().empty())
-          idxAttr = cast<IntegerAttr>(gep.getIndices()[0]);
-        else if (!dynStep)
-          idxAttr = IntegerAttr::get(IntegerType::get(f->getContext(), 64),
-                                     cstStep.getSExtValue());
-        inductions.push_back(
-            {i, byteStep, gep, gep.getElemType(), idxAttr, dynStep});
-        drop[i] = true;
-      }
-      for (auto &al : aliases) {
-        if (!ok)
-          break;
-        const Induction *base = nullptr;
-        for (auto &ind : inductions)
-          if (ind.idx == al.baseIdx)
-            base = &ind;
-        if (!base || yield.getOperand(al.idx) != yield.getOperand(al.baseIdx))
-          ok = false;
-      }
-      if (!ok || !anyPtr || llvm::none_of(drop, [](bool d) { return d; })) {
-        if (getenv("DEBUG_PTRIND") && anyPtr)
-          llvm::errs() << "PTRIND bail ok=" << ok << " aliases="
-                       << aliases.size() << " for: " << f << "\n";
-        continue;
-      }
-
-      // An invariant step chain can live inside the body (an inner loop's
-      // materialized whole-trip advance, emitted after that loop); clone
-      // it above this loop so accesses anywhere in the body and the final
-      // materialization can use it.
-      for (auto &ind : inductions) {
-        Operation *def = ind.dynStep ? ind.dynStep.getDefiningOp() : nullptr;
-        if (!def || !f->isAncestor(def))
-          continue;
-        SetVector<Operation *> slice;
-        BackwardSliceOptions opts;
-        opts.inclusive = true;
-        opts.filter = [&](Operation *op) { return f->isAncestor(op); };
-        if (getBackwardSlice(ind.dynStep, &slice, opts).failed()) {
-          ok = false;
-          break;
-        }
-        OpBuilder hb(f);
-        IRMapping hm;
-        for (Operation *op : slice)
-          hb.clone(*op, hm);
-        ind.dynStep = hm.lookupOrDefault(ind.dynStep);
-      }
-      if (!ok)
-        continue;
-
-      // Completed iterations: k = iv - lb.
-      OpBuilder kb(f.getBody(), f.getBody()->begin());
-      Location loc = f.getLoc();
-      Value k = f.getInductionVar();
-      AffineMap lbMap = f.getLowerBoundMap();
-      if (!(lbMap.isSingleConstant() && lbMap.getSingleConstantResult() == 0)) {
-        Value lb = affine::AffineApplyOp::create(kb, loc, lbMap,
-                                                 f.getLowerBoundOperands());
-        k = arith::SubIOp::create(kb, loc, k, lb);
-      }
-
-      for (auto &ind : inductions) {
-        Value init = f.getInits()[ind.idx];
-        BlockArgument arg = f.getRegionIterArgs()[ind.idx];
-        for (Operation *u : llvm::make_early_inc_range(arg.getUsers())) {
-          auto p2m = dyn_cast<enzymexla::Pointer2MemrefOp>(u);
-          if (!p2m)
-            continue;
-          int64_t viewSz =
-              (int64_t)dl.getTypeSize(p2m.getType().getElementType());
-          if (ind.byteStep % viewSz != 0)
-            continue;
-          int64_t stepElts = ind.byteStep / viewSz;
-          OpBuilder vb(p2m);
-          Value nv = enzymexla::Pointer2MemrefOp::create(vb, p2m.getLoc(),
-                                                         p2m.getType(), init);
-          Value off = k;
-          if (ind.dynStep) {
-            Value ds = ind.dynStep;
-            if (!isa<IndexType>(ds.getType()))
-              ds = arith::IndexCastOp::create(vb, loc, vb.getIndexType(), ds);
-            if (stepElts != 1)
-              ds = arith::MulIOp::create(
-                  vb, loc, ds,
-                  arith::ConstantIndexOp::create(vb, loc, stepElts));
-            off = arith::MulIOp::create(vb, loc, k, ds);
-          } else if (stepElts != 1)
-            off = arith::MulIOp::create(
-                vb, loc, k,
-                arith::ConstantIndexOp::create(vb, loc, stepElts));
-          for (Operation *a : llvm::make_early_inc_range(p2m->getUsers())) {
-            OpBuilder ab(a);
-            auto add = [&](Value idx) {
-              return arith::AddIOp::create(ab, a->getLoc(), idx, off)
-                  .getResult();
-            };
-            // A static step composes into the affine map so the access
-            // stays affine; a runtime step forces an arith-indexed access.
-            bool affineStep = !ind.dynStep && isa<BlockArgument>(k);
-            auto composed = [&](AffineMap m) {
-              AffineExpr e =
-                  m.getResult(0) +
-                  getAffineDimExpr(m.getNumDims(), m.getContext()) * stepElts;
-              return AffineMap::get(m.getNumDims() + 1, m.getNumSymbols(), e);
-            };
-            auto composedOps = [&](OperandRange ops, AffineMap m) {
-              SmallVector<Value> nops(ops.begin(), ops.end());
-              nops.insert(nops.begin() + m.getNumDims(), k);
-              return nops;
-            };
-            if (auto ld = dyn_cast<affine::AffineLoadOp>(a)) {
-              Value nl;
-              if (affineStep) {
-                nl = affine::AffineLoadOp::create(
-                    ab, a->getLoc(), nv, composed(ld.getMap()),
-                    composedOps(ld.getMapOperands(), ld.getMap()));
-              } else {
-                auto expanded = affine::expandAffineMap(
-                    ab, a->getLoc(), ld.getMap(), ld.getMapOperands());
-                nl = memref::LoadOp::create(ab, a->getLoc(), nv,
-                                            ValueRange{add((*expanded)[0])});
-              }
-              a->getResult(0).replaceAllUsesWith(nl);
-              a->erase();
-            } else if (auto st = dyn_cast<affine::AffineStoreOp>(a)) {
-              if (affineStep) {
-                affine::AffineStoreOp::create(
-                    ab, a->getLoc(), st.getValueToStore(), nv,
-                    composed(st.getMap()),
-                    composedOps(st.getMapOperands(), st.getMap()));
-              } else {
-                auto expanded = affine::expandAffineMap(
-                    ab, a->getLoc(), st.getMap(), st.getMapOperands());
-                memref::StoreOp::create(ab, a->getLoc(), st.getValueToStore(),
-                                        nv, ValueRange{add((*expanded)[0])});
-              }
-              a->erase();
-            } else if (auto ld = dyn_cast<memref::LoadOp>(a)) {
-              Value nl = memref::LoadOp::create(
-                  ab, a->getLoc(), nv, ValueRange{add(ld.getIndices()[0])});
-              a->getResult(0).replaceAllUsesWith(nl);
-              a->erase();
-            } else {
-              auto st = cast<memref::StoreOp>(a);
-              memref::StoreOp::create(ab, a->getLoc(), st.getValueToStore(),
-                                      nv, ValueRange{add(st.getIndices()[0])});
-              a->erase();
-            }
-          }
-          p2m.erase();
-        }
-      }
-
-      // Rebuild the loop without the pointer iter args.
-      SmallVector<Value> newInits;
-      for (unsigned i = 0; i < n; ++i)
-        if (!drop[i])
-          newInits.push_back(f.getInits()[i]);
-      OpBuilder b(f);
-      auto nf = affine::AffineForOp::create(
-          b, f.getLoc(), f.getLowerBoundOperands(), f.getLowerBoundMap(),
-          f.getUpperBoundOperands(), f.getUpperBoundMap(), f.getStepAsInt(),
-          newInits);
-      Block *ob = f.getBody(), *nb = nf.getBody();
-      if (!nb->empty())
-        nb->clear();
-      f.getInductionVar().replaceAllUsesWith(nf.getInductionVar());
-      unsigned kept = 0;
-      for (unsigned i = 0; i < n; ++i)
-        if (!drop[i])
-          f.getRegionIterArgs()[i].replaceAllUsesWith(
-              nf.getRegionIterArgs()[kept++]);
-      SmallVector<Value> keptYields;
-      for (unsigned i = 0; i < n; ++i)
-        if (!drop[i])
-          keptYields.push_back(yield.getOperand(i));
-      OpBuilder yb(yield);
-      affine::AffineYieldOp::create(yb, yield.getLoc(), keptYields);
-      yield.erase();
-      // The advancing geps are dead now that nothing yields them.
-      for (auto &ind : inductions)
-        if (ind.advance->use_empty())
-          ind.advance.erase();
-      nb->getOperations().splice(nb->end(), ob->getOperations());
-      kept = 0;
-      for (unsigned i = 0; i < n; ++i)
-        if (!drop[i])
-          f.getResult(i).replaceAllUsesWith(nf.getResult(kept++));
-      if (resultUsed) {
-        OpBuilder fb(nf->getContext());
-        fb.setInsertionPointAfter(nf);
-        Location loc = nf.getLoc();
-        // A statically known trip folds the whole advance to a constant so
-        // downstream users stay affine.
-        std::optional<int64_t> ctrip;
-        if (f.getLowerBoundMap().isSingleConstant() &&
-            f.getUpperBoundMap().isSingleConstant())
-          ctrip = std::max<int64_t>(
-              0, f.getUpperBoundMap().getSingleConstantResult() -
-                     f.getLowerBoundMap().getSingleConstantResult());
-        Value zero = arith::ConstantIndexOp::create(fb, loc, 0);
-        Value trip, trip64;
-        if (ctrip) {
-          trip = arith::ConstantIndexOp::create(fb, loc, *ctrip);
-          trip64 = arith::ConstantOp::create(fb, loc,
-                                             fb.getI64IntegerAttr(*ctrip));
-        } else {
-          Value lbv = affine::AffineApplyOp::create(
-              fb, loc, f.getLowerBoundMap(), f.getLowerBoundOperands());
-          Value ubv = affine::AffineApplyOp::create(
-              fb, loc, f.getUpperBoundMap(), f.getUpperBoundOperands());
-          trip = arith::SubIOp::create(fb, loc, ubv, lbv);
-          Value neg = arith::CmpIOp::create(fb, loc, arith::CmpIPredicate::slt,
-                                            trip, zero);
-          trip = arith::SelectOp::create(fb, loc, neg, zero, trip);
-          trip64 = arith::IndexCastOp::create(fb, loc, fb.getI64Type(), trip);
-        }
-        auto finFor = [&](const Induction &ind) -> Value {
-          // Emit the advance in the widest aligned element so downstream
-          // rebasing sees whole-element addressing.
-          Type finElem = ind.advanceElemType;
-          int64_t finIdxScale = 1;
-          if (ind.byteStep % 8 == 0) {
-            finElem = fb.getF64Type();
-            finIdxScale = ind.byteStep / 8;
-          } else if (isa<IntegerAttr>(ind.advanceIdxAttr)) {
-            finIdxScale = cast<IntegerAttr>(ind.advanceIdxAttr).getInt();
-          }
-          Value scaled;
-          if (ctrip && !ind.dynStep) {
-            scaled = arith::ConstantOp::create(
-                fb, loc, fb.getI64IntegerAttr(*ctrip * finIdxScale));
-          } else {
-            scaled = arith::MulIOp::create(
-                fb, loc, trip64,
-                arith::ConstantOp::create(
-                    fb, loc, fb.getI64IntegerAttr(finIdxScale)));
-            if (ind.dynStep) {
-              Value ds = ind.dynStep;
-              if (isa<IndexType>(ds.getType()))
-                ds = arith::IndexCastOp::create(fb, loc, fb.getI64Type(), ds);
-              else if (ds.getType() != fb.getI64Type())
-                ds = arith::ExtSIOp::create(fb, loc, fb.getI64Type(), ds);
-              scaled = arith::MulIOp::create(fb, loc, scaled, ds);
-            }
-          }
-          return LLVM::GEPOp::create(fb, loc,
-                                     f.getInits()[ind.idx].getType(), finElem,
-                                     f.getInits()[ind.idx],
-                                     ValueRange{scaled});
-        };
-        for (auto &ind : inductions) {
-          if (f.getResult(ind.idx).use_empty())
-            continue;
-          f.getResult(ind.idx).replaceAllUsesWith(finFor(ind));
-        }
-        for (auto &al : aliases) {
-          if (f.getResult(al.idx).use_empty())
-            continue;
-          const Induction *base = nullptr;
-          for (auto &ind : inductions)
-            if (ind.idx == al.baseIdx)
-              base = &ind;
-          Value init = f.getInits()[al.idx];
-          Value repl;
-          if (init.getDefiningOp<ub::PoisonOp>() ||
-              init.getDefiningOp<LLVM::UndefOp>() ||
-              init.getDefiningOp<LLVM::PoisonOp>()) {
-            // A poison zero-trip value never materializes; the base's
-            // final stands unconditionally.
-            repl = finFor(*base);
-          } else {
-            Value pos = arith::CmpIOp::create(
-                fb, loc, arith::CmpIPredicate::sgt, trip, zero);
-            repl = arith::SelectOp::create(fb, loc, pos, finFor(*base), init);
-          }
-          f.getResult(al.idx).replaceAllUsesWith(repl);
-        }
-      }
-      f.erase();
-    }
+    return sub;
   }
 
   // A not-quite-inlined device lambda packs its captures into a stack
@@ -6935,6 +5737,9 @@ struct AffineToStableHLORaisingPass
         int64_t esz;
         Type ty;
         Value idx;
+        // Set when the index folds to a decision tree of slots.
+        SmallVector<SlotNode> tree;
+        int root = -1;
       };
       SmallVector<DynLoad> dynLoads;
       SmallVector<Operation *> chain;
@@ -7025,38 +5830,44 @@ struct AffineToStableHLORaisingPass
             bool viewOk = true;
             for (Operation *au : p2m->getUsers()) {
               std::optional<int64_t> idx;
+              // A runtime index picked by selects of constants forwards
+              // each arm's slot; any other runtime-indexed scalar read (a
+              // shape array walked in a loop) selects among the
+              // constant-offset slots of its own element type.
+              auto dynLoad = [&](Value index) {
+                DynLoad dyn{au, off, esz, ET, index};
+                if (auto root = slotTree(index, dyn.tree))
+                  dyn.root = *root;
+                else if (isa<LLVM::LLVMPointerType>(ET))
+                  return false;
+                dynLoads.push_back(std::move(dyn));
+                return true;
+              };
               if (auto ld = dyn_cast<affine::AffineLoadOp>(au)) {
                 if (auto c = getConstant(ld.getAffineMap()))
                   idx = *c;
-                else if (!isa<LLVM::LLVMPointerType>(ET) &&
-                         ld.getAffineMap().getNumResults() == 1) {
-                  // Runtime-indexed scalar read through an affine map.
+                else if (ld.getAffineMap().getNumResults() == 1) {
                   OpBuilder eb(au);
                   auto expanded = affine::expandAffineMap(
                       eb, au->getLoc(), ld.getAffineMap(),
                       ld.getMapOperands());
-                  if (expanded) {
-                    dynLoads.push_back({au, off, esz, ET, (*expanded)[0]});
+                  if (expanded && dynLoad((*expanded)[0]))
                     continue;
-                  }
                 }
               } else if (auto st = dyn_cast<affine::AffineStoreOp>(au)) {
                 if (st.getValue() != p2m.getResult())
                   if (auto c = getConstant(st.getAffineMap()))
                     idx = *c;
               } else if (auto ld = dyn_cast<memref::LoadOp>(au)) {
-                // A runtime-indexed scalar read (a shape array walked in a
-                // loop) selects among the constant-offset slots of its own
-                // element type.
-                if (!isa<LLVM::LLVMPointerType>(ET) &&
-                    ld.getIndices().size() == 1) {
-                  dynLoads.push_back({au, off, esz, ET, ld.getIndices()[0]});
+                if (ld.getIndices().size() == 1 && dynLoad(ld.getIndices()[0]))
                   continue;
-                }
               }
               if (!idx) {
-                if (getenv("DEBUG_FWD"))
+                if (getenv("DEBUG_FWD")) {
                   llvm::errs() << "FWD bail view user: " << *au << "\n  for alloca: " << *a << "\n";
+                  if (getenv("DEBUG_FWD")[0] == '2')
+                    au->getParentOfType<FunctionOpInterface>()->dump();
+                }
                 viewOk = false;
                 break;
               }
@@ -7156,11 +5967,41 @@ struct AffineToStableHLORaisingPass
           out.push_back({(acc.byteOff + b - viewBase) / esz, b});
         return out;
       };
-      // Every candidate slot of a dynamic load must be forwardable.
+      // Every candidate slot of a dynamic load must be forwardable: each
+      // leaf of a slot tree, else every slot of the element type.
+      auto slotStore = [&](DynLoad &dyn, int64_t slot,
+                           int64_t &pieceOff) -> Access * {
+        for (auto &acc : accesses) {
+          if (!acc.isStore)
+            continue;
+          for (auto [s, b] : coveredSlots(acc, dyn.viewBase, dyn.esz, dyn.ty))
+            if (s == slot) {
+              pieceOff = b;
+              return &acc;
+            }
+        }
+        return nullptr;
+      };
       for (auto &dyn : llvm::make_range(dynLoads.begin(),
                                         legal ? dynLoads.end()
                                               : dynLoads.begin())) {
         bool any = false;
+        if (dyn.root >= 0) {
+          any = true;
+          for (auto &n : dyn.tree) {
+            if (n.cond)
+              continue;
+            int64_t pieceOff;
+            Access *st = slotStore(dyn, n.slot, pieceOff);
+            if (!st || !dom.properlyDominates(st->op, dyn.op)) {
+              legal = false;
+              break;
+            }
+          }
+          if (!legal)
+            break;
+          continue;
+        }
         for (auto &acc : accesses) {
           if (!acc.isStore)
             continue;
@@ -7191,21 +6032,39 @@ struct AffineToStableHLORaisingPass
         Location loc = dyn.op->getLoc();
         Value idx = dyn.idx;
         Value res;
+        auto pieceOf = [&](Access &acc, int64_t pieceOff) {
+          Value piece = acc.value;
+          if (piece.getType() != dyn.ty) {
+            if (pieceOff != 0) {
+              Value sh = arith::ConstantOp::create(
+                  b, loc, IntegerAttr::get(piece.getType(), pieceOff * 8));
+              piece = arith::ShRUIOp::create(b, loc, piece, sh);
+            }
+            piece = arith::TruncIOp::create(b, loc, dyn.ty, piece);
+          }
+          return piece;
+        };
+        if (dyn.root >= 0) {
+          std::function<Value(int)> build = [&](int n) -> Value {
+            SlotNode &node = dyn.tree[n];
+            if (!node.cond) {
+              int64_t pieceOff;
+              return pieceOf(*slotStore(dyn, node.slot, pieceOff), pieceOff);
+            }
+            return arith::SelectOp::create(b, loc, node.cond, build(node.t),
+                                           build(node.f));
+          };
+          res = build(dyn.root);
+          dyn.op->getResult(0).replaceAllUsesWith(res);
+          dyn.op->erase();
+          continue;
+        }
         for (auto &acc : accesses) {
           if (!acc.isStore)
             continue;
           for (auto [slot, pieceOff] :
                coveredSlots(acc, dyn.viewBase, dyn.esz, dyn.ty)) {
-            Value piece = acc.value;
-            if (piece.getType() != dyn.ty) {
-              if (pieceOff != 0) {
-                Value sh = arith::ConstantOp::create(
-                    b, loc,
-                    IntegerAttr::get(piece.getType(), pieceOff * 8));
-                piece = arith::ShRUIOp::create(b, loc, piece, sh);
-              }
-              piece = arith::TruncIOp::create(b, loc, dyn.ty, piece);
-            }
+            Value piece = pieceOf(acc, pieceOff);
             if (!res) {
               res = piece;
               continue;
@@ -7609,6 +6468,12 @@ struct AffineToStableHLORaisingPass
           if (isLoad)
             acc->getResult(0).replaceAllUsesWith(newIf.getResult(0));
           acc->erase();
+          // The conversions the access reached the buffer through are the
+          // only thing still naming the branch; with the access gone they
+          // are dead, and while they stand the branch cannot be raised.
+          for (Operation *link : llvm::reverse(chain))
+            if (link->use_empty())
+              link->erase();
         }
       }
 
@@ -9947,29 +8812,16 @@ struct AffineToStableHLORaisingPass
     // Peeling rewrites loops, so it stays scoped to the regions this pass
     // actually raises.
     for (auto func : funcs) {
-      inlineAllocaScopes(func);
       for (int round = 0; round < 5; ++round) {
-        memsetZeroToStores(func);
-        unrollInvariantYieldWhiles(func);
-        flattenLLVMArrayAllocas(func);
-        flattenStructMemrefAllocas(func);
-        dropNullPointerSelects(func);
-        if (!getenv("DISABLE_NULL_BUFFER"))
-          dropNullBufferAccesses(func);
         if (!getenv("DISABLE_FOLD_CONST_GLOBAL"))
           foldConstantGlobalAccesses(func);
         distributeGepOverSelect(func);
         forwardPackedScratch(func);
         stripAccessMemorySpaceCasts(func);
-        rebaseViewedGeps(func);
-        convertRawGepAccesses(func);
         expandBufferBranches(func);
-        if (!getenv("DISABLE_PTR_INDUCTION"))
-          rewritePointerInduction(func);
         splitStructScratch(func);
         flattenViewedScratch(func);
       }
-      dropDeadPointerChains(func);
       boundParallelAxes(func);
       boundParallelFors(func);
       // Peel before privatizing: a parallel with one leftover dynamic
@@ -10011,30 +8863,10 @@ struct AffineToStableHLORaisingPass
       // so the buffer normalizations must see the whole function, not just
       // the wrapper region; the rewrites also expose one another (a rebase
       // creates the direct views a flatten wants), so iterate once more.
-      inlineAllocaScopes(root);
-      gepCensus(root, "inlineAllocaScopes");
       // The rounds used to re-run once per wrapper; a multi-wrapper root
       // could converge only through that repetition, so keep the total
       // budget comparable.
       for (int round = 0; round < 10; ++round) {
-        memsetZeroToStores(root);
-      gepCensus(root, "memsetZeroToStores");
-        gepCensus(root, "memsetZeroToStores");
-        unrollInvariantYieldWhiles(root);
-      gepCensus(root, "unrollInvariantYieldWhiles");
-        gepCensus(root, "unrollInvariantYieldWhiles");
-        flattenLLVMArrayAllocas(root);
-      gepCensus(root, "flattenLLVMArrayAllocas");
-        gepCensus(root, "flattenLLVMArrayAllocas");
-        flattenStructMemrefAllocas(root);
-        gepCensus(root, "flattenStructMemrefAllocas");
-        dropNullPointerSelects(root);
-      gepCensus(root, "dropNullPointerSelects");
-        gepCensus(root, "dropNullPointerSelects");
-        if (!getenv("DISABLE_NULL_BUFFER"))
-          dropNullBufferAccesses(root);
-      gepCensus(root, "dropNullBufferAccesses");
-        gepCensus(root, "dropNullBufferAccesses");
         if (!getenv("DISABLE_FOLD_CONST_GLOBAL"))
           foldConstantGlobalAccesses(root);
       gepCensus(root, "foldConstantGlobalAccesses");
@@ -10045,22 +8877,13 @@ struct AffineToStableHLORaisingPass
         gepCensus(root, "forwardPackedScratch");
         stripAccessMemorySpaceCasts(root);
         gepCensus(root, "stripAccessMemorySpaceCasts");
-        rebaseViewedGeps(root);
-        gepCensus(root, "rebaseViewedGeps");
-        convertRawGepAccesses(root);
-        gepCensus(root, "convertRawGepAccesses");
         expandBufferBranches(root);
         gepCensus(root, "expandBufferBranches");
-        if (!getenv("DISABLE_PTR_INDUCTION"))
-          rewritePointerInduction(root);
-        gepCensus(root, "rewritePointerInduction");
         splitStructScratch(root);
         gepCensus(root, "splitStructScratch");
         flattenViewedScratch(root);
         gepCensus(root, "flattenViewedScratch");
       }
-      dropDeadPointerChains(root);
-      gepCensus(root, "dropDeadPointerChains");
       SmallVector<enzymexla::GPUWrapperOp> rootWraps;
       root->walk(
           [&](enzymexla::GPUWrapperOp g) { rootWraps.push_back(g); });
