@@ -1067,128 +1067,32 @@ LogicalResult handleAffineIfOp(IslAnalysis &islAnalysis, AffineIfOp ifOp) {
 // min(a, b) where b >= a for every value of the dims and symbols is min(a),
 // and a lower bound max is its dual. Two bound operands often say the same
 // thing through different arithmetic -- a grid counted in blocks against the
-// size it was computed from -- so each symbol operand is expanded through its
-// defining arithmetic down to shared base values before asking isl whether
-// the comparison can ever fail. The expansion reads the arithmetic as
-// arithmetic on non-negative mathematical integers, the reading the
-// assume-nonneg-arith option asserts: casts and extensions preserve the
+// size it was computed from -- so the map is first composed through the
+// arithmetic defining its symbol operands, down to shared base values, before
+// asking isl whether the comparison can ever fail. That composition reads the
+// arithmetic as arithmetic on non-negative mathematical integers, the reading
+// the assume-nonneg-arith option asserts: casts and extensions preserve the
 // value, sums and products do not wrap, and signed division rounds down.
-
-static Value lookThroughCasts(Value v) {
-  while (true) {
-    if (auto c = v.getDefiningOp<arith::IndexCastOp>()) {
-      v = c.getIn();
-      continue;
-    }
-    if (auto c = v.getDefiningOp<arith::IndexCastUIOp>()) {
-      v = c.getIn();
-      continue;
-    }
-    if (auto c = v.getDefiningOp<arith::ExtSIOp>()) {
-      // Sign extension of i1 flips the value (true -> -1); only wider
-      // sources pass through unchanged.
-      if (c.getIn().getType().isInteger(1))
-        break;
-      v = c.getIn();
-      continue;
-    }
-    if (auto c = v.getDefiningOp<arith::ExtUIOp>()) {
-      v = c.getIn();
-      continue;
-    }
-    break;
-  }
-  return v;
-}
-
-// The arithmetic an affine expression represents: sums, differences,
-// products with a constant, and divisions by a positive constant.
-static bool isAffineArithOp(Operation *def) {
-  if (!def)
-    return false;
-  if (isa<arith::AddIOp, arith::SubIOp>(def))
-    return true;
-  APInt cst;
-  if (isa<arith::MulIOp>(def))
-    return matchPattern(def->getOperand(0), m_ConstantInt(&cst)) ||
-           matchPattern(def->getOperand(1), m_ConstantInt(&cst));
-  if (isa<arith::DivSIOp, arith::DivUIOp>(def))
-    return matchPattern(def->getOperand(1), m_ConstantInt(&cst)) &&
-           cst.isStrictlyPositive();
-  return false;
-}
-
-static AffineExpr affineArithExpr(Operation *def, AffineExpr lhs,
-                                  AffineExpr rhs) {
-  if (isa<arith::AddIOp>(def))
-    return lhs + rhs;
-  if (isa<arith::SubIOp>(def))
-    return lhs - rhs;
-  if (isa<arith::MulIOp>(def))
-    return lhs * rhs;
-  if (isa<arith::DivSIOp, arith::DivUIOp>(def))
-    return lhs.floorDiv(rhs);
-  llvm_unreachable("not an affine arith op");
-}
-
-// Expands `root` through its defining arithmetic into an affine expression
-// over the values the expansion stops at, each the symbol at its position in
-// `bases`. `exprs` memoizes the expansion across the operands of one bound.
-static AffineExpr expandValue(Value root, SmallVectorImpl<Value> &bases,
-                              DenseMap<Value, AffineExpr> &exprs) {
-  MLIRContext *ctx = root.getContext();
-  root = lookThroughCasts(root);
-  SmallVector<Value> worklist{root};
-  while (!worklist.empty()) {
-    Value v = worklist.back();
-    if (exprs.contains(v)) {
-      worklist.pop_back();
-      continue;
-    }
-    APInt cst;
-    if (matchPattern(v, m_ConstantInt(&cst))) {
-      exprs[v] = getAffineConstantExpr(cst.getSExtValue(), ctx);
-      worklist.pop_back();
-      continue;
-    }
-    Operation *def = v.getDefiningOp();
-    if (!isAffineArithOp(def)) {
-      bases.push_back(v);
-      exprs[v] = getAffineSymbolExpr(bases.size() - 1, ctx);
-      worklist.pop_back();
-      continue;
-    }
-    Value lhs = lookThroughCasts(def->getOperand(0));
-    Value rhs = lookThroughCasts(def->getOperand(1));
-    if (!exprs.contains(lhs) || !exprs.contains(rhs)) {
-      worklist.push_back(lhs);
-      worklist.push_back(rhs);
-      continue;
-    }
-    exprs[v] = affineArithExpr(def, exprs.lookup(lhs), exprs.lookup(rhs));
-    worklist.pop_back();
-  }
-  return exprs.lookup(root);
-}
 
 // Returns `map` with every expression another expression of its group
 // subsumes dropped, with the groups' new sizes; std::nullopt when all stay.
 static std::optional<std::pair<AffineMap, SmallVector<int32_t>>>
 pruneBoundMap(__isl_keep isl_ctx *ctx, AffineMap map, ValueRange operands,
-              DenseIntElementsAttr groups, bool isUpper) {
-  unsigned numDims = map.getNumDims();
-  SmallVector<Value> bases;
-  DenseMap<Value, AffineExpr> exprs;
-  SmallVector<AffineExpr> symExprs;
-  for (Value operand : operands.drop_front(numDims))
-    symExprs.push_back(expandValue(operand, bases, exprs));
+              DenseIntElementsAttr groups, bool isUpper, Region *scope) {
+  AffineMap expanded = map;
+  SmallVector<Value> expandedOperands(operands);
+  if (!fully2ComposeAffineMapAndOperands(&expanded, &expandedOperands, scope,
+                                         /*throughSymbols=*/true))
+    return std::nullopt;
 
-  isl_space *space = isl_space_set_alloc(ctx, bases.size(), numDims);
+  unsigned numDims = expanded.getNumDims();
+  unsigned numSyms = expanded.getNumSymbols();
+  isl_space *space = isl_space_set_alloc(ctx, numSyms, numDims);
   for (unsigned i : llvm::seq(numDims))
     space =
         isl_space_set_dim_id(space, isl_dim_set, i,
                              isl_id_alloc(ctx, "dim", (void *)(size_t)(i + 1)));
-  for (unsigned i : llvm::seq(bases.size()))
+  for (unsigned i : llvm::seq(numSyms))
     space =
         isl_space_set_dim_id(space, isl_dim_param, i,
                              isl_id_alloc(ctx, "sym", (void *)(size_t)(i + 1)));
@@ -1196,7 +1100,7 @@ pruneBoundMap(__isl_keep isl_ctx *ctx, AffineMap map, ValueRange operands,
       {}, {}, isl_local_space_from_space(space), ctx};
   for (unsigned i : llvm::seq(numDims))
     conv.dimPosMap[i] = i;
-  for (unsigned i : llvm::seq(bases.size()))
+  for (unsigned i : llvm::seq(numSyms))
     conv.symPosMap[i] = i;
 
   SmallVector<AffineExpr> keptExprs;
@@ -1205,10 +1109,10 @@ pruneBoundMap(__isl_keep isl_ctx *ctx, AffineMap map, ValueRange operands,
   unsigned start = 0;
   for (unsigned size : groups.getValues<uint32_t>()) {
     ArrayRef<AffineExpr> group = map.getResults().slice(start, size);
-    start += size;
     SmallVector<isl_aff *> affs;
-    for (AffineExpr expr : group)
-      affs.push_back(conv.getIslAff(expr.replaceSymbols(symExprs)));
+    for (AffineExpr expr : expanded.getResults().slice(start, size))
+      affs.push_back(conv.getIslAff(expr));
+    start += size;
     SmallVector<bool> kept(size, true);
     for (auto [j, affJ] : llvm::enumerate(affs)) {
       if (!affJ)
@@ -1244,26 +1148,29 @@ pruneBoundMap(__isl_keep isl_ctx *ctx, AffineMap map, ValueRange operands,
   isl_local_space_free(conv.ls);
   if (!changed)
     return std::nullopt;
-  return std::make_pair(
-      AffineMap::get(numDims, map.getNumSymbols(), keptExprs, map.getContext()),
-      std::move(keptGroups));
+  return std::make_pair(AffineMap::get(map.getNumDims(), map.getNumSymbols(),
+                                       keptExprs, map.getContext()),
+                        std::move(keptGroups));
 }
 
 LogicalResult pruneParallelBounds(IslAnalysis &islAnalysis,
                                   affine::AffineParallelOp op) {
+  Region *scope = getLocalAffineScope(op);
+  if (!scope)
+    return failure();
   isl_ctx *ctx = islAnalysis.getCtx();
   Builder b(op.getContext());
   bool changed = false;
   if (auto pruned = pruneBoundMap(
           ctx, op.getLowerBoundsMap(), op.getLowerBoundsOperands(),
-          op.getLowerBoundsGroups(), /*isUpper=*/false)) {
+          op.getLowerBoundsGroups(), /*isUpper=*/false, scope)) {
     op.setLowerBoundsMapAttr(AffineMapAttr::get(pruned->first));
     op.setLowerBoundsGroupsAttr(b.getI32TensorAttr(pruned->second));
     changed = true;
   }
   if (auto pruned = pruneBoundMap(
           ctx, op.getUpperBoundsMap(), op.getUpperBoundsOperands(),
-          op.getUpperBoundsGroups(), /*isUpper=*/true)) {
+          op.getUpperBoundsGroups(), /*isUpper=*/true, scope)) {
     op.setUpperBoundsMapAttr(AffineMapAttr::get(pruned->first));
     op.setUpperBoundsGroupsAttr(b.getI32TensorAttr(pruned->second));
     changed = true;
