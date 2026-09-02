@@ -5086,66 +5086,9 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     // it, which is exactly what materializing its initial value where the
     // alloca sits gives. Reads before any write see zeros.
     auto MT = alloca.getType();
-    if (!isXLACompatiblePrimitive(MT.getElementType()))
+    if (!MT.hasStaticShape() || !isXLACompatiblePrimitive(MT.getElementType()))
       return op->emitError("cannot raise dynamic or non-primitive alloca")
              << *op;
-    if (!MT.hasStaticShape()) {
-      // A scratch of runtime extent: a dynamic broadcast of the zero makes
-      // the buffer, its shape assembled from the mapped extents.
-      auto loc =
-          rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo);
-      SmallVector<Value> dims;
-      unsigned dynIdx = 0;
-      auto i64Ty = RankedTensorType::get({}, builder.getI64Type());
-      auto i64x1Ty = RankedTensorType::get({1}, builder.getI64Type());
-      for (int64_t d = 0; d < MT.getRank(); ++d) {
-        Value dv;
-        if (MT.isDynamicDim(d)) {
-          if (dynIdx >= alloca.getDynamicSizes().size())
-            return op->emitError("cannot raise dynamic or non-primitive "
-                                 "alloca")
-                   << *op;
-          Value szv =
-              mapping.lookupOrNull(alloca.getDynamicSizes()[dynIdx++]);
-          if (!szv || cast<RankedTensorType>(szv.getType()).getRank() != 0)
-            return op->emitError("cannot raise dynamic or non-primitive "
-                                 "alloca")
-                   << *op;
-          if (!cast<RankedTensorType>(szv.getType())
-                   .getElementType()
-                   .isInteger(64))
-            szv = stablehlo::ConvertOp::create(builder, loc, i64Ty, szv);
-          dv = szv;
-        } else {
-          dv = stablehlo::ConstantOp::create(
-              builder, loc, i64Ty,
-              SplatElementsAttr::get(
-                  i64Ty, builder.getI64IntegerAttr(MT.getDimSize(d))));
-        }
-        dims.push_back(
-            stablehlo::ReshapeOp::create(builder, loc, i64x1Ty, dv));
-      }
-      Value shape =
-          dims.size() == 1
-              ? dims[0]
-              : stablehlo::ConcatenateOp::create(builder, loc, dims, 0)
-                    .getResult();
-      auto ST = RankedTensorType::get({}, MT.getElementType());
-      Value zeroScalar = stablehlo::ConstantOp::create(
-          builder, loc, ST,
-          SplatElementsAttr::get(ST, builder.getZeroAttr(MT.getElementType())));
-      SmallVector<int64_t> dynShape(MT.getRank(), ShapedType::kDynamic);
-      for (int64_t d = 0; d < MT.getRank(); ++d)
-        if (!MT.isDynamicDim(d))
-          dynShape[d] = MT.getDimSize(d);
-      auto TT = RankedTensorType::get(dynShape, MT.getElementType());
-      Value dyn = stablehlo::DynamicBroadcastInDimOp::create(
-          builder, loc, TT, zeroScalar, shape,
-          builder.getDenseI64ArrayAttr({}));
-      mapping.map(alloca.getResult(), dyn);
-      maps[dyn] = affine::AffineValueMap(AffineMap::get(op->getContext()), {});
-      return success();
-    }
     auto TT = RankedTensorType::get(MT.getShape(), MT.getElementType());
     Value zero = stablehlo::ConstantOp::create(
         builder, rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
