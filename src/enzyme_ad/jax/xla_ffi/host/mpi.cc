@@ -35,14 +35,26 @@ enzymexla_set_mpi_constant(const char *name, void *value, int isptr) {
   mpi_constants_map[name] = std::make_tuple(static_cast<bool>(isptr), value);
 }
 
-template <typename T> xla::ffi::ErrorOr<T> getMpiConstant(const char *name) {
+extern "C" MLIR_CAPI_EXPORTED int
+enzymexla_get_mpi_constant(const char *name, void **value, int *isptr) {
   auto it = mpi_constants_map.find(name);
   if (it == mpi_constants_map.end()) {
-    return ffi::Error::InvalidArgument(
+    return -1;
+  }
+  *isptr = std::get<0>(it->second);
+  *value = std::get<1>(it->second);
+  return 0;
+}
+
+template <typename T> xla::ffi::ErrorOr<T> getMpiConstant(const char *name) {
+  void *value;
+  int isptr;
+  auto notfound = enzymexla_get_mpi_constant(name, &value, &isptr);
+  if (notfound) {
+    return xla::ffi::Error::InvalidArgument(
         absl::StrFormat("MPI constant `%s` not found", name));
   }
-  bool isptr = std::get<0>(it->second);
-  void *value = std::get<1>(it->second);
+
   if (isptr)
     return reinterpret_cast<T>(value);
   else
