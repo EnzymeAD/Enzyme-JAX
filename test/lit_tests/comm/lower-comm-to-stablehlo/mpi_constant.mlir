@@ -1,4 +1,8 @@
+// XFAIL: *
 // RUN: enzymexlamlir-opt --lower-comm-to-stablehlo %s | FileCheck %s
+
+// NOTE disabled because we cannot register constants in the JIT symbol table with enzymexlamlir-opt
+// TODO fix whenever the constant registration allows or we move to MPI 5 ABI
 
 // CHECK: func.func @main() -> (tensor<i64>, tensor<i64>) {
 func.func @main() -> (!comm.mpi.comm, !comm.mpi.op) {
