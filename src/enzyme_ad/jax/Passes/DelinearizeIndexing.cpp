@@ -170,13 +170,19 @@ reshapeMemref2(Value memref, ArrayRef<int64_t> shape,
   for (auto &ainfo : affineAccesses) {
     if (auto load = dyn_cast<AffineLoadOp>(ainfo.access.opInst)) {
       rewriter.setInsertionPoint(load);
-      rewriter.replaceOpWithNewOp<AffineLoadOp>(
+      auto align = load.getAlignment();
+      auto newLoad = rewriter.replaceOpWithNewOp<AffineLoadOp>(
           load, load.getMemref(), ainfo.map, load.getMapOperands());
+      if (align)
+        newLoad.setAlignment(*align);
     } else if (auto store = dyn_cast<AffineStoreOp>(ainfo.access.opInst)) {
       rewriter.setInsertionPoint(store);
-      rewriter.replaceOpWithNewOp<AffineStoreOp>(store, store.getValue(),
-                                                 store.getMemref(), ainfo.map,
-                                                 store.getMapOperands());
+      auto align = store.getAlignment();
+      auto newStore = rewriter.replaceOpWithNewOp<AffineStoreOp>(
+          store, store.getValue(), store.getMemref(), ainfo.map,
+          store.getMapOperands());
+      if (align)
+        newStore.setAlignment(*align);
     } else {
       llvm_unreachable("unexpected affine access");
     }
