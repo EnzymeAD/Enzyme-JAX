@@ -91,20 +91,29 @@ static Value makeZero(OpBuilder &builder, Location loc, Type T) {
              : cast<AutoDiffTypeInterface>(T).createNullValue(builder, loc);
 }
 
-static inline Operation *createAddRegion(Operation *op) {
+template <typename BinaryOp>
+static inline Operation *createBinaryRegion(Operation *op) {
   mlir::OpBuilder builder(op->getContext());
   mlir::Block *block = new Block();
   op->getRegion(0).push_back(block);
   auto elemType = cast<ShapedType>(op->getResult(0).getType()).getElementType();
-  auto tensorType = RankedTensorType::get({}, elemType);
+  auto tensorType = RankedTensorType::get(/*shape=*/{}, elemType);
   block->addArguments({tensorType, tensorType}, {op->getLoc(), op->getLoc()});
   builder.setInsertionPointToEnd(block);
-  mlir::stablehlo::ReturnOp::create(
-      builder, op->getLoc(),
-      mlir::stablehlo::AddOp::create(
-          builder, op->getLoc(), block->getArgument(0), block->getArgument(1))
-          ->getResult(0));
+  mlir::stablehlo::ReturnOp::create(builder, op->getLoc(),
+                                    BinaryOp::create(builder, op->getLoc(),
+                                                     block->getArgument(0),
+                                                     block->getArgument(1))
+                                        ->getResult(0));
   return op;
+}
+
+static inline Operation *createAddRegion(Operation *op) {
+  return createBinaryRegion<mlir::stablehlo::AddOp>(op);
+}
+
+static inline Operation *createMulRegion(Operation *op) {
+  return createBinaryRegion<mlir::stablehlo::MulOp>(op);
 }
 
 Operation *cloneWithNewResultTypes(Operation *op, OpBuilder &builder,
@@ -1950,36 +1959,102 @@ public:
 
       Value cachedValue = gutils->popCache(caches[0], builder);
       Value cachedInit = gutils->popCache(caches[1], builder);
-      Value cachedResult = gutils->popCache(caches[2], builder);
 
       if (!gutils->isConstantValue(value)) {
         auto binDiffe = stablehlo::BroadcastInDimOp::create(
             builder, op.getLoc(), gutils->getShadowType(inTy), inDiffe,
             builder.getDenseI64ArrayAttr(toBroadcast));
 
-        auto resultBroadcasted = stablehlo::BroadcastInDimOp::create(
-            builder, op.getLoc(), inTy, cachedResult,
-            builder.getDenseI64ArrayAttr(toBroadcast));
+        // Count zero factors in each reduction group.  The derivative of a
+        // product is:
+        //   product / x[i]                    when there are no zeros,
+        //   product of the nonzero factors    for the sole zero, and
+        //   zero                              when there are multiple zeros.
+        // Use a nonzero denominator even on the unselected paths so the
+        // adjoint never materializes 0 / 0.
+        auto primalZero = makeZero(builder, op.getLoc(), inTy);
+        auto isZero =
+            stablehlo::CompareOp::create(builder, op.getLoc(), cachedValue,
+                                         primalZero, ComparisonDirection::EQ);
 
-        // valueDiffe = inDiffe * cachedResult / cachedValue
-        Value outDiffe = stablehlo::MulOp::create(
-            builder, op.getLoc(), binDiffe,
-            stablehlo::DivOp::create(builder, op.getLoc(), resultBroadcasted,
-                                     cachedValue));
+        auto countInputTy =
+            RankedTensorType::get(inTy.getShape(), builder.getI32Type());
+        auto zeroIndicators = stablehlo::ConvertOp::create(
+            builder, op.getLoc(), countInputTy, isZero);
+        auto countResultTy = RankedTensorType::get(
+            cast<RankedTensorType>(inDiffe.getType()).getShape(),
+            builder.getI32Type());
+        auto countZeros = stablehlo::ReduceOp::create(
+            builder, op.getLoc(), TypeRange{countResultTy},
+            ValueRange{zeroIndicators},
+            ValueRange{makeI32Constant(op.getLoc(), builder, 0)},
+            op.getDimensions());
+        createAddRegion(countZeros);
+
+        auto countZero = makeZero(builder, op.getLoc(), countResultTy);
+        auto countOne = stablehlo::ConstantOp::create(
+            builder, op.getLoc(), countResultTy,
+            cast<ElementsAttr>(makeAttr(countResultTy, 1)));
+        auto noZeros = stablehlo::CompareOp::create(
+            builder, op.getLoc(), countZeros.getResult(0), countZero,
+            ComparisonDirection::EQ);
+        auto oneZero = stablehlo::CompareOp::create(
+            builder, op.getLoc(), countZeros.getResult(0), countOne,
+            ComparisonDirection::EQ);
+        auto noZerosBroadcasted = stablehlo::BroadcastInDimOp::create(
+            builder, op.getLoc(), isZero.getType(), noZeros,
+            builder.getDenseI64ArrayAttr(toBroadcast));
+        auto oneZeroBroadcasted = stablehlo::BroadcastInDimOp::create(
+            builder, op.getLoc(), isZero.getType(), oneZero,
+            builder.getDenseI64ArrayAttr(toBroadcast));
+        auto isSoleZero = stablehlo::AndOp::create(builder, op.getLoc(),
+                                                   oneZeroBroadcasted, isZero);
+        auto hasNonzeroDerivative = stablehlo::OrOp::create(
+            builder, op.getLoc(), noZerosBroadcasted, isSoleZero);
+
+        auto elemType = inTy.getElementType();
+        auto scalarOne = stablehlo::getIdentityValueForOp<MulOp>(
+            builder, op.getLoc(), elemType);
+        auto ones = stablehlo::BroadcastInDimOp::create(
+            builder, op.getLoc(), inTy, scalarOne,
+            builder.getDenseI64ArrayAttr({}));
+        auto nonzeroValues = stablehlo::SelectOp::create(
+            builder, op.getLoc(), isZero, ones, cachedValue);
+        auto nonzeroProduct = stablehlo::ReduceOp::create(
+            builder, op.getLoc(), TypeRange{inDiffe.getType()},
+            ValueRange{nonzeroValues}, ValueRange{cachedInit},
+            op.getDimensions());
+        createMulRegion(nonzeroProduct);
+        auto productBroadcasted = stablehlo::BroadcastInDimOp::create(
+            builder, op.getLoc(), inTy, nonzeroProduct.getResult(0),
+            builder.getDenseI64ArrayAttr(toBroadcast));
+        auto safeValue = stablehlo::SelectOp::create(builder, op.getLoc(),
+                                                     isZero, ones, cachedValue);
+        auto productWithoutValue = stablehlo::DivOp::create(
+            builder, op.getLoc(), productBroadcasted, safeValue);
+        auto zeroProduct = makeZero(builder, op.getLoc(), inTy);
+        auto valueDerivative = stablehlo::SelectOp::create(
+            builder, op.getLoc(), hasNonzeroDerivative, productWithoutValue,
+            zeroProduct);
+
+        Value outDiffe = stablehlo::MulOp::create(builder, op.getLoc(),
+                                                  binDiffe, valueDerivative);
 
         gutils->addToDiffe(value, outDiffe, builder);
       }
       if (!gutils->isConstantValue(init)) {
-        Value broadcastedInit = stablehlo::BroadcastInDimOp::create(
-            builder, op.getLoc(), cachedResult.getType(), cachedInit,
-            builder.getDenseI64ArrayAttr({}));
-        Value divResInit = stablehlo::DivOp::create(
-            builder, op.getLoc(), cachedResult, broadcastedInit);
-        Value broadcastedInitDiffe =
-            stablehlo::MulOp::create(builder, op.getLoc(), divResInit, inDiffe);
+        auto elemType = inTy.getElementType();
+        auto scalarOne = stablehlo::getIdentityValueForOp<MulOp>(
+            builder, op.getLoc(), elemType);
+        auto inputProduct = stablehlo::ReduceOp::create(
+            builder, op.getLoc(), TypeRange{inDiffe.getType()},
+            ValueRange{cachedValue}, ValueRange{scalarOne}, op.getDimensions());
+        createMulRegion(inputProduct);
+        Value broadcastedInitDiffe = stablehlo::MulOp::create(
+            builder, op.getLoc(), inputProduct.getResult(0), inDiffe);
 
         SmallVector<int64_t> allDims;
-        int64_t N = cast<RankedTensorType>(cachedResult.getType()).getRank();
+        int64_t N = cast<RankedTensorType>(inDiffe.getType()).getRank();
         for (int64_t i = 0; i < N; ++i)
           allDims.push_back(i);
 
@@ -1992,7 +2067,7 @@ public:
         createAddRegion(initDiffeSum);
         Value initDiffe = initDiffeSum->getResult(0);
 
-        // initDiffe = sum(inDifffe * result / init);
+        // initDiffe = sum(inDiffe * product(inputs)).
         gutils->addToDiffe(init, initDiffe, builder);
       }
       return success();
@@ -2014,7 +2089,6 @@ public:
     if (isa<MulOp>(innerOp)) {
       SmallVector<Value> caches;
 
-      auto result = op.getResult(0);
       auto value = orig->getOperand(0);
       auto init = orig->getOperand(1);
 
@@ -2025,9 +2099,6 @@ public:
           gutils->getNewFromOriginal(value), cacheBuilder));
       caches.push_back(gutils->initAndPushCache(
           gutils->getNewFromOriginal(init), cacheBuilder));
-      cacheBuilder.setInsertionPointAfter(newOp);
-      caches.push_back(gutils->initAndPushCache(
-          gutils->getNewFromOriginal(result), cacheBuilder));
 
       return caches;
     }
