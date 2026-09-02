@@ -1,5 +1,8 @@
 #include <string_view>
+#include <tuple>
 #include <type_traits>
+
+#include "llvm/ADT/StringMap.h"
 
 #include "xla/ffi/api/c_api.h"
 #include "xla/ffi/api/ffi.h"
@@ -23,41 +26,47 @@ int mpi_unimplemented_stub(...) {
 
 #define EXLA_FFI_PREFIX enzymexla_ffi
 
-// generates a global variable for `FNAME` that defaults to the value by
-// MPItrampoline by default and a exported C function for setting the value
-// dynamically NOTE this should not be required once MPI v5 ABI is used as
-// minimum version
-#define EXLA_FFI_MPI_CONSTANT_BINDING(T, FNAME)                                \
-  T EXLA_##FNAME = FNAME;                                                      \
-  extern "C" MLIR_CAPI_EXPORTED void EXLA_FFI_PREFIX##_set_##FNAME(T val) {    \
-    EXLA_##FNAME = val;                                                        \
-  }                                                                            \
-  extern "C" MLIR_CAPI_EXPORTED T EXLA_FFI_PREFIX##_get_##FNAME() {            \
-    return EXLA_##FNAME;                                                       \
+// value is a pointer to the constant, boolean indicates whether to deref the
+// pointer (on true) or cast the pointer to the type (on false)
+llvm::StringMap<std::tuple<bool, void *>> mpi_constants_map;
+
+extern "C" MLIR_CAPI_EXPORTED void
+enzymexla_set_mpi_constant(const char *name, void *value, int isptr) {
+  mpi_constants_map[name] = std::make_tuple(static_cast<bool>(isptr), value);
+}
+
+extern "C" MLIR_CAPI_EXPORTED int
+enzymexla_get_mpi_constant(const char *name, void **value, int *isptr) {
+  auto it = mpi_constants_map.find(name);
+  if (it == mpi_constants_map.end()) {
+    return -1;
+  }
+  *isptr = std::get<0>(it->second);
+  *value = std::get<1>(it->second);
+  return 0;
+}
+
+template <typename T> xla::ffi::ErrorOr<T> getMpiConstant(const char *name) {
+  void *value;
+  int isptr;
+  auto notfound = enzymexla_get_mpi_constant(name, &value, &isptr);
+  if (notfound) {
+    return xla::ffi::Error::InvalidArgument(
+        absl::StrFormat("MPI constant `%s` not found", name));
   }
 
-EXLA_FFI_MPI_CONSTANT_BINDING(int, MPI_STATUS_SIZE)
-EXLA_FFI_MPI_CONSTANT_BINDING(int, MPI_SUCCESS)
-EXLA_FFI_MPI_CONSTANT_BINDING(int, MPI_MAX_ERROR_STRING)
-
-#define GENERATE_MPI_OP_LIST(X)                                                \
-  X(MPI_Op, MPI_OP_NULL)                                                       \
-  X(MPI_Op, MPI_SUM)                                                           \
-  X(MPI_Op, MPI_MIN)                                                           \
-  X(MPI_Op, MPI_MAX)                                                           \
-  X(MPI_Op, MPI_PROD)                                                          \
-  X(MPI_Op, MPI_BAND)                                                          \
-  X(MPI_Op, MPI_BOR)                                                           \
-  X(MPI_Op, MPI_BXOR)                                                          \
-  X(MPI_Op, MPI_LAND)                                                          \
-  X(MPI_Op, MPI_LOR)                                                           \
-  X(MPI_Op, MPI_LXOR)                                                          \
-  X(MPI_Op, MPI_MINLOC)                                                        \
-  X(MPI_Op, MPI_MAXLOC)                                                        \
-  X(MPI_Op, MPI_REPLACE)                                                       \
-  X(MPI_Op, MPI_NO_OP)
-
-GENERATE_MPI_OP_LIST(EXLA_FFI_MPI_CONSTANT_BINDING)
+  if (isptr) {
+    if constexpr (std::is_pointer_v<T>) {
+      return reinterpret_cast<T>(value);
+    } else if constexpr (std::is_integral_v<T>) {
+      return static_cast<T>(reinterpret_cast<std::uintptr_t>(value));
+    } else {
+      return reinterpret_cast<T>(value);
+    }
+  } else {
+    return *static_cast<T *>(value);
+  }
+}
 
 namespace enzymexla::ffi_internal {
 namespace ffi = xla::ffi;
@@ -78,16 +87,28 @@ using MpiRequestBuffer = PtrBuffer;
 using MpiStatusBuffer = Buffer<ffi::U8, 1>;
 
 ffi::Error checkMpiStatusSize(const MpiStatusBuffer &buf) {
-  if (buf.element_count() != EXLA_MPI_STATUS_SIZE) {
+  auto mpi_status_size = getMpiConstant<int>("MPI_STATUS_SIZE");
+  if (mpi_status_size.has_error())
+    return mpi_status_size.error();
+
+  if (buf.element_count() != mpi_status_size) {
     return ffi::Error::InvalidArgument(
         absl::StrFormat("MPI_Status buffer must have %d elements, got %d",
-                        EXLA_MPI_STATUS_SIZE, buf.element_count()));
+                        mpi_status_size, buf.element_count()));
   }
   return ffi::Error::Success();
 }
 
 ffi::Error checkMpiError(const char *fname, const int err) {
-  if (err == EXLA_MPI_SUCCESS)
+  auto mpi_success = getMpiConstant<int>("MPI_SUCCESS");
+  if (mpi_success.has_error())
+    return mpi_success.error();
+
+  auto mpi_max_error_string = getMpiConstant<int>("MPI_MAX_ERROR_STRING");
+  if (mpi_max_error_string.has_error())
+    return mpi_max_error_string.error();
+
+  if (err == mpi_success)
     return ffi::Error::Success();
 
   auto *fptr = reinterpret_cast<decltype(MPI_Error_string) *>(
@@ -95,7 +116,7 @@ ffi::Error checkMpiError(const char *fname, const int err) {
   if (fptr == nullptr)
     return ffi::Error::Internal("MPI_Error_string symbol not found");
 
-  std::vector<char> cstr(EXLA_MPI_MAX_ERROR_STRING);
+  std::vector<char> cstr(mpi_max_error_string);
   int len;
 
   fptr(err, cstr.data(), &len);
@@ -106,52 +127,49 @@ ffi::Error checkMpiError(const char *fname, const int err) {
 }
 
 // clang-format off
-std::optional<MPI_Op> symbolizeMpiOp(std::string_view op) {
-  #define X(_, NAME) if (op == #NAME) return EXLA_##NAME;
-  GENERATE_MPI_OP_LIST(X)
-  #undef X
-  return std::nullopt;
-}
-// clang-format on
-
-// clang-format off
 std::optional<MPI_Datatype>
 convertPrimitiveTypeToMpiDatatype(ffi::DataType type, bool allow_cast = false) {
+  const char* name;
   switch (type) {
-    case ffi::DataType::INVALID: return std::nullopt;
-    case ffi::DataType::PRED: return MPI_C_BOOL;
-    case ffi::DataType::S1: return std::nullopt;
-    case ffi::DataType::S2: return std::nullopt;
-    case ffi::DataType::S4: return std::nullopt;
-    case ffi::DataType::S8: return MPI_INT8_T;
-    case ffi::DataType::S16: return MPI_INT16_T;
-    case ffi::DataType::S32: return MPI_INT32_T;
-    case ffi::DataType::S64: return MPI_INT64_T;
-    case ffi::DataType::U1: return std::nullopt;
-    case ffi::DataType::U2: return std::nullopt;
-    case ffi::DataType::U4: return std::nullopt;
-    case ffi::DataType::U8: return MPI_UINT8_T;
-    case ffi::DataType::U16: return MPI_UINT16_T;
-    case ffi::DataType::U32: return MPI_UINT32_T;
-    case ffi::DataType::U64: return MPI_UINT64_T;
-    case ffi::DataType::F16: return std::nullopt; // allow_cast ? MPI_UINT16_T : std::nullopt;
-    case ffi::DataType::F32: return MPI_FLOAT;
-    case ffi::DataType::F64: return MPI_DOUBLE;
-    case ffi::DataType::BF16: return std::nullopt; // allow_cast ? MPI_UINT16_T : std::nullopt;
-    case ffi::DataType::C64: return MPI_C_FLOAT_COMPLEX;
-    case ffi::DataType::C128: return MPI_C_DOUBLE_COMPLEX;
-    case ffi::DataType::TOKEN: return std::nullopt;
-    case ffi::DataType::F8E5M2: return std::nullopt; // allow_cast ? MPI_UINT8_T : std::nullopt;
-    case ffi::DataType::F8E4M3: return std::nullopt; // allow_cast ? MPI_UINT8_T : std::nullopt;
-    case ffi::DataType::F8E4M3FN: return std::nullopt; // allow_cast ? MPI_UINT8_T : std::nullopt;
-    case ffi::DataType::F8E4M3B11FNUZ: return std::nullopt; // allow_cast ? MPI_UINT8_T : std::nullopt;
-    case ffi::DataType::F8E5M2FNUZ: return std::nullopt; // allow_cast ? MPI_UINT8_T : std::nullopt;
-    case ffi::DataType::F8E4M3FNUZ: return std::nullopt; // allow_cast ? MPI_UINT8_T : std::nullopt;
-    case ffi::DataType::F8E3M4: return std::nullopt; // allow_cast ? MPI_UINT8_T : std::nullopt;
-    case ffi::DataType::F4E2M1FN: return std::nullopt;
-    case ffi::DataType::F8E8M0FNU: return std::nullopt; // allow_cast ? MPI_UINT8_T : std::nullopt;
+    // case ffi::DataType::INVALID: name = std::nullopt;
+    case ffi::DataType::PRED: name = "MPI_C_BOOL";
+    // case ffi::DataType::S1: name = std::nullopt;
+    // case ffi::DataType::S2: name = std::nullopt;
+    // case ffi::DataType::S4: name = std::nullopt;
+    case ffi::DataType::S8: name = "MPI_INT8_T";
+    case ffi::DataType::S16: name = "MPI_INT16_T";
+    case ffi::DataType::S32: name = "MPI_INT32_T";
+    case ffi::DataType::S64: name = "MPI_INT64_T";
+    // case ffi::DataType::U1: name = std::nullopt;
+    // case ffi::DataType::U2: name = std::nullopt;
+    // case ffi::DataType::U4: name = std::nullopt;
+    case ffi::DataType::U8: name = "MPI_UINT8_T";
+    case ffi::DataType::U16: name = "MPI_UINT16_T";
+    case ffi::DataType::U32: name = "MPI_UINT32_T";
+    case ffi::DataType::U64: name = "MPI_UINT64_T";
+    case ffi::DataType::F16: name = (allow_cast ? "MPI_UINT16_T" : nullptr);
+    case ffi::DataType::F32: name = "MPI_FLOAT";
+    case ffi::DataType::F64: name = "MPI_DOUBLE";
+    case ffi::DataType::BF16: name = (allow_cast ? "MPI_UINT16_T" : nullptr);
+    case ffi::DataType::C64: name = "MPI_C_FLOAT_COMPLEX";
+    case ffi::DataType::C128: name = "MPI_C_DOUBLE_COMPLEX";
+    // case ffi::DataType::TOKEN: name = std::nullopt;
+    case ffi::DataType::F8E5M2: name = (allow_cast ? "MPI_UINT8_T" : nullptr);
+    case ffi::DataType::F8E4M3: name = (allow_cast ? "MPI_UINT8_T" : nullptr);
+    case ffi::DataType::F8E4M3FN: name = (allow_cast ? "MPI_UINT8_T" : nullptr);
+    case ffi::DataType::F8E4M3B11FNUZ: name = (allow_cast ? "MPI_UINT8_T" : nullptr);
+    case ffi::DataType::F8E5M2FNUZ: name = (allow_cast ? "MPI_UINT8_T" : nullptr);
+    case ffi::DataType::F8E4M3FNUZ: name = (allow_cast ? "MPI_UINT8_T" : nullptr);
+    case ffi::DataType::F8E3M4: name = (allow_cast ? "MPI_UINT8_T" : nullptr);
+    // case ffi::DataType::F4E2M1FN: name = std::nullopt;
+    case ffi::DataType::F8E8M0FNU: name = (allow_cast ? "MPI_UINT8_T" : nullptr);
     default: return std::nullopt;
   }
+
+  auto datatype = getMpiConstant<MPI_Datatype>(name);
+  if (datatype.has_error())
+    return std::nullopt;
+  return datatype.value();
 }
 // clang-format on
 
@@ -459,11 +477,10 @@ ffi::Error MpiAllreduceImpl(ffi::AnyBuffer sendbuf, std::string_view op_str,
     return ffi::Error::InvalidArgument(
         absl::StrFormat("MPI_Allreduce: unsupported datatype %s", oss.str()));
   }
-  auto op = symbolizeMpiOp(op_str);
-  if (!op.has_value()) {
-    return ffi::Error::InvalidArgument(
-        absl::StrFormat("MPI_Allreduce: invalid operation %s", op_str));
-  }
+  auto op = getMpiConstant<MPI_Op>(op_str.data());
+  if (op.has_error())
+    return op.error();
+
   int count = sendbuf.element_count();
   int err = fptr(sendbuf.untyped_data(), recvbuf->untyped_data(), count,
                  datatype.value(), op.value(), comm);
