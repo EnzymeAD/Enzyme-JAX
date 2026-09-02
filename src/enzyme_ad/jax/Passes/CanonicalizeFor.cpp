@@ -292,6 +292,34 @@ static Value castValue(PatternRewriter &rewriter, Value value, Value target,
   }
 };
 
+// The ops needed to recompute `v` where the loop's own operands are available,
+// in block order. A value the loop does not vary can still be computed inside
+// it, so being defined outside is sufficient but not necessary.
+static bool collectLoopInvariantSlice(scf::ForOp forOp, Value v,
+                                      SmallVectorImpl<Operation *> &ops) {
+  SmallVector<Value> todo{v};
+  SmallPtrSet<Operation *, 8> seen;
+  while (!todo.empty()) {
+    Value cur = todo.pop_back_val();
+    if (forOp.isDefinedOutsideOfLoop(cur))
+      continue;
+    Operation *def = cur.getDefiningOp();
+    if (!def || def->getParentRegion() != &forOp.getRegion())
+      return false;
+    if (!isMemoryEffectFree(def) || def->getNumRegions())
+      return false;
+    if (!seen.insert(def).second)
+      continue;
+    if (ops.size() >= 8)
+      return false;
+    ops.push_back(def);
+    llvm::append_range(todo, def->getOperands());
+  }
+  llvm::sort(ops,
+             [](Operation *a, Operation *b) { return a->isBeforeInBlock(b); });
+  return true;
+}
+
 struct ForOpInductionReplacement : public OpRewritePattern<scf::ForOp> {
   using OpRewritePattern<scf::ForOp>::OpRewritePattern;
 
@@ -399,6 +427,7 @@ struct ForOpInductionReplacement : public OpRewritePattern<scf::ForOp> {
           continue;
         int64_t constStride = 0;
         SmallVector<Value> dynStrides;
+        SmallVector<Operation *> strideSlice;
         bool ok = true;
         for (auto g : chain) {
           auto idx = g.getIndices()[0];
@@ -407,7 +436,7 @@ struct ForOpInductionReplacement : public OpRewritePattern<scf::ForOp> {
             continue;
           }
           Value v = cast<Value>(idx);
-          if (!forOp.isDefinedOutsideOfLoop(v)) {
+          if (!collectLoopInvariantSlice(forOp, v, strideSlice)) {
             ok = false;
             break;
           }
@@ -418,8 +447,14 @@ struct ForOpInductionReplacement : public OpRewritePattern<scf::ForOp> {
         Location loc = forOp.getLoc();
 
         auto advancedBy = [&](Value count) {
+          // The stride may be computed in the body, after the point this is
+          // inserted at, so recompute it here.
+          IRMapping map;
+          for (Operation *op : strideSlice)
+            rewriter.clone(*op, map);
           Value stride = nullptr;
-          for (Value v : dynStrides) {
+          for (Value orig : dynStrides) {
+            Value v = map.lookupOrDefault(orig);
             Value c = castValue(rewriter, v, count, loc);
             stride = stride
                          ? AddIOp::create(rewriter, loc, stride, c).getResult()
