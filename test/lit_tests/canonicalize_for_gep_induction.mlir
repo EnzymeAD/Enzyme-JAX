@@ -134,3 +134,42 @@ func.func @never_runs(%p: !llvm.ptr, %x: f64) -> !llvm.ptr {
 
 // TRIP-LABEL: func.func @never_runs(
 // TRIP: return %arg0
+
+// -----
+// RUN: enzymexlamlir-opt %s --canonicalize-scf-for | FileCheck %s --check-prefix=INSIDE
+
+// A distance the loop does not vary can still be computed inside it.
+func.func @stride_computed_inside(%p: !llvm.ptr, %n: i64, %k: i64, %x: f64) -> !llvm.ptr {
+  %c1 = arith.constant 1 : i64
+  %c8 = arith.constant 8 : i64
+  %r = scf.for %i = %c1 to %n step %c1 iter_args(%q = %p) -> (!llvm.ptr) : i64 {
+    %m = arith.maxsi %k, %c1 : i64
+    %off = arith.muli %m, %c8 : i64
+    %at = llvm.getelementptr inbounds|nuw %q[%off] : (!llvm.ptr, i64) -> !llvm.ptr, i8
+    llvm.store %x, %at : f64, !llvm.ptr
+    %next = llvm.getelementptr inbounds|nuw %at[8] : (!llvm.ptr) -> !llvm.ptr, i8
+    scf.yield %next : !llvm.ptr
+  }
+  return %r : !llvm.ptr
+}
+
+// A distance read from memory inside the loop is not one the loop leaves
+// alone: left carried.
+func.func @stride_loaded_inside(%p: !llvm.ptr, %n: i64, %src: memref<?xi64>, %x: f64) -> !llvm.ptr {
+  %c1 = arith.constant 1 : i64
+  %i0 = arith.constant 0 : index
+  %r = scf.for %i = %c1 to %n step %c1 iter_args(%q = %p) -> (!llvm.ptr) : i64 {
+    %off = memref.load %src[%i0] : memref<?xi64>
+    %at = llvm.getelementptr inbounds|nuw %q[%off] : (!llvm.ptr, i64) -> !llvm.ptr, i8
+    llvm.store %x, %at : f64, !llvm.ptr
+    %next = llvm.getelementptr inbounds|nuw %at[8] : (!llvm.ptr) -> !llvm.ptr, i8
+    scf.yield %next : !llvm.ptr
+  }
+  return %r : !llvm.ptr
+}
+
+// INSIDE-LABEL: func.func @stride_computed_inside(
+// INSIDE-NOT: iter_args
+
+// INSIDE-LABEL: func.func @stride_loaded_inside(
+// INSIDE: iter_args
