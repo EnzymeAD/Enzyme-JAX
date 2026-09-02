@@ -496,18 +496,36 @@ affineMapShape(affine::AffineValueMap accessValueMap, ParallelContext pc) {
 static affine::AffineValueMap
 alignMemoryAccess(Value &a, affine::AffineValueMap src, Value *bs,
                   ArrayRef<affine::AffineValueMap> dsts, OpBuilder &builder,
-                  ParallelContext pc) {
+                  ParallelContext pc, bool *ok = nullptr) {
+  // NOTE a default-constructed AffineValueMap holds a null context, so its
+  // getAffineMap() cannot even be probed; validity is reported through `ok`
+  // and inputs must be maps the caller actually recorded.
+  auto fail = [&]() {
+    if (ok)
+      *ok = false;
+    return affine::AffineValueMap();
+  };
+  if (ok)
+    *ok = true;
+  if (!a)
+    return fail();
+  for (unsigned qi = 0; qi < dsts.size(); ++qi)
+    if (!bs[qi])
+      return fail();
   // -> tensor<10x1xf32> loaded from (i) -> (i, 0)
   // -> to tensor<1x10xf32> written as (i) -> (0, i)
 
+  // affineMapShape bails to an empty vector on accesses it cannot size (an
+  // IV with no static range); that must reject the alignment, not assert.
   SmallVector<int64_t> shapeA = affineMapShape(src, pc);
-  assert(shapeA.size() ==
-         cast<RankedTensorType>(a.getType()).getShape().size());
+  if (shapeA.size() != cast<RankedTensorType>(a.getType()).getShape().size())
+    return fail();
   SmallVector<SmallVector<int64_t>> shapeBs;
   for (int i = 0; i < dsts.size(); i++) {
     shapeBs.push_back(affineMapShape(dsts[i], pc));
-    assert(shapeBs[i].size() ==
-           cast<RankedTensorType>(bs[i].getType()).getShape().size());
+    if (shapeBs[i].size() !=
+        cast<RankedTensorType>(bs[i].getType()).getShape().size())
+      return fail();
   }
 
   SmallVector<int64_t> outputShape;
@@ -619,10 +637,10 @@ alignMemoryAccess(Value &a, affine::AffineValueMap src, Value *bs,
 static affine::AffineValueMap
 alignMemoryAccess(Value &a, affine::AffineValueMap src, Value &b,
                   affine::AffineValueMap dst, OpBuilder &builder,
-                  ParallelContext pc) {
+                  ParallelContext pc, bool *ok = nullptr) {
   Value bs[] = {b};
   affine::AffineValueMap dsts[] = {dst};
-  auto res = alignMemoryAccess(a, src, bs, dsts, builder, pc);
+  auto res = alignMemoryAccess(a, src, bs, dsts, builder, pc, ok);
   b = bs[0];
   return res;
 }
@@ -822,6 +840,28 @@ static Block *getRaisedEntryBlock(Operation *op) {
          !isa<func::FuncOp, enzymexla::GPUWrapperOp>(op->getParentOp()))
     op = op->getParentOp();
   return &op->getParentRegion()->front();
+}
+
+// A loop-carried value can be yielded with fewer attributed axes than the
+// carried argument (a uniform chain through an index-table gather loses its
+// lane attribution): broadcast the yield up to the carried layout before
+// matching the permutation.
+static bool
+broadcastYieldToCarried(Value &yielded, Value carried, OpBuilder &builder,
+                        llvm::DenseMap<Value, affine::AffineValueMap> &maps,
+                        ParallelContext &pc) {
+  if (yielded.getType() == carried.getType())
+    return true;
+  bool ok = true;
+  Value a = carried;
+  Value b = yielded;
+  auto outMap = alignMemoryAccess(a, maps.lookup(carried), b,
+                                  maps.lookup(yielded), builder, pc, &ok);
+  if (!ok || a.getType() != carried.getType())
+    return false;
+  maps[b] = outMap;
+  yielded = b;
+  return true;
 }
 
 static LogicalResult tryRaisingForOpToStableHLOWhile(
@@ -1536,6 +1576,11 @@ static LogicalResult tryRaisingForOpToStableHLOWhile(
       Value raisedYieldedIterArg = mapping.lookup(yieldedIterArgs);
       Value raisedIterArg = mapping.lookup(iterArg);
 
+      if (!maps.count(raisedYieldedIterArg) || !maps.count(raisedIterArg))
+        return failure();
+      if (!broadcastYieldToCarried(raisedYieldedIterArg, raisedIterArg, builder,
+                                   maps, pc))
+        return failure();
       auto perm = memoryEquivalentPermutation(maps.lookup(raisedYieldedIterArg),
                                               maps.lookup(raisedIterArg));
 
