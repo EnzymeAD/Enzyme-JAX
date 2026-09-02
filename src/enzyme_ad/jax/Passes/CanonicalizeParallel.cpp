@@ -611,6 +611,97 @@ template <typename IfT> struct IfOfNullPointer : public OpRewritePattern<IfT> {
   }
 };
 
+// A loop whose next-iteration state is loop-invariant, and whose exit test is
+// a pure function of that state, cannot iterate a third time: the third
+// iteration would start from exactly the second's state and take the same
+// exit decision, so the loop would never end. Under the forward-progress
+// guarantee it therefore runs at most twice, and unrolls to
+// body(init); if (cond) { after; body(invariant) }. MFEM's strided copy
+// loops (`k = tid; do { copy(k); k += stride; } while (k < n)`) arrive this
+// way once the range analysis folds the increment to a constant.
+struct UnrollInvariantYieldWhile : public OpRewritePattern<scf::WhileOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(scf::WhileOp w,
+                                PatternRewriter &rewriter) const override {
+    Block &before = w.getBefore().front();
+    Block &after = w.getAfter().front();
+    auto condOp = cast<scf::ConditionOp>(before.getTerminator());
+    auto yield = cast<scf::YieldOp>(after.getTerminator());
+
+    // Whether v is a pure function of values from outside the loop and, when
+    // allowed, of the loop's carried state.
+    auto pureOf = [&](Value root, bool allowState) {
+      SmallVector<Value> stack{root};
+      DenseSet<Value> seen;
+      while (!stack.empty()) {
+        Value v = stack.pop_back_val();
+        if (!seen.insert(v).second)
+          continue;
+        if (auto ba = dyn_cast<BlockArgument>(v)) {
+          Block *owner = ba.getOwner();
+          if (owner == &after) {
+            stack.push_back(condOp.getArgs()[ba.getArgNumber()]);
+            continue;
+          }
+          if (owner == &before) {
+            if (!allowState)
+              return false;
+            continue;
+          }
+          if (w->isAncestor(owner->getParentOp()))
+            return false;
+          continue;
+        }
+        Operation *d = v.getDefiningOp();
+        if (!w->isAncestor(d))
+          continue;
+        if (d->getNumRegions() || !isMemoryEffectFree(d))
+          return false;
+        stack.append(d->operand_begin(), d->operand_end());
+      }
+      return true;
+    };
+    if (!llvm::all_of(yield.getOperands(),
+                      [&](Value v) { return pureOf(v, false); }) ||
+        !pureOf(condOp.getCondition(), true))
+      return failure();
+
+    Location loc = w.getLoc();
+    IRMapping m1;
+    for (auto [ba, init] : llvm::zip(before.getArguments(), w.getInits()))
+      m1.map(ba, init);
+    for (Operation &op : before.without_terminator())
+      rewriter.clone(op, m1);
+    Value cond1 = m1.lookupOrDefault(condOp.getCondition());
+    SmallVector<Value> fwd1;
+    for (Value v : condOp.getArgs())
+      fwd1.push_back(m1.lookupOrDefault(v));
+
+    auto ifOp = scf::IfOp::create(
+        rewriter, loc, cond1,
+        [&](OpBuilder &b, Location l) {
+          IRMapping m2;
+          for (auto [aa, fw] : llvm::zip(after.getArguments(), fwd1))
+            m2.map(aa, fw);
+          for (Operation &op : after.without_terminator())
+            b.clone(op, m2);
+          for (auto [ba, nv] :
+               llvm::zip(before.getArguments(), yield.getOperands()))
+            m2.map(ba, m2.lookupOrDefault(m1.lookupOrDefault(nv)));
+          for (Operation &op : before.without_terminator())
+            b.clone(op, m2);
+          SmallVector<Value> fwd2;
+          for (Value v : condOp.getArgs())
+            fwd2.push_back(m2.lookupOrDefault(v));
+          scf::YieldOp::create(b, l, fwd2);
+        },
+        [&](OpBuilder &b, Location l) { scf::YieldOp::create(b, l, fwd1); });
+    rewriter.replaceOp(w, ifOp.getResults());
+    return success();
+  }
+};
+
 struct CanonicalizeParallelPass
     : public enzyme::impl::CanonicalizeParallelPassBase<
           CanonicalizeParallelPass> {
@@ -638,7 +729,7 @@ struct CanonicalizeParallelPass
         SinkThroughIfOfConstants<arith::DivUIOp, scf::IfOp>,
         SinkThroughIfOfConstants<arith::DivUIOp, affine::AffineIfOp>,
         SelectOfNullPointer, IfOfNullPointer<scf::IfOp>,
-        IfOfNullPointer<affine::AffineIfOp>>(ctx);
+        IfOfNullPointer<affine::AffineIfOp>, UnrollInvariantYieldWhile>(ctx);
     FrozenRewritePatternSet patterns(std::move(owningPatterns));
 
     GreedyRewriteConfig config;
