@@ -132,6 +132,66 @@ static Block *getAllocaBlock(Operation *op) {
   return nullptr;
 }
 
+/// Build an `llvm.global_ctors`/`llvm.global_dtors` entry whose associated
+/// data is the link-once XLA runtime global.  LLVM's object emission places an
+/// associated ctor/dtor entry in the same COMDAT group as that global.  When
+/// several independently compiled translation units contain XLA operations,
+/// the linker therefore keeps the runtime global and exactly one matching
+/// ctor/dtor entry as one unit.
+///
+/// This is emitted as an ordinary LLVM dialect global instead of
+/// LLVM::GlobalCtorsOp/LLVM::GlobalDtorsOp because the LLVM translation used by
+/// this frontend currently drops those ops' `data` attribute.
+static void createAssociatedGlobalCtorDtor(ModuleOp moduleOp, Location loc,
+                                           StringRef globalName,
+                                           LLVM::LLVMFuncOp function,
+                                           LLVM::GlobalOp associatedData,
+                                           RewriterBase &rewriter) {
+  auto i32Type = rewriter.getI32Type();
+  auto ptrType = LLVM::LLVMPointerType::get(rewriter.getContext());
+  auto entryType = LLVM::LLVMStructType::getLiteral(
+      rewriter.getContext(), {i32Type, ptrType, ptrType});
+  auto arrayType = LLVM::LLVMArrayType::get(entryType, 1);
+
+  LLVM::GlobalOp global;
+  {
+    RewriterBase::InsertionGuard guard(rewriter);
+    rewriter.setInsertionPointToEnd(moduleOp.getBody());
+    global = LLVM::GlobalOp::create(
+        rewriter, loc, arrayType, /*isConstant=*/false,
+        LLVM::Linkage::Appending, globalName,
+        /*value=*/Attribute(), /*alignment=*/0, /*addrSpace=*/0);
+  }
+
+  OpBuilder globalBuilder(rewriter.getContext());
+  global.getInitializerRegion().push_back(new Block);
+  globalBuilder.setInsertionPointToStart(global.getInitializerBlock());
+
+  Value priority = LLVM::ConstantOp::create(
+      globalBuilder, loc, i32Type, globalBuilder.getI32IntegerAttr(65535));
+  Value functionAddress =
+      LLVM::AddressOfOp::create(globalBuilder, loc, function);
+  Value dataAddress =
+      LLVM::AddressOfOp::create(globalBuilder, loc, associatedData);
+
+  Value entry = LLVM::UndefOp::create(globalBuilder, loc, entryType);
+  entry = LLVM::InsertValueOp::create(globalBuilder, loc, entryType, entry,
+                                      priority,
+                                      globalBuilder.getDenseI64ArrayAttr(0));
+  entry = LLVM::InsertValueOp::create(globalBuilder, loc, entryType, entry,
+                                      functionAddress,
+                                      globalBuilder.getDenseI64ArrayAttr(1));
+  entry = LLVM::InsertValueOp::create(globalBuilder, loc, entryType, entry,
+                                      dataAddress,
+                                      globalBuilder.getDenseI64ArrayAttr(2));
+
+  Value array = LLVM::UndefOp::create(globalBuilder, loc, arrayType);
+  array =
+      LLVM::InsertValueOp::create(globalBuilder, loc, arrayType, array, entry,
+                                  globalBuilder.getDenseI64ArrayAttr(0));
+  LLVM::ReturnOp::create(globalBuilder, loc, array);
+}
+
 static Value insertXLAInitDeinit(mlir::ModuleOp moduleOp, StringRef backend,
                                  RewriterBase &rewriter) {
   auto loc = moduleOp.getLoc();
@@ -171,29 +231,41 @@ static Value insertXLAInitDeinit(mlir::ModuleOp moduleOp, StringRef backend,
             LLVM::LLVMVoidType::get(moduleOp.getContext()), {}),
         LLVM::Linkage::Linkonce);
 
-    auto ctorSymbol = FlatSymbolRefAttr::get(ctor);
-    LLVM::GlobalCtorsOp::create(
-        rewriter, loc, rewriter.getArrayAttr({std::move(ctorSymbol)}),
-        rewriter.getI32ArrayAttr({65535}),
-        rewriter.getArrayAttr({LLVM::ZeroAttr::get(rewriter.getContext())}));
-
-    auto dtorSymbol = FlatSymbolRefAttr::get(dtor);
-    LLVM::GlobalDtorsOp::create(
-        rewriter, loc, rewriter.getArrayAttr({std::move(dtorSymbol)}),
-        rewriter.getI32ArrayAttr({65535}),
-        rewriter.getArrayAttr({LLVM::ZeroAttr::get(rewriter.getContext())}));
+    auto comdat =
+        LLVM::ComdatOp::create(rewriter, loc, "__reactant_xla_comdat");
+    LLVM::ComdatSelectorOp selector;
+    {
+      PatternRewriter::InsertionGuard comdatGuard(rewriter);
+      rewriter.setInsertionPointToStart(&comdat.getBody().front());
+      selector = LLVM::ComdatSelectorOp::create(rewriter, loc, dataNameBuffer,
+                                                LLVM::comdat::Comdat::Any);
+    }
+    auto comdatRef =
+        SymbolRefAttr::get(rewriter.getContext(), comdat.getSymName(),
+                           FlatSymbolRefAttr::get(selector.getSymNameAttr()));
 
     if (!data || data.getLinkage() == LLVM::Linkage::External) {
-      auto newdata =
-          LLVM::GlobalOp::create(rewriter, loc, ptrty, /*constant*/ false,
-                                 LLVM::Linkage::Linkonce, dataNameBuffer,
-                                 /* initValue */ mlir::Attribute(),
-                                 /* alignment */ 8, /* addrSpace */ 0);
+      auto newdata = LLVM::GlobalOp::create(
+          rewriter, loc, ptrty, /*constant*/ false, LLVM::Linkage::Linkonce,
+          dataNameBuffer,
+          /* initValue */ LLVM::ZeroAttr::get(rewriter.getContext()),
+          /* alignment */ 8, /* addrSpace */ 0);
       if (data) {
         rewriter.eraseOp(data);
       }
       data = newdata;
     }
+
+    // Keep the runtime state, its initializer/finalizer, and the associated
+    // init/fini array entries in one linker-deduplicated group.
+    data.setComdatAttr(comdatRef);
+    ctor.setComdatAttr(comdatRef);
+    dtor.setComdatAttr(comdatRef);
+
+    createAssociatedGlobalCtorDtor(moduleOp, loc, "llvm.global_ctors", ctor,
+                                   data, rewriter);
+    createAssociatedGlobalCtorDtor(moduleOp, loc, "llvm.global_dtors", dtor,
+                                   data, rewriter);
   }
 
   // device id, ptr
