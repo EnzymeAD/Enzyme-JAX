@@ -1083,6 +1083,10 @@ static Value lookThroughCasts(Value v) {
       continue;
     }
     if (auto c = v.getDefiningOp<arith::ExtSIOp>()) {
+      // Sign extension of i1 flips the value (true -> -1); only wider
+      // sources pass through unchanged.
+      if (c.getIn().getType().isInteger(1))
+        break;
       v = c.getIn();
       continue;
     }
