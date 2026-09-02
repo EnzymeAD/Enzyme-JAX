@@ -5486,6 +5486,8 @@ struct AffineToStableHLORaisingPass
   }
 
   static void inlineAllocaScopes(Operation *g) {
+    if (getenv("DISABLE_INLINE_ALLOCA_SCOPES"))
+      return;
     // Inliner wrappers stack alloca_scope/execute_region pairs, so inlining
     // one can expose another: iterate to a fixed point.
     bool changed = true;
@@ -5824,6 +5826,8 @@ struct AffineToStableHLORaisingPass
   // Access rewrites leave dead pointer plumbing behind, and raising visits
   // every op in the region: sweep the unused chains.
   static void dropDeadPointerChains(Operation *root) {
+    if (getenv("DISABLE_DROP_DEAD_POINTER_CHAINS"))
+      return;
     bool changed = true;
     while (changed) {
       changed = false;
@@ -5945,6 +5949,8 @@ struct AffineToStableHLORaisingPass
   // global fold to the initializer: directly for constant offsets, as a
   // select chain over the elements for runtime indices.
   static void foldConstantGlobalAccesses(Operation *root) {
+    if (getenv("DISABLE_FOLD_CONSTANT_GLOBAL_ACCESSES"))
+      return;
     SmallVector<LLVM::AddressOfOp> addrs;
     root->walk([&](LLVM::AddressOfOp a) { addrs.push_back(a); });
     for (auto addr : addrs) {
@@ -6214,6 +6220,8 @@ struct AffineToStableHLORaisingPass
   // the slab; as element stores of zero it flows through the same view
   // rebasing as every other access.
   static void memsetZeroToStores(Operation *root) {
+    if (getenv("DISABLE_MEMSET_ZERO_TO_STORES"))
+      return;
     SmallVector<LLVM::MemsetOp> sets;
     root->walk([&](LLVM::MemsetOp m) { sets.push_back(m); });
     for (auto m : sets) {
@@ -6272,6 +6280,8 @@ struct AffineToStableHLORaisingPass
   // consumers cast straight back to a pointer; hand it over as flat scalar
   // scratch instead.
   static void flattenStructMemrefAllocas(Operation *root) {
+    if (getenv("DISABLE_FLATTEN_STRUCT_MEMREF_ALLOCAS"))
+      return;
     SmallVector<memref::AllocaOp> allocas;
     root->walk([&](memref::AllocaOp a) {
       if (isa<LLVM::LLVMStructType>(a.getType().getElementType()))
@@ -6320,6 +6330,8 @@ struct AffineToStableHLORaisingPass
   // one scalar type; hand it to the memref machinery as flat scratch so
   // the gep rebasing and view flattening see it like any other buffer.
   static void flattenLLVMArrayAllocas(Operation *root) {
+    if (getenv("DISABLE_FLATTEN_LLVM_ARRAY_ALLOCAS"))
+      return;
     SmallVector<LLVM::AllocaOp> allocas;
     root->walk([&](LLVM::AllocaOp a) { allocas.push_back(a); });
     for (auto a : allocas) {
@@ -6395,6 +6407,8 @@ struct AffineToStableHLORaisingPass
   // can only fault, so loads read as zero and stores vanish, and the null
   // never has to become a kernel argument.
   static void dropNullBufferAccesses(Operation *root) {
+    if (getenv("DISABLE_DROP_NULL_BUFFER_ACCESSES"))
+      return;
     SmallVector<LLVM::ZeroOp> zeros;
     root->walk([&](LLVM::ZeroOp z) {
       if (isa<LLVM::LLVMPointerType>(z.getType()))
@@ -6448,6 +6462,8 @@ struct AffineToStableHLORaisingPass
   // through it rebase onto the init pointer at `orig + k*stride` and the
   // carried pointer disappears from the loop.
   static void rewritePointerInduction(Operation *root) {
+    if (getenv("DISABLE_REWRITE_POINTER_INDUCTION"))
+      return;
     SmallVector<affine::AffineForOp> fors;
     // Post-order walk: inner loops rewrite before the outer loops that
     // contain them.
@@ -6899,6 +6915,8 @@ struct AffineToStableHLORaisingPass
   // Forward each load to the unique dominating store of the same slot so
   // the pointer-typed members never reach the raising as memory.
   static void forwardPackedScratch(Operation *root) {
+    if (getenv("DISABLE_FORWARD_PACKED_SCRATCH"))
+      return;
     SmallVector<LLVM::AllocaOp> allocas;
     root->walk([&](LLVM::AllocaOp a) { allocas.push_back(a); });
     for (auto a : allocas) {
@@ -7221,6 +7239,8 @@ struct AffineToStableHLORaisingPass
   // pointers themselves) feeding geps: distribute the gep and the memref
   // view over the select so the buffer-branch expansion can take over.
   static void distributeGepOverSelect(Operation *root) {
+    if (getenv("DISABLE_DISTRIBUTE_GEP_OVER_SELECT"))
+      return;
     bool changed = true;
     while (changed) {
       changed = false;
@@ -7294,10 +7314,7 @@ struct AffineToStableHLORaisingPass
     if (!getenv("DEBUG_GEPCOUNT"))
       return;
     unsigned n = 0;
-    Operation *scope = root->getParentOfType<ModuleOp>();
-    if (!scope)
-      scope = root;
-    scope->walk([&](LLVM::GEPOp g) {
+    root->walk([&](LLVM::GEPOp g) {
       if (auto at = dyn_cast<LLVM::LLVMArrayType>(g.getElemType()))
         if (at.getElementType().isInteger(8))
           ++n;
@@ -7306,6 +7323,8 @@ struct AffineToStableHLORaisingPass
   }
 
   static void stripAccessMemorySpaceCasts(Operation *root) {
+    if (getenv("DISABLE_STRIP_ACCESS_MEMORY_SPACE_CASTS"))
+      return;
     SmallVector<memref::MemorySpaceCastOp> casts;
     root->walk([&](memref::MemorySpaceCastOp c) { casts.push_back(c); });
     for (auto c : casts) {
@@ -8414,6 +8433,8 @@ struct AffineToStableHLORaisingPass
   // reads would collapse to one lane's value. Give the buffer one leading
   // dimension per lane axis and index every access with the lane IVs.
   static void privatizeLaneScratch(Operation *root) {
+    if (getenv("DISABLE_PRIVATIZE_LANE_SCRATCH"))
+      return;
     SmallVector<memref::AllocaOp> allocas;
     root->walk([&](memref::AllocaOp a) { allocas.push_back(a); });
     for (auto a : allocas) {
@@ -8573,6 +8594,8 @@ struct AffineToStableHLORaisingPass
   // `iv < extent` guard, which the masking machinery already understands.
   // Barriers over the axis then stay batched no-ops.
   static void boundParallelAxes(Operation *root) {
+    if (getenv("DISABLE_BOUND_PARALLEL_AXES"))
+      return;
     SmallVector<affine::AffineParallelOp> worklist;
     root->walk([&](affine::AffineParallelOp par) { worklist.push_back(par); });
     for (auto par : worklist) {
@@ -9036,6 +9059,8 @@ struct AffineToStableHLORaisingPass
   // became an affine.parallel: constant trip count at the bound, body behind
   // an `iv < extent` guard.
   static void boundParallelFors(Operation *root) {
+    if (getenv("DISABLE_BOUND_PARALLEL_FORS"))
+      return;
     // The loops needing a constant trip count are the ones barriers span:
     // their ivs appear as barrier operands.
     llvm::SetVector<Operation *> forSet;
@@ -9152,6 +9177,8 @@ struct AffineToStableHLORaisingPass
   }
 
   static void peelDynamicParallelDims(Operation *root) {
+    if (getenv("DISABLE_PEEL_DYNAMIC_PARALLEL_DIMS"))
+      return;
     SmallVector<affine::AffineParallelOp> worklist;
     root->walk([&](affine::AffineParallelOp par) { worklist.push_back(par); });
     for (auto par : worklist) {
@@ -9288,6 +9315,8 @@ struct AffineToStableHLORaisingPass
   // the struct, so the array-of-structs splits into one primitive scratch
   // per field, with whole-struct integer moves split into their fields.
   static void splitStructScratch(Operation *root) {
+    if (getenv("DISABLE_SPLIT_STRUCT_SCRATCH"))
+      return;
     SmallVector<memref::AllocaOp> allocas;
     root->walk([&](memref::AllocaOp a) { allocas.push_back(a); });
     for (auto alloca : allocas) {
@@ -9683,6 +9712,8 @@ struct AffineToStableHLORaisingPass
   // only ever read and written through such flat views, replace the whole
   // chain with one flat static alloca the raising handles directly.
   static void flattenViewedScratch(Operation *root) {
+    if (getenv("DISABLE_FLATTEN_VIEWED_SCRATCH"))
+      return;
     SmallVector<memref::AllocaOp> allocas;
     root->walk([&](memref::AllocaOp a) { allocas.push_back(a); });
     for (auto alloca : allocas) {
