@@ -1686,8 +1686,9 @@ static Value createVectorLoad(OpBuilder &b, Location loc, Type ty,
 // allocation the conversion could take stop being blocked by it: the
 // conversion accepts views of an allocation and nothing else, and a memset
 // names the pointer itself. The element type is the one the allocation was
-// declared with, so the stores land on whole elements; a length that is not a
-// whole number of them is left alone.
+// declared with (every allocation a select could pick must agree), so the
+// stores land on whole elements; a length that is not a whole number of them
+// is left alone.
 struct MemsetZeroToAffineFill : public OpRewritePattern<LLVM::MemsetOp> {
   using OpRewritePattern<LLVM::MemsetOp>::OpRewritePattern;
 
@@ -1704,21 +1705,27 @@ struct MemsetZeroToAffineFill : public OpRewritePattern<LLVM::MemsetOp> {
     if (memset.getIsVolatile())
       return failure();
 
-    Value base = memset.getDst();
-    while (true) {
+    Type elTy;
+    SmallVector<Value> todo{memset.getDst()};
+    while (!todo.empty()) {
+      Value base = todo.pop_back_val();
       if (auto gep = base.getDefiningOp<LLVM::GEPOp>())
-        base = gep.getBase();
+        todo.push_back(gep.getBase());
       else if (auto cast = base.getDefiningOp<LLVM::AddrSpaceCastOp>())
-        base = cast.getArg();
-      else
-        break;
+        todo.push_back(cast.getArg());
+      else if (auto sel = base.getDefiningOp<arith::SelectOp>()) {
+        todo.push_back(sel.getTrueValue());
+        todo.push_back(sel.getFalseValue());
+      } else if (auto alloca = base.getDefiningOp<LLVM::AllocaOp>()) {
+        Type t = alloca.getElemType();
+        while (auto arr = dyn_cast<LLVM::LLVMArrayType>(t))
+          t = arr.getElementType();
+        if (elTy && elTy != t)
+          return failure();
+        elTy = t;
+      } else
+        return failure();
     }
-    auto alloca = base.getDefiningOp<LLVM::AllocaOp>();
-    if (!alloca)
-      return failure();
-    Type elTy = alloca.getElemType();
-    while (auto arr = dyn_cast<LLVM::LLVMArrayType>(elTy))
-      elTy = arr.getElementType();
     auto adTy = dyn_cast<enzyme::AutoDiffTypeInterface>(elTy);
     if (!adTy || !MemRefType::isValidElementType(elTy))
       return failure();
