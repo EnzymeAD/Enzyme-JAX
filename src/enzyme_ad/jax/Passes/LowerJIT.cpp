@@ -151,6 +151,7 @@ void buildGpuPassPipeline(OpPassManager &pm,
   opt.useBarePtrCallConv = options.kernelUseBarePtrCallConv;
   opt.indexBitwidth = options.indexBitWidth;
   pm.addNestedPass<gpu::GPUModuleOp>(createConvertGpuOpsToNVVMOps(opt));
+  pm.addNestedPass<gpu::GPUModuleOp>(createConvertPolygeistToLLVM());
   pm.addNestedPass<gpu::GPUModuleOp>(createCanonicalizerPass());
   pm.addNestedPass<gpu::GPUModuleOp>(createCSEPass());
   pm.addNestedPass<gpu::GPUModuleOp>(createReconcileUnrealizedCastsPass());
@@ -987,13 +988,6 @@ CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
         auto str = gmod.getName();
         if (str.size() > 200)
           gmod.setName(str.substr(0, 200));
-      });
-      submod->walk([](enzymexla::FMulAddOp op) {
-        OpBuilder builder(op);
-        auto newOp = LLVM::FMulAddOp::create(builder, op->getLoc(), op.getA(),
-                                             op.getB(), op.getC());
-        op.getResult().replaceAllUsesWith(newOp.getResult());
-        op->erase();
       });
 
       std::string legalName;
