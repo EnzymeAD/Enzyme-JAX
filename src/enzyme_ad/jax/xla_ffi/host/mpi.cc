@@ -55,10 +55,17 @@ template <typename T> xla::ffi::ErrorOr<T> getMpiConstant(const char *name) {
         absl::StrFormat("MPI constant `%s` not found", name));
   }
 
-  if (isptr)
-    return reinterpret_cast<T>(value);
-  else
+  if (isptr) {
+    if constexpr (std::is_pointer_v<T>) {
+      return reinterpret_cast<T>(value);
+    } else if constexpr (std::is_integral_v<T>) {
+      return static_cast<T>(reinterpret_cast<std::uintptr_t>(value));
+    } else {
+      return reinterpret_cast<T>(value);
+    }
+  } else {
     return *static_cast<T *>(value);
+  }
 }
 
 namespace enzymexla::ffi_internal {
