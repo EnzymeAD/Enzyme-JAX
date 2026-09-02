@@ -140,11 +140,15 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       "llvm.func(canonicalize-loops),"
       "canonicalize-scf-for,"
       "" + canonicalize + ",affine-cfg," + canonicalize + ","
+      "split-branched-accesses," + canonicalize + ",polygeist-mem2reg,"
+      "" + canonicalize + ","
       "func.func(canonicalize-loops),"
       "llvm.func(canonicalize-loops),"
       "" + canonicalize + ",llvm-to-affine-access,"
       "" + canonicalize + ",delinearize-indexing," + canonicalize + ",simplify-affine-exprs,"
       "affine-cfg," + canonicalize + ",llvm-to-affine-access," + canonicalize + ","
+      "split-branched-accesses," + canonicalize + ",polygeist-mem2reg,"
+      "" + canonicalize + ","
       "func.func(affine-loop-invariant-code-motion),"
       "" + canonicalize + ",sort-memory,llvm-to-tessera,tessera-apply-pdl,tessera-to-llvm,";
   // Differentiation runs before the backends diverge, so on xla the

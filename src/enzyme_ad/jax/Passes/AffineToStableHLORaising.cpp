@@ -15,6 +15,7 @@
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "src/enzyme_ad/jax/Utils.h"
 
+#include "Enzyme/MLIR/Dialect/Ops.h"
 #include "mlir/Dialect/Affine/Analysis/AffineAnalysis.h"
 #include "mlir/Dialect/Affine/Analysis/Utils.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -3051,6 +3052,99 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     }
     if (!mapping.lookupOrNull(value) || !mapping.lookupOrNull(memref))
       return failure();
+    Value res = emitStoreAsScatter(
+        rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+        mapping.lookup(value), mapping.lookup(memref), sIndices, builder, maps,
+        pc, /*accumulate=*/true);
+    if (!res)
+      return op->emitError(
+                 "atomic add is dependent on less dims than stored value: ")
+             << *op;
+    mapping.map(memref, res);
+    return success();
+  }
+
+  if (auto rmw = dyn_cast<enzyme::AtomicRMWOp>(op)) {
+    // As for the memref one: only accumulation raises, as a combining
+    // scatter, and only when the old value is unobserved. The ordering the op
+    // carries says nothing once the accumulation is a scatter over the whole
+    // iteration space.
+    if ((rmw.getKind() != arith::AtomicRMWKind::addf &&
+         rmw.getKind() != arith::AtomicRMWKind::addi) ||
+        !rmw.getResult().use_empty())
+      return failure();
+    Value value = rmw.getValue();
+    Value memref = rmw.getMemref();
+    SmallVector<Value> sIndices;
+    for (auto idx : rmw.getIndices()) {
+      Value mapped = mapping.lookupOrNull(idx);
+      if (!mapped || !maps.count(mapped))
+        return failure();
+      sIndices.push_back(mapped);
+    }
+    if (!mapping.lookupOrNull(value) || !mapping.lookupOrNull(memref))
+      return failure();
+    Value res = emitStoreAsScatter(
+        rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+        mapping.lookup(value), mapping.lookup(memref), sIndices, builder, maps,
+        pc, /*accumulate=*/true);
+    if (!res)
+      return op->emitError(
+                 "atomic add is dependent on less dims than stored value: ")
+             << *op;
+    mapping.map(memref, res);
+    return success();
+  }
+
+  if (auto rmw = dyn_cast<enzyme::AffineAtomicRMWOp>(op)) {
+    // The affine form of the same accumulation, with the same two
+    // conditions -- it accumulates, and its old value is unobserved. Its
+    // address is a map over the operands rather than plain indices.
+    if ((rmw.getKind() != arith::AtomicRMWKind::addf &&
+         rmw.getKind() != arith::AtomicRMWKind::addi) ||
+        !rmw.getResult().use_empty())
+      return failure();
+    Value value = rmw.getValue();
+    Value memref = rmw.getMemref();
+    if (!mapping.lookupOrNull(value) || !mapping.lookupOrNull(memref))
+      return failure();
+
+    affine::AffineValueMap accessValueMap(rmw.getMap(), rmw.getIndices());
+    accessValueMap.composeSimplifyAndCanonicalize();
+
+    // A result that names one operand is that operand, taken with the map it
+    // was raised under, exactly as the memref form takes its indices.
+    // Anything else is expanded the way an affine.store's scatter indices are.
+    AffineMap map = accessValueMap.getAffineMap();
+    SmallVector<Value> sIndices;
+    for (auto E : map.getResults()) {
+      unsigned pos = 0;
+      bool namesOperand = true;
+      if (auto dim = dyn_cast<AffineDimExpr>(E))
+        pos = dim.getPosition();
+      else if (auto sym = dyn_cast<AffineSymbolExpr>(E))
+        pos = map.getNumDims() + sym.getPosition();
+      else
+        namesOperand = false;
+
+      if (namesOperand) {
+        Value mapped = mapping.lookupOrNull(accessValueMap.getOperand(pos));
+        if (!mapped || !maps.count(mapped))
+          return failure();
+        sIndices.push_back(mapped);
+        continue;
+      }
+
+      auto [expandedIndex, indexMap] = expandAffineExpr(
+          builder,
+          rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo), E,
+          accessValueMap.getOperands(), mapping, map.getNumDims(), pc);
+      if (!expandedIndex)
+        return failure();
+      maps[expandedIndex] = indexMap;
+      sIndices.push_back(expandedIndex);
+    }
+
     Value res = emitStoreAsScatter(
         rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
         mapping.lookup(value), mapping.lookup(memref), sIndices, builder, maps,

@@ -1926,8 +1926,14 @@ LogicalResult raiseAtomicRMW(Op rmw, PatternRewriter &rewriter) {
   assert(map.getNumInputs() == operands.size());
   auto alignment = rmw->template getAttrOfType<IntegerAttr>(
       memref::AllocOp::getAlignmentAttrStrName());
+  // The enzyme atomic names an ordering and the memref one does not. What
+  // memref.atomic_rmw means on its own is what its lowering gives it, which
+  // upstream MemRefToLLVM makes acq_rel.
+  enzyme::Ordering ordering = enzyme::Ordering::acq_rel;
+  if constexpr (std::is_same_v<Op, enzyme::AtomicRMWOp>)
+    ordering = rmw.getOrdering();
   auto affineLoad = enzyme::AffineAtomicRMWOp::create(
-      rewriter, rmw.getLoc(), rmw.getValue().getType(), rmw.getKind(),
+      rewriter, rmw.getLoc(), rmw.getValue().getType(), rmw.getKind(), ordering,
       rmw.getValue(), rmw.getMemref(), operands, map, alignment);
   rmw.getResult().replaceAllUsesWith(affineLoad.getResult());
   rewriter.eraseOp(rmw);
@@ -6467,6 +6473,11 @@ struct AffineForReductionSink : public OpRewritePattern<affine::AffineForOp> {
       for (auto &u : val.getUses()) {
         auto yldu = llvm::dyn_cast<AffineYieldOp>(u.getOwner());
         if (!yldu)
+          continue;
+        // A yield of some other op nested in the body -- an affine.if, say --
+        // says nothing about what this loop carries, and its operand number
+        // does not index this loop's inits.
+        if (yldu->getParentOp() != forOp)
           continue;
         if (yld) {
           legal = false;

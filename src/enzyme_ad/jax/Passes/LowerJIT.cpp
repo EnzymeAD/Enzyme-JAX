@@ -247,6 +247,15 @@ llvm::orc::SymbolMap MappedSymbols;
 
 bool initJIT();
 
+extern "C" MLIR_CAPI_EXPORTED void *EnzymeJaXLookupSymbol(const char *name) {
+  if (!JIT)
+    return nullptr;
+  auto addr = JIT->lookup(name);
+  if (!addr)
+    return nullptr;
+  return addr->toPtr<void *>();
+}
+
 extern "C" MLIR_CAPI_EXPORTED void EnzymeJaXMapSymbol(const char *name,
                                                       void *symbol) {
   initJIT();
@@ -424,6 +433,47 @@ CallInfo CompileHostModule(std::string &key, mlir::ModuleOp modOp,
   auto ptr = (void *)Entry->getValue();
 
   return CallInfo{(void (*)(void *, void *, void **))ptr, (void *(*)())nvptr};
+}
+
+static void replaceGetStreamOpsWithCudaABIStreamArg(mlir::ModuleOp &submod) {
+  SmallVector<enzymexla::GetStreamOp> streams;
+  submod.walk([&](enzymexla::GetStreamOp op) { streams.push_back(op); });
+  for (auto op : streams) {
+    auto pfunc = op->getParentOfType<LLVM::LLVMFuncOp>();
+    assert(pfunc && "expected get_stream to be inside an LLVM function");
+    mlir::Value stream = pfunc.getBody().begin()->getArgument(1);
+    for (auto u : llvm::make_early_inc_range(op.getResult().getUsers())) {
+      if (auto ur = dyn_cast<UnrealizedConversionCastOp>(u)) {
+        assert(ur->getResult(0).getType() == stream.getType());
+        ur->getResult(0).replaceAllUsesWith(stream);
+        ur.erase();
+        continue;
+      }
+      assert(op.getResult().getType() == stream.getType());
+      u->replaceUsesOfWith(op.getResult(), stream);
+    }
+    op.erase();
+  }
+}
+
+static void insertEmptyGPUInit(mlir::ModuleOp &submod, mlir::Location loc) {
+  OpBuilder builder(submod);
+  builder.setInsertionPointToStart(&submod.getBodyRegion().front());
+
+  auto ptrty = LLVM::LLVMPointerType::get(builder.getContext());
+  auto initTy = LLVM::LLVMFunctionType::get(ptrty, {}, false);
+  auto initfn = LLVM::LLVMFuncOp::create(builder, loc, "nv_func_init", initTy,
+                                         LLVM::Linkage::External);
+
+  auto blk = new Block();
+  initfn.getRegion().push_back(blk);
+  builder.setInsertionPointToEnd(blk);
+  auto i64 = builder.getIntegerType(64);
+  auto one =
+      LLVM::ConstantOp::create(builder, loc, i64, builder.getI64IntegerAttr(1));
+  auto sentinel =
+      LLVM::IntToPtrOp::create(builder, loc, ptrty, one.getResult());
+  LLVM::ReturnOp::create(builder, loc, ValueRange(sentinel));
 }
 
 void rewriteKernelCallABI(
@@ -628,20 +678,7 @@ void rewriteKernelCallABI(
     LLVM::ReturnOp::create(builder, loc, ValueRange(func));
   }
 
-  SmallVector<enzymexla::GetStreamOp> streams;
-  submod.walk([&](enzymexla::GetStreamOp op) { streams.push_back(op); });
-  for (auto op : streams) {
-    OpBuilder builder(op);
-    auto pfunc = op->getParentOfType<LLVM::LLVMFuncOp>();
-    mlir::Value stream = pfunc.getBody().begin()->getArgument(1);
-    for (auto u : llvm::make_early_inc_range(op->getResult(0).getUsers())) {
-      auto ur = cast<UnrealizedConversionCastOp>(u);
-      assert(ur->getResult(0).getType() == stream.getType());
-      ur->getResult(0).replaceAllUsesWith(stream);
-      ur.erase();
-    }
-    op.erase();
-  }
+  replaceGetStreamOpsWithCudaABIStreamArg(submod);
 
   submod.walk([&](gpu::LaunchFuncOp op) {
     builder.setInsertionPoint(op);
@@ -729,17 +766,16 @@ void rewriteKernelCallABI(
   });
 }
 
-CallInfo CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
-                     FunctionOpInterface op, bool jit,
-                     enzymexla::JITCallOp jcall, bool openmp,
-                     size_t cuResultHandlerPtr, size_t cuStreamSynchronizePtr,
-                     int indexBitWidth, const std::string &cubinTriple,
-                     const std::string &cubinChip,
-                     const std::string &cubinFeatures,
-                     const std::string &cubinFormat, int cuOptLevel,
-                     const std::string &toolkitPath,
-                     const llvm::SmallVectorImpl<std::string> &linkFiles,
-                     bool debug, bool returnPtr, bool dump_final_module) {
+CallInfo
+CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
+            FunctionOpInterface op, bool jit, enzymexla::JITCallOp jcall,
+            bool openmp, size_t cuResultHandlerPtr,
+            size_t cuStreamSynchronizePtr, int indexBitWidth,
+            const std::string &cubinTriple, const std::string &cubinChip,
+            const std::string &cubinFeatures, const std::string &cubinFormat,
+            int cuOptLevel, const std::string &toolkitPath,
+            const llvm::SmallVectorImpl<std::string> &linkFiles, bool debug,
+            bool returnPtr, bool dump_final_module, bool requiresCudaABI) {
 
   OpBuilder builder(op);
 
@@ -766,7 +802,6 @@ CallInfo CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
   auto submod = ModuleOp::create(builder, loc);
 
   int numGPUModule = 0;
-
   SmallVector<Operation *> tocopy;
   op->walk([&](gpu::LaunchFuncOp cop) {
     tocopy.push_back(SymbolTable::lookupNearestSymbolFrom<gpu::GPUModuleOp>(
@@ -823,7 +858,7 @@ CallInfo CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
   builder.setInsertionPointToEnd(&submod.getBodyRegion().front());
 
   SmallVector<mlir::Type, 1> intys = {ptrty};
-  if (numGPUModule != 0) {
+  if (numGPUModule != 0 || requiresCudaABI) {
     intys.push_back(ptrty);
     intys.push_back(ptrty);
   }
@@ -943,6 +978,10 @@ CallInfo CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
         submod.erase();
         return {};
       }
+      if (requiresCudaABI) {
+        replaceGetStreamOpsWithCudaABIStreamArg(submod);
+        insertEmptyGPUInit(submod, loc);
+      }
     } else {
       submod->walk([](gpu::GPUModuleOp gmod) {
         auto str = gmod.getName();
@@ -995,7 +1034,8 @@ CallInfo CompileCall(SymbolTableCollection &symbolTable, mlir::Location loc,
                            cubinFormat, cuOptLevel, toolkitPath, linkFiles);
     }
 
-    auto ptr = CompileHostModule(ss.str(), submod, numGPUModule != 0,
+    auto ptr = CompileHostModule(ss.str(), submod,
+                                 numGPUModule != 0 || requiresCudaABI,
                                  dump_final_module);
     jitkernels[ss.str()] = ptr;
     submod.erase();
@@ -1097,11 +1137,14 @@ struct LowerJITPass
         hasReturn = !fnty.getResults().empty();
       }
 
+      auto deviceABI = fn->getAttrOfType<StringAttr>("enzymexla.device_abi");
+
       CallInfo cdata = CompileCall(
           symbolTable, op.getLoc(), fn, jit, op, openmp, cuResultHandlerPtr,
           cuStreamSynchronizePtr, indexBitWidth, cubinTriple, cubinChip,
           cubinFeatures, cubinFormat, cuOptLevel, toolkitPath, linkFilesArray,
-          debug, hasReturn, dump_final_module);
+          debug, hasReturn, dump_final_module,
+          deviceABI && deviceABI.getValue() == "cuda");
 
       std::string backendinfo((char *)&cdata, sizeof(CallInfo));
       if (jit) {
