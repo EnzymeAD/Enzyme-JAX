@@ -1040,25 +1040,29 @@ LogicalResult handleAffineAccessOp(IslAnalysis &islAnalysis, T access) {
   return success();
 }
 
+// Simplifies the condition of `ifOp` against its domain and rebuilds its
+// constraints in the pass's canonical form, which applies even where the domain
+// is unavailable.
 LogicalResult handleAffineIfOp(IslAnalysis &islAnalysis, AffineIfOp ifOp) {
   isl_ctx *ctx = islAnalysis.getCtx();
+  IntegerSet set = ifOp.getCondition();
+  IntegerSet newSet = set;
   LLVM_DEBUG(llvm::dbgs() << "Got domain\n");
   auto [domain, cst] = ::getDomain(ctx, ifOp, true);
-  if (!domain)
+  if (domain) {
+    LLVM_DEBUG(isl_set_dump(domain));
+    LLVM_DEBUG(cst.dump());
+    auto csts = set.getConstraints();
+    AffineMap map = AffineMap::get(set.getNumDims(), set.getNumSymbols(), csts,
+                                   ifOp.getContext());
+    AffineValueMap avm(map, ifOp.getOperands(), {});
+    if (auto newMap = handleAffineValueMap(islAnalysis, avm, domain, cst))
+      newSet = IntegerSet::get(set.getNumDims(), set.getNumSymbols(),
+                               newMap->getResults(), set.getEqFlags());
+  }
+  newSet = mlir::enzyme::recreateExpr(newSet);
+  if (newSet == set)
     return failure();
-  LLVM_DEBUG(isl_set_dump(domain));
-  LLVM_DEBUG(cst.dump());
-  IntegerSet set = ifOp.getCondition();
-  auto csts = set.getConstraints();
-  AffineMap map = AffineMap::get(set.getNumDims(), set.getNumSymbols(), csts,
-                                 ifOp.getContext());
-  AffineValueMap avm(map, ifOp.getOperands(), {});
-  auto newMap = handleAffineValueMap(islAnalysis, avm, domain, cst);
-  if (!newMap)
-    return failure();
-
-  IntegerSet newSet = IntegerSet::get(set.getNumDims(), set.getNumSymbols(),
-                                      newMap->getResults(), set.getEqFlags());
   ifOp.setCondition(newSet);
   return success();
 }
@@ -1203,13 +1207,6 @@ struct SimplifyAffineExprsPass
         (void)handleAffineIfOp(ia, cop);
       else if (auto cop = dyn_cast<AffineParallelOp>(op))
         (void)pruneParallelBounds(ia, cop, rewriter);
-    });
-
-    op->walk([=](AffineIfOp affineOp) {
-      auto map = affineOp.getIntegerSet();
-      auto map2 = mlir::enzyme::recreateExpr(map);
-      if (map != map2)
-        affineOp.setIntegerSet(map2);
     });
   }
 };
