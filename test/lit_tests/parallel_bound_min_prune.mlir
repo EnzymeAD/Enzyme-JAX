@@ -62,3 +62,38 @@ func.func @lowmax(%n: index, %m: memref<?xf64>) {
 
 // CHECK-LABEL: func.func @lowmax(
 // CHECK: affine.parallel (%{{.+}}) = (symbol(%{{.+}})) to (symbol(%{{.+}}) + 128) {
+
+// -----
+
+// Sign-extending an i1 is not value-preserving (true becomes -1), so the two
+// extensions of the same flag are different operands and the min stays.
+func.func @i1ext(%n: index, %b: i1, %m: memref<?xf64>) {
+  %cst = arith.constant 1.0 : f64
+  %s = arith.extsi %b : i1 to i32
+  %u = arith.extui %b : i1 to i32
+  %x = arith.index_cast %s : i32 to index
+  %y = arith.index_cast %u : i32 to index
+  affine.parallel (%i) = (0) to (min(symbol(%n) + symbol(%x), symbol(%n) + symbol(%y))) {
+    affine.store %cst, %m[%i] : memref<?xf64>
+  }
+  return
+}
+
+// CHECK-LABEL: func.func @i1ext(
+// CHECK: affine.parallel (%{{.+}}) = (0) to (min(symbol(%{{.+}}) + symbol(%{{.+}}), symbol(%{{.+}}) + symbol(%{{.+}}))) {
+
+// -----
+
+// A symbol whose arithmetic has no affine form (a product of two symbols)
+// stays opaque, so nothing relates it to the size.
+func.func @opaque(%n: index, %k: index, %m: memref<?xf64>) {
+  %cst = arith.constant 1.0 : f64
+  %p = arith.muli %n, %k : index
+  affine.parallel (%i) = (0) to (min(symbol(%n), symbol(%p))) {
+    affine.store %cst, %m[%i] : memref<?xf64>
+  }
+  return
+}
+
+// CHECK-LABEL: func.func @opaque(
+// CHECK: affine.parallel (%{{.+}}) = (0) to (min(symbol(%{{.+}}), symbol(%{{.+}}))) {

@@ -61,6 +61,13 @@ void fully2ComposeAffineMapAndOperands(
     llvm::SmallVectorImpl<mlir::Value> *operands, mlir::DominanceInfo &DI,
     mlir::Region *scope,
     llvm::SmallVectorImpl<mlir::Operation *> *insertedOps = nullptr);
+// The composition as a question: nothing in the IR moves, and false means an
+// operand would have had to. With `throughSymbols`, an operand that is
+// already a valid symbol is composed through the casts and arithmetic
+// defining it as well, down to values whose definition has no affine form.
+bool fully2ComposeAffineMapAndOperands(
+    mlir::AffineMap *map, llvm::SmallVectorImpl<mlir::Value> *operands,
+    mlir::Region *scope, bool throughSymbols);
 bool isValidIndex(mlir::Value val, mlir::Region *scope);
 mlir::Region *getLocalAffineScope(mlir::Operation *op);
 

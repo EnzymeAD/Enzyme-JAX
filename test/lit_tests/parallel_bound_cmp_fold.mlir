@@ -1,4 +1,4 @@
-// RUN: enzymexlamlir-opt --simplify-affine-exprs --split-input-file %s | FileCheck %s
+// RUN: enzymexlamlir-opt --pass-pipeline="builtin.module(simplify-affine-exprs)" --split-input-file %s | FileCheck %s
 
 // The residual of a peeled grid-stride loop guards on blockIdx + gridDim < N
 // where the parallel extent and gridDim share a base: infeasible for any
@@ -150,3 +150,99 @@ func.func @zerotrip(%n: index, %out: memref<?xf64>, %v: f64) -> f64 {
 // CHECK-LABEL: func.func @zerotrip(
 // CHECK-NOT: scf.for
 // CHECK: affine.yield %arg2
+
+// -----
+
+// The integer set of an enclosing affine.if constrains the domain: under
+// n >= 1 and m >= 1 a rotated do-while's max(m, 1) is m, whether or not any
+// affine loop encloses the use.
+func.func @ifguard(%n: i32, %m: i32, %out: memref<?xf64>, %v: f64) {
+  %c1_i32 = arith.constant 1 : i32
+  %ni = arith.index_cast %n : i32 to index
+  %mi = arith.index_cast %m : i32 to index
+  affine.if affine_set<()[s0, s1] : (s0 - 1 >= 0, s1 - 1 >= 0)>()[%ni, %mi] {
+    %mx = arith.maxsi %m, %c1_i32 : i32
+    %ub = arith.addi %mx, %c1_i32 : i32
+    scf.for %j = %c1_i32 to %ub step %c1_i32 : i32 {
+      %ji = arith.index_cast %j : i32 to index
+      memref.store %v, %out[%ji] : memref<?xf64>
+    }
+  }
+  return
+}
+
+// CHECK-LABEL: func.func @ifguard(
+// CHECK-SAME: %[[n:.+]]: i32, %[[m:.+]]: i32,
+// CHECK-NOT: arith.maxsi
+// CHECK: %[[ub:.+]] = arith.addi %[[m]], %{{.+}} : i32
+// CHECK: scf.for %{{.+}} = %{{.+}} to %[[ub]]
+
+// -----
+
+// Constraints combine with the enclosing loop bounds: inside i < n the
+// remaining extent n - i is at least one.
+func.func @ifiv(%n: index, %out: memref<?xi32>) {
+  %c1_i32 = arith.constant 1 : i32
+  affine.for %i = 0 to %n {
+    affine.if affine_set<(d0)[s0] : (-d0 + s0 - 1 >= 0)>(%i)[%n] {
+      %ni = arith.index_cast %n : index to i32
+      %ii = arith.index_cast %i : index to i32
+      %rem = arith.subi %ni, %ii : i32
+      %mx = arith.maxsi %rem, %c1_i32 : i32
+      affine.store %mx, %out[%i] : memref<?xi32>
+    }
+  }
+  return
+}
+
+// CHECK-LABEL: func.func @ifiv(
+// CHECK-NOT: arith.maxsi
+// CHECK: %[[rem:.+]] = arith.subi
+// CHECK: affine.store %[[rem]],
+
+// -----
+
+// The else region of a single-inequality set is its complement: there
+// n <= 0, deciding both the min and a comparison against zero.
+func.func @ifelse(%n: index, %out: memref<?xi32>, %flag: memref<?xi1>) {
+  %c0_i32 = arith.constant 0 : i32
+  affine.for %i = 0 to 4 {
+    affine.if affine_set<()[s0] : (s0 - 1 >= 0)>()[%n] {
+    } else {
+      %ni = arith.index_cast %n : index to i32
+      %mn = arith.minsi %ni, %c0_i32 : i32
+      %pos = arith.cmpi sgt, %ni, %c0_i32 : i32
+      affine.store %mn, %out[%i] : memref<?xi32>
+      affine.store %pos, %flag[%i] : memref<?xi1>
+    }
+  }
+  return
+}
+
+// CHECK-LABEL: func.func @ifelse(
+// CHECK-NOT: arith.minsi
+// CHECK-NOT: arith.cmpi
+// CHECK-DAG: %[[ni:.+]] = arith.index_cast
+// CHECK-DAG: %[[F:.+]] = arith.constant false
+// CHECK: affine.store %[[ni]],
+// CHECK: affine.store %[[F]],
+
+// -----
+
+// The else region of a multi-constraint set is a disjunction and carries no
+// usable constraint: nothing folds.
+func.func @ifelse_keep(%n: index, %m: index, %out: memref<?xi32>) {
+  %c0_i32 = arith.constant 0 : i32
+  affine.for %i = 0 to 4 {
+    affine.if affine_set<()[s0, s1] : (s0 - 1 >= 0, s1 - 1 >= 0)>()[%n, %m] {
+    } else {
+      %ni = arith.index_cast %n : index to i32
+      %mn = arith.minsi %ni, %c0_i32 : i32
+      affine.store %mn, %out[%i] : memref<?xi32>
+    }
+  }
+  return
+}
+
+// CHECK-LABEL: func.func @ifelse_keep(
+// CHECK: arith.minsi
