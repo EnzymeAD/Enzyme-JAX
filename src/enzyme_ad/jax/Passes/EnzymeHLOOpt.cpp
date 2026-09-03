@@ -36992,9 +36992,8 @@ struct EnzymeHLOOptPass
     if (passses & 1)
       patterns.add<SliceTransposeBase<stablehlo::SliceOp>,
                    SliceTransposeBase<stablehlo::DynamicSliceOp>,
-                   SliceReshapeTranspose, SliceReduceWindow>(context);
-    if ((passses & 1) && !getenv("DISABLE_SLICE_BROADCAST"))
-      patterns.add<SliceBroadcast>(context);
+                   SliceReshapeTranspose, SliceBroadcast, SliceReduceWindow>(
+          context);
 
     if (passses & 2)
       patterns.add<ReducePad, BroadcastPad>(context);
