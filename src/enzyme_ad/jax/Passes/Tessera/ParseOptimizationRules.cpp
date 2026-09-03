@@ -14,6 +14,7 @@
 #include "mlir/Pass/Pass.h"
 #include "src/enzyme_ad/jax/Dialect/Tessera/Dialect.h"
 #include "src/enzyme_ad/jax/Passes/Tessera/Passes.h"
+#include <limits>
 #include <optional>
 #include <utility>
 #include <variant>
@@ -132,7 +133,7 @@ struct Var {
 };
 
 struct Num {
-  int value;
+  int64_t value;
 };
 
 struct Expr;
@@ -226,7 +227,11 @@ std::optional<Expr> Parser::parseExpr() {
     return Var{s};
   }
   if (current.type == TokenType::Number) {
-    int n = std::stoi(current.value);
+    int64_t n;
+    if (StringRef(current.value).getAsInteger(10, n)) {
+      emitError(loc, "integer literal out of range: ") << current.value;
+      return std::nullopt;
+    }
     advance();
     return Expr(Num{n});
   }
@@ -250,6 +255,17 @@ std::optional<Rule> Parser::parseRule() {
   return Rule{std::move(*lhs), std::move(*rhs)};
 }
 
+// Pick the narrowest standard integer width that can hold a literal from a
+// rule annotation. Literals are parsed as int64_t, so anything that does not
+// round-trip through int32_t needs an i64 attribute; asking for an i32
+// attribute in that case would silently truncate the value.
+IntegerAttr getIntegerAttrForLiteral(OpBuilder &builder, int64_t value) {
+  if (value >= std::numeric_limits<int32_t>::min() &&
+      value <= std::numeric_limits<int32_t>::max())
+    return builder.getI32IntegerAttr(static_cast<int32_t>(value));
+  return builder.getI64IntegerAttr(value);
+}
+
 std::pair<mlir::Value, mlir::Value>
 emitMatchPDL(const Expr &expr, OpBuilder &builder, Location loc,
              llvm::StringMap<mlir::Value> &boundVars) {
@@ -264,11 +280,6 @@ emitMatchPDL(const Expr &expr, OpBuilder &builder, Location loc,
             return {boundVars[v.name], mlir::Value()};
           },
           [&](const Num &n) -> std::pair<mlir::Value, mlir::Value> {
-            // Match any llvm.mlir.constant, no attribute constraint here —
-            // the value check happens via native constraint below, since
-            // `value` lives in the op's properties storage, not its
-            // discardable attribute dict, and PDL's declarative attribute
-            // matching doesn't see it.
             auto resultTypeOp = pdl::TypeOp::create(
                 builder, loc, builder.getType<pdl::TypeType>(),
                 /*type=*/TypeAttr());
@@ -280,7 +291,7 @@ emitMatchPDL(const Expr &expr, OpBuilder &builder, Location loc,
                                          /*types=*/ValueRange{resultTypeOp});
 
             auto expectedAttr = pdl::AttributeOp::create(
-                builder, loc, builder.getI32IntegerAttr(n.value));
+                builder, loc, getIntegerAttrForLiteral(builder, n.value));
 
             pdl::ApplyNativeConstraintOp::create(
                 builder, loc, TypeRange{}, "isConstantEqualTo",
@@ -332,15 +343,18 @@ emitRewritePDL(const Expr &expr, OpBuilder &builder, Location loc,
             // numeric values and ignores bit-width, the width here is
             // load-bearing: this attribute becomes the "value" attribute of a
             // materialized llvm.mlir.constant, so it also fixes that op's
-            // result type. The i32 below is hard-coded and takes no account of
-            // what the surrounding IR expects, so a literal spliced next to an
-            // i64 or index consumer yields a type-mismatched operand. No rule
-            // currently puts a literal on the right-hand side, so this path is
-            // untested; before writing one, derive the type from context (the
-            // replaced value, or a type bound while matching) instead of
-            // hard-coding it here.
+            // result type. The width is chosen from the literal's magnitude
+            // (i32 when it fits, otherwise i64), which at least guarantees the
+            // value is representable, but it still takes no account of what
+            // the surrounding IR expects: a small literal spliced next to an
+            // i64 or index consumer is emitted as i32 and yields a
+            // type-mismatched operand. No rule currently puts a literal on the
+            // right-hand side, so this path is untested; the real fix is to
+            // derive the type from context (the replaced value, or a type
+            // bound while matching) and fall back to the magnitude-based
+            // choice only when there is no context to read.
             auto attrVal = pdl::AttributeOp::create(
-                builder, loc, builder.getI32IntegerAttr(n.value));
+                builder, loc, getIntegerAttrForLiteral(builder, n.value));
             auto constOp = pdl::OperationOp::create(
                 builder, loc, "llvm.mlir.constant",
                 /*operands=*/ValueRange{},

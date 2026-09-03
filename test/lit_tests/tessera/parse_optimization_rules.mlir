@@ -2,6 +2,11 @@
 
 module {
   tessera.optimizations {
+    // 3000000000 does not fit in an i32, so the emitted attribute must widen
+    // to i64 rather than silently truncating. The tessera.pow rule below keeps
+    // the narrow case pinned to i32.
+    tessera.optimization "tessera.scale(x) -> tessera.mul(x, 3000000000)"
+    tessera.optimization "tessera.shl(x, 3000000000) -> tessera.mul(x, x)"
     tessera.optimization "eigen.inv(eigen.inv(x)) -> x"
     tessera.optimization "eigen.mag(arith.negf(x),y,z) -> eigen.mag(x,y,z)"
     tessera.optimization "tessera.pow(x, 2) -> tessera.mul(x, x)"
@@ -63,5 +68,48 @@ module {
 // CHECK-NEXT:   %{{.*}} = result 0 of %[[INV2_CALL]]
 // CHECK-NEXT:   rewrite %[[INV2_CALL]] {
 // CHECK-NEXT:     replace %[[INV2_CALL]] with(%[[X0]] : !pdl.value)
+// CHECK-NEXT:   }
+// CHECK-NEXT: }
+
+// Patterns are emitted in reverse of the order the rules are declared, so the
+// two wide-literal rules come last.
+
+// CHECK: pdl.pattern : benefit(1) {
+// CHECK-NEXT:   %[[X0:.*]] = operand
+// CHECK-NEXT:   %[[T0:.*]] = type
+// CHECK-NEXT:   %[[C0:.*]] = operation  -> (%[[T0]] : !pdl.type)
+// CHECK-NEXT:   %[[BIG:.*]] = attribute = 3000000000 : i64
+// CHECK-NEXT:   apply_native_constraint "isConstantEqualTo"(%[[C0]], %[[BIG]] : !pdl.operation, !pdl.attribute)
+// CHECK-NEXT:   %[[RES0:.*]] = result 0 of %[[C0]]
+// CHECK-NEXT:   %[[SHL:.*]] = attribute = @tessera.shl
+// CHECK-NEXT:   %[[T1:.*]] = type
+// CHECK-NEXT:   %[[SHL_CALL:.*]] = operation "tessera.call"(%[[X0]], %[[RES0]] : !pdl.value, !pdl.value)  {"callee" = %[[SHL]]} -> (%[[T1]] : !pdl.type)
+// CHECK-NEXT:   %{{.*}} = result 0 of %[[SHL_CALL]]
+// CHECK-NEXT:   rewrite %[[SHL_CALL]] {
+// CHECK-NEXT:     %[[MUL:.*]] = attribute = @tessera.mul
+// CHECK-NEXT:     %[[T2:.*]] = type
+// CHECK-NEXT:     %[[MUL_CALL:.*]] = operation "tessera.call"(%[[X0]], %[[X0]] : !pdl.value, !pdl.value)  {"callee" = %[[MUL]]} -> (%[[T2]] : !pdl.type)
+// CHECK-NEXT:     %{{.*}} = result 0 of %[[MUL_CALL]]
+// CHECK-NEXT:     replace %[[SHL_CALL]] with %[[MUL_CALL]]
+// CHECK-NEXT:   }
+// CHECK-NEXT: }
+
+// A literal on the right-hand side becomes the "value" attribute of a
+// materialized llvm.mlir.constant, which also fixes that op's result type.
+// CHECK: pdl.pattern : benefit(1) {
+// CHECK-NEXT:   %[[X0:.*]] = operand
+// CHECK-NEXT:   %[[SCALE:.*]] = attribute = @tessera.scale
+// CHECK-NEXT:   %[[T0:.*]] = type
+// CHECK-NEXT:   %[[SCALE_CALL:.*]] = operation "tessera.call"(%[[X0]] : !pdl.value) {"callee" = %[[SCALE]]} -> (%[[T0]] : !pdl.type)
+// CHECK-NEXT:   %{{.*}} = result 0 of %[[SCALE_CALL]]
+// CHECK-NEXT:   rewrite %[[SCALE_CALL]] {
+// CHECK-NEXT:     %[[BIG:.*]] = attribute = 3000000000 : i64
+// CHECK-NEXT:     %[[CST:.*]] = operation "llvm.mlir.constant" {{.*}}"value" = %[[BIG]]{{.*}}
+// CHECK-NEXT:     %[[CST_RES:.*]] = result 0 of %[[CST]]
+// CHECK-NEXT:     %[[MUL:.*]] = attribute = @tessera.mul
+// CHECK-NEXT:     %[[T1:.*]] = type
+// CHECK-NEXT:     %[[MUL_CALL:.*]] = operation "tessera.call"(%[[X0]], %[[CST_RES]] : !pdl.value, !pdl.value)  {"callee" = %[[MUL]]} -> (%[[T1]] : !pdl.type)
+// CHECK-NEXT:     %{{.*}} = result 0 of %[[MUL_CALL]]
+// CHECK-NEXT:     replace %[[SCALE_CALL]] with %[[MUL_CALL]]
 // CHECK-NEXT:   }
 // CHECK-NEXT: }
