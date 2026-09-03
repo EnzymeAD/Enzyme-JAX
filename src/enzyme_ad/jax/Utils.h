@@ -1240,6 +1240,9 @@ bool isDereference(OpOperand &use);
 // the pointer as a value all answer no.
 bool onlyDereferenced(Value root);
 
+// Whether this one use of a pointer reaches nothing but dereferences.
+bool useOnlyDereferenced(OpOperand &use);
+
 } // namespace enzyme
 
 namespace stablehlo {
