@@ -1,14 +1,12 @@
 #include "mlir/Conversion/LLVMCommon/ConversionTarget.h"
-#include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Func/Transforms/FuncConversions.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "src/enzyme_ad/jax/Dialect/Comm/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Comm/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Comm/Passes.h"
+#include "src/enzyme_ad/jax/Passes/Comm/TypeConversion.h"
 #include "stablehlo/dialect/StablehloOps.h"
-
-#include "TypeConversion.h"
 
 namespace mlir::comm {
 #define GEN_PASS_DEF_LOWERCOMMTOSTABLEHLOPASS
