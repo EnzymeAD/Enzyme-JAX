@@ -410,6 +410,13 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
   SmallVector<AffineExpr, 8> symReplacements;
 
   SmallVector<SmallVectorImpl<Value> *> opsTodos;
+  // Legalizing one operand can clone and erase the op defining another that
+  // is not yet reached -- the same value listed twice, or one the hoist
+  // moves on the way -- so the operands wait here where replaceOp finds them.
+  SmallVector<Value> todoOperands(operands.begin(), operands.end());
+  opsTodos.push_back(&todoOperands);
+  opsTodos.push_back(&addedValues);
+  opsTodos.push_back(&reorderedDims);
   auto replaceOp = [&](Operation *oldOp, Operation *newOp) {
     for (auto [oldV, newV] :
          llvm::zip(oldOp->getResults(), newOp->getResults()))
@@ -668,8 +675,8 @@ AffineApplyNormalizer::AffineApplyNormalizer(AffineMap map,
   };
 
   // 2. Compose affine::AffineApplyOps and dispatch dims or symbols.
-  for (unsigned i = 0, e = operands.size(); i < e; ++i) {
-    auto t = operands[i];
+  for (unsigned i = 0, e = todoOperands.size(); i < e; ++i) {
+    auto t = todoOperands[i];
     auto decast = peelCasts(t);
 
     if (!keptAsSymbol(t, scope, throughSymbols)) {
