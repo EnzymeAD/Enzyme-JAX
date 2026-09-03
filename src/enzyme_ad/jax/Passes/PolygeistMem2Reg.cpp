@@ -3169,6 +3169,105 @@ std::vector<OffsetTree> getLastStored(mlir::Value AI, const DataLayout &dl) {
   return todo;
 }
 
+// A select between two constants, so that each arm names a place of its own.
+static arith::SelectOp selectOfConstants(Value v) {
+  auto sel = v.getDefiningOp<arith::SelectOp>();
+  Attribute cst;
+  if (!sel || !sel.getCondition().getType().isInteger(1) ||
+      !matchPattern(sel.getTrueValue(), m_Constant(&cst)) ||
+      !matchPattern(sel.getFalseValue(), m_Constant(&cst)))
+    return nullptr;
+  return sel;
+}
+
+// An access indexed by a select between constants lands in one of two slots
+// the forwarding could match, yet names neither. When every user of the
+// allocation is an access at a constant index or at such a select, each
+// select-indexed access becomes a branch on the select's condition around an
+// access at each constant, and the forwarding then sees only constant
+// indices. Nested selects are split one index at a time, on successive
+// rounds.
+static bool splitSelectIndexedAccesses(Value AI) {
+  auto constantIndices = [](ValueRange indices) {
+    return llvm::all_of(indices, [](Value idx) {
+      Attribute cst;
+      return matchPattern(idx, m_Constant(&cst));
+    });
+  };
+
+  SmallVector<Operation *> toSplit;
+  std::deque<Value> list = {AI};
+  while (!list.empty()) {
+    Value val = list.front();
+    list.pop_front();
+    for (Operation *U : val.getUsers()) {
+      ValueRange indices;
+      if (auto LO = dyn_cast<memref::LoadOp>(U))
+        indices = LO.getIndices();
+      else if (auto SO = dyn_cast<memref::StoreOp>(U))
+        indices = SO.getIndices();
+      else if (auto LO = dyn_cast<affine::AffineLoadOp>(U)) {
+        if (!LO.getAffineMap().isConstant())
+          return false;
+        continue;
+      } else if (auto SO = dyn_cast<affine::AffineStoreOp>(U)) {
+        if (!SO.getAffineMap().isConstant())
+          return false;
+        continue;
+      } else if (auto GO = dyn_cast<LLVM::GEPOp>(U)) {
+        if (!constantIndices(GO.getDynamicIndices()))
+          return false;
+        list.push_back(GO);
+        continue;
+      } else if (isa<memref::CastOp, Memref2PointerOp, Pointer2MemrefOp,
+                     LLVM::BitcastOp, LLVM::AddrSpaceCastOp>(U)) {
+        list.push_back(U->getResult(0));
+        continue;
+      } else
+        return false;
+
+      bool split = false;
+      for (Value idx : indices) {
+        Attribute cst;
+        if (matchPattern(idx, m_Constant(&cst)))
+          continue;
+        if (!selectOfConstants(idx))
+          return false;
+        split = true;
+      }
+      if (split)
+        toSplit.push_back(U);
+    }
+  }
+
+  for (Operation *op : toSplit) {
+    OpOperand *chosen = nullptr;
+    for (OpOperand &operand : op->getOpOperands())
+      if (selectOfConstants(operand.get())) {
+        chosen = &operand;
+        break;
+      }
+    auto sel = cast<arith::SelectOp>(chosen->get().getDefiningOp());
+    OpBuilder b(op);
+    auto ifOp = scf::IfOp::create(b, op->getLoc(), op->getResultTypes(),
+                                  sel.getCondition(), /*withElseRegion=*/true);
+    Value arms[2] = {sel.getTrueValue(), sel.getFalseValue()};
+    for (unsigned arm = 0; arm < 2; ++arm) {
+      Block *block = &ifOp->getRegion(arm).front();
+      b.setInsertionPointToStart(block);
+      Operation *cloned = b.clone(*op);
+      cloned->setOperand(chosen->getOperandNumber(), arms[arm]);
+      if (op->getNumResults()) {
+        b.setInsertionPointToEnd(block);
+        scf::YieldOp::create(b, op->getLoc(), cloned->getResults());
+      }
+    }
+    op->replaceAllUsesWith(ifOp.getResults());
+    op->erase();
+  }
+  return !toSplit.empty();
+}
+
 void PolygeistMem2Reg::runOnOperation() {
   auto *f = getOperation();
 
@@ -3216,6 +3315,7 @@ void PolygeistMem2Reg::runOnOperation() {
     DenseMap<Operation *, SmallVector<Operation *>> capturedAliasing;
     for (auto AI : toPromote) {
       LLVM_DEBUG(llvm::dbgs() << " attempting to promote " << AI << "\n");
+      changed |= splitSelectIndexedAccesses(AI);
       // A nested region may carry a layout of its own, so the sizes an offset
       // is counted in are the ones in force where the allocation is.
       auto lastStored =
