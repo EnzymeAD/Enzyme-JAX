@@ -8,6 +8,8 @@
 #include "src/enzyme_ad/jax/Passes/Comm/Passes.h"
 #include "stablehlo/dialect/StablehloOps.h"
 
+#include "TypeConversion.h"
+
 namespace mlir::comm {
 #define GEN_PASS_DEF_LOWERCOMMTOSTABLEHLOPASS
 #include "src/enzyme_ad/jax/Passes/Comm/Passes.h.inc"
@@ -421,18 +423,7 @@ struct LowerCommToStablehloPass
     target.addLegalDialect<stablehlo::StablehloDialect>();
     target.addIllegalDialect<comm::CommDialect>();
 
-    // defaults to no conversion for other types
-    TypeConverter converter;
-    converter.addConversion([](Type type) { return type; });
-
-    // !comm.mpi.comm, !comm.mpi.request are pointer-like, so lower to
-    // tensor<i64>
-    auto ptr_tensor_type =
-        RankedTensorType::get({}, IntegerType::get(context, 64));
-    converter.addConversion(
-        [&](comm::MpiCommType type) { return ptr_tensor_type; });
-    converter.addConversion(
-        [&](comm::MpiRequestType type) { return ptr_tensor_type; });
+    StablehloTypeConverter converter(context);
 
     target.addDynamicallyLegalOp<func::FuncOp>([&](func::FuncOp op) {
       return converter.isSignatureLegal(op.getFunctionType());
