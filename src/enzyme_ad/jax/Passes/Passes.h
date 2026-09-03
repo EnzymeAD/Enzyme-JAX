@@ -31,6 +31,7 @@ class SliceOp;
 namespace enzyme {
 
 void populateAffineCFGPatterns(RewritePatternSet &rpl);
+void populateInlineNeverLoopingWhilePattern(RewritePatternSet &patterns);
 
 #define GEN_PASS_DECL
 #include "src/enzyme_ad/jax/Passes/Passes.h.inc"
