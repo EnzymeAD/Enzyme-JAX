@@ -560,6 +560,9 @@ static bool onlyDereferenced(Value root) {
       } else if (auto rmw = dyn_cast<enzyme::AffineAtomicRMWOp>(user)) {
         if (use.get() != rmw.getMemref())
           return false;
+      } else if (isa<LLVM::MemsetOp, LLVM::MemsetInlineOp, LLVM::MemcpyOp,
+                     LLVM::MemcpyInlineOp, LLVM::MemmoveOp>(user)) {
+        // Fills or copies the pointed-to memory, through either end.
       } else {
         return false;
       }
