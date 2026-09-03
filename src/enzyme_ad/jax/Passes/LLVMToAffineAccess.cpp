@@ -1284,11 +1284,6 @@ public:
     return AffineExprBuilder::getMap();
   }
 
-  PtrVal getBase() {
-    assert(base);
-    return base;
-  }
-
   void maybeReplaceBase(Value before, Value after) {
     if (base == before)
       base = cast<PtrVal>(after);
@@ -2055,7 +2050,8 @@ convertLLVMToAffineAccess(Operation *op,
   // index the builders by base once and tell only the bucket that cares.
   DenseMap<Value, SmallVector<AffineAccessBuilder *>> buildersByBase;
   for (auto &aabp : accessBuilders)
-    buildersByBase[aabp->getBase()].push_back(aabp.get());
+    if (aabp->base)
+      buildersByBase[aabp->base].push_back(aabp.get());
   auto replaceBases = [&](Value before, Value after) {
     auto it = buildersByBase.find(before);
     if (it == buildersByBase.end())
