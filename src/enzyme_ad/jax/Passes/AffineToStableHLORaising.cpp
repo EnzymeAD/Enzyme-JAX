@@ -2076,6 +2076,24 @@ static LogicalResult tryRaisingLockStepForOpToStableHLO(
   return failure();
 }
 
+// The op count of `op` once every constant-bound affine.for inside it (and
+// `op` itself, if it is one) is unrolled, saturating at 2^40.
+static int64_t unrollCost(Operation *op) {
+  int64_t body = 1;
+  for (Region &r : op->getRegions())
+    for (Block &b : r)
+      for (Operation &inner : b)
+        body = std::min(body + unrollCost(&inner), (int64_t)1 << 40);
+  auto forOp = dyn_cast<affine::AffineForOp>(op);
+  if (!forOp || !forOp.hasConstantBounds())
+    return body;
+  int64_t step = forOp.getStepAsInt();
+  int64_t trip = (forOp.getConstantUpperBound() -
+                  forOp.getConstantLowerBound() + step - 1) /
+                 step;
+  return std::min(std::max(trip, (int64_t)1) * body, (int64_t)1 << 40);
+}
+
 static LogicalResult
 tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
                         llvm::DenseMap<Value, affine::AffineValueMap> &maps,
@@ -3385,24 +3403,6 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     // max-degree kernel reaches millions of ops and gigabytes of module
     // text); past a budget, iterating as a while beats unrolling even when
     // the preference says otherwise.
-    std::function<int64_t(Operation *)> unrollCost =
-        [&](Operation *o) -> int64_t {
-      int64_t body = 1;
-      for (Region &r : o->getRegions())
-        for (Block &b : r)
-          for (Operation &inner : b)
-            body = std::min(body + unrollCost(&inner), (int64_t)1 << 40);
-      if (auto f = dyn_cast<affine::AffineForOp>(o)) {
-        if (!f.hasConstantBounds())
-          return body;
-        int64_t step = f.getStepAsInt();
-        int64_t trip =
-            (f.getConstantUpperBound() - f.getConstantLowerBound() + step - 1) /
-            step;
-        return std::min(std::max(trip, (int64_t)1) * body, (int64_t)1 << 40);
-      }
-      return body;
-    };
     bool hugeUnroll =
         pc.options.unrollBudget >= 0 && forOp.hasConstantBounds() &&
         unrollCost(forOp.getOperation()) > pc.options.unrollBudget;
