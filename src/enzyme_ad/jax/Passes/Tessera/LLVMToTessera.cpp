@@ -442,13 +442,24 @@ struct LLVMToTesseraPass
       }
     }
 
-    patterns.add<FuncOpRewrite>(ctx, argTypesByIndex);
-    patterns.add<CallOpRewrite, ReturnOpRewrite>(ctx);
+    // Convert annotated functions to tessera.define first, in their own
+    // pass. CallOpRewrite only matches once its callee is already a
+    // tessera.define, so running both patterns in one top-down sweep 
+    // therefore silently drops calls whose callee declaration appears later 
+    // in the module than the call site itself -- e.g. an extern function only 
+    // referenced from the first function defined in a translation unit, 
+    // Running two phases eliminates dependency on module order.
+    RewritePatternSet funcPatterns(ctx);
+    funcPatterns.add<FuncOpRewrite>(ctx, argTypesByGlobalIndices);
+    if (failed(applyPatternsGreedily(getOperation(), std::move(funcPatterns)))) {
+      llvm::errs() << "Failed to convert LLVM dialect operations to tessera "
+                      "dialect operations\n";
+      return signalPassFailure();
+    }
 
-    GreedyRewriteConfig config;
-    config.setUseTopDownTraversal(true);
-    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
-                                     config))) {
+    RewritePatternSet callPatterns(ctx);
+    callPatterns.add<CallOpRewrite, ReturnOpRewrite>(ctx);
+    if (failed(applyPatternsGreedily(getOperation(), std::move(callPatterns)))) {
       llvm::errs() << "Failed to convert LLVM dialect operations to tessera "
                       "dialect operations\n";
       return signalPassFailure();

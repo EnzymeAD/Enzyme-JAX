@@ -345,12 +345,25 @@ struct TesseraToLLVMPass
   void runOnOperation() override {
     MLIRContext *ctx = &getContext();
     LLVMTypeConverter typeConverter(ctx);
-    RewritePatternSet patterns(ctx);
 
-    patterns.add<DefineOpRewrite>(typeConverter, ctx);
-    patterns.add<CallOpRewrite, ReturnOpRewrite>(ctx);
+    // Convert calls first, while callees are still tessera.define: CallOpRewrite
+    // only matches a callee that is a tessera::DefineOp. Running both patterns in
+    // one greedysweep is order-dependent: if a define converts before the driver 
+    // reaches its call site, the call is stuck referencing a symbol that is no 
+    // longer a DefineOp and never gets rewritten. Splitting into two phases 
+    // removes that dependency.
+    RewritePatternSet callPatterns(ctx);
+    callPatterns.add<CallOpRewrite>(ctx);
+    if (failed(applyPatternsGreedily(getOperation(), std::move(callPatterns)))) {
+      llvm::errs() << "Failed to convert tessera dialect operations to LLVM "
+                      "dialect operations\n";
+      return signalPassFailure();
+    }
 
-    if (failed(applyPatternsGreedily(getOperation(), std::move(patterns)))) {
+    RewritePatternSet definePatterns(ctx);
+    definePatterns.add<DefineOpRewrite>(typeConverter, ctx);
+    definePatterns.add<ReturnOpRewrite>(ctx);
+    if (failed(applyPatternsGreedily(getOperation(), std::move(definePatterns)))) {
       llvm::errs() << "Failed to convert tessera dialect operations to LLVM "
                       "dialect operations\n";
       return signalPassFailure();
