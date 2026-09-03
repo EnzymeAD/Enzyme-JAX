@@ -270,6 +270,47 @@ struct SinkThroughIfOfConstants : public OpRewritePattern<OpT> {
   }
 };
 
+/// The select counterpart: an op over a select between constants is the
+/// select between the op over each arm, where it meets a constant and folds.
+/// A select costs nothing to keep, so a second user of it is no reason to
+/// leave the op where it is.
+template <typename OpT>
+struct SinkThroughSelectOfConstants : public OpRewritePattern<OpT> {
+  using OpRewritePattern<OpT>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(OpT op,
+                                PatternRewriter &rewriter) const override {
+    arith::SelectOp sel;
+    for (Value operand : op->getOperands()) {
+      Attribute cst;
+      if (matchPattern(operand, m_Constant(&cst)))
+        continue;
+      auto def = operand.getDefiningOp<arith::SelectOp>();
+      if (sel || !def)
+        return failure();
+      sel = def;
+    }
+    if (!sel || !sel.getCondition().getType().isInteger(1))
+      return failure();
+    Value arms[2] = {sel.getTrueValue(), sel.getFalseValue()};
+    for (Value arm : arms) {
+      Attribute cst;
+      if (!matchPattern(arm, m_Constant(&cst)))
+        return failure();
+    }
+
+    Value chosen[2];
+    for (unsigned arm = 0; arm < 2; ++arm) {
+      IRMapping map;
+      map.map(sel.getResult(), arms[arm]);
+      chosen[arm] = rewriter.clone(*op.getOperation(), map)->getResult(0);
+    }
+    rewriter.replaceOpWithNewOp<arith::SelectOp>(op, sel.getCondition(),
+                                                 chosen[0], chosen[1]);
+    return success();
+  }
+};
+
 /// The if counterpart of SelectOfSameBaseGEPs: arms that index one base
 /// differently choose the index instead, with a constant index materialized
 /// where the gep kept it in an attribute.
@@ -668,8 +709,17 @@ struct CanonicalizeParallelPass
         SinkThroughIfOfConstants<arith::DivSIOp, affine::AffineIfOp>,
         SinkThroughIfOfConstants<arith::DivUIOp, scf::IfOp>,
         SinkThroughIfOfConstants<arith::DivUIOp, affine::AffineIfOp>,
-        SelectOfNullPointer, IfOfNullPointer<scf::IfOp>,
-        IfOfNullPointer<affine::AffineIfOp>>(ctx);
+        SinkThroughIfOfConstants<arith::AddIOp, scf::IfOp>,
+        SinkThroughIfOfConstants<arith::AddIOp, affine::AffineIfOp>,
+        SinkThroughIfOfConstants<arith::MulIOp, scf::IfOp>,
+        SinkThroughIfOfConstants<arith::MulIOp, affine::AffineIfOp>,
+        SinkThroughSelectOfConstants<arith::IndexCastOp>,
+        SinkThroughSelectOfConstants<arith::IndexCastUIOp>,
+        SinkThroughSelectOfConstants<arith::DivSIOp>,
+        SinkThroughSelectOfConstants<arith::DivUIOp>,
+        SinkThroughSelectOfConstants<arith::AddIOp>,
+        SinkThroughSelectOfConstants<arith::MulIOp>, SelectOfNullPointer,
+        IfOfNullPointer<scf::IfOp>, IfOfNullPointer<affine::AffineIfOp>>(ctx);
     FrozenRewritePatternSet patterns(std::move(owningPatterns));
 
     GreedyRewriteConfig config;
