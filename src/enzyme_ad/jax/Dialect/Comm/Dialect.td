@@ -20,4 +20,8 @@ class Comm_Type<string name, string typeMnemonic, list<Trait> traits = []> : Typ
 
 class Comm_Op<string mnemonic, list<Trait> traits = []> : Op<Comm_Dialect, mnemonic, traits>;
 
+class Comm_Attr<string name, string attrMnemonic, list<Trait> traits = []> : AttrDef<Comm_Dialect, name, traits> {
+  let mnemonic = attrMnemonic;
+}
+
 #endif // ENZYMEXLA_COMM_DIALECT_TD
