@@ -1499,6 +1499,7 @@ def HoistGPUAllocsPass : Pass<"enzyme-hoist-gpu-allocs"> {
   let summary = "Hoist allocations within gpu_wrappers to the host";
   let dependentDialects = [
     "enzymexla::EnzymeXLADialect",
+    "func::FuncDialect",
     "memref::MemRefDialect",
   ];
 }
