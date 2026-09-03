@@ -1154,28 +1154,31 @@ pruneBoundMap(__isl_keep isl_ctx *ctx, AffineMap map, ValueRange operands,
 }
 
 LogicalResult pruneParallelBounds(IslAnalysis &islAnalysis,
-                                  affine::AffineParallelOp op) {
+                                  affine::AffineParallelOp op,
+                                  RewriterBase &rewriter) {
   Region *scope = getLocalAffineScope(op);
   if (!scope)
     return failure();
   isl_ctx *ctx = islAnalysis.getCtx();
-  Builder b(op.getContext());
-  bool changed = false;
-  if (auto pruned = pruneBoundMap(
-          ctx, op.getLowerBoundsMap(), op.getLowerBoundsOperands(),
-          op.getLowerBoundsGroups(), /*isUpper=*/false, scope)) {
-    op.setLowerBoundsMapAttr(AffineMapAttr::get(pruned->first));
-    op.setLowerBoundsGroupsAttr(b.getI32TensorAttr(pruned->second));
-    changed = true;
-  }
-  if (auto pruned = pruneBoundMap(
-          ctx, op.getUpperBoundsMap(), op.getUpperBoundsOperands(),
-          op.getUpperBoundsGroups(), /*isUpper=*/true, scope)) {
-    op.setUpperBoundsMapAttr(AffineMapAttr::get(pruned->first));
-    op.setUpperBoundsGroupsAttr(b.getI32TensorAttr(pruned->second));
-    changed = true;
-  }
-  return success(changed);
+  auto lower =
+      pruneBoundMap(ctx, op.getLowerBoundsMap(), op.getLowerBoundsOperands(),
+                    op.getLowerBoundsGroups(), /*isUpper=*/false, scope);
+  auto upper =
+      pruneBoundMap(ctx, op.getUpperBoundsMap(), op.getUpperBoundsOperands(),
+                    op.getUpperBoundsGroups(), /*isUpper=*/true, scope);
+  if (!lower && !upper)
+    return failure();
+  rewriter.modifyOpInPlace(op, [&] {
+    if (lower) {
+      op.setLowerBoundsMapAttr(AffineMapAttr::get(lower->first));
+      op.setLowerBoundsGroupsAttr(rewriter.getI32TensorAttr(lower->second));
+    }
+    if (upper) {
+      op.setUpperBoundsMapAttr(AffineMapAttr::get(upper->first));
+      op.setUpperBoundsGroupsAttr(rewriter.getI32TensorAttr(upper->second));
+    }
+  });
+  return success();
 }
 
 struct SimplifyAffineExprsPass
@@ -1186,6 +1189,7 @@ struct SimplifyAffineExprsPass
     IslAnalysis ia;
 
     Operation *op = getOperation();
+    IRRewriter rewriter(op->getContext());
     op->walk([&](Operation *op) {
       if (auto cop = dyn_cast<AffineLoadOp>(op))
         (void)handleAffineAccessOp(ia, cop);
@@ -1198,7 +1202,7 @@ struct SimplifyAffineExprsPass
       else if (auto cop = dyn_cast<AffineIfOp>(op))
         (void)handleAffineIfOp(ia, cop);
       else if (auto cop = dyn_cast<AffineParallelOp>(op))
-        (void)pruneParallelBounds(ia, cop);
+        (void)pruneParallelBounds(ia, cop, rewriter);
     });
 
     op->walk([=](AffineIfOp affineOp) {
@@ -1233,6 +1237,18 @@ struct SimplifyIfAffineExprs : public OpRewritePattern<AffineIfOp> {
   }
 };
 
+struct PruneParallelBounds : public OpRewritePattern<AffineParallelOp> {
+  using OpRewritePattern<AffineParallelOp>::OpRewritePattern;
+  IslAnalysis &islAnalysis;
+  PruneParallelBounds(MLIRContext &context, IslAnalysis &islAnalysis)
+      : OpRewritePattern<AffineParallelOp>(&context), islAnalysis(islAnalysis) {
+  }
+  LogicalResult matchAndRewrite(AffineParallelOp op,
+                                PatternRewriter &rewriter) const override {
+    return pruneParallelBounds(islAnalysis, op, rewriter);
+  }
+};
+
 void mlir::populateAffineExprSimplificationPatterns(
     IslAnalysis &islAnalysis, RewritePatternSet &patterns) {
   // clang-format off
@@ -1241,7 +1257,8 @@ void mlir::populateAffineExprSimplificationPatterns(
     SimplifyAccessAffineExprs<affine::AffineStoreOp>,
     SimplifyAccessAffineExprs<affine::AffineVectorLoadOp>,
     SimplifyAccessAffineExprs<affine::AffineVectorStoreOp>,
-    SimplifyIfAffineExprs
+    SimplifyIfAffineExprs,
+    PruneParallelBounds
   >(*patterns.getContext(), islAnalysis);
   // clang-format on
 }
