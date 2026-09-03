@@ -22,11 +22,11 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<!llvm.ptr, dense<
     return %v : memref<?xf32>
   }
 
-  llvm.func @func_element(%base: !llvm.ptr, %off: i64) -> !llvm.func<void ()> {
+  func.func @func_element(%base: !llvm.ptr, %off: i64) -> !llvm.func<void ()> {
     %g = llvm.getelementptr inbounds|nuw %base[%off] : (!llvm.ptr, i64) -> !llvm.ptr, i8
     %m = "enzymexla.pointer2memref"(%g) : (!llvm.ptr) -> memref<?x!llvm.func<void ()>>
     %v = affine.load %m[0] : memref<?x!llvm.func<void ()>>
-    llvm.return %v : !llvm.func<void ()>
+    return %v : !llvm.func<void ()>
   }
 }
 
@@ -42,6 +42,6 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<#dlti.dl_entry<!llvm.ptr, dense<
 // CHECK: %[[g:.+]] = llvm.getelementptr inbounds|nuw %arg0[%arg1]
 // CHECK: "enzymexla.pointer2memref"(%[[g]])
 
-// CHECK-LABEL: llvm.func @func_element(
+// CHECK-LABEL: func.func @func_element(
 // CHECK: %[[g:.+]] = llvm.getelementptr inbounds|nuw %arg0[%arg1]
 // CHECK: "enzymexla.pointer2memref"(%[[g]])
