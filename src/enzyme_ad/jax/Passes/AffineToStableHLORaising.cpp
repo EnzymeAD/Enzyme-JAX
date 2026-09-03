@@ -4932,6 +4932,27 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
   }
 
   if (auto ifOp = dyn_cast<scf::IfOp>(op)) {
+    if (getenv("DEBUG_SCF")) {
+      llvm::errs() << "SCF-IF-RAISE " << ifOp.getLoc() << " results="
+                   << ifOp.getNumResults() << "\n";
+      Value c = ifOp.getCondition();
+      SmallVector<Value> wl{c};
+      DenseSet<Value> seen;
+      while (!wl.empty()) {
+        Value v = wl.pop_back_val();
+        if (!seen.insert(v).second)
+          continue;
+        if (auto *d = v.getDefiningOp()) {
+          llvm::errs() << "  cond-def: " << *d << "\n";
+          if (isa<arith::CmpIOp, arith::CmpFOp, arith::AndIOp, arith::OrIOp,
+                  arith::XOrIOp, arith::SelectOp, arith::ExtUIOp,
+                  arith::TruncIOp>(d))
+            for (Value o : d->getOperands())
+              wl.push_back(o);
+        } else
+          llvm::errs() << "  cond-arg: " << v << "\n";
+      }
+    }
 
     Value cond = mapping.lookupOrNull(ifOp.getCondition());
     if (!cond || !maps.count(cond))
@@ -5067,6 +5088,18 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
   }
 
   if (auto scfFor = dyn_cast<scf::ForOp>(op)) {
+    if (getenv("DEBUG_SCF")) {
+      llvm::errs() << "SCF-FOR-RAISE " << scfFor.getLoc() << " iterargs="
+                   << scfFor.getNumRegionIterArgs() << "\n";
+      for (auto [n, v] : {std::pair{"lb", scfFor.getLowerBound()},
+                          std::pair{"ub", scfFor.getUpperBound()},
+                          std::pair{"step", scfFor.getStep()}}) {
+        if (auto *d = v.getDefiningOp())
+          llvm::errs() << "  " << n << ": " << *d << "\n";
+        else
+          llvm::errs() << "  " << n << ": " << v << "\n";
+      }
+    }
     if (tryRaisingSCFForOpToStableHLOWhile(scfFor, mapping, builder, maps, pc)
             .succeeded())
       return success();
