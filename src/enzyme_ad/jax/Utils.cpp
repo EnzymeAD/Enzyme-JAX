@@ -2357,6 +2357,10 @@ bool isDereference(OpOperand &use) {
     return use.get() == rmw.getMemref();
   if (auto rmw = dyn_cast<enzyme::AffineAtomicRMWOp>(user))
     return use.get() == rmw.getMemref();
+  // Fills or copies the pointed-to memory, through either end.
+  if (isa<LLVM::MemsetOp, LLVM::MemsetInlineOp, LLVM::MemcpyOp,
+          LLVM::MemcpyInlineOp, LLVM::MemmoveOp>(user))
+    return true;
   return false;
 }
 
