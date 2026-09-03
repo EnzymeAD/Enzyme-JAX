@@ -999,6 +999,52 @@ emitIfAsSelect(Operation *ifOp, Value cond, affine::AffineValueMap map,
   return success();
 }
 
+// A mask over an iv that neither the store location nor the stored value
+// depends on picks which lanes write, and they all write the same thing: the
+// store lands wherever any lane is admitted. Reduces `mask` with `or` over the
+// axes whose iv `isStoreIv` rejects, and rebuilds `maskMap` over the kept ivs.
+static Value reduceMaskToStoreIvs(Location loc, Value mask,
+                                  affine::AffineValueMap &maskMap,
+                                  function_ref<bool(Value)> isStoreIv,
+                                  OpBuilder &builder) {
+  SmallVector<int64_t> lanesToReduce;
+  SmallVector<Value> keptIvs;
+  for (auto [j, E] : llvm::enumerate(maskMap.getAffineMap().getResults())) {
+    Value iv = getIVForExpr(maskMap, E);
+    if (isStoreIv(iv))
+      keptIvs.push_back(iv);
+    else
+      lanesToReduce.push_back(j);
+  }
+  if (lanesToReduce.empty())
+    return mask;
+
+  auto maskType = cast<RankedTensorType>(mask.getType());
+  auto boolType = RankedTensorType::get({}, maskType.getElementType());
+  SmallVector<int64_t> anyShape;
+  for (auto [j, sz] : llvm::enumerate(maskType.getShape()))
+    if (!llvm::is_contained(lanesToReduce, j))
+      anyShape.push_back(sz);
+  Value init = stablehlo::ConstantOp::create(
+      builder, loc, DenseElementsAttr::get(boolType, ArrayRef<bool>(false)));
+  auto any = stablehlo::ReduceOp::create(
+      builder, loc, TypeRange{maskType.clone(anyShape)}, ValueRange{mask},
+      ValueRange{init}, builder.getDenseI64ArrayAttr(lanesToReduce));
+  auto block = new Block();
+  any.getBody().push_back(block);
+  auto a = block->addArgument(boolType, loc);
+  auto b = block->addArgument(boolType, loc);
+  {
+    OpBuilder builder(block, block->end());
+    Value either = stablehlo::OrOp::create(builder, loc, a, b);
+    stablehlo::ReturnOp::create(builder, loc, either);
+  }
+  maskMap = affine::AffineValueMap(
+      AffineMap::getMultiDimIdentityMap(keptIvs.size(), loc.getContext()),
+      keptIvs);
+  return any.getResult(0);
+}
+
 // Builds a `[gridShape..., numColumns]` index tensor from per-dimension index
 // columns, deduplicating induction variables: when the same IV indexes more
 // than one column, the columns share a single grid axis instead of forming a
@@ -1202,8 +1248,10 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
         sliceSizes);
 
     // Broadcast the mask from its IV-space to the update's grid shape.
-    Value mask = pc.mask;
-    affine::AffineValueMap maskMap = maps.lookup(mask);
+    affine::AffineValueMap maskMap = maps.lookup(pc.mask);
+    Value mask = reduceMaskToStoreIvs(
+        loc, pc.mask, maskMap,
+        [&](Value iv) { return llvm::is_contained(ivs, iv); }, builder);
     SmallVector<int64_t> maskBroadcastDims;
     for (auto E : maskMap.getAffineMap().getResults()) {
       Value maskIV = getIVForExpr(maskMap, E);
@@ -2941,51 +2989,15 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
           update, reverseDims);
 
     if (pc.mask) {
-      Value mask = pc.mask;
-      affine::AffineValueMap maskMap = maps.lookup(mask);
-
-      // A mask over an iv that neither the store location nor the stored
-      // value depends on picks which lanes write, and they all write the
-      // same thing: the store lands wherever any lane is admitted.
-      SmallVector<int64_t> lanesToReduce;
-      SmallVector<Value> keptIvs;
-      for (auto [j, E] : llvm::enumerate(maskMap.getAffineMap().getResults())) {
-        Value iv = getIVForExpr(maskMap, E);
-        if (llvm::is_contained(storeOp.getIndices(), iv) ||
-            llvm::is_contained(updateValueMap.getOperands(), iv))
-          keptIvs.push_back(iv);
-        else
-          lanesToReduce.push_back(j);
-      }
-      if (!lanesToReduce.empty()) {
-        auto loc =
-            rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo);
-        auto maskType = cast<RankedTensorType>(mask.getType());
-        auto boolType = RankedTensorType::get({}, maskType.getElementType());
-        SmallVector<int64_t> anyShape;
-        for (auto [j, sz] : llvm::enumerate(maskType.getShape()))
-          if (!llvm::is_contained(lanesToReduce, j))
-            anyShape.push_back(sz);
-        Value init = stablehlo::ConstantOp::create(
-            builder, loc,
-            DenseElementsAttr::get(boolType, ArrayRef<bool>(false)));
-        auto any = stablehlo::ReduceOp::create(
-            builder, loc, TypeRange{maskType.clone(anyShape)}, ValueRange{mask},
-            ValueRange{init}, builder.getDenseI64ArrayAttr(lanesToReduce));
-        auto block = new Block();
-        any.getBody().push_back(block);
-        auto a = block->addArgument(boolType, loc);
-        auto b = block->addArgument(boolType, loc);
-        {
-          OpBuilder builder(block, block->end());
-          Value either = stablehlo::OrOp::create(builder, loc, a, b);
-          stablehlo::ReturnOp::create(builder, loc, either);
-        }
-        mask = any.getResult(0);
-        maskMap = affine::AffineValueMap(
-            AffineMap::getMultiDimIdentityMap(keptIvs.size(), op->getContext()),
-            keptIvs);
-      }
+      affine::AffineValueMap maskMap = maps.lookup(pc.mask);
+      Value mask = reduceMaskToStoreIvs(
+          rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+          pc.mask, maskMap,
+          [&](Value iv) {
+            return llvm::is_contained(storeOp.getIndices(), iv) ||
+                   llvm::is_contained(updateValueMap.getOperands(), iv);
+          },
+          builder);
 
       // here this is a bit annoying but alignMemoryAccess expects non constant
       // dims in its value maps. as such, we remove constant dims from the

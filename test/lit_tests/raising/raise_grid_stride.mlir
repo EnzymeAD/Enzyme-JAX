@@ -7,6 +7,8 @@
 // RUN: FileCheck %s --check-prefix=CARRIED < %t
 // RUN: FileCheck %s --check-prefix=LANE < %t
 // RUN: FileCheck %s --check-prefix=GUARD < %t
+// RUN: FileCheck %s --check-prefix=SCATTER < %t
+// RUN: FileCheck %s --check-prefix=FOREACH2D < %t
 
 // A grid-stride loop (thread t handles t, t + s, t + 2s, ...) inside a
 // parallel of extent s covers exactly one iteration per lane index; it is
@@ -189,3 +191,60 @@ func.func private @lane_guard(%arg0: memref<8xf64, 1>, %arg1: memref<8xf64, 1>) 
 // GUARD: %[[ANY:.+]] = stablehlo.reduce(%[[M]] init: %[[F]]) applies stablehlo.or across dimensions = [0] : (tensor<4xi1>, tensor<i1>) -> tensor<i1>
 // GUARD: %[[MB:.+]] = stablehlo.broadcast_in_dim %[[ANY]], dims = [] : (tensor<i1>) -> tensor<8xi1>
 // GUARD: stablehlo.select %[[MB]], %{{.*}}, %{{.*}} : tensor<8xi1>, tensor<8xf64>
+
+// The same any-lane guard over a store that raises as a scatter (linearized
+// index over two axes).
+func.func private @lane_guard_scatter(%arg0: memref<15xf64, 1>, %arg1: memref<15xf64, 1>) {
+  affine.parallel (%t) = (0) to (4) {
+    affine.if affine_set<(d0) : (d0 == 0)>(%t) {
+      affine.parallel (%i, %j) = (0, 0) to (5, 3) {
+        %0 = affine.load %arg0[%j * 5 + %i] : memref<15xf64, 1>
+        affine.store %0, %arg1[%i * 3 + %j] : memref<15xf64, 1>
+      }
+    }
+  }
+  return
+}
+
+// SCATTER-LABEL: func.func private @lane_guard_scatter_raised(
+// SCATTER: %[[M:.+]] = stablehlo.compare EQ, %{{.*}}, %{{.*}} : (tensor<4xi64>, tensor<4xi64>) -> tensor<4xi1>
+// SCATTER: %[[ANY:.+]] = stablehlo.reduce(%[[M]] init: %{{.*}}) applies stablehlo.or across dimensions = [0] : (tensor<4xi1>, tensor<i1>) -> tensor<i1>
+// SCATTER: %[[MB:.+]] = stablehlo.broadcast_in_dim %[[ANY]], dims = [] : (tensor<i1>) -> tensor<5x3xi1>
+// SCATTER: stablehlo.select %[[MB]], %{{.*}}, %{{.*}} : tensor<5x3xi1>, tensor<5x3xf64>
+// SCATTER: "stablehlo.scatter"
+
+// The MFEM_FOREACH_THREAD(dy,y,D1D-1) MFEM_FOREACH_THREAD(qx,x,Q1D) transpose
+// load of a basis matrix into shared memory: both axes stride, the outer one
+// behind a guard on the z-axis, and the scratch is indexed linearly.
+#set_y = affine_set<(d0, d1) : (d0 == 0, -d1 + 2 >= 0)>
+#set_x = affine_set<(d0) : (-d0 + 4 >= 0)>
+#uby2 = affine_map<(d0) -> ((3 - d0 + 4) floordiv 5)>
+#ubx2 = affine_map<(d0) -> ((5 - d0 + 4) floordiv 5)>
+func.func private @foreach_thread_2d(%B: memref<20xf64, 1>, %out: memref<15xf64, 1>) {
+  affine.parallel (%tx, %ty, %tz) = (0, 0, 0) to (5, 5, 2) {
+    %sB = memref.alloca() : memref<30xf64>
+    affine.if #set_y(%tz, %ty) {
+      affine.for %ky = 0 to #uby2(%ty) {
+        affine.if #set_x(%tx) {
+          affine.for %kx = 0 to #ubx2(%tx) {
+            %b = affine.load %B[(%ty + %ky * 5) * 5 + %tx + %kx * 5] : memref<20xf64, 1>
+            affine.store %b, %sB[(%tx + %kx * 5) * 3 + %ty + %ky * 5] : memref<30xf64>
+          }
+        }
+      }
+    }
+    "enzymexla.barrier"(%tx, %ty, %tz) : (index, index, index) -> ()
+    affine.if #set_y(%tz, %ty) {
+      %v = affine.load %sB[%tx * 3 + %ty] : memref<30xf64>
+      affine.store %v, %out[%tx * 3 + %ty] : memref<15xf64, 1>
+    }
+  }
+  return
+}
+
+// FOREACH2D-LABEL: func.func private @foreach_thread_2d_raised(
+// FOREACH2D-NOT: stablehlo.while
+// FOREACH2D: stablehlo.gather{{.*}} -> tensor<3x5xf64>
+// FOREACH2D-NOT: stablehlo.while
+// FOREACH2D: stablehlo.scatter
+// FOREACH2D-NOT: stablehlo.while
