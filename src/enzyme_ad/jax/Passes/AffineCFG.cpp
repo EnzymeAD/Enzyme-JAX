@@ -307,6 +307,8 @@ static bool legalCondition(Value en, bool dim, Region *scope,
     }
   }
 
+  bool kept = keptAsSymbol(en, scope, throughSymbols);
+
   while (auto ic = en.getDefiningOp<IndexCastOp>())
     en = ic.getIn();
 
@@ -329,7 +331,7 @@ static bool legalCondition(Value en, bool dim, Region *scope,
   // if (auto IC = dyn_cast_or_null<IndexCastOp>(en.getDefiningOp())) {
   //	if (!outer || legalCondition(IC.getOperand(), false)) return true;
   //}
-  if (!dim)
+  if (!dim && !kept)
     if (auto BA = dyn_cast<BlockArgument>(en)) {
       if (isa<affine::AffineForOp, affine::AffineParallelOp>(
               BA.getOwner()->getParentOp()))
