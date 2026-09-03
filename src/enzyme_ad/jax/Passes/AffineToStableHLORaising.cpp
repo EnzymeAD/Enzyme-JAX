@@ -296,6 +296,7 @@ struct ParallelContext {
     bool dump_failed_lockstep = false;
     bool preferWhileRaising = true;
     bool strip_llvm_debuginfo = false;
+    int64_t unrollBudget = 1 << 16;
   } options;
 
   explicit ParallelContext(Options &options) : options(options) {}
@@ -3402,8 +3403,9 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
       }
       return body;
     };
-    bool hugeUnroll = forOp.hasConstantBounds() &&
-                      unrollCost(forOp.getOperation()) > (1 << 16);
+    bool hugeUnroll =
+        pc.options.unrollBudget >= 0 && forOp.hasConstantBounds() &&
+        unrollCost(forOp.getOperation()) > pc.options.unrollBudget;
     // A loop whose trip count is only known at runtime can still iterate as
     // a while, whatever the preference says.
     if ((pc.options.preferWhileRaising || !forOp.hasConstantBounds() ||
@@ -3889,8 +3891,8 @@ struct AffineToStableHLORaisingPass
 
   void runOnOperation() override {
     ParallelContext::Options options{enable_lockstep_for, dump_failed_lockstep,
-                                     prefer_while_raising,
-                                     strip_llvm_debuginfo};
+                                     prefer_while_raising, strip_llvm_debuginfo,
+                                     unroll_budget};
     std::vector<func::FuncOp> funcs;
 
     auto context = getOperation()->getContext();

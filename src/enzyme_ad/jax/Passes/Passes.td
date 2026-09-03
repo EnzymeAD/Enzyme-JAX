@@ -1269,6 +1269,14 @@ def AffineToStableHLORaising : Pass<"raise-affine-to-stablehlo"> {
            /*default=*/"true",
            /*description=*/
            "Whether to prefer raising to while instead of unrolling">,
+       Option<
+           /*C++ variable name=*/"unroll_budget",
+           /*CLI argument=*/"unroll_budget",
+           /*type=*/"int64_t",
+           /*default=*/"65536",
+           /*description=*/
+           "Raise a constant-bound loop as a while instead of unrolling when "
+           "its nested unrolled op count exceeds this. -1 for no budget">,
   ];
 }
 
