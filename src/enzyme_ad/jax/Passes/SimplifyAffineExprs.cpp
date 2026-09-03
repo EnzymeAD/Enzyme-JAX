@@ -1512,6 +1512,137 @@ decideOnDomain(LoopDomain &domain, arith::CmpIPredicate pred, Value lhs,
   return failure();
 }
 
+// The bounds of a for loop as expressions over `domain`: the loop runs while
+// every lower bound is below every upper bound, stepping by `step`.
+LogicalResult loopBounds(LoopDomain &domain, scf::ForOp forOp,
+                         SmallVectorImpl<AffineExpr> &lbs,
+                         SmallVectorImpl<AffineExpr> &ubs, AffineExpr &step) {
+  AffineMap identity =
+      AffineMap::get(0, 1, getAffineSymbolExpr(0, forOp.getContext()));
+  FailureOr<SmallVector<AffineExpr>> lb =
+      domain.compose(identity, forOp.getLowerBound());
+  FailureOr<SmallVector<AffineExpr>> ub =
+      domain.compose(identity, forOp.getUpperBound());
+  FailureOr<SmallVector<AffineExpr>> st =
+      domain.compose(identity, forOp.getStep());
+  if (failed(lb) || failed(ub) || failed(st))
+    return failure();
+  lbs = *lb;
+  ubs = *ub;
+  step = (*st)[0];
+  return success();
+}
+LogicalResult loopBounds(LoopDomain &domain, AffineForOp forOp,
+                         SmallVectorImpl<AffineExpr> &lbs,
+                         SmallVectorImpl<AffineExpr> &ubs, AffineExpr &step) {
+  FailureOr<SmallVector<AffineExpr>> lb =
+      domain.compose(forOp.getLowerBoundMap(), forOp.getLowerBoundOperands());
+  FailureOr<SmallVector<AffineExpr>> ub =
+      domain.compose(forOp.getUpperBoundMap(), forOp.getUpperBoundOperands());
+  if (failed(lb) || failed(ub))
+    return failure();
+  lbs = *lb;
+  ubs = *ub;
+  step = getAffineConstantExpr(forOp.getStepAsInt(), forOp.getContext());
+  return success();
+}
+
+// The value the induction variable takes on the loop's only trip.
+Value firstIterationValue(RewriterBase &rewriter, scf::ForOp forOp) {
+  return forOp.getLowerBound();
+}
+Value firstIterationValue(RewriterBase &rewriter, AffineForOp forOp) {
+  AffineMap lbMap = forOp.getLowerBoundMap();
+  ValueRange operands = forOp.getLowerBoundOperands();
+  if (lbMap.getNumResults() != 1)
+    return AffineMaxOp::create(rewriter, forOp.getLoc(), lbMap, operands);
+  if (auto dim = dyn_cast<AffineDimExpr>(lbMap.getResult(0)))
+    return operands[dim.getPosition()];
+  if (auto symbol = dyn_cast<AffineSymbolExpr>(lbMap.getResult(0)))
+    return operands[lbMap.getNumDims() + symbol.getPosition()];
+  return AffineApplyOp::create(rewriter, forOp.getLoc(), lbMap, operands);
+}
+
+// A for loop whose bounds prove exactly one trip for every point of the
+// enclosing loop nest inlines its body at the lower bound (a strided-copy
+// remainder loop whose extent the propagated block size made constant);
+// a provably zero-trip loop folds to its inits. Applies to scf.for and to
+// the affine.for it raises to.
+template <typename ForOp>
+struct UnrollDecidedFor : public OpRewritePattern<ForOp> {
+  IslAnalysis &islAnalysis;
+  UnrollDecidedFor(MLIRContext &context, IslAnalysis &islAnalysis)
+      : OpRewritePattern<ForOp>(&context), islAnalysis(islAnalysis) {}
+
+  LogicalResult matchAndRewrite(ForOp forOp,
+                                PatternRewriter &rewriter) const override {
+    LoopDomain domain(islAnalysis.getCtx(), forOp);
+    if (!domain)
+      return failure();
+    SmallVector<AffineExpr> lbs, ubs;
+    AffineExpr step;
+    if (failed(loopBounds(domain, forOp, lbs, ubs, step)))
+      return failure();
+    SmallVector<AffineExpr> exprs(lbs);
+    llvm::append_range(exprs, ubs);
+    exprs.push_back(step);
+    FailureOr<SmallVector<isl_aff *>> affs = domain.getAffs(exprs);
+    if (failed(affs))
+      return failure();
+    llvm::scope_exit freeAffs([&] {
+      for (isl_aff *aff : *affs)
+        isl_aff_free(aff);
+    });
+    ArrayRef<isl_aff *> lbAffs(*affs), ubAffs(*affs);
+    lbAffs = lbAffs.take_front(lbs.size());
+    ubAffs = ubAffs.slice(lbs.size(), ubs.size());
+    isl_aff *stepAff = affs->back();
+
+    isl_aff *zero =
+        isl_aff_val_on_domain(isl_aff_get_domain_local_space(stepAff),
+                              isl_val_zero(isl_aff_get_ctx(stepAff)));
+    bool stepPositive =
+        domain.emptyOnDomain(isl_aff_le_set(isl_aff_copy(stepAff), zero));
+    if (!stepPositive)
+      return failure();
+    // The points where the loop runs, and where it takes a second trip.
+    isl_set *runs = isl_set_universe(isl_set_get_space(domain.set));
+    isl_set *runsTwice = isl_set_copy(runs);
+    bool alwaysRuns = true;
+    for (isl_aff *lbAff : lbAffs) {
+      for (isl_aff *ubAff : ubAffs) {
+        runs = isl_set_intersect(
+            runs, isl_aff_lt_set(isl_aff_copy(lbAff), isl_aff_copy(ubAff)));
+        runsTwice = isl_set_intersect(
+            runsTwice, isl_aff_lt_set(isl_aff_add(isl_aff_copy(lbAff),
+                                                  isl_aff_copy(stepAff)),
+                                      isl_aff_copy(ubAff)));
+        alwaysRuns &= domain.emptyOnDomain(
+            isl_aff_ge_set(isl_aff_copy(lbAff), isl_aff_copy(ubAff)));
+      }
+    }
+    bool neverRuns = domain.emptyOnDomain(runs);
+    bool hasSecondTrip = !domain.emptyOnDomain(runsTwice);
+    if (neverRuns) {
+      rewriter.replaceOp(forOp, forOp.getInits());
+      return success();
+    }
+    if (!alwaysRuns || hasSecondTrip)
+      return failure();
+
+    Block *body = forOp.getBody();
+    Operation *yield = body->getTerminator();
+    SmallVector<Value> results(yield->getOperands());
+    rewriter.eraseOp(yield);
+    rewriter.setInsertionPoint(forOp);
+    SmallVector<Value> argReplacements{firstIterationValue(rewriter, forOp)};
+    llvm::append_range(argReplacements, forOp.getInits());
+    rewriter.inlineBlockBefore(body, forOp, argReplacements);
+    rewriter.replaceOp(forOp, results);
+    return success();
+  }
+};
+
 // Fold an integer comparison to a constant when the enclosing affine loop
 // bounds already decide it — e.g. a peeled grid-stride residual's guard
 // (blockIdx + gridDim compared against an extent sharing gridDim's base) or
@@ -1715,7 +1846,9 @@ void mlir::populateAffineExprSimplificationPatterns(
     FoldMinMaxUsingLoopBounds<arith::MinSIOp>,
     FoldMinMaxUsingLoopBounds<arith::MaxUIOp>,
     FoldMinMaxUsingLoopBounds<arith::MinUIOp>,
-    FoldNeverLoopingSCFWhileCondition
+    FoldNeverLoopingSCFWhileCondition,
+    UnrollDecidedFor<scf::ForOp>,
+    UnrollDecidedFor<AffineForOp>
   >(*patterns.getContext(), islAnalysis);
   // clang-format on
   mlir::enzyme::populateInlineNeverLoopingWhilePattern(patterns);
