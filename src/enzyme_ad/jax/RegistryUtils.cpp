@@ -347,11 +347,8 @@ void initializePasses() {
   registerenzymePasses();
   enzyme::registerenzymexlaPasses();
   mlir::enzyme::tessera::registertesseraPasses();
-<<<<<<< HEAD
   mlir::enzyme::perfify::registerperfifyPasses();
-=======
   mlir::comm::registercommPasses();
->>>>>>> main
 
   // Register the standard passes we want.
   mlir::registerCSEPass();
