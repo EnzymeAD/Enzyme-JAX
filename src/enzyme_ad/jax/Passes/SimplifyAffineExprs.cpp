@@ -9,6 +9,7 @@
 #include "mlir/Dialect/Affine/IR/AffineValueMap.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/IntegerSet.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
@@ -1468,12 +1469,53 @@ struct FoldMinMaxUsingLoopBounds : public OpRewritePattern<MinMaxOp> {
   }
 };
 
+// The value `cmp` has on every point of `domain`, its operands read through
+// `substitution`; fails when the domain does not decide it. Values are
+// mathematical integers (no wraparound); an unsigned predicate is only decided
+// when both sides are provably non-negative on the domain.
+FailureOr<bool>
+decideOnDomain(LoopDomain &domain, arith::CmpIOp cmp,
+               const DenseMap<Value, Value> *substitution = nullptr) {
+  arith::CmpIPredicate pred = cmp.getPredicate();
+  FailureOr<SmallVector<isl_aff *>> affs =
+      domain.getAffs({cmp.getLhs(), cmp.getRhs()}, substitution);
+  if (failed(affs))
+    return failure();
+  isl_aff *lhsAff = (*affs)[0], *rhsAff = (*affs)[1];
+  llvm::scope_exit freeAffs([&] {
+    isl_aff_free(lhsAff);
+    isl_aff_free(rhsAff);
+  });
+  if (mlir::enzyme::isUnsignedPredicate(pred)) {
+    if (!(domain.nonNegOnDomain(lhsAff) && domain.nonNegOnDomain(rhsAff)))
+      return failure();
+    pred = mlir::enzyme::signedPredicate(pred);
+  }
+
+  FailureOr<isl_set *> fails = comparisonSet(
+      arith::invertPredicate(pred), isl_aff_copy(lhsAff), isl_aff_copy(rhsAff));
+  FailureOr<isl_set *> holds =
+      comparisonSet(pred, isl_aff_copy(lhsAff), isl_aff_copy(rhsAff));
+  if (failed(fails) || failed(holds)) {
+    if (succeeded(fails))
+      isl_set_free(*fails);
+    if (succeeded(holds))
+      isl_set_free(*holds);
+    return failure();
+  }
+  if (domain.emptyOnDomain(*fails)) {
+    isl_set_free(*holds);
+    return true;
+  }
+  if (domain.emptyOnDomain(*holds))
+    return false;
+  return failure();
+}
+
 // Fold an integer comparison to a constant when the enclosing affine loop
 // bounds already decide it — e.g. a peeled grid-stride residual's guard
 // (blockIdx + gridDim compared against an extent sharing gridDim's base) or
-// a thread-id test under a constant-extent axis. As elsewhere in this pass,
-// values are mathematical integers (no wraparound); unsigned predicates are
-// only folded when both sides are provably non-negative on the domain.
+// a thread-id test under a constant-extent axis.
 struct FoldCmpUsingLoopBounds : public OpRewritePattern<arith::CmpIOp> {
   IslAnalysis &islAnalysis;
   FoldCmpUsingLoopBounds(MLIRContext &context, IslAnalysis &islAnalysis)
@@ -1481,43 +1523,53 @@ struct FoldCmpUsingLoopBounds : public OpRewritePattern<arith::CmpIOp> {
 
   LogicalResult matchAndRewrite(arith::CmpIOp cmp,
                                 PatternRewriter &rewriter) const override {
-    arith::CmpIPredicate pred = cmp.getPredicate();
     LoopDomain domain(islAnalysis.getCtx(), cmp);
     if (!domain)
       return failure();
-    FailureOr<SmallVector<isl_aff *>> affs =
-        domain.getAffs({cmp.getLhs(), cmp.getRhs()});
-    if (failed(affs))
-      return failure();
-    isl_aff *lhsAff = (*affs)[0], *rhsAff = (*affs)[1];
-    llvm::scope_exit freeAffs([&] {
-      isl_aff_free(lhsAff);
-      isl_aff_free(rhsAff);
-    });
-    if (mlir::enzyme::isUnsignedPredicate(pred)) {
-      if (!(domain.nonNegOnDomain(lhsAff) && domain.nonNegOnDomain(rhsAff)))
-        return failure();
-      pred = mlir::enzyme::signedPredicate(pred);
-    }
-
-    FailureOr<isl_set *> fails =
-        comparisonSet(arith::invertPredicate(pred), isl_aff_copy(lhsAff),
-                      isl_aff_copy(rhsAff));
-    FailureOr<isl_set *> holds =
-        comparisonSet(pred, isl_aff_copy(lhsAff), isl_aff_copy(rhsAff));
-    if (failed(fails) || failed(holds)) {
-      if (succeeded(fails))
-        isl_set_free(*fails);
-      if (succeeded(holds))
-        isl_set_free(*holds);
-      return failure();
-    }
-    bool alwaysTrue = domain.emptyOnDomain(*fails);
-    bool alwaysFalse = domain.emptyOnDomain(*holds);
-    if (!alwaysTrue && !alwaysFalse)
+    FailureOr<bool> decided = decideOnDomain(domain, cmp);
+    if (failed(decided))
       return failure();
     rewriter.replaceOpWithNewOp<arith::ConstantOp>(
-        cmp, rewriter.getBoolAttr(alwaysTrue));
+        cmp, rewriter.getBoolAttr(*decided));
+    return success();
+  }
+};
+
+// An scf.while's condition is evaluated first with the inits as the before
+// arguments, and only evaluated again if it held. So when the enclosing loop
+// bounds show it false on the inits it is false whenever evaluated, and the
+// while is one execution of its before region (InlineNeverLoopingWhile). This
+// is how a rotated do-while remainder loop that the propagated block size
+// made single-shot disappears.
+struct FoldNeverLoopingSCFWhileCondition
+    : public OpRewritePattern<scf::WhileOp> {
+  IslAnalysis &islAnalysis;
+  FoldNeverLoopingSCFWhileCondition(MLIRContext &context,
+                                    IslAnalysis &islAnalysis)
+      : OpRewritePattern<scf::WhileOp>(&context), islAnalysis(islAnalysis) {}
+
+  LogicalResult matchAndRewrite(scf::WhileOp whileOp,
+                                PatternRewriter &rewriter) const override {
+    scf::ConditionOp condOp = whileOp.getConditionOp();
+    auto cmp = condOp.getCondition().getDefiningOp<arith::CmpIOp>();
+    if (!cmp)
+      return failure();
+    LoopDomain domain(islAnalysis.getCtx(), whileOp);
+    if (!domain)
+      return failure();
+    DenseMap<Value, Value> initOfArg;
+    for (auto [arg, init] :
+         llvm::zip(whileOp.getBeforeArguments(), whileOp.getInits()))
+      initOfArg[arg] = init;
+    FailureOr<bool> decided = decideOnDomain(domain, cmp, &initOfArg);
+    // Holding on the first evaluation says nothing about the next.
+    if (failed(decided) || *decided)
+      return failure();
+    rewriter.setInsertionPoint(condOp);
+    Value falseValue = arith::ConstantOp::create(rewriter, condOp.getLoc(),
+                                                 rewriter.getBoolAttr(false));
+    rewriter.modifyOpInPlace(
+        condOp, [&] { condOp.getConditionMutable().assign(falseValue); });
     return success();
   }
 };
@@ -1591,7 +1643,8 @@ void mlir::populateAffineExprSimplificationPatterns(
     FoldMinMaxUsingLoopBounds<arith::MaxSIOp>,
     FoldMinMaxUsingLoopBounds<arith::MinSIOp>,
     FoldMinMaxUsingLoopBounds<arith::MaxUIOp>,
-    FoldMinMaxUsingLoopBounds<arith::MinUIOp>
+    FoldMinMaxUsingLoopBounds<arith::MinUIOp>,
+    FoldNeverLoopingSCFWhileCondition
   >(*patterns.getContext(), islAnalysis);
   // clang-format on
   mlir::enzyme::populateInlineNeverLoopingWhilePattern(patterns);
