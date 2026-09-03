@@ -1426,6 +1426,48 @@ FailureOr<isl_set *> comparisonSet(arith::CmpIPredicate pred,
   return failure();
 }
 
+// Collapse a min/max whose order the enclosing loop bounds already decide
+// (maxsi(tid + 2, 2) under tid >= 0), so a loop bound built from it is
+// affine and the loop raises.
+template <typename MinMaxOp>
+struct FoldMinMaxUsingLoopBounds : public OpRewritePattern<MinMaxOp> {
+  IslAnalysis &islAnalysis;
+  FoldMinMaxUsingLoopBounds(MLIRContext &context, IslAnalysis &islAnalysis)
+      : OpRewritePattern<MinMaxOp>(&context), islAnalysis(islAnalysis) {}
+
+  LogicalResult matchAndRewrite(MinMaxOp op,
+                                PatternRewriter &rewriter) const override {
+    bool isMax = std::is_same_v<MinMaxOp, arith::MaxSIOp> ||
+                 std::is_same_v<MinMaxOp, arith::MaxUIOp>;
+    bool isUnsigned = std::is_same_v<MinMaxOp, arith::MaxUIOp> ||
+                      std::is_same_v<MinMaxOp, arith::MinUIOp>;
+    Value lhs = op.getLhs(), rhs = op.getRhs();
+    LoopDomain domain(islAnalysis.getCtx(), op);
+    if (!domain)
+      return failure();
+    FailureOr<SmallVector<isl_aff *>> affs = domain.getAffs({lhs, rhs});
+    if (failed(affs))
+      return failure();
+    isl_aff *lhsAff = (*affs)[0], *rhsAff = (*affs)[1];
+    llvm::scope_exit freeAffs([&] {
+      isl_aff_free(lhsAff);
+      isl_aff_free(rhsAff);
+    });
+    if (isUnsigned &&
+        !(domain.nonNegOnDomain(lhsAff) && domain.nonNegOnDomain(rhsAff)))
+      return failure();
+    bool lhsGeRhs = domain.emptyOnDomain(
+        isl_aff_lt_set(isl_aff_copy(lhsAff), isl_aff_copy(rhsAff)));
+    bool rhsGeLhs =
+        !lhsGeRhs && domain.emptyOnDomain(isl_aff_lt_set(isl_aff_copy(rhsAff),
+                                                         isl_aff_copy(lhsAff)));
+    if (!lhsGeRhs && !rhsGeLhs)
+      return failure();
+    rewriter.replaceOp(op, (lhsGeRhs == isMax) ? lhs : rhs);
+    return success();
+  }
+};
+
 // Fold an integer comparison to a constant when the enclosing affine loop
 // bounds already decide it — e.g. a peeled grid-stride residual's guard
 // (blockIdx + gridDim compared against an extent sharing gridDim's base) or
@@ -1545,7 +1587,11 @@ void mlir::populateAffineExprSimplificationPatterns(
     SimplifyAccessAffineExprs<affine::AffineVectorStoreOp>,
     SimplifyIfAffineExprs,
     PruneParallelBounds,
-    FoldCmpUsingLoopBounds
+    FoldCmpUsingLoopBounds,
+    FoldMinMaxUsingLoopBounds<arith::MaxSIOp>,
+    FoldMinMaxUsingLoopBounds<arith::MinSIOp>,
+    FoldMinMaxUsingLoopBounds<arith::MaxUIOp>,
+    FoldMinMaxUsingLoopBounds<arith::MinUIOp>
   >(*patterns.getContext(), islAnalysis);
   // clang-format on
 }
