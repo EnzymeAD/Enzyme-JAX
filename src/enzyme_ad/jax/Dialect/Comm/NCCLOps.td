@@ -67,13 +67,12 @@ def NcclAllReduceOp : Comm_Op<"nccl.all_reduce", []> {
   let arguments = (ins
     AnyTensor : $sendbuf,
     NcclRedOpAttr : $reduceOp,
-    NcclComm : $comm,
-    NcclStream : $stream
+    NcclComm : $comm
     // TODO $inplace unit attr for reusing sendbuf as recvbuf
   );
 
   let results = (outs AnyTensor : $recvbuf);
-  let assemblyFormat = "$sendbuf `,` $reduceOp `,` $comm `,` $stream attr-dict `:` functional-type($sendbuf, $recvbuf)";
+  let assemblyFormat = "$sendbuf `,` $reduceOp `,` $comm attr-dict `:` functional-type($sendbuf, $recvbuf)";
 }
 
 def NcclBroadcastOp : Comm_Op<"nccl.broadcast", []> {
@@ -82,8 +81,7 @@ def NcclBroadcastOp : Comm_Op<"nccl.broadcast", []> {
   let arguments = (ins
     AnyTensor : $sendbuff,
     TensorI32 : $root,
-    NcclComm : $comm,
-    NcclStream : $stream
+    NcclComm : $comm
     // TODO $inplace unit attr for reusing sendbuf as recvbuf
   );
 
@@ -97,8 +95,7 @@ def NcclSendOp : Comm_Op<"nccl.send", []> {
   let arguments = (ins
     AnyTensor : $sendbuff,
     TensorI32 : $peer,
-    NcclComm : $comm,
-    NcclStream : $stream
+    NcclComm : $comm
   );
 
   let assemblyFormat = "operands attr-dict `:` type($sendbuff)";
@@ -109,8 +106,7 @@ def NcclRecvOp : Comm_Op<"nccl.recv", []> {
 
   let arguments = (ins
     TensorI32 : $peer,
-    NcclComm : $comm,
-    NcclStream : $stream
+    NcclComm : $comm
   );
   let results = (outs AnyTensor : $recvbuff);
 
