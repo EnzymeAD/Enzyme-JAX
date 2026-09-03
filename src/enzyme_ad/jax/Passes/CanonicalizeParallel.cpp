@@ -88,6 +88,16 @@ struct SelectOfSameBaseGEPs : public OpRewritePattern<arith::SelectOp> {
       return failure();
     auto gepT = sel.getTrueValue().getDefiningOp<LLVM::GEPOp>();
     auto gepF = sel.getFalseValue().getDefiningOp<LLVM::GEPOp>();
+    // A side that is the base itself stepped zero elements of the other's
+    // type.
+    int bare = -1;
+    if (!gepT && gepF && sel.getTrueValue() == gepF.getBase()) {
+      gepT = gepF;
+      bare = 0;
+    } else if (!gepF && gepT && sel.getFalseValue() == gepT.getBase()) {
+      gepF = gepT;
+      bare = 1;
+    }
     if (!gepT || !gepF)
       return failure();
     if (gepT.getBase() != gepF.getBase() ||
@@ -111,17 +121,19 @@ struct SelectOfSameBaseGEPs : public OpRewritePattern<arith::SelectOp> {
       idxTy = rewriter.getI64Type();
     }
 
-    auto materialize = [&](LLVM::GEPOp gep, Value dyn) -> Value {
-      if (dyn)
+    auto materialize = [&](LLVM::GEPOp gep, Value dyn, bool zero) -> Value {
+      if (dyn && !zero)
         return dyn;
-      auto attr = cast<IntegerAttr>(gep.getIndices()[0]);
-      Value c = arith::ConstantOp::create(
-          rewriter, gep.getLoc(),
-          IntegerAttr::get(idxTy, attr.getValue().getSExtValue()));
+      int64_t v = zero ? 0
+                       : cast<IntegerAttr>(gep.getIndices()[0])
+                             .getValue()
+                             .getSExtValue();
+      Value c = arith::ConstantOp::create(rewriter, gep.getLoc(),
+                                          IntegerAttr::get(idxTy, v));
       return c;
     };
-    Value idxT = materialize(gepT, dynT);
-    Value idxF = materialize(gepF, dynF);
+    Value idxT = materialize(gepT, dynT, bare == 0);
+    Value idxF = materialize(gepF, dynF, bare == 1);
     Value idx = arith::SelectOp::create(rewriter, sel.getLoc(),
                                         sel.getCondition(), idxT, idxF);
     rewriter.replaceOpWithNewOp<LLVM::GEPOp>(
@@ -275,6 +287,9 @@ template <typename IfT> struct IfOfSameBaseGEPs : public OpRewritePattern<IfT> {
     SmallVector<LLVM::GEPOp> tmpl(ifOp->getNumResults(), nullptr);
     SmallVector<LLVM::GEPOp> other(ifOp->getNumResults(), nullptr);
     SmallVector<char> inBytes(ifOp->getNumResults(), 0);
+    // Which arm, if any, yields the base itself: that arm stepped zero
+    // elements of the other's type.
+    SmallVector<int> bare(ifOp->getNumResults(), -1);
     bool any = false;
     for (auto [i, res] : llvm::enumerate(ifOp->getResults())) {
       newTypes.push_back(res.getType());
@@ -282,6 +297,13 @@ template <typename IfT> struct IfOfSameBaseGEPs : public OpRewritePattern<IfT> {
           thenY->getOperand(i).getDefiningOp());
       auto f = dyn_cast_if_present<LLVM::GEPOp>(
           elseY->getOperand(i).getDefiningOp());
+      if (!t && f && thenY->getOperand(i) == f.getBase()) {
+        t = f;
+        bare[i] = 0;
+      } else if (!f && t && elseY->getOperand(i) == t.getBase()) {
+        f = t;
+        bare[i] = 1;
+      }
       if (!t || !f || t.getBase() != f.getBase() ||
           t.getType() != f.getType() || t.getIndices().size() != 1 ||
           f.getIndices().size() != 1)
@@ -321,10 +343,17 @@ template <typename IfT> struct IfOfSameBaseGEPs : public OpRewritePattern<IfT> {
       for (auto [i, g] : llvm::enumerate(tmpl)) {
         if (!g)
           continue;
-        auto gep = cast<LLVM::GEPOp>(ops[i].getDefiningOp());
-        auto idx = gep.getIndices()[0];
         OpBuilder::InsertionGuard guard(rewriter);
         rewriter.setInsertionPoint(y);
+        if (bare[i] == (int)r) {
+          ops[i] =
+              arith::ConstantOp::create(rewriter, ifOp.getLoc(), newTypes[i],
+                                        rewriter.getIntegerAttr(newTypes[i], 0))
+                  .getResult();
+          continue;
+        }
+        auto gep = cast<LLVM::GEPOp>(ops[i].getDefiningOp());
+        auto idx = gep.getIndices()[0];
         int64_t scale = inBytes[i]
                             ? (int64_t)DataLayout::closest(gep).getTypeSize(
                                   gep.getElemType())
