@@ -73,7 +73,7 @@ struct LowerCommToJITPass
     target.addLegalDialect<enzymexla::EnzymeXLADialect>();
     target.addIllegalDialect<comm::CommDialect>();
 
-    StablehloTypeConverter converter(context);
+    comm::StablehloTypeConverter converter;
 
     target.addDynamicallyLegalOp<func::FuncOp>([&](func::FuncOp op) {
       return converter.isSignatureLegal(op.getFunctionType());
