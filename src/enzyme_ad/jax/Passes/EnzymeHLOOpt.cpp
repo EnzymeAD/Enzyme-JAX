@@ -7227,6 +7227,55 @@ struct ReshapeBroadcast final
     auto deletionDims =
         findReshapeInsertionDims(op.getType(), op.getOperand().getType());
     if (deletionDims.empty()) {
+      // If the reshape is a transpose we can still replace it with an
+      // equivalent broadcast
+      if (reshapeIsTranspose(op)) {
+        SmallVector<int64_t> perm(bcast.getBroadcastDimensions());
+        SmallVector<int64_t> reshapePerm;
+
+        auto bcastType = bcast.getType();
+        auto outputType = op.getType();
+
+        size_t i = 0, j = 0, N = outputType.getRank();
+
+        for (; i < bcastType.getRank(); ++i) {
+          auto insz = bcastType.getDimSize(i);
+          if (insz == 1) {
+            // find first dim 1 that is not in reshapePerm
+            int64_t whereOneGoes = 0;
+            for (; whereOneGoes < N; ++whereOneGoes) {
+              if (outputType.getDimSize(whereOneGoes) == 1 &&
+                  !llvm::is_contained(reshapePerm, whereOneGoes)) {
+                break;
+              }
+            }
+            assert(whereOneGoes != N);
+            reshapePerm.push_back(whereOneGoes);
+            continue;
+          }
+
+          while (j < N) {
+            auto outsz = outputType.getDimSize(j);
+            if (outsz == insz) {
+              reshapePerm.push_back(j);
+              ++j;
+              break;
+            }
+            assert(outsz == 1);
+            ++j;
+          }
+        }
+
+        for (auto [i, d] : llvm::enumerate(perm)) {
+          perm[i] = reshapePerm[d];
+        }
+
+        rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
+            op, op.getType(), bcast.getOperand(), perm);
+
+        return success();
+      }
+
       return failure();
     }
 

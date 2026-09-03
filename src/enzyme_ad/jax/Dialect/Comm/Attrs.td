@@ -2,11 +2,13 @@
 #define ENZYMEXLA_COMM_DIALECT_ATTRS_TD
 
 include "Dialect.td"
+include "Types.td"
 
 include "mlir/IR/EnumAttr.td"
+include "mlir/IR/BuiltinAttributeInterfaces.td"
 
 // MPI
-def MpiComms : I32EnumAttr<"MpiComms", "Named predefined MPI communicators", [
+def MpiCommEnum : I32EnumAttr<"MpiCommEnum", "Named predefined MPI communicators", [
       I32EnumAttrCase<"MPI_COMM_NULL", 256>,
       I32EnumAttrCase<"MPI_COMM_WORLD", 257>,
       I32EnumAttrCase<"MPI_COMM_SELF", 258>,
@@ -15,8 +17,15 @@ def MpiComms : I32EnumAttr<"MpiComms", "Named predefined MPI communicators", [
   let cppNamespace = "::mlir::comm";
 }
 
-def MpiCommsAttr : EnumAttr<Comm_Dialect, MpiComms, "mpi.comm"> {
+def MpiCommAttr : Comm_Attr<"MpiComm", "mpi.comm", [TypedAttrInterface]> {
+  let parameters = (ins EnumParameter<MpiCommEnum>:$value);
   let assemblyFormat = "`<` $value `>`";
+
+  let extraClassDeclaration = [{
+    ::mlir::Type getType() const {
+      return MpiCommType::get(getContext());
+    }
+  }];
 }
 
 def MpiDatatypes : I32EnumAttr<"MpiDatatypes", "Named predefined MPI datatypes", [
@@ -98,11 +107,7 @@ def MpiDatatypes : I32EnumAttr<"MpiDatatypes", "Named predefined MPI datatypes",
   let cppNamespace = "::mlir::comm";
 }
 
-def MpiDatatypesAttr : EnumAttr<Comm_Dialect, MpiDatatypes, "mpi.datatype"> {
-  let assemblyFormat = "`<` $value `>`";
-}
-
-def MpiOps : I32EnumAttr<"MpiOps", "Named predefined MPI (reduction) operations", [
+def MpiOpEnum : I32EnumAttr<"MpiOpEnum", "Named predefined MPI (reduction) operations", [
       I32EnumAttrCase<"MPI_OP_NULL", 32>,
       I32EnumAttrCase<"MPI_SUM", 33>,
       I32EnumAttrCase<"MPI_MIN", 34>,
@@ -123,8 +128,15 @@ def MpiOps : I32EnumAttr<"MpiOps", "Named predefined MPI (reduction) operations"
   let cppNamespace = "::mlir::comm";
 }
 
-def MpiOpsAttr : EnumAttr<Comm_Dialect, MpiOps, "mpi.op"> {
+def MpiOpAttr : Comm_Attr<"MpiOp", "mpi.op", [TypedAttrInterface]> {
+  let parameters = (ins EnumParameter<MpiOpEnum>:$value);
   let assemblyFormat = "`<` $value `>`";
+
+  let extraClassDeclaration = [{
+    ::mlir::Type getType() const {
+      return MpiOpType::get(getContext());
+    }
+  }];
 }
 
 // NCCL

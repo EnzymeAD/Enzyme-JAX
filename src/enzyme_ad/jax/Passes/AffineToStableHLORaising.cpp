@@ -302,6 +302,7 @@ struct ParallelContext {
     bool dump_failed_lockstep = false;
     bool preferWhileRaising = true;
     bool strip_llvm_debuginfo = false;
+    int64_t unrollBudget = 1 << 16;
   } options;
 
   explicit ParallelContext(Options &options) : options(options) {}
@@ -3070,6 +3071,24 @@ static LogicalResult tryRaisingLockStepForOpToStableHLO(
   return failure();
 }
 
+// The op count of `op` once every constant-bound affine.for inside it (and
+// `op` itself, if it is one) is unrolled, saturating at 2^40.
+static int64_t unrollCost(Operation *op) {
+  int64_t body = 1;
+  for (Region &r : op->getRegions())
+    for (Block &b : r)
+      for (Operation &inner : b)
+        body = std::min(body + unrollCost(&inner), (int64_t)1 << 40);
+  auto forOp = dyn_cast<affine::AffineForOp>(op);
+  if (!forOp || !forOp.hasConstantBounds())
+    return body;
+  int64_t step = forOp.getStepAsInt();
+  int64_t trip = (forOp.getConstantUpperBound() -
+                  forOp.getConstantLowerBound() + step - 1) /
+                 step;
+  return std::min(std::max(trip, (int64_t)1) * body, (int64_t)1 << 40);
+}
+
 static LogicalResult
 tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
                         llvm::DenseMap<Value, affine::AffineValueMap> &maps,
@@ -5019,27 +5038,9 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     // max-degree kernel reaches millions of ops and gigabytes of module
     // text); past a budget, iterating as a while beats unrolling even when
     // the preference says otherwise.
-    std::function<int64_t(Operation *)> unrollCost =
-        [&](Operation *o) -> int64_t {
-      int64_t body = 1;
-      for (Region &r : o->getRegions())
-        for (Block &b : r)
-          for (Operation &inner : b)
-            body = std::min(body + unrollCost(&inner),
-                            (int64_t)1 << 40);
-      if (auto f = dyn_cast<affine::AffineForOp>(o)) {
-        if (!f.hasConstantBounds())
-          return body;
-        int64_t step = f.getStepAsInt();
-        int64_t trip =
-            (f.getConstantUpperBound() - f.getConstantLowerBound() + step - 1) /
-            step;
-        return std::min(std::max(trip, (int64_t)1) * body, (int64_t)1 << 40);
-      }
-      return body;
-    };
-    bool hugeUnroll = forOp.hasConstantBounds() &&
-                      unrollCost(forOp.getOperation()) > (1 << 16);
+    bool hugeUnroll =
+        pc.options.unrollBudget >= 0 && forOp.hasConstantBounds() &&
+        unrollCost(forOp.getOperation()) > pc.options.unrollBudget;
     // A loop whose trip count is only known at runtime can still iterate as
     // a while, whatever the preference says.
     if ((pc.options.preferWhileRaising || !forOp.hasConstantBounds() ||
@@ -5101,17 +5102,6 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
   if (isa<LLVM::NoAliasScopeDeclOp>(op)) {
     return success();
-  }
-
-  // A shape-erasing cast of an already-raised buffer is the identity on the
-  // underlying tensor.
-  if (auto castOp = dyn_cast<memref::CastOp>(op)) {
-    Value src = mapping.lookupOrNull(castOp.getSource());
-    if (src && maps.count(src)) {
-      mapping.map(castOp.getResult(), src);
-      maps[src] = maps.lookup(src);
-      return success();
-    }
   }
 
   // Raised execution is ordered over whole tensors: a store over a batched
@@ -5344,89 +5334,6 @@ struct AffineToStableHLORaisingPass
     : public enzyme::impl::AffineToStableHLORaisingBase<
           AffineToStableHLORaisingPass> {
   using AffineToStableHLORaisingBase::AffineToStableHLORaisingBase;
-
-  // An access does not care about the address space of its base, but the
-  // raising identifies buffers by SSA root: a memory_space_cast view would
-  // split one buffer into two roots and lose store propagation. Retarget the
-  // accesses to the source and drop the cast.
-  // An alloca scope only delimits stack lifetime, which the raised value
-  // semantics make meaningless: splice its body into the parent.
-  // Straight-line CFG inside a cloned callee region folds into one block,
-  // so the scope inlining below can dissolve it.
-  static void linearizeRegionBlocks(Region &r) {
-    auto isTrapBlock = [](Block *b) {
-      return isa<LLVM::UnreachableOp>(b->getTerminator());
-    };
-    bool changed = true;
-    while (changed) {
-      changed = false;
-      // Branches whose other targets only trap take their one live successor
-      // unconditionally.
-      for (Block &b : r) {
-        Operation *term = b.getTerminator();
-        SmallVector<std::pair<Block *, SmallVector<Value>>> live;
-        bool anyTrap = false;
-        if (isa<cf::SwitchOp, cf::CondBranchOp>(term)) {
-          for (auto [i, succ] : llvm::enumerate(term->getSuccessors())) {
-            if (isTrapBlock(succ)) {
-              anyTrap = true;
-              continue;
-            }
-            auto sops =
-                cast<BranchOpInterface>(term).getSuccessorOperands(i);
-            SmallVector<Value> args(sops.getForwardedOperands().begin(),
-                                    sops.getForwardedOperands().end());
-            live.push_back({succ, std::move(args)});
-          }
-        }
-        if (anyTrap && live.size() == 1) {
-          OpBuilder tb(term);
-          cf::BranchOp::create(tb, term->getLoc(), live[0].first,
-                               live[0].second);
-          term->erase();
-          changed = true;
-          break;
-        }
-      }
-      if (changed)
-        continue;
-      // Trap blocks with no remaining predecessors disappear.
-      for (Block &b : llvm::make_early_inc_range(r)) {
-        if (&b != &r.front() && b.hasNoPredecessors()) {
-          b.dropAllDefinedValueUses();
-          b.erase();
-          changed = true;
-        }
-      }
-      if (changed)
-        continue;
-      for (Block &b : r) {
-        Operation *term = b.getTerminator();
-        Block *succ = nullptr;
-        SmallVector<Value> args;
-        if (auto br = dyn_cast<cf::BranchOp>(term)) {
-          succ = br.getDest();
-          args.assign(br.getDestOperands().begin(),
-                      br.getDestOperands().end());
-        } else if (auto br = dyn_cast<LLVM::BrOp>(term)) {
-          succ = br.getDest();
-          args.assign(br.getDestOperands().begin(),
-                      br.getDestOperands().end());
-        } else {
-          continue;
-        }
-        if (!succ || succ == &b || succ->getSinglePredecessor() != &b)
-          continue;
-        for (auto [ba, v] : llvm::zip(succ->getArguments(), args))
-          ba.replaceAllUsesWith(v);
-        term->erase();
-        b.getOperations().splice(b.end(), succ->getOperations());
-        succ->erase();
-        changed = true;
-        break;
-      }
-    }
-  }
 
   // A pure scalar computed entirely from values defined outside the wrapper
   // (a null check of an optional buffer, a host-side flag chain) is the
@@ -6124,29 +6031,14 @@ struct AffineToStableHLORaisingPass
     llvm::errs() << "GEPCENSUS after " << after << ": " << n << "\n";
   }
 
+  // An access does not care about the address space of its base, but the
+  // raising identifies buffers by SSA root: a memory_space_cast view would
+  // split one buffer into two roots and lose store propagation. Retarget the
+  // accesses to the source and drop the cast.
   static void stripAccessMemorySpaceCasts(Operation *root) {
     SmallVector<memref::MemorySpaceCastOp> casts;
     root->walk([&](memref::MemorySpaceCastOp c) { casts.push_back(c); });
     for (auto c : casts) {
-      if (!llvm::all_of(c->getUsers(), [](Operation *u) {
-            return isa<affine::AffineLoadOp, affine::AffineStoreOp,
-                       memref::LoadOp, memref::StoreOp>(u);
-          }))
-        continue;
-      for (Operation *u : llvm::make_early_inc_range(c->getUsers()))
-        u->replaceUsesOfWith(c.getResult(), c.getSource());
-      c.erase();
-    }
-    // Shape-erasing casts of static buffers block raising the same way:
-    // accesses go straight to the static source.
-    SmallVector<memref::CastOp> shapeCasts;
-    root->walk([&](memref::CastOp c) {
-      auto src = dyn_cast<MemRefType>(c.getSource().getType());
-      auto dst = dyn_cast<MemRefType>(c.getType());
-      if (src && dst && src.hasStaticShape() && !dst.hasStaticShape())
-        shapeCasts.push_back(c);
-    });
-    for (auto c : shapeCasts) {
       if (!llvm::all_of(c->getUsers(), [](Operation *u) {
             return isa<affine::AffineLoadOp, affine::AffineStoreOp,
                        memref::LoadOp, memref::StoreOp>(u);
@@ -8714,8 +8606,8 @@ struct AffineToStableHLORaisingPass
 
   void runOnOperation() override {
     ParallelContext::Options options{enable_lockstep_for, dump_failed_lockstep,
-                                     prefer_while_raising,
-                                     strip_llvm_debuginfo};
+                                     prefer_while_raising, strip_llvm_debuginfo,
+                                     unroll_budget};
     std::vector<func::FuncOp> funcs;
 
     auto context = getOperation()->getContext();
