@@ -2368,56 +2368,13 @@ static Value createVectorLoad(OpBuilder &b, Location loc, Type ty,
   llvm_unreachable("");
 }
 
-// The one element type every typed view of the pointer's underlying buffers
-// agrees on, or null when they disagree or there is none.
-static Type viewedElementType(Value ptr) {
-  SmallVector<Value> todo{ptr}, roots;
-  DenseSet<Value> seen;
-  while (!todo.empty()) {
-    Value v = todo.pop_back_val();
-    if (!seen.insert(v).second)
-      continue;
-    if (auto gep = v.getDefiningOp<LLVM::GEPOp>())
-      todo.push_back(gep.getBase());
-    else if (auto cast = v.getDefiningOp<LLVM::AddrSpaceCastOp>())
-      todo.push_back(cast.getArg());
-    else if (auto sel = v.getDefiningOp<arith::SelectOp>()) {
-      todo.push_back(sel.getTrueValue());
-      todo.push_back(sel.getFalseValue());
-    } else
-      roots.push_back(v);
-  }
-  Type elTy;
-  seen.clear();
-  todo = roots;
-  while (!todo.empty()) {
-    Value v = todo.pop_back_val();
-    if (!seen.insert(v).second)
-      continue;
-    for (Operation *user : v.getUsers()) {
-      if (auto gep = dyn_cast<LLVM::GEPOp>(user)) {
-        if (gep.getBase() == v)
-          todo.push_back(gep.getResult());
-      } else if (isa<LLVM::AddrSpaceCastOp, arith::SelectOp>(user)) {
-        todo.push_back(user->getResult(0));
-      } else if (auto view = dyn_cast<enzymexla::Pointer2MemrefOp>(user)) {
-        Type t = cast<MemRefType>(view.getType()).getElementType();
-        if (elTy && elTy != t)
-          return nullptr;
-        elTy = t;
-      }
-    }
-  }
-  return elTy;
-}
-
 // A zeroing memset is a loop of stores of zero, and only in that form does an
 // allocation the conversion could take stop being blocked by it: the
 // conversion accepts views of an allocation and nothing else, and a memset
 // names the pointer itself. The element type is the one the allocation was
-// declared with, or failing an allocation the one type every view of the
-// buffer uses, so the stores land on whole elements; a length that is not a
-// whole number of them is left alone.
+// declared with (every allocation a select could pick must agree), so the
+// stores land on whole elements; a length that is not a whole number of them
+// is left alone.
 struct MemsetZeroToAffineFill : public OpRewritePattern<LLVM::MemsetOp> {
   using OpRewritePattern<LLVM::MemsetOp>::OpRewritePattern;
 
@@ -2434,24 +2391,28 @@ struct MemsetZeroToAffineFill : public OpRewritePattern<LLVM::MemsetOp> {
     if (memset.getIsVolatile())
       return failure();
 
-    Value base = memset.getDst();
-    while (true) {
-      if (auto gep = base.getDefiningOp<LLVM::GEPOp>())
-        base = gep.getBase();
-      else if (auto cast = base.getDefiningOp<LLVM::AddrSpaceCastOp>())
-        base = cast.getArg();
-      else
-        break;
-    }
     Type elTy;
-    if (auto alloca = base.getDefiningOp<LLVM::AllocaOp>()) {
-      elTy = alloca.getElemType();
-      while (auto arr = dyn_cast<LLVM::LLVMArrayType>(elTy))
-        elTy = arr.getElementType();
-    } else {
-      elTy = viewedElementType(memset.getDst());
+    SmallVector<Value> todo{memset.getDst()};
+    while (!todo.empty()) {
+      Value base = todo.pop_back_val();
+      if (auto gep = base.getDefiningOp<LLVM::GEPOp>())
+        todo.push_back(gep.getBase());
+      else if (auto cast = base.getDefiningOp<LLVM::AddrSpaceCastOp>())
+        todo.push_back(cast.getArg());
+      else if (auto sel = base.getDefiningOp<arith::SelectOp>()) {
+        todo.push_back(sel.getTrueValue());
+        todo.push_back(sel.getFalseValue());
+      } else if (auto alloca = base.getDefiningOp<LLVM::AllocaOp>()) {
+        Type t = alloca.getElemType();
+        while (auto arr = dyn_cast<LLVM::LLVMArrayType>(t))
+          t = arr.getElementType();
+        if (elTy && elTy != t)
+          return failure();
+        elTy = t;
+      } else
+        return failure();
     }
-    auto adTy = dyn_cast_if_present<enzyme::AutoDiffTypeInterface>(elTy);
+    auto adTy = dyn_cast<enzyme::AutoDiffTypeInterface>(elTy);
     if (!adTy || !MemRefType::isValidElementType(elTy))
       return failure();
 
