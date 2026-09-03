@@ -2299,30 +2299,6 @@ bool allAccessesAreOnMainDiagonal(stablehlo::GatherOp op,
   return false; // TODO: implement this where we are doing gather with iota
 }
 
-// The value `use` derives from its pointer by address arithmetic or a view
-// (or, when `throughBranches`, by a select or a branch yield), or null when
-// the use is anything else.
-static Value derivedPointer(OpOperand &use, bool throughBranches) {
-  Operation *user = use.getOwner();
-  if (auto gep = dyn_cast<LLVM::GEPOp>(user)) {
-    if (use.get() == gep.getBase())
-      return gep.getResult();
-  } else if (isa<LLVM::AddrSpaceCastOp, LLVM::BitcastOp,
-                 enzymexla::Pointer2MemrefOp, enzymexla::Memref2PointerOp>(
-                 user)) {
-    return user->getResult(0);
-  } else if (auto sel = dyn_cast<arith::SelectOp>(user)) {
-    if (throughBranches && use.get() != sel.getCondition())
-      return sel.getResult();
-  } else if (isa<affine::AffineYieldOp, scf::YieldOp>(user)) {
-    // Yielded out of a branch, the pointer becomes that branch's result.
-    Operation *parent = user->getParentOp();
-    if (throughBranches && isa<affine::AffineIfOp, scf::IfOp>(parent))
-      return parent->getResult(use.getOperandNumber());
-  }
-  return nullptr;
-}
-
 bool walkPointerDerivations(Value root, bool throughBranches,
                             llvm::function_ref<bool(OpOperand &)> onUse) {
   SmallVector<Value> todo{root};
@@ -2332,9 +2308,31 @@ bool walkPointerDerivations(Value root, bool throughBranches,
     if (!seen.insert(v).second)
       continue;
     for (OpOperand &use : v.getUses()) {
-      if (Value derived = derivedPointer(use, throughBranches))
-        todo.push_back(derived);
-      else if (!onUse(use))
+      Operation *user = use.getOwner();
+      if (auto gep = dyn_cast<LLVM::GEPOp>(user)) {
+        if (use.get() == gep.getBase()) {
+          todo.push_back(gep.getResult());
+          continue;
+        }
+      } else if (isa<LLVM::AddrSpaceCastOp, LLVM::BitcastOp,
+                     enzymexla::Pointer2MemrefOp, enzymexla::Memref2PointerOp>(
+                     user)) {
+        todo.push_back(user->getResult(0));
+        continue;
+      } else if (auto sel = dyn_cast<arith::SelectOp>(user)) {
+        if (throughBranches && use.get() != sel.getCondition()) {
+          todo.push_back(sel.getResult());
+          continue;
+        }
+      } else if (isa<affine::AffineYieldOp, scf::YieldOp>(user)) {
+        // Yielded out of a branch, the pointer becomes that branch's result.
+        Operation *parent = user->getParentOp();
+        if (throughBranches && isa<affine::AffineIfOp, scf::IfOp>(parent)) {
+          todo.push_back(parent->getResult(use.getOperandNumber()));
+          continue;
+        }
+      }
+      if (!onUse(use))
         return false;
     }
   }
@@ -2368,12 +2366,6 @@ bool isDereference(OpOperand &use) {
 
 bool onlyDereferenced(Value root) {
   return walkPointerDerivations(root, /*throughBranches=*/true, isDereference);
-}
-
-bool useOnlyDereferenced(OpOperand &use) {
-  if (Value derived = derivedPointer(use, /*throughBranches=*/true))
-    return onlyDereferenced(derived);
-  return isDereference(use);
 }
 
 } // namespace enzyme

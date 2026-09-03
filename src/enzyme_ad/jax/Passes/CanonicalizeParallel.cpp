@@ -549,10 +549,9 @@ struct SelectOfDifferentBaseGEPs : public OpRewritePattern<arith::SelectOp> {
 };
 
 // A pointer that is only ever dereferenced cannot tell a null apart from any
-// other address: the null arm can only fault. So every use of a select of a
-// null with a real pointer that reaches nothing but loads and stores takes the
-// real pointer, and the select survives only for the uses that can observe
-// the address -- a store of it as a value, a comparison.
+// other address: the null arm can only fault. So a select of a null with a
+// real pointer, whose result reaches nothing but loads and stores, is the
+// real pointer.
 struct SelectOfNullPointer : public OpRewritePattern<arith::SelectOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -565,18 +564,10 @@ struct SelectOfNullPointer : public OpRewritePattern<arith::SelectOp> {
         sel.getFalseValue().getDefiningOp<LLVM::ZeroOp>() != nullptr;
     if (trueNull == falseNull)
       return failure();
-    Value keep = trueNull ? sel.getFalseValue() : sel.getTrueValue();
-    bool changed = false;
-    for (OpOperand &use : llvm::make_early_inc_range(sel->getUses())) {
-      if (!enzyme::useOnlyDereferenced(use))
-        continue;
-      rewriter.modifyOpInPlace(use.getOwner(), [&] { use.set(keep); });
-      changed = true;
-    }
-    if (!changed)
+    if (!enzyme::onlyDereferenced(sel.getResult()))
       return failure();
-    if (sel->use_empty())
-      rewriter.eraseOp(sel);
+    rewriter.replaceOp(sel,
+                       trueNull ? sel.getFalseValue() : sel.getTrueValue());
     return success();
   }
 };
