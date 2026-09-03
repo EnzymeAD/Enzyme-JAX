@@ -33,7 +33,8 @@ module {
     %ok = arith.cmpi sgt, %n, %c0 : i32
     %s = arith.select %ok, %null, %p : !llvm.ptr
     %q = scf.if %c -> !llvm.ptr {
-      scf.yield %s : !llvm.ptr
+      %g = llvm.getelementptr %s[1] : (!llvm.ptr) -> !llvm.ptr, f64
+      scf.yield %g : !llvm.ptr
     } else {
       scf.yield %sink : !llvm.ptr
     }
@@ -70,12 +71,15 @@ module {
 // CHECK: "enzymexla.pointer2memref"(%arg0)
 // CHECK: llvm.icmp "eq" %[[sel]],
 
-// The yield carries the pointer to a load only, so the branch yields the real
-// pointer; the call keeps the select.
+// The yield carries the pointer to a load only, so the branch's address chain
+// takes the real pointer; the call keeps the select.
 // CHECK-LABEL: llvm.func @yielded_and_escaping(
 // CHECK: %[[sel:.+]] = arith.select %{{.*}}, %{{.*}}, %arg0 : !llvm.ptr
-// CHECK-NOT: scf.if
-// CHECK: llvm.load %arg0
+// CHECK: %[[q:.+]] = scf.if %arg2 -> (!llvm.ptr) {
+// CHECK-NEXT: %[[g:.+]] = llvm.getelementptr %arg0[1]
+// CHECK-NEXT: scf.yield %[[g]] : !llvm.ptr
+// CHECK: scf.yield %arg3 : !llvm.ptr
+// CHECK: llvm.load %[[q]]
 // CHECK: llvm.call @escape(%[[sel]])
 
 // CHECK-LABEL: llvm.func @only_escapes(
