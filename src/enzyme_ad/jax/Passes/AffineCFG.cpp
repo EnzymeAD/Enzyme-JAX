@@ -2471,13 +2471,16 @@ struct MoveIfToAffine : public OpRewritePattern<scf::IfOp> {
   }
 };
 
-struct MoveExtToAffine : public OpRewritePattern<arith::ExtUIOp> {
-  using OpRewritePattern::OpRewritePattern;
+// An extension of an affine-conditional i1 becomes an affine.if yielding the
+// extended constants: 1/0 for extui, -1/0 for extsi.
+template <typename ExtOp>
+struct MoveExtToAffine : public OpRewritePattern<ExtOp> {
+  using OpRewritePattern<ExtOp>::OpRewritePattern;
 
-  LogicalResult matchAndRewrite(arith::ExtUIOp ifOp,
+  LogicalResult matchAndRewrite(ExtOp ifOp,
                                 PatternRewriter &rewriter) const override {
-    if (!ifOp->getParentOfType<affine::AffineForOp>() &&
-        !ifOp->getParentOfType<affine::AffineParallelOp>())
+    if (!ifOp->template getParentOfType<affine::AffineForOp>() &&
+        !ifOp->template getParentOfType<affine::AffineParallelOp>())
       return failure();
 
     if (!ifOp.getOperand().getType().isInteger(1))
@@ -2564,8 +2567,9 @@ struct MoveExtToAffine : public OpRewritePattern<arith::ExtUIOp> {
           IntegerSet::get(/*dim*/ 0, /*symbol*/ applies.size(), exprs, eqflags);
       fully2ComposeIntegerSetAndOperands(rewriter, &iset, &operands, DI, scope);
       affine::canonicalizeSetAndOperands(&iset, &operands);
+      int64_t trueValue = std::is_same_v<ExtOp, arith::ExtSIOp> ? -1 : 1;
       Value tval[1] = {arith::ConstantIntOp::create(rewriter, ifOp.getLoc(),
-                                                    ifOp.getType(), 1)};
+                                                    ifOp.getType(), trueValue)};
       Value fval[1] = {arith::ConstantIntOp::create(rewriter, ifOp.getLoc(),
                                                     ifOp.getType(), 0)};
       affine::AffineIfOp affineIfOp = affine::AffineIfOp::create(
@@ -6701,14 +6705,15 @@ void mlir::enzyme::populateAffineCFGPatterns(RewritePatternSet &rpl) {
           /* IndexCastMovement,*/ AffineFixup<affine::AffineLoadOp>,
           AffineFixup<affine::AffineStoreOp>, CanonicalizIfBounds,
           MoveStoreToAffine, MoveIfToAffine, MoveEnzymeRMWToAffine,
-          MoveRMWToAffine, MoveLoadToAffine, MoveExtToAffine,
-          MoveSIToFPToAffine, CmpExt, MoveSelectToAffine,
-          AffineIfSimplification, AffineIfSimplificationIsl, CombineAffineIfs,
-          MergeNestedAffineParallelLoops, PrepMergeNestedAffineParallelLoops,
-          MergeNestedAffineParallelIf, MergeParallelInductions, OptimizeRem,
-          CanonicalieForBounds, SinkStoreInIf, SinkStoreInAffineIf,
-          AddAddCstEnd, LiftMemrefRead, CompareVs1, AffineForReductionIter,
-          AffineForReductionSink>(context, 2);
+          MoveRMWToAffine, MoveLoadToAffine, MoveExtToAffine<arith::ExtUIOp>,
+          MoveExtToAffine<arith::ExtSIOp>, MoveSIToFPToAffine, CmpExt,
+          MoveSelectToAffine, AffineIfSimplification, AffineIfSimplificationIsl,
+          CombineAffineIfs, MergeNestedAffineParallelLoops,
+          PrepMergeNestedAffineParallelLoops, MergeNestedAffineParallelIf,
+          MergeParallelInductions, OptimizeRem, CanonicalieForBounds,
+          SinkStoreInIf, SinkStoreInAffineIf, AddAddCstEnd, LiftMemrefRead,
+          CompareVs1, AffineForReductionIter, AffineForReductionSink>(context,
+                                                                      2);
   rpl.add<FoldAffineApplyAdd, FoldAffineApplySub, FoldAffineApplyRem,
           FoldAffineApplyDiv, FoldAffineApplyMul, FoldAppliesIntoLoad>(context,
                                                                        2);
