@@ -1,5 +1,4 @@
-// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(simplify-affine-exprs{assume-nonneg-arith=true})" --split-input-file | FileCheck %s
-// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(simplify-affine-exprs)" --split-input-file | FileCheck %s --check-prefix=OFF
+// RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(simplify-affine-exprs)" --split-input-file | FileCheck %s
 
 // A size rounded up to whole blocks is never below the size: the min a
 // launch guard folded into the bound keeps only the size.
@@ -13,10 +12,6 @@ func.func @onesym(%n: index, %m: memref<?xf64>) {
 
 // CHECK-LABEL: func.func @onesym(
 // CHECK: affine.parallel (%{{.+}}) = (0) to (symbol(%{{.+}})) {
-
-// Without the option asserting the arithmetic is in range the bound stays.
-// OFF-LABEL: func.func @onesym(
-// OFF: affine.parallel (%{{.+}}) = (0) to (min(symbol(%{{.+}}), 
 
 // -----
 

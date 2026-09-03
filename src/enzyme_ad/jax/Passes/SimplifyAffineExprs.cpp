@@ -1069,10 +1069,10 @@ LogicalResult handleAffineIfOp(IslAnalysis &islAnalysis, AffineIfOp ifOp) {
 // thing through different arithmetic -- a grid counted in blocks against the
 // size it was computed from -- so the map is first composed through the
 // arithmetic defining its symbol operands, down to shared base values, before
-// asking isl whether the comparison can ever fail. That composition reads the
-// arithmetic as arithmetic on non-negative mathematical integers, the reading
-// the assume-nonneg-arith option asserts: casts and extensions preserve the
-// value, sums and products do not wrap, and signed division rounds down.
+// asking isl whether the comparison can ever fail. The composition is
+// affine-cfg's, and reads the arithmetic the way affine-cfg read it when it
+// wrote the bounds: casts preserve the value, sums and products do not wrap,
+// and signed division is floordiv.
 
 // Returns `map` with every expression another expression of its group
 // subsumes dropped, with the groups' new sizes; std::nullopt when all stay.
@@ -1197,10 +1197,8 @@ struct SimplifyAffineExprsPass
         (void)handleAffineAccessOp(ia, cop);
       else if (auto cop = dyn_cast<AffineIfOp>(op))
         (void)handleAffineIfOp(ia, cop);
-      else if (auto cop = dyn_cast<AffineParallelOp>(op)) {
-        if (assumeNonNegArith)
-          (void)pruneParallelBounds(ia, cop);
-      }
+      else if (auto cop = dyn_cast<AffineParallelOp>(op))
+        (void)pruneParallelBounds(ia, cop);
     });
 
     op->walk([=](AffineIfOp affineOp) {

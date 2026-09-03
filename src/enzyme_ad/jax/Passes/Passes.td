@@ -962,13 +962,6 @@ def SimplifyAffineExprsPass : Pass<"simplify-affine-exprs"> {
   let summary = "";
   let dependentDialects = [
   ];
-  let options = [
-    Option<
-      /*C++ variable name=*/"assumeNonNegArith",
-      /*CLI argument=*/"assume-nonneg-arith",
-      /*type=*/"bool",
-      /*default=*/"false",
-      /*description=*/"Prune affine.parallel bound operands another operand subsumes, reading the integer arithmetic that computes them as arithmetic on non-negative mathematical integers: casts and extensions preserve the value, sums and products do not wrap, and signed division rounds down">];
 }
 
 def LLVMToMemrefAccessPass : Pass<"llvm-to-memref-access"> {

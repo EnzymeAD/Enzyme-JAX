@@ -145,7 +145,7 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       "func.func(canonicalize-loops),"
       "llvm.func(canonicalize-loops),"
       "" + canonicalize + ",llvm-to-affine-access,"
-      "" + canonicalize + ",delinearize-indexing," + canonicalize + ",simplify-affine-exprs{assume-nonneg-arith=true},"
+      "" + canonicalize + ",delinearize-indexing," + canonicalize + ",simplify-affine-exprs,"
       "affine-cfg," + canonicalize + ",llvm-to-affine-access," + canonicalize + ","
       "split-branched-accesses," + canonicalize + ",polygeist-mem2reg,"
       "" + canonicalize + ","
