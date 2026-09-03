@@ -331,6 +331,7 @@ bool getEffectsAfter(
 
 bool mayReadFrom(mlir::Operation *, mlir::Value);
 bool mayWriteTo(mlir::Operation *, mlir::Value, bool ignoreBarrier = false);
+bool isStackAlloca(mlir::Value v);
 
 template <typename AttrTy, typename T>
 SmallVector<Attribute> getUpdatedAttrList(Value val, StringRef attrName,
@@ -414,6 +415,54 @@ T getAttributeFromIR(Value val, StringRef attrName, T unknownValue) {
   auto enumAttr = dyn_cast<AttrTy>(attr);
   assert(enumAttr && "Expected guaranteed analysis result");
   return enumAttr.getValue();
+}
+
+/// Marks a `stablehlo.while` that belongs to the scaffold checkpointed
+/// reverse-mode AD builds around one checkpoint segment -- the forward
+/// recompute, the reverse sweep, or the outer walk over segments.
+///
+/// Such a loop exists *in order to* bound peak memory: checkpointing pays
+/// recompute so that only one segment's intermediates are live at a time. Any
+/// rewrite that materializes its iteration space -- batching, fission,
+/// unrolling -- undoes exactly that trade and rebuilds the full tape the loop
+/// was created to avoid. Passes that would do so must skip loops carrying this
+/// attribute; see `isCheckpointSegmentLoop`.
+constexpr llvm::StringLiteral kCheckpointSegmentAttrName =
+    "enzymexla.checkpoint_segment";
+
+inline void markCheckpointSegmentLoop(mlir::Operation *op) {
+  op->setAttr(kCheckpointSegmentAttrName,
+              mlir::UnitAttr::get(op->getContext()));
+}
+
+/// True if `op` is a checkpoint-segment loop whose iteration space must not be
+/// materialized. See `markCheckpointSegmentLoop` for the rationale.
+inline bool isCheckpointSegmentLoop(mlir::Operation *op) {
+  return op->hasAttr(kCheckpointSegmentAttrName);
+}
+
+/// True if `op` is a checkpoint-segment loop, or encloses one.
+///
+/// The mark is not guaranteed to survive on every loop of the scaffold. A
+/// rewrite that has to widen a loop -- to carry the checkpoint snapshots out,
+/// say -- cannot mutate results in place, so it builds a fresh op, and a fresh
+/// op does not inherit discardable attributes. An outer scaffold loop can
+/// therefore lose the mark while the segment loop nested inside it keeps it.
+///
+/// Materializing the outer loop rebuilds the same tape as materializing the
+/// inner one, so enclosing a marked loop counts the same as carrying the mark.
+/// This is deliberately conservative: it also covers a user loop that happens
+/// to wrap a checkpointed region, where fission would undo the checkpointing
+/// just as thoroughly.
+inline bool isOrContainsCheckpointSegmentLoop(mlir::Operation *op) {
+  if (isCheckpointSegmentLoop(op))
+    return true;
+  return op
+      ->walk([](mlir::Operation *nested) {
+        return isCheckpointSegmentLoop(nested) ? mlir::WalkResult::interrupt()
+                                               : mlir::WalkResult::advance();
+      })
+      .wasInterrupted();
 }
 
 /// Get bounds attribute from IR. Bounds are stored as ArrayAttr with two

@@ -884,6 +884,17 @@ static bool definedOutside(Value v, Operation *op) {
 
 LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
     stablehlo::WhileOp whileOp, PatternRewriter &rewriter) const {
+  // Never fission a checkpoint segment loop. Batching trades memory for
+  // parallelism by computing every iteration at once; for a loop that
+  // checkpointed reverse-mode AD created specifically to keep only one segment
+  // live, that rebuilds the very tape the recompute was paying to avoid. Such a
+  // loop only becomes eligible in the first place when the segment length
+  // divides the trip count evenly (LoopCheckpointing::segmentLength returns the
+  // constant nInner rather than a select), so without this guard peak memory
+  // silently depends on that divisibility.
+  if (isOrContainsCheckpointSegmentLoop(whileOp))
+    return rewriter.notifyMatchFailure(whileOp, "checkpoint segment loop");
+
   auto info = WhileLoopInfo(whileOp);
   auto computeInfoSuccess = info.computeInfo();
   if (computeInfoSuccess.failed())
@@ -1794,6 +1805,11 @@ bool liftOperationByBatching(
 
 mlir::LogicalResult WhileElementwiseReductionToReduce::matchAndRewriteImpl(
     stablehlo::WhileOp whileOp, PatternRewriter &rewriter) const {
+  // Same reasoning as GreedyWhileLoopBatchFission: lifting the reduction
+  // materializes every iteration of the segment at once.
+  if (isOrContainsCheckpointSegmentLoop(whileOp))
+    return rewriter.notifyMatchFailure(whileOp, "checkpoint segment loop");
+
   auto &body = whileOp.getBody().front();
   auto term = body.getTerminator();
   if (!term) {
@@ -2070,8 +2086,75 @@ WhileIsCopySimplify::matchAndRewriteImpl(stablehlo::WhileOp whileOp,
 
     auto dusInductionVarDims =
         getInductionVariableDimension(dusOp, affineIndexInfo, whileOp, info);
+    Value indirectScatterIndices;
+    if (dusInductionVarDims.empty()) {
+      // Handle a common non-contiguous copy idiom:
+      //
+      //   dst[index_table[iv]] = src[iv]
+      //
+      // The destination index is not affine, so it cannot be raised as one
+      // large dynamic_update_slice.  If the index table is a constant set of
+      // unique indices, hoist its per-iteration load and use it to build a
+      // scatter instead.  Requiring uniqueness preserves the sequential
+      // overwrite semantics of the original loop.
+      int64_t indirectDim = -1;
+      stablehlo::DynamicSliceOp indexSlice;
+      for (auto [dim, startIndex] : llvm::enumerate(dusOp.getStartIndices())) {
+        if (info.isConstantAcrossIterations(startIndex, false))
+          continue;
+        if (indirectDim != -1) {
+          indirectDim = -1;
+          break;
+        }
+
+        Value indexValue = startIndex;
+        if (auto reshape = indexValue.getDefiningOp<stablehlo::ReshapeOp>())
+          indexValue = reshape.getOperand();
+        indexSlice = indexValue.getDefiningOp<stablehlo::DynamicSliceOp>();
+        if (!indexSlice)
+          break;
+        indirectDim = dim;
+      }
+
+      DenseElementsAttr indexTable;
+      if (indirectDim >= 0 && indexSlice &&
+          matchPattern(indexSlice.getOperand(), m_Constant(&indexTable)) &&
+          indexTable.getNumElements() ==
+              static_cast<size_t>(info.getConstantNumIters())) {
+        llvm::SmallDenseSet<APInt> seenIndices;
+        bool allUniqueAndInBounds = true;
+        int64_t maxIndex = cast<RankedTensorType>(dusOp.getOperand().getType())
+                               .getDimSize(indirectDim) -
+                           cast<RankedTensorType>(dusOp.getUpdate().getType())
+                               .getDimSize(indirectDim);
+        for (APInt index : indexTable.getValues<APInt>()) {
+          if (index.isNegative() || index.getSExtValue() > maxIndex ||
+              !seenIndices.insert(index).second) {
+            allUniqueAndInBounds = false;
+            break;
+          }
+        }
+
+        auto indexInductionDims = getInductionVariableDimension(
+            indexSlice, affineIndexInfo, whileOp, info);
+        if (allUniqueAndInBounds && indexInductionDims.size() == 1 &&
+            info.canHoistOperationFromLoop(indexSlice, indexInductionDims)) {
+          rewriter.setInsertionPoint(whileOp);
+          if (info.hoistOperationFromLoop(rewriter, indexSlice.getOperand(),
+                                          indexSlice, indexInductionDims,
+                                          indirectScatterIndices)) {
+            indirectScatterIndices = stablehlo::ReshapeOpCreate(
+                rewriter, whileOp.getLoc(), indirectScatterIndices,
+                {info.getConstantNumIters(), 1});
+            dusInductionVarDims.push_back(indirectDim);
+          }
+        }
+      }
+    }
+
     if (dusInductionVarDims.empty() ||
-        !info.canHoistOperationFromLoop(dusOp, dusInductionVarDims)) {
+        (!indirectScatterIndices &&
+         !info.canHoistOperationFromLoop(dusOp, dusInductionVarDims))) {
       continue;
     }
 
@@ -2218,11 +2301,36 @@ WhileIsCopySimplify::matchAndRewriteImpl(stablehlo::WhileOp whileOp,
     }
 
     Value newDUS;
-    bool successfulHoist = info.hoistOperationFromLoop(
-        rewriter, whileOp.getOperands()[idx], newDUSUpdate, dusOp,
-        dusInductionVarDims, newDUS);
-    if (!successfulHoist) {
-      return failure();
+    if (indirectScatterIndices) {
+      auto operandTy =
+          cast<RankedTensorType>(whileOp.getOperands()[idx].getType());
+      auto updateTy = cast<RankedTensorType>(newDUSUpdate.getType());
+      SmallVector<int64_t> updateWindowDims(updateTy.getRank() - 1);
+      std::iota(updateWindowDims.begin(), updateWindowDims.end(), 1);
+
+      auto scatter = stablehlo::ScatterOp::create(
+          rewriter, dusOp.getLoc(), ValueRange{whileOp.getOperands()[idx]},
+          indirectScatterIndices, ValueRange{newDUSUpdate},
+          stablehlo::ScatterDimensionNumbersAttr::get(
+              dusOp.getContext(), updateWindowDims, dusInductionVarDims,
+              /*inputBatchingDims=*/{}, /*scatterIndicesBatchingDims=*/{},
+              dusInductionVarDims, /*indexVectorDim=*/1),
+          /*indicesAreSorted=*/false, /*uniqueIndices=*/true);
+      Block *updateBody = rewriter.createBlock(
+          &scatter.getUpdateComputation(), {},
+          {RankedTensorType::get({}, operandTy.getElementType()),
+           RankedTensorType::get({}, operandTy.getElementType())},
+          {dusOp.getLoc(), dusOp.getLoc()});
+      rewriter.setInsertionPointToStart(updateBody);
+      stablehlo::ReturnOp::create(rewriter, dusOp.getLoc(),
+                                  updateBody->getArgument(1));
+      newDUS = scatter.getResult(0);
+    } else {
+      bool successfulHoist = info.hoistOperationFromLoop(
+          rewriter, whileOp.getOperands()[idx], newDUSUpdate, dusOp,
+          dusInductionVarDims, newDUS);
+      if (!successfulHoist)
+        return failure();
     }
 
     whileOp.getResult(idx).replaceAllUsesWith(newDUS);

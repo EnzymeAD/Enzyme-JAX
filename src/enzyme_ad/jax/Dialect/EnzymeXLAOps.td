@@ -257,12 +257,12 @@ def XLAWrapperOp : EnzymeXLA_Op<"xla_wrapper", [
 ]> {
   let summary = "XLA Call operation";
 
-  let arguments = (ins
-    SymbolRefAttr:$fn,
-    Variadic<AnyType>:$inputs,
-    OptionalAttr<DictArrayAttr>:$arg_attrs,
-    OptionalAttr<DictArrayAttr>:$res_attrs
-  );
+  let arguments = (ins SymbolRefAttr:$fn, Variadic<AnyType>:$inputs,
+      OptionalAttr<DictArrayAttr>:$arg_attrs,
+      OptionalAttr<DictArrayAttr>:$res_attrs,
+      // How many trailing inputs are scalars the runtime specializes the
+      // executable over, injected as compile-time constants per distinct value.
+      DefaultValuedAttr<I64Attr, "0">:$num_specialized);
 
   let assemblyFormat = [{
     $fn ` ` `(` $inputs `)` attr-dict `:` functional-type($inputs, results)

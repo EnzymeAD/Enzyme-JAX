@@ -700,6 +700,17 @@ using ConvertFMFMathFromLLVMPattern =
 
 using AbsFOpLowering =
     ConvertFMFMathFromLLVMPattern<math::AbsFOp, LLVM::FAbsOp>;
+
+// llvm.intr.abs carries an is_int_min_poison flag arith has no place for;
+// drop it and raise to math.absi.
+struct AbsIOpRaising : public OpRewritePattern<LLVM::AbsOp> {
+  using OpRewritePattern::OpRewritePattern;
+  LogicalResult matchAndRewrite(LLVM::AbsOp op,
+                                PatternRewriter &rewriter) const override {
+    rewriter.replaceOpWithNewOp<math::AbsIOp>(op, op.getIn());
+    return success();
+  }
+};
 using CeilOpLowering =
     ConvertFMFMathFromLLVMPattern<math::CeilOp, LLVM::FCeilOp>;
 using CopySignOpLowering =
@@ -954,6 +965,32 @@ struct NVVMRsqrtApproxRaising : public OpRewritePattern<LLVM::CallIntrinsicOp> {
                                                  arith::FastMathFlags::afn);
     rewriter.replaceOp(op, math::RsqrtOp::create(rewriter, op.getLoc(),
                                                  op.getArgs()[0], fmfAttr));
+    return success();
+  }
+};
+
+// The minimumnum/maximumnum intrinsics have no first-class llvm dialect op,
+// so they arrive as llvm.call_intrinsic. Like __nv_fmin/__nv_fmax they treat
+// a NaN operand as missing data, which is arith.minnumf/maxnumf.
+struct MinMaxNumIntrinsicRaising
+    : public OpRewritePattern<LLVM::CallIntrinsicOp> {
+  using OpRewritePattern<LLVM::CallIntrinsicOp>::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(LLVM::CallIntrinsicOp op,
+                                PatternRewriter &rewriter) const override {
+    StringRef intrin = op.getIntrin();
+    bool isMin = intrin.starts_with("llvm.minimumnum.");
+    if (!isMin && !intrin.starts_with("llvm.maximumnum."))
+      return failure();
+    if (op.getArgs().size() != 2 || op->getNumResults() != 1 ||
+        !isa<FloatType>(op->getResult(0).getType()))
+      return failure();
+    if (isMin)
+      rewriter.replaceOpWithNewOp<arith::MinNumFOp>(op, op.getArgs()[0],
+                                                    op.getArgs()[1]);
+    else
+      rewriter.replaceOpWithNewOp<arith::MaxNumFOp>(op, op.getArgs()[0],
+                                                    op.getArgs()[1]);
     return success();
   }
 };
@@ -1389,6 +1426,7 @@ void populateLLVMToMathPatterns(MLIRContext *context,
   // From
   // https://github.com/llvm/llvm-project/blob/7d8b4eb0ead277f41ff69525ed807f9f6e227f37/mlir/lib/Conversion/MathToLLVM/MathToLLVM.cpp#L306
   // patterns.add<FTruncOpLowering>(converter);
+  patterns.add<AbsIOpRaising>(patterns.getContext());
   patterns.add<AbsFOpLowering,
                // AbsIOpLowering,
                CeilOpLowering, CopySignOpLowering, CosOpLowering,
@@ -1421,6 +1459,7 @@ void populateLLVMToMathPatterns(MLIRContext *context,
 
   patterns.add<BarrierConvert>(converter);
   patterns.add<NVVMRsqrtApproxRaising>(converter);
+  patterns.add<MinMaxNumIntrinsicRaising>(converter);
 
   patterns
       .add<GPUConvert<NVVM::BlockDimXOp, gpu::BlockDimOp, gpu::Dimension::x>>(

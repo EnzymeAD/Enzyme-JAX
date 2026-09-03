@@ -1063,6 +1063,121 @@ LogicalResult handleAffineIfOp(IslAnalysis &islAnalysis, AffineIfOp ifOp) {
   return success();
 }
 
+// Drop bound expressions another expression makes redundant: an upper bound
+// min(a, b) where b >= a for every value of the dims and symbols is min(a),
+// and a lower bound max is its dual. Two bound operands often say the same
+// thing through different arithmetic -- a grid counted in blocks against the
+// size it was computed from -- so the map is first composed through the
+// arithmetic defining its symbol operands, down to shared base values, before
+// asking isl whether the comparison can ever fail. The composition is
+// affine-cfg's, and reads the arithmetic the way affine-cfg read it when it
+// wrote the bounds: casts preserve the value, sums and products do not wrap,
+// and signed division is floordiv.
+
+// Returns `map` with every expression another expression of its group
+// subsumes dropped, with the groups' new sizes; std::nullopt when all stay.
+static std::optional<std::pair<AffineMap, SmallVector<int32_t>>>
+pruneBoundMap(__isl_keep isl_ctx *ctx, AffineMap map, ValueRange operands,
+              DenseIntElementsAttr groups, bool isUpper, Region *scope) {
+  AffineMap expanded = map;
+  SmallVector<Value> expandedOperands(operands);
+  if (!fully2ComposeAffineMapAndOperands(&expanded, &expandedOperands, scope,
+                                         /*throughSymbols=*/true))
+    return std::nullopt;
+
+  unsigned numDims = expanded.getNumDims();
+  unsigned numSyms = expanded.getNumSymbols();
+  isl_space *space = isl_space_set_alloc(ctx, numSyms, numDims);
+  for (unsigned i : llvm::seq(numDims))
+    space =
+        isl_space_set_dim_id(space, isl_dim_set, i,
+                             isl_id_alloc(ctx, "dim", (void *)(size_t)(i + 1)));
+  for (unsigned i : llvm::seq(numSyms))
+    space =
+        isl_space_set_dim_id(space, isl_dim_param, i,
+                             isl_id_alloc(ctx, "sym", (void *)(size_t)(i + 1)));
+  AffineExprToIslAffConverter conv{
+      {}, {}, isl_local_space_from_space(space), ctx};
+  for (unsigned i : llvm::seq(numDims))
+    conv.dimPosMap[i] = i;
+  for (unsigned i : llvm::seq(numSyms))
+    conv.symPosMap[i] = i;
+
+  SmallVector<AffineExpr> keptExprs;
+  SmallVector<int32_t> keptGroups;
+  bool changed = false;
+  unsigned start = 0;
+  for (unsigned size : groups.getValues<uint32_t>()) {
+    ArrayRef<AffineExpr> group = map.getResults().slice(start, size);
+    SmallVector<isl_aff *> affs;
+    for (AffineExpr expr : expanded.getResults().slice(start, size))
+      affs.push_back(conv.getIslAff(expr));
+    start += size;
+    SmallVector<bool> kept(size, true);
+    for (auto [j, affJ] : llvm::enumerate(affs)) {
+      if (!affJ)
+        continue;
+      for (auto [i, affI] : llvm::enumerate(affs)) {
+        if (i == j || !kept[i] || !affI)
+          continue;
+        // Upper: j is redundant where e_j >= e_i everywhere, i.e. the set
+        // e_j < e_i is empty. Lower: the dual.
+        isl_set *fails =
+            isUpper ? isl_aff_lt_set(isl_aff_copy(affJ), isl_aff_copy(affI))
+                    : isl_aff_gt_set(isl_aff_copy(affJ), isl_aff_copy(affI));
+        bool redundant = isl_set_is_empty(fails) == isl_bool_true;
+        isl_set_free(fails);
+        if (redundant) {
+          kept[j] = false;
+          break;
+        }
+      }
+    }
+    for (isl_aff *aff : affs)
+      isl_aff_free(aff);
+    unsigned keptCount = 0;
+    for (auto [j, expr] : llvm::enumerate(group)) {
+      if (!kept[j])
+        continue;
+      keptExprs.push_back(expr);
+      keptCount++;
+    }
+    keptGroups.push_back(keptCount);
+    changed |= keptCount != size;
+  }
+  isl_local_space_free(conv.ls);
+  if (!changed)
+    return std::nullopt;
+  return std::make_pair(AffineMap::get(map.getNumDims(), map.getNumSymbols(),
+                                       keptExprs, map.getContext()),
+                        std::move(keptGroups));
+}
+
+LogicalResult pruneParallelBounds(IslAnalysis &islAnalysis,
+                                  affine::AffineParallelOp op) {
+  Region *scope = getLocalAffineScope(op);
+  if (!scope)
+    return failure();
+  isl_ctx *ctx = islAnalysis.getCtx();
+  Builder b(op.getContext());
+  bool changed = false;
+  if (auto pruned = pruneBoundMap(
+          ctx, op.getLowerBoundsMap(), op.getLowerBoundsOperands(),
+          op.getLowerBoundsGroups(), /*isUpper=*/false, scope)) {
+    op.setLowerBoundsMapAttr(AffineMapAttr::get(pruned->first));
+    op.setLowerBoundsGroupsAttr(b.getI32TensorAttr(pruned->second));
+    changed = true;
+  }
+  if (auto pruned = pruneBoundMap(
+          ctx, op.getUpperBoundsMap(), op.getUpperBoundsOperands(),
+          op.getUpperBoundsGroups(), /*isUpper=*/true, scope)) {
+    op.setUpperBoundsMapAttr(AffineMapAttr::get(pruned->first));
+    op.setUpperBoundsGroupsAttr(b.getI32TensorAttr(pruned->second));
+    changed = true;
+  }
+  return success(changed);
+}
+
 struct SimplifyAffineExprsPass
     : public enzyme::impl::SimplifyAffineExprsPassBase<
           SimplifyAffineExprsPass> {
@@ -1082,6 +1197,8 @@ struct SimplifyAffineExprsPass
         (void)handleAffineAccessOp(ia, cop);
       else if (auto cop = dyn_cast<AffineIfOp>(op))
         (void)handleAffineIfOp(ia, cop);
+      else if (auto cop = dyn_cast<AffineParallelOp>(op))
+        (void)pruneParallelBounds(ia, cop);
     });
 
     op->walk([=](AffineIfOp affineOp) {

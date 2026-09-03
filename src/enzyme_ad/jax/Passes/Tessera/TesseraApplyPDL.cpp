@@ -56,7 +56,10 @@ struct TesseraApplyPDLPass
     patternList.add(std::move(pdlPattern));
 
     // Invoke the pattern driver with the provided patterns.
-    if (failed(applyPatternsGreedily(module, std::move(patternList)))) {
+    if (failed(applyPatternsGreedily(
+            module, std::move(patternList),
+            GreedyRewriteConfig().setRegionSimplificationLevel(
+                GreedySimplifyRegionLevel::Normal)))) {
       llvm::errs() << "Failed to apply PDL patterns\n";
       signalPassFailure();
     }

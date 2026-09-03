@@ -96,13 +96,18 @@ cc_library(
     name = "xla_ffi",
     srcs =
         [
+            "xla_ffi/cuda/blas.cc",
+            "xla_ffi/cuda/register.cc",
+            "xla_ffi/cuda/throw_error.cc",
+            "xla_ffi/host/mpi.cc",
+            "xla_ffi/host/register.cc",
+            "xla_ffi/host/throw_error.cc",
             "xla_ffi/register.cc",
-        ] + glob([
-            "xla_ffi/host/**/*.cc",
-            "xla_ffi/cuda/**/*.cc",
-        ]),
+        ],
     hdrs =
-        glob([
+        [
+            "xla_ffi/export_macro.h",
+        ] + glob([
             "xla_ffi/host/**/*.h",
             "xla_ffi/cuda/**/*.h",
         ]),
@@ -118,6 +123,9 @@ cc_library(
         "@xla//xla/ffi/api:c_api",
         "@xla//xla/ffi/api:ffi",
     ] + select({
+        "@xla//xla/tsl:windows": [],
+        "//conditions:default": ["@mpitrampoline"],
+    }) + select({
         "@local_config_cuda//:is_cuda_enabled": [
             "@jax//jaxlib:ffi_helpers",
             "@jax//jaxlib/cuda:cuda_blas_handle_pool",
@@ -1669,6 +1677,7 @@ cc_library(
 
         # Comm dialect
         "//src/enzyme_ad/jax/Dialect/Comm:CommDialect",
+        "//src/enzyme_ad/jax/Passes/Comm:Passes",
     ],
 )
 

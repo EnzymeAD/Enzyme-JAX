@@ -2896,6 +2896,9 @@ gdgo->erase();
     symbolTable.getSymbolTable(getOperation());
     getOperation()->walk([&](GPUErrorOp err) {
       std::string sm;
+      // The host symbol whose address the program passes around; outlined
+      // kernels reach here without one, and registration binds it.
+      StringRef hostSymbol;
       if (auto attr =
               dyn_cast_or_null<ArrayAttr>(err->getAttr("passthrough"))) {
         for (auto a : attr) {
@@ -2908,6 +2911,8 @@ gdgo->erase();
               continue;
             if (s0.getValue() == "target-cpu")
               sm = s1.getValue();
+            if (s0.getValue() == "polygeist.host_symbol")
+              hostSymbol = s1.getValue();
             if (backend == "rocm") {
               if (sm.find("sm_") != std::string::npos) {
                 llvm::errs() << "Error: Found NVIDIA architecture while "
@@ -2934,6 +2939,9 @@ gdgo->erase();
             symbolTable.lookupNearestSymbolFrom(launch, launch.getKernel()));
         if (!gfunc)
           return;
+        if (!hostSymbol.empty() && !gfunc->hasAttr("polygeist.host_symbol"))
+          gfunc->setAttr("polygeist.host_symbol",
+                         StringAttr::get(gfunc->getContext(), hostSymbol));
         auto gmod = cast<gpu::GPUModuleOp>(gfunc->getParentOp());
         if (!gmod.getTargetsAttr()) {
           Attribute target;

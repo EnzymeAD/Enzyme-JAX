@@ -23,6 +23,7 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Dominance.h"
+#include "mlir/Interfaces/ControlFlowInterfaces.h"
 #include "mlir/Support/LLVM.h"
 #include "mlir/Transforms/Passes.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
@@ -176,7 +177,7 @@ public:
     for (unsigned i = 0; i < numDims; i++)
       dim.push_back(vals[i]);
 
-    for (unsigned i = numDims; i < numSymbols; i++)
+    for (unsigned i = numDims; i < numDims + numSymbols; i++)
       sym.push_back(vals[i]);
 
     type = Type::Affine;
@@ -792,6 +793,28 @@ public:
     bool sameExtent = base == o.base || (size && osize && *size == *osize);
     if (!sameExtent && (!size || !osize))
       return Match::Maybe;
+
+    // Two accesses that each land at a known byte and reach a known distance
+    // either share bytes or they do not, whatever units either counted its way
+    // there in: a byte written through one spelling of the allocation says
+    // nothing about a field that lies elsewhere, however differently that
+    // field is read. The stride comparison below cannot relate two paths
+    // counted in different sizes, so it would call such a pair Maybe.
+    if (size && osize) {
+      auto mine = constantOffset(dl), theirs = o.constantOffset(dl);
+      if (mine && theirs) {
+        uint64_t myEnd = *mine + *size, oEnd = *theirs + *osize;
+        if (*theirs >= myEnd || *mine >= oEnd)
+          return Match::None;
+        if (*mine == *theirs && *size == *osize)
+          return Match::Exact;
+        if (*theirs >= *mine && oEnd <= myEnd && containedAt) {
+          *containedAt = *theirs - *mine;
+          return Match::Contains;
+        }
+        return Match::Maybe;
+      }
+    }
 
     // Lying wholly within is a question of where each lands and how far it
     // reaches, which needs nothing of how either counts its way there. It is
@@ -1803,72 +1826,30 @@ void removeRedundantBlockArgs(
     for (auto *pred : prepred) {
       mlir::Value pval = nullptr;
 
-      if (auto op = dyn_cast<cf::BranchOp>(pred->getTerminator())) {
-        pval = op.getOperands()[blockArg.getArgNumber()];
-        if (pval.getType() != elType) {
-          if (auto *def = pval.getDefiningOp())
-            def->getParentRegion()->getParentOp()->dump();
-          llvm::errs() << pval << " - " << AI << "\n";
-        }
-        assert(pval.getType() == elType);
-        if (pval == blockArg)
-          pval = nullptr;
-      } else if (auto op = dyn_cast<cf::CondBranchOp>(pred->getTerminator())) {
-        if (op.getTrueDest() == block) {
-          if (blockArg.getArgNumber() >= op.getTrueOperands().size()) {
-            block->dump();
-            llvm::errs() << op << " ba: " << blockArg.getArgNumber() << "\n";
-          }
-          assert(blockArg.getArgNumber() < op.getTrueOperands().size());
-          pval = op.getTrueOperands()[blockArg.getArgNumber()];
-          assert(pval.getType() == elType);
-          if (pval == blockArg)
-            pval = nullptr;
-        }
-        if (op.getFalseDest() == block) {
-          assert(blockArg.getArgNumber() < op.getFalseOperands().size());
-          auto pval2 = op.getFalseOperands()[blockArg.getArgNumber()];
-          assert(pval2.getType() == elType);
-          if (pval2 != blockArg) {
-            if (pval == nullptr) {
-              pval = pval2;
-            } else if (pval != pval2) {
-              legal = false;
-              break;
-            }
-          }
-          if (pval == blockArg)
-            pval = nullptr;
-        }
-      } else if (auto op = dyn_cast<cf::SwitchOp>(pred->getTerminator())) {
-        mlir::OpBuilder subbuilder(op.getOperation());
-        if (op.getDefaultDestination() == block) {
-          pval = op.getDefaultOperands()[blockArg.getArgNumber()];
-          if (pval == blockArg)
-            pval = nullptr;
-        }
-        for (auto pair : llvm::enumerate(op.getCaseDestinations())) {
-          if (pair.value() == block) {
-            auto pval2 =
-                op.getCaseOperands(pair.index())[blockArg.getArgNumber()];
-            if (pval2 != blockArg) {
-              if (pval == nullptr)
-                pval = pval2;
-              else if (pval != pval2) {
-                legal = false;
-                break;
-              }
-            }
-          }
-        }
-        if (legal == false)
-          break;
-      } else {
+      auto branch = dyn_cast<BranchOpInterface>(pred->getTerminator());
+      if (!branch) {
         llvm::errs() << *pred->getParent()->getParentOp() << "\n";
         pred->dump();
         block->dump();
         llvm_unreachable("unknown branch");
       }
+      for (unsigned i = 0, e = branch->getNumSuccessors(); i < e; ++i) {
+        if (branch->getSuccessor(i) != block)
+          continue;
+        Value pval2 = branch.getSuccessorOperands(i)[blockArg.getArgNumber()];
+        assert(pval2 && "added arg cannot be a produced operand");
+        assert(pval2.getType() == elType);
+        if (pval2 != blockArg) {
+          if (pval == nullptr) {
+            pval = pval2;
+          } else if (pval != pval2) {
+            legal = false;
+            break;
+          }
+        }
+      }
+      if (!legal)
+        break;
 
       assert(pval != blockArg);
       if (val == nullptr) {
@@ -1888,38 +1869,25 @@ void removeRedundantBlockArgs(
     bool used = false;
     for (auto *U : blockArg.getUsers()) {
 
-      if (auto op = dyn_cast<cf::BranchOp>(U)) {
-        size_t i = 0;
-        for (auto V : op.getOperands()) {
-          if (V == blockArg &&
-              !(i == blockArg.getArgNumber() && op.getDest() == block)) {
-            used = true;
-            break;
+      if (auto branch = dyn_cast<BranchOpInterface>(U)) {
+        for (unsigned i = 0, e = branch->getNumSuccessors(); i < e && !used;
+             ++i) {
+          auto ops = branch.getSuccessorOperands(i);
+          unsigned produced = ops.getProducedOperandCount();
+          for (auto &&[j, V] : llvm::enumerate(ops.getForwardedOperands())) {
+            if (V == blockArg && !(produced + j == blockArg.getArgNumber() &&
+                                   branch->getSuccessor(i) == block)) {
+              used = true;
+              break;
+            }
           }
         }
         if (used)
           break;
-      } else if (auto op = dyn_cast<cf::CondBranchOp>(U)) {
-        size_t i = 0;
-        for (auto V : op.getTrueOperands()) {
-          if (V == blockArg &&
-              !(i == blockArg.getArgNumber() && op.getTrueDest() == block)) {
-            used = true;
-            break;
-          }
-        }
-        if (used)
-          break;
-        i = 0;
-        for (auto V : op.getFalseOperands()) {
-          if (V == blockArg &&
-              !(i == blockArg.getArgNumber() && op.getFalseDest() == block)) {
-            used = true;
-            break;
-          }
-        }
-      } else
+      } else {
         used = true;
+        break;
+      }
     }
     if (!used) {
       legal = true;
@@ -1947,59 +1915,10 @@ void removeRedundantBlockArgs(
       SetVector<Block *> prepred(block->getPredecessors().begin(),
                                  block->getPredecessors().end());
       for (auto *pred : prepred) {
-        if (auto op = dyn_cast<cf::BranchOp>(pred->getTerminator())) {
-          mlir::OpBuilder subbuilder(op.getOperation());
-          std::vector<Value> args(op.getOperands().begin(),
-                                  op.getOperands().end());
-          args.erase(args.begin() + blockArg.getArgNumber());
-          assert(args.size() == op.getOperands().size() - 1);
-          cf::BranchOp::create(subbuilder, op.getLoc(), op.getDest(), args);
-          op.erase();
-        } else if (auto op =
-                       dyn_cast<cf::CondBranchOp>(pred->getTerminator())) {
-
-          mlir::OpBuilder subbuilder(op.getOperation());
-          std::vector<Value> trueargs(op.getTrueOperands().begin(),
-                                      op.getTrueOperands().end());
-          std::vector<Value> falseargs(op.getFalseOperands().begin(),
-                                       op.getFalseOperands().end());
-          if (op.getTrueDest() == block) {
-            trueargs.erase(trueargs.begin() + blockArg.getArgNumber());
-          }
-          if (op.getFalseDest() == block) {
-            falseargs.erase(falseargs.begin() + blockArg.getArgNumber());
-          }
-          assert(trueargs.size() < op.getTrueOperands().size() ||
-                 falseargs.size() < op.getFalseOperands().size());
-          cf::CondBranchOp::create(subbuilder, op.getLoc(), op.getCondition(),
-                                   op.getTrueDest(), trueargs,
-                                   op.getFalseDest(), falseargs);
-          op.erase();
-        } else if (auto op = dyn_cast<cf::SwitchOp>(pred->getTerminator())) {
-          mlir::OpBuilder builder(op.getOperation());
-          SmallVector<Value> defaultOps(op.getDefaultOperands().begin(),
-                                        op.getDefaultOperands().end());
-          if (op.getDefaultDestination() == block)
-            defaultOps.erase(defaultOps.begin() + blockArg.getArgNumber());
-
-          SmallVector<SmallVector<Value>> cases;
-          SmallVector<ValueRange> vrange;
-          for (auto pair : llvm::enumerate(op.getCaseDestinations())) {
-            cases.emplace_back(op.getCaseOperands(pair.index()));
-            if (pair.value() == block) {
-              cases.back().erase(cases.back().begin() +
-                                 blockArg.getArgNumber());
-            }
-          }
-          for (auto &c : cases) {
-            vrange.push_back(c);
-          }
-          cf::SwitchOp::create(builder, op.getLoc(), op.getFlag(),
-                               op.getDefaultDestination(), defaultOps,
-                               op.getCaseValuesAttr(), op.getCaseDestinations(),
-                               vrange);
-          op.erase();
-        }
+        auto branch = cast<BranchOpInterface>(pred->getTerminator());
+        for (unsigned i = 0, e = branch->getNumSuccessors(); i < e; ++i)
+          if (branch->getSuccessor(i) == block)
+            branch.getSuccessorOperands(i).erase(blockArg.getArgNumber());
       }
       block->eraseArgument(blockArg.getArgNumber());
       blocksWithAddedArgs.erase(block);
@@ -2949,9 +2868,8 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
       auto endFind = valueAtEndOfBlock.find(Pred);
       assert(endFind != valueAtEndOfBlock.end());
 
-      // Only handle known termination blocks
-      if (!isa<cf::BranchOp, cf::CondBranchOp, cf::SwitchOp>(
-              Pred->getTerminator())) {
+      // Only handle terminators whose successor operands can be extended
+      if (!isa<BranchOpInterface>(Pred->getTerminator())) {
         PotentialArgs[block] = Legality::Illegal;
         break;
       }
@@ -3099,58 +3017,10 @@ bool PolygeistMem2Reg::forwardStoreToLoad(
       assert(pred->getTerminator());
 
       assert(blockArg.getOwner() == block);
-      if (auto op = dyn_cast<cf::BranchOp>(pred->getTerminator())) {
-        mlir::OpBuilder subbuilder(op.getOperation());
-        std::vector<Value> args(op.getOperands().begin(),
-                                op.getOperands().end());
-        args.push_back(pval);
-        cf::BranchOp::create(subbuilder, op.getLoc(), op.getDest(), args);
-        op.erase();
-      } else if (auto op = dyn_cast<cf::CondBranchOp>(pred->getTerminator())) {
-
-        mlir::OpBuilder subbuilder(op.getOperation());
-        std::vector<Value> trueargs(op.getTrueOperands().begin(),
-                                    op.getTrueOperands().end());
-        std::vector<Value> falseargs(op.getFalseOperands().begin(),
-                                     op.getFalseOperands().end());
-        if (op.getTrueDest() == block) {
-          trueargs.push_back(pval);
-        }
-        if (op.getFalseDest() == block) {
-          falseargs.push_back(pval);
-        }
-        cf::CondBranchOp::create(subbuilder, op.getLoc(), op.getCondition(),
-                                 op.getTrueDest(), trueargs, op.getFalseDest(),
-                                 falseargs);
-        op.erase();
-      } else if (auto op = dyn_cast<cf::SwitchOp>(pred->getTerminator())) {
-        mlir::OpBuilder builder(op.getOperation());
-        SmallVector<Value> defaultOps(op.getDefaultOperands().begin(),
-                                      op.getDefaultOperands().end());
-
-        if (op.getDefaultDestination() == block)
-          defaultOps.push_back(pval);
-
-        SmallVector<SmallVector<Value>> cases;
-        for (auto pair : llvm::enumerate(op.getCaseDestinations())) {
-          cases.emplace_back(op.getCaseOperands(pair.index()).begin(),
-                             op.getCaseOperands(pair.index()).end());
-          if (pair.value() == block) {
-            cases.back().push_back(pval);
-          }
-        }
-        SmallVector<ValueRange> vrange;
-        for (auto &c : cases) {
-          vrange.push_back(c);
-        }
-        cf::SwitchOp::create(builder, op.getLoc(), op.getFlag(),
-                             op.getDefaultDestination(), defaultOps,
-                             op.getCaseValuesAttr(), op.getCaseDestinations(),
-                             vrange);
-        op.erase();
-      } else {
-        llvm_unreachable("unknown pred branch");
-      }
+      auto branch = cast<BranchOpInterface>(pred->getTerminator());
+      for (unsigned i = 0, e = branch->getNumSuccessors(); i < e; ++i)
+        if (branch->getSuccessor(i) == block)
+          branch.getSuccessorOperands(i).append(pval);
     }
   }
 
@@ -3299,6 +3169,105 @@ std::vector<OffsetTree> getLastStored(mlir::Value AI, const DataLayout &dl) {
   return todo;
 }
 
+// A select between two constants, so that each arm names a place of its own.
+static arith::SelectOp selectOfConstants(Value v) {
+  auto sel = v.getDefiningOp<arith::SelectOp>();
+  Attribute cst;
+  if (!sel || !sel.getCondition().getType().isInteger(1) ||
+      !matchPattern(sel.getTrueValue(), m_Constant(&cst)) ||
+      !matchPattern(sel.getFalseValue(), m_Constant(&cst)))
+    return nullptr;
+  return sel;
+}
+
+// An access indexed by a select between constants lands in one of two slots
+// the forwarding could match, yet names neither. When every user of the
+// allocation is an access at a constant index or at such a select, each
+// select-indexed access becomes a branch on the select's condition around an
+// access at each constant, and the forwarding then sees only constant
+// indices. Nested selects are split one index at a time, on successive
+// rounds.
+static bool splitSelectIndexedAccesses(Value AI) {
+  auto constantIndices = [](ValueRange indices) {
+    return llvm::all_of(indices, [](Value idx) {
+      Attribute cst;
+      return matchPattern(idx, m_Constant(&cst));
+    });
+  };
+
+  SmallVector<Operation *> toSplit;
+  std::deque<Value> list = {AI};
+  while (!list.empty()) {
+    Value val = list.front();
+    list.pop_front();
+    for (Operation *U : val.getUsers()) {
+      ValueRange indices;
+      if (auto LO = dyn_cast<memref::LoadOp>(U))
+        indices = LO.getIndices();
+      else if (auto SO = dyn_cast<memref::StoreOp>(U))
+        indices = SO.getIndices();
+      else if (auto LO = dyn_cast<affine::AffineLoadOp>(U)) {
+        if (!LO.getAffineMap().isConstant())
+          return false;
+        continue;
+      } else if (auto SO = dyn_cast<affine::AffineStoreOp>(U)) {
+        if (!SO.getAffineMap().isConstant())
+          return false;
+        continue;
+      } else if (auto GO = dyn_cast<LLVM::GEPOp>(U)) {
+        if (!constantIndices(GO.getDynamicIndices()))
+          return false;
+        list.push_back(GO);
+        continue;
+      } else if (isa<memref::CastOp, Memref2PointerOp, Pointer2MemrefOp,
+                     LLVM::BitcastOp, LLVM::AddrSpaceCastOp>(U)) {
+        list.push_back(U->getResult(0));
+        continue;
+      } else
+        return false;
+
+      bool split = false;
+      for (Value idx : indices) {
+        Attribute cst;
+        if (matchPattern(idx, m_Constant(&cst)))
+          continue;
+        if (!selectOfConstants(idx))
+          return false;
+        split = true;
+      }
+      if (split)
+        toSplit.push_back(U);
+    }
+  }
+
+  for (Operation *op : toSplit) {
+    OpOperand *chosen = nullptr;
+    for (OpOperand &operand : op->getOpOperands())
+      if (selectOfConstants(operand.get())) {
+        chosen = &operand;
+        break;
+      }
+    auto sel = cast<arith::SelectOp>(chosen->get().getDefiningOp());
+    OpBuilder b(op);
+    auto ifOp = scf::IfOp::create(b, op->getLoc(), op->getResultTypes(),
+                                  sel.getCondition(), /*withElseRegion=*/true);
+    Value arms[2] = {sel.getTrueValue(), sel.getFalseValue()};
+    for (unsigned arm = 0; arm < 2; ++arm) {
+      Block *block = &ifOp->getRegion(arm).front();
+      b.setInsertionPointToStart(block);
+      Operation *cloned = b.clone(*op);
+      cloned->setOperand(chosen->getOperandNumber(), arms[arm]);
+      if (op->getNumResults()) {
+        b.setInsertionPointToEnd(block);
+        scf::YieldOp::create(b, op->getLoc(), cloned->getResults());
+      }
+    }
+    op->replaceAllUsesWith(ifOp.getResults());
+    op->erase();
+  }
+  return !toSplit.empty();
+}
+
 void PolygeistMem2Reg::runOnOperation() {
   auto *f = getOperation();
 
@@ -3346,6 +3315,7 @@ void PolygeistMem2Reg::runOnOperation() {
     DenseMap<Operation *, SmallVector<Operation *>> capturedAliasing;
     for (auto AI : toPromote) {
       LLVM_DEBUG(llvm::dbgs() << " attempting to promote " << AI << "\n");
+      changed |= splitSelectIndexedAccesses(AI);
       // A nested region may carry a layout of its own, so the sizes an offset
       // is counted in are the ones in force where the allocation is.
       auto lastStored =

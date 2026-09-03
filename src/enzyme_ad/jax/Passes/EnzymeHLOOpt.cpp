@@ -4319,6 +4319,32 @@ struct ReduceConcat final
 struct FullReduceReshapeOrTranspose final
     : CheckedOpRewritePattern<stablehlo::ReduceOp,
                               FullReduceReshapeOrTranspose> {
+private:
+  // Affine map sending an index of `fromShape` to the corresponding index of
+  // `toShape` under the row-major element ordering used by reshape.
+  static AffineMap reshapeMap(MLIRContext *ctx, ArrayRef<int64_t> fromShape,
+                              ArrayRef<int64_t> toShape) {
+    AffineExpr linear = getAffineConstantExpr(0, ctx);
+    int64_t stride = 1;
+    for (int i = fromShape.size() - 1; i >= 0; --i) {
+      linear = linear + getAffineDimExpr(i, ctx) * stride;
+      stride *= fromShape[i];
+    }
+
+    SmallVector<AffineExpr> exprs(toShape.size());
+    stride = 1;
+    for (int i = toShape.size() - 1; i >= 0; --i) {
+      AffineExpr expr = linear.floorDiv(stride);
+      if (i > 0)
+        expr = expr % toShape[i];
+      exprs[i] = expr;
+      stride *= toShape[i];
+    }
+
+    return AffineMap::get(fromShape.size(), 0, exprs, ctx);
+  }
+
+public:
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
 
   LogicalResult matchAndRewriteImpl(stablehlo::ReduceOp op,
@@ -4330,115 +4356,224 @@ struct FullReduceReshapeOrTranspose final
     if (op.getDimensions().size() != inpTy.getShape().size())
       return failure();
 
-    RankedTensorType changeType = nullptr;
+    MLIRContext *ctx = op.getContext();
+
+    // The reduce spans every dimension, so it is invariant under any bijective
+    // reindexing (reshape/transpose) of its input as long as, for every
+    // elementwise op in the cone, all operands agree on the same reindexing.
+    // For every value in the cone we track that reindexing as an affine map
+    // from the value's index space to the index space of the underlying
+    // pre-reshape/transpose data.
+    llvm::MapVector<Value, AffineMap> transforms;
+    // Maps reshape/transpose results in the cone to their pre-transform value.
+    IRMapping mapping;
+    // Elementwise ops whose operand transforms all agree, in post-order (defs
+    // before users).
+    SetVector<Value> tape;
+    // All rewritable cone ops in post-order, for the final erasure sweep.
+    SmallVector<Operation *> coneOps;
     SmallVector<Operation *> reshapeOrTransposes;
-    llvm::MapVector<Operation *, int> toclone;
+
+    auto getTransform = [&](Value val) -> AffineMap {
+      auto found = transforms.find(val);
+      if (found != transforms.end())
+        return found->second;
+      auto ty = dyn_cast<RankedTensorType>(val.getType());
+      return AffineMap::getMultiDimIdentityMap(ty ? ty.getRank() : 0, ctx);
+    };
+
     {
       SmallVector<Value> todo = {op.getInputs()[0]};
-      while (todo.size()) {
-        auto cur = todo.pop_back_val();
-        auto curOp = cur.getDefiningOp();
-        if (!curOp)
-          return failure();
+      DenseSet<Value> processed;
+      DenseMap<Operation *, unsigned> childIdx;
+      while (!todo.empty()) {
+        Value v = todo.back();
+        if (processed.contains(v)) {
+          todo.pop_back();
+          continue;
+        }
+
+        Operation *curOp = v.getDefiningOp();
+        auto vTy = dyn_cast<RankedTensorType>(v.getType());
+        bool leaf =
+            !curOp || !vTy || !vTy.hasStaticShape() ||
+            curOp->getNumResults() != 1 || curOp->getNumOperands() == 0 ||
+            curOp->getNumRegions() != 0 ||
+            (!isa<stablehlo::ReshapeOp, stablehlo::TransposeOp>(curOp) &&
+             !hasTraitElementwise(curOp)) ||
+            !isMemoryEffectFree(curOp) ||
+            !llvm::all_of(curOp->getOperands(), [](Value operand) {
+              auto ty = dyn_cast<RankedTensorType>(operand.getType());
+              return ty && ty.hasStaticShape();
+            });
+        if (leaf) {
+          processed.insert(v);
+          todo.pop_back();
+          continue;
+        }
+
+        unsigned &idx = childIdx[curOp];
+        if (idx < curOp->getNumOperands()) {
+          todo.push_back(curOp->getOperand(idx++));
+          continue;
+        }
+
+        // All operands of curOp have been processed already.
+        processed.insert(v);
+        todo.pop_back();
+
+        if (auto ts = dyn_cast<stablehlo::TransposeOp>(curOp)) {
+          // Maps a result index to the corresponding operand index.
+          auto map = AffineMap::getPermutationMap(ts.getPermutation(), ctx);
+          transforms[v] = getTransform(ts.getOperand()).compose(map);
+          mapping.map(v, mapping.lookupOrDefault(ts.getOperand()));
+          coneOps.push_back(curOp);
+          reshapeOrTransposes.push_back(curOp);
+          continue;
+        }
+
         if (auto rs = dyn_cast<stablehlo::ReshapeOp>(curOp)) {
-          if (changeType != nullptr) {
-            if (rs.getOperand().getType() != changeType)
-              return failure();
-          } else {
-            changeType = rs.getOperand().getType();
-          }
-          reshapeOrTransposes.push_back(rs);
+          auto inTy = cast<RankedTensorType>(rs.getOperand().getType());
+          auto outTy = cast<RankedTensorType>(rs.getResult().getType());
+          // Maps a result index to the corresponding operand index.
+          auto map = reshapeMap(ctx, outTy.getShape(), inTy.getShape());
+          transforms[v] = getTransform(rs.getOperand()).compose(map);
+          mapping.map(v, mapping.lookupOrDefault(rs.getOperand()));
+          coneOps.push_back(curOp);
+          reshapeOrTransposes.push_back(curOp);
           continue;
         }
-        if (auto rs = dyn_cast<stablehlo::TransposeOp>(curOp)) {
-          if (changeType != nullptr) {
-            if (rs.getOperand().getType() != changeType)
-              return failure();
-          } else {
-            changeType = rs.getOperand().getType();
-          }
-          reshapeOrTransposes.push_back(rs);
-          continue;
-        }
-        if (!hasTraitElementwise(curOp))
-          return failure();
-        if (!isMemoryEffectFree(curOp))
-          return failure();
-        for (auto op : curOp->getOperands())
-          todo.push_back(op);
-        toclone[curOp] = curOp->getNumOperands();
-      }
-    }
 
-    IRMapping map;
-    SmallVector<Operation *> todo;
-    for (auto reshape : reshapeOrTransposes) {
-      map.map(reshape->getResult(0), reshape->getOperand(0));
-      for (auto u : reshape->getResult(0).getUsers()) {
-        if (toclone.contains(u)) {
-          toclone[u]--;
-          if (toclone[u] == 0) {
-            todo.push_back(u);
-            toclone.erase(u);
-          }
+        // Elementwise op: rewritable iff all operands agree on the transform.
+        // Operands outside the cone (or unrewritable ones) count as identity.
+        AffineMap ref = getTransform(curOp->getOperand(0));
+        if (llvm::all_of(curOp->getOperands(), [&](Value operand) {
+              return getTransform(operand) == ref;
+            })) {
+          transforms[v] = ref;
+          tape.insert(v);
+          coneOps.push_back(curOp);
         }
       }
     }
-    for (auto pair : toclone) {
-      for (auto u : pair.first->getResult(0).getUsers()) {
-        if (u == op)
-          continue;
-        if (llvm::is_contained(reshapeOrTransposes, u))
-          continue;
-        if (toclone.contains(u))
-          continue;
-        return failure();
+
+    // A reshape/transpose only becomes dead if all its users are rewritten.
+    // If it has a user outside the cone, rewriting on top of its pre-transform
+    // value would duplicate the computation instead of removing it, so block
+    // rewrites building on that value.
+    DenseSet<Value> blockedValues;
+    auto inCone = [&](Operation *user) {
+      if (user == op)
+        return true;
+      if (user->getNumResults() != 1)
+        return false;
+      Value result = user->getResult(0);
+      return tape.contains(result) || mapping.contains(result);
+    };
+    for (Operation *rt : reshapeOrTransposes)
+      if (!llvm::all_of(rt->getResult(0).getUsers(), inCone))
+        blockedValues.insert(mapping.lookup(rt->getResult(0)));
+
+    // Decide, without mutating the IR yet, what the rewritten form of each
+    // tape value is: unchanged (all operands unchanged), a clone on the
+    // pre-transform operands, or blocked (depends on a blocked value; keeping
+    // the original avoids mixing pre- and post-transform shapes).
+    enum class Status { Unchanged, Clone, Blocked };
+    DenseMap<Value, Status> status;
+    DenseMap<Value, RankedTensorType> newTypes;
+
+    struct OperandInfo {
+      bool blocked;
+      bool changed;
+      RankedTensorType type;
+    };
+    auto operandInfo = [&](Value operand) -> OperandInfo {
+      if (mapping.contains(operand)) {
+        Value pre = mapping.lookup(operand);
+        if (blockedValues.contains(pre))
+          return {true, false, nullptr};
+        return {false, true, cast<RankedTensorType>(pre.getType())};
       }
-    }
+      auto found = status.find(operand);
+      if (found != status.end() && found->second == Status::Blocked)
+        return {true, false, nullptr};
+      if (found != status.end() && found->second == Status::Clone)
+        return {false, true, newTypes.lookup(operand)};
+      return {false, false, dyn_cast<RankedTensorType>(operand.getType())};
+    };
 
-    for (auto cur : todo) {
-      for (auto curOp : cur->getOperands()) {
-        if (!map.contains(curOp))
-          return failure();
-      }
-    }
-
-    while (todo.size()) {
-      auto cur = todo.pop_back_val();
-
-      SmallVector<Value> vals;
-      for (auto op : cur->getOperands())
-        vals.push_back(map.lookup(op));
-
-      auto changeType2 = RankedTensorType::get(
-          changeType.getShape(),
-          cast<RankedTensorType>(cur->getResult(0).getType()).getElementType());
-      auto res =
-          rewriter.create(cur->getLoc(), cur->getName().getIdentifier(), vals,
-                          TypeRange(changeType2), cur->getAttrs(), {}, {});
-
-      map.map(cur->getResult(0), res->getResult(0));
-
-      for (auto u : cur->getResult(0).getUsers()) {
-        if (toclone.contains(u)) {
-          toclone[u]--;
-          if (toclone[u] == 0) {
-            todo.push_back(u);
-            toclone.erase(u);
-          }
+    for (Value v : tape) {
+      Operation *curOp = v.getDefiningOp();
+      bool anyBlocked = false, anyChanged = false;
+      RankedTensorType operandTy = nullptr;
+      for (Value operand : curOp->getOperands()) {
+        OperandInfo info = operandInfo(operand);
+        if (info.blocked) {
+          anyBlocked = true;
+          break;
+        }
+        anyChanged |= info.changed;
+        if (!operandTy)
+          operandTy = info.type;
+        else if (operandTy.getShape() != info.type.getShape()) {
+          // Equal transforms should imply equal pre-transform shapes; be
+          // conservative if they do not.
+          anyBlocked = true;
+          break;
         }
       }
+      if (anyBlocked)
+        status[v] = Status::Blocked;
+      else if (!anyChanged)
+        status[v] = Status::Unchanged;
+      else {
+        status[v] = Status::Clone;
+        newTypes[v] = RankedTensorType::get(
+            operandTy.getShape(),
+            cast<RankedTensorType>(v.getType()).getElementType());
+      }
     }
+
+    // No-op detection: only rewrite if the reduce input actually changes,
+    // i.e. at least one reshape/transpose is bypassed on the way to it.
+    OperandInfo rootInfo = operandInfo(op.getInputs()[0]);
+    if (rootInfo.blocked || !rootInfo.changed)
+      return failure();
+
+    rewriter.setInsertionPoint(op);
+    for (Value v : tape) {
+      if (status.lookup(v) != Status::Clone)
+        continue;
+      Operation *curOp = v.getDefiningOp();
+      SmallVector<Value> newOperands;
+      for (Value operand : curOp->getOperands())
+        newOperands.push_back(mapping.lookupOrDefault(operand));
+      Type newType = newTypes.lookup(v);
+      Operation *newOp = rewriter.create(
+          curOp->getLoc(), curOp->getName().getIdentifier(), newOperands,
+          TypeRange(newType), curOp->getAttrs(), {}, {});
+      mapping.map(v, newOp->getResult(0));
+    }
+
+    Value newInit = mapping.lookupOrDefault(op.getInputs()[0]);
 
     SmallVector<int64_t> newReduceDimensions;
-    for (size_t i = 0, end = changeType.getShape().size(); i < end; i++)
+    for (int64_t i = 0, e = cast<RankedTensorType>(newInit.getType()).getRank();
+         i < e; ++i)
       newReduceDimensions.push_back(i);
 
     auto newReduction = stablehlo::ReduceOp::create(
-        rewriter, op.getLoc(), op->getResultTypes(),
-        map.lookup(op.getInputs()[0]), op.getInitValues(), newReduceDimensions);
+        rewriter, op.getLoc(), op->getResultTypes(), ValueRange{newInit},
+        op.getInitValues(), newReduceDimensions);
     newReduction.getRegion().takeBody(op.getRegion());
     rewriter.replaceOp(op, newReduction);
+
+    // Erase the bypassed ops in reverse post-order (users before defs) so a
+    // single sweep removes the whole dead cone.
+    for (Operation *cur : llvm::reverse(coneOps))
+      if (isOpTriviallyDead(cur))
+        rewriter.eraseOp(cur);
+
     return success();
   }
 };
@@ -7072,6 +7207,55 @@ struct ReshapeBroadcast final
     auto deletionDims =
         findReshapeInsertionDims(op.getType(), op.getOperand().getType());
     if (deletionDims.empty()) {
+      // If the reshape is a transpose we can still replace it with an
+      // equivalent broadcast
+      if (reshapeIsTranspose(op)) {
+        SmallVector<int64_t> perm(bcast.getBroadcastDimensions());
+        SmallVector<int64_t> reshapePerm;
+
+        auto bcastType = bcast.getType();
+        auto outputType = op.getType();
+
+        size_t i = 0, j = 0, N = outputType.getRank();
+
+        for (; i < bcastType.getRank(); ++i) {
+          auto insz = bcastType.getDimSize(i);
+          if (insz == 1) {
+            // find first dim 1 that is not in reshapePerm
+            int64_t whereOneGoes = 0;
+            for (; whereOneGoes < N; ++whereOneGoes) {
+              if (outputType.getDimSize(whereOneGoes) == 1 &&
+                  !llvm::is_contained(reshapePerm, whereOneGoes)) {
+                break;
+              }
+            }
+            assert(whereOneGoes != N);
+            reshapePerm.push_back(whereOneGoes);
+            continue;
+          }
+
+          while (j < N) {
+            auto outsz = outputType.getDimSize(j);
+            if (outsz == insz) {
+              reshapePerm.push_back(j);
+              ++j;
+              break;
+            }
+            assert(outsz == 1);
+            ++j;
+          }
+        }
+
+        for (auto [i, d] : llvm::enumerate(perm)) {
+          perm[i] = reshapePerm[d];
+        }
+
+        rewriter.replaceOpWithNewOp<stablehlo::BroadcastInDimOp>(
+            op, op.getType(), bcast.getOperand(), perm);
+
+        return success();
+      }
+
       return failure();
     }
 
@@ -10203,7 +10387,9 @@ struct TransposeReduce
     unsigned resultNum = std::distance(
         reduce.getResults().begin(), llvm::find(reduce.getResults(), operand));
 
-    auto reduceDims = reduce.getDimensions();
+    SmallVector<int64_t> reduceDims = llvm::to_vector(reduce.getDimensions());
+    std::sort(reduceDims.begin(), reduceDims.end());
+
     auto reduceInput = reduce.getInputs()[resultNum];
     auto reduceInputType = dyn_cast<RankedTensorType>(reduceInput.getType());
     if (!reduceInputType)
@@ -10664,7 +10850,11 @@ struct BroadcastReduce
     SmallVector<int64_t> broadcastFromNothingDims, broadcastFromOneDims;
     auto broadcastSourceType =
         cast<TensorType>(broadcast.getOperand().getType());
-    for (int64_t reductionDim : op.getDimensions()) {
+
+    SmallVector<int64_t> reduceDims = llvm::to_vector(op.getDimensions());
+    std::sort(reduceDims.begin(), reduceDims.end());
+
+    for (int64_t reductionDim : reduceDims) {
       if (inputType.isDynamicDim(reductionDim))
         continue;
       auto it = llvm::find(broadcastDims, reductionDim);
@@ -10692,7 +10882,7 @@ struct BroadcastReduce
     int64_t numRemoved = 0;
     SmallVector<int64_t> newReduceDimensions;
     llvm::sort(broadcastFromNothingDims);
-    for (int64_t reductionDim : op.getDimensions()) {
+    for (int64_t reductionDim : reduceDims) {
       if (llvm::is_contained(broadcastFromNothingDims, reductionDim)) {
         numRemoved++;
         continue;
@@ -15734,6 +15924,18 @@ struct GatherOpCanon final
             rewriter, op.getLoc(), result, rewriter.getDenseI64ArrayAttr({0}));
       }
 
+      // The grid may carry dimensions beyond the single mapped one, along
+      // which the index is constant; the slice only covers the mapped
+      // extent, so the rest comes back by broadcast, not reshape.
+      auto gridResultTy =
+          RankedTensorType::get(gridTy.getShape(), operandTy.getElementType());
+      if (gridResultTy.getNumElements() !=
+          cast<ShapedType>(result.getType()).getNumElements()) {
+        result = stablehlo::BroadcastInDimOp::create(
+            rewriter, op.getLoc(), gridResultTy, result,
+            rewriter.getDenseI64ArrayAttr({analysis.mappings[0].gridDim}));
+      }
+
       if (result.getType() != op.getType()) {
         result = stablehlo::ReshapeOp::create(rewriter, op.getLoc(),
                                               op.getType(), result);
@@ -19465,6 +19667,7 @@ struct SinkDUS : public CheckedOpRewritePattern<stablehlo::WhileOp, SinkDUS> {
       for (auto s : DUS.getStartIndices()) {
         if (!definedOutside(s, whileOp)) {
           legal = false;
+          break;
         }
       }
       if (!legal)
@@ -19498,7 +19701,10 @@ struct SinkDUS : public CheckedOpRewritePattern<stablehlo::WhileOp, SinkDUS> {
             Value v = DUS.getOperand();
             while (v != argOperand && v != condOperand) {
               auto DUS2 = v.getDefiningOp<stablehlo::DynamicUpdateSliceOp>();
-              assert(DUS2);
+              if (!DUS2) {
+                legal = false;
+                break;
+              }
               if (mayReadMemoryWrittenTo(use, DUS2)) {
                 mayReadOther = true;
                 break;
@@ -19510,6 +19716,8 @@ struct SinkDUS : public CheckedOpRewritePattern<stablehlo::WhileOp, SinkDUS> {
                 mayReadOther = true;
               }
             }
+            if (!legal)
+              break;
             if (!mayReadOther) {
               if (mustReadMemoryWrittenTo(use, DUS)) {
                 mustReaders.push_back(use);
@@ -21771,6 +21979,10 @@ struct CommonCompareExpressionRewrite
           rewriter.replaceOp(op, negatedCondition);
           return success();
         } else {
+          // The negation reads op's result, so it must sit after op — the
+          // rewriter's insertion point is before op here.
+          PatternRewriter::InsertionGuard guard(rewriter);
+          rewriter.setInsertionPoint(user);
           auto negatedCondition = stablehlo::NotOp::create(
               rewriter, userCompareOp.getLoc(), op.getResult());
           rewriter.replaceOp(user, negatedCondition);
@@ -28793,12 +29005,13 @@ struct DotGeneralReshape final
       newShape.push_back(dim);
     }
 
+    // The result element type may differ from the operands' (e.g. a bf16 x bf16
+    // -> f32 accumulating dot), so take it from the op being replaced: the
+    // trailing reshape has to be element-type preserving.
     auto newDotGeneral = stablehlo::DotGeneralOp::create(
         rewriter, op.getLoc(),
-        RankedTensorType::get(
-            newShape,
-            cast<RankedTensorType>(newLhs.getType()).getElementType()),
-        newLhs, newRhs,
+        RankedTensorType::get(newShape, op.getType().getElementType()), newLhs,
+        newRhs,
         stablehlo::DotDimensionNumbersAttr::get(
             rewriter.getContext(), adjustedLhsBatchingDims,
             adjustedRhsBatchingDims, adjustedLhsContractingDims,
