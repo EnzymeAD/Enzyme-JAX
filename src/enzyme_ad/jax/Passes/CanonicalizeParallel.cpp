@@ -503,10 +503,67 @@ struct SelectOfDifferentBaseGEPs : public OpRewritePattern<arith::SelectOp> {
   }
 };
 
-// Whether nothing can observe the address itself: every use either reads or
-// writes the pointed-to memory, or carries the pointer somewhere that is in
-// turn only dereferenced. A comparison, an escape into a call, or a store of
-// the pointer as a value all answer no.
+// Whether `use` reads or writes the pointed-to memory, or carries the pointer
+// into a value (appended to `derived`) whose uses decide instead. A
+// comparison, an escape into a call, or a store of the pointer as a value all
+// answer no.
+static bool dereferencesOrDerives(OpOperand &use,
+                                  SmallVectorImpl<Value> &derived) {
+  Operation *user = use.getOwner();
+  if (auto gep = dyn_cast<LLVM::GEPOp>(user)) {
+    if (use.get() != gep.getBase())
+      return false;
+    derived.push_back(gep.getResult());
+  } else if (isa<LLVM::AddrSpaceCastOp, LLVM::BitcastOp>(user)) {
+    derived.push_back(user->getResult(0));
+  } else if (auto sel = dyn_cast<arith::SelectOp>(user)) {
+    if (use.get() == sel.getCondition())
+      return false;
+    derived.push_back(sel.getResult());
+  } else if (auto p2m = dyn_cast<enzymexla::Pointer2MemrefOp>(user)) {
+    derived.push_back(p2m.getResult());
+  } else if (auto m2p = dyn_cast<enzymexla::Memref2PointerOp>(user)) {
+    derived.push_back(m2p.getResult());
+  } else if (isa<affine::AffineYieldOp, scf::YieldOp>(user)) {
+    // Yielded out of a branch, the pointer becomes that branch's result.
+    Operation *parent = user->getParentOp();
+    if (!isa<affine::AffineIfOp, scf::IfOp>(parent))
+      return false;
+    derived.push_back(parent->getResult(use.getOperandNumber()));
+  } else if (isa<LLVM::LoadOp, affine::AffineLoadOp, memref::LoadOp>(user)) {
+    // Reads the pointed-to memory, never the pointer.
+  } else if (auto store = dyn_cast<LLVM::StoreOp>(user)) {
+    if (use.get() == store.getValue())
+      return false;
+  } else if (auto store = dyn_cast<affine::AffineStoreOp>(user)) {
+    if (use.get() == store.getValueToStore())
+      return false;
+  } else if (auto store = dyn_cast<memref::StoreOp>(user)) {
+    if (use.get() == store.getValueToStore())
+      return false;
+  } else if (auto rmw = dyn_cast<LLVM::AtomicRMWOp>(user)) {
+    if (use.get() != rmw.getPtr())
+      return false;
+  } else if (auto rmw = dyn_cast<memref::AtomicRMWOp>(user)) {
+    if (use.get() != rmw.getMemref())
+      return false;
+  } else if (auto rmw = dyn_cast<enzyme::AtomicRMWOp>(user)) {
+    if (use.get() != rmw.getMemref())
+      return false;
+  } else if (auto rmw = dyn_cast<enzyme::AffineAtomicRMWOp>(user)) {
+    if (use.get() != rmw.getMemref())
+      return false;
+  } else if (isa<LLVM::MemsetOp, LLVM::MemsetInlineOp, LLVM::MemcpyOp,
+                 LLVM::MemcpyInlineOp, LLVM::MemmoveOp>(user)) {
+    // Fills or copies the pointed-to memory, through either end.
+  } else {
+    return false;
+  }
+  return true;
+}
+
+// Whether nothing can observe the address itself: every use either
+// dereferences it or carries it somewhere that is in turn only dereferenced.
 static bool onlyDereferenced(Value root) {
   SmallVector<Value> todo{root};
   SmallPtrSet<Value, 8> seen;
@@ -514,67 +571,25 @@ static bool onlyDereferenced(Value root) {
     Value v = todo.pop_back_val();
     if (!seen.insert(v).second)
       continue;
-    for (OpOperand &use : v.getUses()) {
-      Operation *user = use.getOwner();
-      if (auto gep = dyn_cast<LLVM::GEPOp>(user)) {
-        if (use.get() != gep.getBase())
-          return false;
-        todo.push_back(gep.getResult());
-      } else if (isa<LLVM::AddrSpaceCastOp, LLVM::BitcastOp>(user)) {
-        todo.push_back(user->getResult(0));
-      } else if (auto sel = dyn_cast<arith::SelectOp>(user)) {
-        if (use.get() == sel.getCondition())
-          return false;
-        todo.push_back(sel.getResult());
-      } else if (auto p2m = dyn_cast<enzymexla::Pointer2MemrefOp>(user)) {
-        todo.push_back(p2m.getResult());
-      } else if (auto m2p = dyn_cast<enzymexla::Memref2PointerOp>(user)) {
-        todo.push_back(m2p.getResult());
-      } else if (isa<affine::AffineYieldOp, scf::YieldOp>(user)) {
-        // Yielded out of a branch, the pointer becomes that branch's result.
-        Operation *parent = user->getParentOp();
-        if (!isa<affine::AffineIfOp, scf::IfOp>(parent))
-          return false;
-        todo.push_back(parent->getResult(use.getOperandNumber()));
-      } else if (isa<LLVM::LoadOp, affine::AffineLoadOp, memref::LoadOp>(
-                     user)) {
-        // Reads the pointed-to memory, never the pointer.
-      } else if (auto store = dyn_cast<LLVM::StoreOp>(user)) {
-        if (use.get() == store.getValue())
-          return false;
-      } else if (auto store = dyn_cast<affine::AffineStoreOp>(user)) {
-        if (use.get() == store.getValueToStore())
-          return false;
-      } else if (auto store = dyn_cast<memref::StoreOp>(user)) {
-        if (use.get() == store.getValueToStore())
-          return false;
-      } else if (auto rmw = dyn_cast<LLVM::AtomicRMWOp>(user)) {
-        if (use.get() != rmw.getPtr())
-          return false;
-      } else if (auto rmw = dyn_cast<memref::AtomicRMWOp>(user)) {
-        if (use.get() != rmw.getMemref())
-          return false;
-      } else if (auto rmw = dyn_cast<enzyme::AtomicRMWOp>(user)) {
-        if (use.get() != rmw.getMemref())
-          return false;
-      } else if (auto rmw = dyn_cast<enzyme::AffineAtomicRMWOp>(user)) {
-        if (use.get() != rmw.getMemref())
-          return false;
-      } else if (isa<LLVM::MemsetOp, LLVM::MemsetInlineOp, LLVM::MemcpyOp,
-                     LLVM::MemcpyInlineOp, LLVM::MemmoveOp>(user)) {
-        // Fills or copies the pointed-to memory, through either end.
-      } else {
+    for (OpOperand &use : v.getUses())
+      if (!dereferencesOrDerives(use, todo))
         return false;
-      }
-    }
   }
   return true;
 }
 
+// Whether this one use of a pointer reaches nothing but dereferences.
+static bool useOnlyDereferenced(OpOperand &use) {
+  SmallVector<Value> derived;
+  return dereferencesOrDerives(use, derived) &&
+         llvm::all_of(derived, onlyDereferenced);
+}
+
 // A pointer that is only ever dereferenced cannot tell a null apart from any
-// other address: the null arm can only fault. So a select of a null with a
-// real pointer, whose result reaches nothing but loads and stores, is the
-// real pointer.
+// other address: the null arm can only fault. So every use of a select of a
+// null with a real pointer that reaches nothing but loads and stores takes the
+// real pointer, and the select survives only for the uses that can observe
+// the address -- a store of it as a value, a comparison.
 struct SelectOfNullPointer : public OpRewritePattern<arith::SelectOp> {
   using OpRewritePattern::OpRewritePattern;
 
@@ -587,10 +602,18 @@ struct SelectOfNullPointer : public OpRewritePattern<arith::SelectOp> {
         sel.getFalseValue().getDefiningOp<LLVM::ZeroOp>() != nullptr;
     if (trueNull == falseNull)
       return failure();
-    if (!onlyDereferenced(sel.getResult()))
+    Value keep = trueNull ? sel.getFalseValue() : sel.getTrueValue();
+    bool changed = false;
+    for (OpOperand &use : llvm::make_early_inc_range(sel->getUses())) {
+      if (!useOnlyDereferenced(use))
+        continue;
+      rewriter.modifyOpInPlace(use.getOwner(), [&] { use.set(keep); });
+      changed = true;
+    }
+    if (!changed)
       return failure();
-    rewriter.replaceOp(sel,
-                       trueNull ? sel.getFalseValue() : sel.getTrueValue());
+    if (sel->use_empty())
+      rewriter.eraseOp(sel);
     return success();
   }
 };
