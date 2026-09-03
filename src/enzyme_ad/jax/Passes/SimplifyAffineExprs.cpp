@@ -1469,16 +1469,16 @@ struct FoldMinMaxUsingLoopBounds : public OpRewritePattern<MinMaxOp> {
   }
 };
 
-// The value `cmp` has on every point of `domain`, its operands read through
-// `substitution`; fails when the domain does not decide it. Values are
+// The value `lhs pred rhs` has on every point of `domain`, the operands read
+// through `substitution`; fails when the domain does not decide it. Values are
 // mathematical integers (no wraparound); an unsigned predicate is only decided
 // when both sides are provably non-negative on the domain.
 FailureOr<bool>
-decideOnDomain(LoopDomain &domain, arith::CmpIOp cmp,
+decideOnDomain(LoopDomain &domain, arith::CmpIPredicate pred, Value lhs,
+               Value rhs,
                const DenseMap<Value, Value> *substitution = nullptr) {
-  arith::CmpIPredicate pred = cmp.getPredicate();
   FailureOr<SmallVector<isl_aff *>> affs =
-      domain.getAffs({cmp.getLhs(), cmp.getRhs()}, substitution);
+      domain.getAffs({lhs, rhs}, substitution);
   if (failed(affs))
     return failure();
   isl_aff *lhsAff = (*affs)[0], *rhsAff = (*affs)[1];
@@ -1526,7 +1526,8 @@ struct FoldCmpUsingLoopBounds : public OpRewritePattern<arith::CmpIOp> {
     LoopDomain domain(islAnalysis.getCtx(), cmp);
     if (!domain)
       return failure();
-    FailureOr<bool> decided = decideOnDomain(domain, cmp);
+    FailureOr<bool> decided =
+        decideOnDomain(domain, cmp.getPredicate(), cmp.getLhs(), cmp.getRhs());
     if (failed(decided))
       return failure();
     rewriter.replaceOpWithNewOp<arith::ConstantOp>(
@@ -1561,7 +1562,8 @@ struct FoldNeverLoopingSCFWhileCondition
     for (auto [arg, init] :
          llvm::zip(whileOp.getBeforeArguments(), whileOp.getInits()))
       initOfArg[arg] = init;
-    FailureOr<bool> decided = decideOnDomain(domain, cmp, &initOfArg);
+    FailureOr<bool> decided = decideOnDomain(
+        domain, cmp.getPredicate(), cmp.getLhs(), cmp.getRhs(), &initOfArg);
     // Holding on the first evaluation says nothing about the next.
     if (failed(decided) || *decided)
       return failure();
@@ -1570,6 +1572,74 @@ struct FoldNeverLoopingSCFWhileCondition
                                                  rewriter.getBoolAttr(false));
     rewriter.modifyOpInPlace(
         condOp, [&] { condOp.getConditionMutable().assign(falseValue); });
+    return success();
+  }
+};
+
+// (a | b) `ult` 2^k holds exactly when every operand is under 2^k, and
+// (a | b) `uge` 2^k when any operand is: bitwise-or sets a bit at or above
+// position k exactly when some operand does, whatever the bit patterns. The or
+// itself is not affine, but the loop bounds may decide an operand's own
+// comparison: an operand decided under 2^k drops out of an `ult` and one
+// decided at least 2^k drops out of a `uge`, while the opposite decision
+// settles the whole comparison.
+struct FoldOrCmpUsingLoopBounds : public OpRewritePattern<arith::CmpIOp> {
+  IslAnalysis &islAnalysis;
+  FoldOrCmpUsingLoopBounds(MLIRContext &context, IslAnalysis &islAnalysis)
+      : OpRewritePattern<arith::CmpIOp>(&context), islAnalysis(islAnalysis) {}
+
+  LogicalResult matchAndRewrite(arith::CmpIOp cmp,
+                                PatternRewriter &rewriter) const override {
+    using Pred = arith::CmpIPredicate;
+    Pred pred = cmp.getPredicate();
+    if (pred != Pred::ult && pred != Pred::uge)
+      return failure();
+    APInt rhsCst;
+    if (!matchPattern(cmp.getRhs(), m_ConstantInt(&rhsCst)) ||
+        !rhsCst.isPowerOf2() || !cmp.getLhs().getDefiningOp<arith::OrIOp>())
+      return failure();
+    LoopDomain domain(islAnalysis.getCtx(), cmp);
+    if (!domain)
+      return failure();
+    SmallVector<Value> leaves;
+    SmallVector<Value> worklist{cmp.getLhs()};
+    while (!worklist.empty()) {
+      Value value = worklist.pop_back_val();
+      if (auto orOp = value.getDefiningOp<arith::OrIOp>()) {
+        worklist.push_back(orOp.getRhs());
+        worklist.push_back(orOp.getLhs());
+      } else {
+        leaves.push_back(value);
+      }
+    }
+    // Under `ult` an operand decided true contributes nothing; under `uge` an
+    // operand decided false does.
+    bool dropsWhen = pred == Pred::ult;
+    SmallVector<Value> kept;
+    for (Value leaf : leaves) {
+      FailureOr<bool> decided =
+          decideOnDomain(domain, pred, leaf, cmp.getRhs());
+      if (failed(decided)) {
+        kept.push_back(leaf);
+        continue;
+      }
+      if (*decided != dropsWhen) {
+        rewriter.replaceOpWithNewOp<arith::ConstantOp>(
+            cmp, rewriter.getBoolAttr(*decided));
+        return success();
+      }
+    }
+    if (kept.size() == leaves.size())
+      return failure();
+    if (kept.empty()) {
+      rewriter.replaceOpWithNewOp<arith::ConstantOp>(
+          cmp, rewriter.getBoolAttr(dropsWhen));
+      return success();
+    }
+    Value lhs = kept.front();
+    for (Value leaf : llvm::drop_begin(kept))
+      lhs = arith::OrIOp::create(rewriter, cmp.getLoc(), lhs, leaf);
+    rewriter.replaceOpWithNewOp<arith::CmpIOp>(cmp, pred, lhs, cmp.getRhs());
     return success();
   }
 };
@@ -1640,6 +1710,7 @@ void mlir::populateAffineExprSimplificationPatterns(
     SimplifyIfAffineExprs,
     PruneParallelBounds,
     FoldCmpUsingLoopBounds,
+    FoldOrCmpUsingLoopBounds,
     FoldMinMaxUsingLoopBounds<arith::MaxSIOp>,
     FoldMinMaxUsingLoopBounds<arith::MinSIOp>,
     FoldMinMaxUsingLoopBounds<arith::MaxUIOp>,
