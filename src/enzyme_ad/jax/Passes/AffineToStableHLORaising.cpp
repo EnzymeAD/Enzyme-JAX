@@ -298,6 +298,7 @@ struct ParallelContext {
     bool dump_failed_lockstep = false;
     bool preferWhileRaising = true;
     bool strip_llvm_debuginfo = false;
+    int64_t unrollBudget = 1 << 16;
   } options;
 
   explicit ParallelContext(Options &options) : options(options) {}
@@ -2253,6 +2254,24 @@ static LogicalResult tryRaisingLockStepForOpToStableHLO(
   return failure();
 }
 
+// The op count of `op` once every constant-bound affine.for inside it (and
+// `op` itself, if it is one) is unrolled, saturating at 2^40.
+static int64_t unrollCost(Operation *op) {
+  int64_t body = 1;
+  for (Region &r : op->getRegions())
+    for (Block &b : r)
+      for (Operation &inner : b)
+        body = std::min(body + unrollCost(&inner), (int64_t)1 << 40);
+  auto forOp = dyn_cast<affine::AffineForOp>(op);
+  if (!forOp || !forOp.hasConstantBounds())
+    return body;
+  int64_t step = forOp.getStepAsInt();
+  int64_t trip = (forOp.getConstantUpperBound() -
+                  forOp.getConstantLowerBound() + step - 1) /
+                 step;
+  return std::min(std::max(trip, (int64_t)1) * body, (int64_t)1 << 40);
+}
+
 static LogicalResult
 tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
                         llvm::DenseMap<Value, affine::AffineValueMap> &maps,
@@ -3747,9 +3766,17 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
             .succeeded()) {
       return success();
     }
+    // Nested constant-bound loops unroll multiplicatively (a generic
+    // max-degree kernel reaches millions of ops and gigabytes of module
+    // text); past a budget, iterating as a while beats unrolling even when
+    // the preference says otherwise.
+    bool hugeUnroll =
+        pc.options.unrollBudget >= 0 && forOp.hasConstantBounds() &&
+        unrollCost(forOp.getOperation()) > pc.options.unrollBudget;
     // A loop whose trip count is only known at runtime can still iterate as
     // a while, whatever the preference says.
-    if ((pc.options.preferWhileRaising || !forOp.hasConstantBounds()) &&
+    if ((pc.options.preferWhileRaising || !forOp.hasConstantBounds() ||
+         hugeUnroll) &&
         tryRaisingForOpToStableHLOWhile(forOp, mapping, builder, maps, pc)
             .succeeded()) {
       return success();
@@ -4241,8 +4268,8 @@ struct AffineToStableHLORaisingPass
 
   void runOnOperation() override {
     ParallelContext::Options options{enable_lockstep_for, dump_failed_lockstep,
-                                     prefer_while_raising,
-                                     strip_llvm_debuginfo};
+                                     prefer_while_raising, strip_llvm_debuginfo,
+                                     unroll_budget};
     std::vector<func::FuncOp> funcs;
 
     auto context = getOperation()->getContext();
