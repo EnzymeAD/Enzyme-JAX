@@ -2368,13 +2368,42 @@ static Value createVectorLoad(OpBuilder &b, Location loc, Type ty,
   llvm_unreachable("");
 }
 
+// The one element type every typed view derived from `root` uses, or null
+// when there is none or they disagree.
+static Type viewedElementType(Value root) {
+  Type elTy;
+  SmallVector<Value> todo{root};
+  DenseSet<Value> seen;
+  while (!todo.empty()) {
+    Value v = todo.pop_back_val();
+    if (!seen.insert(v).second)
+      continue;
+    for (Operation *user : v.getUsers()) {
+      if (auto gep = dyn_cast<LLVM::GEPOp>(user)) {
+        if (gep.getBase() == v)
+          todo.push_back(gep.getResult());
+      } else if (isa<LLVM::AddrSpaceCastOp, arith::SelectOp>(user)) {
+        todo.push_back(user->getResult(0));
+      } else if (auto view = dyn_cast<enzymexla::Pointer2MemrefOp>(user)) {
+        Type t = cast<MemRefType>(view.getType()).getElementType();
+        if (elTy && elTy != t)
+          return nullptr;
+        elTy = t;
+      }
+    }
+  }
+  return elTy;
+}
+
 // A zeroing memset is a loop of stores of zero, and only in that form does an
 // allocation the conversion could take stop being blocked by it: the
 // conversion accepts views of an allocation and nothing else, and a memset
 // names the pointer itself. The element type is the one the allocation was
 // declared with (every allocation a select could pick must agree), so the
 // stores land on whole elements; a length that is not a whole number of them
-// is left alone.
+// is left alone. Inside a kernel every memset has to go, since the raising
+// has no lowering for one, so there a base that is not an allocation may take
+// its type from the views the kernel already accesses it through.
 struct MemsetZeroToAffineFill : public OpRewritePattern<LLVM::MemsetOp> {
   using OpRewritePattern<LLVM::MemsetOp>::OpRewritePattern;
 
@@ -2391,7 +2420,15 @@ struct MemsetZeroToAffineFill : public OpRewritePattern<LLVM::MemsetOp> {
     if (memset.getIsVolatile())
       return failure();
 
+    bool inKernel =
+        memset->getParentOfType<enzymexla::GPUWrapperOp>() != nullptr;
     Type elTy;
+    auto merge = [&](Type t) {
+      if (!t || (elTy && elTy != t))
+        return failure();
+      elTy = t;
+      return success();
+    };
     SmallVector<Value> todo{memset.getDst()};
     while (!todo.empty()) {
       Value base = todo.pop_back_val();
@@ -2406,10 +2443,9 @@ struct MemsetZeroToAffineFill : public OpRewritePattern<LLVM::MemsetOp> {
         Type t = alloca.getElemType();
         while (auto arr = dyn_cast<LLVM::LLVMArrayType>(t))
           t = arr.getElementType();
-        if (elTy && elTy != t)
+        if (failed(merge(t)))
           return failure();
-        elTy = t;
-      } else
+      } else if (!inKernel || failed(merge(viewedElementType(base))))
         return failure();
     }
     auto adTy = dyn_cast<enzyme::AutoDiffTypeInterface>(elTy);

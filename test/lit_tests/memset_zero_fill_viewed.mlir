@@ -44,6 +44,54 @@ module {
     "llvm.intr.memset"(%s, %c0, %c24) <{isVolatile = false}> : (!llvm.ptr, i8, i64) -> ()
     return
   }
+  func.func @kernel_viewed(%p: !llvm.ptr, %i: i64, %x: f64) {
+    %c1 = arith.constant 1 : index
+    %c0 = arith.constant 0 : i8
+    %c24 = arith.constant 24 : i64
+    %0 = "enzymexla.gpu_wrapper"(%c1, %c1, %c1, %c1, %c1, %c1) ({
+      %v = "enzymexla.pointer2memref"(%p) : (!llvm.ptr) -> memref<?xf64>
+      affine.store %x, %v[0] : memref<?xf64>
+      %g = llvm.getelementptr %p[%i] : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<8 x i8>
+      "llvm.intr.memset"(%g, %c0, %c24) <{isVolatile = false}> : (!llvm.ptr, i8, i64) -> ()
+      "enzymexla.polygeist_yield"() : () -> ()
+    }) : (index, index, index, index, index, index) -> index
+    return
+  }
+  func.func @host_viewed(%p: !llvm.ptr, %i: i64, %x: f64) {
+    %c0 = arith.constant 0 : i8
+    %c24 = arith.constant 24 : i64
+    %v = "enzymexla.pointer2memref"(%p) : (!llvm.ptr) -> memref<?xf64>
+    affine.store %x, %v[0] : memref<?xf64>
+    %g = llvm.getelementptr %p[%i] : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<8 x i8>
+    "llvm.intr.memset"(%g, %c0, %c24) <{isVolatile = false}> : (!llvm.ptr, i8, i64) -> ()
+    return
+  }
+  func.func @kernel_unviewed(%p: !llvm.ptr, %i: i64) {
+    %c1 = arith.constant 1 : index
+    %c0 = arith.constant 0 : i8
+    %c24 = arith.constant 24 : i64
+    %0 = "enzymexla.gpu_wrapper"(%c1, %c1, %c1, %c1, %c1, %c1) ({
+      %g = llvm.getelementptr %p[%i] : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<8 x i8>
+      "llvm.intr.memset"(%g, %c0, %c24) <{isVolatile = false}> : (!llvm.ptr, i8, i64) -> ()
+      "enzymexla.polygeist_yield"() : () -> ()
+    }) : (index, index, index, index, index, index) -> index
+    return
+  }
+  func.func @kernel_disagreeing_views(%p: !llvm.ptr, %i: i64, %x: f64, %y: i32) {
+    %c1 = arith.constant 1 : index
+    %c0 = arith.constant 0 : i8
+    %c24 = arith.constant 24 : i64
+    %0 = "enzymexla.gpu_wrapper"(%c1, %c1, %c1, %c1, %c1, %c1) ({
+      %v = "enzymexla.pointer2memref"(%p) : (!llvm.ptr) -> memref<?xf64>
+      affine.store %x, %v[0] : memref<?xf64>
+      %w = "enzymexla.pointer2memref"(%p) : (!llvm.ptr) -> memref<?xi32>
+      affine.store %y, %w[0] : memref<?xi32>
+      %g = llvm.getelementptr %p[%i] : (!llvm.ptr, i64) -> !llvm.ptr, !llvm.array<8 x i8>
+      "llvm.intr.memset"(%g, %c0, %c24) <{isVolatile = false}> : (!llvm.ptr, i8, i64) -> ()
+      "enzymexla.polygeist_yield"() : () -> ()
+    }) : (index, index, index, index, index, index) -> index
+    return
+  }
 }
 
 // CHECK-LABEL:  func.func @chosen(
@@ -64,4 +112,21 @@ module {
 // CHECK:  llvm.intr.memset
 
 // CHECK-LABEL:  func.func @argument(
+// CHECK:  llvm.intr.memset
+
+// CHECK-LABEL:  func.func @kernel_viewed(
+// CHECK-NOT:  llvm.intr.memset
+// CHECK:  %[[gep:.+]] = llvm.getelementptr %arg0[%arg1]
+// CHECK-NEXT:  %[[view:.+]] = "enzymexla.pointer2memref"(%[[gep]]) : (!llvm.ptr) -> memref<?xf64>
+// CHECK-NEXT:  affine.for %[[iv:.+]] = 0 to 3 {
+// CHECK-NEXT:  affine.store %{{.*}}, %[[view]][%[[iv]]] : memref<?xf64>
+// CHECK-NEXT:  }
+
+// CHECK-LABEL:  func.func @host_viewed(
+// CHECK:  llvm.intr.memset
+
+// CHECK-LABEL:  func.func @kernel_unviewed(
+// CHECK:  llvm.intr.memset
+
+// CHECK-LABEL:  func.func @kernel_disagreeing_views(
 // CHECK:  llvm.intr.memset
