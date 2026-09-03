@@ -421,7 +421,7 @@ struct LowerCommToStablehloPass
     target.addLegalDialect<stablehlo::StablehloDialect>();
     target.addIllegalDialect<comm::CommDialect>();
 
-    StablehloTypeConverter converter(context);
+    comm::StablehloTypeConverter converter;
 
     target.addDynamicallyLegalOp<func::FuncOp>([&](func::FuncOp op) {
       return converter.isSignatureLegal(op.getFunctionType());
