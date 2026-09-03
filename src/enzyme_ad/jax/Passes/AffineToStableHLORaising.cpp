@@ -17,6 +17,7 @@
 
 #include "Enzyme/MLIR/Dialect/Ops.h"
 #include "mlir/Dialect/Affine/Analysis/AffineAnalysis.h"
+#include "mlir/Dialect/Affine/Analysis/AffineStructures.h"
 #include "mlir/Dialect/Affine/Analysis/Utils.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Affine/IR/AffineValueMap.h"
@@ -31,6 +32,7 @@
 #include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "mlir/Transforms/RegionUtils.h"
 
 #include "Interfaces/AutoDiffTypeInterface.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
@@ -2942,6 +2944,49 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
       Value mask = pc.mask;
       affine::AffineValueMap maskMap = maps.lookup(mask);
 
+      // A mask over an iv that neither the store location nor the stored
+      // value depends on picks which lanes write, and they all write the
+      // same thing: the store lands wherever any lane is admitted.
+      SmallVector<int64_t> lanesToReduce;
+      SmallVector<Value> keptIvs;
+      for (auto [j, E] : llvm::enumerate(maskMap.getAffineMap().getResults())) {
+        Value iv = getIVForExpr(maskMap, E);
+        if (llvm::is_contained(storeOp.getIndices(), iv) ||
+            llvm::is_contained(updateValueMap.getOperands(), iv))
+          keptIvs.push_back(iv);
+        else
+          lanesToReduce.push_back(j);
+      }
+      if (!lanesToReduce.empty()) {
+        auto loc =
+            rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo);
+        auto maskType = cast<RankedTensorType>(mask.getType());
+        auto boolType = RankedTensorType::get({}, maskType.getElementType());
+        SmallVector<int64_t> anyShape;
+        for (auto [j, sz] : llvm::enumerate(maskType.getShape()))
+          if (!llvm::is_contained(lanesToReduce, j))
+            anyShape.push_back(sz);
+        Value init = stablehlo::ConstantOp::create(
+            builder, loc,
+            DenseElementsAttr::get(boolType, ArrayRef<bool>(false)));
+        auto any = stablehlo::ReduceOp::create(
+            builder, loc, TypeRange{maskType.clone(anyShape)}, ValueRange{mask},
+            ValueRange{init}, builder.getDenseI64ArrayAttr(lanesToReduce));
+        auto block = new Block();
+        any.getBody().push_back(block);
+        auto a = block->addArgument(boolType, loc);
+        auto b = block->addArgument(boolType, loc);
+        {
+          OpBuilder builder(block, block->end());
+          Value either = stablehlo::OrOp::create(builder, loc, a, b);
+          stablehlo::ReturnOp::create(builder, loc, either);
+        }
+        mask = any.getResult(0);
+        maskMap = affine::AffineValueMap(
+            AffineMap::getMultiDimIdentityMap(keptIvs.size(), op->getContext()),
+            keptIvs);
+      }
+
       // here this is a bit annoying but alignMemoryAccess expects non constant
       // dims in its value maps. as such, we remove constant dims from the
       // update and subsequent previous value as to use the storeValueMap.
@@ -4059,6 +4104,347 @@ struct AffineToStableHLORaisingPass
     return std::nullopt;
   }
 
+  // MFEM_FOREACH_THREAD(i, x, N) is CUDA's grid-stride idiom: lane t of a
+  // block of extent s handles i = t, t+s, t+2s, ... below N, so the lanes
+  // and the loop together visit every i in [0, N) exactly once. Raised
+  // execution is whole-tensor, so serializing the loop (its trip count
+  // differs per lane) gains nothing over one parallel axis of extent N run
+  // from lane 0 alone:
+  //
+  //   affine.parallel (t) = (0) to (s) {
+  //     affine.for j = t + a to N + a step s { B(j) }        // constant s
+  //     affine.for k = 0 to (N - t) ceildiv s { B(t + k*s) } // any s
+  //   }
+  //   =>
+  //   affine.parallel (t) = (0) to (s) {
+  //     affine.if t == 0 { affine.parallel (i) = (0) to (N) { B(i) } }
+  //   }
+  //
+  // Sound when the body depends on the lane only through its index, the
+  // iterations over i are independent, and every guard between the axis
+  // and the loop admits each lane below min(s, N).
+  struct GridStrideLoop {
+    affine::AffineParallelOp par;
+    unsigned axis;
+    affine::AffineForOp loop;
+    affine::AffineValueMap extent;
+    // The lane index i against the loop's own variables: j = i + shift for
+    // the constant-stride form, t = i - k * stride otherwise.
+    std::optional<affine::AffineValueMap> shift;
+    Value stride;
+  };
+
+  static std::optional<GridStrideLoop>
+  matchGridStrideLoop(affine::AffineForOp loop) {
+    if (loop.getNumIterOperands() != 0 ||
+        loop.getLowerBoundMap().getNumResults() != 1 ||
+        loop.getUpperBoundMap().getNumResults() != 1)
+      return std::nullopt;
+    MLIRContext *ctx = loop.getContext();
+
+    Value t;
+    SmallVector<Value> boundOperands(loop.getLowerBoundOperands());
+    llvm::append_range(boundOperands, loop.getUpperBoundOperands());
+    for (Value o : boundOperands) {
+      auto owner = affine::getAffineParallelInductionVarOwner(o);
+      if (!owner || !owner->isProperAncestor(loop))
+        continue;
+      if (t && t != o)
+        return std::nullopt;
+      t = o;
+    }
+    if (!t)
+      return std::nullopt;
+    auto par = affine::getAffineParallelInductionVarOwner(t);
+    unsigned axis = cast<BlockArgument>(t).getArgNumber();
+    if (!par.getReductions().empty() || par.getSteps()[axis] != 1)
+      return std::nullopt;
+    auto parLb = getConstant(par.getLowerBoundMap(axis));
+    if (!parLb || *parLb != 0)
+      return std::nullopt;
+    AffineMap extentMap = par.getUpperBoundMap(axis);
+    if (extentMap.getNumResults() != 1)
+      return std::nullopt;
+    std::optional<int64_t> cst;
+    Value stride;
+    if (auto c = dyn_cast<AffineConstantExpr>(extentMap.getResult(0)))
+      cst = c.getValue();
+    else if (auto s = dyn_cast<AffineSymbolExpr>(extentMap.getResult(0)))
+      stride = par.getUpperBoundsOperands()[extentMap.getNumDims() +
+                                            s.getPosition()];
+    else
+      return std::nullopt;
+
+    GridStrideLoop gs{par, axis, loop, {}, {}, stride};
+    affine::AffineValueMap lb(loop.getLowerBoundMap(),
+                              loop.getLowerBoundOperands());
+    affine::AffineValueMap ub(loop.getUpperBoundMap(),
+                              loop.getUpperBoundOperands());
+    auto canonicalize = [](affine::AffineValueMap &vm) {
+      AffineMap m = vm.getAffineMap();
+      SmallVector<Value> ops(vm.getOperands());
+      affine::canonicalizeMapAndOperands(&m, &ops);
+      vm.reset(m, ops);
+    };
+    auto lbConst = getConstant(lb.getAffineMap());
+    if (cst && loop.getStepAsInt() == *cst) {
+      affine::AffineValueMap tv(AffineMap::getMultiDimIdentityMap(1, ctx), t);
+      gs.shift.emplace();
+      affine::AffineValueMap::difference(lb, tv, &*gs.shift);
+      if (gs.shift->isFunctionOf(0, t))
+        return std::nullopt;
+      canonicalize(*gs.shift);
+      affine::AffineValueMap::difference(ub, *gs.shift, &gs.extent);
+    } else if (loop.getStepAsInt() == 1 && lbConst && *lbConst == 0) {
+      AffineMap um = ub.getAffineMap();
+      auto div = dyn_cast<AffineBinaryOpExpr>(um.getResult(0));
+      if (!div || (div.getKind() != AffineExprKind::FloorDiv &&
+                   div.getKind() != AffineExprKind::CeilDiv))
+        return std::nullopt;
+      AffineExpr den = div.getRHS();
+      if (cst) {
+        if (den != getAffineConstantExpr(*cst, ctx))
+          return std::nullopt;
+      } else {
+        auto s = dyn_cast<AffineSymbolExpr>(den);
+        if (!s || ub.getOperand(um.getNumDims() + s.getPosition()) != stride)
+          return std::nullopt;
+      }
+      auto tIt = llvm::find(ub.getOperands(), t);
+      unsigned tPos = tIt - ub.getOperands().begin();
+      if (tPos >= um.getNumDims())
+        return std::nullopt;
+      AffineExpr n = div.getLHS() + getAffineDimExpr(tPos, ctx);
+      if (div.getKind() == AffineExprKind::FloorDiv)
+        n = n - den + 1;
+      gs.extent.reset(AffineMap::get(um.getNumDims(), um.getNumSymbols(),
+                                     simplifyAffineExpr(n, um.getNumDims(),
+                                                        um.getNumSymbols())),
+                      ub.getOperands());
+    } else {
+      return std::nullopt;
+    }
+    if (gs.extent.isFunctionOf(0, t))
+      return std::nullopt;
+    canonicalize(gs.extent);
+    return gs;
+  }
+
+  // Whether `v`, read from inside a loop nested in `par`, can differ between
+  // lanes of axis `t` other than through `t` itself. Values from outside the
+  // parallel, its other axes, the IVs of the loops between it and the use
+  // (whose bounds the caller has checked are lane-invariant), allocations,
+  // and pure functions of those cannot.
+  static bool variesWithLane(Value v, affine::AffineParallelOp par, Value t,
+                             DenseMap<Value, bool> &memo) {
+    if (v == t)
+      return true;
+    if (auto it = memo.find(v); it != memo.end())
+      return it->second;
+    bool res;
+    if (!par.getRegion().isAncestor(v.getParentRegion()) ||
+        isa<BlockArgument>(v)) {
+      res = false;
+    } else {
+      Operation *def = v.getDefiningOp();
+      if (isa<memref::AllocaOp, memref::AllocOp>(def))
+        res = false;
+      else if (def->getNumRegions() != 0 || !isMemoryEffectFree(def))
+        res = true;
+      else
+        res = llvm::any_of(def->getOperands(), [&](Value o) {
+          return variesWithLane(o, par, t, memo);
+        });
+    }
+    memo[v] = res;
+    return res;
+  }
+
+  // Whether the constraints of `guard` that mention the lane `t` hold over
+  // all of `lanes`, the lanes below min(s, N).
+  static bool guardAdmitsLanes(affine::AffineIfOp guard,
+                               const affine::FlatAffineValueConstraints &lanes,
+                               Value t) {
+    IntegerSet set = guard.getIntegerSet();
+    SmallVector<Value> operands(guard.getOperands());
+    affine::canonicalizeSetAndOperands(&set, &operands);
+    auto cond = affine::FlatAffineValueConstraints::create(set, operands);
+    if (failed(cond))
+      return false;
+    affine::FlatAffineValueConstraints dom(lanes);
+    dom.mergeAndAlignVarsWithOther(0, &*cond);
+    unsigned tPos;
+    if (!cond->findVar(t, &tPos))
+      return true;
+    for (int i = cond->getNumInequalities() - 1; i >= 0; --i)
+      if (cond->atIneq(i, tPos) == 0)
+        cond->removeInequality(i);
+    for (int i = cond->getNumEqualities() - 1; i >= 0; --i)
+      if (cond->atEq(i, tPos) == 0)
+        cond->removeEquality(i);
+    return dom.isSubsetOf(*cond);
+  }
+
+  // isLoopMemoryParallel, but admitting nested affine.parallel: the lanes an
+  // inner grid-stride loop already coalesced into.
+  static bool isLaneLoopParallel(affine::AffineForOp forOp) {
+    SmallVector<Operation *> accesses;
+    auto walkResult = forOp.walk([&](Operation *op) -> WalkResult {
+      Value memref;
+      if (auto read = dyn_cast<affine::AffineReadOpInterface>(op))
+        memref = read.getMemRef();
+      else if (auto write = dyn_cast<affine::AffineWriteOpInterface>(op))
+        memref = write.getMemRef();
+      if (memref) {
+        if (!memref.getDefiningOp() ||
+            !forOp->isProperAncestor(memref.getDefiningOp()))
+          accesses.push_back(op);
+        return WalkResult::advance();
+      }
+      if (isa<affine::AffineForOp, affine::AffineParallelOp,
+              affine::AffineYieldOp, affine::AffineIfOp>(op) ||
+          hasSingleEffect<MemoryEffects::Allocate>(op) ||
+          isMemoryEffectFree(op))
+        return WalkResult::advance();
+      return WalkResult::interrupt();
+    });
+    if (walkResult.wasInterrupted())
+      return false;
+    unsigned depth = affine::getNestingDepth(forOp) + 1;
+    for (Operation *src : accesses) {
+      affine::MemRefAccess srcAccess(src);
+      for (Operation *dst : accesses) {
+        affine::MemRefAccess dstAccess(dst);
+        if (affine::checkMemrefAccessDependence(srcAccess, dstAccess, depth)
+                .value != affine::DependenceResult::NoDependence)
+          return false;
+      }
+    }
+    return true;
+  }
+
+  static void coalesceGridStrideLoops(Operation *root) {
+    MLIRContext *ctx = root->getContext();
+    RewritePatternSet owningPatterns(ctx);
+    for (RegisteredOperationName op : ctx->getRegisteredOperations())
+      if (op.getDialectNamespace() ==
+          affine::AffineDialect::getDialectNamespace())
+        op.getCanonicalizationPatterns(owningPatterns, ctx);
+    FrozenRewritePatternSet patterns(std::move(owningPatterns));
+    GreedyRewriteConfig config;
+    config.setStrictness(GreedyRewriteStrictness::ExistingAndNewOps);
+
+    // Post-order, so an inner loop coalesces before the outer one asks
+    // whether its own iterations are independent.
+    SmallVector<affine::AffineForOp> worklist;
+    root->walk([&](affine::AffineForOp loop) { worklist.push_back(loop); });
+    for (auto loop : worklist) {
+      auto gs = matchGridStrideLoop(loop);
+      if (!gs)
+        continue;
+      if (loop->walk(
+                  [](enzymexla::BarrierOp) { return WalkResult::interrupt(); })
+              .wasInterrupted())
+        continue;
+      Value t = gs->par.getIVs()[gs->axis];
+
+      affine::FlatAffineValueConstraints lanes;
+      if (failed(lanes.addInductionVarOrTerminalSymbol(t)))
+        continue;
+      unsigned tPos;
+      lanes.findVar(t, &tPos);
+      lanes.addBound(presburger::BoundType::LB, tPos, 0);
+      if (failed(lanes.addBound(presburger::BoundType::UB, tPos,
+                                gs->par.getUpperBoundMap(gs->axis),
+                                gs->par.getUpperBoundsOperands())) ||
+          failed(lanes.addBound(presburger::BoundType::UB, tPos,
+                                gs->extent.getAffineMap(),
+                                gs->extent.getOperands())))
+        continue;
+
+      DenseMap<Value, bool> memo;
+      auto laneInvariant = [&](ValueRange vals) {
+        return llvm::none_of(vals, [&](Value o) {
+          return o != t && variesWithLane(o, gs->par, t, memo);
+        });
+      };
+      bool ok = laneInvariant(loop->getOperands());
+      Operation *child = loop;
+      for (Operation *anc = loop->getParentOp(); ok && anc != gs->par;
+           child = anc, anc = anc->getParentOp()) {
+        if (auto guard = dyn_cast<affine::AffineIfOp>(anc))
+          ok = child->getParentRegion() == &guard.getThenRegion() &&
+               guardAdmitsLanes(guard, lanes, t);
+        else if (isa<affine::AffineForOp, affine::AffineParallelOp>(anc))
+          ok = laneInvariant(anc->getOperands());
+        else
+          ok = false;
+      }
+      if (!ok)
+        continue;
+      loop.getBody()->walk([&](Operation *op) {
+        for (Value o : op->getOperands())
+          if (!loop.getRegion().isAncestor(o.getParentRegion()) &&
+              !laneInvariant(o))
+            ok = false;
+      });
+      if (!ok)
+        continue;
+
+      // Build the lane loop around a clone of the body, so that giving up
+      // leaves the original untouched.
+      OpBuilder b(loop);
+      Location loc = loop.getLoc();
+      auto guard = affine::AffineIfOp::create(
+          b, loc, TypeRange(),
+          IntegerSet::get(1, 0, {b.getAffineDimExpr(0)}, {true}), ValueRange{t},
+          /*withElseRegion=*/false);
+      b.setInsertionPointToStart(guard.getThenBlock());
+      auto lane = affine::AffineForOp::create(
+          b, loc, ValueRange{}, AffineMap::getConstantMap(0, ctx),
+          gs->extent.getOperands(), gs->extent.getAffineMap(), 1);
+      Value i = lane.getInductionVar();
+      auto clone = cast<affine::AffineForOp>(b.clone(*loop));
+      Value k = clone.getInductionVar();
+      Block *dst = lane.getBody();
+      dst->getTerminator()->erase();
+      dst->getOperations().splice(dst->end(), clone.getBody()->getOperations());
+      b.setInsertionPointToStart(dst);
+      AffineExpr d0 = b.getAffineDimExpr(0), d1 = b.getAffineDimExpr(1);
+      Value tRepl;
+      if (gs->shift) {
+        int64_t c = loop.getStepAsInt();
+        tRepl = affine::AffineApplyOp::create(b, loc,
+                                              AffineMap::get(1, 0, d0 % c), i);
+        Value a = affine::AffineApplyOp::create(
+            b, loc, gs->shift->getAffineMap(), gs->shift->getOperands());
+        Value kRepl = affine::AffineApplyOp::create(
+            b, loc, AffineMap::get(2, 0, d0 + d1), ValueRange{i, a});
+        replaceAllUsesInRegionWith(k, kRepl, lane.getRegion());
+      } else if (gs->stride) {
+        tRepl = affine::AffineApplyOp::create(
+            b, loc, AffineMap::get(2, 1, d0 - d1 * b.getAffineSymbolExpr(0)),
+            ValueRange{i, k, gs->stride});
+      } else {
+        int64_t c = *getConstant(gs->par.getUpperBoundMap(gs->axis));
+        tRepl = affine::AffineApplyOp::create(
+            b, loc, AffineMap::get(2, 0, d0 - d1 * c), ValueRange{i, k});
+      }
+      replaceAllUsesInRegionWith(t, tRepl, lane.getRegion());
+      SmallVector<Operation *> ops;
+      dst->walk([&](Operation *op) { ops.push_back(op); });
+      (void)applyOpPatternsGreedily(ops, patterns, config);
+
+      if (!k.use_empty() || !isLaneLoopParallel(lane)) {
+        guard.erase();
+        continue;
+      }
+      clone.erase();
+      loop.erase();
+      (void)affine::affineParallelize(lane);
+    }
+  }
+
   // A parallel axis whose extent is dynamic but provably bounded (a block
   // size clamped by a min against a constant) batches at the bound instead
   // of peeling to a serial loop: the axis becomes constant-extent and the
@@ -4304,6 +4690,7 @@ struct AffineToStableHLORaisingPass
     // actually raises.
     for (auto func : funcs) {
       stripAccessMemorySpaceCasts(func);
+      coalesceGridStrideLoops(func);
       boundParallelAxes(func);
       peelDynamicParallelDims(func);
     }
@@ -4327,6 +4714,7 @@ struct AffineToStableHLORaisingPass
     op->walk([&](enzymexla::GPUWrapperOp g) { gwrap.push_back(g); });
     for (auto g : gwrap) {
       stripAccessMemorySpaceCasts(g);
+      coalesceGridStrideLoops(g);
       boundParallelAxes(g);
       peelDynamicParallelDims(g);
     }
