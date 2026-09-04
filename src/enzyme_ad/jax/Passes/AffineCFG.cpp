@@ -2981,6 +2981,12 @@ struct SplitOnAffineIfConstants : public OpRewritePattern<OpTy> {
     Region *scope = getLocalAffineScope(op);
     if (!scope)
       return failure();
+    // Only scalar results are yielded through the affine.if as a select;
+    // a pointer or memref result would leave one no raising can select on.
+    if (!llvm::all_of(op->getResultTypes(), [](Type type) {
+          return isa<IntegerType, IndexType, FloatType>(type);
+        }))
+      return failure();
     affine::AffineIfOp ifOp = findConditional(op, scope);
     if (!ifOp)
       return failure();
