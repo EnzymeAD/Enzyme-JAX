@@ -972,6 +972,9 @@ emitIfAsSelect(Operation *ifOp, Value cond, affine::AffineValueMap map,
          llvm::zip_equal(thenTerm->getOperands(), elseTerm->getOperands(),
                          ifOp->getResults())) {
       Value a = cond;
+      if (isa<MemRefType, LLVM::LLVMPointerType>(res.getType()) &&
+          res.use_empty())
+        continue;
       if (isa<MemRefType, LLVM::LLVMPointerType>(res.getType())) {
         // A branch choosing between whole buffers raises as a select of the
         // whole tensors when the choice is uniform and nothing writes through
@@ -4326,6 +4329,126 @@ struct AffineToStableHLORaisingPass
     }
   }
 
+  // A branch yielding one of several buffers blocks raising: no tensor can
+  // stand for "one of these two memrefs". Duplicate the branch at every
+  // access instead — a load becomes a value-yielding branch loading in each
+  // arm, a store becomes a store in each arm — so every access reaches a
+  // real buffer and the usual select/mask raising applies. Branch bodies are
+  // cloned per access, so only effect-free bodies qualify.
+  static void expandBufferBranches(Operation *root) {
+    // The same shape also arrives as an arith.select of two buffers: expand
+    // each access into an scf.if on the select's condition.
+    SmallVector<arith::SelectOp> selects;
+    root->walk([&](arith::SelectOp sel) {
+      if (isa<MemRefType>(sel.getType()))
+        selects.push_back(sel);
+    });
+    for (auto sel : selects) {
+      for (OpOperand &use : llvm::make_early_inc_range(sel->getUses())) {
+        Operation *user = use.getOwner();
+        bool isLoad = isa<memref::LoadOp, affine::AffineLoadOp>(user);
+        bool isStore = isa<memref::StoreOp, affine::AffineStoreOp>(user);
+        unsigned memIdx = isLoad ? 0 : 1;
+        if ((!isLoad && !isStore) || use.getOperandNumber() != memIdx)
+          continue;
+        OpBuilder b(user);
+        auto newIf = scf::IfOp::create(
+            b, user->getLoc(),
+            isLoad ? TypeRange(user->getResult(0).getType()) : TypeRange(),
+            sel.getCondition(), /*withElseRegion=*/true);
+        auto fillArm = [&](Value buf, Block *dstArm) {
+          dstArm->clear();
+          IRMapping m;
+          OpBuilder ab = OpBuilder::atBlockBegin(dstArm);
+          Operation *access = ab.clone(*user, m);
+          access->setOperand(memIdx, buf);
+          scf::YieldOp::create(ab, user->getLoc(),
+                               isLoad ? ValueRange(access->getResult(0))
+                                      : ValueRange());
+        };
+        fillArm(sel.getTrueValue(), newIf.thenBlock());
+        fillArm(sel.getFalseValue(), newIf.elseBlock());
+        if (isLoad)
+          user->getResult(0).replaceAllUsesWith(newIf.getResult(0));
+        user->erase();
+      }
+      if (sel->use_empty())
+        sel.erase();
+    }
+
+    SmallVector<affine::AffineIfOp> worklist;
+    root->walk([&](affine::AffineIfOp ifOp) {
+      if (ifOp.hasElse() && llvm::any_of(ifOp.getResultTypes(), [](Type t) {
+            return isa<MemRefType>(t);
+          }))
+        worklist.push_back(ifOp);
+    });
+    for (auto ifOp : worklist) {
+      Block *thenB = ifOp.getThenBlock(), *elseB = ifOp.getElseBlock();
+      auto effectFree = [](Block *b) {
+        return llvm::all_of(b->without_terminator(), [](Operation &op) {
+          return isMemoryEffectFree(&op);
+        });
+      };
+      if (!effectFree(thenB) || !effectFree(elseB))
+        continue;
+      // A branch nothing writes through raises as a whole-tensor select;
+      // only one that is stored through needs the per-access expansion.
+      auto loadOnly = [&](Value buf) {
+        return llvm::all_of(buf.getUsers(), [&](Operation *user) {
+          return isa<affine::AffineLoadOp, memref::LoadOp,
+                     affine::AffineVectorLoadOp>(user) ||
+                 user == ifOp || user == thenB->getTerminator() ||
+                 user == elseB->getTerminator();
+        });
+      };
+      for (auto [i, res] : llvm::enumerate(ifOp.getResults())) {
+        if (!isa<MemRefType>(res.getType()))
+          continue;
+        Value thenV = thenB->getTerminator()->getOperand(i);
+        Value elseV = elseB->getTerminator()->getOperand(i);
+        if (loadOnly(res) && loadOnly(thenV) && loadOnly(elseV))
+          continue;
+        for (OpOperand &use : llvm::make_early_inc_range(res.getUses())) {
+          Operation *user = use.getOwner();
+          bool isLoad = isa<memref::LoadOp, affine::AffineLoadOp>(user);
+          bool isStore = isa<memref::StoreOp, affine::AffineStoreOp>(user);
+          unsigned memIdx = isLoad ? 0 : 1;
+          if ((!isLoad && !isStore) || use.getOperandNumber() != memIdx)
+            continue;
+          OpBuilder b(user);
+          auto newIf = affine::AffineIfOp::create(
+              b, user->getLoc(),
+              isLoad ? TypeRange(user->getResult(0).getType()) : TypeRange(),
+              ifOp.getIntegerSet(), ifOp.getOperands(),
+              /*withElseRegion=*/true);
+          auto fillArm = [&](Block *srcArm, Value yielded, Block *dstArm) {
+            if (Operation *term = dstArm->empty() ? nullptr : &dstArm->back())
+              if (term->hasTrait<OpTrait::IsTerminator>())
+                term->erase();
+            IRMapping m;
+            OpBuilder ab = OpBuilder::atBlockEnd(dstArm);
+            for (Operation &armOp : srcArm->without_terminator())
+              ab.clone(armOp, m);
+            Operation *access = ab.clone(*user, m);
+            access->setOperand(memIdx, m.lookupOrDefault(yielded));
+            affine::AffineYieldOp::create(
+                ab, user->getLoc(),
+                isLoad ? ValueRange(access->getResult(0)) : ValueRange());
+          };
+          fillArm(thenB, thenV, newIf.getThenBlock());
+          fillArm(elseB, elseV, newIf.getElseBlock());
+          if (isLoad)
+            user->getResult(0).replaceAllUsesWith(newIf.getResult(0));
+          user->erase();
+        }
+      }
+      if (llvm::all_of(ifOp.getResults(),
+                       [](Value r) { return r.use_empty(); }))
+        ifOp.erase();
+    }
+  }
+
   // A parallel dimension whose extent is only known at runtime cannot become
   // a tensor axis, but its iterations are still independent: peel each such
   // dimension into an affine.for tagged enzymexla.parallel, which the while
@@ -4616,6 +4739,7 @@ struct AffineToStableHLORaisingPass
     for (auto func : funcs) {
       stripAccessMemorySpaceCasts(func);
       boundParallelAxes(func);
+      expandBufferBranches(func);
       peelDynamicParallelDims(func);
     }
 
@@ -4639,6 +4763,7 @@ struct AffineToStableHLORaisingPass
     for (auto g : gwrap) {
       stripAccessMemorySpaceCasts(g);
       boundParallelAxes(g);
+      expandBufferBranches(g);
       peelDynamicParallelDims(g);
     }
     size_t raised_count = 0;
