@@ -102,6 +102,7 @@ public:
   llvm::SmallVector<AxisSymbol> resolve(llvm::ArrayRef<AxisSymbol> syms);
   // Promises to return a set of root symbols
   OverlapSet getOverlapping(AxisSymbol sym);
+  OverlapSet getOverlapping(llvm::ArrayRef<AxisSymbol> syms);
 
 private:
   llvm::EquivalenceClasses<AxisSymbol> symbolUnion;

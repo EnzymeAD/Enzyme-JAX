@@ -83,10 +83,10 @@ SymbolFactorMerge::_getOverlappingForRoot(AxisSymbol sym) {
   llvm::SmallVector<AxisSymbol> insert;
 
   for (AxisSymbol other : overlapping) {
-    AxisSymbol other_root = symbolUnion.getOrInsertLeaderValue(other);
-    if (!(other_root == other)) {
+    auto resolution = resolve(other);
+    if (!(resolution.size() == 1 && resolution.front() == other)) {
       remove.push_back(other);
-      insert.push_back(other_root);
+      insert.append(resolution.begin(), resolution.end());
     }
   }
   for (AxisSymbol r : remove) {
@@ -111,11 +111,17 @@ void SymbolFactorMerge::_appendOverlaps(const OverlapSet &from, AxisSymbol to) {
 
 SymbolFactorMerge::OverlapSet
 SymbolFactorMerge::getOverlapping(AxisSymbol sym) {
-  auto factors = resolve(sym);
+  AxisSymbol arr[] = {sym};
+  return getOverlapping(arr);
+}
+
+SymbolFactorMerge::OverlapSet
+SymbolFactorMerge::getOverlapping(llvm::ArrayRef<AxisSymbol> syms) {
+  auto factors = resolve(syms);
   OverlapSet result;
-  for (AxisSymbol factor : factors) {
-    auto factor_overlaps = _getOverlappingForRoot(factor);
-    result.insert(factor_overlaps.begin(), factor_overlaps.end());
+  for (AxisSymbol sym : factors) {
+    auto sym_overlaps = _getOverlappingForRoot(sym);
+    result.insert(sym_overlaps.begin(), sym_overlaps.end());
   }
   return result;
 }
@@ -145,6 +151,25 @@ static bool hasSharedFactorOrderConflict(llvm::ArrayRef<AxisSymbol> lhs,
       return true;
     }
     minorProduct *= factor.getExtent();
+  }
+  return false;
+}
+
+static bool hasOverlappingSymbolsConflict(
+    const llvm::ArrayRef<AxisSymbol> lhs, const llvm::ArrayRef<AxisSymbol> rhs,
+    const SymbolFactorMerge::OverlapSet &lhsOverlaps,
+    const SymbolFactorMerge::OverlapSet &rhsOverlaps) {
+  // if any symbol on either side has a non-identity overlap in the other side,
+  // we cannot merge
+  for (AxisSymbol sym : lhs) {
+    if (llvm::is_contained(rhsOverlaps, sym)) {
+      return true;
+    }
+  }
+  for (AxisSymbol sym : rhs) {
+    if (llvm::is_contained(lhsOverlaps, sym)) {
+      return true;
+    }
   }
   return false;
 }
@@ -198,11 +223,6 @@ void SymbolFactorMerge::_factorSymbol(AxisSymbol sym,
 #endif
 
   const auto &overlapping_sym = getOverlapping(sym);
-  for (AxisSymbol factor : factors) {
-    if (overlapping_sym.count(factor)) {
-      return;
-    }
-  }
 
   factorizations[sym] =
       llvm::SmallVector<AxisSymbol>(factors.begin(), factors.end());
@@ -217,13 +237,8 @@ void SymbolFactorMerge::_mergeSymbols(AxisSymbol a, AxisSymbol b) {
   assert(a == resolve(a).front() && "symbol must be a root symbol");
   assert(b == resolve(b).front() && "symbol must be a root symbol");
 
-  const auto &overlap_a = getOverlapping(a);
-  const auto &overlap_b = getOverlapping(b);
-  // technically this should be symmetric.
-  if (overlap_a.count(b) || overlap_b.count(a)) {
-    // If a and b are already overlapping, we don't need to merge them.
-    return;
-  }
+  auto overlap_a = getOverlapping(a);
+  auto overlap_b = getOverlapping(b);
 
   auto new_leader = *symbolUnion.unionSets(a, b);
   if (!(new_leader == a)) {
@@ -243,8 +258,20 @@ void SymbolFactorMerge::attemptMergeSymbols(llvm::ArrayRef<AxisSymbol> a,
   assert(extentOfList(lhs_factors) == extentOfList(rhs_factors) &&
          "Cannot merge symbols with different extents");
   if (hasSharedFactorOrderConflict(lhs_factors, rhs_factors)) {
+    // reject merge: the same symbol appears in A and B at
+    // different positions
     return;
   }
+
+  auto lhs_factor_overlaps = getOverlapping(lhs_factors);
+  auto rhs_factor_overlaps = getOverlapping(rhs_factors);
+
+  if (hasOverlappingSymbolsConflict(lhs_factors, rhs_factors,
+                                    lhs_factor_overlaps, rhs_factor_overlaps)) {
+    // reject merge: there are overlapping-but-not-identical conflicts
+    return;
+  }
+
   // Simple recursive base cases:
   if (lhs_factors.size() == 1 && rhs_factors.size() == 1) {
     _mergeSymbols(lhs_factors[0], rhs_factors[0]);
@@ -770,19 +797,25 @@ void ShardyLogicalAxisAnalysis::validateLogicalAxisAssignments() {
 /**
  * This somewhat replicates Shardy propogation, but our goal here
  * is to decide when two axes have been equivalent, not make decisions:
- * Shardy has already inserted communication ops where necessary, but
- * but is on a logical mesh basis, wheras we want to completely
- * distangangle different symbols for an axes without a propogation
- * dependency. Some of these axes are hidden within serial / non-sharded
- * partition axes. So, our logic here is:
+ * Shardy has already (mostly) inserted communication ops where necessary,
+ * but is on a physical mesh basis, resulting in accidental collisions onto the
+ * same physical axis. We want to completely distangangle different symbols for
+ * an axes without a propogation dependency. Some of these axes are hidden
+ * within serial / non-sharded partition axes. So, our logic here is:
  *  - If neither the producer nor consumer are a reshard / collective,
  *    then we merge all symbols with a propagation edge.
  *  - If the producer is a collective, we merge only the RHS of the producers
  *    symbols
  *  - If the consumer is a collective, we merge only its LHS symbols.
- * As a precondition for the pass, we require all reshards to be
- * explicit. This means that each producer / consumer op has consistent
- * sharding, simplifying things.
+ * In this propagation / unioning, we respect exising reshard operations:
+ * any decisions made by Shardy are kept as distinct degrees of freedom /
+ * separate axes in our analysis. However, that doesn't gaurantee sharding to be
+ * entirely compatible: we can have discovered sharding on new previously-serial
+ * axes that may introduce conflicts. We need to be ensure that we never place
+ * the same sharding axis symbol in two distinct places / axes on an operation
+ * or tensor. This is done by maintaining an "overlapping" set of symbols in our
+ * union-factor-find: we can never merge any symbols that are overlapping. This
+ * rejection is located in the datastructure itself.
  */
 void ShardyLogicalAxisAnalysis::buildUnion() {
   auto mergeUses = [&](const TensorAxesToPartitionAxes &producerMapping,

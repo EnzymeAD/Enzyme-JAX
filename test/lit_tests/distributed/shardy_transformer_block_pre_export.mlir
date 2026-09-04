@@ -1,5 +1,5 @@
-// RUN: true
-// Temporarily disabled: enzymexlamlir-opt --sdy-propagation-pipeline --sdy-insert-explicit-reshards --shardy-to-distributed-pipeline
+// RUN: enzymexlamlir-opt --sdy-propagation-pipeline --shardy-to-distributed-pipeline %s -o /dev/null
+// RUN: enzymexlamlir-opt --sdy-propagation-pipeline --sdy-insert-explicit-reshards --convert-main-to-distributed-function --materialize-distributed-collectives --sdy-drop-sharding-and-mesh --canonicalize --cse --cluster-distributed-kernels %s -o /dev/null
 
 module @shardy_transformer_block_pre_export {
   sdy.mesh @mesh = <["data"=4, "tile"=4, "model"=2]>

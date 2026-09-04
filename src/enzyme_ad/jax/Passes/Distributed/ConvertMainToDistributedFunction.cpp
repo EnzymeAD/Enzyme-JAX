@@ -26,6 +26,28 @@ using TV_FactorGroup = mlir::TypedValue<mlir::enzyme::axis::FactorGroupType>;
 using TensorPartitioningAxes =
     ShardyLogicalAxisAnalysis::SymbolsPerPartitioningAxis;
 
+// Can't use dedicated Shardy pass since we need to keep the mesh attributes
+// around for the Reshard ops (for now)
+static ArrayAttr dropShardyAttrs(ArrayAttr attrs, MLIRContext *ctx) {
+  if (!attrs) {
+    return {};
+  }
+
+  SmallVector<Attribute> filteredAttrs;
+  bool hasRemainingAttrs = false;
+  for (Attribute attr : attrs) {
+    SmallVector<NamedAttribute> filteredDict;
+    for (NamedAttribute namedAttr : cast<DictionaryAttr>(attr)) {
+      if (!namedAttr.getName().strref().starts_with("sdy.")) {
+        filteredDict.push_back(namedAttr);
+      }
+    }
+    hasRemainingAttrs |= !filteredDict.empty();
+    filteredAttrs.push_back(DictionaryAttr::get(ctx, filteredDict));
+  }
+  return hasRemainingAttrs ? ArrayAttr::get(ctx, filteredAttrs) : ArrayAttr{};
+}
+
 // Lazily materializes one LogicalMeshAxesOp value per logical symbol.
 static TV_AxisFactor getOrCreateLogicalAxisForSymbol(
     AxisSymbol symbol, OpBuilder &axisBuilder, Location axisLoc,
@@ -170,7 +192,8 @@ static LogicalResult convertMainToDistributedFunction(
       TypeAttr::get(mainFunc.getFunctionType()),
       ValueRange(orderedPartitioningAxes), argShardingsAttr,
       outputShardingsAttr, mainFunc.getSymVisibilityAttr(),
-      mainFunc.getArgAttrsAttr(), mainFunc.getResAttrsAttr());
+      dropShardyAttrs(mainFunc.getArgAttrsAttr(), ctx),
+      dropShardyAttrs(mainFunc.getResAttrsAttr(), ctx));
   distributedFunction.getBody().takeBody(mainFunc.getBody());
   mainBlock = &distributedFunction.getBody().front();
 
