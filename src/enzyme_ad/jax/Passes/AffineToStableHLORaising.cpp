@@ -1241,6 +1241,9 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
       }
     }
     if (refine) {
+      emitWarning(loc) << "racy store: the stored value varies along a "
+                          "parallel axis the destination does not index; "
+                          "raising lane 0's write";
       SmallVector<int64_t> starts(UTy.getRank(), 0);
       SmallVector<int64_t> limits(UTy.getShape().begin(), UTy.getShape().end());
       SmallVector<int64_t> ones(UTy.getRank(), 1);
@@ -3224,6 +3227,9 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
         }
       }
       if (refine) {
+        op->emitWarning() << "racy store: the stored value varies along a "
+                             "parallel axis the destination does not index; "
+                             "raising lane 0's write";
         auto UT = cast<RankedTensorType>(update.getType());
         SmallVector<int64_t> starts(UT.getRank(), 0);
         SmallVector<int64_t> limits(UT.getShape().begin(), UT.getShape().end());

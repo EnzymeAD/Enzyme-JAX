@@ -5,6 +5,7 @@
 func.func @racy(%out: memref<8xf64, 1>, %in: memref<?xf64, 1>) {
   affine.parallel (%e, %t) = (0, 0) to (8, 32) {
     %v = affine.load %in[%e * 32 + %t] : memref<?xf64, 1>
+    // expected-warning @below {{racy store: the stored value varies along a parallel axis the destination does not index; raising lane 0's write}}
     affine.store %v, %out[%e] : memref<8xf64, 1>
   }
   return
@@ -22,6 +23,7 @@ func.func @racy(%out: memref<8xf64, 1>, %in: memref<?xf64, 1>) {
 func.func @racy_scatter(%out: memref<16xf64, 1>, %in: memref<?xf64, 1>) {
   affine.parallel (%e, %t) = (0, 0) to (8, 32) {
     %v = affine.load %in[%e * 32 + %t] : memref<?xf64, 1>
+    // expected-warning @below {{racy store: the stored value varies along a parallel axis the destination does not index; raising lane 0's write}}
     affine.store %v, %out[%e * 2] : memref<16xf64, 1>
   }
   return
