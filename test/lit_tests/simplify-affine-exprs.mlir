@@ -7,6 +7,8 @@ func.func private @kern$par0(%memref_arg: memref<?x20x30xi64, 1>, %idx : index, 
     affine.store %2, %memref_arg[%arg1, %arg2 floordiv 30, %arg3 mod 30] : memref<?x20x30xi64, 1>
     %l = affine.load %memref_arg[%arg1, %arg2 floordiv 10, %arg3 mod 20] : memref<?x20x30xi64, 1>
     %l2 = affine.load %memref_arg[%arg1 + symbol(%idx2), %arg2 floordiv 10, %arg3 mod 20] : memref<?x20x30xi64, 1>
+    affine.store %l, %memref_arg[%arg1, 0, 0] : memref<?x20x30xi64, 1>
+    affine.store %l2, %memref_arg[%arg1, 0, 1] : memref<?x20x30xi64, 1>
   }
   return
 }
@@ -104,7 +106,7 @@ module {
 
 // -----
 
-// CHECK: affine_set<(d0, d1) : (d1 - 3 >= 0, -d1 + 8 >= 0)>
+// CHECK: affine_set<(d0) : (d0 - 3 >= 0, -d0 + 8 >= 0)>
 
 module {
   func.func private @foo(%arg0: memref<26x40xf64, 1>) {

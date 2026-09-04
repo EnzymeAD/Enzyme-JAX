@@ -18,7 +18,7 @@ func.func @under_loop(%n: index, %m: index, %out: memref<?xf64>, %v: f64) {
   return
 }
 
-// CHECK-DAG: #[[MOD:.+]] = affine_set<(d0)[s0] : ((s0 * 5 + 3) mod 2 - 1 >= 0)>
+// CHECK-DAG: #[[MOD:.+]] = affine_set<()[s0] : ((s0 * 5 + 3) mod 2 - 1 >= 0)>
 // CHECK-DAG: #[[SUM:.+]] = affine_set<(d0)[s0] : (d0 + s0 * 3 - 1 >= 0)>
 // CHECK-DAG: #[[DIV:.+]] = affine_set<(d0)[s0, s1] : ((d0 + 1) floordiv 4 + -s0 + s1 * 2 + 2 == 0)>
 // CHECK-LABEL: func.func @under_loop(
@@ -36,6 +36,6 @@ func.func @top(%n: index, %i: index, %out: memref<?xf64>, %v: f64) {
   return
 }
 
-// CHECK: #[[TOP:.+]] = affine_set<(d0)[s0] : (d0 + s0 floordiv 4 - 1 >= 0)>
+// CHECK: #[[TOP:.+]] = affine_set<()[s0, s1] : (s1 + s0 floordiv 4 - 1 >= 0)>
 // CHECK-LABEL: func.func @top(
 // CHECK: affine.if #[[TOP]](
