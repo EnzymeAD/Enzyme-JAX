@@ -494,21 +494,33 @@ affineMapShape(affine::AffineValueMap accessValueMap, ParallelContext pc) {
   return shape;
 }
 
-static affine::AffineValueMap
+static FailureOr<affine::AffineValueMap>
 alignMemoryAccess(Value &a, affine::AffineValueMap src, Value *bs,
                   ArrayRef<affine::AffineValueMap> dsts, OpBuilder &builder,
                   ParallelContext pc) {
+  // NOTE a default-constructed AffineValueMap holds a null context, so its
+  // getAffineMap() cannot even be probed; inputs must be maps the caller
+  // actually recorded.
+  if (!a)
+    return failure();
+  for (unsigned qi = 0; qi < dsts.size(); ++qi)
+    if (!bs[qi])
+      return failure();
   // -> tensor<10x1xf32> loaded from (i) -> (i, 0)
   // -> to tensor<1x10xf32> written as (i) -> (0, i)
 
+  // affineMapShape bails to an empty vector on accesses it cannot size
+  // (an IV with no static range); that must reject the alignment, not read
+  // past the end below.
   SmallVector<int64_t> shapeA = affineMapShape(src, pc);
-  assert(shapeA.size() ==
-         cast<RankedTensorType>(a.getType()).getShape().size());
+  if (shapeA.size() != cast<RankedTensorType>(a.getType()).getShape().size())
+    return failure();
   SmallVector<SmallVector<int64_t>> shapeBs;
-  for (int i = 0; i < dsts.size(); i++) {
+  for (size_t i = 0; i < dsts.size(); i++) {
     shapeBs.push_back(affineMapShape(dsts[i], pc));
-    assert(shapeBs[i].size() ==
-           cast<RankedTensorType>(bs[i].getType()).getShape().size());
+    if (shapeBs[i].size() !=
+        cast<RankedTensorType>(bs[i].getType()).getShape().size())
+      return failure();
   }
 
   SmallVector<int64_t> outputShape;
@@ -617,7 +629,7 @@ alignMemoryAccess(Value &a, affine::AffineValueMap src, Value *bs,
   return outputMap;
 }
 
-static affine::AffineValueMap
+static FailureOr<affine::AffineValueMap>
 alignMemoryAccess(Value &a, affine::AffineValueMap src, Value &b,
                   affine::AffineValueMap dst, OpBuilder &builder,
                   ParallelContext pc) {
@@ -630,10 +642,11 @@ alignMemoryAccess(Value &a, affine::AffineValueMap src, Value &b,
 
 // like affine::expandAffineExpr but with stablehlo ops and returning
 // the corresponding AffineValueMap for the produced value.
-static std::tuple<Value, affine::AffineValueMap>
+static FailureOr<std::tuple<Value, affine::AffineValueMap>>
 expandAffineExpr(OpBuilder &builder, Location loc, AffineExpr expr,
                  ValueRange operands, IRMapping &mapping, unsigned numDims,
                  ParallelContext pc) {
+  using Expanded = std::tuple<Value, affine::AffineValueMap>;
   if (auto constExpr = dyn_cast<AffineConstantExpr>(expr)) {
     auto ET = builder.getI64Type();
     auto TT = RankedTensorType::get({}, ET);
@@ -641,18 +654,27 @@ expandAffineExpr(OpBuilder &builder, Location loc, AffineExpr expr,
         builder, loc, TT,
         SplatElementsAttr::get(TT, ArrayRef<Attribute>(IntegerAttr::get(
                                        ET, constExpr.getValue()))));
-    return {res, affine::AffineValueMap(AffineMap::get(expr.getContext()), {})};
+    return Expanded{
+        res, affine::AffineValueMap(AffineMap::get(expr.getContext()), {})};
   }
 
   if (auto binExpr = dyn_cast<AffineBinaryOpExpr>(expr)) {
     AffineExpr lhsExpr = binExpr.getLHS(), rhsExpr = binExpr.getRHS();
-    auto [lhs, lhsMap] =
+    auto lhsExpanded =
         expandAffineExpr(builder, loc, lhsExpr, operands, mapping, numDims, pc);
-    auto [rhs, rhsMap] =
+    if (failed(lhsExpanded))
+      return failure();
+    auto rhsExpanded =
         expandAffineExpr(builder, loc, rhsExpr, operands, mapping, numDims, pc);
+    if (failed(rhsExpanded))
+      return failure();
+    auto [lhs, lhsMap] = *lhsExpanded;
+    auto [rhs, rhsMap] = *rhsExpanded;
 
-    affine::AffineValueMap outputMap =
-        alignMemoryAccess(lhs, lhsMap, rhs, rhsMap, builder, pc);
+    auto aligned = alignMemoryAccess(lhs, lhsMap, rhs, rhsMap, builder, pc);
+    if (failed(aligned))
+      return failure();
+    affine::AffineValueMap outputMap = *aligned;
 
     auto makeI64Constant = [loc, &builder](ShapedType ty,
                                            int64_t cst) -> Value {
@@ -742,25 +764,31 @@ expandAffineExpr(OpBuilder &builder, Location loc, AffineExpr expr,
     default:
       llvm_unreachable("unsupported expansion of expr");
     }
-    return {result, outputMap};
+    return Expanded{result, outputMap};
   }
 
   if (auto symExpr = dyn_cast<AffineSymbolExpr>(expr)) {
     Value sym = operands[symExpr.getPosition() + numDims];
-    return {mapping.lookup(sym),
-            affine::AffineValueMap(AffineMap::get(sym.getContext()), {})};
+    Value mapped = mapping.lookupOrNull(sym);
+    if (!mapped)
+      return failure();
+    return Expanded{
+        mapped, affine::AffineValueMap(AffineMap::get(sym.getContext()), {})};
   }
 
   if (auto dimExpr = dyn_cast<AffineDimExpr>(expr)) {
     Value dim = operands[dimExpr.getPosition()];
+    Value mapped = mapping.lookupOrNull(dim);
+    if (!mapped)
+      return failure();
 
     if (!pc.isParallelIV(dim)) {
-      return {mapping.lookup(dim),
-              affine::AffineValueMap(AffineMap::get(dim.getContext()), {})};
+      return Expanded{
+          mapped, affine::AffineValueMap(AffineMap::get(dim.getContext()), {})};
     }
 
-    return {
-        mapping.lookup(dim),
+    return Expanded{
+        mapped,
         affine::AffineValueMap(
             AffineMap::getMultiDimIdentityMap(1, expr.getContext()), {dim})};
   }
@@ -882,14 +910,16 @@ emitIfAsSelect(Operation *ifOp, Value cond, affine::AffineValueMap map,
       // merge mask and current cond
       affine::AffineValueMap maskMap = maps.lookup(mask),
                              condMap = maps.lookup(cond);
-      affine::AffineValueMap newMaskMap =
+      auto newMaskMap =
           alignMemoryAccess(mask, maskMap, cond, condMap, builder, pc);
+      if (failed(newMaskMap))
+        return Value();
 
       mask = stablehlo::AndOp::create(
           builder,
           rewriteLocation(ifOp->getLoc(), pc.options.strip_llvm_debuginfo),
           mask, cond);
-      maps[mask] = newMaskMap;
+      maps[mask] = *newMaskMap;
     } else {
       mask = cond;
     }
@@ -897,6 +927,8 @@ emitIfAsSelect(Operation *ifOp, Value cond, affine::AffineValueMap map,
   };
 
   Value mask = getMaskedCond(cond, pc.mask);
+  if (pc.mask && !mask)
+    return failure();
 
   ParallelContext thenPc(pc.options);
   thenPc.ranges = pc.ranges;
@@ -920,6 +952,8 @@ emitIfAsSelect(Operation *ifOp, Value cond, affine::AffineValueMap map,
     maps[elseCond] = maps.lookup(cond);
 
     Value elseMask = getMaskedCond(elseCond, pc.mask);
+    if (pc.mask && !elseMask)
+      return failure();
     assert(maps.contains(elseMask));
     elsePc.mask = elseMask;
 
@@ -965,22 +999,27 @@ emitIfAsSelect(Operation *ifOp, Value cond, affine::AffineValueMap map,
             rewriteLocation(ifOp->getLoc(), pc.options.strip_llvm_debuginfo),
             cond, thenBuf, elseBuf);
         mapping.map(res, sel.getResult());
-        maps[sel.getResult()] = maps.lookup(thenBuf);
+        if (auto it = maps.find(thenBuf); it != maps.end())
+          maps[sel.getResult()] = it->second;
         continue;
       }
-      Value b = mapping.lookup(thenVal);
-      Value c = mapping.lookup(elseVal);
-
-      auto mapA = map;
-      auto mapB = maps.lookup(b);
-      auto mapC = maps.lookup(c);
-      if (!mapA.getAffineMap() || !mapB.getAffineMap() || !mapC.getAffineMap())
+      Value b = mapping.lookupOrNull(thenVal);
+      Value c = mapping.lookupOrNull(elseVal);
+      if (!b || !c)
+        return ifOp->emitError(
+            "cannot raise branch result without an access map");
+      auto itB = maps.find(b), itC = maps.find(c);
+      if (itB == maps.end() || itC == maps.end())
         return ifOp->emitError(
             "cannot raise branch result without an access map");
 
+      auto mapA = map;
       Value dsts[] = {b, c};
-      affine::AffineValueMap submaps[] = {mapB, mapC};
+      affine::AffineValueMap submaps[] = {itB->second, itC->second};
       auto outputMap = alignMemoryAccess(a, mapA, dsts, submaps, builder, pc);
+      if (failed(outputMap))
+        return ifOp->emitError(
+            "cannot raise branch result without an access map");
       b = dsts[0];
       c = dsts[1];
       assert(b.getType() == c.getType());
@@ -990,7 +1029,7 @@ emitIfAsSelect(Operation *ifOp, Value cond, affine::AffineValueMap map,
           rewriteLocation(ifOp->getLoc(), pc.options.strip_llvm_debuginfo), a,
           b, c);
       mapping.map(res, newOp.getResult());
-      maps[newOp.getResult()] = outputMap;
+      maps[newOp.getResult()] = *outputMap;
     }
   }
 
@@ -1016,6 +1055,8 @@ static Value buildGatherScatterIndices(
 
     SmallVector<int64_t> dimsToBroadcast;
 
+    if (!maps.count(raisedIdx))
+      return nullptr;
     auto map = maps.lookup(raisedIdx);
 
     for (auto [i, E] : llvm::enumerate(map.getAffineMap().getResults())) {
@@ -1112,6 +1153,8 @@ emitLoadAsGather(Location loc, Value mappedMemref, ValueRange lIndices,
 
   Value indices =
       buildGatherScatterIndices(loc, lIndices, builder, maps, ivs, outputShape);
+  if (!indices)
+    return nullptr;
 
   // The grid axes of `indices` act as implicit batch dimensions, so the
   // gather result directly has shape `outputShape`.
@@ -1141,6 +1184,8 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
                    OpBuilder &builder,
                    llvm::DenseMap<Value, affine::AffineValueMap> &maps,
                    const ParallelContext &pc, bool accumulate = false) {
+  if (!maps.count(update))
+    return nullptr;
   affine::AffineValueMap updateValueMap = maps.lookup(update);
 
   auto UTy = cast<RankedTensorType>(update.getType());
@@ -1152,6 +1197,8 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
   SmallVector<int64_t> gridShape;
   Value indices =
       buildGatherScatterIndices(loc, sIndices, builder, maps, ivs, gridShape);
+  if (!indices)
+    return nullptr;
 
   SmallVector<int64_t> scatterDimsToOperandDims;
   for (int64_t i = 0, e = sIndices.size(); i < e; ++i)
@@ -1401,10 +1448,11 @@ static LogicalResult tryRaisingForOpToStableHLOWhile(
                          bool isUpper) -> Value {
       Value acc;
       for (AffineExpr expr : map.getResults()) {
-        auto [val, avm] = expandAffineExpr(builder, wloc, expr, operands,
-                                           mapping, map.getNumDims(), pc);
-        if (!val)
+        auto expanded = expandAffineExpr(builder, wloc, expr, operands, mapping,
+                                         map.getNumDims(), pc);
+        if (failed(expanded))
           return nullptr;
+        auto [val, avm] = *expanded;
         auto vt = dyn_cast<RankedTensorType>(val.getType());
         if (!vt || vt.getRank() != 0)
           return nullptr;
@@ -1423,8 +1471,7 @@ static LogicalResult tryRaisingForOpToStableHLOWhile(
     ub = evalBound(forOp.getUpperBoundMap(), forOp.getUpperBoundOperands(),
                    /*isUpper=*/true);
     if (!lb || !ub)
-      return forOp.emitError(
-          "cannot evaluate non-constant loop bounds as scalars");
+      return failure();
   }
   Value step = makeConst(forOp.getStepAsInt());
 
@@ -1446,12 +1493,13 @@ static LogicalResult tryRaisingForOpToStableHLOWhile(
         TT, rewriteLocation(iterArg.getLoc(), pc.options.strip_llvm_debuginfo));
     Value iterArgInBody = body->addArgument(
         TT, rewriteLocation(iterArg.getLoc(), pc.options.strip_llvm_debuginfo));
-    auto tensorInit = mapping.lookup(init);
+    auto tensorInit = mapping.lookupOrNull(init);
+    if (!tensorInit || !maps.count(tensorInit))
+      return failure();
     auto broadcastInit =
         pc.getBroadcast(builder, maps.lookup(tensorInit), tensorInit);
-    if (!broadcastInit) {
-      return forOp->emitError("Could not broadcast an init");
-    }
+    if (!broadcastInit)
+      return failure();
     inits.push_back(broadcastInit->v);
     mapping.map(iterArg, iterArgInBody);
     maps[iterArgInBody] = broadcastInit->avm;
@@ -1527,11 +1575,8 @@ static LogicalResult tryRaisingForOpToStableHLOWhile(
 
     for (auto &innerOp : forOp.getBody()->without_terminator()) {
       if (tryRaisingOpToStableHLO(&innerOp, mapping, builder, maps, pc)
-              .failed()) {
-        LLVM_DEBUG(llvm::dbgs() << "Failed to raise inner op\n"
-                                << innerOp << "\n");
+              .failed())
         return failure();
-      }
     }
 
     Value newIvInBody = stablehlo::AddOp::create(
@@ -1544,16 +1589,20 @@ static LogicalResult tryRaisingForOpToStableHLOWhile(
          llvm::zip(forOp.getRegionIterArgs(),
                    forOp.getBody()->getTerminator()->getOperands())) {
 
-      Value raisedYieldedIterArg = mapping.lookup(yieldedIterArgs);
-      Value raisedIterArg = mapping.lookup(iterArg);
+      Value raisedYieldedIterArg = mapping.lookupOrNull(yieldedIterArgs);
+      Value raisedIterArg = mapping.lookupOrNull(iterArg);
+      if (!raisedYieldedIterArg || !raisedIterArg)
+        return failure();
 
+      if (!maps.count(raisedYieldedIterArg) || !maps.count(raisedIterArg))
+        return failure();
       auto perm = memoryEquivalentPermutation(maps.lookup(raisedYieldedIterArg),
                                               maps.lookup(raisedIterArg));
 
       if (!perm.has_value()) {
-        auto err = forOp.emitError("invalid init for iterArg: ") << iterArg;
-        whileOp->erase();
-        return err;
+        // Leave the abandoned while in place: raised values in `maps` may
+        // reference its body, and the failed function is discarded whole.
+        return failure();
       }
 
       if (!std::is_sorted(perm->begin(), perm->end()))
@@ -1717,6 +1766,7 @@ static LogicalResult tryRaisingSCFWhileOpToStableHLO(
   parentMapping = mapping;
   return success();
 }
+
 template <class T> static SmallVector<BlockArgument, 6> getIVs(T op);
 template <> SmallVector<BlockArgument, 6> getIVs(affine::AffineParallelOp op) {
   return {op.getIVs().begin(), op.getIVs().end()};
@@ -1774,19 +1824,26 @@ static LogicalResult tryRaisingParallelOpToStableHLO(
       Value init_val = iter_inputs[reduced_idx];
 
       Value reduce_broadcasted = mapping.lookup(reduced_val);
+      if (!maps.count(reduce_broadcasted))
+        return failure();
       auto reduce_map = maps.lookup(reduce_broadcasted);
 
       auto forOp = cast<affine::AffineForOp>(
           iters[reduced_idx].getOwner()->getParentOp());
 
       Value idx_broadcasted = mapping.lookup(forOp.getInductionVar());
+      if (!maps.count(idx_broadcasted))
+        return failure();
       auto idx_map = maps.lookup(idx_broadcasted);
 
       Value dsts[] = {idx_broadcasted, mapping.lookup(init_val)};
       affine::AffineValueMap submaps[] = {idx_map, maps.lookup(dsts[1])};
 
-      auto outputMap = alignMemoryAccess(reduce_broadcasted, reduce_map, dsts,
-                                         submaps, builder, *newPc);
+      auto aligned = alignMemoryAccess(reduce_broadcasted, reduce_map, dsts,
+                                       submaps, builder, *newPc);
+      if (failed(aligned))
+        return failure();
+      affine::AffineValueMap outputMap = *aligned;
 
       ssize_t idx_to_reduce = -1;
       for (auto &&[i, expr] :
@@ -1885,7 +1942,9 @@ static LogicalResult tryRaisingParallelOpToStableHLO(
   auto yld = parallelOp.getBody()->getTerminator();
   for (auto &&[res, yval] :
        llvm::zip_equal(parallelOp.getResults(), yld->getOperands())) {
-    auto val = mapping.lookup(yval);
+    auto val = mapping.lookupOrNull(yval);
+    if (!val)
+      return failure();
     auto outputMap = maps[val];
 
     if (auto forOp = dyn_cast<affine::AffineForOp>(parallelOp.getOperation())) {
@@ -1985,10 +2044,15 @@ static LogicalResult tryRaisingParallelOpToStableHLO(
       for (auto idx : dims_to_reduce) {
         auto dst = mapping.lookup(pforOp.getIVs()[idx]);
         dsts.push_back(dst);
+        if (!maps.count(dst))
+          return failure();
         submaps.push_back(maps.lookup(dst));
       }
-      auto outputMap2 = alignMemoryAccess(val, outputMap, dsts.data(), submaps,
-                                          builder, *newPc);
+      auto aligned = alignMemoryAccess(val, outputMap, dsts.data(), submaps,
+                                       builder, *newPc);
+      if (failed(aligned))
+        return failure();
+      affine::AffineValueMap outputMap2 = *aligned;
 
       SmallVector<int64_t> idxs_to_reduce;
       SmallVector<int64_t> redshape;
@@ -2296,7 +2360,9 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     // See tryRaisingForOpToStableHLOUnroll
     accessValueMap.composeSimplifyAndCanonicalize();
 
-    auto inputTen = mapping.lookup(access.memref);
+    auto inputTen = mapping.lookupOrNull(access.memref);
+    if (!inputTen)
+      return failure();
 
     SmallVector<int64_t> outputShape = affineMapShape(accessValueMap, pc);
 
@@ -2316,11 +2382,14 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     if (emitAsGather) {
       SmallVector<Value> lIndices;
       for (auto E : accessValueMap.getAffineMap().getResults()) {
-        auto [idx, idxMap] = expandAffineExpr(
+        auto expanded = expandAffineExpr(
             builder,
             rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo), E,
             accessValueMap.getOperands(), mapping,
             accessValueMap.getAffineMap().getNumDims(), pc);
+        if (failed(expanded))
+          return failure();
+        auto [idx, idxMap] = *expanded;
         maps[idx] = idxMap;
         lIndices.push_back(idx);
       }
@@ -2356,11 +2425,14 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
           }
         }
 
-        auto [startIndex, _] = expandAffineExpr(
+        auto expanded = expandAffineExpr(
             builder,
             rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
             exprToEmit, accessValueMap.getOperands(), mapping,
             accessValueMap.getAffineMap().getNumDims(), pc);
+        if (failed(expanded))
+          return failure();
+        Value startIndex = std::get<0>(*expanded);
 
         startIndices.push_back(startIndex);
       }
@@ -2592,8 +2664,10 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
   // Affine store inside a loop becomes a dynamic_update_slice
   if (auto storeOp = dyn_cast<affine::AffineStoreOp>(op)) {
-    auto operand = mapping.lookup(storeOp.getMemref());
-    auto update = mapping.lookup(storeOp.getValue());
+    auto operand = mapping.lookupOrNull(storeOp.getMemref());
+    auto update = mapping.lookupOrNull(storeOp.getValue());
+    if (!operand || !update)
+      return failure();
 
     affine::MemRefAccess access(storeOp);
 
@@ -2613,11 +2687,14 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     if (emitAsScatter) {
       SmallVector<Value> sIndices;
       for (auto E : accessValueMap.getAffineMap().getResults()) {
-        auto [expandedIndex, indexMap] = expandAffineExpr(
+        auto expanded = expandAffineExpr(
             builder,
             rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo), E,
             accessValueMap.getOperands(), mapping,
             accessValueMap.getAffineMap().getNumDims(), pc);
+        if (failed(expanded))
+          return failure();
+        auto [expandedIndex, indexMap] = *expanded;
         maps[expandedIndex] = indexMap;
         sIndices.push_back(expandedIndex);
       }
@@ -2649,7 +2726,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     auto Ty = builder.getI64Type();
     auto unrankedTensorType = RankedTensorType::get({}, Ty);
 
-    assert(maps.contains(update));
+    if (!maps.contains(update))
+      return failure();
     affine::AffineValueMap updateValueMap = maps.lookup(update);
 
     // for each dim in update, where it will
@@ -2870,12 +2948,14 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
           updateShape.push_back(1);
         }
 
-        auto [startIndex_, _] = expandAffineExpr(
+        auto expanded = expandAffineExpr(
             builder,
             rewriteLocation(iv.getLoc(), pc.options.strip_llvm_debuginfo),
             exprToEmit, accessValueMap.getOperands(), mapping,
             accessValueMap.getAffineMap().getNumDims(), pc);
-        startIndex = startIndex_;
+        if (failed(expanded))
+          return failure();
+        startIndex = std::get<0>(*expanded);
       }
 
       if (pLow != 0) {
@@ -2993,7 +3073,10 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
       // update what if cond has more ivs dependence than the update?
       // or different?
-      storeValueMap = alignMemoryAccess(mask, maskMap, vals, dsts, builder, pc);
+      auto aligned = alignMemoryAccess(mask, maskMap, vals, dsts, builder, pc);
+      if (failed(aligned))
+        return op->emitError("cannot align masked store");
+      storeValueMap = *aligned;
 
       for (auto dim : storeValueMap.getOperands()) {
         // This dim is present in the masked update and not in the stored
@@ -3180,8 +3263,14 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     auto memref = loadOp.getMemref();
 
     SmallVector<Value> lIndices;
-    for (auto idx : loadOp.getIndices())
-      lIndices.push_back(mapping.lookup(idx));
+    for (auto idx : loadOp.getIndices()) {
+      Value mapped = mapping.lookupOrNull(idx);
+      if (!mapped || !maps.count(mapped))
+        return failure();
+      lIndices.push_back(mapped);
+    }
+    if (!mapping.lookupOrNull(memref))
+      return failure();
 
     Value res = emitLoadAsGather(
         rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
@@ -3295,12 +3384,13 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
         continue;
       }
 
-      auto [expandedIndex, indexMap] = expandAffineExpr(
+      auto expanded = expandAffineExpr(
           builder,
           rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo), E,
           accessValueMap.getOperands(), mapping, map.getNumDims(), pc);
-      if (!expandedIndex)
+      if (failed(expanded))
         return failure();
+      auto [expandedIndex, indexMap] = *expanded;
       maps[expandedIndex] = indexMap;
       sIndices.push_back(expandedIndex);
     }
@@ -3322,8 +3412,14 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     Value memref = storeOp.getMemref();
 
     SmallVector<Value> sIndices;
-    for (auto idx : storeOp.getIndices())
-      sIndices.push_back(mapping.lookup(idx));
+    for (auto idx : storeOp.getIndices()) {
+      Value mapped = mapping.lookupOrNull(idx);
+      if (!mapped || !maps.count(mapped))
+        return failure();
+      sIndices.push_back(mapped);
+    }
+    if (!mapping.lookupOrNull(value) || !mapping.lookupOrNull(memref))
+      return failure();
 
     Value res = emitStoreAsScatter(
         rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
@@ -3394,13 +3490,18 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
   // Identity
   if (isa<enzymexla::Memref2PointerOp>(op)) {
     Value operand = op->getOperand(0), result = op->getResult(0);
-    mapping.map(result, mapping.lookup(operand));
+    Value mappedOperand = mapping.lookupOrNull(operand);
+    if (!mappedOperand)
+      return failure();
+    mapping.map(result, mappedOperand);
     return success();
   }
 
   if (isa<arith::IndexCastUIOp, arith::IndexCastOp>(op)) {
     Value operand = op->getOperand(0), result = op->getResult(0);
-    Value mappedResult = mapping.lookup(operand);
+    Value mappedResult = mapping.lookupOrNull(operand);
+    if (!mappedResult)
+      return failure();
 
     Type targetType = makeIndexToI64(result.getType());
     auto currentType =
@@ -3428,11 +3529,14 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     auto avm = apply.getAffineValueMap();
     // See tryRaisingForOpToStableHLOUnroll
     avm.composeSimplifyAndCanonicalize();
-    auto [expanded, expandedMap] = expandAffineExpr(
+    auto res = expandAffineExpr(
         builder,
         rewriteLocation(apply.getLoc(), pc.options.strip_llvm_debuginfo),
         avm.getAffineMap().getResult(0), avm.getOperands(), mapping,
         avm.getAffineMap().getNumDims(), pc);
+    if (failed(res))
+      return failure();
+    auto [expanded, expandedMap] = *res;
     mapping.map(apply.getResult(), expanded);
     maps[expanded] = expandedMap;
     return success();
@@ -3440,7 +3544,9 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
   if (auto p2m = dyn_cast<enzymexla::Pointer2MemrefOp>(op)) {
     Value operand = op->getOperand(0), result = op->getResult(0);
-    auto input = mapping.lookup(operand);
+    auto input = mapping.lookupOrNull(operand);
+    if (!input)
+      return failure();
     auto MT = p2m.getType();
     if (!isXLACompatiblePrimitive(MT.getElementType())) {
       return op->emitError("unsupported element type for XLA: ")
@@ -3544,7 +3650,9 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
       op->getNumOperands() == 1 && op->getNumResults() == 1) {
 
     auto operand = op->getOperand(0);
-    auto newOperand = mapping.lookup(operand);
+    auto newOperand = mapping.lookupOrNull(operand);
+    if (!newOperand)
+      return failure();
 
     auto IT = cast<RankedTensorType>(newOperand.getType());
     auto T = RankedTensorType::get(IT.getShape(),
@@ -3572,11 +3680,18 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
           math::CopySignOp, math::Atan2Op, math::PowFOp>(op)) {
     assert(op->getNumOperands() == 2 && op->getNumResults() == 1);
 
-    Value a = mapping.lookup(op->getOperand(0)),
-          b = mapping.lookup(op->getOperand(1));
+    Value a = mapping.lookupOrNull(op->getOperand(0)),
+          b = mapping.lookupOrNull(op->getOperand(1));
+    if (!a || !b)
+      return failure();
 
-    auto mapA = maps.lookup(a), mapB = maps.lookup(b);
-    auto outputMap = alignMemoryAccess(a, mapA, b, mapB, builder, pc);
+    auto itA = maps.find(a), itB = maps.find(b);
+    if (itA == maps.end() || itB == maps.end())
+      return failure();
+    auto outputMap =
+        alignMemoryAccess(a, itA->second, b, itB->second, builder, pc);
+    if (failed(outputMap))
+      return failure();
     assert(a.getType() == b.getType());
 
     auto IT = cast<RankedTensorType>(a.getType());
@@ -3593,7 +3708,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     for (auto [oldRes, newRes] :
          llvm::zip_equal(op->getResults(), newOp->getResults())) {
       mapping.map(oldRes, newRes);
-      maps[newRes] = outputMap;
+      maps[newRes] = *outputMap;
     }
 
     return success();
@@ -3603,15 +3718,19 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
   if (isa<arith::SelectOp, math::FmaOp, enzymexla::FMulAddOp>(op)) {
     assert(op->getNumOperands() == 3 && op->getNumResults() == 1);
 
-    Value a = mapping.lookup(op->getOperand(0)),
-          b = mapping.lookup(op->getOperand(1)),
-          c = mapping.lookup(op->getOperand(2));
+    Value a = mapping.lookupOrNull(op->getOperand(0)),
+          b = mapping.lookupOrNull(op->getOperand(1)),
+          c = mapping.lookupOrNull(op->getOperand(2));
+    if (!a || !b || !c || !maps.count(a) || !maps.count(b) || !maps.count(c))
+      return failure();
 
     auto mapA = maps.lookup(a), mapB = maps.lookup(b), mapC = maps.lookup(c);
 
     Value dsts[] = {b, c};
     affine::AffineValueMap submaps[] = {mapB, mapC};
     auto outputMap = alignMemoryAccess(a, mapA, dsts, submaps, builder, pc);
+    if (failed(outputMap))
+      return failure();
     b = dsts[0];
     c = dsts[1];
     assert(b.getType() == c.getType());
@@ -3628,7 +3747,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     for (auto [oldRes, newRes] :
          llvm::zip_equal(op->getResults(), newOp->getResults())) {
       mapping.map(oldRes, newRes);
-      maps[newRes] = outputMap;
+      maps[newRes] = *outputMap;
     }
 
     return success();
@@ -3702,7 +3821,9 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
   if (auto ifOp = dyn_cast<scf::IfOp>(op)) {
 
-    Value cond = mapping.lookup(ifOp.getCondition());
+    Value cond = mapping.lookupOrNull(ifOp.getCondition());
+    if (!cond || !maps.count(cond))
+      return failure();
     if (emitIfAsSelect(op, cond, maps.lookup(cond), builder, mapping, maps, pc)
             .failed())
       return failure();
@@ -3725,11 +3846,14 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
     for (auto [constraint, eq] : llvm::zip_equal(
              constraintMap.getAffineMap().getResults(), is.getEqFlags())) {
-      auto [expandedExpr, outputMap] = expandAffineExpr(
+      auto expanded = expandAffineExpr(
           builder,
           rewriteLocation(ifOp.getLoc(), pc.options.strip_llvm_debuginfo),
           constraint, constraintMap.getOperands(), mapping,
           constraintMap.getNumDims(), pc);
+      if (failed(expanded))
+        return failure();
+      auto [expandedExpr, outputMap] = *expanded;
       Value zero = stablehlo::ConstantOp::create(
           builder,
           rewriteLocation(ifOp.getLoc(), pc.options.strip_llvm_debuginfo),
@@ -3744,7 +3868,11 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
           eq ? stablehlo::ComparisonDirection::EQ
              : stablehlo::ComparisonDirection::GE);
       if (cond) {
-        map = alignMemoryAccess(cond, map, newCond, outputMap, builder, pc);
+        auto aligned =
+            alignMemoryAccess(cond, map, newCond, outputMap, builder, pc);
+        if (failed(aligned))
+          return failure();
+        map = *aligned;
         cond = stablehlo::AndOp::create(
             builder,
             rewriteLocation(ifOp.getLoc(), pc.options.strip_llvm_debuginfo),
