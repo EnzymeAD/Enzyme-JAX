@@ -1767,6 +1767,165 @@ static LogicalResult tryRaisingSCFWhileOpToStableHLO(
   return success();
 }
 
+// An scf.for whose bounds and step raise as uniform scalars iterates as a
+// stablehlo.while, exactly like a runtime-extent affine loop: the induction
+// variable is a rank-0 tensor of the loop's integer type, iter args are
+// loop-carried (broadcast like the affine path), and every buffer the body
+// writes is threaded through the loop.
+static LogicalResult tryRaisingSCFForOpToStableHLOWhile(
+    scf::ForOp forOp, IRMapping &parentMapping, OpBuilder &builder,
+    llvm::DenseMap<Value, affine::AffineValueMap> &maps, ParallelContext pc) {
+  IRMapping mapping = parentMapping;
+
+  Value iv = forOp.getInductionVar();
+  auto wloc = rewriteLocation(forOp.getLoc(), pc.options.strip_llvm_debuginfo);
+
+  Value lb = mapping.lookupOrNull(forOp.getLowerBound());
+  Value ub = mapping.lookupOrNull(forOp.getUpperBound());
+  Value step = mapping.lookupOrNull(forOp.getStep());
+  if (!lb || !ub || !step)
+    return failure();
+  auto scalarTy = dyn_cast<RankedTensorType>(lb.getType());
+  if (!scalarTy || scalarTy.getRank() != 0)
+    return failure();
+  auto toCounterType = [&](Value v) -> Value {
+    auto vt = dyn_cast<RankedTensorType>(v.getType());
+    if (!vt || vt.getRank() != 0)
+      return nullptr;
+    if (vt != scalarTy)
+      v = stablehlo::ConvertOp::create(builder, wloc, scalarTy, v);
+    return v;
+  };
+  ub = toCounterType(ub);
+  step = toCounterType(step);
+  if (!ub || !step)
+    return failure();
+
+  Block *entryBlock = getRaisedEntryBlock(forOp);
+
+  Block *cond = new Block(), *body = new Block();
+  Value ivInCond = cond->addArgument(
+      scalarTy, rewriteLocation(iv.getLoc(), pc.options.strip_llvm_debuginfo));
+  Value ivInBody = body->addArgument(
+      scalarTy, rewriteLocation(iv.getLoc(), pc.options.strip_llvm_debuginfo));
+
+  SmallVector<Value> inits;
+  inits.push_back(lb);
+
+  for (auto [init, iterArg] :
+       llvm::zip(forOp.getInits(), forOp.getRegionIterArgs())) {
+    auto TT = pc.getTensorType(init.getType());
+    cond->addArgument(
+        TT, rewriteLocation(iterArg.getLoc(), pc.options.strip_llvm_debuginfo));
+    Value iterArgInBody = body->addArgument(
+        TT, rewriteLocation(iterArg.getLoc(), pc.options.strip_llvm_debuginfo));
+    auto tensorInit = mapping.lookupOrNull(init);
+    if (!tensorInit || !maps.count(tensorInit))
+      return failure();
+    auto broadcastInit =
+        pc.getBroadcast(builder, maps.lookup(tensorInit), tensorInit);
+    if (!broadcastInit)
+      return failure();
+    inits.push_back(broadcastInit->v);
+    mapping.map(iterArg, iterArgInBody);
+    maps[iterArgInBody] = broadcastInit->avm;
+  }
+
+  SmallVector<Value> buffers(entryBlock->getArguments().begin(),
+                             entryBlock->getArguments().end());
+  {
+    llvm::SmallPtrSet<Value, 8> seen(buffers.begin(), buffers.end());
+    forOp.getBody()->walk([&](Operation *innerOp) {
+      for (Value v : innerOp->getOperands())
+        if (isa<MemRefType>(v.getType()) && mapping.contains(v) &&
+            !forOp->isAncestor(v.getParentRegion()->getParentOp()) &&
+            seen.insert(v).second)
+          buffers.push_back(v);
+    });
+  }
+
+  for (auto memref : buffers) {
+    Value mappedMemref = mapping.lookup(memref);
+    inits.push_back(mappedMemref);
+    cond->addArgument(mappedMemref.getType(),
+                      rewriteLocation(mappedMemref.getLoc(),
+                                      pc.options.strip_llvm_debuginfo));
+    Value memrefInBody =
+        body->addArgument(mappedMemref.getType(),
+                          rewriteLocation(mappedMemref.getLoc(),
+                                          pc.options.strip_llvm_debuginfo));
+    mapping.map(memref, memrefInBody);
+  }
+
+  auto whileOp = stablehlo::WhileOp::create(builder, wloc, inits);
+  whileOp->getRegion(0).push_back(cond);
+  whileOp->getRegion(1).push_back(body);
+
+  {
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointToStart(cond);
+    Value condVal = stablehlo::CompareOp::create(
+        builder, wloc, ivInCond, ub, stablehlo::ComparisonDirection::LT);
+    stablehlo::ReturnOp::create(builder, wloc, condVal);
+  }
+  {
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointToStart(body);
+
+    mapping.map(iv, ivInBody);
+    maps[ivInBody] =
+        affine::AffineValueMap(AffineMap::get(forOp->getContext()), {});
+
+    for (auto &innerOp : forOp.getBody()->without_terminator()) {
+      if (tryRaisingOpToStableHLO(&innerOp, mapping, builder, maps, pc)
+              .failed())
+        return failure();
+    }
+
+    Value newIvInBody = stablehlo::AddOp::create(builder, wloc, ivInBody, step);
+
+    SmallVector<Value> loopCarried = {newIvInBody};
+    for (auto [iterArg, yielded] :
+         llvm::zip(forOp.getRegionIterArgs(),
+                   forOp.getBody()->getTerminator()->getOperands())) {
+      Value raisedYielded = mapping.lookupOrNull(yielded);
+      Value raisedIterArg = mapping.lookup(iterArg);
+      if (!raisedYielded)
+        return failure();
+      if (!maps.count(raisedYielded) || !maps.count(raisedIterArg))
+        return failure();
+      auto perm = memoryEquivalentPermutation(maps.lookup(raisedYielded),
+                                              maps.lookup(raisedIterArg));
+      if (!perm.has_value()) {
+        // Leave the abandoned while in place: raised values in `maps` may
+        // reference its body, and the failed function is discarded whole.
+        return failure();
+      }
+      if (!std::is_sorted(perm->begin(), perm->end()))
+        raisedYielded = stablehlo::TransposeOp::create(
+            builder, raisedYielded.getLoc(), raisedYielded, *perm);
+      loopCarried.push_back(raisedYielded);
+    }
+
+    for (auto memref : buffers)
+      loopCarried.push_back(mapping.lookup(memref));
+    stablehlo::ReturnOp::create(builder, wloc, loopCarried);
+  }
+
+  for (auto [i, memref] : llvm::enumerate(buffers))
+    mapping.map(memref,
+                whileOp.getResult(i + 1 + forOp.getNumRegionIterArgs()));
+  for (auto [forRes, forIterArg, whileRes] :
+       llvm::zip(forOp.getResults(), forOp.getRegionIterArgs(),
+                 llvm::drop_begin(whileOp.getResults()))) {
+    mapping.map(forRes, whileRes);
+    maps[whileRes] = maps.lookup(mapping.lookup(forIterArg));
+  }
+
+  parentMapping = mapping;
+  return success();
+}
+
 template <class T> static SmallVector<BlockArgument, 6> getIVs(T op);
 template <> SmallVector<BlockArgument, 6> getIVs(affine::AffineParallelOp op) {
   return {op.getIVs().begin(), op.getIVs().end()};
@@ -3933,6 +4092,12 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     }
   }
 
+  if (auto scfFor = dyn_cast<scf::ForOp>(op)) {
+    if (tryRaisingSCFForOpToStableHLOWhile(scfFor, mapping, builder, maps, pc)
+            .succeeded())
+      return success();
+  }
+
   if (auto scfWhile = dyn_cast<scf::WhileOp>(op)) {
     if (tryRaisingSCFWhileOpToStableHLO(scfWhile, mapping, builder, maps, pc)
             .succeeded())
@@ -4514,11 +4679,15 @@ struct AffineToStableHLORaisingPass
             builder.setInsertionPointToEnd(newBlock);
             Value newVal;
             if (arg.getDefiningOp<ub::PoisonOp>()) {
-              newVal = cast<mlir::enzyme::AutoDiffTypeInterface>(arg.getType())
-                           .createNullValue(
-                               builder,
-                               rewriteLocation(arg.getLoc(),
-                                               options.strip_llvm_debuginfo));
+              // A poison scalar reads as zero, as a rank-0 tensor like every
+              // other raised scalar so loop carrying can broadcast it.
+              auto newConst = stablehlo::ConstantOp::create(
+                  builder,
+                  rewriteLocation(arg.getLoc(), options.strip_llvm_debuginfo),
+                  unrankedTensorType,
+                  SplatElementsAttr::get(unrankedTensorType,
+                                         builder.getZeroAttr(ET)));
+              newVal = newConst.getResult();
             } else {
               auto newConst = stablehlo::ConstantOp::create(
                   builder,
