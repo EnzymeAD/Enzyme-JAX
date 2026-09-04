@@ -91,3 +91,30 @@ func.func @symbol_keep(%d: i32, %k: index, %out: memref<?xi32>, %v: i32) {
 // CHECK: affine.if #{{.+}}()[%{{.+}}] -> i32 {
 // CHECK: affine.parallel
 // CHECK-NOT: affine.if
+
+// -----
+
+// The same shape as @split_for, but one branch yields a non-constant: there is
+// no constant to inline under each arm, so the conditional is not matched and
+// the loop is left as-is.
+func.func @nonconstant_keep(%d: i32, %out: memref<?xi32>, %v: i32) {
+  %c0_i32 = arith.constant 0 : i32
+  %c1_i32 = arith.constant 1 : i32
+  affine.parallel (%t, %c) = (0, 0) to (8, 2) {
+    %e = affine.if affine_set<(d0) : (d0 - 1 >= 0)>(%c) -> i32 {
+      affine.yield %v : i32
+    } else {
+      affine.yield %c0_i32 : i32
+    }
+    %ub = arith.addi %d, %e : i32
+    scf.for %i = %c0_i32 to %ub step %c1_i32 : i32 {
+      %ii = arith.index_cast %i : i32 to index
+      memref.store %v, %out[%ii] : memref<?xi32>
+    }
+  }
+  return
+}
+
+// CHECK-LABEL: func.func @nonconstant_keep
+// CHECK: affine.if
+// CHECK: scf.for
