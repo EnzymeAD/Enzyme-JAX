@@ -338,6 +338,10 @@ std::tuple<std::string, bool, bool> parseRunLine(llvm::StringRef filePath) {
     // Format passes for the PassManager
     if (token.consume_front("--") || token.consume_front("-")) {
       auto [passName, passOpts] = token.split('=');
+      if (passName == "pass-pipeline") {
+        passes.push_back(passOpts.str());
+        continue;
+      }
       if (!passOpts.empty()) {
         passes.push_back((passName + "{" + passOpts + "}").str());
       } else {
@@ -587,7 +591,7 @@ int main(int argc, char **argv) {
   if (mlir::failed(mlir::parsePassPipeline(passPipeline, pm, diag()))) {
     llvm::WithColor::error(diag())
         << "Failed to parse the pass pipeline: " << passPipeline << "\n";
-    return 1;
+    return 2;
   }
 
   auto BaseConstraints = parseRestrictInput(restrictInput);
