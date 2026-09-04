@@ -1219,8 +1219,62 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
     }
   }
 
-  // The stored value must not vary along a dimension that is absent from the
-  // store indices.
+  // A value varying along an axis the store indices do not cover is a racy
+  // write: every lane along that axis stores to the same location, and the
+  // original program does not define which lane wins. Lane 0 is a sound
+  // refinement, unless a mask varies along the axis: which lanes write at
+  // all is then data-dependent, and the store stays unraisable below.
+  {
+    SmallVector<int64_t> raceDims;
+    for (auto [updateIdx, dim] : llvm::enumerate(broadcastDims))
+      if (dim == -1)
+        raceDims.push_back((int64_t)updateIdx);
+    bool refine = !raceDims.empty();
+    if (refine && pc.mask) {
+      affine::AffineValueMap mm = maps.lookup(pc.mask);
+      for (int64_t ri : raceDims) {
+        Value riv = getIVForExpr(updateValueMap,
+                                 updateValueMap.getAffineMap().getResult(ri));
+        for (auto E : mm.getAffineMap().getResults())
+          if (getIVForExpr(mm, E) == riv)
+            refine = false;
+      }
+    }
+    if (refine) {
+      emitWarning(loc) << "racy store: the stored value varies along a "
+                          "parallel axis the destination does not index; "
+                          "raising lane 0's write";
+      SmallVector<int64_t> starts(UTy.getRank(), 0);
+      SmallVector<int64_t> limits(UTy.getShape().begin(), UTy.getShape().end());
+      SmallVector<int64_t> ones(UTy.getRank(), 1);
+      for (int64_t ri : raceDims)
+        limits[ri] = 1;
+      Value lane0 = stablehlo::SliceOp::create(builder, loc, update, starts,
+                                               limits, ones);
+      SmallVector<int64_t> keptShape;
+      SmallVector<AffineExpr> keptExprs;
+      SmallVector<int64_t> keptBroadcastDims;
+      for (auto [updateIdx, dim] : llvm::enumerate(broadcastDims)) {
+        if (llvm::is_contained(raceDims, (int64_t)updateIdx))
+          continue;
+        keptShape.push_back(UTy.getShape()[updateIdx]);
+        keptExprs.push_back(updateValueMap.getAffineMap().getResult(updateIdx));
+        keptBroadcastDims.push_back(dim);
+      }
+      update = stablehlo::ReshapeOp::create(
+          builder, loc, RankedTensorType::get(keptShape, UTy.getElementType()),
+          lane0);
+      updateValueMap = affine::AffineValueMap(
+          AffineMap::get(updateValueMap.getAffineMap().getNumDims(),
+                         updateValueMap.getAffineMap().getNumSymbols(),
+                         keptExprs, loc.getContext()),
+          updateValueMap.getOperands());
+      updateValueMap.composeSimplifyAndCanonicalize();
+      maps[update] = updateValueMap;
+      UTy = cast<RankedTensorType>(update.getType());
+      broadcastDims.assign(keptBroadcastDims.begin(), keptBroadcastDims.end());
+    }
+  }
   if (llvm::any_of(broadcastDims, [](int64_t dim) { return dim == -1; })) {
     return nullptr;
   }
@@ -3148,6 +3202,68 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
           broadcastDims[updateIdx] = (updateShape.size() - 1);
           break;
         }
+      }
+    }
+
+    // A value varying along an axis the destination does not index is a racy
+    // write: every lane along that axis stores to the same location, and the
+    // original program does not define which lane wins. Lane 0 is a sound
+    // refinement, unless a mask varies along the axis: which lanes write at
+    // all is then data-dependent, and the store stays unraisable below.
+    {
+      SmallVector<int64_t> raceDims;
+      for (auto [updateIdx, dim] : llvm::enumerate(broadcastDims))
+        if (dim == -1)
+          raceDims.push_back((int64_t)updateIdx);
+      bool refine = !raceDims.empty();
+      if (refine && pc.mask) {
+        affine::AffineValueMap mm = maps.lookup(pc.mask);
+        for (int64_t ri : raceDims) {
+          Value riv = getIVForExpr(updateValueMap,
+                                   updateValueMap.getAffineMap().getResult(ri));
+          for (auto E : mm.getAffineMap().getResults())
+            if (getIVForExpr(mm, E) == riv)
+              refine = false;
+        }
+      }
+      if (refine) {
+        op->emitWarning() << "racy store: the stored value varies along a "
+                             "parallel axis the destination does not index; "
+                             "raising lane 0's write";
+        auto UT = cast<RankedTensorType>(update.getType());
+        SmallVector<int64_t> starts(UT.getRank(), 0);
+        SmallVector<int64_t> limits(UT.getShape().begin(), UT.getShape().end());
+        SmallVector<int64_t> ones(UT.getRank(), 1);
+        for (int64_t ri : raceDims)
+          limits[ri] = 1;
+        update = stablehlo::SliceOp::create(
+            builder,
+            rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+            update, starts, limits, ones);
+        SmallVector<int64_t> keptShape;
+        SmallVector<AffineExpr> keptExprs;
+        SmallVector<int64_t> keptBroadcastDims;
+        for (auto [updateIdx, dim] : llvm::enumerate(broadcastDims)) {
+          if (llvm::is_contained(raceDims, (int64_t)updateIdx))
+            continue;
+          keptShape.push_back(UT.getShape()[updateIdx]);
+          keptExprs.push_back(
+              updateValueMap.getAffineMap().getResult(updateIdx));
+          keptBroadcastDims.push_back(dim);
+        }
+        update = stablehlo::ReshapeOp::create(
+            builder,
+            rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+            RankedTensorType::get(keptShape, UT.getElementType()), update);
+        updateValueMap = affine::AffineValueMap(
+            AffineMap::get(updateValueMap.getAffineMap().getNumDims(),
+                           updateValueMap.getAffineMap().getNumSymbols(),
+                           keptExprs, op->getContext()),
+            updateValueMap.getOperands());
+        updateValueMap.composeSimplifyAndCanonicalize();
+        maps[update] = updateValueMap;
+        broadcastDims.assign(keptBroadcastDims.begin(),
+                             keptBroadcastDims.end());
       }
     }
 
