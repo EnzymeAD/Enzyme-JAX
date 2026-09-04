@@ -507,10 +507,7 @@ struct RaiseCmpI : public OpRewritePattern<arith::CmpIOp> {
     // Booleans (i1) and unsigned integers lower to PRED/unsigned HLO types,
     // which require an UNSIGNED comparison type regardless of the predicate.
     auto elemType = operandType.getElementType();
-    bool unsignedPredicate = predicate == arith::CmpIPredicate::ugt ||
-                             predicate == arith::CmpIPredicate::uge ||
-                             predicate == arith::CmpIPredicate::ult ||
-                             predicate == arith::CmpIPredicate::ule;
+    bool unsignedPredicate = isUnsignedPredicate(predicate);
     stablehlo::ComparisonType compType =
         (unsignedPredicate || elemType.isUnsignedInteger() ||
          elemType.isInteger(1))

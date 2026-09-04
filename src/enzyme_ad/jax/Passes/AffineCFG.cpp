@@ -78,28 +78,16 @@ bool isValidSymbolInt(Operation *defOp, bool recur, Region *scope) {
     return true;
 
   if (recur) {
-    if (isa<arith::SelectOp, IndexCastOp, IndexCastUIOp, AddIOp, MulIOp,
-            DivSIOp, DivUIOp, RemSIOp, RemUIOp, SubIOp, CmpIOp, TruncIOp,
-            ExtUIOp, ExtSIOp, MaxSIOp, MinSIOp, MaxUIOp, MinUIOp>(defOp))
-      if (llvm::all_of(defOp->getOperands(), [&](Value v) {
-            bool b = isValidSymbolInt(v, recur, scope);
-            // if (!b)
-            //	LLVM_DEBUG(llvm::dbgs() << "illegal isValidSymbolInt: "
-            //<< value << " due to " << v << "\n");
-            return b;
-          }))
-        return true;
-    if (auto orOp = dyn_cast<OrIOp>(defOp)) {
-      if (isDisjoint(orOp) && isValidSymbolInt(orOp.getLhs(), recur, scope) &&
-          isValidSymbolInt(orOp.getRhs(), recur, scope))
-        return true;
-    }
-    if (auto shiftOp = dyn_cast<ShLIOp>(defOp)) {
-      APInt intValue;
-      if (isValidSymbolInt(shiftOp.getLhs(), recur, scope) &&
-          matchPattern(shiftOp.getRhs(), m_ConstantInt(&intValue)))
-        return true;
-    }
+    // A region-free op without memory effects is a function of its operands
+    // alone, so with valid symbols for operands its result is invariant over
+    // the scope the way a symbol is; whether it has an affine form is
+    // composableSymbol's question, not this one.
+    if (defOp->getNumRegions() == 0 && defOp->getNumOperands() != 0 &&
+        isMemoryEffectFree(defOp) &&
+        llvm::all_of(defOp->getOperands(), [&](Value v) {
+          return isValidSymbolInt(v, recur, scope);
+        }))
+      return true;
     // A conditional whose regions yield valid symbols produces one: the value
     // is select(cond, thenYield, elseYield) regardless of what else the regions
     // do.  Materializing that is AffineApplyNormalizer::fix's job -- see the
@@ -2471,13 +2459,16 @@ struct MoveIfToAffine : public OpRewritePattern<scf::IfOp> {
   }
 };
 
-struct MoveExtToAffine : public OpRewritePattern<arith::ExtUIOp> {
-  using OpRewritePattern::OpRewritePattern;
+// An extension of an affine-conditional i1 becomes an affine.if yielding the
+// extended constants: 1/0 for extui, -1/0 for extsi.
+template <typename ExtOp>
+struct MoveExtToAffine : public OpRewritePattern<ExtOp> {
+  using OpRewritePattern<ExtOp>::OpRewritePattern;
 
-  LogicalResult matchAndRewrite(arith::ExtUIOp ifOp,
+  LogicalResult matchAndRewrite(ExtOp ifOp,
                                 PatternRewriter &rewriter) const override {
-    if (!ifOp->getParentOfType<affine::AffineForOp>() &&
-        !ifOp->getParentOfType<affine::AffineParallelOp>())
+    if (!ifOp->template getParentOfType<affine::AffineForOp>() &&
+        !ifOp->template getParentOfType<affine::AffineParallelOp>())
       return failure();
 
     if (!ifOp.getOperand().getType().isInteger(1))
@@ -2564,8 +2555,9 @@ struct MoveExtToAffine : public OpRewritePattern<arith::ExtUIOp> {
           IntegerSet::get(/*dim*/ 0, /*symbol*/ applies.size(), exprs, eqflags);
       fully2ComposeIntegerSetAndOperands(rewriter, &iset, &operands, DI, scope);
       affine::canonicalizeSetAndOperands(&iset, &operands);
+      int64_t trueValue = std::is_same_v<ExtOp, arith::ExtSIOp> ? -1 : 1;
       Value tval[1] = {arith::ConstantIntOp::create(rewriter, ifOp.getLoc(),
-                                                    ifOp.getType(), 1)};
+                                                    ifOp.getType(), trueValue)};
       Value fval[1] = {arith::ConstantIntOp::create(rewriter, ifOp.getLoc(),
                                                     ifOp.getType(), 0)};
       affine::AffineIfOp affineIfOp = affine::AffineIfOp::create(
@@ -6701,14 +6693,15 @@ void mlir::enzyme::populateAffineCFGPatterns(RewritePatternSet &rpl) {
           /* IndexCastMovement,*/ AffineFixup<affine::AffineLoadOp>,
           AffineFixup<affine::AffineStoreOp>, CanonicalizIfBounds,
           MoveStoreToAffine, MoveIfToAffine, MoveEnzymeRMWToAffine,
-          MoveRMWToAffine, MoveLoadToAffine, MoveExtToAffine,
-          MoveSIToFPToAffine, CmpExt, MoveSelectToAffine,
-          AffineIfSimplification, AffineIfSimplificationIsl, CombineAffineIfs,
-          MergeNestedAffineParallelLoops, PrepMergeNestedAffineParallelLoops,
-          MergeNestedAffineParallelIf, MergeParallelInductions, OptimizeRem,
-          CanonicalieForBounds, SinkStoreInIf, SinkStoreInAffineIf,
-          AddAddCstEnd, LiftMemrefRead, CompareVs1, AffineForReductionIter,
-          AffineForReductionSink>(context, 2);
+          MoveRMWToAffine, MoveLoadToAffine, MoveExtToAffine<arith::ExtUIOp>,
+          MoveExtToAffine<arith::ExtSIOp>, MoveSIToFPToAffine, CmpExt,
+          MoveSelectToAffine, AffineIfSimplification, AffineIfSimplificationIsl,
+          CombineAffineIfs, MergeNestedAffineParallelLoops,
+          PrepMergeNestedAffineParallelLoops, MergeNestedAffineParallelIf,
+          MergeParallelInductions, OptimizeRem, CanonicalieForBounds,
+          SinkStoreInIf, SinkStoreInAffineIf, AddAddCstEnd, LiftMemrefRead,
+          CompareVs1, AffineForReductionIter, AffineForReductionSink>(context,
+                                                                      2);
   rpl.add<FoldAffineApplyAdd, FoldAffineApplySub, FoldAffineApplyRem,
           FoldAffineApplyDiv, FoldAffineApplyMul, FoldAppliesIntoLoad>(context,
                                                                        2);

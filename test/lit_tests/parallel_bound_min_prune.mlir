@@ -1,4 +1,5 @@
 // RUN: enzymexlamlir-opt %s --pass-pipeline="builtin.module(simplify-affine-exprs)" --split-input-file | FileCheck %s
+// RUN: enzymexlamlir-opt %s --affine-cfg --split-input-file | FileCheck %s
 
 // A size rounded up to whole blocks is never below the size: the min a
 // launch guard folded into the bound keeps only the size.
