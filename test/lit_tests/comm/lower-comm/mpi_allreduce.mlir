@@ -26,5 +26,5 @@ func.func @main(%buf : tensor<4xf64>, %comm : !comm.mpi.comm) -> tensor<4xf64> {
 // JIT-NEXT: %[[DATATYPE:.*]] = stablehlo.constant dense<0> : tensor<i64>
 // JIT-NEXT: %[[OP:.*]] = stablehlo.constant dense<0> : tensor<i32>
 // JIT-NEXT: %[[RECVBUF:.*]] = stablehlo.constant dense<0> : tensor<4xf64>
-// JIT-NEXT: %[[v0:.*]] = stablehlo.jit_call @enzymexla_jitwrap_MPI_Allreduce(%[[BUF]], %[[RECVBUF]], %[[COUNT]], %[[DATATYPE]], %[[OP]], %[[COMM]]) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 1, operand_tuple_indices = []>]} : (tensor<4xf64>, tensor<4xf64>, tensor<i32>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<4xf64>
+// JIT-NEXT: %[[v0:.*]] = enzymexla.jit_call @enzymexla_jitwrap_MPI_Allreduce(%[[BUF]], %[[RECVBUF]], %[[COUNT]], %[[DATATYPE]], %[[OP]], %[[COMM]]) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 1, operand_tuple_indices = []>]} : (tensor<4xf64>, tensor<4xf64>, tensor<i32>, tensor<i64>, tensor<i64>, tensor<i64>) -> tensor<4xf64>
 // JIT-NEXT: return %[[v0]] : tensor<4xf64>
