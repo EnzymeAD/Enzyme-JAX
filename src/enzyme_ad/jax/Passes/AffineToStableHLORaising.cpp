@@ -31,6 +31,7 @@
 #include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include <numeric>
 
 #include "Interfaces/AutoDiffTypeInterface.h"
 #include "mlir/Dialect/GPU/IR/GPUDialect.h"
@@ -644,8 +645,9 @@ alignMemoryAccess(Value &a, affine::AffineValueMap src, Value &b,
 // the corresponding AffineValueMap for the produced value.
 static FailureOr<std::tuple<Value, affine::AffineValueMap>>
 expandAffineExpr(OpBuilder &builder, Location loc, AffineExpr expr,
-                 ValueRange operands, IRMapping &mapping, unsigned numDims,
-                 ParallelContext pc) {
+                 ValueRange operands, IRMapping &mapping,
+                 llvm::DenseMap<Value, affine::AffineValueMap> &maps,
+                 unsigned numDims, ParallelContext pc) {
   using Expanded = std::tuple<Value, affine::AffineValueMap>;
   if (auto constExpr = dyn_cast<AffineConstantExpr>(expr)) {
     auto ET = builder.getI64Type();
@@ -660,12 +662,12 @@ expandAffineExpr(OpBuilder &builder, Location loc, AffineExpr expr,
 
   if (auto binExpr = dyn_cast<AffineBinaryOpExpr>(expr)) {
     AffineExpr lhsExpr = binExpr.getLHS(), rhsExpr = binExpr.getRHS();
-    auto lhsExpanded =
-        expandAffineExpr(builder, loc, lhsExpr, operands, mapping, numDims, pc);
+    auto lhsExpanded = expandAffineExpr(builder, loc, lhsExpr, operands,
+                                        mapping, maps, numDims, pc);
     if (failed(lhsExpanded))
       return failure();
-    auto rhsExpanded =
-        expandAffineExpr(builder, loc, rhsExpr, operands, mapping, numDims, pc);
+    auto rhsExpanded = expandAffineExpr(builder, loc, rhsExpr, operands,
+                                        mapping, maps, numDims, pc);
     if (failed(rhsExpanded))
       return failure();
     auto [lhs, lhsMap] = *lhsExpanded;
@@ -772,6 +774,8 @@ expandAffineExpr(OpBuilder &builder, Location loc, AffineExpr expr,
     Value mapped = mapping.lookupOrNull(sym);
     if (!mapped)
       return failure();
+    if (maps.count(mapped))
+      return Expanded{mapped, maps.lookup(mapped)};
     return Expanded{
         mapped, affine::AffineValueMap(AffineMap::get(sym.getContext()), {})};
   }
@@ -783,6 +787,10 @@ expandAffineExpr(OpBuilder &builder, Location loc, AffineExpr expr,
       return failure();
 
     if (!pc.isParallelIV(dim)) {
+      // A masked loop's induction variable maps to a lane tensor carrying
+      // its own access map; a uniform while counter maps to a scalar.
+      if (maps.count(mapped))
+        return Expanded{mapped, maps.lookup(mapped)};
       return Expanded{
           mapped, affine::AffineValueMap(AffineMap::get(dim.getContext()), {})};
     }
@@ -794,6 +802,24 @@ expandAffineExpr(OpBuilder &builder, Location loc, AffineExpr expr,
   }
 
   llvm_unreachable("unreachable");
+}
+
+// A for-loop induction variable whose raised value is a lane tensor (a
+// masked while over per-lane bounds) cannot use the slice path: its start
+// index is not a scalar.
+static bool usesLaneTensorIV(affine::AffineValueMap &avm, IRMapping &mapping,
+                             ParallelContext &pc) {
+  for (Value opnd : avm.getOperands()) {
+    if (!affine::isAffineForInductionVar(opnd) || pc.isParallelIV(opnd))
+      continue;
+    Value mapped = mapping.lookupOrNull(opnd);
+    if (!mapped)
+      continue;
+    auto tt = dyn_cast<RankedTensorType>(mapped.getType());
+    if (tt && tt.getRank() > 0)
+      return true;
+  }
+  return false;
 }
 
 /// scope is an operation _in_ the scope we are interested in
@@ -1449,7 +1475,7 @@ static LogicalResult tryRaisingForOpToStableHLOWhile(
       Value acc;
       for (AffineExpr expr : map.getResults()) {
         auto expanded = expandAffineExpr(builder, wloc, expr, operands, mapping,
-                                         map.getNumDims(), pc);
+                                         maps, map.getNumDims(), pc);
         if (failed(expanded))
           return nullptr;
         auto [val, avm] = *expanded;
@@ -1924,6 +1950,320 @@ static LogicalResult tryRaisingSCFForOpToStableHLOWhile(
 
   parentMapping = mapping;
   return success();
+}
+
+// An scf.for whose bounds vary per lane (a thread-stride remainder loop with
+// tid-dependent extent) iterates a scalar trip counter to the maximum lane
+// trip count, with a per-lane active mask lb + k*step < ub applied to the
+// body: masked stores skip finished lanes and iter args keep their value.
+static LogicalResult raiseLoopToMaskedWhile(
+    Operation *loopOp, Value iv, Block *loopBody, ValueRange loopInits,
+    ValueRange regionIterArgs, Value lb, Value ub, Value step,
+    IRMapping &parentMapping, IRMapping &mapping, OpBuilder &builder,
+    llvm::DenseMap<Value, affine::AffineValueMap> &maps, ParallelContext pc);
+
+static LogicalResult tryRaisingSCFForOpToMaskedWhile(
+    scf::ForOp forOp, IRMapping &parentMapping, OpBuilder &builder,
+    llvm::DenseMap<Value, affine::AffineValueMap> &maps, ParallelContext pc) {
+  IRMapping mapping = parentMapping;
+
+  APInt stepCst;
+  if (!matchPattern(forOp.getStep(), m_ConstantInt(&stepCst)) ||
+      !stepCst.isStrictlyPositive())
+    return failure();
+
+  Value lb = mapping.lookupOrNull(forOp.getLowerBound());
+  Value ub = mapping.lookupOrNull(forOp.getUpperBound());
+  Value step = mapping.lookupOrNull(forOp.getStep());
+  if (!lb || !ub || !step)
+    return failure();
+  for (Value v : {lb, ub, step})
+    if (!isa<RankedTensorType>(v.getType()) ||
+        !cast<RankedTensorType>(v.getType()).getElementType().isInteger())
+      return failure();
+  return raiseLoopToMaskedWhile(forOp, forOp.getInductionVar(), forOp.getBody(),
+                                forOp.getInits(), forOp.getRegionIterArgs(), lb,
+                                ub, step, parentMapping, mapping, builder, maps,
+                                pc);
+}
+
+static LogicalResult raiseLoopToMaskedWhile(
+    Operation *loopOp, Value iv, Block *loopBody, ValueRange loopInits,
+    ValueRange regionIterArgs, Value lb, Value ub, Value step,
+    IRMapping &parentMapping, IRMapping &mapping, OpBuilder &builder,
+    llvm::DenseMap<Value, affine::AffineValueMap> &maps, ParallelContext pc) {
+  auto wloc =
+      rewriteLocation(loopOp->getLoc(), pc.options.strip_llvm_debuginfo);
+
+  // One common lane space for the bounds.
+  if (!maps.count(lb) || !maps.count(ub) || !maps.count(step))
+    return failure();
+  Value vals[] = {ub, step};
+  affine::AffineValueMap dsts[] = {maps.lookup(ub), maps.lookup(step)};
+  auto aligned =
+      alignMemoryAccess(lb, maps.lookup(lb), vals, dsts, builder, pc);
+  if (failed(aligned))
+    return failure();
+  affine::AffineValueMap laneMap = *aligned;
+  ub = vals[0];
+  step = vals[1];
+  auto laneTy = cast<RankedTensorType>(lb.getType());
+  if (laneTy.getRank() == 0)
+    return failure(); // the uniform path handles this
+  auto ET = laneTy.getElementType();
+
+  auto splat = [&](int64_t v) -> Value {
+    return stablehlo::ConstantOp::create(
+        builder, wloc, laneTy,
+        SplatElementsAttr::get(laneTy, IntegerAttr::get(ET, v)));
+  };
+
+  // Per-lane trip count cdiv(max(ub - lb, 0), step), then its maximum.
+  Value diff = stablehlo::SubtractOp::create(builder, wloc, ub, lb);
+  diff = stablehlo::MaxOp::create(builder, wloc, diff, splat(0));
+  Value stepM1 = stablehlo::SubtractOp::create(builder, wloc, step, splat(1));
+  Value iters = stablehlo::DivOp::create(
+      builder, wloc, stablehlo::AddOp::create(builder, wloc, diff, stepM1),
+      step);
+  auto scalarTy = RankedTensorType::get({}, ET);
+  Value initMin = stablehlo::ConstantOp::create(
+      builder, wloc, scalarTy,
+      SplatElementsAttr::get(scalarTy, IntegerAttr::get(ET, 0)));
+  SmallVector<int64_t> allDims(laneTy.getRank());
+  std::iota(allDims.begin(), allDims.end(), 0);
+  auto maxReduce = stablehlo::ReduceOp::create(
+      builder, wloc, ValueRange{iters}, ValueRange{initMin},
+      builder.getDenseI64ArrayAttr(allDims));
+  {
+    Block *rbody = new Block();
+    maxReduce.getBody().push_back(rbody);
+    rbody->addArgument(scalarTy, wloc);
+    rbody->addArgument(scalarTy, wloc);
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointToStart(rbody);
+    Value m = stablehlo::MaxOp::create(builder, wloc, rbody->getArgument(0),
+                                       rbody->getArgument(1));
+    stablehlo::ReturnOp::create(builder, wloc, m);
+  }
+  Value kMax = maxReduce.getResult(0);
+
+  Block *entryBlock = getRaisedEntryBlock(loopOp);
+
+  Block *cond = new Block(), *body = new Block();
+  Value kInCond = cond->addArgument(scalarTy, wloc);
+  Value kInBody = body->addArgument(scalarTy, wloc);
+
+  SmallVector<Value> inits;
+  Value kZero = stablehlo::ConstantOp::create(
+      builder, wloc, scalarTy,
+      SplatElementsAttr::get(scalarTy, IntegerAttr::get(ET, 0)));
+  inits.push_back(kZero);
+
+  SmallVector<affine::AffineValueMap> iterArgMaps;
+  for (auto [init, iterArg] : llvm::zip(loopInits, regionIterArgs)) {
+    auto TT = pc.getTensorType(init.getType());
+    cond->addArgument(
+        TT, rewriteLocation(iterArg.getLoc(), pc.options.strip_llvm_debuginfo));
+    Value iterArgInBody = body->addArgument(
+        TT, rewriteLocation(iterArg.getLoc(), pc.options.strip_llvm_debuginfo));
+    auto tensorInit = mapping.lookupOrNull(init);
+    if (!tensorInit || !maps.count(tensorInit))
+      return failure();
+    auto broadcastInit =
+        pc.getBroadcast(builder, maps.lookup(tensorInit), tensorInit);
+    if (!broadcastInit)
+      return failure();
+    inits.push_back(broadcastInit->v);
+    mapping.map(iterArg, iterArgInBody);
+    maps[iterArgInBody] = broadcastInit->avm;
+    iterArgMaps.push_back(broadcastInit->avm);
+  }
+
+  SmallVector<Value> buffers(entryBlock->getArguments().begin(),
+                             entryBlock->getArguments().end());
+  {
+    llvm::SmallPtrSet<Value, 8> seen(buffers.begin(), buffers.end());
+    loopBody->walk([&](Operation *innerOp) {
+      for (Value v : innerOp->getOperands())
+        if (isa<MemRefType>(v.getType()) && mapping.contains(v) &&
+            !loopOp->isAncestor(v.getParentRegion()->getParentOp()) &&
+            seen.insert(v).second)
+          buffers.push_back(v);
+    });
+  }
+  for (auto memref : buffers) {
+    Value mappedMemref = mapping.lookup(memref);
+    inits.push_back(mappedMemref);
+    cond->addArgument(mappedMemref.getType(),
+                      rewriteLocation(mappedMemref.getLoc(),
+                                      pc.options.strip_llvm_debuginfo));
+    Value memrefInBody =
+        body->addArgument(mappedMemref.getType(),
+                          rewriteLocation(mappedMemref.getLoc(),
+                                          pc.options.strip_llvm_debuginfo));
+    mapping.map(memref, memrefInBody);
+  }
+
+  auto whileOp = stablehlo::WhileOp::create(builder, wloc, inits);
+  whileOp->getRegion(0).push_back(cond);
+  whileOp->getRegion(1).push_back(body);
+
+  {
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointToStart(cond);
+    Value c = stablehlo::CompareOp::create(builder, wloc, kInCond, kMax,
+                                           stablehlo::ComparisonDirection::LT);
+    stablehlo::ReturnOp::create(builder, wloc, c);
+  }
+  {
+    OpBuilder::InsertionGuard guard(builder);
+    builder.setInsertionPointToStart(body);
+
+    Value kLane = stablehlo::BroadcastInDimOp::create(
+        builder, wloc, laneTy, kInBody, ArrayRef<int64_t>{});
+    Value ivT = stablehlo::AddOp::create(
+        builder, wloc, lb,
+        stablehlo::MulOp::create(builder, wloc, kLane, step));
+    mapping.map(iv, ivT);
+    maps[ivT] = laneMap;
+
+    Value active = stablehlo::CompareOp::create(
+        builder, wloc, ivT, ub, stablehlo::ComparisonDirection::LT);
+    maps[active] = laneMap;
+
+    ParallelContext bodyPc(pc.options);
+    bodyPc.ranges = pc.ranges;
+    bodyPc.ivs = pc.ivs;
+    Value mask = active;
+    if (pc.mask) {
+      Value pm = pc.mask;
+      affine::AffineValueMap pmMap = maps.lookup(pm);
+      auto merged = alignMemoryAccess(pm, pmMap, mask, laneMap, builder, pc);
+      if (failed(merged))
+        return failure();
+      mask = stablehlo::AndOp::create(builder, wloc, pm, mask);
+      maps[mask] = *merged;
+    }
+    bodyPc.mask = mask;
+
+    for (auto &innerOp : loopBody->without_terminator()) {
+      if (tryRaisingOpToStableHLO(&innerOp, mapping, builder, maps, bodyPc)
+              .failed())
+        return failure();
+    }
+
+    Value kNext = stablehlo::AddOp::create(
+        builder, wloc, kInBody,
+        stablehlo::ConstantOp::create(
+            builder, wloc, scalarTy,
+            SplatElementsAttr::get(scalarTy, IntegerAttr::get(ET, 1))));
+
+    SmallVector<Value> loopCarried = {kNext};
+    for (auto [i, pair] : llvm::enumerate(llvm::zip(
+             regionIterArgs, loopBody->getTerminator()->getOperands()))) {
+      auto [iterArg, yielded] = pair;
+      Value raisedYielded = mapping.lookupOrNull(yielded);
+      Value raisedIterArg = mapping.lookup(iterArg);
+      if (!raisedYielded)
+        return failure();
+      // Finished lanes keep their value.
+      Value m = mask;
+      if (!maps.count(raisedYielded) || !maps.count(raisedIterArg))
+        return failure();
+      affine::AffineValueMap mMap = maps.lookup(m);
+      Value selVals[] = {raisedYielded, raisedIterArg};
+      affine::AffineValueMap selMaps[] = {maps.lookup(raisedYielded),
+                                          maps.lookup(raisedIterArg)};
+      auto outMap = alignMemoryAccess(m, mMap, selVals, selMaps, builder, pc);
+      if (failed(outMap))
+        return failure();
+      Value sel =
+          stablehlo::SelectOp::create(builder, wloc, m, selVals[0], selVals[1]);
+      // The aligned select may order the axes differently than the carried
+      // value; permute it back into the iter arg's layout.
+      auto perm =
+          memoryEquivalentPermutation(*outMap, maps.lookup(raisedIterArg));
+      if (perm.has_value() && !std::is_sorted(perm->begin(), perm->end()))
+        sel = stablehlo::TransposeOp::create(builder, wloc, sel, *perm);
+      if (sel.getType() != raisedIterArg.getType())
+        return failure();
+      loopCarried.push_back(sel);
+    }
+
+    for (auto memref : buffers)
+      loopCarried.push_back(mapping.lookup(memref));
+    stablehlo::ReturnOp::create(builder, wloc, loopCarried);
+  }
+
+  for (auto [i, memref] : llvm::enumerate(buffers))
+    mapping.map(memref, whileOp.getResult(i + 1 + regionIterArgs.size()));
+  for (auto [i, loopRes] : llvm::enumerate(loopOp->getResults())) {
+    Value whileRes = whileOp.getResult(1 + i);
+    mapping.map(loopRes, whileRes);
+    maps[whileRes] = iterArgMaps[i];
+  }
+
+  parentMapping = mapping;
+  return success();
+}
+
+// An affine.for whose bounds only evaluate per lane takes the same masked
+// path: bounds expand elementwise (max over lower results, min over upper),
+// and the loop iterates to the maximum lane trip count.
+static LogicalResult tryRaisingAffineForOpToMaskedWhile(
+    affine::AffineForOp forOp, IRMapping &parentMapping, OpBuilder &builder,
+    llvm::DenseMap<Value, affine::AffineValueMap> &maps, ParallelContext pc) {
+  if (forOp.getStepAsInt() <= 0)
+    return failure();
+  IRMapping mapping = parentMapping;
+  auto wloc = rewriteLocation(forOp.getLoc(), pc.options.strip_llvm_debuginfo);
+
+  auto evalBound = [&](AffineMap map, ValueRange operands,
+                       bool isUpper) -> Value {
+    Value acc;
+    affine::AffineValueMap accMap;
+    for (AffineExpr expr : map.getResults()) {
+      auto expanded = expandAffineExpr(builder, wloc, expr, operands, mapping,
+                                       maps, map.getNumDims(), pc);
+      if (failed(expanded))
+        return nullptr;
+      auto [val, avm] = *expanded;
+      if (!maps.count(val))
+        maps[val] = avm;
+      else
+        avm = maps.lookup(val);
+      if (!acc) {
+        acc = val;
+        accMap = avm;
+        continue;
+      }
+      auto merged = alignMemoryAccess(acc, accMap, val, avm, builder, pc);
+      if (failed(merged))
+        return nullptr;
+      acc = isUpper ? (Value)stablehlo::MinOp::create(builder, wloc, acc, val)
+                    : (Value)stablehlo::MaxOp::create(builder, wloc, acc, val);
+      accMap = *merged;
+    }
+    if (acc)
+      maps[acc] = accMap;
+    return acc;
+  };
+  Value lb = evalBound(forOp.getLowerBoundMap(), forOp.getLowerBoundOperands(),
+                       /*isUpper=*/false);
+  Value ub = evalBound(forOp.getUpperBoundMap(), forOp.getUpperBoundOperands(),
+                       /*isUpper=*/true);
+  if (!lb || !ub)
+    return failure();
+  auto ET = builder.getI64Type();
+  auto TT = RankedTensorType::get({}, ET);
+  Value step = stablehlo::ConstantOp::create(
+      builder, wloc, TT,
+      SplatElementsAttr::get(TT, IntegerAttr::get(ET, forOp.getStepAsInt())));
+  maps[step] = affine::AffineValueMap(AffineMap::get(forOp->getContext()), {});
+  return raiseLoopToMaskedWhile(forOp, forOp.getInductionVar(), forOp.getBody(),
+                                forOp.getInits(), forOp.getRegionIterArgs(), lb,
+                                ub, step, parentMapping, mapping, builder, maps,
+                                pc);
 }
 
 template <class T> static SmallVector<BlockArgument, 6> getIVs(T op);
@@ -2536,7 +2876,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
         affineMapToSlice(accessValueMap, strides, reverseDims, pc).failed() ||
         (dynIndices &&
          llvm::any_of(strides, [](int64_t stride) { return stride != 1; })) ||
-        needsGeneralScatterGather(accessValueMap);
+        needsGeneralScatterGather(accessValueMap) ||
+        usesLaneTensorIV(accessValueMap, mapping, pc);
 
     if (emitAsGather) {
       SmallVector<Value> lIndices;
@@ -2544,7 +2885,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
         auto expanded = expandAffineExpr(
             builder,
             rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo), E,
-            accessValueMap.getOperands(), mapping,
+            accessValueMap.getOperands(), mapping, maps,
             accessValueMap.getAffineMap().getNumDims(), pc);
         if (failed(expanded))
           return failure();
@@ -2587,7 +2928,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
         auto expanded = expandAffineExpr(
             builder,
             rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
-            exprToEmit, accessValueMap.getOperands(), mapping,
+            exprToEmit, accessValueMap.getOperands(), mapping, maps,
             accessValueMap.getAffineMap().getNumDims(), pc);
         if (failed(expanded))
           return failure();
@@ -2841,7 +3182,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     bool emitAsScatter =
         affineMapToSlice(accessValueMap, strides, reverseDims, pc).failed() ||
         llvm::any_of(strides, [](int64_t stride) { return stride != 1; }) ||
-        needsGeneralScatterGather(accessValueMap);
+        needsGeneralScatterGather(accessValueMap) ||
+        usesLaneTensorIV(accessValueMap, mapping, pc);
 
     if (emitAsScatter) {
       SmallVector<Value> sIndices;
@@ -2849,7 +3191,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
         auto expanded = expandAffineExpr(
             builder,
             rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo), E,
-            accessValueMap.getOperands(), mapping,
+            accessValueMap.getOperands(), mapping, maps,
             accessValueMap.getAffineMap().getNumDims(), pc);
         if (failed(expanded))
           return failure();
@@ -3110,7 +3452,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
         auto expanded = expandAffineExpr(
             builder,
             rewriteLocation(iv.getLoc(), pc.options.strip_llvm_debuginfo),
-            exprToEmit, accessValueMap.getOperands(), mapping,
+            exprToEmit, accessValueMap.getOperands(), mapping, maps,
             accessValueMap.getAffineMap().getNumDims(), pc);
         if (failed(expanded))
           return failure();
@@ -3546,7 +3888,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
       auto expanded = expandAffineExpr(
           builder,
           rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo), E,
-          accessValueMap.getOperands(), mapping, map.getNumDims(), pc);
+          accessValueMap.getOperands(), mapping, maps, map.getNumDims(), pc);
       if (failed(expanded))
         return failure();
       auto [expandedIndex, indexMap] = *expanded;
@@ -3691,7 +4033,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     auto res = expandAffineExpr(
         builder,
         rewriteLocation(apply.getLoc(), pc.options.strip_llvm_debuginfo),
-        avm.getAffineMap().getResult(0), avm.getOperands(), mapping,
+        avm.getAffineMap().getResult(0), avm.getOperands(), mapping, maps,
         avm.getAffineMap().getNumDims(), pc);
     if (failed(res))
       return failure();
@@ -4008,7 +4350,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
       auto expanded = expandAffineExpr(
           builder,
           rewriteLocation(ifOp.getLoc(), pc.options.strip_llvm_debuginfo),
-          constraint, constraintMap.getOperands(), mapping,
+          constraint, constraintMap.getOperands(), mapping, maps,
           constraintMap.getNumDims(), pc);
       if (failed(expanded))
         return failure();
@@ -4090,10 +4432,17 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
             .succeeded()) {
       return success();
     }
+    if (tryRaisingAffineForOpToMaskedWhile(forOp, mapping, builder, maps, pc)
+            .succeeded()) {
+      return success();
+    }
   }
 
   if (auto scfFor = dyn_cast<scf::ForOp>(op)) {
     if (tryRaisingSCFForOpToStableHLOWhile(scfFor, mapping, builder, maps, pc)
+            .succeeded())
+      return success();
+    if (tryRaisingSCFForOpToMaskedWhile(scfFor, mapping, builder, maps, pc)
             .succeeded())
       return success();
   }
