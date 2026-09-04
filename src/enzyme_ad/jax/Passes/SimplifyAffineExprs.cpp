@@ -1548,4 +1548,5 @@ void mlir::populateAffineExprSimplificationPatterns(
     FoldCmpUsingLoopBounds
   >(*patterns.getContext(), islAnalysis);
   // clang-format on
+  mlir::enzyme::populateInlineNeverLoopingWhilePattern(patterns);
 }
