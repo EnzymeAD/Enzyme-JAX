@@ -902,6 +902,7 @@ cc_library(
         "Dialect/Ops.h",
         "Utils.h",
     ],
+    visibility = ["//visibility:public"],
     deps = [
         ":EnzymeXLAAttrsIncGen",
         ":EnzymeXLACanonicalizers",
@@ -1451,6 +1452,7 @@ cc_library(
         "RegistryUtils.h",
     ],
     copts = triton_copts,
+    visibility = ["//visibility:public"],
     deps = [
         ":TransformOps",
         ":XLADerivatives",
