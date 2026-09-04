@@ -5090,14 +5090,35 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
   if (auto scfFor = dyn_cast<scf::ForOp>(op)) {
     if (getenv("DEBUG_SCF")) {
+      auto fn = scfFor->getParentOfType<FunctionOpInterface>();
       llvm::errs() << "SCF-FOR-RAISE " << scfFor.getLoc() << " iterargs="
-                   << scfFor.getNumRegionIterArgs() << "\n";
+                   << scfFor.getNumRegionIterArgs() << " op=" << (void *)op
+                   << " fn=" << (fn ? fn.getName() : "?") << "\n";
+      std::function<void(Value, unsigned)> chain = [&](Value v, unsigned d) {
+        auto *def = v.getDefiningOp();
+        if (!def) {
+          llvm::errs() << std::string(2 * d, ' ') << "<-: blockarg of "
+                       << v.getParentBlock()->getParentOp()->getName() << "\n";
+          return;
+        }
+        llvm::errs() << std::string(2 * d, ' ') << "<-: ";
+        def->print(llvm::errs(), OpPrintingFlags().skipRegions());
+        llvm::errs() << "\n";
+        if (d >= 5 || isa<arith::ConstantOp>(def))
+          return;
+        for (Value o : def->getOperands())
+          chain(o, d + 1);
+      };
       for (auto [n, v] : {std::pair{"lb", scfFor.getLowerBound()},
                           std::pair{"ub", scfFor.getUpperBound()},
                           std::pair{"step", scfFor.getStep()}}) {
-        if (auto *d = v.getDefiningOp())
-          llvm::errs() << "  " << n << ": " << *d << "\n";
-        else
+        if (auto *d = v.getDefiningOp()) {
+          llvm::errs() << "  " << n << ": ";
+          d->print(llvm::errs(), OpPrintingFlags().skipRegions());
+          llvm::errs() << "\n";
+          for (Value o : d->getOperands())
+            chain(o, 2);
+        } else
           llvm::errs() << "  " << n << ": " << v << "\n";
       }
     }
