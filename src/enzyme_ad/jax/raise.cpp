@@ -154,7 +154,7 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
   // Differentiation runs before the backends diverge, so on xla the
   // generated derivative launches raise to stablehlo like any other kernel.
   if (outfile.size() && getenv("EXPORT_REACTANT")) {
-    pass_pipeline += "print{filename="+outfile+".mlir},";
+    pass_pipeline += "print{filename="+outfile+".pre.mlir},";
   }
   pass_pipeline += "symbol-dce,raise-llvm-ext,outline-enzyme-regions,";
   if (options->preADLowerAffine)
@@ -201,6 +201,9 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
       // raiser wants; rebuild it the way the shared prefix does.
       pass_pipeline += ",affine-cfg," + canonicalize +
                        ",llvm-to-affine-access," + canonicalize + ",";
+      if (outfile.size() && getenv("EXPORT_REACTANT")) {
+        pass_pipeline += "print{filename="+outfile+".preraise.mlir},";
+      }
       pass_pipeline += "func.func(kernelcast),raise-affine-to-stablehlo{prefer_while_raising=false "
       "dump_failed_lockstep=true}," + canonicalize + ",arith-raise{stablehlo=true},"
       "symbol-dce";
