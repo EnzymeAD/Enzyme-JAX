@@ -16,6 +16,7 @@
 #include "mlir/Interfaces/FunctionInterfaces.h"
 #include "mlir/Interfaces/LoopLikeInterface.h"
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
+#include "mlir/Transforms/RegionUtils.h"
 #include "src/enzyme_ad/jax/Passes/AffineUtils.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
 #include "llvm/ADT/SmallSet.h"
@@ -2899,6 +2900,137 @@ struct MoveSelectToAffine : public OpRewritePattern<arith::SelectOp> {
     }
 
     return success(changed);
+  }
+};
+
+// Whether the value derives from `ifOp` through pure region-free ops, or is
+// one of its results.
+static bool derivesFrom(Value value, affine::AffineIfOp ifOp) {
+  SmallVector<Value> todo = {value};
+  DenseSet<Value> seen;
+  while (!todo.empty()) {
+    Value cur = todo.pop_back_val();
+    if (!seen.insert(cur).second)
+      continue;
+    Operation *def = cur.getDefiningOp();
+    if (!def)
+      continue;
+    if (def == ifOp)
+      return true;
+    if (def->getNumRegions() || !isPure(def))
+      continue;
+    todo.append(def->getOperands().begin(), def->getOperands().end());
+  }
+  return false;
+}
+
+// The operands the raising of the op needs affine.
+static SmallVector<Value> raisedOperands(scf::ForOp op) {
+  return {op.getLowerBound(), op.getUpperBound(), op.getStep()};
+}
+static SmallVector<Value> raisedOperands(scf::IfOp op) {
+  return {op.getCondition()};
+}
+
+// An affine.if over dims yielding constants is a select no affine expression
+// expresses, so an scf.for or scf.if whose bounds or condition derive from it
+// cannot raise. Splitting the op on the conditional puts a copy under each
+// branch with the constant in place of the result, and each copy can.
+template <typename OpTy>
+struct SplitOnAffineIfConstants : public OpRewritePattern<OpTy> {
+  using OpRewritePattern<OpTy>::OpRewritePattern;
+
+  // The conditional of constants some raised operand of `op` derives from
+  // through pure region-free ops, when its result is not a symbol already.
+  static affine::AffineIfOp findConditional(OpTy op, Region *scope) {
+    SmallVector<Value> todo = raisedOperands(op);
+    DenseSet<Value> seen;
+    while (!todo.empty()) {
+      Value cur = todo.pop_back_val();
+      if (!seen.insert(cur).second)
+        continue;
+      Operation *def = cur.getDefiningOp();
+      if (!def)
+        continue;
+      if (auto ifOp = dyn_cast<affine::AffineIfOp>(def)) {
+        if (ifOp.getNumResults() == 0 || !ifOp.hasElse())
+          continue;
+        if (getLocalAffineScope(ifOp) != scope)
+          continue;
+        if (llvm::all_of(ifOp.getOperands(), [&](Value o) {
+              return isValidSymbolInt(o, /*recur*/ true, scope);
+            }))
+          continue;
+        auto isConstant = [](Value v) { return matchPattern(v, m_Constant()); };
+        if (llvm::all_of(ifOp.getThenBlock()->getTerminator()->getOperands(),
+                         isConstant) &&
+            llvm::all_of(ifOp.getElseBlock()->getTerminator()->getOperands(),
+                         isConstant))
+          return ifOp;
+        continue;
+      }
+      if (def->getNumRegions() || !isPure(def))
+        continue;
+      todo.append(def->getOperands().begin(), def->getOperands().end());
+    }
+    return nullptr;
+  }
+
+  LogicalResult matchAndRewrite(OpTy op,
+                                PatternRewriter &rewriter) const override {
+    Region *scope = getLocalAffineScope(op);
+    if (!scope)
+      return failure();
+    // Only scalar results are yielded through the affine.if as a select;
+    // a pointer or memref result would leave one no raising can select on.
+    if (!llvm::all_of(op->getResultTypes(), [](Type type) {
+          return isa<IntegerType, IndexType, FloatType>(type);
+        }))
+      return failure();
+    affine::AffineIfOp ifOp = findConditional(op, scope);
+    if (!ifOp)
+      return failure();
+
+    // Values from outside the op that the copies read, the derived ones among
+    // them to be recomputed under each branch.
+    SetVector<Value> external(op->operand_begin(), op->operand_end());
+    getUsedValuesDefinedAbove(op->getRegions(), external);
+
+    Location loc = op.getLoc();
+    auto split = affine::AffineIfOp::create(
+        rewriter, loc, op->getResultTypes(), ifOp.getIntegerSet(),
+        ifOp.getOperands(), /*withElseRegion=*/true);
+    for (int i = 0; i < 2; i++) {
+      Block *block = i == 0 ? split.getThenBlock() : split.getElseBlock();
+      Operation *yield =
+          (i == 0 ? ifOp.getThenBlock() : ifOp.getElseBlock())->getTerminator();
+      // The builder terminates result-less branches itself.
+      Operation *terminator = block->empty() ? nullptr : block->getTerminator();
+      if (terminator)
+        rewriter.setInsertionPoint(terminator);
+      else
+        rewriter.setInsertionPointToEnd(block);
+      IRMapping mapping;
+      for (auto [result, constant] :
+           llvm::zip(ifOp.getResults(), yield->getOperands()))
+        mapping.map(result,
+                    rewriter.clone(*constant.getDefiningOp())->getResult(0));
+      std::function<void(Value)> remap = [&](Value value) {
+        if (mapping.contains(value) || !derivesFrom(value, ifOp))
+          return;
+        Operation *def = value.getDefiningOp();
+        for (Value operand : def->getOperands())
+          remap(operand);
+        rewriter.clone(*def, mapping);
+      };
+      for (Value value : external)
+        remap(value);
+      Operation *copy = rewriter.clone(*op, mapping);
+      if (!terminator)
+        affine::AffineYieldOp::create(rewriter, loc, copy->getResults());
+    }
+    rewriter.replaceOp(op, split.getResults());
+    return success();
   }
 };
 
@@ -6695,13 +6827,14 @@ void mlir::enzyme::populateAffineCFGPatterns(RewritePatternSet &rpl) {
           MoveStoreToAffine, MoveIfToAffine, MoveEnzymeRMWToAffine,
           MoveRMWToAffine, MoveLoadToAffine, MoveExtToAffine<arith::ExtUIOp>,
           MoveExtToAffine<arith::ExtSIOp>, MoveSIToFPToAffine, CmpExt,
-          MoveSelectToAffine, AffineIfSimplification, AffineIfSimplificationIsl,
-          CombineAffineIfs, MergeNestedAffineParallelLoops,
-          PrepMergeNestedAffineParallelLoops, MergeNestedAffineParallelIf,
-          MergeParallelInductions, OptimizeRem, CanonicalieForBounds,
-          SinkStoreInIf, SinkStoreInAffineIf, AddAddCstEnd, LiftMemrefRead,
-          CompareVs1, AffineForReductionIter, AffineForReductionSink>(context,
-                                                                      2);
+          MoveSelectToAffine, SplitOnAffineIfConstants<scf::ForOp>,
+          SplitOnAffineIfConstants<scf::IfOp>, AffineIfSimplification,
+          AffineIfSimplificationIsl, CombineAffineIfs,
+          MergeNestedAffineParallelLoops, PrepMergeNestedAffineParallelLoops,
+          MergeNestedAffineParallelIf, MergeParallelInductions, OptimizeRem,
+          CanonicalieForBounds, SinkStoreInIf, SinkStoreInAffineIf,
+          AddAddCstEnd, LiftMemrefRead, CompareVs1, AffineForReductionIter,
+          AffineForReductionSink>(context, 2);
   rpl.add<FoldAffineApplyAdd, FoldAffineApplySub, FoldAffineApplyRem,
           FoldAffineApplyDiv, FoldAffineApplyMul, FoldAppliesIntoLoad>(context,
                                                                        2);
