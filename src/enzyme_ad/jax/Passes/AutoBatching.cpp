@@ -882,6 +882,255 @@ static bool definedOutside(Value v, Operation *op) {
   return !op->isAncestor(v.getParentBlock()->getParentOp());
 }
 
+/// Ops this pattern never batches: either there is nothing to gain (a
+/// reshape-like op is metadata only) or batching would reintroduce a loop.
+static bool avoidBatching(Operation *op) {
+  if (!op) {
+    return true;
+  }
+
+  return llvm::TypeSwitch<Operation *, bool>(op)
+      .Case<stablehlo::ReshapeOp, stablehlo::SliceOp, stablehlo::ReturnOp,
+            // avoid ops that use SHLOGenericBatchOpInterface since that
+            // lowers to loop
+            stablehlo::IfOp, stablehlo::CaseOp, stablehlo::WhileOp,
+            stablehlo::CustomCallOp>([](auto op) { return true; })
+      .Case<stablehlo::BroadcastInDimOp, stablehlo::TransposeOp>(
+          [](auto op) { return stablehlo::OpIsReshapeLike(op); })
+      .Default([](auto op) { return false; });
+}
+
+/// `traverseOperandsForHoisting` accepts an operand that is a candidate slice
+/// through one intervening reshape; mirror that when reasoning about the shape
+/// of the batchable subgraph.
+static Value skipIntermediateReshape(Value v) {
+  if (auto reshape = v.getDefiningOp<stablehlo::ReshapeOp>())
+    return reshape.getOperand();
+  return v;
+}
+
+/// Appends the ops that consume `v`, looking through an intervening reshape the
+/// same way the candidate collection below does.
+static void appendBatchingConsumers(Value v,
+                                    SmallVectorImpl<Operation *> &consumers) {
+  for (Operation *user : v.getUsers()) {
+    if (auto reshape = dyn_cast<stablehlo::ReshapeOp>(user)) {
+      for (Operation *indirect : reshape.getResult().getUsers())
+        consumers.push_back(indirect);
+      continue;
+    }
+    consumers.push_back(user);
+  }
+}
+
+/// Whether this pattern could batch `op`, given that everything in `available`
+/// will have been batched. Mirrors the acceptance in
+/// `traverseOperandsForHoisting` without touching the IR.
+static bool isBatchableGiven(Operation *op, WhileLoopInfo &info,
+                             const DenseSet<Value> &available) {
+  if (avoidBatching(op) || op->getNumResults() != 1)
+    return false;
+
+  if (!isa<BatchOpInterface>(op) && !stablehlo::hasTraitElementwise(op))
+    return false;
+
+  auto affineIndexInfoMap = info.getAffineIndexInfo();
+  for (Value operand : op->getOperands()) {
+    if (available.contains(skipIntermediateReshape(operand)))
+      continue;
+
+    if (info.isConstantAcrossIterations(operand))
+      continue;
+
+    return false;
+  }
+
+  return true;
+}
+
+/// Whether `v` is a block argument the loop threads from one iteration to the
+/// next, with `yielded` taking its place at the end of the body.
+static bool isCarriedThrough(Value v, Value yielded,
+                             stablehlo::WhileOp whileOp) {
+  Block &body = whileOp.getBody().front();
+  auto blockArg = dyn_cast<BlockArgument>(v);
+  return blockArg && blockArg.getOwner() == &body &&
+         body.getTerminator()->getOperand(blockArg.getArgNumber()) == yielded;
+}
+
+/// An accumulation into a carried value, in the form `liftReduceLikeOperation`
+/// can rewrite into a stablehlo.reduce over the batched dimension. That removes
+/// the carry, so the loop itself goes away rather than surviving to read a
+/// batched buffer back row by row.
+///
+/// This is the single eligibility test for that rewrite: the rewrite itself
+/// calls it, and so does the profitability analysis, which must not promise a
+/// collapse the rewrite would then decline. On success `carriedArgIdx` is the
+/// position of the carry and `otherOperand` the side that gets reduced.
+static bool isReduceLikeAccumulation(Operation *op, stablehlo::WhileOp whileOp,
+                                     int64_t &carriedArgIdx,
+                                     Value &otherOperand) {
+  // sub / div are handled by reducing with add / multiply over a neg /
+  // reciprocal, which only works with the carry on the left: `x - a - b`
+  // accumulates, `a - x` alternates.
+  bool specialOps = isa<stablehlo::SubtractOp, stablehlo::DivOp>(op);
+  if (!specialOps && !stablehlo::canFuseIntoReduce(op))
+    return false;
+
+  if (op->getNumOperands() != 2 || op->getNumResults() != 1)
+    return false;
+
+  Value result = op->getResult(0);
+  if (!llvm::hasSingleElement(result.getUsers()))
+    return false;
+
+  auto returnOp = dyn_cast<stablehlo::ReturnOp>(*result.getUsers().begin());
+  if (!returnOp || returnOp != whileOp.getBody().front().getTerminator())
+    return false;
+
+  bool lhsIsCarry = isCarriedThrough(op->getOperand(0), result, whileOp);
+  bool rhsIsCarry = isCarriedThrough(op->getOperand(1), result, whileOp);
+
+  // Exactly one side may be the carry.
+  if (lhsIsCarry == rhsIsCarry)
+    return false;
+  if (specialOps && rhsIsCarry)
+    return false;
+
+  carriedArgIdx =
+      cast<BlockArgument>(op->getOperand(lhsIsCarry ? 0 : 1)).getArgNumber();
+
+  // while-dead-args is what actually drops the carry afterwards, and it only
+  // runs on a result somebody reads.
+  if (carriedArgIdx >= whileOp->getNumResults() ||
+      whileOp->getResult(carriedArgIdx).getUsers().empty())
+    return false;
+
+  otherOperand = lhsIsCarry ? op->getOperand(1) : op->getOperand(0);
+  return true;
+}
+
+/// Predicate-only overload, for callers that just need the classification.
+static bool isReduceLikeAccumulation(Operation *op,
+                                     stablehlo::WhileOp whileOp) {
+  int64_t carriedArgIdx;
+  Value otherOperand;
+  return isReduceLikeAccumulation(op, whileOp, carriedArgIdx, otherOperand);
+}
+
+/// A consumer that carries the value out of the loop, so batching its producer
+/// does not leave a trip-count-sized buffer behind to be read back row by row.
+static bool leavesLoop(Operation *op, stablehlo::WhileOp whileOp,
+                       WhileLoopInfo &info) {
+  if (op == whileOp.getBody().front().getTerminator())
+    return true;
+
+  // A row-wise write into a carried buffer: the loop is a scatter over the
+  // batched dimension, which the dus hoisting patterns take out wholesale.
+  if (auto dus = dyn_cast<stablehlo::DynamicUpdateSliceOp>(op)) {
+    if (!isCarriedThrough(dus.getOperand(), dus.getResult(), whileOp))
+      return false;
+    return llvm::any_of(dus.getStartIndices(), [&](Value idx) {
+      return info.getAffineIndexInfo().contains(idx);
+    });
+  }
+
+  // A consumer that reads only a small part of the value. Batching the
+  // producer re-points a read the loop was already doing rather than adding a
+  // full-width read-back, and the slice-of-dynamic-slice patterns collapse the
+  // two reads into one narrow read of the batched buffer. This is what lets a
+  // loop that discards most of what it computes each iteration be batched even
+  // though it survives as a scatter.
+  //
+  // Heuristic in the fraction: what actually matters is bytes read back per
+  // iteration versus bytes materialized, which this only approximates.
+  if (isa<stablehlo::DynamicSliceOp, stablehlo::SliceOp>(op)) {
+    auto operandTy = dyn_cast<RankedTensorType>(op->getOperand(0).getType());
+    auto resultTy = dyn_cast<RankedTensorType>(op->getResult(0).getType());
+    if (!operandTy || !resultTy || !operandTy.hasStaticShape() ||
+        !resultTy.hasStaticShape())
+      return false;
+    return 2 * resultTy.getNumElements() <= operandTy.getNumElements();
+  }
+
+  return isReduceLikeAccumulation(op, whileOp);
+}
+
+/// Batching an op out of the loop replaces it with a trip-count-sized buffer
+/// outside plus a dynamic_slice back inside. That pays off only when the whole
+/// chain it belongs to leaves the loop: then no per-iteration value is needed
+/// and the loop itself dies, or collapses into a reduce or a scatter.
+///
+/// If instead some consumer of the chain cannot be batched -- typically because
+/// it also reads a sequentially carried value, as the state adjoint `c_i =
+/// J_i^T c_{i+1}` of a reverse-mode loop does -- the loop survives, and every
+/// batched intermediate gets materialized at trip-count scale only to be read
+/// back one row at a time. Identical arithmetic, N times the memory traffic.
+/// So grow the batchable subgraph to its fixpoint and require that it closes.
+///
+/// Returns the ops to batch, or an empty set if the subgraph does not close.
+static void computeClosedBatchableSet(
+    stablehlo::WhileOp whileOp, WhileLoopInfo &info,
+    ArrayRef<SliceInfo<stablehlo::DynamicSliceOp>> candidateSlices,
+    ArrayRef<Operation *> indexCandidates,
+    SmallPtrSetImpl<Operation *> &batchable) {
+  DenseSet<Value> available;
+  SmallVector<Value> pending;
+
+  for (auto ds : candidateSlices) {
+    Value sliced = ds.sliceOp.getResult();
+    if (available.insert(sliced).second)
+      pending.push_back(sliced);
+  }
+
+  auto markBatchable = [&](Operation *op) {
+    if (!batchable.insert(op).second)
+      return;
+    if (available.insert(op->getResult(0)).second)
+      pending.push_back(op->getResult(0));
+  };
+
+  // Ops on the loop index alone are batchable without any slice feeding them.
+  for (Operation *op : indexCandidates)
+    markBatchable(op);
+
+  while (!pending.empty()) {
+    Value value = pending.pop_back_val();
+
+    SmallVector<Operation *> consumers;
+    appendBatchingConsumers(value, consumers);
+
+    for (Operation *consumer : consumers) {
+      if (batchable.contains(consumer))
+        continue;
+      if (isBatchableGiven(consumer, info, available)) {
+        markBatchable(consumer);
+        continue;
+      }
+      // An accumulation is rewritten into a reduce rather than into a batched
+      // op, so it belongs to the subgraph but produces nothing inside the loop.
+      if (isReduceLikeAccumulation(consumer, whileOp))
+        batchable.insert(consumer);
+    }
+  }
+
+  // Now check the subgraph closes. Note that a candidate slice with a consumer
+  // outside it is fine: the sliced buffer is already materialized, so leaving
+  // the read in place costs nothing. It is the ops we would batch that must not
+  // strand a trip-count-sized result behind.
+  for (Operation *op : batchable) {
+    SmallVector<Operation *> consumers;
+    appendBatchingConsumers(op->getResult(0), consumers);
+
+    for (Operation *consumer : consumers) {
+      if (batchable.contains(consumer) || leavesLoop(consumer, whileOp, info))
+        continue;
+      batchable.clear();
+      return;
+    }
+  }
+}
+
 LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
     stablehlo::WhileOp whileOp, PatternRewriter &rewriter) const {
   // Never fission a checkpoint segment loop. Batching trades memory for
@@ -940,22 +1189,6 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
     }
   }
 
-  auto avoidBatching = [](Operation *op) {
-    if (!op) {
-      return true;
-    }
-
-    return llvm::TypeSwitch<Operation *, bool>(op)
-        .Case<stablehlo::ReshapeOp, stablehlo::SliceOp, stablehlo::ReturnOp,
-              // avoid ops that use SHLOGenericBatchOpInterface since that
-              // lowers to loop
-              stablehlo::IfOp, stablehlo::CaseOp, stablehlo::WhileOp,
-              stablehlo::CustomCallOp>([](auto op) { return true; })
-        .Case<stablehlo::BroadcastInDimOp, stablehlo::TransposeOp>(
-            [](auto op) { return stablehlo::OpIsReshapeLike(op); })
-        .Default([](auto op) { return false; });
-  };
-
   // Create a map of user operations to their corresponding dynamic slices
   llvm::MapVector<Operation *,
                   SmallVector<SliceInfo<stablehlo::DynamicSliceOp>>>
@@ -991,6 +1224,7 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
 
   // for certain operations on index variables it is more efficient to hoist
   // those out of the loop and then perform indirect indexing
+  SmallVector<Operation *> indexCandidates;
   for (auto &[val, info] : affineIndexInfoMap) {
     for (auto user : val.getUsers()) {
       if (avoidBatching(user)) {
@@ -1000,6 +1234,7 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
       if (isa<stablehlo::CompareOp, stablehlo::BroadcastInDimOp>(user)) {
         userOpToSlicesMap[user].push_back(
             SliceInfo<stablehlo::DynamicSliceOp>{});
+        indexCandidates.push_back(user);
       }
     }
   }
@@ -1008,10 +1243,23 @@ LogicalResult GreedyWhileLoopBatchFission::matchAndRewriteImpl(
     return failure();
   }
 
+  // Only batch when the whole chain leaves the loop; see
+  // computeClosedBatchableSet for why a chain that dead-ends inside it is a
+  // strict loss.
+  SmallPtrSet<Operation *, 16> batchable;
+  computeClosedBatchableSet(whileOp, info, candidateSlices, indexCandidates,
+                            batchable);
+  if (batchable.empty())
+    return rewriter.notifyMatchFailure(
+        whileOp, "batchable subgraph does not leave the loop");
+
   bool anyOpRewritten = false;
 
   for (auto &[op, slices] : userOpToSlicesMap) {
     assert(!avoidBatching(op));
+
+    if (!batchable.contains(op))
+      continue;
 
     if (auto dsOp = dyn_cast<stablehlo::DynamicSliceOp>(op)) {
       if (raiseDynamicSliceToGather(rewriter, whileOp, slices, dsOp, info)) {
@@ -1315,58 +1563,13 @@ bool liftReduceLikeOperation(
     PatternRewriter &rewriter, stablehlo::WhileOp whileOp,
     ArrayRef<SliceInfo<stablehlo::DynamicSliceOp>> slices, Operation *op,
     WhileLoopInfo info) {
-  // we can hoist `sub` / `div` by emitting a `neg` / `reciprocal` and then
-  // apply the hoisting. note that this only applies if the LHS is the loop
-  // caried dependency
-  bool specialOps = isa<stablehlo::SubtractOp, stablehlo::DivOp>(op);
-  if (!specialOps && !stablehlo::canFuseIntoReduce(op)) {
-    return false;
-  }
-
-  auto result = op->getResult(0);
-  if (!llvm::hasSingleElement(result.getUsers())) {
-    return false;
-  }
-
-  auto returnOp = dyn_cast<stablehlo::ReturnOp>(*result.getUsers().begin());
-  if (!returnOp || returnOp != whileOp.getBody().front().getTerminator()) {
-    return false;
-  }
-
-  auto lhs = op->getOperand(0);
-  auto rhs = op->getOperand(1);
-
-  bool isLhsLoopCarriedDep = false, isRhsLoopCarriedDep = false;
   int64_t argIdx;
-  if (auto lhsBlockArg = dyn_cast<BlockArgument>(lhs)) {
-    if (lhsBlockArg.getOwner() == &whileOp.getBody().front() &&
-        returnOp->getOperand(lhsBlockArg.getArgNumber()) == result) {
-      argIdx = lhsBlockArg.getArgNumber();
-      isLhsLoopCarriedDep = true;
-    }
-  }
-  if (auto rhsBlockArg = dyn_cast<BlockArgument>(rhs)) {
-    if (rhsBlockArg.getOwner() == &whileOp.getBody().front() &&
-        returnOp->getOperand(rhsBlockArg.getArgNumber()) == result) {
-      argIdx = rhsBlockArg.getArgNumber();
-      isRhsLoopCarriedDep = true;
-    }
-  }
-
-  // while dead args is needed to clean this up
-  if (argIdx >= whileOp->getNumResults() ||
-      whileOp->getResult(argIdx).getUsers().empty()) {
+  Value otherOperand;
+  if (!isReduceLikeAccumulation(op, whileOp, argIdx, otherOperand))
     return false;
-  }
 
-  if (isLhsLoopCarriedDep == isRhsLoopCarriedDep) {
-    return false; // atmost one of lhs/rhs must be loop carried dep
-  }
-  if (specialOps && isRhsLoopCarriedDep) { // only lhs can be loop carried dep
-    return false;
-  }
-
-  Value otherOperand = isLhsLoopCarriedDep ? rhs : lhs;
+  // sub / div reduce with add / multiply over a neg / reciprocal instead.
+  bool specialOps = isa<stablehlo::SubtractOp, stablehlo::DivOp>(op);
 
   SmallVector<BatchLiftingMode> batchLiftingModes;
   SmallVector<Value> batchOperands;
