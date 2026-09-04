@@ -3468,6 +3468,29 @@ struct CombineAffineIfs : public OpRewritePattern<affine::AffineIfOp> {
     if (!nextThen && !nextElse)
       return failure();
 
+    // An if with pure arms that yields a pointer or memref is a select
+    // between views; the access raising can only follow it while it stays
+    // one. Merging it into an if with side effects would bury the choice in
+    // arms that do work.
+    auto hasEffects = [](affine::AffineIfOp ifOp) {
+      if (llvm::any_of(ifOp.getThenBlock()->without_terminator(),
+                       [](Operation &op) { return !isPure(&op); }))
+        return true;
+      return ifOp.hasElse() &&
+             llvm::any_of(ifOp.getElseBlock()->without_terminator(),
+                          [](Operation &op) { return !isPure(&op); });
+    };
+    auto isViewSelect = [&](affine::AffineIfOp ifOp) {
+      return llvm::any_of(ifOp.getResultTypes(),
+                          [](Type type) {
+                            return isa<LLVM::LLVMPointerType, MemRefType>(type);
+                          }) &&
+             !hasEffects(ifOp);
+    };
+    if ((isViewSelect(prevIf) && hasEffects(nextIf)) ||
+        (isViewSelect(nextIf) && hasEffects(prevIf)))
+      return failure();
+
     SmallVector<Value> prevElseYielded;
     if (!prevIf.getElseRegion().empty())
       prevElseYielded =
