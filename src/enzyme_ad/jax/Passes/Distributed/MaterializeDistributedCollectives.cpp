@@ -187,8 +187,7 @@ struct MaterializeDistributedCollectivesPass
           if (failed(axisAnalysis.assignLogicalAxis(symbol, factor))) {
             return failure();
           }
-          auto [it, inserted] =
-              symbolToLogicalAxis.try_emplace(symbol, factor);
+          auto [it, inserted] = symbolToLogicalAxis.try_emplace(symbol, factor);
           if (!inserted && it->second != factor) {
             function.emitError()
                 << "unified logical axis has distinct SSA factor anchors";
@@ -541,6 +540,15 @@ struct MaterializeDistributedCollectivesPass
       return;
     }
     axisAnalysis = mainAxisAnalysis.getAnalysis();
+
+    // Dump before any rewriting below, so the output reflects analysis of
+    // Shardy IR and remains available even if a later step fails.
+    if (dumpValueAxes) {
+      distributed::dumpValueAxes(llvm::errs(), mainBlock, axisAnalysis);
+    }
+    if (dumpOperationAxes) {
+      distributed::dumpOperationAxes(llvm::errs(), mainBlock, axisAnalysis);
+    }
 
     auto distributedFunction = dyn_cast<DistributedFunctionOp>(mainScopeOp);
     if (!distributedFunction ||

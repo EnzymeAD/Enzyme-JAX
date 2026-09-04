@@ -36,6 +36,14 @@ def ConvertMainToDistributedFunctionPass
 def MaterializeDistributedCollectivesPass
     : Pass<"materialize-distributed-collectives", "::mlir::ModuleOp"> {
   let summary = "Replace Shardy reshards with distributed collectives.";
+  let options = [
+    Option<"dumpValueAxes", "dump-value-axes", "bool", "false",
+           "Print ShardyLogicalAxisAnalysis axis symbols for each SSA value "
+           "in main, before collective materialization">,
+    Option<"dumpOperationAxes", "dump-operation-axes", "bool", "false",
+           "Print ShardyLogicalAxisAnalysis axis symbols for each operation "
+           "in main, before collective materialization">,
+  ];
   let dependentDialects = [
     "enzyme::axis::AxisDialect", "sdy::SdyDialect",
     "enzyme::distributed::DistributedDialect"

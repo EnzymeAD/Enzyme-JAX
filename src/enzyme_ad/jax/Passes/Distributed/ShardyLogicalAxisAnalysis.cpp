@@ -8,6 +8,7 @@
 #include "shardy/dialect/sdy/ir/dialect.h"
 #include "shardy/dialect/sdy/ir/utils.h"
 #include "shardy/dialect/sdy/transforms/propagation/op_sharding_rule_registry.h"
+#include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringRef.h"
 
 namespace mlir::enzyme::distributed {
@@ -473,14 +474,14 @@ LogicalResult ShardyLogicalAxisAnalysis::assignLogicalAxis(AxisSymbol symbol,
   }
 
   AxisSymbol resolvedSymbol = resolved.front();
-    auto [symbolIt, insertedSymbol] =
+  auto [symbolIt, insertedSymbol] =
       logicalAxisToFactor.try_emplace(resolvedSymbol, factor);
-    auto [factorIt, insertedFactor] =
+  auto [factorIt, insertedFactor] =
       factorToLogicalAxis.try_emplace(factor, resolvedSymbol);
-    if ((!insertedSymbol && symbolIt->second != factor) ||
+  if ((!insertedSymbol && symbolIt->second != factor) ||
       (!insertedFactor && !(factorIt->second == resolvedSymbol))) {
     sdy_func->emitError() << "conflicting logical axis and SSA factor "
-                << "assignment";
+                          << "assignment";
     valid = false;
     return failure();
   }
@@ -516,8 +517,7 @@ ShardyLogicalAxisAnalysis::getTensorPartitionDimsForViewCast(
     for (TypedValue<axis::AxisFactorType> factor : *factors) {
       auto factorIt = factorToLogicalAxis.find(factor);
       if (factorIt == factorToLogicalAxis.end()) {
-        AxisSymbol symbol =
-            AxisSymbol::create(factor.getType().getExtent());
+        AxisSymbol symbol = AxisSymbol::create(factor.getType().getExtent());
         if (failed(assignLogicalAxis(symbol, factor))) {
           return std::nullopt;
         }
@@ -822,4 +822,71 @@ void ShardyLogicalAxisAnalysis::buildUnion() {
     }
   }
 } // end of buildUnion
+
+// Prints one symbol as its resolved SSA factor name, falling back to a
+// synthetic "aN" name when no factor has been assigned yet (e.g. mid-rewrite).
+static void printAxisSymbol(llvm::raw_ostream &os,
+                            ShardyLogicalAxisAnalysis &axisAnalysis,
+                            AxisSymbol symbol) {
+  if (Value factor = axisAnalysis.getLogicalAxis(symbol)) {
+    factor.printAsOperand(os, OpPrintingFlags());
+  } else {
+    os << "a" << symbol.getId();
+  }
+}
+
+// Prints a "list of lists" of axis symbols, one bracketed group per tensor
+// dimension, e.g. " [%ax1, %ax2] [%ax3]".
+static void printAxesPerDimension(
+    llvm::raw_ostream &os, ShardyLogicalAxisAnalysis &axisAnalysis,
+    llvm::ArrayRef<llvm::SmallVector<AxisSymbol>> axesPerDim) {
+  for (const auto &dimSymbols : axesPerDim) {
+    os << " [";
+    llvm::interleaveComma(dimSymbols, os, [&](const AxisSymbol &symbol) {
+      printAxisSymbol(os, axisAnalysis, symbol);
+    });
+    os << "]";
+  }
+}
+
+void dumpValueAxes(llvm::raw_ostream &os, Block *block,
+                   ShardyLogicalAxisAnalysis &axisAnalysis) {
+  os << "===== Logical Axes per Value =====\n";
+  for (BlockArgument arg : block->getArguments()) {
+    auto axes = axisAnalysis.getTensorPartitionDims(arg);
+    if (!axes) {
+      continue;
+    }
+    arg.printAsOperand(os, OpPrintingFlags());
+    os << " :";
+    printAxesPerDimension(os, axisAnalysis, *axes);
+    os << "\n";
+  }
+  for (Operation &op : block->getOperations()) {
+    for (OpResult result : op.getResults()) {
+      auto axes = axisAnalysis.getTensorPartitionDims(result);
+      if (!axes) {
+        continue;
+      }
+      result.printAsOperand(os, OpPrintingFlags());
+      os << " :";
+      printAxesPerDimension(os, axisAnalysis, *axes);
+      os << "\n";
+    }
+  }
+  os << "===== End Logical Axes per Value =====\n";
+}
+
+void dumpOperationAxes(llvm::raw_ostream &os, Block *block,
+                       ShardyLogicalAxisAnalysis &axisAnalysis) {
+  os << "===== Logical Axes per Operation =====\n";
+  for (Operation &op : block->getOperations()) {
+    auto axes = axisAnalysis.getPartitioningAxes(&op);
+    op.print(os, OpPrintingFlags().skipRegions());
+    os << " :";
+    printAxesPerDimension(os, axisAnalysis, axes);
+    os << "\n";
+  }
+  os << "===== End Logical Axes per Operation =====\n";
+}
 } // namespace mlir::enzyme::distributed

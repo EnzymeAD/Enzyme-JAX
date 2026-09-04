@@ -17,6 +17,7 @@
 #include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/EquivalenceClasses.h"
 #include "llvm/ADT/SmallVector.h"
+#include "llvm/Support/raw_ostream.h"
 
 namespace mlir::enzyme::distributed {
 
@@ -258,6 +259,24 @@ private:
   bool valid = true;
   ShardyLogicalAxisAnalysis *analysis = nullptr;
 };
+
+// Shared debug-dump helpers, usable from any pass in the distributed
+// pipeline. Both walk `block` linearly (no recursion into nested regions)
+// and print even when the analysis or surrounding IR is only partially
+// valid, since their whole purpose is diagnosing broken invariants.
+//
+// Prints, for every block argument and op result in `block`, its producer-side
+// logical partitioning axes as one bracketed list per tensor dimension, e.g.
+// `%val : [%ax1, %ax2] [%ax3] [%ax4]`. Values with no tracked sharding (e.g.
+// non-tensor values) are skipped.
+void dumpValueAxes(llvm::raw_ostream &os, Block *block,
+                   ShardyLogicalAxisAnalysis &axisAnalysis);
+
+// Prints, for every op in `block`, its Shardy rewrite partitioning axes as one
+// bracketed list per sharding-rule factor, e.g. `some.op : [%ax1] [%ax2,
+// %ax3]`.
+void dumpOperationAxes(llvm::raw_ostream &os, Block *block,
+                       ShardyLogicalAxisAnalysis &axisAnalysis);
 
 } // namespace mlir::enzyme::distributed
 
