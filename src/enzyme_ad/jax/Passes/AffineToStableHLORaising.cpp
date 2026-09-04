@@ -5389,37 +5389,27 @@ struct AffineToStableHLORaisingPass
           AffineToStableHLORaisingPass> {
   using AffineToStableHLORaisingBase::AffineToStableHLORaisingBase;
 
-  // A pure scalar computed entirely from values defined outside the wrapper
-  // (a null check of an optional buffer, a host-side flag chain) is the
+  // A pointer comparison has no tensor form, so a null check of an optional
+  // buffer computed inside the kernel blocks capturing the pointer. When
+  // both pointers are defined outside the wrapper the comparison is the
   // host's to compute: hoist it out, so the kernel captures the resulting
-  // scalar instead of pointers no tensor can stand for.
-  static void hoistWrapperInvariantScalars(Operation *g) {
+  // flag instead.
+  static void hoistWrapperInvariantPointerCompares(Operation *g) {
     auto definedOutside = [&](Value v) {
       if (auto ba = dyn_cast<BlockArgument>(v))
         return !g->isProperAncestor(ba.getOwner()->getParentOp()) &&
                ba.getOwner()->getParentOp() != g;
       return !g->isProperAncestor(v.getDefiningOp());
     };
-    bool changed = true;
-    while (changed) {
-      changed = false;
-      SmallVector<Operation *> toHoist;
-      g->walk([&](Operation *op) {
-        if (op->getNumOperands() == 0 || op->getNumRegions() ||
-            op->hasTrait<OpTrait::IsTerminator>() || !isMemoryEffectFree(op))
-          return;
-        if (!llvm::all_of(op->getResultTypes(),
-                          [](Type t) { return t.isIntOrIndexOrFloat(); }))
-          return;
-        if (!llvm::all_of(op->getOperands(), definedOutside))
-          return;
-        toHoist.push_back(op);
-      });
-      for (Operation *op : toHoist) {
-        op->moveBefore(g);
-        changed = true;
-      }
-    }
+    SmallVector<LLVM::ICmpOp> toHoist;
+    g->walk([&](LLVM::ICmpOp cmp) {
+      if (!isa<LLVM::LLVMPointerType>(cmp.getLhs().getType()))
+        return;
+      if (definedOutside(cmp.getLhs()) && definedOutside(cmp.getRhs()))
+        toHoist.push_back(cmp);
+    });
+    for (auto cmp : toHoist)
+      cmp->moveBefore(g);
   }
 
   // A kernel-local constant table (`const int map[9] = {...}`) is promoted
@@ -8771,7 +8761,7 @@ struct AffineToStableHLORaisingPass
       root->walk(
           [&](enzymexla::GPUWrapperOp g) { rootWraps.push_back(g); });
       for (auto g : rootWraps) {
-        hoistWrapperInvariantScalars(g);
+        hoistWrapperInvariantPointerCompares(g);
         boundParallelAxes(g);
         boundParallelFors(g);
         peelDynamicParallelDims(g);
