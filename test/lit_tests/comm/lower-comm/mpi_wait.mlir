@@ -11,11 +11,11 @@ func.func @main(%req : !comm.mpi.request) {
 // JIT-LABEL: llvm.func @MPI_Wait
 // JIT-SAME:                     (!llvm.ptr, !llvm.ptr) -> i32
 // JIT-LABEL: llvm.func @enzymexla_jitwrap_MPI_Wait
-// JIT-SAME:                                       (%arg0: !llvm.ptr, %arg1: !llvm.ptr) {
+// JIT-SAME:                                       (%arg0: !llvm.ptr) {
 // JIT-NEXT:   %0 = llvm.mlir.zero : !llvm.ptr
 // JIT-NEXT:   %1 = llvm.call @MPI_Wait(%arg0, %0) : (!llvm.ptr, !llvm.ptr) -> i32
 // JIT-NEXT:   llvm.return
 // JIT-NEXT: }
 // JIT-LABEL: func.func @main
 // JIT-SAME:                 (%[[REQ:.*]]: tensor<i64>) {
-// JIT-NEXT: enzymexla.jit_call @enzymexla_jitwrap_MPI_Wait(%[[REQ]]) : (tensor<i64>) -> ()
+// JIT-NEXT: enzymexla.jit_call @enzymexla_jitwrap_MPI_Wait (%[[REQ]]) : (tensor<i64>) -> ()
