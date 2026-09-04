@@ -24,5 +24,5 @@ func.func @main(%inBuffer : tensor<4xf64>, %root : tensor<i32>, %comm : !comm.mp
 // JIT-SAME:                 (%[[IN_BUFFER:.*]]: tensor<4xf64>, %[[ROOT:.*]]: tensor<i32>, %[[COMM:.*]]: tensor<i64>) -> tensor<4xf64> {
 // JIT-NEXT: %[[COUNT:.*]] = stablehlo.constant dense<4> : tensor<i32>
 // JIT-NEXT: %[[DATATYPE:.*]] = stablehlo.constant dense<0> : tensor<i64>
-// JIT-NEXT: %[[v0:.*]] = stablehlo.jit_call @enzymexla_jitwrap_MPI_Bcast(%[[IN_BUFFER]], %[[COUNT]], %[[DATATYPE]], %[[ROOT]], %[[COMM]]) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]} : (tensor<4xf64>, tensor<i32>, tensor<i64>, tensor<i32>, tensor<i64>) -> tensor<4xf64>
+// JIT-NEXT: %[[v0:.*]] = enzymexla.jit_call @enzymexla_jitwrap_MPI_Bcast(%[[IN_BUFFER]], %[[COUNT]], %[[DATATYPE]], %[[ROOT]], %[[COMM]]) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 0, operand_tuple_indices = []>]} : (tensor<4xf64>, tensor<i32>, tensor<i64>, tensor<i32>, tensor<i64>) -> tensor<4xf64>
 // JIT-NEXT: return %[[v0]] : tensor<4xf64>

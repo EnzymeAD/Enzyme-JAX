@@ -18,4 +18,4 @@ func.func @main(%comm : !comm.mpi.comm) {
 // JIT-NEXT: }
 // JIT-LABEL: func.func @main
 // JIT-SAME:                 (%[[COMM:.*]]: tensor<i64>) {
-// JIT-NEXT: stablehlo.jit_call @enzymexla_jitwrap_MPI_Barrier(%[[COMM]])  {xla_side_effect_free} : (tensor<i64>) -> ()
+// JIT-NEXT: enzymexla.jit_call @enzymexla_jitwrap_MPI_Barrier(%[[COMM]])  {xla_side_effect_free} : (tensor<i64>) -> ()

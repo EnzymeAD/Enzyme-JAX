@@ -12,7 +12,7 @@ def LowerCommToStablehloPass : Pass<"lower-comm-to-stablehlo"> {
 }
 
 def LowerCommToJITPass : Pass<"lower-comm-to-jit"> {
-  let summary = "Lower Comm ops to `stablehlo.jit_call`";
+  let summary = "Lower Comm ops to `enzymexla.jit_call`";
   let dependentDialects = [
     "comm::CommDialect",
     "stablehlo::StablehloDialect",
