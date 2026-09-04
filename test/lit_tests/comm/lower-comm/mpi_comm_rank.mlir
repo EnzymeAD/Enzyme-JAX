@@ -20,6 +20,6 @@ func.func @main(%comm : !comm.mpi.comm) -> tensor<i32> {
 // JIT-NEXT: }
 // JIT-LABEL: func.func @main
 // JIT-SAME:                 (%[[COMM:.*]]: tensor<i64>) -> tensor<i32> {
-// JIT-NEXT: %[[rank_pl:.*]] = stablehlo.constant dense<0> : tensor<i32>
-// JIT-NEXT: %[[v0:.*]] = enzymexla.jit_call @enzymexla_jitwrap_MPI_Comm_rank(%[[COMM]], %[[rank_pl]]) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 1, operand_tuple_indices = []>], xla_side_effect_free} : (tensor<i64>, tensor<i32>) -> tensor<i32>
+// JIT-NEXT: %[[rank_pl:.*]] = stablehlo.constant dense<-1> : tensor<i32>
+// JIT-NEXT: %[[v0:.*]] = enzymexla.jit_call @enzymexla_jitwrap_MPI_Comm_rank (%[[COMM]], %[[rank_pl]]) {output_operand_aliases = [#stablehlo.output_operand_alias<output_tuple_indices = [], operand_index = 1, operand_tuple_indices = []>], xla_side_effect_free} : (tensor<i64>, tensor<i32>) -> tensor<i32>
 // JIT-NEXT: return %[[v0]] : tensor<i32>
