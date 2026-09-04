@@ -1632,11 +1632,17 @@ struct UnrollDecidedFor : public OpRewritePattern<ForOp> {
 
     Block *body = forOp.getBody();
     Operation *yield = body->getTerminator();
-    SmallVector<Value> results(yield->getOperands());
-    rewriter.eraseOp(yield);
     rewriter.setInsertionPoint(forOp);
     SmallVector<Value> argReplacements{firstIterationValue(rewriter, forOp)};
     llvm::append_range(argReplacements, forOp.getInits());
+    SmallVector<Value> results;
+    for (Value result : yield->getOperands()) {
+      auto arg = dyn_cast<BlockArgument>(result);
+      if (arg && arg.getOwner() == body)
+        result = argReplacements[arg.getArgNumber()];
+      results.push_back(result);
+    }
+    rewriter.eraseOp(yield);
     rewriter.inlineBlockBefore(body, forOp, argReplacements);
     rewriter.replaceOp(forOp, results);
     return success();

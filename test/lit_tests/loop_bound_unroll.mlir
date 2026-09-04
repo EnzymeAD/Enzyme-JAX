@@ -98,3 +98,26 @@ func.func @zerotrip(%n: index, %out: memref<?xf64>, %v: f64) -> f64 {
 // CHECK-LABEL: func.func @zerotrip(
 // CHECK-NOT: scf.for
 // CHECK: affine.yield %arg2
+
+// -----
+
+// A single-trip loop yielding its own induction variable and iteration
+// argument results in the first iteration's values.
+func.func @yield_args(%out: memref<?xindex>, %v: f64) -> f64 {
+  %c1 = arith.constant 1 : index
+  %r = affine.parallel (%t) = (0) to (2) reduce ("addf") -> f64 {
+    %t1 = arith.addi %t, %c1 : index
+    %j, %acc = scf.for %i = %t to %t1 step %c1 iter_args(%ai = %t, %aacc = %v) -> (index, f64) {
+      scf.yield %i, %aacc : index, f64
+    }
+    memref.store %j, %out[%t] : memref<?xindex>
+    affine.yield %acc : f64
+  }
+  return %r : f64
+}
+
+// CHECK-LABEL: func.func @yield_args(
+// CHECK: affine.parallel (%[[t:.+]]) =
+// CHECK-NOT: scf.for
+// CHECK: memref.store %[[t]], %{{.+}}[%[[t]]]
+// CHECK: affine.yield %arg1
