@@ -16,6 +16,7 @@
 #include "src/enzyme_ad/jax/Utils.h"
 
 #include "Enzyme/MLIR/Dialect/Ops.h"
+#include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/Affine/Analysis/AffineAnalysis.h"
 #include "mlir/Dialect/Affine/Analysis/Utils.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
@@ -29,7 +30,6 @@
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
-#include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
 #include "mlir/IR/IRMapping.h"
 #include "mlir/IR/Verifier.h"
@@ -502,25 +502,18 @@ affineMapShape(affine::AffineValueMap accessValueMap, ParallelContext pc) {
   return shape;
 }
 
-static affine::AffineValueMap
+static FailureOr<affine::AffineValueMap>
 alignMemoryAccess(Value &a, affine::AffineValueMap src, Value *bs,
                   ArrayRef<affine::AffineValueMap> dsts, OpBuilder &builder,
-                  ParallelContext pc, bool *ok = nullptr) {
+                  ParallelContext pc) {
   // NOTE a default-constructed AffineValueMap holds a null context, so its
-  // getAffineMap() cannot even be probed; validity is reported through `ok`
-  // and inputs must be maps the caller actually recorded.
-  auto fail = [&]() {
-    if (ok)
-      *ok = false;
-    return affine::AffineValueMap();
-  };
-  if (ok)
-    *ok = true;
+  // getAffineMap() cannot even be probed; inputs must be maps the caller
+  // actually recorded.
   if (!a)
-    return fail();
+    return failure();
   for (unsigned qi = 0; qi < dsts.size(); ++qi)
     if (!bs[qi])
-      return fail();
+      return failure();
   // -> tensor<10x1xf32> loaded from (i) -> (i, 0)
   // -> to tensor<1x10xf32> written as (i) -> (0, i)
 
@@ -529,13 +522,13 @@ alignMemoryAccess(Value &a, affine::AffineValueMap src, Value *bs,
   // past the end below.
   SmallVector<int64_t> shapeA = affineMapShape(src, pc);
   if (shapeA.size() != cast<RankedTensorType>(a.getType()).getShape().size())
-    return fail();
+    return failure();
   SmallVector<SmallVector<int64_t>> shapeBs;
   for (size_t i = 0; i < dsts.size(); i++) {
     shapeBs.push_back(affineMapShape(dsts[i], pc));
     if (shapeBs[i].size() !=
         cast<RankedTensorType>(bs[i].getType()).getShape().size())
-      return fail();
+      return failure();
   }
 
   SmallVector<int64_t> outputShape;
@@ -658,24 +651,25 @@ alignMemoryAccess(Value &a, affine::AffineValueMap src, Value *bs,
   return outputMap;
 }
 
-static affine::AffineValueMap
+static FailureOr<affine::AffineValueMap>
 alignMemoryAccess(Value &a, affine::AffineValueMap src, Value &b,
                   affine::AffineValueMap dst, OpBuilder &builder,
-                  ParallelContext pc, bool *ok = nullptr) {
+                  ParallelContext pc) {
   Value bs[] = {b};
   affine::AffineValueMap dsts[] = {dst};
-  auto res = alignMemoryAccess(a, src, bs, dsts, builder, pc, ok);
+  auto res = alignMemoryAccess(a, src, bs, dsts, builder, pc);
   b = bs[0];
   return res;
 }
 
 // like affine::expandAffineExpr but with stablehlo ops and returning
 // the corresponding AffineValueMap for the produced value.
-static std::tuple<Value, affine::AffineValueMap>
+static FailureOr<std::tuple<Value, affine::AffineValueMap>>
 expandAffineExpr(OpBuilder &builder, Location loc, AffineExpr expr,
                  ValueRange operands, IRMapping &mapping,
                  llvm::DenseMap<Value, affine::AffineValueMap> &maps,
                  unsigned numDims, ParallelContext pc) {
+  using Expanded = std::tuple<Value, affine::AffineValueMap>;
   if (auto constExpr = dyn_cast<AffineConstantExpr>(expr)) {
     auto ET = builder.getI64Type();
     auto TT = RankedTensorType::get({}, ET);
@@ -683,21 +677,27 @@ expandAffineExpr(OpBuilder &builder, Location loc, AffineExpr expr,
         builder, loc, TT,
         SplatElementsAttr::get(TT, ArrayRef<Attribute>(IntegerAttr::get(
                                        ET, constExpr.getValue()))));
-    return {res, affine::AffineValueMap(AffineMap::get(expr.getContext()), {})};
+    return Expanded{
+        res, affine::AffineValueMap(AffineMap::get(expr.getContext()), {})};
   }
 
   if (auto binExpr = dyn_cast<AffineBinaryOpExpr>(expr)) {
     AffineExpr lhsExpr = binExpr.getLHS(), rhsExpr = binExpr.getRHS();
-    auto [lhs, lhsMap] = expandAffineExpr(builder, loc, lhsExpr, operands,
-                                          mapping, maps, numDims, pc);
-    auto [rhs, rhsMap] = expandAffineExpr(builder, loc, rhsExpr, operands,
-                                          mapping, maps, numDims, pc);
+    auto lhsExpanded = expandAffineExpr(builder, loc, lhsExpr, operands,
+                                        mapping, maps, numDims, pc);
+    if (failed(lhsExpanded))
+      return failure();
+    auto rhsExpanded = expandAffineExpr(builder, loc, rhsExpr, operands,
+                                        mapping, maps, numDims, pc);
+    if (failed(rhsExpanded))
+      return failure();
+    auto [lhs, lhsMap] = *lhsExpanded;
+    auto [rhs, rhsMap] = *rhsExpanded;
 
-    bool alignOk = true;
-    affine::AffineValueMap outputMap =
-        alignMemoryAccess(lhs, lhsMap, rhs, rhsMap, builder, pc, &alignOk);
-    if (!alignOk)
-      return {nullptr, affine::AffineValueMap()};
+    auto aligned = alignMemoryAccess(lhs, lhsMap, rhs, rhsMap, builder, pc);
+    if (failed(aligned))
+      return failure();
+    affine::AffineValueMap outputMap = *aligned;
 
     auto makeI64Constant = [loc, &builder](ShapedType ty,
                                            int64_t cst) -> Value {
@@ -787,34 +787,39 @@ expandAffineExpr(OpBuilder &builder, Location loc, AffineExpr expr,
     default:
       llvm_unreachable("unsupported expansion of expr");
     }
-    return {result, outputMap};
+    return Expanded{result, outputMap};
   }
 
   if (auto symExpr = dyn_cast<AffineSymbolExpr>(expr)) {
     Value sym = operands[symExpr.getPosition() + numDims];
     Value mapped = mapping.lookupOrNull(sym);
-    if (mapped && maps.count(mapped))
-      return {mapped, maps.lookup(mapped)};
-    return {mapped,
-            affine::AffineValueMap(AffineMap::get(sym.getContext()), {})};
+    if (!mapped)
+      return failure();
+    if (maps.count(mapped))
+      return Expanded{mapped, maps.lookup(mapped)};
+    return Expanded{
+        mapped, affine::AffineValueMap(AffineMap::get(sym.getContext()), {})};
   }
 
   if (auto dimExpr = dyn_cast<AffineDimExpr>(expr)) {
     Value dim = operands[dimExpr.getPosition()];
     Value mapped = mapping.lookupOrNull(dim);
+    if (!mapped)
+      return failure();
 
     if (!pc.isParallelIV(dim)) {
       // A masked loop's induction variable maps to a lane tensor carrying
       // its own access map; a uniform while counter maps to a scalar.
-      if (mapped && maps.count(mapped))
-        return {mapped, maps.lookup(mapped)};
-      return {mapped,
-              affine::AffineValueMap(AffineMap::get(dim.getContext()), {})};
+      if (maps.count(mapped))
+        return Expanded{mapped, maps.lookup(mapped)};
+      return Expanded{
+          mapped, affine::AffineValueMap(AffineMap::get(dim.getContext()), {})};
     }
 
-    return {mapped, affine::AffineValueMap(
-                        AffineMap::getMultiDimIdentityMap(1, expr.getContext()),
-                        {dim})};
+    return Expanded{
+        mapped,
+        affine::AffineValueMap(
+            AffineMap::getMultiDimIdentityMap(1, expr.getContext()), {dim})};
   }
 
   llvm_unreachable("unreachable");
@@ -952,17 +957,16 @@ emitIfAsSelect(Operation *ifOp, Value cond, affine::AffineValueMap map,
       // merge mask and current cond
       affine::AffineValueMap maskMap = maps.lookup(mask),
                              condMap = maps.lookup(cond);
-      bool alignOk = true;
-      affine::AffineValueMap newMaskMap = alignMemoryAccess(
-          mask, maskMap, cond, condMap, builder, pc, &alignOk);
-      if (!alignOk)
+      auto newMaskMap =
+          alignMemoryAccess(mask, maskMap, cond, condMap, builder, pc);
+      if (failed(newMaskMap))
         return Value();
 
       mask = stablehlo::AndOp::create(
           builder,
           rewriteLocation(ifOp->getLoc(), pc.options.strip_llvm_debuginfo),
           mask, cond);
-      maps[mask] = newMaskMap;
+      maps[mask] = *newMaskMap;
     } else {
       mask = cond;
     }
@@ -1043,14 +1047,14 @@ emitIfAsSelect(Operation *ifOp, Value cond, affine::AffineValueMap map,
                                  {"thenVal", thenVal},
                                  {"elseVal", elseVal}})
               for (Operation *u : v.getUsers())
-                llvm::errs() << "BUFSEL user of " << nm << ": " << u->getName()
-                             << "\n";
+                llvm::errs()
+                    << "BUFSEL user of " << nm << ": " << u->getName() << "\n";
             llvm::errs() << "BUFSEL fail: thenBuf=" << (bool)thenBuf
                          << " elseBuf=" << (bool)elseBuf << " tyEq="
                          << (thenBuf && elseBuf &&
                              thenBuf.getType() == elseBuf.getType())
-                         << " condTy=" << (bool)condTy << " condRank="
-                         << (condTy ? condTy.getRank() : -1)
+                         << " condTy=" << (bool)condTy
+                         << " condRank=" << (condTy ? condTy.getRank() : -1)
                          << " readOnly=" << readOnly << "\n"
                          << *ifOp << "\n";
           }
@@ -1065,7 +1069,8 @@ emitIfAsSelect(Operation *ifOp, Value cond, affine::AffineValueMap map,
             rewriteLocation(ifOp->getLoc(), pc.options.strip_llvm_debuginfo),
             cond, thenBuf, elseBuf);
         mapping.map(res, sel.getResult());
-        maps[sel.getResult()] = maps.lookup(thenBuf);
+        if (auto it = maps.find(thenBuf); it != maps.end())
+          maps[sel.getResult()] = it->second;
         continue;
       }
       Value b = mapping.lookupOrNull(thenVal);
@@ -1081,10 +1086,8 @@ emitIfAsSelect(Operation *ifOp, Value cond, affine::AffineValueMap map,
       auto mapA = map;
       Value dsts[] = {b, c};
       affine::AffineValueMap submaps[] = {itB->second, itC->second};
-      bool alignOk = true;
-      auto outputMap =
-          alignMemoryAccess(a, mapA, dsts, submaps, builder, pc, &alignOk);
-      if (!alignOk)
+      auto outputMap = alignMemoryAccess(a, mapA, dsts, submaps, builder, pc);
+      if (failed(outputMap))
         return ifOp->emitError(
             "cannot raise branch result without an access map");
       b = dsts[0];
@@ -1096,7 +1099,7 @@ emitIfAsSelect(Operation *ifOp, Value cond, affine::AffineValueMap map,
           rewriteLocation(ifOp->getLoc(), pc.options.strip_llvm_debuginfo), a,
           b, c);
       mapping.map(res, newOp.getResult());
-      maps[newOp.getResult()] = outputMap;
+      maps[newOp.getResult()] = *outputMap;
     }
   }
 
@@ -1343,11 +1346,11 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
         Value mAligned = pc.mask;
         Value updAligned = update;
         affine::AffineValueMap mm = maps.lookup(pc.mask);
-        bool alignOk = true;
-        affine::AffineValueMap unionMap = alignMemoryAccess(
-            mAligned, mm, updAligned, updateValueMap, builder, pc, &alignOk);
-        if (!alignOk)
+        auto aligned = alignMemoryAccess(mAligned, mm, updAligned,
+                                         updateValueMap, builder, pc);
+        if (failed(aligned))
           return nullptr;
+        affine::AffineValueMap unionMap = *aligned;
         auto AT = cast<RankedTensorType>(updAligned.getType());
         if (mAligned.getType() !=
             RankedTensorType::get(AT.getShape(), builder.getI1Type()))
@@ -1491,8 +1494,8 @@ emitStoreAsScatter(Location loc, Value update, Value input, ValueRange sIndices,
       idxMaskDims.push_back(k);
     Value idxMask = stablehlo::BroadcastInDimOp::create(
         builder, loc, idxMaskTy, broadcastedMask, idxMaskDims);
-    indices = stablehlo::SelectOp::create(builder, loc, idxMask, indices,
-                                          minusOne);
+    indices =
+        stablehlo::SelectOp::create(builder, loc, idxMask, indices, minusOne);
   }
 
   auto Ty = cast<RankedTensorType>(input.getType());
@@ -1645,19 +1648,19 @@ memoryEquivalentPermutation(const affine::AffineValueMap &aIn,
 // A yielded value carrying fewer lane axes than the loop-carried arg
 // stores the same number into every missing lane: broadcast it up to the
 // carried layout before matching.
-static bool broadcastYieldToCarried(
-    Value &yielded, Value carried, OpBuilder &builder,
-    llvm::DenseMap<Value, affine::AffineValueMap> &maps, ParallelContext &pc) {
+static bool
+broadcastYieldToCarried(Value &yielded, Value carried, OpBuilder &builder,
+                        llvm::DenseMap<Value, affine::AffineValueMap> &maps,
+                        ParallelContext &pc) {
   if (yielded.getType() == carried.getType())
     return true;
-  bool ok = true;
   Value a = carried;
   Value b = yielded;
   auto outMap = alignMemoryAccess(a, maps.lookup(carried), b,
-                                  maps.lookup(yielded), builder, pc, &ok);
-  if (!ok || a.getType() != carried.getType())
+                                  maps.lookup(yielded), builder, pc);
+  if (failed(outMap) || a.getType() != carried.getType())
     return false;
-  maps[b] = outMap;
+  maps[b] = *outMap;
   yielded = b;
   return true;
 }
@@ -1694,10 +1697,11 @@ static LogicalResult tryRaisingForOpToStableHLOWhile(
                          bool isUpper) -> Value {
       Value acc;
       for (AffineExpr expr : map.getResults()) {
-        auto [val, avm] = expandAffineExpr(builder, wloc, expr, operands,
-                                           mapping, maps, map.getNumDims(), pc);
-        if (!val)
+        auto expanded = expandAffineExpr(builder, wloc, expr, operands, mapping,
+                                         maps, map.getNumDims(), pc);
+        if (failed(expanded))
           return nullptr;
+        auto [val, avm] = *expanded;
         auto vt = dyn_cast<RankedTensorType>(val.getType());
         if (!vt || vt.getRank() != 0)
           return nullptr;
@@ -1841,8 +1845,8 @@ static LogicalResult tryRaisingForOpToStableHLOWhile(
 
       if (!maps.count(raisedYieldedIterArg) || !maps.count(raisedIterArg))
         return failure();
-      if (!broadcastYieldToCarried(raisedYieldedIterArg, raisedIterArg,
-                                   builder, maps, pc))
+      if (!broadcastYieldToCarried(raisedYieldedIterArg, raisedIterArg, builder,
+                                   maps, pc))
         return failure();
       auto perm = memoryEquivalentPermutation(maps.lookup(raisedYieldedIterArg),
                                               maps.lookup(raisedIterArg));
@@ -2010,8 +2014,8 @@ static LogicalResult tryRaisingSCFForOpToStableHLOWhile(
         return failure();
       if (!maps.count(raisedYielded) || !maps.count(raisedIterArg))
         return failure();
-      if (!broadcastYieldToCarried(raisedYielded, raisedIterArg, builder,
-                                   maps, pc))
+      if (!broadcastYieldToCarried(raisedYielded, raisedIterArg, builder, maps,
+                                   pc))
         return failure();
       auto perm = memoryEquivalentPermutation(maps.lookup(raisedYielded),
                                               maps.lookup(raisedIterArg));
@@ -2103,12 +2107,11 @@ static LogicalResult raiseLoopToMaskedWhile(
   }
   Value vals[] = {bnds[(refIdx + 1) % 3], bnds[(refIdx + 2) % 3]};
   affine::AffineValueMap dsts[] = {maps.lookup(vals[0]), maps.lookup(vals[1])};
-  bool laneOk = true;
-  affine::AffineValueMap laneMap = alignMemoryAccess(
-      bnds[refIdx], maps.lookup(bnds[refIdx]), vals, dsts, builder, pc,
-      &laneOk);
-  if (!laneOk)
+  auto aligned = alignMemoryAccess(bnds[refIdx], maps.lookup(bnds[refIdx]),
+                                   vals, dsts, builder, pc);
+  if (failed(aligned))
     return failure();
+  affine::AffineValueMap laneMap = *aligned;
   bnds[(refIdx + 1) % 3] = vals[0];
   bnds[(refIdx + 2) % 3] = vals[1];
   lb = bnds[0];
@@ -2245,13 +2248,11 @@ static LogicalResult raiseLoopToMaskedWhile(
     if (pc.mask) {
       Value pm = pc.mask;
       affine::AffineValueMap pmMap = maps.lookup(pm);
-      bool mergeOk = true;
-      affine::AffineValueMap merged =
-          alignMemoryAccess(pm, pmMap, mask, laneMap, builder, pc, &mergeOk);
-      if (!mergeOk)
+      auto merged = alignMemoryAccess(pm, pmMap, mask, laneMap, builder, pc);
+      if (failed(merged))
         return failure();
       mask = stablehlo::AndOp::create(builder, wloc, pm, mask);
-      maps[mask] = merged;
+      maps[mask] = *merged;
     }
     bodyPc.mask = mask;
 
@@ -2283,17 +2284,15 @@ static LogicalResult raiseLoopToMaskedWhile(
       Value selVals[] = {raisedYielded, raisedIterArg};
       affine::AffineValueMap selMaps[] = {maps.lookup(raisedYielded),
                                           maps.lookup(raisedIterArg)};
-      bool selOk = true;
-      affine::AffineValueMap outMap =
-          alignMemoryAccess(m, mMap, selVals, selMaps, builder, pc, &selOk);
-      if (!selOk)
+      auto outMap = alignMemoryAccess(m, mMap, selVals, selMaps, builder, pc);
+      if (failed(outMap))
         return failure();
       Value sel =
           stablehlo::SelectOp::create(builder, wloc, m, selVals[0], selVals[1]);
       // The aligned select may order the axes differently than the carried
       // value; permute it back into the iter arg's layout.
       auto perm =
-          memoryEquivalentPermutation(outMap, maps.lookup(raisedIterArg));
+          memoryEquivalentPermutation(*outMap, maps.lookup(raisedIterArg));
       if (perm.has_value() && !std::is_sorted(perm->begin(), perm->end()))
         sel = stablehlo::TransposeOp::create(builder, wloc, sel, *perm);
       if (sel.getType() != raisedIterArg.getType())
@@ -2334,10 +2333,11 @@ static LogicalResult tryRaisingAffineForOpToMaskedWhile(
     Value acc;
     affine::AffineValueMap accMap;
     for (AffineExpr expr : map.getResults()) {
-      auto [val, avm] = expandAffineExpr(builder, wloc, expr, operands, mapping,
-                                         maps, map.getNumDims(), pc);
-      if (!val)
+      auto expanded = expandAffineExpr(builder, wloc, expr, operands, mapping,
+                                       maps, map.getNumDims(), pc);
+      if (failed(expanded))
         return nullptr;
+      auto [val, avm] = *expanded;
       if (!maps.count(val))
         maps[val] = avm;
       else
@@ -2347,14 +2347,12 @@ static LogicalResult tryRaisingAffineForOpToMaskedWhile(
         accMap = avm;
         continue;
       }
-      bool alignOk = true;
-      affine::AffineValueMap merged =
-          alignMemoryAccess(acc, accMap, val, avm, builder, pc, &alignOk);
-      if (!alignOk)
+      auto merged = alignMemoryAccess(acc, accMap, val, avm, builder, pc);
+      if (failed(merged))
         return nullptr;
       acc = isUpper ? (Value)stablehlo::MinOp::create(builder, wloc, acc, val)
                     : (Value)stablehlo::MaxOp::create(builder, wloc, acc, val);
-      accMap = merged;
+      accMap = *merged;
     }
     if (acc)
       maps[acc] = accMap;
@@ -2582,11 +2580,11 @@ static LogicalResult tryRaisingParallelOpToStableHLO(
       Value dsts[] = {idx_broadcasted, mapping.lookup(init_val)};
       affine::AffineValueMap submaps[] = {idx_map, maps.lookup(dsts[1])};
 
-      bool alignOk = true;
-      auto outputMap = alignMemoryAccess(reduce_broadcasted, reduce_map, dsts,
-                                         submaps, builder, *newPc, &alignOk);
-      if (!alignOk)
+      auto aligned = alignMemoryAccess(reduce_broadcasted, reduce_map, dsts,
+                                       submaps, builder, *newPc);
+      if (failed(aligned))
         return failure();
+      affine::AffineValueMap outputMap = *aligned;
 
       ssize_t idx_to_reduce = -1;
       for (auto &&[i, expr] :
@@ -2791,11 +2789,11 @@ static LogicalResult tryRaisingParallelOpToStableHLO(
           return failure();
         submaps.push_back(maps.lookup(dst));
       }
-      bool align2Ok = true;
-      auto outputMap2 = alignMemoryAccess(val, outputMap, dsts.data(), submaps,
-                                          builder, *newPc, &align2Ok);
-      if (!align2Ok)
+      auto aligned = alignMemoryAccess(val, outputMap, dsts.data(), submaps,
+                                       builder, *newPc);
+      if (failed(aligned))
         return failure();
+      affine::AffineValueMap outputMap2 = *aligned;
 
       SmallVector<int64_t> idxs_to_reduce;
       SmallVector<int64_t> redshape;
@@ -3126,13 +3124,14 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     if (emitAsGather) {
       SmallVector<Value> lIndices;
       for (auto E : accessValueMap.getAffineMap().getResults()) {
-        auto [idx, idxMap] = expandAffineExpr(
+        auto expanded = expandAffineExpr(
             builder,
             rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo), E,
             accessValueMap.getOperands(), mapping, maps,
             accessValueMap.getAffineMap().getNumDims(), pc);
-        if (!idx)
+        if (failed(expanded))
           return failure();
+        auto [idx, idxMap] = *expanded;
         maps[idx] = idxMap;
         lIndices.push_back(idx);
       }
@@ -3168,13 +3167,14 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
           }
         }
 
-        auto [startIndex, _] = expandAffineExpr(
+        auto expanded = expandAffineExpr(
             builder,
             rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
             exprToEmit, accessValueMap.getOperands(), mapping, maps,
             accessValueMap.getAffineMap().getNumDims(), pc);
-        if (!startIndex)
+        if (failed(expanded))
           return failure();
+        Value startIndex = std::get<0>(*expanded);
 
         startIndices.push_back(startIndex);
       }
@@ -3430,13 +3430,14 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     if (emitAsScatter) {
       SmallVector<Value> sIndices;
       for (auto E : accessValueMap.getAffineMap().getResults()) {
-        auto [expandedIndex, indexMap] = expandAffineExpr(
+        auto expanded = expandAffineExpr(
             builder,
             rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo), E,
             accessValueMap.getOperands(), mapping, maps,
             accessValueMap.getAffineMap().getNumDims(), pc);
-        if (!expandedIndex)
+        if (failed(expanded))
           return failure();
+        auto [expandedIndex, indexMap] = *expanded;
         maps[expandedIndex] = indexMap;
         sIndices.push_back(expandedIndex);
       }
@@ -3690,14 +3691,14 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
           updateShape.push_back(1);
         }
 
-        auto [startIndex_, _] = expandAffineExpr(
+        auto expanded = expandAffineExpr(
             builder,
             rewriteLocation(iv.getLoc(), pc.options.strip_llvm_debuginfo),
             exprToEmit, accessValueMap.getOperands(), mapping, maps,
             accessValueMap.getAffineMap().getNumDims(), pc);
-        if (!startIndex_)
+        if (failed(expanded))
           return failure();
-        startIndex = startIndex_;
+        startIndex = std::get<0>(*expanded);
       }
 
       if (pLow != 0) {
@@ -3764,9 +3765,11 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
         Value mAligned = pc.mask;
         Value updAligned = update;
         affine::AffineValueMap mm = maps.lookup(pc.mask);
-        bool alignOk = true;
-        affine::AffineValueMap unionMap = alignMemoryAccess(
-            mAligned, mm, updAligned, updateValueMap, builder, pc, &alignOk);
+        auto aligned = alignMemoryAccess(mAligned, mm, updAligned,
+                                         updateValueMap, builder, pc);
+        bool alignOk = succeeded(aligned);
+        affine::AffineValueMap unionMap =
+            alignOk ? *aligned : affine::AffineValueMap();
         if (alignOk && updAligned != update &&
             mAligned.getType() ==
                 RankedTensorType::get(
@@ -4114,8 +4117,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
                   limits(vt.getShape().begin(), vt.getShape().end()),
                   strides(vt.getRank(), 1);
               limits[axis] = len;
-              return stablehlo::SliceOp::create(builder, loc, v, starts,
-                                                limits, strides)
+              return stablehlo::SliceOp::create(builder, loc, v, starts, limits,
+                                                strides)
                   .getResult();
             };
             int64_t len = o - s;
@@ -4163,8 +4166,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
       bool unfit = updateShape.size() != operandShape.size();
       if (!unfit)
         for (auto [u, o] : llvm::zip(updateShape, operandShape))
-          if (u == ShapedType::kDynamic ||
-              (o != ShapedType::kDynamic && u > o))
+          if (u == ShapedType::kDynamic || (o != ShapedType::kDynamic && u > o))
             unfit = true;
       if (unfit) {
         auto err =
@@ -4192,11 +4194,10 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
       // update what if cond has more ivs dependence than the update?
       // or different?
-      bool alignOk = true;
-      storeValueMap =
-          alignMemoryAccess(mask, maskMap, vals, dsts, builder, pc, &alignOk);
-      if (!alignOk)
+      auto aligned = alignMemoryAccess(mask, maskMap, vals, dsts, builder, pc);
+      if (failed(aligned))
         return op->emitError("cannot align masked store");
+      storeValueMap = *aligned;
 
       for (auto dim : storeValueMap.getOperands()) {
         // This dim is present in the masked update and not in the stored
@@ -4504,12 +4505,13 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
         continue;
       }
 
-      auto [expandedIndex, indexMap] = expandAffineExpr(
+      auto expanded = expandAffineExpr(
           builder,
           rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo), E,
           accessValueMap.getOperands(), mapping, maps, map.getNumDims(), pc);
-      if (!expandedIndex)
+      if (failed(expanded))
         return failure();
+      auto [expandedIndex, indexMap] = *expanded;
       maps[expandedIndex] = indexMap;
       sIndices.push_back(expandedIndex);
     }
@@ -4648,13 +4650,14 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     auto avm = apply.getAffineValueMap();
     // See tryRaisingForOpToStableHLOUnroll
     avm.composeSimplifyAndCanonicalize();
-    auto [expanded, expandedMap] = expandAffineExpr(
+    auto res = expandAffineExpr(
         builder,
         rewriteLocation(apply.getLoc(), pc.options.strip_llvm_debuginfo),
         avm.getAffineMap().getResult(0), avm.getOperands(), mapping, maps,
         avm.getAffineMap().getNumDims(), pc);
-    if (!expanded)
+    if (failed(res))
       return failure();
+    auto [expanded, expandedMap] = *res;
     mapping.map(apply.getResult(), expanded);
     maps[expanded] = expandedMap;
     return success();
@@ -4670,8 +4673,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
       for (Operation *user : result.getUsers())
         if ((isa<affine::AffineStoreOp, memref::StoreOp>(user) &&
              user->getOperand(1) == result))
-          return op->emitError(
-              "cannot raise a store through an aliasing view");
+          return op->emitError("cannot raise a store through an aliasing view");
     auto input = mapping.lookupOrNull(operand);
     if (!input)
       return failure();
@@ -4816,10 +4818,9 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     auto itA = maps.find(a), itB = maps.find(b);
     if (itA == maps.end() || itB == maps.end())
       return failure();
-    bool alignOk = true;
-    auto outputMap = alignMemoryAccess(a, itA->second, b, itB->second, builder,
-                                       pc, &alignOk);
-    if (!alignOk)
+    auto outputMap =
+        alignMemoryAccess(a, itA->second, b, itB->second, builder, pc);
+    if (failed(outputMap))
       return failure();
     assert(a.getType() == b.getType());
 
@@ -4837,7 +4838,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     for (auto [oldRes, newRes] :
          llvm::zip_equal(op->getResults(), newOp->getResults())) {
       mapping.map(oldRes, newRes);
-      maps[newRes] = outputMap;
+      maps[newRes] = *outputMap;
     }
 
     return success();
@@ -4857,10 +4858,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
     Value dsts[] = {b, c};
     affine::AffineValueMap submaps[] = {mapB, mapC};
-    bool alignOk = true;
-    auto outputMap =
-        alignMemoryAccess(a, mapA, dsts, submaps, builder, pc, &alignOk);
-    if (!alignOk)
+    auto outputMap = alignMemoryAccess(a, mapA, dsts, submaps, builder, pc);
+    if (failed(outputMap))
       return failure();
     b = dsts[0];
     c = dsts[1];
@@ -4878,7 +4877,7 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
     for (auto [oldRes, newRes] :
          llvm::zip_equal(op->getResults(), newOp->getResults())) {
       mapping.map(oldRes, newRes);
-      maps[newRes] = outputMap;
+      maps[newRes] = *outputMap;
     }
 
     return success();
@@ -4952,8 +4951,8 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
   if (auto ifOp = dyn_cast<scf::IfOp>(op)) {
     if (getenv("DEBUG_SCF")) {
-      llvm::errs() << "SCF-IF-RAISE " << ifOp.getLoc() << " results="
-                   << ifOp.getNumResults() << "\n";
+      llvm::errs() << "SCF-IF-RAISE " << ifOp.getLoc()
+                   << " results=" << ifOp.getNumResults() << "\n";
       Value c = ifOp.getCondition();
       SmallVector<Value> wl{c};
       DenseSet<Value> seen;
@@ -4998,13 +4997,14 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
     for (auto [constraint, eq] : llvm::zip_equal(
              constraintMap.getAffineMap().getResults(), is.getEqFlags())) {
-      auto [expandedExpr, outputMap] = expandAffineExpr(
+      auto expanded = expandAffineExpr(
           builder,
           rewriteLocation(ifOp.getLoc(), pc.options.strip_llvm_debuginfo),
           constraint, constraintMap.getOperands(), mapping, maps,
           constraintMap.getNumDims(), pc);
-      if (!expandedExpr)
+      if (failed(expanded))
         return failure();
+      auto [expandedExpr, outputMap] = *expanded;
       Value zero = stablehlo::ConstantOp::create(
           builder,
           rewriteLocation(ifOp.getLoc(), pc.options.strip_llvm_debuginfo),
@@ -5019,11 +5019,11 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
           eq ? stablehlo::ComparisonDirection::EQ
              : stablehlo::ComparisonDirection::GE);
       if (cond) {
-        bool alignOk = true;
-        map = alignMemoryAccess(cond, map, newCond, outputMap, builder, pc,
-                                &alignOk);
-        if (!alignOk)
+        auto aligned =
+            alignMemoryAccess(cond, map, newCond, outputMap, builder, pc);
+        if (failed(aligned))
           return failure();
+        map = *aligned;
         cond = stablehlo::AndOp::create(
             builder,
             rewriteLocation(ifOp.getLoc(), pc.options.strip_llvm_debuginfo),
@@ -5091,8 +5091,9 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
   if (auto scfFor = dyn_cast<scf::ForOp>(op)) {
     if (getenv("DEBUG_SCF")) {
       auto fn = scfFor->getParentOfType<FunctionOpInterface>();
-      llvm::errs() << "SCF-FOR-RAISE " << scfFor.getLoc() << " iterargs="
-                   << scfFor.getNumRegionIterArgs() << " op=" << (void *)op
+      llvm::errs() << "SCF-FOR-RAISE " << scfFor.getLoc()
+                   << " iterargs=" << scfFor.getNumRegionIterArgs()
+                   << " op=" << (void *)op
                    << " fn=" << (fn ? fn.getName() : "?") << "\n";
       std::function<void(Value, unsigned)> chain = [&](Value v, unsigned d) {
         auto *def = v.getDefiningOp();
@@ -5126,6 +5127,12 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
             .succeeded())
       return success();
     if (tryRaisingSCFForOpToMaskedWhile(scfFor, mapping, builder, maps, pc)
+            .succeeded())
+      return success();
+  }
+
+  if (auto scfFor = dyn_cast<scf::ForOp>(op)) {
+    if (tryRaisingSCFForOpToStableHLOWhile(scfFor, mapping, builder, maps, pc)
             .succeeded())
       return success();
   }
@@ -5222,14 +5229,12 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
           forOwner->print(llvm::errs(), OpPrintingFlags().skipRegions());
           llvm::errs() << "\n  barrier: " << *op << "\n";
         }
-        return op->emitError(
-            "barrier over a dynamically sized parallel axis");
+        return op->emitError("barrier over a dynamically sized parallel axis");
       }
       if (isa<scf::ForOp, scf::WhileOp>(owner)) {
         if (getenv("DEBUG_BOUND"))
           llvm::errs() << "dynamic barrier SCF owner: " << *owner << "\n";
-        return op->emitError(
-            "barrier over a dynamically sized parallel axis");
+        return op->emitError("barrier over a dynamically sized parallel axis");
       }
     }
     return success();
@@ -5502,10 +5507,9 @@ struct AffineToStableHLORaisingPass
           OpBuilder b(a);
           Location loc = a->getLoc();
           auto elemConst = [&](int64_t i) -> Value {
-            int64_t j = std::clamp<int64_t>(base + i, 0,
-                                            (int64_t)elems.size() - 1);
-            return arith::ConstantOp::create(b, loc,
-                                             cast<TypedAttr>(elems[j]));
+            int64_t j =
+                std::clamp<int64_t>(base + i, 0, (int64_t)elems.size() - 1);
+            return arith::ConstantOp::create(b, loc, cast<TypedAttr>(elems[j]));
           };
           std::optional<int64_t> cst;
           Value idx;
@@ -5513,8 +5517,8 @@ struct AffineToStableHLORaisingPass
             if (auto c = getConstant(ld.getAffineMap()))
               cst = *c;
             else {
-              auto expanded = affine::expandAffineMap(
-                  b, loc, ld.getAffineMap(), ld.getMapOperands());
+              auto expanded = affine::expandAffineMap(b, loc, ld.getAffineMap(),
+                                                      ld.getMapOperands());
               idx = (*expanded)[0];
             }
           } else {
@@ -5528,8 +5532,8 @@ struct AffineToStableHLORaisingPass
             res = elemConst(0);
             for (int64_t i = 1; i < n; ++i) {
               Value c = arith::ConstantIndexOp::create(b, loc, i);
-              Value eq = arith::CmpIOp::create(
-                  b, loc, arith::CmpIPredicate::eq, idx, c);
+              Value eq = arith::CmpIOp::create(b, loc, arith::CmpIPredicate::eq,
+                                               idx, c);
               res = arith::SelectOp::create(b, loc, eq, elemConst(i), res);
             }
           }
@@ -5550,7 +5554,8 @@ struct AffineToStableHLORaisingPass
     int64_t slot;
     int t, f;
   };
-  static std::optional<int> slotTree(Value v, SmallVectorImpl<SlotNode> &nodes) {
+  static std::optional<int> slotTree(Value v,
+                                     SmallVectorImpl<SlotNode> &nodes) {
     llvm::APInt c;
     if (matchPattern(v, m_ConstantInt(&c))) {
       nodes.push_back({nullptr, c.getSExtValue(), -1, -1});
@@ -5655,8 +5660,8 @@ struct AffineToStableHLORaisingPass
         for (Operation *u : v.getUsers()) {
           if (auto gep = dyn_cast<LLVM::GEPOp>(u)) {
             // A constant-valued SSA index is as good as an attribute one.
-            auto constIdx =
-                [](llvm::PointerUnion<IntegerAttr, Value> e) -> std::optional<int64_t> {
+            auto constIdx = [](llvm::PointerUnion<IntegerAttr, Value> e)
+                -> std::optional<int64_t> {
               if (auto attr = dyn_cast<IntegerAttr>(e))
                 return attr.getInt();
               llvm::APInt c;
@@ -5722,11 +5727,11 @@ struct AffineToStableHLORaisingPass
               break;
             }
             Type ET = MT.getElementType();
-            int64_t esz = isa<LLVM::LLVMPointerType>(ET)
-                              ? 8
-                              : (ET.isIntOrFloat()
-                                     ? (ET.getIntOrFloatBitWidth() + 7) / 8
-                                     : 0);
+            int64_t esz =
+                isa<LLVM::LLVMPointerType>(ET)
+                    ? 8
+                    : (ET.isIntOrFloat() ? (ET.getIntOrFloatBitWidth() + 7) / 8
+                                         : 0);
             if (esz == 0) {
               ok = false;
               break;
@@ -5753,8 +5758,7 @@ struct AffineToStableHLORaisingPass
                 else if (ld.getAffineMap().getNumResults() == 1) {
                   OpBuilder eb(au);
                   auto expanded = affine::expandAffineMap(
-                      eb, au->getLoc(), ld.getAffineMap(),
-                      ld.getMapOperands());
+                      eb, au->getLoc(), ld.getAffineMap(), ld.getMapOperands());
                   if (expanded && dynLoad((*expanded)[0]))
                     continue;
                 }
@@ -5768,7 +5772,8 @@ struct AffineToStableHLORaisingPass
               }
               if (!idx) {
                 if (getenv("DEBUG_FWD")) {
-                  llvm::errs() << "FWD bail view user: " << *au << "\n  for alloca: " << *a << "\n";
+                  llvm::errs() << "FWD bail view user: " << *au
+                               << "\n  for alloca: " << *a << "\n";
                   if (getenv("DEBUG_FWD")[0] == '2')
                     au->getParentOfType<FunctionOpInterface>()->dump();
                 }
@@ -5815,7 +5820,8 @@ struct AffineToStableHLORaisingPass
             continue;
           }
           if (getenv("DEBUG_FWD"))
-            llvm::errs() << "FWD bail user: " << *u << "\n  for alloca: " << *a << "\n";
+            llvm::errs() << "FWD bail user: " << *u << "\n  for alloca: " << *a
+                         << "\n";
           ok = false;
           break;
         }
@@ -5850,8 +5856,9 @@ struct AffineToStableHLORaisingPass
       // type match, or several for a wider integer store (two i32 sizes
       // packed into one i64 write). Little-endian extraction.
       DataLayout dlq = dl;
-      auto coveredSlots = [&](Access &acc, int64_t viewBase, int64_t esz,
-                              Type ty) -> SmallVector<std::pair<int64_t, int64_t>> {
+      auto coveredSlots =
+          [&](Access &acc, int64_t viewBase, int64_t esz,
+              Type ty) -> SmallVector<std::pair<int64_t, int64_t>> {
         // pairs of (slot index, byte offset of the piece inside the store)
         SmallVector<std::pair<int64_t, int64_t>> out;
         if (acc.byteOff < viewBase)
@@ -5886,9 +5893,8 @@ struct AffineToStableHLORaisingPass
         }
         return nullptr;
       };
-      for (auto &dyn : llvm::make_range(dynLoads.begin(),
-                                        legal ? dynLoads.end()
-                                              : dynLoads.begin())) {
+      for (auto &dyn : llvm::make_range(
+               dynLoads.begin(), legal ? dynLoads.end() : dynLoads.begin())) {
         bool any = false;
         if (dyn.root >= 0) {
           any = true;
@@ -5974,8 +5980,8 @@ struct AffineToStableHLORaisingPass
               continue;
             }
             Value c = arith::ConstantIndexOp::create(b, loc, slot);
-            Value eq = arith::CmpIOp::create(b, loc,
-                                             arith::CmpIPredicate::eq, idx, c);
+            Value eq =
+                arith::CmpIOp::create(b, loc, arith::CmpIPredicate::eq, idx, c);
             res = arith::SelectOp::create(b, loc, eq, piece, res);
           }
         }
@@ -6017,7 +6023,8 @@ struct AffineToStableHLORaisingPass
           auto sel = p2m.getSource().getDefiningOp<arith::SelectOp>();
           if (!sel)
             continue;
-          auto condTy = dyn_cast<RankedTensorType>(sel.getCondition().getType());
+          auto condTy =
+              dyn_cast<RankedTensorType>(sel.getCondition().getType());
           if (condTy)
             continue;
           OpBuilder b(op);
@@ -6041,9 +6048,9 @@ struct AffineToStableHLORaisingPass
           mf.map(gep.getBase(), sel.getFalseValue());
           Operation *gt = b.clone(*op, mt);
           Operation *gf = b.clone(*op, mf);
-          Value ns = arith::SelectOp::create(
-              b, op->getLoc(), sel.getCondition(), gt->getResult(0),
-              gf->getResult(0));
+          Value ns =
+              arith::SelectOp::create(b, op->getLoc(), sel.getCondition(),
+                                      gt->getResult(0), gf->getResult(0));
           op->getResult(0).replaceAllUsesWith(ns);
           op->erase();
           changed = true;
@@ -6061,9 +6068,9 @@ struct AffineToStableHLORaisingPass
           mf.map(gep.getDynamicIndices()[0], sel.getFalseValue());
           Operation *gt = b.clone(*op, mt);
           Operation *gf = b.clone(*op, mf);
-          Value ns = arith::SelectOp::create(
-              b, op->getLoc(), sel.getCondition(), gt->getResult(0),
-              gf->getResult(0));
+          Value ns =
+              arith::SelectOp::create(b, op->getLoc(), sel.getCondition(),
+                                      gt->getResult(0), gf->getResult(0));
           op->getResult(0).replaceAllUsesWith(ns);
           op->erase();
           changed = true;
@@ -6193,8 +6200,7 @@ struct AffineToStableHLORaisingPass
           auto p2m = dyn_cast<enzymexla::Pointer2MemrefOp>(use.getOwner());
           if (!p2m)
             continue;
-          for (OpOperand &ause :
-               llvm::make_early_inc_range(p2m->getUses())) {
+          for (OpOperand &ause : llvm::make_early_inc_range(p2m->getUses())) {
             Operation *acc = ause.getOwner();
             bool isLoad = isa<memref::LoadOp, affine::AffineLoadOp>(acc);
             bool isStore = isa<memref::StoreOp, affine::AffineStoreOp>(acc);
@@ -6248,9 +6254,9 @@ struct AffineToStableHLORaisingPass
           liveTypes.push_back(res.getType());
         }
         OpBuilder b(ifOp);
-        auto newIf = scf::IfOp::create(b, ifOp.getLoc(), liveTypes,
-                                       ifOp.getCondition(),
-                                       /*withElseRegion=*/true);
+        auto newIf =
+            scf::IfOp::create(b, ifOp.getLoc(), liveTypes, ifOp.getCondition(),
+                              /*withElseRegion=*/true);
         auto rebuildArm = [&](Block *srcArm, Block *dstArm) {
           dstArm->clear();
           IRMapping m;
@@ -6633,8 +6639,7 @@ struct AffineToStableHLORaisingPass
 
   // Upper bound from the guards enclosing the launch: inside the surviving
   // branch of `if (v REL C)`, the relation holds.
-  static std::optional<int64_t> enclosingGuardBound(Value v,
-                                                    Operation *anchor,
+  static std::optional<int64_t> enclosingGuardBound(Value v, Operation *anchor,
                                                     unsigned depth = 0) {
     if (!anchor)
       return std::nullopt;
@@ -6741,9 +6746,8 @@ struct AffineToStableHLORaisingPass
     return bound;
   }
 
-  static std::optional<int64_t> derivedExtentBound(Value v, unsigned depth = 0,
-                                                   Operation *anchor =
-                                                       nullptr) {
+  static std::optional<int64_t>
+  derivedExtentBound(Value v, unsigned depth = 0, Operation *anchor = nullptr) {
     if (depth > 8)
       return std::nullopt;
     while (true) {
@@ -6789,8 +6793,10 @@ struct AffineToStableHLORaisingPass
       return l ? l : r;
     }
     if (isa_and_nonnull<LLVM::SMaxOp, LLVM::UMaxOp>(v.getDefiningOp())) {
-      auto l = derivedExtentBound(v.getDefiningOp()->getOperand(0), depth + 1, anchor);
-      auto r = derivedExtentBound(v.getDefiningOp()->getOperand(1), depth + 1, anchor);
+      auto l = derivedExtentBound(v.getDefiningOp()->getOperand(0), depth + 1,
+                                  anchor);
+      auto r = derivedExtentBound(v.getDefiningOp()->getOperand(1), depth + 1,
+                                  anchor);
       if (l && r)
         return std::max(*l, *r);
       return std::nullopt;
@@ -6819,7 +6825,8 @@ struct AffineToStableHLORaisingPass
       return std::nullopt;
     }
     if (isa_and_nonnull<arith::ExtUIOp, arith::ExtSIOp>(v.getDefiningOp()))
-      return derivedExtentBound(v.getDefiningOp()->getOperand(0), depth + 1, anchor);
+      return derivedExtentBound(v.getDefiningOp()->getOperand(0), depth + 1,
+                                anchor);
     if (auto t = v.getDefiningOp<arith::TruncIOp>()) {
       // dim3 packing replicates a 32-bit dim into both halves of an i64 as
       // x * 0x100000001; either half recovers the dim.
@@ -7037,8 +7044,8 @@ struct AffineToStableHLORaisingPass
     // the max over all call sites, each of which must itself be bounded.
     if (auto ba = dyn_cast<BlockArgument>(v)) {
       if (getenv("DEBUG_BOUND"))
-        llvm::errs() << "interproc: blockarg " << ba.getArgNumber()
-                     << " depth " << depth << " owner "
+        llvm::errs() << "interproc: blockarg " << ba.getArgNumber() << " depth "
+                     << depth << " owner "
                      << ba.getOwner()->getParentOp()->getName() << "\n";
       if (depth > 4)
         return std::nullopt;
@@ -7053,8 +7060,8 @@ struct AffineToStableHLORaisingPass
       auto uses = SymbolTable::getSymbolUses(func, mod);
       if (!uses) {
         if (getenv("DEBUG_BOUND"))
-          llvm::errs() << "interproc: no uses view for "
-                       << func.getNameAttr() << "\n";
+          llvm::errs() << "interproc: no uses view for " << func.getNameAttr()
+                       << "\n";
         return std::nullopt;
       }
       std::optional<int64_t> bound;
@@ -7085,10 +7092,10 @@ struct AffineToStableHLORaisingPass
         auto b = derivedExtentBound(actual, depth + 1, call);
         if (!b) {
           if (getenv("DEBUG_BOUND")) {
-            llvm::errs() << "interproc: underivable actual in "
-                         << call->getParentOfType<FunctionOpInterface>()
-                                .getNameAttr()
-                         << "\n";
+            llvm::errs()
+                << "interproc: underivable actual in "
+                << call->getParentOfType<FunctionOpInterface>().getNameAttr()
+                << "\n";
             Value w = actual;
             for (int k = 0; k < 8 && w.getDefiningOp(); ++k) {
               llvm::errs() << "   <- " << *w.getDefiningOp() << "\n";
@@ -7102,8 +7109,8 @@ struct AffineToStableHLORaisingPass
         bound = bound ? std::max(*bound, *b) : *b;
       }
       if (!anyCall && getenv("DEBUG_BOUND"))
-        llvm::errs() << "interproc: no direct callers of "
-                     << func.getNameAttr() << "\n";
+        llvm::errs() << "interproc: no direct callers of " << func.getNameAttr()
+                     << "\n";
       if (anyCall)
         return bound;
       if (auto g = guardBound(v, anchor, depth))
@@ -7130,8 +7137,7 @@ struct AffineToStableHLORaisingPass
       if (!isa<affine::AffineLoadOp, affine::AffineStoreOp, memref::LoadOp,
                memref::StoreOp>(op))
         return;
-      for (Operation *a = op->getParentOp(); a != loop;
-           a = a->getParentOp()) {
+      for (Operation *a = op->getParentOp(); a != loop; a = a->getParentOp()) {
         auto f = dyn_cast<affine::AffineForOp>(a);
         if (!f || !f.hasConstantBounds() ||
             f.getConstantLowerBound() >= f.getConstantUpperBound())
@@ -7205,8 +7211,7 @@ struct AffineToStableHLORaisingPass
       };
       if (getenv("DEBUG_PRIV"))
         llvm::errs() << "PRIV consider: " << *a << " par=" << (bool)par
-                     << " nested=" << (par && hasParallelAncestor(par))
-                     << "\n";
+                     << " nested=" << (par && hasParallelAncestor(par)) << "\n";
       if (!par)
         continue;
       // Scratch under the outermost parallel is per-lane for elementwise
@@ -7216,8 +7221,7 @@ struct AffineToStableHLORaisingPass
       // leave that alone.
       if (!hasParallelAncestor(par)) {
         bool hasBarrier = false;
-        par.getBody()->walk(
-            [&](enzymexla::BarrierOp) { hasBarrier = true; });
+        par.getBody()->walk([&](enzymexla::BarrierOp) { hasBarrier = true; });
         if (hasBarrier) {
           if (getenv("DEBUG_PRIV"))
             llvm::errs() << "PRIV skip (synchronized shared): " << *a << "\n";
@@ -7253,11 +7257,10 @@ struct AffineToStableHLORaisingPass
       SmallVector<Operation *> accesses;
       bool legal = true;
       for (Operation *u : a->getUsers()) {
-        bool isAccess =
-            (isa<affine::AffineLoadOp, memref::LoadOp>(u) &&
-             u->getOperand(0) == a.getResult()) ||
-            (isa<affine::AffineStoreOp, memref::StoreOp>(u) &&
-             u->getOperand(1) == a.getResult());
+        bool isAccess = (isa<affine::AffineLoadOp, memref::LoadOp>(u) &&
+                         u->getOperand(0) == a.getResult()) ||
+                        (isa<affine::AffineStoreOp, memref::StoreOp>(u) &&
+                         u->getOperand(1) == a.getResult());
         if (!isAccess || !par->isProperAncestor(u)) {
           legal = false;
           break;
@@ -7316,9 +7319,8 @@ struct AffineToStableHLORaisingPass
           exprs.push_back(getAffineDimExpr(nd + k, par.getContext()));
         for (AffineExpr e : map.getResults())
           exprs.push_back(e);
-        auto newMap =
-            AffineMap::get(nd + K, map.getNumSymbols(), exprs,
-                           par.getContext());
+        auto newMap = AffineMap::get(nd + K, map.getNumSymbols(), exprs,
+                                     par.getContext());
         SmallVector<Value> newOperands(mapOperands.begin(),
                                        mapOperands.begin() + nd);
         newOperands.append(ivs.begin(), ivs.end());
@@ -7374,9 +7376,8 @@ struct AffineToStableHLORaisingPass
         Value ext;
         std::optional<int64_t> mapBound;
         if (auto se = dyn_cast<AffineSymbolExpr>(um.getResult(0)))
-          ext = par.getUpperBoundsOperands()[par.getUpperBoundsMap()
-                                                .getNumDims() +
-                                            se.getPosition()];
+          ext = par.getUpperBoundsOperands()
+                    [par.getUpperBoundsMap().getNumDims() + se.getPosition()];
         else if (auto de = dyn_cast<AffineDimExpr>(um.getResult(0)))
           ext = par.getUpperBoundsOperands()[de.getPosition()];
         else {
@@ -7416,8 +7417,7 @@ struct AffineToStableHLORaisingPass
             llvm::errs() << "bpa launch-budget bound " << *launchB << " dim "
                          << i << "\n";
           bounded.push_back({i, *launchB, ext});
-        }
-        else if (getenv("DEBUG_BOUND")) {
+        } else if (getenv("DEBUG_BOUND")) {
           llvm::errs() << "unbounded extent: " << ext << "\n";
           std::function<void(Value, int)> dump = [&](Value v, int ind) {
             if (ind > 4)
@@ -7426,8 +7426,7 @@ struct AffineToStableHLORaisingPass
               llvm::errs() << "  ";
             if (auto ba = dyn_cast<BlockArgument>(v)) {
               llvm::errs() << "blockarg " << ba.getArgNumber() << " of "
-                           << ba.getOwner()->getParentOp()->getName()
-                           << "\n";
+                           << ba.getOwner()->getParentOp()->getName() << "\n";
               return;
             }
             if (!v.getDefiningOp()) {
@@ -7457,7 +7456,8 @@ struct AffineToStableHLORaisingPass
         auto bit = llvm::find_if(
             bounded, [&](const BoundedDim &bd) { return bd.dim == i; });
         if (bit != bounded.end()) {
-          ubounds.push_back(getAffineConstantExpr(bit->bound, par.getContext()));
+          ubounds.push_back(
+              getAffineConstantExpr(bit->bound, par.getContext()));
           uboundGroup.push_back(1);
         } else {
           ubounds.append(um.getResults().begin(), um.getResults().end());
@@ -7467,11 +7467,13 @@ struct AffineToStableHLORaisingPass
       }
       // When every bound came out constant, drop the stale symbols and
       // operands entirely: downstream batching expects clean constant maps.
-      bool allConstant =
-          llvm::all_of(lbounds,
-                       [](AffineExpr e) { return isa<AffineConstantExpr>(e); }) &&
-          llvm::all_of(ubounds,
-                       [](AffineExpr e) { return isa<AffineConstantExpr>(e); });
+      bool allConstant = llvm::all_of(lbounds,
+                                      [](AffineExpr e) {
+                                        return isa<AffineConstantExpr>(e);
+                                      }) &&
+                         llvm::all_of(ubounds, [](AffineExpr e) {
+                           return isa<AffineConstantExpr>(e);
+                         });
       unsigned lbDims = par.getLowerBoundsMap().getNumDims(),
                lbSyms = par.getLowerBoundsMap().getNumSymbols(),
                ubDims = par.getUpperBoundsMap().getNumDims(),
@@ -7514,9 +7516,9 @@ struct AffineToStableHLORaisingPass
       for (auto &bd : bounded)
         setOperands.push_back(bd.extent);
       b.setInsertionPoint(yield);
-      auto ifOp = affine::AffineIfOp::create(b, loc, TypeRange(), iset,
-                                             setOperands,
-                                             /*withElseRegion=*/false);
+      auto ifOp =
+          affine::AffineIfOp::create(b, loc, TypeRange(), iset, setOperands,
+                                     /*withElseRegion=*/false);
       Block *oldBody = par.getBody();
       for (unsigned i = 0; i < n; ++i)
         oldBody->getArgument(i).replaceAllUsesWith(ivRepl[i]);
@@ -7669,8 +7671,7 @@ struct AffineToStableHLORaisingPass
   static Value stagedHostValue(Value v) {
     auto ld = v.getDefiningOp<affine::AffineLoadOp>();
     if (!ld || !ld.getMapOperands().empty() ||
-        ld.getMap().getNumResults() !=
-            (unsigned)ld.getMemRefType().getRank() ||
+        ld.getMap().getNumResults() != (unsigned)ld.getMemRefType().getRank() ||
         ld.getMemRefType().getNumElements() != 1)
       return Value();
     Value buf = ld.getMemRef();
@@ -7906,15 +7907,14 @@ struct AffineToStableHLORaisingPass
       newFor->setDiscardableAttrs(f->getDiscardableAttrDictionary());
       Block *nb = newFor.getBody();
       bld.setInsertionPointToStart(nb);
-      auto iset = IntegerSet::get(
-          1, 1,
-          {getAffineSymbolExpr(0, f.getContext()) -
-           getAffineDimExpr(0, f.getContext()) - 1},
-          {false});
+      auto iset = IntegerSet::get(1, 1,
+                                  {getAffineSymbolExpr(0, f.getContext()) -
+                                   getAffineDimExpr(0, f.getContext()) - 1},
+                                  {false});
       Value setOperands[] = {newFor.getInductionVar(), ext};
-      auto ifOp = affine::AffineIfOp::create(bld, loc, TypeRange(), iset,
-                                             setOperands,
-                                             /*withElseRegion=*/false);
+      auto ifOp =
+          affine::AffineIfOp::create(bld, loc, TypeRange(), iset, setOperands,
+                                     /*withElseRegion=*/false);
       Block *oldBody = f.getBody();
       oldBody->getArgument(0).replaceAllUsesWith(newFor.getInductionVar());
       Block *thenBlk = ifOp.getThenBlock();
@@ -8120,15 +8120,13 @@ struct AffineToStableHLORaisingPass
       SmallVector<enzymexla::Pointer2MemrefOp> views;
       SmallVector<enzymexla::Memref2PointerOp> casts;
 
-      auto classify = [&](Operation *op, Type elemTy,
-                          AffineMap map) -> bool {
+      auto classify = [&](Operation *op, Type elemTy, AffineMap map) -> bool {
         if (map.getNumResults() != 1)
           return false;
         int64_t s = dl.getTypeSize(elemTy);
         AffineExpr byteExpr = map.getResult(0) * s;
-        AffineExpr rem = simplifyAffineExpr(byteExpr % pairSize,
-                                            map.getNumDims(),
-                                            map.getNumSymbols());
+        AffineExpr rem = simplifyAffineExpr(
+            byteExpr % pairSize, map.getNumDims(), map.getNumSymbols());
         auto remCst = dyn_cast<AffineConstantExpr>(rem);
         if (!remCst)
           return false;
@@ -8306,18 +8304,17 @@ struct AffineToStableHLORaisingPass
       SmallVector<Value> fieldBufs;
       for (auto &f : fields)
         fieldBufs.push_back(memref::AllocaOp::create(
-            b, alloca.getLoc(),
-            MemRefType::get({MT.getNumElements()}, f.ty)));
+            b, alloca.getLoc(), MemRefType::get({MT.getNumElements()}, f.ty)));
 
       for (auto &fa : fieldAccesses) {
         if (auto ld = dyn_cast<affine::AffineLoadOp>(fa.op)) {
           OpBuilder ab(ld);
-          Value newLd = affine::AffineLoadOp::create(
-              ab, ld.getLoc(), fieldBufs[fa.field], fa.pairMap,
-              ld.getMapOperands());
+          Value newLd =
+              affine::AffineLoadOp::create(ab, ld.getLoc(), fieldBufs[fa.field],
+                                           fa.pairMap, ld.getMapOperands());
           if (fa.bitcast)
-            newLd = arith::BitcastOp::create(ab, ld.getLoc(), ld.getType(),
-                                             newLd);
+            newLd =
+                arith::BitcastOp::create(ab, ld.getLoc(), ld.getType(), newLd);
           ld.getResult().replaceAllUsesWith(newLd);
           ld.erase();
         } else {
@@ -8325,8 +8322,8 @@ struct AffineToStableHLORaisingPass
           OpBuilder ab(st);
           Value val = st.getValueToStore();
           if (fa.bitcast)
-            val = arith::BitcastOp::create(ab, st.getLoc(),
-                                           fields[fa.field].ty, val);
+            val = arith::BitcastOp::create(ab, st.getLoc(), fields[fa.field].ty,
+                                           val);
           affine::AffineStoreOp::create(ab, st.getLoc(), val,
                                         fieldBufs[fa.field], fa.pairMap,
                                         st.getMapOperands());
@@ -8338,8 +8335,8 @@ struct AffineToStableHLORaisingPass
           OpBuilder ab(ld);
           Location loc = ld.getLoc();
           Type wideTy = ld.getType();
-          Value acc = arith::ConstantOp::create(
-              ab, loc, wideTy, ab.getIntegerAttr(wideTy, 0));
+          Value acc = arith::ConstantOp::create(ab, loc, wideTy,
+                                                ab.getIntegerAttr(wideTy, 0));
           for (unsigned i : wa.covered) {
             Value v = affine::AffineLoadOp::create(
                 ab, loc, fieldBufs[i], wa.pairMap, ld.getMapOperands());
@@ -8477,16 +8474,15 @@ struct AffineToStableHLORaisingPass
       bool viewedOnly = true;
       if (!MT.getElementType().isIntOrFloat())
         continue;
-      int64_t elemBytes =
-          (MT.getElementType().getIntOrFloatBitWidth() + 7) / 8;
+      int64_t elemBytes = (MT.getElementType().getIntOrFloatBitWidth() + 7) / 8;
       SmallVector<std::pair<Value, int64_t>> ptrWork;
       for (Operation *user : alloca->getUsers()) {
         auto m2p = dyn_cast<enzymexla::Memref2PointerOp>(user);
         if (!m2p) {
           // A direct access can move to the flat buffer with its indexing
           // linearized; anything else keeps the chain intact.
-          if (isa<affine::AffineLoadOp, affine::AffineStoreOp,
-                  memref::LoadOp>(user)) {
+          if (isa<affine::AffineLoadOp, affine::AffineStoreOp, memref::LoadOp>(
+                  user)) {
             directAccesses.push_back(user);
             continue;
           }
@@ -8513,8 +8509,8 @@ struct AffineToStableHLORaisingPass
           if (auto gep = dyn_cast<LLVM::GEPOp>(viewUser)) {
             // Only all-constant geps carry a static byte offset.
             int64_t gepOff = 0;
-            bool constGep = gep.getDynamicIndices().empty() &&
-                            gep.getIndices().size() >= 1;
+            bool constGep =
+                gep.getDynamicIndices().empty() && gep.getIndices().size() >= 1;
             if (constGep) {
               DataLayout dl = DataLayout::closest(gep);
               Type cur = gep.getElemType();
@@ -8572,8 +8568,7 @@ struct AffineToStableHLORaisingPass
       auto flat = memref::AllocaOp::create(b, alloca.getLoc(), flatTy);
       for (auto [p2m, elemOff] : views) {
         if (elemOff != 0) {
-          for (Operation *u :
-               llvm::make_early_inc_range(p2m->getUsers())) {
+          for (Operation *u : llvm::make_early_inc_range(p2m->getUsers())) {
             if (auto ld = dyn_cast<affine::AffineLoadOp>(u)) {
               auto m = ld.getMap();
               ld.setMap(AffineMap::get(m.getNumDims(), m.getNumSymbols(),
@@ -8585,8 +8580,8 @@ struct AffineToStableHLORaisingPass
             } else {
               OpBuilder ab(u);
               unsigned idxPos = isa<memref::LoadOp>(u) ? 1 : 2;
-              Value c = arith::ConstantIndexOp::create(ab, u->getLoc(),
-                                                       elemOff);
+              Value c =
+                  arith::ConstantIndexOp::create(ab, u->getLoc(), elemOff);
               Value ni = arith::AddIOp::create(ab, u->getLoc(),
                                                u->getOperand(idxPos), c);
               u->setOperand(idxPos, ni);
@@ -8618,8 +8613,7 @@ struct AffineToStableHLORaisingPass
       for (Operation *access : directAccesses) {
         if (auto mload = dyn_cast<memref::LoadOp>(access)) {
           OpBuilder ab(mload);
-          Value lin =
-              linearizeValues(ab, mload.getLoc(), mload.getIndices());
+          Value lin = linearizeValues(ab, mload.getLoc(), mload.getIndices());
           Value idxs[] = {lin};
           mload.getMemrefMutable().assign(flat);
           mload.getIndicesMutable().assign(idxs);
@@ -8627,8 +8621,7 @@ struct AffineToStableHLORaisingPass
         }
         if (auto mstore = dyn_cast<memref::StoreOp>(access)) {
           OpBuilder ab(mstore);
-          Value lin =
-              linearizeValues(ab, mstore.getLoc(), mstore.getIndices());
+          Value lin = linearizeValues(ab, mstore.getLoc(), mstore.getIndices());
           Value idxs[] = {lin};
           mstore.getMemrefMutable().assign(flat);
           mstore.getIndicesMutable().assign(idxs);
@@ -8752,7 +8745,7 @@ struct AffineToStableHLORaisingPass
       for (int round = 0; round < 10; ++round) {
         if (!getenv("DISABLE_FOLD_CONST_GLOBAL"))
           foldConstantGlobalAccesses(root);
-      gepCensus(root, "foldConstantGlobalAccesses");
+        gepCensus(root, "foldConstantGlobalAccesses");
         gepCensus(root, "foldConstantGlobalAccesses");
         distributeGepOverSelect(root);
         gepCensus(root, "distributeGepOverSelect");
@@ -8768,8 +8761,7 @@ struct AffineToStableHLORaisingPass
         gepCensus(root, "flattenViewedScratch");
       }
       SmallVector<enzymexla::GPUWrapperOp> rootWraps;
-      root->walk(
-          [&](enzymexla::GPUWrapperOp g) { rootWraps.push_back(g); });
+      root->walk([&](enzymexla::GPUWrapperOp g) { rootWraps.push_back(g); });
       for (auto g : rootWraps) {
         hoistWrapperInvariantScalars(g);
         boundParallelAxes(g);
@@ -8800,7 +8792,8 @@ struct AffineToStableHLORaisingPass
             patterns, g.getContext());
         enzymexla::Memref2PointerOp::getCanonicalizationPatterns(
             patterns, g.getContext());
-        (void)applyPatternsGreedily(g, FrozenRewritePatternSet(std::move(patterns)));
+        (void)applyPatternsGreedily(
+            g, FrozenRewritePatternSet(std::move(patterns)));
       }
       // Last before the descent: a branch that chose between buffers only
       // acquires the accesses that give it away by this point, and the
@@ -8903,7 +8896,8 @@ struct AffineToStableHLORaisingPass
               while (true) {
                 if (auto gepB = base.getDefiningOp<LLVM::GEPOp>())
                   base = gepB.getBase();
-                else if (auto cast = base.getDefiningOp<LLVM::AddrSpaceCastOp>())
+                else if (auto cast =
+                             base.getDefiningOp<LLVM::AddrSpaceCastOp>())
                   base = cast.getArg();
                 else
                   break;
@@ -9026,12 +9020,11 @@ struct AffineToStableHLORaisingPass
                 storeVal, res0, b.getMultiDimIdentityMap(0), ValueRange());
             // The memcpy size is in bytes: a count of one only copies the
             // low byte of the scalar.
-            int64_t elemBytes =
-                (cast<MemRefType>(res0.getType())
-                     .getElementType()
-                     .getIntOrFloatBitWidth() +
-                 7) /
-                8;
+            int64_t elemBytes = (cast<MemRefType>(res0.getType())
+                                     .getElementType()
+                                     .getIntOrFloatBitWidth() +
+                                 7) /
+                                8;
             auto csz = arith::ConstantIndexOp::create(
                 b, rewriteLocation(g.getLoc(), options.strip_llvm_debuginfo),
                 elemBytes);
