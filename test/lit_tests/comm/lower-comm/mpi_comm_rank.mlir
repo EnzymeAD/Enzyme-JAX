@@ -14,8 +14,8 @@ func.func @main(%comm : !comm.mpi.comm) -> tensor<i32> {
 // JIT-SAME:                          (!llvm.ptr, !llvm.ptr) -> i32
 // JIT-LABEL: llvm.func @enzymexla_jitwrap_MPI_Comm_rank
 // JIT-SAME:                                            (%arg0: !llvm.ptr, %arg1: !llvm.ptr) {
-// JIT-NEXT:   %0 = llvm.load %arg1 : !llvm.ptr -> !llvm.ptr
-// JIT-NEXT:   %1 = llvm.call @MPI_Comm_rank(%0, %arg0) : (!llvm.ptr, !llvm.ptr) -> i32
+// JIT-NEXT:   %0 = llvm.load %arg0 : !llvm.ptr -> !llvm.ptr
+// JIT-NEXT:   %1 = llvm.call @MPI_Comm_rank(%0, %arg1) : (!llvm.ptr, !llvm.ptr) -> i32
 // JIT-NEXT:   llvm.return
 // JIT-NEXT: }
 // JIT-LABEL: func.func @main
