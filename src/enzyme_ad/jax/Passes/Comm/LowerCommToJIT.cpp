@@ -183,11 +183,11 @@ struct LowerCommMpiCommRankOpToJIT
       // wrapperFunc.setArgAttr(0, "enzymexla.memory_effects",
       // memoryEffectsAttr);
 
-      Value arg_rank_ptr = entryBlock->getArgument(0);
-      Value arg_newcomm_ptr = entryBlock->getArgument(1);
+      Value arg_comm_ptr = entryBlock->getArgument(0);
+      Value arg_rank_ptr = entryBlock->getArgument(1);
 
       Value comm =
-          LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr, arg_newcomm_ptr)
+          LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr, arg_comm_ptr)
               .getResult();
 
       // TODO error checking
@@ -281,11 +281,11 @@ struct LowerCommMpiCommSizeOpToJIT
       // wrapperFunc.setArgAttr(0, "enzymexla.memory_effects",
       // memoryEffectsAttr);
 
-      Value arg_size_ptr = entryBlock->getArgument(0);
-      Value arg_newcomm_ptr = entryBlock->getArgument(1);
+      Value arg_comm_ptr = entryBlock->getArgument(0);
+      Value arg_size_ptr = entryBlock->getArgument(1);
 
       Value comm =
-          LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr, arg_newcomm_ptr)
+          LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr, arg_comm_ptr)
               .getResult();
 
       // TODO error checking
