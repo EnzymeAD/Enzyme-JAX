@@ -2000,6 +2000,9 @@ static LogicalResult tryRaisingSCFForOpToStableHLOWhile(
         return failure();
       if (!maps.count(raisedYielded) || !maps.count(raisedIterArg))
         return failure();
+      if (!broadcastYieldToCarried(raisedYielded, raisedIterArg, builder, maps,
+                                   pc))
+        return failure();
       auto perm = memoryEquivalentPermutation(maps.lookup(raisedYielded),
                                               maps.lookup(raisedIterArg));
       if (!perm.has_value()) {
