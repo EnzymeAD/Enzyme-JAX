@@ -1,7 +1,7 @@
 // RUN: enzymexlamlir-opt %s --raise-affine-to-stablehlo --split-input-file | FileCheck %s
 
-// A uniform branch choosing between two read-only buffers raises as a select
-// of the whole tensors.
+// A uniform branch choosing between two read-only buffers expands per access
+// and raises as a select of the gathered values.
 func.func @bufsel(%a: memref<100xf64, 1>, %b: memref<100xf64, 1>, %out: memref<100xf64, 1>, %flagbuf: memref<i64, 1>) {
   %f = affine.load %flagbuf[] : memref<i64, 1>
   %fi = arith.index_cast %f : i64 to index
@@ -18,5 +18,5 @@ func.func @bufsel(%a: memref<100xf64, 1>, %b: memref<100xf64, 1>, %out: memref<1
 }
 
 // CHECK-LABEL: func.func private @bufsel_raised(
-// CHECK: stablehlo.select %{{.+}}, %arg0, %arg1 : tensor<i1>, tensor<100xf64>
+// CHECK: stablehlo.select %{{.+}}, %{{.+}}, %{{.+}} : tensor<100xi1>, tensor<100xf64>
 
