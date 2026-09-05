@@ -1,11 +1,11 @@
 #include "mlir/Conversion/LLVMCommon/ConversionTarget.h"
-#include "mlir/Conversion/LLVMCommon/TypeConverter.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Func/Transforms/FuncConversions.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "src/enzyme_ad/jax/Dialect/Comm/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Comm/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Comm/Passes.h"
+#include "src/enzyme_ad/jax/Passes/Comm/TypeConversion.h"
 #include "stablehlo/dialect/StablehloOps.h"
 
 namespace mlir::comm {
@@ -18,7 +18,7 @@ using namespace mlir;
 // from LowerJIT
 extern "C" void *EnzymeJaXLookupSymbol(const char *name);
 
-struct LowerCommMpiConstantOp
+struct LowerCommMpiConstantOpToStablehlo
     : public OpConversionPattern<comm::MpiConstantOp> {
   using OpConversionPattern::OpConversionPattern;
 
@@ -60,7 +60,7 @@ struct LowerCommMpiConstantOp
   }
 };
 
-struct LowerCommMpiCommRankOp
+struct LowerCommMpiCommRankOpToStablehlo
     : public OpConversionPattern<comm::MpiCommRankOp> {
   using OpConversionPattern::OpConversionPattern;
 
@@ -91,7 +91,7 @@ struct LowerCommMpiCommRankOp
   }
 };
 
-struct LowerCommMpiCommSizeOp
+struct LowerCommMpiCommSizeOpToStablehlo
     : public OpConversionPattern<comm::MpiCommSizeOp> {
   using OpConversionPattern::OpConversionPattern;
 
@@ -122,7 +122,7 @@ struct LowerCommMpiCommSizeOp
   }
 };
 
-struct LowerCommMpiCommSplitOp
+struct LowerCommMpiCommSplitOpToStablehlo
     : public OpConversionPattern<comm::MpiCommSplitOp> {
   using OpConversionPattern::OpConversionPattern;
 
@@ -154,7 +154,8 @@ struct LowerCommMpiCommSplitOp
   }
 };
 
-struct LowerCommMpiBarrierOp : public OpConversionPattern<comm::MpiBarrierOp> {
+struct LowerCommMpiBarrierOpToStablehlo
+    : public OpConversionPattern<comm::MpiBarrierOp> {
   using OpConversionPattern::OpConversionPattern;
 
   LogicalResult
@@ -176,7 +177,8 @@ struct LowerCommMpiBarrierOp : public OpConversionPattern<comm::MpiBarrierOp> {
   }
 };
 
-struct LowerCommMpiSendOp : public OpConversionPattern<comm::MpiSendOp> {
+struct LowerCommMpiSendOpToStablehlo
+    : public OpConversionPattern<comm::MpiSendOp> {
   using OpConversionPattern::OpConversionPattern;
 
   LogicalResult
@@ -200,7 +202,8 @@ struct LowerCommMpiSendOp : public OpConversionPattern<comm::MpiSendOp> {
   }
 };
 
-struct LowerCommMpiIsendOp : public OpConversionPattern<comm::MpiIsendOp> {
+struct LowerCommMpiIsendOpToStablehlo
+    : public OpConversionPattern<comm::MpiIsendOp> {
   using OpConversionPattern::OpConversionPattern;
 
   LogicalResult
@@ -230,7 +233,8 @@ struct LowerCommMpiIsendOp : public OpConversionPattern<comm::MpiIsendOp> {
   }
 };
 
-struct LowerCommMpiRecvOp : public OpConversionPattern<comm::MpiRecvOp> {
+struct LowerCommMpiRecvOpToStablehlo
+    : public OpConversionPattern<comm::MpiRecvOp> {
   using OpConversionPattern::OpConversionPattern;
 
   LogicalResult
@@ -259,7 +263,8 @@ struct LowerCommMpiRecvOp : public OpConversionPattern<comm::MpiRecvOp> {
   }
 };
 
-struct LowerCommMpiIrecvOp : public OpConversionPattern<comm::MpiIrecvOp> {
+struct LowerCommMpiIrecvOpToStablehlo
+    : public OpConversionPattern<comm::MpiIrecvOp> {
   using OpConversionPattern::OpConversionPattern;
 
   LogicalResult
@@ -288,7 +293,8 @@ struct LowerCommMpiIrecvOp : public OpConversionPattern<comm::MpiIrecvOp> {
   }
 };
 
-struct LowerCommMpiWaitOp : public OpConversionPattern<comm::MpiWaitOp> {
+struct LowerCommMpiWaitOpToStablehlo
+    : public OpConversionPattern<comm::MpiWaitOp> {
   using OpConversionPattern::OpConversionPattern;
 
   LogicalResult
@@ -310,7 +316,8 @@ struct LowerCommMpiWaitOp : public OpConversionPattern<comm::MpiWaitOp> {
   }
 };
 
-struct LowerCommMpiWaitallOp : public OpConversionPattern<comm::MpiWaitallOp> {
+struct LowerCommMpiWaitallOpToStablehlo
+    : public OpConversionPattern<comm::MpiWaitallOp> {
   using OpConversionPattern::OpConversionPattern;
 
   LogicalResult
@@ -332,7 +339,7 @@ struct LowerCommMpiWaitallOp : public OpConversionPattern<comm::MpiWaitallOp> {
   }
 };
 
-struct LowerCommMpiAllreduceOp
+struct LowerCommMpiAllreduceOpToStablehlo
     : public OpConversionPattern<comm::MpiAllreduceOp> {
   using OpConversionPattern::OpConversionPattern;
 
@@ -372,7 +379,8 @@ struct LowerCommMpiAllreduceOp
   }
 };
 
-struct LowerCommMpiBcastOp : public OpConversionPattern<comm::MpiBcastOp> {
+struct LowerCommMpiBcastOpToStablehlo
+    : public OpConversionPattern<comm::MpiBcastOp> {
   using OpConversionPattern::OpConversionPattern;
 
   LogicalResult
@@ -413,18 +421,7 @@ struct LowerCommToStablehloPass
     target.addLegalDialect<stablehlo::StablehloDialect>();
     target.addIllegalDialect<comm::CommDialect>();
 
-    // defaults to no conversion for other types
-    TypeConverter converter;
-    converter.addConversion([](Type type) { return type; });
-
-    // !comm.mpi.comm, !comm.mpi.request are pointer-like, so lower to
-    // tensor<i64>
-    auto ptr_tensor_type =
-        RankedTensorType::get({}, IntegerType::get(context, 64));
-    converter.addConversion(
-        [&](comm::MpiCommType type) { return ptr_tensor_type; });
-    converter.addConversion(
-        [&](comm::MpiRequestType type) { return ptr_tensor_type; });
+    comm::StablehloTypeConverter converter;
 
     target.addDynamicallyLegalOp<func::FuncOp>([&](func::FuncOp op) {
       return converter.isSignatureLegal(op.getFunctionType());
@@ -444,12 +441,14 @@ struct LowerCommToStablehloPass
     mlir::populateCallOpTypeConversionPattern(patterns, converter);
     mlir::populateReturnOpTypeConversionPattern(patterns, converter);
 
-    patterns.add<LowerCommMpiConstantOp, LowerCommMpiCommRankOp,
-                 LowerCommMpiCommSizeOp, LowerCommMpiCommSplitOp,
-                 LowerCommMpiBarrierOp, LowerCommMpiSendOp, LowerCommMpiIsendOp,
-                 LowerCommMpiRecvOp, LowerCommMpiIrecvOp, LowerCommMpiWaitOp,
-                 LowerCommMpiWaitallOp, LowerCommMpiAllreduceOp,
-                 LowerCommMpiBcastOp>(converter, context);
+    patterns.add<
+        LowerCommMpiConstantOpToStablehlo, LowerCommMpiCommRankOpToStablehlo,
+        LowerCommMpiCommSizeOpToStablehlo, LowerCommMpiCommSplitOpToStablehlo,
+        LowerCommMpiBarrierOpToStablehlo, LowerCommMpiSendOpToStablehlo,
+        LowerCommMpiIsendOpToStablehlo, LowerCommMpiRecvOpToStablehlo,
+        LowerCommMpiIrecvOpToStablehlo, LowerCommMpiWaitOpToStablehlo,
+        LowerCommMpiWaitallOpToStablehlo, LowerCommMpiAllreduceOpToStablehlo,
+        LowerCommMpiBcastOpToStablehlo>(converter, context);
 
     if (failed(applyPartialConversion(getOperation(), target,
                                       std::move(patterns)))) {

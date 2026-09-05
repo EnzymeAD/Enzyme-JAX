@@ -128,7 +128,7 @@ def MpiWaitallOp : Comm_Op<"mpi.waitall", []> {
   let assemblyFormat = "operands attr-dict `:` type(operands)";
 }
 
-def MpiAllreduceOp : Comm_Op<"mpi.allreduce", []> {
+def MpiAllreduceOp : Comm_Op<"mpi.allreduce", [AllTypesMatch<["sendbuf", "recvbuf"]>]> {
   let summary = "Equivalent to `MPI_Allreduce`";
 
   let arguments = (ins
@@ -141,7 +141,7 @@ def MpiAllreduceOp : Comm_Op<"mpi.allreduce", []> {
   let assemblyFormat = "$sendbuf `,` $reduceOp `,` $comm attr-dict `:` functional-type(operands, results)";
 }
 
-def MpiBcastOp : Comm_Op<"mpi.bcast", []> {
+def MpiBcastOp : Comm_Op<"mpi.bcast", [AllTypesMatch<["inBuffer", "outBuffer"]>]> {
   let summary = "Equivalent to `MPI_Bcast`";
 
   let arguments = (ins
