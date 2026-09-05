@@ -566,6 +566,9 @@ int main(int argc, char **argv) {
   context.loadDialect<mlir::enzyme::EnzymeDialect>();
   context.loadDialect<mlir::enzymexla::EnzymeXLADialect>();
 
+  if (allowUnreg)
+    context.allowUnregisteredDialects();
+
   mlir::enzyme::registerenzymexlaPasses();
   mlir::transform::registerTransformPasses();
 
