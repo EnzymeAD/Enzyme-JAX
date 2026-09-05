@@ -900,6 +900,31 @@ def LowerJITPass : Pass<"lower-jit"> {
   ];
 }
 
+def MapSymbolPass : Pass<"map-symbol"> {
+  let summary = "Register a symbol to address mapping";
+  let description = [{
+    Register a symbol to address mapping, mainly used for JIT.
+
+    This pass is not thought to be used on a regular pipeline. It exists because
+    some transformation passes fail to run when run through `enzymexlamlir-opt`. 
+    As they rely on taking symbols from the symbol table, it fails because such
+    symbols are registered on runtime initialization by a frontend (e.g.
+    Reactant).
+
+    This pass is a workaround to register the symbols with mock values as if you
+    were calling `EnzymeJaxMapSymbol`. This pass should only be used for
+    testing.
+  }];
+  let dependentDialects = [];
+  let options = [
+    ListOption<
+      /*C++ variable name=*/"symbols",
+      /*CLI argument=*/"symbols",
+      /*type=*/"std::string",
+      /*description=*/"List of symbols to register with mock values">
+  ];
+}
+
 //===----------------------------------------------------------------------===//
 // LLVMToControlFlow
 //===----------------------------------------------------------------------===//
