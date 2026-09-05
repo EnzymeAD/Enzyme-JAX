@@ -27,6 +27,14 @@ cc_binary(
         "@llvm-project//mlir:TransformDialect",
         "@llvm-project//mlir:TransformDialectTransforms",
 
+        "@llvm-project//mlir:AffineDialect",
+        "@llvm-project//mlir:SCFDialect",
+        "@llvm-project//mlir:ControlFlowDialect",
+        "@llvm-project//mlir:LinalgDialect",
+        "@llvm-project//mlir:TensorDialect",
+
+        "@llvm-project//mlir:LLVMDialect",
+
         "@triton//:TritonToTritonGPU",
         
         # StableHLO Interpreter

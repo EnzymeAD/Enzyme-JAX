@@ -1,4 +1,10 @@
+#include "mlir/Dialect/Affine/IR/AffineOps.h"
+#include "mlir/Dialect/ControlFlow/IR/ControlFlow.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/Linalg/IR/Linalg.h"
+#include "mlir/Dialect/SCF/IR/SCF.h"
+#include "mlir/Dialect/Tensor/IR/Tensor.h"
 #include "mlir/Dialect/Transform/IR/TransformDialect.h"
 #include "mlir/Dialect/Transform/Transforms/Passes.h"
 #include "mlir/IR/MLIRContext.h"
@@ -559,9 +565,16 @@ int main(int argc, char **argv) {
   std::mt19937 gen(seed);
 
   MLIRContext context;
-  context.loadDialect<mlir::stablehlo::StablehloDialect>();
   context.loadDialect<mlir::func::FuncDialect>();
+  context.loadDialect<mlir::cf::ControlFlowDialect>();
+  context.loadDialect<mlir::scf::SCFDialect>();
+  context.loadDialect<mlir::linalg::LinalgDialect>();
+  context.loadDialect<mlir::LLVM::LLVMDialect>();
+  context.loadDialect<mlir::tensor::TensorDialect>();
+  context.loadDialect<mlir::sdy::SdyDialect>();
+  context.loadDialect<mlir::affine::AffineDialect>();
   context.loadDialect<mlir::transform::TransformDialect>();
+  context.loadDialect<mlir::stablehlo::StablehloDialect>();
   context.loadDialect<mlir::chlo::ChloDialect>();
   context.loadDialect<mlir::enzyme::EnzymeDialect>();
   context.loadDialect<mlir::enzymexla::EnzymeXLADialect>();
@@ -589,6 +602,7 @@ int main(int argc, char **argv) {
   funcPM.addPass(mlir::enzyme::createLowerEnzymeXLALinalgPass());
   funcPM.addPass(mlir::enzyme::createLowerEnzymeJacobianStableHLO());
   funcPM.addPass(mlir::enzyme::createLowerEnzymeXLAMPIPass());
+  funcPM.addPass(mlir::enzyme::createLowerEnzymeXLAMLPass());
 
   mlir::PassManager pm(&context);
   if (mlir::failed(mlir::parsePassPipeline(passPipeline, pm, diag()))) {
