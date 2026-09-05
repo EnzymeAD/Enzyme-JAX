@@ -73,7 +73,7 @@ module {
   // CHECK-NEXT: %[[SLICED:.+]] = stablehlo.slice %[[LOGL]] [0:1, 0:1] : (tensor<3x3xf64>) -> tensor<1x1xf64>
   // CHECK-NEXT: %[[MVN:.+]] = stablehlo.reshape %[[SLICED]] : (tensor<1x1xf64>) -> tensor<f64>
   // CHECK-NEXT: %[[TOTAL:.+]] = arith.addf %[[HN]], %[[MVN]] : tensor<f64>
-  // CHECK-NEXT: impulse.yield %[[TOTAL]] : tensor<f64>
+  // CHECK-NEXT: impulse.yield %[[TOTAL]], %[[HN]], %[[MVN]] : tensor<f64>, tensor<f64>, tensor<f64>
   // CHECK: num_position_args = 1
   // CHECK-SAME: position_size = 1
   func.func @test_scale_family_mvn(%rng : tensor<2xui64>,

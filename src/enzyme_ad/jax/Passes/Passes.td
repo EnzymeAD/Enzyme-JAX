@@ -735,6 +735,32 @@ def LowerEnzymeXLALapackPass : Pass<"lower-enzymexla-lapack"> {
   ];
 }
 
+def StablehloToLapackPass : Pass<"stablehlo-to-lapack"> {
+  let summary = "Convert stablehlo linear-algebra ops to enzymexla LAPACK ops";
+  let description = [{
+    Rewrites unbatched `stablehlo.cholesky` into `enzymexla.lapack.potrf`
+    plus a triangle mask (LAPACK leaves the opposite triangle of its in-place
+    result untouched, while stablehlo.cholesky consumers expect zeros there),
+    so the CPU backend executes an L1-resident LAPACK kernel instead of the
+    while-loops produced by XLA's CholeskyExpander. Run AFTER automatic
+    differentiation: diffrules act on the stablehlo form, and cholesky ops
+    appearing in gradient code are converted the same way.
+  }];
+  let dependentDialects = [
+    "stablehlo::StablehloDialect",
+    "enzymexla::EnzymeXLADialect",
+  ];
+
+  let options = [
+    Option<
+        /*C++ variable name=*/"backend",
+        /*CLI argument=*/"backend",
+        /*type=*/"std::string",
+        /*default=*/"\"cpu\"",
+        /*description=*/"HW backend">,
+  ];
+}
+
 def LowerEnzymeXLABLASPass : Pass<"lower-enzymexla-blas"> {
   let summary = "Lower enzymexla.blas ops to stablehlo";
   let dependentDialects = [
