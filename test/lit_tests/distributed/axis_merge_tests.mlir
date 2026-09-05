@@ -175,5 +175,5 @@ module @test_single_kernel {
 // CHAIN: %[[COLL:.*]] = distributed.Collective
 // CHAIN-SAME: reduces (%{{.*}})
 // CHAIN: %[[RED_AWAIT:.*]] = distributed.Await %[[COLL]]
-// CHAIN: distributed.CastLocalToGlobal %[[RED_AWAIT]] axes %{{.*}}, %{{.*}}
-// CHAIN: distributed.DistributedYield %{{.*}}, %{{.*}}
+// CHAIN: distributed.CastLocalToGlobal %[[RED_AWAIT]] axes (%{{.*}}, %{{.*}})
+// CHAIN: distributed.DistributedYield (%{{.*}} : {{.*}}, %{{.*}} : {{.*}})

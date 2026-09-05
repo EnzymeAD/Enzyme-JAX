@@ -23,29 +23,29 @@ module @physical_kernel {
   %pf = axis.factor %phys : !distributed.physical_comm_axis<4, 1><4, 1>
   %pg = axis.product (%pf : !axis.axis_factor<!distributed.physical_comm_axis<4, 1>, 4, 1>)
   %input = tensor.empty() : tensor<4xf32>
-  %r = distributed.DistributedKernel %input : tensor<4xf32> #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0]] : unreduced_axes = []>]>
-    -> tensor<4xf32> #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0]] : unreduced_axes = []>]>
-    axes %pg : !axis.factor_group<4> {
+  %r = distributed.DistributedKernel (%input : tensor<4xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0]] : unreduced_axes = []>]>
+    -> (tensor<4xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0]] : unreduced_axes = []>]>
+    axes (%pg : !axis.factor_group<4>) {
   ^bb0(%arg0: tensor<4xf32>):
-    distributed.DistributedYield %arg0 tensor<4xf32>
+    distributed.DistributedYield (%arg0 : tensor<4xf32>)
   }
 }
 
 // NOLOWER-LABEL: module @physical_kernel {
 // NOLOWER: %[[PG:.*]] = axis.product (%{{.*}} : !axis.axis_factor<!distributed.physical_comm_axis<4, 1>, 4, 1>)
-// NOLOWER: distributed.DistributedKernel %{{.*}} : tensor<4xf32> {{.*}}
-// NOLOWER-NEXT: -> tensor<4xf32> {{.*}}
-// NOLOWER-NEXT: axes %[[PG]] : !axis.factor_group<4> {
+// NOLOWER: distributed.DistributedKernel (%{{.*}} : tensor<4xf32>) {{.*}}
+// NOLOWER-NEXT: -> (tensor<4xf32>) {{.*}}
+// NOLOWER-NEXT: axes (%[[PG]] : !axis.factor_group<4>) {
 // NOLOWER-NEXT: ^bb0(%arg0: tensor<4xf32>):
-// NOLOWER-NEXT: distributed.DistributedYield %arg0 tensor<4xf32>
+// NOLOWER-NEXT: distributed.DistributedYield (%arg0 : tensor<4xf32>)
 
 // LOWER-LABEL: module @physical_kernel {
 // LOWER: %[[PG:.*]] = axis.product (%{{.*}} : !axis.axis_factor<!distributed.physical_comm_axis<4, 1>, 4, 1>)
-// LOWER: distributed.DistributedKernel %{{.*}} : tensor<4xf32> {{.*}}
-// LOWER-NEXT: -> tensor<4xf32> {{.*}}
-// LOWER-NEXT: axes %[[PG]] : !axis.factor_group<4> {
+// LOWER: distributed.DistributedKernel (%{{.*}} : tensor<4xf32>) {{.*}}
+// LOWER-NEXT: -> (tensor<4xf32>) {{.*}}
+// LOWER-NEXT: axes (%[[PG]] : !axis.factor_group<4>) {
 // LOWER-NEXT: ^bb0(%arg0: tensor<4xf32>):
-// LOWER-NEXT: distributed.DistributedYield %arg0 tensor<4xf32>
+// LOWER-NEXT: distributed.DistributedYield (%arg0 : tensor<4xf32>)
 
 // -----
 
@@ -63,33 +63,33 @@ module @logical_kernel {
   %lf = axis.factor %logical : !distributed.logical_mesh_axis<4><4, 1>
   %lg = axis.product (%lf : !axis.axis_factor<!distributed.logical_mesh_axis<4>, 4, 1>)
   %input = tensor.empty() : tensor<4xf32>
-  %r = distributed.DistributedKernel %input : tensor<4xf32> #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0]] : unreduced_axes = []>]>
-    -> tensor<4xf32> #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0]] : unreduced_axes = []>]>
-    axes %lg : !axis.factor_group<4> {
+  %r = distributed.DistributedKernel (%input : tensor<4xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0]] : unreduced_axes = []>]>
+    -> (tensor<4xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0]] : unreduced_axes = []>]>
+    axes (%lg : !axis.factor_group<4>) {
   ^bb0(%arg0: tensor<4xf32>):
-    distributed.DistributedYield %arg0 tensor<4xf32>
+    distributed.DistributedYield (%arg0 : tensor<4xf32>)
   }
 }
 
 // Unlowered: nothing changes.
 // NOLOWER-LABEL: module @logical_kernel {
 // NOLOWER: %[[LG:.*]] = axis.product (%{{.*}} : !axis.axis_factor<!distributed.logical_mesh_axis<4>, 4, 1>)
-// NOLOWER: distributed.DistributedKernel %{{.*}} : tensor<4xf32> {{.*}}
-// NOLOWER-NEXT: -> tensor<4xf32> {{.*}}
-// NOLOWER-NEXT: axes %[[LG]] : !axis.factor_group<4> {
+// NOLOWER: distributed.DistributedKernel (%{{.*}} : tensor<4xf32>) {{.*}}
+// NOLOWER-NEXT: -> (tensor<4xf32>) {{.*}}
+// NOLOWER-NEXT: axes (%[[LG]] : !axis.factor_group<4>) {
 // NOLOWER-NEXT: ^bb0(%arg0: tensor<4xf32>):
-// NOLOWER-NEXT: distributed.DistributedYield %arg0 tensor<4xf32>
+// NOLOWER-NEXT: distributed.DistributedYield (%arg0 : tensor<4xf32>)
 
 // Lowered: external types unchanged; the factor is removed from the product
 // (which becomes empty rather than disappearing), and the internal
 // block-arg/yield types and factor_group extent shrink from 4 to 1.
 // LOWER-LABEL: module @logical_kernel {
 // LOWER: %[[LG:.*]] = axis.product ()
-// LOWER: distributed.DistributedKernel %{{.*}} : tensor<4xf32> {{.*}}
-// LOWER-NEXT: -> tensor<4xf32> {{.*}}
-// LOWER-NEXT: axes %[[LG]] : !axis.factor_group<1> {
+// LOWER: distributed.DistributedKernel (%{{.*}} : tensor<4xf32>) {{.*}}
+// LOWER-NEXT: -> (tensor<4xf32>) {{.*}}
+// LOWER-NEXT: axes (%[[LG]] : !axis.factor_group<1>) {
 // LOWER-NEXT: ^bb0(%arg0: tensor<1xf32>):
-// LOWER-NEXT: distributed.DistributedYield %arg0 tensor<1xf32>
+// LOWER-NEXT: distributed.DistributedYield (%arg0 : tensor<1xf32>)
 
 // -----
 
@@ -103,22 +103,22 @@ module @replication_kernel {
   %rf = axis.factor %repl : !distributed.replication_axis<4><4, 1>
   %rg = axis.product (%rf : !axis.axis_factor<!distributed.replication_axis<4>, 4, 1>)
   %input = tensor.empty() : tensor<4xf32>
-  %r = distributed.DistributedKernel %input : tensor<4xf32> #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0]] : unreduced_axes = []>]>
-    -> tensor<4xf32> #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0]] : unreduced_axes = []>]>
-    axes %rg : !axis.factor_group<4> {
+  %r = distributed.DistributedKernel (%input : tensor<4xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0]] : unreduced_axes = []>]>
+    -> (tensor<4xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0]] : unreduced_axes = []>]>
+    axes (%rg : !axis.factor_group<4>) {
   ^bb0(%arg0: tensor<4xf32>):
-    distributed.DistributedYield %arg0 tensor<4xf32>
+    distributed.DistributedYield (%arg0 : tensor<4xf32>)
   }
 }
 
 // NOLOWER-LABEL: module @replication_kernel {
 // NOLOWER: %[[RG:.*]] = axis.product (%{{.*}} : !axis.axis_factor<!distributed.replication_axis<4>, 4, 1>)
-// NOLOWER: axes %[[RG]] : !axis.factor_group<4> {
+// NOLOWER: axes (%[[RG]] : !axis.factor_group<4>) {
 // NOLOWER-NEXT: ^bb0(%arg0: tensor<4xf32>):
 
 // LOWER-LABEL: module @replication_kernel {
 // LOWER: %[[RG:.*]] = axis.product (%{{.*}} : !axis.axis_factor<!distributed.replication_axis<4>, 4, 1>)
-// LOWER: axes %[[RG]] : !axis.factor_group<4> {
+// LOWER: axes (%[[RG]] : !axis.factor_group<4>) {
 // LOWER-NEXT: ^bb0(%arg0: tensor<4xf32>):
 
 // -----
@@ -134,22 +134,22 @@ module @devicelocal_kernel {
   %df = axis.factor %devloc : !distributed.device_local_axis<4><4, 1>
   %dg = axis.product (%df : !axis.axis_factor<!distributed.device_local_axis<4>, 4, 1>)
   %input = tensor.empty() : tensor<4xf32>
-  %r = distributed.DistributedKernel %input : tensor<4xf32> #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0]] : unreduced_axes = []>]>
-    -> tensor<4xf32> #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0]] : unreduced_axes = []>]>
-    axes %dg : !axis.factor_group<4> {
+  %r = distributed.DistributedKernel (%input : tensor<4xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0]] : unreduced_axes = []>]>
+    -> (tensor<4xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0]] : unreduced_axes = []>]>
+    axes (%dg : !axis.factor_group<4>) {
   ^bb0(%arg0: tensor<4xf32>):
-    distributed.DistributedYield %arg0 tensor<4xf32>
+    distributed.DistributedYield (%arg0 : tensor<4xf32>)
   }
 }
 
 // NOLOWER-LABEL: module @devicelocal_kernel {
 // NOLOWER: %[[DG:.*]] = axis.product (%{{.*}} : !axis.axis_factor<!distributed.device_local_axis<4>, 4, 1>)
-// NOLOWER: axes %[[DG]] : !axis.factor_group<4> {
+// NOLOWER: axes (%[[DG]] : !axis.factor_group<4>) {
 // NOLOWER-NEXT: ^bb0(%arg0: tensor<4xf32>):
 
 // LOWER-LABEL: module @devicelocal_kernel {
 // LOWER: %[[DG:.*]] = axis.product (%{{.*}} : !axis.axis_factor<!distributed.device_local_axis<4>, 4, 1>)
-// LOWER: axes %[[DG]] : !axis.factor_group<4> {
+// LOWER: axes (%[[DG]] : !axis.factor_group<4>) {
 // LOWER-NEXT: ^bb0(%arg0: tensor<4xf32>):
 
 // -----
@@ -169,22 +169,22 @@ module @composite_kernel {
   %df = axis.factor %devloc : !distributed.device_local_axis<2><2, 1>
   %cg = axis.product (%lf : !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>, %df : !axis.axis_factor<!distributed.device_local_axis<2>, 2, 1>)
   %input = tensor.empty() : tensor<4xf32>
-  %r = distributed.DistributedKernel %input : tensor<4xf32> #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0]] : unreduced_axes = []>]>
-    -> tensor<4xf32> #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0]] : unreduced_axes = []>]>
-    axes %cg : !axis.factor_group<4> {
+  %r = distributed.DistributedKernel (%input : tensor<4xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0]] : unreduced_axes = []>]>
+    -> (tensor<4xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0]] : unreduced_axes = []>]>
+    axes (%cg : !axis.factor_group<4>) {
   ^bb0(%arg0: tensor<4xf32>):
-    distributed.DistributedYield %arg0 tensor<4xf32>
+    distributed.DistributedYield (%arg0 : tensor<4xf32>)
   }
 }
 
 // NOLOWER-LABEL: module @composite_kernel {
 // NOLOWER: %[[CG:.*]] = axis.product (%{{.*}} : !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>, %{{.*}} : !axis.axis_factor<!distributed.device_local_axis<2>, 2, 1>)
-// NOLOWER: axes %[[CG]] : !axis.factor_group<4> {
+// NOLOWER: axes (%[[CG]] : !axis.factor_group<4>) {
 // NOLOWER-NEXT: ^bb0(%arg0: tensor<4xf32>):
 
 // LOWER-LABEL: module @composite_kernel {
 // LOWER: %[[DF:.*]] = axis.factor %{{.*}} : !distributed.device_local_axis<2><2, 1>
 // LOWER: %[[CG:.*]] = axis.product (%[[DF]] : !axis.axis_factor<!distributed.device_local_axis<2>, 2, 1>)
-// LOWER: axes %[[CG]] : !axis.factor_group<2> {
+// LOWER: axes (%[[CG]] : !axis.factor_group<2>) {
 // LOWER-NEXT: ^bb0(%arg0: tensor<2xf32>):
-// LOWER-NEXT: distributed.DistributedYield %arg0 tensor<2xf32>
+// LOWER-NEXT: distributed.DistributedYield (%arg0 : tensor<2xf32>)

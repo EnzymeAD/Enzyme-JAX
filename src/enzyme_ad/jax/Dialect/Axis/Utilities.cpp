@@ -54,11 +54,10 @@ ParseResult parseVariadicWithTypes(
 void printVariadicWithTypes(OpAsmPrinter &printer, Operation *op,
                             OperandRange operands, TypeRange types) {
   printer << '(';
-  llvm::interleaveComma(llvm::zip(operands, types), printer,
-                        [&](auto pair) {
-                          auto [operand, type] = pair;
-                          printer << operand << " : " << type;
-                        });
+  llvm::interleaveComma(llvm::zip(operands, types), printer, [&](auto pair) {
+    auto [operand, type] = pair;
+    printer << operand << " : " << type;
+  });
   printer << ')';
 }
 

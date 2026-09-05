@@ -123,7 +123,7 @@ def DistributedKernelOp : DistributedOp<"DistributedKernel", [SingleBlock, AttrS
   let results = (outs Variadic<AnyType> : $returns);
   let regions = (region AnyRegion:$body);
   let hasVerifier = 1;
-  let assemblyFormat = [{$arguments `:` type($arguments) $argument_shardings `\n` ` ` ` ` `->` type($returns) $output_shardings `\n` ` ` ` ` `axes` $partitioning_axes `:` type($partitioning_axes) $body attr-dict}];
+  let assemblyFormat = [{custom<VariadicWithTypes>($arguments, type($arguments)) $argument_shardings `\n` ` ` ` ` `->` custom<ParenTypes>(type($returns)) $output_shardings `\n` ` ` ` ` `axes` custom<VariadicWithTypes>($partitioning_axes, type($partitioning_axes)) $body attr-dict}];
 }
 
 
@@ -133,7 +133,8 @@ def DistributedYieldOp : DistributedOp<"DistributedYield", [Terminator]> {
         Terminator for distributed functions. Yields local values back to the caller.
   }];
   let arguments = (ins Variadic<AnyType> : $returns);
-  let assemblyFormat = "$returns type($returns) attr-dict";
+  let assemblyFormat =
+      "custom<VariadicWithTypes>($returns, type($returns)) attr-dict";
 }
 
 def DistributedAwait
@@ -163,7 +164,7 @@ def DistributedCastGlobalToLocalOp : DistributedOp<
   );
   let results = (outs AnyTensor:$output);
   let assemblyFormat =
-      "$input `axes` $partitioning_axes `:` type($partitioning_axes) attr-dict `:` type($input) `->` type($output)";
+      "$input `axes` custom<VariadicWithTypes>($partitioning_axes, type($partitioning_axes)) attr-dict `:` type($input) `->` type($output)";
   let hasVerifier = 1;
 }
 
@@ -180,7 +181,7 @@ def DistributedCastLocalToGlobalOp : DistributedOp<
   );
   let results = (outs AnyTensor:$output);
   let assemblyFormat =
-      "$input `axes` $partitioning_axes `:` type($partitioning_axes) attr-dict `:` type($input) `->` type($output)";
+      "$input `axes` custom<VariadicWithTypes>($partitioning_axes, type($partitioning_axes)) attr-dict `:` type($input) `->` type($output)";
   let hasVerifier = 1;
 }
 

@@ -5,6 +5,15 @@ include "mlir/IR/BuiltinAttributes.td"
 
 include "Dialect.td"
 
+// Drop-in replacement for ArrayRefParameter that can also parse the empty list
+// its printer emits. Prints and parses its own `[` `]` delimiters, so the
+// assembly format must not repeat them. Implemented in Dialect.cpp.
+class EmptyableArrayRefParameter<string arrayOf, string desc = ""> :
+    ArrayRefParameter<arrayOf, desc> {
+  let parser = [{ ::mlir::enzyme::distributed::parseEmptyableArrayRef<$0>($_parser) }];
+  let printer = [{ ::mlir::enzyme::distributed::printEmptyableArrayRef($_printer, $_self) }];
+}
+
 // Per-tensor sharding metadata keyed by partitioning-axis indices.
 // - dim_partitioning_axes: one DenseI64ArrayAttr per tensor dim, where each
 //   entry stores zero or more indices into the owning op's partitioning_axes.
@@ -15,12 +24,12 @@ def IndexedTensorShardingAttr : AttrDef<DistributedDialect, "IndexedTensorShardi
   let mnemonic = "indexed_tensor_sharding";
 
   let parameters = (ins
-    ArrayRefParameter<"DenseI64ArrayAttr">:$dim_partitioning_axes,
+    EmptyableArrayRefParameter<"DenseI64ArrayAttr">:$dim_partitioning_axes,
     "DenseI64ArrayAttr":$unreduced_axes
   );
 
   let assemblyFormat = [{
-    `<` `dim_partitioning_axes` `=` `[` $dim_partitioning_axes `]` `:`
+    `<` `dim_partitioning_axes` `=` $dim_partitioning_axes `:`
     `unreduced_axes` `=` $unreduced_axes `>`
   }];
 }
@@ -32,11 +41,11 @@ def IndexedTensorShardingPerValueAttr : AttrDef<DistributedDialect, "IndexedTens
   let mnemonic = "indexed_tensor_sharding_per_value";
 
   let parameters = (ins
-    ArrayRefParameter<"IndexedTensorShardingAttr">:$shardings
+    EmptyableArrayRefParameter<"IndexedTensorShardingAttr">:$shardings
   );
 
   let assemblyFormat = [{
-    `<` `[` $shardings `]` `>`
+    `<` $shardings `>`
   }];
 }
 

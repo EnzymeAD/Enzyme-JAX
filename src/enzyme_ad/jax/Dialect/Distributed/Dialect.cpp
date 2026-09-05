@@ -2,6 +2,42 @@
 
 #include "Dialect.h"
 
+namespace mlir::enzyme::distributed {
+
+// Backing implementation for EmptyableArrayRefParameter (Attributes.td).
+//
+// ODS's default list parser is FieldParser<SmallVector<T>>, which calls
+// parseCommaSeparatedList with Delimiter::None. MLIR only permits an empty list
+// when a delimiter is supplied, so the default parser rejects the `[]` that its
+// own printer emits. Owning the delimiter here is what makes the empty case
+// round-trip.
+template <typename ContainerT>
+static FailureOr<ContainerT> parseEmptyableArrayRef(AsmParser &parser) {
+  ContainerT elements;
+  auto parseElement = [&]() -> ParseResult {
+    auto element = FieldParser<typename ContainerT::value_type>::parse(parser);
+    if (failed(element))
+      return failure();
+    elements.push_back(std::move(*element));
+    return success();
+  };
+  if (parser.parseCommaSeparatedList(AsmParser::Delimiter::Square,
+                                     parseElement))
+    return failure();
+  return elements;
+}
+
+template <typename RangeT>
+static void printEmptyableArrayRef(AsmPrinter &printer, RangeT &&elements) {
+  printer << '[';
+  llvm::interleaveComma(elements, printer, [&](auto element) {
+    printer.printStrippedAttrOrType(element);
+  });
+  printer << ']';
+}
+
+} // namespace mlir::enzyme::distributed
+
 // Include the .cpp.inc files
 #include "src/enzyme_ad/jax/Dialect/Distributed/DistributedDialect.cpp.inc"
 
