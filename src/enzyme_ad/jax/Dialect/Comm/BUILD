@@ -9,6 +9,7 @@ td_library(
         "MPIOps.td",
         "NCCLOps.td",
         "Types.td",
+        "Utils.td",
     ],
     deps = [
         "@llvm-project//mlir:BuiltinDialectTdFiles",

@@ -5,17 +5,9 @@ include "Dialect.td"
 
 include "mlir/Interfaces/SideEffectInterfaces.td"
 
+include "Utils.td"
 include "Types.td"
 include "Attrs.td"
-
-def TensorI32
-    : Type<CPred<"::llvm::isa<::mlir::TensorType>($_self) && "
-                 "::llvm::cast<::mlir::TensorType>($_self).getShape().size() "
-                 "== 0 && "
-                 "::llvm::cast<::mlir::TensorType>($_self).getElementType()."
-                 "isSignlessInteger(32)">,
-           "tensor<i32>", "::mlir::TensorType">,
-      BuildableType<"RankedTensorType::get({}, $_builder.getIntegerType(32))">;
 
 def MpiConstantOp : Comm_Op<"mpi.constant", [ConstantLike, Pure, AllTypesMatch<["value", "result"]>]> {
   let summary = "Creates a value that represents a MPI constant";
