@@ -247,10 +247,11 @@ llvm::orc::SymbolMap MappedSymbols;
 
 bool initJIT();
 
-extern "C" MLIR_CAPI_EXPORTED int EnzymeJaXLookupSymbol(const char *name, void **symbol) {
+extern "C" MLIR_CAPI_EXPORTED int EnzymeJaXLookupSymbol(const char *name,
+                                                        void **symbol) {
   if (!JIT)
     return -1;
-  
+
   auto mangled_name = JIT->mangleAndIntern(name);
   if (!MappedSymbols.contains(mangled_name))
     return -1;
