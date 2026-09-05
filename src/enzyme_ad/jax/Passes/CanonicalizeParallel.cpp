@@ -19,6 +19,7 @@
 #include "Enzyme/MLIR/Dialect/Ops.h"
 #include "Enzyme/MLIR/Interfaces/AutoDiffOpInterface.h"
 #include "mlir/Analysis/DataLayoutAnalysis.h"
+#include "mlir/Analysis/SliceAnalysis.h"
 #include "mlir/Dialect/Affine/IR/AffineOps.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -32,6 +33,7 @@
 #include "mlir/Transforms/GreedyPatternRewriteDriver.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 #include "src/enzyme_ad/jax/Passes/Passes.h"
+#include "llvm/Support/KnownBits.h"
 
 namespace mlir {
 namespace enzyme {
@@ -41,6 +43,7 @@ namespace enzyme {
 } // namespace mlir
 
 using namespace mlir;
+using llvm::KnownBits;
 
 namespace {
 
@@ -766,6 +769,358 @@ struct StoreOfUndef
   }
 };
 
+// The loop-carried arguments a value is a pure function of, or nullopt when
+// the dependence passes through a region or a side effect. getBackwardSlice
+// collects every operation inside the loop the value depends on; the block
+// arguments among their operands are then read directly, an after-region
+// argument standing for the condition operand forwarded to it. With
+// `anyIsEnough` the walk stops at the first carried argument found.
+static std::optional<SetVector<BlockArgument>>
+carriedArguments(scf::WhileOp whileOp, Value root, bool anyIsEnough = false) {
+  Block &before = whileOp.getBefore().front();
+  Block &after = whileOp.getAfter().front();
+  scf::ConditionOp conditionOp = whileOp.getConditionOp();
+  SetVector<BlockArgument> carried;
+  BackwardSliceOptions options;
+  options.inclusive = true;
+  options.omitBlockArguments = true;
+  options.filter = [&](Operation *op) { return whileOp->isAncestor(op); };
+  SmallVector<Value> roots{root};
+  DenseSet<Value> visited;
+  while (!roots.empty()) {
+    Value value = roots.pop_back_val();
+    if (!visited.insert(value).second)
+      continue;
+    SmallVector<Value> operands{value};
+    if (Operation *definingOp = value.getDefiningOp();
+        definingOp && whileOp->isAncestor(definingOp)) {
+      SetVector<Operation *> slice;
+      if (failed(getBackwardSlice(definingOp, &slice, options)))
+        return std::nullopt;
+      for (Operation *op : slice) {
+        if (op->getNumRegions() || !isMemoryEffectFree(op))
+          return std::nullopt;
+        operands.append(op->operand_begin(), op->operand_end());
+      }
+    }
+    for (Value operand : operands) {
+      auto blockArg = dyn_cast<BlockArgument>(operand);
+      if (!blockArg)
+        continue;
+      Block *owner = blockArg.getOwner();
+      if (owner == &before) {
+        carried.insert(blockArg);
+        if (anyIsEnough)
+          return carried;
+      } else if (owner == &after) {
+        roots.push_back(conditionOp.getArgs()[blockArg.getArgNumber()]);
+      } else if (whileOp->isAncestor(owner->getParentOp())) {
+        return std::nullopt;
+      }
+    }
+  }
+  return carried;
+}
+
+// Whether a value is a pure function of values from outside the loop.
+static bool isInvariant(scf::WhileOp whileOp, Value value) {
+  auto carried = carriedArguments(whileOp, value, /*anyIsEnough=*/true);
+  return carried && carried->empty();
+}
+
+// The evaluation of the loop a value is asked about: Outside for a value
+// defined outside the loop, First for the before region fed by the inits,
+// Second for the before region fed by the first evaluation's yields.
+enum class Evaluation { Outside, First, Second };
+using KnownKey = std::pair<Value, Evaluation>;
+// The bits known of an integer value; nullopt for a value of another type.
+using Known = std::optional<KnownBits>;
+
+static unsigned integerWidth(Type type) {
+  if (auto intType = dyn_cast<IntegerType>(type))
+    return intType.getWidth();
+  if (isa<IndexType>(type))
+    return IndexType::kInternalStorageBitWidth;
+  return 0;
+}
+
+static KnownKey knownKey(scf::WhileOp whileOp, Value value,
+                         Evaluation evaluation) {
+  auto blockArg = dyn_cast<BlockArgument>(value);
+  Operation *definingOp = value.getDefiningOp();
+  if (!whileOp->isAncestor(blockArg ? blockArg.getOwner()->getParentOp()
+                                    : definingOp))
+    evaluation = Evaluation::Outside;
+  return {value, evaluation};
+}
+
+// The keys whose bits decide the bits of a key inside the loop. For an
+// scf.if result they are the condition and the values its two regions yield.
+static SmallVector<KnownKey> knownInputKeys(scf::WhileOp whileOp,
+                                            KnownKey key) {
+  auto [value, evaluation] = key;
+  assert(evaluation != Evaluation::Outside);
+  if (auto blockArg = dyn_cast<BlockArgument>(value)) {
+    unsigned argNumber = blockArg.getArgNumber();
+    if (blockArg.getOwner() == &whileOp.getBefore().front()) {
+      if (evaluation == Evaluation::First)
+        return {knownKey(whileOp, whileOp.getInits()[argNumber],
+                         Evaluation::Outside)};
+      assert(evaluation == Evaluation::Second);
+      return {knownKey(whileOp, whileOp.getYieldOp().getOperand(argNumber),
+                       Evaluation::First)};
+    }
+    assert(blockArg.getOwner() == &whileOp.getAfter().front());
+    return {knownKey(whileOp, whileOp.getConditionOp().getArgs()[argNumber],
+                     evaluation)};
+  }
+  Operation *definingOp = value.getDefiningOp();
+  SmallVector<KnownKey> keys;
+  if (auto ifOp = dyn_cast<scf::IfOp>(definingOp)) {
+    unsigned resultNumber = cast<OpResult>(value).getResultNumber();
+    keys.push_back(knownKey(whileOp, ifOp.getCondition(), evaluation));
+    keys.push_back(knownKey(whileOp, ifOp.thenYield().getOperand(resultNumber),
+                            evaluation));
+    keys.push_back(knownKey(whileOp, ifOp.elseYield().getOperand(resultNumber),
+                            evaluation));
+    return keys;
+  }
+  for (Value operand : definingOp->getOperands())
+    keys.push_back(knownKey(whileOp, operand, evaluation));
+  return keys;
+}
+
+// The bits known of a key from the bits known of its input keys.
+static Known knownBitsFrom(KnownKey key, ArrayRef<Known> inputs) {
+  auto [value, evaluation] = key;
+  unsigned width = integerWidth(value.getType());
+  if (isa<BlockArgument>(value))
+    return inputs[0];
+  APInt constant;
+  if (matchPattern(value, m_ConstantInt(&constant)))
+    return KnownBits::makeConstant(constant);
+  if (llvm::any_of(inputs, [](const Known &bits) { return !bits; }))
+    return KnownBits(width);
+  Operation *definingOp = value.getDefiningOp();
+  // An scf.if or a select has the bits of the side its condition picks, or
+  // the bits both sides agree on.
+  if (isa<scf::IfOp, arith::SelectOp>(definingOp)) {
+    const KnownBits &condition = *inputs[0], &thenBits = *inputs[1],
+                    &elseBits = *inputs[2];
+    if (condition.isConstant())
+      return condition.isZero() ? elseBits : thenBits;
+    return thenBits.intersectWith(elseBits);
+  }
+  if (auto cmp = dyn_cast<arith::CmpIOp>(definingOp)) {
+    const KnownBits &lhs = *inputs[0], &rhs = *inputs[1];
+    std::optional<bool> result;
+    switch (cmp.getPredicate()) {
+    case arith::CmpIPredicate::eq:
+      result = KnownBits::eq(lhs, rhs);
+      break;
+    case arith::CmpIPredicate::ne:
+      result = KnownBits::ne(lhs, rhs);
+      break;
+    case arith::CmpIPredicate::slt:
+      result = KnownBits::slt(lhs, rhs);
+      break;
+    case arith::CmpIPredicate::sle:
+      result = KnownBits::sle(lhs, rhs);
+      break;
+    case arith::CmpIPredicate::sgt:
+      result = KnownBits::sgt(lhs, rhs);
+      break;
+    case arith::CmpIPredicate::sge:
+      result = KnownBits::sge(lhs, rhs);
+      break;
+    case arith::CmpIPredicate::ult:
+      result = KnownBits::ult(lhs, rhs);
+      break;
+    case arith::CmpIPredicate::ule:
+      result = KnownBits::ule(lhs, rhs);
+      break;
+    case arith::CmpIPredicate::ugt:
+      result = KnownBits::ugt(lhs, rhs);
+      break;
+    case arith::CmpIPredicate::uge:
+      result = KnownBits::uge(lhs, rhs);
+      break;
+    }
+    if (result)
+      return KnownBits::makeConstant(APInt(1, *result));
+    return KnownBits(width);
+  }
+  if (inputs.size() == 2) {
+    const KnownBits &lhs = *inputs[0], &rhs = *inputs[1];
+    if (isa<arith::AddIOp>(definingOp))
+      return KnownBits::add(lhs, rhs);
+    if (isa<arith::SubIOp>(definingOp))
+      return KnownBits::sub(lhs, rhs);
+    if (isa<arith::MulIOp>(definingOp))
+      return KnownBits::mul(lhs, rhs);
+    if (isa<arith::AndIOp>(definingOp))
+      return lhs & rhs;
+    if (isa<arith::OrIOp>(definingOp))
+      return lhs | rhs;
+    if (isa<arith::XOrIOp>(definingOp))
+      return lhs ^ rhs;
+    if (isa<arith::ShLIOp>(definingOp))
+      return KnownBits::shl(lhs, rhs);
+    if (isa<arith::ShRUIOp>(definingOp))
+      return KnownBits::lshr(lhs, rhs);
+    if (isa<arith::ShRSIOp>(definingOp))
+      return KnownBits::ashr(lhs, rhs);
+    if (isa<arith::DivUIOp>(definingOp))
+      return KnownBits::udiv(lhs, rhs);
+    if (isa<arith::DivSIOp>(definingOp))
+      return KnownBits::sdiv(lhs, rhs);
+    if (isa<arith::RemUIOp>(definingOp))
+      return KnownBits::urem(lhs, rhs);
+    if (isa<arith::RemSIOp>(definingOp))
+      return KnownBits::srem(lhs, rhs);
+  }
+  if (inputs.size() == 1) {
+    const KnownBits &input = *inputs[0];
+    if (isa<arith::ExtUIOp, arith::IndexCastUIOp>(definingOp))
+      return input.zextOrTrunc(width);
+    if (isa<arith::ExtSIOp, arith::IndexCastOp>(definingOp))
+      return input.sextOrTrunc(width);
+    if (isa<arith::TruncIOp>(definingOp))
+      return input.trunc(width);
+  }
+  return KnownBits(width);
+}
+
+// The bits known of a value in one evaluation of the loop, memoized in
+// `known`; a key is computed once its input keys are known.
+static Known knownBitsIn(scf::WhileOp whileOp, DenseMap<KnownKey, Known> &known,
+                         Value value, Evaluation evaluation) {
+  KnownKey root = knownKey(whileOp, value, evaluation);
+  SmallVector<KnownKey> worklist{root};
+  DenseSet<KnownKey> pending;
+  while (!worklist.empty()) {
+    KnownKey key = worklist.back();
+    if (known.contains(key)) {
+      worklist.pop_back();
+      continue;
+    }
+    unsigned width = integerWidth(key.first.getType());
+    if (!width) {
+      known[key] = std::nullopt;
+      worklist.pop_back();
+      continue;
+    }
+    // Of a value from outside the loop only a constant says anything.
+    if (key.second == Evaluation::Outside) {
+      APInt constant;
+      known[key] = matchPattern(key.first, m_ConstantInt(&constant))
+                       ? KnownBits::makeConstant(constant)
+                       : KnownBits(width);
+      worklist.pop_back();
+      continue;
+    }
+    SmallVector<KnownKey> inputs = knownInputKeys(whileOp, key);
+    SmallVector<KnownKey> missing;
+    for (const KnownKey &input : inputs)
+      if (!known.contains(input))
+        missing.push_back(input);
+    if (missing.empty()) {
+      SmallVector<Known> bits;
+      for (const KnownKey &input : inputs)
+        bits.push_back(known[input]);
+      known[key] = knownBitsFrom(key, bits);
+      pending.erase(key);
+      worklist.pop_back();
+      continue;
+    }
+    // Asked again before its inputs settle, a value is on a cycle within
+    // one evaluation; nothing is known of it.
+    if (!pending.insert(key).second) {
+      known[key] = KnownBits(width);
+      worklist.pop_back();
+      continue;
+    }
+    worklist.append(missing);
+  }
+  return known[root];
+}
+
+// A while loop whose exit test cannot come out differently on a third
+// evaluation runs its before region at most twice and its after region at
+// most once, so it unrolls to
+//   before(inits); if (condition) { after; before(yields) }
+// The test is decided by then when it is a pure function of the loop-carried
+// arguments and each of those is yielded a loop-invariant value: the second
+// evaluation already sees what every later one would. It is also decided when
+// the bits known of the values feeding the second evaluation settle it, as
+// for a trip flag yielded as a constant or a counter whose low bit it reads.
+struct UnrollInvariantYieldWhile : public OpRewritePattern<scf::WhileOp> {
+  using OpRewritePattern::OpRewritePattern;
+
+  LogicalResult matchAndRewrite(scf::WhileOp whileOp,
+                                PatternRewriter &rewriter) const override {
+    Block &before = whileOp.getBefore().front();
+    Block &after = whileOp.getAfter().front();
+    scf::ConditionOp conditionOp = whileOp.getConditionOp();
+    scf::YieldOp yieldOp = whileOp.getYieldOp();
+
+    bool decided = false;
+    if (auto carried = carriedArguments(whileOp, conditionOp.getCondition()))
+      decided = llvm::all_of(*carried, [&](BlockArgument blockArg) {
+        return isInvariant(whileOp,
+                           yieldOp.getOperand(blockArg.getArgNumber()));
+      });
+    if (!decided) {
+      DenseMap<KnownKey, Known> known;
+      Known condition = knownBitsIn(whileOp, known, conditionOp.getCondition(),
+                                    Evaluation::Second);
+      decided = condition && condition->isZero();
+    }
+    if (!decided)
+      return failure();
+
+    Location loc = whileOp.getLoc();
+    IRMapping firstEvaluation;
+    for (auto [blockArg, init] :
+         llvm::zip(before.getArguments(), whileOp.getInits()))
+      firstEvaluation.map(blockArg, init);
+    for (Operation &op : before.without_terminator())
+      rewriter.clone(op, firstEvaluation);
+    Value firstCondition =
+        firstEvaluation.lookupOrDefault(conditionOp.getCondition());
+    SmallVector<Value> firstForwarded;
+    for (Value value : conditionOp.getArgs())
+      firstForwarded.push_back(firstEvaluation.lookupOrDefault(value));
+
+    auto ifOp = scf::IfOp::create(
+        rewriter, loc, firstCondition,
+        [&](OpBuilder &builder, Location loc) {
+          IRMapping secondEvaluation;
+          for (auto [afterArg, forwarded] :
+               llvm::zip(after.getArguments(), firstForwarded))
+            secondEvaluation.map(afterArg, forwarded);
+          for (Operation &op : after.without_terminator())
+            builder.clone(op, secondEvaluation);
+          for (auto [blockArg, yielded] :
+               llvm::zip(before.getArguments(), yieldOp.getOperands()))
+            secondEvaluation.map(blockArg,
+                                 secondEvaluation.lookupOrDefault(
+                                     firstEvaluation.lookupOrDefault(yielded)));
+          for (Operation &op : before.without_terminator())
+            builder.clone(op, secondEvaluation);
+          SmallVector<Value> secondForwarded;
+          for (Value value : conditionOp.getArgs())
+            secondForwarded.push_back(secondEvaluation.lookupOrDefault(value));
+          scf::YieldOp::create(builder, loc, secondForwarded);
+        },
+        [&](OpBuilder &builder, Location loc) {
+          scf::YieldOp::create(builder, loc, firstForwarded);
+        });
+    rewriter.replaceOp(whileOp, ifOp.getResults());
+    return success();
+  }
+};
+
 struct CanonicalizeParallelPass
     : public enzyme::impl::CanonicalizeParallelPassBase<
           CanonicalizeParallelPass> {
@@ -803,7 +1158,7 @@ struct CanonicalizeParallelPass
         SinkThroughSelectOfConstants<arith::AddIOp>,
         SinkThroughSelectOfConstants<arith::MulIOp>, SelectOfNullPointer,
         IfOfNullPointer<scf::IfOp>, IfOfNullPointer<affine::AffineIfOp>,
-        FlattenAggregateAlloca, StoreOfUndef>(ctx);
+        FlattenAggregateAlloca, StoreOfUndef, UnrollInvariantYieldWhile>(ctx);
     FrozenRewritePatternSet patterns(std::move(owningPatterns));
 
     GreedyRewriteConfig config;
