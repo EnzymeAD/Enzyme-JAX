@@ -16,7 +16,7 @@ namespace mlir::comm {
 using namespace mlir;
 
 // from LowerJIT
-extern "C" void *EnzymeJaXLookupSymbol(const char *name);
+extern "C" int EnzymeJaXLookupSymbol(const char *name, void **symbol);
 
 struct LowerCommMpiConstantOp
     : public OpConversionPattern<comm::MpiConstantOp> {
@@ -42,13 +42,14 @@ struct LowerCommMpiConstantOp
           op, "MPI constant is not a valid attribute");
     }
 
-    void *value_abi = EnzymeJaXLookupSymbol(name.data());
-    if (value_abi == nullptr) {
+    uint64_t value;
+    int found =
+        EnzymeJaXLookupSymbol(name.data(), reinterpret_cast<void **>(&value));
+    if (!found) {
       return rewriter.notifyMatchFailure(op, "MPI constant `" + name +
                                                  "` not found");
     }
 
-    uint64_t value = reinterpret_cast<uint64_t>(value_abi);
     auto constant_attr = SplatElementsAttr::get(
         RankedTensorType::get({}, rewriter.getIntegerType(64)),
         ArrayRef(APInt(64, value)));

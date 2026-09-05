@@ -247,13 +247,17 @@ llvm::orc::SymbolMap MappedSymbols;
 
 bool initJIT();
 
-extern "C" MLIR_CAPI_EXPORTED void *EnzymeJaXLookupSymbol(const char *name) {
+extern "C" MLIR_CAPI_EXPORTED int EnzymeJaXLookupSymbol(const char *name, void **symbol) {
   if (!JIT)
-    return nullptr;
-  auto addr = JIT->lookup(name);
-  if (!addr)
-    return nullptr;
-  return addr->toPtr<void *>();
+    return -1;
+  
+  auto mangled_name = JIT->mangleAndIntern(name);
+  if (!MappedSymbols.contains(mangled_name))
+    return -1;
+
+  auto addr = MappedSymbols[mangled_name];
+  *symbol = addr.toPtr<void *>();
+  return 0;
 }
 
 extern "C" MLIR_CAPI_EXPORTED void EnzymeJaXMapSymbol(const char *name,
