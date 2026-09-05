@@ -25,29 +25,33 @@ module {
 // CPU-NEXT:    %c = stablehlo.constant dense<[0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18, 19, 20, 21, 22, 23, 24, 25, 26, 27, 28, 29, 30, 31, 32, 33, 34, 35, 36, 37, 38, 39, 40, 41, 42, 43, 44, 45, 46, 47, 48, 49, 50, 51, 52, 53, 54, 55, 56, 57, 58, 59, 60, 61, 62, 63]> : tensor<64xi64>
 // CPU-NEXT:    %c_0 = stablehlo.constant dense<1> : tensor<i32>
 // CPU-NEXT:    %c_1 = stablehlo.constant dense<64> : tensor<i32>
-// CPU-NEXT:    %c_2 = stablehlo.constant dense<1> : tensor<64xi64>
-// CPU-NEXT:    %c_3 = stablehlo.constant dense<0> : tensor<i32>
-// CPU-NEXT:    %0:3 = call @enzymexla_lapack_sgetrf_[[WRAPPER_ID]](%arg0) : (tensor<64x64xf32>) -> (tensor<64x64xf32>, tensor<64xi64>, tensor<i64>)
-// CPU-NEXT:    %1 = stablehlo.subtract %0#1, %c_2 : tensor<64xi64>
-// CPU-NEXT:    %2:2 = stablehlo.while(%iterArg = %c_3, %iterArg_4 = %c) : tensor<i32>, tensor<64xi64>
+// CPU-NEXT:    %c_2 = stablehlo.constant dense<63> : tensor<64xi64>
+// CPU-NEXT:    %c_3 = stablehlo.constant dense<0> : tensor<64xi64>
+// CPU-NEXT:    %c_4 = stablehlo.constant dense<1> : tensor<64xi64>
+// CPU-NEXT:    %c_5 = stablehlo.constant dense<0> : tensor<i32>
+// CPU-NEXT:    %0:3 = call @enzymexla_lapack_sgetrf_3(%arg0) : (tensor<64x64xf32>) -> (tensor<64x64xf32>, tensor<64xi64>, tensor<i64>)
+// CPU-NEXT:    %1 = stablehlo.subtract %0#1, %c_4 : tensor<64xi64>
+// CPU-NEXT:    %2 = stablehlo.clamp %c_3, %1, %c_2 : tensor<64xi64>
+// CPU-NEXT:    %3:2 = stablehlo.while(%iterArg = %c_5, %iterArg_6 = %c) : tensor<i32>, tensor<64xi64>
 // CPU-NEXT:    cond {
-// CPU-NEXT:      %7 = stablehlo.compare  LT, %iterArg, %c_1 : (tensor<i32>, tensor<i32>) -> tensor<i1>
-// CPU-NEXT:      stablehlo.return %7 : tensor<i1>
+// CPU-NEXT:      %8 = stablehlo.compare LT, %iterArg, %c_1 : (tensor<i32>, tensor<i32>) -> tensor<i1>
+// CPU-NEXT:      stablehlo.return %8 : tensor<i1>
 // CPU-NEXT:    } do {
-// CPU-NEXT:      %7 = stablehlo.add %iterArg, %c_0 {enzymexla.bounds = {{.*}}} : tensor<i32>
-// CPU-NEXT:      %8 = stablehlo.dynamic_slice %1, %iterArg, sizes = [1] : (tensor<64xi64>, tensor<i32>) -> tensor<1xi64>
-// CPU-NEXT:      %9 = stablehlo.dynamic_slice %iterArg_4, %iterArg, sizes = [1] : (tensor<64xi64>, tensor<i32>) -> tensor<1xi64>
-// CPU-NEXT:      %10 = stablehlo.reshape %8 : (tensor<1xi64>) -> tensor<i64>
-// CPU-NEXT:      %11 = stablehlo.dynamic_slice %iterArg_4, %10, sizes = [1] : (tensor<64xi64>, tensor<i64>) -> tensor<1xi64>
-// CPU-NEXT:      %12 = stablehlo.dynamic_update_slice %iterArg_4, %11, %iterArg : (tensor<64xi64>, tensor<1xi64>, tensor<i32>) -> tensor<64xi64>
-// CPU-NEXT:      %13 = stablehlo.dynamic_update_slice %12, %9, %10 : (tensor<64xi64>, tensor<1xi64>, tensor<i64>) -> tensor<64xi64>
-// CPU-NEXT:      stablehlo.return %7, %13 : tensor<i32>, tensor<64xi64>
+// CPU-NEXT:      %8 = stablehlo.add %iterArg, %c_0 {enzymexla.bounds = {{\[\[}}1 : i32, 64 : i32{{\]\]}}} : tensor<i32>
+// CPU-NEXT:      %9 = stablehlo.dynamic_slice %2, %iterArg, sizes = [1] : (tensor<64xi64>, tensor<i32>) -> tensor<1xi64>
+// CPU-NEXT:      %10 = stablehlo.dynamic_slice %iterArg_6, %iterArg, sizes = [1] : (tensor<64xi64>, tensor<i32>) -> tensor<1xi64>
+// CPU-NEXT:      %11 = stablehlo.reshape %9 : (tensor<1xi64>) -> tensor<i64>
+// CPU-NEXT:      %12 = stablehlo.dynamic_slice %iterArg_6, %11, sizes = [1] : (tensor<64xi64>, tensor<i64>) -> tensor<1xi64>
+// CPU-NEXT:      %13 = stablehlo.dynamic_update_slice %iterArg_6, %12, %iterArg : (tensor<64xi64>, tensor<1xi64>, tensor<i32>) -> tensor<64xi64>
+// CPU-NEXT:      %14 = stablehlo.dynamic_update_slice %13, %10, %11 : (tensor<64xi64>, tensor<1xi64>, tensor<i64>) -> tensor<64xi64>
+// CPU-NEXT:      stablehlo.return %8, %14 : tensor<i32>, tensor<64xi64>
 // CPU-NEXT:    }
-// CPU-NEXT:    %3 = stablehlo.add %2#1, %c_2 : tensor<64xi64>
-// CPU-NEXT:    %4 = stablehlo.convert %0#1 : (tensor<64xi64>) -> tensor<64xi32>
-// CPU-NEXT:    %5 = stablehlo.convert %3 : (tensor<64xi64>) -> tensor<64xi32>
-// CPU-NEXT:    %6 = stablehlo.convert %0#2 : (tensor<i64>) -> tensor<i32>
-// CPU-NEXT:    return %0#0, %4, %5, %6 : tensor<64x64xf32>, tensor<64xi32>, tensor<64xi32>, tensor<i32>
+// CPU-NEXT:    %4 = stablehlo.add %3#1, %c_4 : tensor<64xi64>
+// CPU-NEXT:    %5 = stablehlo.convert %0#1 : (tensor<64xi64>) -> tensor<64xi32>
+// CPU-NEXT:    %6 = stablehlo.convert %4 : (tensor<64xi64>) -> tensor<64xi32>
+// CPU-NEXT:    %7 = stablehlo.convert %0#2 : (tensor<i64>) -> tensor<i32>
+// CPU-NEXT:    return %0#0, %5, %6, %7 : tensor<64x64xf32>, tensor<64xi32>, tensor<64xi32>, tensor<i32>
+// CPU-NEXT:  }
 // CPU-NEXT:  }
 
 // CUDA: func.func @main(%arg0: tensor<64x64xf32>) -> (tensor<64x64xf32>, tensor<64xi32>, tensor<64xi32>, tensor<i32>) {
