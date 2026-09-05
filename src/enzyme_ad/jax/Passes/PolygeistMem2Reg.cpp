@@ -23,7 +23,9 @@
 #include "mlir/Dialect/MemRef/IR/MemRef.h"
 #include "mlir/Dialect/SCF/IR/SCF.h"
 #include "mlir/IR/Dominance.h"
+#include "mlir/IR/IRMapping.h"
 #include "mlir/Interfaces/ControlFlowInterfaces.h"
+#include "mlir/Interfaces/SideEffectInterfaces.h"
 #include "mlir/Support/LLVM.h"
 #include "mlir/Transforms/Passes.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
@@ -3169,6 +3171,188 @@ std::vector<OffsetTree> getLastStored(mlir::Value AI, const DataLayout &dl) {
   return todo;
 }
 
+// The allocation a buffer is, looked at through the casts that only respell
+// it.
+static Value bufferRoot(Value v) {
+  while (Operation *op = v.getDefiningOp()) {
+    if (!isa<memref::CastOp, memref::MemorySpaceCastOp, Memref2PointerOp,
+             Pointer2MemrefOp, LLVM::BitcastOp, LLVM::AddrSpaceCastOp>(op))
+      break;
+    v = op->getOperand(0);
+  }
+  return v;
+}
+
+static bool isAllocation(Value v) {
+  return v.getDefiningOp<memref::AllocaOp>() ||
+         v.getDefiningOp<memref::AllocOp>() ||
+         v.getDefiningOp<LLVM::AllocaOp>() ||
+         v.getDefiningOp<memref::GetGlobalOp>();
+}
+
+// A branch choosing between buffers: an arith.select, or an scf.if or
+// affine.if with an else, yielding a memref or pointer.
+struct BufferBranch {
+  Operation *op;
+  unsigned resultNo;
+
+  Value result() const { return op->getResult(resultNo); }
+  Value armValue(unsigned arm) const {
+    if (auto sel = dyn_cast<arith::SelectOp>(op))
+      return arm == 0 ? sel.getTrueValue() : sel.getFalseValue();
+    return op->getRegion(arm).front().getTerminator()->getOperand(resultNo);
+  }
+  // The ops of an arm the chosen buffer is computed from, in program order,
+  // which a copy of the arm has to carry along.
+  bool armSlice(unsigned arm, SmallVectorImpl<Operation *> &slice) const {
+    if (isa<arith::SelectOp>(op))
+      return true;
+    Block &body = op->getRegion(arm).front();
+    SmallPtrSet<Operation *, 4> needed;
+    SmallVector<Value> work = {armValue(arm)};
+    while (!work.empty()) {
+      Operation *def = work.pop_back_val().getDefiningOp();
+      if (!def || def->getBlock() != &body || !needed.insert(def).second)
+        continue;
+      if (!isMemoryEffectFree(def) || def->getNumRegions())
+        return false;
+      work.append(def->operand_begin(), def->operand_end());
+    }
+    for (Operation &o : body.without_terminator())
+      if (needed.count(&o))
+        slice.push_back(&o);
+    return true;
+  }
+};
+
+static std::optional<BufferBranch> bufferBranch(Value v) {
+  auto res = dyn_cast<OpResult>(v);
+  if (!res || !isa<MemRefType, LLVM::LLVMPointerType>(v.getType()))
+    return std::nullopt;
+  Operation *op = res.getOwner();
+  if (auto sel = dyn_cast<arith::SelectOp>(op)) {
+    if (!sel.getCondition().getType().isInteger(1))
+      return std::nullopt;
+  } else if (auto sif = dyn_cast<scf::IfOp>(op)) {
+    if (sif.getElseRegion().empty())
+      return std::nullopt;
+  } else if (auto aif = dyn_cast<affine::AffineIfOp>(op)) {
+    if (!aif.hasElse())
+      return std::nullopt;
+  } else
+    return std::nullopt;
+  return BufferBranch{op, res.getResultNumber()};
+}
+
+// Whether `user` takes the buffer as the thing it accesses or respells, and
+// which operand that is.
+static std::optional<unsigned> bufferOperand(Operation *user, Value buf) {
+  if (auto store = dyn_cast<enzyme::StoreLikeInterface>(user)) {
+    if (store.getStoredPointer() != buf)
+      return std::nullopt;
+    // The pointer written through, which is not the value written even when
+    // the two are spelled the same.
+    bool skippedValue = false;
+    for (OpOperand &operand : user->getOpOperands()) {
+      if (!skippedValue && operand.get() == store.getStoredValue()) {
+        skippedValue = true;
+        continue;
+      }
+      if (operand.get() == buf)
+        return operand.getOperandNumber();
+    }
+    return std::nullopt;
+  }
+  if (!isa<memref::LoadOp, affine::AffineLoadOp, LLVM::LoadOp, memref::CastOp,
+           memref::MemorySpaceCastOp, Memref2PointerOp, Pointer2MemrefOp,
+           LLVM::BitcastOp, LLVM::AddrSpaceCastOp, LLVM::GEPOp>(user) ||
+      user->getOperand(0) != buf)
+    return std::nullopt;
+  return 0;
+}
+
+// A load or store through a branch between allocations names neither of them,
+// and keeps both from being promoted. Doing the access in each arm instead, on
+// the buffer that arm chose, gives every allocation accesses of its own: the
+// branch is asked again where the access stands, with the arm's own
+// computation of the buffer carried along. A cast or offset of the branch's
+// result is pushed into the arms the same way, so an access reached through
+// one still ends at an allocation. Anything else done with the result stays as
+// it was.
+static bool splitBufferBranchAccesses(Operation *f) {
+  SmallVector<BufferBranch> work;
+  f->walk([&](Operation *op) {
+    for (Value res : op->getResults())
+      if (auto br = bufferBranch(res))
+        if (isAllocation(bufferRoot(br->armValue(0))) ||
+            isAllocation(bufferRoot(br->armValue(1))))
+          work.push_back(*br);
+  });
+
+  bool changed = false;
+  while (!work.empty()) {
+    BufferBranch br = work.pop_back_val();
+    SmallVector<Operation *> slices[2];
+    if (!br.armSlice(0, slices[0]) || !br.armSlice(1, slices[1]))
+      continue;
+
+    for (OpOperand &use : llvm::make_early_inc_range(br.result().getUses())) {
+      Operation *user = use.getOwner();
+      auto operand = bufferOperand(user, br.result());
+      if (!operand)
+        continue;
+
+      OpBuilder b(user);
+      Operation *newBr;
+      if (auto aif = dyn_cast<affine::AffineIfOp>(br.op))
+        newBr = affine::AffineIfOp::create(
+            b, user->getLoc(), user->getResultTypes(), aif.getIntegerSet(),
+            aif.getOperands(), /*withElseRegion=*/true);
+      else
+        // A select and an scf.if both lead with their condition.
+        newBr = scf::IfOp::create(b, user->getLoc(), user->getResultTypes(),
+                                  br.op->getOperand(0),
+                                  /*withElseRegion=*/true);
+      for (unsigned arm = 0; arm < 2; ++arm) {
+        Block *dst = &newBr->getRegion(arm).front();
+        // A branch built without results comes with its yields already.
+        if (!dst->empty() && dst->back().hasTrait<OpTrait::IsTerminator>())
+          dst->back().erase();
+        OpBuilder ab = OpBuilder::atBlockEnd(dst);
+        IRMapping m;
+        for (Operation *o : slices[arm])
+          ab.clone(*o, m);
+        Operation *access = ab.clone(*user, m);
+        access->setOperand(*operand, m.lookupOrDefault(br.armValue(arm)));
+        if (isa<affine::AffineIfOp>(newBr))
+          affine::AffineYieldOp::create(ab, user->getLoc(),
+                                        access->getResults());
+        else
+          scf::YieldOp::create(ab, user->getLoc(), access->getResults());
+      }
+      user->replaceAllUsesWith(newBr->getResults());
+      user->erase();
+      changed = true;
+      // A respelling of the branch's result is a branch between buffers again,
+      // whose own accesses want splitting.
+      if (newBr->getNumResults())
+        if (auto inner = bufferBranch(newBr->getResult(0)))
+          work.push_back(*inner);
+    }
+
+    // A branch nothing is left to ask goes, so long as it did nothing but
+    // choose: the yields of a spent arm would still hold the allocation.
+    bool onlyChose = llvm::all_of(br.op->getRegions(), [](Region &arm) {
+      return llvm::all_of(arm.front().without_terminator(),
+                          [](Operation &o) { return isMemoryEffectFree(&o); });
+    });
+    if (onlyChose && llvm::all_of(br.op->getResults(),
+                                  [](Value r) { return r.use_empty(); }))
+      br.op->erase();
+  }
+  return changed;
+}
+
 // A select between two constants, so that each arm names a place of its own.
 static arith::SelectOp selectOfConstants(Value v) {
   auto sel = v.getDefiningOp<arith::SelectOp>();
@@ -3289,6 +3473,10 @@ void PolygeistMem2Reg::runOnOperation() {
 
     // Load op's whose results were replaced by those forwarded from stores.
     SmallVector<Operation *, 8> loadOpsToErase;
+
+    // An allocation reached only through a branch between buffers is not yet
+    // promotable; splitting the accesses first gives it accesses of its own.
+    changed |= splitBufferBranchAccesses(f);
 
     // Walk all load's and perform store to load forwarding.
     SmallVector<mlir::Value, 4> toPromote;
