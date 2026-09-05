@@ -3247,20 +3247,28 @@ static std::optional<BufferBranch> bufferBranch(Value v) {
 // Whether `user` takes the buffer as the thing it accesses or respells, and
 // which operand that is.
 static std::optional<unsigned> bufferOperand(Operation *user, Value buf) {
-  unsigned idx;
-  if (isa<memref::LoadOp, affine::AffineLoadOp, LLVM::LoadOp>(user))
-    idx = 0;
-  else if (isa<memref::StoreOp, affine::AffineStoreOp, LLVM::StoreOp>(user))
-    idx = 1;
-  else if (isa<memref::CastOp, memref::MemorySpaceCastOp, Memref2PointerOp,
-               Pointer2MemrefOp, LLVM::BitcastOp, LLVM::AddrSpaceCastOp,
-               LLVM::GEPOp>(user))
-    idx = 0;
-  else
+  if (auto store = dyn_cast<enzyme::StoreLikeInterface>(user)) {
+    if (store.getStoredPointer() != buf)
+      return std::nullopt;
+    // The pointer written through, which is not the value written even when
+    // the two are spelled the same.
+    bool skippedValue = false;
+    for (OpOperand &operand : user->getOpOperands()) {
+      if (!skippedValue && operand.get() == store.getStoredValue()) {
+        skippedValue = true;
+        continue;
+      }
+      if (operand.get() == buf)
+        return operand.getOperandNumber();
+    }
     return std::nullopt;
-  if (user->getOperand(idx) != buf)
+  }
+  if (!isa<memref::LoadOp, affine::AffineLoadOp, LLVM::LoadOp, memref::CastOp,
+           memref::MemorySpaceCastOp, Memref2PointerOp, Pointer2MemrefOp,
+           LLVM::BitcastOp, LLVM::AddrSpaceCastOp, LLVM::GEPOp>(user) ||
+      user->getOperand(0) != buf)
     return std::nullopt;
-  return idx;
+  return 0;
 }
 
 // A load or store through a branch between allocations names neither of them,
