@@ -130,6 +130,24 @@ static LogicalResult addAffineIfOpDomain(AffineIfOp ifOp, bool isElse,
   return success();
 }
 
+// Loop bound operands that are symbols only by virtue of dominating the affine
+// scope (e.g. an index_cast defined in an scf.if above a gpu wrapper) are
+// rejected by FlatAffineValueConstraints::addBound, which only accepts
+// symbols defined at the top level of a scope. Register them as symbols of the
+// domain up front so the bound constraints can still be added.
+static void addDominatingBoundSymbols(AffineMap map, ValueRange mapOperands,
+                                      Region *scope,
+                                      FlatAffineValueConstraints *domain) {
+  SmallVector<Value> operands(mapOperands);
+  fullyComposeAffineMapAndOperands(&map, &operands);
+  map = simplifyAffineMap(map);
+  canonicalizeMapAndOperands(&map, &operands);
+  for (Value operand : operands)
+    if (!domain->containsVar(operand) && !isAffineInductionVar(operand) &&
+        !isValidSymbol(operand) && isValidSymbol(operand, scope))
+      domain->appendSymbolVar(operand);
+}
+
 static LogicalResult getIndexSetEx(ArrayRef<Operation *> ops,
                                    ArrayRef<bool> isElse,
                                    FlatAffineValueConstraints *domain,
@@ -161,14 +179,27 @@ static LogicalResult getIndexSetEx(ArrayRef<Operation *> ops,
   for (auto &&[op, complement] : llvm::zip(ops, isElse)) {
     // Add constraints from forOp's bounds.
     if (AffineForOp forOp = dyn_cast<AffineForOp>(op)) {
+      Region *scope = getAffineScope(forOp);
+      addDominatingBoundSymbols(forOp.getLowerBoundMap(),
+                                forOp.getLowerBoundOperands(), scope, domain);
+      addDominatingBoundSymbols(forOp.getUpperBoundMap(),
+                                forOp.getUpperBoundOperands(), scope, domain);
       if (failed(domain->addAffineForOpDomain(forOp)))
         return failure();
     } else if (auto ifOp = dyn_cast<AffineIfOp>(op)) {
       if (failed(addAffineIfOpDomain(ifOp, complement, domain)) && !allowFail)
         return failure();
-    } else if (auto parallelOp = dyn_cast<AffineParallelOp>(op))
+    } else if (auto parallelOp = dyn_cast<AffineParallelOp>(op)) {
+      Region *scope = getAffineScope(parallelOp);
+      addDominatingBoundSymbols(parallelOp.getLowerBoundsMap(),
+                                parallelOp.getLowerBoundsOperands(), scope,
+                                domain);
+      addDominatingBoundSymbols(parallelOp.getUpperBoundsMap(),
+                                parallelOp.getUpperBoundsOperands(), scope,
+                                domain);
       if (failed(domain->addAffineParallelOpDomain(parallelOp)))
         return failure();
+    }
   }
   return success();
 }
