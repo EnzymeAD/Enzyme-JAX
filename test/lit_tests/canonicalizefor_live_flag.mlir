@@ -83,3 +83,42 @@ func.func @gridstride(%N: i32, %ipt: i32, %bsi: index, %tid: i32, %woff: i32, %b
 // CHECK-NEXT: }
 // CHECK-NEXT: return %[[V9]]#1 : f64
 // CHECK-NEXT: }
+
+// -----
+
+// Near-miss: the counter advances by two per iteration, not the `cnt + 1` the
+// fold recognizes. The flag is not a pure function of the induction variable,
+// so the pattern must not fire and the i1 "live" flag stays a carried value.
+func.func @counter_step_two(%N: i32, %ipt: i32, %bsi: index, %tid: i32, %woff: i32, %buf: memref<?xf64>) -> f64 {
+  %bs = arith.index_castui %bsi : index to i32
+  %cst = arith.constant 0.0 : f64
+  %c0_i32 = arith.constant 0 : i32
+  %c2_i32 = arith.constant 2 : i32
+  %r:2 = scf.while (%acc = %cst, %idx = %c0_i32) : (f64, i32) -> (f64, i32) {
+    %t0 = arith.addi %idx, %woff overflow<nsw> : i32
+    %t1 = arith.muli %t0, %bs : i32
+    %i = arith.addi %t1, %tid : i32
+    %inb = arith.cmpi slt, %i, %N : i32
+    %next = arith.addi %idx, %c2_i32 overflow<nsw, nuw> : i32
+    %ne = arith.cmpi ne, %next, %ipt : i32
+    %acc2 = scf.if %inb -> (f64) {
+      %ii = arith.index_cast %i : i32 to index
+      %v = memref.load %buf[%ii] : memref<?xf64>
+      %s = arith.addf %acc, %v : f64
+      scf.yield %s : f64
+    } else {
+      scf.yield %acc : f64
+    }
+    %cond = arith.andi %inb, %ne : i1
+    scf.condition(%cond) %acc2, %next : f64, i32
+  } do {
+  ^bb0(%a: f64, %i2: i32):
+    scf.yield %a, %i2 : f64, i32
+  }
+  return %r#0 : f64
+}
+// The flag stays a loop-carried i1 and the induction-variable predicate fold
+// (an arith.ori of `iv == lb` with the test) never appears.
+// CHECK-LABEL: func.func @counter_step_two(
+// CHECK: scf.for {{.*}} -> (f64, i32, f64, i32, i1)
+// CHECK-NOT: arith.ori
