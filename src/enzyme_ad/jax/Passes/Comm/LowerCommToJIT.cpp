@@ -122,7 +122,6 @@ struct LowerCommMpiConstantOpToJIT
           op, "MPI constant is not a valid attribute");
     }
 
-    void *value_abi = EnzymeJaXLookupSymbol(name.data());
     uint64_t value;
     int found = EnzymeJaXLookupSymbol(name.data(),
                                       reinterpret_cast<void **>(&value_abi));
