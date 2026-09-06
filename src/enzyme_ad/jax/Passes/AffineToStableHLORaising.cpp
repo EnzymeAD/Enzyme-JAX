@@ -2993,10 +2993,22 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
         startIndices.push_back(startIndex);
       }
 
-      newVal = stablehlo::DynamicSliceOp::create(
-          builder,
-          rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo), T,
-          inputTen, startIndices, outputShape);
+      // A rank-0 buffer has nothing to slice (and a rank-0 dynamic_slice
+      // prints in a form no parser reads back); the tensor is the value.
+      if (startIndices.empty())
+        newVal = inputTen.getType() == T
+                     ? inputTen
+                     : stablehlo::ReshapeOp::create(
+                           builder,
+                           rewriteLocation(op->getLoc(),
+                                           pc.options.strip_llvm_debuginfo),
+                           T, inputTen)
+                           .getResult();
+      else
+        newVal = stablehlo::DynamicSliceOp::create(
+            builder,
+            rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo), T,
+            inputTen, startIndices, outputShape);
     } else {
       bool needSlice = false;
       bool needPad = false;
@@ -3673,10 +3685,16 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
 
       SmallVector<int64_t> updateShape(updateType.getShape().begin(),
                                        updateType.getShape().end());
-      Value prev = stablehlo::DynamicSliceOp::create(
-          builder,
-          rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
-          operand, startIndicesValues, updateShape);
+      // The previous value of a rank-0 buffer is the buffer itself: a
+      // rank-0 dynamic_slice prints in a form no parser reads back.
+      Value prev = updateShape.empty()
+                       ? operand
+                       : stablehlo::DynamicSliceOp::create(
+                             builder,
+                             rewriteLocation(op->getLoc(),
+                                             pc.options.strip_llvm_debuginfo),
+                             operand, startIndicesValues, updateShape)
+                             .getResult();
 
       Value updateWithoutConstantDims = stablehlo::ReshapeOp::create(
           builder,
