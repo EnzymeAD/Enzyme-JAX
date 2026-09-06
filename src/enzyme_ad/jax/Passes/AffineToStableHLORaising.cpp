@@ -4127,15 +4127,20 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
         cast<RankedTensorType>(mappedResult.getType()).getElementType();
 
     if (currentType != targetType) {
+      Location loc =
+          rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo);
+      auto shape = cast<ShapedType>(mappedResult.getType()).getShape();
       Value newMappedResult =
-          stablehlo::ConvertOp::create(
-              builder,
-              rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
-              RankedTensorType::get(
-                  cast<ShapedType>(mappedResult.getType()).getShape(),
-                  targetType),
-              mappedResult)
+          stablehlo::ConvertOp::create(builder, loc,
+                                       RankedTensorType::get(shape, targetType),
+                                       mappedResult)
               .getResult();
+      // stablehlo.convert reads i1 as boolean (true -> 1), but the signed
+      // index_cast of an i1 sign-extends: true -> -1. Negate the boolean's
+      // conversion, as the arith raising does for extsi.
+      if (isa<arith::IndexCastOp>(op) && currentType.isInteger(1))
+        newMappedResult =
+            stablehlo::NegOp::create(builder, loc, newMappedResult).getResult();
       maps[newMappedResult] = maps.lookup(mappedResult);
       mappedResult = newMappedResult;
     }
