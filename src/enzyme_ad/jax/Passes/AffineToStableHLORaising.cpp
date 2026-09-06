@@ -4003,6 +4003,60 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
           rewriteLocation(storeOp.getLoc(), pc.options.strip_llvm_debuginfo),
           update, reverseDims);
 
+    // Pad before the masked path reads the previous value: a store whose
+    // lane range runs past the buffer (a guarded write of a scratch narrower
+    // than the lane count) slices that value with the range's extent, which
+    // only the padded buffer has.
+    if (needPad) {
+      auto elemType =
+          cast<RankedTensorType>(operand.getType()).getElementType();
+      auto tensorType = RankedTensorType::get({}, elemType);
+      auto padVal = stablehlo::ConstantOp::create(
+          builder,
+          rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+          tensorType, cast<ElementsAttr>(builder.getZeroAttr(tensorType)));
+
+      if (hasDynamicEdgePadding) {
+        auto edgePaddingLow = stablehlo::ConcatenateOpCreate(
+            builder,
+            rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+            dynPadLow, 0);
+        auto edgePaddingHigh = stablehlo::ConcatenateOpCreate(
+            builder,
+            rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+            dynPadHigh, 0);
+        auto interiorPadding = stablehlo::ConcatenateOpCreate(
+            builder,
+            rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+            dynPaddingInterior, 0);
+
+        SmallVector<int64_t> paddedShape(
+            cast<RankedTensorType>(operand.getType()).getShape().size(),
+            ShapedType::kDynamic);
+
+        operand = stablehlo::DynamicPadOp::create(
+            builder,
+            rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+            cast<RankedTensorType>(operand.getType()).clone(paddedShape),
+            operand, padVal, edgePaddingLow, edgePaddingHigh, interiorPadding);
+      } else {
+        SmallVector<int64_t> paddedShape;
+        SmallVector<int64_t> interior(
+            cast<RankedTensorType>(operand.getType()).getShape().size(), 0);
+        for (auto [sz, low, high] :
+             llvm::zip(cast<RankedTensorType>(operand.getType()).getShape(),
+                       padLow, padHigh)) {
+          paddedShape.push_back(sz + low + high);
+        }
+
+        operand = stablehlo::PadOp::create(
+            builder,
+            rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+            cast<RankedTensorType>(operand.getType()).clone(paddedShape),
+            operand, padVal, padLow, padHigh, interior);
+      }
+    }
+
     if (pc.mask) {
       Value mask = pc.mask;
       affine::AffineValueMap maskMap = maps.lookup(mask);
@@ -4180,56 +4234,6 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
           builder,
           rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
           maskedUpdate, updateType.getShape(), maskedUpdateBroadcastDims);
-    }
-
-    if (needPad) {
-      auto elemType =
-          cast<RankedTensorType>(operand.getType()).getElementType();
-      auto tensorType = RankedTensorType::get({}, elemType);
-      auto padVal = stablehlo::ConstantOp::create(
-          builder,
-          rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
-          tensorType, cast<ElementsAttr>(builder.getZeroAttr(tensorType)));
-
-      if (hasDynamicEdgePadding) {
-        auto edgePaddingLow = stablehlo::ConcatenateOpCreate(
-            builder,
-            rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
-            dynPadLow, 0);
-        auto edgePaddingHigh = stablehlo::ConcatenateOpCreate(
-            builder,
-            rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
-            dynPadHigh, 0);
-        auto interiorPadding = stablehlo::ConcatenateOpCreate(
-            builder,
-            rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
-            dynPaddingInterior, 0);
-
-        SmallVector<int64_t> paddedShape(
-            cast<RankedTensorType>(operand.getType()).getShape().size(),
-            ShapedType::kDynamic);
-
-        operand = stablehlo::DynamicPadOp::create(
-            builder,
-            rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
-            cast<RankedTensorType>(operand.getType()).clone(paddedShape),
-            operand, padVal, edgePaddingLow, edgePaddingHigh, interiorPadding);
-      } else {
-        SmallVector<int64_t> paddedShape;
-        SmallVector<int64_t> interior(
-            cast<RankedTensorType>(operand.getType()).getShape().size(), 0);
-        for (auto [sz, low, high] :
-             llvm::zip(cast<RankedTensorType>(operand.getType()).getShape(),
-                       padLow, padHigh)) {
-          paddedShape.push_back(sz + low + high);
-        }
-
-        operand = stablehlo::PadOp::create(
-            builder,
-            rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
-            cast<RankedTensorType>(operand.getType()).clone(paddedShape),
-            operand, padVal, padLow, padHigh, interior);
-      }
     }
 
     auto newOperand = stablehlo::DynamicUpdateSliceOp::create(
