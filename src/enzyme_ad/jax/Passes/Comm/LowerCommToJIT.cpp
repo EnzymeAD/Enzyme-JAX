@@ -100,6 +100,70 @@ const char *convertMlirTypeToMpiDatatypeName(Type type,
 //   return dt;
 // }
 
+const char *convertMlirTypeToNcclDatatype(Type type, bool allow_cast = false) {
+  // case ffi::DataType::INVALID: return nullptr;
+  if (type.isInteger(1)) /*ffi::DataType::PRED:*/
+    return "MPI_C_BOOL";
+  // case ffi::DataType::S1: return nullptr;
+  // case ffi::DataType::S2: return nullptr;
+  // case ffi::DataType::S4: return nullptr;
+  if (type.isInteger(8)) /*ffi::DataType::S8:*/
+    return "MPI_INT8_T";
+  if (type.isInteger(16)) /*ffi::DataType::S16:*/
+    return "MPI_INT16_T";
+  if (type.isInteger(32)) /*ffi::DataType::S32:*/
+    return "MPI_INT32_T";
+  if (type.isInteger(64)) /*ffi::DataType::S64:*/
+    return "MPI_INT64_T";
+  // case ffi::DataType::U1: return nullptr;
+  // case ffi::DataType::U2: return nullptr;
+  // case ffi::DataType::U4: return nullptr;
+  if (type.isUnsignedInteger(8)) /*ffi::DataType::U8:*/
+    return "MPI_UINT8_T";
+  if (type.isUnsignedInteger(16)) /*ffi::DataType::U16:*/
+    return "MPI_UINT16_T";
+  if (type.isUnsignedInteger(32)) /*ffi::DataType::U32:*/
+    return "MPI_UINT32_T";
+  if (type.isUnsignedInteger(64)) /*ffi::DataType::U64:*/
+    return "MPI_UINT64_T";
+  if (type.isFloat(16)) /*ffi::DataType::F16:*/
+    return (allow_cast ? "MPI_UINT16_T" : nullptr);
+  if (type.isF32()) /*ffi::DataType::F32:*/
+    return "MPI_FLOAT";
+  if (type.isF64()) /*ffi::DataType::F64:*/
+    return "MPI_DOUBLE";
+  if (type.isBF16()) /*ffi::DataType::BF16:*/
+    return (allow_cast ? "MPI_UINT16_T" : nullptr);
+  if (auto complex_type = dyn_cast<ComplexType>(type)) {
+    if (complex_type.getElementType().isF32()) /*ffi::DataType::C64:*/
+      return "MPI_C_FLOAT_COMPLEX";
+    if (complex_type.getElementType().isF64()) /*ffi::DataType::C128:*/
+      return "MPI_C_DOUBLE_COMPLEX";
+    else
+      return nullptr;
+  }
+  // case ffi::DataType::TOKEN: return nullptr;
+  //   if (type) /*ffi::DataType::F8E5M2:*/
+  //     return (allow_cast ? "MPI_UINT8_T" : nullptr);
+  //   if (type) /*ffi::DataType::F8E4M3:*/
+  //     return (allow_cast ? "MPI_UINT8_T" : nullptr);
+  //   if (type) /*ffi::DataType::F8E4M3FN:*/
+  //     return (allow_cast ? "MPI_UINT8_T" : nullptr);
+  //   if (type) /*ffi::DataType::F8E4M3B11FNUZ:*/
+  //     return (allow_cast ? "MPI_UINT8_T" : nullptr);
+  //   if (type) /*ffi::DataType::F8E5M2FNUZ:*/
+  //     return (allow_cast ? "MPI_UINT8_T" : nullptr);
+  //   if (type) /*ffi::DataType::F8E4M3FNUZ:*/
+  //     return (allow_cast ? "MPI_UINT8_T" : nullptr);
+  //   if (type) /*ffi::DataType::F8E3M4:*/
+  //     return (allow_cast ? "MPI_UINT8_T" : nullptr);
+  // case ffi::DataType::F4E2M1FN: return nullptr;
+  //   if (isa<>(type)) /*ffi::DataType::F8E8M0FNU:*/
+  //     return (allow_cast ? "MPI_UINT8_T" : nullptr);
+  else
+    return nullptr;
+}
+
 struct LowerCommMpiConstantOpToJIT
     : public OpConversionPattern<comm::MpiConstantOp> {
   using OpConversionPattern::OpConversionPattern;
@@ -192,8 +256,7 @@ struct LowerCommMpiCommRankOpToJIT
           LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr, arg_comm_ptr)
               .getResult();
 
-      // TODO error checking
-      // currently, we ignore the int return code
+      // TODO error checking: currently, we ignore the int return code
       LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
                            SymbolRefAttr::get(context, function_name),
                            ValueRange{comm, arg_rank_ptr});
@@ -290,8 +353,7 @@ struct LowerCommMpiCommSizeOpToJIT
           LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr, arg_comm_ptr)
               .getResult();
 
-      // TODO error checking
-      // currently, we ignore the int return code
+      // TODO error checking: currently, we ignore the int return code
       LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
                            SymbolRefAttr::get(context, function_name),
                            ValueRange{comm, arg_size_ptr});
@@ -397,8 +459,7 @@ struct LowerCommMpiCommSplitOpToJIT
           LLVM::LoadOp::create(rewriter, op.getLoc(), type_i32, arg_key_ptr)
               .getResult();
 
-      // TODO error checking
-      // currently, we ignore the int return code
+      // TODO error checking: currently, we ignore the int return code
       LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
                            SymbolRefAttr::get(context, function_name),
                            ValueRange{comm, color, key, arg_newcomm_ptr});
@@ -493,8 +554,7 @@ struct LowerCommMpiBarrierOpToJIT
           LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr, arg_comm_ptr)
               .getResult();
 
-      // TODO error checking
-      // currently, we ignore the int return code
+      // TODO error checking: currently, we ignore the int return code
       LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
                            SymbolRefAttr::get(context, function_name),
                            ValueRange{comm});
@@ -597,8 +657,7 @@ struct LowerCommMpiSendOpToJIT : public OpConversionPattern<comm::MpiSendOp> {
           LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr, arg_comm_ptr)
               .getResult();
 
-      // TODO error checking
-      // currently, we ignore the int return code
+      // TODO error checking: currently, we ignore the int return code
       LLVM::CallOp::create(
           rewriter, op.getLoc(), TypeRange{type_i32},
           SymbolRefAttr::get(context, function_name),
@@ -738,8 +797,7 @@ struct LowerCommMpiIsendOpToJIT : public OpConversionPattern<comm::MpiIsendOp> {
           LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr, arg_comm_ptr)
               .getResult();
 
-      // TODO error checking
-      // currently, we ignore the int return code
+      // TODO error checking: currently, we ignore the int return code
       LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
                            SymbolRefAttr::get(context, function_name),
                            ValueRange{arg_buffer_ptr, count, datatype, dest,
@@ -892,8 +950,7 @@ struct LowerCommMpiRecvOpToJIT : public OpConversionPattern<comm::MpiRecvOp> {
       Value status =
           LLVM::ZeroOp::create(rewriter, op.getLoc(), type_ptr).getResult();
 
-      // TODO error checking
-      // currently, we ignore the int return code
+      // TODO error checking: currently, we ignore the int return code
       LLVM::CallOp::create(
           rewriter, op.getLoc(), TypeRange{type_i32},
           SymbolRefAttr::get(context, function_name),
@@ -1046,8 +1103,7 @@ struct LowerCommMpiIrecvOpToJIT : public OpConversionPattern<comm::MpiIrecvOp> {
           LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr, arg_comm_ptr)
               .getResult();
 
-      // TODO error checking
-      // currently, we ignore the int return code
+      // TODO error checking: currently, we ignore the int return code
       LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
                            SymbolRefAttr::get(context, function_name),
                            ValueRange{arg_buffer_ptr, count, datatype, src, tag,
@@ -1187,8 +1243,7 @@ struct LowerCommMpiWaitOpToJIT : public OpConversionPattern<comm::MpiWaitOp> {
       Value status_ptr =
           LLVM::ZeroOp::create(rewriter, op.getLoc(), type_ptr).getResult();
 
-      // TODO error checking
-      // currently, we ignore the int return code
+      // TODO error checking: currently, we ignore the int return code
       LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
                            SymbolRefAttr::get(context, function_name),
                            ValueRange{arg_request_ptr, status_ptr});
@@ -1296,8 +1351,7 @@ struct LowerCommMpiWaitallOpToJIT
       Value status_ptr =
           LLVM::ZeroOp::create(rewriter, op.getLoc(), type_ptr).getResult();
 
-      // TODO error checking
-      // currently, we ignore the int return code
+      // TODO error checking: currently, we ignore the int return code
       LLVM::CallOp::create(
           rewriter, op.getLoc(), TypeRange{type_i32},
           SymbolRefAttr::get(context, function_name),
@@ -1397,8 +1451,7 @@ struct LowerCommMpiAllreduceOpToJIT
           LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr, arg_comm_ptr)
               .getResult();
 
-      // TODO error checking
-      // currently, we ignore the int return code
+      // TODO error checking: currently, we ignore the int return code
       LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
                            SymbolRefAttr::get(context, function_name),
                            ValueRange{arg_sendbuf_ptr, arg_recvbuf_ptr, count,
@@ -1553,8 +1606,7 @@ struct LowerCommMpiBcastOpToJIT : public OpConversionPattern<comm::MpiBcastOp> {
           LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr, arg_comm_ptr)
               .getResult();
 
-      // TODO error checking
-      // currently, we ignore the int return code
+      // TODO error checking: currently, we ignore the int return code
       LLVM::CallOp::create(
           rewriter, op.getLoc(), TypeRange{type_i32},
           SymbolRefAttr::get(context, function_name),
@@ -1684,7 +1736,7 @@ struct LowerCommNcclCommUserRankOpToJIT
               .getResult();
 
       // TODO move to cudaMemcpyAsync by wrapping NCCL call in
-      // cudaLaunchHostFunc load `comm` to host memory
+      // cudaLaunchHostFunc
       Value count =
           LLVM::ConstantOp::create(rewriter, op.getLoc(), type_i32,
                                    rewriter.getI32IntegerAttr(sizeof(int32_t)))
@@ -1705,10 +1757,9 @@ struct LowerCommNcclCommUserRankOpToJIT
           LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr, host_comm_ptr)
               .getResult();
 
-      // TODO error checking
-      // currently, we ignore the int return code
+      // TODO error checking: currently, we ignore the int return code
       Value host_rank_ptr =
-          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_i32, type_ptr)
+          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_i32)
               .getResult();
       LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
                            SymbolRefAttr::get(context, function_name),
@@ -1819,7 +1870,7 @@ struct LowerCommNcclCommCountOpToJIT
               .getResult();
 
       // TODO move to cudaMemcpyAsync by wrapping NCCL call in
-      // cudaLaunchHostFunc load `comm` to host memory
+      // cudaLaunchHostFunc
       Value count =
           LLVM::ConstantOp::create(rewriter, op.getLoc(), type_i32,
                                    rewriter.getI32IntegerAttr(sizeof(int32_t)))
@@ -1840,10 +1891,9 @@ struct LowerCommNcclCommCountOpToJIT
           LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr, host_comm_ptr)
               .getResult();
 
-      // TODO error checking
-      // currently, we ignore the int return code
+      // TODO error checking: currently, we ignore the int return code
       Value host_size_ptr =
-          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_i32, type_ptr)
+          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_i32)
               .getResult();
       LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
                            SymbolRefAttr::get(context, function_name),
@@ -1896,6 +1946,188 @@ struct LowerCommNcclCommCountOpToJIT
         /*res_attrs=*/nullptr,
         /*output_operand_aliases=*/aliases,
         /*xla_side_effect_free=*/rewriter.getUnitAttr());
+
+    return success();
+  }
+};
+
+struct LowerCommNcclSendOpToJIT : public OpConversionPattern<comm::NcclSendOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(comm::NcclSendOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto context = op->getContext();
+
+    auto moduleOp = op->getParentOfType<ModuleOp>();
+    auto type_ptr = LLVM::LLVMPointerType::get(context);
+    auto type_void = LLVM::LLVMVoidType::get(context);
+    auto type_i32 = IntegerType::get(context, 32);
+    auto type_tensor_i32 = RankedTensorType::get({}, type_i32);
+    auto type_nccl_result = IntegerType::get(context, sizeof(ncclResult_t) * 8);
+    auto type_nccl_datatype =
+        IntegerType::get(context, sizeof(ncclDataType_t) * 8);
+
+    std::string function_name = "ncclSend";
+    std::string wrapper_name = "enzymexla_jitwrap_" + function_name;
+
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapper_name)) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+      auto funcType = LLVM::LLVMFunctionType::get(
+          type_void, {type_ptr, type_ptr, type_ptr}, false);
+
+      auto wrapperFunc = LLVM::LLVMFuncOp::create(rewriter, op.getLoc(),
+                                                  wrapper_name, funcType);
+
+      Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
+      rewriter.setInsertionPointToStart(entryBlock);
+
+      // Add function-level memory effects attribute
+      //   auto memoryEffectsAttr = rewriter.getArrayAttr(
+      //       {rewriter.getStringAttr("read"), rewriter.getStringAttr("write"),
+      //        rewriter.getStringAttr("allocate"),
+      //        rewriter.getStringAttr("free")});
+      //   wrapperFunc->setAttr("enzymexla.memory_effects", memoryEffectsAttr);
+      //   wrapperFunc->setAttr("enzymexla.device_abi",
+      //                        rewriter.getStringAttr("cuda"));
+      // Add argument-level memory effects attribute to all arguments
+      //   for (unsigned i = 0; i < 2; ++i) {
+      //     wrapperFunc.setArgAttr(i, "enzymexla.memory_effects",
+      //                            memoryEffectsAttr);
+      //   }
+
+      Value arg_buffer_ptr = entryBlock->getArgument(0);
+      Value arg_count_ptr = entryBlock->getArgument(1);
+      Value arg_datatype_ptr = entryBlock->getArgument(2);
+      Value arg_peer_ptr = entryBlock->getArgument(3);
+      Value arg_comm_ptr = entryBlock->getArgument(4);
+      Value stream =
+          enzymexla::GetStreamOp::create(rewriter, op.getLoc(), type_ptr)
+              .getResult();
+
+      // copy scalars from device to host memory
+      // TODO move to cudaMemcpyAsync by wrapping NCCL call in
+      // cudaLaunchHostFunc
+      Value host_count_ptr =
+          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_i32)
+              .getResult();
+      Value host_datatype_ptr =
+          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr,
+                                 type_nccl_datatype)
+              .getResult();
+      Value host_peer_ptr =
+          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_i32)
+              .getResult();
+      Value host_comm_ptr =
+          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_ptr)
+              .getResult();
+
+      Value memcpy_count;
+      Value kind = LLVM::ConstantOp::create(
+                       rewriter, op.getLoc(), type_i32,
+                       rewriter.getI32IntegerAttr(cudaMemcpyDeviceToHost))
+                       .getResult();
+
+      memcpy_count =
+          LLVM::ConstantOp::create(rewriter, op.getLoc(), type_i32,
+                                   rewriter.getI32IntegerAttr(sizeof(int32_t)))
+              .getResult();
+      LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
+                           SymbolRefAttr::get(context, "cudaMemcpy"),
+                           ValueRange{
+                               host_count_ptr,
+                               arg_count_ptr,
+                               memcpy_count,
+                               kind,
+                           });
+      LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
+                           SymbolRefAttr::get(context, "cudaMemcpy"),
+                           ValueRange{
+                               host_peer_ptr,
+                               arg_peer_ptr,
+                               memcpy_count,
+                               kind,
+                           });
+
+      memcpy_count = LLVM::ConstantOp::create(
+                         rewriter, op.getLoc(), type_i32,
+                         rewriter.getI32IntegerAttr(sizeof(ncclDataType_t)))
+                         .getResult();
+      LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_nccl_datatype},
+                           SymbolRefAttr::get(context, "cudaMemcpy"),
+                           ValueRange{
+                               host_datatype_ptr,
+                               arg_datatype_ptr,
+                               memcpy_count,
+                               kind,
+                           });
+
+      memcpy_count =
+          LLVM::ConstantOp::create(rewriter, op.getLoc(), type_i32,
+                                   rewriter.getI32IntegerAttr(sizeof(void *)))
+              .getResult();
+      LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
+                           SymbolRefAttr::get(context, "cudaMemcpy"),
+                           ValueRange{
+                               host_comm_ptr,
+                               arg_comm_ptr,
+                               memcpy_count,
+                               kind,
+                           });
+
+      Value count =
+          LLVM::LoadOp::create(rewriter, op.getLoc(), type_i32, host_count_ptr)
+              .getResult();
+      Value datatype =
+          LLVM::LoadOp::create(rewriter, op.getLoc(), type_nccl_datatype,
+                               host_datatype_ptr)
+              .getResult();
+      Value peer =
+          LLVM::LoadOp::create(rewriter, op.getLoc(), type_i32, host_peer_ptr)
+              .getResult();
+      Value comm =
+          LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr, host_comm_ptr)
+              .getResult();
+
+      // TODO error checking: currently, we ignore the int return code
+      LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_nccl_result},
+                           SymbolRefAttr::get(context, function_name),
+                           ValueRange{
+                               arg_buffer_ptr,
+                               count,
+                               datatype,
+                               peer,
+                               comm,
+                               stream,
+                           });
+      LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
+    }
+
+    auto sendbuff = adaptor.getSendbuff();
+    auto len = std::reduce(op.getSendbuff().getType().getShape().begin(),
+                           op.getSendbuff().getType().getShape().end(), 1,
+                           std::multiplies<int64_t>());
+    auto count = rewriter.create<stablehlo::ConstantOp>(
+        op.getLoc(), type_tensor_i32,
+        DenseIntElementsAttr::get(type_tensor_i32, len));
+
+    auto peer = adaptor.getPeer();
+    auto comm = adaptor.getComm();
+
+    // TODO revise if it is side effect free
+    rewriter.replaceOpWithNewOp<enzymexla::JITCallOp>(
+        op, type_tensor_i32,
+        mlir::FlatSymbolRefAttr::get(context, wrapper_name),
+        ValueRange{sendbuff, count, datatype, peer, comm},
+        /*backend_config=*/rewriter.getStringAttr(""),
+        /*operand_layouts=*/nullptr,
+        /*result_layouts=*/nullptr,
+        /*arg_attrs=*/nullptr,
+        /*res_attrs=*/nullptr,
+        /*output_operand_aliases=*/nullptr,
+        /*xla_side_effect_free=*/nullptr);
 
     return success();
   }
