@@ -12,6 +12,7 @@
 #include "stablehlo/dialect/StablehloOps.h"
 
 #include "cuda/cuda_runtime_api.h"
+#include "nccl.h"
 
 namespace mlir::comm {
 #define GEN_PASS_DEF_LOWERCOMMTOJITPASS
@@ -100,68 +101,39 @@ const char *convertMlirTypeToMpiDatatypeName(Type type,
 //   return dt;
 // }
 
-const char *convertMlirTypeToNcclDatatype(Type type, bool allow_cast = false) {
-  // case ffi::DataType::INVALID: return nullptr;
-  if (type.isInteger(1)) /*ffi::DataType::PRED:*/
-    return "MPI_C_BOOL";
-  // case ffi::DataType::S1: return nullptr;
-  // case ffi::DataType::S2: return nullptr;
-  // case ffi::DataType::S4: return nullptr;
-  if (type.isInteger(8)) /*ffi::DataType::S8:*/
-    return "MPI_INT8_T";
-  if (type.isInteger(16)) /*ffi::DataType::S16:*/
-    return "MPI_INT16_T";
+llvm::Expected<ncclDatatype_t>
+convertMlirTypeToNcclDatatype(Type type, bool allow_cast = false) {
+  if (type.isInteger(8))  /*ffi::DataType::S8:*/
+    return ncclInt8;      // aka ncclChar
   if (type.isInteger(32)) /*ffi::DataType::S32:*/
-    return "MPI_INT32_T";
+    return ncclInt32;     // aka ncclInt
   if (type.isInteger(64)) /*ffi::DataType::S64:*/
-    return "MPI_INT64_T";
-  // case ffi::DataType::U1: return nullptr;
-  // case ffi::DataType::U2: return nullptr;
-  // case ffi::DataType::U4: return nullptr;
+    return ncclInt64;
   if (type.isUnsignedInteger(8)) /*ffi::DataType::U8:*/
-    return "MPI_UINT8_T";
-  if (type.isUnsignedInteger(16)) /*ffi::DataType::U16:*/
-    return "MPI_UINT16_T";
+    return ncclUint8;
   if (type.isUnsignedInteger(32)) /*ffi::DataType::U32:*/
-    return "MPI_UINT32_T";
+    return ncclUint32;
   if (type.isUnsignedInteger(64)) /*ffi::DataType::U64:*/
-    return "MPI_UINT64_T";
+    return ncclUint64;
   if (type.isFloat(16)) /*ffi::DataType::F16:*/
-    return (allow_cast ? "MPI_UINT16_T" : nullptr);
-  if (type.isF32()) /*ffi::DataType::F32:*/
-    return "MPI_FLOAT";
-  if (type.isF64()) /*ffi::DataType::F64:*/
-    return "MPI_DOUBLE";
-  if (type.isBF16()) /*ffi::DataType::BF16:*/
-    return (allow_cast ? "MPI_UINT16_T" : nullptr);
-  if (auto complex_type = dyn_cast<ComplexType>(type)) {
-    if (complex_type.getElementType().isF32()) /*ffi::DataType::C64:*/
-      return "MPI_C_FLOAT_COMPLEX";
-    if (complex_type.getElementType().isF64()) /*ffi::DataType::C128:*/
-      return "MPI_C_DOUBLE_COMPLEX";
-    else
-      return nullptr;
-  }
-  // case ffi::DataType::TOKEN: return nullptr;
-  //   if (type) /*ffi::DataType::F8E5M2:*/
-  //     return (allow_cast ? "MPI_UINT8_T" : nullptr);
-  //   if (type) /*ffi::DataType::F8E4M3:*/
-  //     return (allow_cast ? "MPI_UINT8_T" : nullptr);
-  //   if (type) /*ffi::DataType::F8E4M3FN:*/
-  //     return (allow_cast ? "MPI_UINT8_T" : nullptr);
-  //   if (type) /*ffi::DataType::F8E4M3B11FNUZ:*/
-  //     return (allow_cast ? "MPI_UINT8_T" : nullptr);
-  //   if (type) /*ffi::DataType::F8E5M2FNUZ:*/
-  //     return (allow_cast ? "MPI_UINT8_T" : nullptr);
-  //   if (type) /*ffi::DataType::F8E4M3FNUZ:*/
-  //     return (allow_cast ? "MPI_UINT8_T" : nullptr);
-  //   if (type) /*ffi::DataType::F8E3M4:*/
-  //     return (allow_cast ? "MPI_UINT8_T" : nullptr);
-  // case ffi::DataType::F4E2M1FN: return nullptr;
-  //   if (isa<>(type)) /*ffi::DataType::F8E8M0FNU:*/
-  //     return (allow_cast ? "MPI_UINT8_T" : nullptr);
-  else
-    return nullptr;
+    return ncclFloat16; // aka ncclHalf
+  if (type.isF32())     /*ffi::DataType::F32:*/
+    return ncclFloat32; // aka ncclFloat
+  if (type.isF64())     /*ffi::DataType::F64:*/
+    return ncclFloat64; // aka ncclDouble
+  if (type.isBF16())    /*ffi::DataType::BF16:*/
+    return ncclBfloat16;
+  if (type.isF8E5M2()) /*ffi::DataType::F8E5M2:*/
+    return ncclFloat8e5m2;
+  if (type.isF8E4M3()) /*ffi::DataType::F8E4M3:*/
+    return ncclFloat8e4m3;
+
+  std::string type_name;
+  llvm::raw_string_ostream ostream(type_name);
+  type.print(ostream);
+  return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                 "type has no equivalent in NCCL: %s",
+                                 type_name.c_str());
 }
 
 struct LowerCommMpiConstantOpToJIT
@@ -2112,6 +2084,18 @@ struct LowerCommNcclSendOpToJIT : public OpConversionPattern<comm::NcclSendOp> {
     auto count = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_tensor_i32,
         DenseIntElementsAttr::get(type_tensor_i32, len));
+
+    auto datatype_val = convertMlirTypeToNcclDatatype(
+        op.getSendbuff().getType().getElementType());
+    if (!datatype_val) {
+      std::ostringstream oss;
+      oss << datatype_val;
+      return rewriter.notifyMatchFailure(
+          op, absl::StrFormat("Unsupported datatype: %s", oss.str()));
+    }
+    auto datatype = rewriter.create<stablehlo::ConstantOp>(
+        op.getLoc(), type_tensor_i32,
+        DenseIntElementsAttr::get(type_tensor_i32, datatype_val.get()));
 
     auto peer = adaptor.getPeer();
     auto comm = adaptor.getComm();
