@@ -18,7 +18,7 @@ namespace mlir::comm {
 
 using namespace mlir;
 
-extern "C" void *EnzymeJaXLookupSymbol(const char *name);
+extern "C" int EnzymeJaXLookupSymbol(const char *name, void **symbol);
 
 const char *convertMlirTypeToMpiDatatypeName(Type type,
                                              bool allow_cast = false) {
@@ -123,12 +123,12 @@ struct LowerCommMpiConstantOpToJIT
     }
 
     void *value_abi = EnzymeJaXLookupSymbol(name.data());
-    if (value_abi == nullptr) {
-      return rewriter.notifyMatchFailure(op, "MPI constant `" + name +
-                                                 "` not found");
-    }
+    uint64_t value;
+    int found = EnzymeJaXLookupSymbol(name.data(),
+                                      reinterpret_cast<void **>(&value_abi));
+    if (!found)
+      return rewriter.notifyMatchFailure(op, name + " symbol not found");
 
-    uint64_t value = reinterpret_cast<uint64_t>(value_abi);
     auto constant_attr = SplatElementsAttr::get(
         RankedTensorType::get({}, rewriter.getIntegerType(64)),
         ArrayRef(APInt(64, value)));
@@ -639,16 +639,16 @@ struct LowerCommMpiSendOpToJIT : public OpConversionPattern<comm::MpiSendOp> {
     auto datatype_name = convertMlirTypeToMpiDatatypeName(
         op.getBuffer().getType().getElementType(),
         /*allow_cast=*/true);
-    auto datatype_val = EnzymeJaXLookupSymbol(datatype_name);
-    if (datatype_val == nullptr) {
-      return rewriter.notifyMatchFailure(
-          op, "Symbol `" + std::string(datatype_name) + "` not found");
-    }
+    int64_t datatype_val;
+    int found = EnzymeJaXLookupSymbol(datatype_name,
+                                      reinterpret_cast<void **>(&datatype_val));
+    if (!found)
+      return rewriter.notifyMatchFailure(op, std::string(datatype_name) +
+                                                 " symbol not found");
 
     Value datatype = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_tensor_i64,
-        DenseIntElementsAttr::get(type_tensor_i64,
-                                  reinterpret_cast<int64_t>(datatype_val)));
+        DenseIntElementsAttr::get(type_tensor_i64, datatype_val));
 
     // TODO revise if it is side effect free
     rewriter.replaceOpWithNewOp<enzymexla::JITCallOp>(
@@ -784,11 +784,12 @@ struct LowerCommMpiIsendOpToJIT : public OpConversionPattern<comm::MpiIsendOp> {
     auto datatype_name = convertMlirTypeToMpiDatatypeName(
         op.getBuffer().getType().getElementType(),
         /*allow_cast=*/true);
-    auto datatype_val = EnzymeJaXLookupSymbol(datatype_name);
-    if (datatype_val == nullptr) {
-      return rewriter.notifyMatchFailure(
-          op, "Symbol `" + std::string(datatype_name) + "` not found");
-    }
+    int64_t datatype_val;
+    int found = EnzymeJaXLookupSymbol(datatype_name,
+                                      reinterpret_cast<void **>(&datatype_val));
+    if (!found)
+      return rewriter.notifyMatchFailure(op, std::string(datatype_name) +
+                                                 " symbol not found");
 
     Value datatype = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_tensor_i64,
@@ -938,11 +939,12 @@ struct LowerCommMpiRecvOpToJIT : public OpConversionPattern<comm::MpiRecvOp> {
     auto datatype_name =
         convertMlirTypeToMpiDatatypeName(type_buffer.getElementType(),
                                          /*allow_cast=*/true);
-    auto datatype_val = EnzymeJaXLookupSymbol(datatype_name);
-    if (datatype_val == nullptr) {
-      return rewriter.notifyMatchFailure(
-          op, "Symbol `" + std::string(datatype_name) + "` not found");
-    }
+    int64_t datatype_val;
+    int found = EnzymeJaXLookupSymbol(datatype_name,
+                                      reinterpret_cast<void **>(&datatype_val));
+    if (!found)
+      return rewriter.notifyMatchFailure(op, std::string(datatype_name) +
+                                                 " symbol not found");
 
     Value datatype = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_tensor_i64,
@@ -1095,11 +1097,12 @@ struct LowerCommMpiIrecvOpToJIT : public OpConversionPattern<comm::MpiIrecvOp> {
     auto datatype_name =
         convertMlirTypeToMpiDatatypeName(type_buffer.getElementType(),
                                          /*allow_cast=*/true);
-    auto datatype_val = EnzymeJaXLookupSymbol(datatype_name);
-    if (datatype_val == nullptr) {
-      return rewriter.notifyMatchFailure(
-          op, "Symbol `" + std::string(datatype_name) + "` not found");
-    }
+    int64_t datatype_val;
+    int found = EnzymeJaXLookupSymbol(datatype_name,
+                                      reinterpret_cast<void **>(&datatype_val));
+    if (!found)
+      return rewriter.notifyMatchFailure(op, std::string(datatype_name) +
+                                                 " symbol not found");
 
     Value datatype = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_tensor_i64,
@@ -1440,11 +1443,12 @@ struct LowerCommMpiAllreduceOpToJIT
     auto datatype_name =
         convertMlirTypeToMpiDatatypeName(type_buffer.getElementType(),
                                          /*allow_cast=*/false);
-    auto datatype_val = EnzymeJaXLookupSymbol(datatype_name);
-    if (datatype_val == nullptr) {
-      return rewriter.notifyMatchFailure(
-          op, "Symbol `" + std::string(datatype_name) + "` not found");
-    }
+    int64_t datatype_val;
+    int found = EnzymeJaXLookupSymbol(datatype_name,
+                                      reinterpret_cast<void **>(&datatype_val));
+    if (!found)
+      return rewriter.notifyMatchFailure(op, std::string(datatype_name) +
+                                                 " symbol not found");
 
     Value datatype = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_tensor_i64,
@@ -1453,11 +1457,12 @@ struct LowerCommMpiAllreduceOpToJIT
 
     auto mpi_op_name =
         comm::stringifyMpiOpEnum(adaptor.getReduceOp().getValue());
-    auto mpi_op_val = EnzymeJaXLookupSymbol(mpi_op_name.data());
-    if (mpi_op_val == nullptr) {
-      return rewriter.notifyMatchFailure(
-          op, "Symbol `" + std::string(mpi_op_name) + "` not found");
-    }
+    int64_t mpi_op_val;
+    found = EnzymeJaXLookupSymbol(mpi_op_name.data(),
+                                  reinterpret_cast<void **>(&mpi_op_val));
+    if (!found)
+      return rewriter.notifyMatchFailure(op, std::string(mpi_op_name) +
+                                                 " symbol not found");
 
     Value mpi_op = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_tensor_i64,
@@ -1593,11 +1598,12 @@ struct LowerCommMpiBcastOpToJIT : public OpConversionPattern<comm::MpiBcastOp> {
     auto datatype_name =
         convertMlirTypeToMpiDatatypeName(type_buffer.getElementType(),
                                          /*allow_cast=*/true);
-    auto datatype_val = EnzymeJaXLookupSymbol(datatype_name);
-    if (datatype_val == nullptr) {
-      return rewriter.notifyMatchFailure(
-          op, "Symbol `" + std::string(datatype_name) + "` not found");
-    }
+    int64_t datatype_val;
+    int found = EnzymeJaXLookupSymbol(datatype_name,
+                                      reinterpret_cast<void **>(&datatype_val));
+    if (!found)
+      return rewriter.notifyMatchFailure(op, std::string(datatype_name) +
+                                                 " symbol not found");
 
     Value datatype = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_tensor_i64,
