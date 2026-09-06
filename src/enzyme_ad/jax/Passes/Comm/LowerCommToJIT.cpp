@@ -1739,10 +1739,10 @@ struct LowerCommNcclCommUserRankOpToJIT
 
       // TODO move to cudaMemcpyAsync by wrapping NCCL call in
       // cudaLaunchHostFunc
-      Value count =
-          LLVM::ConstantOp::create(rewriter, op.getLoc(), type_i32,
-                                   rewriter.getI32IntegerAttr(sizeof(int32_t)))
-              .getResult();
+      Value count = LLVM::ConstantOp::create(
+                        rewriter, op.getLoc(), type_i32,
+                        rewriter.getI32IntegerAttr(sizeof(int32_t) * 8))
+                        .getResult();
       Value kind = LLVM::ConstantOp::create(
                        rewriter, op.getLoc(), type_i32,
                        rewriter.getI32IntegerAttr(cudaMemcpyDeviceToHost))
@@ -1771,10 +1771,10 @@ struct LowerCommNcclCommUserRankOpToJIT
                            });
 
       // copy `count` result back to device memory
-      count =
-          LLVM::ConstantOp::create(rewriter, op.getLoc(), type_i32,
-                                   rewriter.getI32IntegerAttr(sizeof(int32_t)))
-              .getResult();
+      count = LLVM::ConstantOp::create(
+                  rewriter, op.getLoc(), type_i32,
+                  rewriter.getI32IntegerAttr(sizeof(int32_t) * 8))
+                  .getResult();
       kind = LLVM::ConstantOp::create(
                  rewriter, op.getLoc(), type_i32,
                  rewriter.getI32IntegerAttr(cudaMemcpyHostToDevice))
@@ -1873,10 +1873,10 @@ struct LowerCommNcclCommCountOpToJIT
 
       // TODO move to cudaMemcpyAsync by wrapping NCCL call in
       // cudaLaunchHostFunc
-      Value count =
-          LLVM::ConstantOp::create(rewriter, op.getLoc(), type_i32,
-                                   rewriter.getI32IntegerAttr(sizeof(int32_t)))
-              .getResult();
+      Value count = LLVM::ConstantOp::create(
+                        rewriter, op.getLoc(), type_i32,
+                        rewriter.getI32IntegerAttr(sizeof(int32_t) * 8))
+                        .getResult();
       Value kind = LLVM::ConstantOp::create(
                        rewriter, op.getLoc(), type_i32,
                        rewriter.getI32IntegerAttr(cudaMemcpyDeviceToHost))
@@ -1905,10 +1905,10 @@ struct LowerCommNcclCommCountOpToJIT
                            });
 
       // copy `count` result back to device memory
-      count =
-          LLVM::ConstantOp::create(rewriter, op.getLoc(), type_i32,
-                                   rewriter.getI32IntegerAttr(sizeof(int32_t)))
-              .getResult();
+      count = LLVM::ConstantOp::create(
+                  rewriter, op.getLoc(), type_i32,
+                  rewriter.getI32IntegerAttr(sizeof(int32_t) * 8))
+                  .getResult();
       kind = LLVM::ConstantOp::create(
                  rewriter, op.getLoc(), type_i32,
                  rewriter.getI32IntegerAttr(cudaMemcpyHostToDevice))
@@ -2010,8 +2010,6 @@ struct LowerCommNcclSendOpToJIT : public OpConversionPattern<comm::NcclSendOp> {
               .getResult();
 
       // copy scalars from device to host memory
-      // TODO move to cudaMemcpyAsync by wrapping NCCL call in
-      // cudaLaunchHostFunc
       Value host_count_ptr =
           LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_i32)
               .getResult();
@@ -2032,38 +2030,41 @@ struct LowerCommNcclSendOpToJIT : public OpConversionPattern<comm::NcclSendOp> {
                        rewriter.getI32IntegerAttr(cudaMemcpyDeviceToHost))
                        .getResult();
 
-      memcpy_count =
-          LLVM::ConstantOp::create(rewriter, op.getLoc(), type_i32,
-                                   rewriter.getI32IntegerAttr(sizeof(int32_t)))
-              .getResult();
+      memcpy_count = LLVM::ConstantOp::create(
+                         rewriter, op.getLoc(), type_i32,
+                         rewriter.getI32IntegerAttr(sizeof(int32_t) * 8))
+                         .getResult();
       LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
-                           SymbolRefAttr::get(context, "cudaMemcpy"),
+                           SymbolRefAttr::get(context, "cudaMemcpyAsync"),
                            ValueRange{
                                host_count_ptr,
                                arg_count_ptr,
                                memcpy_count,
                                kind,
+                               stream,
                            });
       LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
-                           SymbolRefAttr::get(context, "cudaMemcpy"),
+                           SymbolRefAttr::get(context, "cudaMemcpyAsync"),
                            ValueRange{
                                host_peer_ptr,
                                arg_peer_ptr,
                                memcpy_count,
                                kind,
+                               stream,
                            });
 
       memcpy_count = LLVM::ConstantOp::create(
                          rewriter, op.getLoc(), type_i32,
-                         rewriter.getI32IntegerAttr(sizeof(ncclDataType_t)))
+                         rewriter.getI32IntegerAttr(sizeof(ncclDataType_t) * 8))
                          .getResult();
       LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_nccl_datatype},
-                           SymbolRefAttr::get(context, "cudaMemcpy"),
+                           SymbolRefAttr::get(context, "cudaMemcpyAsync"),
                            ValueRange{
                                host_datatype_ptr,
                                arg_datatype_ptr,
                                memcpy_count,
                                kind,
+                               stream,
                            });
 
       memcpy_count =
@@ -2071,12 +2072,13 @@ struct LowerCommNcclSendOpToJIT : public OpConversionPattern<comm::NcclSendOp> {
                                    rewriter.getI32IntegerAttr(sizeof(void *)))
               .getResult();
       LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
-                           SymbolRefAttr::get(context, "cudaMemcpy"),
+                           SymbolRefAttr::get(context, "cudaMemcpyAsync"),
                            ValueRange{
                                host_comm_ptr,
                                arg_comm_ptr,
                                memcpy_count,
                                kind,
+                               stream,
                            });
 
       Value count =
@@ -2122,16 +2124,16 @@ struct LowerCommNcclSendOpToJIT : public OpConversionPattern<comm::NcclSendOp> {
       return rewriter.notifyMatchFailure(op, llvm::toString(std::move(err)));
     }
     auto datatype = rewriter.create<stablehlo::ConstantOp>(
-        op.getLoc(), type_tensor_i32,
-        DenseIntElementsAttr::get(type_tensor_i32, datatype_val.get()));
+        op.getLoc(), RankedTensorType::get({}, type_nccl_datatype),
+        DenseIntElementsAttr::get(
+            RankedTensorType::get({}, type_nccl_datatype),
+            ArrayRef<ncclDataType_t>{datatype_val.get()}));
 
     auto peer = adaptor.getPeer();
     auto comm = adaptor.getComm();
 
-    // TODO revise if it is side effect free
     rewriter.replaceOpWithNewOp<enzymexla::JITCallOp>(
-        op, type_tensor_i32,
-        mlir::FlatSymbolRefAttr::get(context, wrapper_name),
+        op, TypeRange{}, mlir::FlatSymbolRefAttr::get(context, wrapper_name),
         ValueRange{sendbuff, count, datatype, peer, comm},
         /*backend_config=*/rewriter.getStringAttr(""),
         /*operand_layouts=*/nullptr,
@@ -2202,8 +2204,6 @@ struct LowerCommNcclRecvOpToJIT : public OpConversionPattern<comm::NcclRecvOp> {
               .getResult();
 
       // copy scalars from device to host memory
-      // TODO move to cudaMemcpyAsync by wrapping NCCL call in
-      // cudaLaunchHostFunc
       Value host_count_ptr =
           LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_i32)
               .getResult();
@@ -2224,38 +2224,41 @@ struct LowerCommNcclRecvOpToJIT : public OpConversionPattern<comm::NcclRecvOp> {
                        rewriter.getI32IntegerAttr(cudaMemcpyDeviceToHost))
                        .getResult();
 
-      memcpy_count =
-          LLVM::ConstantOp::create(rewriter, op.getLoc(), type_i32,
-                                   rewriter.getI32IntegerAttr(sizeof(int32_t)))
-              .getResult();
+      memcpy_count = LLVM::ConstantOp::create(
+                         rewriter, op.getLoc(), type_i32,
+                         rewriter.getI32IntegerAttr(sizeof(int32_t) * 8))
+                         .getResult();
       LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
-                           SymbolRefAttr::get(context, "cudaMemcpy"),
+                           SymbolRefAttr::get(context, "cudaMemcpyAsync"),
                            ValueRange{
                                host_count_ptr,
                                arg_count_ptr,
                                memcpy_count,
                                kind,
+                               stream,
                            });
       LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
-                           SymbolRefAttr::get(context, "cudaMemcpy"),
+                           SymbolRefAttr::get(context, "cudaMemcpyAsync"),
                            ValueRange{
                                host_peer_ptr,
                                arg_peer_ptr,
                                memcpy_count,
                                kind,
+                               stream,
                            });
 
       memcpy_count = LLVM::ConstantOp::create(
                          rewriter, op.getLoc(), type_i32,
-                         rewriter.getI32IntegerAttr(sizeof(ncclDataType_t)))
+                         rewriter.getI32IntegerAttr(sizeof(ncclDataType_t) * 8))
                          .getResult();
       LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_nccl_datatype},
-                           SymbolRefAttr::get(context, "cudaMemcpy"),
+                           SymbolRefAttr::get(context, "cudaMemcpyAsync"),
                            ValueRange{
                                host_datatype_ptr,
                                arg_datatype_ptr,
                                memcpy_count,
                                kind,
+                               stream,
                            });
 
       memcpy_count =
@@ -2263,12 +2266,13 @@ struct LowerCommNcclRecvOpToJIT : public OpConversionPattern<comm::NcclRecvOp> {
                                    rewriter.getI32IntegerAttr(sizeof(void *)))
               .getResult();
       LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
-                           SymbolRefAttr::get(context, "cudaMemcpy"),
+                           SymbolRefAttr::get(context, "cudaMemcpyAsync"),
                            ValueRange{
                                host_comm_ptr,
                                arg_comm_ptr,
                                memcpy_count,
                                kind,
+                               stream,
                            });
 
       Value count =
@@ -2299,7 +2303,11 @@ struct LowerCommNcclRecvOpToJIT : public OpConversionPattern<comm::NcclRecvOp> {
       LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
     }
 
-    auto recvbuff = adaptor.getRecvbuff();
+    auto type_buffer = op.getRecvbuff().getType();
+    auto recvbuff = rewriter.create<stablehlo::ConstantOp>(
+        op.getLoc(), type_buffer,
+        DenseElementsAttr::get(type_buffer, op.getRecvbuff().getValue()));
+
     auto len = std::reduce(op.getRecvbuff().getType().getShape().begin(),
                            op.getRecvbuff().getType().getShape().end(), 1,
                            std::multiplies<int64_t>());
@@ -2314,8 +2322,10 @@ struct LowerCommNcclRecvOpToJIT : public OpConversionPattern<comm::NcclRecvOp> {
       return rewriter.notifyMatchFailure(op, llvm::toString(std::move(err)));
     }
     auto datatype = rewriter.create<stablehlo::ConstantOp>(
-        op.getLoc(), type_tensor_i32,
-        DenseIntElementsAttr::get(type_tensor_i32, datatype_val.get()));
+        op.getLoc(), RankedTensorType::get({}, type_nccl_datatype),
+        DenseIntElementsAttr::get(
+            RankedTensorType::get({}, type_nccl_datatype),
+            ArrayRef<ncclDataType_t>{datatype_val.get()}));
 
     auto peer = adaptor.getPeer();
     auto comm = adaptor.getComm();
@@ -2327,10 +2337,8 @@ struct LowerCommNcclRecvOpToJIT : public OpConversionPattern<comm::NcclRecvOp> {
             /*operandIndex=*/0,
             /*operandTupleIndices=*/ArrayRef<int64_t>{})});
 
-    // TODO revise if it is side effect free
     rewriter.replaceOpWithNewOp<enzymexla::JITCallOp>(
-        op, type_tensor_i32,
-        mlir::FlatSymbolRefAttr::get(context, wrapper_name),
+        op, type_buffer, mlir::FlatSymbolRefAttr::get(context, wrapper_name),
         ValueRange{recvbuff, count, datatype, peer, comm},
         /*backend_config=*/rewriter.getStringAttr(""),
         /*operand_layouts=*/nullptr,
@@ -2642,10 +2650,10 @@ struct LowerCommNcclBroadcastOpToJIT
                        rewriter.getI32IntegerAttr(cudaMemcpyDeviceToHost))
                        .getResult();
 
-      memcpy_count =
-          LLVM::ConstantOp::create(rewriter, op.getLoc(), type_i32,
-                                   rewriter.getI32IntegerAttr(sizeof(int32_t)))
-              .getResult();
+      memcpy_count = LLVM::ConstantOp::create(
+                         rewriter, op.getLoc(), type_i32,
+                         rewriter.getI32IntegerAttr(sizeof(int32_t) * 8))
+                         .getResult();
       LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
                            SymbolRefAttr::get(context, "cudaMemcpyAsync"),
                            ValueRange{
@@ -2667,7 +2675,7 @@ struct LowerCommNcclBroadcastOpToJIT
 
       memcpy_count = LLVM::ConstantOp::create(
                          rewriter, op.getLoc(), type_i32,
-                         rewriter.getI32IntegerAttr(sizeof(ncclDataType_t)))
+                         rewriter.getI32IntegerAttr(sizeof(ncclDataType_t) * 8))
                          .getResult();
       LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_nccl_datatype},
                            SymbolRefAttr::get(context, "cudaMemcpyAsync"),
@@ -2738,8 +2746,10 @@ struct LowerCommNcclBroadcastOpToJIT
       return rewriter.notifyMatchFailure(op, llvm::toString(std::move(err)));
     }
     auto datatype = rewriter.create<stablehlo::ConstantOp>(
-        op.getLoc(), type_tensor_i32,
-        DenseIntElementsAttr::get(type_tensor_i32, datatype_val.get()));
+        op.getLoc(), RankedTensorType::get({}, type_nccl_datatype),
+        DenseIntElementsAttr::get(
+            RankedTensorType::get({}, type_nccl_datatype),
+            ArrayRef<ncclDataType_t>{datatype_val.get()}));
 
     auto root = adaptor.getRoot();
     auto comm = adaptor.getComm();
@@ -2752,7 +2762,7 @@ struct LowerCommNcclBroadcastOpToJIT
             /*operandTupleIndices=*/ArrayRef<int64_t>{})});
 
     rewriter.replaceOpWithNewOp<enzymexla::JITCallOp>(
-        op, type_tensor_i32,
+        op, op.getRecvbuff().getType(),
         mlir::FlatSymbolRefAttr::get(context, wrapper_name),
         ValueRange{buffer, count, datatype, root, comm},
         /*backend_config=*/rewriter.getStringAttr(""),
@@ -2813,6 +2823,8 @@ struct LowerCommToJITPass
                  LowerCommMpiIrecvOpToJIT, LowerCommMpiWaitOpToJIT,
                  LowerCommMpiWaitallOpToJIT, LowerCommMpiAllreduceOpToJIT,
                  LowerCommMpiBcastOpToJIT>(converter, context);
+
+    patterns.add<>(converter, context);
 
     if (failed(applyPartialConversion(getOperation(), target,
                                       std::move(patterns)))) {
