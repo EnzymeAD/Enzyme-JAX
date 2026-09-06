@@ -1634,6 +1634,7 @@ cc_library(
         "@llvm-project//mlir:ViewLikeInterface",
         "@shardy//shardy/dialect/sdy/ir:dialect",
         "@shardy//shardy/dialect/sdy/transforms/export:passes",
+        "@shardy//shardy/dialect/sdy/transforms/import:passes",
         "@shardy//shardy/dialect/sdy/transforms/propagation:op_sharding_rule_registry",
         "@shardy//shardy/dialect/sdy/transforms/propagation:op_sharding_rule_builder",
         "@stablehlo//:base",

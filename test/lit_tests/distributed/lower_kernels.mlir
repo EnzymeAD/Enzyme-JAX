@@ -1,13 +1,17 @@
-// RUN: enzymexlamlir-opt --distributed-lower-kernels -split-input-file %s | FileCheck %s --check-prefix=NOLOWER
-// RUN: enzymexlamlir-opt --distributed-lower-kernels="lower-logical-axes=true" -split-input-file %s | FileCheck %s --check-prefix=LOWER
+// RUN: enzymexlamlir-opt --distributed-lower-kernels --cse --canonicalize --stabilize-axis-order -split-input-file %s | FileCheck %s --check-prefix=NOLOWER
+// RUN: enzymexlamlir-opt --distributed-lower-kernels="lower-logical-axes=true" --cse --canonicalize --stabilize-axis-order -split-input-file %s | FileCheck %s --check-prefix=LOWER
 
 // Idempotency: applying the pass twice must be a no-op the second time,
-// for both the default and lower-logical-axes=true configurations.
-// RUN: enzymexlamlir-opt --distributed-lower-kernels -split-input-file %s -o %t.default.once
-// RUN: enzymexlamlir-opt --distributed-lower-kernels -split-input-file %t.default.once -o %t.default.twice
+// for both the default and lower-logical-axes=true configurations. Each
+// application is followed by --cse --canonicalize --stabilize-axis-order,
+// same as real pipeline usage, so redundant axis ops (e.g. the empty
+// axis.product created per-kernel when a factor is fully sharded away) get
+// merged/ordered deterministically instead of piling up across kernels.
+// RUN: enzymexlamlir-opt --distributed-lower-kernels --cse --canonicalize --stabilize-axis-order -split-input-file %s -o %t.default.once
+// RUN: enzymexlamlir-opt --distributed-lower-kernels --cse --canonicalize --stabilize-axis-order -split-input-file %t.default.once -o %t.default.twice
 // RUN: diff -u %t.default.once %t.default.twice
-// RUN: enzymexlamlir-opt --distributed-lower-kernels="lower-logical-axes=true" -split-input-file %s -o %t.lower.once
-// RUN: enzymexlamlir-opt --distributed-lower-kernels="lower-logical-axes=true" -split-input-file %t.lower.once -o %t.lower.twice
+// RUN: enzymexlamlir-opt --distributed-lower-kernels="lower-logical-axes=true" --cse --canonicalize --stabilize-axis-order -split-input-file %s -o %t.lower.once
+// RUN: enzymexlamlir-opt --distributed-lower-kernels="lower-logical-axes=true" --cse --canonicalize --stabilize-axis-order -split-input-file %t.lower.once -o %t.lower.twice
 // RUN: diff -u %t.lower.once %t.lower.twice
 
 // A kernel partitioned over a physical axis. Physical axes are never
@@ -183,8 +187,113 @@ module @composite_kernel {
 // NOLOWER-NEXT: ^bb0(%arg0: tensor<4xf32>):
 
 // LOWER-LABEL: module @composite_kernel {
-// LOWER: %[[DF:.*]] = axis.factor %{{.*}} : !distributed.device_local_axis<2><2, 1>
-// LOWER: %[[CG:.*]] = axis.product (%[[DF]] : !axis.axis_factor<!distributed.device_local_axis<2>, 2, 1>)
-// LOWER: axes (%[[CG]] : !axis.factor_group<2>) {
+// LOWER: %[[CG:.*]] = axis.product (%[[DF:.*]] : !axis.axis_factor<!distributed.device_local_axis<2>, 2, 1>)
+// LOWER-NEXT: %[[DF]] = axis.factor %{{.*}} : !distributed.device_local_axis<2><2, 1>
+// LOWER-NEXT: distributed.DistributedKernel (%{{.*}} : tensor<4xf32>) {{.*}}
+// LOWER-NEXT: -> (tensor<4xf32>) {{.*}}
+// LOWER-NEXT: axes (%[[CG]] : !axis.factor_group<2>) {
 // LOWER-NEXT: ^bb0(%arg0: tensor<2xf32>):
 // LOWER-NEXT: distributed.DistributedYield (%arg0 : tensor<2xf32>)
+
+// -----
+
+// A kernel with real multi-op computation (two operands, an add followed by
+// a multiply) sharded over two independent logical axes. Unlike the other
+// cases above, the interior ops here carry their own
+// distributed.argument_shardings/output_shardings, exercising the
+// per-op sharding translation and not just the kernel-boundary one: both ops
+// must shrink in lockstep with the kernel's block-arg/yield types.
+module @addmul_kernel {
+  func.func @main() {
+    return
+  }
+  %x_axis = distributed.LogicalMeshAxes [8] : !distributed.logical_mesh_axis<8>
+  %y_axis = distributed.LogicalMeshAxes [8] : !distributed.logical_mesh_axis<8>
+  %xf = axis.factor %x_axis : !distributed.logical_mesh_axis<8><8, 1>
+  %yf = axis.factor %y_axis : !distributed.logical_mesh_axis<8><8, 1>
+  %xg = axis.product (%xf : !axis.axis_factor<!distributed.logical_mesh_axis<8>, 8, 1>)
+  %yg = axis.product (%yf : !axis.axis_factor<!distributed.logical_mesh_axis<8>, 8, 1>)
+  %a = tensor.empty() : tensor<8x8xf32>
+  %b = tensor.empty() : tensor<8x8xf32>
+  %r = distributed.DistributedKernel (%a : tensor<8x8xf32>, %b : tensor<8x8xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0], [1]] : unreduced_axes = []>, <dim_partitioning_axes = [[0], [1]] : unreduced_axes = []>]>
+    -> (tensor<8x8xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0], [1]] : unreduced_axes = []>]>
+    axes (%xg : !axis.factor_group<8>, %yg : !axis.factor_group<8>) {
+  ^bb0(%arg0: tensor<8x8xf32>, %arg1: tensor<8x8xf32>):
+    %s = stablehlo.add %arg0, %arg1 {distributed.argument_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0], [1]] : unreduced_axes = []>, <dim_partitioning_axes = [[0], [1]] : unreduced_axes = []>]>, distributed.output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0], [1]] : unreduced_axes = []>]>} : tensor<8x8xf32>
+    %m = stablehlo.multiply %s, %arg0 {distributed.argument_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0], [1]] : unreduced_axes = []>, <dim_partitioning_axes = [[0], [1]] : unreduced_axes = []>]>, distributed.output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0], [1]] : unreduced_axes = []>]>} : tensor<8x8xf32>
+    distributed.DistributedYield (%m : tensor<8x8xf32>)
+  }
+}
+
+// Unlowered: nothing changes (both axes are logical, only lowered when
+// lower-logical-axes=true).
+// NOLOWER-LABEL: module @addmul_kernel {
+// NOLOWER: distributed.DistributedKernel (%{{.*}} : tensor<8x8xf32>, %{{.*}} : tensor<8x8xf32>) {{.*}}
+// NOLOWER-NEXT: -> (tensor<8x8xf32>) {{.*}}
+// NOLOWER: ^bb0(%arg0: tensor<8x8xf32>, %arg1: tensor<8x8xf32>):
+// NOLOWER-NEXT: %[[ADD:.*]] = stablehlo.add %arg0, %arg1 {{.*}} : tensor<8x8xf32>
+// NOLOWER-NEXT: stablehlo.multiply %[[ADD]], %arg0 {{.*}} : tensor<8x8xf32>
+
+// Lowered: external operand/result types stay tensor<8x8xf32>; the internal
+// block-arg/yield types and both interior ops shrink to tensor<1x1xf32>, and
+// each factor_group shrinks from 8 to 1 (with an empty axis.product each).
+// LOWER-LABEL: module @addmul_kernel {
+// LOWER: distributed.DistributedKernel (%{{.*}} : tensor<8x8xf32>, %{{.*}} : tensor<8x8xf32>) {{.*}}
+// LOWER-NEXT: -> (tensor<8x8xf32>) {{.*}}
+// LOWER: ^bb0(%arg0: tensor<1x1xf32>, %arg1: tensor<1x1xf32>):
+// LOWER-NEXT: %[[ADD:.*]] = stablehlo.add %arg0, %arg1 {{.*}} : tensor<1x1xf32>
+// LOWER-NEXT: stablehlo.multiply %[[ADD]], %arg0 {{.*}} : tensor<1x1xf32>
+// LOWER-NEXT: distributed.DistributedYield (%{{.*}} : tensor<1x1xf32>)
+
+// -----
+
+// A kernel whose only interior op is a dot_general contracting over a
+// shardable logical axis ("k") that does not survive into the output. This
+// axis is only visible on the operand side (argument_shardings), never in
+// output_shardings, so lowering it needs a placeholder all-reduce to satisfy
+// Shardy's invariant that a sharded contracting dim have exactly one
+// sdy.all_reduce consumer (see insertPlaceholderAllReduces /
+// stripPlaceholderAllReduces in LowerKernels.cpp): the placeholder is
+// inserted before Shardy lowering and stripped back out afterward, since a
+// kernel body must never itself contain a collective.
+module @dot_general_kernel {
+  func.func @main() {
+    return
+  }
+  %i_axis = distributed.LogicalMeshAxes [2] : !distributed.logical_mesh_axis<2>
+  %k_axis = distributed.LogicalMeshAxes [2] : !distributed.logical_mesh_axis<2>
+  %j_axis = distributed.LogicalMeshAxes [2] : !distributed.logical_mesh_axis<2>
+  %if = axis.factor %i_axis : !distributed.logical_mesh_axis<2><2, 1>
+  %kf = axis.factor %k_axis : !distributed.logical_mesh_axis<2><2, 1>
+  %jf = axis.factor %j_axis : !distributed.logical_mesh_axis<2><2, 1>
+  %ig = axis.product (%if : !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>)
+  %kg = axis.product (%kf : !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>)
+  %jg = axis.product (%jf : !axis.axis_factor<!distributed.logical_mesh_axis<2>, 2, 1>)
+  %lhs = tensor.empty() : tensor<2x2xf32>
+  %rhs = tensor.empty() : tensor<2x2xf32>
+  %r = distributed.DistributedKernel (%lhs : tensor<2x2xf32>, %rhs : tensor<2x2xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0], [1]] : unreduced_axes = []>, <dim_partitioning_axes = [[1], [2]] : unreduced_axes = []>]>
+    -> (tensor<2x2xf32>) #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0], [2]] : unreduced_axes = []>]>
+    axes (%ig : !axis.factor_group<2>, %kg : !axis.factor_group<2>, %jg : !axis.factor_group<2>) {
+  ^bb0(%arg0: tensor<2x2xf32>, %arg1: tensor<2x2xf32>):
+    %d = stablehlo.dot_general %arg0, %arg1, contracting_dims = [1] x [0] {distributed.argument_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0], [1]] : unreduced_axes = []>, <dim_partitioning_axes = [[1], [2]] : unreduced_axes = []>]>, distributed.output_shardings = #distributed.indexed_tensor_sharding_per_value<[<dim_partitioning_axes = [[0], [2]] : unreduced_axes = []>]>} : (tensor<2x2xf32>, tensor<2x2xf32>) -> tensor<2x2xf32>
+    distributed.DistributedYield (%d : tensor<2x2xf32>)
+  }
+}
+
+// Unlowered: nothing changes (all three axes are logical).
+// NOLOWER-LABEL: module @dot_general_kernel {
+// NOLOWER: distributed.DistributedKernel (%{{.*}} : tensor<2x2xf32>, %{{.*}} : tensor<2x2xf32>) {{.*}}
+// NOLOWER-NEXT: -> (tensor<2x2xf32>) {{.*}}
+// NOLOWER: ^bb0(%arg0: tensor<2x2xf32>, %arg1: tensor<2x2xf32>):
+// NOLOWER-NEXT: stablehlo.dot_general %arg0, %arg1, contracting_dims = [1] x [0] {{.*}} : (tensor<2x2xf32>, tensor<2x2xf32>) -> tensor<2x2xf32>
+
+// Lowered: external operand/result types stay tensor<2x2xf32>; the internal
+// block-arg/dot_general/yield types shrink to tensor<1x1xf32> and all three
+// factor_groups shrink from 2 to 1 (empty axis.product each). No collective
+// (all_reduce or otherwise) survives in the final kernel body.
+// LOWER-LABEL: module @dot_general_kernel {
+// LOWER: distributed.DistributedKernel (%{{.*}} : tensor<2x2xf32>, %{{.*}} : tensor<2x2xf32>) {{.*}}
+// LOWER-NEXT: -> (tensor<2x2xf32>) {{.*}}
+// LOWER: ^bb0(%arg0: tensor<1x1xf32>, %arg1: tensor<1x1xf32>):
+// LOWER-NEXT: %[[DOT:.*]] = stablehlo.dot_general %arg0, %arg1, contracting_dims = [1] x [0] {{.*}} : (tensor<1x1xf32>, tensor<1x1xf32>) -> tensor<1x1xf32>
+// LOWER-NEXT: distributed.DistributedYield (%[[DOT]] : tensor<1x1xf32>)

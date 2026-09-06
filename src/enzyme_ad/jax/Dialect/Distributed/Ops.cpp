@@ -76,12 +76,14 @@ static LogicalResult verifyIndexedShardingPerValueAgainstDimensionRanges(
       }
     }
 
-    for (int64_t dimIndex : sharding.getUnreducedAxes().asArrayRef()) {
-      if (dimIndex < 0 || dimIndex >= expectedDimCount) {
+    // unreduced_axes holds partitioning-axis indices (like
+    // dim_partitioning_axes entries), not tensor-dim indices.
+    for (int64_t axisIndex : sharding.getUnreducedAxes().asArrayRef()) {
+      if (axisIndex < 0 || axisIndex >= partitioningAxisCount) {
         return op->emitOpError()
                << "requires " << ownerName << "[" << valueIndex
-               << "] unreduced_axes index " << dimIndex
-               << " to be in range [0, " << expectedDimCount << ")";
+               << "] unreduced_axes index " << axisIndex
+               << " to be in range [0, " << partitioningAxisCount << ")";
       }
     }
   }

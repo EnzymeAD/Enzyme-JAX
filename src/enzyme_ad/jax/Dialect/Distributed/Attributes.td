@@ -17,7 +17,8 @@ class EmptyableArrayRefParameter<string arrayOf, string desc = ""> :
 // Per-tensor sharding metadata keyed by partitioning-axis indices.
 // - dim_partitioning_axes: one DenseI64ArrayAttr per tensor dim, where each
 //   entry stores zero or more indices into the owning op's partitioning_axes.
-// - unreduced_axes: tensor-dim indices that remain unreduced.
+// - unreduced_axes: logical axis indices that remain unreduced. (We expect all tensor reduction indices to happen locally,
+//   so this only stores logical/ non-local physical axes to reduce over)
 def IndexedTensorShardingAttr : AttrDef<DistributedDialect, "IndexedTensorSharding"> {
   let summary = "Tensor sharding with integer partitioning-axis indices";
   let cppNamespace = "::mlir::enzyme::distributed";
