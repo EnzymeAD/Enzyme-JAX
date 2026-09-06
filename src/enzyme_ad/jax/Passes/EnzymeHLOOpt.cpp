@@ -476,10 +476,15 @@ void sliceSliceHelper(stablehlo::SliceOp prev, SmallVector<int64_t> &starts,
     auto start2 = pstart + pstep * nstart;
     auto step2 = pstep * nstep;
     auto end2 = pstart + pstep * nstart + pstep * (nend - nstart);
-    if (start2 > size)
-      start2 = size;
-    if (end2 > size)
-      end2 = size;
+    // The merged bounds are within the inner slice's static bounds already;
+    // clamping to the operand only matters when its extent is known
+    // (kDynamic is INT64_MIN, and clamping to it makes a negative start).
+    if (size != ShapedType::kDynamic) {
+      if (start2 > size)
+        start2 = size;
+      if (end2 > size)
+        end2 = size;
+    }
     nstart = start2;
     nstep = step2;
     nend = end2;
