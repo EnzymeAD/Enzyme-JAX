@@ -55,12 +55,14 @@
 
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallSet.h"
+#include "llvm/IR/ConstantRange.h"
 
 #include "llvm/ADT/MapVector.h"
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <iterator>
+#include <limits>
 #include <llvm/ADT/MapVector.h>
 #include <llvm/ADT/STLExtras.h>
 #include <llvm/ADT/SmallVector.h>
@@ -27711,6 +27713,265 @@ struct ScatterSubSimplify final
   }
 };
 
+// Combine independent point writes into a single scatter. In particular, this
+// avoids turning a chain of disjoint scatters into a chain of in-place updates
+// which a downstream GPU backend may be unable to fuse.
+struct ScatterDisjointConcat final
+    : CheckedOpRewritePattern<stablehlo::ScatterOp, ScatterDisjointConcat> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ScatterOp outer,
+                                    PatternRewriter &rewriter) const {
+    if (!isPointWrite(outer))
+      return failure();
+    auto inner = outer.getInputs()[0].getDefiningOp<stablehlo::ScatterOp>();
+    if (!inner || !isPointWrite(inner) || !inner->hasOneUse())
+      return failure();
+
+    auto innerIndices = inner.getScatterIndices();
+    auto outerIndices = outer.getScatterIndices();
+    if (innerIndices.getType().getElementType() !=
+        outerIndices.getType().getElementType())
+      return failure();
+
+    // unique_indices on each scatter does not establish uniqueness across
+    // scatters. Prove that their index sets are disjoint before combining them.
+    // ConstantRange models the index type's modular arithmetic, including
+    // overflow; mathematical integer bounds would not be sufficient here.
+    DenseMap<Value, llvm::ConstantRange> ranges;
+    if (!getIndexRange(innerIndices, ranges)
+             .intersectWith(getIndexRange(outerIndices, ranges))
+             .isEmptySet())
+      return failure();
+
+    int64_t innerCount = cast<RankedTensorType>(inner.getUpdates()[0].getType())
+                             .getNumElements();
+    int64_t outerCount = cast<RankedTensorType>(outer.getUpdates()[0].getType())
+                             .getNumElements();
+    if (innerCount > std::numeric_limits<int64_t>::max() - outerCount)
+      return failure();
+
+    auto loc = outer.getLoc();
+    // A point scatter's batch dimensions can be flattened without changing
+    // which update belongs to each index. This also handles different batch
+    // shapes and explicit/implicit singleton index-vector dimensions.
+    auto [innerIndex, innerUpdate] = flattenPointWrite(inner, rewriter);
+    auto [outerIndex, outerUpdate] = flattenPointWrite(outer, rewriter);
+    Value indices[] = {innerIndex, outerIndex};
+    Value updates[] = {innerUpdate, outerUpdate};
+    auto combinedIndices =
+        stablehlo::ConcatenateOp::create(rewriter, loc, indices, 0);
+    auto combinedUpdates =
+        stablehlo::ConcatenateOp::create(rewriter, loc, updates, 0);
+    auto dims = stablehlo::ScatterDimensionNumbersAttr::get(
+        rewriter.getContext(), /*updateWindowDims=*/{},
+        /*insertedWindowDims=*/{0}, /*inputBatchingDims=*/{},
+        /*scatterIndicesBatchingDims=*/{}, /*scatterDimsToOperandDims=*/{0},
+        /*indexVectorDim=*/1);
+    auto combined = stablehlo::ScatterOp::create(
+        rewriter, loc, outer.getResultTypes(), inner.getInputs(),
+        combinedIndices, ValueRange{combinedUpdates}, dims,
+        /*indicesAreSorted=*/false, /*uniqueIndices=*/true);
+    rewriter.cloneRegionBefore(outer.getUpdateComputation(),
+                               combined.getUpdateComputation(),
+                               combined.getUpdateComputation().end());
+    rewriter.replaceOp(outer, combined);
+    rewriter.eraseOp(inner);
+    return success();
+  }
+
+private:
+  static Value transposeIndexGrid(Value value, ArrayRef<int64_t> permutation,
+                                  PatternRewriter &rewriter,
+                                  DenseMap<Value, Value> &cache) {
+    if (auto found = cache.find(value); found != cache.end())
+      return found->second;
+    auto type = cast<RankedTensorType>(value.getType());
+    SmallVector<int64_t> shape;
+    for (int64_t dim : permutation)
+      shape.push_back(type.getDimSize(dim));
+    auto transposedType = type.clone(shape);
+    auto inverse = getInversePermutation(permutation);
+    auto loc = value.getLoc();
+    Value result;
+    if (auto iota = value.getDefiningOp<stablehlo::IotaOp>()) {
+      result = stablehlo::IotaOp::create(rewriter, loc, transposedType,
+                                         inverse[iota.getIotaDimension()]);
+    } else if (auto broadcast =
+                   value.getDefiningOp<stablehlo::BroadcastInDimOp>()) {
+      SmallVector<int64_t> dims;
+      for (int64_t dim : broadcast.getBroadcastDimensions())
+        dims.push_back(inverse[dim]);
+      if (llvm::is_sorted(dims))
+        result = stablehlo::BroadcastInDimOp::create(
+            rewriter, loc, transposedType, broadcast.getOperand(), dims);
+    } else if (auto *def = value.getDefiningOp();
+               isa_and_nonnull<stablehlo::AddOp, stablehlo::SubtractOp,
+                               stablehlo::MulOp, stablehlo::ConvertOp>(def)) {
+      SmallVector<Value> operands;
+      for (Value operand : def->getOperands())
+        operands.push_back(
+            transposeIndexGrid(operand, permutation, rewriter, cache));
+      result = rewriter
+                   .create(loc, def->getName().getIdentifier(), operands,
+                           TypeRange{transposedType}, def->getAttrs(), {}, {})
+                   ->getResult(0);
+    }
+    if (!result)
+      result =
+          stablehlo::TransposeOp::create(rewriter, loc, value, permutation);
+    cache[value] = result;
+    return result;
+  }
+
+  static std::pair<Value, Value> flattenPointWrite(stablehlo::ScatterOp op,
+                                                   PatternRewriter &rewriter) {
+    Value indices = op.getScatterIndices();
+    Value updates = op.getUpdates()[0];
+    int64_t count = cast<RankedTensorType>(updates.getType()).getNumElements();
+    Value grid = indices;
+    if (auto reshape = grid.getDefiningOp<stablehlo::ReshapeOp>())
+      grid = reshape.getOperand();
+    auto gridTy = cast<RankedTensorType>(grid.getType());
+    SmallVector<IotaLikeTensor> iotas;
+    if (gridTy.getRank() > 1 && extractGridIotas(grid, iotas) &&
+        llvm::all_of(iotas, [&](const auto &iota) {
+          return iota.dimension >= 0 && iota.dimension < gridTy.getRank();
+        })) {
+      unsigned width = gridTy.getElementType().getIntOrFloatBitWidth();
+      SmallVector<APInt> strides(gridTy.getRank(), APInt(width, 0));
+      for (const auto &iota : iotas)
+        strides[iota.dimension] +=
+            cast<IntegerAttr>(iota.scale).getValue().sextOrTrunc(width);
+      SmallVector<int64_t> permutation;
+      for (int64_t d = 0; d < gridTy.getRank(); ++d)
+        permutation.push_back(d);
+      // Visit the smallest-stride dimension fastest before flattening. This
+      // lets update producers keep the layout matching their destination
+      // accesses instead of materializing transposes for the concatenation.
+      // Strides are only a layout heuristic: any common permutation preserves
+      // the index/update pairing and is legal for these unique point writes.
+      llvm::stable_sort(permutation, [&](int64_t a, int64_t b) {
+        return strides[a].abs().ugt(strides[b].abs());
+      });
+      if (!isIotaRange(permutation)) {
+        updates = stablehlo::ReshapeOpCreate(rewriter, op.getLoc(), updates,
+                                             gridTy.getShape());
+        updates = stablehlo::TransposeOp::create(rewriter, op.getLoc(), updates,
+                                                 permutation);
+        // Commute the permutation through inexpensive index arithmetic even
+        // when it is shared. Leaving a transpose of an iota expression here
+        // can make the backend materialize the entire index tensor. Preserve
+        // the arithmetic itself (including conversions and integer overflow),
+        // rather than reconstructing it from the layout heuristic's strides.
+        DenseMap<Value, Value> cache;
+        indices = transposeIndexGrid(grid, permutation, rewriter, cache);
+      }
+    }
+    return {
+        stablehlo::ReshapeOpCreate(rewriter, op.getLoc(), indices, {count, 1}),
+        stablehlo::ReshapeOpCreate(rewriter, op.getLoc(), updates, {count})};
+  }
+
+  static bool isPointWrite(stablehlo::ScatterOp op) {
+    if (op.getInputs().size() != 1 || !op.getUniqueIndices() ||
+        !isSetindexBlock(&op.getUpdateComputation().front()))
+      return false;
+    auto inputTy = cast<RankedTensorType>(op.getInputs()[0].getType());
+    auto indicesTy = op.getScatterIndices().getType();
+    auto updateTy = cast<RankedTensorType>(op.getUpdates()[0].getType());
+    if (inputTy.getRank() != 1 || !inputTy.hasStaticShape() ||
+        !indicesTy.hasStaticShape() || !updateTy.hasStaticShape() ||
+        updateTy.getNumElements() == 0)
+      return false;
+    auto dims = op.getScatterDimensionNumbers();
+    if (!dims.getUpdateWindowDims().empty() ||
+        dims.getInsertedWindowDims() != ArrayRef<int64_t>{0} ||
+        !dims.getInputBatchingDims().empty() ||
+        !dims.getScatterIndicesBatchingDims().empty() ||
+        dims.getScatterDimsToOperandDims() != ArrayRef<int64_t>{0})
+      return false;
+    return indicesTy.getNumElements() == updateTy.getNumElements();
+  }
+
+  static llvm::ConstantRange
+  getIndexRange(Value value, DenseMap<Value, llvm::ConstantRange> &cache,
+                unsigned depth = 0) {
+    if (auto found = cache.find(value); found != cache.end())
+      return found->second;
+    auto type = cast<RankedTensorType>(value.getType());
+    unsigned width = type.getElementType().getIntOrFloatBitWidth();
+    auto full = llvm::ConstantRange::getFull(width);
+    // Boolean conversion uses nonzero tests, not integer truncation. Keep its
+    // range conservative instead of applying modular arithmetic to i1 values.
+    if (depth == 64 || width == 1)
+      return full;
+    auto infer = [&]() -> llvm::ConstantRange {
+      if (!type.hasStaticShape())
+        return full;
+      if (type.getNumElements() == 0)
+        return llvm::ConstantRange::getEmpty(width);
+      DenseIntElementsAttr constant;
+      if (matchPattern(value, m_Constant(&constant))) {
+        if (constant.isSplat())
+          return llvm::ConstantRange(constant.getSplatValue<APInt>());
+        auto values = constant.getValues<APInt>();
+        APInt lower = *values.begin(), upper = lower;
+        for (const APInt &element : values) {
+          if (element.ult(lower))
+            lower = element;
+          if (element.ugt(upper))
+            upper = element;
+        }
+        return llvm::ConstantRange::getNonEmpty(lower, upper + 1);
+      }
+      if (auto iota = value.getDefiningOp<stablehlo::IotaOp>()) {
+        uint64_t size = type.getDimSize(iota.getIotaDimension());
+        if (APInt(64, size).getActiveBits() > width)
+          return full;
+        return llvm::ConstantRange::getNonEmpty(APInt(width, 0),
+                                                APInt(width, size));
+      }
+      auto range = [&](Value operand) {
+        return getIndexRange(operand, cache, depth + 1);
+      };
+      auto *op = value.getDefiningOp();
+      if (!op)
+        return full;
+      if (isa<stablehlo::ReshapeOp, stablehlo::TransposeOp,
+              stablehlo::BroadcastInDimOp, stablehlo::ReverseOp,
+              stablehlo::SliceOp, stablehlo::DynamicSliceOp>(op))
+        return range(op->getOperand(0));
+      if (auto convert = dyn_cast<stablehlo::ConvertOp>(op)) {
+        auto sourceType = dyn_cast<IntegerType>(
+            convert.getOperand().getType().getElementType());
+        if (!sourceType)
+          return full;
+        auto sourceRange = range(convert.getOperand());
+        return sourceType.isUnsigned() || sourceType.getWidth() == 1
+                   ? sourceRange.zextOrTrunc(width)
+                   : sourceRange.sextOrTrunc(width);
+      }
+      if (isa<stablehlo::AddOp>(op))
+        return range(op->getOperand(0)).add(range(op->getOperand(1)));
+      if (isa<stablehlo::SubtractOp>(op))
+        return range(op->getOperand(0)).sub(range(op->getOperand(1)));
+      if (isa<stablehlo::MulOp>(op))
+        return range(op->getOperand(0)).multiply(range(op->getOperand(1)));
+      if (auto concat = dyn_cast<stablehlo::ConcatenateOp>(op)) {
+        auto result = llvm::ConstantRange::getEmpty(width);
+        for (Value operand : concat.getOperands())
+          result = result.unionWith(range(operand));
+        return result;
+      }
+      return full;
+    };
+    auto result = infer();
+    cache.try_emplace(value, result);
+    return result;
+  }
+};
+
 // Fuse scatter(scatter(input, indices, updates1) { body1 }, indices, updates2)
 // { body2 } into a single scatter when both use the same indices and scatter
 // dimension numbers.
@@ -36975,6 +37236,10 @@ struct EnzymeHLOOptPass
 
     RewritePatternSet patterns(context);
     mlir::enzyme::populateWithGenerated(patterns);
+
+    // Combine disjoint writes before individual scatters become in-place DUS
+    // operations. This is enabled in the normal optimization pipeline.
+    patterns.add<ScatterDisjointConcat>(context, PatternBenefit(2));
 
     patterns.add<SliceExtend>(context);
     patterns.add<SliceRotate>(context);
