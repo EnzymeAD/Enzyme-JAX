@@ -1363,6 +1363,38 @@ def AffineToStableHLORaising : Pass<"raise-affine-to-stablehlo"> {
   ];
 }
 
+def XLAMegakernelizePass : Pass<"xla-megakernelize", "ModuleOp"> {
+  let summary = "Fuse XLA wrappers and lift wrapper loops into megakernels";
+  let description = [{
+    Fuse compatible sequential enzymexla.xla_wrapper operations which
+    have proven MustAlias or NoAlias relationships between their buffers. The
+    fused wrapper operates on their union, threading updated tensor state for
+    shared buffers while preserving independent buffers. Each wrapper must use
+    unique, pairwise-disjoint buffers. The raised StableHLO function bodies are
+    cloned into a new function. If alias analysis cannot prove the required
+    MustAlias and NoAlias relationships, the wrappers are left unchanged.
+
+    An scf.for or affine.for containing one wrapper and otherwise only pure
+    bookkeeping can also be moved into a raised function as a stablehlo.while.
+    This is restricted to loops whose induction variable is unused and whose
+    wrapper buffers are proven pairwise non-aliasing. Dynamic loop bounds are
+    copied to temporary device allocations before the wrapper call; constant
+    bounds are embedded directly in the raised StableHLO function.
+
+    The resulting function is compiled as one XLA program. Fusion into GPU
+    kernels remains a backend decision.
+  }];
+  let dependentDialects = [
+    "arith::ArithDialect",
+    "enzymexla::EnzymeXLADialect",
+    "func::FuncDialect",
+    "gpu::GPUDialect",
+    "memref::MemRefDialect",
+    "scf::SCFDialect",
+    "stablehlo::StablehloDialect",
+  ];
+}
+
 def ParallelLower : Pass<"parallel-lower"> {
   let summary = "Lower gpu launch op to parallel ops";
   let dependentDialects = [
