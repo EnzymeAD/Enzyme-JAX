@@ -2088,10 +2088,8 @@ struct LowerCommNcclSendOpToJIT : public OpConversionPattern<comm::NcclSendOp> {
     auto datatype_val = convertMlirTypeToNcclDatatype(
         op.getSendbuff().getType().getElementType());
     if (!datatype_val) {
-      std::ostringstream oss;
-      oss << datatype_val;
-      return rewriter.notifyMatchFailure(
-          op, absl::StrFormat("Unsupported datatype: %s", oss.str()));
+      auto err = datatype_val.takeError();
+      return rewriter.notifyMatchFailure(op, llvm::toString(std::move(err)));
     }
     auto datatype = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_tensor_i32,
@@ -2280,12 +2278,10 @@ struct LowerCommNcclRecvOpToJIT : public OpConversionPattern<comm::NcclRecvOp> {
         DenseIntElementsAttr::get(type_tensor_i32, len));
 
     auto datatype_val = convertMlirTypeToNcclDatatype(
-        op.getSendbuff().getType().getElementType());
+        op.getRecvbuff().getType().getElementType());
     if (!datatype_val) {
-      std::ostringstream oss;
-      oss << datatype_val;
-      return rewriter.notifyMatchFailure(
-          op, absl::StrFormat("Unsupported datatype: %s", oss.str()));
+      auto err = datatype_val.takeError();
+      return rewriter.notifyMatchFailure(op, llvm::toString(std::move(err)));
     }
     auto datatype = rewriter.create<stablehlo::ConstantOp>(
         op.getLoc(), type_tensor_i32,
