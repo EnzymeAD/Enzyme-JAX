@@ -1948,7 +1948,7 @@ struct LowerCommNcclSendOpToJIT : public OpConversionPattern<comm::NcclSendOp> {
       rewriter.setInsertionPointToStart(moduleOp.getBody());
 
       auto funcType = LLVM::LLVMFunctionType::get(
-          type_void, {type_ptr, type_ptr, type_ptr}, false);
+          type_void, {type_ptr, type_ptr, type_ptr, type_ptr, type_ptr}, false);
 
       auto wrapperFunc = LLVM::LLVMFuncOp::create(rewriter, op.getLoc(),
                                                   wrapper_name, funcType);
