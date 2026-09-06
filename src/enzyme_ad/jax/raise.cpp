@@ -203,6 +203,12 @@ extern "C" std::string runLLVMToMLIRRoundTrip(std::string input,
                        ",llvm-to-affine-access," + canonicalize + ",";
       pass_pipeline += "func.func(kernelcast),raise-affine-to-stablehlo{prefer_while_raising=false "
       "dump_failed_lockstep=true}," + canonicalize + ",arith-raise{stablehlo=true},"
+      // Optimize each raised kernel once here, before the linked runtime
+      // specializes it to its buffer sizes at first execution: a raised
+      // kernel is largely repeated index arithmetic (cse alone takes the
+      // modules mfem embeds from 844 MB to 252 MB of text), and what
+      // enzyme-hlo-opt folds here it does not fold again per execution.
+      "cse,enzyme-hlo-opt," + canonicalize + ","
       "symbol-dce";
       if (outfile.size() && getenv("EXPORT_REACTANT")) {
         pass_pipeline += ",print{filename="+outfile+".mlir}";
