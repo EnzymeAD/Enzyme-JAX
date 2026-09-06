@@ -95,3 +95,12 @@ func.func @test8(%arg0: tensor<4xf64>) -> tensor<4xf64> {
 // CHECK-NEXT:     %0 = stablehlo.logistic %arg0 {enzymexla.non_negative = [#enzymexla<guaranteed GUARANTEED>]} : tensor<4xf64>
 // CHECK-NEXT:     return %0 : tensor<4xf64>
 // CHECK-NEXT: }
+
+// mul of two distinct block args must NOT be proven non-negative: the product
+// is negative whenever the args have opposite signs, so the abs has to stay.
+func.func @test9(%arg0: tensor<12xf64>, %arg1: tensor<12xf64>) -> tensor<12xf64> {
+    %0 = stablehlo.multiply %arg0, %arg1 : tensor<12xf64>
+    // CHECK: stablehlo.abs
+    %1 = stablehlo.abs %0 : tensor<12xf64>
+    return %1 : tensor<12xf64>
+}
