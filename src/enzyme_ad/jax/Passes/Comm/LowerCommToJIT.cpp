@@ -11,6 +11,8 @@
 #include "src/enzyme_ad/jax/Passes/Comm/TypeConversion.h"
 #include "stablehlo/dialect/StablehloOps.h"
 
+#include "cuda/cuda_runtime_api.h"
+
 namespace mlir::comm {
 #define GEN_PASS_DEF_LOWERCOMMTOJITPASS
 #include "src/enzyme_ad/jax/Passes/Comm/Passes.h.inc"
@@ -1624,6 +1626,141 @@ struct LowerCommMpiBcastOpToJIT : public OpConversionPattern<comm::MpiBcastOp> {
         /*res_attrs=*/nullptr,
         /*output_operand_aliases=*/aliases,
         /*xla_side_effect_free=*/nullptr);
+
+    return success();
+  }
+};
+
+struct LowerCommNcclCommCountOpToJIT
+    : public OpConversionPattern<comm::NcclCommCountOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(comm::NcclCommCountOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto context = op->getContext();
+
+    auto moduleOp = op->getParentOfType<ModuleOp>();
+    auto type_ptr = LLVM::LLVMPointerType::get(context);
+    auto type_void = LLVM::LLVMVoidType::get(context);
+    auto type_i32 = IntegerType::get(context, 32);
+    auto type_tensor_i32 = RankedTensorType::get({}, type_i32);
+
+    std::string function_name = "ncclCommCount";
+    std::string wrapper_name = "enzymexla_jitwrap_" + function_name;
+
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapper_name)) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+      auto funcType =
+          LLVM::LLVMFunctionType::get(type_void, {type_ptr, type_ptr}, false);
+
+      auto wrapperFunc = LLVM::LLVMFuncOp::create(rewriter, op.getLoc(),
+                                                  wrapper_name, funcType);
+
+      Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
+      rewriter.setInsertionPointToStart(entryBlock);
+
+      // Add function-level memory effects attribute
+      //   auto memoryEffectsAttr = rewriter.getArrayAttr(
+      //       {rewriter.getStringAttr("read"), rewriter.getStringAttr("write"),
+      //        rewriter.getStringAttr("allocate"),
+      //        rewriter.getStringAttr("free")});
+      //   wrapperFunc->setAttr("enzymexla.memory_effects", memoryEffectsAttr);
+      //   wrapperFunc->setAttr("enzymexla.device_abi",
+      //                        rewriter.getStringAttr("cuda"));
+      // Add argument-level memory effects attribute to all arguments
+      //   for (unsigned i = 0; i < 2; ++i) {
+      //     wrapperFunc.setArgAttr(i, "enzymexla.memory_effects",
+      //                            memoryEffectsAttr);
+      //   }
+
+      Value arg_comm_ptr = entryBlock->getArgument(0);
+      Value arg_size_ptr = entryBlock->getArgument(1);
+
+      Value host_comm_ptr =
+          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_ptr)
+              .getResult();
+
+      // TODO move to cudaMemcpyAsync by wrapping NCCL call in cudaLaunchHostFunc
+      // load `comm` to host memory
+      Value count =
+          LLVM::ConstantOp::create(rewriter, op.getLoc(), type_i32,
+                                   rewriter.getI32IntegerAttr(sizeof(int32_t)))
+              .getResult();
+      Value kind = LLVM::ConstantOp::create(
+                       rewriter, op.getLoc(), type_i32,
+                       rewriter.getI32IntegerAttr(cudaMemcpyDeviceToHost))
+                       .getResult();
+      LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
+                           SymbolRefAttr::get(context, "cudaMemcpy"),
+                           ValueRange{
+                               host_comm_ptr,
+                               arg_comm_ptr,
+                               count,
+                               kind,
+                           });
+      Value comm =
+          LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr, host_comm_ptr)
+              .getResult();
+
+      // TODO error checking
+      // currently, we ignore the int return code
+      Value host_size_ptr =
+          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_i32, type_ptr)
+              .getResult();
+      LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
+                           SymbolRefAttr::get(context, function_name),
+                           ValueRange{
+                               comm,
+                               host_size_ptr,
+                           });
+
+      // copy `count` result back to device memory
+      count =
+          LLVM::ConstantOp::create(rewriter, op.getLoc(), type_i32,
+                                   rewriter.getI32IntegerAttr(sizeof(int32_t)))
+              .getResult();
+      kind = LLVM::ConstantOp::create(
+                 rewriter, op.getLoc(), type_i32,
+                 rewriter.getI32IntegerAttr(cudaMemcpyHostToDevice))
+                 .getResult();
+      LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
+                           SymbolRefAttr::get(context, "cudaMemcpy"),
+                           ValueRange{
+                               arg_size_ptr,
+                               host_size_ptr,
+                               count,
+                               kind,
+                           });
+      LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
+    }
+
+    auto comm = adaptor.getComm();
+    auto size_placeholder = stablehlo::ConstantOp::create(
+        rewriter, op.getLoc(), type_tensor_i32,
+        DenseIntElementsAttr::get(type_tensor_i32, ArrayRef<int32_t>{-1}));
+
+    auto aliases =
+        rewriter.getArrayAttr({stablehlo::OutputOperandAliasAttr::get(
+            context,
+            /*outputTupleIndices=*/ArrayRef<int64_t>{},
+            /*operandIndex=*/1,
+            /*operandTupleIndices=*/ArrayRef<int64_t>{})});
+
+    // TODO revise if it is side effect free
+    rewriter.replaceOpWithNewOp<enzymexla::JITCallOp>(
+        op, type_tensor_i32,
+        mlir::FlatSymbolRefAttr::get(context, wrapper_name),
+        ValueRange{comm, size_placeholder},
+        /*backend_config=*/rewriter.getStringAttr(""),
+        /*operand_layouts=*/nullptr,
+        /*result_layouts=*/nullptr,
+        /*arg_attrs=*/nullptr,
+        /*res_attrs=*/nullptr,
+        /*output_operand_aliases=*/aliases,
+        /*xla_side_effect_free=*/rewriter.getUnitAttr());
 
     return success();
   }
