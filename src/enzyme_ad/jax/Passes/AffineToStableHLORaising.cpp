@@ -2993,6 +2993,33 @@ tryRaisingOpToStableHLO(Operation *op, IRMapping &mapping, OpBuilder &builder,
         startIndices.push_back(startIndex);
       }
 
+      // A lane range wider than the buffer (a guarded read `if (q < 2)
+      // Bo[q][d]` over three lanes of a 2-row scratch) would slice past
+      // the buffer, an op no verifier accepts. Pad the buffer out to the
+      // range; the guard's select discards the padded lanes.
+      auto inTy = cast<RankedTensorType>(inputTen.getType());
+      SmallVector<int64_t> padHigh(outputShape.size(), 0);
+      bool pad = false;
+      for (auto [d, sz] : llvm::enumerate(outputShape))
+        if (d < (size_t)inTy.getRank() && !inTy.isDynamicDim(d) &&
+            inTy.getDimSize(d) < sz) {
+          padHigh[d] = sz - inTy.getDimSize(d);
+          pad = true;
+        }
+      if (pad) {
+        SmallVector<int64_t> zeros(outputShape.size(), 0);
+        Value zero = stablehlo::ConstantOp::create(
+            builder,
+            rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+            RankedTensorType::get({}, inTy.getElementType()),
+            SplatElementsAttr::get(
+                RankedTensorType::get({}, inTy.getElementType()),
+                builder.getZeroAttr(inTy.getElementType())));
+        inputTen = stablehlo::PadOp::create(
+            builder,
+            rewriteLocation(op->getLoc(), pc.options.strip_llvm_debuginfo),
+            inputTen, zero, zeros, padHigh, zeros);
+      }
       // A rank-0 buffer has nothing to slice (and a rank-0 dynamic_slice
       // prints in a form no parser reads back); the tensor is the value.
       if (startIndices.empty())
