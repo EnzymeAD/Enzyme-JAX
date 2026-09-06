@@ -700,13 +700,15 @@ expandAffineExpr(OpBuilder &builder, Location loc, AffineExpr expr,
     case AffineExprKind::Mod:
       // a mod b =
       //     let remainder = srem a, b;
-      //         negative = a < 0 in
+      //         negative = remainder < 0 in
       //     select negative, remainder + b, remainder.
+      // The test is on the remainder, not on a: srem of a negative exact
+      // multiple is 0, and adding b to it would give b (out of range).
       {
         Value remainder = stablehlo::RemOp::create(builder, loc, lhs, rhs);
         Value negative = stablehlo::CompareOp::create(
-            builder, loc, lhs,
-            makeI64Constant(cast<ShapedType>(lhs.getType()), 0),
+            builder, loc, remainder,
+            makeI64Constant(cast<ShapedType>(remainder.getType()), 0),
             stablehlo::ComparisonDirection::LT);
         result = stablehlo::SelectOp::create(
             builder, loc, negative,
