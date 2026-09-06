@@ -42,7 +42,8 @@ static void splitPartitioningAxesByShardability(
   shardableParts.clear();
   nonShardableParts.clear();
 
-  for (auto [dim, partitioning] : llvm::enumerate(kernelOp.getPartitioningAxes())) {
+  for (auto [dim, partitioning] :
+       llvm::enumerate(kernelOp.getPartitioningAxes())) {
     (void)dim;
     auto &shardable = shardableParts.emplace_back();
     auto &nonShardable = nonShardableParts.emplace_back();
@@ -64,9 +65,9 @@ static void splitPartitioningAxesByShardability(
   }
 }
 
-// Shardy expects a function-shaped wrapper, but the kernel's block arguments are
-// the canonical source of truth for the current local view. The kernel body is
-// discarded once the rewritten function is spliced back in
+// Shardy expects a function-shaped wrapper, but the kernel's block arguments
+// are the canonical source of truth for the current local view. The kernel body
+// is discarded once the rewritten function is spliced back in
 // copyShardyModuleToKernelAndErase, so its ops are moved rather than cloned.
 static ModuleOp kernelToShardyModule(DistributedKernelOp kernelOp) {
   OpBuilder builder(kernelOp.getContext());
@@ -76,14 +77,14 @@ static ModuleOp kernelToShardyModule(DistributedKernelOp kernelOp) {
   // AttrSizedOperandSegments packs partitioning_axes into the same operand
   // range.
   SmallVector<Type> shardyInputTypes(kernelOp.getArguments().getTypes().begin(),
-                                    kernelOp.getArguments().getTypes().end());
+                                     kernelOp.getArguments().getTypes().end());
   SmallVector<Type> shardyResultTypes(kernelOp.getResultTypes().begin(),
-                                     kernelOp.getResultTypes().end());
+                                      kernelOp.getResultTypes().end());
 
   auto fnType = FunctionType::get(kernelOp.getContext(), shardyInputTypes,
                                   shardyResultTypes);
-  auto shardyFunc = func::FuncOp::create(builder, kernelOp.getLoc(), "kernel",
-                                        fnType);
+  auto shardyFunc =
+      func::FuncOp::create(builder, kernelOp.getLoc(), "kernel", fnType);
 
   auto &kernelBody = kernelOp.getBody().front();
   auto &funcBody = *shardyFunc.addEntryBlock();
@@ -111,7 +112,7 @@ static ModuleOp kernelToShardyModule(DistributedKernelOp kernelOp) {
 // tensor shapes for the axes whose shardability has just been lowered from the
 // in-kernel partitioning basis.
 static void updateKernelArgumentTypes(DistributedKernelOp kernelOp,
-                                     FactorsPerDim &shardableFactors) {
+                                      FactorsPerDim &shardableFactors) {
   auto &entryBlock = kernelOp.getBody().front();
   for (auto [argIndex, arg] : llvm::enumerate(entryBlock.getArguments())) {
     auto rankedType = dyn_cast<RankedTensorType>(arg.getType());
@@ -135,8 +136,8 @@ static void updateKernelArgumentTypes(DistributedKernelOp kernelOp,
     }
 
     if (updatedShape != rankedType.getShape()) {
-      arg.setType(RankedTensorType::get(updatedShape,
-                                        rankedType.getElementType()));
+      arg.setType(
+          RankedTensorType::get(updatedShape, rankedType.getElementType()));
     }
 
     (void)argIndex;
@@ -149,9 +150,10 @@ static void updateKernelArgumentTypes(DistributedKernelOp kernelOp,
 // entirely would desync the axis indices referenced by the sharding attrs.
 // Dims with nothing removed this run keep their existing operand unchanged,
 // so re-running the pass does not create redundant axis.product ops.
-static void removeShardedFactorsFromPartitioningAxes(
-    DistributedKernelOp kernelOp, FactorsPerDim &shardedFactors,
-    FactorsPerDim &remainingFactors) {
+static void
+removeShardedFactorsFromPartitioningAxes(DistributedKernelOp kernelOp,
+                                         FactorsPerDim &shardedFactors,
+                                         FactorsPerDim &remainingFactors) {
   OpBuilder builder(kernelOp.getContext());
   builder.setInsertionPoint(kernelOp);
 
@@ -174,7 +176,7 @@ static void removeShardedFactorsFromPartitioningAxes(
 // body back into the kernel's block and keep the kernel's own local metadata as
 // the source of truth.
 static void copyShardyModuleToKernelAndErase(ModuleOp shardyModule,
-                                            DistributedKernelOp kernelOp) {
+                                             DistributedKernelOp kernelOp) {
   auto shardyFunc = shardyModule.lookupSymbol<func::FuncOp>("kernel");
   if (!shardyFunc) {
     shardyModule.emitError() << "missing shardy kernel wrapper function";
@@ -192,14 +194,15 @@ static void copyShardyModuleToKernelAndErase(ModuleOp shardyModule,
 
   SmallVector<Value> results;
   if (auto returnOp = dyn_cast<func::ReturnOp>(funcBody.getTerminator())) {
-    results.assign(returnOp.getOperands().begin(), returnOp.getOperands().end());
+    results.assign(returnOp.getOperands().begin(),
+                   returnOp.getOperands().end());
     returnOp.erase();
   }
   oldBody.getOperations().splice(oldBody.end(), funcBody.getOperations());
 
-  auto yield = OpBuilder(kernelOp.getContext())
-                  .create<DistributedYieldOp>(kernelOp.getLoc(), TypeRange{},
-                                             results);
+  auto yield =
+      OpBuilder(kernelOp.getContext())
+          .create<DistributedYieldOp>(kernelOp.getLoc(), TypeRange{}, results);
   oldBody.push_back(yield);
 
   shardyModule.erase();
@@ -253,11 +256,18 @@ struct LowerKernelsPass : public impl::LowerKernelsPassBase<LowerKernelsPass> {
     FactorsPerDim shardableParts;
     FactorsPerDim nonShardableParts;
     splitPartitioningAxesByShardability(kernelOp, lowerLogical, shardableParts,
-                                       nonShardableParts);
+                                        nonShardableParts);
 
     // The temporary func.func is intentionally a thin wrapper: Shardy works on
-    // function-shaped IR, while the kernel op itself carries the local ABI types.
+    // function-shaped IR, while the kernel op itself carries the local ABI
+    // types.
     auto shardyModule = kernelToShardyModule(kernelOp);
+    // debug logging option
+    if (dumpShardyModules) {
+      llvm::dbgs() << "Dumping Shardy module:\n";
+      llvm::dbgs() << shardyModule << "\n";
+    }
+    // Transform and copy back the module
     runShardyLowering(shardyModule);
     copyShardyModuleToKernelAndErase(shardyModule, kernelOp);
     updateKernelArgumentTypes(kernelOp, shardableParts);

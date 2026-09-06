@@ -144,7 +144,10 @@ def LowerKernelsPass : Pass<"distributed-lower-kernels", "::mlir::ModuleOp"> {
     "enzyme::distributed::DistributedDialect", "sdy::SdyDialect",
     "mlir::func::FuncDialect"
   ];
-  let options = [ Option<"lowerLogicalAxes", "lower-logical-axes", "bool", "false", "Whether to lower sharding over logical axes. If false, logical axes will be left un-sharded. Default: false">];
+  let options = [ 
+    Option<"lowerLogicalAxes", "lower-logical-axes", "bool", "false", "Whether to lower sharding over logical axes. If false, logical axes will be left un-sharded. Default: false">,
+    Option<"dumpShardyModules", "dump-shardy-modules", "bool", "false", "Print Shardy modules created for each distributed kernel">,
+  ];
   let description = [{
     Translates distributed kernels to their sharded form. By default, only shards over sharding factors on physical axes. Axes that have
     been sharded over are removed from the kernel's axis mapping. Axis factors succesfully sharded over are removed from
