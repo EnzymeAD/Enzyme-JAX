@@ -155,18 +155,18 @@ struct LowerCommMpiCommRankOpToJIT
     auto type_i32 = IntegerType::get(context, 32);
     auto type_tensor_i32 = RankedTensorType::get({}, type_i32);
 
-    std::string mpiFunctionName = "MPI_Comm_rank";
-    std::string wrapperFunctionName = "enzymexla_jitwrap_" + mpiFunctionName;
+    std::string function_name = "MPI_Comm_rank";
+    std::string wrapper_name = "enzymexla_jitwrap_" + function_name;
 
-    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapperFunctionName)) {
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapper_name)) {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(moduleOp.getBody());
 
       auto funcType =
           LLVM::LLVMFunctionType::get(type_void, {type_ptr, type_ptr}, false);
 
-      auto wrapperFunc = LLVM::LLVMFuncOp::create(
-          rewriter, op.getLoc(), wrapperFunctionName, funcType);
+      auto wrapperFunc = LLVM::LLVMFuncOp::create(rewriter, op.getLoc(),
+                                                  wrapper_name, funcType);
 
       Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
       rewriter.setInsertionPointToStart(entryBlock);
@@ -193,20 +193,20 @@ struct LowerCommMpiCommRankOpToJIT
       // TODO error checking
       // currently, we ignore the int return code
       LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
-                           SymbolRefAttr::get(context, mpiFunctionName),
+                           SymbolRefAttr::get(context, function_name),
                            ValueRange{comm, arg_rank_ptr});
 
       LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
     }
 
-    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(mpiFunctionName)) {
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(function_name)) {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(moduleOp.getBody());
 
       auto funcType =
           LLVM::LLVMFunctionType::get(type_i32, {type_ptr, type_ptr}, false);
 
-      LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), mpiFunctionName, funcType,
+      LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), function_name, funcType,
                                LLVM::Linkage::External);
     }
 
@@ -225,7 +225,7 @@ struct LowerCommMpiCommRankOpToJIT
     // TODO revise if it is side effect free
     rewriter.replaceOpWithNewOp<enzymexla::JITCallOp>(
         op, type_tensor_i32,
-        mlir::FlatSymbolRefAttr::get(context, wrapperFunctionName),
+        mlir::FlatSymbolRefAttr::get(context, wrapper_name),
         ValueRange{comm, rank_placeholder},
         /*backend_config=*/rewriter.getStringAttr(""),
         /*operand_layouts=*/nullptr,
@@ -254,18 +254,18 @@ struct LowerCommMpiCommSizeOpToJIT
     auto type_i32 = IntegerType::get(context, 32);
     auto type_tensor_i32 = RankedTensorType::get({}, type_i32);
 
-    std::string mpiFunctionName = "MPI_Comm_size";
-    std::string wrapperFunctionName = "enzymexla_jitwrap_" + mpiFunctionName;
+    std::string function_name = "MPI_Comm_size";
+    std::string wrapper_name = "enzymexla_jitwrap_" + function_name;
 
-    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapperFunctionName)) {
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapper_name)) {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(moduleOp.getBody());
 
       auto funcType =
           LLVM::LLVMFunctionType::get(type_void, {type_ptr, type_ptr}, false);
 
-      auto wrapperFunc = LLVM::LLVMFuncOp::create(
-          rewriter, op.getLoc(), wrapperFunctionName, funcType);
+      auto wrapperFunc = LLVM::LLVMFuncOp::create(rewriter, op.getLoc(),
+                                                  wrapper_name, funcType);
 
       Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
       rewriter.setInsertionPointToStart(entryBlock);
@@ -291,20 +291,20 @@ struct LowerCommMpiCommSizeOpToJIT
       // TODO error checking
       // currently, we ignore the int return code
       LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
-                           SymbolRefAttr::get(context, mpiFunctionName),
+                           SymbolRefAttr::get(context, function_name),
                            ValueRange{comm, arg_size_ptr});
 
       LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
     }
 
-    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(mpiFunctionName)) {
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(function_name)) {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(moduleOp.getBody());
 
       auto funcType =
           LLVM::LLVMFunctionType::get(type_i32, {type_ptr, type_ptr}, false);
 
-      LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), mpiFunctionName, funcType,
+      LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), function_name, funcType,
                                LLVM::Linkage::External);
     }
 
@@ -323,7 +323,7 @@ struct LowerCommMpiCommSizeOpToJIT
     // TODO revise if it is side effect free
     rewriter.replaceOpWithNewOp<enzymexla::JITCallOp>(
         op, type_tensor_i32,
-        mlir::FlatSymbolRefAttr::get(context, wrapperFunctionName),
+        mlir::FlatSymbolRefAttr::get(context, wrapper_name),
         ValueRange{comm, size_placeholder},
         /*backend_config=*/rewriter.getStringAttr(""),
         /*operand_layouts=*/nullptr,
@@ -353,18 +353,18 @@ struct LowerCommMpiCommSplitOpToJIT
     auto type_i64 = IntegerType::get(context, 64);
     auto type_tensor_i64 = RankedTensorType::get({}, type_i64);
 
-    std::string mpiFunctionName = "MPI_Comm_split";
-    std::string wrapperFunctionName = "enzymexla_jitwrap_" + mpiFunctionName;
+    std::string function_name = "MPI_Comm_split";
+    std::string wrapper_name = "enzymexla_jitwrap_" + function_name;
 
-    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapperFunctionName)) {
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapper_name)) {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(moduleOp.getBody());
 
       auto funcType = LLVM::LLVMFunctionType::get(
           type_void, {type_ptr, type_ptr, type_ptr, type_ptr}, false);
 
-      auto wrapperFunc = LLVM::LLVMFuncOp::create(
-          rewriter, op.getLoc(), wrapperFunctionName, funcType);
+      auto wrapperFunc = LLVM::LLVMFuncOp::create(rewriter, op.getLoc(),
+                                                  wrapper_name, funcType);
 
       Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
       rewriter.setInsertionPointToStart(entryBlock);
@@ -398,20 +398,20 @@ struct LowerCommMpiCommSplitOpToJIT
       // TODO error checking
       // currently, we ignore the int return code
       LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
-                           SymbolRefAttr::get(context, mpiFunctionName),
+                           SymbolRefAttr::get(context, function_name),
                            ValueRange{comm, color, key, arg_newcomm_ptr});
 
       LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
     }
 
-    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(mpiFunctionName)) {
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(function_name)) {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(moduleOp.getBody());
 
       auto funcType = LLVM::LLVMFunctionType::get(
           type_i32, {type_ptr, type_i32, type_i32, type_ptr}, false);
 
-      LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), mpiFunctionName, funcType,
+      LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), function_name, funcType,
                                LLVM::Linkage::External);
     }
 
@@ -431,7 +431,7 @@ struct LowerCommMpiCommSplitOpToJIT
 
     rewriter.replaceOpWithNewOp<enzymexla::JITCallOp>(
         op, type_tensor_i64,
-        mlir::FlatSymbolRefAttr::get(context, wrapperFunctionName),
+        mlir::FlatSymbolRefAttr::get(context, wrapper_name),
         ValueRange{comm, color, key, newcomm_placeholder},
         /*backend_config=*/rewriter.getStringAttr(""),
         /*operand_layouts=*/nullptr,
@@ -459,17 +459,17 @@ struct LowerCommMpiBarrierOpToJIT
     auto type_void = LLVM::LLVMVoidType::get(context);
     auto type_i32 = IntegerType::get(context, 32);
 
-    std::string mpiFunctionName = "MPI_Barrier";
-    std::string wrapperFunctionName = "enzymexla_jitwrap_" + mpiFunctionName;
+    std::string function_name = "MPI_Barrier";
+    std::string wrapper_name = "enzymexla_jitwrap_" + function_name;
 
-    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapperFunctionName)) {
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapper_name)) {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(moduleOp.getBody());
 
       auto funcType = LLVM::LLVMFunctionType::get(type_void, {type_ptr}, false);
 
-      auto wrapperFunc = LLVM::LLVMFuncOp::create(
-          rewriter, op.getLoc(), wrapperFunctionName, funcType);
+      auto wrapperFunc = LLVM::LLVMFuncOp::create(rewriter, op.getLoc(),
+                                                  wrapper_name, funcType);
 
       Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
       rewriter.setInsertionPointToStart(entryBlock);
@@ -494,19 +494,19 @@ struct LowerCommMpiBarrierOpToJIT
       // TODO error checking
       // currently, we ignore the int return code
       LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
-                           SymbolRefAttr::get(context, mpiFunctionName),
+                           SymbolRefAttr::get(context, function_name),
                            ValueRange{comm});
 
       LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
     }
 
-    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(mpiFunctionName)) {
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(function_name)) {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(moduleOp.getBody());
 
       auto funcType = LLVM::LLVMFunctionType::get(type_i32, {type_ptr}, false);
 
-      LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), mpiFunctionName, funcType,
+      LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), function_name, funcType,
                                LLVM::Linkage::External);
     }
 
@@ -514,8 +514,7 @@ struct LowerCommMpiBarrierOpToJIT
 
     // TODO revise if it is side effect free
     rewriter.replaceOpWithNewOp<enzymexla::JITCallOp>(
-        op, TypeRange{},
-        mlir::FlatSymbolRefAttr::get(context, wrapperFunctionName),
+        op, TypeRange{}, mlir::FlatSymbolRefAttr::get(context, wrapper_name),
         ValueRange{comm},
         /*backend_config=*/rewriter.getStringAttr(""),
         /*operand_layouts=*/nullptr,
@@ -545,10 +544,10 @@ struct LowerCommMpiSendOpToJIT : public OpConversionPattern<comm::MpiSendOp> {
     auto type_tensor_i32 = RankedTensorType::get({}, type_i32);
     auto type_tensor_i64 = RankedTensorType::get({}, type_i64);
 
-    std::string mpiFunctionName = "MPI_Send";
-    std::string wrapperFunctionName = "enzymexla_jitwrap_" + mpiFunctionName;
+    std::string function_name = "MPI_Send";
+    std::string wrapper_name = "enzymexla_jitwrap_" + function_name;
 
-    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapperFunctionName)) {
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapper_name)) {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(moduleOp.getBody());
 
@@ -556,8 +555,8 @@ struct LowerCommMpiSendOpToJIT : public OpConversionPattern<comm::MpiSendOp> {
           type_void,
           {type_ptr, type_ptr, type_ptr, type_ptr, type_ptr, type_ptr}, false);
 
-      auto wrapperFunc = LLVM::LLVMFuncOp::create(
-          rewriter, op.getLoc(), wrapperFunctionName, funcType);
+      auto wrapperFunc = LLVM::LLVMFuncOp::create(rewriter, op.getLoc(),
+                                                  wrapper_name, funcType);
 
       Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
       rewriter.setInsertionPointToStart(entryBlock);
@@ -600,13 +599,13 @@ struct LowerCommMpiSendOpToJIT : public OpConversionPattern<comm::MpiSendOp> {
       // currently, we ignore the int return code
       LLVM::CallOp::create(
           rewriter, op.getLoc(), TypeRange{type_i32},
-          SymbolRefAttr::get(context, mpiFunctionName),
+          SymbolRefAttr::get(context, function_name),
           ValueRange{arg_buffer_ptr, count, datatype, dest, tag, comm});
 
       LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
     }
 
-    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(mpiFunctionName)) {
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(function_name)) {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(moduleOp.getBody());
 
@@ -614,7 +613,7 @@ struct LowerCommMpiSendOpToJIT : public OpConversionPattern<comm::MpiSendOp> {
           type_i32,
           {type_ptr, type_i32, type_ptr, type_i32, type_i32, type_ptr}, false);
 
-      LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), mpiFunctionName, funcType,
+      LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), function_name, funcType,
                                LLVM::Linkage::External);
     }
 
@@ -653,7 +652,7 @@ struct LowerCommMpiSendOpToJIT : public OpConversionPattern<comm::MpiSendOp> {
     // TODO revise if it is side effect free
     rewriter.replaceOpWithNewOp<enzymexla::JITCallOp>(
         op, type_tensor_i64,
-        mlir::FlatSymbolRefAttr::get(context, wrapperFunctionName),
+        mlir::FlatSymbolRefAttr::get(context, wrapper_name),
         ValueRange{buffer, count, datatype, dest, tag, comm},
         /*backend_config=*/rewriter.getStringAttr(""),
         /*operand_layouts=*/nullptr,
@@ -683,10 +682,10 @@ struct LowerCommMpiIsendOpToJIT : public OpConversionPattern<comm::MpiIsendOp> {
     auto type_tensor_i32 = RankedTensorType::get({}, type_i32);
     auto type_tensor_i64 = RankedTensorType::get({}, type_i64);
 
-    std::string mpiFunctionName = "MPI_Isend";
-    std::string wrapperFunctionName = "enzymexla_jitwrap_" + mpiFunctionName;
+    std::string function_name = "MPI_Isend";
+    std::string wrapper_name = "enzymexla_jitwrap_" + function_name;
 
-    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapperFunctionName)) {
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapper_name)) {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(moduleOp.getBody());
 
@@ -696,8 +695,8 @@ struct LowerCommMpiIsendOpToJIT : public OpConversionPattern<comm::MpiIsendOp> {
                                        type_ptr, type_ptr, type_ptr},
                                       false);
 
-      auto wrapperFunc = LLVM::LLVMFuncOp::create(
-          rewriter, op.getLoc(), wrapperFunctionName, funcType);
+      auto wrapperFunc = LLVM::LLVMFuncOp::create(rewriter, op.getLoc(),
+                                                  wrapper_name, funcType);
 
       Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
       rewriter.setInsertionPointToStart(entryBlock);
@@ -740,14 +739,14 @@ struct LowerCommMpiIsendOpToJIT : public OpConversionPattern<comm::MpiIsendOp> {
       // TODO error checking
       // currently, we ignore the int return code
       LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
-                           SymbolRefAttr::get(context, mpiFunctionName),
+                           SymbolRefAttr::get(context, function_name),
                            ValueRange{arg_buffer_ptr, count, datatype, dest,
                                       tag, comm, arg_request_ptr});
 
       LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
     }
 
-    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(mpiFunctionName)) {
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(function_name)) {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(moduleOp.getBody());
 
@@ -755,7 +754,7 @@ struct LowerCommMpiIsendOpToJIT : public OpConversionPattern<comm::MpiIsendOp> {
           type_i32,
           {type_ptr, type_i32, type_ptr, type_i32, type_i32, type_ptr}, false);
 
-      LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), mpiFunctionName, funcType,
+      LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), function_name, funcType,
                                LLVM::Linkage::External);
     }
 
@@ -806,7 +805,7 @@ struct LowerCommMpiIsendOpToJIT : public OpConversionPattern<comm::MpiIsendOp> {
     // TODO revise if it is side effect free
     rewriter.replaceOpWithNewOp<enzymexla::JITCallOp>(
         op, type_tensor_i64,
-        mlir::FlatSymbolRefAttr::get(context, wrapperFunctionName),
+        mlir::FlatSymbolRefAttr::get(context, wrapper_name),
         ValueRange{buffer, count, datatype, dest, tag, comm,
                    request_placeholder},
         /*backend_config=*/rewriter.getStringAttr(""),
@@ -837,10 +836,10 @@ struct LowerCommMpiRecvOpToJIT : public OpConversionPattern<comm::MpiRecvOp> {
     auto type_tensor_i32 = RankedTensorType::get({}, type_i32);
     auto type_tensor_i64 = RankedTensorType::get({}, type_i64);
 
-    std::string mpiFunctionName = "MPI_Recv";
-    std::string wrapperFunctionName = "enzymexla_jitwrap_" + mpiFunctionName;
+    std::string function_name = "MPI_Recv";
+    std::string wrapper_name = "enzymexla_jitwrap_" + function_name;
 
-    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapperFunctionName)) {
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapper_name)) {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(moduleOp.getBody());
 
@@ -849,8 +848,8 @@ struct LowerCommMpiRecvOpToJIT : public OpConversionPattern<comm::MpiRecvOp> {
           type_void,
           {type_ptr, type_ptr, type_ptr, type_ptr, type_ptr, type_ptr}, false);
 
-      auto wrapperFunc = LLVM::LLVMFuncOp::create(
-          rewriter, op.getLoc(), wrapperFunctionName, funcType);
+      auto wrapperFunc = LLVM::LLVMFuncOp::create(rewriter, op.getLoc(),
+                                                  wrapper_name, funcType);
 
       Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
       rewriter.setInsertionPointToStart(entryBlock);
@@ -895,13 +894,13 @@ struct LowerCommMpiRecvOpToJIT : public OpConversionPattern<comm::MpiRecvOp> {
       // currently, we ignore the int return code
       LLVM::CallOp::create(
           rewriter, op.getLoc(), TypeRange{type_i32},
-          SymbolRefAttr::get(context, mpiFunctionName),
+          SymbolRefAttr::get(context, function_name),
           ValueRange{arg_buffer_ptr, count, datatype, src, tag, comm, status});
 
       LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
     }
 
-    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(mpiFunctionName)) {
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(function_name)) {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(moduleOp.getBody());
 
@@ -911,7 +910,7 @@ struct LowerCommMpiRecvOpToJIT : public OpConversionPattern<comm::MpiRecvOp> {
                                        type_i32, type_ptr, type_ptr},
                                       false);
 
-      LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), mpiFunctionName, funcType,
+      LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), function_name, funcType,
                                LLVM::Linkage::External);
     }
 
@@ -961,7 +960,7 @@ struct LowerCommMpiRecvOpToJIT : public OpConversionPattern<comm::MpiRecvOp> {
     // TODO revise if it is side effect free
     rewriter.replaceOpWithNewOp<enzymexla::JITCallOp>(
         op, type_tensor_i64,
-        mlir::FlatSymbolRefAttr::get(context, wrapperFunctionName),
+        mlir::FlatSymbolRefAttr::get(context, wrapper_name),
         ValueRange{buffer_placeholder, count, datatype, src, tag, comm},
         /*backend_config=*/rewriter.getStringAttr(""),
         /*operand_layouts=*/nullptr,
@@ -991,10 +990,10 @@ struct LowerCommMpiIrecvOpToJIT : public OpConversionPattern<comm::MpiIrecvOp> {
     auto type_tensor_i32 = RankedTensorType::get({}, type_i32);
     auto type_tensor_i64 = RankedTensorType::get({}, type_i64);
 
-    std::string mpiFunctionName = "MPI_Irecv";
-    std::string wrapperFunctionName = "enzymexla_jitwrap_" + mpiFunctionName;
+    std::string function_name = "MPI_Irecv";
+    std::string wrapper_name = "enzymexla_jitwrap_" + function_name;
 
-    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapperFunctionName)) {
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapper_name)) {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(moduleOp.getBody());
 
@@ -1004,8 +1003,8 @@ struct LowerCommMpiIrecvOpToJIT : public OpConversionPattern<comm::MpiIrecvOp> {
                                        type_ptr, type_ptr, type_ptr},
                                       false);
 
-      auto wrapperFunc = LLVM::LLVMFuncOp::create(
-          rewriter, op.getLoc(), wrapperFunctionName, funcType);
+      auto wrapperFunc = LLVM::LLVMFuncOp::create(rewriter, op.getLoc(),
+                                                  wrapper_name, funcType);
 
       Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
       rewriter.setInsertionPointToStart(entryBlock);
@@ -1048,14 +1047,14 @@ struct LowerCommMpiIrecvOpToJIT : public OpConversionPattern<comm::MpiIrecvOp> {
       // TODO error checking
       // currently, we ignore the int return code
       LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
-                           SymbolRefAttr::get(context, mpiFunctionName),
+                           SymbolRefAttr::get(context, function_name),
                            ValueRange{arg_buffer_ptr, count, datatype, src, tag,
                                       comm, arg_request_ptr});
 
       LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
     }
 
-    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(mpiFunctionName)) {
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(function_name)) {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(moduleOp.getBody());
 
@@ -1065,7 +1064,7 @@ struct LowerCommMpiIrecvOpToJIT : public OpConversionPattern<comm::MpiIrecvOp> {
                                        type_i32, type_ptr, type_ptr},
                                       false);
 
-      LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), mpiFunctionName, funcType,
+      LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), function_name, funcType,
                                LLVM::Linkage::External);
     }
 
@@ -1127,7 +1126,7 @@ struct LowerCommMpiIrecvOpToJIT : public OpConversionPattern<comm::MpiIrecvOp> {
     // TODO revise if it is side effect free
     rewriter.replaceOpWithNewOp<enzymexla::JITCallOp>(
         op, type_tensor_i64,
-        mlir::FlatSymbolRefAttr::get(context, wrapperFunctionName),
+        mlir::FlatSymbolRefAttr::get(context, wrapper_name),
         ValueRange{buffer_placeholder, count, datatype, src, tag, comm,
                    request_placeholder},
         /*backend_config=*/rewriter.getStringAttr(""),
@@ -1155,18 +1154,18 @@ struct LowerCommMpiWaitOpToJIT : public OpConversionPattern<comm::MpiWaitOp> {
     auto type_void = LLVM::LLVMVoidType::get(context);
     auto type_i32 = IntegerType::get(context, 32);
 
-    std::string mpiFunctionName = "MPI_Wait";
-    std::string wrapperFunctionName = "enzymexla_jitwrap_" + mpiFunctionName;
+    std::string function_name = "MPI_Wait";
+    std::string wrapper_name = "enzymexla_jitwrap_" + function_name;
 
-    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapperFunctionName)) {
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapper_name)) {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(moduleOp.getBody());
 
       // we are ignoring `MPI_Status` argument for now
       auto funcType = LLVM::LLVMFunctionType::get(type_void, {type_ptr}, false);
 
-      auto wrapperFunc = LLVM::LLVMFuncOp::create(
-          rewriter, op.getLoc(), wrapperFunctionName, funcType);
+      auto wrapperFunc = LLVM::LLVMFuncOp::create(rewriter, op.getLoc(),
+                                                  wrapper_name, funcType);
 
       Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
       rewriter.setInsertionPointToStart(entryBlock);
@@ -1189,28 +1188,27 @@ struct LowerCommMpiWaitOpToJIT : public OpConversionPattern<comm::MpiWaitOp> {
       // TODO error checking
       // currently, we ignore the int return code
       LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
-                           SymbolRefAttr::get(context, mpiFunctionName),
+                           SymbolRefAttr::get(context, function_name),
                            ValueRange{arg_request_ptr, status_ptr});
 
       LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
     }
 
-    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(mpiFunctionName)) {
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(function_name)) {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(moduleOp.getBody());
 
       auto funcType =
           LLVM::LLVMFunctionType::get(type_i32, {type_ptr, type_ptr}, false);
 
-      LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), mpiFunctionName, funcType,
+      LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), function_name, funcType,
                                LLVM::Linkage::External);
     }
 
     auto request = adaptor.getRequest();
 
     rewriter.replaceOpWithNewOp<enzymexla::JITCallOp>(
-        op, TypeRange{},
-        mlir::FlatSymbolRefAttr::get(context, wrapperFunctionName),
+        op, TypeRange{}, mlir::FlatSymbolRefAttr::get(context, wrapper_name),
         ValueRange{request},
         /*backend_config=*/rewriter.getStringAttr(""),
         /*operand_layouts=*/nullptr,
@@ -1239,10 +1237,10 @@ struct LowerCommMpiWaitallOpToJIT
     auto type_i32 = IntegerType::get(context, 32);
 
     auto num_requests = op.getNumOperands();
-    std::string mpiFunctionName = "MPI_Waitall_" + std::to_string(num_requests);
-    std::string wrapperFunctionName = "enzymexla_jitwrap_" + mpiFunctionName;
+    std::string function_name = "MPI_Waitall_" + std::to_string(num_requests);
+    std::string wrapper_name = "enzymexla_jitwrap_" + function_name;
 
-    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapperFunctionName)) {
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapper_name)) {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(moduleOp.getBody());
 
@@ -1250,8 +1248,8 @@ struct LowerCommMpiWaitallOpToJIT
       SmallVector<Type> argTypes(num_requests, type_ptr);
       auto funcType = LLVM::LLVMFunctionType::get(type_void, argTypes, false);
 
-      auto wrapperFunc = LLVM::LLVMFuncOp::create(
-          rewriter, op.getLoc(), wrapperFunctionName, funcType);
+      auto wrapperFunc = LLVM::LLVMFuncOp::create(rewriter, op.getLoc(),
+                                                  wrapper_name, funcType);
 
       Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
       rewriter.setInsertionPointToStart(entryBlock);
@@ -1300,26 +1298,25 @@ struct LowerCommMpiWaitallOpToJIT
       // currently, we ignore the int return code
       LLVM::CallOp::create(
           rewriter, op.getLoc(), TypeRange{type_i32},
-          SymbolRefAttr::get(context, mpiFunctionName),
+          SymbolRefAttr::get(context, function_name),
           ValueRange{count, array_of_requests_ptr, status_ptr});
 
       LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
     }
 
-    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(mpiFunctionName)) {
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(function_name)) {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(moduleOp.getBody());
 
       auto funcType =
           LLVM::LLVMFunctionType::get(type_i32, {type_ptr, type_ptr}, false);
 
-      LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), mpiFunctionName, funcType,
+      LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), function_name, funcType,
                                LLVM::Linkage::External);
     }
 
     rewriter.replaceOpWithNewOp<enzymexla::JITCallOp>(
-        op, TypeRange{},
-        mlir::FlatSymbolRefAttr::get(context, wrapperFunctionName),
+        op, TypeRange{}, mlir::FlatSymbolRefAttr::get(context, wrapper_name),
         adaptor.getRequests(),
         /*backend_config=*/rewriter.getStringAttr(""),
         /*operand_layouts=*/nullptr,
@@ -1350,10 +1347,10 @@ struct LowerCommMpiAllreduceOpToJIT
     auto type_tensor_i32 = RankedTensorType::get({}, type_i32);
     auto type_tensor_i64 = RankedTensorType::get({}, type_i64);
 
-    std::string mpiFunctionName = "MPI_Allreduce";
-    std::string wrapperFunctionName = "enzymexla_jitwrap_" + mpiFunctionName;
+    std::string function_name = "MPI_Allreduce";
+    std::string wrapper_name = "enzymexla_jitwrap_" + function_name;
 
-    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapperFunctionName)) {
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapper_name)) {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(moduleOp.getBody());
 
@@ -1361,8 +1358,8 @@ struct LowerCommMpiAllreduceOpToJIT
           type_void,
           {type_ptr, type_ptr, type_ptr, type_ptr, type_ptr, type_ptr}, false);
 
-      auto wrapperFunc = LLVM::LLVMFuncOp::create(
-          rewriter, op.getLoc(), wrapperFunctionName, funcType);
+      auto wrapperFunc = LLVM::LLVMFuncOp::create(rewriter, op.getLoc(),
+                                                  wrapper_name, funcType);
 
       Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
       rewriter.setInsertionPointToStart(entryBlock);
@@ -1401,14 +1398,14 @@ struct LowerCommMpiAllreduceOpToJIT
       // TODO error checking
       // currently, we ignore the int return code
       LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
-                           SymbolRefAttr::get(context, mpiFunctionName),
+                           SymbolRefAttr::get(context, function_name),
                            ValueRange{arg_sendbuf_ptr, arg_recvbuf_ptr, count,
                                       datatype, op_val, comm});
 
       LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
     }
 
-    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(mpiFunctionName)) {
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(function_name)) {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(moduleOp.getBody());
 
@@ -1416,7 +1413,7 @@ struct LowerCommMpiAllreduceOpToJIT
           type_i32,
           {type_ptr, type_ptr, type_i32, type_ptr, type_ptr, type_ptr}, false);
 
-      LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), mpiFunctionName, funcType,
+      LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), function_name, funcType,
                                LLVM::Linkage::External);
     }
 
@@ -1478,8 +1475,7 @@ struct LowerCommMpiAllreduceOpToJIT
 
     // TODO revise if it is side effect free
     rewriter.replaceOpWithNewOp<enzymexla::JITCallOp>(
-        op, type_buffer,
-        mlir::FlatSymbolRefAttr::get(context, wrapperFunctionName),
+        op, type_buffer, mlir::FlatSymbolRefAttr::get(context, wrapper_name),
         ValueRange{sendbuf, recvbuf_placeholder, count, datatype, mpi_op, comm},
         /*backend_config=*/rewriter.getStringAttr(""),
         /*operand_layouts=*/nullptr,
@@ -1509,18 +1505,18 @@ struct LowerCommMpiBcastOpToJIT : public OpConversionPattern<comm::MpiBcastOp> {
     auto type_tensor_i32 = RankedTensorType::get({}, type_i32);
     auto type_tensor_i64 = RankedTensorType::get({}, type_i64);
 
-    std::string mpiFunctionName = "MPI_Bcast";
-    std::string wrapperFunctionName = "enzymexla_jitwrap_" + mpiFunctionName;
+    std::string function_name = "MPI_Bcast";
+    std::string wrapper_name = "enzymexla_jitwrap_" + function_name;
 
-    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapperFunctionName)) {
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapper_name)) {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(moduleOp.getBody());
 
       auto funcType = LLVM::LLVMFunctionType::get(
           type_void, {type_ptr, type_ptr, type_ptr, type_ptr, type_ptr}, false);
 
-      auto wrapperFunc = LLVM::LLVMFuncOp::create(
-          rewriter, op.getLoc(), wrapperFunctionName, funcType);
+      auto wrapperFunc = LLVM::LLVMFuncOp::create(rewriter, op.getLoc(),
+                                                  wrapper_name, funcType);
 
       Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
       rewriter.setInsertionPointToStart(entryBlock);
@@ -1559,20 +1555,20 @@ struct LowerCommMpiBcastOpToJIT : public OpConversionPattern<comm::MpiBcastOp> {
       // currently, we ignore the int return code
       LLVM::CallOp::create(
           rewriter, op.getLoc(), TypeRange{type_i32},
-          SymbolRefAttr::get(context, mpiFunctionName),
+          SymbolRefAttr::get(context, function_name),
           ValueRange{arg_buffer_ptr, count, datatype, root, comm});
 
       LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
     }
 
-    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(mpiFunctionName)) {
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(function_name)) {
       OpBuilder::InsertionGuard guard(rewriter);
       rewriter.setInsertionPointToStart(moduleOp.getBody());
 
       auto funcType = LLVM::LLVMFunctionType::get(
           type_i32, {type_ptr, type_i32, type_ptr, type_i32, type_ptr}, false);
 
-      LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), mpiFunctionName, funcType,
+      LLVM::LLVMFuncOp::create(rewriter, op.getLoc(), function_name, funcType,
                                LLVM::Linkage::External);
     }
 
@@ -1619,8 +1615,7 @@ struct LowerCommMpiBcastOpToJIT : public OpConversionPattern<comm::MpiBcastOp> {
 
     // TODO revise if it is side effect free
     rewriter.replaceOpWithNewOp<enzymexla::JITCallOp>(
-        op, type_buffer,
-        mlir::FlatSymbolRefAttr::get(context, wrapperFunctionName),
+        op, type_buffer, mlir::FlatSymbolRefAttr::get(context, wrapper_name),
         ValueRange{buffer, count, datatype, root, comm},
         /*backend_config=*/rewriter.getStringAttr(""),
         /*operand_layouts=*/nullptr,
