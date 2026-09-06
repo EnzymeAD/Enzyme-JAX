@@ -13242,8 +13242,40 @@ struct CSEIndex : public RewriterBase::Listener {
   DenseMap<size_t, SmallVector<Operation *, 2>> buckets;
   DenseMap<Operation *, size_t> where;
 
-  static bool indexable(Operation *op) {
-    return op->getNumOperands() > 0 && op->getNumRegions() == 0;
+  // The operation kinds the registered CSE patterns cover.
+  DenseSet<OperationName> names;
+
+  bool indexable(Operation *op) const {
+    return op->getNumOperands() > 0 && names.contains(op->getName());
+  }
+
+  static bool equivalent(Operation *op, Operation *nop) {
+    OperationEquivalence::Flags flags =
+        OperationEquivalence::IgnoreLocations |
+        OperationEquivalence::IgnoreDiscardableAttrs;
+    // OperationEquivalence only checks for mlir::OpTrait::IsCommutative
+    if (!op->hasTrait<::mlir::OpTrait::IsCommutative>())
+      flags |= OperationEquivalence::IgnoreCommutativity;
+    if (OperationEquivalence::isEquivalentTo(op, nop, flags))
+      return true;
+    // stablehlo defines a special trait for commutative operations.
+    if (op->hasTrait<::mlir::hlo::OpTrait::IsCommutative>())
+      return isCommutativeEquivalent(op->getOperands(), nop->getOperands());
+    return false;
+  }
+
+  // The earlier operation of the block equivalent to `op`, if indexed.
+  Operation *twinOf(Operation *op, size_t hash) const {
+    auto bucket = buckets.find(hash);
+    if (bucket == buckets.end())
+      return nullptr;
+    for (Operation *nop : bucket->second) {
+      if (nop == op || nop->getBlock() != op->getBlock() ||
+          op->getName() != nop->getName() || !equivalent(op, nop))
+        continue;
+      return nop;
+    }
+    return nullptr;
   }
 
   static size_t hashOf(Operation *op) {
@@ -13297,8 +13329,27 @@ struct CSEIndex : public RewriterBase::Listener {
       add(op, hashOf(op));
   }
 
-  void populate(Operation *root) {
-    root->walk([&](Operation *op) { add(op); });
+  // Merge what is already duplicated before the driver sees it: a raised
+  // kernel can be 90% repeated index arithmetic, and letting the driver
+  // discover that one merge at a time re-queues every user of every merge.
+  // One pass in program order does it in linear time, exactly the merges
+  // the patterns would make (same block, same kinds); the patterns then
+  // only track the duplicates the rewrites create.
+  void mergeAndPopulate(Operation *root) {
+    SmallVector<Operation *> ops;
+    root->walk<WalkOrder::PreOrder>([&](Operation *op) {
+      if (indexable(op))
+        ops.push_back(op);
+    });
+    for (Operation *op : ops) {
+      size_t hash = hashOf(op);
+      if (Operation *twin = twinOf(op, hash)) {
+        op->replaceAllUsesWith(twin);
+        op->erase();
+        continue;
+      }
+      add(op, hash);
+    }
   }
 
   void notifyOperationInserted(Operation *op, OpBuilder::InsertPoint) override {
@@ -13312,7 +13363,9 @@ template <typename T> struct CSE final : CheckedOpRewritePattern<T, CSE<T>> {
   CSEIndex *index;
 
   CSE(CSEIndex *index, MLIRContext *context, PatternBenefit benefit)
-      : CheckedOpRewritePattern<T, CSE<T>>(context, benefit), index(index) {}
+      : CheckedOpRewritePattern<T, CSE<T>>(context, benefit), index(index) {
+    index->names.insert(OperationName(T::getOperationName(), context));
+  }
   // Registered on its own (the transform-dialect pattern names), the
   // pattern has no driver listener to keep an index live: it walks the use
   // list of the operand with the fewest users instead.
@@ -37417,7 +37470,13 @@ struct EnzymeHLOOptPass
     config.setUseTopDownTraversal(top_down);
     config.enableFolding();
     if (cse) {
-      cseIndex.populate(getOperation());
+      // Merge what is already duplicated before the driver sees it: a
+      // raised kernel can be 90% repeated index arithmetic, and letting the
+      // driver discover that one merge at a time re-queues every user of
+      // every merge. One hashed pass over the region does it in linear
+      // time; the indexed patterns then only track the duplicates the
+      // rewrites create.
+      cseIndex.mergeAndPopulate(getOperation());
       config.setListener(&cseIndex);
     }
     if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),

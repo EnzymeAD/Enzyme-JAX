@@ -37,21 +37,20 @@ module @reactant_conditi... attributes {mhlo.num_partitions = 1 : i64, mhlo.num_
   }
 }
 
-// CHECK: func.func @main(%arg0: tensor<10x2xf64> {tf.aliasing_output = 3 : i32}) -> (tensor<10x2xf64>, tensor<10x2xf64>, tensor<10x2xf64>, tensor<10x2xf64>) {
-// CHECK-NEXT:     %cst = stablehlo.constant dense<2.000000e+00> : tensor<10x2xf64>
-// CHECK-NEXT:     %cst_0 = stablehlo.constant dense<0.000000e+00> : tensor<f64>
-// CHECK-NEXT:     %cst_1 = stablehlo.constant dense<1.000000e+00> : tensor<10x2xf64>
-// CHECK-NEXT:     %0 = stablehlo.add %arg0, %cst_1 : tensor<10x2xf64>
-// CHECK-NEXT:     %1 = stablehlo.negate %0 : tensor<10x2xf64>
-// CHECK-NEXT:     %2 = stablehlo.reduce(%0 init: %cst_0) applies stablehlo.add across dimensions = [1, 0] {enzymexla.non_negative = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<10x2xf64>, tensor<f64>) -> tensor<f64>
-// CHECK-NEXT:     %3 = stablehlo.compare  GT, %2, %cst_0 : (tensor<f64>, tensor<f64>) -> tensor<i1>
-// CHECK-NEXT:     %4 = stablehlo.select %3, %arg0, %0 : tensor<i1>, tensor<10x2xf64>
-// CHECK-NEXT:     %5 = stablehlo.select %3, %0, %1 : tensor<i1>, tensor<10x2xf64>
-// CHECK-NEXT:     %6 = "stablehlo.if"(%3) ({
-// CHECK-NEXT:       stablehlo.return %0 : tensor<10x2xf64>
-// CHECK-NEXT:     }, {
-// CHECK-NEXT:       %7 = stablehlo.add %arg0, %cst : tensor<10x2xf64>
-// CHECK-NEXT:       stablehlo.return %7 : tensor<10x2xf64>
-// CHECK-NEXT:     }) : (tensor<i1>) -> tensor<10x2xf64>
-// CHECK-NEXT:     return %5, %4, %6, %arg0 : tensor<10x2xf64>, tensor<10x2xf64>, tensor<10x2xf64>, tensor<10x2xf64>
-// CHECK-NEXT:   }
+// CHECK:    func.func @main(%arg0: tensor<10x2xf64> {tf.aliasing_output = 3 : i32}) -> (tensor<10x2xf64>, tensor<10x2xf64>, tensor<10x2xf64>, tensor<10x2xf64>) {
+// CHECK-NEXT:    %cst = stablehlo.constant dense<2.000000e+00> : tensor<10x2xf64>
+// CHECK-NEXT:    %cst_0 = stablehlo.constant dense<0.000000e+00> : tensor<f64>
+// CHECK-NEXT:    %cst_1 = stablehlo.constant dense<1.000000e+00> : tensor<10x2xf64>
+// CHECK-NEXT:    %0 = stablehlo.add %arg0, %cst_1 : tensor<10x2xf64>
+// CHECK-NEXT:    %1 = stablehlo.reduce(%0 init: %cst_0) applies stablehlo.add across dimensions = [1, 0] {enzymexla.non_negative = [#enzymexla<guaranteed NOTGUARANTEED>]} : (tensor<10x2xf64>, tensor<f64>) -> tensor<f64>
+// CHECK-NEXT:    %2 = stablehlo.compare GT, %1, %cst_0 : (tensor<f64>, tensor<f64>) -> tensor<i1>
+// CHECK-NEXT:    %3 = stablehlo.select %2, %arg0, %0 : tensor<i1>, tensor<10x2xf64>
+// CHECK-NEXT:    %4:2 = "stablehlo.if"(%2) ({
+// CHECK-NEXT:      stablehlo.return %0, %0 : tensor<10x2xf64>, tensor<10x2xf64>
+// CHECK-NEXT:    }, {
+// CHECK-NEXT:      %5 = stablehlo.add %arg0, %cst : tensor<10x2xf64>
+// CHECK-NEXT:      %6 = stablehlo.negate %0 : tensor<10x2xf64>
+// CHECK-NEXT:      stablehlo.return %6, %5 : tensor<10x2xf64>, tensor<10x2xf64>
+// CHECK-NEXT:    }) : (tensor<i1>) -> (tensor<10x2xf64>, tensor<10x2xf64>)
+// CHECK-NEXT:    return %4#0, %3, %4#1, %arg0 : tensor<10x2xf64>, tensor<10x2xf64>, tensor<10x2xf64>, tensor<10x2xf64>
+// CHECK-NEXT:  }
