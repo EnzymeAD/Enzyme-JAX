@@ -13,7 +13,7 @@
 // registered normally (as they are encoded as pointers)
 // - integer constants (MPI_SUCCESS, MPI_STATUS_SIZE, ...) should be registered
 // as pointers to int
-extern "C" void *EnzymeJaXLookupSymbol(const char *name);
+extern "C" int EnzymeJaXLookupSymbol(const char *name, void **symbol);
 
 #if defined(_WIN32)
 void registerEnzymeJaXXLAHostMPIFFI() {}
@@ -40,8 +40,12 @@ using MpiRequestBuffer = PtrBuffer;
 using MpiStatusBuffer = Buffer<ffi::U8, 1>;
 
 ffi::Error checkMpiStatusSize(const MpiStatusBuffer &buf) {
-  int mpi_status_size =
-      *reinterpret_cast<int *>(EnzymeJaXLookupSymbol("MPI_STATUS_SIZE"));
+  int mpi_status_size;
+  int found = EnzymeJaXLookupSymbol(
+      "MPI_STATUS_SIZE", reinterpret_cast<void **>(&mpi_status_size));
+  if (!found)
+    return ffi::Error::Internal("MPI_STATUS_SIZE symbol not found");
+
   if (buf.element_count() != mpi_status_size) {
     return ffi::Error::InvalidArgument(
         absl::StrFormat("MPI_Status buffer must have %d elements, got %d",
@@ -51,17 +55,25 @@ ffi::Error checkMpiStatusSize(const MpiStatusBuffer &buf) {
 }
 
 ffi::Error checkMpiError(const char *fname, const int err) {
-  int mpi_success =
-      *reinterpret_cast<int *>(EnzymeJaXLookupSymbol("MPI_SUCCESS"));
-  int mpi_max_error_string =
-      *reinterpret_cast<int *>(EnzymeJaXLookupSymbol("MPI_MAX_ERROR_STRING"));
+  int mpi_success;
+  int found = EnzymeJaXLookupSymbol("MPI_SUCCESS",
+                                    reinterpret_cast<void **>(&mpi_success));
+  if (!found)
+    return ffi::Error::Internal("MPI_SUCCESS symbol not found");
 
   if (err == mpi_success)
     return ffi::Error::Success();
 
-  auto *fptr = reinterpret_cast<decltype(MPI_Error_string) *>(
-      EnzymeJaXLookupSymbol("MPI_Error_string"));
-  if (fptr == nullptr)
+  int mpi_max_error_string;
+  found = EnzymeJaXLookupSymbol(
+      "MPI_MAX_ERROR_STRING", reinterpret_cast<void **>(&mpi_max_error_string));
+  if (!found)
+    return ffi::Error::Internal("MPI_MAX_ERROR_STRING symbol not found");
+
+  decltype(MPI_Error_string) *fptr;
+  found = EnzymeJaXLookupSymbol("MPI_Error_string",
+                                reinterpret_cast<void **>(&fptr));
+  if (!found)
     return ffi::Error::Internal("MPI_Error_string symbol not found");
 
   std::vector<char> cstr(mpi_max_error_string);
@@ -125,20 +137,22 @@ convertPrimitiveTypeToMpiDatatype(ffi::DataType type, bool allow_cast = false) {
         absl::StrFormat("MPI: unsupported datatype `%s`", oss.str()));
   }
 
-  auto dt = reinterpret_cast<MPI_Datatype>(EnzymeJaXLookupSymbol(name));
-  if (dt == nullptr) {
-    return ffi::Error::Internal(
-        absl::StrFormat("MPI: symbol `%s` not found", name));
+  MPI_Datatype dt;
+  int found = EnzymeJaXLookupSymbol(name, reinterpret_cast<void **>(&dt));
+  if (!found) {
+    return ffi::Error::Internal(absl::StrFormat("%s symbol not found", name));
   }
 
   return dt;
 }
 
 ffi::Error MpiCommRankImpl(MpiCommBuffer comm_ptr, Result<IntBuffer> rank_ptr) {
-  auto *fptr = reinterpret_cast<decltype(MPI_Comm_rank) *>(
-      EnzymeJaXLookupSymbol("MPI_Comm_rank"));
-  if (fptr == nullptr)
+  decltype(MPI_Comm_rank) *fptr;
+  int found =
+      EnzymeJaXLookupSymbol("MPI_Comm_rank", reinterpret_cast<void **>(&fptr));
+  if (!found)
     return ffi::Error::Internal("MPI_Comm_rank symbol not found");
+
   MPI_Comm comm = *reinterpret_cast<MPI_Comm *>(comm_ptr.typed_data());
   int err = fptr(comm, rank_ptr->typed_data());
   return checkMpiError("MPI_Comm_rank", err);
@@ -151,10 +165,12 @@ XLA_FFI_DEFINE_HANDLER(MpiCommRankFfi, MpiCommRankImpl,
 );
 
 ffi::Error MpiCommSizeImpl(MpiCommBuffer comm_ptr, Result<IntBuffer> size_ptr) {
-  auto *fptr = reinterpret_cast<decltype(MPI_Comm_size) *>(
-      EnzymeJaXLookupSymbol("MPI_Comm_size"));
-  if (fptr == nullptr)
+  decltype(MPI_Comm_size) *fptr;
+  int found =
+      EnzymeJaXLookupSymbol("MPI_Comm_size", reinterpret_cast<void **>(&fptr));
+  if (!found)
     return ffi::Error::Internal("MPI_Comm_size symbol not found");
+
   MPI_Comm comm = *reinterpret_cast<MPI_Comm *>(comm_ptr.typed_data());
   int err = fptr(comm, size_ptr->typed_data());
   return checkMpiError("MPI_Comm_size", err);
@@ -169,10 +185,12 @@ XLA_FFI_DEFINE_HANDLER(MpiCommSizeFfi, MpiCommSizeImpl,
 ffi::Error MpiCommSplitImpl(MpiCommBuffer comm_ptr, IntBuffer color_ptr,
                             IntBuffer key_ptr,
                             Result<MpiCommBuffer> newcomm_ptr) {
-  auto *fptr = reinterpret_cast<decltype(MPI_Comm_split) *>(
-      EnzymeJaXLookupSymbol("MPI_Comm_split"));
-  if (fptr == nullptr)
+  decltype(MPI_Comm_split) *fptr;
+  int found =
+      EnzymeJaXLookupSymbol("MPI_Comm_split", reinterpret_cast<void **>(&fptr));
+  if (!found)
     return ffi::Error::Internal("MPI_Comm_split symbol not found");
+
   MPI_Comm comm = *reinterpret_cast<MPI_Comm *>(comm_ptr.typed_data());
   int color = *color_ptr.typed_data();
   int key = *key_ptr.typed_data();
@@ -190,10 +208,12 @@ XLA_FFI_DEFINE_HANDLER(MpiCommSplitFfi, MpiCommSplitImpl,
 );
 
 ffi::Error MpiBarrierImpl(MpiCommBuffer comm_ptr) {
-  auto fptr = reinterpret_cast<decltype(MPI_Barrier) *>(
-      EnzymeJaXLookupSymbol("MPI_Barrier"));
-  if (fptr == nullptr)
+  decltype(MPI_Barrier) *fptr;
+  int found =
+      EnzymeJaXLookupSymbol("MPI_Barrier", reinterpret_cast<void **>(&fptr));
+  if (!found)
     return ffi::Error::Internal("MPI_Barrier symbol not found");
+
   MPI_Comm comm = *reinterpret_cast<MPI_Comm *>(comm_ptr.typed_data());
   int err = fptr(comm);
   return checkMpiError("MPI_Barrier", err);
@@ -204,10 +224,12 @@ XLA_FFI_DEFINE_HANDLER(MpiBarrierFfi, MpiBarrierImpl,
 
 ffi::Error MpiSendImpl(ffi::AnyBuffer buf, IntBuffer dest_ptr,
                        IntBuffer tag_ptr, MpiCommBuffer comm_ptr) {
-  auto *fptr =
-      reinterpret_cast<decltype(MPI_Send) *>(EnzymeJaXLookupSymbol("MPI_Send"));
-  if (fptr == nullptr)
+  decltype(MPI_Send) *fptr;
+  int found =
+      EnzymeJaXLookupSymbol("MPI_Send", reinterpret_cast<void **>(&fptr));
+  if (!found)
     return ffi::Error::Internal("MPI_Send symbol not found");
+
   MPI_Comm comm = *reinterpret_cast<MPI_Comm *>(comm_ptr.typed_data());
   int dest = *dest_ptr.typed_data();
   int tag = *tag_ptr.typed_data();
@@ -231,10 +253,12 @@ XLA_FFI_DEFINE_HANDLER(MpiSendFfi, MpiSendImpl,
 ffi::Error MpiIsendImpl(ffi::AnyBuffer buf, IntBuffer dest_ptr,
                         IntBuffer tag_ptr, MpiCommBuffer comm_ptr,
                         Result<MpiRequestBuffer> request_ptr) {
-  auto *fptr = reinterpret_cast<decltype(MPI_Isend) *>(
-      EnzymeJaXLookupSymbol("MPI_Isend"));
-  if (fptr == nullptr)
+  decltype(MPI_Isend) *fptr;
+  int found =
+      EnzymeJaXLookupSymbol("MPI_Isend", reinterpret_cast<void **>(&fptr));
+  if (!found)
     return ffi::Error::Internal("MPI_Isend symbol not found");
+
   auto datatype = convertPrimitiveTypeToMpiDatatype(buf.element_type());
   if (datatype.has_error())
     return datatype.error();
@@ -262,10 +286,12 @@ XLA_FFI_DEFINE_HANDLER(MpiIsendFfi, MpiIsendImpl,
 ffi::Error MpiRecvImpl(IntBuffer source_ptr, IntBuffer tag_ptr,
                        MpiCommBuffer comm_ptr, Result<ffi::AnyBuffer> buf,
                        Result<MpiStatusBuffer> status_ptr) {
-  auto *fptr =
-      reinterpret_cast<decltype(MPI_Recv) *>(EnzymeJaXLookupSymbol("MPI_Recv"));
-  if (fptr == nullptr)
+  decltype(MPI_Recv) *fptr;
+  int found =
+      EnzymeJaXLookupSymbol("MPI_Recv", reinterpret_cast<void **>(&fptr));
+  if (!found)
     return ffi::Error::Internal("MPI_Recv symbol not found");
+
   if (auto error = checkMpiStatusSize(*status_ptr); error.failure()) {
     return error;
   }
@@ -295,10 +321,12 @@ XLA_FFI_DEFINE_HANDLER(MpiRecvFfi, MpiRecvImpl,
 ffi::Error MpiIrecvImpl(IntBuffer source_ptr, IntBuffer tag_ptr,
                         MpiCommBuffer comm_ptr, Result<ffi::AnyBuffer> buf,
                         Result<MpiRequestBuffer> request_ptr) {
-  auto *fptr = reinterpret_cast<decltype(MPI_Irecv) *>(
-      EnzymeJaXLookupSymbol("MPI_Irecv"));
-  if (fptr == nullptr)
+  decltype(MPI_Irecv) *fptr;
+  int found =
+      EnzymeJaXLookupSymbol("MPI_Irecv", reinterpret_cast<void **>(&fptr));
+  if (!found)
     return ffi::Error::Internal("MPI_Irecv symbol not found");
+
   MPI_Comm comm = *reinterpret_cast<MPI_Comm *>(comm_ptr.typed_data());
   auto datatype = convertPrimitiveTypeToMpiDatatype(buf->element_type());
   if (datatype.has_error())
@@ -325,10 +353,12 @@ XLA_FFI_DEFINE_HANDLER(MpiIrecvFfi, MpiIrecvImpl,
 
 ffi::Error MpiWaitImpl(MpiRequestBuffer request_ptr,
                        Result<MpiStatusBuffer> status_ptr) {
-  auto *fptr =
-      reinterpret_cast<decltype(MPI_Wait) *>(EnzymeJaXLookupSymbol("MPI_Wait"));
-  if (fptr == nullptr)
+  decltype(MPI_Wait) *fptr;
+  int found =
+      EnzymeJaXLookupSymbol("MPI_Wait", reinterpret_cast<void **>(&fptr));
+  if (!found)
     return ffi::Error::Internal("MPI_Wait symbol not found");
+
   if (auto error = checkMpiStatusSize(*status_ptr); error.failure()) {
     return error;
   }
@@ -347,10 +377,12 @@ XLA_FFI_DEFINE_HANDLER(MpiWaitFfi, MpiWaitImpl,
 
 ffi::Error MpiWaitallImpl(ffi::RemainingArgs requests,
                           ffi::RemainingRets statuses) {
-  auto *fptr = reinterpret_cast<decltype(MPI_Waitall) *>(
-      EnzymeJaXLookupSymbol("MPI_Waitall"));
-  if (fptr == nullptr)
+  decltype(MPI_Waitall) *fptr;
+  int found =
+      EnzymeJaXLookupSymbol("MPI_Waitall", reinterpret_cast<void **>(&fptr));
+  if (!found)
     return ffi::Error::Internal("MPI_Waitall symbol not found");
+
   if (requests.size() != statuses.size()) {
     return ffi::Error::InvalidArgument(
         absl::StrFormat("MPI_Waitall: requests and statuses must have the same "
@@ -373,7 +405,9 @@ ffi::Error MpiWaitallImpl(ffi::RemainingArgs requests,
 
   std::vector<MPI_Status> status_vector(count);
   int err = fptr(count, request_vector.data(), status_vector.data());
-  return checkMpiError("MPI_Waitall", err);
+  auto error = checkMpiError("MPI_Waitall", err);
+  if (error.failure())
+    return error;
 
   // copy statuses back to the output buffers
   for (int i = 0; i < count; ++i) {
@@ -401,14 +435,17 @@ XLA_FFI_DEFINE_HANDLER(MpiWaitallFfi, MpiWaitallImpl,
 ffi::Error MpiAllreduceImpl(ffi::AnyBuffer sendbuf, std::string_view op_str,
                             MpiCommBuffer comm_ptr,
                             Result<ffi::AnyBuffer> recvbuf) {
-  auto *fptr = reinterpret_cast<decltype(MPI_Allreduce) *>(
-      EnzymeJaXLookupSymbol("MPI_Allreduce"));
-  if (fptr == nullptr)
+  decltype(MPI_Allreduce) *fptr;
+  int found =
+      EnzymeJaXLookupSymbol("MPI_Allreduce", reinterpret_cast<void **>(&fptr));
+  if (!found)
     return ffi::Error::Internal("MPI_Allreduce symbol not found");
+
   if (sendbuf.element_count() <= recvbuf->element_count()) {
-    return ffi::Error::InvalidArgument(absl::StrFormat(
-        "MPI_Allreduce: recvbuf size (%d) must be at least sendbuf size (%d)",
-        recvbuf->element_count(), sendbuf.element_count()));
+    return ffi::Error::InvalidArgument(
+        absl::StrFormat("MPI_Allreduce: recvbuf size (%d) must be at least "
+                        "sendbuf size (%d)",
+                        recvbuf->element_count(), sendbuf.element_count()));
   }
   if (sendbuf.element_type() != recvbuf->element_type()) {
     std::ostringstream oss_send, oss_recv;
@@ -423,11 +460,10 @@ ffi::Error MpiAllreduceImpl(ffi::AnyBuffer sendbuf, std::string_view op_str,
   if (datatype.has_error())
     return datatype.error();
 
-  auto op = static_cast<MPI_Op>(EnzymeJaXLookupSymbol(op_str.data()));
-  if (op == nullptr) {
-    return ffi::Error::InvalidArgument(
-        absl::StrFormat("MPI_Allreduce: symbol `%s`", op_str));
-  }
+  MPI_Op op;
+  found = EnzymeJaXLookupSymbol(op_str.data(), reinterpret_cast<void **>(&op));
+  if (!found)
+    return ffi::Error::Internal(absl::StrFormat("%s symbol not found", op_str));
 
   int count = sendbuf.element_count();
   int err = fptr(sendbuf.untyped_data(), recvbuf->untyped_data(), count,
@@ -445,10 +481,12 @@ XLA_FFI_DEFINE_HANDLER(MpiAllreduceFfi, MpiAllreduceImpl,
 
 ffi::Error MpiBcastImpl(ffi::AnyBuffer buf, IntBuffer root_ptr,
                         MpiCommBuffer comm_ptr) {
-  auto *fptr = reinterpret_cast<decltype(MPI_Bcast) *>(
-      EnzymeJaXLookupSymbol("MPI_Bcast"));
-  if (fptr == nullptr)
+  decltype(MPI_Bcast) *fptr;
+  int found =
+      EnzymeJaXLookupSymbol("MPI_Bcast", reinterpret_cast<void **>(&fptr));
+  if (!found)
     return ffi::Error::Internal("MPI_Bcast symbol not found");
+
   MPI_Comm comm = *reinterpret_cast<MPI_Comm *>(comm_ptr.typed_data());
   auto datatype = convertPrimitiveTypeToMpiDatatype(buf.element_type());
   if (datatype.has_error()) {
