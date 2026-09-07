@@ -8087,6 +8087,129 @@ struct ReduceOrAnd
   }
 };
 
+// An index along `dims` at which a pad-shaped mask is true for every
+// position outside `dims`, if one is guaranteed: either the padding value
+// is true and every reduced dim is padded (a padded index), or the operand
+// is all true (its first index) and the other dims are unpadded or padded
+// with true. Pads with negative or interior padding are left alone.
+static std::optional<SmallVector<int64_t>>
+padTrueIndexAlongDims(Value mask, ArrayRef<int64_t> dims) {
+  auto pad = mask.getDefiningOp<stablehlo::PadOp>();
+  if (!pad || dims.empty())
+    return std::nullopt;
+  auto maskTy = cast<RankedTensorType>(mask.getType());
+  if (!maskTy.hasStaticShape() || !maskTy.getElementType().isInteger(1))
+    return std::nullopt;
+  auto opTy = cast<RankedTensorType>(pad.getOperand().getType());
+  for (int64_t d = 0; d < maskTy.getRank(); ++d)
+    if (pad.getInteriorPadding()[d] != 0 || pad.getEdgePaddingLow()[d] < 0 ||
+        pad.getEdgePaddingHigh()[d] < 0)
+      return std::nullopt;
+  bool padTrue = matchPattern(pad.getPaddingValue(), m_One());
+  SmallVector<int64_t> idx;
+  // A padded index along every reduced dim: true whatever the operand.
+  if (padTrue) {
+    bool ok = true;
+    for (int64_t d : dims) {
+      if (pad.getEdgePaddingLow()[d] > 0)
+        idx.push_back(0);
+      else if (pad.getEdgePaddingHigh()[d] > 0)
+        idx.push_back(opTy.getDimSize(d));
+      else
+        ok = false;
+    }
+    if (ok)
+      return idx;
+    idx.clear();
+  }
+  // The operand's first index along every reduced dim: true if the operand
+  // is all true and the other dims never read the (false) padding.
+  if (!matchPattern(pad.getOperand(), m_One()))
+    return std::nullopt;
+  for (int64_t d = 0; d < maskTy.getRank(); ++d) {
+    if (llvm::is_contained(dims, d)) {
+      if (opTy.getDimSize(d) < 1)
+        return std::nullopt;
+      idx.push_back(pad.getEdgePaddingLow()[d]);
+    } else if (!padTrue && (pad.getEdgePaddingLow()[d] != 0 ||
+                            pad.getEdgePaddingHigh()[d] != 0)) {
+      return std::nullopt;
+    }
+  }
+  return idx;
+}
+
+// The raiser picks one lane's value out of a reduced axis with a
+// (value, mask) reduce whose body is select(mask, new, acc) / or(mask, acc);
+// which of several live lanes wins is unspecified (the reduction order is).
+// When the mask is a pad with an index that is guaranteed true, the pick is
+// the slice at that index and the reduced mask is true.
+struct OneHotMaskedReduce
+    : public CheckedOpRewritePattern<stablehlo::ReduceOp, OneHotMaskedReduce> {
+  using CheckedOpRewritePattern<stablehlo::ReduceOp,
+                                OneHotMaskedReduce>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ReduceOp op,
+                                    PatternRewriter &rewriter) const {
+    if (op.getInputs().size() != 2 || op.getInitValues().size() != 2)
+      return failure();
+    Block &body = op.getBody().front();
+    if (body.getNumArguments() != 4)
+      return failure();
+    auto ret = dyn_cast<stablehlo::ReturnOp>(body.getTerminator());
+    if (!ret || ret.getNumOperands() != 2)
+      return failure();
+    // Block args: (acc value, acc mask, new value, new mask) in either
+    // role; the select must be keyed on one mask arg and pick that side's
+    // value, and the or must join the two mask args.
+    Value accV = body.getArgument(0), accM = body.getArgument(1),
+          newV = body.getArgument(2), newM = body.getArgument(3);
+    auto sel = ret.getOperand(0).getDefiningOp<stablehlo::SelectOp>();
+    auto orOp = ret.getOperand(1).getDefiningOp<stablehlo::OrOp>();
+    if (!sel || !orOp)
+      return failure();
+    if (!((orOp.getLhs() == accM && orOp.getRhs() == newM) ||
+          (orOp.getLhs() == newM && orOp.getRhs() == accM)))
+      return failure();
+    bool keyedOnNew = sel.getPred() == newM && sel.getOnTrue() == newV &&
+                      sel.getOnFalse() == accV;
+    bool keyedOnAcc = sel.getPred() == accM && sel.getOnTrue() == accV &&
+                      sel.getOnFalse() == newV;
+    if (!keyedOnNew && !keyedOnAcc)
+      return failure();
+    if (!matchPattern(op.getInitValues()[1], m_Zero()))
+      return failure();
+
+    SmallVector<int64_t> dims(op.getDimensions().begin(),
+                              op.getDimensions().end());
+    auto idx = padTrueIndexAlongDims(op.getInputs()[1], dims);
+    if (!idx)
+      return failure();
+
+    Value values = op.getInputs()[0];
+    auto valTy = cast<RankedTensorType>(values.getType());
+    if (!valTy.hasStaticShape())
+      return failure();
+    SmallVector<int64_t> starts(valTy.getRank(), 0), limits(valTy.getShape()),
+        strides(valTy.getRank(), 1);
+    for (auto [i, d] : llvm::enumerate(dims)) {
+      starts[d] = (*idx)[i];
+      limits[d] = (*idx)[i] + 1;
+    }
+    auto outTy = cast<RankedTensorType>(op.getResult(0).getType());
+    Value picked = stablehlo::SliceOpCreate(rewriter, op.getLoc(), values,
+                                            starts, limits, strides);
+    picked = stablehlo::ReshapeOpCreate(rewriter, op.getLoc(), picked,
+                                        outTy.getShape());
+    auto maskOutTy = cast<RankedTensorType>(op.getResult(1).getType());
+    Value anyTrue =
+        stablehlo::ConstantOp::create(rewriter, op.getLoc(), maskOutTy,
+                                      DenseElementsAttr::get(maskOutTy, true));
+    rewriter.replaceOp(op, {picked, anyTrue});
+    return success();
+  }
+};
+
 struct AndSimplify
     : public CheckedOpRewritePattern<stablehlo::AndOp, AndSimplify> {
   using CheckedOpRewritePattern<stablehlo::AndOp,
@@ -36883,10 +37006,10 @@ struct EnzymeHLOOptPass
     patterns.add<BitcastConvertCancellation>(context);
 
     patterns.add<
-        AddSimplify, SubSimplify, AndSimplify, ReduceOrAnd, MaxSimplify,
-        MinSimplify, OrSimplify, XorSimplify, MulSimplify, DivSimplify,
-        RemSimplify, PowSimplify, NoopSlice, NoopReverse, SliceReverse,
-        SliceSlice, DynamicSliceDynamicSlice, DynamicSliceSlice,
+        AddSimplify, SubSimplify, AndSimplify, OneHotMaskedReduce, ReduceOrAnd,
+        MaxSimplify, MinSimplify, OrSimplify, XorSimplify, MulSimplify,
+        DivSimplify, RemSimplify, PowSimplify, NoopSlice, NoopReverse,
+        SliceReverse, SliceSlice, DynamicSliceDynamicSlice, DynamicSliceSlice,
         SliceDynamicSlice, LogSimplify, ShiftRightLogicalSimplify,
         NegativePadToSlice, SliceSimplify, ConvertSimplify, TransposeSimplify,
         DotGeneralSimplify, DotGeneralReshape, DiagonalTensorDotGeneralRewrite,
