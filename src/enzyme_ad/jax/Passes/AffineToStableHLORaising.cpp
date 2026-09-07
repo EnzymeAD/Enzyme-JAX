@@ -5557,6 +5557,10 @@ struct AffineToStableHLORaisingPass
       patterns.add<PushReductionsDown>(context);
       GreedyRewriteConfig config;
       config.enableFolding();
+      // The canonicalizer's default: no identical-block merging. Merging adds
+      // successor operands for the values the blocks differed in, and e.g.
+      // llvm.invoke cannot carry an index-typed successor operand.
+      config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);
       if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
                                        config))) {
         signalPassFailure();
