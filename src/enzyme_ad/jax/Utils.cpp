@@ -3553,6 +3553,19 @@ Value ConcatenateOpCreate(
   return concatOp.getResult();
 }
 
+Value BroadcastInDimOpCreate(OpBuilder &builder, Location loc, Value input,
+                             ArrayRef<int64_t> shape,
+                             ArrayRef<int64_t> broadcastDimensions) {
+  auto inputTy = cast<RankedTensorType>(input.getType());
+  if (inputTy.getShape() == shape &&
+      llvm::equal(broadcastDimensions,
+                  llvm::seq<int64_t>(0, inputTy.getRank())))
+    return input;
+  return stablehlo::BroadcastInDimOp::create(
+      builder, loc, RankedTensorType::get(shape, inputTy.getElementType()),
+      input, broadcastDimensions);
+}
+
 Value ReshapeOpCreate(OpBuilder &builder, Location loc, Value input,
                       ArrayRef<int64_t> shape,
                       std::optional<sdy::TensorShardingPerValueAttr> sharding) {

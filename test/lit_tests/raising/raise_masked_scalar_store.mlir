@@ -28,11 +28,7 @@ func.func @scalar_masked(%out: memref<f64, 1>, %in: memref<4xf64, 1>, %flag: mem
 // CHECK-NEXT:    %4 = stablehlo.reshape %3 : (tensor<1xf64>) -> tensor<f64>
 // CHECK-NEXT:    %5 = stablehlo.reshape %arg2 : (tensor<1xi64>) -> tensor<i64>
 // CHECK-NEXT:    %6 = arith.cmpi eq, %5, %c : tensor<i64>
-// CHECK-NEXT:    %7 = stablehlo.broadcast_in_dim %4, dims = [] : (tensor<f64>) -> tensor<f64>
-// CHECK-NEXT:    %8 = stablehlo.reshape %7 : (tensor<f64>) -> tensor<f64>
-// CHECK-NEXT:    %9 = stablehlo.reshape %arg0 : (tensor<f64>) -> tensor<f64>
-// CHECK-NEXT:    %10 = stablehlo.select %6, %8, %9 : tensor<i1>, tensor<f64>
-// CHECK-NEXT:    %11 = stablehlo.broadcast_in_dim %10, dims = [] : (tensor<f64>) -> tensor<f64>
-// CHECK-NEXT:    %12 = stablehlo.dynamic_update_slice %arg0, %11 : (tensor<f64>, tensor<f64>) -> tensor<f64>
-// CHECK-NEXT:    return %12, %arg1, %arg2 : tensor<f64>, tensor<4xf64>, tensor<1xi64>
+// CHECK-NEXT:    %7 = stablehlo.select %6, %4, %arg0 : tensor<i1>, tensor<f64>
+// CHECK-NEXT:    %8 = stablehlo.dynamic_update_slice %arg0, %7 : (tensor<f64>, tensor<f64>) -> tensor<f64>
+// CHECK-NEXT:    return %8, %arg1, %arg2 : tensor<f64>, tensor<4xf64>, tensor<1xi64>
 // CHECK-NEXT:  }

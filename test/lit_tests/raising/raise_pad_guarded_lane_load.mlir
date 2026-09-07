@@ -44,70 +44,63 @@ func.func @guarded_lane_read(%out: memref<9xf64, 1>, %in: memref<6xf64, 1>) {
 // CHECK-NEXT:    %c_3 = stablehlo.constant dense<1> : tensor<6xi64>
 // CHECK-NEXT:    %5 = stablehlo.multiply %4, %c_3 : tensor<6xi64>
 // CHECK-NEXT:    %c_4 = stablehlo.constant dense<0> : tensor<i64>
-// CHECK-NEXT:    %6 = stablehlo.dynamic_slice %arg1, %c_4, sizes = [6] : (tensor<6xf64>, tensor<i64>) -> tensor<6xf64>
-// CHECK-NEXT:    %7 = stablehlo.reshape %6 : (tensor<6xf64>) -> tensor<6xf64>
 // CHECK-NEXT:    %c_5 = stablehlo.constant dense<3> : tensor<i64>
-// CHECK-NEXT:    %8 = stablehlo.broadcast_in_dim %c_5, dims = [] : (tensor<i64>) -> tensor<6xi64>
+// CHECK-NEXT:    %6 = stablehlo.broadcast_in_dim %c_5, dims = [] : (tensor<i64>) -> tensor<6xi64>
 // CHECK-NEXT:    %c_6 = stablehlo.constant dense<0> : tensor<6xi64>
-// CHECK-NEXT:    %9 = stablehlo.compare LT, %5, %c_6 : (tensor<6xi64>, tensor<6xi64>) -> tensor<6xi1>
+// CHECK-NEXT:    %7 = stablehlo.compare LT, %5, %c_6 : (tensor<6xi64>, tensor<6xi64>) -> tensor<6xi1>
 // CHECK-NEXT:    %c_7 = stablehlo.constant dense<1> : tensor<6xi64>
-// CHECK-NEXT:    %10 = stablehlo.negate %5 : tensor<6xi64>
-// CHECK-NEXT:    %11 = stablehlo.subtract %10, %c_7 : tensor<6xi64>
-// CHECK-NEXT:    %12 = stablehlo.select %9, %11, %5 : tensor<6xi1>, tensor<6xi64>
-// CHECK-NEXT:    %13 = stablehlo.divide %12, %8 : tensor<6xi64>
-// CHECK-NEXT:    %14 = stablehlo.negate %13 : tensor<6xi64>
-// CHECK-NEXT:    %15 = stablehlo.subtract %14, %c_7 : tensor<6xi64>
-// CHECK-NEXT:    %16 = stablehlo.select %9, %15, %13 : tensor<6xi1>, tensor<6xi64>
+// CHECK-NEXT:    %8 = stablehlo.negate %5 : tensor<6xi64>
+// CHECK-NEXT:    %9 = stablehlo.subtract %8, %c_7 : tensor<6xi64>
+// CHECK-NEXT:    %10 = stablehlo.select %7, %9, %5 : tensor<6xi1>, tensor<6xi64>
+// CHECK-NEXT:    %11 = stablehlo.divide %10, %6 : tensor<6xi64>
+// CHECK-NEXT:    %12 = stablehlo.negate %11 : tensor<6xi64>
+// CHECK-NEXT:    %13 = stablehlo.subtract %12, %c_7 : tensor<6xi64>
+// CHECK-NEXT:    %14 = stablehlo.select %7, %13, %11 : tensor<6xi1>, tensor<6xi64>
 // CHECK-NEXT:    %c_8 = stablehlo.constant dense<3> : tensor<i64>
-// CHECK-NEXT:    %17 = stablehlo.broadcast_in_dim %c_8, dims = [] : (tensor<i64>) -> tensor<6xi64>
-// CHECK-NEXT:    %18 = stablehlo.remainder %5, %17 : tensor<6xi64>
+// CHECK-NEXT:    %15 = stablehlo.broadcast_in_dim %c_8, dims = [] : (tensor<i64>) -> tensor<6xi64>
+// CHECK-NEXT:    %16 = stablehlo.remainder %5, %15 : tensor<6xi64>
 // CHECK-NEXT:    %c_9 = stablehlo.constant dense<0> : tensor<6xi64>
-// CHECK-NEXT:    %19 = stablehlo.compare LT, %18, %c_9 : (tensor<6xi64>, tensor<6xi64>) -> tensor<6xi1>
-// CHECK-NEXT:    %20 = stablehlo.add %18, %17 : tensor<6xi64>
-// CHECK-NEXT:    %21 = stablehlo.select %19, %20, %18 : tensor<6xi1>, tensor<6xi64>
-// CHECK-NEXT:    %22 = stablehlo.reshape %16 : (tensor<6xi64>) -> tensor<6x1xi64>
-// CHECK-NEXT:    %23 = stablehlo.broadcast_in_dim %21, dims = [0] : (tensor<6xi64>) -> tensor<6x1xi64>
-// CHECK-NEXT:    %24 = stablehlo.broadcast_in_dim %22, dims = [0, 1] : (tensor<6x1xi64>) -> tensor<6x1xi64>
-// CHECK-NEXT:    %25 = stablehlo.concatenate %24, %23, dim = 1 : (tensor<6x1xi64>, tensor<6x1xi64>) -> tensor<6x2xi64>
-// CHECK-NEXT:    %26 = stablehlo.broadcast_in_dim %7, dims = [0] : (tensor<6xf64>) -> tensor<6xf64>
-// CHECK-NEXT:    %27 = "stablehlo.scatter"(%cst_1, %25, %26) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0, 1], scatter_dims_to_operand_dims = [0, 1], index_vector_dim = 1>, unique_indices = true}> ({
+// CHECK-NEXT:    %17 = stablehlo.compare LT, %16, %c_9 : (tensor<6xi64>, tensor<6xi64>) -> tensor<6xi1>
+// CHECK-NEXT:    %18 = stablehlo.add %16, %15 : tensor<6xi64>
+// CHECK-NEXT:    %19 = stablehlo.select %17, %18, %16 : tensor<6xi1>, tensor<6xi64>
+// CHECK-NEXT:    %20 = stablehlo.reshape %14 : (tensor<6xi64>) -> tensor<6x1xi64>
+// CHECK-NEXT:    %21 = stablehlo.broadcast_in_dim %19, dims = [0] : (tensor<6xi64>) -> tensor<6x1xi64>
+// CHECK-NEXT:    %22 = stablehlo.concatenate %20, %21, dim = 1 : (tensor<6x1xi64>, tensor<6x1xi64>) -> tensor<6x2xi64>
+// CHECK-NEXT:    %23 = "stablehlo.scatter"(%cst_1, %22, %arg1) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0, 1], scatter_dims_to_operand_dims = [0, 1], index_vector_dim = 1>, unique_indices = true}> ({
 // CHECK-NEXT:    ^bb0(%arg2: tensor<f64>, %arg3: tensor<f64>):
 // CHECK-NEXT:      stablehlo.return %arg3 : tensor<f64>
 // CHECK-NEXT:    }) : (tensor<2x3xf64>, tensor<6x2xi64>, tensor<6xf64>) -> tensor<2x3xf64>
-// CHECK-NEXT:    %28 = stablehlo.iota dim = 0 : tensor<3xi64>
+// CHECK-NEXT:    %24 = stablehlo.iota dim = 0 : tensor<3xi64>
 // CHECK-NEXT:    %c_10 = stablehlo.constant dense<0> : tensor<3xi64>
-// CHECK-NEXT:    %29 = stablehlo.add %28, %c_10 : tensor<3xi64>
+// CHECK-NEXT:    %25 = stablehlo.add %24, %c_10 : tensor<3xi64>
 // CHECK-NEXT:    %c_11 = stablehlo.constant dense<1> : tensor<3xi64>
-// CHECK-NEXT:    %30 = stablehlo.multiply %29, %c_11 : tensor<3xi64>
+// CHECK-NEXT:    %26 = stablehlo.multiply %25, %c_11 : tensor<3xi64>
 // CHECK-NEXT:    %c_12 = stablehlo.constant dense<-1> : tensor<i64>
-// CHECK-NEXT:    %31 = stablehlo.broadcast_in_dim %c_12, dims = [] : (tensor<i64>) -> tensor<3xi64>
-// CHECK-NEXT:    %32 = stablehlo.multiply %2, %31 : tensor<3xi64>
+// CHECK-NEXT:    %27 = stablehlo.broadcast_in_dim %c_12, dims = [] : (tensor<i64>) -> tensor<3xi64>
+// CHECK-NEXT:    %28 = stablehlo.multiply %2, %27 : tensor<3xi64>
 // CHECK-NEXT:    %c_13 = stablehlo.constant dense<1> : tensor<i64>
-// CHECK-NEXT:    %33 = stablehlo.broadcast_in_dim %c_13, dims = [] : (tensor<i64>) -> tensor<3xi64>
-// CHECK-NEXT:    %34 = stablehlo.add %32, %33 : tensor<3xi64>
+// CHECK-NEXT:    %29 = stablehlo.broadcast_in_dim %c_13, dims = [] : (tensor<i64>) -> tensor<3xi64>
+// CHECK-NEXT:    %30 = stablehlo.add %28, %29 : tensor<3xi64>
 // CHECK-NEXT:    %c_14 = stablehlo.constant dense<0> : tensor<3xi64>
-// CHECK-NEXT:    %35 = stablehlo.compare GE, %34, %c_14 : (tensor<3xi64>, tensor<3xi64>) -> tensor<3xi1>
+// CHECK-NEXT:    %31 = stablehlo.compare GE, %30, %c_14 : (tensor<3xi64>, tensor<3xi64>) -> tensor<3xi1>
 // CHECK-NEXT:    %c_15 = stablehlo.constant dense<0> : tensor<i64>
 // CHECK-NEXT:    %c_16 = stablehlo.constant dense<0> : tensor<i64>
 // CHECK-NEXT:    %cst_17 = stablehlo.constant dense<0.000000e+00> : tensor<f64>
-// CHECK-NEXT:    %36 = stablehlo.pad %27, %cst_17, low = [0, 0], high = [1, 0], interior = [0, 0] : (tensor<2x3xf64>, tensor<f64>) -> tensor<3x3xf64>
-// CHECK-NEXT:    %37 = stablehlo.dynamic_slice %36, %c_15, %c_16, sizes = [3, 3] : (tensor<3x3xf64>, tensor<i64>, tensor<i64>) -> tensor<3x3xf64>
-// CHECK-NEXT:    %38 = stablehlo.reshape %37 : (tensor<3x3xf64>) -> tensor<3x3xf64>
-// CHECK-NEXT:    %39 = stablehlo.not %35 : tensor<3xi1>
-// CHECK-NEXT:    %40 = stablehlo.broadcast_in_dim %35, dims = [0] : (tensor<3xi1>) -> tensor<3x3xi1>
-// CHECK-NEXT:    %41 = stablehlo.broadcast_in_dim %cst, dims = [] : (tensor<f64>) -> tensor<3x3xf64>
-// CHECK-NEXT:    %42 = stablehlo.select %40, %38, %41 : tensor<3x3xi1>, tensor<3x3xf64>
+// CHECK-NEXT:    %32 = stablehlo.pad %23, %cst_17, low = [0, 0], high = [1, 0], interior = [0, 0] : (tensor<2x3xf64>, tensor<f64>) -> tensor<3x3xf64>
+// CHECK-NEXT:    %33 = stablehlo.not %31 : tensor<3xi1>
+// CHECK-NEXT:    %34 = stablehlo.broadcast_in_dim %31, dims = [0] : (tensor<3xi1>) -> tensor<3x3xi1>
+// CHECK-NEXT:    %35 = stablehlo.broadcast_in_dim %cst, dims = [] : (tensor<f64>) -> tensor<3x3xf64>
+// CHECK-NEXT:    %36 = stablehlo.select %34, %32, %35 : tensor<3x3xi1>, tensor<3x3xf64>
 // CHECK-NEXT:    %c_18 = stablehlo.constant dense<3> : tensor<i64>
-// CHECK-NEXT:    %43 = stablehlo.broadcast_in_dim %c_18, dims = [] : (tensor<i64>) -> tensor<3xi64>
-// CHECK-NEXT:    %44 = stablehlo.multiply %2, %43 : tensor<3xi64>
-// CHECK-NEXT:    %45 = stablehlo.broadcast_in_dim %44, dims = [0] : (tensor<3xi64>) -> tensor<3x3xi64>
-// CHECK-NEXT:    %46 = stablehlo.broadcast_in_dim %30, dims = [1] : (tensor<3xi64>) -> tensor<3x3xi64>
-// CHECK-NEXT:    %47 = stablehlo.add %45, %46 : tensor<3x3xi64>
-// CHECK-NEXT:    %48 = stablehlo.reshape %47 : (tensor<3x3xi64>) -> tensor<3x3x1xi64>
-// CHECK-NEXT:    %49 = stablehlo.broadcast_in_dim %42, dims = [0, 1] : (tensor<3x3xf64>) -> tensor<3x3xf64>
-// CHECK-NEXT:    %50 = "stablehlo.scatter"(%arg0, %48, %49) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0], scatter_dims_to_operand_dims = [0], index_vector_dim = 2>, unique_indices = true}> ({
+// CHECK-NEXT:    %37 = stablehlo.broadcast_in_dim %c_18, dims = [] : (tensor<i64>) -> tensor<3xi64>
+// CHECK-NEXT:    %38 = stablehlo.multiply %2, %37 : tensor<3xi64>
+// CHECK-NEXT:    %39 = stablehlo.broadcast_in_dim %38, dims = [0] : (tensor<3xi64>) -> tensor<3x3xi64>
+// CHECK-NEXT:    %40 = stablehlo.broadcast_in_dim %26, dims = [1] : (tensor<3xi64>) -> tensor<3x3xi64>
+// CHECK-NEXT:    %41 = stablehlo.add %39, %40 : tensor<3x3xi64>
+// CHECK-NEXT:    %42 = stablehlo.reshape %41 : (tensor<3x3xi64>) -> tensor<3x3x1xi64>
+// CHECK-NEXT:    %43 = "stablehlo.scatter"(%arg0, %42, %36) <{indices_are_sorted = false, scatter_dimension_numbers = #stablehlo.scatter<inserted_window_dims = [0], scatter_dims_to_operand_dims = [0], index_vector_dim = 2>, unique_indices = true}> ({
 // CHECK-NEXT:    ^bb0(%arg2: tensor<f64>, %arg3: tensor<f64>):
 // CHECK-NEXT:      stablehlo.return %arg3 : tensor<f64>
 // CHECK-NEXT:    }) : (tensor<9xf64>, tensor<3x3x1xi64>, tensor<3x3xf64>) -> tensor<9xf64>
-// CHECK-NEXT:    return %50, %arg1 : tensor<9xf64>, tensor<6xf64>
+// CHECK-NEXT:    return %43, %arg1 : tensor<9xf64>, tensor<6xf64>
 // CHECK-NEXT:  }
