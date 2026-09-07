@@ -970,10 +970,18 @@ NonNegativeResultAnalysis::State NonNegativeResultAnalysis::localGuaranteed(
 
   // integer ops
   if (isa<stablehlo::AbsOp, stablehlo::SqrtOp, stablehlo::ExpOp,
-          stablehlo::IotaOp, stablehlo::AndOp, stablehlo::OrOp,
-          stablehlo::XorOp, stablehlo::NotOp>(op)) {
+          stablehlo::IotaOp, stablehlo::OrOp, stablehlo::XorOp,
+          stablehlo::NotOp>(op)) {
     return State::GUARANTEED;
   }
+
+  // AND clears the sign bit only if at least one operand has it clear.
+  // In particular, a signed high-bit mask can produce a negative result.
+  if (auto andOp = dyn_cast<stablehlo::AndOp>(op))
+    return guaranteed(andOp.getRhs(), rewriter) ||
+                   guaranteed(andOp.getLhs(), rewriter)
+               ? State::GUARANTEED
+               : State::NOTGUARANTEED;
 
   if (isa<chlo::ErfInvOp>(op)) {
     return State::NOTGUARANTEED;
