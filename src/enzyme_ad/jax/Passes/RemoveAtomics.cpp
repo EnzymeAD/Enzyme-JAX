@@ -182,7 +182,7 @@ isl::union_map getDeps(ScopStmt &stmtA, MemoryAccess *accessA, ScopStmt &stmtB,
   isl_union_map *Read = isl_union_map_empty(isl_space_copy(Space));
   isl_union_map *MayWrite = isl_union_map_empty(isl_space_copy(Space));
   isl_union_map *MustWrite = isl_union_map_empty(isl_space_copy(Space));
-  isl_union_map *Kill = isl_union_map_empty(isl_space_copy(Space));
+  isl_union_map *Kill = isl_union_map_empty(Space);
   // isl_union_map *StmtSchedule = isl_union_map_empty(Space);
 
   for (auto [MA, Stmt] :

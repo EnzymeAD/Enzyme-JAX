@@ -257,8 +257,8 @@ StringRef getStmtName(Operation *op) {
 isl_schedule *IslScop::buildLeafSchedule(Operation *op) {
   // TODO check that we are really calling a statement
   auto &stmt = getIslStmt(op);
-  isl_schedule *schedule = isl_schedule_from_domain(
-      isl_union_set_from_set(isl_set_copy(stmt.islDomain)));
+  isl_schedule *schedule =
+      isl_schedule_from_domain(isl_union_set_from_set(stmt.islDomain.copy()));
   LLVM_DEBUG({
     llvm::errs() << "Created leaf schedule:\n";
     isl_schedule_dump(schedule);
@@ -404,9 +404,10 @@ void IslScop::addIndependences() {
   // FIXME we need the param space here - perhaps in the future we may not have
   // all the params on all stmts
   this->independence = isl::manage(
-      isl_union_map_empty(isl_set_get_space(stmts.front().islDomain)));
+      isl_union_map_empty(isl_set_get_space(stmts.front().islDomain.get())));
   for (auto &stmt : *this) {
-    isl_set *domain = isl_set_copy(stmt.islDomain);
+    isl::set domainOwner = stmt.islDomain;
+    isl_set *domain = domainOwner.get();
     unsigned totalDims = unsignedFromIslSize(isl_set_dim(domain, isl_dim_set));
     LLVM_DEBUG(dbgs() << "Adding independence for stmt with domain ";
                isl_set_dump(domain));
@@ -458,7 +459,7 @@ void IslScop::addIndependences() {
         isl_space *space;
         isl_multi_aff *ma;
         isl_pw_multi_aff *pma;
-        space = isl_set_get_space(stmt.getDomain().release());
+        space = isl_set_get_space(domain);
         int dim;
         dim = isl_space_dim(space, isl_dim_set);
         ma = isl_multi_aff_project_out_map(space, isl_dim_set, dim,
@@ -504,12 +505,13 @@ void IslScop::addDomainRelation(ScopStmt &stmt,
   LLVM_DEBUG(llvm::errs() << "space: ");
   LLVM_DEBUG(isl_space_dump(space));
   stmt.islDomain =
-      isl_set_from_basic_set(isl_basic_set_from_constraint_matrices(
+      isl::manage(isl_set_from_basic_set(isl_basic_set_from_constraint_matrices(
           space, eqMat, ineqMat, isl_dim_set, isl_dim_div, isl_dim_param,
-          isl_dim_cst));
+          isl_dim_cst)));
   LLVM_DEBUG(llvm::errs() << "bset: ");
-  LLVM_DEBUG(isl_set_dump(stmt.islDomain));
-  assert((int)cst.getNumDimVars() == isl_set_dim(stmt.islDomain, isl_dim_set));
+  LLVM_DEBUG(isl_set_dump(stmt.islDomain.get()));
+  assert((int)cst.getNumDimVars() ==
+         isl_set_dim(stmt.islDomain.get(), isl_dim_set));
 }
 
 LogicalResult
@@ -535,13 +537,13 @@ IslScop::addAccessRelation(ScopStmt &stmt, MemoryAccess::MemoryKind kind,
 
   if (universe) {
     isl_set *range = isl_space_universe_set(arraySpace.copy());
-    map = isl_map_from_domain_and_range(isl_set_copy(stmt.islDomain), range);
+    map = isl_map_from_domain_and_range(stmt.islDomain.copy(), range);
   } else if (createAccessRelationConstraints(vMap, cst, domain).failed()) {
     LLVM_DEBUG(llvm::dbgs() << "createAccessRelationConstraints failed\n");
 
     // Conservatively act on the entire array
     isl_set *range = isl_space_universe_set(arraySpace.copy());
-    map = isl_map_from_domain_and_range(isl_set_copy(stmt.islDomain), range);
+    map = isl_map_from_domain_and_range(stmt.islDomain.copy(), range);
 
     if (type == MemoryAccess::AccessType::MUST_WRITE) {
       // If we could not get exact relation, we need to downgrade to a may write
