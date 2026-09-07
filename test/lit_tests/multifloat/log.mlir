@@ -1,5 +1,10 @@
 // RUN: enzymexlamlir-opt --multi-float-conversion="source-type=f64 target-type=f32 concat-dimension=first" %s | FileCheck %s
 // RUN: enzymexlamlir-opt --multi-float-conversion="source-type=f64 target-type=f32 concat-dimension=last" %s | FileCheck %s
+// Numeric interpret runs for each concat mode — exercises the special-case
+// branches of LogOpConversion (x==1, x==0, x==±inf, x<0) at runtime.
+// RUN: enzymexlamlir-opt --multi-float-conversion="source-type=f64 target-type=f32 concat-dimension=first" %s | stablehlo-translate - --interpret --allow-unregistered-dialect
+// RUN: enzymexlamlir-opt --multi-float-conversion="source-type=f64 target-type=f32 concat-dimension=last" %s | stablehlo-translate - --interpret --allow-unregistered-dialect
+// RUN: enzymexlamlir-opt --multi-float-conversion="source-type=f64 target-type=f32 concat-dimension=tuple" %s | stablehlo-translate - --interpret --allow-unregistered-dialect
 
 
 func.func @log_test(%arg0: tensor<f64>) -> tensor<f64> {
@@ -20,12 +25,16 @@ func.func @main() attributes {enzyme.no_multifloat} {
   %r0 = func.call @log_test(%c0) : (tensor<f64>) -> tensor<f64>
   "check.expect_close"(%r0, %e0) {max_ulp_difference = 0 : ui64} : (tensor<f64>, tensor<f64>) -> ()
 
-  // Test -1.0 -> NaN
+  // Test -1.0 -> NaN.
+  // NaN is the only IEEE value that compares unequal to itself, so
+  // (r2 != r2) must be true exactly when log returned NaN.
   %cn1 = stablehlo.constant dense<-1.0> : tensor<f64>
   %r2 = func.call @log_test(%cn1) : (tensor<f64>) -> tensor<f64>
-  // We can't easily check for NaN with expect_close, but we can check if it is not equal to itself?
-  // Or we can just assume it works if it doesn't crash!
-  // Let's just check it doesn't crash!
+  %r2_is_nan = stablehlo.compare NE, %r2, %r2 : (tensor<f64>, tensor<f64>) -> tensor<i1>
+  %true_i1 = stablehlo.constant dense<true> : tensor<i1>
+  %r2_is_nan_f64 = stablehlo.convert %r2_is_nan : (tensor<i1>) -> tensor<f64>
+  %true_f64 = stablehlo.convert %true_i1 : (tensor<i1>) -> tensor<f64>
+  "check.expect_close"(%r2_is_nan_f64, %true_f64) {max_ulp_difference = 0 : ui64} : (tensor<f64>, tensor<f64>) -> ()
 
   // Test +inf -> +inf
   %cinf = stablehlo.constant dense<0x7FF0000000000000> : tensor<f64> // +inf
@@ -1077,14 +1086,19 @@ func.func @main() attributes {enzyme.no_multifloat} {
 // CHECK:     check.expect_close %1, %cst_2, max_ulp_difference = 0 : tensor<f64>, tensor<f64>
 // CHECK:     %cst_3 = stablehlo.constant dense<-1.000000e+00> : tensor<f64>
 // CHECK:     %2 = call @log_test(%cst_3) : (tensor<f64>) -> tensor<f64>
+// CHECK:     %3 = stablehlo.compare NE, %2, %2 : (tensor<f64>, tensor<f64>) -> tensor<i1>
+// CHECK:     %c = stablehlo.constant dense<true> : tensor<i1>
+// CHECK:     %4 = stablehlo.convert %3 : (tensor<i1>) -> tensor<f64>
+// CHECK:     %5 = stablehlo.convert %c : (tensor<i1>) -> tensor<f64>
+// CHECK:     check.expect_close %4, %5, max_ulp_difference = 0 : tensor<f64>, tensor<f64>
 // CHECK:     %cst_4 = stablehlo.constant dense<0x7FF0000000000000> : tensor<f64>
-// CHECK:     %3 = call @log_test(%cst_4) : (tensor<f64>) -> tensor<f64>
-// CHECK:     check.expect_close %3, %cst_4, max_ulp_difference = 0 : tensor<f64>, tensor<f64>
+// CHECK:     %6 = call @log_test(%cst_4) : (tensor<f64>) -> tensor<f64>
+// CHECK:     check.expect_close %6, %cst_4, max_ulp_difference = 0 : tensor<f64>, tensor<f64>
 // CHECK:     %cst_5 = stablehlo.constant dense<2.000000e+00> : tensor<f64>
 // CHECK:     %cst_6 = stablehlo.constant dense<0.6931471805599454> : tensor<f64>
-// CHECK:     %4 = call @log_test(%cst_5) : (tensor<f64>) -> tensor<f64>
-// CHECK:     check.expect_close %4, %cst_6, max_ulp_difference = 1 : tensor<f64>, tensor<f64>
+// CHECK:     %7 = call @log_test(%cst_5) : (tensor<f64>) -> tensor<f64>
+// CHECK:     check.expect_close %7, %cst_6, max_ulp_difference = 1 : tensor<f64>, tensor<f64>
 // CHECK:     %cst_7 = stablehlo.constant dense<0.69314718055994529> : tensor<f64>
-// CHECK:     check.expect_close %4, %cst_7, max_ulp_difference = 100 : tensor<f64>, tensor<f64>
+// CHECK:     check.expect_close %7, %cst_7, max_ulp_difference = 100 : tensor<f64>, tensor<f64>
 // CHECK:     return
 // CHECK: }
