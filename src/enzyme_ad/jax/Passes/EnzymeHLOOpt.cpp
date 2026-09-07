@@ -21236,6 +21236,113 @@ struct WhileScatterAccumulatorNoAdd final
   }
 };
 
+// Evaluate a dynamic counted loop's next condition in its body, where the
+// comparison can fuse with the counter update. The condition region then just
+// returns a carried predicate, avoiding a separate device kernel per test.
+struct WhileConditionToBody final
+    : CheckedOpRewritePattern<stablehlo::WhileOp, WhileConditionToBody> {
+  using CheckedOpRewritePattern::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::WhileOp op,
+                                    PatternRewriter &rewriter) const {
+    // Adding a result would require extending an explicit sharding contract.
+    if (op->hasAttr("mhlo.sharding") || op->hasAttr("sdy.sharding"))
+      return failure();
+    // Checkpointing (including later differentiation of generated segments)
+    // needs the counted-loop condition to recover the induction variable.
+    if (op->hasAttr("enzyme.enable_checkpointing") ||
+        op->hasAttr("enzyme.binomial_checkpointing") ||
+        op->hasAttr("enzyme.checkpoint_period") ||
+        op->hasAttr("enzymexla.checkpoint_segment"))
+      return failure();
+    Block &cond = op.getCond().front();
+    auto condReturn = cast<stablehlo::ReturnOp>(cond.getTerminator());
+    auto compare =
+        condReturn.getOperand(0).getDefiningOp<stablehlo::CompareOp>();
+    if (!compare)
+      return failure();
+    // Clone only the scalar comparison and its constants. In particular, do
+    // not duplicate effects, nested control flow, or expensive conditions.
+    for (Operation &operation : cond.without_terminator())
+      if (&operation != compare.getOperation() &&
+          !isa<stablehlo::ConstantOp>(operation))
+        return failure();
+
+    // Look for a counter update that the next comparison can consume in the
+    // same fusion. Either operand order and signed/unsigned comparisons are
+    // supported: the comparison itself will be cloned without modification.
+    Block &oldBody = op.getBody().front();
+    auto oldReturn = cast<stablehlo::ReturnOp>(oldBody.getTerminator());
+    bool dynamicCounter = false;
+    for (unsigned side = 0; side < 2; ++side) {
+      auto arg = dyn_cast<BlockArgument>(compare->getOperand(side));
+      Value limit = compare->getOperand(1 - side);
+      if (!arg || arg.getOwner() != &cond ||
+          !(definedOutside(limit, op) || matchPattern(limit, m_Constant())))
+        continue;
+      auto next = oldReturn.getOperand(arg.getArgNumber())
+                      .getDefiningOp<stablehlo::AddOp>();
+      if (!next)
+        continue;
+      Value bodyArg = oldBody.getArgument(arg.getArgNumber());
+      Value step;
+      if (next.getLhs() == bodyArg)
+        step = next.getRhs();
+      else if (next.getRhs() == bodyArg)
+        step = next.getLhs();
+      DenseIntElementsAttr stepAttr;
+      if (!step || !matchPattern(step, m_Constant(&stepAttr)) ||
+          !stepAttr.isSplat() || stepAttr.getSplatValue<APInt>().isZero())
+        continue;
+      // Keep static trip counts recognizable for downstream unrolling.
+      if (matchPattern(op->getOperand(arg.getArgNumber()), m_Constant()) &&
+          matchPattern(limit, m_Constant()))
+        continue;
+      dynamicCounter = true;
+      break;
+    }
+    if (!dynamicCounter)
+      return failure();
+
+    auto cloneCondition = [&](ValueRange arguments) {
+      IRMapping mapping;
+      for (auto [arg, value] : llvm::zip(cond.getArguments(), arguments))
+        mapping.map(arg, value);
+      for (Operation &operation : cond.without_terminator())
+        rewriter.clone(operation, mapping);
+      return mapping.lookupOrDefault(condReturn.getOperand(0));
+    };
+
+    Value initialPredicate = cloneCondition(op.getOperands());
+    SmallVector<Value> inputs(op.getOperands());
+    inputs.push_back(initialPredicate);
+    auto nextWhile = stablehlo::WhileOp::create(rewriter, op.getLoc(), inputs,
+                                                op->getAttrs());
+    nextWhile.getBody().takeBody(op.getBody());
+    Block &body = nextWhile.getBody().front();
+    body.addArgument(initialPredicate.getType(), op.getLoc());
+
+    {
+      OpBuilder::InsertionGuard guard(rewriter);
+      auto bodyReturn = cast<stablehlo::ReturnOp>(body.getTerminator());
+      rewriter.setInsertionPoint(bodyReturn);
+      Value nextPredicate = cloneCondition(bodyReturn.getOperands());
+      SmallVector<Value> outputs(bodyReturn.getOperands());
+      outputs.push_back(nextPredicate);
+      rewriter.replaceOpWithNewOp<stablehlo::ReturnOp>(bodyReturn, outputs);
+
+      Block *nextCond = rewriter.createBlock(&nextWhile.getCond());
+      for (Value input : inputs)
+        nextCond->addArgument(input.getType(), op.getLoc());
+      rewriter.setInsertionPointToEnd(nextCond);
+      stablehlo::ReturnOp::create(rewriter, op.getLoc(),
+                                  nextCond->getArguments().take_back());
+    }
+    rewriter.replaceOp(op, nextWhile.getResults().drop_back());
+    return success();
+  }
+};
+
 // Replace while op iteration variables which are not updated with their
 // upcoming value
 struct WhileSimplify
@@ -37744,7 +37851,16 @@ struct EnzymeHLOOptPass
     if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
                                      config))) {
       signalPassFailure();
+      return;
     }
+
+    // Preserve recognizable induction variables throughout the main rewrite
+    // pipeline. Only move conditions once loop optimizations have converged.
+    RewritePatternSet loopConditions(context);
+    loopConditions.add<WhileConditionToBody>(context);
+    if (failed(applyPatternsGreedily(getOperation(), std::move(loopConditions),
+                                     config)))
+      signalPassFailure();
   }
 };
 
