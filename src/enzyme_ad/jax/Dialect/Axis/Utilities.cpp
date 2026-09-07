@@ -873,21 +873,18 @@ subtractFactorFromFactor(TypedValue<AxisFactorType> minuend,
 }
 
 FailureOr<llvm::SmallVector<TypedValue<AxisFactorType>>>
-subtractFactorsFromFactorGroup(
-    TypedValue<FactorGroupType> minuend,
-    llvm::ArrayRef<TypedValue<AxisFactorType>> subtrahend, OpBuilder &builder) {
-  auto remainder = getProductProvenanceFactors(minuend);
-  if (failed(remainder)) {
-    return failure();
-  }
-  auto loc = minuend.getLoc();
+subtractSpaceImpl(llvm::ArrayRef<TypedValue<AxisFactorType>> minuend,
+                  llvm::ArrayRef<TypedValue<AxisFactorType>> subtrahend,
+                  OpBuilder &builder, Location loc) {
+  llvm::SmallVector<TypedValue<AxisFactorType>> remainder(minuend.begin(),
+                                                          minuend.end());
 
   for (TypedValue<AxisFactorType> removedFactor : subtrahend) {
     llvm::SmallVector<TypedValue<AxisFactorType>> nextRemainder;
-    nextRemainder.reserve(remainder->size());
+    nextRemainder.reserve(remainder.size());
 
     bool hadAliasOverlap = false;
-    for (TypedValue<AxisFactorType> candidate : *remainder) {
+    for (TypedValue<AxisFactorType> candidate : remainder) {
       auto candidateAxis = getFactorProvenanceAxis(candidate);
       auto removedAxis = getFactorProvenanceAxis(removedFactor);
       if (failed(candidateAxis) || failed(removedAxis)) {
@@ -910,10 +907,30 @@ subtractFactorsFromFactorGroup(
       return failure();
     }
 
-    *remainder = std::move(nextRemainder);
+    remainder = std::move(nextRemainder);
   }
 
-  return *remainder;
+  return remainder;
+}
+
+FailureOr<llvm::SmallVector<TypedValue<AxisFactorType>>>
+subtractSpace(TypedValue<FactorGroupType> minuend,
+              llvm::ArrayRef<TypedValue<AxisFactorType>> subtrahend,
+              OpBuilder &builder) {
+  auto minuendFactors = getProductProvenanceFactors(minuend);
+  if (failed(minuendFactors)) {
+    return failure();
+  }
+  return subtractSpaceImpl(*minuendFactors, subtrahend, builder,
+                           minuend.getLoc());
+}
+
+FailureOr<llvm::SmallVector<TypedValue<AxisFactorType>>>
+subtractSpace(llvm::ArrayRef<TypedValue<AxisFactorType>> minuend,
+              llvm::ArrayRef<TypedValue<AxisFactorType>> subtrahend,
+              OpBuilder &builder) {
+  Location loc = minuend.empty() ? builder.getUnknownLoc() : minuend[0].getLoc();
+  return subtractSpaceImpl(minuend, subtrahend, builder, loc);
 }
 
 struct _global_factor {

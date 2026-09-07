@@ -14,6 +14,7 @@ class BeamSearchNodeBase {
 public:
   double score;
   virtual bool finalized() const = 0;
+  virtual ~BeamSearchNodeBase() = default;
 };
 
 /**
@@ -27,17 +28,20 @@ public:
   virtual void push(NodePtr node) = 0;
   virtual NodePtr pop() = 0;
   virtual bool done() = 0;
+  virtual ~BeamSearchQueueBase() = default;
 };
 
 template <typename NodeType> class BeamSearchScorerBase {
 public:
   virtual double score(const std::shared_ptr<NodeType> &node) = 0;
+  virtual ~BeamSearchScorerBase() = default;
 };
 
 template <typename NodeType> class BeamSearchExplorerBase {
 public:
   using NodePtr = std::shared_ptr<NodeType>;
   virtual std::vector<NodePtr> generateCandidatesFromNode(NodePtr node) = 0;
+  virtual ~BeamSearchExplorerBase() = default;
 };
 
 /**

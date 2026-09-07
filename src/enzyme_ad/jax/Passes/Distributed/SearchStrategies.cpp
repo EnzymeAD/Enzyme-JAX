@@ -1,4 +1,5 @@
 #include "src/enzyme_ad/jax/Passes/Distributed/BeamSearchDriver.h"
+#include "src/enzyme_ad/jax/Passes/Distributed/LogicalAxisOverlap.h"
 #include "src/enzyme_ad/jax/Passes/Distributed/Passes.h"
 #include "src/enzyme_ad/jax/Passes/Distributed/ReplayTree.h"
 
@@ -6,6 +7,7 @@
 #include "src/enzyme_ad/jax/Dialect/Distributed/Utilities.h"
 
 #include <memory>
+#include <utility>
 
 namespace mlir::enzyme::distributed {
 using namespace mlir::enzyme::axis;
@@ -39,29 +41,6 @@ using namespace mlir::enzyme::axis;
  */
 namespace {
 
-// Attempt to hybridize replaying decision lists (O(n) per step, so O(n^2))
-// vs storing complete state at leaves (O(n) size per leaf, O(n) time to copy)
-// to a hybrid approach that ammortizes both to a (hopefully) more efficient
-// strategy.
-
-struct LogicalAxisWorklist {
-  // SSA value of the next logical axis to rewrite
-  TypedValue<LogicalMeshAxisType> axis;
-  std::shared_ptr<LogicalAxisWorklist> next;
-
-  static std::shared_ptr<LogicalAxisWorklist>
-  fromArray(const llvm::ArrayRef<TypedValue<LogicalMeshAxisType>> &axes) {
-    std::shared_ptr<LogicalAxisWorklist> current = nullptr;
-    for (auto it = axes.rbegin(); it != axes.rend(); ++it) {
-      auto node = std::make_shared<LogicalAxisWorklist>();
-      node->axis = *it;
-      node->next = current;
-      current = node;
-    }
-    return current;
-  }
-};
-
 // Collects all logical axes with users in the given module.
 static std::vector<TypedValue<LogicalMeshAxisType>>
 findAllLogicalAxes(ModuleOp moduleOp) {
@@ -85,6 +64,14 @@ findAllLogicalAxes(ModuleOp moduleOp) {
   return logicalAxes;
 }
 
+static std::vector<TypedValue<AxisFactorType>>
+findAllPhysicalAxes(ModuleOp moduleOp) {
+  assert(false && "findAllPhysicalAxes not implemented");
+  return {};
+}
+
+using LogicalAxisOrder = std::vector<TypedValue<LogicalMeshAxisType>>;
+
 struct AxisMappingReplayState {
   llvm::DenseMap<TypedValue<LogicalMeshAxisType>,
                  std::vector<TypedValue<AxisFactorType>>>
@@ -104,6 +91,8 @@ public:
   using mlir::enzyme::distributed::ReplayTree<
       AxisMappingReplayTree, AxisMappingReplayState>::ReplayTree;
 
+  // Returns what, if any, factors are currently bound to
+  // the given logical axis in the current replay tree.
   llvm::SmallVector<TypedValue<AxisFactorType>>
   getBindings(TypedValue<LogicalMeshAxisType> axis) {
     struct LookupOperator {
@@ -113,34 +102,98 @@ public:
                  llvm::SmallVector<TypedValue<AxisFactorType>> &result) {
         auto it = state.axisMapping.find(axis);
         if (it != state.axisMapping.end()) {
-          result.insert(result.end(), it->second.begin(), it->second.end());
+          result.insert(result.end(), it->second.rbegin(), it->second.rend());
         }
         return mlir::enzyme::distributed::Continue;
       }
     };
     LookupOperator lookup;
     llvm::SmallVector<TypedValue<AxisFactorType>> result;
-    queryReplay(lookup, axis, result);
+    queryReplayReverse(lookup, axis, result);
+    std::reverse(result.begin(), result.end());
+    return result;
+  }
+
+  llvm::SmallVector<TypedValue<AxisFactorType>>
+  lookupBindings(llvm::ArrayRef<TypedValue<LogicalMeshAxisType>> axes) {
+    llvm::SmallVector<TypedValue<AxisFactorType>> result;
+    for (auto axis : axes) {
+      auto bindings = getBindings(axis);
+      result.insert(result.end(), bindings.begin(), bindings.end());
+    }
     return result;
   }
 };
 
-struct StrategySearchNode : public BeamSearchNodeBase {
+class StrategySearchNode : public BeamSearchNodeBase {
 
-  std::shared_ptr<LogicalAxisWorklist> worklist;
+  std::shared_ptr<const LogicalAxisOrder> axes;
+  std::size_t axisIndex;
   std::shared_ptr<AxisMappingReplayTree> decisions;
   int extentTaken; // extent already taken from the current axis
 
+  // Factors of the physical mesh available for this axis
+  std::vector<TypedValue<AxisFactorType>> availableSpace;
+
   StrategySearchNode() = delete; // disable default constructor
-  StrategySearchNode(std::shared_ptr<LogicalAxisWorklist> worklist,
-                     std::shared_ptr<AxisMappingReplayTree> decisions,
-                     int extentTaken)
-      : worklist(worklist), decisions(decisions), extentTaken(extentTaken) {
+
+  StrategySearchNode(const StrategySearchNode &other,
+                     std::shared_ptr<AxisMappingReplayTree> childDecisions)
+      : axes(other.axes), axisIndex(other.axisIndex), decisions(childDecisions),
+        extentTaken(other.extentTaken), availableSpace(other.availableSpace) {}
+
+public:
+  StrategySearchNode(std::shared_ptr<const LogicalAxisOrder> axes,
+                     std::shared_ptr<AxisMappingReplayTree> decisions)
+      : axes(axes), axisIndex(-1 /* incremented to 0 upon setupNextAxis */),
+        decisions(decisions), extentTaken(1) {
     assert(extentTaken >= 1);
   }
 
-  TypedValue<LogicalMeshAxisType> currentAxis() const { return worklist->axis; }
-  bool finalized() const override { return worklist == nullptr; }
+  TypedValue<LogicalMeshAxisType> currentAxis() const {
+    assert(!finalized());
+    return (*axes)[axisIndex];
+  }
+  bool finalized() const override { return axisIndex >= axes->size(); }
+
+  std::shared_ptr<StrategySearchNode> makeChild() const {
+    auto childDecisions = AxisMappingReplayTree::makeChild(decisions);
+    auto childNode = std::shared_ptr<StrategySearchNode>(
+        new StrategySearchNode(*this, childDecisions));
+    return childNode;
+  }
+
+  void setupNextAxis(LogicalAxisOverlap &overlap,
+                     std::vector<TypedValue<AxisFactorType>> totalMeshSpace,
+                     OpBuilder &builder) {
+    extentTaken = 1;
+    axisIndex++;
+    if (finalized()) {
+      return;
+    }
+    availableSpace = std::move(totalMeshSpace);
+
+    auto axis = currentAxis();
+
+    // Look up what decisions have already been made for any overlapping axes,
+    // then remove those from availableSpace.
+    auto overlappingAxes = overlap.getOverlaps(axis);
+    if (!overlappingAxes) {
+      return;
+    }
+    auto overlappingBinds = decisions->lookupBindings(*overlappingAxes);
+
+    // Use axis dialect utilities to get the space subtraction
+    // of binds from availableSpace.
+    // TODO: memory leak?
+    auto remainingSpace =
+        subtractSpace(availableSpace, overlappingBinds, builder);
+    if (failed(remainingSpace)) {
+      availableSpace.clear();
+      return;
+    }
+    availableSpace.assign(remainingSpace->begin(), remainingSpace->end());
+  }
 };
 
 class StrategyExplorer : public BeamSearchExplorerBase<StrategySearchNode> {
@@ -170,14 +223,21 @@ struct DistributedSearchStrategiesPass
 
   void runOnOperation() override {
     ModuleOp moduleOp = getOperation();
+    mlir::OpBuilder temporaryBuilder(moduleOp.getContext());
+    temporaryBuilder.clearInsertionPoint();
+
+    auto overlap = LogicalAxisOverlap(moduleOp);
 
     auto logicalAxes = findAllLogicalAxes(moduleOp);
+    std::vector<TypedValue<AxisFactorType>> physicalAxes =
+        findAllPhysicalAxes(moduleOp);
     // TODO: order by importance
-    auto worklist = LogicalAxisWorklist::fromArray(logicalAxes);
+    auto axes =
+        std::make_shared<const LogicalAxisOrder>(std::move(logicalAxes));
     auto decisions = AxisMappingReplayTree::makeRoot();
 
-    auto initialNode =
-        std::make_shared<StrategySearchNode>(worklist, decisions, 1);
+    auto initialNode = std::make_shared<StrategySearchNode>(axes, decisions);
+    initialNode->setupNextAxis(overlap, physicalAxes, temporaryBuilder);
 
     int TODO_PARAMETER_BEAM_SIZE = 100;
     BeamSearchBreadthFirstQueue<StrategySearchNode> queue(

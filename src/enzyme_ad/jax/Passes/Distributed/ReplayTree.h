@@ -75,17 +75,18 @@ public:
 
   // Currently return-by-reference or state on the query object.
   // Query must return a short-circuit status indicating whether to
-  // continue or stop, and should be associative and commutative with
-  // respect to the delta state. (Currently we look at the latest delta first)
+  // continue or stop. Will always search the latest part of the replay
+  // first.
   template <typename Query, typename... Args>
-  void queryReplay(Query q, Args... args) const {
+  void queryReplayReverse(Query q, Args... args) const {
+    // Query the current delta first
     ReplayQueryShortCircuit status = q((const DeltaType)delta, args...);
     if (status == Stop) {
       return;
     }
     // Continue querying the parent if it exists
     if (parent) {
-      parent->queryReplay(q, args...);
+      parent->queryReplayReverse(q, args...);
     }
   }
 };
