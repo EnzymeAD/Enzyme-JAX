@@ -10,6 +10,8 @@
 #include "mlir/CAPI/IR.h"
 #include "mlir/CAPI/Support.h"
 
+#include "src/enzyme_ad/jax/Dialect/Comm/Dialect.h"
+#include "src/enzyme_ad/jax/Dialect/Comm/Ops.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 
