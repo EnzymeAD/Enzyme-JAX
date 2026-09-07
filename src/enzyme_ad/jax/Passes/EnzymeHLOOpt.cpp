@@ -55,6 +55,7 @@
 
 #include "llvm/ADT/SmallPtrSet.h"
 #include "llvm/ADT/SmallSet.h"
+#include "llvm/Support/MathExtras.h"
 
 #include "llvm/ADT/MapVector.h"
 #include <cmath>
@@ -15879,13 +15880,19 @@ struct GridIndexingAnalysis {
 static LogicalResult analyzeGridIndexing(Value indices, Value operand,
                                          int64_t indexVectorDim,
                                          ArrayRef<int64_t> dimsToOperandDims,
-                                         GridIndexingAnalysis &result) {
+                                         GridIndexingAnalysis &result,
+                                         bool allowWrapping = false) {
   auto operandTy = cast<RankedTensorType>(operand.getType());
-  if (operandTy.getRank() != 1) {
+  auto indicesTy = cast<RankedTensorType>(indices.getType());
+  auto indexType = indicesTy.getElementType();
+  auto integerType = dyn_cast<IntegerType>(indexType);
+  if (operandTy.getRank() != 1 || !operandTy.hasStaticShape() ||
+      !indicesTy.hasStaticShape() || !integerType ||
+      integerType.getWidth() > 64) {
     return failure();
   }
 
-  if (cast<ShapedType>(indices.getType()).getNumElements() == 1) {
+  if (cast<ShapedType>(indices.getType()).getNumElements() <= 1) {
     return failure();
   }
 
@@ -15905,7 +15912,6 @@ static LogicalResult analyzeGridIndexing(Value indices, Value operand,
     return failure();
   }
 
-  auto indicesTy = cast<RankedTensorType>(indices.getType());
   if (indexVectorDim < indicesTy.getRank() &&
       indicesTy.getDimSize(indexVectorDim) != 1) {
     return failure();
@@ -15921,15 +15927,20 @@ static LogicalResult analyzeGridIndexing(Value indices, Value operand,
   for (auto &iota : iotas) {
     int64_t start = cast<IntegerAttr>(iota.start).getValue().getSExtValue();
     int64_t scale = cast<IntegerAttr>(iota.scale).getValue().getSExtValue();
-    totalStart += start;
+    if (llvm::AddOverflow(totalStart, start, totalStart))
+      return failure();
     if (scale != 0) {
-      if (iota.dimension >= gridRank)
+      if (iota.dimension >= gridRank ||
+          llvm::AddOverflow(dimScales[iota.dimension], scale,
+                            dimScales[iota.dimension]))
         return failure();
-      dimScales[iota.dimension] += scale;
     }
   }
 
   for (int64_t d = 0; d < gridRank; ++d) {
+    if (gridTy.getDimSize(d) <= 0 ||
+        dimScales[d] == std::numeric_limits<int64_t>::min())
+      return failure();
     if (dimScales[d] != 0) {
       result.mappings.push_back({d, dimScales[d], std::abs(dimScales[d])});
     }
@@ -15973,13 +15984,21 @@ static LogicalResult analyzeGridIndexing(Value indices, Value operand,
   // Calculate the minimum total starting offset, adjusting for any negative
   // scales that effectively offset the slice starts in the grid.
   int64_t minTotalOffset = totalStart;
+  int64_t maxTotalOffset = totalStart;
   for (int64_t d = 0; d < gridRank; ++d) {
-    if (dimScales[d] < 0) {
-      minTotalOffset += (gridTy.getDimSize(d) - 1) * dimScales[d];
-    }
+    int64_t extent;
+    if (llvm::MulOverflow(gridTy.getDimSize(d) - 1, dimScales[d], extent))
+      return failure();
+    int64_t &bound = dimScales[d] < 0 ? minTotalOffset : maxTotalOffset;
+    if (llvm::AddOverflow(bound, extent, bound))
+      return failure();
   }
 
-  if (minTotalOffset < 0)
+  // DUS clamps its start, whereas scatter drops out-of-bounds updates. Only
+  // reshape a grid whose complete address range is in bounds and whose index
+  // arithmetic does not wrap at the integer type's signed limit.
+  if (minTotalOffset < 0 || maxTotalOffset >= N ||
+      !APInt(64, maxTotalOffset).isSignedIntN(integerType.getWidth()))
     return failure();
 
   result.minTotalOffset = minTotalOffset;
@@ -15998,9 +16017,11 @@ static LogicalResult analyzeGridIndexing(Value indices, Value operand,
   }
 
   for (int64_t k = 0; k < opRank; ++k) {
-    if (result.sliceStarts[k] + result.sliceSizes[k] > result.operandShape[k]) {
+    if (result.sliceSizes[k] > result.operandShape[k])
       return failure();
-    }
+    if (!allowWrapping &&
+        result.sliceStarts[k] > result.operandShape[k] - result.sliceSizes[k])
+      return failure();
   }
 
   for (size_t m = 0; m < result.mappings.size(); ++m) {
@@ -35698,6 +35719,60 @@ struct RecognizeMultiPad final
   }
 };
 
+// A translated affine grid can cross a boundary in the reshaped operand.
+// Split the update grid at those boundaries before forming DUS operations.
+// For example, offset 7 + i + 8*j with i in [0, 2), j in [0, 3) writes
+// [0:3, 7:8] and [1:4, 0:1] in an 8-column view, not [0:3, 6:8] (DUS clamp).
+struct GridUpdatePiece {
+  SmallVector<int64_t> updateStarts;
+  SmallVector<int64_t> sizes;
+  SmallVector<int64_t> operandStarts;
+  int64_t offset;
+};
+
+static LogicalResult splitGridUpdate(const GridIndexingAnalysis &analysis,
+                                     SmallVectorImpl<GridUpdatePiece> &pieces) {
+  auto strides = computeStrides(analysis.operandShape);
+  int64_t rank = analysis.operandShape.size();
+  SmallVector<GridUpdatePiece> pending;
+  pending.push_back({SmallVector<int64_t>(rank, 0),
+                     analysis.sliceSizes,
+                     {},
+                     analysis.minTotalOffset});
+  while (!pending.empty()) {
+    auto piece = pending.pop_back_val();
+    int64_t rem = piece.offset;
+    piece.operandStarts.resize(rank);
+    for (int64_t d = 0; d < rank; ++d) {
+      piece.operandStarts[d] = rem / strides[d];
+      rem %= strides[d];
+    }
+    int64_t splitDim = rank - 1;
+    while (splitDim >= 0 &&
+           piece.sizes[splitDim] <=
+               analysis.operandShape[splitDim] - piece.operandStarts[splitDim])
+      --splitDim;
+    if (splitDim < 0) {
+      pieces.push_back(std::move(piece));
+      continue;
+    }
+    // Avoid an exponential increase for high-rank grids. All matches and
+    // bounds checks happen before creating any operations in the rewriter.
+    if (splitDim == 0 || pieces.size() + pending.size() >= 31)
+      return failure();
+    int64_t head =
+        analysis.operandShape[splitDim] - piece.operandStarts[splitDim];
+    auto tail = piece;
+    tail.updateStarts[splitDim] += head;
+    tail.sizes[splitDim] -= head;
+    tail.offset += head * strides[splitDim];
+    piece.sizes[splitDim] = head;
+    pending.push_back(std::move(tail));
+    pending.push_back(std::move(piece));
+  }
+  return success();
+}
+
 struct ScatterOpCanon final
     : CheckedOpRewritePattern<stablehlo::ScatterOp, ScatterOpCanon> {
   using CheckedOpRewritePattern::CheckedOpRewritePattern;
@@ -35744,21 +35819,41 @@ private:
     auto indices = op.getScatterIndices();
     auto dimNumbers = op.getScatterDimensionNumbers();
 
+    // This path models point writes, with every update coordinate supplying
+    // one scalar operand index. Window and batching semantics need a separate
+    // analysis, even if their index expression happens to be affine.
+    if (!dimNumbers.getUpdateWindowDims().empty() ||
+        !dimNumbers.getInputBatchingDims().empty() ||
+        !dimNumbers.getScatterIndicesBatchingDims().empty() ||
+        dimNumbers.getInsertedWindowDims() != ArrayRef<int64_t>{0})
+      return failure();
+
     GridIndexingAnalysis analysis;
     if (failed(analyzeGridIndexing(
             indices, operand, dimNumbers.getIndexVectorDim(),
-            dimNumbers.getScatterDimsToOperandDims(), analysis))) {
+            dimNumbers.getScatterDimsToOperandDims(), analysis,
+            /*allowWrapping=*/true))) {
       return failure();
     }
 
     auto gridTy = cast<RankedTensorType>(analysis.grid.getType());
     int64_t gridRank = gridTy.getRank();
+    auto updatesTy = cast<RankedTensorType>(update.getType());
+    if (updatesTy.getNumElements() != gridTy.getNumElements())
+      return failure();
+    for (int64_t d = 0; d < gridRank; ++d)
+      if (gridTy.getDimSize(d) != 1 &&
+          llvm::none_of(analysis.mappings,
+                        [d](const auto &m) { return m.gridDim == d; }))
+        return failure(); // Repeated indices cannot be reshaped into a tile.
+    SmallVector<GridUpdatePiece> pieces;
+    if (failed(splitGridUpdate(analysis, pieces)))
+      return failure();
 
     Value reshapedOperand = stablehlo::ReshapeOpCreate(
         rewriter, op.getLoc(), operand, analysis.operandShape);
 
-    auto updatesTy = cast<RankedTensorType>(update.getType());
-    if (updatesTy.getRank() != gridRank) {
+    if (updatesTy.getShape() != gridTy.getShape()) {
       // Reshape updates to match gridTy shape.
       update = stablehlo::ReshapeOpCreate(rewriter, op.getLoc(), update,
                                           gridTy.getShape());
@@ -35787,17 +35882,28 @@ private:
           rewriter.getDenseI64ArrayAttr(analysis.reverseDims));
     }
 
-    SmallVector<Value> sliceStartsVal(analysis.sliceStarts.size());
-    for (size_t k = 0; k < analysis.sliceStarts.size(); ++k) {
-      sliceStartsVal[k] = stablehlo::ConstantOp::create(
-          rewriter, op.getLoc(),
-          cast<ElementsAttr>(
-              makeAttr(RankedTensorType::get({}, rewriter.getI32Type()),
-                       analysis.sliceStarts[k])));
+    Value updatedOperand = reshapedOperand;
+    for (const auto &piece : pieces) {
+      SmallVector<int64_t> limits;
+      for (auto [start, size] :
+           llvm::zip_equal(piece.updateStarts, piece.sizes))
+        limits.push_back(start + size);
+      Value pieceUpdate = stablehlo::SliceOpCreate(
+          rewriter, op.getLoc(), reshapedUpdate, piece.updateStarts, limits,
+          SmallVector<int64_t>(piece.sizes.size(), 1));
+      SmallVector<Value> starts;
+      bool needsI64 = llvm::any_of(piece.operandStarts, [](int64_t start) {
+        return start > std::numeric_limits<int32_t>::max();
+      });
+      auto startType = RankedTensorType::get(
+          {}, rewriter.getIntegerType(needsI64 ? 64 : 32));
+      for (int64_t start : piece.operandStarts)
+        starts.push_back(stablehlo::ConstantOp::create(
+            rewriter, op.getLoc(),
+            cast<ElementsAttr>(makeAttr(startType, start))));
+      updatedOperand = stablehlo::DynamicUpdateSliceOp::create(
+          rewriter, op.getLoc(), updatedOperand, pieceUpdate, starts);
     }
-
-    Value updatedOperand = stablehlo::DynamicUpdateSliceOp::create(
-        rewriter, op.getLoc(), reshapedOperand, reshapedUpdate, sliceStartsVal);
 
     Value result = stablehlo::ReshapeOpCreate(
         rewriter, op.getLoc(), updatedOperand, operandTy.getShape());
