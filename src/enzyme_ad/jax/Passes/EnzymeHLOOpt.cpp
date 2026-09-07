@@ -7750,37 +7750,85 @@ using BroadcastingElementwiseAllTransposeOperandsSimplify =
 struct TransposeElementwiseTransposeSimplify
     : public CheckedOpRewritePattern<stablehlo::TransposeOp,
                                      TransposeElementwiseTransposeSimplify> {
-  using CheckedOpRewritePattern<
-      stablehlo::TransposeOp,
-      TransposeElementwiseTransposeSimplify>::CheckedOpRewritePattern;
+  bool allowPartial;
+
+  TransposeElementwiseTransposeSimplify(MLIRContext *context,
+                                        PatternBenefit benefit = 1,
+                                        bool allowPartial = true)
+      : CheckedOpRewritePattern(context, benefit), allowPartial(allowPartial) {}
 
   LogicalResult matchAndRewriteImpl(stablehlo::TransposeOp op,
                                     PatternRewriter &rewriter) const {
     auto elem = op.getOperand().getDefiningOp();
-    if (!elem)
+    if (!elem ||
+        (!stablehlo::hasTraitElementwise(elem) &&
+         !isa<stablehlo::SelectOp>(elem)) ||
+        elem->getNumResults() != 1 || elem->getNumRegions() != 0)
       return failure();
-    if (!stablehlo::hasTraitElementwise(elem))
-      return failure();
-
-    SmallVector<Value> newOperands;
 
     auto invPerm = rewriter.getDenseI64ArrayAttr(
         getInversePermutation(op.getPermutation()));
-
-    for (auto operand : elem->getOperands()) {
-      auto innerTransposeOp = operand.getDefiningOp<stablehlo::TransposeOp>();
-      if (!innerTransposeOp)
+    bool singleUse = elem->hasOneUse();
+    bool cancelsTranspose = false;
+    bool allOperandsCancel = true;
+    unsigned addedTransposes = 0;
+    unsigned removedTransposes = 1;
+    SmallPtrSet<Operation *, 4> removableInputs;
+    for (Value operand : elem->getOperands()) {
+      auto type = dyn_cast<RankedTensorType>(operand.getType());
+      if (!type)
         return failure();
-      if (innerTransposeOp.getPermutationAttr() != invPerm)
+      // Select also permits a scalar predicate. It has no axes to permute.
+      if (type.getRank() == 0) {
+        allOperandsCancel = false;
+        continue;
+      }
+      if (type.getRank() != op.getType().getRank())
         return failure();
-      newOperands.push_back(innerTransposeOp.getOperand());
+      auto inner = operand.getDefiningOp<stablehlo::TransposeOp>();
+      if (inner && inner.getPermutationAttr() == invPerm) {
+        cancelsTranspose = true;
+        if (singleUse &&
+            llvm::all_of(inner->getUsers(),
+                         [&](Operation *user) { return user == elem; }) &&
+            removableInputs.insert(inner).second)
+          ++removedTransposes;
+        continue;
+      }
+      allOperandsCancel = false;
+      SplatElementsAttr splat;
+      if (!matchPattern(operand, m_Constant(&splat)))
+        ++addedTransposes;
     }
 
-    auto newElem = Operation::create(elem->getLoc(), elem->getName(),
-                                     {op->getResult(0).getType()}, newOperands,
-                                     elem->getAttrs(), mlir::PropertyRef(),
-                                     elem->getSuccessors(), 0);
-    rewriter.insert(newElem);
+    // T(select(T^-1(p), x, T^-1(y))) becomes select(p, T(x), y).
+    // Partial cancellation must strictly reduce transposes, without duplicating
+    // shared arithmetic. Neutral layout changes can cycle with transpose
+    // factoring and CSE. Shared input transposes only count as removed when all
+    // of their users disappear.
+    if ((!allowPartial && !allOperandsCancel) || !cancelsTranspose ||
+        (!allOperandsCancel && !singleUse) ||
+        (addedTransposes && addedTransposes >= removedTransposes))
+      return failure();
+
+    SmallVector<Value> newOperands;
+    for (Value operand : elem->getOperands()) {
+      if (cast<RankedTensorType>(operand.getType()).getRank() == 0) {
+        newOperands.push_back(operand);
+        continue;
+      }
+      auto inner = operand.getDefiningOp<stablehlo::TransposeOp>();
+      if (inner && inner.getPermutationAttr() == invPerm) {
+        newOperands.push_back(inner.getOperand());
+      } else {
+        newOperands.push_back(stablehlo::TransposeOp::create(
+            rewriter, op.getLoc(), operand, op.getPermutation()));
+      }
+    }
+
+    Operation *newElem = rewriter.clone(*elem);
+    newElem->setOperands(newOperands);
+    newElem->getResult(0).setType(op.getType());
     rewriter.replaceOp(op, newElem);
     return success();
   }
@@ -37361,9 +37409,10 @@ struct EnzymeHLOOptPass
 
     patterns.add<ElementwiseAllTransposeOperandsSimplify,
                  BroadcastingElementwiseAllTransposeOperandsSimplify,
-                 TransposeElementwiseTransposeSimplify,
                  AssociativeBinaryOpReordering,
                  CommonAssociativeCommutativeOpReorder>(context);
+    patterns.add<TransposeElementwiseTransposeSimplify>(
+        context, PatternBenefit(1), /*allowPartial=*/false);
 
     patterns.add<BinopPadToConcat<stablehlo::AddOp>,
                  BinopPadToConcat<stablehlo::MulOp>, ConcatPad,
@@ -37749,6 +37798,19 @@ struct EnzymeHLOOptPass
     config.setRegionSimplificationLevel(GreedySimplifyRegionLevel::Normal);
     if (failed(applyPatternsGreedily(getOperation(), std::move(patterns),
                                      config))) {
+      signalPassFailure();
+      return;
+    }
+
+    // Partial transpose cancellation moves layouts across shared expression
+    // boundaries. Run it after transpose factoring and CSE have converged, so
+    // those patterns cannot recreate the intermediate transposes it removes.
+    RewritePatternSet transposeCleanup(context);
+    transposeCleanup.add<TransposeElementwiseTransposeSimplify>(context);
+    if (passses & 2048)
+      transposeCleanup.add<TransposeTranspose>(context);
+    if (failed(applyPatternsGreedily(getOperation(),
+                                     std::move(transposeCleanup), config))) {
       signalPassFailure();
       return;
     }
