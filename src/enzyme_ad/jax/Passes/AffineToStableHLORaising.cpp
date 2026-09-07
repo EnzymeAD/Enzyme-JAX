@@ -881,6 +881,27 @@ static Block *getRaisedEntryBlock(Operation *op) {
   return &op->getParentRegion()->front();
 }
 
+// A loop-carried value can be yielded with fewer attributed axes than the
+// carried argument (a uniform chain through an index-table gather loses its
+// lane attribution): broadcast the yield up to the carried layout before
+// matching the permutation.
+static bool
+broadcastYieldToCarried(Value &yielded, Value carried, OpBuilder &builder,
+                        llvm::DenseMap<Value, affine::AffineValueMap> &maps,
+                        ParallelContext &pc) {
+  if (yielded.getType() == carried.getType())
+    return true;
+  Value a = carried;
+  Value b = yielded;
+  auto outMap = alignMemoryAccess(a, maps.lookup(carried), b,
+                                  maps.lookup(yielded), builder, pc);
+  if (failed(outMap) || a.getType() != carried.getType())
+    return false;
+  maps[b] = *outMap;
+  yielded = b;
+  return true;
+}
+
 static LogicalResult tryRaisingForOpToStableHLOWhile(
     affine::AffineForOp forOp, IRMapping &parentMapping, OpBuilder &builder,
     llvm::DenseMap<Value, affine::AffineValueMap> &maps, ParallelContext pc,
@@ -1678,6 +1699,9 @@ static LogicalResult tryRaisingForOpToStableHLOWhile(
 
       if (!maps.count(raisedYieldedIterArg) || !maps.count(raisedIterArg))
         return failure();
+      if (!broadcastYieldToCarried(raisedYieldedIterArg, raisedIterArg, builder,
+                                   maps, pc))
+        return failure();
       auto perm = memoryEquivalentPermutation(maps.lookup(raisedYieldedIterArg),
                                               maps.lookup(raisedIterArg));
 
@@ -1975,6 +1999,9 @@ static LogicalResult tryRaisingSCFForOpToStableHLOWhile(
       if (!raisedYielded)
         return failure();
       if (!maps.count(raisedYielded) || !maps.count(raisedIterArg))
+        return failure();
+      if (!broadcastYieldToCarried(raisedYielded, raisedIterArg, builder, maps,
+                                   pc))
         return failure();
       auto perm = memoryEquivalentPermutation(maps.lookup(raisedYielded),
                                               maps.lookup(raisedIterArg));
