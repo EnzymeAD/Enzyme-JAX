@@ -123,8 +123,8 @@ struct LowerCommMpiConstantOpToJIT
     }
 
     uint64_t value;
-    int found = EnzymeJaXLookupSymbol(name.data(),
-                                      reinterpret_cast<void **>(&value_abi));
+    int found =
+        EnzymeJaXLookupSymbol(name.data(), reinterpret_cast<void **>(&value));
     if (!found)
       return rewriter.notifyMatchFailure(op, name + " symbol not found");
 
