@@ -10,6 +10,8 @@
 #include "mlir/CAPI/IR.h"
 #include "mlir/CAPI/Support.h"
 
+#include "src/enzyme_ad/jax/Dialect/Comm/Dialect.h"
+#include "src/enzyme_ad/jax/Dialect/Comm/Ops.h"
 #include "src/enzyme_ad/jax/Dialect/Dialect.h"
 #include "src/enzyme_ad/jax/Dialect/Ops.h"
 
@@ -286,6 +288,63 @@ MlirAttribute enzymexlaMPIOpAttrGet(MlirContext ctx, EnzymeXlaMPIOp mode) {
     llvm_unreachable("Invalid MPI op mode");
   }
   return wrap(mlir::enzymexla::MPIOpAttr::get(unwrap(ctx), op));
+}
+
+MlirType enzymexlaCommMpiCommTypeGet(MlirContext ctx) {
+  return wrap(mlir::comm::MpiCommType::get(unwrap(ctx)));
+}
+
+MlirType enzymexlaCommMpiRequestTypeGet(MlirContext ctx) {
+  return wrap(mlir::comm::MpiRequestType::get(unwrap(ctx)));
+}
+
+MlirAttribute enzymexlaCommMpiCommAttrGet(MlirContext ctx,
+                                          EnzymeXlaCommMpiComm comm) {
+  switch (comm) {
+  case ENZYMEXLA_COMM_MPI_COMM_NULL:
+    return wrap(mlir::comm::MpiCommAttr::get(
+        unwrap(ctx), mlir::comm::MpiCommEnum::MPI_COMM_NULL));
+  case ENZYMEXLA_COMM_MPI_COMM_WORLD:
+    return wrap(mlir::comm::MpiCommAttr::get(
+        unwrap(ctx), mlir::comm::MpiCommEnum::MPI_COMM_WORLD));
+  case ENZYMEXLA_COMM_MPI_COMM_SELF:
+    return wrap(mlir::comm::MpiCommAttr::get(
+        unwrap(ctx), mlir::comm::MpiCommEnum::MPI_COMM_SELF));
+  default:
+    llvm_unreachable("Invalid MPI comm mode");
+  }
+}
+
+MlirAttribute enzymexlaCommMpiOpAttrGet(MlirContext ctx,
+                                        EnzymeXlaCommMpiOp op) {
+  switch (op) {
+  case ENZYMEXLA_COMM_MPI_OP_NULL:
+    return wrap(mlir::comm::MpiOpAttr::get(unwrap(ctx),
+                                           mlir::comm::MpiOpEnum::MPI_OP_NULL));
+  case ENZYMEXLA_COMM_MPI_SUM:
+    return wrap(mlir::comm::MpiOpAttr::get(unwrap(ctx),
+                                           mlir::comm::MpiOpEnum::MPI_SUM));
+  case ENZYMEXLA_COMM_MPI_MIN:
+    return wrap(mlir::comm::MpiOpAttr::get(unwrap(ctx),
+                                           mlir::comm::MpiOpEnum::MPI_MIN));
+  case ENZYMEXLA_COMM_MPI_MAX:
+    return wrap(mlir::comm::MpiOpAttr::get(unwrap(ctx),
+                                           mlir::comm::MpiOpEnum::MPI_MAX));
+  case ENZYMEXLA_COMM_MPI_PROD:
+    return wrap(mlir::comm::MpiOpAttr::get(unwrap(ctx),
+                                           mlir::comm::MpiOpEnum::MPI_PROD));
+  case ENZYMEXLA_COMM_MPI_BAND:
+    return wrap(mlir::comm::MpiOpAttr::get(unwrap(ctx),
+                                           mlir::comm::MpiOpEnum::MPI_BAND));
+  case ENZYMEXLA_COMM_MPI_BOR:
+    return wrap(mlir::comm::MpiOpAttr::get(unwrap(ctx),
+                                           mlir::comm::MpiOpEnum::MPI_BOR));
+  case ENZYMEXLA_COMM_MPI_BXOR:
+    return wrap(mlir::comm::MpiOpAttr::get(unwrap(ctx),
+                                           mlir::comm::MpiOpEnum::MPI_BXOR));
+  default:
+    llvm_unreachable("Invalid MPI op mode");
+  }
 }
 
 namespace {

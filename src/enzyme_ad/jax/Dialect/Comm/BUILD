@@ -8,6 +8,7 @@ td_library(
         "Dialect.td",
         "MPIOps.td",
         "NCCLOps.td",
+        "Ops.td",
         "Types.td",
         "Utils.td",
     ],
