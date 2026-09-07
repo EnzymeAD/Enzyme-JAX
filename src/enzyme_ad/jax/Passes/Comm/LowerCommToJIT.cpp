@@ -11,6 +11,9 @@
 #include "src/enzyme_ad/jax/Passes/Comm/TypeConversion.h"
 #include "stablehlo/dialect/StablehloOps.h"
 
+#include "cuda/cuda_runtime_api.h"
+#include "nccl.h"
+
 namespace mlir::comm {
 #define GEN_PASS_DEF_LOWERCOMMTOJITPASS
 #include "src/enzyme_ad/jax/Passes/Comm/Passes.h.inc"
@@ -97,6 +100,62 @@ const char *convertMlirTypeToMpiDatatypeName(Type type,
 
 //   return dt;
 // }
+
+llvm::Expected<ncclDatatype_t>
+convertMlirTypeToNcclDatatype(Type type, bool allow_cast = false) {
+  if (type.isInteger(8))  /*ffi::DataType::S8:*/
+    return ncclInt8;      // aka ncclChar
+  if (type.isInteger(32)) /*ffi::DataType::S32:*/
+    return ncclInt32;     // aka ncclInt
+  if (type.isInteger(64)) /*ffi::DataType::S64:*/
+    return ncclInt64;
+  if (type.isUnsignedInteger(8)) /*ffi::DataType::U8:*/
+    return ncclUint8;
+  if (type.isUnsignedInteger(32)) /*ffi::DataType::U32:*/
+    return ncclUint32;
+  if (type.isUnsignedInteger(64)) /*ffi::DataType::U64:*/
+    return ncclUint64;
+  if (type.isFloat(16)) /*ffi::DataType::F16:*/
+    return ncclFloat16; // aka ncclHalf
+  if (type.isF32())     /*ffi::DataType::F32:*/
+    return ncclFloat32; // aka ncclFloat
+  if (type.isF64())     /*ffi::DataType::F64:*/
+    return ncclFloat64; // aka ncclDouble
+  if (type.isBF16())    /*ffi::DataType::BF16:*/
+    return ncclBfloat16;
+  if (type.isF8E5M2()) /*ffi::DataType::F8E5M2:*/
+    return ncclFloat8e5m2;
+  if (type.isF8E4M3()) /*ffi::DataType::F8E4M3:*/
+    return ncclFloat8e4m3;
+
+  std::string type_name;
+  llvm::raw_string_ostream ostream(type_name);
+  type.print(ostream);
+  return llvm::createStringError(llvm::inconvertibleErrorCode(),
+                                 "type has no equivalent in NCCL: %s",
+                                 type_name.c_str());
+}
+
+llvm::Expected<ncclRedOp_t>
+convertCommNcclRedOpEnumToNcclRedOp(comm::NcclRedOpEnum op) {
+  switch (op) {
+  case comm::NcclRedOpEnum::ncclSum:
+    return ncclSum;
+  case comm::NcclRedOpEnum::ncclProd:
+    return ncclProd;
+  case comm::NcclRedOpEnum::ncclMax:
+    return ncclMax;
+  case comm::NcclRedOpEnum::ncclMin:
+    return ncclMin;
+  case comm::NcclRedOpEnum::ncclAvg:
+    return ncclAvg;
+  default:
+    return llvm::createStringError(
+        llvm::inconvertibleErrorCode(),
+        "MPI operation has no equivalent in NCCL: %s",
+        comm::stringifyMpiOpEnum(op).c_str());
+  }
+}
 
 struct LowerCommMpiConstantOpToJIT
     : public OpConversionPattern<comm::MpiConstantOp> {
@@ -189,8 +248,7 @@ struct LowerCommMpiCommRankOpToJIT
           LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr, arg_comm_ptr)
               .getResult();
 
-      // TODO error checking
-      // currently, we ignore the int return code
+      // TODO error checking: currently, we ignore the int return code
       LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
                            SymbolRefAttr::get(context, function_name),
                            ValueRange{comm, arg_rank_ptr});
@@ -287,8 +345,7 @@ struct LowerCommMpiCommSizeOpToJIT
           LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr, arg_comm_ptr)
               .getResult();
 
-      // TODO error checking
-      // currently, we ignore the int return code
+      // TODO error checking: currently, we ignore the int return code
       LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
                            SymbolRefAttr::get(context, function_name),
                            ValueRange{comm, arg_size_ptr});
@@ -394,8 +451,7 @@ struct LowerCommMpiCommSplitOpToJIT
           LLVM::LoadOp::create(rewriter, op.getLoc(), type_i32, arg_key_ptr)
               .getResult();
 
-      // TODO error checking
-      // currently, we ignore the int return code
+      // TODO error checking: currently, we ignore the int return code
       LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
                            SymbolRefAttr::get(context, function_name),
                            ValueRange{comm, color, key, arg_newcomm_ptr});
@@ -490,8 +546,7 @@ struct LowerCommMpiBarrierOpToJIT
           LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr, arg_comm_ptr)
               .getResult();
 
-      // TODO error checking
-      // currently, we ignore the int return code
+      // TODO error checking: currently, we ignore the int return code
       LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
                            SymbolRefAttr::get(context, function_name),
                            ValueRange{comm});
@@ -511,7 +566,6 @@ struct LowerCommMpiBarrierOpToJIT
 
     auto comm = adaptor.getComm();
 
-    // TODO revise if it is side effect free
     rewriter.replaceOpWithNewOp<enzymexla::JITCallOp>(
         op, TypeRange{}, mlir::FlatSymbolRefAttr::get(context, wrapper_name),
         ValueRange{comm},
@@ -594,8 +648,7 @@ struct LowerCommMpiSendOpToJIT : public OpConversionPattern<comm::MpiSendOp> {
           LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr, arg_comm_ptr)
               .getResult();
 
-      // TODO error checking
-      // currently, we ignore the int return code
+      // TODO error checking: currently, we ignore the int return code
       LLVM::CallOp::create(
           rewriter, op.getLoc(), TypeRange{type_i32},
           SymbolRefAttr::get(context, function_name),
@@ -648,7 +701,6 @@ struct LowerCommMpiSendOpToJIT : public OpConversionPattern<comm::MpiSendOp> {
         op.getLoc(), type_tensor_i64,
         DenseIntElementsAttr::get(type_tensor_i64, datatype_val));
 
-    // TODO revise if it is side effect free
     rewriter.replaceOpWithNewOp<enzymexla::JITCallOp>(
         op, type_tensor_i64,
         mlir::FlatSymbolRefAttr::get(context, wrapper_name),
@@ -735,8 +787,7 @@ struct LowerCommMpiIsendOpToJIT : public OpConversionPattern<comm::MpiIsendOp> {
           LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr, arg_comm_ptr)
               .getResult();
 
-      // TODO error checking
-      // currently, we ignore the int return code
+      // TODO error checking: currently, we ignore the int return code
       LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
                            SymbolRefAttr::get(context, function_name),
                            ValueRange{arg_buffer_ptr, count, datatype, dest,
@@ -889,8 +940,7 @@ struct LowerCommMpiRecvOpToJIT : public OpConversionPattern<comm::MpiRecvOp> {
       Value status =
           LLVM::ZeroOp::create(rewriter, op.getLoc(), type_ptr).getResult();
 
-      // TODO error checking
-      // currently, we ignore the int return code
+      // TODO error checking: currently, we ignore the int return code
       LLVM::CallOp::create(
           rewriter, op.getLoc(), TypeRange{type_i32},
           SymbolRefAttr::get(context, function_name),
@@ -956,7 +1006,6 @@ struct LowerCommMpiRecvOpToJIT : public OpConversionPattern<comm::MpiRecvOp> {
             /*operandIndex=*/0,
             /*operandTupleIndices=*/ArrayRef<int64_t>{})});
 
-    // TODO revise if it is side effect free
     rewriter.replaceOpWithNewOp<enzymexla::JITCallOp>(
         op, type_tensor_i64,
         mlir::FlatSymbolRefAttr::get(context, wrapper_name),
@@ -1043,8 +1092,7 @@ struct LowerCommMpiIrecvOpToJIT : public OpConversionPattern<comm::MpiIrecvOp> {
           LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr, arg_comm_ptr)
               .getResult();
 
-      // TODO error checking
-      // currently, we ignore the int return code
+      // TODO error checking: currently, we ignore the int return code
       LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
                            SymbolRefAttr::get(context, function_name),
                            ValueRange{arg_buffer_ptr, count, datatype, src, tag,
@@ -1184,8 +1232,7 @@ struct LowerCommMpiWaitOpToJIT : public OpConversionPattern<comm::MpiWaitOp> {
       Value status_ptr =
           LLVM::ZeroOp::create(rewriter, op.getLoc(), type_ptr).getResult();
 
-      // TODO error checking
-      // currently, we ignore the int return code
+      // TODO error checking: currently, we ignore the int return code
       LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
                            SymbolRefAttr::get(context, function_name),
                            ValueRange{arg_request_ptr, status_ptr});
@@ -1293,8 +1340,7 @@ struct LowerCommMpiWaitallOpToJIT
       Value status_ptr =
           LLVM::ZeroOp::create(rewriter, op.getLoc(), type_ptr).getResult();
 
-      // TODO error checking
-      // currently, we ignore the int return code
+      // TODO error checking: currently, we ignore the int return code
       LLVM::CallOp::create(
           rewriter, op.getLoc(), TypeRange{type_i32},
           SymbolRefAttr::get(context, function_name),
@@ -1394,8 +1440,7 @@ struct LowerCommMpiAllreduceOpToJIT
           LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr, arg_comm_ptr)
               .getResult();
 
-      // TODO error checking
-      // currently, we ignore the int return code
+      // TODO error checking: currently, we ignore the int return code
       LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
                            SymbolRefAttr::get(context, function_name),
                            ValueRange{arg_sendbuf_ptr, arg_recvbuf_ptr, count,
@@ -1472,7 +1517,6 @@ struct LowerCommMpiAllreduceOpToJIT
             /*operandIndex=*/1,
             /*operandTupleIndices=*/ArrayRef<int64_t>{})});
 
-    // TODO revise if it is side effect free
     rewriter.replaceOpWithNewOp<enzymexla::JITCallOp>(
         op, type_buffer, mlir::FlatSymbolRefAttr::get(context, wrapper_name),
         ValueRange{sendbuf, recvbuf_placeholder, count, datatype, mpi_op, comm},
@@ -1550,8 +1594,7 @@ struct LowerCommMpiBcastOpToJIT : public OpConversionPattern<comm::MpiBcastOp> {
           LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr, arg_comm_ptr)
               .getResult();
 
-      // TODO error checking
-      // currently, we ignore the int return code
+      // TODO error checking: currently, we ignore the int return code
       LLVM::CallOp::create(
           rewriter, op.getLoc(), TypeRange{type_i32},
           SymbolRefAttr::get(context, function_name),
@@ -1612,9 +1655,1100 @@ struct LowerCommMpiBcastOpToJIT : public OpConversionPattern<comm::MpiBcastOp> {
             /*operandIndex=*/0,
             /*operandTupleIndices=*/ArrayRef<int64_t>{})});
 
-    // TODO revise if it is side effect free
     rewriter.replaceOpWithNewOp<enzymexla::JITCallOp>(
         op, type_buffer, mlir::FlatSymbolRefAttr::get(context, wrapper_name),
+        ValueRange{buffer, count, datatype, root, comm},
+        /*backend_config=*/rewriter.getStringAttr(""),
+        /*operand_layouts=*/nullptr,
+        /*result_layouts=*/nullptr,
+        /*arg_attrs=*/nullptr,
+        /*res_attrs=*/nullptr,
+        /*output_operand_aliases=*/aliases,
+        /*xla_side_effect_free=*/nullptr);
+
+    return success();
+  }
+};
+
+struct LowerCommNcclCommUserRankOpToJIT
+    : public OpConversionPattern<comm::NcclCommUserRankOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(comm::NcclCommUserRankOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto context = op->getContext();
+
+    auto moduleOp = op->getParentOfType<ModuleOp>();
+    auto type_ptr = LLVM::LLVMPointerType::get(context);
+    auto type_void = LLVM::LLVMVoidType::get(context);
+    auto type_i32 = IntegerType::get(context, 32);
+    auto type_tensor_i32 = RankedTensorType::get({}, type_i32);
+
+    std::string function_name = "ncclCommUserRank";
+    std::string wrapper_name = "enzymexla_jitwrap_" + function_name;
+
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapper_name)) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+      auto funcType =
+          LLVM::LLVMFunctionType::get(type_void, {type_ptr, type_ptr}, false);
+
+      auto wrapperFunc = LLVM::LLVMFuncOp::create(rewriter, op.getLoc(),
+                                                  wrapper_name, funcType);
+
+      Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
+      rewriter.setInsertionPointToStart(entryBlock);
+
+      // Add function-level memory effects attribute
+      //   auto memoryEffectsAttr = rewriter.getArrayAttr(
+      //       {rewriter.getStringAttr("read"), rewriter.getStringAttr("write"),
+      //        rewriter.getStringAttr("allocate"),
+      //        rewriter.getStringAttr("free")});
+      //   wrapperFunc->setAttr("enzymexla.memory_effects", memoryEffectsAttr);
+      //   wrapperFunc->setAttr("enzymexla.device_abi",
+      //                        rewriter.getStringAttr("cuda"));
+      // Add argument-level memory effects attribute to all arguments
+      //   for (unsigned i = 0; i < 2; ++i) {
+      //     wrapperFunc.setArgAttr(i, "enzymexla.memory_effects",
+      //                            memoryEffectsAttr);
+      //   }
+
+      Value arg_comm_ptr = entryBlock->getArgument(0);
+      Value arg_size_ptr = entryBlock->getArgument(1);
+
+      Value host_comm_ptr =
+          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_ptr)
+              .getResult();
+
+      // TODO move to cudaMemcpyAsync by wrapping NCCL call in
+      // cudaLaunchHostFunc
+      Value count = LLVM::ConstantOp::create(
+                        rewriter, op.getLoc(), type_i32,
+                        rewriter.getI32IntegerAttr(sizeof(int32_t) * 8))
+                        .getResult();
+      Value kind = LLVM::ConstantOp::create(
+                       rewriter, op.getLoc(), type_i32,
+                       rewriter.getI32IntegerAttr(cudaMemcpyDeviceToHost))
+                       .getResult();
+      LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
+                           SymbolRefAttr::get(context, "cudaMemcpy"),
+                           ValueRange{
+                               host_comm_ptr,
+                               arg_comm_ptr,
+                               count,
+                               kind,
+                           });
+      Value comm =
+          LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr, host_comm_ptr)
+              .getResult();
+
+      // TODO error checking: currently, we ignore the int return code
+      Value host_rank_ptr =
+          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_i32)
+              .getResult();
+      LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
+                           SymbolRefAttr::get(context, function_name),
+                           ValueRange{
+                               comm,
+                               host_rank_ptr,
+                           });
+
+      // copy `count` result back to device memory
+      count = LLVM::ConstantOp::create(
+                  rewriter, op.getLoc(), type_i32,
+                  rewriter.getI32IntegerAttr(sizeof(int32_t) * 8))
+                  .getResult();
+      kind = LLVM::ConstantOp::create(
+                 rewriter, op.getLoc(), type_i32,
+                 rewriter.getI32IntegerAttr(cudaMemcpyHostToDevice))
+                 .getResult();
+      LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
+                           SymbolRefAttr::get(context, "cudaMemcpy"),
+                           ValueRange{
+                               arg_rank_ptr,
+                               host_rank_ptr,
+                               count,
+                               kind,
+                           });
+      LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
+    }
+
+    auto comm = adaptor.getComm();
+    auto rank_placeholder = stablehlo::ConstantOp::create(
+        rewriter, op.getLoc(), type_tensor_i32,
+        DenseIntElementsAttr::get(type_tensor_i32, ArrayRef<int32_t>{-1}));
+
+    auto aliases =
+        rewriter.getArrayAttr({stablehlo::OutputOperandAliasAttr::get(
+            context,
+            /*outputTupleIndices=*/ArrayRef<int64_t>{},
+            /*operandIndex=*/1,
+            /*operandTupleIndices=*/ArrayRef<int64_t>{})});
+
+    // TODO revise if it is side effect free
+    rewriter.replaceOpWithNewOp<enzymexla::JITCallOp>(
+        op, type_tensor_i32,
+        mlir::FlatSymbolRefAttr::get(context, wrapper_name),
+        ValueRange{comm, rank_placeholder},
+        /*backend_config=*/rewriter.getStringAttr(""),
+        /*operand_layouts=*/nullptr,
+        /*result_layouts=*/nullptr,
+        /*arg_attrs=*/nullptr,
+        /*res_attrs=*/nullptr,
+        /*output_operand_aliases=*/aliases,
+        /*xla_side_effect_free=*/rewriter.getUnitAttr());
+
+    return success();
+  }
+};
+
+struct LowerCommNcclCommCountOpToJIT
+    : public OpConversionPattern<comm::NcclCommCountOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(comm::NcclCommCountOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto context = op->getContext();
+
+    auto moduleOp = op->getParentOfType<ModuleOp>();
+    auto type_ptr = LLVM::LLVMPointerType::get(context);
+    auto type_void = LLVM::LLVMVoidType::get(context);
+    auto type_i32 = IntegerType::get(context, 32);
+    auto type_tensor_i32 = RankedTensorType::get({}, type_i32);
+
+    std::string function_name = "ncclCommCount";
+    std::string wrapper_name = "enzymexla_jitwrap_" + function_name;
+
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapper_name)) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+      auto funcType =
+          LLVM::LLVMFunctionType::get(type_void, {type_ptr, type_ptr}, false);
+
+      auto wrapperFunc = LLVM::LLVMFuncOp::create(rewriter, op.getLoc(),
+                                                  wrapper_name, funcType);
+
+      Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
+      rewriter.setInsertionPointToStart(entryBlock);
+
+      // Add function-level memory effects attribute
+      //   auto memoryEffectsAttr = rewriter.getArrayAttr(
+      //       {rewriter.getStringAttr("read"), rewriter.getStringAttr("write"),
+      //        rewriter.getStringAttr("allocate"),
+      //        rewriter.getStringAttr("free")});
+      //   wrapperFunc->setAttr("enzymexla.memory_effects", memoryEffectsAttr);
+      //   wrapperFunc->setAttr("enzymexla.device_abi",
+      //                        rewriter.getStringAttr("cuda"));
+      // Add argument-level memory effects attribute to all arguments
+      //   for (unsigned i = 0; i < 2; ++i) {
+      //     wrapperFunc.setArgAttr(i, "enzymexla.memory_effects",
+      //                            memoryEffectsAttr);
+      //   }
+
+      Value arg_comm_ptr = entryBlock->getArgument(0);
+      Value arg_size_ptr = entryBlock->getArgument(1);
+
+      Value host_comm_ptr =
+          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_ptr)
+              .getResult();
+
+      // TODO move to cudaMemcpyAsync by wrapping NCCL call in
+      // cudaLaunchHostFunc
+      Value count = LLVM::ConstantOp::create(
+                        rewriter, op.getLoc(), type_i32,
+                        rewriter.getI32IntegerAttr(sizeof(int32_t) * 8))
+                        .getResult();
+      Value kind = LLVM::ConstantOp::create(
+                       rewriter, op.getLoc(), type_i32,
+                       rewriter.getI32IntegerAttr(cudaMemcpyDeviceToHost))
+                       .getResult();
+      LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
+                           SymbolRefAttr::get(context, "cudaMemcpy"),
+                           ValueRange{
+                               host_comm_ptr,
+                               arg_comm_ptr,
+                               count,
+                               kind,
+                           });
+      Value comm =
+          LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr, host_comm_ptr)
+              .getResult();
+
+      // TODO error checking: currently, we ignore the int return code
+      Value host_size_ptr =
+          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_i32)
+              .getResult();
+      LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
+                           SymbolRefAttr::get(context, function_name),
+                           ValueRange{
+                               comm,
+                               host_size_ptr,
+                           });
+
+      // copy `count` result back to device memory
+      count = LLVM::ConstantOp::create(
+                  rewriter, op.getLoc(), type_i32,
+                  rewriter.getI32IntegerAttr(sizeof(int32_t) * 8))
+                  .getResult();
+      kind = LLVM::ConstantOp::create(
+                 rewriter, op.getLoc(), type_i32,
+                 rewriter.getI32IntegerAttr(cudaMemcpyHostToDevice))
+                 .getResult();
+      LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
+                           SymbolRefAttr::get(context, "cudaMemcpy"),
+                           ValueRange{
+                               arg_size_ptr,
+                               host_size_ptr,
+                               count,
+                               kind,
+                           });
+      LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
+    }
+
+    auto comm = adaptor.getComm();
+    auto size_placeholder = stablehlo::ConstantOp::create(
+        rewriter, op.getLoc(), type_tensor_i32,
+        DenseIntElementsAttr::get(type_tensor_i32, ArrayRef<int32_t>{-1}));
+
+    auto aliases =
+        rewriter.getArrayAttr({stablehlo::OutputOperandAliasAttr::get(
+            context,
+            /*outputTupleIndices=*/ArrayRef<int64_t>{},
+            /*operandIndex=*/1,
+            /*operandTupleIndices=*/ArrayRef<int64_t>{})});
+
+    // TODO revise if it is side effect free
+    rewriter.replaceOpWithNewOp<enzymexla::JITCallOp>(
+        op, type_tensor_i32,
+        mlir::FlatSymbolRefAttr::get(context, wrapper_name),
+        ValueRange{comm, size_placeholder},
+        /*backend_config=*/rewriter.getStringAttr(""),
+        /*operand_layouts=*/nullptr,
+        /*result_layouts=*/nullptr,
+        /*arg_attrs=*/nullptr,
+        /*res_attrs=*/nullptr,
+        /*output_operand_aliases=*/aliases,
+        /*xla_side_effect_free=*/rewriter.getUnitAttr());
+
+    return success();
+  }
+};
+
+struct LowerCommNcclSendOpToJIT : public OpConversionPattern<comm::NcclSendOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(comm::NcclSendOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto context = op->getContext();
+
+    auto moduleOp = op->getParentOfType<ModuleOp>();
+    auto type_ptr = LLVM::LLVMPointerType::get(context);
+    auto type_void = LLVM::LLVMVoidType::get(context);
+    auto type_i32 = IntegerType::get(context, 32);
+    auto type_tensor_i32 = RankedTensorType::get({}, type_i32);
+    auto type_nccl_result = IntegerType::get(context, sizeof(ncclResult_t) * 8);
+    auto type_nccl_datatype =
+        IntegerType::get(context, sizeof(ncclDataType_t) * 8);
+
+    std::string function_name = "ncclSend";
+    std::string wrapper_name = "enzymexla_jitwrap_" + function_name;
+
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapper_name)) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+      auto funcType = LLVM::LLVMFunctionType::get(
+          type_void, {type_ptr, type_ptr, type_ptr, type_ptr, type_ptr}, false);
+
+      auto wrapperFunc = LLVM::LLVMFuncOp::create(rewriter, op.getLoc(),
+                                                  wrapper_name, funcType);
+
+      Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
+      rewriter.setInsertionPointToStart(entryBlock);
+
+      // Add function-level memory effects attribute
+      //   auto memoryEffectsAttr = rewriter.getArrayAttr(
+      //       {rewriter.getStringAttr("read"), rewriter.getStringAttr("write"),
+      //        rewriter.getStringAttr("allocate"),
+      //        rewriter.getStringAttr("free")});
+      //   wrapperFunc->setAttr("enzymexla.memory_effects", memoryEffectsAttr);
+      //   wrapperFunc->setAttr("enzymexla.device_abi",
+      //                        rewriter.getStringAttr("cuda"));
+      // Add argument-level memory effects attribute to all arguments
+      //   for (unsigned i = 0; i < 2; ++i) {
+      //     wrapperFunc.setArgAttr(i, "enzymexla.memory_effects",
+      //                            memoryEffectsAttr);
+      //   }
+
+      Value arg_buffer_ptr = entryBlock->getArgument(0);
+      Value arg_count_ptr = entryBlock->getArgument(1);
+      Value arg_datatype_ptr = entryBlock->getArgument(2);
+      Value arg_peer_ptr = entryBlock->getArgument(3);
+      Value arg_comm_ptr = entryBlock->getArgument(4);
+      Value stream =
+          enzymexla::GetStreamOp::create(rewriter, op.getLoc(), type_ptr)
+              .getResult();
+
+      // copy scalars from device to host memory
+      Value host_count_ptr =
+          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_i32)
+              .getResult();
+      Value host_datatype_ptr =
+          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr,
+                                 type_nccl_datatype)
+              .getResult();
+      Value host_peer_ptr =
+          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_i32)
+              .getResult();
+      Value host_comm_ptr =
+          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_ptr)
+              .getResult();
+
+      Value memcpy_count;
+      Value kind = LLVM::ConstantOp::create(
+                       rewriter, op.getLoc(), type_i32,
+                       rewriter.getI32IntegerAttr(cudaMemcpyDeviceToHost))
+                       .getResult();
+
+      memcpy_count = LLVM::ConstantOp::create(
+                         rewriter, op.getLoc(), type_i32,
+                         rewriter.getI32IntegerAttr(sizeof(int32_t) * 8))
+                         .getResult();
+      LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
+                           SymbolRefAttr::get(context, "cudaMemcpyAsync"),
+                           ValueRange{
+                               host_count_ptr,
+                               arg_count_ptr,
+                               memcpy_count,
+                               kind,
+                               stream,
+                           });
+      LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
+                           SymbolRefAttr::get(context, "cudaMemcpyAsync"),
+                           ValueRange{
+                               host_peer_ptr,
+                               arg_peer_ptr,
+                               memcpy_count,
+                               kind,
+                               stream,
+                           });
+
+      memcpy_count = LLVM::ConstantOp::create(
+                         rewriter, op.getLoc(), type_i32,
+                         rewriter.getI32IntegerAttr(sizeof(ncclDataType_t) * 8))
+                         .getResult();
+      LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_nccl_datatype},
+                           SymbolRefAttr::get(context, "cudaMemcpyAsync"),
+                           ValueRange{
+                               host_datatype_ptr,
+                               arg_datatype_ptr,
+                               memcpy_count,
+                               kind,
+                               stream,
+                           });
+
+      memcpy_count =
+          LLVM::ConstantOp::create(rewriter, op.getLoc(), type_i32,
+                                   rewriter.getI32IntegerAttr(sizeof(void *)))
+              .getResult();
+      LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
+                           SymbolRefAttr::get(context, "cudaMemcpyAsync"),
+                           ValueRange{
+                               host_comm_ptr,
+                               arg_comm_ptr,
+                               memcpy_count,
+                               kind,
+                               stream,
+                           });
+
+      Value count =
+          LLVM::LoadOp::create(rewriter, op.getLoc(), type_i32, host_count_ptr)
+              .getResult();
+      Value datatype =
+          LLVM::LoadOp::create(rewriter, op.getLoc(), type_nccl_datatype,
+                               host_datatype_ptr)
+              .getResult();
+      Value peer =
+          LLVM::LoadOp::create(rewriter, op.getLoc(), type_i32, host_peer_ptr)
+              .getResult();
+      Value comm =
+          LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr, host_comm_ptr)
+              .getResult();
+
+      // TODO error checking: currently, we ignore the int return code
+      LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_nccl_result},
+                           SymbolRefAttr::get(context, function_name),
+                           ValueRange{
+                               arg_buffer_ptr,
+                               count,
+                               datatype,
+                               peer,
+                               comm,
+                               stream,
+                           });
+      LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
+    }
+
+    auto sendbuff = adaptor.getSendbuff();
+    auto len = std::reduce(op.getSendbuff().getType().getShape().begin(),
+                           op.getSendbuff().getType().getShape().end(), 1,
+                           std::multiplies<int64_t>());
+    auto count = rewriter.create<stablehlo::ConstantOp>(
+        op.getLoc(), type_tensor_i32,
+        DenseIntElementsAttr::get(type_tensor_i32, len));
+
+    auto datatype_val = convertMlirTypeToNcclDatatype(
+        op.getSendbuff().getType().getElementType());
+    if (!datatype_val) {
+      auto err = datatype_val.takeError();
+      return rewriter.notifyMatchFailure(op, llvm::toString(std::move(err)));
+    }
+    auto datatype = rewriter.create<stablehlo::ConstantOp>(
+        op.getLoc(), RankedTensorType::get({}, type_nccl_datatype),
+        DenseIntElementsAttr::get(
+            RankedTensorType::get({}, type_nccl_datatype),
+            ArrayRef<ncclDataType_t>{datatype_val.get()}));
+
+    auto peer = adaptor.getPeer();
+    auto comm = adaptor.getComm();
+
+    rewriter.replaceOpWithNewOp<enzymexla::JITCallOp>(
+        op, TypeRange{}, mlir::FlatSymbolRefAttr::get(context, wrapper_name),
+        ValueRange{sendbuff, count, datatype, peer, comm},
+        /*backend_config=*/rewriter.getStringAttr(""),
+        /*operand_layouts=*/nullptr,
+        /*result_layouts=*/nullptr,
+        /*arg_attrs=*/nullptr,
+        /*res_attrs=*/nullptr,
+        /*output_operand_aliases=*/nullptr,
+        /*xla_side_effect_free=*/nullptr);
+
+    return success();
+  }
+};
+
+struct LowerCommNcclRecvOpToJIT : public OpConversionPattern<comm::NcclRecvOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(comm::NcclRecvOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto context = op->getContext();
+
+    auto moduleOp = op->getParentOfType<ModuleOp>();
+    auto type_ptr = LLVM::LLVMPointerType::get(context);
+    auto type_void = LLVM::LLVMVoidType::get(context);
+    auto type_i32 = IntegerType::get(context, 32);
+    auto type_tensor_i32 = RankedTensorType::get({}, type_i32);
+    auto type_nccl_result = IntegerType::get(context, sizeof(ncclResult_t) * 8);
+    auto type_nccl_datatype =
+        IntegerType::get(context, sizeof(ncclDataType_t) * 8);
+
+    std::string function_name = "ncclRecv";
+    std::string wrapper_name = "enzymexla_jitwrap_" + function_name;
+
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapper_name)) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+      auto funcType = LLVM::LLVMFunctionType::get(
+          type_void, {type_ptr, type_ptr, type_ptr, type_ptr, type_ptr}, false);
+
+      auto wrapperFunc = LLVM::LLVMFuncOp::create(rewriter, op.getLoc(),
+                                                  wrapper_name, funcType);
+
+      Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
+      rewriter.setInsertionPointToStart(entryBlock);
+
+      // Add function-level memory effects attribute
+      //   auto memoryEffectsAttr = rewriter.getArrayAttr(
+      //       {rewriter.getStringAttr("read"), rewriter.getStringAttr("write"),
+      //        rewriter.getStringAttr("allocate"),
+      //        rewriter.getStringAttr("free")});
+      //   wrapperFunc->setAttr("enzymexla.memory_effects", memoryEffectsAttr);
+      //   wrapperFunc->setAttr("enzymexla.device_abi",
+      //                        rewriter.getStringAttr("cuda"));
+      // Add argument-level memory effects attribute to all arguments
+      //   for (unsigned i = 0; i < 2; ++i) {
+      //     wrapperFunc.setArgAttr(i, "enzymexla.memory_effects",
+      //                            memoryEffectsAttr);
+      //   }
+
+      Value arg_buffer_ptr = entryBlock->getArgument(0);
+      Value arg_count_ptr = entryBlock->getArgument(1);
+      Value arg_datatype_ptr = entryBlock->getArgument(2);
+      Value arg_peer_ptr = entryBlock->getArgument(3);
+      Value arg_comm_ptr = entryBlock->getArgument(4);
+      Value stream =
+          enzymexla::GetStreamOp::create(rewriter, op.getLoc(), type_ptr)
+              .getResult();
+
+      // copy scalars from device to host memory
+      Value host_count_ptr =
+          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_i32)
+              .getResult();
+      Value host_datatype_ptr =
+          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr,
+                                 type_nccl_datatype)
+              .getResult();
+      Value host_peer_ptr =
+          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_i32)
+              .getResult();
+      Value host_comm_ptr =
+          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_ptr)
+              .getResult();
+
+      Value memcpy_count;
+      Value kind = LLVM::ConstantOp::create(
+                       rewriter, op.getLoc(), type_i32,
+                       rewriter.getI32IntegerAttr(cudaMemcpyDeviceToHost))
+                       .getResult();
+
+      memcpy_count = LLVM::ConstantOp::create(
+                         rewriter, op.getLoc(), type_i32,
+                         rewriter.getI32IntegerAttr(sizeof(int32_t) * 8))
+                         .getResult();
+      LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
+                           SymbolRefAttr::get(context, "cudaMemcpyAsync"),
+                           ValueRange{
+                               host_count_ptr,
+                               arg_count_ptr,
+                               memcpy_count,
+                               kind,
+                               stream,
+                           });
+      LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
+                           SymbolRefAttr::get(context, "cudaMemcpyAsync"),
+                           ValueRange{
+                               host_peer_ptr,
+                               arg_peer_ptr,
+                               memcpy_count,
+                               kind,
+                               stream,
+                           });
+
+      memcpy_count = LLVM::ConstantOp::create(
+                         rewriter, op.getLoc(), type_i32,
+                         rewriter.getI32IntegerAttr(sizeof(ncclDataType_t) * 8))
+                         .getResult();
+      LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_nccl_datatype},
+                           SymbolRefAttr::get(context, "cudaMemcpyAsync"),
+                           ValueRange{
+                               host_datatype_ptr,
+                               arg_datatype_ptr,
+                               memcpy_count,
+                               kind,
+                               stream,
+                           });
+
+      memcpy_count =
+          LLVM::ConstantOp::create(rewriter, op.getLoc(), type_i32,
+                                   rewriter.getI32IntegerAttr(sizeof(void *)))
+              .getResult();
+      LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
+                           SymbolRefAttr::get(context, "cudaMemcpyAsync"),
+                           ValueRange{
+                               host_comm_ptr,
+                               arg_comm_ptr,
+                               memcpy_count,
+                               kind,
+                               stream,
+                           });
+
+      Value count =
+          LLVM::LoadOp::create(rewriter, op.getLoc(), type_i32, host_count_ptr)
+              .getResult();
+      Value datatype =
+          LLVM::LoadOp::create(rewriter, op.getLoc(), type_nccl_datatype,
+                               host_datatype_ptr)
+              .getResult();
+      Value peer =
+          LLVM::LoadOp::create(rewriter, op.getLoc(), type_i32, host_peer_ptr)
+              .getResult();
+      Value comm =
+          LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr, host_comm_ptr)
+              .getResult();
+
+      // TODO error checking: currently, we ignore the int return code
+      LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_nccl_result},
+                           SymbolRefAttr::get(context, function_name),
+                           ValueRange{
+                               arg_buffer_ptr,
+                               count,
+                               datatype,
+                               peer,
+                               comm,
+                               stream,
+                           });
+      LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
+    }
+
+    auto type_buffer = op.getRecvbuff().getType();
+    auto recvbuff = rewriter.create<stablehlo::ConstantOp>(
+        op.getLoc(), type_buffer,
+        DenseElementsAttr::get(type_buffer, op.getRecvbuff().getValue()));
+
+    auto len = std::reduce(op.getRecvbuff().getType().getShape().begin(),
+                           op.getRecvbuff().getType().getShape().end(), 1,
+                           std::multiplies<int64_t>());
+    auto count = rewriter.create<stablehlo::ConstantOp>(
+        op.getLoc(), type_tensor_i32,
+        DenseIntElementsAttr::get(type_tensor_i32, len));
+
+    auto datatype_val = convertMlirTypeToNcclDatatype(
+        op.getRecvbuff().getType().getElementType());
+    if (!datatype_val) {
+      auto err = datatype_val.takeError();
+      return rewriter.notifyMatchFailure(op, llvm::toString(std::move(err)));
+    }
+    auto datatype = rewriter.create<stablehlo::ConstantOp>(
+        op.getLoc(), RankedTensorType::get({}, type_nccl_datatype),
+        DenseIntElementsAttr::get(
+            RankedTensorType::get({}, type_nccl_datatype),
+            ArrayRef<ncclDataType_t>{datatype_val.get()}));
+
+    auto peer = adaptor.getPeer();
+    auto comm = adaptor.getComm();
+
+    auto aliases =
+        rewriter.getArrayAttr({stablehlo::OutputOperandAliasAttr::get(
+            context,
+            /*outputTupleIndices=*/ArrayRef<int64_t>{},
+            /*operandIndex=*/0,
+            /*operandTupleIndices=*/ArrayRef<int64_t>{})});
+
+    rewriter.replaceOpWithNewOp<enzymexla::JITCallOp>(
+        op, type_buffer, mlir::FlatSymbolRefAttr::get(context, wrapper_name),
+        ValueRange{recvbuff, count, datatype, peer, comm},
+        /*backend_config=*/rewriter.getStringAttr(""),
+        /*operand_layouts=*/nullptr,
+        /*result_layouts=*/nullptr,
+        /*arg_attrs=*/nullptr,
+        /*res_attrs=*/nullptr,
+        /*output_operand_aliases=*/aliases,
+        /*xla_side_effect_free=*/nullptr);
+
+    return success();
+  }
+};
+
+struct LowerCommNcclAllReduceOpToJIT
+    : public OpConversionPattern<comm::NcclAllReduceOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(comm::NcclAllReduceOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto context = op->getContext();
+
+    auto moduleOp = op->getParentOfType<ModuleOp>();
+    auto type_ptr = LLVM::LLVMPointerType::get(context);
+    auto type_void = LLVM::LLVMVoidType::get(context);
+    auto type_i32 = IntegerType::get(context, 32);
+    auto type_tensor_i32 = RankedTensorType::get({}, type_i32);
+    auto type_nccl_result = IntegerType::get(context, sizeof(ncclResult_t) * 8);
+    auto type_nccl_datatype =
+        IntegerType::get(context, sizeof(ncclDataType_t) * 8);
+    auto type_nccl_redop = IntegerType::get(context, sizeof(ncclRedOp_t) * 8);
+
+    std::string function_name = "ncclAllReduce";
+    std::string wrapper_name = "enzymexla_jitwrap_" + function_name;
+
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapper_name)) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+      auto funcType = LLVM::LLVMFunctionType::get(
+          type_void, {type_ptr, type_ptr, type_ptr, type_ptr, type_ptr}, false);
+
+      auto wrapperFunc = LLVM::LLVMFuncOp::create(rewriter, op.getLoc(),
+                                                  wrapper_name, funcType);
+
+      Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
+      rewriter.setInsertionPointToStart(entryBlock);
+
+      // Add function-level memory effects attribute
+      //   auto memoryEffectsAttr = rewriter.getArrayAttr(
+      //       {rewriter.getStringAttr("read"), rewriter.getStringAttr("write"),
+      //        rewriter.getStringAttr("allocate"),
+      //        rewriter.getStringAttr("free")});
+      //   wrapperFunc->setAttr("enzymexla.memory_effects", memoryEffectsAttr);
+      //   wrapperFunc->setAttr("enzymexla.device_abi",
+      //                        rewriter.getStringAttr("cuda"));
+      // Add argument-level memory effects attribute to all arguments
+      //   for (unsigned i = 0; i < 2; ++i) {
+      //     wrapperFunc.setArgAttr(i, "enzymexla.memory_effects",
+      //                            memoryEffectsAttr);
+      //   }
+
+      Value arg_buffer_ptr = entryBlock->getArgument(0);
+      Value arg_count_ptr = entryBlock->getArgument(1);
+      Value arg_datatype_ptr = entryBlock->getArgument(2);
+      Value arg_redop_ptr = entryBlock->getArgument(3);
+      Value arg_comm_ptr = entryBlock->getArgument(4);
+      Value stream =
+          enzymexla::GetStreamOp::create(rewriter, op.getLoc(), type_ptr)
+              .getResult();
+
+      // copy scalars from device to host memory
+      Value host_count_ptr =
+          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_i32)
+              .getResult();
+      Value host_datatype_ptr =
+          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr,
+                                 type_nccl_datatype)
+              .getResult();
+      Value host_redop_ptr = LLVM::AllocaOp::create(rewriter, op.getLoc(),
+                                                    type_ptr, type_nccl_redop)
+                                 .getResult();
+      Value host_comm_ptr =
+          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_ptr)
+              .getResult();
+
+      Value memcpy_count;
+      Value kind = LLVM::ConstantOp::create(
+                       rewriter, op.getLoc(), type_i32,
+                       rewriter.getI32IntegerAttr(cudaMemcpyDeviceToHost))
+                       .getResult();
+
+      memcpy_count = LLVM::ConstantOp::create(
+                         rewriter, op.getLoc(), type_i32,
+                         rewriter.getI32IntegerAttr(sizeof(int32_t) * 8))
+                         .getResult();
+      LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
+                           SymbolRefAttr::get(context, "cudaMemcpyAsync"),
+                           ValueRange{
+                               host_count_ptr,
+                               arg_count_ptr,
+                               memcpy_count,
+                               kind,
+                               stream,
+                           });
+
+      memcpy_count = LLVM::ConstantOp::create(
+                         rewriter, op.getLoc(), type_i32,
+                         rewriter.getI32IntegerAttr(sizeof(ncclRedOp_t) * 8))
+                         .getResult();
+      LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
+                           SymbolRefAttr::get(context, "cudaMemcpyAsync"),
+                           ValueRange{
+                               host_redop_ptr,
+                               arg_redop_ptr,
+                               memcpy_count,
+                               kind,
+                               stream,
+                           });
+
+      memcpy_count = LLVM::ConstantOp::create(
+                         rewriter, op.getLoc(), type_i32,
+                         rewriter.getI32IntegerAttr(sizeof(ncclDataType_t) * 8))
+                         .getResult();
+      LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_nccl_datatype},
+                           SymbolRefAttr::get(context, "cudaMemcpyAsync"),
+                           ValueRange{
+                               host_datatype_ptr,
+                               arg_datatype_ptr,
+                               memcpy_count,
+                               kind,
+                               stream,
+                           });
+
+      memcpy_count =
+          LLVM::ConstantOp::create(rewriter, op.getLoc(), type_i32,
+                                   rewriter.getI32IntegerAttr(sizeof(void *)))
+              .getResult();
+      LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
+                           SymbolRefAttr::get(context, "cudaMemcpyAsync"),
+                           ValueRange{
+                               host_comm_ptr,
+                               arg_comm_ptr,
+                               memcpy_count,
+                               kind,
+                               stream,
+                           });
+
+      Value count =
+          LLVM::LoadOp::create(rewriter, op.getLoc(), type_i32, host_count_ptr)
+              .getResult();
+      Value datatype =
+          LLVM::LoadOp::create(rewriter, op.getLoc(), type_nccl_datatype,
+                               host_datatype_ptr)
+              .getResult();
+      Value redop = LLVM::LoadOp::create(rewriter, op.getLoc(), type_nccl_redop,
+                                         host_redop_ptr)
+                        .getResult();
+      Value comm =
+          LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr, host_comm_ptr)
+              .getResult();
+
+      // TODO error checking: currently, we ignore the int return code
+      // uses in-place version of ncclAllReduce
+      LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_nccl_result},
+                           SymbolRefAttr::get(context, function_name),
+                           ValueRange{
+                               arg_buffer_ptr,
+                               arg_buffer_ptr,
+                               count,
+                               datatype,
+                               redop,
+                               comm,
+                               stream,
+                           });
+      LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
+    }
+
+    auto buffer = adaptor.getSendbuff();
+    auto len = std::reduce(op.getRecvbuff().getType().getShape().begin(),
+                           op.getRecvbuff().getType().getShape().end(), 1,
+                           std::multiplies<int64_t>());
+    auto count = rewriter.create<stablehlo::ConstantOp>(
+        op.getLoc(), type_tensor_i32,
+        DenseIntElementsAttr::get(type_tensor_i32, len));
+
+    auto datatype_val = convertMlirTypeToNcclDatatype(
+        op.getRecvbuff().getType().getElementType());
+    if (!datatype_val) {
+      auto err = datatype_val.takeError();
+      return rewriter.notifyMatchFailure(op, llvm::toString(std::move(err)));
+    }
+    auto datatype = rewriter.create<stablehlo::ConstantOp>(
+        op.getLoc(), RankedTensorType::get({}, type_nccl_datatype),
+        DenseIntElementsAttr::get(
+            RankedTensorType::get({}, type_nccl_datatype),
+            ArrayRef<ncclDataType_t>{datatype_val.get()}));
+
+    auto redop_val = convertCommNcclRedOpEnumToNcclRedOp(op.getOp());
+    if (!redop_val) {
+      auto err = redop_val.takeError();
+      return rewriter.notifyMatchFailure(op, llvm::toString(std::move(err)));
+    }
+    auto redop = rewriter.create<stablehlo::ConstantOp>(
+        op.getLoc(), RankedTensorType::get({}, type_nccl_redop),
+        DenseIntElementsAttr::get(RankedTensorType::get({}, type_nccl_redop),
+                                  redop_val.get()));
+
+    auto comm = adaptor.getComm();
+
+    auto aliases =
+        rewriter.getArrayAttr({stablehlo::OutputOperandAliasAttr::get(
+            context,
+            /*outputTupleIndices=*/ArrayRef<int64_t>{},
+            /*operandIndex=*/0,
+            /*operandTupleIndices=*/ArrayRef<int64_t>{})});
+
+    rewriter.replaceOpWithNewOp<enzymexla::JITCallOp>(
+        op, buffer.getType(),
+        mlir::FlatSymbolRefAttr::get(context, wrapper_name),
+        ValueRange{buffer, count, datatype, redop, comm},
+        /*backend_config=*/rewriter.getStringAttr(""),
+        /*operand_layouts=*/nullptr,
+        /*result_layouts=*/nullptr,
+        /*arg_attrs=*/nullptr,
+        /*res_attrs=*/nullptr,
+        /*output_operand_aliases=*/aliases,
+        /*xla_side_effect_free=*/nullptr);
+
+    return success();
+  }
+};
+
+struct LowerCommNcclBroadcastOpToJIT
+    : public OpConversionPattern<comm::NcclBroadcastOp> {
+  using OpConversionPattern::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(comm::NcclBroadcastOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const override {
+    auto context = op->getContext();
+
+    auto moduleOp = op->getParentOfType<ModuleOp>();
+    auto type_ptr = LLVM::LLVMPointerType::get(context);
+    auto type_void = LLVM::LLVMVoidType::get(context);
+    auto type_i32 = IntegerType::get(context, 32);
+    auto type_tensor_i32 = RankedTensorType::get({}, type_i32);
+    auto type_nccl_result = IntegerType::get(context, sizeof(ncclResult_t) * 8);
+    auto type_nccl_datatype =
+        IntegerType::get(context, sizeof(ncclDataType_t) * 8);
+
+    std::string function_name = "ncclBroadcast";
+    std::string wrapper_name = "enzymexla_jitwrap_" + function_name;
+
+    if (!moduleOp.lookupSymbol<LLVM::LLVMFuncOp>(wrapper_name)) {
+      OpBuilder::InsertionGuard guard(rewriter);
+      rewriter.setInsertionPointToStart(moduleOp.getBody());
+
+      auto funcType = LLVM::LLVMFunctionType::get(
+          type_void, {type_ptr, type_ptr, type_ptr, type_ptr, type_ptr}, false);
+
+      auto wrapperFunc = LLVM::LLVMFuncOp::create(rewriter, op.getLoc(),
+                                                  wrapper_name, funcType);
+
+      Block *entryBlock = wrapperFunc.addEntryBlock(rewriter);
+      rewriter.setInsertionPointToStart(entryBlock);
+
+      // Add function-level memory effects attribute
+      //   auto memoryEffectsAttr = rewriter.getArrayAttr(
+      //       {rewriter.getStringAttr("read"), rewriter.getStringAttr("write"),
+      //        rewriter.getStringAttr("allocate"),
+      //        rewriter.getStringAttr("free")});
+      //   wrapperFunc->setAttr("enzymexla.memory_effects", memoryEffectsAttr);
+      //   wrapperFunc->setAttr("enzymexla.device_abi",
+      //                        rewriter.getStringAttr("cuda"));
+      // Add argument-level memory effects attribute to all arguments
+      //   for (unsigned i = 0; i < 2; ++i) {
+      //     wrapperFunc.setArgAttr(i, "enzymexla.memory_effects",
+      //                            memoryEffectsAttr);
+      //   }
+
+      Value arg_buffer_ptr = entryBlock->getArgument(0);
+      Value arg_count_ptr = entryBlock->getArgument(1);
+      Value arg_datatype_ptr = entryBlock->getArgument(2);
+      Value arg_root_ptr = entryBlock->getArgument(3);
+      Value arg_comm_ptr = entryBlock->getArgument(4);
+      Value stream =
+          enzymexla::GetStreamOp::create(rewriter, op.getLoc(), type_ptr)
+              .getResult();
+
+      // copy scalars from device to host memory
+      Value host_count_ptr =
+          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_i32)
+              .getResult();
+      Value host_datatype_ptr =
+          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr,
+                                 type_nccl_datatype)
+              .getResult();
+      Value host_root_ptr =
+          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_i32)
+              .getResult();
+      Value host_comm_ptr =
+          LLVM::AllocaOp::create(rewriter, op.getLoc(), type_ptr, type_ptr)
+              .getResult();
+
+      Value memcpy_count;
+      Value kind = LLVM::ConstantOp::create(
+                       rewriter, op.getLoc(), type_i32,
+                       rewriter.getI32IntegerAttr(cudaMemcpyDeviceToHost))
+                       .getResult();
+
+      memcpy_count = LLVM::ConstantOp::create(
+                         rewriter, op.getLoc(), type_i32,
+                         rewriter.getI32IntegerAttr(sizeof(int32_t) * 8))
+                         .getResult();
+      LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
+                           SymbolRefAttr::get(context, "cudaMemcpyAsync"),
+                           ValueRange{
+                               host_count_ptr,
+                               arg_count_ptr,
+                               memcpy_count,
+                               kind,
+                               stream,
+                           });
+      LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
+                           SymbolRefAttr::get(context, "cudaMemcpyAsync"),
+                           ValueRange{
+                               host_root_ptr,
+                               arg_root_ptr,
+                               memcpy_count,
+                               kind,
+                               stream,
+                           });
+
+      memcpy_count = LLVM::ConstantOp::create(
+                         rewriter, op.getLoc(), type_i32,
+                         rewriter.getI32IntegerAttr(sizeof(ncclDataType_t) * 8))
+                         .getResult();
+      LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_nccl_datatype},
+                           SymbolRefAttr::get(context, "cudaMemcpyAsync"),
+                           ValueRange{
+                               host_datatype_ptr,
+                               arg_datatype_ptr,
+                               memcpy_count,
+                               kind,
+                               stream,
+                           });
+
+      memcpy_count =
+          LLVM::ConstantOp::create(rewriter, op.getLoc(), type_i32,
+                                   rewriter.getI32IntegerAttr(sizeof(void *)))
+              .getResult();
+      LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_i32},
+                           SymbolRefAttr::get(context, "cudaMemcpyAsync"),
+                           ValueRange{
+                               host_comm_ptr,
+                               arg_comm_ptr,
+                               memcpy_count,
+                               kind,
+                               stream,
+                           });
+
+      Value count =
+          LLVM::LoadOp::create(rewriter, op.getLoc(), type_i32, host_count_ptr)
+              .getResult();
+      Value datatype =
+          LLVM::LoadOp::create(rewriter, op.getLoc(), type_nccl_datatype,
+                               host_datatype_ptr)
+              .getResult();
+      Value root =
+          LLVM::LoadOp::create(rewriter, op.getLoc(), type_i32, host_root_ptr)
+              .getResult();
+      Value comm =
+          LLVM::LoadOp::create(rewriter, op.getLoc(), type_ptr, host_comm_ptr)
+              .getResult();
+
+      // TODO error checking: currently, we ignore the int return code
+      // uses in-place version of ncclBroadcast
+      LLVM::CallOp::create(rewriter, op.getLoc(), TypeRange{type_nccl_result},
+                           SymbolRefAttr::get(context, function_name),
+                           ValueRange{
+                               arg_buffer_ptr,
+                               arg_buffer_ptr,
+                               count,
+                               datatype,
+                               root,
+                               comm,
+                               stream,
+                           });
+      LLVM::ReturnOp::create(rewriter, op.getLoc(), ValueRange{});
+    }
+
+    auto buffer = adaptor.getSendbuff();
+    auto len = std::reduce(op.getRecvbuff().getType().getShape().begin(),
+                           op.getRecvbuff().getType().getShape().end(), 1,
+                           std::multiplies<int64_t>());
+    auto count = rewriter.create<stablehlo::ConstantOp>(
+        op.getLoc(), type_tensor_i32,
+        DenseIntElementsAttr::get(type_tensor_i32, len));
+
+    auto datatype_val = convertMlirTypeToNcclDatatype(
+        op.getRecvbuff().getType().getElementType());
+    if (!datatype_val) {
+      auto err = datatype_val.takeError();
+      return rewriter.notifyMatchFailure(op, llvm::toString(std::move(err)));
+    }
+    auto datatype = rewriter.create<stablehlo::ConstantOp>(
+        op.getLoc(), RankedTensorType::get({}, type_nccl_datatype),
+        DenseIntElementsAttr::get(
+            RankedTensorType::get({}, type_nccl_datatype),
+            ArrayRef<ncclDataType_t>{datatype_val.get()}));
+
+    auto root = adaptor.getRoot();
+    auto comm = adaptor.getComm();
+
+    auto aliases =
+        rewriter.getArrayAttr({stablehlo::OutputOperandAliasAttr::get(
+            context,
+            /*outputTupleIndices=*/ArrayRef<int64_t>{},
+            /*operandIndex=*/0,
+            /*operandTupleIndices=*/ArrayRef<int64_t>{})});
+
+    rewriter.replaceOpWithNewOp<enzymexla::JITCallOp>(
+        op, op.getRecvbuff().getType(),
+        mlir::FlatSymbolRefAttr::get(context, wrapper_name),
         ValueRange{buffer, count, datatype, root, comm},
         /*backend_config=*/rewriter.getStringAttr(""),
         /*operand_layouts=*/nullptr,
@@ -1668,6 +2802,8 @@ struct LowerCommToJITPass
                  LowerCommMpiIrecvOpToJIT, LowerCommMpiWaitOpToJIT,
                  LowerCommMpiWaitallOpToJIT, LowerCommMpiAllreduceOpToJIT,
                  LowerCommMpiBcastOpToJIT>(converter, context);
+
+    patterns.add<>(converter, context);
 
     if (failed(applyPartialConversion(getOperation(), target,
                                       std::move(patterns)))) {
