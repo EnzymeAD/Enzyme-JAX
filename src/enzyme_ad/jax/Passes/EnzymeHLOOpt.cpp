@@ -2703,6 +2703,21 @@ struct SliceOfDynamicUpdate final
       }
 
       if (no_overlap) {
+        // If the updated result is still needed, bypassing a single-use DUS
+        // chain makes an earlier buffer version live alongside a later write.
+        // That can force the backend to copy the whole buffer before updating
+        // it in place. Keep the read on the final version in this case.
+        Value previous = dyn.getOperand();
+        while (previous.hasOneUse()) {
+          auto reshape = previous.getDefiningOp<stablehlo::ReshapeOp>();
+          if (!reshape)
+            break;
+          previous = reshape.getOperand();
+        }
+        if (!dyn->hasOneUse() && previous.hasOneUse() &&
+            previous.getDefiningOp<stablehlo::DynamicUpdateSliceOp>())
+          return failure();
+
         rewriter.replaceOpWithNewOp<stablehlo::SliceOp>(
             op, dyn.getOperand(), op.getStartIndices(), op.getLimitIndices(),
             op.getStrides());
@@ -19636,15 +19651,9 @@ struct DUSDUSSubsuming
     if (!dus2)
       return failure();
 
-    SmallVector<Value> dusResults = {dus2.getResult(), dus.getResult()};
-    DenseMap<Value, TensorValueProvenance> provenanceInfo;
-    computeTensorValueProvenanceImpl(dusResults, provenanceInfo);
-
     DominanceInfo domInfo;
-    llvm::MapVector<Operation *, Operation *> movedSlices;
-    SmallVector<Operation *> originalUsers =
-        llvm::to_vector(dus2.getResult().getUsers());
-    for (Operation *user : originalUsers) {
+    SmallVector<stablehlo::SliceOp> movableSlices;
+    for (Operation *user : dus2.getResult().getUsers()) {
       if (user == dus)
         continue;
       auto slice = dyn_cast<stablehlo::SliceOp>(user);
@@ -19663,6 +19672,55 @@ struct DUSDUSSubsuming
       if (!isSliceMovable)
         continue;
 
+      movableSlices.push_back(slice);
+    }
+
+    // A nonempty final update contributes its provenance to the result. If
+    // it comes from a smaller tensor, piecewise select cannot represent it:
+    // rematerializeByPiecewiseSelect requires full-shaped sources or scalars.
+    // Avoid analyzing an entire DUS chain when neither rewriting it nor moving
+    // a slice can succeed. Follow slices just as provenance analysis does, but
+    // leave DUS and pad sources to the full analysis.
+    if (dus.getType().hasStaticShape() &&
+        dus.getUpdate().getType().hasStaticShape() &&
+        dus.getUpdate().getType().getNumElements() != 0) {
+      Value source = dus.getUpdate();
+      while (auto slice = source.getDefiningOp<stablehlo::SliceOp>())
+        source = slice.getOperand();
+      auto sourceType = cast<RankedTensorType>(source.getType());
+      if (!source.getDefiningOp<stablehlo::DynamicUpdateSliceOp>() &&
+          !source.getDefiningOp<stablehlo::PadOp>() &&
+          sourceType.getRank() != 0 &&
+          sourceType.getShape() != dus.getType().getShape()) {
+        // Moving disjoint reads forward is immediately undone by
+        // SliceOfDynamicUpdate. When rematerialization cannot succeed, only
+        // overlapping reads can benefit from the full provenance analysis.
+        llvm::erase_if(movableSlices, [&](stablehlo::SliceOp slice) {
+          for (auto [dim, index] : llvm::enumerate(dus.getStartIndices())) {
+            DenseIntElementsAttr attr;
+            if (!matchPattern(index, m_Constant(&attr)))
+              continue;
+            int64_t size = dus.getUpdate().getType().getDimSize(dim);
+            int64_t start =
+                std::clamp<int64_t>((*attr.begin()).getSExtValue(), 0,
+                                    dus.getType().getDimSize(dim) - size);
+            if (slice.getLimitIndices()[dim] <= start ||
+                slice.getStartIndices()[dim] >= start + size)
+              return true;
+          }
+          return false;
+        });
+        if (movableSlices.empty())
+          return failure();
+      }
+    }
+
+    SmallVector<Value> dusResults = {dus2.getResult(), dus.getResult()};
+    DenseMap<Value, TensorValueProvenance> provenanceInfo;
+    computeTensorValueProvenanceImpl(dusResults, provenanceInfo);
+
+    llvm::MapVector<Operation *, Operation *> movedSlices;
+    for (stablehlo::SliceOp slice : movableSlices) {
       IRMapping mapping;
       rewriter.setInsertionPointAfter(dus);
       mapping.map(dus2.getResult(), dus.getResult());
