@@ -384,6 +384,7 @@ slice_elementwise<1>;
 slice_pad<1>;
 dot_reshape_dot<1>;
 concat_const_prop<1>(1024);
+reduce_or_and;
 concat_fuse<1>;
 pad_reshape_pad<1>;
 pad_pad<1>;

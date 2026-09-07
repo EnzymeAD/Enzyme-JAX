@@ -8019,6 +8019,74 @@ struct NoNanSelfSubSimplify
   }
 };
 
+// An or/and reduction of a constant mask is a constant: the raiser's
+// lane masks (a one-hot `tid == 0` guard or-reduced over the lanes) fold
+// to the scalar they always were.
+struct ReduceOrAnd
+    : public CheckedOpRewritePattern<stablehlo::ReduceOp, ReduceOrAnd> {
+  using CheckedOpRewritePattern<stablehlo::ReduceOp,
+                                ReduceOrAnd>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ReduceOp op,
+                                    PatternRewriter &rewriter) const {
+    if (op.getInputs().size() != 1 || op.getInitValues().size() != 1)
+      return failure();
+    auto kind = stablehlo::CheckCommonReduceOp(op).kind;
+    bool isOr = kind == stablehlo::ReduceOpKind::Or;
+    if (!isOr && kind != stablehlo::ReduceOpKind::And)
+      return failure();
+    DenseElementsAttr input, init;
+    if (!matchPattern(op.getInputs()[0], m_Constant(&input)) ||
+        !matchPattern(op.getInitValues()[0], m_Constant(&init)))
+      return failure();
+    auto inTy = cast<RankedTensorType>(input.getType());
+    auto outTy = cast<RankedTensorType>(op.getResult(0).getType());
+    if (!inTy.getElementType().isInteger(1) || !inTy.hasStaticShape() ||
+        !outTy.hasStaticShape())
+      return failure();
+    bool initV = init.getSplatValue<bool>();
+    auto acc = [&](bool a, bool b) { return isOr ? (a || b) : (a && b); };
+
+    DenseElementsAttr result;
+    if (input.isSplat()) {
+      // Every reduced element is the same: the result is a splat too, at
+      // any size.
+      bool v = inTy.getNumElements() > 0
+                   ? acc(initV, input.getSplatValue<bool>())
+                   : initV;
+      result = DenseElementsAttr::get(outTy, v);
+    } else {
+      // Which input dims survive, in order, and the output strides.
+      llvm::SmallDenseSet<int64_t> reduced(op.getDimensions().begin(),
+                                           op.getDimensions().end());
+      SmallVector<int64_t> kept;
+      for (int64_t d = 0; d < inTy.getRank(); ++d)
+        if (!reduced.contains(d))
+          kept.push_back(d);
+      SmallVector<int64_t> outStride(kept.size(), 1);
+      for (int64_t i = (int64_t)kept.size() - 2; i >= 0; --i)
+        outStride[i] = outStride[i + 1] * inTy.getDimSize(kept[i + 1]);
+
+      SmallVector<bool> values(outTy.getNumElements(), initV);
+      SmallVector<int64_t> idx(inTy.getRank(), 0);
+      for (bool v : input.getValues<bool>()) {
+        int64_t o = 0;
+        for (auto [i, d] : llvm::enumerate(kept))
+          o += idx[d] * outStride[i];
+        values[o] = acc(values[o], v);
+        for (int64_t d = inTy.getRank() - 1; d >= 0; --d) {
+          if (++idx[d] < inTy.getDimSize(d))
+            break;
+          idx[d] = 0;
+        }
+      }
+      result = DenseElementsAttr::get(outTy, values);
+    }
+    rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(op, outTy, result);
+    return success();
+  }
+};
+
 struct AndSimplify
     : public CheckedOpRewritePattern<stablehlo::AndOp, AndSimplify> {
   using CheckedOpRewritePattern<stablehlo::AndOp,
@@ -13440,8 +13508,7 @@ struct DUSSliceSimplify final
         });
 
     LLVM_DEBUG(
-        for (auto [idx, operandSize, updateSize]
-             : llvm::zip_equal(
+        for (auto [idx, operandSize, updateSize] : llvm::zip_equal(
                  newDusIndices,
                  cast<RankedTensorType>(preSliceOperand.getType()).getShape(),
                  cast<RankedTensorType>(preSliceUpdate.getType()).getShape())) {
@@ -36816,13 +36883,13 @@ struct EnzymeHLOOptPass
     patterns.add<BitcastConvertCancellation>(context);
 
     patterns.add<
-        AddSimplify, SubSimplify, AndSimplify, MaxSimplify, MinSimplify,
-        OrSimplify, XorSimplify, MulSimplify, DivSimplify, RemSimplify,
-        PowSimplify, NoopSlice, NoopReverse, SliceReverse, SliceSlice,
-        DynamicSliceDynamicSlice, DynamicSliceSlice, SliceDynamicSlice,
-        LogSimplify, ShiftRightLogicalSimplify, NegativePadToSlice,
-        SliceSimplify, ConvertSimplify, TransposeSimplify, DotGeneralSimplify,
-        DotGeneralReshape, DiagonalTensorDotGeneralRewrite,
+        AddSimplify, SubSimplify, AndSimplify, ReduceOrAnd, MaxSimplify,
+        MinSimplify, OrSimplify, XorSimplify, MulSimplify, DivSimplify,
+        RemSimplify, PowSimplify, NoopSlice, NoopReverse, SliceReverse,
+        SliceSlice, DynamicSliceDynamicSlice, DynamicSliceSlice,
+        SliceDynamicSlice, LogSimplify, ShiftRightLogicalSimplify,
+        NegativePadToSlice, SliceSimplify, ConvertSimplify, TransposeSimplify,
+        DotGeneralSimplify, DotGeneralReshape, DiagonalTensorDotGeneralRewrite,
         DynamicSliceToStatic, DynamicUpdateSliceElim, ReduceToReshape,
         BroadcastToReshape, ReshapeEmptyBroadcast, ReshapeBroadcast,
         BroadcastReshape, ConstPropThroughBarrier, ReplaceNegAddWithSubtract,
