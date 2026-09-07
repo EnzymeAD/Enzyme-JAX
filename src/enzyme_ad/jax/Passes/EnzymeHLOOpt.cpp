@@ -8087,6 +8087,79 @@ struct ReduceOrAnd
   }
 };
 
+// Whether a pad-shaped mask is guaranteed to hold `v` at some index along
+// `dims` for every position outside `dims`: either the padding value is v
+// and every reduced dim is padded, or the operand is a splat of v and the
+// other dims are unpadded or padded with v. Negative and interior padding
+// are left alone.
+static bool padHoldsAlongDims(stablehlo::PadOp pad, ArrayRef<int64_t> dims,
+                              bool v) {
+  auto maskTy = cast<RankedTensorType>(pad.getType());
+  if (!maskTy.hasStaticShape() || dims.empty())
+    return false;
+  for (int64_t d = 0; d < maskTy.getRank(); ++d)
+    if (pad.getInteriorPadding()[d] != 0 || pad.getEdgePaddingLow()[d] < 0 ||
+        pad.getEdgePaddingHigh()[d] < 0)
+      return false;
+  auto is = [&](Value x) {
+    return v ? matchPattern(x, m_One()) : matchPattern(x, m_Zero());
+  };
+  bool padIsV = is(pad.getPaddingValue());
+  if (padIsV && llvm::all_of(dims, [&](int64_t d) {
+        return pad.getEdgePaddingLow()[d] > 0 ||
+               pad.getEdgePaddingHigh()[d] > 0;
+      }))
+    return true;
+  if (!is(pad.getOperand()))
+    return false;
+  auto opTy = cast<RankedTensorType>(pad.getOperand().getType());
+  for (int64_t d = 0; d < maskTy.getRank(); ++d) {
+    if (llvm::is_contained(dims, d)) {
+      if (opTy.getDimSize(d) < 1)
+        return false;
+    } else if (!padIsV && (pad.getEdgePaddingLow()[d] != 0 ||
+                           pad.getEdgePaddingHigh()[d] != 0)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+// An or-reduce over a pad that is guaranteed true somewhere along the
+// reduced axes is true (and an and-reduce over one guaranteed false is
+// false) at any size: the raiser's lane guard (`tid == 0`, a pad of an
+// all-true row once its compare folds) or-reduced over the lanes.
+struct ReduceOrAndPad
+    : public CheckedOpRewritePattern<stablehlo::ReduceOp, ReduceOrAndPad> {
+  using CheckedOpRewritePattern<stablehlo::ReduceOp,
+                                ReduceOrAndPad>::CheckedOpRewritePattern;
+
+  LogicalResult matchAndRewriteImpl(stablehlo::ReduceOp op,
+                                    PatternRewriter &rewriter) const {
+    if (op.getInputs().size() != 1 || op.getInitValues().size() != 1)
+      return failure();
+    auto kind = stablehlo::CheckCommonReduceOp(op).kind;
+    bool isOr = kind == stablehlo::ReduceOpKind::Or;
+    if (!isOr && kind != stablehlo::ReduceOpKind::And)
+      return failure();
+    auto pad = op.getInputs()[0].getDefiningOp<stablehlo::PadOp>();
+    if (!pad ||
+        !cast<RankedTensorType>(pad.getType()).getElementType().isInteger(1))
+      return failure();
+    SmallVector<int64_t> dims(op.getDimensions().begin(),
+                              op.getDimensions().end());
+    // or absorbs a true, and absorbs a false, whatever the init.
+    if (!padHoldsAlongDims(pad, dims, isOr))
+      return failure();
+    auto outTy = cast<RankedTensorType>(op.getResult(0).getType());
+    if (!outTy.hasStaticShape())
+      return failure();
+    rewriter.replaceOpWithNewOp<stablehlo::ConstantOp>(
+        op, outTy, DenseElementsAttr::get(outTy, isOr));
+    return success();
+  }
+};
+
 struct AndSimplify
     : public CheckedOpRewritePattern<stablehlo::AndOp, AndSimplify> {
   using CheckedOpRewritePattern<stablehlo::AndOp,
@@ -36883,10 +36956,10 @@ struct EnzymeHLOOptPass
     patterns.add<BitcastConvertCancellation>(context);
 
     patterns.add<
-        AddSimplify, SubSimplify, AndSimplify, ReduceOrAnd, MaxSimplify,
-        MinSimplify, OrSimplify, XorSimplify, MulSimplify, DivSimplify,
-        RemSimplify, PowSimplify, NoopSlice, NoopReverse, SliceReverse,
-        SliceSlice, DynamicSliceDynamicSlice, DynamicSliceSlice,
+        AddSimplify, SubSimplify, AndSimplify, ReduceOrAndPad, ReduceOrAnd,
+        MaxSimplify, MinSimplify, OrSimplify, XorSimplify, MulSimplify,
+        DivSimplify, RemSimplify, PowSimplify, NoopSlice, NoopReverse,
+        SliceReverse, SliceSlice, DynamicSliceDynamicSlice, DynamicSliceSlice,
         SliceDynamicSlice, LogSimplify, ShiftRightLogicalSimplify,
         NegativePadToSlice, SliceSimplify, ConvertSimplify, TransposeSimplify,
         DotGeneralSimplify, DotGeneralReshape, DiagonalTensorDotGeneralRewrite,

@@ -355,6 +355,7 @@ select_op_canon<16>(1024);
 add_simplify<16>;
 sub_simplify<16>;
 and_simplify<16>;
+reduce_or_and_pad;
 max_simplify<16>;
 min_simplify<16>;
 or_simplify<16>;
