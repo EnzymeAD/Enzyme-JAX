@@ -772,6 +772,7 @@ static void addConstPropPasses(std::vector<std::string> &list,
   list.push_back("log_plus_one_const_prop<1>");
   list.push_back("is_finite_const_prop");
   list.push_back("not_const_prop");
+  list.push_back("reduce_or_and");
   list.push_back("neg_const_prop");
   list.push_back("sqrt_const_prop");
   list.push_back("rsqrt_const_prop");

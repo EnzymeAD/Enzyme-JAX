@@ -61,6 +61,10 @@ def ApplyAndSimplifyPatterns : EnzymeHLOPatternOp<
     "and_simplify"> {
   let patterns = ["AndSimplify"];
 }
+def ApplyReduceOrAndPatterns : EnzymeHLOPatternOp<
+    "reduce_or_and"> {
+  let patterns = ["ReduceOrAnd"];
+}
 def ApplyMaxSimplifyPatterns : EnzymeHLOPatternOp<
     "max_simplify"> {
   let patterns = ["MaxSimplify"];
