@@ -20,8 +20,7 @@ module {
   }
 }
 
-// CHECK:  module {
-// CHECK-NEXT:  llvm.mlir.global private constant @map(dense<[0, 3, 6, 1]> : tensor<4xi32>) {addr_space = 0 : i32} : !llvm.array<4 x i32>
+// CHECK:    llvm.mlir.global private constant @map(dense<[0, 3, 6, 1]> : tensor<4xi32>) {addr_space = 0 : i32} : !llvm.array<4 x i32>
 // CHECK-NEXT:  func.func private @table_raised(%arg0: tensor<16xf64>) -> tensor<16xf64> {
 // CHECK-NEXT:    %c = stablehlo.constant dense<[0, 3, 6, 1]> : tensor<4xi32>
 // CHECK-NEXT:    %0 = stablehlo.bitcast_convert %c : (tensor<4xi32>) -> tensor<4xi32>
@@ -50,13 +49,11 @@ module {
 // CHECK-NEXT:    %c_7 = stablehlo.constant dense<0> : tensor<1xi64>
 // CHECK-NEXT:    %c_8 = stablehlo.constant dense<0> : tensor<1xi64>
 // CHECK-NEXT:    %c_9 = stablehlo.constant dense<0> : tensor<i64>
-// CHECK-NEXT:    %16 = stablehlo.broadcast_in_dim %15, dims = [0] : (tensor<16xf64>) -> tensor<16xf64>
-// CHECK-NEXT:    %17 = stablehlo.dynamic_update_slice %arg0, %16, %c_9 : (tensor<16xf64>, tensor<16xf64>, tensor<i64>) -> tensor<16xf64>
-// CHECK-NEXT:    return %17 : tensor<16xf64>
+// CHECK-NEXT:    %16 = stablehlo.dynamic_update_slice %arg0, %15, %c_9 : (tensor<16xf64>, tensor<16xf64>, tensor<i64>) -> tensor<16xf64>
+// CHECK-NEXT:    return %16 : tensor<16xf64>
 // CHECK-NEXT:  }
 
 // -----
-
 // In the host form the view of the table is taken outside the wrapper; it
 // moves inside instead of becoming a kernel operand.
 
@@ -79,8 +76,7 @@ module {
   }
 }
 
-// CHECK:  module {
-// CHECK-NEXT:  llvm.mlir.global private constant @map(dense<[0, 3, 6, 1, 4, 7, 2, 5, 8]> : tensor<9xi32>) {addr_space = 0 : i32} : !llvm.array<9 x i32>
+// CHECK:    llvm.mlir.global private constant @map(dense<[0, 3, 6, 1, 4, 7, 2, 5, 8]> : tensor<9xi32>) {addr_space = 0 : i32} : !llvm.array<9 x i32>
 // CHECK-NEXT:  func.func @host(%arg0: memref<9xf64, 1>, %arg1: memref<9xf64, 1>, %arg2: index) {
 // CHECK-NEXT:    %c1 = arith.constant 1 : index
 // CHECK-NEXT:    %0 = llvm.mlir.addressof @map : !llvm.ptr
@@ -97,23 +93,20 @@ module {
 // CHECK-NEXT:    %2 = stablehlo.add %1, %c_0 : tensor<9xi64>
 // CHECK-NEXT:    %c_1 = stablehlo.constant dense<1> : tensor<9xi64>
 // CHECK-NEXT:    %3 = stablehlo.multiply %2, %c_1 : tensor<9xi64>
-// CHECK-NEXT:    %4 = stablehlo.reshape %0 : (tensor<9xi32>) -> tensor<9xi32>
-// CHECK-NEXT:    %5 = stablehlo.convert %4 : (tensor<9xi32>) -> tensor<9xi64>
-// CHECK-NEXT:    %6 = stablehlo.reshape %5 : (tensor<9xi64>) -> tensor<9x1xi64>
-// CHECK-NEXT:    %7 = "stablehlo.gather"(%arg0, %6) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1>}> : (tensor<9xf64>, tensor<9x1xi64>) -> tensor<9xf64>
+// CHECK-NEXT:    %4 = stablehlo.convert %0 : (tensor<9xi32>) -> tensor<9xi64>
+// CHECK-NEXT:    %5 = stablehlo.reshape %4 : (tensor<9xi64>) -> tensor<9x1xi64>
+// CHECK-NEXT:    %6 = "stablehlo.gather"(%arg0, %5) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1>}> : (tensor<9xf64>, tensor<9x1xi64>) -> tensor<9xf64>
 // CHECK-NEXT:    %c_2 = stablehlo.constant dense<0> : tensor<1xi64>
 // CHECK-NEXT:    %c_3 = stablehlo.constant dense<0> : tensor<1xi64>
 // CHECK-NEXT:    %c_4 = stablehlo.constant dense<0> : tensor<1xi64>
 // CHECK-NEXT:    %c_5 = stablehlo.constant dense<0> : tensor<1xi64>
 // CHECK-NEXT:    %c_6 = stablehlo.constant dense<0> : tensor<1xi64>
 // CHECK-NEXT:    %c_7 = stablehlo.constant dense<0> : tensor<i64>
-// CHECK-NEXT:    %8 = stablehlo.broadcast_in_dim %7, dims = [0] : (tensor<9xf64>) -> tensor<9xf64>
-// CHECK-NEXT:    %9 = stablehlo.dynamic_update_slice %arg1, %8, %c_7 : (tensor<9xf64>, tensor<9xf64>, tensor<i64>) -> tensor<9xf64>
-// CHECK-NEXT:    return %arg0, %9 : tensor<9xf64>, tensor<9xf64>
+// CHECK-NEXT:    %7 = stablehlo.dynamic_update_slice %arg1, %6, %c_7 : (tensor<9xf64>, tensor<9xf64>, tensor<i64>) -> tensor<9xf64>
+// CHECK-NEXT:    return %arg0, %7 : tensor<9xf64>, tensor<9xf64>
 // CHECK-NEXT:  }
 
 // -----
-
 // The view may also be taken inside the wrapper, leaving the table's address
 // as the operand: the same move applies to the pointer.
 
@@ -136,8 +129,7 @@ module {
   }
 }
 
-// CHECK:  module {
-// CHECK-NEXT:  llvm.mlir.global private constant @map(dense<[0, 3, 6, 1, 4, 7, 2, 5, 8]> : tensor<9xi32>) {addr_space = 0 : i32} : !llvm.array<9 x i32>
+// CHECK:    llvm.mlir.global private constant @map(dense<[0, 3, 6, 1, 4, 7, 2, 5, 8]> : tensor<9xi32>) {addr_space = 0 : i32} : !llvm.array<9 x i32>
 // CHECK-NEXT:  func.func @host_ptr(%arg0: memref<9xf64, 1>, %arg1: memref<9xf64, 1>, %arg2: index) {
 // CHECK-NEXT:    %c1 = arith.constant 1 : index
 // CHECK-NEXT:    %0 = llvm.mlir.addressof @map : !llvm.ptr
@@ -153,17 +145,15 @@ module {
 // CHECK-NEXT:    %2 = stablehlo.add %1, %c_0 : tensor<9xi64>
 // CHECK-NEXT:    %c_1 = stablehlo.constant dense<1> : tensor<9xi64>
 // CHECK-NEXT:    %3 = stablehlo.multiply %2, %c_1 : tensor<9xi64>
-// CHECK-NEXT:    %4 = stablehlo.reshape %0 : (tensor<9xi32>) -> tensor<9xi32>
-// CHECK-NEXT:    %5 = stablehlo.convert %4 : (tensor<9xi32>) -> tensor<9xi64>
-// CHECK-NEXT:    %6 = stablehlo.reshape %5 : (tensor<9xi64>) -> tensor<9x1xi64>
-// CHECK-NEXT:    %7 = "stablehlo.gather"(%arg0, %6) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1>}> : (tensor<9xf64>, tensor<9x1xi64>) -> tensor<9xf64>
+// CHECK-NEXT:    %4 = stablehlo.convert %0 : (tensor<9xi32>) -> tensor<9xi64>
+// CHECK-NEXT:    %5 = stablehlo.reshape %4 : (tensor<9xi64>) -> tensor<9x1xi64>
+// CHECK-NEXT:    %6 = "stablehlo.gather"(%arg0, %5) <{dimension_numbers = #stablehlo.gather<collapsed_slice_dims = [0], start_index_map = [0], index_vector_dim = 1>, indices_are_sorted = false, slice_sizes = array<i64: 1>}> : (tensor<9xf64>, tensor<9x1xi64>) -> tensor<9xf64>
 // CHECK-NEXT:    %c_2 = stablehlo.constant dense<0> : tensor<1xi64>
 // CHECK-NEXT:    %c_3 = stablehlo.constant dense<0> : tensor<1xi64>
 // CHECK-NEXT:    %c_4 = stablehlo.constant dense<0> : tensor<1xi64>
 // CHECK-NEXT:    %c_5 = stablehlo.constant dense<0> : tensor<1xi64>
 // CHECK-NEXT:    %c_6 = stablehlo.constant dense<0> : tensor<1xi64>
 // CHECK-NEXT:    %c_7 = stablehlo.constant dense<0> : tensor<i64>
-// CHECK-NEXT:    %8 = stablehlo.broadcast_in_dim %7, dims = [0] : (tensor<9xf64>) -> tensor<9xf64>
-// CHECK-NEXT:    %9 = stablehlo.dynamic_update_slice %arg1, %8, %c_7 : (tensor<9xf64>, tensor<9xf64>, tensor<i64>) -> tensor<9xf64>
-// CHECK-NEXT:    return %arg0, %9 : tensor<9xf64>, tensor<9xf64>
+// CHECK-NEXT:    %7 = stablehlo.dynamic_update_slice %arg1, %6, %c_7 : (tensor<9xf64>, tensor<9xf64>, tensor<i64>) -> tensor<9xf64>
+// CHECK-NEXT:    return %arg0, %7 : tensor<9xf64>, tensor<9xf64>
 // CHECK-NEXT:  }
