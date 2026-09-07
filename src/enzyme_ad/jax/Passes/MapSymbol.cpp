@@ -4,7 +4,7 @@
 #include <stdexcept>
 #include <string>
 
-#define DEBUG_TYPE "jit-map-symbol"
+#define DEBUG_TYPE "map-symbol"
 
 namespace mlir::enzyme {
 #define GEN_PASS_DEF_MAPSYMBOLPASS
